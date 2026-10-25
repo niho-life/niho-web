@@ -171,6 +171,8 @@ Next.js では `metadata` の各項目へ対応付けます。Astro では `rend
 
 ### サイト共通スタイルの保存と削除
 
+全体の正は [サイト共通スタイルの契約](site-styles-contract.md) です。この節は保存 API の責務を定めます。
+
 `SiteSettings` は任意で `tokens?: Record<string, DesignToken>` と `textStyles?: Record<string, TextStyle>` を持ちます。値と参照の許可範囲はページと共通で、`parseSiteSettings` は未知フィールド・未解決参照・型不一致を拒否します。公開情報だけを編集・保存する場合も既存のスタイル定義を保持します。`readSiteSettings` / `saveSiteSettings` を持たないホストはページのスタイルだけで動作します。
 
 スタイル変更時の保存要求には、保存済み基準の `previousStyles?: SiteStyles` を追加します。エディターは保存前に全ページの実効参照を再検証し、最新のサイト設定と元の version / 内容を比較します。差異または409では入力・元のversion・移行前のページを保持し、競合した最新設定と比較できます。事前確認は補助で、以下の原子的処理はホストの必須責務です。

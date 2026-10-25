@@ -118,6 +118,7 @@
     "demo:projects": "node examples/projects-demo.mjs",
     "demo:analytics": "node examples/analytics-demo.mjs",
     "demo:localization": "node examples/localization-demo.mjs",
+    "demo:site-styles": "npm run build && node examples/site-styles-demo.mjs",
     "demo:kamakura": "npm run build && node examples/kamakura-native-demo.mjs",
     "demo:kamakura:check": "npm run build && node examples/kamakura-native-demo.mjs --check",
     "prepare": "npm run build"

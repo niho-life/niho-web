@@ -40,6 +40,8 @@ const adapter: EditorAdapter = {
 
 訳文側の`readDocument`は、現在の正本原文とoverlayを`materializeLocalizedPage`した最新の共通構造を返してください。原文の構造・style変更後も手修正済みの訳値は保持し、変更された原文unitだけを`review-needed`にします。これは編集用draftの契約です。公開中の訳文snapshotは独立して保持し、draft再materializeで置き換えません。
 
+原文がサイト共通スタイル（[契約](site-styles-contract.md)）を参照するホストでは、エディターは `readSiteSettings` の保存済み設定を `options.siteStyles` として原文の検証と訳文の再構成に使い、設定の読込が終わるまで訳文の編集を始めません。設定を保存すると原文・訳文の状態を読み直します。ホストの `validateLocalizedDocumentSave` にも同じ保存済み設定を `siteStyles` として渡してください。
+
 `PageDocument`が`instance`を含む場合、`EditorAdapter.components`を実装し、同じサイトの現在の正本`ComponentLibrary`を`readLibrary`から返します。原文ページと部品デザインの読込・編集・undo/redo・自動保存・CAS・使用状況・公開影響は、このcanonical `LibrarySession`だけを使います。`readPage.sourceVersion`は正本原文と、その抽出に使った正本component libraryの組を識別しなければなりません。エディターはraw文書のstableなinstance/component IDを保存対象として保持し、訳文の表示時だけcanonical libraryとoverlayから作った同一IDのlocalized libraryを展開します。展開後の配列位置をraw文書へ適用したり、ページ保存や訳文操作で正本の共通定義を更新したりしません。
 
 ## 訳文保存の必須検証

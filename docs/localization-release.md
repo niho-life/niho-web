@@ -20,6 +20,8 @@
 
 source言語は翻訳reviewを要求しませんが、文書identity、公開catalogue、block、共有参照、resource bindingはtargetと同じく検証します。`requiredResourceIds` に指定したCSS/CMS等のbindingが無ければ失敗します。指定されていない外部resourceを「snapshotに固定済み」とは扱いません。
 
+サイト共通スタイル（[契約](site-styles-contract.md)）を参照するページは、`createPublishedSiteLocaleSnapshot(input, { blocks, siteStyles })` に公開時点の保存済み `SiteSettings` を渡します。各ページを同じ設定で検証したうえで、実効 token / 文字スタイルを含む自己完結の文書として snapshot へ固定するため、保存済み snapshot の読込（`parsePublishedSiteLocaleSnapshot` / `verifyPublishedSiteLocaleSnapshot`）と投影・rollback に設定は要りません。後からサイト設定を変えても過去の release の見た目は変わらず、サイト共通の変更は次の release の `contentDigest` と差分に現れます。設定を渡さずに共通参照を持つページを渡すと検証で失敗し、途中までを公開しません。
+
 ```ts
 import { createPublishedSiteLocaleSnapshot } from "@niho/web/localization-release";
 

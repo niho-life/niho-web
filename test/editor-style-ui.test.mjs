@@ -9,6 +9,7 @@ const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { PageEditor } = await import("@niho/web/editor");
 const { renderPageToHtml } = await import("@niho/web/server");
+const { detachRemovedSiteStyles, parsePageDocument } = await import("@niho/web/core");
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 
 const flush = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
@@ -434,5 +435,101 @@ test("unsaved page changes and page inputs keep site-wide styles locked and say 
     assert.equal(input("色", left()).disabled, false); assert.ok(!left().textContent.includes(sitePageHold));
     await change(input("色", left()), "#00aa00");
     assert.ok(document.querySelector('[aria-label="サイト共通スタイルの変更確認"]'));
+  } finally { await app.cleanup(); }
+});
+
+async function until(condition, message = "the editor did not reach the expected state") { for (let attempt = 0; attempt < 50 && !condition(); attempt++) await flush(); assert.ok(condition(), message); }
+const review = () => document.querySelector('[aria-label="サイト共通スタイルの変更確認"]');
+
+test("one site-wide color change is confirmed against every page that uses it and reaches each page's published CSS", async () => {
+  const host = siteStyleHost(), about = structuredClone(fixture);
+  about.pageId = "about"; about.title = "私たちについて"; about.body[0].children[0].style = { base: { color: { token: "brand" } } };
+  const app = await setup({ document: host.page, adapter: { ...host.adapter,
+    listPages: async () => [{ siteId: "demo", pageId: "home", locale: "ja-JP", title: "ホーム" }, { siteId: "demo", pageId: "about", locale: "ja-JP", title: "私たちについて" }],
+    readDocument: async (target) => ({ document: structuredClone(target.pageId === "about" ? about : host.page), version: "v1" }) } });
+  try {
+    await openSiteColor("ブランド");
+    await change(input("色", left()), "#00aa00");
+    await until(() => review()?.textContent.includes("2 ページの参照または見た目に反映されます。"));
+    assert.ok(review().textContent.includes("ホーム · ja-JP")); assert.ok(review().textContent.includes("私たちについて · ja-JP"));
+    assert.ok(review().textContent.includes("#336655")); assert.ok(review().textContent.includes("#00aa00"), "the diff against the saved settings is shown before saving");
+    await click(button("サイト共通スタイルを保存"));
+    assert.equal(host.saves.length, 1);
+    assert.deepEqual(host.saves[0].previousStyles, { tokens: { brand: { type: "color", value: "#336655", label: "ブランド" } } });
+    assert.equal(host.saves[0].settings.tokens.brand.value, "#00aa00");
+    for (const page of [host.page, about]) assert.match(renderPageToHtml(page, {}, { siteStyles: host.saves[0].settings }), /--nw-brand:#00aa00;/);
+    assert.equal(app.calls.saves.length, 0, "no page draft is written for a site-wide change");
+    await until(() => canvasCss().includes("--nw-brand:#00aa00;"), "the canvas shows the saved site color");
+  } finally { await app.cleanup(); }
+});
+
+test("a 409 on the site-wide save keeps the edited value and shows the latest settings for comparison", async () => {
+  const host = siteStyleHost();
+  let other = null; // 別の人が先に保存した設定
+  const adapter = { ...host.adapter,
+    readSiteSettings: async () => other ? { settings: structuredClone(other), version: "s2" } : host.adapter.readSiteSettings(),
+    saveSiteSettings: async (request) => { host.saves.push(structuredClone(request)); return other ? { status: "conflict" } : host.adapter.saveSiteSettings(request); } };
+  const app = await setup({ document: host.page, adapter });
+  try {
+    await openSiteColor("ブランド");
+    await change(input("色", left()), "#00aa00");
+    await until(() => review()?.textContent.includes("1 ページの参照または見た目に反映されます。"));
+    other = { title: "デモサイト", locale: "ja", tokens: { brand: { type: "color", value: "#aa0000", label: "ブランド" } } };
+    await click(button("サイト共通スタイルを保存"));
+    await until(() => review()?.textContent.includes("サイト設定が競合しました（409）。入力を保持しています。"));
+    assert.equal(host.saves.filter((save) => save.settings.tokens.brand.value === "#00aa00").length, 0, "the stale version is detected before the write");
+    assert.equal(input("色", left()).value, "#00aa00", "the edited value stays");
+    const compare = [...review().querySelectorAll("details summary")].find((node) => node.textContent === "競合した最新設定と比較");
+    assert.ok(compare); assert.ok(compare.parentElement.textContent.includes("#aa0000")); assert.ok(compare.parentElement.textContent.includes("#00aa00"));
+    assert.equal(app.calls.saves.length, 0);
+    await click(button("サイトの変更を取り消す"));
+    assert.equal(review(), null, "discarding restores the saved settings");
+  } finally { await app.cleanup(); }
+});
+
+test("deleting a site-wide color needs the host's atomic detachment and detaches page references with it", async () => {
+  const refusal = "このホストは全ページの参照を同時に切り離せないため、サイト共通スタイルを削除できません。";
+  const host = siteStyleHost(), app = await setup({ document: host.page, adapter: host.adapter });
+  try {
+    await openSiteColor("ブランド");
+    await click(button("このカラーを削除", left())); await click(button("削除する", left()));
+    assert.ok(left().textContent.includes(refusal)); assert.equal(review(), null);
+    assert.ok(libraryRow("ブランド"), "the definition stays");
+  } finally { await app.cleanup(); }
+  const atomic = siteStyleHost();
+  // 宣言したホストは、設定と一緒に全ページの参照を今の見た目のまま切り離す（ここでは 1 ページ）。
+  const save = atomic.adapter.saveSiteSettings;
+  atomic.adapter.saveSiteSettings = async (request) => {
+    const result = await save(request);
+    atomic.page = detachRemovedSiteStyles(parsePageDocument(atomic.page, {}, { siteStyles: request.previousStyles }), request.previousStyles, request.settings);
+    parsePageDocument(atomic.page, {}, { siteStyles: request.settings });
+    return result;
+  };
+  const app2 = await setup({ document: atomic.page, adapter: { ...atomic.adapter, siteStyleCapabilities: { atomicReferenceDetachment: true }, readDocument: async () => ({ document: structuredClone(atomic.page), version: "v1" }) } });
+  try {
+    await openSiteColor("ブランド");
+    await click(button("このカラーを削除", left())); await click(button("削除する", left()));
+    assert.ok(!left().textContent.includes(refusal));
+    await until(() => review()?.textContent.includes("1 ページの参照または見た目に反映されます。"));
+    assert.ok(review().textContent.includes("削除（参照の見た目を保持）"));
+    await click(button("サイト共通スタイルを保存"));
+    assert.equal(atomic.saves.length, 1);
+    assert.deepEqual(atomic.saves[0].settings.tokens, {}); assert.deepEqual(atomic.saves[0].previousStyles.tokens.brand, { type: "color", value: "#336655", label: "ブランド" });
+    assert.equal(atomic.page.body[0].children[0].style.base.color, "#336655", "the page keeps its appearance as a literal value");
+    await until(() => canvasCss().includes("color:#336655;") && !canvasCss().includes("--nw-brand"), "the reloaded page renders the detached value");
+    assert.equal(app2.calls.saves.length, 0);
+  } finally { await app2.cleanup(); }
+});
+
+test("a host without site settings shows neither the site scope nor owners and keeps page-only styles", async () => {
+  const app = await setup();
+  try {
+    await click(button("スタイル", left()));
+    assert.equal(document.querySelector('[aria-label="スタイルの保存先"]'), null);
+    assert.equal(button("サイト共通", left()), undefined); assert.equal(button("このページ", left()), undefined);
+    assert.equal(left().querySelectorAll(".e-lib-row").length, 1, "the fixture's own color");
+    await click(button("カラーを追加", left()));
+    assert.equal(left().querySelectorAll(".e-lib-row").length, 2, "page-only colors are still created");
+    assert.equal(review(), null); assert.equal(button("サイト共通へ移す", left()), undefined);
   } finally { await app.cleanup(); }
 });
