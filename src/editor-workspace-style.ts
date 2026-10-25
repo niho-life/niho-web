@@ -32,9 +32,11 @@ export const workspaceCss = `
 .nw-editor .e-body{position:relative;display:grid;grid-template-columns:296px minmax(0,1fr) 300px;min-height:0;flex:1;overflow:hidden}
 .nw-editor .e-body.is-left-closed{grid-template-columns:44px minmax(0,1fr) 300px}.nw-editor .e-body.is-right-closed{grid-template-columns:296px minmax(0,1fr)}.nw-editor .e-body.is-left-closed.is-right-closed{grid-template-columns:44px minmax(0,1fr)}
 .nw-editor .e-rail{height:100%;min-height:0;background:#fff}.nw-editor .e-left{display:flex;min-width:0;overflow:hidden;border-right:1px solid var(--e-border)}
-.nw-editor .e-tools{display:flex;width:44px;flex:none;flex-direction:column;align-items:center;gap:3px;padding:7px 4px;border-right:1px solid var(--e-border);background:#fff}
-.nw-editor .e-tools button{display:flex;width:36px;height:36px;min-width:36px;min-height:36px;align-items:center;justify-content:center;padding:0;border:0;border-radius:5px;background:transparent;color:#666}
-.nw-editor .e-tools button:hover:not(:disabled),.nw-editor .e-tools button[aria-pressed=true]{border-color:transparent;background:var(--e-hover);color:#222}.nw-editor .e-tool-icon{display:block;width:19px;height:19px;flex:none}
+/* Tool rail: 44px column, 32px buttons, 18px line icons (stroke 1.5). The open tool gets a small grey square like STUDIO's navigation. */
+.nw-editor .e-tools{display:flex;width:44px;flex:none;flex-direction:column;align-items:center;gap:4px;padding:8px 4px;border-right:1px solid var(--e-border);background:#fff}
+.nw-editor .e-tools button{display:flex;width:32px;height:32px;min-width:32px;min-height:32px;align-items:center;justify-content:center;padding:0;border:0;border-radius:6px;background:transparent;color:#4a4a4a}
+.nw-editor .e-tools button:hover:not(:disabled){border-color:transparent;background:var(--e-hover);color:#111}.nw-editor .e-tools button[aria-pressed=true]{border-color:transparent;background:#e6e6e6;color:#111}
+.nw-editor .e-tools button:disabled{opacity:.35}.nw-editor .e-tools .e-panel-toggle{margin-bottom:4px}.nw-editor .e-tool-icon{display:block;width:18px;height:18px;flex:none}
 .nw-editor .e-left-column{display:flex;min-width:0;min-height:0;flex:1;flex-direction:column}.nw-editor .e-body.is-left-closed .e-left-column{display:none}.nw-editor .e-project-context{display:grid;min-height:48px;grid-template-columns:32px minmax(0,1fr);grid-template-rows:20px 16px;align-content:center;padding:4px 8px;border-bottom:1px solid var(--e-border)}
 .nw-editor .e-toolbar-start{display:flex;grid-row:1/3;align-items:center}.nw-editor .e-toolbar-start>a{display:grid;width:30px;height:30px;place-items:center;border-radius:5px;color:#333;text-decoration:none}.nw-editor .e-toolbar-start>a:hover{background:var(--e-hover)}
 .nw-editor .e-crumb,.nw-editor .e-project-context>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.nw-editor .e-crumb{font-size:12px}.nw-editor .e-project-context>span{color:var(--e-muted);font-size:10px}

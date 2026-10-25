@@ -2,10 +2,31 @@ import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEven
 import { projectLayers, visibleLayers, type LayerEntry, type LayerLabels } from "./layers.js";
 import type { PageDocument } from "./types.js";
 
-function LayerGlyph({ kind }: { kind: LayerEntry["kind"] }) {
-  return <svg className="e-layer-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round">
-    {kind === "text" ? <><path d="M3 4h10M8 4v8M5.5 12h5" /></> : kind === "image" ? <><rect x="2.5" y="3" width="11" height="10" rx="1" /><circle cx="6" cy="6.5" r="1" /><path d="m3.5 11 3-2.5 2 1.5 2-2 2 2" /></> : kind === "component" || kind === "instance" ? <><path d="m5 2.5 3 3-3 3-3-3 3-3Zm6 5 3 3-3 3-3-3 3-3Z" /><path d="M8 5.5h3v2M5 8.5v2h3" /></> : <rect x="2.5" y="2.5" width="11" height="11" rx="1" />}
-  </svg>;
+/** レイヤー行の図形。STUDIO のレイヤーパネルに合わせ、テキストは T、画像は左上を塗った四角、ボックスは四角、コンポーネント（配置した再利用部品）は紫のひし形。リストとセクションは niho-web の要素の種類を見分けるために加える。 */
+export type LayerGlyphName = "text" | "image" | "list" | "section" | "box" | "part" | "block";
+const sectionTags = new Set(["section", "header", "footer", "nav", "main", "aside", "article"]), listTags = new Set(["ul", "ol", "dl"]);
+export function layerGlyphName(entry: Pick<LayerEntry, "kind" | "node">): LayerGlyphName {
+  if (entry.kind === "instance") return "part";
+  if (entry.kind === "component") return "block";
+  if (entry.kind === "image" || entry.kind === "text") return entry.kind;
+  const tag = entry.node.type === "element" ? entry.node.tag : "";
+  return listTags.has(tag) ? "list" : sectionTags.has(tag) ? "section" : "box";
+}
+const solid = { fill: "currentColor", stroke: "none" };
+const layerGlyphs: Record<LayerGlyphName, ReactNode> = {
+  text: <path d="M3.5 4h9M8 4v8.5M6 12.5h4" />,
+  image: <><rect x="2.5" y="2.5" width="11" height="11" rx="1.3" /><path d="M3.3 3.3h9L3.3 12.3z" {...solid} /></>,
+  list: <><path d="M6 4.3h7M6 8h7M6 11.7h7" /><circle cx="3.2" cy="4.3" r=".9" {...solid} /><circle cx="3.2" cy="8" r=".9" {...solid} /><circle cx="3.2" cy="11.7" r=".9" {...solid} /></>,
+  section: <><rect x="2.5" y="2.5" width="11" height="11" rx="1.3" /><path d="M2.5 6.2h11" /></>,
+  box: <rect x="2.5" y="2.5" width="11" height="11" rx="1.3" />,
+  part: <path d="m8 2.3 5.7 5.7L8 13.7 2.3 8z" />,
+  block: <><path d="m8 2.3 5.7 5.7L8 13.7 2.3 8z" /><circle cx="8" cy="8" r="1.4" {...solid} /></>
+};
+function LayerGlyph({ name }: { name: LayerGlyphName }) {
+  return <svg className="e-layer-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">{layerGlyphs[name]}</svg>;
+}
+function Chevron({ open }: { open: boolean }) {
+  return <svg className={`e-layer-chevron${open ? " is-open" : ""}`} viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="m6 4.5 3.5 3.5L6 11.5" /></svg>;
 }
 
 export type LayerTreePanelProps = {
@@ -83,12 +104,12 @@ export function LayerTreePanel({ document, labels, rootLabel, selectedId, disabl
     <div data-layer-key="root" className="e-layer-row">
       <button ref={(node) => { if (node) refs.current.set("__root__", node); else refs.current.delete("__root__"); }} type="button" role="treeitem" aria-level={1} aria-selected={selectedId === null} className="e-layer e-layer-root" aria-pressed={selectedId === null} tabIndex={visibleFocusId === null ? 0 : -1} onClick={() => { setFocusId(null); select(null); }} onKeyDown={(event) => keys(event, null)} disabled={disabled}>{rootLabel}</button>
     </div>
-    {visible.map((entry) => <div key={entry.id} data-node-id={entry.id} data-layer-kind={entry.kind}
-      className={`e-layer-row${className ? className(entry) : ""}`} style={{ paddingLeft: entry.depth * 13 }} draggable={draggable}
+    {visible.map((entry) => <div key={entry.id} data-node-id={entry.id} data-layer-kind={entry.kind} data-layer-glyph={layerGlyphName(entry)}
+      className={`e-layer-row${className ? className(entry) : ""}`} style={{ paddingLeft: entry.depth * 14 }} draggable={draggable}
       onDragStart={(event) => dragStart?.(event, entry.id)} onDragEnd={dragEnd} onDragOver={(event) => dragOver?.(event, entry.id)} onDrop={(event) => drop?.(event, entry.id)}>
-      {entry.hasChildren ? <button type="button" className="e-layer-toggle" aria-label={`${entry.label}を${expanded.has(entry.id) ? "閉じる" : "開く"}`} tabIndex={-1} onClick={() => toggle(entry.id)} disabled={disabled}>{expanded.has(entry.id) ? "⌄" : ">"}</button> : <span className="e-layer-toggle-placeholder" aria-hidden="true" />}
+      {entry.hasChildren ? <button type="button" className="e-layer-toggle" aria-label={`${entry.label}を${expanded.has(entry.id) ? "閉じる" : "開く"}`} tabIndex={-1} onClick={() => toggle(entry.id)} disabled={disabled}><Chevron open={expanded.has(entry.id)} /></button> : <span className="e-layer-toggle-placeholder" aria-hidden="true" />}
       <button ref={(node) => { if (node) refs.current.set(entry.id, node); else refs.current.delete(entry.id); }} type="button" role="treeitem" aria-level={entry.depth + 2} aria-selected={selectedId === entry.id} {...(entry.hasChildren ? { "aria-expanded": expanded.has(entry.id) } : {})} className="e-layer" aria-pressed={selectedId === entry.id} tabIndex={visibleFocusId === entry.id ? 0 : -1} title={entry.label} onClick={() => { setFocusId(entry.id); select(entry.id); }} onKeyDown={(event) => keys(event, entry)} disabled={disabled}>
-        <LayerGlyph kind={entry.kind} /><span className="e-layer-label">{entry.label}</span>{trailing?.(entry)}
+        <LayerGlyph name={layerGlyphName(entry)} /><span className="e-layer-label">{entry.label}</span>{trailing?.(entry)}
       </button>
     </div>)}
   </div>;

@@ -1,4 +1,4 @@
-import type { PageDocument, PageNode } from "./types.js";
+import type { ElementTag, PageDocument, PageNode } from "./types.js";
 
 export type LayerKind = "box" | "image" | "text" | "component" | "instance";
 export type LayerEntry = {
@@ -20,7 +20,15 @@ const textTags = new Set(["p", "h1", "h2", "h3", "h4", "h5", "h6", "span", "labe
 const plain = (node: PageNode): string => node.type === "text" ? node.text : node.type === "element" ? node.children.map(plain).join(" ") : "";
 const excerpt = (value: string) => value.replace(/\s+/g, " ").trim().slice(0, 32);
 
-/** レイヤー名は文書へ複製せず、現在のノードから人向けに投影する。raw text は親要素の内容なので行を作らない。 */
+/** 要素の種類の表示名。レイヤー行・移動先・インスペクタの見出しで共通に使う。 */
+export const elementTypeLabel: Record<ElementTag, string> = {
+  div: "ボックス", section: "セクション", article: "記事", header: "ヘッダー", footer: "フッター", main: "メイン領域", nav: "ナビゲーション", aside: "補足領域",
+  h1: "見出し1", h2: "見出し2", h3: "見出し3", h4: "見出し4", h5: "見出し5", h6: "見出し6", p: "段落", span: "インラインテキスト",
+  a: "リンク", img: "画像", picture: "画像領域", source: "画像候補", ul: "箇条書き", ol: "番号付きリスト", li: "リスト項目",
+  dl: "説明リスト", dt: "説明見出し", dd: "説明内容", strong: "強調", em: "強勢", b: "太字", i: "斜体", small: "補足テキスト",
+  blockquote: "引用", figure: "図版", figcaption: "図版説明", br: "改行", hr: "区切り", time: "日時", details: "開閉領域", summary: "開閉見出し"
+};
+/** レイヤー名は文書へ複製せず、現在のノードから人向けに投影する。raw text は親要素の内容なので行を作らない。文字を持たない要素はセクション・箇条書きなど種類の名前にする。 */
 export function layerLabel(node: Exclude<PageNode, { type: "text" }>, labels: LayerLabels = {}): string {
   if (node.type === "component") return labels.blocks?.[node.block] ?? "コンポーネント";
   if (node.type === "instance") return labels.components?.get(node.component) ?? "コンポーネント";
@@ -29,7 +37,7 @@ export function layerLabel(node: Exclude<PageNode, { type: "text" }>, labels: La
     const value = excerpt(plain(node));
     return value || "テキスト";
   }
-  return "ボックス";
+  return elementTypeLabel[node.tag] ?? "ボックス";
 }
 
 export function layerKind(node: Exclude<PageNode, { type: "text" }>): LayerKind {

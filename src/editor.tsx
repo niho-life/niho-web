@@ -22,7 +22,7 @@ import { AutosaveSwitch, ConflictDialog, HistoryBar, HistoryDialogs, LibraryReco
 import { isDirectlyEditable, readEditableChildren } from "./editor-rich-text.js";
 import { isSafePublicLink } from "./validation-utils.js";
 import type { ComponentUsageEntry, EditorBlockRegistry, EditorCanvasPreviewProps, EditorLocaleReleasePlan, EditorLocaleReleaseState, EditorLock, EditorPage, EditorPageChange, EditorReleasePlan, EditorReleaseRequest, EditorSite, EditorTarget, PageEditorProps } from "./editor-types.js";
-import type { ComponentKind, ComponentLibrary, ElementTag, PageDocument, PageNode, SitePresentation } from "./types.js";
+import type { ComponentKind, ComponentLibrary, PageDocument, PageNode, SitePresentation } from "./types.js";
 import { AssetLibraryPanel, BackgroundImageField, ImageSourceField, assetPlacement, socialImageProblem, useLocalAssetUsage, useResolvedAssets, type AssetAction, type AssetPicker } from "./editor-assets.js";
 import { assetEditorCss, canvasAssetCss } from "./editor-assets-style.js";
 import type { LibraryAsset, ResolvedAssetMap } from "./assets.js";
@@ -40,7 +40,7 @@ import { LanguageSelector, LocalizationPanel, localizationEditorCss, localizedOp
 import { parseEditorLocaleReleaseApplyResult, parseEditorLocaleReleasePlan, parseEditorLocaleReleaseState } from "./editor-locale-release.js";
 import { documentLocaleFor, localizationLocaleFor, validateLocalizedDocumentSave, type LocalizationLocale } from "./localization.js";
 import { editorSessionFrom, readEditorSession, type EditorSession } from "./editor-session.js";
-import { canvasViewportHeight, fitCanvasScale, layerLabel, pathForNodeId, projectLayers, visibleLayers } from "./layers.js";
+import { canvasViewportHeight, elementTypeLabel, fitCanvasScale, layerLabel, pathForNodeId, projectLayers, visibleLayers } from "./layers.js";
 import { LayerTreePanel } from "./editor-layers.js";
 import { CanvasViewportToolbar, EditorWorkspace, InspectorTabs, PanelToggle, WorkspaceIcon, WorkspaceScaleSelect, type WorkspaceScale, type WorkspaceTab } from "./editor-workspace.js";
 import { workspaceCss } from "./editor-workspace-style.js";
@@ -89,29 +89,25 @@ const releasePreparationNotice = (error: unknown): string => {
   return "公開先と差分を確認できませんでした。接続を確認して再試行してください。編集内容は保持しています。";
 };
 const label = (node: PageNode, blocks: EditorBlockRegistry, names?: ReadonlyMap<string, string>) => node.type === "text" ? node.text.slice(0, 32) || "テキスト" : layerLabel(node, { blocks: Object.fromEntries(Object.entries(blocks).map(([id, block]) => [id, block.label ?? "コンポーネント"])), ...(names ? { components: names } : {}) });
-const elementTypeLabel: Record<ElementTag, string> = {
-  div: "ボックス", section: "セクション", article: "記事", header: "ヘッダー", footer: "フッター", main: "メイン領域", nav: "ナビゲーション", aside: "補足領域",
-  h1: "見出し1", h2: "見出し2", h3: "見出し3", h4: "見出し4", h5: "見出し5", h6: "見出し6", p: "段落", span: "インラインテキスト",
-  a: "リンク", img: "画像", picture: "画像領域", source: "画像候補", ul: "箇条書き", ol: "番号付きリスト", li: "リスト項目",
-  dl: "説明リスト", dt: "説明見出し", dd: "説明内容", strong: "強調", em: "強勢", b: "太字", i: "斜体", small: "補足テキスト",
-  blockquote: "引用", figure: "図版", figcaption: "図版説明", br: "改行", hr: "区切り", time: "日時", details: "開閉領域", summary: "開閉見出し"
-};
 const destinationLabel = (node: Exclude<PageNode, { type: "text" }>, path: readonly number[], blocks: EditorBlockRegistry, names?: ReadonlyMap<string, string>) => {
-  const depth = Math.max(0, path.length - 1), type = node.type === "element" ? elementTypeLabel[node.tag] : node.type === "component" ? "業務ブロック" : "コンポーネント";
-  return `${"　".repeat(depth)}${depth ? "└ " : ""}${label(node, blocks, names)}（${type}）`;
+  const depth = Math.max(0, path.length - 1), type = node.type === "element" ? elementTypeLabel[node.tag] : node.type === "component" ? "業務ブロック" : "コンポーネント", name = label(node, blocks, names);
+  return `${"　".repeat(depth)}${depth ? "└ " : ""}${name}${name === type ? "" : `（${type}）`}`;
 };
 type ToolName = "add" | "pages" | "layers" | "styles" | "assets" | "upload" | "stock" | "connect" | "components";
+/** 左レールのアイコン。STUDIO の左ナビゲーション（24px の線画・線幅 1.5）の各ツールと同じ形: 追加は 3 つの塗りの四角と＋、ページは折り目の付いた 1 枚、レイヤーは最上段を塗った 3 段、スタイルは A と小さな○、アップロードはフォルダー、ストックは画像と＋、接続は 2 本のつまみ、コンポーネントは 4 つのひし形。 */
+const folderGlyph = <path d="M3.5 6.5A1.5 1.5 0 0 1 5 5h4.2l2 2H19a1.5 1.5 0 0 1 1.5 1.5V18a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 18z" />;
 function ToolGlyph({ tool }: { tool: ToolName }) {
-  const common = { fill: "none", stroke: "currentColor", strokeWidth: 1.7, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
+  const common = { fill: "none", stroke: "currentColor", strokeWidth: 1.5, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
+  const solid = { fill: "currentColor", stroke: "none" };
   const paths: Record<ToolName, ReactNode> = {
-    add: <><rect x="3.5" y="3.5" width="7" height="7" rx="1.5" /><rect x="13.5" y="3.5" width="7" height="7" rx="1.5" /><rect x="3.5" y="13.5" width="7" height="7" rx="1.5" /><path d="M17 14v6M14 17h6" /></>,
-    pages: <><path d="M6 3.5h8l4 4v13H6z" /><path d="M14 3.5v4h4M9 12h6M9 16h6" /></>,
-    layers: <><path d="m12 3.5 8.5 4.8L12 13.1 3.5 8.3 12 3.5Z" /><path d="m4 12.5 8 4.6 8-4.6M4 16.5l8 4.6 8-4.6" /></>,
-    styles: <><path d="M4.5 19 10 5l5.5 14M6.5 14h7" /><path d="m16 8 3.5-3.5 2 2L18 10l-2.5.5.5-2.5Z" /></>,
-    assets: <><path d="M3.5 7.5h6l2 2h9v9.8a1.2 1.2 0 0 1-1.2 1.2H4.7a1.2 1.2 0 0 1-1.2-1.2V7.5Z" /><path d="M3.5 7.5V5.7a1.2 1.2 0 0 1 1.2-1.2h4.6l2 2h8.2a1.2 1.2 0 0 1 1.2 1.2v1.8" /></>,
-    upload: <><path d="M4 15.5v4h16v-4" /><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5" /></>,
-    stock: <><rect x="3.5" y="4" width="17" height="16" rx="2" /><circle cx="9" cy="9" r="1.5" /><path d="m5 17 4-4 3 3 3-5 4 6" /><path d="m17 2 .7 1.5 1.6.2-1.2 1.1.3 1.6L17 5.6l-1.4.8.3-1.6-1.2-1.1 1.6-.2L17 2Z" /></>,
-    connect: <><circle cx="6" cy="6" r="2.2" /><circle cx="18" cy="6" r="2.2" /><circle cx="12" cy="18" r="2.2" /><path d="m8 7 3 8M16 7l-3 8M8.2 6h7.6" /></>,
+    add: <><rect x="3.5" y="3.5" width="7" height="7" rx="1.8" {...solid} /><rect x="13.5" y="3.5" width="7" height="7" rx="1.8" {...solid} /><rect x="3.5" y="13.5" width="7" height="7" rx="1.8" {...solid} /><path d="M17 13.8v6.4M13.8 17h6.4" strokeWidth={1.8} /></>,
+    pages: <><path d="M6 3.5h7.5L18 8v12.5H6z" /><path d="M13.5 3.5V8H18" /></>,
+    layers: <><path d="m12 3.2 8.5 4.8L12 12.8 3.5 8 12 3.2Z" {...solid} /><path d="m4 12.2 8 4.5 8-4.5M4 16.3l8 4.5 8-4.5" /></>,
+    styles: <><path d="M3.5 18 9 5.5 14.5 18M5.6 13.4h6.8" /><circle cx="18.3" cy="15.2" r="2.7" /></>,
+    assets: folderGlyph,
+    upload: folderGlyph,
+    stock: <><rect x="3.5" y="5" width="13" height="14" rx="1.6" /><circle cx="8" cy="9.5" r="1.4" /><path d="m3.5 16.5 4-3.6 3 2.6 2.5-2.6 3.5 3.6" /><path d="M19.5 3v5M17 5.5h5" /></>,
+    connect: <><path d="M4 7.5h16M4 16.5h16" /><circle cx="9" cy="7.5" r="2.4" {...solid} /><circle cx="15" cy="16.5" r="2.4" {...solid} /></>,
     components: <><path d="m7 3.5 3.5 3.5L7 10.5 3.5 7 7 3.5Z" /><path d="m17 3.5 3.5 3.5-3.5 3.5L13.5 7 17 3.5Z" /><path d="m7 13.5 3.5 3.5L7 20.5 3.5 17 7 13.5Z" /><path d="m17 13.5 3.5 3.5-3.5 3.5-3.5-3.5 3.5-3.5Z" /></>
   };
   return <svg className="e-tool-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false" {...common}>{paths[tool]}</svg>;
