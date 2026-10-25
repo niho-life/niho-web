@@ -24,7 +24,8 @@ await Promise.all([
     legalComments: "none",
     metafile: true
     });
-    const forbidden = Object.keys(result.metafile.inputs).filter((input) => /studio\/(?:integration-entry|experience-editor|kamakura-editor)\.tsx$/u.test(input) || /src\/editor\.tsx$/u.test(input));
+    // Kamakura は凍結中も読み取り専用で開く（kamakura-site#84）。Experience の editor は休止のまま入れない。
+    const forbidden = Object.keys(result.metafile.inputs).filter((input) => /studio\/(?:integration-entry|experience-editor)\.tsx$/u.test(input));
     if (forbidden.length) throw new Error(`Frozen editor code entered the Studio client bundle: ${forbidden.join(", ")}`);
   })(),
   build({
@@ -55,6 +56,6 @@ await Promise.all([
 ]);
 
 const workerBundle = await readFile(join(outputDirectory, "worker.js"), "utf8");
-for (const forbidden of ["https://api.niho.life", "https://api-stg.niho.life", "/internal/studio/web-content"]) {
+for (const forbidden of ["https://api.niho.life", "https://api-stg.niho.life"]) {
   if (workerBundle.includes(forbidden)) throw new Error(`Frozen editor upstream entered the Studio Worker bundle: ${forbidden}`);
 }
