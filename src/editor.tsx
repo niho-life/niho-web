@@ -127,6 +127,8 @@ function hostPreviewComponent(value: unknown): PageEditorProps["previewComponent
   if (typeof value === "object" && value !== null && !Array.isArray(value) && typeof (value as { $$typeof?: unknown }).$$typeof === "symbol") return value as NonNullable<PageEditorProps["previewComponent"]>;
   return undefined;
 }
+/** キャンバスの直接編集は枠の外のクリック・⌘Enter で確定し、Esc で取り消す。完了のためだけのボタンは置かない（STUDIO と同じ）。 */
+const textEditHint = "枠の外をクリックするか ⌘Enter（Ctrl+Enter）で確定、Esc で取り消します。";
 type DragItem = { kind: "palette"; type: string } | { kind: "node"; id: string };
 type DropPlace = { parentId: string | null; index: number; marker: { left: number; top: number; width: number; height: number; inside: boolean } };
 const asElement = (target: EventTarget | null): HTMLElement | null => target && typeof target === "object" && "nodeType" in target && (target as Node).nodeType === 1 ? target as HTMLElement : null;
@@ -345,13 +347,13 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
         onPointerDown={(event) => { event.preventDefault(); event.stopPropagation(); const element = sizeTarget(selectedId.id); if (!element) return; const bounds = element.getBoundingClientRect(), computed = body.ownerDocument.defaultView?.getComputedStyle(element); resizing.current = { element, path: resizePath, x: event.clientX, y: event.clientY, width: Number.parseFloat(computed?.width ?? "") || bounds.width, height: Number.parseFloat(computed?.height ?? "") || bounds.height, inlineWidth: element.style.width, inlineHeight: element.style.height }; event.currentTarget.setPointerCapture(event.pointerId); }}
         onPointerMove={(event) => { const current = resizing.current; if (!current) return; event.preventDefault(); current.element.style.width = `${Math.min(10000, Math.max(1, Math.round(current.width + event.clientX - current.x)))}px`; current.element.style.height = `${Math.min(10000, Math.max(1, Math.round(current.height + event.clientY - current.y)))}px`; }}
         onPointerUp={(event) => { event.preventDefault(); event.stopPropagation(); endResize(true); }} onPointerCancel={() => endResize(false)} />}
-      {editingId && <div className="nw-text-toolbar" role="toolbar" aria-label="文字の装飾" contentEditable={false}>
+      {editingId && <div className="nw-text-toolbar" role="toolbar" aria-label="文字の装飾" title={textEditHint} contentEditable={false}>
         {structureEditable ? <><button type="button" aria-label="太字" onMouseDown={(event) => event.preventDefault()} onClick={() => format("bold")}>B</button>
         <button type="button" aria-label="斜体" onMouseDown={(event) => event.preventDefault()} onClick={() => format("italic")}>I</button>
         <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => { savedRange.current = body.ownerDocument.getSelection()?.rangeCount ? body.ownerDocument.getSelection()!.getRangeAt(0).cloneRange() : null; setLinkOpen(true); }}>リンク</button>
         {editing?.node.type === "element" && editing.node.tag === "div" && <><button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => format("formatBlock", "p")}>段落</button><button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => format("formatBlock", "h2")}>見出し</button><button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => format("insertUnorderedList")}>箇条書き</button><button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => format("insertOrderedList")}>番号</button></>}</> : <span>リンクと装飾を保持して文字だけ編集します</span>}
         {linkOpen && <><input aria-label="リンク先URL" value={linkHref} onChange={(event) => { setLinkHref(event.target.value); setLinkError(""); }} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); applyLink(); } }} /><button type="button" onClick={applyLink}>適用</button>{linkError && <span className="problem" role="alert">{linkError}</span>}</>}
-        <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => stopEditing(true)}>完了</button>
+        <span style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap" }}>{textEditHint}</span>
       </div>}
     </div>, body)}
   </>;
@@ -966,6 +968,16 @@ export function PageEditor({ adapter, toolbarStart, blocks = emptyBlocks, builde
   const document = useMemo(() => rawDocument && siteStylesReady ? (master ? resolveComponentStyles(rawDocument, activeSiteStyles) : resolvePageStyles(detachRemovedSiteStyles(rawDocument, session?.siteStyles ?? {}, activeSiteStyles), activeSiteStyles)) : undefined, [rawDocument, master, activeSiteStyles, siteStylesReady, session?.siteStyles]);
   const selection = document ? pathForNodeId(document, selectedId) : null;
   const entries = document ? walkNodes(document) : [];
+  // インスペクタの候補に出す定義の場所。ページでは rawDocument に無い名前がサイト共通、部品の編集ではサイト共通に同名の定義がある名前がサイト共通。
+  const styleOrigins = useMemo(() => {
+    if (!rawDocument || !document) return undefined;
+    const shared = activeSiteStyles.tokens ?? {};
+    const tokenOrigin = (name: string) => masterId ? (Object.hasOwn(shared, name) ? "サイト共通" : "コンポーネント本体") : Object.hasOwn(rawDocument.tokens, name) ? "このページ" : "サイト共通";
+    const styleOrigin = (name: string) => masterId ? "コンポーネント本体" : Object.hasOwn(rawDocument.textStyles ?? {}, name) ? "このページ" : "サイト共通";
+    const result = Object.fromEntries([...Object.keys(document.tokens).map((name) => [`token:${name}`, tokenOrigin(name)]), ...Object.keys(document.textStyles ?? {}).map((name) => [`textStyle:${name}`, styleOrigin(name)])]);
+    // サイト共通の定義が無いページでは場所を分けない（候補は「共通カラー」のまま）。
+    return masterId || Object.values(result).includes("サイト共通") ? result : undefined;
+  }, [rawDocument, document, masterId, activeSiteStyles]);
   const names = useMemo(() => new Map(libraryPresent?.components.map((component) => [component.id, component.name] as const)), [libraryPresent]);
   const layerLabels = useMemo(() => ({ blocks: Object.fromEntries(Object.entries(blocks).map(([id, block]) => [id, block.label ?? "コンポーネント"])), components: names }), [blocks, names]);
   const pageDocument = session?.history.present, pageTitle = session ? pages.find((page) => sameTarget(page, session.target))?.title ?? session.history.present.title : undefined;
@@ -1420,7 +1432,7 @@ export function PageEditor({ adapter, toolbarStart, blocks = emptyBlocks, builde
         toggle={(name, exposed) => reportProblem(updateLibrary((library) => exposeComponentProp(library, masterComponent.id, node.id, name, exposed, blocks)))} relabel={(name, value) => updateLibrary((library) => relabelComponentProp(library, masterComponent.id, name, value, blocks))} />
         : !targetMode && <CreateComponentSection disabled={libraryBlocked || hasInput} reason={reason("*") ?? (document ? componentCreationLock(document, selection, session?.locks ?? [])?.reason : undefined)} open={() => setComponentDialog({ type: "create", path: selection })} />)}
       {node?.type === "text" && elementTab === "settings" && <p className="e-help">このテキスト要素に追加設定はありません。</p>}
-      {node && node.type !== "text" && selection && document && <StyleInspector key={pathKey} document={document} saved={masterId ? savedMaster : session?.saved} node={node} path={selection} blocks={blocks} tiers={tiers} tier={tier} setTier={setBreakpoint} range={range} setRange={setRange} tab={elementTab}
+      {node && node.type !== "text" && selection && document && <StyleInspector key={pathKey} document={document} saved={masterId ? savedMaster : session?.saved} node={node} path={selection} blocks={blocks} tiers={tiers} tier={tier} setTier={setBreakpoint} range={range} setRange={setRange} tab={elementTab} origins={styleOrigins}
         width={width} setWidth={setWidth} apply={apply} preview={previewOperation} pending={pending} fieldKey={pathKey} disabled={editBlocked || targetMode} tierLocked={hasInput} reason={reason} notify={setNotice} styleState={styleState} setStyleState={setStyleState} stateControl="external"
         appearanceExtra={assets && (node.type !== "element" || !["img", "source", "br", "hr"].includes(node.tag)) && <BackgroundImageField key={`${pathKey}-${tier}-background`} declarations={tier === "base" ? node.style?.base : node.style?.responsive?.find((entry) => entry.minWidth === tier)?.declarations} assets={resolvedAssets.map}
           lock={(property) => reason(tier === "base" ? `style.base.${property}` : "style.responsive")} disabled={editBlocked} onPick={() => setPicker({ purpose: "background", path: selection, breakpoint: tier })}

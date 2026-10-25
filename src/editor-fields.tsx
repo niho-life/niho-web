@@ -95,7 +95,8 @@ const parseText = (input: string): StyleValue | undefined => {
   return !value ? undefined : value.startsWith("@") ? { token: value.slice(1) } : value;
 };
 
-export type ColorChoice = { name: string; label: string; value: string };
+/** origin: どこで定義した色か（「サイト共通」「このページ」など）。候補をその見出しで分けて出す。 */
+export type ColorChoice = { name: string; label: string; value: string; origin?: string | undefined };
 /** 見本・HEX・不透明度を 1 つの枠に。見本から共通カラーと色の選択を開く。token 参照中は名前と「切り離す」。 */
 export function ColorField({ caption, value, tokens, apply, preview, pending = noop, fieldKey, disabled = false, status, placeholder, extra, none, inherited }: Common & {
   value: StyleValue | undefined; tokens: readonly ColorChoice[]; none?: { value: StyleValue | undefined } | undefined;
@@ -132,6 +133,9 @@ export function ColorField({ caption, value, tokens, apply, preview, pending = n
     return () => input.removeEventListener("change", commit);
   });
   const swatch = value !== undefined ? text : inherited;
+  // 共通カラーは定義した場所（サイト共通・このページ）ごとに見出しを付ける。出所が 1 つだけなら「共通カラー」のまま。
+  const groups = new Map<string, ColorChoice[]>();
+  for (const choice of tokens) groups.set(choice.origin ?? "共通カラー", [...(groups.get(choice.origin ?? "共通カラー") ?? []), choice]);
   return <Row caption={caption} htmlFor={id} hintId={hintId} status={status} extra={extra}>
     <Frame states={[hex, alpha]} className="e-color">
       <button type="button" className={`e-swatch${swatch ? value === undefined ? " e-inherited" : "" : " e-none"}`} style={swatch ? { background: swatch } : undefined}
@@ -143,9 +147,9 @@ export function ColorField({ caption, value, tokens, apply, preview, pending = n
     {typeof value === "object" && <span className="e-chip"><i className="e-swatch-dot" style={token ? { background: token.value } : undefined} aria-hidden="true" />{token?.label ?? value.token}
       <button type="button" className="e-small" disabled={disabled || !token} onClick={() => token && report(apply(token.value))}>切り離す</button></span>}
     {open && <span className="e-pop" role="group" aria-label={`${caption}の候補`}>
-      {tokens.length > 0 && <><small className="e-help">共通カラー</small><span className="e-pop-tokens">{tokens.map((choice) =>
+      {[...groups].map(([title, choices]) => <span key={title} className="e-pop-group" role="group" aria-label={title}><small className="e-help">{title}</small><span className="e-pop-tokens">{choices.map((choice) =>
         <button type="button" key={choice.name} className="e-token" aria-pressed={token?.name === choice.name} onClick={() => { setOpen(false); report(apply({ token: choice.name })); }}>
-          <i className="e-swatch-dot" style={{ background: choice.value }} aria-hidden="true" />{choice.label}</button>)}</span></>}
+          <i className="e-swatch-dot" style={{ background: choice.value }} aria-hidden="true" />{choice.label}</button>)}</span></span>)}
       <span className="e-pop-row">
         <input ref={picker} key={base?.hex ?? "none"} type="color" defaultValue={base?.hex ?? "#000000"} aria-label={`${caption}を選ぶ`}
           onInput={(event) => { live.current = event.currentTarget.value; preview?.(withAlpha(event.currentTarget.value, parts?.alpha ?? 100)); }} />

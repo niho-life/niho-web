@@ -83,7 +83,7 @@ function TransformFields({ prefix, disabled, get, resolve, set, preview, status,
   const setSkew = (nextX: StyleValue | undefined, nextY: StyleValue | undefined) => set({ skew: skewValue(nextX, nextY) });
   const previewSkew = (nextX: StyleValue | undefined | null, nextY: StyleValue | undefined) => preview(nextX === null ? null : { skew: skewValue(nextX, nextY) });
   return <>
-    <h4>変形</h4>
+    <h4>トランスフォーム</h4>
     <div role="group" aria-label="移動">
       <h4>移動</h4><div className="e-grid2">
       <UnitField key={`${prefix}-tx`} caption="X" value={x} units={lengths} apply={(value) => set({ translate: translateValue(value, y) })} preview={(value) => preview(value === null ? null : { translate: translateValue(value, y) })}
