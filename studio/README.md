@@ -65,7 +65,7 @@ Cloudflare Access 側で Studio hostname 全体を Access application として�
 - 最後の owner の削除・降格は DB trigger が transaction 内で拒否するため、同時 request でも迂回できない
 - 非参加者には Project の存在・名称を返さない。ただし、検証済み email に明示的に宛てられた有効な招待 token を提示した場合だけ、受諾に必要な Project / Site 名と role を返す
 - membership revoke は次の API request から有効になる
-- Experience / Kamakura editor の list/read/save/release 各 request でも、Access `sub`、固定 Project/Site、D1 の現在の `owner` / `editor` membership を再照合する
+- Experience / Kamakura editor の list/read/save/release 各 request と Kamakura CMS の各 request でも、Access `sub`、固定 Project/Site、D1 の現在の `owner` / `editor` membership を再照合する
 - API と静的応答は `no-store`。CSP、frame 拒否、MIME sniff 拒否等を付与する
 
 Member 管理 mutation は従来どおり `POST` のみです。request URL と完全一致する `Origin`、`Sec-Fetch-Site: same-origin`、`application/json`、16 KiB の streaming 上限、JSON object、endpoint ごとの完全な key set を必須にします。この 16 KiB 境界は editor 追加後も変更しません。Editor mutation も同じ same-origin / JSON 条件を要求し、draft だけ 600 KiB、release-plan / release は 16 KiB の streaming 上限です。token、token hash、JWT、HMAC secret、request body は application log に出力しません。
@@ -120,6 +120,55 @@ Kamakura の `PageEditor` には `studio/kamakura-assets.ts` の素材 adapter �
 - `GET .../assets/<uuid>/preview` は同一 origin（`Sec-Fetch-Site: same-origin`）の GET を署名つき `POST assets/preview` に変え、画像の Content-Type の応答だけを `no-store` で流します。公開前の Studio アップロードを公開 URL なしで表示するための経路で、ほかの出所の素材は公開 CDN（`kamakura-media.niho.life` の `/cdn-cgi/image` 幅指定）のサムネイルをそのまま使います（`img-src https:`）。
 - アップロードは、`upload-intent` で得た一回限りのトークンを `Authorization: Bearer` に付け、`credentials: "omit"` で kamakura-site へ直接 PUT します。Studio Worker は画像本体を中継しません。Access Cookie・JWT・bridge secret はブラウザにも kamakura-site にも渡りません。
 - 追加の secret はありません（`KAMAKURA_STUDIO_BRIDGE_SECRET` を共用）。契約の全体は [素材ライブラリ契約](../docs/asset-contract.md)「鎌倉サイトでの接続」と kamakura-site の `worker/README.md`、テストは `test/studio-worker-assets.test.mjs`・`test/kamakura-assets-adapter.test.mjs` です。
+
+## Kamakura の CMS bridge（コレクション）
+
+鎌倉サイトの記事・サークル・会社を、[コレクションの画面](../docs/collection-contract.md)（`CollectionWorkspace`）から編集するための BFF と adapter です。**Dashboard の「CMS」はまだサイト側の管理画面の枠のままで、この adapter への切り替えは後の段で行います。**
+
+- ブラウザが呼ぶのは同一 origin の `/api/projects/project-kamakura/sites/kamakura/cms/...` と、画像本体の `PUT https://next-kamakura.niho.life/internal/studio/cms-upload/<uuid>` だけです。BFF は service binding `KAMAKURA_SITE` の `/internal/studio/cms/...` へ、editor と同じ HMAC の header（同じ関数）で署名して渡します。追加の secret はありません。
+- 鎌倉以外の Project / Site は 404 です。要求ごとに Access の `sub` と D1 の現在の `owner` / `editor` を確かめます（無ければ 403）。query string、知らない route（404）・method（405）、GET の本文は拒否します。
+- 書き込みの本文は、同一 origin（`Origin` 一致・`Sec-Fetch-Site: same-origin`）・`application/json`・JSON object を要求し、操作ごとの key の集合が完全に一致するときだけ通します。BFF は確かめた値だけで JSON を作り直し、Access で確かめた email を `actor: { email }` に入れます。ブラウザが `actor` を送ってきたら 400 です。
+
+| route（`cms/` の後ろ） | ブラウザの本文 | 上流の成功 |
+| --- | --- | --- |
+| `GET schema` | – | 200 `{ status: "ready", collections }` |
+| `GET collections/:col/items` | – | 200 `{ status: "ready", collectionId, items }` |
+| `GET collections/:col/items/:id` | – | 200 `{ status: "ready", item }` |
+| `POST collections/:col/items` | `{}` | 201 `{ status: "created", item }` |
+| `PUT …/:id/draft` | `{ version, values }`（直した key だけ） | 200 `{ status: "saved", item }` |
+| `POST …/:id/publish`・`unpublish` | `{ version }` | 202 `{ status: "publishing", item }` |
+| `POST …/:id/discard-draft`・`cancel-schedule` | `{ version }` | 200 saved |
+| `POST …/:id/schedule` | `{ version, at }`（BFF が UTC の ISO にそろえる） | 200 saved |
+| `POST …/:id/duplicate` | `{ version }` | 201 created（別の id） |
+| `POST …/:id/remove` | `{ version }` | 200 `{ status: "removed" }` |
+| `POST uploads/intent` | `{ collectionId, name, mimeType, bytes }` | 201 `{ uploadUrl, uploadToken, uploadId }` |
+
+- 上限: 下書きの本文 2 MiB（`values` の key は `^[a-z][A-Za-z0-9]{0,63}$` で 100 個まで、値は string〔100 万字まで〕・null・string[]〔200 個まで・各 1〜200 字・重複なし〕）、ほかの本文 16 KiB、上流の応答 3 MiB（upload intent は 16 KiB）。`collectionId` は `^[a-z][a-z0-9-]{0,39}$`、画像は jpeg / png / webp / avif / gif で 50 MiB まで（実際の上限は鎌倉の Worker の 413）。
+- 上流の待ち時間は、読み取り 12 秒、書き込み 30 秒（公開・非公開・削除は鎌倉側で commit まで行う）。
+- 応答は `studio/kamakura-cms-contract.ts` の parser（BFF とブラウザで共有、`src/collection-model.ts` の parser を使う）で確かめ、既知の field だけを返します。schema の項目の key も `values` と同じ形に限ります。
+
+| 上流 | ブラウザへ |
+| --- | --- |
+| 契約どおりの成功 | 同じ status で、確かめ直した JSON |
+| 409（項目つき） | 409 `{ error: "conflict", item }`（item はほかの人が保存した最新） |
+| 422 | 422 `{ error: "invalid", errors }`（先頭の 50 件） |
+| upload intent の 413 / 415 | 同じ status で `{ error: "image_rejected" }` |
+| 404 | 404 `{ error: "not_found" }`（schema の 404 は endpoint の未配備として 503） |
+| 400（と本文の 413） | 400 `{ error: "invalid_request" }` |
+| 401 / 403 / 429 / 5xx / 3xx / JSON でない / 上限超え / timeout / 想定外の 4xx | 503 `{ error: "service_unavailable", supportId }` |
+| 契約に合わない応答（field の過不足・id の不一致・成功の status 違いなど） | 502 `{ error: "upstream_contract_invalid", supportId }` |
+
+log は editor と同じく問い合わせ ID・固定の operation（`cms_schema`・`cms_list`・`cms_read`・`cms_create`・`cms_draft_save`・`cms_publish`・`cms_discard_draft`・`cms_unpublish`・`cms_duplicate`・`cms_remove`・`cms_schedule`・`cms_cancel_schedule`・`cms_upload_intent`）・固定の分類（editor の分類と `cms_endpoint_missing`）・上流の status だけで、本文・email・subject は出しません。
+
+ブラウザ側は `studio/kamakura-cms.ts` の `createKamakuraCmsAdapter({ siteOrigin })` が `CollectionAdapter` を返します（`siteOrigin` は Project の `site.domains[0]`）。
+
+- 項目ごとに最後に読んだ version と値を覚え、`saveDraft` は**その値との差分だけ**を送ります（触っていない本文などを、画面側の正規化で書き換えないため）。覚えていない version なら読み直し、違えば保存せずに conflict を返します。
+- 403 → forbidden、404 → not_found、409 → conflict、422 → invalid。非公開（上流は 202 publishing）は画面の契約に合わせて saved で返します。複製は覚えている version で呼び、競合なら最新の version でもう一度だけ試します。
+- 画像: BFF の `uploads/intent` を呼び、`uploadUrl` が鎌倉の Worker の `/internal/studio/cms-upload/<uploadId>` であることを確かめてから、`credentials: "omit"`・`Authorization: Bearer <uploadToken>` で直接 PUT します。結果の URL は `https://kamakura-media.niho.life/uploads/...` だけを受けます。拒否は type / size / permission / invalid で返します。
+- `imageUrl` は `kamakura-media.niho.life` の画像だけ `/cdn-cgi/image/width=<w>,format=auto/` の URL にします。`previewUrl` は公開中（変更ありを含む）の項目だけ、サイトの公開 URL と `item.path` から作ります（下書きのプレビューはありません）。
+- Dashboard へ組み込むときは、Dashboard の HTML の `connect-src` に画像の PUT 先（`https://next-kamakura.niho.life`）を足す必要があります（今は editor の画面だけ）。
+
+テストは `test/studio-worker-cms.test.mjs`（BFF）と `test/kamakura-cms-adapter.test.mjs`（adapter）です。
 
 ## Migration と初回セットアップ
 
@@ -202,6 +251,7 @@ Project 固有 API はすべて次の prefix 配下です。
 - Kamakura: `GET editor/catalog`、`GET editor/:pageId`
 - Kamakura: `PUT editor/:pageId/draft`、`POST editor/:pageId/release-plan`、`POST editor/:pageId/release`
 - Kamakura: `POST editor/assets/{list,upload-intent,update,usages,resolve}`、`GET editor/assets/:uuid/preview`（owner/editor）
+- Kamakura CMS: `GET cms/schema`、`GET|POST cms/collections/:col/items`、`GET cms/collections/:col/items/:id`、`PUT …/:id/draft`、`POST …/:id/{publish,discard-draft,unpublish,duplicate,remove,schedule,cancel-schedule}`、`POST cms/uploads/intent`（owner/editor・鎌倉以外は 404）
 
 unknown Project/Site と権限のない Project/Site は、外部から区別できる詳細を返しません。owner API が返す member 情報は、その owner が管理する同一 Project に限定します。
 
