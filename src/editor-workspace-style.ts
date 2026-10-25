@@ -3,7 +3,9 @@ export const workspaceCss = `
 /* Tokens and shared controls */
 .nw-editor{
   --e-ink:#1f1f1f;--e-muted:#737373;--e-border:#e6e6e6;--e-border-strong:#d5d5d5;
-  --e-ground:#f3f3f3;--e-input:#f5f5f5;--e-hover:#eee;--e-blue:#2878ff;--e-blue-soft:#edf4ff;--e-green:#1f5a3e;--e-soft:#f1f3f1;--e-part:#6d4bc3;
+  --e-ground:#f3f3f3;--e-hover:#eee;--e-blue:#2878ff;--e-blue-soft:#edf4ff;--e-green:#1f5a3e;--e-soft:#f1f3f1;--e-part:#6d4bc3;
+  /* 入力欄: 面・枠・無効・placeholder・単位の文字・角丸・フォーカスは種類を問わずこの token だけを使う（#71）。 */
+  --e-input:#f2f2f2;--e-input-border:#e3e3e3;--e-input-disabled:#e9e9e9;--e-placeholder:#858585;--e-unit:#666;--e-radius:6px;--e-focus:var(--e-blue);
   display:flex;width:100%;height:100dvh;max-height:100dvh;min-width:320px;min-height:0;flex-direction:column;overflow:hidden;
   border:0;border-radius:0;background:var(--e-ground);color:var(--e-ink);font:12px/1.45 Inter,"Noto Sans JP",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif
 }
@@ -11,10 +13,14 @@ export const workspaceCss = `
 .nw-editor button,.nw-editor input,.nw-editor select,.nw-editor textarea{font:inherit;color:inherit}
 .nw-editor button{min-height:30px;padding:5px 9px;border:1px solid var(--e-border-strong);border-radius:5px;background:#fff;cursor:pointer;transition:background .15s,border-color .15s,box-shadow .15s}
 .nw-editor button:hover:not(:disabled){border-color:#c8c8c8;background:var(--e-hover)}.nw-editor button:disabled{cursor:default;opacity:.45}
-.nw-editor button:focus-visible,.nw-editor input:focus-visible,.nw-editor select:focus-visible,.nw-editor textarea:focus-visible,.nw-editor summary:focus-visible{outline:2px solid var(--e-blue);outline-offset:2px}
+.nw-editor button:focus-visible,.nw-editor input:focus-visible,.nw-editor select:focus-visible,.nw-editor textarea:focus-visible,.nw-editor summary:focus-visible{outline:2px solid var(--e-focus);outline-offset:2px}
 .nw-editor button[aria-pressed=true]{border-color:#cbdcff;background:var(--e-blue-soft);color:#155cc7}
-.nw-editor input:not([type=checkbox]),.nw-editor select,.nw-editor textarea{display:block;width:100%;min-width:0;padding:6px 8px;border:1px solid var(--e-border);border-radius:5px;background:var(--e-input)}
-.nw-editor textarea{min-height:90px;resize:vertical}.nw-editor :is(input,select,textarea):disabled{background:#ececec}.nw-editor :is(input,textarea)::placeholder{color:#929292;opacity:1}
+/* Inputs: one neutral surface for text, number, search, URL, unit, select and textarea. */
+.nw-editor input:not([type=checkbox]):not([type=radio]),.nw-editor select,.nw-editor textarea{display:block;width:100%;min-width:0;min-height:30px;padding:5px 8px;border:1px solid var(--e-input-border);border-radius:var(--e-radius);background-color:var(--e-input);color:var(--e-ink)}
+.nw-editor select{appearance:none;padding-right:24px;background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='m3 4.5 3 3 3-3' fill='none' stroke='%23666' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 7px center;background-size:12px 12px;cursor:pointer}
+.nw-editor select:disabled{cursor:not-allowed}.nw-editor input[type=checkbox],.nw-editor input[type=radio]{accent-color:var(--e-blue)}
+.nw-editor textarea{min-height:90px;resize:vertical}.nw-editor :is(input,select,textarea):disabled{background-color:var(--e-input-disabled);color:var(--e-muted);cursor:not-allowed}.nw-editor :is(input,textarea)[readonly]{background-color:var(--e-input-disabled)}
+.nw-editor :is(input,textarea)::placeholder{color:var(--e-placeholder);opacity:1}.nw-editor :is(input,textarea)[aria-invalid=true]{border-color:#8d3026}
 .nw-editor .e-primary{border-color:#171717;background:#171717;color:#fff;font-weight:700}.nw-editor .e-primary:hover:not(:disabled){border-color:#303030;background:#303030;color:#fff}.nw-editor .e-danger{color:#9c3e35}
 .nw-editor h2{margin:0 0 12px;font-size:14px}.nw-editor h3{margin:20px 0 8px;color:var(--e-muted);font-size:11px;letter-spacing:.05em}
 .nw-editor .e-field{display:block;margin:0 0 11px}.nw-editor .e-field>span{display:block;margin:0 0 4px;color:#4e4e4e;font-size:11px;font-weight:700}
@@ -43,7 +49,7 @@ export const workspaceCss = `
 .nw-editor .e-canvas-spacer{position:relative;flex:none;margin:0 auto}.nw-editor .e-canvas-scaled{position:absolute;top:0;left:0}
 .nw-editor iframe{display:block;height:800px;max-width:none;margin:0 auto;border:0;outline:1px solid #dedede;background:#fff;box-shadow:0 2px 8px #00000012}.nw-editor .e-empty{padding:40px;color:var(--e-muted);text-align:center}
 .nw-editor .e-canvas-tools{position:absolute;z-index:10;bottom:16px;left:50%;display:flex;width:auto;height:42px;min-height:42px;max-width:calc(100% - 24px);align-items:center;justify-content:center;gap:5px;padding:5px 7px;border:1px solid #dedede;border-radius:7px;background:#fff;box-shadow:0 3px 14px #00000014;transform:translateX(-50%)}
-.nw-editor .e-width-field{display:flex;width:80px;align-items:center;color:var(--e-muted);white-space:nowrap}.nw-editor .e-width-field input{width:58px;height:30px;padding:4px 3px 4px 7px;border:0;background:transparent;text-align:right;font-variant-numeric:tabular-nums}
+.nw-editor .e-width-field{display:flex;width:80px;align-items:center;color:var(--e-muted);white-space:nowrap}.nw-editor .e-width-field input{width:58px;height:30px;padding:4px 3px 4px 7px;border:0;background-color:transparent;text-align:right;font-variant-numeric:tabular-nums}
 .nw-editor .e-device-group{display:flex;align-items:center;gap:1px;padding:2px;border-radius:5px;background:var(--e-input)}.nw-editor .e-device-button{display:grid;width:30px;height:28px;min-width:30px;min-height:28px;place-items:center;padding:0;border:0;background:transparent}
 .nw-editor .e-device-button[aria-pressed=true]{background:#fff;color:var(--e-blue);box-shadow:0 1px 3px #00000016}.nw-editor .e-device-button .e-action-icon{width:16px;height:16px}
 .nw-editor .e-canvas-tools .e-motion-toggle{width:30px;min-width:30px;height:30px;overflow:hidden;padding:0;color:transparent}.nw-editor .e-canvas-tools .e-motion-toggle::before{content:"▶";display:grid;width:30px;height:30px;place-items:center;color:#444;font-size:11px}
@@ -57,7 +63,7 @@ export const workspaceCss = `
 .nw-editor .e-inspector-actions .e-status-action{order:21;min-height:24px;padding:2px 6px}.nw-editor .e-inspector-actions .e-autosave{order:22;min-height:24px;margin-left:auto;padding:2px 4px;font-size:10px}.nw-editor .e-inspector-actions .e-language-selector{order:19;width:100%;overflow-x:auto}
 .nw-editor .e-action-button,.nw-editor .e-panel-toggle{display:grid;width:28px;height:30px;min-width:28px;min-height:30px;place-items:center;padding:0;border-color:transparent;background:transparent}
 .nw-editor .e-action-button:hover:not(:disabled),.nw-editor .e-panel-toggle:hover:not(:disabled){border-color:transparent;background:var(--e-hover)}.nw-editor .e-action-icon{display:block;width:17px;height:17px}.nw-editor .e-save-button{color:#333}
-.nw-editor .e-zoom-field{margin-right:auto}.nw-editor .e-zoom-field select{width:72px;height:30px;padding:3px 5px;border:0;background:var(--e-input)}
+.nw-editor .e-zoom-field{margin-right:auto}.nw-editor .e-zoom-field select{width:78px;height:30px;padding:3px 20px 3px 7px;border:0;background-position:right 5px center}
 .nw-editor .e-publish-button{min-width:50px;min-height:30px;padding:4px 10px;border-color:#171717;background:#171717;color:#fff;font-size:11px}.nw-editor .e-hold{display:none}
 .nw-editor .e-inspector-scroll{min-height:0;flex:1;overflow:auto}.nw-editor .e-inspector-context{position:sticky;z-index:4;top:0;display:flex;min-height:46px;align-items:center;gap:6px;padding:7px 9px;border-bottom:1px solid var(--e-border);background:#fff}
 .nw-editor .e-inspector-context strong{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}.nw-editor .e-inspector-context label{flex:0 0 auto;margin:0}.nw-editor .e-inspector-context select{width:auto;max-width:86px;height:30px;padding:4px 23px 4px 7px}.nw-editor .e-condition-select{max-width:92px!important}
