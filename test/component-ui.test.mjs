@@ -202,7 +202,7 @@ test("localized component navigation keeps host page kinds and returns to the or
     assert.ok(document.querySelector(".e-part-banner")?.textContent.includes("サイトの共通枠"));
     await click("ページに戻る");
     assert.deepEqual(reads.at(-1), { siteId: "demo", pageId: "other", locale: "en-US" });
-    assert.equal(document.querySelector('.e-project-context span')?.textContent, "別ページ");
+    assert.equal(document.querySelector('.e-project-context .e-crumb-page')?.textContent, "別ページ");
   } finally { await app.cleanup(); }
 });
 
