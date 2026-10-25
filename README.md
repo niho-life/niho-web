@@ -41,6 +41,8 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 | `@niho/web/project-directory` | 管理フォームと独立した日常の `ProjectDirectory`。名前・ドメイン検索、更新順、サイトプレビュー、Dashboard / Editor導線 |
 | `@niho/web/project-dashboard` | 選択した1 Project・1 Siteに固定した `ProjectDashboard`。公開状況・変更履歴・アクセス解析・設定導線 |
 | `@niho/web/project-read-model` | summary / dashboardの型・読み取りadapter・runtime parser。React不要 |
+| `@niho/web/collection-workspace` | コレクション（CMS）の一覧と項目の編集の `CollectionWorkspace`。ホストの adapter で読み書き・自動保存・公開・予約（[接続方法](docs/collection-contract.md)） |
+| `@niho/web/collection-model` | コレクションの定義・項目の型、adapter の応答の runtime parser、公開前の値の検証、本文の HTML の無害化。React不要 |
 | `@niho/web/project-editor` | 既存 `EditorAdapter` をProjectの唯一のSiteへ限定するwrapper |
 | `@niho/web/pages` | ページのパス検証・ツリー・内部リンク影響、公開メタ情報（title / description / OG画像 / robots / canonical）の解決と `<head>` 出力。React不要 |
 | `@niho/web/site-analytics` | GA4 / Search Console の接続状態・所有確認・変更計画の型と境界検証。React不要 |

@@ -71,6 +71,14 @@
       "types": "./dist/project-read-model.d.ts",
       "import": "./dist/project-read-model.js"
     },
+    "./collection-workspace": {
+      "types": "./dist/collection-workspace.d.ts",
+      "import": "./dist/collection-workspace.js"
+    },
+    "./collection-model": {
+      "types": "./dist/collection-model.d.ts",
+      "import": "./dist/collection-model.js"
+    },
     "./assets": {
       "types": "./dist/assets.d.ts",
       "import": "./dist/assets.js"
@@ -116,6 +124,7 @@
     "demo": "node examples/editor-demo.mjs",
     "demo:builder": "npm run build && node examples/builder-demo.mjs",
     "demo:projects": "node examples/projects-demo.mjs",
+    "demo:collections": "npm run build && node examples/collection-demo.mjs",
     "demo:analytics": "node examples/analytics-demo.mjs",
     "demo:localization": "node examples/localization-demo.mjs",
     "demo:site-styles": "npm run build && node examples/site-styles-demo.mjs",
