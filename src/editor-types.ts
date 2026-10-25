@@ -1,10 +1,10 @@
 import type { SiteStyles } from "./site-styles.js";
 import type { BuilderDefinition } from "./builder.js";
 import type { ComponentType, ReactNode } from "react";
-import type { AssetLibraryAdapter } from "./assets.js";
+import type { AssetLibraryAdapter, ResolvedAssetMap } from "./assets.js";
 import type { BlockDefinition, ExternalFramePolicy } from "./react.js";
 import type { PageKind, PageVisibility, SiteSettings } from "./pages.js";
-import type { ComponentLibrary, PageDocument, PublicPropValue, StyleProperty } from "./types.js";
+import type { ComponentLibrary, PageDocument, PublicPropValue, SitePresentation, StyleProperty } from "./types.js";
 import type { EditorRecoveryStore, EditorRevisionEntry, EditorRevisionPage } from "./history.js";
 import type { BlockLocalizationSchema, LocalizationLocale, LocalizationValue } from "./localization.js";
 export type { PageKind, PageVisibility, SiteSettings } from "./pages.js";
@@ -248,17 +248,31 @@ export type EditorBlockRegistry = Readonly<Record<string, BlockDefinition & {
 }>>;
 /** 編集する幅の段。minWidth は 320〜3840 の整数・昇順。 */
 export type EditorBreakpoint = { minWidth: number; label: string };
-/** 同じiframeへ表示する、ホスト所有の同期Reactプレビュー。文書を直接変更しない。 */
+/**
+ * 同じiframeへ表示する、ホスト所有の同期Reactプレビュー。文書を直接変更しない。
+ * blocks・assets・presentation・externalFramePolicy は従来の描画（children）が使った入力で、ホストが同じ文書を自分の表示部品で
+ * 描き直すときに `SitePageRenderer` / `PageRenderer` へそのまま渡せる。
+ */
 export type EditorCanvasPreviewProps = {
+  /** 表示中の検証済み・展開済みの文書。編集中の訳と未保存の変更を含み、言語は document.locale。 */
   document: PageDocument;
   /** 未保存編集の基準版。共有部品の編集中は部品ライブラリの版、それ以外はページ下書きの版。 */
   baseVersion: string;
   /** 履歴表示で選択した版。ホストが同じ版の関連表示資源を選ぶために使う。 */
   historyRevision?: EditorRevisionEntry;
+  /** キャンバスの表示幅（px）と、その幅が属する段。 */
   width: number;
   breakpoint: number | "base";
   mode: "edit" | "preview" | "history";
   readOnly: boolean;
+  /** 従来の描画に使った登録ブロック。キャンバス用の preview を持つブロックは component を preview に置き換えてある。 */
+  blocks: EditorBlockRegistry;
+  /** 従来の描画に使った、ホストが解決した素材。 */
+  assets: ResolvedAssetMap;
+  /** 従来の描画に使った native presentation。共有枠・メニューの編集中はその内容を含む。presentation を持たないサイトでは渡さない。 */
+  presentation?: SitePresentation;
+  /** PageEditor に渡した外部枠の policy。 */
+  externalFramePolicy?: ExternalFramePolicy;
   /** 従来の文書描画。編集文書を置き換えない場合はそのまま返せる。 */
   children: ReactNode;
 };
