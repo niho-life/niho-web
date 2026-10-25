@@ -176,4 +176,22 @@ CMS 画像は、ホストが認可した参照（`{ provider, id }`）だけを�
 - ストック素材を取得したとき、ライセンス付きでサイトの素材へ複製すること
 本番の永続化例ではありません。
 
-実サイトでの保存・配信・権限の受け入れは、Experience は niho-life/niho-experience#39、鎌倉は niho-coliving/kamakura-site#42 で行います。
+## 鎌倉サイトでの接続
+
+鎌倉サイト（`project-kamakura` / `kamakura`）は、Studio host の BFF と kamakura-site Worker の署名つき契約でこの adapter を実装しています（#85）。公開リポジトリに置くのは契約の形だけで、secret・内部の置き場の詳細は置きません。
+
+| provider | kind | 内容 | 権限 |
+| --- | --- | --- | --- |
+| `kamakura-upload` | upload | NIHO Studio からアップロードした画像。非公開の置き場に受け取り、公開時に公開 CDN へ昇格 | upload・editMetadata |
+| `kamakura-admin-upload` | cms | 鎌倉サイトの管理画面からアップロードした既存画像 | 読み取り |
+| `kamakura-studio` | cms | STUDIO から移した素材 | 読み取り |
+| `kamakura-cms` | cms | STUDIO の CMS 素材 | 読み取り |
+| `kamakura-approved-remote` | cms | 承認済みの外部画像の固定表 | 読み取り |
+
+- 削除はどの出所でも `rejected` / `permission` です（参照中の誤削除を防ぐ。正本は鎌倉サイト側）。フォルダ・ストック・`acquire` はありません。
+- `kamakura-upload` の素材は、公開までサムネイルも解決 URL も Studio の認証つきプレビュー経路で表示し、公開 URL を文書やブラウザに出しません。ほかの出所は公開 CDN のサムネイル（幅を絞った画像変換 URL）を使います。
+- アップロードは、BFF が署名して鎌倉 Worker に開始を依頼し、ブラウザが一回限りのトークンで鎌倉 Worker へ直接 PUT します。鎌倉 Worker は実データから形式と寸法を検査し、申告と違えば 415、容量超過は 507、大きすぎれば 413 で拒否します。Studio Worker は画像本体を中継しません。
+- 使用状況（`listAssetUsages`）と「最近使った」は、公開済みページと下書きの参照から鎌倉 Worker が作ります。
+- 凍結中（kamakura-site の `VISUAL_EDITOR_FROZEN`）は一覧・解決・使用状況・プレビューだけが動き、アップロードと更新は `409 visual_editor_frozen` で止まります。
+
+Studio 側の BFF と route は [studio/README.md](../studio/README.md) の「Kamakura の素材ライブラリ」、鎌倉 Worker 側の置き場・ID・検査は kamakura-site の `worker/README.md` を正とします。Experience の実保存連携は niho-life/niho-experience#39 で受け入れます。
