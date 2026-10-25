@@ -39,21 +39,30 @@ await Promise.all([
     legalComments: "none"
   }),
   copyFile(join(studioDirectory, "public", "index.html"), join(publicOutput, "index.html")),
-  copyFile(join(studioDirectory, "public", "studio.css"), join(publicOutput, "assets", "studio.css")),
+  // 本文の編集部品の CSS（CSP で inline の <style> を使えない）は studio.css の後ろに足す
   (async () => {
-    const result = await build({
-      entryPoints: [join(studioDirectory, "..", "src", "project-view-style.ts")],
-      bundle: true,
-      format: "esm",
-      platform: "node",
-      write: false
-    });
-    const source = result.outputFiles[0]?.text;
-    if (!source) throw new Error("Project view style build produced no output");
-    const { projectViewCss } = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
+    const [studioCss, { studioRichTextCss }] = await Promise.all([readFile(join(studioDirectory, "public", "studio.css"), "utf8"), cssModule("rich-text-style.ts", studioDirectory)]);
+    await writeFile(join(publicOutput, "assets", "studio.css"), `${studioCss.trimEnd()}\n${studioRichTextCss.trim()}\n`);
+  })(),
+  (async () => {
+    const { projectViewCss } = await cssModule("project-view-style.ts", join(studioDirectory, "..", "src"));
     await writeFile(join(publicOutput, "assets", "project-view.css"), projectViewCss);
   })()
 ]);
+
+/** CSS の文字列を export する TS を読み込む。 */
+async function cssModule(file, directory) {
+  const result = await build({
+    entryPoints: [join(directory, file)],
+    bundle: true,
+    format: "esm",
+    platform: "node",
+    write: false
+  });
+  const source = result.outputFiles[0]?.text;
+  if (!source) throw new Error(`${file} build produced no output`);
+  return import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
+}
 
 const workerBundle = await readFile(join(outputDirectory, "worker.js"), "utf8");
 for (const forbidden of ["https://api.niho.life", "https://api-stg.niho.life"]) {

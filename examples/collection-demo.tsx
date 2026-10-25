@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { CollectionWorkspace, type CollectionAdapter, type CollectionDefinition, type CollectionItem, type CollectionNavigationState } from "@niho/web/collection-workspace";
+import { createStudioRichText } from "../studio/rich-text-editor.js";
+import { studioRichTextCss } from "../studio/rich-text-style.js";
 
 // 公開できる架空のデータだけを使う。認証・本番 API・実在の人やサイトには接続しない。変更はこのタブのメモリだけ。
 const now = () => new Date().toISOString();
@@ -70,9 +72,22 @@ put("posts", { ...base, id: "p-reading", title: "読書会の参加者を募集�
   values: { title: "読書会の参加者を募集します", cover: null, body: "<p>毎月第 2 土曜日に読書会をしています。</p>", slug: "reading", category: ["c-learn"], circles: [], keywords: ["本"], kind: ["news"], eventAt: null, source: "", description: "" } });
 put("posts", { ...base, id: "p-candle", title: "冬至のキャンドルの夜", status: "scheduled", scheduledAt: days(4), updatedAt: days(-1),
   values: { title: "冬至のキャンドルの夜", cover: "/media/seed-dusk.svg", body: "<p>灯りをともして、静かに過ごす夜です。</p>", slug: "candle-night", category: ["c-event"], circles: [], keywords: [], kind: ["news"], eventAt: days(30), source: "", description: "" } });
+// STUDIO から移した形の本文（架空）。図の style・見出しの id（目次の飛び先）・目次の置き場・埋め込み・リンクの target を含む。
+// ?rich=tiptap で開き、1 文字直して戻すと、下の「本文の値」で直した所以外が変わらないことを確かめられる。
+const studioBody = '<h2 id="index_Dm8kQ2aL">はじめに</h2><p>架空の記事です。<a target="_blank" href="https://example.test/guide" rel="">案内のページ</a>もどうぞ。</p><div></div>'
+  + '<figure style="text-align: "><img src="/media/seed-green.svg" alt="" width="" height=""><figcaption>架空の写真の説明</figcaption></figure>'
+  + '<h3 id="index_Rt5vWx9P">当日の流れ</h3><p>午前は<strong>散歩</strong>、午後は<em>読書</em>でした。<br>二行目です。</p>'
+  + '<figure style=""><img src="/media/seed-sand.svg" alt="" width="" height=""><figcaption></figcaption></figure>'
+  + '<div data-type="embed_code"><iframe src="https://video.example.test/embed/demo" width="560" height="315" title="架空の動画" allowfullscreen=""></iframe></div>'
+  + '<h2 id="index_Yh3nBc7Q">まとめ</h2><ul><li>ひとつめ</li><li>ふたつめ</li></ul><hr><p>おわり。<a target="_blank" href="#index_Dm8kQ2aL" rel="noopener">はじめにへ</a></p>';
+put("posts", { ...base, id: "p-studio", title: "STUDIO から移した形の記事（架空）", imageUrl: "/media/seed-green.svg", path: "/posts/studio-shape", status: "published", publishedAt: days(-8), updatedAt: days(-8),
+  values: { title: "STUDIO から移した形の記事（架空）", cover: "/media/seed-green.svg", body: studioBody, slug: "studio-shape", category: ["c-walk"], circles: [], keywords: ["移行"], kind: ["column"], eventAt: null, source: "", description: "本文の書式を保つかを確かめる架空の記事です。" } });
 put("posts", { ...base, id: "p-draft", title: "", updatedAt: days(0), values: { title: "", cover: null, body: "", slug: "下書き", category: [], circles: [], keywords: [], kind: [], eventAt: null, source: "", description: "" } });
 
 const demo = { forbidden: false, latencyMs: 250 };
+// 本文の値の変化を見るため、読み込んだときの本文を覚えておき、保存のたびに知らせる
+const originalBodies = new Map([...store.posts!.values()].map((item) => [item.id, String(item.values.body ?? "")]));
+const bodyListeners = new Set<() => void>();
 const copy = <T,>(value: T): T => structuredClone(value);
 const summary = ({ version: _version, values: _values, ...rest }: Stored) => rest;
 const delay = (signal: AbortSignal) => new Promise<void>((resolve, reject) => {
@@ -121,6 +136,7 @@ const adapter: CollectionAdapter = {
     item.values = copy(input.values) as Record<string, unknown>;
     if (item.status === "published") item.status = "changed";
     refresh(input.collectionId, item);
+    bodyListeners.forEach((listener) => listener());
     return { status: "saved", item: copy(item) };
   }),
   publish: (input, signal) => guarded(signal, () => {
@@ -178,13 +194,35 @@ function readLocation(): { collectionId?: string; itemId?: string } {
   return { ...(collectionId ? { collectionId } : {}), ...(collectionId && itemId ? { itemId } : {}) };
 }
 let opened: CollectionNavigationState | null = null;
+const tiptap = new URLSearchParams(location.search).get("rich") === "tiptap";
+const renderRichText = tiptap ? createStudioRichText() : undefined;
+const switchHref = (next: boolean) => { const params = new URLSearchParams(location.search); if (next) params.set("rich", "tiptap"); else params.delete("rich"); return `?${params}`; };
+
+/** 開いている記事の本文が、読み込んだときからどう変わったか（保存した値で比べる）。 */
+function BodyChange({ itemId }: { itemId: string | null }) {
+  const [, setTick] = useState(0);
+  useEffect(() => { const listener = () => setTick((tick) => tick + 1); bodyListeners.add(listener); return () => { bodyListeners.delete(listener); }; }, []);
+  const original = itemId ? originalBodies.get(itemId) : undefined;
+  if (original === undefined || !itemId) return <span>本文の値: 記事を開くと、読み込んだときとの違いを出します。</span>;
+  const current = String(store.posts!.get(itemId)?.values.body ?? "");
+  if (current === original) return <span role="status">本文の値: 読み込んだときと同じ（{original.length} 文字）</span>;
+  let prefix = 0;
+  while (prefix < original.length && original[prefix] === current[prefix]) prefix += 1;
+  let suffix = 0;
+  while (suffix < original.length - prefix && suffix < current.length - prefix && original[original.length - 1 - suffix] === current[current.length - 1 - suffix]) suffix += 1;
+  const around = (text: string) => text.length > 160 ? `${text.slice(0, 80)}…${text.slice(-60)}` : text;
+  return <span role="status">本文の値: {prefix} 文字目から — 元「<code>{around(original.slice(prefix, original.length - suffix))}</code>」→ いま「<code>{around(current.slice(prefix, current.length - suffix))}</code>」（前後は同じ）</span>;
+}
+
 function App() {
   const start = readLocation();
   const [forbidden, setForbidden] = useState(false);
   const [note, setNote] = useState("");
+  const [openItem, setOpenItem] = useState<string | null>(start.collectionId === "posts" ? start.itemId ?? null : null);
   const navigate = (state: CollectionNavigationState) => {
     opened = state;
-    const params = new URLSearchParams({ c: state.collectionId, ...(state.itemId ? { i: state.itemId } : {}) });
+    setOpenItem(state.collectionId === "posts" ? state.itemId ?? null : null);
+    const params = new URLSearchParams({ c: state.collectionId, ...(state.itemId ? { i: state.itemId } : {}), ...(tiptap ? { rich: "tiptap" } : {}) });
     history.replaceState(null, "", `?${params}`);
   };
   const bump = () => {
@@ -196,12 +234,15 @@ function App() {
     setNote(`「${item.title || "無題"}」をほかの人が保存したことにしました。次の自動保存で知らせが出ます。`);
   };
   return <>
+    {tiptap && <style dangerouslySetInnerHTML={{ __html: studioRichTextCss }} />}
     <div className="demo-tools">
+      <a href={switchHref(!tiptap)} style={{ color: "inherit" }}>{tiptap ? "本文: TipTap（Studio の部品）→ 既定に戻す" : "本文: 既定 → TipTap（Studio の部品）にする"}</a>
       <button type="button" onClick={bump}>開いている項目をほかの人が保存したことにする</button>
       <label><input type="checkbox" checked={forbidden} onChange={(event) => { demo.forbidden = event.target.checked; setForbidden(event.target.checked); }} />権限を外す（次の読み書きから）</label>
       {note && <span role="status">{note}</span>}
+      <BodyChange itemId={openItem} />
     </div>
-    <CollectionWorkspace adapter={adapter} {...(start.collectionId ? { initialCollectionId: start.collectionId } : {})} {...(start.itemId ? { initialItemId: start.itemId } : {})} onNavigate={navigate} />
+    <CollectionWorkspace adapter={adapter} {...(renderRichText ? { renderRichText } : {})} {...(start.collectionId ? { initialCollectionId: start.collectionId } : {})} {...(start.itemId ? { initialItemId: start.itemId } : {})} onNavigate={navigate} />
   </>;
 }
 
