@@ -146,6 +146,11 @@
     }
   },
   "devDependencies": {
+    "@tiptap/core": "3.31.4",
+    "@tiptap/extension-heading": "3.31.4",
+    "@tiptap/extensions": "3.31.4",
+    "@tiptap/pm": "3.31.4",
+    "@tiptap/starter-kit": "3.31.4",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "esbuild": "0.28.2",
