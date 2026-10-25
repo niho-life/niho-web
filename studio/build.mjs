@@ -1,6 +1,6 @@
 import { build } from "esbuild";
 import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const studioDirectory = dirname(fileURLToPath(import.meta.url));
@@ -12,9 +12,13 @@ await mkdir(join(publicOutput, "assets"), { recursive: true });
 
 await Promise.all([
   (async () => {
+    // CMS のコレクション画面（CollectionWorkspace・TipTap）は import() で分け、CMS を開いたときだけ読む（assets/chunks/）。
     const result = await build({
-    entryPoints: [join(studioDirectory, "client.tsx")],
-    outfile: join(publicOutput, "assets", "app.js"),
+    entryPoints: { app: join(studioDirectory, "client.tsx") },
+    outdir: join(publicOutput, "assets"),
+    entryNames: "[name]",
+    chunkNames: "chunks/[name]-[hash]",
+    splitting: true,
     bundle: true,
     format: "esm",
     platform: "browser",
@@ -27,6 +31,16 @@ await Promise.all([
     // Kamakura は凍結中も読み取り専用で開く（kamakura-site#84）。Experience の editor は休止のまま入れない。
     const forbidden = Object.keys(result.metafile.inputs).filter((input) => /studio\/(?:integration-entry|experience-editor)\.tsx$/u.test(input));
     if (forbidden.length) throw new Error(`Frozen editor code entered the Studio client bundle: ${forbidden.join(", ")}`);
+    // 最初に読む分（app.js と、そこから静的に import する chunk）に本文の編集部品を入れない
+    const eager = new Set(), queue = [relative(process.cwd(), join(publicOutput, "assets", "app.js")).replaceAll("\\", "/")];
+    while (queue.length) {
+      const output = queue.shift();
+      if (eager.has(output)) continue;
+      eager.add(output);
+      for (const entry of result.metafile.outputs[output]?.imports ?? []) if (entry.kind === "import-statement" && !entry.external) queue.push(entry.path);
+    }
+    const eagerLazy = [...eager].flatMap((output) => Object.keys(result.metafile.outputs[output]?.inputs ?? {})).filter((input) => /(?:@tiptap|prosemirror|studio\/rich-text-editor\.tsx|src\/collection-workspace\.tsx)/u.test(input));
+    if (eagerLazy.length) throw new Error(`CMS workspace code entered the initial Studio client bundle: ${eagerLazy.slice(0, 5).join(", ")}`);
   })(),
   build({
     entryPoints: [join(studioDirectory, "worker.ts")],
@@ -47,6 +61,11 @@ await Promise.all([
   (async () => {
     const { projectViewCss } = await cssModule("project-view-style.ts", join(studioDirectory, "..", "src"));
     await writeFile(join(publicOutput, "assets", "project-view.css"), projectViewCss);
+  })(),
+  // CMS のコレクション画面の CSS（部品の inline の <style> は CSP で当たらない）
+  (async () => {
+    const { collectionCss } = await cssModule("collection-style.ts", join(studioDirectory, "..", "src"));
+    await writeFile(join(publicOutput, "assets", "collection.css"), collectionCss);
   })()
 ]);
 

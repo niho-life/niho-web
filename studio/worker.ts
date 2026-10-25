@@ -3,7 +3,8 @@ import { siteAdmin } from "./site-admin.mjs";
 import { integrationIdentity, isTrustedEditorAction, resolveTrustedEditorApi, resolveTrustedEditorPage, type ResolvedTrustedIntegration } from "./integration-registry.mjs";
 import { KAMAKURA_CATALOG_CONTRACT_ERROR_CODE, KAMAKURA_CATALOG_CONTRACT_ERROR_STATUS, KamakuraCatalogContractError, KAMAKURA_COMMON_PAGE_ID, KAMAKURA_EDITOR_SITE_ID, parseKamakuraCatalog } from "./kamakura-catalog.js";
 import {
-  KAMAKURA_CMS_IMAGE_TYPES, KAMAKURA_CMS_LIMITS, KAMAKURA_CMS_UPSTREAM_PREFIX, KAMAKURA_MEDIA_ORIGIN, KamakuraCmsContractError,
+  KAMAKURA_CMS_IMAGE_TYPES, KAMAKURA_CMS_LIMITS, KAMAKURA_CMS_PROJECT_ID, KAMAKURA_CMS_SITE_ID, KAMAKURA_CMS_UPLOAD_ORIGIN, KAMAKURA_CMS_UPSTREAM_PREFIX,
+  KAMAKURA_MEDIA_ORIGIN, KamakuraCmsContractError,
   isKamakuraCmsCollectionId, isKamakuraCmsItemId, isKamakuraCmsLine, isKamakuraCmsVersion, normalizeKamakuraCmsTimestamp,
   parseKamakuraCmsConflict, parseKamakuraCmsInvalid, parseKamakuraCmsItemEnvelope, parseKamakuraCmsList, parseKamakuraCmsRemoved,
   parseKamakuraCmsSchema, parseKamakuraCmsUploadIntent, parseKamakuraCmsValues
@@ -39,6 +40,8 @@ export interface Env {
   readonly KAMAKURA_STUDIO_BRIDGE_SECRET?: string;
   /** kamakura-site の管理画面（CMS・翻訳）の https origin。Dashboard の中の枠で開く（kamakura-site#108 U1）。未設定なら枠を出さない。 */
   readonly KAMAKURA_ADMIN_ORIGIN?: string;
+  /** "workspace" のときだけ、Dashboard の CMS を Studio のコレクション画面で開く。無い・ほかの値は従来の枠。 */
+  readonly KAMAKURA_CMS_VIEW?: string;
 }
 
 type Role = "owner" | "editor";
@@ -850,11 +853,11 @@ function kamakuraEditorRoute(action: string, method: string): EditorRoute | "met
   return { upstreamPath: `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/${page[1]}${suffix}`, bodyLimit: suffix === "/draft" ? MAX_EDITOR_SAVE_BODY_BYTES : MAX_MUTATION_BODY_BYTES };
 }
 
-/** サイト側の管理画面を枠で開くための origin とパス。参加者（owner・editor）だけに返す */
+/** サイト側の管理画面を枠で開くための origin とパス、CMS の開き方（frame / workspace）。参加者（owner・editor）だけに返す */
 async function siteAdminApi(env: Env, identity: AccessIdentity, projectId: string, siteId: string): Promise<Response> {
   if (!await editorMember(env, identity, projectId, siteId)) return json({ error: "forbidden" }, 403);
   const admin = siteAdmin(env as unknown as Record<string, unknown>, projectId, siteId);
-  return admin ? json({ origin: admin.origin, paths: admin.paths }) : json({ error: "not_connected" }, 404);
+  return admin ? json({ origin: admin.origin, paths: admin.paths, cmsView: admin.cmsView }) : json({ error: "not_connected" }, 404);
 }
 
 async function editorMember(env: Env, identity: AccessIdentity, projectId: string, siteId: string): Promise<boolean> {
@@ -1525,11 +1528,13 @@ async function handle(request: Request, env: Env): Promise<Response> {
     const indexUrl = new URL("/index.html", url);
     // Dashboard（ID の URL と alias の URL）は、そのサイトの管理画面を枠で開ける。editor は従来どおり
     const dashboardTarget = isEditor ? null : projectAlias ?? (dashboardPage ? { projectId: dashboardPage[1]!, siteId: dashboardPage[2]! } : null);
-    const adminOrigin = dashboardTarget ? siteAdmin(env as unknown as Record<string, unknown>, dashboardTarget.projectId, dashboardTarget.siteId)?.origin : undefined;
+    const admin = dashboardTarget ? siteAdmin(env as unknown as Record<string, unknown>, dashboardTarget.projectId, dashboardTarget.siteId) : null;
     // サイト側にまだ Access の cookie が無いと、枠は Access のチームのドメインを経由して戻る（Studio にログイン済みならログイン画面は出ない）。
-    // その経由先も枠に許す。ログイン画面そのものは Access が枠を拒むので、画面の「別のタブで開く」で入る
-    const adminFrames = adminOrigin ? [adminOrigin, new URL(env.ACCESS_ISSUER).origin] : [];
-    return withStaticSecurity(await env.ASSETS.fetch(new Request(indexUrl, { method: request.method, headers: request.headers })), pageAdapter !== null, pageAdapter?.connectOrigins ?? [], pageAdapter?.fontSources ?? [], pageAdapter ? pageAdapter.frameSources ?? [] : adminFrames);
+    // その経由先も枠に許す。ログイン画面そのものは Access が枠を拒むので、画面の「別のタブで開く」で入る（翻訳は CMS の切替の後も枠）
+    const adminFrames = admin ? [admin.origin, new URL(env.ACCESS_ISSUER).origin] : [];
+    // CMS をコレクション画面で開くときだけ、画像本体を直接 PUT する鎌倉の Worker へ接続を許す（本文・縮小の画像は img-src の https: で足りる）
+    const cmsConnect = admin?.cmsView === "workspace" && dashboardTarget?.projectId === KAMAKURA_CMS_PROJECT_ID && dashboardTarget.siteId === KAMAKURA_CMS_SITE_ID ? [KAMAKURA_CMS_UPLOAD_ORIGIN] : [];
+    return withStaticSecurity(await env.ASSETS.fetch(new Request(indexUrl, { method: request.method, headers: request.headers })), pageAdapter !== null, pageAdapter ? pageAdapter.connectOrigins ?? [] : cmsConnect, pageAdapter?.fontSources ?? [], pageAdapter ? pageAdapter.frameSources ?? [] : adminFrames);
   }
   return withStaticSecurity(await env.ASSETS.fetch(request));
 }

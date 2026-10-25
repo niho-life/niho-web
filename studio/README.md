@@ -36,15 +36,27 @@ Dashboard の上部のサイトナビには、ホスト（`studio/client.tsx`）
 | 機能 | Kamakura での中身 |
 | --- | --- |
 | ページ | 右上の「デザインエディタ」（従来どおり） |
-| CMS | サイト側の管理画面（記事・サークル・会社・クリエイター）を Dashboard の中の枠で開く |
+| CMS | 既定はサイト側の管理画面（記事・サークル・会社・クリエイター）を Dashboard の中の枠で開く。切替（`KAMAKURA_CMS_VIEW=workspace`）を入れると Studio のコレクション画面で開く（下の「CMS の切替」） |
 | 素材 | 今の置き場所（エディタの「素材」と CMS の画像欄）への案内。一覧・検索の画面は素材 provider（#85）の後 |
 | 翻訳 | サイト側の翻訳画面を枠で開く |
 | 設定 | プロジェクト設定（メンバーと招待）。Home 配下の「プロジェクト設定」と同じ |
 
 - 枠で開くサイト側の管理画面の origin はコードに書かず、Worker の設定値 `KAMAKURA_ADMIN_ORIGIN`（https の origin だけ）から読みます（`studio/site-admin.mjs`）。未設定ならサイト機能を出しません。`wrangler secret put KAMAKURA_ADMIN_ORIGIN --config studio/wrangler.toml` で入れると、配備のたびに消えません。
-- `GET /api/projects/<Project>/sites/<Site>/site-admin` は D1 の現在の `owner` / `editor` だけに origin と画面のパスを返し、接続の無いサイトは 404 `not_connected` です。
+- `GET /api/projects/<Project>/sites/<Site>/site-admin` は D1 の現在の `owner` / `editor` だけに origin・画面のパス・CMS の開き方（`cmsView`: `"frame"` / `"workspace"`）を返し、接続の無いサイトは 404 `not_connected` です。
 - Dashboard の HTML（ID の URL と alias の URL）の CSP は `frame-src` をその origin と Access のチームのドメイン（`ACCESS_ISSUER`）だけにします。サイト側にまだ Access の cookie が無いとき、枠はチームのドメインを経由して戻るためです（Studio にログイン済みならログイン画面は出ない。ログイン画面そのものは Access が枠を拒む）。editor の CSP と `frame-ancestors 'none'` は変えません。枠は `postMessage` を使わず、`sandbox` で Studio の画面の移動を許しません。
 - 枠の中は同じ Cloudflare Access のチームの SSO で開きます。サイト側にまだログインしていないと枠の中ではログイン画面を出せないので、画面に「別のタブで開く」を常に置きます（一度ログインすれば枠の中でも開ける）。サイト側は `frame-ancestors` で Studio の origin だけに枠を許します。
+
+### CMS の切替（枠 → コレクション画面）
+
+Dashboard の「CMS」は、Worker の設定値 `KAMAKURA_CMS_VIEW` で中身を切り替えます。値が `workspace` のときだけ Studio のコレクション画面（`CollectionWorkspace` ＋ `createKamakuraCmsAdapter` ＋ 本文の TipTap）、無い・ほかの値は従来の枠です。**既定は枠**で、owner と editor の受入が終わったら on にします。翻訳は切替の後も枠のままです。
+
+- on にする: `wrangler secret put KAMAKURA_CMS_VIEW --config studio/wrangler.toml` で `workspace` を入れる（値は公開 repo に書かない。secret なので配備のたびに消えない）。Worker が新しい値で動き出せば、開き直した Dashboard から新しい画面になります（再配備は要らない）。
+- 戻す: `wrangler secret delete KAMAKURA_CMS_VIEW --config studio/wrangler.toml`（または `frame` を入れ直す）。次に開いた Dashboard から枠に戻ります。
+- 旧画面の入口: コレクション画面の上の「旧画面（/admin）を開く ↗」で、サイト側の管理画面（`KAMAKURA_ADMIN_ORIGIN` の `/admin`）を別のタブで開けます。切替は `KAMAKURA_ADMIN_ORIGIN` があるときだけ効きます（無いとサイト機能そのものを出さない）。
+- URL: 一覧は `/projects/<別名>/admin/cms/<collectionId>`、項目は `/projects/<別名>/admin/cms/<collectionId>/<itemId>`（`/admin/cms` はそのサイトの先頭のコレクション）。画面の中で一覧・項目を移ると URL を積み、ブラウザの戻る・進むはその URL でコレクション画面を開き直します。短い入口 `/project/<別名>/cms/<collectionId>/<itemId>` も同じ形へ 301 で移します。id は collection-model の形（コレクションは `[A-Za-z0-9_][A-Za-z0-9_-]*`、項目は `[A-Za-z0-9_][A-Za-z0-9._~-]*`）だけで、ほかの形の URL は画面の route にしません。
+- CSP: on のとき、鎌倉の Dashboard の HTML（ID の URL と alias の URL）だけ `connect-src` に画像本体の直接 PUT 先 `https://next-kamakura.niho.life` を足します。本文と一覧の画像（`https://kamakura-media.niho.life` の縮小を含む）は今の `img-src 'self' https:` で足ります。本文の部品は inline の `<style>` と style 属性を使わず、埋め込みは枠を作らない（中身は公開したページだけ）ので、`style-src`・`frame-src` は変えません。off のときは何も足しません。editor の CSP と `frame-ancestors 'none'` は変えません。
+- 読み込み: コレクション画面と TipTap は `import()` で分け（`assets/chunks/`）、CMS を開いたときだけ読みます。読み込み中は「CMS の画面を読み込んでいます…」、失敗は「再試行」を出します。`studio/build.mjs` は、最初に読む分（`app.js` と、そこから静的に読む chunk）に TipTap・ProseMirror・`collection-workspace.tsx` が入ったら build を失敗させます。画面の CSS は `assets/collection.css`（`index.html` から読む）、項目の編集の上のバーは Studio のヘッダーの下に貼り付きます（`--niho-sticky-top`: 68px、幅 600px 以下は 58px）。
+- 画面の中の移動では作り直さないので、adapter が覚えた version で差分だけを保存します。ブラウザの戻る・進むで開き直すときは、自動保存（約 1 秒）の前の直しは残りません（画面の「一覧へ」は先に保存してから戻る）。
 
 Alias は Worker と client router の固定対応表で内部の Project / Site ID へ解決します。別名 URL 自体をブラウザに保ち、alias から Dashboard と Editor の間を移動しても同じ表記を使います。API/BFF の path、membership 判定、Project / Site ID は変わりません。招待 URL と Experience STG 専用 URL は引き続き ID 付き route です。
 
@@ -123,7 +135,7 @@ Kamakura の `PageEditor` には `studio/kamakura-assets.ts` の素材 adapter �
 
 ## Kamakura の CMS bridge（コレクション）
 
-鎌倉サイトの記事・サークル・会社を、[コレクションの画面](../docs/collection-contract.md)（`CollectionWorkspace`）から編集するための BFF と adapter です。**Dashboard の「CMS」はまだサイト側の管理画面の枠のままで、この adapter への切り替えは後の段で行います。**
+鎌倉サイトの記事・サークル・会社を、[コレクションの画面](../docs/collection-contract.md)（`CollectionWorkspace`）から編集するための BFF と adapter です。Dashboard の「CMS」から使うには「CMS の切替」の `KAMAKURA_CMS_VIEW` を入れます（既定は枠のまま）。
 
 - ブラウザが呼ぶのは同一 origin の `/api/projects/project-kamakura/sites/kamakura/cms/...` と、画像本体の `PUT https://next-kamakura.niho.life/internal/studio/cms-upload/<uuid>` だけです。BFF は service binding `KAMAKURA_SITE` の `/internal/studio/cms/...` へ、editor と同じ HMAC の header（同じ関数）で署名して渡します。追加の secret はありません。
 - 鎌倉以外の Project / Site は 404 です。要求ごとに Access の `sub` と D1 の現在の `owner` / `editor` を確かめます（無ければ 403）。query string、知らない route（404）・method（405）、GET の本文は拒否します。
@@ -166,9 +178,10 @@ log は editor と同じく問い合わせ ID・固定の operation（`cms_schem
 - 403 → forbidden、404 → not_found、409 → conflict、422 → invalid。非公開（上流は 202 publishing）は画面の契約に合わせて saved で返します。複製は覚えている version で呼び、競合なら最新の version でもう一度だけ試します。
 - 画像: BFF の `uploads/intent` を呼び、`uploadUrl` が鎌倉の Worker の `/internal/studio/cms-upload/<uploadId>` であることを確かめてから、`credentials: "omit"`・`Authorization: Bearer <uploadToken>` で直接 PUT します。結果の URL は `https://kamakura-media.niho.life/uploads/...` だけを受けます。拒否は type / size / permission / invalid で返します。
 - `imageUrl` は `kamakura-media.niho.life` の画像だけ `/cdn-cgi/image/width=<w>,format=auto/` の URL にします。`previewUrl` は公開中（変更ありを含む）の項目だけ、サイトの公開 URL と `item.path` から作ります（下書きのプレビューはありません）。
-- Dashboard へ組み込むときは、Dashboard の HTML の `connect-src` に画像の PUT 先（`https://next-kamakura.niho.life`）を足す必要があります（今は editor の画面だけ）。
+- Dashboard の HTML の `connect-src` には、切替が on のときだけ画像の PUT 先（`https://next-kamakura.niho.life`）を足します（editor の画面は従来どおり）。
+- Dashboard の中では `studio/site-cms.tsx` が `studio/kamakura-cms-workspace.tsx` を `import()` で読み、adapter と本文の部品（`createStudioRichText({ imageUrl: adapter.imageUrl })`）を描画の外でサイトごとに 1 回だけ作ります。
 
-テストは `test/studio-worker-cms.test.mjs`（BFF）と `test/kamakura-cms-adapter.test.mjs`（adapter）です。
+テストは `test/studio-worker-cms.test.mjs`（BFF）、`test/kamakura-cms-adapter.test.mjs`（adapter）、`test/studio-site-admin.test.mjs`（切替・CSP・URL）、`test/studio-client-cms.test.mjs`（client の枠とコレクション画面の切り替え・URL・戻る/進む）です。
 
 ## Migration と初回セットアップ
 
