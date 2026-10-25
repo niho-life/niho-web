@@ -18,7 +18,12 @@ export type EditorSite = {
   structuredData?: readonly EditorStructuredDataPreset[];
 };
 /** title はページ一覧の名前。任意項目を省いたホストは従来どおり動作する。 */
-export type EditorPage = EditorTarget & { title: string; path?: string; kind?: PageKind; visibility?: PageVisibility; published?: boolean };
+/**
+ * ホストが公開サイトでの扱いを補足する表示。「未公開」の一語では誤解を招く状態（移行中で公開サイトは別の表示のまま等）を、
+ * ページ一覧・ページ設定・サイト全体のコンポーネントに文字で出す。label は短い語、description はその意味と編集の影響。
+ */
+export type EditorPagePublication = { label: string; description: string };
+export type EditorPage = EditorTarget & { title: string; path?: string; kind?: PageKind; visibility?: PageVisibility; published?: boolean; publication?: EditorPagePublication };
 export type EditorLocalizationPageState = "source" | "missing" | "translating" | "review-needed" | "reviewed" | "failed";
 export type EditorLocalizationLanguageStatus = { state: EditorLocalizationPageState; changed?: number; published?: boolean };
 export type EditorLocalizedPage = Omit<EditorPage, "locale"> & {

@@ -126,11 +126,11 @@ const pageHostMethods = (calls, overrides = {}) => ({
 test("page list optional fields and structured data presets pass through validated, unknown fields are dropped", async () => {
   const { wrapped } = setup({
     listSites: async () => [{ ...project.site, structuredData: [{ id: "organization", label: "組織", description: "運営者", extra: true }, { id: "localBusiness", label: "店舗" }] }],
-    listPages: async () => [{ siteId: "demo", pageId: "detail", locale: "ja-JP", title: "体験詳細", path: "/experiences/[slug]", kind: "template", visibility: "public", published: false, secret: "drop" }]
+    listPages: async () => [{ siteId: "demo", pageId: "detail", locale: "ja-JP", title: "体験詳細", path: "/experiences/[slug]", kind: "template", visibility: "public", published: false, publication: { label: "プレビューのみ", description: "公開サイトは移行前の表示のままです。", extra: "drop" }, secret: "drop" }]
   });
   assert.deepEqual(await wrapped.listSites(signal()), [{ ...project.site, structuredData: [{ id: "organization", label: "組織", description: "運営者" }, { id: "localBusiness", label: "店舗" }] }]);
-  assert.deepEqual(await wrapped.listPages("demo", signal()), [{ siteId: "demo", pageId: "detail", locale: "ja-JP", title: "体験詳細", path: "/experiences/[slug]", kind: "template", visibility: "public", published: false }]);
-  for (const extra of [{ kind: "layout" }, { visibility: "hidden" }, { published: "yes" }, { path: "/a\nb" }, { path: 1 }])
+  assert.deepEqual(await wrapped.listPages("demo", signal()), [{ siteId: "demo", pageId: "detail", locale: "ja-JP", title: "体験詳細", path: "/experiences/[slug]", kind: "template", visibility: "public", published: false, publication: { label: "プレビューのみ", description: "公開サイトは移行前の表示のままです。" } }]);
+  for (const extra of [{ kind: "layout" }, { visibility: "hidden" }, { published: "yes" }, { path: "/a\nb" }, { path: 1 }, { publication: "プレビューのみ" }, { publication: { label: "", description: "説明" } }, { publication: { label: "プレビュー\nのみ", description: "説明" } }, { publication: { label: "プレビューのみ" } }, { publication: { label: "あ".repeat(41), description: "説明" } }])
     await assert.rejects(() => setup({ listPages: async () => [{ siteId: "demo", pageId: "home", locale: "ja-JP", title: "ホーム", ...extra }] }).wrapped.listPages("demo", signal()));
   await assert.rejects(() => setup({ listSites: async () => [{ ...project.site, structuredData: [{ id: "a", label: "A" }, { id: "a", label: "B" }] }] }).wrapped.listSites(signal()), /重複/);
   await assert.rejects(() => setup({ listSites: async () => [{ ...project.site, structuredData: [{ id: "1bad", label: "A" }] }] }).wrapped.listSites(signal()));

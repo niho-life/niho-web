@@ -126,7 +126,7 @@ export function ComponentPanel({ library, librarySupported, failed, visible, sit
       {siteList.length ? <div className="e-part-list">{siteList.map((page) => {
         const selected = !!current && page.siteId === current.siteId && page.pageId === current.pageId && page.locale === current.locale;
         return <article key={`${page.pageId}/${page.locale}`} className={`e-site-component${selected ? " is-editing" : ""}`} aria-label={page.title}>
-          <div className="e-part-meta"><strong>{page.title}</strong>{selected && <span className="e-part-badge">編集中</span>}<small>サイト共通</small></div>
+          <div className="e-part-meta"><strong>{page.title}</strong>{selected && <span className="e-part-badge">編集中</span>}{page.publication && <span className="e-badge e-badge-publication">{page.publication.label}</span>}<small>{page.publication ? `サイト共通。${page.publication.description}` : "サイト共通"}</small></div>
           <div className="e-actions"><button type="button" onClick={() => editSiteComponent(page)} disabled={selected || navigationDisabled}>コンポーネントを編集</button></div>
         </article>;
       })}</div> : <p className="e-help">「{query.trim()}」に一致するサイト全体のコンポーネントはありません。</p>}
