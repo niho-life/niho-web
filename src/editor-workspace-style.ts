@@ -39,7 +39,9 @@ export const workspaceCss = `
 .nw-editor .e-tools button:disabled{opacity:.35}.nw-editor .e-tools .e-panel-toggle{margin-bottom:4px}.nw-editor .e-tool-icon{display:block;width:18px;height:18px;flex:none}
 .nw-editor .e-left-column{display:flex;min-width:0;min-height:0;flex:1;flex-direction:column}.nw-editor .e-body.is-left-closed .e-left-column{display:none}.nw-editor .e-project-context{display:grid;min-height:48px;grid-template-columns:32px minmax(0,1fr);grid-template-rows:20px 16px;align-content:center;padding:4px 8px;border-bottom:1px solid var(--e-border)}
 .nw-editor .e-toolbar-start{display:flex;grid-row:1/3;align-items:center}.nw-editor .e-toolbar-start>a{display:grid;width:30px;height:30px;place-items:center;border-radius:5px;color:#333;text-decoration:none}.nw-editor .e-toolbar-start>a:hover{background:var(--e-hover)}
-.nw-editor .e-crumb,.nw-editor .e-project-context>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.nw-editor .e-crumb{font-size:12px}.nw-editor .e-project-context>span{color:var(--e-muted);font-size:10px}
+/* Breadcrumb: site / page on the first line, the public path (or the kind) under it. Each part truncates on its own. */
+.nw-editor .e-crumb,.nw-editor .e-crumb>span,.nw-editor .e-crumb-path{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.nw-editor .e-crumb{display:flex;align-items:baseline;gap:4px;font-size:12px}
+.nw-editor .e-crumb-site{flex:0 1 auto;color:var(--e-muted);font-weight:500}.nw-editor .e-crumb-sep{flex:none;color:#b5b5b5;font-weight:400}.nw-editor .e-crumb-page{flex:1 1 auto}.nw-editor .e-crumb-path{color:var(--e-muted);font-size:10px;font-variant-numeric:tabular-nums}
 .nw-editor .e-panel{min-width:0;min-height:0;flex:1;overflow:auto}.nw-editor .e-panel>section{padding:14px 12px 22px}.nw-editor .e-panel-head{margin-bottom:12px}.nw-editor .e-panel-head h2{margin:0;font-size:13px}.nw-editor .e-panel-head p{display:none}
 
 /* Layout zoom keeps fixed iframe layers intact; transforming the iframe can drop their initial paint in Chromium. */
@@ -80,5 +82,11 @@ export const workspaceCss = `
   .nw-editor .e-body,.nw-editor .e-body.is-left-closed,.nw-editor .e-body.is-right-closed,.nw-editor .e-body.is-left-closed.is-right-closed{display:grid;grid-template-columns:minmax(0,1fr)}
   .nw-editor .e-left,.nw-editor .e-right{position:absolute;z-index:20;inset-block:0;width:min(296px,calc(100vw - 44px));box-shadow:6px 0 24px #0002}.nw-editor .e-left{left:0}.nw-editor .e-right{right:0;left:auto;box-shadow:-6px 0 24px #0002}
   .nw-editor .e-body.is-left-closed .e-left{width:44px;box-shadow:none}
+}
+/* 320px: the inspector header wraps instead of pushing its close button out, and the viewport bar stays inside the stage. */
+@media(max-width:480px){
+  .nw-editor .e-inspector-context{flex-wrap:wrap;min-height:0;gap:4px 6px;padding:6px 8px}.nw-editor .e-inspector-context strong{flex:1 1 100%}
+  .nw-editor .e-canvas-tools{gap:3px;padding:4px 5px}.nw-editor .e-width-field{width:70px}.nw-editor .e-width-field input{width:48px;padding-left:4px}
+  .nw-editor .e-inspector-actions .e-status{flex-basis:70px}
 }
 `;

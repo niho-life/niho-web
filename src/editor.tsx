@@ -1275,6 +1275,9 @@ export function PageEditor({ adapter, toolbarStart, blocks = emptyBlocks, builde
   const rawSelectedOwner = document && rawSelected?.type === "text" && selection && selection.length > 1 ? nodeAt(document, selection.slice(0, -1)) : rawSelected;
   const canvasSelectedNodeId = selectedCanvasNode ?? (rawSelectedOwner && rawSelectedOwner.type !== "text" ? rawSelectedOwner.id : undefined);
   const activeInspectorTabs = inspectorTabsFor(node);
+  // 左上の文脈: サイト / 開いているもの（ページ・コンポーネント）と、そのパスか種類。常に現在地が分かるようにする。
+  const contextSite = site?.name ?? "サイト", contextTitle = masterComponent?.name ?? page?.title ?? session?.history.present.title ?? "ページ編集";
+  const contextDetail = masterComponent ? "コンポーネント本体" : isSiteComponent ? "サイト全体のコンポーネント" : page?.path ?? (page?.kind === "template" ? "テンプレート" : "");
   const localizationGate = localization.supported && !localizationReady ? localization.siteState === "loading" || localization.pageState === "loading"
     ? "言語設定と翻訳状態を読み込み中です。完了するまで編集・保存・公開はできません。"
     : "言語設定または翻訳状態を確認できません。編集内容を保持したまま停止しています。再試行してください。" : "";
@@ -1285,7 +1288,8 @@ export function PageEditor({ adapter, toolbarStart, blocks = emptyBlocks, builde
     {components && libraryFailed && <div className="e-notice" role="alert">再利用コンポーネントを読み込めませんでした。配置済みのページは表示できない場合があります。</div>}
     {localizationGate && <div className="e-localization-gate" role={localization.siteState === "error" || localization.pageState === "error" ? "alert" : "status"}><span>{localizationGate}</span><button type="button" className="e-small" disabled={localization.siteState === "loading" || localization.pageState === "loading"} onClick={localization.reloadAll}>再試行</button></div>}</>} left={<aside className="e-rail e-left" aria-label="サイト・ページ・レイヤー" hidden={preview}>
       <nav className="e-tools" aria-label="編集ツール"><PanelToggle side="left" open={leftPanelOpen} onClick={() => setLeftPanelOpen((value) => !value)} />{tools.map(([key, name]) => { const common = targetMode && ["add", "styles"].includes(key); return <button key={key} type="button" aria-label={name} aria-pressed={visiblePanel === key && leftPanelOpen} title={common ? "共通デザインは原文側で編集" : name} disabled={common} onClick={() => { setPicker(null); setPanel(key); setLeftPanelOpen(true); }}><ToolGlyph tool={key} /><small className="e-vh">{name}</small></button>; })}</nav>
-      <div className="e-left-column"><div className="e-project-context"><div className="e-toolbar-start">{toolbarStart}</div><strong className="e-crumb">{sites.find((entry) => entry.id === siteId)?.name ?? "サイト"}</strong><span>{panelPages.find((entry) => entry.pageId === session?.target.pageId)?.title ?? "ページ編集"}</span></div>
+      <div className="e-left-column"><div className="e-project-context" title={`${contextSite} / ${contextTitle}${contextDetail ? ` · ${contextDetail}` : ""}`}><div className="e-toolbar-start">{toolbarStart}</div>
+        <strong className="e-crumb"><span className="e-crumb-site">{contextSite}</span><span className="e-crumb-sep" aria-hidden="true">/</span><span className="e-crumb-page">{contextTitle}</span></strong><span className="e-crumb-path">{contextDetail}</span></div>
       <div className="e-panel">
         <section hidden={visiblePanel !== "add"} aria-label="要素を追加"><div className="e-panel-head"><h2>追加</h2><p>クリックで追加、ドラッグで配置</p></div>
           {targetMode && <p className="e-help">共通デザインは原文側で編集してください。</p>}{paletteGroups.map((group) => <div key={group}><h3>{group}</h3><div className="e-palette">{palette.filter((item) => item.group === group).map((item) => <button type="button" key={item.id} title={item.description} draggable={!!document && !editBlocked && !hasInput && !targetMode} onDragStart={(event) => startDrag(event, { kind: "palette", type: item.id })} onDragEnd={() => { dragItem.current = null; }} onClick={() => add(item.id)} disabled={!document || editBlocked || hasInput || targetMode}><span aria-hidden="true">{item.glyph ?? "+"}</span>{item.label}</button>)}</div></div>)}
