@@ -186,12 +186,22 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
   await assertFailure(await callCatalog(), { status: 503, code: "service_unavailable", category: "service_binding_failed" });
   bindingFailure = false;
 
-  t.mock.method(globalThis, "setTimeout", (callback) => { queueMicrotask(callback); return 1; });
+  const timeouts = [];
+  t.mock.method(globalThis, "setTimeout", (callback, milliseconds) => { timeouts.push(milliseconds); queueMicrotask(callback); return 1; });
   t.mock.method(globalThis, "clearTimeout", () => {});
   bindingResponseFactory = (request) => new Response(new ReadableStream({
     start(controller) { request.signal.addEventListener("abort", () => controller.error(new Error("response body aborted")), { once: true }); }
   }), { headers: { "Content-Type": "application/json" } });
   await assertFailure(await callCatalog(), { status: 503, code: "service_unavailable", category: "service_binding_timeout" });
+  assert.equal(timeouts.at(-1), 12_000);
+  // 公開は commit と読み直しを含むので、ほかの操作より長く待つ（kamakura-site#109）。
+  const release = await workerModule.default.fetch(new Request("https://studio.niho.life/api/projects/project-kamakura/sites/kamakura/editor/business-plan/release", {
+    method: "POST",
+    headers: { "Cf-Access-Jwt-Assertion": token, "Content-Type": "application/json", Origin: "https://studio.niho.life", "Sec-Fetch-Site": "same-origin" },
+    body: JSON.stringify({ expectedVersion: "nw2:none:new:none", confirmationToken: "x" })
+  }), env);
+  await assertFailure(release, { status: 503, code: "service_unavailable", category: "service_binding_timeout", operation: "release" });
+  assert.equal(timeouts.at(-1), 30_000);
   bindingResponseFactory = null;
 
   const missingSecret = await workerModule.default.fetch(new Request("https://studio.niho.life/api/projects/project-kamakura/sites/kamakura/editor/catalog", {
