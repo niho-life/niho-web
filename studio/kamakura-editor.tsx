@@ -13,6 +13,9 @@ import { KAMAKURA_CATALOG_CONTRACT_ERROR_CODE, KAMAKURA_CATALOG_CONTRACT_ERROR_S
 import type { KamakuraCatalog } from "./kamakura-catalog.js";
 
 const BASE = "/api/projects/project-kamakura/sites/kamakura/editor";
+// kamakura-site が見た目の編集を凍結している間の保存・公開の 409。競合とは分けて案内する（kamakura-site#84）。
+const VISUAL_EDITOR_FROZEN = "visual_editor_frozen";
+const FROZEN_MESSAGE = "サイトの見た目の編集は凍結中です。表示の確認だけでき、保存と公開はできません。";
 const CONFIRMATION_TOKEN = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}){2}$/u;
 type RequestMethod = "GET" | "POST" | "PUT";
 type EditorApiStatus = { readonly status: number; readonly errorCode: string | null; readonly supportId: string | null };
@@ -20,7 +23,7 @@ type CatalogState = { readonly status: "loading" } | { readonly status: "error";
 
 class EditorApiError extends Error {
   constructor(readonly status: number, readonly code: string | null = null, readonly supportId: string | null = null) {
-    super(code === KAMAKURA_CATALOG_CONTRACT_ERROR_CODE ? "Kamakura catalog contract mismatch" : status === 401 ? "Cloudflare Access のセッションを確認してください。" : status === 403 ? "このプロジェクトの編集権限がありません。" : status === 404 ? "新形式のページが見つかりません。" : status === 503 ? "編集ブリッジを利用できません。" : "編集 API の要求を完了できませんでした。");
+    super(code === KAMAKURA_CATALOG_CONTRACT_ERROR_CODE ? "Kamakura catalog contract mismatch" : code === VISUAL_EDITOR_FROZEN ? FROZEN_MESSAGE : status === 401 ? "Cloudflare Access のセッションを確認してください。" : status === 403 ? "このプロジェクトの編集権限がありません。" : status === 404 ? "新形式のページが見つかりません。" : status === 503 ? "編集ブリッジを利用できません。" : "編集 API の要求を完了できませんでした。");
   }
 }
 
@@ -126,14 +129,14 @@ function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (status: Edit
       onStatus(null);
       return result;
     } catch (error) {
-      if (!signal.aborted && error instanceof EditorApiError && error.status !== 409) onStatus(statusFromError(error));
+      if (!signal.aborted && error instanceof EditorApiError && (error.status !== 409 || error.code === VISUAL_EDITOR_FROZEN)) onStatus(statusFromError(error));
       else if (!signal.aborted && !(error instanceof EditorApiError)) onStatus(statusFromError(error));
       throw error;
     }
   }
   async function conflict<T extends EditorSaveResult | EditorReleaseResult>(run: () => Promise<T>): Promise<T | { status: "conflict" }> {
     try { return await run(); }
-    catch (error) { if (error instanceof EditorApiError && error.status === 409) return { status: "conflict" }; throw error; }
+    catch (error) { if (error instanceof EditorApiError && error.status === 409 && error.code !== VISUAL_EDITOR_FROZEN) return { status: "conflict" }; throw error; }
   }
   return {
     listSites: (signal) => request(signal, async () => catalog.sites),
@@ -163,6 +166,7 @@ function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (status: Edit
 function EditorAlert({ status }: { readonly status: EditorApiStatus }) {
   const code = status.status;
   const catalogContractMismatch = status.errorCode === KAMAKURA_CATALOG_CONTRACT_ERROR_CODE;
+  if (status.errorCode === VISUAL_EDITOR_FROZEN) return <div className="studio-editor-alert studio-editor-alert-409" role="alert"><strong>保存・公開は凍結中です</strong><span>{FROZEN_MESSAGE}</span></div>;
   return <div className={`studio-editor-alert studio-editor-alert-${code}`} role="alert">
     <strong>{catalogContractMismatch ? "ページ一覧の形式を確認できません" : code === 401 ? "セッションの再確認が必要です" : code === 403 ? "編集権限を確認できません" : code === 404 ? "新形式ページが見つかりません" : code === 503 ? "サイト編集サービスに接続できません" : "編集 API の要求を完了できませんでした"}</strong>
     <span>{catalogContractMismatch ? "ページ一覧の形式に対応できません。編集内容は変更されていません。管理者がサイト側とStudio側の対応状態を確認してください。" : code === 401 ? "編集内容を保持したまま、別タブで Cloudflare Access に再ログインしてから再読込してください。" : code === 403 ? "D1 の Kamakura プロジェクト参加資格が削除または変更されています。Studio 管理者へ確認してください。" : code === 404 ? "ページ一覧を読み直し、新形式ページが存在することを確認してください。" : code === 503 ? "編集内容は変更されていません。時間をおいてから再試行してください。続く場合は管理者へ確認してください。" : "入力内容と接続状態を確認し、エディタ内から再試行してください。"}{status.supportId !== null && <><br />問い合わせID: <code>{status.supportId}</code></>}</span>
@@ -191,7 +195,7 @@ export function KamakuraEditor({ project, environment }: { readonly project: Pro
   return <main className="studio-editor studio-kamakura-editor">
     {status !== null && <EditorAlert status={status} />}
     {catalog.status === "loading" && <section className="studio-kamakura-state" role="status"><p>ページを読み込んでいます…</p></section>}
-    {catalog.status === "error" && <section className="studio-kamakura-state" role="alert"><h1>ページを読み込めませんでした</h1><p>{catalog.errorCode === KAMAKURA_CATALOG_CONTRACT_ERROR_CODE ? "ページ一覧の形式に対応できません。編集内容は変更されていません。管理者へ確認してください。" : "編集内容は変更されていません。接続状態を確認して再試行してください。"}</p>{catalog.supportId !== null && <p>問い合わせID: <code>{catalog.supportId}</code></p>}<button type="button" onClick={() => setReload((value) => value + 1)}>再試行</button></section>}
+    {catalog.status === "error" && <section className="studio-kamakura-state" role="alert"><h1>ページを読み込めませんでした</h1><p>{catalog.errorCode === KAMAKURA_CATALOG_CONTRACT_ERROR_CODE ? "ページ一覧の形式に対応できません。編集内容は変更されていません。管理者へ確認してください。" : catalog.errorCode === VISUAL_EDITOR_FROZEN ? `${FROZEN_MESSAGE}ページ一覧はサイト側の更新後に開けます。` : "編集内容は変更されていません。接続状態を確認して再試行してください。"}</p>{catalog.supportId !== null && <p>問い合わせID: <code>{catalog.supportId}</code></p>}<button type="button" onClick={() => setReload((value) => value + 1)}>再試行</button></section>}
     {ready && (ready.pages.length === 0
       ? <section className="studio-kamakura-state"><h1>編集できるページはありません</h1><p>編集対象のページがありません。ページ一覧を再読み込みしてください。</p><button type="button" onClick={() => setReload((value) => value + 1)}>再読み込み</button></section>
       : adapter && <PageEditor adapter={adapter} externalFramePolicy={externalFramePolicy} blocks={blocks} assets={kamakuraAssetLibrary} insertableBlocks={[]} builder={studioBuilderDefinition} toolbarStart={<a href={projectRoutePath(window.location.pathname, project.id, project.site.id, "dashboard")} aria-label="ダッシュボードに戻る" title="ダッシュボードに戻る">←</a>} />)}

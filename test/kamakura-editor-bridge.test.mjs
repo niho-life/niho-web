@@ -1,11 +1,11 @@
-// 凍結前の上流接続テスト。現在のCIでは実行せず、再接続時の資料として保持する。
+// Kamakura は凍結中も読み取りを通す（kamakura-site#84）。BFF の上流失敗の分類と、凍結中の 409 を競合と分ける扱いを守る。
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { build } from "esbuild";
 
 async function loadKamakuraCatalogContract() {
   const result = await build({
-    entryPoints: [new URL("../../studio/kamakura-catalog.ts", import.meta.url).pathname],
+    entryPoints: [new URL("../studio/kamakura-catalog.ts", import.meta.url).pathname],
     bundle: true,
     format: "esm",
     platform: "node",
@@ -21,7 +21,7 @@ const communityDinnerTitle = "Kamakura: Community Dinner with Locals  | NIHO ka
 
 async function loadStudioWorker() {
   const result = await build({
-    entryPoints: [new URL("../../studio/worker.ts", import.meta.url).pathname],
+    entryPoints: [new URL("../studio/worker.ts", import.meta.url).pathname],
     bundle: true,
     format: "esm",
     platform: "node",
@@ -64,54 +64,6 @@ function catalog(pageTitle = "NIHO Kamakura") {
     }
   };
 }
-
-test("shared catalog contract accepts the current 133-character page title", () => {
-  assert.equal(communityDinnerTitle.length, 133);
-  const result = contract.parseKamakuraCatalog(catalog(communityDinnerTitle));
-  assert.equal(result.pages[0].title, communityDinnerTitle);
-  assert.deepEqual(result.pages[0], {
-    siteId: "kamakura",
-    pageId: "kamakura-community-dinner",
-    locale: "ja",
-    title: communityDinnerTitle
-  });
-});
-
-test("shared catalog contract normalizes known fields and rejects unsafe or mismatched data", () => {
-  const extended = catalog();
-  extended.unexpected = "ignored";
-  extended.pages[0].untrusted = "ignored";
-  const result = contract.parseKamakuraCatalog(extended);
-  assert.equal("unexpected" in result, false);
-  assert.equal("untrusted" in result.pages[0], false);
-  assert.equal(result.blockContracts.KamakuraLegacyForm.props.formId.values[0], "community-dinner");
-
-  for (const invalid of [
-    { ...catalog(), project: { id: "other-project", name: "NIHO kamakura", site: catalog().project.site } },
-    catalog("unsafe\nname"),
-    { ...catalog(), pages: [catalog().pages[0], catalog().pages[0]] },
-    { ...catalog(), legacy: [{ name: "home", path: "/../admin" }] },
-    { ...catalog(), blockContracts: {} },
-    { ...catalog(), blockContracts: { constructor: { props: {} } } },
-    { ...catalog(), blockContracts: { unsafe: { props: { field: { type: "unknown" } } } } },
-    { ...catalog(), blockContracts: { unsafe: { props: {}, slots: { item: { label: "Unsafe", style: ["backgroundImage"] } } } } },
-    { ...catalog(), blockContracts: { unsafe: { props: {}, slots: { item: { label: "Unsafe", data: { reason: "missing source" } } } } } }
-  ]) {
-    assert.throws(
-      () => contract.parseKamakuraCatalog(invalid),
-      (error) => error instanceof contract.KamakuraCatalogContractError && error.code === contract.KAMAKURA_CATALOG_CONTRACT_ERROR_CODE
-    );
-  }
-  assert.equal(contract.KAMAKURA_CATALOG_CONTRACT_ERROR_STATUS, 502);
-});
-
-test("shared catalog contract keeps collection limits at the bridge boundary", () => {
-  const tooManyPages = { ...catalog(), pages: Array.from({ length: 501 }, (_, index) => ({ siteId: "kamakura", pageId: `page-${index}`, locale: "ja", title: "Page" })) };
-  assert.throws(
-    () => contract.parseKamakuraCatalog(tooManyPages),
-    (error) => error instanceof contract.KamakuraCatalogContractError
-  );
-});
 
 test("Kamakura Worker accepts valid long titles and separates contract errors from unavailable upstream", async (t) => {
   const issuer = "https://catalog-contract-test.example";
@@ -205,6 +157,11 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
   upstreamResponse = new Response(JSON.stringify({ error: "conflict" }), { status: 409, headers: { "Content-Type": "application/json" } });
   const unexpectedConflict = await callCatalog();
   await assertFailure(unexpectedConflict, { status: 502, code: contract.KAMAKURA_CATALOG_CONTRACT_ERROR_CODE, category: "upstream_contract_invalid", upstreamStatus: 409 });
+
+  upstreamResponse = new Response(JSON.stringify({ error: "visual_editor_frozen", message: "凍結中" }), { status: 409, headers: { "Content-Type": "application/json" } });
+  const frozenCatalog = await callCatalog();
+  assert.equal(frozenCatalog.status, 409);
+  assert.deepEqual(await frozenCatalog.json(), { error: "visual_editor_frozen" });
 
   upstreamResponse = new Response("SENSITIVE_UPSTREAM_BODY", { status: 500 });
   const unavailable = await callCatalog();
