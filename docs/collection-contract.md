@@ -182,6 +182,8 @@ type CollectionItem = CollectionItemSummary & { version: string; values: Record<
 
 ホストは保存・公開の前に、サーバーでも同じ以上の無害化をしてください。
 
+`renderRichText` で差し替えるホストの部品は、`props.sanitize` の代わりに自分の許可リストを使ってかまいません。ただし `sanitizeRichTextHtml` が残すものはすべて同じ形で残し（上位集合）、`script`・`on*` 属性・`javascript:` などのリンク・外の読み込みを含む `style` は落としてください。既存の本文の書式（見出しの `id`・`figure` の `style`・埋め込みなど）を保つ必要があるサイトのための例外です。NIHO Web Studio の鎌倉の本文の部品（`studio/rich-text-editor.tsx`）は `sanitizeStudioRichTextHtml`（`studio/rich-text-sanitize.ts`）を使います。
+
 ## 当初の案から変えた点
 
 - `CollectionItemSummary` に `path` を足しました（一覧で題名の下にアドレスを出すため。`CollectionItem` は summary を含むので、そのまま持ちます）。
