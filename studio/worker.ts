@@ -90,6 +90,9 @@ const EDITOR_UPSTREAM_PREFIX = "/api/internal/studio/experience";
 const EDITOR_PROJECT_ID = "project-experience";
 const EDITOR_SITE_ID = "experience";
 const EDITOR_TIMEOUT_MILLISECONDS = 12_000;
+// 鎌倉の公開（release）は kamakura-site 側で GitHub への commit と公開後の読み直しまで行い、ほかの操作より長い。
+// 12 秒では commit が済んでも応答が間に合わず「接続できません」になった（kamakura-site#109 の受入）。
+const KAMAKURA_RELEASE_TIMEOUT_MILLISECONDS = 30_000;
 const KAMAKURA_EDITOR_UPSTREAM_ORIGIN = "https://next-kamakura.niho.life";
 const KAMAKURA_EDITOR_UPSTREAM_PREFIX = "/internal/studio/web-content";
 const KAMAKURA_EDITOR_PROJECT_ID = "project-kamakura";
@@ -1003,7 +1006,7 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
   const abortForRequest = () => controller.abort();
   const abortForTimeout = () => { timedOut = true; controller.abort(); };
   request.signal.addEventListener("abort", abortForRequest, { once: true });
-  const timeout = setTimeout(abortForTimeout, EDITOR_TIMEOUT_MILLISECONDS);
+  const timeout = setTimeout(abortForTimeout, operation === "release" ? KAMAKURA_RELEASE_TIMEOUT_MILLISECONDS : EDITOR_TIMEOUT_MILLISECONDS);
   try {
     const upstream = new Request(`${KAMAKURA_EDITOR_UPSTREAM_ORIGIN}${route.upstreamPath}`, {
       method: request.method,
