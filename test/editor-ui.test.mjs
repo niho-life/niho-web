@@ -355,6 +355,8 @@ test("host publication notes replace the generic unpublished badge in the page l
     assert.ok(pageRow("私たちについて").querySelector(".e-badge-publication")?.textContent === "プレビューのみ");
     assert.ok(!pageRow("私たちについて").textContent.includes("未公開"));
     assert.ok(pageRow("私たちについて").title.includes(preview.description));
+    assert.equal(pageRow("私たちについて").querySelector(".e-page-label > .e-page-name").textContent, "私たちについて");
+    assert.deepEqual([...pageRow("私たちについて").querySelector(".e-page-meta").children].map((node) => node.textContent), ["/about", "プレビューのみ"]);
     assert.ok(pageRow("準備中").textContent.includes("未公開"));
     assert.equal(pageRow("ホーム").querySelector(".e-badge-publication"), null);
     assert.ok(document.body.textContent.includes("公開中 1 / 3 ページ"));

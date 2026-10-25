@@ -123,11 +123,16 @@ export function PagePanel({ pages, localizedPages, current, disabled, operations
       <button type="button" className="e-page" aria-current={current && sameTarget(page, current) ? "page" : undefined} style={{ paddingLeft: 8 + node.depth * 14 }}
         disabled={disabled} title={[page.title, secondary, page.publication?.description].filter(Boolean).join(" · ")} onClick={() => select(page)}>
         <Icon name={kind === "template" ? "template" : page.path === "/" ? "home" : "page"} />
-        <span className="e-page-name">{page.title}</span>{secondary && <span className="e-page-path">{secondary}</span>}
-        {kind !== "page" && kindLabels[kind] && <span className="e-badge">{kindLabels[kind]}</span>}
-        {page.visibility === "private" && <span className="e-badge e-badge-private">非公開</span>}
-        {page.publication ? <span className="e-badge e-badge-publication">{page.publication.label}</span> : page.published === false && <span className="e-badge">未公開</span>}
-        {localized && <span className="e-locale-states">{(["ja", "en"] as const).map((locale) => localized.locales[locale] && <span className="e-badge" key={locale}>{locale.toUpperCase()} {localizationStateLabel(localized.locales[locale]!.state)}</span>)}</span>}
+        {/* ページ名は 1 段目を占有し、パスと状態は 2 段目に置く。狭い一覧でもバッジに押されて名前が切れないようにする。 */}
+        <span className="e-page-label"><span className="e-page-name">{page.title}</span>
+          {(secondary || kind !== "page" || page.visibility === "private" || page.publication || page.published === false || localized) && <span className="e-page-meta">
+            {secondary && <span className="e-page-path">{secondary}</span>}
+            {kind !== "page" && kindLabels[kind] && <span className="e-badge">{kindLabels[kind]}</span>}
+            {page.visibility === "private" && <span className="e-badge e-badge-private">非公開</span>}
+            {page.publication ? <span className="e-badge e-badge-publication">{page.publication.label}</span> : page.published === false && <span className="e-badge">未公開</span>}
+            {localized && <span className="e-locale-states">{(["ja", "en"] as const).map((locale) => localized.locales[locale] && <span className="e-badge" key={locale}>{locale.toUpperCase()} {localizationStateLabel(localized.locales[locale]!.state)}</span>)}</span>}
+          </span>}
+        </span>
       </button>
       {operations && kind === "page" && <PageMenu page={page} open={menu === key} setOpen={(open) => setMenu(open ? key : "")} disabled={disabled || operationsDisabled} start={start} />}
     </div></li>;
