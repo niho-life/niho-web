@@ -6,12 +6,14 @@ import { parseProjectDirectoryResult, type ProjectDirectoryResult } from "../src
 import type { Project } from "../src/projects.js";
 import { integrationIdentity, resolveTrustedEditorPage, resolveTrustedIntegration, trustedEditorPath } from "./integration-registry.mjs";
 import { KamakuraEditor } from "./kamakura-editor.js";
-import { parseProjectAliasPath, projectRoutePath, type ProjectSiteViewId } from "./project-routes.mjs";
+import { parseProjectAliasPath, projectRoutePath, type ProjectCmsRoute, type ProjectSiteViewId } from "./project-routes.mjs";
+import type { SiteCmsView } from "./site-admin.mjs";
+import { SiteCmsWorkspace } from "./site-cms.js";
 
 type Role = "owner" | "editor";
 type Screen =
   | { readonly kind: "directory" }
-  | { readonly kind: "dashboard"; readonly projectId: string; readonly siteId: string; readonly view?: ProjectSiteViewId | null }
+  | { readonly kind: "dashboard"; readonly projectId: string; readonly siteId: string; readonly view?: ProjectSiteViewId | null; readonly cms?: ProjectCmsRoute | null }
   | { readonly kind: "editor"; readonly projectId: string; readonly siteId: string; readonly environment: string }
   | { readonly kind: "invite"; readonly projectId: string; readonly siteId: string; readonly token: string };
 type SessionState =
@@ -69,7 +71,7 @@ function screenFromLocation(): Screen {
   if (projectAlias) {
     return projectAlias.page === "editor"
       ? { kind: "editor", projectId: projectAlias.projectId, siteId: projectAlias.siteId, environment: "production" }
-      : { kind: "dashboard", projectId: projectAlias.projectId, siteId: projectAlias.siteId, view: projectAlias.page === "dashboard" ? null : projectAlias.page };
+      : { kind: "dashboard", projectId: projectAlias.projectId, siteId: projectAlias.siteId, view: projectAlias.page === "dashboard" ? null : projectAlias.page, cms: projectAlias.cms ?? null };
   }
   const invite = /^\/projects\/([A-Za-z][A-Za-z0-9_-]{0,79})\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/invite\/?$/u.exec(window.location.pathname);
   if (invite) {
@@ -179,13 +181,14 @@ function Notice({ title, children, retry }: { readonly title: string; readonly c
   return <main className="studio-state"><p className="studio-kicker">NIHO WEB</p><h1>{title}</h1><p>{children}</p>{retry && <button type="button" onClick={retry}>再試行</button>}</main>;
 }
 
-type SiteAdmin = { readonly origin: string; readonly paths: { readonly cms: string; readonly translations: string } };
+type SiteAdmin = { readonly origin: string; readonly paths: { readonly cms: string; readonly translations: string }; readonly cmsView: SiteCmsView };
 function parseSiteAdmin(value: unknown): SiteAdmin {
   const item = record(value), paths = record(item.paths);
   if (typeof item.origin !== "string" || typeof paths.cms !== "string" || typeof paths.translations !== "string") throw new Error("invalid site admin");
   const origin = new URL(item.origin);
   if (origin.protocol !== "https:" || origin.origin !== item.origin || !paths.cms.startsWith("/") || !paths.translations.startsWith("/")) throw new Error("invalid site admin");
-  return { origin: item.origin, paths: { cms: paths.cms, translations: paths.translations } };
+  // CMS の開き方は Worker の切替（KAMAKURA_CMS_VIEW）。"workspace" 以外（古い Worker の無い値を含む）は従来の枠
+  return { origin: item.origin, paths: { cms: paths.cms, translations: paths.translations }, cmsView: item.cmsView === "workspace" ? "workspace" : "frame" };
 }
 
 /**
@@ -346,6 +349,8 @@ function App() {
   const [screen, setScreen] = useState<Screen>(screenFromLocation);
   const [pendingProject, setPendingProject] = useState<Project | null>(null);
   const [siteAdmin, setSiteAdmin] = useState<{ readonly key: string; readonly value: SiteAdmin | null } | null>(null);
+  /** 戻る・進むで CMS の URL が変わったら、コレクション画面をその URL で開き直す（画面の中の移動では作り直さない） */
+  const [cmsEpoch, setCmsEpoch] = useState(0);
   const expire = useCallback(() => setSession({ status: "expired" }), []);
 
   const loadSession = useCallback(() => {
@@ -368,7 +373,7 @@ function App() {
     }
   }, [screen]);
   useEffect(() => {
-    const onPopState = () => { setPendingProject(null); setScreen(screenFromLocation()); };
+    const onPopState = () => { setPendingProject(null); setScreen(screenFromLocation()); setCmsEpoch((epoch) => epoch + 1); };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
@@ -378,11 +383,19 @@ function App() {
       ? "/"
       : next.kind === "editor"
         ? trustedEditorPath(next.projectId, next.siteId, next.environment) ?? "/"
-        : projectRoutePath(window.location.pathname, next.projectId, next.siteId, next.view ?? "dashboard");
+        : projectRoutePath(window.location.pathname, next.projectId, next.siteId, next.view ?? "dashboard", next.kind === "dashboard" ? next.cms ?? null : null);
     window.history.pushState(null, "", path);
     setPendingProject(null);
     setScreen(next);
     window.scrollTo({ top: 0, behavior: "auto" });
+  }, []);
+
+  /** コレクション画面の中の移動（一覧・項目）を URL に合わせる。画面は作り直さない。項目を開いたときだけ上へ戻す */
+  const navigateCms = useCallback((projectId: string, siteId: string, cms: ProjectCmsRoute) => {
+    const path = projectRoutePath(window.location.pathname, projectId, siteId, "cms", cms);
+    if (path !== window.location.pathname) window.history.pushState(null, "", path);
+    setScreen({ kind: "dashboard", projectId, siteId, view: "cms", cms });
+    if (cms.itemId !== null) window.scrollTo({ top: 0, behavior: "auto" });
   }, []);
 
   const directoryAdapter = useMemo(() => ({
@@ -446,8 +459,12 @@ function App() {
   const siteViews = (project: Project): ProjectSiteView[] => {
     if (!admin) return [];
     const open = (view: ProjectSiteViewId) => navigate({ kind: "dashboard", projectId: project.id, siteId: project.site.id, view });
+    const legacyCms = `${admin.origin}${admin.paths.cms}`;
     return [
-      { id: "cms", label: "CMS", content: <SiteAdminFrame title="CMS" src={`${admin.origin}${admin.paths.cms}`}>記事・サークル・会社・クリエイターの原稿と画像を直し、公開・予約公開します。</SiteAdminFrame> },
+      { id: "cms", label: "CMS", content: admin.cmsView === "workspace"
+        ? <SiteCmsWorkspace key={cmsEpoch} legacyUrl={legacyCms} siteOrigin={project.site.domains[0] ?? null}
+            route={screen.kind === "dashboard" ? screen.cms ?? null : null} onNavigate={(cms) => navigateCms(project.id, project.site.id, cms)} />
+        : <SiteAdminFrame title="CMS" src={legacyCms}>記事・サークル・会社・クリエイターの原稿と画像を直し、公開・予約公開します。</SiteAdminFrame> },
       { id: "assets", label: "素材", content: <AssetsHub onOpenEditor={() => openEditor(project)} onOpenCms={() => open("cms")} /> },
       { id: "translations", label: "翻訳", content: <SiteAdminFrame title="翻訳" src={`${admin.origin}${admin.paths.translations}`}>英語版の文章を直して確認し、公開します。</SiteAdminFrame> }
     ];
@@ -483,7 +500,11 @@ function App() {
               settingsContent={<MemberAdministration key={`${selected.id}:${selected.site.id}`} project={selected} expire={expire} />}
               siteViews={siteViews(selected)}
               activeSiteView={screen.view ?? null}
-              onSiteViewChange={(view) => navigate({ kind: "dashboard", projectId: selected.id, siteId: selected.site.id, view: view as ProjectSiteViewId | null })}
+              onSiteViewChange={(view) => {
+                // 開いている機能をもう一度押しても移らない（CMS の中の項目を開いたまま URL だけ一覧に戻さない）
+                if (view === (screen.view ?? null)) return;
+                navigate({ kind: "dashboard", projectId: selected.id, siteId: selected.site.id, view: view as ProjectSiteViewId | null });
+              }}
             />
           : <ProjectDirectory
               adapter={directoryAdapter}
