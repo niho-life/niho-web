@@ -47,6 +47,8 @@ export type StyleInspectorProps = {
   scope?: "node" | "slot";
   /** InspectorのStudio準拠タブ。省略すると既存の一括表示として扱う。 */
   tab?: InspectorTab;
+  /** `token:名前` / `textStyle:名前` → 定義した場所（「サイト共通」「このページ」など）。テキストスタイルと共通カラーの候補をその場所で分けて出す。 */
+  origins?: Readonly<Record<string, string>> | undefined;
 };
 
 const textTags = new Set("h1 h2 h3 h4 h5 h6 p span a li strong em small blockquote figcaption time".split(" "));
@@ -126,7 +128,7 @@ export function StyleInspector(props: StyleInspectorProps) {
     };
   }
   const tokenChoices = (property: StyleProperty): Choice[] => Object.entries(document.tokens).filter(([, token]) => token.type === styleTokenKind(property)).map(([name, token]) => [name, token.label ?? name]);
-  const colorTokens = Object.entries(document.tokens).filter(([, token]) => token.type === "color").map(([name, token]) => ({ name, label: token.label ?? name, value: String(token.value) }));
+  const colorTokens = Object.entries(document.tokens).filter(([, token]) => token.type === "color").map(([name, token]) => ({ name, label: token.label ?? name, value: String(token.value), origin: props.origins?.[`token:${name}`] }));
   const ui: Ui = {
     document, tier, disabled, uid, state, effective, set, report, status,
     can: (property) => can(property),
@@ -166,6 +168,10 @@ export function StyleInspector(props: StyleInspectorProps) {
   const display = String(effective("display") ?? ""), flex = display === "flex" || display === "inline-flex", grid = display === "grid" || display === "inline-grid";
   const position = String(effective("position") ?? "static");
   const textStyles = Object.entries(document.textStyles ?? {});
+  // テキストスタイルの候補は定義した場所（サイト共通・このページ）で分ける。場所が 1 つだけなら見出しを付けない。
+  const styleGroups = new Map<string, typeof textStyles>();
+  for (const entry of textStyles) { const origin = props.origins?.[`textStyle:${entry[0]}`] ?? ""; styleGroups.set(origin, [...(styleGroups.get(origin) ?? []), entry]); }
+  const styleOptions = (entries: typeof textStyles) => entries.map(([name, style]) => <option key={name} value={name}>{style.label ?? name}</option>);
   const span = only ? current.key === "base" ? `〜${next!.start - 1}px` : `${current.start}〜${next!.start - 1}px` : current.key === "base" ? "すべての幅" : `${current.start}px 以上`;
   const description = only ? `${span}だけに適用。${next!.start}px 以上の見た目は変えません。`
     : `${span}に適用。${higher.length ? current.key === "base" ? "上の幅で上書きした項目を除きます。" : `${higher.map(tierName).join("・")} で上書きした項目を除きます。` : ""}`;
@@ -190,7 +196,7 @@ export function StyleInspector(props: StyleInspectorProps) {
       {can("textStyle") && <Row caption="テキストスタイル" htmlFor={`${uid}-ts`} status={{ unsaved: (saved?.style?.textStyle ?? "") !== (node.style?.textStyle ?? ""), lock: reason("style.textStyle") }}>
         <span className="e-inline"><select id={`${uid}-ts`} aria-label="テキストスタイル" value={node.style?.textStyle ?? ""} disabled={disabled || !!reason("style.textStyle")}
           onChange={(event) => report(apply({ type: "nodeTextStyle", path, name: event.target.value || undefined }))}>
-          <option value="">なし</option>{textStyles.map(([name, style]) => <option key={name} value={name}>{style.label ?? name}</option>)}
+          <option value="">なし</option>{styleGroups.size > 1 ? [...styleGroups].map(([origin, entries]) => <optgroup key={origin} label={origin || "この文書"}>{styleOptions(entries)}</optgroup>) : styleOptions(textStyles)}
         </select>
         {node.style?.textStyle && <button type="button" className="e-small" title="今の見た目のまま、この要素だけの指定に変えます" disabled={disabled || !!reason("style.textStyle")} onClick={() => report(apply({ type: "nodeTextStyle", path, name: undefined, detach: true }))}>切り離す</button>}</span>
       </Row>}
