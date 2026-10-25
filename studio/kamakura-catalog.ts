@@ -158,6 +158,10 @@ export function parseKamakuraCatalog(value: unknown): KamakuraCatalog {
       if (typeof candidate.published !== "boolean") throw new KamakuraCatalogContractError();
       entry.published = candidate.published;
     }
+    if (candidate.publication !== undefined) {
+      if (!isRecord(candidate.publication)) throw new KamakuraCatalogContractError();
+      entry.publication = { label: catalogText(candidate.publication.label, 40), description: catalogText(candidate.publication.description, 300) };
+    }
     return entry;
   });
   if (new Set(pages.map(({ pageId }) => pageId)).size !== pages.length) throw new KamakuraCatalogContractError();

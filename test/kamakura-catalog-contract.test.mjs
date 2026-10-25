@@ -54,14 +54,15 @@ test("Kamakura catalog preserves page kinds, template paths and publication meta
   const source = catalog();
   const base = source.pages[0];
   source.pages = [
-    { ...base, pageId: "home", path: "/", kind: "page", visibility: "private", published: false },
-    { ...base, pageId: "brand-navigation", kind: "shared" },
+    { ...base, pageId: "home", path: "/", kind: "page", visibility: "private", published: false, publication: { label: "プレビューのみ", description: "公開サイトは移行前の表示のままです。" } },
+    { ...base, pageId: "brand-navigation", kind: "shared", publication: { label: "一部で公開中", description: "新しい表示で公開中の 2 ページにだけ出ます。" } },
     { ...base, pageId: "post-detail", kind: "template", path: "/posts/[slug]", published: true }
   ];
   assert.deepEqual(contract.parseKamakuraCatalog(source).pages, source.pages);
   for (const invalid of [
     { kind: "component" }, { kind: null }, { path: "https://other.example/" }, { path: "/../admin" },
-    { path: "/posts/[slug]", kind: "page" }, { visibility: "hidden" }, { published: "false" }
+    { path: "/posts/[slug]", kind: "page" }, { visibility: "hidden" }, { published: "false" },
+    { publication: "preview" }, { publication: { label: "プレビューのみ" } }, { publication: { label: "改行\nあり", description: "説明" } }, { publication: { label: "あ".repeat(41), description: "説明" } }
   ]) {
     assert.throws(() => contract.parseKamakuraCatalog({ ...source, pages: [{ ...base, ...invalid }] }), contract.KamakuraCatalogContractError);
   }

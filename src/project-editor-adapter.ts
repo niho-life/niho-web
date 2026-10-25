@@ -1,7 +1,7 @@
 import { parseSiteStyles } from "./site-styles.js";
 import { normalizePageChange, parseEditorReadOnly, validatePageChangePlan, validateReleasePlan } from "./editor-model.js";
 import { parseEditorLocaleReleaseApplyResult, parseEditorLocaleReleasePlan, parseEditorLocaleReleaseState } from "./editor-locale-release.js";
-import type { EditorAdapter, EditorComponentAdapter, EditorLocaleReleaseApplyRequest, EditorLocaleReleasePrepareRequest, EditorLocalizationAdapter, EditorLocalizationCommand, EditorPage, EditorPageChange, EditorReleasePlan, EditorReleaseRequest, EditorSite, EditorStructuredDataPreset, EditorTarget } from "./editor-types.js";
+import type { EditorAdapter, EditorComponentAdapter, EditorLocaleReleaseApplyRequest, EditorLocaleReleasePrepareRequest, EditorLocalizationAdapter, EditorLocalizationCommand, EditorPage, EditorPageChange, EditorPagePublication, EditorReleasePlan, EditorReleaseRequest, EditorSite, EditorStructuredDataPreset, EditorTarget } from "./editor-types.js";
 import { parseRevisionEntry, parseRevisionPage } from "./history.js";
 import { parseSiteSettings } from "./pages.js";
 import { parseProject, type Project } from "./projects.js";
@@ -100,7 +100,17 @@ function pageEntry(page: EditorPage): EditorPage {
     if (typeof page.published !== "boolean") throw new Error("ページ一覧の公開版の情報が正しくありません。");
     entry.published = page.published;
   }
+  if (page.publication !== undefined) entry.publication = parsePagePublication(page.publication);
   return entry;
+}
+
+/** ホストの公開状態の補足。改行なしの短い表示だけを受け、既知の項目だけを残す。 */
+export function parsePagePublication(value: unknown): EditorPagePublication {
+  const line = (text: unknown, maximum: number) => typeof text === "string" && text.trim() !== "" && text.length <= maximum && !/[\u0000-\u001f\u007f]/u.test(text);
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("ページ一覧の公開状態の補足が正しくありません。");
+  const { label, description } = value as Record<string, unknown>;
+  if (!line(label, 40) || !line(description, 300)) throw new Error("ページ一覧の公開状態の補足が正しくありません。");
+  return { label: label as string, description: description as string };
 }
 
 function structuredDataPresets(value: unknown): EditorStructuredDataPreset[] {

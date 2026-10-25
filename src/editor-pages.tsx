@@ -121,12 +121,12 @@ export function PagePanel({ pages, localizedPages, current, disabled, operations
     const secondary = [page.path, multiLocale ? page.locale : undefined].filter(Boolean).join(" · ");
     return <li key={key}><div className="e-page-row">
       <button type="button" className="e-page" aria-current={current && sameTarget(page, current) ? "page" : undefined} style={{ paddingLeft: 8 + node.depth * 14 }}
-        disabled={disabled} title={[page.title, secondary].filter(Boolean).join(" · ")} onClick={() => select(page)}>
+        disabled={disabled} title={[page.title, secondary, page.publication?.description].filter(Boolean).join(" · ")} onClick={() => select(page)}>
         <Icon name={kind === "template" ? "template" : page.path === "/" ? "home" : "page"} />
         <span className="e-page-name">{page.title}</span>{secondary && <span className="e-page-path">{secondary}</span>}
         {kind !== "page" && kindLabels[kind] && <span className="e-badge">{kindLabels[kind]}</span>}
         {page.visibility === "private" && <span className="e-badge e-badge-private">非公開</span>}
-        {page.published === false && <span className="e-badge">未公開</span>}
+        {page.publication ? <span className="e-badge e-badge-publication">{page.publication.label}</span> : page.published === false && <span className="e-badge">未公開</span>}
         {localized && <span className="e-locale-states">{(["ja", "en"] as const).map((locale) => localized.locales[locale] && <span className="e-badge" key={locale}>{locale.toUpperCase()} {localizationStateLabel(localized.locales[locale]!.state)}</span>)}</span>}
       </button>
       {operations && kind === "page" && <PageMenu page={page} open={menu === key} setOpen={(open) => setMenu(open ? key : "")} disabled={disabled || operationsDisabled} start={start} />}
@@ -477,7 +477,7 @@ export function PageSettings({ document, page, site, settings, field, apply, rep
           <div><dt>ページ名</dt><dd>{page?.title ?? "—"}</dd></div>
           <div><dt>パス</dt><dd>{page?.path ?? "未設定"}</dd></div>
           <div><dt>種類</dt><dd>{kindLabels[kind] ?? kind}</dd></div>
-          {!canChange && <div><dt>公開状態</dt><dd>{page?.visibility === "private" ? "非公開" : page?.published === false ? "未公開" : "公開"}</dd></div>}
+          {!canChange && <div><dt>公開状態</dt><dd>{page?.visibility === "private" ? "非公開" : page?.publication ? <>{page.publication.label}<small>{page.publication.description}</small></> : page?.published === false ? "未公開" : "公開"}</dd></div>}
         </dl>
         {canChange && <button type="button" role="switch" className="e-switch" aria-checked={page.visibility === "private"} disabled={changeDisabled}
           onClick={() => start({ action: "visibility", page, visibility: page.visibility === "private" ? "public" : "private" })}>

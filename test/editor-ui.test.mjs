@@ -342,6 +342,33 @@ test("page panel shows the path tree, kinds, states and counts, and selecting a 
   } finally { await app.cleanup(); }
 });
 
+test("host publication notes replace the generic unpublished badge in the page list, page settings and site components", async () => {
+  const preview = { label: "プレビューのみ", description: "公開サイトは移行前の表示のままです。ここで編集しても公開サイトには出ません。" };
+  const partial = { label: "一部で公開中", description: "新しい表示で公開中の 1 ページにだけ出ます。" };
+  const app = await setup({ adapter: { listPages: async () => [
+    { siteId: "demo", pageId: "home", locale: "ja-JP", title: "ホーム", path: "/" },
+    { siteId: "demo", pageId: "about", locale: "ja-JP", title: "私たちについて", path: "/about", published: false, publication: preview },
+    { siteId: "demo", pageId: "draft", locale: "ja-JP", title: "準備中", path: "/draft", published: false },
+    { siteId: "demo", pageId: "header", locale: "ja-JP", title: "ヘッダー", kind: "shared", publication: partial }
+  ] } });
+  try {
+    assert.ok(pageRow("私たちについて").querySelector(".e-badge-publication")?.textContent === "プレビューのみ");
+    assert.ok(!pageRow("私たちについて").textContent.includes("未公開"));
+    assert.ok(pageRow("私たちについて").title.includes(preview.description));
+    assert.ok(pageRow("準備中").textContent.includes("未公開"));
+    assert.equal(pageRow("ホーム").querySelector(".e-badge-publication"), null);
+    assert.ok(document.body.textContent.includes("公開中 1 / 3 ページ"));
+    await clickPage("私たちについて");
+    const settings = await panel("ページ");
+    const state = [...settings.querySelectorAll(".e-rows > div")].find((row) => row.querySelector("dt")?.textContent === "公開状態");
+    assert.equal(state?.querySelector("dd")?.textContent, `${preview.label}${preview.description}`);
+    await click("コンポーネント");
+    const card = document.querySelector('.e-site-component[aria-label="ヘッダー"]');
+    assert.equal(card?.querySelector(".e-badge-publication")?.textContent, partial.label);
+    assert.ok(card?.textContent.includes(`サイト共通。${partial.description}`));
+  } finally { await app.cleanup(); }
+});
+
 test("public information edits are undoable document edits saved in meta", async () => {
   const host = pageHost(), app = await setup({ adapter: host.adapter });
   try {
