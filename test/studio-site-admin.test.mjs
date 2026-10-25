@@ -69,7 +69,7 @@ test("Worker: 参加者にだけ管理画面の origin を返し、Dashboard だ
     const page = await call(path);
     assert.equal(page.status, 200, path);
     const csp = page.headers.get("Content-Security-Policy");
-    assert.match(csp, / frame-src https:\/\/admin\.example\.test;/u, path);
+    assert.match(csp, / frame-src https:\/\/admin\.example\.test https:\/\/site-admin-test\.example;/u, path);
     assert.match(csp, /frame-ancestors 'none'/u, path);
   }
   for (const path of ["/", "/projects/niho-experience/admin", "/projects/project-experience/sites/experience"]) {

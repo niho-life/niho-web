@@ -1293,7 +1293,10 @@ async function handle(request: Request, env: Env): Promise<Response> {
     // Dashboard（ID の URL と alias の URL）は、そのサイトの管理画面を枠で開ける。editor は従来どおり
     const dashboardTarget = isEditor ? null : projectAlias ?? (dashboardPage ? { projectId: dashboardPage[1]!, siteId: dashboardPage[2]! } : null);
     const adminOrigin = dashboardTarget ? siteAdmin(env as unknown as Record<string, unknown>, dashboardTarget.projectId, dashboardTarget.siteId)?.origin : undefined;
-    return withStaticSecurity(await env.ASSETS.fetch(new Request(indexUrl, { method: request.method, headers: request.headers })), pageAdapter !== null, pageAdapter?.connectOrigins ?? [], pageAdapter?.fontSources ?? [], pageAdapter ? pageAdapter.frameSources ?? [] : adminOrigin ? [adminOrigin] : []);
+    // サイト側にまだ Access の cookie が無いと、枠は Access のチームのドメインを経由して戻る（Studio にログイン済みならログイン画面は出ない）。
+    // その経由先も枠に許す。ログイン画面そのものは Access が枠を拒むので、画面の「別のタブで開く」で入る
+    const adminFrames = adminOrigin ? [adminOrigin, new URL(env.ACCESS_ISSUER).origin] : [];
+    return withStaticSecurity(await env.ASSETS.fetch(new Request(indexUrl, { method: request.method, headers: request.headers })), pageAdapter !== null, pageAdapter?.connectOrigins ?? [], pageAdapter?.fontSources ?? [], pageAdapter ? pageAdapter.frameSources ?? [] : adminFrames);
   }
   return withStaticSecurity(await env.ASSETS.fetch(request));
 }
