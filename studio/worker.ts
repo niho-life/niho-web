@@ -729,11 +729,12 @@ async function enforceMutationBoundary(request: Request): Promise<Record<string,
 type KamakuraAssetOperation = "list" | "upload-intent" | "update" | "usages" | "resolve";
 type EditorRoute = { readonly upstreamPath: string; readonly bodyLimit: number; readonly assetOperation?: KamakuraAssetOperation };
 
-const KAMAKURA_ASSET_PROVIDERS = new Set(["kamakura-upload", "kamakura-studio", "kamakura-cms", "kamakura-approved-remote"]);
+/** kamakura-site の worker/studio-assets.ts と同じ固定表。kamakura-upload だけが Studio からのアップロード先。 */
+const KAMAKURA_ASSET_PROVIDERS = new Set(["kamakura-upload", "kamakura-admin-upload", "kamakura-studio", "kamakura-cms", "kamakura-approved-remote"]);
 const KAMAKURA_ASSET_ID = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/u;
 const KAMAKURA_UPLOAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const KAMAKURA_ASSET_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/avif", "image/gif"]);
-const MAX_KAMAKURA_ASSET_UPLOAD_BYTES = 100 * 1024 * 1024;
+const MAX_KAMAKURA_ASSET_UPLOAD_BYTES = 50 * 1024 * 1024;
 
 function assetText(value: unknown, maximum: number, allowEmpty = false): value is string {
   return typeof value === "string" && value.length <= maximum && (allowEmpty || !!value.trim()) && !/[\u0000-\u001f\u007f]/u.test(value);
@@ -908,7 +909,8 @@ async function readBoundedResponse(response: Response, maximumBytes = MAX_EDITOR
   let parsed: unknown;
   try { parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)) as unknown; }
   catch { throw new BridgeUnavailableError("invalid bridge JSON"); }
-  if (!isRecord(parsed)) throw new BridgeUnavailableError("invalid bridge response");
+  // 素材の使用箇所（assets/usages）は配列で返る。それ以外の応答は object。
+  if (!isRecord(parsed) && !Array.isArray(parsed)) throw new BridgeUnavailableError("invalid bridge response");
   return parsed;
 }
 
@@ -1031,6 +1033,11 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
       if (frozen) return json({ error: "visual_editor_frozen" }, 409);
       if (!isCatalog) return json({ error: "conflict" }, 409);
       throw kamakuraBridgeFailure(supportId, operation, "upstream_contract_invalid", response.status);
+    }
+    if (route.assetOperation && (response.status === 413 || response.status === 415 || response.status === 507)) {
+      // 素材の拒否（大きさ・形式・容量）は status を保ち、画面が理由を表示できるようにする。本文は読まない。
+      await response.body?.cancel();
+      return json({ error: "asset_rejected" }, response.status);
     }
     if (response.status === 401 || response.status === 403) throw kamakuraBridgeFailure(supportId, operation, "upstream_auth_rejected", response.status);
     if (response.status === 429) throw kamakuraBridgeFailure(supportId, operation, "upstream_rate_limited", response.status);

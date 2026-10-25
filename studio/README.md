@@ -97,7 +97,7 @@ Editor HTML route だけ `PageEditor` の inline style と `iframe srcDoc` に�
 
 ## Kamakura editor bridge
 
-ブラウザは同一 origin の `/api/projects/project-kamakura/sites/kamakura/editor` 配下だけを呼びます。利用できる route は `GET catalog`、`GET :pageId`、`PUT :pageId/draft`、`POST :pageId/release-plan`、`POST :pageId/release` だけです。`pageId` は `^(?!(?:catalog|create|index)$)[a-z][a-z0-9-]{0,59}$` に固定し、query string、未知の route / method、600 KiB を超える draft を拒否します。
+ブラウザは同一 origin の `/api/projects/project-kamakura/sites/kamakura/editor` 配下だけを呼びます。利用できる route は `GET catalog`、`GET :pageId`、`PUT :pageId/draft`、`POST :pageId/release-plan`、`POST :pageId/release`、素材の `POST assets/{list,upload-intent,update,usages,resolve}`・`GET assets/:uuid/preview`（下記）だけです。`pageId` は `^(?!(?:catalog|create|index)$)[a-z][a-z0-9-]{0,59}$` に固定し、query string、未知の route / method、600 KiB を超える draft を拒否します。
 
 上流は Cloudflare service binding `KAMAKURA_SITE`（service `kamakura-site`）だけです。署名用 URL は `https://next-kamakura.niho.life/internal/studio/web-content/...` に固定し、任意 origin のネットワーク fetch や generic proxy にはしません。browser cookie、Cloudflare Access JWT、NIHO account 情報は転送しません。各 request は Experience と同じ HMAC message 形式で、Project header だけ `project-kamakura` を使います。secret は別の `KAMAKURA_STUDIO_BRIDGE_SECRET` とし、canonical base64url、decode 後 32 byte 以上を必須にします。
 
@@ -110,6 +110,16 @@ catalog がこの契約に合わない場合は `502 { "error": "upstream_contra
 Kamakura の `PageEditor` が編集するのは `src/site/niho-web` の新形式ページだけです。現時点では0件のため、UI は移行待ちを明示し、catalog の旧形式一覧を読み取り専用で表示します。旧形式のデザインは `https://next-kamakura.niho.life/admin/pages`、記事・サークル・会社などの CMS は `https://next-kamakura.niho.life/admin` で引き続き編集します。Studio は CMS を変更せず、STUDIO からの全面移行を完了扱いにしません。source of truth は `studio` のままで、移行作業は kamakura-site #42 に残ります。
 
 Kamakura の editor route にも Experience と同じ範囲限定 CSP 緩和を適用します。native presentation のフォントだけは `https://kamakura-media.niho.life/niho-web/fonts/v1/` を font-src に追加します。manifest・共有枠・保存CASの契約は [site-presentation.md](../docs/site-presentation.md) に従います。Directory / Dashboard / invite route の CSP は変えません。
+
+### Kamakura の素材ライブラリ（#85）
+
+Kamakura の `PageEditor` には `studio/kamakura-assets.ts` の素材 adapter を渡します。ブラウザが呼ぶのは同一 origin の `POST .../editor/assets/{list,upload-intent,update,usages,resolve}` と `GET .../editor/assets/<uuid>/preview`、そしてアップロード本体の `PUT https://next-kamakura.niho.life/internal/studio/asset-upload/<uuid>` だけです（Kamakura editor route の `connect-src` に固定）。
+
+- BFF は要求ごとに Access `sub` と D1 の `owner` / `editor` membership を照合し、本文を検証して正規化した JSON だけを署名して service binding へ渡します。`siteId` は `kamakura`、出所は `kamakura-upload`（Studio からのアップロード。ID は UUID）・`kamakura-admin-upload`・`kamakura-studio`・`kamakura-cms`・`kamakura-approved-remote` に固定し、`update` と `upload-intent` は `kamakura-upload` だけを受けます。削除の route はありません。
+- 上流の `409 visual_editor_frozen` はそのまま返し、素材の拒否（413・415・507）は status を保って `{ "error": "asset_rejected" }` で返します。画面はこれで「大きすぎる」「形式」「容量」を表示します。それ以外の 4xx・5xx は従来どおり 503 `service_unavailable` と問い合わせ ID です。
+- `GET .../assets/<uuid>/preview` は同一 origin（`Sec-Fetch-Site: same-origin`）の GET を署名つき `POST assets/preview` に変え、画像の Content-Type の応答だけを `no-store` で流します。公開前の Studio アップロードを公開 URL なしで表示するための経路で、ほかの出所の素材は公開 CDN（`kamakura-media.niho.life` の `/cdn-cgi/image` 幅指定）のサムネイルをそのまま使います（`img-src https:`）。
+- アップロードは、`upload-intent` で得た一回限りのトークンを `Authorization: Bearer` に付け、`credentials: "omit"` で kamakura-site へ直接 PUT します。Studio Worker は画像本体を中継しません。Access Cookie・JWT・bridge secret はブラウザにも kamakura-site にも渡りません。
+- 追加の secret はありません（`KAMAKURA_STUDIO_BRIDGE_SECRET` を共用）。契約の全体は [素材ライブラリ契約](../docs/asset-contract.md)「鎌倉サイトでの接続」と kamakura-site の `worker/README.md`、テストは `test/studio-worker-assets.test.mjs`・`test/kamakura-assets-adapter.test.mjs` です。
 
 ## Migration と初回セットアップ
 
@@ -191,6 +201,7 @@ Project 固有 API はすべて次の prefix 配下です。
 - Experience STG: 同じ route を `/editor-staging` 配下で提供し、owner のみ許可
 - Kamakura: `GET editor/catalog`、`GET editor/:pageId`
 - Kamakura: `PUT editor/:pageId/draft`、`POST editor/:pageId/release-plan`、`POST editor/:pageId/release`
+- Kamakura: `POST editor/assets/{list,upload-intent,update,usages,resolve}`、`GET editor/assets/:uuid/preview`（owner/editor）
 
 unknown Project/Site と権限のない Project/Site は、外部から区別できる詳細を返しません。owner API が返す member 情報は、その owner が管理する同一 Project に限定します。
 
@@ -209,7 +220,7 @@ wrangler dev --config studio/wrangler.toml
 ## 制約と follow-up
 
 - Experience editor の本番UIは Backend Draft PR #19268 の本番配備と、Studio Worker／NIHO API の本番 secret 設定が揃った場合だけ有効にします。secret が欠落・不正なら API 接続は 503 で fail-closed します。STG用 secret は本番で再利用しません。
-- Kamakura editor は新形式の共通ページだけを扱います。ブロック契約は kamakura-site の `GET catalog` が保存時検証と同じ正本から返し、Studio はそれを検証して安全なローカルプレビューを組み立てます。外部表示・予約・送信・CMS取得のコードは実行しません。旧形式一覧は読み取り専用です。作成、素材 upload、旧形式ページ編集、CMS 操作、全面移行はこの bridge の対象外です。
+- Kamakura editor は新形式の共通ページだけを扱います。ブロック契約は kamakura-site の `GET catalog` が保存時検証と同じ正本から返し、Studio はそれを検証して安全なローカルプレビューを組み立てます。外部表示・予約・送信・CMS取得のコードは実行しません。旧形式一覧は読み取り専用です。素材は「Kamakura の素材ライブラリ」のとおり接続済みで、アップロードと更新は kamakura-site の凍結解除後に通ります。作成、旧形式ページ編集、CMS 操作、全面移行はこの bridge の対象外です。
 - Experience editor は production API が提供するページ文書・下書き・公開・復元だけを扱います。自由追加できない NIHO 業務ブロックは `insertableBlocks=[]` とし、components / localization / assets は未実装です。
 - 招待メールの配信、再送、token の再表示はありません。URL の安全な共有は owner の運用責任です。
 - Access email の変更や IdP account の統合は自動追従しません。membership の主体は安定 `sub` で、保存 email は招待照合と owner 表示用です。
