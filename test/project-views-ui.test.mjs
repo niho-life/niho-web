@@ -174,6 +174,33 @@ test("dashboard members are read-only with empty, multiple and long-name states"
   } finally { await app.cleanup(); }
 });
 
+test("dashboard shows host site views in the site nav and project settings content in Home", async () => {
+  const selected = project(), changes = [];
+  const siteViews = [{ id: "cms", label: "CMS", content: createElement("p", { id: "cms-body" }, "CMS の中身") }, { id: "translations", label: "翻訳", content: createElement("p", { id: "translations-body" }, "翻訳の中身") }];
+  const app = await setup(ProjectDashboard, { project: selected, adapter: dashboardAdapter(async () => dashboard(selected)), siteViews, activeSiteView: null, onSiteViewChange: (id) => changes.push(id), settingsContent: createElement("p", { id: "settings-body" }, "メンバーと招待") });
+  try {
+    const nav = [...document.querySelectorAll(".pv-global-nav button")].map((node) => node.textContent);
+    assert.deepEqual(nav, ["ホーム", "CMS", "翻訳", "アナリティクス", "設定"]);
+    await click("CMS");
+    assert.deepEqual(changes, ["cms"]);
+    await app.rerender({ activeSiteView: "cms" });
+    assert.equal(document.querySelector("#cms-body")?.textContent, "CMS の中身");
+    assert.equal(document.querySelector(".pv-dashboard-layout"), null);
+    assert.equal(button("CMS").getAttribute("aria-current"), "page");
+    assert.equal(button("ホーム").getAttribute("aria-current"), null);
+    await click("ホーム");
+    assert.deepEqual(changes, ["cms", null]);
+    await app.rerender({ activeSiteView: null });
+    await click("設定");
+    assert.equal(document.querySelector("#settings-body")?.textContent, "メンバーと招待");
+    assert.equal(document.querySelector(".pv-page-title").textContent, "プロジェクト設定");
+    assert.equal(button("設定").getAttribute("aria-current"), "page");
+    assert.equal(app.calls.settings.length, 0);
+    await app.rerender({ activeSiteView: "unknown" });
+    assert.ok(document.querySelector(".pv-dashboard-layout"));
+  } finally { await app.cleanup(); }
+});
+
 test("dashboard back navigation stays available while its read is pending", async () => {
   let resolve; const selected = project();
   const app = await setup(ProjectDashboard, { project: selected, adapter: dashboardAdapter(() => new Promise((done) => { resolve = done; })) });
