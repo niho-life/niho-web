@@ -142,13 +142,63 @@ const builder = {
 
 インスペクタとスタイルパネルの入力中（キー入力・色の選択のドラッグ・スライダー）は、文書のルールに合う値だけをキャンバスへ仮に反映し、履歴には積みません。確定・取り消し・選択の変更・undo/redo・保存・ページ移動で仮の反映をやめます。
 
-### サイト全体の共通表示を差し込む
+### ホストの表示部品を同じ iframe へ差し込む
 
-`PageEditor` の任意prop `previewComponent` は `EditorCanvasPreviewProps` を受けるReactコンポーネントです。展開済みの現在の文書（編集中の訳と未保存の変更を含む）、幅、breakpoint、`mode`（edit / preview / history）、`readOnly`、編集の基準版 `baseVersion`、履歴の選択版 `historyRevision`、従来の描画結果 `children` を、既存Canvasと同じiframe・error boundary内で受け取ります。共有部品の編集中は合成文書と部品ライブラリの版を渡し、それ以外はページ下書きの版を渡します。コンポーネントの参照は安定させて渡してください。React contextも引き継ぎ、iframeの言語は表示中の文書のlocaleへ合わせます。
+`PageEditor` の任意 prop `previewComponent` に `EditorCanvasPreviewProps` を受ける React コンポーネントを渡すと、キャンバスの iframe の中で従来の描画の代わりにそのコンポーネントを描画します。営業日・イベントのカレンダー、地図、カルーセル、予約・問い合わせフォームの見本、記事や会社の一覧のようにホストが所有する表示を、公開ページと同じ部品・CSS・データでキャンバスに出すための入口です。未指定なら従来の描画・編集・プレビュー・履歴の挙動は変わりません。
 
-コード管理ページではホスト所有の版固定表示部品を返し、通常の編集文書は `children` をそのまま返せます。未指定なら既存描画を維持します。渡された文書を直接変更せず、保存・翻訳・公開・予約などの副作用を起こさないでください。プレビューと履歴の読み取り専用状態、フォーム送信・リンク移動の抑制は従来のCanvasが扱います。
+```tsx
+'use client';
+import { createContext, useContext } from 'react';
+import { PageEditor, type EditorCanvasPreviewProps } from '@niho/web/editor';
+import { PageRenderer, SitePageRenderer } from '@niho/web/react';
 
-ホスト画面のglobal CSSはiframeへ自動で入りません。表示部品に対応する信頼済みCSS・font・画像を同じ版で供給し、iframeのsandboxを緩めないでください。データ取得・権限確認・版の選択はホストの責任で、共有editorは任意のHTMLや実行文字列を受け取りません。
+// 公開表示データ（CMS の JSON、営業日など）は PageEditor の外側の provider から iframe の中へ届く。
+const DisplayData = createContext(emptyDisplayData);
+// 幅と表示モードは表示部品へ context で配る。block の props は増やさない。
+const CanvasFrame = createContext<{ width: number; mode: EditorCanvasPreviewProps['mode'] }>({ width: 1280, mode: 'edit' });
+
+function HostPreview({ document, blocks, assets, presentation, externalFramePolicy, width, mode, children }: EditorCanvasPreviewProps) {
+  if (document.siteId !== ownedSiteId) return <>{children}</>; // 所有しないサイトの文書は従来の描画
+  // 見本（registry の preview / component）を公開と同じ表示部品へ差し替えて、同じ文書を描き直す。
+  const display = { ...blocks, EventCalendar: { ...blocks.EventCalendar!, component: EventCalendarDisplay } };
+  return <CanvasFrame.Provider value={{ width, mode }}>
+    <style>{hostCss}</style>
+    {presentation
+      ? <SitePageRenderer document={document} presentation={presentation} blocks={display} assets={assets} missingAssets="placeholder" hostViewMode="fallback" {...(externalFramePolicy ? { externalFramePolicy } : {})} />
+      : <PageRenderer document={document} blocks={display} assets={assets} missingAssets="placeholder" />}
+  </CanvasFrame.Provider>;
+}
+
+<DisplayData.Provider value={data}><PageEditor adapter={adapter} blocks={blocks} previewComponent={HostPreview} /></DisplayData.Provider>
+```
+
+| prop | 内容 |
+| --- | --- |
+| `document` | 表示中の検証済み・展開済みの文書。編集中の訳と未保存の変更を含む。言語版は `document.locale` で、iframe の `lang` も同じ値になる |
+| `width` / `breakpoint` | キャンバスの表示幅（px）と、その幅が属する段（`"base"` または段の minWidth） |
+| `mode` / `readOnly` | `edit` / `preview` / `history`。プレビュー・履歴の表示と、読み取り専用の原文・訳文では `readOnly` が true |
+| `baseVersion` / `historyRevision` | 未保存編集の基準版（共有部品の編集中は部品ライブラリの版、それ以外はページ下書きの版）と、履歴で選択した版 |
+| `blocks` | 従来の描画が使った登録ブロック。キャンバス用 `preview` を持つブロックは `component` を置き換え済み |
+| `assets` | 従来の描画が使った、ホストが解決した素材 |
+| `presentation` | 従来の描画が使った native presentation。共有枠・メニューの編集中はその内容を含む。presentation を持たないサイトでは渡さない |
+| `externalFramePolicy` | `PageEditor` に渡した外部枠の policy |
+| `children` | 従来の描画結果。置き換えない文書ではそのまま返す |
+
+使い方は2つです。
+
+- **包む**: `children` をそのまま返し、その前後にホストの `<style>` / `<link rel="stylesheet">`、context provider、サイトの枠を足す。
+- **描き直す**: `blocks` の見本を公開と同じ表示部品に差し替えた registry を、`SitePageRenderer`（presentation を持つサイト）または `PageRenderer` に渡して同じ文書を描き直す。両 renderer は `data-nw-owner` / `data-nw-node` / `data-nw-slot` を出すため、要素の選択・ドラッグ・直接の文字編集・表示領域の編集は従来どおり動きます。表示部品は `data-nw-slot` の付け方を見本と同じにし、`data-nw-owner` / `data-nw-node` を自分で付けないでください。
+
+表示部品は props と自分の context から同期に描画し、`document` を直接変更しません。データ取得・権限確認・予約・送信・保存・課金などの副作用を起こさず、公開表示データは `PageEditor` の外側の provider か module scope から表示部品と同じ版で供給します。コンポーネントの参照は安定させて渡してください（module scope / `useMemo`）。再描画のたびに作り直すと部品が付け替わります。
+
+制約と従来どおりの点:
+
+- 受け付けるのは `ComponentType<EditorCanvasPreviewProps>`（関数・class・`memo` / `forwardRef` / `lazy`）だけです。文字列・数値・配列・プレーンオブジェクトなど React コンポーネントでない値は実行時に無視し、従来の描画を使います。任意の HTML 文字列・実行文字列・URL からの読み込みは受け取りません。
+- ホスト画面の global CSS は iframe へ自動では入りません。表示部品と同じ版の CSS・font・画像を、部品の中の `<style>` / `<link rel="stylesheet">` で供給します。iframe は `srcdoc` のためホスト画面の CSP を継承し、sandbox（`allow-same-origin`、外部枠を持つ presentation のときだけ `allow-scripts` を追加）は変えません。
+- プレビュー・履歴の読み取り専用状態、リンク移動と form 送信の抑制、未保存編集・選択言語・履歴の整合性、描画に失敗したときの error boundary（「ブロックのプレビューを表示できません」）は従来の Canvas が扱います。
+- ページの保存方式、公開権限、認証・API・予約・翻訳の判断は変わりません。ホスト固有の処理は表示部品と provider の側に置きます。
+
+動作例は `npm run demo:host-preview`（`examples/host-preview-demo.tsx`）、検証は `test/editor-host-preview.test.mjs` と `test/host-preview-demo.test.mjs` です。
 
 ## 変形とアニメーション
 
@@ -294,7 +344,7 @@ npm run typecheck
 npm run demo
 ```
 
-`http://127.0.0.1:4173` の動作例は公開可能なインメモリ adapter を使います（別のポートで開く場合は `PORT=4180 npm run demo`）。ホームと「私たちについて」には共通部品のサイトヘッダーとセクション見出しを置いており、部品の編集・ページごとの値・展開済みの差分での公開を試せます。変更と「公開」はメモリ内だけに反映され、プロセス終了で失われます。素材ライブラリには生成した見本画像・PDF・動画のメタデータが入っており、アップロードしたファイルもデモサーバーのメモリにだけ保存します。外部API・認証・実サイトへ接続しません。サムネイルや配信 URL を別ドメインから読む場合は、CSP の `img-src` にそのドメインを追加してください。
+`http://127.0.0.1:4173` の動作例は公開可能なインメモリ adapter を使います（別のポートで開く場合は `PORT=4180 npm run demo`）。ホームと「私たちについて」には共通部品のサイトヘッダーとセクション見出しを置いており、部品の編集・ページごとの値・展開済みの差分での公開を試せます。変更と「公開」はメモリ内だけに反映され、プロセス終了で失われます。素材ライブラリには生成した見本画像・PDF・動画のメタデータが入っており、アップロードしたファイルもデモサーバーのメモリにだけ保存します。外部API・認証・実サイトへ接続しません。サムネイルや配信 URL を別ドメインから読む場合は、CSP の `img-src` にそのドメインを追加してください。ホストの表示部品（営業日カレンダー・記事一覧）をキャンバスの同じ iframe に公開と同じ部品・CSS・合成データで描く最小の例は `npm run demo:host-preview`（`http://127.0.0.1:4178`）です。
 
 テストは core 連動編集、構造操作、ロック、履歴、素材のアップロード・置き換え・保存・再読込と削除防止、実DOMでの入力・保存・409/通信失敗時の保持・保存中編集、公開ドメイン/差分確認、未保存移動、共通カラーの作成・適用・反映、段ごとの上書きと解除・表示幅で段が変わらないこと・「〜だけ」の編集と公開用 CSS との一致、無効値の拒否、余白の一括⇔個別の undo、業務ブロックの見た目の限定、テキストスタイルの適用と切り離し、ホバー・フォーカスの作成と公開用 CSS での再現、幅別の非表示、登場の設定、動きの停止・再生、キャンバスで開閉しないこと、キーボードでの状態の切替を確認します。利用先への導入では認証・同時編集・本番公開処理・CSP・アクセシビリティとサイト固有ブロックの表示を確認してください。インラインCSSと `srcdoc` iframe を許可する CSP が必要です。
 
