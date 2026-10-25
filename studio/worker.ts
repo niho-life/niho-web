@@ -1015,7 +1015,13 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
     try { response = await env.KAMAKURA_SITE.fetch(upstream); }
     catch { throw kamakuraBridgeFailure(supportId, operation, timedOut ? "service_binding_timeout" : "service_binding_failed"); }
     if (response.status >= 300 && response.status < 400) throw kamakuraBridgeFailure(supportId, operation, "upstream_redirect_rejected", response.status);
-    if (response.status === 409 && !isCatalog) return json({ error: "conflict" }, 409);
+    if (response.status === 409) {
+      // 凍結中の保存・公開（kamakura-site#84）は競合と分けて返し、画面で凍結中と案内する。
+      const frozen = await readBoundedResponse(response).then((value) => isRecord(value) && value.error === "visual_editor_frozen", () => false);
+      if (frozen) return json({ error: "visual_editor_frozen" }, 409);
+      if (!isCatalog) return json({ error: "conflict" }, 409);
+      throw kamakuraBridgeFailure(supportId, operation, "upstream_contract_invalid", response.status);
+    }
     if (response.status === 401 || response.status === 403) throw kamakuraBridgeFailure(supportId, operation, "upstream_auth_rejected", response.status);
     if (response.status === 429) throw kamakuraBridgeFailure(supportId, operation, "upstream_rate_limited", response.status);
     if (response.status >= 500) throw kamakuraBridgeFailure(supportId, operation, "upstream_server_error", response.status);
@@ -1121,6 +1127,25 @@ type WorkerEditorAdapter = {
   readonly frameSources?: readonly string[];
 };
 
+// Kamakura は凍結中も読み取りを通す（kamakura-site#84）。保存・公開を止めるのは kamakura-site で、
+// ページ文書の readOnly と 409 visual_editor_frozen を画面がそのまま案内する。凍結の切り替えはサイト側の 1 か所。
+const KAMAKURA_EDITOR_ADAPTER: WorkerEditorAdapter = {
+  route: (action, method) => kamakuraEditorRoute(action, method),
+  authorize: (env, identity, resolved) => editorMember(env, identity, resolved.registration.projectId, resolved.registration.siteId),
+  dispatch: (request, env, identity, route) => signedKamakuraEditorRequest(request, env, identity, route),
+  assetPreview: (action) => /^\/editor\/assets\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/preview$/iu.exec(action)?.[1] ?? null,
+  dispatchAssetPreview: signedKamakuraAssetPreview,
+  connectOrigins: [KAMAKURA_EDITOR_UPSTREAM_ORIGIN],
+  fontSources: ["https://kamakura-media.niho.life/niho-web/fonts/v1/"],
+  frameSources: ["https://kamakura-media.niho.life/niho-web/embeds/v1/", "https://www.google.com/maps/embed"]
+};
+
+function liveEditorAdapter(resolved: ResolvedTrustedIntegration): WorkerEditorAdapter | null {
+  return resolved.environment === "production" && integrationIdentity(resolved.registration.projectId, resolved.registration.siteId) === integrationIdentity(KAMAKURA_EDITOR_PROJECT_ID, KAMAKURA_EDITOR_SITE_ID)
+    ? KAMAKURA_EDITOR_ADAPTER
+    : null;
+}
+
 function workerEditorAdapter(resolved: ResolvedTrustedIntegration): WorkerEditorAdapter | null {
   const frozenAdapters: ReadonlyMap<string, WorkerEditorAdapter> = new Map([
   [integrationIdentity(EDITOR_PROJECT_ID, EDITOR_SITE_ID), {
@@ -1132,27 +1157,42 @@ function workerEditorAdapter(resolved: ResolvedTrustedIntegration): WorkerEditor
       ? signedEditorRequest(request, identity, route, { origin: EDITOR_STAGING_UPSTREAM_ORIGIN, secret: env.NIHO_STUDIO_BRIDGE_SECRET_STG })
       : signedEditorRequest(request, identity, route, { origin: EDITOR_UPSTREAM_ORIGIN, secret: env.NIHO_STUDIO_BRIDGE_SECRET })
   }],
-  [integrationIdentity(KAMAKURA_EDITOR_PROJECT_ID, KAMAKURA_EDITOR_SITE_ID), {
-    route: (action, method) => kamakuraEditorRoute(action, method),
-    authorize: (env, identity, resolved) => editorMember(env, identity, resolved.registration.projectId, resolved.registration.siteId),
-    dispatch: (request, env, identity, route) => signedKamakuraEditorRequest(request, env, identity, route),
-    assetPreview: (action) => /^\/editor\/assets\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/preview$/iu.exec(action)?.[1] ?? null,
-    dispatchAssetPreview: signedKamakuraAssetPreview,
-    connectOrigins: [KAMAKURA_EDITOR_UPSTREAM_ORIGIN],
-    fontSources: ["https://kamakura-media.niho.life/niho-web/fonts/v1/"],
-    frameSources: ["https://kamakura-media.niho.life/niho-web/embeds/v1/", "https://www.google.com/maps/embed"]
-  }]
+  [integrationIdentity(KAMAKURA_EDITOR_PROJECT_ID, KAMAKURA_EDITOR_SITE_ID), KAMAKURA_EDITOR_ADAPTER]
   ]);
   return frozenAdapters.get(integrationIdentity(resolved.registration.projectId, resolved.registration.siteId)) ?? null;
 }
-// Retain the legacy adapters as frozen source only. No active route invokes
-// them while visual editor write paths are frozen.
+// Retain the Experience adapter as frozen source only. No active route invokes
+// it while the Experience visual editor is frozen.
 if (false) void workerEditorAdapter;
 
-async function editorApi(env: Env, identity: AccessIdentity, url: URL, projectId: string, siteId: string, action: string): Promise<Response> {
+async function liveEditorApi(request: Request, env: Env, identity: AccessIdentity, action: string, resolved: ResolvedTrustedIntegration, adapter: WorkerEditorAdapter): Promise<Response> {
+  const assetId = adapter.assetPreview?.(action) ?? null;
+  if (assetId && adapter.dispatchAssetPreview) {
+    if (request.method !== "GET") return json({ error: "method_not_allowed" }, 405);
+    if (!await adapter.authorize(env, identity, resolved)) return json({ error: "forbidden" }, 403);
+    try { return await adapter.dispatchAssetPreview(request, env, identity, assetId); }
+    catch (error) {
+      if (error instanceof AuthenticationError) return json({ error: "invalid_request" }, 400);
+      throw error;
+    }
+  }
+  const route = adapter.route(action, request.method, resolved.environment);
+  if (route === null) return json({ error: "not_found" }, 404);
+  if (route === "method_not_allowed") return json({ error: "method_not_allowed" }, 405);
+  if (!await adapter.authorize(env, identity, resolved)) return json({ error: "forbidden" }, 403);
+  try { return await adapter.dispatch(request, env, identity, route, resolved); }
+  catch (error) {
+    if (error instanceof AuthenticationError) return json({ error: "invalid_request" }, 400);
+    throw error;
+  }
+}
+
+async function editorApi(request: Request, env: Env, identity: AccessIdentity, url: URL, projectId: string, siteId: string, action: string): Promise<Response> {
   if (url.href.includes("?")) return json({ error: "invalid_request" }, 400);
   const resolved = resolveTrustedEditorApi(projectId, siteId, action);
   if (!resolved) return json({ error: "not_found" }, 404);
+  const adapter = liveEditorAdapter(resolved);
+  if (adapter) return liveEditorApi(request, env, identity, action, resolved, adapter);
   const authorized = resolved.environment === "staging"
     ? resolved.registration.projectId === EDITOR_PROJECT_ID && resolved.registration.siteId === EDITOR_SITE_ID && await experienceEditorOwner(env, identity)
     : await editorMember(env, identity, resolved.registration.projectId, resolved.registration.siteId);
@@ -1180,7 +1220,7 @@ async function scopedApi(request: Request, env: Env, identity: AccessIdentity, u
   const projectId = match[1]!;
   const siteId = match[2]!;
   const action = match[3] ?? "";
-  if (isTrustedEditorAction(action)) return editorApi(env, identity, url, projectId, siteId, action);
+  if (isTrustedEditorAction(action)) return editorApi(request, env, identity, url, projectId, siteId, action);
   if (request.method === "GET") {
     if (action === "/dashboard") return dashboard(env, identity, projectId, siteId);
     if (action === "/membership") return membershipAdministration(env, identity, projectId, siteId);
@@ -1226,10 +1266,11 @@ async function handle(request: Request, env: Env): Promise<Response> {
   const projectAlias = parseProjectAliasPath(url.pathname);
   const editorPage = resolveTrustedEditorPage(url.pathname);
   const isEditor = editorPage !== null;
+  const pageAdapter = editorPage ? liveEditorAdapter(editorPage) : null;
   if (url.pathname === "/" || /^\/projects\/[A-Za-z][A-Za-z0-9_-]{0,79}\/sites\/[A-Za-z][A-Za-z0-9_-]{0,79}\/?$/u.test(url.pathname) || /^\/projects\/[A-Za-z][A-Za-z0-9_-]{0,79}\/sites\/[A-Za-z][A-Za-z0-9_-]{0,79}\/invite\/?$/u.test(url.pathname) || isEditor || projectAlias !== null) {
     if (editorPage?.environment === "staging" && !await experienceEditorOwner(env, identity)) return htmlError("このページを表示できません。", 403);
     const indexUrl = new URL("/index.html", url);
-    return withStaticSecurity(await env.ASSETS.fetch(new Request(indexUrl, { method: request.method, headers: request.headers })), false);
+    return withStaticSecurity(await env.ASSETS.fetch(new Request(indexUrl, { method: request.method, headers: request.headers })), pageAdapter !== null, pageAdapter?.connectOrigins ?? [], pageAdapter?.fontSources ?? [], pageAdapter?.frameSources ?? []);
   }
   return withStaticSecurity(await env.ASSETS.fetch(request));
 }

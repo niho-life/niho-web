@@ -4,7 +4,8 @@ import { ProjectDashboard } from "../src/project-dashboard.js";
 import { ProjectDirectory } from "../src/project-directory.js";
 import { parseProjectDirectoryResult, type ProjectDirectoryResult } from "../src/project-read-model.js";
 import type { Project } from "../src/projects.js";
-import { resolveTrustedEditorPage, resolveTrustedIntegration, trustedEditorPath } from "./integration-registry.mjs";
+import { integrationIdentity, resolveTrustedEditorPage, resolveTrustedIntegration, trustedEditorPath } from "./integration-registry.mjs";
+import { KamakuraEditor } from "./kamakura-editor.js";
 import { parseProjectAliasPath, projectRoutePath } from "./project-routes.mjs";
 
 type Role = "owner" | "editor";
@@ -394,14 +395,18 @@ function App() {
   const resolvedEditor = screen.kind === "editor" && selected
     ? resolveTrustedIntegration(selected.id, selected.site.id, screen.environment)
     : null;
+  // Kamakura は凍結中も表示の確認だけできる（kamakura-site#84）。Experience は休止のまま。
+  const kamakuraEditor = resolvedEditor?.environment === "production" && integrationIdentity(resolvedEditor.registration.projectId, resolvedEditor.registration.siteId) === integrationIdentity("project-kamakura", "kamakura");
 
-  return <div className="studio-app">
+  return <div className={`studio-app${kamakuraEditor ? " studio-editor-shell" : ""}`}>
     <header className="studio-shell-header"><a href="/" onClick={screen.kind === "editor" ? undefined : (event) => { event.preventDefault(); navigate({ kind: "directory" }); }}><span>NIHO</span> Web Studio</a><details className="studio-account"><summary>{session.identity.email}</summary><div><small>Google / Cloudflare Access</small><label>Access ID <code>{session.identity.subject}</code></label></div></details></header>
-    <div className={`studio-content${screen.kind === "editor" ? " studio-content-editor" : ""}`}>
+    <div className={`studio-content${screen.kind === "editor" ? " studio-content-editor" : ""}${kamakuraEditor ? " studio-editor-content" : ""}`}>
       {(screen.kind === "dashboard" || screen.kind === "editor") && !selected
         ? <Notice title="プロジェクトを表示できません">プロジェクトが存在しないか、現在のアカウントには参加資格がありません。</Notice>
         : selected && screen.kind === "editor"
-          ? resolvedEditor
+          ? kamakuraEditor && resolvedEditor
+            ? <KamakuraEditor project={selected} environment={resolvedEditor.environment} />
+            : resolvedEditor
             ? <Notice title="サイトデザイン編集は休止中です">ヘッダー、余白、レイアウトなどの変更は各サイトの開発で対応します。以前の編集内容は保管しています。記事や体験の原稿は、それぞれの管理画面で引き続き編集できます。</Notice>
             : <Notice title="エディターを表示できません">このサイトまたは環境のエディターは接続されていません。</Notice>
         : selected && screen.kind === "dashboard"
