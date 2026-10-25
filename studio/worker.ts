@@ -1,4 +1,5 @@
-import { parseProjectAliasPath } from "./project-routes.mjs";
+import { parseProjectAliasPath, projectShortcutTarget } from "./project-routes.mjs";
+import { siteAdmin } from "./site-admin.mjs";
 import { integrationIdentity, isTrustedEditorAction, resolveTrustedEditorApi, resolveTrustedEditorPage, type ResolvedTrustedIntegration } from "./integration-registry.mjs";
 import { KAMAKURA_CATALOG_CONTRACT_ERROR_CODE, KAMAKURA_CATALOG_CONTRACT_ERROR_STATUS, KamakuraCatalogContractError, KAMAKURA_COMMON_PAGE_ID, KAMAKURA_EDITOR_SITE_ID, parseKamakuraCatalog } from "./kamakura-catalog.js";
 
@@ -30,6 +31,8 @@ export interface Env {
   readonly NIHO_STUDIO_BRIDGE_SECRET_STG?: string;
   /** kamakura-site Studio bridgeと共有するbase64url HMAC key。 */
   readonly KAMAKURA_STUDIO_BRIDGE_SECRET?: string;
+  /** kamakura-site の管理画面（CMS・翻訳）の https origin。Dashboard の中の枠で開く（kamakura-site#108 U1）。未設定なら枠を出さない。 */
+  readonly KAMAKURA_ADMIN_ORIGIN?: string;
 }
 
 type Role = "owner" | "editor";
@@ -823,6 +826,13 @@ function kamakuraEditorRoute(action: string, method: string): EditorRoute | "met
   return { upstreamPath: `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/${page[1]}${suffix}`, bodyLimit: suffix === "/draft" ? MAX_EDITOR_SAVE_BODY_BYTES : MAX_MUTATION_BODY_BYTES };
 }
 
+/** サイト側の管理画面を枠で開くための origin とパス。参加者（owner・editor）だけに返す */
+async function siteAdminApi(env: Env, identity: AccessIdentity, projectId: string, siteId: string): Promise<Response> {
+  if (!await editorMember(env, identity, projectId, siteId)) return json({ error: "forbidden" }, 403);
+  const admin = siteAdmin(env as unknown as Record<string, unknown>, projectId, siteId);
+  return admin ? json({ origin: admin.origin, paths: admin.paths }) : json({ error: "not_connected" }, 404);
+}
+
 async function editorMember(env: Env, identity: AccessIdentity, projectId: string, siteId: string): Promise<boolean> {
   const row = await env.DB.prepare(`
     SELECT 1 AS allowed
@@ -1204,7 +1214,9 @@ function withStaticSecurity(response: Response, editor = false, connectOrigins: 
   const headers = new Headers(response.headers);
   headers.set("Cache-Control", "no-store");
   const connectSrc = `connect-src 'self'${connectOrigins.map((origin) => ` ${origin}`).join("")};`;
-  headers.set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'" + (editor ? " 'unsafe-inline'" : "") + "; img-src 'self' https:; " + connectSrc + ` font-src 'self'${fontSources.map((source) => ` ${source}`).join("")};` + (editor ? ` frame-src 'self'${frameSources.map((source) => ` ${source}`).join("")};` : "") + " frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
+  // editor は自分のプレビュー枠（'self'）と接続先、Dashboard はサイト側の管理画面の origin だけを枠に許す
+  const frames = editor ? ["'self'", ...frameSources] : frameSources;
+  headers.set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'" + (editor ? " 'unsafe-inline'" : "") + "; img-src 'self' https:; " + connectSrc + ` font-src 'self'${fontSources.map((source) => ` ${source}`).join("")};` + (frames.length ? ` frame-src ${frames.join(" ")};` : "") + " frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
   headers.set("Cross-Origin-Opener-Policy", "same-origin");
   headers.set("Cross-Origin-Resource-Policy", "same-origin");
   headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()");
@@ -1224,6 +1236,7 @@ async function scopedApi(request: Request, env: Env, identity: AccessIdentity, u
   if (request.method === "GET") {
     if (action === "/dashboard") return dashboard(env, identity, projectId, siteId);
     if (action === "/membership") return membershipAdministration(env, identity, projectId, siteId);
+    if (action === "/site-admin") return siteAdminApi(env, identity, projectId, siteId);
     return json({ error: "not_found" }, 404);
   }
   if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
@@ -1263,14 +1276,24 @@ async function handle(request: Request, env: Env): Promise<Response> {
   }
 
   if (request.method !== "GET" && request.method !== "HEAD") return htmlError("この操作は利用できません。", 405);
+  const shortcut = projectShortcutTarget(url.pathname);
+  if (shortcut) {
+    const headers = securityHeaders("text/plain; charset=utf-8");
+    headers.set("Location", shortcut);
+    return new Response(null, { status: 301, headers });
+  }
   const projectAlias = parseProjectAliasPath(url.pathname);
   const editorPage = resolveTrustedEditorPage(url.pathname);
   const isEditor = editorPage !== null;
   const pageAdapter = editorPage ? liveEditorAdapter(editorPage) : null;
-  if (url.pathname === "/" || /^\/projects\/[A-Za-z][A-Za-z0-9_-]{0,79}\/sites\/[A-Za-z][A-Za-z0-9_-]{0,79}\/?$/u.test(url.pathname) || /^\/projects\/[A-Za-z][A-Za-z0-9_-]{0,79}\/sites\/[A-Za-z][A-Za-z0-9_-]{0,79}\/invite\/?$/u.test(url.pathname) || isEditor || projectAlias !== null) {
+  const dashboardPage = /^\/projects\/([A-Za-z][A-Za-z0-9_-]{0,79})\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/?$/u.exec(url.pathname);
+  if (url.pathname === "/" || dashboardPage || /^\/projects\/[A-Za-z][A-Za-z0-9_-]{0,79}\/sites\/[A-Za-z][A-Za-z0-9_-]{0,79}\/invite\/?$/u.test(url.pathname) || isEditor || projectAlias !== null) {
     if (editorPage?.environment === "staging" && !await experienceEditorOwner(env, identity)) return htmlError("このページを表示できません。", 403);
     const indexUrl = new URL("/index.html", url);
-    return withStaticSecurity(await env.ASSETS.fetch(new Request(indexUrl, { method: request.method, headers: request.headers })), pageAdapter !== null, pageAdapter?.connectOrigins ?? [], pageAdapter?.fontSources ?? [], pageAdapter?.frameSources ?? []);
+    // Dashboard（ID の URL と alias の URL）は、そのサイトの管理画面を枠で開ける。editor は従来どおり
+    const dashboardTarget = isEditor ? null : projectAlias ?? (dashboardPage ? { projectId: dashboardPage[1]!, siteId: dashboardPage[2]! } : null);
+    const adminOrigin = dashboardTarget ? siteAdmin(env as unknown as Record<string, unknown>, dashboardTarget.projectId, dashboardTarget.siteId)?.origin : undefined;
+    return withStaticSecurity(await env.ASSETS.fetch(new Request(indexUrl, { method: request.method, headers: request.headers })), pageAdapter !== null, pageAdapter?.connectOrigins ?? [], pageAdapter?.fontSources ?? [], pageAdapter ? pageAdapter.frameSources ?? [] : adminOrigin ? [adminOrigin] : []);
   }
   return withStaticSecurity(await env.ASSETS.fetch(request));
 }

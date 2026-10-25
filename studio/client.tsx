@@ -1,17 +1,17 @@
-import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { ProjectDashboard } from "../src/project-dashboard.js";
+import { ProjectDashboard, type ProjectSiteView } from "../src/project-dashboard.js";
 import { ProjectDirectory } from "../src/project-directory.js";
 import { parseProjectDirectoryResult, type ProjectDirectoryResult } from "../src/project-read-model.js";
 import type { Project } from "../src/projects.js";
 import { integrationIdentity, resolveTrustedEditorPage, resolveTrustedIntegration, trustedEditorPath } from "./integration-registry.mjs";
 import { KamakuraEditor } from "./kamakura-editor.js";
-import { parseProjectAliasPath, projectRoutePath } from "./project-routes.mjs";
+import { parseProjectAliasPath, projectRoutePath, type ProjectSiteViewId } from "./project-routes.mjs";
 
 type Role = "owner" | "editor";
 type Screen =
   | { readonly kind: "directory" }
-  | { readonly kind: "dashboard"; readonly projectId: string; readonly siteId: string }
+  | { readonly kind: "dashboard"; readonly projectId: string; readonly siteId: string; readonly view?: ProjectSiteViewId | null }
   | { readonly kind: "editor"; readonly projectId: string; readonly siteId: string; readonly environment: string }
   | { readonly kind: "invite"; readonly projectId: string; readonly siteId: string; readonly token: string };
 type SessionState =
@@ -69,7 +69,7 @@ function screenFromLocation(): Screen {
   if (projectAlias) {
     return projectAlias.page === "editor"
       ? { kind: "editor", projectId: projectAlias.projectId, siteId: projectAlias.siteId, environment: "production" }
-      : { kind: "dashboard", projectId: projectAlias.projectId, siteId: projectAlias.siteId };
+      : { kind: "dashboard", projectId: projectAlias.projectId, siteId: projectAlias.siteId, view: projectAlias.page === "dashboard" ? null : projectAlias.page };
   }
   const invite = /^\/projects\/([A-Za-z][A-Za-z0-9_-]{0,79})\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/invite\/?$/u.exec(window.location.pathname);
   if (invite) {
@@ -177,6 +177,40 @@ function editorEnabled(project: Project): boolean {
 
 function Notice({ title, children, retry }: { readonly title: string; readonly children: string; readonly retry?: () => void }) {
   return <main className="studio-state"><p className="studio-kicker">NIHO WEB</p><h1>{title}</h1><p>{children}</p>{retry && <button type="button" onClick={retry}>再試行</button>}</main>;
+}
+
+type SiteAdmin = { readonly origin: string; readonly paths: { readonly cms: string; readonly translations: string } };
+function parseSiteAdmin(value: unknown): SiteAdmin {
+  const item = record(value), paths = record(item.paths);
+  if (typeof item.origin !== "string" || typeof paths.cms !== "string" || typeof paths.translations !== "string") throw new Error("invalid site admin");
+  const origin = new URL(item.origin);
+  if (origin.protocol !== "https:" || origin.origin !== item.origin || !paths.cms.startsWith("/") || !paths.translations.startsWith("/")) throw new Error("invalid site admin");
+  return { origin: item.origin, paths: { cms: paths.cms, translations: paths.translations } };
+}
+
+/**
+ * サイト側の管理画面（CMS・翻訳）を Studio の中の枠で開く（kamakura-site#108 U1）。同じ Cloudflare Access のチームなので、
+ * サイト側に一度ログインしていれば枠の中でもそのまま開ける。枠の中ではログイン画面を出せないので、別のタブで開く入口を常に置く。
+ */
+function SiteAdminFrame({ title, src, children }: { readonly title: string; readonly src: string; readonly children: ReactNode }) {
+  return <section className="studio-site-frame">
+    <header>
+      <div><h2>{title}</h2><p>{children}</p></div>
+      <a href={src} target="_blank" rel="noopener">別のタブで開く <span aria-hidden="true">↗</span></a>
+    </header>
+    <p className="studio-site-frame-hint">枠の中が表示されないときは「別のタブで開く」から一度ログインしてください。その後はここで開けます。</p>
+    <iframe title={title} src={src} sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals" />
+  </section>;
+}
+
+/** 素材の一覧はまだ単独の画面が無いので、今の置き場所（エディタの素材・CMS の画像欄）へ案内する */
+function AssetsHub({ onOpenEditor, onOpenCms }: { readonly onOpenEditor: () => void; readonly onOpenCms: () => void }) {
+  return <section className="studio-site-hub">
+    <h2>素材</h2>
+    <p>画像は、ページのエディタの左にある「素材」と、CMS の各項目の画像欄から選んだり追加したりします。</p>
+    <div className="studio-site-hub-actions"><button type="button" onClick={onOpenEditor}>ページのエディタを開く</button><button type="button" onClick={onOpenCms}>CMS を開く</button></div>
+    <p className="studio-site-hub-note">素材の一覧・検索をこの画面で扱えるようにする準備をしています。</p>
+  </section>;
 }
 
 function MemberAdministration({ project, expire }: { readonly project: Project; readonly expire: () => void }) {
@@ -311,6 +345,7 @@ function App() {
   const [session, setSession] = useState<SessionState>({ status: "loading" });
   const [screen, setScreen] = useState<Screen>(screenFromLocation);
   const [pendingProject, setPendingProject] = useState<Project | null>(null);
+  const [siteAdmin, setSiteAdmin] = useState<{ readonly key: string; readonly value: SiteAdmin | null } | null>(null);
   const expire = useCallback(() => setSession({ status: "expired" }), []);
 
   const loadSession = useCallback(() => {
@@ -343,7 +378,7 @@ function App() {
       ? "/"
       : next.kind === "editor"
         ? trustedEditorPath(next.projectId, next.siteId, next.environment) ?? "/"
-        : projectRoutePath(window.location.pathname, next.projectId, next.siteId, "dashboard");
+        : projectRoutePath(window.location.pathname, next.projectId, next.siteId, next.view ?? "dashboard");
     window.history.pushState(null, "", path);
     setPendingProject(null);
     setScreen(next);
@@ -370,6 +405,23 @@ function App() {
     }
   }), [expire]);
 
+  // サイト側の管理画面（CMS・翻訳を枠で開く先）。接続の無いサイトは 404 で、サイト機能を出さない
+  const dashboardKey = screen.kind === "dashboard" ? `${screen.projectId}\u0000${screen.siteId}` : null;
+  useEffect(() => {
+    if (screen.kind !== "dashboard" || !dashboardKey) return;
+    const controller = new AbortController();
+    void api(`/api/projects/${encodeURIComponent(screen.projectId)}/sites/${encodeURIComponent(screen.siteId)}/site-admin`, { signal: controller.signal })
+      .then((value) => setSiteAdmin({ key: dashboardKey, value: parseSiteAdmin(value) }))
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        if (error instanceof SessionExpiredError) { expire(); return; }
+        setSiteAdmin({ key: dashboardKey, value: null });
+      });
+    return () => controller.abort();
+    // 同じサイトの中で画面を切り替えても取り直さない
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dashboardKey, expire]);
+
   const openEditor = useCallback((project: Project) => {
     const path = trustedEditorPath(project.id, project.site.id);
     if (path) {
@@ -389,6 +441,17 @@ function App() {
   }} />;
   if (session.directory.status === "forbidden") return <Notice title="アクセス権がありません" retry={loadSession}>Studio 管理者にプロジェクト参加資格を確認してください。</Notice>;
 
+  const admin = screen.kind === "dashboard" && siteAdmin?.key === dashboardKey ? siteAdmin.value : null;
+  /** Dashboard の上部のサイトナビに足すサイト機能（ページはデザインエディタ、設定はメンバーと招待） */
+  const siteViews = (project: Project): ProjectSiteView[] => {
+    if (!admin) return [];
+    const open = (view: ProjectSiteViewId) => navigate({ kind: "dashboard", projectId: project.id, siteId: project.site.id, view });
+    return [
+      { id: "cms", label: "CMS", content: <SiteAdminFrame title="CMS" src={`${admin.origin}${admin.paths.cms}`}>記事・サークル・会社・クリエイターの原稿と画像を直し、公開・予約公開します。</SiteAdminFrame> },
+      { id: "assets", label: "素材", content: <AssetsHub onOpenEditor={() => openEditor(project)} onOpenCms={() => open("cms")} /> },
+      { id: "translations", label: "翻訳", content: <SiteAdminFrame title="翻訳" src={`${admin.origin}${admin.paths.translations}`}>英語版の文章を直して確認し、公開します。</SiteAdminFrame> }
+    ];
+  };
   const selected = screen.kind === "dashboard" || screen.kind === "editor"
     ? session.directory.entries.find(({ project }) => project.id === screen.projectId && project.site.id === screen.siteId)?.project
     : undefined;
@@ -410,18 +473,18 @@ function App() {
             ? <Notice title="サイトデザイン編集は休止中です">ヘッダー、余白、レイアウトなどの変更は各サイトの開発で対応します。以前の編集内容は保管しています。記事や体験の原稿は、それぞれの管理画面で引き続き編集できます。</Notice>
             : <Notice title="エディターを表示できません">このサイトまたは環境のエディターは接続されていません。</Notice>
         : selected && screen.kind === "dashboard"
-          ? <>
-              <ProjectDashboard
-                project={selected}
-                adapter={dashboardAdapter}
-                onBackToProjects={() => navigate({ kind: "directory" })}
-                onOpenEditor={openEditor}
-                onOpenSettings={() => undefined}
-                editorAction={editorEnabled(selected) ? "enabled" : "pending"}
-                settingsAction="disabled"
-              />
-              <MemberAdministration key={`${selected.id}:${selected.site.id}`} project={selected} expire={expire} />
-            </>
+          ? <ProjectDashboard
+              project={selected}
+              adapter={dashboardAdapter}
+              onBackToProjects={() => navigate({ kind: "directory" })}
+              onOpenEditor={openEditor}
+              onOpenSettings={() => undefined}
+              editorAction={editorEnabled(selected) ? "enabled" : "pending"}
+              settingsContent={<MemberAdministration key={`${selected.id}:${selected.site.id}`} project={selected} expire={expire} />}
+              siteViews={siteViews(selected)}
+              activeSiteView={screen.view ?? null}
+              onSiteViewChange={(view) => navigate({ kind: "dashboard", projectId: selected.id, siteId: selected.site.id, view: view as ProjectSiteViewId | null })}
+            />
           : <ProjectDirectory
               adapter={directoryAdapter}
               onCreateProject={() => undefined}

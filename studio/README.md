@@ -27,6 +27,25 @@ D1 が Project / Site / Member / Role / Invitation / Audit の正本です。NIH
 | Kamakura (`project-kamakura` / `kamakura`) | `/projects/kamakura-site/admin` | `/projects/kamakura-site/admin/editor` |
 | NIHO Experience (`project-experience` / `experience`) | `/projects/niho-experience/admin` | `/projects/niho-experience/admin/editor` |
 
+覚えやすい入口として `/project/<別名>`（例: `/project/kamakura-site`）も使えます。Worker が認証の後に `/projects/<別名>/admin` へ 301 で移します。
+
+### サイト機能（kamakura-site#108 U1）
+
+Dashboard の上部のサイトナビには、ホスト（`studio/client.tsx`）が接続したサイト機能を「ホーム」の後ろに並べます。各機能は alias の URL を持ちます（`/projects/<別名>/admin/cms`・`/assets`・`/translations`、`/project/<別名>/cms` などからも入れる）。
+
+| 機能 | Kamakura での中身 |
+| --- | --- |
+| ページ | 右上の「デザインエディタ」（従来どおり） |
+| CMS | サイト側の管理画面（記事・サークル・会社・クリエイター）を Dashboard の中の枠で開く |
+| 素材 | 今の置き場所（エディタの「素材」と CMS の画像欄）への案内。一覧・検索の画面は素材 provider（#85）の後 |
+| 翻訳 | サイト側の翻訳画面を枠で開く |
+| 設定 | プロジェクト設定（メンバーと招待）。Home 配下の「プロジェクト設定」と同じ |
+
+- 枠で開くサイト側の管理画面の origin はコードに書かず、Worker の設定値 `KAMAKURA_ADMIN_ORIGIN`（https の origin だけ）から読みます（`studio/site-admin.mjs`）。未設定ならサイト機能を出しません。`wrangler secret put KAMAKURA_ADMIN_ORIGIN --config studio/wrangler.toml` で入れると、配備のたびに消えません。
+- `GET /api/projects/<Project>/sites/<Site>/site-admin` は D1 の現在の `owner` / `editor` だけに origin と画面のパスを返し、接続の無いサイトは 404 `not_connected` です。
+- Dashboard の HTML（ID の URL と alias の URL）の CSP は `frame-src` をその origin だけにします。editor の CSP と `frame-ancestors 'none'` は変えません。枠は `postMessage` を使わず、`sandbox` で Studio の画面の移動を許しません。
+- 枠の中は同じ Cloudflare Access のチームの SSO で開きます。サイト側にまだログインしていないと枠の中ではログイン画面を出せないので、画面に「別のタブで開く」を常に置きます（一度ログインすれば枠の中でも開ける）。サイト側は `frame-ancestors` で Studio の origin だけに枠を許します。
+
 Alias は Worker と client router の固定対応表で内部の Project / Site ID へ解決します。別名 URL 自体をブラウザに保ち、alias から Dashboard と Editor の間を移動しても同じ表記を使います。API/BFF の path、membership 判定、Project / Site ID は変わりません。招待 URL と Experience STG 専用 URL は引き続き ID 付き route です。
 
 Experience と Kamakura の Editor UI / BFF は実装されています。Experience の本番編集は niho-app Backend Draft PR #19268 が本番反映済みで、NIHO API と Studio Worker の `NIHO_STUDIO_BRIDGE_SECRET` が同じ値に設定されている場合に限り有効です。STG検証画面は `/projects/project-experience/sites/experience/editor/staging` に限り、D1 の Experience owner のみ開けます。画面・APIの両方で owner を確認し、固定した `https://api-stg.niho.life` と別の `NIHO_STUDIO_BRIDGE_SECRET_STG` を使います。Kamakura は `kamakura-site` の内部 endpoint、service binding `KAMAKURA_SITE`、両 Worker の `KAMAKURA_STUDIO_BRIDGE_SECRET` が揃った後に利用します。この host は Dashboard の公開状態や解析値を合成せず、`unknown` / `unavailable` / `disconnected` / `null` のまま表示します。
