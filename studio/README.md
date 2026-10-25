@@ -43,7 +43,7 @@ Dashboard の上部のサイトナビには、ホスト（`studio/client.tsx`）
 
 - 枠で開くサイト側の管理画面の origin はコードに書かず、Worker の設定値 `KAMAKURA_ADMIN_ORIGIN`（https の origin だけ）から読みます（`studio/site-admin.mjs`）。未設定ならサイト機能を出しません。`wrangler secret put KAMAKURA_ADMIN_ORIGIN --config studio/wrangler.toml` で入れると、配備のたびに消えません。
 - `GET /api/projects/<Project>/sites/<Site>/site-admin` は D1 の現在の `owner` / `editor` だけに origin と画面のパスを返し、接続の無いサイトは 404 `not_connected` です。
-- Dashboard の HTML（ID の URL と alias の URL）の CSP は `frame-src` をその origin だけにします。editor の CSP と `frame-ancestors 'none'` は変えません。枠は `postMessage` を使わず、`sandbox` で Studio の画面の移動を許しません。
+- Dashboard の HTML（ID の URL と alias の URL）の CSP は `frame-src` をその origin と Access のチームのドメイン（`ACCESS_ISSUER`）だけにします。サイト側にまだ Access の cookie が無いとき、枠はチームのドメインを経由して戻るためです（Studio にログイン済みならログイン画面は出ない。ログイン画面そのものは Access が枠を拒む）。editor の CSP と `frame-ancestors 'none'` は変えません。枠は `postMessage` を使わず、`sandbox` で Studio の画面の移動を許しません。
 - 枠の中は同じ Cloudflare Access のチームの SSO で開きます。サイト側にまだログインしていないと枠の中ではログイン画面を出せないので、画面に「別のタブで開く」を常に置きます（一度ログインすれば枠の中でも開ける）。サイト側は `frame-ancestors` で Studio の origin だけに枠を許します。
 
 Alias は Worker と client router の固定対応表で内部の Project / Site ID へ解決します。別名 URL 自体をブラウザに保ち、alias から Dashboard と Editor の間を移動しても同じ表記を使います。API/BFF の path、membership 判定、Project / Site ID は変わりません。招待 URL と Experience STG 専用 URL は引き続き ID 付き route です。
