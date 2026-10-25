@@ -32,7 +32,7 @@ React 18.3 または 19 と、同じ版の React DOM を利用側で用意して
 | `prepareRelease(request, signal)` | 公開 / rollback の正確な対象ドメイン、公開内容との差分、確認 token を発行 |
 | `release(plan, signal)` | 確認済みの内容を公開 / rollback。成功時は最新 snapshot、競合時は `status: 'conflict'` |
 | `preparePageChange` / `applyPageChange`（任意） | ページの作成・複製・名前とURLの変更・公開切替。影響の確認と一回限りの確認 token。[ページ管理の契約](page-contract.md) |
-| `readSiteSettings` / `saveSiteSettings`（任意） | サイト共通の公開情報。楽観ロック付き |
+| `readSiteSettings` / `saveSiteSettings`（任意） | サイト共通の公開情報とカラー・文字スタイル。楽観ロック付き（[サイト共通スタイルの契約](site-styles-contract.md)） |
 | `listRevisions` / `readRevision` / `createSnapshot`（任意） | 版履歴の一覧・読み取り専用の表示・名前付きスナップショット。[保存・履歴の契約](save-history-contract.md) |
 
 `listPages` の各ページに任意で `path`・`kind`（page / template / shared）・`visibility`・`published` を返すと、左のページパネルにフォルダ・種別・公開状態を表示します。任意メソッドを実装しないホストでは、ページ操作とサイト設定の保存を表示しません。
@@ -349,6 +349,8 @@ npm run demo
 テストは core 連動編集、構造操作、ロック、履歴、素材のアップロード・置き換え・保存・再読込と削除防止、実DOMでの入力・保存・409/通信失敗時の保持・保存中編集、公開ドメイン/差分確認、未保存移動、共通カラーの作成・適用・反映、段ごとの上書きと解除・表示幅で段が変わらないこと・「〜だけ」の編集と公開用 CSS との一致、無効値の拒否、余白の一括⇔個別の undo、業務ブロックの見た目の限定、テキストスタイルの適用と切り離し、ホバー・フォーカスの作成と公開用 CSS での再現、幅別の非表示、登場の設定、動きの停止・再生、キャンバスで開閉しないこと、キーボードでの状態の切替を確認します。利用先への導入では認証・同時編集・本番公開処理・CSP・アクセシビリティとサイト固有ブロックの表示を確認してください。インラインCSSと `srcdoc` iframe を許可する CSP が必要です。
 
 ## サイトとページのスタイル所有権
+
+型・優先順位・保存契約・多言語と公開 snapshot の扱い・ホストの実装手順の正は [サイト共通スタイルの契約](site-styles-contract.md) です。この節は編集画面での見せ方と操作の規則です。
 
 スタイルパネルはサイト設定の読書きがあるホストで「このページ」「サイト共通」を表示し、各行にも所有者を示します。ページの override を優先した同じ実効値を、フィールド・CSS・キャンバスへ使います。共有定義をページ側で編集するとページの override を作ります。
 

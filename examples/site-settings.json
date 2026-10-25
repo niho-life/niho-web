@@ -1,0 +1,16 @@
+{
+  "title": "公開ページの例",
+  "locale": "ja-JP",
+  "tokens": {
+    "brand": { "type": "color", "value": "#195640", "label": "メイン" },
+    "ink": { "type": "color", "value": "#111111", "label": "文字の色（サイト既定）" },
+    "headingSize": { "type": "length", "value": "2rem", "label": "見出しのサイズ" }
+  },
+  "textStyles": {
+    "heading": {
+      "label": "見出し",
+      "base": { "fontSize": 24, "fontWeight": 700, "lineHeight": 1.3 },
+      "responsive": [{ "minWidth": 768, "declarations": { "fontSize": { "token": "headingSize" } } }]
+    }
+  }
+}

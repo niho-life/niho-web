@@ -244,3 +244,5 @@ renderPageToHtml(page, blocks, { siteStyles: settings });
 ```
 
 `parseSiteSettings` は `@niho/web/pages`、`resolvePageStyles` / `detachRemovedSiteStyles` は `@niho/web/core` から利用できます。共通スタイルの保存は既存の `readSiteSettings` / `saveSiteSettings` に接続します。設定を省略したホストはページのスタイルだけで動作します。参照の厳格検証・scope・移行確認・削除時の原子的な切り離し・公開 snapshot の詳細は [文書契約](docs/document-contract.md#サイト共通スタイル) と [サイト設定の契約](docs/page-contract.md#サイト共通スタイルの保存と削除) を参照してください。
+
+型・優先順位・保存契約・多言語と言語別公開・ホストの実装手順をまとめた正は [サイト共通スタイルの契約](docs/site-styles-contract.md) です。React 不要の最小例は `npm run demo:site-styles`（`examples/site-styles-demo.mjs`・`examples/site-settings.json`・`examples/site-styled-page.json`）で、2 ページが同じサイト共通カラーを参照し、1 回の変更で両方の CSS が変わること、ページ固有の上書きが残ること、削除時の切り離しを標準出力で確認できます。

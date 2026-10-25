@@ -1,14 +1,18 @@
 import { parseComponentLibrary } from "./components.js";
 import { parsePageDocument } from "./document.js";
 import type {
-  BlockContracts, ComponentDefinition, ComponentNode, ElementNode, InstanceNode, PageDocument, PageImage, PageNode
+  BlockContracts, ComponentDefinition, ComponentLibrary, ComponentNode, ElementNode, InstanceNode, PageDocument, PageImage, PageNode
 } from "./types.js";
+import type { SiteStyles } from "./site-styles.js";
 import { fail, identifier, keys, line, localeCode, parseAssetReference, publicImageSrcSet, publicImageUrl, record, string } from "./validation-utils.js";
 import type {
   BlockLocalizationSchema, LocalizationCollection, LocalizationDraftEntry, LocalizationExtractionOptions, LocalizationIssue, LocalizationLocale,
   LocalizationOverlay, LocalizationStatus, LocalizationUnit, LocalizationUnitScope, LocalizationValue, LocalizationValueKind, LocalizedAsset, LocalizedRichText,
   LocalizedDocumentSaveValidation, LocalizedRichTextNode, MaterializedLocalization, SiteLocalizationConfig, TranslationCandidate, TranslationResult
 } from "./localization-types.js";
+
+/** 文書検証に渡す同じサイトの部品ライブラリとサイト共通スタイル。省略した項目は付けず、継承値を文書へ書き戻さない。 */
+const parseOptions = (components: ComponentLibrary | undefined, siteStyles: SiteStyles | undefined) => ({ ...(components ? { components } : {}), ...(siteStyles ? { siteStyles } : {}) });
 
 export type * from "./localization-types.js";
 
@@ -261,7 +265,7 @@ export async function collectLocalizationUnits(configInput: unknown, documentInp
   const config = parseSiteLocalizationConfig(configInput), targetLocale = localizationLocale(targetLocaleInput, "$targetLocale");
   if (targetLocale === config.sourceLocale || !config.enabledLocales.includes(targetLocale)) fail("$targetLocale", "target locale must be a different enabled locale");
   const blocks = options.blocks ?? {}, components = options.components === undefined ? undefined : parseComponentLibrary(options.components, blocks);
-  const document = parsePageDocument(documentInput, blocks, components ? { components } : {});
+  const document = parsePageDocument(documentInput, blocks, parseOptions(components, options.siteStyles));
   if (document.siteId !== config.siteId) fail("$.siteId", "document belongs to another site");
   if (document.locale !== config.documentLocales[config.sourceLocale]) fail("$.locale", "document locale does not match the explicit source locale mapping");
   const definitions = new Map((components?.components ?? []).map((component) => [component.id, component]));
@@ -726,7 +730,7 @@ export function localizedValuesForDocument(documentInput: unknown, collection: L
   options: LocalizationExtractionOptions = {}): Readonly<Record<string, LocalizationValue>> {
   validateCollection(collection);
   const components = options.components === undefined ? undefined : parseComponentLibrary(options.components, options.blocks ?? {});
-  const document = parsePageDocument(documentInput, options.blocks ?? {}, components ? { components } : {});
+  const document = parsePageDocument(documentInput, options.blocks ?? {}, parseOptions(components, options.siteStyles));
   if (document.siteId !== collection.siteId || document.pageId !== collection.pageId) fail("$document", "document scope does not match localization collection");
   return Object.fromEntries(collection.units.filter((unit) => unit.scope === "page").map((unit) => [unit.unitId, detached(valueFromPageUnit(document, unit))]));
 }
@@ -780,7 +784,7 @@ export async function materializeLocalizedPage(configInput: unknown, documentInp
   const currentCollection = await collectLocalizationUnits(config, documentInput, collection.targetLocale, options);
   assertCurrentCollection(collection, currentCollection);
   const sourceComponents = options.components === undefined ? undefined : parseComponentLibrary(options.components, blocks);
-  const sourceDocument = parsePageDocument(documentInput, blocks, sourceComponents ? { components: sourceComponents } : {});
+  const sourceDocument = parsePageDocument(documentInput, blocks, parseOptions(sourceComponents, options.siteStyles));
   const { overlay } = scoped(overlayInput, currentCollection), document = detached(sourceDocument), components = sourceComponents && detached(sourceComponents);
   const entries = new Map(overlay.entries.map((entry) => [entry.unitId, entry]));
   const materializationUnits = [...currentCollection.units].sort((left, right) => Number(right.field.endsWith(".richText")) - Number(left.field.endsWith(".richText")));
@@ -797,7 +801,7 @@ export async function materializeLocalizedPage(configInput: unknown, documentInp
   }
   document.locale = config.documentLocales[currentCollection.targetLocale];
   const parsedComponents = components && parseComponentLibrary(components, blocks);
-  const parsedDocument = parsePageDocument(document, blocks, parsedComponents ? { components: parsedComponents } : {});
+  const parsedDocument = parsePageDocument(document, blocks, parseOptions(parsedComponents, options.siteStyles));
   return { document: parsedDocument, ...(parsedComponents ? { components: parsedComponents } : {}), status: localizationStatus(overlay, currentCollection) };
 }
 
@@ -810,8 +814,8 @@ export async function validateLocalizedDocumentSave(configInput: unknown, source
   options: LocalizationExtractionOptions = {}): Promise<LocalizedDocumentSaveValidation> {
   const config = parseSiteLocalizationConfig(configInput), blocks = options.blocks ?? {};
   const components = options.components === undefined ? undefined : parseComponentLibrary(options.components, blocks);
-  const sourceDocument = parsePageDocument(sourceDocumentInput, blocks, components ? { components } : {});
-  const targetDocument = parsePageDocument(targetDocumentInput, blocks, components ? { components } : {});
+  const sourceDocument = parsePageDocument(sourceDocumentInput, blocks, parseOptions(components, options.siteStyles));
+  const targetDocument = parsePageDocument(targetDocumentInput, blocks, parseOptions(components, options.siteStyles));
   if (sourceDocument.siteId !== targetDocument.siteId || sourceDocument.pageId !== targetDocument.pageId) fail("$target", "translated document scope does not match source");
   if (sourceDocument.locale !== config.documentLocales[config.sourceLocale]) fail("$source.locale", "source document locale does not match config");
   const targetLocale = localizationLocaleFor(config, targetDocument.locale);

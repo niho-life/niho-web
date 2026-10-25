@@ -1,4 +1,5 @@
 import type { AssetReference, BlockContracts, ComponentLibrary, PageDocument } from "./types.js";
+import type { SiteStyles } from "./site-styles.js";
 
 export type LocalizationLocale = "ja" | "en";
 
@@ -63,6 +64,8 @@ export type LocalizationExtractionOptions = {
   components?: ComponentLibrary;
   blocks?: BlockContracts;
   blockLocalization?: BlockLocalizationSchema;
+  /** 同じサイトの共通スタイル（SiteSettings の tokens / textStyles）。原文・訳文の検証にだけ使い、継承値を文書へ書き戻さない。 */
+  siteStyles?: SiteStyles;
 };
 
 export type TranslationCandidate = {

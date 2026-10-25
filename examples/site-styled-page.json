@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "siteId": "demo",
+  "pageId": "about",
+  "locale": "ja-JP",
+  "revision": 1,
+  "title": "サイト共通スタイルを参照するページの例",
+  "tokens": {
+    "accent": { "type": "color", "value": "#f2b705", "label": "このページだけのアクセント" }
+  },
+  "body": [
+    {
+      "type": "element",
+      "id": "about",
+      "tag": "section",
+      "style": { "base": { "color": { "token": "ink" }, "padding": 24 } },
+      "children": [
+        { "type": "element", "id": "about_heading", "tag": "h1", "style": { "textStyle": "heading", "base": { "color": { "token": "brand" } } }, "children": [
+          { "type": "text", "text": "私たちについて" }
+        ] },
+        { "type": "element", "id": "about_lead", "tag": "p", "style": { "base": { "borderLeftWidth": 4, "borderLeftStyle": "solid", "borderLeftColor": { "token": "accent" }, "paddingLeft": 12 } }, "children": [
+          { "type": "text", "text": "見出しの色と文字スタイルはサイト共通、左の線の色はこのページだけの定義です。" }
+        ] }
+      ]
+    }
+  ]
+}

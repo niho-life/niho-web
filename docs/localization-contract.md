@@ -166,6 +166,8 @@ const reviewed = reviewLocalizedValue(adopted, jaToEn, {
 
 `await materializeLocalizedPage(config, sourceDocument, collection, overlay, options)` は、現在のsource document・component library・configからunitを非同期で再抽出し、順序に依存せずcollection全体を照合してから、candidateではなくdraftだけを適用します。sourceの移動やstyle変更だけなら同じ安定unitとして扱い、本文、config context/glossary/direction、component内容、保護hrefが変わった古いcollectionや改変collectionは拒否します。pageId、node/component ID、構造（rich-text内の安全な語順変更を除く）、style、token、金額、在庫、予約ID、hrefはsourceを維持し、targetの明示的なPageDocument localeへ変えます。戻り値は既存parserで再検証済みです。
 
+サイト共通スタイル（[契約](site-styles-contract.md)）を参照する原文は、`options.siteStyles` に同じ保存済みの `SiteSettings`（`tokens` / `textStyles`）を渡して検証・再構成します。`collectLocalizationUnits` / `localizedValuesForDocument` / `materializeLocalizedPage` / `validateLocalizedDocumentSave` はこの値で原文と訳文を検証し、訳文にも継承値を書き戻さずページ所有の定義だけを保ちます。省略すると、共通参照を持つ文書は従来どおり `unknown token` として拒否します。token と文字スタイルは翻訳単位ではありません。
+
 画像asset unitは `required: false` / `translatable: false` です。overrideがなければsource assetを共有し、completenessを妨げません。差し替える場合は `editLocalizedValue` へ `{ kind: "asset", asset: { provider, id } }` を渡し、既存asset validatorを通します。provider URLは受け付けません。
 
 ```ts

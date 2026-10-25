@@ -4,7 +4,7 @@ import { PageEditor, type EditorAdapter, type EditorBlockRegistry, type EditorCo
 import { createBrowserRecoveryStore, diffDocuments } from "@niho/web/history";
 import { findInternalLinks, findPathConflict, pageUrl, parseSiteSettings, rewriteInternalLinks, validatePagePath, type SiteSettings } from "@niho/web/pages";
 import fixture from "./page.json";
-import { componentUsage, parseComponentLibrary, parsePageDocument, resolvePageDocument, type ComponentLibrary, type ElementNode, type PageDocument, type PageNode, type PublicPropValue } from "@niho/web/core";
+import { componentUsage, detachRemovedSiteStyles, parseComponentLibrary, parsePageDocument, parseSiteStyles, resolvePageDocument, type ComponentLibrary, type ElementNode, type PageDocument, type PageNode, type PublicPropValue, type SiteStyles } from "@niho/web/core";
 import { createMemoryAssetLibrary } from "./memory-asset-library.mjs";
 
 /** editor-demo.mjs がサーバーで生成した、出所ごとの素材のメタデータ。 */
@@ -12,7 +12,8 @@ declare const DEMO_ASSET_SEED: Readonly<Record<"uploads" | "experience" | "stock
 
 // 公開可能なインメモリ動作例。認証や本番 API には接続しない。
 const domain = "https://demo.example.test", domains = [domain];
-type Revision = { entry: EditorRevisionEntry; document: PageDocument };
+/** siteStyles はその版が参照していたサイト共通スタイル。履歴の表示・復元で現在の設定を過去版へ混ぜない。 */
+type Revision = { entry: EditorRevisionEntry; document: PageDocument; siteStyles: SiteStyles };
 /**
  * revisions は古い順。版の識別子は opaque な値として返す。公開版は共通部品を展開した文書で、下書きと内容が異なるため、
  * revision は下書きと公開で同じ番号を使わないよう entry ごとに採番する。
@@ -22,7 +23,7 @@ const actor = "デモ編集者";
 let nextRevision = 1;
 function record(item: Entry, kind: EditorRevisionEntry["kind"], document: PageDocument, label?: string): EditorRevisionEntry {
   const entry: EditorRevisionEntry = { id: `rev-${nextRevision++}`, revision: document.revision, kind, createdAt: new Date().toISOString(), actor, ...(label ? { label } : {}) };
-  item.revisions.push({ entry, document: structuredClone(document) }); return entry;
+  item.revisions.push({ entry, document: structuredClone(document), siteStyles: parseSiteStyles(siteSettings) }); return entry;
 }
 const text = (value: string): PageNode => ({ type: "text", text: value });
 const link = (id: string, href: string, label: string): PageNode => ({ type: "element", id, tag: "a", attrs: { href }, children: [text(label)] });
@@ -33,12 +34,8 @@ function pageDocument(pageId: string, title: string, children: PageNode[]): Page
 const home = structuredClone(fixture) as PageDocument;
 (home.body[0] as ElementNode).children.push({ type: "element", id: "photo", tag: "img", asset: { provider: "uploads", id: "seed-sea" }, attrs: { alt: "朝の海辺の景色" }, style: { base: { maxWidth: "100%", height: "auto", borderRadius: 12 } }, children: [] });
 home.body.push({ type: "component", id: "notice", block: "PublicNotice", props: { heading: "今月のお知らせ", count: 3 }, style: { base: { marginTop: 24 } } }); home.revision++;
-// 共通カラーとテキストスタイル（タブレット以上で文字サイズを上書き）の例。
-home.tokens = { ...home.tokens, ink: { type: "color", value: "#172d25", label: "文字の色" }, brand: { type: "color", value: "#195640", label: "メイン" }, accent: { type: "color", value: "#f2b70533", label: "アクセント" } };
-home.textStyles = {
-  heading: { label: "見出し", base: { fontSize: 28, fontWeight: 700, lineHeight: 1.3 }, responsive: [{ minWidth: 768, declarations: { fontSize: 40 } }] },
-  body: { label: "本文", base: { fontSize: 16, lineHeight: 1.8 }, responsive: [{ minWidth: 768, declarations: { fontSize: 17 } }] }
-};
+// このページだけのカラーの例。メインの色（brand）と見出し・本文のテキストスタイルはサイト共通（siteSettings）にあり、ホームと「私たちについて」の両方が参照する。
+home.tokens = { ...home.tokens, ink: { type: "color", value: "#172d25", label: "文字の色" }, accent: { type: "color", value: "#f2b70533", label: "アクセント" } };
 const [heading, lead] = (home.body[0] as ElementNode).children as ElementNode[];
 heading!.style = { textStyle: "heading", base: { color: { token: "brand" } } };
 lead!.style = { textStyle: "body" };
@@ -56,7 +53,7 @@ home.body.push({ type: "component", id: "experiences", block: "ExperienceCards",
 const seeds: [EditorPage, PageDocument][] = [
   [{ siteId: "demo", pageId: "home", locale: "ja-JP", title: "ホーム", path: "/" }, home],
   [{ siteId: "demo", pageId: "about", locale: "ja-JP", title: "私たちについて", path: "/about" }, pageDocument("about", "私たちについて", [
-    { type: "element", id: "heading", tag: "h1", children: [text("私たちについて")] }, { type: "element", id: "lead", tag: "p", children: [text("海のそばで暮らす人の集まりです。")] },
+    { type: "element", id: "heading", tag: "h1", style: { textStyle: "heading", base: { color: { token: "brand" } } }, children: [text("私たちについて")] }, { type: "element", id: "lead", tag: "p", style: { textStyle: "body" }, children: [text("海のそばで暮らす人の集まりです。")] },
     { type: "instance", id: "about_heading", component: "section_heading", props: { title: "活動について" } }, link("to_badminton", "/circles/badminton", "バドミントンの会")])],
   [{ siteId: "demo", pageId: "badminton", locale: "ja-JP", title: "バドミントン", path: "/circles/badminton" }, pageDocument("badminton", "バドミントンの会", [
     { type: "element", id: "heading", tag: "h1", children: [text("バドミントンの会")] }, link("to_about", "/about", "運営について"), link("to_home", "/", "ホームへ")])],
@@ -69,12 +66,19 @@ const seeds: [EditorPage, PageDocument][] = [
 ];
 seeds[1]![1].body.unshift(structuredClone(header));
 let library: ComponentLibrary, libraryVersion = 1;
-const componentsVersion = () => `library-${libraryVersion}`, resolved = (document: PageDocument) => resolvePageDocument(document, library, blocks).document;
+// 公開版は部品を展開し、サイト共通スタイルの実効値を含む自己完結の文書にする。
+const componentsVersion = () => `library-${libraryVersion}`, resolved = (document: PageDocument) => resolvePageDocument(document, library, blocks, siteSettings).document;
 const entries = new Map<string, Entry>();
 const recovery = createBrowserRecoveryStore({ scope: "demo-staff" });
 let pageListVersion = 1, nextPage = 1, nextToken = 1;
 const pageTokens = new Map<string, { change: string; listVersion: number }>();
-let siteSettings: SiteSettings = { title: "デモサイト", description: "鎌倉の海のそばで暮らす人のための動作例です。", locale: "ja" }, settingsVersion = 1;
+// サイト共通のカラーとテキストスタイル（タブレット以上で文字サイズを上書き）。ホームと「私たちについて」が参照し、1 回の変更で両方へ反映される。
+let siteSettings: SiteSettings = { title: "デモサイト", description: "鎌倉の海のそばで暮らす人のための動作例です。", locale: "ja",
+  tokens: { brand: { type: "color", value: "#195640", label: "メイン" } },
+  textStyles: {
+    heading: { label: "見出し", base: { fontSize: 28, fontWeight: 700, lineHeight: 1.3 }, responsive: [{ minWidth: 768, declarations: { fontSize: 40 } }] },
+    body: { label: "本文", base: { fontSize: 16, lineHeight: 1.8 }, responsive: [{ minWidth: 768, declarations: { fontSize: 17 } }] }
+  } }, settingsVersion = 1;
 
 function entry(pageId: string): Entry {
   const found = entries.get(pageId);
@@ -193,7 +197,7 @@ library = parseComponentLibrary({ schemaVersion: 1, siteId: "demo", revision: 1,
 for (const [page, document] of seeds) {
   const published = resolved(document);
   entries.set(page.pageId, { page, draft: { ...document, revision: document.revision + 1 }, published, version: 1, revision: document.revision + 1, confirmedPlan: null,
-    revisions: [{ entry: { id: `rev-${nextRevision++}`, revision: published.revision, kind: "publish", createdAt: "2026-10-01T09:00:00+09:00", actor, label: "最初の公開" }, document: structuredClone(published) }] });
+    revisions: [{ entry: { id: `rev-${nextRevision++}`, revision: published.revision, kind: "publish", createdAt: "2026-10-01T09:00:00+09:00", actor, label: "最初の公開" }, document: structuredClone(published), siteStyles: parseSiteStyles(siteSettings) }] });
 }
 const components: EditorComponentAdapter = {
   readLibrary: async () => ({ library: structuredClone(library), version: componentsVersion() }),
@@ -201,7 +205,7 @@ const components: EditorComponentAdapter = {
     if (request.siteId !== "demo" || request.expectedVersion !== componentsVersion()) return { status: "conflict" };
     const next = parseComponentLibrary(request.library, blocks);
     // 削除した部品を下書きが参照していないこと、各部品の version が減っていないことを確かめてから保存する。
-    for (const item of entries.values()) parsePageDocument(item.draft, blocks, { components: next });
+    for (const item of entries.values()) parsePageDocument(item.draft, blocks, { components: next, siteStyles: siteSettings });
     if (library.components.some((before) => next.components.some((after) => after.id === before.id && after.version < before.version))) throw new Error("version decreased");
     library = { ...next, revision: library.revision + 1 }; libraryVersion++;
     return { status: "saved", version: componentsVersion(), revision: library.revision };
@@ -216,7 +220,7 @@ const adapter: EditorAdapter = {
   saveDraft: async (request) => {
     const item = entry(request.target.pageId);
     if (request.expectedVersion !== `draft-${item.version}`) return { status: "conflict" };
-    item.draft = { ...parsePageDocument(request.document, blocks, { components: library }), revision: ++item.revision }; item.version++; record(item, request.trigger === "autosave" ? "autosave" : "draft", item.draft);
+    item.draft = { ...parsePageDocument(request.document, blocks, { components: library, siteStyles: siteSettings }), revision: ++item.revision }; item.version++; record(item, request.trigger === "autosave" ? "autosave" : "draft", item.draft);
     return { status: "saved", version: `draft-${item.version}`, revision: item.draft.revision };
   },
   prepareRelease: async (request) => {
@@ -229,7 +233,7 @@ const adapter: EditorAdapter = {
     const header = entries.get("header")?.page;
     return { ...request, confirmationToken: item.confirmedPlan, domain, changes, ...(item.page.path && validatePagePath(item.page.path) === null ? { url: pageUrl(domain, item.page.path) } : {}),
       affected: [...(header && header.pageId !== item.page.pageId ? [{ kind: "shared" as const, name: header.title, detail: "全ページで共通のナビゲーションです。このページの公開では変わりません。" }] : []),
-        { kind: "site" as const, name: "サイト共通の設定", detail: "保存済みのタイトル・説明文がこの公開で反映されます。" }] };
+        { kind: "site" as const, name: "サイト共通の設定", detail: "保存済みのタイトル・説明文と、サイト共通のカラー・テキストスタイルがこの公開で反映されます。" }] };
   },
   release: async (request) => {
     const item = entry(request.target.pageId);
@@ -246,7 +250,7 @@ const adapter: EditorAdapter = {
   readRevision: async ({ target, id }) => {
     const found = entry(target.pageId).revisions.find(({ entry }) => entry.id === id);
     if (!found) throw new Error("not found");
-    return { document: structuredClone(found.document) };
+    return { document: structuredClone(found.document), siteStyles: structuredClone(found.siteStyles) };
   },
   createSnapshot: async ({ target, expectedVersion, label }) => {
     const item = entry(target.pageId);
@@ -302,9 +306,16 @@ const adapter: EditorAdapter = {
   readSiteSettings: async () => ({ settings: structuredClone(siteSettings), version: `site-${settingsVersion}` }),
   saveSiteSettings: async (request) => {
     if (request.expectedVersion !== `site-${settingsVersion}`) return { status: "conflict" };
-    siteSettings = parseSiteSettings(request.settings); settingsVersion++;
+    const next = parseSiteSettings(request.settings), before = parseSiteStyles(siteSettings);
+    if (request.previousStyles && JSON.stringify(parseSiteStyles(request.previousStyles)) !== JSON.stringify(before)) return { status: "conflict" };
+    // 消した定義を全ページの下書きで今の見た目のまま切り離し、新しい設定で検証できた場合だけ設定と一緒に反映する（公開版は展開済みで自己完結）。
+    const drafts = [...entries.values()].map((item) => [item, parsePageDocument(detachRemovedSiteStyles(item.draft, before, next), blocks, { components: library, siteStyles: next })] as const);
+    for (const [item, draft] of drafts) if (diffDocuments(item.draft, draft).length) { item.draft = { ...draft, revision: ++item.revision }; item.version++; record(item, "draft", item.draft, "サイト共通スタイルの削除に伴う切り離し"); }
+    siteSettings = next; settingsVersion++;
     return { status: "saved", version: `site-${settingsVersion}` };
-  }
+  },
+  // 全ページの下書きがこのメモリ内にあり、切り離しと設定の反映を一度に行えるため、サイト共通の定義の削除を許可する。
+  siteStyleCapabilities: { atomicReferenceDetachment: true }
 };
 // 出所は3つ。体験写真は CMS 側の正本を参照するだけで、ここでは編集・削除しない。ストックは ?stock=connected のときだけ接続する。
 const stockConnected = new URLSearchParams(location.search).get("stock") === "connected";

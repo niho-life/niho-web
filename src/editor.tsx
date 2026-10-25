@@ -421,7 +421,10 @@ export function PageEditor({ adapter, toolbarStart, blocks = emptyBlocks, builde
   const siteSettingsRef = useRef(siteSettings); siteSettingsRef.current = siteSettings;
   const [problem, setProblem] = useState<SaveProblem | null>(null), [savedAt, setSavedAt] = useState<Date | null>(null), [loadEpoch, setLoadEpoch] = useState(0);
   const [conflictView, setConflictView] = useState(0), [recoveryCompare, setRecoveryCompare] = useState(false), [autosaveOn, setAutosaveOn] = useState(true);
-  const localization = useEditorLocalization(adapter, siteId, session?.target, blocks, libraryPresent, loadEpoch, setNotice);
+  // 訳文の原文検証・再構成には保存済みのサイト共通スタイルを使う。設定を読むホストでは読込が終わるまで待ち、読めなければ文書と同じ読込で得た設定か文書単体で進める。
+  const savedSiteStylesReady = !adapter.readSiteSettings || siteSettings.status === "ready" || siteSettings.status === "error";
+  const savedSiteStyles = siteSettings.status === "ready" ? siteSettings.settings : session?.siteStyles;
+  const localization = useEditorLocalization(adapter, siteId, session?.target, blocks, libraryPresent, savedSiteStylesReady, savedSiteStyles, loadEpoch, setNotice);
   let selectedLocale: LocalizationLocale | undefined;
   try { if (localization.site && session) selectedLocale = localizationLocaleFor(localization.site.config, session.target.locale); } catch { /* read hook reports the invalid mapping */ }
   const targetMode = !!localization.site && !!selectedLocale && selectedLocale !== localization.site.config.sourceLocale;

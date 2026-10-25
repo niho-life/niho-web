@@ -15,6 +15,7 @@ import {
   type LocalizationLocale, type LocalizationOverlay, type LocalizationUnit, type LocalizationValue, type SiteLocalizationConfig
 } from "./localization.js";
 import type { ComponentLibrary, ElementNode, PageDocument, PageNode } from "./types.js";
+import type { SiteStyles } from "./site-styles.js";
 import { publicImageSrcSet, publicImageUrl } from "./validation-utils.js";
 
 export type EditorLocalizationSite = {
@@ -97,8 +98,12 @@ function previousValues(value: EditorLocalizationPageSnapshot["previousSourceVal
   return Object.fromEntries(parsed.entries.map((entry) => [entry.unitId, entry.draftValue!]));
 }
 
+/**
+ * siteStyles は保存済みのサイト共通スタイル。原文の検証と訳文の再構成に使い、サイト設定を読むホストでは siteStylesReady になるまで訳文の読込を待つ。
+ * 設定が変わると（保存後）原文・訳文の状態を読み直す。
+ */
 export function useEditorLocalization(adapter: EditorAdapter, siteId: string, target: EditorTarget | undefined, blocks: EditorBlockRegistry,
-  canonicalComponents: ComponentLibrary | undefined, epoch: number, report: (message: string) => void) {
+  canonicalComponents: ComponentLibrary | undefined, siteStylesReady: boolean, siteStyles: SiteStyles | undefined, epoch: number, report: (message: string) => void) {
   const supported = !!adapter.localization;
   const [site, setSite] = useState<EditorLocalizationSite | null>(null), [context, setContext] = useState<EditorLocalizationContext | null>(null);
   const [siteState, setSiteState] = useState<EditorLocalizationLoadState>(supported ? "loading" : "idle"), [pageState, setPageState] = useState<EditorLocalizationLoadState>("idle");
@@ -122,14 +127,15 @@ export function useEditorLocalization(adapter: EditorAdapter, siteId: string, ta
     try { locale = localizationLocaleFor(site.config, target.locale); } catch { setContext(null); setPageState("error"); report("文書の言語がサイトの明示設定にありません。編集と保存を停止しました。"); return; }
     if (!site.config.enabledLocales.includes(locale)) { setContext(null); setPageState("error"); report("無効な言語の文書です。編集と保存を停止しました。"); return; }
     if (locale === site.config.sourceLocale) { setContext(null); setPageState("ready"); return; }
+    if (!siteStylesReady) { setPageState("loading"); return; }
     const controller = new AbortController(); setPageState("loading");
     adapter.localization.readPage(target, controller.signal).then(async (snapshot) => {
       // adapter.components があるホストでは LibrarySession が唯一の正本。readPage.components は旧ホスト用のfallbackに限る。
       const fallbackComponents = snapshot.components === undefined ? undefined : parseComponentLibrary(snapshot.components, blocks);
       const components = canonicalComponents ?? fallbackComponents;
       if (components && components.siteId !== target.siteId) throw new Error("component library scope mismatch");
-      const options: LocalizationExtractionOptions = { blocks, ...(components ? { components } : {}), ...(snapshot.blockLocalization ? { blockLocalization: snapshot.blockLocalization } : {}) };
-      const sourceDocument = parsePageDocument(snapshot.sourceDocument, blocks, components ? { components } : {});
+      const options: LocalizationExtractionOptions = { blocks, ...(components ? { components } : {}), ...(siteStyles ? { siteStyles } : {}), ...(snapshot.blockLocalization ? { blockLocalization: snapshot.blockLocalization } : {}) };
+      const sourceDocument = parsePageDocument(snapshot.sourceDocument, blocks, { ...(components ? { components } : {}), ...(siteStyles ? { siteStyles } : {}) });
       if (sourceDocument.siteId !== target.siteId || sourceDocument.pageId !== target.pageId || sourceDocument.locale !== site.config.documentLocales[site.config.sourceLocale]) throw new Error("source scope mismatch");
       const collection = await collectLocalizationUnits(site.config, sourceDocument, locale, options), overlay = parseLocalizationOverlay(snapshot.overlay);
       localizationStatus(overlay, collection);
@@ -142,7 +148,7 @@ export function useEditorLocalization(adapter: EditorAdapter, siteId: string, ta
       setPageState("ready");
     }).catch(() => { if (!controller.signal.aborted) { setPageState("error"); report("この言語の原文・訳文状態を読み込めませんでした。編集内容は保持されています。再試行してください。"); } });
     return () => controller.abort();
-  }, [adapter, site, siteState, target?.siteId, target?.pageId, target?.locale, blocks, canonicalComponents, epoch, pageEpoch, report]);
+  }, [adapter, site, siteState, target?.siteId, target?.pageId, target?.locale, blocks, canonicalComponents, siteStylesReady, siteStyles, epoch, pageEpoch, report]);
   const reloadSite = () => setSiteEpoch((value) => value + 1), reloadPage = () => setPageEpoch((value) => value + 1);
   return { supported, site, context, siteState, pageState, siteBusy: siteState === "loading", pageBusy: pageState === "loading", reloadSite, reloadPage,
     reloadAll: () => { reloadSite(); reloadPage(); } };
