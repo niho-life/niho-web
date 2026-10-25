@@ -2,6 +2,12 @@ import { parseProjectAliasPath, projectShortcutTarget } from "./project-routes.m
 import { siteAdmin } from "./site-admin.mjs";
 import { integrationIdentity, isTrustedEditorAction, resolveTrustedEditorApi, resolveTrustedEditorPage, type ResolvedTrustedIntegration } from "./integration-registry.mjs";
 import { KAMAKURA_CATALOG_CONTRACT_ERROR_CODE, KAMAKURA_CATALOG_CONTRACT_ERROR_STATUS, KamakuraCatalogContractError, KAMAKURA_COMMON_PAGE_ID, KAMAKURA_EDITOR_SITE_ID, parseKamakuraCatalog } from "./kamakura-catalog.js";
+import {
+  KAMAKURA_CMS_IMAGE_TYPES, KAMAKURA_CMS_LIMITS, KAMAKURA_CMS_UPSTREAM_PREFIX, KAMAKURA_MEDIA_ORIGIN, KamakuraCmsContractError,
+  isKamakuraCmsCollectionId, isKamakuraCmsItemId, isKamakuraCmsLine, isKamakuraCmsVersion, normalizeKamakuraCmsTimestamp,
+  parseKamakuraCmsConflict, parseKamakuraCmsInvalid, parseKamakuraCmsItemEnvelope, parseKamakuraCmsList, parseKamakuraCmsRemoved,
+  parseKamakuraCmsSchema, parseKamakuraCmsUploadIntent, parseKamakuraCmsValues
+} from "./kamakura-cms-contract.js";
 
 type D1Meta = { readonly changes?: number };
 type D1Result<T> = { readonly results?: readonly T[]; readonly success: boolean; readonly meta?: D1Meta };
@@ -124,7 +130,20 @@ type KamakuraBridgeOperation =
   | "asset_upload_intent"
   | "asset_update"
   | "asset_usages"
-  | "asset_resolve";
+  | "asset_resolve"
+  | "cms_schema"
+  | "cms_list"
+  | "cms_read"
+  | "cms_create"
+  | "cms_draft_save"
+  | "cms_publish"
+  | "cms_discard_draft"
+  | "cms_unpublish"
+  | "cms_duplicate"
+  | "cms_remove"
+  | "cms_schedule"
+  | "cms_cancel_schedule"
+  | "cms_upload_intent";
 type KamakuraBridgeFailureCategory =
   | "bridge_secret_missing_or_invalid"
   | "bridge_signing_failed"
@@ -133,6 +152,7 @@ type KamakuraBridgeFailureCategory =
   | "upstream_auth_rejected"
   | "upstream_unexpected_4xx"
   | "catalog_endpoint_missing"
+  | "cms_endpoint_missing"
   | "upstream_rate_limited"
   | "upstream_server_error"
   | "upstream_redirect_rejected"
@@ -983,16 +1003,22 @@ function kamakuraBridgeFailure(
   return new KamakuraBridgeFailureError(supportId, operation, category, upstreamStatus);
 }
 
-async function signedKamakuraEditorRequest(request: Request, env: Env, identity: AccessIdentity, route: EditorRoute): Promise<Response> {
-  const supportId = crypto.randomUUID();
-  const operation = kamakuraBridgeOperation(route);
-  if (request.method === "GET" && (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length")))) throw new AuthenticationError("GET body rejected");
-  const rawBody = request.method === "GET" ? new Uint8Array() : await readBoundedBody(request, route.bodyLimit);
-  const body = route.assetOperation ? validateKamakuraAssetBody(rawBody, route.assetOperation) : rawBody;
+/**
+ * kamakura-site の service binding へ渡す署名つきの header。editor（web-content・素材）と CMS の BFF で共有する。
+ * message は `v1\n${timestamp}\n${method}\n${path}\n${sha256hex(body)}\n${project}\n${subject}`。GET の body は空 byte 列。
+ */
+async function kamakuraSignedHeaders(
+  env: Env,
+  identity: AccessIdentity,
+  method: string,
+  upstreamPath: string,
+  body: Uint8Array,
+  supportId: string,
+  operation: KamakuraBridgeOperation
+): Promise<Record<string, string>> {
   const timestamp = Math.floor(Date.now() / 1000).toString();
-  const bodyBytes = body.slice().buffer;
-  const bodyHash = hexadecimal(await crypto.subtle.digest("SHA-256", bodyBytes));
-  const message = `v1\n${timestamp}\n${request.method}\n${route.upstreamPath}\n${bodyHash}\n${KAMAKURA_EDITOR_PROJECT_ID}\n${identity.subject}`;
+  const bodyHash = hexadecimal(await crypto.subtle.digest("SHA-256", body.slice().buffer));
+  const message = `v1\n${timestamp}\n${method}\n${upstreamPath}\n${bodyHash}\n${KAMAKURA_EDITOR_PROJECT_ID}\n${identity.subject}`;
   let secret: Uint8Array;
   try { secret = bridgeSecret(env.KAMAKURA_STUDIO_BRIDGE_SECRET); }
   catch { throw kamakuraBridgeFailure(supportId, operation, "bridge_secret_missing_or_invalid"); }
@@ -1001,6 +1027,26 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
     const key = await crypto.subtle.importKey("raw", secret.slice().buffer, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
     signature = hexadecimal(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message)));
   } catch { throw kamakuraBridgeFailure(supportId, operation, "bridge_signing_failed"); }
+  return {
+    Accept: "application/json",
+    "Cache-Control": "no-store",
+    ...(method === "GET" ? {} : { "Content-Type": "application/json" }),
+    "X-NIHO-Studio-Project": KAMAKURA_EDITOR_PROJECT_ID,
+    "X-NIHO-Studio-Subject": identity.subject,
+    "X-NIHO-Studio-Request-ID": supportId,
+    "X-NIHO-Studio-Timestamp": timestamp,
+    "X-NIHO-Studio-Signature": `v1=${signature}`
+  };
+}
+
+async function signedKamakuraEditorRequest(request: Request, env: Env, identity: AccessIdentity, route: EditorRoute): Promise<Response> {
+  const supportId = crypto.randomUUID();
+  const operation = kamakuraBridgeOperation(route);
+  if (request.method === "GET" && (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length")))) throw new AuthenticationError("GET body rejected");
+  const rawBody = request.method === "GET" ? new Uint8Array() : await readBoundedBody(request, route.bodyLimit);
+  const body = route.assetOperation ? validateKamakuraAssetBody(rawBody, route.assetOperation) : rawBody;
+  const bodyBytes = body.slice().buffer;
+  const headers = await kamakuraSignedHeaders(env, identity, request.method, route.upstreamPath, body, supportId, operation);
   const controller = new AbortController();
   let timedOut = false;
   const abortForRequest = () => controller.abort();
@@ -1013,16 +1059,7 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
       cache: "no-store",
       redirect: "manual",
       signal: controller.signal,
-      headers: {
-        Accept: "application/json",
-        "Cache-Control": "no-store",
-        ...(request.method === "GET" ? {} : { "Content-Type": "application/json" }),
-        "X-NIHO-Studio-Project": KAMAKURA_EDITOR_PROJECT_ID,
-        "X-NIHO-Studio-Subject": identity.subject,
-        "X-NIHO-Studio-Request-ID": supportId,
-        "X-NIHO-Studio-Timestamp": timestamp,
-        "X-NIHO-Studio-Signature": `v1=${signature}`
-      },
+      headers,
       ...(request.method === "GET" ? {} : { body: bodyBytes })
     });
     const isCatalog = route.upstreamPath === `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/catalog`;
@@ -1136,6 +1173,191 @@ async function signedKamakuraAssetPreview(request: Request, env: Env, identity: 
   } finally { if (!streaming) cleanup(); }
 }
 
+/* ---------- Kamakura の CMS（記事・サークル・会社）の BFF ---------- */
+
+type KamakuraCmsOperation = "schema" | "list" | "read" | "create" | "draft" | "publish" | "discard-draft" | "unpublish" | "duplicate" | "remove" | "schedule" | "cancel-schedule" | "upload-intent";
+type KamakuraCmsRoute = { readonly operation: KamakuraCmsOperation; readonly upstreamPath: string; readonly collectionId: string | null; readonly itemId: string | null };
+type KamakuraCmsOperationSpec = { readonly method: "GET" | "POST" | "PUT"; readonly success: 200 | 201 | 202; readonly log: KamakuraBridgeOperation; readonly bodyKeys: readonly string[] | null };
+
+/** 操作ごとの method・上流の成功の status・log の operation・ブラウザの本文の key の集合（actor は BFF が入れる）。 */
+const KAMAKURA_CMS_OPERATIONS: Readonly<Record<KamakuraCmsOperation, KamakuraCmsOperationSpec>> = {
+  schema: { method: "GET", success: 200, log: "cms_schema", bodyKeys: null },
+  list: { method: "GET", success: 200, log: "cms_list", bodyKeys: null },
+  read: { method: "GET", success: 200, log: "cms_read", bodyKeys: null },
+  create: { method: "POST", success: 201, log: "cms_create", bodyKeys: [] },
+  draft: { method: "PUT", success: 200, log: "cms_draft_save", bodyKeys: ["version", "values"] },
+  publish: { method: "POST", success: 202, log: "cms_publish", bodyKeys: ["version"] },
+  "discard-draft": { method: "POST", success: 200, log: "cms_discard_draft", bodyKeys: ["version"] },
+  unpublish: { method: "POST", success: 202, log: "cms_unpublish", bodyKeys: ["version"] },
+  duplicate: { method: "POST", success: 201, log: "cms_duplicate", bodyKeys: ["version"] },
+  remove: { method: "POST", success: 200, log: "cms_remove", bodyKeys: ["version"] },
+  schedule: { method: "POST", success: 200, log: "cms_schedule", bodyKeys: ["version", "at"] },
+  "cancel-schedule": { method: "POST", success: 200, log: "cms_cancel_schedule", bodyKeys: ["version"] },
+  "upload-intent": { method: "POST", success: 201, log: "cms_upload_intent", bodyKeys: ["collectionId", "name", "mimeType", "bytes"] }
+};
+const KAMAKURA_CMS_ITEM_ACTIONS: ReadonlySet<string> = new Set(["draft", "publish", "discard-draft", "unpublish", "duplicate", "remove", "schedule", "cancel-schedule"]);
+
+/** action は `/cms` より後ろ。collection と item の ID は固定の形だけを通し、上流のパスはこの action をそのまま使う。 */
+function kamakuraCmsRoute(action: string, method: string): KamakuraCmsRoute | "method_not_allowed" | null {
+  let operation: KamakuraCmsOperation, collectionId: string | null = null, itemId: string | null = null;
+  if (action === "/schema") operation = "schema";
+  else if (action === "/uploads/intent") operation = "upload-intent";
+  else {
+    const match = /^\/collections\/([^/]+)\/items(?:\/([^/]+)(?:\/([^/]+))?)?$/u.exec(action);
+    if (!match || !isKamakuraCmsCollectionId(match[1])) return null;
+    collectionId = match[1];
+    if (match[2] === undefined) {
+      if (method !== "GET" && method !== "POST") return "method_not_allowed";
+      operation = method === "GET" ? "list" : "create";
+    } else {
+      if (!isKamakuraCmsItemId(match[2])) return null;
+      itemId = match[2];
+      if (match[3] === undefined) operation = "read";
+      else if (KAMAKURA_CMS_ITEM_ACTIONS.has(match[3])) operation = match[3] as KamakuraCmsOperation;
+      else return null;
+    }
+  }
+  if (method !== KAMAKURA_CMS_OPERATIONS[operation].method) return "method_not_allowed";
+  return { operation, upstreamPath: `${KAMAKURA_CMS_UPSTREAM_PREFIX}${action}`, collectionId, itemId };
+}
+
+/** ブラウザの本文を操作ごとの key の集合で確かめ、BFF が確かめた email を actor に入れて JSON を作り直す。actor を送ってきたら拒否。 */
+function kamakuraCmsBody(route: KamakuraCmsRoute, raw: Uint8Array, identity: AccessIdentity): Uint8Array {
+  const keys = KAMAKURA_CMS_OPERATIONS[route.operation].bodyKeys;
+  let parsed: unknown;
+  try { parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw)) as unknown; }
+  catch { throw new AuthenticationError("invalid CMS JSON"); }
+  if (!isRecord(parsed) || keys === null) throw new AuthenticationError("invalid CMS body");
+  const actual = Object.keys(parsed).sort(), expected = [...keys].sort();
+  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) throw new AuthenticationError("unexpected CMS body fields");
+  const actor = { email: identity.email };
+  if (route.operation === "create") return new TextEncoder().encode(JSON.stringify({ actor }));
+  if (route.operation === "upload-intent") {
+    const { collectionId, name, mimeType, bytes } = parsed;
+    if (!isKamakuraCmsCollectionId(collectionId) || !isKamakuraCmsLine(name, KAMAKURA_CMS_LIMITS.uploadNameLength) || typeof mimeType !== "string" || !KAMAKURA_CMS_IMAGE_TYPES.has(mimeType)
+      || typeof bytes !== "number" || !Number.isSafeInteger(bytes) || bytes < 1 || bytes > KAMAKURA_CMS_LIMITS.imageBytes) throw new AuthenticationError("invalid CMS upload request");
+    return new TextEncoder().encode(JSON.stringify({ collectionId, name, mimeType, bytes, actor }));
+  }
+  const version = parsed.version;
+  if (!isKamakuraCmsVersion(version)) throw new AuthenticationError("invalid CMS version");
+  if (route.operation === "draft") {
+    let values: unknown;
+    try { values = parseKamakuraCmsValues(parsed.values); }
+    catch { throw new AuthenticationError("invalid CMS values"); }
+    return new TextEncoder().encode(JSON.stringify({ version, values, actor }));
+  }
+  if (route.operation === "schedule") {
+    const at = normalizeKamakuraCmsTimestamp(parsed.at);
+    if (at === null) throw new AuthenticationError("invalid CMS schedule");
+    return new TextEncoder().encode(JSON.stringify({ version, at, actor }));
+  }
+  return new TextEncoder().encode(JSON.stringify({ version, actor }));
+}
+
+/** 上流の成功の応答を契約の parser で確かめ、既知の field だけにする。 */
+function kamakuraCmsSuccess(route: KamakuraCmsRoute, value: unknown): unknown {
+  const itemId = route.itemId ?? undefined;
+  switch (route.operation) {
+    case "schema": return parseKamakuraCmsSchema(value);
+    case "list": return parseKamakuraCmsList(value, route.collectionId!);
+    case "read": return parseKamakuraCmsItemEnvelope(value, "ready", itemId);
+    case "create": return parseKamakuraCmsItemEnvelope(value, "created");
+    case "duplicate": {
+      const created = parseKamakuraCmsItemEnvelope(value, "created");
+      if (created.item.id === route.itemId) throw new KamakuraCmsContractError("response.item.id");
+      return created;
+    }
+    case "publish": case "unpublish": return parseKamakuraCmsItemEnvelope(value, "publishing", itemId);
+    case "remove": return parseKamakuraCmsRemoved(value);
+    case "upload-intent": return parseKamakuraCmsUploadIntent(value);
+    case "draft": case "discard-draft": case "schedule": case "cancel-schedule": return parseKamakuraCmsItemEnvelope(value, "saved", itemId);
+  }
+}
+
+async function signedKamakuraCmsRequest(request: Request, env: Env, identity: AccessIdentity, route: KamakuraCmsRoute): Promise<Response> {
+  const supportId = crypto.randomUUID();
+  const spec = KAMAKURA_CMS_OPERATIONS[route.operation];
+  const operation = spec.log, method = spec.method;
+  if (method === "GET" && (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length")))) throw new AuthenticationError("GET body rejected");
+  const body = method === "GET"
+    ? new Uint8Array()
+    : kamakuraCmsBody(route, await readBoundedBody(request, route.operation === "draft" ? KAMAKURA_CMS_LIMITS.draftBodyBytes : KAMAKURA_CMS_LIMITS.bodyBytes), identity);
+  const headers = await kamakuraSignedHeaders(env, identity, method, route.upstreamPath, body, supportId, operation);
+  const responseLimit = route.operation === "upload-intent" ? KAMAKURA_CMS_LIMITS.bodyBytes : KAMAKURA_CMS_LIMITS.responseBytes;
+  const controller = new AbortController();
+  let timedOut = false;
+  const abortForRequest = () => controller.abort();
+  const abortForTimeout = () => { timedOut = true; controller.abort(); };
+  request.signal.addEventListener("abort", abortForRequest, { once: true });
+  // 読み取りは 12 秒。公開・非公開・削除などの書き込みは kamakura-site で commit まで行うので 30 秒。
+  const timeout = setTimeout(abortForTimeout, method === "GET" ? EDITOR_TIMEOUT_MILLISECONDS : KAMAKURA_RELEASE_TIMEOUT_MILLISECONDS);
+  const read = async (response: Response): Promise<unknown> => {
+    try { return await readBoundedResponse(response, responseLimit); }
+    catch { throw kamakuraBridgeFailure(supportId, operation, timedOut ? "service_binding_timeout" : "upstream_invalid_response", response.status); }
+  };
+  const checked = (response: Response, parse: () => unknown): Response => {
+    try { return json(parse(), response.status); }
+    catch (error) {
+      throw kamakuraBridgeFailure(supportId, operation, error instanceof KamakuraCmsContractError ? "upstream_contract_invalid" : "bridge_processing_failed", response.status);
+    }
+  };
+  const discard = async (response: Response) => { try { await response.body?.cancel(); } catch { /* 本文は使わない */ } };
+  try {
+    const upstream = new Request(`${KAMAKURA_EDITOR_UPSTREAM_ORIGIN}${route.upstreamPath}`, {
+      method, cache: "no-store", redirect: "manual", signal: controller.signal, headers,
+      ...(method === "GET" ? {} : { body: body.slice().buffer })
+    });
+    let response: Response;
+    try { response = await env.KAMAKURA_SITE.fetch(upstream); }
+    catch { throw kamakuraBridgeFailure(supportId, operation, timedOut ? "service_binding_timeout" : "service_binding_failed"); }
+    const status = response.status;
+    if (status >= 300 && status < 400) throw kamakuraBridgeFailure(supportId, operation, "upstream_redirect_rejected", status);
+    if (status === 401 || status === 403) throw kamakuraBridgeFailure(supportId, operation, "upstream_auth_rejected", status);
+    if (status === 429) throw kamakuraBridgeFailure(supportId, operation, "upstream_rate_limited", status);
+    if (status >= 500) throw kamakuraBridgeFailure(supportId, operation, "upstream_server_error", status);
+    if (status === 409 && route.itemId !== null) {
+      const value = await read(response);
+      return checked(response, () => parseKamakuraCmsConflict(value, route.itemId!));
+    }
+    if (status === 422) {
+      const value = await read(response);
+      return checked(response, () => parseKamakuraCmsInvalid(value));
+    }
+    if ((status === 413 || status === 415) && route.operation === "upload-intent") { await discard(response); return json({ error: "image_rejected" }, status); }
+    if (status === 404) {
+      await discard(response);
+      // schema が無いのは鎌倉の Worker の endpoint が未配備。ほかの 404 はコレクション・項目が無い。
+      if (route.operation === "schema") throw kamakuraBridgeFailure(supportId, operation, "cms_endpoint_missing", status);
+      return json({ error: "not_found" }, 404);
+    }
+    if (status === 400 || status === 413) { await discard(response); return json({ error: "invalid_request" }, 400); }
+    if (status !== spec.success) {
+      await discard(response);
+      throw kamakuraBridgeFailure(supportId, operation, status >= 200 && status < 300 ? "upstream_contract_invalid" : "upstream_unexpected_4xx", status);
+    }
+    const value = await read(response);
+    return checked(response, () => kamakuraCmsSuccess(route, value));
+  } catch (error) {
+    if (error instanceof KamakuraBridgeFailureError) throw error;
+    throw kamakuraBridgeFailure(supportId, operation, "bridge_processing_failed");
+  } finally { clearTimeout(timeout); request.signal.removeEventListener("abort", abortForRequest); }
+}
+
+/** `/api/projects/project-kamakura/sites/kamakura/cms/*`。鎌倉以外は 404。要求ごとに D1 の owner / editor を確かめる。 */
+async function kamakuraCmsApi(request: Request, env: Env, identity: AccessIdentity, url: URL, projectId: string, siteId: string, action: string): Promise<Response> {
+  if (projectId !== KAMAKURA_EDITOR_PROJECT_ID || siteId !== KAMAKURA_EDITOR_SITE_ID) return json({ error: "not_found" }, 404);
+  if (url.href.includes("?")) return json({ error: "invalid_request" }, 400);
+  const route = kamakuraCmsRoute(action, request.method);
+  if (route === null) return json({ error: "not_found" }, 404);
+  if (route === "method_not_allowed") return json({ error: "method_not_allowed" }, 405);
+  if (!await editorMember(env, identity, projectId, siteId)) return json({ error: "forbidden" }, 403);
+  try { return await signedKamakuraCmsRequest(request, env, identity, route); }
+  catch (error) {
+    if (error instanceof AuthenticationError) return json({ error: "invalid_request" }, 400);
+    throw error;
+  }
+}
+
 type WorkerEditorAdapter = {
   readonly route: (action: string, method: string, environment: string) => EditorRoute | "method_not_allowed" | null;
   readonly authorize: (env: Env, identity: AccessIdentity, resolved: ResolvedTrustedIntegration) => Promise<boolean>;
@@ -1156,8 +1378,8 @@ const KAMAKURA_EDITOR_ADAPTER: WorkerEditorAdapter = {
   assetPreview: (action) => /^\/editor\/assets\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/preview$/iu.exec(action)?.[1] ?? null,
   dispatchAssetPreview: signedKamakuraAssetPreview,
   connectOrigins: [KAMAKURA_EDITOR_UPSTREAM_ORIGIN],
-  fontSources: ["https://kamakura-media.niho.life/niho-web/fonts/v1/"],
-  frameSources: ["https://kamakura-media.niho.life/niho-web/embeds/v1/", "https://www.google.com/maps/embed"]
+  fontSources: [`${KAMAKURA_MEDIA_ORIGIN}/niho-web/fonts/v1/`],
+  frameSources: [`${KAMAKURA_MEDIA_ORIGIN}/niho-web/embeds/v1/`, "https://www.google.com/maps/embed"]
 };
 
 function liveEditorAdapter(resolved: ResolvedTrustedIntegration): WorkerEditorAdapter | null {
@@ -1242,6 +1464,7 @@ async function scopedApi(request: Request, env: Env, identity: AccessIdentity, u
   const projectId = match[1]!;
   const siteId = match[2]!;
   const action = match[3] ?? "";
+  if (action === "/cms" || action.startsWith("/cms/")) return kamakuraCmsApi(request, env, identity, url, projectId, siteId, action.slice("/cms".length));
   if (isTrustedEditorAction(action)) return editorApi(request, env, identity, url, projectId, siteId, action);
   if (request.method === "GET") {
     if (action === "/dashboard") return dashboard(env, identity, projectId, siteId);
