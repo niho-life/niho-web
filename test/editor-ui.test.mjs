@@ -616,7 +616,7 @@ test("layer tree keeps ID selection through sibling edits and clears only a remo
     const destinations = [...input("移動先").options].map((option) => ({ value: option.value, text: option.textContent }));
     assert.deepEqual(destinations.slice(0, 2), [
       { value: "", text: "ページ直下" },
-      { value: "hero", text: "ボックス（セクション）" },
+      { value: "hero", text: "セクション" },
     ]);
     assert.equal(destinations.some(({ text }) => text.includes("hero") || text.includes("heading")), false);
     await click("下へ"); assert.equal(document.querySelector('[data-node-id="heading"] button.e-layer').getAttribute("aria-selected"), "true");
