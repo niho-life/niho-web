@@ -142,6 +142,7 @@ export type LocalizationCommandInput = CommandBase & (
   | { readonly action: "set-value"; readonly value: string | LocalizedRichText }
   | { readonly action: "adopt-candidate"; readonly candidateId: string }
   | { readonly action: "review-current" }
+  | { readonly action: "clear-value" }
   | { readonly action: "set-image"; readonly image: LocalizedAsset | null }
   | { readonly action: "review-image" }
 );

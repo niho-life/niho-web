@@ -157,6 +157,30 @@ test("editor: source and translation side by side, autosave about a second after
   } finally { await app.cleanup(); }
 });
 
+test("clear: the translation is cleared only after confirming, and the input is emptied", async () => {
+  const memory = createLocalizationMemory();
+  const app = await setup({ adapter: memory.adapter });
+  try {
+    await openRow("トップ");
+    assert.equal(button("訳を消す", card("cover")), undefined, "images are put back with their own button");
+    await click(button("訳を消す", card("title")), "clear");
+    assert.ok(dialog().textContent.includes("この項目の訳を消しますか"));
+    await press("やめる", dialog());
+    assert.equal(commands(memory, "clear-value").length, 0, "cancel sends nothing");
+    assert.equal(inputText("title"), "Workshop by the sea");
+    await setText("title", "Workshop by the sea, unsaved");
+    await click(button("訳を消す", card("title")), "clear");
+    await press("訳を消す", dialog());
+    assert.deepEqual({ ...commands(memory, "clear-value")[0].input, operationId: "x" }, { itemKey: "aG9tZQ", operationId: "x", unitId: "title", expectedVersion: "v1", expectedSourceVersion: "s1", action: "clear-value" });
+    assert.equal(commands(memory, "set-value").length, 0, "the unsaved input is dropped, not saved first");
+    assert.equal(inputText("title"), "", "the input is emptied");
+    assert.ok(card("title").querySelector(".lw-unit-head").textContent.includes("未翻訳"));
+    assert.equal(button("訳を消す", card("title")), undefined, "nothing left to clear");
+    await wait(1300);
+    assert.equal(commands(memory, "set-value").length, 0, "the dropped input is not saved later");
+  } finally { await app.cleanup(); }
+});
+
 test("conflict: another editor's change or a new source is never overwritten", async () => {
   const memory = createLocalizationMemory();
   const app = await setup({ adapter: memory.adapter, autosaveDelay: 50 });

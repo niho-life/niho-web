@@ -249,6 +249,7 @@ type LocalizationCommandInput = {
   | { action: 'set-value'; value: string | LocalizedRichText }     // 文字・リッチテキスト
   | { action: 'adopt-candidate'; candidateId: string }               // 翻訳案を使う
   | { action: 'review-current' }                                     // 今の訳文を確認済みにする（文字・リッチテキスト）
+  | { action: 'clear-value' }                                        // 訳文を消して未翻訳に戻す（文字・リッチテキスト）。翻訳案は残す
   | { action: 'set-image'; image: LocalizedAsset | null }            // 画像を差し替える。null は原文と同じに戻す
   | { action: 'review-image' }                                       // 差し替えた画像を確認済みにする
 );
@@ -257,9 +258,10 @@ type LocalizationCommandInput = {
 - **CAS。** `expectedVersion` が今の項目の版と違う、または `expectedSourceVersion` が今の原文の版と違うときは、書かずに `{ status: "conflict", unit, summary }`（`unit` は最新）を返します。版は項目ごとに比べるので、同じ 1 件の別の項目を別の人が直していても衝突しません。
 - **冪等。** `operationId` は画面が操作ごとに作ります。同じ `operationId` の再送（通信が切れたときの再試行など）は二重に書かず、前回と同じ結果を返してください。保存しておく期間は 24 時間以上を推奨します。
 - **応答。** `applied` の `unit` は書いた後の項目、`summary` はその 1 件の一覧の行（状態・件数の更新に使う）です。`set-value` で訳文を直すと、確認済みだった項目は `draft` に戻します。
+- **訳を消す。** `clear-value` は訳文（下書き・確認済み）を消し、項目を未翻訳（必須なら `missing`・任意なら `source`）に戻します。翻訳案は残します。訳文の無い項目と画像は `invalid` です（画像は `set-image` に `null` で原文に戻します）。
 - **invalid。** 札が合わない・長すぎる・空にできない項目を空にした・画像が使えない、などは `{ status: "invalid", message }` で、`message` を項目の下に出します。
 - 項目が原文から消えたときは `not_found` です。画面は「この項目は原文から無くなりました」と出し、読み直しを勧めます。
-- 権限の確かめ: `set-value`・`adopt-candidate`・`set-image` は `edit`、`review-current`・`review-image` は `review` です。
+- 権限の確かめ: `set-value`・`adopt-candidate`・`clear-value`・`set-image` は `edit`、`review-current`・`review-image` は `review` です。
 
 ### 翻訳の依頼（requestTranslation・readJob）
 
