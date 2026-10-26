@@ -102,9 +102,16 @@ test("list: nav, counts, rows, search and tabs follow the definitions and both o
 
 test("editor: opens an item, splits main and side, and autosaves once about a second after editing", async () => {
   const fixture = createAdapter();
-  const app = await setup({ adapter: fixture.adapter });
+  const app = await setup({ adapter: fixture.adapter, itemLanguages: {
+    source: "日本語", target: "English", targetHref: ({ collectionId, itemId }) => `/translations/${collectionId}/${itemId}`,
+  } });
   try {
     await openRow("海辺の朝さんぽ");
+    const languages = document.querySelector('.cw-language-tabs');
+    assert.equal(languages.querySelector('[aria-current="page"]').textContent, "日本語（編集中）");
+    assert.equal(languages.querySelector('a').getAttribute('href'), '/translations/posts/p1');
+    assert.equal(languages.querySelector('a').getAttribute('target'), '_blank');
+    assert.equal(languages.querySelector('a').getAttribute('rel'), 'noopener noreferrer');
     assert.deepEqual(app.navigations.at(-1), { collectionId: "posts", itemId: "p1" });
     assert.deepEqual(fixture.named("loadItem").at(-1).input, { collectionId: "posts", itemId: "p1" });
     const mainKeys = [...document.querySelectorAll(".cw-editor-main [data-field]")].map((node) => node.dataset.field);
