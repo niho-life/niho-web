@@ -10,6 +10,7 @@ import { Placeholder } from "@tiptap/extensions";
 import { DOMParser as ProseMirrorDOMParser, DOMSerializer, Fragment, type Node as ProseMirrorNode, type ParseOptions, type Schema } from "@tiptap/pm/model";
 import { Plugin, PluginKey, type Transaction } from "@tiptap/pm/state";
 import StarterKit from "@tiptap/starter-kit";
+import { uiColor } from "../src/ui-tokens.js";
 import { HEADING_ID, studioRichTextHref } from "./rich-text-sanitize.js";
 
 export type RichTextSchemaOptions = {
@@ -270,7 +271,7 @@ export function createRichTextExtensions(options: RichTextSchemaOptions): Extens
       codeBlock: false,
       // 既存のリンクの target・rel は読んだまま書き戻す（無いものに足さない）。新しいリンクの target は道具の側で付ける
       link: { openOnClick: false, autolink: true, HTMLAttributes: { target: null, rel: null, class: null }, isAllowedUri: (url) => studioRichTextHref(url) !== null },
-      dropcursor: { color: "#2c6bdc", width: 3 },
+      dropcursor: { color: uiColor.accent, width: 3 },
     }),
     Head,
     Figure.configure({ displayImage: options.displayImage }),

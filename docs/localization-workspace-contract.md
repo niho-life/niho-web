@@ -52,7 +52,7 @@ const adapter: LocalizationWorkspaceAdapter = {
 | `autosaveDelay` | 直してから自動で保存するまでの待ち時間（ms）。既定は 1000。 |
 | `pollInterval` | 翻訳の依頼・原文の取り込み・公開の進み具合を読み直す間隔（ms）。既定は 2000。 |
 
-部品は `<style>` で `localizationWorkspaceCss` を入れます（CMS の画面の `collectionCss` を含みます）。inline の `<style>` を CSP で拒むホストは、この文字列をファイルにして読み込んでください。根の class は `.nw-collection.nw-localization`、翻訳の画面だけのクラスの接頭辞は `lw-` です。色は CMS の画面と同じ `--niho-*` を使います。
+部品は `<style>` で `localizationWorkspaceCss` を入れます（CMS の画面の `collectionCss` を含みます）。inline の `<style>` を CSP で拒むホストは、この文字列をファイルにして読み込んでください。根の class は `.nw-collection.nw-localization`、翻訳の画面だけのクラスの接頭辞は `lw-` です。色・角丸・文字は CMS の画面と同じ `@niho/web/ui-tokens` のトークン（`--nw-*`）を使います。
 
 ## 識別子と大きさの上限
 

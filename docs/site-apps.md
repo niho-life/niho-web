@@ -1,6 +1,6 @@
 # サイト設定の連携画面
 
-`@niho/web/site-apps` の `SiteApps` は「サイト設定 > 連携」に埋め込むReactコンポーネントです。GA4とSearch Consoleだけを表示し、計測タグとGA4レポート、サイト所有権とSearch Consoleレポートの状態・操作を分けます。CSSはコンポーネントがscopeして出力し、既存の `--niho-*` 色tokenを利用します。
+`@niho/web/site-apps` の `SiteApps` は「サイト設定 > 連携」に埋め込むReactコンポーネントです。GA4とSearch Consoleだけを表示し、計測タグとGA4レポート、サイト所有権とSearch Consoleレポートの状態・操作を分けます。CSSはコンポーネントがscopeして出力し、色・角丸・文字は `@niho/web/ui-tokens` のトークン（`--nw-*`）を使います（[見た目と実装の契約](editor-ui-design.md#見た目と実装の契約)）。
 
 ```tsx
 import { SiteApps } from '@niho/web/site-apps';

@@ -48,6 +48,7 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 | `@niho/web/pages` | ページのパス検証・ツリー・内部リンク影響、公開メタ情報（title / description / OG画像 / robots / canonical）の解決と `<head>` 出力。React不要 |
 | `@niho/web/site-analytics` | GA4 / Search Console の接続状態・所有確認・変更計画の型と境界検証。React不要 |
 | `@niho/web/site-apps` | サイト設定の `SiteApps`。計測タグ・所有権確認・レポート接続を分け、変更確認・再試行・解除を提供（[接続方法](docs/site-apps.md)） |
+| `@niho/web/ui-tokens` | Studio と各画面が共有する配色・角丸・文字のトークン（`uiTokensCss`・`uiColor`）。各画面の CSS は先頭にこれを持ち、ホストは `--nw-*` を上書きできる。React不要（[見た目と実装の契約](docs/editor-ui-design.md#見た目と実装の契約)） |
 | `@niho/web/assets` | 素材参照の列挙・解決済み素材 map の検証、素材ライブラリ adapter の型と応答検証。React不要 |
 | `@niho/web/history` | 文書の差分（`diffDocuments`）、版履歴の項目の検証、端末内の緊急復元ストア（ページ・サイトごとの共通部品）。React不要 |
 | `@niho/web/analytics` | GA4 / Search Console を分けて示す読取専用画面、型付きadapter、応答検証 |

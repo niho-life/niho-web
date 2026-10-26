@@ -56,19 +56,21 @@ await Promise.all([
     legalComments: "none"
   }),
   copyFile(join(studioDirectory, "public", "index.html"), join(publicOutput, "index.html")),
+  // 配色・角丸・文字のトークン（src/ui-tokens.ts）は全ページが最初に読む studio.css の先頭に置く（#159）。
   // 本文の編集部品の CSS（CSP で inline の <style> を使えない）は studio.css の後ろに足す
   (async () => {
-    const [studioCss, { studioRichTextCss }] = await Promise.all([readFile(join(studioDirectory, "public", "studio.css"), "utf8"), cssModule("rich-text-style.ts", studioDirectory)]);
-    await writeFile(join(publicOutput, "assets", "studio.css"), `${studioCss.trimEnd()}\n${studioRichTextCss.trim()}\n`);
+    const [studioCss, { studioRichTextCss }, uiTokensCss] = await Promise.all([readFile(join(studioDirectory, "public", "studio.css"), "utf8"), cssModule("rich-text-style.ts", studioDirectory), tokensCss()]);
+    await writeFile(join(publicOutput, "assets", "studio.css"), `${uiTokensCss.trim()}\n${studioCss.trim()}\n${studioRichTextCss.trim()}\n`);
   })(),
+  // 部品の CSS は先頭にトークンを持つ（ほかのホストは <style> だけで描ける）。Studio は studio.css で読むので外す
   (async () => {
-    const { projectViewCss } = await cssModule("project-view-style.ts", join(studioDirectory, "..", "src"));
-    await writeFile(join(publicOutput, "assets", "project-view.css"), projectViewCss);
+    const [{ projectViewCss }, uiTokensCss] = await Promise.all([cssModule("project-view-style.ts", join(studioDirectory, "..", "src")), tokensCss()]);
+    await writeFile(join(publicOutput, "assets", "project-view.css"), withoutTokens(projectViewCss, uiTokensCss, "projectViewCss"));
   })(),
   // CMS のコレクション画面の CSS（部品の inline の <style> は CSP で当たらない）
   (async () => {
-    const { collectionCss } = await cssModule("collection-style.ts", join(studioDirectory, "..", "src"));
-    await writeFile(join(publicOutput, "assets", "collection.css"), collectionCss);
+    const [{ collectionCss }, uiTokensCss] = await Promise.all([cssModule("collection-style.ts", join(studioDirectory, "..", "src")), tokensCss()]);
+    await writeFile(join(publicOutput, "assets", "collection.css"), withoutTokens(collectionCss, uiTokensCss, "collectionCss"));
   })(),
   // 翻訳の画面だけの CSS（localizationWorkspaceCss は collectionCss の後ろに足したもの。collectionCss は上の collection.css）
   (async () => {
@@ -80,6 +82,18 @@ await Promise.all([
     await writeFile(join(publicOutput, "assets", "localization.css"), localizationWorkspaceCss.slice(collectionCss.length));
   })()
 ]);
+
+/** src/ui-tokens.ts のトークンの CSS。 */
+async function tokensCss() {
+  const { uiTokensCss } = await cssModule("ui-tokens.ts", join(studioDirectory, "..", "src"));
+  return uiTokensCss;
+}
+
+/** 部品の CSS から先頭のトークンを外す。先頭に無ければ build を止める（studio.css だけが定義を持つ前提が崩れるため）。 */
+function withoutTokens(css, uiTokensCss, name) {
+  if (!css.startsWith(uiTokensCss)) throw new Error(`${name} no longer starts with uiTokensCss`);
+  return css.slice(uiTokensCss.length);
+}
 
 /** CSS の文字列を export する TS を読み込む。 */
 async function cssModule(file, directory) {

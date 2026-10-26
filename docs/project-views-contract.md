@@ -123,7 +123,7 @@ const adapter: ProjectDashboardAdapter = {
 
 ホストは一覧・Dashboard・Editorを別の画面として切り替え、スマホで一覧の下にDashboardや作成フォームを積まないでください。遷移後の見出しへのfocus・scroll復元、Editorの未保存内容の保持または確認もホストの責務です。一覧へ戻るときは任意の `initialFocusProjectId` を指定すると、読込後に対象の一覧行のボタンへ一度だけfocusを戻し、行を表示範囲へ入れます。未指定・該当Projectなしの場合はfocusを移しません。各操作はnative button/link、検索はlabel、focus-visibleを持ちます。320pxでは表を縦の一覧行に変え、カードを隠して名前とURLを折り返します。
 
-CSSはpackage内にscopeし、既存packageと同じfont・余白・緑系surfaceの慣習を使います。ホストが定義している場合は `--niho-text` / `--niho-text-sub` / `--niho-border` / `--niho-surface` / `--niho-surface-subtle` / `--niho-primary-bg` / `--niho-primary-ink` を使い、未定義ならpackage内のfallbackで描画します。NIHOappへのimportはありません。
+CSSはpackage内にscopeし、色・角丸・文字は `@niho/web/ui-tokens` のトークン（`--nw-*`）だけを使います（[見た目と実装の契約](editor-ui-design.md#見た目と実装の契約)）。CSSの先頭にトークンの定義を持ち、詳細度は0なので、ホストは `:root` や `.nw-project-view` で同じ名前を上書きできます。黒のボタンは「作成」だけ、緑は公開中の点だけです。NIHOappへのimportはありません。
 
 ## デモと検証
 

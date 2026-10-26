@@ -1,6 +1,7 @@
 import type { CSSProperties, ReactNode } from "react";
 import type { EditorBlockRegistry } from "../src/editor-types.js";
 import type { BlockContract, BlockContracts, BlockSlot, PublicPropValue } from "../src/types.js";
+import { uiColor } from "../src/ui-tokens.js";
 
 type PreviewKind = "frame" | "form" | "list" | "articles" | "carousel" | "detail";
 type PreviewProps = Record<string, PublicPropValue>;
@@ -35,9 +36,10 @@ const previewKinds: Readonly<Record<string, PreviewKind>> = {
   KamakuraCmsDetail: "detail"
 };
 
-const muted: CSSProperties = { color: "#67736d", fontSize: 13 };
-const sampleImage: CSSProperties = { display: "grid", placeItems: "center", minHeight: 80, background: "#e8e6e0", color: "#67736d" };
-const sampleField: CSSProperties = { minHeight: 40, padding: 10, border: "1px solid #cbc8c0", borderRadius: 6, color: "#67736d" };
+// キャンバスの iframe の中に出す見本なので、CSS 変数ではなくトークンの値を直接使う（#159）。
+const muted: CSSProperties = { color: uiColor.textSub, fontSize: 13 };
+const sampleImage: CSSProperties = { display: "grid", placeItems: "center", minHeight: 80, background: uiColor.surface2, color: uiColor.textSub };
+const sampleField: CSSProperties = { minHeight: 40, padding: 10, border: `1px solid ${uiColor.borderStrong}`, borderRadius: 6, color: uiColor.textSub };
 
 function slotLabel(slots: Readonly<Record<string, BlockSlot>>, name: string): string {
   return slots[name]?.label ?? name;
@@ -81,7 +83,7 @@ function KamakuraBlockPreview({ block, contract, props }: { block: string; contr
     content = <div>{Object.keys(slots).map((name) => <Slot key={name} name={name} slots={slots} />)}</div>;
   }
 
-  return <section aria-label={`${label}のプレビュー`} style={{ border: "1px dashed #aeb9b1", borderRadius: 10, padding: 14, color: "#34433a", background: "#f8faf8" }}>
+  return <section aria-label={`${label}のプレビュー`} style={{ border: `1px dashed ${uiColor.borderStrong}`, borderRadius: 8, padding: 14, color: uiColor.text, background: uiColor.surface }}>
     <strong>{label}</strong>
     <p style={muted}>安全な表示サンプルです。フォーム送信、予約、決済、CMS取得、埋め込み読み込みは行いません。</p>
     {content}
