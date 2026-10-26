@@ -79,6 +79,14 @@
       "types": "./dist/collection-model.d.ts",
       "import": "./dist/collection-model.js"
     },
+    "./localization-workspace": {
+      "types": "./dist/localization-workspace.d.ts",
+      "import": "./dist/localization-workspace.js"
+    },
+    "./localization-workspace-model": {
+      "types": "./dist/localization-workspace-model.d.ts",
+      "import": "./dist/localization-workspace-model.js"
+    },
     "./assets": {
       "types": "./dist/assets.d.ts",
       "import": "./dist/assets.js"
@@ -127,6 +135,7 @@
     "demo:collections": "npm run build && node examples/collection-demo.mjs",
     "demo:analytics": "node examples/analytics-demo.mjs",
     "demo:localization": "node examples/localization-demo.mjs",
+    "demo:localization-workspace": "npm run build && node examples/localization-workspace-demo.mjs",
     "demo:site-styles": "npm run build && node examples/site-styles-demo.mjs",
     "demo:host-preview": "node examples/host-preview-demo.mjs",
     "demo:kamakura": "npm run build && node examples/kamakura-native-demo.mjs",

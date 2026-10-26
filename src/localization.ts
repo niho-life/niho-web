@@ -332,6 +332,11 @@ function parseValue(input: unknown, kind: LocalizationValueKind, path: string): 
   return { kind: "rich-text", children: source.children.map((child, index) => parseRichNode(child, `${path}.children[${index}]`, count)) };
 }
 
+/** 1 つの値（文字・リッチテキスト・画像）を、overlay と同じ規則（大きさ・入れ子・画像の URL）で確かめて複製を返す。 */
+export function parseLocalizationValue(input: unknown, kind: LocalizationValueKind, path = "$value"): LocalizationValue {
+  return parseValue(input, kind, path);
+}
+
 function richSignature(nodes: readonly LocalizedRichTextNode[]): string[] {
   const result: string[] = [];
   const visit = (node: LocalizedRichTextNode, parent: string): void => {
