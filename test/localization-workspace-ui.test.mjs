@@ -79,6 +79,7 @@ test("list: staged loading, groups, band, filters, search and excluded reasons",
     assert.ok(byTitle("トップ").textContent.includes("未翻訳"));
     assert.ok(byTitle("トップ").querySelector(".lw-cell-reviewed").textContent.includes("0/3"));
     assert.ok(byTitle("私たちについて").textContent.includes("原文が更新"));
+    assert.ok(byTitle("私たちについて").textContent.includes("含むもの：ページ本文 · 案内カード"));
     assert.ok(byTitle("私たちについて").textContent.includes("原文に未公開の下書き"));
     assert.ok(byTitle("フッター").textContent.includes("確認済み"));
     assert.equal(byTitle("会員向けのお知らせ").querySelector(".cw-row-sub").textContent, "訳さない理由：会員だけが読むページなので訳しません。");
@@ -104,6 +105,19 @@ test("list: staged loading, groups, band, filters, search and excluded reasons",
     await press("共通部分（1 件）");
     assert.deepEqual(rowTitles(), ["フッター"]);
     assert.equal(document.querySelector(".cw-list-title h2").textContent, "共通部分");
+  } finally { await app.cleanup(); }
+});
+
+test("list: an edit destination opens the host editor and unsafe links fall back to the inline view", async () => {
+  const memory = createLocalizationMemory();
+  const adapter = { ...memory.adapter, editLink: (key) => key === "YWJvdXQ" ? "/studio/pages/about?locale=en" : "javascript:alert(1)" };
+  const app = await setup({ adapter });
+  try {
+    const edit = document.querySelector('a.cw-row-open[data-item-key="YWJvdXQ"]');
+    assert.equal(edit?.getAttribute("href"), "/studio/pages/about?locale=en");
+    assert.equal(edit?.getAttribute("referrerpolicy"), "no-referrer");
+    assert.ok(document.querySelector('button.cw-row-open[data-item-key="aG9tZQ"]'));
+    assert.ok(!document.querySelector('a.cw-row-open[data-item-key="aG9tZQ"]'));
   } finally { await app.cleanup(); }
 });
 

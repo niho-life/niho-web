@@ -61,6 +61,8 @@ export type LocalizationItemSummary = {
   readonly groupId: string;
   readonly title: string;
   readonly path: string | null;
+  /** 1 行にまとめた内容の、人が読む短い名前。古い adapter は省略できる。 */
+  readonly includedParts?: readonly string[];
   readonly state: LocalizationItemState;
   readonly excludedReason: string | null;
   /** 確認済み n/m の m（訳す項目の数）。 */
@@ -176,6 +178,8 @@ export interface LocalizationWorkspaceAdapter {
   pickAsset?(input: { readonly itemKey: string; readonly unitId: string }, signal: AbortSignal): Promise<unknown>;
   /** 任意（同期）。原文を CMS で開く URL（https か "/" から始まる同じサイトの path）。null なら出さない。 */
   sourceLink?(itemKey: string): string | null;
+  /** 任意（同期）。その項目のサブ言語の編集画面への URL。null ならこの画面で項目を開く。 */
+  editLink?(itemKey: string): string | null;
 }
 
 /* ---------- 上限と小さな検証 ---------- */
@@ -476,7 +480,7 @@ export function parseLocalizationOverviewResult(input: unknown): LocalizationOve
 /* ---------- 一覧・1 件・項目 ---------- */
 
 const ITEM_STATES: readonly LocalizationItemState[] = ["untranslated", "draft", "source-changed", "reviewed", "excluded"];
-const SUMMARY_KEYS = ["key", "groupId", "title", "path", "state", "excludedReason", "totalUnits", "reviewedUnits", "imagesUnreviewed", "sourceDraftPending", "updatedAt", "updatedBy"];
+const SUMMARY_KEYS = ["key", "groupId", "title", "path", "includedParts", "state", "excludedReason", "totalUnits", "reviewedUnits", "imagesUnreviewed", "sourceDraftPending", "updatedAt", "updatedBy"];
 
 function parseSummaryFields(source: Record<string, unknown>, path: string): LocalizationItemSummary {
   if (!ITEM_STATES.includes(source.state as LocalizationItemState)) fail(`${path}.state`, "invalid state");
@@ -485,9 +489,11 @@ function parseSummaryFields(source: Record<string, unknown>, path: string): Loca
   if ((state === "excluded") !== (excludedReason !== null)) fail(`${path}.excludedReason`, "excluded items need a reason and others have none");
   const totalUnits = count(source.totalUnits, `${path}.totalUnits`, LOCALIZATION_LIMITS.units), reviewedUnits = count(source.reviewedUnits, `${path}.reviewedUnits`, LOCALIZATION_LIMITS.units);
   if (reviewedUnits > totalUnits) fail(`${path}.reviewedUnits`, "reviewed exceeds units");
+  const includedParts = source.includedParts === undefined ? undefined : array(source.includedParts, `${path}.includedParts`, 8).map((part, index) => name(part, `${path}.includedParts[${index}]`, 80));
+  if (includedParts && new Set(includedParts).size !== includedParts.length) fail(`${path}.includedParts`, "duplicate part");
   return {
     key: itemKey(source.key, `${path}.key`), groupId: shortId(source.groupId, `${path}.groupId`), title: lineText(source.title, `${path}.title`, 1000),
-    path: sitePath(source.path, `${path}.path`), state, excludedReason, totalUnits, reviewedUnits,
+    path: sitePath(source.path, `${path}.path`), ...(includedParts === undefined ? {} : { includedParts }), state, excludedReason, totalUnits, reviewedUnits,
     imagesUnreviewed: count(source.imagesUnreviewed, `${path}.imagesUnreviewed`, LOCALIZATION_LIMITS.units),
     sourceDraftPending: bool(source.sourceDraftPending, `${path}.sourceDraftPending`),
     updatedAt: timestamp(source.updatedAt, `${path}.updatedAt`), updatedBy: nullableName(source.updatedBy, `${path}.updatedBy`),

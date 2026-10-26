@@ -103,6 +103,7 @@ parser は未知の key を拒み、次の形と上限を確かめます。上�
 | `uploadImage`（任意） | `{ itemKey, unitId, file }` | `{ status: "uploaded", image }` / `{ status: "rejected", reason: "type" \| "size" \| "permission" \| "invalid" }` |
 | `pickAsset`（任意） | `{ itemKey, unitId }` | `{ status: "picked", image }` / `{ status: "cancelled" }`（素材の選び方の画面はホストが出す） |
 | `sourceLink?(itemKey)` | —（同期） | 原文を CMS で開く URL（https、または `/` から始まる同じサイトの path）か `null` |
+| `editLink?(itemKey)` | —（同期） | サブの言語を直すホスト画面の URL。ページはエディタ、CMS 項目は項目のサブ言語タブ。安全な URL があれば行はその画面へ移り、無ければ従来の翻訳項目画面を開く |
 
 - 応答の `summary.key`・`item.key`・`unit.unitId` は要求と一致必須です（違えば例外）。
 - 読み取りも POST で送れるよう、入力はすべて JSON の本文に収まる形です。query string は使いません。
@@ -154,6 +155,7 @@ type LocalizationItemSummary = {
   groupId: string;                // overview.groups のどれか（無ければ「すべて」にだけ出す）
   title: string;                  // 原文の題名（空なら「無題」と出す）
   path: string | null;            // 原文のアドレス。"/" から始まる
+  includedParts?: string[];       // 同じ行へまとめた内容（人が読む短い名前。最大 8 件）
   state: 'untranslated' | 'draft' | 'source-changed' | 'reviewed' | 'excluded';
   excludedReason: string | null;  // state が excluded のときだけ・必須（例「英語版を作らない設定です」）
   totalUnits: number; reviewedUnits: number;    // 確認済み n/m（reviewedUnits <= totalUnits）
@@ -375,7 +377,7 @@ type PreviewRenderMessage = {
 - 上に「{訳す言語}版」の帯: 公開中の版と日時、確認済み n/m 件、「{訳す言語}版を公開…」（`publish`）、「公開の履歴」、原文の取り込みの進み具合、途中の公開の「続ける」。
 - 左にコンテンツの種類と件数（「すべて」を先頭に）。幅 900px 以下は上に横並び。
 - 絞り込み: 初回は「要対応」。要対応／確認済み／すべて／対象外（件数つき）を切り替えられる。検索を始めると全件から題名とアドレスを探し、項目から一覧へ戻ったときは元の行を見つけられるよう「すべて」を表示する。「要対応」が空なら「すべてを見る」で切り替えられる。
-- 行: 状態の印（形と言葉）・題名（下にアドレス、対象外は理由）・確認済み n/m・未確認の画像の数・最終更新。`sourceLink` が安全な URL を返す行には「原文を編集」を出す。
+- 行: 状態の印（形と言葉）・題名（下にアドレス、対象外は理由）・任意の「含むもの」・確認済み n/m・未確認の画像の数・最終更新。ホストが同じページや項目の部品を 1 件に集約し、内部名の代わりに `includedParts` へ人が読む名前を返す。`editLink` が安全な URL を返す行はホストのサブ言語編集画面へ移り、無ければこの画面の項目を開く。`sourceLink` が安全な URL を返す行には「原文を編集」を出す。
 - 「すべて」と各種類では、対象外の行を一覧の下の折りたたみへ分ける。検索中は一致した対象外も見えるように開く。「対象外」の絞り込みでは直接一覧に出す。
 
 1 件の編集:

@@ -34,6 +34,8 @@ const localizationCss = `
 .nw-localization .cw-nav-count+.lw-needs{margin-left:4px}
 .nw-localization .lw-rows-head,.nw-localization .lw-row{grid-template-columns:minmax(0,1fr) 230px 90px 150px}
 .nw-localization .lw-row .cw-row-open{padding-left:6px}
+.nw-localization .lw-edit-link{text-decoration:none}
+.nw-localization .lw-included-parts{font-size:11.5px}
 .nw-localization .lw-cell-reviewed{font-variant-numeric:tabular-nums}
 .nw-localization .lw-source-link{width:max-content;max-width:100%;margin-top:3px;color:var(--nw-text);font-size:12px;font-weight:600;text-decoration:underline;text-underline-offset:3px}
 .nw-localization .lw-source-link:hover{color:var(--nw-accent-strong)}
