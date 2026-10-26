@@ -16,7 +16,7 @@
 - host allowlistに含まれる業務blockだけ
 - source / config / target overlayのversionとdigest
 - CSS、CMS、asset等、PageDocument外にあるものをhostが渡した範囲だけのresource binding
-- target言語では全ページと共通内容の確認完了、抽出issueが0件であること
+- target言語では全公開ページに現在の原文に合う訳があり、共通内容・用語集と確認必須ページの確認が完了し、抽出issueが0件であること。ページの自動訳は未確認でもよい
 
 source言語は翻訳reviewを要求しませんが、文書identity、公開catalogue、block、共有参照、resource bindingはtargetと同じく検証します。`requiredResourceIds` に指定したCSS/CMS等のbindingが無ければ失敗します。指定されていない外部resourceを「snapshotに固定済み」とは扱いません。
 
@@ -47,12 +47,17 @@ const snapshot = await createPublishedSiteLocaleSnapshot({
   },
   requiredResourceIds: ["siteCss"],
   completeness: {
-    reviewedPageIds: authoritativePublicCatalogue.map((page) => page.pageId),
+    translatedPageIds: authoritativePublicCatalogue.map((page) => page.pageId),
+    reviewRequiredPageIds: authoritativePublicCatalogue.filter((page) => page.reviewBeforeTargetPublish).map((page) => page.pageId),
+    reviewedPageIds: authoritativePublicCatalogue.filter((page) => page.reviewBeforeTargetPublish).map((page) => page.pageId),
     sharedReviewed: true,
+    glossaryReviewed: true,
     unresolvedIssues: []
   }
 }, { blocks });
 ```
+
+`translatedPageIds`、`reviewRequiredPageIds`、`glossaryReviewed` は3つを同時に渡します。hostは現在の原文と照合でき、翻訳済みのページだけを `translatedPageIds` に入れます。`reviewRequiredPageIds` はサイト設定で「サブは確認してから公開」にした公開ページのIDです。target公開時に前者は公開ページ集合と完全一致し、後者は `reviewedPageIds` に含まれなければ失敗します。共通部分と用語集も確認済みである必要があります。3つを省いた既存hostには従来の全ページ確認条件を適用します。公開直前の原文版と実際の訳文の照合はhostの責務です。
 
 `contentDigest` はcanonical JSONに対するWeb Crypto SHA-256です。内容同一性の比較用であり、署名、認証、認可の代用ではありません。保存済みsnapshotの読込時は `verifyPublishedSiteLocaleSnapshot` でparserとdigestの両方を検証します。
 
