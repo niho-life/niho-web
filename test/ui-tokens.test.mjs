@@ -12,7 +12,8 @@ const read = (path) => readFileSync(join(root, path), "utf8");
 const styleSources = [
   ...readdirSync(join(root, "src")).filter((name) => /-style(?:-css)?\.ts$/u.test(name)).map((name) => `src/${name}`),
   "studio/public/studio.css",
-  "studio/rich-text-style.ts"
+  "studio/rich-text-style.ts",
+  "src/editor-localization.tsx"
 ];
 // 「#159」のような Issue 番号を色と取り違えないよう、色の前に来る文字を限る。コメントだけの行は見ない。
 const hexColor = /(?<=[:\s(,"'`=])#([0-9a-f]{8}|[0-9a-f]{6}|[0-9a-f]{3,4})\b/giu;
@@ -95,6 +96,15 @@ test("screen stylesheets use the tokens only: no color values, shadows that floa
     for (const shadow of code.match(/box-shadow:[^;}]+/gu) ?? []) assert.match(shadow, /^box-shadow:(?:none|inset -?\d+(?:px)? -?\d+(?:px)? 0 |0 0 0 \dpx )/u, `${path} ${shadow}`);
   }
   assert.doesNotMatch(read("studio/client.tsx"), /studio-kicker/u, "the uppercase kicker above headings is gone");
+});
+
+test("every variable a screen stylesheet reads is defined by the tokens or by that stylesheet", () => {
+  // 廃止した名前（--e-green など）を読むと色が消えるので、定義の無い var() を拒む。ホストが渡す値は予備値付きで読む。
+  const defined = new Set([...uiTokensCss.matchAll(/--([a-z0-9-]+):/gu)].map((match) => match[1]));
+  const sources = styleSources.map((path) => [path, read(path)]);
+  for (const [, code] of sources) for (const match of code.matchAll(/--([a-z0-9-]+):/gu)) defined.add(match[1]);
+  const missing = sources.flatMap(([path, code]) => [...code.matchAll(/var\(--([a-z0-9-]+)(,?)/gu)].filter((match) => !match[2] && !defined.has(match[1])).map((match) => `${path} --${match[1]}`));
+  assert.deepEqual([...new Set(missing)], []);
 });
 
 test("focus rings are 2px and blue on every screen", () => {
