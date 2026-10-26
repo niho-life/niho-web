@@ -47,7 +47,7 @@ export const collectionCss = `
 .nw-collection .cw-nav-label{min-width:0;overflow-wrap:anywhere}
 .nw-collection .cw-nav-count{margin-left:auto;color:var(--cw-muted);font-size:12px;font-weight:500;font-variant-numeric:tabular-nums}
 .nw-collection .cw-main{min-width:0}
-.nw-collection .cw-list{max-width:1180px;margin:0 auto;padding:24px 32px 64px}
+.nw-collection .cw-list{max-width:1180px;margin:0 auto;padding:24px 32px 64px;container:cw-list/inline-size}
 .nw-collection .cw-list-head{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:14px}
 .nw-collection .cw-list-title{display:flex;align-items:baseline;gap:10px;min-width:0}
 .nw-collection .cw-list-title h2{margin:0;font-size:22px;line-height:1.35;overflow-wrap:anywhere}
@@ -260,6 +260,17 @@ export const collectionCss = `
 .nw-collection .cw-list-title h2{font-size:20px}
 .nw-collection .cw-list-actions{width:100%;margin-left:0}
 .nw-collection .cw-search{flex:1 1 140px;width:auto}
+.nw-collection .cw-back-label{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.nw-collection .cw-back{padding:0 8px}
+.nw-collection .cw-editor-status{order:3;flex-basis:100%}
+.nw-collection .cw-image-preview{width:96px;height:64px}
+.nw-collection .cw-image[data-shape=round] .cw-image-preview{width:64px}
+.nw-collection .cw-toast-region{bottom:16px}
+.nw-collection .cw-gallery-row{grid-template-columns:minmax(0,1fr)}
+.nw-collection .cw-gallery-media{grid-template-columns:auto minmax(0,1fr);align-items:center}
+}
+/* 一覧の行は画面ではなく一覧そのものの幅で 2 段にする（ホストの画面の左のメニューなどで一覧が狭いときも題名を潰さない） */
+@container cw-list (max-width:880px){
 .nw-collection .cw-rows-head{display:none}
 .nw-collection .cw-row{grid-template-columns:minmax(0,1fr) 40px;column-gap:4px;padding:0}
 .nw-collection .cw-row-open{grid-column:1;grid-row:1;align-items:flex-start;padding:12px 0 6px}
@@ -271,22 +282,14 @@ export const collectionCss = `
 .nw-collection .cw-cell-updated{display:block}
 .nw-collection .cw-cell-updated .cw-by{margin-left:6px}
 .nw-collection .cw-row-title{display:-webkit-box;white-space:normal;line-height:1.45;-webkit-line-clamp:2;-webkit-box-orient:vertical}
-.nw-collection .cw-back-label{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
-.nw-collection .cw-back{padding:0 8px}
-.nw-collection .cw-editor-status{order:3;flex-basis:100%}
-.nw-collection .cw-image-preview{width:96px;height:64px}
-.nw-collection .cw-image[data-shape=round] .cw-image-preview{width:64px}
-.nw-collection .cw-toast-region{bottom:16px}
 .nw-collection .cw-table[data-lead] .cw-row{grid-template-columns:var(--cw-lead) minmax(0,1fr) 40px}
 .nw-collection .cw-table[data-lead] .cw-row-lead{grid-column:1;grid-row:1;align-self:start;margin-top:8px}
 .nw-collection .cw-table[data-lead] .cw-row-open{grid-column:2}
 .nw-collection .cw-table[data-lead] .cw-row-menu{grid-column:3}
 .nw-collection .cw-table[data-lead] .cw-row-meta{grid-column:2/-1}
 .nw-collection .cw-bulk-actions{margin-left:0}
-.nw-collection .cw-gallery-row{grid-template-columns:minmax(0,1fr)}
-.nw-collection .cw-gallery-media{grid-template-columns:auto minmax(0,1fr);align-items:center}
 }
-@media (max-width:400px){
+@container cw-list (max-width:400px){
 .nw-collection .cw-table[data-lead] .cw-thumb,.nw-collection .cw-table[data-lead] .cw-thumb[data-shape=round]{width:36px;height:36px}
 .nw-collection .cw-table[data-lead] .cw-row-open{gap:8px}
 .nw-collection .cw-table[data-lead] .cw-row-meta{padding-left:44px}
