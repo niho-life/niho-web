@@ -103,7 +103,7 @@ parser は未知の key を拒み、次の形と上限を確かめます。上�
 | `uploadImage`（任意） | `{ itemKey, unitId, file }` | `{ status: "uploaded", image }` / `{ status: "rejected", reason: "type" \| "size" \| "permission" \| "invalid" }` |
 | `pickAsset`（任意） | `{ itemKey, unitId }` | `{ status: "picked", image }` / `{ status: "cancelled" }`（素材の選び方の画面はホストが出す） |
 | `sourceLink?(itemKey)` | —（同期） | 原文を CMS で開く URL（https、または `/` から始まる同じサイトの path）か `null` |
-| `editLink?(itemKey)` | —（同期） | サブの言語を直すホスト画面の URL。ページはエディタ、CMS 項目は項目のサブ言語タブ。安全な URL があれば行はその画面へ移り、無ければ従来の翻訳項目画面を開く |
+| `editLink?(itemKey)` | —（同期） | サブの言語を直すホスト画面の URL。ページはエディタ、CMS 項目は項目のサブ言語タブ。安全な URL があれば行はその画面へ移り、無ければ従来の翻訳項目画面を開く。Kamakura の `common:<pageId>` は `?page=<pageId>&lang=en` で English キャンバスへ、CMS は `?lang=en` で同じ項目の English タブへ移る。その他の項目はこの画面で編集する |
 
 - 応答の `summary.key`・`item.key`・`unit.unitId` は要求と一致必須です（違えば例外）。
 - 読み取りも POST で送れるよう、入力はすべて JSON の本文に収まる形です。query string は使いません。

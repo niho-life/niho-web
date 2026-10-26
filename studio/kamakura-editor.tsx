@@ -300,6 +300,14 @@ function EditorAlert({ status }: { readonly status: EditorApiStatus }) {
   </div>;
 }
 
+/** 翻訳一覧からの導線だけが初期対象を指定できる。未知の query は通常のページ一覧を開く。 */
+export function kamakuraEditorInitialTarget(search: string): EditorTarget | undefined {
+  const query = new URLSearchParams(search);
+  const pageId = query.get("page"), locale = query.get("lang");
+  if (query.getAll("page").length !== 1 || query.getAll("lang").length !== 1 || pageId === null || !COMMON_PAGE_ID.test(pageId) || locale !== "en") return undefined;
+  return { siteId: KAMAKURA_EDITOR_SITE_ID, pageId, locale: "en" };
+}
+
 export function KamakuraEditor({ project, environment }: { readonly project: Project; readonly environment: string }) {
   if (environment !== "production") throw new Error("Kamakura editor environment is not registered");
   const [catalog, setCatalog] = useState<CatalogState>({ status: "loading" });
@@ -319,12 +327,13 @@ export function KamakuraEditor({ project, environment }: { readonly project: Pro
   const adapter = useMemo(() => ready ? createProjectEditorAdapter(createKamakuraAdapter(ready, setStatus), project) : null, [ready, project]);
   const blocks = useMemo(() => ready ? createKamakuraEditorBlocks(ready.blockContracts) : {}, [ready]);
   const externalFramePolicy = useMemo(() => createExternalFramePolicy({ parentOrigin: window.location.origin, sources: ["https://www.google.com/maps/embed"] }), []);
+  const initialTarget = useMemo(() => kamakuraEditorInitialTarget(window.location.search), []);
   return <main className="studio-editor studio-kamakura-editor">
     {status !== null && <EditorAlert status={status} />}
     {catalog.status === "loading" && <section className="studio-kamakura-state" role="status"><p>ページを読み込んでいます…</p></section>}
     {catalog.status === "error" && <section className="studio-kamakura-state" role="alert"><h1>ページを読み込めませんでした</h1><p>{catalog.errorCode === KAMAKURA_CATALOG_CONTRACT_ERROR_CODE ? "ページ一覧の形式に対応できません。編集内容は変更されていません。管理者へ確認してください。" : catalog.errorCode === VISUAL_EDITOR_FROZEN ? `${FROZEN_MESSAGE}ページ一覧はサイト側の更新後に開けます。` : "編集内容は変更されていません。接続状態を確認して再試行してください。"}</p>{catalog.supportId !== null && <p>問い合わせID: <code>{catalog.supportId}</code></p>}<button type="button" onClick={() => setReload((value) => value + 1)}>再試行</button></section>}
     {ready && (ready.pages.length === 0
       ? <section className="studio-kamakura-state"><h1>編集できるページはありません</h1><p>編集対象のページがありません。ページ一覧を再読み込みしてください。</p><button type="button" onClick={() => setReload((value) => value + 1)}>再読み込み</button></section>
-      : adapter && <PageEditor adapter={adapter} externalFramePolicy={externalFramePolicy} blocks={blocks} assets={kamakuraAssetLibrary} insertableBlocks={["ManagedEmbed"]} builder={studioBuilderDefinition} toolbarStart={<a href={projectRoutePath(window.location.pathname, project.id, project.site.id, "dashboard")} aria-label="ダッシュボードに戻る" title="ダッシュボードに戻る">←</a>} />)}
+      : adapter && <PageEditor adapter={adapter} {...(initialTarget ? { initialTarget } : {})} externalFramePolicy={externalFramePolicy} blocks={blocks} assets={kamakuraAssetLibrary} insertableBlocks={["ManagedEmbed"]} builder={studioBuilderDefinition} toolbarStart={<a href={projectRoutePath(window.location.pathname, project.id, project.site.id, "dashboard")} aria-label="ダッシュボードに戻る" title="ダッシュボードに戻る">←</a>} />)}
   </main>;
 }
