@@ -72,10 +72,11 @@ function liveFor(server: LocalizationWorkspaceUnit): UnitLive {
 export type ItemEditorProps = {
   adapter: LocalizationWorkspaceAdapter; overview: LocalizationOverview; itemKey: string; timeZone: string; autosaveDelay: number; pollInterval: number;
   confirm: (request: ConfirmRequest) => void; onSummary: (summary: LocalizationItemSummary) => void; onBack: () => void; onForbidden: () => void; backLabel?: string; hideSourceLink?: boolean;
+  registerBack?: (back: (() => void) | null) => void;
 };
 
 /** 1 件の編集。項目ごとに原文と訳文を並べ、約 1 秒後に項目ごとに自動で保存する。競合は上書きしない。 */
-export function ItemEditor({ adapter, overview, itemKey, timeZone, autosaveDelay, pollInterval, confirm, onSummary, onBack, onForbidden, backLabel = "一覧へ", hideSourceLink = false }: ItemEditorProps) {
+export function ItemEditor({ adapter, overview, itemKey, timeZone, autosaveDelay, pollInterval, confirm, onSummary, onBack, onForbidden, backLabel = "一覧へ", hideSourceLink = false, registerBack }: ItemEditorProps) {
   const requests = useRequests();
   const baseId = useId();
   const heading = useRef<HTMLHeadingElement>(null);
@@ -390,6 +391,13 @@ export function ItemEditor({ adapter, overview, itemKey, timeZone, autosaveDelay
       run: () => { live.current.units.forEach((unit) => { clearTimeout(unit.timer); unit.dirty = false; }); onBack(); },
     });
   };
+
+  const currentBack = useRef<() => void>(() => {});
+  currentBack.current = () => { void back(); };
+  useEffect(() => {
+    registerBack?.(() => currentBack.current());
+    return () => registerBack?.(null);
+  }, [registerBack]);
 
   const s = live.current, item = s.item;
   if (phase !== "ready" || !item) {

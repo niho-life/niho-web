@@ -52,7 +52,7 @@ const adapter: LocalizationWorkspaceAdapter = {
 | `autosaveDelay` | 直してから自動で保存するまでの待ち時間（ms）。既定は 1000。 |
 | `pollInterval` | 翻訳の依頼・原文の取り込み・公開の進み具合を読み直す間隔（ms）。既定は 2000。 |
 
-`LocalizationItemWorkspace` には同じ `adapter`、対象の `itemKey`、原文のタブへ戻る `onBack` を渡します。概要と対象の 1 件だけを読み、一覧全体や公開画面は読みません。`timeZone`・`autosaveDelay`・`pollInterval` も共通です。原文と訳文のタブは切り替えてもマウントを保つため、自動保存中の入力は残ります。項目エディタ内の「日本語へ」は保存を終えてから戻ります。
+`LocalizationItemWorkspace` には同じ `adapter`、対象の `itemKey`、原文のタブへ戻る `onBack` を渡します。原文の取り込みが進行中なら先に `advanceCatalog` を進め、完了後に対象の 1 件を読みます。一覧全体や公開画面は読みません。`timeZone`・`autosaveDelay`・`pollInterval` も共通です。CMS の言語タブから安全に戻るため、`registerBack` に項目エディタの保存処理を登録します。原文の入力は切替中も残り、訳文は保存してから閉じるので、次に開くと最新の原文を読みます。
 
 部品は `<style>` で `localizationWorkspaceCss` を入れます（CMS の画面の `collectionCss` を含みます）。inline の `<style>` を CSP で拒むホストは、この文字列をファイルにして読み込んでください。根の class は `.nw-collection.nw-localization`、翻訳の画面だけのクラスの接頭辞は `lw-` です。色・角丸・文字は CMS の画面と同じ `@niho/web/ui-tokens` のトークン（`--nw-*`）を使います。
 

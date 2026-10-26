@@ -41,26 +41,44 @@ export function LocalizationWorkspace(props: LocalizationWorkspaceProps) {
 }
 
 /** CMS など、原文の編集画面の中で同じ 1 件だけを直す入口。 */
-export function LocalizationItemWorkspace({ adapter, itemKey, onBack, timeZone = "Asia/Tokyo", autosaveDelay = 1000, pollInterval = 2000 }: {
-  adapter: LocalizationWorkspaceAdapter; itemKey: string; onBack: () => void; timeZone?: string; autosaveDelay?: number; pollInterval?: number;
+export function LocalizationItemWorkspace({ adapter, itemKey, onBack, registerBack, timeZone = "Asia/Tokyo", autosaveDelay = 1000, pollInterval = 2000 }: {
+  adapter: LocalizationWorkspaceAdapter; itemKey: string; onBack: () => void; registerBack?: (back: (() => void) | null) => void; timeZone?: string; autosaveDelay?: number; pollInterval?: number;
 }) {
   const [overview, setOverview] = useState<OverviewState>({ status: "loading" });
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
   const [retry, setRetry] = useState(0);
+  const [syncProgress, setSyncProgress] = useState<string | null>(null);
   useEffect(() => {
     const controller = new AbortController();
     setOverview({ status: "loading" });
-    void adapter.loadOverview(controller.signal).then(parseLocalizationOverviewResult).then((result) => {
-      if (!controller.signal.aborted) setOverview(result.status === "forbidden" ? { status: "forbidden" } : { status: "ready", overview: result.overview });
-    }).catch(() => { if (!controller.signal.aborted) setOverview({ status: "error" }); });
+    setSyncProgress(null);
+    void (async () => {
+      try {
+        let result = parseLocalizationOverviewResult(await adapter.loadOverview(controller.signal));
+        if (result.status === "ready" && result.overview.catalog.state === "updating" && result.overview.permissions.includes("edit")) {
+          for (let round = 0; round < 500 && result.status === "ready" && result.overview.catalog.state === "updating"; round++) {
+            if (controller.signal.aborted) return;
+            const progress = result.overview.catalog.progress;
+            setSyncProgress(`原文を同期中: ${progress.done}/${progress.total}`);
+            if (round > 0 && !(await pause(pollInterval, () => controller.signal.aborted))) return;
+            const next = parseLocalizationCatalogResult(await adapter.advanceCatalog({}, controller.signal));
+            if (next.status === "forbidden") { if (!controller.signal.aborted) setOverview({ status: "forbidden" }); return; }
+            result = parseLocalizationOverviewResult(await adapter.loadOverview(controller.signal));
+          }
+          if (result.status === "ready" && result.overview.catalog.state === "updating") throw new Error("catalog sync timed out");
+        }
+        if (!controller.signal.aborted) { setSyncProgress(null); setOverview(result.status === "forbidden" ? { status: "forbidden" } : { status: "ready", overview: result.overview }); }
+      } catch { if (!controller.signal.aborted) { setSyncProgress(null); setOverview({ status: "error" }); } }
+    })();
     return () => controller.abort();
-  }, [adapter, retry]);
+  }, [adapter, pollInterval, retry]);
   return <section className="nw-collection nw-localization" aria-label={overview.status === "ready" ? `${overview.overview.languages.target}の翻訳` : "翻訳"}>
     <style dangerouslySetInnerHTML={{ __html: localizationWorkspaceCss }} />
     {overview.status === "ready" && isLocalizationItemKey(itemKey)
       ? <ItemEditor key={itemKey} adapter={adapter} overview={overview.overview} itemKey={itemKey} timeZone={timeZone} autosaveDelay={autosaveDelay} pollInterval={pollInterval}
-          backLabel={`${overview.overview.languages.source}へ`} hideSourceLink confirm={setConfirm} onSummary={() => {}} onForbidden={() => setOverview({ status: "forbidden" })} onBack={onBack} />
-      : <Notice status={overview.status === "ready" ? "error" : overview.status} noun="翻訳" retry={() => setRetry((count) => count + 1)} />}
+          backLabel={`${overview.overview.languages.source}へ`} hideSourceLink {...(registerBack ? { registerBack } : {})} confirm={setConfirm} onSummary={() => {}} onForbidden={() => setOverview({ status: "forbidden" })} onBack={onBack} />
+      : syncProgress && overview.status === "loading" ? <div className="cw-notice"><p role="status">{syncProgress}</p></div>
+        : <Notice status={overview.status === "ready" ? "error" : overview.status} noun="翻訳" retry={() => setRetry((count) => count + 1)} />}
     {confirm && <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />}
   </section>;
 }

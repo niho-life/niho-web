@@ -46,8 +46,8 @@ export function KamakuraCmsWorkspace({ siteOrigin, route, onNavigate }: Kamakura
     itemLanguages={{ source: "日本語", target: "English", targetHref: ({ collectionId, itemId }) => {
       const itemKey = kamakuraCmsLocalizationItemKey(collectionId, itemId);
       return itemKey ? projectAliasPath(KAMAKURA_CMS_PROJECT_ID, KAMAKURA_CMS_SITE_ID, "translations", { itemKey }) : null;
-    }, renderTarget: ({ collectionId, itemId, onBack }) => {
+    }, renderTarget: ({ collectionId, itemId, onBack, registerBack }) => {
       const itemKey = kamakuraCmsLocalizationItemKey(collectionId, itemId);
-      return itemKey && <Suspense fallback={<p role="status">翻訳を読み込んでいます…</p>}><CmsTranslation siteOrigin={siteOrigin} itemKey={itemKey} onBack={onBack} /></Suspense>;
+      return itemKey && <Suspense fallback={<p role="status">翻訳を読み込んでいます…</p>}><CmsTranslation siteOrigin={siteOrigin} itemKey={itemKey} onBack={onBack} registerBack={registerBack} /></Suspense>;
     } }} {...initial} />;
 }

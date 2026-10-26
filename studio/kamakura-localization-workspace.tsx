@@ -43,6 +43,6 @@ export function KamakuraLocalizationWorkspace({ cmsView, siteOrigin, route, onNa
 }
 
 /** CMS の同じ項目画面内で開く訳文。翻訳一覧は読み込まない。 */
-export function KamakuraCmsTranslation({ siteOrigin, itemKey, onBack }: { readonly siteOrigin: string | null; readonly itemKey: string; readonly onBack: () => void }) {
-  return <LocalizationItemWorkspace adapter={adapterFor("workspace", siteOrigin)} itemKey={itemKey} onBack={onBack} />;
+export function KamakuraCmsTranslation({ siteOrigin, itemKey, onBack, registerBack }: { readonly siteOrigin: string | null; readonly itemKey: string; readonly onBack: () => void; readonly registerBack: (back: (() => void) | null) => void }) {
+  return <LocalizationItemWorkspace adapter={adapterFor("workspace", siteOrigin)} itemKey={itemKey} onBack={onBack} registerBack={registerBack} />;
 }

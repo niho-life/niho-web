@@ -7,7 +7,7 @@ import { studioRichTextCss } from "../studio/rich-text-style.js";
 import { adapter, bodyListeners, demo, nextVersion, originalBodies, redirectListeners, store } from "./collection-memory.js";
 import { createLocalizationMemory, seedItems } from "./localization-workspace-memory.mjs";
 
-const translation = createLocalizationMemory({ catalogRounds: 0 });
+const translation = createLocalizationMemory({ catalogRounds: 2 });
 const keyFor = (collectionId: string, itemId: string) => btoa(`cms:${collectionId}:${itemId}`).replace(/=+$/u, "").replace(/\+/gu, "-").replace(/\//gu, "_");
 const example = seedItems()[0];
 translation.state.groups = [{ id: "cms", label: "CMS" }];
@@ -72,7 +72,7 @@ function App() {
     </div>
     <CollectionWorkspace adapter={adapter} {...(renderRichText ? { renderRichText } : {})} {...(start.collectionId ? { initialCollectionId: start.collectionId } : {})} {...(start.itemId ? { initialItemId: start.itemId } : {})} onNavigate={navigate}
       itemLanguages={{ source: "日本語", target: "English", targetHref: ({ collectionId, itemId }) => `/translation-demo?item=${keyFor(collectionId, itemId)}`,
-        renderTarget: ({ collectionId, itemId, onBack }) => <LocalizationItemWorkspace adapter={translation.adapter} itemKey={keyFor(collectionId, itemId)} onBack={onBack} /> }} />
+        renderTarget: ({ collectionId, itemId, onBack, registerBack }) => <LocalizationItemWorkspace adapter={translation.adapter} itemKey={keyFor(collectionId, itemId)} onBack={onBack} registerBack={registerBack} /> }} />
   </>;
 }
 
