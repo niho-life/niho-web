@@ -180,6 +180,11 @@ export type LocaleReleasePending = {
 export type LocaleReleaseBlocker = { readonly id: string; readonly message: string; readonly itemKey: string | null };
 /** 公開で出る・外れるページ（人が読む題名とアドレス）。 */
 export type LocaleReleasePageRef = { readonly path: string; readonly title: string };
+/** 初回公開の確認に見せる内訳。自動訳の件数は未確認の自動訳を含むページ数。 */
+export type LocaleFirstReleaseSummary = {
+  readonly groups: readonly { readonly label: string; readonly pages: number; readonly automaticPages: number }[];
+  readonly excluded: { readonly count: number; readonly examples: readonly (LocaleReleasePageRef & { readonly reason: string })[] };
+};
 export type LocaleReleaseWorkspacePlan = {
   readonly confirmationToken: string;
   readonly expiresAt: string;
@@ -190,6 +195,8 @@ export type LocaleReleaseWorkspacePlan = {
   readonly prepared: LocaleReleaseSummary;
   /** 確認済みのページだけを公開するサイトが返す、今の版から新しく出るページと外れるページ。返さないサイトは null。 */
   readonly changes: { readonly added: readonly LocaleReleasePageRef[]; readonly removed: readonly LocaleReleasePageRef[] } | null;
+  /** 初回公開のときだけ。古い adapter は省略できる。 */
+  readonly firstRelease: LocaleFirstReleaseSummary | null;
 };
 export type LocaleReleaseWorkspaceState = {
   readonly current: LocaleReleaseSummary | null;
@@ -346,7 +353,7 @@ export function parseLocaleReleasePrepareResult(input: unknown, request: LocaleR
   keys(source, ["status", "plan"], "prepare");
   if (source.status !== "ready") fail("prepare.status", "invalid status");
   const plan = record(source.plan, "prepare.plan");
-  keys(plan, ["confirmationToken", "expiresAt", "address", "pages", "previous", "prepared", "changes"], "prepare.plan");
+  keys(plan, ["confirmationToken", "expiresAt", "address", "pages", "previous", "prepared", "changes", "firstRelease"], "prepare.plan");
   const address = oneLine(plan.address, "prepare.plan.address", 2048);
   let url: URL;
   try { url = new URL(address); } catch { fail("prepare.plan.address", "invalid address"); }
@@ -357,11 +364,37 @@ export function parseLocaleReleasePrepareResult(input: unknown, request: LocaleR
   if (previous && (prepared.releaseId === previous.releaseId || prepared.version === previous.version)) fail("prepare.plan.prepared", "prepared release equals the current one");
   if (request.operation === "rollback" && prepared.releaseId !== request.releaseId) fail("prepare.plan.prepared", "rollback target mismatch");
   const expiresAt = exactIso(plan.expiresAt, "prepare.plan.expiresAt");
+  const firstRelease = plan.firstRelease === undefined || plan.firstRelease === null ? null : parseFirstRelease(plan.firstRelease, count(plan.pages, "prepare.plan.pages"));
+  if (firstRelease && (request.operation !== "publish" || previous !== null)) fail("prepare.plan.firstRelease", "only first publication has a summary");
   return {
     status: "ready",
     plan: { confirmationToken: parseLocaleReleaseToken(plan.confirmationToken, "prepare.plan.confirmationToken"), expiresAt, address, pages: count(plan.pages, "prepare.plan.pages"), previous, prepared,
-      changes: plan.changes === undefined || plan.changes === null ? null : parsePageChanges(plan.changes, "prepare.plan.changes") },
+      changes: plan.changes === undefined || plan.changes === null ? null : parsePageChanges(plan.changes, "prepare.plan.changes"), firstRelease },
   };
+}
+function parseFirstRelease(input: unknown, pages: number): LocaleFirstReleaseSummary {
+  const path = "prepare.plan.firstRelease", source = record(input, path);
+  keys(source, ["groups", "excluded"], path);
+  if (!Array.isArray(source.groups) || source.groups.length === 0 || source.groups.length > 100) fail(`${path}.groups`, "expected a bounded list of groups");
+  const groups = source.groups.map((entry, index) => {
+    const at = `${path}.groups[${index}]`, group = record(entry, at);
+    keys(group, ["label", "pages", "automaticPages"], at);
+    const countPages = count(group.pages, `${at}.pages`), automaticPages = count(group.automaticPages, `${at}.automaticPages`);
+    if (countPages === 0 || automaticPages > countPages) fail(at, "invalid group count");
+    return { label: oneLine(group.label, `${at}.label`, 100), pages: countPages, automaticPages };
+  });
+  if (new Set(groups.map((group) => group.label)).size !== groups.length || groups.reduce((sum, group) => sum + group.pages, 0) !== pages) fail(`${path}.groups`, "groups do not match pages");
+  const excluded = record(source.excluded, `${path}.excluded`);
+  keys(excluded, ["count", "examples"], `${path}.excluded`);
+  const excludedCount = count(excluded.count, `${path}.excluded.count`);
+  if (!Array.isArray(excluded.examples) || excluded.examples.length > 20 || excluded.examples.length > excludedCount) fail(`${path}.excluded.examples`, "expected a bounded list of excluded pages");
+  const examples = excluded.examples.map((entry, index) => {
+    const at = `${path}.excluded.examples[${index}]`, page = record(entry, at);
+    keys(page, ["path", "title", "reason"], at);
+    return { path: routePath(page.path), title: oneLine(page.title, `${at}.title`, 200), reason: oneLine(page.reason, `${at}.reason`, 200) };
+  });
+  if (new Set(examples.map((page) => page.path)).size !== examples.length) fail(`${path}.excluded.examples`, "duplicate page");
+  return { groups, excluded: { count: excludedCount, examples } };
 }
 const PAGE_CHANGES_MAX = 500;
 function parsePageChanges(input: unknown, path: string): NonNullable<LocaleReleaseWorkspacePlan["changes"]> {

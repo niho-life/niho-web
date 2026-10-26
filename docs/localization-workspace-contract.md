@@ -309,6 +309,10 @@ type LocaleReleaseWorkspacePlan = {
     added: { path: string; title: string }[];     // 今の版から新しく出るページ（500 件まで）
     removed: { path: string; title: string }[];   // 今の版から外れるページ（500 件まで）
   } | null;
+  firstRelease?: {                               // 初回の publish だけ。古い adapter は省略可
+    groups: { label: string; pages: number; automaticPages: number }[]; // groups の pages 合計は plan.pages
+    excluded: { count: number; examples: { path: string; title: string; reason: string }[] }; // examples は最大 20 件
+  } | null;
 };
 ```
 
@@ -318,7 +322,7 @@ type LocaleReleaseWorkspacePlan = {
 
 1. 概要を読み直し、`blockers` が 1 つでもあれば一覧を出して先へ進めません（`itemKey` があれば「開く」で 1 件へ移れます）。
 2. 準備: `prepareRelease({ operation: "publish", releaseId: null, expectedVersion: overview.version, expectedCurrentVersion: current?.version ?? null, resumeToken: null })`。`preparing` なら `progress`（n/m）を出し、返った `resumeToken` を付けてすぐ呼び直します。`ready` で確認へ。`blocked` なら 1. の一覧に戻ります。`conflict` は「内容が変わりました。読み込み直して、もう一度試してください」。
-3. 確認: ページ数・公開する先・今の版 → 新しい版・期限の残り（`expiresAt` まで）を出します。`changes` があれば、新しく出るページと外れるページも出します。公開で `pages` が 0 になるとき（すべて外れる）は、そのことをはっきり出します。期限が切れたら「準備し直す」だけを出します。
+3. 確認: ページ数・公開する先・今の版 → 新しい版・期限の残り（`expiresAt` まで）を出します。初回公開の `firstRelease` があれば、まとまりごとのページ数と、そのうち未確認の自動訳があるページ数、対象外の件数と理由を出します。`changes` があれば、新しく出るページと外れるページも出します。公開で `pages` が 0 になるとき（すべて外れる）は、そのことをはっきり出します。期限が切れたら「準備し直す」だけを出します。
 4. 反映: `applyRelease({ confirmationToken, resumeToken: null })`。`applying` なら n/m を出し、`resumeToken` を付けて `applyRelease({ confirmationToken: null, resumeToken })` を呼び直します。`applied` で完了、`expired` は 2. からやり直し、`conflict` は読み直し。
 
 - 途中で閉じても、サイトは途中の状態を `overview.release.pending`（と `readRelease` の `pending`）で返してください。画面は帯に「前回の公開が途中です。」と「続ける」を出し、`stage` に合わせて `prepareRelease` か `applyRelease` を `resumeToken` だけで呼び直します（`publish`・`rollback` の権限が要ります）。

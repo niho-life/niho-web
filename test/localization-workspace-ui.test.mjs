@@ -330,6 +330,22 @@ test("release: blockers stop the flow; prepare n/m, confirm with the time left, 
   } finally { await app.cleanup(); }
 });
 
+test("first release: confirmation names the page groups, automatic drafts and exclusions", async () => {
+  const memory = createLocalizationMemory({ firstRelease: true });
+  memory.setBlockers([]);
+  const app = await setup({ adapter: memory.adapter });
+  try {
+    await press("English版を公開…");
+    await press("準備を始める", dialog());
+    const box = dialog();
+    assert.ok(box.textContent.includes("今回公開するもの"));
+    assert.ok(box.textContent.includes("固定ページ") && box.textContent.includes("自動翻訳のまま 1"));
+    assert.ok(box.textContent.includes("記事") && box.textContent.includes("自動翻訳のまま 2"));
+    assert.ok(box.textContent.includes("訳さないページ（1）"));
+    assert.ok(box.textContent.includes("/en/") && box.textContent.includes("日本語版のページはそのまま"));
+  } finally { await app.cleanup(); }
+});
+
 test("release: an interrupted publish resumes from the band, and the confirmation can expire", async () => {
   const memory = createLocalizationMemory({ pending: "apply" });
   const app = await setup({ adapter: memory.adapter });

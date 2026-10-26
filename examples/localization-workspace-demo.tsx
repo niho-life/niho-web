@@ -12,6 +12,7 @@ const presets = {
 type Preset = keyof typeof presets;
 
 const memory = createLocalizationMemory({
+  firstRelease: new URLSearchParams(location.search).get("first") === "1",
   frameUrl: `${location.origin}/frame.html`,
   mediaBase: "/media",
   pageSize: 2,
@@ -38,7 +39,10 @@ function App() {
   const [blockersCleared, setBlockersCleared] = useState(false);
   const navigate = (state: LocalizationNavigationState) => {
     setOpened(state.itemKey);
-    const params = new URLSearchParams(state.itemKey ? { item: state.itemKey } : state.view === "settings" ? { view: "settings" } : {});
+    const params = new URLSearchParams(location.search);
+    params.delete("item"); params.delete("view");
+    if (state.itemKey) params.set("item", state.itemKey);
+    else if (state.view === "settings") params.set("view", "settings");
     history.replaceState(null, "", params.size ? `?${params}` : location.pathname);
   };
   const firstTextUnit = () => {
