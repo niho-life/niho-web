@@ -5,6 +5,7 @@ import { collectionCss } from "./collection-style.js";
  * 状態は色だけでなく、印の形（.lw-shape）と言葉でも示す。320px で横にはみ出さない。
  */
 const localizationCss = `
+.nw-localization{max-width:100%}
 .nw-localization .lw-pill[data-lw-state=untranslated]{background:var(--nw-surface-2);color:var(--nw-text-sub)}
 .nw-localization .lw-pill[data-lw-state=draft]{background:var(--nw-accent-soft);color:var(--nw-accent-strong)}
 .nw-localization .lw-pill[data-lw-state=source-changed]{background:var(--nw-warning-soft);color:var(--nw-warning)}

@@ -36,35 +36,45 @@ export type ProjectDashboardProps = {
 type ReadyDashboard = Extract<ProjectDashboardResult, { status: "ready" }>;
 type DashboardView = "overview" | "analytics" | "members" | "settings";
 const VIEW_TITLES: Readonly<Record<DashboardView, string>> = { overview: "ダッシュボード", analytics: "アナリティクス", members: "メンバー", settings: "プロジェクト設定" };
-const numberLabel = (value: number | null) => value === null ? "未取得" : value.toLocaleString("ja-JP");
+const numberLabel = (value: number) => value.toLocaleString("ja-JP");
 const DISCONNECTED_TEXT = "アクセス解析はまだ接続されていません。";
-const DISCONNECTED_HINT = "解析サービスを接続すると、訪問者数とページ表示数、対象期間をここに表示します。接続までは数値を表示しません。";
 const ROLE_LABELS: Readonly<Record<ProjectMemberRole, string>> = { owner: "オーナー", editor: "編集者" };
 
+function AnalyticsMetrics({ uniqueVisitors, pageViews }: { uniqueVisitors: number | null; pageViews: number | null }) {
+  if (uniqueVisitors === null && pageViews === null) return <p className="pv-muted">この期間に表示できる解析値はありません。</p>;
+  return <dl className="pv-stats">
+    {uniqueVisitors !== null && <div><dt>訪問者数</dt><dd>{numberLabel(uniqueVisitors)}</dd></div>}
+    {pageViews !== null && <div><dt>ページ表示数</dt><dd>{numberLabel(pageViews)}</dd></div>}
+  </dl>;
+}
+
 function Overview({ overview }: { overview: ProjectOverview }) {
-  return <><PublicationBadge status={overview.publicationStatus} />
-    <p>{overview.publishedUrl ? <a className="pv-domain" href={overview.publishedUrl} target="_blank" rel="noopener noreferrer">{overview.publishedUrl}</a> : overview.publicationStatus === "unpublished" ? "サイトはまだ公開されていません。" : "公開URLは未取得です。"}</p>
-    <dl className="pv-stats"><div><dt>公開ページ数</dt><dd>{numberLabel(overview.publishedPageCount)}</dd></div><div><dt>アセット使用量</dt><dd>{overview.assetBytes === null ? "未取得" : `${numberLabel(overview.assetBytes)} B`}</dd></div></dl>
-    <p className="pv-muted">最終公開 {overview.lastPublishedAt === null && overview.publicationStatus === "unpublished" ? "未公開" : <Timestamp value={overview.lastPublishedAt} />}</p>
+  return <>{overview.publicationStatus !== "unknown" && <PublicationBadge status={overview.publicationStatus} />}
+    {overview.publishedUrl ? <p><a className="pv-domain" href={overview.publishedUrl} target="_blank" rel="noopener noreferrer">{overview.publishedUrl}</a></p> : overview.publicationStatus === "unpublished" ? <p>サイトはまだ公開されていません。</p> : null}
+    {(overview.publishedPageCount !== null || overview.assetBytes !== null) && <dl className="pv-stats">
+      {overview.publishedPageCount !== null && <div><dt>公開ページ数</dt><dd>{numberLabel(overview.publishedPageCount)}</dd></div>}
+      {overview.assetBytes !== null && <div><dt>アセット使用量</dt><dd>{numberLabel(overview.assetBytes)} B</dd></div>}
+    </dl>}
+    {overview.lastPublishedAt !== null && <p className="pv-muted">最終公開 <Timestamp value={overview.lastPublishedAt} /></p>}
     {overview.publishedUrl && <div className="pv-actions"><a className="pv-link" href={overview.publishedUrl} target="_blank" rel="noopener noreferrer">公開サイト確認 <span aria-label="新しいタブ">↗</span></a></div>}
   </>;
 }
 function Analytics({ result, connect, retry, settingsAction }: { result: ReadyDashboard["analytics"]; connect: () => void; retry: () => void; settingsAction: "enabled" | "disabled" }) {
   const settingsButton = <button type="button" onClick={connect} disabled={settingsAction === "disabled"}>{settingsAction === "disabled" ? "解析接続（準備中）" : "解析接続設定"}</button>;
-  if (result.status === "disconnected") return <><p>{DISCONNECTED_TEXT}</p><p className="pv-muted">{DISCONNECTED_HINT}</p><div className="pv-actions">{settingsButton}</div></>;
+  if (result.status === "disconnected") return <><p>{DISCONNECTED_TEXT}</p><div className="pv-actions">{settingsButton}</div></>;
   if (result.status === "unavailable") return <><p role="alert">アクセス解析を取得できませんでした。</p><div className="pv-actions"><button type="button" onClick={retry}>再試行</button>{settingsButton}</div></>;
   return <><p className="pv-period">対象期間 <time dateTime={result.data.period.start}>{dateLabel(result.data.period.start)}</time> 〜 <time dateTime={result.data.period.end}>{dateLabel(result.data.period.end)}</time></p>
-    <dl className="pv-stats"><div><dt>訪問者数</dt><dd>{numberLabel(result.data.uniqueVisitors)}</dd></div><div><dt>ページ表示数</dt><dd>{numberLabel(result.data.pageViews)}</dd></div></dl>
+    <AnalyticsMetrics uniqueVisitors={result.data.uniqueVisitors} pageViews={result.data.pageViews} />
     <p className="pv-fetched">解析取得日時 <Timestamp value={result.data.fetchedAt} /></p><div className="pv-actions">{settingsButton}</div></>;
 }
 function AnalyticsSummary({ result, open }: { result: ReadyDashboard["analytics"]; open: () => void }) {
   return <section className="pv-panel pv-analytics-summary"><h3>アクセス解析</h3>
-    {result.status === "ready" ? <><dl className="pv-stats"><div><dt>訪問者数</dt><dd>{numberLabel(result.data.uniqueVisitors)}</dd></div><div><dt>ページ表示数</dt><dd>{numberLabel(result.data.pageViews)}</dd></div></dl>
+    {result.status === "ready" ? <><AnalyticsMetrics uniqueVisitors={result.data.uniqueVisitors} pageViews={result.data.pageViews} />
       <p className="pv-period">対象期間 <time dateTime={result.data.period.start}>{dateLabel(result.data.period.start)}</time> 〜 <time dateTime={result.data.period.end}>{dateLabel(result.data.period.end)}</time></p>
       <p className="pv-fetched">解析取得日時 <Timestamp value={result.data.fetchedAt} /></p></>
-      : result.status === "disconnected" ? <><p>{DISCONNECTED_TEXT}</p><p className="pv-muted">{DISCONNECTED_HINT}</p></>
+      : result.status === "disconnected" ? <p>{DISCONNECTED_TEXT}</p>
       : <p role="alert">アクセス解析を取得できませんでした。</p>}
-    <div className="pv-actions"><button type="button" onClick={open}>アクセス解析を見る</button></div>
+    <div className="pv-actions"><button className="pv-text-link" type="button" onClick={open}>アクセス解析を見る</button></div>
   </section>;
 }
 
@@ -72,10 +82,10 @@ function AnalyticsSummary({ result, open }: { result: ReadyDashboard["analytics"
 function Members({ project, members, retry, openSettings }: { project: Project; members: ReadyDashboard["members"]; retry: () => void; openSettings: (() => void) | null }) {
   const section: ReadSection<readonly ProjectMemberSummary[]> = members ?? { status: "ready", data: project.members.map((member) => ({ displayName: member.displayName, role: null })) };
   if (section.status === "unavailable") return <section className="pv-panel"><h3>メンバー</h3><p role="alert">メンバーを取得できませんでした。</p><div className="pv-actions"><button type="button" onClick={retry}>再試行</button></div></section>;
-  return <section className="pv-panel"><h3>メンバー（{section.data.length}名）</h3>
+  return <section className="pv-panel pv-members"><div className="pv-panel-heading"><h3>メンバー（{section.data.length}名）</h3>{openSettings && <button type="button" onClick={openSettings}>プロジェクト設定を開く</button>}</div>
     {section.data.length === 0 ? <p className="pv-muted">メンバーはいません。</p>
-      : <ul className="pv-member-list">{section.data.map((member, index) => <li key={index}><span className="pv-member-name">{member.displayName}</span>{member.role && <span className={`pv-role pv-role-${member.role}`}>{ROLE_LABELS[member.role]}</span>}</li>)}</ul>}
-    {openSettings && <><p className="pv-muted">メンバーの招待・権限の変更・参加解除はプロジェクト設定で行います。</p><div className="pv-actions"><button type="button" onClick={openSettings}>プロジェクト設定を開く</button></div></>}
+      : <table className="pv-member-table"><thead><tr><th scope="col">名前</th><th scope="col">権限</th></tr></thead><tbody>{section.data.map((member, index) => <tr key={index}><th scope="row">{member.displayName}</th><td>{member.role && <span className="pv-role">{ROLE_LABELS[member.role]}</span>}</td></tr>)}</tbody></table>}
+    {openSettings && <p className="pv-muted">メンバーの招待・権限の変更・参加解除はプロジェクト設定で行います。</p>}
   </section>;
 }
 
@@ -136,7 +146,7 @@ function DashboardSession({ project: inputProject, adapter, onBackToProjects, on
               : view === "analytics" ? <section className="pv-panel"><h3>アクセス解析</h3><Analytics result={result.analytics} connect={() => onOpenSettings(project, "analytics")} retry={reload} settingsAction={settingsAction} /></section>
               : view === "members" ? <Members project={project} members={result.members} retry={reload} openSettings={settingsDisabled ? null : () => openSettings(project)} />
               : <div className="pv-sections"><section className="pv-panel"><h3>公開情報</h3>{result.overview.status === "ready" ? <Overview overview={result.overview.data} /> : <><p role="alert">公開情報を取得できませんでした。</p><button type="button" onClick={reload}>再試行</button></>}</section>
-                <section className="pv-panel"><h3>直近の変更</h3>{result.overview.status === "unavailable" ? <p role="alert">変更履歴を取得できませんでした。</p> : result.overview.data.recentChanges.length === 0 ? <p className="pv-muted">直近の変更はありません。</p> : <ul className="pv-changes">{result.overview.data.recentChanges.map((change) => <li key={change.id}>{change.label}<Timestamp value={change.changedAt} /></li>)}</ul>}</section>
+                <section className="pv-panel"><h3>直近の変更</h3>{result.overview.status === "unavailable" ? <p role="alert">変更履歴を取得できませんでした。</p> : result.overview.data.recentChanges.length === 0 ? <p className="pv-muted">直近の変更はありません。</p> : <table className="pv-changes"><thead><tr><th scope="col">内容</th><th scope="col">更新日時</th></tr></thead><tbody>{result.overview.data.recentChanges.map((change) => <tr key={change.id}><th scope="row">{change.label}</th><td><Timestamp value={change.changedAt} /></td></tr>)}</tbody></table>}</section>
                 <AnalyticsSummary result={result.analytics} open={() => setView("analytics")} />
               </div>}
             <div className="pv-footer"><p className="pv-fetched">ダッシュボード取得日時 <Timestamp value={result.fetchedAt} /></p><button type="button" onClick={reload}>再読込</button></div>

@@ -4,7 +4,7 @@ import { uiTokensCss } from "./ui-tokens.js";
  * CollectionWorkspace の CSS。部品は <style> でも入れるが、inline の <style> を CSP で拒むホスト（Studio）は
  * この文字列をファイルにして読み込む。色・角丸・文字は ./ui-tokens.ts のトークン（--nw-*）だけを使い、先頭にトークンの定義を持つ（#159）。
  */
-export const collectionCss = `${uiTokensCss}.nw-collection{position:relative;min-width:0;color:var(--nw-text);background:var(--nw-bg);font:var(--nw-font-size)/1.6 var(--nw-font);-webkit-font-smoothing:antialiased}
+export const collectionCss = `${uiTokensCss}.nw-collection{position:relative;min-width:0;max-width:100%;color:var(--nw-text);background:var(--nw-bg);font:var(--nw-font-size)/1.6 var(--nw-font);-webkit-font-smoothing:antialiased}
 .nw-collection *{box-sizing:border-box}
 .nw-collection :is(button,input,select,textarea){font:inherit;color:inherit}
 .nw-collection button{position:relative;cursor:pointer}
@@ -62,8 +62,8 @@ export const collectionCss = `${uiTokensCss}.nw-collection{position:relative;min
 .nw-collection .cw-search:focus-within{outline:2px solid var(--nw-focus);outline-offset:2px}
 .nw-collection .cw-search input{flex:1;min-width:0;height:38px;border:0;background:transparent;color:var(--nw-text)}
 .nw-collection .cw-search input:focus-visible{outline:none}
-.nw-collection .cw-filters{display:flex;gap:4px;margin-bottom:4px;border-bottom:1px solid var(--nw-border);overflow-x:auto;scrollbar-width:none}
-.nw-collection .cw-filters button{min-height:40px;margin-bottom:-1px;padding:0 12px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--nw-text-sub);font-weight:600;white-space:nowrap}
+.nw-collection .cw-filters{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:4px;border-bottom:1px solid var(--nw-border)}
+.nw-collection .cw-filters button{min-height:40px;margin-bottom:-1px;padding:0 12px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--nw-text-sub);font-weight:600;white-space:normal}
 .nw-collection .cw-filters button[aria-pressed=true]{border-bottom-color:var(--nw-text);color:var(--nw-text)}
 .nw-collection .cw-filters button:focus-visible{outline-offset:-3px}
 .nw-collection .cw-filter-count{margin-left:4px;color:var(--nw-text-sub);font-weight:500;font-variant-numeric:tabular-nums}
@@ -249,7 +249,7 @@ export const collectionCss = `${uiTokensCss}.nw-collection{position:relative;min
 @media (max-width:1099px){.nw-collection .cw-editor-body{grid-template-columns:minmax(0,1fr) 300px}.nw-collection .cw-editor-main{padding:24px 24px 64px}}
 @media (max-width:899px){
 .nw-collection .cw-layout{grid-template-columns:minmax(0,1fr)}
-.nw-collection .cw-nav{padding:8px 12px;border-right:0;border-bottom:1px solid var(--nw-border);overflow-x:auto}
+.nw-collection .cw-nav{padding:8px 12px;border-right:0;border-bottom:1px solid var(--nw-border);overflow-x:visible}
 .nw-collection .cw-nav-heading{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .nw-collection .cw-nav ul{display:flex;gap:4px}
 .nw-collection .cw-nav li{flex:none}
