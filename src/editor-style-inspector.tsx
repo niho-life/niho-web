@@ -2,7 +2,7 @@
 
 import { useId, useMemo, useState, type ReactNode } from "react";
 import { AlignGrid, Collapse, ColorField, FontField, PercentField, Row, Segmented, SelectField, Stepper, Toggle, UnitField, fontChoices, weightChoices, type Align, type Choice, type Pending, type RowStatus } from "./editor-fields.js";
-import { walkNodes, type EditorOperation, type NodePath } from "./editor-model.js";
+import { nodeAt, walkNodes, type EditorOperation, type NodePath } from "./editor-model.js";
 import type { EditorBlockRegistry } from "./editor-types.js";
 import { declarationsAt, expandBox, fieldState, resolveValue, tierForWidth, tierName, type EditorTier, type FieldState, type TierKey } from "./style-model.js";
 import { MotionFields, type StyleState } from "./editor-style-motion.js";
@@ -81,7 +81,7 @@ type Ui = {
   set: (values: Values) => string | undefined;
   report: (error: string | undefined) => void;
   status: (properties: StyleProperty[], valueLabel?: string) => RowStatus;
-  width: () => ReactNode;
+  size: (property: "width" | "height", caption: string) => ReactNode;
   unit: (property: StyleProperty, caption: string, options?: UnitOptions) => ReactNode;
   select: (property: StyleProperty, caption: string, choices: readonly Choice[], number?: boolean) => ReactNode;
 };
@@ -130,37 +130,46 @@ export function StyleInspector(props: StyleInspectorProps) {
   }
   const tokenChoices = (property: StyleProperty): Choice[] => Object.entries(document.tokens).filter(([, token]) => token.type === styleTokenKind(property)).map(([name, token]) => [name, token.label ?? name]);
   const colorTokens = Object.entries(document.tokens).filter(([, token]) => token.type === "color").map(([name, token]) => ({ name, label: token.label ?? name, value: String(token.value), origin: props.origins?.[`token:${name}`] }));
+  const parent = path.length > 1 ? nodeAt(document, path.slice(0, -1)) : null;
+  const parentValue = (property: StyleProperty) => {
+    if (!parent || parent.type !== "element") return undefined;
+    const field = fieldState(document, parent, property, tier);
+    return resolveValue(document, field.own ?? field.inherited?.value);
+  };
+  const verticalFlex = ["flex", "inline-flex"].includes(String(parentValue("display"))) &&
+    ["column", "column-reverse"].includes(String(parentValue("flexDirection")));
   const ui: Ui = {
     document, tier, disabled, uid, state, effective, set, report, status,
     can: (property) => can(property),
-    width: () => {
-      if (!can("width")) return null;
-      const supportsFlex = can("flexGrow") && can("flexBasis");
-      if (!supportsFlex) return ui.unit("width", "幅", { keywords: sizes });
+    size: (property, caption) => {
+      if (!can(property)) return null;
+      const units = property === "height" ? [...lengths, "dvh"] : lengths;
+      const supportsFlex = can("flexGrow") && can("flexBasis") && (property === "height" ? verticalFlex : !verticalFlex);
+      if (!supportsFlex) return ui.unit(property, caption, { units, keywords: sizes });
       const grow = Number(effective("flexGrow")), basis = String(effective("flexBasis") ?? "");
-      const width = effective("width"), flexWidth = grow > 0 && grow <= 1000 && (basis === "0" || basis === "0px") && (width === undefined || width === "auto");
-      const properties: StyleProperty[] = flexWidth ? ["flexGrow", "flexBasis", "width"] : ["width", "flexGrow", "flexBasis"];
-      const applyWidth = (value: StyleValue | undefined): string | undefined => {
+      const size = effective(property), flexSize = grow > 0 && grow <= 1000 && (basis === "0" || basis === "0px") && (size === undefined || size === "auto");
+      const properties: StyleProperty[] = flexSize ? ["flexGrow", "flexBasis", property] : [property, "flexGrow", "flexBasis"];
+      const applySize = (value: StyleValue | undefined): string | undefined => {
         const match = typeof value === "string" ? /^(\d+(?:\.\d+)?|\.\d+)flex$/.exec(value) : null;
         if (match) {
           const ratio = Number(match[1]);
           if (!Number.isFinite(ratio) || ratio <= 0 || ratio > 1000) return "flex の比率は 0 より大きく 1000 以下で指定してください。";
           const blocked = lock("flexGrow") ?? lock("flexBasis");
           if (blocked) return blocked;
-          return set({ width: "auto", flexGrow: ratio, flexBasis: "0px" });
+          return set({ [property]: "auto", flexGrow: ratio, flexBasis: "0px" });
         }
         if (typeof value === "string" && value.endsWith("flex")) return "flex の比率は 0 より大きい数値で指定してください。";
-        if (value === undefined && flexWidth) return set({ width: undefined, flexGrow: undefined, flexBasis: undefined });
-        if (!flexWidth) return set({ width: value });
+        if (value === undefined && flexSize) return set({ [property]: undefined, flexGrow: undefined, flexBasis: undefined });
+        if (!flexSize) return set({ [property]: value });
         const blocked = lock("flexGrow") ?? lock("flexBasis");
         if (blocked) return blocked;
         const inheritedGrow = Number(resolveValue(document, state("flexGrow").inherited?.value));
         const inheritedBasis = resolveValue(document, state("flexBasis").inherited?.value);
-        return set({ width: value, flexGrow: inheritedGrow > 0 ? 0 : undefined, flexBasis: inheritedBasis !== undefined ? "auto" : undefined });
+        return set({ [property]: value, flexGrow: inheritedGrow > 0 ? 0 : undefined, flexBasis: inheritedBasis !== undefined ? "auto" : undefined });
       };
-      return <UnitField key={key("width")} caption="幅" value={flexWidth ? `${grow}flex` : state("width").own}
-        units={[...lengths, "flex"]} keywords={sizes} tokens={tokenChoices("width")} apply={applyWidth} pending={pending} fieldKey={key("width")}
-        disabled={disabled || !!lock("width")} status={status(properties)} placeholder={text(state("width").inherited?.value)} />;
+      return <UnitField key={key(property)} caption={caption} value={flexSize ? `${grow}flex` : state(property).own}
+        units={[...units, "flex"]} keywords={sizes} tokens={tokenChoices(property)} apply={applySize} pending={pending} fieldKey={key(property)}
+        disabled={disabled || !!lock(property)} status={status(properties)} placeholder={text(state(property).inherited?.value)} />;
     },
     unit: (property, caption, options = {}) => can(property) && <UnitField key={options.key ?? key(property)} caption={caption} value={"value" in options ? options.value : state(property).own}
       units={options.units ?? lengths} numberUnit={options.numberUnit ?? "px"} numberLabel={options.numberLabel ?? "数値"} keywords={options.keywords ?? []} tokens={tokenChoices(property)}
@@ -299,7 +308,7 @@ function Layout({ ui }: { ui: Ui }) {
   const limits = (["minWidth", "maxWidth", "minHeight", "maxHeight"] as const);
   if (!(["width", "height", "margin", "padding", ...limits] as StyleProperty[]).some(ui.can) && !(["marginTop", "paddingTop"] as StyleProperty[]).some(ui.can)) return null;
   return <section className="e-sec"><h3>レイアウト</h3>
-    <div className="e-grid2">{ui.width()}{ui.unit("height", "高さ", { units: [...lengths, "dvh"], keywords: sizes })}</div>
+    <div className="e-grid2">{ui.size("width", "幅")}{ui.size("height", "高さ")}</div>
     {limits.some(ui.can) && <Collapse title="最小・最大サイズ" initial={limits.some((property) => ui.state(property).own !== undefined)}>
       <div className="e-grid2">{ui.unit("minWidth", "最小幅", { keywords: auto })}{ui.unit("maxWidth", "最大幅", { keywords: [["none", "制限なし"]] })}
         {ui.unit("minHeight", "最小高さ", { keywords: auto })}{ui.unit("maxHeight", "最大高さ", { keywords: [["none", "制限なし"]] })}</div>

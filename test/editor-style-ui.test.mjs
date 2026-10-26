@@ -316,6 +316,52 @@ test("a wider breakpoint can switch an inherited flex ratio to a fixed width and
   } finally { await app.cleanup(); }
 });
 
+test("height flex divides a vertical parent's remaining space and switches back to a fixed height", async () => {
+  const source = structuredClone(fixture);
+  source.body[0].style.base.height = 480;
+  source.body[0].children[0].style = { base: { height: 80 } };
+  const app = await setup({ document: source });
+  try {
+    await click(button("h1 · heading")); await editorTab("ボックス");
+    const heightUnit = () => field("高さ", right()).querySelector("select");
+    assert.ok([...heightUnit().options].some((option) => option.value === "u:flex"));
+    assert.ok(![...field("幅", right()).querySelector("select").options].some((option) => option.value === "u:flex"), "the cross axis does not claim the same grow ratio");
+    await change(heightUnit(), "u:flex");
+    await change(input("高さ", right()), "2");
+    assert.match(canvasCss(), /flex-basis:0px;flex-grow:2;height:auto;/);
+    await click(button("元に戻す"));
+    assert.equal(input("高さ", right()).value, "1");
+    await click(button("やり直す"));
+    await click(button("下書き保存"));
+    const saved = app.calls.saves[0].document.body[0].children[0].style.base;
+    assert.deepEqual({ height: saved.height, flexGrow: saved.flexGrow, flexBasis: saved.flexBasis }, { height: "auto", flexGrow: 2, flexBasis: "0px" });
+    await click(button("最新の文書を再読込")); await click(button("h1 · heading")); await editorTab("ボックス");
+    assert.equal(heightUnit().value, "u:flex");
+    await change(heightUnit(), "u:px");
+    await click(button("下書き保存"));
+    const fixed = app.calls.saves[1].document.body[0].children[0].style.base;
+    assert.deepEqual({ height: fixed.height, flexGrow: fixed.flexGrow, flexBasis: fixed.flexBasis }, { height: 2, flexGrow: undefined, flexBasis: undefined });
+    assert.match(renderPageToHtml(app.stored()), /height:2px;/);
+  } finally { await app.cleanup(); }
+});
+
+test("a wider breakpoint overrides inherited height flex without leaving the inherited grow active", async () => {
+  const source = structuredClone(fixture);
+  source.body[0].children[0].style = { base: { height: "auto", flexGrow: 2, flexBasis: "0px" } };
+  const app = await setup({ document: source });
+  try {
+    await click(button("h1 · heading")); await editorTab("ボックス");
+    await click(button("タブレット 768px〜", right()));
+    const heightUnit = () => field("高さ", right()).querySelector("select");
+    assert.equal(heightUnit().value, "u:flex");
+    await change(heightUnit(), "u:px");
+    await click(button("下書き保存"));
+    const node = app.calls.saves[0].document.body[0].children[0];
+    assert.deepEqual(node.style.responsive, [{ minWidth: 768, declarations: { height: 2, flexGrow: 0, flexBasis: "auto" } }]);
+    assert.match(renderPageToHtml(app.stored()), /@media \(min-width:768px\)\{[^}]*flex-basis:auto;flex-grow:0;height:2px;/);
+  } finally { await app.cleanup(); }
+});
+
 test("invalid width and color values are rejected and the previous values are saved", async () => {
   const app = await setup();
   try {
