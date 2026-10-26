@@ -348,6 +348,7 @@ test("candidate stays separate until adoption, command conflicts retry, failures
     await showLocalization(); await click("現在の訳を確認済みにする");
     assert.ok(app.sites.kamakura.overlay.entries.some((entry) => entry.reviewedSourceFingerprint));
     await showInspector("page"); await change(input("ページタイトル"), "Manual after review"); await click("下書き保存");
+    await waitForUi(() => app.sites.kamakura.overlay.entries.find((entry) => entry.unitId === "page.title")?.reviewedSourceFingerprint === undefined, "保存後に確認済み状態が解除される");
     assert.equal(app.sites.kamakura.overlay.entries.find((entry) => entry.unitId === "page.title").reviewedSourceFingerprint, undefined);
   } finally { await app.cleanup(); }
   const late = await setup({ delayedRead: true });
