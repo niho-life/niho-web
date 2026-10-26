@@ -13,12 +13,15 @@ export type InsertionContext = {
   id: BuilderIdFactory;
   target: Readonly<Pick<PageDocument, "siteId" | "pageId" | "locale">>;
 };
+export type InsertionCategory = "basic" | "parts" | "sections";
 /** trusted host が通常の PageNode 部分木を返す。関数自体は文書へ保存されない。 */
 export type InsertionPreset = {
   id: string;
   label: string;
   description?: string;
   group: string;
+  /** 省略した既存・host独自プリセットは basic として表示する。 */
+  category?: InsertionCategory;
   glyph?: string;
   create(context: InsertionContext): PageNode;
 };
@@ -100,6 +103,63 @@ const grid = (id: BuilderIdFactory): ElementNode => ({
   type: "element", id: id(), tag: "div", style: { base: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 16 } },
   children: [element(id, "div"), element(id, "div")]
 });
+const styled = (id: BuilderIdFactory, tag: ElementNode["tag"], children: PageNode[], style?: NodeStyle, attrs?: ElementNode["attrs"]): ElementNode => ({
+  type: "element", id: id(), tag, ...(attrs ? { attrs } : {}), ...(style ? { style } : {}), children
+});
+const link = (id: BuilderIdFactory, label: string, style?: NodeStyle): ElementNode => styled(id, "a", [{ type: "text", text: label }], style, { href: "/" });
+const column = (gap = 12): NodeStyle => ({ base: { display: "flex", flexDirection: "column", gap } });
+const responsiveRow: NodeStyle = {
+  base: { display: "flex", flexDirection: "column", gap: 20 },
+  responsive: [{ minWidth: 768, declarations: { flexDirection: "row", alignItems: "center" } }]
+};
+
+/** 複数ページで再利用しやすい、小さな編集可能部品。 */
+export const partInsertionPresets: readonly InsertionPreset[] = [
+  { id: "part-button", label: "ボタン", description: "リンク先と文字を編集できるボタン", group: "アクション", category: "parts", glyph: "→", create: ({ id }) => link(id, "詳しく見る", {
+    base: { display: "inline-flex", alignItems: "center", justifyContent: "center", width: "fit-content", padding: "10px 18px", borderRadius: 999, backgroundColor: "#0f70eb", color: "#ffffff", fontWeight: 700 },
+    states: { hover: { backgroundColor: "#0b5cc5" }, focus: { backgroundColor: "#0b5cc5" } }
+  }) },
+  { id: "part-card", label: "カード", description: "見出し、説明、リンクをまとめたカード", group: "コンテンツ", category: "parts", glyph: "▱", create: ({ id }) => styled(id, "article", [
+    element(id, "h3", "カードの見出し"), element(id, "p", "内容を短く紹介する説明文です。"), link(id, "詳しく見る")
+  ], { base: { display: "flex", flexDirection: "column", gap: 12, padding: 20, borderWidth: 1, borderStyle: "solid", borderColor: "#dedede", borderRadius: 12 } }) },
+  { id: "part-heading-set", label: "見出しセット", description: "補助文、見出し、説明の組み合わせ", group: "コンテンツ", category: "parts", glyph: "H+", create: ({ id }) => styled(id, "div", [
+    styled(id, "p", [{ type: "text", text: "SECTION LABEL" }], { base: { fontSize: 12, fontWeight: 700, letterSpacing: "0.08em", color: "#555555" } }),
+    styled(id, "h2", [{ type: "text", text: "伝えたいことを見出しに" }], { base: { fontSize: 32, lineHeight: 1.25 } }),
+    styled(id, "p", [{ type: "text", text: "見出しを補足する説明文を入力します。" }], { base: { lineHeight: 1.7, color: "#555555" } })
+  ], column(8)) },
+  { id: "part-list", label: "リスト", description: "編集可能な3項目のリスト", group: "コンテンツ", category: "parts", glyph: "☷", create: ({ id }) => styled(id, "ul", ["リスト項目 1", "リスト項目 2", "リスト項目 3"].map((value) => styled(id, "li", [{ type: "text", text: value }], { base: { padding: "6px 0" } })), { base: { display: "flex", flexDirection: "column", gap: 4, paddingLeft: 24 } }) }
+];
+
+const featureCard = (id: BuilderIdFactory, title: string, body: string): ElementNode => styled(id, "article", [element(id, "h3", title), element(id, "p", body)], {
+  base: { display: "flex", flexDirection: "column", gap: 8, padding: 20, backgroundColor: "#ffffff", borderWidth: 1, borderStyle: "solid", borderColor: "#dedede", borderRadius: 12 }
+});
+
+/** ページの大きな区切りとしてそのまま編集できる標準セクション。 */
+export const sectionInsertionPresets: readonly InsertionPreset[] = [
+  { id: "section-header", label: "ヘッダー", description: "ロゴ文字とナビゲーションを持つヘッダー", group: "ナビゲーション", category: "sections", glyph: "▔", create: ({ id }) => styled(id, "header", [styled(id, "nav", [
+    link(id, "サイト名", { base: { fontSize: 20, fontWeight: 700 } }),
+    styled(id, "div", [link(id, "概要"), link(id, "サービス"), link(id, "お問い合わせ")], { base: { display: "flex", flexWrap: "wrap", gap: 16, alignItems: "center" } })
+  ], { base: { display: "flex", flexDirection: "column", gap: 16, width: "100%" }, responsive: [{ minWidth: 768, declarations: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" } }] }, { "aria-label": "メインナビゲーション" })], { base: { padding: "20px 24px", borderBottomWidth: 1, borderBottomStyle: "solid", borderBottomColor: "#dedede" } }) },
+  { id: "section-hero", label: "ヒーロー", description: "主見出し、説明、アクションを持つ導入セクション", group: "メイン", category: "sections", glyph: "▰", create: ({ id }) => styled(id, "section", [
+    styled(id, "div", [element(id, "p", "WELCOME"), styled(id, "h1", [{ type: "text", text: "暮らしに、新しい選択肢を。" }], { base: { fontSize: 44, lineHeight: 1.15 } }), element(id, "p", "ここにサービスや場所の魅力を伝える文章を入力します。"), link(id, "はじめる")], { base: { display: "flex", flexDirection: "column", gap: 16, flexGrow: 1 } }),
+    styled(id, "div", [element(id, "p", "ビジュアル領域")], { base: { display: "flex", alignItems: "center", justifyContent: "center", minHeight: 240, flexGrow: 1, backgroundColor: "#eaf2fd", borderRadius: 16, color: "#555555" } })
+  ], { ...responsiveRow, base: { ...responsiveRow.base, padding: "56px 24px", backgroundColor: "#f7f7f7" }, responsive: [{ minWidth: 768, declarations: { flexDirection: "row", alignItems: "center", padding: "88px 48px" } }] }, { "aria-label": "ページ紹介" }) },
+  { id: "section-feature-grid", label: "特徴グリッド", description: "見出しと3つの特徴カード", group: "コンテンツ", category: "sections", glyph: "▦", create: ({ id }) => styled(id, "section", [
+    styled(id, "div", [element(id, "h2", "選ばれる理由"), element(id, "p", "大切な特徴をわかりやすく紹介します。")], column(8)),
+    styled(id, "div", [featureCard(id, "特徴 1", "特徴の説明を入力します。"), featureCard(id, "特徴 2", "特徴の説明を入力します。"), featureCard(id, "特徴 3", "特徴の説明を入力します。")], { base: { display: "grid", gridTemplateColumns: "1fr", gap: 16 }, responsive: [{ minWidth: 768, declarations: { gridTemplateColumns: "repeat(3, minmax(0, 1fr))" } }] })
+  ], { base: { display: "flex", flexDirection: "column", gap: 28, padding: "56px 24px" } }) },
+  { id: "section-cta", label: "CTA", description: "行動を促す見出し、説明、ボタン", group: "コンテンツ", category: "sections", glyph: "→", create: ({ id }) => styled(id, "section", [
+    styled(id, "div", [element(id, "h2", "次の一歩をはじめましょう"), element(id, "p", "詳しい情報や相談はこちらから。")], column(8)), link(id, "お問い合わせ", { base: { display: "inline-flex", width: "fit-content", padding: "10px 18px", borderRadius: 999, backgroundColor: "#ffffff", color: "#0f70eb", fontWeight: 700 } })
+  ], { base: { ...responsiveRow.base, padding: "40px 24px", backgroundColor: "#0f70eb", color: "#ffffff", borderRadius: 16 }, responsive: [{ minWidth: 768, declarations: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", padding: "48px" } }] }) },
+  { id: "section-faq", label: "FAQ", description: "編集可能な質問と回答の一覧", group: "コンテンツ", category: "sections", glyph: "?", create: ({ id }) => styled(id, "section", [element(id, "h2", "よくある質問"), styled(id, "div", [
+    styled(id, "details", [element(id, "summary", "質問を入力します"), element(id, "p", "回答を入力します。")], { base: { padding: "16px 0", borderBottomWidth: 1, borderBottomStyle: "solid", borderBottomColor: "#dedede" } }),
+    styled(id, "details", [element(id, "summary", "もう一つの質問"), element(id, "p", "回答を入力します。")], { base: { padding: "16px 0", borderBottomWidth: 1, borderBottomStyle: "solid", borderBottomColor: "#dedede" } })
+  ], { base: { display: "flex", flexDirection: "column" } })], { base: { display: "grid", gridTemplateColumns: "1fr", gap: 24, padding: "56px 24px" }, responsive: [{ minWidth: 768, declarations: { gridTemplateColumns: "1fr 2fr", gap: 48 } }] }) },
+  { id: "section-footer", label: "フッター", description: "サイト名、リンク、著作権表示を持つフッター", group: "ナビゲーション", category: "sections", glyph: "▁", create: ({ id }) => styled(id, "footer", [
+    styled(id, "div", [styled(id, "div", [element(id, "h2", "サイト名"), element(id, "p", "サイトについての短い説明です。")], column(8)), styled(id, "nav", [link(id, "概要"), link(id, "サービス"), link(id, "お問い合わせ")], { base: { display: "flex", flexWrap: "wrap", gap: 16 } }, { "aria-label": "フッターナビゲーション" })], { base: { display: "flex", flexDirection: "column", gap: 24 }, responsive: [{ minWidth: 768, declarations: { flexDirection: "row", justifyContent: "space-between" } }] }),
+    element(id, "small", "© サイト名")
+  ], { base: { display: "flex", flexDirection: "column", gap: 32, padding: "40px 24px", backgroundColor: "#f2f2f2" } }) }
+];
 /** hostが明示的に挿入カタログへ加えられる構成例。標準画面には自動追加しない。 */
 export const layoutInsertionPresets: readonly InsertionPreset[] = [
   { id: "hstack", label: "横並び", group: "構造", glyph: "↔", create: ({ id }) => stack(id) },
@@ -118,7 +178,9 @@ export const standardBuilderDefinition: BuilderDefinition = {
     { id: "a", label: "リンク", group: "文字", glyph: "↗", create: ({ id }) => element(id, "a", "リンク") },
     { id: "img", label: "画像", group: "メディア", glyph: "▧", create: ({ id }) => element(id, "img") },
     { id: "carousel", label: "カルーセル", group: "インタラクション", glyph: "⇆", create: ({ id }) => carouselPreset(id) },
-    { id: "toggle", label: "トグル（開閉）", group: "インタラクション", glyph: "▾", create: ({ id }) => togglePreset(id) }
+    { id: "toggle", label: "トグル（開閉）", group: "インタラクション", glyph: "▾", create: ({ id }) => togglePreset(id) },
+    ...partInsertionPresets,
+    ...sectionInsertionPresets
   ],
   motions: []
 };
@@ -131,7 +193,8 @@ export function defineBuilder(definition: BuilderDefinition): BuilderDefinition 
   const ids = new Set<string>();
   for (const entry of definition.insertions ?? []) {
     if (!identifier.test(entry.id) || ids.has(entry.id) || !validText(entry.label) || entry.description !== undefined && !validText(entry.description) ||
-        !validText(entry.group) || entry.glyph !== undefined && (!validText(entry.glyph) || [...entry.glyph].length > 4) || typeof entry.create !== "function") throw new Error("挿入プリセットの定義が正しくありません。");
+        !validText(entry.group) || entry.category !== undefined && !["basic", "parts", "sections"].includes(entry.category) ||
+        entry.glyph !== undefined && (!validText(entry.glyph) || [...entry.glyph].length > 4) || typeof entry.create !== "function") throw new Error("挿入プリセットの定義が正しくありません。");
     ids.add(entry.id);
   }
   ids.clear();

@@ -14,7 +14,7 @@ import { StyleInspector, type InspectorTab, type StyleRange } from "./editor-sty
 import { SharedStyleLibrary, sharedTokenReason } from "./editor-shared-styles.js";
 import { detachRemovedSiteStyles, parseSiteStyles, resolveComponentStyles, resolvePageStyles, type SiteStyles } from "./site-styles.js";
 import type { StyleState } from "./editor-style-motion.js";
-import { createInsertionNode, resolveBuilderDefinition } from "./builder.js";
+import { createInsertionNode, resolveBuilderDefinition, type InsertionCategory } from "./builder.js";
 import { editorTiers, hiddenAt, normalizeBreakpoints, tierForWidth, tierName } from "./style-model.js";
 import { Dialog } from "./editor-dialog.js";
 import { PageChangeDialog, PageSettings, PagePanel, ReleaseSearchSummary, SiteSettingsPanel, chooseSiteCover, coverReferences, pageChangeNotice, publicInfoMessage, useSiteSettings, type FieldOptions, type PageChangeStart } from "./editor-pages.js";
@@ -391,7 +391,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const [localeRelease, setLocaleRelease] = useState<EditorLocaleReleaseState | null>(null), [localeReleasePlan, setLocaleReleasePlan] = useState<EditorLocaleReleasePlan | null>(null);
   const [localeReleaseConfirmed, setLocaleReleaseConfirmed] = useState(false), [localeReleaseLoading, setLocaleReleaseLoading] = useState(false), [localeReleaseEpoch, setLocaleReleaseEpoch] = useState(0);
   const [localeRollbackId, setLocaleRollbackId] = useState("");
-  const [addType, setAddType] = useState("p"), [parentId, setParentId] = useState(""), [rollbackRevision, setRollbackRevision] = useState("");
+  const [addType, setAddType] = useState("p"), [addCategory, setAddCategory] = useState<InsertionCategory>("basic"), [parentId, setParentId] = useState(""), [rollbackRevision, setRollbackRevision] = useState("");
   const [panel, setPanel] = useState<"add" | "pages" | "layers" | "styles" | "assets" | "upload" | "stock" | "connect" | "components">("pages");
   const [inspector, setInspector] = useState<Inspector>("page"), [elementTab, setElementTab] = useState<InspectorTab>("text"), [preview, setPreview] = useState(false);
   const [leftPanelOpen, setLeftPanelOpen] = useState(true), [rightPanelOpen, setRightPanelOpen] = useState(true);
@@ -1228,7 +1228,20 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   }
   const siblingCount = document && selection ? selection.length === 1 ? document.body.length : (nodeAt(document, selection.slice(0, -1)) as { children: PageNode[] }).children.length : 0;
   const palette = builderDefinition.insertions;
-  const paletteGroups = [...new Set(palette.map((item) => item.group))];
+  const categoryPalette = palette.filter((item) => (item.category ?? "basic") === addCategory);
+  const paletteGroups = [...new Set(categoryPalette.map((item) => item.group))];
+  const insertionCategories: readonly { id: InsertionCategory; label: string; ariaLabel: string }[] = [
+    { id: "basic", label: "Basic", ariaLabel: "基本要素" }, { id: "parts", label: "Parts", ariaLabel: "パーツ" }, { id: "sections", label: "Sections", ariaLabel: "セクション" }
+  ];
+  const chooseInsertionCategoryByKey = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const nextIndex = event.key === "Home" ? 0 : event.key === "End" ? insertionCategories.length - 1
+      : (index + (event.key === "ArrowRight" ? 1 : -1) + insertionCategories.length) % insertionCategories.length;
+    const next = insertionCategories[nextIndex];
+    event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[nextIndex]?.focus();
+    if (next) setAddCategory(next.id);
+  };
   const availableBlocks = Object.entries(blocks).filter(([key]) => !insertableBlocks || insertableBlocks.includes(key));
   const startDrag = (event: React.DragEvent<HTMLElement>, item: DragItem) => {
     if (!document || hasInput || editBlocked || targetMode) { event.preventDefault(); return; }
@@ -1318,7 +1331,9 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         <strong className="e-crumb"><span className="e-crumb-site">{contextSite}</span><span className="e-crumb-sep" aria-hidden="true">/</span><span className="e-crumb-page">{contextTitle}</span></strong><span className="e-crumb-path">{contextDetail}</span></div>
       <div className="e-panel">
         <section hidden={visiblePanel !== "add"} aria-label="要素を追加"><div className="e-panel-head"><h2>追加</h2><p>クリックで追加、ドラッグで配置</p></div>
-          {targetMode && <p className="e-help">共通デザインは原文側で編集してください。</p>}{paletteGroups.map((group) => <div key={group}><h3>{group}</h3><div className="e-palette">{palette.filter((item) => item.group === group).map((item) => <button type="button" key={item.id} title={item.description} draggable={!!document && !editBlocked && !hasInput && !targetMode} onDragStart={(event) => startDrag(event, { kind: "palette", type: item.id })} onDragEnd={() => { dragItem.current = null; }} onClick={() => add(item.id)} disabled={!document || editBlocked || hasInput || targetMode}><span aria-hidden="true">{item.glyph ?? "+"}</span>{item.label}</button>)}</div></div>)}
+          {targetMode && <p className="e-help">共通デザインは原文側で編集してください。</p>}
+          <div className="e-add-tabs" role="tablist" aria-label="追加カテゴリ">{insertionCategories.map((category, index) => <button type="button" role="tab" id={`e-add-tab-${category.id}`} aria-label={category.ariaLabel} aria-selected={addCategory === category.id} aria-controls="e-add-panel" tabIndex={addCategory === category.id ? 0 : -1} key={category.id} onClick={() => setAddCategory(category.id)} onKeyDown={(event) => chooseInsertionCategoryByKey(event, index)}>{category.label}</button>)}</div>
+          <div className="e-add-category" role="tabpanel" id="e-add-panel" aria-labelledby={`e-add-tab-${addCategory}`}>{paletteGroups.map((group) => <div className="e-palette-group" key={group}><h3>{group}</h3><div className="e-palette">{categoryPalette.filter((item) => item.group === group).map((item) => <button type="button" className="e-preset-card" key={item.id} title={item.description} draggable={!!document && !editBlocked && !hasInput && !targetMode} onDragStart={(event) => startDrag(event, { kind: "palette", type: item.id })} onDragEnd={() => { dragItem.current = null; }} onClick={() => add(item.id)} disabled={!document || editBlocked || hasInput || targetMode}><span className="e-preset-preview" data-category={item.category ?? "basic"} data-preset={item.id} aria-hidden="true"><i /><i /><i /></span><span className="e-preset-label"><i aria-hidden="true">{item.glyph ?? "+"}</i>{item.label}</span></button>)}</div></div>)}</div>
           <details><summary>挿入先と詳細</summary><label className="e-field"><span>追加・移動先</span><select aria-label="追加・移動先" value={parentId} disabled={editBlocked || hasInput || targetMode} onChange={(event) => setParentId(event.target.value)}>{!masterId && <option value="">ページ直下</option>}{entries.filter(({ node }) => node.type === "element" && !["img", "source", "br", "hr"].includes(node.tag)).map(({ node, path }) => node.type === "element" && <option key={node.id} value={node.id}>{destinationLabel(node, path, blocks, names)}</option>)}</select></label>
             <label className="e-field"><span>追加する要素</span><select aria-label="追加する要素" value={addType === "p" ? "text" : addType} onChange={(event) => setAddType(event.target.value)} disabled={editBlocked || targetMode}>
               {palette.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}{availableBlocks.map(([key, block]) => <option key={key} value={`block:${key}`}>{block.label ?? key}</option>)}</select></label>

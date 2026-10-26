@@ -196,7 +196,7 @@ const html = renderPageToHtml(document);
 
 ## 開発
 
-スタッフ向けエディターは `@niho/web/editor` の `PageEditor` を使います。左の追加・ページ・レイヤーパネル、中央キャンバスでの直接文字編集とドラッグ配置、右インスペクタ（幅の `flex` 比率・高さの `dvh` を含む）、下書き保存、楽観ロック、公開/rollbackの対象ドメインと差分確認を提供します。[ホスト接続・編集・公開の契約](docs/editor-contract.md)と `npm run demo` のインメモリ動作例を参照してください。ホストが所有する表示部品（カレンダー・地図・カルーセル・一覧など）をキャンバスの同じ iframe に公開と同じ見た目で出すには、`PageEditor` の `previewComponent` に表示中の文書・幅・表示モード・従来の描画を受けるコンポーネントを渡します（[ホストの表示部品を同じ iframe へ差し込む](docs/editor-contract.md#ホストの表示部品を同じ-iframe-へ差し込む)、`npm run demo:host-preview`）。
+スタッフ向けエディターは `@niho/web/editor` の `PageEditor` を使います。左の追加パネルは Basic / Parts / Sections に分かれ、基本要素に加えて編集可能なボタン・カード・見出しセット・リストと、ヘッダー・ヒーロー・特徴グリッド・CTA・FAQ・フッターをクリックまたはドラッグで配置できます。ページ・レイヤーパネル、中央キャンバスでの直接文字編集とドラッグ配置、右インスペクタ（幅の `flex` 比率・高さの `dvh` を含む）、下書き保存、楽観ロック、公開/rollbackの対象ドメインと差分確認も提供します。[ホスト接続・編集・公開の契約](docs/editor-contract.md)と `npm run demo` のインメモリ動作例を参照してください。ホストが所有する表示部品（カレンダー・地図・カルーセル・一覧など）をキャンバスの同じ iframe に公開と同じ見た目で出すには、`PageEditor` の `previewComponent` に表示中の文書・幅・表示モード・従来の描画を受けるコンポーネントを渡します（[ホストの表示部品を同じ iframe へ差し込む](docs/editor-contract.md#ホストの表示部品を同じ-iframe-へ差し込む)、`npm run demo:host-preview`）。
 
 Studioへの新しいサイト接続と、独自挿入・motion・block・共通部品・画像・CAS保存・SSRを持つ第三サイト `atelier` の動作例は[ビルダー接続ガイド](docs/builder-integration-guide.md)を参照してください。`npm run demo:builder` で `127.0.0.1` 限定のdemoを起動できます。
 

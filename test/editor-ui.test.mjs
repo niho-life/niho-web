@@ -840,7 +840,7 @@ test("library images can be added inside the selected element and used as its ba
     assert.ok(document.querySelector('[data-node-id="node_1"]'));
     assert.equal(canvasNode("node_1").parentElement.getAttribute("data-nw-node"), "hero");
     assert.equal(canvasNode("node_1").getAttribute("src"), "/media/garden.png"); assert.equal(canvasNode("node_1").getAttribute("width"), "600");
-    await tool("レイヤー"); await clickLayer("hero"); assert.equal(document.querySelector('[role="tab"][aria-selected="true"]').textContent, "ボックス"); await click("背景画像を選ぶ");
+    await tool("レイヤー"); await clickLayer("hero"); assert.equal(document.querySelector('[aria-label="インスペクタ"] [role="tab"][aria-selected="true"]').textContent, "ボックス"); await click("背景画像を選ぶ");
     assert.equal(assetPanel().querySelector("h2").textContent, "背景画像を選ぶ");
     await chooseAsset("庭の緑.png");
     const css = () => document.querySelector("iframe").contentDocument.querySelector("style[data-nw-style]").textContent;
