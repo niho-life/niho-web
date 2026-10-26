@@ -2,12 +2,12 @@
 
 import { useCallback, useId, useMemo, useState, type ReactNode } from "react";
 import { parseProject, type Project } from "./projects.js";
-import { parseProjectDashboardResult, type ProjectDashboardAdapter, type ProjectDashboardResult, type ProjectOverview } from "./project-read-model.js";
+import { parseProjectDashboardResult, type ProjectDashboardAdapter, type ProjectDashboardResult, type ProjectMemberRole, type ProjectMemberSummary, type ProjectOverview, type ReadSection } from "./project-read-model.js";
 import { dateLabel, PublicationBadge, ReadNotice, Timestamp, useProjectRead } from "./project-view-shared.js";
 import { projectViewCss } from "./project-view-style.js";
 
 export { parseProjectDashboardResult } from "./project-read-model.js";
-export type { ProjectAnalytics, ProjectDashboardAdapter, ProjectDashboardResult, ProjectOverview, ProjectTarget, ReadSection } from "./project-read-model.js";
+export type { ProjectAnalytics, ProjectDashboardAdapter, ProjectDashboardResult, ProjectMemberRole, ProjectMemberSummary, ProjectOverview, ProjectTarget, ReadSection } from "./project-read-model.js";
 /** ホストが接続したサイト機能（CMS・素材・翻訳など）。中身はホストが描く */
 export type ProjectSiteView = { id: string; label: string; content: ReactNode };
 export type ProjectDashboardProps = {
@@ -39,6 +39,7 @@ const VIEW_TITLES: Readonly<Record<DashboardView, string>> = { overview: "ダッ
 const numberLabel = (value: number | null) => value === null ? "未取得" : value.toLocaleString("ja-JP");
 const DISCONNECTED_TEXT = "アクセス解析はまだ接続されていません。";
 const DISCONNECTED_HINT = "解析サービスを接続すると、訪問者数とページ表示数、対象期間をここに表示します。接続までは数値を表示しません。";
+const ROLE_LABELS: Readonly<Record<ProjectMemberRole, string>> = { owner: "オーナー", editor: "編集者" };
 
 function Overview({ overview }: { overview: ProjectOverview }) {
   return <><PublicationBadge status={overview.publicationStatus} />
@@ -64,6 +65,17 @@ function AnalyticsSummary({ result, open }: { result: ReadyDashboard["analytics"
       : result.status === "disconnected" ? <><p>{DISCONNECTED_TEXT}</p><p className="pv-muted">{DISCONNECTED_HINT}</p></>
       : <p role="alert">アクセス解析を取得できませんでした。</p>}
     <div className="pv-actions"><button type="button" onClick={open}>アクセス解析を見る</button></div>
+  </section>;
+}
+
+/** 読み取り専用のメンバー一覧。ホストが members を返さなければ Project 正本の参加者を役割なしで出す。招待・解除・権限変更はプロジェクト設定（ホスト）の役割。 */
+function Members({ project, members, retry, openSettings }: { project: Project; members: ReadyDashboard["members"]; retry: () => void; openSettings: (() => void) | null }) {
+  const section: ReadSection<readonly ProjectMemberSummary[]> = members ?? { status: "ready", data: project.members.map((member) => ({ displayName: member.displayName, role: null })) };
+  if (section.status === "unavailable") return <section className="pv-panel"><h3>メンバー</h3><p role="alert">メンバーを取得できませんでした。</p><div className="pv-actions"><button type="button" onClick={retry}>再試行</button></div></section>;
+  return <section className="pv-panel"><h3>メンバー（{section.data.length}名）</h3>
+    {section.data.length === 0 ? <p className="pv-muted">メンバーはいません。</p>
+      : <ul className="pv-member-list">{section.data.map((member, index) => <li key={index}><span className="pv-member-name">{member.displayName}</span>{member.role && <span className={`pv-role pv-role-${member.role}`}>{ROLE_LABELS[member.role]}</span>}</li>)}</ul>}
+    {openSettings && <><p className="pv-muted">メンバーの招待・権限の変更・参加解除はプロジェクト設定で行います。</p><div className="pv-actions"><button type="button" onClick={openSettings}>プロジェクト設定を開く</button></div></>}
   </section>;
 }
 
@@ -122,7 +134,7 @@ function DashboardSession({ project: inputProject, adapter, onBackToProjects, on
             <h2 className="pv-page-title">{VIEW_TITLES[view]}</h2>
             {view === "settings" ? <div className="pv-settings">{settingsContent}</div>
               : view === "analytics" ? <section className="pv-panel"><h3>アクセス解析</h3><Analytics result={result.analytics} connect={() => onOpenSettings(project, "analytics")} retry={reload} settingsAction={settingsAction} /></section>
-              : view === "members" ? <section className="pv-panel"><h3>メンバー（{project.members.length}名）</h3>{project.members.length === 0 ? <p className="pv-muted">メンバーはいません。</p> : <ul className="pv-member-list">{project.members.map((member) => <li key={member.userId}>{member.displayName}</li>)}</ul>}</section>
+              : view === "members" ? <Members project={project} members={result.members} retry={reload} openSettings={settingsDisabled ? null : () => openSettings(project)} />
               : <div className="pv-sections"><section className="pv-panel"><h3>公開情報</h3>{result.overview.status === "ready" ? <Overview overview={result.overview.data} /> : <><p role="alert">公開情報を取得できませんでした。</p><button type="button" onClick={reload}>再試行</button></>}</section>
                 <section className="pv-panel"><h3>直近の変更</h3>{result.overview.status === "unavailable" ? <p role="alert">変更履歴を取得できませんでした。</p> : result.overview.data.recentChanges.length === 0 ? <p className="pv-muted">直近の変更はありません。</p> : <ul className="pv-changes">{result.overview.data.recentChanges.map((change) => <li key={change.id}>{change.label}<Timestamp value={change.changedAt} /></li>)}</ul>}</section>
                 <AnalyticsSummary result={result.analytics} open={() => setView("analytics")} />

@@ -22,6 +22,11 @@ const rows = {
   "project-experience/experience": { project_id: "project-experience", project_name: "NIHO Experience", site_id: "experience", site_name: "NIHO Experience", public_origin: "https://experience.niho.life", display_name: "編集者" },
 };
 const projectOf = (row, subject) => ({ id: row.project_id, name: row.project_name, site: { id: row.site_id, name: row.site_name, domains: [row.public_origin] }, members: [{ userId: subject, displayName: row.display_name }] });
+// D1 の project_members（表示名と役割だけを読む）。値はすべて架空
+const memberRows = {
+  "project-kamakura": [{ display_name: "オーナー（架空）", role: "owner" }, { display_name: "編集者", role: "editor" }],
+  "project-experience": [{ display_name: "編集者", role: "editor" }]
+};
 
 const upstreamOverview = () => ({
   publicationStatus: "published",
@@ -50,6 +55,7 @@ test("Dashboard reads the Kamakura overview through the signed bridge and degrad
   const members = new Set();
   const calls = [];
   let upstream = async () => Response.json(upstreamOverview());
+  let membersQuery = async (projectId) => ({ success: true, results: memberRows[projectId] ?? [] });
   const env = {
     ACCESS_ISSUER: auth.issuer,
     ACCESS_AUDIENCE: auth.audience,
@@ -57,6 +63,10 @@ test("Dashboard reads the Kamakura overview through the signed bridge and degrad
     DB: { prepare() { return { bind(...values) { this.values = values; return this; }, async first() {
       const key = `${this.values[1]}/${this.values[2]}`;
       return this.values[0] === auth.subject && members.has(key) ? rows[key] : null;
+    }, async all() {
+      // メンバー一覧は project_id と上限だけで引く（subject で絞らない＝参加者全員）
+      assert.equal(this.values.length, 2); assert.equal(this.values[1], 500);
+      return membersQuery(this.values[0]);
     } }; } },
     ASSETS: { async fetch() { return new Response("unused"); } },
     KAMAKURA_SITE: { async fetch(request) {
@@ -71,7 +81,7 @@ test("Dashboard reads the Kamakura overview through the signed bridge and degrad
   };
   const kamakura = async (target = env) => {
     const value = await dashboard("project-kamakura", "kamakura", target);
-    assert.deepEqual(Object.keys(value).sort(), ["analytics", "fetchedAt", "overview", "projectId", "siteId", "status"]);
+    assert.deepEqual(Object.keys(value).sort(), ["analytics", "fetchedAt", "members", "overview", "projectId", "siteId", "status"]);
     assert.equal(value.status, "ready");
     assert.deepEqual(value.analytics, { status: "disconnected" });
     // client 側の parser（未知の key を拒否する）にそのまま通る
@@ -88,6 +98,8 @@ test("Dashboard reads the Kamakura overview through the signed bridge and degrad
 
   // 上流 OK: 既知の key だけで組み立て直し、日時は UTC に揃える
   const ready = await kamakura();
+  // メンバーは参加者全員の表示名と役割だけ（subject・メール・日時は出さない）。owner が先
+  assert.deepEqual(ready.members, { status: "ready", data: [{ displayName: "オーナー（架空）", role: "owner" }, { displayName: "編集者", role: "editor" }] });
   assert.deepEqual(ready.overview, { status: "ready", data: {
     publicationStatus: "published",
     publishedUrl: "https://next-kamakura.niho.life",
@@ -179,10 +191,26 @@ test("Dashboard reads the Kamakura overview through the signed bridge and degrad
   assert.deepEqual((await kamakura({ ...env, KAMAKURA_STUDIO_BRIDGE_SECRET: undefined })).overview, { status: "unavailable" });
   assert.equal(calls.length, before);
 
+  // メンバーの読み取りに失敗しても、公開情報は残り Dashboard は 200（members だけ unavailable）。保存値が壊れていても同じ
+  upstream = async () => Response.json(upstreamOverview());
+  for (const broken of [async () => { throw new Error("D1_ERROR"); }, async () => ({ success: false, results: [] }), async () => ({ success: true, results: [{ display_name: "x", role: "admin" }] }), async () => ({ success: true, results: [{ display_name: "   ", role: "owner" }] })]) {
+    membersQuery = broken;
+    const degraded = await kamakura();
+    assert.deepEqual(degraded.members, { status: "unavailable" });
+    assert.equal(degraded.overview.status, "ready");
+  }
+  membersQuery = async (projectId) => ({ success: true, results: memberRows[projectId] ?? [] });
+
+  // メンバーの失敗のログは固定の文言と error の name だけ（表示名・subject・本文を出さない）
+  const memberWarnings = warnings.filter(([label]) => label === "NIHO Studio dashboard members unavailable");
+  assert.equal(memberWarnings.length, 4);
+  for (const [, detail] of memberWarnings) assert.equal(detail, "Error");
   // ログは support ID・操作・分類・status だけ（秘密・署名・subject・本文を出さない）
-  assert.ok(warnings.length >= Object.keys(failures).length + 2);
+  const bridgeWarnings = warnings.filter(([label]) => label === "NIHO Studio Kamakura bridge failure");
+  assert.equal(bridgeWarnings.length + memberWarnings.length, warnings.length);
+  assert.ok(bridgeWarnings.length >= Object.keys(failures).length + 2);
   const categories = new Set();
-  for (const [label, detail] of warnings) {
+  for (const [label, detail] of bridgeWarnings) {
     assert.equal(label, "NIHO Studio Kamakura bridge failure");
     assert.equal(detail.operation, "site_overview");
     for (const key of Object.keys(detail)) assert.ok(["supportId", "operation", "category", "upstreamStatus"].includes(key), key);
@@ -200,6 +228,7 @@ test("Dashboard reads the Kamakura overview through the signed bridge and degrad
   assert.equal(experience.status, "ready");
   assert.deepEqual(experience.overview, { status: "unavailable" });
   assert.deepEqual(experience.analytics, { status: "disconnected" });
+  assert.deepEqual(experience.members, { status: "ready", data: [{ displayName: "編集者", role: "editor" }] });
   assert.equal(calls.length, callsBefore);
   assert.equal(parseProjectDashboardResult(experience, projectOf(rows["project-experience/experience"], auth.subject)).status, "ready");
 });

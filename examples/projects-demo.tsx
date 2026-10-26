@@ -107,7 +107,9 @@ const dashboardAdapter: ProjectDashboardAdapter = {
         lastPublishedAt: published ? demoTime : null, publishedPageCount: published ? 1 : 0, assetBytes: null,
         recentChanges: published ? [{ id: "demo_change", label: "合成ページの見出しを更新", changedAt: demoTime }] : []
       } },
-      analytics: published ? { status: "ready", data: { period: { start: "2026-10-01T00:00:00Z", end: demoTime }, fetchedAt: demoTime, uniqueVisitors: 42, pageViews: 184 } } : { status: "disconnected" }
+      analytics: published ? { status: "ready", data: { period: { start: "2026-10-01T00:00:00Z", end: demoTime }, fetchedAt: demoTime, uniqueVisitors: 42, pageViews: 184 } } : { status: "disconnected" },
+      // メンバー表示は表示名と役割だけ（合成値: 最初の参加者をオーナーにする）
+      members: { status: "ready", data: project.members.map((member, index) => ({ displayName: member.displayName, role: index === 0 ? "owner" : "editor" })) }
     };
   }
 };
