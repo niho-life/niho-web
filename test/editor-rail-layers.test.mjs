@@ -59,7 +59,8 @@ test("the tool rail shows one line icon per STUDIO tool, names it for assistive 
     const css = document.querySelector(".nw-editor style").textContent;
     assert.ok(css.includes(".nw-editor .e-tools button{display:flex;width:32px;height:32px"), "32px buttons in the 44px rail");
     assert.ok(css.includes(".nw-editor .e-tool-icon{display:block;width:18px;height:18px"));
-    assert.ok(css.includes(".nw-editor .e-tools button[aria-pressed=true]{border-color:transparent;background:#e6e6e6;color:#111}"), "the open tool has a small grey square");
+    assert.ok(css.includes(".nw-editor .e-tools button[aria-pressed=true]{border-color:transparent;background:var(--nw-pressed);color:var(--e-ink)}"), "the open tool has a small grey square");
+    assert.ok(css.includes("--nw-pressed:#e6e6e6"), "…drawn from the shared tokens");
   } finally { await app.cleanup(); }
 });
 

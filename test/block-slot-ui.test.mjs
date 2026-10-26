@@ -105,7 +105,7 @@ test("clicking a region on the canvas selects the block and that region, shows o
     assert.ok(right().textContent.includes("この領域で変更できる見た目だけを表示しています。"));
     assert.deepEqual(captions(), ["文字色", "文字サイズ", "文字の太さ"]);
     // 繰り返すカードの同じ領域をすべて破線で囲む。
-    assert.ok(editorCss().includes('[data-nw-node="cards"] [data-nw-slot="title"]{outline:2px dashed #2878ff!important;outline-offset:2px;}'));
+    assert.ok(editorCss().includes('[data-nw-node="cards"] [data-nw-slot="title"]{outline:2px dashed #0f70eb!important;outline-offset:2px;}'));
     await change(input("文字色", right()), "#ff0000");
     assert.ok(canvasCss().includes('[data-nw-node="cards"] [data-nw-slot="title"]{color:#ff0000;}'));
     assert.ok(field("文字色", right()).querySelector(".e-dot"), "the changed region field is marked as unsaved");

@@ -57,7 +57,7 @@ export function StyleLibrary({ document, selection, apply, select, disabled, bre
     } else if (tab === "color") {
       name = nextName([...tokens.map(([key]) => key), ...reservedNames], "color");
       const current = resolveValue(document, selected?.style?.base?.color);
-      operation = { type: "token", name, token: { type: "color", value: typeof current === "string" ? current : "#195640", label: `カラー ${name.slice(6)}` } };
+      operation = { type: "token", name, token: { type: "color", value: typeof current === "string" ? current : "#1a1a1a", label: `カラー ${name.slice(6)}` } };
     } else {
       name = nextName([...tokens.map(([key]) => key), ...reservedNames], "size");
       operation = { type: "token", name, token: { type: "length", value: 16, label: `サイズ ${name.slice(5)}` } };

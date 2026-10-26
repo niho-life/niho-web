@@ -265,20 +265,20 @@ test("dashboard mismatch, failure and permission loss clear all sensitive facts 
   } finally { await app.cleanup(); }
 });
 
-test("dashboard uses the host theme variables with Studio-style color fallbacks", async () => {
+test("dashboard draws with the shared white tokens that a host can override", async () => {
   const selected = project();
   const app = await setup(ProjectDashboard, { project: selected, adapter: dashboardAdapter(async () => dashboard(selected)) });
   try {
     const css = [...document.querySelectorAll("style")].map((style) => style.textContent ?? "").join("\n");
-    assert.ok(css.includes("background:var(--niho-surface,#fff)"));
-    assert.ok(css.includes("--pv-ink:var(--niho-text,#191919)"));
-    assert.ok(css.includes("--pv-muted:var(--niho-text-sub,#777)"));
-    assert.ok(css.includes("--pv-border:var(--niho-border,#e6e6e6)"));
-    assert.ok(css.includes("--pv-primary-bg:var(--niho-primary-bg,#1d1d1d)"));
-    assert.ok(css.includes(".pv-project-bar{position:relative;z-index:2;display:flex;align-items:center;gap:14px;min-height:64px;padding:0 22px;background:var(--pv-surface);border-bottom:1px solid var(--pv-border)"));
-    assert.ok(css.includes(".pv-dashboard-nav{display:flex;flex-direction:column;gap:18px;margin:0;padding:22px 14px;border-right:1px solid var(--pv-border);background:var(--pv-surface)"));
-    // 現在地の背景はホストの変数が無くても見える値に落ちる
-    assert.ok(css.includes("--pv-nav-active:var(--niho-surface-subtle,#f0f0f0)"));
+    // トークンの定義は詳細度 0（:where）なので、ホストは :root や .nw-project-view で上書きできる（#159）
+    assert.ok(css.includes(":where(:root){") && css.includes("--nw-bg:#fff") && css.includes("--nw-border:rgba(34,34,34,.1)"));
+    assert.ok(css.includes(".nw-project-dashboard{padding:0;border-radius:0;background:var(--nw-bg)}"));
+    assert.ok(css.includes(".pv-project-bar{position:relative;z-index:2;display:flex;align-items:center;gap:14px;min-height:64px;padding:0 22px;background:var(--nw-bg);border-bottom:1px solid var(--nw-border)"));
+    assert.ok(css.includes(".pv-dashboard-nav{display:flex;flex-direction:column;gap:18px;margin:0;padding:22px 14px;border-right:1px solid var(--nw-border);background:var(--nw-bg)"));
+    // 現在地は一段の灰色の面、公開中は緑の点だけ
+    assert.ok(css.includes(".pv-dashboard-nav button[aria-current=page]{background:var(--nw-surface-2);"));
+    assert.ok(css.includes(".pv-project-identity[data-publication=published] i{background:var(--nw-live)}"));
+    assert.equal(/--niho-(?!sticky-top)|--pv-/u.test(css), false, "no host-specific or private color variables are left");
   } finally { await app.cleanup(); }
 });
 
