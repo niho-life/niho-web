@@ -1,6 +1,6 @@
 import {
-  isIsoTimestamp, parseCollectionItemSummary, parseCollectionListResult, parseCollectionSchemaResult,
-  type CollectionDefinition, type CollectionFieldError, type CollectionItem, type CollectionItemSummary, type CollectionValue
+  COLLECTION_BULK_LIMIT, isIsoTimestamp, parseCollectionItemSummary, parseCollectionListResult, parseCollectionSchemaResult, parseGalleryEntries,
+  type CollectionDefinition, type CollectionFieldError, type CollectionGalleryEntry, type CollectionItem, type CollectionItemSummary, type CollectionValue
 } from "../src/collection-model.js";
 import { DocumentValidationError, fail, record } from "../src/validation-utils.js";
 
@@ -30,6 +30,15 @@ export const KAMAKURA_CMS_LIMITS = Object.freeze({
   draftBodyBytes: 2 * 1024 * 1024,
   /** そのほかの本文と、アップロード開始の応答。 */
   bodyBytes: 16 * 1024,
+  /** 並べ替え（ids）・まとめての操作（items）の本文。 */
+  listBodyBytes: 128 * 1024,
+  /** 並べ替えの ids の数。 */
+  reorderIds: 2000,
+  /** まとめての操作の items の数。 */
+  bulkItems: COLLECTION_BULK_LIMIT,
+  /** gallery（作品／活動など）の行の数と、説明の文字数（UTF-16）。 */
+  galleryEntries: 200,
+  galleryCaptionLength: 20_000,
   valueKeys: 100,
   /** 1 つの値の文字数（UTF-16）。本文（richText）を含む。本文全体は draftBodyBytes でも抑える。 */
   stringLength: 1_000_000,
@@ -61,6 +70,10 @@ export function isKamakuraCmsVersion(value: unknown): value is string {
 /** 1 行の短い文字列（題名・ファイル名など）。 */
 export function isKamakuraCmsLine(value: unknown, maximum: number): value is string {
   return typeof value === "string" && value.length <= maximum && !!value.trim() && !/[\u0000-\u001f\u007f]/u.test(value);
+}
+/** サイトの中のパス（削除の移動先）。"/" から始まり、"//"・空白・制御文字・`?`・`#`・バックスラッシュを含まない 2048 字まで。 */
+export function isKamakuraCmsSitePath(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 2048 && value.startsWith("/") && !value.startsWith("//") && !/[\s\u0000-\u001f\u007f?#\\]/u.test(value);
 }
 /** 予約の日時。タイムゾーン付きの ISO を UTC（Z）にそろえる。読めなければ null。 */
 export function normalizeKamakuraCmsTimestamp(value: unknown): string | null {
@@ -103,6 +116,15 @@ function parseValuesAt(input: unknown, path: string): Record<string, CollectionV
     else if (typeof value === "string") {
       if (value.length > KAMAKURA_CMS_LIMITS.stringLength || /[\u0000\u000b\u000c]/u.test(value)) fail(at, "invalid string");
       result[key] = value;
+    } else if (Array.isArray(value) && value.some((entry) => typeof entry === "object" && entry !== null)) {
+      // gallery（作品／活動など）: { id, image, caption } の並び
+      if (value.length > KAMAKURA_CMS_LIMITS.galleryEntries) fail(at, "too many entries");
+      const entries: CollectionGalleryEntry[] = parseGalleryEntries(value, at);
+      entries.forEach((entry, index) => {
+        if (entry.caption.length > KAMAKURA_CMS_LIMITS.galleryCaptionLength) fail(`${at}[${index}].caption`, "caption too long");
+        if (entry.image !== null && /[\s<>"'\\]/u.test(entry.image)) fail(`${at}[${index}].image`, "invalid image");
+      });
+      result[key] = entries;
     } else if (Array.isArray(value)) {
       if (value.length > KAMAKURA_CMS_LIMITS.arrayEntries) fail(at, "too many entries");
       const list = value.map((entry, index) => {
@@ -111,14 +133,15 @@ function parseValuesAt(input: unknown, path: string): Record<string, CollectionV
       });
       if (new Set(list).size !== list.length) fail(at, "duplicate entry");
       result[key] = list;
-    } else fail(at, "expected string, null or string[]");
+    } else fail(at, "expected string, null, string[] or gallery entries");
   }
   return result;
 }
 
 /**
  * 項目の値（definition を使わない形の確かめ）。key は読みやすい名前（^[a-z][A-Za-z0-9]{0,63}$）で 100 個まで、
- * 値は string（100 万字まで）・null・string[]（200 個まで・各 1〜200 字・重複なし）。BFF は下書きの本文にも使う。
+ * 値は string（100 万字まで）・null・string[]（200 個まで・各 1〜200 字・重複なし）・gallery の並び
+ * （`{ id, image, caption }` が 200 行まで・id は "" か不透明な id・説明は 2 万字まで）。BFF は下書きの本文にも使う。
  */
 export function parseKamakuraCmsValues(input: unknown, path = "values"): Record<string, CollectionValue> {
   return guarded(() => parseValuesAt(input, path));
@@ -189,6 +212,37 @@ export function parseKamakuraCmsRemoved(input: unknown): { readonly status: "rem
     exact(value, ["status"], "response");
     if (value.status !== "removed") fail("response.status", "unexpected status");
     return { status: "removed" as const };
+  });
+}
+
+function parseSummariesAt(input: unknown, path: string): CollectionItemSummary[] {
+  if (!Array.isArray(input) || input.length > 10_000) fail(path, "expected an array");
+  const items = input.map((entry: unknown, index: number) => {
+    const item = parseCollectionItemSummary(entry, `${path}[${index}]`);
+    if (!isKamakuraCmsItemId(item.id)) fail(`${path}[${index}].id`, "invalid item id");
+    return item;
+  });
+  if (new Set(items.map((item) => item.id)).size !== items.length) fail(path, "duplicate item");
+  return items;
+}
+
+/** POST collections/:col/reorder の 202・bulk の 202（publishing）/ 200（saved）。items は操作の後の一覧。 */
+export function parseKamakuraCmsListChange<S extends "publishing" | "saved">(input: unknown, status: S): { readonly status: S; readonly items: readonly CollectionItemSummary[] } {
+  return guarded(() => {
+    const value = record(input, "response");
+    exact(value, ["status", "items"], "response");
+    if (value.status !== status) fail("response.status", "unexpected status");
+    return { status, items: parseSummariesAt(value.items, "response.items") };
+  });
+}
+
+/** reorder・bulk の 409 `{ error: "conflict", items }`。items は今の一覧。 */
+export function parseKamakuraCmsListConflict(input: unknown): { readonly error: "conflict"; readonly items: readonly CollectionItemSummary[] } {
+  return guarded(() => {
+    const value = record(input, "conflict");
+    exact(value, ["error", "items"], "conflict");
+    if (value.error !== "conflict") fail("conflict.error", "unexpected error");
+    return { error: "conflict" as const, items: parseSummariesAt(value.items, "conflict.items") };
   });
 }
 

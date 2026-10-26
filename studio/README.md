@@ -158,14 +158,18 @@ Kamakura の `PageEditor` には `studio/kamakura-assets.ts` の素材 adapter �
 | `GET collections/:col/items/:id` | – | 200 `{ status: "ready", item }` |
 | `POST collections/:col/items` | `{}` | 201 `{ status: "created", item }` |
 | `PUT …/:id/draft` | `{ version, values }`（直した key だけ） | 200 `{ status: "saved", item }` |
-| `POST …/:id/publish`・`unpublish` | `{ version }` | 202 `{ status: "publishing", item }` |
-| `POST …/:id/discard-draft`・`cancel-schedule` | `{ version }` | 200 saved |
-| `POST …/:id/schedule` | `{ version, at }`（BFF が UTC の ISO にそろえる） | 200 saved |
+| `POST …/:id/publish` | `{ version, redirect? }`（`redirect` は boolean） | 202 `{ status: "publishing", item }` |
+| `POST …/:id/unpublish` | `{ version }` | 202 `{ status: "publishing", item }` |
+| `POST …/:id/discard-draft`・`cancel-schedule`・`retry-schedule` | `{ version }` | 200 saved |
+| `POST …/:id/schedule` | `{ version, at, redirect? }`（BFF が `at` を UTC の ISO にそろえる） | 200 saved |
 | `POST …/:id/duplicate` | `{ version }` | 201 created（別の id） |
-| `POST …/:id/remove` | `{ version }` | 200 `{ status: "removed" }` |
+| `POST …/:id/remove` | `{ version, redirectTo? }`（`redirectTo` は null かサイトの中のパス） | 200 `{ status: "removed" }` |
+| `POST collections/:col/reorder` | `{ ids, from, to }`（ids は 2〜2000 件・重複なし、from・to は 0 以上 ids の数未満の違う整数） | 202 `{ status: "publishing", items }` |
+| `POST collections/:col/bulk` | `{ action: "publish" \| "unpublish" \| "remove", items: { id, version }[] }`（1〜100 件・id の重複なし） | 202 `{ status: "publishing", items }`・200 `{ status: "saved", items }` |
 | `POST uploads/intent` | `{ collectionId, name, mimeType, bytes }` | 201 `{ uploadUrl, uploadToken, uploadId }` |
 
-- 上限: 下書きの本文 2 MiB（`values` の key は `^[a-z][A-Za-z0-9]{0,63}$` で 100 個まで、値は string〔100 万字まで〕・null・string[]〔200 個まで・各 1〜200 字・重複なし〕）、ほかの本文 16 KiB、上流の応答 3 MiB（upload intent は 16 KiB）。`collectionId` は `^[a-z][a-z0-9-]{0,39}$`、画像は jpeg / png / webp / avif / gif で 50 MiB まで（実際の上限は鎌倉の Worker の 413）。
+- 任意の key（`publish`・`schedule` の `redirect`、`remove` の `redirectTo`）は、無ければ上流へも送りません（上流の既定: 転送する・一覧へ移す）。`redirectTo` が同じコレクションの公開中の項目か一覧のパスかは上流が確かめ、違えば 422 です。
+- 上限: 下書きの本文 2 MiB（`values` の key は `^[a-z][A-Za-z0-9]{0,63}$` で 100 個まで、値は string〔100 万字まで〕・null・string[]〔200 個まで・各 1〜200 字・重複なし〕・作品のような `{ id, image, caption }` の並び〔200 行まで・`id` は `""` か不透明な id・説明は 2 万字まで〕）、並べ替え・まとめての操作の本文 128 KiB、ほかの本文 16 KiB、上流の応答 3 MiB（upload intent は 16 KiB）。`collectionId` は `^[a-z][a-z0-9-]{0,39}$`、画像は jpeg / png / webp / avif / gif で 50 MiB まで（実際の上限は鎌倉の Worker の 413）。
 - 上流の待ち時間は、読み取り 12 秒、書き込み 30 秒（公開・非公開・削除は鎌倉側で commit まで行う）。
 - 応答は `studio/kamakura-cms-contract.ts` の parser（BFF とブラウザで共有、`src/collection-model.ts` の parser を使う）で確かめ、既知の field だけを返します。schema の項目の key も `values` と同じ形に限ります。
 
@@ -173,6 +177,7 @@ Kamakura の `PageEditor` には `studio/kamakura-assets.ts` の素材 adapter �
 | --- | --- |
 | 契約どおりの成功 | 同じ status で、確かめ直した JSON |
 | 409（項目つき） | 409 `{ error: "conflict", item }`（item はほかの人が保存した最新） |
+| 409（並べ替え・まとめての操作） | 409 `{ error: "conflict", items }`（items は今の一覧） |
 | 422 | 422 `{ error: "invalid", errors }`（先頭の 50 件） |
 | upload intent の 413 / 415 | 同じ status で `{ error: "image_rejected" }` |
 | 404 | 404 `{ error: "not_found" }`（schema の 404 は endpoint の未配備として 503） |
@@ -180,12 +185,14 @@ Kamakura の `PageEditor` には `studio/kamakura-assets.ts` の素材 adapter �
 | 401 / 403 / 429 / 5xx / 3xx / JSON でない / 上限超え / timeout / 想定外の 4xx | 503 `{ error: "service_unavailable", supportId }` |
 | 契約に合わない応答（field の過不足・id の不一致・成功の status 違いなど） | 502 `{ error: "upstream_contract_invalid", supportId }` |
 
-log は editor と同じく問い合わせ ID・固定の operation（`cms_schema`・`cms_list`・`cms_read`・`cms_create`・`cms_draft_save`・`cms_publish`・`cms_discard_draft`・`cms_unpublish`・`cms_duplicate`・`cms_remove`・`cms_schedule`・`cms_cancel_schedule`・`cms_upload_intent`）・固定の分類（editor の分類と `cms_endpoint_missing`）・上流の status だけで、本文・email・subject は出しません。
+log は editor と同じく問い合わせ ID・固定の operation（`cms_schema`・`cms_list`・`cms_read`・`cms_create`・`cms_draft_save`・`cms_publish`・`cms_discard_draft`・`cms_unpublish`・`cms_duplicate`・`cms_remove`・`cms_schedule`・`cms_cancel_schedule`・`cms_retry_schedule`・`cms_reorder`・`cms_bulk`・`cms_upload_intent`）・固定の分類（editor の分類と `cms_endpoint_missing`）・上流の status だけで、本文・email・subject は出しません。
 
 ブラウザ側は `studio/kamakura-cms.ts` の `createKamakuraCmsAdapter({ siteOrigin })` が `CollectionAdapter` を返します（`siteOrigin` は Project の `site.domains[0]`）。
 
 - 項目ごとに最後に読んだ version と値を覚え、`saveDraft` は**その値との差分だけ**を送ります（触っていない本文などを、画面側の正規化で書き換えないため）。覚えていない version なら読み直し、違えば保存せずに conflict を返します。
 - 403 → forbidden、404 → not_found、409 → conflict、422 → invalid。非公開（上流は 202 publishing）は画面の契約に合わせて saved で返します。複製は覚えている version で呼び、競合なら最新の version でもう一度だけ試します。
+- `publish`・`schedule` の `redirect`、`remove` の `redirectTo` は、画面が付けたときだけ送ります。`reorder`・`bulk` は成功（並べ替えは 202、まとめての操作は 202 / 200）と 409 の一覧をそのまま画面へ返し、触った項目の覚えた version を捨てます（次に開いたときに読み直す）。`retrySchedule` は `retry-schedule` を呼びます。
+- 上流の schema が 5 つの capabilities だけでも、新しい 4 つ（`redirects`・`reorder`・`bulk`・`retrySchedule`）と項目の型 `gallery` を返しても読めます（新しい key は無ければ false）。Studio を先に配備し、鎌倉の Worker の新しい key・型は後から出します。
 - 画像: BFF の `uploads/intent` を呼び、`uploadUrl` が鎌倉の Worker の `/internal/studio/cms-upload/<uploadId>` であることを確かめてから、`credentials: "omit"`・`Authorization: Bearer <uploadToken>` で直接 PUT します。結果の URL は `https://kamakura-media.niho.life/uploads/...` だけを受けます。拒否は type / size / permission / invalid で返します。
 - `imageUrl` は `kamakura-media.niho.life` の画像だけ `/cdn-cgi/image/width=<w>,format=auto/` の URL にします。`previewUrl` は公開中（変更ありを含む）の項目だけ、サイトの公開 URL と `item.path` から作ります（下書きのプレビューはありません）。
 - Dashboard の HTML の `connect-src` には、切替が on のときだけ画像の PUT 先（`https://next-kamakura.niho.life`）を足します（editor の画面は従来どおり）。
