@@ -60,7 +60,7 @@ Dashboard の「CMS」は、Worker の設定値 `KAMAKURA_CMS_VIEW` で中身を
 
 Alias は Worker と client router の固定対応表で内部の Project / Site ID へ解決します。別名 URL 自体をブラウザに保ち、alias から Dashboard と Editor の間を移動しても同じ表記を使います。API/BFF の path、membership 判定、Project / Site ID は変わりません。招待 URL と Experience STG 専用 URL は引き続き ID 付き route です。
 
-Experience と Kamakura の Editor UI / BFF は実装されています。Experience の本番編集は niho-app Backend Draft PR #19268 が本番反映済みで、NIHO API と Studio Worker の `NIHO_STUDIO_BRIDGE_SECRET` が同じ値に設定されている場合に限り有効です。STG検証画面は `/projects/project-experience/sites/experience/editor/staging` に限り、D1 の Experience owner のみ開けます。画面・APIの両方で owner を確認し、固定した `https://api-stg.niho.life` と別の `NIHO_STUDIO_BRIDGE_SECRET_STG` を使います。Kamakura は `kamakura-site` の内部 endpoint、service binding `KAMAKURA_SITE`、両 Worker の `KAMAKURA_STUDIO_BRIDGE_SECRET` が揃った後に利用します。この host は Dashboard の公開状態や解析値を合成せず、`unknown` / `unavailable` / `disconnected` / `null` のまま表示します。
+Experience と Kamakura の Editor UI / BFF は実装されています。Experience の本番編集は niho-app Backend Draft PR #19268 が本番反映済みで、NIHO API と Studio Worker の `NIHO_STUDIO_BRIDGE_SECRET` が同じ値に設定されている場合に限り有効です。STG検証画面は `/projects/project-experience/sites/experience/editor/staging` に限り、D1 の Experience owner のみ開けます。画面・APIの両方で owner を確認し、固定した `https://api-stg.niho.life` と別の `NIHO_STUDIO_BRIDGE_SECRET_STG` を使います。Kamakura は `kamakura-site` の内部 endpoint、service binding `KAMAKURA_SITE`、両 Worker の `KAMAKURA_STUDIO_BRIDGE_SECRET` が揃った後に利用します。この host は Dashboard の公開状態や解析値を合成せず、`unknown` / `unavailable` / `disconnected` / `null` のまま表示します。Kamakura の公開情報だけはサイト側から読みます（下の「Kamakura の Dashboard 公開情報」）。解析はどのサイトも `disconnected` です。
 
 両Editorは `PageEditor` の共通workspaceを使います。左のツール列とパネル、中央キャンバス、右インスペクター上段の倍率と編集操作、下部の表示幅操作はサイト間で共通です。各hostはダッシュボードへ戻る入口だけを `toolbarStart` に渡し、サイト固有のレイアウト指定は行いません。左右パネルは開閉でき、狭い表示でもoverlayで編集を続けられます。
 
@@ -132,6 +132,16 @@ Kamakura の `PageEditor` には `studio/kamakura-assets.ts` の素材 adapter �
 - `GET .../assets/<uuid>/preview` は同一 origin（`Sec-Fetch-Site: same-origin`）の GET を署名つき `POST assets/preview` に変え、画像の Content-Type の応答だけを `no-store` で流します。公開前の Studio アップロードを公開 URL なしで表示するための経路で、ほかの出所の素材は公開 CDN（`kamakura-media.niho.life` の `/cdn-cgi/image` 幅指定）のサムネイルをそのまま使います（`img-src https:`）。
 - アップロードは、`upload-intent` で得た一回限りのトークンを `Authorization: Bearer` に付け、`credentials: "omit"` で kamakura-site へ直接 PUT します。Studio Worker は画像本体を中継しません。Access Cookie・JWT・bridge secret はブラウザにも kamakura-site にも渡りません。
 - 追加の secret はありません（`KAMAKURA_STUDIO_BRIDGE_SECRET` を共用）。契約の全体は [素材ライブラリ契約](../docs/asset-contract.md)「鎌倉サイトでの接続」と kamakura-site の `worker/README.md`、テストは `test/studio-worker-assets.test.mjs`・`test/kamakura-assets-adapter.test.mjs` です。
+
+### Kamakura の Dashboard 公開情報
+
+`GET /api/projects/project-kamakura/sites/kamakura/dashboard` は、D1 の membership を確かめた後、service binding `KAMAKURA_SITE` に署名つきの `GET /internal/studio/web-content/_site/overview` を送ります（editor・CMS と同じ HMAC・`redirect: manual`・JSON 64 KiB 上限・8 秒で打ち切り）。`_` で始まるのはページ ID と重ならないためです。値の出どころ（公開 origin・sitemap の URL 数・GitHub の commit と Workers Builds）は kamakura-site の `worker/README.md`「Dashboard の公開情報」が正です。
+
+- 応答は `ProjectOverview` の 6 つの key（`publicationStatus`・`publishedUrl`・`lastPublishedAt`・`publishedPageCount`・`assetBytes`・`recentChanges` 最大 20 件・id 重複なし）だけで組み立て直し、上流の未知の key は捨てます。日時は UTC の ISO に揃えます。
+- 上流の 3xx・401/403・404（endpoint 未配備＝`overview_endpoint_missing`）・429・5xx・本文や形の誤り・timeout・secret 未設定は、`overview: { "status": "unavailable" }` にして Dashboard 全体は 200 で返します。ログは他の Kamakura bridge と同じく問い合わせ ID・operation `site_overview`・分類・上流 status だけです。
+- `publishedUrl` は D1 の `sites.public_origin`（今は `https://next-kamakura.niho.life`）と同じ origin のときだけ出します。違うときは URL だけ `null` にします（client の parser が許可外の origin を拒むため）。11/3 の切替では、kamakura-site の `PUBLIC_SITE_ORIGIN` と D1 の `public_origin` を同じ日に `https://kamakura.niho.life` へ替えます。
+- 解析（`analytics`）は資格情報が無いので `disconnected` のままです。Experience の Dashboard は今までどおり上流を呼ばず `unavailable` / `disconnected` です。
+- 配備は kamakura-site を先に出します（後から出すと、それまで公開情報は `unavailable`・分類 `overview_endpoint_missing`）。テストは `test/studio-worker-dashboard.test.mjs` です。
 
 ## Kamakura の CMS bridge（コレクション）
 
@@ -250,7 +260,7 @@ Project 固有 API はすべて次の prefix 配下です。
 /api/projects/:projectId/sites/:siteId/
 ```
 
-- `GET dashboard`: 現在 member のみ
+- `GET dashboard`: 現在 member のみ（Kamakura は公開情報をサイト側から読む・上記）
 - `GET membership`: 現在 owner の member / invitation 一覧
 - `POST invitations`: owner の招待作成
 - `POST invitations/revoke`: owner の pending 招待取消

@@ -105,6 +105,11 @@ const KAMAKURA_RELEASE_TIMEOUT_MILLISECONDS = 30_000;
 const KAMAKURA_EDITOR_UPSTREAM_ORIGIN = "https://next-kamakura.niho.life";
 const KAMAKURA_EDITOR_UPSTREAM_PREFIX = "/internal/studio/web-content";
 const KAMAKURA_EDITOR_PROJECT_ID = "project-kamakura";
+// Dashboard の公開情報（kamakura-site の worker/studio-overview.ts）。「_」始まりはページ ID と重ならない。
+const KAMAKURA_OVERVIEW_UPSTREAM_PATH = `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/_site/overview`;
+// Dashboard を待たせすぎない。kamakura-site 側は GitHub を 5 秒で諦めて手元の値だけで返す。
+const KAMAKURA_OVERVIEW_TIMEOUT_MILLISECONDS = 8_000;
+const KAMAKURA_OVERVIEW_MAX_RESPONSE_BYTES = 64 * 1024;
 const COMMON_PAGE_ID = KAMAKURA_COMMON_PAGE_ID;
 const MAX_PENDING_INVITATIONS = 100;
 const MAX_PROJECT_MEMBERS = 500;
@@ -146,7 +151,8 @@ type KamakuraBridgeOperation =
   | "cms_remove"
   | "cms_schedule"
   | "cms_cancel_schedule"
-  | "cms_upload_intent";
+  | "cms_upload_intent"
+  | "site_overview";
 type KamakuraBridgeFailureCategory =
   | "bridge_secret_missing_or_invalid"
   | "bridge_signing_failed"
@@ -156,6 +162,7 @@ type KamakuraBridgeFailureCategory =
   | "upstream_unexpected_4xx"
   | "catalog_endpoint_missing"
   | "cms_endpoint_missing"
+  | "overview_endpoint_missing"
   | "upstream_rate_limited"
   | "upstream_server_error"
   | "upstream_redirect_rejected"
@@ -411,15 +418,137 @@ async function dashboard(env: Env, identity: AccessIdentity, projectId: string, 
      LIMIT 1
   `).bind(identity.subject, projectId, siteId).first<ProjectRow>();
   if (row === null) return json({ status: "forbidden", projectId, siteId });
-  projectFromRow(row, identity.subject);
+  const project = projectFromRow(row, identity.subject);
+  // 公開情報は鎌倉だけサイト側から読む。ほかのサイトと解析は値を合成しない（unavailable / disconnected のまま）。
+  const overview: DashboardOverview = projectId === KAMAKURA_EDITOR_PROJECT_ID && siteId === KAMAKURA_EDITOR_SITE_ID
+    ? await kamakuraOverview(env, identity, project.site.domains)
+    : { status: "unavailable" };
   return json({
     status: "ready",
     projectId,
     siteId,
     fetchedAt: new Date().toISOString(),
-    overview: { status: "unavailable" },
+    overview,
     analytics: { status: "disconnected" }
   });
+}
+
+type DashboardOverviewData = {
+  readonly publicationStatus: "published" | "unpublished" | "unknown";
+  readonly publishedUrl: string | null;
+  readonly lastPublishedAt: string | null;
+  readonly publishedPageCount: number | null;
+  readonly assetBytes: number | null;
+  readonly recentChanges: readonly { readonly id: string; readonly label: string; readonly changedAt: string }[];
+};
+type DashboardOverview = { readonly status: "unavailable" } | { readonly status: "ready"; readonly data: DashboardOverviewData };
+
+class KamakuraOverviewContractError extends Error {}
+
+function overviewContract(condition: boolean): asserts condition {
+  if (!condition) throw new KamakuraOverviewContractError("invalid Kamakura overview");
+}
+
+/** ISO 8601（timezone 付き・暦として正しい）だけを受け、UTC の toISOString に揃える。 */
+function overviewTimestamp(value: unknown): string {
+  overviewContract(typeof value === "string" && value.length <= 40);
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/u.exec(value);
+  overviewContract(match !== null);
+  const [, year, month, day, hour, minute, second, offsetHour, offsetMinute] = match.map(Number);
+  const leap = year! % 4 === 0 && (year! % 100 !== 0 || year! % 400 === 0);
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month! - 1] ?? 0;
+  overviewContract(day! >= 1 && day! <= days && hour! <= 23 && minute! <= 59 && second! <= 59 && (match[7] === undefined || (offsetHour! <= 23 && offsetMinute! <= 59)));
+  const time = Date.parse(value);
+  overviewContract(Number.isFinite(time));
+  return new Date(time).toISOString();
+}
+
+function overviewCount(value: unknown): number | null {
+  if (value === null) return null;
+  overviewContract(typeof value === "number" && Number.isSafeInteger(value) && value >= 0);
+  return value;
+}
+
+/**
+ * kamakura-site の公開情報を検査し、ProjectOverview の既知の key だけで組み立て直す（上流の未知の key は捨てる）。
+ * 形の誤りは KamakuraOverviewContractError。公開 URL がこのサイトの D1 の公開 origin と違う（切替の直後など）ときは URL だけ出さない。
+ */
+function kamakuraOverviewData(value: unknown, domains: readonly string[]): DashboardOverviewData {
+  overviewContract(isRecord(value));
+  const status = value.publicationStatus;
+  overviewContract(status === "published" || status === "unpublished" || status === "unknown");
+  const rawUrl = value.publishedUrl;
+  let publishedUrl: string | null = null;
+  if (rawUrl !== null) {
+    overviewContract(status === "published" && typeof rawUrl === "string" && rawUrl.length <= 2048);
+    let url: URL;
+    try { url = new URL(rawUrl); } catch { throw new KamakuraOverviewContractError("invalid Kamakura overview URL"); }
+    const origin = url.origin;
+    overviewContract(url.protocol === "https:" && !url.username && !url.password && !url.search && !url.hash && url.pathname === "/" && (rawUrl === origin || rawUrl === `${origin}/`));
+    publishedUrl = domains.find((domain) => domain === origin) ?? null;
+  }
+  const changes = value.recentChanges;
+  overviewContract(Array.isArray(changes) && changes.length <= 20);
+  const recentChanges = changes.map((change: unknown) => {
+    overviewContract(isRecord(change));
+    const { id, label } = change;
+    overviewContract(typeof id === "string" && /^[A-Za-z][A-Za-z0-9_-]{0,79}$/u.test(id));
+    overviewContract(typeof label === "string" && label.trim().length > 0 && label.length <= 240 && !/\p{Cc}/u.test(label));
+    return { id, label, changedAt: overviewTimestamp(change.changedAt) };
+  });
+  overviewContract(new Set(recentChanges.map((change) => change.id)).size === recentChanges.length);
+  return {
+    publicationStatus: status,
+    publishedUrl,
+    lastPublishedAt: value.lastPublishedAt === null ? null : overviewTimestamp(value.lastPublishedAt),
+    publishedPageCount: overviewCount(value.publishedPageCount),
+    assetBytes: overviewCount(value.assetBytes),
+    recentChanges
+  };
+}
+
+/**
+ * 鎌倉の公開情報を署名つき GET で読む（editor・CMS と同じ署名・redirect 拒否・JSON 上限）。
+ * 上流の失敗・形の誤り・timeout はすべて unavailable にして Dashboard 全体は 200 のまま返す。ログは support ID・操作・分類・status だけ。
+ */
+async function kamakuraOverview(env: Env, identity: AccessIdentity, domains: readonly string[]): Promise<DashboardOverview> {
+  const supportId = crypto.randomUUID();
+  const operation: KamakuraBridgeOperation = "site_overview";
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => { controller.abort(); reject(kamakuraBridgeFailure(supportId, operation, "service_binding_timeout")); }, KAMAKURA_OVERVIEW_TIMEOUT_MILLISECONDS);
+  });
+  const read = async (): Promise<DashboardOverviewData> => {
+    const headers = await kamakuraSignedHeaders(env, identity, "GET", KAMAKURA_OVERVIEW_UPSTREAM_PATH, new Uint8Array(), supportId, operation);
+    const upstream = new Request(`${KAMAKURA_EDITOR_UPSTREAM_ORIGIN}${KAMAKURA_OVERVIEW_UPSTREAM_PATH}`, { method: "GET", cache: "no-store", redirect: "manual", signal: controller.signal, headers });
+    let response: Response;
+    try { response = await env.KAMAKURA_SITE.fetch(upstream); }
+    catch { throw kamakuraBridgeFailure(supportId, operation, controller.signal.aborted ? "service_binding_timeout" : "service_binding_failed"); }
+    const status = response.status;
+    if (status !== 200) {
+      try { await response.body?.cancel(); } catch { /* 本文は使わない */ }
+      if (status >= 300 && status < 400) throw kamakuraBridgeFailure(supportId, operation, "upstream_redirect_rejected", status);
+      if (status === 401 || status === 403) throw kamakuraBridgeFailure(supportId, operation, "upstream_auth_rejected", status);
+      if (status === 404) throw kamakuraBridgeFailure(supportId, operation, "overview_endpoint_missing", status);
+      if (status === 429) throw kamakuraBridgeFailure(supportId, operation, "upstream_rate_limited", status);
+      if (status >= 500) throw kamakuraBridgeFailure(supportId, operation, "upstream_server_error", status);
+      throw kamakuraBridgeFailure(supportId, operation, status >= 400 ? "upstream_unexpected_4xx" : "upstream_contract_invalid", status);
+    }
+    let value: unknown;
+    try { value = await readBoundedResponse(response, KAMAKURA_OVERVIEW_MAX_RESPONSE_BYTES); }
+    catch { throw kamakuraBridgeFailure(supportId, operation, controller.signal.aborted ? "service_binding_timeout" : "upstream_invalid_response", status); }
+    try { return kamakuraOverviewData(value, domains); }
+    catch (error) { throw kamakuraBridgeFailure(supportId, operation, error instanceof KamakuraOverviewContractError ? "upstream_contract_invalid" : "bridge_processing_failed", status); }
+  };
+  try {
+    return { status: "ready", data: await Promise.race([read(), expired]) };
+  } catch (error) {
+    logKamakuraBridgeFailure(error instanceof KamakuraBridgeFailureError ? error : kamakuraBridgeFailure(supportId, operation, "bridge_processing_failed"));
+    return { status: "unavailable" };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function ownerContextStatement(env: Env, identity: AccessIdentity, projectId: string, siteId: string): D1Statement {
@@ -997,6 +1126,16 @@ function kamakuraBridgeOperation(route: EditorRoute): KamakuraBridgeOperation {
   return "page_read";
 }
 
+/** 秘密・署名・subject・本文は出さない。support ID・操作・分類・上流の status だけ。 */
+function logKamakuraBridgeFailure(error: KamakuraBridgeFailureError): void {
+  console.warn("NIHO Studio Kamakura bridge failure", {
+    supportId: error.supportId,
+    operation: error.operation,
+    category: error.category,
+    ...(error.upstreamStatus === undefined ? {} : { upstreamStatus: error.upstreamStatus })
+  });
+}
+
 function kamakuraBridgeFailure(
   supportId: string,
   operation: KamakuraBridgeOperation,
@@ -1544,12 +1683,7 @@ export default {
     try { return await handle(request, env); }
     catch (error) {
       if (error instanceof KamakuraBridgeFailureError) {
-        console.warn("NIHO Studio Kamakura bridge failure", {
-          supportId: error.supportId,
-          operation: error.operation,
-          category: error.category,
-          ...(error.upstreamStatus === undefined ? {} : { upstreamStatus: error.upstreamStatus })
-        });
+        logKamakuraBridgeFailure(error);
         return json({ error: error.code, supportId: error.supportId }, error.httpStatus);
       }
       console.error("NIHO Studio request failed", error instanceof Error ? error.name : "UnknownError");
