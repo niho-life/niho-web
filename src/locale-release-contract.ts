@@ -178,6 +178,8 @@ export type LocaleReleasePending = {
 };
 /** 公開できない理由。message はサイトが作る人が読む文。itemKey があれば画面から 1 件へ移れる。 */
 export type LocaleReleaseBlocker = { readonly id: string; readonly message: string; readonly itemKey: string | null };
+/** 公開で出る・外れるページ（人が読む題名とアドレス）。 */
+export type LocaleReleasePageRef = { readonly path: string; readonly title: string };
 export type LocaleReleaseWorkspacePlan = {
   readonly confirmationToken: string;
   readonly expiresAt: string;
@@ -186,6 +188,8 @@ export type LocaleReleaseWorkspacePlan = {
   readonly pages: number;
   readonly previous: LocaleReleaseSummary | null;
   readonly prepared: LocaleReleaseSummary;
+  /** 確認済みのページだけを公開するサイトが返す、今の版から新しく出るページと外れるページ。返さないサイトは null。 */
+  readonly changes: { readonly added: readonly LocaleReleasePageRef[]; readonly removed: readonly LocaleReleasePageRef[] } | null;
 };
 export type LocaleReleaseWorkspaceState = {
   readonly current: LocaleReleaseSummary | null;
@@ -342,7 +346,7 @@ export function parseLocaleReleasePrepareResult(input: unknown, request: LocaleR
   keys(source, ["status", "plan"], "prepare");
   if (source.status !== "ready") fail("prepare.status", "invalid status");
   const plan = record(source.plan, "prepare.plan");
-  keys(plan, ["confirmationToken", "expiresAt", "address", "pages", "previous", "prepared"], "prepare.plan");
+  keys(plan, ["confirmationToken", "expiresAt", "address", "pages", "previous", "prepared", "changes"], "prepare.plan");
   const address = oneLine(plan.address, "prepare.plan.address", 2048);
   let url: URL;
   try { url = new URL(address); } catch { fail("prepare.plan.address", "invalid address"); }
@@ -355,8 +359,29 @@ export function parseLocaleReleasePrepareResult(input: unknown, request: LocaleR
   const expiresAt = exactIso(plan.expiresAt, "prepare.plan.expiresAt");
   return {
     status: "ready",
-    plan: { confirmationToken: parseLocaleReleaseToken(plan.confirmationToken, "prepare.plan.confirmationToken"), expiresAt, address, pages: count(plan.pages, "prepare.plan.pages"), previous, prepared },
+    plan: { confirmationToken: parseLocaleReleaseToken(plan.confirmationToken, "prepare.plan.confirmationToken"), expiresAt, address, pages: count(plan.pages, "prepare.plan.pages"), previous, prepared,
+      changes: plan.changes === undefined || plan.changes === null ? null : parsePageChanges(plan.changes, "prepare.plan.changes") },
   };
+}
+const PAGE_CHANGES_MAX = 500;
+function parsePageChanges(input: unknown, path: string): NonNullable<LocaleReleaseWorkspacePlan["changes"]> {
+  const source = record(input, path);
+  keys(source, ["added", "removed"], path);
+  const list = (value: unknown, at: string) => {
+    if (!Array.isArray(value) || value.length > PAGE_CHANGES_MAX) fail(at, "expected a bounded list of pages");
+    const pages = value.map((entry, index) => {
+      const page = record(entry, `${at}[${index}]`);
+      keys(page, ["path", "title"], `${at}[${index}]`);
+      const pagePath = oneLine(page.path, `${at}[${index}].path`, 2048);
+      if (!pagePath.startsWith("/") || pagePath.startsWith("//")) fail(`${at}[${index}].path`, "expected a site path");
+      return { path: pagePath, title: oneLine(page.title, `${at}[${index}].title`, 200) };
+    });
+    if (new Set(pages.map((page) => page.path)).size !== pages.length) fail(at, "duplicate page");
+    return pages;
+  };
+  const added = list(source.added, `${path}.added`), removed = list(source.removed, `${path}.removed`);
+  if (added.some((page) => removed.some((other) => other.path === page.path))) fail(path, "a page is both added and removed");
+  return { added, removed };
 }
 
 export function parseLocaleReleaseApplyResult(input: unknown, expected: { readonly prepared: Pick<LocaleReleaseSummary, "releaseId" | "version"> | null }): LocaleReleaseApplyResult {

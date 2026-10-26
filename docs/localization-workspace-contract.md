@@ -300,6 +300,10 @@ type LocaleReleaseWorkspacePlan = {
   pages: number;                                  // 公開するページの数
   previous: LocaleReleaseSummary | null;          // 今の公開中の版
   prepared: LocaleReleaseSummary;                 // これから公開する版
+  changes?: {                                     // 確認済みのページだけを公開するサイトが返す。返さなければ null として扱う
+    added: { path: string; title: string }[];     // 今の版から新しく出るページ（500 件まで）
+    removed: { path: string; title: string }[];   // 今の版から外れるページ（500 件まで）
+  } | null;
 };
 ```
 
@@ -309,11 +313,12 @@ type LocaleReleaseWorkspacePlan = {
 
 1. 概要を読み直し、`blockers` が 1 つでもあれば一覧を出して先へ進めません（`itemKey` があれば「開く」で 1 件へ移れます）。
 2. 準備: `prepareRelease({ operation: "publish", releaseId: null, expectedVersion: overview.version, expectedCurrentVersion: current?.version ?? null, resumeToken: null })`。`preparing` なら `progress`（n/m）を出し、返った `resumeToken` を付けてすぐ呼び直します。`ready` で確認へ。`blocked` なら 1. の一覧に戻ります。`conflict` は「内容が変わりました。読み込み直して、もう一度試してください」。
-3. 確認: ページ数・公開する先・今の版 → 新しい版・期限の残り（`expiresAt` まで）を出します。期限が切れたら「準備し直す」だけを出します。
+3. 確認: ページ数・公開する先・今の版 → 新しい版・期限の残り（`expiresAt` まで）を出します。`changes` があれば、新しく出るページと外れるページも出します。公開で `pages` が 0 になるとき（すべて外れる）は、そのことをはっきり出します。期限が切れたら「準備し直す」だけを出します。
 4. 反映: `applyRelease({ confirmationToken, resumeToken: null })`。`applying` なら n/m を出し、`resumeToken` を付けて `applyRelease({ confirmationToken: null, resumeToken })` を呼び直します。`applied` で完了、`expired` は 2. からやり直し、`conflict` は読み直し。
 
 - 途中で閉じても、サイトは途中の状態を `overview.release.pending`（と `readRelease` の `pending`）で返してください。画面は帯に「前回の公開が途中です。」と「続ける」を出し、`stage` に合わせて `prepareRelease` か `applyRelease` を `resumeToken` だけで呼び直します（`publish`・`rollback` の権限が要ります）。
 - `confirmationToken` は URL・ログ・保存先に出さないでください。画面もタブのメモリにだけ持ちます。準備・反映の `resumeToken` も一回の公開の中でだけ使えるものにしてください。
+- **ページ単位の公開。** サイトは、訳がそろったページだけを公開してよいです（未訳のページは原文の言語のまま。言語の切替と hreflang も出たページだけ）。そのときの `blockers` は、公開そのものを止める理由（取り込み中・公開の途中・共通部分の訳が未確認で出せるページが無い、など）だけにし、未訳の項目は並べません。出る・外れるページは `changes` で返します。
 - 戻し: 公開の履歴で `restorable` の版を選び、`prepareRelease({ operation: "rollback", releaseId, … })` から同じ手順です。戻しは前に公開した版をそのまま戻すので、`blockers` で止めません（サイトが止める理由を返したときは出します）。
 - 権限の確かめ: 公開は `publish`、戻しは `rollback` です。
 
