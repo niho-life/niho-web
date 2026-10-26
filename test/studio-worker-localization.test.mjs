@@ -152,10 +152,12 @@ test("翻訳 BFF: Access と D1 の owner/editor を要求ごとに確かめ、�
     ["POST", "/editor/pages/catalog", 404],
     ["POST", "/editor/pages/Home", 404],
     ["POST", "/editor/pages/home/extra", 404],
+    ["POST", "/editor/pages/home/save/extra", 404],
     ["GET", "/overview", 405],
     ["PUT", "/overview", 405],
     ["GET", "/items", 405],
     ["GET", "/editor/pages/home", 405],
+    ["GET", "/editor/pages/home/save", 405],
     ["POST", "/settings", 405],
     ["PUT", "/items/aG9tZQ/command", 405],
     ["DELETE", "/items/aG9tZQ", 405]
@@ -169,6 +171,46 @@ test("翻訳 BFF: Access と D1 の owner/editor を要求ごとに確かめ、�
   h.roles.delete("project-kamakura/kamakura");
   await expectJson(await h.send("POST", "/overview", {}), 403, "forbidden");
   assert.equal(h.calls.length, before);
+});
+
+test("翻訳 BFF: native 訳文保存と項目操作は版・対象を検証し、actor を署名して一つの正本へ渡す", async (t) => {
+  const auth = await accessFixture(), worker = await loadWorker();
+  mockAccess(t, auth);
+  const h = harness(auth, worker);
+  h.roles.set("project-kamakura/kamakura", "editor");
+  const versions = { expectedSourceVersion: `p.${"a".repeat(64)}`, expectedVersion: `l.${"b".repeat(64)}`, expectedOverlayVersion: 2 };
+  const document = { schemaVersion: 1, siteId: "kamakura", pageId: "home", locale: "en", revision: 4, title: "Home", tokens: {}, body: [] };
+  const save = { document, ...versions }, result = { status: "saved", version: `l.${"c".repeat(64)}`, revision: 5 };
+  h.setRespond(() => Response.json(result));
+  assert.deepEqual(await expectJson(await h.send("POST", "/editor/pages/home/save", save), 200), result);
+  let call = h.calls.at(-1);
+  assert.equal(call.path, `${UPSTREAM}/editor/pages/home/save`);
+  assert.deepEqual(JSON.parse(call.body), { ...save, actor: { email: EMAIL, role: "editor" } });
+  h.verifySignature(call);
+
+  const command = { action: "set-value", unitId: "page.title", value: "New home", sourceFingerprint: `sha256:${"d".repeat(64)}`, expectedEntryVersion: 1, ...versions };
+  h.setRespond(() => Response.json({ status: "applied", version: result.version }));
+  assert.deepEqual(await expectJson(await h.send("POST", "/editor/pages/home/command", command), 200), { status: "applied", version: result.version });
+  call = h.calls.at(-1);
+  assert.equal(call.path, `${UPSTREAM}/editor/pages/home/command`);
+  assert.deepEqual(JSON.parse(call.body), { ...command, actor: { email: EMAIL, role: "editor" } });
+  h.verifySignature(call);
+
+  for (const [path, body] of [
+    ["/editor/pages/home/save", { ...save, document: { ...document, pageId: "other" } }],
+    ["/editor/pages/home/save", { ...save, expectedVersion: "old" }],
+    ["/editor/pages/home/command", { ...command, expectedEntryVersion: -1 }],
+    ["/editor/pages/home/command", { ...command, sourceFingerprint: "bad" }],
+    ["/editor/pages/home/command", { ...command, actor: { role: "owner" } }]
+  ]) await expectJson(await h.send("POST", path, body), 400, "invalid_request");
+  assert.equal(h.calls.length, 2, "不正な本文は上流へ届かない");
+
+  for (const reply of [{ status: "conflict" }, { status: "invalid", message: "訳文を確認してください。" }]) {
+    h.setRespond(() => Response.json(reply));
+    assert.deepEqual(await expectJson(await h.send("POST", "/editor/pages/home/save", save), 200), reply);
+  }
+  h.setRespond(() => Response.json({ status: "saved", version: "bad", revision: 5 }));
+  await expectJson(await h.send("POST", "/editor/pages/home/save", save), 502, "upstream_contract_invalid");
 });
 
 test("翻訳 BFF: native 編集用ページは所属を確認して署名付きで読み、原文と既存訳の scope を検証する", async (t) => {
@@ -189,6 +231,9 @@ test("翻訳 BFF: native 編集用ページは所属を確認して署名付き�
   assert.equal(call.path, `${UPSTREAM}/editor/pages/home`);
   assert.equal(call.body, JSON.stringify({ actor: { email: EMAIL, role: "editor" } }));
   h.verifySignature(call);
+  const normalized = { ...ready, sourceDocument: { ...page, locale: "ja-JP" } };
+  h.setRespond(() => Response.json(normalized));
+  assert.deepEqual(await expectJson(await h.send("POST", "/editor/pages/home", {}), 200), normalized);
   const before = h.calls.length;
   await expectJson(await h.send("POST", "/editor/pages/home", { pageId: "other" }), 400, "invalid_request");
   assert.equal(h.calls.length, before);
