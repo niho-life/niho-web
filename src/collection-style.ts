@@ -251,7 +251,7 @@ export const collectionCss = `${uiTokensCss}.nw-collection{position:relative;min
 .nw-collection .cw-layout{grid-template-columns:minmax(0,1fr)}
 .nw-collection .cw-nav{padding:8px 12px;border-right:0;border-bottom:1px solid var(--nw-border);overflow-x:visible}
 .nw-collection .cw-nav-heading{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
-.nw-collection .cw-nav ul{display:flex;gap:4px}
+.nw-collection .cw-nav ul{display:flex;flex-wrap:wrap;gap:4px}
 .nw-collection .cw-nav li{flex:none}
 .nw-collection .cw-nav button{width:auto;white-space:nowrap}
 .nw-collection .cw-list{padding:18px 16px 48px}
