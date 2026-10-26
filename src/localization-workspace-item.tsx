@@ -71,11 +71,12 @@ function liveFor(server: LocalizationWorkspaceUnit): UnitLive {
 
 export type ItemEditorProps = {
   adapter: LocalizationWorkspaceAdapter; overview: LocalizationOverview; itemKey: string; timeZone: string; autosaveDelay: number; pollInterval: number;
-  confirm: (request: ConfirmRequest) => void; onSummary: (summary: LocalizationItemSummary) => void; onBack: () => void; onForbidden: () => void;
+  confirm: (request: ConfirmRequest) => void; onSummary: (summary: LocalizationItemSummary) => void; onBack: () => void; onForbidden: () => void; backLabel?: string; hideSourceLink?: boolean;
+  registerBack?: (back: (() => void) | null) => void;
 };
 
 /** 1 件の編集。項目ごとに原文と訳文を並べ、約 1 秒後に項目ごとに自動で保存する。競合は上書きしない。 */
-export function ItemEditor({ adapter, overview, itemKey, timeZone, autosaveDelay, pollInterval, confirm, onSummary, onBack, onForbidden }: ItemEditorProps) {
+export function ItemEditor({ adapter, overview, itemKey, timeZone, autosaveDelay, pollInterval, confirm, onSummary, onBack, onForbidden, backLabel = "一覧へ", hideSourceLink = false, registerBack }: ItemEditorProps) {
   const requests = useRequests();
   const baseId = useId();
   const heading = useRef<HTMLHeadingElement>(null);
@@ -386,15 +387,22 @@ export function ItemEditor({ adapter, overview, itemKey, timeZone, autosaveDelay
     setBackBusy(false);
     if (ok) { onBack(); return; }
     confirm({
-      title: "保存できていない変更があります", body: "一覧へ戻ると、この画面でいま直したところのうち、保存できていないものは消えます。", confirmLabel: "変更を捨てて戻る", tone: "danger",
+      title: "保存できていない変更があります", body: `${backLabel}戻ると、この画面でいま直したところのうち、保存できていないものは消えます。`, confirmLabel: "変更を捨てて戻る", tone: "danger",
       run: () => { live.current.units.forEach((unit) => { clearTimeout(unit.timer); unit.dirty = false; }); onBack(); },
     });
   };
 
+  const currentBack = useRef<() => void>(() => {});
+  currentBack.current = () => { void back(); };
+  useEffect(() => {
+    registerBack?.(() => currentBack.current());
+    return () => registerBack?.(null);
+  }, [registerBack]);
+
   const s = live.current, item = s.item;
   if (phase !== "ready" || !item) {
     return <div className="cw-editor lw-item">
-      <header className="cw-editor-bar"><button type="button" className="cw-back" onClick={onBack}><Icon name="back" /><span className="cw-back-label">一覧へ</span></button></header>
+      <header className="cw-editor-bar"><button type="button" className="cw-back" onClick={onBack}><Icon name="back" /><span className="cw-back-label">{backLabel}</span></button></header>
       <div className="cw-notice" aria-busy={phase === "loading"}>
         <p role={phase === "loading" ? "status" : "alert"}>{phase === "loading" || phase === "ready" ? "読み込んでいます…" : phase === "forbidden" ? "この 1 件を見る権限がありません。管理者に確かめてください。"
           : phase === "not_found" ? "見つかりませんでした。原文から消えたかもしれません。" : "読み込めませんでした。"}</p>
@@ -413,7 +421,7 @@ export function ItemEditor({ adapter, overview, itemKey, timeZone, autosaveDelay
     value: unit.server.kind !== "image" && unit.dirty && unit.value !== null && !unit.problem ? unit.value : unit.server.value }));
   const overridesKey = JSON.stringify(overrides);
   let link: string | null = null;
-  try { link = adapter.sourceLink ? adapter.sourceLink(itemKey) : null; } catch { link = null; }
+  try { link = !hideSourceLink && adapter.sourceLink ? adapter.sourceLink(itemKey) : null; } catch { link = null; }
   if (link !== null && !isSafeNavigationUrl(link)) link = null;
   const changed = units.filter((unit) => unit.server.state === "review-needed");
   const rest = units.filter((unit) => unit.server.state !== "review-needed");
@@ -433,7 +441,7 @@ export function ItemEditor({ adapter, overview, itemKey, timeZone, autosaveDelay
   return <div className="cw-editor lw-item">
     <h2 className="cw-sr" tabIndex={-1} ref={heading}>{`「${item.title || "無題"}」の${overview.languages.target}版を直す`}</h2>
     <header className="cw-editor-bar">
-      <button type="button" className="cw-back" onClick={() => void back()} disabled={backBusy}><Icon name="back" /><span className="cw-back-label">一覧へ</span></button>
+      <button type="button" className="cw-back" onClick={() => void back()} disabled={backBusy}><Icon name="back" /><span className="cw-back-label">{backLabel}</span></button>
       <div className="cw-editor-status">
         <span className="lw-item-title">{item.title || "無題"}</span>
         <ItemStateBadge state={item.state} />

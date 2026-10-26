@@ -1,6 +1,6 @@
 # 翻訳の画面（LocalizationWorkspace）と adapter の契約
 
-`LocalizationWorkspace` は、サイトの原文（例: 日本語）を訳す言語（例: English）に直し、確かめ、言語ごとまとめて公開するための画面です。ページの編集画面の中ではなく、CMS の `CollectionWorkspace`（[契約](collection-contract.md)）と同じく、どのサイトでも使える独立した画面として `@niho/web/localization-workspace` から使います。React 不要の型・runtime parser・印（置き換えてはいけない部分）の扱いは `@niho/web/localization-workspace-model` にあります。
+`LocalizationWorkspace` は、サイトの翻訳の残りを確認し、言語ごとまとめて公開する画面です。CMS の同じ項目で訳文を直すときは `LocalizationItemWorkspace` を `CollectionWorkspace.itemLanguages.renderTarget` に置きます。両方とも同じ adapter と項目エディタを使い、訳文・確認状態の正本を分けません。React 不要の型・runtime parser・印（置き換えてはいけない部分）の扱いは `@niho/web/localization-workspace-model` にあります。
 
 この段（W1）は画面と、ホスト（サイト）が実装する adapter の契約だけです。Studio の BFF・サイトごとの adapter・切替のフラグ・描画用の枠（サイト側の静的なページ）は含みません。
 
@@ -51,6 +51,8 @@ const adapter: LocalizationWorkspaceAdapter = {
 | `timeZone` | 日時の表示のタイムゾーン。既定は `Asia/Tokyo`。 |
 | `autosaveDelay` | 直してから自動で保存するまでの待ち時間（ms）。既定は 1000。 |
 | `pollInterval` | 翻訳の依頼・原文の取り込み・公開の進み具合を読み直す間隔（ms）。既定は 2000。 |
+
+`LocalizationItemWorkspace` には同じ `adapter`、対象の `itemKey`、原文のタブへ戻る `onBack` を渡します。原文の取り込みが進行中なら先に `advanceCatalog` を進め、完了後に対象の 1 件を読みます。一覧全体や公開画面は読みません。`timeZone`・`autosaveDelay`・`pollInterval` も共通です。CMS の言語タブから安全に戻るため、`registerBack` に項目エディタの保存処理を登録します。原文の入力は切替中も残り、訳文は保存してから閉じるので、次に開くと最新の原文を読みます。
 
 部品は `<style>` で `localizationWorkspaceCss` を入れます（CMS の画面の `collectionCss` を含みます）。inline の `<style>` を CSP で拒むホストは、この文字列をファイルにして読み込んでください。根の class は `.nw-collection.nw-localization`、翻訳の画面だけのクラスの接頭辞は `lw-` です。色・角丸・文字は CMS の画面と同じ `@niho/web/ui-tokens` のトークン（`--nw-*`）を使います。
 

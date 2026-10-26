@@ -2,7 +2,7 @@
  * Dashboard の「翻訳」（鎌倉）を Studio の翻訳の画面（LocalizationWorkspace）で開く中身。
  * 画面の部品が大きいので、client からは翻訳を開いたときだけ import() で読む（studio/site-translations.tsx）。
  */
-import { LocalizationWorkspace, type LocalizationNavigationState, type LocalizationWorkspaceAdapter } from "../src/localization-workspace.js";
+import { LocalizationItemWorkspace, LocalizationWorkspace, type LocalizationNavigationState, type LocalizationWorkspaceAdapter } from "../src/localization-workspace.js";
 import { KAMAKURA_CMS_PROJECT_ID, KAMAKURA_CMS_SITE_ID } from "./kamakura-cms-contract.js";
 import { createKamakuraLocalizationAdapter } from "./kamakura-localization.js";
 import { projectAliasPath, type ProjectTranslationsRoute } from "./project-routes.mjs";
@@ -40,4 +40,9 @@ export type KamakuraLocalizationWorkspaceProps = {
 export function KamakuraLocalizationWorkspace({ cmsView, siteOrigin, route, onNavigate }: KamakuraLocalizationWorkspaceProps) {
   const itemKey = route?.itemKey ?? null;
   return <LocalizationWorkspace adapter={adapterFor(cmsView, siteOrigin)} onNavigate={onNavigate} {...(itemKey === null ? {} : { initialItemKey: itemKey })} />;
+}
+
+/** CMS の同じ項目画面内で開く訳文。翻訳一覧は読み込まない。 */
+export function KamakuraCmsTranslation({ siteOrigin, itemKey, onBack, registerBack }: { readonly siteOrigin: string | null; readonly itemKey: string; readonly onBack: () => void; readonly registerBack: (back: (() => void) | null) => void }) {
+  return <LocalizationItemWorkspace adapter={adapterFor("workspace", siteOrigin)} itemKey={itemKey} onBack={onBack} registerBack={registerBack} />;
 }
