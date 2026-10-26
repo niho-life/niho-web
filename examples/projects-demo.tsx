@@ -4,7 +4,7 @@ import { PageEditor, type EditorAdapter } from "@niho/web/editor";
 import { createProjectEditorAdapter } from "@niho/web/project-editor";
 import { ProjectManager, type ProjectAdapter } from "@niho/web/project-manager";
 import { ProjectDirectory, type ProjectDirectoryAdapter } from "@niho/web/project-directory";
-import { ProjectDashboard, type ProjectDashboardAdapter } from "@niho/web/project-dashboard";
+import { ProjectDashboard, type ProjectDashboardAdapter, type ProjectSiteView } from "@niho/web/project-dashboard";
 import {
   addProject, addProjectMember, parseProjectCatalog,
   removeProjectMember, type Project, type ProjectCatalog, type ProjectMember
@@ -112,6 +112,16 @@ const dashboardAdapter: ProjectDashboardAdapter = {
   }
 };
 
+// Dashboard の左のメニュー「サイト機能」に並べる合成の画面。実際のホスト（Studio）はここに CMS・素材・翻訳の本物の画面を入れる。
+function DemoSiteView({ title, children }: { title: string; children: string }) {
+  return <section style={{ padding: "28px 22px", maxWidth: 720, margin: "0 auto", font: "14px/1.7 sans-serif" }}><h2 style={{ margin: "0 0 10px", fontSize: 22 }}>{title}</h2><p style={{ margin: 0 }}>{children}</p></section>;
+}
+const demoSiteViews: readonly ProjectSiteView[] = [
+  { id: "cms", label: "CMS", content: <DemoSiteView title="CMS">このデモではサイト側の CMS を接続していません。ホストが接続した CMS の画面がここに入ります。</DemoSiteView> },
+  { id: "assets", label: "素材", content: <DemoSiteView title="素材">このデモでは素材の一覧を接続していません。ホストが接続した素材の画面がここに入ります。</DemoSiteView> },
+  { id: "translations", label: "翻訳", content: <DemoSiteView title="翻訳">このデモでは翻訳の画面を接続していません。ホストが接続した翻訳の画面がここに入ります。</DemoSiteView> }
+];
+
 function DemoEditor({ project }: { project: Project }) {
   const scopedAdapter = useMemo(() => createProjectEditorAdapter(editorAdapter, project), [project]);
   return <PageEditor adapter={scopedAdapter} />;
@@ -121,19 +131,20 @@ function Demo() {
   const [selected, setSelected] = useState<Project | null>(null);
   const [editors, setEditors] = useState<readonly Project[]>([]);
   const [setting, setSetting] = useState<"site" | "analytics">("site");
+  const [siteView, setSiteView] = useState<string | null>(null);
   const surface = useRef<HTMLElement>(null);
   useEffect(() => {
     const heading = Array.from(surface.current?.querySelectorAll<HTMLElement>("h1") ?? []).find((node) => !node.closest("[hidden]"));
     if (heading) { heading.tabIndex = -1; heading.focus(); }
   }, [screen, selected]);
-  function openDashboard(project: Project) { setSelected(project); setScreen("dashboard"); }
+  function openDashboard(project: Project) { setSelected(project); setSiteView(null); setScreen("dashboard"); }
   function openEditor(project: Project) {
     setSelected(project); setEditors((current) => current.some((value) => value.id === project.id) ? current : [...current, project]); setScreen("editor");
   }
   return <main ref={surface}>
     {screen === "directory" && <ProjectDirectory adapter={directoryAdapter} onCreateProject={() => setScreen("manager")} onOpenDashboard={openDashboard} onOpenEditor={openEditor} {...(selected ? { initialFocusProjectId: selected.id } : {})} />}
     {screen === "manager" && <><button type="button" onClick={() => setScreen("directory")}>‹ プロジェクト一覧</button><ProjectManager adapter={projectAdapter} onOpenProject={openDashboard} /></>}
-    {screen === "dashboard" && selected && <ProjectDashboard project={selected} adapter={dashboardAdapter} onBackToProjects={() => setScreen("directory")} onOpenEditor={openEditor} onOpenSettings={(project, section) => { setSelected(project); setSetting(section); setScreen("settings"); }} />}
+    {screen === "dashboard" && selected && <ProjectDashboard project={selected} adapter={dashboardAdapter} onBackToProjects={() => setScreen("directory")} onOpenEditor={openEditor} onOpenSettings={(project, section) => { setSelected(project); setSetting(section); setScreen("settings"); }} siteViews={demoSiteViews} activeSiteView={siteView} onSiteViewChange={setSiteView} />}
     {screen === "settings" && selected && <section style={{ background: "white", padding: 20, font: "14px/1.6 sans-serif" }}><button type="button" onClick={() => setScreen("dashboard")}>‹ ダッシュボード</button><h1>{setting === "analytics" ? "解析接続設定" : "サイト設定"}</h1><p>{selected.name}</p><p>このデモは設定の接続先を示すだけの合成画面です。実際の接続・認可・保存はホストが実装します。</p>{setting === "site" && <button type="button" onClick={() => setScreen("manager")}>作成・参加者管理</button>}</section>}
     {editors.map((project) => <section key={project.id} hidden={screen !== "editor" || selected?.id !== project.id}>
       <button type="button" onClick={() => setScreen("directory")}>‹ プロジェクト一覧</button><h1 style={{ font: "700 18px sans-serif" }}>{project.name}のページ編集</h1><DemoEditor project={project} />

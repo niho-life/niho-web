@@ -141,10 +141,10 @@ test("切替が on（workspace）の CMS は、コレクション画面で項目
   assert.equal(window.location.pathname, "/projects/kamakura-site/admin/cms/posts/morning-walk");
   assert.equal(document.querySelector('[data-field="title"] input')?.value, "海辺の朝さんぽ");
 
-  // サイトナビで開いている CMS をもう一度押しても移らない。ホームへ移ると Dashboard の URL
-  await click(byText(".pv-global-nav button", "CMS"));
+  // 左のメニューで開いている CMS をもう一度押しても移らない。ダッシュボードへ移ると Dashboard の URL
+  await click(byText(".pv-dashboard-nav button", "CMS"));
   assert.equal(window.location.pathname, "/projects/kamakura-site/admin/cms/posts/morning-walk");
-  await click(byText(".pv-global-nav button", "ホーム"));
+  await click(byText(".pv-dashboard-nav button", "ダッシュボード"));
   assert.equal(window.location.pathname, "/projects/kamakura-site/admin");
   assert.equal(document.querySelector(".nw-collection"), null);
   // 書き込みは呼んでいない（読んだだけで値を書き換えない）

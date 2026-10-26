@@ -31,7 +31,7 @@ D1 が Project / Site / Member / Role / Invitation / Audit の正本です。NIH
 
 ### サイト機能（kamakura-site#108 U1）
 
-Dashboard の上部のサイトナビには、ホスト（`studio/client.tsx`）が接続したサイト機能を「ホーム」の後ろに並べます。各機能は alias の URL を持ちます（`/projects/<別名>/admin/cms`・`/assets`・`/translations`、`/project/<別名>/cms` などからも入れる）。
+Dashboard の左のメニューは 1 列で、「ホーム」（ダッシュボード・メンバー・プロジェクト設定）と「サイト機能」（ホスト `studio/client.tsx` が接続した CMS・素材・翻訳、アナリティクス）の 2 つの見出しで分けます（niho-web#74）。幅 900px 以下はメニューを本文の上に折り返して並べ、600px 以下は縦 1 列にして横スクロールを無くします。各機能は alias の URL を持ちます（`/projects/<別名>/admin/cms`・`/assets`・`/translations`、`/project/<別名>/cms` などからも入れる）。
 
 | 機能 | Kamakura での中身 |
 | --- | --- |
@@ -39,7 +39,7 @@ Dashboard の上部のサイトナビには、ホスト（`studio/client.tsx`）
 | CMS | 既定はサイト側の管理画面（記事・サークル・会社・クリエイター）を Dashboard の中の枠で開く。切替（`KAMAKURA_CMS_VIEW=workspace`）を入れると Studio のコレクション画面で開く（下の「CMS の切替」） |
 | 素材 | 今の置き場所（エディタの「素材」と CMS の画像欄）への案内。一覧・検索の画面は素材 provider（#85）の後 |
 | 翻訳 | サイト側の翻訳画面を枠で開く |
-| 設定 | プロジェクト設定（メンバーと招待）。Home 配下の「プロジェクト設定」と同じ |
+| プロジェクト設定 | メンバーと招待（オーナー）。編集者には「オーナーだけが行えます」の案内を出す。解析の接続設定はまだ無いので、アナリティクスの「解析接続（準備中）」は無効 |
 
 - 枠で開くサイト側の管理画面の origin はコードに書かず、Worker の設定値 `KAMAKURA_ADMIN_ORIGIN`（https の origin だけ）から読みます（`studio/site-admin.mjs`）。未設定ならサイト機能を出しません。`wrangler secret put KAMAKURA_ADMIN_ORIGIN --config studio/wrangler.toml` で入れると、配備のたびに消えません。
 - `GET /api/projects/<Project>/sites/<Site>/site-admin` は D1 の現在の `owner` / `editor` だけに origin・画面のパス・CMS の開き方（`cmsView`: `"frame"` / `"workspace"`）を返し、接続の無いサイトは 404 `not_connected` です。
