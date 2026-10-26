@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useMemo, useState, type ReactNode } from "react";
+import { useId, useMemo, useState, type KeyboardEvent, type ReactNode } from "react";
 import { AlignGrid, Collapse, ColorField, FontField, PercentField, Row, Segmented, SelectField, Stepper, Toggle, UnitField, fontChoices, weightChoices, type Align, type Choice, type Pending, type RowStatus } from "./editor-fields.js";
 import { nodeAt, walkNodes, type EditorOperation, type NodePath } from "./editor-model.js";
 import type { EditorBlockRegistry } from "./editor-types.js";
@@ -221,14 +221,19 @@ export function StyleInspector(props: StyleInspectorProps) {
   const appearanceExtra = slot ? undefined : props.appearanceExtra;
   return <div className="e-inspector" data-tone={tone}>
     {normal && <div className="e-tierbar">
-      <Segmented label="編集する幅" value={String(tier)} options={tiers.map((entry) => ({ value: String(entry.key), text: tierName(entry) }))} disabled={disabled || props.tierLocked}
-        onChange={(value) => chooseTier(value === "base" ? "base" : Number(value))} />
-      {next && <Segmented label="反映する範囲" className="e-range" value={only ? "only" : "wide"} disabled={disabled || props.tierLocked} onChange={props.setRange}
-        options={[{ value: "wide", text: current.key === "base" ? "すべての幅" : `${current.start}px 以上` }, { value: "only", text: current.key === "base" ? `〜${next.start - 1}px だけ` : `${current.start}〜${next.start - 1}px だけ` }]} />}
-      <p className="e-help">{description}</p>
+      <details className="e-tier-details">
+        <summary><span className="e-tier-summary"><span>編集 <strong>{tierName(current)}</strong></span><span>表示 <strong>{props.width}px · {tierName(shown)}</strong></span></span><span className="e-tier-open">段・範囲</span></summary>
+        <div className="e-tier-controls">
+          <Segmented label="編集する幅" value={String(tier)} options={tiers.map((entry) => ({ value: String(entry.key), text: tierName(entry) }))} disabled={disabled || props.tierLocked}
+            onChange={(value) => chooseTier(value === "base" ? "base" : Number(value))} />
+          {next && <Segmented label="反映する範囲" className="e-range" value={only ? "only" : "wide"} disabled={disabled || props.tierLocked} onChange={props.setRange}
+            options={[{ value: "wide", text: current.key === "base" ? "すべての幅" : `${current.start}px 以上` }, { value: "only", text: current.key === "base" ? `〜${next.start - 1}px だけ` : `${current.start}〜${next.start - 1}px だけ` }]} />}
+          <p className="e-help">{description}</p>
+        </div>
+      </details>
+      {shown.key !== current.key && <button type="button" className="e-small e-follow" disabled={disabled || props.tierLocked} onClick={() => chooseTier(shown.key)}>表示中の段を編集（{tierName(shown)}）</button>}
       {outside && <p className="e-tier-out" role="status">表示中の {props.width}px にはこの指定は反映されません
         <button type="button" className="e-small" onClick={() => props.setWidth(target)}>{target}px で表示</button></p>}
-      {shown.key !== current.key && <button type="button" className="e-small e-follow" disabled={disabled || props.tierLocked} onClick={() => chooseTier(shown.key)}>表示中の幅（{tierName(shown)}）の段を編集</button>}
     </div>}
     {normal && allowed && <p className="e-help">{slot ? "この領域で変更できる見た目だけを表示しています。" : "このブロックで変更できる見た目だけを表示しています。"}</p>}
     {show("text") && normal && textual && (can("textStyle") || textStyleProperties.some(can) || can("color") || can("textAlign")) && <section className="e-sec"><h3>テキスト</h3>
@@ -257,8 +262,7 @@ export function StyleInspector(props: StyleInspectorProps) {
     {show("settings") && motionVisible && <MotionFields document={document} node={node} saved={saved} path={path} tiers={tiers} state={styleState} setState={props.setStyleState ?? (() => undefined)} showStateControl={props.stateControl !== "external"} apply={apply} preview={preview} pending={pending}
       fieldKey={`${fieldKey}-settings`} disabled={disabled} reason={reason} notify={notify} can={can} colorTokens={colorTokens}
       tier={{ key: String(tier), get: (property) => state(property).own, set, preview: (values) => preview(values === null ? null : operation(values)), status: (property) => status([property]), lock, effective }} section="settings" />}
-    {show("box") && normal && <Layout ui={ui} />}
-    {show("box") && normal && (element || slot) && <Flow ui={ui} flex={flex} grid={grid} />}
+    {show("box") && normal && <Layout ui={ui} flex={flex} grid={grid} flow={!!element || slot} />}
     {show("box") && normal && (!!appearanceExtra || (["backgroundColor", "borderRadius", "borderWidth", "borderTopWidth", "borderRightWidth", "borderBottomWidth", "borderLeftWidth", "borderStyle", "borderTopStyle", "borderRightStyle", "borderBottomStyle", "borderLeftStyle", "borderColor", "borderTopColor", "borderRightColor", "borderBottomColor", "borderLeftColor", "opacity", "boxShadow", "textShadow", "outlineOffset", "backgroundFilter"] as const).some(can)) && <section className="e-sec"><h3>外観</h3>
       {color("backgroundColor", "背景色", true)}
       {appearanceExtra}
@@ -284,13 +288,13 @@ export function StyleInspector(props: StyleInspectorProps) {
       {ui.unit("backgroundFilter", "背景画像フィルター", { units: [] })}
       {ui.unit("outlineOffset", "アウトライン位置", { units: ["px", "rem", "em"] })}
     </section>}
-    {show("box") && normal && (["position", "top", "right", "bottom", "left", "zIndex", "overflow"] as const).some(can) && <Collapse key={key("position-section")} title="位置">
+    {show("box") && normal && (["position", "top", "right", "bottom", "left", "zIndex", "overflow"] as const).some(can) && <section className="e-sec"><h3>位置</h3>
       {ui.select("position", "配置の基準", positions)}
       {position !== "static" && <div className="e-grid2">{ui.unit("top", "上から", { keywords: auto })}{ui.unit("right", "右から", { keywords: auto })}{ui.unit("bottom", "下から", { keywords: auto })}{ui.unit("left", "左から", { keywords: auto })}</div>}
       {can("zIndex") && <Stepper key={key("zIndex")} caption="重ね順" value={state("zIndex").own} apply={(value) => set({ zIndex: value })} preview={draft("zIndex")} pending={pending} fieldKey={key("zIndex")}
         disabled={disabled || !!lock("zIndex")} status={status(["zIndex"])} placeholder={text(state("zIndex").inherited?.value)} />}
       {ui.select("overflow", "はみ出し", overflows)}
-    </Collapse>}
+    </section>}
     {show("box") && normal && (["flexGrow", "flexShrink", "flexBasis", "gridColumn", "gridRow", "alignSelf", "objectFit", "overflowWrap", "wordBreak", "writingMode"] as const).some(can) && <Collapse key={key("detail-section")} title="詳細">
       <div className="e-grid2">{ui.unit("flexGrow", "伸びる比率", { units: [""], numberUnit: "" })}{ui.unit("flexShrink", "縮む比率", { units: [""], numberUnit: "" })}</div>
       {ui.unit("flexBasis", "基準サイズ", { keywords: sizes })}
@@ -304,23 +308,26 @@ export function StyleInspector(props: StyleInspectorProps) {
   </div>;
 }
 
-function Layout({ ui }: { ui: Ui }) {
+function Layout({ ui, flex, grid, flow }: { ui: Ui; flex: boolean; grid: boolean; flow: boolean }) {
   const limits = (["minWidth", "maxWidth", "minHeight", "maxHeight"] as const);
-  if (!(["width", "height", "margin", "padding", ...limits] as StyleProperty[]).some(ui.can) && !(["marginTop", "paddingTop"] as StyleProperty[]).some(ui.can)) return null;
+  const layout = (["width", "height", "margin", "padding", ...limits] as StyleProperty[]).some(ui.can) || (["marginTop", "paddingTop"] as StyleProperty[]).some(ui.can);
+  const flowProperties: StyleProperty[] = ["display", "flexDirection", "flexWrap", "justifyContent", "alignItems", "alignContent", "gap", "gridTemplateColumns", "gridTemplateRows"];
+  if (!layout && !(flow && flowProperties.some(ui.can))) return null;
   return <section className="e-sec"><h3>レイアウト</h3>
     <div className="e-grid2">{ui.size("width", "幅")}{ui.size("height", "高さ")}</div>
+    <Box key={`${ui.tier}-margin`} ui={ui} kind="margin" />
+    <Box key={`${ui.tier}-padding`} ui={ui} kind="padding" />
+    {flow && <Flow ui={ui} flex={flex} grid={grid} />}
     {limits.some(ui.can) && <Collapse title="最小・最大サイズ" initial={limits.some((property) => ui.state(property).own !== undefined)}>
       <div className="e-grid2">{ui.unit("minWidth", "最小幅", { keywords: auto })}{ui.unit("maxWidth", "最大幅", { keywords: [["none", "制限なし"]] })}
         {ui.unit("minHeight", "最小高さ", { keywords: auto })}{ui.unit("maxHeight", "最大高さ", { keywords: [["none", "制限なし"]] })}</div>
     </Collapse>}
-    <Box key={`${ui.tier}-margin`} ui={ui} kind="margin" />
-    <Box key={`${ui.tier}-padding`} ui={ui} kind="padding" />
   </section>;
 }
 
 /** 一括 1 欄 ⇔ 上右下左 4 欄。切替は 1 回の操作（1 回の undo で戻る）。 */
 function Box({ ui, kind }: { ui: Ui; kind: "margin" | "padding" }) {
-  const caption = kind === "margin" ? "外側の余白" : "内側の余白", short = kind === "margin" ? "外余白" : "内余白";
+  const caption = kind === "margin" ? "マージン" : "パディング", short = caption;
   const sides = (["Top", "Right", "Bottom", "Left"] as const).map((side) => `${kind}${side}` as StyleProperty);
   const own = sides.map((property) => ui.state(property).own), [choice, setChoice] = useState(false);
   if (![kind, ...sides].some(ui.can)) return null;
@@ -370,6 +377,23 @@ function Corners({ ui }: { ui: Ui }) {
     }))}</div></div>;
 }
 
+function AxisAlignment({ axis, value, disabled, onChange }: { axis: "horizontal" | "vertical"; value: Align | undefined; disabled: boolean; onChange: (value: Align) => void }) {
+  const options: readonly { value: Align; text: string }[] = axis === "horizontal"
+    ? [{ value: "start", text: "左" }, { value: "center", text: "中央" }, { value: "end", text: "右" }]
+    : [{ value: "start", text: "上" }, { value: "center", text: "中央" }, { value: "end", text: "下" }];
+  const label = axis === "horizontal" ? "横方向" : "縦方向";
+  function chooseByKey(event: KeyboardEvent<HTMLButtonElement>, index: number) {
+    const previous = axis === "horizontal" ? "ArrowLeft" : "ArrowUp", next = axis === "horizontal" ? "ArrowRight" : "ArrowDown";
+    if (![previous, next, "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const at = event.key === "Home" ? 0 : event.key === "End" ? options.length - 1 : (index + (event.key === next ? 1 : -1) + options.length) % options.length;
+    onChange(options[at]!.value);
+    event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>("button")[at]?.focus();
+  }
+  return <div className="e-axis-wrap"><span>{label}</span><div className="e-axis" role="group" aria-label={`${label}の配置`}>{options.map((option, index) => <button type="button" key={option.value}
+    aria-label={`${label}を${option.text}に揃える`} aria-pressed={value === option.value} disabled={disabled} onClick={() => onChange(option.value)} onKeyDown={(event) => chooseByKey(event, index)}>{option.text}</button>)}</div></div>;
+}
+
 function Flow({ ui, flex, grid }: { ui: Ui; flex: boolean; grid: boolean }) {
   const properties: StyleProperty[] = ["display", "flexDirection", "flexWrap", "justifyContent", "alignItems", "alignContent", "gap", "gridTemplateColumns", "gridTemplateRows"];
   if (!properties.some(ui.can)) return null;
@@ -380,29 +404,39 @@ function Flow({ ui, flex, grid }: { ui: Ui; flex: boolean; grid: boolean }) {
   const spread = ui.effective("justifyContent") === "space-between";
   const lock = (property: StyleProperty) => !!ui.status([property]).lock;
   const row = (properties: StyleProperty[], caption: string, control: ReactNode) => properties.some(ui.can) && <Row caption={caption} group status={ui.status(properties)}>{control}</Row>;
-  return <section className="e-sec"><h3>並び</h3>
+  const setPlacement = (nx: Align, ny: Align) => {
+    const mainAxis = column ? ny : nx, crossAxis = column ? nx : ny;
+    ui.report(ui.set({ justifyContent: flexValue((reverse ? flip(mainAxis) : mainAxis)!), alignItems: flexValue(crossAxis) }));
+  };
+  const setHorizontal = (value: Align) => ui.report(ui.set(column
+    ? { alignItems: flexValue(value) }
+    : { justifyContent: flexValue((reverse ? flip(value) : value)!) }));
+  const setVertical = (value: Align) => ui.report(ui.set(column
+    ? { justifyContent: flexValue((reverse ? flip(value) : value)!) }
+    : { alignItems: flexValue(value) }));
+  const horizontalProperty: StyleProperty = column ? "alignItems" : "justifyContent", verticalProperty: StyleProperty = column ? "justifyContent" : "alignItems";
+  return <div className="e-flow">
     {ui.select("display", "配置方式", displays)}
     {flex && <>
-      {row(["flexDirection", "flexWrap"], "並ぶ向き", <Segmented label="並ぶ向き" options={directions} value={direction === "row" && wrap === "wrap" ? "wrap" : direction as typeof directions[number]["value"]}
+      {row(["flexDirection", "flexWrap"], "方向", <Segmented label="方向" options={directions} value={direction === "row" && wrap === "wrap" ? "wrap" : direction as typeof directions[number]["value"]}
         disabled={ui.disabled || lock("flexDirection") || lock("flexWrap")} onChange={(value) => {
           const inherited = resolveValue(ui.document, ui.state("flexWrap").inherited?.value);
           ui.report(ui.set({ flexDirection: value === "wrap" ? "row" : value, flexWrap: value === "wrap" ? "wrap" : inherited === "wrap" || inherited === "wrap-reverse" ? "nowrap" : undefined }));
         }} />)}
-      {ui.unit("gap", "要素間の余白")}
-      {ui.select("alignContent", "複数行の揃え", contentAligns)}
-      {row(["justifyContent", "alignItems"], "配置", <><AlignGrid label="配置" value={spread ? undefined : [x, y]} disabled={ui.disabled || lock("justifyContent") || lock("alignItems")} onChange={(nx, ny) => {
-        const mainAxis = column ? ny : nx, crossAxis = column ? nx : ny;
-        ui.report(ui.set({ justifyContent: flexValue((reverse ? flip(mainAxis) : mainAxis)!), alignItems: flexValue(crossAxis) }));
-      }} /><Toggle text="均等に配置" pressed={spread} disabled={ui.disabled || lock("justifyContent")} onChange={() => {
+      {ui.unit("gap", "ギャップ")}
+      {row(["justifyContent", "alignItems"], "配置", <><div className="e-placement"><AlignGrid label="9点配置" value={spread ? undefined : [x, y]} disabled={ui.disabled || lock("justifyContent") || lock("alignItems")} onChange={setPlacement} />
+        <div className="e-axis-controls"><AxisAlignment axis="horizontal" value={spread ? undefined : x} disabled={ui.disabled || lock(horizontalProperty)} onChange={setHorizontal} />
+          <AxisAlignment axis="vertical" value={y} disabled={ui.disabled || lock(verticalProperty)} onChange={setVertical} /></div></div><Toggle text="均等に配置" pressed={spread} disabled={ui.disabled || lock("justifyContent")} onChange={() => {
         const own = ui.state("justifyContent");
         ui.report(ui.set({ justifyContent: !spread ? "space-between" : own.own === "space-between" && resolveValue(ui.document, own.inherited?.value) !== "space-between" ? undefined : "flex-start" }));
       }} /></>)}
+      {ui.select("alignContent", "複数行の揃え", contentAligns)}
     </>}
     {grid && <>
       {row(["gridTemplateColumns"], "列の数", <Segmented label="列の数" options={columns} value={String(ui.effective("gridTemplateColumns") ?? "")} disabled={ui.disabled || lock("gridTemplateColumns")} onChange={(value) => ui.report(ui.set({ gridTemplateColumns: value }))} />)}
       {ui.unit("gridTemplateColumns", "列の構成", { units: [], key: `${ui.uid}-${ui.tier}-columns` })}
       {ui.unit("gridTemplateRows", "行の構成", { units: [] })}
-      {ui.unit("gap", "要素間の余白")}
+      {ui.unit("gap", "ギャップ")}
     </>}
-  </section>;
+  </div>;
 }

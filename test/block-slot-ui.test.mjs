@@ -215,10 +215,10 @@ test("region edits follow the edited width and keep wider widths with the only r
   const app = await setup();
   try {
     await canvasClick('[data-nw-node="cards"] ul[data-nw-slot="list"]'); assert.equal(heading(), "体験カード一覧 · カードの並び");
-    await change(input("配置方式", right()), "grid"); await change(input("要素間の余白", right()), "16");
+    await change(input("配置方式", right()), "grid"); await change(input("ギャップ", right()), "16");
     await click(button("タブレット 768px〜", right())); await click(button("3 列", right()));
-    assert.ok(field("要素間の余白", right()).textContent.includes("継承: 基本"));
-    await click(button("768〜1279px だけ", right())); await change(input("要素間の余白", right()), "24");
+    assert.ok(field("ギャップ", right()).textContent.includes("継承: 基本"));
+    await click(button("768〜1279px だけ", right())); await change(input("ギャップ", right()), "24");
     await click(button("下書き保存"));
     assert.deepEqual(app.calls.saves[0].document.body.at(-1).slots.list, { base: { display: "grid", gap: 16 }, responsive: [
       { minWidth: 768, declarations: { gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 24 } }, { minWidth: 1280, declarations: { gap: 16 } }] });
