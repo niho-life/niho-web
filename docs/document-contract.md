@@ -12,7 +12,7 @@
 
 文書契約の非互換変更は `schemaVersion` を上げ、移行処理を明示してから導入します。未知版の暗黙変換は行いません。既存の鎌倉サイトの文書を直接受け入れる形式ではありません。移行時には現行の HTML / CSS を新しい許可リストに対応付ける adapter と視覚確認が必要です。
 
-token の `label`、`textStyles`、node style の `textStyle`、文字の見た目プロパティ（`fontStyle` / `textDecorationLine`）、辺ごとの枠線幅（`borderTopWidth` / `borderRightWidth` / `borderBottomWidth` / `borderLeftWidth`）は v1 への後方互換な追加で、`schemaVersion` は 1 のままです。入力に無いキーは出力にも付けないため、既存文書の検証結果・直列化・fingerprint・CSS は変わりません。これらのキーを含む文書は、追加前のパッケージでは未知フィールドとして拒否されます。ホストは保存・公開側の検証も新しい commit SHA へ更新してから、新しい編集機能を使ってください。
+token の `label`、`textStyles`、node style の `textStyle`、文字の見た目プロパティ（`fontStyle` / `textDecorationLine`）、辺ごとの枠線幅（`borderTopWidth` / `borderRightWidth` / `borderBottomWidth` / `borderLeftWidth`）、element の組み込み `icon` と `video` は v1 への後方互換な追加で、`schemaVersion` は 1 のままです。入力に無いキーは出力にも付けないため、既存文書の検証結果・直列化・fingerprint・CSS は変わりません。これらのキーを含む文書は、追加前のパッケージでは未知フィールドとして拒否されます。ホストは保存・公開側の検証も新しい commit SHA へ更新してから、新しい編集機能を使ってください。
 
 `@niho/web/builder` の挿入・モーション定義は編集時だけの設定で、文書wireには保存しません。挿入結果は既存の `PageNode`、モーション結果は既存の `NodeStyle.base/states/appear` です。定義名、関数、任意JS/CSS、新しい識別fieldは `PageDocument` に加わらないため、この拡張を使わない既存ホストと既存文書の直列化は変わりません。
 
@@ -23,13 +23,19 @@ token の `label`、`textStyles`、node style の `textStyle`、文字の見た�
 | type | 内容 | 制約 |
 | --- | --- | --- |
 | `text` | `text` | HTML として解釈せず React が escape |
-| `element` | `id`, `tag`, `attrs?`, `style?`, `children` | 安全な HTML タグ・属性のみ。子配列は必須 |
+| `element` | `id`, `tag`, `attrs?`, `asset?`, `icon?`, `style?`, `children` | 安全な HTML タグ・属性のみ。子配列は必須。`asset` と `icon` は下記の閉じた用途だけ |
 | `component` | `id`, `block`, `props`, `style?`, `slots?` | 登録済み名・許可された primitive props のみ。独自の children は持たない。`slots` は registry が宣言した表示領域ごとの見た目（[業務ブロックの表示領域契約](block-slot-contract.md)） |
 | `instance` | `id`, `component`, `props?`, `style?` | 下書きだけで使う共通部品の参照。部品ライブラリを渡した検証でだけ受け付け、公開前に通常の element へ展開する（[共通部品契約](component-contract.md)） |
 
 element / component / instance の `id` は文書全体で一意です。element の `attrs.id` は別の HTML ID として同一文書内の重複を拒否します。リンクの `#id` と ARIA の参照先は利用側で揃えます。HTML ID はブラウザ全体の名前空間なので、複数文書を同じページへ置く利用側は document 間でも一意にします。
 
-タグは `src/types.ts` の `ElementTag`、属性は `src/document.ts` の許可リストを正とします。`a.href` は HTTPS・サイト内パス・同一文書内アンカーに加えて、安全な `mailto:` と `tel:` を許可します。メール宛先は単一の ASCII メールアドレス、query は重複のない `subject` / `body` のみです。電話番号は数字と `+ ( ) . -` のみを使い、空白・制御文字・改行・バックスラッシュ・危険な scheme は拒否します。mailto の subject / body では通常の空白をパーセントエンコードできます。`img` は安全な `src` か素材参照 `asset: { provider, id }` のどちらか一方と、`alt` が必須です。空の alt は装飾画像として許可します。素材参照の URL は描画時にホストの解決済み map から決め、解決できない画像は描画しません（[素材ライブラリ契約](asset-contract.md)）。`a[target=_blank]` には `noopener noreferrer` を描画時に補います。`source.srcSet` は単一 URL のみを許可します。開閉の `details` / `summary` は JS なしで動く部品として許可し、`summary` は `details` の最初の子だけに置けます（1 つまで。中にリンクや入れ子の開閉は置けません）。`details` の `open` は真偽値です。複数候補の srcset、SVG、iframe、form、script、style、イベント属性は v1 の対象外です。
+タグは `src/types.ts` の `ElementTag`、属性は `src/document.ts` の許可リストを正とします。`a.href` は HTTPS・サイト内パス・同一文書内アンカーに加えて、安全な `mailto:` と `tel:` を許可します。メール宛先は単一の ASCII メールアドレス、query は重複のない `subject` / `body` のみです。電話番号は数字と `+ ( ) . -` のみを使い、空白・制御文字・改行・バックスラッシュ・危険な scheme は拒否します。mailto の subject / body では通常の空白をパーセントエンコードできます。`img` は安全な `src` か素材参照 `asset: { provider, id }` のどちらか一方と、`alt` が必須です。空の alt は装飾画像として許可します。素材参照の URL は描画時にホストの解決済み map から決め、解決できない画像は描画しません（[素材ライブラリ契約](asset-contract.md)）。`a[target=_blank]` には `noopener noreferrer` を描画時に補います。`source.srcSet` は単一 URL のみを許可します。開閉の `details` / `summary` は JS なしで動く部品として許可し、`summary` は `details` の最初の子だけに置けます（1 つまで。中にリンクや入れ子の開閉は置けません）。`details` の `open` は真偽値です。
+
+組み込みアイコンは `tag: "span"` に閉じた `icon` 名（`arrow-right` / `arrow-left` / `check` / `close` / `plus` / `minus` / `star` / `heart` / `location` / `info`）を持たせます。`role: "img"` と空でない `aria-label` が必須で、children は空です。保存するのは名前だけで、glyph は trusted code のカタログから描画します。任意の SVG path、SVG/HTML、画像URL、class、data属性を文書から渡す入口にはしません。色・大きさ・配置は通常の安全な `NodeStyle`（`color` / `fontSize` 等）で指定します。
+
+`video` は安全な HTTPS / root-relative `attrs.src` か `asset: { provider, id }` のいずれか一方、または編集中のソース未設定状態を持ち、children は空です。asset の配信URLは文書に保存せず、画像と同じ解決済み map から描画時に得ます。`aria-label` または `title` の空でないアクセシブル名が必須です。許可属性は `src` / `poster` / `width` / `height` / `controls` / `loop` / `muted` / `preload`（`none` / `metadata` / `auto`）/ `playsInline` と global allowlist だけです。renderer は未指定の `controls` を true、`preload` を `metadata` として出力し、`autoplay` は受け付けません。未解決 asset とソース未設定の動画は公開出力では省略し、editor の placeholder mode ではそれぞれ「動画を表示できません」「動画を選んでください」と示します。editor の素材選択は ready な `video/mp4` を最低限の対応形式としますが、MIME検査・配信URL発行・保存・認可はホスト責務です。iframe・外部embed・remote code はこの native video 契約に含みません。
+
+複数候補の srcset、任意 SVG、iframe、form、script、style、イベント属性は v1 の対象外です。
 
 `p` や見出しなどの phrasing content の中への block element、入れ子のリンク、void element の子、不正な list / picture の子を拒否し、初期 HTML をブラウザが組み替えて hydration と食い違うことを防ぎます。ブロックは `<div data-nw-node="…" data-nw-block="…">` に包むため、flow content の中だけで利用できます。ブロック自身が返す HTML の妥当性は利用側で保証します。
 

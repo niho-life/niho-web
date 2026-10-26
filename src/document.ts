@@ -5,24 +5,26 @@ import type {
 import { COMPONENT_LIMITS, expandDocument, instancesOf } from "./component-expand.js";
 import { isStyleProperty, parseStyle, parseTextStyles, parseTokens } from "./style-values.js";
 import { DocumentValidationError, fail, identifier, isSafePublicLink, isSafePublicUrl, keys, line, localeCode, parseAssetReference, publicImageSrcSet, publicImageUrl, record, string } from "./validation-utils.js";
+import { isIconName } from "./icons.js";
 
-const tags = new Set("div section article header footer main nav aside h1 h2 h3 h4 h5 h6 p span a img picture source ul ol li dl dt dd strong em b i small blockquote figure figcaption br hr time details summary".split(" "));
+const tags = new Set("div section article header footer main nav aside h1 h2 h3 h4 h5 h6 p span a img picture source video ul ol li dl dt dd strong em b i small blockquote figure figcaption br hr time details summary".split(" "));
 const voidTags = new Set(["img", "source", "br", "hr"]);
 const phrasing = new Set("span a img strong em b i small br time".split(" "));
 const phrasingParents = new Set("p span h1 h2 h3 h4 h5 h6 a strong em b i small time summary".split(" "));
 // 開閉（details / summary）は JS なしで動く。summary の中にリンクや入れ子の開閉は置けない。
-const interactive = new Set(["a", "details", "summary"]);
+const interactive = new Set(["a", "video", "details", "summary"]);
 const globalAttributes = ["id", "title", "lang", "dir", "role", "hidden", "tabIndex", "aria-label", "aria-labelledby", "aria-describedby", "aria-hidden", "aria-current"];
 const tagAttributes: Partial<Record<ElementTag, string[]>> = {
   a: ["href", "target", "rel", "hrefLang"], img: ["src", "srcSet", "alt", "width", "height", "loading", "decoding"],
-  source: ["srcSet", "type", "media"], ol: ["start", "reversed"], li: ["value"], time: ["dateTime"], details: ["open"]
+  source: ["srcSet", "type", "media"], video: ["src", "poster", "width", "height", "controls", "loop", "muted", "preload", "playsInline"],
+  ol: ["start", "reversed"], li: ["value"], time: ["dateTime"], details: ["open"]
 };
 function attributes(value: unknown, tag: ElementTag, path: string, asset = false): ElementAttributes {
   const source = record(value, path), result: ElementAttributes = {};
   keys(source, [...globalAttributes, ...(tagAttributes[tag] ?? [])], path);
   for (const [name, value] of Object.entries(source)) {
     const at = `${path}.${name}`;
-    if (name === "hidden" || name === "reversed" || name === "open") {
+    if (["hidden", "reversed", "open", "controls", "loop", "muted", "playsInline"].includes(name)) {
       if (typeof value !== "boolean") fail(at, "expected boolean");
     } else if (["width", "height", "start", "value", "tabIndex"].includes(name)) {
       if (typeof value !== "number" || !Number.isSafeInteger(value) || Math.abs(value) > 100000 ||
@@ -31,6 +33,7 @@ function attributes(value: unknown, tag: ElementTag, path: string, asset = false
       const text = string(value, at, 2048);
       if (name === "href" && !isSafePublicLink(text)) fail(at, "unsafe URL");
       if (name === "src") publicImageUrl(text, at);
+      if (name === "poster") publicImageUrl(text, at);
       if (name === "srcSet") publicImageSrcSet(text, at);
       if (name === "media" && !/^\((?:min|max)-width: [1-9]\d{1,3}px\)$/.test(text)) fail(at, "unsupported media condition");
       if (name === "type" && !["image/avif", "image/webp", "image/png", "image/jpeg"].includes(text)) fail(at, "unsupported image type");
@@ -45,11 +48,14 @@ function attributes(value: unknown, tag: ElementTag, path: string, asset = false
       if (name === "role" && !["banner", "navigation", "main", "contentinfo", "complementary", "region", "group", "list", "listitem", "img", "presentation", "none", "note"].includes(text)) fail(at, "unsupported role");
       if (name === "loading" && !["lazy", "eager"].includes(text)) fail(at, "invalid loading");
       if (name === "decoding" && !["async", "sync", "auto"].includes(text)) fail(at, "invalid decoding");
+      if (name === "preload" && !["none", "metadata", "auto"].includes(text)) fail(at, "invalid preload");
     }
     result[name] = value as string | number | boolean;
   }
   if (tag === "img" && asset && (Object.hasOwn(result, "src") || Object.hasOwn(result, "srcSet"))) fail(path, "img uses either URL sources or asset");
   if (tag === "img" && (!asset && typeof result.src !== "string" || typeof result.alt !== "string")) fail(path, asset ? "img requires alt" : "img requires src and alt");
+  if (tag === "video" && asset && Object.hasOwn(result, "src")) fail(path, "video uses either URL source or asset");
+  if (tag === "video" && ![result["aria-label"], result.title].some((label) => typeof label === "string" && !!label.trim())) fail(path, "video requires an accessible label");
   return result;
 }
 
@@ -202,7 +208,7 @@ export function parseNode(raw: unknown, at: string, context: NodeContext, depth 
   }
   if (node.type === "instance" && !context.components) fail(at, "component instance requires a component library");
   if (node.type !== "element" && node.type !== "component" && node.type !== "instance") fail(`${at}.type`, "unknown node type");
-  keys(node, node.type === "element" ? ["type", "id", "tag", "asset", "attrs", "style", "children"] : node.type === "component" ? ["type", "id", "block", "props", "style", "slots"] : ["type", "id", "component", "props", "style"], at);
+  keys(node, node.type === "element" ? ["type", "id", "tag", "asset", "icon", "attrs", "style", "children"] : node.type === "component" ? ["type", "id", "block", "props", "style", "slots"] : ["type", "id", "component", "props", "style"], at);
   const id = identifier(node.id, `${at}.id`);
   if (ids.has(id)) fail(`${at}.id`, "duplicate node ID");
   ids.add(id);
@@ -234,8 +240,10 @@ export function parseNode(raw: unknown, at: string, context: NodeContext, depth 
   const tag = node.tag;
   if (inline && !phrasing.has(tag) || constrainedParent && !constrainedParent.includes(tag) || insideLink && interactive.has(tag)) fail(at, "invalid HTML content nesting");
   if (tag === "summary" && parent !== "details") fail(at, "summary must be the first child of details");
-  if (node.asset !== undefined && tag !== "img") fail(`${at}.asset`, "only img can reference an asset");
+  if (node.asset !== undefined && tag !== "img" && tag !== "video") fail(`${at}.asset`, "only img or video can reference an asset");
+  if (node.icon !== undefined && (tag !== "span" || !isIconName(node.icon))) fail(`${at}.icon`, "unsupported built-in icon");
   const asset = node.asset === undefined ? {} : { asset: parseAssetReference(node.asset, `${at}.asset`) };
+  const icon = node.icon === undefined ? {} : { icon: node.icon };
   const attrs = node.attrs === undefined ? {} : { attrs: attributes(node.attrs, tag, `${at}.attrs`, !!asset.asset) };
   const htmlId = attrs.attrs?.id;
   if (typeof htmlId === "string") {
@@ -243,8 +251,11 @@ export function parseNode(raw: unknown, at: string, context: NodeContext, depth 
     htmlIds.add(htmlId);
   }
   if (tag === "img" && !attrs.attrs) fail(at, "img requires attributes");
+  if (tag === "video" && !attrs.attrs) fail(at, "video requires attributes");
+  if (node.icon !== undefined && (attrs.attrs?.role !== "img" || typeof attrs.attrs["aria-label"] !== "string" || !attrs.attrs["aria-label"].trim() || attrs.attrs["aria-hidden"] === "true")) fail(at, "icon requires role img and aria-label");
   const children = parseNodes(node.children, `${at}.children`, context, depth + 1, tag, insideLink || interactive.has(tag) && tag !== "details", inline || phrasingParents.has(tag));
   if (voidTags.has(tag) && children.length) fail(at, "void element cannot have children");
+  if ((tag === "video" || node.icon !== undefined) && children.length) fail(at, "media element cannot have children");
   if (tag === "details") {
     const summaries = children.flatMap((child, index) => (child.type === "element" ? child.tag : child.type === "instance" ? context.components!.get(child.component)!.tag : "") === "summary" ? [index] : []);
     if (summaries.length > 1 || summaries.length === 1 && summaries[0] !== 0) fail(`${at}.children`, "summary must be the first child of details");
@@ -255,7 +266,7 @@ export function parseNode(raw: unknown, at: string, context: NodeContext, depth 
       fail(`${at}.children`, "picture requires source elements followed by one img");
     }
   }
-  return { type: "element", id, tag, ...asset, ...attrs, ...style, children };
+  return { type: "element", id, tag, ...asset, ...icon, ...attrs, ...style, children };
 }
 
 export type PageParseOptions = {

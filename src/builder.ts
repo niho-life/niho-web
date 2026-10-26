@@ -86,8 +86,13 @@ export function assertMotionStylePatch(value: unknown): asserts value is MotionS
 
 const element = (id: BuilderIdFactory, tag: ElementNode["tag"], text?: string): ElementNode => ({
   type: "element", id: id(), tag,
-  ...(tag === "a" ? { attrs: { href: "/" } } : tag === "img" ? { attrs: { src: "/placeholder.webp", alt: "画像の説明" } } : {}),
-  children: tag === "img" ? [] : text === undefined ? [] : [{ type: "text", text }]
+  ...(tag === "a" ? { attrs: { href: "/" } } : tag === "img" ? { attrs: { src: "/placeholder.webp", alt: "画像の説明" } }
+    : tag === "video" ? { attrs: { "aria-label": "動画", controls: true, preload: "metadata", playsInline: true } } : {}),
+  children: tag === "img" || tag === "video" ? [] : text === undefined ? [] : [{ type: "text", text }]
+});
+const icon = (id: BuilderIdFactory): ElementNode => ({
+  type: "element", id: id(), tag: "span", icon: "check", attrs: { role: "img", "aria-label": "チェック" },
+  style: { base: { display: "inline-flex", fontSize: 32, color: "currentColor", lineHeight: 1 } }, children: []
 });
 const richText = (id: BuilderIdFactory): ElementNode => ({
   type: "element", id: id(), tag: "div", attrs: { role: "group", "aria-label": "リッチテキスト" }, children: [element(id, "p", "新しいテキスト")]
@@ -170,13 +175,15 @@ export const layoutInsertionPresets: readonly InsertionPreset[] = [
 /** 画面上の標準挿入項目。表示と生成の両方がこの定義だけを参照する。 */
 export const standardBuilderDefinition: BuilderDefinition = {
   insertions: [
-    { id: "section", label: "セクション", group: "構造", glyph: "▤", create: ({ id }) => element(id, "section") },
-    { id: "box", label: "ボックス", group: "構造", glyph: "□", create: ({ id }) => element(id, "div") },
-    { id: "text", label: "テキスト", group: "文字", glyph: "T", create: ({ id }) => element(id, "p", "新しいテキスト") },
+    { id: "section", label: "セクション", group: "基本", glyph: "▤", create: ({ id }) => element(id, "section") },
+    { id: "box", label: "ボックス", group: "基本", glyph: "□", create: ({ id }) => element(id, "div") },
+    { id: "img", label: "画像", group: "基本", glyph: "▧", create: ({ id }) => element(id, "img") },
+    { id: "text", label: "テキスト", group: "基本", glyph: "T", create: ({ id }) => element(id, "p", "新しいテキスト") },
+    { id: "icon", label: "アイコン", group: "基本", glyph: "✓", create: ({ id }) => icon(id) },
+    { id: "richtext", label: "リッチテキスト", group: "基本", glyph: "¶", create: ({ id }) => richText(id) },
+    { id: "video", label: "動画", group: "基本", glyph: "▶", create: ({ id }) => element(id, "video") },
     { id: "h2", label: "見出し", group: "文字", glyph: "H", create: ({ id }) => element(id, "h2", "新しいテキスト") },
-    { id: "richtext", label: "リッチテキスト", group: "文字", glyph: "¶", create: ({ id }) => richText(id) },
     { id: "a", label: "リンク", group: "文字", glyph: "↗", create: ({ id }) => element(id, "a", "リンク") },
-    { id: "img", label: "画像", group: "メディア", glyph: "▧", create: ({ id }) => element(id, "img") },
     { id: "carousel", label: "カルーセル", group: "インタラクション", glyph: "⇆", create: ({ id }) => carouselPreset(id) },
     { id: "toggle", label: "トグル（開閉）", group: "インタラクション", glyph: "▾", create: ({ id }) => togglePreset(id) },
     ...partInsertionPresets,

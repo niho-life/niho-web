@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { DocumentValidationError, parsePageDocument } from "@niho/web/core";
 import {
-  ASSET_LIMITS, INSERTABLE_IMAGE_TYPES, assetErrorReason, assetKey, collectAssetReferences, formatBytes, isInsertableImage, missingAssetReferences,
+  ASSET_LIMITS, INSERTABLE_IMAGE_TYPES, INSERTABLE_VIDEO_TYPES, assetErrorReason, assetKey, collectAssetReferences, formatBytes, isInsertableImage, isInsertableVideo, missingAssetReferences,
   parseAssetAcquireResult, parseAssetDeleteResult, parseAssetListResult, parseAssetProviders, parseAssetUpdateResult, parseAssetUploadResult, parseAssetUsages, parseLibraryAsset,
   parseResolvedAssets, uniqueAssetReferences
 } from "@niho/web/assets";
@@ -35,16 +35,18 @@ test("asset references are collected from images and every background breakpoint
   doc.body[0].style.base.backgroundImage = { asset: { provider: "uploads", id: "wave" } };
   doc.body[0].style.responsive[0].declarations.backgroundImage = { asset: { provider: "cms", id: "hero" } };
   doc.body[0].children.push({ type: "element", id: "photo", tag: "img", asset: { provider: "uploads", id: "sea" }, attrs: { alt: "" }, children: [] },
-    { type: "element", id: "again", tag: "img", asset: { provider: "uploads", id: "wave" }, attrs: { alt: "" }, children: [] });
+    { type: "element", id: "again", tag: "img", asset: { provider: "uploads", id: "wave" }, attrs: { alt: "" }, children: [] },
+    { type: "element", id: "clip", tag: "video", asset: { provider: "uploads", id: "clip" }, attrs: { "aria-label": "紹介動画" }, children: [] });
   const document = parsePageDocument(doc);
   assert.deepEqual(collectAssetReferences(document), [
     { reference: { provider: "uploads", id: "wave" }, nodeId: "hero", target: "background", breakpoint: "base" },
     { reference: { provider: "cms", id: "hero" }, nodeId: "hero", target: "background", breakpoint: 768 },
     { reference: { provider: "uploads", id: "sea" }, nodeId: "photo", target: "image", breakpoint: "base" },
-    { reference: { provider: "uploads", id: "wave" }, nodeId: "again", target: "image", breakpoint: "base" }
+    { reference: { provider: "uploads", id: "wave" }, nodeId: "again", target: "image", breakpoint: "base" },
+    { reference: { provider: "uploads", id: "clip" }, nodeId: "clip", target: "video", breakpoint: "base" }
   ]);
-  assert.deepEqual(uniqueAssetReferences(document).map(assetKey), ["cms:hero", "uploads:sea", "uploads:wave"]);
-  assert.deepEqual(missingAssetReferences(document, parseResolvedAssets({ "uploads:sea": { src: "/sea.webp" } })).map(assetKey), ["cms:hero", "uploads:wave"]);
+  assert.deepEqual(uniqueAssetReferences(document).map(assetKey), ["cms:hero", "uploads:clip", "uploads:sea", "uploads:wave"]);
+  assert.deepEqual(missingAssetReferences(document, parseResolvedAssets({ "uploads:sea": { src: "/sea.webp" } })).map(assetKey), ["cms:hero", "uploads:clip", "uploads:wave"]);
   assert.deepEqual(missingAssetReferences(parsePageDocument(fixture), {}), []);
 });
 
@@ -88,6 +90,8 @@ test("only ready allowlisted images are insertable and sizes and errors are clas
   assert.deepEqual([...INSERTABLE_IMAGE_TYPES], ["image/jpeg", "image/png", "image/webp", "image/avif", "image/gif"]);
   assert.equal(isInsertableImage(asset()), true);
   for (const extra of [{ status: "processing" }, { kind: "pdf", mimeType: "application/pdf" }, { kind: "video", mimeType: "video/mp4" }, { mimeType: "image/svg+xml" }, { mimeType: "image/tiff" }]) assert.equal(isInsertableImage(asset(extra)), false);
+  assert.deepEqual([...INSERTABLE_VIDEO_TYPES], ["video/mp4"]); assert.equal(isInsertableVideo(asset({ kind: "video", mimeType: "video/mp4" })), true);
+  for (const extra of [{ status: "processing" }, { kind: "image", mimeType: "video/mp4" }, { kind: "video", mimeType: "video/webm" }]) assert.equal(isInsertableVideo(asset(extra)), false);
   assert.deepEqual([0, 512, 1024, 250880, 3.4 * 1024 ** 2, 1.6 * 1024 ** 3, 10 * 1024 ** 3, 1048575].map(formatBytes), ["0 B", "512 B", "1 KB", "245 KB", "3.4 MB", "1.6 GB", "10 GB", "1 MB"]);
   assert.deepEqual([403, 413, 415, 507, 409, 500].map((status) => assetErrorReason({ status })), ["permission", "size", "type", "quota", "conflict", "unknown"]);
   assert.equal(assetErrorReason(new Error("offline")), "unknown"); assert.equal(assetErrorReason(null), "unknown");

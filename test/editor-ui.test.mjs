@@ -128,6 +128,41 @@ test("three rails edit live text, color, size, position and viewport before draf
     assert.equal(button("下書き保存").disabled, true);
   } finally { await app.cleanup(); }
 });
+test("Basic Icon and Video can be selected, edited, saved, reloaded and rendered", async () => {
+  const app = await setup();
+  const addPreset = async (id) => {
+    await click("追加");
+    const target = document.querySelector(`.e-preset-preview[data-preset="${id}"]`)?.closest("button");
+    assert.ok(target, id); await act(async () => target.click()); await flush();
+  };
+  try {
+    await click("追加");
+    assert.deepEqual([...document.querySelectorAll(".e-add-category .e-preset-preview")].slice(0, 7).map((item) => item.dataset.preset), ["section", "box", "img", "text", "icon", "richtext", "video"]);
+    await addPreset("icon");
+    assert.equal(document.querySelector('[aria-label="インスペクタ"] .e-inspector-context strong').textContent, "アイコン");
+    assert.deepEqual([...document.querySelectorAll('.e-inspector-tabs [role="tab"]')].map((tab) => tab.textContent), ["アイコン", "文字", "ボックス", "変形"]);
+    await change(input("アイコン"), "star"); await change(input("アクセシブルな名前"), "おすすめ");
+    await editorTab("文字"); await change(input("文字サイズ"), "40"); await change(input("文字色"), "#123456");
+    await click("下書き保存");
+    assert.equal(app.stored().body.at(-1).icon, "star"); assert.equal(app.stored().body.at(-1).attrs["aria-label"], "おすすめ");
+    await click("最新の文書を再読込"); await clickLayer("node_1");
+    assert.equal(input("アイコン").value, "star"); assert.equal(input("アクセシブルな名前").value, "おすすめ");
+
+    await addPreset("video");
+    assert.equal(document.querySelector('[aria-label="インスペクタ"] .e-inspector-context strong').textContent, "動画");
+    await change(input("動画 URL"), "https://media.example.test/intro.mp4");
+    await change(input("動画の説明"), "施設の紹介動画"); await change(input("ポスター画像 URL"), "/poster.webp"); await change(input("先読み"), "none");
+    const check = (caption) => [...document.querySelectorAll("label.e-check")].find((label) => label.textContent.includes(caption))?.querySelector("input");
+    const controls = check("再生コントロールを表示"), loop = check("繰り返す");
+    assert.equal(controls.checked, true); await act(async () => controls.click()); await act(async () => loop.click()); await flush();
+    await click("下書き保存"); await click("最新の文書を再読込"); await clickLayer("node_2");
+    assert.equal(input("動画 URL").value, "https://media.example.test/intro.mp4"); assert.equal(input("動画の説明").value, "施設の紹介動画");
+    assert.equal(check("再生コントロールを表示").checked, false); assert.equal(check("繰り返す").checked, true); assert.equal(input("先読み").value, "none");
+    const html = renderPageToHtml(app.stored()), video = html.match(/<video[^>]*data-nw-node="node_2"[^>]*><\/video>/)?.[0];
+    assert.ok(video.includes('src="https://media.example.test/intro.mp4"')); assert.ok(video.includes('aria-label="施設の紹介動画"'));
+    assert.ok(video.includes('poster="/poster.webp"')); assert.ok(video.includes('loop=""')); assert.ok(!video.includes("controls=")); assert.ok(!video.includes("autoplay"));
+  } finally { await app.cleanup(); }
+});
 test("host adapters receive only the documented editor target fields", async () => {
   const app = await setup(), target = { siteId: "demo", pageId: "home", locale: "ja-JP" };
   try {
@@ -647,6 +682,25 @@ const png = (name, size) => new File([new Uint8Array(size)], name, { type: "imag
 const imageTypes = ["image/jpeg", "image/png", "image/webp", "image/avif", "image/gif"];
 const garden = { id: "garden", name: "庭の緑.png", mimeType: "image/png", bytes: 2048, width: 600, height: 400, alt: "庭の緑", src: "/media/garden.png", thumbnailUrl: "/media/garden.png" };
 function withImage(node = { attrs: { src: "/photo.webp", alt: "古い写真" } }) { const doc = structuredClone(fixture); doc.body[0].children.push({ type: "element", id: "photo", tag: "img", children: [], ...node }); return doc; }
+
+test("a ready MP4 can replace a native video without storing its resolved URL", async () => {
+  const clip = { id: "intro", name: "紹介.mp4", mimeType: "video/mp4", bytes: 4096, alt: "", src: "/media/intro.mp4" };
+  const library = createMemoryAssetLibrary({ siteId: "demo", seed: [garden, clip] });
+  const doc = structuredClone(fixture); doc.body.push({ type: "element", id: "movie", tag: "video", attrs: { src: "/old.mp4", "aria-label": "紹介動画", controls: true }, children: [] });
+  const app = await setup({ document: doc, assets: library });
+  try {
+    await clickCanvas("movie"); assert.deepEqual([...document.querySelectorAll('.e-inspector-tabs [role="tab"]')].map((tab) => tab.textContent), ["動画", "ボックス", "変形", "設定"]);
+    await click("動画を置き換え"); await settle();
+    assert.equal(assetPanel().querySelector("h2").textContent, "動画を選ぶ"); assert.equal(assetCard("庭の緑.png"), undefined); assert.ok(assetCard("紹介.mp4"));
+    await chooseAsset("紹介.mp4"); await settle();
+    const edited = app.calls.saves.length ? app.calls.saves.at(-1).document : null;
+    assert.equal(input("動画 URL").value, ""); assert.ok(canvasNode("movie").getAttribute("src").endsWith("/media/intro.mp4"));
+    await click("下書き保存");
+    const saved = app.calls.saves.at(-1).document.body.find((node) => node.id === "movie");
+    assert.deepEqual(saved.asset, { provider: "uploads", id: "intro" }); assert.equal(saved.attrs.src, undefined); assert.equal(edited, null);
+    await click("最新の文書を再読込"); await settle(); assert.ok(canvasNode("movie").getAttribute("src").endsWith("/media/intro.mp4"));
+  } finally { await app.cleanup(); }
+});
 
 test("layer tree keeps ID selection through sibling edits and clears only a removed target", async () => {
   const app = await setup();

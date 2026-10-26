@@ -303,7 +303,7 @@ export function StyleInspector(props: StyleInspectorProps) {
       {ui.select("overflowWrap", "長い文字の折り返し", wrapChoices)}
       {ui.select("wordBreak", "単語の改行", wordBreakChoices)}
       {ui.select("writingMode", "文字の向き", [["horizontal-tb", "横書き"], ["vertical-rl", "縦書き（右から）"], ["vertical-lr", "縦書き（左から）"]])}
-      {(element?.tag === "img" || slot) && ui.select("objectFit", "画像の収まり", fits)}
+      {(element?.tag === "img" || element?.tag === "video" || slot) && ui.select("objectFit", element?.tag === "video" ? "動画の収まり" : "画像の収まり", fits)}
     </Collapse>}
   </div>;
 }

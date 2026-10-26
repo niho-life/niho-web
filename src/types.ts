@@ -69,18 +69,22 @@ export type NodeStyle = {
 export type ElementTag =
   | "div" | "section" | "article" | "header" | "footer" | "main" | "nav" | "aside"
   | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p" | "span"
-  | "a" | "img" | "picture" | "source" | "ul" | "ol" | "li"
+  | "a" | "img" | "picture" | "source" | "video" | "ul" | "ol" | "li"
   | "dl" | "dt" | "dd" | "strong" | "em" | "b" | "i" | "small"
   | "blockquote" | "figure" | "figcaption" | "br" | "hr" | "time"
   | "details" | "summary";
 export type ElementAttributes = Record<string, string | number | boolean>;
+/** 任意の SVG/HTML ではなく、trusted code の閉じたカタログだけを参照する。 */
+export type IconName = "arrow-right" | "arrow-left" | "check" | "close" | "plus" | "minus" | "star" | "heart" | "location" | "info";
 export type TextNode = { type: "text"; text: string };
 export type ElementNode = {
   type: "element";
   id: string;
   tag: ElementTag;
-  /** img だけが持てる。持つ場合 attrs.src は持たない。 */
+  /** img / video だけが持てる。持つ場合 attrs.src は持たない。 */
   asset?: AssetReference;
+  /** span だけが持てる組み込みアイコン名。glyph や markup は trusted code から描画する。 */
+  icon?: IconName;
   attrs?: ElementAttributes;
   style?: NodeStyle;
   children: PageNode[];

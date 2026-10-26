@@ -24,7 +24,7 @@ const excerpt = (value: string) => value.replace(/\s+/g, " ").trim().slice(0, 32
 export const elementTypeLabel: Record<ElementTag, string> = {
   div: "ボックス", section: "セクション", article: "記事", header: "ヘッダー", footer: "フッター", main: "メイン領域", nav: "ナビゲーション", aside: "補足領域",
   h1: "見出し1", h2: "見出し2", h3: "見出し3", h4: "見出し4", h5: "見出し5", h6: "見出し6", p: "段落", span: "インラインテキスト",
-  a: "リンク", img: "画像", picture: "画像領域", source: "画像候補", ul: "箇条書き", ol: "番号付きリスト", li: "リスト項目",
+  a: "リンク", img: "画像", picture: "画像領域", source: "画像候補", video: "動画", ul: "箇条書き", ol: "番号付きリスト", li: "リスト項目",
   dl: "説明リスト", dt: "説明見出し", dd: "説明内容", strong: "強調", em: "強勢", b: "太字", i: "斜体", small: "補足テキスト",
   blockquote: "引用", figure: "図版", figcaption: "図版説明", br: "改行", hr: "区切り", time: "日時", details: "開閉領域", summary: "開閉見出し"
 };
@@ -32,6 +32,8 @@ export const elementTypeLabel: Record<ElementTag, string> = {
 export function layerLabel(node: Exclude<PageNode, { type: "text" }>, labels: LayerLabels = {}): string {
   if (node.type === "component") return labels.blocks?.[node.block] ?? "コンポーネント";
   if (node.type === "instance") return labels.components?.get(node.component) ?? "コンポーネント";
+  if (node.icon) return "アイコン";
+  if (node.tag === "video") return "動画";
   if (node.tag === "img" || node.tag === "picture") return "画像";
   if (textTags.has(node.tag)) {
     const value = excerpt(plain(node));
@@ -43,7 +45,7 @@ export function layerLabel(node: Exclude<PageNode, { type: "text" }>, labels: La
 export function layerKind(node: Exclude<PageNode, { type: "text" }>): LayerKind {
   if (node.type === "component") return "component";
   if (node.type === "instance") return "instance";
-  if (node.tag === "img" || node.tag === "picture") return "image";
+  if (node.icon || node.tag === "video" || node.tag === "img" || node.tag === "picture") return "image";
   return textTags.has(node.tag) ? "text" : "box";
 }
 
