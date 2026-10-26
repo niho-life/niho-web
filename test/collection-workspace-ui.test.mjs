@@ -208,6 +208,28 @@ test("editor: publish stops on required and slug errors with focus, then flushes
   } finally { await app.cleanup(); }
 });
 
+test("editor: while the publish request is in flight, the status shows 反映中 instead of the saved draft's 変更あり", async () => {
+  const fixture = createAdapter();
+  const original = fixture.adapter.publish.bind(fixture.adapter);
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  fixture.adapter.publish = async (input, signal) => { await gate; return original(input, signal); };
+  const app = await setup({ adapter: fixture.adapter, autosaveDelay: 5000, initialCollectionId: "posts", initialItemId: "p1" });
+  const pill = () => document.querySelector(".cw-editor-status .cw-pill")?.textContent.trim();
+  try {
+    assert.equal(pill(), "公開中");
+    await type(field("title").querySelector("input"), "海辺の朝さんぽ（改）");
+    assert.equal(pill(), "変更あり", "an unsaved edit on a published item");
+    const publishing = press("変更を公開する");
+    await flush();
+    assert.equal(pill(), "反映中", "the saved draft's 変更あり is not shown while publishing");
+    release();
+    await publishing;
+    await flush();
+    assert.equal(pill(), "反映中");
+  } finally { release(); await app.cleanup(); }
+});
+
 test("editor: image, reference, tags, select, datetime, url and rich text change values in the contract shapes", async () => {
   let reject = false;
   const fixture = createAdapter({ uploadImage: async () => reject ? { status: "rejected", reason: "size" } : undefined });

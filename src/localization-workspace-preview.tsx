@@ -11,6 +11,16 @@ type Materials = { readonly status: "loading" | "error" | "too-large" | "forbidd
 type FrameState = { readonly status: "waiting" | "ready" | "rendered" } | { readonly status: "error"; readonly message: string | null };
 export type PreviewWidth = "pc" | "360" | "320";
 const widths: readonly [PreviewWidth, string][] = [["pc", "PC"], ["360", "360"], ["320", "320"]];
+/** 「PC」で描く幅。枠はこの幅で描き、表示の場所が狭ければ縮小して見せる（PC を選んでもスマホの見た目にならないように）。 */
+const PC_WIDTH = 1280;
+const FRAME_MIN_HEIGHT = 420;
+/** 描く幅と、表示の場所の幅から、縮小の倍率と枠の寸法を決める。場所の幅が分からない間は縮小しない。 */
+export function previewFrameLayout(width: PreviewWidth, boxWidth: number, viewHeight: number): { readonly frameWidth: number; readonly frameHeight: number; readonly scale: number; readonly boxHeight: number } {
+  const frameWidth = width === "pc" ? PC_WIDTH : Number(width);
+  const scale = boxWidth > 0 ? Math.min(1, boxWidth / frameWidth) : 1;
+  const boxHeight = Math.max(FRAME_MIN_HEIGHT, Math.round(viewHeight * 0.7));
+  return { frameWidth, frameHeight: Math.round(boxHeight / scale), scale, boxHeight };
+}
 
 /**
  * サイトが用意する描画用の枠に、材料と未保存の入力を postMessage で渡す。
@@ -27,6 +37,19 @@ export function PreviewPane({ adapter, itemKey, frameUrl, previews, languages, l
   const [nonce] = useState(createPreviewNonce);
   const [previewId, setPreviewId] = useState(previews[0]?.id ?? "");
   const [width, setWidth] = useState<PreviewWidth>("pc");
+  // 表示の場所の幅と画面の高さ。枠を描く幅で置き、場所に収まるよう縮小する（previewFrameLayout）
+  const box = useRef<HTMLDivElement>(null);
+  const [boxWidth, setBoxWidth] = useState(0), [viewHeight, setViewHeight] = useState(() => (typeof window === "undefined" ? 800 : window.innerHeight));
+  useLayoutEffect(() => {
+    const element = box.current;
+    if (!element) return;
+    const measure = () => { setBoxWidth(Math.floor(element.clientWidth)); setViewHeight(window.innerHeight); };
+    measure();
+    if (typeof ResizeObserver === "undefined") { window.addEventListener("resize", measure); return () => window.removeEventListener("resize", measure); }
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [previews.length]);
   const [language, setLanguage] = useState<"source" | "target">("target");
   const [materials, setMaterials] = useState<Materials>({ status: "loading" });
   const [frameState, setFrameState] = useState<FrameState>({ status: "waiting" });
@@ -102,6 +125,7 @@ export function PreviewPane({ adapter, itemKey, frameUrl, previews, languages, l
   }, [frameReady, ready, language, width, overridesKey, nonce, locales.source, locales.target]);
 
   if (!previews.length) return null;
+  const layout = previewFrameLayout(width, boxWidth, viewHeight);
   const languageName = language === "target" ? languages.target : languages.source;
   const choice = previews.find((entry) => entry.id === previewId);
   const statusText = materials.status === "loading" ? "プレビューを準備しています…"
@@ -125,9 +149,11 @@ export function PreviewPane({ adapter, itemKey, frameUrl, previews, languages, l
     <p className="lw-preview-note">{language === "target" ? "まだ保存していない入力も映します。" : "原文で表示しています。"}リンクとフォームは動きません。</p>
     {statusText && <p className="lw-preview-status" role="status">{statusText}
       {(materials.status === "error" || frameState.status === "error") && <button type="button" className="cw-link-button" onClick={() => { setFrameState({ status: "waiting" }); setAttempt(attempt + 1); }}>再試行</button>}</p>}
-    <div className="lw-frame-wrap" data-width={width}>
+    <div ref={box} className="lw-frame-wrap" data-width={width} data-scale={layout.scale < 1 ? "fit" : undefined}
+      style={{ height: layout.boxHeight, overflow: layout.scale < 1 ? "hidden" : undefined }}>
       <iframe ref={frame} key={attempt} className="lw-frame" src={previewFrameSrc(frameUrl, nonce)} sandbox="allow-scripts" referrerPolicy="no-referrer"
-        title={`プレビュー：${choice?.label ?? ""}（${languageName}・${width === "pc" ? "PC" : `${width}px`}）`} />
+        style={{ width: layout.frameWidth, maxWidth: "none", height: layout.frameHeight, minHeight: 0, margin: 0, transform: layout.scale < 1 ? `scale(${layout.scale})` : undefined, transformOrigin: "0 0" }}
+        title={`プレビュー：${choice?.label ?? ""}（${languageName}・${width === "pc" ? `PC・${PC_WIDTH}px` : `${width}px`}${layout.scale < 1 ? `・${Math.round(layout.scale * 100)}% で表示` : ""}）`} />
     </div>
   </section>;
 }

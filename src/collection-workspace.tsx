@@ -897,7 +897,8 @@ function ItemEditor({ adapter, definition, itemId, created, timeZone, autosaveDe
     </div>;
   }
 
-  const status: CollectionItemStatus = dirty && item.status === "published" ? "changed" : item.status;
+  // 公開の要求（commit を含み数十秒かかることがある）の間は、直前に保存した下書きの「変更あり」ではなく「反映中」を出す（kamakura-site#155）
+  const status: CollectionItemStatus = busy === "publish" ? "publishing" : dirty && item.status === "published" ? "changed" : item.status;
   const capabilities = definition.capabilities;
   const menu: MenuItem[] = [];
   if (status === "changed" && adapter.discardDraft) menu.push({ label: "変更を取り消す", onSelect: () => confirm({
