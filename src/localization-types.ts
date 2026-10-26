@@ -80,6 +80,8 @@ export type LocalizationDraftEntry = {
   version: number;
   draftValue?: LocalizationValue;
   editOrigin?: "AUTO" | "MANUAL";
+  /** Source used for this draft; an older manual draft needs review after source changes. */
+  draftSourceFingerprint?: string;
   reviewedSourceFingerprint?: string;
   candidate?: TranslationCandidate;
 };

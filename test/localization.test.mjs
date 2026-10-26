@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { parseComponentLibrary, parsePageDocument, resolvePageDocument } from "@niho/web/core";
 import {
-  acceptTranslationResult, adoptTranslationCandidate, collectLocalizationUnits, createLocalizationOverlay, documentLocaleFor,
+  acceptTranslationResult, adoptTranslationCandidate, applyAutomaticTranslationResult, collectLocalizationUnits, createLocalizationOverlay, documentLocaleFor,
   editLocalizedValue, localizationLocaleFor, localizationStatus, materializeLocalizedPage, parseSiteLocalizationConfig, reviewLocalizedValue,
   validateLocalizedDocumentSave
 } from "@niho/web/localization";
@@ -52,6 +52,40 @@ const resultFor = (overlay, collection, resultId, values) => ({
   schemaVersion: 1, resultId, siteId: collection.siteId, pageId: collection.pageId, sourceLocale: collection.sourceLocale,
   targetLocale: collection.targetLocale, baseVersion: overlay.version,
   values: values.map(([unitId, value]) => ({ unitId, sourceFingerprint: byId(collection, unitId).sourceFingerprint, value }))
+});
+
+test("automatic results update machine drafts and retain human edits or reviews as candidates", async () => {
+  const first = await collectLocalizationUnits(config(), page(), "en", options());
+  const ids = ["page.title", "page.node.heading.text", "page.meta.description"];
+  let overlay = createLocalizationOverlay(first);
+  overlay = applyAutomaticTranslationResult(overlay, first, resultFor(overlay, first, "initial", [
+    [ids[0], "Experience"], [ids[1], "Welcome"], [ids[2], "Living by the sea"]
+  ]));
+  assert.equal(overlay.entries.length, 3);
+  assert.ok(overlay.entries.every((entry) => entry.editOrigin === "AUTO" && !entry.candidate));
+  overlay = reviewLocalizedValue(overlay, first, { unitId: ids[0], expectedVersion: overlay.version });
+  overlay = editLocalizedValue(overlay, first, { unitId: ids[1], value: "Come visit", expectedVersion: overlay.version });
+
+  const changed = page();
+  changed.title = "新しい体験";
+  changed.body[0].children[0].children[0].text = "新しい挨拶";
+  changed.meta.description = "新しい海辺の暮らし";
+  const current = await collectLocalizationUnits(config(), changed, "en", options());
+  assert.equal(localizationStatus(overlay, current).details.find((item) => item.unitId === ids[1]).state, "review-needed");
+  const previous = structuredClone(overlay);
+  overlay = applyAutomaticTranslationResult(overlay, current, resultFor(overlay, current, "updated", [
+    [ids[0], "New experience"], [ids[1], "New welcome"], [ids[2], "New life by the sea"]
+  ]));
+  assert.deepEqual(previous.entries.find((entry) => entry.unitId === ids[0]).draftValue, "Experience");
+  assert.equal(overlay.entries.find((entry) => entry.unitId === ids[0]).draftValue, "Experience");
+  assert.equal(overlay.entries.find((entry) => entry.unitId === ids[0]).candidate.value, "New experience");
+  assert.equal(overlay.entries.find((entry) => entry.unitId === ids[1]).draftValue, "Come visit");
+  assert.equal(overlay.entries.find((entry) => entry.unitId === ids[1]).candidate.value, "New welcome");
+  assert.equal(overlay.entries.find((entry) => entry.unitId === ids[2]).draftValue, "New life by the sea");
+  assert.equal(overlay.entries.find((entry) => entry.unitId === ids[2]).candidate, undefined);
+  assert.equal(localizationStatus(overlay, current).details.find((item) => item.unitId === ids[0]).state, "review-needed");
+  assert.equal(localizationStatus(overlay, current).details.find((item) => item.unitId === ids[2]).state, "draft");
+  assert.throws(() => applyAutomaticTranslationResult(previous, current, resultFor(overlay, current, "stale", [[ids[2], "Stale"]])), /stale optimistic version/);
 });
 
 test("config requires an explicit source locale and explicit ja/en document mappings in both directions", async () => {

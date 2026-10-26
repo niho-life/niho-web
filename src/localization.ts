@@ -437,7 +437,7 @@ function parseCandidate(input: unknown, kind: LocalizationValueKind, path: strin
 
 function parseEntry(input: unknown, path: string): LocalizationDraftEntry {
   const source = record(input, path);
-  keys(source, ["unitId", "kind", "version", "draftValue", "editOrigin", "reviewedSourceFingerprint", "candidate"], path);
+  keys(source, ["unitId", "kind", "version", "draftValue", "editOrigin", "draftSourceFingerprint", "reviewedSourceFingerprint", "candidate"], path);
   const unitId = string(source.unitId, `${path}.unitId`, 300);
   if (!unitId || !/^[A-Za-z][A-Za-z0-9_.-]*$/.test(unitId)) fail(`${path}.unitId`, "invalid unit ID");
   if (!["text", "rich-text", "asset"].includes(source.kind as string)) fail(`${path}.kind`, "invalid value kind");
@@ -449,11 +449,13 @@ function parseEntry(input: unknown, path: string): LocalizationDraftEntry {
     editOrigin = source.editOrigin;
   }
   if ((draftValue === undefined) !== (editOrigin === undefined)) fail(path, "draft value and edit origin must be present together");
+  const draftSourceFingerprint = source.draftSourceFingerprint === undefined ? undefined : fingerprint(source.draftSourceFingerprint, `${path}.draftSourceFingerprint`);
+  if (draftSourceFingerprint && draftValue === undefined) fail(path, "draft source requires a draft value");
   const reviewedSourceFingerprint = source.reviewedSourceFingerprint === undefined ? undefined : fingerprint(source.reviewedSourceFingerprint, `${path}.reviewedSourceFingerprint`);
   if (reviewedSourceFingerprint && draftValue === undefined) fail(path, "review requires a draft value");
   const candidate = source.candidate === undefined ? undefined : parseCandidate(source.candidate, kind, `${path}.candidate`);
   if (draftValue === undefined && candidate === undefined) fail(path, "empty draft entry");
-  return { unitId, kind, version, ...(draftValue !== undefined ? { draftValue, editOrigin: editOrigin! } : {}),
+  return { unitId, kind, version, ...(draftValue !== undefined ? { draftValue, editOrigin: editOrigin!, ...(draftSourceFingerprint ? { draftSourceFingerprint } : {}) } : {}),
     ...(reviewedSourceFingerprint ? { reviewedSourceFingerprint } : {}), ...(candidate ? { candidate } : {}) };
 }
 
@@ -557,8 +559,7 @@ function parseTranslationResult(input: unknown): TranslationResult {
   return { schemaVersion: 1, resultId, siteId, pageId, sourceLocale, targetLocale, baseVersion, values };
 }
 
-/** Store generated values only as candidates; an existing manual or adopted draft is never replaced. */
-export function acceptTranslationResult(overlayInput: unknown, collection: LocalizationCollection, resultInput: unknown): LocalizationOverlay {
+function receiveTranslationResult(overlayInput: unknown, collection: LocalizationCollection, resultInput: unknown, automatic: boolean): LocalizationOverlay {
   const { overlay, units } = scoped(overlayInput, collection), result = parseTranslationResult(resultInput);
   if (result.siteId !== overlay.siteId || result.pageId !== overlay.pageId || result.sourceLocale !== overlay.sourceLocale || result.targetLocale !== overlay.targetLocale) {
     fail("$result", "translation result has foreign scope");
@@ -571,12 +572,27 @@ export function acceptTranslationResult(overlayInput: unknown, collection: Local
     if (incoming.sourceFingerprint !== unit.sourceFingerprint) fail(`${path}.sourceFingerprint`, "source fingerprint is stale");
     const value = valueForUnit(incoming.value, unit, `${path}.value`, true);
     const candidate: TranslationCandidate = { candidateId: result.resultId, sourceFingerprint: unit.sourceFingerprint, value, version };
-    upsert(entries, unit.unitId, () => ({ unitId: unit.unitId, kind: unit.kind, version, candidate }), (entry) => {
+    upsert(entries, unit.unitId, () => automatic
+      ? { unitId: unit.unitId, kind: unit.kind, version, draftValue: value, editOrigin: "AUTO", draftSourceFingerprint: unit.sourceFingerprint }
+      : { unitId: unit.unitId, kind: unit.kind, version, candidate }, (entry) => {
       if (entry.kind !== unit.kind) fail(path, "stored value kind conflicts with current unit");
+      if (automatic && entry.editOrigin !== "MANUAL" && !entry.reviewedSourceFingerprint) return {
+        unitId: unit.unitId, kind: unit.kind, version, draftValue: value, editOrigin: "AUTO", draftSourceFingerprint: unit.sourceFingerprint
+      };
       return { ...entry, version, candidate };
     });
   }
   return { ...overlay, version, entries };
+}
+
+/** Candidate-only path for an explicit translation suggestion. */
+export function acceptTranslationResult(overlayInput: unknown, collection: LocalizationCollection, resultInput: unknown): LocalizationOverlay {
+  return receiveTranslationResult(overlayInput, collection, resultInput, false);
+}
+
+/** Automatic jobs replace untouched machine drafts and preserve manual or reviewed drafts as candidates. */
+export function applyAutomaticTranslationResult(overlayInput: unknown, collection: LocalizationCollection, resultInput: unknown): LocalizationOverlay {
+  return receiveTranslationResult(overlayInput, collection, resultInput, true);
 }
 
 export function editLocalizedValue(overlayInput: unknown, collection: LocalizationCollection, editInput: unknown): LocalizationOverlay {
@@ -587,10 +603,10 @@ export function editLocalizedValue(overlayInput: unknown, collection: Localizati
   const unitId = string(edit.unitId, "$edit.unitId", 300), unit = units.get(unitId);
   if (!unit) fail("$edit.unitId", "unknown localization unit");
   const value = valueForUnit(edit.value, unit, "$edit.value"), version = overlay.version + 1, entries = nextEntries(overlay);
-  upsert(entries, unit.unitId, () => ({ unitId: unit.unitId, kind: unit.kind, version, draftValue: value, editOrigin: "MANUAL" }),
+  upsert(entries, unit.unitId, () => ({ unitId: unit.unitId, kind: unit.kind, version, draftValue: value, editOrigin: "MANUAL", draftSourceFingerprint: unit.sourceFingerprint }),
     (entry) => {
       const { reviewedSourceFingerprint: _reviewed, ...unreviewed } = entry;
-      return { ...unreviewed, kind: unit.kind, version, draftValue: value, editOrigin: "MANUAL" };
+      return { ...unreviewed, kind: unit.kind, version, draftValue: value, editOrigin: "MANUAL", draftSourceFingerprint: unit.sourceFingerprint };
     });
   return { ...overlay, version, entries };
 }
@@ -608,7 +624,7 @@ export function adoptTranslationCandidate(overlayInput: unknown, collection: Loc
   if (entry.candidate.sourceFingerprint !== unit.sourceFingerprint) fail("$adoption.unitId", "candidate source is stale");
   const candidateValue = valueForUnit(entry.candidate.value, unit, "$adoption.candidate", true);
   const version = overlay.version + 1;
-  entries[index] = { unitId: unit.unitId, kind: unit.kind, version, draftValue: candidateValue, editOrigin: "AUTO" };
+  entries[index] = { unitId: unit.unitId, kind: unit.kind, version, draftValue: candidateValue, editOrigin: "AUTO", draftSourceFingerprint: unit.sourceFingerprint };
   return { ...overlay, version, entries };
 }
 
@@ -623,7 +639,7 @@ export function reviewLocalizedValue(overlayInput: unknown, collection: Localiza
   const entries = nextEntries(overlay), index = entries.findIndex((entry) => entry.unitId === unit.unitId), entry = entries[index];
   if (entry?.draftValue === undefined) fail("$review.unitId", "draft value not found");
   const version = overlay.version + 1;
-  entries[index] = { ...entry, version, reviewedSourceFingerprint: unit.sourceFingerprint };
+  entries[index] = { ...entry, version, draftSourceFingerprint: unit.sourceFingerprint, reviewedSourceFingerprint: unit.sourceFingerprint };
   return { ...overlay, version, entries };
 }
 
@@ -637,7 +653,7 @@ export function localizationStatus(overlayInput: unknown, collection: Localizati
     if (entry?.draftValue === undefined && !unit.required) { state = "source"; sourceFallback++; }
     else if (entry?.draftValue === undefined) { state = "missing"; missing++; }
     else if (entry.reviewedSourceFingerprint === unit.sourceFingerprint) { state = "reviewed"; reviewed++; }
-    else if (entry.reviewedSourceFingerprint) { state = "review-needed"; reviewNeeded++; }
+    else if (entry.reviewedSourceFingerprint || entry.draftSourceFingerprint && entry.draftSourceFingerprint !== unit.sourceFingerprint) { state = "review-needed"; reviewNeeded++; }
     else { state = "draft"; draft++; }
     return { unitId: unit.unitId, state, hasCandidate: !!entry?.candidate };
   });

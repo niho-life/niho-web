@@ -131,7 +131,11 @@ const result = {
 const withCandidates = acceptTranslationResult(overlay, jaToEn, result);
 ```
 
-受理時にsite/page/direction、現在のsource fingerprint、overlayの `baseVersion`、重複・未知unit、値の型・長さ、rich-text保護要素を検証します。生成候補内のURL、メールアドレス、数値（桁区切りの表記差を除く）も原文と一致しなければ拒否します。固有名詞は推測で保護せずhost glossaryで管理します。受理した値はcandidateにだけ入り、既存のmanual draftを上書きしません。同じ結果の再受理はversion不一致で拒否されます。
+受理時にsite/page/direction、現在のsource fingerprint、overlayの `baseVersion`、重複・未知unit、値の型・長さ、rich-text保護要素を検証します。生成結果内のURL、メールアドレス、数値（桁区切りの表記差を除く）も原文と一致しなければ拒否します。固有名詞は推測で保護せずhost glossaryで管理します。同じ結果の再受理はversion不一致で拒否されます。
+
+自動翻訳ジョブの結果は `applyAutomaticTranslationResult` で受け取ります。訳がない単位と、まだ人が触れていない `AUTO` の単位は、検証済みの新しい訳をそのままdraftへ入れます。`MANUAL` の単位と、`AUTO` でも人が確認済みにした単位はdraftを残してcandidateを付けます。明示的に翻訳案だけを作る操作には従来の `acceptTranslationResult` を使います。どちらも同じ検証と版比較を通ります。
+
+draftには `editOrigin`（`AUTO` / `MANUAL`）と `draftSourceFingerprint` を保存します。原文が変わった人のdraftは、確認前の手修正でも `review-needed` になります。旧overlayに `draftSourceFingerprint` がない場合は、原文との対応を推測せず従来の状態判定を保ち、次の編集・候補採用・確認時に記録します。
 
 操作は分離されています。
 
@@ -156,11 +160,11 @@ const reviewed = reviewLocalizedValue(adopted, jaToEn, {
 ```
 
 - `editLocalizedValue`: draftだけを明示的に手編集し、以前の確認を解除します。candidateは比較用に残します。
-- `adoptTranslationCandidate`: 指定versionのcandidateをdraftへ採用し、以前の確認を解除します。
+- `adoptTranslationCandidate`: 指定versionのcandidateをdraftへ採用し、以前の確認を解除します。採用だけでは人が確認したことにはしません。
 - `reviewLocalizedValue`: 現在のdraftを現在のsource fingerprintに対して確認済みにします。新candidateを採用せず、既存訳を維持したまま確認することもできます。
 - `localizationStatus`: `source / missing / draft / review-needed / reviewed` とcandidate、obsolete、issueの集計を返します。
 
-原文変更後に旧draftを自動で置換せず `review-needed` にします。英語原文の日本語draftを編集しても英語原文は変更しません。逆翻訳APIはありません。
+原文変更後は自動訳のdraftだけを新しい結果で置換し、人が編集・確認したdraftは保持して `review-needed` にします。英語原文の日本語draftを編集しても英語原文は変更しません。逆翻訳APIはありません。
 
 ## Materialization
 
@@ -184,7 +188,7 @@ preview.status.complete; // 全required unitがreviewedでissuesがなければt
 - Config/mapping: `parseSiteLocalizationConfig`, `documentLocaleFor`, `localizationLocaleFor`
 - Extraction/fingerprint: `collectLocalizationUnits`
 - Persistence parsing/construction: `parseLocalizationOverlay`, `createLocalizationOverlay`
-- Candidate/draft/review: `acceptTranslationResult`, `editLocalizedValue`, `adoptTranslationCandidate`, `reviewLocalizedValue`
+- Candidate/draft/review: `acceptTranslationResult`, `applyAutomaticTranslationResult`, `editLocalizedValue`, `adoptTranslationCandidate`, `reviewLocalizedValue`
 - Output/status: `materializeLocalizedPage`, `localizationStatus`
 
 すべてのparserと操作は未知field・非plain object・上限超過を拒否し、新しいdetached valueを返します。
