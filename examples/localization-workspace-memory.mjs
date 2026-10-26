@@ -107,6 +107,7 @@ const richPrefix = (value, prefix) => {
  * - frameUrl: プレビューの枠の URL（無ければプレビューを出さない）
  * - catalogRounds: 原文の取り込みを何回で終えるか（0 なら取り込み済み）
  * - planTtl: 確認の期限（ms・既定 120000）
+ * - firstRelease: 初回公開の確認を試す（既定 false）
  * - pending: 途中の公開（"prepare" | "apply"）を作っておく
  * - upload: (file) => Promise<string>（上げた画像の URL）
  * - by: 操作した人の名前
@@ -123,9 +124,9 @@ export function createLocalizationMemory(options = {}) {
     blockersOverride: null,
     settings: { version: 1, autoDraft: true, connected: true, waiting: 0, failed: 0, nextRetryAt: null },
     catalog: options.catalogRounds ? { done: 0, total: options.catalogRounds } : null,
-    current: { releaseId: "en-2026-10-01", version: "r2", label: "10/1 の公開", publishedAt: "2026-10-01T01:00:00.000Z", pages: 3, sharedResources: 1 },
-    history: [{ releaseId: "en-2026-09-15", version: "r1", label: "9/15 の公開", publishedAt: "2026-09-15T01:00:00.000Z", pages: 2, sharedResources: 1, operation: "publish", by: "管理者（架空）", restorable: true }],
-    pending: null, plan: null, operations: new Map(), jobs: new Map(), releaseCount: 2, forbidden: false,
+    current: options.firstRelease ? null : { releaseId: "en-2026-10-01", version: "r2", label: "10/1 の公開", publishedAt: "2026-10-01T01:00:00.000Z", pages: 3, sharedResources: 1 },
+    history: options.firstRelease ? [] : [{ releaseId: "en-2026-09-15", version: "r1", label: "9/15 の公開", publishedAt: "2026-09-15T01:00:00.000Z", pages: 2, sharedResources: 1, operation: "publish", by: "管理者（架空）", restorable: true }],
+    pending: null, plan: null, operations: new Map(), jobs: new Map(), releaseCount: options.firstRelease ? 0 : 2, forbidden: false,
   };
   const by = options.by ?? "あなた（架空）";
   const calls = [], holds = new Map(), failures = new Set();
@@ -288,7 +289,11 @@ export function createLocalizationMemory(options = {}) {
       state.pending = null;
       return { status: "ready", plan: { confirmationToken: state.plan.confirmationToken, expiresAt: new Date(state.plan.expiresAt).toISOString(), address: "https://example.test/en/",
         pages: state.plan.prepared.pages, previous: state.current ? { ...state.current } : null, prepared: { ...state.plan.prepared },
-        changes: state.plan.operation === "publish" ? structuredClone(options.changes ?? { added: [{ path: "/about", title: "私たちについて" }], removed: [] }) : null } };
+        changes: state.plan.operation === "publish" ? structuredClone(options.changes ?? (!state.current
+          ? { added: [{ path: "/", title: "トップ" }, { path: "/about", title: "私たちについて" }, { path: "/news", title: "お知らせ一覧" }, { path: "/news/sample", title: "記事の詳細" }], removed: [] }
+          : { added: [{ path: "/about", title: "私たちについて" }], removed: [] })) : null,
+        firstRelease: state.plan.operation === "publish" && !state.current ? { groups: [{ label: "固定ページ", pages: 2, automaticPages: 1 }, { label: "記事", pages: 2, automaticPages: 2 }],
+          excluded: { count: 1, examples: [{ path: "/members/news", title: "会員向けのお知らせ", reason: "会員向け" }] } } : null } };
     }),
     applyRelease: wrap("applyRelease", (input) => {
       const plan = state.plan;

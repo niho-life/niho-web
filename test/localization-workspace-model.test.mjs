@@ -187,6 +187,15 @@ test("release: progress, resume, blockers and history kinds are strict; editor p
   assert.throws(() => parseLocaleReleasePrepareResult({ status: "ready", plan: { ...plan, changes: { added: changes.added, removed: changes.added } } }, request), /both added and removed/);
   assert.throws(() => parseLocaleReleasePrepareResult({ status: "ready", plan: { ...plan, changes: { added: [{ path: "https://evil.test/", title: "x" }], removed: [] } } }, request), /site path/);
   assert.throws(() => parseLocaleReleasePrepareResult({ status: "ready", plan: { ...plan, changes: { added: [], removed: [], extra: 1 } } }, request));
+  const initialRequest = { ...request, expectedCurrentVersion: null };
+  const firstRelease = { groups: [{ label: "固定ページ", pages: 2, automaticPages: 1 }, { label: "記事", pages: 2, automaticPages: 2 }], excluded: { count: 1, examples: [{ path: "/private", title: "会員ページ", reason: "会員向け" }] } };
+  const initialPlan = { ...plan, previous: null, firstRelease };
+  assert.deepEqual(parseLocaleReleasePrepareResult({ status: "ready", plan: initialPlan }, initialRequest).plan.firstRelease, firstRelease);
+  assert.throws(() => parseLocaleReleasePrepareResult({ status: "ready", plan: initialPlan }, request), /previous release mismatch|only first publication/);
+  assert.throws(() => parseLocaleReleasePrepareResult({ status: "ready", plan: { ...plan, firstRelease } }, request), /only first publication/);
+  assert.throws(() => parseLocaleReleasePrepareResult({ status: "ready", plan: { ...initialPlan, firstRelease: { ...firstRelease, groups: [{ label: "固定ページ", pages: 2, automaticPages: 1 }] } } }, initialRequest), /groups do not match pages/);
+  assert.throws(() => parseLocaleReleasePrepareResult({ status: "ready", plan: { ...initialPlan, firstRelease: { ...firstRelease, groups: [{ label: "固定ページ", pages: 2, automaticPages: 3 }] } } }, initialRequest), /invalid group count/);
+  assert.throws(() => parseLocaleReleasePrepareResult({ status: "ready", plan: { ...initialPlan, firstRelease: { ...firstRelease, excluded: { count: 1, examples: [{ path: "https://evil.test/", title: "x", reason: "y" }] } } } }, initialRequest), /locale release path/);
   assert.throws(() => parseLocaleReleasePrepareResult({ status: "ready", plan: { ...plan, previous: null } }, request), /previous release mismatch/);
   assert.throws(() => parseLocaleReleasePrepareResult({ status: "ready", plan: { ...plan, address: "https://example.test/en/?token=x" } }, request), /address/);
   assert.throws(() => parseLocaleReleasePrepareResult({ status: "blocked", blockers: [] }, request), /at least one/);

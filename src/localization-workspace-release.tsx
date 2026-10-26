@@ -37,6 +37,18 @@ function PageChanges({ added, removed }: { added: PageChangeList; removed: PageC
   return <>{list("新しく出るページ", added)}{list("外れるページ", removed)}</>;
 }
 
+function FirstReleaseSummary({ summary, target, address, source }: { summary: NonNullable<LocaleReleaseWorkspacePlan["firstRelease"]>; target: string; address: string; source: string }) {
+  return <section className="lw-first-release" aria-label="最初の公開の内訳">
+    <h3>今回公開するもの</h3>
+    <ul>{summary.groups.map((group) => <li key={group.label}><span>{group.label}</span><span>{group.pages} ページ <small>（自動翻訳のまま {group.automaticPages}）</small></span></li>)}</ul>
+    <details className="lw-previous"><summary>訳さないページ（{summary.excluded.count}）</summary>
+      {summary.excluded.examples.length ? <ul>{summary.excluded.examples.map((page) => <li key={page.path}>{page.title} <span className="cw-by">{page.path} · {page.reason}</span></li>)}</ul> : <p className="cw-hint">{summary.excluded.count ? "詳細は翻訳一覧の対象外で確認できます。" : "ありません。"}</p>}
+      {summary.excluded.count > summary.excluded.examples.length && summary.excluded.examples.length > 0 && <p className="cw-hint">ほか {summary.excluded.count - summary.excluded.examples.length} ページは翻訳一覧の対象外で確認できます。</p>}
+    </details>
+    <p className="cw-hint">{target}版は {new URL(address).pathname} から公開され、ページに言語の切り替えと検索エンジン向けの言語対応が加わります。{source}版のページはそのままです。</p>
+  </section>;
+}
+
 const MAX_ROUNDS = 1000;
 const remaining = (expiresAt: string, now: number) => Math.max(0, Math.floor((Date.parse(expiresAt) - now) / 1000));
 const clock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
@@ -160,6 +172,7 @@ export function ReleaseDialog({ adapter, start, overview, timeZone, onClose, onO
           <div><dt>{operation === "rollback" ? "戻す版" : "新しい版"}</dt><dd>{plan.prepared.label}</dd></div>
           <div><dt>確認の期限まで</dt><dd><span role="timer" aria-live="off">残り {clock(seconds)}</span></dd></div>
         </dl>
+        {operation === "publish" && plan.previous === null && plan.firstRelease && <FirstReleaseSummary summary={plan.firstRelease} target={target} address={plan.address} source={overview.languages.source} />}
         {plan.changes && operation === "publish" && plan.pages === 0 && <p className="cw-error" role="alert"><Icon name="alert" />{target}版のページをすべて外します。公開すると、{target}版のページは無くなります。</p>}
         {plan.changes && <PageChanges added={plan.changes.added} removed={plan.changes.removed} />}
         <div className="cw-dialog-actions">
