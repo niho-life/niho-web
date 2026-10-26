@@ -71,6 +71,9 @@ test("list: staged loading, groups, band, filters, search and excluded reasons",
     assert.ok(band.textContent.includes("確認済み 1/4"));
     assert.ok(button("English版を公開…"));
     assert.deepEqual([...document.querySelectorAll(".cw-filters button")].map(nameOf), ["すべて（5 件）", "要対応（3 件）", "確認済み（1 件）", "対象外（1 件）"]);
+    assert.equal(document.querySelector('.cw-filters button[aria-pressed="true"]').textContent.replace(/\s+/gu, " ").trim(), "要対応（3 件）");
+    assert.deepEqual(rowTitles(), ["トップ", "私たちについて", "お知らせ一覧"]);
+    await press("すべて（5 件）", document.querySelector(".cw-filters"));
     assert.deepEqual(rowTitles(), ["トップ", "私たちについて", "フッター", "お知らせ一覧", "会員向けのお知らせ"]);
     const byTitle = (title) => rows().find((row) => row.querySelector(".cw-row-title").textContent === title);
     assert.ok(byTitle("トップ").textContent.includes("未翻訳"));
@@ -458,7 +461,7 @@ test("stale responses: a late item, list or adapter response is dropped", async 
     await other.render({ adapter: fresh.adapter });
     await act(async () => holdList.release());
     await flush();
-    assert.deepEqual(rowTitles(), ["トップ", "私たちについて", "フッター", "お知らせ一覧", "会員向けのお知らせ"]);
+    assert.deepEqual(rowTitles(), ["トップ", "私たちについて", "お知らせ一覧"]);
     assert.equal(button("English版を公開…"), undefined, "the new adapter's permissions are used");
     assert.equal(slow.named("listItems").length, 1, "the old adapter is not followed further");
   } finally { await other.cleanup(); }
