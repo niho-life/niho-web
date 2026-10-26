@@ -153,10 +153,12 @@ test("翻訳 BFF: Access と D1 の owner/editor を要求ごとに確かめ、�
     ["POST", "/editor/pages/Home", 404],
     ["POST", "/editor/pages/home/extra", 404],
     ["POST", "/editor/pages/home/save/extra", 404],
+    ["POST", "/editor/site/extra", 404],
     ["GET", "/overview", 405],
     ["PUT", "/overview", 405],
     ["GET", "/items", 405],
     ["GET", "/editor/pages/home", 405],
+    ["GET", "/editor/site", 405],
     ["GET", "/editor/pages/home/save", 405],
     ["POST", "/settings", 405],
     ["PUT", "/items/aG9tZQ/command", 405],
@@ -249,6 +251,37 @@ test("翻訳 BFF: native 編集用ページは所属を確認して署名付き�
   for (const [status, reply] of [[403, { status: "forbidden" }], [404, { status: "not_found" }]]) {
     h.setRespond(() => Response.json(reply, { status }));
     assert.deepEqual(await expectJson(await h.send("POST", "/editor/pages/home", {}), status), reply);
+  }
+});
+
+test("翻訳 BFF: 英語編集用のページ一覧は所属・署名・状態と公開情報を検証する", async (t) => {
+  const auth = await accessFixture(), worker = await loadWorker();
+  mockAccess(t, auth);
+  const h = harness(auth, worker);
+  const config = { schemaVersion: 1, siteId: "kamakura", sourceLocale: "ja", defaultLocale: "ja", enabledLocales: ["ja", "en"], documentLocales: { ja: "ja-JP", en: "en" }, glossaryVersion: "test-v1", contextVersion: "test-v1" };
+  const page = { siteId: "kamakura", pageId: "terms", title: "利用規約", path: "/terms", kind: "page", locales: { ja: { state: "source" }, en: { state: "review-needed", changed: 2, published: false } } };
+  const ready = { status: "ready", config, pages: [page], version: `s.${"a".repeat(64)}` };
+  h.setRespond(() => Response.json(ready));
+  await expectJson(await h.send("POST", "/editor/site", {}, { jwt: "" }), 401, "session_expired");
+  await expectJson(await h.send("POST", "/editor/site", {}), 403, "forbidden");
+  assert.equal(h.calls.length, 0);
+  h.roles.set("project-kamakura/kamakura", "editor");
+  assert.deepEqual(await expectJson(await h.send("POST", "/editor/site", {}), 200), ready);
+  const call = h.calls.at(-1);
+  assert.equal(call.path, `${UPSTREAM}/editor/site`);
+  assert.equal(call.body, JSON.stringify({ actor: { email: EMAIL, role: "editor" } }));
+  h.verifySignature(call);
+  await expectJson(await h.send("POST", "/editor/site", { actor: { email: EMAIL, role: "owner" } }), 400, "invalid_request");
+  assert.equal(h.calls.length, 1);
+  for (const reply of [
+    { ...ready, pages: [page, page] },
+    { ...ready, pages: [{ ...page, locales: { ...page.locales, en: { state: "source" } } }] },
+    { ...ready, pages: [{ ...page, locales: { ...page.locales, en: { ...page.locales.en, published: "true" } } }] },
+    { ...ready, version: "s.bad" },
+    { ...ready, extra: true }
+  ]) {
+    h.setRespond(() => Response.json(reply));
+    await expectJson(await h.send("POST", "/editor/site", {}), 502, "upstream_contract_invalid");
   }
 });
 

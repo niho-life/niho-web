@@ -19,7 +19,7 @@ import {
   parseLocalizationOverviewResult, parseLocalizationPreviewResult, parseLocalizationSettingsResult, parseLocalizationTranslationResult,
   type LocaleReleasePrepareInput
 } from "../src/localization-workspace-model.js";
-import { parseLocalizationOverlay, parseLocalizationValue } from "../src/localization.js";
+import { parseLocalizationOverlay, parseLocalizationValue, parseSiteLocalizationConfig } from "../src/localization.js";
 import { DocumentValidationError } from "../src/validation-utils.js";
 
 type D1Meta = { readonly changes?: number };
@@ -196,6 +196,7 @@ type KamakuraBridgeOperation =
   | "localization_settings"
   | "localization_upload_intent"
   | "localization_editor_page"
+  | "localization_editor_site"
   | "localization_editor_save"
   | "localization_editor_command"
   | "site_overview";
@@ -1781,7 +1782,7 @@ async function kamakuraCmsApi(request: Request, env: Env, identity: AccessIdenti
 /* ---------- Kamakura の翻訳（LocalizationWorkspace）の BFF ---------- */
 
 type KamakuraLocalizationOperation =
-  "overview" | "list" | "list-after" | "item" | "command" | "translate" | "job" | "catalog" | "preview" | "release" | "prepare" | "apply" | "settings" | "upload-intent" | "editor-page" | "editor-save" | "editor-command";
+  "overview" | "list" | "list-after" | "item" | "command" | "translate" | "job" | "catalog" | "preview" | "release" | "prepare" | "apply" | "settings" | "upload-intent" | "editor-site" | "editor-page" | "editor-save" | "editor-command";
 type KamakuraLocalizationRoute = { readonly operation: KamakuraLocalizationOperation; readonly upstreamPath: string; readonly itemKey: string | null; readonly jobId: string | null; readonly pageId: string | null };
 type KamakuraLocalizationSpec = { readonly method: "POST" | "PUT"; readonly log: KamakuraBridgeOperation; readonly bodyKeys: readonly string[] | null; readonly long: boolean };
 type KamakuraLocalizationActor = { readonly email: string; readonly role: Role };
@@ -1805,6 +1806,7 @@ const KAMAKURA_LOCALIZATION_OPERATIONS: Readonly<Record<KamakuraLocalizationOper
   apply: { method: "POST", log: "localization_release_apply", bodyKeys: ["confirmationToken", "resumeToken"], long: true },
   settings: { method: "PUT", log: "localization_settings", bodyKeys: ["expectedVersion", "autoDraft"], long: false },
   "upload-intent": { method: "POST", log: "localization_upload_intent", bodyKeys: ["itemKey", "unitId", "name", "mimeType", "bytes"], long: false },
+  "editor-site": { method: "POST", log: "localization_editor_site", bodyKeys: [], long: true },
   "editor-page": { method: "POST", log: "localization_editor_page", bodyKeys: [], long: true },
   "editor-save": { method: "POST", log: "localization_editor_save", bodyKeys: ["document", "expectedSourceVersion", "expectedVersion", "expectedOverlayVersion"], long: true },
   "editor-command": { method: "POST", log: "localization_editor_command", bodyKeys: null, long: true }
@@ -1812,7 +1814,7 @@ const KAMAKURA_LOCALIZATION_OPERATIONS: Readonly<Record<KamakuraLocalizationOper
 /** 下の階層を持たない経路（`/localization` より後ろ）。 */
 const KAMAKURA_LOCALIZATION_FIXED: Readonly<Record<string, KamakuraLocalizationOperation>> = {
   "/overview": "overview", "/items": "list", "/catalog/advance": "catalog", "/preview/items": "preview", "/release": "release",
-  "/release/prepare": "prepare", "/release/apply": "apply", "/settings": "settings", "/uploads/intent": "upload-intent"
+  "/release/prepare": "prepare", "/release/apply": "apply", "/settings": "settings", "/uploads/intent": "upload-intent", "/editor/site": "editor-site"
 };
 /** command の action ごとに足す本文の key。 */
 const KAMAKURA_LOCALIZATION_COMMAND_KEYS: Readonly<Record<string, readonly string[]>> = {
@@ -1894,7 +1896,7 @@ function kamakuraLocalizationValues(route: KamakuraLocalizationRoute, body: Reco
     return { expectedSourceVersion: body.expectedSourceVersion, expectedVersion: body.expectedVersion, expectedOverlayVersion: body.expectedOverlayVersion };
   };
   switch (route.operation) {
-    case "overview": case "list": case "list-after": case "item": case "job": case "catalog": case "release": case "editor-page":
+    case "overview": case "list": case "list-after": case "item": case "job": case "catalog": case "release": case "editor-site": case "editor-page":
       return {};
     case "command": {
       const base = {
@@ -2004,6 +2006,46 @@ function kamakuraLocalizationBody(route: KamakuraLocalizationRoute, raw: Uint8Ar
   return { body: new TextEncoder().encode(JSON.stringify({ ...values, actor: { email: actor.email, role: actor.role } })), values };
 }
 
+/** ページ一覧の言語状態は UI に直接出るため、上流の余分な値を通さず確かめ直す。 */
+function parseKamakuraLocalizationEditorSite(input: unknown) {
+  if (!isRecord(input) || Object.keys(input).sort().join(",") !== "config,pages,status,version" || input.status !== "ready") {
+    throw new DocumentValidationError("response", "unexpected editor site result");
+  }
+  const config = parseSiteLocalizationConfig(input.config);
+  if (config.siteId !== KAMAKURA_EDITOR_SITE_ID || config.sourceLocale !== "ja" || config.enabledLocales.length !== 2
+    || !config.enabledLocales.includes("ja") || !config.enabledLocales.includes("en")
+    || !Array.isArray(input.pages) || input.pages.length > 500
+    || typeof input.version !== "string" || !/^s\.[0-9a-f]{64}$/u.test(input.version)) {
+    throw new DocumentValidationError("response", "unexpected editor site scope");
+  }
+  const ids = new Set<string>();
+  const pages = input.pages.map((entry: unknown) => {
+    if (!isRecord(entry) || Object.keys(entry).some((key) => !["siteId", "pageId", "title", "path", "kind", "locales"].includes(key))
+      || entry.siteId !== KAMAKURA_EDITOR_SITE_ID || typeof entry.pageId !== "string" || !KAMAKURA_COMMON_PAGE_ID.test(entry.pageId)
+      || ids.has(entry.pageId) || !isKamakuraCmsLine(entry.title, 300)
+      || entry.path !== undefined && (!isKamakuraCmsSitePath(entry.path) || entry.path.length > 160)
+      || entry.kind !== undefined && !["page", "template", "shared"].includes(entry.kind as string)
+      || !isRecord(entry.locales) || Object.keys(entry.locales).sort().join(",") !== "en,ja") {
+      throw new DocumentValidationError("response.pages", "unexpected page");
+    }
+    ids.add(entry.pageId);
+    const ja = entry.locales.ja, en = entry.locales.en;
+    if (!isRecord(ja) || Object.keys(ja).join(",") !== "state" || ja.state !== "source"
+      || !isRecord(en) || Object.keys(en).some((key) => !["state", "changed", "published"].includes(key))
+      || !["missing", "translating", "review-needed", "reviewed", "failed"].includes(en.state as string)
+      || en.changed !== undefined && (!Number.isSafeInteger(en.changed) || (en.changed as number) < 0 || (en.changed as number) > 2000)
+      || en.published !== undefined && typeof en.published !== "boolean") {
+      throw new DocumentValidationError("response.pages.locales", "unexpected locale state");
+    }
+    return {
+      siteId: KAMAKURA_EDITOR_SITE_ID, pageId: entry.pageId, title: entry.title,
+      ...(entry.path === undefined ? {} : { path: entry.path }), ...(entry.kind === undefined ? {} : { kind: entry.kind }),
+      locales: { ja: { state: "source" }, en: { state: en.state, ...(en.changed === undefined ? {} : { changed: en.changed }), ...(en.published === undefined ? {} : { published: en.published }) } }
+    };
+  });
+  return { status: "ready", config, pages, version: input.version };
+}
+
 /**
  * 上流の契約の結果（本文 `{ status, … }`）を W1 の parser で確かめ、既知の field だけにする。
  * forbidden は 403・not_found は 404・ほかは 200 で返る約束なので、HTTP の status と合わなければ契約違反。
@@ -2031,6 +2073,10 @@ function kamakuraLocalizationResult(route: KamakuraLocalizationRoute, request: R
       case "apply": return parseLocaleReleaseApplyResult(value, { prepared: null });
       case "settings": return parseLocalizationSettingsResult(value);
       case "upload-intent": return parseKamakuraLocalizationUploadRefusal(value);
+      case "editor-site": {
+        if (isRecord(value) && (value.status === "forbidden" || value.status === "not_found") && Object.keys(value).length === 1) return { status: value.status };
+        return parseKamakuraLocalizationEditorSite(value);
+      }
       case "editor-page": {
         if (!isRecord(value)) throw new DocumentValidationError("response", "expected object");
         if (value.status === "forbidden" || value.status === "not_found") {
