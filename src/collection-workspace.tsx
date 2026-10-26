@@ -28,6 +28,10 @@ export type CollectionNavigationState = { readonly collectionId: string; readonl
 export type CollectionItemLanguages = {
   /** 編集中の原文と、訳す言語の表示名。 */
   readonly source: string; readonly target: string;
+  /** URL から項目を直接開いたときの言語。訳文の画面が無ければ原文で開く。 */
+  readonly initialLanguage?: "source" | "target";
+  /** 項目内の言語を切り替えたとき、ホストが URL を合わせる。 */
+  readonly onLanguageChange?: (language: "source" | "target") => void;
   /** 同じ項目の翻訳画面。"/" から始まる同一サイトの path だけを使う。 */
   readonly targetHref: (input: { readonly collectionId: string; readonly itemId: string }) => string | null;
   /** 訳文を同じ項目画面内で編集するホストの画面。戻る前の保存処理を registerBack に登録する。 */
@@ -628,13 +632,17 @@ export function editorStatus(status: CollectionItemStatus, dirty: boolean, busy:
 }
 
 function ItemEditor({ adapter, definition, itemId, created, timeZone, autosaveDelay, itemLanguages, renderRichText, references, retryReferences, confirm, redirectCandidates: candidatesFor, onSaved, onBack, onRemoved, onOpenItem }: EditorProps) {
+  let targetHref: string | null = null;
+  try { targetHref = itemLanguages?.targetHref({ collectionId: definition.id, itemId }) ?? null; } catch { targetHref = null; }
+  if (targetHref !== null && (!targetHref.startsWith("/") || targetHref.startsWith("//") || /[\s\u0000-\u001f\u007f<>"'\\]/u.test(targetHref))) targetHref = null;
   const requests = useRequests();
   const baseId = useId();
   const root = useRef<HTMLDivElement>(null), heading = useRef<HTMLHeadingElement>(null), scheduleField = useRef<HTMLInputElement>(null);
   const targetBack = useRef<(() => void) | null>(null);
   const registerTargetBack = useCallback((back: (() => void) | null) => { targetBack.current = back; }, []);
   const [phase, setPhase] = useState<"loading" | "error" | "forbidden" | "not_found" | "ready">(created ? "ready" : "loading");
-  const [language, setLanguage] = useState<"source" | "target">("source");
+  const [language, setLanguage] = useState<"source" | "target">(itemLanguages?.initialLanguage === "target" && itemLanguages.renderTarget && targetHref ? "target" : "source");
+  const showLanguage = (next: "source" | "target") => { setLanguage(next); itemLanguages?.onLanguageChange?.(next); };
   const [item, setItemState] = useState<CollectionItem | null>(created);
   const [values, setValuesState] = useState<CollectionValues>(created?.values ?? {});
   const [dirty, setDirty] = useState(false);
@@ -970,16 +978,12 @@ function ItemEditor({ adapter, definition, itemId, created, timeZone, autosaveDe
   const mainFields = definition.fields.filter((field) => field.placement === "main"), sideFields = definition.fields.filter((field) => field.placement === "side");
   const canSchedule = capabilities.schedule && !!adapter.schedule;
   const canRetry = !!capabilities.retrySchedule && !!adapter.retrySchedule && item.scheduledAt !== null && item.publishFailed;
-  let targetHref: string | null = null;
-  try { targetHref = itemLanguages?.targetHref({ collectionId: definition.id, itemId }) ?? null; } catch { targetHref = null; }
-  if (targetHref !== null && (!targetHref.startsWith("/") || targetHref.startsWith("//") || /[\s\u0000-\u001f\u007f<>"'\\]/u.test(targetHref))) targetHref = null;
-
   return <div className="cw-editor" ref={root}>
     <h2 className="cw-sr" tabIndex={-1} ref={heading}>{`${definition.label}「${titleText()}」の編集`}</h2>
     {itemLanguages && targetHref && <nav className="cw-language-tabs" aria-label="項目の言語">
       {itemLanguages.renderTarget
-        ? <><button type="button" aria-current={language === "source" ? "page" : undefined} onClick={() => language === "target" ? (targetBack.current ? targetBack.current() : setLanguage("source")) : undefined}>{itemLanguages.source}</button>
-          <button type="button" aria-current={language === "target" ? "page" : undefined} onClick={() => setLanguage("target")}>{itemLanguages.target}</button></>
+        ? <><button type="button" aria-current={language === "source" ? "page" : undefined} onClick={() => language === "target" ? (targetBack.current ? targetBack.current() : showLanguage("source")) : undefined}>{itemLanguages.source}</button>
+          <button type="button" aria-current={language === "target" ? "page" : undefined} onClick={() => showLanguage("target")}>{itemLanguages.target}</button></>
         : <><span aria-current="page">{itemLanguages.source}<span className="cw-sr">（編集中）</span></span>
           <a href={targetHref} target="_blank" rel="noopener noreferrer">{itemLanguages.target}<span className="cw-sr">（翻訳を新しいタブで開く）</span></a></>}
     </nav>}
@@ -1040,7 +1044,7 @@ function ItemEditor({ adapter, definition, itemId, created, timeZone, autosaveDe
     </div>
     </div>
     {language === "target" && itemLanguages?.renderTarget && targetHref && <div>
-      {itemLanguages.renderTarget({ collectionId: definition.id, itemId, onBack: () => setLanguage("source"), registerBack: registerTargetBack })}
+      {itemLanguages.renderTarget({ collectionId: definition.id, itemId, onBack: () => showLanguage("source"), registerBack: registerTargetBack })}
     </div>}
   </div>;
 }

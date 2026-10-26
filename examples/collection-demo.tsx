@@ -71,7 +71,9 @@ function App() {
       <BodyChange itemId={openItem} />
     </div>
     <CollectionWorkspace adapter={adapter} {...(renderRichText ? { renderRichText } : {})} {...(start.collectionId ? { initialCollectionId: start.collectionId } : {})} {...(start.itemId ? { initialItemId: start.itemId } : {})} onNavigate={navigate}
-      itemLanguages={{ source: "日本語", target: "English", targetHref: ({ collectionId, itemId }) => `/translation-demo?item=${keyFor(collectionId, itemId)}`,
+      itemLanguages={{ source: "日本語", target: "English", initialLanguage: new URLSearchParams(location.search).get("lang") === "en" ? "target" : "source",
+        onLanguageChange: (language) => { const params = new URLSearchParams(location.search); if (language === "target") params.set("lang", "en"); else params.delete("lang"); history.replaceState(null, "", `?${params}`); },
+        targetHref: ({ collectionId, itemId }) => `/translation-demo?item=${keyFor(collectionId, itemId)}`,
         renderTarget: ({ collectionId, itemId, onBack, registerBack }) => <LocalizationItemWorkspace adapter={translation.adapter} itemKey={keyFor(collectionId, itemId)} onBack={onBack} registerBack={registerBack} /> }} />
   </>;
 }

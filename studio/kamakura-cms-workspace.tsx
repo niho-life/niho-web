@@ -42,8 +42,15 @@ export type KamakuraCmsWorkspaceProps = {
 export function KamakuraCmsWorkspace({ siteOrigin, route, onNavigate }: KamakuraCmsWorkspaceProps) {
   const { adapter, renderRichText } = sessionFor(siteOrigin);
   const initial = route ? { initialCollectionId: route.collectionId, ...(route.itemId === null ? {} : { initialItemId: route.itemId }) } : {};
+  const initialLanguage = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("lang") === "en" ? "target" : "source";
+  const onLanguageChange = (language: "source" | "target") => {
+    const url = new URL(window.location.href);
+    if (language === "target") url.searchParams.set("lang", "en");
+    else url.searchParams.delete("lang");
+    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+  };
   return <CollectionWorkspace adapter={adapter} renderRichText={renderRichText} onNavigate={onNavigate}
-    itemLanguages={{ source: "日本語", target: "English", targetHref: ({ collectionId, itemId }) => {
+    itemLanguages={{ source: "日本語", target: "English", initialLanguage, onLanguageChange, targetHref: ({ collectionId, itemId }) => {
       const itemKey = kamakuraCmsLocalizationItemKey(collectionId, itemId);
       return itemKey ? projectAliasPath(KAMAKURA_CMS_PROJECT_ID, KAMAKURA_CMS_SITE_ID, "translations", { itemKey }) : null;
     }, renderTarget: ({ collectionId, itemId, onBack, registerBack }) => {

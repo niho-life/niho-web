@@ -291,7 +291,7 @@ function ListView({ adapter, overview, list, group, onGroup, timeZone, focusItem
   const excluded = visible.filter((item) => item.state === "excluded");
   useEffect(() => {
     if (!items || !focusItem) return;
-    const target = Array.from(rowsRef.current?.querySelectorAll<HTMLButtonElement>("button.cw-row-open") ?? []).find((node) => node.dataset.itemKey === focusItem);
+    const target = Array.from(rowsRef.current?.querySelectorAll<HTMLElement>(".cw-row-open") ?? []).find((node) => node.dataset.itemKey === focusItem);
     target?.focus();
     target?.scrollIntoView?.({ block: "nearest" });
     onFocused();

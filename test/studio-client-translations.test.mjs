@@ -96,6 +96,7 @@ const text = (node) => node.textContent.replace(/\s+/gu, " ").trim();
 const byText = (selector, value) => [...document.querySelectorAll(selector)].find((node) => text(node) === value);
 const click = async (node) => { assert.ok(node, "target not found"); await act(async () => node.click()); await flush(); };
 const row = (title) => [...document.querySelectorAll("button.cw-row-open")].find((node) => node.querySelector(".cw-row-title")?.textContent === title);
+const rowLink = (title) => [...document.querySelectorAll("a.cw-row-open")].find((node) => node.querySelector(".cw-row-title")?.textContent === title);
 const cmsLink = () => [...document.querySelectorAll(".lw-item a.cw-button")].find((node) => text(node).startsWith("CMS で開く"));
 const historyMove = async (direction) => { await act(async () => { window.history[direction](); await new Promise((resolve) => setTimeout(resolve, 20)); }); await flush(); };
 
@@ -133,31 +134,30 @@ test("切替が on（workspace）の翻訳は、翻訳の画面で URL の 1 件
   assert.ok(frame.getAttribute("src").startsWith(`${FRAME}#niho-preview=`));
   assert.equal(frame.getAttribute("sandbox"), "allow-scripts");
 
-  // 一覧へ戻ると URL が一覧になり、1 件を開くと 1 件の URL になる（画面の中の移動では作り直さない）
+  // CMS 項目は同じ項目の英語タブに直接入り、固定ページはこの画面の 1 件へ移る。
   const root = document.querySelector(".nw-localization");
   await click(byText("button.cw-back", "一覧へ"));
   assert.equal(window.location.pathname, "/projects/kamakura-site/admin/translations");
-  await click(row("お知らせ一覧"));
-  assert.equal(window.location.pathname, `/projects/kamakura-site/admin/translations/${CMS_KEY}`);
+  assert.equal(rowLink("お知らせ一覧")?.getAttribute("href"), "/projects/kamakura-site/admin/cms/posts/morning-walk?lang=en");
+  await click(row("私たちについて"));
+  assert.equal(window.location.pathname, "/projects/kamakura-site/admin/translations/YWJvdXQ");
   assert.equal(document.querySelector(".nw-localization"), root, "同じ画面のまま");
-  // CMS の項目の原文は Studio の CMS のその項目で開く
-  assert.equal(cmsLink()?.getAttribute("href"), "/projects/kamakura-site/admin/cms/posts/morning-walk");
-  assert.equal(cmsLink()?.getAttribute("target"), "_blank");
+  assert.equal(cmsLink(), undefined, "固定ページの原文はコードで管理");
 
   // 戻る: URL の一覧で開き直す。進む: 1 件で開き直す
   await historyMove("back");
   assert.equal(window.location.pathname, "/projects/kamakura-site/admin/translations");
-  assert.ok(row("お知らせ一覧"), "一覧");
+  assert.ok(rowLink("お知らせ一覧"), "一覧");
   assert.equal(document.querySelector(".lw-item"), null);
   await historyMove("forward");
-  assert.equal(window.location.pathname, `/projects/kamakura-site/admin/translations/${CMS_KEY}`);
+  assert.equal(window.location.pathname, "/projects/kamakura-site/admin/translations/YWJvdXQ");
   assert.ok(document.querySelector(".lw-item"), "1 件");
-  assert.ok(calls.includes(`POST ${LOC}/items/${CMS_KEY}`));
+  assert.ok(calls.includes(`POST ${LOC}/items/YWJvdXQ`));
 
   // 上のタブで開いている翻訳をもう一度押しても移らない。ホームへ移ると Dashboard の URL
   assert.equal(document.querySelector(".pv-dashboard-nav"), null, "翻訳を開いている間はホームの左のメニューを出さない");
   await click(byText(".pv-project-tabs button", "翻訳"));
-  assert.equal(window.location.pathname, `/projects/kamakura-site/admin/translations/${CMS_KEY}`);
+  assert.equal(window.location.pathname, "/projects/kamakura-site/admin/translations/YWJvdXQ");
   await click(byText(".pv-project-tabs button", "ホーム"));
   assert.equal(window.location.pathname, "/projects/kamakura-site/admin");
   assert.equal(document.querySelector(".nw-localization"), null);

@@ -154,6 +154,22 @@ test("editor: opens an item, splits main and side, and autosaves once about a se
   } finally { await app.cleanup(); }
 });
 
+test("CMS item: a direct target-language link opens the target tab and keeps the URL in sync", async () => {
+  const fixture = createAdapter(), languages = [];
+  const app = await setup({ adapter: fixture.adapter, initialCollectionId: "posts", initialItemId: "p1", itemLanguages: {
+    source: "日本語", target: "English", initialLanguage: "target", onLanguageChange: (language) => languages.push(language),
+    targetHref: () => "/translations/posts/p1", renderTarget: () => createElement("div", { "data-test-target": "true" }, "英語の編集"),
+  } });
+  try {
+    assert.equal(document.querySelector('.cw-language-tabs [aria-current="page"]').textContent, "English");
+    assert.ok(document.querySelector('[data-test-target="true"]'));
+    await press("日本語", document.querySelector(".cw-language-tabs"));
+    assert.equal(document.querySelector('.cw-language-tabs [aria-current="page"]').textContent, "日本語");
+    await press("English", document.querySelector(".cw-language-tabs"));
+    assert.deepEqual(languages, ["source", "target"]);
+  } finally { await app.cleanup(); }
+});
+
 test("editor: conflict never overwrites and reloads on request; invalid shows errors under fields", async () => {
   let mode = "conflict";
   const fixture = createAdapter({
