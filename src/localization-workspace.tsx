@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ConfirmDialog, DateTime, formatDateTime, Icon, useRequests, zoneLabel, type ConfirmRequest, type Outcome } from "./collection-ui.js";
 import {
-  isLocalizationItemKey, LOCALIZATION_LIMITS, localizationItemFilter, parseLocalizationCatalogResult, parseLocalizationListResult, parseLocalizationOverviewResult,
+  isLocalizationItemKey, isSafeNavigationUrl, LOCALIZATION_LIMITS, localizationItemFilter, parseLocalizationCatalogResult, parseLocalizationListResult, parseLocalizationOverviewResult,
   parseLocalizationSettingsResult,
   type LocaleReleaseHistoryEntry, type LocaleReleasePending, type LocalizationFilter, type LocalizationItemSummary, type LocalizationListResult, type LocalizationOverview,
   type LocalizationSettings, type LocalizationWorkspaceAdapter,
@@ -168,7 +168,7 @@ function Session({ adapter, initialItemKey, initialView, onNavigate, timeZone = 
           onRetryCatalog={() => { setCatalogStalled(false); void loadOverview(true); }}
           onPublish={() => setDialog({ kind: "release", start: { kind: "publish" } })} onHistory={() => setDialog({ kind: "history" })}
           onResume={(pending) => setDialog({ kind: "release", start: { kind: "resume", pending } })} onSettings={() => go({ view: "settings", itemKey: null })} />
-        <ListView overview={current} list={list} group={group} onGroup={setGroup} timeZone={timeZone} focusItem={focusItem} onFocused={() => setFocusItem(null)}
+        <ListView adapter={adapter} overview={current} list={list} group={group} onGroup={setGroup} timeZone={timeZone} focusItem={focusItem} onFocused={() => setFocusItem(null)}
           onOpen={(itemKey) => go({ view: "item", itemKey })} onRetry={() => void loadList()} />
       </>;
     }
@@ -226,13 +226,13 @@ function LocaleBand({ overview, list, timeZone, catalogStalled, onRetryCatalog, 
 
 const filterTabs: readonly [LocalizationFilter, string][] = [["all", "すべて"], ["needs-work", "要対応"], ["reviewed", "確認済み"], ["excluded", "対象外"]];
 
-function ListView({ overview, list, group, onGroup, timeZone, focusItem, onFocused, onOpen, onRetry }: {
-  overview: LocalizationOverview; list: ListState; group: string | null; onGroup: (group: string | null) => void; timeZone: string;
+function ListView({ adapter, overview, list, group, onGroup, timeZone, focusItem, onFocused, onOpen, onRetry }: {
+  adapter: LocalizationWorkspaceAdapter; overview: LocalizationOverview; list: ListState; group: string | null; onGroup: (group: string | null) => void; timeZone: string;
   focusItem: string | null; onFocused: () => void; onOpen: (itemKey: string) => void; onRetry: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<LocalizationFilter>("all");
-  const rowsRef = useRef<HTMLUListElement>(null);
+  const rowsRef = useRef<HTMLDivElement>(null);
   const items = list.status === "ready" ? list.items : null;
   const inGroup = useMemo(() => (items ?? []).filter((item) => group === null || item.groupId === group), [items, group]);
   const counts = useMemo(() => ({
@@ -244,6 +244,8 @@ function ListView({ overview, list, group, onGroup, timeZone, focusItem, onFocus
   const needle = query.trim().toLocaleLowerCase("ja-JP");
   const visible = inGroup.filter((item) => (filter === "all" || localizationItemFilter(item.state) === filter) &&
     (!needle || item.title.toLocaleLowerCase("ja-JP").includes(needle) || (item.path ?? "").toLocaleLowerCase("ja-JP").includes(needle)));
+  const active = visible.filter((item) => item.state !== "excluded");
+  const excluded = visible.filter((item) => item.state === "excluded");
   useEffect(() => {
     if (!items || !focusItem) return;
     const target = Array.from(rowsRef.current?.querySelectorAll<HTMLButtonElement>("button.cw-row-open") ?? []).find((node) => node.dataset.itemKey === focusItem);
@@ -253,9 +255,30 @@ function ListView({ overview, list, group, onGroup, timeZone, focusItem, onFocus
   }, [items, focusItem, onFocused]);
   const total = overview.groups.reduce((sum, entry) => sum + entry.items, 0);
   const groupLabel = group === null ? "すべて" : overview.groups.find((entry) => entry.id === group)?.label ?? "すべて";
+  const rows = (entries: readonly LocalizationItemSummary[], label: string) => <>
+    <div className="cw-rows-head lw-rows-head" aria-hidden="true"><span>題名</span><span>状態</span><span>確認済み</span><span>最終更新</span></div>
+    <ul className="cw-rows lw-rows" aria-label={label}>{entries.map((item) => {
+      let source: string | null = null;
+      try { source = adapter.sourceLink?.(item.key) ?? null; } catch { source = null; }
+      if (source !== null && !isSafeNavigationUrl(source)) source = null;
+      const sub = item.state === "excluded" ? `訳さない理由：${item.excludedReason}` : item.path;
+      return <li className="cw-row lw-row" key={item.key}>
+        <button type="button" className="cw-row-open" data-item-key={item.key} onClick={() => onOpen(item.key)}>
+          <span className="cw-row-text"><span className="cw-row-title">{item.title || "無題"}</span>{sub && <span className="cw-row-sub">{sub}</span>}</span>
+        </button>
+        <span className="cw-row-meta">
+          <span className="cw-cell cw-cell-status"><span className="cw-cell-label">状態</span><span className="cw-badges"><ItemStateBadge state={item.state} />
+            {item.imagesUnreviewed > 0 && <span className="cw-pill lw-pill" data-lw-state="images"><Icon name="image" />未確認の画像 {item.imagesUnreviewed}</span>}
+            {item.sourceDraftPending && <span className="cw-pill lw-pill" data-lw-state="pending-source">原文に未公開の下書き</span>}</span></span>
+          <span className="cw-cell lw-cell-reviewed"><span className="cw-cell-label">確認済み</span>{item.state === "excluded" ? "—" : `${item.reviewedUnits}/${item.totalUnits}`}</span>
+          <span className="cw-cell cw-cell-updated"><span className="cw-cell-label">最終更新</span><DateTime value={item.updatedAt} timeZone={timeZone} />{item.updatedBy && <span className="cw-by">{item.updatedBy}</span>}{source && <a className="lw-source-link" href={source} target="_blank" rel="noopener noreferrer">原文を編集<span className="cw-sr">（新しいタブで開く）</span></a>}</span>
+        </span>
+      </li>;
+    })}</ul>
+  </>;
   return <div className="cw-layout">
-    <nav className="cw-nav" aria-label="まとまり">
-      <h2 className="cw-nav-heading">まとまり</h2>
+    <nav className="cw-nav" aria-label="コンテンツ">
+      <h2 className="cw-nav-heading">コンテンツ</h2>
       <ul>
         <li><button type="button" aria-current={group === null ? "page" : undefined} onClick={() => onGroup(null)}><span className="cw-nav-label">すべて</span>
           <span className="cw-nav-count"><span className="cw-sr">（</span>{total}<span className="cw-sr"> 件）</span></span></button></li>
@@ -267,7 +290,7 @@ function ListView({ overview, list, group, onGroup, timeZone, focusItem, onFocus
       </ul>
     </nav>
     <div className="cw-main">
-      <div className="cw-list">
+      <div className="cw-list" ref={rowsRef}>
         <header className="cw-list-head">
           <div className="cw-list-title"><h2>{groupLabel}</h2>{items && <span className="cw-count">{inGroup.length} 件</span>}</div>
           <div className="cw-list-actions">
@@ -284,23 +307,14 @@ function ListView({ overview, list, group, onGroup, timeZone, focusItem, onFocus
             : visible.length === 0 ? <div className="cw-empty"><p>{needle ? `「${query.trim()}」に当てはまるものはありません。` : `${filterTabs.find(([value]) => value === filter)?.[1]}のものはありません。`}</p>
               <button type="button" className="cw-button" onClick={() => { setQuery(""); setFilter("all"); }}>絞り込みをやめる</button></div>
             : <>
-              <p className="cw-sr" role="status">{visible.length} 件を表示しています</p>
-              <div className="cw-rows-head lw-rows-head" aria-hidden="true"><span>題名</span><span>状態</span><span>確認済み</span><span>最終更新</span></div>
-              <ul className="cw-rows lw-rows" ref={rowsRef} aria-label={`${groupLabel}の一覧`}>{visible.map((item) => {
-                const sub = item.state === "excluded" ? `訳さない理由：${item.excludedReason}` : item.path;
-                return <li className="cw-row lw-row" key={item.key}>
-                  <button type="button" className="cw-row-open" data-item-key={item.key} onClick={() => onOpen(item.key)}>
-                    <span className="cw-row-text"><span className="cw-row-title">{item.title || "無題"}</span>{sub && <span className="cw-row-sub">{sub}</span>}</span>
-                  </button>
-                  <span className="cw-row-meta">
-                    <span className="cw-cell cw-cell-status"><span className="cw-cell-label">状態</span><span className="cw-badges"><ItemStateBadge state={item.state} />
-                      {item.imagesUnreviewed > 0 && <span className="cw-pill lw-pill" data-lw-state="images"><Icon name="image" />未確認の画像 {item.imagesUnreviewed}</span>}
-                      {item.sourceDraftPending && <span className="cw-pill lw-pill" data-lw-state="pending-source">原文に未公開の下書き</span>}</span></span>
-                    <span className="cw-cell lw-cell-reviewed"><span className="cw-cell-label">確認済み</span>{item.state === "excluded" ? "—" : `${item.reviewedUnits}/${item.totalUnits}`}</span>
-                    <span className="cw-cell cw-cell-updated"><span className="cw-cell-label">最終更新</span><DateTime value={item.updatedAt} timeZone={timeZone} />{item.updatedBy && <span className="cw-by">{item.updatedBy}</span>}</span>
-                  </span>
-                </li>;
-              })}</ul>
+              <p className="cw-sr" role="status">{visible.length} 件が見つかりました{filter !== "excluded" && excluded.length > 0 ? `。対象外 ${excluded.length} 件は別のまとまりにあります` : ""}</p>
+              {filter === "excluded" ? rows(excluded, `${groupLabel}の対象外`) : <>
+                {active.length > 0 && rows(active, `${groupLabel}の一覧`)}
+                {excluded.length > 0 && <details className="lw-excluded" key={`${group ?? "all"}:${needle}`} open={!!needle || excluded.some((item) => item.key === focusItem)}>
+                  <summary>対象外 <span>{excluded.length} 件</span></summary>
+                  {rows(excluded, `${groupLabel}の対象外`)}
+                </details>}
+              </>}
             </>}
         </>}
       </div>

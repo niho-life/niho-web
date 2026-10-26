@@ -79,6 +79,12 @@ test("list: staged loading, groups, band, filters, search and excluded reasons",
     assert.ok(byTitle("私たちについて").textContent.includes("原文に未公開の下書き"));
     assert.ok(byTitle("フッター").textContent.includes("確認済み"));
     assert.equal(byTitle("会員向けのお知らせ").querySelector(".cw-row-sub").textContent, "訳さない理由：会員だけが読むページなので訳しません。");
+    assert.equal(document.querySelector(".lw-excluded").open, false, "対象外は通常の一覧では閉じている");
+    assert.equal(document.querySelector(".lw-excluded summary").textContent.replace(/\s+/gu, " ").trim(), "対象外 1 件");
+    assert.equal(byTitle("トップ").querySelector(".lw-source-link").getAttribute("href"), "https://cms.example.test/items/aG9tZQ");
+    assert.equal(byTitle("トップ").querySelector(".lw-source-link").getAttribute("rel"), "noopener noreferrer");
+    await click(document.querySelector(".lw-excluded summary"), "対象外");
+    assert.equal(document.querySelector(".lw-excluded").open, true);
     for (const row of rows()) assert.ok(row.querySelector(".lw-pill .lw-shape"), "state has a shape as well as words");
     assert.ok(!document.body.textContent.includes("⟦"), "internal mark tokens are never shown");
 

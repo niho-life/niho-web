@@ -35,6 +35,13 @@ const localizationCss = `
 .nw-localization .lw-rows-head,.nw-localization .lw-row{grid-template-columns:minmax(0,1fr) 230px 90px 150px}
 .nw-localization .lw-row .cw-row-open{padding-left:6px}
 .nw-localization .lw-cell-reviewed{font-variant-numeric:tabular-nums}
+.nw-localization .lw-source-link{width:max-content;max-width:100%;margin-top:3px;color:var(--nw-text);font-size:12px;font-weight:600;text-decoration:underline;text-underline-offset:3px}
+.nw-localization .lw-source-link:hover{color:var(--nw-accent-strong)}
+.nw-localization .lw-excluded{margin-top:16px;border-top:1px solid var(--nw-border)}
+.nw-localization .lw-excluded>summary{min-height:44px;padding:12px 6px;color:var(--nw-text-sub);font-size:13px;font-weight:650;cursor:pointer}
+.nw-localization .lw-excluded>summary span{font-variant-numeric:tabular-nums;font-weight:500}
+.nw-localization .lw-excluded>summary:hover{color:var(--nw-text)}
+.nw-localization .lw-excluded>summary:focus-visible{outline:2px solid var(--nw-focus);outline-offset:-2px}
 
 .nw-localization .lw-item .cw-editor-status{gap:4px 10px}
 .nw-localization .lw-item-title{min-width:0;max-width:100%;overflow:hidden;font-weight:650;text-overflow:ellipsis;white-space:nowrap}
