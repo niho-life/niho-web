@@ -124,6 +124,22 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
   assert.deepEqual(acceptedCatalog.blockContracts, catalog().blockContracts);
   assert.match(boundRequestIds[0], /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu);
 
+  let embedUpstream;
+  bindingResponseFactory = async (request) => {
+    embedUpstream = { url: request.url, method: request.method, body: await request.json(), signature: request.headers.get("X-NIHO-Studio-Signature") };
+    return new Response(JSON.stringify({ status: "draft", refId: `emb_${"1".repeat(32)}`, flow: "rental", version: "fixture-version", verification: "format_only" }), { headers: { "Content-Type": "application/json" } });
+  };
+  const embed = await workerModule.default.fetch(new Request("https://studio.niho.life/api/projects/project-kamakura/sites/kamakura/editor/embeds/rentalspace/import", {
+    method: "POST",
+    headers: { "Cf-Access-Jwt-Assertion": token, "Content-Type": "application/json", Origin: "https://studio.niho.life", "Sec-Fetch-Site": "same-origin" },
+    body: JSON.stringify({ source: "synthetic iframe input" })
+  }), env);
+  assert.equal(embed.status, 200); assert.equal((await embed.json()).verification, "format_only");
+  assert.deepEqual(embedUpstream.body, { source: "synthetic iframe input" });
+  assert.equal(new URL(embedUpstream.url).pathname, "/internal/studio/web-content/embeds/rentalspace/import");
+  assert.equal(embedUpstream.method, "POST"); assert.match(embedUpstream.signature, /^v1=[0-9a-f]{64}$/u);
+  bindingResponseFactory = null;
+
   const assertFailure = async (response, { status, code, category, upstreamStatus, operation = "catalog" }) => {
     const body = await response.json();
     assert.equal(response.status, status, JSON.stringify(body));

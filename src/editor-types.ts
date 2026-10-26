@@ -4,7 +4,7 @@ import type { ComponentType, ReactNode } from "react";
 import type { AssetLibraryAdapter, ResolvedAssetMap } from "./assets.js";
 import type { BlockDefinition, ExternalFramePolicy } from "./react.js";
 import type { PageKind, PageVisibility, SiteSettings } from "./pages.js";
-import type { ComponentLibrary, PageDocument, PublicPropValue, SitePresentation, StyleProperty } from "./types.js";
+import type { ComponentLibrary, ComponentNode, PageDocument, PublicPropValue, SitePresentation, StyleProperty } from "./types.js";
 import type { EditorRecoveryStore, EditorRevisionEntry, EditorRevisionPage } from "./history.js";
 import type { BlockLocalizationSchema, LocalizationLocale, LocalizationValue } from "./localization.js";
 import type {
@@ -197,6 +197,14 @@ export interface EditorAdapter {
   createSnapshot?(request: { target: EditorTarget; expectedVersion: string; label: string }, signal: AbortSignal): Promise<EditorSnapshotResult>;
 }
 export type EditorSnapshotResult = { status: "saved"; entry: EditorRevisionEntry } | { status: "conflict" };
+export type EditorBlockSettingsProps = {
+  node: ComponentNode;
+  target: EditorTarget;
+  pagePath?: string;
+  disabled: boolean;
+  setProp(name: string, value: PublicPropValue | undefined): void;
+  notify(message: string): void;
+};
 export type EditorBlockRegistry = Readonly<Record<string, BlockDefinition & {
   label?: string;
   defaultProps?: Record<string, PublicPropValue>;
@@ -209,6 +217,8 @@ export type EditorBlockRegistry = Readonly<Record<string, BlockDefinition & {
    * データの取得・課金・予約・保存などの副作用を起こさず、表示領域（data-nw-slot）の付け方は component と同じにし、現実的な見本を複数件（一覧なら 3 件ほど）表示する。
    */
   preview?: ComponentType<Record<string, PublicPropValue>>;
+  /** trusted host 固有の設定 UI。文書へは setProp で block contract の公開 props だけを書き込む。 */
+  settings?: ComponentType<EditorBlockSettingsProps>;
 }>>;
 /** 編集する幅の段。minWidth は 320〜3840 の整数・昇順。 */
 export type EditorBreakpoint = { minWidth: number; label: string };

@@ -164,6 +164,8 @@ type KamakuraBridgeOperation =
   | "asset_update"
   | "asset_usages"
   | "asset_resolve"
+  | "embed_import"
+  | "embed_status"
   | "cms_schema"
   | "cms_list"
   | "cms_read"
@@ -1084,7 +1086,7 @@ async function enforceMutationBoundary(request: Request): Promise<Record<string,
 }
 
 type KamakuraAssetOperation = "list" | "upload-intent" | "update" | "usages" | "resolve";
-type EditorRoute = { readonly upstreamPath: string; readonly bodyLimit: number; readonly assetOperation?: KamakuraAssetOperation };
+type EditorRoute = { readonly upstreamPath: string; readonly bodyLimit: number; readonly assetOperation?: KamakuraAssetOperation; readonly embedOperation?: "import" | "status" };
 
 /** kamakura-site の worker/studio-assets.ts と同じ固定表。kamakura-upload だけが Studio からのアップロード先。 */
 const KAMAKURA_ASSET_PROVIDERS = new Set(["kamakura-upload", "kamakura-admin-upload", "kamakura-studio", "kamakura-cms", "kamakura-approved-remote"]);
@@ -1166,6 +1168,12 @@ function experienceEditorRoute(action: string, method: string, staging = false):
 }
 
 function kamakuraEditorRoute(action: string, method: string): EditorRoute | "method_not_allowed" | null {
+  const embed = /^\/editor\/embeds\/([a-z][a-z0-9-]{0,59})\/(import|status)$/u.exec(action);
+  if (embed) {
+    if (method !== "POST") return "method_not_allowed";
+    if (!COMMON_PAGE_ID.test(embed[1]!)) return null;
+    return { upstreamPath: `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/embeds/${embed[1]}/${embed[2]}`, bodyLimit: MAX_MUTATION_BODY_BYTES, embedOperation: embed[2] as "import" | "status" };
+  }
   const asset = /^\/editor\/assets\/(list|upload-intent|update|usages|resolve)$/u.exec(action);
   if (asset) {
     if (method !== "POST") return "method_not_allowed";
@@ -1330,6 +1338,8 @@ async function signedEditorRequest(
 }
 
 function kamakuraBridgeOperation(route: EditorRoute): KamakuraBridgeOperation {
+  if (route.embedOperation === "import") return "embed_import";
+  if (route.embedOperation === "status") return "embed_status";
   if (route.assetOperation === "list") return "asset_list";
   if (route.assetOperation === "upload-intent") return "asset_upload_intent";
   if (route.assetOperation === "update") return "asset_update";

@@ -29,6 +29,10 @@ async function loadEditorBlocks() {
 
 const { createKamakuraEditorBlocks } = await loadEditorBlocks();
 const contracts = {
+  ManagedEmbed: {
+    props: { refId: { type: "string", maxLength: 80 }, background: { type: "enum", values: ["white", "transparent"], required: true }, initialHeight: { type: "number", min: 240, max: 1600, required: true } },
+    slots: { frame: { label: "埋め込み枠", style: ["width", "borderRadius"] } }
+  },
   KamakuraLegacyForm: {
     props: { formId: { type: "enum", values: ["community-dinner", "parenting", "remotework"] } },
     slots: {
@@ -67,4 +71,12 @@ test("known and future block previews expose style slots without running site be
     assert.doesNotMatch(html, /<(?:form|iframe|input|button)\b/iu, name);
     for (const slotName of Object.keys(contracts[name].slots ?? {})) assert.match(html, new RegExp(`data-nw-slot="${slotName}"`, "u"), `${name}:${slotName}`);
   }
+});
+
+test("ManagedEmbed is the named safe sample with host settings and safe defaults", () => {
+  assert.equal(blocks.ManagedEmbed.label, "埋め込み");
+  assert.deepEqual(blocks.ManagedEmbed.defaultProps, { background: "white", initialHeight: 720 });
+  assert.equal(typeof blocks.ManagedEmbed.settings, "function");
+  const html = renderToStaticMarkup(createElement(blocks.ManagedEmbed.preview, { refId: `emb_${"1".repeat(32)}`, background: "white", initialHeight: 720 }));
+  assert.match(html, /埋め込み/); assert.match(html, /安全な表示サンプル/); assert.doesNotMatch(html, /<iframe|launchToken|https:\/\/niho/u);
 });
