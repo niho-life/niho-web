@@ -12,7 +12,7 @@
 
 文書契約の非互換変更は `schemaVersion` を上げ、移行処理を明示してから導入します。未知版の暗黙変換は行いません。既存の鎌倉サイトの文書を直接受け入れる形式ではありません。移行時には現行の HTML / CSS を新しい許可リストに対応付ける adapter と視覚確認が必要です。
 
-token の `label`、`textStyles`、node style の `textStyle`、文字の見た目プロパティ（`fontStyle` / `textDecorationLine`）、辺ごとの枠線幅（`borderTopWidth` / `borderRightWidth` / `borderBottomWidth` / `borderLeftWidth`）、element の組み込み `icon` と `video` は v1 への後方互換な追加で、`schemaVersion` は 1 のままです。入力に無いキーは出力にも付けないため、既存文書の検証結果・直列化・fingerprint・CSS は変わりません。これらのキーを含む文書は、追加前のパッケージでは未知フィールドとして拒否されます。ホストは保存・公開側の検証も新しい commit SHA へ更新してから、新しい編集機能を使ってください。
+token の `label`、`textStyles`、node style の `textStyle`、文字の見た目プロパティ（`fontStyle` / `textDecorationLine`）、辺ごとの枠線幅（`borderTopWidth` / `borderRightWidth` / `borderBottomWidth` / `borderLeftWidth`）、element の組み込み `icon`・`video`・フォーム要素は v1 への後方互換な追加で、`schemaVersion` は 1 のままです。入力に無いキーは出力にも付けないため、既存文書の検証結果・直列化・fingerprint・CSS は変わりません。これらのキーを含む文書は、追加前のパッケージでは未知フィールドとして拒否されます。ホストは保存・公開側の検証も新しい commit SHA へ更新してから、新しい編集機能を使ってください。
 
 `@niho/web/builder` の挿入・モーション定義は編集時だけの設定で、文書wireには保存しません。挿入結果は既存の `PageNode`、モーション結果は既存の `NodeStyle.base/states/appear` です。定義名、関数、任意JS/CSS、新しい識別fieldは `PageDocument` に加わらないため、この拡張を使わない既存ホストと既存文書の直列化は変わりません。
 
@@ -35,9 +35,17 @@ element / component / instance の `id` は文書全体で一意です。element
 
 `video` は安全な HTTPS / root-relative `attrs.src` か `asset: { provider, id }` のいずれか一方、または編集中のソース未設定状態を持ち、children は空です。asset の配信URLは文書に保存せず、画像と同じ解決済み map から描画時に得ます。`aria-label` または `title` の空でないアクセシブル名が必須です。許可属性は `src` / `poster` / `width` / `height` / `controls` / `loop` / `muted` / `preload`（`none` / `metadata` / `auto`）/ `playsInline` と global allowlist だけです。renderer は未指定の `controls` を true、`preload` を `metadata` として出力し、`autoplay` は受け付けません。未解決 asset とソース未設定の動画は公開出力では省略し、editor の placeholder mode ではそれぞれ「動画を表示できません」「動画を選んでください」と示します。editor の素材選択は ready な `video/mp4` を最低限の対応形式としますが、MIME検査・配信URL発行・保存・認可はホスト責務です。iframe・外部embed・remote code はこの native video 契約に含みません。
 
-複数候補の srcset、任意 SVG、iframe、form、script、style、イベント属性は v1 の対象外です。
+### フォーム
 
-`p` や見出しなどの phrasing content の中への block element、入れ子のリンク、void element の子、不正な list / picture の子を拒否し、初期 HTML をブラウザが組み替えて hydration と食い違うことを防ぎます。ブロックは `<div data-nw-node="…" data-nw-block="…">` に包むため、flow content の中だけで利用できます。ブロック自身が返す HTML の妥当性は利用側で保証します。
+`form` / `label` / `input` / `textarea` / `select` / `option` / `button` / `fieldset` / `legend` を通常の `element` として扱います。フォームの `name`、ラベルの `htmlFor`、入力項目の `type` / `name` / `placeholder` / `required` / `value` / `checked` / `disabled` / `autocomplete` / `accept`、textarea の `rows` 等、タグごとの閉じた属性だけを許可します。input type は `text` / `email` / `tel` / `radio` / `checkbox` / `file` / `submit` / `search` / `password`、button type は `button` / `submit` に限定します。`accept` は MIME type または拡張子の最大16件です。`action` / `method` / イベント属性 / 任意 data 属性は JSON から受け付けません。
+
+フォームの入れ子、form 外の label・入力項目、子を持つ input、select 外の option、fieldset の先頭以外の legend、空の option を拒否します。submit 以外の input・textarea・select は `aria-label`、または同じ文書内で `label.htmlFor` が参照する一意な HTML IDを必要とします。参照先のない label も拒否します。password と file の `value` は保存できません。radio / checkbox の初期値と checked は公開設定であり、利用者が入力した現在値ではありません。
+
+`PageRenderer` / SSR は label、required、option 等をそのまま意味のあるHTMLとして出力します。一方、このリリースは問い合わせ送信、ファイル保存、完了画面、スパム対策、認証・認可を実装しません。文書から送信先を指定できず、renderer は form を trusted な `method="dialog"` で出力します。dialog外のformではこのmethodの送信処理が中止されるため、静的HTMLでも既定では現在URLにも外部URLにも入力値を送りません。ホストは検証済み文書を描画した外側で、認証・CSRF・サーバー側再検証を含む独自の送信bindingを実装してください。静的HTML中の `method="dialog"` は保存文書へ逆輸入せず、ホスト接続後も action URL や実行コードをページJSONへ追加しません。
+
+複数候補の srcset、任意 SVG、iframe、script、style、イベント属性は v1 の対象外です。
+
+`p` や見出しなどの phrasing content の中への block element、入れ子のリンク、void element の子、不正な list / picture / form の子を拒否し、初期 HTML をブラウザが組み替えて hydration と食い違うことを防ぎます。ブロックは `<div data-nw-node="…" data-nw-block="…">` に包むため、flow content の中だけで利用できます。ブロック自身が返す HTML の妥当性は利用側で保証します。
 
 ## トークンと style
 

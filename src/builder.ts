@@ -117,6 +117,70 @@ const responsiveRow: NodeStyle = {
   base: { display: "flex", flexDirection: "column", gap: 20 },
   responsive: [{ minWidth: 768, declarations: { flexDirection: "row", alignItems: "center" } }]
 };
+const formControlStyle: NodeStyle = { base: { width: "100%", padding: "10px 12px", borderWidth: 1, borderStyle: "solid", borderColor: "#c9c9c9", borderRadius: 6 } };
+const formLabelStyle: NodeStyle = { base: { display: "flex", flexDirection: "column", gap: 6, fontWeight: 600 } };
+const formShell = (id: BuilderIdFactory, name: string, children: PageNode[]): ElementNode => styled(id, "form", children, {
+  base: { display: "flex", flexDirection: "column", gap: 16, maxWidth: 640, padding: 24, borderWidth: 1, borderStyle: "solid", borderColor: "#dedede", borderRadius: 12 }
+}, { name, autocomplete: "on", "aria-label": "入力フォーム" });
+const formInput = (id: BuilderIdFactory, labelText: string, name: string, type: string = "text", placeholder?: string, required = false): PageNode[] => {
+  const inputId = id();
+  return [styled(id, "label", [{ type: "text", text: labelText }], formLabelStyle, { htmlFor: inputId }), {
+    type: "element", id: inputId, tag: "input", attrs: { id: inputId, type, name, ...(placeholder ? { placeholder } : {}), ...(required ? { required: true } : {}) }, style: formControlStyle, children: []
+  }];
+};
+const formTextarea = (id: BuilderIdFactory, labelText: string, name: string, placeholder: string): PageNode[] => {
+  const controlId = id();
+  return [styled(id, "label", [{ type: "text", text: labelText }], formLabelStyle, { htmlFor: controlId }), {
+    type: "element", id: controlId, tag: "textarea", attrs: { id: controlId, name, placeholder, rows: 5 }, style: formControlStyle, children: []
+  }];
+};
+const formSelect = (id: BuilderIdFactory, labelText: string, name: string, choices: readonly string[]): PageNode[] => {
+  const controlId = id();
+  return [styled(id, "label", [{ type: "text", text: labelText }], formLabelStyle, { htmlFor: controlId }), {
+    type: "element", id: controlId, tag: "select", attrs: { id: controlId, name }, style: formControlStyle,
+    children: choices.map((choice) => styled(id, "option", [{ type: "text", text: choice }], undefined, { value: choice }))
+  }];
+};
+const radioGroup = (id: BuilderIdFactory, legend: string, name: string, choices: readonly string[]): ElementNode => styled(id, "fieldset", [
+  styled(id, "legend", [{ type: "text", text: legend }]),
+  ...choices.flatMap((choice) => { const controlId = id(); return [{ type: "element", id: controlId, tag: "input", attrs: { id: controlId, type: "radio", name, value: choice }, children: [] } as ElementNode,
+    styled(id, "label", [{ type: "text", text: choice }], undefined, { htmlFor: controlId })]; })
+], { base: { display: "flex", flexWrap: "wrap", gap: 12, padding: 12, borderWidth: 1, borderStyle: "solid", borderColor: "#dedede", borderRadius: 6 } }, { name });
+const checkbox = (id: BuilderIdFactory, labelText: string, name: string): PageNode[] => {
+  const controlId = id();
+  return [{ type: "element", id: controlId, tag: "input", attrs: { id: controlId, type: "checkbox", name, value: "yes" }, children: [] },
+    styled(id, "label", [{ type: "text", text: labelText }], undefined, { htmlFor: controlId })];
+};
+const submitButton = (id: BuilderIdFactory, caption = "送信する"): ElementNode => styled(id, "button", [{ type: "text", text: caption }], {
+  base: { width: "fit-content", padding: "10px 20px", borderWidth: 0, borderRadius: 999, backgroundColor: "#0f70eb", color: "#ffffff", fontWeight: 700 }
+}, { type: "submit" });
+const partForm = (id: BuilderIdFactory, child: PageNode | PageNode[]): ElementNode => formShell(id, "form", Array.isArray(child) ? child : [child]);
+
+/** Basic のフォーム／フォームパーツ。単体パーツも root 配置時に有効な form で包む。 */
+export const formInsertionPresets: readonly InsertionPreset[] = [
+  { id: "form-1", label: "Form1", group: "フォーム", glyph: "F1", create: ({ id }) => formShell(id, "contact", [
+    ...formInput(id, "お名前", "name", "text", "山田 花子", true), ...formInput(id, "メールアドレス", "email", "email", "name@example.com", true),
+    ...formTextarea(id, "お問い合わせ内容", "message", "お問い合わせ内容を入力してください"), submitButton(id)
+  ]) },
+  { id: "form-2", label: "Form2", group: "フォーム", glyph: "F2", create: ({ id }) => formShell(id, "application", [
+    ...formSelect(id, "ご希望", "plan", ["選択してください", "プラン A", "プラン B"]), radioGroup(id, "ご連絡方法", "contact", ["メール", "電話"]),
+    ...checkbox(id, "内容を確認しました", "confirmed"), submitButton(id, "申し込む")
+  ]) },
+  { id: "form-3", label: "Form3", group: "フォーム", glyph: "F3", create: ({ id }) => formShell(id, "registration", [
+    ...formInput(id, "キーワード", "query", "search", "検索"), ...formInput(id, "パスワード", "password", "password", "パスワード", true),
+    ...formInput(id, "添付ファイル", "attachment", "file"), submitButton(id, "確認する")
+  ]) },
+  { id: "form-input", label: "Input", group: "フォームパーツ", glyph: "I", create: ({ id }) => partForm(id, formInput(id, "項目名", "field", "text", "入力してください")) },
+  { id: "form-textarea", label: "Textarea", group: "フォームパーツ", glyph: "TA", create: ({ id }) => partForm(id, formTextarea(id, "項目名", "message", "入力してください")) },
+  { id: "form-select", label: "Select", group: "フォームパーツ", glyph: "▾", create: ({ id }) => partForm(id, formSelect(id, "項目名", "choice", ["選択してください", "選択肢 1", "選択肢 2"])) },
+  { id: "form-radio", label: "Radio", group: "フォームパーツ", glyph: "◉", create: ({ id }) => partForm(id, radioGroup(id, "項目名", "choice", ["選択肢 1", "選択肢 2"])) },
+  { id: "form-confirm", label: "Confirm", group: "フォームパーツ", glyph: "✓", create: ({ id }) => partForm(id, formInput(id, "確認入力", "confirmation", "text", "もう一度入力してください", true)) },
+  { id: "form-checkbox", label: "Checkbox", group: "フォームパーツ", glyph: "☑", create: ({ id }) => partForm(id, checkbox(id, "同意する", "agreement")) },
+  { id: "form-file", label: "File", group: "フォームパーツ", glyph: "↑", create: ({ id }) => partForm(id, formInput(id, "ファイル", "attachment", "file")) },
+  { id: "form-submit", label: "Submit", group: "フォームパーツ", glyph: "→", create: ({ id }) => partForm(id, submitButton(id)) },
+  { id: "form-search", label: "Search", group: "フォームパーツ", glyph: "⌕", create: ({ id }) => partForm(id, formInput(id, "検索", "query", "search", "キーワード")) },
+  { id: "form-password", label: "Password", group: "フォームパーツ", glyph: "●", create: ({ id }) => partForm(id, formInput(id, "パスワード", "password", "password", "パスワード", true)) }
+];
 
 /** 複数ページで再利用しやすい、小さな編集可能部品。 */
 export const partInsertionPresets: readonly InsertionPreset[] = [
@@ -186,6 +250,7 @@ export const standardBuilderDefinition: BuilderDefinition = {
     { id: "a", label: "リンク", group: "文字", glyph: "↗", create: ({ id }) => element(id, "a", "リンク") },
     { id: "carousel", label: "カルーセル", group: "インタラクション", glyph: "⇆", create: ({ id }) => carouselPreset(id) },
     { id: "toggle", label: "トグル（開閉）", group: "インタラクション", glyph: "▾", create: ({ id }) => togglePreset(id) },
+    ...formInsertionPresets,
     ...partInsertionPresets,
     ...sectionInsertionPresets
   ],

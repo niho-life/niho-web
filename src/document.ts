@@ -1,34 +1,39 @@
 import { mergeSiteStyles, parseSiteStyles, resolvePageStyles, type SiteStyles } from "./site-styles.js";
 import type {
-  BlockContract, BlockContracts, BlockSlot, ComponentLibrary, ComponentPropField, DesignToken, ElementAttributes, ElementTag, NodeStyle, PageDocument, PageImage, PageMeta, PageNode, PropRule, PublicPropValue, TextStyle
+  BlockContract, BlockContracts, BlockSlot, ComponentLibrary, ComponentPropField, DesignToken, ElementAttributes, ElementNode, ElementTag, NodeStyle, PageDocument, PageImage, PageMeta, PageNode, PropRule, PublicPropValue, TextStyle
 } from "./types.js";
 import { COMPONENT_LIMITS, expandDocument, instancesOf } from "./component-expand.js";
 import { isStyleProperty, parseStyle, parseTextStyles, parseTokens } from "./style-values.js";
 import { DocumentValidationError, fail, identifier, isSafePublicLink, isSafePublicUrl, keys, line, localeCode, parseAssetReference, publicImageSrcSet, publicImageUrl, record, string } from "./validation-utils.js";
 import { isIconName } from "./icons.js";
 
-const tags = new Set("div section article header footer main nav aside h1 h2 h3 h4 h5 h6 p span a img picture source video ul ol li dl dt dd strong em b i small blockquote figure figcaption br hr time details summary".split(" "));
-const voidTags = new Set(["img", "source", "br", "hr"]);
-const phrasing = new Set("span a img strong em b i small br time".split(" "));
-const phrasingParents = new Set("p span h1 h2 h3 h4 h5 h6 a strong em b i small time summary".split(" "));
+const tags = new Set("div section article header footer main nav aside h1 h2 h3 h4 h5 h6 p span a img picture source video ul ol li dl dt dd strong em b i small blockquote figure figcaption br hr time details summary form label input textarea select option button fieldset legend".split(" "));
+const voidTags = new Set(["img", "source", "br", "hr", "input"]);
+const phrasing = new Set("span a img strong em b i small br time label input textarea select button".split(" "));
+const phrasingParents = new Set("p span h1 h2 h3 h4 h5 h6 a strong em b i small time summary label button option legend".split(" "));
 // 開閉（details / summary）は JS なしで動く。summary の中にリンクや入れ子の開閉は置けない。
-const interactive = new Set(["a", "video", "details", "summary"]);
+const interactive = new Set(["a", "video", "details", "summary", "label", "input", "textarea", "select", "button"]);
 const globalAttributes = ["id", "title", "lang", "dir", "role", "hidden", "tabIndex", "aria-label", "aria-labelledby", "aria-describedby", "aria-hidden", "aria-current"];
 const tagAttributes: Partial<Record<ElementTag, string[]>> = {
   a: ["href", "target", "rel", "hrefLang"], img: ["src", "srcSet", "alt", "width", "height", "loading", "decoding"],
   source: ["srcSet", "type", "media"], video: ["src", "poster", "width", "height", "controls", "loop", "muted", "preload", "playsInline"],
-  ol: ["start", "reversed"], li: ["value"], time: ["dateTime"], details: ["open"]
+  ol: ["start", "reversed"], li: ["value"], time: ["dateTime"], details: ["open"],
+  form: ["name", "autocomplete"], label: ["htmlFor"],
+  input: ["type", "name", "placeholder", "required", "value", "checked", "disabled", "autocomplete", "accept"],
+  textarea: ["name", "placeholder", "required", "disabled", "autocomplete", "rows"],
+  select: ["name", "required", "disabled", "autocomplete"], option: ["value", "disabled"],
+  button: ["type", "name", "value", "disabled"], fieldset: ["name", "disabled"]
 };
 function attributes(value: unknown, tag: ElementTag, path: string, asset = false): ElementAttributes {
   const source = record(value, path), result: ElementAttributes = {};
   keys(source, [...globalAttributes, ...(tagAttributes[tag] ?? [])], path);
   for (const [name, value] of Object.entries(source)) {
     const at = `${path}.${name}`;
-    if (["hidden", "reversed", "open", "controls", "loop", "muted", "playsInline"].includes(name)) {
+    if (["hidden", "reversed", "open", "controls", "loop", "muted", "playsInline", "required", "checked", "disabled"].includes(name)) {
       if (typeof value !== "boolean") fail(at, "expected boolean");
-    } else if (["width", "height", "start", "value", "tabIndex"].includes(name)) {
+    } else if (["width", "height", "start", "tabIndex", "rows"].includes(name) || name === "value" && tag === "li") {
       if (typeof value !== "number" || !Number.isSafeInteger(value) || Math.abs(value) > 100000 ||
-          (["width", "height"].includes(name) && value <= 0) || (name === "tabIndex" && ![-1, 0].includes(value))) fail(at, "invalid integer attribute");
+          (["width", "height", "rows"].includes(name) && value <= 0) || (name === "rows" && value > 100) || (name === "tabIndex" && ![-1, 0].includes(value))) fail(at, "invalid integer attribute");
     } else {
       const text = string(value, at, 2048);
       if (name === "href" && !isSafePublicLink(text)) fail(at, "unsafe URL");
@@ -36,8 +41,16 @@ function attributes(value: unknown, tag: ElementTag, path: string, asset = false
       if (name === "poster") publicImageUrl(text, at);
       if (name === "srcSet") publicImageSrcSet(text, at);
       if (name === "media" && !/^\((?:min|max)-width: [1-9]\d{1,3}px\)$/.test(text)) fail(at, "unsupported media condition");
-      if (name === "type" && !["image/avif", "image/webp", "image/png", "image/jpeg"].includes(text)) fail(at, "unsupported image type");
+      if (name === "type" && tag === "source" && !["image/avif", "image/webp", "image/png", "image/jpeg"].includes(text)) fail(at, "unsupported image type");
+      if (name === "type" && tag === "input" && !["text", "email", "tel", "radio", "checkbox", "file", "submit", "search", "password"].includes(text)) fail(at, "unsupported input type");
+      if (name === "type" && tag === "button" && !["button", "submit"].includes(text)) fail(at, "unsupported button type");
       if (name === "id") identifier(text, at);
+      if (name === "name" && !/^[A-Za-z][A-Za-z0-9_.-]{0,79}$/.test(text)) fail(at, "invalid form identifier");
+      if (name === "htmlFor" && !/^[A-Za-z][A-Za-z0-9_-]{0,79}$/.test(text)) fail(at, "invalid form identifier");
+      if (name === "placeholder" && (text.length > 300 || /[\u0000-\u001f\u007f]/u.test(text))) fail(at, "invalid placeholder");
+      if (name === "value" && text.length > 500) fail(at, "form value is too long");
+      if (name === "autocomplete" && !["on", "off", "name", "email", "tel", "current-password", "new-password"].includes(text)) fail(at, "unsupported autocomplete value");
+      if (name === "accept" && (tag !== "input" || !/^(?:[a-z]+\/[a-z0-9.+*-]+|\.[a-z0-9]+)(?:\s*,\s*(?:[a-z]+\/[a-z0-9.+*-]+|\.[a-z0-9]+)){0,15}$/i.test(text))) fail(at, "invalid file accept list");
       if (["aria-labelledby", "aria-describedby"].includes(name) && !/^[A-Za-z][A-Za-z0-9_-]*(?: [A-Za-z][A-Za-z0-9_-]*)*$/.test(text)) fail(at, "invalid ID references");
       if (name === "aria-hidden" && !["true", "false"].includes(text)) fail(at, "invalid aria-hidden");
       if (name === "aria-current" && !["page", "step", "location", "date", "time", "true", "false"].includes(text)) fail(at, "invalid aria-current");
@@ -56,6 +69,20 @@ function attributes(value: unknown, tag: ElementTag, path: string, asset = false
   if (tag === "img" && (!asset && typeof result.src !== "string" || typeof result.alt !== "string")) fail(path, asset ? "img requires alt" : "img requires src and alt");
   if (tag === "video" && asset && Object.hasOwn(result, "src")) fail(path, "video uses either URL source or asset");
   if (tag === "video" && ![result["aria-label"], result.title].some((label) => typeof label === "string" && !!label.trim())) fail(path, "video requires an accessible label");
+  if (tag === "form" && typeof result.name !== "string") fail(path, "form requires name");
+  if (tag === "label" && typeof result.htmlFor !== "string") fail(path, "label requires htmlFor");
+  if (tag === "fieldset" && typeof result.name !== "string") fail(path, "radio fieldset requires name");
+  if (tag === "textarea" || tag === "select" || tag === "input" && result.type !== "submit") {
+    if (typeof result.name !== "string") fail(path, "form control requires name");
+  }
+  if (tag === "input") {
+    const type = String(result.type ?? "text");
+    if (result.type === undefined) result.type = "text";
+    if ((type === "password" || type === "file") && Object.hasOwn(result, "value")) fail(path, "password and file values cannot be persisted");
+    if (Object.hasOwn(result, "checked") && !["radio", "checkbox"].includes(type)) fail(path, "checked is only valid for radio and checkbox");
+    if (Object.hasOwn(result, "accept") && type !== "file") fail(path, "accept is only valid for file inputs");
+  }
+  if (tag === "button" && result.type === undefined) result.type = "button";
   return result;
 }
 
@@ -129,8 +156,17 @@ export type NodeContext = {
   readonly components: ReadonlyMap<string, ComponentShape> | undefined;
   readonly ids: Set<string>;
   readonly htmlIds: Set<string>;
+  readonly formLabels: Map<string, string>;
+  readonly formControls: { id?: string; accessibleName?: string; path: string }[];
   readonly usage: { nodes: number; text: number };
 };
+/** @internal form control と label の文書全体参照を検査する。 */
+export function validateFormReferences(context: NodeContext): void {
+  for (const control of context.formControls) {
+    if (!control.accessibleName && (!control.id || !context.formLabels.has(control.id))) fail(control.path, "form control requires an accessible label");
+  }
+  for (const [id, path] of context.formLabels) if (!context.formControls.some((control) => control.id === id)) fail(path, "label target is not a form control");
+}
 /** @internal */
 export const reservedPropNames: readonly string[] = ["__proto__", "prototype", "constructor"];
 /** @internal */
@@ -189,13 +225,13 @@ function slotStyles(value: unknown, contract: BlockContract, tokens: Record<stri
 }
 
 /** @internal 文書の body と部品の root を同じ規則で検証し、新しいノードを返す。 */
-export function parseNodes(input: unknown, path: string, context: NodeContext, depth = 0, parent?: string, insideLink = false, inline = false): PageNode[] {
+export function parseNodes(input: unknown, path: string, context: NodeContext, depth = 0, parent?: string, insideLink = false, inline = false, insideForm = false): PageNode[] {
   if (!Array.isArray(input)) fail(path, "expected node array");
   if (depth > 48 || input.length > 5000) fail(path, "document exceeds limits");
-  return input.map((raw, index) => parseNode(raw, `${path}[${index}]`, context, depth, parent, insideLink, inline));
+  return input.map((raw, index) => parseNode(raw, `${path}[${index}]`, context, depth, parent, insideLink, inline, insideForm));
 }
 /** @internal depth はノードを含む配列の深さ。 */
-export function parseNode(raw: unknown, at: string, context: NodeContext, depth = 0, parent?: string, insideLink = false, inline = false): PageNode {
+export function parseNode(raw: unknown, at: string, context: NodeContext, depth = 0, parent?: string, insideLink = false, inline = false, insideForm = false): PageNode {
   const node = record(raw, at), { blocks, tokens, ids, htmlIds, usage } = context;
   if (++usage.nodes > 5000) fail(at, "too many nodes");
   if (node.type === "text") {
@@ -203,7 +239,7 @@ export function parseNode(raw: unknown, at: string, context: NodeContext, depth 
     const text = string(node.text, `${at}.text`, 100000);
     usage.text += text.length;
     if (usage.text > 1000000) fail(at, "too much text");
-    if (["ul", "ol", "dl", "picture"].includes(parent ?? "") && text.trim()) fail(at, "text not allowed in this parent");
+    if (["ul", "ol", "dl", "picture", "select"].includes(parent ?? "") && text.trim()) fail(at, "text not allowed in this parent");
     return { type: "text", text };
   }
   if (node.type === "instance" && !context.components) fail(at, "component instance requires a component library");
@@ -213,7 +249,7 @@ export function parseNode(raw: unknown, at: string, context: NodeContext, depth 
   if (ids.has(id)) fail(`${at}.id`, "duplicate node ID");
   ids.add(id);
   const style = node.style === undefined ? {} : { style: parseStyle(node.style, node.type === "instance" ? context.instanceTokens : tokens, `${at}.style`, context.textStyles) };
-  const constrainedParent = parent === "ul" || parent === "ol" ? ["li"] : parent === "dl" ? ["dt", "dd"] : parent === "picture" ? ["source", "img"] : undefined;
+  const constrainedParent = parent === "ul" || parent === "ol" ? ["li"] : parent === "dl" ? ["dt", "dd"] : parent === "picture" ? ["source", "img"] : parent === "select" ? ["option"] : undefined;
   if (node.type === "instance") {
     const component = identifier(node.component, `${at}.component`), shape = context.components?.get(component);
     if (!shape) fail(`${at}.component`, "unknown component");
@@ -239,6 +275,10 @@ export function parseNode(raw: unknown, at: string, context: NodeContext, depth 
   if (!isElementTag(node.tag)) fail(`${at}.tag`, "unsupported element");
   const tag = node.tag;
   if (inline && !phrasing.has(tag) || constrainedParent && !constrainedParent.includes(tag) || insideLink && interactive.has(tag)) fail(at, "invalid HTML content nesting");
+  if (tag === "form" && insideForm) fail(at, "forms cannot be nested");
+  if (["label", "input", "textarea", "select", "button", "fieldset"].includes(tag) && !insideForm) fail(at, "form control requires a form parent");
+  if (tag === "option" && parent !== "select") fail(at, "option requires select parent");
+  if (tag === "legend" && parent !== "fieldset") fail(at, "legend requires fieldset parent");
   if (tag === "summary" && parent !== "details") fail(at, "summary must be the first child of details");
   if (node.asset !== undefined && tag !== "img" && tag !== "video") fail(`${at}.asset`, "only img or video can reference an asset");
   if (node.icon !== undefined && (tag !== "span" || !isIconName(node.icon))) fail(`${at}.icon`, "unsupported built-in icon");
@@ -250,12 +290,28 @@ export function parseNode(raw: unknown, at: string, context: NodeContext, depth 
     if (htmlIds.has(htmlId)) fail(`${at}.attrs.id`, "duplicate HTML ID");
     htmlIds.add(htmlId);
   }
+  if (tag === "label" && typeof attrs.attrs?.htmlFor === "string") context.formLabels.set(attrs.attrs.htmlFor, `${at}.attrs.htmlFor`);
+  if (["input", "textarea", "select"].includes(tag) && !(tag === "input" && attrs.attrs?.type === "submit")) context.formControls.push({
+    ...(typeof htmlId === "string" ? { id: htmlId } : {}),
+    ...([attrs.attrs?.["aria-label"], attrs.attrs?.title].find((value) => typeof value === "string" && value.trim()) ? { accessibleName: String([attrs.attrs?.["aria-label"], attrs.attrs?.title].find((value) => typeof value === "string" && value.trim())) } : {}), path: at
+  });
   if (tag === "img" && !attrs.attrs) fail(at, "img requires attributes");
   if (tag === "video" && !attrs.attrs) fail(at, "video requires attributes");
   if (node.icon !== undefined && (attrs.attrs?.role !== "img" || typeof attrs.attrs["aria-label"] !== "string" || !attrs.attrs["aria-label"].trim() || attrs.attrs["aria-hidden"] === "true")) fail(at, "icon requires role img and aria-label");
-  const children = parseNodes(node.children, `${at}.children`, context, depth + 1, tag, insideLink || interactive.has(tag) && tag !== "details", inline || phrasingParents.has(tag));
+  const children = parseNodes(node.children, `${at}.children`, context, depth + 1, tag, insideLink || interactive.has(tag) && tag !== "details", inline || phrasingParents.has(tag), insideForm || tag === "form");
   if (voidTags.has(tag) && children.length) fail(at, "void element cannot have children");
   if ((tag === "video" || node.icon !== undefined) && children.length) fail(at, "media element cannot have children");
+  if (tag === "label" && !children.some((child) => child.type === "text" ? !!child.text.trim() : true)) fail(at, "label requires text");
+  if (tag === "button" && !children.some((child) => child.type === "text" ? !!child.text.trim() : true) && typeof attrs.attrs?.["aria-label"] !== "string") fail(at, "button requires an accessible caption");
+  if (tag === "option" && (!children.length || children.some((child) => child.type !== "text") || !children.some((child) => child.type === "text" && child.text.trim()))) fail(at, "option requires text");
+  if (tag === "select" && !children.some((child) => child.type === "element" && child.tag === "option")) fail(at, "select requires options");
+  if (tag === "fieldset") {
+    const legends = children.flatMap((child, index) => child.type === "element" && child.tag === "legend" ? [index] : []);
+    if (legends.length !== 1 || legends[0] !== 0) fail(`${at}.children`, "fieldset requires one first legend");
+    const radios = children.filter((child): child is ElementNode => child.type === "element" && child.tag === "input" && child.attrs?.type === "radio");
+    if (!radios.length || children.slice(1).some((child) => child.type !== "element" || child.tag !== "label" && !(child.tag === "input" && child.attrs?.type === "radio")) ||
+        radios.some((radio) => radio.attrs?.name !== attrs.attrs?.name)) fail(`${at}.children`, "fieldset requires one named radio group");
+  }
   if (tag === "details") {
     const summaries = children.flatMap((child, index) => (child.type === "element" ? child.tag : child.type === "instance" ? context.components!.get(child.component)!.tag : "") === "summary" ? [index] : []);
     if (summaries.length > 1 || summaries.length === 1 && summaries[0] !== 0) fail(`${at}.children`, "summary must be the first child of details");
@@ -296,9 +352,10 @@ export function parsePageDocument(input: unknown, blocks: BlockContracts = {}, o
   const effective = mergeSiteStyles({ tokens, ...(textStyles ? { textStyles } : {}) }, options.siteStyles);
   const context: NodeContext = {
     blocks, ...effective, instanceTokens: library ? { ...library.tokens, ...effective.tokens } : effective.tokens, components: library && componentShapes(library),
-    ids: new Set(), htmlIds: new Set(), usage: { nodes: 0, text: 0 }
+    ids: new Set(), htmlIds: new Set(), formLabels: new Map(), formControls: [], usage: { nodes: 0, text: 0 }
   };
   const document: PageDocument = { schemaVersion: 1, siteId, pageId, locale, revision: source.revision, title, ...(Object.keys(meta).length ? { meta } : {}), tokens, ...(textStyles ? { textStyles } : {}), body: parseNodes(source.body, "$.body", context) };
+  validateFormReferences(context);
   if (library && instancesOf(document.body).length) {
     try {
       parsePageDocument(expandDocument(resolvePageStyles(document, options.siteStyles), library).document, blocks, options.siteStyles ? { siteStyles: options.siteStyles } : {});

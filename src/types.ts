@@ -72,7 +72,8 @@ export type ElementTag =
   | "a" | "img" | "picture" | "source" | "video" | "ul" | "ol" | "li"
   | "dl" | "dt" | "dd" | "strong" | "em" | "b" | "i" | "small"
   | "blockquote" | "figure" | "figcaption" | "br" | "hr" | "time"
-  | "details" | "summary";
+  | "details" | "summary"
+  | "form" | "label" | "input" | "textarea" | "select" | "option" | "button" | "fieldset" | "legend";
 export type ElementAttributes = Record<string, string | number | boolean>;
 /** 任意の SVG/HTML ではなく、trusted code の閉じたカタログだけを参照する。 */
 export type IconName = "arrow-right" | "arrow-left" | "check" | "close" | "plus" | "minus" | "star" | "heart" | "location" | "info";

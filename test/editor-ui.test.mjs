@@ -163,6 +163,35 @@ test("Basic Icon and Video can be selected, edited, saved, reloaded and rendered
     assert.ok(video.includes('poster="/poster.webp"')); assert.ok(video.includes('loop=""')); assert.ok(!video.includes("controls=")); assert.ok(!video.includes("autoplay"));
   } finally { await app.cleanup(); }
 });
+test("Basic のフォーム一覧とインスペクタでフォーム項目を編集し、既存フォームへ安全に追加できる", async () => {
+  const app = await setup();
+  const addPreset = async (id) => {
+    await click("追加"); const target = document.querySelector(`.e-preset-preview[data-preset="${id}"]`)?.closest("button");
+    assert.ok(target, id); await act(async () => target.click()); await flush();
+  };
+  try {
+    await click("追加");
+    const labels = [...document.querySelectorAll(".e-add-category .e-preset-card")].map((item) => item.textContent);
+    for (const label of ["Form1", "Form2", "Form3", "Input", "Textarea", "Select", "Radio", "Confirm", "Checkbox", "File", "Submit", "Search", "Password"]) assert.ok(labels.some((text) => text.endsWith(label)), label);
+    await addPreset("form-1");
+    assert.ok(input("フォーム名")); assert.ok(document.body.textContent.includes("完了設定")); assert.ok(document.body.textContent.includes("項目一覧"));
+    await change(input("フォーム名"), "contact_form");
+    const formId = document.querySelector("iframe").contentDocument.querySelector("form[data-nw-node]").dataset.nwNode;
+    await addPreset("form-input");
+    assert.ok(input("項目名")); assert.equal(input("入力タイプ").value, "text");
+    await change(input("項目名"), "company"); await change(input("入力タイプ"), "email"); await change(input("プレースホルダー"), "company@example.com");
+    const required = [...document.querySelectorAll("label.e-check")].find((label) => label.textContent.includes("必須項目"))?.querySelector("input");
+    await act(async () => required.click()); await flush(); await click("下書き保存");
+    const form = app.stored().body.at(-1), controls = form.children.filter((node) => node.type === "element" && node.tag === "input");
+    assert.equal(form.tag, "form"); assert.equal(form.attrs.name, "contact_form"); assert.equal(form.children.some((node) => node.type === "element" && node.tag === "form"), false);
+    assert.ok(controls.some((control) => control.attrs.name === "company" && control.attrs.type === "email" && control.attrs.required === true && control.attrs.placeholder === "company@example.com"));
+    await clickCanvas(formId);
+    const itemButtons = [...document.querySelectorAll(".e-form-items button")];
+    assert.equal(itemButtons.length, 4);
+    await act(async () => itemButtons.find((item) => item.textContent.includes("company")).click()); await flush();
+    assert.equal(input("項目名").value, "company");
+  } finally { await app.cleanup(); }
+});
 test("host adapters receive only the documented editor target fields", async () => {
   const app = await setup(), target = { siteId: "demo", pageId: "home", locale: "ja-JP" };
   try {

@@ -13,7 +13,9 @@ export { nodeAt, walkNodes, type NodePath };
 export type EditorOperation =
   | { type: "text"; path: NodePath; value: string }
   | { type: "attribute"; path: NodePath; name: string; value: string }
-  | { type: "booleanAttribute"; path: NodePath; name: "controls" | "loop" | "muted" | "playsInline"; value: boolean }
+  | { type: "booleanAttribute"; path: NodePath; name: "controls" | "loop" | "muted" | "playsInline" | "required" | "checked" | "disabled"; value: boolean }
+  /** select / radio fieldset の表示値。空行を除いた1〜20件へ置き換える。 */
+  | { type: "formChoices"; path: NodePath; values: readonly string[] }
   | { type: "icon"; path: NodePath; name: IconName }
   | { type: "tag"; path: NodePath; value: "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" }
   | { type: "prop"; path: NodePath; name: string; value: PublicPropValue | undefined }
@@ -38,6 +40,7 @@ export type EditorOperation =
   | { type: "hidden"; path: NodePath; ranges: readonly HiddenRange[] | undefined }
   | { type: "title"; value: string }
   | { type: "add"; parentId: string | null; node: PageNode; index?: number }
+  | { type: "addMany"; parentId: string | null; nodes: readonly PageNode[]; index?: number }
   | { type: "replaceChildren"; path: NodePath; children: PageNode[] }
   | { type: "image"; path: NodePath; source: { asset: AssetReference } | { src: string; srcset?: string }; alt?: string }
   | { type: "video"; path: NodePath; source: { asset: AssetReference } | { src: string } }
@@ -208,6 +211,13 @@ function assertStyleProperties(node: ElementNode | ComponentNode | InstanceNode,
   const allowed = node.type === "component" ? blocks[node.block]?.styleProperties : undefined;
   if (allowed && properties.some((property) => !(allowed as readonly string[]).includes(property))) throw new Error("このブロックでは変更できない見た目です。");
 }
+function formFieldPairIndex(siblings: readonly PageNode[], node: PageNode, index: number): number {
+  const controlId = node.type === "element" && ["input", "textarea", "select"].includes(node.tag) ? node.attrs?.id : undefined;
+  const labelTarget = node.type === "element" && node.tag === "label" ? node.attrs?.htmlFor : undefined;
+  return siblings.findIndex((candidate, at) => at !== index && candidate.type === "element" &&
+    (typeof controlId === "string" && candidate.tag === "label" && candidate.attrs?.htmlFor === controlId ||
+     typeof labelTarget === "string" && ["input", "textarea", "select"].includes(candidate.tag) && candidate.attrs?.id === labelTarget));
+}
 /** components はインスタンスを含む文書の検証に使う、同じサイトの検証済みライブラリ。 */
 export function editDocument(document: PageDocument, operation: EditorOperation, blocks: EditorBlockRegistry = {}, locks: readonly EditorLock[] = [], components?: ComponentLibrary, siteStyles?: SiteStyles): PageDocument {
   const draft = structuredClone(resolvePageStyles(document, siteStyles)), allLocks = effectiveLocks(document, locks, blocks);
@@ -242,10 +252,12 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
     else meta[operation.field] = structuredClone(value);
     if (Object.keys(meta).length) draft.meta = meta as PageMeta; else delete draft.meta;
   }
-  else if (operation.type === "add") {
+  else if (operation.type === "add" || operation.type === "addMany") {
     const destination = targetChildren(operation.parentId), index = operation.index ?? destination.length;
     if (!Number.isInteger(index) || index < 0 || index > destination.length) throw new Error("追加先の位置が不正です。");
-    destination.splice(index, 0, structuredClone(operation.node));
+    const additions = operation.type === "add" ? [operation.node] : operation.nodes;
+    if (!additions.length) throw new Error("追加する要素がありません。");
+    destination.splice(index, 0, ...structuredClone(additions));
   } else if (operation.type === "replaceAsset") {
     const { from, to } = operation, same = (reference: AssetReference) => reference.provider === from.provider && reference.id === from.id;
     let count = 0;
@@ -303,9 +315,35 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
       node.attrs ??= {};
       if (operation.value === "" && !(node.tag === "img" && operation.name === "alt")) delete node.attrs[operation.name];
       else node.attrs[operation.name] = operation.value;
+      if (node.tag === "fieldset" && operation.name === "name") for (const child of node.children) {
+        if (child.type === "element" && child.tag === "input" && child.attrs?.type === "radio") (child.attrs ??= {}).name = operation.value;
+      }
+      if (node.tag === "input" && operation.name === "type") {
+        if (["password", "file"].includes(operation.value)) delete node.attrs.value;
+        if (!["radio", "checkbox"].includes(operation.value)) delete node.attrs.checked;
+        if (operation.value !== "file") delete node.attrs.accept;
+      }
     } else if (operation.type === "booleanAttribute") {
-      if (node.type !== "element" || node.tag !== "video") throw new Error("動画を選択してください。");
+      const video = node.type === "element" && node.tag === "video" && ["controls", "loop", "muted", "playsInline"].includes(operation.name);
+      const form = node.type === "element" && ["input", "textarea", "select", "button", "option", "fieldset"].includes(node.tag) && ["required", "checked", "disabled"].includes(operation.name);
+      if (!video && !form) throw new Error("この要素では切り替えられない設定です。");
       (node.attrs ??= {})[operation.name] = operation.value;
+    } else if (operation.type === "formChoices") {
+      if (node.type !== "element" || !["select", "fieldset"].includes(node.tag)) throw new Error("選択肢を持つ要素を選択してください。");
+      const values = operation.values.map((value) => value.trim()).filter(Boolean);
+      if (!values.length || values.length > 20 || values.some((value) => value.length > 120 || /[\u0000-\u001f\u007f]/u.test(value))) throw new Error("選択肢は1〜20件、各120文字以内で入力してください。");
+      const used = new Set(walkNodes(draft).flatMap(({ node }) => node.type === "text" ? [] : [node.id]));
+      let serial = 1;
+      const nextId = (kind: string): string => { let value = ""; do value = `${node.id.slice(0, 58)}_${kind}${serial++}`; while (used.has(value)); used.add(value); return value; };
+      if (node.tag === "select") node.children = values.map((value) => ({ type: "element", id: nextId("option"), tag: "option", attrs: { value }, children: [{ type: "text", text: value }] }));
+      else {
+        const legend = node.children[0], name = String(node.attrs?.name ?? "choice");
+        node.children = [legend!, ...values.flatMap((value): PageNode[] => {
+          const inputId = nextId("radio"), labelId = nextId("label");
+          return [{ type: "element", id: inputId, tag: "input", attrs: { id: inputId, type: "radio", name, value }, children: [] },
+            { type: "element", id: labelId, tag: "label", attrs: { htmlFor: inputId }, children: [{ type: "text", text: value }] }];
+        })];
+      }
     } else if (operation.type === "icon") {
       if (node.type !== "element" || node.tag !== "span" || !node.icon) throw new Error("アイコンを選択してください。");
       node.icon = operation.name;
@@ -428,11 +466,18 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
       const declarations = declarationsAt(node, operation.breakpoint);
       if (operation.asset === undefined) delete declarations.backgroundImage; else declarations.backgroundImage = { asset: structuredClone(operation.asset) };
       pruneResponsive(node);
-    } else if (operation.type === "remove") parentChildren(operation.path).splice(operation.path.at(-1)!, 1);
+    } else if (operation.type === "remove") {
+      const siblings = parentChildren(operation.path), index = operation.path.at(-1)!;
+      const pair = formFieldPairIndex(siblings, node, index);
+      for (const at of [index, pair].filter((at) => at >= 0).sort((left, right) => right - left)) siblings.splice(at, 1);
+    }
     else if (operation.type === "duplicate") {
-      const subtree = node.type === "text" ? [] : walkNodes({ ...draft, body: [node] });
+      const siblings = parentChildren(operation.path), index = operation.path.at(-1)!;
+      const pair = formFieldPairIndex(siblings, node, index);
+      const originals = pair < 0 ? [node] : [siblings[Math.min(index, pair)]!, siblings[Math.max(index, pair)]!];
+      const subtree = originals.flatMap((entry) => entry.type === "text" ? [] : walkNodes({ ...draft, body: [entry] }));
       if (subtree.some(({ node }) => node.type !== "text" && allLocks.some((lock) => lock.nodeId === node.id))) throw new Error("データ連動値を含む要素は複製できません。");
-      const copy = structuredClone(node), used = new Set(walkNodes(draft).flatMap(({ node }) => node.type === "text" ? [] : [node.id]));
+      const copies = structuredClone(originals), used = new Set(walkNodes(draft).flatMap(({ node }) => node.type === "text" ? [] : [node.id]));
       const usedHtmlIds = new Set(walkNodes(draft).flatMap(({ node }) => node.type === "element" && typeof node.attrs?.id === "string" ? [node.attrs.id] : []));
       const remap = new Map<string, string>();
       function rename(current: PageNode): void {
@@ -443,14 +488,15 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
           current.children.forEach(rename);
         }
       }
-      rename(copy);
+      copies.forEach(rename);
       function links(current: PageNode): void {
         if (current.type !== "element") return;
         if (typeof current.attrs?.href === "string" && current.attrs.href.startsWith("#") && remap.has(current.attrs.href.slice(1))) current.attrs.href = `#${remap.get(current.attrs.href.slice(1))}`;
+        if (typeof current.attrs?.htmlFor === "string" && remap.has(current.attrs.htmlFor)) current.attrs.htmlFor = remap.get(current.attrs.htmlFor)!;
         for (const key of ["aria-labelledby", "aria-describedby"]) if (typeof current.attrs?.[key] === "string") current.attrs[key] = current.attrs[key].split(" ").map((id) => remap.get(id) ?? id).join(" ");
         current.children.forEach(links);
       }
-      links(copy); parentChildren(operation.path).splice(operation.path.at(-1)! + 1, 0, copy);
+      copies.forEach(links); siblings.splice(Math.max(index, pair) + 1, 0, ...copies);
     } else if (operation.type === "move") {
       if (operation.parentId && walkNodes({ ...draft, body: [node] }).some(({ node }) => node.type !== "text" && node.id === operation.parentId)) throw new Error("要素を自分の内側へ移動できません。");
       parentChildren(operation.path).splice(operation.path.at(-1)!, 1);

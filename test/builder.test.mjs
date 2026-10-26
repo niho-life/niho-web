@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
-  createInsertionNode, defineBuilder, layoutInsertionPresets, matchesMotionPreset, partInsertionPresets, resolveBuilderDefinition, sectionInsertionPresets, standardBuilderDefinition
+  createInsertionNode, defineBuilder, formInsertionPresets, layoutInsertionPresets, matchesMotionPreset, partInsertionPresets, resolveBuilderDefinition, sectionInsertionPresets, standardBuilderDefinition
 } from "@niho/web/builder";
 import { generatePageCss, parseComponentLibrary, parsePageDocument } from "@niho/web/core";
 import { renderPageToHtml } from "@niho/web/server";
@@ -41,6 +41,18 @@ test("Basic catalog includes safe editable icons and native videos in the refere
   assert.deepEqual(reloaded.body[videoIndex].asset, { provider: "uploads", id: "intro" }); assert.equal(reloaded.body[videoIndex].attrs.src, undefined);
   const html = renderPageToHtml(reloaded, {}, { assets: { "uploads:intro": { src: "/media/intro.mp4" } } });
   assert.ok(html.includes("★")); assert.ok(html.includes('src="/media/intro.mp4"'));
+});
+
+test("Basic のフォームと全フォームパーツは有効な部分木として保存・再読込できる", () => {
+  assert.deepEqual(formInsertionPresets.map(({ id }) => id), ["form-1", "form-2", "form-3", "form-input", "form-textarea", "form-select", "form-radio", "form-confirm", "form-checkbox", "form-file", "form-submit", "form-search", "form-password"]);
+  assert.ok(formInsertionPresets.slice(0, 3).every((preset) => preset.group === "フォーム"));
+  assert.ok(formInsertionPresets.slice(3).every((preset) => preset.group === "フォームパーツ"));
+  let page = doc();
+  for (const preset of formInsertionPresets) page = editDocument(page, { type: "add", parentId: null, node: createInsertionNode(preset, { document: page }) });
+  const reloaded = parsePageDocument(JSON.parse(JSON.stringify(page)));
+  assert.equal(reloaded.body.filter((node) => node.type === "element" && node.tag === "form").length, formInsertionPresets.length);
+  const html = renderPageToHtml(reloaded);
+  assert.match(html, /<label[^>]*for="/); assert.match(html, /required=""/); assert.match(html, /<option[^>]*>選択肢 1<\/option>/);
 });
 
 test("standard parts and sections validate, survive editing and reload, and render through SSR", () => {

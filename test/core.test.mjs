@@ -38,7 +38,7 @@ test("only safe HTTPS, root relative and fragment URLs are allowed", () => {
 });
 
 test("scriptable tags and attributes, arbitrary HTML and JS are rejected", () => {
-  for (const tag of ["script", "iframe", "style", "link", "object", "svg", "math", "custom-widget", "form", "input"]) {
+  for (const tag of ["script", "iframe", "style", "link", "object", "svg", "math", "custom-widget"]) {
     const input = doc(); input.body[0].tag = tag; reject(input);
   }
   for (const attrs of [{ onClick: "alert(1)" }, { onclick: "alert(1)" }, { style: "color:red" }, { srcDoc: "<script>" },
@@ -46,6 +46,36 @@ test("scriptable tags and attributes, arbitrary HTML and JS are rejected", () =>
     const input = doc(); input.body[0].attrs = attrs; reject(input);
   }
   const input = doc(); input.body[0].html = "<b>raw</b>"; reject(input);
+});
+
+test("フォーム要素は閉じた属性・安全な入れ子・アクセシブルなラベルだけを受け付ける", () => {
+  const valid = doc(); valid.body = [{ type: "element", id: "contact", tag: "form", attrs: { name: "contact", autocomplete: "on", "aria-label": "お問い合わせ" }, children: [
+    { type: "element", id: "email-label", tag: "label", attrs: { htmlFor: "email" }, children: [{ type: "text", text: "メール" }] },
+    { type: "element", id: "email", tag: "input", attrs: { id: "email", type: "email", name: "email", placeholder: "name@example.com", required: true, autocomplete: "email" }, children: [] },
+    { type: "element", id: "plan-label", tag: "label", attrs: { htmlFor: "plan" }, children: [{ type: "text", text: "プラン" }] },
+    { type: "element", id: "plan", tag: "select", attrs: { id: "plan", name: "plan" }, children: [
+      { type: "element", id: "plan-a", tag: "option", attrs: { value: "a" }, children: [{ type: "text", text: "プランA" }] }
+    ] },
+    { type: "element", id: "send", tag: "button", attrs: { type: "submit" }, children: [{ type: "text", text: "送信" }] }
+  ] }];
+  assert.deepEqual(parsePageDocument(valid).body, valid.body);
+  const titled = structuredClone(valid);
+  titled.body[0].children.splice(0, 1);
+  titled.body[0].children[0].attrs["aria-label"] = "";
+  titled.body[0].children[0].attrs.title = "メールアドレス";
+  assert.doesNotThrow(() => parsePageDocument(titled));
+  for (const change of [
+    (value) => { value.body[0].attrs.action = "https://example.com/collect"; },
+    (value) => { value.body[0].attrs.method = "post"; },
+    (value) => { value.body[0].children[1].attrs.type = "date"; },
+    (value) => { value.body[0].children[1].attrs.onclick = "alert(1)"; },
+    (value) => { value.body[0].children[1].children = [{ type: "text", text: "bad" }]; },
+    (value) => { value.body[0].children[0].attrs.htmlFor = "missing"; },
+    (value) => { value.body[0].children[3].children = []; },
+    (value) => { value.body[0].children.push({ type: "element", id: "nested", tag: "form", attrs: { name: "nested" }, children: [] }); },
+    (value) => { value.body[0].children[1].attrs.type = "password"; value.body[0].children[1].attrs.value = "secret"; }
+  ]) { const invalid = structuredClone(valid); change(invalid); reject(invalid); }
+  const standalone = doc(); standalone.body = [valid.body[0].children[1]]; reject(standalone);
 });
 
 test("duplicate IDs, void children and invalid HTML nesting cannot break hydration", () => {

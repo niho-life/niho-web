@@ -70,6 +70,9 @@ const videoInspectorTabs: readonly WorkspaceTab<InspectorTab>[] = [
 const iconInspectorTabs: readonly WorkspaceTab<InspectorTab>[] = [
   { value: "settings", label: "アイコン" }, { value: "text", label: "文字" }, { value: "box", label: "ボックス" }, { value: "transform", label: "変形" }
 ];
+const formInspectorTabs: readonly WorkspaceTab<InspectorTab>[] = [
+  { value: "settings", label: "フォーム" }, { value: "text", label: "文字" }, { value: "box", label: "ボックス" }, { value: "transform", label: "変形" }
+];
 const boxInspectorTabs: readonly WorkspaceTab<InspectorTab>[] = [
   { value: "box", label: "ボックス" }, { value: "transform", label: "変形" }, { value: "settings", label: "設定" }
 ];
@@ -82,6 +85,7 @@ const inspectorTabsFor = (node: PageNode | undefined): readonly WorkspaceTab<Ins
   if (node?.type === "element" && node.icon) return iconInspectorTabs;
   if (node?.type === "element" && node.tag === "video") return videoInspectorTabs;
   if (node?.type === "element" && (node.tag === "img" || node.tag === "picture")) return imageInspectorTabs;
+  if (node?.type === "element" && ["form", "label", "input", "textarea", "select", "option", "button", "fieldset", "legend"].includes(node.tag)) return formInspectorTabs;
   if (node?.type === "element" && (["p", "h1", "h2", "h3", "h4", "h5", "h6", "span", "a", "li", "strong", "em", "small", "blockquote", "figcaption", "time"].includes(node.tag) || node.children.length === 1 && node.children[0]?.type === "text")) return textInspectorTabs;
   return boxInspectorTabs;
 };
@@ -261,7 +265,7 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
     const entry = target ? entries.find(({ node }) => node.type !== "text" && node.id === target.dataset.nwNode) : undefined;
     if (!entry || !target) return { parentId: null, index: document.body.length, marker: { left: 8, top: body?.scrollHeight ?? 0, width: Math.max(120, width - 16), height: 2, inside: false } };
     const rect = target.getBoundingClientRect(), scrollX = body?.ownerDocument.defaultView?.scrollX ?? 0, scrollY = body?.ownerDocument.defaultView?.scrollY ?? 0;
-    const canContain = entry.node.type === "element" && ["div", "section", "article", "header", "footer", "main", "nav", "aside", "li", "figure", "blockquote"].includes(entry.node.tag);
+    const canContain = entry.node.type === "element" && ["div", "section", "article", "header", "footer", "main", "nav", "aside", "li", "figure", "blockquote", "form"].includes(entry.node.tag);
     const fraction = rect.height ? (event.clientY - rect.top) / rect.height : 0;
     const inside = canContain && (event.altKey || fraction > .3 && fraction < .7);
     if (inside && entry.node.type === "element") return { parentId: entry.node.id, index: entry.node.children.length,
@@ -618,6 +622,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     if (selected?.type === "component" || selected?.type === "instance") return "settings";
     if (selected?.type === "element" && selected.icon) return "settings";
     if (selected?.type === "element" && (selected.tag === "img" || selected.tag === "picture" || selected.tag === "video")) return "image";
+    if (selected?.type === "element" && ["form", "label", "input", "textarea", "select", "button", "fieldset"].includes(selected.tag)) return "settings";
     if (selected?.type === "text" || selected?.type === "element" && selected.children.length === 1 && selected.children[0]?.type === "text") return "text";
     return "box";
   }
@@ -1161,8 +1166,18 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     if (!document || hasInput || editBlocked) return;
     try {
       const newNode = makeNode(type); if (!newNode) return;
-      const error = apply({ type: "add", parentId: place ? place.parentId : parentId || null, node: newNode, ...(place ? { index: place.index } : {}) });
-      if (error) setNotice(error); else if (newNode.type !== "text") selectId(newNode.id);
+      const formPart = type.startsWith("form-") && !["form-1", "form-2", "form-3"].includes(type);
+      const selectedTarget = selection ? nodeAt(currentDocument()!, selection) : undefined;
+      const selectedFormId = selectedTarget?.type === "element" && selectedTarget.tag === "form" ? selectedTarget.id : null;
+      const destinationId = place ? place.parentId : parentId || (formPart ? selectedFormId : null);
+      const destination = destinationId ? walkNodes(currentDocument()!).find(({ node }) => node.type === "element" && node.id === destinationId)?.node : undefined;
+      const children = formPart && destination?.type === "element" && destination.tag === "form" && newNode.type === "element" && newNode.tag === "form" ? newNode.children : undefined;
+      const operation: EditorOperation = children
+        ? { type: "addMany", parentId: destinationId, nodes: children, ...(place ? { index: place.index } : {}) }
+        : { type: "add", parentId: destinationId, node: newNode, ...(place ? { index: place.index } : {}) };
+      const error = apply(operation);
+      const selected = children?.find((child) => child.type === "element" && ["input", "textarea", "select", "button", "fieldset"].includes(child.tag));
+      if (error) setNotice(error); else if (selected?.type === "element") selectId(selected.id); else if (newNode.type !== "text") selectId(newNode.id);
     } catch (error) { setNotice(message(error)); }
   }
   function dropAt(item: DragItem, drop: Pick<DropPlace, "parentId" | "index">) {
@@ -1182,7 +1197,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     if (!document) return null;
     const target = entries.find(({ node }) => node.type !== "text" && node.id === targetId); if (!target) return null;
     const rect = event.currentTarget.getBoundingClientRect(), fraction = rect.height ? (event.clientY - rect.top) / rect.height : 0;
-    const canContain = target.node.type === "element" && ["div", "section", "article", "header", "footer", "main", "nav", "aside", "li", "figure", "blockquote"].includes(target.node.tag);
+    const canContain = target.node.type === "element" && ["div", "section", "article", "header", "footer", "main", "nav", "aside", "li", "figure", "blockquote", "form"].includes(target.node.tag);
     if (canContain && (event.altKey || fraction > .3 && fraction < .7) && target.node.type === "element") return { position: "inside", parentId: target.node.id, index: target.node.children.length };
     const parent = target.path.length > 1 ? nodeAt(document, target.path.slice(0, -1)) : null;
     const after = fraction >= .5;
@@ -1324,6 +1339,13 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const rawSelectedOwner = document && rawSelected?.type === "text" && selection && selection.length > 1 ? nodeAt(document, selection.slice(0, -1)) : rawSelected;
   const canvasSelectedNodeId = selectedCanvasNode ?? (rawSelectedOwner && rawSelectedOwner.type !== "text" ? rawSelectedOwner.id : undefined);
   const activeInspectorTabs = inspectorTabsFor(node);
+  const selectedHtmlId = node?.type === "element" && typeof node.attrs?.id === "string" ? node.attrs.id : undefined;
+  const associatedLabel = document && selectedHtmlId ? walkNodes(document).find(({ node: candidate }) => candidate.type === "element" && candidate.tag === "label" && candidate.attrs?.htmlFor === selectedHtmlId && candidate.children[0]?.type === "text") : undefined;
+  const formItems = document && node?.type === "element" && node.tag === "form" ? walkNodes({ ...document, body: [node] }).flatMap(({ node: item }) =>
+    item.type === "element" && ["input", "textarea", "select", "fieldset"].includes(item.tag) && item.attrs?.type !== "submit"
+      ? [{ id: item.id, label: String(item.attrs?.name ?? elementTypeLabel[item.tag]) }] : []) : [];
+  const choiceText = node?.type === "element" && node.tag === "select" ? node.children.flatMap((child) => child.type === "element" && child.tag === "option" && child.children[0]?.type === "text" ? [child.children[0].text] : []).join("\n")
+    : node?.type === "element" && node.tag === "fieldset" ? node.children.flatMap((child) => child.type === "element" && child.tag === "label" && child.children[0]?.type === "text" ? [child.children[0].text] : []).join("\n") : "";
   // 左上の文脈: サイト / 開いているもの（ページ・コンポーネント）と、そのパスか種類。常に現在地が分かるようにする。
   const contextSite = site?.name ?? "サイト", contextTitle = masterComponent?.name ?? page?.title ?? session?.history.present.title ?? "ページ編集";
   const contextDetail = masterComponent ? "コンポーネント本体" : isSiteComponent ? "サイト全体のコンポーネント" : page?.path ?? (page?.kind === "template" ? "テンプレート" : "");
@@ -1369,7 +1391,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
             dragStart={(event, id) => startDrag(event, { kind: "node", id })} dragEnd={() => { dragItem.current = null; setLayerDrop(null); }}
             dragOver={(event, id) => { if (!dragItem.current) return; const place = layerPlace(event, id); if (!place) return; event.preventDefault(); event.dataTransfer.dropEffect = dragItem.current.kind === "node" ? "move" : "copy"; setLayerDrop({ id, position: place.position }); }}
             drop={(event, id) => { if (!dragItem.current) return; const place = layerPlace(event, id); if (place) { event.preventDefault(); dropAt(dragItem.current, place); } dragItem.current = null; setLayerDrop(null); }} />}
-          <label className="e-field"><span>移動先</span><select aria-label="移動先" value={parentId} disabled={editBlocked || hasInput || targetMode} onChange={(event) => setParentId(event.target.value)}>{!masterId && <option value="">ページ直下</option>}{entries.filter(({ node }) => node.type === "element" && ["div", "section", "article", "header", "footer", "main", "nav", "aside", "li", "figure", "blockquote"].includes(node.tag)).map(({ node, path }) => node.type === "element" && <option key={node.id} value={node.id}>{destinationLabel(node, path, blocks, names)}</option>)}</select></label>
+          <label className="e-field"><span>移動先</span><select aria-label="移動先" value={parentId} disabled={editBlocked || hasInput || targetMode} onChange={(event) => setParentId(event.target.value)}>{!masterId && <option value="">ページ直下</option>}{entries.filter(({ node }) => node.type === "element" && ["div", "section", "article", "header", "footer", "main", "nav", "aside", "li", "figure", "blockquote", "form"].includes(node.tag)).map(({ node, path }) => node.type === "element" && <option key={node.id} value={node.id}>{destinationLabel(node, path, blocks, names)}</option>)}</select></label>
           <div className="e-actions"><button disabled={targetMode || !selection || editBlocked || hasInput} onClick={() => selection && structural({ type: "duplicate", path: selection })}>複製</button><button className="e-danger" disabled={targetMode || !selection || editBlocked || hasInput} onClick={() => selection && structural({ type: "remove", path: selection })}>削除</button>
             <button disabled={targetMode || !selection || selection.at(-1) === 0 || editBlocked || hasInput} onClick={() => moveBy(-1)}>上へ</button><button disabled={targetMode || !selection || selection.at(-1)! >= siblingCount - 1 || editBlocked || hasInput} onClick={() => moveBy(1)}>下へ</button>
             <button disabled={targetMode || !selection || editBlocked || hasInput} onClick={moveToEnd}>指定先の末尾へ</button>
@@ -1449,6 +1471,30 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       {!node && <p className="e-help">レイヤーまたはキャンバス上の要素を選択してください。</p>}
       {elementTab === "text" && node?.type === "text" && selection && field("テキスト", node.text, (value) => ({ type: "text", path: selection, value }), "text", { multiline: true, reason: document ? lockReason(document, selection, "text", locks) : undefined })}
       {node?.type === "element" && selection && <>
+        {elementTab === "settings" && node.tag === "form" && <>
+          {field("フォーム名", String(node.attrs?.name ?? ""), (value) => ({ type: "attribute", path: selection, name: "name", value }), "attrs.name", { reason: reason("attrs.name") })}
+          <h4>完了設定</h4><p className="e-help">送信は未接続です。公開出力も入力値を現在のURLや外部URLへ送りません。送信処理、保存、完了画面はホスト側で接続します。</p>
+          <h4>項目一覧</h4>{formItems.length ? <ul className="e-form-items">{formItems.map((item) => <li key={item.id}><button type="button" onClick={() => selectId(item.id)}>{item.label}<span aria-hidden="true">→</span></button></li>)}</ul> : <p className="e-help">入力項目はありません。</p>}
+        </>}
+        {elementTab === "settings" && ["input", "textarea", "select"].includes(node.tag) && node.attrs?.type !== "submit" && <>
+          {field("項目名", String(node.attrs?.name ?? ""), (value) => ({ type: "attribute", path: selection, name: "name", value }), "attrs.name", { reason: reason("attrs.name") })}
+          <label className="e-check"><input type="checkbox" checked={node.attrs?.required === true} disabled={editBlocked || !!reason("attrs.required")} onChange={(event) => { const error = apply({ type: "booleanAttribute", path: selection, name: "required", value: event.target.checked }); if (error) setNotice(error); }} />必須項目</label>
+        </>}
+        {elementTab === "settings" && node.tag === "input" && node.attrs?.type !== "submit" && <>
+          <label className="e-field"><span>入力タイプ</span><select aria-label="入力タイプ" value={String(node.attrs?.type ?? "text")} disabled={editBlocked || !!reason("attrs.type")} onChange={(event) => { const error = apply({ type: "attribute", path: selection, name: "type", value: event.target.value }); if (error) setNotice(error); }}>
+            <option value="text">テキスト</option><option value="email">メール</option><option value="tel">電話番号</option><option value="search">検索</option><option value="password">パスワード</option><option value="file">ファイル</option><option value="radio">ラジオ</option><option value="checkbox">チェックボックス</option>
+          </select></label>
+          {["text", "email", "tel", "search", "password"].includes(String(node.attrs?.type ?? "text")) && field("プレースホルダー", String(node.attrs?.placeholder ?? ""), (value) => ({ type: "attribute", path: selection, name: "placeholder", value }), "attrs.placeholder", { reason: reason("attrs.placeholder") })}
+          {node.attrs?.type === "file" && field("受付ファイル", String(node.attrs?.accept ?? ""), (value) => ({ type: "attribute", path: selection, name: "accept", value }), "attrs.accept", { reason: reason("attrs.accept"), placeholder: "image/*, .pdf" })}
+          {node.attrs?.type === "checkbox" && associatedLabel?.node.type === "element" && associatedLabel.node.children[0]?.type === "text" && field("チェックボックスのラベル", associatedLabel.node.children[0].text, (value) => ({ type: "text", path: [...associatedLabel.path, 0], value }), "checkbox-label", { reason: document ? lockReason(document, [...associatedLabel.path, 0], "text", locks) : undefined })}
+        </>}
+        {elementTab === "settings" && node.tag === "textarea" && field("プレースホルダー", String(node.attrs?.placeholder ?? ""), (value) => ({ type: "attribute", path: selection, name: "placeholder", value }), "attrs.placeholder", { reason: reason("attrs.placeholder") })}
+        {elementTab === "settings" && node.tag === "select" && field("選択肢（1行に1件）", choiceText, (value) => ({ type: "formChoices", path: selection, values: value.split("\n") }), "choices", { multiline: true, reason: reason("children") })}
+        {elementTab === "settings" && node.tag === "fieldset" && <>
+          {field("項目名", String(node.attrs?.name ?? ""), (value) => ({ type: "attribute", path: selection, name: "name", value }), "attrs.name", { reason: reason("attrs.name") })}
+          {field("ラジオの選択肢（1行に1件）", choiceText, (value) => ({ type: "formChoices", path: selection, values: value.split("\n") }), "choices", { multiline: true, reason: reason("children") })}
+        </>}
+        {elementTab === "settings" && node.tag === "button" && node.attrs?.type === "submit" && node.children[0]?.type === "text" && field("送信ボタンの表示", node.children[0].text, (value) => ({ type: "text", path: [...selection, 0], value }), "submit-caption", { reason: document ? lockReason(document, [...selection, 0], "text", locks) : undefined })}
         {elementTab === "settings" && ["p", "h1", "h2", "h3", "h4", "h5", "h6"].includes(node.tag) && <label className="e-field"><span>文字の種類</span><select aria-label="文字の種類" value={node.tag} disabled={targetMode || editBlocked || !!reason("tag")} onChange={(event) => { const problem = apply({ type: "tag", path: selection, value: event.target.value as "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" }); if (problem) setNotice(problem); }}><option value="p">段落</option><option value="h1">見出し 1</option><option value="h2">見出し 2</option><option value="h3">見出し 3</option><option value="h4">見出し 4</option><option value="h5">見出し 5</option><option value="h6">見出し 6</option></select>{targetMode && <small className="e-help">共通デザインは原文側で編集してください。</small>}</label>}
         {elementTab === "text" && node.children.length === 1 && node.children[0]?.type === "text" && field("テキスト", node.children[0].text, (value) => ({ type: "text", path: [...selection, 0], value }), "child-text", { multiline: true, reason: document ? lockReason(document, [...selection, 0], "text", locks) : undefined })}
         {elementTab === "image" && node.tag === "img" && (assets ? <ImageSourceField node={node} assets={resolvedAssets.map} failed={resolvedAssets.failed} lock={reason("attrs.src") ?? reason("asset")} disabled={editBlocked} onPick={() => setPicker({ purpose: "image", path: selection })}>

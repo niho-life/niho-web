@@ -32,7 +32,7 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 
 | 入口 | 用途 |
 | --- | --- |
-| `@niho/web` | JSON 型、`validateDocument` / `parsePageDocument`、閉じた組み込みアイコンカタログ、CSS、画像・native動画を含む React SSR の `PageRenderer` |
+| `@niho/web` | JSON 型、`validateDocument` / `parsePageDocument`、閉じた組み込みアイコンとフォーム要素、CSS、画像・native動画を含む React SSR の `PageRenderer` |
 | `@niho/web/core` | 検証・文書型・CSS・共通部品の検証と展開だけの入口。React の runtime import を含みません |
 | `@niho/web/builder` | 汎用の挿入カタログ、モーション定義、host拡張の型と検証。React非依存 |
 | `@niho/web/react` | `PageRenderer` とブロック registry の型 |
@@ -113,7 +113,7 @@ export default function Page() {
 }
 ```
 
-`PageRenderer` は `useEffect` やクライアントでの JSON fetch を必要としません。scoped `<style>` と本文の `<div lang="…">` を返します。`title` は文書の情報として保持し、Next.js の `metadata` / Astro の `<head>` へ設定するのは利用側の責務です。読み込む文書を site / page / locale から選ぶ処理も利用側に置きます。
+`PageRenderer` は `useEffect` やクライアントでの JSON fetch を必要としません。scoped `<style>` と本文の `<div lang="…">` を返します。`title` は文書の情報として保持し、Next.js の `metadata` / Astro の `<head>` へ設定するのは利用側の責務です。読み込む文書を site / page / locale から選ぶ処理も利用側に置きます。フォームはアクセシブルなlabel・required・選択肢をSSRしますが、既定では送信しません。回答送信、ファイル保存、完了画面、検証・CSRF・認可はホストがtrusted codeで接続し、action URLやイベントコードをページJSONへ保存しません（[フォーム契約](docs/document-contract.md#フォーム)）。
 
 ## 登録済み動的ブロック
 
@@ -199,7 +199,7 @@ const html = renderPageToHtml(document);
 
 ## 開発
 
-スタッフ向けエディターは `@niho/web/editor` の `PageEditor` を使います。左の追加パネルは Basic / Parts / Sections に分かれ、Basic のセクション・ボックス・画像・テキスト・組み込みアイコン・リッチテキスト・native動画等に加えて、編集可能なボタン・カード・見出しセット・リストと、ヘッダー・ヒーロー・特徴グリッド・CTA・FAQ・フッターをクリックまたはドラッグで配置できます。動画は直接URLまたは素材ライブラリのready MP4を選び、配信URLを文書へ保存しません。ページ・レイヤーパネル、中央キャンバスでの直接文字編集とドラッグ配置、右インスペクタ（編集段と表示段の要約、幅・高さ、マージン、パディング、方向、ギャップ、9点＋横・縦の配置、外観、位置。`flex` 比率と高さの `dvh` を含む）、下書き保存、楽観ロック、公開/rollbackの対象ドメインと差分確認も提供します。[ホスト接続・編集・公開の契約](docs/editor-contract.md)と `npm run demo` のインメモリ動作例を参照してください。ホストが所有する表示部品（カレンダー・地図・カルーセル・一覧など）をキャンバスの同じ iframe に公開と同じ見た目で出すには、`PageEditor` の `previewComponent` に表示中の文書・幅・表示モード・従来の描画を受けるコンポーネントを渡します（[ホストの表示部品を同じ iframe へ差し込む](docs/editor-contract.md#ホストの表示部品を同じ-iframe-へ差し込む)、`npm run demo:host-preview`）。
+スタッフ向けエディターは `@niho/web/editor` の `PageEditor` を使います。左の追加パネルは Basic / Parts / Sections に分かれ、Basic のセクション・ボックス・画像・テキスト・組み込みアイコン・リッチテキスト・native動画、Form1/2/3とInput・Textarea・Select・Radio・Confirm・Checkbox・File・Submit・Search・Passwordに加えて、編集可能なボタン・カード・見出しセット・リストと、ヘッダー・ヒーロー・特徴グリッド・CTA・FAQ・フッターをクリックまたはドラッグで配置できます。フォーム名、項目名、必須、入力型、placeholder、選択肢、checkbox label、file accept、submit captionは右インスペクタで編集できます。動画は直接URLまたは素材ライブラリのready MP4を選び、配信URLを文書へ保存しません。ページ・レイヤーパネル、中央キャンバスでの直接文字編集とドラッグ配置、右インスペクタ（編集段と表示段の要約、幅・高さ、マージン、パディング、方向、ギャップ、9点＋横・縦の配置、外観、位置。`flex` 比率と高さの `dvh` を含む）、下書き保存、楽観ロック、公開/rollbackの対象ドメインと差分確認も提供します。[ホスト接続・編集・公開の契約](docs/editor-contract.md)と `npm run demo` のインメモリ動作例を参照してください。ホストが所有する表示部品（カレンダー・地図・カルーセル・一覧など）をキャンバスの同じ iframe に公開と同じ見た目で出すには、`PageEditor` の `previewComponent` に表示中の文書・幅・表示モード・従来の描画を受けるコンポーネントを渡します（[ホストの表示部品を同じ iframe へ差し込む](docs/editor-contract.md#ホストの表示部品を同じ-iframe-へ差し込む)、`npm run demo:host-preview`）。
 
 Studioへの新しいサイト接続と、独自挿入・motion・block・共通部品・画像・CAS保存・SSRを持つ第三サイト `atelier` の動作例は[ビルダー接続ガイド](docs/builder-integration-guide.md)を参照してください。`npm run demo:builder` で `127.0.0.1` 限定のdemoを起動できます。
 
