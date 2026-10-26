@@ -78,6 +78,10 @@ const adapter: ProjectDashboardAdapter = {
 
 `onOpenSettings` の `section` は `site` または `analytics` です。設定ボタンと解析未接続のCTAは、ホストが実装した設定画面へ接続してください。概要とアクセス解析は実際の表示切替で、未実装のCMS・フォーム・課金タブは出しません。公開サイト確認は別タブで開き、元のDashboardを残します。
 
+- `settingsContent` を渡すと「プロジェクト設定」はDashboardの中でその中身を開き、`onOpenSettings(project, "site")` は呼びません。渡さなければ従来どおり `onOpenSettings` を呼びます。
+- `settingsAction: "disabled"` は設定画面の無いホストの表示です。`settingsContent` を渡していないホストでは「プロジェクト設定（準備中）」として無効にし、どのホストでも解析の接続操作を「解析接続（準備中）」として無効にします（接続設定の画面を持たないホストが、押しても何も起きないボタンを出さないため）。
+- `siteViews` はホストが接続したサイト機能（CMS・素材・翻訳など）です。左のメニューの「サイト機能」に `label` の順で並び、選ぶと本文の代わりに `content` を出します。開いている機能は `activeSiteView` / `onSiteViewChange` でホストが持ち、URLと合わせます。
+
 ```ts
 {
   status: 'ready', projectId: project.id, siteId: project.site.id,
@@ -92,10 +96,14 @@ const adapter: ProjectDashboardAdapter = {
     period: { start: '2026-10-01T00:00:00Z', end: '2026-10-20T09:00:00Z' },
     fetchedAt: '2026-10-20T09:00:00Z', uniqueVisitors: 0, pageViews: null,
   } },
+  members: { status: 'ready', data: [ // 任意。表示名と役割（owner | editor | null）だけ
+    { displayName: 'オーナー（架空）', role: 'owner' }, { displayName: '編集者（架空）', role: 'editor' },
+  ] },
 }
 // overview取得失敗: overview: { status: 'unavailable' }
 // 解析取得失敗: analytics: { status: 'unavailable' }
 // 解析未接続: analytics: { status: 'disconnected' }
+// メンバー取得失敗: members: { status: 'unavailable' }（members を省略すると Project.members を役割なしで表示）
 // 権限なし: { status: 'forbidden', projectId: project.id, siteId: project.site.id }
 ```
 
@@ -104,8 +112,8 @@ const adapter: ProjectDashboardAdapter = {
 - 日時はtimezone付きISO timestampです。解析対象期間の開始・終了、解析取得日時、Dashboard取得日時を表示します。表示は日本時間です。期間の逆転を拒否します。
 - 公開情報と解析の部分失敗を別々に表示します。未公開サイトに公開リンクを出しません。直近変更0件と取得失敗も別の状態です。変更はホストが返した順に最大20件表示します。
 - 概要には解析の要約（訪問者数、ページ表示数、対象期間、解析取得日時）とアクセス解析画面への導線を表示します。解析が未接続・取得失敗の場合はそれぞれの状態を表示し、公開情報の成否とは独立させます。`null` は未取得、`0` は実数値として表示します。
-- メンバー画面は選択Projectの `members` の表示名と人数を読み取り専用で表示します。0名は空状態として表示し、追加・解除の操作は既存 `ProjectManager` が担います。
-- DashboardはSTUDIOを参考に、サイト名・公開ドメイン、上部のホーム／アナリティクス／設定／デザインエディタ、ホーム配下のダッシュボード／プロジェクト設定／メンバーという階層で表示します。CMS・フォーム・課金などホストに機能がない導線は表示しません。ホーム本文は公開状態・ドメイン・ページ数・直近の変更と解析概要を表示し、メンバーは専用画面で読み取り専用表示します。デスクトップではホームメニューを左に、本文列を最大992px（内側の余白を除く本文は最大920px）で中央に配置し、幅900px以下ではメニューを横並びにして本文の上に置きます。
+- メンバー画面は読み取り専用です。ホストが `members` を返せば、その表示名・役割（オーナー／編集者。`null` は役割なし）・人数をホストの順で表示します。表示名は1〜120文字、最大500名です。返さないホストでは選択Projectの `members` を役割なしで表示します。0名は空状態、`unavailable` は取得失敗として公開情報と別に表示し、再試行できます。ホストのユーザーID・メールアドレスは契約に含めません。追加・解除・権限変更の操作は置かず、設定画面を持つホストでは「プロジェクト設定を開く」だけを出します（Studioでは既存のメンバー管理、ライブラリのデモでは既存 `ProjectManager`）。
+- DashboardはSTUDIOを参考に、上部にプロジェクト名・公開ドメイン・「デザインエディタ」、左に1列のメニューを置きます。メニューはSTUDIOの階層を見出しで分けます: 「ホーム」はダッシュボード／メンバー／プロジェクト設定、「サイト機能」はホストが接続したサイト機能（`siteViews`）とアナリティクスです。同じ画面を2か所から開く入口は作らず、CMS・フォーム・課金などホストに機能がない導線は表示しません。ダッシュボード本文は公開状態・ドメイン・ページ数・直近の変更と解析概要を表示し、メンバーは専用画面で読み取り専用表示します。デスクトップではメニューを左220pxに、本文列を最大992px（内側の余白を除く本文は最大920px）で中央に配置します。幅900px以下はメニューを本文の上で見出しごとに折り返して並べ、600px以下は縦1列にして横スクロールを使いません（320pxで全項目と現在地が見えます）。現在地は `aria-current="page"` で示し、各項目はnative buttonでfocus-visibleを持ちます。
 
 ## 非同期・接続切替・画面遷移
 

@@ -9,6 +9,18 @@ import {
   parseKamakuraCmsConflict, parseKamakuraCmsInvalid, parseKamakuraCmsItemEnvelope, parseKamakuraCmsList, parseKamakuraCmsListChange,
   parseKamakuraCmsListConflict, parseKamakuraCmsRemoved, parseKamakuraCmsSchema, parseKamakuraCmsUploadIntent, parseKamakuraCmsValues
 } from "./kamakura-cms-contract.js";
+import {
+  KAMAKURA_LOCALIZATION_IMAGE_TYPES, KAMAKURA_LOCALIZATION_LIMITS, KAMAKURA_LOCALIZATION_PREVIEW_ORIGIN, KAMAKURA_LOCALIZATION_UPLOAD_ORIGIN,
+  KAMAKURA_LOCALIZATION_UPSTREAM_PREFIX, isKamakuraLocalizationPreviewFrame, parseKamakuraLocalizationUploadIntent, parseKamakuraLocalizationUploadRefusal
+} from "./kamakura-localization-contract.js";
+import {
+  LOCALIZATION_LIMITS, isLocalizationItemKey, isLocalizationOperationId, parseLocaleReleaseApplyResult, parseLocaleReleasePrepareResult, parseLocaleReleaseStateResult,
+  parseLocalizationCatalogResult, parseLocalizationCommandResult, parseLocalizationItemResult, parseLocalizationJobResult, parseLocalizationListResult,
+  parseLocalizationOverviewResult, parseLocalizationPreviewResult, parseLocalizationSettingsResult, parseLocalizationTranslationResult,
+  type LocaleReleasePrepareInput
+} from "../src/localization-workspace-model.js";
+import { parseLocalizationValue } from "../src/localization.js";
+import { DocumentValidationError } from "../src/validation-utils.js";
 
 type D1Meta = { readonly changes?: number };
 type D1Result<T> = { readonly results?: readonly T[]; readonly success: boolean; readonly meta?: D1Meta };
@@ -42,6 +54,8 @@ export interface Env {
   readonly KAMAKURA_ADMIN_ORIGIN?: string;
   /** "workspace" のときだけ、Dashboard の CMS を Studio のコレクション画面で開く。無い・ほかの値は従来の枠。 */
   readonly KAMAKURA_CMS_VIEW?: string;
+  /** "workspace" のときだけ、Dashboard の翻訳を Studio の翻訳の画面で開く。無い・ほかの値は従来の枠。 */
+  readonly KAMAKURA_TRANSLATIONS_VIEW?: string;
 }
 
 type Role = "owner" | "editor";
@@ -155,6 +169,19 @@ type KamakuraBridgeOperation =
   | "cms_reorder"
   | "cms_bulk"
   | "cms_upload_intent"
+  | "localization_overview"
+  | "localization_list"
+  | "localization_item"
+  | "localization_command"
+  | "localization_translate"
+  | "localization_job"
+  | "localization_catalog"
+  | "localization_preview"
+  | "localization_release"
+  | "localization_release_prepare"
+  | "localization_release_apply"
+  | "localization_settings"
+  | "localization_upload_intent"
   | "site_overview";
 type KamakuraBridgeFailureCategory =
   | "bridge_secret_missing_or_invalid"
@@ -165,6 +192,7 @@ type KamakuraBridgeFailureCategory =
   | "upstream_unexpected_4xx"
   | "catalog_endpoint_missing"
   | "cms_endpoint_missing"
+  | "localization_endpoint_missing"
   | "overview_endpoint_missing"
   | "upstream_rate_limited"
   | "upstream_server_error"
@@ -423,17 +451,49 @@ async function dashboard(env: Env, identity: AccessIdentity, projectId: string, 
   if (row === null) return json({ status: "forbidden", projectId, siteId });
   const project = projectFromRow(row, identity.subject);
   // 公開情報は鎌倉だけサイト側から読む。ほかのサイトと解析は値を合成しない（unavailable / disconnected のまま）。
-  const overview: DashboardOverview = projectId === KAMAKURA_EDITOR_PROJECT_ID && siteId === KAMAKURA_EDITOR_SITE_ID
-    ? await kamakuraOverview(env, identity, project.site.domains)
-    : { status: "unavailable" };
+  const [overview, members] = await Promise.all([
+    projectId === KAMAKURA_EDITOR_PROJECT_ID && siteId === KAMAKURA_EDITOR_SITE_ID
+      ? kamakuraOverview(env, identity, project.site.domains)
+      : Promise.resolve<DashboardOverview>({ status: "unavailable" }),
+    dashboardMembers(env, projectId)
+  ]);
   return json({
     status: "ready",
     projectId,
     siteId,
     fetchedAt: new Date().toISOString(),
     overview,
-    analytics: { status: "disconnected" }
+    analytics: { status: "disconnected" },
+    members
   });
+}
+
+type DashboardMembers = { readonly status: "unavailable" } | { readonly status: "ready"; readonly data: readonly { readonly displayName: string; readonly role: Role }[] };
+
+/**
+ * Dashboard のメンバー表示（#66）: 参加者全員の表示名と役割。参加していることは dashboard() が先に確かめているので、
+ * owner でも editor でも読める。Access subject・メール・作成日時は出さない（招待・権限変更は membership API のまま owner だけ）。
+ * 読めないときは members だけ unavailable にして Dashboard 全体は返す。
+ */
+async function dashboardMembers(env: Env, projectId: string): Promise<DashboardMembers> {
+  try {
+    const result = await env.DB.prepare(`
+      SELECT m.display_name, m.role
+        FROM project_members AS m
+       WHERE m.project_id = ?1
+       ORDER BY CASE m.role WHEN 'owner' THEN 0 ELSE 1 END, m.display_name COLLATE NOCASE, m.access_subject
+       LIMIT ?2
+    `).bind(projectId, MAX_PROJECT_MEMBERS).all<Pick<MemberRow, "display_name" | "role">>();
+    if (!result.success) throw new Error("members query failed");
+    const data = (result.results ?? []).map((member) => {
+      if (!validName(member.display_name) || !validRole(member.role)) throw new Error("invalid stored member");
+      return { displayName: member.display_name, role: member.role };
+    });
+    return { status: "ready", data };
+  } catch (error) {
+    console.warn("NIHO Studio dashboard members unavailable", error instanceof Error ? error.name : "UnknownError");
+    return { status: "unavailable" };
+  }
 }
 
 type DashboardOverviewData = {
@@ -985,11 +1045,11 @@ function kamakuraEditorRoute(action: string, method: string): EditorRoute | "met
   return { upstreamPath: `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/${page[1]}${suffix}`, bodyLimit: suffix === "/draft" ? MAX_EDITOR_SAVE_BODY_BYTES : MAX_MUTATION_BODY_BYTES };
 }
 
-/** サイト側の管理画面を枠で開くための origin とパス、CMS の開き方（frame / workspace）。参加者（owner・editor）だけに返す */
+/** サイト側の管理画面を枠で開くための origin とパス、CMS・翻訳の開き方（frame / workspace）。参加者（owner・editor）だけに返す */
 async function siteAdminApi(env: Env, identity: AccessIdentity, projectId: string, siteId: string): Promise<Response> {
   if (!await editorMember(env, identity, projectId, siteId)) return json({ error: "forbidden" }, 403);
   const admin = siteAdmin(env as unknown as Record<string, unknown>, projectId, siteId);
-  return admin ? json({ origin: admin.origin, paths: admin.paths, cmsView: admin.cmsView }) : json({ error: "not_connected" }, 404);
+  return admin ? json({ origin: admin.origin, paths: admin.paths, cmsView: admin.cmsView, translationsView: admin.translationsView }) : json({ error: "not_connected" }, 404);
 }
 
 async function editorMember(env: Env, identity: AccessIdentity, projectId: string, siteId: string): Promise<boolean> {
@@ -1002,6 +1062,20 @@ async function editorMember(env: Env, identity: AccessIdentity, projectId: strin
      LIMIT 1
   `).bind(identity.subject, projectId, siteId).first<{ readonly allowed: number }>();
   return row?.allowed === 1;
+}
+
+/** そのサイトでの役割（owner / editor）。参加していなければ null。翻訳の BFF が上流へ渡す actor の role に使う。 */
+async function editorRole(env: Env, identity: AccessIdentity, projectId: string, siteId: string): Promise<Role | null> {
+  const row = await env.DB.prepare(`
+    SELECT m.role AS role
+      FROM project_members AS m
+      JOIN sites AS s ON s.project_id = m.project_id
+     WHERE m.access_subject = ?1 AND m.project_id = ?2 AND s.id = ?3
+       AND m.role IN ('owner', 'editor')
+     LIMIT 1
+  `).bind(identity.subject, projectId, siteId).first<{ readonly role: unknown }>();
+  const role = row?.role;
+  return role === "owner" || role === "editor" ? role : null;
 }
 
 async function experienceEditorOwner(env: Env, identity: AccessIdentity): Promise<boolean> {
@@ -1552,6 +1626,346 @@ async function kamakuraCmsApi(request: Request, env: Env, identity: AccessIdenti
   }
 }
 
+/* ---------- Kamakura の翻訳（LocalizationWorkspace）の BFF ---------- */
+
+type KamakuraLocalizationOperation =
+  "overview" | "list" | "list-after" | "item" | "command" | "translate" | "job" | "catalog" | "preview" | "release" | "prepare" | "apply" | "settings" | "upload-intent";
+type KamakuraLocalizationRoute = { readonly operation: KamakuraLocalizationOperation; readonly upstreamPath: string; readonly itemKey: string | null; readonly jobId: string | null };
+type KamakuraLocalizationSpec = { readonly method: "POST" | "PUT"; readonly log: KamakuraBridgeOperation; readonly bodyKeys: readonly string[] | null; readonly long: boolean };
+type KamakuraLocalizationActor = { readonly email: string; readonly role: Role };
+
+/**
+ * 操作ごとの method・log の operation・ブラウザの本文の key の集合（command は action ごと。actor は BFF が入れる）・待ち時間。
+ * long は GitHub や翻訳サービスを待つ操作（概要・原文の取り込み・翻訳の依頼・プレビューの材料・公開の履歴と準備と反映）で 30 秒、ほかは 12 秒。
+ */
+const KAMAKURA_LOCALIZATION_OPERATIONS: Readonly<Record<KamakuraLocalizationOperation, KamakuraLocalizationSpec>> = {
+  overview: { method: "POST", log: "localization_overview", bodyKeys: [], long: true },
+  list: { method: "POST", log: "localization_list", bodyKeys: [], long: false },
+  "list-after": { method: "POST", log: "localization_list", bodyKeys: [], long: false },
+  item: { method: "POST", log: "localization_item", bodyKeys: [], long: false },
+  command: { method: "POST", log: "localization_command", bodyKeys: null, long: false },
+  translate: { method: "POST", log: "localization_translate", bodyKeys: ["itemKey", "operationId", "unitIds"], long: true },
+  job: { method: "POST", log: "localization_job", bodyKeys: [], long: false },
+  catalog: { method: "POST", log: "localization_catalog", bodyKeys: [], long: true },
+  preview: { method: "POST", log: "localization_preview", bodyKeys: ["itemKey", "previewId", "cursor"], long: true },
+  release: { method: "POST", log: "localization_release", bodyKeys: [], long: true },
+  prepare: { method: "POST", log: "localization_release_prepare", bodyKeys: ["operation", "releaseId", "expectedVersion", "expectedCurrentVersion", "resumeToken"], long: true },
+  apply: { method: "POST", log: "localization_release_apply", bodyKeys: ["confirmationToken", "resumeToken"], long: true },
+  settings: { method: "PUT", log: "localization_settings", bodyKeys: ["expectedVersion", "autoDraft"], long: false },
+  "upload-intent": { method: "POST", log: "localization_upload_intent", bodyKeys: ["itemKey", "unitId", "name", "mimeType", "bytes"], long: false }
+};
+/** 下の階層を持たない経路（`/localization` より後ろ）。 */
+const KAMAKURA_LOCALIZATION_FIXED: Readonly<Record<string, KamakuraLocalizationOperation>> = {
+  "/overview": "overview", "/items": "list", "/catalog/advance": "catalog", "/preview/items": "preview", "/release": "release",
+  "/release/prepare": "prepare", "/release/apply": "apply", "/settings": "settings", "/uploads/intent": "upload-intent"
+};
+/** command の action ごとに足す本文の key。 */
+const KAMAKURA_LOCALIZATION_COMMAND_KEYS: Readonly<Record<string, readonly string[]>> = {
+  "set-value": ["value"], "adopt-candidate": ["candidateId"], "review-current": [], "set-image": ["image"], "review-image": []
+};
+// 形は W1 の契約（src/localization-workspace-model.ts の parser）と同じ
+const LOCALIZATION_UNIT_ID = /^[A-Za-z][A-Za-z0-9_.-]{0,299}$/u;
+const LOCALIZATION_SHORT_ID = /^[A-Za-z0-9_-]{1,80}$/u;
+const LOCALIZATION_CURSOR = /^[A-Za-z0-9_-]{1,512}$/u;
+const LOCALIZATION_OPAQUE_ID = /^[A-Za-z0-9_-]{1,128}$/u;
+const LOCALIZATION_RELEASE_ID = /^[A-Za-z][A-Za-z0-9_-]{0,127}$/u;
+const LOCALIZATION_TOKEN = /^[A-Za-z0-9._~+/=-]{1,512}$/u;
+const RESERVED_LOCALIZATION_SEGMENTS: ReadonlySet<string> = new Set(["__proto__", "constructor", "prototype"]);
+
+/** action は `/localization` より後ろ。itemKey・cursor・jobId は固定の形だけを通し、上流のパスはこの action をそのまま使う。 */
+function kamakuraLocalizationRoute(action: string, method: string): KamakuraLocalizationRoute | "method_not_allowed" | null {
+  let operation: KamakuraLocalizationOperation, itemKey: string | null = null, jobId: string | null = null;
+  const after = /^\/items\/after\/([^/]+)$/u.exec(action);
+  const item = /^\/items\/([^/]+)(?:\/(command|translate))?$/u.exec(action);
+  const job = /^\/jobs\/([^/]+)$/u.exec(action);
+  if (Object.hasOwn(KAMAKURA_LOCALIZATION_FIXED, action)) operation = KAMAKURA_LOCALIZATION_FIXED[action]!;
+  // 鎌倉の Worker と同じく items/after/<cursor> は一覧の続き（items/after だけなら 1 件）
+  else if (after) {
+    if (!LOCALIZATION_CURSOR.test(after[1]!)) return null;
+    operation = "list-after";
+  } else if (item) {
+    const key = item[1], suffix = item[2];
+    if (!isLocalizationItemKey(key)) return null;
+    itemKey = key;
+    operation = suffix === "command" || suffix === "translate" ? suffix : "item";
+  } else if (job) {
+    if (!LOCALIZATION_OPAQUE_ID.test(job[1]!) || RESERVED_LOCALIZATION_SEGMENTS.has(job[1]!)) return null;
+    jobId = job[1]!;
+    operation = "job";
+  } else return null;
+  if (method !== KAMAKURA_LOCALIZATION_OPERATIONS[operation].method) return "method_not_allowed";
+  return { operation, upstreamPath: `${KAMAKURA_LOCALIZATION_UPSTREAM_PREFIX}${action}`, itemKey, jobId };
+}
+
+function invalidLocalizationBody(what: string): never {
+  throw new AuthenticationError(`invalid localization ${what}`);
+}
+
+/** ブラウザの本文の値を操作ごとに確かめ、上流へ渡す値だけで作り直す（actor は含めない）。 */
+function kamakuraLocalizationValues(route: KamakuraLocalizationRoute, body: Record<string, unknown>): Record<string, unknown> {
+  const itemKey = (value: unknown, expected: string | null) => {
+    if (!isLocalizationItemKey(value) || (expected !== null && value !== expected)) invalidLocalizationBody("item key");
+    return value;
+  };
+  const unitId = (value: unknown) => {
+    if (typeof value !== "string" || !LOCALIZATION_UNIT_ID.test(value)) invalidLocalizationBody("unit");
+    return value;
+  };
+  const version = (value: unknown) => {
+    if (!isKamakuraCmsVersion(value)) invalidLocalizationBody("version");
+    return value;
+  };
+  const operationId = (value: unknown) => {
+    if (!isLocalizationOperationId(value)) invalidLocalizationBody("operation");
+    return value;
+  };
+  const token = (value: unknown) => {
+    if (value !== null && (typeof value !== "string" || !LOCALIZATION_TOKEN.test(value))) invalidLocalizationBody("token");
+    return value as string | null;
+  };
+  switch (route.operation) {
+    case "overview": case "list": case "list-after": case "item": case "job": case "catalog": case "release":
+      return {};
+    case "command": {
+      const base = {
+        itemKey: itemKey(body.itemKey, route.itemKey), operationId: operationId(body.operationId), action: body.action, unitId: unitId(body.unitId),
+        expectedVersion: version(body.expectedVersion), expectedSourceVersion: version(body.expectedSourceVersion)
+      };
+      if (body.action === "set-value") {
+        let value: unknown;
+        try { value = parseLocalizationValue(body.value, typeof body.value === "string" ? "text" : "rich-text"); }
+        catch { invalidLocalizationBody("value"); }
+        return { ...base, value };
+      }
+      if (body.action === "adopt-candidate") {
+        if (typeof body.candidateId !== "string" || !LOCALIZATION_OPAQUE_ID.test(body.candidateId)) invalidLocalizationBody("candidate");
+        return { ...base, candidateId: body.candidateId };
+      }
+      if (body.action === "set-image") {
+        if (body.image === null) return { ...base, image: null };
+        // 鎌倉の Worker が受けるのは公開画像の URL（{ kind: "image-url", src }）だけ。どの URL を使えるかは鎌倉の Worker が確かめる
+        let image: ReturnType<typeof parseLocalizationValue>;
+        try { image = parseLocalizationValue(body.image, "asset"); }
+        catch { invalidLocalizationBody("image"); }
+        if (typeof image !== "object" || image.kind !== "image-url" || image.srcset !== undefined) invalidLocalizationBody("image");
+        return { ...base, image: { kind: "image-url", src: image.src } };
+      }
+      return base;
+    }
+    case "translate": {
+      const ids = body.unitIds;
+      if (ids !== null && (!Array.isArray(ids) || ids.length > LOCALIZATION_LIMITS.units || new Set(ids).size !== ids.length)) invalidLocalizationBody("units");
+      return { itemKey: itemKey(body.itemKey, route.itemKey), operationId: operationId(body.operationId), unitIds: ids === null ? null : (ids as unknown[]).map(unitId) };
+    }
+    case "preview": {
+      if (typeof body.previewId !== "string" || !LOCALIZATION_SHORT_ID.test(body.previewId) || RESERVED_LOCALIZATION_SEGMENTS.has(body.previewId)) invalidLocalizationBody("preview");
+      if (body.cursor !== null && (typeof body.cursor !== "string" || !LOCALIZATION_CURSOR.test(body.cursor))) invalidLocalizationBody("cursor");
+      return { itemKey: itemKey(body.itemKey, null), previewId: body.previewId, cursor: body.cursor };
+    }
+    case "prepare": {
+      const operation = body.operation, releaseId = body.releaseId;
+      if (operation !== "publish" && operation !== "rollback") invalidLocalizationBody("release operation");
+      // 公開は行き先なし、戻しは行き先の版が要る
+      if (operation === "publish" ? releaseId !== null : typeof releaseId !== "string" || !LOCALIZATION_RELEASE_ID.test(releaseId)) invalidLocalizationBody("release");
+      const current = body.expectedCurrentVersion === null ? null : version(body.expectedCurrentVersion);
+      return { operation, releaseId, expectedVersion: version(body.expectedVersion), expectedCurrentVersion: current, resumeToken: token(body.resumeToken) };
+    }
+    case "apply": {
+      const confirmationToken = token(body.confirmationToken), resumeToken = token(body.resumeToken);
+      if ((confirmationToken === null) === (resumeToken === null)) invalidLocalizationBody("release token");
+      return { confirmationToken, resumeToken };
+    }
+    case "settings":
+      if (typeof body.autoDraft !== "boolean") invalidLocalizationBody("settings");
+      return { expectedVersion: version(body.expectedVersion), autoDraft: body.autoDraft };
+    case "upload-intent": {
+      const { name, mimeType, bytes } = body;
+      if (!isKamakuraCmsLine(name, KAMAKURA_LOCALIZATION_LIMITS.uploadNameLength) || typeof mimeType !== "string" || !KAMAKURA_LOCALIZATION_IMAGE_TYPES.has(mimeType)
+        || typeof bytes !== "number" || !Number.isSafeInteger(bytes) || bytes < 1 || bytes > KAMAKURA_LOCALIZATION_LIMITS.imageBytes) invalidLocalizationBody("upload");
+      return { itemKey: itemKey(body.itemKey, null), unitId: unitId(body.unitId), name, mimeType, bytes };
+    }
+  }
+}
+
+/** ブラウザの本文を操作ごとの key の集合で確かめ、BFF が確かめた email と役割を actor に入れて JSON を作り直す。actor を送ってきたら拒否。 */
+function kamakuraLocalizationBody(route: KamakuraLocalizationRoute, raw: Uint8Array, actor: KamakuraLocalizationActor): { readonly body: Uint8Array; readonly values: Record<string, unknown> } {
+  let parsed: unknown;
+  try { parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw)) as unknown; }
+  catch { invalidLocalizationBody("JSON"); }
+  if (!isRecord(parsed)) invalidLocalizationBody("body");
+  const action = parsed.action;
+  const commandKeys = typeof action === "string" && Object.hasOwn(KAMAKURA_LOCALIZATION_COMMAND_KEYS, action) ? KAMAKURA_LOCALIZATION_COMMAND_KEYS[action] : undefined;
+  const keys = route.operation === "command"
+    ? commandKeys && ["itemKey", "operationId", "action", "unitId", "expectedVersion", "expectedSourceVersion", ...commandKeys]
+    : KAMAKURA_LOCALIZATION_OPERATIONS[route.operation].bodyKeys;
+  if (!keys) invalidLocalizationBody("action");
+  const actual = Object.keys(parsed).sort(), expected = [...keys].sort();
+  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) invalidLocalizationBody("fields");
+  const values = kamakuraLocalizationValues(route, parsed);
+  return { body: new TextEncoder().encode(JSON.stringify({ ...values, actor: { email: actor.email, role: actor.role } })), values };
+}
+
+/**
+ * 上流の契約の結果（本文 `{ status, … }`）を W1 の parser で確かめ、既知の field だけにする。
+ * forbidden は 403・not_found は 404・ほかは 200 で返る約束なので、HTTP の status と合わなければ契約違反。
+ */
+function kamakuraLocalizationResult(route: KamakuraLocalizationRoute, request: Record<string, unknown>, value: unknown, httpStatus: number): { readonly status: string } {
+  const parse = (): { readonly status: string } => {
+    switch (route.operation) {
+      case "overview": {
+        const result = parseLocalizationOverviewResult(value);
+        // プレビューの枠は鎌倉の Worker のものだけ（CSP の frame-src に足すのもその origin だけ）
+        if (result.status === "ready" && result.overview.preview !== null && !isKamakuraLocalizationPreviewFrame(result.overview.preview.frameUrl)) {
+          throw new DocumentValidationError("overview.preview.frameUrl", "unexpected preview frame");
+        }
+        return result;
+      }
+      case "list": case "list-after": return parseLocalizationListResult(value);
+      case "item": return parseLocalizationItemResult(value, route.itemKey!);
+      case "command": return parseLocalizationCommandResult(value, { itemKey: route.itemKey!, unitId: request.unitId as string });
+      case "translate": return parseLocalizationTranslationResult(value);
+      case "job": return parseLocalizationJobResult(value, route.jobId!);
+      case "catalog": return parseLocalizationCatalogResult(value);
+      case "preview": return parseLocalizationPreviewResult(value);
+      case "release": return parseLocaleReleaseStateResult(value);
+      case "prepare": return parseLocaleReleasePrepareResult(value, request as unknown as LocaleReleasePrepareInput);
+      case "apply": return parseLocaleReleaseApplyResult(value, { prepared: null });
+      case "settings": return parseLocalizationSettingsResult(value);
+      case "upload-intent": return parseKamakuraLocalizationUploadRefusal(value);
+    }
+  };
+  const result = parse();
+  const expected = result.status === "forbidden" ? 403 : result.status === "not_found" ? 404 : 200;
+  if (httpStatus !== expected) throw new DocumentValidationError("response.status", "status does not match the HTTP status");
+  return result;
+}
+
+function isJsonResponse(response: Response): boolean {
+  return response.headers.get("Content-Type")?.split(";", 1)[0]?.trim().toLowerCase() === "application/json";
+}
+
+/**
+ * プレビューの材料（1 回 2 MiB まで）は確かめずに上限つきでそのまま流す（ブラウザの adapter と画面が W1 の parser で確かめる）。
+ * 上限を超えたら途中で切る（ブラウザは JSON を読めず、失敗として扱う）。
+ */
+function boundedJsonStream(response: Response, maximumBytes: number, failure: (category: KamakuraBridgeFailureCategory, status?: number) => KamakuraBridgeFailureError, onEnd: () => void, controller: AbortController): Response {
+  const declared = response.headers.get("Content-Length");
+  if (!isJsonResponse(response) || !response.body || (declared !== null && (!/^\d+$/u.test(declared) || Number(declared) > maximumBytes))) {
+    void response.body?.cancel().catch(() => undefined);
+    throw failure("upstream_invalid_response", response.status);
+  }
+  const reader = response.body.getReader();
+  let total = 0;
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(streamController) {
+      try {
+        const chunk = await reader.read();
+        if (chunk.done) { streamController.close(); onEnd(); return; }
+        total += chunk.value.byteLength;
+        if (total > maximumBytes) {
+          logKamakuraBridgeFailure(failure("upstream_invalid_response", response.status));
+          await reader.cancel("response too large").catch(() => undefined);
+          streamController.error(new Error("response too large"));
+          onEnd();
+          return;
+        }
+        streamController.enqueue(chunk.value);
+      } catch (error) { streamController.error(error); onEnd(); }
+    },
+    async cancel(reason) { try { await reader.cancel(reason); } finally { controller.abort(); onEnd(); } }
+  });
+  return new Response(stream, { status: 200, headers: securityHeaders("application/json; charset=utf-8") });
+}
+
+async function signedKamakuraLocalizationRequest(request: Request, env: Env, identity: AccessIdentity, role: Role, route: KamakuraLocalizationRoute): Promise<Response> {
+  const supportId = crypto.randomUUID();
+  const spec = KAMAKURA_LOCALIZATION_OPERATIONS[route.operation];
+  const operation = spec.log, method = spec.method;
+  const raw = await readBoundedBody(request, route.operation === "command" ? KAMAKURA_LOCALIZATION_LIMITS.commandBodyBytes : KAMAKURA_LOCALIZATION_LIMITS.bodyBytes);
+  const { body, values } = kamakuraLocalizationBody(route, raw, { email: identity.email, role });
+  const headers = await kamakuraSignedHeaders(env, identity, method, route.upstreamPath, body, supportId, operation);
+  const failure = (category: KamakuraBridgeFailureCategory, status?: number) => kamakuraBridgeFailure(supportId, operation, category, status);
+  const controller = new AbortController();
+  let timedOut = false, streaming = false;
+  const abortForRequest = () => controller.abort();
+  const abortForTimeout = () => { timedOut = true; controller.abort(); };
+  request.signal.addEventListener("abort", abortForRequest, { once: true });
+  const timeout = setTimeout(abortForTimeout, spec.long ? KAMAKURA_RELEASE_TIMEOUT_MILLISECONDS : EDITOR_TIMEOUT_MILLISECONDS);
+  const cleanup = () => { clearTimeout(timeout); request.signal.removeEventListener("abort", abortForRequest); };
+  const read = async (response: Response, limit: number): Promise<unknown> => {
+    try { return await readBoundedResponse(response, limit); }
+    catch { throw failure(timedOut ? "service_binding_timeout" : "upstream_invalid_response", response.status); }
+  };
+  const checked = (status: number, parse: () => unknown): Response => {
+    try { return json(parse(), status); }
+    catch (error) { throw failure(error instanceof DocumentValidationError ? "upstream_contract_invalid" : "bridge_processing_failed", status); }
+  };
+  const discard = async (response: Response) => { try { await response.body?.cancel(); } catch { /* 本文は使わない */ } };
+  try {
+    const upstream = new Request(`${KAMAKURA_EDITOR_UPSTREAM_ORIGIN}${route.upstreamPath}`, {
+      method, cache: "no-store", redirect: "manual", signal: controller.signal, headers, body: body.slice().buffer
+    });
+    let response: Response;
+    try { response = await env.KAMAKURA_SITE.fetch(upstream); }
+    catch { throw failure(timedOut ? "service_binding_timeout" : "service_binding_failed"); }
+    const status = response.status;
+    if (status >= 300 && status < 400) throw failure("upstream_redirect_rejected", status);
+    if (status === 401) throw failure("upstream_auth_rejected", status);
+    if (status === 429) throw failure("upstream_rate_limited", status);
+    if (status >= 500) throw failure("upstream_server_error", status);
+    if (status === 200 && route.operation === "preview") {
+      const streamed = boundedJsonStream(response, KAMAKURA_LOCALIZATION_LIMITS.previewResponseBytes, failure, cleanup, controller);
+      streaming = true;
+      return streamed;
+    }
+    if (status === 201 && route.operation === "upload-intent") {
+      const value = await read(response, KAMAKURA_LOCALIZATION_LIMITS.bodyBytes);
+      return checked(201, () => parseKamakuraLocalizationUploadIntent(value));
+    }
+    if (status === 200 || status === 403 || status === 404) {
+      // 契約の結果は本文に status がある。経路の誤り（{ error }）や JSON でない 404 は契約の結果ではない
+      const limit = route.operation === "upload-intent" ? KAMAKURA_LOCALIZATION_LIMITS.bodyBytes : KAMAKURA_LOCALIZATION_LIMITS.responseBytes;
+      let value: unknown = null;
+      if (status !== 404 || isJsonResponse(response)) value = await read(response, limit);
+      else await discard(response);
+      if (isRecord(value) && Object.hasOwn(value, "status")) return checked(status, () => kamakuraLocalizationResult(route, values, value, status));
+      if (status === 404) {
+        // 概要は画面が最初に読む。ここが経路ごと無いのは、鎌倉の Worker の翻訳の API がまだ配備されていない
+        if (route.operation === "overview") throw failure("localization_endpoint_missing", status);
+        return json({ error: "not_found" }, 404);
+      }
+      throw failure(status === 403 ? "upstream_auth_rejected" : "upstream_contract_invalid", status);
+    }
+    if (status === 409) { await discard(response); return json({ error: "conflict" }, 409); }
+    if ((status === 413 || status === 415) && route.operation === "upload-intent") { await discard(response); return json({ error: "image_rejected" }, status); }
+    if (status === 400 || status === 413 || status === 415) { await discard(response); return json({ error: "invalid_request" }, 400); }
+    await discard(response);
+    throw failure(status >= 200 && status < 300 ? "upstream_contract_invalid" : "upstream_unexpected_4xx", status);
+  } catch (error) {
+    if (error instanceof KamakuraBridgeFailureError) throw error;
+    throw failure("bridge_processing_failed");
+  } finally { if (!streaming) cleanup(); }
+}
+
+/**
+ * `/api/projects/project-kamakura/sites/kamakura/localization/*`。鎌倉以外は 404。要求ごとに D1 の owner / editor を確かめ、
+ * その役割を actor の role として上流へ渡す（できる操作は鎌倉の Worker が役割から決め、書き込みでも確かめる）。
+ */
+async function kamakuraLocalizationApi(request: Request, env: Env, identity: AccessIdentity, url: URL, projectId: string, siteId: string, action: string): Promise<Response> {
+  if (projectId !== KAMAKURA_EDITOR_PROJECT_ID || siteId !== KAMAKURA_EDITOR_SITE_ID) return json({ error: "not_found" }, 404);
+  if (url.href.includes("?")) return json({ error: "invalid_request" }, 400);
+  const route = kamakuraLocalizationRoute(action, request.method);
+  if (route === null) return json({ error: "not_found" }, 404);
+  if (route === "method_not_allowed") return json({ error: "method_not_allowed" }, 405);
+  const role = await editorRole(env, identity, projectId, siteId);
+  if (!role) return json({ error: "forbidden" }, 403);
+  try { return await signedKamakuraLocalizationRequest(request, env, identity, role, route); }
+  catch (error) {
+    if (error instanceof AuthenticationError) return json({ error: "invalid_request" }, 400);
+    throw error;
+  }
+}
+
 type WorkerEditorAdapter = {
   readonly route: (action: string, method: string, environment: string) => EditorRoute | "method_not_allowed" | null;
   readonly authorize: (env: Env, identity: AccessIdentity, resolved: ResolvedTrustedIntegration) => Promise<boolean>;
@@ -1659,6 +2073,7 @@ async function scopedApi(request: Request, env: Env, identity: AccessIdentity, u
   const siteId = match[2]!;
   const action = match[3] ?? "";
   if (action === "/cms" || action.startsWith("/cms/")) return kamakuraCmsApi(request, env, identity, url, projectId, siteId, action.slice("/cms".length));
+  if (action === "/localization" || action.startsWith("/localization/")) return kamakuraLocalizationApi(request, env, identity, url, projectId, siteId, action.slice("/localization".length));
   if (isTrustedEditorAction(action)) return editorApi(request, env, identity, url, projectId, siteId, action);
   if (request.method === "GET") {
     if (action === "/dashboard") return dashboard(env, identity, projectId, siteId);
@@ -1723,9 +2138,14 @@ async function handle(request: Request, env: Env): Promise<Response> {
     // サイト側にまだ Access の cookie が無いと、枠は Access のチームのドメインを経由して戻る（Studio にログイン済みならログイン画面は出ない）。
     // その経由先も枠に許す。ログイン画面そのものは Access が枠を拒むので、画面の「別のタブで開く」で入る（翻訳は CMS の切替の後も枠）
     const adminFrames = admin ? [admin.origin, new URL(env.ACCESS_ISSUER).origin] : [];
+    const kamakuraDashboard = dashboardTarget?.projectId === KAMAKURA_CMS_PROJECT_ID && dashboardTarget.siteId === KAMAKURA_CMS_SITE_ID;
     // CMS をコレクション画面で開くときだけ、画像本体を直接 PUT する鎌倉の Worker へ接続を許す（本文・縮小の画像は img-src の https: で足りる）
-    const cmsConnect = admin?.cmsView === "workspace" && dashboardTarget?.projectId === KAMAKURA_CMS_PROJECT_ID && dashboardTarget.siteId === KAMAKURA_CMS_SITE_ID ? [KAMAKURA_CMS_UPLOAD_ORIGIN] : [];
-    return withStaticSecurity(await env.ASSETS.fetch(new Request(indexUrl, { method: request.method, headers: request.headers })), pageAdapter !== null, pageAdapter ? pageAdapter.connectOrigins ?? [] : cmsConnect, pageAdapter?.fontSources ?? [], pageAdapter ? pageAdapter.frameSources ?? [] : adminFrames);
+    const cmsConnect = admin?.cmsView === "workspace" && kamakuraDashboard ? [KAMAKURA_CMS_UPLOAD_ORIGIN] : [];
+    // 翻訳を翻訳の画面で開くときだけ、訳す言語の画像の直接 PUT 先への接続と、鎌倉の Worker のプレビューの枠を許す
+    const translations = admin?.translationsView === "workspace" && kamakuraDashboard;
+    const dashboardConnect = [...new Set([...cmsConnect, ...(translations ? [KAMAKURA_LOCALIZATION_UPLOAD_ORIGIN] : [])])];
+    const dashboardFrames = [...new Set([...adminFrames, ...(translations ? [KAMAKURA_LOCALIZATION_PREVIEW_ORIGIN] : [])])];
+    return withStaticSecurity(await env.ASSETS.fetch(new Request(indexUrl, { method: request.method, headers: request.headers })), pageAdapter !== null, pageAdapter ? pageAdapter.connectOrigins ?? [] : dashboardConnect, pageAdapter?.fontSources ?? [], pageAdapter ? pageAdapter.frameSources ?? [] : dashboardFrames);
   }
   return withStaticSecurity(await env.ASSETS.fetch(request));
 }

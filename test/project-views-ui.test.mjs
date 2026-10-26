@@ -124,8 +124,12 @@ test("dashboard shows only selected Site facts, zero versus unknown, analytic da
     assert.deepEqual([...summary.querySelectorAll("dd")].map((node) => node.textContent), ["0", "未取得"]);
     assert.ok(summary.textContent.includes("対象期間")); assert.ok(summary.textContent.includes("解析取得日時"));
     assert.equal(document.querySelector('a.pv-link').href, "https://one.example.test/");
-    assert.deepEqual([...document.querySelectorAll(".pv-global-nav button")].map((node) => node.textContent), ["ホーム", "アナリティクス", "設定"]);
-    assert.deepEqual([...document.querySelectorAll(".pv-home-nav button")].map((node) => node.textContent), ["ダッシュボード", "プロジェクト設定", "メンバー"]);
+    // 左の 1 列のメニュー: STUDIO の「ホーム配下」と「サイト機能」を見出しで分け、同じ画面を 2 か所から開かない
+    assert.deepEqual([...document.querySelectorAll(".pv-dashboard-nav button")].map((node) => node.textContent), ["ダッシュボード", "メンバー", "プロジェクト設定", "アナリティクス"]);
+    assert.deepEqual([...document.querySelectorAll(".pv-dashboard-nav .pv-nav-heading")].map((node) => node.textContent), ["ホーム", "サイト機能"]);
+    assert.equal(document.querySelector(".pv-global-nav, .pv-home-nav"), null);
+    for (const group of document.querySelectorAll(".pv-nav-group")) assert.equal(document.getElementById(group.getAttribute("aria-labelledby"))?.classList.contains("pv-nav-heading"), true);
+    assert.equal(button("ダッシュボード").getAttribute("aria-current"), "page");
     await click("デザインエディタ"); assert.deepEqual(app.calls.editors[0], selected);
     await click("プロジェクト設定"); assert.deepEqual(app.calls.settings[0], [selected, "site"]);
     await click("アナリティクス"); assert.equal(button("アナリティクス").getAttribute("aria-current"), "page");
@@ -159,18 +163,37 @@ test("dashboard unpublished, empty changes, disconnected Analytics, and partial 
   } finally { await app.cleanup(); }
 });
 
-test("dashboard members are read-only with empty, multiple and long-name states", async () => {
+test("dashboard members are read-only with roles, host fallback, empty, unavailable and long-name states", async () => {
   const selected = project(); selected.members = [];
   const app = await setup(ProjectDashboard, { project: selected, adapter: dashboardAdapter(async () => dashboard(selected)) });
   try {
     assert.ok(button("プロジェクト一覧へ戻る")); await click("プロジェクト一覧へ戻る"); assert.equal(app.calls.backs, 1);
     await click("メンバー"); assert.ok(document.body.textContent.includes("メンバー（0名）")); assert.ok(document.body.textContent.includes("メンバーはいません"));
     assert.equal(document.querySelector(".pv-member-list"), null);
+    // ホストが members を返さなければ Project 正本の参加者（役割なし）
     const next = project(); next.members = [{ userId: "first", displayName: "長い参加者名".repeat(18) }, { userId: "second", displayName: "二人目" }];
     await app.rerender({ project: next, adapter: dashboardAdapter(async () => dashboard(next)) });
     await click("メンバー"); assert.equal(document.querySelectorAll(".pv-member-list li").length, 2);
     assert.ok(document.body.textContent.includes(next.members[0].displayName)); assert.ok(document.body.textContent.includes("メンバー（2名）"));
-    assert.equal(document.querySelector(".pv-member-list button"), null);
+    assert.equal(document.querySelector(".pv-member-list button"), null); assert.equal(document.querySelector(".pv-role"), null);
+    // ホストが返した members（役割つき）を Project.members より優先し、順序はホストのまま。追加・解除・権限変更の操作は置かない
+    const withRoles = dashboard(next); withRoles.members = { status: "ready", data: [{ displayName: "オーナー（架空）", role: "owner" }, { displayName: "編集者（架空）", role: "editor" }, { displayName: "役割なし（架空）", role: null }] };
+    await app.rerender({ adapter: dashboardAdapter(async () => withRoles) });
+    await click("メンバー");
+    assert.deepEqual([...document.querySelectorAll(".pv-member-list li")].map((node) => node.textContent), ["オーナー（架空）オーナー", "編集者（架空）編集者", "役割なし（架空）"]);
+    assert.ok(document.querySelector(".pv-member-list .pv-role-owner")); assert.ok(document.body.textContent.includes("メンバー（3名）"));
+    assert.equal(document.body.textContent.includes(next.members[0].displayName), false);
+    assert.equal(document.querySelector(".pv-member-list button, .pv-member-list input, .pv-member-list select"), null);
+    await click("プロジェクト設定を開く"); assert.deepEqual(app.calls.settings.at(-1), [next, "site"]);
+    // 設定画面の無いホストでは設定への導線も出さない
+    await app.rerender({ settingsAction: "disabled" }); await click("メンバー");
+    assert.equal(button("プロジェクト設定を開く"), undefined); assert.equal(document.querySelectorAll(".pv-member-list li").length, 3);
+    // 取得失敗はメンバーだけ（公開情報は残る）
+    const failed = dashboard(next); failed.members = { status: "unavailable" };
+    await app.rerender({ settingsAction: "enabled", adapter: dashboardAdapter(async () => failed) });
+    await click("メンバー"); assert.ok(document.querySelector(".pv-panel [role=alert]").textContent.includes("メンバーを取得できませんでした")); assert.ok(button("再試行"));
+    assert.equal(document.querySelector(".pv-member-list"), null);
+    await click("ダッシュボード"); assert.ok(document.body.textContent.includes("公開中"));
   } finally { await app.cleanup(); }
 });
 
@@ -179,25 +202,36 @@ test("dashboard shows host site views in the site nav and project settings conte
   const siteViews = [{ id: "cms", label: "CMS", content: createElement("p", { id: "cms-body" }, "CMS の中身") }, { id: "translations", label: "翻訳", content: createElement("p", { id: "translations-body" }, "翻訳の中身") }];
   const app = await setup(ProjectDashboard, { project: selected, adapter: dashboardAdapter(async () => dashboard(selected)), siteViews, activeSiteView: null, onSiteViewChange: (id) => changes.push(id), settingsContent: createElement("p", { id: "settings-body" }, "メンバーと招待") });
   try {
-    const nav = [...document.querySelectorAll(".pv-global-nav button")].map((node) => node.textContent);
-    assert.deepEqual(nav, ["ホーム", "CMS", "翻訳", "アナリティクス", "設定"]);
+    const nav = [...document.querySelectorAll(".pv-dashboard-nav button")].map((node) => node.textContent);
+    assert.deepEqual(nav, ["ダッシュボード", "メンバー", "プロジェクト設定", "CMS", "翻訳", "アナリティクス"]);
+    assert.equal(new Set(nav).size, nav.length, "同じ名前の入口を 2 つ出さない");
     await click("CMS");
     assert.deepEqual(changes, ["cms"]);
     await app.rerender({ activeSiteView: "cms" });
     assert.equal(document.querySelector("#cms-body")?.textContent, "CMS の中身");
-    assert.equal(document.querySelector(".pv-dashboard-layout"), null);
+    // サイト機能を開いている間もメニューは残り、本文だけが入れ替わる
+    assert.ok(document.querySelector(".pv-dashboard-layout > .pv-dashboard-nav"));
+    assert.equal(document.querySelector(".pv-dashboard-content"), null);
+    assert.equal(document.querySelector(".pv-site-view")?.getAttribute("aria-label"), "CMS");
     assert.equal(button("CMS").getAttribute("aria-current"), "page");
-    assert.equal(button("ホーム").getAttribute("aria-current"), null);
-    await click("ホーム");
+    assert.equal(button("ダッシュボード").getAttribute("aria-current"), null);
+    await click("ダッシュボード");
     assert.deepEqual(changes, ["cms", null]);
     await app.rerender({ activeSiteView: null });
-    await click("設定");
+    await click("プロジェクト設定");
     assert.equal(document.querySelector("#settings-body")?.textContent, "メンバーと招待");
     assert.equal(document.querySelector(".pv-page-title").textContent, "プロジェクト設定");
-    assert.equal(button("設定").getAttribute("aria-current"), "page");
+    assert.equal(button("プロジェクト設定").getAttribute("aria-current"), "page");
     assert.equal(app.calls.settings.length, 0);
     await app.rerender({ activeSiteView: "unknown" });
-    assert.ok(document.querySelector(".pv-dashboard-layout"));
+    assert.ok(document.querySelector(".pv-dashboard-content"));
+    // 設定の中身を持つホストが解析の接続設定だけを持たないとき: プロジェクト設定は開け、解析接続は無効の正直なラベル
+    await app.rerender({ activeSiteView: null, settingsAction: "disabled" });
+    assert.equal(button("プロジェクト設定").disabled, false);
+    await click("アナリティクス");
+    assert.equal(button("解析接続（準備中）").disabled, true);
+    assert.equal(button("解析接続設定"), undefined);
+    assert.equal(app.calls.settings.length, 0);
   } finally { await app.cleanup(); }
 });
 
@@ -226,7 +260,7 @@ test("dashboard mismatch, failure and permission loss clear all sensitive facts 
     }
     result = dashboard(); await click("再試行"); assert.ok(button("デザインエディタ"));
     result = { status: "forbidden", projectId: "project_one", siteId: "site_one" }; await click("再読込");
-    assert.ok(document.body.textContent.includes("権限がありません")); assert.ok(button("プロジェクト一覧へ戻る")); assert.equal(document.body.textContent.includes(project().name), false); assert.equal(document.querySelector(".pv-project-identity h1")?.textContent, "プロジェクトダッシュボード"); assert.equal(button("設定"), undefined);
+    assert.ok(document.body.textContent.includes("権限がありません")); assert.ok(button("プロジェクト一覧へ戻る")); assert.equal(document.body.textContent.includes(project().name), false); assert.equal(document.querySelector(".pv-project-identity h1")?.textContent, "プロジェクトダッシュボード"); assert.equal(button("プロジェクト設定"), undefined); assert.equal(document.querySelector(".pv-dashboard-nav"), null);
     fail = true; await click("再試行"); assert.ok(document.body.textContent.includes("読み込めませんでした")); assert.ok(button("プロジェクト一覧へ戻る")); assert.equal(document.body.textContent.includes("secret"), false);
   } finally { await app.cleanup(); }
 });
@@ -241,8 +275,10 @@ test("dashboard uses the host theme variables with Studio-style color fallbacks"
     assert.ok(css.includes("--pv-muted:var(--niho-text-sub,#777)"));
     assert.ok(css.includes("--pv-border:var(--niho-border,#e6e6e6)"));
     assert.ok(css.includes("--pv-primary-bg:var(--niho-primary-bg,#1d1d1d)"));
-    assert.ok(css.includes(".pv-project-bar{position:relative;z-index:2;display:flex;align-items:center;gap:18px;min-height:64px;padding:0 22px;background:var(--pv-surface);border-bottom:1px solid var(--pv-border)"));
-    assert.ok(css.includes(".pv-home-nav{display:flex;flex-direction:column;gap:3px;align-items:stretch;margin:0;padding:22px 18px;border-right:1px solid var(--pv-border);background:var(--pv-surface)"));
+    assert.ok(css.includes(".pv-project-bar{position:relative;z-index:2;display:flex;align-items:center;gap:14px;min-height:64px;padding:0 22px;background:var(--pv-surface);border-bottom:1px solid var(--pv-border)"));
+    assert.ok(css.includes(".pv-dashboard-nav{display:flex;flex-direction:column;gap:18px;margin:0;padding:22px 14px;border-right:1px solid var(--pv-border);background:var(--pv-surface)"));
+    // 現在地の背景はホストの変数が無くても見える値に落ちる
+    assert.ok(css.includes("--pv-nav-active:var(--niho-surface-subtle,#f0f0f0)"));
   } finally { await app.cleanup(); }
 });
 
@@ -271,5 +307,11 @@ test("long Japanese names and URLs remain complete and the stylesheet defines 32
     assert.ok(rows()[1].textContent.includes(input.entries[0].project.name));
     const css = [...document.querySelectorAll("style")].map((style) => style.textContent ?? "").join("\n"); assert.ok(css.includes("overflow-wrap:anywhere")); assert.ok(css.includes("@media(max-width:600px)")); assert.ok(css.includes("grid-template-columns:86px minmax(0,1fr)")); assert.ok(css.includes(":focus-visible")); assert.ok(css.includes(".pv-dashboard-content{width:min(100%,992px)"));
     assert.ok(css.includes(".pv-grid{display:none}")); assert.ok(css.includes(".pv-directory-list tr{padding:12px 14px"));
+    // Dashboard のメニュー: 900px 以下は本文の上で折り返し、600px 以下は縦 1 列。横スクロールで欠けさせない
+    const dashboardMobile = css.slice(css.indexOf(".nw-project-dashboard{"));
+    assert.ok(dashboardMobile.includes("@media(max-width:900px){.nw-project-dashboard .pv-project-bar{gap:10px;padding:0 14px}.nw-project-dashboard .pv-dashboard-layout{grid-template-columns:1fr"));
+    assert.ok(dashboardMobile.includes(".nw-project-dashboard .pv-nav-group{flex-direction:row;flex-wrap:wrap"));
+    assert.ok(dashboardMobile.includes("@media(max-width:600px){") && dashboardMobile.includes(".nw-project-dashboard .pv-nav-group{flex-direction:column;align-items:stretch") && dashboardMobile.includes(".nw-project-dashboard .pv-dashboard-nav button{width:100%"));
+    assert.equal(dashboardMobile.includes("overflow-x:auto"), false);
   } finally { await app.cleanup(); }
 });

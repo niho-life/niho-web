@@ -1,13 +1,13 @@
 "use client";
 
-import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useId, useMemo, useState, type ReactNode } from "react";
 import { parseProject, type Project } from "./projects.js";
-import { parseProjectDashboardResult, type ProjectDashboardAdapter, type ProjectDashboardResult, type ProjectOverview } from "./project-read-model.js";
+import { parseProjectDashboardResult, type ProjectDashboardAdapter, type ProjectDashboardResult, type ProjectMemberRole, type ProjectMemberSummary, type ProjectOverview, type ReadSection } from "./project-read-model.js";
 import { dateLabel, PublicationBadge, ReadNotice, Timestamp, useProjectRead } from "./project-view-shared.js";
 import { projectViewCss } from "./project-view-style.js";
 
 export { parseProjectDashboardResult } from "./project-read-model.js";
-export type { ProjectAnalytics, ProjectDashboardAdapter, ProjectDashboardResult, ProjectOverview, ProjectTarget, ReadSection } from "./project-read-model.js";
+export type { ProjectAnalytics, ProjectDashboardAdapter, ProjectDashboardResult, ProjectMemberRole, ProjectMemberSummary, ProjectOverview, ProjectTarget, ReadSection } from "./project-read-model.js";
 /** ホストが接続したサイト機能（CMS・素材・翻訳など）。中身はホストが描く */
 export type ProjectSiteView = { id: string; label: string; content: ReactNode };
 export type ProjectDashboardProps = {
@@ -19,19 +19,27 @@ export type ProjectDashboardProps = {
   onOpenSettings: (project: Project, section: "site" | "analytics") => void;
   /** editor bridge未接続時は、ホストの説明surfaceを開ける正直なラベルにする。 */
   editorAction?: "enabled" | "pending";
-  /** ホストに設定画面がない場合は、設定操作を無効として表示する。 */
+  /**
+   * ホストに設定画面がない場合は、設定操作を無効として表示する。
+   * `settingsContent` を渡したホストではプロジェクト設定は常に開け、この値は解析の接続設定の操作にだけ効く。
+   */
   settingsAction?: "enabled" | "disabled";
-  /** 設定を開いたときに Dashboard の中に出す中身（メンバーと招待など）。指定がなければ onOpenSettings を呼ぶ。 */
+  /** プロジェクト設定を開いたときに Dashboard の中に出す中身（メンバーと招待など）。指定がなければ onOpenSettings を呼ぶ。 */
   settingsContent?: ReactNode;
-  /** 上部のサイトナビで「ホーム」の後ろに並べるサイト機能。選ぶと Dashboard の本文の代わりに中身を出す。 */
+  /** 左のメニューの「サイト機能」に並べるサイト機能。選ぶと Dashboard の本文の代わりに中身を出す。 */
   siteViews?: readonly ProjectSiteView[];
-  /** 開いているサイト機能の id。null・未指定は Dashboard 側（ホーム・アナリティクス・設定）。URL と合わせるためホストが持つ。 */
+  /** 開いているサイト機能の id。null・未指定は Dashboard 側（ダッシュボード・メンバー・プロジェクト設定・アナリティクス）。URL と合わせるためホストが持つ。 */
   activeSiteView?: string | null;
   onSiteViewChange?: (id: string | null) => void;
 };
 
 type ReadyDashboard = Extract<ProjectDashboardResult, { status: "ready" }>;
+type DashboardView = "overview" | "analytics" | "members" | "settings";
+const VIEW_TITLES: Readonly<Record<DashboardView, string>> = { overview: "ダッシュボード", analytics: "アナリティクス", members: "メンバー", settings: "プロジェクト設定" };
 const numberLabel = (value: number | null) => value === null ? "未取得" : value.toLocaleString("ja-JP");
+const DISCONNECTED_TEXT = "アクセス解析はまだ接続されていません。";
+const DISCONNECTED_HINT = "解析サービスを接続すると、訪問者数とページ表示数、対象期間をここに表示します。接続までは数値を表示しません。";
+const ROLE_LABELS: Readonly<Record<ProjectMemberRole, string>> = { owner: "オーナー", editor: "編集者" };
 
 function Overview({ overview }: { overview: ProjectOverview }) {
   return <><PublicationBadge status={overview.publicationStatus} />
@@ -43,7 +51,7 @@ function Overview({ overview }: { overview: ProjectOverview }) {
 }
 function Analytics({ result, connect, retry, settingsAction }: { result: ReadyDashboard["analytics"]; connect: () => void; retry: () => void; settingsAction: "enabled" | "disabled" }) {
   const settingsButton = <button type="button" onClick={connect} disabled={settingsAction === "disabled"}>{settingsAction === "disabled" ? "解析接続（準備中）" : "解析接続設定"}</button>;
-  if (result.status === "disconnected") return <><p>アクセス解析はまだ接続されていません。</p><p className="pv-muted">解析サービスを接続すると、このサイトの訪問状況を確認できます。</p><div className="pv-actions">{settingsButton}</div></>;
+  if (result.status === "disconnected") return <><p>{DISCONNECTED_TEXT}</p><p className="pv-muted">{DISCONNECTED_HINT}</p><div className="pv-actions">{settingsButton}</div></>;
   if (result.status === "unavailable") return <><p role="alert">アクセス解析を取得できませんでした。</p><div className="pv-actions"><button type="button" onClick={retry}>再試行</button>{settingsButton}</div></>;
   return <><p className="pv-period">対象期間 <time dateTime={result.data.period.start}>{dateLabel(result.data.period.start)}</time> 〜 <time dateTime={result.data.period.end}>{dateLabel(result.data.period.end)}</time></p>
     <dl className="pv-stats"><div><dt>訪問者数</dt><dd>{numberLabel(result.data.uniqueVisitors)}</dd></div><div><dt>ページ表示数</dt><dd>{numberLabel(result.data.pageViews)}</dd></div></dl>
@@ -54,8 +62,20 @@ function AnalyticsSummary({ result, open }: { result: ReadyDashboard["analytics"
     {result.status === "ready" ? <><dl className="pv-stats"><div><dt>訪問者数</dt><dd>{numberLabel(result.data.uniqueVisitors)}</dd></div><div><dt>ページ表示数</dt><dd>{numberLabel(result.data.pageViews)}</dd></div></dl>
       <p className="pv-period">対象期間 <time dateTime={result.data.period.start}>{dateLabel(result.data.period.start)}</time> 〜 <time dateTime={result.data.period.end}>{dateLabel(result.data.period.end)}</time></p>
       <p className="pv-fetched">解析取得日時 <Timestamp value={result.data.fetchedAt} /></p></>
-      : <p role={result.status === "unavailable" ? "alert" : undefined}>{result.status === "disconnected" ? "アクセス解析はまだ接続されていません。" : "アクセス解析を取得できませんでした。"}</p>}
+      : result.status === "disconnected" ? <><p>{DISCONNECTED_TEXT}</p><p className="pv-muted">{DISCONNECTED_HINT}</p></>
+      : <p role="alert">アクセス解析を取得できませんでした。</p>}
     <div className="pv-actions"><button type="button" onClick={open}>アクセス解析を見る</button></div>
+  </section>;
+}
+
+/** 読み取り専用のメンバー一覧。ホストが members を返さなければ Project 正本の参加者を役割なしで出す。招待・解除・権限変更はプロジェクト設定（ホスト）の役割。 */
+function Members({ project, members, retry, openSettings }: { project: Project; members: ReadyDashboard["members"]; retry: () => void; openSettings: (() => void) | null }) {
+  const section: ReadSection<readonly ProjectMemberSummary[]> = members ?? { status: "ready", data: project.members.map((member) => ({ displayName: member.displayName, role: null })) };
+  if (section.status === "unavailable") return <section className="pv-panel"><h3>メンバー</h3><p role="alert">メンバーを取得できませんでした。</p><div className="pv-actions"><button type="button" onClick={retry}>再試行</button></div></section>;
+  return <section className="pv-panel"><h3>メンバー（{section.data.length}名）</h3>
+    {section.data.length === 0 ? <p className="pv-muted">メンバーはいません。</p>
+      : <ul className="pv-member-list">{section.data.map((member, index) => <li key={index}><span className="pv-member-name">{member.displayName}</span>{member.role && <span className={`pv-role pv-role-${member.role}`}>{ROLE_LABELS[member.role]}</span>}</li>)}</ul>}
+    {openSettings && <><p className="pv-muted">メンバーの招待・権限の変更・参加解除はプロジェクト設定で行います。</p><div className="pv-actions"><button type="button" onClick={openSettings}>プロジェクト設定を開く</button></div></>}
   </section>;
 }
 
@@ -74,12 +94,16 @@ function DashboardSession({ project: inputProject, adapter, onBackToProjects, on
     return parseProjectDashboardResult(response, project);
   }, [adapter, project]);
   const { state, reload } = useProjectRead(reader);
-  const [view, setView] = useState<"overview" | "analytics" | "members" | "settings">("overview");
+  const [view, setView] = useState<DashboardView>("overview");
+  const navId = useId();
   const result = state.status === "complete" && state.value.status === "ready" ? state.value : null;
   const siteView = siteViews.find((item) => item.id === activeSiteView) ?? null;
   /** Dashboard 側の画面へ移る（開いているサイト機能は閉じる） */
-  const show = (next: typeof view) => { if (siteView) onSiteViewChange?.(null); setView(next); };
+  const show = (next: DashboardView) => { if (siteView) onSiteViewChange?.(null); setView(next); };
+  // 設定の中身を持つホストはいつでも開ける。持たないホストは onOpenSettings へ渡し、設定画面の無いホストでは無効にする
+  const settingsDisabled = settingsContent === undefined && settingsAction === "disabled";
   const openSettings = (target: Project) => settingsContent === undefined ? onOpenSettings(target, "site") : show("settings");
+  const current = (target: DashboardView) => !siteView && view === target ? "page" : undefined;
   return <section className="nw-project-view nw-project-dashboard" aria-label="プロジェクトダッシュボード"><style dangerouslySetInnerHTML={{ __html: projectViewCss }} />
     <header className="pv-project-bar">
       <button type="button" className="pv-project-back" onClick={onBackToProjects} aria-label="プロジェクト一覧へ戻る">‹</button>
@@ -87,38 +111,36 @@ function DashboardSession({ project: inputProject, adapter, onBackToProjects, on
         <h1>{result && project ? project.name : "プロジェクトダッシュボード"}</h1>
         {result && project && <span><i aria-hidden="true" />{project.site.domains[0] ?? project.site.name}</span>}
       </div>
-      {result && project && <>
-        <nav className="pv-global-nav" aria-label="サイト機能">
-          <button type="button" aria-current={!siteView && (view === "overview" || view === "members") ? "page" : undefined} onClick={() => show("overview")}>ホーム</button>
-          {siteViews.map((item) => <button key={item.id} type="button" aria-current={siteView?.id === item.id ? "page" : undefined} onClick={() => onSiteViewChange?.(item.id)}>{item.label}</button>)}
-          <button type="button" aria-current={!siteView && view === "analytics" ? "page" : undefined} onClick={() => show("analytics")}>アナリティクス</button>
-          <button type="button" aria-current={!siteView && view === "settings" ? "page" : undefined} onClick={() => openSettings(project)} disabled={settingsAction === "disabled"}>{settingsAction === "disabled" ? "設定（準備中）" : "設定"}</button>
-        </nav>
-        <button type="button" className="pv-editor-link" onClick={() => onOpenEditor(project)}>{editorAction === "pending" ? "エディター接続待ち" : "デザインエディタ"}</button>
-      </>}
+      {result && project && <button type="button" className="pv-editor-link" onClick={() => onOpenEditor(project)}>{editorAction === "pending" ? "エディター接続待ち" : "デザインエディタ"}</button>}
     </header>
     {state.status !== "complete" ? <ReadNotice status={state.status} noun="ダッシュボード" retry={reload} />
       : state.value.status === "forbidden" ? <ReadNotice status="forbidden" noun="ダッシュボード" retry={reload} />
-      : result && project && siteView ? <main className="pv-site-view" aria-label={siteView.label}>{siteView.content}</main>
-      : result && project && <>
-        <div className="pv-dashboard-layout">
-          <nav className="pv-home-nav" aria-label="ホームメニュー">
-            <button type="button" aria-current={view === "overview" ? "page" : undefined} onClick={() => setView("overview")}>ダッシュボード</button>
-            <button type="button" aria-current={view === "settings" ? "page" : undefined} onClick={() => openSettings(project)} disabled={settingsAction === "disabled"}>{settingsAction === "disabled" ? "プロジェクト設定（準備中）" : "プロジェクト設定"}</button>
-            <button type="button" aria-current={view === "members" ? "page" : undefined} onClick={() => setView("members")}>メンバー</button>
-          </nav>
-          <main className="pv-dashboard-content">
-            <h2 className="pv-page-title">{view === "overview" ? "ダッシュボード" : view === "analytics" ? "アナリティクス" : view === "settings" ? "プロジェクト設定" : "メンバー"}</h2>
+      : result && project && <div className="pv-dashboard-layout">
+        <nav className="pv-dashboard-nav" aria-label="ダッシュボードメニュー">
+          <div className="pv-nav-group" role="group" aria-labelledby={`${navId}-home`}>
+            <p className="pv-nav-heading" id={`${navId}-home`}>ホーム</p>
+            <button type="button" aria-current={current("overview")} onClick={() => show("overview")}>ダッシュボード</button>
+            <button type="button" aria-current={current("members")} onClick={() => show("members")}>メンバー</button>
+            <button type="button" aria-current={current("settings")} onClick={() => openSettings(project)} disabled={settingsDisabled}>{settingsDisabled ? "プロジェクト設定（準備中）" : "プロジェクト設定"}</button>
+          </div>
+          <div className="pv-nav-group" role="group" aria-labelledby={`${navId}-site`}>
+            <p className="pv-nav-heading" id={`${navId}-site`}>サイト機能</p>
+            {siteViews.map((item) => <button key={item.id} type="button" aria-current={siteView?.id === item.id ? "page" : undefined} onClick={() => onSiteViewChange?.(item.id)}>{item.label}</button>)}
+            <button type="button" aria-current={current("analytics")} onClick={() => show("analytics")}>アナリティクス</button>
+          </div>
+        </nav>
+        {siteView ? <main className="pv-site-view" aria-label={siteView.label}>{siteView.content}</main>
+          : <main className="pv-dashboard-content">
+            <h2 className="pv-page-title">{VIEW_TITLES[view]}</h2>
             {view === "settings" ? <div className="pv-settings">{settingsContent}</div>
               : view === "analytics" ? <section className="pv-panel"><h3>アクセス解析</h3><Analytics result={result.analytics} connect={() => onOpenSettings(project, "analytics")} retry={reload} settingsAction={settingsAction} /></section>
-              : view === "members" ? <section className="pv-panel"><h3>メンバー（{project.members.length}名）</h3>{project.members.length === 0 ? <p className="pv-muted">メンバーはいません。</p> : <ul className="pv-member-list">{project.members.map((member) => <li key={member.userId}>{member.displayName}</li>)}</ul>}</section>
+              : view === "members" ? <Members project={project} members={result.members} retry={reload} openSettings={settingsDisabled ? null : () => openSettings(project)} />
               : <div className="pv-sections"><section className="pv-panel"><h3>公開情報</h3>{result.overview.status === "ready" ? <Overview overview={result.overview.data} /> : <><p role="alert">公開情報を取得できませんでした。</p><button type="button" onClick={reload}>再試行</button></>}</section>
                 <section className="pv-panel"><h3>直近の変更</h3>{result.overview.status === "unavailable" ? <p role="alert">変更履歴を取得できませんでした。</p> : result.overview.data.recentChanges.length === 0 ? <p className="pv-muted">直近の変更はありません。</p> : <ul className="pv-changes">{result.overview.data.recentChanges.map((change) => <li key={change.id}>{change.label}<Timestamp value={change.changedAt} /></li>)}</ul>}</section>
                 <AnalyticsSummary result={result.analytics} open={() => setView("analytics")} />
               </div>}
             <div className="pv-footer"><p className="pv-fetched">ダッシュボード取得日時 <Timestamp value={result.fetchedAt} /></p><button type="button" onClick={reload}>再読込</button></div>
-          </main>
-        </div>
-      </>}
+          </main>}
+      </div>}
   </section>;
 }

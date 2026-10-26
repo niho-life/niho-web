@@ -12,7 +12,7 @@ await mkdir(join(publicOutput, "assets"), { recursive: true });
 
 await Promise.all([
   (async () => {
-    // CMS のコレクション画面（CollectionWorkspace・TipTap）は import() で分け、CMS を開いたときだけ読む（assets/chunks/）。
+    // CMS のコレクション画面（CollectionWorkspace・TipTap）と翻訳の画面（LocalizationWorkspace）は import() で分け、開いたときだけ読む（assets/chunks/）。
     const result = await build({
     entryPoints: { app: join(studioDirectory, "client.tsx") },
     outdir: join(publicOutput, "assets"),
@@ -31,7 +31,7 @@ await Promise.all([
     // Kamakura は凍結中も読み取り専用で開く（kamakura-site#84）。Experience の editor は休止のまま入れない。
     const forbidden = Object.keys(result.metafile.inputs).filter((input) => /studio\/(?:integration-entry|experience-editor)\.tsx$/u.test(input));
     if (forbidden.length) throw new Error(`Frozen editor code entered the Studio client bundle: ${forbidden.join(", ")}`);
-    // 最初に読む分（app.js と、そこから静的に import する chunk）に本文の編集部品を入れない
+    // 最初に読む分（app.js と、そこから静的に import する chunk）に本文の編集部品・CMS と翻訳の画面を入れない
     const eager = new Set(), queue = [relative(process.cwd(), join(publicOutput, "assets", "app.js")).replaceAll("\\", "/")];
     while (queue.length) {
       const output = queue.shift();
@@ -39,8 +39,11 @@ await Promise.all([
       eager.add(output);
       for (const entry of result.metafile.outputs[output]?.imports ?? []) if (entry.kind === "import-statement" && !entry.external) queue.push(entry.path);
     }
-    const eagerLazy = [...eager].flatMap((output) => Object.keys(result.metafile.outputs[output]?.inputs ?? {})).filter((input) => /(?:@tiptap|prosemirror|studio\/rich-text-editor\.tsx|src\/collection-workspace\.tsx)/u.test(input));
+    const eagerInputs = [...eager].flatMap((output) => Object.keys(result.metafile.outputs[output]?.inputs ?? {}));
+    const eagerLazy = eagerInputs.filter((input) => /(?:@tiptap|prosemirror|studio\/rich-text-editor\.tsx|src\/collection-workspace\.tsx)/u.test(input));
     if (eagerLazy.length) throw new Error(`CMS workspace code entered the initial Studio client bundle: ${eagerLazy.slice(0, 5).join(", ")}`);
+    const eagerTranslations = eagerInputs.filter((input) => /(?:src\/localization-workspace(?:-[a-z]+)?\.tsx?|studio\/kamakura-localization(?:-workspace|-contract)?\.tsx?)$/u.test(input));
+    if (eagerTranslations.length) throw new Error(`Translation workspace code entered the initial Studio client bundle: ${eagerTranslations.slice(0, 5).join(", ")}`);
   })(),
   build({
     entryPoints: [join(studioDirectory, "worker.ts")],
@@ -66,6 +69,15 @@ await Promise.all([
   (async () => {
     const { collectionCss } = await cssModule("collection-style.ts", join(studioDirectory, "..", "src"));
     await writeFile(join(publicOutput, "assets", "collection.css"), collectionCss);
+  })(),
+  // 翻訳の画面だけの CSS（localizationWorkspaceCss は collectionCss の後ろに足したもの。collectionCss は上の collection.css）
+  (async () => {
+    const [{ collectionCss }, { localizationWorkspaceCss }] = await Promise.all([
+      cssModule("collection-style.ts", join(studioDirectory, "..", "src")),
+      cssModule("localization-workspace-style.ts", join(studioDirectory, "..", "src"))
+    ]);
+    if (!localizationWorkspaceCss.startsWith(collectionCss)) throw new Error("localizationWorkspaceCss no longer starts with collectionCss");
+    await writeFile(join(publicOutput, "assets", "localization.css"), localizationWorkspaceCss.slice(collectionCss.length));
   })()
 ]);
 
