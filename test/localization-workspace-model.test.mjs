@@ -29,6 +29,7 @@ test("the fictional memory adapter speaks the contract the parsers accept", asyn
   assert.deepEqual(parsed.overview.groups.map((group) => [group.id, group.items]), [["pages", 2], ["shared", 1], ["posts", 2]]);
   const page = parseLocalizationListResult(list);
   assert.equal(page.items.length, 2);
+  assert.deepEqual(page.items[1].includedParts, ["ページ本文", "案内カード"]);
   assert.equal(page.nextCursor, "p2");
   const loaded = parseLocalizationItemResult(item, "aG9tZQ");
   assert.deepEqual(loaded.item.units.map((unit) => [unit.unitId, unit.kind, unit.state]), [["title", "text", "draft"], ["lead", "text", "missing"], ["body", "rich-text", "missing"], ["cover", "image", "source"]]);
@@ -70,6 +71,10 @@ test("parsers reject unknown keys, mismatched states and oversized values", asyn
   assert.throws(() => parseLocalizationListResult({ status: "ready", items: [overReviewed], nextCursor: null }), /reviewed exceeds/);
   const badKey = clone(list.items[0]); badKey.key = "../etc";
   assert.throws(() => parseLocalizationListResult({ status: "ready", items: [badKey], nextCursor: null }), /item key/);
+  const duplicateParts = clone(list.items[1]); duplicateParts.includedParts = ["本文", "本文"];
+  assert.throws(() => parseLocalizationListResult({ status: "ready", items: [duplicateParts], nextCursor: null }), /duplicate part/);
+  const internalPart = clone(list.items[1]); internalPart.includedParts = ["内部\n名"];
+  assert.throws(() => parseLocalizationListResult({ status: "ready", items: [internalPart], nextCursor: null }), /invalid text/);
 
   const unit = clone(item.item.units[0]);
   assert.equal(parseLocalizationUnit(unit).editOrigin, "AUTO");

@@ -35,7 +35,7 @@ export function seedItems(mediaBase = "https://media.example.test") {
       ],
     },
     {
-      key: "YWJvdXQ", groupId: "pages", title: "私たちについて", path: "/about", excluded: null, sourceDraftPending: true, updatedAt: "2026-10-22T03:00:00.000Z", updatedBy: "書き手（架空）",
+      key: "YWJvdXQ", groupId: "pages", title: "私たちについて", path: "/about", includedParts: ["ページ本文", "案内カード"], excluded: null, sourceDraftPending: true, updatedAt: "2026-10-22T03:00:00.000Z", updatedBy: "書き手（架空）",
       previews: [{ id: "about", label: "私たちについて" }],
       units: [
         text("title", "題名", "私たちについて", { singleLine: true, value: "About us", reviewedSource: "s1" }),
@@ -78,7 +78,7 @@ function summarize(item) {
   const counted = states.filter((state) => state !== "source");
   const state = item.excluded ? "excluded" : states.includes("missing") ? "untranslated" : states.includes("review-needed") ? "source-changed" : states.includes("draft") ? "draft" : "reviewed";
   return {
-    key: item.key, groupId: item.groupId, title: item.title, path: item.path, state, excludedReason: item.excluded,
+    key: item.key, groupId: item.groupId, title: item.title, path: item.path, ...(item.includedParts ? { includedParts: [...item.includedParts] } : {}), state, excludedReason: item.excluded,
     totalUnits: item.excluded ? 0 : counted.length, reviewedUnits: item.excluded ? 0 : counted.filter((entry) => entry === "reviewed").length,
     imagesUnreviewed: item.units.filter((unit, index) => unit.kind === "image" && (states[index] === "draft" || states[index] === "review-needed")).length,
     sourceDraftPending: item.sourceDraftPending, updatedAt: item.updatedAt, updatedBy: item.updatedBy,

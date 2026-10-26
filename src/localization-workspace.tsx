@@ -304,11 +304,15 @@ function ListView({ adapter, overview, list, group, onGroup, timeZone, focusItem
       let source: string | null = null;
       try { source = adapter.sourceLink?.(item.key) ?? null; } catch { source = null; }
       if (source !== null && !isSafeNavigationUrl(source)) source = null;
+      let edit: string | null = null;
+      try { edit = adapter.editLink?.(item.key) ?? null; } catch { edit = null; }
+      if (edit !== null && !isSafeNavigationUrl(edit)) edit = null;
       const sub = item.state === "excluded" ? `訳さない理由：${item.excludedReason}` : item.path;
+      const title = <span className="cw-row-text"><span className="cw-row-title">{item.title || "無題"}</span>{sub && <span className="cw-row-sub">{sub}</span>}
+        {!!item.includedParts?.length && <span className="cw-row-sub lw-included-parts">含むもの：{item.includedParts.join(" · ")}</span>}</span>;
       return <li className="cw-row lw-row" key={item.key}>
-        <button type="button" className="cw-row-open" data-item-key={item.key} onClick={() => onOpen(item.key)}>
-          <span className="cw-row-text"><span className="cw-row-title">{item.title || "無題"}</span>{sub && <span className="cw-row-sub">{sub}</span>}</span>
-        </button>
+        {edit ? <a className="cw-row-open lw-edit-link" data-item-key={item.key} href={edit}>{title}</a>
+          : <button type="button" className="cw-row-open" data-item-key={item.key} onClick={() => onOpen(item.key)}>{title}</button>}
         <span className="cw-row-meta">
           <span className="cw-cell cw-cell-status"><span className="cw-cell-label">状態</span><span className="cw-badges"><ItemStateBadge state={item.state} />
             {item.imagesUnreviewed > 0 && <span className="cw-pill lw-pill" data-lw-state="images"><Icon name="image" />未確認の画像 {item.imagesUnreviewed}</span>}
