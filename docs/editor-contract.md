@@ -265,6 +265,8 @@ iframe は scripts を許可しない sandbox として表示し、公開ペー�
 
 `insertableBlocks` を空配列にすると、登録済み業務ブロックの新規追加を隠し、既存ブロックの表示 props 編集だけを残せます。省略時はすべての登録ブロックを追加できます。サイト固有の配置条件は保存 API でも検証してください。
 
+ホスト固有ブロックは registry の `settings` に trusted React component を渡すと、通常の props 欄に代えて専用設定 UI を表示できます。component に渡る `setProp` は block contract の公開 props だけを通常の編集操作として文書へ反映します。接続 URL、token、任意 HTML など文書契約に含めない値は `setProp` へ渡さず、認証済みホスト API の private storage に保存してください。詳細は [ManagedEmbed の保存・公開契約](managed-embed-contract.md) を参照してください。
+
 ## 素材ライブラリ
 
 `PageEditor` に `assets`（`AssetLibraryAdapter`）を渡すと素材ライブラリを使えます。`listProviders` を実装するホストでは、左レールに「アップロード」「ストック」「接続」を出し、それぞれサイトへのアップロード素材・ストック素材・接続済みCMS素材だけを表示します。「接続」はCMS素材を参照する入口で、外部サービスの接続設定はホスト側の設定画面が担当します。インスペクタの画像選択では、配置を許可された出所をまとめて選べます。`listProviders` のない既存ホストは単一の「素材」パネルを維持します。`assets` を渡さない場合は、画像を追加して「画像 URL」で指定する案内を表示します。adapter・素材の形・ホストの責務は[素材ライブラリ契約](asset-contract.md)を正とします。

@@ -2,11 +2,13 @@ import type { CSSProperties, ReactNode } from "react";
 import type { EditorBlockRegistry } from "../src/editor-types.js";
 import type { BlockContract, BlockContracts, BlockSlot, PublicPropValue } from "../src/types.js";
 import { uiColor } from "../src/ui-tokens.js";
+import { KamakuraManagedEmbedSettings } from "./kamakura-managed-embed.js";
 
 type PreviewKind = "frame" | "form" | "list" | "articles" | "carousel" | "detail";
 type PreviewProps = Record<string, PublicPropValue>;
 
 const blockLabels: Readonly<Record<string, string>> = {
+  ManagedEmbed: "埋め込み",
   KamakuraLegacyFrame: "外部機能の表示枠",
   KamakuraLegacyForm: "従来フォーム",
   KamakuraCmsList: "CMS一覧",
@@ -22,6 +24,7 @@ const blockLabels: Readonly<Record<string, string>> = {
 };
 
 const previewKinds: Readonly<Record<string, PreviewKind>> = {
+  ManagedEmbed: "form",
   KamakuraLegacyFrame: "frame",
   KamakuraLegacyForm: "form",
   KamakuraCmsList: "list",
@@ -94,6 +97,6 @@ function KamakuraBlockPreview({ block, contract, props }: { block: string; contr
 export function createKamakuraEditorBlocks(contracts: BlockContracts): EditorBlockRegistry {
   return Object.fromEntries(Object.entries(contracts).map(([block, contract]) => {
     const render = (props: PreviewProps) => <KamakuraBlockPreview block={block} contract={contract} props={props} />;
-    return [block, { ...contract, label: blockLabels[block] ?? block, component: render, preview: render }];
+    return [block, { ...contract, label: blockLabels[block] ?? block, component: render, preview: render, ...(block === "ManagedEmbed" ? { defaultProps: { background: "white", initialHeight: 720 }, settings: KamakuraManagedEmbedSettings } : {}) }];
   }));
 }
