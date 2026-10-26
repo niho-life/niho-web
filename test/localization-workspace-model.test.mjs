@@ -7,6 +7,7 @@ import {
   segmentsToRichText, segmentsToText, textSegments, visibleLength, createOperationId, createPreviewNonce, isLocalizationOperationId,
 } from "@niho/web/localization-workspace-model";
 import { parseEditorLocaleReleaseState } from "../dist/editor-locale-release.js";
+import { previewFrameLayout } from "../dist/localization-workspace-preview.js";
 import { createLocalizationMemory } from "../examples/localization-workspace-memory.mjs";
 
 const signal = new AbortController().signal;
@@ -183,4 +184,17 @@ test("release: progress, resume, blockers and history kinds are strict; editor p
   assert.throws(() => parseLocaleReleaseApplyResult({ status: "applied", current: summary }, { prepared: { releaseId: "en-2", version: "r2" } }), /mismatch/);
   assert.equal(parseLocaleReleaseApplyResult({ status: "applying", progress: { done: 1, total: 2 }, resumeToken: "apply-2" }, { prepared: null }).resumeToken, "apply-2");
   assert.deepEqual(parseEditorLocaleReleaseState({ siteId: "demo", locale: "en", current: null, history: [] }, "demo", "en"), { siteId: "demo", locale: "en", current: null, history: [] });
+});
+
+
+test("preview frame layout: PC draws at 1280px and scales down to the box; phone widths shrink only when the box is narrower", async () => {
+  const pc = previewFrameLayout("pc", 344, 800);
+  assert.equal(pc.frameWidth, 1280);
+  assert.ok(Math.abs(pc.scale - 344 / 1280) < 1e-9);
+  assert.equal(pc.boxHeight, 560);
+  assert.equal(pc.frameHeight, Math.round(560 / pc.scale));
+  assert.deepEqual(previewFrameLayout("320", 400, 800), { frameWidth: 320, frameHeight: 560, scale: 1, boxHeight: 560 });
+  assert.ok(previewFrameLayout("360", 344, 800).scale < 1);
+  assert.equal(previewFrameLayout("pc", 0, 400).scale, 1, "no shrinking before the box is measured");
+  assert.equal(previewFrameLayout("pc", 0, 400).boxHeight, 420, "minimum height");
 });
