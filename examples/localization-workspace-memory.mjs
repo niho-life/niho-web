@@ -198,6 +198,10 @@ export function createLocalizationMemory(options = {}) {
           if (!unit.candidate || unit.candidate.candidateId !== input.candidateId) return { status: "invalid", message: "この翻訳案はもう使えません。" };
           unit.value = structuredClone(unit.candidate.value); unit.reviewedSource = null;
           break;
+        case "clear-value":
+          if (unit.kind === "image" || unit.value === null) return { status: "invalid", message: "この項目には訳がありません。" };
+          unit.value = null; unit.reviewedSource = null;
+          break;
         case "review-current": case "review-image":
           if (unit.value === null) return { status: "invalid", message: "まだ訳文がありません。" };
           unit.reviewedSource = unit.sourceVersion;

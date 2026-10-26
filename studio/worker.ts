@@ -1661,7 +1661,7 @@ const KAMAKURA_LOCALIZATION_FIXED: Readonly<Record<string, KamakuraLocalizationO
 };
 /** command の action ごとに足す本文の key。 */
 const KAMAKURA_LOCALIZATION_COMMAND_KEYS: Readonly<Record<string, readonly string[]>> = {
-  "set-value": ["value"], "adopt-candidate": ["candidateId"], "review-current": [], "set-image": ["image"], "review-image": []
+  "set-value": ["value"], "adopt-candidate": ["candidateId"], "review-current": [], "clear-value": [], "set-image": ["image"], "review-image": []
 };
 // 形は W1 の契約（src/localization-workspace-model.ts の parser）と同じ
 const LOCALIZATION_UNIT_ID = /^[A-Za-z][A-Za-z0-9_.-]{0,299}$/u;
