@@ -35,7 +35,7 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 | `@niho/web/builder` | 汎用の挿入カタログ、モーション定義、host拡張の型と検証。React非依存 |
 | `@niho/web/react` | `PageRenderer` とブロック registry の型 |
 | `@niho/web/server` | Astro の build / server で使える `renderPageToHtml` |
-| `@niho/web/editor` | 認証済みホストadapterへ接続する `PageEditor` と型。`initialTarget`、許可ブロック、trusted host 固有の設定 UI を扱う（[編集・公開契約](docs/editor-contract.md)、[ManagedEmbed 契約](docs/managed-embed-contract.md)）。React / React DOM が必要 |
+| `@niho/web/editor` | 認証済みホストadapterへ接続する `PageEditor` と型。`initialTarget`、任意の日英切替、許可ブロック、trusted host 固有の設定 UI を扱う（[編集・公開契約](docs/editor-contract.md)、[多言語 editor 契約](docs/localization-editor.md)、[ManagedEmbed 契約](docs/managed-embed-contract.md)）。React / React DOM が必要 |
 | `@niho/web/projects` | 1 Project = 1 Site の検証、純粋操作、atomic CAS契約。React不要 |
 | `@niho/web/project-manager` | 認証済みホストadapterへ接続する `ProjectManager`。React / React DOM が必要 |
 | `@niho/web/project-directory` | 管理フォームと独立した日常の `ProjectDirectory`。内部またはhost shellの名前・ドメイン検索、OG画像／頭文字カード、更新順の一覧表、Dashboard / Editorメニュー |

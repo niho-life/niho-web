@@ -19,7 +19,7 @@ import {
   parseLocalizationOverviewResult, parseLocalizationPreviewResult, parseLocalizationSettingsResult, parseLocalizationTranslationResult,
   type LocaleReleasePrepareInput
 } from "../src/localization-workspace-model.js";
-import { parseLocalizationValue } from "../src/localization.js";
+import { parseLocalizationOverlay, parseLocalizationValue } from "../src/localization.js";
 import { DocumentValidationError } from "../src/validation-utils.js";
 
 type D1Meta = { readonly changes?: number };
@@ -195,6 +195,7 @@ type KamakuraBridgeOperation =
   | "localization_release_apply"
   | "localization_settings"
   | "localization_upload_intent"
+  | "localization_editor_page"
   | "site_overview";
 type KamakuraBridgeFailureCategory =
   | "bridge_secret_missing_or_invalid"
@@ -1778,8 +1779,8 @@ async function kamakuraCmsApi(request: Request, env: Env, identity: AccessIdenti
 /* ---------- Kamakura の翻訳（LocalizationWorkspace）の BFF ---------- */
 
 type KamakuraLocalizationOperation =
-  "overview" | "list" | "list-after" | "item" | "command" | "translate" | "job" | "catalog" | "preview" | "release" | "prepare" | "apply" | "settings" | "upload-intent";
-type KamakuraLocalizationRoute = { readonly operation: KamakuraLocalizationOperation; readonly upstreamPath: string; readonly itemKey: string | null; readonly jobId: string | null };
+  "overview" | "list" | "list-after" | "item" | "command" | "translate" | "job" | "catalog" | "preview" | "release" | "prepare" | "apply" | "settings" | "upload-intent" | "editor-page";
+type KamakuraLocalizationRoute = { readonly operation: KamakuraLocalizationOperation; readonly upstreamPath: string; readonly itemKey: string | null; readonly jobId: string | null; readonly pageId: string | null };
 type KamakuraLocalizationSpec = { readonly method: "POST" | "PUT"; readonly log: KamakuraBridgeOperation; readonly bodyKeys: readonly string[] | null; readonly long: boolean };
 type KamakuraLocalizationActor = { readonly email: string; readonly role: Role };
 
@@ -1801,7 +1802,8 @@ const KAMAKURA_LOCALIZATION_OPERATIONS: Readonly<Record<KamakuraLocalizationOper
   prepare: { method: "POST", log: "localization_release_prepare", bodyKeys: ["operation", "releaseId", "expectedVersion", "expectedCurrentVersion", "resumeToken"], long: true },
   apply: { method: "POST", log: "localization_release_apply", bodyKeys: ["confirmationToken", "resumeToken"], long: true },
   settings: { method: "PUT", log: "localization_settings", bodyKeys: ["expectedVersion", "autoDraft"], long: false },
-  "upload-intent": { method: "POST", log: "localization_upload_intent", bodyKeys: ["itemKey", "unitId", "name", "mimeType", "bytes"], long: false }
+  "upload-intent": { method: "POST", log: "localization_upload_intent", bodyKeys: ["itemKey", "unitId", "name", "mimeType", "bytes"], long: false },
+  "editor-page": { method: "POST", log: "localization_editor_page", bodyKeys: [], long: true }
 };
 /** 下の階層を持たない経路（`/localization` より後ろ）。 */
 const KAMAKURA_LOCALIZATION_FIXED: Readonly<Record<string, KamakuraLocalizationOperation>> = {
@@ -1823,10 +1825,11 @@ const RESERVED_LOCALIZATION_SEGMENTS: ReadonlySet<string> = new Set(["__proto__"
 
 /** action は `/localization` より後ろ。itemKey・cursor・jobId は固定の形だけを通し、上流のパスはこの action をそのまま使う。 */
 function kamakuraLocalizationRoute(action: string, method: string): KamakuraLocalizationRoute | "method_not_allowed" | null {
-  let operation: KamakuraLocalizationOperation, itemKey: string | null = null, jobId: string | null = null;
+  let operation: KamakuraLocalizationOperation, itemKey: string | null = null, jobId: string | null = null, pageId: string | null = null;
   const after = /^\/items\/after\/([^/]+)$/u.exec(action);
   const item = /^\/items\/([^/]+)(?:\/(command|translate))?$/u.exec(action);
   const job = /^\/jobs\/([^/]+)$/u.exec(action);
+  const editorPage = /^\/editor\/pages\/([^/]+)$/u.exec(action);
   if (Object.hasOwn(KAMAKURA_LOCALIZATION_FIXED, action)) operation = KAMAKURA_LOCALIZATION_FIXED[action]!;
   // 鎌倉の Worker と同じく items/after/<cursor> は一覧の続き（items/after だけなら 1 件）
   else if (after) {
@@ -1841,9 +1844,13 @@ function kamakuraLocalizationRoute(action: string, method: string): KamakuraLoca
     if (!LOCALIZATION_OPAQUE_ID.test(job[1]!) || RESERVED_LOCALIZATION_SEGMENTS.has(job[1]!)) return null;
     jobId = job[1]!;
     operation = "job";
+  } else if (editorPage) {
+    if (!KAMAKURA_COMMON_PAGE_ID.test(editorPage[1]!)) return null;
+    pageId = editorPage[1]!;
+    operation = "editor-page";
   } else return null;
   if (method !== KAMAKURA_LOCALIZATION_OPERATIONS[operation].method) return "method_not_allowed";
-  return { operation, upstreamPath: `${KAMAKURA_LOCALIZATION_UPSTREAM_PREFIX}${action}`, itemKey, jobId };
+  return { operation, upstreamPath: `${KAMAKURA_LOCALIZATION_UPSTREAM_PREFIX}${action}`, itemKey, jobId, pageId };
 }
 
 function invalidLocalizationBody(what: string): never {
@@ -1873,7 +1880,7 @@ function kamakuraLocalizationValues(route: KamakuraLocalizationRoute, body: Reco
     return value as string | null;
   };
   switch (route.operation) {
-    case "overview": case "list": case "list-after": case "item": case "job": case "catalog": case "release":
+    case "overview": case "list": case "list-after": case "item": case "job": case "catalog": case "release": case "editor-page":
       return {};
     case "command": {
       const base = {
@@ -1959,7 +1966,7 @@ function kamakuraLocalizationBody(route: KamakuraLocalizationRoute, raw: Uint8Ar
  * forbidden は 403・not_found は 404・ほかは 200 で返る約束なので、HTTP の status と合わなければ契約違反。
  */
 function kamakuraLocalizationResult(route: KamakuraLocalizationRoute, request: Record<string, unknown>, value: unknown, httpStatus: number): { readonly status: string } {
-  const parse = (): { readonly status: string } => {
+  const parse = (): { readonly status: string; readonly sourceDocument?: unknown; readonly sourceVersion?: string; readonly overlay?: unknown; readonly version?: string } => {
     switch (route.operation) {
       case "overview": {
         const result = parseLocalizationOverviewResult(value);
@@ -1981,6 +1988,29 @@ function kamakuraLocalizationResult(route: KamakuraLocalizationRoute, request: R
       case "apply": return parseLocaleReleaseApplyResult(value, { prepared: null });
       case "settings": return parseLocalizationSettingsResult(value);
       case "upload-intent": return parseKamakuraLocalizationUploadRefusal(value);
+      case "editor-page": {
+        if (!isRecord(value)) throw new DocumentValidationError("response", "expected object");
+        if (value.status === "forbidden" || value.status === "not_found") {
+          if (Object.keys(value).length !== 1) throw new DocumentValidationError("response", "unexpected fields");
+          return { status: value.status };
+        }
+        if (value.status !== "ready" || Object.keys(value).sort().join(",") !== "overlay,sourceDocument,sourceVersion,status,version") {
+          throw new DocumentValidationError("response", "unexpected fields");
+        }
+        const document = value.sourceDocument;
+        if (!isRecord(document) || document.schemaVersion !== 1 || document.siteId !== KAMAKURA_EDITOR_SITE_ID || document.pageId !== route.pageId
+          || document.locale !== "ja" || !Number.isSafeInteger(document.revision) || (document.revision as number) < 1
+          || !Array.isArray(document.body) || typeof document.title !== "string") {
+          throw new DocumentValidationError("response.sourceDocument", "unexpected page scope");
+        }
+        const overlay = parseLocalizationOverlay(value.overlay);
+        if (overlay.siteId !== KAMAKURA_EDITOR_SITE_ID || overlay.pageId !== route.pageId || overlay.sourceLocale !== "ja" || overlay.targetLocale !== "en"
+          || typeof value.sourceVersion !== "string" || !/^p\.[0-9a-f]{64}$/u.test(value.sourceVersion)
+          || typeof value.version !== "string" || !/^l\.[0-9a-f]{64}$/u.test(value.version)) {
+          throw new DocumentValidationError("response", "unexpected localization scope");
+        }
+        return { status: "ready", sourceDocument: document, sourceVersion: value.sourceVersion, overlay, version: value.version };
+      }
     }
   };
   const result = parse();
