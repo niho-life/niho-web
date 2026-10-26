@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { JSDOM } from "jsdom";
 import {
-  collectionDateFromInput, collectionDateInputValue, collectionItemFilter, parseCollectionCreateResult, parseCollectionItemResult, parseCollectionListResult,
-  parseCollectionPublishResult, parseCollectionRemoveResult, parseCollectionSaveResult, parseCollectionSchemaResult, parseCollectionUploadResult,
+  collectionDateFromInput, collectionDateInputValue, collectionItemFilter, collectionReorderSequence, moveCollectionIds, parseCollectionBulkResult,
+  parseCollectionCreateResult, parseCollectionItemResult, parseCollectionListResult, parseCollectionPublishResult, parseCollectionRemoveResult,
+  parseCollectionReorderResult, parseCollectionSaveResult, parseCollectionSchemaResult, parseCollectionUploadResult, parseCollectionValues,
   sanitizeRichTextHtml, sortCollectionItems, validateCollectionValues,
 } from "@niho/web/collection-model";
 import { circlesDefinition, post, postsDefinition, schema, seed, tagsDefinition, toSummary } from "./collection-fixtures.mjs";
@@ -163,4 +164,81 @@ test("rich text sanitizer keeps the allowed elements and attributes only", () =>
   assert.equal(clean('<img src="https://media.example.test/a.jpg" width="100px" height="50">'), '<img src="https://media.example.test/a.jpg" alt="" height="50">');
   assert.equal(clean("<p>&lt;script&gt;alert(1)&lt;/script&gt; &amp; <!-- c --></p>"), "<p>&lt;script&gt;alert(1)&lt;/script&gt; &amp; </p>");
   assert.equal(clean(""), "");
+});
+
+const galleryDefinition = () => ({
+  id: "companies", label: "会社", addLabel: "追加する", ordering: "manual", pathPrefix: "/companies/",
+  titleField: "name", slugField: null, imageField: null, subtitleField: null,
+  capabilities: { create: true, duplicate: true, remove: true, unpublish: true, schedule: false, redirects: true, reorder: true, bulk: true, retrySchedule: false },
+  fields: [
+    { key: "name", label: "名前", type: "text", required: true, placement: "main" },
+    { key: "portfolio", label: "作品／活動", type: "gallery", captionLabel: "説明", placement: "main", maxItems: 3, captionMaxLength: 10 },
+  ],
+});
+
+test("capabilities accept the old five keys and the optional new keys, defaulting the new ones to false", () => {
+  const old = parseCollectionSchemaResult(schema()).collections[0].capabilities;
+  assert.deepEqual(old, { create: true, duplicate: true, remove: true, unpublish: true, schedule: true, redirects: false, reorder: false, bulk: false, retrySchedule: false });
+  const next = parseCollectionSchemaResult({ status: "ready", collections: [galleryDefinition()] }).collections[0].capabilities;
+  assert.deepEqual(next, galleryDefinition().capabilities);
+  const partial = withPosts((definition) => { definition.capabilities.bulk = true; });
+  assert.equal(parseCollectionSchemaResult(partial).collections[0].capabilities.bulk, true);
+  assert.equal(parseCollectionSchemaResult(partial).collections[0].capabilities.reorder, false);
+  assert.throws(() => parseCollectionSchemaResult(withPosts((definition) => { definition.capabilities.reorder = "yes"; })), /expected a boolean/u);
+  assert.throws(() => parseCollectionSchemaResult(withPosts((definition) => { definition.capabilities.archive = true; })), /unknown field/u);
+});
+
+test("gallery fields and values parse strictly and validate count, caption length and images", () => {
+  const definition = parseCollectionSchemaResult({ status: "ready", collections: [galleryDefinition()] }).collections[0];
+  assert.deepEqual(definition.fields[1], galleryDefinition().fields[1]);
+  const bad = [
+    [(field) => { delete field.captionLabel; }, /invalid label/u],
+    [(field) => { field.maxItems = 0; }, /positive integer/u],
+    [(field) => { field.maxItems = 501; }, /positive integer/u],
+    [(field) => { field.multiple = true; }, /unknown field/u],
+  ];
+  for (const [mutate, pattern] of bad) {
+    const input = galleryDefinition(); mutate(input.fields[1]);
+    assert.throws(() => parseCollectionSchemaResult({ status: "ready", collections: [input] }), pattern);
+  }
+  const entries = [{ id: "w1", image: "https://media.example.test/a.jpg", caption: "一つ目\n二行目" }, { id: "", image: null, caption: "" }];
+  assert.deepEqual(parseCollectionValues({ name: "架空の会社", portfolio: entries }, definition).portfolio, entries);
+  assert.deepEqual(parseCollectionValues({ name: "x" }, definition).portfolio, []);
+  assert.deepEqual(parseCollectionValues({ portfolio: [{ id: "", image: "", caption: "" }] }, definition).portfolio, [{ id: "", image: null, caption: "" }]);
+  for (const [value, pattern] of [
+    [[{ id: "w1", image: null }], /needs id, image and caption/u],
+    [[{ id: "w1", image: null, caption: "", order: 1 }], /unknown field/u],
+    [[{ id: "../w", image: null, caption: "" }], /invalid gallery entry id/u],
+    [[{ id: "..", image: null, caption: "" }], /invalid gallery entry id/u],
+    [[{ id: 1, image: null, caption: "" }], /invalid gallery entry id/u],
+    [[{ id: "w1", image: 3, caption: "" }], /invalid text/u],
+    [[{ id: "w1", image: null, caption: 1 }], /invalid string/u],
+    [[{ id: "w1", image: null, caption: "" }, { id: "w1", image: null, caption: "" }], /duplicate gallery entry/u],
+    [["w1"], /expected a JSON object/u],
+    ["w1", /expected an array/u],
+  ]) assert.throws(() => parseCollectionValues({ portfolio: value }, definition), pattern);
+  const check = (portfolio) => validateCollectionValues(definition, { name: "x", portfolio }).map((error) => error.message);
+  assert.deepEqual(check(entries), []);
+  assert.deepEqual(check([...entries, ...entries.map((entry) => ({ ...entry, id: "" }))]), ["3 件までにしてください（いま 4 件）。"]);
+  assert.deepEqual(check([{ id: "", image: "javascript:alert(1)", caption: "" }]), ["1 件目の画像を選び直してください。"]);
+  assert.deepEqual(check([{ id: "", image: null, caption: "" }, { id: "", image: null, caption: "あ".repeat(11) }]), ["2 件目の説明を 10 文字以内にしてください（いま 11 文字）。"]);
+  const required = { ...definition, fields: definition.fields.map((field) => ({ ...field, required: true })) };
+  assert.deepEqual(validateCollectionValues(required, { name: "x", portfolio: [] }), [{ field: "portfolio", message: "1 件以上追加してください。" }]);
+});
+
+test("reorder and bulk results carry the list; remove may be invalid; the reorder sequence keeps the host order on ties", () => {
+  const items = [...seed().circles.values()].map(toSummary);
+  for (const parse of [parseCollectionReorderResult, parseCollectionBulkResult]) {
+    for (const status of ["publishing", "saved", "conflict"]) assert.deepEqual(parse({ status, items }), { status, items });
+    assert.deepEqual(parse({ status: "invalid", errors: [{ field: "", message: "公開できない項目があります。" }] }), { status: "invalid", errors: [{ field: "", message: "公開できない項目があります。" }] });
+    assert.deepEqual(parse({ status: "forbidden" }), { status: "forbidden" });
+    assert.throws(() => parse({ status: "publishing", items: [items[0], items[0]] }), /duplicate item/u);
+    assert.throws(() => parse({ status: "publishing", items, extra: 1 }), /unknown field/u);
+    assert.throws(() => parse({ status: "removed", items }), /invalid status/u);
+  }
+  assert.deepEqual(parseCollectionRemoveResult({ status: "invalid", errors: [{ field: "", message: "移動先を選び直してください" }] }, posts(), "p1"), { status: "invalid", errors: [{ field: "", message: "移動先を選び直してください" }] });
+  const tied = [{ ...items[0], id: "b", order: 2 }, { ...items[0], id: "draft", order: null }, { ...items[0], id: "a", order: 1 }, { ...items[0], id: "c", order: 2 }];
+  assert.deepEqual(collectionReorderSequence(tied).map((item) => item.id), ["a", "b", "c"]);
+  assert.deepEqual(moveCollectionIds(["a", "b", "c", "d"], 1, 3), ["a", "c", "d", "b"]);
+  assert.deepEqual(moveCollectionIds(["a", "b", "c", "d"], 3, 0), ["d", "a", "b", "c"]);
 });
