@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { formatDateTime, useRequests } from "./collection-ui.js";
+import { formatDateTime, Icon, useRequests } from "./collection-ui.js";
 import {
   parseLocaleReleaseApplyResult, parseLocaleReleasePrepareResult, parseLocaleReleaseStateResult, parseLocalizationOverviewResult,
   type LocaleReleaseBlocker, type LocaleReleaseHistoryEntry, type LocaleReleasePending, type LocaleReleaseProgress, type LocaleReleaseSummary,
@@ -26,6 +26,16 @@ type Step =
   | { readonly step: "conflict" }
   | { readonly step: "forbidden" }
   | { readonly step: "stopped"; readonly stage: "check" | "prepare" | "apply"; readonly resumeToken: string | null };
+
+type PageChangeList = NonNullable<LocaleReleaseWorkspacePlan["changes"]>["added"];
+/** 公開で新しく出るページと外れるページ。少なければ開いて出す。 */
+function PageChanges({ added, removed }: { added: PageChangeList; removed: PageChangeList }) {
+  const list = (label: string, pages: PageChangeList) => <details className="lw-previous" open={pages.length > 0 && pages.length <= 10}>
+    <summary>{label}（{pages.length}）</summary>
+    {pages.length ? <ul>{pages.map((page) => <li key={page.path}>{page.title}<span className="cw-by">　{page.path}</span></li>)}</ul> : <p className="cw-hint">ありません。</p>}
+  </details>;
+  return <>{list("新しく出るページ", added)}{list("外れるページ", removed)}</>;
+}
 
 const MAX_ROUNDS = 1000;
 const remaining = (expiresAt: string, now: number) => Math.max(0, Math.floor((Date.parse(expiresAt) - now) / 1000));
@@ -150,6 +160,8 @@ export function ReleaseDialog({ adapter, start, overview, timeZone, onClose, onO
           <div><dt>{operation === "rollback" ? "戻す版" : "新しい版"}</dt><dd>{plan.prepared.label}</dd></div>
           <div><dt>確認の期限まで</dt><dd><span role="timer" aria-live="off">残り {clock(seconds)}</span></dd></div>
         </dl>
+        {plan.changes && operation === "publish" && plan.pages === 0 && <p className="cw-error" role="alert"><Icon name="alert" />{target}版のページをすべて外します。公開すると、{target}版のページは無くなります。</p>}
+        {plan.changes && <PageChanges added={plan.changes.added} removed={plan.changes.removed} />}
         <div className="cw-dialog-actions">
           <button type="button" className="cw-button" onClick={onClose}>やめる</button>
           <button type="button" className="cw-button cw-primary" onClick={() => void apply({ confirmationToken: plan.confirmationToken, resumeToken: null }, plan.prepared)}>

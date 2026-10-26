@@ -242,3 +242,13 @@ test("reorder and bulk results carry the list; remove may be invalid; the reorde
   assert.deepEqual(moveCollectionIds(["a", "b", "c", "d"], 1, 3), ["a", "c", "d", "b"]);
   assert.deepEqual(moveCollectionIds(["a", "b", "c", "d"], 3, 0), ["d", "a", "b", "c"]);
 });
+
+test("editor status: an edit on a published item is 変更あり, and the publish request in flight shows 反映中 (kamakura-site#155)", async () => {
+  const { editorStatus } = await import("../dist/collection-workspace.js");
+  assert.equal(editorStatus("published", false, null), "published");
+  assert.equal(editorStatus("published", true, null), "changed");
+  assert.equal(editorStatus("changed", false, "publish"), "publishing", "the saved draft's 変更あり is not shown while publishing");
+  assert.equal(editorStatus("draft", false, "publish"), "publishing");
+  assert.equal(editorStatus("changed", false, "save"), "changed");
+  assert.equal(editorStatus("publishing", false, null), "publishing");
+});

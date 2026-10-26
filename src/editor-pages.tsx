@@ -37,6 +37,16 @@ const isConflict = (error: unknown) => !!error && typeof error === "object" && "
 const targetOf = (page: EditorTarget): EditorTarget => ({ siteId: page.siteId, pageId: page.pageId, locale: page.locale });
 const pageKey = (page: EditorTarget) => `${page.pageId}/${page.locale}`;
 const kindLabels: Record<string, string> = { page: "ページ", template: "テンプレート", shared: "コンポーネント" };
+/**
+ * ページ一覧の行の状態。札（文字のバッジ）ではなく右端の点で示す: 緑＝公開中、灰＝まだ公開していない（プレビューのみ・未公開）、輪郭だけ＝非公開。
+ * 文言はホストが渡した publication（label と description）を優先し、ツールチップと読み上げに使う。
+ */
+export function pageStatus(page: EditorPage): { state: "live" | "unpublished" | "private"; text: string } {
+  const host = page.publication ? `${page.publication.label}：${page.publication.description}` : undefined;
+  if (page.visibility === "private") return { state: "private", text: host ? `非公開 · ${host}` : "非公開" };
+  if (page.published === false) return { state: "unpublished", text: host ?? "未公開" };
+  return { state: "live", text: host ?? "公開中" };
+}
 const publicPath = (page: EditorPage | undefined) => page?.path !== undefined && validatePagePath(page.path) === null ? page.path : undefined;
 function metadataFor(document: PageDocument, page: EditorPage | undefined, domain: string | undefined, settings: SiteSettings | undefined, assets?: ResolvedAssetMap): PageMetadata | undefined {
   try { return resolvePageMetadata({ document, site: settings, domain, path: publicPath(page), visibility: page?.visibility, assets }); } catch { return undefined; }
@@ -101,7 +111,10 @@ export function PagePanel({ pages, localizedPages, current, disabled, operations
   const [collapsed, setCollapsed] = useState<readonly string[]>([]), [menu, setMenu] = useState("");
   // shared は互換 adapter 上のサイト全体コンポーネント。URL を持つページの検索・フォルダ・件数には混ぜない。
   const visiblePages = pages.filter((page) => page.kind !== "shared");
-  const tree = buildPageTree(visiblePages, searching ? query : undefined), multiLocale = new Set(visiblePages.map((page) => page.locale)).size > 1;
+  // テンプレート（CMS の詳細ページの型）は、パスの階層ではなく「テンプレート」の見出しの下にまとめる。検索はどちらにも同じ条件で効く。
+  const needle = searching ? query.trim().toLowerCase() : "";
+  const templates = visiblePages.filter((page) => page.kind === "template" && (!needle || [page.title, page.path ?? "", page.pageId].some((value) => String(value).toLowerCase().includes(needle))));
+  const tree = buildPageTree(visiblePages.filter((page) => page.kind !== "template"), searching ? query : undefined), multiLocale = new Set(visiblePages.map((page) => page.locale)).size > 1;
   const normal = visiblePages.filter((page) => (page.kind ?? "page") === "page");
   const published = normal.filter((page) => page.visibility !== "private" && page.published !== false).length;
   const closeSearch = () => { setSearching(false); setQuery(""); };
@@ -116,25 +129,23 @@ export function PagePanel({ pages, localizedPages, current, disabled, operations
         {open && <ul>{node.children.map(row)}</ul>}
       </li>;
     }
-    const page: EditorPage = node.page, kind = page.kind ?? "page", key = pageKey(page);
+    const page: EditorPage = node.page, kind = page.kind ?? "page", key = pageKey(page), status = pageStatus(page);
     const localized = localizedPages?.find((entry) => entry.pageId === page.pageId);
     const secondary = [page.path, multiLocale ? page.locale : undefined].filter(Boolean).join(" · ");
     return <li key={key}><div className="e-page-row">
       <button type="button" className="e-page" aria-current={current && sameTarget(page, current) ? "page" : undefined} style={{ paddingLeft: 8 + node.depth * 14 }}
-        disabled={disabled} title={[page.title, secondary, page.publication?.description].filter(Boolean).join(" · ")} onClick={() => select(page)}>
+        disabled={disabled} title={[page.title, secondary, status.text].filter(Boolean).join(" · ")} onClick={() => select(page)}>
         <Icon name={kind === "template" ? "template" : page.path === "/" ? "home" : "page"} />
-        {/* ページ名は 1 段目を占有し、パスと状態は 2 段目に置く。狭い一覧でもバッジに押されて名前が切れないようにする。 */}
+        {/* ページ名は 1 段目、パスは 2 段目。状態は札ではなく右端の点で示し（緑＝公開中・灰＝未公開・輪郭＝非公開）、文言はツールチップと読み上げに回す。 */}
         <span className="e-page-label"><span className="e-page-name">{page.title}</span>
-          {(secondary || kind !== "page" || page.visibility === "private" || page.publication || page.published === false || localized) && <span className="e-page-meta">
+          {(secondary || localized) && <span className="e-page-meta">
             {secondary && <span className="e-page-path">{secondary}</span>}
-            {kind !== "page" && kindLabels[kind] && <span className="e-badge">{kindLabels[kind]}</span>}
-            {page.visibility === "private" && <span className="e-badge e-badge-private">非公開</span>}
-            {page.publication ? <span className="e-badge e-badge-publication">{page.publication.label}</span> : page.published === false && <span className="e-badge">未公開</span>}
-            {localized && <span className="e-locale-states">{(["ja", "en"] as const).map((locale) => localized.locales[locale] && <span className="e-badge" key={locale}>{locale.toUpperCase()} {localizationStateLabel(localized.locales[locale]!.state)}</span>)}</span>}
+            {localized && <span className="e-locale-states">{(["ja", "en"] as const).map((locale) => localized.locales[locale] && <span className="e-locale-state" key={locale}>{locale.toUpperCase()} {localizationStateLabel(localized.locales[locale]!.state)}</span>)}</span>}
           </span>}
         </span>
+        <span className={`e-page-state is-${status.state}`} role="img" aria-label={status.text} title={status.text} />
       </button>
-      {operations && kind === "page" && <PageMenu page={page} open={menu === key} setOpen={(open) => setMenu(open ? key : "")} disabled={disabled || operationsDisabled} start={start} />}
+      {operations && (kind === "page" ? <PageMenu page={page} open={menu === key} setOpen={(open) => setMenu(open ? key : "")} disabled={disabled || operationsDisabled} start={start} /> : <span className="e-page-more-spacer" aria-hidden="true" />)}
     </div></li>;
   }
   return <div className="e-pages">
@@ -145,7 +156,9 @@ export function PagePanel({ pages, localizedPages, current, disabled, operations
     {children}
     {searching && <input className="e-page-search" type="search" aria-label="ページを検索" placeholder="ページ名・パスで検索" value={query} autoFocus
       onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); closeSearch(); } }} />}
-    {tree.length ? <ul className="e-page-tree">{tree.map(row)}</ul> : <p className="e-help">{searching && query.trim() ? "一致するページはありません" : "ページがありません"}</p>}
+    {tree.length > 0 && <ul className="e-page-tree">{tree.map(row)}</ul>}
+    {templates.length > 0 && <section className="e-page-section" aria-label="テンプレート"><h3>テンプレート</h3><ul className="e-page-tree e-page-templates">{templates.map((page) => row({ type: "page", page, depth: 0 }))}</ul></section>}
+    {!tree.length && !templates.length && <p className="e-help">{searching && query.trim() ? "一致するページはありません" : "ページがありません"}</p>}
     {operations && unsaved && <small className="e-help">未保存の変更を保存してから操作できます。</small>}
     <p className="e-page-count">公開中 {published} / {normal.length} ページ</p>
   </div>;

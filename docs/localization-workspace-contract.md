@@ -249,6 +249,7 @@ type LocalizationCommandInput = {
   | { action: 'set-value'; value: string | LocalizedRichText }     // 文字・リッチテキスト
   | { action: 'adopt-candidate'; candidateId: string }               // 翻訳案を使う
   | { action: 'review-current' }                                     // 今の訳文を確認済みにする（文字・リッチテキスト）
+  | { action: 'clear-value' }                                        // 訳文を消して未翻訳に戻す（文字・リッチテキスト）。翻訳案は残す
   | { action: 'set-image'; image: LocalizedAsset | null }            // 画像を差し替える。null は原文と同じに戻す
   | { action: 'review-image' }                                       // 差し替えた画像を確認済みにする
 );
@@ -257,9 +258,10 @@ type LocalizationCommandInput = {
 - **CAS。** `expectedVersion` が今の項目の版と違う、または `expectedSourceVersion` が今の原文の版と違うときは、書かずに `{ status: "conflict", unit, summary }`（`unit` は最新）を返します。版は項目ごとに比べるので、同じ 1 件の別の項目を別の人が直していても衝突しません。
 - **冪等。** `operationId` は画面が操作ごとに作ります。同じ `operationId` の再送（通信が切れたときの再試行など）は二重に書かず、前回と同じ結果を返してください。保存しておく期間は 24 時間以上を推奨します。
 - **応答。** `applied` の `unit` は書いた後の項目、`summary` はその 1 件の一覧の行（状態・件数の更新に使う）です。`set-value` で訳文を直すと、確認済みだった項目は `draft` に戻します。
+- **訳を消す。** `clear-value` は訳文（下書き・確認済み）を消し、項目を未翻訳（必須なら `missing`・任意なら `source`）に戻します。翻訳案は残します。訳文の無い項目と画像は `invalid` です（画像は `set-image` に `null` で原文に戻します）。
 - **invalid。** 札が合わない・長すぎる・空にできない項目を空にした・画像が使えない、などは `{ status: "invalid", message }` で、`message` を項目の下に出します。
 - 項目が原文から消えたときは `not_found` です。画面は「この項目は原文から無くなりました」と出し、読み直しを勧めます。
-- 権限の確かめ: `set-value`・`adopt-candidate`・`set-image` は `edit`、`review-current`・`review-image` は `review` です。
+- 権限の確かめ: `set-value`・`adopt-candidate`・`clear-value`・`set-image` は `edit`、`review-current`・`review-image` は `review` です。
 
 ### 翻訳の依頼（requestTranslation・readJob）
 
@@ -298,6 +300,10 @@ type LocaleReleaseWorkspacePlan = {
   pages: number;                                  // 公開するページの数
   previous: LocaleReleaseSummary | null;          // 今の公開中の版
   prepared: LocaleReleaseSummary;                 // これから公開する版
+  changes?: {                                     // 確認済みのページだけを公開するサイトが返す。返さなければ null として扱う
+    added: { path: string; title: string }[];     // 今の版から新しく出るページ（500 件まで）
+    removed: { path: string; title: string }[];   // 今の版から外れるページ（500 件まで）
+  } | null;
 };
 ```
 
@@ -307,11 +313,12 @@ type LocaleReleaseWorkspacePlan = {
 
 1. 概要を読み直し、`blockers` が 1 つでもあれば一覧を出して先へ進めません（`itemKey` があれば「開く」で 1 件へ移れます）。
 2. 準備: `prepareRelease({ operation: "publish", releaseId: null, expectedVersion: overview.version, expectedCurrentVersion: current?.version ?? null, resumeToken: null })`。`preparing` なら `progress`（n/m）を出し、返った `resumeToken` を付けてすぐ呼び直します。`ready` で確認へ。`blocked` なら 1. の一覧に戻ります。`conflict` は「内容が変わりました。読み込み直して、もう一度試してください」。
-3. 確認: ページ数・公開する先・今の版 → 新しい版・期限の残り（`expiresAt` まで）を出します。期限が切れたら「準備し直す」だけを出します。
+3. 確認: ページ数・公開する先・今の版 → 新しい版・期限の残り（`expiresAt` まで）を出します。`changes` があれば、新しく出るページと外れるページも出します。公開で `pages` が 0 になるとき（すべて外れる）は、そのことをはっきり出します。期限が切れたら「準備し直す」だけを出します。
 4. 反映: `applyRelease({ confirmationToken, resumeToken: null })`。`applying` なら n/m を出し、`resumeToken` を付けて `applyRelease({ confirmationToken: null, resumeToken })` を呼び直します。`applied` で完了、`expired` は 2. からやり直し、`conflict` は読み直し。
 
 - 途中で閉じても、サイトは途中の状態を `overview.release.pending`（と `readRelease` の `pending`）で返してください。画面は帯に「前回の公開が途中です。」と「続ける」を出し、`stage` に合わせて `prepareRelease` か `applyRelease` を `resumeToken` だけで呼び直します（`publish`・`rollback` の権限が要ります）。
 - `confirmationToken` は URL・ログ・保存先に出さないでください。画面もタブのメモリにだけ持ちます。準備・反映の `resumeToken` も一回の公開の中でだけ使えるものにしてください。
+- **ページ単位の公開。** サイトは、訳がそろったページだけを公開してよいです（未訳のページは原文の言語のまま。言語の切替と hreflang も出たページだけ）。そのときの `blockers` は、公開そのものを止める理由（取り込み中・公開の途中・共通部分の訳が未確認で出せるページが無い、など）だけにし、未訳の項目は並べません。出る・外れるページは `changes` で返します。
 - 戻し: 公開の履歴で `restorable` の版を選び、`prepareRelease({ operation: "rollback", releaseId, … })` から同じ手順です。戻しは前に公開した版をそのまま戻すので、`blockers` で止めません（サイトが止める理由を返したときは出します）。
 - 権限の確かめ: 公開は `publish`、戻しは `rollback` です。
 

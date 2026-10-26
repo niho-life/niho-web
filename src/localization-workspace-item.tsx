@@ -17,7 +17,7 @@ type Value = string | LocalizedRichText;
 type UnitStatus = "idle" | "pending" | "saving" | "saved" | "error" | "conflict" | "invalid" | "gone";
 type CommandPayload =
   | { readonly action: "adopt-candidate"; readonly candidateId: string }
-  | { readonly action: "review-current" | "review-image" }
+  | { readonly action: "review-current" | "review-image" | "clear-value" }
   | { readonly action: "set-image"; readonly image: LocalizedAsset | null };
 /** 項目ごとの、画面の中の状態（変えるたびに rev を上げて描き直す）。 */
 type UnitLive = {
@@ -301,7 +301,12 @@ export function ItemEditor({ adapter, overview, itemKey, timeZone, autosaveDelay
   const runCommand = async (unitId: string, payload: CommandPayload, success: string) => {
     const unit = live.current.units.get(unitId);
     if (!unit || unit.busy) return;
-    if (unit.dirty && !(await save(unitId))) {
+    // 訳を消すときは、保存していない入力も一緒に捨てる（保存してから消すと、直せない入力で止まる）
+    if (payload.action === "clear-value") {
+      clearTimeout(unit.timer);
+      if (unit.saving) await unit.saving;
+      unit.dirty = false; unit.seq++; unit.segments = null; unit.value = null; unit.problem = null; unit.lastValid = null; unit.retry = null;
+    } else if (unit.dirty && !(await save(unitId))) {
       unit.actionMessage = { text: "保存できていないため、操作しませんでした。", error: true };
       touch(unit);
       return;
@@ -319,7 +324,7 @@ export function ItemEditor({ adapter, overview, itemKey, timeZone, autosaveDelay
       unit.actionRetry = null;
       const result = outcome.value;
       if (result.status === "applied") {
-        applyServer(unit, result.unit, payload.action === "adopt-candidate");
+        applyServer(unit, result.unit, payload.action === "adopt-candidate" || payload.action === "clear-value");
         unit.status = "idle";
         unit.actionMessage = { text: success, error: false };
         latest.current.onSummary(result.summary);
@@ -360,12 +365,18 @@ export function ItemEditor({ adapter, overview, itemKey, timeZone, autosaveDelay
     await runCommand(unitId, { action: "set-image", image: result.image.asset }, "画像を差し替えました。確かめたら「確認済みにする」を押してください。");
   };
 
-  const actions = useRef({ change, save, restoreMarks, reloadUnit, runCommand, pickImage, uploadImage });
-  actions.current = { change, save, restoreMarks, reloadUnit, runCommand, pickImage, uploadImage };
+  const clearValue = (unitId: string) => confirm({
+    title: "この項目の訳を消しますか", body: "訳文を消して未翻訳に戻します。確認済みの記録も消えます。翻訳案は残ります。", confirmLabel: "訳を消す", tone: "danger",
+    run: () => runCommand(unitId, { action: "clear-value" }, "訳を消しました。"),
+  });
+
+  const actions = useRef({ change, save, restoreMarks, reloadUnit, runCommand, pickImage, uploadImage, clearValue });
+  actions.current = { change, save, restoreMarks, reloadUnit, runCommand, pickImage, uploadImage, clearValue };
   const stable = useRef<UnitActions>({
     change: (id, segments) => actions.current.change(id, segments), retry: (id) => void actions.current.save(id), restoreMarks: (id) => actions.current.restoreMarks(id),
     reload: (id) => actions.current.reloadUnit(id), command: (id, payload, success) => void actions.current.runCommand(id, payload, success),
     pick: (id) => void actions.current.pickImage(id), upload: (id, file) => void actions.current.uploadImage(id, file),
+    clear: (id) => actions.current.clearValue(id),
   });
 
   const back = async () => {
@@ -461,6 +472,7 @@ export function ItemEditor({ adapter, overview, itemKey, timeZone, autosaveDelay
 type UnitActions = {
   change: (unitId: string, segments: MarkSegment[]) => void; retry: (unitId: string) => void; restoreMarks: (unitId: string) => void; reload: (unitId: string) => void;
   command: (unitId: string, payload: CommandPayload, success: string) => void; pick: (unitId: string) => void; upload: (unitId: string, file: File) => void;
+  clear: (unitId: string) => void;
 };
 type UnitCardProps = {
   unit: UnitLive; rev: number; languages: LocalizationOverview["languages"]; timeZone: string;
@@ -489,6 +501,8 @@ const UnitCard = memo(function UnitCard({ unit, languages, timeZone, canEdit, ca
   const reviewButton = canReview && reviewable && <button type="button" className="cw-button" disabled={busy}
     onClick={() => actions.command(unitId, { action: server.kind === "image" ? "review-image" : "review-current" }, "確認済みにしました。")}>
     {unit.busy === "review-current" || unit.busy === "review-image" ? "記録しています…" : "確認済みにする"}</button>;
+  const clearButton = canEdit && server.kind !== "image" && server.value !== null && status !== "conflict" && status !== "gone"
+    && <button type="button" className="cw-link-button" disabled={busy} onClick={() => actions.clear(unitId)}>{unit.busy === "clear-value" ? "消しています…" : "訳を消す"}</button>;
 
   let target: ReactNode, sourceNode: ReactNode;
   if (server.kind === "image") {
@@ -545,9 +559,9 @@ const UnitCard = memo(function UnitCard({ unit, languages, timeZone, canEdit, ca
       <div className="lw-target"><span className="lw-col-label" id={targetId}>{languages.target}</span>{target}</div>
     </div>
     {conflictBox}{goneBox}{actionNote}
-    {(reviewButton || server.updatedAt) && <footer className="lw-unit-foot">
+    {(reviewButton || clearButton || server.updatedAt) && <footer className="lw-unit-foot">
       {server.updatedAt && <span className="cw-by">最終更新 <DateTime value={server.updatedAt} timeZone={timeZone} />{server.updatedBy ? `・${server.updatedBy}` : ""}</span>}
-      {reviewButton}
+      {(clearButton || reviewButton) && <span style={{ display: "flex", alignItems: "center", gap: 12, marginInlineStart: "auto" }}>{clearButton}{reviewButton}</span>}
     </footer>}
   </section>;
 }, (previous, next) => previous.rev === next.rev && previous.unit === next.unit && previous.canEdit === next.canEdit && previous.canReview === next.canReview

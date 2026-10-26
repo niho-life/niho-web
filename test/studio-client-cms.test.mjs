@@ -121,6 +121,28 @@ test("Project一覧はStudio shellの中央検索・選択済み左nav・アカ�
   assert.match(css, /@media\(max-width:600px\).*\.studio-content-directory\{grid-template-columns:48px minmax\(0,1fr\)/u);
 });
 
+test("Project一覧はStudio shellの中央検索・選択済み左nav・アカウントと、disabled導線なしで表示する", async (t) => {
+  await openStudio(t, "/");
+  const header = document.querySelector(".studio-shell-header");
+  assert.ok(header?.querySelector(".studio-logo"));
+  assert.ok(header?.querySelector('.studio-directory-search input[type="search"]'));
+  assert.ok(header?.querySelector(".studio-account"));
+  const nav = document.querySelector(".studio-directory-nav a");
+  assert.equal(nav?.getAttribute("href"), "/");
+  assert.equal(nav?.getAttribute("aria-current"), "page");
+  assert.equal(nav?.textContent.includes("プロジェクト一覧"), true);
+  assert.ok(document.querySelector(".studio-directory-main>.nw-project-view"));
+  assert.equal(document.querySelector('.nw-project-view input[type="search"]'), null, "検索欄を重複させない");
+  assert.equal(byText("button", "新規プロジェクト"), undefined);
+  assert.equal([...document.querySelectorAll("th")].some((node) => node.textContent === "メンバー"), true);
+  assert.match(document.querySelector(".pv-avatars")?.getAttribute("aria-label") ?? "", /一覧オーナー（オーナー）、一覧編集者（編集者）/u);
+  assert.equal(document.body.textContent.includes("参加者（架空）"), false, "Project.membersを全員扱いしない");
+  assert.ok(document.querySelector(".pv-preview-initial"));
+  const css = readFileSync(new URL("../studio/public/studio.css", import.meta.url), "utf8");
+  assert.match(css, /\.studio-shell-header\{height:64px;display:grid/u);
+  assert.match(css, /@media\(max-width:600px\).*\.studio-content-directory\{grid-template-columns:48px minmax\(0,1fr\)/u);
+});
+
 test("切替が off（frame・値なし）の Dashboard の CMS は、従来どおりサイト側の管理画面の枠", async (t) => {
   for (const cmsView of [undefined, "frame", "unknown"]) {
     const calls = await openStudio(t, "/projects/kamakura-site/admin/cms", cmsView);
