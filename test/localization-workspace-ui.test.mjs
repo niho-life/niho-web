@@ -125,6 +125,37 @@ test("list: 対象外は理由ごとにまとまり、理由でも検索でき�
   } finally { await app.cleanup(); }
 });
 
+test("initial release readiness and disconnected translator are visible in the band", async () => {
+  const memory = createLocalizationMemory();
+  memory.state.current = null;
+  memory.state.settings.connected = false;
+  memory.setBlockers([{ id: "first-release", message: "公開ページの訳が揃っていません。", itemKey: null }]);
+  const app = await setup({ adapter: memory.adapter });
+  try {
+    const band = document.querySelector(".lw-band");
+    assert.ok(band.textContent.includes("初回公開までに必要な準備が 1 件あります"));
+    assert.ok(band.textContent.includes("English版を公開…」で理由を確認できます"));
+    assert.ok(band.textContent.includes("翻訳サービスがつながっていません"));
+    assert.ok(band.textContent.includes("訳文は手入力できます"));
+    assert.ok(button("English版を公開…"), "公開できない理由を読む操作は残す");
+  } finally { await app.cleanup(); }
+});
+
+test("read-only viewers see the release owner and editor roles needed to proceed", async () => {
+  const memory = createLocalizationMemory();
+  memory.state.current = null;
+  memory.state.settings.connected = false;
+  memory.setPermissions([]);
+  memory.setBlockers([{ id: "first-release", message: "公開ページの訳が揃っていません。", itemKey: null }]);
+  const app = await setup({ adapter: memory.adapter });
+  try {
+    const band = document.querySelector(".lw-band");
+    assert.ok(band.textContent.includes("公開する権限のある人に確認してください"));
+    assert.ok(band.textContent.includes("編集権限がある人は訳文を手入力できます"));
+    assert.equal(button("English版を公開…"), undefined);
+  } finally { await app.cleanup(); }
+});
+
 test("list: an edit destination opens the host editor and unsafe links fall back to the inline view", async () => {
   const memory = createLocalizationMemory();
   const adapter = { ...memory.adapter, editLink: (key) => key === "YWJvdXQ" ? "/studio/pages/about?locale=en" : "javascript:alert(1)" };

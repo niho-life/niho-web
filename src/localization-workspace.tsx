@@ -250,6 +250,8 @@ function LocaleBand({ overview, list, timeZone, catalogStalled, onRetryCatalog, 
       <h2>{target}版</h2>
       <p className="lw-band-line">{current ? <span>公開中：{current.label}（<time dateTime={current.publishedAt}>{formatDateTime(current.publishedAt, timeZone)}</time>）</span> : "まだ公開していません"}</p>
       <Progress label="確認済み" done={totals.reviewed} total={totals.items} />
+      {!current && overview.blockers.length > 0 && <p className="cw-banner" role="note">初回公開までに必要な準備が {overview.blockers.length} 件あります。{canPublish ? `「${target}版を公開…」で理由を確認できます。` : "公開する権限のある人に確認してください。"}</p>}
+      {!overview.settings.translator.connected && <p className="cw-banner" role="note">翻訳サービスがつながっていません。翻訳案の自動作成は使えません。{overview.permissions.includes("edit") ? "訳文は手入力できます。" : "編集権限がある人は訳文を手入力できます。"}</p>}
       {list.status === "ready" && list.more === "loading" && <span className="cw-hint" role="status">残りを読み込んでいます…（{list.items.length} 件まで）</span>}
       {overview.catalog.state === "updating" && <span className="lw-band-line" role="status"><Progress label={`${overview.languages.source}の原文を取り込んでいます`} done={overview.catalog.progress.done} total={overview.catalog.progress.total} /></span>}
       {catalogStalled && <p className="cw-error" role="alert"><Icon name="alert" />原文の取り込みが止まりました。<button type="button" className="cw-link-button" onClick={onRetryCatalog}>再試行</button></p>}
