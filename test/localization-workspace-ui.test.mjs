@@ -279,6 +279,7 @@ test("release: blockers stop the flow; prepare n/m, confirm with the time left, 
     box = dialog();
     assert.ok(box.textContent.includes("https://example.test/en/"));
     assert.ok(box.textContent.includes("4 ページ"));
+    assert.ok(box.textContent.includes("新しく出るページ（1）") && box.textContent.includes("私たちについて") && box.textContent.includes("外れるページ（0）"), "the pages that come and go are listed");
     assert.match(box.querySelector('[role="timer"]').textContent, /残り [12]:\d\d/);
     assert.ok(!box.textContent.includes("confirm-"), "the confirmation token is not shown");
     await press("English版を公開する", box);

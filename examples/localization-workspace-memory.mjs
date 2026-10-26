@@ -283,7 +283,8 @@ export function createLocalizationMemory(options = {}) {
       state.plan.expiresAt = now() + (options.planTtl ?? 120_000);
       state.pending = null;
       return { status: "ready", plan: { confirmationToken: state.plan.confirmationToken, expiresAt: new Date(state.plan.expiresAt).toISOString(), address: "https://example.test/en/",
-        pages: state.plan.prepared.pages, previous: state.current ? { ...state.current } : null, prepared: { ...state.plan.prepared } } };
+        pages: state.plan.prepared.pages, previous: state.current ? { ...state.current } : null, prepared: { ...state.plan.prepared },
+        changes: state.plan.operation === "publish" ? structuredClone(options.changes ?? { added: [{ path: "/about", title: "私たちについて" }], removed: [] }) : null } };
     }),
     applyRelease: wrap("applyRelease", (input) => {
       const plan = state.plan;

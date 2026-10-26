@@ -176,6 +176,13 @@ test("release: progress, resume, blockers and history kinds are strict; editor p
   const request = { operation: "publish", releaseId: null, expectedVersion: "o1", expectedCurrentVersion: "r1", resumeToken: null };
   const plan = { confirmationToken: "confirm-1", expiresAt: "2026-10-26T00:02:00.000Z", address: "https://example.test/en/", pages: 4, previous: summary, prepared: { ...summary, releaseId: "en-2", version: "r2" } };
   assert.equal(parseLocaleReleasePrepareResult({ status: "ready", plan }, request).plan.pages, 4);
+  // 出る・外れるページは任意（返さないサイトは null）。同じページが両方にあるもの・サイトの外のアドレスは止める
+  assert.equal(parseLocaleReleasePrepareResult({ status: "ready", plan }, request).plan.changes, null);
+  const changes = { added: [{ path: "/posts/a", title: "記事 A" }], removed: [{ path: "/about", title: "私たちについて" }] };
+  assert.deepEqual(parseLocaleReleasePrepareResult({ status: "ready", plan: { ...plan, changes } }, request).plan.changes, changes);
+  assert.throws(() => parseLocaleReleasePrepareResult({ status: "ready", plan: { ...plan, changes: { added: changes.added, removed: changes.added } } }, request), /both added and removed/);
+  assert.throws(() => parseLocaleReleasePrepareResult({ status: "ready", plan: { ...plan, changes: { added: [{ path: "https://evil.test/", title: "x" }], removed: [] } } }, request), /site path/);
+  assert.throws(() => parseLocaleReleasePrepareResult({ status: "ready", plan: { ...plan, changes: { added: [], removed: [], extra: 1 } } }, request));
   assert.throws(() => parseLocaleReleasePrepareResult({ status: "ready", plan: { ...plan, previous: null } }, request), /previous release mismatch/);
   assert.throws(() => parseLocaleReleasePrepareResult({ status: "ready", plan: { ...plan, address: "https://example.test/en/?token=x" } }, request), /address/);
   assert.throws(() => parseLocaleReleasePrepareResult({ status: "blocked", blockers: [] }, request), /at least one/);
