@@ -311,7 +311,7 @@ function ListView({ adapter, overview, list, group, onGroup, timeZone, focusItem
       const title = <span className="cw-row-text"><span className="cw-row-title">{item.title || "無題"}</span>{sub && <span className="cw-row-sub">{sub}</span>}
         {!!item.includedParts?.length && <span className="cw-row-sub lw-included-parts">含むもの：{item.includedParts.join(" · ")}</span>}</span>;
       return <li className="cw-row lw-row" key={item.key}>
-        {edit ? <a className="cw-row-open lw-edit-link" data-item-key={item.key} href={edit}>{title}</a>
+        {edit ? <a className="cw-row-open lw-edit-link" data-item-key={item.key} href={edit} referrerPolicy="no-referrer">{title}</a>
           : <button type="button" className="cw-row-open" data-item-key={item.key} onClick={() => onOpen(item.key)}>{title}</button>}
         <span className="cw-row-meta">
           <span className="cw-cell cw-cell-status"><span className="cw-cell-label">状態</span><span className="cw-badges"><ItemStateBadge state={item.state} />

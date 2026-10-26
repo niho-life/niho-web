@@ -115,6 +115,7 @@ test("list: an edit destination opens the host editor and unsafe links fall back
   try {
     const edit = document.querySelector('a.cw-row-open[data-item-key="YWJvdXQ"]');
     assert.equal(edit?.getAttribute("href"), "/studio/pages/about?locale=en");
+    assert.equal(edit?.getAttribute("referrerpolicy"), "no-referrer");
     assert.ok(document.querySelector('button.cw-row-open[data-item-key="aG9tZQ"]'));
     assert.ok(!document.querySelector('a.cw-row-open[data-item-key="aG9tZQ"]'));
   } finally { await app.cleanup(); }
