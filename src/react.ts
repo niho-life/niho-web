@@ -2,7 +2,7 @@ import { resolvePageStyles, type SiteStyles } from "./site-styles.js";
 import { createElement, Fragment, type ComponentType, type ReactElement } from "react";
 import type { BlockContract, PageDocument, PageNode, PublicPropValue, SitePresentation, SitePresentationExternalFrame, SitePresentationHostView, SitePresentationOverlay } from "./types.js";
 import { parsePageDocument } from "./document.js";
-import { cssForDocument, pageScope } from "./css.js";
+import { cssForDocument, pageScope, resolveViewportHeightUnits } from "./css.js";
 import { parseResolvedAssets, resolvedAsset, type ResolvedAssetMap } from "./assets.js";
 import { cssForSitePresentation, parseSitePresentation, presentationLayoutDocument, sitePresentationHostViewKey } from "./presentation.js";
 
@@ -42,10 +42,22 @@ export type PageRendererProps = {
   /** display-only host viewの優先方法。公開hostはfallback/offで実componentを選べる。 */
   hostViewMode?: "prefer" | "fallback" | "off";
   externalFramePolicy?: ExternalFramePolicy;
+  /**
+   * @internal エディターのキャンバスだけが渡す。viewportHeight は viewport 高さの単位を倍率 100% の高さの px に置き換える基準、
+   * siteOrigin は文書の root-relative な画像 URL（`/x.svg`）をサイトの公開 origin で解決する（キャンバスの iframe は Studio の origin のため）。
+   */
+  canvas?: { viewportHeight?: number | undefined; siteOrigin?: string | undefined } | undefined;
 };
 
+const canvasCssText = (css: string, canvas: PageRendererProps["canvas"]) => canvas?.viewportHeight ? resolveViewportHeightUnits(css, canvas.viewportHeight) : css;
+const rootRelative = (value: string) => value.startsWith("/") && !value.startsWith("//");
+function withSiteOrigin(attrs: Record<string, unknown>, siteOrigin: string): void {
+  if (typeof attrs.src === "string" && rootRelative(attrs.src)) attrs.src = siteOrigin + attrs.src;
+  if (typeof attrs.srcSet === "string") attrs.srcSet = attrs.srcSet.split(",").map((entry) => { const trimmed = entry.trim(); return rootRelative(trimmed) ? siteOrigin + trimmed : trimmed; }).join(", ");
+}
+
 /** useEffect を使わず、Next.js の初期 HTML と静的 SSR の両方で本文を返す。 */
-export function PageRenderer({ document: input, blocks = {}, assets: assetInput, missingAssets = "omit", siteStyles, overlayBindings = [], hostViews = [], hostViewBinding, hostViewMode = "prefer", externalFramePolicy }: PageRendererProps): ReactElement {
+export function PageRenderer({ document: input, blocks = {}, assets: assetInput, missingAssets = "omit", siteStyles, overlayBindings = [], hostViews = [], hostViewBinding, hostViewMode = "prefer", externalFramePolicy, canvas }: PageRendererProps): ReactElement {
   const document = resolvePageStyles(parsePageDocument(input, blocks, siteStyles ? { siteStyles } : {}), siteStyles);
   const assets = assetInput === undefined ? {} : parseResolvedAssets(assetInput);
   const scope = pageScope(document);
@@ -60,13 +72,14 @@ export function PageRenderer({ document: input, blocks = {}, assets: assetInput,
         const view = candidates.find((candidate) => sitePresentationHostViewKey(candidate.block, candidate.props) === sitePresentationHostViewKey(node.block, node.props));
         if (!view) throw new Error(`Registered host view is missing for block props: ${node.block}`);
         return createElement("div", { key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-block": node.block, "data-nw-host-view": view.id },
-          createElement(PageRenderer, { document: view.document, assets, missingAssets, hostViewBinding: view, hostViewMode: "off", overlayBindings, ...(externalFramePolicy ? { externalFramePolicy } : {}) }));
+          createElement(PageRenderer, { document: view.document, assets, missingAssets, hostViewBinding: view, hostViewMode: "off", overlayBindings, ...(externalFramePolicy ? { externalFramePolicy } : {}), ...(canvas ? { canvas } : {}) }));
       }
       if (!definition?.component) throw new Error(`Registered block has no React component: ${node.block}`);
       // 枠の属性や style をブロックの props へ混ぜない。
       return createElement("div", { key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-block": node.block }, createElement(definition.component, node.props));
     }
     const attrs = { ...node.attrs };
+    if (canvas?.siteOrigin && !node.asset) withSiteOrigin(attrs, canvas.siteOrigin);
     if (hostViewBinding) {
       for (const [slot, ids] of Object.entries(hostViewBinding.slotBindings ?? {})) if (ids.includes(node.id)) attrs["data-nw-slot"] = slot;
       const binding = hostViewBinding.carousel;
@@ -113,7 +126,7 @@ export function PageRenderer({ document: input, blocks = {}, assets: assetInput,
   return createElement(Fragment, null,
     // React 18 HTML-escapes text children inside <style>, which changes CSS selectors.
     // cssForDocument only emits identifiers and values accepted by the closed CSS schema.
-    createElement("style", { "data-nw-style": scope, dangerouslySetInnerHTML: { __html: cssForDocument(document, assets) } }),
+    createElement("style", { "data-nw-style": scope, dangerouslySetInnerHTML: { __html: canvasCssText(cssForDocument(document, assets), canvas) } }),
     createElement("div", { "data-nw-scope": scope, lang: document.locale }, ...document.body.map(render)));
 }
 
@@ -122,21 +135,21 @@ export type SitePageRendererProps = PageRendererProps & { presentation: unknown 
  * PageEditor と SSR が共有する native site composition。
  * 編集対象が canonical header/footer 自身なら、その文書を該当 slot にだけ置き、本文へ複製しない。
  */
-export function SitePageRenderer({ document: input, presentation: presentationInput, blocks = {}, assets: assetInput, missingAssets = "omit", siteStyles, hostViewMode = "prefer", externalFramePolicy }: SitePageRendererProps): ReactElement {
+export function SitePageRenderer({ document: input, presentation: presentationInput, blocks = {}, assets: assetInput, missingAssets = "omit", siteStyles, hostViewMode = "prefer", externalFramePolicy, canvas }: SitePageRendererProps): ReactElement {
   const document = resolvePageStyles(parsePageDocument(input, blocks, siteStyles ? { siteStyles } : {}), siteStyles);
   const presentation: SitePresentation = parseSitePresentation(presentationInput, document, blocks);
   const assets = assetInput === undefined ? {} : parseResolvedAssets(assetInput);
   const output = cssForSitePresentation(presentation, document, blocks, assets), layout = presentationLayoutDocument(presentation);
   const layoutScope = pageScope(layout), shared = presentation.shared;
   const overlays = presentation.overlays ?? [], hostViews = presentation.hostViews ?? [];
-  const hostOptions = { hostViews, hostViewMode, ...(externalFramePolicy ? { externalFramePolicy } : {}) };
+  const hostOptions = { hostViews, hostViewMode, ...(externalFramePolicy ? { externalFramePolicy } : {}), ...(canvas ? { canvas } : {}) };
   const header: PageDocument = document.pageId === shared.header.pageId ? document : shared.header;
   const footer: PageDocument = document.pageId === shared.footer.pageId ? document : shared.footer;
   const body = document.pageId === shared.header.pageId || document.pageId === shared.footer.pageId ? null
     : overlays.some((overlay) => document.pageId === overlay.document.pageId) ? null
     : createElement("main", { "data-nw-presentation-body": "" }, createElement(PageRenderer, { document, blocks, assets, missingAssets, overlayBindings: overlays, ...hostOptions, ...(siteStyles ? { siteStyles } : {}) }));
   return createElement(Fragment, null,
-    createElement("style", { "data-nw-presentation-style": output.scope, dangerouslySetInnerHTML: { __html: output.css } }),
+    createElement("style", { "data-nw-presentation-style": output.scope, dangerouslySetInnerHTML: { __html: canvasCssText(output.css, canvas) } }),
     createElement("div", { "data-nw-presentation": output.scope, "data-nw-scope": layoutScope, lang: document.locale },
       createElement("div", { "data-nw-owner": layoutScope, "data-nw-node": "layout" },
       createElement("div", { "data-nw-presentation-header": "" }, createElement(PageRenderer, { document: header, blocks, assets, missingAssets, overlayBindings: overlays, ...hostOptions })),

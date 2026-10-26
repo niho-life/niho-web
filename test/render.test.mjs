@@ -123,3 +123,18 @@ test("background images compile from resolved assets and only the unresolved dec
   assert.throws(() => generatePageCss(doc, {}, { "uploads:a": { src: "javascript:alert(1)" } }), DocumentValidationError);
   assert.ok(renderPageToHtml(doc, {}, { assets: { "uploads:a": { src: "/media/a.webp" } } }).includes('background-image:url("/media/a.webp");'));
 });
+
+test("canvas rendering resolves viewport-height units and root-relative image URLs without changing public output", () => {
+  const doc = structuredClone(fixture);
+  doc.body[0].style = { ...(doc.body[0].style ?? {}), base: { ...(doc.body[0].style?.base ?? {}), minHeight: "100vh", height: "60vh" } };
+  doc.body[0].children.push({ type: "element", id: "placeholder-image", tag: "img", attrs: { src: "/placeholder.svg", alt: "" }, children: [] });
+  const publicHtml = renderPageToHtml(doc);
+  assert.ok(publicHtml.includes("min-height:100vh"), "public CSS keeps viewport units");
+  assert.ok(publicHtml.includes('src="/placeholder.svg"'), "public HTML keeps root-relative URLs");
+  const canvasHtml = renderToString(createElement(PageRenderer, { document: doc, canvas: { viewportHeight: 900, siteOrigin: "https://site.example" } }));
+  assert.ok(canvasHtml.includes("min-height:900px"), "canvas resolves vh against the 100% viewport height");
+  assert.ok(canvasHtml.includes("height:540px"), "every vh value is resolved");
+  assert.ok(!/\d(?:dvh|svh|lvh|vh)\b/.test(canvasHtml.replace(/<[^>]*data-nw-scope="[^"]*"/g, "")), "no viewport-height unit remains in canvas CSS");
+  assert.ok(canvasHtml.includes('src="https://site.example/placeholder.svg"'), "canvas resolves root-relative image URLs against the site origin");
+  assert.ok(canvasHtml.includes(`data-nw-scope="${pageScope(doc)}"`), "scope names are not rewritten");
+});
