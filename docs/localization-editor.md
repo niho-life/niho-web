@@ -4,6 +4,8 @@
 
 認証、Project / Site 権限、永続化、翻訳provider、ジョブ実行、監査、公開snapshotはホストの責務です。ライブラリはproviderを直接呼ばず、認証情報も保持しません。
 
+Kamakura の Studio host を接続するときは、翻訳 BFF の `editor/pages/:pageId`、`save`、`command` を介してサイト側の唯一の翻訳 overlay を読み書きします。BFF は所属・署名・対象と版を確認し、サイト側は `save` で下記の文書構造検証と条件付き保存を実行します。原文は `ja-JP` の文書localeへ正規化してから多言語 adapter に渡します。
+
 ## adapter
 
 ```ts
