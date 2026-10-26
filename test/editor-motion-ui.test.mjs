@@ -179,6 +179,39 @@ test("toggle and carousel presets are inserted from the palette and the canvas n
   } finally { await app.cleanup(); }
 });
 
+test("the Add panel exposes accessible Basic, Parts and Sections tabs and click placement uses the selected destination", async () => {
+  const app = await setup();
+  try {
+    await click(button("追加"));
+    const panel = document.querySelector('[aria-label="要素を追加"]');
+    const tabs = [...panel.querySelectorAll('.e-add-tabs [role="tab"]')];
+    assert.deepEqual(tabs.map((tab) => tab.textContent), ["Basic", "Parts", "Sections"]);
+    assert.deepEqual(tabs.map((tab) => tab.getAttribute("aria-label")), ["基本要素", "パーツ", "セクション"]);
+    assert.equal(tabs[0].getAttribute("aria-selected"), "true");
+    assert.ok(panel.querySelector('.e-preset-preview[data-preset="section"]'), "basic items also use an original skeleton preview");
+    const css = document.querySelector(".nw-editor style").textContent;
+    assert.ok(css.includes(".e-add-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))"));
+    assert.ok(css.includes(".e-palette .e-preset-card{min-width:0"), "template cards can shrink in the narrow overlay panel");
+    await act(async () => tabs[0].dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }))); await flush();
+    assert.equal(tabs[1].getAttribute("aria-selected"), "true");
+    assert.equal(document.activeElement, tabs[1]);
+
+    await change(input("追加・移動先", panel), "hero");
+    await click(tabs[1]);
+    const partLabels = [...panel.querySelectorAll(".e-preset-card")].map((node) => node.textContent);
+    for (const label of ["ボタン", "カード", "見出しセット", "リスト"]) assert.ok(partLabels.some((text) => text.endsWith(label)), label);
+    await click([...panel.querySelectorAll(".e-preset-card")].find((node) => node.textContent.endsWith("カード")));
+
+    await click([...panel.querySelectorAll('.e-add-tabs [role="tab"]')].find((node) => node.textContent === "Sections"));
+    const sectionLabels = [...panel.querySelectorAll(".e-preset-card")].map((node) => node.textContent);
+    for (const label of ["ヘッダー", "ヒーロー", "特徴グリッド", "CTA", "FAQ", "フッター"]) assert.ok(sectionLabels.some((text) => text.endsWith(label)), label);
+    await click(button("下書き保存"));
+    const hero = app.calls.saves[0].document.body.find((node) => node.id === "hero");
+    assert.equal(hero.children.at(-1).tag, "article");
+    assert.equal(hero.children.at(-1).children[0].children[0].text, "カードの見出し");
+  } finally { await app.cleanup(); }
+});
+
 test("a host insertion catalog reaches the real palette and uses unique IDs for the whole subtree", async () => {
   const builder = { insertions: [{ id: "feature-card", label: "特徴カード", group: "カスタム", glyph: "◇", create: ({ id }) => ({
     type: "element", id: id(), tag: "article", children: [
@@ -188,9 +221,11 @@ test("a host insertion catalog reaches the real palette and uses unique IDs for 
   }) }] };
   const app = await setup({ props: { builder } });
   try {
-    const labels = [...document.querySelectorAll('[aria-label="要素を追加"] button')].map((node) => node.textContent);
-    assert.ok(!labels.some((label) => /横並び|グリッド|リスト/.test(label)), "追加構造はhostが明示した場合だけ表示する");
-    const preset = [...document.querySelectorAll('[aria-label="要素を追加"] button')].find((node) => node.textContent.endsWith("特徴カード"));
+    const panel = document.querySelector('[aria-label="要素を追加"]');
+    const labels = [...panel.querySelectorAll(".e-preset-card")].map((node) => node.textContent);
+    assert.ok(!labels.some((label) => /横並び|グリッド/.test(label)), "opt-in layout presets remain absent");
+    assert.ok(labels.some((label) => label.endsWith("特徴カード")), "a host preset without category defaults to Basic");
+    const preset = [...panel.querySelectorAll(".e-preset-card")].find((node) => node.textContent.endsWith("特徴カード"));
     await click(preset); await click(button("下書き保存"));
     const card = app.calls.saves[0].document.body.at(-1), ids = [card.id, ...card.children.map((child) => child.id)];
     assert.equal(card.tag, "article"); assert.equal(new Set(ids).size, ids.length); assert.ok(ids.every((id) => /^node_\d+$/.test(id)));

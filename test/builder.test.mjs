@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
-  createInsertionNode, defineBuilder, layoutInsertionPresets, matchesMotionPreset, resolveBuilderDefinition, standardBuilderDefinition
+  createInsertionNode, defineBuilder, layoutInsertionPresets, matchesMotionPreset, partInsertionPresets, resolveBuilderDefinition, sectionInsertionPresets, standardBuilderDefinition
 } from "@niho/web/builder";
 import { generatePageCss, parseComponentLibrary, parsePageDocument } from "@niho/web/core";
+import { renderPageToHtml } from "@niho/web/server";
 import { commitHistory, editDocument, travelHistory } from "../dist/editor-model.js";
 
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
@@ -20,6 +21,35 @@ test("layout compositions are opt-in and every catalog entry creates a valid doc
   }
   assert.ok(page.body.some((node) => node.type === "element" && node.style?.base?.display === "grid"));
   assert.equal(resolveBuilderDefinition().motions.length, 0);
+});
+
+test("standard parts and sections validate, survive editing and reload, and render through SSR", () => {
+  let page = doc();
+  for (const preset of [...partInsertionPresets, ...sectionInsertionPresets]) {
+    const node = createInsertionNode(preset, { document: page });
+    page = parsePageDocument({ ...page, body: [...page.body, node] });
+  }
+  assert.deepEqual(partInsertionPresets.map(({ id }) => id), ["part-button", "part-card", "part-heading-set", "part-list"]);
+  assert.deepEqual(sectionInsertionPresets.map(({ id }) => id), ["section-header", "section-hero", "section-feature-grid", "section-cta", "section-faq", "section-footer"]);
+  assert.ok(page.body.some((node) => node.type === "element" && node.style?.responsive?.length), "section layouts carry responsive declarations");
+
+  const buttonIndex = page.body.findIndex((node) => node.type === "element" && node.tag === "a" && node.children[0]?.text === "詳しく見る");
+  const edited = editDocument(page, { type: "text", path: [buttonIndex, 0], value: "内容を見る" });
+  const reloaded = parsePageDocument(JSON.parse(JSON.stringify(edited)));
+  assert.equal(reloaded.body[buttonIndex].children[0].text, "内容を見る");
+  const html = renderPageToHtml(reloaded);
+  assert.match(html, /内容を見る/);
+  assert.match(html, /@media \(min-width:768px\)/);
+  assert.match(html, /よくある質問/);
+});
+
+test("insertion categories are closed while omitted host categories remain backward compatible", () => {
+  const legacy = { id: "legacy", label: "従来項目", group: "独自", create: ({ id }) => ({ type: "element", id: id(), tag: "div", children: [] }) };
+  const resolved = resolveBuilderDefinition({ insertions: [legacy] });
+  assert.equal(resolved.insertions.find(({ id }) => id === "legacy").category, undefined);
+  assert.equal(resolved.insertions.find(({ id }) => id === "part-card").category, "parts");
+  assert.equal(resolved.insertions.find(({ id }) => id === "section-hero").category, "sections");
+  assert.throws(() => defineBuilder({ insertions: [{ ...legacy, category: "marketing" }] }), /正しくありません/);
 });
 
 test("the standard catalog and a custom composed subtree use only unique factory IDs", () => {

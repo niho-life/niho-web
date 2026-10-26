@@ -18,7 +18,9 @@ host adapterには業務上の差異を残す。Kamakuraは許可済みpage ID�
 
 ## BuilderDefinition
 
-Studio の両接続は `studio/integration-builder.ts` の同じ定義を `PageEditor` へ渡す。標準挿入はcoreの `standardBuilderDefinition` が正本であり、Studio側へコピーしない。Studio定義は共通の `layoutInsertionPresets` を明示的に追加し、横並び、グリッド、リストを利用可能にする。
+Studio の両接続は `studio/integration-builder.ts` の同じ定義を `PageEditor` へ渡す。標準挿入はcoreの `standardBuilderDefinition` が正本であり、Studio側へコピーしない。追加パネルは標準の Basic / Parts / Sections を表示し、Parts にはボタン・カード・見出しセット・リスト、Sections にはヘッダー・ヒーロー・特徴グリッド・CTA・FAQ・フッターが含まれる。どれも通常の編集可能な `PageNode` であり、保存・再読込・SSRに専用処理を要求しない。Studio定義は共通の `layoutInsertionPresets` を明示的に追加し、組み立て用の横並び、グリッド、素朴なリストも利用可能にする。
+
+host独自の `InsertionPreset` は任意の `category: "basic" | "parts" | "sections"` で配置先タブを選ぶ。categoryを持たない既存定義は Basic のまま表示されるため変更不要である。`defineBuilder` は未知categoryを拒否し、ID・表示文言・factoryの従来検証も維持する。同じgroupの見出しは各タブ内で保たれる。
 
 業務blockの配置許可はBuilderDefinitionと別である。KamakuraとExperienceは現在 `insertableBlocks=[]` を維持し、保存済み業務blockの安全な表示と、自由な新規配置を区別する。Experienceの表示は引き続き副作用のない業務previewである。
 
