@@ -27,8 +27,9 @@ export function EditorWorkspace({ preview, leftOpen, rightOpen, chrome, left, ca
 
 type IconName = "back" | "close" | "desktop" | "tablet" | "mobile" | "undo" | "redo" | "history" | "preview" | "save" | "publish" | "leftPanel" | "rightPanel";
 
+/** 左レールと上部の操作で同じ線の太さ（24 のマス目で 1.5）。大きさは CSS の .e-tool-icon / .e-action-icon が 18px にそろえる。 */
 export function WorkspaceIcon({ name }: { name: IconName }) {
-  const common = { fill: "none", stroke: "currentColor", strokeWidth: 1.7, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
+  const common = { fill: "none", stroke: "currentColor", strokeWidth: 1.5, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
   const paths: Record<IconName, ReactNode> = {
     back: <><path d="m14.5 5-7 7 7 7" /><path d="M8 12h11" /></>,
     close: <><path d="m6 6 12 12M18 6 6 18" /></>,
@@ -75,8 +76,10 @@ export function InspectorTabs<T extends string>({ tabs, active, disabled, onChan
 }
 
 export function WorkspaceScaleSelect({ scale, fitPercent, onScale }: { scale: WorkspaceScale; fitPercent: number; onScale: (value: WorkspaceScale) => void }) {
-  return <label className="e-zoom-field"><span className="e-vh">表示倍率</span><select aria-label="表示倍率" value={String(scale)} onChange={(event) => onScale(event.target.value === "fit" ? "fit" : Number(event.target.value) as WorkspaceScale)}>
-    <option value="fit">全体 {fitPercent}%</option><option value="0.25">25%</option><option value="0.5">50%</option><option value="0.75">75%</option><option value="1">100%</option><option value="1.5">150%</option><option value="2">200%</option>
+  // 閉じた状態は STUDIO と同じ「50%」だけを出す。全体表示は「全体表示」のグループに入れ、一覧の中で固定の 50% と見分ける。
+  return <label className="e-zoom-field"><span className="e-vh">表示倍率</span><select aria-label="表示倍率" title={scale === "fit" ? `全体表示（作業領域に収まる倍率: ${fitPercent}%）` : "表示倍率"} value={String(scale)} onChange={(event) => onScale(event.target.value === "fit" ? "fit" : Number(event.target.value) as WorkspaceScale)}>
+    <optgroup label="全体表示"><option value="fit">{fitPercent}%</option></optgroup>
+    <optgroup label="倍率"><option value="0.25">25%</option><option value="0.5">50%</option><option value="0.75">75%</option><option value="1">100%</option><option value="1.5">150%</option><option value="2">200%</option></optgroup>
   </select></label>;
 }
 
