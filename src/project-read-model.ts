@@ -1,4 +1,4 @@
-import { parseProject, parseProjectCatalog, type Project } from "./projects.js";
+import { parseProject, parseProjectCatalog, PROJECT_LIMITS, type Project } from "./projects.js";
 import { fail, identifier, isSafePublicUrl, keys, record } from "./validation-utils.js";
 
 export type ProjectTarget = { readonly projectId: string; readonly siteId: string };
@@ -35,6 +35,9 @@ export type ProjectAnalytics = {
   readonly uniqueVisitors: number | null;
   readonly pageViews: number | null;
 };
+export type ProjectMemberRole = "owner" | "editor";
+/** Dashboardのメンバー表示。表示名と役割だけで、ホストの不変IDやメールアドレスは含めない。 */
+export type ProjectMemberSummary = { readonly displayName: string; readonly role: ProjectMemberRole | null };
 export type ReadSection<T> = { readonly status: "ready"; readonly data: T } | { readonly status: "unavailable" };
 export type ProjectDashboardResult =
   | (ProjectTarget & {
@@ -42,6 +45,8 @@ export type ProjectDashboardResult =
     readonly fetchedAt: string;
     readonly overview: ReadSection<ProjectOverview>;
     readonly analytics: ReadSection<ProjectAnalytics> | { readonly status: "disconnected" };
+    /** 参加者の表示名と役割（ホストが返した順）。返さないホストでは画面が `Project.members` を役割なしで表示する。 */
+    readonly members?: ReadSection<readonly ProjectMemberSummary[]>;
   })
   | (ProjectTarget & { readonly status: "forbidden" });
 
@@ -121,11 +126,25 @@ function section<T>(input: unknown, path: string, parse: (value: Record<string, 
   if (value.status !== "ready") fail(path, "invalid section status");
   return { status: "ready", data: parse(record(value.data, `${path}.data`)) };
 }
+function membersSection(input: unknown): ReadSection<readonly ProjectMemberSummary[]> {
+  const value = record(input, "members");
+  if (value.status === "unavailable") { keys(value, ["status"], "members"); return { status: "unavailable" }; }
+  keys(value, ["status", "data"], "members");
+  if (value.status !== "ready" || !Array.isArray(value.data) || value.data.length > PROJECT_LIMITS.membersPerProject) fail("members", "invalid members");
+  const data = value.data.map((inputMember, index): ProjectMemberSummary => {
+    const path = `members.data[${index}]`, member = record(inputMember, path);
+    keys(member, ["displayName", "role"], path);
+    const role = member.role;
+    if (role !== null && role !== "owner" && role !== "editor") fail(`${path}.role`, "invalid role");
+    return { displayName: text(member.displayName, `${path}.displayName`, PROJECT_LIMITS.nameLength), role };
+  });
+  return { status: "ready", data };
+}
 export function parseProjectDashboardResult(input: unknown, inputProject: Project): ProjectDashboardResult {
   const project = parseProject(inputProject), value = record(input, "dashboard");
   const identity = target(value, { projectId: project.id, siteId: project.site.id }, "dashboard");
   if (value.status === "forbidden") { keys(value, ["status", "projectId", "siteId"], "dashboard"); return { ...identity, status: "forbidden" }; }
-  keys(value, ["status", "projectId", "siteId", "fetchedAt", "overview", "analytics"], "dashboard");
+  keys(value, ["status", "projectId", "siteId", "fetchedAt", "overview", "analytics", "members"], "dashboard");
   if (value.status !== "ready") fail("dashboard.status", "invalid status");
   const overview = section(value.overview, "overview", (data): ProjectOverview => {
     keys(data, ["publicationStatus", "publishedUrl", "lastPublishedAt", "publishedPageCount", "assetBytes", "recentChanges"], "overview.data");
@@ -148,5 +167,7 @@ export function parseProjectDashboardResult(input: unknown, inputProject: Projec
       if (Date.parse(end) < Date.parse(start)) fail("analytics.period", "invalid period");
       return { period: { start, end }, fetchedAt: date(data.fetchedAt, "analytics.fetchedAt"), uniqueVisitors: count(data.uniqueVisitors, "analytics.uniqueVisitors"), pageViews: count(data.pageViews, "analytics.pageViews") };
     });
-  return { status: "ready", ...identity, fetchedAt: date(value.fetchedAt, "dashboard.fetchedAt"), overview, analytics: parsedAnalytics };
+  // members は任意。返さないホストでは画面が Project.members を使う（未取得と区別するため undefined のまま）
+  const members = value.members === undefined ? undefined : membersSection(value.members);
+  return { status: "ready", ...identity, fetchedAt: date(value.fetchedAt, "dashboard.fetchedAt"), overview, analytics: parsedAnalytics, ...(members === undefined ? {} : { members }) };
 }

@@ -69,3 +69,21 @@ test("unavailable, disconnected, unknown, true zero and forbidden retain distinc
   assert.deepEqual(parseProjectDashboardResult({ status: "forbidden", projectId: "project_one", siteId: "site_one" }, project()), { status: "forbidden", projectId: "project_one", siteId: "site_one" });
   assert.deepEqual(parseProjectDirectoryResult({ status: "forbidden" }, () => true), { status: "forbidden" });
 });
+
+test("dashboard members carry display names and roles, degrade separately, and stay optional", () => {
+  const input = dashboard(); input.members = { status: "ready", data: [{ displayName: "オーナー（架空）", role: "owner" }, { displayName: "編集者（架空）", role: "editor" }, { displayName: "役割なし（架空）", role: null }] };
+  const checked = parseProjectDashboardResult(input, project());
+  assert.deepEqual(checked.members, input.members);
+  input.members.data[0].displayName = "mutated";
+  assert.equal(checked.members.data[0].displayName, "オーナー（架空）");
+  // 返さないホストでは undefined のまま（unavailable と区別する）
+  assert.equal("members" in parseProjectDashboardResult(dashboard(), project()), false);
+  const unavailable = dashboard(); unavailable.members = { status: "unavailable" };
+  assert.deepEqual(parseProjectDashboardResult(unavailable, project()).members, { status: "unavailable" });
+  for (const data of [[{ displayName: "x", role: "admin" }], [{ displayName: "", role: "owner" }], [{ displayName: "x\u0000y", role: "owner" }], [{ displayName: "x", role: "owner", userId: "u" }], [{ displayName: "x" }], [{ displayName: "x".repeat(121), role: "editor" }], Array.from({ length: 501 }, () => ({ displayName: "x", role: "editor" })), "not a list", null]) {
+    const invalid = dashboard(); invalid.members = { status: "ready", data };
+    assert.throws(() => parseProjectDashboardResult(invalid, project()), Error, JSON.stringify(data)?.slice(0, 60));
+  }
+  const badStatus = dashboard(); badStatus.members = { status: "disconnected" };
+  assert.throws(() => parseProjectDashboardResult(badStatus, project()), Error);
+});

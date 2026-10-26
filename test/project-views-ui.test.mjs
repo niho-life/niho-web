@@ -163,18 +163,37 @@ test("dashboard unpublished, empty changes, disconnected Analytics, and partial 
   } finally { await app.cleanup(); }
 });
 
-test("dashboard members are read-only with empty, multiple and long-name states", async () => {
+test("dashboard members are read-only with roles, host fallback, empty, unavailable and long-name states", async () => {
   const selected = project(); selected.members = [];
   const app = await setup(ProjectDashboard, { project: selected, adapter: dashboardAdapter(async () => dashboard(selected)) });
   try {
     assert.ok(button("プロジェクト一覧へ戻る")); await click("プロジェクト一覧へ戻る"); assert.equal(app.calls.backs, 1);
     await click("メンバー"); assert.ok(document.body.textContent.includes("メンバー（0名）")); assert.ok(document.body.textContent.includes("メンバーはいません"));
     assert.equal(document.querySelector(".pv-member-list"), null);
+    // ホストが members を返さなければ Project 正本の参加者（役割なし）
     const next = project(); next.members = [{ userId: "first", displayName: "長い参加者名".repeat(18) }, { userId: "second", displayName: "二人目" }];
     await app.rerender({ project: next, adapter: dashboardAdapter(async () => dashboard(next)) });
     await click("メンバー"); assert.equal(document.querySelectorAll(".pv-member-list li").length, 2);
     assert.ok(document.body.textContent.includes(next.members[0].displayName)); assert.ok(document.body.textContent.includes("メンバー（2名）"));
-    assert.equal(document.querySelector(".pv-member-list button"), null);
+    assert.equal(document.querySelector(".pv-member-list button"), null); assert.equal(document.querySelector(".pv-role"), null);
+    // ホストが返した members（役割つき）を Project.members より優先し、順序はホストのまま。追加・解除・権限変更の操作は置かない
+    const withRoles = dashboard(next); withRoles.members = { status: "ready", data: [{ displayName: "オーナー（架空）", role: "owner" }, { displayName: "編集者（架空）", role: "editor" }, { displayName: "役割なし（架空）", role: null }] };
+    await app.rerender({ adapter: dashboardAdapter(async () => withRoles) });
+    await click("メンバー");
+    assert.deepEqual([...document.querySelectorAll(".pv-member-list li")].map((node) => node.textContent), ["オーナー（架空）オーナー", "編集者（架空）編集者", "役割なし（架空）"]);
+    assert.ok(document.querySelector(".pv-member-list .pv-role-owner")); assert.ok(document.body.textContent.includes("メンバー（3名）"));
+    assert.equal(document.body.textContent.includes(next.members[0].displayName), false);
+    assert.equal(document.querySelector(".pv-member-list button, .pv-member-list input, .pv-member-list select"), null);
+    await click("プロジェクト設定を開く"); assert.deepEqual(app.calls.settings.at(-1), [next, "site"]);
+    // 設定画面の無いホストでは設定への導線も出さない
+    await app.rerender({ settingsAction: "disabled" }); await click("メンバー");
+    assert.equal(button("プロジェクト設定を開く"), undefined); assert.equal(document.querySelectorAll(".pv-member-list li").length, 3);
+    // 取得失敗はメンバーだけ（公開情報は残る）
+    const failed = dashboard(next); failed.members = { status: "unavailable" };
+    await app.rerender({ settingsAction: "enabled", adapter: dashboardAdapter(async () => failed) });
+    await click("メンバー"); assert.ok(document.querySelector(".pv-panel [role=alert]").textContent.includes("メンバーを取得できませんでした")); assert.ok(button("再試行"));
+    assert.equal(document.querySelector(".pv-member-list"), null);
+    await click("ダッシュボード"); assert.ok(document.body.textContent.includes("公開中"));
   } finally { await app.cleanup(); }
 });
 
