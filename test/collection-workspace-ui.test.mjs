@@ -55,6 +55,10 @@ test("list: nav, counts, rows, search and tabs follow the definitions and both o
     const nav = [...document.querySelectorAll(".cw-nav button")];
     assert.deepEqual(nav.map(nameOf), ["記事（5 件）", "サークル（3 件）", "カテゴリ（2 件）"]);
     assert.equal(nav[0].getAttribute("aria-current"), "page");
+    // 行の寄せ方とメニューの折り返しは自分で決める（ホストのボタンの共通スタイルの中央寄せを受けない・320px ではみ出さない）
+    const css = document.querySelector(".nw-collection style").textContent;
+    assert.ok(css.includes(".cw-row-open{display:flex;align-items:center;justify-content:flex-start;"));
+    assert.ok(css.includes(".cw-nav ul{display:flex;flex-wrap:wrap;gap:4px}"));
     assert.equal(document.querySelector(".cw-list-title h2").textContent, "記事");
     assert.equal(document.querySelector(".cw-count").textContent, "5 件");
     assert.deepEqual([...document.querySelectorAll(".cw-filters button")].map(nameOf), ["すべて（5 件）", "公開中（3 件）", "下書き（2 件）"]);

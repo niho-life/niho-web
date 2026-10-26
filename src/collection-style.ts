@@ -73,7 +73,7 @@ export const collectionCss = `${uiTokensCss}.nw-collection{position:relative;min
 .nw-collection .cw-row{min-height:64px;padding:0 6px;border-bottom:1px solid var(--nw-border)}
 .nw-collection .cw-row:hover{background:var(--nw-surface)}
 .nw-collection .cw-row-meta{display:contents}
-.nw-collection .cw-row-open{display:flex;align-items:center;gap:12px;min-width:0;min-height:56px;padding:8px 0;border:0;background:transparent;color:inherit;text-align:left}
+.nw-collection .cw-row-open{display:flex;align-items:center;justify-content:flex-start;gap:12px;min-width:0;min-height:56px;padding:8px 0;border:0;background:transparent;color:inherit;text-align:left}
 .nw-collection .cw-row-open:hover .cw-row-title{text-decoration:underline;text-underline-offset:3px}
 .nw-collection .cw-thumb{display:grid;place-items:center;flex:none;width:56px;height:42px;overflow:hidden;border-radius:var(--nw-radius);background:var(--nw-hover);color:var(--nw-text-sub)}
 .nw-collection .cw-thumb[data-shape=round]{width:42px;border-radius:50%}
