@@ -242,6 +242,8 @@ export type EditorCanvasPreviewProps = {
 };
 export type PageEditorProps = {
   adapter: EditorAdapter;
+  /** 一覧から開く最初のページと言語。対象が一覧に無ければ通常の先頭ページを開く。 */
+  initialTarget?: EditorTarget;
   /** ホストが用意する戻るなどの操作をツールバーの先頭へ表示する。 */
   toolbarStart?: ReactNode;
   blocks?: EditorBlockRegistry;

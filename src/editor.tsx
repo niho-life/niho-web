@@ -366,8 +366,9 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
 }
 
 /** 認証済みホストに接続する共通エディター。ネットワーク URL や秘密を所有しない。 */
-export function PageEditor({ adapter, toolbarStart, blocks = emptyBlocks, builder, previewComponent, insertableBlocks, assets, externalFramePolicy, breakpoints: hostBreakpoints, autosave, recovery }: PageEditorProps) {
+export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = emptyBlocks, builder, previewComponent, insertableBlocks, assets, externalFramePolicy, breakpoints: hostBreakpoints, autosave, recovery }: PageEditorProps) {
   const adapterRef = useRef(adapter); adapterRef.current = adapter;
+  const initialTargetRef = useRef<EditorTarget | null>(initialTarget ?? null);
   const [sites, setSites] = useState<readonly EditorSite[]>([]), [siteId, setSiteId] = useState("");
   const [pages, setPages] = useState<readonly EditorPage[]>([]), [session, setSession] = useState<Session | null>(null);
   const sessionRef = useRef(session); sessionRef.current = session;
@@ -532,7 +533,7 @@ export function PageEditor({ adapter, toolbarStart, blocks = emptyBlocks, builde
   }, [styleMigration, siteSettings.styles, siteSettings.stylesDirty]);
   useEffect(() => {
     const controller = new AbortController();
-    adapter.listSites(controller.signal).then((result) => { if (!controller.signal.aborted) { setSites(result); setSiteId(result[0]?.id ?? ""); } })
+    adapter.listSites(controller.signal).then((result) => { if (!controller.signal.aborted) { setSites(result); setSiteId(result.find((site) => site.id === initialTargetRef.current?.siteId)?.id ?? result[0]?.id ?? ""); } })
       .catch(() => { if (!controller.signal.aborted) setNotice("サイト一覧を読み込めませんでした。"); });
     return () => controller.abort();
   }, [adapter]);
@@ -544,7 +545,12 @@ export function PageEditor({ adapter, toolbarStart, blocks = emptyBlocks, builde
     listed.then((result) => {
       if (controller.signal.aborted) return;
       if (result.some((page) => page.siteId !== siteId)) throw new Error("site mismatch");
-      setPages(result); const first = result.find((page) => page.kind !== "shared") ?? result[0]; if (first) void load(first); else { replace(null); setBusy(""); }
+      setPages(result);
+      const requested = initialTargetRef.current;
+      initialTargetRef.current = null;
+      const first = result.find((page) => page.kind !== "shared") ?? result[0];
+      const target = requested?.siteId === siteId && result.some((page) => page.pageId === requested.pageId) ? requested : first;
+      if (target) void load(target); else { replace(null); setBusy(""); }
     }).catch(() => { if (!controller.signal.aborted) { setNotice("ページ一覧を読み込めませんでした。"); setBusy(""); } });
     return () => { controller.abort(); request.current?.abort(); pageList.current?.abort(); };
   }, [adapter, siteId, load, replace, components, openLibrary, replaceLibrary]);
