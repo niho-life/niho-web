@@ -145,12 +145,14 @@ test("optional page and site methods are absent unless the host implements them"
 test("localization methods remain project-scoped and preserve optimistic command fields", async () => {
   const calls = [];
   const localization = {
+    requestPageTranslation: false,
     readSite: async (siteId) => ({ config: { siteId }, pages: [{ siteId, pageId: "home", title: "ホーム", locales: {} }], version: "site-1" }),
     readPage: async (target) => ({ sourceDocument: { ...fixture, siteId: target.siteId, pageId: target.pageId }, sourceVersion: "source-1", overlay: {}, version: "loc-1" }),
     command: async (request) => { calls.push(structuredClone(request)); return { status: "applied", version: "loc-2" }; },
     requestSiteTranslation: async (request) => { calls.push(structuredClone(request)); return { status: "applied", version: "site-2" }; }
   };
   const { wrapped } = setup({ localization });
+  assert.equal(wrapped.localization.requestPageTranslation, false);
   assert.equal((await wrapped.localization.readSite("demo", signal())).version, "site-1");
   await assert.rejects(() => wrapped.localization.readSite("other", signal()), /プロジェクト外/);
   const target = { siteId: "demo", pageId: "home", locale: "en" };

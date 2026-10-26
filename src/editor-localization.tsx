@@ -309,9 +309,10 @@ function ManualValueEditor({ unit, value, accepted, disabled, pending, invalid, 
       <button type="button" className="e-small" disabled={disabled || !pending} onClick={cancel}>入力を取り消す</button></div></div>;
 }
 
-export function LocalizationPanel({ context, document, disabled, selectedUnit, run, refresh, pickAsset, manualBuffer, setManualBuffer }: {
+export function LocalizationPanel({ context, document, disabled, selectedUnit, run, refresh, pickAsset, manualBuffer, setManualBuffer, requestTranslation = true }: {
   context: EditorLocalizationContext; document: PageDocument; disabled: boolean;
   selectedUnit?: string | null; run: (request: EditorLocalizationCommand) => Promise<EditorLocalizationCommandOutcome>; refresh: () => void; pickAsset?: (unit: LocalizationUnit) => void;
+  requestTranslation?: boolean;
   manualBuffer: EditorLocalizationManualBuffer | null; setManualBuffer: (buffer: EditorLocalizationManualBuffer | null) => void;
 }) {
   const panel = useRef<HTMLDivElement>(null);
@@ -352,7 +353,8 @@ export function LocalizationPanel({ context, document, disabled, selectedUnit, r
     {manualPending && !bufferedUnit && <button type="button" className="e-small" disabled={disabled} onClick={() => setManualBuffer(null)}>入力を取り消す</button>}
     {context.job?.state === "failed" && <p className="e-help e-problem" role="alert">翻訳に失敗しました。{context.job.message ? ` ${context.job.message}` : ""}</p>}
     {context.job && ["queued", "running"].includes(context.job.state) && <p className="e-help" role="status">{context.job.state === "queued" ? "翻訳を待機中です。" : "翻訳中です。"}</p>}
-    <button type="button" className="e-small" disabled={disabled || manualPending || context.job?.state === "queued" || context.job?.state === "running"} onClick={() => void request("request-translation")}>{context.job?.state === "failed" ? "翻訳を再試行" : "このページを翻訳"}</button>
+    {requestTranslation ? <button type="button" className="e-small" disabled={disabled || manualPending || context.job?.state === "queued" || context.job?.state === "running"} onClick={() => void request("request-translation")}>{context.job?.state === "failed" ? "翻訳を再試行" : "このページを翻訳"}</button>
+      : <p className="e-help">このページからの自動翻訳依頼には対応していません。翻訳画面で依頼するか、訳文を手修正してください。</p>}
     {context.job && ["queued", "running", "failed"].includes(context.job.state) && <button type="button" className="e-small" disabled={disabled || manualPending} onClick={refresh}>翻訳状況を更新</button>}
   </section>{context.collection.issues.length > 0 && <p className="e-help e-problem" role="alert">原文に未対応またはIDのない内容が {context.collection.issues.length} 件あります。公開可能な訳文にはできません。</p>}
   {context.collection.units.map((unit) => {

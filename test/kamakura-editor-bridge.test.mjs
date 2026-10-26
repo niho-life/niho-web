@@ -32,6 +32,18 @@ async function loadStudioWorker() {
   return import(`data:text/javascript;base64,${source}`);
 }
 
+async function loadKamakuraEditor() {
+  const result = await build({
+    entryPoints: [new URL("../studio/kamakura-editor.tsx", import.meta.url).pathname],
+    bundle: true,
+    format: "esm",
+    platform: "node",
+    target: "node22",
+    write: false
+  });
+  return import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].contents).toString("base64")}`);
+}
+
 function base64url(value) {
   return Buffer.from(typeof value === "string" ? value : value).toString("base64url");
 }
@@ -64,6 +76,60 @@ function catalog(pageTitle = "NIHO Kamakura") {
     }
   };
 }
+
+test("Kamakura editor adapter は日本語経路を維持し、英語 snapshot・overlay 保存・翻訳操作を localization BFF に限定する", async (t) => {
+  const { createKamakuraAdapter } = await loadKamakuraEditor();
+  const parsedCatalog = contract.parseKamakuraCatalog(catalog());
+  const pageId = "kamakura-community-dinner";
+  const document = (id, locale, title = id) => ({ schemaVersion: 1, siteId: "kamakura", pageId: id, locale, revision: 2, title, tokens: {}, body: [] });
+  const presentation = { schemaVersion: 1, siteId: "kamakura", locale: "en", version: "presentation-1", reset: "neutral-v1", tokens: {}, fonts: [],
+    shared: { header: document("site-header", "en"), footer: document("site-footer", "en") } };
+  const versions = { expectedSourceVersion: `p.${"a".repeat(64)}`, expectedVersion: `l.${"b".repeat(64)}`, expectedOverlayVersion: 1 };
+  const config = { schemaVersion: 1, siteId: "kamakura", sourceLocale: "ja", defaultLocale: "ja", enabledLocales: ["ja", "en"], documentLocales: { ja: "ja", en: "en" }, glossaryVersion: "g1", contextVersion: "c1" };
+  const overlay = { schemaVersion: 1, siteId: "kamakura", pageId, sourceLocale: "ja", targetLocale: "en", version: 1, entries: [] };
+  const localizedPage = { siteId: "kamakura", pageId, title: "Community Dinner", locales: { ja: { state: "source" }, en: { state: "review-needed", changed: 1, published: false } } };
+  const normalizedLocalizedPage = { ...localizedPage, title: parsedCatalog.pages[0].title };
+  const replies = new Map([
+    [`GET /api/projects/project-kamakura/sites/kamakura/editor/${pageId}`, { document: document(pageId, "ja"), version: "ja-version" }],
+    [`POST /api/projects/project-kamakura/sites/kamakura/localization/editor/site`, { status: "ready", config, pages: [localizedPage], version: `s.${"c".repeat(64)}` }],
+    [`POST /api/projects/project-kamakura/sites/kamakura/localization/editor/pages/${pageId}`, { status: "ready", sourceDocument: document(pageId, "ja"), sourceVersion: versions.expectedSourceVersion, overlay, version: versions.expectedVersion }],
+    [`POST /api/projects/project-kamakura/sites/kamakura/localization/editor/pages/${pageId}/snapshot`, { status: "ready", document: document(pageId, "en", "Community Dinner"), version: versions.expectedVersion, presentation }],
+    [`POST /api/projects/project-kamakura/sites/kamakura/localization/editor/pages/${pageId}/save`, { status: "saved", version: `l.${"d".repeat(64)}`, revision: 3 }],
+    [`POST /api/projects/project-kamakura/sites/kamakura/localization/editor/pages/${pageId}/command`, { status: "applied", version: `l.${"e".repeat(64)}` }]
+  ]);
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (path, init = {}) => {
+    const key = `${init.method ?? "GET"} ${String(path)}`, body = init.body === undefined ? undefined : JSON.parse(init.body);
+    calls.push({ key, body });
+    const reply = replies.get(key);
+    if (!reply) throw new Error(`unexpected request: ${key}`);
+    return Response.json(reply);
+  });
+  const adapter = createKamakuraAdapter(parsedCatalog, () => {}), signal = new AbortController().signal;
+  const ja = { siteId: "kamakura", pageId, locale: "ja" }, en = { siteId: "kamakura", pageId, locale: "en" };
+
+  assert.equal((await adapter.readDocument(ja, signal)).document.locale, "ja");
+  const english = await adapter.readDocument(en, signal);
+  assert.equal(english.document.locale, "en");
+  assert.equal(english.presentation.version, presentation.version);
+  assert.deepEqual(await adapter.localization.readSite("kamakura", signal), { config, pages: [normalizedLocalizedPage], version: `s.${"c".repeat(64)}` });
+  assert.deepEqual(await adapter.localization.readPage(en, signal), { sourceDocument: document(pageId, "ja"), sourceVersion: versions.expectedSourceVersion, overlay, version: versions.expectedVersion });
+  const saved = await adapter.saveDraft({ target: en, document: english.document, expectedVersion: versions.expectedVersion, presentationVersion: presentation.version, localization: versions }, signal);
+  assert.equal(saved.status, "saved");
+  const saveCall = calls.at(-1);
+  assert.deepEqual(saveCall.body, { document: english.document, ...versions }, "presentationVersion と target は BFF の allowlist へ混ぜない");
+  assert.deepEqual(await adapter.localization.command({ action: "review-current", target: en, unitId: "page.title", ...versions }, signal), { status: "applied", version: `l.${"e".repeat(64)}` });
+  const before = calls.length;
+  await assert.rejects(adapter.localization.command({ action: "request-translation", target: en, ...versions }, signal), /まだ対応していません/u);
+  assert.equal(calls.length, before, "未対応の翻訳依頼を成功扱いせず BFF にも送らない");
+  await assert.rejects(adapter.saveDraft({ target: en, document: english.document, expectedVersion: `l.${"f".repeat(64)}`, presentationVersion: presentation.version, localization: versions }, signal), /版が正しくありません/u);
+  assert.equal(calls.length, before);
+
+  replies.set(`POST /api/projects/project-kamakura/sites/kamakura/localization/editor/pages/${pageId}/snapshot`, { status: "unavailable", message: "このページの英語表示材料はまだありません。" });
+  await assert.rejects(adapter.readDocument(en, signal), /英語表示材料/u);
+  replies.set(`POST /api/projects/project-kamakura/sites/kamakura/localization/editor/pages/${pageId}/snapshot`, { status: "conflict" });
+  await assert.rejects(adapter.readDocument(en, signal), (error) => error.status === 409);
+});
 
 test("Kamakura Worker accepts valid long titles and separates contract errors from unavailable upstream", async (t) => {
   const issuer = "https://catalog-contract-test.example";

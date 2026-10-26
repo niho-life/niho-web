@@ -67,6 +67,8 @@ export interface EditorLocalizationAdapter {
   readSite(siteId: string, signal: AbortSignal): Promise<EditorLocalizationSiteSnapshot>;
   readPage(target: EditorTarget, signal: AbortSignal): Promise<EditorLocalizationPageSnapshot>;
   command(request: EditorLocalizationCommand, signal: AbortSignal): Promise<EditorLocalizationCommandResult>;
+  /** false のホストではページ単位の自動翻訳依頼を表示せず、手修正・候補採用・確認だけを使う。省略時は従来どおり表示する。 */
+  requestPageTranslation?: false;
   /** Optional host-owned site-wide async translation queue. The library never calls a provider. */
   requestSiteTranslation?(request: { siteId: string; targetLocale: LocalizationLocale; expectedVersion: string }, signal: AbortSignal): Promise<EditorLocalizationCommandResult>;
   /** Optional host-owned whole-locale publication. All four methods are required to enable translated publication. */
