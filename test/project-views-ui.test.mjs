@@ -202,7 +202,7 @@ test("dashboard unpublished, empty changes, disconnected Analytics, and partial 
     partial.analytics = { status: "unavailable" };
     await app.rerender({ adapter: dashboardAdapter(async () => partial) }); await click("アナリティクス");
     assert.ok(document.body.textContent.includes("アクセス解析を取得できませんでした")); assert.ok(button("再試行"));
-    await click("ダッシュボード"); assert.ok(document.querySelector(".pv-analytics-summary [role=alert]"));
+    await click("ホーム"); assert.ok(document.querySelector(".pv-analytics-summary [role=alert]"));
   } finally { await app.cleanup(); }
 });
 
