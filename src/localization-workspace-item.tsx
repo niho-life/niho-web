@@ -303,8 +303,9 @@ export function ItemEditor({ adapter, overview, itemKey, timeZone, autosaveDelay
     if (!unit || unit.busy) return;
     // 訳を消すときは、保存していない入力も一緒に捨てる（保存してから消すと、直せない入力で止まる）
     if (payload.action === "clear-value") {
-      clearTimeout(unit.timer); unit.dirty = false;
+      clearTimeout(unit.timer);
       if (unit.saving) await unit.saving;
+      unit.dirty = false; unit.seq++; unit.segments = null; unit.value = null; unit.problem = null; unit.lastValid = null; unit.retry = null;
     } else if (unit.dirty && !(await save(unitId))) {
       unit.actionMessage = { text: "保存できていないため、操作しませんでした。", error: true };
       touch(unit);
