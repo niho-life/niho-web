@@ -607,6 +607,15 @@ function publishedSlugOf(definition: CollectionDefinition, item: CollectionItem)
   return item.publishedAt !== null && item.path !== null && definition.pathPrefix !== null && item.path.startsWith(definition.pathPrefix) ? item.path.slice(definition.pathPrefix.length) : null;
 }
 
+/**
+ * 1 件の編集の上に出す状態。まだ保存していない直しがある公開中の項目は「変更あり」。
+ * 公開の要求（commit を含み数十秒かかることがある）の間は、直前に保存した下書きの「変更あり」ではなく「反映中」を出す（kamakura-site#155）。
+ */
+export function editorStatus(status: CollectionItemStatus, dirty: boolean, busy: string | null): CollectionItemStatus {
+  if (busy === "publish") return "publishing";
+  return dirty && status === "published" ? "changed" : status;
+}
+
 function ItemEditor({ adapter, definition, itemId, created, timeZone, autosaveDelay, renderRichText, references, retryReferences, confirm, redirectCandidates: candidatesFor, onSaved, onBack, onRemoved, onOpenItem }: EditorProps) {
   const requests = useRequests();
   const baseId = useId();
@@ -897,8 +906,7 @@ function ItemEditor({ adapter, definition, itemId, created, timeZone, autosaveDe
     </div>;
   }
 
-  // 公開の要求（commit を含み数十秒かかることがある）の間は、直前に保存した下書きの「変更あり」ではなく「反映中」を出す（kamakura-site#155）
-  const status: CollectionItemStatus = busy === "publish" ? "publishing" : dirty && item.status === "published" ? "changed" : item.status;
+  const status = editorStatus(item.status, dirty, busy);
   const capabilities = definition.capabilities;
   const menu: MenuItem[] = [];
   if (status === "changed" && adapter.discardDraft) menu.push({ label: "変更を取り消す", onSelect: () => confirm({

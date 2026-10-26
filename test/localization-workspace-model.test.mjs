@@ -7,6 +7,7 @@ import {
   segmentsToRichText, segmentsToText, textSegments, visibleLength, createOperationId, createPreviewNonce, isLocalizationOperationId,
 } from "@niho/web/localization-workspace-model";
 import { parseEditorLocaleReleaseState } from "../dist/editor-locale-release.js";
+import { previewFrameLayout } from "../dist/localization-workspace-preview.js";
 import { createLocalizationMemory } from "../examples/localization-workspace-memory.mjs";
 
 const signal = new AbortController().signal;
@@ -187,7 +188,6 @@ test("release: progress, resume, blockers and history kinds are strict; editor p
 
 
 test("preview frame layout: PC draws at 1280px and scales down to the box; phone widths shrink only when the box is narrower", async () => {
-  const { previewFrameLayout } = await loadPreview();
   const pc = previewFrameLayout("pc", 344, 800);
   assert.equal(pc.frameWidth, 1280);
   assert.ok(Math.abs(pc.scale - 344 / 1280) < 1e-9);
