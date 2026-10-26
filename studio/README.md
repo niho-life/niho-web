@@ -227,6 +227,7 @@ log は editor と同じく問い合わせ ID・固定の operation（`cms_schem
 | `POST overview` | `{}` | 30 秒 |
 | `POST items`・`POST items/after/:cursor` | `{}` | 12 秒 |
 | `POST items/:itemKey` | `{}` | 12 秒 |
+| `POST editor/pages/:pageId` | `{}`。固定の native ページ ID のみ | 30 秒 |
 | `POST items/:itemKey/command` | `{ itemKey, operationId, action, unitId, expectedVersion, expectedSourceVersion }` と action ごとに `value`／`candidateId`／`image` | 12 秒 |
 | `POST items/:itemKey/translate` | `{ itemKey, operationId, unitIds }` | 30 秒 |
 | `POST jobs/:jobId` | `{}` | 12 秒 |
@@ -238,7 +239,7 @@ log は editor と同じく問い合わせ ID・固定の operation（`cms_schem
 
 - `set-image` の `image` は `null`（原文と同じに戻す）か `{ kind: "image-url", src }` だけです（どの URL を使えるかは鎌倉の Worker が確かめる）。
 - 上限: 訳文の保存（`command`）の本文は 1 MiB − 4 KiB（鎌倉の Worker の 1 MiB から actor の分を引く）、ほかの本文 16 KiB、上流の応答 4 MiB（upload intent は 16 KiB）。画像は jpeg / png / webp / avif / gif で 50 MiB まで（実際の上限は鎌倉の Worker の 413）。
-- プレビューの材料（`preview/items` の 200）は、確かめずに 2 MiB + 64 KiB の上限つきでそのまま流します（ブラウザの adapter と画面が W1 の parser で確かめる。上限を超えたら途中で切る）。ほかの応答は W1 の parser（`src/localization-workspace-model.ts`）で確かめ、既知の field だけを返します。概要の `preview.frameUrl` は鎌倉の Worker の `/_studio/localization-preview`（`.html` 付きも可）だけを受けます。
+- プレビューの材料（`preview/items` の 200）は、確かめずに 2 MiB + 64 KiB の上限つきでそのまま流します（ブラウザの adapter と画面が W1 の parser で確かめる。上限を超えたら途中で切る）。ほかの応答は W1 の parser（`src/localization-workspace-model.ts`）で確かめ、既知の field だけを返します。`editor/pages/:pageId` は原文の site・page・locale・revision、訳文 overlay の scope、両版を確かめて返します。文書本文のブロック契約はホストの editor adapter で検証します。概要の `preview.frameUrl` は鎌倉の Worker の `/_studio/localization-preview`（`.html` 付きも可）だけを受けます。
 
 | 上流 | ブラウザへ |
 | --- | --- |
@@ -251,7 +252,7 @@ log は editor と同じく問い合わせ ID・固定の operation（`cms_schem
 | 401 / status の無い 403 / 429 / 5xx / 3xx / JSON でない / 上限超え / timeout / 想定外の 4xx | 503 `{ error: "service_unavailable", supportId }` |
 | 契約に合わない応答（field の過不足・itemKey / unitId / jobId の不一致・status と HTTP の status の食い違い・プレビューの枠の違いなど） | 502 `{ error: "upstream_contract_invalid", supportId }` |
 
-log は editor・CMS と同じく問い合わせ ID・固定の operation（`localization_overview`・`localization_list`・`localization_item`・`localization_command`・`localization_translate`・`localization_job`・`localization_catalog`・`localization_preview`・`localization_release`・`localization_release_prepare`・`localization_release_apply`・`localization_settings`・`localization_upload_intent`）・固定の分類（editor の分類と `localization_endpoint_missing`）・上流の status だけで、本文・token・email・subject は出しません。
+log は editor・CMS と同じく問い合わせ ID・固定の operation（`localization_overview`・`localization_list`・`localization_item`・`localization_editor_page`・`localization_command`・`localization_translate`・`localization_job`・`localization_catalog`・`localization_preview`・`localization_release`・`localization_release_prepare`・`localization_release_apply`・`localization_settings`・`localization_upload_intent`）・固定の分類（editor の分類と `localization_endpoint_missing`）・上流の status だけで、本文・token・email・subject は出しません。
 
 ブラウザ側は `studio/kamakura-localization.ts` の `createKamakuraLocalizationAdapter({ siteOrigin, cmsItemUrl, chooseImage })` が `LocalizationWorkspaceAdapter` を返します（`siteOrigin` は Project の `site.domains[0]`）。
 
@@ -345,7 +346,7 @@ Project 固有 API はすべて次の prefix 配下です。
 - Kamakura: `PUT editor/:pageId/draft`、`POST editor/:pageId/release-plan`、`POST editor/:pageId/release`
 - Kamakura: `POST editor/assets/{list,upload-intent,update,usages,resolve}`、`GET editor/assets/:uuid/preview`（owner/editor）
 - Kamakura CMS: `GET cms/schema`、`GET|POST cms/collections/:col/items`、`GET cms/collections/:col/items/:id`、`PUT …/:id/draft`、`POST …/:id/{publish,discard-draft,unpublish,duplicate,remove,schedule,cancel-schedule}`、`POST cms/uploads/intent`（owner/editor・鎌倉以外は 404）
-- Kamakura 翻訳: `POST localization/{overview,items,catalog/advance,preview/items,release,release/prepare,release/apply,uploads/intent}`、`POST localization/items/after/:cursor`、`POST localization/items/:itemKey{,/command,/translate}`、`POST localization/jobs/:jobId`、`PUT localization/settings`（owner/editor・役割を上流へ渡す・鎌倉以外は 404）
+- Kamakura 翻訳: `POST localization/{overview,items,catalog/advance,preview/items,release,release/prepare,release/apply,uploads/intent}`、`POST localization/editor/pages/:pageId`、`POST localization/items/after/:cursor`、`POST localization/items/:itemKey{,/command,/translate}`、`POST localization/jobs/:jobId`、`PUT localization/settings`（owner/editor・役割を上流へ渡す・鎌倉以外は 404）
 
 unknown Project/Site と権限のない Project/Site は、外部から区別できる詳細を返しません。owner API が返す member 情報は、その owner が管理する同一 Project に限定します。
 

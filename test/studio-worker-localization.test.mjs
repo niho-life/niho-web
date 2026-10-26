@@ -149,9 +149,13 @@ test("翻訳 BFF: Access と D1 の owner/editor を要求ごとに確かめ、�
     ["POST", "/jobs/a.b", 404],
     ["POST", "/jobs/constructor", 404],
     ["POST", "/release/rollback", 404],
+    ["POST", "/editor/pages/catalog", 404],
+    ["POST", "/editor/pages/Home", 404],
+    ["POST", "/editor/pages/home/extra", 404],
     ["GET", "/overview", 405],
     ["PUT", "/overview", 405],
     ["GET", "/items", 405],
+    ["GET", "/editor/pages/home", 405],
     ["POST", "/settings", 405],
     ["PUT", "/items/aG9tZQ/command", 405],
     ["DELETE", "/items/aG9tZQ", 405]
@@ -165,6 +169,42 @@ test("翻訳 BFF: Access と D1 の owner/editor を要求ごとに確かめ、�
   h.roles.delete("project-kamakura/kamakura");
   await expectJson(await h.send("POST", "/overview", {}), 403, "forbidden");
   assert.equal(h.calls.length, before);
+});
+
+test("翻訳 BFF: native 編集用ページは所属を確認して署名付きで読み、原文と既存訳の scope を検証する", async (t) => {
+  const auth = await accessFixture();
+  const worker = await loadWorker();
+  mockAccess(t, auth);
+  const h = harness(auth, worker);
+  const page = { schemaVersion: 1, siteId: "kamakura", pageId: "home", locale: "ja", revision: 2, title: "海辺の暮らし", tokens: {}, body: [] };
+  const overlay = { schemaVersion: 1, siteId: "kamakura", pageId: "home", sourceLocale: "ja", targetLocale: "en", version: 1, entries: [] };
+  const ready = { status: "ready", sourceDocument: page, sourceVersion: `p.${"a".repeat(64)}`, overlay, version: `l.${"b".repeat(64)}` };
+  h.setRespond(() => Response.json(ready));
+  await expectJson(await h.send("POST", "/editor/pages/home", {}, { jwt: "" }), 401, "session_expired");
+  await expectJson(await h.send("POST", "/editor/pages/home", {}), 403, "forbidden");
+  assert.equal(h.calls.length, 0);
+  h.roles.set("project-kamakura/kamakura", "editor");
+  assert.deepEqual(await expectJson(await h.send("POST", "/editor/pages/home", {}), 200), ready);
+  const call = h.calls.at(-1);
+  assert.equal(call.path, `${UPSTREAM}/editor/pages/home`);
+  assert.equal(call.body, JSON.stringify({ actor: { email: EMAIL, role: "editor" } }));
+  h.verifySignature(call);
+  const before = h.calls.length;
+  await expectJson(await h.send("POST", "/editor/pages/home", { pageId: "other" }), 400, "invalid_request");
+  assert.equal(h.calls.length, before);
+  for (const reply of [
+    { ...ready, sourceDocument: { ...page, pageId: "other" } },
+    { ...ready, overlay: { ...overlay, pageId: "other" } },
+    { ...ready, sourceVersion: "p.bad" },
+    { ...ready, extra: true }
+  ]) {
+    h.setRespond(() => Response.json(reply));
+    await expectJson(await h.send("POST", "/editor/pages/home", {}), 502, "upstream_contract_invalid");
+  }
+  for (const [status, reply] of [[403, { status: "forbidden" }], [404, { status: "not_found" }]]) {
+    h.setRespond(() => Response.json(reply, { status }));
+    assert.deepEqual(await expectJson(await h.send("POST", "/editor/pages/home", {}), status), reply);
+  }
 });
 
 test("翻訳 BFF: 本文を操作ごとの key の集合と W1 の形で確かめ、確かめた値と actor だけで作り直して署名する", async (t) => {
