@@ -193,7 +193,7 @@ export type LocaleReleaseWorkspacePlan = {
   readonly pages: number;
   readonly previous: LocaleReleaseSummary | null;
   readonly prepared: LocaleReleaseSummary;
-  /** 確認済みのページだけを公開するサイトが返す、今の版から新しく出るページと外れるページ。返さないサイトは null。 */
+  /** 公開ページ集合の差分を返すサイトが使う、今の版から新しく出るページと外れるページ。返さないサイトは null。 */
   readonly changes: { readonly added: readonly LocaleReleasePageRef[]; readonly removed: readonly LocaleReleasePageRef[] } | null;
   /** 初回公開のときだけ。古い adapter は省略できる。 */
   readonly firstRelease: LocaleFirstReleaseSummary | null;

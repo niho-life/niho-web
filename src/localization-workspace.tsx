@@ -412,10 +412,10 @@ function SettingsView({ adapter, overview, timeZone, onBack, onSaved }: {
       <h2 ref={heading} tabIndex={-1}>{overview.languages.target}版の設定</h2>
       {!canChange && <p className="cw-banner" role="note">設定を変える権限がありません。見ることだけできます。</p>}
       <section className="lw-settings-card" aria-labelledby="lw-settings-auto">
-        <h3 id="lw-settings-auto">翻訳案</h3>
+        <h3 id="lw-settings-auto">自動翻訳</h3>
         <label className="lw-check"><input type="checkbox" checked={autoDraft} disabled={!canChange || busy} onChange={(event) => setAutoDraft(event.target.checked)} />
-          <span>{overview.languages.source}が変わったら、翻訳案を自動で作る</span></label>
-        <p className="cw-hint">翻訳案は「下書き」として項目に入ります。公開する前に、人が 1 つずつ確かめます。</p>
+          <span>{overview.languages.source}の変更した箇所を自動翻訳する</span></label>
+        <p className="cw-hint">自動翻訳のまま公開できます。人が直した・確認した訳は上書きせず、原文が変わると新しい訳を翻訳案に残します。</p>
         {canChange && <div className="lw-settings-actions"><button type="button" className="cw-button cw-primary" disabled={busy || autoDraft === settings.autoDraft} onClick={() => void save()}>{busy ? "保存しています…" : "保存する"}</button></div>}
         {note && <p className={note.error ? "cw-error" : "lw-note"} role={note.error ? "alert" : "status"}>{note.error && <Icon name="alert" />}{note.text}</p>}
       </section>
