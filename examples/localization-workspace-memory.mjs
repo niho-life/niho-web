@@ -25,7 +25,7 @@ export function seedItems(mediaBase = "https://media.example.test") {
       key: "aG9tZQ", groupId: "pages", title: "トップ", path: "/", excluded: null, sourceDraftPending: false, updatedAt: "2026-10-24T03:00:00.000Z", updatedBy: "編集担当（架空）",
       previews: [{ id: "home", label: "トップ" }],
       units: [
-        text("title", "題名", "海の見える工房", { section: "見出し", singleLine: true, maxLength: 40, value: "Workshop by the sea", updatedAt: "2026-10-24T03:00:00.000Z", updatedBy: "編集担当（架空）" }),
+        text("title", "題名", "海の見える工房", { section: "見出し", singleLine: true, maxLength: 40, value: "Workshop by the sea", editOrigin: "AUTO", updatedAt: "2026-10-24T03:00:00.000Z", updatedBy: "編集担当（架空）" }),
         text("lead", "案内文", `営業時間は${M("m0")}です。お問い合わせは${M("m1")}へ。`, {
           section: "見出し", marks: [{ id: "m0", label: "営業時間" }, { id: "m1", label: "メールアドレス" }],
           candidate: { candidateId: "c-lead-1", value: `Open ${M("m0")}. Contact us at ${M("m1")}.` },
@@ -40,7 +40,7 @@ export function seedItems(mediaBase = "https://media.example.test") {
       units: [
         text("title", "題名", "私たちについて", { singleLine: true, value: "About us", reviewedSource: "s1" }),
         text("intro", "紹介文", "小さな町の工房です。週末は体験教室を開いています。", {
-          value: "A small workshop in a small town.", sourceVersion: "s2", reviewedSource: "s1", previousSource: "小さな町の工房です。",
+          value: "A small workshop in a small town.", editOrigin: "MANUAL", sourceVersion: "s2", reviewedSource: "s1", previousSource: "小さな町の工房です。",
         }),
       ],
     },
@@ -70,7 +70,7 @@ function exportUnit(unit) {
   const base = { unitId: unit.unitId, label: unit.label, section: unit.section, required: unit.required, version: `v${unit.version}`, sourceVersion: unit.sourceVersion, state,
     updatedAt: unit.updatedAt, updatedBy: unit.updatedBy, kind: unit.kind, source: structuredClone(unit.source), value: structuredClone(unit.value) };
   if (unit.kind === "image") return base;
-  const extra = { previousSource: state === "review-needed" ? structuredClone(unit.previousSource) : null, candidate: structuredClone(unit.candidate) };
+  const extra = { previousSource: state === "review-needed" ? structuredClone(unit.previousSource) : null, candidate: structuredClone(unit.candidate), ...(unit.editOrigin ? { editOrigin: unit.editOrigin } : {}) };
   return unit.kind === "text" ? { ...base, ...extra, marks: structuredClone(unit.marks), maxLength: unit.maxLength, singleLine: unit.singleLine } : { ...base, ...extra };
 }
 function summarize(item) {
@@ -192,15 +192,15 @@ export function createLocalizationMemory(options = {}) {
           } else if (unit.kind === "rich-text") {
             if (richShape(input.value) !== richShape(unit.source)) return { status: "invalid", message: "リンクや装飾の形が原文と合いません。" };
           } else return { status: "invalid", message: "画像は画像の操作で変えてください。" };
-          unit.value = input.value; unit.reviewedSource = unitState(unit) === "reviewed" ? null : unit.reviewedSource;
+          unit.value = input.value; unit.editOrigin = "MANUAL"; unit.reviewedSource = unitState(unit) === "reviewed" ? null : unit.reviewedSource;
           break;
         case "adopt-candidate":
           if (!unit.candidate || unit.candidate.candidateId !== input.candidateId) return { status: "invalid", message: "この翻訳案はもう使えません。" };
-          unit.value = structuredClone(unit.candidate.value); unit.reviewedSource = null;
+          unit.value = structuredClone(unit.candidate.value); unit.editOrigin = "AUTO"; unit.reviewedSource = null;
           break;
         case "clear-value":
           if (unit.kind === "image" || unit.value === null) return { status: "invalid", message: "この項目には訳がありません。" };
-          unit.value = null; unit.reviewedSource = null;
+          unit.value = null; unit.editOrigin = null; unit.reviewedSource = null;
           break;
         case "review-current": case "review-image":
           if (unit.value === null) return { status: "invalid", message: "まだ訳文がありません。" };
@@ -334,7 +334,7 @@ export function createLocalizationMemory(options = {}) {
     /** ほかの人が直したことにする（項目の版が上がる）。 */
     externalEdit(itemKey, unitId, value) {
       const unit = find(itemKey).units.find((entry) => entry.unitId === unitId);
-      unit.value = value; unit.version++; unit.reviewedSource = null; unit.updatedBy = "ほかの編集者（架空）"; unit.updatedAt = iso(); state.overviewVersion++;
+      unit.value = value; unit.editOrigin = unit.kind === "image" ? null : "MANUAL"; unit.version++; unit.reviewedSource = null; unit.updatedBy = "ほかの編集者（架空）"; unit.updatedAt = iso(); state.overviewVersion++;
     },
     /** 原文が変わったことにする（原文の版が変わる）。 */
     changeSource(itemKey, unitId, source) {

@@ -70,7 +70,7 @@ test("list: staged loading, groups, band, filters, search and excluded reasons",
     assert.ok(band.textContent.includes("公開中：10/1 の公開"));
     assert.ok(band.textContent.includes("確認済み 1/4"));
     assert.ok(button("English版を公開…"));
-    assert.deepEqual([...document.querySelectorAll(".cw-filters button")].map(nameOf), ["すべて（5 件）", "要対応（3 件）", "確認済み（1 件）", "対象外（1 件）"]);
+    assert.deepEqual([...document.querySelectorAll(".cw-filters button")].map(nameOf), ["要対応（3 件）", "確認済み（1 件）", "すべて（5 件）", "対象外（1 件）"]);
     assert.equal(document.querySelector('.cw-filters button[aria-pressed="true"]').textContent.replace(/\s+/gu, " ").trim(), "要対応（3 件）");
     assert.deepEqual(rowTitles(), ["トップ", "私たちについて", "お知らせ一覧"]);
     await press("すべて（5 件）", document.querySelector(".cw-filters"));
@@ -128,6 +128,7 @@ test("editor: source and translation side by side, autosave about a second after
     assert.deepEqual([...card("title").querySelectorAll(".lw-col-label")].map((node) => node.textContent), ["日本語（読むだけ）", "English"]);
     assert.equal(card("title").querySelector(".lw-source .lw-text").textContent, "海の見える工房");
     assert.equal(inputText("title"), "Workshop by the sea");
+    assert.ok(card("title").querySelector(".lw-unit-head").textContent.includes("自動翻訳（未確認）"));
     assert.equal(input("title").getAttribute("role"), "textbox");
     assert.equal(input("title").getAttribute("aria-multiline"), "false");
     assert.ok(input("title").getAttribute("aria-labelledby").split(" ").every((id) => document.getElementById(id)), "the input is labelled by the unit and the language");
@@ -137,6 +138,7 @@ test("editor: source and translation side by side, autosave about a second after
 
     await setText("title", "Workshop by");
     await setText("title", "Workshop by the sea!");
+    assert.ok(card("title").querySelector(".lw-unit-head").textContent.includes("手修正（未確認）"));
     assert.equal(document.querySelector(".cw-editor-status .cw-save-state").textContent, "保存中…");
     await wait(500);
     assert.equal(commands(memory).length, 0, "waits before saving");

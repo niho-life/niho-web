@@ -72,6 +72,10 @@ test("parsers reject unknown keys, mismatched states and oversized values", asyn
   assert.throws(() => parseLocalizationListResult({ status: "ready", items: [badKey], nextCursor: null }), /item key/);
 
   const unit = clone(item.item.units[0]);
+  assert.equal(parseLocalizationUnit(unit).editOrigin, "AUTO");
+  assert.equal(parseLocalizationUnit({ ...unit, editOrigin: "MANUAL" }).editOrigin, "MANUAL");
+  assert.throws(() => parseLocalizationUnit({ ...unit, editOrigin: "BOT" }), /edit origin/);
+  assert.throws(() => parseLocalizationUnit({ ...item.item.units[3], editOrigin: "AUTO" }), /unknown field/);
   assert.throws(() => parseLocalizationUnit({ ...unit, value: "x".repeat(100_001) }), /invalid text/);
   assert.throws(() => parseLocalizationUnit({ ...unit, value: null }), /does not fit the state/);
   assert.throws(() => parseLocalizationUnit({ ...unit, state: "reviewed", previousSource: "前" }), /previous source/);

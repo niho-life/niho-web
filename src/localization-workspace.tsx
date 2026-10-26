@@ -267,7 +267,7 @@ function LocaleBand({ overview, list, timeZone, catalogStalled, onRetryCatalog, 
 
 /* ---------- 一覧 ---------- */
 
-const filterTabs: readonly [LocalizationFilter, string][] = [["all", "すべて"], ["needs-work", "要対応"], ["reviewed", "確認済み"], ["excluded", "対象外"]];
+const filterTabs: readonly [LocalizationFilter, string][] = [["needs-work", "要対応"], ["reviewed", "確認済み"], ["all", "すべて"], ["excluded", "対象外"]];
 
 function ListView({ adapter, overview, list, group, onGroup, timeZone, focusItem, onFocused, onOpen, onRetry }: {
   adapter: LocalizationWorkspaceAdapter; overview: LocalizationOverview; list: ListState; group: string | null; onGroup: (group: string | null) => void; timeZone: string;

@@ -166,7 +166,7 @@ type LocalizationItemSummary = {
 | state | 意味 | 印 | 絞り込み |
 | --- | --- | --- | --- |
 | `untranslated` | 訳文がまだ無い項目がある | 未翻訳（中抜きの丸） | 要対応 |
-| `draft` | 訳文はあるが、確認していない項目がある | 下書き（半分の丸） | 要対応 |
+| `draft` | 訳文はあるが、確認していない項目がある | 未確認（半分の丸） | 要対応 |
 | `source-changed` | 確認した後に原文が変わった項目がある | 原文が更新（三角） | 要対応 |
 | `reviewed` | すべて確認済み | 確認済み（✓） | 確認済み |
 | `excluded` | 訳さない（理由つき） | 対象外（斜線の四角） | 対象外 |
@@ -194,9 +194,11 @@ type LocalizationWorkspaceUnit = {
   updatedAt: string | null; updatedBy: string | null;
 } & (
   | { kind: 'text'; source: string; value: string | null; previousSource: string | null;
+      editOrigin?: 'AUTO' | 'MANUAL' | null; // 保存済み訳文の出どころ。古い adapter は省略可
       candidate: { candidateId: string; value: string } | null;
       marks: { id: string; label: string }[]; maxLength: number | null; singleLine: boolean }
   | { kind: 'rich-text'; source: LocalizedRichText; value: LocalizedRichText | null; previousSource: LocalizedRichText | null;
+      editOrigin?: 'AUTO' | 'MANUAL' | null;
       candidate: { candidateId: string; value: LocalizedRichText } | null }
   | { kind: 'image'; source: LocalizationImage; value: LocalizationImage | null }
 );
@@ -212,6 +214,7 @@ type LocalizationImage = { asset: LocalizedAsset; url: string };   // asset は 
 | `reviewed` | 今の原文に対して確認済み | あり |
 
 - `previousSource` は `review-needed` のときだけ値を持てます。
+- `editOrigin` は訳文を自動翻訳で保存したら `AUTO`、人が編集して保存したら `MANUAL` です。`draft` の項目に限り、画面はそれぞれ「自動翻訳（未確認）」「手修正（未確認）」と表示します。省略または `null` は「未確認」です。画像には付けません。
 - `candidate` は翻訳サービスが作った案です。画面は「翻訳案を使う」で `adopt-candidate` を送ります。
 - 画像の `value: null` は「原文と同じ画像を使う」です。
 
@@ -367,7 +370,7 @@ type PreviewRenderMessage = {
 
 - 上に「{訳す言語}版」の帯: 公開中の版と日時、確認済み n/m 件、「{訳す言語}版を公開…」（`publish`）、「公開の履歴」、原文の取り込みの進み具合、途中の公開の「続ける」。
 - 左にコンテンツの種類と件数（「すべて」を先頭に）。幅 900px 以下は上に横並び。
-- 絞り込み: 初回は「要対応」。すべて／要対応／確認済み／対象外（件数つき）を切り替えられる。検索を始めると全件から題名とアドレスを探し、項目から一覧へ戻ったときは元の行を見つけられるよう「すべて」を表示する。「要対応」が空なら「すべてを見る」で切り替えられる。
+- 絞り込み: 初回は「要対応」。要対応／確認済み／すべて／対象外（件数つき）を切り替えられる。検索を始めると全件から題名とアドレスを探し、項目から一覧へ戻ったときは元の行を見つけられるよう「すべて」を表示する。「要対応」が空なら「すべてを見る」で切り替えられる。
 - 行: 状態の印（形と言葉）・題名（下にアドレス、対象外は理由）・確認済み n/m・未確認の画像の数・最終更新。`sourceLink` が安全な URL を返す行には「原文を編集」を出す。
 - 「すべて」と各種類では、対象外の行を一覧の下の折りたたみへ分ける。検索中は一致した対象外も見えるように開く。「対象外」の絞り込みでは直接一覧に出す。
 
