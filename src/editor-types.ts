@@ -7,7 +7,14 @@ import type { PageKind, PageVisibility, SiteSettings } from "./pages.js";
 import type { ComponentLibrary, PageDocument, PublicPropValue, SitePresentation, StyleProperty } from "./types.js";
 import type { EditorRecoveryStore, EditorRevisionEntry, EditorRevisionPage } from "./history.js";
 import type { BlockLocalizationSchema, LocalizationLocale, LocalizationValue } from "./localization.js";
+import type {
+  EditorLocaleReleaseApplyRequest, EditorLocaleReleaseApplyResult, EditorLocaleReleasePlan, EditorLocaleReleasePrepareRequest, EditorLocaleReleaseState
+} from "./locale-release-contract.js";
 export type { PageKind, PageVisibility, SiteSettings } from "./pages.js";
+/** 言語全体の公開の型は locale-release-contract.ts に移した。互換のためここからも export する。 */
+export type {
+  EditorLocaleReleaseApplyRequest, EditorLocaleReleaseApplyResult, EditorLocaleReleasePlan, EditorLocaleReleasePrepareRequest, EditorLocaleReleaseState, EditorLocaleReleaseSummary
+} from "./locale-release-contract.js";
 export type { DocumentChange, EditorLibraryRecoveryEntry, EditorRecoveryEntry, EditorRecoveryStore, EditorRevisionEntry, EditorRevisionKind, EditorRevisionPage, StoredLibraryRecoveryEntry, StoredRecoveryEntry } from "./history.js";
 
 export type EditorTarget = { siteId: string; pageId: string; locale: string };
@@ -56,54 +63,6 @@ export type EditorLocalizationCommand =
   | { action: "set-value"; target: EditorTarget; unitId: string; value: LocalizationValue; sourceFingerprint: string; expectedEntryVersion: number;
     expectedSourceVersion: string; expectedVersion: string; expectedOverlayVersion: number };
 export type EditorLocalizationCommandResult = { status: "applied"; version: string } | { status: "conflict" };
-export type EditorLocaleReleaseSummary = {
-  releaseId: string;
-  version: string;
-  label: string;
-  publishedAt: string;
-  pages: number;
-  sharedResources: number;
-};
-export type EditorLocaleReleaseState = {
-  siteId: string;
-  locale: LocalizationLocale;
-  /** CAS identity of the current locale release; null before first activation. */
-  current: EditorLocaleReleaseSummary | null;
-  /** Immutable prior whole-locale releases, newest first. */
-  history: readonly EditorLocaleReleaseSummary[];
-};
-export type EditorLocaleReleasePrepareRequest = {
-  siteId: string;
-  locale: LocalizationLocale;
-  action: "publish" | "rollback";
-  expectedSiteVersion: string;
-  expectedCurrentVersion: string | null;
-  rollbackReleaseId?: string;
-};
-export type EditorLocaleReleasePlan = EditorLocaleReleasePrepareRequest & {
-  confirmationToken: string;
-  domain: string;
-  expiresAt: string;
-  optimisticVersion: string;
-  previous: EditorLocaleReleaseSummary | null;
-  prepared: EditorLocaleReleaseSummary;
-  pages: readonly { pageId: string; title: string; path: string; complete: boolean; reasons: readonly string[] }[];
-  sharedResources: readonly { id: string; label: string; kind: "component" | "navigation" | "style" | "resource"; complete: boolean; reasons: readonly string[] }[];
-  incompleteReasons: readonly string[];
-  complete: boolean;
-};
-export type EditorLocaleReleaseApplyRequest = {
-  confirmationToken: string;
-  siteId: string;
-  locale: LocalizationLocale;
-  expectedCurrentVersion: string | null;
-  optimisticVersion: string;
-  preparedReleaseId: string;
-  preparedVersion: string;
-};
-export type EditorLocaleReleaseApplyResult =
-  | { status: "applied"; siteId: string; locale: LocalizationLocale; current: EditorLocaleReleaseSummary }
-  | { status: "conflict" | "expired" };
 export interface EditorLocalizationAdapter {
   readSite(siteId: string, signal: AbortSignal): Promise<EditorLocalizationSiteSnapshot>;
   readPage(target: EditorTarget, signal: AbortSignal): Promise<EditorLocalizationPageSnapshot>;
