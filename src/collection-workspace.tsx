@@ -1,22 +1,23 @@
 "use client";
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import {
-  collectionDateFromInput, collectionItemFilter, isDisplayableImageUrl, parseCollectionCreateResult, parseCollectionItemResult,
-  parseCollectionListResult, parseCollectionPublishResult, parseCollectionRemoveResult, parseCollectionSaveResult, parseCollectionSchemaResult,
-  parseCollectionUploadResult, sanitizeRichTextHtml, sortCollectionItems, validateCollectionValues,
-  type CollectionAdapter, type CollectionDefinition, type CollectionFieldError, type CollectionFilter, type CollectionItem, type CollectionItemStatus,
-  type CollectionItemSummary, type CollectionValue, type CollectionValues,
+  COLLECTION_BULK_LIMIT, collectionDateFromInput, collectionItemFilter, collectionReorderSequence, isDisplayableImageUrl, moveCollectionIds,
+  parseCollectionBulkResult, parseCollectionCreateResult, parseCollectionItemResult, parseCollectionListResult, parseCollectionPublishResult,
+  parseCollectionRemoveResult, parseCollectionReorderResult, parseCollectionSaveResult, parseCollectionSchemaResult, parseCollectionUploadResult,
+  sanitizeRichTextHtml, sortCollectionItems, validateCollectionValues,
+  type CollectionAdapter, type CollectionBulkAction, type CollectionDefinition, type CollectionFieldError, type CollectionFilter, type CollectionItem,
+  type CollectionItemStatus, type CollectionItemSummary, type CollectionValue, type CollectionValues,
 } from "./collection-model.js";
 import { displayImage, FieldView, fieldControlId, rejectMessages, type CollectionRichTextEditorProps, type FieldContext, type ReferenceCandidates } from "./collection-fields.js";
 import { ConfirmDialog, DateTime, formatDateTime, Icon, MenuButton, StatusBadges, useRequests, zoneLabel, type ConfirmRequest, type MenuItem } from "./collection-ui.js";
 import { collectionCss } from "./collection-style.js";
 
 export {
-  collectionDateFromInput, collectionDateInputValue, collectionItemFilter, isIsoTimestamp, isRichTextLinkAllowed, parseCollectionCreateResult,
-  parseCollectionItem, parseCollectionItemResult, parseCollectionItemSummary, parseCollectionListResult, parseCollectionPublishResult,
-  parseCollectionRemoveResult, parseCollectionSaveResult, parseCollectionSchemaResult, parseCollectionUploadResult, parseCollectionValues,
-  sanitizeRichTextHtml, sortCollectionItems, validateCollectionValues,
+  collectionDateFromInput, collectionDateInputValue, collectionItemFilter, collectionReorderSequence, isIsoTimestamp, isRichTextLinkAllowed,
+  moveCollectionIds, parseCollectionBulkResult, parseCollectionCreateResult, parseCollectionItem, parseCollectionItemResult, parseCollectionItemSummary,
+  parseCollectionListResult, parseCollectionPublishResult, parseCollectionRemoveResult, parseCollectionReorderResult, parseCollectionSaveResult,
+  parseCollectionSchemaResult, parseCollectionUploadResult, parseCollectionValues, sanitizeRichTextHtml, sortCollectionItems, validateCollectionValues,
 } from "./collection-model.js";
 export type * from "./collection-model.js";
 export type { CollectionRichTextEditorProps } from "./collection-fields.js";
@@ -48,6 +49,71 @@ const toSummary = (item: CollectionItem): CollectionItemSummary => ({
   id: item.id, title: item.title, subtitle: item.subtitle, imageUrl: item.imageUrl, path: item.path, status: item.status, publishedAt: item.publishedAt,
   updatedAt: item.updatedAt, updatedBy: item.updatedBy, scheduledAt: item.scheduledAt, publishFailed: item.publishFailed, order: item.order,
 });
+const messagesOf = (errors: readonly CollectionFieldError[]) => errors.map((error) => error.message);
+/** サイトに出ている項目（削除の移動先を選べる）。 */
+const isLive = (summary: Pick<CollectionItemSummary, "path" | "status">) => summary.path !== null && (summary.status === "published" || summary.status === "changed" || summary.status === "publishing");
+
+/* ---------- 削除の移動先（capabilities.redirects） ---------- */
+
+type RedirectCandidate = { readonly path: string; readonly title: string };
+/** 移動先にできる、同じコレクションのほかの公開中の項目（path があり published・changed）。 */
+function redirectCandidates(items: readonly CollectionItemSummary[] | null, ordering: CollectionDefinition["ordering"], selfId: string): RedirectCandidate[] {
+  const seen = new Set<string>();
+  return sortCollectionItems(items ?? [], ordering).flatMap((item) => {
+    if (item.id === selfId || item.path === null || (item.status !== "published" && item.status !== "changed") || seen.has(item.path)) return [];
+    seen.add(item.path);
+    return [{ path: item.path, title: item.title || "無題" }];
+  });
+}
+/** undefined = 一覧へ移す（ホストの既定）、null = 移さない、string = ほかの項目の path。 */
+type RedirectTo = string | null | undefined;
+function RedirectChoices({ label, path, candidates, onChange }: { label: string; path: string; candidates: readonly RedirectCandidate[]; onChange: (value: RedirectTo) => void }) {
+  const name = useId();
+  const [kind, setKind] = useState<"list" | "other" | "none">("list");
+  const [other, setOther] = useState(candidates[0]?.path ?? "");
+  const choose = (nextKind: "list" | "other" | "none", nextPath = other) => {
+    setKind(nextKind);
+    setOther(nextPath);
+    onChange(nextKind === "list" ? undefined : nextKind === "none" ? null : nextPath);
+  };
+  return <fieldset className="cw-choices">
+    <legend>このアドレス（<span className="cw-address">{path}</span>）を開いた人の移動先</legend>
+    <label className="cw-choice"><input type="radio" name={name} checked={kind === "list"} onChange={() => choose("list")} /><span>一覧へ移す</span></label>
+    {candidates.length > 0 && <label className="cw-choice"><input type="radio" name={name} checked={kind === "other"} onChange={() => choose("other")} /><span>ほかの{label}へ移す</span></label>}
+    {kind === "other" && <select className="cw-input cw-select" aria-label={`移動先の${label}`} value={other} onChange={(event) => choose("other", event.target.value)}>
+      {candidates.map((candidate) => <option key={candidate.path} value={candidate.path}>{candidate.title}（{candidate.path}）</option>)}
+    </select>}
+    <label className="cw-choice"><input type="radio" name={name} checked={kind === "none"} onChange={() => choose("none")} /><span>移さない<span className="cw-hint">このアドレスを開いた人には「見つかりません」が出ます。</span></span></label>
+  </fieldset>;
+}
+/** 削除の確認。転送できるホストで公開中の項目なら、移動先の 3 つの選択を出す。 */
+function removeConfirm(definition: CollectionDefinition, title: string, summary: Pick<CollectionItemSummary, "path" | "status">, candidates: readonly RedirectCandidate[], run: (redirectTo: RedirectTo) => Promise<void>): ConfirmRequest {
+  const heading = `「${title}」を削除しますか？`;
+  if (!definition.capabilities.redirects || !isLive(summary)) {
+    return { title: heading, body: summary.status === "draft" ? "削除は元に戻せません。" : "サイトからも外れます。削除は元に戻せません。", confirmLabel: "削除する", tone: "danger", run: () => run(undefined) };
+  }
+  const choice: { value: RedirectTo } = { value: undefined };
+  return {
+    title: heading, body: "サイトから外れます。削除は元に戻せません。", confirmLabel: "削除する", tone: "danger",
+    extra: <RedirectChoices label={definition.label} path={summary.path!} candidates={candidates} onChange={(value) => { choice.value = value; }} />,
+    run: () => run(choice.value),
+  };
+}
+const redirectInput = (redirectTo: RedirectTo) => redirectTo === undefined ? {} : { redirectTo };
+
+/* ---------- まとめての操作 ---------- */
+
+type BulkOutcome = { readonly kind: "done" | "kept" } | { readonly kind: "invalid"; readonly messages: readonly string[] };
+const bulkDone: Record<CollectionBulkAction, readonly [string, string]> = {
+  publish: ["公開しました。", "サイトに出るまで少しかかります。"],
+  unpublish: ["下書きに戻しました。", "サイトから外れるまで少しかかります。"],
+  remove: ["削除しました。", "サイトから外れるまで少しかかります。"],
+};
+/** 並べて読む（同時に limit 本まで）。 */
+async function eachLimited<T>(list: readonly T[], limit: number, run: (entry: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, list.length) }, async () => { while (next < list.length) await run(list[next++]!); }));
+}
 
 /** コレクション（CMS）の一覧と項目の編集。adapter を差し替えると中身を作り直し、古い応答を捨てる。 */
 export function CollectionWorkspace(props: CollectionWorkspaceProps) {
@@ -72,7 +138,9 @@ function WorkspaceSession({ adapter, initialCollectionId, initialItemId, onNavig
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
   const [focusItem, setFocusItem] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-  const listSeq = useRef(new Map<string, number>()), schemaSeq = useRef(0), toastSeq = useRef(0);
+  /** 並べ替えの応答待ち。ids はその間に出す並び。 */
+  const [moving, setMoving] = useState<{ readonly collectionId: string; readonly ids: readonly string[] } | null>(null);
+  const listSeq = useRef(new Map<string, number>()), schemaSeq = useRef(0), toastSeq = useRef(0), movingNow = useRef(false);
 
   const notify = useCallback((text: string, error = false) => setToast({ text, error, id: ++toastSeq.current }), []);
   useEffect(() => {
@@ -125,6 +193,11 @@ function WorkspaceSession({ adapter, initialCollectionId, initialItemId, onNavig
     const state = previous[collectionId];
     return state?.status === "ready" ? { ...previous, [collectionId]: { status: "ready", items: state.items.filter((entry) => entry.id !== itemId) } } : previous;
   });
+  /** 操作の応答の一覧で置き換える（読み込み中の古い一覧は捨てる）。 */
+  const replaceList = (collectionId: string, items: readonly CollectionItemSummary[]) => {
+    listSeq.current.set(collectionId, (listSeq.current.get(collectionId) ?? 0) + 1);
+    setList(collectionId, { status: "ready", items });
+  };
 
   const collections = schema.status === "ready" ? schema.collections : [];
   const definition = collections.find((candidate) => candidate.id === view.collectionId) ?? null;
@@ -132,6 +205,7 @@ function WorkspaceSession({ adapter, initialCollectionId, initialItemId, onNavig
     const state = lists[collectionId];
     return !state ? { status: "loading" } : state.status === "ready" ? { status: "ready", items: state.items } : { status: state.status };
   };
+  const listedItems = (collectionId: string) => { const state = lists[collectionId]; return state?.status === "ready" ? state.items : null; };
 
   /* ---------- 一覧からの操作（最新を読んで version を付けてから） ---------- */
   const afterListAction = (target: CollectionDefinition, status: string, success: string) => {
@@ -165,15 +239,64 @@ function WorkspaceSession({ adapter, initialCollectionId, initialItemId, onNavig
         else if (outcome.kind === "error") failed();
       }),
     }) });
-    if (target.capabilities.remove && adapter.remove) items.push({ label: "削除する", danger: true, onSelect: () => setConfirm({
-      title: `「${title}」を削除しますか？`, body: summary.status === "draft" ? "削除は元に戻せません。" : "サイトからも外れます。削除は元に戻せません。", confirmLabel: "削除する", tone: "danger",
-      run: () => withLatest(target, summary, async (item) => {
-        const outcome = await requests.current.run(async (signal) => parseCollectionRemoveResult(await adapter.remove!({ collectionId: target.id, itemId: item.id, version: item.version }, signal), target, item.id));
-        if (outcome.kind === "ok") { if (outcome.value.status === "removed") drop(target.id, item.id); afterListAction(target, outcome.value.status, "削除しました。"); }
-        else if (outcome.kind === "error") failed();
-      }),
-    }) });
+    if (target.capabilities.remove && adapter.remove) items.push({ label: "削除する", danger: true, onSelect: () => setConfirm(removeConfirm(target, title, summary, redirectCandidates(listedItems(target.id), target.ordering, summary.id), (redirectTo) => withLatest(target, summary, async (item) => {
+      const outcome = await requests.current.run(async (signal) => parseCollectionRemoveResult(await adapter.remove!({ collectionId: target.id, itemId: item.id, version: item.version, ...redirectInput(redirectTo) }, signal), target, item.id));
+      if (outcome.kind === "ok") {
+        const result = outcome.value;
+        if (result.status === "invalid") { notify(messagesOf(result.errors).join(" ") || "削除できませんでした。", true); void loadList(target.id, true); return; }
+        if (result.status === "removed") drop(target.id, item.id);
+        afterListAction(target, result.status, "削除しました。");
+      } else if (outcome.kind === "error") failed();
+    }))) });
     return items;
+  };
+
+  /* ---------- 並べ替え・まとめての操作 ---------- */
+  const reorder = async (target: CollectionDefinition, ids: readonly string[], from: number, to: number): Promise<boolean> => {
+    if (!adapter.reorder || movingNow.current) return false;
+    movingNow.current = true;
+    setMoving({ collectionId: target.id, ids: moveCollectionIds(ids, from, to) });
+    const outcome = await requests.current.run(async (signal) => parseCollectionReorderResult(await adapter.reorder!({ collectionId: target.id, ids: [...ids], from, to }, signal)));
+    movingNow.current = false;
+    setMoving(null);
+    if (outcome.kind === "aborted") return false;
+    if (outcome.kind === "error") { notify("並べ替えられませんでした。もう一度試してください。", true); void loadList(target.id, true); return false; }
+    const result = outcome.value;
+    if (result.status === "forbidden" || result.status === "not_found") { afterListAction(target, result.status, ""); return false; }
+    if (result.status === "invalid") { notify(messagesOf(result.errors).join(" ") || "並べ替えられませんでした。", true); void loadList(target.id, true); return false; }
+    replaceList(target.id, result.items);
+    if (result.status === "conflict") { notify("ほかの人が先に並びを変えていました。一覧を読み込み直したので、もう一度並べ替えてください。", true); return false; }
+    notify(result.status === "publishing" ? "並べ替えました。サイトに出るまで少しかかります。" : "並べ替えました。");
+    return true;
+  };
+  const bulk = async (target: CollectionDefinition, action: CollectionBulkAction, chosen: readonly CollectionItemSummary[]): Promise<BulkOutcome> => {
+    if (!adapter.bulk || chosen.length === 0 || chosen.length > COLLECTION_BULK_LIMIT) return { kind: "kept" };
+    // 一覧の要約は version を持たないので、先に最新を読む（ほかの人の変更を上書きしないため）
+    const versions = new Map<string, string>();
+    let problem: "error" | "forbidden" | "not_found" | null = null, aborted = false;
+    await eachLimited(chosen, 6, async (summary) => {
+      if (problem || aborted) return;
+      const outcome = await requests.current.run(async (signal) => parseCollectionItemResult(await adapter.loadItem({ collectionId: target.id, itemId: summary.id }, signal), target, summary.id));
+      if (outcome.kind === "aborted") aborted = true;
+      else if (outcome.kind === "error") problem ??= "error";
+      else if (outcome.value.status !== "ready") problem ??= outcome.value.status;
+      else versions.set(summary.id, outcome.value.item.version);
+    });
+    if (aborted) return { kind: "kept" };
+    if (problem === "error") { failed(); return { kind: "kept" }; }
+    if (problem) { afterListAction(target, problem, ""); return { kind: "kept" }; }
+    const items = chosen.map((summary) => ({ id: summary.id, version: versions.get(summary.id)! }));
+    const outcome = await requests.current.run(async (signal) => parseCollectionBulkResult(await adapter.bulk!({ collectionId: target.id, action, items }, signal)));
+    if (outcome.kind === "aborted") return { kind: "kept" };
+    if (outcome.kind === "error") { failed(); void loadList(target.id, true); return { kind: "kept" }; }
+    const result = outcome.value;
+    if (result.status === "forbidden" || result.status === "not_found") { afterListAction(target, result.status, ""); return { kind: "kept" }; }
+    if (result.status === "invalid") return { kind: "invalid", messages: messagesOf(result.errors) };
+    replaceList(target.id, result.items);
+    if (result.status === "conflict") { notify("ほかの人が先に変えました。一覧を読み込み直したので、確かめてからもう一度試してください。", true); return { kind: "kept" }; }
+    const [done, later] = bulkDone[action];
+    notify(`${items.length} 件を${done}${result.status === "publishing" ? later : ""}`);
+    return { kind: "done" };
   };
   const create = async (target: CollectionDefinition) => {
     if (!adapter.createItem || creating) return;
@@ -194,6 +317,7 @@ function WorkspaceSession({ adapter, initialCollectionId, initialItemId, onNavig
     const target = definition, itemId = view.itemId;
     body = <ItemEditor key={`${target.id}/${itemId}`} adapter={adapter} definition={target} itemId={itemId} created={view.created} timeZone={timeZone} autosaveDelay={autosaveDelay}
       renderRichText={renderRichText} references={references} retryReferences={(collectionId) => void loadList(collectionId)} confirm={setConfirm}
+      redirectCandidates={() => redirectCandidates(listedItems(target.id), target.ordering, itemId)}
       onSaved={(item) => upsert(target.id, item)}
       onBack={() => { go(target.id, null); setFocusItem(itemId); void loadList(target.id, true); }}
       onRemoved={(message) => { drop(target.id, itemId); notify(message); go(target.id, null); void loadList(target.id, true); }}
@@ -215,7 +339,10 @@ function WorkspaceSession({ adapter, initialCollectionId, initialItemId, onNavig
         <ItemList key={definition.id} definition={definition} state={state} timeZone={timeZone} focusItem={focusItem} onFocused={() => setFocusItem(null)}
           imageSrc={(url, width) => displayImage(url, width, adapter.imageUrl ? (value, size) => adapter.imageUrl!(value, size) : undefined)}
           canCreate={definition.capabilities.create && !!adapter.createItem} creating={creating} onCreate={() => void create(definition)}
-          onOpen={(itemId) => go(definition.id, itemId)} onRetry={() => void loadList(definition.id)} menuFor={(summary) => rowMenu(definition, summary)} />
+          onOpen={(itemId) => go(definition.id, itemId)} onRetry={() => void loadList(definition.id)} menuFor={(summary) => rowMenu(definition, summary)} confirm={setConfirm}
+          reorder={definition.capabilities.reorder && adapter.reorder && definition.ordering === "manual"
+            ? { pending: moving?.collectionId === definition.id ? moving.ids : null, onMove: (ids, from, to) => reorder(definition, ids, from, to) } : null}
+          bulk={definition.capabilities.bulk && adapter.bulk ? (action, chosen) => bulk(definition, action, chosen) : null} />
       </div>
     </div>;
   }
@@ -235,16 +362,43 @@ function Thumb({ src }: { src: string | null }) {
   return src && src !== failedSrc ? <img src={src} alt="" loading="lazy" referrerPolicy="no-referrer" onError={() => setFailedSrc(src)} /> : <Icon name="image" />;
 }
 
-function ItemList({ definition, state, timeZone, focusItem, onFocused, imageSrc, canCreate, creating, onCreate, onOpen, onRetry, menuFor }: {
+type ReorderControl = { readonly pending: readonly string[] | null; readonly onMove: (ids: readonly string[], from: number, to: number) => Promise<boolean> };
+type BulkRun = (action: CollectionBulkAction, chosen: readonly CollectionItemSummary[]) => Promise<BulkOutcome>;
+const bulkFailed: Record<CollectionBulkAction, string> = { publish: "まとめて公開できませんでした。", unpublish: "まとめて下書きに戻せませんでした。", remove: "まとめて削除できませんでした。" };
+
+function ItemList({ definition, state, timeZone, focusItem, onFocused, imageSrc, canCreate, creating, onCreate, onOpen, onRetry, menuFor, confirm, reorder, bulk }: {
   definition: CollectionDefinition; state: ListState; timeZone: string; focusItem: string | null; onFocused: () => void;
   imageSrc: (url: string | null, width: number) => string | null; canCreate: boolean; creating: boolean; onCreate: () => void;
-  onOpen: (itemId: string) => void; onRetry: () => void; menuFor: (summary: CollectionItemSummary) => MenuItem[];
+  onOpen: (itemId: string) => void; onRetry: () => void; menuFor: (summary: CollectionItemSummary) => MenuItem[]; confirm: (request: ConfirmRequest) => void;
+  /** 並べ替えられるとき（capabilities.reorder・adapter.reorder・manual）。 */
+  reorder: ReorderControl | null;
+  /** まとめて操作できるとき（capabilities.bulk・adapter.bulk）。 */
+  bulk: BulkRun | null;
 }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<CollectionFilter>("all");
-  const list = useRef<HTMLUListElement>(null);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState<CollectionBulkAction | null>(null);
+  const [bulkErrors, setBulkErrors] = useState<{ readonly action: CollectionBulkAction; readonly messages: readonly string[] } | null>(null);
+  const [drag, setDrag] = useState<{ readonly id: string; readonly from: number; readonly to: number } | null>(null);
+  const [refocus, setRefocus] = useState<string | null>(null);
+  const list = useRef<HTMLUListElement>(null), selectAll = useRef<HTMLInputElement>(null);
+  const dragging = useRef<{ readonly pointerId: number; readonly id: string; readonly from: number; readonly ids: readonly string[] } | null>(null);
   const items = state.status === "ready" ? state.items : null;
-  const sorted = useMemo(() => sortCollectionItems(items ?? [], definition.ordering), [items, definition.ordering]);
+  const pending = reorder?.pending ?? null;
+  const canReorder = reorder !== null && definition.ordering === "manual";
+  /** 並べ替えの並び（order のある項目）。応答待ちの間は動かした後の並びを出す。 */
+  const sequence = useMemo(() => {
+    if (!canReorder || !items) return [];
+    const base = collectionReorderSequence(items);
+    if (!pending) return base;
+    const byId = new Map(base.map((item) => [item.id, item]));
+    const moved = pending.flatMap((id) => { const item = byId.get(id); return item ? [item] : []; });
+    return moved.length === base.length ? moved : base;
+  }, [canReorder, items, pending]);
+  const sorted = useMemo(() => canReorder
+    ? [...sortCollectionItems((items ?? []).filter((item) => item.order === null), "manual"), ...sequence]
+    : sortCollectionItems(items ?? [], definition.ordering), [canReorder, items, sequence, definition.ordering]);
   const counts = useMemo(() => ({
     all: sorted.length,
     published: sorted.filter((item) => collectionItemFilter(item.status) === "published").length,
@@ -253,6 +407,10 @@ function ItemList({ definition, state, timeZone, focusItem, onFocused, imageSrc,
   const needle = query.trim().toLocaleLowerCase("ja-JP");
   const visible = sorted.filter((item) => (filter === "all" || collectionItemFilter(item.status) === filter) &&
     (!needle || item.title.toLocaleLowerCase("ja-JP").includes(needle) || (item.path ?? "").toLocaleLowerCase("ja-JP").includes(needle)));
+  const reorderActive = canReorder && filter === "all" && !needle;
+  const sequenceIds = sequence.map((item) => item.id);
+  const chosen = bulk ? visible.filter((item) => selected.has(item.id)) : [];
+  const visibleKey = visible.map((item) => item.id).join("\n");
   const imageField = definition.fields.find((field) => field.key === definition.imageField);
   const shape = imageField?.type === "image" && imageField.shape === "round" ? "round" : "rect";
   useEffect(() => {
@@ -262,6 +420,101 @@ function ItemList({ definition, state, timeZone, focusItem, onFocused, imageSrc,
     target?.scrollIntoView?.({ block: "nearest" });
     onFocused();
   }, [items, focusItem, onFocused]);
+  // 見えなくなった行（絞り込み・削除）は選択から外す
+  useEffect(() => {
+    const shown = new Set(visibleKey ? visibleKey.split("\n") : []);
+    setSelected((previous) => [...previous].every((id) => shown.has(id)) ? previous : new Set([...previous].filter((id) => shown.has(id))));
+  }, [visibleKey]);
+  useEffect(() => { if (selectAll.current) selectAll.current.indeterminate = chosen.length > 0 && chosen.length < visible.length; });
+  // 「上へ」「下へ」の後は、動かした行の「…」へ focus を戻す（行の DOM が動くと focus が外れるため）
+  useEffect(() => {
+    if (!refocus) return;
+    Array.from(list.current?.querySelectorAll<HTMLElement>("li.cw-row") ?? []).find((node) => node.dataset.rowId === refocus)?.querySelector<HTMLButtonElement>(".cw-row-menu button")?.focus();
+    if (!pending) setRefocus(null);
+  }, [refocus, pending, sorted]);
+  // ドラッグ中の Esc は取り消し
+  useEffect(() => {
+    if (!drag) return;
+    const cancel = (event: KeyboardEvent) => { if (event.key === "Escape") { dragging.current = null; setDrag(null); } };
+    window.addEventListener("keydown", cancel);
+    return () => window.removeEventListener("keydown", cancel);
+  }, [drag]);
+
+  const move = (ids: readonly string[], from: number, to: number) => { if (reorder && !pending && from !== to) void reorder.onMove(ids, from, to); };
+  const menu = (item: CollectionItemSummary): MenuItem[] => {
+    const base = menuFor(item), index = reorderActive && !pending && item.order !== null ? sequenceIds.indexOf(item.id) : -1;
+    if (index < 0) return base;
+    const moves: MenuItem[] = [];
+    if (index > 0) moves.push({ label: "上へ", onSelect: () => { setRefocus(item.id); move(sequenceIds, index, index - 1); } });
+    if (index < sequenceIds.length - 1) moves.push({ label: "下へ", onSelect: () => { setRefocus(item.id); move(sequenceIds, index, index + 1); } });
+    return [...base.slice(0, 1), ...moves, ...base.slice(1)];
+  };
+  /** 指の位置から、動かした後の位置（自分以外で中心が指より上にある行の数）を出す。 */
+  const dropIndex = (clientY: number) => {
+    const info = dragging.current;
+    if (!info) return 0;
+    const rows = Array.from(list.current?.querySelectorAll<HTMLElement>("li.cw-row") ?? []);
+    return info.ids.filter((id, index) => {
+      if (index === info.from) return false;
+      const rect = rows.find((node) => node.dataset.rowId === id)?.getBoundingClientRect();
+      return rect ? rect.top + rect.height / 2 < clientY : false;
+    }).length;
+  };
+  const grab = (event: ReactPointerEvent<HTMLElement>, id: string) => {
+    if (!reorderActive || pending || (event.pointerType === "mouse" && event.button !== 0)) return;
+    const from = sequenceIds.indexOf(id);
+    if (from < 0) return;
+    event.preventDefault();
+    try { event.currentTarget.setPointerCapture?.(event.pointerId); } catch { /* 捕まえられなくても動かせる */ }
+    dragging.current = { pointerId: event.pointerId, id, from, ids: sequenceIds };
+    setDrag({ id, from, to: from });
+  };
+  const drift = (event: ReactPointerEvent<HTMLElement>) => {
+    const info = dragging.current;
+    if (!info || event.pointerId !== info.pointerId) return;
+    const to = dropIndex(event.clientY);
+    setDrag((previous) => previous && previous.to !== to ? { ...previous, to } : previous);
+  };
+  const release = (event: ReactPointerEvent<HTMLElement>) => {
+    const info = dragging.current;
+    if (!info || event.pointerId !== info.pointerId) return;
+    const to = dropIndex(event.clientY);
+    dragging.current = null;
+    setDrag(null);
+    move(info.ids, info.from, to);
+  };
+  const dropSide = (id: string): "before" | "after" | undefined => {
+    if (!drag || drag.to === drag.from || sequenceIds[drag.to] !== id) return undefined;
+    return drag.to > drag.from ? "after" : "before";
+  };
+
+  const runBulk = async (action: CollectionBulkAction, targets: readonly CollectionItemSummary[]) => {
+    if (!bulk) return;
+    setBulkBusy(action);
+    setBulkErrors(null);
+    try {
+      const result = await bulk(action, targets);
+      if (result.kind === "done") { setSelected(new Set()); selectAll.current?.focus(); }
+      else if (result.kind === "invalid") setBulkErrors({ action, messages: result.messages.length ? result.messages : [bulkFailed[action]] });
+    } finally { setBulkBusy(null); }
+  };
+  const startBulk = (action: CollectionBulkAction) => {
+    const targets = chosen, count = targets.length;
+    if (action === "publish") { void runBulk(action, targets); return; }
+    confirm(action === "remove" ? {
+      title: `${count} 件の${definition.label}を削除しますか？`,
+      body: definition.capabilities.redirects ? "公開中の項目のアドレスは一覧へ移します。削除は元に戻せません。" : "公開中の項目はサイトからも外れます。削除は元に戻せません。",
+      confirmLabel: "削除する", tone: "danger", run: () => runBulk(action, targets),
+    } : {
+      title: `${count} 件を下書きに戻しますか？`, body: "公開中の項目はサイトから外れます。もう一度公開するまで、そのアドレスは開けなくなります。",
+      confirmLabel: "下書きに戻す", tone: "danger", run: () => runBulk(action, targets),
+    });
+  };
+  const toggle = (id: string, on: boolean) => { setBulkErrors(null); setSelected((previous) => { const next = new Set(previous); if (on) next.add(id); else next.delete(id); return next; }); };
+  const allChosen = visible.length > 0 && chosen.length === visible.length;
+  const tooMany = chosen.length > COLLECTION_BULK_LIMIT;
+  const lead = bulk && reorderActive ? "both" : bulk ? "select" : reorderActive ? "grip" : undefined;
+
   const tabs: readonly [CollectionFilter, string][] = [["all", "すべて"], ["published", "公開中"], ["draft", "下書き"]];
   return <div className="cw-list">
     <header className="cw-list-head">
@@ -280,22 +533,47 @@ function ItemList({ definition, state, timeZone, focusItem, onFocused, imageSrc,
           <button type="button" className="cw-button" onClick={() => { setQuery(""); setFilter("all"); }}>絞り込みをやめる</button></div>
         : <>
           <p className="cw-sr" role="status">{visible.length} 件を表示しています</p>
-          <div className="cw-rows-head" aria-hidden="true"><span>題名</span><span>状態</span><span>公開日時</span><span>最終更新</span><span /></div>
-          <ul className="cw-rows" ref={list} aria-label={`${definition.label}の一覧`}>{visible.map((item) => {
-            const sub = item.subtitle ?? item.path;
-            return <li className="cw-row" key={item.id}>
-              <button type="button" className="cw-row-open" data-item-id={item.id} onClick={() => onOpen(item.id)}>
-                <span className="cw-thumb" data-shape={shape}><Thumb src={imageSrc(item.imageUrl, 160)} /></span>
-                <span className="cw-row-text"><span className="cw-row-title">{item.title || "無題"}</span>{sub && <span className="cw-row-sub">{sub}</span>}</span>
-              </button>
-              <span className="cw-row-meta">
-                <span className="cw-cell cw-cell-status"><span className="cw-cell-label">状態</span><StatusBadges status={item.status} scheduledAt={item.scheduledAt} publishFailed={item.publishFailed} timeZone={timeZone} /></span>
-                <span className="cw-cell cw-cell-published"><span className="cw-cell-label">公開</span><DateTime value={item.publishedAt} timeZone={timeZone} /></span>
-                <span className="cw-cell cw-cell-updated"><span className="cw-cell-label">最終更新</span><DateTime value={item.updatedAt} timeZone={timeZone} />{item.updatedBy && <span className="cw-by">{item.updatedBy}</span>}</span>
+          {canReorder && !reorderActive && sequence.length > 1 && <p className="cw-hint cw-list-hint">並べ替えは、検索と絞り込みをやめると使えます。</p>}
+          {bulk && <div className="cw-bulk" role="group" aria-label="まとめての操作" data-active={chosen.length > 0}>
+            <label className="cw-check"><input ref={selectAll} type="checkbox" checked={allChosen} disabled={!!bulkBusy}
+              onChange={() => { setBulkErrors(null); setSelected(allChosen ? new Set() : new Set(visible.map((item) => item.id))); }} /><span>全部を選ぶ</span></label>
+            {chosen.length > 0 && <>
+              <span className="cw-bulk-count">{chosen.length} 件を選択中</span>
+              <span className="cw-bulk-actions">
+                <button type="button" className="cw-button" disabled={!!bulkBusy || tooMany} onClick={() => startBulk("publish")}>{bulkBusy === "publish" ? "公開しています…" : "公開する"}</button>
+                <button type="button" className="cw-button" disabled={!!bulkBusy || tooMany} onClick={() => startBulk("unpublish")}>{bulkBusy === "unpublish" ? "戻しています…" : "下書きに戻す"}</button>
+                <button type="button" className="cw-button cw-danger-outline" disabled={!!bulkBusy || tooMany} onClick={() => startBulk("remove")}>{bulkBusy === "remove" ? "削除しています…" : "削除する"}</button>
+                <button type="button" className="cw-link-button" disabled={!!bulkBusy} onClick={() => { setSelected(new Set()); setBulkErrors(null); selectAll.current?.focus(); }}>選択をやめる</button>
               </span>
-              <MenuButton label={`「${item.title || "無題"}」の操作`} items={menuFor(item)} className="cw-row-menu" />
-            </li>;
-          })}</ul>
+            </>}
+          </div>}
+          {tooMany && <p className="cw-hint cw-warn" role="status">一度に操作できるのは {COLLECTION_BULK_LIMIT} 件までです（いま {chosen.length} 件）。選ぶ数を減らしてください。</p>}
+          {bulkErrors && <div className="cw-bulk-errors" role="alert"><p>{bulkFailed[bulkErrors.action]}</p><ul>{bulkErrors.messages.map((message, index) => <li key={`${index}-${message}`}>{message}</li>)}</ul></div>}
+          <div className="cw-table" data-lead={lead}>
+            <div className="cw-rows-head" aria-hidden="true">{lead && <span />}<span>題名</span><span>状態</span><span>公開日時</span><span>最終更新</span><span /></div>
+            <ul className="cw-rows" ref={list} aria-label={`${definition.label}の一覧`} aria-busy={!!pending} data-dragging={drag ? true : undefined}>{visible.map((item) => {
+              const sub = item.subtitle ?? item.path, title = item.title || "無題", grabbable = reorderActive && item.order !== null;
+              return <li className="cw-row" key={item.id} data-row-id={item.id} data-dragging={drag?.id === item.id ? true : undefined} data-drop={dropSide(item.id)}>
+                {lead && <span className="cw-row-lead">
+                  {bulk && <label className="cw-check cw-row-check"><input type="checkbox" aria-label={`「${title}」を選ぶ`} checked={selected.has(item.id)} disabled={!!bulkBusy} onChange={(event) => toggle(item.id, event.target.checked)} /></label>}
+                  {reorderActive && (grabbable
+                    ? <span className="cw-handle" aria-hidden="true" title="ドラッグして並べ替える" data-disabled={pending ? true : undefined}
+                      onPointerDown={(event) => grab(event, item.id)} onPointerMove={drift} onPointerUp={release} onPointerCancel={() => { dragging.current = null; setDrag(null); }}><Icon name="grip" /></span>
+                    : <span className="cw-handle-slot" aria-hidden="true" />)}
+                </span>}
+                <button type="button" className="cw-row-open" data-item-id={item.id} onClick={() => onOpen(item.id)}>
+                  <span className="cw-thumb" data-shape={shape}><Thumb src={imageSrc(item.imageUrl, 160)} /></span>
+                  <span className="cw-row-text"><span className="cw-row-title">{title}</span>{sub && <span className="cw-row-sub">{sub}</span>}</span>
+                </button>
+                <span className="cw-row-meta">
+                  <span className="cw-cell cw-cell-status"><span className="cw-cell-label">状態</span><StatusBadges status={item.status} scheduledAt={item.scheduledAt} publishFailed={item.publishFailed} timeZone={timeZone} /></span>
+                  <span className="cw-cell cw-cell-published"><span className="cw-cell-label">公開</span><DateTime value={item.publishedAt} timeZone={timeZone} /></span>
+                  <span className="cw-cell cw-cell-updated"><span className="cw-cell-label">最終更新</span><DateTime value={item.updatedAt} timeZone={timeZone} />{item.updatedBy && <span className="cw-by">{item.updatedBy}</span>}</span>
+                </span>
+                <MenuButton label={`「${title}」の操作`} items={menu(item)} className="cw-row-menu" />
+              </li>;
+            })}</ul>
+          </div>
         </>}
     </>}
   </div>;
@@ -310,6 +588,8 @@ type EditorProps = {
   renderRichText: ((props: CollectionRichTextEditorProps) => ReactNode) | undefined;
   references: (collectionId: string) => ReferenceCandidates; retryReferences: (collectionId: string) => void;
   confirm: (request: ConfirmRequest) => void;
+  /** 削除の移動先にできる、同じコレクションのほかの公開中の項目。 */
+  redirectCandidates: () => readonly RedirectCandidate[];
   onSaved: (item: CollectionItem) => void; onBack: () => void; onRemoved: (message: string) => void; onOpenItem: (item: CollectionItem) => void;
 };
 type Live = {
@@ -322,7 +602,12 @@ function safeLink(value: string | null): string | null {
   return isDisplayableImageUrl(value) ? value : null;
 }
 
-function ItemEditor({ adapter, definition, itemId, created, timeZone, autosaveDelay, renderRichText, references, retryReferences, confirm, onSaved, onBack, onRemoved, onOpenItem }: EditorProps) {
+/** 公開中のアドレスの slug（pathPrefix の後ろ）。公開していなければ null。 */
+function publishedSlugOf(definition: CollectionDefinition, item: CollectionItem): string | null {
+  return item.publishedAt !== null && item.path !== null && definition.pathPrefix !== null && item.path.startsWith(definition.pathPrefix) ? item.path.slice(definition.pathPrefix.length) : null;
+}
+
+function ItemEditor({ adapter, definition, itemId, created, timeZone, autosaveDelay, renderRichText, references, retryReferences, confirm, redirectCandidates: candidatesFor, onSaved, onBack, onRemoved, onOpenItem }: EditorProps) {
   const requests = useRequests();
   const baseId = useId();
   const root = useRef<HTMLDivElement>(null), heading = useRef<HTMLHeadingElement>(null), scheduleField = useRef<HTMLInputElement>(null);
@@ -338,6 +623,10 @@ function ItemEditor({ adapter, definition, itemId, created, timeZone, autosaveDe
   const [banner, setBanner] = useState<{ readonly text: string; readonly error: boolean } | null>(null);
   const [scheduleInput, setScheduleInput] = useState("");
   const [scheduleError, setScheduleError] = useState<string | null>(null);
+  /** 公開中のアドレスを変えたとき、前のアドレスから移すか（capabilities.redirects のときだけ使う）。 */
+  const [redirect, setRedirectState] = useState(true);
+  const redirectChoice = useRef(true);
+  const setRedirect = (checked: boolean) => { redirectChoice.current = checked; setRedirectState(checked); };
   const live = useRef<Live>({ item: created, values: created?.values ?? {}, dirty: false, seq: 0, saving: null, timer: undefined, blocked: false, closed: false, uploads: new Set() });
 
   const setItem = (next: CollectionItem) => { live.current.item = next; setItemState(next); onSaved(next); };
@@ -473,6 +762,12 @@ function ItemEditor({ adapter, definition, itemId, created, timeZone, autosaveDe
 
   /* ---------- 公開・予約・ほかの操作 ---------- */
   const titleText = () => { const value = live.current.values[definition.titleField]; return typeof value === "string" && value.trim() ? value.trim() : "無題"; };
+  /** 公開・予約に付ける redirect。転送できるホストで、公開中のアドレスを変えたときだけ付ける。 */
+  const redirectFor = (current: CollectionItem, values: CollectionValues): { readonly redirect?: boolean } => {
+    if (!definition.capabilities.redirects || definition.slugField === null) return {};
+    const slug = publishedSlugOf(definition, current), next = values[definition.slugField];
+    return slug !== null && typeof next === "string" && next !== slug ? { redirect: redirectChoice.current } : {};
+  };
   const publish = async () => {
     const s = live.current;
     if (busy || !s.item || s.blocked) return;
@@ -482,13 +777,14 @@ function ItemEditor({ adapter, definition, itemId, created, timeZone, autosaveDe
     setBanner(null);
     try {
       if (!(await flush())) { if (!s.blocked && s.item) setBanner({ text: "保存できないため、公開しませんでした。", error: true }); return; }
-      const version = s.item!.version;
-      const outcome = await requests.current.run(async (signal) => parseCollectionPublishResult(await adapter.publish({ collectionId: definition.id, itemId, version }, signal), definition, itemId));
+      const version = s.item!.version, moveOld = redirectFor(s.item!, s.values);
+      const outcome = await requests.current.run(async (signal) => parseCollectionPublishResult(await adapter.publish({ collectionId: definition.id, itemId, version, ...moveOld }, signal), definition, itemId));
       if (outcome.kind === "aborted") return;
       if (outcome.kind === "error") { setBanner({ text: "公開できませんでした。もう一度試してください。", error: true }); return; }
       const result = outcome.value;
       if (result.status === "published" || result.status === "publishing") {
         setItem(result.item);
+        setRedirect(true);
         setBanner({ text: result.status === "publishing" ? "公開しました。サイトに出るまで少しかかります。" : "公開しました。", error: false });
       } else if (result.status === "conflict") { s.blocked = true; setConflict(true); }
       else if (result.status === "invalid") { showProblems(result.errors, "server", true); setBanner({ text: "公開できません。印のついた項目を直してください。", error: true }); }
@@ -536,16 +832,17 @@ function ItemEditor({ adapter, definition, itemId, created, timeZone, autosaveDe
       setBanner({ text: "最新の内容を読み込みました。", error: false });
     } finally { setBusy(null); }
   };
-  const removeItem = async () => {
+  const removeItem = async (redirectTo: RedirectTo) => {
     const s = live.current;
     if (!s.item || !adapter.remove) return;
     setBusy("remove");
+    setBanner(null);
     try {
       clearTimeout(s.timer);
       if (s.saving) await s.saving;
       if (!s.item) return;
       const version = s.item.version;
-      const outcome = await requests.current.run(async (signal) => parseCollectionRemoveResult(await adapter.remove!({ collectionId: definition.id, itemId, version }, signal), definition, itemId));
+      const outcome = await requests.current.run(async (signal) => parseCollectionRemoveResult(await adapter.remove!({ collectionId: definition.id, itemId, version, ...redirectInput(redirectTo) }, signal), definition, itemId));
       if (outcome.kind === "aborted") return;
       if (outcome.kind === "error") { setBanner({ text: "削除できませんでした。もう一度試してください。", error: true }); return; }
       const result = outcome.value;
@@ -553,6 +850,7 @@ function ItemEditor({ adapter, definition, itemId, created, timeZone, autosaveDe
         Object.assign(s, { dirty: false, blocked: true });
         onRemoved(result.status === "removed" ? "削除しました。" : "すでに削除されていました。");
       } else if (result.status === "conflict") { s.blocked = true; setConflict(true); }
+      else if (result.status === "invalid") setBanner({ text: `削除できませんでした。${messagesOf(result.errors).join(" ")}`, error: true });
       else lose(result.status);
     } finally { setBusy(null); }
   };
@@ -576,7 +874,7 @@ function ItemEditor({ adapter, definition, itemId, created, timeZone, autosaveDe
     setScheduleError(null);
     const problems = validateCollectionValues(definition, live.current.values);
     if (problems.length) { showProblems(problems, "local", true); setBanner({ text: "予約できません。印のついた項目を直してください。", error: true }); return; }
-    const done = await mutate("schedule", (version, signal) => schedule.call(adapter, { collectionId: definition.id, itemId, version, at }, signal), `予約しました。${formatDateTime(at, timeZone)}（${zoneLabel(timeZone)}）に公開します。`, true);
+    const done = await mutate("schedule", (version, signal) => schedule.call(adapter, { collectionId: definition.id, itemId, version, at, ...(live.current.item ? redirectFor(live.current.item, live.current.values) : {}) }, signal), `予約しました。${formatDateTime(at, timeZone)}（${zoneLabel(timeZone)}）に公開します。`, true);
     if (done) setScheduleInput("");
   };
   const back = async () => {
@@ -611,10 +909,7 @@ function ItemEditor({ adapter, definition, itemId, created, timeZone, autosaveDe
     run: async () => { await mutate("unpublish", (version, signal) => adapter.unpublish!({ collectionId: definition.id, itemId, version }, signal), "非公開にしました。サイトから外れるまで少しかかります。", true); },
   }) });
   if (capabilities.duplicate && adapter.duplicate) menu.push({ label: "複製する", onSelect: () => void duplicate() });
-  if (capabilities.remove && adapter.remove) menu.push({ label: "削除する", danger: true, onSelect: () => confirm({
-    title: `「${titleText()}」を削除しますか？`, body: status === "draft" ? "削除は元に戻せません。" : "サイトからも外れます。削除は元に戻せません。", confirmLabel: "削除する", tone: "danger",
-    run: removeItem,
-  }) });
+  if (capabilities.remove && adapter.remove) menu.push({ label: "削除する", danger: true, onSelect: () => confirm(removeConfirm(definition, titleText(), { path: item.path, status: item.status }, candidatesFor(), removeItem)) });
   const primary = busy === "publish" ? { label: "公開しています…", disabled: true }
     : status === "published" ? { label: "公開中", disabled: true }
     : status === "publishing" && !dirty ? { label: "反映中", disabled: true }
@@ -627,7 +922,7 @@ function ItemEditor({ adapter, definition, itemId, created, timeZone, autosaveDe
   const address = definition.pathPrefix !== null && definition.slugField !== null
     ? typeof slugValue === "string" && slugValue.trim() ? `${definition.pathPrefix}${slugValue.trim()}` : null
     : item.path;
-  const publishedSlug = item.publishedAt !== null && item.path !== null && definition.pathPrefix !== null && item.path.startsWith(definition.pathPrefix) ? item.path.slice(definition.pathPrefix.length) : null;
+  const publishedSlug = publishedSlugOf(definition, item);
   const sanitize = (html: string) => sanitizeRichTextHtml(html, adapter.isRichTextImageAllowed ? { isImageSrcAllowed: (src) => adapter.isRichTextImageAllowed!(src) } : {});
   const upload: FieldContext["upload"] = async (file) => {
     const s = live.current;
@@ -643,6 +938,7 @@ function ItemEditor({ adapter, definition, itemId, created, timeZone, autosaveDe
   };
   const context: FieldContext = {
     baseId, timeZone, pathPrefix: definition.pathPrefix, isTitle: false, publishedSlug, self: { collectionId: definition.id, itemId },
+    redirect: capabilities.redirects && publishedSlug !== null && item.path !== null ? { from: item.path, checked: redirect, onChange: setRedirect } : null,
     imageSrc: (url, width) => displayImage(url, width, adapter.imageUrl ? (value, size) => adapter.imageUrl!(value, size) : undefined),
     upload, references, retryReferences, renderRichText, sanitize,
   };
@@ -650,6 +946,7 @@ function ItemEditor({ adapter, definition, itemId, created, timeZone, autosaveDe
     context={field.key === definition.titleField ? { ...context, isTitle: true } : context} onChange={(value) => change(field.key, value)} />;
   const mainFields = definition.fields.filter((field) => field.placement === "main"), sideFields = definition.fields.filter((field) => field.placement === "side");
   const canSchedule = capabilities.schedule && !!adapter.schedule;
+  const canRetry = !!capabilities.retrySchedule && !!adapter.retrySchedule && item.scheduledAt !== null && item.publishFailed;
 
   return <div className="cw-editor" ref={root}>
     <h2 className="cw-sr" tabIndex={-1} ref={heading}>{`${definition.label}「${titleText()}」の編集`}</h2>
@@ -687,7 +984,11 @@ function ItemEditor({ adapter, definition, itemId, created, timeZone, autosaveDe
           </dl>
           {canSchedule && (item.scheduledAt !== null
             ? <div className="cw-schedule"><p><strong>公開予定</strong> <time dateTime={item.scheduledAt}>{formatDateTime(item.scheduledAt, timeZone)}</time>（{zoneLabel(timeZone)}）</p>
-              {adapter.cancelSchedule && <button type="button" className="cw-button" disabled={!!busy || conflict} onClick={() => void mutate("cancelSchedule", (version, signal) => adapter.cancelSchedule!({ collectionId: definition.id, itemId, version }, signal), "予約を取り消しました。", true)}>予約を取り消す</button>}</div>
+              {canRetry && <p className="cw-error"><Icon name="alert" />予約していた公開に失敗しました。</p>}
+              <div className="cw-inline">
+                {canRetry && <button type="button" className="cw-button cw-primary" disabled={!!busy || conflict} onClick={() => void mutate("retrySchedule", (version, signal) => adapter.retrySchedule!({ collectionId: definition.id, itemId, version }, signal), "予約していた公開をやり直しました。", true)}>{busy === "retrySchedule" ? "やり直しています…" : "もう一度公開する"}</button>}
+                {adapter.cancelSchedule && <button type="button" className="cw-button" disabled={!!busy || conflict} onClick={() => void mutate("cancelSchedule", (version, signal) => adapter.cancelSchedule!({ collectionId: definition.id, itemId, version }, signal), "予約を取り消しました。", true)}>予約を取り消す</button>}
+              </div></div>
             : <div className="cw-schedule">
               <label className="cw-label" htmlFor={`${baseId}-schedule`}>予約して公開する日時</label>
               <p className="cw-hint" id={`${baseId}-schedule-hint`}>{zoneLabel(timeZone)}で入力します。保存した下書きを、その日時に公開します。</p>

@@ -38,6 +38,8 @@ export const tagsDefinition = () => ({
   fields: [{ key: "title", label: "名前", type: "text", required: true, placement: "main" }],
 });
 export const schema = () => ({ status: "ready", collections: [postsDefinition(), circlesDefinition(), tagsDefinition()] });
+/** 後から足した capabilities（redirects・reorder・bulk・retrySchedule）を全部のコレクションに付けた schema。 */
+export const schemaWith = (extra) => { const value = schema(); for (const definition of value.collections) Object.assign(definition.capabilities, extra); return value; };
 
 const emptyPost = { title: "", cover: null, body: "", slug: "", category: [], related: [], keywords: [], kind: [], days: [], eventAt: null, source: "", summary: "" };
 const base = { subtitle: null, imageUrl: null, path: null, status: "draft", publishedAt: null, updatedAt: at, updatedBy: "編集担当（架空）", scheduledAt: null, publishFailed: false, order: null, version: "v1" };
@@ -132,6 +134,37 @@ export function createAdapter(options = {}) {
       const item = { ...base, id, title: "", values };
       store[input.collectionId].set(id, item);
       return { status: "created", item: copy(item) };
+    },
+    async retrySchedule(input, signal) {
+      record("retrySchedule", input, signal);
+      return (await override("retrySchedule", input, signal)) ?? versioned(input, (found) => Object.assign(found, { publishFailed: false }));
+    },
+    async reorder(input, signal) {
+      record("reorder", copy(input), signal);
+      const result = await override("reorder", input, signal);
+      if (result !== undefined) return result;
+      const list = [...store[input.collectionId].values()];
+      const current = list.filter((entry) => entry.order !== null).sort((a, b) => a.order - b.order).map((entry) => entry.id);
+      if (current.join() !== input.ids.join()) return { status: "conflict", items: list.map((entry) => toSummary(copy(entry))) };
+      const next = [...input.ids];
+      const [moved] = next.splice(input.from, 1);
+      next.splice(input.to, 0, moved);
+      next.forEach((id, index) => { const found = store[input.collectionId].get(id); found.order = index + 1; found.version = nextVersion(); });
+      return { status: "publishing", items: [...store[input.collectionId].values()].map((entry) => toSummary(copy(entry))) };
+    },
+    async bulk(input, signal) {
+      record("bulk", copy(input), signal);
+      const result = await override("bulk", input, signal);
+      if (result !== undefined) return result;
+      const map = store[input.collectionId];
+      if (input.items.some(({ id, version }) => map.get(id)?.version !== version)) return { status: "conflict", items: [...map.values()].map((entry) => toSummary(copy(entry))) };
+      for (const { id } of input.items) {
+        const found = map.get(id);
+        if (input.action === "remove") map.delete(id);
+        else if (input.action === "publish") Object.assign(found, { status: "publishing", publishedAt: found.publishedAt ?? "2026-10-26T01:00:00Z", path: found.path ?? `/${input.collectionId}/${id}`, version: nextVersion() });
+        else if (found.status === "published" || found.status === "changed") Object.assign(found, { status: "draft", publishedAt: null, path: null, version: nextVersion() });
+      }
+      return { status: "publishing", items: [...map.values()].map((entry) => toSummary(copy(entry))) };
     },
     async uploadImage(input, signal) {
       record("uploadImage", input, signal);

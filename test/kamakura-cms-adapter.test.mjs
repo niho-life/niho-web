@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { build } from "esbuild";
 import {
-  parseCollectionCreateResult, parseCollectionItemResult, parseCollectionPublishResult, parseCollectionRemoveResult, parseCollectionSaveResult,
-  parseCollectionSchemaResult, parseCollectionUploadResult, parseCollectionValues
+  parseCollectionBulkResult, parseCollectionCreateResult, parseCollectionItemResult, parseCollectionPublishResult, parseCollectionRemoveResult,
+  parseCollectionReorderResult, parseCollectionSaveResult, parseCollectionSchemaResult, parseCollectionUploadResult, parseCollectionValues
 } from "@niho/web/collection-model";
 
 // 架空の値だけを使う（実在の記事・人・内部 ID は書かない）。
@@ -255,4 +255,118 @@ test("CMS adapter: 画像の縮小は公開画像の置き場だけ、プレビ�
     assert.equal(createKamakuraCmsAdapter({ siteOrigin }).previewUrl("posts", published), null, String(siteOrigin));
   }
   assert.equal(adapter.isRichTextImageAllowed, undefined, "本文の画像は既定どおり https だけ");
+});
+
+// U2-e: 後から足した capabilities・gallery・並べ替え・まとめての操作・転送・予約のやり直し
+const nextSchema = () => ({
+  status: "ready",
+  collections: [
+    { ...schema().collections[0], capabilities: { create: true, duplicate: true, remove: true, unpublish: true, schedule: true, redirects: true, reorder: false, bulk: true, retrySchedule: true } },
+    {
+      id: "companies", label: "会社", addLabel: "追加する", icon: "person", ordering: "manual", pathPrefix: "/companies/",
+      titleField: "name", slugField: null, imageField: null, subtitleField: null,
+      capabilities: { create: true, duplicate: true, remove: true, unpublish: true, schedule: false, redirects: true, reorder: true, bulk: true, retrySchedule: false },
+      fields: [
+        { key: "name", label: "名前", type: "text", required: true, placement: "main" },
+        { key: "portfolio", label: "作品／活動", type: "gallery", captionLabel: "説明", placement: "main", maxItems: 60, captionMaxLength: 2000 }
+      ]
+    }
+  ]
+});
+const summaryOf = ({ version: _version, values: _values, ...rest }) => rest;
+const company = (overrides = {}, portfolio = [{ id: "w1", image: "https://kamakura-media.niho.life/uploads/w1.jpg", caption: "一つ目" }]) => item({ id: "shop-a", title: "架空の店", path: "/companies/shop-a", status: "published", publishedAt: "2026-10-20T09:00:00Z", order: 1, ...overrides }, { name: "架空の店", portfolio });
+
+test("CMS adapter: 新しい schema（9 つの capabilities・gallery）を読み、gallery は行ごとに比べて直したときだけ送る", async (t) => {
+  const { createKamakuraCmsAdapter } = await loadAdapter();
+  const definition = parseCollectionSchemaResult(nextSchema()).collections[1];
+  let saveReply = (body) => jsonResponse({ status: "saved", item: company({ version: "v2" }, body.values.portfolio) });
+  const calls = fakeBff(t, {
+    "GET /schema": () => jsonResponse(nextSchema()),
+    "GET /collections/companies/items/shop-a": () => jsonResponse({ status: "ready", item: company() }),
+    "PUT /collections/companies/items/shop-a/draft": (body) => saveReply(body)
+  });
+  const adapter = createKamakuraCmsAdapter({ siteOrigin: SITE });
+  assert.deepEqual(parseCollectionSchemaResult(await adapter.loadSchema(signal())).collections[1].capabilities.reorder, true);
+  const loaded = parseCollectionItemResult(await adapter.loadItem({ collectionId: "companies", itemId: "shop-a" }, signal()), definition, "shop-a");
+  const same = loaded.item.values;
+  const before = calls.length;
+  // 中身が同じ新しい配列（画面の正規化）なら送らない
+  await adapter.saveDraft({ collectionId: "companies", itemId: "shop-a", version: "v1", values: { ...same, portfolio: same.portfolio.map((entry) => ({ ...entry })) } }, signal());
+  assert.equal(calls.length, before);
+  const next = [...same.portfolio, { id: "", image: null, caption: "新しい行" }];
+  const saved = parseCollectionSaveResult(await adapter.saveDraft({ collectionId: "companies", itemId: "shop-a", version: "v1", values: { ...same, portfolio: next } }, signal()), definition, "shop-a");
+  assert.equal(saved.status, "saved");
+  assert.deepEqual(calls.at(-1).body, { version: "v1", values: { portfolio: next } });
+  saveReply = () => jsonResponse({ status: "saved", item: company({ version: "v3" }, [{ id: "w1", image: null, caption: "x", extra: 1 }]) });
+  await assert.rejects(adapter.saveDraft({ collectionId: "companies", itemId: "shop-a", version: "v2", values: { ...same, portfolio: [] } }, signal()), /contract/u);
+});
+
+test("CMS adapter: 転送・削除の移動先・予約のやり直し・並べ替え・まとめての操作を契約の形で呼ぶ", async (t) => {
+  const { createKamakuraCmsAdapter } = await loadAdapter();
+  const definition = parseCollectionSchemaResult(nextSchema()).collections[0];
+  let removeReply = () => jsonResponse({ status: "removed" });
+  let retryReply = () => jsonResponse({ status: "saved", item: item({ status: "scheduled", scheduledAt: "2026-11-01T09:00:00Z", version: "v3" }) });
+  let reorderReply = () => jsonResponse({ status: "publishing", items: [summaryOf(company({ order: 2 })), summaryOf(company({ id: "shop-b", order: 1 }))] }, 202);
+  let bulkReply = () => jsonResponse({ status: "publishing", items: [summaryOf(item({ status: "publishing" }))] }, 202);
+  const calls = fakeBff(t, {
+    "GET /schema": () => jsonResponse(nextSchema()),
+    "POST /collections/posts/items/morning-walk/publish": () => jsonResponse({ status: "publishing", item: item({ status: "publishing", version: "v2" }) }, 202),
+    "POST /collections/posts/items/morning-walk/schedule": () => jsonResponse({ status: "saved", item: item({ status: "scheduled", scheduledAt: "2026-11-01T09:00:00Z", version: "v2" }) }),
+    "POST /collections/posts/items/morning-walk/remove": () => removeReply(),
+    "POST /collections/posts/items/morning-walk/retry-schedule": () => retryReply(),
+    "POST /collections/companies/reorder": () => reorderReply(),
+    "POST /collections/posts/bulk": () => bulkReply()
+  });
+  const adapter = createKamakuraCmsAdapter({ siteOrigin: SITE });
+  const target = { collectionId: "posts", itemId: "morning-walk" };
+
+  // redirect は画面が付けたときだけ送る
+  await adapter.publish({ ...target, version: "v1" }, signal());
+  assert.deepEqual(calls.at(-1).body, { version: "v1" });
+  assert.equal(parseCollectionPublishResult(await adapter.publish({ ...target, version: "v1", redirect: false }, signal()), definition, "morning-walk").status, "publishing");
+  assert.deepEqual(calls.at(-1).body, { version: "v1", redirect: false });
+  await adapter.schedule({ ...target, version: "v1", at: "2026-11-01T09:00:00.000Z", redirect: true }, signal());
+  assert.deepEqual(calls.at(-1).body, { version: "v1", at: "2026-11-01T09:00:00.000Z", redirect: true });
+
+  // 削除の移動先: 無し・null・ほかの項目の path。422 は選び直し
+  for (const [extra, body] of [[{}, { version: "v1" }], [{ redirectTo: null }, { version: "v1", redirectTo: null }], [{ redirectTo: "/posts/other" }, { version: "v1", redirectTo: "/posts/other" }]]) {
+    assert.deepEqual(await adapter.remove({ ...target, version: "v1", ...extra }, signal()), { status: "removed" });
+    assert.deepEqual(calls.at(-1).body, body);
+  }
+  removeReply = () => jsonResponse({ error: "invalid", errors: [{ field: "", message: "移動先を選び直してください" }] }, 422);
+  assert.deepEqual(parseCollectionRemoveResult(await adapter.remove({ ...target, version: "v1", redirectTo: "/posts/gone" }, signal()), definition, "morning-walk"), { status: "invalid", errors: [{ field: "", message: "移動先を選び直してください" }] });
+
+  // 予約のやり直し
+  const retried = parseCollectionSaveResult(await adapter.retrySchedule({ ...target, version: "v2" }, signal()), definition, "morning-walk");
+  assert.deepEqual([retried.status, retried.item.version], ["saved", "v3"]);
+  assert.deepEqual(calls.at(-1).body, { version: "v2" });
+  retryReply = () => jsonResponse({ error: "invalid", errors: [{ field: "", message: "失敗した予約はありません。" }] }, 422);
+  assert.equal(parseCollectionSaveResult(await adapter.retrySchedule({ ...target, version: "v2" }, signal()), definition, "morning-walk").status, "invalid");
+
+  // 並べ替え: 202 は一覧つき、409 は今の一覧つきの conflict、404・403 は画面の形
+  const reordered = parseCollectionReorderResult(await adapter.reorder({ collectionId: "companies", ids: ["shop-a", "shop-b"], from: 0, to: 1 }, signal()));
+  assert.deepEqual([reordered.status, reordered.items.map((entry) => entry.id)], ["publishing", ["shop-a", "shop-b"]]);
+  assert.deepEqual(calls.at(-1).body, { ids: ["shop-a", "shop-b"], from: 0, to: 1 });
+  reorderReply = () => jsonResponse({ error: "conflict", items: [summaryOf(company())] }, 409);
+  assert.equal(parseCollectionReorderResult(await adapter.reorder({ collectionId: "companies", ids: ["shop-a", "shop-b"], from: 1, to: 0 }, signal())).status, "conflict");
+  reorderReply = () => jsonResponse({ error: "not_found" }, 404);
+  assert.deepEqual(await adapter.reorder({ collectionId: "companies", ids: ["shop-a", "shop-b"], from: 1, to: 0 }, signal()), { status: "not_found" });
+  reorderReply = () => jsonResponse({ error: "forbidden" }, 403);
+  assert.deepEqual(await adapter.reorder({ collectionId: "companies", ids: ["shop-a", "shop-b"], from: 1, to: 0 }, signal()), { status: "forbidden" });
+  reorderReply = () => jsonResponse({ status: "publishing", items: [], extra: true }, 202);
+  await assert.rejects(adapter.reorder({ collectionId: "companies", ids: ["shop-a", "shop-b"], from: 1, to: 0 }, signal()), /contract/u);
+  await assert.rejects(adapter.reorder({ collectionId: "../x", ids: ["a", "b"], from: 1, to: 0 }, signal()), /正しくありません/u);
+
+  // まとめての操作: 202 publishing・200 saved・409・422
+  const items = [{ id: "morning-walk", version: "v1" }];
+  assert.equal(parseCollectionBulkResult(await adapter.bulk({ collectionId: "posts", action: "publish", items }, signal())).status, "publishing");
+  assert.deepEqual(calls.at(-1).body, { action: "publish", items });
+  bulkReply = () => jsonResponse({ status: "saved", items: [] });
+  assert.deepEqual(parseCollectionBulkResult(await adapter.bulk({ collectionId: "posts", action: "remove", items }, signal())), { status: "saved", items: [] });
+  bulkReply = () => jsonResponse({ error: "conflict", items: [summaryOf(item())] }, 409);
+  assert.equal(parseCollectionBulkResult(await adapter.bulk({ collectionId: "posts", action: "unpublish", items }, signal())).status, "conflict");
+  bulkReply = () => jsonResponse({ error: "invalid", errors: [{ field: "", message: "「海辺の朝さんぽ」は公開できません。" }] }, 422);
+  assert.deepEqual(parseCollectionBulkResult(await adapter.bulk({ collectionId: "posts", action: "publish", items }, signal())), { status: "invalid", errors: [{ field: "", message: "「海辺の朝さんぽ」は公開できません。" }] });
+  bulkReply = () => jsonResponse({ status: "saved", items: [] }, 202);
+  await assert.rejects(adapter.bulk({ collectionId: "posts", action: "publish", items }, signal()), /contract/u);
 });

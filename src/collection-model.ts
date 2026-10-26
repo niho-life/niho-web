@@ -4,12 +4,24 @@ import { DocumentValidationError, fail, keys, record, string } from "./validatio
 
 export type CollectionIcon = "document" | "people" | "person" | "tag";
 export type CollectionOrdering = "publishedAt" | "manual";
+/**
+ * 任意の操作の可否。create〜schedule の 5 つは必須。redirects・reorder・bulk・retrySchedule は後から足した任意の key で、
+ * ホストが返さなければ parser が false にする（古いホストもそのまま開ける）。
+ */
 export type CollectionCapabilities = {
   readonly create: boolean;
   readonly duplicate: boolean;
   readonly remove: boolean;
   readonly unpublish: boolean;
   readonly schedule: boolean;
+  /** 公開・予約のときの前のアドレスからの転送（redirect）と、削除の移動先（redirectTo）を選べる。 */
+  readonly redirects?: boolean;
+  /** 手で並べるコレクション（ordering: "manual"）の並べ替え。 */
+  readonly reorder?: boolean;
+  /** まとめての公開・下書きに戻す・削除。 */
+  readonly bulk?: boolean;
+  /** 失敗した公開予約のやり直し。 */
+  readonly retrySchedule?: boolean;
 };
 export type CollectionFieldPlacement = "main" | "side";
 type FieldBase = {
@@ -31,9 +43,11 @@ export type CollectionReferenceField = FieldBase & { readonly type: "reference";
 export type CollectionTagsField = FieldBase & { readonly type: "tags" };
 export type CollectionDatetimeField = FieldBase & { readonly type: "datetime" };
 export type CollectionSlugField = FieldBase & { readonly type: "slug" };
+/** 画像と説明の並び（作品・活動など）。値は CollectionGalleryEntry[]。 */
+export type CollectionGalleryField = FieldBase & { readonly type: "gallery"; readonly captionLabel: string; readonly maxItems?: number; readonly captionMaxLength?: number };
 export type CollectionField =
   | CollectionTextField | CollectionLongTextField | CollectionRichTextField | CollectionUrlField | CollectionImageField
-  | CollectionSelectField | CollectionReferenceField | CollectionTagsField | CollectionDatetimeField | CollectionSlugField;
+  | CollectionSelectField | CollectionReferenceField | CollectionTagsField | CollectionDatetimeField | CollectionSlugField | CollectionGalleryField;
 export type CollectionFieldType = CollectionField["type"];
 
 export type CollectionDefinition = {
@@ -70,8 +84,10 @@ export type CollectionItemSummary = {
   readonly publishFailed: boolean;
   readonly order: number | null;
 };
-/** text・longText・url・slug・richText は string、image・datetime は string | null、select・reference・tags は string[]。 */
-export type CollectionValue = string | null | readonly string[];
+/** gallery の 1 行。id は既存の行の id（新しく足した行は ""）、image は image の項目と同じ形の URL。 */
+export type CollectionGalleryEntry = { readonly id: string; readonly image: string | null; readonly caption: string };
+/** text・longText・url・slug・richText は string、image・datetime は string | null、select・reference・tags は string[]、gallery は CollectionGalleryEntry[]。 */
+export type CollectionValue = string | null | readonly string[] | readonly CollectionGalleryEntry[];
 export type CollectionValues = Readonly<Record<string, CollectionValue>>;
 export type CollectionItem = CollectionItemSummary & { readonly version: string; readonly values: CollectionValues };
 export type CollectionFieldError = { readonly field: string; readonly message: string };
@@ -86,7 +102,12 @@ export type CollectionItemResult = { readonly status: "ready"; readonly item: Co
 export type CollectionCreateResult = { readonly status: "created"; readonly item: CollectionItem } | CollectionNotFound | CollectionForbidden;
 export type CollectionSaveResult = { readonly status: "saved"; readonly item: CollectionItem } | CollectionConflict | CollectionInvalid | CollectionNotFound | CollectionForbidden;
 export type CollectionPublishResult = { readonly status: "published" | "publishing"; readonly item: CollectionItem } | CollectionConflict | CollectionInvalid | CollectionNotFound | CollectionForbidden;
-export type CollectionRemoveResult = { readonly status: "removed" } | CollectionConflict | CollectionNotFound | CollectionForbidden;
+export type CollectionRemoveResult = { readonly status: "removed" } | CollectionConflict | CollectionInvalid | CollectionNotFound | CollectionForbidden;
+/** reorder・bulk の応答。items は操作の後（conflict は今）の一覧で、画面はこれで一覧を置き換える。 */
+export type CollectionListChangeResult =
+  | { readonly status: "saved" | "publishing" | "conflict"; readonly items: readonly CollectionItemSummary[] }
+  | CollectionInvalid | CollectionNotFound | CollectionForbidden;
+export type CollectionBulkAction = "publish" | "unpublish" | "remove";
 export type CollectionUploadRejectReason = "type" | "size" | "permission" | "invalid";
 export type CollectionUploadResult =
   | { readonly status: "uploaded"; readonly url: string; readonly width?: number; readonly height?: number }
@@ -94,6 +115,8 @@ export type CollectionUploadResult =
 
 export type CollectionTarget = { readonly collectionId: string; readonly itemId: string };
 export type CollectionVersionedTarget = CollectionTarget & { readonly version: string };
+/** 公開・予約の入力。redirect は公開中のアドレスを変えたとき前のアドレスから移すか（capabilities.redirects のときだけ付ける）。 */
+export type CollectionPublishInput = CollectionVersionedTarget & { readonly redirect?: boolean };
 
 /**
  * ホストが実装する adapter。すべての戻り値は unknown として受け取り、parser で検証する。
@@ -107,7 +130,8 @@ export interface CollectionAdapter {
   loadItem(input: CollectionTarget, signal: AbortSignal): Promise<unknown>;
   /** 下書きを保存する。values は definition.fields の全部の key を持つ。fields に無い値はホストが保持する。 */
   saveDraft(input: CollectionVersionedTarget & { readonly values: CollectionValues }, signal: AbortSignal): Promise<unknown>;
-  publish(input: CollectionVersionedTarget, signal: AbortSignal): Promise<unknown>;
+  /** redirect は capabilities.redirects で、公開中のアドレスを変えたときだけ付く。 */
+  publish(input: CollectionPublishInput, signal: AbortSignal): Promise<unknown>;
   uploadImage(input: { readonly collectionId: string; readonly file: File }, signal: AbortSignal): Promise<unknown>;
   /** 下書きとして作る（capabilities.create）。 */
   createItem?(input: { readonly collectionId: string }, signal: AbortSignal): Promise<unknown>;
@@ -115,9 +139,22 @@ export interface CollectionAdapter {
   discardDraft?(input: CollectionVersionedTarget, signal: AbortSignal): Promise<unknown>;
   unpublish?(input: CollectionVersionedTarget, signal: AbortSignal): Promise<unknown>;
   duplicate?(input: CollectionTarget, signal: AbortSignal): Promise<unknown>;
-  remove?(input: CollectionVersionedTarget, signal: AbortSignal): Promise<unknown>;
-  schedule?(input: CollectionVersionedTarget & { readonly at: string }, signal: AbortSignal): Promise<unknown>;
+  /**
+   * redirectTo は capabilities.redirects で公開中の項目を消すときだけ付く。無ければホストの既定（一覧へ移す）、
+   * null は移さない、string は同じコレクションのほかの公開中の項目の path。
+   */
+  remove?(input: CollectionVersionedTarget & { readonly redirectTo?: string | null }, signal: AbortSignal): Promise<unknown>;
+  schedule?(input: CollectionPublishInput & { readonly at: string }, signal: AbortSignal): Promise<unknown>;
   cancelSchedule?(input: CollectionVersionedTarget, signal: AbortSignal): Promise<unknown>;
+  /** 失敗した公開予約をやり直す（capabilities.retrySchedule）。応答は saveDraft と同じ形。 */
+  retrySchedule?(input: CollectionVersionedTarget, signal: AbortSignal): Promise<unknown>;
+  /**
+   * 並べ替え（capabilities.reorder・ordering: "manual"）。ids は画面が見ていた並び（order のある項目を order の順に）、
+   * from・to はその中の位置（to は動かした後の位置）。応答は CollectionListChangeResult。
+   */
+  reorder?(input: { readonly collectionId: string; readonly ids: readonly string[]; readonly from: number; readonly to: number }, signal: AbortSignal): Promise<unknown>;
+  /** まとめての操作（capabilities.bulk）。items は 1〜100 件で、version は直前に loadItem で読んだもの。応答は CollectionListChangeResult。 */
+  bulk?(input: { readonly collectionId: string; readonly action: CollectionBulkAction; readonly items: readonly { readonly id: string; readonly version: string }[] }, signal: AbortSignal): Promise<unknown>;
   /** 一覧の小さい画像・項目の画像の表示用 URL。無ければ url のまま。 */
   imageUrl?(url: string, width: number): string;
   /** プレビューを別タブで開く URL（保存済みの下書き）。null なら出さない。 */
@@ -132,6 +169,12 @@ const RESERVED_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const KEY_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/;
 const ITEM_ID_RE = /^[A-Za-z0-9_][A-Za-z0-9._~-]*$/;
 export const COLLECTION_SLUG_PATTERN = /^[A-Za-z0-9_-]+$/;
+/** gallery の行の id（不透明。新しく足した行は ""）。 */
+export const COLLECTION_GALLERY_ENTRY_ID_PATTERN = /^[A-Za-z0-9._~:-]{1,128}$/;
+/** gallery の行の数の上限（定義の maxItems もこれ以下）。 */
+export const COLLECTION_GALLERY_LIMIT = 500;
+/** reorder・bulk の items の数の上限。 */
+export const COLLECTION_BULK_LIMIT = 100;
 
 function key(value: unknown, path: string): string {
   const result = string(value, path, 80);
@@ -218,6 +261,7 @@ const fieldKeys: Record<CollectionFieldType, readonly string[]> = {
   tags: [],
   datetime: [],
   slug: [],
+  gallery: ["captionLabel", "maxItems", "captionMaxLength"],
 };
 const baseKeys = ["key", "label", "hint", "required", "placement", "type"];
 
@@ -262,6 +306,14 @@ function parseField(input: unknown, path: string): CollectionField {
     case "tags": return { ...base, type: "tags" };
     case "datetime": return { ...base, type: "datetime" };
     case "slug": return { ...base, type: "slug" };
+    case "gallery": {
+      const maxItems = optional(source, "maxItems", (value) => positiveInt(value, `${path}.maxItems`, COLLECTION_GALLERY_LIMIT));
+      const captionMaxLength = optional(source, "captionMaxLength", (value) => positiveInt(value, `${path}.captionMaxLength`, 100_000));
+      return {
+        ...base, type: "gallery", captionLabel: label(source.captionLabel, `${path}.captionLabel`, 80),
+        ...(maxItems === undefined ? {} : { maxItems }), ...(captionMaxLength === undefined ? {} : { captionMaxLength }),
+      };
+    }
   }
 }
 
@@ -287,8 +339,12 @@ function parseDefinition(input: unknown, path: string): CollectionDefinition {
   if (pathPrefix !== null && (!pathPrefix.startsWith("/") || pathPrefix.startsWith("//") || /[\s?#]/u.test(pathPrefix))) fail(`${path}.pathPrefix`, "invalid path prefix");
   const capabilitySource = record(source.capabilities, `${path}.capabilities`);
   const capabilityNames = ["create", "duplicate", "remove", "unpublish", "schedule"] as const;
-  keys(capabilitySource, capabilityNames, `${path}.capabilities`);
-  const capabilities = Object.fromEntries(capabilityNames.map((name) => [name, bool(capabilitySource[name], `${path}.capabilities.${name}`)])) as unknown as CollectionCapabilities;
+  const optionalCapabilities = ["redirects", "reorder", "bulk", "retrySchedule"] as const;
+  keys(capabilitySource, [...capabilityNames, ...optionalCapabilities], `${path}.capabilities`);
+  const capabilities = Object.fromEntries([
+    ...capabilityNames.map((name) => [name, bool(capabilitySource[name], `${path}.capabilities.${name}`)]),
+    ...optionalCapabilities.map((name) => [name, capabilitySource[name] === undefined ? false : bool(capabilitySource[name], `${path}.capabilities.${name}`)]),
+  ]) as unknown as CollectionCapabilities;
   return {
     id: key(source.id, `${path}.id`),
     label: label(source.label, `${path}.label`, 80),
@@ -374,9 +430,28 @@ export function parseCollectionValues(input: unknown, definition: CollectionDefi
         result[field.key] = list;
         break;
       }
+      case "gallery":
+        result[field.key] = raw === undefined || raw === null ? [] : parseGalleryEntries(raw, at);
+        break;
     }
   }
   return result;
+}
+
+/** gallery の値。各行は id・image・caption の 3 つだけ。id は "" か不透明な id で、重複は不可（"" は何行でも）。 */
+export function parseGalleryEntries(input: unknown, path: string): CollectionGalleryEntry[] {
+  const entries = array(input, path, COLLECTION_GALLERY_LIMIT).map((inputEntry, index) => {
+    const at = `${path}[${index}]`, entry = record(inputEntry, at);
+    keys(entry, ["id", "image", "caption"], at);
+    if (!Object.hasOwn(entry, "id") || !Object.hasOwn(entry, "image") || !Object.hasOwn(entry, "caption")) fail(at, "gallery entry needs id, image and caption");
+    const id = entry.id;
+    if (typeof id !== "string" || (id !== "" && (!COLLECTION_GALLERY_ENTRY_ID_PATTERN.test(id) || /^\.+$/u.test(id) || RESERVED_KEYS.has(id)))) fail(`${at}.id`, "invalid gallery entry id");
+    const image = entry.image === null || entry.image === "" ? null : lineText(entry.image, `${at}.image`, 2048);
+    return { id, image, caption: string(entry.caption, `${at}.caption`, 200_000) };
+  });
+  const ids = entries.map((entry) => entry.id).filter(Boolean);
+  if (new Set(ids).size !== ids.length) fail(path, "duplicate gallery entry");
+  return entries;
 }
 
 export function parseCollectionItem(input: unknown, definition: CollectionDefinition, path = "item"): CollectionItem {
@@ -458,10 +533,27 @@ export function parseCollectionRemoveResult(input: unknown, definition: Collecti
   const value = record(input, "remove");
   const shared = common(value, "remove");
   if (shared) return shared;
+  if (value.status === "invalid") return parseErrors(value, "remove");
   if (value.status === "removed") { keys(value, ["status"], "remove"); return { status: "removed" }; }
   if (value.status !== "conflict") fail("remove.status", "invalid status");
   return { status: "conflict", item: withItem(value, definition, expectedItemId, "remove") };
 }
+
+function parseListChange(input: unknown, path: string): CollectionListChangeResult {
+  const value = record(input, path);
+  const shared = common(value, path);
+  if (shared) return shared;
+  if (value.status === "invalid") return parseErrors(value, path);
+  if (value.status !== "saved" && value.status !== "publishing" && value.status !== "conflict") fail(`${path}.status`, "invalid status");
+  keys(value, ["status", "items"], path);
+  const items = array(value.items, `${path}.items`, 10_000).map((item, index) => parseCollectionItemSummary(item, `${path}.items[${index}]`));
+  if (new Set(items.map((item) => item.id)).size !== items.length) fail(`${path}.items`, "duplicate item");
+  return { status: value.status, items };
+}
+/** reorder の応答（saved・publishing・conflict は items つき）。 */
+export function parseCollectionReorderResult(input: unknown): CollectionListChangeResult { return parseListChange(input, "reorder"); }
+/** bulk の応答（saved・publishing・conflict は items つき・invalid は errors）。 */
+export function parseCollectionBulkResult(input: unknown): CollectionListChangeResult { return parseListChange(input, "bulk"); }
 
 export function parseCollectionUploadResult(input: unknown): CollectionUploadResult {
   const value = record(input, "upload");
@@ -495,7 +587,7 @@ export function validateCollectionValues(definition: CollectionDefinition, value
   for (const field of definition.fields) {
     const value = values[field.key];
     const push = (message: string) => errors.push({ field: field.key, message });
-    if (field.required && isEmpty(field, value)) { push(field.type === "image" ? "画像を選んでください。" : field.type === "select" || field.type === "reference" ? "選んでください。" : "入力してください。"); continue; }
+    if (field.required && isEmpty(field, value)) { push(field.type === "image" ? "画像を選んでください。" : field.type === "select" || field.type === "reference" ? "選んでください。" : field.type === "gallery" ? "1 件以上追加してください。" : "入力してください。"); continue; }
     if (isEmpty(field, value)) continue;
     switch (field.type) {
       case "text": case "longText":
@@ -516,11 +608,26 @@ export function validateCollectionValues(definition: CollectionDefinition, value
       case "select":
         if (Array.isArray(value) && value.some((id) => !field.options.some((option) => option.id === id))) push("選べない値が入っています。選び直してください。");
         break;
+      case "gallery": {
+        const entries = galleryEntries(value);
+        if (field.maxItems !== undefined && entries.length > field.maxItems) { push(`${field.maxItems} 件までにしてください（いま ${entries.length} 件）。`); break; }
+        const badImage = entries.findIndex((entry) => entry.image !== null && !isDisplayableImageUrl(entry.image));
+        if (badImage >= 0) { push(`${badImage + 1} 件目の画像を選び直してください。`); break; }
+        const max = field.captionMaxLength;
+        const long = max === undefined ? -1 : entries.findIndex((entry) => [...entry.caption].length > max);
+        if (long >= 0) push(`${long + 1} 件目の${field.captionLabel}を ${max} 文字以内にしてください（いま ${[...entries[long]!.caption].length} 文字）。`);
+        break;
+      }
       default:
         break;
     }
   }
   return errors;
+}
+
+/** 値のうち gallery の行だけ（ほかの形なら空）。 */
+export function galleryEntries(value: CollectionValue | undefined): readonly CollectionGalleryEntry[] {
+  return Array.isArray(value) ? (value as readonly unknown[]).filter((entry): entry is CollectionGalleryEntry => typeof entry === "object" && entry !== null) : [];
 }
 
 /* ---------- 一覧の並び・絞り込み・日時の入力 ---------- */
@@ -545,6 +652,22 @@ export function sortCollectionItems<T extends CollectionItemSummary>(items: read
     if (a.publishedAt === null || b.publishedAt === null) return a.publishedAt === b.publishedAt ? tie(a, b) : a.publishedAt === null ? -1 : 1;
     return time(b.publishedAt) - time(a.publishedAt) || tie(a, b);
   });
+}
+
+/**
+ * 並べ替えの対象の並び。order のある項目を order の小さい順に並べる。同じ order は一覧の応答の順（ホストの並び）を保つ。
+ * reorder の ids にはこの並びの id を送る。order が null の項目（下書きだけ）は並びの外。
+ */
+export function collectionReorderSequence<T extends CollectionItemSummary>(items: readonly T[]): T[] {
+  return items.map((item, index) => ({ item, index })).filter((entry) => entry.item.order !== null)
+    .sort((a, b) => a.item.order! - b.item.order! || a.index - b.index).map((entry) => entry.item);
+}
+/** ids の from の位置の項目を to の位置へ動かした並び（to は動かした後の位置）。 */
+export function moveCollectionIds(ids: readonly string[], from: number, to: number): string[] {
+  const next = [...ids];
+  const [moved] = next.splice(from, 1);
+  if (moved !== undefined) next.splice(to, 0, moved);
+  return next;
 }
 
 function zonedParts(date: Date, timeZone: string) {

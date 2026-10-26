@@ -30,7 +30,8 @@ const adapter: CollectionAdapter = {
   saveDraft: (input, signal) => host.put(`/collections/${input.collectionId}/items/${input.itemId}/draft`, input, signal),
   publish: (input, signal) => host.post(`/collections/${input.collectionId}/items/${input.itemId}/publish`, input, signal),
   uploadImage: ({ collectionId, file }, signal) => host.upload(collectionId, file, signal),
-  // 任意: createItem, discardDraft, unpublish, duplicate, remove, schedule, cancelSchedule, imageUrl, previewUrl, isRichTextImageAllowed
+  // 任意: createItem, discardDraft, unpublish, duplicate, remove, schedule, cancelSchedule, retrySchedule, reorder, bulk,
+  //       imageUrl, previewUrl, isRichTextImageAllowed
 };
 
 <CollectionWorkspace
@@ -62,20 +63,28 @@ const adapter: CollectionAdapter = {
 | `listItems` | `{ collectionId }` | `{ status: "ready", collectionId, items: CollectionItemSummary[] }`（`collectionId` は要求と一致） |
 | `loadItem` | `{ collectionId, itemId }` | `{ status: "ready", item }` / `not_found` |
 | `saveDraft` | `{ collectionId, itemId, version, values }` | `{ status: "saved", item }` / `{ status: "conflict", item }` / `{ status: "invalid", errors: { field, message }[] }` |
-| `publish` | `{ collectionId, itemId, version }` | `{ status: "published" \| "publishing", item }` / conflict / invalid |
+| `publish` | `{ collectionId, itemId, version, redirect? }` | `{ status: "published" \| "publishing", item }` / conflict / invalid |
 | `uploadImage` | `{ collectionId, file }` | `{ status: "uploaded", url, width?, height? }` / `{ status: "rejected", reason: "type" \| "size" \| "permission" \| "invalid" }` |
 | `createItem`（任意） | `{ collectionId }` | `{ status: "created", item }`（下書きとして作る） |
 | `discardDraft`（任意） | `{ collectionId, itemId, version }` | saved（公開中の内容に戻した項目）/ conflict |
 | `unpublish`（任意） | `{ collectionId, itemId, version }` | saved / conflict |
 | `duplicate`（任意） | `{ collectionId, itemId }` | created（複製した下書き） |
-| `remove`（任意） | `{ collectionId, itemId, version }` | `{ status: "removed" }` / conflict |
-| `schedule`（任意） | `{ collectionId, itemId, version, at }` | saved（`status: "scheduled"`・`scheduledAt`）/ conflict / invalid |
+| `remove`（任意） | `{ collectionId, itemId, version, redirectTo? }` | `{ status: "removed" }` / conflict / invalid（移動先の選び直し） |
+| `schedule`（任意） | `{ collectionId, itemId, version, at, redirect? }` | saved（`status: "scheduled"`・`scheduledAt`）/ conflict / invalid |
 | `cancelSchedule`（任意） | `{ collectionId, itemId, version }` | saved / conflict |
+| `retrySchedule`（任意） | `{ collectionId, itemId, version }` | saved（失敗した公開予約をやり直した項目）/ conflict / invalid |
+| `reorder`（任意） | `{ collectionId, ids, from, to }` | `{ status: "saved" \| "publishing", items }` / `{ status: "conflict", items }` / invalid |
+| `bulk`（任意） | `{ collectionId, action: "publish" \| "unpublish" \| "remove", items: { id, version }[] }` | `{ status: "saved" \| "publishing", items }` / `{ status: "conflict", items }` / invalid |
 | `imageUrl?(url, width)` | — | 一覧の小さい画像・項目の画像の表示用 URL（同期）。無ければ `url` のまま。 |
 | `previewUrl?(collectionId, item)` | — | 保存済みの下書きを別タブで開く URL（同期）。`null` なら「プレビュー」を出しません。 |
 | `isRichTextImageAllowed?(src)` | — | 本文の画像で、`/` から始まる同じサイトの path を残してよいか。既定は https の画像だけ残します。 |
 
-- 任意の操作は、メソッドが無いか、その定義の `capabilities`（`create`・`duplicate`・`remove`・`unpublish`・`schedule`）が `false` のとき出しません。`discardDraft` は状態が「変更あり」のときだけ出します。
+- 任意の操作は、メソッドが無いか、その定義の `capabilities` が `false` のとき出しません（`createItem` は `create`、`duplicate`・`remove`・`unpublish`・`schedule`／`cancelSchedule` は同じ名前、`retrySchedule` は `retrySchedule`、`reorder` は `reorder` と `ordering: "manual"`、`bulk` は `bulk`、`publish`・`schedule` の `redirect` と `remove` の `redirectTo` は `redirects`）。`discardDraft` は状態が「変更あり」のときだけ出します。
+- `redirect`（boolean）は、`capabilities.redirects` で、公開中の項目（`path` と `publishedAt` がある）の slug を公開中のアドレスから変えたときだけ付けます。`true` は前のアドレスを開いた人を新しいアドレスへ移す、`false` は移さない。ほかのときは付けません（ホストの既定に任せます）。
+- `redirectTo` は、`capabilities.redirects` で、サイトに出ている項目（`path` があり `published`・`changed`・`publishing`）を消すときだけ付けます。付けない＝ホストの既定（一覧へ移す）、`null`＝移さない、string＝同じコレクションのほかの公開中の項目（`path` があり `published`・`changed`）の `path`。ホストが受け付けない移動先は `invalid`（`field: ""`）で返します。
+- `reorder` の `ids` は、一覧の項目のうち `order` が `null` でないものを `order` の小さい順に並べた id（同じ `order` は一覧の応答の順）です（`collectionReorderSequence`）。`from`・`to` はその中の位置で、`to` は動かした後の位置です（`moveCollectionIds`）。ホストの並びと `ids` が違えば `conflict` と今の一覧を返します。
+- `bulk` の `items` は 1〜100 件で、画面は直前に各項目の `loadItem` を呼んで最新の `version` を付けます（一覧の要約は `version` を持たないため）。どれかの `version` が違えば `conflict` と今の一覧、操作できない項目があれば `invalid`（`field: ""` の文を帯の近くに並べます）。
+- `reorder`・`bulk` の `items` は操作の後（`conflict` は今）の一覧で、画面は一覧をこれで置き換えます。
 - `saved`・`conflict`・`published` などの `item.id` は要求の `itemId` と一致必須です。`conflict` の `item` はほかの人が保存した最新です。
 - `invalid` の `field` が `fields` の key なら、その項目の下に `message` を出します。key でなければ（`""` など）画面の上にまとめて出します。
 - `uploadImage` の `url` は https、または `/` から始まる同じサイトの path だけです（http・data・javascript・資格情報付きは拒否）。
@@ -93,7 +102,10 @@ type CollectionDefinition = {
   slugField: string | null;                              // type: slug の項目
   imageField: string | null;                             // type: image の項目（shape: round なら一覧の画像も丸）
   subtitleField: string | null;                          // fields のどれか（一覧の下の文字はホストが summary.subtitle で返す）
-  capabilities: { create: boolean; duplicate: boolean; remove: boolean; unpublish: boolean; schedule: boolean };
+  capabilities: {
+    create: boolean; duplicate: boolean; remove: boolean; unpublish: boolean; schedule: boolean;
+    redirects?: boolean; reorder?: boolean; bulk?: boolean; retrySchedule?: boolean;  // 無ければ false
+  };
   fields: CollectionField[];                             // 並び順どおりに出す
 };
 ```
@@ -112,10 +124,11 @@ type CollectionDefinition = {
 | `tags` | — | string[] |
 | `datetime` | — | タイムゾーン付き ISO の string \| null |
 | `slug` | — | string（`^[A-Za-z0-9_-]+$`） |
+| `gallery` | `captionLabel`・`maxItems?`（1〜500）・`captionMaxLength?` | `{ id, image, caption }[]`（画像と説明の並び。`id` は既存の行の id、新しく足した行は `""`。`image` は `image` の項目と同じ形の URL \| null） |
 
-`parseCollectionSchemaResult` は、key・option・コレクションの重複、知らない type・設定、`titleField` などの指す項目の型、`reference` の参照先が同じ schema にあることを確かめます。
+`parseCollectionSchemaResult` は、key・option・コレクションの重複、知らない type・設定、`titleField` などの指す項目の型、`reference` の参照先が同じ schema にあることを確かめます。`capabilities` は 5 つの key が必須で、`redirects`・`reorder`・`bulk`・`retrySchedule` は任意です（無ければ `false` にそろえます。5 つだけを返す古いホストもそのまま開けます）。ほかの key は拒否します。
 
-項目の値は `parseCollectionValues` で定義の形にそろえます。無い key は空の値（`""`・`null`・`[]`）で補い、`fields` に無い key は捨てます（ホストが保持）。型が違う・単一の選択に 2 つ以上・同じ値の重複は例外です。slug の形や URL の scheme などの中身は、下書きでは自由で、公開・予約の前に `validateCollectionValues` で確かめます。
+項目の値は `parseCollectionValues` で定義の形にそろえます。無い key は空の値（`""`・`null`・`[]`）で補い、`fields` に無い key は捨てます（ホストが保持）。型が違う・単一の選択に 2 つ以上・同じ値の重複は例外です。`gallery` の各行は `id`・`image`・`caption` の 3 つちょうどで、`id` は `""` か `^[A-Za-z0-9._~:-]{1,128}$`（`""` 以外の重複は不可）です。slug の形や URL の scheme などの中身は、下書きでは自由で、公開・予約の前に `validateCollectionValues` で確かめます（`gallery` は行の数・画像の URL・説明の文字数）。
 
 ## 項目（CollectionItemSummary / CollectionItem）
 
@@ -147,7 +160,9 @@ type CollectionItem = CollectionItemSummary & { version: string; values: Record<
 一覧:
 
 - 左に「コンテンツ」としてコレクションの並びと件数、本文の上にコレクション名と件数、「すべて・公開中・下書き」の絞り込み（件数つき）、題名（とアドレス）の検索、主ボタン「＋ {addLabel}」。
-- 行は小さい画像・題名（下に `subtitle`、無ければ `path`）・状態の印・公開日時・最終更新（日時と人）・「…」（開く・複製する・非公開にする・削除する）。
+- 行は小さい画像・題名（下に `subtitle`、無ければ `path`）・状態の印・公開日時・最終更新（日時と人）・「…」（開く・上へ・下へ・複製する・非公開にする・削除する）。
+- 並べ替え（`reorder`）: 検索も絞り込みもしていない一覧で、`order` のある行の左に掴む印を出し、ドラッグ（マウス・指。Esc で取り消し）と「…」の「上へ」「下へ」で動かします。`order` が `null` の行（下書きだけ）は並びの外として先頭にまとめ、印も「上へ」「下へ」も出しません。応答を待つ間は動かした後の並びを出し、終わったら応答の一覧で置き換えます。「上へ」「下へ」の後は動かした行の「…」へ focus を戻します。`conflict` は一覧を置き換えて「ほかの人が先に並びを変えていました」と出します。絞り込み中は「並べ替えは、検索と絞り込みをやめると使えます。」と出します。
+- まとめての操作（`bulk`）: 行の左の選択（「「題名」を選ぶ」）と「全部を選ぶ」（表示している行だけ）。選んでいる間は帯に「n 件を選択中」「公開する」「下書きに戻す」「削除する」「選択をやめる」を出します。下書きに戻す・削除は確認の後だけ呼び、削除の確認は `redirects` のホストでは「公開中の項目のアドレスは一覧へ移します。」と書きます。検索・絞り込みで見えなくなった行は選択から外します。100 件を超えて選ぶと操作を止めて知らせます。成功したら一覧を置き換えて選択を外し、`invalid` は帯の下に文を並べ（選択は残す）、`conflict` は一覧を置き換えて「ほかの人が先に変えました」と出します。
 - 読み込み中・空・検索で 0 件・失敗（再試行）・権限なしを分けて出します。幅 900px 以下はコレクションの並びを上に横並び、640px 以下は行を縦のカードにします。320px でも横にはみ出しません。
 - 項目から一覧へ戻ると、その項目の行へ focus を戻します。
 
@@ -159,9 +174,11 @@ type CollectionItem = CollectionItemSummary & { version: string; values: Record<
 - `conflict` は上書きせず「ほかの人が先に保存しました」と出し、「最新を読み込む」で読み直します（この画面でいま直したところは消えると書きます）。解決するまで自動保存と公開を止めます。
 - `invalid` は該当の項目の下にエラーを出し、入力に `aria-invalid` と `aria-describedby` を付けます。直すとその項目のエラーを消します。
 - 公開・予約の前に `validateCollectionValues`（必須・文字数・slug・URL・日時・選べない選択肢）を確かめ、だめなら最初の項目へ focus して止めます。通れば、保存待ちの下書きを先に保存してから `publish` を呼びます。`publishing` なら「公開しました。サイトに出るまで少しかかります。」と出します。
-- 削除・非公開・変更の取り消しは確認のダイアログの後だけ呼びます。ダイアログは Esc で閉じ、Tab は中で回り、閉じると開く前の場所へ focus を戻します。
+- 削除・非公開・変更の取り消しは確認のダイアログの後だけ呼びます。ダイアログは Esc で閉じ、Tab は中で回り（選択の部品も含む）、閉じると開く前の場所へ focus を戻します。
+- 削除の移動先（`redirects`）: サイトに出ている項目を消す確認（一覧・項目の編集とも）に「このアドレス（/posts/…）を開いた人の移動先」として「一覧へ移す」（既定・`redirectTo` を送らない）・「ほかの{コレクションの label}へ移す」（候補があるときだけ。選ぶと候補の一覧を出し、その `path` を送る）・「移さない」（「このアドレスを開いた人には『見つかりません』が出ます。」・`null`）を出します。公開していない項目は今までの確認のままです。
+- 予約のやり直し（`retrySchedule`）: 予約があり `publishFailed` のとき、右の欄の予約に「予約していた公開に失敗しました。」と「もう一度公開する」を出します（保存待ちの下書きを先に保存してから呼びます）。
 - 保存待ちのまま「一覧へ」を押すと、先に保存してから戻ります。保存できなければ「変更を捨てて戻る」かを確かめます。保存待ち・保存中・画像を上げている途中にタブを閉じようとすると `beforeunload` で止めます。
-- 公開中の項目の slug を変えると「前のアドレスを開いた人や検索結果からは見つからなくなります」と出します（転送の設定は持ちません）。
+- 公開中の項目の slug を変えたとき: `capabilities.redirects` のホストでは slug の欄の下に「前のアドレス（/posts/…）を開いた人を新しいアドレスへ移す」の checkbox（既定は on）を出し、公開・予約に `redirect` を付けます（外したときだけ「移さないと、前のアドレスを開いた人や検索結果からは見つからなくなります。」と出します）。転送できないホストでは「前のアドレスを開いた人や検索結果からは見つからなくなります」と出します。
 
 項目の入力:
 
@@ -170,6 +187,7 @@ type CollectionItem = CollectionItemSummary & { version: string; values: Record<
 - タグ: 入力して Enter（日本語の変換中は足さない）か「足す」で足すチップ。前後の空白を詰め、重複は足しません。
 - 選択: 単一はラジオ（必須でなければ「なし」付き）、複数はチェックボックス。選んだものは色に加えて ✓ を出します。
 - 日時: `datetime-local` で `timeZone` の時刻を入力し、ISO（UTC）に直して値にします。「消す」で `null`。
+- 画像と説明の並び（`gallery`）: 行ごとに画像（`imageUrl(url, 320)`。「画像を選ぶ／画像を変える」は `uploadImage` を同じ `collectionId` で呼ぶ）・説明（`captionLabel` の textarea。`captionMaxLength` があれば文字数）・「上へ」「下へ」「外す」。下に「追加」（新しい行は `{ id: "", image: null, caption: "" }`）。`maxItems` に達したら「追加」を出さずに「これ以上は追加できません」と出します。動かした・外した・足した後は、その行（外したときは隣の行）へ focus を移します。
 - 既定のリッチテキスト: contenteditable と道具（段落・見出し・小見出し・太字・斜体・箇条書き・番号付き・引用・リンク・画像）。変更のたびに `sanitizeRichTextHtml` を通した HTML を値にします。書式は `document.execCommand` を使い、無い環境（jsdom など）では書式の道具は何もしません。画像は `uploadImage` の後に入れ、execCommand が無いときは本文の最後に段落として足します。リンクは http・https・mailto だけです。貼り付けも無害化してから入れます。
 
 ## 本文の HTML の無害化（sanitizeRichTextHtml）
@@ -193,16 +211,17 @@ type CollectionItem = CollectionItemSummary & { version: string; values: Record<
 - 無害化で `h1`・`h5`・`h6`・段落を含まない `div` を置き換えるようにしました（既存の本文の見出しと、contenteditable が作る改行を失わないため）。
 - props に `timeZone`・`autosaveDelay` を足しました。
 - デモのポートは 4179 です（4173〜4178 はほかのデモが使っています）。
+- U2-e（鎌倉の /admin の撤廃）で、`capabilities` に任意の `redirects`・`reorder`・`bulk`・`retrySchedule`、adapter に `retrySchedule`・`reorder`・`bulk`、`publish`・`schedule` の `redirect`、`remove` の `redirectTo` と invalid、項目の型 `gallery` を足しました。新しい key は任意なので、5 つの capabilities だけを返すホストは今までどおり動きます。
 
 ## 既知の不足
 
 - 既定のリッチテキストは `document.execCommand`（非推奨の API）に頼ります。表・コード・下線・打ち消し線・文字色・見出しの `id`（目次のアンカー）・`/` から始まるリンクは残りません。画像の `alt` と `figcaption` は入力できません（既存の値は残ります）。きちんとした本文の編集はホストが `renderRichText` で差し替えてください。
-- 手で並べるコレクション（`manual`）の並べ替え・一括操作・作品のような入れ子の項目は、まだありません。
 - 反映中（`publishing`）の結果は見に行きません。ホストが一覧を読み直したときに反映します。
-- 公開中のアドレスを変えたときの転送の設定は持ちません（警告だけ）。
+- ドラッグの並べ替えは、一覧を画面の外まで自動ではスクロールしません（長い一覧は「上へ」「下へ」を使います）。
+- まとめての操作は、選んだ項目を 1 件ずつ `loadItem` で読んでから呼びます（同時に 6 件まで）。
 
 ## デモと検証
 
-`npm run demo:collections`（または `npm run build` の後に `node examples/collection-demo.mjs`）で `http://127.0.0.1:4179` に、記事・サークル・カテゴリの 3 つのコレクションと、全部の項目の種類が出るデモを出します。データはすべて架空で、ブラウザのメモリ上の adapter にだけあり、再読み込みで戻ります。画像はローカルのサーバーのメモリに置きます。「開いている項目をほかの人が保存したことにする」で衝突を、「権限を外す」で権限なしを試せます。
+`npm run demo:collections`（または `npm run build` の後に `node examples/collection-demo.mjs`）で `http://127.0.0.1:4179` に、記事・サークル・カテゴリの 3 つのコレクションと、全部の項目の種類が出るデモを出します。データはすべて架空で、ブラウザのメモリ上の adapter にだけあり、再読み込みで戻ります。画像はローカルのサーバーのメモリに置きます。「開いている項目をほかの人が保存したことにする」で衝突を、「権限を外す」で権限なしを試せます。記事ではまとめての操作・削除の移動先・アドレスを変えたときの転送・予約のやり直し（「冬至のキャンドルの夜」は予約の公開に失敗した形）を、サークルでは並べ替え・まとめての操作・画像と説明の並び（「活動の写真」）を試せます（転送と移動先はデモの帯に送った値を出すだけです）。
 
-`test/collection-model.test.mjs` は定義・一覧・項目・操作・画像の parser、値の検証、並び、日時の変換、無害化を確かめます。`test/collection-workspace-ui.test.mjs` は jsdom で、一覧（並び・件数・印・検索・絞り込み・capabilities）、項目の編集（main と side・約 1 秒後に 1 回の自動保存と version）、conflict と invalid、公開前の確かめと focus・保存してからの公開、各項目の値の形、確認のダイアログと focus の戻り、権限なし、adapter の差し替え・閉じたときの abort と遅い応答の破棄、一覧へ戻るときの保存と `beforeunload` を確かめます。
+`test/collection-model.test.mjs` は定義（capabilities の新旧の形・`gallery`）・一覧・項目・操作（`reorder`・`bulk`・`remove` の invalid）・画像の parser、値の検証、並び（並べ替えの並び）、日時の変換、無害化を確かめます。`test/collection-workspace-actions-ui.test.mjs` は jsdom で、並べ替え（印・「上へ」「下へ」・ドラッグ・conflict・絞り込み中）、まとめての操作（選択・最新の version・確認・invalid・conflict）、削除の移動先、slug を変えたときの転送の選択と `redirect`、`gallery` の行の操作と値の形、予約のやり直しを、古い capabilities では出ないことと合わせて確かめます。`test/collection-workspace-ui.test.mjs` は jsdom で、一覧（並び・件数・印・検索・絞り込み・capabilities）、項目の編集（main と side・約 1 秒後に 1 回の自動保存と version）、conflict と invalid、公開前の確かめと focus・保存してからの公開、各項目の値の形、確認のダイアログと focus の戻り、権限なし、adapter の差し替え・閉じたときの abort と遅い応答の破棄、一覧へ戻るときの保存と `beforeunload` を確かめます。

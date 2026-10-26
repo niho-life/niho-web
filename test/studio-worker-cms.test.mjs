@@ -125,7 +125,10 @@ test("CMS BFF: Access と D1 の owner/editor を要求ごとに確かめ、鎌�
 
   h.roles.set("project-kamakura/kamakura", "editor");
   const ready = await expectJson(await h.send("GET", "/schema"), 200);
-  assert.deepEqual(ready, schema());
+  // 今の上流（capabilities が 5 つ）も通し、後から足した 4 つは false にそろえて返す
+  const normalized = schema();
+  for (const collection of normalized.collections) Object.assign(collection.capabilities, { redirects: false, reorder: false, bulk: false, retrySchedule: false });
+  assert.deepEqual(ready, normalized);
   assert.equal(h.calls.length, 1);
   assert.equal(h.calls[0].method, "GET");
   assert.equal(h.calls[0].path, `${UPSTREAM}/schema`);
@@ -405,4 +408,143 @@ test("CMS BFF: 読み取りは 12 秒、書き込みは 30 秒で上流を打ち
     t.mock.timers.tick(1);
     await expectJson(await pending, 503, "service_unavailable");
   }
+});
+
+test("CMS BFF: 並べ替え・まとめての操作・予約のやり直しと、転送の任意の key を確かめて actor を入れて渡す", async (t) => {
+  const auth = await accessFixture();
+  const worker = await loadWorker();
+  t.mock.method(globalThis, "fetch", async (url) => {
+    if (String(url) === `${auth.issuer}/cdn-cgi/access/certs`) return Response.json({ keys: [auth.jwk] });
+    throw new Error(`unexpected network request: ${url}`);
+  });
+  const warnings = [];
+  t.mock.method(console, "warn", (...args) => { warnings.push(args); });
+  const h = harness(auth, worker);
+  h.roles.set("project-kamakura/kamakura", "editor");
+  const target = "/collections/posts/items/morning-walk";
+  const circle = (id, order) => summary(item({ id, title: `架空のサークル ${id}`, path: `/circles/${id}`, status: "published", publishedAt: "2026-10-20T09:00:00Z", order }));
+  const list = [circle("walk", 1), circle("books", 2)];
+
+  // 新しい schema（9 つの capabilities・gallery の項目）はそのまま通す
+  const next = schema();
+  next.collections[1].capabilities = { create: true, duplicate: false, remove: true, unpublish: true, schedule: false, redirects: true, reorder: true, bulk: true, retrySchedule: false };
+  next.collections[1].fields.push({ key: "portfolio", label: "作品／活動", type: "gallery", captionLabel: "説明", placement: "main", maxItems: 60, captionMaxLength: 2000 });
+  h.setRespond(() => Response.json(next));
+  assert.deepEqual((await expectJson(await h.send("GET", "/schema"), 200)).collections[1], next.collections[1]);
+
+  const writes = [
+    ["POST", `${target}/publish`, { version: "v1", redirect: false }, { version: "v1", redirect: false, actor: { email: EMAIL } }, 202, { status: "publishing", item: item({ status: "publishing" }) }],
+    ["POST", `${target}/schedule`, { version: "v1", at: "2026-11-01T18:00:00+09:00", redirect: true }, { version: "v1", at: "2026-11-01T09:00:00.000Z", redirect: true, actor: { email: EMAIL } }, 200, { status: "saved", item: item({ status: "scheduled", scheduledAt: "2026-11-01T09:00:00Z" }) }],
+    ["POST", `${target}/remove`, { version: "v1", redirectTo: null }, { version: "v1", redirectTo: null, actor: { email: EMAIL } }, 200, { status: "removed" }],
+    ["POST", `${target}/remove`, { version: "v1", redirectTo: "/posts/other-post" }, { version: "v1", redirectTo: "/posts/other-post", actor: { email: EMAIL } }, 200, { status: "removed" }],
+    ["POST", `${target}/retry-schedule`, { version: "v1" }, { version: "v1", actor: { email: EMAIL } }, 200, { status: "saved", item: item({ status: "scheduled", scheduledAt: "2026-11-01T09:00:00Z" }) }],
+    ["POST", "/collections/circles/reorder", { ids: ["walk", "books"], from: 1, to: 0 }, { ids: ["walk", "books"], from: 1, to: 0, actor: { email: EMAIL } }, 202, { status: "publishing", items: [circle("books", 1), circle("walk", 2)] }],
+    // 同じ番号どうしの入れ替えは commit が無く 200 saved
+    ["POST", "/collections/circles/reorder", { ids: ["walk", "books"], from: 1, to: 0 }, { ids: ["walk", "books"], from: 1, to: 0, actor: { email: EMAIL } }, 200, { status: "saved", items: list }],
+    ["POST", "/collections/circles/bulk", { action: "unpublish", items: [{ id: "walk", version: "v1" }, { id: "books", version: "v2" }] }, { action: "unpublish", items: [{ id: "walk", version: "v1" }, { id: "books", version: "v2" }], actor: { email: EMAIL } }, 202, { status: "publishing", items: list }],
+    ["POST", "/collections/circles/bulk", { action: "remove", items: [{ id: "walk", version: "v1" }] }, { action: "remove", items: [{ id: "walk", version: "v1" }], actor: { email: EMAIL } }, 200, { status: "saved", items: [list[1]] }],
+    ["PUT", "/collections/circles/items/walk/draft", { version: "v1", values: { portfolio: [{ id: "w1", image: "https://kamakura-media.niho.life/uploads/a.jpg", caption: "説明\n二行目" }, { id: "", image: null, caption: "" }] } },
+      { version: "v1", values: { portfolio: [{ id: "w1", image: "https://kamakura-media.niho.life/uploads/a.jpg", caption: "説明\n二行目" }, { id: "", image: null, caption: "" }] }, actor: { email: EMAIL } }, 200,
+      { status: "saved", item: item({ id: "walk" }, { portfolio: [{ id: "w1", image: null, caption: "x" }] }) }]
+  ];
+  for (const [method, path, body, forwarded, status, reply] of writes) {
+    h.setRespond(() => Response.json(reply, { status }));
+    assert.deepEqual(await expectJson(await h.send(method, path, body), status), JSON.parse(JSON.stringify(reply)), path);
+    assert.equal(h.calls.at(-1).path, `${UPSTREAM}${path}`);
+    assert.deepEqual(JSON.parse(h.calls.at(-1).body), forwarded, path);
+    h.verifySignature(h.calls.at(-1));
+  }
+
+  // 409 は一覧つき・422 は errors。posts の並べ替えは上流の 404
+  h.setRespond(() => Response.json({ error: "conflict", items: list }, { status: 409 }));
+  assert.deepEqual(await expectJson(await h.send("POST", "/collections/circles/reorder", { ids: ["walk", "books"], from: 0, to: 1 }), 409), { error: "conflict", items: list });
+  assert.deepEqual(await expectJson(await h.send("POST", "/collections/circles/bulk", { action: "publish", items: [{ id: "walk", version: "v1" }] }), 409), { error: "conflict", items: list });
+  h.setRespond(() => Response.json({ error: "invalid", errors: [{ field: "", message: "作品／活動を直した項目は 1 件ずつ公開してください" }] }, { status: 422 }));
+  assert.equal((await expectJson(await h.send("POST", "/collections/circles/bulk", { action: "publish", items: [{ id: "walk", version: "v1" }] }), 422, "invalid")).errors[0].field, "");
+  h.setRespond(() => Response.json({ error: "not_found" }, { status: 404 }));
+  assert.deepEqual(await expectJson(await h.send("POST", "/collections/posts/reorder", { ids: ["a", "b"], from: 0, to: 1 }), 404), { error: "not_found" });
+
+  // 契約に合わない応答は 502
+  for (const [path, body, reply, status] of [
+    ["/collections/circles/reorder", { ids: ["walk", "books"], from: 0, to: 1 }, { status: "saved", items: list }, 202],
+    ["/collections/circles/reorder", { ids: ["walk", "books"], from: 0, to: 1 }, { status: "publishing", items: list }, 200],
+    ["/collections/circles/reorder", { ids: ["walk", "books"], from: 0, to: 1 }, { error: "conflict", item: item() }, 409],
+    ["/collections/circles/bulk", { action: "publish", items: [{ id: "walk", version: "v1" }] }, { status: "publishing", items: list }, 200],
+    ["/collections/circles/bulk", { action: "publish", items: [{ id: "walk", version: "v1" }] }, { status: "publishing", items: [list[0], list[0]] }, 202],
+    ["/collections/circles/bulk", { action: "publish", items: [{ id: "walk", version: "v1" }] }, { status: "publishing", items: [{ ...list[0], secret: 1 }] }, 202],
+    [`${target}/retry-schedule`, { version: "v1" }, { status: "publishing", item: item() }, 200]
+  ]) {
+    h.setRespond(() => Response.json(reply, { status }));
+    await expectJson(await h.send("POST", path, body), 502, "upstream_contract_invalid");
+  }
+
+  // 本文の確かめに落ちた要求は上流へ届かない
+  const before = h.calls.length;
+  const bulkItems = (count) => Array.from({ length: count }, (_, index) => ({ id: `item-${index}`, version: "v1" }));
+  for (const [method, path, body] of [
+    ["POST", `${target}/publish`, { version: "v1", redirect: "yes" }],
+    ["POST", `${target}/publish`, { version: "v1", redirectTo: null }],
+    ["POST", `${target}/schedule`, { version: "v1", at: "2026-11-01T09:00:00Z", redirect: 1 }],
+    ["POST", `${target}/unpublish`, { version: "v1", redirect: true }],
+    ["POST", `${target}/remove`, { version: "v1", redirect: true }],
+    ["POST", `${target}/remove`, { version: "v1", redirectTo: "https://evil.example/x" }],
+    ["POST", `${target}/remove`, { version: "v1", redirectTo: "//evil.example/x" }],
+    ["POST", `${target}/remove`, { version: "v1", redirectTo: "/posts/a?b=1" }],
+    ["POST", `${target}/remove`, { version: "v1", redirectTo: "/posts/a b" }],
+    ["POST", `${target}/remove`, { version: "v1", redirectTo: "" }],
+    ["POST", `${target}/remove`, { version: "v1", redirectTo: 1 }],
+    ["POST", `${target}/remove`, { redirectTo: null }],
+    ["POST", `${target}/retry-schedule`, { version: "v1", at: "2026-11-01T09:00:00Z" }],
+    ["POST", `${target}/retry-schedule`, {}],
+    ["POST", "/collections/circles/reorder", { ids: ["walk", "books"], from: 0, to: 0 }],
+    ["POST", "/collections/circles/reorder", { ids: ["walk", "books"], from: 0, to: 2 }],
+    ["POST", "/collections/circles/reorder", { ids: ["walk", "books"], from: -1, to: 1 }],
+    ["POST", "/collections/circles/reorder", { ids: ["walk", "books"], from: 0.5, to: 1 }],
+    ["POST", "/collections/circles/reorder", { ids: ["walk", "books"], from: "0", to: 1 }],
+    ["POST", "/collections/circles/reorder", { ids: ["walk", "walk"], from: 0, to: 1 }],
+    ["POST", "/collections/circles/reorder", { ids: ["walk", "../books"], from: 0, to: 1 }],
+    ["POST", "/collections/circles/reorder", { ids: ["walk"], from: 0, to: 1 }],
+    ["POST", "/collections/circles/reorder", { ids: ["walk", "books"], from: 0 }],
+    ["POST", "/collections/circles/reorder", { ids: ["walk", "books"], from: 0, to: 1, actor: { email: EMAIL } }],
+    ["POST", "/collections/circles/bulk", { action: "archive", items: bulkItems(1) }],
+    ["POST", "/collections/circles/bulk", { action: "publish", items: [] }],
+    ["POST", "/collections/circles/bulk", { action: "publish", items: bulkItems(101) }],
+    ["POST", "/collections/circles/bulk", { action: "publish", items: [{ id: "walk", version: "v1" }, { id: "walk", version: "v2" }] }],
+    ["POST", "/collections/circles/bulk", { action: "publish", items: [{ id: "walk", version: "v1", status: "published" }] }],
+    ["POST", "/collections/circles/bulk", { action: "publish", items: [{ id: "walk" }] }],
+    ["POST", "/collections/circles/bulk", { action: "publish", items: [{ id: "walk", version: "" }] }],
+    ["POST", "/collections/circles/bulk", { action: "publish", items: ["walk"] }],
+    ["POST", "/collections/circles/bulk", { action: "publish", items: bulkItems(1), actor: { email: EMAIL } }],
+    ["PUT", "/collections/circles/items/walk/draft", { version: "v1", values: { portfolio: [{ id: "w1", image: null }] } }],
+    ["PUT", "/collections/circles/items/walk/draft", { version: "v1", values: { portfolio: [{ id: "w1", image: null, caption: "", order: 1 }] } }],
+    ["PUT", "/collections/circles/items/walk/draft", { version: "v1", values: { portfolio: [{ id: "../w", image: null, caption: "" }] } }],
+    ["PUT", "/collections/circles/items/walk/draft", { version: "v1", values: { portfolio: [{ id: "w1", image: "https://a.example/x y.jpg", caption: "" }] } }],
+    ["PUT", "/collections/circles/items/walk/draft", { version: "v1", values: { portfolio: [{ id: "w1", image: null, caption: "x".repeat(20_001) }] } }],
+    ["PUT", "/collections/circles/items/walk/draft", { version: "v1", values: { portfolio: [{ id: "w1", image: null, caption: "" }, "w2"] } }],
+    ["PUT", "/collections/circles/items/walk/draft", { version: "v1", values: { portfolio: Array.from({ length: 201 }, () => ({ id: "", image: null, caption: "" })) } }]
+  ]) await expectJson(await h.send(method, path, body), 400, "invalid_request");
+  assert.equal(h.calls.length, before);
+
+  // 経路: 並べ替え・まとめての操作は POST だけ。項目の下や知らない操作は閉じる
+  for (const [method, path, status] of [
+    ["GET", "/collections/circles/reorder", 405],
+    ["PUT", "/collections/circles/bulk", 405],
+    ["POST", "/collections/Circles/reorder", 404],
+    ["POST", "/collections/circles/items/walk/reorder", 404],
+    ["POST", "/collections/circles/sort", 404],
+    ["GET", `${target}/retry-schedule`, 405]
+  ]) {
+    const response = await worker.fetch(new Request(`${STUDIO}${BASE}${path}`, { method, headers: { "Cf-Access-Jwt-Assertion": auth.jwt } }), h.env);
+    assert.equal(response.status, status, `${method} ${path}`);
+  }
+  assert.equal(h.calls.length, before);
+
+  // log は固定の operation だけ
+  h.setRespond(() => Response.json({ error: "down" }, { status: 500 }));
+  await expectJson(await h.send("POST", "/collections/circles/reorder", { ids: ["walk", "books"], from: 0, to: 1 }), 503, "service_unavailable");
+  await expectJson(await h.send("POST", "/collections/circles/bulk", { action: "publish", items: bulkItems(1) }), 503, "service_unavailable");
+  await expectJson(await h.send("POST", `${target}/retry-schedule`, { version: "v1" }), 503, "service_unavailable");
+  const logged = warnings.map(([, detail]) => detail.operation);
+  for (const operation of ["cms_reorder", "cms_bulk", "cms_retry_schedule"]) assert.ok(logged.includes(operation), operation);
+  assert.ok(!JSON.stringify(warnings).includes(EMAIL));
 });

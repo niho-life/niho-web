@@ -5,8 +5,8 @@ import {
 import {
   KAMAKURA_CMS_BASE, KAMAKURA_CMS_IMAGE_TYPES, KAMAKURA_CMS_LIMITS, KAMAKURA_MEDIA_ORIGIN,
   isKamakuraCmsCollectionId, isKamakuraCmsItemId,
-  parseKamakuraCmsConflict, parseKamakuraCmsInvalid, parseKamakuraCmsItemEnvelope, parseKamakuraCmsList, parseKamakuraCmsRemoved,
-  parseKamakuraCmsSchema, parseKamakuraCmsUploadIntent, parseKamakuraCmsUploadResult,
+  parseKamakuraCmsConflict, parseKamakuraCmsInvalid, parseKamakuraCmsItemEnvelope, parseKamakuraCmsList, parseKamakuraCmsListChange,
+  parseKamakuraCmsListConflict, parseKamakuraCmsRemoved, parseKamakuraCmsSchema, parseKamakuraCmsUploadIntent, parseKamakuraCmsUploadResult,
   type KamakuraCmsItemStatus
 } from "./kamakura-cms-contract.js";
 
@@ -74,10 +74,23 @@ function itemPath(collectionId: string, itemId?: string, action?: string): strin
   return `collections/${collectionId}/items${itemId === undefined ? "" : `/${itemId}`}${action === undefined ? "" : `/${action}`}`;
 }
 
+function collectionPath(collectionId: string, action: "reorder" | "bulk"): string {
+  if (!isKamakuraCmsCollectionId(collectionId)) throw new Error("コレクションの指定が正しくありません。");
+  return `collections/${collectionId}/${action}`;
+}
+
+/** 文字列の並びは各要素の一致、gallery の並びは各行の id・image・caption の一致。 */
 function sameValue(left: CollectionValue | undefined, right: CollectionValue | undefined): boolean {
   if (left === right) return true;
   if (!Array.isArray(left) || !Array.isArray(right)) return false;
-  return left.length === right.length && left.every((entry, index) => entry === right[index]);
+  const a = left as readonly unknown[], b = right as readonly unknown[];
+  return a.length === b.length && a.every((entry, index) => {
+    const other = b[index];
+    if (entry === other) return true;
+    if (typeof entry !== "object" || entry === null || typeof other !== "object" || other === null) return false;
+    const x = entry as Record<string, unknown>, y = other as Record<string, unknown>;
+    return x.id === y.id && x.image === y.image && x.caption === y.caption;
+  });
 }
 
 /** ファイル名を BFF の条件（1〜200 字・制御文字なし）に収める。 */
@@ -157,6 +170,18 @@ export function createKamakuraCmsAdapter(options: KamakuraCmsAdapterOptions): Co
     return settle(reply, input.collectionId, input.itemId, expected);
   };
 
+  /** reorder・bulk の応答を画面の形にする。成功と 409 は一覧つき。触った項目の覚えた version は捨てる。 */
+  const listChange = (reply: Reply, collectionId: string, touched: readonly string[], success: Readonly<Partial<Record<number, "publishing" | "saved">>>) => {
+    const status = success[reply.status];
+    if (status !== undefined || reply.status === 409) for (const id of touched) forget(collectionId, id);
+    if (status !== undefined) return parseKamakuraCmsListChange(reply.body, status);
+    if (reply.status === 403) return forbidden;
+    if (reply.status === 404) return notFound;
+    if (reply.status === 409) return { status: "conflict" as const, items: parseKamakuraCmsListConflict(reply.body).items };
+    if (reply.status === 422) return { status: "invalid" as const, errors: parseKamakuraCmsInvalid(reply.body).errors };
+    return failure(reply);
+  };
+
   /** 複製の元の version。覚えていなければ読む。 */
   const currentVersion = async (collectionId: string, itemId: string, signal: AbortSignal): Promise<string | typeof forbidden | typeof notFound> => {
     const cached = known.get(keyOf(collectionId, itemId));
@@ -197,8 +222,9 @@ export function createKamakuraCmsAdapter(options: KamakuraCmsAdapterOptions): Co
       return settle(reply, collectionId, itemId, { code: 200, status: "saved" });
     },
 
-    async publish(input, signal) {
-      return versioned("publish", input, {}, { code: 202, status: "publishing" }, signal);
+    async publish({ redirect, ...input }, signal) {
+      // redirect は画面が付けたときだけ送る（無ければ上流の既定＝前のアドレスから移す）
+      return versioned("publish", input, redirect === undefined ? {} : { redirect }, { code: 202, status: "publishing" }, signal);
     },
 
     async createItem({ collectionId }, signal) {
@@ -241,20 +267,34 @@ export function createKamakuraCmsAdapter(options: KamakuraCmsAdapterOptions): Co
       throw new KamakuraCmsRequestError(409, null);
     },
 
-    async remove(input, signal) {
-      const reply = await call("POST", itemPath(input.collectionId, input.itemId, "remove"), { version: input.version }, signal);
+    async remove({ redirectTo, ...input }, signal) {
+      const reply = await call("POST", itemPath(input.collectionId, input.itemId, "remove"), { version: input.version, ...(redirectTo === undefined ? {} : { redirectTo }) }, signal);
       if (reply.status === 200) {
         const result = parseKamakuraCmsRemoved(reply.body);
         forget(input.collectionId, input.itemId);
         return result;
       }
-      const result = settle(reply, input.collectionId, input.itemId, { code: 200, status: "saved" });
-      if (result.status === "invalid") failure(reply);
-      return result;
+      // 422 は移動先の選び直し（{ field: "", message }）
+      return settle(reply, input.collectionId, input.itemId, { code: 200, status: "saved" });
     },
 
-    async schedule({ at, ...input }, signal) {
-      return versioned("schedule", input, { at }, { code: 200, status: "saved" }, signal);
+    async schedule({ at, redirect, ...input }, signal) {
+      return versioned("schedule", input, { at, ...(redirect === undefined ? {} : { redirect }) }, { code: 200, status: "saved" }, signal);
+    },
+
+    async retrySchedule(input, signal) {
+      return versioned("retry-schedule", input, {}, { code: 200, status: "saved" }, signal);
+    },
+
+    async reorder({ collectionId, ids, from, to }, signal) {
+      const reply = await call("POST", collectionPath(collectionId, "reorder"), { ids: [...ids], from, to }, signal);
+      // 並べた項目の version は変わる。次に開いたときに読み直す
+      return listChange(reply, collectionId, ids, { 202: "publishing" });
+    },
+
+    async bulk({ collectionId, action, items }, signal) {
+      const reply = await call("POST", collectionPath(collectionId, "bulk"), { action, items: items.map(({ id, version }) => ({ id, version })) }, signal);
+      return listChange(reply, collectionId, items.map((item) => item.id), { 202: "publishing", 200: "saved" });
     },
 
     async cancelSchedule(input, signal) {

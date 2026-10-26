@@ -12,7 +12,7 @@ const collections: CollectionDefinition[] = [
   {
     id: "posts", label: "記事", addLabel: "新しく書く", icon: "document", ordering: "publishedAt", pathPrefix: "/posts/",
     titleField: "title", slugField: "slug", imageField: "cover", subtitleField: null,
-    capabilities: { create: true, duplicate: true, remove: true, unpublish: true, schedule: true },
+    capabilities: { create: true, duplicate: true, remove: true, unpublish: true, schedule: true, redirects: true, reorder: false, bulk: true, retrySchedule: true },
     fields: [
       { key: "title", label: "タイトル", type: "text", required: true, maxLength: 60, placement: "main" },
       { key: "cover", label: "カバー画像", type: "image", placement: "main", hint: "一覧のカードと、記事の上に出ます。" },
@@ -30,12 +30,13 @@ const collections: CollectionDefinition[] = [
   {
     id: "circles", label: "サークル", addLabel: "追加する", icon: "people", ordering: "manual", pathPrefix: "/circles/",
     titleField: "title", slugField: "slug", imageField: "photo", subtitleField: "host",
-    capabilities: { create: true, duplicate: true, remove: true, unpublish: true, schedule: false },
+    capabilities: { create: true, duplicate: true, remove: true, unpublish: true, schedule: false, redirects: true, reorder: true, bulk: true, retrySchedule: false },
     fields: [
       { key: "title", label: "名前", type: "text", required: true, placement: "main" },
       { key: "photo", label: "カバー画像", type: "image", placement: "main", hint: "一覧のカードと、ページの上に出ます。" },
       { key: "summary", label: "活動の概要", type: "longText", rows: 3, placement: "main", hint: "一覧のカードに出ます。" },
       { key: "detail", label: "活動の詳細", type: "longText", rows: 7, placement: "main", hint: "ページの本文に出ます。" },
+      { key: "works", label: "活動の写真", type: "gallery", captionLabel: "説明", placement: "main", maxItems: 6, captionMaxLength: 200, hint: "ページの下に並びます。" },
       { key: "hostPhoto", label: "主催者の顔写真", type: "image", shape: "round", placement: "main" },
       { key: "host", label: "主催者名", type: "text", placement: "side", hint: "一覧の題名の下に出ます。" },
       { key: "weekdays", label: "活動する曜日", type: "select", multiple: true, options: [{ id: "mon", label: "月" }, { id: "wed", label: "水" }, { id: "sat", label: "土" }, { id: "sun", label: "日" }], placement: "side" },
@@ -62,15 +63,18 @@ const put = (collectionId: string, item: Stored) => store[collectionId]!.set(ite
 let sequence = 1;
 [["c-walk", "散歩"], ["c-learn", "学び"], ["c-event", "催し"]].forEach(([id, title], index) => put("categories", { ...base, id: id!, title: title!, status: "published", publishedAt: days(-30), order: index + 1, values: { title, note: "" } }));
 put("circles", { ...base, id: "morning-yoga", title: "朝のヨガ部", subtitle: "架空の主催者 A", imageUrl: "/media/seed-green.svg", path: "/circles/morning-yoga", status: "published", publishedAt: days(-20), order: 1,
-  values: { title: "朝のヨガ部", photo: "/media/seed-green.svg", summary: "週に 2 回、朝 7 時から体をほぐします。", detail: "はじめての人も歓迎です。", hostPhoto: "/media/seed-sand.svg", host: "架空の主催者 A", weekdays: ["wed", "sat"], categories: ["c-walk"], website: "", slug: "morning-yoga" } });
+  values: { title: "朝のヨガ部", photo: "/media/seed-green.svg", summary: "週に 2 回、朝 7 時から体をほぐします。", detail: "はじめての人も歓迎です。", hostPhoto: "/media/seed-sand.svg", host: "架空の主催者 A", weekdays: ["wed", "sat"], categories: ["c-walk"], website: "", slug: "morning-yoga",
+    works: [{ id: "w-1", image: "/media/seed-dusk.svg", caption: "海の見える広場で。" }, { id: "w-2", image: null, caption: "雨の日は公民館で。" }] } });
 put("circles", { ...base, id: "board-games", title: "ボードゲームの会", subtitle: "架空の主催者 B", path: "/circles/board-games", status: "changed", publishedAt: days(-12), order: 2,
   values: { title: "ボードゲームの会", photo: null, summary: "月に 1 回、いろいろなゲームを持ち寄ります。", detail: "", hostPhoto: null, host: "架空の主催者 B", weekdays: ["sun"], categories: ["c-learn"], website: "https://example.test/games", slug: "board-games" } });
 put("circles", { ...base, id: "draft-circle", title: "（準備中）写真さんぽ", subtitle: "架空の主催者 C", values: { title: "（準備中）写真さんぽ", photo: null, summary: "", detail: "", hostPhoto: null, host: "架空の主催者 C", weekdays: [], categories: [], website: "", slug: "photo-walk" } });
+put("circles", { ...base, id: "garden", title: "花壇の手入れの会", subtitle: "架空の主催者 D", path: "/circles/garden", status: "published", publishedAt: days(-9), order: 3,
+  values: { title: "花壇の手入れの会", photo: null, summary: "月に 2 回、駅前の花壇を手入れします。", detail: "", hostPhoto: null, host: "架空の主催者 D", weekdays: ["sat"], categories: ["c-walk"], website: "", slug: "garden" } });
 put("posts", { ...base, id: "p-autumn", title: "秋の小さな市を開きました", imageUrl: "/media/seed-sand.svg", path: "/posts/autumn-market", status: "published", publishedAt: days(-5), updatedAt: days(-5),
   values: { title: "秋の小さな市を開きました", cover: "/media/seed-sand.svg", body: "<p>晴れた日曜日に、小さな市を開きました。</p><h2>当日のようす</h2><p>手づくりの品が<strong>20 店</strong>ならびました。</p><ul><li>焼き菓子</li><li>古本</li></ul>", slug: "autumn-market", category: ["c-event"], circles: ["board-games"], keywords: ["市", "秋"], kind: ["report"], eventAt: days(-6), source: "", description: "秋の小さな市のレポートです。" } });
 put("posts", { ...base, id: "p-reading", title: "読書会の参加者を募集します", status: "changed", path: "/posts/reading", publishedAt: days(-2), updatedAt: days(-1), publishFailed: true,
   values: { title: "読書会の参加者を募集します", cover: null, body: "<p>毎月第 2 土曜日に読書会をしています。</p>", slug: "reading", category: ["c-learn"], circles: [], keywords: ["本"], kind: ["news"], eventAt: null, source: "", description: "" } });
-put("posts", { ...base, id: "p-candle", title: "冬至のキャンドルの夜", status: "scheduled", scheduledAt: days(4), updatedAt: days(-1),
+put("posts", { ...base, id: "p-candle", title: "冬至のキャンドルの夜", status: "scheduled", scheduledAt: days(4), updatedAt: days(-1), publishFailed: true,
   values: { title: "冬至のキャンドルの夜", cover: "/media/seed-dusk.svg", body: "<p>灯りをともして、静かに過ごす夜です。</p>", slug: "candle-night", category: ["c-event"], circles: [], keywords: [], kind: ["news"], eventAt: days(30), source: "", description: "" } });
 // STUDIO から移した形の本文（架空）。図の style・見出しの id（目次の飛び先）・目次の置き場・埋め込み・リンクの target を含む。
 // ?rich=tiptap で開き、1 文字直して戻すと、下の「本文の値」で直した所以外が変わらないことを確かめられる。
@@ -85,6 +89,9 @@ put("posts", { ...base, id: "p-studio", title: "STUDIO から移した形の記�
 put("posts", { ...base, id: "p-draft", title: "", updatedAt: days(0), values: { title: "", cover: null, body: "", slug: "下書き", category: [], circles: [], keywords: [], kind: [], eventAt: null, source: "", description: "" } });
 
 const demo = { forbidden: false, latencyMs: 250 };
+// 転送はデモの外の仕事。画面が送った値をデモの帯に出して確かめられるようにする
+const redirectListeners = new Set<(text: string) => void>();
+const redirectNote = (text: string) => redirectListeners.forEach((listener) => listener(text));
 // 本文の値の変化を見るため、読み込んだときの本文を覚えておき、保存のたびに知らせる
 const originalBodies = new Map([...store.posts!.values()].map((item) => [item.id, String(item.values.body ?? "")]));
 const bodyListeners = new Set<() => void>();
@@ -140,6 +147,7 @@ const adapter: CollectionAdapter = {
     return { status: "saved", item: copy(item) };
   }),
   publish: (input, signal) => guarded(signal, () => {
+    if (input.redirect !== undefined) redirectNote(`前のアドレスを${input.redirect ? "新しいアドレスへ移す" : "移さない"}で公開（デモ）`);
     const result = versioned(input, (item) => {
       const slugField = definitionOf(input.collectionId).slugField, prefix = definitionOf(input.collectionId).pathPrefix;
       Object.assign(item, { status: "publishing", publishedAt: item.publishedAt ?? now(), scheduledAt: null, publishFailed: false, path: prefix && slugField ? `${prefix}${String(item.values[slugField])}` : null });
@@ -166,12 +174,40 @@ const adapter: CollectionAdapter = {
     const item = store[input.collectionId]?.get(input.itemId);
     if (!item) return { status: "not_found" };
     if (item.version !== input.version) return { status: "conflict", item: copy(item) };
+    // デモは転送を持たない。選んだ移動先をデモの帯に出すだけ
+    if (input.redirectTo !== undefined) redirectNote(`削除した「${item.title || "無題"}」のアドレス ${item.path ?? ""} は ${input.redirectTo === null ? "移さない" : `${input.redirectTo} へ移す`}（デモ）`);
     store[input.collectionId]!.delete(input.itemId);
     return { status: "removed" };
   }),
+  retrySchedule: (input, signal) => guarded(signal, () => versioned(input, (item) => { item.publishFailed = false; })),
+  reorder: (input, signal) => guarded(signal, () => {
+    const list = [...store[input.collectionId]!.values()];
+    const current = list.filter((item) => item.order !== null).sort((a, b) => a.order! - b.order!).map((item) => item.id);
+    if (current.join("\n") !== input.ids.join("\n")) return { status: "conflict", items: list.map((item) => summary(copy(item))) };
+    const next = [...input.ids], [moved] = next.splice(input.from, 1);
+    if (moved) next.splice(input.to, 0, moved);
+    next.forEach((id, index) => { const item = store[input.collectionId]!.get(id)!; item.order = index + 1; item.version = String(++sequence); });
+    return { status: "publishing", items: [...store[input.collectionId]!.values()].map((item) => summary(copy(item))) };
+  }),
+  bulk: (input, signal) => guarded(signal, () => {
+    const map = store[input.collectionId]!;
+    if (input.items.some(({ id, version }) => map.get(id)?.version !== version)) return { status: "conflict", items: [...map.values()].map((item) => summary(copy(item))) };
+    if (input.action === "publish") {
+      const slugField = definitionOf(input.collectionId).slugField;
+      const blocked = input.items.map(({ id }) => map.get(id)!).filter((item) => slugField && !item.values[slugField]);
+      if (blocked.length) return { status: "invalid", errors: blocked.map((item) => ({ field: "", message: `「${item.title || "無題"}」はアドレスが空なので公開できません。` })) };
+    }
+    for (const { id } of input.items) {
+      const item = map.get(id)!, prefix = definitionOf(input.collectionId).pathPrefix, slugField = definitionOf(input.collectionId).slugField;
+      if (input.action === "remove") map.delete(id);
+      else if (input.action === "publish") { Object.assign(item, { status: "publishing", publishedAt: item.publishedAt ?? now(), scheduledAt: null, publishFailed: false, path: prefix && slugField ? `${prefix}${String(item.values[slugField])}` : null, version: String(++sequence) }); finishPublishing(input.collectionId, id); }
+      else if (item.status === "published" || item.status === "changed" || item.status === "publishing") Object.assign(item, { status: "draft", publishedAt: null, path: null, version: String(++sequence) });
+    }
+    return { status: "publishing", items: [...map.values()].map((item) => summary(copy(item))) };
+  }),
   createItem: ({ collectionId }, signal) => guarded(signal, () => {
     const definition = definitionOf(collectionId), id = `new-${++sequence}`;
-    const values = Object.fromEntries(definition.fields.map((field) => [field.key, ["select", "reference", "tags"].includes(field.type) ? [] : field.type === "image" || field.type === "datetime" ? null : ""]));
+    const values = Object.fromEntries(definition.fields.map((field) => [field.key, ["select", "reference", "tags", "gallery"].includes(field.type) ? [] : field.type === "image" || field.type === "datetime" ? null : ""]));
     const item: Stored = { ...copy(base), id, title: "", updatedAt: now(), updatedBy: "あなた（デモ）", values };
     put(collectionId, item);
     return { status: "created", item: copy(item) };
@@ -218,6 +254,7 @@ function App() {
   const start = readLocation();
   const [forbidden, setForbidden] = useState(false);
   const [note, setNote] = useState("");
+  useEffect(() => { redirectListeners.add(setNote); return () => { redirectListeners.delete(setNote); }; }, []);
   const [openItem, setOpenItem] = useState<string | null>(start.collectionId === "posts" ? start.itemId ?? null : null);
   const navigate = (state: CollectionNavigationState) => {
     opened = state;

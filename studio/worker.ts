@@ -5,9 +5,9 @@ import { KAMAKURA_CATALOG_CONTRACT_ERROR_CODE, KAMAKURA_CATALOG_CONTRACT_ERROR_S
 import {
   KAMAKURA_CMS_IMAGE_TYPES, KAMAKURA_CMS_LIMITS, KAMAKURA_CMS_PROJECT_ID, KAMAKURA_CMS_SITE_ID, KAMAKURA_CMS_UPLOAD_ORIGIN, KAMAKURA_CMS_UPSTREAM_PREFIX,
   KAMAKURA_MEDIA_ORIGIN, KamakuraCmsContractError,
-  isKamakuraCmsCollectionId, isKamakuraCmsItemId, isKamakuraCmsLine, isKamakuraCmsVersion, normalizeKamakuraCmsTimestamp,
-  parseKamakuraCmsConflict, parseKamakuraCmsInvalid, parseKamakuraCmsItemEnvelope, parseKamakuraCmsList, parseKamakuraCmsRemoved,
-  parseKamakuraCmsSchema, parseKamakuraCmsUploadIntent, parseKamakuraCmsValues
+  isKamakuraCmsCollectionId, isKamakuraCmsItemId, isKamakuraCmsLine, isKamakuraCmsSitePath, isKamakuraCmsVersion, normalizeKamakuraCmsTimestamp,
+  parseKamakuraCmsConflict, parseKamakuraCmsInvalid, parseKamakuraCmsItemEnvelope, parseKamakuraCmsList, parseKamakuraCmsListChange,
+  parseKamakuraCmsListConflict, parseKamakuraCmsRemoved, parseKamakuraCmsSchema, parseKamakuraCmsUploadIntent, parseKamakuraCmsValues
 } from "./kamakura-cms-contract.js";
 import {
   KAMAKURA_LOCALIZATION_IMAGE_TYPES, KAMAKURA_LOCALIZATION_LIMITS, KAMAKURA_LOCALIZATION_PREVIEW_ORIGIN, KAMAKURA_LOCALIZATION_UPLOAD_ORIGIN,
@@ -165,6 +165,9 @@ type KamakuraBridgeOperation =
   | "cms_remove"
   | "cms_schedule"
   | "cms_cancel_schedule"
+  | "cms_retry_schedule"
+  | "cms_reorder"
+  | "cms_bulk"
   | "cms_upload_intent"
   | "localization_overview"
   | "localization_list"
@@ -1391,34 +1394,47 @@ async function signedKamakuraAssetPreview(request: Request, env: Env, identity: 
 
 /* ---------- Kamakura の CMS（記事・サークル・会社）の BFF ---------- */
 
-type KamakuraCmsOperation = "schema" | "list" | "read" | "create" | "draft" | "publish" | "discard-draft" | "unpublish" | "duplicate" | "remove" | "schedule" | "cancel-schedule" | "upload-intent";
+type KamakuraCmsOperation = "schema" | "list" | "read" | "create" | "draft" | "publish" | "discard-draft" | "unpublish" | "duplicate" | "remove" | "schedule" | "cancel-schedule" | "retry-schedule" | "reorder" | "bulk" | "upload-intent";
 type KamakuraCmsRoute = { readonly operation: KamakuraCmsOperation; readonly upstreamPath: string; readonly collectionId: string | null; readonly itemId: string | null };
-type KamakuraCmsOperationSpec = { readonly method: "GET" | "POST" | "PUT"; readonly success: 200 | 201 | 202; readonly log: KamakuraBridgeOperation; readonly bodyKeys: readonly string[] | null };
+type KamakuraCmsOperationSpec = {
+  readonly method: "GET" | "POST" | "PUT"; readonly success: readonly (200 | 201 | 202)[]; readonly log: KamakuraBridgeOperation;
+  /** 必ず要る key（null は本文なし）。optionalKeys は付けてもよい key。それ以外の key は拒否。 */
+  readonly bodyKeys: readonly string[] | null; readonly optionalKeys?: readonly string[];
+};
 
 /** 操作ごとの method・上流の成功の status・log の operation・ブラウザの本文の key の集合（actor は BFF が入れる）。 */
 const KAMAKURA_CMS_OPERATIONS: Readonly<Record<KamakuraCmsOperation, KamakuraCmsOperationSpec>> = {
-  schema: { method: "GET", success: 200, log: "cms_schema", bodyKeys: null },
-  list: { method: "GET", success: 200, log: "cms_list", bodyKeys: null },
-  read: { method: "GET", success: 200, log: "cms_read", bodyKeys: null },
-  create: { method: "POST", success: 201, log: "cms_create", bodyKeys: [] },
-  draft: { method: "PUT", success: 200, log: "cms_draft_save", bodyKeys: ["version", "values"] },
-  publish: { method: "POST", success: 202, log: "cms_publish", bodyKeys: ["version"] },
-  "discard-draft": { method: "POST", success: 200, log: "cms_discard_draft", bodyKeys: ["version"] },
-  unpublish: { method: "POST", success: 202, log: "cms_unpublish", bodyKeys: ["version"] },
-  duplicate: { method: "POST", success: 201, log: "cms_duplicate", bodyKeys: ["version"] },
-  remove: { method: "POST", success: 200, log: "cms_remove", bodyKeys: ["version"] },
-  schedule: { method: "POST", success: 200, log: "cms_schedule", bodyKeys: ["version", "at"] },
-  "cancel-schedule": { method: "POST", success: 200, log: "cms_cancel_schedule", bodyKeys: ["version"] },
-  "upload-intent": { method: "POST", success: 201, log: "cms_upload_intent", bodyKeys: ["collectionId", "name", "mimeType", "bytes"] }
+  schema: { method: "GET", success: [200], log: "cms_schema", bodyKeys: null },
+  list: { method: "GET", success: [200], log: "cms_list", bodyKeys: null },
+  read: { method: "GET", success: [200], log: "cms_read", bodyKeys: null },
+  create: { method: "POST", success: [201], log: "cms_create", bodyKeys: [] },
+  draft: { method: "PUT", success: [200], log: "cms_draft_save", bodyKeys: ["version", "values"] },
+  publish: { method: "POST", success: [202], log: "cms_publish", bodyKeys: ["version"], optionalKeys: ["redirect"] },
+  "discard-draft": { method: "POST", success: [200], log: "cms_discard_draft", bodyKeys: ["version"] },
+  unpublish: { method: "POST", success: [202], log: "cms_unpublish", bodyKeys: ["version"] },
+  duplicate: { method: "POST", success: [201], log: "cms_duplicate", bodyKeys: ["version"] },
+  remove: { method: "POST", success: [200], log: "cms_remove", bodyKeys: ["version"], optionalKeys: ["redirectTo"] },
+  schedule: { method: "POST", success: [200], log: "cms_schedule", bodyKeys: ["version", "at"], optionalKeys: ["redirect"] },
+  "cancel-schedule": { method: "POST", success: [200], log: "cms_cancel_schedule", bodyKeys: ["version"] },
+  "retry-schedule": { method: "POST", success: [200], log: "cms_retry_schedule", bodyKeys: ["version"] },
+  reorder: { method: "POST", success: [202, 200], log: "cms_reorder", bodyKeys: ["ids", "from", "to"] },
+  bulk: { method: "POST", success: [202, 200], log: "cms_bulk", bodyKeys: ["action", "items"] },
+  "upload-intent": { method: "POST", success: [201], log: "cms_upload_intent", bodyKeys: ["collectionId", "name", "mimeType", "bytes"] }
 };
-const KAMAKURA_CMS_ITEM_ACTIONS: ReadonlySet<string> = new Set(["draft", "publish", "discard-draft", "unpublish", "duplicate", "remove", "schedule", "cancel-schedule"]);
+const KAMAKURA_CMS_ITEM_ACTIONS: ReadonlySet<string> = new Set(["draft", "publish", "discard-draft", "unpublish", "duplicate", "remove", "schedule", "cancel-schedule", "retry-schedule"]);
+const KAMAKURA_CMS_BULK_ACTIONS: ReadonlySet<unknown> = new Set(["publish", "unpublish", "remove"]);
 
 /** action は `/cms` より後ろ。collection と item の ID は固定の形だけを通し、上流のパスはこの action をそのまま使う。 */
 function kamakuraCmsRoute(action: string, method: string): KamakuraCmsRoute | "method_not_allowed" | null {
   let operation: KamakuraCmsOperation, collectionId: string | null = null, itemId: string | null = null;
+  const listAction = /^\/collections\/([^/]+)\/(reorder|bulk)$/u.exec(action);
   if (action === "/schema") operation = "schema";
   else if (action === "/uploads/intent") operation = "upload-intent";
-  else {
+  else if (listAction) {
+    if (!isKamakuraCmsCollectionId(listAction[1])) return null;
+    collectionId = listAction[1];
+    operation = listAction[2] as "reorder" | "bulk";
+  } else {
     const match = /^\/collections\/([^/]+)\/items(?:\/([^/]+)(?:\/([^/]+))?)?$/u.exec(action);
     if (!match || !isKamakuraCmsCollectionId(match[1])) return null;
     collectionId = match[1];
@@ -1439,39 +1455,67 @@ function kamakuraCmsRoute(action: string, method: string): KamakuraCmsRoute | "m
 
 /** ブラウザの本文を操作ごとの key の集合で確かめ、BFF が確かめた email を actor に入れて JSON を作り直す。actor を送ってきたら拒否。 */
 function kamakuraCmsBody(route: KamakuraCmsRoute, raw: Uint8Array, identity: AccessIdentity): Uint8Array {
-  const keys = KAMAKURA_CMS_OPERATIONS[route.operation].bodyKeys;
+  const spec = KAMAKURA_CMS_OPERATIONS[route.operation], keys = spec.bodyKeys, optionalKeys = spec.optionalKeys ?? [];
   let parsed: unknown;
   try { parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw)) as unknown; }
   catch { throw new AuthenticationError("invalid CMS JSON"); }
   if (!isRecord(parsed) || keys === null) throw new AuthenticationError("invalid CMS body");
-  const actual = Object.keys(parsed).sort(), expected = [...keys].sort();
-  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) throw new AuthenticationError("unexpected CMS body fields");
+  const body = parsed;
+  if (keys.some((key) => !Object.hasOwn(body, key)) || Object.keys(body).some((key) => !keys.includes(key) && !optionalKeys.includes(key))) throw new AuthenticationError("unexpected CMS body fields");
   const actor = { email: identity.email };
   if (route.operation === "create") return new TextEncoder().encode(JSON.stringify({ actor }));
+  if (route.operation === "reorder") {
+    const { ids, from, to } = body;
+    if (!Array.isArray(ids) || ids.length < 2 || ids.length > KAMAKURA_CMS_LIMITS.reorderIds || !ids.every((id) => isKamakuraCmsItemId(id)) || new Set(ids).size !== ids.length) throw new AuthenticationError("invalid CMS reorder ids");
+    const index = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value < ids.length;
+    if (!index(from) || !index(to) || from === to) throw new AuthenticationError("invalid CMS reorder position");
+    return new TextEncoder().encode(JSON.stringify({ ids, from, to, actor }));
+  }
+  if (route.operation === "bulk") {
+    const { action, items } = body;
+    if (!KAMAKURA_CMS_BULK_ACTIONS.has(action) || !Array.isArray(items) || items.length < 1 || items.length > KAMAKURA_CMS_LIMITS.bulkItems) throw new AuthenticationError("invalid CMS bulk request");
+    const checked = items.map((entry: unknown) => {
+      if (!isRecord(entry) || Object.keys(entry).length !== 2 || !isKamakuraCmsItemId(entry.id) || !isKamakuraCmsVersion(entry.version)) throw new AuthenticationError("invalid CMS bulk item");
+      return { id: entry.id, version: entry.version };
+    });
+    if (new Set(checked.map((entry) => entry.id)).size !== checked.length) throw new AuthenticationError("duplicate CMS bulk item");
+    return new TextEncoder().encode(JSON.stringify({ action, items: checked, actor }));
+  }
   if (route.operation === "upload-intent") {
     const { collectionId, name, mimeType, bytes } = parsed;
     if (!isKamakuraCmsCollectionId(collectionId) || !isKamakuraCmsLine(name, KAMAKURA_CMS_LIMITS.uploadNameLength) || typeof mimeType !== "string" || !KAMAKURA_CMS_IMAGE_TYPES.has(mimeType)
       || typeof bytes !== "number" || !Number.isSafeInteger(bytes) || bytes < 1 || bytes > KAMAKURA_CMS_LIMITS.imageBytes) throw new AuthenticationError("invalid CMS upload request");
     return new TextEncoder().encode(JSON.stringify({ collectionId, name, mimeType, bytes, actor }));
   }
-  const version = parsed.version;
+  const version = body.version;
   if (!isKamakuraCmsVersion(version)) throw new AuthenticationError("invalid CMS version");
   if (route.operation === "draft") {
     let values: unknown;
-    try { values = parseKamakuraCmsValues(parsed.values); }
+    try { values = parseKamakuraCmsValues(body.values); }
     catch { throw new AuthenticationError("invalid CMS values"); }
     return new TextEncoder().encode(JSON.stringify({ version, values, actor }));
   }
+  // 公開・予約の redirect（前のアドレスから移すか）は boolean だけ。無ければ送らない（上流の既定は true）。
+  const redirect = body.redirect;
+  if (redirect !== undefined && typeof redirect !== "boolean") throw new AuthenticationError("invalid CMS redirect");
+  const redirectPart = redirect === undefined ? {} : { redirect };
   if (route.operation === "schedule") {
-    const at = normalizeKamakuraCmsTimestamp(parsed.at);
+    const at = normalizeKamakuraCmsTimestamp(body.at);
     if (at === null) throw new AuthenticationError("invalid CMS schedule");
-    return new TextEncoder().encode(JSON.stringify({ version, at, actor }));
+    return new TextEncoder().encode(JSON.stringify({ version, at, ...redirectPart, actor }));
+  }
+  if (route.operation === "publish") return new TextEncoder().encode(JSON.stringify({ version, ...redirectPart, actor }));
+  if (route.operation === "remove") {
+    // 削除の移動先: null（移さない）か、サイトの中のパス。何を受け付けるか（同じコレクションの公開中の項目・一覧）は上流が確かめる。
+    const redirectTo = body.redirectTo;
+    if (redirectTo !== undefined && redirectTo !== null && !isKamakuraCmsSitePath(redirectTo)) throw new AuthenticationError("invalid CMS redirect target");
+    return new TextEncoder().encode(JSON.stringify({ version, ...(redirectTo === undefined ? {} : { redirectTo }), actor }));
   }
   return new TextEncoder().encode(JSON.stringify({ version, actor }));
 }
 
 /** 上流の成功の応答を契約の parser で確かめ、既知の field だけにする。 */
-function kamakuraCmsSuccess(route: KamakuraCmsRoute, value: unknown): unknown {
+function kamakuraCmsSuccess(route: KamakuraCmsRoute, value: unknown, status: number): unknown {
   const itemId = route.itemId ?? undefined;
   switch (route.operation) {
     case "schema": return parseKamakuraCmsSchema(value);
@@ -1486,7 +1530,10 @@ function kamakuraCmsSuccess(route: KamakuraCmsRoute, value: unknown): unknown {
     case "publish": case "unpublish": return parseKamakuraCmsItemEnvelope(value, "publishing", itemId);
     case "remove": return parseKamakuraCmsRemoved(value);
     case "upload-intent": return parseKamakuraCmsUploadIntent(value);
-    case "draft": case "discard-draft": case "schedule": case "cancel-schedule": return parseKamakuraCmsItemEnvelope(value, "saved", itemId);
+    case "draft": case "discard-draft": case "schedule": case "cancel-schedule": case "retry-schedule": return parseKamakuraCmsItemEnvelope(value, "saved", itemId);
+    // 並べ替え・まとめての操作は commit したら 202 publishing、commit が無ければ（同じ番号どうしの入れ替え・下書きを捨てただけ）200 saved
+    case "reorder":
+    case "bulk": return parseKamakuraCmsListChange(value, status === 202 ? "publishing" : "saved");
   }
 }
 
@@ -1497,7 +1544,8 @@ async function signedKamakuraCmsRequest(request: Request, env: Env, identity: Ac
   if (method === "GET" && (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length")))) throw new AuthenticationError("GET body rejected");
   const body = method === "GET"
     ? new Uint8Array()
-    : kamakuraCmsBody(route, await readBoundedBody(request, route.operation === "draft" ? KAMAKURA_CMS_LIMITS.draftBodyBytes : KAMAKURA_CMS_LIMITS.bodyBytes), identity);
+    : kamakuraCmsBody(route, await readBoundedBody(request, route.operation === "draft" ? KAMAKURA_CMS_LIMITS.draftBodyBytes
+      : route.operation === "reorder" || route.operation === "bulk" ? KAMAKURA_CMS_LIMITS.listBodyBytes : KAMAKURA_CMS_LIMITS.bodyBytes), identity);
   const headers = await kamakuraSignedHeaders(env, identity, method, route.upstreamPath, body, supportId, operation);
   const responseLimit = route.operation === "upload-intent" ? KAMAKURA_CMS_LIMITS.bodyBytes : KAMAKURA_CMS_LIMITS.responseBytes;
   const controller = new AbortController();
@@ -1535,6 +1583,10 @@ async function signedKamakuraCmsRequest(request: Request, env: Env, identity: Ac
       const value = await read(response);
       return checked(response, () => parseKamakuraCmsConflict(value, route.itemId!));
     }
+    if (status === 409 && (route.operation === "reorder" || route.operation === "bulk")) {
+      const value = await read(response);
+      return checked(response, () => parseKamakuraCmsListConflict(value));
+    }
     if (status === 422) {
       const value = await read(response);
       return checked(response, () => parseKamakuraCmsInvalid(value));
@@ -1547,12 +1599,12 @@ async function signedKamakuraCmsRequest(request: Request, env: Env, identity: Ac
       return json({ error: "not_found" }, 404);
     }
     if (status === 400 || status === 413) { await discard(response); return json({ error: "invalid_request" }, 400); }
-    if (status !== spec.success) {
+    if (!(spec.success as readonly number[]).includes(status)) {
       await discard(response);
       throw kamakuraBridgeFailure(supportId, operation, status >= 200 && status < 300 ? "upstream_contract_invalid" : "upstream_unexpected_4xx", status);
     }
     const value = await read(response);
-    return checked(response, () => kamakuraCmsSuccess(route, value));
+    return checked(response, () => kamakuraCmsSuccess(route, value, status));
   } catch (error) {
     if (error instanceof KamakuraBridgeFailureError) throw error;
     throw kamakuraBridgeFailure(supportId, operation, "bridge_processing_failed");

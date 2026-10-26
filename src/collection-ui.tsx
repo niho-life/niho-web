@@ -68,6 +68,7 @@ const paths: Record<string, ReactNode> = {
   alert: <><path d="M12 4 2.8 19.5h18.4z" /><path d="M12 10v4.5M12 17v.3" /></>,
   close: <path d="m6 6 12 12M18 6 6 18" />,
   back: <path d="m14.5 5.5-6.5 6.5 6.5 6.5" />,
+  grip: <><circle cx="9" cy="6.5" r="1.2" /><circle cx="15" cy="6.5" r="1.2" /><circle cx="9" cy="12" r="1.2" /><circle cx="15" cy="12" r="1.2" /><circle cx="9" cy="17.5" r="1.2" /><circle cx="15" cy="17.5" r="1.2" /></>,
 };
 export function Icon({ name }: { name: CollectionIcon | keyof typeof paths }) {
   return <svg className="cw-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">{paths[name]}</svg>;
@@ -124,7 +125,9 @@ export function MenuButton({ label, items, className }: { label: string; items: 
 
 /* ---------- 確認のダイアログ ---------- */
 
-export type ConfirmRequest = { readonly title: string; readonly body: string; readonly confirmLabel: string; readonly tone: "danger" | "primary"; readonly run: () => Promise<void> | void };
+/** extra は本文の下に出す選択など（削除の移動先）。選んだ値は run が読む。 */
+export type ConfirmRequest = { readonly title: string; readonly body: string; readonly confirmLabel: string; readonly tone: "danger" | "primary"; readonly run: () => Promise<void> | void; readonly extra?: ReactNode };
+const FOCUSABLE = "button:not(:disabled), input:not(:disabled):not([type=hidden]), select:not(:disabled), textarea:not(:disabled)";
 /** キーボードで操作でき、Tab は中で回る。閉じると開く前の場所へ focus を戻す。 */
 export function ConfirmDialog({ request, onClose }: { request: ConfirmRequest; onClose: () => void }) {
   const root = useRef<HTMLElement>(null), id = useId();
@@ -142,7 +145,7 @@ export function ConfirmDialog({ request, onClose }: { request: ConfirmRequest; o
   return <div className="cw-backdrop"><section ref={root} className="cw-dialog" role="dialog" aria-modal="true" aria-labelledby={`${id}-title`} aria-describedby={`${id}-body`} aria-busy={busy} onKeyDown={(event) => {
     if (event.key === "Escape" && !busy) { event.preventDefault(); onClose(); }
     if (event.key !== "Tab") return;
-    const controls = Array.from(root.current?.querySelectorAll<HTMLElement>("button:not(:disabled)") ?? []);
+    const controls = Array.from(root.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? []);
     const first = controls[0], last = controls.at(-1);
     if (!first) { event.preventDefault(); return; }
     if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
@@ -150,6 +153,7 @@ export function ConfirmDialog({ request, onClose }: { request: ConfirmRequest; o
   }}>
     <h2 id={`${id}-title`}>{request.title}</h2>
     <p id={`${id}-body`}>{request.body}</p>
+    {request.extra}
     <div className="cw-dialog-actions">
       <button type="button" className="cw-button" disabled={busy} onClick={onClose}>やめる</button>
       <button type="button" className={request.tone === "danger" ? "cw-button cw-danger" : "cw-button cw-primary"} disabled={busy} onClick={() => void confirm()}>{busy ? "処理しています…" : request.confirmLabel}</button>

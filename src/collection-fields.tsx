@@ -2,8 +2,8 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
-  collectionDateFromInput, collectionDateInputValue, isDisplayableImageUrl, isRichTextLinkAllowed,
-  type CollectionField, type CollectionItemSummary, type CollectionUploadRejectReason, type CollectionValue,
+  collectionDateFromInput, collectionDateInputValue, galleryEntries, isDisplayableImageUrl, isRichTextLinkAllowed,
+  type CollectionField, type CollectionGalleryEntry, type CollectionItemSummary, type CollectionUploadRejectReason, type CollectionValue,
 } from "./collection-model.js";
 import { Icon, zoneLabel } from "./collection-ui.js";
 
@@ -39,8 +39,10 @@ export type FieldContext = {
   readonly timeZone: string;
   readonly pathPrefix: string | null;
   readonly isTitle: boolean;
-  /** 公開中のアドレスの slug（変えると警告を出す）。 */
+  /** 公開中のアドレスの slug（変えると警告か、転送の選択を出す）。 */
   readonly publishedSlug: string | null;
+  /** ホストが転送できる（capabilities.redirects）とき、公開中のアドレスを変えたら出す「前のアドレスから移す」の選択。 */
+  readonly redirect: { readonly from: string; readonly checked: boolean; readonly onChange: (checked: boolean) => void } | null;
   /** 開いている項目（参照の候補から自分を外す）。 */
   readonly self: { readonly collectionId: string; readonly itemId: string };
   readonly imageSrc: (url: string, width: number) => string | null;
@@ -55,7 +57,7 @@ const idFor = (context: FieldContext, field: CollectionField, part: string) => `
 /** 項目の入力の id（公開前の focus に使う）。 */
 export const fieldControlId = (baseId: string, key: string) => `${baseId}-${key}-control`;
 const asString = (value: CollectionValue | undefined) => typeof value === "string" ? value : "";
-const asList = (value: CollectionValue | undefined): readonly string[] => Array.isArray(value) ? value : [];
+const asList = (value: CollectionValue | undefined): readonly string[] => Array.isArray(value) ? (value as readonly unknown[]).filter((entry): entry is string => typeof entry === "string") : [];
 
 export function FieldView({ field, value, error, context, onChange }: {
   field: CollectionField; value: CollectionValue | undefined; error: string | undefined; context: FieldContext; onChange: (value: CollectionValue) => void;
@@ -66,7 +68,7 @@ export function FieldView({ field, value, error, context, onChange }: {
   const describedBy = [field.hint ? hintId : null, extra ? extraId : null, error ? errorId : null].filter(Boolean).join(" ") || undefined;
   const common = { id: controlId, "aria-describedby": describedBy, "aria-invalid": error ? true : undefined, "aria-required": field.required ? true : undefined } as const;
   const labelText = <>{field.label}{field.required && <span className="cw-required">（必須）</span>}</>;
-  const grouped = field.type === "image" || field.type === "select";
+  const grouped = field.type === "image" || field.type === "select" || field.type === "gallery";
   const label = grouped ? <span className="cw-label" id={labelId}>{labelText}</span>
     : <label className={`cw-label${context.isTitle ? " cw-sr" : ""}`} id={labelId} htmlFor={controlId}>{labelText}</label>;
   let control: ReactNode;
@@ -96,7 +98,13 @@ export function FieldView({ field, value, error, context, onChange }: {
         <div className="cw-slug">{context.pathPrefix !== null && <span aria-hidden="true">{context.pathPrefix}</span>}
           <input {...common} type="text" className="cw-input" autoCapitalize="off" autoComplete="off" spellCheck={false} value={slug} onChange={(event) => onChange(event.target.value)} />
         </div>
-        {context.publishedSlug !== null && slug !== context.publishedSlug && <p className="cw-hint cw-warn">公開中のアドレスを変えると、前のアドレスを開いた人や検索結果からは見つからなくなります。</p>}
+        {context.publishedSlug !== null && slug !== context.publishedSlug && (context.redirect
+          ? <div className="cw-redirect">
+            <label className="cw-check"><input type="checkbox" checked={context.redirect.checked} onChange={(event) => context.redirect?.onChange(event.target.checked)} />
+              <span>前のアドレス（<span className="cw-address">{context.redirect.from}</span>）を開いた人を新しいアドレスへ移す</span></label>
+            {!context.redirect.checked && <p className="cw-hint cw-warn">移さないと、前のアドレスを開いた人や検索結果からは見つからなくなります。</p>}
+          </div>
+          : <p className="cw-hint cw-warn">公開中のアドレスを変えると、前のアドレスを開いた人や検索結果からは見つからなくなります。</p>)}
       </>;
       break;
     }
@@ -124,6 +132,9 @@ export function FieldView({ field, value, error, context, onChange }: {
       break;
     case "tags":
       control = <TagsControl field={field} value={asList(value)} controlId={controlId} describedBy={describedBy} invalid={!!error} onChange={onChange} />;
+      break;
+    case "gallery":
+      control = <GalleryControl field={field} value={galleryEntries(value)} context={context} controlId={controlId} describedBy={describedBy} onChange={onChange} />;
       break;
   }
   const body = <>
@@ -165,6 +176,108 @@ function ImageControl({ field, value, context, controlId, labelId, describedBy, 
     </span>
     {state.busy && <p className="cw-hint" role="status">画像を上げています…</p>}
     {state.error && <p className="cw-error" role="alert"><Icon name="alert" />{state.error}</p>}
+  </div>;
+}
+
+/* ---------- 画像と説明の並び（gallery） ---------- */
+
+/** 行ごとの React の key。足す・外す・動かすときに一緒に動かし、外から長さが変わったら作り直す。 */
+function useRowKeys(length: number) {
+  const counter = useRef(0), keys = useRef<string[]>([]);
+  const fresh = () => `row-${++counter.current}`;
+  if (keys.current.length !== length) keys.current = Array.from({ length }, fresh);
+  return {
+    /** いまの並び（古い描画の closure からも最新を読む）。 */
+    get list(): readonly string[] { return keys.current; },
+    add: () => { const key = fresh(); keys.current = [...keys.current, key]; return key; },
+    remove: (index: number) => { keys.current = keys.current.filter((_, position) => position !== index); },
+    move: (from: number, to: number) => { const next = [...keys.current]; const [key] = next.splice(from, 1); if (key !== undefined) next.splice(to, 0, key); keys.current = next; },
+  };
+}
+
+function GalleryControl({ field, value, context, controlId, describedBy, onChange }: {
+  field: Extract<CollectionField, { type: "gallery" }>; value: readonly CollectionGalleryEntry[]; context: FieldContext; controlId: string; describedBy: string | undefined; onChange: (value: CollectionValue) => void;
+}) {
+  const rows = useRowKeys(value.length);
+  const latest = useRef(value);
+  latest.current = value;
+  const root = useRef<HTMLDivElement>(null), files = useRef(new Map<string, HTMLInputElement>());
+  const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
+  const [rowErrors, setRowErrors] = useState<Readonly<Record<string, string>>>({});
+  const [focusTarget, setFocusTarget] = useState<{ readonly key: string; readonly part: string } | null>(null);
+  useEffect(() => {
+    if (!focusTarget) return;
+    root.current?.querySelector<HTMLElement>(`[data-row="${focusTarget.key}"] [data-part="${focusTarget.part}"]`)?.focus();
+    setFocusTarget(null);
+  }, [focusTarget]);
+  const full = field.maxItems !== undefined && value.length >= field.maxItems;
+  const update = (key: string, patch: Partial<CollectionGalleryEntry>) => {
+    const index = rows.list.indexOf(key);
+    if (index < 0) return;
+    onChange(latest.current.map((entry, position) => position === index ? { ...entry, ...patch } : entry));
+  };
+  const move = (index: number, to: number, part: string) => {
+    const key = rows.list[index];
+    if (key === undefined || to < 0 || to >= value.length) return;
+    const next = [...latest.current];
+    const [entry] = next.splice(index, 1);
+    if (entry) next.splice(to, 0, entry);
+    rows.move(index, to);
+    onChange(next);
+    // 端まで動かしたら、押せなくなったボタンではなく反対のボタンへ
+    setFocusTarget({ key, part: to === 0 && part === "up" ? "down" : to === value.length - 1 && part === "down" ? "up" : part });
+  };
+  const removeRow = (index: number) => {
+    const next = rows.list[index + 1] ?? rows.list[index - 1];
+    rows.remove(index);
+    onChange(latest.current.filter((_, position) => position !== index));
+    if (next) setFocusTarget({ key: next, part: "remove" });
+    else root.current?.querySelector<HTMLButtonElement>("[data-part=add]")?.focus();
+  };
+  const add = () => {
+    const key = rows.add();
+    onChange([...latest.current, { id: "", image: null, caption: "" }]);
+    setFocusTarget({ key, part: "image" });
+  };
+  const pick = async (key: string, input: HTMLInputElement) => {
+    const chosen = input.files?.[0];
+    input.value = "";
+    if (!chosen) return;
+    setBusy((previous) => new Set(previous).add(key));
+    setRowErrors((previous) => { const next = { ...previous }; delete next[key]; return next; });
+    const result = await context.upload(chosen);
+    setBusy((previous) => { const next = new Set(previous); next.delete(key); return next; });
+    if ("url" in result) update(key, { image: result.url });
+    else setRowErrors((previous) => ({ ...previous, [key]: result.error }));
+  };
+  return <div className="cw-gallery" ref={root}>
+    {value.length > 0 && <ol className="cw-gallery-rows">{value.map((entry, index) => {
+      const key = rows.list[index] ?? `row-missing-${index}`, number = `${index + 1} 件目`, captionId = `${controlId}-${key}-caption`;
+      const src = entry.image !== null ? context.imageSrc(entry.image, 320) : null, length = [...entry.caption].length, rowBusy = busy.has(key);
+      return <li key={key} className="cw-gallery-row" data-row={key} role="group" aria-label={`${field.label}の${number}`} aria-busy={rowBusy}>
+        <div className="cw-gallery-media">
+          <span className="cw-image-preview">{src ? <img src={src} alt={`${number}の画像`} referrerPolicy="no-referrer" /> : <span className="cw-image-empty"><Icon name="image" /><span>{entry.image ? "表示できません" : "画像なし"}</span></span>}</span>
+          <button type="button" className="cw-button" data-part="image" id={index === 0 ? controlId : undefined} disabled={rowBusy} aria-label={`${number}の${rowBusy ? "画像を上げています" : entry.image ? "画像を変える" : "画像を選ぶ"}`} onClick={() => files.current.get(key)?.click()}>
+            {rowBusy ? "上げています…" : entry.image ? "画像を変える" : "画像を選ぶ"}</button>
+          <input ref={(node) => { if (node) files.current.set(key, node); else files.current.delete(key); }} type="file" accept="image/*" hidden tabIndex={-1} aria-label={`${number}の画像`} onChange={(event) => void pick(key, event.currentTarget)} />
+        </div>
+        <div className="cw-gallery-text">
+          <label className="cw-label" htmlFor={captionId}>{field.captionLabel}<span className="cw-sr">（{number}）</span></label>
+          <textarea id={captionId} className="cw-input cw-textarea" rows={3} value={entry.caption} onChange={(event) => update(key, { caption: event.target.value })} />
+          {field.captionMaxLength !== undefined && <span className={`cw-counter${length > field.captionMaxLength ? " cw-over" : ""}`} aria-hidden="true">{length} / {field.captionMaxLength}</span>}
+          {rowErrors[key] && <p className="cw-error" role="alert"><Icon name="alert" />{rowErrors[key]}</p>}
+        </div>
+        <div className="cw-gallery-actions">
+          <button type="button" className="cw-button" data-part="up" disabled={index === 0} aria-label={`${number}を上へ`} onClick={() => move(index, index - 1, "up")}>上へ</button>
+          <button type="button" className="cw-button" data-part="down" disabled={index === value.length - 1} aria-label={`${number}を下へ`} onClick={() => move(index, index + 1, "down")}>下へ</button>
+          <button type="button" className="cw-button" data-part="remove" disabled={rowBusy} aria-label={`${number}を外す`} onClick={() => removeRow(index)}>外す</button>
+        </div>
+      </li>;
+    })}</ol>}
+    <div className="cw-gallery-foot">
+      {!full && <button type="button" className="cw-button" data-part="add" id={value.length === 0 ? controlId : undefined} aria-label={`${field.label}を追加`} aria-describedby={describedBy} onClick={add}><Icon name="plus" />追加</button>}
+      {field.maxItems !== undefined && <span className="cw-hint">{value.length} / {field.maxItems} 件{full ? "（これ以上は追加できません）" : ""}</span>}
+    </div>
   </div>;
 }
 
