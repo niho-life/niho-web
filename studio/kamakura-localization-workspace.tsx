@@ -20,7 +20,11 @@ function adapterFor(cmsView: SiteCmsView, siteOrigin: string | null): Localizati
   if (existing) return existing;
   const adapter = createKamakuraLocalizationAdapter({
     siteOrigin,
-    cmsItemUrl: (collectionId, itemId) => projectAliasPath(KAMAKURA_CMS_PROJECT_ID, KAMAKURA_CMS_SITE_ID, "cms", cmsView === "workspace" ? { collectionId, itemId } : null)
+    cmsItemUrl: (collectionId, itemId) => projectAliasPath(KAMAKURA_CMS_PROJECT_ID, KAMAKURA_CMS_SITE_ID, "cms", cmsView === "workspace" ? { collectionId, itemId } : null),
+    ...(cmsView === "workspace" ? { cmsTranslationUrl: (collectionId: string, itemId: string) => {
+      const path = projectAliasPath(KAMAKURA_CMS_PROJECT_ID, KAMAKURA_CMS_SITE_ID, "cms", { collectionId, itemId });
+      return path ? `${path}?lang=en` : null;
+    } } : {})
   });
   adapters.set(key, adapter);
   return adapter;

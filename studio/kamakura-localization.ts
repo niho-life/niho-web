@@ -19,6 +19,8 @@ export type KamakuraLocalizationAdapterOptions = {
   readonly siteOrigin?: string | null;
   /** 原文が CMS の項目のとき、Studio の CMS でその項目を開く URL（"/" から始まる同じサイトの path）。無ければ原文へのリンクを出さない。 */
   readonly cmsItemUrl?: (collectionId: string, itemId: string) => string | null;
+  /** CMS の項目の English タブを直接開く Studio 内 URL。無ければ一覧の項目画面を使う。 */
+  readonly cmsTranslationUrl?: (collectionId: string, itemId: string) => string | null;
   /** 素材から画像を選ぶホストの画面。選んだ鎌倉の公開画像の URL、やめたら null。無ければ「素材から選ぶ」を出さない。 */
   readonly chooseImage?: (input: { readonly itemKey: string; readonly unitId: string }, signal: AbortSignal) => Promise<string | null>;
 };
@@ -101,7 +103,7 @@ function httpsOrigin(value: string | null | undefined): string | null {
 }
 
 export function createKamakuraLocalizationAdapter(options: KamakuraLocalizationAdapterOptions = {}): LocalizationWorkspaceAdapter {
-  const { cmsItemUrl, chooseImage } = options;
+  const { cmsItemUrl, cmsTranslationUrl, chooseImage } = options;
   const siteOrigin = httpsOrigin(options.siteOrigin);
   // 画像の表示用の URL が "/" から始まる（サイトの中の画像）なら、Studio の origin ではなくサイトの公開 origin から読む。
   // set-image で送る asset はそのまま（鎌倉の Worker の値）
@@ -215,6 +217,12 @@ export function createKamakuraLocalizationAdapter(options: KamakuraLocalizationA
     adapter.sourceLink = (itemKey) => {
       const source = kamakuraLocalizationCmsSource(itemKey);
       return source ? cmsItemUrl(source.collectionId, source.itemId) : null;
+    };
+  }
+  if (cmsTranslationUrl) {
+    adapter.editLink = (itemKey) => {
+      const source = kamakuraLocalizationCmsSource(itemKey);
+      return source ? cmsTranslationUrl(source.collectionId, source.itemId) : null;
     };
   }
   return adapter;

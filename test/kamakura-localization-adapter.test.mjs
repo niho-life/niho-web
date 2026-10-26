@@ -224,7 +224,8 @@ test("翻訳 adapter: 素材から選んだ画像は鎌倉の公開画像だけ 
   let pick = MEDIA;
   const adapter = createKamakuraLocalizationAdapter({
     chooseImage: async (input) => { chosen.push(input); return pick; },
-    cmsItemUrl: (collectionId, itemId) => `/projects/kamakura-site/admin/cms/${collectionId}/${itemId}`
+    cmsItemUrl: (collectionId, itemId) => `/projects/kamakura-site/admin/cms/${collectionId}/${itemId}`,
+    cmsTranslationUrl: (collectionId, itemId) => `/projects/kamakura-site/admin/cms/${collectionId}/${itemId}?lang=en`
   });
   assert.deepEqual(parseLocalizationImageResult(await adapter.pickAsset({ itemKey: "aG9tZQ", unitId: "cover" }, signal())), { status: "picked", image: { asset: { kind: "image-url", src: MEDIA }, url: MEDIA } });
   assert.deepEqual(chosen, [{ itemKey: "aG9tZQ", unitId: "cover" }]);
@@ -237,9 +238,11 @@ test("翻訳 adapter: 素材から選んだ画像は鎌倉の公開画像だけ 
 
   // CMS の項目の 1 件だけ Studio の CMS へ。固定ページなどの原文はコードで管理なので出さない
   assert.equal(adapter.sourceLink(b64("cms:posts:morning-walk")), "/projects/kamakura-site/admin/cms/posts/morning-walk");
+  assert.equal(adapter.editLink(b64("cms:posts:morning-walk")), "/projects/kamakura-site/admin/cms/posts/morning-walk?lang=en");
   assert.equal(adapter.sourceLink(b64("cms:circles:海の会")), null, "CMS の項目の id の形でないものは出さない");
   for (const key of [b64("page:about"), b64("part:footer"), b64("list:news"), b64("cms:Posts:x"), b64("cms:posts:a:b"), b64("cms:posts"), "aG9tZQ", "%%%", "a"]) {
     assert.equal(adapter.sourceLink(key), null, key);
+    assert.equal(adapter.editLink(key), null, key);
   }
 });
 

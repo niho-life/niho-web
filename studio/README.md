@@ -258,7 +258,7 @@ log は editor・CMS と同じく問い合わせ ID・固定の operation（`loc
 - 各メソッドは BFF を呼び、本文に `status` があれば W1 の parser に通します。BFF が所属を拒んだ 403（`{ error }`）は forbidden、ほかの `{ error }` は例外（画面では「読み込めませんでした」と再試行）です。
 - 1 件と保存の結果の画像の項目は、表示用の `url` が `/` から始まる（サイトの中の画像）ときだけ `siteOrigin` の絶対 URL にします（Studio の origin から読まないため）。`set-image` で送る `asset` は変えません。
 - 画像: BFF の `uploads/intent` を呼び、`uploadUrl` が鎌倉の Worker の `/internal/studio/localization-upload/<uploadId>` であることを確かめてから、`credentials: "omit"`・`Authorization: Bearer <uploadToken>` で直接 PUT します。結果は W1 の `{ status: "uploaded", image }`（`image.asset` は `{ kind: "image-url", src }`）だけを受けます。拒否は type / size / permission / invalid で返します。
-- `pickAsset` は `chooseImage`（選んだ鎌倉の公開画像 `https://kamakura-media.niho.life/...` の URL か null）を渡したときだけ作り、`{ kind: "image-url", src }` で返します。`sourceLink` は `cmsItemUrl` を渡したときだけ作り、CMS の項目の 1 件だけに URL を返します。
+- `pickAsset` は `chooseImage`（選んだ鎌倉の公開画像 `https://kamakura-media.niho.life/...` の URL か null）を渡したときだけ作り、`{ kind: "image-url", src }` で返します。`sourceLink` は `cmsItemUrl` を渡したときだけ作り、CMS の項目の 1 件だけに URL を返します。CMS が Studio の項目画面なら `editLink` は同じ項目の `?lang=en` を返し、一覧から English タブを直接開きます。タブの切替は URL に反映します。
 - Dashboard の中では `studio/site-translations.tsx` が `studio/kamakura-localization-workspace.tsx` を `import()` で読み、adapter を描画の外で CMS の開き方ごとに 1 回だけ作ります。
 
 テストは `test/studio-worker-localization.test.mjs`（BFF・CSP・bundle の分割）、`test/kamakura-localization-adapter.test.mjs`（adapter）、`test/studio-site-admin.test.mjs`（切替・URL）、`test/studio-client-translations.test.mjs`（client の枠と翻訳の画面の切り替え・URL・戻る/進む）です。
