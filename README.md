@@ -54,7 +54,7 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 | `@niho/web/analytics` | GA4 / Search Console を分けて示す読取専用画面、型付きadapter、応答検証 |
 | `@niho/web/analytics-data` | サーバーで使う分析DTO・adapterの型と応答検証。React不要。画面と同じパーサーを使用 |
 | `@niho/web/localization` | 明示的な日英設定、安定IDの翻訳単位、自動訳の更新・人の訳の保護、候補・手編集・確認、共通構造からの文書生成。React不要 |
-| `@niho/web/localization-release` | 言語単位の不変snapshot、route・内部リンク・SEO、prepare/apply/rollback検証。React不要 |
+| `@niho/web/localization-release` | 言語単位の不変snapshot、全ページの訳・確認必須ページ・共通部分・用語集の公開条件、route・内部リンク・SEO、prepare/apply/rollback検証。React不要 |
 
 React は optional peer dependency です。API サーバーなど React を入れない利用先では `import { parsePageDocument } from '@niho/web/core'` を使います。root と `/react` は React runtime を import します。
 

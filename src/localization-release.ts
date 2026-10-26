@@ -43,6 +43,10 @@ export type PublishedSiteLocaleSnapshot = {
 export type ReleaseCompleteness = {
   reviewedPageIds: readonly string[];
   sharedReviewed: boolean;
+  /** The host asserts that each page has a translation for the current source. Required together with the two fields below for the new release policy. */
+  translatedPageIds?: readonly string[];
+  reviewRequiredPageIds?: readonly string[];
+  glossaryReviewed?: boolean;
   unresolvedIssues: readonly { code: string; ownerId: string }[];
 };
 export type CreatePublishedSiteLocaleSnapshotInput = {
@@ -228,13 +232,24 @@ export async function createPublishedSiteLocaleSnapshot(input: CreatePublishedSi
   const ids = pages.map((page) => page.pageId);
   if (new Set(ids).size !== ids.length) fail("$.pages", "duplicate pageId");
   if (ids.length !== publicSet.size || ids.some((id) => !publicSet.has(id))) fail("$.pages", "pages must exactly match the authoritative public catalogue");
-  const completeness = record(input.completeness, "$.completeness"); keys(completeness, ["reviewedPageIds", "sharedReviewed", "unresolvedIssues"], "$.completeness");
+  const completeness = record(input.completeness, "$.completeness"); keys(completeness, ["reviewedPageIds", "sharedReviewed", "translatedPageIds", "reviewRequiredPageIds", "glossaryReviewed", "unresolvedIssues"], "$.completeness");
   const reviewed = uniqueIds(completeness.reviewedPageIds, "$.completeness.reviewedPageIds");
   if (typeof completeness.sharedReviewed !== "boolean") fail("$.completeness.sharedReviewed", "expected boolean");
+  const readinessFields = ["translatedPageIds", "reviewRequiredPageIds", "glossaryReviewed"] as const;
+  const newPolicy = readinessFields.some((field) => completeness[field] !== undefined);
+  if (newPolicy && readinessFields.some((field) => completeness[field] === undefined)) fail("$.completeness", "all translation readiness fields are required together");
+  const translated = newPolicy ? uniqueIds(completeness.translatedPageIds, "$.completeness.translatedPageIds") : [];
+  const reviewRequired = newPolicy ? uniqueIds(completeness.reviewRequiredPageIds, "$.completeness.reviewRequiredPageIds") : [];
+  if (newPolicy && typeof completeness.glossaryReviewed !== "boolean") fail("$.completeness.glossaryReviewed", "expected boolean");
   if (!Array.isArray(completeness.unresolvedIssues) || completeness.unresolvedIssues.length > LIMITS.issues) fail("$.completeness.unresolvedIssues", "expected bounded issue array");
   completeness.unresolvedIssues.forEach((entry, index) => { const issue = record(entry, `$.completeness.unresolvedIssues[${index}]`); keys(issue, ["code", "ownerId"], `$.completeness.unresolvedIssues[${index}]`); line(issue.code, `$.completeness.unresolvedIssues[${index}].code`, 100); identifier(issue.ownerId, `$.completeness.unresolvedIssues[${index}].ownerId`); });
   if (completeness.unresolvedIssues.length) fail("$.completeness.unresolvedIssues", "unresolved extraction issues prevent release");
-  if (chosen !== config.sourceLocale && (!completeness.sharedReviewed || reviewed.length !== publicSet.size || reviewed.some((id) => !publicSet.has(id)))) fail("$.completeness", "target release is not completely reviewed");
+  if (chosen !== config.sourceLocale) {
+    if (!completeness.sharedReviewed || reviewed.some((id) => !publicSet.has(id))) fail("$.completeness", "target release is not ready");
+    if (newPolicy) {
+      if (!completeness.glossaryReviewed || translated.length !== publicSet.size || translated.some((id) => !publicSet.has(id)) || reviewRequired.some((id) => !publicSet.has(id) || !reviewed.includes(id))) fail("$.completeness", "target release is not ready");
+    } else if (reviewed.length !== publicSet.size) fail("$.completeness", "target release is not completely reviewed");
+  }
   const manifest = parseSiteLocaleReleaseManifest(input.manifest);
   if (chosen !== config.sourceLocale && !manifest.overlay) fail("$.manifest.overlay", "target release requires an overlay identity");
   const requiredResources = uniqueIds(input.requiredResourceIds ?? [], "$.requiredResourceIds", LIMITS.resources), bound = new Set(manifest.resources.map((entry) => entry.id));

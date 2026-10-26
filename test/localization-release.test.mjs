@@ -129,6 +129,20 @@ test("complete target snapshots bind whole pages, shared library, styles and ext
     publicPageIds: ["home"], components: library("kamakura"), navigation: [], manifest: manifest(true), completeness: { reviewedPageIds: ["home"], sharedReviewed: true, unresolvedIssues: [{ code: "UNANCHORED_TEXT", ownerId: "home" }] } }), /unresolved/);
 });
 
+test("first target release accepts current automatic translations while enforcing shared and required review", async () => {
+  const completeness = { reviewedPageIds: ["legal"], sharedReviewed: true, translatedPageIds: ["home", "legal"], reviewRequiredPageIds: ["legal"], glossaryReviewed: true, unresolvedIssues: [] };
+  const input = { config: config("readiness", "ja"), locale: "en", releaseId: "first-en", version: "v1",
+    pages: [{ path: "/", document: page("readiness", "home", "en-US", "Automatic home") }, { path: "/legal/", document: page("readiness", "legal", "en-US", "Reviewed legal") }],
+    publicPageIds: ["home", "legal"], components: library("readiness"), navigation: [], manifest: manifest(true), completeness };
+  const snapshot = await createPublishedSiteLocaleSnapshot(input);
+  assert.deepEqual(snapshot.pages.map((entry) => entry.pageId), ["home", "legal"]);
+  for (const changed of [
+    { translatedPageIds: ["legal"] }, { reviewedPageIds: [] }, { sharedReviewed: false }, { glossaryReviewed: false },
+    { reviewRequiredPageIds: ["legal", "missing"] }, { translatedPageIds: ["home", "legal", "missing"] }
+  ]) await assert.rejects(() => createPublishedSiteLocaleSnapshot({ ...input, completeness: { ...completeness, ...changed } }), /not ready/);
+  await assert.rejects(() => createPublishedSiteLocaleSnapshot({ ...input, completeness: { ...completeness, glossaryReviewed: undefined } }), /readiness fields/);
+});
+
 test("unsupported blocks and missing shared references prevent a complete release", async () => {
   const booking = { props: { heading: { type: "string" } }, component: () => null };
   const bookingPage = page("blocks", "home", "ja-JP", "Home", 1, [{ type: "component", id: "booking", block: "Booking", props: { heading: "Book" } }]);
