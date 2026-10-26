@@ -1343,7 +1343,7 @@ const KAMAKURA_CMS_OPERATIONS: Readonly<Record<KamakuraCmsOperation, KamakuraCms
   schedule: { method: "POST", success: [200], log: "cms_schedule", bodyKeys: ["version", "at"], optionalKeys: ["redirect"] },
   "cancel-schedule": { method: "POST", success: [200], log: "cms_cancel_schedule", bodyKeys: ["version"] },
   "retry-schedule": { method: "POST", success: [200], log: "cms_retry_schedule", bodyKeys: ["version"] },
-  reorder: { method: "POST", success: [202], log: "cms_reorder", bodyKeys: ["ids", "from", "to"] },
+  reorder: { method: "POST", success: [202, 200], log: "cms_reorder", bodyKeys: ["ids", "from", "to"] },
   bulk: { method: "POST", success: [202, 200], log: "cms_bulk", bodyKeys: ["action", "items"] },
   "upload-intent": { method: "POST", success: [201], log: "cms_upload_intent", bodyKeys: ["collectionId", "name", "mimeType", "bytes"] }
 };
@@ -1457,8 +1457,8 @@ function kamakuraCmsSuccess(route: KamakuraCmsRoute, value: unknown, status: num
     case "remove": return parseKamakuraCmsRemoved(value);
     case "upload-intent": return parseKamakuraCmsUploadIntent(value);
     case "draft": case "discard-draft": case "schedule": case "cancel-schedule": case "retry-schedule": return parseKamakuraCmsItemEnvelope(value, "saved", itemId);
-    case "reorder": return parseKamakuraCmsListChange(value, "publishing");
-    // まとめての操作は commit したら 202 publishing、下書きを捨てただけなど commit が無ければ 200 saved
+    // 並べ替え・まとめての操作は commit したら 202 publishing、commit が無ければ（同じ番号どうしの入れ替え・下書きを捨てただけ）200 saved
+    case "reorder":
     case "bulk": return parseKamakuraCmsListChange(value, status === 202 ? "publishing" : "saved");
   }
 }

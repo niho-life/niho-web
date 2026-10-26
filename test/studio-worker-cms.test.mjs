@@ -439,6 +439,8 @@ test("CMS BFF: 並べ替え・まとめての操作・予約のやり直しと�
     ["POST", `${target}/remove`, { version: "v1", redirectTo: "/posts/other-post" }, { version: "v1", redirectTo: "/posts/other-post", actor: { email: EMAIL } }, 200, { status: "removed" }],
     ["POST", `${target}/retry-schedule`, { version: "v1" }, { version: "v1", actor: { email: EMAIL } }, 200, { status: "saved", item: item({ status: "scheduled", scheduledAt: "2026-11-01T09:00:00Z" }) }],
     ["POST", "/collections/circles/reorder", { ids: ["walk", "books"], from: 1, to: 0 }, { ids: ["walk", "books"], from: 1, to: 0, actor: { email: EMAIL } }, 202, { status: "publishing", items: [circle("books", 1), circle("walk", 2)] }],
+    // 同じ番号どうしの入れ替えは commit が無く 200 saved
+    ["POST", "/collections/circles/reorder", { ids: ["walk", "books"], from: 1, to: 0 }, { ids: ["walk", "books"], from: 1, to: 0, actor: { email: EMAIL } }, 200, { status: "saved", items: list }],
     ["POST", "/collections/circles/bulk", { action: "unpublish", items: [{ id: "walk", version: "v1" }, { id: "books", version: "v2" }] }, { action: "unpublish", items: [{ id: "walk", version: "v1" }, { id: "books", version: "v2" }], actor: { email: EMAIL } }, 202, { status: "publishing", items: list }],
     ["POST", "/collections/circles/bulk", { action: "remove", items: [{ id: "walk", version: "v1" }] }, { action: "remove", items: [{ id: "walk", version: "v1" }], actor: { email: EMAIL } }, 200, { status: "saved", items: [list[1]] }],
     ["PUT", "/collections/circles/items/walk/draft", { version: "v1", values: { portfolio: [{ id: "w1", image: "https://kamakura-media.niho.life/uploads/a.jpg", caption: "説明\n二行目" }, { id: "", image: null, caption: "" }] } },
