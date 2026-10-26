@@ -75,6 +75,8 @@ test("editor opens the page tree in a full-width quiet workspace", async () => {
     assert.equal(document.querySelector(".e-toolbar"), null); assert.ok(document.querySelector(".e-project-context")); assert.ok(document.querySelector(".e-inspector-actions"));
     const zoom = document.querySelector('.e-inspector-actions select[aria-label="表示倍率"]');
     assert.deepEqual([...zoom.options].map((option) => option.textContent), [zoom.options[0].textContent, "25%", "50%", "75%", "100%", "150%", "200%"]);
+    assert.match(zoom.options[0].textContent, /^\d+%$/, "the closed select shows only the number, like STUDIO"); assert.equal(zoom.selectedOptions[0], zoom.options[0], "the fit scale is the first option");
+    assert.deepEqual([...zoom.querySelectorAll("optgroup")].map((group) => group.label), ["全体表示", "倍率"], "fit is told apart from the fixed 50% by its group");
     await change(zoom, "0.5"); assert.equal(document.querySelector(".e-canvas-spacer").dataset.scale, "0.500");
     // CSS zoom は iframe の devicePixelRatio を倍率にし、箱の寸法が device px に丸められて折返しが変わる。拡縮は transform だけで行う。
     assert.equal(document.querySelector(".e-canvas-scaled").style.transform, "scale(0.5)", "workspace scaling must not change the layout inside the canvas");
@@ -322,10 +324,18 @@ test("page panel shows the path tree, kinds, states and counts, and selecting a 
   const host = pageHost(), app = await setup({ adapter: host.adapter });
   try {
     assert.equal(document.querySelector('[aria-label="ページ"]')?.getAttribute("aria-pressed"), "true");
-    assert.deepEqual(treeShape(), ["ホーム", "私たちについて", { circles: ["バドミントン", "囲碁"] }, { experiences: ["体験詳細"] }]);
+    assert.deepEqual(treeShape(), ["ホーム", "私たちについて", { circles: ["バドミントン", "囲碁"] }], "templates leave the path tree");
     assert.equal(pageRow("ホーム").getAttribute("aria-current"), "page"); assert.ok(pageRow("ホーム").textContent.includes("/"));
-    assert.ok(pageRow("囲碁").textContent.includes("/circles/kamakura-go")); assert.ok(pageRow("囲碁").textContent.includes("非公開"));
-    assert.ok(pageRow("体験詳細").textContent.includes("テンプレート")); assert.equal(pageRow("ヘッダー"), undefined);
+    // 状態は札ではなく右端の点（緑＝公開中・輪郭＝非公開）とそのツールチップ・読み上げで示す。
+    assert.ok(pageRow("囲碁").textContent.includes("/circles/kamakura-go")); assert.equal(pageRow("囲碁").textContent.includes("非公開"), false, "no text badge");
+    assert.equal(document.querySelector(".e-page .e-badge"), null, "page rows carry no badge");
+    assert.equal(pageRow("囲碁").querySelector(".e-page-state").className, "e-page-state is-private"); assert.equal(pageRow("囲碁").querySelector(".e-page-state").getAttribute("aria-label"), "非公開");
+    assert.equal(pageRow("囲碁").querySelector(".e-page-state").title, "非公開");
+    assert.equal(pageRow("ホーム").querySelector(".e-page-state").className, "e-page-state is-live"); assert.equal(pageRow("ホーム").querySelector(".e-page-state").getAttribute("aria-label"), "公開中");
+    // テンプレートは「テンプレート」の見出しの下（パスの階層には入れない）。
+    const templates = document.querySelector(".e-page-section"); assert.equal(templates.querySelector("h3").textContent, "テンプレート");
+    assert.deepEqual(treeShape(templates.querySelector(".e-page-templates")), ["体験詳細"]); assert.ok(templates.contains(pageRow("体験詳細"))); assert.ok(pageRow("体験詳細").textContent.includes("/experiences/[slug]"));
+    assert.equal(document.querySelector(".e-page-templates .e-folder"), null); assert.equal(pageRow("ヘッダー"), undefined);
     assert.ok(document.body.textContent.includes("公開中 3 / 4 ページ"));
     assert.equal(document.querySelector('[aria-label="体験詳細 の操作"]'), null); assert.equal(document.querySelector('[aria-label="ヘッダー の操作"]'), null);
     assert.ok(document.querySelector('[aria-label="私たちについて の操作"]'));
@@ -336,11 +346,13 @@ test("page panel shows the path tree, kinds, states and counts, and selecting a 
     assert.deepEqual(app.calls.reads.at(-1), { siteId: "demo", pageId: "about", locale: "ja-JP" }); assert.equal(pageRow("私たちについて").getAttribute("aria-current"), "page");
     await press(document.querySelector('[aria-label="検索"]'));
     await change(document.querySelector('input[aria-label="ページを検索"]'), "circles");
-    assert.deepEqual(treeShape(), ["バドミントン", "囲碁"]);
+    assert.deepEqual(treeShape(), ["バドミントン", "囲碁"]); assert.equal(document.querySelector(".e-page-section"), null, "no template matches circles");
+    await change(document.querySelector('input[aria-label="ページを検索"]'), "slug");
+    assert.equal(document.querySelector(".e-page-tree:not(.e-page-templates)"), null); assert.deepEqual(treeShape(document.querySelector(".e-page-templates")), ["体験詳細"], "search also filters the template section");
     await change(document.querySelector('input[aria-label="ページを検索"]'), "存在しない");
-    assert.ok(document.body.textContent.includes("一致するページはありません"));
+    assert.ok(document.body.textContent.includes("一致するページはありません")); assert.equal(document.querySelector(".e-page-section"), null);
     await press(document.querySelector('[aria-label="検索"]')); assert.equal(document.querySelector('input[aria-label="ページを検索"]'), null);
-    assert.equal(treeShape().length, 4);
+    assert.equal(treeShape().length, 3); assert.ok(document.querySelector(".e-page-section"));
   } finally { await app.cleanup(); }
 });
 
@@ -354,13 +366,17 @@ test("host publication notes replace the generic unpublished badge in the page l
     { siteId: "demo", pageId: "header", locale: "ja-JP", title: "ヘッダー", kind: "shared", publication: partial }
   ] } });
   try {
-    assert.ok(pageRow("私たちについて").querySelector(".e-badge-publication")?.textContent === "プレビューのみ");
+    // ホストの label と description は点のツールチップ・読み上げに回り、行には文字の札を出さない。
+    const dot = (title) => pageRow(title).querySelector(".e-page-state");
+    assert.equal(dot("私たちについて").className, "e-page-state is-unpublished"); assert.equal(dot("私たちについて").getAttribute("aria-label"), `${preview.label}：${preview.description}`);
+    assert.equal(dot("私たちについて").title, `${preview.label}：${preview.description}`);
+    assert.equal(pageRow("私たちについて").querySelector(".e-badge, .e-badge-publication"), null); assert.ok(!pageRow("私たちについて").textContent.includes("プレビューのみ"));
     assert.ok(!pageRow("私たちについて").textContent.includes("未公開"));
     assert.ok(pageRow("私たちについて").title.includes(preview.description));
     assert.equal(pageRow("私たちについて").querySelector(".e-page-label > .e-page-name").textContent, "私たちについて");
-    assert.deepEqual([...pageRow("私たちについて").querySelector(".e-page-meta").children].map((node) => node.textContent), ["/about", "プレビューのみ"]);
-    assert.ok(pageRow("準備中").textContent.includes("未公開"));
-    assert.equal(pageRow("ホーム").querySelector(".e-badge-publication"), null);
+    assert.deepEqual([...pageRow("私たちについて").querySelector(".e-page-meta").children].map((node) => node.textContent), ["/about"]);
+    assert.equal(dot("準備中").className, "e-page-state is-unpublished"); assert.equal(dot("準備中").getAttribute("aria-label"), "未公開"); assert.ok(!pageRow("準備中").textContent.includes("未公開"));
+    assert.equal(dot("ホーム").className, "e-page-state is-live"); assert.equal(pageRow("ホーム").querySelector(".e-badge-publication"), null);
     assert.ok(document.body.textContent.includes("公開中 1 / 3 ページ"));
     await clickPage("私たちについて");
     const settings = await panel("ページ");
@@ -371,6 +387,18 @@ test("host publication notes replace the generic unpublished badge in the page l
     assert.equal(card?.querySelector(".e-badge-publication")?.textContent, partial.label);
     assert.ok(card?.textContent.includes(`サイト共通。${partial.description}`));
   } finally { await app.cleanup(); }
+});
+
+test("page status maps visibility, published and the host publication to a dot and its words", async () => {
+  const { pageStatus } = await import("../dist/editor-pages.js");
+  const base = { siteId: "demo", pageId: "p", locale: "ja-JP", title: "P" };
+  assert.deepEqual(pageStatus(base), { state: "live", text: "公開中" });
+  assert.deepEqual(pageStatus({ ...base, published: false }), { state: "unpublished", text: "未公開" });
+  assert.deepEqual(pageStatus({ ...base, visibility: "private" }), { state: "private", text: "非公開" });
+  const preview = { label: "プレビューのみ", description: "公開サイトは移行前のままです。" };
+  assert.deepEqual(pageStatus({ ...base, published: false, publication: preview }), { state: "unpublished", text: "プレビューのみ：公開サイトは移行前のままです。" });
+  assert.deepEqual(pageStatus({ ...base, publication: { label: "公開中", description: "保存・公開した内容は反映されます。" } }), { state: "live", text: "公開中：保存・公開した内容は反映されます。" });
+  assert.deepEqual(pageStatus({ ...base, visibility: "private", published: false, publication: preview }), { state: "private", text: "非公開 · プレビューのみ：公開サイトは移行前のままです。" });
 });
 
 test("public information edits are undoable document edits saved in meta", async () => {

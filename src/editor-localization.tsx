@@ -383,5 +383,5 @@ export const localizationEditorCss = `
 .e-localization-gate{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 18px;border-bottom:1px solid var(--e-border);background:var(--nw-warning-soft);color:var(--nw-warning)}
 .e-localization-panel .e-localization-unit{border-top:1px solid var(--e-border);padding:10px}.e-localization-panel .e-localization-unit.is-selected{outline:2px solid var(--e-blue);outline-offset:-2px}.e-localization-unit dd{white-space:pre-wrap;overflow-wrap:anywhere}
 .e-localization-unit .e-section-head{justify-content:flex-start}.e-localization-unit .e-section-head h3{margin-right:auto}.e-localization-manual{margin:10px 0}.e-localization-rich{min-height:64px;padding:8px;border:1px solid var(--e-border);border-radius:var(--nw-radius);background:inherit}.e-localization-rich:focus{outline:2px solid var(--e-focus);outline-offset:1px}
-.e-locale-states{display:flex;gap:4px;margin-left:auto}.e-locale-states .e-badge{font-size:10px}
+.e-locale-states{display:flex;gap:6px;min-width:0}.e-locale-state{color:var(--e-muted);font-size:var(--nw-font-size-sub);white-space:nowrap}
 `;

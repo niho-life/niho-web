@@ -4,7 +4,7 @@
 
 編集画面は左のツール列とページパネル、中央のキャンバス、右のインスペクタを共通workspaceに置きます。キャンバス下部のツールバーで表示幅、右パネル上段で倍率を変更します。左パネルを閉じてもツール列を残し、ツール選択で再度開けます。接続されていない素材機能等の入口は表示しません。workspaceは100dvhで高さを確定し、stageとパネル内だけをスクロールします。狭い画面ではパネルをキャンバス上のoverlayとして開閉して編集操作を維持します。
 
-ホスト固有の戻る操作や識別表示は `toolbarStart` に渡します。サイト名による表示分岐は契約に含めず、すべてのホストが同じworkspaceを使います。旧 `toolbarLayout` propは削除しています。
+ホスト固有の戻る操作や識別表示（STGなど環境の印）は `toolbarStart` に渡します。環境の注意は帯にせず小さな印にして、帯は保存できない・ロック・不正な入力・接続の失敗のときだけ出してください。サイト名による表示分岐は契約に含めず、すべてのホストが同じworkspaceを使います。旧 `toolbarLayout` propは削除しています。
 
 ## ホストへの接続
 
@@ -35,7 +35,7 @@ React 18.3 または 19 と、同じ版の React DOM を利用側で用意して
 | `readSiteSettings` / `saveSiteSettings`（任意） | サイト共通の公開情報とカラー・文字スタイル。楽観ロック付き（[サイト共通スタイルの契約](site-styles-contract.md)） |
 | `listRevisions` / `readRevision` / `createSnapshot`（任意） | 版履歴の一覧・読み取り専用の表示・名前付きスナップショット。[保存・履歴の契約](save-history-contract.md) |
 
-`listPages` の各ページに任意で `path`・`kind`（page / template / shared）・`visibility`・`published` を返すと、左のページパネルにフォルダ・種別・公開状態を表示します。任意メソッドを実装しないホストでは、ページ操作とサイト設定の保存を表示しません。
+`listPages` の各ページに任意で `path`・`kind`（page / template / shared）・`visibility`・`published` を返すと、左のページパネルにフォルダ（`template` は「テンプレート」の見出しの下）と公開状態の点（緑＝公開中、灰＝未公開、輪郭＝非公開）を表示します。`publication` があれば、その label と description を点のツールチップと読み上げに使います。任意メソッドを実装しないホストでは、ページ操作とサイト設定の保存を表示しません。
 
 target は `siteId/pageId/locale` の組です。文書の組と一致しない読込結果は受け入れません。ホストは各呼出しで現在のセッションの認証・サイト/ページ権限を確認し、文書を `@niho/web/core` で検証してください。UI の選択値やロック表示をサーバーの認可の代わりにしません。
 

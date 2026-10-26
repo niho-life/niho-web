@@ -59,6 +59,12 @@ test("the tool rail shows one line icon per STUDIO tool, names it for assistive 
     const css = document.querySelector(".nw-editor style").textContent;
     assert.ok(css.includes(".nw-editor .e-tools button{display:flex;width:32px;height:32px"), "32px buttons in the 44px rail");
     assert.ok(css.includes(".nw-editor .e-tool-icon{display:block;width:18px;height:18px"));
+    // 左パネルの開閉ボタンと上段の操作アイコンも、ツールと同じ 18px・線幅 1.5（24 のマス目）。線の太さと大きさを混ぜない。
+    const toggle = document.querySelector(".e-tools .e-panel-toggle svg"); assert.ok(toggle, "the left rail starts with the panel toggle");
+    assert.equal(toggle.getAttribute("stroke-width"), "1.5"); assert.equal(toggle.getAttribute("viewBox"), "0 0 24 24");
+    const actionIcons = [...document.querySelectorAll(".nw-editor svg.e-action-icon")]; assert.ok(actionIcons.length >= 5, "the top actions draw with the same icon set");
+    for (const icon of actionIcons) assert.equal(icon.getAttribute("stroke-width"), "1.5");
+    assert.ok(css.includes(".nw-editor .e-action-icon{display:block;width:18px;height:18px}"), "the action icons are 18px like the tool icons");
     assert.ok(css.includes(".nw-editor .e-tools button[aria-pressed=true]{border-color:transparent;background:var(--nw-pressed);color:var(--e-ink)}"), "the open tool has a small grey square");
     assert.ok(css.includes("--nw-pressed:#e6e6e6"), "…drawn from the shared tokens");
   } finally { await app.cleanup(); }
