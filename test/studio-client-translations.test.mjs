@@ -48,7 +48,7 @@ const flush = async () => { for (let index = 0; index < 10; index += 1) await wa
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
 
 /** 偽の Studio API と翻訳の BFF（中身は W1 のデモ用のメモリの adapter）。呼ばれた要求を返す。 */
-function fakeApi(t, views) {
+function fakeApi(t) {
   const calls = [];
   const memory = createLocalizationMemory({ frameUrl: FRAME });
   const local = (text) => text.replaceAll(CMS_KEY, MEMORY_KEY), shown = (value) => JSON.parse(JSON.stringify(value).replaceAll(MEMORY_KEY, CMS_KEY));
@@ -78,16 +78,16 @@ function fakeApi(t, views) {
     if (target === "/api/session") return json({ status: "authenticated", subject: "subject-one", email: "editor@example.test" });
     if (target === "/api/projects") return json(directory);
     if (target === "/api/projects/project-kamakura/sites/kamakura/dashboard") return json(dashboard(project));
-    if (target === "/api/projects/project-kamakura/sites/kamakura/site-admin") return json({ origin: "https://admin.example.test", paths: { cms: "/admin", translations: "/admin/localization" }, ...views });
+    if (target === "/api/projects/project-kamakura/sites/kamakura/site-admin") return json({ connected: true });
     return json({ error: "not_found" }, 404);
   });
   return calls;
 }
 
 let instance = 0;
-async function openStudio(t, pathname, views) {
+async function openStudio(t, pathname) {
   installDom(pathname);
-  const calls = fakeApi(t, views);
+  const calls = fakeApi(t);
   await act(async () => { await import(`${pathToFileURL(bundle).href}?instance=${++instance}`); });
   await flush();
   return calls;
@@ -100,30 +100,14 @@ const rowLink = (title) => [...document.querySelectorAll("a.cw-row-open")].find(
 const cmsLink = () => [...document.querySelectorAll(".lw-item a.cw-button")].find((node) => text(node).startsWith("CMS で開く"));
 const historyMove = async (direction) => { await act(async () => { window.history[direction](); await new Promise((resolve) => setTimeout(resolve, 20)); }); await flush(); };
 
-test("切替が off（frame・値なし・ほかの値）の Dashboard の翻訳は、従来どおりサイト側の翻訳画面の枠", async (t) => {
-  for (const translationsView of [undefined, "frame", "Workspace", "unknown"]) {
-    const calls = await openStudio(t, "/projects/kamakura-site/admin/translations", translationsView === undefined ? { cmsView: "workspace" } : { cmsView: "workspace", translationsView });
-    const frame = document.querySelector(".studio-site-frame iframe");
-    assert.ok(frame, String(translationsView));
-    assert.equal(frame.getAttribute("src"), "https://admin.example.test/admin/localization");
-    assert.equal(document.querySelector(".nw-localization"), null);
-    assert.equal(calls.some((call) => call.includes("/localization/")), false, "BFF を呼ばない");
-  }
-});
-
-test("切替が on（workspace）の翻訳は、翻訳の画面で URL の 1 件を開き、一覧・1 件の移動と戻る/進むを URL に合わせる", async (t) => {
-  const calls = await openStudio(t, "/projects/kamakura-site/admin/translations/aG9tZQ", { cmsView: "workspace", translationsView: "workspace" });
+test("Studio の翻訳は、翻訳の画面で URL の 1 件を開き、一覧・1 件の移動と戻る/進むを URL に合わせる", async (t) => {
+  const calls = await openStudio(t, "/projects/kamakura-site/admin/translations/aG9tZQ");
   assert.equal(document.querySelector(".studio-site-frame"), null);
   assert.ok(document.querySelector(".studio-site-translations .nw-collection.nw-localization"), "LocalizationWorkspace");
   // プロジェクトの中は Dashboard の帯が 1 段のヘッダー（Studio のヘッダーを重ねない）。アカウントは帯の右端
   assert.equal(document.querySelector(".studio-shell-header"), null);
   assert.ok(document.querySelector(".studio-content-project > .nw-project-dashboard .pv-project-end .studio-account"));
-  // 旧画面は、開いている間だけ帯の右側から別のタブで開ける
-  const legacy = byText(".pv-project-end .studio-legacy-link", "旧画面（/admin/localization）を開く ↗");
-  assert.ok(legacy);
-  assert.equal(legacy.getAttribute("href"), "https://admin.example.test/admin/localization");
-  assert.equal(legacy.getAttribute("target"), "_blank");
-  assert.equal(legacy.getAttribute("rel"), "noopener");
+  assert.equal(document.querySelector(".studio-legacy-link"), null);
   // URL の 1 件を最初に開く。固定ページの原文はコードで管理なので「CMS で開く」を出さない
   assert.ok(calls.includes(`POST ${LOC}/items/aG9tZQ`));
   assert.ok(document.querySelector('.lw-unit[data-unit-id="title"]'), "1 件の項目");
@@ -163,10 +147,4 @@ test("切替が on（workspace）の翻訳は、翻訳の画面で URL の 1 件
   assert.equal(document.querySelector(".nw-localization"), null);
   // 読んだだけで書き込みは呼んでいない
   assert.equal(calls.some((call) => call.startsWith("PUT ") || /\/(command|translate|release\/(prepare|apply))$/u.test(call)), false);
-});
-
-test("CMS が枠のままなら、翻訳の画面の「CMS で開く」は Studio の CMS の入口へ", async (t) => {
-  await openStudio(t, `/projects/kamakura-site/admin/translations/${CMS_KEY}`, { translationsView: "workspace" });
-  assert.ok(document.querySelector(".nw-localization"));
-  assert.equal(cmsLink()?.getAttribute("href"), "/projects/kamakura-site/admin/cms");
 });

@@ -1,4 +1,4 @@
-import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ProjectDashboard, type ProjectSiteView } from "../src/project-dashboard.js";
 import { ProjectDirectory } from "../src/project-directory.js";
@@ -7,7 +7,6 @@ import type { Project } from "../src/projects.js";
 import { integrationIdentity, resolveTrustedEditorPage, resolveTrustedIntegration, trustedEditorPath } from "./integration-registry.mjs";
 import { KamakuraEditor } from "./kamakura-editor.js";
 import { parseProjectAliasPath, projectRoutePath, type ProjectCmsRoute, type ProjectSiteViewId, type ProjectTranslationsRoute } from "./project-routes.mjs";
-import type { SiteCmsView, SiteTranslationsView } from "./site-admin.mjs";
 import { SiteCmsWorkspace } from "./site-cms.js";
 import { SiteTranslationsWorkspace } from "./site-translations.js";
 
@@ -200,40 +199,10 @@ function Notice({ title, children, retry }: { readonly title: string; readonly c
   return <main className="studio-state"><h1>{title}</h1><p>{children}</p>{retry && <button type="button" onClick={retry}>再試行</button>}</main>;
 }
 
-type SiteAdmin = {
-  readonly origin: string; readonly paths: { readonly cms: string; readonly translations: string };
-  readonly cmsView: SiteCmsView; readonly translationsView: SiteTranslationsView;
-};
+type SiteAdmin = { readonly connected: true };
 function parseSiteAdmin(value: unknown): SiteAdmin {
-  const item = record(value), paths = record(item.paths);
-  if (typeof item.origin !== "string" || typeof paths.cms !== "string" || typeof paths.translations !== "string") throw new Error("invalid site admin");
-  const origin = new URL(item.origin);
-  if (origin.protocol !== "https:" || origin.origin !== item.origin || !paths.cms.startsWith("/") || !paths.translations.startsWith("/")) throw new Error("invalid site admin");
-  // CMS・翻訳の開き方は Worker の切替（KAMAKURA_CMS_VIEW・KAMAKURA_TRANSLATIONS_VIEW）。"workspace" 以外（古い Worker の無い値を含む）は従来の枠
-  return {
-    origin: item.origin, paths: { cms: paths.cms, translations: paths.translations },
-    cmsView: item.cmsView === "workspace" ? "workspace" : "frame", translationsView: item.translationsView === "workspace" ? "workspace" : "frame"
-  };
-}
-
-/**
- * サイト側の管理画面（CMS・翻訳）を Studio の中の枠で開く（kamakura-site#108 U1）。同じ Cloudflare Access のチームなので、
- * サイト側に一度ログインしていれば枠の中でもそのまま開ける。枠の中ではログイン画面を出せないので、別のタブで開く入口を常に置く。
- */
-/** 移行の間は、サイト側の旧画面を別のタブで開く入口を、そのサイト機能を開いている間だけ上の帯の右側に置く */
-function LegacyLink({ href, path }: { readonly href: string; readonly path: string }) {
-  return <a className="studio-legacy-link" href={href} target="_blank" rel="noopener">旧画面<span className="studio-sr">（{path}）を開く</span> <span aria-hidden="true">↗</span></a>;
-}
-
-function SiteAdminFrame({ title, src, children }: { readonly title: string; readonly src: string; readonly children: ReactNode }) {
-  return <section className="studio-site-frame">
-    <header>
-      <div><h2>{title}</h2><p>{children}</p></div>
-      <a href={src} target="_blank" rel="noopener">別のタブで開く <span aria-hidden="true">↗</span></a>
-    </header>
-    <p className="studio-site-frame-hint">枠の中が表示されないときは「別のタブで開く」から一度ログインしてください。その後はここで開けます。</p>
-    <iframe title={title} src={src} sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals" />
-  </section>;
+  if (record(value).connected !== true) throw new Error("invalid site admin");
+  return { connected: true };
 }
 
 /** 素材の一覧はまだ単独の画面が無いので、今の置き場所（エディタの素材・CMS の画像欄）へ案内する */
@@ -460,7 +429,7 @@ function App() {
     }
   }), [expire]);
 
-  // サイト側の管理画面（CMS・翻訳を枠で開く先）。接続の無いサイトは 404 で、サイト機能を出さない
+  // Studio の CMS・翻訳に接続したサイトだけ、サイト機能を表示する。
   const dashboardKey = screen.kind === "dashboard" ? `${screen.projectId}\u0000${screen.siteId}` : null;
   useEffect(() => {
     if (screen.kind !== "dashboard" || !dashboardKey) return;
@@ -501,18 +470,13 @@ function App() {
   const siteViews = (project: Project): ProjectSiteView[] => {
     if (!admin) return [];
     const open = (view: ProjectSiteViewId) => navigate({ kind: "dashboard", projectId: project.id, siteId: project.site.id, view });
-    const legacyCms = `${admin.origin}${admin.paths.cms}`, legacyTranslations = `${admin.origin}${admin.paths.translations}`;
     return [
-      { id: "cms", label: "CMS", ...(admin.cmsView === "workspace" ? { actions: <LegacyLink href={legacyCms} path={admin.paths.cms} /> } : {}), content: admin.cmsView === "workspace"
-        ? <SiteCmsWorkspace key={viewEpoch} siteOrigin={project.site.domains[0] ?? null}
-            route={screen.kind === "dashboard" ? screen.cms ?? null : null} onNavigate={(cms) => navigateCms(project.id, project.site.id, cms)} />
-        : <SiteAdminFrame title="CMS" src={legacyCms}>記事・サークル・会社・クリエイターの原稿と画像を直し、公開・予約公開します。</SiteAdminFrame> },
+      { id: "cms", label: "CMS", content: <SiteCmsWorkspace key={viewEpoch} siteOrigin={project.site.domains[0] ?? null}
+          route={screen.kind === "dashboard" ? screen.cms ?? null : null} onNavigate={(cms) => navigateCms(project.id, project.site.id, cms)} /> },
       { id: "assets", label: "素材", content: <AssetsHub onOpenEditor={() => openEditor(project)} onOpenCms={() => open("cms")} /> },
-      { id: "translations", label: "翻訳", ...(admin.translationsView === "workspace" ? { actions: <LegacyLink href={legacyTranslations} path={admin.paths.translations} /> } : {}), content: admin.translationsView === "workspace"
-        ? <SiteTranslationsWorkspace key={viewEpoch} cmsView={admin.cmsView} siteOrigin={project.site.domains[0] ?? null}
-            route={screen.kind === "dashboard" ? screen.translations ?? null : null}
-            onNavigate={(state) => navigateTranslations(project.id, project.site.id, { itemKey: state.view === "item" ? state.itemKey : null })} />
-        : <SiteAdminFrame title="翻訳" src={legacyTranslations}>英語版の文章を直して確認し、公開します。</SiteAdminFrame> }
+      { id: "translations", label: "翻訳", content: <SiteTranslationsWorkspace key={viewEpoch} siteOrigin={project.site.domains[0] ?? null}
+          route={screen.kind === "dashboard" ? screen.translations ?? null : null}
+          onNavigate={(state) => navigateTranslations(project.id, project.site.id, { itemKey: state.view === "item" ? state.itemKey : null })} /> }
     ];
   };
   const selected = screen.kind === "dashboard" || screen.kind === "editor"

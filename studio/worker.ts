@@ -51,12 +51,6 @@ export interface Env {
   readonly NIHO_STUDIO_BRIDGE_SECRET_STG?: string;
   /** kamakura-site Studio bridgeと共有するbase64url HMAC key。 */
   readonly KAMAKURA_STUDIO_BRIDGE_SECRET?: string;
-  /** kamakura-site の管理画面（CMS・翻訳）の https origin。Dashboard の中の枠で開く（kamakura-site#108 U1）。未設定なら枠を出さない。 */
-  readonly KAMAKURA_ADMIN_ORIGIN?: string;
-  /** "workspace" のときだけ、Dashboard の CMS を Studio のコレクション画面で開く。無い・ほかの値は従来の枠。 */
-  readonly KAMAKURA_CMS_VIEW?: string;
-  /** "workspace" のときだけ、Dashboard の翻訳を Studio の翻訳の画面で開く。無い・ほかの値は従来の枠。 */
-  readonly KAMAKURA_TRANSLATIONS_VIEW?: string;
 }
 
 type Role = "owner" | "editor";
@@ -1200,11 +1194,11 @@ function kamakuraEditorRoute(action: string, method: string): EditorRoute | "met
     ...(suffix === "/english-publication-retry" ? { englishPublicationRetry: true as const } : {}) };
 }
 
-/** サイト側の管理画面を枠で開くための origin とパス、CMS・翻訳の開き方（frame / workspace）。参加者（owner・editor）だけに返す */
+/** Studio のサイト機能への接続を、参加者（owner・editor）だけに返す。 */
 async function siteAdminApi(env: Env, identity: AccessIdentity, projectId: string, siteId: string): Promise<Response> {
   if (!await editorMember(env, identity, projectId, siteId)) return json({ error: "forbidden" }, 403);
-  const admin = siteAdmin(env as unknown as Record<string, unknown>, projectId, siteId);
-  return admin ? json({ origin: admin.origin, paths: admin.paths, cmsView: admin.cmsView, translationsView: admin.translationsView }) : json({ error: "not_connected" }, 404);
+  const admin = siteAdmin(projectId, siteId);
+  return admin ? json(admin) : json({ error: "not_connected" }, 404);
 }
 
 async function editorMember(env: Env, identity: AccessIdentity, projectId: string, siteId: string): Promise<boolean> {
@@ -2489,19 +2483,12 @@ async function handle(request: Request, env: Env): Promise<Response> {
   if (url.pathname === "/" || dashboardPage || /^\/projects\/[A-Za-z][A-Za-z0-9_-]{0,79}\/sites\/[A-Za-z][A-Za-z0-9_-]{0,79}\/invite\/?$/u.test(url.pathname) || isEditor || projectAlias !== null) {
     if (editorPage?.environment === "staging" && !await experienceEditorOwner(env, identity)) return htmlError("このページを表示できません。", 403);
     const indexUrl = new URL("/index.html", url);
-    // Dashboard（ID の URL と alias の URL）は、そのサイトの管理画面を枠で開ける。editor は従来どおり
     const dashboardTarget = isEditor ? null : projectAlias ?? (dashboardPage ? { projectId: dashboardPage[1]!, siteId: dashboardPage[2]! } : null);
-    const admin = dashboardTarget ? siteAdmin(env as unknown as Record<string, unknown>, dashboardTarget.projectId, dashboardTarget.siteId) : null;
-    // サイト側にまだ Access の cookie が無いと、枠は Access のチームのドメインを経由して戻る（Studio にログイン済みならログイン画面は出ない）。
-    // その経由先も枠に許す。ログイン画面そのものは Access が枠を拒むので、画面の「別のタブで開く」で入る（翻訳は CMS の切替の後も枠）
-    const adminFrames = admin ? [admin.origin, new URL(env.ACCESS_ISSUER).origin] : [];
+    const admin = dashboardTarget ? siteAdmin(dashboardTarget.projectId, dashboardTarget.siteId) : null;
     const kamakuraDashboard = dashboardTarget?.projectId === KAMAKURA_CMS_PROJECT_ID && dashboardTarget.siteId === KAMAKURA_CMS_SITE_ID;
-    // CMS をコレクション画面で開くときだけ、画像本体を直接 PUT する鎌倉の Worker へ接続を許す（本文・縮小の画像は img-src の https: で足りる）
-    const cmsConnect = admin?.cmsView === "workspace" && kamakuraDashboard ? [KAMAKURA_CMS_UPLOAD_ORIGIN] : [];
-    // 翻訳を翻訳の画面で開くときだけ、訳す言語の画像の直接 PUT 先への接続と、鎌倉の Worker のプレビューの枠を許す
-    const translations = admin?.translationsView === "workspace" && kamakuraDashboard;
-    const dashboardConnect = [...new Set([...cmsConnect, ...(translations ? [KAMAKURA_LOCALIZATION_UPLOAD_ORIGIN] : [])])];
-    const dashboardFrames = [...new Set([...adminFrames, ...(translations ? [KAMAKURA_LOCALIZATION_PREVIEW_ORIGIN] : [])])];
+    // 鎌倉の CMS・翻訳は常に Studio の画面。直接 PUT と翻訳プレビューの枠だけを許す。
+    const dashboardConnect = admin && kamakuraDashboard ? [...new Set([KAMAKURA_CMS_UPLOAD_ORIGIN, KAMAKURA_LOCALIZATION_UPLOAD_ORIGIN])] : [];
+    const dashboardFrames = admin && kamakuraDashboard ? [KAMAKURA_LOCALIZATION_PREVIEW_ORIGIN] : [];
     return withStaticSecurity(await env.ASSETS.fetch(new Request(indexUrl, { method: request.method, headers: request.headers })), pageAdapter !== null, pageAdapter ? pageAdapter.connectOrigins ?? [] : dashboardConnect, pageAdapter?.fontSources ?? [], pageAdapter ? pageAdapter.frameSources ?? [] : dashboardFrames);
   }
   return withStaticSecurity(await env.ASSETS.fetch(request));

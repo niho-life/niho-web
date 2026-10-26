@@ -63,7 +63,7 @@ const flush = async () => { for (let index = 0; index < 8; index += 1) await wai
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
 
 /** 偽の Studio API と CMS の BFF。呼ばれた path を返す。 */
-function fakeApi(t, cmsView) {
+function fakeApi(t) {
   const calls = [];
   t.mock.method(globalThis, "fetch", async (url, init = {}) => {
     const target = String(url), method = init.method ?? "GET";
@@ -73,7 +73,7 @@ function fakeApi(t, cmsView) {
     if (target === "/api/session") return json({ status: "authenticated", subject: "subject-one", email: "editor@example.test" });
     if (target === "/api/projects") return json(directory);
     if (target === "/api/projects/project-kamakura/sites/kamakura/dashboard") return json(dashboard(project));
-    if (target === "/api/projects/project-kamakura/sites/kamakura/site-admin") return json({ origin: "https://admin.example.test", paths: { cms: "/admin", translations: "/admin/localization" }, ...(cmsView === undefined ? {} : { cmsView }) });
+    if (target === "/api/projects/project-kamakura/sites/kamakura/site-admin") return json({ connected: true });
     if (target === "/api/projects/project-kamakura/sites/kamakura/membership") return json({
       status: "ready", projectName: project.name, siteName: project.site.name,
       members: [{ subject: "subject-one", email: "owner@example.test", role: "owner", displayName: "オーナー（架空）", createdAt: at, isCurrent: true }],
@@ -88,9 +88,9 @@ function fakeApi(t, cmsView) {
 }
 
 let instance = 0;
-async function openStudio(t, pathname, cmsView) {
+async function openStudio(t, pathname) {
   installDom(pathname);
-  const calls = fakeApi(t, cmsView);
+  const calls = fakeApi(t);
   await act(async () => { await import(`${pathToFileURL(bundle).href}?instance=${++instance}`); });
   await flush();
   return calls;
@@ -121,30 +121,14 @@ test("Project一覧はStudio shellの中央検索・選択済み左nav・アカ�
   assert.match(css, /@media\(max-width:600px\).*\.studio-content-directory\{grid-template-columns:48px minmax\(0,1fr\)/u);
 });
 
-test("切替が off（frame・値なし）の Dashboard の CMS は、従来どおりサイト側の管理画面の枠", async (t) => {
-  for (const cmsView of [undefined, "frame", "unknown"]) {
-    const calls = await openStudio(t, "/projects/kamakura-site/admin/cms", cmsView);
-    const frame = document.querySelector(".studio-site-frame iframe");
-    assert.ok(frame, String(cmsView));
-    assert.equal(frame.getAttribute("src"), "https://admin.example.test/admin");
-    assert.equal(document.querySelector(".nw-collection"), null);
-    assert.equal(calls.some((call) => call.includes("/cms/")), false, "BFF を呼ばない");
-  }
-});
-
-test("切替が on（workspace）の CMS は、コレクション画面で項目を開き、本文を TipTap で出し、URL を合わせる", async (t) => {
-  const calls = await openStudio(t, "/projects/kamakura-site/admin/cms/posts/morning-walk", "workspace");
+test("Studio の CMS は、コレクション画面で項目を開き、本文を TipTap で出し、URL を合わせる", async (t) => {
+  const calls = await openStudio(t, "/projects/kamakura-site/admin/cms/posts/morning-walk");
   assert.equal(document.querySelector(".studio-site-frame"), null);
   assert.ok(document.querySelector(".studio-site-cms .nw-collection"), "CollectionWorkspace");
   // プロジェクトの中は Dashboard の帯が 1 段のヘッダー（Studio のヘッダーを重ねない）。アカウントは帯の右端
   assert.equal(document.querySelector(".studio-shell-header"), null);
   assert.ok(document.querySelector(".studio-content-project > .nw-project-dashboard .pv-project-end .studio-account"));
-  // 旧画面は、開いている間だけ帯の右側から別のタブで開ける
-  const legacy = byText(".pv-project-end .studio-legacy-link", "旧画面（/admin）を開く ↗");
-  assert.ok(legacy);
-  assert.equal(legacy.getAttribute("href"), "https://admin.example.test/admin");
-  assert.equal(legacy.getAttribute("target"), "_blank");
-  assert.equal(legacy.getAttribute("rel"), "noopener");
+  assert.equal(document.querySelector(".studio-legacy-link"), null);
   // URL の項目を最初に開き、本文は TipTap の部品（ProseMirror）で出す
   assert.ok(calls.includes(`GET ${CMS}/collections/posts/items/morning-walk`));
   assert.equal(document.querySelector('[data-field="title"] input')?.value, "海辺の朝さんぽ");

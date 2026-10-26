@@ -2,9 +2,8 @@ import { useEffect, useState } from "react";
 import type { KamakuraCmsWorkspaceProps } from "./kamakura-cms-workspace.js";
 
 /**
- * Dashboard の「CMS」をコレクション画面で開く（Worker の KAMAKURA_CMS_VIEW が "workspace" のとき）。
+ * Dashboard の「CMS」をコレクション画面で開く。
  * 画面の部品（CollectionWorkspace・TipTap）は Studio の最初の bundle に入れず、CMS を開いたときだけ読む。
- * 旧画面への入口は Dashboard の帯の右側（studio/client.tsx の LegacyLink）。
  */
 type WorkspaceModule = typeof import("./kamakura-cms-workspace.js");
 let loaded: WorkspaceModule | null = null;

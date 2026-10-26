@@ -88,7 +88,7 @@ const adapter: ProjectDashboardAdapter = {
 
 - `settingsContent` を渡すと「プロジェクト設定」はDashboardの中でその中身を開き、`onOpenSettings(project, "site")` は呼びません。渡さなければ従来どおり `onOpenSettings` を呼びます。
 - `settingsAction: "disabled"` は設定画面の無いホストの表示です。`settingsContent` を渡していないホストでは「プロジェクト設定（準備中）」として無効にし、どのホストでも解析の接続操作を「解析接続（準備中）」として無効にします（接続設定の画面を持たないホストが、押しても何も起きないボタンを出さないため）。
-- `siteViews` はホストが接続したサイト機能（CMS・素材・翻訳など）です。上のタブの「ホーム」と「アナリティクス」の間に `label` の順で並び、選ぶとホームの左のメニューを閉じて、全幅で `content` を出します（CMSモード）。開いている機能は `activeSiteView` / `onSiteViewChange` でホストが持ち、URLと合わせます。`actions` を渡すと、その機能を開いている間だけ帯の右側（「デザインエディタ」の左）に出します（Studioでは旧画面への入口）。
+- `siteViews` はホストが接続したサイト機能（CMS・素材・翻訳など）です。上のタブの「ホーム」と「アナリティクス」の間に `label` の順で並び、選ぶとホームの左のメニューを閉じて、全幅で `content` を出します（CMSモード）。開いている機能は `activeSiteView` / `onSiteViewChange` でホストが持ち、URLと合わせます。`actions` を渡すと、その機能を開いている間だけ帯の右側（「デザインエディタ」の左）に出します（必要な操作）。
 - `headerEnd` は帯の右端にホストが置くもの（アカウントのメニューなど）です。ホストが自分のヘッダーを出さず、この帯をプロジェクトの中の1段のヘッダーとして使うときに渡します。
 
 ```ts

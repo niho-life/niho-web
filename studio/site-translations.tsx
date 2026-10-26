@@ -2,9 +2,9 @@ import { useEffect, useState } from "react";
 import type { KamakuraLocalizationWorkspaceProps } from "./kamakura-localization-workspace.js";
 
 /**
- * Dashboard の「翻訳」を翻訳の画面で開く（Worker の KAMAKURA_TRANSLATIONS_VIEW が "workspace" のとき）。
+ * Dashboard の「翻訳」を翻訳の画面で開く。
  * 画面の部品（LocalizationWorkspace）は Studio の最初の bundle に入れず、翻訳を開いたときだけ読む。
- * 器の見た目は CMS の画面と同じ。旧画面への入口は Dashboard の帯の右側（studio/client.tsx の LegacyLink）。
+ * 器の見た目は CMS の画面と同じ。
  */
 type WorkspaceModule = typeof import("./kamakura-localization-workspace.js");
 let loaded: WorkspaceModule | null = null;

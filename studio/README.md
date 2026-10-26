@@ -29,54 +29,15 @@ D1 が Project / Site / Member / Role / Invitation / Audit の正本です。NIH
 
 覚えやすい入口として `/project/<別名>`（例: `/project/kamakura-site`）も使えます。Worker が認証の後に `/projects/<別名>/admin` へ 301 で移します。
 
-### サイト機能（kamakura-site#108 U1）
+### サイト機能（鎌倉）
 
-プロジェクトの中は全幅で、Studio のヘッダーの代わりに Dashboard の 1 段の帯をヘッダーにします（niho-web#174）。帯の中央のタブ「ホーム・CMS・素材・翻訳・アナリティクス」で画面全体を切り替え、左のメニュー（ダッシュボード・メンバー・プロジェクト設定）はホームの中だけに出します。CMS では CMS 自身のコレクションのメニューと一覧だけが全幅に並びます（CMS モード）。アカウントは帯の右端、旧画面への入口は CMS・翻訳を開いている間だけ帯の右側に置きます。帯は幅 900px より広いときだけ上に留め、900px 以下はタブを帯の 2 段目に折り返します。各機能は alias の URL を持ちます（`/projects/<別名>/admin/cms`・`/assets`・`/translations`、`/project/<別名>/cms` などからも入れる）。
+鎌倉の Dashboard は「ホーム・CMS・素材・翻訳・アナリティクス」を表示します。CMS は Studio のコレクション画面、翻訳は Studio の翻訳画面、ページと共通コンポーネントはデザインエディタで扱います。素材の入口はエディタと CMS の画像欄です。旧サイト管理画面の埋め込みと切替設定は撤廃しました。
 
-| 機能 | Kamakura での中身 |
-| --- | --- |
-| ページ | 右上の「デザインエディタ」（従来どおり） |
-| CMS | 既定はサイト側の管理画面（記事・サークル・会社・クリエイター）を Dashboard の中の枠で開く。切替（`KAMAKURA_CMS_VIEW=workspace`）を入れると Studio のコレクション画面で開く（下の「CMS の切替」） |
-| 素材 | 今の置き場所（エディタの「素材」と CMS の画像欄）への案内。一覧・検索の画面は素材 provider（#85）の後 |
-| 翻訳 | 既定はサイト側の翻訳画面（`/admin/localization`）を枠で開く。切替（`KAMAKURA_TRANSLATIONS_VIEW=workspace`）を入れると Studio の翻訳の画面で開く（下の「翻訳の切替」） |
-| プロジェクト設定 | メンバーと招待（オーナー）。編集者には「オーナーだけが行えます」の案内を出す。解析の接続設定はまだ無いので、アナリティクスの「解析接続（準備中）」は無効 |
+各機能には `/projects/<別名>/admin/cms`・`/assets`・`/translations` などの Studio 内の URL があり、`/project/<別名>/cms` からも入れます。この URL に含まれる `/admin` は Studio の Dashboard の経路であり、鎌倉サイトの旧 `/admin` とは別です。
 
-- 枠で開くサイト側の管理画面の origin はコードに書かず、Worker の設定値 `KAMAKURA_ADMIN_ORIGIN`（https の origin だけ）から読みます（`studio/site-admin.mjs`）。未設定ならサイト機能を出しません。`wrangler secret put KAMAKURA_ADMIN_ORIGIN --config studio/wrangler.toml` で入れると、配備のたびに消えません。
-- `GET /api/projects/<Project>/sites/<Site>/site-admin` は D1 の現在の `owner` / `editor` だけに origin・画面のパス・CMS と翻訳の開き方（`cmsView`・`translationsView`: `"frame"` / `"workspace"`）を返し、接続の無いサイトは 404 `not_connected` です。
-- Dashboard の HTML（ID の URL と alias の URL）の CSP は `frame-src` をその origin と Access のチームのドメイン（`ACCESS_ISSUER`）だけにします。サイト側にまだ Access の cookie が無いとき、枠はチームのドメインを経由して戻るためです（Studio にログイン済みならログイン画面は出ない。ログイン画面そのものは Access が枠を拒む）。editor の CSP と `frame-ancestors 'none'` は変えません。枠は `postMessage` を使わず、`sandbox` で Studio の画面の移動を許しません。
-- 枠の中は同じ Cloudflare Access のチームの SSO で開きます。サイト側にまだログインしていないと枠の中ではログイン画面を出せないので、画面に「別のタブで開く」を常に置きます（一度ログインすれば枠の中でも開ける）。サイト側は `frame-ancestors` で Studio の origin だけに枠を許します。
-
-### CMS の切替（枠 → コレクション画面）
-
-Dashboard の「CMS」は、Worker の設定値 `KAMAKURA_CMS_VIEW` で中身を切り替えます。値が `workspace` のときだけ Studio のコレクション画面（`CollectionWorkspace` ＋ `createKamakuraCmsAdapter` ＋ 本文の TipTap）、無い・ほかの値は従来の枠です。**既定は枠**で、owner と editor の受入が終わったら on にします。翻訳は別の切替です（下の「翻訳の切替」）。
-
-- on にする: `wrangler secret put KAMAKURA_CMS_VIEW --config studio/wrangler.toml` で `workspace` を入れる（値は公開 repo に書かない。secret なので配備のたびに消えない）。Worker が新しい値で動き出せば、開き直した Dashboard から新しい画面になります（再配備は要らない）。
-- 戻す: `wrangler secret delete KAMAKURA_CMS_VIEW --config studio/wrangler.toml`（または `frame` を入れ直す）。次に開いた Dashboard から枠に戻ります。
-- 旧画面の入口: CMS を開いている間、帯の右側の「旧画面 ↗」（読み上げは「旧画面（/admin）を開く」）で、サイト側の管理画面（`KAMAKURA_ADMIN_ORIGIN` の `/admin`）を別のタブで開けます。切替は `KAMAKURA_ADMIN_ORIGIN` があるときだけ効きます（無いとサイト機能そのものを出さない）。
-- URL: 一覧は `/projects/<別名>/admin/cms/<collectionId>`、項目は `/projects/<別名>/admin/cms/<collectionId>/<itemId>`（`/admin/cms` はそのサイトの先頭のコレクション）。画面の中で一覧・項目を移ると URL を積み、ブラウザの戻る・進むはその URL でコレクション画面を開き直します。短い入口 `/project/<別名>/cms/<collectionId>/<itemId>` も同じ形へ 301 で移します。id は collection-model の形（コレクションは `[A-Za-z0-9_][A-Za-z0-9_-]*`、項目は `[A-Za-z0-9_][A-Za-z0-9._~-]*`）だけで、ほかの形の URL は画面の route にしません。
-- CSP: on のとき、鎌倉の Dashboard の HTML（ID の URL と alias の URL）だけ `connect-src` に画像本体の直接 PUT 先 `https://next-kamakura.niho.life` を足します。本文と一覧の画像（`https://kamakura-media.niho.life` の縮小を含む）は今の `img-src 'self' https:` で足ります。本文の部品は inline の `<style>` と style 属性を使わず、埋め込みは枠を作らない（中身は公開したページだけ）ので、`style-src`・`frame-src` は変えません。off のときは何も足しません。editor の CSP と `frame-ancestors 'none'` は変えません。
-- 読み込み: コレクション画面と TipTap は `import()` で分け（`assets/chunks/`）、CMS を開いたときだけ読みます。読み込み中は「CMS の画面を読み込んでいます…」、失敗は「再試行」を出します。`studio/build.mjs` は、最初に読む分（`app.js` と、そこから静的に読む chunk）に TipTap・ProseMirror・`collection-workspace.tsx` が入ったら build を失敗させます。画面の CSS は `assets/collection.css`（`index.html` から読む。配色トークンは `assets/studio.css` の先頭にあるので、`collectionCss` の先頭のトークンは外して書き出す）、項目の編集の上のバーは Studio のヘッダーの下に貼り付きます（`--niho-sticky-top`: 64px、幅 600px 以下は 56px）。
-- 画面の中の移動では作り直さないので、adapter が覚えた version で差分だけを保存します。ブラウザの戻る・進むで開き直すときは、自動保存（約 1 秒）の前の直しは残りません（画面の「一覧へ」は先に保存してから戻る）。
-
-### 翻訳の切替（枠 → 翻訳の画面）
-
-Dashboard の「翻訳」は、Worker の設定値 `KAMAKURA_TRANSLATIONS_VIEW` で中身を切り替えます。値が `workspace` のときだけ Studio の翻訳の画面（[`LocalizationWorkspace`](../docs/localization-workspace-contract.md) ＋ `createKamakuraLocalizationAdapter`）、無い・ほかの値・この値を返さない古い Worker は従来の枠です。**既定は枠**で、CMS の切替とは別に入れます。
-
-- 配備の順: 鎌倉の Worker の翻訳の API（kamakura-site#108 U3 K1・下の「Kamakura の翻訳 bridge」）を先に配備 → この Studio を配備（切替は入れないので枠のまま）→ `KAMAKURA_TRANSLATIONS_VIEW` を入れて owner と editor で受入（旧画面と同じ内容が読めること・保存・公開の準備まで）→ 問題があれば下の「戻す」。鎌倉の API が無いうちに入れると、翻訳の画面は「読み込めませんでした」になります（BFF の log は `localization_endpoint_missing`）。
-- on にする: `wrangler secret put KAMAKURA_TRANSLATIONS_VIEW --config studio/wrangler.toml` で `workspace` を入れる（値は公開 repo に書かない。secret なので配備のたびに消えない。再配備は要らない）。
-- 戻す: `wrangler secret delete KAMAKURA_TRANSLATIONS_VIEW --config studio/wrangler.toml`（または `frame` を入れ直す）。次に開いた Dashboard から枠に戻ります。翻訳の中身はどちらの画面でも鎌倉の同じ保存先なので、戻しても直した訳文は消えません。
-- 旧画面の入口: 翻訳を開いている間、帯の右側の「旧画面 ↗」（読み上げは「旧画面（/admin/localization）を開く」）で、サイト側の翻訳画面（`KAMAKURA_ADMIN_ORIGIN` の `/admin/localization`）を別のタブで開けます。切替は `KAMAKURA_ADMIN_ORIGIN` があるときだけ効きます。
-- URL: 一覧は `/projects/<別名>/admin/translations`、1 件は `/projects/<別名>/admin/translations/<itemKey>`（設定は一覧と同じ URL）。画面の中で一覧・1 件を移ると URL を積み、ブラウザの戻る・進むはその URL で翻訳の画面を開き直します（CMS と同じ。自動保存の前の直しは残らない）。短い入口 `/project/<別名>/translations/<itemKey>` も同じ形へ 301 で移します。itemKey は W1 の形（`[A-Za-z0-9_-]` で 200 字まで）だけで、ほかの形の URL は画面の route にしません。
-- 原文へのリンク（`sourceLink`）: 1 件が鎌倉の CMS の項目なら「CMS で開く」で Studio の CMS（CMS の切替が on ならその項目 `/admin/cms/<collectionId>/<itemId>`、off なら CMS の入口）を開きます。CMS の項目を開いたときは「日本語／English」のタブから同じ項目の翻訳へ移れます。固定ページ・共通部分などの原文はコードで管理しているので、リンクを出しません。
-- 画像: 「画像を上げる」は鎌倉の Worker へ直接 PUT します（下）。「素材から選ぶ」は adapter の `chooseImage` で選び方の画面を渡したときだけ出します（今は渡していない。素材の一覧の部品はエディタの中だけで、Studio に上げた素材は公開前の URL なので、訳す言語の画像には使えない）。
-- CSP: on のとき、鎌倉の Dashboard の HTML（ID の URL と alias の URL）だけ `connect-src` に画像の直接 PUT 先、`frame-src` にプレビューの枠の origin（どちらも鎌倉の Worker の `https://next-kamakura.niho.life`）を足します。枠は画面が `sandbox="allow-scripts"`・`referrerpolicy="no-referrer"` で開き、`#niho-preview=<nonce>` を付けて postMessage でだけ話します。訳文・原文の画像は今の `img-src 'self' https:` で足ります。off のときは何も足しません。editor の CSP と `frame-ancestors 'none'` は変えません。
-- 読み込み: 翻訳の画面は `import()` で分け（`assets/chunks/`）、翻訳を開いたときだけ読みます（`studio/site-translations.tsx` → `studio/kamakura-localization-workspace.tsx`）。`studio/build.mjs` は、最初に読む分に `src/localization-workspace*.tsx`・`studio/kamakura-localization*` が入ったら build を失敗させます。画面だけの CSS は `assets/localization.css`（`localizationWorkspaceCss` から `collectionCss` を除いたもの。`index.html` から読む）です。
-
-Alias は Worker と client router の固定対応表で内部の Project / Site ID へ解決します。別名 URL 自体をブラウザに保ち、alias から Dashboard と Editor の間を移動しても同じ表記を使います。API/BFF の path、membership 判定、Project / Site ID は変わりません。招待 URL と Experience STG 専用 URL は引き続き ID 付き route です。
-
-Experience と Kamakura の Editor UI / BFF は実装されています。Experience の本番編集は niho-app Backend Draft PR #19268 が本番反映済みで、NIHO API と Studio Worker の `NIHO_STUDIO_BRIDGE_SECRET` が同じ値に設定されている場合に限り有効です。STG検証画面は `/projects/project-experience/sites/experience/editor/staging` に限り、D1 の Experience owner のみ開けます。画面・APIの両方で owner を確認し、固定した `https://api-stg.niho.life` と別の `NIHO_STUDIO_BRIDGE_SECRET_STG` を使います。Kamakura は `kamakura-site` の内部 endpoint、service binding `KAMAKURA_SITE`、両 Worker の `KAMAKURA_STUDIO_BRIDGE_SECRET` が揃った後に利用します。この host は Dashboard の公開状態や解析値を合成せず、`unknown` / `unavailable` / `disconnected` / `null` のまま表示します。Kamakura の公開情報だけはサイト側から読みます（下の「Kamakura の Dashboard 公開情報」）。解析はどのサイトも `disconnected` です。Dashboard の「メンバー」は `GET …/dashboard` の `members` で、D1 の `project_members` から参加者全員の表示名と役割（owner / editor）を owner 先頭で返します（参加している owner / editor なら誰でも読める。Access subject・メール・日時は返さない）。招待・権限変更・参加解除は従来どおり membership API の owner 操作だけで、D1 が読めないときは `members` だけ `unavailable` にして Dashboard 全体は返します。
-
-両Editorは `PageEditor` の共通workspaceを使います。左のツール列とパネル、中央キャンバス、右インスペクター上段の倍率と編集操作、下部の表示幅操作はサイト間で共通です。各hostはダッシュボードへ戻る入口だけを `toolbarStart` に渡し、サイト固有のレイアウト指定は行いません。左右パネルは開閉でき、狭い表示でもoverlayで編集を続けられます。
+- `GET /api/projects/<Project>/sites/<Site>/site-admin` は、D1 の現行 owner / editor にだけ `{ "connected": true }` を返します。未接続サイトは 404 `not_connected` です。
+- 鎌倉の Dashboard HTML の CSP は、CMS・翻訳の画像本体の直接 PUT 先を `connect-src` に、翻訳プレビューの枠だけを `frame-src` に許します。旧管理画面と Access のログイン画面は枠に許しません。editor の CSP と `frame-ancestors 'none'` は変えません。
+- Studio の CMS は `CollectionWorkspace` と `createKamakuraCmsAdapter`、翻訳は `LocalizationWorkspace` と `createKamakuraLocalizationAdapter` を使います。原文が CMS の項目なら Studio の該当項目へのリンクを表示します。
 
 ## 認証・認可境界
 
@@ -159,7 +120,7 @@ Kamakura の `PageEditor` には `studio/kamakura-assets.ts` の素材 adapter �
 
 ## Kamakura の CMS bridge（コレクション）
 
-鎌倉サイトの記事・サークル・会社を、[コレクションの画面](../docs/collection-contract.md)（`CollectionWorkspace`）から編集するための BFF と adapter です。Dashboard の「CMS」から使うには「CMS の切替」の `KAMAKURA_CMS_VIEW` を入れます（既定は枠のまま）。
+鎌倉サイトの記事・サークル・会社を、[コレクションの画面](../docs/collection-contract.md)（`CollectionWorkspace`）から編集するための BFF と adapter です。Dashboard の「CMS」から直接使います。
 
 - ブラウザが呼ぶのは同一 origin の `/api/projects/project-kamakura/sites/kamakura/cms/...` と、画像本体の `PUT https://next-kamakura.niho.life/internal/studio/cms-upload/<uuid>` だけです。BFF は service binding `KAMAKURA_SITE` の `/internal/studio/cms/...` へ、editor と同じ HMAC の header（同じ関数）で署名して渡します。追加の secret はありません。
 - 鎌倉以外の Project / Site は 404 です。要求ごとに Access の `sub` と D1 の現在の `owner` / `editor` を確かめます（無ければ 403）。query string、知らない route（404）・method（405）、GET の本文は拒否します。
@@ -216,7 +177,7 @@ log は editor と同じく問い合わせ ID・固定の operation（`cms_schem
 
 ## Kamakura の翻訳 bridge（LocalizationWorkspace）
 
-鎌倉サイトの英語版を、[翻訳の画面](../docs/localization-workspace-contract.md)（`LocalizationWorkspace`・W1）から直すための BFF と adapter です。Dashboard の「翻訳」から使うには「翻訳の切替」の `KAMAKURA_TRANSLATIONS_VIEW` を入れます（既定は枠のまま）。上流の経路と応答の正は kamakura-site の `worker/README.md`「Studio の翻訳 API の契約」です。
+鎌倉サイトの英語版を、[翻訳の画面](../docs/localization-workspace-contract.md)（`LocalizationWorkspace`・W1）から直すための BFF と adapter です。Dashboard の「翻訳」から直接使います。上流の経路と応答の正は kamakura-site の `worker/README.md`「Studio の翻訳 API の契約」です。
 
 - ブラウザが呼ぶのは同一 origin の `/api/projects/project-kamakura/sites/kamakura/localization/...` と、画像本体の `PUT https://next-kamakura.niho.life/internal/studio/localization-upload/<uuid>` だけです。BFF は service binding `KAMAKURA_SITE` の `/internal/studio/localization/...` へ、editor・CMS と同じ HMAC の header（同じ関数・`KAMAKURA_STUDIO_BRIDGE_SECRET`）で署名して渡します。追加の secret はありません。
 - 鎌倉以外の Project / Site は 404 です。要求ごとに Access の `sub` と D1 の現在の `owner` / `editor` を確かめ（無ければ 403）、その役割を上流へ渡します。query string、知らない route（404）・method（405）は拒否します。読み取りも POST と本文です。
