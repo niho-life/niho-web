@@ -28,6 +28,7 @@ export const ASSET_LIMITS = Object.freeze({
   attributionLength: 300
 });
 export const INSERTABLE_IMAGE_TYPES = Object.freeze(["image/jpeg", "image/png", "image/webp", "image/avif", "image/gif"] as const);
+export const INSERTABLE_VIDEO_TYPES = Object.freeze(["video/mp4"] as const);
 
 /** ホストが発行した配信 URL。文書には保存しない。 */
 export type ResolvedAsset = { src: string; width?: number; height?: number };
@@ -35,7 +36,7 @@ export type ResolvedAsset = { src: string; width?: number; height?: number };
 export type ResolvedAssetMap = Readonly<Record<string, ResolvedAsset>>;
 /** ogImage = 文書の meta.ogImage（ソーシャルカバー）。ノードを持たない。 */
 export type AssetPlacement =
-  | { reference: AssetReference; nodeId: string; target: "image" | "background"; breakpoint: number | "base" }
+  | { reference: AssetReference; nodeId: string; target: "image" | "video" | "background"; breakpoint: number | "base" }
   | { reference: AssetReference; target: "ogImage" };
 
 export type AssetKind = "image" | "video" | "pdf" | "other";
@@ -144,7 +145,7 @@ export function resolvedAsset(assets: ResolvedAssetMap, reference: AssetReferenc
   return Object.hasOwn(assets, key) ? assets[key] : undefined;
 }
 
-/** 本文の画像・背景と、meta.ogImage の素材参照。使用状況・削除可否・保存時の所属確認に使う。 */
+/** 本文の画像・動画・背景と、meta.ogImage の素材参照。使用状況・削除可否・保存時の所属確認に使う。 */
 export function collectAssetReferences(document: PageDocument): AssetPlacement[] {
   const result: AssetPlacement[] = [];
   const copy = (reference: AssetReference): AssetReference => ({ provider: reference.provider, id: reference.id });
@@ -153,7 +154,7 @@ export function collectAssetReferences(document: PageDocument): AssetPlacement[]
   function visit(nodes: readonly PageNode[]): void {
     for (const node of nodes) {
       if (node.type === "text") continue;
-      if (node.type === "element" && node.asset) result.push({ reference: copy(node.asset), nodeId: node.id, target: "image", breakpoint: "base" });
+      if (node.type === "element" && node.asset) result.push({ reference: copy(node.asset), nodeId: node.id, target: node.tag === "video" ? "video" : "image", breakpoint: "base" });
       const base = node.style?.base?.backgroundImage;
       if (base && base !== "none") result.push({ reference: copy(base.asset), nodeId: node.id, target: "background", breakpoint: "base" });
       for (const entry of node.style?.responsive ?? []) {
@@ -176,6 +177,9 @@ export function missingAssetReferences(document: PageDocument, assets: ResolvedA
 
 export function isInsertableImage(asset: Pick<LibraryAsset, "kind" | "status" | "mimeType">): boolean {
   return asset.kind === "image" && asset.status === "ready" && (INSERTABLE_IMAGE_TYPES as readonly string[]).includes(asset.mimeType);
+}
+export function isInsertableVideo(asset: Pick<LibraryAsset, "kind" | "status" | "mimeType">): boolean {
+  return asset.kind === "video" && asset.status === "ready" && (INSERTABLE_VIDEO_TYPES as readonly string[]).includes(asset.mimeType);
 }
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 1024) return `${Number.isFinite(bytes) && bytes > 0 ? Math.round(bytes) : 0} B`;

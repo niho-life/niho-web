@@ -196,3 +196,18 @@ test("diffDocuments covers component instances, image assets, block slots and te
   assert.deepEqual(changes[3], { path: "img#photo のアセット", before: '{"provider":"uploads","id":"sea"}', after: '{"provider":"uploads","id":"wave"}' });
   assert.deepEqual(paths(diffDocuments(base, { ...base, body: [] })), ["コンポーネント header#nav を削除", "img#photo を削除", "Cards#cards を削除", "p#lead を削除"]);
 });
+
+test("diffDocuments reports trusted icon selection and native video fields", () => {
+  const before = doc(), after = doc();
+  before.body.push(
+    { type: "element", id: "status", tag: "span", icon: "check", attrs: { role: "img", "aria-label": "完了" }, children: [] },
+    { type: "element", id: "movie", tag: "video", attrs: { src: "/before.mp4", "aria-label": "紹介動画", controls: true }, children: [] }
+  );
+  after.body.push(
+    { type: "element", id: "status", tag: "span", icon: "star", attrs: { role: "img", "aria-label": "おすすめ" }, children: [] },
+    { type: "element", id: "movie", tag: "video", asset: { provider: "uploads", id: "clip" }, attrs: { "aria-label": "新しい紹介動画", controls: true, muted: true }, children: [] }
+  );
+  assert.deepEqual(paths(diffDocuments(before, after)), [
+    "span#status の aria-label", "span#status のアイコン", "video#movie の aria-label", "video#movie の muted", "video#movie の src", "video#movie のアセット"
+  ]);
+});

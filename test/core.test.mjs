@@ -72,6 +72,31 @@ test("picture requires source elements before exactly one fallback image", () =>
   reject(picture([image(), source()]));
 });
 
+test("built-in icons and native videos use closed, accessible document shapes", () => {
+  const media = doc();
+  media.body = [
+    { type: "element", id: "icon", tag: "span", icon: "check", attrs: { role: "img", "aria-label": "完了" }, children: [] },
+    { type: "element", id: "clip", tag: "video", attrs: { src: "https://media.example.test/clip.mp4", poster: "/poster.webp", "aria-label": "紹介動画", controls: true, loop: false, muted: true, preload: "metadata", playsInline: true }, children: [] },
+    { type: "element", id: "managed", tag: "video", asset: { provider: "uploads", id: "clip" }, attrs: { title: "施設案内" }, children: [] }
+  ];
+  assert.deepEqual(parsePageDocument(media).body, media.body);
+  for (const change of [
+    (value) => { value.body[0].icon = "<svg onload=alert(1)>"; },
+    (value) => { value.body[0].children = [{ type: "text", text: "arbitrary glyph" }]; },
+    (value) => { delete value.body[0].attrs["aria-label"]; },
+    (value) => { value.body[0].attrs["aria-hidden"] = "true"; },
+    (value) => { value.body[1].attrs.src = "javascript:alert(1)"; },
+    (value) => { value.body[1].attrs.src = "http://media.example.test/clip.mp4"; },
+    (value) => { value.body[1].attrs.preload = "script"; },
+    (value) => { delete value.body[1].attrs["aria-label"]; },
+    (value) => { value.body[2].attrs.src = "/other.mp4"; },
+    (value) => { value.body[2].children = [{ type: "text", text: "fallback" }]; }
+  ]) { const invalid = structuredClone(media); change(invalid); reject(invalid); }
+  const linked = doc();
+  linked.body = [{ type: "element", id: "link", tag: "a", attrs: { href: "/watch" }, children: [media.body[1]] }];
+  reject(linked);
+});
+
 test("depth and node limits reject pathological documents", () => {
   const deep = doc(); let children = deep.body;
   for (let i = 0; i < 50; i++) {

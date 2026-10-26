@@ -5,6 +5,7 @@ import { parsePageDocument } from "./document.js";
 import { cssForDocument, pageScope, resolveViewportHeightUnits } from "./css.js";
 import { parseResolvedAssets, resolvedAsset, type ResolvedAssetMap } from "./assets.js";
 import { cssForSitePresentation, parseSitePresentation, presentationLayoutDocument, sitePresentationHostViewKey } from "./presentation.js";
+import { iconGlyph } from "./icons.js";
 
 export type BlockDefinition = BlockContract & {
   /** ホストアプリが所有する同期 React コンポーネント。JSON から実行コードを読まない。 */
@@ -53,6 +54,7 @@ const canvasCssText = (css: string, canvas: PageRendererProps["canvas"]) => canv
 const rootRelative = (value: string) => value.startsWith("/") && !value.startsWith("//");
 function withSiteOrigin(attrs: Record<string, unknown>, siteOrigin: string): void {
   if (typeof attrs.src === "string" && rootRelative(attrs.src)) attrs.src = siteOrigin + attrs.src;
+  if (typeof attrs.poster === "string" && rootRelative(attrs.poster)) attrs.poster = siteOrigin + attrs.poster;
   if (typeof attrs.srcSet === "string") attrs.srcSet = attrs.srcSet.split(",").map((entry) => { const trimmed = entry.trim(); return rootRelative(trimmed) ? siteOrigin + trimmed : trimmed; }).join(", ");
 }
 
@@ -79,7 +81,7 @@ export function PageRenderer({ document: input, blocks = {}, assets: assetInput,
       return createElement("div", { key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-block": node.block }, createElement(definition.component, node.props));
     }
     const attrs = { ...node.attrs };
-    if (canvas?.siteOrigin && !node.asset) withSiteOrigin(attrs, canvas.siteOrigin);
+    if (canvas?.siteOrigin) withSiteOrigin(attrs, canvas.siteOrigin);
     if (hostViewBinding) {
       for (const [slot, ids] of Object.entries(hostViewBinding.slotBindings ?? {})) if (ids.includes(node.id)) attrs["data-nw-slot"] = slot;
       const binding = hostViewBinding.carousel;
@@ -104,11 +106,18 @@ export function PageRenderer({ document: input, blocks = {}, assets: assetInput,
     if (closes) attrs["data-nw-overlay-close"] = closes.id;
     if (node.asset) {
       const resolved = resolvedAsset(assets, node.asset);
-      if (!resolved) return missingAssets === "placeholder" ? createElement("span", { key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-missing-asset": "", role: "img",
-        "aria-label": typeof attrs.alt === "string" && attrs.alt ? attrs.alt : "画像を表示できません" }) : null;
+      if (!resolved) return missingAssets === "placeholder" ? createElement("span", { key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-missing-asset": "", role: node.tag === "img" ? "img" : "status",
+        "aria-label": node.tag === "img" ? typeof attrs.alt === "string" && attrs.alt ? attrs.alt : "画像を表示できません" : "動画を表示できません" }) : null;
       attrs.src = resolved.src;
       // 寸法を持たない画像にだけ付け、レイアウトのずれを防ぐ。
-      if (attrs.width === undefined && attrs.height === undefined && resolved.width !== undefined && resolved.height !== undefined) { attrs.width = resolved.width; attrs.height = resolved.height; }
+      if (node.tag === "img" && attrs.width === undefined && attrs.height === undefined && resolved.width !== undefined && resolved.height !== undefined) { attrs.width = resolved.width; attrs.height = resolved.height; }
+    }
+    if (node.icon) return createElement("span", { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope }, iconGlyph(node.icon));
+    if (node.tag === "video") {
+      if (typeof attrs.src !== "string") return missingAssets === "placeholder" ? createElement("span", { key: node.id, "data-nw-node": node.id, "data-nw-owner": scope,
+        "data-nw-missing-asset": "", role: "status", "aria-label": "動画を選んでください" }, "動画を選んでください") : null;
+      if (attrs.controls === undefined) attrs.controls = true;
+      if (attrs.preload === undefined) attrs.preload = "metadata";
     }
     if (node.tag === "a" && attrs.target === "_blank") {
       attrs.rel = [...new Set(`${attrs.rel ?? ""} noopener noreferrer`.trim().split(/\s+/))].join(" ");
@@ -120,7 +129,7 @@ export function PageRenderer({ document: input, blocks = {}, assets: assetInput,
       ...(frame.frameKey ? { "data-nw-frame-key": frame.frameKey, "data-nw-frame-max-height": frame.autoHeightMax ?? 1200 } : {}),
       ...(frame.allowFullScreen ? { allowFullScreen: true } : {}) });
     // children を渡さないことで React の void element 契約を守る。
-    return createElement(node.tag, { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope },
+    return createElement(node.tag, { ...attrs, ...(canvas && node.tag === "video" ? { onPlay: (event: { currentTarget: { pause(): void } }) => event.currentTarget.pause() } : {}), key: node.id, "data-nw-node": node.id, "data-nw-owner": scope },
       ...(node.children.length ? node.children.map(render) : []));
   }
   return createElement(Fragment, null,

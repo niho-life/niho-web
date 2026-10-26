@@ -23,6 +23,26 @@ test("layout compositions are opt-in and every catalog entry creates a valid doc
   assert.equal(resolveBuilderDefinition().motions.length, 0);
 });
 
+test("Basic catalog includes safe editable icons and native videos in the reference-like order", () => {
+  const basic = resolveBuilderDefinition().insertions.filter((entry) => (entry.category ?? "basic") === "basic");
+  const ordered = ["section", "box", "img", "text", "icon", "richtext", "video"];
+  assert.deepEqual(basic.filter((entry) => ordered.includes(entry.id)).map((entry) => entry.id), ordered);
+  assert.ok(basic.filter((entry) => ordered.includes(entry.id)).every((entry) => entry.group === "基本"));
+  let page = doc();
+  for (const id of ["icon", "video"]) page = editDocument(page, { type: "add", parentId: null, node: createInsertionNode(basic.find((entry) => entry.id === id), { document: page }) });
+  const iconIndex = page.body.findIndex((node) => node.type === "element" && node.icon);
+  const videoIndex = page.body.findIndex((node) => node.type === "element" && node.tag === "video");
+  assert.equal(page.body[videoIndex].attrs.src, undefined, "新規動画は実在しない URL を持たない");
+  page = editDocument(page, { type: "icon", path: [iconIndex], name: "star" });
+  page = editDocument(page, { type: "attribute", path: [iconIndex], name: "aria-label", value: "おすすめ" });
+  page = editDocument(page, { type: "video", path: [videoIndex], source: { asset: { provider: "uploads", id: "intro" } } });
+  const reloaded = parsePageDocument(JSON.parse(JSON.stringify(page)));
+  assert.equal(reloaded.body[iconIndex].icon, "star"); assert.equal(reloaded.body[iconIndex].attrs["aria-label"], "おすすめ");
+  assert.deepEqual(reloaded.body[videoIndex].asset, { provider: "uploads", id: "intro" }); assert.equal(reloaded.body[videoIndex].attrs.src, undefined);
+  const html = renderPageToHtml(reloaded, {}, { assets: { "uploads:intro": { src: "/media/intro.mp4" } } });
+  assert.ok(html.includes("★")); assert.ok(html.includes('src="/media/intro.mp4"'));
+});
+
 test("standard parts and sections validate, survive editing and reload, and render through SSR", () => {
   let page = doc();
   for (const preset of [...partInsertionPresets, ...sectionInsertionPresets]) {

@@ -13,7 +13,7 @@ export { COMPONENT_LIMITS, type ResolvedOrigin } from "./component-expand.js";
 
 const kinds: readonly string[] = ["header", "footer", "navigation", "section", "part"];
 const fields: readonly string[] = ["text", "href", "src", "alt"];
-const textless = new Set(["img", "source", "br", "hr", "ul", "ol", "dl", "picture"]);
+const textless = new Set(["img", "source", "video", "br", "hr", "ul", "ol", "dl", "picture"]);
 
 /** @internal 公開 props の field を置ける element か。text は子が空か文字1つだけの element。 */
 export function fitsPropField(node: ElementNode, field: ComponentPropField): boolean {
@@ -21,7 +21,7 @@ export function fitsPropField(node: ElementNode, field: ComponentPropField): boo
   // 素材ライブラリの画像（asset）は src と併用できないため、URL の画像だけ src を公開できる。
   if (field === "src") return node.tag === "img" && node.asset === undefined;
   if (field === "alt") return node.tag === "img";
-  return !textless.has(node.tag) && (!node.children.length || node.children.length === 1 && node.children[0]!.type === "text");
+  return !node.icon && !textless.has(node.tag) && (!node.children.length || node.children.length === 1 && node.children[0]!.type === "text");
 }
 function displayText(value: unknown, path: string, max: number): string {
   if (typeof value !== "string" || value.length > max || !value.trim() || /[\u0000-\u001f\u007f]/u.test(value)) fail(path, "invalid string");

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  ASSET_LIMITS, INSERTABLE_IMAGE_TYPES, assetErrorReason, assetKey, collectAssetReferences, formatBytes, isInsertableImage, parseAssetAcquireResult, parseAssetDeleteResult, parseAssetFolder,
+  ASSET_LIMITS, INSERTABLE_IMAGE_TYPES, assetErrorReason, assetKey, collectAssetReferences, formatBytes, isInsertableImage, isInsertableVideo, parseAssetAcquireResult, parseAssetDeleteResult, parseAssetFolder,
   parseAssetListResult, parseAssetProviders, parseAssetUpdateResult, parseAssetUploadResult, parseAssetUsages, parseResolvedAssets, resolvedAsset, uniqueAssetReferences,
   type AssetFolder, type AssetKind, type AssetLibraryAdapter, type AssetListQuery, type AssetProvider, type AssetProviderKind, type AssetQuota, type AssetRejectReason, type AssetUpdateRequest,
   type AssetUploadPolicy, type AssetUsage, type LibraryAsset, type ResolvedAsset, type ResolvedAssetMap
@@ -12,7 +12,7 @@ import { nodeAt, walkNodes, type EditorOperation, type NodePath } from "./editor
 import type { AssetReference, ElementNode, PageDocument, StyleDeclarations, StyleProperty, StyleValue } from "./types.js";
 
 /** ogImage = ページのソーシャルカバー。siteOgImage = サイト設定のソーシャルカバー（文書ではなくサイト設定の入力へ入れる）。 */
-export type AssetPicker = { purpose: "image"; path: NodePath } | { purpose: "background"; path: NodePath; breakpoint: number | "base" } | { purpose: "replace"; from: AssetReference }
+export type AssetPicker = { purpose: "image"; path: NodePath } | { purpose: "video"; path: NodePath } | { purpose: "background"; path: NodePath; breakpoint: number | "base" } | { purpose: "replace"; from: AssetReference; kind: "image" | "video" }
   | { purpose: "ogImage" } | { purpose: "siteOgImage" };
 /** SNS のリンクプレビューが表示できる形式。AVIF は多くのサービスで表示されない。 */
 export const SOCIAL_IMAGE_TYPES = Object.freeze(["image/jpeg", "image/png", "image/webp", "image/gif"] as const);
@@ -24,7 +24,9 @@ export const coverAlt = (asset: Pick<LibraryAsset, "alt">, current: string): str
 export type AssetAction = "replace" | "background" | "insert" | "pick";
 export type AssetLibraryPanelProps = {
   adapter: AssetLibraryAdapter; siteId: string; mode: "library" | "pick"; pickTitle?: string | undefined;
-  /** Library rail can scope results to a declared provider class. Image pickers keep the full list. */
+  /** pick mode で一覧と配置可否を絞る。既定は画像。 */
+  pickKind?: "image" | "video" | undefined;
+  /** Library rail can scope results to a declared provider class. Media pickers keep the full list. */
   providerKind?: AssetProviderKind | undefined; panelLabel?: string | undefined;
   /** 文書の再読込・公開のたびに増える値。変わったら出所と一覧を取り直す。 */
   epoch?: number;
@@ -52,6 +54,7 @@ export function assetPlacement(document: PageDocument, asset: LibraryAsset, targ
     return { operation: { type: "meta", field: "ogImage", value: { asset: reference, alt: coverAlt(asset, document.meta?.ogImage?.alt ?? "") } }, notice: "ソーシャルカバーを設定しました。画像の説明を確認してください。" };
   }
   if (target.purpose === "background") return { operation: { type: "background", path: target.path, breakpoint: target.breakpoint, asset: reference } };
+  if (target.purpose === "video") return { operation: { type: "video", path: target.path, source: { asset: reference } }, notice: "動画を置き換えました。" };
   if (target.purpose === "image") {
     const node = nodeAt(document, target.path), current = node.type === "element" && typeof node.attrs?.alt === "string" ? node.attrs.alt : "";
     return { operation: { type: "image", path: target.path, source: { asset: reference }, alt: asset.alt || current }, notice: "画像を置き換えました。代替テキストを確認してください。" };
@@ -60,7 +63,7 @@ export function assetPlacement(document: PageDocument, asset: LibraryAsset, targ
   let counter = 1;
   while (used.has(`node_${counter}`)) counter++;
   const selected = selection ? nodeAt(document, selection) : undefined;
-  const container = selected?.type === "element" && !["img", "source", "br", "hr", "ul", "ol", "dl", "picture"].includes(selected.tag) ? selected : undefined;
+  const container = selected?.type === "element" && !["img", "source", "video", "br", "hr", "ul", "ol", "dl", "picture"].includes(selected.tag) ? selected : undefined;
   const node: ElementNode = { type: "element", id: `node_${counter}`, tag: "img", asset: reference, attrs: { alt: asset.alt }, style: { base: { maxWidth: "100%", height: "auto" } }, children: [] };
   if (container && selection) return { operation: { type: "add", parentId: container.id, node }, select: [...selection, container.children.length] };
   if (!selection) return { operation: { type: "add", parentId: null, node }, select: [document.body.length] };
@@ -163,8 +166,8 @@ class SourceMismatch extends Error {}
 
 /** サイト別の素材ライブラリ。library は管理と配置、pick は画像の選択だけを行う。listProviders があれば出所ごとに分ける。 */
 export function AssetLibraryPanel(props: AssetLibraryPanelProps) {
-  const { adapter, siteId, mode, pickTitle, providerKind, panelLabel = "アセット", localUsage, actions, disabledReason, onClose, onReplaceUsages, epoch = 0 } = props;
-  const sourceScopeKey = `${mode}:${providerKind ?? "all"}`;
+  const { adapter, siteId, mode, pickTitle, pickKind = "image", providerKind, panelLabel = "アセット", localUsage, actions, disabledReason, onClose, onReplaceUsages, epoch = 0 } = props;
+  const sourceScopeKey = `${mode}:${pickKind}:${providerKind ?? "all"}`;
   const [folderId, setFolderId] = useState<string | null>(null), [kind, setKind] = useState<AssetKind | "all">("all");
   const [searchInput, setSearchInput] = useState(""), [search, setSearch] = useState(""), [reload, setReload] = useState(0);
   const [list, setList] = useState<ListState>({ status: "loading", assets: [], folders: [], more: "idle" });
@@ -183,12 +186,12 @@ export function AssetLibraryPanel(props: AssetLibraryPanelProps) {
   const fileInput = useRef<HTMLInputElement>(null), heading = useRef<HTMLHeadingElement>(null), cards = useRef(new Map<string, HTMLButtonElement>());
   const more = useRef<AbortController | null>(null), uploadId = useRef(0), latest = useRef(props), busy = useRef(false), work = useControllers();
   latest.current = props;
-  const listKind = mode === "pick" ? "image" : kind;
+  const listKind = mode === "pick" ? pickKind : kind;
   const legacy = !adapter.listProviders, providers = !legacy && sources.status === "ready" ? sources.items : undefined;
   const scopedProviders = useMemo(() => providers?.filter((item) => !providerKind || item.kind === providerKind), [providers, providerKind]);
   const providerOf = (asset: LibraryAsset) => providers?.find((item) => item.id === asset.provider);
   const current = scopedProviders && source !== null ? scopedProviders.find((item) => item.id === source) : undefined, offline = current?.status === "unavailable";
-  const listScopeKey = `${mode}:${providerKind ?? "all"}:${source ?? "all"}`;
+  const listScopeKey = `${mode}:${pickKind}:${providerKind ?? "all"}:${source ?? "all"}`;
   const visibleList: ListState = list.scopeKey === listScopeKey ? list : { status: "loading", assets: [], folders: [], more: "idle" };
   const uploadTarget = !providers ? undefined : current ? (current.status === "available" && current.capabilities.upload ? current : undefined)
     : scopedProviders?.find((item) => item.status === "available" && item.capabilities.upload);
@@ -216,7 +219,7 @@ export function AssetLibraryPanel(props: AssetLibraryPanelProps) {
   }, [adapter, siteId, sourceReload, epoch]);
   useEffect(() => {
     setFolderId(null); setFolderDraft(null); setFolderError("");
-  }, [mode, providerKind]);
+  }, [mode, pickKind, providerKind]);
   useEffect(() => {
     if (mode === "pick") { setSource(null); return; }
     if (!providerKind) { setSource(null); return; }
@@ -224,7 +227,7 @@ export function AssetLibraryPanel(props: AssetLibraryPanelProps) {
     setSource((previous) => previous !== null && providers.some((item) => item.id === previous && item.kind === providerKind)
       ? previous : providers.find((item) => item.kind === providerKind)?.id ?? null);
   }, [mode, providerKind, providers]);
-  useEffect(() => { setDetail(null); }, [mode, providerKind]);
+  useEffect(() => { setDetail(null); }, [mode, pickKind, providerKind]);
   useEffect(() => {
     if (!legacy && !providers) return;
     more.current?.abort(); more.current = null;
@@ -272,7 +275,9 @@ export function AssetLibraryPanel(props: AssetLibraryPanelProps) {
     const provider = providerOf(asset);
     if (!legacy && !provider) return { error: unknownSource, acquired: false };
     if (provider?.status === "unavailable") return { error: provider.unavailableReason ?? unavailableText, acquired: false };
-    if (!isInsertableImage(asset)) return { error: asset.kind === "image" && asset.status === "processing" ? waitText : notPlaceable, acquired: false };
+    const insertable = mode === "pick" && pickKind === "video" ? isInsertableVideo(asset) : isInsertableImage(asset);
+    const placementProblem = pickKind === "video" ? "配置できる動画は確認済みの MP4 です。" : notPlaceable;
+    if (!insertable) return { error: asset.kind === pickKind && asset.status === "processing" ? waitText : placementProblem, acquired: false };
     if (!provider?.capabilities.acquire) return { error: latest.current.onApply(asset, action), acquired: false };
     if (!adapter.acquireAsset) return { error: "この出所のアセットは利用の準備ができません。", acquired: false };
     if (busy.current) return null;
@@ -294,7 +299,7 @@ export function AssetLibraryPanel(props: AssetLibraryPanelProps) {
     const key = assetKey(ready), from = assetKey(asset);
     setList((previous) => ({ ...previous, assets: previous.assets.some((item) => assetKey(item) === key) ? previous.assets.map((item) => assetKey(item) === key ? ready : item)
       : source === null || source === ready.provider ? [ready, ...previous.assets] : previous.assets }));
-    const error = isInsertableImage(ready) ? latest.current.onApply(ready, action) : notPlaceable;
+    const error = (mode === "pick" && pickKind === "video" ? isInsertableVideo(ready) : isInsertableImage(ready)) ? latest.current.onApply(ready, action) : placementProblem;
     setDetail((previous) => previous && assetKey(previous.asset) === from ? { asset: ready, focus: key === from ? previous.focus : "place", notice: { text: error ?? acquiredText, error: !!error } } : previous);
     return { error, acquired: true };
   }
@@ -331,7 +336,7 @@ export function AssetLibraryPanel(props: AssetLibraryPanelProps) {
     const [single] = uploaded;
     if (uploaded.length !== 1 || !single) return;
     if (latest.current.mode === "library") { setLastKey(assetKey(single)); setDetail({ asset: single, focus: "alt" }); }
-    else if (isInsertableImage(single)) { const result = await apply(single, "pick"); if (result) setPickError(result.error ?? ""); }
+    else if (pickKind === "video" ? isInsertableVideo(single) : isInsertableImage(single)) { const result = await apply(single, "pick"); if (result) setPickError(result.error ?? ""); }
   }
   async function createFolder() {
     const name = (folderDraft ?? "").trim();
@@ -356,7 +361,7 @@ export function AssetLibraryPanel(props: AssetLibraryPanelProps) {
     : providerKind === "cms" ? "接続済みCMSのアセットを参照・配置"
       : providerKind === "upload" ? "サイトへアップロードしたアセットを管理・配置" : "アセットをページに配置";
   return <section className="e-asset" aria-label="アセットライブラリ" onKeyDown={(event) => { if (mode === "pick" && event.key === "Escape") { event.preventDefault(); onClose(); } }}>
-    {mode === "pick" ? <div className="e-asset-head"><h2 ref={heading} tabIndex={-1}>{pickTitle ?? "画像を選ぶ"}</h2><button type="button" className="e-small" aria-label="画像の選択を閉じる" onClick={onClose}>閉じる</button></div> : <div className="e-panel-head"><h2>{panelLabel}</h2><p>{description}</p></div>}
+    {mode === "pick" ? <div className="e-asset-head"><h2 ref={heading} tabIndex={-1}>{pickTitle ?? "画像を選ぶ"}</h2><button type="button" className="e-small" aria-label={`${pickKind === "video" ? "動画" : "画像"}の選択を閉じる`} onClick={onClose}>閉じる</button></div> : <div className="e-panel-head"><h2>{panelLabel}</h2><p>{description}</p></div>}
     {!legacy && !providers ? sources.status === "error"
       ? <div role="alert"><p className="e-help e-problem">アセットの出所を読み込めませんでした。</p><button type="button" onClick={() => setSourceReload((value) => value + 1)}>再読み込み</button></div>
       : <p className="e-help" role="status">読み込み中…</p> : <>
@@ -538,6 +543,21 @@ export function ImageSourceField({ node, assets, failed, lock, disabled, onPick,
     <small className="e-help">{node.asset ? "アセットの画像" : "URL で指定した画像"}</small>
     {node.asset && !src && failed && <small className="e-help e-problem">アセットの情報を取得できませんでした。</small>}
     <div className="e-actions"><button type="button" disabled={disabled || !!lock} onClick={onPick}>{src ? "画像を置き換え" : "画像を選ぶ"}</button></div>
+    {lock && <small className="e-help">ロック: {lock}</small>}
+    <details><summary>URL で指定</summary>{children}</details>
+  </div>;
+}
+
+/** video のインスペクタ。asset URL は文書へ戻さず、URL 入力欄は呼び出し側から渡す。 */
+export function VideoSourceField({ node, assets, failed, lock, disabled, onPick, children }: {
+  node: ElementNode; assets: ResolvedAssetMap; failed: boolean; lock: string | undefined; disabled: boolean; onPick: () => void; children: ReactNode;
+}) {
+  const src = node.asset ? resolvedAsset(assets, node.asset)?.src : typeof node.attrs?.src === "string" ? node.attrs.src : undefined;
+  return <div className="e-asset-source">
+    <div className="e-asset-preview">{src ? <video src={src} poster={typeof node.attrs?.poster === "string" ? node.attrs.poster : undefined} muted preload="metadata" onPlay={(event) => event.currentTarget.pause()} /> : <span className="e-asset-missing">{node.asset ? "動画を表示できません" : "動画を選んでください"}</span>}</div>
+    <small className="e-help">{node.asset ? "アセットの動画" : src ? "URL で指定した動画" : "動画の素材または URL を指定"}</small>
+    {node.asset && !src && failed && <small className="e-help e-problem">アセットの情報を取得できませんでした。</small>}
+    <div className="e-actions"><button type="button" disabled={disabled || !!lock} onClick={onPick}>{src ? "動画を置き換え" : "動画を選ぶ"}</button></div>
     {lock && <small className="e-help">ロック: {lock}</small>}
     <details><summary>URL で指定</summary>{children}</details>
   </div>;

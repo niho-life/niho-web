@@ -100,6 +100,28 @@ test("asset images render resolved URLs with intrinsic size and omit or mark unr
   assert.ok(!renderPageToHtml(doc).includes("<img"));
 });
 
+test("icons and videos render accessibly in SSR and unresolved video assets fail gracefully", () => {
+  const doc = structuredClone(fixture);
+  doc.body = [
+    { type: "element", id: "done", tag: "span", icon: "check", attrs: { role: "img", "aria-label": "完了" }, style: { base: { color: "#123456", fontSize: 28 } }, children: [] },
+    { type: "element", id: "clip", tag: "video", asset: { provider: "uploads", id: "clip" }, attrs: { "aria-label": "紹介動画", poster: "/poster.webp", muted: true, playsInline: true }, children: [] },
+    { type: "element", id: "lost-video", tag: "video", asset: { provider: "uploads", id: "lost" }, attrs: { title: "見つからない動画" }, children: [] },
+    { type: "element", id: "empty-video", tag: "video", attrs: { "aria-label": "準備中の動画" }, children: [] }
+  ];
+  const html = renderPageToHtml(doc, {}, { assets: { "uploads:clip": { src: "/media/clip.mp4" } } });
+  assert.match(html, /<span[^>]*data-nw-node="done"[^>]*>✓<\/span>/);
+  const video = html.match(/<video[^>]*data-nw-node="clip"[^>]*><\/video>/)?.[0];
+  assert.ok(video.includes('src="/media/clip.mp4"')); assert.ok(video.includes('poster="/poster.webp"'));
+  assert.ok(video.includes('controls=""')); assert.ok(video.includes('preload="metadata"')); assert.ok(!video.includes("autoplay"));
+  assert.ok(!html.includes('data-nw-node="lost-video"'));
+  assert.ok(!html.includes('data-nw-node="empty-video"'));
+  const placeholder = renderToString(createElement(PageRenderer, { document: doc, assets: { "uploads:clip": { src: "/media/clip.mp4" } }, missingAssets: "placeholder" }));
+  assert.match(placeholder, /data-nw-node="lost-video"[^>]*data-nw-missing-asset=""[^>]*role="status"[^>]*aria-label="動画を表示できません"/);
+  assert.match(placeholder, /data-nw-node="empty-video"[^>]*data-nw-missing-asset=""[^>]*role="status"[^>]*aria-label="動画を選んでください"[^>]*>動画を選んでください<\/span>/);
+  const canvas = renderToString(createElement(PageRenderer, { document: doc, assets: { "uploads:clip": { src: "/media/clip.mp4" } }, canvas: { siteOrigin: "https://site.example" } }));
+  assert.ok(canvas.includes('poster="https://site.example/poster.webp"'));
+});
+
 test("unsafe resolved asset maps throw before any block executes", () => {
   const doc = imageDocument(); let called = 0;
   doc.body.unshift({ type: "component", id: "notice", block: "Notice", props: {} });

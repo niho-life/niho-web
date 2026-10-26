@@ -4,7 +4,7 @@ import { parsePageDocument } from "./document.js";
 import type { EditorBlockRegistry, EditorLock, EditorPage, EditorPageChange, EditorPageChangePlan, EditorPageImpact, EditorReadOnly, EditorReleasePlan, EditorReleaseRequest, EditorSite, EditorTarget } from "./editor-types.js";
 import { findPathConflict, validatePagePath } from "./pages.js";
 import { copyId, nodeAt, siblingsAt, walkNodes, type NodePath } from "./node-tree.js";
-import type { Appear, AssetReference, ComponentLibrary, ComponentNode, DesignToken, ElementNode, HiddenRange, InstanceNode, NodeStyle, PageDocument, PageMeta, PageNode, PublicPropValue, StateName, StateProperty, StyleDeclarations, StyleProperty, StyleValue, TextStyle } from "./types.js";
+import type { Appear, AssetReference, ComponentLibrary, ComponentNode, DesignToken, ElementNode, HiddenRange, IconName, InstanceNode, NodeStyle, PageDocument, PageMeta, PageNode, PublicPropValue, StateName, StateProperty, StyleDeclarations, StyleProperty, StyleValue, TextStyle } from "./types.js";
 import { stateNames, textStyleProperties } from "./style-values.js";
 import { assertMotionStylePatch, sameMotionValue, type MotionStylePatch } from "./builder.js";
 import { isSafeHttpsOrigin, isSafePublicUrl, keys, line, record } from "./validation-utils.js";
@@ -13,6 +13,8 @@ export { nodeAt, walkNodes, type NodePath };
 export type EditorOperation =
   | { type: "text"; path: NodePath; value: string }
   | { type: "attribute"; path: NodePath; name: string; value: string }
+  | { type: "booleanAttribute"; path: NodePath; name: "controls" | "loop" | "muted" | "playsInline"; value: boolean }
+  | { type: "icon"; path: NodePath; name: IconName }
   | { type: "tag"; path: NodePath; value: "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" }
   | { type: "prop"; path: NodePath; name: string; value: PublicPropValue | undefined }
   | { type: "style"; path: NodePath; breakpoint: number | "base"; property: StyleProperty; value: StyleValue | undefined }
@@ -38,6 +40,7 @@ export type EditorOperation =
   | { type: "add"; parentId: string | null; node: PageNode; index?: number }
   | { type: "replaceChildren"; path: NodePath; children: PageNode[] }
   | { type: "image"; path: NodePath; source: { asset: AssetReference } | { src: string; srcset?: string }; alt?: string }
+  | { type: "video"; path: NodePath; source: { asset: AssetReference } | { src: string } }
   | { type: "background"; path: NodePath; breakpoint: number | "base"; asset: AssetReference | undefined }
   | { type: "replaceAsset"; from: AssetReference; to: AssetReference }
   | { type: "duplicate" | "remove"; path: NodePath }
@@ -83,7 +86,7 @@ function fieldValue(node: PageNode, field: string): unknown {
   }
   return value;
 }
-const imageSourceFields = ["asset", "attrs.src", "attrs.srcSet"];
+const mediaSourceFields = ["asset", "attrs.src", "attrs.srcSet"];
 function assertLocks(before: PageDocument, after: PageDocument, locks: readonly EditorLock[]): void {
   const index = (document: PageDocument) => new Map(walkNodes(document).flatMap(({ node }) => node.type === "text" ? [] : [[node.id, node] as const]));
   const previous = index(before), next = index(after);
@@ -94,7 +97,7 @@ function assertLocks(before: PageDocument, after: PageDocument, locks: readonly 
     return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, resolved(document, entry)]));
   };
   const projected = (document: PageDocument, node: PageNode, field: string): unknown => {
-    if (node.type === "element" && node.tag === "img" && imageSourceFields.includes(field)) {
+    if (node.type === "element" && (node.tag === "img" || node.tag === "video") && mediaSourceFields.includes(field)) {
       return [node.asset, node.attrs?.src, node.attrs?.srcSet];
     }
     const raw = resolved(document, fieldValue(node, field));
@@ -117,7 +120,7 @@ export function lockReason(document: PageDocument, path: NodePath, field: string
     if (node.type === "text") continue;
     const inherited = depth < path.length;
     const lock = locks.find((lock) => lock.nodeId === node.id && lock.fields.some((locked) => locked === "*" ||
-      (inherited ? locked === "children" : field === locked || field.startsWith(`${locked}.`) || node.type === "element" && node.tag === "img" && imageSourceFields.includes(field) && imageSourceFields.includes(locked))));
+      (inherited ? locked === "children" : field === locked || field.startsWith(`${locked}.`) || node.type === "element" && (node.tag === "img" || node.tag === "video") && mediaSourceFields.includes(field) && mediaSourceFields.includes(locked))));
     if (lock) return lock.reason;
   }
   return undefined;
@@ -300,6 +303,12 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
       node.attrs ??= {};
       if (operation.value === "" && !(node.tag === "img" && operation.name === "alt")) delete node.attrs[operation.name];
       else node.attrs[operation.name] = operation.value;
+    } else if (operation.type === "booleanAttribute") {
+      if (node.type !== "element" || node.tag !== "video") throw new Error("動画を選択してください。");
+      (node.attrs ??= {})[operation.name] = operation.value;
+    } else if (operation.type === "icon") {
+      if (node.type !== "element" || node.tag !== "span" || !node.icon) throw new Error("アイコンを選択してください。");
+      node.icon = operation.name;
     } else if (operation.type === "prop") {
       if (node.type !== "component") throw new Error("ブロックを選択してください。");
       if (operation.value === undefined) delete node.props[operation.name]; else node.props[operation.name] = operation.value;
@@ -409,6 +418,11 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
         delete node.asset;
       }
       if (operation.alt !== undefined) node.attrs.alt = operation.alt;
+    } else if (operation.type === "video") {
+      if (node.type !== "element" || node.tag !== "video") throw new Error("動画を選択してください。");
+      node.attrs ??= {};
+      if ("asset" in operation.source) { node.asset = structuredClone(operation.source.asset); delete node.attrs.src; }
+      else { if (operation.source.src) node.attrs.src = operation.source.src; else delete node.attrs.src; delete node.asset; }
     } else if (operation.type === "background") {
       if (node.type === "text") throw new Error("親要素の見た目を編集してください。");
       const declarations = declarationsAt(node, operation.breakpoint);
@@ -572,5 +586,6 @@ export function validatePageChangePlan(plan: unknown, change: EditorPageChange, 
 }
 export function newElement(tag: ElementNode["tag"], id: string): ElementNode {
   return tag === "img" ? { type: "element", id, tag, attrs: { src: "/placeholder.webp", alt: "画像の説明" }, children: [] }
+    : tag === "video" ? { type: "element", id, tag, attrs: { "aria-label": "動画", controls: true, preload: "metadata", playsInline: true }, children: [] }
     : { type: "element", id, tag, ...(tag === "a" ? { attrs: { href: "/" } } : {}), children: tag === "section" ? [] : [{ type: "text", text: tag === "a" ? "リンク" : "新しいテキスト" }] };
 }

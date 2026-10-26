@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { DocumentValidationError, generatePageCss } from "@niho/web/core";
+import { DocumentValidationError, generatePageCss, parsePageDocument } from "@niho/web/core";
 import { acceptSavedRevision, checkPageChange, commitHistory, editDocument, effectiveLocks, fingerprint, lockReason, newElement, nodeAt, travelHistory, validatePageChangePlan, validateReleasePlan, walkNodes } from "../dist/editor-model.js";
 
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
@@ -164,6 +164,26 @@ test("image operations switch between library assets and URLs and keep or set al
   const locked = withPhoto({ asset: sea, attrs: { alt: "" } });
   assert.throws(() => editDocument(locked, { type: "image", path: [0, 3], source: { src: "/other.webp" } }, {}, [{ nodeId: "photo", fields: ["asset"], reason: "連動画像" }]), /連動画像/);
   assert.throws(() => editDocument(locked, { type: "image", path: [0, 3], source: { asset: { provider: "uploads", id: "b" } } }, {}, [{ nodeId: "photo", fields: ["*"], reason: "連動画像" }]), /連動画像/);
+});
+test("icon and video operations preserve closed media contracts through reload", () => {
+  const original = doc();
+  original.body.push(
+    { type: "element", id: "status-icon", tag: "span", icon: "check", attrs: { role: "img", "aria-label": "完了" }, children: [] },
+    { type: "element", id: "movie", tag: "video", attrs: { src: "/intro.mp4", "aria-label": "紹介動画", controls: true, preload: "metadata" }, children: [] }
+  );
+  let next = editDocument(original, { type: "icon", path: [1], name: "heart" });
+  next = editDocument(next, { type: "video", path: [2], source: { asset: { provider: "uploads", id: "intro" } } });
+  next = editDocument(next, { type: "video", path: [2], source: { src: "" } });
+  assert.equal(nodeAt(next, [2]).asset, undefined);
+  assert.equal(nodeAt(next, [2]).attrs.src, undefined);
+  next = editDocument(next, { type: "video", path: [2], source: { asset: { provider: "uploads", id: "intro" } } });
+  next = editDocument(next, { type: "booleanAttribute", path: [2], name: "loop", value: true });
+  const reloaded = parsePageDocument(JSON.parse(JSON.stringify(next)));
+  assert.equal(nodeAt(reloaded, [1]).icon, "heart");
+  assert.deepEqual(nodeAt(reloaded, [2]).asset, { provider: "uploads", id: "intro" });
+  assert.equal(nodeAt(reloaded, [2]).attrs.src, undefined); assert.equal(nodeAt(reloaded, [2]).attrs.loop, true);
+  assert.throws(() => editDocument(original, { type: "video", path: [2], source: { src: "data:video/mp4;base64,AAAA" } }), DocumentValidationError);
+  assert.throws(() => editDocument(original, { type: "icon", path: [1], name: "<svg>" }), DocumentValidationError);
 });
 test("image source locks cover src, srcSet, assets, restoration and history together", () => {
   const original = withPhoto({ attrs: { src: "/photo.webp", srcSet: "/photo-large.webp", alt: "Sea" } });
