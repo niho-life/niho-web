@@ -38,17 +38,17 @@ Dashboard の左のメニューは 1 列で、「ホーム」（ダッシュボ�
 | ページ | 右上の「デザインエディタ」（従来どおり） |
 | CMS | 既定はサイト側の管理画面（記事・サークル・会社・クリエイター）を Dashboard の中の枠で開く。切替（`KAMAKURA_CMS_VIEW=workspace`）を入れると Studio のコレクション画面で開く（下の「CMS の切替」） |
 | 素材 | 今の置き場所（エディタの「素材」と CMS の画像欄）への案内。一覧・検索の画面は素材 provider（#85）の後 |
-| 翻訳 | サイト側の翻訳画面を枠で開く |
+| 翻訳 | 既定はサイト側の翻訳画面（`/admin/localization`）を枠で開く。切替（`KAMAKURA_TRANSLATIONS_VIEW=workspace`）を入れると Studio の翻訳の画面で開く（下の「翻訳の切替」） |
 | プロジェクト設定 | メンバーと招待（オーナー）。編集者には「オーナーだけが行えます」の案内を出す。解析の接続設定はまだ無いので、アナリティクスの「解析接続（準備中）」は無効 |
 
 - 枠で開くサイト側の管理画面の origin はコードに書かず、Worker の設定値 `KAMAKURA_ADMIN_ORIGIN`（https の origin だけ）から読みます（`studio/site-admin.mjs`）。未設定ならサイト機能を出しません。`wrangler secret put KAMAKURA_ADMIN_ORIGIN --config studio/wrangler.toml` で入れると、配備のたびに消えません。
-- `GET /api/projects/<Project>/sites/<Site>/site-admin` は D1 の現在の `owner` / `editor` だけに origin・画面のパス・CMS の開き方（`cmsView`: `"frame"` / `"workspace"`）を返し、接続の無いサイトは 404 `not_connected` です。
+- `GET /api/projects/<Project>/sites/<Site>/site-admin` は D1 の現在の `owner` / `editor` だけに origin・画面のパス・CMS と翻訳の開き方（`cmsView`・`translationsView`: `"frame"` / `"workspace"`）を返し、接続の無いサイトは 404 `not_connected` です。
 - Dashboard の HTML（ID の URL と alias の URL）の CSP は `frame-src` をその origin と Access のチームのドメイン（`ACCESS_ISSUER`）だけにします。サイト側にまだ Access の cookie が無いとき、枠はチームのドメインを経由して戻るためです（Studio にログイン済みならログイン画面は出ない。ログイン画面そのものは Access が枠を拒む）。editor の CSP と `frame-ancestors 'none'` は変えません。枠は `postMessage` を使わず、`sandbox` で Studio の画面の移動を許しません。
 - 枠の中は同じ Cloudflare Access のチームの SSO で開きます。サイト側にまだログインしていないと枠の中ではログイン画面を出せないので、画面に「別のタブで開く」を常に置きます（一度ログインすれば枠の中でも開ける）。サイト側は `frame-ancestors` で Studio の origin だけに枠を許します。
 
 ### CMS の切替（枠 → コレクション画面）
 
-Dashboard の「CMS」は、Worker の設定値 `KAMAKURA_CMS_VIEW` で中身を切り替えます。値が `workspace` のときだけ Studio のコレクション画面（`CollectionWorkspace` ＋ `createKamakuraCmsAdapter` ＋ 本文の TipTap）、無い・ほかの値は従来の枠です。**既定は枠**で、owner と editor の受入が終わったら on にします。翻訳は切替の後も枠のままです。
+Dashboard の「CMS」は、Worker の設定値 `KAMAKURA_CMS_VIEW` で中身を切り替えます。値が `workspace` のときだけ Studio のコレクション画面（`CollectionWorkspace` ＋ `createKamakuraCmsAdapter` ＋ 本文の TipTap）、無い・ほかの値は従来の枠です。**既定は枠**で、owner と editor の受入が終わったら on にします。翻訳は別の切替です（下の「翻訳の切替」）。
 
 - on にする: `wrangler secret put KAMAKURA_CMS_VIEW --config studio/wrangler.toml` で `workspace` を入れる（値は公開 repo に書かない。secret なので配備のたびに消えない）。Worker が新しい値で動き出せば、開き直した Dashboard から新しい画面になります（再配備は要らない）。
 - 戻す: `wrangler secret delete KAMAKURA_CMS_VIEW --config studio/wrangler.toml`（または `frame` を入れ直す）。次に開いた Dashboard から枠に戻ります。
@@ -57,6 +57,20 @@ Dashboard の「CMS」は、Worker の設定値 `KAMAKURA_CMS_VIEW` で中身を
 - CSP: on のとき、鎌倉の Dashboard の HTML（ID の URL と alias の URL）だけ `connect-src` に画像本体の直接 PUT 先 `https://next-kamakura.niho.life` を足します。本文と一覧の画像（`https://kamakura-media.niho.life` の縮小を含む）は今の `img-src 'self' https:` で足ります。本文の部品は inline の `<style>` と style 属性を使わず、埋め込みは枠を作らない（中身は公開したページだけ）ので、`style-src`・`frame-src` は変えません。off のときは何も足しません。editor の CSP と `frame-ancestors 'none'` は変えません。
 - 読み込み: コレクション画面と TipTap は `import()` で分け（`assets/chunks/`）、CMS を開いたときだけ読みます。読み込み中は「CMS の画面を読み込んでいます…」、失敗は「再試行」を出します。`studio/build.mjs` は、最初に読む分（`app.js` と、そこから静的に読む chunk）に TipTap・ProseMirror・`collection-workspace.tsx` が入ったら build を失敗させます。画面の CSS は `assets/collection.css`（`index.html` から読む）、項目の編集の上のバーは Studio のヘッダーの下に貼り付きます（`--niho-sticky-top`: 68px、幅 600px 以下は 58px）。
 - 画面の中の移動では作り直さないので、adapter が覚えた version で差分だけを保存します。ブラウザの戻る・進むで開き直すときは、自動保存（約 1 秒）の前の直しは残りません（画面の「一覧へ」は先に保存してから戻る）。
+
+### 翻訳の切替（枠 → 翻訳の画面）
+
+Dashboard の「翻訳」は、Worker の設定値 `KAMAKURA_TRANSLATIONS_VIEW` で中身を切り替えます。値が `workspace` のときだけ Studio の翻訳の画面（[`LocalizationWorkspace`](../docs/localization-workspace-contract.md) ＋ `createKamakuraLocalizationAdapter`）、無い・ほかの値・この値を返さない古い Worker は従来の枠です。**既定は枠**で、CMS の切替とは別に入れます。
+
+- 配備の順: 鎌倉の Worker の翻訳の API（kamakura-site#108 U3 K1・下の「Kamakura の翻訳 bridge」）を先に配備 → この Studio を配備（切替は入れないので枠のまま）→ `KAMAKURA_TRANSLATIONS_VIEW` を入れて owner と editor で受入（旧画面と同じ内容が読めること・保存・公開の準備まで）→ 問題があれば下の「戻す」。鎌倉の API が無いうちに入れると、翻訳の画面は「読み込めませんでした」になります（BFF の log は `localization_endpoint_missing`）。
+- on にする: `wrangler secret put KAMAKURA_TRANSLATIONS_VIEW --config studio/wrangler.toml` で `workspace` を入れる（値は公開 repo に書かない。secret なので配備のたびに消えない。再配備は要らない）。
+- 戻す: `wrangler secret delete KAMAKURA_TRANSLATIONS_VIEW --config studio/wrangler.toml`（または `frame` を入れ直す）。次に開いた Dashboard から枠に戻ります。翻訳の中身はどちらの画面でも鎌倉の同じ保存先なので、戻しても直した訳文は消えません。
+- 旧画面の入口: 翻訳の画面の上の「旧画面（/admin/localization）を開く ↗」で、サイト側の翻訳画面（`KAMAKURA_ADMIN_ORIGIN` の `/admin/localization`）を別のタブで開けます。切替は `KAMAKURA_ADMIN_ORIGIN` があるときだけ効きます。
+- URL: 一覧は `/projects/<別名>/admin/translations`、1 件は `/projects/<別名>/admin/translations/<itemKey>`（設定は一覧と同じ URL）。画面の中で一覧・1 件を移ると URL を積み、ブラウザの戻る・進むはその URL で翻訳の画面を開き直します（CMS と同じ。自動保存の前の直しは残らない）。短い入口 `/project/<別名>/translations/<itemKey>` も同じ形へ 301 で移します。itemKey は W1 の形（`[A-Za-z0-9_-]` で 200 字まで）だけで、ほかの形の URL は画面の route にしません。
+- 原文へのリンク（`sourceLink`）: 1 件が鎌倉の CMS の項目なら「CMS で開く」で Studio の CMS（CMS の切替が on ならその項目 `/admin/cms/<collectionId>/<itemId>`、off なら CMS の入口）を開きます。固定ページ・共通部分などの原文はコードで管理しているので、リンクを出しません。
+- 画像: 「画像を上げる」は鎌倉の Worker へ直接 PUT します（下）。「素材から選ぶ」は adapter の `chooseImage` で選び方の画面を渡したときだけ出します（今は渡していない。素材の一覧の部品はエディタの中だけで、Studio に上げた素材は公開前の URL なので、訳す言語の画像には使えない）。
+- CSP: on のとき、鎌倉の Dashboard の HTML（ID の URL と alias の URL）だけ `connect-src` に画像の直接 PUT 先、`frame-src` にプレビューの枠の origin（どちらも鎌倉の Worker の `https://next-kamakura.niho.life`）を足します。枠は画面が `sandbox="allow-scripts"`・`referrerpolicy="no-referrer"` で開き、`#niho-preview=<nonce>` を付けて postMessage でだけ話します。訳文・原文の画像は今の `img-src 'self' https:` で足ります。off のときは何も足しません。editor の CSP と `frame-ancestors 'none'` は変えません。
+- 読み込み: 翻訳の画面は `import()` で分け（`assets/chunks/`）、翻訳を開いたときだけ読みます（`studio/site-translations.tsx` → `studio/kamakura-localization-workspace.tsx`）。`studio/build.mjs` は、最初に読む分に `src/localization-workspace*.tsx`・`studio/kamakura-localization*` が入ったら build を失敗させます。画面だけの CSS は `assets/localization.css`（`localizationWorkspaceCss` から `collectionCss` を除いたもの。`index.html` から読む）です。
 
 Alias は Worker と client router の固定対応表で内部の Project / Site ID へ解決します。別名 URL 自体をブラウザに保ち、alias から Dashboard と Editor の間を移動しても同じ表記を使います。API/BFF の path、membership 判定、Project / Site ID は変わりません。招待 URL と Experience STG 専用 URL は引き続き ID 付き route です。
 
@@ -193,6 +207,55 @@ log は editor と同じく問い合わせ ID・固定の operation（`cms_schem
 
 テストは `test/studio-worker-cms.test.mjs`（BFF）、`test/kamakura-cms-adapter.test.mjs`（adapter）、`test/studio-site-admin.test.mjs`（切替・CSP・URL）、`test/studio-client-cms.test.mjs`（client の枠とコレクション画面の切り替え・URL・戻る/進む）です。
 
+## Kamakura の翻訳 bridge（LocalizationWorkspace）
+
+鎌倉サイトの英語版を、[翻訳の画面](../docs/localization-workspace-contract.md)（`LocalizationWorkspace`・W1）から直すための BFF と adapter です。Dashboard の「翻訳」から使うには「翻訳の切替」の `KAMAKURA_TRANSLATIONS_VIEW` を入れます（既定は枠のまま）。上流の経路と応答の正は kamakura-site の `worker/README.md`「Studio の翻訳 API の契約」です。
+
+- ブラウザが呼ぶのは同一 origin の `/api/projects/project-kamakura/sites/kamakura/localization/...` と、画像本体の `PUT https://next-kamakura.niho.life/internal/studio/localization-upload/<uuid>` だけです。BFF は service binding `KAMAKURA_SITE` の `/internal/studio/localization/...` へ、editor・CMS と同じ HMAC の header（同じ関数・`KAMAKURA_STUDIO_BRIDGE_SECRET`）で署名して渡します。追加の secret はありません。
+- 鎌倉以外の Project / Site は 404 です。要求ごとに Access の `sub` と D1 の現在の `owner` / `editor` を確かめ（無ければ 403）、その役割を上流へ渡します。query string、知らない route（404）・method（405）は拒否します。読み取りも POST と本文です。
+- 本文は同一 origin（`Origin` 一致・`Sec-Fetch-Site: same-origin`）・`application/json`・JSON object を要求し、操作ごと（`command` は action ごと）の key の集合が完全に一致し、値が W1 の形（itemKey・unitId・operationId・版・cursor・token・訳文の大きさ）のときだけ通します。BFF は確かめた値だけで JSON を作り直し、Access で確かめた email と D1 の役割を `actor: { email, role }` に入れます。ブラウザが `actor` を送ってきたら 400 です。できる操作（`permissions`）は鎌倉の Worker が役割から決め、書き込みでも確かめます。
+
+| route（`localization/` の後ろ） | ブラウザの本文（`actor` は BFF） | 上流の待ち時間 |
+| --- | --- | --- |
+| `POST overview` | `{}` | 30 秒 |
+| `POST items`・`POST items/after/:cursor` | `{}` | 12 秒 |
+| `POST items/:itemKey` | `{}` | 12 秒 |
+| `POST items/:itemKey/command` | `{ itemKey, operationId, action, unitId, expectedVersion, expectedSourceVersion }` と action ごとに `value`／`candidateId`／`image` | 12 秒 |
+| `POST items/:itemKey/translate` | `{ itemKey, operationId, unitIds }` | 30 秒 |
+| `POST jobs/:jobId` | `{}` | 12 秒 |
+| `POST catalog/advance` | `{}` | 30 秒 |
+| `POST preview/items` | `{ itemKey, previewId, cursor }` | 30 秒 |
+| `POST release`・`release/prepare`・`release/apply` | `{}`・`{ operation, releaseId, expectedVersion, expectedCurrentVersion, resumeToken }`・`{ confirmationToken, resumeToken }` | 30 秒 |
+| `PUT settings` | `{ expectedVersion, autoDraft }` | 12 秒 |
+| `POST uploads/intent` | `{ itemKey, unitId, name, mimeType, bytes }` | 12 秒 |
+
+- `set-image` の `image` は `null`（原文と同じに戻す）か `{ kind: "image-url", src }` だけです（どの URL を使えるかは鎌倉の Worker が確かめる）。
+- 上限: 訳文の保存（`command`）の本文は 1 MiB − 4 KiB（鎌倉の Worker の 1 MiB から actor の分を引く）、ほかの本文 16 KiB、上流の応答 4 MiB（upload intent は 16 KiB）。画像は jpeg / png / webp / avif / gif で 50 MiB まで（実際の上限は鎌倉の Worker の 413）。
+- プレビューの材料（`preview/items` の 200）は、確かめずに 2 MiB + 64 KiB の上限つきでそのまま流します（ブラウザの adapter と画面が W1 の parser で確かめる。上限を超えたら途中で切る）。ほかの応答は W1 の parser（`src/localization-workspace-model.ts`）で確かめ、既知の field だけを返します。概要の `preview.frameUrl` は鎌倉の Worker の `/_studio/localization-preview`（`.html` 付きも可）だけを受けます。
+
+| 上流 | ブラウザへ |
+| --- | --- |
+| 契約の結果（本文 `{ status, … }`。forbidden は 403・not_found は 404・ほかは 200） | 同じ status で、確かめ直した JSON |
+| upload intent の 201 | 201 `{ uploadUrl, uploadToken, uploadId }`（`uploadUrl` は鎌倉の Worker の `/internal/studio/localization-upload/<uploadId>` だけ） |
+| 経路の 404（本文に status が無い） | 404 `{ error: "not_found" }`（概要の 404 は翻訳の API の未配備として 503） |
+| 409 `{ error }`（保存先の取り合いが続いた） | 409 `{ error: "conflict" }` |
+| upload intent の 413 / 415 | 同じ status で `{ error: "image_rejected" }` |
+| 400（と本文の 413 / 415） | 400 `{ error: "invalid_request" }` |
+| 401 / status の無い 403 / 429 / 5xx / 3xx / JSON でない / 上限超え / timeout / 想定外の 4xx | 503 `{ error: "service_unavailable", supportId }` |
+| 契約に合わない応答（field の過不足・itemKey / unitId / jobId の不一致・status と HTTP の status の食い違い・プレビューの枠の違いなど） | 502 `{ error: "upstream_contract_invalid", supportId }` |
+
+log は editor・CMS と同じく問い合わせ ID・固定の operation（`localization_overview`・`localization_list`・`localization_item`・`localization_command`・`localization_translate`・`localization_job`・`localization_catalog`・`localization_preview`・`localization_release`・`localization_release_prepare`・`localization_release_apply`・`localization_settings`・`localization_upload_intent`）・固定の分類（editor の分類と `localization_endpoint_missing`）・上流の status だけで、本文・token・email・subject は出しません。
+
+ブラウザ側は `studio/kamakura-localization.ts` の `createKamakuraLocalizationAdapter({ siteOrigin, cmsItemUrl, chooseImage })` が `LocalizationWorkspaceAdapter` を返します（`siteOrigin` は Project の `site.domains[0]`）。
+
+- 各メソッドは BFF を呼び、本文に `status` があれば W1 の parser に通します。BFF が所属を拒んだ 403（`{ error }`）は forbidden、ほかの `{ error }` は例外（画面では「読み込めませんでした」と再試行）です。
+- 1 件と保存の結果の画像の項目は、表示用の `url` が `/` から始まる（サイトの中の画像）ときだけ `siteOrigin` の絶対 URL にします（Studio の origin から読まないため）。`set-image` で送る `asset` は変えません。
+- 画像: BFF の `uploads/intent` を呼び、`uploadUrl` が鎌倉の Worker の `/internal/studio/localization-upload/<uploadId>` であることを確かめてから、`credentials: "omit"`・`Authorization: Bearer <uploadToken>` で直接 PUT します。結果は W1 の `{ status: "uploaded", image }`（`image.asset` は `{ kind: "image-url", src }`）だけを受けます。拒否は type / size / permission / invalid で返します。
+- `pickAsset` は `chooseImage`（選んだ鎌倉の公開画像 `https://kamakura-media.niho.life/...` の URL か null）を渡したときだけ作り、`{ kind: "image-url", src }` で返します。`sourceLink` は `cmsItemUrl` を渡したときだけ作り、CMS の項目の 1 件だけに URL を返します。
+- Dashboard の中では `studio/site-translations.tsx` が `studio/kamakura-localization-workspace.tsx` を `import()` で読み、adapter を描画の外で CMS の開き方ごとに 1 回だけ作ります。
+
+テストは `test/studio-worker-localization.test.mjs`（BFF・CSP・bundle の分割）、`test/kamakura-localization-adapter.test.mjs`（adapter）、`test/studio-site-admin.test.mjs`（切替・URL）、`test/studio-client-translations.test.mjs`（client の枠と翻訳の画面の切り替え・URL・戻る/進む）です。
+
 ## Migration と初回セットアップ
 
 前提: Node.js 22、依存関係、Wrangler CLI。Wrangler は環境側で管理し、Cloudflare にログイン済みの operator が実行します。
@@ -275,6 +338,7 @@ Project 固有 API はすべて次の prefix 配下です。
 - Kamakura: `PUT editor/:pageId/draft`、`POST editor/:pageId/release-plan`、`POST editor/:pageId/release`
 - Kamakura: `POST editor/assets/{list,upload-intent,update,usages,resolve}`、`GET editor/assets/:uuid/preview`（owner/editor）
 - Kamakura CMS: `GET cms/schema`、`GET|POST cms/collections/:col/items`、`GET cms/collections/:col/items/:id`、`PUT …/:id/draft`、`POST …/:id/{publish,discard-draft,unpublish,duplicate,remove,schedule,cancel-schedule}`、`POST cms/uploads/intent`（owner/editor・鎌倉以外は 404）
+- Kamakura 翻訳: `POST localization/{overview,items,catalog/advance,preview/items,release,release/prepare,release/apply,uploads/intent}`、`POST localization/items/after/:cursor`、`POST localization/items/:itemKey{,/command,/translate}`、`POST localization/jobs/:jobId`、`PUT localization/settings`（owner/editor・役割を上流へ渡す・鎌倉以外は 404）
 
 unknown Project/Site と権限のない Project/Site は、外部から区別できる詳細を返しません。owner API が返す member 情報は、その owner が管理する同一 Project に限定します。
 

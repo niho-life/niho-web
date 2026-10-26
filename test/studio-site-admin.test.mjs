@@ -47,13 +47,39 @@ test("CMS の一覧・項目は /admin/cms/<collectionId>/<itemId> で開け、�
 
   assert.equal(projectShortcutTarget("/project/kamakura-site/cms/posts"), "/projects/kamakura-site/admin/cms/posts");
   assert.equal(projectShortcutTarget("/project/kamakura-site/cms/posts/morning-walk/"), "/projects/kamakura-site/admin/cms/posts/morning-walk");
-  for (const path of ["/project/kamakura-site/translations/posts", "/project/kamakura-site/cms/posts/a/b", "/project/kamakura-site/cms/prototype", "/project/unknown/cms/posts"]) {
+  for (const path of ["/project/kamakura-site/assets/posts", "/project/kamakura-site/cms/posts/a/b", "/project/kamakura-site/cms/prototype", "/project/unknown/cms/posts"]) {
+    assert.equal(projectShortcutTarget(path), null, path);
+  }
+});
+
+test("翻訳の一覧・1 件は /admin/translations/<itemKey> で開け、短い入口からも同じ形で移す", () => {
+  const base = { slug: "kamakura-site", projectId: "project-kamakura", siteId: "kamakura", page: "translations" };
+  assert.deepEqual(parseProjectAliasPath("/projects/kamakura-site/admin/translations"), base);
+  assert.deepEqual(parseProjectAliasPath("/projects/kamakura-site/admin/translations/aG9tZQ"), { ...base, translations: { itemKey: "aG9tZQ" } });
+  assert.deepEqual(parseProjectAliasPath("/projects/kamakura-site/admin/translations/Y21zOnBvc3RzOmE_-x/"), { ...base, translations: { itemKey: "Y21zOnBvc3RzOmE_-x" } });
+  for (const path of [
+    "/projects/kamakura-site/admin/translations/a/b", "/projects/kamakura-site/admin/translations/a.b", "/projects/kamakura-site/admin/translations/__proto__",
+    "/projects/kamakura-site/admin/translations/a%2Fb", "/projects/kamakura-site/admin/translations//x", `/projects/kamakura-site/admin/translations/${"a".repeat(201)}`,
+    "/projects/kamakura-site/admin/assets/aG9tZQ", "/projects/kamakura-site/admin/editor/aG9tZQ"
+  ]) assert.equal(parseProjectAliasPath(path), null, path);
+
+  assert.equal(projectRoutePath("/projects/kamakura-site/admin/translations", "project-kamakura", "kamakura", "translations", { itemKey: "aG9tZQ" }), "/projects/kamakura-site/admin/translations/aG9tZQ");
+  assert.equal(projectRoutePath("/projects/project-kamakura/sites/kamakura", "project-kamakura", "kamakura", "translations", { itemKey: null }), "/projects/kamakura-site/admin/translations");
+  // 形の違う itemKey は URL に書かない（一覧に戻す）。翻訳の下の階層を CMS などには付けない
+  assert.equal(projectRoutePath("/", "project-kamakura", "kamakura", "translations", { itemKey: "a/b" }), "/projects/kamakura-site/admin/translations");
+  assert.equal(projectRoutePath("/", "project-kamakura", "kamakura", "translations", { itemKey: "constructor" }), "/projects/kamakura-site/admin/translations");
+  assert.equal(projectRoutePath("/", "project-kamakura", "kamakura", "cms", { itemKey: "aG9tZQ" }), "/projects/kamakura-site/admin/cms");
+  assert.equal(projectRoutePath("/", "project-kamakura", "kamakura", "translations", { collectionId: "posts", itemId: "x" }), "/projects/kamakura-site/admin/translations");
+
+  assert.equal(projectShortcutTarget("/project/kamakura-site/translations/aG9tZQ"), "/projects/kamakura-site/admin/translations/aG9tZQ");
+  assert.equal(projectShortcutTarget("/project/kamakura-site/translations/aG9tZQ/"), "/projects/kamakura-site/admin/translations/aG9tZQ");
+  for (const path of ["/project/kamakura-site/translations/a/b", "/project/kamakura-site/translations/prototype", "/project/unknown/translations/aG9tZQ"]) {
     assert.equal(projectShortcutTarget(path), null, path);
   }
 });
 
 test("管理画面の origin は設定値の https の origin だけを使い、接続の無いサイトは null", () => {
-  assert.deepEqual(siteAdmin({ KAMAKURA_ADMIN_ORIGIN: "https://admin.example.test" }, "project-kamakura", "kamakura"), { origin: "https://admin.example.test", paths: { cms: "/admin", translations: "/admin/localization" }, cmsView: "frame" });
+  assert.deepEqual(siteAdmin({ KAMAKURA_ADMIN_ORIGIN: "https://admin.example.test" }, "project-kamakura", "kamakura"), { origin: "https://admin.example.test", paths: { cms: "/admin", translations: "/admin/localization" }, cmsView: "frame", translationsView: "frame" });
   for (const value of [undefined, "", "http://admin.example.test", "https://admin.example.test/admin", "https://user:pass@admin.example.test", "https://admin.example.test?x=1", "not a url"]) {
     assert.equal(siteAdmin({ KAMAKURA_ADMIN_ORIGIN: value }, "project-kamakura", "kamakura"), null, String(value));
   }
@@ -68,6 +94,18 @@ test("CMS の開き方は KAMAKURA_CMS_VIEW が \"workspace\" のときだけコ
   }
   // 管理画面の origin が無ければ、切替が on でもサイト機能を出さない（旧画面の入口と翻訳の枠に要る）
   assert.equal(siteAdmin({ KAMAKURA_CMS_VIEW: "workspace" }, "project-kamakura", "kamakura"), null);
+});
+
+test("翻訳の開き方は KAMAKURA_TRANSLATIONS_VIEW が \"workspace\" のときだけ翻訳の画面、ほかは枠。CMS の切替とは別", () => {
+  const origin = { KAMAKURA_ADMIN_ORIGIN: "https://admin.example.test" };
+  const on = siteAdmin({ ...origin, KAMAKURA_TRANSLATIONS_VIEW: "workspace" }, "project-kamakura", "kamakura");
+  assert.equal(on?.translationsView, "workspace");
+  assert.equal(on?.cmsView, "frame", "CMS は別の切替");
+  assert.equal(siteAdmin({ ...origin, KAMAKURA_CMS_VIEW: "workspace" }, "project-kamakura", "kamakura")?.translationsView, "frame");
+  for (const value of [undefined, "", "frame", "Workspace", " workspace", "workspace ", "true", "1", true, ["workspace"]]) {
+    assert.equal(siteAdmin({ ...origin, KAMAKURA_TRANSLATIONS_VIEW: value }, "project-kamakura", "kamakura")?.translationsView, "frame", JSON.stringify(value));
+  }
+  assert.equal(siteAdmin({ KAMAKURA_TRANSLATIONS_VIEW: "workspace" }, "project-kamakura", "kamakura"), null);
 });
 
 test("Worker: 参加者にだけ管理画面の origin を返し、Dashboard だけ枠をその origin に許し、/project/<別名> は 301", async (t) => {
@@ -95,7 +133,7 @@ test("Worker: 参加者にだけ管理画面の origin を返し、Dashboard だ
   roles.set("project-kamakura/kamakura", "editor");
   const admin = await call(api);
   assert.equal(admin.status, 200);
-  assert.deepEqual(await admin.json(), { origin: "https://admin.example.test", paths: { cms: "/admin", translations: "/admin/localization" }, cmsView: "frame" });
+  assert.deepEqual(await admin.json(), { origin: "https://admin.example.test", paths: { cms: "/admin", translations: "/admin/localization" }, cmsView: "frame", translationsView: "frame" });
   roles.set("project-experience/experience", "editor");
   assert.equal((await call("/api/projects/project-experience/sites/experience/site-admin")).status, 404);
   assert.equal((await worker.fetch(new Request(`https://studio.niho.life${api}`, { headers: { "Cf-Access-Jwt-Assertion": auth.jwt } }), { ...env, KAMAKURA_ADMIN_ORIGIN: undefined })).status, 404);
@@ -119,6 +157,9 @@ test("Worker: 参加者にだけ管理画面の origin を返し、Dashboard だ
   assert.equal(shortcut.status, 301);
   assert.equal(shortcut.headers.get("Location"), "/projects/kamakura-site/admin");
   assert.equal((await call("/project/kamakura-site/translations")).headers.get("Location"), "/projects/kamakura-site/admin/translations");
+  assert.equal((await call("/project/kamakura-site/translations/aG9tZQ")).headers.get("Location"), "/projects/kamakura-site/admin/translations/aG9tZQ");
+  await call("/projects/kamakura-site/admin/translations/aG9tZQ");
+  assert.equal(assetPaths.at(-1), "/index.html");
   assert.equal((await call("/project/kamakura-site/cms/posts/morning-walk")).headers.get("Location"), "/projects/kamakura-site/admin/cms/posts/morning-walk");
   // 形の違う CMS の URL は画面の route にしない（静的ファイルとして探す＝本番の ASSETS では 404）
   await call("/projects/kamakura-site/admin/cms/posts/a/b");
@@ -130,7 +171,7 @@ test("Worker: 参加者にだけ管理画面の origin を返し、Dashboard だ
   // 切替が on: site-admin が workspace を返し、鎌倉の Dashboard の HTML だけ connect-src に画像の PUT 先を足す。枠・editor の CSP は変えない
   const workspaceEnv = { ...env, KAMAKURA_CMS_VIEW: "workspace" };
   const callWorkspace = (path) => worker.fetch(new Request(`https://studio.niho.life${path}`, { headers: { "Cf-Access-Jwt-Assertion": auth.jwt } }), workspaceEnv);
-  assert.deepEqual(await (await callWorkspace(api)).json(), { origin: "https://admin.example.test", paths: { cms: "/admin", translations: "/admin/localization" }, cmsView: "workspace" });
+  assert.deepEqual(await (await callWorkspace(api)).json(), { origin: "https://admin.example.test", paths: { cms: "/admin", translations: "/admin/localization" }, cmsView: "workspace", translationsView: "frame" });
   for (const path of ["/projects/kamakura-site/admin", "/projects/kamakura-site/admin/cms", "/projects/kamakura-site/admin/cms/posts/morning-walk", "/projects/project-kamakura/sites/kamakura"]) {
     const csp = (await callWorkspace(path)).headers.get("Content-Security-Policy");
     assert.match(csp, / connect-src 'self' https:\/\/next-kamakura\.niho\.life;/u, path);
