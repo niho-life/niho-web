@@ -7,7 +7,7 @@ const port = 4179;
 const output = await build({ entryPoints: [fileURLToPath(new URL("./collection-demo.tsx", import.meta.url))], bundle: true, write: false, format: "esm", jsx: "automatic", define: { "process.env.NODE_ENV": '"development"' } });
 const script = output.outputFiles[0].text;
 const html = `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>niho-web コレクションのデモ</title>
-<style>body{margin:0;background:#f6f5f2;font:13px sans-serif}.demo-tools{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;padding:8px 16px;background:#23211d;color:#fff}.demo-tools button{min-height:32px;border:1px solid #fff6;border-radius:6px;background:none;color:inherit;padding:0 10px;font:inherit}.demo-tools label{display:inline-flex;gap:6px;align-items:center}</style></head>
+<style>body{margin:0;font:13px sans-serif}.demo-tools{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;padding:8px 16px;border-bottom:1px solid var(--nw-border);background:var(--nw-surface);color:var(--nw-text)}.demo-tools button{min-height:32px;border:1px solid var(--nw-border-strong);border-radius:var(--nw-radius);background:var(--nw-bg);color:inherit;padding:0 10px;font:inherit}.demo-tools label{display:inline-flex;gap:6px;align-items:center}</style></head>
 <body><div id="root"></div><script type="module" src="/app.js"></script></body></html>`;
 const swatches = { green: ["#dce9de", "#7ea886"], sand: ["#efe4d2", "#c9a46b"], dusk: ["#d9dcef", "#6f78b5"] };
 const seed = (name) => {

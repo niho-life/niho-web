@@ -29,6 +29,8 @@ const adapter: ProjectDirectoryAdapter = {
 />;
 ```
 
+host shellに検索欄を置く場合は、`searchValue` / `onSearchValueChange` をcontrolledで渡し、`searchControl="external"` にします。ライブラリ内の検索欄だけが隠れ、名前・サイト名・ドメインのfilter、検索0件、検索解除は同じ契約で動きます。shellのロゴ、global nav、アカウント表示はhostの責務です。
+
 `loadDirectory` は `unknown` を返し、runtime parserで検証します。
 
 ```ts
@@ -44,6 +46,9 @@ const adapter: ProjectDirectoryAdapter = {
       thumbnail: { url: '/public-preview.svg', alt: '合成サイトのプレビュー' }, // またはnull
       updatedAt: '2026-10-20T09:00:00Z', // string | null
       lastAccessedAt: null, // string | null
+      members: { status: 'ready', data: [ // 任意。Directory表示専用
+        { displayName: 'オーナー', role: 'owner' },
+      ] },
     },
   }],
 }
@@ -52,10 +57,13 @@ const adapter: ProjectDirectoryAdapter = {
 
 - summaryの `projectId` / `siteId` は同じentryのProjectと一致必須です。Project・Siteの重複や未知フィールドも拒否します。
 - 名前・サイト名・公開ドメインを検索し、既定では `updatedAt` の新しい順に並べます。日時未取得は末尾、同時刻は名前順です。未取得日時を合成しません。
-- 画像は安全なHTTPS URLまたは `/` から始まる同一originの公開・素材URLで、さらに `isThumbnailUrlAllowed` が同期的に許可したものだけを描画します。任意URLへのアクセス確認・画像生成・スクリーンショット取得はしません。資格情報付きURL、data、javascript、protocol relative、fragmentは拒否し、許可外・画像失敗時はプレビューなし表示です。ホストは非公開原稿や閲覧不能な素材、内部サービスのURLを許可しないでください。
+- 画像は安全なHTTPS URLまたは `/` から始まる同一originの公開・素材URLで、さらに `isThumbnailUrlAllowed` が同期的に許可したものだけを描画します。任意URLへのアクセス確認・画像生成・スクリーンショット取得はしません。資格情報付きURL、data、javascript、protocol relative、fragmentは拒否し、許可外・画像失敗時は灰色面にSite名の頭文字を表示します。「プレビューなし」など取得不能を示す文言は出しません。ホストは非公開原稿や閲覧不能な素材、内部サービスのURLを許可しないでください。
 - 公開URLは `published` のときだけ設定でき、Projectの `site.domains` のHTTPS originに所属する必要があります。設定ドメイン自体は公開の証明として扱いません。
-- 0件と検索結果0件を区別し、作成・検索解除の導線を提供します。作成・メンバー管理のフォームは日常一覧に置きません。
-- プレビューカードの下に同じ検索結果・並び順のコンパクトな一覧を表示します。一覧はProject名・Site名、公開状態・設定ドメイン、メンバー数と名前、最終更新・最終アクセスを読み取り専用で表示し、DashboardとEditorを別々に開けます。プランや請求情報はProject契約に無いため表示しません。狭い画面では一覧行へ集約します。
+- 0件と検索結果0件を区別し、検索解除の導線を提供します。`createAction="enabled"` のときだけ右上に新規作成ボタンを表示し、`disabled` では代替の無効ボタンを出しません。作成・メンバー管理のフォームは日常一覧に置きません。
+- カードは画像、Project名、設定済みドメインと、`publicationStatus: "published"` のときだけ公開中の点を表示します。状態不明、ドメインなし、日時なしを文言で補いません。
+- カードの下に同じ検索結果・並び順のコンパクトな一覧を表示します。一覧はProject名とドメイン、メンバーのavatar相当、値がある最終更新、Dashboard / Editorのメニューを表示します。`memberDetails="visible"` は従来どおりProject正本の`members`、`"summary"`はsummaryの表示専用`members`だけを使い、取得不能時に相互を代用しません。`editorAction="hidden"` ではEditor項目を出しません。プランや請求情報はProject契約に無いため表示しません。狭い画面でもカードを1列表示し、表は名前・取得済みメンバー・取得済み最終更新・操作メニューを縦の一覧行にして、320pxで横スクロールを使いません。
+
+Studio hostは認可済みの最大100 Projectについて参加者をD1から1 queryで読み、表示名・役割だけをsummaryへ返します。Access subject・メールアドレスは選択もブラウザ返却もせず、失敗は`members: { status: "unavailable" }`としてUIを空欄にします。D1の`public_origin`はそのまま汎用fetch先にせず、接続済み公開originの固定表に一致する場合だけ、redirect拒否・2秒timeout・HTML 256 KiB上限で公開ページの`og:image`を読みます。同じoriginはProject間で1回だけ取得するため、100 Projectでも外部fetchは最大3件です。公開ページのHTML取得に成功した場合だけ公開中と判定します。画像URLもHTTPSかつ公開origin、または鎌倉の固定画像origin `kamakura-media.niho.life` に限定し、画像がない場合はそのentryの`thumbnail: null`へ縮退します。認証・membership確認とProject正本の分離は従来どおりです。
 
 ## ProjectDashboard
 
@@ -121,12 +129,12 @@ const adapter: ProjectDashboardAdapter = {
 
 再読込を始めると直前のデータとEditor・設定・公開サイトの操作を隠します。adapter交換・Project切替・unmountは進行中のsignalをabortし、世代照合によってabortを無視したadapterの遅延応答も捨てます。取得失敗・ID不一致・権限なしの場合は以前の値を残しません。ホストのpush通知や認証監視自体は実装しません。
 
-ホストは一覧・Dashboard・Editorを別の画面として切り替え、スマホで一覧の下にDashboardや作成フォームを積まないでください。遷移後の見出しへのfocus・scroll復元、Editorの未保存内容の保持または確認もホストの責務です。一覧へ戻るときは任意の `initialFocusProjectId` を指定すると、読込後に対象の一覧行のボタンへ一度だけfocusを戻し、行を表示範囲へ入れます。未指定・該当Projectなしの場合はfocusを移しません。各操作はnative button/link、検索はlabel、focus-visibleを持ちます。320pxでは表を縦の一覧行に変え、カードを隠して名前とURLを折り返します。
+ホストは一覧・Dashboard・Editorを別の画面として切り替え、スマホで一覧の下にDashboardや作成フォームを積まないでください。遷移後の見出しへのfocus・scroll復元、Editorの未保存内容の保持または確認もホストの責務です。一覧へ戻るときは任意の `initialFocusProjectId` を指定すると、読込後に対象の一覧行のボタンへ一度だけfocusを戻し、行を表示範囲へ入れます。未指定・該当Projectなしの場合はfocusを移しません。各操作はnative button/link、検索はlabel、focus-visibleを持ちます。320pxではカードを1列で維持し、表も縦の一覧行に変えて名前とURL、取得できたメンバー・日時、操作を折り返します。
 
-CSSはpackage内にscopeし、Dashboard・CMS・素材・翻訳・分析・設定を同じ白いsurface、境界線、ボタン、neutral pill、空状態の規則で描きます。ホストが定義している場合は `--niho-text` / `--niho-text-sub` / `--niho-border` / `--niho-surface` / `--niho-surface-subtle` / `--niho-primary-bg` / `--niho-primary-ink` / `--niho-focus` / `--niho-danger` / `--niho-accent-ink` を使い、未定義ならpackage内のfallbackで描画します。画面固有の色を状態の唯一の手掛かりにせず、NIHOappへのimportはありません。
+CSSはpackage内にscopeし、Dashboard・CMS・素材・翻訳・分析・設定を同じ白いsurface、境界線、ボタン、neutral pill、空状態の規則で描きます。色・角丸・文字は `@niho/web/ui-tokens` のトークン（`--nw-*`）だけを使います（[見た目と実装の契約](editor-ui-design.md#見た目と実装の契約)）。CSSの先頭にトークンの定義を持ち、詳細度は0なので、ホストは `:root` や `.nw-project-view` で同じ名前を上書きできます。黒のボタンは「作成」だけ、緑は公開中の点だけです。画面固有の色を状態の唯一の手掛かりにせず、NIHOappへのimportはありません。
 
 ## デモと検証
 
 `npm run demo:projects` は日常一覧 → 選択ProjectのDashboard → Editor / 既存ProjectManagerの導線を提供します。解析値・画像・日時・参加者はすべて合成値で、公開URLも `.example.test` です。画像はローカルサーバーが生成するSVGで、実サイトや外部画像サービスへ接続しません。設定画面はホスト接続先を示す合成画面です。デモで開いたEditorは画面切替時にunmountせず、Projectごとの入力を保持します。
 
-`test/project-read-model.test.mjs` は正本との分離、ID・URL・画像許可・数値・日時のruntime検証を確認します。`test/project-views-ui.test.mjs` は複数Project、検索・順序・各導線、空状態・画像失敗・未接続・部分失敗・権限喪失、adapter交換・Project切替・unmount後の遅延応答破棄を確認します。
+`test/project-read-model.test.mjs` は正本との分離、ID・URL・画像許可・表示専用メンバー・数値・日時のruntime検証を確認します。`test/project-views-ui.test.mjs` は複数Project、内部／host検索・順序・カード／表／各導線、320px、空状態・画像失敗・未接続・部分失敗・権限喪失、adapter交換・Project切替・unmount後の遅延応答破棄を確認します。`test/studio-worker-directory.test.mjs` はStudioの認可済みメンバーbulk取得、100 Projectで最大3件のOG取得、画像origin・redirect・上限・timeoutと個別縮退を確認します。

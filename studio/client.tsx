@@ -184,8 +184,20 @@ function editorEnabled(project: Project): boolean {
   return resolveTrustedIntegration(project.id, project.site.id) !== null;
 }
 
+const STUDIO_THUMBNAIL_ORIGINS = new Set([
+  "https://next-kamakura.niho.life",
+  "https://kamakura.niho.life",
+  "https://kamakura-media.niho.life",
+  "https://experience.niho.life"
+]);
+function isStudioThumbnailUrlAllowed(value: string): boolean {
+  let url: URL;
+  try { url = new URL(value); } catch { return false; }
+  return url.protocol === "https:" && !url.username && !url.password && !url.hash && STUDIO_THUMBNAIL_ORIGINS.has(url.origin);
+}
+
 function Notice({ title, children, retry }: { readonly title: string; readonly children: string; readonly retry?: () => void }) {
-  return <main className="studio-state"><p className="studio-kicker">NIHO WEB</p><h1>{title}</h1><p>{children}</p>{retry && <button type="button" onClick={retry}>再試行</button>}</main>;
+  return <main className="studio-state"><h1>{title}</h1><p>{children}</p>{retry && <button type="button" onClick={retry}>再試行</button>}</main>;
 }
 
 type SiteAdmin = {
@@ -294,12 +306,12 @@ function MemberAdministration({ project, expire }: { readonly project: Project; 
   };
 
   // オーナーでない参加者（API が 403）には、変更できる人を案内する（空の画面にしない）
-  if (state.status === "hidden") return <section className="studio-members" aria-label="プロジェクト設定"><div className="studio-section-heading"><div><p className="studio-kicker">ACCESS</p><h2>メンバー管理</h2></div></div><p className="studio-help">メンバーの招待・権限の変更・参加解除はプロジェクトのオーナーだけが行えます。変更が必要なときはオーナーに依頼してください。参加しているメンバーは左の「メンバー」で確認できます。</p></section>;
+  if (state.status === "hidden") return <section className="studio-members" aria-label="プロジェクト設定"><div className="studio-section-heading"><div><h2>メンバー管理</h2></div></div><p className="studio-help">メンバーの招待・権限の変更・参加解除はプロジェクトのオーナーだけが行えます。変更が必要なときはオーナーに依頼してください。参加しているメンバーは左の「メンバー」で確認できます。</p></section>;
   if (state.status === "loading") return <section className="studio-members studio-members-loading" aria-live="polite">メンバー管理を確認しています。</section>;
-  if (state.status === "error") return <section className="studio-members"><div className="studio-section-heading"><div><p className="studio-kicker">ACCESS</p><h2>メンバー管理</h2></div><button type="button" onClick={() => load()}>再読込</button></div><p role="alert">メンバー情報を取得できませんでした。</p></section>;
+  if (state.status === "error") return <section className="studio-members"><div className="studio-section-heading"><div><h2>メンバー管理</h2></div><button type="button" onClick={() => load()}>再読込</button></div><p role="alert">メンバー情報を取得できませんでした。</p></section>;
   const value = state.value;
   return <section className="studio-members" aria-label="メンバー管理">
-    <div className="studio-section-heading"><div><p className="studio-kicker">ACCESS</p><h2>メンバー管理</h2><p>{value.projectName} / {value.siteName}</p></div><div className="studio-section-actions"><button type="button" className="studio-secondary" onClick={() => load()} disabled={busy}>再読込</button><button type="button" aria-expanded={showInvite} aria-controls="studio-invite-fields" onClick={() => setShowInvite((visible) => !visible)}>{showInvite ? "閉じる" : "招待"}</button></div></div>
+    <div className="studio-section-heading"><div><h2>メンバー管理</h2><p>{value.projectName} / {value.siteName}</p></div><div className="studio-section-actions"><button type="button" className="studio-secondary" onClick={() => load()} disabled={busy}>再読込</button><button type="button" aria-expanded={showInvite} aria-controls="studio-invite-fields" onClick={() => setShowInvite((visible) => !visible)}>{showInvite ? "閉じる" : "招待"}</button></div></div>
     {message && <p className="studio-message" role="status">{message}</p>}
     {showInvite && <div id="studio-invite-fields" className="studio-invite-fields"><form className="studio-invite-form" onSubmit={(event) => { void create(event); }}>
       <label><span>招待するメールアドレス</span><input type="email" required maxLength={254} autoComplete="off" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@example.com" /></label>
@@ -356,13 +368,14 @@ function InvitationAcceptance({ screen, expire, accepted }: { readonly screen: E
   if (state.status === "accepting") return <Notice title="参加処理を進めています">招待を一度だけ使用し、メンバー登録しています。</Notice>;
   if (state.status === "unavailable") return <Notice title="この招待は利用できません">宛先が異なるか、期限切れ・承諾済み・取消済みの招待です。オーナーへ新しい招待を依頼してください。</Notice>;
   if (state.status === "error") return <Notice title="招待を確認できませんでした">時間をおいて、受け取った URL から再度お試しください。</Notice>;
-  return <main className="studio-state studio-invite-accept"><p className="studio-kicker">STUDIO INVITATION</p><h1>{state.value.projectName} に参加</h1><p>{state.value.siteName} の <strong>{roleLabel(state.value.role)}</strong> として招待されています。</p><dl><div><dt>有効期限</dt><dd>{dateLabel(state.value.expiresAt)}</dd></div></dl><p>参加するには、下のボタンで招待を明示的に承諾してください。招待は一度だけ使用できます。</p><button type="button" onClick={() => { void accept(); }}>招待を承諾する</button></main>;
+  return <main className="studio-state studio-invite-accept"><h1>{state.value.projectName} に参加</h1><p>{state.value.siteName} の <strong>{roleLabel(state.value.role)}</strong> として招待されています。</p><dl><div><dt>有効期限</dt><dd>{dateLabel(state.value.expiresAt)}</dd></div></dl><p>参加するには、下のボタンで招待を明示的に承諾してください。招待は一度だけ使用できます。</p><button type="button" onClick={() => { void accept(); }}>招待を承諾する</button></main>;
 }
 
 function App() {
   const [session, setSession] = useState<SessionState>({ status: "loading" });
   const [screen, setScreen] = useState<Screen>(screenFromLocation);
   const [pendingProject, setPendingProject] = useState<Project | null>(null);
+  const [directoryQuery, setDirectoryQuery] = useState("");
   const [siteAdmin, setSiteAdmin] = useState<{ readonly key: string; readonly value: SiteAdmin | null } | null>(null);
   /** 戻る・進むで CMS・翻訳の URL が変わったら、その画面を URL で開き直す（画面の中の移動では作り直さない） */
   const [viewEpoch, setViewEpoch] = useState(0);
@@ -372,7 +385,7 @@ function App() {
     const controller = new AbortController();
     setSession({ status: "loading" });
     void api("/api/session", { signal: controller.signal })
-      .then(async (value) => ({ identity: parseIdentity(value), directory: parseProjectDirectoryResult(await api("/api/projects", { signal: controller.signal }), () => false) }))
+      .then(async (value) => ({ identity: parseIdentity(value), directory: parseProjectDirectoryResult(await api("/api/projects", { signal: controller.signal }), isStudioThumbnailUrlAllowed) }))
       .then(({ identity, directory }) => setSession({ status: "ready", directory, identity }))
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
@@ -426,13 +439,13 @@ function App() {
     loadDirectory: async (signal: AbortSignal) => {
       try {
         const value = await api("/api/projects", { signal });
-        const directory = parseProjectDirectoryResult(value, () => false);
+        const directory = parseProjectDirectoryResult(value, isStudioThumbnailUrlAllowed);
         if (!signal.aborted) setSession((current) => current.status === "ready" ? { ...current, directory } : current);
         return value;
       }
       catch (error) { if (error instanceof SessionExpiredError) expire(); throw error; }
     },
-    isThumbnailUrlAllowed: () => false
+    isThumbnailUrlAllowed: isStudioThumbnailUrlAllowed
   }), [expire]);
 
   const dashboardAdapter = useMemo(() => ({
@@ -507,8 +520,9 @@ function App() {
   const kamakuraEditor = resolvedEditor?.environment === "production" && integrationIdentity(resolvedEditor.registration.projectId, resolvedEditor.registration.siteId) === integrationIdentity("project-kamakura", "kamakura");
 
   return <div className={`studio-app${kamakuraEditor ? " studio-editor-shell" : ""}`}>
-    <header className="studio-shell-header"><a href="/" onClick={screen.kind === "editor" ? undefined : (event) => { event.preventDefault(); navigate({ kind: "directory" }); }}><span>NIHO</span> Web Studio</a><details className="studio-account"><summary>{session.identity.email}</summary><div><small>Google / Cloudflare Access</small><label>Access ID <code>{session.identity.subject}</code></label></div></details></header>
-    <div className={`studio-content${screen.kind === "editor" ? " studio-content-editor" : ""}${kamakuraEditor ? " studio-editor-content" : ""}`}>
+    <header className="studio-shell-header"><a className="studio-logo" href="/" onClick={screen.kind === "editor" ? undefined : (event) => { event.preventDefault(); navigate({ kind: "directory" }); }}><span>NIHO</span><b>Studio</b></a>{screen.kind === "directory" ? <label className="studio-directory-search"><span>プロジェクトを検索</span><input type="search" value={directoryQuery} onChange={(event) => setDirectoryQuery(event.target.value)} placeholder="プロジェクトを検索" /></label> : <span /> }<details className="studio-account"><summary><span className="studio-account-avatar" aria-hidden="true">{Array.from(session.identity.email)[0]?.toUpperCase() ?? "?"}</span><span className="studio-account-email">{session.identity.email}</span></summary><div><small>Google / Cloudflare Access</small><label>Access ID <code>{session.identity.subject}</code></label></div></details></header>
+    <div className={`studio-content${screen.kind === "directory" ? " studio-content-directory" : ""}${screen.kind === "editor" ? " studio-content-editor" : ""}${kamakuraEditor ? " studio-editor-content" : ""}`}>
+      {screen.kind === "directory" && <nav className="studio-directory-nav" aria-label="メインメニュー"><a href="/" aria-current="page" onClick={(event) => event.preventDefault()}><span aria-hidden="true">▦</span><b>プロジェクト一覧</b></a></nav>}
       {(screen.kind === "dashboard" || screen.kind === "editor") && !selected
         ? <Notice title="プロジェクトを表示できません">プロジェクトが存在しないか、現在のアカウントには参加資格がありません。</Notice>
         : selected && screen.kind === "editor"
@@ -536,19 +550,22 @@ function App() {
                 navigate({ kind: "dashboard", projectId: selected.id, siteId: selected.site.id, view: view as ProjectSiteViewId | null });
               }}
             />
-          : <ProjectDirectory
+          : <div className="studio-directory-main"><ProjectDirectory
               adapter={directoryAdapter}
               onCreateProject={() => undefined}
               onOpenDashboard={(project) => navigate({ kind: "dashboard", projectId: project.id, siteId: project.site.id })}
               onOpenEditor={openEditor}
               createAction="disabled"
-              editorAction={(project) => editorEnabled(project) ? "enabled" : "pending"}
-              memberDetails="hidden"
-            />}
+              editorAction={(project) => editorEnabled(project) ? "enabled" : "hidden"}
+              memberDetails="summary"
+              searchValue={directoryQuery}
+              onSearchValueChange={setDirectoryQuery}
+              searchControl="external"
+            /></div>}
     </div>
     {pendingProject && <div className="studio-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setPendingProject(null); }}>
       <section className="studio-dialog" role="dialog" aria-modal="true" aria-labelledby="editor-pending-title">
-        <p className="studio-kicker">{pendingProject.site.name}</p><h2 id="editor-pending-title">エディター接続待ち</h2>
+        <p className="studio-dialog-site">{pendingProject.site.name}</p><h2 id="editor-pending-title">エディター接続待ち</h2>
         <p>このサイトの編集 API はまだ Studio に接続されていません。現在、このサイトでは編集・保存・公開を利用できません。</p>
         <button type="button" autoFocus onClick={() => setPendingProject(null)}>閉じる</button>
       </section>

@@ -37,17 +37,23 @@ test("directory is independent from management and supports two Projects, search
     assert.equal(document.querySelector(".nw-project-manager"), null);
     assert.equal(cards().length, 2); assert.ok(cards()[0].textContent.includes("twoの"));
     assert.equal(rows().length, 2); assert.ok(rows()[0].textContent.includes("twoの"));
-    assert.ok(rows()[0].textContent.includes("最終アクセス 未取得"));
+    assert.equal(document.body.textContent.includes("未取得"), false);
+    assert.equal(document.body.textContent.includes("最終アクセス"), false);
     assert.equal(document.body.textContent.includes("プラン"), false);
-    assert.ok(document.body.textContent.includes("共通参加者（架空）"));
+    assert.match(rows()[0].querySelector(".pv-avatars").getAttribute("aria-label"), /共通参加者（架空）/u);
+    assert.equal(cards()[0].querySelectorAll(".pv-live").length, 1);
+    assert.equal(cards()[0].querySelector(".pv-domain").textContent, project("two").site.domains[0]);
+    assert.equal(cards()[0].querySelector(".pv-actions"), null);
     assert.equal(document.querySelectorAll("textarea").length, 0);
-    await click("作成"); assert.equal(app.calls.creates, 1);
+    await click("新規プロジェクト"); assert.equal(app.calls.creates, 1);
     await click(`${project("two").name}（${project("two").site.name}）のダッシュボード`); assert.deepEqual(app.calls.dashboards[0], project("two"));
-    await act(async () => cards()[0].querySelectorAll(".pv-actions button")[1].click()); assert.equal(app.calls.editors[0].site.id, "site_two");
-    await act(async () => rows()[0].querySelectorAll(".pv-actions button")[1].click()); assert.equal(app.calls.editors[1].site.id, "site_two");
+    await act(async () => rows()[0].querySelectorAll(".pv-project-menu button")[1].click()); assert.equal(app.calls.editors[0].site.id, "site_two");
     await app.rerender({ editorAction: "pending" });
-    assert.equal(cards()[0].querySelectorAll(".pv-actions button")[1].textContent, "エディター接続待ち");
-    assert.equal(rows()[0].querySelectorAll(".pv-actions button")[1].textContent, "エディター接続待ち");
+    assert.equal(rows()[0].querySelectorAll(".pv-project-menu button")[1].textContent, "エディター接続待ち");
+    await app.rerender({ editorAction: "hidden", memberDetails: "hidden", createAction: "disabled" });
+    assert.equal(rows()[0].querySelectorAll(".pv-project-menu button").length, 1);
+    assert.equal([...document.querySelectorAll("th")].some((node) => node.textContent === "メンバー"), false);
+    assert.equal(button("新規プロジェクト"), undefined);
     await app.rerender({ editorAction: "enabled" });
     await search("one.example.test"); assert.equal(cards().length, 1); assert.equal(rows().length, 1); assert.ok(cards()[0].textContent.includes("oneの"));
     await search("存在しない名前"); assert.ok(document.body.textContent.includes("条件に一致する"));
@@ -57,7 +63,34 @@ test("directory is independent from management and supports two Projects, search
     const open = button(`${project().name}（${project().site.name}）のダッシュボード`); open.focus(); assert.equal(document.activeElement, open);
     assert.ok([...document.querySelectorAll("button")].every((node) => node.type === "button"));
     const img = cards()[0].querySelector("img"); assert.ok(img.alt); await act(async () => img.dispatchEvent(new Event("error")));
-    assert.equal(cards()[0].querySelector("img"), null); assert.ok(cards()[0].textContent.includes("プレビューなし"));
+    assert.equal(cards()[0].querySelector("img"), null); assert.ok(cards()[0].querySelector(".pv-preview-initial"));
+    assert.equal(document.body.textContent.includes("プレビューなし"), false);
+  } finally { await app.cleanup(); }
+});
+
+test("directory accepts a host-controlled external search without duplicating its input", async () => {
+  const changes = [];
+  const app = await setup(ProjectDirectory, { adapter: directoryAdapter(), searchValue: "one", onSearchValueChange: (value) => changes.push(value), searchControl: "external" });
+  try {
+    assert.equal(document.querySelector('input[type="search"]'), null);
+    assert.equal(cards().length, 1); assert.ok(cards()[0].textContent.includes("oneの"));
+    await app.rerender({ searchValue: "存在しない名前" });
+    await click("検索解除"); assert.deepEqual(changes, [""]);
+    await app.rerender({ searchValue: "" }); assert.equal(cards().length, 2);
+  } finally { await app.cleanup(); }
+});
+
+test("directory can render display-only member summaries without falling back to Project members", async () => {
+  const input = directory();
+  input.entries[1].summary.members = { status: "ready", data: [{ displayName: "一覧オーナー", role: "owner" }, { displayName: "一覧編集者", role: "editor" }] };
+  input.entries[0].summary.members = { status: "unavailable" };
+  const app = await setup(ProjectDirectory, { adapter: directoryAdapter(async () => input), memberDetails: "summary" });
+  try {
+    assert.equal([...document.querySelectorAll("th")].some((node) => node.textContent === "メンバー"), true);
+    assert.match(rows()[0].querySelector(".pv-avatars").getAttribute("aria-label"), /一覧オーナー（オーナー）、一覧編集者（編集者）/u);
+    assert.equal(rows()[1].querySelector(".pv-avatars"), null);
+    assert.equal(rows()[1].textContent.includes("共通参加者（架空）"), false);
+    assert.equal(document.body.textContent.includes("未取得"), false);
   } finally { await app.cleanup(); }
 });
 
@@ -274,22 +307,22 @@ test("dashboard mismatch, failure and permission loss clear all sensitive facts 
   } finally { await app.cleanup(); }
 });
 
-test("dashboard uses the host theme variables with Studio-style color fallbacks", async () => {
+test("dashboard draws with the shared white tokens that a host can override", async () => {
   const selected = project();
   const app = await setup(ProjectDashboard, { project: selected, adapter: dashboardAdapter(async () => dashboard(selected)) });
   try {
     const css = [...document.querySelectorAll("style")].map((style) => style.textContent ?? "").join("\n");
-    assert.ok(css.includes("background:var(--niho-surface,#fff)"));
-    assert.ok(css.includes("--pv-ink:var(--niho-text,#191919)"));
-    assert.ok(css.includes("--pv-muted:var(--niho-text-sub,#777)"));
-    assert.ok(css.includes("--pv-border:var(--niho-border,#e6e6e6)"));
-    assert.ok(css.includes("--pv-primary-bg:var(--niho-primary-bg,#1d1d1d)"));
-    assert.ok(css.includes("--pv-focus:var(--niho-focus,var(--pv-primary-bg))"));
-    assert.ok(css.includes(".pv-project-bar{position:relative;z-index:2;display:flex;align-items:center;gap:14px;min-height:64px;padding:0 22px;background:var(--pv-surface);border-bottom:1px solid var(--pv-border)"));
-    assert.ok(css.includes(".pv-dashboard-nav{display:flex;flex-direction:column;gap:18px;margin:0;padding:22px 14px;border-right:1px solid var(--pv-border);background:var(--pv-surface)"));
-    assert.ok(css.includes(".pv-panel>.pv-badge::before"));
-    // 現在地の背景はホストの変数が無くても見える値に落ちる
-    assert.ok(css.includes("--pv-nav-active:var(--niho-surface-subtle,#f0f0f0)"));
+    // トークンの定義は詳細度 0（:where）なので、ホストは :root や .nw-project-view で上書きできる（#159）
+    assert.ok(css.includes(":where(:root){") && css.includes("--nw-bg:#fff") && css.includes("--nw-border:rgba(34,34,34,.1)"));
+    assert.ok(css.includes(".nw-project-dashboard{padding:0;border-radius:0;background:var(--nw-bg)}"));
+    assert.ok(css.includes(".pv-project-bar{position:relative;z-index:2;display:flex;align-items:center;gap:14px;min-height:64px;padding:0 22px;background:var(--nw-bg);border-bottom:1px solid var(--nw-border)"));
+    assert.ok(css.includes(".pv-dashboard-nav{display:flex;flex-direction:column;gap:18px;margin:0;padding:22px 14px;border-right:1px solid var(--nw-border);background:var(--nw-bg)"));
+    // 現在地は一段の灰色の面、公開中は緑の点だけ
+    assert.ok(css.includes(".pv-dashboard-nav button[aria-current=page]{background:var(--nw-surface-2);"));
+    assert.ok(css.includes(".pv-project-identity[data-publication=published] i{background:var(--nw-live)}"));
+    assert.equal(/--niho-(?!sticky-top)|--pv-/u.test(css), false, "no host-specific or private color variables are left");
+    assert.ok(css.includes(".pv-changes,.nw-project-view .pv-member-table{width:100%"));
+    assert.ok(css.includes(".pv-panel-heading{display:flex;align-items:center;justify-content:space-between"));
   } finally { await app.cleanup(); }
 });
 
@@ -316,8 +349,8 @@ test("long Japanese names and URLs remain complete and the stylesheet defines 32
   try {
     assert.ok(document.body.textContent.includes(input.entries[0].project.name)); assert.ok(document.body.textContent.includes(input.entries[0].project.site.domains[0]));
     assert.ok(rows()[1].textContent.includes(input.entries[0].project.name));
-    const css = [...document.querySelectorAll("style")].map((style) => style.textContent ?? "").join("\n"); assert.ok(css.includes("overflow-wrap:anywhere")); assert.ok(css.includes("@media(max-width:600px)")); assert.ok(css.includes("grid-template-columns:86px minmax(0,1fr)")); assert.ok(css.includes(":focus-visible")); assert.ok(css.includes(".pv-dashboard-content{width:min(100%,992px)"));
-    assert.ok(css.includes(".pv-grid{display:none}")); assert.ok(css.includes(".pv-directory-list tr{padding:12px 14px"));
+    const css = [...document.querySelectorAll("style")].map((style) => style.textContent ?? "").join("\n"); assert.ok(css.includes("overflow-wrap:anywhere")); assert.ok(css.includes("@media(max-width:600px)")); assert.ok(css.includes(".pv-project-menu>div{position:static;width:100%")); assert.ok(css.includes(":focus-visible")); assert.ok(css.includes(".pv-dashboard-content{width:min(100%,992px)"));
+    assert.equal(css.includes(".pv-grid{display:none}"), false); assert.ok(css.includes(".pv-grid{display:grid;grid-template-columns:minmax(0,1fr)")); assert.ok(css.includes(".pv-directory-list td:empty{display:none}")); assert.equal(css.includes("overflow-x:auto"), false);
     // Dashboard のメニュー: 900px 以下は本文の上で折り返し、600px 以下は縦 1 列。横スクロールで欠けさせない
     const dashboardMobile = css.slice(css.indexOf(".nw-project-dashboard{"));
     assert.ok(dashboardMobile.includes("@media(max-width:900px){.nw-project-dashboard .pv-project-bar{gap:10px;padding:0 14px}.nw-project-dashboard .pv-dashboard-layout{grid-template-columns:1fr"));

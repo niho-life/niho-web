@@ -3,6 +3,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { parseSiteAnalyticsSnapshot } from "./analytics-parse.js";
 import { siteAnalyticsCss } from "./analytics-style.js";
+import { uiColor } from "./ui-tokens.js";
 import type { AnalyticsPeriod, Ga4Report, Metric, ReportWindow, SearchConsoleReport, SiteAnalyticsAdapter, SiteAnalyticsSnapshot, SourceMetadata, SourceResult } from "./analytics-types.js";
 
 export type * from "./analytics-types.js";
@@ -29,7 +30,7 @@ function Daily({ rows, label, color = "green" }: { rows: readonly { date: string
   });
   const segments: string[] = []; let current: string[] = [];
   for (const point of [...points, null]) { if (point) current.push(point); else if (current.length) { segments.push(current.join(" ")); current = []; } }
-  return <div className="an-panel"><h3>{label}の日別推移</h3>{rows.length ? <><svg className={`an-chart${color === "blue" ? " an-chart-secondary" : ""}`} viewBox="0 0 320 100" role="img" aria-label={`${label}の日別折れ線。詳細な数値は下の一覧に表示`}><path className="an-axis" d="M10 90H310" fill="none" />{segments.map((segment, index) => <polyline className="an-line" key={index} points={segment} fill="none" strokeWidth="2.5" vectorEffect="non-scaling-stroke" />)}</svg><ol className="an-daily" aria-label={`${label}の日別数値`}>{rows.map((row) => <li key={row.date}><time dateTime={row.date}>{row.date.slice(5)}</time><strong>{format(row.value)}</strong></li>)}</ol></> : <p className="an-empty">日別データはありません。</p>}</div>;
+  return <div className="an-panel"><h3>{label}の日別推移</h3>{rows.length ? <><svg className="an-chart" viewBox="0 0 320 100" role="img" aria-label={`${label}の日別折れ線。詳細な数値は下の一覧に表示`}><path d="M10 90H310" stroke={uiColor.border} fill="none" />{segments.map((segment, index) => <polyline key={index} points={segment} fill="none" stroke={color === "blue" ? uiColor.text : uiColor.accent} strokeWidth="2.5" vectorEffect="non-scaling-stroke" />)}</svg><ol className="an-daily" aria-label={`${label}の日別数値`}>{rows.map((row) => <li key={row.date}><time dateTime={row.date}>{row.date.slice(5)}</time><strong>{format(row.value)}</strong></li>)}</ol></> : <p className="an-empty">日別データはありません。</p>}</div>;
 }
 function Pages({ title, rows }: { title: string; rows: readonly { page: { path: string; title?: string }; values: string }[] }) {
   return <div className="an-panel"><h3>{title}</h3>{rows.length ? <ol className="an-list">{rows.map(({ page, values }) => <li key={page.path}><span>{page.title ?? page.path}{page.title && <small>{page.path}</small>}</span><strong>{values}</strong></li>)}</ol> : <p className="an-empty">対象ページはありません。</p>}</div>;

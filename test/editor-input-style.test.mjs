@@ -44,10 +44,10 @@ test("disabled, pending, invalid and width-specific inputs keep a cue that is no
   assert.ok(block(css, ".nw-editor :is(input,textarea)[readonly]").includes("var(--e-input-disabled)"));
   assert.ok(css.includes(".nw-editor .e-frame:has(>input:first-of-type:disabled){background-color:var(--e-input-disabled)}"), "a disabled unit field greys the whole frame");
   assert.ok(block(css, ".nw-editor .e-frame[data-pending]").includes("border-style:dashed"), "pending input stays dashed");
-  assert.ok(block(css, ".nw-editor .e-frame[data-invalid]").includes("border-color:#8d3026"));
-  assert.ok(block(css, ".nw-editor :is(input,textarea)[aria-invalid=true]").includes("border-color:#8d3026"));
+  assert.ok(block(css, ".nw-editor .e-frame[data-invalid]").includes("border-color:var(--nw-danger)"));
+  assert.ok(block(css, ".nw-editor :is(input,textarea)[aria-invalid=true]").includes("border-color:var(--nw-danger)"));
   assert.ok(block(css, ".nw-editor .e-own .e-frame,.nw-editor .e-own>.e-control>select,.nw-editor .e-own .e-inline>select").includes("var(--e-blue-soft)"), "width-specific values keep the blue surface");
-  assert.ok(block(css, ".nw-editor .e-own>.e-cap").includes("color:#245fbe"), "…and the caption color beside the reset button");
+  assert.ok(block(css, ".nw-editor .e-own>.e-cap").includes("color:var(--nw-accent-strong)"), "…and the caption color beside the reset button");
   for (const legacy of ["#f5f4f2", "#f0f3f0", "#f7f9f7", "#929292", "#e6f1e9", "outline:2px solid #bdbdbd", "accent-color:var(--e-green)"]) {
     assert.ok(!css.includes(legacy), `${legacy} left in the editor stylesheet`);
     assert.ok(!assetCss.includes(legacy), `${legacy} left in the asset stylesheet`);

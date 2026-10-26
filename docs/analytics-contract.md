@@ -2,7 +2,7 @@
 
 `@niho/web/analytics` は認証済みホスト向けの React 画面、`SiteAnalyticsAdapter`、応答パーサーを提供します。データ取得・認証・認可・OAuth・永続化はホストが所有します。このパッケージは GA4 / Search Console へ通信しません。
 
-画面のsurface・境界線・ボタン・状態pill・空状態は `--niho-text` / `--niho-text-sub` / `--niho-border` / `--niho-surface` / `--niho-surface-subtle` / `--niho-primary-bg` / `--niho-primary-ink` / `--niho-focus` / `--niho-danger` を使います。状態は文言でも示し、320pxでは列を一列にして画面全体の横スクロールを作りません。
+画面のsurface・境界線・ボタン・状態pill・空状態は `@niho/web/ui-tokens` の `--nw-*` トークンだけを使います。状態は文言でも示し、320pxでは列を一列にして画面全体の横スクロールを作りません。
 
 サーバーでの集計・キャッシュ検証には `@niho/web/analytics-data` を使います。型とパーサーは画面と共通で、Reactを読み込みません。対象の認可と公開ページだけに絞る処理は、引き続きホストが実施します。
 
