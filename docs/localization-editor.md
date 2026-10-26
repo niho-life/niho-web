@@ -4,7 +4,7 @@
 
 認証、Project / Site 権限、永続化、翻訳provider、ジョブ実行、監査、公開snapshotはホストの責務です。ライブラリはproviderを直接呼ばず、認証情報も保持しません。
 
-Kamakura の Studio host を接続するときは、翻訳 BFF の `editor/site` で native ページごとの日英状態と公開状態を読み、`editor/pages/:pageId`、`save`、`command` を介してサイト側の唯一の翻訳 overlay を読み書きします。BFF は所属・署名・対象と版を確認し、サイト側は `save` で下記の文書構造検証と条件付き保存を実行します。原文は `ja-JP` の文書localeへ正規化してから多言語 adapter に渡します。
+Kamakura の Studio host を接続するときは、翻訳 BFF の `editor/site` で native ページごとの日英状態と公開状態を読み、`editor/pages/:pageId`、`snapshot`、`save`、`command` を介してサイト側の唯一の翻訳 overlay を読み書きします。English の `readDocument` は `snapshot` が返す `document` と同じ言語・版の `presentation` だけを使い、`unavailable` を日本語文書や仮データへ置き換えません。BFF は所属・署名・対象と版を確認し、サイト側は `save` で下記の文書構造検証と条件付き保存を実行します。原文は `ja-JP` の文書localeへ正規化してから多言語 adapter に渡します。
 
 ## adapter
 
@@ -35,6 +35,7 @@ const adapter: EditorAdapter = {
 - `readPage(target, signal)` は、現在の正本原文、`sourceVersion`、現在のoverlay、opaqueなversion、任意のblock allowlist・旧原文値・job状態を返します。遅い応答はsite / page / localeと読込epochで破棄されます。`components`を併用するホストでは、部品ライブラリは`components.readLibrary`から得た`LibrarySession`を使い、`readPage.components`は返しません。後者は旧ホスト向けのfallbackです。
 - `command` は `request-translation`、`adopt-candidate`、`review-current`、`set-value` を処理します。すべて `expectedSourceVersion`、opaque version、overlay versionをCASし、409は `{ status: "conflict" }` に変換します。手修正の`set-value`はさらに`sourceFingerprint`と`expectedEntryVersion`（未作成は0）を比較し、指定unit以外を変更しません。
 - `requestSiteTranslation` は任意です。実装すると「サイト全体を翻訳」を表示します。queued / running / failedを`readSite`で返してください。エディターは常時pollせず、操作・保存・再読込時だけ状態を読み直します。
+- ページ単位の翻訳依頼を提供しないホストは `requestPageTranslation: false` を指定します。画面は成功を装うボタンを出さず、翻訳画面を使うか手修正するよう明示します。Kamakura は現在この指定で、`request-translation` の backend 対応後にだけ有効化します。
 
 `localization`を実装したホストでは、`readSite`の設定・状態が検証でき、現在の`PageDocument.locale`が明示mappingに一致するまで、エディターは原文／訳文を推測せず編集・保存・公開を停止します。再読込失敗を単言語モードへのopt-inとして扱いません。queued / running中は「翻訳状況を更新」で`readSite`と`readPage`を明示的に再読込できます。
 
@@ -71,6 +72,8 @@ const checked = await validateLocalizedDocumentSave(
 - `expectedSourceVersion`
 - `expectedVersion`（`readPage`のopaque version）
 - `expectedOverlayVersion`
+
+Kamakura の English `saveDraft` は通常の `expectedVersion` と `request.localization.expectedVersion` が同一であること、`presentationVersion` が snapshot 由来の有効な版であることも確認します。BFF の `save` allowlist には presentation や target を追加せず、検証済み `document` と3つの localization versionだけを渡します。
 
 ホストは文書versionに加えてこの3値を比較し、古い原文・overlayへの保存を409にしてください。手編集値を`editLocalizedValue`で反映すると、既存の確認は自動で解除されます。
 

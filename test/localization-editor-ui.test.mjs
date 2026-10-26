@@ -78,7 +78,7 @@ async function localizedSite(siteId, sourceLocale, labels) {
   const targetDocument = (await materializeLocalizedPage(cfg, sourceDocument, collection, overlay)).document;
   return { cfg, sourceDocument, targetDocument, collection, overlay, labels, documentVersion: 1, localizationVersion: 1, siteVersion: 1, job: { state: "failed", message: "合成した失敗" } };
 }
-async function setup({ conflictOnce = false, conflictSourceChange = false, rejectCommandOnce = false, delayedRead = false, delayedSite = false, delayedSiteAfterFirst = false, rejectSiteOnce = false, rejectPageOnce = false, unsupportedLocale = false, extraPublicPage = false, recovery, localeRelease, readOnlySource = false, readOnlyTarget = false, previewComponent, initialTarget } = {}) {
+async function setup({ conflictOnce = false, conflictSourceChange = false, rejectCommandOnce = false, delayedRead = false, delayedSite = false, delayedSiteAfterFirst = false, rejectSiteOnce = false, rejectPageOnce = false, unsupportedLocale = false, extraPublicPage = false, recovery, localeRelease, readOnlySource = false, readOnlyTarget = false, previewComponent, initialTarget, pageTranslationUnavailable = false } = {}) {
   const kamakura = await localizedSite("kamakura", "ja", { source: "鎌倉ホーム", manual: "Manual Kamakura", candidate: "Candidate Kamakura" });
   const experience = await localizedSite("experience", "en", { source: "Experience home", manual: "体験（手修正）", candidate: "体験（翻訳案）" });
   const sites = { kamakura, experience }, calls = { saves: [], commands: [], siteReads: 0, pageReads: 0 }; let conflict = conflictOnce, rejectCommand = rejectCommandOnce, delayedResolve, delayedSiteResolve, failSite = rejectSiteOnce, failPage = rejectPageOnce;
@@ -112,6 +112,7 @@ async function setup({ conflictOnce = false, conflictSourceChange = false, rejec
     prepareRelease: async (request) => ({ ...request, confirmationToken: "demo", domain: "https://example.test", changes: [] }),
     release: async () => ({ status: "conflict" }),
     localization: {
+      ...(pageTranslationUnavailable ? { requestPageTranslation: false } : {}),
       readSite: async (siteId, signal) => { calls.siteReads++; if (failSite) { failSite = false; throw new Error("synthetic site failure"); }
         if (delayedSite || delayedSiteAfterFirst && calls.siteReads > 1) await new Promise((resolve) => { delayedSiteResolve = resolve; signal.addEventListener("abort", resolve, { once: true }); });
         const state = sites[siteId]; return { config: structuredClone(state.cfg), version: `site-${state.siteVersion}`, job: structuredClone(state.job), pages: [
@@ -164,6 +165,17 @@ test("initialTarget opens the translated language on the canvas", async () => {
   try {
     await waitForUi(() => document.querySelector('.e-language-selector [aria-pressed="true"]')?.textContent?.includes("English"), "English is selected from the initial target");
     assert.equal(document.querySelector('.e-language-selector [aria-pressed="true"]')?.textContent, "English（訳文）");
+  } finally { await app.cleanup(); }
+});
+
+test("page translation capability can be explicitly unavailable without pretending the request succeeded", async () => {
+  const app = await setup({ pageTranslationUnavailable: true, initialTarget: { siteId: "kamakura", pageId: "home", locale: "en-US" } });
+  try {
+    await waitForUi(() => document.querySelector('.e-language-selector [aria-pressed="true"]')?.textContent?.includes("English"), "English is selected");
+    await showLocalization();
+    assert.match(document.querySelector(".e-localization-panel").textContent, /このページからの自動翻訳依頼には対応していません/u);
+    assert.equal(button("翻訳を再試行"), undefined);
+    assert.equal(app.calls.commands.length, 0);
   } finally { await app.cleanup(); }
 });
 

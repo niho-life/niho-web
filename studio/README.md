@@ -229,6 +229,7 @@ log は editor と同じく問い合わせ ID・固定の operation（`cms_schem
 | `POST items/:itemKey` | `{}` | 12 秒 |
 | `POST editor/site` | `{}`。native ページごとの日英状態・英語の公開状態と翻訳設定を読む | 30 秒 |
 | `POST editor/pages/:pageId` | `{}`。固定の native ページ ID のみ | 30 秒 |
+| `POST editor/pages/:pageId/snapshot` | `{}`。English キャンバス用の `document` と同じ版の `presentation` を読む | 30 秒 |
 | `POST editor/pages/:pageId/save` | `{ document, expectedSourceVersion, expectedVersion, expectedOverlayVersion }` | 30 秒 |
 | `POST editor/pages/:pageId/command` | `{ action, expectedSourceVersion, expectedVersion, expectedOverlayVersion }` と操作別の unit / value / fingerprint / entry 版 | 30 秒 |
 | `POST items/:itemKey/command` | `{ itemKey, operationId, action, unitId, expectedVersion, expectedSourceVersion }` と action ごとに `value`／`candidateId`／`image` | 12 秒 |
@@ -242,7 +243,7 @@ log は editor と同じく問い合わせ ID・固定の operation（`cms_schem
 
 - `set-image` の `image` は `null`（原文と同じに戻す）か `{ kind: "image-url", src }` だけです（どの URL を使えるかは鎌倉の Worker が確かめる）。
 - 上限: 訳文の保存（`command`・`editor/pages/:pageId/save`・`editor/pages/:pageId/command`）の本文は 1 MiB − 4 KiB（鎌倉の Worker の 1 MiB から actor の分を引く）、ほかの本文 16 KiB、上流の応答 4 MiB（upload intent は 16 KiB）。画像は jpeg / png / webp / avif / gif で 50 MiB まで（実際の上限は鎌倉の Worker の 413）。
-- プレビューの材料（`preview/items` の 200）は、確かめずに 2 MiB + 64 KiB の上限つきでそのまま流します（ブラウザの adapter と画面が W1 の parser で確かめる。上限を超えたら途中で切る）。ほかの応答は W1 の parser（`src/localization-workspace-model.ts`）で確かめ、既知の field だけを返します。`editor/site` は設定・ページ ID の重複・言語別状態・公開状態・版を検証します。`editor/pages/:pageId` は原文の site・page・locale（移行中の `ja` と正規化済み `ja-JP`）・revision、訳文 overlay の scope、両版を確かめて返します。文書本文のブロック契約はホストの editor adapter で検証します。`save` は文書の対象と版を絞って上流の構造検証へ渡し、`command` は操作ごとの入力を絞ります。概要の `preview.frameUrl` は鎌倉の Worker の `/_studio/localization-preview`（`.html` 付きも可）だけを受けます。
+- プレビューの材料（`preview/items` の 200）は、確かめずに 2 MiB + 64 KiB の上限つきでそのまま流します（ブラウザの adapter と画面が W1 の parser で確かめる。上限を超えたら途中で切る）。ほかの応答は W1 の parser（`src/localization-workspace-model.ts`）または editor 専用 parser で確かめ、既知の field だけを返します。`editor/site` は設定・ページ ID の重複・言語別状態・公開状態・版を検証します。`editor/pages/:pageId` は原文の site・page・locale（移行中の `ja` と正規化済み `ja-JP`）・revision、訳文 overlay の scope、両版を確かめて返します。`snapshot` は English の document と presentation 内の全表示文書について site・page/locale・版を検証し、`conflict` / `unavailable` をそのまま明示します。文書本文のブロック契約はホストの editor adapter で catalog と組み合わせて検証します。`save` は文書の対象と版を絞って上流の構造検証へ渡し、`command` は操作ごとの入力を絞ります。概要の `preview.frameUrl` は鎌倉の Worker の `/_studio/localization-preview`（`.html` 付きも可）だけを受けます。
 
 | 上流 | ブラウザへ |
 | --- | --- |
@@ -349,7 +350,7 @@ Project 固有 API はすべて次の prefix 配下です。
 - Kamakura: `PUT editor/:pageId/draft`、`POST editor/:pageId/release-plan`、`POST editor/:pageId/release`
 - Kamakura: `POST editor/assets/{list,upload-intent,update,usages,resolve}`、`GET editor/assets/:uuid/preview`（owner/editor）
 - Kamakura CMS: `GET cms/schema`、`GET|POST cms/collections/:col/items`、`GET cms/collections/:col/items/:id`、`PUT …/:id/draft`、`POST …/:id/{publish,discard-draft,unpublish,duplicate,remove,schedule,cancel-schedule}`、`POST cms/uploads/intent`（owner/editor・鎌倉以外は 404）
-- Kamakura 翻訳: `POST localization/{overview,items,catalog/advance,preview/items,release,release/prepare,release/apply,uploads/intent,editor/site}`、`POST localization/editor/pages/:pageId{,/save,/command}`、`POST localization/items/after/:cursor`、`POST localization/items/:itemKey{,/command,/translate}`、`POST localization/jobs/:jobId`、`PUT localization/settings`（owner/editor・役割を上流へ渡す・鎌倉以外は 404）
+- Kamakura 翻訳: `POST localization/{overview,items,catalog/advance,preview/items,release,release/prepare,release/apply,uploads/intent,editor/site}`、`POST localization/editor/pages/:pageId{,/snapshot,/save,/command}`、`POST localization/items/after/:cursor`、`POST localization/items/:itemKey{,/command,/translate}`、`POST localization/jobs/:jobId`、`PUT localization/settings`（owner/editor・役割を上流へ渡す・鎌倉以外は 404）
 
 unknown Project/Site と権限のない Project/Site は、外部から区別できる詳細を返しません。owner API が返す member 情報は、その owner が管理する同一 Project に限定します。
 

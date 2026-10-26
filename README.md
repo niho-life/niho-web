@@ -3,12 +3,14 @@
 > 2026-10-22: Studioの2サイト向けvisual editor実行経路は凍結しました。公開サイトの構造・レイアウト・スタイルは各サイトのコードが正本です。editor source/coreは将来用の独立ライブラリとして保持しますが、Studio client bundle、HTML route、server proxyには接続しません。Dashboard、membership、招待など他のplatform機能は継続します。
 >
 > 2026-10-25: Kamakura の editor だけ読み取り専用で再接続しました（niho-life/kamakura-site#84）。保存・公開はサイト側の凍結で止まり、画面は凍結中と案内します。Experience は凍結したままです。詳細は [Studio runbook](studio/README.md)。
+>
+> 2026-10-27: Kamakura の English キャンバスはサイト側の canonical localization overlay に接続しました。日本語の見た目編集・ページ単位公開は従来の凍結状態を維持し、英語は表示材料が揃うページだけ読込・下書き保存できます。
 
 公開ページの JSON 文書、入力検証、scoped CSS、React / HTML renderer を共有する TypeScript パッケージです。Astro と Next.js が同じ文書を描画できます。React renderer は本文と登録済みブロックをサーバーで描画し、初期 HTML に含めます。
 
 このリポジトリには公開可能な文書契約と描画処理を置きます。認証情報、管理 API、サイトの非公開データ、価格・在庫・予約の判断処理は利用側が所有します。
 
-`studio/` には、このライブラリとは独立して配置する NIHO Web Studio host があります。Cloudflare Access の Google 認証、Studio専用D1のProject/Site・membership、参加Project一覧とDashboardを所有し、niho-appのUser/Project DBやcookieには接続しません。Experience のサイト編集routeは凍結案内を返し、editor APIは上流へproxyしません。Kamakura は読み取り専用で開きます。構成、security boundary、D1 migration、owner bootstrap、配置手順は [Studio runbook](studio/README.md) を参照してください。
+`studio/` には、このライブラリとは独立して配置する NIHO Web Studio host があります。Cloudflare Access の Google 認証、Studio専用D1のProject/Site・membership、参加Project一覧とDashboardを所有し、niho-appのUser/Project DBやcookieには接続しません。Experience のサイト編集routeは凍結案内を返し、editor APIは上流へproxyしません。Kamakura は日本語の既存読込と、サイト側の正本 overlay を使う English 下書き編集を提供します。構成、security boundary、D1 migration、owner bootstrap、配置手順は [Studio runbook](studio/README.md) を参照してください。
 
 ソースは公開されていますが、第三者への再利用ライセンスは付与していません（`UNLICENSED`）。
 
@@ -35,7 +37,7 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 | `@niho/web/builder` | 汎用の挿入カタログ、モーション定義、host拡張の型と検証。React非依存 |
 | `@niho/web/react` | `PageRenderer` とブロック registry の型 |
 | `@niho/web/server` | Astro の build / server で使える `renderPageToHtml` |
-| `@niho/web/editor` | 認証済みホストadapterへ接続する `PageEditor` と型。`initialTarget`、任意の日英切替、許可ブロック、trusted host 固有の設定 UI を扱う。Kamakura の日英一覧は Studio BFF の `localization/editor/site` から読む（[編集・公開契約](docs/editor-contract.md)、[多言語 editor 契約](docs/localization-editor.md)、[ManagedEmbed 契約](docs/managed-embed-contract.md)）。React / React DOM が必要 |
+| `@niho/web/editor` | 認証済みホストadapterへ接続する `PageEditor` と型。`initialTarget`、任意の日英切替、許可ブロック、trusted host 固有の設定 UI を扱う。Kamakura の日英一覧は Studio BFF の `localization/editor/site`、English キャンバスは `editor/pages/:pageId/snapshot` から読み、保存はサイト側の正本 overlay へ戻す（[編集・公開契約](docs/editor-contract.md)、[多言語 editor 契約](docs/localization-editor.md)、[ManagedEmbed 契約](docs/managed-embed-contract.md)）。React / React DOM が必要 |
 | `@niho/web/projects` | 1 Project = 1 Site の検証、純粋操作、atomic CAS契約。React不要 |
 | `@niho/web/project-manager` | 認証済みホストadapterへ接続する `ProjectManager`。React / React DOM が必要 |
 | `@niho/web/project-directory` | 管理フォームと独立した日常の `ProjectDirectory`。内部またはhost shellの名前・ドメイン検索、OG画像／頭文字カード、更新順の一覧表、Dashboard / Editorメニュー |

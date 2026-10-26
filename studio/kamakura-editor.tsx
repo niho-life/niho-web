@@ -2,17 +2,19 @@ import { useEffect, useMemo, useState } from "react";
 import { PageEditor } from "../src/editor.js";
 import { createExternalFramePolicy } from "../src/react.js";
 import { createProjectEditorAdapter } from "../src/project-editor-adapter.js";
-import type { EditorAdapter, EditorReleasePlan, EditorReleaseRequest, EditorReleaseResult, EditorSaveResult, EditorSnapshot, EditorTarget } from "../src/editor-types.js";
+import type { EditorAdapter, EditorLocalizedPage, EditorLocalizationCommandResult, EditorLocalizationPageSnapshot, EditorLocalizationSiteSnapshot, EditorReleasePlan, EditorReleaseRequest, EditorReleaseResult, EditorSaveResult, EditorSnapshot, EditorTarget } from "../src/editor-types.js";
 import type { Project } from "../src/projects.js";
 import { studioBuilderDefinition } from "./integration-builder.js";
 import { projectRoutePath } from "./project-routes.mjs";
 import { kamakuraAssetLibrary } from "./kamakura-assets.js";
 import { createKamakuraEditorBlocks } from "./kamakura-editor-blocks.js";
 import { parsePageDocument, parseSitePresentation, type BlockContracts } from "../src/core.js";
+import { parseLocalizationOverlay, parseSiteLocalizationConfig } from "../src/localization.js";
 import { KAMAKURA_CATALOG_CONTRACT_ERROR_CODE, KAMAKURA_CATALOG_CONTRACT_ERROR_STATUS, KAMAKURA_COMMON_PAGE_ID as COMMON_PAGE_ID, KAMAKURA_EDITOR_DOMAIN as DOMAIN, KAMAKURA_EDITOR_SITE_ID, KamakuraCatalogContractError, parseKamakuraCatalog } from "./kamakura-catalog.js";
 import type { KamakuraCatalog } from "./kamakura-catalog.js";
 
 const BASE = "/api/projects/project-kamakura/sites/kamakura/editor";
+const LOCALIZATION_BASE = "/api/projects/project-kamakura/sites/kamakura/localization";
 // kamakura-site が見た目の編集を凍結している間の保存・公開の 409。競合とは分けて案内する（kamakura-site#84）。
 const VISUAL_EDITOR_FROZEN = "visual_editor_frozen";
 const FROZEN_MESSAGE = "サイトの見た目の編集は凍結中です。表示の確認だけでき、保存と公開はできません。";
@@ -22,10 +24,12 @@ type EditorApiStatus = { readonly status: number; readonly errorCode: string | n
 type CatalogState = { readonly status: "loading" } | { readonly status: "error"; readonly code: number; readonly errorCode: string | null; readonly supportId: string | null } | { readonly status: "ready"; readonly value: KamakuraCatalog };
 
 class EditorApiError extends Error {
-  constructor(readonly status: number, readonly code: string | null = null, readonly supportId: string | null = null) {
-    super(code === KAMAKURA_CATALOG_CONTRACT_ERROR_CODE ? "Kamakura catalog contract mismatch" : code === VISUAL_EDITOR_FROZEN ? FROZEN_MESSAGE : status === 401 ? "Cloudflare Access のセッションを確認してください。" : status === 403 ? "このプロジェクトの編集権限がありません。" : status === 404 ? "新形式のページが見つかりません。" : status === 503 ? "編集ブリッジを利用できません。" : "編集 API の要求を完了できませんでした。");
+  constructor(readonly status: number, readonly code: string | null = null, readonly supportId: string | null = null, message?: string) {
+    super(message ?? (code === KAMAKURA_CATALOG_CONTRACT_ERROR_CODE ? "Kamakura catalog contract mismatch" : code === VISUAL_EDITOR_FROZEN ? FROZEN_MESSAGE : status === 401 ? "Cloudflare Access のセッションを確認してください。" : status === 403 ? "このプロジェクトの編集権限がありません。" : status === 404 ? "新形式のページが見つかりません。" : status === 503 ? "編集ブリッジを利用できません。" : "編集 API の要求を完了できませんでした。"));
   }
 }
+
+class EditorContentUnavailableError extends Error {}
 
 function record(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("編集 API の応答が正しくありません。");
@@ -46,8 +50,17 @@ function validTarget(target: EditorTarget): EditorTarget {
   return { siteId: "kamakura", pageId: target.pageId, locale: "ja" };
 }
 
+function validEnglishTarget(target: EditorTarget): EditorTarget {
+  if (target.siteId !== KAMAKURA_EDITOR_SITE_ID || target.locale !== "en" || !COMMON_PAGE_ID.test(target.pageId)) throw new Error("英語の編集対象ではありません。");
+  return { siteId: KAMAKURA_EDITOR_SITE_ID, pageId: target.pageId, locale: "en" };
+}
+
 function pagePath(target: EditorTarget): string {
   return `${BASE}/${validTarget(target).pageId}`;
+}
+
+function localizationPagePath(target: EditorTarget): string {
+  return `${LOCALIZATION_BASE}/editor/pages/${validEnglishTarget(target).pageId}`;
 }
 
 async function api(path: string, method: RequestMethod, body: Record<string, unknown> | undefined, signal: AbortSignal): Promise<unknown> {
@@ -93,6 +106,88 @@ function parseSnapshot(value: unknown, target: EditorTarget, blocks: BlockContra
   return structuredClone(value) as EditorSnapshot;
 }
 
+function safeLine(value: unknown, maximum: number): value is string {
+  return typeof value === "string" && value.trim() !== "" && value.length <= maximum && !/[\u0000-\u001f\u007f]/u.test(value);
+}
+
+function localizationVersion(value: unknown, prefix: "l" | "p" | "s"): value is string {
+  return typeof value === "string" && new RegExp(`^${prefix}\\.[0-9a-f]{64}$`, "u").test(value);
+}
+
+function parseEnglishSnapshot(value: unknown, target: EditorTarget, blocks: BlockContracts): EditorSnapshot {
+  const source = record(value), checked = validEnglishTarget(target);
+  if (source.status === "conflict" && Object.keys(source).length === 1) throw new EditorApiError(409, "conflict", null, "英語の編集状態が更新されました。最新の状態を読み直してください。");
+  if (source.status === "unavailable" && Object.keys(source).sort().join(",") === "message,status" && safeLine(source.message, 1000)) {
+    throw new EditorContentUnavailableError(source.message);
+  }
+  if (source.status !== "ready" || Object.keys(source).sort().join(",") !== "document,presentation,status,version" || !localizationVersion(source.version, "l")) {
+    throw new Error("英語文書の応答が正しくありません。");
+  }
+  const document = parsePageDocument(source.document, blocks);
+  if (document.siteId !== checked.siteId || document.pageId !== checked.pageId || document.locale !== checked.locale) throw new Error("英語文書の対象が一致しません。");
+  const presentation = parseSitePresentation(source.presentation, document, blocks);
+  if (!validVersion(presentation.version)) throw new Error("英語表示コンテキストの版が正しくありません。");
+  return { document, version: source.version, presentation };
+}
+
+function parseLocalizationSite(value: unknown, catalog: KamakuraCatalog): EditorLocalizationSiteSnapshot {
+  const source = record(value);
+  if (source.status !== "ready" || Object.keys(source).sort().join(",") !== "config,pages,status,version" || !localizationVersion(source.version, "s") || !Array.isArray(source.pages) || source.pages.length > 500) {
+    throw new Error("言語設定とページ一覧の応答が正しくありません。");
+  }
+  const config = parseSiteLocalizationConfig(source.config);
+  if (config.siteId !== KAMAKURA_EDITOR_SITE_ID || config.sourceLocale !== "ja" || config.enabledLocales.length !== 2 || !config.enabledLocales.includes("ja") || !config.enabledLocales.includes("en")) {
+    throw new Error("言語設定の対象が一致しません。");
+  }
+  const ids = new Set<string>();
+  const pages = source.pages.map((input): EditorLocalizedPage => {
+    const page = record(input), allowed = ["siteId", "pageId", "title", "path", "kind", "locales"];
+    if (Object.keys(page).some((key) => !allowed.includes(key)) || page.siteId !== KAMAKURA_EDITOR_SITE_ID || typeof page.pageId !== "string" || !COMMON_PAGE_ID.test(page.pageId)
+      || ids.has(page.pageId) || !safeLine(page.title, 300) || page.path !== undefined && (typeof page.path !== "string" || page.path.length > 160 || /[\u0000-\u001f\u007f]/u.test(page.path))
+      || page.kind !== undefined && !["page", "template", "shared"].includes(String(page.kind))) throw new Error("言語別ページ一覧が正しくありません。");
+    const locales = record(page.locales), ja = record(locales.ja), en = record(locales.en);
+    if (Object.keys(locales).sort().join(",") !== "en,ja" || Object.keys(ja).join(",") !== "state" || ja.state !== "source"
+      || Object.keys(en).some((key) => !["state", "changed", "published"].includes(key)) || !["missing", "translating", "review-needed", "reviewed", "failed"].includes(String(en.state))
+      || en.changed !== undefined && (!Number.isSafeInteger(en.changed) || (en.changed as number) < 0) || en.published !== undefined && typeof en.published !== "boolean") {
+      throw new Error("言語別ページの状態が正しくありません。");
+    }
+    const sourcePage = catalog.pages.find((entry) => entry.pageId === page.pageId);
+    if (!sourcePage) throw new Error("言語別ページ一覧に日本語の正本ページがありません。");
+    ids.add(page.pageId);
+    return { siteId: KAMAKURA_EDITOR_SITE_ID, pageId: page.pageId, title: sourcePage.title, locales: { ja: { state: "source" }, en: { state: en.state as "missing" | "translating" | "review-needed" | "reviewed" | "failed", ...(en.changed === undefined ? {} : { changed: en.changed as number }), ...(en.published === undefined ? {} : { published: en.published }) } },
+      ...(sourcePage.path === undefined ? {} : { path: sourcePage.path }), ...(sourcePage.kind === undefined ? {} : { kind: sourcePage.kind }) };
+  });
+  if (ids.size !== catalog.pages.length || catalog.pages.some((page) => !ids.has(page.pageId))) throw new Error("日本語と英語のページ一覧が一致しません。");
+  return { config, pages, version: source.version };
+}
+
+function parseLocalizationPage(value: unknown, target: EditorTarget, blocks: BlockContracts): EditorLocalizationPageSnapshot {
+  const source = record(value), checked = validEnglishTarget(target);
+  if (source.status !== "ready" || Object.keys(source).sort().join(",") !== "overlay,sourceDocument,sourceVersion,status,version"
+    || !localizationVersion(source.sourceVersion, "p") || !localizationVersion(source.version, "l")) throw new Error("翻訳状態の応答が正しくありません。");
+  const document = parsePageDocument(source.sourceDocument, blocks);
+  if (document.siteId !== checked.siteId || document.pageId !== checked.pageId || !["ja", "ja-JP"].includes(document.locale)) throw new Error("翻訳原文の対象が一致しません。");
+  const overlay = parseLocalizationOverlay(source.overlay);
+  if (overlay.siteId !== checked.siteId || overlay.pageId !== checked.pageId || overlay.sourceLocale !== "ja" || overlay.targetLocale !== "en") throw new Error("翻訳下書きの対象が一致しません。");
+  return { sourceDocument: document, sourceVersion: source.sourceVersion, overlay, version: source.version };
+}
+
+function parseLocalizationCommandResult(value: unknown): EditorLocalizationCommandResult {
+  const source = record(value);
+  if (source.status === "conflict" && Object.keys(source).length === 1) return { status: "conflict" };
+  if (source.status === "invalid" && Object.keys(source).sort().join(",") === "message,status" && safeLine(source.message, 1000)) throw new Error(source.message);
+  if (source.status !== "applied" || Object.keys(source).sort().join(",") !== "status,version" || !localizationVersion(source.version, "l")) throw new Error("翻訳操作の結果が正しくありません。");
+  return { status: "applied", version: source.version };
+}
+
+function parseLocalizedSave(value: unknown): EditorSaveResult {
+  const source = record(value);
+  if (source.status === "conflict" && Object.keys(source).length === 1) return { status: "conflict" };
+  if (source.status === "invalid" && Object.keys(source).sort().join(",") === "message,status" && safeLine(source.message, 1000)) throw new Error(source.message);
+  if (source.status !== "saved" || Object.keys(source).sort().join(",") !== "revision,status,version" || !localizationVersion(source.version, "l")) throw new Error("英語下書き保存の結果が正しくありません。");
+  return parseSaved(source);
+}
+
 function parseSaved(value: unknown): Extract<EditorSaveResult, { status: "saved" }> {
   const source = record(value);
   if (source.status !== "saved" || !validVersion(source.version) || !Number.isSafeInteger(source.revision) || (source.revision as number) < 1) throw new Error("下書き保存の結果が正しくありません。");
@@ -121,7 +216,7 @@ function parseReleased(value: unknown, target: EditorTarget, blocks: BlockContra
   return { status: "released", snapshot: parseSnapshot(source.snapshot, target, blocks, required) };
 }
 
-function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (status: EditorApiStatus | null) => void): EditorAdapter {
+export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (status: EditorApiStatus | null) => void): EditorAdapter {
   async function request<T>(signal: AbortSignal, run: () => Promise<T>): Promise<T> {
     try {
       const result = await run();
@@ -130,11 +225,11 @@ function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (status: Edit
       return result;
     } catch (error) {
       if (!signal.aborted && error instanceof EditorApiError && (error.status !== 409 || error.code === VISUAL_EDITOR_FROZEN)) onStatus(statusFromError(error));
-      else if (!signal.aborted && !(error instanceof EditorApiError)) onStatus(statusFromError(error));
+      else if (!signal.aborted && !(error instanceof EditorApiError) && !(error instanceof EditorContentUnavailableError)) onStatus(statusFromError(error));
       throw error;
     }
   }
-  async function conflict<T extends EditorSaveResult | EditorReleaseResult>(run: () => Promise<T>): Promise<T | { status: "conflict" }> {
+  async function conflict<T>(run: () => Promise<T>): Promise<T | { status: "conflict" }> {
     try { return await run(); }
     catch (error) { if (error instanceof EditorApiError && error.status === 409 && error.code !== VISUAL_EDITOR_FROZEN) return { status: "conflict" }; throw error; }
   }
@@ -144,8 +239,20 @@ function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (status: Edit
       if (siteId !== "kamakura") throw new Error("編集対象のサイトがありません。");
       return catalog.pages;
     }),
-    readDocument: (target, signal) => request(signal, async () => parseSnapshot(await api(pagePath(target), "GET", undefined, signal), target, catalog.blockContracts, catalog.nativePresentationPages.includes(target.pageId))),
+    readDocument: (target, signal) => request(signal, async () => target.locale === "en"
+      ? parseEnglishSnapshot(await api(`${localizationPagePath(target)}/snapshot`, "POST", {}, signal), target, catalog.blockContracts)
+      : parseSnapshot(await api(pagePath(target), "GET", undefined, signal), target, catalog.blockContracts, catalog.nativePresentationPages.includes(target.pageId))),
     saveDraft: (input, signal) => conflict(() => request(signal, async () => {
+      if (input.target.locale === "en") {
+        const target = validEnglishTarget(input.target), localization = input.localization;
+        if (!localization || !localizationVersion(localization.expectedSourceVersion, "p") || !localizationVersion(localization.expectedVersion, "l")
+          || !Number.isSafeInteger(localization.expectedOverlayVersion) || localization.expectedOverlayVersion < 1
+          || input.expectedVersion !== localization.expectedVersion || !validVersion(input.presentationVersion)) throw new Error("英語下書きの対象または版が正しくありません。");
+        const document = parsePageDocument(input.document, catalog.blockContracts);
+        if (document.siteId !== target.siteId || document.pageId !== target.pageId || document.locale !== target.locale) throw new Error("英語下書きの対象が一致しません。");
+        return parseLocalizedSave(await api(`${localizationPagePath(target)}/save`, "POST", { document, expectedSourceVersion: localization.expectedSourceVersion,
+          expectedVersion: localization.expectedVersion, expectedOverlayVersion: localization.expectedOverlayVersion }, signal));
+      }
       if (!validVersion(input.expectedVersion)) throw new Error("保存対象の版が正しくありません。");
       if (!validVersion(input.presentationVersion)) throw new Error("表示コンテキストの版が正しくありません。");
       return parseSaved(await api(`${pagePath(input.target)}/draft`, "PUT", { expectedVersion: input.expectedVersion, presentationVersion: input.presentationVersion, document: input.document }, signal));
@@ -159,7 +266,27 @@ function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (status: Edit
     release: (plan, signal) => conflict(() => request(signal, async () => {
       if (!releaseMatches(plan, plan)) throw new Error("公開確認が不正です。再度確認してください。");
       return parseReleased(await api(`${pagePath(plan.target)}/release`, "POST", { expectedVersion: plan.expectedVersion, presentationVersion: plan.presentationVersion, confirmationToken: plan.confirmationToken }, signal), plan.target, catalog.blockContracts, catalog.nativePresentationPages.includes(plan.target.pageId));
-    }))
+    })),
+    localization: {
+      requestPageTranslation: false,
+      readSite: (siteId, signal) => request(signal, async () => {
+        if (siteId !== KAMAKURA_EDITOR_SITE_ID) throw new Error("編集対象のサイトがありません。");
+        return parseLocalizationSite(await api(`${LOCALIZATION_BASE}/editor/site`, "POST", {}, signal), catalog);
+      }),
+      readPage: (target, signal) => request(signal, async () => parseLocalizationPage(await api(localizationPagePath(target), "POST", {}, signal), target, catalog.blockContracts)),
+      command: (input, signal) => conflict(() => request(signal, async () => {
+        const target = validEnglishTarget(input.target);
+        if (!localizationVersion(input.expectedSourceVersion, "p") || !localizationVersion(input.expectedVersion, "l")
+          || !Number.isSafeInteger(input.expectedOverlayVersion) || input.expectedOverlayVersion < 1) throw new Error("翻訳操作の版が正しくありません。");
+        if (input.action === "request-translation") throw new Error("ページエディタからの翻訳依頼にはまだ対応していません。翻訳画面を利用してください。");
+        let body: Record<string, unknown>;
+        if (input.action === "adopt-candidate") body = { action: input.action, unitId: input.unitId, candidateVersion: input.candidateVersion };
+        else if (input.action === "set-value") body = { action: input.action, unitId: input.unitId, value: input.value, sourceFingerprint: input.sourceFingerprint, expectedEntryVersion: input.expectedEntryVersion };
+        else body = { action: input.action, unitId: input.unitId };
+        return parseLocalizationCommandResult(await api(`${localizationPagePath(target)}/command`, "POST", { ...body, expectedSourceVersion: input.expectedSourceVersion,
+          expectedVersion: input.expectedVersion, expectedOverlayVersion: input.expectedOverlayVersion }, signal));
+      })) as Promise<EditorLocalizationCommandResult>
+    }
   };
 }
 

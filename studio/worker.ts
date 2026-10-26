@@ -196,6 +196,7 @@ type KamakuraBridgeOperation =
   | "localization_settings"
   | "localization_upload_intent"
   | "localization_editor_page"
+  | "localization_editor_snapshot"
   | "localization_editor_site"
   | "localization_editor_save"
   | "localization_editor_command"
@@ -1782,7 +1783,7 @@ async function kamakuraCmsApi(request: Request, env: Env, identity: AccessIdenti
 /* ---------- Kamakura の翻訳（LocalizationWorkspace）の BFF ---------- */
 
 type KamakuraLocalizationOperation =
-  "overview" | "list" | "list-after" | "item" | "command" | "translate" | "job" | "catalog" | "preview" | "release" | "prepare" | "apply" | "settings" | "upload-intent" | "editor-site" | "editor-page" | "editor-save" | "editor-command";
+  "overview" | "list" | "list-after" | "item" | "command" | "translate" | "job" | "catalog" | "preview" | "release" | "prepare" | "apply" | "settings" | "upload-intent" | "editor-site" | "editor-page" | "editor-snapshot" | "editor-save" | "editor-command";
 type KamakuraLocalizationRoute = { readonly operation: KamakuraLocalizationOperation; readonly upstreamPath: string; readonly itemKey: string | null; readonly jobId: string | null; readonly pageId: string | null };
 type KamakuraLocalizationSpec = { readonly method: "POST" | "PUT"; readonly log: KamakuraBridgeOperation; readonly bodyKeys: readonly string[] | null; readonly long: boolean };
 type KamakuraLocalizationActor = { readonly email: string; readonly role: Role };
@@ -1808,6 +1809,7 @@ const KAMAKURA_LOCALIZATION_OPERATIONS: Readonly<Record<KamakuraLocalizationOper
   "upload-intent": { method: "POST", log: "localization_upload_intent", bodyKeys: ["itemKey", "unitId", "name", "mimeType", "bytes"], long: false },
   "editor-site": { method: "POST", log: "localization_editor_site", bodyKeys: [], long: true },
   "editor-page": { method: "POST", log: "localization_editor_page", bodyKeys: [], long: true },
+  "editor-snapshot": { method: "POST", log: "localization_editor_snapshot", bodyKeys: [], long: true },
   "editor-save": { method: "POST", log: "localization_editor_save", bodyKeys: ["document", "expectedSourceVersion", "expectedVersion", "expectedOverlayVersion"], long: true },
   "editor-command": { method: "POST", log: "localization_editor_command", bodyKeys: null, long: true }
 };
@@ -1839,7 +1841,7 @@ function kamakuraLocalizationRoute(action: string, method: string): KamakuraLoca
   const after = /^\/items\/after\/([^/]+)$/u.exec(action);
   const item = /^\/items\/([^/]+)(?:\/(command|translate))?$/u.exec(action);
   const job = /^\/jobs\/([^/]+)$/u.exec(action);
-  const editorPage = /^\/editor\/pages\/([^/]+)(?:\/(save|command))?$/u.exec(action);
+  const editorPage = /^\/editor\/pages\/([^/]+)(?:\/(snapshot|save|command))?$/u.exec(action);
   if (Object.hasOwn(KAMAKURA_LOCALIZATION_FIXED, action)) operation = KAMAKURA_LOCALIZATION_FIXED[action]!;
   // 鎌倉の Worker と同じく items/after/<cursor> は一覧の続き（items/after だけなら 1 件）
   else if (after) {
@@ -1857,7 +1859,7 @@ function kamakuraLocalizationRoute(action: string, method: string): KamakuraLoca
   } else if (editorPage) {
     if (!KAMAKURA_COMMON_PAGE_ID.test(editorPage[1]!)) return null;
     pageId = editorPage[1]!;
-    operation = editorPage[2] === "save" ? "editor-save" : editorPage[2] === "command" ? "editor-command" : "editor-page";
+    operation = editorPage[2] === "snapshot" ? "editor-snapshot" : editorPage[2] === "save" ? "editor-save" : editorPage[2] === "command" ? "editor-command" : "editor-page";
   } else return null;
   if (method !== KAMAKURA_LOCALIZATION_OPERATIONS[operation].method) return "method_not_allowed";
   return { operation, upstreamPath: `${KAMAKURA_LOCALIZATION_UPSTREAM_PREFIX}${action}`, itemKey, jobId, pageId };
@@ -1896,7 +1898,7 @@ function kamakuraLocalizationValues(route: KamakuraLocalizationRoute, body: Reco
     return { expectedSourceVersion: body.expectedSourceVersion, expectedVersion: body.expectedVersion, expectedOverlayVersion: body.expectedOverlayVersion };
   };
   switch (route.operation) {
-    case "overview": case "list": case "list-after": case "item": case "job": case "catalog": case "release": case "editor-site": case "editor-page":
+    case "overview": case "list": case "list-after": case "item": case "job": case "catalog": case "release": case "editor-site": case "editor-page": case "editor-snapshot":
       return {};
     case "command": {
       const base = {
@@ -2046,12 +2048,66 @@ function parseKamakuraLocalizationEditorSite(input: unknown) {
   return { status: "ready", config, pages, version: input.version };
 }
 
+function assertKamakuraEnglishDocumentScope(input: unknown, pageId: string | null, path: string): Record<string, unknown> {
+  if (!isRecord(input) || input.schemaVersion !== 1 || input.siteId !== KAMAKURA_EDITOR_SITE_ID || typeof input.pageId !== "string"
+    || (pageId === null ? !/^[A-Za-z][A-Za-z0-9_-]{0,79}$/u.test(input.pageId) : input.pageId !== pageId)
+    || input.locale !== "en"
+    || !Number.isSafeInteger(input.revision) || (input.revision as number) < 1 || typeof input.title !== "string" || !Array.isArray(input.body)) {
+    throw new DocumentValidationError(path, "unexpected English document scope");
+  }
+  return input;
+}
+
+/** snapshot の外枠と、そこに含まれる全 presentation 文書の site / locale / 版を BFF でも固定する。本文の block 契約は client adapter が catalog と組で検証する。 */
+function parseKamakuraLocalizationEditorSnapshot(input: unknown, pageId: string) {
+  if (!isRecord(input)) throw new DocumentValidationError("response", "expected object");
+  if (input.status === "conflict") {
+    if (Object.keys(input).length !== 1) throw new DocumentValidationError("response", "unexpected conflict fields");
+    return { status: "conflict" as const };
+  }
+  if (input.status === "unavailable") {
+    if (Object.keys(input).sort().join(",") !== "message,status" || !isKamakuraCmsLine(input.message, 1000)) {
+      throw new DocumentValidationError("response", "unexpected unavailable result");
+    }
+    return { status: "unavailable" as const, message: input.message };
+  }
+  if (input.status !== "ready" || Object.keys(input).sort().join(",") !== "document,presentation,status,version"
+    || typeof input.version !== "string" || !/^l\.[0-9a-f]{64}$/u.test(input.version)) {
+    throw new DocumentValidationError("response", "unexpected snapshot fields");
+  }
+  const document = assertKamakuraEnglishDocumentScope(input.document, pageId, "response.document");
+  const presentation = input.presentation;
+  if (!isRecord(presentation) || Object.keys(presentation).some((key) => !["schemaVersion", "siteId", "locale", "version", "reset", "tokens", "layout", "fonts", "shared", "overlays", "hostViews"].includes(key))
+    || presentation.schemaVersion !== 1 || presentation.siteId !== KAMAKURA_EDITOR_SITE_ID || presentation.locale !== "en"
+    || !isKamakuraCmsLine(presentation.version, 256) || !isRecord(presentation.shared)
+    || Object.keys(presentation.shared).sort().join(",") !== "footer,header") {
+    throw new DocumentValidationError("response.presentation", "unexpected presentation scope");
+  }
+  assertKamakuraEnglishDocumentScope(presentation.shared.header, null, "response.presentation.shared.header");
+  assertKamakuraEnglishDocumentScope(presentation.shared.footer, null, "response.presentation.shared.footer");
+  if (presentation.overlays !== undefined) {
+    if (!Array.isArray(presentation.overlays) || presentation.overlays.length > 8) throw new DocumentValidationError("response.presentation.overlays", "unexpected overlays");
+    for (const [index, entry] of presentation.overlays.entries()) {
+      if (!isRecord(entry) || !isRecord(entry.document)) throw new DocumentValidationError(`response.presentation.overlays[${index}]`, "unexpected overlay");
+      assertKamakuraEnglishDocumentScope(entry.document, null, `response.presentation.overlays[${index}].document`);
+    }
+  }
+  if (presentation.hostViews !== undefined) {
+    if (!Array.isArray(presentation.hostViews) || presentation.hostViews.length > 64) throw new DocumentValidationError("response.presentation.hostViews", "unexpected host views");
+    for (const [index, entry] of presentation.hostViews.entries()) {
+      if (!isRecord(entry) || !isRecord(entry.document)) throw new DocumentValidationError(`response.presentation.hostViews[${index}]`, "unexpected host view");
+      assertKamakuraEnglishDocumentScope(entry.document, null, `response.presentation.hostViews[${index}].document`);
+    }
+  }
+  return { status: "ready" as const, document, version: input.version, presentation };
+}
+
 /**
  * 上流の契約の結果（本文 `{ status, … }`）を W1 の parser で確かめ、既知の field だけにする。
  * forbidden は 403・not_found は 404・ほかは 200 で返る約束なので、HTTP の status と合わなければ契約違反。
  */
 function kamakuraLocalizationResult(route: KamakuraLocalizationRoute, request: Record<string, unknown>, value: unknown, httpStatus: number): { readonly status: string } {
-  const parse = (): { readonly status: string; readonly sourceDocument?: unknown; readonly sourceVersion?: string; readonly overlay?: unknown; readonly version?: string; readonly revision?: number; readonly message?: string } => {
+  const parse = (): { readonly status: string; readonly sourceDocument?: unknown; readonly sourceVersion?: string; readonly overlay?: unknown; readonly document?: unknown; readonly presentation?: unknown; readonly version?: string; readonly revision?: number; readonly message?: string } => {
     switch (route.operation) {
       case "overview": {
         const result = parseLocalizationOverviewResult(value);
@@ -2100,6 +2156,7 @@ function kamakuraLocalizationResult(route: KamakuraLocalizationRoute, request: R
         }
         return { status: "ready", sourceDocument: document, sourceVersion: value.sourceVersion, overlay, version: value.version };
       }
+      case "editor-snapshot": return parseKamakuraLocalizationEditorSnapshot(value, route.pageId!);
       case "editor-save": case "editor-command": {
         if (!isRecord(value)) throw new DocumentValidationError("response", "expected object");
         if (value.status === "forbidden" || value.status === "not_found" || value.status === "conflict") {
