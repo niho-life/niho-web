@@ -4,7 +4,7 @@ import type { KamakuraCmsWorkspaceProps } from "./kamakura-cms-workspace.js";
 /**
  * Dashboard の「CMS」をコレクション画面で開く（Worker の KAMAKURA_CMS_VIEW が "workspace" のとき）。
  * 画面の部品（CollectionWorkspace・TipTap）は Studio の最初の bundle に入れず、CMS を開いたときだけ読む。
- * 移行の間は、サイト側の旧画面（/admin）を別のタブで開く入口を上に残す。
+ * 旧画面への入口は Dashboard の帯の右側（studio/client.tsx の LegacyLink）。
  */
 type WorkspaceModule = typeof import("./kamakura-cms-workspace.js");
 let loaded: WorkspaceModule | null = null;
@@ -18,7 +18,7 @@ function loadWorkspace(): Promise<WorkspaceModule> {
 
 type LoadState = { readonly status: "loading" | "error" } | { readonly status: "ready"; readonly module: WorkspaceModule };
 
-export function SiteCmsWorkspace({ legacyUrl, ...props }: KamakuraCmsWorkspaceProps & { readonly legacyUrl: string }) {
+export function SiteCmsWorkspace(props: KamakuraCmsWorkspaceProps) {
   const [state, setState] = useState<LoadState>(() => loaded ? { status: "ready", module: loaded } : { status: "loading" });
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
@@ -33,9 +33,6 @@ export function SiteCmsWorkspace({ legacyUrl, ...props }: KamakuraCmsWorkspacePr
   }, [attempt]);
 
   return <section className="studio-site-cms" aria-label="CMS">
-    <div className="studio-site-cms-bar">
-      <a href={legacyUrl} target="_blank" rel="noopener">旧画面（/admin）を開く <span aria-hidden="true">↗</span></a>
-    </div>
     {state.status === "ready"
       ? <state.module.KamakuraCmsWorkspace {...props} />
       : state.status === "error"

@@ -39,7 +39,7 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 | `@niho/web/projects` | 1 Project = 1 Site の検証、純粋操作、atomic CAS契約。React不要 |
 | `@niho/web/project-manager` | 認証済みホストadapterへ接続する `ProjectManager`。React / React DOM が必要 |
 | `@niho/web/project-directory` | 管理フォームと独立した日常の `ProjectDirectory`。内部またはhost shellの名前・ドメイン検索、OG画像／頭文字カード、更新順の一覧表、Dashboard / Editorメニュー |
-| `@niho/web/project-dashboard` | 選択した1 Project・1 Siteに固定した共通Studio shellの `ProjectDashboard`。公開状況・変更履歴表・メンバー表・アクセス解析・設定／サイト機能導線 |
+| `@niho/web/project-dashboard` | 選択した1 Project・1 Siteに固定した共通Studio shellの `ProjectDashboard`。上部のタブ（ホーム・サイト機能・アナリティクス）で画面全体を切り替え、公開状況・変更履歴表・メンバー表・アクセス解析・設定を表示 |
 | `@niho/web/project-read-model` | summary / dashboardの型・読み取りadapter・runtime parser。React不要 |
 | `@niho/web/collection-workspace` | コレクション（CMS）の一覧と項目の編集の `CollectionWorkspace`。ホストの adapter で読み書き・自動保存・公開・予約（[接続方法](docs/collection-contract.md)） |
 | `@niho/web/localization-workspace` | どのサイトでも使える翻訳の画面 `LocalizationWorkspace`。対象外を分けた一覧・原文編集への導線、原文と訳文を並べた編集・自動保存・確認済み・言語全体の公開と戻し・プレビューの枠への受け渡し（[接続方法](docs/localization-workspace-contract.md)）。型と parser は `@niho/web/localization-workspace-model` |

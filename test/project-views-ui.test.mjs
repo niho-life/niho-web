@@ -162,20 +162,21 @@ test("dashboard shows only selected Site facts, zero versus unknown, analytic da
     assert.ok(document.querySelector(".pv-changes thead"));
     assert.deepEqual([...document.querySelectorAll(".pv-changes tbody tr")].map((node) => node.children.length), [2]);
     assert.equal(document.querySelector('a.pv-link').href, "https://one.example.test/");
-    // 左の 1 列のメニュー: STUDIO の「ホーム配下」と「サイト機能」を見出しで分け、同じ画面を 2 か所から開かない
-    assert.deepEqual([...document.querySelectorAll(".pv-dashboard-nav button")].map((node) => node.textContent), ["ダッシュボード", "メンバー", "プロジェクト設定", "アナリティクス"]);
-    assert.deepEqual([...document.querySelectorAll(".pv-dashboard-nav .pv-nav-heading")].map((node) => node.textContent), ["ホーム", "サイト機能"]);
-    assert.equal(document.querySelector(".pv-global-nav, .pv-home-nav"), null);
-    for (const group of document.querySelectorAll(".pv-nav-group")) assert.equal(document.getElementById(group.getAttribute("aria-labelledby"))?.classList.contains("pv-nav-heading"), true);
+    // STUDIO と同じく上のタブで画面を切り替え、左のメニューはホームの中だけ。同じ画面を 2 か所から開かない
+    assert.deepEqual([...document.querySelectorAll(".pv-project-tabs button")].map((node) => node.textContent), ["ホーム", "アナリティクス"]);
+    assert.deepEqual([...document.querySelectorAll(".pv-dashboard-nav button")].map((node) => node.textContent), ["ダッシュボード", "メンバー", "プロジェクト設定"]);
+    assert.equal(document.querySelector(".pv-global-nav, .pv-home-nav, .pv-nav-heading"), null);
+    assert.equal(button("ホーム").getAttribute("aria-current"), "true");
     assert.equal(button("ダッシュボード").getAttribute("aria-current"), "page");
     await click("デザインエディタ"); assert.deepEqual(app.calls.editors[0], selected);
     await click("プロジェクト設定"); assert.deepEqual(app.calls.settings[0], [selected, "site"]);
     await click("アナリティクス"); assert.equal(button("アナリティクス").getAttribute("aria-current"), "page");
+    assert.equal(button("ホーム").getAttribute("aria-current"), null); assert.equal(document.querySelector(".pv-dashboard-nav"), null, "アナリティクスは左のメニューを持たない");
     assert.deepEqual([...document.querySelectorAll(".pv-stats dd")].map((node) => node.textContent), ["0"]);
     assert.ok(document.body.textContent.includes("対象期間")); assert.ok(document.body.textContent.includes("解析取得日時")); assert.ok(document.querySelectorAll("time[datetime]").length >= 4);
     await click("解析接続設定"); assert.deepEqual(app.calls.settings[1], [selected, "analytics"]);
-    await click("ダッシュボード"); await click("アクセス解析を見る"); assert.equal(button("アナリティクス").getAttribute("aria-current"), "page");
-    await click("メンバー"); assert.ok(document.body.textContent.includes("メンバー（1名）")); assert.ok(document.body.textContent.includes("共通参加者（架空）"));
+    await click("ホーム"); await click("アクセス解析を見る"); assert.equal(button("アナリティクス").getAttribute("aria-current"), "page");
+    await click("ホーム"); await click("メンバー"); assert.ok(document.body.textContent.includes("メンバー（1名）")); assert.ok(document.body.textContent.includes("共通参加者（架空）"));
     await click("プロジェクト一覧へ戻る"); assert.equal(app.calls.backs, 1);
     for (const text of ["CMS", "フォーム", "課金"]) assert.equal(document.body.textContent.includes(text), false);
   } finally { await app.cleanup(); }
@@ -201,7 +202,7 @@ test("dashboard unpublished, empty changes, disconnected Analytics, and partial 
     partial.analytics = { status: "unavailable" };
     await app.rerender({ adapter: dashboardAdapter(async () => partial) }); await click("アナリティクス");
     assert.ok(document.body.textContent.includes("アクセス解析を取得できませんでした")); assert.ok(button("再試行"));
-    await click("ダッシュボード"); assert.ok(document.querySelector(".pv-analytics-summary [role=alert]"));
+    await click("ホーム"); assert.ok(document.querySelector(".pv-analytics-summary [role=alert]"));
   } finally { await app.cleanup(); }
 });
 
@@ -239,25 +240,32 @@ test("dashboard members are read-only with roles, host fallback, empty, unavaila
   } finally { await app.cleanup(); }
 });
 
-test("dashboard shows host site views in the site nav and project settings content in Home", async () => {
+test("dashboard shows host site views as top tabs and project settings content in Home", async () => {
   const selected = project(), changes = [];
-  const siteViews = [{ id: "cms", label: "CMS", content: createElement("p", { id: "cms-body" }, "CMS の中身") }, { id: "translations", label: "翻訳", content: createElement("p", { id: "translations-body" }, "翻訳の中身") }];
-  const app = await setup(ProjectDashboard, { project: selected, adapter: dashboardAdapter(async () => dashboard(selected)), siteViews, activeSiteView: null, onSiteViewChange: (id) => changes.push(id), settingsContent: createElement("p", { id: "settings-body" }, "メンバーと招待") });
+  const siteViews = [{ id: "cms", label: "CMS", content: createElement("p", { id: "cms-body" }, "CMS の中身"), actions: createElement("a", { id: "cms-action", href: "#legacy" }, "旧画面") }, { id: "translations", label: "翻訳", content: createElement("p", { id: "translations-body" }, "翻訳の中身") }];
+  const app = await setup(ProjectDashboard, { project: selected, adapter: dashboardAdapter(async () => dashboard(selected)), siteViews, activeSiteView: null, onSiteViewChange: (id) => changes.push(id), headerEnd: createElement("span", { id: "account" }, "A"), settingsContent: createElement("p", { id: "settings-body" }, "メンバーと招待") });
   try {
-    const nav = [...document.querySelectorAll(".pv-dashboard-nav button")].map((node) => node.textContent);
-    assert.deepEqual(nav, ["ダッシュボード", "メンバー", "プロジェクト設定", "CMS", "翻訳", "アナリティクス"]);
-    assert.equal(new Set(nav).size, nav.length, "同じ名前の入口を 2 つ出さない");
+    const tabs = [...document.querySelectorAll(".pv-project-tabs button")].map((node) => node.textContent);
+    assert.deepEqual(tabs, ["ホーム", "CMS", "翻訳", "アナリティクス"]);
+    const home = [...document.querySelectorAll(".pv-dashboard-nav button")].map((node) => node.textContent);
+    assert.deepEqual(home, ["ダッシュボード", "メンバー", "プロジェクト設定"]);
+    assert.equal(new Set([...tabs, ...home]).size, tabs.length + home.length, "同じ名前の入口を 2 つ出さない");
+    // ホストの右端（アカウントなど）はいつも、サイト機能の操作はその機能を開いている間だけ帯に出す
+    assert.ok(document.querySelector(".pv-project-end #account"));
+    assert.equal(document.querySelector("#cms-action"), null);
     await click("CMS");
     assert.deepEqual(changes, ["cms"]);
     await app.rerender({ activeSiteView: "cms" });
     assert.equal(document.querySelector("#cms-body")?.textContent, "CMS の中身");
-    // サイト機能を開いている間もメニューは残り、本文だけが入れ替わる
-    assert.ok(document.querySelector(".pv-dashboard-layout > .pv-dashboard-nav"));
+    // サイト機能を開くと画面全体がその機能になる: ホームの左のメニューを閉じ、上のタブは残す
+    assert.equal(document.querySelector(".pv-dashboard-nav"), null);
+    assert.equal(document.querySelector(".pv-dashboard-layout")?.getAttribute("data-section"), "site");
     assert.equal(document.querySelector(".pv-dashboard-content"), null);
     assert.equal(document.querySelector(".pv-site-view")?.getAttribute("aria-label"), "CMS");
     assert.equal(button("CMS").getAttribute("aria-current"), "page");
-    assert.equal(button("ダッシュボード").getAttribute("aria-current"), null);
-    await click("ダッシュボード");
+    assert.equal(button("ホーム").getAttribute("aria-current"), null);
+    assert.ok(document.querySelector(".pv-project-end #cms-action"));
+    await click("ホーム");
     assert.deepEqual(changes, ["cms", null]);
     await app.rerender({ activeSiteView: null });
     await click("プロジェクト設定");
@@ -315,8 +323,11 @@ test("dashboard draws with the shared white tokens that a host can override", as
     // トークンの定義は詳細度 0（:where）なので、ホストは :root や .nw-project-view で上書きできる（#159）
     assert.ok(css.includes(":where(:root){") && css.includes("--nw-bg:#fff") && css.includes("--nw-border:rgba(34,34,34,.1)"));
     assert.ok(css.includes(".nw-project-dashboard{padding:0;border-radius:0;background:var(--nw-bg)}"));
-    assert.ok(css.includes(".pv-project-bar{position:relative;z-index:2;display:flex;align-items:center;gap:14px;min-height:64px;padding:0 22px;background:var(--nw-bg);border-bottom:1px solid var(--nw-border)"));
-    assert.ok(css.includes(".pv-dashboard-nav{display:flex;flex-direction:column;gap:18px;margin:0;padding:22px 14px;border-right:1px solid var(--nw-border);background:var(--nw-bg)"));
+    // 帯は 1 段: 左にプロジェクト、中央にタブ、右にデザインエディタとホストの操作
+    assert.ok(css.includes(".pv-project-bar{position:relative;z-index:2;display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:center;gap:16px;min-height:64px;padding:0 20px;background:var(--nw-bg);border-bottom:1px solid var(--nw-border)"));
+    assert.ok(css.includes(".pv-project-tabs button[aria-current]{color:var(--nw-text);font-weight:650;box-shadow:inset 0 -2px 0 var(--nw-text)}"));
+    assert.ok(css.includes(".pv-dashboard-layout:not([data-section=home]){grid-template-columns:minmax(0,1fr)}"));
+    assert.ok(css.includes(".pv-dashboard-nav{display:flex;flex-direction:column;gap:2px;margin:0;padding:22px 14px;border-right:1px solid var(--nw-border);background:var(--nw-bg)"));
     // 現在地は一段の灰色の面、公開中は緑の点だけ
     assert.ok(css.includes(".pv-dashboard-nav button[aria-current=page]{background:var(--nw-surface-2);"));
     assert.ok(css.includes(".pv-project-identity[data-publication=published] i{background:var(--nw-live)}"));
@@ -351,11 +362,11 @@ test("long Japanese names and URLs remain complete and the stylesheet defines 32
     assert.ok(rows()[1].textContent.includes(input.entries[0].project.name));
     const css = [...document.querySelectorAll("style")].map((style) => style.textContent ?? "").join("\n"); assert.ok(css.includes("overflow-wrap:anywhere")); assert.ok(css.includes("@media(max-width:600px)")); assert.ok(css.includes(".pv-project-menu>div{position:static;width:100%")); assert.ok(css.includes(":focus-visible")); assert.ok(css.includes(".pv-dashboard-content{width:min(100%,992px)"));
     assert.equal(css.includes(".pv-grid{display:none}"), false); assert.ok(css.includes(".pv-grid{display:grid;grid-template-columns:minmax(0,1fr)")); assert.ok(css.includes(".pv-directory-list td:empty{display:none}")); assert.equal(css.includes("overflow-x:auto"), false);
-    // Dashboard のメニュー: 900px 以下は本文の上で折り返し、600px 以下は縦 1 列。横スクロールで欠けさせない
+    // 900px 以下はタブを帯の 2 段目、ホームのメニューを本文の上に置いて折り返す。600px 以下は操作も 1 段下げる。横スクロールで欠けさせない
     const dashboardMobile = css.slice(css.indexOf(".nw-project-dashboard{"));
-    assert.ok(dashboardMobile.includes("@media(max-width:900px){.nw-project-dashboard .pv-project-bar{gap:10px;padding:0 14px}.nw-project-dashboard .pv-dashboard-layout{grid-template-columns:1fr"));
-    assert.ok(dashboardMobile.includes(".nw-project-dashboard .pv-nav-group{flex-direction:row;flex-wrap:wrap"));
-    assert.ok(dashboardMobile.includes("@media(max-width:600px){") && dashboardMobile.includes(".nw-project-dashboard .pv-nav-group{flex-direction:column;align-items:stretch") && dashboardMobile.includes(".nw-project-dashboard .pv-dashboard-nav button{width:100%"));
+    assert.ok(dashboardMobile.includes("@media(max-width:900px){.nw-project-dashboard .pv-project-bar{grid-template-columns:minmax(0,1fr) auto;gap:0 10px;padding:0 14px}"));
+    assert.ok(dashboardMobile.includes(".nw-project-dashboard .pv-project-tabs{grid-column:1/-1;grid-row:2;flex-wrap:wrap"));
+    assert.ok(dashboardMobile.includes("@media(max-width:600px){") && dashboardMobile.includes(".nw-project-dashboard .pv-dashboard-nav{flex-direction:row;flex-wrap:wrap") && dashboardMobile.includes(".nw-project-dashboard .pv-project-end{grid-column:1/-1;grid-row:2") && dashboardMobile.includes(".nw-project-dashboard .pv-project-tabs{grid-row:3"));
     assert.equal(dashboardMobile.includes("overflow-x:auto"), false);
   } finally { await app.cleanup(); }
 });

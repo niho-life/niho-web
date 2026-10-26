@@ -31,7 +31,7 @@ D1 が Project / Site / Member / Role / Invitation / Audit の正本です。NIH
 
 ### サイト機能（kamakura-site#108 U1）
 
-Dashboard の左のメニューは 1 列で、「ホーム」（ダッシュボード・メンバー・プロジェクト設定）と「サイト機能」（ホスト `studio/client.tsx` が接続した CMS・素材・翻訳、アナリティクス）の 2 つの見出しで分けます（niho-web#74）。幅 900px 以下はメニューを本文の上に折り返して並べ、600px 以下は縦 1 列にして横スクロールを無くします。各機能は alias の URL を持ちます（`/projects/<別名>/admin/cms`・`/assets`・`/translations`、`/project/<別名>/cms` などからも入れる）。
+プロジェクトの中は全幅で、Studio のヘッダーの代わりに Dashboard の 1 段の帯をヘッダーにします（niho-web#174）。帯の中央のタブ「ホーム・CMS・素材・翻訳・アナリティクス」で画面全体を切り替え、左のメニュー（ダッシュボード・メンバー・プロジェクト設定）はホームの中だけに出します。CMS では CMS 自身のコレクションのメニューと一覧だけが全幅に並びます（CMS モード）。アカウントは帯の右端、旧画面への入口は CMS・翻訳を開いている間だけ帯の右側に置きます。帯は幅 900px より広いときだけ上に留め、900px 以下はタブを帯の 2 段目に折り返します。各機能は alias の URL を持ちます（`/projects/<別名>/admin/cms`・`/assets`・`/translations`、`/project/<別名>/cms` などからも入れる）。
 
 | 機能 | Kamakura での中身 |
 | --- | --- |
@@ -52,7 +52,7 @@ Dashboard の「CMS」は、Worker の設定値 `KAMAKURA_CMS_VIEW` で中身を
 
 - on にする: `wrangler secret put KAMAKURA_CMS_VIEW --config studio/wrangler.toml` で `workspace` を入れる（値は公開 repo に書かない。secret なので配備のたびに消えない）。Worker が新しい値で動き出せば、開き直した Dashboard から新しい画面になります（再配備は要らない）。
 - 戻す: `wrangler secret delete KAMAKURA_CMS_VIEW --config studio/wrangler.toml`（または `frame` を入れ直す）。次に開いた Dashboard から枠に戻ります。
-- 旧画面の入口: コレクション画面の上の「旧画面（/admin）を開く ↗」で、サイト側の管理画面（`KAMAKURA_ADMIN_ORIGIN` の `/admin`）を別のタブで開けます。切替は `KAMAKURA_ADMIN_ORIGIN` があるときだけ効きます（無いとサイト機能そのものを出さない）。
+- 旧画面の入口: CMS を開いている間、帯の右側の「旧画面 ↗」（読み上げは「旧画面（/admin）を開く」）で、サイト側の管理画面（`KAMAKURA_ADMIN_ORIGIN` の `/admin`）を別のタブで開けます。切替は `KAMAKURA_ADMIN_ORIGIN` があるときだけ効きます（無いとサイト機能そのものを出さない）。
 - URL: 一覧は `/projects/<別名>/admin/cms/<collectionId>`、項目は `/projects/<別名>/admin/cms/<collectionId>/<itemId>`（`/admin/cms` はそのサイトの先頭のコレクション）。画面の中で一覧・項目を移ると URL を積み、ブラウザの戻る・進むはその URL でコレクション画面を開き直します。短い入口 `/project/<別名>/cms/<collectionId>/<itemId>` も同じ形へ 301 で移します。id は collection-model の形（コレクションは `[A-Za-z0-9_][A-Za-z0-9_-]*`、項目は `[A-Za-z0-9_][A-Za-z0-9._~-]*`）だけで、ほかの形の URL は画面の route にしません。
 - CSP: on のとき、鎌倉の Dashboard の HTML（ID の URL と alias の URL）だけ `connect-src` に画像本体の直接 PUT 先 `https://next-kamakura.niho.life` を足します。本文と一覧の画像（`https://kamakura-media.niho.life` の縮小を含む）は今の `img-src 'self' https:` で足ります。本文の部品は inline の `<style>` と style 属性を使わず、埋め込みは枠を作らない（中身は公開したページだけ）ので、`style-src`・`frame-src` は変えません。off のときは何も足しません。editor の CSP と `frame-ancestors 'none'` は変えません。
 - 読み込み: コレクション画面と TipTap は `import()` で分け（`assets/chunks/`）、CMS を開いたときだけ読みます。読み込み中は「CMS の画面を読み込んでいます…」、失敗は「再試行」を出します。`studio/build.mjs` は、最初に読む分（`app.js` と、そこから静的に読む chunk）に TipTap・ProseMirror・`collection-workspace.tsx` が入ったら build を失敗させます。画面の CSS は `assets/collection.css`（`index.html` から読む。配色トークンは `assets/studio.css` の先頭にあるので、`collectionCss` の先頭のトークンは外して書き出す）、項目の編集の上のバーは Studio のヘッダーの下に貼り付きます（`--niho-sticky-top`: 64px、幅 600px 以下は 56px）。
@@ -65,7 +65,7 @@ Dashboard の「翻訳」は、Worker の設定値 `KAMAKURA_TRANSLATIONS_VIEW` 
 - 配備の順: 鎌倉の Worker の翻訳の API（kamakura-site#108 U3 K1・下の「Kamakura の翻訳 bridge」）を先に配備 → この Studio を配備（切替は入れないので枠のまま）→ `KAMAKURA_TRANSLATIONS_VIEW` を入れて owner と editor で受入（旧画面と同じ内容が読めること・保存・公開の準備まで）→ 問題があれば下の「戻す」。鎌倉の API が無いうちに入れると、翻訳の画面は「読み込めませんでした」になります（BFF の log は `localization_endpoint_missing`）。
 - on にする: `wrangler secret put KAMAKURA_TRANSLATIONS_VIEW --config studio/wrangler.toml` で `workspace` を入れる（値は公開 repo に書かない。secret なので配備のたびに消えない。再配備は要らない）。
 - 戻す: `wrangler secret delete KAMAKURA_TRANSLATIONS_VIEW --config studio/wrangler.toml`（または `frame` を入れ直す）。次に開いた Dashboard から枠に戻ります。翻訳の中身はどちらの画面でも鎌倉の同じ保存先なので、戻しても直した訳文は消えません。
-- 旧画面の入口: 翻訳の画面の上の「旧画面（/admin/localization）を開く ↗」で、サイト側の翻訳画面（`KAMAKURA_ADMIN_ORIGIN` の `/admin/localization`）を別のタブで開けます。切替は `KAMAKURA_ADMIN_ORIGIN` があるときだけ効きます。
+- 旧画面の入口: 翻訳を開いている間、帯の右側の「旧画面 ↗」（読み上げは「旧画面（/admin/localization）を開く」）で、サイト側の翻訳画面（`KAMAKURA_ADMIN_ORIGIN` の `/admin/localization`）を別のタブで開けます。切替は `KAMAKURA_ADMIN_ORIGIN` があるときだけ効きます。
 - URL: 一覧は `/projects/<別名>/admin/translations`、1 件は `/projects/<別名>/admin/translations/<itemKey>`（設定は一覧と同じ URL）。画面の中で一覧・1 件を移ると URL を積み、ブラウザの戻る・進むはその URL で翻訳の画面を開き直します（CMS と同じ。自動保存の前の直しは残らない）。短い入口 `/project/<別名>/translations/<itemKey>` も同じ形へ 301 で移します。itemKey は W1 の形（`[A-Za-z0-9_-]` で 200 字まで）だけで、ほかの形の URL は画面の route にしません。
 - 原文へのリンク（`sourceLink`）: 1 件が鎌倉の CMS の項目なら「CMS で開く」で Studio の CMS（CMS の切替が on ならその項目 `/admin/cms/<collectionId>/<itemId>`、off なら CMS の入口）を開きます。固定ページ・共通部分などの原文はコードで管理しているので、リンクを出しません。
 - 画像: 「画像を上げる」は鎌倉の Worker へ直接 PUT します（下）。「素材から選ぶ」は adapter の `chooseImage` で選び方の画面を渡したときだけ出します（今は渡していない。素材の一覧の部品はエディタの中だけで、Studio に上げた素材は公開前の URL なので、訳す言語の画像には使えない）。

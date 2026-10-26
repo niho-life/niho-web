@@ -136,8 +136,11 @@ test("切替が on（workspace）の CMS は、コレクション画面で項目
   const calls = await openStudio(t, "/projects/kamakura-site/admin/cms/posts/morning-walk", "workspace");
   assert.equal(document.querySelector(".studio-site-frame"), null);
   assert.ok(document.querySelector(".studio-site-cms .nw-collection"), "CollectionWorkspace");
-  // 旧画面は別のタブで開ける
-  const legacy = byText(".studio-site-cms-bar a", "旧画面（/admin）を開く ↗");
+  // プロジェクトの中は Dashboard の帯が 1 段のヘッダー（Studio のヘッダーを重ねない）。アカウントは帯の右端
+  assert.equal(document.querySelector(".studio-shell-header"), null);
+  assert.ok(document.querySelector(".studio-content-project > .nw-project-dashboard .pv-project-end .studio-account"));
+  // 旧画面は、開いている間だけ帯の右側から別のタブで開ける
+  const legacy = byText(".pv-project-end .studio-legacy-link", "旧画面（/admin）を開く ↗");
   assert.ok(legacy);
   assert.equal(legacy.getAttribute("href"), "https://admin.example.test/admin");
   assert.equal(legacy.getAttribute("target"), "_blank");
@@ -170,10 +173,11 @@ test("切替が on（workspace）の CMS は、コレクション画面で項目
   assert.equal(window.location.pathname, "/projects/kamakura-site/admin/cms/posts/morning-walk");
   assert.equal(document.querySelector('[data-field="title"] input')?.value, "海辺の朝さんぽ");
 
-  // 左のメニューで開いている CMS をもう一度押しても移らない。ダッシュボードへ移ると Dashboard の URL
-  await click(byText(".pv-dashboard-nav button", "CMS"));
+  // 上のタブで開いている CMS をもう一度押しても移らない。ホームへ移ると Dashboard の URL
+  assert.equal(document.querySelector(".pv-dashboard-nav"), null, "CMSを開いている間はホームの左のメニューを出さない");
+  await click(byText(".pv-project-tabs button", "CMS"));
   assert.equal(window.location.pathname, "/projects/kamakura-site/admin/cms/posts/morning-walk");
-  await click(byText(".pv-dashboard-nav button", "ダッシュボード"));
+  await click(byText(".pv-project-tabs button", "ホーム"));
   assert.equal(window.location.pathname, "/projects/kamakura-site/admin");
   assert.equal(document.querySelector(".nw-collection"), null);
   // 書き込みは呼んでいない（読んだだけで値を書き換えない）

@@ -52,7 +52,7 @@ export const collectionCss = `${uiTokensCss}.nw-collection{position:relative;min
 .nw-collection .cw-nav-label{min-width:0;overflow-wrap:anywhere}
 .nw-collection .cw-nav-count{margin-left:auto;color:var(--nw-text-sub);font-size:12px;font-weight:500;font-variant-numeric:tabular-nums}
 .nw-collection .cw-main{min-width:0}
-.nw-collection .cw-list{max-width:1180px;margin:0 auto;padding:24px 32px 64px;container:cw-list/inline-size}
+.nw-collection .cw-list{padding:24px 32px 64px;container:cw-list/inline-size}
 .nw-collection .cw-list-head{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:14px}
 .nw-collection .cw-list-title{display:flex;align-items:baseline;gap:10px;min-width:0}
 .nw-collection .cw-list-title h2{margin:0;font-size:22px;line-height:1.35;overflow-wrap:anywhere}
@@ -251,7 +251,7 @@ export const collectionCss = `${uiTokensCss}.nw-collection{position:relative;min
 .nw-collection .cw-layout{grid-template-columns:minmax(0,1fr)}
 .nw-collection .cw-nav{padding:8px 12px;border-right:0;border-bottom:1px solid var(--nw-border);overflow-x:visible}
 .nw-collection .cw-nav-heading{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
-.nw-collection .cw-nav ul{display:flex;gap:4px}
+.nw-collection .cw-nav ul{display:flex;flex-wrap:wrap;gap:4px}
 .nw-collection .cw-nav li{flex:none}
 .nw-collection .cw-nav button{width:auto;white-space:nowrap}
 .nw-collection .cw-list{padding:18px 16px 48px}

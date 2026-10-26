@@ -114,8 +114,11 @@ test("切替が on（workspace）の翻訳は、翻訳の画面で URL の 1 件
   const calls = await openStudio(t, "/projects/kamakura-site/admin/translations/aG9tZQ", { cmsView: "workspace", translationsView: "workspace" });
   assert.equal(document.querySelector(".studio-site-frame"), null);
   assert.ok(document.querySelector(".studio-site-translations .nw-collection.nw-localization"), "LocalizationWorkspace");
-  // 旧画面は別のタブで開ける
-  const legacy = byText(".studio-site-cms-bar a", "旧画面（/admin/localization）を開く ↗");
+  // プロジェクトの中は Dashboard の帯が 1 段のヘッダー（Studio のヘッダーを重ねない）。アカウントは帯の右端
+  assert.equal(document.querySelector(".studio-shell-header"), null);
+  assert.ok(document.querySelector(".studio-content-project > .nw-project-dashboard .pv-project-end .studio-account"));
+  // 旧画面は、開いている間だけ帯の右側から別のタブで開ける
+  const legacy = byText(".pv-project-end .studio-legacy-link", "旧画面（/admin/localization）を開く ↗");
   assert.ok(legacy);
   assert.equal(legacy.getAttribute("href"), "https://admin.example.test/admin/localization");
   assert.equal(legacy.getAttribute("target"), "_blank");
@@ -151,10 +154,11 @@ test("切替が on（workspace）の翻訳は、翻訳の画面で URL の 1 件
   assert.ok(document.querySelector(".lw-item"), "1 件");
   assert.ok(calls.includes(`POST ${LOC}/items/${CMS_KEY}`));
 
-  // 左のメニューで開いている翻訳をもう一度押しても移らない。ダッシュボードへ移ると Dashboard の URL
-  await click(byText(".pv-dashboard-nav button", "翻訳"));
+  // 上のタブで開いている翻訳をもう一度押しても移らない。ホームへ移ると Dashboard の URL
+  assert.equal(document.querySelector(".pv-dashboard-nav"), null, "翻訳を開いている間はホームの左のメニューを出さない");
+  await click(byText(".pv-project-tabs button", "翻訳"));
   assert.equal(window.location.pathname, `/projects/kamakura-site/admin/translations/${CMS_KEY}`);
-  await click(byText(".pv-dashboard-nav button", "ダッシュボード"));
+  await click(byText(".pv-project-tabs button", "ホーム"));
   assert.equal(window.location.pathname, "/projects/kamakura-site/admin");
   assert.equal(document.querySelector(".nw-localization"), null);
   // 読んだだけで書き込みは呼んでいない

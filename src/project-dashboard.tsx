@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useId, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { parseProject, type Project } from "./projects.js";
 import { parseProjectDashboardResult, type ProjectDashboardAdapter, type ProjectDashboardResult, type ProjectMemberRole, type ProjectMemberSummary, type ProjectOverview, type ReadSection } from "./project-read-model.js";
 import { dateLabel, PublicationBadge, ReadNotice, Timestamp, useProjectRead } from "./project-view-shared.js";
@@ -8,8 +8,8 @@ import { projectViewCss } from "./project-view-style.js";
 
 export { parseProjectDashboardResult } from "./project-read-model.js";
 export type { ProjectAnalytics, ProjectDashboardAdapter, ProjectDashboardResult, ProjectMemberRole, ProjectMemberSummary, ProjectOverview, ProjectTarget, ReadSection } from "./project-read-model.js";
-/** ホストが接続したサイト機能（CMS・素材・翻訳など）。中身はホストが描く */
-export type ProjectSiteView = { id: string; label: string; content: ReactNode };
+/** ホストが接続したサイト機能（CMS・素材・翻訳など）。中身はホストが描く。actions は開いている間だけ上の帯の右側に出す（旧画面への入口など） */
+export type ProjectSiteView = { id: string; label: string; content: ReactNode; actions?: ReactNode };
 export type ProjectDashboardProps = {
   project: Project;
   adapter: ProjectDashboardAdapter;
@@ -26,11 +26,13 @@ export type ProjectDashboardProps = {
   settingsAction?: "enabled" | "disabled";
   /** プロジェクト設定を開いたときに Dashboard の中に出す中身（メンバーと招待など）。指定がなければ onOpenSettings を呼ぶ。 */
   settingsContent?: ReactNode;
-  /** 左のメニューの「サイト機能」に並べるサイト機能。選ぶと Dashboard の本文の代わりに中身を出す。 */
+  /** 上のタブの「ホーム」と「アナリティクス」の間に並べるサイト機能。選ぶと左のメニューを閉じ、全幅で中身を出す。 */
   siteViews?: readonly ProjectSiteView[];
   /** 開いているサイト機能の id。null・未指定は Dashboard 側（ダッシュボード・メンバー・プロジェクト設定・アナリティクス）。URL と合わせるためホストが持つ。 */
   activeSiteView?: string | null;
   onSiteViewChange?: (id: string | null) => void;
+  /** 上の帯の右端にホストが置くもの（アカウントのメニューなど）。ホストが自分のヘッダーの代わりにこの帯を使うときに渡す。 */
+  headerEnd?: ReactNode;
 };
 
 type ReadyDashboard = Extract<ProjectDashboardResult, { status: "ready" }>;
@@ -96,7 +98,7 @@ export function ProjectDashboard(props: ProjectDashboardProps) {
   }
   return <DashboardSession key={source.generation} {...props} />;
 }
-function DashboardSession({ project: inputProject, adapter, onBackToProjects, onOpenEditor, onOpenSettings, editorAction = "enabled", settingsAction = "enabled", settingsContent, siteViews = [], activeSiteView = null, onSiteViewChange }: ProjectDashboardProps) {
+function DashboardSession({ project: inputProject, adapter, onBackToProjects, onOpenEditor, onOpenSettings, editorAction = "enabled", settingsAction = "enabled", settingsContent, siteViews = [], activeSiteView = null, onSiteViewChange, headerEnd }: ProjectDashboardProps) {
   const project = useMemo(() => { try { return parseProject(inputProject); } catch { return null; } }, [inputProject]);
   const reader = useCallback(async (signal: AbortSignal) => {
     if (!project) throw new Error("invalid selected project");
@@ -105,7 +107,6 @@ function DashboardSession({ project: inputProject, adapter, onBackToProjects, on
   }, [adapter, project]);
   const { state, reload } = useProjectRead(reader);
   const [view, setView] = useState<DashboardView>("overview");
-  const navId = useId();
   const result = state.status === "complete" && state.value.status === "ready" ? state.value : null;
   const siteView = siteViews.find((item) => item.id === activeSiteView) ?? null;
   /** Dashboard 側の画面へ移る（開いているサイト機能は閉じる） */
@@ -114,31 +115,36 @@ function DashboardSession({ project: inputProject, adapter, onBackToProjects, on
   const settingsDisabled = settingsContent === undefined && settingsAction === "disabled";
   const openSettings = (target: Project) => settingsContent === undefined ? onOpenSettings(target, "site") : show("settings");
   const current = (target: DashboardView) => !siteView && view === target ? "page" : undefined;
+  // 上のタブで画面全体を切り替える。左のメニューはホームだけが持ち、サイト機能とアナリティクスは全幅で出す
+  const section = siteView ? "site" : view === "analytics" ? "analytics" : "home";
   return <section className="nw-project-view nw-project-dashboard" aria-label="プロジェクトダッシュボード"><style dangerouslySetInnerHTML={{ __html: projectViewCss }} />
     <header className="pv-project-bar">
-      <button type="button" className="pv-project-back" onClick={onBackToProjects} aria-label="プロジェクト一覧へ戻る">‹</button>
-      <div className="pv-project-identity" data-publication={result?.overview.status === "ready" ? result.overview.data.publicationStatus : "unknown"}>
-        <h1>{result && project ? project.name : "プロジェクトダッシュボード"}</h1>
-        {result && project && <span><i aria-hidden="true" />{project.site.domains[0] ?? project.site.name}</span>}
+      <div className="pv-project-start">
+        <button type="button" className="pv-project-back" onClick={onBackToProjects} aria-label="プロジェクト一覧へ戻る">‹</button>
+        <div className="pv-project-identity" data-publication={result?.overview.status === "ready" ? result.overview.data.publicationStatus : "unknown"}>
+          <h1>{result && project ? project.name : "プロジェクトダッシュボード"}</h1>
+          {result && project && <span><i aria-hidden="true" />{project.site.domains[0] ?? project.site.name}</span>}
+        </div>
       </div>
-      {result && project && <button type="button" className="pv-editor-link" onClick={() => onOpenEditor(project)}>{editorAction === "pending" ? "エディター接続待ち" : "デザインエディタ"}</button>}
+      {result && project && <nav className="pv-project-tabs" aria-label="プロジェクトのメニュー">
+        <button type="button" aria-current={section === "home" ? "true" : undefined} onClick={() => show("overview")}>ホーム</button>
+        {siteViews.map((item) => <button key={item.id} type="button" aria-current={siteView?.id === item.id ? "page" : undefined} onClick={() => onSiteViewChange?.(item.id)}>{item.label}</button>)}
+        <button type="button" aria-current={current("analytics")} onClick={() => show("analytics")}>アナリティクス</button>
+      </nav>}
+      <div className="pv-project-end">
+        {siteView?.actions}
+        {result && project && <button type="button" className="pv-editor-link" onClick={() => onOpenEditor(project)}>{editorAction === "pending" ? "エディター接続待ち" : "デザインエディタ"}</button>}
+        {headerEnd}
+      </div>
     </header>
     {state.status !== "complete" ? <ReadNotice status={state.status} noun="ダッシュボード" retry={reload} />
       : state.value.status === "forbidden" ? <ReadNotice status="forbidden" noun="ダッシュボード" retry={reload} />
-      : result && project && <div className="pv-dashboard-layout">
-        <nav className="pv-dashboard-nav" aria-label="ダッシュボードメニュー">
-          <div className="pv-nav-group" role="group" aria-labelledby={`${navId}-home`}>
-            <p className="pv-nav-heading" id={`${navId}-home`}>ホーム</p>
-            <button type="button" aria-current={current("overview")} onClick={() => show("overview")}>ダッシュボード</button>
-            <button type="button" aria-current={current("members")} onClick={() => show("members")}>メンバー</button>
-            <button type="button" aria-current={current("settings")} onClick={() => openSettings(project)} disabled={settingsDisabled}>{settingsDisabled ? "プロジェクト設定（準備中）" : "プロジェクト設定"}</button>
-          </div>
-          <div className="pv-nav-group" role="group" aria-labelledby={`${navId}-site`}>
-            <p className="pv-nav-heading" id={`${navId}-site`}>サイト機能</p>
-            {siteViews.map((item) => <button key={item.id} type="button" aria-current={siteView?.id === item.id ? "page" : undefined} onClick={() => onSiteViewChange?.(item.id)}>{item.label}</button>)}
-            <button type="button" aria-current={current("analytics")} onClick={() => show("analytics")}>アナリティクス</button>
-          </div>
-        </nav>
+      : result && project && <div className="pv-dashboard-layout" data-section={section}>
+        {section === "home" && <nav className="pv-dashboard-nav" aria-label="ホームのメニュー">
+          <button type="button" aria-current={current("overview")} onClick={() => show("overview")}>ダッシュボード</button>
+          <button type="button" aria-current={current("members")} onClick={() => show("members")}>メンバー</button>
+          <button type="button" aria-current={current("settings")} onClick={() => openSettings(project)} disabled={settingsDisabled}>{settingsDisabled ? "プロジェクト設定（準備中）" : "プロジェクト設定"}</button>
+        </nav>}
         {siteView ? <main className="pv-site-view" aria-label={siteView.label}>{siteView.content}</main>
           : <main className="pv-dashboard-content">
             <h2 className="pv-page-title">{VIEW_TITLES[view]}</h2>
