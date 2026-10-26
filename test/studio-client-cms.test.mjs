@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -12,7 +12,7 @@ import { at, dashboard } from "./project-view-fixtures.mjs";
 const ORIGIN = "https://studio.example.test";
 const CMS = "/api/projects/project-kamakura/sites/kamakura/cms";
 const project = { id: "project-kamakura", name: "架空の鎌倉プロジェクト", site: { id: "kamakura", name: "架空のサイト", domains: ["https://site.example.test"] }, members: [{ userId: "member_one", displayName: "参加者（架空）" }] };
-const directory = { status: "ready", entries: [{ project, summary: { projectId: project.id, siteId: project.site.id, publicationStatus: "published", publishedUrl: project.site.domains[0], thumbnail: null, updatedAt: at, lastAccessedAt: null } }] };
+const directory = { status: "ready", entries: [{ project, summary: { projectId: project.id, siteId: project.site.id, publicationStatus: "published", publishedUrl: project.site.domains[0], thumbnail: null, updatedAt: at, lastAccessedAt: null, members: { status: "ready", data: [{ displayName: "一覧オーナー", role: "owner" }, { displayName: "一覧編集者", role: "editor" }] } } }] };
 const schema = {
   status: "ready",
   collections: [{
@@ -91,6 +91,28 @@ async function openStudio(t, pathname, cmsView) {
 }
 const byText = (selector, text) => [...document.querySelectorAll(selector)].find((node) => node.textContent.replace(/\s+/gu, " ").trim() === text);
 const click = async (node) => { assert.ok(node, "target not found"); await act(async () => node.click()); await flush(); };
+
+test("Project一覧はStudio shellの中央検索・選択済み左nav・アカウントと、disabled導線なしで表示する", async (t) => {
+  await openStudio(t, "/");
+  const header = document.querySelector(".studio-shell-header");
+  assert.ok(header?.querySelector(".studio-logo"));
+  assert.ok(header?.querySelector('.studio-directory-search input[type="search"]'));
+  assert.ok(header?.querySelector(".studio-account"));
+  const nav = document.querySelector(".studio-directory-nav a");
+  assert.equal(nav?.getAttribute("href"), "/");
+  assert.equal(nav?.getAttribute("aria-current"), "page");
+  assert.equal(nav?.textContent.includes("プロジェクト一覧"), true);
+  assert.ok(document.querySelector(".studio-directory-main>.nw-project-view"));
+  assert.equal(document.querySelector('.nw-project-view input[type="search"]'), null, "検索欄を重複させない");
+  assert.equal(byText("button", "新規プロジェクト"), undefined);
+  assert.equal([...document.querySelectorAll("th")].some((node) => node.textContent === "メンバー"), true);
+  assert.match(document.querySelector(".pv-avatars")?.getAttribute("aria-label") ?? "", /一覧オーナー（オーナー）、一覧編集者（編集者）/u);
+  assert.equal(document.body.textContent.includes("参加者（架空）"), false, "Project.membersを全員扱いしない");
+  assert.ok(document.querySelector(".pv-preview-initial"));
+  const css = readFileSync(new URL("../studio/public/studio.css", import.meta.url), "utf8");
+  assert.match(css, /\.studio-shell-header\{height:64px;display:grid/u);
+  assert.match(css, /@media\(max-width:600px\).*\.studio-content-directory\{grid-template-columns:48px minmax\(0,1fr\)/u);
+});
 
 test("切替が off（frame・値なし）の Dashboard の CMS は、従来どおりサイト側の管理画面の枠", async (t) => {
   for (const cmsView of [undefined, "frame", "unknown"]) {

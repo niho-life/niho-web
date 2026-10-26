@@ -29,6 +29,22 @@ test("only safe host-approved preview URLs reach image rendering", () => {
   assert.equal(parseProjectDirectoryResult(directory(), () => false).entries[0].summary.thumbnail, null);
 });
 
+test("directory display-only members stay separate from Project truth and validate roles", () => {
+  const input = directory();
+  input.entries[0].summary.members = { status: "ready", data: [{ displayName: "オーナー（表示専用）", role: "owner" }, { displayName: "編集者（表示専用）", role: "editor" }] };
+  input.entries[1].summary.members = { status: "unavailable" };
+  const checked = parseProjectDirectoryResult(input, () => true);
+  assert.deepEqual(checked.entries[0].summary.members, input.entries[0].summary.members);
+  assert.deepEqual(checked.entries[1].summary.members, { status: "unavailable" });
+  assert.equal(checked.entries[0].project.members[0].displayName, "共通参加者（架空）");
+  input.entries[0].summary.members.data[0].displayName = "mutated";
+  assert.equal(checked.entries[0].summary.members.data[0].displayName, "オーナー（表示専用）");
+  for (const data of [[{ displayName: "x", role: "admin" }], [{ displayName: "x", role: "owner", email: "secret@example.test" }], [{ displayName: "", role: "owner" }], Array.from({ length: 501 }, () => ({ displayName: "x", role: "editor" }))]) {
+    const invalid = directory(); invalid.entries[0].summary.members = { status: "ready", data };
+    assert.throws(() => parseProjectDirectoryResult(invalid, () => true), Error);
+  }
+});
+
 test("published URL must belong to the unique selected Site", () => {
   for (const publishedUrl of ["https://other.example.test", "javascript:alert(1)", "/unscoped", "https://one.example.test@evil.example.test"]) {
     const input = dashboard(); input.overview.data.publishedUrl = publishedUrl;
