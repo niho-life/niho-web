@@ -264,6 +264,58 @@ test("a tablet override is shown in the tier color, can be reset, and matches th
   } finally { await app.cleanup(); }
 });
 
+test("flex width and dvh height round-trip through the inspector, undo, and published CSS", async () => {
+  const source = structuredClone(fixture);
+  source.body[0].style.base.flexDirection = "row";
+  source.body[0].children[0].style = { base: { width: 240 } };
+  const app = await setup({ document: source });
+  try {
+    await click(button("h1 · heading")); await editorTab("ボックス");
+    const widthUnit = () => field("幅", right()).querySelector("select");
+    await change(widthUnit(), "u:flex");
+    assert.equal(input("幅", right()).value, "1", "fixed width becomes a 1 flex ratio");
+    assert.match(canvasCss(), /flex-basis:0px;flex-grow:1;width:auto;/);
+    await change(input("幅", right()), "2");
+    await click(button("元に戻す"));
+    assert.equal(input("幅", right()).value, "1", "the ratio change is one undo step");
+    await click(button("やり直す"));
+    assert.equal(input("幅", right()).value, "2");
+    await change(input("幅", right()), "0");
+    assert.ok(right().textContent.includes("flex の比率は 0 より大きく"));
+    assert.equal(button("下書き保存").disabled, true);
+    await change(input("幅", right()), "2");
+    await change(input("高さ", right()), "100dvh");
+    await click(button("下書き保存"));
+    const saved = app.calls.saves[0].document.body[0].children[0].style.base;
+    assert.deepEqual({ width: saved.width, flexGrow: saved.flexGrow, flexBasis: saved.flexBasis, height: saved.height },
+      { width: "auto", flexGrow: 2, flexBasis: "0px", height: "100dvh" });
+    await click(button("最新の文書を再読込"));
+    await click(button("h1 · heading")); await editorTab("ボックス");
+    assert.equal(widthUnit().value, "u:flex");
+    assert.equal(field("高さ", right()).querySelector("select").value, "u:dvh");
+    const published = renderPageToHtml(app.stored());
+    assert.match(published, /flex-basis:0px;flex-grow:2;height:100dvh;width:auto;/);
+  } finally { await app.cleanup(); }
+});
+
+test("a wider breakpoint can switch an inherited flex ratio to a fixed width and undo it", async () => {
+  const source = structuredClone(fixture);
+  source.body[0].style.base.flexDirection = "row";
+  source.body[0].children[0].style = { base: { width: "auto", flexGrow: 2, flexBasis: "0px" } };
+  const app = await setup({ document: source });
+  try {
+    await click(button("h1 · heading")); await editorTab("ボックス");
+    await click(button("タブレット 768px〜", right()));
+    assert.equal(field("幅", right()).querySelector("select").value, "u:flex");
+    await change(field("幅", right()).querySelector("select"), "u:px");
+    await click(button("下書き保存"));
+    const node = app.calls.saves[0].document.body[0].children[0];
+    assert.deepEqual(node.style.base, { width: "auto", flexGrow: 2, flexBasis: "0px" });
+    assert.deepEqual(node.style.responsive, [{ minWidth: 768, declarations: { width: 2, flexGrow: 0, flexBasis: "auto" } }]);
+    assert.match(renderPageToHtml(app.stored()), /@media \(min-width:768px\)\{[^}]*flex-basis:auto;flex-grow:0;width:2px;/);
+  } finally { await app.cleanup(); }
+});
+
 test("invalid width and color values are rejected and the previous values are saved", async () => {
   const app = await setup();
   try {

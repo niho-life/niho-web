@@ -3,9 +3,9 @@ import { fail, identifier, keys, parseAssetReference, record } from "./validatio
 
 const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && Math.abs(v) <= 100000;
 // 表示を壊す過大値を拒否する。上限は単位ごと（負値は絶対値）。
-const lengthLimits: Record<string, number> = { px: 10000, rem: 1000, em: 1000, ch: 1000, "%": 1000, vh: 1000, vw: 1000, vmin: 1000, vmax: 1000 };
+const lengthLimits: Record<string, number> = { px: 10000, rem: 1000, em: 1000, ch: 1000, "%": 1000, vh: 1000, dvh: 1000, vw: 1000, vmin: 1000, vmax: 1000 };
 const length = (v: string) => {
-  const match = /^(?:0|-?(\d+(?:\.\d+)?|\.\d+)(px|rem|em|%|vh|vw|vmin|vmax|ch))$/.exec(v);
+  const match = /^(?:0|-?(\d+(?:\.\d+)?|\.\d+)(px|rem|em|%|vh|dvh|vw|vmin|vmax|ch))$/.exec(v);
   return !!match && (v === "0" || Number(match[1]) <= lengthLimits[match[2]!]!);
 };
 // 固定値の percent - px だけを dimension の calc として許可する。任意の CSS

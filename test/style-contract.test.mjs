@@ -139,9 +139,9 @@ test("oversized lengths and stacking orders are rejected at unit specific limits
   const accept = (declarations) => { const copy = doc(); copy.body[0].style.base = declarations; assert.doesNotThrow(() => parsePageDocument(copy), JSON.stringify(declarations)); };
   const deny = (declarations) => { const copy = doc(); copy.body[0].style.base = declarations; reject(copy); };
   for (const declarations of [{ width: "10000px" }, { width: 10000 }, { marginTop: -10000 }, { width: "1000rem" }, { fontSize: "1000em" }, { width: "1000ch" },
-    { width: "1000%" }, { height: "1000vh" }, { width: "1000vw" }, { width: "1000vmin" }, { width: "1000vmax" }, { marginLeft: "-1000rem" }, { zIndex: 9999 }, { zIndex: -9999 }, { zIndex: "auto" }]) accept(declarations);
+    { width: "1000%" }, { height: "1000vh" }, { height: "1000dvh" }, { width: "1000vw" }, { width: "1000vmin" }, { width: "1000vmax" }, { marginLeft: "-1000rem" }, { zIndex: 9999 }, { zIndex: -9999 }, { zIndex: "auto" }]) accept(declarations);
   for (const declarations of [{ width: "10001px" }, { width: 10001 }, { marginTop: -10001 }, { width: "1001rem" }, { fontSize: "1000.5em" }, { width: "1001%" },
-    { height: "1001vh" }, { letterSpacing: "-1001em" }, { padding: "1rem 1001rem" }, { gridTemplateColumns: "repeat(2, minmax(0, 10001px))" }, { zIndex: 10000 }, { zIndex: -10000 }, { zIndex: 99999 }]) deny(declarations);
+    { height: "1001vh" }, { height: "1001dvh" }, { letterSpacing: "-1001em" }, { padding: "1rem 1001rem" }, { gridTemplateColumns: "repeat(2, minmax(0, 10001px))" }, { zIndex: 10000 }, { zIndex: -10000 }, { zIndex: 99999 }]) deny(declarations);
   const token = doc(); token.tokens.space.value = "1001rem"; reject(token);
   const numeric = doc(); numeric.tokens.space.value = 10001; reject(numeric);
 });
