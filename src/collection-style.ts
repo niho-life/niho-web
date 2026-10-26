@@ -3,7 +3,7 @@
  * この文字列をファイルにして読み込む。色はホストの --niho-* があればそれを使い、無ければここの値。
  */
 export const collectionCss = `
-.nw-collection{--cw-ink:var(--niho-text,#23211d);--cw-muted:var(--niho-text-sub,#66625a);--cw-border:var(--niho-border,#e3e0d9);--cw-field-border:#8e897f;--cw-surface:var(--niho-surface,#fff);--cw-ground:var(--niho-surface-subtle,#f6f5f2);--cw-hover:#efede8;--cw-primary-bg:var(--niho-primary-bg,#23211d);--cw-primary-ink:var(--niho-primary-ink,#fff);--cw-focus:var(--niho-focus,#2c6bdc);--cw-ok:#1b7240;--cw-ok-soft:#e3f2e7;--cw-accent:#2457b5;--cw-accent-soft:#e8effc;--cw-sch:#7f530b;--cw-sch-soft:#faefd9;--cw-danger:#b02e2e;--cw-danger-soft:#fbe9e9;--cw-draft:#5f5b53;--cw-draft-soft:#eeece6;position:relative;min-width:0;color:var(--cw-ink);background:var(--cw-surface);font:14px/1.6 -apple-system,BlinkMacSystemFont,"Hiragino Sans","Hiragino Kaku Gothic ProN","Noto Sans JP","Yu Gothic UI",Meiryo,sans-serif;-webkit-font-smoothing:antialiased}
+.nw-collection{--cw-ink:var(--niho-text,#23211d);--cw-muted:var(--niho-text-sub,#66625a);--cw-border:var(--niho-border,#e3e0d9);--cw-field-border:var(--niho-border,#e3e0d9);--cw-surface:var(--niho-surface,#fff);--cw-ground:var(--niho-surface-subtle,#f6f5f2);--cw-hover:var(--niho-surface-subtle,#f6f5f2);--cw-primary-bg:var(--niho-primary-bg,#23211d);--cw-primary-ink:var(--niho-primary-ink,#fff);--cw-focus:var(--niho-focus,var(--cw-primary-bg));--cw-ok:var(--niho-accent-ink,var(--cw-ink));--cw-ok-soft:var(--niho-surface-subtle,#f6f5f2);--cw-accent:var(--niho-accent-ink,var(--cw-ink));--cw-accent-soft:var(--niho-surface-subtle,#f6f5f2);--cw-sch:var(--niho-text-sub,#66625a);--cw-sch-soft:var(--niho-surface-subtle,#f6f5f2);--cw-danger:var(--niho-danger,var(--cw-ink));--cw-danger-soft:var(--niho-surface-subtle,#f6f5f2);--cw-draft:var(--niho-text-sub,#66625a);--cw-draft-soft:var(--niho-surface-subtle,#f6f5f2);position:relative;min-width:0;max-width:100%;color:var(--cw-ink);background:var(--cw-surface);font:14px/1.6 -apple-system,BlinkMacSystemFont,"Hiragino Sans","Hiragino Kaku Gothic ProN","Noto Sans JP","Yu Gothic UI",Meiryo,sans-serif;-webkit-font-smoothing:antialiased}
 .nw-collection *{box-sizing:border-box}
 .nw-collection :is(button,input,select,textarea){font:inherit;color:inherit}
 .nw-collection button{position:relative;cursor:pointer}
@@ -15,7 +15,7 @@ export const collectionCss = `
 .nw-collection .cw-button:hover:not(:disabled){background:var(--cw-hover)}
 .nw-collection .cw-primary{background:var(--cw-primary-bg);border-color:var(--cw-primary-bg);color:var(--cw-primary-ink)}
 .nw-collection .cw-primary:hover:not(:disabled){background:var(--cw-primary-bg);filter:brightness(1.25)}
-.nw-collection .cw-danger{background:var(--cw-danger);border-color:var(--cw-danger);color:#fff}
+.nw-collection .cw-danger{background:var(--cw-danger);border-color:var(--cw-danger);color:var(--cw-primary-ink)}
 .nw-collection .cw-danger:hover:not(:disabled){background:var(--cw-danger);filter:brightness(1.1)}
 .nw-collection .cw-icon-button{display:inline-flex;align-items:center;justify-content:center;flex:none;width:40px;height:40px;padding:0;border:0;border-radius:8px;background:transparent;color:var(--cw-muted)}
 .nw-collection .cw-icon-button:hover{background:var(--cw-hover);color:var(--cw-ink)}
@@ -23,7 +23,7 @@ export const collectionCss = `
 .nw-collection .cw-notice,.nw-collection .cw-empty{display:grid;justify-items:center;gap:12px;padding:56px 16px;text-align:center;color:var(--cw-muted)}
 .nw-collection .cw-notice p,.nw-collection .cw-empty p{margin:0;max-width:34em}
 .nw-collection .cw-badges{display:inline-flex;flex-wrap:wrap;gap:4px;align-items:center;min-width:0}
-.nw-collection .cw-pill{display:inline-flex;align-items:center;gap:6px;min-height:24px;padding:0 9px 0 7px;border-radius:999px;background:var(--cw-draft-soft);color:var(--cw-draft);font-size:12px;font-weight:650;line-height:1.3;white-space:nowrap}
+.nw-collection .cw-pill{display:inline-flex;align-items:center;gap:6px;min-height:24px;padding:0 9px 0 7px;border:1px solid var(--cw-border);border-radius:999px;background:var(--cw-draft-soft);color:var(--cw-draft);font-size:12px;font-weight:650;line-height:1.3;white-space:nowrap}
 .nw-collection .cw-pill .cw-icon{width:13px;height:13px;stroke-width:2.2}
 .nw-collection .cw-dot{width:8px;height:8px;flex:none;border-radius:50%;background:currentColor}
 .nw-collection .cw-pill[data-status=draft] .cw-dot{background:transparent;border:1.6px solid currentColor}
@@ -38,12 +38,12 @@ export const collectionCss = `
 @keyframes cw-spin{to{transform:rotate(360deg)}}
 
 .nw-collection .cw-layout{display:grid;grid-template-columns:220px minmax(0,1fr);min-height:100%}
-.nw-collection .cw-nav{padding:18px 12px;border-right:1px solid var(--cw-border);background:var(--cw-ground);min-width:0}
+.nw-collection .cw-nav{padding:18px 12px;border-right:1px solid var(--cw-border);background:var(--cw-surface);min-width:0}
 .nw-collection .cw-nav-heading{margin:0;padding:4px 10px 8px;color:var(--cw-muted);font-size:11px;font-weight:700;letter-spacing:.08em}
 .nw-collection .cw-nav ul{display:grid;gap:2px;margin:0;padding:0;list-style:none}
 .nw-collection .cw-nav button{display:flex;align-items:center;gap:10px;width:100%;min-height:40px;padding:0 10px;border:0;border-radius:8px;background:transparent;color:var(--cw-muted);font-weight:600;text-align:left}
 .nw-collection .cw-nav button:hover{background:var(--cw-hover);color:var(--cw-ink)}
-.nw-collection .cw-nav button[aria-current=page]{background:var(--cw-surface);color:var(--cw-ink);box-shadow:0 0 0 1px var(--cw-border)}
+.nw-collection .cw-nav button[aria-current=page]{background:var(--cw-ground);color:var(--cw-ink);box-shadow:none}
 .nw-collection .cw-nav-label{min-width:0;overflow-wrap:anywhere}
 .nw-collection .cw-nav-count{margin-left:auto;color:var(--cw-muted);font-size:12px;font-weight:500;font-variant-numeric:tabular-nums}
 .nw-collection .cw-main{min-width:0}
@@ -57,8 +57,8 @@ export const collectionCss = `
 .nw-collection .cw-search:focus-within{outline:3px solid var(--cw-focus);outline-offset:2px}
 .nw-collection .cw-search input{flex:1;min-width:0;height:38px;border:0;background:transparent;color:var(--cw-ink)}
 .nw-collection .cw-search input:focus-visible{outline:none}
-.nw-collection .cw-filters{display:flex;gap:4px;margin-bottom:4px;border-bottom:1px solid var(--cw-border);overflow-x:auto;scrollbar-width:none}
-.nw-collection .cw-filters button{min-height:40px;margin-bottom:-1px;padding:0 12px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--cw-muted);font-weight:600;white-space:nowrap}
+.nw-collection .cw-filters{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:4px;border-bottom:1px solid var(--cw-border)}
+.nw-collection .cw-filters button{min-height:40px;margin-bottom:-1px;padding:0 12px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--cw-muted);font-weight:600;white-space:normal}
 .nw-collection .cw-filters button[aria-pressed=true]{border-bottom-color:var(--cw-ink);color:var(--cw-ink)}
 .nw-collection .cw-filters button:focus-visible{outline-offset:-3px}
 .nw-collection .cw-filter-count{margin-left:4px;color:var(--cw-muted);font-weight:500;font-variant-numeric:tabular-nums}
@@ -116,7 +116,7 @@ export const collectionCss = `
 
 .nw-collection .cw-toast-region{position:fixed;bottom:24px;left:50%;z-index:60;width:max-content;max-width:calc(100vw - 32px);transform:translateX(-50%)}
 .nw-collection .cw-toast{display:flex;align-items:center;gap:8px;padding:4px 4px 4px 14px;border-radius:10px;background:var(--cw-ink);color:var(--cw-surface);box-shadow:0 10px 30px rgba(35,33,29,.2)}
-.nw-collection .cw-toast[data-tone=error]{background:var(--cw-danger);color:#fff}
+.nw-collection .cw-toast[data-tone=error]{background:var(--cw-danger);color:var(--cw-primary-ink)}
 .nw-collection .cw-toast p{margin:0;font-size:13.5px}
 .nw-collection .cw-toast .cw-icon-button{color:inherit}
 .nw-collection .cw-toast .cw-icon-button:hover{background:rgba(255,255,255,.14)}
@@ -144,8 +144,8 @@ export const collectionCss = `
 .nw-collection .cw-banner p{flex:1 1 260px;margin:0;align-self:center}
 .nw-collection .cw-banner ul{margin:0;padding-left:18px}
 .nw-collection .cw-editor-body{display:grid;grid-template-columns:minmax(0,1fr) 340px;flex:1}
-.nw-collection .cw-editor-main{min-width:0;padding:28px 32px 80px;background:var(--cw-ground)}
-.nw-collection .cw-card{display:grid;gap:22px;max-width:780px;min-width:0;margin:0 auto;padding:28px 32px 40px;border-radius:12px;background:var(--cw-surface);box-shadow:0 0 0 1px var(--cw-border)}
+.nw-collection .cw-editor-main{min-width:0;padding:28px 32px 80px;background:var(--cw-surface)}
+.nw-collection .cw-card{display:grid;gap:22px;max-width:780px;min-width:0;margin:0 auto;padding:28px 32px 40px;border:1px solid var(--cw-border);border-radius:10px;background:var(--cw-surface);box-shadow:none}
 .nw-collection .cw-editor-side{min-width:0;padding:4px 20px 40px;border-left:1px solid var(--cw-border);background:var(--cw-surface)}
 .nw-collection .cw-side-section{display:grid;gap:16px;padding:16px 0;border-bottom:1px solid var(--cw-border)}
 .nw-collection .cw-side-section:last-child{border-bottom:0}
@@ -243,11 +243,11 @@ export const collectionCss = `
 @media (max-width:1099px){.nw-collection .cw-editor-body{grid-template-columns:minmax(0,1fr) 300px}.nw-collection .cw-editor-main{padding:24px 24px 64px}}
 @media (max-width:899px){
 .nw-collection .cw-layout{grid-template-columns:minmax(0,1fr)}
-.nw-collection .cw-nav{padding:8px 12px;border-right:0;border-bottom:1px solid var(--cw-border);overflow-x:auto}
+.nw-collection .cw-nav{padding:8px 12px;border-right:0;border-bottom:1px solid var(--cw-border);overflow-x:visible}
 .nw-collection .cw-nav-heading{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
-.nw-collection .cw-nav ul{display:flex;gap:4px}
-.nw-collection .cw-nav li{flex:none}
-.nw-collection .cw-nav button{width:auto;white-space:nowrap}
+.nw-collection .cw-nav ul{display:flex;flex-wrap:wrap;gap:4px}
+.nw-collection .cw-nav li{flex:1 1 140px;min-width:0}
+.nw-collection .cw-nav button{width:100%;white-space:normal}
 .nw-collection .cw-list{padding:18px 16px 48px}
 .nw-collection .cw-editor-body{grid-template-columns:minmax(0,1fr)}
 .nw-collection .cw-editor-main{padding:16px 16px 32px}

@@ -5,7 +5,7 @@ import { collectionCss } from "./collection-style.js";
  * 状態は色だけでなく、印の形（.lw-shape）と言葉でも示す。320px で横にはみ出さない。
  */
 const localizationCss = `
-.nw-localization{--lw-changed:#8a4b00;--lw-changed-soft:#fdecd6;--lw-mark:#2a4f8f;--lw-mark-soft:#e6edf9;--lw-source-bg:#f9f8f5}
+.nw-localization{--lw-changed:var(--niho-accent-ink,var(--cw-ink));--lw-changed-soft:var(--niho-surface-subtle,var(--cw-ground));--lw-mark:var(--niho-accent-ink,var(--cw-ink));--lw-mark-soft:var(--niho-surface-subtle,var(--cw-ground));--lw-source-bg:var(--niho-surface-subtle,var(--cw-ground));max-width:100%}
 .nw-localization .lw-pill[data-lw-state=untranslated]{background:var(--cw-draft-soft);color:var(--cw-draft)}
 .nw-localization .lw-pill[data-lw-state=draft]{background:var(--cw-accent-soft);color:var(--cw-accent)}
 .nw-localization .lw-pill[data-lw-state=source-changed]{background:var(--lw-changed-soft);color:var(--lw-changed)}
@@ -38,7 +38,7 @@ const localizationCss = `
 
 .nw-localization .lw-item .cw-editor-status{gap:4px 10px}
 .nw-localization .lw-item-title{min-width:0;max-width:100%;overflow:hidden;font-weight:650;text-overflow:ellipsis;white-space:nowrap}
-.nw-localization .lw-item-body{display:grid;grid-template-columns:minmax(0,1fr);align-items:start;flex:1;background:var(--cw-ground)}
+.nw-localization .lw-item-body{display:grid;grid-template-columns:minmax(0,1fr);align-items:start;flex:1;background:var(--cw-surface)}
 .nw-localization .lw-item-body.lw-with-preview{grid-template-columns:minmax(0,1fr) minmax(320px,42%)}
 .nw-localization .lw-units{display:grid;gap:14px;min-width:0;padding:20px 28px 72px}
 .nw-localization .lw-item-meta{display:flex;flex-wrap:wrap;gap:4px 16px;margin:0;color:var(--cw-muted);font-size:12.5px}
@@ -47,7 +47,7 @@ const localizationCss = `
 .nw-localization .lw-group-title .lw-shape{width:0;height:0;border:0;border-left:6px solid transparent;border-right:6px solid transparent;border-bottom:11px solid currentColor;border-radius:0}
 .nw-localization .lw-changed .cw-hint{color:var(--lw-changed)}
 .nw-localization .lw-section{margin:10px 0 0;color:var(--cw-muted);font-size:12px;font-weight:700;letter-spacing:.06em}
-.nw-localization .lw-unit{display:grid;gap:10px;min-width:0;padding:16px 18px;border-radius:12px;background:var(--cw-surface);box-shadow:0 0 0 1px var(--cw-border)}
+.nw-localization .lw-unit{display:grid;gap:10px;min-width:0;padding:16px 18px;border:1px solid var(--cw-border);border-radius:10px;background:var(--cw-surface);box-shadow:none}
 .nw-localization .lw-unit[data-state=review-needed]{box-shadow:0 0 0 1px var(--lw-changed),inset 4px 0 0 var(--lw-changed)}
 .nw-localization .lw-unit-head{display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px;min-width:0}
 .nw-localization .lw-unit-label{margin:0;min-width:0;font-size:14px;font-weight:700;overflow-wrap:anywhere}
@@ -91,7 +91,7 @@ const localizationCss = `
 .nw-localization .lw-toggle button:focus-visible{outline-offset:-3px}
 .nw-localization .lw-preview-note,.nw-localization .lw-preview-status{margin:0;color:var(--cw-muted);font-size:12px}
 .nw-localization .lw-frame-wrap{min-width:0;overflow:auto;border:1px solid var(--cw-border);border-radius:10px;background:var(--cw-ground)}
-.nw-localization .lw-frame{display:block;width:100%;height:70vh;min-height:420px;margin:0 auto;border:0;background:#fff}
+.nw-localization .lw-frame{display:block;width:100%;height:70vh;min-height:420px;margin:0 auto;border:0;background:var(--cw-surface)}
 .nw-localization .lw-frame-wrap[data-width="360"] .lw-frame{width:360px;max-width:none}
 .nw-localization .lw-frame-wrap[data-width="320"] .lw-frame{width:320px;max-width:none}
 
@@ -113,7 +113,7 @@ const localizationCss = `
 .nw-localization .lw-settings-body{display:grid;gap:16px;max-width:720px;margin:0 auto;padding:24px 24px 64px}
 .nw-localization .lw-settings-body h2{margin:0;font-size:20px}
 .nw-localization .lw-settings-body h2:focus-visible{outline:none}
-.nw-localization .lw-settings-card{display:grid;gap:10px;padding:18px;border-radius:12px;background:var(--cw-surface);box-shadow:0 0 0 1px var(--cw-border)}
+.nw-localization .lw-settings-card{display:grid;gap:10px;padding:18px;border:1px solid var(--cw-border);border-radius:10px;background:var(--cw-surface);box-shadow:none}
 .nw-localization .lw-settings-card h3{margin:0;font-size:14px}
 .nw-localization .lw-check{display:flex;align-items:flex-start;gap:10px;min-height:40px;cursor:pointer}
 .nw-localization .lw-check input{width:20px;height:20px;margin:2px 0 0;flex:none;accent-color:var(--cw-ink)}

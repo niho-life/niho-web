@@ -68,11 +68,17 @@ function fakeApi(t, cmsView) {
   t.mock.method(globalThis, "fetch", async (url, init = {}) => {
     const target = String(url), method = init.method ?? "GET";
     calls.push(`${method} ${target}`);
+    if (target === "/api/projects/project-kamakura/sites/kamakura/invitations" && method === "POST") return json({ invitationUrl: `${ORIGIN}/invite/example` });
     if (method !== "GET") return json({ error: "method_not_allowed" }, 405);
     if (target === "/api/session") return json({ status: "authenticated", subject: "subject-one", email: "editor@example.test" });
     if (target === "/api/projects") return json(directory);
     if (target === "/api/projects/project-kamakura/sites/kamakura/dashboard") return json(dashboard(project));
     if (target === "/api/projects/project-kamakura/sites/kamakura/site-admin") return json({ origin: "https://admin.example.test", paths: { cms: "/admin", translations: "/admin/localization" }, ...(cmsView === undefined ? {} : { cmsView }) });
+    if (target === "/api/projects/project-kamakura/sites/kamakura/membership") return json({
+      status: "ready", projectName: project.name, siteName: project.site.name,
+      members: [{ subject: "subject-one", email: "owner@example.test", role: "owner", displayName: "オーナー（架空）", createdAt: at, isCurrent: true }],
+      invitations: [{ id: "invite-one", email: "editor@example.test", role: "editor", createdAt: at, expiresAt: at, status: "pending" }]
+    });
     if (target === `${CMS}/schema`) return json(schema);
     if (target === `${CMS}/collections/posts/items`) return json({ status: "ready", collectionId: "posts", items: [summary] });
     if (target === `${CMS}/collections/posts/items/morning-walk`) return json({ status: "ready", item });
@@ -91,6 +97,7 @@ async function openStudio(t, pathname, cmsView) {
 }
 const byText = (selector, text) => [...document.querySelectorAll(selector)].find((node) => node.textContent.replace(/\s+/gu, " ").trim() === text);
 const click = async (node) => { assert.ok(node, "target not found"); await act(async () => node.click()); await flush(); };
+const input = async (node, value) => { await act(async () => { Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value").set.call(node, value); node.dispatchEvent(new Event("input", { bubbles: true })); }); await flush(); };
 
 test("切替が off（frame・値なし）の Dashboard の CMS は、従来どおりサイト側の管理画面の枠", async (t) => {
   for (const cmsView of [undefined, "frame", "unknown"]) {
@@ -149,4 +156,25 @@ test("切替が on（workspace）の CMS は、コレクション画面で項目
   assert.equal(document.querySelector(".nw-collection"), null);
   // 書き込みは呼んでいない（読んだだけで値を書き換えない）
   assert.equal(calls.some((call) => !call.startsWith("GET ")), false);
+});
+
+test("Studio のオーナー向けメンバー管理は表を使い、上部の招待ボタンでフォームを開く", async (t) => {
+  const calls = await openStudio(t, "/projects/kamakura-site/admin", "workspace");
+  await click(byText(".pv-dashboard-nav button", "プロジェクト設定"));
+  assert.ok(document.querySelector(".studio-members"));
+  assert.equal(document.querySelector(".studio-invite-form"), null, "招待フォームを常時表示しない");
+  assert.equal(document.querySelectorAll(".studio-admin-table").length, 2);
+  assert.equal(document.querySelectorAll(".studio-admin-list").length, 0);
+  assert.equal(document.querySelector(".studio-role")?.textContent, "オーナー");
+  assert.equal(document.querySelector(".studio-status")?.textContent, "承諾待ち");
+
+  const invite = byText(".studio-section-actions button", "招待");
+  assert.equal(invite.getAttribute("aria-expanded"), "false");
+  await click(invite);
+  assert.ok(document.querySelector("#studio-invite-fields .studio-invite-form"));
+  assert.equal(byText(".studio-section-actions button", "閉じる").getAttribute("aria-expanded"), "true");
+  await input(document.querySelector('.studio-invite-form input[type="email"]'), "new@example.test");
+  await click(byText(".studio-invite-form button", "招待 URL を作成"));
+  assert.ok(calls.includes("POST /api/projects/project-kamakura/sites/kamakura/invitations"));
+  assert.equal(document.querySelector(".studio-copy input")?.value, `${ORIGIN}/invite/example`);
 });

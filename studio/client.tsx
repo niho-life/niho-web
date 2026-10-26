@@ -233,6 +233,7 @@ function MemberAdministration({ project, expire }: { readonly project: Project; 
   const [state, setState] = useState<AdministrationState>({ status: "loading" });
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [showInvite, setShowInvite] = useState(false);
   const [email, setEmail] = useState("");
   const [inviteRole, setInviteRole] = useState<Role>("editor");
   const [expiry, setExpiry] = useState(7);
@@ -298,25 +299,25 @@ function MemberAdministration({ project, expire }: { readonly project: Project; 
   if (state.status === "error") return <section className="studio-members"><div className="studio-section-heading"><div><p className="studio-kicker">ACCESS</p><h2>メンバー管理</h2></div><button type="button" onClick={() => load()}>再読込</button></div><p role="alert">メンバー情報を取得できませんでした。</p></section>;
   const value = state.value;
   return <section className="studio-members" aria-label="メンバー管理">
-    <div className="studio-section-heading"><div><p className="studio-kicker">ACCESS</p><h2>メンバー管理</h2><p>{value.projectName} / {value.siteName}</p></div><button type="button" className="studio-secondary" onClick={() => load()} disabled={busy}>再読込</button></div>
+    <div className="studio-section-heading"><div><p className="studio-kicker">ACCESS</p><h2>メンバー管理</h2><p>{value.projectName} / {value.siteName}</p></div><div className="studio-section-actions"><button type="button" className="studio-secondary" onClick={() => load()} disabled={busy}>再読込</button><button type="button" aria-expanded={showInvite} aria-controls="studio-invite-fields" onClick={() => setShowInvite((visible) => !visible)}>{showInvite ? "閉じる" : "招待"}</button></div></div>
     {message && <p className="studio-message" role="status">{message}</p>}
-    <form className="studio-invite-form" onSubmit={(event) => { void create(event); }}>
+    {showInvite && <div id="studio-invite-fields" className="studio-invite-fields"><form className="studio-invite-form" onSubmit={(event) => { void create(event); }}>
       <label><span>招待するメールアドレス</span><input type="email" required maxLength={254} autoComplete="off" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@example.com" /></label>
       <label><span>権限</span><select value={inviteRole} onChange={(event) => setInviteRole(event.target.value as Role)}><option value="editor">編集者</option><option value="owner">オーナー</option></select></label>
       <label><span>有効期間</span><select value={expiry} onChange={(event) => setExpiry(Number(event.target.value))}><option value={1}>1日</option><option value={3}>3日</option><option value={7}>7日</option></select></label>
       <button type="submit" disabled={busy}>招待 URL を作成</button>
     </form>
     <p className="studio-help">メールは送信されません。本人が Cloudflare Access で同じメールアドレスにログインし、URL から明示的に承諾すると参加します。</p>
-    {invitationUrl && <div className="studio-copy"><label><span>一度だけ表示される招待 URL</span><input readOnly value={invitationUrl} onFocus={(event) => event.currentTarget.select()} /></label><button type="button" onClick={() => { void navigator.clipboard.writeText(invitationUrl).then(() => setMessage("招待 URL をコピーしました。")).catch(() => setMessage("URL 欄を選択してコピーしてください。")); }}>コピー</button></div>}
+    {invitationUrl && <div className="studio-copy"><label><span>一度だけ表示される招待 URL</span><input readOnly value={invitationUrl} onFocus={(event) => event.currentTarget.select()} /></label><button type="button" onClick={() => { void navigator.clipboard.writeText(invitationUrl).then(() => setMessage("招待 URL をコピーしました。")).catch(() => setMessage("URL 欄を選択してコピーしてください。")); }}>コピー</button></div>}</div>}
     <div className="studio-admin-grid">
-      <section><h3>参加メンバー</h3><ul className="studio-admin-list">{value.members.map((member) => <li key={member.subject}>
-        <div><strong>{member.displayName}</strong>{member.isCurrent && <span className="studio-you">自分</span>}<small>{member.email ?? "メール未登録（bootstrap）"}</small></div>
-        <div className="studio-row-actions"><span className={`studio-role studio-role-${member.role}`}>{roleLabel(member.role)}</span><button type="button" className="studio-secondary" disabled={busy} onClick={() => { const next = member.role === "owner" ? "editor" : "owner"; if (window.confirm(`${member.displayName} を${roleLabel(next)}に変更しますか？`)) void mutate("/members/role", { subject: member.subject, role: next }, "権限を変更しました。"); }}>{member.role === "owner" ? "編集者に変更" : "オーナーに変更"}</button><button type="button" className="studio-danger" disabled={busy} onClick={() => { if (window.confirm(`${member.displayName} をプロジェクトから削除しますか？`)) void mutate("/members/remove", { subject: member.subject }, "メンバーを削除しました。"); }}>削除</button></div>
-      </li>)}</ul></section>
-      <section><h3>招待履歴</h3>{value.invitations.length === 0 ? <p className="studio-help">招待はまだありません。</p> : <ul className="studio-admin-list">{value.invitations.map((invitation) => <li key={invitation.id}>
-        <div><strong>{invitation.email}</strong><small>{roleLabel(invitation.role)} ・ 期限 {dateLabel(invitation.expiresAt)}</small></div>
-        <div className="studio-row-actions"><span className={`studio-status studio-status-${invitation.status}`}>{{ pending: "承諾待ち", expired: "期限切れ", accepted: "承諾済み", revoked: "取消済み" }[invitation.status]}</span>{invitation.status === "pending" && <button type="button" className="studio-danger" disabled={busy} onClick={() => { if (window.confirm(`${invitation.email} への招待を取り消しますか？`)) void mutate("/invitations/revoke", { invitationId: invitation.id }, "招待を取り消しました。"); }}>取消</button>}</div>
-      </li>)}</ul>}</section>
+      <section><h3>参加メンバー</h3><div className="studio-table-wrap"><table className="studio-admin-table"><thead><tr><th scope="col">メンバー</th><th scope="col">権限</th><th scope="col">操作</th></tr></thead><tbody>{value.members.map((member) => <tr key={member.subject}>
+        <th scope="row"><strong>{member.displayName}</strong>{member.isCurrent && <span className="studio-you">自分</span>}<small>{member.email ?? "メール未登録（bootstrap）"}</small></th>
+        <td data-label="権限"><span className="studio-role">{roleLabel(member.role)}</span></td><td data-label="操作"><div className="studio-row-actions"><button type="button" className="studio-secondary" disabled={busy} onClick={() => { const next = member.role === "owner" ? "editor" : "owner"; if (window.confirm(`${member.displayName} を${roleLabel(next)}に変更しますか？`)) void mutate("/members/role", { subject: member.subject, role: next }, "権限を変更しました。"); }}>{member.role === "owner" ? "編集者に変更" : "オーナーに変更"}</button><button type="button" className="studio-danger" disabled={busy} onClick={() => { if (window.confirm(`${member.displayName} をプロジェクトから削除しますか？`)) void mutate("/members/remove", { subject: member.subject }, "メンバーを削除しました。"); }}>削除</button></div></td>
+      </tr>)}</tbody></table></div></section>
+      <section><h3>招待履歴</h3>{value.invitations.length === 0 ? <p className="studio-help">招待はまだありません。</p> : <div className="studio-table-wrap"><table className="studio-admin-table"><thead><tr><th scope="col">招待先</th><th scope="col">状態</th><th scope="col">操作</th></tr></thead><tbody>{value.invitations.map((invitation) => <tr key={invitation.id}>
+        <th scope="row"><strong>{invitation.email}</strong><small>{roleLabel(invitation.role)} ・ 期限 {dateLabel(invitation.expiresAt)}</small></th>
+        <td data-label="状態"><span className="studio-status">{{ pending: "承諾待ち", expired: "期限切れ", accepted: "承諾済み", revoked: "取消済み" }[invitation.status]}</span></td><td data-label="操作">{invitation.status === "pending" && <button type="button" className="studio-danger" disabled={busy} onClick={() => { if (window.confirm(`${invitation.email} への招待を取り消しますか？`)) void mutate("/invitations/revoke", { invitationId: invitation.id }, "招待を取り消しました。"); }}>取消</button>}</td>
+      </tr>)}</tbody></table></div>}</section>
     </div>
   </section>;
 }
