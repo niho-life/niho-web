@@ -448,17 +448,49 @@ async function dashboard(env: Env, identity: AccessIdentity, projectId: string, 
   if (row === null) return json({ status: "forbidden", projectId, siteId });
   const project = projectFromRow(row, identity.subject);
   // 公開情報は鎌倉だけサイト側から読む。ほかのサイトと解析は値を合成しない（unavailable / disconnected のまま）。
-  const overview: DashboardOverview = projectId === KAMAKURA_EDITOR_PROJECT_ID && siteId === KAMAKURA_EDITOR_SITE_ID
-    ? await kamakuraOverview(env, identity, project.site.domains)
-    : { status: "unavailable" };
+  const [overview, members] = await Promise.all([
+    projectId === KAMAKURA_EDITOR_PROJECT_ID && siteId === KAMAKURA_EDITOR_SITE_ID
+      ? kamakuraOverview(env, identity, project.site.domains)
+      : Promise.resolve<DashboardOverview>({ status: "unavailable" }),
+    dashboardMembers(env, projectId)
+  ]);
   return json({
     status: "ready",
     projectId,
     siteId,
     fetchedAt: new Date().toISOString(),
     overview,
-    analytics: { status: "disconnected" }
+    analytics: { status: "disconnected" },
+    members
   });
+}
+
+type DashboardMembers = { readonly status: "unavailable" } | { readonly status: "ready"; readonly data: readonly { readonly displayName: string; readonly role: Role }[] };
+
+/**
+ * Dashboard のメンバー表示（#66）: 参加者全員の表示名と役割。参加していることは dashboard() が先に確かめているので、
+ * owner でも editor でも読める。Access subject・メール・作成日時は出さない（招待・権限変更は membership API のまま owner だけ）。
+ * 読めないときは members だけ unavailable にして Dashboard 全体は返す。
+ */
+async function dashboardMembers(env: Env, projectId: string): Promise<DashboardMembers> {
+  try {
+    const result = await env.DB.prepare(`
+      SELECT m.display_name, m.role
+        FROM project_members AS m
+       WHERE m.project_id = ?1
+       ORDER BY CASE m.role WHEN 'owner' THEN 0 ELSE 1 END, m.display_name COLLATE NOCASE, m.access_subject
+       LIMIT ?2
+    `).bind(projectId, MAX_PROJECT_MEMBERS).all<Pick<MemberRow, "display_name" | "role">>();
+    if (!result.success) throw new Error("members query failed");
+    const data = (result.results ?? []).map((member) => {
+      if (!validName(member.display_name) || !validRole(member.role)) throw new Error("invalid stored member");
+      return { displayName: member.display_name, role: member.role };
+    });
+    return { status: "ready", data };
+  } catch (error) {
+    console.warn("NIHO Studio dashboard members unavailable", error instanceof Error ? error.name : "UnknownError");
+    return { status: "unavailable" };
+  }
 }
 
 type DashboardOverviewData = {

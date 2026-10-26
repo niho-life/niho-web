@@ -292,7 +292,8 @@ function MemberAdministration({ project, expire }: { readonly project: Project; 
     } finally { setBusy(false); }
   };
 
-  if (state.status === "hidden") return null;
+  // オーナーでない参加者（API が 403）には、変更できる人を案内する（空の画面にしない）
+  if (state.status === "hidden") return <section className="studio-members" aria-label="プロジェクト設定"><div className="studio-section-heading"><div><p className="studio-kicker">ACCESS</p><h2>メンバー管理</h2></div></div><p className="studio-help">メンバーの招待・権限の変更・参加解除はプロジェクトのオーナーだけが行えます。変更が必要なときはオーナーに依頼してください。参加しているメンバーは左の「メンバー」で確認できます。</p></section>;
   if (state.status === "loading") return <section className="studio-members studio-members-loading" aria-live="polite">メンバー管理を確認しています。</section>;
   if (state.status === "error") return <section className="studio-members"><div className="studio-section-heading"><div><p className="studio-kicker">ACCESS</p><h2>メンバー管理</h2></div><button type="button" onClick={() => load()}>再読込</button></div><p role="alert">メンバー情報を取得できませんでした。</p></section>;
   const value = state.value;
@@ -477,7 +478,7 @@ function App() {
   if (session.directory.status === "forbidden") return <Notice title="アクセス権がありません" retry={loadSession}>Studio 管理者にプロジェクト参加資格を確認してください。</Notice>;
 
   const admin = screen.kind === "dashboard" && siteAdmin?.key === dashboardKey ? siteAdmin.value : null;
-  /** Dashboard の上部のサイトナビに足すサイト機能（ページはデザインエディタ、設定はメンバーと招待） */
+  /** Dashboard の左のメニュー「サイト機能」に足すもの（ページは右上のデザインエディタ、プロジェクト設定はメンバーと招待） */
   const siteViews = (project: Project): ProjectSiteView[] => {
     if (!admin) return [];
     const open = (view: ProjectSiteViewId) => navigate({ kind: "dashboard", projectId: project.id, siteId: project.site.id, view });
@@ -523,6 +524,8 @@ function App() {
               onOpenEditor={openEditor}
               onOpenSettings={() => undefined}
               editorAction={editorEnabled(selected) ? "enabled" : "pending"}
+              // 解析の接続設定の画面はまだ無い（GA4／Search Console の接続は別 Issue）。プロジェクト設定は settingsContent で開く
+              settingsAction="disabled"
               settingsContent={<MemberAdministration key={`${selected.id}:${selected.site.id}`} project={selected} expire={expire} />}
               siteViews={siteViews(selected)}
               activeSiteView={screen.view ?? null}
