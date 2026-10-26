@@ -145,10 +145,10 @@ export const collectionCss = `${uiTokensCss}.nw-collection{position:relative;min
 .nw-collection .cw-save-state{color:var(--nw-text-sub);font-size:12.5px}
 .nw-collection .cw-editor-actions{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-left:auto}
 .nw-collection .cw-language-tabs{display:flex;gap:20px;min-height:44px;padding:0 24px;border-bottom:1px solid var(--nw-border);background:var(--nw-bg)}
-.nw-collection .cw-language-tabs>span,.nw-collection .cw-language-tabs>a{display:inline-flex;align-items:center;min-height:44px;border-bottom:2px solid transparent;color:var(--nw-text-sub);font-size:13px;font-weight:650;text-decoration:none}
+.nw-collection .cw-language-tabs>span,.nw-collection .cw-language-tabs>a,.nw-collection .cw-language-tabs>button{display:inline-flex;align-items:center;min-height:44px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--nw-text-sub);font:inherit;font-size:13px;font-weight:650;text-decoration:none}
 .nw-collection .cw-language-tabs>[aria-current=page]{border-bottom-color:var(--nw-text);color:var(--nw-text)}
-.nw-collection .cw-language-tabs>a:hover{color:var(--nw-text)}
-.nw-collection .cw-language-tabs>a:focus-visible{outline:2px solid var(--nw-focus);outline-offset:-2px}
+.nw-collection .cw-language-tabs>a:hover,.nw-collection .cw-language-tabs>button:hover{color:var(--nw-text)}
+.nw-collection .cw-language-tabs>a:focus-visible,.nw-collection .cw-language-tabs>button:focus-visible{outline:2px solid var(--nw-focus);outline-offset:-2px}
 .nw-collection .cw-banner{display:flex;align-items:flex-start;flex-wrap:wrap;gap:8px 12px;padding:10px 16px;border-bottom:1px solid var(--nw-border);background:var(--nw-accent-soft);color:var(--nw-text);font-size:13.5px}
 .nw-collection .cw-banner[data-tone=error]{background:var(--nw-danger-soft);box-shadow:inset 4px 0 0 var(--nw-danger)}
 .nw-collection .cw-banner p{flex:1 1 260px;margin:0;align-self:center}

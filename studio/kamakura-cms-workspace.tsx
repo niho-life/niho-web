@@ -2,13 +2,15 @@
  * Dashboard の「CMS」（鎌倉）を Studio のコレクション画面（CollectionWorkspace）で開く中身。
  * 本文の編集部品（TipTap）を含んで大きいので、client からは CMS を開いたときだけ import() で読む（studio/site-cms.tsx）。
  */
-import type { ReactNode } from "react";
+import { lazy, Suspense, type ReactNode } from "react";
 import { CollectionWorkspace, type CollectionAdapter, type CollectionNavigationState, type CollectionRichTextEditorProps } from "../src/collection-workspace.js";
 import { createKamakuraCmsAdapter } from "./kamakura-cms.js";
 import { KAMAKURA_CMS_PROJECT_ID, KAMAKURA_CMS_SITE_ID } from "./kamakura-cms-contract.js";
 import { kamakuraCmsLocalizationItemKey } from "./kamakura-localization-contract.js";
 import { projectAliasPath } from "./project-routes.mjs";
 import { createStudioRichText } from "./rich-text-editor.js";
+
+const CmsTranslation = lazy(() => import("./kamakura-localization-workspace.js").then(({ KamakuraCmsTranslation }) => ({ default: KamakuraCmsTranslation })));
 
 type Session = { readonly adapter: CollectionAdapter; readonly renderRichText: (props: CollectionRichTextEditorProps) => ReactNode };
 const sessions = new Map<string, Session>();
@@ -44,5 +46,8 @@ export function KamakuraCmsWorkspace({ siteOrigin, route, onNavigate }: Kamakura
     itemLanguages={{ source: "日本語", target: "English", targetHref: ({ collectionId, itemId }) => {
       const itemKey = kamakuraCmsLocalizationItemKey(collectionId, itemId);
       return itemKey ? projectAliasPath(KAMAKURA_CMS_PROJECT_ID, KAMAKURA_CMS_SITE_ID, "translations", { itemKey }) : null;
+    }, renderTarget: ({ collectionId, itemId, onBack }) => {
+      const itemKey = kamakuraCmsLocalizationItemKey(collectionId, itemId);
+      return itemKey && <Suspense fallback={<p role="status">翻訳を読み込んでいます…</p>}><CmsTranslation siteOrigin={siteOrigin} itemKey={itemKey} onBack={onBack} /></Suspense>;
     } }} {...initial} />;
 }

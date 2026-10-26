@@ -1,9 +1,20 @@
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { CollectionWorkspace, type CollectionNavigationState } from "@niho/web/collection-workspace";
+import { LocalizationItemWorkspace } from "@niho/web/localization-workspace";
 import { createStudioRichText } from "../studio/rich-text-editor.js";
 import { studioRichTextCss } from "../studio/rich-text-style.js";
 import { adapter, bodyListeners, demo, nextVersion, originalBodies, redirectListeners, store } from "./collection-memory.js";
+import { createLocalizationMemory, seedItems } from "./localization-workspace-memory.mjs";
+
+const translation = createLocalizationMemory({ catalogRounds: 0 });
+const keyFor = (collectionId: string, itemId: string) => btoa(`cms:${collectionId}:${itemId}`).replace(/=+$/u, "").replace(/\+/gu, "-").replace(/\//gu, "_");
+const example = seedItems()[0];
+translation.state.groups = [{ id: "cms", label: "CMS" }];
+translation.state.items = Object.entries(store).flatMap(([collectionId, items]) => [...items.values()].map((item) => ({
+  ...structuredClone(example), key: keyFor(collectionId, item.id), groupId: "cms", title: item.title || "無題", path: item.path,
+  units: [{ ...structuredClone(example.units[0]), source: item.title || "無題", value: null, reviewedSource: null }],
+})));
 
 function readLocation(): { collectionId?: string; itemId?: string } {
   const params = new URLSearchParams(location.search), collectionId = params.get("c"), itemId = params.get("i");
@@ -59,7 +70,9 @@ function App() {
       {note && <span role="status">{note}</span>}
       <BodyChange itemId={openItem} />
     </div>
-    <CollectionWorkspace adapter={adapter} {...(renderRichText ? { renderRichText } : {})} {...(start.collectionId ? { initialCollectionId: start.collectionId } : {})} {...(start.itemId ? { initialItemId: start.itemId } : {})} onNavigate={navigate} />
+    <CollectionWorkspace adapter={adapter} {...(renderRichText ? { renderRichText } : {})} {...(start.collectionId ? { initialCollectionId: start.collectionId } : {})} {...(start.itemId ? { initialItemId: start.itemId } : {})} onNavigate={navigate}
+      itemLanguages={{ source: "日本語", target: "English", targetHref: ({ collectionId, itemId }) => `/translation-demo?item=${keyFor(collectionId, itemId)}`,
+        renderTarget: ({ collectionId, itemId, onBack }) => <LocalizationItemWorkspace adapter={translation.adapter} itemKey={keyFor(collectionId, itemId)} onBack={onBack} /> }} />
   </>;
 }
 

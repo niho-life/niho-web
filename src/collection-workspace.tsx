@@ -30,6 +30,8 @@ export type CollectionItemLanguages = {
   readonly source: string; readonly target: string;
   /** 同じ項目の翻訳画面。"/" から始まる同一サイトの path だけを使う。 */
   readonly targetHref: (input: { readonly collectionId: string; readonly itemId: string }) => string | null;
+  /** 訳文を同じ項目画面内で編集するホストの画面。原文の入力は切替中も保持する。 */
+  readonly renderTarget?: (input: { readonly collectionId: string; readonly itemId: string; readonly onBack: () => void }) => ReactNode;
 };
 export type CollectionWorkspaceProps = {
   adapter: CollectionAdapter;
@@ -630,6 +632,8 @@ function ItemEditor({ adapter, definition, itemId, created, timeZone, autosaveDe
   const baseId = useId();
   const root = useRef<HTMLDivElement>(null), heading = useRef<HTMLHeadingElement>(null), scheduleField = useRef<HTMLInputElement>(null);
   const [phase, setPhase] = useState<"loading" | "error" | "forbidden" | "not_found" | "ready">(created ? "ready" : "loading");
+  const [language, setLanguage] = useState<"source" | "target">("source");
+  const [targetVisited, setTargetVisited] = useState(false);
   const [item, setItemState] = useState<CollectionItem | null>(created);
   const [values, setValuesState] = useState<CollectionValues>(created?.values ?? {});
   const [dirty, setDirty] = useState(false);
@@ -971,6 +975,14 @@ function ItemEditor({ adapter, definition, itemId, created, timeZone, autosaveDe
 
   return <div className="cw-editor" ref={root}>
     <h2 className="cw-sr" tabIndex={-1} ref={heading}>{`${definition.label}「${titleText()}」の編集`}</h2>
+    {itemLanguages && targetHref && <nav className="cw-language-tabs" aria-label="項目の言語">
+      {itemLanguages.renderTarget
+        ? <><button type="button" aria-current={language === "source" ? "page" : undefined} onClick={() => setLanguage("source")}>{itemLanguages.source}</button>
+          <button type="button" aria-current={language === "target" ? "page" : undefined} onClick={() => { setTargetVisited(true); setLanguage("target"); }}>{itemLanguages.target}</button></>
+        : <><span aria-current="page">{itemLanguages.source}<span className="cw-sr">（編集中）</span></span>
+          <a href={targetHref} target="_blank" rel="noopener noreferrer">{itemLanguages.target}<span className="cw-sr">（翻訳を新しいタブで開く）</span></a></>}
+    </nav>}
+    <div style={language === "target" ? { display: "none" } : undefined}>
     <header className="cw-editor-bar">
       <button type="button" className="cw-back" onClick={() => void back()} disabled={busy === "back"}><Icon name="back" /><span className="cw-back-label">一覧へ</span></button>
       <div className="cw-editor-status">
@@ -984,10 +996,6 @@ function ItemEditor({ adapter, definition, itemId, created, timeZone, autosaveDe
         <button type="button" className="cw-button cw-primary" disabled={primary.disabled} onClick={() => void publish()}>{primary.label}</button>
       </div>
     </header>
-    {itemLanguages && targetHref && <nav className="cw-language-tabs" aria-label="項目の言語">
-      <span aria-current="page">{itemLanguages.source}<span className="cw-sr">（編集中）</span></span>
-      <a href={targetHref} target="_blank" rel="noopener noreferrer">{itemLanguages.target}<span className="cw-sr">（翻訳を新しいタブで開く）</span></a>
-    </nav>}
     {conflict && <div className="cw-banner" data-tone="error" role="alert">
       <p><strong>ほかの人が先に保存しました。</strong>この画面の変更は保存していません。「最新を読み込む」と、ほかの人が保存した内容を開きます（この画面でいま直したところは消えます）。</p>
       <button type="button" className="cw-button" disabled={busy === "reload"} onClick={() => void reloadLatest()}>最新を読み込む</button>
@@ -1029,5 +1037,9 @@ function ItemEditor({ adapter, definition, itemId, created, timeZone, autosaveDe
         {sideFields.length > 0 && <section className="cw-side-section cw-side-fields" aria-label="項目">{sideFields.map(fieldNode)}</section>}
       </aside>
     </div>
+    </div>
+    {targetVisited && itemLanguages?.renderTarget && targetHref && <div style={language === "source" ? { display: "none" } : undefined}>
+      {itemLanguages.renderTarget({ collectionId: definition.id, itemId, onBack: () => setLanguage("source") })}
+    </div>}
   </div>;
 }

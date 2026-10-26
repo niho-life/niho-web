@@ -40,6 +40,31 @@ export function LocalizationWorkspace(props: LocalizationWorkspaceProps) {
   return <Session key={source.generation} {...props} />;
 }
 
+/** CMS など、原文の編集画面の中で同じ 1 件だけを直す入口。 */
+export function LocalizationItemWorkspace({ adapter, itemKey, onBack, timeZone = "Asia/Tokyo", autosaveDelay = 1000, pollInterval = 2000 }: {
+  adapter: LocalizationWorkspaceAdapter; itemKey: string; onBack: () => void; timeZone?: string; autosaveDelay?: number; pollInterval?: number;
+}) {
+  const [overview, setOverview] = useState<OverviewState>({ status: "loading" });
+  const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
+  const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    const controller = new AbortController();
+    setOverview({ status: "loading" });
+    void adapter.loadOverview(controller.signal).then(parseLocalizationOverviewResult).then((result) => {
+      if (!controller.signal.aborted) setOverview(result.status === "forbidden" ? { status: "forbidden" } : { status: "ready", overview: result.overview });
+    }).catch(() => { if (!controller.signal.aborted) setOverview({ status: "error" }); });
+    return () => controller.abort();
+  }, [adapter, retry]);
+  return <section className="nw-collection nw-localization" aria-label={overview.status === "ready" ? `${overview.overview.languages.target}の翻訳` : "翻訳"}>
+    <style dangerouslySetInnerHTML={{ __html: localizationWorkspaceCss }} />
+    {overview.status === "ready" && isLocalizationItemKey(itemKey)
+      ? <ItemEditor key={itemKey} adapter={adapter} overview={overview.overview} itemKey={itemKey} timeZone={timeZone} autosaveDelay={autosaveDelay} pollInterval={pollInterval}
+          backLabel={`${overview.overview.languages.source}へ`} hideSourceLink confirm={setConfirm} onSummary={() => {}} onForbidden={() => setOverview({ status: "forbidden" })} onBack={onBack} />
+      : <Notice status={overview.status === "ready" ? "error" : overview.status} noun="翻訳" retry={() => setRetry((count) => count + 1)} />}
+    {confirm && <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />}
+  </section>;
+}
+
 type OverviewState = { readonly status: "loading" | "error" | "forbidden" } | { readonly status: "ready"; readonly overview: LocalizationOverview };
 type ListState = { readonly status: "loading" | "error" | "forbidden" } | { readonly status: "ready"; readonly items: readonly LocalizationItemSummary[]; readonly more: "loading" | "done" | "error" | "truncated" };
 type View = { readonly view: "list" | "item" | "settings"; readonly itemKey: string | null };
