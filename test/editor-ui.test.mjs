@@ -59,6 +59,15 @@ async function setup(options = {}) {
   return { calls, adapter, root, stored: () => stored, cleanup: async () => { await act(async () => root.unmount()); container.remove(); } };
 }
 
+test("initialTarget opens the requested page and falls back when the page is absent", async () => {
+  const requested = await setup({ props: { initialTarget: { siteId: "demo", pageId: "other", locale: "ja-JP" } } });
+  try { assert.deepEqual(requested.calls.reads, [{ siteId: "demo", pageId: "other", locale: "ja-JP" }]); }
+  finally { await requested.cleanup(); }
+  const absent = await setup({ props: { initialTarget: { siteId: "demo", pageId: "missing", locale: "ja-JP" } } });
+  try { assert.deepEqual(absent.calls.reads, [{ siteId: "demo", pageId: "home", locale: "ja-JP" }]); }
+  finally { await absent.cleanup(); }
+});
+
 test("editor opens the page tree in a full-width quiet workspace", async () => {
   const app = await setup();
   try {

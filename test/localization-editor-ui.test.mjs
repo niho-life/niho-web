@@ -78,7 +78,7 @@ async function localizedSite(siteId, sourceLocale, labels) {
   const targetDocument = (await materializeLocalizedPage(cfg, sourceDocument, collection, overlay)).document;
   return { cfg, sourceDocument, targetDocument, collection, overlay, labels, documentVersion: 1, localizationVersion: 1, siteVersion: 1, job: { state: "failed", message: "合成した失敗" } };
 }
-async function setup({ conflictOnce = false, conflictSourceChange = false, rejectCommandOnce = false, delayedRead = false, delayedSite = false, delayedSiteAfterFirst = false, rejectSiteOnce = false, rejectPageOnce = false, unsupportedLocale = false, extraPublicPage = false, recovery, localeRelease, readOnlySource = false, readOnlyTarget = false, previewComponent } = {}) {
+async function setup({ conflictOnce = false, conflictSourceChange = false, rejectCommandOnce = false, delayedRead = false, delayedSite = false, delayedSiteAfterFirst = false, rejectSiteOnce = false, rejectPageOnce = false, unsupportedLocale = false, extraPublicPage = false, recovery, localeRelease, readOnlySource = false, readOnlyTarget = false, previewComponent, initialTarget } = {}) {
   const kamakura = await localizedSite("kamakura", "ja", { source: "鎌倉ホーム", manual: "Manual Kamakura", candidate: "Candidate Kamakura" });
   const experience = await localizedSite("experience", "en", { source: "Experience home", manual: "体験（手修正）", candidate: "体験（翻訳案）" });
   const sites = { kamakura, experience }, calls = { saves: [], commands: [], siteReads: 0, pageReads: 0 }; let conflict = conflictOnce, rejectCommand = rejectCommandOnce, delayedResolve, delayedSiteResolve, failSite = rejectSiteOnce, failPage = rejectPageOnce;
@@ -153,11 +153,19 @@ async function setup({ conflictOnce = false, conflictSourceChange = false, rejec
   };
   if (localeRelease) Object.assign(adapter.localization, localeRelease);
   const container = document.createElement("div"); document.body.append(container); const root = createRoot(container);
-  await act(async () => root.render(createElement(PageEditor, { adapter, ...(recovery ? { recovery } : {}), ...(previewComponent ? { previewComponent } : {}) }))); await flush(6);
+  await act(async () => root.render(createElement(PageEditor, { adapter, ...(recovery ? { recovery } : {}), ...(previewComponent ? { previewComponent } : {}), ...(initialTarget ? { initialTarget } : {}) }))); await flush(6);
   return { sites, calls, adapter, resolveDelayed: () => delayedResolve?.(), resolveDelayedSite: () => delayedSiteResolve?.(),
     rerenderAdapter: async (next) => { await act(async () => root.render(createElement(PageEditor, { adapter: next, ...(recovery ? { recovery } : {}), ...(previewComponent ? { previewComponent } : {}) }))); await flush(4); },
     cleanup: async () => { await act(async () => root.unmount()); container.remove(); } };
 }
+
+test("initialTarget opens the translated language on the canvas", async () => {
+  const app = await setup({ initialTarget: { siteId: "kamakura", pageId: "home", locale: "en-US" } });
+  try {
+    await waitForUi(() => document.querySelector('.e-language-selector [aria-pressed="true"]')?.textContent?.includes("English"), "English is selected from the initial target");
+    assert.equal(document.querySelector('.e-language-selector [aria-pressed="true"]')?.textContent, "English（訳文）");
+  } finally { await app.cleanup(); }
+});
 
 async function setupSharedComponents() {
   const cfg = config("shared", "ja"), components = { schemaVersion: 1, siteId: "shared", revision: 1, tokens: {}, components: [{
