@@ -68,7 +68,7 @@ test("editor opens the page tree in a full-width quiet workspace", async () => {
     assert.equal(document.querySelector('.e-tools button[title="アセット"]'), null);
     assert.ok(pageRow("ホーム")); assert.ok(document.querySelector('.e-canvas-tools input[aria-label="表示幅"]'));
     const css = document.querySelector(".nw-editor style").textContent;
-    assert.ok(css.includes("--e-blue:#2878ff")); assert.ok(css.includes("grid-template-columns:296px minmax(0,1fr) 300px"));
+    assert.ok(css.includes("--e-blue:var(--nw-accent)") && css.includes("--nw-accent:#0f70eb"), "selection blue comes from the shared accent token"); assert.ok(css.includes("grid-template-columns:296px minmax(0,1fr) 300px"));
     assert.ok(css.includes("position:absolute")); assert.ok(css.includes("@media(max-width:820px)"));
     assert.ok(css.includes("scrollbar-gutter:stable"), "fit canvas keeps the scrollbar gutter even when its content fits");
     assert.ok(css.includes("@supports not (scrollbar-gutter:stable){.nw-editor .e-stage{overflow-y:scroll}}"), "older engines reserve the same width with a persistent scrollbar");
