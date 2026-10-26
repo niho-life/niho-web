@@ -5,6 +5,8 @@ import { createProjectEditorAdapter } from "@niho/web/project-editor";
 import { ProjectManager, type ProjectAdapter } from "@niho/web/project-manager";
 import { ProjectDirectory, type ProjectDirectoryAdapter } from "@niho/web/project-directory";
 import { ProjectDashboard, type ProjectDashboardAdapter, type ProjectSiteView } from "@niho/web/project-dashboard";
+import { CollectionWorkspace } from "@niho/web/collection-workspace";
+import { adapter as collectionAdapter } from "./collection-memory.js";
 import {
   addProject, addProjectMember, parseProjectCatalog,
   removeProjectMember, type Project, type ProjectCatalog, type ProjectMember
@@ -119,7 +121,8 @@ function DemoSiteView({ title, children }: { title: string; children: string }) 
   return <section style={{ padding: "28px 22px", maxWidth: 720, margin: "0 auto", font: "14px/1.7 sans-serif" }}><h2 style={{ margin: "0 0 10px", fontSize: 22 }}>{title}</h2><p style={{ margin: 0 }}>{children}</p></section>;
 }
 const demoSiteViews: readonly ProjectSiteView[] = [
-  { id: "cms", label: "CMS", content: <DemoSiteView title="CMS">このデモではサイト側の CMS を接続していません。ホストが接続した CMS の画面がここに入ります。</DemoSiteView> },
+  // CMS はコレクションのデモと同じメモリ内のデータで、全幅の CMS モード（左にコレクション・右に一覧）を確かめる
+  { id: "cms", label: "CMS", content: <CollectionWorkspace adapter={collectionAdapter} />, actions: <a href="#cms" style={{ color: "inherit", font: "600 12px sans-serif", textDecoration: "none" }}>旧画面 ↗</a> },
   { id: "assets", label: "素材", content: <DemoSiteView title="素材">このデモでは素材の一覧を接続していません。ホストが接続した素材の画面がここに入ります。</DemoSiteView> },
   { id: "translations", label: "翻訳", content: <DemoSiteView title="翻訳">このデモでは翻訳の画面を接続していません。ホストが接続した翻訳の画面がここに入ります。</DemoSiteView> }
 ];
@@ -146,7 +149,7 @@ function Demo() {
   return <main ref={surface}>
     {screen === "directory" && <ProjectDirectory adapter={directoryAdapter} onCreateProject={() => setScreen("manager")} onOpenDashboard={openDashboard} onOpenEditor={openEditor} {...(selected ? { initialFocusProjectId: selected.id } : {})} />}
     {screen === "manager" && <><button type="button" onClick={() => setScreen("directory")}>‹ プロジェクト一覧</button><ProjectManager adapter={projectAdapter} onOpenProject={openDashboard} /></>}
-    {screen === "dashboard" && selected && <ProjectDashboard project={selected} adapter={dashboardAdapter} onBackToProjects={() => setScreen("directory")} onOpenEditor={openEditor} onOpenSettings={(project, section) => { setSelected(project); setSetting(section); setScreen("settings"); }} siteViews={demoSiteViews} activeSiteView={siteView} onSiteViewChange={setSiteView} />}
+    {screen === "dashboard" && selected && <ProjectDashboard project={selected} adapter={dashboardAdapter} onBackToProjects={() => setScreen("directory")} onOpenEditor={openEditor} onOpenSettings={(project, section) => { setSelected(project); setSetting(section); setScreen("settings"); }} siteViews={demoSiteViews} headerEnd={<span aria-label="デモ利用者" style={{ display: "grid", placeItems: "center", width: 30, height: 30, borderRadius: "50%", background: "#1a1a1a", color: "#fff", font: "700 11px sans-serif" }}>D</span>} activeSiteView={siteView} onSiteViewChange={setSiteView} />}
     {screen === "settings" && selected && <section style={{ background: "white", padding: 20, font: "14px/1.6 sans-serif" }}><button type="button" onClick={() => setScreen("dashboard")}>‹ ダッシュボード</button><h1>{setting === "analytics" ? "解析接続設定" : "サイト設定"}</h1><p>{selected.name}</p><p>このデモは設定の接続先を示すだけの合成画面です。実際の接続・認可・保存はホストが実装します。</p>{setting === "site" && <button type="button" onClick={() => setScreen("manager")}>作成・参加者管理</button>}</section>}
     {editors.map((project) => <section key={project.id} hidden={screen !== "editor" || selected?.id !== project.id}>
       <button type="button" onClick={() => setScreen("directory")}>‹ プロジェクト一覧</button><h1 style={{ font: "700 18px sans-serif" }}>{project.name}のページ編集</h1><DemoEditor project={project} />

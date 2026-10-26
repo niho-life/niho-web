@@ -52,7 +52,7 @@ export const collectionCss = `${uiTokensCss}.nw-collection{position:relative;min
 .nw-collection .cw-nav-label{min-width:0;overflow-wrap:anywhere}
 .nw-collection .cw-nav-count{margin-left:auto;color:var(--nw-text-sub);font-size:12px;font-weight:500;font-variant-numeric:tabular-nums}
 .nw-collection .cw-main{min-width:0}
-.nw-collection .cw-list{max-width:1180px;margin:0 auto;padding:24px 32px 64px;container:cw-list/inline-size}
+.nw-collection .cw-list{padding:24px 32px 64px;container:cw-list/inline-size}
 .nw-collection .cw-list-head{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:14px}
 .nw-collection .cw-list-title{display:flex;align-items:baseline;gap:10px;min-width:0}
 .nw-collection .cw-list-title h2{margin:0;font-size:22px;line-height:1.35;overflow-wrap:anywhere}

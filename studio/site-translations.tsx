@@ -4,7 +4,7 @@ import type { KamakuraLocalizationWorkspaceProps } from "./kamakura-localization
 /**
  * Dashboard の「翻訳」を翻訳の画面で開く（Worker の KAMAKURA_TRANSLATIONS_VIEW が "workspace" のとき）。
  * 画面の部品（LocalizationWorkspace）は Studio の最初の bundle に入れず、翻訳を開いたときだけ読む。
- * 移行の間は、サイト側の旧画面（/admin/localization）を別のタブで開く入口を上に残す。器の見た目は CMS の画面と同じ。
+ * 器の見た目は CMS の画面と同じ。旧画面への入口は Dashboard の帯の右側（studio/client.tsx の LegacyLink）。
  */
 type WorkspaceModule = typeof import("./kamakura-localization-workspace.js");
 let loaded: WorkspaceModule | null = null;
@@ -18,7 +18,7 @@ function loadWorkspace(): Promise<WorkspaceModule> {
 
 type LoadState = { readonly status: "loading" | "error" } | { readonly status: "ready"; readonly module: WorkspaceModule };
 
-export function SiteTranslationsWorkspace({ legacyUrl, ...props }: KamakuraLocalizationWorkspaceProps & { readonly legacyUrl: string }) {
+export function SiteTranslationsWorkspace(props: KamakuraLocalizationWorkspaceProps) {
   const [state, setState] = useState<LoadState>(() => loaded ? { status: "ready", module: loaded } : { status: "loading" });
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
@@ -33,9 +33,6 @@ export function SiteTranslationsWorkspace({ legacyUrl, ...props }: KamakuraLocal
   }, [attempt]);
 
   return <section className="studio-site-cms studio-site-translations" aria-label="翻訳">
-    <div className="studio-site-cms-bar">
-      <a href={legacyUrl} target="_blank" rel="noopener">旧画面（/admin/localization）を開く <span aria-hidden="true">↗</span></a>
-    </div>
     {state.status === "ready"
       ? <state.module.KamakuraLocalizationWorkspace {...props} />
       : state.status === "error"

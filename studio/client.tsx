@@ -220,6 +220,11 @@ function parseSiteAdmin(value: unknown): SiteAdmin {
  * サイト側の管理画面（CMS・翻訳）を Studio の中の枠で開く（kamakura-site#108 U1）。同じ Cloudflare Access のチームなので、
  * サイト側に一度ログインしていれば枠の中でもそのまま開ける。枠の中ではログイン画面を出せないので、別のタブで開く入口を常に置く。
  */
+/** 移行の間は、サイト側の旧画面を別のタブで開く入口を、そのサイト機能を開いている間だけ上の帯の右側に置く */
+function LegacyLink({ href, path }: { readonly href: string; readonly path: string }) {
+  return <a className="studio-legacy-link" href={href} target="_blank" rel="noopener">旧画面<span className="studio-sr">（{path}）を開く</span> <span aria-hidden="true">↗</span></a>;
+}
+
 function SiteAdminFrame({ title, src, children }: { readonly title: string; readonly src: string; readonly children: ReactNode }) {
   return <section className="studio-site-frame">
     <header>
@@ -498,13 +503,13 @@ function App() {
     const open = (view: ProjectSiteViewId) => navigate({ kind: "dashboard", projectId: project.id, siteId: project.site.id, view });
     const legacyCms = `${admin.origin}${admin.paths.cms}`, legacyTranslations = `${admin.origin}${admin.paths.translations}`;
     return [
-      { id: "cms", label: "CMS", content: admin.cmsView === "workspace"
-        ? <SiteCmsWorkspace key={viewEpoch} legacyUrl={legacyCms} siteOrigin={project.site.domains[0] ?? null}
+      { id: "cms", label: "CMS", ...(admin.cmsView === "workspace" ? { actions: <LegacyLink href={legacyCms} path={admin.paths.cms} /> } : {}), content: admin.cmsView === "workspace"
+        ? <SiteCmsWorkspace key={viewEpoch} siteOrigin={project.site.domains[0] ?? null}
             route={screen.kind === "dashboard" ? screen.cms ?? null : null} onNavigate={(cms) => navigateCms(project.id, project.site.id, cms)} />
         : <SiteAdminFrame title="CMS" src={legacyCms}>記事・サークル・会社・クリエイターの原稿と画像を直し、公開・予約公開します。</SiteAdminFrame> },
       { id: "assets", label: "素材", content: <AssetsHub onOpenEditor={() => openEditor(project)} onOpenCms={() => open("cms")} /> },
-      { id: "translations", label: "翻訳", content: admin.translationsView === "workspace"
-        ? <SiteTranslationsWorkspace key={viewEpoch} legacyUrl={legacyTranslations} cmsView={admin.cmsView} siteOrigin={project.site.domains[0] ?? null}
+      { id: "translations", label: "翻訳", ...(admin.translationsView === "workspace" ? { actions: <LegacyLink href={legacyTranslations} path={admin.paths.translations} /> } : {}), content: admin.translationsView === "workspace"
+        ? <SiteTranslationsWorkspace key={viewEpoch} cmsView={admin.cmsView} siteOrigin={project.site.domains[0] ?? null}
             route={screen.kind === "dashboard" ? screen.translations ?? null : null}
             onNavigate={(state) => navigateTranslations(project.id, project.site.id, { itemKey: state.view === "item" ? state.itemKey : null })} />
         : <SiteAdminFrame title="翻訳" src={legacyTranslations}>英語版の文章を直して確認し、公開します。</SiteAdminFrame> }
@@ -519,9 +524,13 @@ function App() {
   // Kamakura は凍結中も表示の確認だけできる（kamakura-site#84）。Experience は休止のまま。
   const kamakuraEditor = resolvedEditor?.environment === "production" && integrationIdentity(resolvedEditor.registration.projectId, resolvedEditor.registration.siteId) === integrationIdentity("project-kamakura", "kamakura");
 
+  // プロジェクトの中では Dashboard の帯が 1 段のヘッダーになる（Studio のヘッダーを重ねない）。アカウントはその帯の右端に置く
+  const projectShell = screen.kind === "dashboard" && selected !== undefined;
+  const account = <details className="studio-account"><summary><span className="studio-account-avatar" aria-hidden="true">{Array.from(session.identity.email)[0]?.toUpperCase() ?? "?"}</span><span className="studio-account-email">{session.identity.email}</span></summary><div><small>Google / Cloudflare Access</small><label>Access ID <code>{session.identity.subject}</code></label></div></details>;
+
   return <div className={`studio-app${kamakuraEditor ? " studio-editor-shell" : ""}`}>
-    <header className="studio-shell-header"><a className="studio-logo" href="/" onClick={screen.kind === "editor" ? undefined : (event) => { event.preventDefault(); navigate({ kind: "directory" }); }}><span>NIHO</span><b>Studio</b></a>{screen.kind === "directory" ? <label className="studio-directory-search"><span>プロジェクトを検索</span><input type="search" value={directoryQuery} onChange={(event) => setDirectoryQuery(event.target.value)} placeholder="プロジェクトを検索" /></label> : <span /> }<details className="studio-account"><summary><span className="studio-account-avatar" aria-hidden="true">{Array.from(session.identity.email)[0]?.toUpperCase() ?? "?"}</span><span className="studio-account-email">{session.identity.email}</span></summary><div><small>Google / Cloudflare Access</small><label>Access ID <code>{session.identity.subject}</code></label></div></details></header>
-    <div className={`studio-content${screen.kind === "directory" ? " studio-content-directory" : ""}${screen.kind === "editor" ? " studio-content-editor" : ""}${kamakuraEditor ? " studio-editor-content" : ""}`}>
+    {!projectShell && <header className="studio-shell-header"><a className="studio-logo" href="/" onClick={screen.kind === "editor" ? undefined : (event) => { event.preventDefault(); navigate({ kind: "directory" }); }}><span>NIHO</span><b>Studio</b></a>{screen.kind === "directory" ? <label className="studio-directory-search"><span>プロジェクトを検索</span><input type="search" value={directoryQuery} onChange={(event) => setDirectoryQuery(event.target.value)} placeholder="プロジェクトを検索" /></label> : <span /> }{account}</header>}
+    <div className={`studio-content${screen.kind === "directory" ? " studio-content-directory" : ""}${screen.kind === "editor" ? " studio-content-editor" : ""}${kamakuraEditor ? " studio-editor-content" : ""}${projectShell ? " studio-content-project" : ""}`}>
       {screen.kind === "directory" && <nav className="studio-directory-nav" aria-label="メインメニュー"><a href="/" aria-current="page" onClick={(event) => event.preventDefault()}><span aria-hidden="true">▦</span><b>プロジェクト一覧</b></a></nav>}
       {(screen.kind === "dashboard" || screen.kind === "editor") && !selected
         ? <Notice title="プロジェクトを表示できません">プロジェクトが存在しないか、現在のアカウントには参加資格がありません。</Notice>
@@ -536,6 +545,7 @@ function App() {
               project={selected}
               adapter={dashboardAdapter}
               onBackToProjects={() => navigate({ kind: "directory" })}
+              headerEnd={account}
               onOpenEditor={openEditor}
               onOpenSettings={() => undefined}
               editorAction={editorEnabled(selected) ? "enabled" : "pending"}
