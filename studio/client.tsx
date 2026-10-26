@@ -184,6 +184,18 @@ function editorEnabled(project: Project): boolean {
   return resolveTrustedIntegration(project.id, project.site.id) !== null;
 }
 
+const STUDIO_THUMBNAIL_ORIGINS = new Set([
+  "https://next-kamakura.niho.life",
+  "https://kamakura.niho.life",
+  "https://kamakura-media.niho.life",
+  "https://experience.niho.life"
+]);
+function isStudioThumbnailUrlAllowed(value: string): boolean {
+  let url: URL;
+  try { url = new URL(value); } catch { return false; }
+  return url.protocol === "https:" && !url.username && !url.password && !url.hash && STUDIO_THUMBNAIL_ORIGINS.has(url.origin);
+}
+
 function Notice({ title, children, retry }: { readonly title: string; readonly children: string; readonly retry?: () => void }) {
   return <main className="studio-state"><p className="studio-kicker">NIHO WEB</p><h1>{title}</h1><p>{children}</p>{retry && <button type="button" onClick={retry}>再試行</button>}</main>;
 }
@@ -362,6 +374,7 @@ function App() {
   const [session, setSession] = useState<SessionState>({ status: "loading" });
   const [screen, setScreen] = useState<Screen>(screenFromLocation);
   const [pendingProject, setPendingProject] = useState<Project | null>(null);
+  const [directoryQuery, setDirectoryQuery] = useState("");
   const [siteAdmin, setSiteAdmin] = useState<{ readonly key: string; readonly value: SiteAdmin | null } | null>(null);
   /** 戻る・進むで CMS・翻訳の URL が変わったら、その画面を URL で開き直す（画面の中の移動では作り直さない） */
   const [viewEpoch, setViewEpoch] = useState(0);
@@ -371,7 +384,7 @@ function App() {
     const controller = new AbortController();
     setSession({ status: "loading" });
     void api("/api/session", { signal: controller.signal })
-      .then(async (value) => ({ identity: parseIdentity(value), directory: parseProjectDirectoryResult(await api("/api/projects", { signal: controller.signal }), () => false) }))
+      .then(async (value) => ({ identity: parseIdentity(value), directory: parseProjectDirectoryResult(await api("/api/projects", { signal: controller.signal }), isStudioThumbnailUrlAllowed) }))
       .then(({ identity, directory }) => setSession({ status: "ready", directory, identity }))
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
@@ -425,13 +438,13 @@ function App() {
     loadDirectory: async (signal: AbortSignal) => {
       try {
         const value = await api("/api/projects", { signal });
-        const directory = parseProjectDirectoryResult(value, () => false);
+        const directory = parseProjectDirectoryResult(value, isStudioThumbnailUrlAllowed);
         if (!signal.aborted) setSession((current) => current.status === "ready" ? { ...current, directory } : current);
         return value;
       }
       catch (error) { if (error instanceof SessionExpiredError) expire(); throw error; }
     },
-    isThumbnailUrlAllowed: () => false
+    isThumbnailUrlAllowed: isStudioThumbnailUrlAllowed
   }), [expire]);
 
   const dashboardAdapter = useMemo(() => ({
@@ -506,8 +519,9 @@ function App() {
   const kamakuraEditor = resolvedEditor?.environment === "production" && integrationIdentity(resolvedEditor.registration.projectId, resolvedEditor.registration.siteId) === integrationIdentity("project-kamakura", "kamakura");
 
   return <div className={`studio-app${kamakuraEditor ? " studio-editor-shell" : ""}`}>
-    <header className="studio-shell-header"><a href="/" onClick={screen.kind === "editor" ? undefined : (event) => { event.preventDefault(); navigate({ kind: "directory" }); }}><span>NIHO</span> Web Studio</a><details className="studio-account"><summary>{session.identity.email}</summary><div><small>Google / Cloudflare Access</small><label>Access ID <code>{session.identity.subject}</code></label></div></details></header>
-    <div className={`studio-content${screen.kind === "editor" ? " studio-content-editor" : ""}${kamakuraEditor ? " studio-editor-content" : ""}`}>
+    <header className="studio-shell-header"><a className="studio-logo" href="/" onClick={screen.kind === "editor" ? undefined : (event) => { event.preventDefault(); navigate({ kind: "directory" }); }}><span>NIHO</span><b>Studio</b></a>{screen.kind === "directory" ? <label className="studio-directory-search"><span>プロジェクトを検索</span><input type="search" value={directoryQuery} onChange={(event) => setDirectoryQuery(event.target.value)} placeholder="プロジェクトを検索" /></label> : <span /> }<details className="studio-account"><summary><span className="studio-account-avatar" aria-hidden="true">{Array.from(session.identity.email)[0]?.toUpperCase() ?? "?"}</span><span className="studio-account-email">{session.identity.email}</span></summary><div><small>Google / Cloudflare Access</small><label>Access ID <code>{session.identity.subject}</code></label></div></details></header>
+    <div className={`studio-content${screen.kind === "directory" ? " studio-content-directory" : ""}${screen.kind === "editor" ? " studio-content-editor" : ""}${kamakuraEditor ? " studio-editor-content" : ""}`}>
+      {screen.kind === "directory" && <nav className="studio-directory-nav" aria-label="メインメニュー"><a href="/" aria-current="page" onClick={(event) => event.preventDefault()}><span aria-hidden="true">▦</span><b>プロジェクト一覧</b></a></nav>}
       {(screen.kind === "dashboard" || screen.kind === "editor") && !selected
         ? <Notice title="プロジェクトを表示できません">プロジェクトが存在しないか、現在のアカウントには参加資格がありません。</Notice>
         : selected && screen.kind === "editor"
@@ -535,15 +549,18 @@ function App() {
                 navigate({ kind: "dashboard", projectId: selected.id, siteId: selected.site.id, view: view as ProjectSiteViewId | null });
               }}
             />
-          : <ProjectDirectory
+          : <div className="studio-directory-main"><ProjectDirectory
               adapter={directoryAdapter}
               onCreateProject={() => undefined}
               onOpenDashboard={(project) => navigate({ kind: "dashboard", projectId: project.id, siteId: project.site.id })}
               onOpenEditor={openEditor}
               createAction="disabled"
-              editorAction={(project) => editorEnabled(project) ? "enabled" : "pending"}
-              memberDetails="hidden"
-            />}
+              editorAction={(project) => editorEnabled(project) ? "enabled" : "hidden"}
+              memberDetails="summary"
+              searchValue={directoryQuery}
+              onSearchValueChange={setDirectoryQuery}
+              searchControl="external"
+            /></div>}
     </div>
     {pendingProject && <div className="studio-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setPendingProject(null); }}>
       <section className="studio-dialog" role="dialog" aria-modal="true" aria-labelledby="editor-pending-title">

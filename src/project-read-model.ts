@@ -3,12 +3,18 @@ import { fail, identifier, isSafePublicUrl, keys, record } from "./validation-ut
 
 export type ProjectTarget = { readonly projectId: string; readonly siteId: string };
 export type PublicationStatus = "published" | "unpublished" | "unknown";
+export type ProjectMemberRole = "owner" | "editor";
+/** 読み取り画面専用。ホストの不変IDやメールアドレスは含めない。 */
+export type ProjectMemberSummary = { readonly displayName: string; readonly role: ProjectMemberRole | null };
+export type ReadSection<T> = { readonly status: "ready"; readonly data: T } | { readonly status: "unavailable" };
 export type ProjectSummary = ProjectTarget & {
   readonly publicationStatus: PublicationStatus;
   readonly publishedUrl: string | null;
   readonly thumbnail: { readonly url: string; readonly alt: string } | null;
   readonly updatedAt: string | null;
   readonly lastAccessedAt: string | null;
+  /** Directory用の表示専用参加者。省略時はhostのProject.members表示方針を維持する。 */
+  readonly members?: ReadSection<readonly ProjectMemberSummary[]>;
 };
 export type ProjectDirectoryEntry = { readonly project: Project; readonly summary: ProjectSummary };
 export type ProjectDirectoryResult =
@@ -35,10 +41,6 @@ export type ProjectAnalytics = {
   readonly uniqueVisitors: number | null;
   readonly pageViews: number | null;
 };
-export type ProjectMemberRole = "owner" | "editor";
-/** Dashboardのメンバー表示。表示名と役割だけで、ホストの不変IDやメールアドレスは含めない。 */
-export type ProjectMemberSummary = { readonly displayName: string; readonly role: ProjectMemberRole | null };
-export type ReadSection<T> = { readonly status: "ready"; readonly data: T } | { readonly status: "unavailable" };
 export type ProjectDashboardResult =
   | (ProjectTarget & {
     readonly status: "ready";
@@ -104,7 +106,8 @@ export function parseProjectDirectoryResult(input: unknown, isThumbnailUrlAllowe
     const path = `directory.entries[${index}]`, entry = record(inputEntry, path);
     keys(entry, ["project", "summary"], path);
     const project = parseProject(entry.project, `${path}.project`), summary = record(entry.summary, `${path}.summary`);
-    keys(summary, ["projectId", "siteId", "publicationStatus", "publishedUrl", "thumbnail", "updatedAt", "lastAccessedAt"], `${path}.summary`);
+    const hasMembers = Object.hasOwn(summary, "members");
+    keys(summary, ["projectId", "siteId", "publicationStatus", "publishedUrl", "thumbnail", "updatedAt", "lastAccessedAt", ...(hasMembers ? ["members"] : [])], `${path}.summary`);
     const identity = target(summary, { projectId: project.id, siteId: project.site.id }, `${path}.summary`);
     let thumbnail: ProjectSummary["thumbnail"] = null;
     if (summary.thumbnail !== null) {
@@ -113,7 +116,8 @@ export function parseProjectDirectoryResult(input: unknown, isThumbnailUrlAllowe
       const url = text(image.url, `${path}.thumbnail.url`, 2048), alt = text(image.alt, `${path}.thumbnail.alt`);
       if (isSafePublicUrl(url) && !url.startsWith("#") && isThumbnailUrlAllowed(url)) thumbnail = { url, alt };
     }
-    return { project, summary: { ...identity, ...publication(summary, project, path), thumbnail, updatedAt: nullableDate(summary.updatedAt, `${path}.updatedAt`), lastAccessedAt: nullableDate(summary.lastAccessedAt, `${path}.lastAccessedAt`) } };
+    const members = hasMembers ? membersSection(summary.members, `${path}.summary.members`) : undefined;
+    return { project, summary: { ...identity, ...publication(summary, project, path), thumbnail, updatedAt: nullableDate(summary.updatedAt, `${path}.updatedAt`), lastAccessedAt: nullableDate(summary.lastAccessedAt, `${path}.lastAccessedAt`), ...(members === undefined ? {} : { members }) } };
   });
   parseProjectCatalog({ projects: entries.map((entry) => entry.project) });
   return { status: "ready", entries };
@@ -126,17 +130,17 @@ function section<T>(input: unknown, path: string, parse: (value: Record<string, 
   if (value.status !== "ready") fail(path, "invalid section status");
   return { status: "ready", data: parse(record(value.data, `${path}.data`)) };
 }
-function membersSection(input: unknown): ReadSection<readonly ProjectMemberSummary[]> {
-  const value = record(input, "members");
-  if (value.status === "unavailable") { keys(value, ["status"], "members"); return { status: "unavailable" }; }
-  keys(value, ["status", "data"], "members");
-  if (value.status !== "ready" || !Array.isArray(value.data) || value.data.length > PROJECT_LIMITS.membersPerProject) fail("members", "invalid members");
+function membersSection(input: unknown, path = "members"): ReadSection<readonly ProjectMemberSummary[]> {
+  const value = record(input, path);
+  if (value.status === "unavailable") { keys(value, ["status"], path); return { status: "unavailable" }; }
+  keys(value, ["status", "data"], path);
+  if (value.status !== "ready" || !Array.isArray(value.data) || value.data.length > PROJECT_LIMITS.membersPerProject) fail(path, "invalid members");
   const data = value.data.map((inputMember, index): ProjectMemberSummary => {
-    const path = `members.data[${index}]`, member = record(inputMember, path);
-    keys(member, ["displayName", "role"], path);
+    const memberPath = `${path}.data[${index}]`, member = record(inputMember, memberPath);
+    keys(member, ["displayName", "role"], memberPath);
     const role = member.role;
-    if (role !== null && role !== "owner" && role !== "editor") fail(`${path}.role`, "invalid role");
-    return { displayName: text(member.displayName, `${path}.displayName`, PROJECT_LIMITS.nameLength), role };
+    if (role !== null && role !== "owner" && role !== "editor") fail(`${memberPath}.role`, "invalid role");
+    return { displayName: text(member.displayName, `${memberPath}.displayName`, PROJECT_LIMITS.nameLength), role };
   });
   return { status: "ready", data };
 }

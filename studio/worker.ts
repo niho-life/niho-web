@@ -81,6 +81,7 @@ type ProjectRow = {
   readonly public_origin: string | null;
   readonly display_name: string;
 };
+type DirectoryMemberRow = { readonly project_id: string; readonly display_name: string; readonly role: Role };
 type AdminContextRow = { readonly project_name: string; readonly site_name: string };
 type MemberRow = {
   readonly access_subject: string;
@@ -124,9 +125,19 @@ const KAMAKURA_OVERVIEW_UPSTREAM_PATH = `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/_sit
 // Dashboard を待たせすぎない。kamakura-site 側は GitHub を 5 秒で諦めて手元の値だけで返す。
 const KAMAKURA_OVERVIEW_TIMEOUT_MILLISECONDS = 8_000;
 const KAMAKURA_OVERVIEW_MAX_RESPONSE_BYTES = 64 * 1024;
+const DIRECTORY_OG_TIMEOUT_MILLISECONDS = 2_000;
+const DIRECTORY_OG_MAX_RESPONSE_BYTES = 256 * 1024;
+/** D1 の値だけでは fetch を許さない。Studio が接続済みの公開 origin と、その OG 画像 origin を固定する。 */
+const DIRECTORY_OG_SOURCES = new Map<string, ReadonlySet<string>>([
+  ["https://next-kamakura.niho.life", new Set(["https://next-kamakura.niho.life", "https://kamakura-media.niho.life"])],
+  ["https://kamakura.niho.life", new Set(["https://kamakura.niho.life", "https://kamakura-media.niho.life"])],
+  ["https://experience.niho.life", new Set(["https://experience.niho.life"])]
+]);
 const COMMON_PAGE_ID = KAMAKURA_COMMON_PAGE_ID;
 const MAX_PENDING_INVITATIONS = 100;
+const MAX_DIRECTORY_PROJECTS = 100;
 const MAX_PROJECT_MEMBERS = 500;
+const MAX_DIRECTORY_MEMBER_ROWS = MAX_DIRECTORY_PROJECTS * MAX_PROJECT_MEMBERS;
 const JWKS_CACHE_MILLISECONDS = 5 * 60 * 1000;
 let jwksCache: { readonly url: string; readonly expiresAt: number; readonly keys: readonly SigningJwk[] } | undefined;
 let lastForcedJwksRefreshAt = 0;
@@ -406,6 +417,121 @@ function projectFromRow(row: ProjectRow, subject: string) {
   };
 }
 
+function decodeOgAttribute(value: string): string {
+  return value.replace(/&(?:amp|quot|apos|#39|#x27);/giu, (entity) => {
+    switch (entity.toLowerCase()) {
+      case "&amp;": return "&";
+      case "&quot;": return '"';
+      default: return "'";
+    }
+  });
+}
+
+function ogImageFromHtml(html: string): string | null {
+  for (const match of html.matchAll(/<meta\b[^>]*>/giu)) {
+    const attributes = new Map<string, string>();
+    for (const attribute of match[0].matchAll(/\b(property|content)\s*=\s*(["'])(.*?)\2/gisu)) {
+      attributes.set(attribute[1]!.toLowerCase(), decodeOgAttribute(attribute[3]!.trim()));
+    }
+    if (attributes.get("property")?.toLowerCase() === "og:image") return attributes.get("content") ?? null;
+  }
+  return null;
+}
+
+async function readBoundedHtml(response: Response): Promise<string> {
+  if (response.status !== 200 || response.redirected) throw new Error("directory preview response rejected");
+  const contentType = response.headers.get("Content-Type")?.split(";", 1)[0]?.trim().toLowerCase();
+  if (contentType !== "text/html") throw new Error("directory preview HTML required");
+  const declaredLength = response.headers.get("Content-Length");
+  if (declaredLength !== null && (!/^\d+$/u.test(declaredLength) || Number(declaredLength) > DIRECTORY_OG_MAX_RESPONSE_BYTES)) throw new Error("directory preview response too large");
+  const reader = response.body?.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  if (reader) {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      total += chunk.value.byteLength;
+      if (total > DIRECTORY_OG_MAX_RESPONSE_BYTES) {
+        await reader.cancel("directory preview response too large");
+        throw new Error("directory preview response too large");
+      }
+      chunks.push(chunk.value);
+    }
+  }
+  const body = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
+  return new TextDecoder("utf-8", { fatal: true }).decode(body);
+}
+
+type DirectoryPublicPage = { readonly published: boolean; readonly thumbnailUrl: string | null };
+async function directoryPublicPage(origin: string): Promise<DirectoryPublicPage> {
+  const allowedImageOrigins = DIRECTORY_OG_SOURCES.get(origin);
+  if (!allowedImageOrigins) return { published: false, thumbnailUrl: null };
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), DIRECTORY_OG_TIMEOUT_MILLISECONDS);
+  try {
+    const response = await fetch(`${origin}/`, {
+      method: "GET",
+      cache: "no-store",
+      credentials: "omit",
+      redirect: "manual",
+      referrerPolicy: "no-referrer",
+      signal: controller.signal,
+      headers: { Accept: "text/html" }
+    });
+    const rawImage = ogImageFromHtml(await readBoundedHtml(response));
+    if (rawImage === null || rawImage.length > 2048) return { published: true, thumbnailUrl: null };
+    let image: URL;
+    try { image = new URL(rawImage); } catch { return { published: true, thumbnailUrl: null }; }
+    if (image.protocol !== "https:" || image.username || image.password || image.hash || !allowedImageOrigins.has(image.origin)) return { published: true, thumbnailUrl: null };
+    return { published: true, thumbnailUrl: image.href };
+  } catch { return { published: false, thumbnailUrl: null }; }
+  finally { clearTimeout(timeout); }
+}
+
+type DirectoryMembers = Map<string, { readonly status: "ready"; readonly data: { readonly displayName: string; readonly role: Role }[] }>;
+
+/** 認可済みの最大100 Projectに属する参加者だけを1 queryで読む。subject・emailは選択も返却もしない。 */
+async function directoryMembers(env: Env, subject: string): Promise<DirectoryMembers | null> {
+  try {
+    const result = await env.DB.prepare(`
+      WITH visible_projects AS (
+        SELECT p.id, p.name
+          FROM project_members AS actor
+          JOIN projects AS p ON p.id = actor.project_id
+          JOIN sites AS s ON s.project_id = p.id
+         WHERE actor.access_subject = ?1
+         ORDER BY p.name COLLATE NOCASE, p.id
+         LIMIT ${MAX_DIRECTORY_PROJECTS}
+      )
+      SELECT members.project_id, members.display_name, members.role
+        FROM visible_projects
+        JOIN project_members AS members ON members.project_id = visible_projects.id
+       ORDER BY visible_projects.name COLLATE NOCASE, visible_projects.id,
+                CASE members.role WHEN 'owner' THEN 0 ELSE 1 END,
+                members.display_name COLLATE NOCASE, members.access_subject
+       LIMIT ${MAX_DIRECTORY_MEMBER_ROWS}
+    `).bind(subject).all<DirectoryMemberRow>();
+    if (!result.success) throw new Error("directory members query failed");
+    const members: DirectoryMembers = new Map();
+    for (const row of result.results ?? []) {
+      if (!validIdentifier(row.project_id) || !validName(row.display_name) || !validRole(row.role)) throw new Error("invalid stored directory member");
+      const current = members.get(row.project_id);
+      if (current === undefined) members.set(row.project_id, { status: "ready", data: [{ displayName: row.display_name, role: row.role }] });
+      else {
+        if (current.data.length >= MAX_PROJECT_MEMBERS) throw new Error("too many stored directory members");
+        current.data.push({ displayName: row.display_name, role: row.role });
+      }
+    }
+    return members;
+  } catch (error) {
+    console.warn("NIHO Studio directory members unavailable", error instanceof Error ? error.name : "UnknownError");
+    return null;
+  }
+}
+
 async function directory(env: Env, identity: AccessIdentity): Promise<Response> {
   const result = await env.DB.prepare(`
     SELECT p.id AS project_id, p.name AS project_name,
@@ -416,21 +542,34 @@ async function directory(env: Env, identity: AccessIdentity): Promise<Response> 
       JOIN sites AS s ON s.project_id = p.id
      WHERE m.access_subject = ?1
      ORDER BY p.name COLLATE NOCASE, p.id
-     LIMIT 100
+     LIMIT ${MAX_DIRECTORY_PROJECTS}
   `).bind(identity.subject).all<ProjectRow>();
   if (!result.success) throw new Error("directory query failed");
-  const entries = (result.results ?? []).map((row) => {
+  const rows = result.results ?? [];
+  const publicPages = new Map<string, Promise<DirectoryPublicPage>>();
+  for (const row of rows) {
+    if (row.public_origin !== null && DIRECTORY_OG_SOURCES.has(row.public_origin) && !publicPages.has(row.public_origin)) {
+      publicPages.set(row.public_origin, directoryPublicPage(row.public_origin));
+    }
+  }
+  const membersPromise = directoryMembers(env, identity.subject);
+  const resolvedPublicPages = new Map(await Promise.all([...publicPages].map(async ([origin, page]) => [origin, await page] as const)));
+  const members = await membersPromise;
+  const entries = rows.map((row) => {
     const project = projectFromRow(row, identity.subject);
+    const publicPage = row.public_origin === null ? null : resolvedPublicPages.get(row.public_origin) ?? null;
+    const thumbnailUrl = publicPage?.thumbnailUrl ?? null;
     return {
       project,
       summary: {
         projectId: project.id,
         siteId: project.site.id,
-        publicationStatus: "unknown",
-        publishedUrl: null,
-        thumbnail: null,
+        publicationStatus: publicPage?.published ? "published" : "unknown",
+        publishedUrl: publicPage?.published ? row.public_origin : null,
+        thumbnail: thumbnailUrl === null ? null : { url: thumbnailUrl, alt: `${project.site.name}のプレビュー` },
         updatedAt: null,
-        lastAccessedAt: null
+        lastAccessedAt: null,
+        members: members?.get(project.id) ?? { status: "unavailable" }
       }
     };
   });
