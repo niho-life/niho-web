@@ -48,6 +48,7 @@ const adapter: CollectionAdapter = {
 | `initialCollectionId` / `initialItemId` | 最初に開くコレクション・項目。無い・見つからないときは先頭のコレクションの一覧。最初の表示だけに使います（途中で開き直すときは `key` を替えて作り直してください）。 |
 | `onNavigate` | 一覧・項目を移ったときに `{ collectionId, itemId }`（一覧は `itemId: null`）で呼びます。最初の表示では呼びません。URL を合わせるのはホストです。 |
 | `renderRichText` | リッチテキストの編集部品の差し替え。受け取る props は `CollectionRichTextEditorProps`（`id`・`labelId`・`describedBy`・`invalid`・`value`・`onChange`・`sanitize`・`uploadImage`）。`id` を編集する要素に付けると、公開前の確かめで focus できます。無ければ既定の contenteditable（`CollectionRichTextEditor` として export）。 |
+| `itemLanguages` | 任意。`source`・`target` と `targetHref({ collectionId, itemId })` を渡すと、項目の上に原文と翻訳の言語タブを出します。翻訳先は同一サイトの `/` から始まる path だけを受け、新しいタブで開きます。編集中の原文を離れないため、未保存の入力を保てます。 |
 | `timeZone` | 日時の表示と入力のタイムゾーン。既定は `Asia/Tokyo`（「日本時間」と出します）。 |
 | `autosaveDelay` | 直してから下書きを自動で保存するまでの待ち時間（ms）。既定は 1000。 |
 

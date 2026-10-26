@@ -24,6 +24,20 @@ async function loadAdapter() {
   return import("data:text/javascript;base64," + Buffer.from(result.outputFiles[0].contents).toString("base64"));
 }
 
+async function loadContract() {
+  const result = await build({ entryPoints: [new URL("../studio/kamakura-localization-contract.ts", import.meta.url).pathname], bundle: true, format: "esm", platform: "node", target: "node22", write: false });
+  return import("data:text/javascript;base64," + Buffer.from(result.outputFiles[0].contents).toString("base64"));
+}
+
+test("CMS の項目から翻訳の itemKey を作り、同じ原文の項目に戻せる", async () => {
+  const { kamakuraCmsLocalizationItemKey, kamakuraLocalizationCmsSource } = await loadContract();
+  const key = kamakuraCmsLocalizationItemKey("posts", "morning-walk");
+  assert.equal(key, b64("cms:posts:morning-walk"));
+  assert.deepEqual(kamakuraLocalizationCmsSource(key), { collectionId: "posts", itemId: "morning-walk" });
+  assert.equal(kamakuraCmsLocalizationItemKey("posts", "../bad"), null);
+  assert.equal(kamakuraCmsLocalizationItemKey("p".repeat(40), "x".repeat(128)), null, "Worker の一覧に入らない長さはリンクしない");
+});
+
 /** 偽の BFF。routes の `${method} ${path}` に合う関数の戻り値を応答にする。 */
 function fakeBff(t, routes) {
   const calls = [];

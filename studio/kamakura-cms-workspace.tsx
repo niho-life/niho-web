@@ -5,6 +5,9 @@
 import type { ReactNode } from "react";
 import { CollectionWorkspace, type CollectionAdapter, type CollectionNavigationState, type CollectionRichTextEditorProps } from "../src/collection-workspace.js";
 import { createKamakuraCmsAdapter } from "./kamakura-cms.js";
+import { KAMAKURA_CMS_PROJECT_ID, KAMAKURA_CMS_SITE_ID } from "./kamakura-cms-contract.js";
+import { kamakuraCmsLocalizationItemKey } from "./kamakura-localization-contract.js";
+import { projectAliasPath } from "./project-routes.mjs";
 import { createStudioRichText } from "./rich-text-editor.js";
 
 type Session = { readonly adapter: CollectionAdapter; readonly renderRichText: (props: CollectionRichTextEditorProps) => ReactNode };
@@ -37,5 +40,9 @@ export type KamakuraCmsWorkspaceProps = {
 export function KamakuraCmsWorkspace({ siteOrigin, route, onNavigate }: KamakuraCmsWorkspaceProps) {
   const { adapter, renderRichText } = sessionFor(siteOrigin);
   const initial = route ? { initialCollectionId: route.collectionId, ...(route.itemId === null ? {} : { initialItemId: route.itemId }) } : {};
-  return <CollectionWorkspace adapter={adapter} renderRichText={renderRichText} onNavigate={onNavigate} {...initial} />;
+  return <CollectionWorkspace adapter={adapter} renderRichText={renderRichText} onNavigate={onNavigate}
+    itemLanguages={{ source: "日本語", target: "English", targetHref: ({ collectionId, itemId }) => {
+      const itemKey = kamakuraCmsLocalizationItemKey(collectionId, itemId);
+      return itemKey ? projectAliasPath(KAMAKURA_CMS_PROJECT_ID, KAMAKURA_CMS_SITE_ID, "translations", { itemKey }) : null;
+    } }} {...initial} />;
 }

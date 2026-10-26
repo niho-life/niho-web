@@ -96,3 +96,11 @@ export function kamakuraLocalizationCmsSource(itemKey: string): { readonly colle
   if (!isKamakuraCmsCollectionId(collectionId) || !isKamakuraCmsItemId(itemId)) return null;
   return { collectionId, itemId };
 }
+
+/** CMS の 1 件から、同じ 1 件の翻訳画面の itemKey を作る。 */
+export function kamakuraCmsLocalizationItemKey(collectionId: string, itemId: string): string | null {
+  if (!isKamakuraCmsCollectionId(collectionId) || !isKamakuraCmsItemId(itemId)) return null;
+  const canonical = `cms:${collectionId}:${itemId}`;
+  if (canonical.length > 150) return null; // 鎌倉 Worker の itemIndex と同じ上限
+  return btoa(canonical).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
+}

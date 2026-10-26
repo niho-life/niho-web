@@ -25,6 +25,12 @@ export { DefaultRichText as CollectionRichTextEditor } from "./collection-fields
 export { collectionCss } from "./collection-style.js";
 
 export type CollectionNavigationState = { readonly collectionId: string; readonly itemId: string | null };
+export type CollectionItemLanguages = {
+  /** 編集中の原文と、訳す言語の表示名。 */
+  readonly source: string; readonly target: string;
+  /** 同じ項目の翻訳画面。"/" から始まる同一サイトの path だけを使う。 */
+  readonly targetHref: (input: { readonly collectionId: string; readonly itemId: string }) => string | null;
+};
 export type CollectionWorkspaceProps = {
   adapter: CollectionAdapter;
   /** 最初に開くコレクション。無い・見つからないときは先頭。 */
@@ -35,6 +41,8 @@ export type CollectionWorkspaceProps = {
   onNavigate?: (state: CollectionNavigationState) => void;
   /** リッチテキストの編集部品を差し替える。無ければ既定の contenteditable。 */
   renderRichText?: (props: CollectionRichTextEditorProps) => ReactNode;
+  /** 任意。項目を開いたとき、原文と訳文の入口を表示する。 */
+  itemLanguages?: CollectionItemLanguages;
   /** 日時の表示・入力のタイムゾーン。既定は Asia/Tokyo（日本時間）。 */
   timeZone?: string;
   /** 直してから下書きを自動で保存するまでの待ち時間（ms）。既定は 1000。 */
@@ -129,7 +137,7 @@ function Notice({ status, noun, retry }: { status: "loading" | "error" | "forbid
   </div>;
 }
 
-function WorkspaceSession({ adapter, initialCollectionId, initialItemId, onNavigate, renderRichText, timeZone = "Asia/Tokyo", autosaveDelay = 1000 }: CollectionWorkspaceProps) {
+function WorkspaceSession({ adapter, initialCollectionId, initialItemId, onNavigate, renderRichText, itemLanguages, timeZone = "Asia/Tokyo", autosaveDelay = 1000 }: CollectionWorkspaceProps) {
   const requests = useRequests();
   const [schema, setSchema] = useState<SchemaState>({ status: "loading" });
   const [lists, setLists] = useState<Readonly<Record<string, ListState>>>({});
@@ -315,7 +323,7 @@ function WorkspaceSession({ adapter, initialCollectionId, initialItemId, onNavig
   else if (!definition) body = <div className="cw-notice"><p>編集できるコレクションはありません。</p></div>;
   else if (view.itemId !== null) {
     const target = definition, itemId = view.itemId;
-    body = <ItemEditor key={`${target.id}/${itemId}`} adapter={adapter} definition={target} itemId={itemId} created={view.created} timeZone={timeZone} autosaveDelay={autosaveDelay}
+    body = <ItemEditor key={`${target.id}/${itemId}`} adapter={adapter} definition={target} itemId={itemId} created={view.created} timeZone={timeZone} autosaveDelay={autosaveDelay} itemLanguages={itemLanguages}
       renderRichText={renderRichText} references={references} retryReferences={(collectionId) => void loadList(collectionId)} confirm={setConfirm}
       redirectCandidates={() => redirectCandidates(listedItems(target.id), target.ordering, itemId)}
       onSaved={(item) => upsert(target.id, item)}
@@ -585,6 +593,7 @@ type SaveState = "idle" | "pending" | "saving" | "saved" | "error" | "invalid";
 type FieldErrors = Readonly<Record<string, { readonly message: string; readonly source: "local" | "server" }>>;
 type EditorProps = {
   adapter: CollectionAdapter; definition: CollectionDefinition; itemId: string; created: CollectionItem | null; timeZone: string; autosaveDelay: number;
+  itemLanguages: CollectionItemLanguages | undefined;
   renderRichText: ((props: CollectionRichTextEditorProps) => ReactNode) | undefined;
   references: (collectionId: string) => ReferenceCandidates; retryReferences: (collectionId: string) => void;
   confirm: (request: ConfirmRequest) => void;
@@ -616,7 +625,7 @@ export function editorStatus(status: CollectionItemStatus, dirty: boolean, busy:
   return dirty && status === "published" ? "changed" : status;
 }
 
-function ItemEditor({ adapter, definition, itemId, created, timeZone, autosaveDelay, renderRichText, references, retryReferences, confirm, redirectCandidates: candidatesFor, onSaved, onBack, onRemoved, onOpenItem }: EditorProps) {
+function ItemEditor({ adapter, definition, itemId, created, timeZone, autosaveDelay, itemLanguages, renderRichText, references, retryReferences, confirm, redirectCandidates: candidatesFor, onSaved, onBack, onRemoved, onOpenItem }: EditorProps) {
   const requests = useRequests();
   const baseId = useId();
   const root = useRef<HTMLDivElement>(null), heading = useRef<HTMLHeadingElement>(null), scheduleField = useRef<HTMLInputElement>(null);
@@ -956,6 +965,9 @@ function ItemEditor({ adapter, definition, itemId, created, timeZone, autosaveDe
   const mainFields = definition.fields.filter((field) => field.placement === "main"), sideFields = definition.fields.filter((field) => field.placement === "side");
   const canSchedule = capabilities.schedule && !!adapter.schedule;
   const canRetry = !!capabilities.retrySchedule && !!adapter.retrySchedule && item.scheduledAt !== null && item.publishFailed;
+  let targetHref: string | null = null;
+  try { targetHref = itemLanguages?.targetHref({ collectionId: definition.id, itemId }) ?? null; } catch { targetHref = null; }
+  if (targetHref !== null && (!targetHref.startsWith("/") || targetHref.startsWith("//") || /[\s\u0000-\u001f\u007f<>"'\\]/u.test(targetHref))) targetHref = null;
 
   return <div className="cw-editor" ref={root}>
     <h2 className="cw-sr" tabIndex={-1} ref={heading}>{`${definition.label}「${titleText()}」の編集`}</h2>
@@ -972,6 +984,10 @@ function ItemEditor({ adapter, definition, itemId, created, timeZone, autosaveDe
         <button type="button" className="cw-button cw-primary" disabled={primary.disabled} onClick={() => void publish()}>{primary.label}</button>
       </div>
     </header>
+    {itemLanguages && targetHref && <nav className="cw-language-tabs" aria-label="項目の言語">
+      <span aria-current="page">{itemLanguages.source}<span className="cw-sr">（編集中）</span></span>
+      <a href={targetHref} target="_blank" rel="noopener noreferrer">{itemLanguages.target}<span className="cw-sr">（翻訳を新しいタブで開く）</span></a>
+    </nav>}
     {conflict && <div className="cw-banner" data-tone="error" role="alert">
       <p><strong>ほかの人が先に保存しました。</strong>この画面の変更は保存していません。「最新を読み込む」と、ほかの人が保存した内容を開きます（この画面でいま直したところは消えます）。</p>
       <button type="button" className="cw-button" disabled={busy === "reload"} onClick={() => void reloadLatest()}>最新を読み込む</button>
