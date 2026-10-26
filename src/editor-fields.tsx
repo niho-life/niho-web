@@ -185,7 +185,8 @@ export function UnitField({ caption, value, units, numberUnit = "px", numberLabe
     if (next.startsWith("k:")) setProblem(apply(next.slice(2)) ?? "");
     else if (next.startsWith("t:")) setProblem(apply({ token: next.slice(2) }) ?? "");
     else if (next.startsWith("u:")) {
-      const nextUnit = next.slice(2), number = parts && "number" in parts ? parts.number : numeric.test(state.buffer.trim()) ? Number(state.buffer.trim()) : undefined;
+      const nextUnit = next.slice(2), number = nextUnit === "flex" && !(parts && "number" in parts && parts.unit === "flex") ? 1
+        : parts && "number" in parts ? parts.number : numeric.test(state.buffer.trim()) ? Number(state.buffer.trim()) : undefined;
       setChosen(nextUnit);
       if (number !== undefined) setProblem(apply(nextUnit === numberUnit ? number : `${number}${nextUnit}`) ?? "");
     }

@@ -131,7 +131,7 @@ export type LengthParts = { number: number; unit: string } | { keyword: string }
 export function splitLength(value: StyleValue, numberUnit = "px"): LengthParts {
   if (typeof value === "object") return { token: value.token };
   if (typeof value === "number") return { number: value, unit: numberUnit };
-  const match = /^(-?(?:\d+(?:\.\d+)?|\.\d+))(px|rem|em|%|vh|vw|vmin|vmax|ch)?$/.exec(value);
+  const match = /^(-?(?:\d+(?:\.\d+)?|\.\d+))(px|rem|em|%|vh|dvh|vw|vmin|vmax|ch|flex)?$/.exec(value);
   return match ? { number: Number(match[1]), unit: match[2] ?? "" } : { keyword: value };
 }
 /** HEX を `#RRGGBB` と、透明度があれば `/ 不透明度%` で表す。それ以外はそのまま。 */
