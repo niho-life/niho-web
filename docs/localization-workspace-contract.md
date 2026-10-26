@@ -126,7 +126,7 @@ type LocalizationOverview = {
 type LocalizationPermission = 'edit' | 'review' | 'translate' | 'publish' | 'rollback' | 'settings';
 type LocalizationSettings = {
   version: string;
-  autoDraft: boolean;                      // 原文が変わったら翻訳案を自動で作るか
+  autoDraft: boolean;                      // 原文の変更箇所を自動翻訳するか。人が直した・確認した訳は候補に留める
   translator: { connected: boolean };      // 翻訳サービスにつながっているか（設定の中身は出さない）
   queue: { waiting: number; failed: number; nextRetryAt: string | null };
 };
@@ -307,7 +307,7 @@ type LocaleReleaseWorkspacePlan = {
   pages: number;                                  // 公開するページの数
   previous: LocaleReleaseSummary | null;          // 今の公開中の版
   prepared: LocaleReleaseSummary;                 // これから公開する版
-  changes?: {                                     // 確認済みのページだけを公開するサイトが返す。返さなければ null として扱う
+  changes?: {                                     // 公開ページ集合の差分を返すサイトが使う。返さなければ null として扱う
     added: { path: string; title: string }[];     // 今の版から新しく出るページ（500 件まで）
     removed: { path: string; title: string }[];   // 今の版から外れるページ（500 件まで）
   } | null;
@@ -335,7 +335,7 @@ type LocaleReleaseWorkspacePlan = {
 
 ### 設定（saveSettings）
 
-画面で変えられるのは `autoDraft` だけです。翻訳サービスの接続の有無・待っている件数・失敗と次の再試行は読むだけです。`expectedVersion` は `settings.version` で、違えば `conflict` と最新の `settings` を返します。
+画面で変えられるのは `autoDraft` だけです。有効にすると、原文の変更箇所を自動翻訳します。自動翻訳のままの訳は新しい訳で更新し、人が直した・確認した訳は保持して新しい訳を翻訳案に残します。自動翻訳のままでも公開できます。翻訳サービスの接続の有無・待っている件数・失敗と次の再試行は読むだけです。`expectedVersion` は `settings.version` で、違えば `conflict` と最新の `settings` を返します。
 
 ### 画像（uploadImage・pickAsset）
 

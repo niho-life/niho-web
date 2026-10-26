@@ -33,7 +33,7 @@ export type LocalizationGroup = {
 };
 export type LocalizationSettings = {
   readonly version: string;
-  /** 原文が変わったら翻訳案を自動で作るか。画面で変えられるのはこれだけ。 */
+  /** 原文の変更箇所を自動翻訳するか。人が直した・確認した訳は保持して候補に留める。画面で変えられるのはこれだけ。 */
   readonly autoDraft: boolean;
   readonly translator: { readonly connected: boolean };
   readonly queue: { readonly waiting: number; readonly failed: number; readonly nextRetryAt: string | null };
