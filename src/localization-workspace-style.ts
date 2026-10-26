@@ -44,6 +44,9 @@ const localizationCss = `
 .nw-localization .lw-excluded>summary span{font-variant-numeric:tabular-nums;font-weight:500}
 .nw-localization .lw-excluded>summary:hover{color:var(--nw-text)}
 .nw-localization .lw-excluded>summary:focus-visible{outline:2px solid var(--nw-focus);outline-offset:-2px}
+.nw-localization .lw-excluded-reason{margin-top:12px}
+.nw-localization .lw-excluded-reason h3{display:flex;align-items:baseline;gap:8px;margin:0;padding:10px 6px;color:var(--nw-text-sub);font-size:13px;font-weight:650}
+.nw-localization .lw-excluded-reason h3 span{font-size:12px;font-weight:500;font-variant-numeric:tabular-nums}
 
 .nw-localization .lw-item .cw-editor-status{gap:4px 10px}
 .nw-localization .lw-item-title{min-width:0;max-width:100%;overflow:hidden;font-weight:650;text-overflow:ellipsis;white-space:nowrap}

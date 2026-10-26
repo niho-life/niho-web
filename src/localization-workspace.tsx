@@ -286,9 +286,15 @@ function ListView({ adapter, overview, list, group, onGroup, timeZone, focusItem
   }), [inGroup]);
   const needle = query.trim().toLocaleLowerCase("ja-JP");
   const visible = inGroup.filter((item) => (filter === "all" || localizationItemFilter(item.state) === filter) &&
-    (!needle || item.title.toLocaleLowerCase("ja-JP").includes(needle) || (item.path ?? "").toLocaleLowerCase("ja-JP").includes(needle)));
+    (!needle || item.title.toLocaleLowerCase("ja-JP").includes(needle) || (item.path ?? "").toLocaleLowerCase("ja-JP").includes(needle) ||
+      (item.excludedReason ?? "").toLocaleLowerCase("ja-JP").includes(needle)));
   const active = visible.filter((item) => item.state !== "excluded");
   const excluded = visible.filter((item) => item.state === "excluded");
+  const excludedByReason = new Map<string, LocalizationItemSummary[]>();
+  for (const item of excluded) {
+    const reason = item.excludedReason || "その他";
+    excludedByReason.set(reason, [...(excludedByReason.get(reason) ?? []), item]);
+  }
   useEffect(() => {
     if (!items || !focusItem) return;
     const target = Array.from(rowsRef.current?.querySelectorAll<HTMLElement>(".cw-row-open") ?? []).find((node) => node.dataset.itemKey === focusItem);
@@ -307,7 +313,7 @@ function ListView({ adapter, overview, list, group, onGroup, timeZone, focusItem
       let edit: string | null = null;
       try { edit = adapter.editLink?.(item.key) ?? null; } catch { edit = null; }
       if (edit !== null && !isSafeNavigationUrl(edit)) edit = null;
-      const sub = item.state === "excluded" ? `訳さない理由：${item.excludedReason}` : item.path;
+      const sub = item.path;
       const title = <span className="cw-row-text"><span className="cw-row-title">{item.title || "無題"}</span>{sub && <span className="cw-row-sub">{sub}</span>}
         {!!item.includedParts?.length && <span className="cw-row-sub lw-included-parts">含むもの：{item.includedParts.join(" · ")}</span>}</span>;
       return <li className="cw-row lw-row" key={item.key}>
@@ -323,6 +329,10 @@ function ListView({ adapter, overview, list, group, onGroup, timeZone, focusItem
       </li>;
     })}</ul>
   </>;
+  const excludedGroups = [...excludedByReason].map(([reason, entries]) => <section className="lw-excluded-reason" key={reason}>
+    <h3>{reason}<span>{entries.length} 件</span></h3>
+    {rows(entries, `${groupLabel}の対象外：${reason}`)}
+  </section>);
   return <div className="cw-layout">
     <nav className="cw-nav" aria-label="コンテンツ">
       <h2 className="cw-nav-heading">コンテンツ</h2>
@@ -341,8 +351,8 @@ function ListView({ adapter, overview, list, group, onGroup, timeZone, focusItem
         <header className="cw-list-head">
           <div className="cw-list-title"><h2>{groupLabel}</h2>{items && <span className="cw-count">{inGroup.length} 件</span>}</div>
           <div className="cw-list-actions">
-            <label className="cw-search"><Icon name="search" /><span className="cw-sr">題名とアドレスで検索</span>
-              <input type="search" value={query} placeholder="題名・アドレスで検索" autoComplete="off" onChange={(event) => { setQuery(event.target.value); if (event.target.value.trim()) setFilter("all"); }} /></label>
+            <label className="cw-search"><Icon name="search" /><span className="cw-sr">題名・アドレス・対象外の理由で検索</span>
+              <input type="search" value={query} placeholder="題名・アドレス・理由で検索" autoComplete="off" onChange={(event) => { setQuery(event.target.value); if (event.target.value.trim()) setFilter("all"); }} /></label>
           </div>
         </header>
         {list.status !== "ready" ? <Notice status={list.status} noun="一覧" retry={onRetry} /> : <>
@@ -355,11 +365,11 @@ function ListView({ adapter, overview, list, group, onGroup, timeZone, focusItem
               <button type="button" className="cw-button" onClick={() => { setQuery(""); setFilter("all"); }}>{!needle && filter === "needs-work" ? "すべてを見る" : "絞り込みをやめる"}</button></div>
             : <>
               <p className="cw-sr" role="status">{visible.length} 件が見つかりました{filter !== "excluded" && excluded.length > 0 ? `。対象外 ${excluded.length} 件は別のまとまりにあります` : ""}</p>
-              {filter === "excluded" ? rows(excluded, `${groupLabel}の対象外`) : <>
+              {filter === "excluded" ? excludedGroups : <>
                 {active.length > 0 && rows(active, `${groupLabel}の一覧`)}
                 {excluded.length > 0 && <details className="lw-excluded" key={`${group ?? "all"}:${needle}`} open={!!needle || excluded.some((item) => item.key === focusItem)}>
                   <summary>対象外 <span>{excluded.length} 件</span></summary>
-                  {rows(excluded, `${groupLabel}の対象外`)}
+                  {excludedGroups}
                 </details>}
               </>}
             </>}
