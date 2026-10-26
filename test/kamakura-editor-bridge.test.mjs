@@ -44,6 +44,14 @@ async function loadKamakuraEditor() {
   return import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].contents).toString("base64")}`);
 }
 
+test("翻訳一覧のページリンクは検証済みの English ページを初期表示し、不正な指定は無視する", async () => {
+  const { kamakuraEditorInitialTarget } = await loadKamakuraEditor();
+  assert.deepEqual(kamakuraEditorInitialTarget("?page=home&lang=en"), { siteId: "kamakura", pageId: "home", locale: "en" });
+  for (const search of ["", "?page=home", "?page=home&lang=ja", "?page=home&lang=en&page=about", "?page=home&lang=en&lang=ja", "?page=../admin&lang=en", "?page=catalog&lang=en"]) {
+    assert.equal(kamakuraEditorInitialTarget(search), undefined, search);
+  }
+});
+
 function base64url(value) {
   return Buffer.from(typeof value === "string" ? value : value).toString("base64url");
 }

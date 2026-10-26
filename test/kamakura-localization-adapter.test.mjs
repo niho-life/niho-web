@@ -225,7 +225,8 @@ test("翻訳 adapter: 素材から選んだ画像は鎌倉の公開画像だけ 
   const adapter = createKamakuraLocalizationAdapter({
     chooseImage: async (input) => { chosen.push(input); return pick; },
     cmsItemUrl: (collectionId, itemId) => `/projects/kamakura-site/admin/cms/${collectionId}/${itemId}`,
-    cmsTranslationUrl: (collectionId, itemId) => `/projects/kamakura-site/admin/cms/${collectionId}/${itemId}?lang=en`
+    cmsTranslationUrl: (collectionId, itemId) => `/projects/kamakura-site/admin/cms/${collectionId}/${itemId}?lang=en`,
+    pageTranslationUrl: (pageId) => `/projects/kamakura-site/admin/editor?page=${pageId}&lang=en`
   });
   assert.deepEqual(parseLocalizationImageResult(await adapter.pickAsset({ itemKey: "aG9tZQ", unitId: "cover" }, signal())), { status: "picked", image: { asset: { kind: "image-url", src: MEDIA }, url: MEDIA } });
   assert.deepEqual(chosen, [{ itemKey: "aG9tZQ", unitId: "cover" }]);
@@ -239,8 +240,10 @@ test("翻訳 adapter: 素材から選んだ画像は鎌倉の公開画像だけ 
   // CMS の項目の 1 件だけ Studio の CMS へ。固定ページなどの原文はコードで管理なので出さない
   assert.equal(adapter.sourceLink(b64("cms:posts:morning-walk")), "/projects/kamakura-site/admin/cms/posts/morning-walk");
   assert.equal(adapter.editLink(b64("cms:posts:morning-walk")), "/projects/kamakura-site/admin/cms/posts/morning-walk?lang=en");
+  assert.equal(adapter.editLink(b64("common:home")), "/projects/kamakura-site/admin/editor?page=home&lang=en");
+  assert.equal(adapter.editLink(b64("common:site-header")), "/projects/kamakura-site/admin/editor?page=site-header&lang=en");
   assert.equal(adapter.sourceLink(b64("cms:circles:海の会")), null, "CMS の項目の id の形でないものは出さない");
-  for (const key of [b64("page:about"), b64("part:footer"), b64("list:news"), b64("cms:Posts:x"), b64("cms:posts:a:b"), b64("cms:posts"), "aG9tZQ", "%%%", "a"]) {
+  for (const key of [b64("page:about"), b64("part:footer"), b64("list:news"), b64("cms:Posts:x"), b64("cms:posts:a:b"), b64("cms:posts"), b64("common:../admin"), b64("common:catalog"), "aG9tZQ", "%%%", "a"]) {
     assert.equal(adapter.sourceLink(key), null, key);
     assert.equal(adapter.editLink(key), null, key);
   }

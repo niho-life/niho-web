@@ -6,7 +6,7 @@ import {
 } from "../src/localization-workspace-model.js";
 import {
   KAMAKURA_LOCALIZATION_BASE, KAMAKURA_LOCALIZATION_IMAGE_TYPES, KAMAKURA_LOCALIZATION_LIMITS,
-  isKamakuraPublicImageUrl, kamakuraLocalizationCmsSource, parseKamakuraLocalizationUploadIntent, parseKamakuraLocalizationUploadRefusal
+  isKamakuraPublicImageUrl, kamakuraLocalizationCmsSource, kamakuraLocalizationPage, parseKamakuraLocalizationUploadIntent, parseKamakuraLocalizationUploadRefusal
 } from "./kamakura-localization-contract.js";
 
 /**
@@ -21,6 +21,8 @@ export type KamakuraLocalizationAdapterOptions = {
   readonly cmsItemUrl?: (collectionId: string, itemId: string) => string | null;
   /** CMS の項目の English タブを直接開く Studio 内 URL。無ければ一覧の項目画面を使う。 */
   readonly cmsTranslationUrl?: (collectionId: string, itemId: string) => string | null;
+  /** 共通ページの English キャンバスを直接開く Studio 内 URL。 */
+  readonly pageTranslationUrl?: (pageId: string) => string | null;
   /** 素材から画像を選ぶホストの画面。選んだ鎌倉の公開画像の URL、やめたら null。無ければ「素材から選ぶ」を出さない。 */
   readonly chooseImage?: (input: { readonly itemKey: string; readonly unitId: string }, signal: AbortSignal) => Promise<string | null>;
 };
@@ -103,7 +105,7 @@ function httpsOrigin(value: string | null | undefined): string | null {
 }
 
 export function createKamakuraLocalizationAdapter(options: KamakuraLocalizationAdapterOptions = {}): LocalizationWorkspaceAdapter {
-  const { cmsItemUrl, cmsTranslationUrl, chooseImage } = options;
+  const { cmsItemUrl, cmsTranslationUrl, pageTranslationUrl, chooseImage } = options;
   const siteOrigin = httpsOrigin(options.siteOrigin);
   // 画像の表示用の URL が "/" から始まる（サイトの中の画像）なら、Studio の origin ではなくサイトの公開 origin から読む。
   // set-image で送る asset はそのまま（鎌倉の Worker の値）
@@ -219,10 +221,12 @@ export function createKamakuraLocalizationAdapter(options: KamakuraLocalizationA
       return source ? cmsItemUrl(source.collectionId, source.itemId) : null;
     };
   }
-  if (cmsTranslationUrl) {
+  if (cmsTranslationUrl || pageTranslationUrl) {
     adapter.editLink = (itemKey) => {
       const source = kamakuraLocalizationCmsSource(itemKey);
-      return source ? cmsTranslationUrl(source.collectionId, source.itemId) : null;
+      if (source) return cmsTranslationUrl?.(source.collectionId, source.itemId) ?? null;
+      const pageId = kamakuraLocalizationPage(itemKey);
+      return pageId ? pageTranslationUrl?.(pageId) ?? null : null;
     };
   }
   return adapter;

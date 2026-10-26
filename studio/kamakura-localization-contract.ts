@@ -1,6 +1,7 @@
 import { KAMAKURA_CMS_IMAGE_TYPES, KAMAKURA_CMS_UPLOAD_ORIGIN, KAMAKURA_MEDIA_ORIGIN, isKamakuraCmsCollectionId, isKamakuraCmsItemId } from "./kamakura-cms-contract.js";
 import { LOCALIZATION_LIMITS } from "../src/localization-workspace-model.js";
 import { fail, keys, record } from "../src/validation-utils.js";
+import { KAMAKURA_COMMON_PAGE_ID } from "./kamakura-catalog.js";
 
 /**
  * 鎌倉サイトの翻訳を Studio の翻訳の画面（LocalizationWorkspace）から直す契約（kamakura-site#108 U3）。
@@ -84,17 +85,28 @@ export function isKamakuraPublicImageUrl(value: unknown): value is string {
  * CMS の項目は `cms:<コレクション>:<項目の id>`（kamakura-site の worker/README.md「Studio の翻訳 API の契約」）。
  * 固定ページ・共通部分などの原文はコードで管理しているので null。読めない値も null。
  */
-export function kamakuraLocalizationCmsSource(itemKey: string): { readonly collectionId: string; readonly itemId: string } | null {
+function localizationResourceId(itemKey: string): string | null {
   if (!/^[A-Za-z0-9_-]{1,200}$/u.test(itemKey)) return null;
-  let text: string;
   try {
     const binary = atob(itemKey.replaceAll("-", "+").replaceAll("_", "/").padEnd(Math.ceil(itemKey.length / 4) * 4, "="));
-    text = new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(binary, (character) => character.charCodeAt(0)));
+    return new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(binary, (character) => character.charCodeAt(0)));
   } catch { return null; }
+}
+
+export function kamakuraLocalizationCmsSource(itemKey: string): { readonly collectionId: string; readonly itemId: string } | null {
+  const text = localizationResourceId(itemKey);
+  if (text === null) return null;
   const match = /^cms:([^:]+):([^:]+)$/u.exec(text);
   const collectionId = match?.[1], itemId = match?.[2];
   if (!isKamakuraCmsCollectionId(collectionId) || !isKamakuraCmsItemId(itemId)) return null;
   return { collectionId, itemId };
+}
+
+/** 正本の共通ページだけを English エディタへ送る。未知の resource は翻訳の項目画面に残す。 */
+export function kamakuraLocalizationPage(itemKey: string): string | null {
+  const text = localizationResourceId(itemKey);
+  const pageId = text?.startsWith("common:") ? text.slice("common:".length) : null;
+  return pageId !== null && KAMAKURA_COMMON_PAGE_ID.test(pageId) ? pageId : null;
 }
 
 /** CMS の 1 件から、同じ 1 件の翻訳画面の itemKey を作る。 */
