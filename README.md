@@ -42,7 +42,7 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 | `@niho/web/project-dashboard` | 選択した1 Project・1 Siteに固定した共通Studio shellの `ProjectDashboard`。上部のタブ（ホーム・サイト機能・アナリティクス）で画面全体を切り替え、公開状況・変更履歴表・メンバー表・アクセス解析・設定を表示 |
 | `@niho/web/project-read-model` | summary / dashboardの型・読み取りadapter・runtime parser。React不要 |
 | `@niho/web/collection-workspace` | コレクション（CMS）の一覧と項目の編集の `CollectionWorkspace`。ホストの adapter で読み書き・自動保存・公開・予約、同じ画面で切り替える任意の原文／翻訳タブ（[接続方法](docs/collection-contract.md)） |
-| `@niho/web/localization-workspace` | 翻訳の一覧・公開の `LocalizationWorkspace` と、CMS 項目に埋め込む `LocalizationItemWorkspace`。訳文の自動保存・確認済み・翻訳案・プレビューを共通化する（[接続方法](docs/localization-workspace-contract.md)）。型と parser は `@niho/web/localization-workspace-model` |
+| `@niho/web/localization-workspace` | 要対応から始まる翻訳一覧・公開の `LocalizationWorkspace` と、CMS 項目に埋め込む `LocalizationItemWorkspace`。訳文の自動保存・確認済み・翻訳案・プレビューを共通化する（[接続方法](docs/localization-workspace-contract.md)）。型と parser は `@niho/web/localization-workspace-model` |
 | `@niho/web/collection-model` | コレクションの定義・項目の型、adapter の応答の runtime parser、公開前の値の検証、本文の HTML の無害化。React不要 |
 | `@niho/web/project-editor` | 既存 `EditorAdapter` をProjectの唯一のSiteへ限定するwrapper |
 | `@niho/web/pages` | ページのパス検証・ツリー・内部リンク影響、公開メタ情報（title / description / OG画像 / robots / canonical）の解決と `<head>` 出力。React不要 |

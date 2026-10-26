@@ -274,7 +274,7 @@ function ListView({ adapter, overview, list, group, onGroup, timeZone, focusItem
   focusItem: string | null; onFocused: () => void; onOpen: (itemKey: string) => void; onRetry: () => void;
 }) {
   const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState<LocalizationFilter>("all");
+  const [filter, setFilter] = useState<LocalizationFilter>(focusItem ? "all" : "needs-work");
   const rowsRef = useRef<HTMLDivElement>(null);
   const items = list.status === "ready" ? list.items : null;
   const inGroup = useMemo(() => (items ?? []).filter((item) => group === null || item.groupId === group), [items, group]);
@@ -338,7 +338,7 @@ function ListView({ adapter, overview, list, group, onGroup, timeZone, focusItem
           <div className="cw-list-title"><h2>{groupLabel}</h2>{items && <span className="cw-count">{inGroup.length} 件</span>}</div>
           <div className="cw-list-actions">
             <label className="cw-search"><Icon name="search" /><span className="cw-sr">題名とアドレスで検索</span>
-              <input type="search" value={query} placeholder="題名・アドレスで検索" autoComplete="off" onChange={(event) => setQuery(event.target.value)} /></label>
+              <input type="search" value={query} placeholder="題名・アドレスで検索" autoComplete="off" onChange={(event) => { setQuery(event.target.value); if (event.target.value.trim()) setFilter("all"); }} /></label>
           </div>
         </header>
         {list.status !== "ready" ? <Notice status={list.status} noun="一覧" retry={onRetry} /> : <>
@@ -348,7 +348,7 @@ function ListView({ adapter, overview, list, group, onGroup, timeZone, focusItem
           {list.more === "truncated" && <p className="cw-hint">件数が多いため、一部だけを出しています。検索で絞り込んでください。</p>}
           {inGroup.length === 0 ? <div className="cw-empty"><p>{list.more === "loading" ? "読み込んでいます…" : "訳すものはありません。"}</p></div>
             : visible.length === 0 ? <div className="cw-empty"><p>{needle ? `「${query.trim()}」に当てはまるものはありません。` : `${filterTabs.find(([value]) => value === filter)?.[1]}のものはありません。`}</p>
-              <button type="button" className="cw-button" onClick={() => { setQuery(""); setFilter("all"); }}>絞り込みをやめる</button></div>
+              <button type="button" className="cw-button" onClick={() => { setQuery(""); setFilter("all"); }}>{!needle && filter === "needs-work" ? "すべてを見る" : "絞り込みをやめる"}</button></div>
             : <>
               <p className="cw-sr" role="status">{visible.length} 件が見つかりました{filter !== "excluded" && excluded.length > 0 ? `。対象外 ${excluded.length} 件は別のまとまりにあります` : ""}</p>
               {filter === "excluded" ? rows(excluded, `${groupLabel}の対象外`) : <>
