@@ -151,10 +151,10 @@ test("切替が on（workspace）の翻訳は、翻訳の画面で URL の 1 件
   assert.ok(document.querySelector(".lw-item"), "1 件");
   assert.ok(calls.includes(`POST ${LOC}/items/${CMS_KEY}`));
 
-  // サイトナビで開いている翻訳をもう一度押しても移らない。ホームへ移ると Dashboard の URL
-  await click(byText(".pv-global-nav button", "翻訳"));
+  // 左のメニューで開いている翻訳をもう一度押しても移らない。ダッシュボードへ移ると Dashboard の URL
+  await click(byText(".pv-dashboard-nav button", "翻訳"));
   assert.equal(window.location.pathname, `/projects/kamakura-site/admin/translations/${CMS_KEY}`);
-  await click(byText(".pv-global-nav button", "ホーム"));
+  await click(byText(".pv-dashboard-nav button", "ダッシュボード"));
   assert.equal(window.location.pathname, "/projects/kamakura-site/admin");
   assert.equal(document.querySelector(".nw-localization"), null);
   // 読んだだけで書き込みは呼んでいない
