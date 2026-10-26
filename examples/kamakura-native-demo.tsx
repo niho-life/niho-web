@@ -39,7 +39,7 @@ const adapter: EditorAdapter = {
 function Demo() {
   const [ssrWidth, setSsrWidth] = useState(1280);
   return <main style={{ fontFamily: "sans-serif" }}>
-    <aside style={{ display: "flex", gap: 8, alignItems: "center", padding: 8, background: "#eef2ee" }}>
+    <aside style={{ display: "flex", gap: 8, alignItems: "center", padding: 8, borderBottom: "1px solid var(--nw-border)", background: "var(--nw-surface)" }}>
       <strong>同じ native context のSSR比較 + {menuLabel}</strong>
       {[375, 768, 1280].map((width) => <button key={width} type="button" onClick={() => setSsrWidth(width)}>{width}px</button>)}
       <a href={`/ssr?width=${ssrWidth}`} target="native-ssr">別窓</a>
@@ -48,7 +48,7 @@ function Demo() {
     </aside>
     <div style={{ display: "grid", gridTemplateColumns: "minmax(760px,1fr) minmax(320px,0.7fr)", gap: 12, alignItems: "start" }}>
       <PageEditor adapter={adapter} assets={assetAdapter} insertableBlocks={[]} />
-      <iframe name="native-ssr" title="同じSSR renderer" src={`/ssr?width=${ssrWidth}`} style={{ width: ssrWidth > 768 ? "100%" : ssrWidth, maxWidth: "100%", height: "90vh", border: "1px solid #9baa9e" }} />
+      <iframe name="native-ssr" title="同じSSR renderer" src={`/ssr?width=${ssrWidth}`} style={{ width: ssrWidth > 768 ? "100%" : ssrWidth, maxWidth: "100%", height: "90vh", border: "1px solid var(--nw-border-strong)" }} />
     </div>
   </main>;
 }

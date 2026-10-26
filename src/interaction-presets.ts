@@ -11,7 +11,7 @@ export function carouselPreset(id: IdFactory): ElementNode {
     style: { base: { display: "flex", gap: 16, overflowX: "auto", scrollSnapType: "x mandatory", paddingBottom: 8 } },
     children: [1, 2, 3].map((index): ElementNode => ({
       type: "element", id: id(), tag: "div",
-      style: { base: { flexBasis: "80%", flexShrink: 0, scrollSnapAlign: "start", padding: 24, borderRadius: 8, backgroundColor: "#eef3ef" } },
+      style: { base: { flexBasis: "80%", flexShrink: 0, scrollSnapAlign: "start", padding: 24, borderRadius: 8, backgroundColor: "#f2f2f2" } },
       children: [text(id(), "p", `スライド ${index}`)]
     }))
   };
@@ -19,7 +19,7 @@ export function carouselPreset(id: IdFactory): ElementNode {
 /** details / summary の開閉。初期は閉じていて、見出しを押すと開く。 */
 export function togglePreset(id: IdFactory): ElementNode {
   return {
-    type: "element", id: id(), tag: "details", style: { base: { borderWidth: 1, borderStyle: "solid", borderColor: "#d5ded6", borderRadius: 8, padding: 16 } },
+    type: "element", id: id(), tag: "details", style: { base: { borderWidth: 1, borderStyle: "solid", borderColor: "#e3e3e3", borderRadius: 8, padding: 16 } },
     children: [text(id(), "summary", "開閉する見出し"), text(id(), "p", "開いたときに表示する内容です。")]
   };
 }
