@@ -82,7 +82,8 @@ test("list: staged loading, groups, band, filters, search and excluded reasons",
     assert.ok(byTitle("私たちについて").textContent.includes("含むもの：ページ本文 · 案内カード"));
     assert.ok(byTitle("私たちについて").textContent.includes("原文に未公開の下書き"));
     assert.ok(byTitle("フッター").textContent.includes("確認済み"));
-    assert.equal(byTitle("会員向けのお知らせ").querySelector(".cw-row-sub").textContent, "訳さない理由：会員だけが読むページなので訳しません。");
+    assert.equal(byTitle("会員向けのお知らせ").querySelector(".cw-row-sub").textContent, "/members/news");
+    assert.equal(document.querySelector(".lw-excluded-reason h3").textContent.replace(/\s+/gu, " ").trim(), "会員だけが読むページなので訳しません。1 件");
     assert.equal(document.querySelector(".lw-excluded").open, false, "対象外は通常の一覧では閉じている");
     assert.equal(document.querySelector(".lw-excluded summary").textContent.replace(/\s+/gu, " ").trim(), "対象外 1 件");
     assert.equal(byTitle("トップ").querySelector(".lw-source-link").getAttribute("href"), "https://cms.example.test/items/aG9tZQ");
@@ -105,6 +106,22 @@ test("list: staged loading, groups, band, filters, search and excluded reasons",
     await press("共通部分（1 件）");
     assert.deepEqual(rowTitles(), ["フッター"]);
     assert.equal(document.querySelector(".cw-list-title h2").textContent, "共通部分");
+  } finally { await app.cleanup(); }
+});
+
+test("list: 対象外は理由ごとにまとまり、理由でも検索できる", async () => {
+  const memory = createLocalizationMemory();
+  const original = memory.state.items.find((item) => item.excluded);
+  memory.state.items.push({ ...structuredClone(original), key: "c3RhZmY", title: "スタッフ用カレンダー", path: "/staff/calendar", excluded: "スタッフ向けです。" });
+  const app = await setup({ adapter: memory.adapter });
+  try {
+    await press("対象外（2 件）", document.querySelector(".cw-filters"));
+    assert.deepEqual([...document.querySelectorAll(".lw-excluded-reason h3")].map(nameOf), ["会員だけが読むページなので訳しません。1 件", "スタッフ向けです。1 件"]);
+    assert.deepEqual([...document.querySelectorAll(".lw-excluded-reason")].map((section) => section.querySelector(".cw-row-title").textContent), ["会員向けのお知らせ", "スタッフ用カレンダー"]);
+    const search = document.querySelector(".cw-search input");
+    await act(async () => { Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value").set.call(search, "スタッフ向け"); search.dispatchEvent(new dom.window.Event("input", { bubbles: true })); });
+    assert.deepEqual(rowTitles(), ["スタッフ用カレンダー"]);
+    assert.equal(document.querySelector(".lw-excluded").open, true);
   } finally { await app.cleanup(); }
 });
 
