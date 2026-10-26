@@ -21,6 +21,7 @@ const input = (text, root = document) => field(text, root)?.querySelector("input
 const frame = () => document.querySelector("iframe");
 const canvasCss = () => frame().contentDocument.querySelector("style[data-nw-style]").textContent;
 async function click(target) { assert.ok(target); await act(async () => target.click()); await flush(); }
+async function key(target, value) { assert.ok(target); await act(async () => target.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: value, bubbles: true }))); await flush(); }
 async function editorTab(name) { const target = [...document.querySelectorAll('.e-inspector-tabs [role="tab"]')].find((node) => node.textContent === name); assert.ok(target, name); if (target.getAttribute("aria-selected") !== "true") await click(target); }
 async function canvasClick(selector) { const view = frame().contentWindow, target = view.document.querySelector(selector); assert.ok(target, selector); await act(async () => target.dispatchEvent(new view.MouseEvent("click", { bubbles: true, cancelable: true }))); await flush(); }
 async function type(target, value) {
@@ -232,24 +233,24 @@ test("a tablet override is shown in the tier color, can be reset, and matches th
     await click(button("タブレット 768px〜", right()));
     await change(document.querySelector('[aria-label="表示幅"]'), "1440"); assert.equal(pressedTier(), "タブレット 768px〜");
     assert.ok(document.querySelector(".e-tier-note").textContent.includes("表示中: 1440px（PC の段）"));
-    assert.ok(button("表示中の幅（PC 1280px〜）の段を編集", right()));
+    assert.ok(button("表示中の段を編集（PC 1280px〜）", right()));
     await change(document.querySelector('[aria-label="表示幅"]'), "375"); assert.equal(pressedTier(), "タブレット 768px〜");
     assert.ok(right().textContent.includes("表示中の 375px にはこの指定は反映されません"));
     assert.ok(right().textContent.includes("768px 以上に適用。PC 1280px〜 で上書きした項目を除きます。"));
     await click(button("768px で表示", right()));
     assert.equal(frame().style.width, "768px"); assert.ok(!right().textContent.includes("反映されません"));
     assert.ok(document.querySelector(".e-tier-note").textContent.includes("表示中: 768px（タブレット の段）"));
-    assert.equal(button("表示中の幅（タブレット 768px〜）の段を編集", right()), undefined);
+    assert.equal(button("表示中の段を編集（タブレット 768px〜）", right()), undefined);
     assert.equal(input("幅", right()).placeholder, "80%");
     const hint = field("幅", right()).querySelector(".e-hint");
     assert.equal(hint.querySelector('[aria-hidden="true"]').textContent, "継承: 基本"); assert.equal(hint.title, "基本から継承");
     assert.equal(input("幅", right()).getAttribute("aria-describedby"), hint.id);
-    const direction = () => right().querySelector('[role="group"][aria-label="並ぶ向き"]');
+    const direction = () => right().querySelector('[role="group"][aria-label="方向"]');
     await click(direction().querySelector('[aria-label="横"]'));
     const row = direction().closest(".e-row");
     assert.ok(row.classList.contains("e-own")); assert.ok(row.textContent.includes("保存前"));
     assert.ok(canvasCss().includes("flex-direction:row;"));
-    await click(button("並ぶ向きのこの幅の指定を解除", right()));
+    await click(button("方向のこの幅の指定を解除", right()));
     assert.ok(!canvasCss().includes("flex-direction:row;")); assert.ok(!direction().closest(".e-row").classList.contains("e-own"));
     await click(direction().querySelector('[aria-label="横"]'));
     // 選択を変えても段は維持する。
@@ -261,6 +262,57 @@ test("a tablet override is shown in the tier color, can be reset, and matches th
     const html = renderPageToHtml(app.stored()), published = html.match(/<style data-nw-style="[^"]+">([^]*?)<\/style>/)[1];
     assert.ok(published.includes("@media (min-width:768px)") && published.includes("flex-direction:row;"));
     assert.equal(canvasCss(), published);
+  } finally { await app.cleanup(); }
+});
+
+test("the compact tier disclosure and explicit alignment controls keep viewport, axis, undo and position behavior", async () => {
+  const source = structuredClone(fixture);
+  Object.assign(source.body[0].style.base, { flexDirection: "row-reverse", justifyContent: "flex-start", alignItems: "flex-end", position: "static", zIndex: 2, overflow: "hidden" });
+  const app = await setup({ document: source });
+  try {
+    await click(button("section · hero")); await editorTab("ボックス");
+    const tierDetails = right().querySelector(".e-tier-details");
+    assert.equal(tierDetails.open, false, "tier controls start collapsed");
+    assert.match(tierDetails.querySelector("summary").textContent, /編集\s*基本/);
+    assert.match(tierDetails.querySelector("summary").textContent, /表示\s*1280px · PC 1280px〜/);
+    assert.ok(tierDetails.querySelector('[aria-label="編集する幅"]'), "all tier controls remain in the disclosure");
+    await click(tierDetails.querySelector("summary")); assert.equal(tierDetails.open, true);
+    await click(button("タブレット 768px〜", tierDetails));
+    assert.ok(button("表示中の段を編集（PC 1280px〜）", right()), "a tier mismatch has an explicit action");
+
+    const placement = right().querySelector('[role="group"][aria-label="9点配置"]');
+    const placementRow = placement.closest(".e-row");
+    assert.ok(placementRow.textContent.includes("継承: 基本"), "alignment keeps inherited status visible");
+    assert.equal(right().querySelector('[aria-label="横方向を右に揃える"]').getAttribute("aria-pressed"), "true", "row-reverse is converted to the visual horizontal axis");
+    assert.equal(right().querySelector('[aria-label="縦方向を下に揃える"]').getAttribute("aria-pressed"), "true");
+    await click(right().querySelector('[aria-label="横方向を左に揃える"]'));
+    assert.match(canvasCss(), /@media \(min-width:768px\)\{[^}]*hero"\]\{[^}]*justify-content:flex-end;/);
+    await click(button("元に戻す"));
+    assert.equal(right().querySelector('[aria-label="横方向を右に揃える"]').getAttribute("aria-pressed"), "true", "axis edits remain one undo step");
+
+    const direction = right().querySelector('[role="group"][aria-label="方向"]');
+    await click(direction.querySelector('[aria-label="縦（逆順）"]'));
+    assert.equal(right().querySelector('[aria-label="横方向を右に揃える"]').getAttribute("aria-pressed"), "true", "column-reverse maps alignItems to the horizontal selector");
+    assert.equal(right().querySelector('[aria-label="縦方向を下に揃える"]').getAttribute("aria-pressed"), "true", "column-reverse flips justifyContent on the vertical selector");
+    const horizontalRight = right().querySelector('[aria-label="横方向を右に揃える"]');
+    horizontalRight.focus(); await key(horizontalRight, "ArrowLeft");
+    assert.equal(document.activeElement.getAttribute("aria-label"), "横方向を中央に揃える");
+    const verticalBottom = right().querySelector('[aria-label="縦方向を下に揃える"]');
+    verticalBottom.focus(); await key(verticalBottom, "ArrowUp");
+    assert.equal(document.activeElement.getAttribute("aria-label"), "縦方向を中央に揃える");
+    assert.match(canvasCss(), /@media \(min-width:768px\)\{[^}]*hero"\]\{[^}]*align-items:center;[^}]*justify-content:center;/);
+    await click(button("均等に配置", right()));
+    assert.match(canvasCss(), /@media \(min-width:768px\)\{[^}]*hero"\]\{[^}]*justify-content:space-between;/);
+
+    assert.deepEqual([...right().querySelectorAll(".e-sec>h3")].map((node) => node.textContent), ["レイアウト", "外観", "位置"]);
+    for (const caption of ["マージン", "パディング", "ギャップ", "配置の基準", "重ね順", "はみ出し"]) assert.ok(field(caption, right()), caption);
+    assert.ok(right().querySelector('[role="group"][aria-label="方向"]'));
+    assert.equal(input("上から", right()), undefined, "offsets stay conditional while position is static");
+    await change(input("配置の基準", right()), "absolute"); assert.ok(input("上から", right()));
+    await click(button("下書き保存"));
+    const tablet = app.calls.saves[0].document.body[0].style.responsive.find((entry) => entry.minWidth === 768).declarations;
+    assert.deepEqual({ direction: tablet.flexDirection, horizontal: tablet.alignItems, vertical: tablet.justifyContent, position: tablet.position },
+      { direction: "column-reverse", horizontal: "center", vertical: "space-between", position: "absolute" });
   } finally { await app.cleanup(); }
 });
 
@@ -384,21 +436,21 @@ test("switching margins between one value and four sides is undone in one step",
   const app = await setup();
   try {
     await click(button("section · hero")); await editorTab("ボックス"); await click(button("タブレット 768px〜", right()));
-    assert.equal(input("外側の余白", right()).value, "0 auto");
-    await click(button("外側の余白を上下左右で個別に指定", right()));
-    assert.equal(input("外側の余白", right()), undefined);
-    assert.equal(input("上の外余白", right()).value, "0");
-    assert.equal(input("右の外余白", right()).value, ""); assert.equal(field("右の外余白", right()).querySelector("select").value, "k:auto");
+    assert.equal(input("マージン", right()).value, "0 auto");
+    await click(button("マージンを上下左右で個別に指定", right()));
+    assert.equal(input("マージン", right()), undefined);
+    assert.equal(input("上のマージン", right()).value, "0");
+    assert.equal(input("右のマージン", right()).value, ""); assert.equal(field("右のマージン", right()).querySelector("select").value, "k:auto");
     await click(button("元に戻す"));
     assert.equal(button("下書き保存").disabled, true);
     await click(button("section · hero")); await editorTab("ボックス");
-    assert.equal(input("外側の余白", right()).value, "0 auto");
-    await click(button("外側の余白を上下左右で個別に指定", right()));
-    await change(input("左の外余白", right()), "24");
-    await click(button("外側の余白を上下左右で個別に指定", right()));
-    assert.equal(input("外側の余白", right()).value, "0");
+    assert.equal(input("マージン", right()).value, "0 auto");
+    await click(button("マージンを上下左右で個別に指定", right()));
+    await change(input("左のマージン", right()), "24");
+    await click(button("マージンを上下左右で個別に指定", right()));
+    assert.equal(input("マージン", right()).value, "0");
     await click(button("元に戻す")); await click(button("section · hero")); await editorTab("ボックス");
-    assert.equal(input("左の外余白", right()).value, "24");
+    assert.equal(input("左のマージン", right()).value, "24");
     await click(button("下書き保存"));
     assert.deepEqual(app.calls.saves[0].document.body[0].style.responsive[0].declarations, { maxWidth: "64rem", marginTop: "0", marginRight: "auto", marginBottom: "0", marginLeft: 24 });
   } finally { await app.cleanup(); }
@@ -414,9 +466,9 @@ test("business blocks show only the appearance fields they allow", async () => {
   try {
     await click(button("お知らせ · notice")); await editorTab("ボックス");
     assert.ok(right().textContent.includes("このブロックで変更できる見た目だけを表示しています。"));
-    for (const caption of ["文字色", "幅", "外側の余白", "右の外余白", "内側の余白", "配置の基準", "角丸", "テキストスタイル", "不透明度"]) assert.equal(field(caption, right()), undefined, caption);
-    assert.ok(input("背景色", right())); assert.ok(input("上の外余白", right()));
-    await change(input("背景色", right()), "#fff8e6"); await change(input("上の外余白", right()), "32");
+    for (const caption of ["文字色", "幅", "マージン", "右のマージン", "パディング", "配置の基準", "角丸", "テキストスタイル", "不透明度"]) assert.equal(field(caption, right()), undefined, caption);
+    assert.ok(input("背景色", right())); assert.ok(input("上のマージン", right()));
+    await change(input("背景色", right()), "#fff8e6"); await change(input("上のマージン", right()), "32");
     await click(button("下書き保存"));
     const saved = app.calls.saves[0].document.body.at(-2);
     assert.deepEqual(saved.style.base, { backgroundColor: "#fff8e6", marginTop: 32 }); assert.deepEqual(saved.props, { heading: "表示名" });
@@ -456,7 +508,7 @@ test("editing only below the next tier keeps wider widths, is undone in one step
   const app = await setup();
   try {
     await click(button("section · hero")); await editorTab("ボックス");
-    const direction = () => right().querySelector('[role="group"][aria-label="並ぶ向き"]');
+    const direction = () => right().querySelector('[role="group"][aria-label="方向"]');
     await click(direction().querySelector('[aria-label="横"]'));
     await click(button("〜767px だけ", right()));
     assert.ok(right().textContent.includes("〜767pxだけに適用。768px 以上の見た目は変えません。"));
@@ -467,7 +519,7 @@ test("editing only below the next tier keeps wider widths, is undone in one step
     await click(button("元に戻す")); await click(button("section · hero"));
     assert.equal(right().querySelector('[aria-label="反映する範囲"] [aria-pressed="true"]').textContent, "〜767px だけ", "範囲は選択を変えても保つ");
     assert.doesNotMatch(canvasCss(), /@media \(min-width:768px\)\{[^}]*hero"\]\{[^}]*flex-direction/);
-    await click(right().querySelector('[role="group"][aria-label="並ぶ向き"] [aria-label="縦"]'));
+    await click(right().querySelector('[role="group"][aria-label="方向"] [aria-label="縦"]'));
     await click(button("p · lead")); await editorTab("テキスト"); await change(input("文字色", right()), "#ff0000");
     assert.ok(field("文字色", right()).querySelector('[role="alert"]').textContent.includes("先に「768px 以上」で値を入れてください。"));
     await click(button("入力を取り消す", field("文字色", right())));
