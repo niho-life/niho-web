@@ -54,6 +54,15 @@ export function canvasCss(document: PageDocument, options: CanvasCssOptions, ass
   if (options.motion === "paused") rules.push(`[data-nw-scope="${scope}"],[data-nw-scope="${scope}"] *{animation:none!important;transition:none!important}`);
   return rules.join("\n");
 }
+/**
+ * @internal エディターのキャンバス用。キャンバスの iframe の高さは表示倍率で変わる（作業領域÷倍率）ため、
+ * `vh`／`dvh`／`svh`／`lvh` を基準の viewport 高さ（倍率 100% のときの高さ）の px に置き換え、倍率でレイアウトが変わらないようにする。
+ * 公開の描画には使わない。数の直前が識別子の文字のときは置き換えない（scope 名などを壊さない）。
+ */
+export function resolveViewportHeightUnits(css: string, viewportHeight: number): string {
+  if (!Number.isFinite(viewportHeight) || viewportHeight <= 0) return css;
+  return css.replace(/(?<![\w.-])(-?(?:\d+(?:\.\d+)?|\.\d+))(?:dvh|svh|lvh|vh)\b/g, (_match, value: string) => `${Number((Number(value) * viewportHeight / 100).toFixed(3))}px`);
+}
 /** @internal 検証済み文書と素材マップだけで利用。公開 API は必ず再検証する。 */
 export function cssForDocument(document: PageDocument, assets: ResolvedAssetMap = {}, options: CanvasCssOptions = {}): string {
   const scope = `[data-nw-scope="${pageScope(document)}"]`;

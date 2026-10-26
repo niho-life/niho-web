@@ -76,8 +76,10 @@ test("editor opens the page tree in a full-width quiet workspace", async () => {
     const zoom = document.querySelector('.e-inspector-actions select[aria-label="表示倍率"]');
     assert.deepEqual([...zoom.options].map((option) => option.textContent), [zoom.options[0].textContent, "25%", "50%", "75%", "100%", "150%", "200%"]);
     await change(zoom, "0.5"); assert.equal(document.querySelector(".e-canvas-spacer").dataset.scale, "0.500");
-    assert.equal(document.querySelector(".e-canvas-scaled").style.zoom, "0.5", "workspace scaling participates in layout so fixed iframe layers paint on first open");
-    assert.equal(document.querySelector(".e-canvas-scaled").style.transform, "");
+    // CSS zoom は iframe の devicePixelRatio を倍率にし、箱の寸法が device px に丸められて折返しが変わる。拡縮は transform だけで行う。
+    assert.equal(document.querySelector(".e-canvas-scaled").style.transform, "scale(0.5)", "workspace scaling must not change the layout inside the canvas");
+    assert.equal(document.querySelector(".e-canvas-scaled").style.zoom, "");
+    assert.equal(document.querySelector(".e-canvas-scaled").style.transformOrigin, "0 0");
     assert.equal(document.querySelector("iframe").style.border, "0px", "the canvas border must not reduce the authored viewport width");
     await click("左パネルを閉じる"); assert.equal(document.querySelector('[aria-label="サイト・ページ・レイヤー"]').hidden, false); assert.ok(document.querySelector(".e-body").classList.contains("is-left-closed"));
     await click("ページ"); assert.equal(document.querySelector(".e-body").classList.contains("is-left-closed"), false);
@@ -887,7 +889,9 @@ test("without an asset adapter the editor keeps the URL image fields and shows n
     assert.equal(document.querySelector('.e-tools button[aria-label="アセット"]'), null); assert.equal(assetPanel(), null);
     await clickCanvas("photo"); await editorTab("画像");
     assert.equal(input("画像 URL").value, "/photo.webp"); assert.equal(button("画像を置き換え"), undefined); assert.equal(button("背景画像を選ぶ"), undefined);
-    await change(input("画像 URL"), "/other.webp"); assert.equal(canvasNode("photo").getAttribute("src"), "/other.webp");
+    await change(input("画像 URL"), "/other.webp");
+    // 文書は root-relative のまま保存し、キャンバスの iframe（Studio の origin）ではサイトの公開 origin で解決して表示する。
+    assert.equal(canvasNode("photo").getAttribute("src"), "https://example.test/other.webp");
   } finally { await app.cleanup(); }
 });
 

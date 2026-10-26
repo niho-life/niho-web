@@ -276,21 +276,23 @@ test("URL画像の手修正は親bufferでcancel・離脱guard・409再試行を
     const url = [...section.querySelectorAll("label")].find((label) => label.querySelector("span")?.textContent === "言語別の画像 URL")?.querySelector("input");
     const save = [...section.querySelectorAll("button")].find((node) => node.textContent === "URLを保存"), cancel = [...section.querySelectorAll("button")].find((node) => node.textContent === "入力を取り消す");
     const frameImage = () => document.querySelector("iframe").contentDocument.querySelector('[data-nw-node="urlPhoto"]');
+    // キャンバスは root-relative な URL をサイトの公開 origin で解決して表示する。入力欄と文書は root-relative のまま。
+    const origin = "https://kamakura.example", docSrc = (src) => src.startsWith(origin) ? src.slice(origin.length) : src;
     const accepted = frameImage().getAttribute("src"), acceptedAlt = frameImage().getAttribute("alt");
     await change(url, "/manual-cancel.webp"); assert.equal(frameImage().getAttribute("src"), accepted);
     const unload = new dom.window.Event("beforeunload", { cancelable: true }); window.dispatchEvent(unload); assert.equal(unload.defaultPrevented, true);
     await click("日本語（原文）"); assert.ok(document.querySelector('[role="dialog"]')); await click("編集を続ける"); assert.equal(url.value, "/manual-cancel.webp");
-    await act(async () => cancel.click()); await flush(); assert.equal(url.value, accepted);
+    await act(async () => cancel.click()); await flush(); assert.equal(url.value, docSrc(accepted));
     await change(url, "/manual-target.webp"); await act(async () => save.click()); await flush(7);
     assert.ok(document.body.textContent.includes("409")); assert.equal(url.value, "/manual-target.webp"); assert.equal(frameImage().getAttribute("src"), accepted);
     await act(async () => save.click()); await flush(8);
-    assert.equal(frameImage().getAttribute("src"), "/manual-target.webp"); assert.equal(frameImage().getAttribute("alt"), acceptedAlt);
+    assert.equal(frameImage().getAttribute("src"), origin + "/manual-target.webp"); assert.equal(frameImage().getAttribute("alt"), acceptedAlt);
     assert.equal(app.sites.kamakura.sourceDocument.body[0].children.find((node) => node.id === "urlPhoto").attrs.src, "/kamakura-source.webp");
     assert.deepEqual(app.calls.commands.filter((entry) => entry.action === "set-value").at(-1).value, { kind: "image-url", src: "/manual-target.webp" });
     const responsive = () => document.querySelector('[data-unit-id="page.node.urlPhoto.asset"]').querySelectorAll("input")[1];
     const saveUrl = () => [...document.querySelector('[data-unit-id="page.node.urlPhoto.asset"]').querySelectorAll("button")].find((node) => node.textContent === "URLを保存");
     await change(responsive(), "/manual-2x.webp"); await act(async () => saveUrl().click()); await flush(8);
-    assert.equal(frameImage().getAttribute("srcset"), "/manual-2x.webp");
+    assert.equal(frameImage().getAttribute("srcset"), origin + "/manual-2x.webp");
     await change(responsive(), ""); await act(async () => saveUrl().click()); await flush(8);
     assert.equal(frameImage().hasAttribute("srcset"), false);
     assert.deepEqual(app.calls.commands.filter((entry) => entry.action === "set-value").at(-1).value, { kind: "image-url", src: "/manual-target.webp" });
@@ -298,7 +300,7 @@ test("URL画像の手修正は親bufferでcancel・離脱guard・409再試行を
     const current = document.querySelector('[data-unit-id="page.node.urlPhoto.asset"]'), review = [...current.querySelectorAll("button")].find((node) => node.textContent === "現在の訳を確認済みにする");
     await act(async () => review.click()); await flush(7);
     assert.ok(app.sites.kamakura.overlay.entries.find((entry) => entry.unitId === "page.node.urlPhoto.asset").reviewedSourceFingerprint);
-    await click("日本語（原文）"); await flush(7); assert.equal(frameImage().getAttribute("src"), "/kamakura-source.webp");
+    await click("日本語（原文）"); await flush(7); assert.equal(frameImage().getAttribute("src"), origin + "/kamakura-source.webp");
   } finally { await app.cleanup(); }
 });
 

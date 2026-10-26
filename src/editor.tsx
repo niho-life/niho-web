@@ -132,7 +132,7 @@ const textEditHint = "枠の外をクリックするか ⌘Enter（Ctrl+Enter）
 type DragItem = { kind: "palette"; type: string } | { kind: "node"; id: string };
 type DropPlace = { parentId: string | null; index: number; marker: { left: number; top: number; width: number; height: number; inside: boolean } };
 const asElement = (target: EventTarget | null): HTMLElement | null => target && typeof target === "object" && "nodeType" in target && (target as Node).nodeType === 1 ? target as HTMLElement : null;
-function Canvas({ document, blocks, width, height, breakpoint, selection, selectedNodeId, slot, select, canEditNode, dragItem, drop, pending, editText, resize, reportError, editable, structureEditable, locks, preview, previewComponent: PreviewComponent, mode, baseVersion, historyRevision, assets, motionCss, replay, rendered, presentation, presentationRuntime, externalFramePolicy, origins, openInstance }: {
+function Canvas({ document, blocks, width, height, breakpoint, selection, selectedNodeId, slot, select, canEditNode, dragItem, drop, pending, editText, resize, reportError, editable, structureEditable, locks, preview, previewComponent: PreviewComponent, mode, baseVersion, historyRevision, assets, motionCss, replay, rendered, presentation, presentationRuntime, externalFramePolicy, origins, openInstance, viewportHeight, siteOrigin }: {
   document: PageDocument; blocks: EditorBlockRegistry; width: number; height: number; selection: NodePath | null; selectedNodeId?: string; select: (path: NodePath | null, nodeId?: string, slot?: string | null) => void;
   canEditNode?: (nodeId: string) => boolean;
   slot: string | null;
@@ -150,6 +150,10 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
   presentation?: SitePresentation;
   /** 描画する展開済みの文書と、展開したノードの出所。選択・ドラッグ等は document のノードで扱う。 */
   rendered: PageDocument; origins: ReadonlyMap<string, ResolvedOrigin>; openInstance: (instanceId: string, nodeId: string) => void;
+  /** 倍率 100% のときの iframe の高さ。vh をこの高さで解決し、表示倍率でレイアウトが変わらないようにする。 */
+  viewportHeight: number;
+  /** サイトの公開 origin。root-relative な画像 URL をここで解決する。 */
+  siteOrigin?: string | undefined;
 }) {
   const [body, setBody] = useState<HTMLElement | null>(null), frame = useRef<HTMLIFrameElement>(null);
   useEffect(() => { if (body) body.ownerDocument.documentElement.lang = rendered.locale; }, [body, rendered.locale]);
@@ -278,9 +282,10 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
     format("createLink", linkHref); setLinkOpen(false); setLinkError("");
     const element = body?.querySelector<HTMLElement>(`[data-nw-owner="${scope}"][data-nw-node="${editingId}"]`); element?.focus();
   }
+  const canvasRendering = useMemo(() => ({ viewportHeight, siteOrigin }), [viewportHeight, siteOrigin]);
   const defaultPreview = presentation
-    ? <SitePageRenderer key={replay} document={rendered} presentation={presentation} blocks={blocks} {...(externalFramePolicy ? { externalFramePolicy } : {})} assets={assets} missingAssets="placeholder" />
-    : <StablePageRenderer key={replay} document={rendered} blocks={blocks} assets={assets} missingAssets="placeholder" />;
+    ? <SitePageRenderer key={replay} document={rendered} presentation={presentation} blocks={blocks} {...(externalFramePolicy ? { externalFramePolicy } : {})} assets={assets} missingAssets="placeholder" canvas={canvasRendering} />
+    : <StablePageRenderer key={replay} document={rendered} blocks={blocks} assets={assets} missingAssets="placeholder" canvas={canvasRendering} />;
   useEffect(() => {
     if (!body || !presentation) return;
     return initializeSitePresentation(body, { interactive: presentationRuntime });
@@ -1031,6 +1036,8 @@ export function PageEditor({ adapter, toolbarStart, blocks = emptyBlocks, builde
   const fitScale = fitCanvasScale(width, stageSize.width);
   const canvasScale = scaleMode === "fit" ? fitScale : scaleMode;
   const canvasHeight = canvasViewportHeight(canvasScale, stageSize.height);
+  // vh の基準は倍率 100% のときの iframe の高さ。倍率は見た目の拡縮だけにし、キャンバスの中のレイアウトを変えない。
+  const canvasReferenceHeight = canvasViewportHeight(1, stageSize.height);
   function field(name: string, value: string, operation: (value: string) => EditorOperation, key: string, options: FieldOptions = {}) {
     const localizationReason = targetMode && key === "meta.favicon" ? "共通設定は原文側で編集してください。" : targetMode && document && localization.context ? localizedOperationProblem(document, operation(value), localization.context.collection) : undefined;
     return <Field key={`${pathKey}-${key}`} name={name} value={value} fieldKey={`${pathKey}-${key}`} pending={pending} disabled={editBlocked}
@@ -1369,7 +1376,7 @@ export function PageEditor({ adapter, toolbarStart, blocks = emptyBlocks, builde
         restore={() => { if (recoveryStale) setRecoveryCompare(true); else void restoreRecovered(); }} discard={recoveryState.discard} />}
       <div className="e-stage" ref={stageRef}><HistoryBar history={versions} restore={restoreRevision} {...(session?.readOnly ? { restoreBlocked: session.readOnly.reason } : {})} rollbackHint={session?.readOnly ? session.readOnly.reason : session?.hasSavedDraft === false ? publishHold : dirty || libraryDirty || hasInput ? "未保存の変更を保存してから公開版を戻せます。" : blocked ? "処理が完了してから操作できます。" : undefined}
         rollback={session?.readOnly || session?.hasSavedDraft === false || viewedRelease === undefined ? undefined : () => { versions.exit(); setRollbackRevision(String(viewedRelease)); void prepare("rollback", viewedRelease); }} />
-{document && session && shown && renderedCanvas && localizationReady ? <div className="e-canvas-spacer" data-scale={canvasScale.toFixed(3)} data-viewport-height={canvasHeight} style={{ width: width * canvasScale, height: canvasHeight * canvasScale }}><div className="e-canvas-scaled" style={{ width, zoom: canvasScale }}><Canvas key={`${document.siteId}/${document.pageId}/${document.locale}/${masterId ?? ""}`} document={shown} rendered={renderedCanvas} {...(canvasPresentation ? { presentation: canvasPresentation } : {})} origins={canvasOrigins} openInstance={openInstance} blocks={canvasBlocks} {...(externalFramePolicy ? { externalFramePolicy } : {})} width={width} height={canvasHeight} breakpoint={tier} selection={targetMode ? null : historyMode ? null : selection} {...(!historyMode && canvasSelectedNodeId ? { selectedNodeId: canvasSelectedNodeId } : {})} slot={historyMode ? null : slotName} select={selectCanvas} canEditNode={canEditCanvasNode} dragItem={dragItem} drop={dropAt} pending={pending} editText={editCanvasText} resize={(path, width, height) => applyStyle({ type: "resize", path, breakpoint: tier, width, height, ...(until === undefined ? {} : { until }) })} reportError={setNotice} editable={!editBlocked && !hasInput} structureEditable={!editBlocked && !hasInput && !targetMode} locks={locks} preview={preview || historyMode} baseVersion={masterId && library ? library.version : session.version} {...(historyMode && versions.viewing ? { historyRevision: versions.viewing.entry } : {})} mode={historyMode ? "history" : preview ? "preview" : "edit"} {...(canvasPreview ? { previewComponent: canvasPreview } : {})} assets={resolvedAssets.map} replay={`${replay}-${preview}`}
+{document && session && shown && renderedCanvas && localizationReady ? <div className="e-canvas-spacer" data-scale={canvasScale.toFixed(3)} data-viewport-height={canvasHeight} style={{ width: width * canvasScale, height: canvasHeight * canvasScale }}><div className="e-canvas-scaled" style={{ width, transform: `scale(${canvasScale})`, transformOrigin: "0 0" }}><Canvas key={`${document.siteId}/${document.pageId}/${document.locale}/${masterId ?? ""}`} document={shown} rendered={renderedCanvas} {...(canvasPresentation ? { presentation: canvasPresentation } : {})} origins={canvasOrigins} openInstance={openInstance} blocks={canvasBlocks} {...(externalFramePolicy ? { externalFramePolicy } : {})} width={width} height={canvasHeight} breakpoint={tier} selection={targetMode ? null : historyMode ? null : selection} {...(!historyMode && canvasSelectedNodeId ? { selectedNodeId: canvasSelectedNodeId } : {})} slot={historyMode ? null : slotName} select={selectCanvas} canEditNode={canEditCanvasNode} dragItem={dragItem} drop={dropAt} pending={pending} editText={editCanvasText} resize={(path, width, height) => applyStyle({ type: "resize", path, breakpoint: tier, width, height, ...(until === undefined ? {} : { until }) })} reportError={setNotice} editable={!editBlocked && !hasInput} structureEditable={!editBlocked && !hasInput && !targetMode} locks={locks} preview={preview || historyMode} baseVersion={masterId && library ? library.version : session.version} {...(historyMode && versions.viewing ? { historyRevision: versions.viewing.entry } : {})} mode={historyMode ? "history" : preview ? "preview" : "edit"} {...(canvasPreview ? { previewComponent: canvasPreview } : {})} assets={resolvedAssets.map} replay={`${replay}-${preview}`} viewportHeight={canvasReferenceHeight} siteOrigin={site?.domains[0]}
         presentationRuntime={(preview || motion) && !historyMode} motionCss={canvasCss(renderedCanvas, { forceState: !preview && !historyMode && styleState !== "normal" && node && node.type !== "text" ? { nodeId: node.id, state: styleState } : undefined, motion: (preview || motion) && !historyMode ? "play" : "paused" })} /></div></div> : <p className="e-empty">{localizationGate || "サイトとページを選ぶと、ここにプレビューを表示します。"}</p>}</div></section>} right={<aside className="e-rail e-right" aria-label="インスペクタ" hidden={!rightPanelOpen || preview}>
       <div className="e-inspector-actions" role="toolbar" aria-label="編集操作"><WorkspaceScaleSelect scale={scaleMode} fitPercent={Math.round(fitScale * 100)} onScale={setScaleMode} />
       {localization.site && selectedLocale && <LanguageSelector config={localization.site.config} locale={selectedLocale} disabled={blocked} select={selectLocale} />}
