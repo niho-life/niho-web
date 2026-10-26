@@ -559,7 +559,7 @@ const UnitCard = memo(function UnitCard({ unit, languages, timeZone, canEdit, ca
   return <section className="lw-unit" data-unit-id={unitId} data-state={server.state} aria-labelledby={labelId}>
     <header className="lw-unit-head">
       <h4 id={labelId} className="lw-unit-label">{server.label}{server.required && <span className="cw-required">必須</span>}</h4>
-      <UnitStateBadge state={server.state} />
+      <UnitStateBadge state={unit.dirty && server.kind !== "image" ? "draft" : server.state} editOrigin={unit.dirty ? "MANUAL" : (server.kind === "image" ? null : server.editOrigin ?? null)} />
       <span className="cw-save-state lw-unit-save">{unitSave}{status === "error" && <button type="button" className="cw-link-button" onClick={() => actions.retry(unitId)}>再試行</button>}</span>
     </header>
     <div className="lw-pair">

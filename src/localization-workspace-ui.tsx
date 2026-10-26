@@ -1,18 +1,19 @@
 "use client";
 
 import { useEffect, useId, useRef, type ReactNode } from "react";
-import type { LocalizationItemState, LocalizationUnitState } from "./localization-workspace-model.js";
+import type { LocalizationEditOrigin, LocalizationItemState, LocalizationUnitState } from "./localization-workspace-model.js";
 
 /* ---------- 状態の印（色だけに頼らず、形と言葉でも分かるように） ---------- */
 
-const itemText: Record<LocalizationItemState, string> = { untranslated: "未翻訳", draft: "下書き", "source-changed": "原文が更新", reviewed: "確認済み", excluded: "対象外" };
+const itemText: Record<LocalizationItemState, string> = { untranslated: "未翻訳", draft: "未確認", "source-changed": "原文が更新", reviewed: "確認済み", excluded: "対象外" };
 export function ItemStateBadge({ state }: { state: LocalizationItemState }) {
   return <span className="cw-pill lw-pill" data-lw-state={state}><span className="lw-shape" aria-hidden="true" />{itemText[state]}</span>;
 }
 const unitText: Record<LocalizationUnitState, string> = { source: "原文のまま", missing: "未翻訳", draft: "未確認", "review-needed": "原文が更新", reviewed: "確認済み" };
 const unitShape: Record<LocalizationUnitState, LocalizationItemState> = { source: "excluded", missing: "untranslated", draft: "draft", "review-needed": "source-changed", reviewed: "reviewed" };
-export function UnitStateBadge({ state }: { state: LocalizationUnitState }) {
-  return <span className="cw-pill lw-pill" data-lw-state={unitShape[state]} data-lw-unit-state={state}><span className="lw-shape" aria-hidden="true" />{unitText[state]}</span>;
+export function UnitStateBadge({ state, editOrigin }: { state: LocalizationUnitState; editOrigin?: LocalizationEditOrigin | null }) {
+  const label = state === "draft" && editOrigin ? editOrigin === "AUTO" ? "自動翻訳（未確認）" : "手修正（未確認）" : unitText[state];
+  return <span className="cw-pill lw-pill" data-lw-state={unitShape[state]} data-lw-unit-state={state}><span className="lw-shape" aria-hidden="true" />{label}</span>;
 }
 
 /* ---------- 進み具合（n/m） ---------- */

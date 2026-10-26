@@ -74,6 +74,7 @@ export type LocalizationItemSummary = {
 export type LocalizationTextMark = { readonly id: string; readonly label: string };
 /** asset は niho-web の LocalizedAsset（set-image でそのまま送る）。url は表示用。 */
 export type LocalizationImage = { readonly asset: LocalizedAsset; readonly url: string };
+export type LocalizationEditOrigin = "AUTO" | "MANUAL";
 type UnitBase = {
   readonly unitId: string;
   readonly label: string;
@@ -89,6 +90,8 @@ type UnitBase = {
 };
 export type LocalizationTextUnit = UnitBase & {
   readonly kind: "text";
+  /** 保存済み訳文の出どころ。古い adapter は省略できる。 */
+  readonly editOrigin?: LocalizationEditOrigin | null;
   readonly source: string; readonly value: string | null; readonly previousSource: string | null;
   readonly candidate: { readonly candidateId: string; readonly value: string } | null;
   readonly marks: readonly LocalizationTextMark[];
@@ -98,6 +101,8 @@ export type LocalizationTextUnit = UnitBase & {
 };
 export type LocalizationRichTextUnit = UnitBase & {
   readonly kind: "rich-text";
+  /** 保存済み訳文の出どころ。古い adapter は省略できる。 */
+  readonly editOrigin?: LocalizationEditOrigin | null;
   readonly source: LocalizedRichText; readonly value: LocalizedRichText | null; readonly previousSource: LocalizedRichText | null;
   readonly candidate: { readonly candidateId: string; readonly value: LocalizedRichText } | null;
 };
@@ -534,14 +539,17 @@ export function parseLocalizationUnit(input: unknown, path = "unit"): Localizati
   const source = record(input, path);
   const kind = source.kind;
   if (kind !== "text" && kind !== "rich-text" && kind !== "image") fail(`${path}.kind`, "invalid unit kind");
-  keys(source, [...UNIT_BASE_KEYS, ...(kind === "text" ? ["previousSource", "candidate", "marks", "maxLength", "singleLine"] : kind === "rich-text" ? ["previousSource", "candidate"] : [])], path);
+  keys(source, [...UNIT_BASE_KEYS, ...(kind === "text" ? ["previousSource", "candidate", "marks", "maxLength", "singleLine", "editOrigin"] : kind === "rich-text" ? ["previousSource", "candidate", "editOrigin"] : [])], path);
   if (!UNIT_STATES.includes(source.state as LocalizationUnitState)) fail(`${path}.state`, "invalid state");
   const state = source.state as LocalizationUnitState;
+  const editOrigin = source.editOrigin;
+  if (kind !== "image" && editOrigin !== undefined && editOrigin !== null && editOrigin !== "AUTO" && editOrigin !== "MANUAL") fail(`${path}.editOrigin`, "invalid edit origin");
   const required = bool(source.required, `${path}.required`);
   const base = {
     unitId: unitId(source.unitId, `${path}.unitId`), label: name(source.label, `${path}.label`), section: nullableName(source.section, `${path}.section`),
     required, version: version(source.version, `${path}.version`), sourceVersion: version(source.sourceVersion, `${path}.sourceVersion`), state,
     updatedAt: timestamp(source.updatedAt, `${path}.updatedAt`), updatedBy: nullableName(source.updatedBy, `${path}.updatedBy`),
+    ...(kind !== "image" && editOrigin !== undefined ? { editOrigin: editOrigin as LocalizationEditOrigin | null } : {}),
   };
   const hasValue = source.value !== null;
   if ((state === "source" || state === "missing") === hasValue) fail(`${path}.value`, "value does not fit the state");
