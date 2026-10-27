@@ -43,7 +43,7 @@ import { documentLocaleFor, localizationLocaleFor, validateLocalizedDocumentSave
 import { editorSessionFrom, readEditorSession, type EditorSession } from "./editor-session.js";
 import { canvasViewportHeight, elementTypeLabel, fitCanvasScale, layerLabel, pathForNodeId, projectLayers, visibleLayers } from "./layers.js";
 import { LayerTreePanel } from "./editor-layers.js";
-import { CanvasViewportToolbar, EditorWorkspace, InspectorTabs, PanelToggle, WorkspaceIcon, WorkspaceScaleSelect, type WorkspaceScale, type WorkspaceTab } from "./editor-workspace.js";
+import { CanvasViewportToolbar, EditorWorkspace, InspectorTabs, PanelToggle, WorkspaceIcon, WorkspaceScaleSelect, viewportPresets, type WorkspaceScale, type WorkspaceTab } from "./editor-workspace.js";
 import { workspaceCss } from "./editor-workspace-style.js";
 import { iconCatalog } from "./icons.js";
 
@@ -385,7 +385,7 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
 }
 
 /** 認証済みホストに接続する共通エディター。ネットワーク URL や秘密を所有しない。 */
-export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = emptyBlocks, builder, previewComponent, insertableBlocks, assets, externalFramePolicy, breakpoints: hostBreakpoints, autosave, recovery }: PageEditorProps) {
+export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = emptyBlocks, builder, previewComponent, insertableBlocks, assets, externalFramePolicy, breakpoints: hostBreakpoints, mobilePreviewWidth, autosave, recovery }: PageEditorProps) {
   const adapterRef = useRef(adapter); adapterRef.current = adapter;
   const initialTargetRef = useRef<EditorTarget | null>(initialTarget ?? null);
   const [sites, setSites] = useState<readonly EditorSite[]>([]), [siteId, setSiteId] = useState("");
@@ -1423,7 +1423,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
           : <details className="e-history"><summary>公開済みの版に戻す</summary><label className="e-field"><span>戻す版</span><select aria-label="戻す版" value={rollbackRevision} disabled={blocked || !!session?.readOnly} onChange={(event) => setRollbackRevision(event.target.value)}><option value="">版を選択</option>{session?.releases.map((release) => <option key={release.revision} value={release.revision}>{release.label}</option>)}</select></label><button disabled={siteSettings.dirty || siteSettings.busy || !rollbackRevision || !!session?.readOnly || session?.hasSavedDraft === false || dirty || libraryDirty || !!masterId || blocked || hasInput} onClick={() => void prepare("rollback")}>戻す内容を確認</button><small className="e-help">{session?.readOnly?.reason ?? "未保存の変更がある間は実行できません。"}</small>{publishHold && <small className="e-help">{publishHold}</small>}</details>}
       </div></div>
     </aside>} canvas={<section className="e-canvas" aria-label="ライブプレビュー">{preview && <button className="e-preview-exit" aria-label="編集に戻る" title="編集に戻る" onClick={() => setPreview(false)}><WorkspaceIcon name="preview" /><span>編集に戻る</span></button>}{masterComponent && <ComponentBanner name={masterComponent.name} back={leaveComponent} />}{isSiteComponent && page && <SiteComponentBanner name={page.title} {...(siteComponentBack ? { back: () => requestNavigation({ type: "page", target: siteComponentBack }) } : {})} />}
-      <CanvasViewportToolbar width={width} widthField={widthField} leftOpen={leftPanelOpen} rightOpen={rightPanelOpen} disabled={historyMode}
+      <CanvasViewportToolbar width={width} widthField={widthField} leftOpen={leftPanelOpen} rightOpen={rightPanelOpen} disabled={historyMode} presets={viewportPresets(breakpoints, mobilePreviewWidth)}
         onWidthInput={(value) => { setWidthField(value); const parsed = Number(value); if (value !== "" && Number.isInteger(parsed) && parsed >= 320 && parsed <= 1920) setWidth(parsed); }}
         onWidthCommit={() => { const parsed = Number(widthField); const normalized = Number.isFinite(parsed) ? Math.max(320, Math.min(1920, Math.round(parsed))) : width; setWidth(normalized); setWidthField(String(normalized)); }}
         toggleLeft={() => setLeftPanelOpen((value) => !value)} toggleRight={() => setRightPanelOpen((value) => !value)}>

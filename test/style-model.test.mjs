@@ -24,7 +24,7 @@ test("tiers combine host breakpoints with widths used by the document", () => {
   assert.equal(tierForWidth(tiers, 1100).key, 1024);
   assert.equal(tierForWidth(tiers, 3000).key, 1280);
   assert.deepEqual(editorTiers({ ...fixture, body: [] }, []), [{ key: "base", start: 0, end: null, label: "基本" }]);
-  for (const invalid of [[{ minWidth: 100, label: "x" }], [{ minWidth: 800, label: "a" }, { minWidth: 700, label: "b" }], [{ minWidth: 768.5, label: "x" }], [{ minWidth: 768, label: " " }], "768"]) assert.equal(normalizeBreakpoints(invalid).length, 2);
+  for (const invalid of [[{ minWidth: 100, label: "x" }], [{ minWidth: 800, label: "a" }, { minWidth: 700, label: "b" }], [{ minWidth: 768.5, label: "x" }], [{ minWidth: 768, label: " " }], [{ minWidth: 691, label: "タブレット", previewWidth: 991 }, { minWidth: 991, label: "スモール" }], "768"]) assert.equal(normalizeBreakpoints(invalid).length, 2);
   const custom = [{ minWidth: 600, label: "小" }]; assert.equal(normalizeBreakpoints(custom), custom);
 });
 

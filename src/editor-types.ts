@@ -223,7 +223,7 @@ export type EditorBlockRegistry = Readonly<Record<string, BlockDefinition & {
   settings?: ComponentType<EditorBlockSettingsProps>;
 }>>;
 /** 編集する幅の段。minWidth は 320〜3840 の整数・昇順。 */
-export type EditorBreakpoint = { minWidth: number; label: string };
+export type EditorBreakpoint = { minWidth: number; label: string; previewWidth?: number };
 /**
  * 同じiframeへ表示する、ホスト所有の同期Reactプレビュー。文書を直接変更しない。
  * blocks・assets・presentation・externalFramePolicy は従来の描画（children）が使った入力で、ホストが同じ文書を自分の表示部品で
@@ -269,8 +269,10 @@ export type PageEditorProps = {
   insertableBlocks?: readonly string[];
   /** サイト別の素材ライブラリ。参照は安定させる。省略時は素材の UI を表示しない。 */
   assets?: AssetLibraryAdapter;
-  /** 編集する幅の段。省略・不正時は タブレット 768px / PC 1280px。 */
+  /** 編集する幅の段。省略・不正時は タブレット 768px / PC 1280px。previewWidth はその段の表示用の幅。 */
   breakpoints?: readonly EditorBreakpoint[];
+  /** 最も狭い段の表示用の幅。省略時は375px。 */
+  mobilePreviewWidth?: number;
   /** 省略時は手動保存だけ。true は 2,000ms、delayMs は 100〜60,000ms。 */
   autosave?: boolean | { delayMs?: number };
   /** 端末内の緊急復元。省略時は端末へ何も保存しない。 */
