@@ -18,11 +18,13 @@ export const defaultBreakpoints: readonly EditorBreakpoint[] = [{ minWidth: 768,
 /** ホスト指定の段を検証し、不正なら既定値へ戻す。 */
 export function normalizeBreakpoints(input: readonly EditorBreakpoint[] | undefined): readonly EditorBreakpoint[] {
   if (!Array.isArray(input) || input.length > 12) return defaultBreakpoints;
-  let previous = 0;
+  let previous = 0, previousPreview = 0;
   for (const entry of input) {
     if (!entry || !Number.isInteger(entry.minWidth) || entry.minWidth < 320 || entry.minWidth > 3840 || entry.minWidth <= previous ||
       typeof entry.label !== "string" || !entry.label.trim() || entry.label.length > 40) return defaultBreakpoints;
-    previous = entry.minWidth;
+    if (entry.previewWidth !== undefined && (!Number.isInteger(entry.previewWidth) || entry.previewWidth < entry.minWidth || entry.previewWidth > 1920)) return defaultBreakpoints;
+    if (previousPreview >= entry.minWidth) return defaultBreakpoints;
+    previous = entry.minWidth; previousPreview = entry.previewWidth ?? 0;
   }
   return input;
 }

@@ -20,7 +20,7 @@ const pages = [
 const crumb = () => ({ site: document.querySelector(".e-crumb-site")?.textContent, page: document.querySelector(".e-crumb-page")?.textContent, detail: document.querySelector(".e-crumb-path")?.textContent });
 const pageRow = (title) => [...document.querySelectorAll("button.e-page")].find((node) => node.querySelector(".e-page-name")?.textContent === title);
 async function click(target) { assert.ok(target); await act(async () => target.click()); await flush(); }
-async function setup() {
+async function setup(props = {}) {
   const container = document.createElement("div"); document.body.append(container); const root = createRoot(container);
   const adapter = {
     listSites: async () => [{ id: "demo", name: "デモサイト", domains: ["https://example.test"] }],
@@ -28,7 +28,7 @@ async function setup() {
     readDocument: async (target) => ({ document: { ...structuredClone(fixture), pageId: target.pageId }, version: "v1" }),
     saveDraft: async () => { throw new Error("not used"); }, prepareRelease: async () => { throw new Error("not used"); }, release: async () => { throw new Error("not used"); }
   };
-  await act(async () => root.render(createElement(PageEditor, { adapter }))); await flush();
+  await act(async () => root.render(createElement(PageEditor, { adapter, ...props }))); await flush();
   const frame = document.querySelector("iframe"); if (frame) await act(async () => frame.dispatchEvent(new dom.window.Event("load")));
   return { cleanup: async () => { await act(async () => root.unmount()); container.remove(); } };
 }
@@ -61,11 +61,29 @@ test("the workspace keeps three fixed columns on desktop, overlays panels under 
     const narrow = css.slice(css.indexOf("@media(max-width:480px)"));
     assert.ok(narrow.includes(".nw-editor .e-inspector-context{flex-wrap:wrap"), "the inspector header wraps so the close toggle stays reachable");
     assert.ok(narrow.includes(".nw-editor .e-inspector-context strong{flex:1 1 100%}"));
-    assert.ok(narrow.includes(".nw-editor .e-canvas-tools{gap:3px;padding:4px 5px}") && narrow.includes(".nw-editor .e-width-field{width:70px}"), "the viewport bar fits inside a 320px stage");
-    for (const label of ["左パネルを閉じる", "右パネルを閉じる", "表示幅", "PC 1280px", "モバイル 375px", "元に戻す", "下書き保存", "公開"]) assert.ok(document.querySelector(`[aria-label="${label}"]`), label);
+    assert.ok(narrow.includes(".nw-editor .e-canvas-tools{height:auto;flex-wrap:wrap;gap:3px;padding:4px 5px}") && narrow.includes(".nw-editor .e-width-field{width:70px}"), "the viewport bar wraps inside a 320px stage");
+    for (const label of ["左パネルを閉じる", "右パネルを閉じる", "表示幅", "PC 1280px", "タブレット 768px", "モバイル 375px", "元に戻す", "下書き保存", "公開"]) assert.ok(document.querySelector(`[aria-label="${label}"]`), label);
     await click(document.querySelector('[aria-label="右パネルを閉じる"]'));
     assert.equal(document.querySelector('[aria-label="インスペクタ"]').hidden, true);
     assert.ok(document.querySelector('.e-canvas-tools [aria-label="右パネルを開く"]'), "the viewport bar offers the way back");
+  } finally { await app.cleanup(); }
+});
+
+test("site-defined viewport presets select the four responsive ranges", async () => {
+  const app = await setup({ breakpoints: [
+    { minWidth: 691, label: "タブレット", previewWidth: 840 },
+    { minWidth: 991, label: "スモール", previewWidth: 991 },
+    { minWidth: 1280, label: "PC", previewWidth: 1280 }
+  ], mobilePreviewWidth: 480 });
+  try {
+    const button = (name) => document.querySelector(`.e-device-group [aria-label="${name}"]`);
+    for (const name of ["PC 1280px", "スモール 991px", "タブレット 840px", "モバイル 480px"]) assert.ok(button(name), name);
+    await click(button("タブレット 840px"));
+    assert.equal(document.querySelector('[aria-label="表示幅"]').value, "840");
+    assert.equal(button("タブレット 840px").getAttribute("aria-pressed"), "true");
+    await click(button("モバイル 480px"));
+    assert.equal(document.querySelector('[aria-label="表示幅"]').value, "480");
+    assert.equal(button("モバイル 480px").getAttribute("aria-pressed"), "true");
   } finally { await app.cleanup(); }
 });
 

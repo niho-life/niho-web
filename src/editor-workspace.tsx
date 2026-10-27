@@ -1,6 +1,7 @@
 "use client";
 
 import type { KeyboardEvent, ReactNode } from "react";
+import type { EditorBreakpoint } from "./editor-types.js";
 
 export type WorkspaceScale = "fit" | 0.25 | 0.5 | 0.75 | 1 | 1.5 | 2;
 
@@ -25,7 +26,7 @@ export function EditorWorkspace({ preview, leftOpen, rightOpen, chrome, left, ca
   </div>;
 }
 
-type IconName = "back" | "close" | "desktop" | "tablet" | "mobile" | "undo" | "redo" | "history" | "preview" | "save" | "publish" | "leftPanel" | "rightPanel";
+type IconName = "back" | "close" | "desktop" | "laptop" | "tablet" | "mobile" | "undo" | "redo" | "history" | "preview" | "save" | "publish" | "leftPanel" | "rightPanel";
 
 /** 左レールと上部の操作で同じ線の太さ（24 のマス目で 1.5）。大きさは CSS の .e-tool-icon / .e-action-icon が 18px にそろえる。 */
 export function WorkspaceIcon({ name }: { name: IconName }) {
@@ -34,6 +35,7 @@ export function WorkspaceIcon({ name }: { name: IconName }) {
     back: <><path d="m14.5 5-7 7 7 7" /><path d="M8 12h11" /></>,
     close: <><path d="m6 6 12 12M18 6 6 18" /></>,
     desktop: <><rect x="3" y="4" width="18" height="13" rx="2" /><path d="M8 21h8M12 17v4" /></>,
+    laptop: <><rect x="4" y="4" width="16" height="12" rx="1" /><path d="M2 19h20l-2-3H4z" /></>,
     tablet: <><rect x="5" y="3" width="14" height="18" rx="2" /><path d="M11 18h2" /></>,
     mobile: <><rect x="7" y="2.5" width="10" height="19" rx="2" /><path d="M11 18.5h2" /></>,
     undo: <><path d="M9 7 4 12l5 5" /><path d="M5 12h8a6 6 0 0 1 6 6" /></>,
@@ -83,24 +85,38 @@ export function WorkspaceScaleSelect({ scale, fitPercent, onScale }: { scale: Wo
   </select></label>;
 }
 
-export function CanvasViewportToolbar({ width, widthField, leftOpen, rightOpen, disabled, onWidthInput, onWidthCommit, toggleLeft, toggleRight, children }: {
+export type ViewportPreset = { width: number; start: number; label: string; icon: "desktop" | "laptop" | "tablet" | "mobile" };
+
+/** Site breakpoints determine the selectable widths; the mobile-first base gets its own preview. */
+export function viewportPresets(breakpoints: readonly EditorBreakpoint[], mobilePreviewWidth = 375): ViewportPreset[] {
+  const usable = breakpoints.filter((entry) => entry.minWidth <= 1920);
+  const first = breakpoints[0]?.minWidth ?? 1921;
+  const base = Number.isInteger(mobilePreviewWidth) && mobilePreviewWidth >= 320 && mobilePreviewWidth <= 1920 && mobilePreviewWidth < first
+    ? mobilePreviewWidth : Math.min(375, first - 1);
+  const icon = (width: number): ViewportPreset["icon"] => width >= 1100 ? "desktop" : width >= 900 ? "laptop" : width >= 600 ? "tablet" : "mobile";
+  return [...usable].reverse().map((entry) => ({ width: entry.previewWidth ?? entry.minWidth, start: entry.minWidth, label: entry.label, icon: icon(entry.minWidth) }))
+    .concat(base >= 320 ? [{ width: base, start: 0, label: "モバイル", icon: "mobile" }] : []);
+}
+
+export function CanvasViewportToolbar({ width, widthField, leftOpen, rightOpen, disabled, presets = viewportPresets([{ minWidth: 768, label: "タブレット" }, { minWidth: 1280, label: "PC" }]), onWidthInput, onWidthCommit, toggleLeft, toggleRight, children }: {
   width: number;
   widthField: string;
   leftOpen: boolean;
   rightOpen: boolean;
   disabled?: boolean;
+  presets?: readonly ViewportPreset[];
   onWidthInput: (value: string) => void;
   onWidthCommit: () => void;
   toggleLeft: () => void;
   toggleRight: () => void;
   children?: ReactNode;
 }) {
-  const preset = (value: number, icon: "desktop" | "tablet" | "mobile", label: string) => <button type="button" className="e-device-button" aria-label={`${label} ${value}px`} title={`${label} ${value}px`} aria-pressed={width === value} disabled={disabled}
+  const preset = ({ width: value, start, icon, label }: ViewportPreset, index: number) => <button key={`${start}-${value}`} type="button" className="e-device-button" aria-label={`${label} ${value}px`} title={`${label} ${value}px`} aria-pressed={width >= start && (index === 0 || width < presets[index - 1]!.start)} disabled={disabled}
     onClick={() => { onWidthInput(String(value)); }}><WorkspaceIcon name={icon} /></button>;
   return <div className="e-canvas-tools" role="toolbar" aria-label="キャンバス表示">
     {!leftOpen && <PanelToggle side="left" open={false} onClick={toggleLeft} />}
     <label className="e-width-field"><span className="e-vh">表示幅</span><input aria-label="表示幅" type="number" min={320} max={1920} step={1} value={widthField} disabled={disabled} onChange={(event) => onWidthInput(event.target.value)} onBlur={onWidthCommit} /><span>px</span></label>
-    <div className="e-device-group" role="group" aria-label="デバイス幅">{preset(1280, "desktop", "PC")}{preset(768, "tablet", "タブレット")}{preset(375, "mobile", "モバイル")}</div>
+    <div className="e-device-group" role="group" aria-label="デバイス幅">{presets.map(preset)}</div>
     {children}
     {!rightOpen && <PanelToggle side="right" open={false} onClick={toggleRight} />}
   </div>;

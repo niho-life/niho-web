@@ -87,7 +87,7 @@ export const workspaceCss = `${uiTokensCss}
 /* 320px: the inspector header wraps instead of pushing its close button out, and the viewport bar stays inside the stage. */
 @media(max-width:480px){
   .nw-editor .e-inspector-context{flex-wrap:wrap;min-height:0;gap:4px 6px;padding:6px 8px}.nw-editor .e-inspector-context strong{flex:1 1 100%}
-  .nw-editor .e-canvas-tools{gap:3px;padding:4px 5px}.nw-editor .e-width-field{width:70px}.nw-editor .e-width-field input{width:48px;padding-left:4px}
+  .nw-editor .e-canvas-tools{height:auto;flex-wrap:wrap;gap:3px;padding:4px 5px}.nw-editor .e-width-field{width:70px}.nw-editor .e-width-field input{width:48px;padding-left:4px}
   .nw-editor .e-inspector-actions .e-status{flex-basis:70px}
 }
 `;
