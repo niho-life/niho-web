@@ -33,7 +33,11 @@ test("the fictional memory adapter speaks the contract the parsers accept", asyn
   assert.equal(page.nextCursor, "p2");
   const loaded = parseLocalizationItemResult(item, "aG9tZQ");
   assert.deepEqual(loaded.item.units.map((unit) => [unit.unitId, unit.kind, unit.state]), [["title", "text", "draft"], ["lead", "text", "missing"], ["body", "rich-text", "missing"], ["cover", "image", "source"]]);
+  const withRelated = clone(item);
+  withRelated.item.relatedItems = [{ key: "bmV3cw", label: "一覧カード" }];
+  assert.deepEqual(parseLocalizationItemResult(withRelated, "aG9tZQ").item.relatedItems, [{ key: "bmV3cw", label: "一覧カード" }]);
   const about = parseLocalizationItemResult(await memory.adapter.loadItem({ itemKey: "YWJvdXQ" }, signal), "YWJvdXQ");
+  assert.deepEqual(about.item.relatedItems, [{ key: "aG9tZQ", label: "トップの案内文" }]);
   assert.equal(about.item.units[1].state, "review-needed");
   assert.equal(about.item.units[1].previousSource, "小さな町の工房です。");
   assert.throws(() => parseLocalizationItemResult(item, "YWJvdXQ"), /identity mismatch/);
@@ -75,6 +79,13 @@ test("parsers reject unknown keys, mismatched states and oversized values", asyn
   assert.throws(() => parseLocalizationListResult({ status: "ready", items: [duplicateParts], nextCursor: null }), /duplicate part/);
   const internalPart = clone(list.items[1]); internalPart.includedParts = ["内部\n名"];
   assert.throws(() => parseLocalizationListResult({ status: "ready", items: [internalPart], nextCursor: null }), /invalid text/);
+  const related = clone(item); related.item.relatedItems = [{ key: "bmV3cw", label: "一覧カード" }];
+  const duplicateRelated = clone(related); duplicateRelated.item.relatedItems.push({ key: "bmV3cw", label: "別の名前" });
+  assert.throws(() => parseLocalizationItemResult(duplicateRelated, "aG9tZQ"), /duplicate or self-referencing/);
+  const selfRelated = clone(related); selfRelated.item.relatedItems[0].key = "aG9tZQ";
+  assert.throws(() => parseLocalizationItemResult(selfRelated, "aG9tZQ"), /duplicate or self-referencing/);
+  const malformedRelated = clone(related); malformedRelated.item.relatedItems[0].label = "内部\n名";
+  assert.throws(() => parseLocalizationItemResult(malformedRelated, "aG9tZQ"), /invalid text/);
 
   const unit = clone(item.item.units[0]);
   assert.equal(parseLocalizationUnit(unit).editOrigin, "AUTO");

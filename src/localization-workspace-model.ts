@@ -112,9 +112,12 @@ export type LocalizationImageUnit = UnitBase & { readonly kind: "image"; readonl
 export type LocalizationWorkspaceUnit = LocalizationTextUnit | LocalizationRichTextUnit | LocalizationImageUnit;
 export type LocalizationJob = { readonly jobId: string; readonly state: "queued" | "running" | "done" | "failed"; readonly message: string | null };
 export type LocalizationPreviewChoice = { readonly id: string; readonly label: string };
+export type LocalizationRelatedItem = { readonly key: string; readonly label: string };
 export type LocalizationItem = LocalizationItemSummary & {
   readonly units: readonly LocalizationWorkspaceUnit[];
   readonly previews: readonly LocalizationPreviewChoice[];
+  /** 同じ一覧行に含まれる、保存単位が別の訳文。古い adapter は省略できる。 */
+  readonly relatedItems?: readonly LocalizationRelatedItem[];
   readonly job: LocalizationJob | null;
 };
 
@@ -606,7 +609,7 @@ function parseJob(input: unknown, path: string): LocalizationJob {
 
 export function parseLocalizationItem(input: unknown, path = "item"): LocalizationItem {
   const source = record(input, path);
-  keys(source, [...SUMMARY_KEYS, "units", "previews", "job"], path);
+  keys(source, [...SUMMARY_KEYS, "units", "previews", "relatedItems", "job"], path);
   const summary = parseSummaryFields(source, path);
   const units = array(source.units, `${path}.units`, LOCALIZATION_LIMITS.units).map((entry, index) => parseLocalizationUnit(entry, `${path}.units[${index}]`));
   if (new Set(units.map((unit) => unit.unitId)).size !== units.length) fail(`${path}.units`, "duplicate unit");
@@ -616,7 +619,15 @@ export function parseLocalizationItem(input: unknown, path = "item"): Localizati
     return { id: shortId(choice.id, `${at}.id`), label: name(choice.label, `${at}.label`) };
   });
   if (new Set(previews.map((choice) => choice.id)).size !== previews.length) fail(`${path}.previews`, "duplicate preview");
-  return { ...summary, units, previews, job: source.job === null ? null : parseJob(source.job, `${path}.job`) };
+  const relatedItems = source.relatedItems === undefined ? undefined : array(source.relatedItems, `${path}.relatedItems`, 8).map((entry, index) => {
+    const at = `${path}.relatedItems[${index}]`, related = record(entry, at);
+    keys(related, ["key", "label"], at);
+    return { key: itemKey(related.key, `${at}.key`), label: name(related.label, `${at}.label`, 80) };
+  });
+  if (relatedItems && (new Set(relatedItems.map((related) => related.key)).size !== relatedItems.length || relatedItems.some((related) => related.key === summary.key))) {
+    fail(`${path}.relatedItems`, "duplicate or self-referencing item");
+  }
+  return { ...summary, units, previews, ...(relatedItems === undefined ? {} : { relatedItems }), job: source.job === null ? null : parseJob(source.job, `${path}.job`) };
 }
 
 export function parseLocalizationItemResult(input: unknown, expectedKey: string): LocalizationItemResult {

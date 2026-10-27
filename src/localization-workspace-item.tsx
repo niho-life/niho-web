@@ -71,12 +71,12 @@ function liveFor(server: LocalizationWorkspaceUnit): UnitLive {
 
 export type ItemEditorProps = {
   adapter: LocalizationWorkspaceAdapter; overview: LocalizationOverview; itemKey: string; timeZone: string; autosaveDelay: number; pollInterval: number;
-  confirm: (request: ConfirmRequest) => void; onSummary: (summary: LocalizationItemSummary) => void; onBack: () => void; onForbidden: () => void; backLabel?: string; hideSourceLink?: boolean;
+  confirm: (request: ConfirmRequest) => void; onSummary: (summary: LocalizationItemSummary) => void; onBack: () => void; onOpenRelated?: (itemKey: string) => void; onForbidden: () => void; backLabel?: string; hideSourceLink?: boolean;
   registerBack?: (back: (() => void) | null) => void;
 };
 
 /** 1 件の編集。項目ごとに原文と訳文を並べ、約 1 秒後に項目ごとに自動で保存する。競合は上書きしない。 */
-export function ItemEditor({ adapter, overview, itemKey, timeZone, autosaveDelay, pollInterval, confirm, onSummary, onBack, onForbidden, backLabel = "一覧へ", hideSourceLink = false, registerBack }: ItemEditorProps) {
+export function ItemEditor({ adapter, overview, itemKey, timeZone, autosaveDelay, pollInterval, confirm, onSummary, onBack, onOpenRelated, onForbidden, backLabel = "一覧へ", hideSourceLink = false, registerBack }: ItemEditorProps) {
   const requests = useRequests();
   const baseId = useId();
   const heading = useRef<HTMLHeadingElement>(null);
@@ -380,17 +380,18 @@ export function ItemEditor({ adapter, overview, itemKey, timeZone, autosaveDelay
     clear: (id) => actions.current.clearValue(id),
   });
 
-  const back = async () => {
+  const leave = async (next: () => void, body: string, confirmLabel: string) => {
     if (backBusy) return;
     setBackBusy(true);
     const ok = await flushAll();
     setBackBusy(false);
-    if (ok) { onBack(); return; }
+    if (ok) { next(); return; }
     confirm({
-      title: "保存できていない変更があります", body: `${backLabel}戻ると、この画面でいま直したところのうち、保存できていないものは消えます。`, confirmLabel: "変更を捨てて戻る", tone: "danger",
-      run: () => { live.current.units.forEach((unit) => { clearTimeout(unit.timer); unit.dirty = false; }); onBack(); },
+      title: "保存できていない変更があります", body, confirmLabel, tone: "danger",
+      run: () => { live.current.units.forEach((unit) => { clearTimeout(unit.timer); unit.dirty = false; }); next(); },
     });
   };
+  const back = () => leave(onBack, `${backLabel}戻ると、この画面でいま直したところのうち、保存できていないものは消えます。`, "変更を捨てて戻る");
 
   const currentBack = useRef<() => void>(() => {});
   currentBack.current = () => { void back(); };
@@ -462,6 +463,11 @@ export function ItemEditor({ adapter, overview, itemKey, timeZone, autosaveDelay
       <div className="lw-units">
         <p className="lw-item-meta">{item.path && <span className="cw-address">{item.path}</span>}<span>確認済み {item.reviewedUnits}/{item.totalUnits}</span>
           {item.updatedAt && <span>最終更新 <DateTime value={item.updatedAt} timeZone={timeZone} />{item.updatedBy ? `・${item.updatedBy}` : ""}</span>}</p>
+        {onOpenRelated && !!item.relatedItems?.length && <nav className="lw-related" aria-label="この項目に含まれる訳文">
+          <span className="lw-related-label">あわせて確認</span>
+          {item.relatedItems.map((related) => <button type="button" className="lw-related-link" key={related.key} disabled={backBusy}
+            onClick={() => void leave(() => onOpenRelated(related.key), `「${related.label}」を開くと、保存できていない変更は消えます。`, "変更を捨てて開く")}>{related.label}<span aria-hidden="true">→</span></button>)}
+        </nav>}
         {units.length === 0 && <p className="cw-hint">訳す項目はありません。</p>}
         {changed.length > 0 && <section className="lw-changed" aria-labelledby={`${baseId}-changed`}>
           <h3 id={`${baseId}-changed`} className="lw-group-title"><span className="lw-shape" data-lw-state="source-changed" aria-hidden="true" />原文が更新された項目（{changed.length}）</h3>

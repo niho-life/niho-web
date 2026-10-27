@@ -41,8 +41,8 @@ export function LocalizationWorkspace(props: LocalizationWorkspaceProps) {
 }
 
 /** CMS など、原文の編集画面の中で同じ 1 件だけを直す入口。 */
-export function LocalizationItemWorkspace({ adapter, itemKey, onBack, registerBack, timeZone = "Asia/Tokyo", autosaveDelay = 1000, pollInterval = 2000 }: {
-  adapter: LocalizationWorkspaceAdapter; itemKey: string; onBack: () => void; registerBack?: (back: (() => void) | null) => void; timeZone?: string; autosaveDelay?: number; pollInterval?: number;
+export function LocalizationItemWorkspace({ adapter, itemKey, onBack, onOpenRelated, registerBack, timeZone = "Asia/Tokyo", autosaveDelay = 1000, pollInterval = 2000 }: {
+  adapter: LocalizationWorkspaceAdapter; itemKey: string; onBack: () => void; onOpenRelated?: (itemKey: string) => void; registerBack?: (back: (() => void) | null) => void; timeZone?: string; autosaveDelay?: number; pollInterval?: number;
 }) {
   const [overview, setOverview] = useState<OverviewState>({ status: "loading" });
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
@@ -76,7 +76,7 @@ export function LocalizationItemWorkspace({ adapter, itemKey, onBack, registerBa
     <style dangerouslySetInnerHTML={{ __html: localizationWorkspaceCss }} />
     {overview.status === "ready" && isLocalizationItemKey(itemKey)
       ? <ItemEditor key={itemKey} adapter={adapter} overview={overview.overview} itemKey={itemKey} timeZone={timeZone} autosaveDelay={autosaveDelay} pollInterval={pollInterval}
-          backLabel={`${overview.overview.languages.source}へ`} hideSourceLink {...(registerBack ? { registerBack } : {})} confirm={setConfirm} onSummary={() => {}} onForbidden={() => setOverview({ status: "forbidden" })} onBack={onBack} />
+          backLabel={`${overview.overview.languages.source}へ`} hideSourceLink {...(onOpenRelated ? { onOpenRelated } : {})} {...(registerBack ? { registerBack } : {})} confirm={setConfirm} onSummary={() => {}} onForbidden={() => setOverview({ status: "forbidden" })} onBack={onBack} />
       : syncProgress && overview.status === "loading" ? <div className="cw-notice"><p role="status">{syncProgress}</p></div>
         : <Notice status={overview.status === "ready" ? "error" : overview.status} noun="翻訳" retry={() => setRetry((count) => count + 1)} />}
     {confirm && <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />}
@@ -100,6 +100,7 @@ function Session({ adapter, initialItemKey, initialView, onNavigate, timeZone = 
   const [overview, setOverview] = useState<OverviewState>({ status: "loading" });
   const [list, setList] = useState<ListState>({ status: "loading" });
   const [view, setView] = useState<View>(initialItemKey !== undefined && isLocalizationItemKey(initialItemKey) ? { view: "item", itemKey: initialItemKey } : { view: initialView ?? "list", itemKey: null });
+  const [itemStack, setItemStack] = useState<readonly string[]>([]);
   const [group, setGroup] = useState<string | null>(null);
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
@@ -201,7 +202,12 @@ function Session({ adapter, initialItemKey, initialView, onNavigate, timeZone = 
       const itemKey = view.itemKey;
       body = <ItemEditor key={itemKey} adapter={adapter} overview={current} itemKey={itemKey} timeZone={timeZone} autosaveDelay={autosaveDelay} pollInterval={pollInterval}
         confirm={setConfirm} onSummary={upsert} onForbidden={() => void loadOverview(true)}
-        onBack={() => { go({ view: "list", itemKey: null }); setFocusItem(itemKey); void loadOverview(true); }} />;
+        backLabel={itemStack.length ? "元の項目へ" : "一覧へ"}
+        onOpenRelated={(relatedKey) => { setItemStack([...itemStack, itemKey]); go({ view: "item", itemKey: relatedKey }); }}
+        onBack={() => {
+          if (itemStack.length) { const parent = itemStack[itemStack.length - 1]!; setItemStack(itemStack.slice(0, -1)); go({ view: "item", itemKey: parent }); }
+          else { go({ view: "list", itemKey: null }); setFocusItem(itemKey); void loadOverview(true); }
+        }} />;
     } else if (view.view === "settings") {
       body = <SettingsView adapter={adapter} overview={current} timeZone={timeZone} onBack={() => go({ view: "list", itemKey: null })}
         onSaved={(settings) => setOverview({ status: "ready", overview: { ...current, settings } })} />;
@@ -212,7 +218,7 @@ function Session({ adapter, initialItemKey, initialView, onNavigate, timeZone = 
           onPublish={() => setDialog({ kind: "release", start: { kind: "publish" } })} onHistory={() => setDialog({ kind: "history" })}
           onResume={(pending) => setDialog({ kind: "release", start: { kind: "resume", pending } })} onSettings={() => go({ view: "settings", itemKey: null })} />
         <ListView adapter={adapter} overview={current} list={list} group={group} onGroup={setGroup} timeZone={timeZone} focusItem={focusItem} onFocused={() => setFocusItem(null)}
-          onOpen={(itemKey) => go({ view: "item", itemKey })} onRetry={() => void loadList()} />
+          onOpen={(itemKey) => { setItemStack([]); go({ view: "item", itemKey }); }} onRetry={() => void loadList()} />
       </>;
     }
   }
