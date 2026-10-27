@@ -52,7 +52,7 @@ const adapter: LocalizationWorkspaceAdapter = {
 | `autosaveDelay` | 直してから自動で保存するまでの待ち時間（ms）。既定は 1000。 |
 | `pollInterval` | 翻訳の依頼・原文の取り込み・公開の進み具合を読み直す間隔（ms）。既定は 2000。 |
 
-`LocalizationItemWorkspace` には同じ `adapter`、対象の `itemKey`、原文のタブへ戻る `onBack` を渡します。原文の取り込みが進行中なら先に `advanceCatalog` を進め、完了後に対象の 1 件を読みます。一覧全体や公開画面は読みません。`timeZone`・`autosaveDelay`・`pollInterval` も共通です。CMS の言語タブから安全に戻るため、`registerBack` に項目エディタの保存処理を登録します。原文の入力は切替中も残り、訳文は保存してから閉じるので、次に開くと最新の原文を読みます。ホストが `onOpenRelated(itemKey)` を渡すと、同じ一覧行に含まれる別の保存単位へ移れます。移る前に保存待ちを完了し、失敗した場合は確認を出します。
+`LocalizationItemWorkspace` には同じ `adapter`、対象の `itemKey`、原文のタブへ戻る `onBack` を渡します。原文の取り込みが進行中なら先に `advanceCatalog` を進め、完了後に対象の 1 件を読みます。一覧全体や公開画面は読みません。`timeZone`・`autosaveDelay`・`pollInterval` も共通です。CMS の言語タブから安全に戻るため、`registerBack` に項目エディタの保存処理を登録します。原文の入力は切替中も残り、訳文は保存してから閉じるので、次に開くと最新の原文を読みます。ホストが `onOpenRelated(itemKey)` を渡すと、同じ一覧行に含まれる別の保存単位へ移れます。移る前に保存待ちを完了し、失敗した場合は確認を出します。`relatedPageLink` を渡すと、その項目に関係するページの安全な URL を別タブで開けます。Kamakura の CMS は記事などの詳細ページの英語エディタに使います。
 
 部品は `<style>` で `localizationWorkspaceCss` を入れます（CMS の画面の `collectionCss` を含みます）。inline の `<style>` を CSP で拒むホストは、この文字列をファイルにして読み込んでください。根の class は `.nw-collection.nw-localization`、翻訳の画面だけのクラスの接頭辞は `lw-` です。色・角丸・文字は CMS の画面と同じ `@niho/web/ui-tokens` のトークン（`--nw-*`）を使います。
 
@@ -384,7 +384,7 @@ type PreviewRenderMessage = {
 
 1 件の編集:
 
-- 上のバー: 「‹ 一覧へ」・状態・保存の状態・「翻訳案を作る」（`translate`）・「CMS で開く」（`sourceLink`）。
+- 上のバー: 「‹ 一覧へ」・状態・保存の状態・「翻訳案を作る」（`translate`）・「CMS で開く」（`sourceLink`）。本文の上には関連する訳文と、指定があれば詳細ページの英語エディタへのリンクを置く。
 - 原文の CMS に未公開の下書きがあれば帯で知らせ、CMS への入口を出します。
 - 「原文が更新」の項目は「原文が更新された項目」として先にまとめて出し、確認したときの原文（`previousSource`）を開いて見られます。
 - 項目ごとに原文（読むだけ）と訳文を横に並べます（900px 以下は縦）。訳文は直してから `autosaveDelay` 後に自動で保存し、項目ごとに「確認済みにする」（`review`）・「翻訳案を使う」を出します。

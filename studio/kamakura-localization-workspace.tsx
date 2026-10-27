@@ -5,10 +5,14 @@
 import { LocalizationItemWorkspace, LocalizationWorkspace, type LocalizationNavigationState, type LocalizationWorkspaceAdapter } from "../src/localization-workspace.js";
 import { KAMAKURA_CMS_PROJECT_ID, KAMAKURA_CMS_SITE_ID } from "./kamakura-cms-contract.js";
 import { createKamakuraLocalizationAdapter } from "./kamakura-localization.js";
+import { kamakuraLocalizationCmsSource } from "./kamakura-localization-contract.js";
 import { projectAliasPath, type ProjectTranslationsRoute } from "./project-routes.mjs";
 import type { SiteCmsView } from "./site-admin.mjs";
 
 const adapters = new Map<string, LocalizationWorkspaceAdapter>();
+const cmsTemplatePages: Readonly<Record<string, string>> = {
+  posts: "post-template", circles: "circle-template", companies: "company-template", creators: "creator-template",
+};
 
 /**
  * adapter は描画の外でサイトと CMS の開き方ごとに 1 回だけ作る。作り直すと LocalizationWorkspace が中身を読み直し、進行中の保存を止める。
@@ -52,7 +56,12 @@ export function KamakuraLocalizationWorkspace({ cmsView, siteOrigin, route, onNa
 
 /** CMS の同じ項目画面内で開く訳文。翻訳一覧は読み込まない。 */
 export function KamakuraCmsTranslation({ siteOrigin, itemKey, onBack, registerBack }: { readonly siteOrigin: string | null; readonly itemKey: string; readonly onBack: () => void; readonly registerBack: (back: (() => void) | null) => void }) {
+  const collectionId = kamakuraLocalizationCmsSource(itemKey)?.collectionId;
+  const template = collectionId ? cmsTemplatePages[collectionId] : undefined;
+  const editorPath = template ? projectAliasPath(KAMAKURA_CMS_PROJECT_ID, KAMAKURA_CMS_SITE_ID, "editor") : null;
+  const relatedPageLink = template && editorPath ? { href: `${editorPath}?page=${encodeURIComponent(template)}&lang=en`, label: "英語の詳細ページ" } : null;
   return <LocalizationItemWorkspace adapter={adapterFor("workspace", siteOrigin)} itemKey={itemKey} onBack={onBack} registerBack={registerBack}
+    {...(relatedPageLink ? { relatedPageLink } : {})}
     onOpenRelated={(relatedKey) => {
       const path = projectAliasPath(KAMAKURA_CMS_PROJECT_ID, KAMAKURA_CMS_SITE_ID, "translations", { itemKey: relatedKey });
       if (path) window.location.assign(path);
