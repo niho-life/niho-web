@@ -79,6 +79,9 @@ const formInspectorTabs: readonly WorkspaceTab<InspectorTab>[] = [
 const boxInspectorTabs: readonly WorkspaceTab<InspectorTab>[] = [
   { value: "box", label: "ボックス" }, { value: "transform", label: "変形" }, { value: "settings", label: "設定" }
 ];
+const loopBoxInspectorTabs: readonly WorkspaceTab<InspectorTab>[] = [
+  { value: "settings", label: "Loop Box" }, { value: "box", label: "ボックス" }, { value: "transform", label: "変形" }
+];
 const componentInspectorTabs: readonly WorkspaceTab<InspectorTab>[] = [
   { value: "settings", label: "設定" }, { value: "text", label: "テキスト" }, { value: "box", label: "ボックス" }, { value: "transform", label: "変形" }
 ];
@@ -87,6 +90,7 @@ const inspectorTabsFor = (node: PageNode | undefined): readonly WorkspaceTab<Ins
   if (node?.type === "text") return textInspectorTabs;
   if (node?.type === "element" && node.icon) return iconInspectorTabs;
   if (node?.type === "element" && node.embed) return embedInspectorTabs;
+  if (node?.type === "element" && node.interaction?.type === "loop-box") return loopBoxInspectorTabs;
   if (node?.type === "element" && node.tag === "video") return videoInspectorTabs;
   if (node?.type === "element" && (node.tag === "img" || node.tag === "picture")) return imageInspectorTabs;
   if (node?.type === "element" && ["form", "label", "input", "textarea", "select", "option", "button", "fieldset", "legend"].includes(node.tag)) return formInspectorTabs;
@@ -629,6 +633,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     if (selected?.type === "component" || selected?.type === "instance") return "settings";
     if (selected?.type === "element" && selected.icon) return "settings";
     if (selected?.type === "element" && selected.embed) return "settings";
+    if (selected?.type === "element" && selected.interaction?.type === "loop-box") return "settings";
     if (selected?.type === "element" && (selected.tag === "img" || selected.tag === "picture" || selected.tag === "video")) return "image";
     if (selected?.type === "element" && ["form", "label", "input", "textarea", "select", "button", "fieldset"].includes(selected.tag)) return "settings";
     if (selected?.type === "text" || selected?.type === "element" && selected.children.length === 1 && selected.children[0]?.type === "text") return "text";
@@ -1354,6 +1359,15 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       ? [{ id: item.id, label: String(item.attrs?.name ?? elementTypeLabel[item.tag]) }] : []) : [];
   const choiceText = node?.type === "element" && node.tag === "select" ? node.children.flatMap((child) => child.type === "element" && child.tag === "option" && child.children[0]?.type === "text" ? [child.children[0].text] : []).join("\n")
     : node?.type === "element" && node.tag === "fieldset" ? node.children.flatMap((child) => child.type === "element" && child.tag === "label" && child.children[0]?.type === "text" ? [child.children[0].text] : []).join("\n") : "";
+  const loopInteraction = node?.type === "element" && node.interaction?.type === "loop-box" ? node.interaction : undefined;
+  const loopDirectionLock = reason(tier === "base" ? "style.base.flexDirection" : "style.responsive") ?? (until === undefined ? undefined : reason("style.responsive"));
+  const loopDirection = (() => {
+    if (node?.type !== "element" || node.interaction?.type !== "loop-box") return "row";
+    let value = node.style?.base?.flexDirection;
+    const maximum = tier === "base" ? 0 : tier;
+    for (const entry of node.style?.responsive ?? []) if (entry.minWidth <= maximum && entry.declarations.flexDirection !== undefined) value = entry.declarations.flexDirection;
+    return ["row", "row-reverse", "column", "column-reverse"].includes(String(value)) ? String(value) : "row";
+  })();
   // 左上の文脈: サイト / 開いているもの（ページ・コンポーネント）と、そのパスか種類。常に現在地が分かるようにする。
   const contextSite = site?.name ?? "サイト", contextTitle = masterComponent?.name ?? page?.title ?? session?.history.present.title ?? "ページ編集";
   const contextDetail = masterComponent ? "コンポーネント本体" : isSiteComponent ? "サイト全体のコンポーネント" : page?.path ?? (page?.kind === "template" ? "テンプレート" : "");
@@ -1503,6 +1517,16 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
           {field("ラジオの選択肢（1行に1件）", choiceText, (value) => ({ type: "formChoices", path: selection, values: value.split("\n") }), "choices", { multiline: true, reason: reason("children") })}
         </>}
         {elementTab === "settings" && node.tag === "button" && node.attrs?.type === "submit" && node.children[0]?.type === "text" && field("送信ボタンの表示", node.children[0].text, (value) => ({ type: "text", path: [...selection, 0], value }), "submit-caption", { reason: document ? lockReason(document, [...selection, 0], "text", locks) : undefined })}
+        {elementTab === "settings" && loopInteraction && <>
+          <label className="e-field"><span>方向</span><select aria-label="Loop Boxの方向" value={loopDirection} disabled={editBlocked || !!loopDirectionLock} onChange={(event) => {
+            const value = event.target.value, error = applyStyle(until === undefined ? { type: "style", path: selection, breakpoint: tier, property: "flexDirection", value }
+              : { type: "styleRange", path: selection, breakpoint: tier, until, values: { flexDirection: value } }); if (error) setNotice(error);
+          }}><option value="row">横・順方向</option><option value="row-reverse">横・逆方向</option><option value="column">縦・順方向</option><option value="column-reverse">縦・逆方向</option></select></label>
+          {loopDirectionLock && <small className="e-help">ロック: {loopDirectionLock}</small>}
+          {field("速度（px/秒）", String(loopInteraction.speed), (value) => ({ type: "loopBox", path: selection, speed: Number(value), pauseOnHover: loopInteraction.pauseOnHover }), "loop-speed", { reason: reason("interaction") })}
+          <label className="e-check"><input type="checkbox" checked={loopInteraction.pauseOnHover} disabled={editBlocked || !!reason("interaction")} onChange={(event) => { const error = apply({ type: "loopBox", path: selection, speed: loopInteraction.speed, pauseOnHover: event.target.checked }); if (error) setNotice(error); }} />ホバー中は一時停止</label>
+          <p className="e-help">0px/秒では停止します。動きを減らす設定でも自動的に停止します。</p>
+        </>}
         {elementTab === "settings" && ["p", "h1", "h2", "h3", "h4", "h5", "h6"].includes(node.tag) && <label className="e-field"><span>文字の種類</span><select aria-label="文字の種類" value={node.tag} disabled={targetMode || editBlocked || !!reason("tag")} onChange={(event) => { const problem = apply({ type: "tag", path: selection, value: event.target.value as "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" }); if (problem) setNotice(problem); }}><option value="p">段落</option><option value="h1">見出し 1</option><option value="h2">見出し 2</option><option value="h3">見出し 3</option><option value="h4">見出し 4</option><option value="h5">見出し 5</option><option value="h6">見出し 6</option></select>{targetMode && <small className="e-help">共通デザインは原文側で編集してください。</small>}</label>}
         {elementTab === "text" && node.children.length === 1 && node.children[0]?.type === "text" && field("テキスト", node.children[0].text, (value) => ({ type: "text", path: [...selection, 0], value }), "child-text", { multiline: true, reason: document ? lockReason(document, [...selection, 0], "text", locks) : undefined })}
         {elementTab === "image" && node.tag === "img" && (assets ? <ImageSourceField node={node} assets={resolvedAssets.map} failed={resolvedAssets.failed} lock={reason("attrs.src") ?? reason("asset")} disabled={editBlocked} onPick={() => setPicker({ purpose: "image", path: selection })}>

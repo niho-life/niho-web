@@ -87,7 +87,10 @@ export type EmbedDescriptor = {
   source?: string;
 };
 /** 実行コードやID参照を持たず、検証済みの固定部分木だけへ結び付く標準操作。 */
-export type ElementInteraction = { type: "video-toggle" };
+export type ElementInteraction =
+  | { type: "video-toggle" }
+  /** flexDirection が進行軸と向きを決める、trusted runtime の無限マーキー。 */
+  | { type: "loop-box"; /** px/秒。0 は停止。 */ speed: number; pauseOnHover: boolean };
 export type TextNode = { type: "text"; text: string };
 export type ElementNode = {
   type: "element";

@@ -43,3 +43,17 @@ export function videoWithButtonPreset(id: IdFactory): ElementNode {
     ]
   };
 }
+
+/** 編集可能な3枚のカードを、flexDirection に沿って流す安全な Loop Box。 */
+export function loopBoxPreset(id: IdFactory): ElementNode {
+  const cards = ["新しい景色", "心地よい時間", "つながる場所"];
+  return {
+    type: "element", id: id(), tag: "div", interaction: { type: "loop-box", speed: 60, pauseOnHover: true },
+    style: { base: { display: "flex", flexDirection: "row", gap: 16, width: "100%", overflow: "hidden" } },
+    children: cards.map((value): ElementNode => ({
+      type: "element", id: id(), tag: "div",
+      style: { base: { flexShrink: 0, minWidth: 180, padding: 20, borderWidth: 1, borderStyle: "solid", borderColor: "#dedede", borderRadius: 12, backgroundColor: "#f7f7f7" } },
+      children: [{ type: "element", id: id(), tag: "p", children: [{ type: "text", text: value }] }]
+    }))
+  };
+}

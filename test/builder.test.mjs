@@ -64,6 +64,29 @@ test("VideoWithButton uses a closed structural binding that survives reload, dup
   assert.throws(() => parsePageDocument({ ...page, body: [{ ...root, children: [root.children[0], { ...root.children[1], children: [{ type: "element", id: "nested-control", tag: "span", children: [{ type: "text", text: "再生" }] }] }] }] }), /video-toggle/);
 });
 
+test("Loop Box uses a bounded closed descriptor and survives edit, reload and duplication", () => {
+  const preset = resolveBuilderDefinition().insertions.find((entry) => entry.id === "loop-box");
+  assert.ok(preset); assert.equal(preset.group, "インタラクション");
+  let page = editDocument(doc(), { type: "add", parentId: null, node: createInsertionNode(preset, { document: doc() }) });
+  const index = page.body.length - 1, root = page.body[index];
+  assert.deepEqual(root.interaction, { type: "loop-box", speed: 60, pauseOnHover: true });
+  assert.equal(root.style.base.flexDirection, "row"); assert.equal(root.children.length, 3);
+  page = editDocument(page, { type: "loopBox", path: [index], speed: 125.5, pauseOnHover: false });
+  page = editDocument(page, { type: "style", path: [index], breakpoint: "base", property: "flexDirection", value: "column-reverse" });
+  const reloaded = parsePageDocument(JSON.parse(JSON.stringify(page)));
+  assert.deepEqual(reloaded.body[index].interaction, { type: "loop-box", speed: 125.5, pauseOnHover: false });
+  assert.equal(reloaded.body[index].style.base.flexDirection, "column-reverse");
+  const duplicated = editDocument(reloaded, { type: "duplicate", path: [index] });
+  assert.deepEqual(duplicated.body.slice(-2).map((node) => node.interaction), [{ type: "loop-box", speed: 125.5, pauseOnHover: false }, { type: "loop-box", speed: 125.5, pauseOnHover: false }]);
+  const reject = (interaction, children = root.children) => assert.throws(() => parsePageDocument({ ...page, body: [{ ...root, interaction, children }] }), /interaction|loop-box/);
+  reject({ type: "loop-box", speed: -1, pauseOnHover: true });
+  reject({ type: "loop-box", speed: 1001, pauseOnHover: true });
+  reject({ type: "loop-box", speed: 60, pauseOnHover: "yes" });
+  reject({ type: "loop-box", speed: 60, pauseOnHover: true, script: "alert(1)" });
+  reject({ type: "loop-box", speed: 60, pauseOnHover: true }, []);
+  reject({ type: "loop-box", speed: 60, pauseOnHover: true }, [{ ...root.children[0], interaction: { type: "loop-box", speed: 60, pauseOnHover: false } }, ...root.children.slice(1)]);
+});
+
 test("Map, YouTube and Vimeo presets start empty and keep provider fixed through source edits and history", () => {
   const basic = resolveBuilderDefinition().insertions.filter((entry) => (entry.category ?? "basic") === "basic");
   let page = doc();

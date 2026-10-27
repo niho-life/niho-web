@@ -1,6 +1,6 @@
 import { mergeSiteStyles, parseSiteStyles, resolvePageStyles, type SiteStyles } from "./site-styles.js";
 import type {
-  BlockContract, BlockContracts, BlockSlot, ComponentLibrary, ComponentPropField, DesignToken, ElementAttributes, ElementNode, ElementTag, NodeStyle, PageDocument, PageImage, PageMeta, PageNode, PropRule, PublicPropValue, TextStyle
+  BlockContract, BlockContracts, BlockSlot, ComponentLibrary, ComponentPropField, DesignToken, ElementAttributes, ElementInteraction, ElementNode, ElementTag, NodeStyle, PageDocument, PageImage, PageMeta, PageNode, PropRule, PublicPropValue, TextStyle
 } from "./types.js";
 import { COMPONENT_LIMITS, expandDocument, instancesOf } from "./component-expand.js";
 import { isStyleProperty, parseStyle, parseTextStyles, parseTokens } from "./style-values.js";
@@ -228,13 +228,13 @@ function slotStyles(value: unknown, contract: BlockContract, tokens: Record<stri
 }
 
 /** @internal 文書の body と部品の root を同じ規則で検証し、新しいノードを返す。 */
-export function parseNodes(input: unknown, path: string, context: NodeContext, depth = 0, parent?: string, insideLink = false, inline = false, insideForm = false, parentInteraction?: "video-toggle"): PageNode[] {
+export function parseNodes(input: unknown, path: string, context: NodeContext, depth = 0, parent?: string, insideLink = false, inline = false, insideForm = false, ancestorInteraction?: ElementInteraction["type"]): PageNode[] {
   if (!Array.isArray(input)) fail(path, "expected node array");
   if (depth > 48 || input.length > 5000) fail(path, "document exceeds limits");
-  return input.map((raw, index) => parseNode(raw, `${path}[${index}]`, context, depth, parent, insideLink, inline, insideForm, parentInteraction));
+  return input.map((raw, index) => parseNode(raw, `${path}[${index}]`, context, depth, parent, insideLink, inline, insideForm, ancestorInteraction));
 }
 /** @internal depth はノードを含む配列の深さ。 */
-export function parseNode(raw: unknown, at: string, context: NodeContext, depth = 0, parent?: string, insideLink = false, inline = false, insideForm = false, parentInteraction?: "video-toggle"): PageNode {
+export function parseNode(raw: unknown, at: string, context: NodeContext, depth = 0, parent?: string, insideLink = false, inline = false, insideForm = false, ancestorInteraction?: ElementInteraction["type"]): PageNode {
   const node = record(raw, at), { blocks, tokens, ids, htmlIds, usage } = context;
   if (++usage.nodes > 5000) fail(at, "too many nodes");
   if (node.type === "text") {
@@ -279,19 +279,26 @@ export function parseNode(raw: unknown, at: string, context: NodeContext, depth 
   const tag = node.tag;
   if (inline && !phrasing.has(tag) || constrainedParent && !constrainedParent.includes(tag) || insideLink && interactive.has(tag)) fail(at, "invalid HTML content nesting");
   if (tag === "form" && insideForm) fail(at, "forms cannot be nested");
-  if (["label", "input", "textarea", "select", "button", "fieldset"].includes(tag) && !insideForm && !(tag === "button" && parentInteraction === "video-toggle")) fail(at, "form control requires a form parent");
+  if (["label", "input", "textarea", "select", "button", "fieldset"].includes(tag) && !insideForm && !(tag === "button" && ancestorInteraction === "video-toggle")) fail(at, "form control requires a form parent");
   if (tag === "option" && parent !== "select") fail(at, "option requires select parent");
   if (tag === "legend" && parent !== "fieldset") fail(at, "legend requires fieldset parent");
   if (tag === "summary" && parent !== "details") fail(at, "summary must be the first child of details");
   if (node.asset !== undefined && tag !== "img" && tag !== "video") fail(`${at}.asset`, "only img or video can reference an asset");
   if (node.icon !== undefined && (tag !== "span" || !isIconName(node.icon))) fail(`${at}.icon`, "unsupported built-in icon");
   if (node.embed !== undefined && tag !== "div") fail(`${at}.embed`, "only div can contain a standard embed");
-  let interaction: { interaction?: { type: "video-toggle" } } = {};
+  let interaction: { interaction?: ElementInteraction } = {};
   if (node.interaction !== undefined) {
     const descriptor = record(node.interaction, `${at}.interaction`);
-    keys(descriptor, ["type"], `${at}.interaction`);
-    if (descriptor.type !== "video-toggle" || tag !== "div" || node.asset !== undefined || node.icon !== undefined || node.embed !== undefined) fail(`${at}.interaction`, "unsupported interaction descriptor");
-    interaction = { interaction: { type: "video-toggle" } };
+    if (tag !== "div" || node.asset !== undefined || node.icon !== undefined || node.embed !== undefined || ancestorInteraction === "loop-box") fail(`${at}.interaction`, "unsupported interaction descriptor");
+    if (descriptor.type === "video-toggle") {
+      keys(descriptor, ["type"], `${at}.interaction`);
+      interaction = { interaction: { type: "video-toggle" } };
+    } else if (descriptor.type === "loop-box") {
+      keys(descriptor, ["type", "speed", "pauseOnHover"], `${at}.interaction`);
+      if (typeof descriptor.speed !== "number" || !Number.isFinite(descriptor.speed) || descriptor.speed < 0 || descriptor.speed > 1000) fail(`${at}.interaction.speed`, "speed must be between 0 and 1000 px/sec");
+      if (typeof descriptor.pauseOnHover !== "boolean") fail(`${at}.interaction.pauseOnHover`, "expected boolean");
+      interaction = { interaction: { type: "loop-box", speed: descriptor.speed, pauseOnHover: descriptor.pauseOnHover } };
+    } else fail(`${at}.interaction`, "unsupported interaction descriptor");
   }
   const asset = node.asset === undefined ? {} : { asset: parseAssetReference(node.asset, `${at}.asset`) };
   const icon = node.icon === undefined ? {} : { icon: node.icon };
@@ -310,7 +317,7 @@ export function parseNode(raw: unknown, at: string, context: NodeContext, depth 
   if (tag === "img" && !attrs.attrs) fail(at, "img requires attributes");
   if (tag === "video" && !attrs.attrs) fail(at, "video requires attributes");
   if (node.icon !== undefined && (attrs.attrs?.role !== "img" || typeof attrs.attrs["aria-label"] !== "string" || !attrs.attrs["aria-label"].trim() || attrs.attrs["aria-hidden"] === "true")) fail(at, "icon requires role img and aria-label");
-  const children = parseNodes(node.children, `${at}.children`, context, depth + 1, tag, insideLink || interactive.has(tag) && tag !== "details", inline || phrasingParents.has(tag), insideForm || tag === "form", interaction.interaction?.type);
+  const children = parseNodes(node.children, `${at}.children`, context, depth + 1, tag, insideLink || interactive.has(tag) && tag !== "details", inline || phrasingParents.has(tag), insideForm || tag === "form", interaction.interaction?.type ?? ancestorInteraction);
   if (voidTags.has(tag) && children.length) fail(at, "void element cannot have children");
   if ((tag === "video" || node.icon !== undefined || node.embed !== undefined) && children.length) fail(at, "media element cannot have children");
   if (tag === "label" && !children.some((child) => child.type === "text" ? !!child.text.trim() : true)) fail(at, "label requires text");
@@ -339,6 +346,7 @@ export function parseNode(raw: unknown, at: string, context: NodeContext, depth 
     if (children.length !== 2 || video?.type !== "element" || video.tag !== "video" || button?.type !== "element" || button.tag !== "button" ||
         video.attrs?.controls === false || button.attrs?.type !== "button" || button.children.length !== 1 || button.children[0]?.type !== "text") fail(`${at}.children`, "video-toggle requires one controlled video followed by one text button");
   }
+  if (interaction.interaction?.type === "loop-box" && !children.length) fail(`${at}.children`, "loop-box requires content");
   return { type: "element", id, tag, ...asset, ...icon, ...embed, ...interaction, ...attrs, ...style, children };
 }
 

@@ -48,6 +48,8 @@ export type EditorOperation =
   /** provider は挿入時に固定し、入力 URL だけを provider 固有の canonical source へ更新する。 */
   | { type: "embedSource"; path: NodePath; source: string }
   | { type: "embedTitle"; path: NodePath; title: string }
+  /** Loop Box の閉じた runtime 設定。方向は通常の flexDirection style で編集する。 */
+  | { type: "loopBox"; path: NodePath; speed: number; pauseOnHover: boolean }
   | { type: "background"; path: NodePath; breakpoint: number | "base"; asset: AssetReference | undefined }
   | { type: "replaceAsset"; from: AssetReference; to: AssetReference }
   | { type: "duplicate" | "remove"; path: NodePath }
@@ -332,6 +334,10 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
       const form = node.type === "element" && ["input", "textarea", "select", "button", "option", "fieldset"].includes(node.tag) && ["required", "checked", "disabled"].includes(operation.name);
       if (!video && !form) throw new Error("この要素では切り替えられない設定です。");
       (node.attrs ??= {})[operation.name] = operation.value;
+    } else if (operation.type === "loopBox") {
+      if (node.type !== "element" || node.interaction?.type !== "loop-box") throw new Error("Loop Boxを選択してください。");
+      if (!Number.isFinite(operation.speed) || operation.speed < 0 || operation.speed > 1000) throw new Error("速度は0〜1000px/秒で指定してください。");
+      node.interaction = { type: "loop-box", speed: operation.speed, pauseOnHover: operation.pauseOnHover };
     } else if (operation.type === "formChoices") {
       if (node.type !== "element" || !["select", "fieldset"].includes(node.tag)) throw new Error("選択肢を持つ要素を選択してください。");
       const values = operation.values.map((value) => value.trim()).filter(Boolean);

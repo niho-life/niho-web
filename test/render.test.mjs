@@ -152,6 +152,21 @@ test("VideoWithButton SSR keeps native controls and emits only the closed runtim
   assert.match(empty, /動画を選んでください/); assert.match(empty, /data-nw-video-toggle=""[^>]*disabled=""/);
 });
 
+test("Loop Box SSR keeps one accessible original and a fixed empty runtime mount", () => {
+  const doc = structuredClone(fixture);
+  doc.body = [{ type: "element", id: "loop", tag: "div", interaction: { type: "loop-box", speed: 60, pauseOnHover: true }, style: { base: { display: "flex", flexDirection: "row", overflow: "hidden" } }, children: [
+    { type: "element", id: "first", tag: "p", children: [{ type: "text", text: "Accessible original" }] },
+    { type: "element", id: "second", tag: "a", attrs: { href: "/details" }, children: [{ type: "text", text: "More" }] }
+  ] }];
+  const html = renderPageToHtml(doc);
+  assert.equal((html.match(/Accessible original/g) ?? []).length, 1);
+  assert.match(html, /data-nw-loop-box=""[^>]*data-nw-loop-speed="60"[^>]*data-nw-loop-pause-hover="true"/);
+  assert.match(html, /data-nw-loop-box-track=""/); assert.match(html, /data-nw-loop-box-clones=""[^>]*aria-hidden="true"/);
+  assert.match(html, /href="\/details"/); assert.ok(!html.includes("onclick"));
+  const editCanvas = renderToString(createElement(PageRenderer, { document: doc, canvas: { interactive: false } }));
+  assert.match(editCanvas, /data-nw-loop-box-static=""/); assert.doesNotMatch(editCanvas, /data-nw-loop-box=""/);
+});
+
 test("closed standard embeds render fixed trusted iframe attributes and empty sources make no request", () => {
   const doc = structuredClone(fixture);
   doc.body = [
