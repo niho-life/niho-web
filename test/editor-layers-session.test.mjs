@@ -80,6 +80,21 @@ test("editor session wraps invalid documents consistently when site settings loa
     (error) => error instanceof EditorSessionLoadError && error.reason === "document" && /現在の編集内容は保持/.test(error.message) && error.cause instanceof Error);
 });
 
+test("editor session carries only a strictly validated English publication status", async () => {
+  const englishPublication = { state: "review-required", retryable: false, updatedAt: "2026-10-27T01:02:03+09:00" };
+  const loaded = await readEditorSession({ readDocument: async () => ({ ...snapshot(), englishPublication }) }, target, new AbortController().signal);
+  assert.deepEqual(loaded.session.englishPublication, { ...englishPublication, updatedAt: "2026-10-26T16:02:03.000Z" });
+  for (const invalid of [
+    { state: "unknown", retryable: false },
+    { state: "queued", retryable: "false" },
+    { state: "queued", retryable: false, updatedAt: "tomorrow" },
+    { state: "queued", retryable: false, internal: "secret" }
+  ]) {
+    await assert.rejects(() => readEditorSession({ readDocument: async () => ({ ...snapshot(), englishPublication: invalid }) }, target, new AbortController().signal),
+      (error) => error instanceof EditorSessionLoadError && error.reason === "document" && /現在の編集内容は保持/u.test(error.message));
+  }
+});
+
 test("canvas fit scale is pure and leaves the document viewport width unchanged", () => {
   assert.equal(fitCanvasScale(1280, 640), .5);
   assert.equal(fitCanvasScale(1280, 1600), 1);

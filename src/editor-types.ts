@@ -10,6 +10,8 @@ import type { BlockLocalizationSchema, LocalizationLocale, LocalizationValue } f
 import type {
   EditorLocaleReleaseApplyRequest, EditorLocaleReleaseApplyResult, EditorLocaleReleasePlan, EditorLocaleReleasePrepareRequest, EditorLocaleReleaseState
 } from "./locale-release-contract.js";
+import type { EnglishPublication, EnglishPublicationRetryResult } from "./english-publication.js";
+export type { EnglishPublication, EnglishPublicationRetryResult, EnglishPublicationState } from "./english-publication.js";
 export type { PageKind, PageVisibility, SiteSettings } from "./pages.js";
 /** 言語全体の公開の型は locale-release-contract.ts に移した。互換のためここからも export する。 */
 export type {
@@ -94,6 +96,8 @@ export type EditorSnapshot = {
   readOnly?: EditorReadOnly;
   /** 本文と独立した、同じ snapshot/version に対応する native site presentation。旧ホストは省略可。 */
   presentation?: unknown;
+  /** 原文の公開とは独立した、ホスト所有の英語版公開処理の現在値。省略時は表示しない。 */
+  englishPublication?: EnglishPublication;
 };
 export type EditorSaveResult = {
   status: "saved";
@@ -176,6 +180,11 @@ export interface EditorAdapter {
   }, signal: AbortSignal): Promise<EditorSaveResult>;
   prepareRelease(request: EditorReleaseRequest, signal: AbortSignal): Promise<EditorReleasePlan>;
   release(request: EditorReleasePlan, signal: AbortSignal): Promise<EditorReleaseResult>;
+  /** 省略したホストでは英語公開状態の明示更新・安全な再試行を表示しない。本文や version は更新しない。 */
+  englishPublication?: {
+    refresh(target: EditorTarget, signal: AbortSignal): Promise<EnglishPublication | undefined>;
+    retry(target: EditorTarget, signal: AbortSignal): Promise<EnglishPublicationRetryResult>;
+  };
   /** 省略したホストでは部品機能を使わない。 */
   components?: EditorComponentAdapter;
   /** 省略したホストは従来どおり単言語で動作する。認証・永続化・翻訳providerはホストの責務。 */

@@ -50,6 +50,7 @@ test("Experience editor stays frozen while Kamakura reads pass and site freezes 
   assert.equal((await worker.fetch(new Request(`https://studio.niho.life${experience}/editor/sites`), env)).status, 401);
   assert.equal((await call(`${experience}/editor/sites`)).status, 403);
   assert.equal((await call(`${kamakura}/editor/catalog`)).status, 403);
+  assert.equal((await write(`${kamakura}/editor/home/english-publication-retry`, "POST")).status, 403);
   assert.equal(kamakuraCalls.length, 0);
   roles.set("project-experience/experience", "editor");
   roles.set("project-kamakura/kamakura", "editor");

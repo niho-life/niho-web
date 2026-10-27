@@ -31,11 +31,20 @@ React 18.3 または 19 と、同じ版の React DOM を利用側で用意して
 | `saveDraft({ target, document, expectedVersion }, signal)` | 楽観ロック付き下書き保存。成功時は新しい version とサーバー採番の revision、競合時は `status: 'conflict'` |
 | `prepareRelease(request, signal)` | 公開 / rollback の正確な対象ドメイン、公開内容との差分、確認 token を発行 |
 | `release(plan, signal)` | 確認済みの内容を公開 / rollback。成功時は最新 snapshot、競合時は `status: 'conflict'` |
+| `englishPublication`（任意） | 原文と独立した英語版公開状態の明示更新と、ホストが許した失敗だけの再試行 |
 | `preparePageChange` / `applyPageChange`（任意） | ページの作成・複製・名前とURLの変更・公開切替。影響の確認と一回限りの確認 token。[ページ管理の契約](page-contract.md) |
 | `readSiteSettings` / `saveSiteSettings`（任意） | サイト共通の公開情報とカラー・文字スタイル。楽観ロック付き（[サイト共通スタイルの契約](site-styles-contract.md)） |
 | `listRevisions` / `readRevision` / `createSnapshot`（任意） | 版履歴の一覧・読み取り専用の表示・名前付きスナップショット。[保存・履歴の契約](save-history-contract.md) |
 
 `listPages` の各ページに任意で `path`・`kind`（page / template / shared）・`visibility`・`published` を返すと、左のページパネルにフォルダ（`template` は「テンプレート」の見出しの下）と公開状態の点（緑＝公開中、灰＝未公開、輪郭＝非公開）を表示します。`publication` があれば、その label と description を点のツールチップと読み上げに使います。任意メソッドを実装しないホストでは、ページ操作とサイト設定の保存を表示しません。
+
+### 原文ページに対応する英語版の公開状態
+
+原文の `EditorSnapshot` と原文公開成功時の `snapshot` は、任意で `englishPublication: { state, retryable, updatedAt? }` を返せます。状態は `initial-release-required` / `queued` / `translating` / `review-required` / `publishing` / `published` / `withdrawn` / `retryable-failure` / `superseded` の閉じた値です。`updatedAt` はタイムゾーン付きの有効な ISO timestamp、`retryable` は boolean とし、未知の state・余計な field・不正日時は拒否します。訳文 snapshot に原文の値を補完しません。省略時は何も表示しません。
+
+`EditorAdapter.englishPublication` は optional capability です。`refresh(target, signal)` は状態だけを読み、`retry(target, signal)` は `{ status: "accepted", englishPublication }` または `{ status: "conflict" }` を返します。画面は `retryable: true` かつ `initial-release-required` 以外でだけ再試行を出します。明示更新と再試行成功は状態だけを差し替え、未保存文書、undo/redo、文書 version を変えません。別ページへ移った後の遅い応答は破棄し、accepted を published と推測しません。日本語の公開成功案内と英語版の状態は別に扱います。
+
+Kamakura Studio は同一 origin の `POST /api/projects/project-kamakura/sites/kamakura/editor/:pageId/english-publication-retry` に空の `{}` だけを送り、署名済み BFF が `/internal/studio/web-content/:pageId/english-publication-retry` へ中継します。BFF は固定 project/site、owner/editor membership、page ID、POST、query なし、空の要求本文を検査し、上流の accepted 応答も既知 field だけに再構成します。raw upstream error、内部情報、原稿はブラウザへ返しません。見た目編集の凍結とこの再試行は独立です。
 
 target は `siteId/pageId/locale` の組です。文書の組と一致しない読込結果は受け入れません。ホストは各呼出しで現在のセッションの認証・サイト/ページ権限を確認し、文書を `@niho/web/core` で検証してください。UI の選択値やロック表示をサーバーの認可の代わりにしません。
 
