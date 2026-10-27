@@ -8,6 +8,7 @@ import type { Appear, AssetReference, ComponentLibrary, ComponentNode, DesignTok
 import { stateNames, textStyleProperties } from "./style-values.js";
 import { assertMotionStylePatch, sameMotionValue, type MotionStylePatch } from "./builder.js";
 import { isSafeHttpsOrigin, isSafePublicUrl, keys, line, record } from "./validation-utils.js";
+import { normalizeEmbedSource } from "./embeds.js";
 
 export { nodeAt, walkNodes, type NodePath };
 export type EditorOperation =
@@ -44,6 +45,9 @@ export type EditorOperation =
   | { type: "replaceChildren"; path: NodePath; children: PageNode[] }
   | { type: "image"; path: NodePath; source: { asset: AssetReference } | { src: string; srcset?: string }; alt?: string }
   | { type: "video"; path: NodePath; source: { asset: AssetReference } | { src: string } }
+  /** provider は挿入時に固定し、入力 URL だけを provider 固有の canonical source へ更新する。 */
+  | { type: "embedSource"; path: NodePath; source: string }
+  | { type: "embedTitle"; path: NodePath; title: string }
   | { type: "background"; path: NodePath; breakpoint: number | "base"; asset: AssetReference | undefined }
   | { type: "replaceAsset"; from: AssetReference; to: AssetReference }
   | { type: "duplicate" | "remove"; path: NodePath }
@@ -461,6 +465,13 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
       node.attrs ??= {};
       if ("asset" in operation.source) { node.asset = structuredClone(operation.source.asset); delete node.attrs.src; }
       else { if (operation.source.src) node.attrs.src = operation.source.src; else delete node.attrs.src; delete node.asset; }
+    } else if (operation.type === "embedSource") {
+      if (node.type !== "element" || !node.embed) throw new Error("埋め込みを選択してください。");
+      if (operation.source === "") delete node.embed.source;
+      else node.embed.source = normalizeEmbedSource(node.embed.provider, operation.source);
+    } else if (operation.type === "embedTitle") {
+      if (node.type !== "element" || !node.embed) throw new Error("埋め込みを選択してください。");
+      node.embed.title = operation.title;
     } else if (operation.type === "background") {
       if (node.type === "text") throw new Error("親要素の見た目を編集してください。");
       const declarations = declarationsAt(node, operation.breakpoint);

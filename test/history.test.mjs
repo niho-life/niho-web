@@ -211,3 +211,10 @@ test("diffDocuments reports trusted icon selection and native video fields", () 
     "span#status の aria-label", "span#status のアイコン", "video#movie の aria-label", "video#movie の muted", "video#movie の src", "video#movie のアセット"
   ]);
 });
+
+test("diffDocuments reports standard embed source and accessible title", () => {
+  const before = doc(), after = doc();
+  before.body.push({ type: "element", id: "tour", tag: "div", embed: { provider: "youtube", title: "動画" }, children: [] });
+  after.body.push({ type: "element", id: "tour", tag: "div", embed: { provider: "youtube", title: "施設紹介", source: "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ" }, children: [] });
+  assert.deepEqual(paths(diffDocuments(before, after)), ["div#tour の埋め込み URL", "div#tour の埋め込みタイトル"]);
+});

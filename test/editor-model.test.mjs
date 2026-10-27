@@ -213,6 +213,19 @@ test("icon and video operations preserve closed media contracts through reload",
   assert.throws(() => editDocument(original, { type: "video", path: [2], source: { src: "data:video/mp4;base64,AAAA" } }), DocumentValidationError);
   assert.throws(() => editDocument(original, { type: "icon", path: [1], name: "<svg>" }), DocumentValidationError);
 });
+
+test("embed source and title operations are provider-bound, validated, locked and undoable", () => {
+  const original = doc(); original.body.push({ type: "element", id: "tour", tag: "div", embed: { provider: "youtube", title: "動画" }, children: [] });
+  let next = editDocument(original, { type: "embedSource", path: [1], source: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" });
+  next = editDocument(next, { type: "embedTitle", path: [1], title: "施設紹介" });
+  assert.deepEqual(nodeAt(next, [1]).embed, { provider: "youtube", title: "施設紹介", source: "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ" });
+  const history = commitHistory({ past: [original], present: next, future: [] }, next);
+  assert.equal(travelHistory({ ...history, past: [original] }, "undo", {}, []).present.body[1].embed.source, undefined);
+  assert.throws(() => editDocument(original, { type: "embedSource", path: [1], source: "https://vimeo.com/123456789" }), /YouTube/);
+  assert.throws(() => editDocument(original, { type: "embedTitle", path: [1], title: "" }), DocumentValidationError);
+  assert.throws(() => editDocument(original, { type: "embedSource", path: [1], source: "https://youtu.be/dQw4w9WgXcQ" }, {}, [{ nodeId: "tour", fields: ["embed.source"], reason: "固定埋め込み" }]), /固定埋め込み/);
+  assert.throws(() => editDocument(original, { type: "embedTitle", path: [1], title: "変更" }, {}, [{ nodeId: "tour", fields: ["embed.title"], reason: "固定タイトル" }]), /固定タイトル/);
+});
 test("image source locks cover src, srcSet, assets, restoration and history together", () => {
   const original = withPhoto({ attrs: { src: "/photo.webp", srcSet: "/photo-large.webp", alt: "Sea" } });
   const changed = structuredClone(original); nodeAt(changed, [0, 3]).attrs.srcSet = "/bypass.webp";

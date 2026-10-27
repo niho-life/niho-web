@@ -32,8 +32,8 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 
 | 入口 | 用途 |
 | --- | --- |
-| `@niho/web` | JSON 型、`validateDocument` / `parsePageDocument`、閉じた組み込みアイコンとフォーム要素、CSS、画像・native動画を含む React SSR の `PageRenderer` |
-| `@niho/web/core` | 検証・文書型・CSS・共通部品の検証と展開だけの入口。React の runtime import を含みません |
+| `@niho/web` | JSON 型、`validateDocument` / `parsePageDocument`、閉じた組み込みアイコン・フォーム・Map / YouTube / Vimeo埋め込み、CSS、画像・native動画を含む React SSR の `PageRenderer` |
+| `@niho/web/core` | 検証・文書型・embed URL正規化・CSS・共通部品の検証と展開だけの入口。React の runtime import を含みません |
 | `@niho/web/builder` | 汎用の挿入カタログ、モーション定義、host拡張の型と検証。React非依存 |
 | `@niho/web/react` | `PageRenderer` とブロック registry の型 |
 | `@niho/web/server` | Astro の build / server で使える `renderPageToHtml` |
@@ -189,7 +189,7 @@ const html = renderPageToHtml(document);
 ## 検証と対応範囲
 
 - 未知フィールド、schema の版違い、重複 ID、画像の `alt` 不足、代表的な不正 HTML の入れ子を拒否します。
-- アイコンは閉じた名前カタログだけを保存し、任意 SVG/HTML を受け付けません。動画は HTTPS / root-relative URL または asset 参照の一方を持つか、編集中はソース未設定にでき、アクセシブル名と限定した media 属性を検証します。asset URL は文書へ保存しません。
+- アイコンは閉じた名前カタログだけを保存し、任意 SVG/HTML を受け付けません。動画は HTTPS / root-relative URL または asset 参照の一方を持つか、編集中はソース未設定にでき、アクセシブル名と限定した media 属性を検証します。asset URL は文書へ保存しません。標準embedはMap / YouTube / Vimeoだけをprovider固有URLへ正規化し、任意iframe HTML・src・sandbox・JavaScriptを受け付けません。
 - HTML タグ・属性・CSS プロパティは許可リスト方式です。任意 HTML / CSS / selector / JavaScript / event handler は扱いません。
 - URL は資格情報のない HTTPS、`/` から始まる同一サイト内パス、`#id` に限定します。HTTP、protocol relative、data、javascript、制御文字を含む値を拒否します。
 - 色・フォント・寸法・余白・Flex・Grid・位置・画像の収まり等を扱います。名前付きの文字スタイル（`textStyles`）と表示名付きの token で見た目を共通化できます。任意 CSS 関数や `url()` は許可しません。背景画像は素材参照だけを指定でき、`url()` はホストが解決した安全な URL から描画時に生成します。数値の寸法は px、line-height 等の数値プロパティは単位なしです。
@@ -199,7 +199,7 @@ const html = renderPageToHtml(document);
 
 ## 開発
 
-スタッフ向けエディターは `@niho/web/editor` の `PageEditor` を使います。左の追加パネルは Basic / Parts / Sections に分かれ、Basic のセクション・ボックス・画像・テキスト・組み込みアイコン・リッチテキスト・native動画、Form1/2/3とInput・Textarea・Select・Radio・Confirm・Checkbox・File・Submit・Search・Passwordに加えて、編集可能なボタン・カード・見出しセット・リストと、ヘッダー・ヒーロー・特徴グリッド・CTA・FAQ・フッターをクリックまたはドラッグで配置できます。フォーム名、項目名、必須、入力型、placeholder、選択肢、checkbox label、file accept、submit captionは右インスペクタで編集できます。動画は直接URLまたは素材ライブラリのready MP4を選び、配信URLを文書へ保存しません。ページ・レイヤーパネル、中央キャンバスでの直接文字編集とドラッグ配置、右インスペクタ（編集段と表示段の要約、幅・高さ、マージン、パディング、方向、ギャップ、9点＋横・縦の配置、外観、位置。`flex` 比率と高さの `dvh` を含む）、下書き保存、楽観ロック、公開/rollbackの対象ドメインと差分確認も提供します。[ホスト接続・編集・公開の契約](docs/editor-contract.md)と `npm run demo` のインメモリ動作例を参照してください。ホストが所有する表示部品（カレンダー・地図・カルーセル・一覧など）をキャンバスの同じ iframe に公開と同じ見た目で出すには、`PageEditor` の `previewComponent` に表示中の文書・幅・表示モード・従来の描画を受けるコンポーネントを渡します（[ホストの表示部品を同じ iframe へ差し込む](docs/editor-contract.md#ホストの表示部品を同じ-iframe-へ差し込む)、`npm run demo:host-preview`）。
+スタッフ向けエディターは `@niho/web/editor` の `PageEditor` を使います。左の追加パネルは Basic / Parts / Sections に分かれ、Basic のセクション・ボックス・画像・テキスト・組み込みアイコン・リッチテキスト・native動画、埋め込み群のMap / YouTube / Vimeo、Form1/2/3とInput・Textarea・Select・Radio・Confirm・Checkbox・File・Submit・Search・Passwordに加えて、編集可能なボタン・カード・見出しセット・リストと、ヘッダー・ヒーロー・特徴グリッド・CTA・FAQ・フッターをクリックまたはドラッグで配置できます。フォーム名、項目名、必須、入力型、placeholder、選択肢、checkbox label、file accept、submit captionは右インスペクタで編集できます。動画は直接URLまたは素材ライブラリのready MP4を選び、配信URLを文書へ保存しません。標準埋め込みはprovider固定のままURLとアクセシブルなタイトルを編集し、未設定なら公開出力から省きます。ページ・レイヤーパネル、中央キャンバスでの直接文字編集とドラッグ配置、右インスペクタ（編集段と表示段の要約、幅・高さ、マージン、パディング、方向、ギャップ、9点＋横・縦の配置、外観、位置。`flex` 比率と高さの `dvh` を含む）、下書き保存、楽観ロック、公開/rollbackの対象ドメインと差分確認も提供します。[ホスト接続・編集・公開の契約](docs/editor-contract.md)と `npm run demo` のインメモリ動作例を参照してください。ホストが所有する表示部品（カレンダー・地図・カルーセル・一覧など）をキャンバスの同じ iframe に公開と同じ見た目で出すには、`PageEditor` の `previewComponent` に表示中の文書・幅・表示モード・従来の描画を受けるコンポーネントを渡します（[ホストの表示部品を同じ iframe へ差し込む](docs/editor-contract.md#ホストの表示部品を同じ-iframe-へ差し込む)、`npm run demo:host-preview`）。
 
 Studioへの新しいサイト接続と、独自挿入・motion・block・共通部品・画像・CAS保存・SSRを持つ第三サイト `atelier` の動作例は[ビルダー接続ガイド](docs/builder-integration-guide.md)を参照してください。`npm run demo:builder` で `127.0.0.1` 限定のdemoを起動できます。
 

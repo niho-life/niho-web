@@ -34,6 +34,7 @@ export function layerLabel(node: Exclude<PageNode, { type: "text" }>, labels: La
   if (node.type === "component") return labels.blocks?.[node.block] ?? "コンポーネント";
   if (node.type === "instance") return labels.components?.get(node.component) ?? "コンポーネント";
   if (node.icon) return "アイコン";
+  if (node.embed) return node.embed.provider === "map" ? "Map" : node.embed.provider === "youtube" ? "YouTube" : "Vimeo";
   if (node.tag === "video") return "動画";
   if (node.tag === "img" || node.tag === "picture") return "画像";
   if (textTags.has(node.tag)) {
@@ -46,7 +47,7 @@ export function layerLabel(node: Exclude<PageNode, { type: "text" }>, labels: La
 export function layerKind(node: Exclude<PageNode, { type: "text" }>): LayerKind {
   if (node.type === "component") return "component";
   if (node.type === "instance") return "instance";
-  if (node.icon || node.tag === "video" || node.tag === "img" || node.tag === "picture") return "image";
+  if (node.icon || node.embed || node.tag === "video" || node.tag === "img" || node.tag === "picture") return "image";
   return textTags.has(node.tag) ? "text" : "box";
 }
 

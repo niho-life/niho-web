@@ -136,6 +136,28 @@ test("icons and videos render accessibly in SSR and unresolved video assets fail
   assert.ok(canvas.includes('poster="https://site.example/poster.webp"'));
 });
 
+test("closed standard embeds render fixed trusted iframe attributes and empty sources make no request", () => {
+  const doc = structuredClone(fixture);
+  doc.body = [
+    { type: "element", id: "map", tag: "div", embed: { provider: "map", title: "周辺地図", source: "https://www.google.com/maps/embed?pb=!1m18!2m3%20Public%20Place" }, children: [] },
+    { type: "element", id: "youtube", tag: "div", embed: { provider: "youtube", title: "紹介動画", source: "https://youtu.be/dQw4w9WgXcQ" }, children: [] },
+    { type: "element", id: "vimeo", tag: "div", embed: { provider: "vimeo", title: "作品動画", source: "https://vimeo.com/123456789?h=Unlisted_1" }, children: [] },
+    { type: "element", id: "empty", tag: "div", embed: { provider: "map", title: "準備中の地図" }, children: [] }
+  ];
+  const html = renderPageToHtml(doc);
+  assert.ok(!html.includes('data-nw-node="empty"')); assert.equal((html.match(/<iframe/g) ?? []).length, 3);
+  assert.match(html, /data-nw-embed="map"><iframe src="https:\/\/www\.google\.com\/maps\/embed\?pb=/);
+  assert.match(html, /title="周辺地図" loading="lazy" referrerPolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-same-origin"/);
+  assert.match(html, /src="https:\/\/www\.youtube-nocookie\.com\/embed\/dQw4w9WgXcQ"/);
+  assert.match(html, /allow="encrypted-media; picture-in-picture; fullscreen" allowFullScreen=""/);
+  assert.match(html, /src="https:\/\/player\.vimeo\.com\/video\/123456789\?h=Unlisted_1"/);
+  assert.ok(!html.includes("javascript:")); assert.ok(!html.includes("srcDoc=")); assert.ok(!html.includes("pointer-events"));
+  const placeholder = renderToString(createElement(PageRenderer, { document: doc, missingAssets: "placeholder" }));
+  assert.match(placeholder, /data-nw-node="empty"[^>]*data-nw-empty-embed="map"[^>]*role="status"[^>]*>Map の URL を設定してください<\/div>/);
+  const canvas = renderToString(createElement(PageRenderer, { document: doc, canvas: {} }));
+  assert.match(canvas, /<iframe[^>]*style="[^"]*pointer-events:none/);
+});
+
 test("unsafe resolved asset maps throw before any block executes", () => {
   const doc = imageDocument(); let called = 0;
   doc.body.unshift({ type: "component", id: "notice", block: "Notice", props: {} });

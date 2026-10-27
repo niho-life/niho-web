@@ -6,6 +6,7 @@ import { COMPONENT_LIMITS, expandDocument, instancesOf } from "./component-expan
 import { isStyleProperty, parseStyle, parseTextStyles, parseTokens } from "./style-values.js";
 import { DocumentValidationError, fail, identifier, isSafePublicLink, isSafePublicUrl, keys, line, localeCode, parseAssetReference, publicImageSrcSet, publicImageUrl, record, string } from "./validation-utils.js";
 import { isIconName } from "./icons.js";
+import { parseEmbedDescriptor } from "./embeds.js";
 
 const tags = new Set("div section article header footer main nav aside h1 h2 h3 h4 h5 h6 p span a img picture source video ul ol li dl dt dd strong em b i small blockquote figure figcaption br hr time details summary form label input textarea select option button fieldset legend".split(" "));
 const voidTags = new Set(["img", "source", "br", "hr", "input"]);
@@ -244,7 +245,7 @@ export function parseNode(raw: unknown, at: string, context: NodeContext, depth 
   }
   if (node.type === "instance" && !context.components) fail(at, "component instance requires a component library");
   if (node.type !== "element" && node.type !== "component" && node.type !== "instance") fail(`${at}.type`, "unknown node type");
-  keys(node, node.type === "element" ? ["type", "id", "tag", "asset", "icon", "attrs", "style", "children"] : node.type === "component" ? ["type", "id", "block", "props", "style", "slots"] : ["type", "id", "component", "props", "style"], at);
+  keys(node, node.type === "element" ? ["type", "id", "tag", "asset", "icon", "embed", "attrs", "style", "children"] : node.type === "component" ? ["type", "id", "block", "props", "style", "slots"] : ["type", "id", "component", "props", "style"], at);
   const id = identifier(node.id, `${at}.id`);
   if (ids.has(id)) fail(`${at}.id`, "duplicate node ID");
   ids.add(id);
@@ -282,8 +283,10 @@ export function parseNode(raw: unknown, at: string, context: NodeContext, depth 
   if (tag === "summary" && parent !== "details") fail(at, "summary must be the first child of details");
   if (node.asset !== undefined && tag !== "img" && tag !== "video") fail(`${at}.asset`, "only img or video can reference an asset");
   if (node.icon !== undefined && (tag !== "span" || !isIconName(node.icon))) fail(`${at}.icon`, "unsupported built-in icon");
+  if (node.embed !== undefined && tag !== "div") fail(`${at}.embed`, "only div can contain a standard embed");
   const asset = node.asset === undefined ? {} : { asset: parseAssetReference(node.asset, `${at}.asset`) };
   const icon = node.icon === undefined ? {} : { icon: node.icon };
+  const embed = node.embed === undefined ? {} : { embed: parseEmbedDescriptor(node.embed, `${at}.embed`) };
   const attrs = node.attrs === undefined ? {} : { attrs: attributes(node.attrs, tag, `${at}.attrs`, !!asset.asset) };
   const htmlId = attrs.attrs?.id;
   if (typeof htmlId === "string") {
@@ -300,7 +303,7 @@ export function parseNode(raw: unknown, at: string, context: NodeContext, depth 
   if (node.icon !== undefined && (attrs.attrs?.role !== "img" || typeof attrs.attrs["aria-label"] !== "string" || !attrs.attrs["aria-label"].trim() || attrs.attrs["aria-hidden"] === "true")) fail(at, "icon requires role img and aria-label");
   const children = parseNodes(node.children, `${at}.children`, context, depth + 1, tag, insideLink || interactive.has(tag) && tag !== "details", inline || phrasingParents.has(tag), insideForm || tag === "form");
   if (voidTags.has(tag) && children.length) fail(at, "void element cannot have children");
-  if ((tag === "video" || node.icon !== undefined) && children.length) fail(at, "media element cannot have children");
+  if ((tag === "video" || node.icon !== undefined || node.embed !== undefined) && children.length) fail(at, "media element cannot have children");
   if (tag === "label" && !children.some((child) => child.type === "text" ? !!child.text.trim() : true)) fail(at, "label requires text");
   if (tag === "button" && !children.some((child) => child.type === "text" ? !!child.text.trim() : true) && typeof attrs.attrs?.["aria-label"] !== "string") fail(at, "button requires an accessible caption");
   if (tag === "option" && (!children.length || children.some((child) => child.type !== "text") || !children.some((child) => child.type === "text" && child.text.trim()))) fail(at, "option requires text");
@@ -322,7 +325,7 @@ export function parseNode(raw: unknown, at: string, context: NodeContext, depth 
       fail(`${at}.children`, "picture requires source elements followed by one img");
     }
   }
-  return { type: "element", id, tag, ...asset, ...icon, ...attrs, ...style, children };
+  return { type: "element", id, tag, ...asset, ...icon, ...embed, ...attrs, ...style, children };
 }
 
 export type PageParseOptions = {
