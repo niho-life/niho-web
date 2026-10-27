@@ -26,4 +26,5 @@ test("Studio serves an index and entry assets whose paths change with their cont
     assert.equal(match[1], fingerprint(readFileSync(join(publicDir, "assets", versionedName))));
   }
   assert.match(readFileSync(join(root, "studio", "dist", "worker.js"), "utf8"), new RegExp(indexName, "u"));
+  assert.match(readFileSync(join(publicDir, "assets", "studio.css"), "utf8"), /\.nw-language-options\{display:grid/u);
 });

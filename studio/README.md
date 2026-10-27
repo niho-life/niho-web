@@ -370,6 +370,7 @@ wrangler dev --config studio/wrangler.toml
 ローカルでも Worker は実 Access JWT を要求します。JWT 検証を迂回する development mode は設けていません。配置前に Access application の hostname、issuer、AUD、D1 binding、custom domain を相互確認し、`wrangler deploy --config studio/wrangler.toml` を実行します。
 
 `studio:build` は HTML・entry JS・CSS に内容由来の名前を付け、Worker がその HTML を直接読みます。Cloudflare の静的アセット cache で旧 `app.js` と新しい chunk が混ざると白画面になるため、配備後は Chrome で Studio を再読み込みして Dashboard と CMS・翻訳の遅延画面が開くことを確認します。配備を取り消すだけでは旧アセットが戻らない場合があり、そのときは旧版を build して旧 chunk を含むアセット集合を再配備します。
+サイトの言語設定部品は、ほかのホストでは自身の `<style>` を使い、CSP が inline style を拒否する Studio では `studio:build` が同じ CSS を `studio.css` に入れます。設定画面の確認では項目の表示だけでなく、選択肢が横並びのカードとして整っていることも見るようにします。
 
 ## 制約と follow-up
 

@@ -50,8 +50,13 @@ await Promise.all([
   // 配色・角丸・文字のトークン（src/ui-tokens.ts）は全ページが最初に読む studio.css の先頭に置く（#159）。
   // 本文の編集部品の CSS（CSP で inline の <style> を使えない）は studio.css の後ろに足す
   (async () => {
-    const [studioCss, { studioRichTextCss }, uiTokensCss] = await Promise.all([readFile(join(studioDirectory, "public", "studio.css"), "utf8"), cssModule("rich-text-style.ts", studioDirectory), tokensCss()]);
-    await writeFile(join(publicOutput, "assets", "studio.css"), `${uiTokensCss.trim()}\n${studioCss.trim()}\n${studioRichTextCss.trim()}\n`);
+    const [studioCss, { studioRichTextCss }, { siteLanguageSettingsCss }, uiTokensCss] = await Promise.all([
+      readFile(join(studioDirectory, "public", "studio.css"), "utf8"),
+      cssModule("rich-text-style.ts", studioDirectory),
+      cssModule("site-language-settings-style.ts", join(studioDirectory, "..", "src")),
+      tokensCss()
+    ]);
+    await writeFile(join(publicOutput, "assets", "studio.css"), `${uiTokensCss.trim()}\n${studioCss.trim()}\n${studioRichTextCss.trim()}\n${withoutTokens(siteLanguageSettingsCss, uiTokensCss, "siteLanguageSettingsCss").trim()}\n`);
   })(),
   // 部品の CSS は先頭にトークンを持つ（ほかのホストは <style> だけで描ける）。Studio は studio.css で読むので外す
   (async () => {
