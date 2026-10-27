@@ -5,6 +5,7 @@ import {
 import {
   KAMAKURA_CMS_BASE, KAMAKURA_CMS_IMAGE_TYPES, KAMAKURA_CMS_LIMITS, KAMAKURA_MEDIA_ORIGIN,
   isKamakuraCmsCollectionId, isKamakuraCmsItemId,
+  kamakuraCmsEnglishPublicationRoutes, parseKamakuraCmsEnglishPublications,
   parseKamakuraCmsConflict, parseKamakuraCmsInvalid, parseKamakuraCmsItemEnvelope, parseKamakuraCmsList, parseKamakuraCmsListChange,
   parseKamakuraCmsListConflict, parseKamakuraCmsRemoved, parseKamakuraCmsSchema, parseKamakuraCmsUploadIntent, parseKamakuraCmsUploadResult,
   type KamakuraCmsItemStatus
@@ -136,6 +137,19 @@ export function createKamakuraCmsAdapter(options: KamakuraCmsAdapterOptions): Co
     return definition;
   };
 
+  const englishPublications = async (status: "ready" | "accepted", method: "GET" | "POST", collectionId: string, itemId: string, signal: AbortSignal) => {
+    const routes = kamakuraCmsEnglishPublicationRoutes(collectionId, itemId);
+    if (routes.length === 0) throw new Error("英語公開状態を扱えない項目です。");
+    const reply = await call(method, itemPath(collectionId, itemId, "english-publication"), method === "POST" ? {} : undefined, signal);
+    if (method === "POST" && reply.status === 409) return { status: "conflict" as const };
+    if (reply.status !== 200) failure(reply);
+    const parsed = parseKamakuraCmsEnglishPublications(reply.body, status, collectionId, itemId);
+    return {
+      status,
+      englishPublications: routes.map(({ key, label, pageId }) => ({ key, label, publication: parsed.englishPublications[pageId]! }))
+    };
+  };
+
   /** 項目を読み直す。ready なら覚えた値を更新する。 */
   const read = async (collectionId: string, itemId: string, signal: AbortSignal) => {
     const reply = await call("GET", itemPath(collectionId, itemId), undefined, signal);
@@ -202,6 +216,14 @@ export function createKamakuraCmsAdapter(options: KamakuraCmsAdapterOptions): Co
 
     async loadItem({ collectionId, itemId }, signal) {
       return read(collectionId, itemId, signal);
+    },
+
+    async loadEnglishPublications({ collectionId, itemId }, signal) {
+      return englishPublications("ready", "GET", collectionId, itemId, signal);
+    },
+
+    async retryEnglishPublications({ collectionId, itemId }, signal) {
+      return englishPublications("accepted", "POST", collectionId, itemId, signal);
     },
 
     async saveDraft({ collectionId, itemId, version, values }, signal) {

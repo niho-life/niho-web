@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { JSDOM } from "jsdom";
 import {
   collectionDateFromInput, collectionDateInputValue, collectionItemFilter, collectionReorderSequence, moveCollectionIds, parseCollectionBulkResult,
-  parseCollectionCreateResult, parseCollectionItemResult, parseCollectionListResult, parseCollectionPublishResult, parseCollectionRemoveResult,
+  parseCollectionCreateResult, parseCollectionEnglishPublicationsReadResult, parseCollectionEnglishPublicationsRetryResult, parseCollectionItemResult, parseCollectionListResult, parseCollectionPublishResult, parseCollectionRemoveResult,
   parseCollectionReorderResult, parseCollectionSaveResult, parseCollectionSchemaResult, parseCollectionUploadResult, parseCollectionValues,
   sanitizeRichTextHtml, sortCollectionItems, validateCollectionValues,
 } from "@niho/web/collection-model";
@@ -103,6 +103,25 @@ test("mutation and upload results keep their closed shapes", () => {
   }
   assert.deepEqual(parseCollectionUploadResult({ status: "rejected", reason: "size" }), { status: "rejected", reason: "size" });
   assert.throws(() => parseCollectionUploadResult({ status: "rejected", reason: "virus" }), /invalid reason/u);
+});
+
+test("English publication DTO keeps only labelled safe states and supports an explicit retry conflict", () => {
+  const ready = parseCollectionEnglishPublicationsReadResult({ status: "ready", englishPublications: [
+    { key: "company", label: "会社ページ", publication: { state: "published", retryable: false, updatedAt: "2026-10-27T00:00:00Z" } },
+    { key: "creator", label: "クリエイターページ", publication: { state: "retryable-failure", retryable: true } },
+  ] });
+  assert.deepEqual(ready.englishPublications.map(({ key, label }) => [key, label]), [["company", "会社ページ"], ["creator", "クリエイターページ"]]);
+  assert.equal(ready.englishPublications[0].publication.updatedAt, "2026-10-27T00:00:00.000Z");
+  assert.deepEqual(parseCollectionEnglishPublicationsRetryResult({ status: "conflict" }), { status: "conflict" });
+  for (const invalid of [
+    { status: "ready", englishPublications: [] },
+    { status: "ready", englishPublications: [{ key: "company", label: "会社ページ", publication: { state: "unknown", retryable: false } }] },
+    { status: "ready", englishPublications: [{ key: "company", label: "会社ページ", publication: { state: "published", retryable: false }, rawId: "internal" }] },
+    { status: "ready", englishPublications: [
+      { key: "company", label: "会社ページ", publication: { state: "published", retryable: false } },
+      { key: "company", label: "重複", publication: { state: "published", retryable: false } },
+    ] },
+  ]) assert.throws(() => parseCollectionEnglishPublicationsReadResult(invalid));
 });
 
 test("validation checks required, length, slug, url, datetime and options before publishing", () => {

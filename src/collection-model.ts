@@ -1,4 +1,5 @@
 import { DocumentValidationError, fail, keys, record, string } from "./validation-utils.js";
+import { parseEnglishPublication, type EnglishPublication } from "./english-publication.js";
 
 /* ---------- 型（React 不要） ---------- */
 
@@ -112,6 +113,12 @@ export type CollectionUploadRejectReason = "type" | "size" | "permission" | "inv
 export type CollectionUploadResult =
   | { readonly status: "uploaded"; readonly url: string; readonly width?: number; readonly height?: number }
   | { readonly status: "rejected"; readonly reason: CollectionUploadRejectReason };
+/** 画面に出してよい英語ページの名前と状態。key は画面内の安定 key で、ホストの raw page ID ではない。 */
+export type CollectionEnglishPublication = { readonly key: string; readonly label: string; readonly publication: EnglishPublication };
+export type CollectionEnglishPublicationsReadResult = { readonly status: "ready"; readonly englishPublications: readonly CollectionEnglishPublication[] };
+export type CollectionEnglishPublicationsRetryResult =
+  | { readonly status: "accepted"; readonly englishPublications: readonly CollectionEnglishPublication[] }
+  | { readonly status: "conflict" };
 
 export type CollectionTarget = { readonly collectionId: string; readonly itemId: string };
 export type CollectionVersionedTarget = CollectionTarget & { readonly version: string };
@@ -148,6 +155,10 @@ export interface CollectionAdapter {
   cancelSchedule?(input: CollectionVersionedTarget, signal: AbortSignal): Promise<unknown>;
   /** 失敗した公開予約をやり直す（capabilities.retrySchedule）。応答は saveDraft と同じ形。 */
   retrySchedule?(input: CollectionVersionedTarget, signal: AbortSignal): Promise<unknown>;
+  /** 項目本文・version と独立した、英語ページごとの公開状態。無いホストでは画面に出さない。 */
+  loadEnglishPublications?(input: CollectionTarget, signal: AbortSignal): Promise<unknown>;
+  /** 保存済みの公開 identity に対する安全な再試行。retryable な状態のときだけ画面から呼ぶ。 */
+  retryEnglishPublications?(input: CollectionTarget, signal: AbortSignal): Promise<unknown>;
   /**
    * 並べ替え（capabilities.reorder・ordering: "manual"）。ids は画面が見ていた並び（order のある項目を order の順に）、
    * from・to はその中の位置（to は動かした後の位置）。応答は CollectionListChangeResult。
@@ -569,6 +580,39 @@ export function parseCollectionUploadResult(input: unknown): CollectionUploadRes
   const width = optional(value, "width", (size) => positiveInt(size, "upload.width", 100_000));
   const height = optional(value, "height", (size) => positiveInt(size, "upload.height", 100_000));
   return { status: "uploaded", url, ...(width === undefined ? {} : { width }), ...(height === undefined ? {} : { height }) };
+}
+
+function parseCollectionEnglishPublications(input: unknown, expectedStatus: "ready" | "accepted", path: string): { readonly status: "ready" | "accepted"; readonly englishPublications: readonly CollectionEnglishPublication[] } {
+  const value = record(input, path);
+  keys(value, ["status", "englishPublications"], path);
+  if (value.status !== expectedStatus) fail(`${path}.status`, "invalid status");
+  const seen = new Set<string>();
+  const englishPublications = array(value.englishPublications, `${path}.englishPublications`, 10).map((entry, index) => {
+    const at = `${path}.englishPublications[${index}]`, source = record(entry, at);
+    keys(source, ["key", "label", "publication"], at);
+    const routeKey = key(source.key, `${at}.key`);
+    if (seen.has(routeKey)) fail(`${at}.key`, "duplicate key");
+    seen.add(routeKey);
+    let publication: EnglishPublication;
+    try { publication = parseEnglishPublication(source.publication); }
+    catch { fail(`${at}.publication`, "invalid English publication"); }
+    return { key: routeKey, label: label(source.label, `${at}.label`), publication };
+  });
+  if (englishPublications.length === 0) fail(`${path}.englishPublications`, "expected at least one page");
+  return { status: expectedStatus, englishPublications };
+}
+
+export function parseCollectionEnglishPublicationsReadResult(input: unknown): CollectionEnglishPublicationsReadResult {
+  return parseCollectionEnglishPublications(input, "ready", "englishPublications") as CollectionEnglishPublicationsReadResult;
+}
+
+export function parseCollectionEnglishPublicationsRetryResult(input: unknown): CollectionEnglishPublicationsRetryResult {
+  const value = record(input, "englishPublicationRetry");
+  if (value.status === "conflict") {
+    keys(value, ["status"], "englishPublicationRetry");
+    return { status: "conflict" };
+  }
+  return parseCollectionEnglishPublications(value, "accepted", "englishPublicationRetry") as Extract<CollectionEnglishPublicationsRetryResult, { status: "accepted" }>;
 }
 
 /* ---------- 値の検証（公開・予約の前） ---------- */

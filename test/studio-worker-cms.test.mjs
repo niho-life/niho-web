@@ -266,6 +266,69 @@ test("CMS BFF: 本文を操作ごとの key の集合で確かめ、actor に確
   assert.equal(h.calls.length, beforeIntent);
 });
 
+test("CMS BFF: 英語公開状態を完全一致で読み、安全な再試行だけに actor を足して渡す", async (t) => {
+  const auth = await accessFixture();
+  const worker = await loadWorker();
+  t.mock.method(globalThis, "fetch", async (url) => {
+    if (String(url) === `${auth.issuer}/cdn-cgi/access/certs`) return Response.json({ keys: [auth.jwk] });
+    throw new Error(`unexpected network request: ${url}`);
+  });
+  const warnings = [];
+  t.mock.method(console, "warn", (...args) => { warnings.push(args); });
+  const h = harness(auth, worker);
+  h.roles.set("project-kamakura/kamakura", "editor");
+  const path = "/collections/posts/items/morning-walk/english-publication";
+  const pageId = "cms:posts:morning-walk";
+  const ready = { status: "ready", englishPublications: { [pageId]: { state: "retryable-failure", retryable: true, updatedAt: "2026-10-27T00:00:00Z" } } };
+  h.setRespond(() => Response.json(ready));
+  assert.deepEqual(await expectJson(await h.send("GET", path), 200), { ...ready, englishPublications: { [pageId]: { ...ready.englishPublications[pageId], updatedAt: "2026-10-27T00:00:00.000Z" } } });
+  const readCall = h.calls.at(-1);
+  assert.deepEqual({ method: readCall.method, path: readCall.path, body: readCall.body }, { method: "GET", path: `${UPSTREAM}${path}`, body: "" });
+  h.verifySignature(readCall);
+
+  const accepted = { status: "accepted", englishPublications: { [pageId]: { state: "queued", retryable: false } } };
+  h.setRespond(() => Response.json(accepted));
+  assert.deepEqual(await expectJson(await h.send("POST", path, {}), 200), accepted);
+  const retryCall = h.calls.at(-1);
+  assert.deepEqual(JSON.parse(retryCall.body), { actor: { email: EMAIL } });
+  h.verifySignature(retryCall);
+
+  // actor・余分な本文・query・method は BFF で止める。
+  const before = h.calls.length;
+  await expectJson(await h.send("POST", path, { actor: { email: "attacker@example.test" } }), 400, "invalid_request");
+  await expectJson(await h.send("POST", path, { version: "v1" }), 400, "invalid_request");
+  assert.equal((await h.send("GET", `${path}?raw=1`)).status, 400);
+  assert.equal((await h.send("PUT", path, {})).status, 405);
+  assert.equal(h.calls.length, before);
+
+  // 409 は上流本文を捨て、英語状態の競合だけを返す。
+  h.setRespond(() => Response.json({ error: "conflict", internal: "secret" }, { status: 409 }));
+  assert.deepEqual(await expectJson(await h.send("POST", path, {}), 409), { error: "conflict" });
+
+  // 未知 page ID、欠けた page ID、状態の余分な field、成功 status の違いは閉じる。
+  for (const [reply, status = 200] of [
+    [{ status: "ready", englishPublications: { [pageId]: { state: "published", retryable: false }, "cms:posts:internal-id": { state: "published", retryable: false } } }],
+    [{ status: "ready", englishPublications: {} }],
+    [{ status: "ready", englishPublications: { [pageId]: { state: "published", retryable: false, internalError: "secret" } } }],
+    [{ status: "accepted", englishPublications: { [pageId]: { state: "queued", retryable: false } } }],
+    [ready, 202],
+  ]) {
+    h.setRespond(() => Response.json(reply, { status }));
+    const value = await expectJson(await h.send("GET", path), 502, "upstream_contract_invalid");
+    assert.deepEqual(Object.keys(value).sort(), ["error", "supportId"]);
+    assert.equal(JSON.stringify(value).includes("secret"), false);
+  }
+
+  h.setRespond(() => Response.json({ error: "down", token: "secret" }, { status: 500 }));
+  await expectJson(await h.send("GET", path), 503, "service_unavailable");
+  await expectJson(await h.send("POST", path, {}), 503, "service_unavailable");
+  const logs = warnings.map(([, detail]) => detail);
+  assert.ok(logs.some((detail) => detail.operation === "cms_english_publication_read"));
+  assert.ok(logs.some((detail) => detail.operation === "cms_english_publication_retry"));
+  assert.ok(!JSON.stringify(logs).includes(EMAIL));
+  assert.ok(!JSON.stringify(logs).includes("secret"));
+});
+
 test("CMS BFF: 上流の status を契約どおりに写し、契約に合わない応答は 502、利用できないときは 503 と問い合わせ ID", async (t) => {
   const auth = await accessFixture();
   const worker = await loadWorker();

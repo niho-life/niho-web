@@ -16,6 +16,11 @@ export type EnglishPublication = {
   readonly retryable: boolean;
   readonly updatedAt?: string;
 };
+export type EnglishPublications = Readonly<Record<string, EnglishPublication>>;
+export type EnglishPublicationsResult<S extends "ready" | "accepted" = "ready" | "accepted"> = {
+  readonly status: S;
+  readonly englishPublications: EnglishPublications;
+};
 export type EnglishPublicationRetryResult =
   | { readonly status: "accepted"; readonly englishPublication: EnglishPublication }
   | { readonly status: "conflict" };
@@ -55,4 +60,26 @@ export function parseEnglishPublicationAccepted(value: unknown): Extract<English
   exactKeys(source, ["status", "englishPublication"]);
   if (source.status !== "accepted") throw new Error("英語公開状態が正しくありません。");
   return { status: "accepted", englishPublication: parseEnglishPublication(source.englishPublication) };
+}
+
+/**
+ * CMS のページ別状態 map を、呼び出し側が指定した page ID の完全一致で読む。
+ * 未知の page ID、欠けた page ID、各状態の余分な field はすべて拒否する。
+ */
+export function parseEnglishPublications(value: unknown, expectedPageIds: readonly string[]): EnglishPublications {
+  const source = record(value);
+  if (new Set(expectedPageIds).size !== expectedPageIds.length || expectedPageIds.some((pageId) => !pageId || pageId.length > 256 || /[\u0000-\u001f\u007f]/u.test(pageId))) {
+    throw new Error("英語公開状態が正しくありません。");
+  }
+  exactKeys(source, expectedPageIds);
+  if (expectedPageIds.some((pageId) => !Object.hasOwn(source, pageId))) throw new Error("英語公開状態が正しくありません。");
+  return Object.fromEntries(expectedPageIds.map((pageId) => [pageId, parseEnglishPublication(source[pageId])])) as EnglishPublications;
+}
+
+/** CMS の GET / POST 成功応答を既知 field だけに再構成する。 */
+export function parseEnglishPublicationsResult<S extends "ready" | "accepted">(value: unknown, expectedStatus: S, expectedPageIds: readonly string[]): EnglishPublicationsResult<S> {
+  const source = record(value);
+  exactKeys(source, ["status", "englishPublications"]);
+  if (source.status !== expectedStatus) throw new Error("英語公開状態が正しくありません。");
+  return { status: expectedStatus, englishPublications: parseEnglishPublications(source.englishPublications, expectedPageIds) };
 }

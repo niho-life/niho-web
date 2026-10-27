@@ -31,6 +31,7 @@ const adapter: CollectionAdapter = {
   publish: (input, signal) => host.post(`/collections/${input.collectionId}/items/${input.itemId}/publish`, input, signal),
   uploadImage: ({ collectionId, file }, signal) => host.upload(collectionId, file, signal),
   // 任意: createItem, discardDraft, unpublish, duplicate, remove, schedule, cancelSchedule, retrySchedule, reorder, bulk,
+  //       loadEnglishPublications, retryEnglishPublications,
   //       imageUrl, previewUrl, isRichTextImageAllowed
 };
 
@@ -74,6 +75,8 @@ const adapter: CollectionAdapter = {
 | `schedule`（任意） | `{ collectionId, itemId, version, at, redirect? }` | saved（`status: "scheduled"`・`scheduledAt`）/ conflict / invalid |
 | `cancelSchedule`（任意） | `{ collectionId, itemId, version }` | saved / conflict |
 | `retrySchedule`（任意） | `{ collectionId, itemId, version }` | saved（失敗した公開予約をやり直した項目）/ conflict / invalid |
+| `loadEnglishPublications`（任意） | `{ collectionId, itemId }` | `{ status: "ready", englishPublications: { key, label, publication }[] }` |
+| `retryEnglishPublications`（任意） | `{ collectionId, itemId }` | `{ status: "accepted", englishPublications: { key, label, publication }[] }` / `{ status: "conflict" }` |
 | `reorder`（任意） | `{ collectionId, ids, from, to }` | `{ status: "saved" \| "publishing", items }` / `{ status: "conflict", items }` / invalid |
 | `bulk`（任意） | `{ collectionId, action: "publish" \| "unpublish" \| "remove", items: { id, version }[] }` | `{ status: "saved" \| "publishing", items }` / `{ status: "conflict", items }` / invalid |
 | `imageUrl?(url, width)` | — | 一覧の小さい画像・項目の画像の表示用 URL（同期）。無ければ `url` のまま。 |
@@ -81,6 +84,7 @@ const adapter: CollectionAdapter = {
 | `isRichTextImageAllowed?(src)` | — | 本文の画像で、`/` から始まる同じサイトの path を残してよいか。既定は https の画像だけ残します。 |
 
 - 任意の操作は、メソッドが無いか、その定義の `capabilities` が `false` のとき出しません（`createItem` は `create`、`duplicate`・`remove`・`unpublish`・`schedule`／`cancelSchedule` は同じ名前、`retrySchedule` は `retrySchedule`、`reorder` は `reorder` と `ordering: "manual"`、`bulk` は `bulk`、`publish`・`schedule` の `redirect` と `remove` の `redirectTo` は `redirects`）。`discardDraft` は状態が「変更あり」のときだけ出します。
+- `loadEnglishPublications` があると、項目の言語タブの下に、どちらの言語を編集中でも見えるページ別の英語公開状態と明示的な「状態を更新」を出します。`retryEnglishPublications` もあり、どれかの `publication.retryable` が true のときだけ「英語公開を再試行」を出します。`key` は画面内だけの安定 key、`label` は「会社ページ」「クリエイターページ」のように人が読める名前、`publication` は `{ state, retryable, updatedAt? }` の完全一致です。raw page ID や内部 error はこの DTO に入れないでください。
 - `redirect`（boolean）は、`capabilities.redirects` で、公開中の項目（`path` と `publishedAt` がある）の slug を公開中のアドレスから変えたときだけ付けます。`true` は前のアドレスを開いた人を新しいアドレスへ移す、`false` は移さない。ほかのときは付けません（ホストの既定に任せます）。
 - `redirectTo` は、`capabilities.redirects` で、サイトに出ている項目（`path` があり `published`・`changed`・`publishing`）を消すときだけ付けます。付けない＝ホストの既定（一覧へ移す）、`null`＝移さない、string＝同じコレクションのほかの公開中の項目（`path` があり `published`・`changed`）の `path`。ホストが受け付けない移動先は `invalid`（`field: ""`）で返します。
 - `reorder` の `ids` は、一覧の項目のうち `order` が `null` でないものを `order` の小さい順に並べた id（同じ `order` は一覧の応答の順）です（`collectionReorderSequence`）。`from`・`to` はその中の位置で、`to` は動かした後の位置です（`moveCollectionIds`）。ホストの並びと `ids` が違えば `conflict` と今の一覧を返します。
@@ -178,6 +182,7 @@ type CollectionItem = CollectionItemSummary & { version: string; values: Record<
 - 削除・非公開・変更の取り消しは確認のダイアログの後だけ呼びます。ダイアログは Esc で閉じ、Tab は中で回り（選択の部品も含む）、閉じると開く前の場所へ focus を戻します。
 - 削除の移動先（`redirects`）: サイトに出ている項目を消す確認（一覧・項目の編集とも）に「このアドレス（/posts/…）を開いた人の移動先」として「一覧へ移す」（既定・`redirectTo` を送らない）・「ほかの{コレクションの label}へ移す」（候補があるときだけ。選ぶと候補の一覧を出し、その `path` を送る）・「移さない」（「このアドレスを開いた人には『見つかりません』が出ます。」・`null`）を出します。公開していない項目は今までの確認のままです。
 - 予約のやり直し（`retrySchedule`）: 予約があり `publishFailed` のとき、右の欄の予約に「予約していた公開に失敗しました。」と「もう一度公開する」を出します（保存待ちの下書きを先に保存してから呼びます）。
+- 英語版の公開状態: 任意 adapter があると右欄に日本語で状態の意味を出し、状態取得に失敗しても日本語の編集を止めません。英語の状態取得・再試行は本文の値・dirty・自動保存タイマー・version を読み直したり変更したりしません。項目切替・unmount と連続操作では専用の AbortSignal と epoch で古い応答を捨てます。
 - 保存待ちのまま「一覧へ」を押すと、先に保存してから戻ります。保存できなければ「変更を捨てて戻る」かを確かめます。保存待ち・保存中・画像を上げている途中にタブを閉じようとすると `beforeunload` で止めます。
 - 公開中の項目の slug を変えたとき: `capabilities.redirects` のホストでは slug の欄の下に「前のアドレス（/posts/…）を開いた人を新しいアドレスへ移す」の checkbox（既定は on）を出し、公開・予約に `redirect` を付けます（外したときだけ「移さないと、前のアドレスを開いた人や検索結果からは見つからなくなります。」と出します）。転送できないホストでは「前のアドレスを開いた人や検索結果からは見つからなくなります」と出します。
 
@@ -225,4 +230,4 @@ type CollectionItem = CollectionItemSummary & { version: string; values: Record<
 
 `npm run demo:collections`（または `npm run build` の後に `node examples/collection-demo.mjs`）で `http://127.0.0.1:4179` に、記事・サークル・カテゴリの 3 つのコレクションと、全部の項目の種類が出るデモを出します。データはすべて架空で、ブラウザのメモリ上の adapter にだけあり、再読み込みで戻ります。画像はローカルのサーバーのメモリに置きます。「開いている項目をほかの人が保存したことにする」で衝突を、「権限を外す」で権限なしを試せます。記事ではまとめての操作・削除の移動先・アドレスを変えたときの転送・予約のやり直し（「冬至のキャンドルの夜」は予約の公開に失敗した形）を、サークルでは並べ替え・まとめての操作・画像と説明の並び（「活動の写真」）を試せます（転送と移動先はデモの帯に送った値を出すだけです）。
 
-`test/collection-model.test.mjs` は定義（capabilities の新旧の形・`gallery`）・一覧・項目・操作（`reorder`・`bulk`・`remove` の invalid）・画像の parser、値の検証、並び（並べ替えの並び）、日時の変換、無害化を確かめます。`test/collection-workspace-actions-ui.test.mjs` は jsdom で、並べ替え（印・「上へ」「下へ」・ドラッグ・conflict・絞り込み中）、まとめての操作（選択・最新の version・確認・invalid・conflict）、削除の移動先、slug を変えたときの転送の選択と `redirect`、`gallery` の行の操作と値の形、予約のやり直しを、古い capabilities では出ないことと合わせて確かめます。`test/collection-workspace-ui.test.mjs` は jsdom で、一覧（並び・件数・印・検索・絞り込み・capabilities）、項目の編集（main と side・約 1 秒後に 1 回の自動保存と version）、conflict と invalid、公開前の確かめと focus・保存してからの公開、各項目の値の形、確認のダイアログと focus の戻り、権限なし、adapter の差し替え・閉じたときの abort と遅い応答の破棄、一覧へ戻るときの保存と `beforeunload` を確かめます。
+`test/collection-model.test.mjs` は定義（capabilities の新旧の形・`gallery`）・一覧・項目・操作（`reorder`・`bulk`・`remove` の invalid）・画像・英語公開状態の parser、値の検証、並び（並べ替えの並び）、日時の変換、無害化を確かめます。`test/collection-workspace-actions-ui.test.mjs` は jsdom で、並べ替え（印・「上へ」「下へ」・ドラッグ・conflict・絞り込み中）、まとめての操作（選択・最新の version・確認・invalid・conflict）、削除の移動先、slug を変えたときの転送の選択と `redirect`、`gallery` の行の操作と値の形、予約のやり直しを、古い capabilities では出ないことと合わせて確かめます。`test/collection-workspace-ui.test.mjs` は jsdom で、一覧（並び・件数・印・検索・絞り込み・capabilities）、項目の編集（main と side・約 1 秒後に 1 回の自動保存と version）、英語公開状態と本文編集の独立性、conflict と invalid、公開前の確かめと focus・保存してからの公開、各項目の値の形、確認のダイアログと focus の戻り、権限なし、adapter の差し替え・閉じたときの abort と遅い応答の破棄、一覧へ戻るときの保存と `beforeunload` を確かめます。

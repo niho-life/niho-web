@@ -179,7 +179,10 @@ test("editor: conflict never overwrites and reloads on request; invalid shows er
       return undefined;
     },
   });
-  const app = await setup({ adapter: fixture.adapter, autosaveDelay: 20, initialCollectionId: "posts", initialItemId: "p1" });
+  const app = await setup({ adapter: fixture.adapter, autosaveDelay: 20, initialCollectionId: "posts", initialItemId: "p1", itemLanguages: {
+    source: "日本語", target: "English", targetHref: () => "/translations/posts/p1",
+    renderTarget: () => createElement("div", { "data-test-target": "true" }, "英語の編集"),
+  } });
   try {
     assert.equal(app.navigations.length, 0, "the initial view does not navigate");
     const title = () => document.querySelector('[data-field="title"] input');
@@ -420,6 +423,76 @@ test("forbidden clears content; adapter swap and close abort old reads and disca
   const closing = await setup({ adapter: slow.adapter, initialCollectionId: "posts", initialItemId: "p1" });
   await closing.cleanup();
   assert.equal(itemSignal.aborted, true);
+});
+
+test("English publication state and retry stay independent from item values, autosave, version, and unmount", async () => {
+  const plain = await setup({ adapter: createAdapter().adapter, initialCollectionId: "posts", initialItemId: "p1" });
+  try { assert.equal(document.querySelector(".cw-english-publications"), null, "optional adapter が無いホストには出さない"); }
+  finally { await plain.cleanup(); }
+
+  const fixture = createAdapter(), englishCalls = [];
+  let readState = { state: "retryable-failure", retryable: true, updatedAt: "2026-10-27T00:00:00Z" };
+  let failRead = false, lateResolve, lateSignal;
+  fixture.adapter.loadEnglishPublications = async (target, signal) => {
+    englishCalls.push({ kind: "read", target, signal });
+    if (lateResolve !== undefined) return new Promise((resolve) => { lateSignal = signal; lateResolve = resolve; });
+    if (failRead) throw new Error("private upstream detail");
+    return { status: "ready", englishPublications: [{ key: "post", label: "記事ページ", publication: readState }] };
+  };
+  fixture.adapter.retryEnglishPublications = async (target, signal) => {
+    englishCalls.push({ kind: "retry", target, signal });
+    return { status: "accepted", englishPublications: [{ key: "post", label: "記事ページ", publication: { state: "queued", retryable: false } }] };
+  };
+  const app = await setup({ adapter: fixture.adapter, autosaveDelay: 20, initialCollectionId: "posts", initialItemId: "p1", itemLanguages: {
+    source: "日本語", target: "English", targetHref: () => "/translations/posts/p1",
+    renderTarget: () => createElement("div", { "data-test-target": "true" }, "英語の編集"),
+  } });
+  try {
+    const panel = () => document.querySelector(".cw-english-publications");
+    assert.match(panel().textContent, /記事ページ.*失敗（再試行可能）/su);
+    assert.equal(panel().textContent.includes("cms:posts"), false, "raw page ID は表示しない");
+    assert.ok(button("状態を更新", panel()));
+    assert.ok(button("英語公開を再試行", panel()));
+    assert.deepEqual(englishCalls[0].target, { collectionId: "posts", itemId: "p1" });
+    await press("English", document.querySelector(".cw-language-tabs"));
+    assert.ok(document.querySelector('[data-test-target="true"]'));
+    assert.match(panel().textContent, /記事ページ.*失敗（再試行可能）/su, "English タブでも状態が見える");
+    await press("日本語", document.querySelector(".cw-language-tabs"));
+
+    const title = document.querySelector('[data-field="title"] input');
+    await type(title, "英語の再試行中も残る日本語の変更");
+    const versionBefore = fixture.store.posts.get("p1").version;
+    await press("英語公開を再試行", panel());
+    assert.equal(title.value, "英語の再試行中も残る日本語の変更");
+    assert.match(panel().textContent, /処理待ち/u);
+    assert.match(panel().textContent, /再試行を受け付けました/u);
+    assert.equal(fixture.named("loadItem").length, 1, "英語操作は項目を読み直さない");
+    await wait(40); await flush();
+    assert.equal(fixture.named("saveDraft").length, 1, "日本語の自動保存タイマーは英語操作で止めない");
+    assert.equal(fixture.named("saveDraft")[0].input.version, versionBefore);
+
+    failRead = true;
+    await press("状態を更新", panel());
+    assert.match(panel().textContent, /日本語版の編集は続けられます/u);
+    assert.equal(title.value, "英語の再試行中も残る日本語の変更");
+    assert.equal(document.body.textContent.includes("private upstream detail"), false);
+
+    failRead = false;
+    readState = { state: "published", retryable: false };
+    await press("状態を更新", panel());
+    assert.match(panel().textContent, /公開済み/u);
+
+    // 項目を閉じた後の遅い応答は abort し、一覧へ反映しない。
+    lateResolve = null;
+    await act(async () => button("状態を更新", panel()).click());
+    await flush();
+    assert.ok(lateSignal && !lateSignal.aborted);
+    await press("一覧へ");
+    assert.equal(lateSignal.aborted, true);
+    await act(async () => lateResolve({ status: "ready", englishPublications: [{ key: "post", label: "内部ID", publication: { state: "retryable-failure", retryable: true } }] }));
+    await flush();
+    assert.equal(document.body.textContent.includes("内部ID"), false);
+  } finally { await app.cleanup(); }
 });
 
 test("leaving the editor saves first, restores row focus, and beforeunload guards unsaved edits", async () => {

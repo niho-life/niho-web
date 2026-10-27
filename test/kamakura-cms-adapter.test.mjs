@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { build } from "esbuild";
 import {
-  parseCollectionBulkResult, parseCollectionCreateResult, parseCollectionItemResult, parseCollectionPublishResult, parseCollectionRemoveResult,
+  parseCollectionBulkResult, parseCollectionCreateResult, parseCollectionEnglishPublicationsReadResult, parseCollectionEnglishPublicationsRetryResult, parseCollectionItemResult, parseCollectionPublishResult, parseCollectionRemoveResult,
   parseCollectionReorderResult, parseCollectionSaveResult, parseCollectionSchemaResult, parseCollectionUploadResult, parseCollectionValues
 } from "@niho/web/collection-model";
 
@@ -174,6 +174,45 @@ test("CMS adapter: 公開・非公開・複製・削除・予約を契約の形�
   const beforeDuplicate = calls.length;
   assert.deepEqual(await adapter.duplicate(target, signal()), { status: "not_found" });
   assert.deepEqual(calls.slice(beforeDuplicate).map(({ method, path }) => `${method} ${path}`), ["GET /collections/posts/items/morning-walk", "POST /collections/posts/items/morning-walk/duplicate"]);
+});
+
+test("CMS adapter: 英語公開の raw page ID を厳密に検証し、人が読める route 名だけを画面へ渡す", async (t) => {
+  const { createKamakuraCmsAdapter } = await loadAdapter();
+  const postPage = "cms:posts:morning-walk";
+  const companyPage = "cms:companies:sample-company", creatorPage = "cms:creators:sample-company";
+  let readPost = () => jsonResponse({ status: "ready", englishPublications: { [postPage]: { state: "retryable-failure", retryable: true, updatedAt: "2026-10-27T00:00:00Z" } } });
+  let retryPost = () => jsonResponse({ status: "accepted", englishPublications: { [postPage]: { state: "queued", retryable: false } } });
+  const calls = fakeBff(t, {
+    "GET /collections/posts/items/morning-walk/english-publication": () => readPost(),
+    "POST /collections/posts/items/morning-walk/english-publication": () => retryPost(),
+    "GET /collections/companies/items/sample-company/english-publication": () => jsonResponse({
+      status: "ready", englishPublications: {
+        [companyPage]: { state: "published", retryable: false },
+        [creatorPage]: { state: "review-required", retryable: false },
+      }
+    })
+  });
+  const adapter = createKamakuraCmsAdapter({ siteOrigin: SITE });
+  const target = { collectionId: "posts", itemId: "morning-walk" };
+  const read = parseCollectionEnglishPublicationsReadResult(await adapter.loadEnglishPublications(target, signal()));
+  assert.deepEqual(read.englishPublications.map(({ key, label, publication }) => [key, label, publication.state]), [["post", "記事ページ", "retryable-failure"]]);
+  assert.equal(JSON.stringify(read).includes(postPage), false, "raw page ID を画面の DTO に残さない");
+  assert.equal(calls.at(-1).body, undefined);
+
+  const retried = parseCollectionEnglishPublicationsRetryResult(await adapter.retryEnglishPublications(target, signal()));
+  assert.deepEqual(retried, { status: "accepted", englishPublications: [{ key: "post", label: "記事ページ", publication: { state: "queued", retryable: false } }] });
+  assert.deepEqual(calls.at(-1).body, {});
+
+  const company = parseCollectionEnglishPublicationsReadResult(await adapter.loadEnglishPublications({ collectionId: "companies", itemId: "sample-company" }, signal()));
+  assert.deepEqual(company.englishPublications.map(({ label }) => label), ["会社ページ", "クリエイターページ"]);
+
+  readPost = () => jsonResponse({ status: "ready", englishPublications: { [postPage]: { state: "published", retryable: false }, "cms:posts:internal": { state: "published", retryable: false } } });
+  await assert.rejects(adapter.loadEnglishPublications(target, signal()), (error) => error.name === "KamakuraCmsContractError");
+  readPost = () => jsonResponse({ status: "ready", englishPublications: { [postPage]: { state: "published", retryable: false, internalError: "secret" } } });
+  await assert.rejects(adapter.loadEnglishPublications(target, signal()), (error) => error.name === "KamakuraCmsContractError");
+
+  retryPost = () => jsonResponse({ error: "conflict", internal: "secret" }, 409);
+  assert.deepEqual(parseCollectionEnglishPublicationsRetryResult(await adapter.retryEnglishPublications(target, signal())), { status: "conflict" });
 });
 
 test("CMS adapter: 画像は intent の URL を確かめてから credentials なしで直接 PUT し、拒否は理由つきで返す", async (t) => {
