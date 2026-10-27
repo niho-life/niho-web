@@ -1,6 +1,6 @@
 "use client";
 
-import type { KeyboardEvent, ReactNode } from "react";
+import { useRef, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
 import type { EditorBreakpoint } from "./editor-types.js";
 
 export type WorkspaceScale = "fit" | 0.25 | 0.5 | 0.75 | 1 | 1.5 | 2;
@@ -86,6 +86,26 @@ export function WorkspaceScaleSelect({ scale, fitPercent, onScale }: { scale: Wo
 }
 
 export type ViewportPreset = { width: number; start: number; label: string; icon: "desktop" | "laptop" | "tablet" | "mobile" };
+
+/** Resize the centered canvas from either edge without changing the document's styles. */
+export function ViewportEdgeHandle({ side, width, scale, disabled, onWidthChange }: {
+  side: "left" | "right"; width: number; scale: number; disabled: boolean; onWidthChange: (width: number) => void;
+}) {
+  const drag = useRef<{ pointerId: number; x: number; width: number; scale: number } | null>(null);
+  const clamp = (value: number) => Math.max(320, Math.min(1920, Math.round(value)));
+  const stop = (event: PointerEvent<HTMLButtonElement>) => {
+    if (drag.current?.pointerId !== event.pointerId) return;
+    drag.current = null;
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  };
+  return <button type="button" className={`e-viewport-edge is-${side}`} aria-label={`画面${side === "left" ? "左" : "右"}端で表示幅を変更`} title="ドラッグ、または左右キーで表示幅を変更" disabled={disabled}
+    onPointerDown={(event) => { if (disabled || event.button !== 0) return; drag.current = { pointerId: event.pointerId, x: event.clientX, width, scale: Math.max(scale, .01) }; event.currentTarget.setPointerCapture?.(event.pointerId); event.preventDefault(); }}
+    onPointerMove={(event) => { const active = drag.current; if (!active || active.pointerId !== event.pointerId) return; onWidthChange(clamp(active.width + (event.clientX - active.x) * (side === "right" ? 2 : -2) / active.scale)); }}
+    onPointerUp={stop} onPointerCancel={stop} onLostPointerCapture={() => { drag.current = null; }}
+    onKeyDown={(event) => { const step = event.shiftKey ? 10 : 1; const delta = event.key === "ArrowRight" ? step : event.key === "ArrowLeft" ? -step : 0;
+      if (delta || event.key === "Home" || event.key === "End") { event.preventDefault(); onWidthChange(event.key === "Home" ? 320 : event.key === "End" ? 1920 : clamp(width + delta)); }
+    }} />;
+}
 
 /** Site breakpoints determine the selectable widths; the mobile-first base gets its own preview. */
 export function viewportPresets(breakpoints: readonly EditorBreakpoint[], mobilePreviewWidth = 375): ViewportPreset[] {

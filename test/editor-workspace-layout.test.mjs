@@ -87,6 +87,21 @@ test("site-defined viewport presets select the four responsive ranges", async ()
   } finally { await app.cleanup(); }
 });
 
+test("viewport edges change only the preview width by keyboard, including the bounds", async () => {
+  const app = await setup();
+  try {
+    const edge = document.querySelector('[aria-label="画面右端で表示幅を変更"]');
+    const field = document.querySelector('[aria-label="表示幅"]');
+    assert.ok(edge && document.querySelector('[aria-label="画面左端で表示幅を変更"]'));
+    const press = async (key, shiftKey = false) => act(async () => edge.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key, shiftKey, bubbles: true, cancelable: true })));
+    await press("ArrowLeft", true); assert.equal(field.value, "1270");
+    await press("Home"); assert.equal(field.value, "320");
+    await press("ArrowLeft"); assert.equal(field.value, "320");
+    await press("End"); assert.equal(field.value, "1920");
+    assert.equal(document.querySelector("iframe").style.width, "1920px");
+  } finally { await app.cleanup(); }
+});
+
 test("the demo host embeds the editor below a slim banner without page scrolling", () => {
   const source = readFileSync(new URL("../examples/editor-demo.mjs", import.meta.url), "utf8");
   assert.ok(source.includes("body{margin:0;display:flex;flex-direction:column;overflow:hidden"));
