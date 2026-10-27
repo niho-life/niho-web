@@ -53,7 +53,7 @@ export type PageRendererProps = {
 const canvasCssText = (css: string, canvas: PageRendererProps["canvas"]) => canvas?.viewportHeight ? resolveViewportHeightUnits(css, canvas.viewportHeight) : css;
 const rootRelative = (value: string) => value.startsWith("/") && !value.startsWith("//");
 const embedAllow = { map: undefined, youtube: "encrypted-media; picture-in-picture; fullscreen", vimeo: "picture-in-picture; fullscreen" } as const;
-const embedLabel = { map: "Map", youtube: "YouTube", vimeo: "Vimeo" } as const;
+const embedLabel = { map: "Map", youtube: "YouTube", vimeo: "Vimeo", lottie: "Lottie" } as const;
 function withSiteOrigin(attrs: Record<string, unknown>, siteOrigin: string): void {
   if (typeof attrs.src === "string" && rootRelative(attrs.src)) attrs.src = siteOrigin + attrs.src;
   if (typeof attrs.poster === "string" && rootRelative(attrs.poster)) attrs.poster = siteOrigin + attrs.poster;
@@ -139,6 +139,12 @@ export function PageRenderer({ document: input, blocks = {}, assets: assetInput,
     if (node.embed && !hostViewBinding?.externalFrames?.some((candidate) => candidate.nodeId === node.id)) {
       if (!node.embed.source) return missingAssets === "placeholder" ? createElement("div", { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope,
         "data-nw-empty-embed": node.embed.provider, role: "status" }, `${embedLabel[node.embed.provider]} の URL を設定してください`) : null;
+      if (node.embed.provider === "lottie") return createElement("div", { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope,
+        "data-nw-embed": "lottie", "data-nw-lottie-source": node.embed.source, "data-nw-lottie-title": node.embed.title,
+        ...(canvas && !canvas.interactive ? { "data-nw-lottie-static": "" } : {}) },
+        createElement("div", { "data-nw-lottie-player": "", style: { display: "grid", width: "100%", height: "100%" } },
+          createElement("span", { "data-nw-lottie-fallback": "", role: "img", "aria-label": node.embed.title,
+            style: { gridArea: "1 / 1", display: "flex", alignItems: "center", justifyContent: "center", width: "100%", height: "100%" } }, node.embed.title)));
       const frame = createElement("iframe", {
         src: node.embed.source, title: node.embed.title, loading: "lazy", referrerPolicy: "strict-origin-when-cross-origin",
         sandbox: "allow-scripts allow-same-origin", ...(embedAllow[node.embed.provider] ? { allow: embedAllow[node.embed.provider] } : {}),

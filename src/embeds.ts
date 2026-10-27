@@ -4,12 +4,15 @@ import { fail, keys, line, record } from "./validation-utils.js";
 const youtubeId = /^[A-Za-z0-9_-]{11}$/u;
 const vimeoId = /^[0-9]{1,20}$/u;
 const vimeoHash = /^[A-Za-z0-9_-]{1,128}$/u;
-const providers = new Set<EmbedProvider>(["map", "youtube", "vimeo"]);
+const lottieUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
+const lottieFilename = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,198}[A-Za-z0-9_-])?\.(?:json|lottie)$/u;
+const providers = new Set<EmbedProvider>(["map", "youtube", "vimeo", "lottie"]);
 
 function invalid(provider: EmbedProvider): never {
   throw new Error(provider === "map" ? "Google Maps の共有画面で取得した埋め込み URL を入力してください。"
     : provider === "youtube" ? "YouTube の動画 URL を入力してください。"
-    : "Vimeo の動画 URL を入力してください。");
+    : provider === "vimeo" ? "Vimeo の動画 URL を入力してください。"
+    : "LottieFiles の lottie.host Asset link を入力してください。");
 }
 
 function safeUrl(value: string, provider: EmbedProvider): URL {
@@ -42,6 +45,12 @@ function youtubeQuery(url: URL, watch: boolean): boolean {
 export function normalizeEmbedSource(provider: EmbedProvider, value: string): string {
   if (!providers.has(provider)) throw new Error("未対応の埋め込みサービスです。");
   const url = safeUrl(value, provider), host = url.hostname.toLowerCase();
+  if (provider === "lottie") {
+    if (host !== "lottie.host" || /[?#]/u.test(value)) invalid(provider);
+    const match = /^\/(?:embed\/)?([^/]+)\/([^/]+)$/u.exec(url.pathname);
+    if (!match || !lottieUuid.test(match[1]!) || !lottieFilename.test(match[2]!)) invalid(provider);
+    return `https://lottie.host/embed/${match[1]!.toLowerCase()}/${match[2]!}`;
+  }
   if (provider === "youtube") {
     let id: string | undefined;
     if ((host === "youtube.com" || host === "www.youtube.com") && url.pathname === "/watch" && youtubeQuery(url, true)) id = url.searchParams.get("v") ?? undefined;

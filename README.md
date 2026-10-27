@@ -32,11 +32,11 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 
 | 入口 | 用途 |
 | --- | --- |
-| `@niho/web` | JSON 型、`validateDocument` / `parsePageDocument`、閉じた組み込みアイコン・フォーム・Map / YouTube / Vimeo埋め込み・VideoWithButton・Loop Box、CSS、画像・native動画を含む React SSR の `PageRenderer` |
+| `@niho/web` | JSON 型、`validateDocument` / `parsePageDocument`、閉じた組み込みアイコン・フォーム・Map / YouTube / Vimeo / Lottie埋め込み・VideoWithButton・Loop Box、CSS、画像・native動画を含む React SSR の `PageRenderer` |
 | `@niho/web/core` | 検証・文書型・embed URL正規化・CSS・共通部品の検証と展開だけの入口。React の runtime import を含みません |
 | `@niho/web/builder` | 汎用の挿入カタログ、モーション定義、host拡張の型と検証。React非依存 |
 | `@niho/web/react` | `PageRenderer` とブロック registry の型 |
-| `@niho/web/presentation-runtime` | SSR後の検証済みDOMへ、native presentation、VideoWithButton、Loop Box の標準操作を接続するclient runtime。返されたcleanupを再初期化前に呼ぶ |
+| `@niho/web/presentation-runtime` | SSR後の検証済みDOMへ、native presentation、VideoWithButton、Loop Box、reduced-motion対応Lottie playerの標準操作を接続するclient runtime。返されたcleanupを再初期化前に呼ぶ |
 | `@niho/web/server` | Astro の build / server で使える `renderPageToHtml` |
 | `@niho/web/editor` | 認証済みホストadapterへ接続する `PageEditor` と型。50pxの左ツール列＋300pxの追加パネル、300pxの右インスペクタ、サイトごとに設定できる表示幅・端末切替の下部ツールバーを共通化する。`initialTarget`、任意の日英切替、許可ブロック、trusted host 固有の設定 UI を扱う。Kamakura の日英一覧は Studio BFF の `localization/editor/site`、English キャンバスは `editor/pages/:pageId/snapshot` から読み、保存はサイト側の正本 overlay へ戻す（[編集・公開契約](docs/editor-contract.md)、[多言語 editor 契約](docs/localization-editor.md)、[ManagedEmbed 契約](docs/managed-embed-contract.md)）。React / React DOM が必要 |
 | `@niho/web/projects` | 1 Project = 1 Site の検証、純粋操作、atomic CAS契約。React不要 |
@@ -114,7 +114,7 @@ export default function Page() {
 }
 ```
 
-`PageRenderer` は `useEffect` やクライアントでの JSON fetch を必要としません。scoped `<style>` と本文の `<div lang="…">` を返します。`title` は文書の情報として保持し、Next.js の `metadata` / Astro の `<head>` へ設定するのは利用側の責務です。読み込む文書を site / page / locale から選ぶ処理も利用側に置きます。VideoWithButtonとLoop Boxを公開ページで動かす場合は、client側で `initializeSitePresentation(document)` を1回呼び、再初期化前にcleanupします。Loop Boxはruntimeが無くても元内容を1組SSRし、runtime起動時だけ画面幅を満たす非アクセシブルな複製を作って無限スクロールします。文書が保存するのは検証済みの固定構造と閉じたdescriptorだけで、イベントコードは保存しません。フォームはアクセシブルなlabel・required・選択肢をSSRしますが、既定では送信しません。回答送信、ファイル保存、完了画面、検証・CSRF・認可はホストがtrusted codeで接続し、action URLやイベントコードをページJSONへ保存しません（[フォーム契約](docs/document-contract.md#フォーム)）。
+`PageRenderer` は `useEffect` やクライアントでの JSON fetch を必要としません。scoped `<style>` と本文の `<div lang="…">` を返します。`title` は文書の情報として保持し、Next.js の `metadata` / Astro の `<head>` へ設定するのは利用側の責務です。読み込む文書を site / page / locale から選ぶ処理も利用側に置きます。VideoWithButton・Loop Box・Lottieを公開ページで動かす場合は、client側で `initializeSitePresentation(document)` を1回呼び、再初期化前にcleanupします。LottieはSSRで静的fallbackだけを返し、このruntimeを呼ばない限り外部playerを読み込みません。runtimeも`prefers-reduced-motion: reduce`ではplayerを読み込まず、設定変更に追従します。Loop Boxはruntimeが無くても元内容を1組SSRし、runtime起動時だけ画面幅を満たす非アクセシブルな複製を作って無限スクロールします。文書が保存するのは検証済みの固定構造と閉じたdescriptorだけで、イベントコードは保存しません。フォームはアクセシブルなlabel・required・選択肢をSSRしますが、既定では送信しません。回答送信、ファイル保存、完了画面、検証・CSRF・認可はホストがtrusted codeで接続し、action URLやイベントコードをページJSONへ保存しません（[フォーム契約](docs/document-contract.md#フォーム)）。
 
 ## 登録済み動的ブロック
 

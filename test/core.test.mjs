@@ -127,7 +127,7 @@ test("built-in icons and native videos use closed, accessible document shapes", 
   reject(linked);
 });
 
-test("standard embeds normalize only closed Map, YouTube and Vimeo sources", () => {
+test("standard embeds normalize only closed Map, YouTube, Vimeo and Lottie sources", () => {
   const sources = [
     ["youtube", "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ"],
     ["youtube", "https://youtube.com/embed/dQw4w9WgXcQ", "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ"],
@@ -136,7 +136,9 @@ test("standard embeds normalize only closed Map, YouTube and Vimeo sources", () 
     ["youtube", "https://youtu.be/dQw4w9WgXcQ?si=ShareToken_1", "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ"],
     ["vimeo", "https://vimeo.com/123456789", "https://player.vimeo.com/video/123456789"],
     ["vimeo", "https://player.vimeo.com/video/123456789?h=Unlisted_1", "https://player.vimeo.com/video/123456789?h=Unlisted_1"],
-    ["map", "https://www.google.com/maps/embed?pb=!1m18!2m3%20Public%20Place", "https://www.google.com/maps/embed?pb=!1m18!2m3%20Public%20Place"]
+    ["map", "https://www.google.com/maps/embed?pb=!1m18!2m3%20Public%20Place", "https://www.google.com/maps/embed?pb=!1m18!2m3%20Public%20Place"],
+    ["lottie", "https://lottie.host/123E4567-E89B-42D3-A456-426614174000/intro-animation.json", "https://lottie.host/embed/123e4567-e89b-42d3-a456-426614174000/intro-animation.json"],
+    ["lottie", "https://lottie.host/embed/123e4567-e89b-42d3-a456-426614174000/intro.lottie", "https://lottie.host/embed/123e4567-e89b-42d3-a456-426614174000/intro.lottie"]
   ];
   for (const [provider, source, expected] of sources) assert.equal(normalizeEmbedSource(provider, source), expected);
   const input = doc(); input.body = sources.map(([provider, source], index) => ({
@@ -157,7 +159,20 @@ test("standard embeds reject arbitrary iframe data and malformed provider URLs",
     ["vimeo", "https://vimeo.com/channels/staffpicks/123456789"], ["vimeo", "https://vimeo.com/123456789?autoplay=1"],
     ["vimeo", "https://player.vimeo.com/video/not-a-number"], ["map", "https://www.google.com/maps/embed/v1/place?key=public&query=place"],
     ["map", "https://maps.google.com/maps/embed?pb=!1m18!2m3"], ["map", "https://www.google.com/maps/embed?pb=!1m18!2m3&output=embed"],
-    ["map", "https://www.google.com/maps/embed?pb=!1m18%3Cscript%3E"]
+    ["map", "https://www.google.com/maps/embed?pb=!1m18%3Cscript%3E"],
+    ["lottie", "http://lottie.host/123e4567-e89b-42d3-a456-426614174000/a.json"],
+    ["lottie", "https://user@lottie.host/123e4567-e89b-42d3-a456-426614174000/a.json"],
+    ["lottie", "https://lottie.host:443/123e4567-e89b-42d3-a456-426614174000/a.json"],
+    ["lottie", "https://www.lottie.host/123e4567-e89b-42d3-a456-426614174000/a.json"],
+    ["lottie", "https://lottie.host/not-a-uuid/a.json"],
+    ["lottie", "https://lottie.host/123e4567-e89b-42d3-a456-426614174000/folder/a.json"],
+    ["lottie", "https://lottie.host/embed/123e4567-e89b-42d3-a456-426614174000/a.json/extra"],
+    ["lottie", "https://lottie.host/123e4567-e89b-42d3-a456-426614174000/a.js"],
+    ["lottie", "https://lottie.host/123e4567-e89b-42d3-a456-426614174000/a%20b.json"],
+    ["lottie", "https://lottie.host/123e4567-e89b-42d3-a456-426614174000/a.json?autoplay=1"],
+    ["lottie", "https://lottie.host/123e4567-e89b-42d3-a456-426614174000/a.json?"],
+    ["lottie", "https://lottie.host/123e4567-e89b-42d3-a456-426614174000/a.json#fragment"],
+    ["lottie", "https://lottie.host/123e4567-e89b-42d3-a456-426614174000/a.json#"]
   ];
   for (const [provider, source] of invalidSources) assert.throws(() => normalizeEmbedSource(provider, source), Error, `${provider}: ${source}`);
   const base = { type: "element", id: "embed", tag: "div", embed: { provider: "youtube", title: "動画", source: "https://youtu.be/dQw4w9WgXcQ" }, children: [] };

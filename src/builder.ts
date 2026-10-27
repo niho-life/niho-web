@@ -253,6 +253,7 @@ export const standardBuilderDefinition: BuilderDefinition = {
     { id: "embed-map", label: "Map", description: "Google Maps の共有地図", group: "埋め込み", glyph: "⌖", create: ({ id }) => embed(id, "map", "地図") },
     { id: "embed-youtube", label: "YouTube", description: "YouTube の動画", group: "埋め込み", glyph: "▶", create: ({ id }) => embed(id, "youtube", "YouTube 動画") },
     { id: "embed-vimeo", label: "Vimeo", description: "Vimeo の動画", group: "埋め込み", glyph: "▶", create: ({ id }) => embed(id, "vimeo", "Vimeo 動画") },
+    { id: "embed-lottie", label: "Lottie", description: "LottieFiles のアニメーション", group: "埋め込み", glyph: "◌", create: ({ id }) => embed(id, "lottie", "Lottie アニメーション") },
     { id: "h2", label: "見出し", group: "文字", glyph: "H", create: ({ id }) => element(id, "h2", "新しいテキスト") },
     { id: "a", label: "リンク", group: "文字", glyph: "↗", create: ({ id }) => element(id, "a", "リンク") },
     { id: "carousel", label: "カルーセル", group: "インタラクション", glyph: "⇆", create: ({ id }) => carouselPreset(id) },

@@ -50,6 +50,32 @@ export function initializeSitePresentation(scope: ParentNode = document, options
   }
   // Frame sizing is required while editing too. Navigation and animation are preview-only.
   if (options.interactive === false) return () => { for (const cleanup of cleanups.splice(0)) cleanup(); };
+  const lottieSource = /^https:\/\/lottie\.host\/embed\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/[A-Za-z0-9](?:[A-Za-z0-9._-]{0,198}[A-Za-z0-9_-])?\.(?:json|lottie)$/u;
+  const lottieBindings = Array.from(scope.querySelectorAll<HTMLElement>('[data-nw-embed="lottie"][data-nw-lottie-source]')).flatMap((root) => {
+    if (root.hasAttribute("data-nw-lottie-static")) return [];
+    const source = root.dataset.nwLottieSource ?? "", title = root.dataset.nwLottieTitle ?? "";
+    const ViewHTMLElement = ownerDocument.defaultView?.HTMLElement;
+    const mount = ViewHTMLElement ? Array.from(root.children).find((child): child is HTMLElement => child instanceof ViewHTMLElement && child.hasAttribute("data-nw-lottie-player")) : undefined;
+    return mount && lottieSource.test(source) && title.trim() ? [{ source, title, mount, frame: null as HTMLIFrameElement | null }] : [];
+  });
+  if (lottieBindings.length) {
+    const view = ownerDocument.defaultView, reducedMotion = view?.matchMedia?.("(prefers-reduced-motion: reduce)");
+    const renderLottie = () => {
+      for (const binding of lottieBindings) {
+        if (reducedMotion?.matches) { binding.frame?.remove(); binding.frame = null; continue; }
+        if (binding.frame?.isConnected) continue;
+        const frame = ownerDocument.createElement("iframe");
+        frame.src = binding.source; frame.title = binding.title;
+        frame.setAttribute("loading", "lazy"); frame.setAttribute("referrerpolicy", "no-referrer"); frame.setAttribute("sandbox", "allow-scripts");
+        frame.setAttribute("aria-hidden", "true"); frame.setAttribute("tabindex", "-1"); frame.setAttribute("data-nw-lottie-frame", "");
+        frame.style.gridArea = "1 / 1"; frame.style.width = "100%"; frame.style.height = "100%"; frame.style.border = "0"; frame.style.display = "block"; frame.style.pointerEvents = "none";
+        binding.mount.append(frame); binding.frame = frame;
+      }
+    };
+    if (reducedMotion) listen(reducedMotion, "change", renderLottie as EventListener);
+    renderLottie();
+    cleanups.push(() => lottieBindings.forEach((binding) => { binding.frame?.remove(); binding.frame = null; }));
+  }
   for (const root of Array.from(scope.querySelectorAll<HTMLElement>("[data-nw-loop-box]"))) {
     const view = ownerDocument.defaultView; if (!view) continue;
     const direct = Array.from(root.children), track = direct.find((child): child is HTMLElement => child instanceof view.HTMLElement && child.hasAttribute("data-nw-loop-box-track"));

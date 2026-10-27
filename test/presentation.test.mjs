@@ -47,6 +47,32 @@ test("public runtime toggles VideoWithButton by click and native media events, t
   control.click(); assert.equal(plays, 1, "cleanup removes the binding"); dom.window.close();
 });
 
+test("Lottie runtime mounts only the fixed canonical iframe when motion is allowed and fully cleans up", () => {
+  const document = page("synthetic", "en", "lottie", [{ type: "element", id: "motion", tag: "div", embed: { provider: "lottie", title: "Calm loading animation", source: "https://lottie.host/123e4567-e89b-42d3-a456-426614174000/calm.json" }, children: [] }]);
+  const dom = new JSDOM(`<!doctype html><body>${renderPageToHtml(document)}</body>`), root = dom.window.document.querySelector('[data-nw-embed="lottie"]');
+  assert.ok(root.querySelector('[data-nw-lottie-fallback][role="img"]')); assert.equal(root.querySelector("iframe"), null, "SSR is static");
+  let reduced = false, listeners = [];
+  dom.window.matchMedia = () => ({ get matches() { return reduced; }, addEventListener: (_type, listener) => listeners.push(listener), removeEventListener: (_type, listener) => { listeners = listeners.filter((entry) => entry !== listener); } });
+  const editCleanup = initializeSitePresentation(dom.window.document, { interactive: false });
+  assert.equal(root.querySelector("iframe"), null, "edit mode never loads the player"); editCleanup();
+  reduced = true;
+  const cleanup = initializeSitePresentation(dom.window.document);
+  assert.equal(root.querySelector("iframe"), null, "reduced motion prevents the initial request");
+  reduced = false; listeners.forEach((listener) => listener(new dom.window.Event("change")));
+  const frame = root.querySelector("iframe");
+  assert.equal(frame.getAttribute("src"), "https://lottie.host/embed/123e4567-e89b-42d3-a456-426614174000/calm.json");
+  assert.equal(frame.getAttribute("sandbox"), "allow-scripts"); assert.equal(frame.getAttribute("referrerpolicy"), "no-referrer"); assert.equal(frame.getAttribute("loading"), "lazy");
+  assert.equal(frame.getAttribute("title"), "Calm loading animation"); assert.equal(frame.getAttribute("tabindex"), "-1"); assert.equal(frame.style.pointerEvents, "none");
+  assert.equal(frame.hasAttribute("allow"), false); assert.equal(frame.hasAttribute("allowfullscreen"), false);
+  reduced = true; listeners.forEach((listener) => listener(new dom.window.Event("change"))); assert.equal(root.querySelector("iframe"), null);
+  reduced = false; listeners.forEach((listener) => listener(new dom.window.Event("change"))); assert.ok(root.querySelector("iframe"));
+  const fallback = root.querySelector('[data-nw-lottie-fallback]'); cleanup();
+  assert.equal(root.querySelector("iframe"), null); assert.ok(fallback.isConnected); assert.equal(listeners.length, 0);
+  reduced = false; listeners.forEach((listener) => listener(new dom.window.Event("change"))); assert.equal(root.querySelector("iframe"), null);
+  root.dataset.nwLottieSource = "https://untrusted.example/animation.json";
+  const invalidCleanup = initializeSitePresentation(dom.window.document); assert.equal(root.querySelector("iframe"), null, "runtime revalidates the canonical origin"); invalidCleanup(); dom.window.close();
+});
+
 test("Loop Box fills the viewport with inert safe copies, pauses, honors reduced motion and cleans up", async () => {
   const document = page("synthetic", "en", "loop", [{ type: "element", id: "loop", tag: "div", interaction: { type: "loop-box", speed: 60, pauseOnHover: true },
     attrs: { "aria-label": "Highlights" }, style: { base: { display: "flex", flexDirection: "row", gap: 0, overflow: "hidden" } }, children: [
