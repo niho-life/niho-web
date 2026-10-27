@@ -73,6 +73,30 @@ test("Lottie runtime mounts only the fixed canonical iframe when motion is allow
   const invalidCleanup = initializeSitePresentation(dom.window.document); assert.equal(root.querySelector("iframe"), null, "runtime revalidates the canonical origin"); invalidCleanup(); dom.window.close();
 });
 
+test("Facebook runtime waits for explicit activation, revalidates canonical data and keeps the link fallback", () => {
+  const source = "https://www.facebook.com/example.page/posts/123456789";
+  const document = page("synthetic", "ja", "facebook", [{ type: "element", id: "post", tag: "div", embed: { provider: "facebook", title: "Facebook のお知らせ", source }, children: [] }]);
+  const dom = new JSDOM(`<!doctype html><body>${renderPageToHtml(document)}</body>`), root = dom.window.document.querySelector('[data-nw-embed="facebook"]');
+  const button = root.querySelector("[data-nw-facebook-load]"), link = root.querySelector("[data-nw-facebook-link]");
+  assert.equal(root.querySelector("iframe"), null); assert.equal(button.hidden, true); assert.equal(link.getAttribute("href"), source);
+  const staticCleanup = initializeSitePresentation(dom.window.document, { interactive: false });
+  assert.equal(button.hidden, true); button.click(); assert.equal(root.querySelector("iframe"), null); staticCleanup();
+  const cleanup = initializeSitePresentation(dom.window.document);
+  assert.equal(button.hidden, false); assert.equal(root.querySelector("iframe"), null, "runtime reveal alone makes no third-party request");
+  button.click();
+  const frame = root.querySelector("iframe[data-nw-facebook-frame]");
+  assert.equal(root.querySelector("[data-nw-facebook-status]").style.visibility, "hidden");
+  assert.equal(frame.getAttribute("src"), "https://www.facebook.com/plugins/post.php?href=https%3A%2F%2Fwww.facebook.com%2Fexample.page%2Fposts%2F123456789");
+  assert.equal(frame.getAttribute("title"), "Facebook のお知らせ"); assert.equal(frame.getAttribute("sandbox"), "allow-scripts allow-same-origin");
+  assert.equal(frame.getAttribute("referrerpolicy"), "no-referrer"); assert.equal(frame.getAttribute("loading"), "lazy");
+  assert.equal(frame.hasAttribute("allow"), false); assert.equal(frame.hasAttribute("allowfullscreen"), false); assert.equal(link.isConnected, true); assert.equal(button.hidden, true);
+  cleanup(); assert.equal(root.querySelector("iframe"), null); assert.equal(button.hidden, true); assert.equal(link.isConnected, true);
+  assert.equal(root.querySelector("[data-nw-facebook-status]").style.visibility, "");
+  button.click(); assert.equal(root.querySelector("iframe"), null, "cleanup removes the activation listener");
+  root.dataset.nwFacebookSource = "https://evil.example/post"; link.setAttribute("href", "https://evil.example/post");
+  const invalidCleanup = initializeSitePresentation(dom.window.document); assert.equal(button.hidden, true); button.click(); assert.equal(root.querySelector("iframe"), null); invalidCleanup(); dom.window.close();
+});
+
 test("Loop Box fills the viewport with inert safe copies, pauses, honors reduced motion and cleans up", async () => {
   const document = page("synthetic", "en", "loop", [{ type: "element", id: "loop", tag: "div", interaction: { type: "loop-box", speed: 60, pauseOnHover: true },
     attrs: { "aria-label": "Highlights" }, style: { base: { display: "flex", flexDirection: "row", gap: 0, overflow: "hidden" } }, children: [

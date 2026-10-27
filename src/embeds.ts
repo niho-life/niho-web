@@ -6,13 +6,17 @@ const vimeoId = /^[0-9]{1,20}$/u;
 const vimeoHash = /^[A-Za-z0-9_-]{1,128}$/u;
 const lottieUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const lottieFilename = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,198}[A-Za-z0-9_-])?\.(?:json|lottie)$/u;
-const providers = new Set<EmbedProvider>(["map", "youtube", "vimeo", "lottie"]);
+const facebookActor = /^[A-Za-z0-9](?:[A-Za-z0-9.]{0,78}[A-Za-z0-9])?$/u;
+const facebookActorId = /^[0-9]{1,32}$/u;
+const facebookPostId = /^(?:[0-9]{1,32}|pfbid[A-Za-z0-9]{20,195})$/u;
+const providers = new Set<EmbedProvider>(["map", "youtube", "vimeo", "lottie", "facebook"]);
 
 function invalid(provider: EmbedProvider): never {
   throw new Error(provider === "map" ? "Google Maps の共有画面で取得した埋め込み URL を入力してください。"
     : provider === "youtube" ? "YouTube の動画 URL を入力してください。"
     : provider === "vimeo" ? "Vimeo の動画 URL を入力してください。"
-    : "LottieFiles の lottie.host Asset link を入力してください。");
+    : provider === "lottie" ? "LottieFiles の lottie.host Asset link を入力してください。"
+    : "Facebook の公開投稿 URL を入力してください。");
 }
 
 function safeUrl(value: string, provider: EmbedProvider): URL {
@@ -45,6 +49,19 @@ function youtubeQuery(url: URL, watch: boolean): boolean {
 export function normalizeEmbedSource(provider: EmbedProvider, value: string): string {
   if (!providers.has(provider)) throw new Error("未対応の埋め込みサービスです。");
   const url = safeUrl(value, provider), host = url.hostname.toLowerCase();
+  if (provider === "facebook") {
+    if (host !== "facebook.com" && host !== "www.facebook.com") invalid(provider);
+    const post = /^https:\/\/(?:www\.)?facebook\.com\/([^/?#]+)\/posts\/(?:[A-Za-z0-9_-]{1,200}\/)?([^/?#]+)\/?$/u.exec(value);
+    const actor = post?.[1];
+    if (post && actor && facebookActor.test(actor) && !actor.includes("..") && (!/^\d+$/u.test(actor) || facebookActorId.test(actor)) && facebookPostId.test(post[2]!)) {
+      return `https://www.facebook.com/${post[1]!}/posts/${post[2]!}`;
+    }
+    const permalink = /^https:\/\/(?:www\.)?facebook\.com\/permalink\.php\?story_fbid=([^&]+)&id=([^&]+)$/u.exec(value);
+    if (permalink && facebookPostId.test(permalink[1]!) && facebookActorId.test(permalink[2]!)) {
+      return `https://www.facebook.com/permalink.php?story_fbid=${permalink[1]!}&id=${permalink[2]!}`;
+    }
+    invalid(provider);
+  }
   if (provider === "lottie") {
     if (host !== "lottie.host" || /[?#]/u.test(value)) invalid(provider);
     const match = /^\/(?:embed\/)?([^/]+)\/([^/]+)$/u.exec(url.pathname);

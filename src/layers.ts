@@ -34,7 +34,7 @@ export function layerLabel(node: Exclude<PageNode, { type: "text" }>, labels: La
   if (node.type === "component") return labels.blocks?.[node.block] ?? "コンポーネント";
   if (node.type === "instance") return labels.components?.get(node.component) ?? "コンポーネント";
   if (node.icon) return "アイコン";
-  if (node.embed) return node.embed.provider === "map" ? "Map" : node.embed.provider === "youtube" ? "YouTube" : node.embed.provider === "vimeo" ? "Vimeo" : "Lottie";
+  if (node.embed) return node.embed.provider === "map" ? "Map" : node.embed.provider === "youtube" ? "YouTube" : node.embed.provider === "vimeo" ? "Vimeo" : node.embed.provider === "lottie" ? "Lottie" : "Facebook";
   if (node.tag === "video") return "動画";
   if (node.tag === "img" || node.tag === "picture") return "画像";
   if (textTags.has(node.tag)) {
