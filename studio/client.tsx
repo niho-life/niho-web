@@ -2,6 +2,7 @@ import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useSta
 import { createRoot } from "react-dom/client";
 import { ProjectDashboard, type ProjectSiteView } from "../src/project-dashboard.js";
 import { ProjectDirectory } from "../src/project-directory.js";
+import { SiteLanguageSettings } from "../src/site-language-settings.js";
 import { parseProjectDirectoryResult, type ProjectDirectoryResult } from "../src/project-read-model.js";
 import type { Project } from "../src/projects.js";
 import { integrationIdentity, resolveTrustedEditorPage, resolveTrustedIntegration, trustedEditorPath } from "./integration-registry.mjs";
@@ -518,6 +519,7 @@ function App() {
   const selected = screen.kind === "dashboard" || screen.kind === "editor"
     ? session.directory.entries.find(({ project }) => project.id === screen.projectId && project.site.id === screen.siteId)?.project
     : undefined;
+  const selectedSourceLocale = selected ? resolveTrustedIntegration(selected.id, selected.site.id)?.registration.sourceLocale : undefined;
   const resolvedEditor = screen.kind === "editor" && selected
     ? resolveTrustedIntegration(selected.id, selected.site.id, screen.environment)
     : null;
@@ -551,7 +553,10 @@ function App() {
               editorAction={editorEnabled(selected) ? "enabled" : "pending"}
               // 解析の接続設定の画面はまだ無い（GA4／Search Console の接続は別 Issue）。プロジェクト設定は settingsContent で開く
               settingsAction="disabled"
-              settingsContent={<MemberAdministration key={`${selected.id}:${selected.site.id}`} project={selected} expire={expire} />}
+              settingsContent={<div className="studio-project-settings">
+                {selectedSourceLocale && <SiteLanguageSettings value={{ sourceLocale: selectedSourceLocale, targetLocale: selectedSourceLocale === "ja" ? "en" : "ja" }} locked={false} />}
+                <MemberAdministration key={`${selected.id}:${selected.site.id}`} project={selected} expire={expire} />
+              </div>}
               siteViews={siteViews(selected)}
               activeSiteView={screen.view ?? null}
               onSiteViewChange={(view) => {

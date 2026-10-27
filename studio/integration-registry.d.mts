@@ -1,6 +1,7 @@
 export type TrustedIntegration = Readonly<{
   projectId: string;
   siteId: string;
+  sourceLocale: "ja" | "en";
   aliases: readonly string[];
   environments: Readonly<Record<string, Readonly<{ editorPathSuffix: string; apiPrefix: string }>>>;
 }>;

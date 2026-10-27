@@ -89,6 +89,7 @@ const adapter: ProjectDashboardAdapter = {
 - `settingsContent` を渡すと「プロジェクト設定」はDashboardの中でその中身を開き、`onOpenSettings(project, "site")` は呼びません。渡さなければ従来どおり `onOpenSettings` を呼びます。
 - `settingsAction: "disabled"` は設定画面の無いホストの表示です。`settingsContent` を渡していないホストでは「プロジェクト設定（準備中）」として無効にし、どのホストでも解析の接続操作を「解析接続（準備中）」として無効にします（接続設定の画面を持たないホストが、押しても何も起きないボタンを出さないため）。
 - サイトの言語を設定するホストは `settingsContent` に `SiteLanguageSettings`（`@niho/web/site-language-settings`）を置けます。`value` は明示した `sourceLocale` ともう一方の `targetLocale`、`locked` は初回サブ公開済みの状態です。`onSave` は保存した2言語の組を返します。画面の固定だけに依存せず、ホストが権限・原文の整合・版の競合・初回公開後の変更禁止を確認してから保存します。未対応ホストは `onSave` を渡さず現在値を表示します。
+- Studio の既存サイトでは、信頼するサイト登録に鎌倉=`ja`、Experience=`en` の原文言語を明記し、この設定画面で表示します。既存原文と公開履歴を移す保存経路はまだ無いため、既存サイトには `onSave` を渡しません。登録外のサイトに原文言語を推測して表示しません。
 - `siteViews` はホストが接続したサイト機能（CMS・素材・翻訳など）です。上のタブの「ホーム」と「アナリティクス」の間に `label` の順で並び、選ぶとホームの左のメニューを閉じて、全幅で `content` を出します（CMSモード）。開いている機能は `activeSiteView` / `onSiteViewChange` でホストが持ち、URLと合わせます。`actions` を渡すと、その機能を開いている間だけ帯の右側（「デザインエディタ」の左）に出します（Studioでは旧画面への入口）。
 - `headerEnd` は帯の右端にホストが置くもの（アカウントのメニューなど）です。ホストが自分のヘッダーを出さず、この帯をプロジェクトの中の1段のヘッダーとして使うときに渡します。
 

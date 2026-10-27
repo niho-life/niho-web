@@ -17,8 +17,8 @@ export function createTrustedIntegrationRegistry(definitions) {
   if (!Array.isArray(definitions) || definitions.length === 0) throw new Error("trusted integration registry is empty");
   const identities = new Set(), aliases = new Set(), htmlPaths = new Set(), apiScopes = new Set();
   const registrations = definitions.map((raw) => {
-    if (!raw || typeof raw !== "object" || Array.isArray(raw) || !identifier.test(raw.projectId) || !identifier.test(raw.siteId) || !Array.isArray(raw.aliases) || !raw.environments || typeof raw.environments !== "object" || Array.isArray(raw.environments)) throw new Error("invalid trusted integration registration");
-    if (Object.keys(raw).some((key) => !["projectId", "siteId", "aliases", "environments"].includes(key))) throw new Error("unknown trusted integration metadata");
+    if (!raw || typeof raw !== "object" || Array.isArray(raw) || !identifier.test(raw.projectId) || !identifier.test(raw.siteId) || !["ja", "en"].includes(raw.sourceLocale) || !Array.isArray(raw.aliases) || !raw.environments || typeof raw.environments !== "object" || Array.isArray(raw.environments)) throw new Error("invalid trusted integration registration");
+    if (Object.keys(raw).some((key) => !["projectId", "siteId", "sourceLocale", "aliases", "environments"].includes(key))) throw new Error("unknown trusted integration metadata");
     const identity = integrationIdentity(raw.projectId, raw.siteId);
     if (identities.has(identity)) throw new Error("duplicate trusted integration identity");
     identities.add(identity);
@@ -37,7 +37,7 @@ export function createTrustedIntegrationRegistry(definitions) {
       return [environment, Object.freeze({ editorPathSuffix: config.editorPathSuffix, apiPrefix: config.apiPrefix })];
     }));
     if (Object.keys(environments).length === 0) throw new Error("trusted integration has no environment");
-    return Object.freeze({ projectId: raw.projectId, siteId: raw.siteId, aliases: frozenAliases, environments: Object.freeze(environments) });
+    return Object.freeze({ projectId: raw.projectId, siteId: raw.siteId, sourceLocale: raw.sourceLocale, aliases: frozenAliases, environments: Object.freeze(environments) });
   });
   const frozen = Object.freeze(registrations);
   const byIdentity = new Map(frozen.map((entry) => [integrationIdentity(entry.projectId, entry.siteId), entry]));
@@ -84,12 +84,14 @@ const registry = createTrustedIntegrationRegistry([
   {
     projectId: "project-kamakura",
     siteId: "kamakura",
+    sourceLocale: "ja",
     aliases: ["kamakura-site"],
     environments: { production: { editorPathSuffix: "", apiPrefix: "/editor" } }
   },
   {
     projectId: "project-experience",
     siteId: "experience",
+    sourceLocale: "en",
     aliases: ["niho-experience"],
     environments: {
       production: { editorPathSuffix: "", apiPrefix: "/editor" },
