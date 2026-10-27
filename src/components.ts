@@ -3,7 +3,7 @@ import type {
   BlockContracts, ComponentDefinition, ComponentKind, ComponentLibrary, ComponentPropDefinition, ComponentPropField, ElementNode, PageDocument, PageNode
 } from "./types.js";
 import { COMPONENT_LIMITS, expandDocument, instancesOf, ownElements, type ResolvedOrigin } from "./component-expand.js";
-import { isElementTag, parseNode, parsePageDocument, reservedPropNames, type ComponentShape, type NodeContext } from "./document.js";
+import { isElementTag, parseNode, parsePageDocument, reservedPropNames, validateFormReferences, type ComponentShape, type NodeContext } from "./document.js";
 import { collectAssetReferences, type AssetPlacement } from "./assets.js";
 import { findInternalLinks, linkTarget, rewriteInternalLinks, validatePagePath } from "./pages.js";
 import { parseTokens } from "./style-values.js";
@@ -76,8 +76,9 @@ export function parseComponentLibrary(input: unknown, blocks: BlockContracts = {
   const usage = { nodes: 0, text: 0 }, references = new Map<string, string[]>();
   const components = headers.map((header, index): ComponentDefinition => {
     const at = `$.components[${index}]`;
-    const context: NodeContext = { blocks, tokens, instanceTokens: tokens, components: shapes, ids: new Set(), htmlIds: new Set(), usage };
+    const context: NodeContext = { blocks, tokens, instanceTokens: tokens, components: shapes, ids: new Set(), htmlIds: new Set(), formLabels: new Map(), formControls: [], usage };
     const root = parseNode(header.root, `${at}.root`, context);
+    validateFormReferences(context);
     if (root.type !== "element") fail(`${at}.root`, "component root must be an element");
     const elements = ownElements(root), targets = new Set<string>();
     for (const [name, prop] of Object.entries(header.props ?? {})) {

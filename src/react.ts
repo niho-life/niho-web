@@ -81,6 +81,7 @@ export function PageRenderer({ document: input, blocks = {}, assets: assetInput,
       return createElement("div", { key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-block": node.block }, createElement(definition.component, node.props));
     }
     const attrs = { ...node.attrs };
+    if (typeof attrs.autocomplete === "string") { attrs.autoComplete = attrs.autocomplete; delete attrs.autocomplete; }
     if (canvas?.siteOrigin) withSiteOrigin(attrs, canvas.siteOrigin);
     if (hostViewBinding) {
       for (const [slot, ids] of Object.entries(hostViewBinding.slotBindings ?? {})) if (ids.includes(node.id)) attrs["data-nw-slot"] = slot;
@@ -122,6 +123,9 @@ export function PageRenderer({ document: input, blocks = {}, assets: assetInput,
     if (node.tag === "a" && attrs.target === "_blank") {
       attrs.rel = [...new Set(`${attrs.rel ?? ""} noopener noreferrer`.trim().split(/\s+/))].join(" ");
     }
+    // action / method は文書から受け付けない。method=dialog は form が dialog 外なら送信せず、
+    // 静的 HTML でも現在 URL へ入力値を誤送信しない。送信処理はホストの trusted code が所有する。
+    if (node.tag === "form") attrs.method = "dialog";
     const frame = hostViewBinding?.externalFrames?.find((candidate) => candidate.nodeId === node.id);
     if (frame) return createElement("iframe", { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, src: frame.src, title: frame.title,
       loading: frame.loading ?? "lazy", referrerPolicy: frame.referrerPolicy ?? "strict-origin-when-cross-origin", sandbox: externalFramePolicy?.(frame) === "retain-origin" ? "allow-scripts allow-same-origin" : "allow-scripts",
@@ -129,7 +133,8 @@ export function PageRenderer({ document: input, blocks = {}, assets: assetInput,
       ...(frame.frameKey ? { "data-nw-frame-key": frame.frameKey, "data-nw-frame-max-height": frame.autoHeightMax ?? 1200 } : {}),
       ...(frame.allowFullScreen ? { allowFullScreen: true } : {}) });
     // children を渡さないことで React の void element 契約を守る。
-    return createElement(node.tag, { ...attrs, ...(canvas && node.tag === "video" ? { onPlay: (event: { currentTarget: { pause(): void } }) => event.currentTarget.pause() } : {}), key: node.id, "data-nw-node": node.id, "data-nw-owner": scope },
+    return createElement(node.tag, { ...attrs,
+      ...(canvas && node.tag === "video" ? { onPlay: (event: { currentTarget: { pause(): void } }) => event.currentTarget.pause() } : {}), key: node.id, "data-nw-node": node.id, "data-nw-owner": scope },
       ...(node.children.length ? node.children.map(render) : []));
   }
   return createElement(Fragment, null,

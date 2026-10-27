@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { DocumentValidationError, generatePageCss, parsePageDocument } from "@niho/web/core";
 import { acceptSavedRevision, checkPageChange, commitHistory, editDocument, effectiveLocks, fingerprint, lockReason, newElement, nodeAt, travelHistory, validatePageChangePlan, validateReleasePlan, walkNodes } from "../dist/editor-model.js";
+import { createInsertionNode, formInsertionPresets } from "@niho/web/builder";
 
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 const doc = () => structuredClone(fixture);
@@ -24,6 +25,33 @@ test("editor changes text, link, image and responsive styles through the core va
     { type: "style", path: [0], breakpoint: "base", property: "color", value: "red;display:none" },
     { type: "add", parentId: "heading", node: newElement("section", "invalid") }
   ]) assert.throws(() => editDocument(next, operation), DocumentValidationError);
+});
+test("フォーム操作は名前・必須・型・選択肢を検証済み文書として更新する", () => {
+  const preset = formInsertionPresets.find(({ id }) => id === "form-2");
+  let page = editDocument(doc(), { type: "add", parentId: null, node: createInsertionNode(preset, { document: doc() }) });
+  const formIndex = page.body.length - 1, form = page.body[formIndex];
+  page = editDocument(page, { type: "attribute", path: [formIndex], name: "name", value: "entry" });
+  const selectIndex = form.children.findIndex((node) => node.type === "element" && node.tag === "select");
+  page = editDocument(page, { type: "booleanAttribute", path: [formIndex, selectIndex], name: "required", value: true });
+  page = editDocument(page, { type: "formChoices", path: [formIndex, selectIndex], values: ["標準", "優先"] });
+  const fieldsetIndex = form.children.findIndex((node) => node.type === "element" && node.tag === "fieldset");
+  page = editDocument(page, { type: "attribute", path: [formIndex, fieldsetIndex], name: "name", value: "reply" });
+  page = editDocument(page, { type: "formChoices", path: [formIndex, fieldsetIndex], values: ["メール", "電話", "郵送"] });
+  const reloaded = parsePageDocument(JSON.parse(JSON.stringify(page))), edited = reloaded.body[formIndex];
+  assert.equal(edited.attrs.name, "entry"); assert.equal(edited.children[selectIndex].attrs.required, true);
+  assert.deepEqual(edited.children[selectIndex].children.map((option) => option.children[0].text), ["標準", "優先"]);
+  assert.deepEqual(edited.children[fieldsetIndex].children.filter((child) => child.tag === "input").map((input) => input.attrs.name), ["reply", "reply", "reply"]);
+  const withoutControl = editDocument(page, { type: "remove", path: [formIndex, selectIndex] });
+  const withoutLabel = editDocument(page, { type: "remove", path: [formIndex, selectIndex - 1] });
+  assert.equal(withoutControl.body[formIndex].children.length, form.children.length - 2);
+  assert.deepEqual(withoutControl.body[formIndex].children, withoutLabel.body[formIndex].children);
+  const duplicatedField = editDocument(page, { type: "duplicate", path: [formIndex, selectIndex] }).body[formIndex].children;
+  assert.equal(duplicatedField.length, form.children.length + 2);
+  assert.equal(duplicatedField[selectIndex + 1].attrs.htmlFor, duplicatedField[selectIndex + 2].attrs.id);
+  assert.throws(() => editDocument(page, { type: "formChoices", path: [formIndex, selectIndex], values: [] }), /1〜20件/);
+  const duplicated = editDocument(page, { type: "duplicate", path: [formIndex] }), copy = duplicated.body[formIndex + 1];
+  const copiedIds = new Set(walkNodes({ ...duplicated, body: [copy] }).flatMap(({ node }) => node.type === "element" && typeof node.attrs?.id === "string" ? [node.attrs.id] : []));
+  assert.ok(walkNodes({ ...duplicated, body: [copy] }).filter(({ node }) => node.type === "element" && node.tag === "label").every(({ node }) => copiedIds.has(node.attrs.htmlFor)), "複製したlabelは複製内の入力項目を参照する");
 });
 test("structure editing duplicates unique IDs and remaps internal links and ARIA references", () => {
   const original = doc(); original.body[0].attrs.id = "intro";

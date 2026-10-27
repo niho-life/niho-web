@@ -26,7 +26,8 @@ export const elementTypeLabel: Record<ElementTag, string> = {
   h1: "見出し1", h2: "見出し2", h3: "見出し3", h4: "見出し4", h5: "見出し5", h6: "見出し6", p: "段落", span: "インラインテキスト",
   a: "リンク", img: "画像", picture: "画像領域", source: "画像候補", video: "動画", ul: "箇条書き", ol: "番号付きリスト", li: "リスト項目",
   dl: "説明リスト", dt: "説明見出し", dd: "説明内容", strong: "強調", em: "強勢", b: "太字", i: "斜体", small: "補足テキスト",
-  blockquote: "引用", figure: "図版", figcaption: "図版説明", br: "改行", hr: "区切り", time: "日時", details: "開閉領域", summary: "開閉見出し"
+  blockquote: "引用", figure: "図版", figcaption: "図版説明", br: "改行", hr: "区切り", time: "日時", details: "開閉領域", summary: "開閉見出し",
+  form: "フォーム", label: "項目ラベル", input: "入力欄", textarea: "複数行入力", select: "選択メニュー", option: "選択肢", button: "ボタン", fieldset: "選択肢グループ", legend: "グループ見出し"
 };
 /** レイヤー名は文書へ複製せず、現在のノードから人向けに投影する。raw text は親要素の内容なので行を作らない。文字を持たない要素はセクション・箇条書きなど種類の名前にする。 */
 export function layerLabel(node: Exclude<PageNode, { type: "text" }>, labels: LayerLabels = {}): string {

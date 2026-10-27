@@ -46,4 +46,8 @@ export const historyCss = `
 .nw-editor .e-add-category[data-category=basic] .e-preset-card:hover .e-preset-preview{border-color:var(--e-blue)}
 .nw-editor .e-add-category[data-category=basic] .e-preset-label{width:100%;justify-content:center;font-size:10px;line-height:1.2;overflow-wrap:anywhere}
 .nw-editor .e-add-category[data-category=basic] .e-preset-label>i{display:none}
+.nw-editor .e-form-items{list-style:none;margin:0;padding:0;display:grid;gap:4px}
+.nw-editor .e-form-items li{margin:0;padding:0}
+.nw-editor .e-form-items button{width:100%;display:flex;justify-content:space-between;align-items:center;text-align:left;min-height:30px;padding:6px 8px;border:1px solid var(--e-border);border-radius:var(--nw-radius);background:var(--nw-bg);color:var(--e-ink);font-size:12px}
+.nw-editor .e-form-items button:hover{border-color:var(--e-blue)}
 `;
