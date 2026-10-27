@@ -67,6 +67,10 @@
       "types": "./dist/project-dashboard.d.ts",
       "import": "./dist/project-dashboard.js"
     },
+    "./site-language-settings": {
+      "types": "./dist/site-language-settings.d.ts",
+      "import": "./dist/site-language-settings.js"
+    },
     "./project-read-model": {
       "types": "./dist/project-read-model.d.ts",
       "import": "./dist/project-read-model.js"
@@ -141,6 +145,7 @@
     "demo:localization": "node examples/localization-demo.mjs",
     "demo:localization-workspace": "npm run build && node examples/localization-workspace-demo.mjs",
     "demo:page-review-policy": "npm run build && node examples/page-review-policy-demo.mjs",
+    "demo:site-language-settings": "npm run build && node examples/site-language-settings-demo.mjs",
     "demo:site-styles": "npm run build && node examples/site-styles-demo.mjs",
     "demo:host-preview": "node examples/host-preview-demo.mjs",
     "demo:kamakura": "npm run build && node examples/kamakura-native-demo.mjs",
