@@ -254,7 +254,7 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
   }
   else if (operation.type === "meta") {
     const meta: Record<string, unknown> = { ...draft.meta }, value = operation.value;
-    if (value === undefined || value === "" || value === false || Array.isArray(value) && !value.length) delete meta[operation.field];
+    if (value === undefined || value === "" || value === false && operation.field !== "targetReviewBeforePublish" || Array.isArray(value) && !value.length) delete meta[operation.field];
     else meta[operation.field] = structuredClone(value);
     if (Object.keys(meta).length) draft.meta = meta as PageMeta; else delete draft.meta;
   }

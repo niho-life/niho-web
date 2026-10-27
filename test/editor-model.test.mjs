@@ -135,6 +135,13 @@ test("meta operations add, replace and remove public information through the cor
   const history = commitHistory({ past: [], present: doc(), future: [] }, editDocument(doc(), { type: "meta", field: "favicon", value: "/icon.png" }));
   assert.equal(travelHistory(history, "undo", {}, []).present.meta, undefined);
 });
+test("the page's target review policy preserves an explicit false override", () => {
+  let next = editDocument(doc(), { type: "meta", field: "targetReviewBeforePublish", value: true });
+  assert.equal(next.meta.targetReviewBeforePublish, true);
+  next = editDocument(next, { type: "meta", field: "targetReviewBeforePublish", value: false });
+  assert.deepEqual(next.meta, { targetReviewBeforePublish: false });
+  assert.throws(() => editDocument(doc(), { type: "meta", field: "targetReviewBeforePublish", value: "yes" }), DocumentValidationError);
+});
 const pages = [
   { siteId: "demo", pageId: "home", locale: "ja-JP", title: "ホーム", path: "/" },
   { siteId: "demo", pageId: "about", locale: "ja-JP", title: "私たちについて", path: "/about" },

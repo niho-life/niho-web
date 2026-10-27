@@ -110,6 +110,9 @@ npm run demo:localization
 
 訳文の公開には `EditorLocalizationAdapter` の `readRelease / prepareRelease / applyRelease / rollbackRelease` を4つとも実装します。実装済みhostでは、従来無効だった訳文の公開ボタンが「言語全体の公開確認」になり、全ページ、共通部品、ナビ、style、外部resource、domain、現在版、準備版、期限、確認用の依存版、未完了理由を表示します。未完了項目が1つでもあればapplyできません。
 
+原文ページの「ページ設定」には、`EditorLocalizationAdapter` があるサイトだけ「サブは確認してから公開」を表示します。値は原文 `PageDocument.meta.targetReviewBeforePublish` に `true` / `false` として保存し、英語キャンバスからは変更できません。省略時の既定値、確認済みを求める対象と公開直前の判定はホストが決めます。`false` はホストの既定値を明示的に解除する値なので、文書 parser と保存処理は削除せず保持します。
+`npm run demo:page-review-policy` で架空のページの設定をブラウザ上で試せます。
+
 未保存ページ、未保存のsource component library、入力途中の翻訳手動bufferはprepareを止めます。applyはhost発行のopaqueなconfirmation tokenと準備時identityだけを返し、任意snapshotを送りません。409、期限切れ、通信断では下書きを保持して確認を閉じ、現在の言語releaseと同じページの翻訳公開状態を読み直します。通信断は成立状況不明なので、再実行前に現在状態を確認します。
 
 prepare自体が競合した場合も、現在の文書・サイト版・言語公開版を読み直し、利用者が改めて確認します。同じ古い版で自動再試行しません。新規公開の確認は現在の原文公開ページ全体を対象にし、過去版の復元は現在も公開可能な過去版のページだけを対象にします。後から追加された原文だけのページを過去の訳文版へ混ぜません。

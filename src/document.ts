@@ -128,13 +128,17 @@ export function parsePageImage(input: unknown, path: string): PageImage {
 /** 公開メタ情報を検証して新しいオブジェクトを返す。false・空配列は保存しない。 */
 export function parsePageMeta(input: unknown, path = "$.meta"): PageMeta {
   const source = record(input, path), result: PageMeta = {};
-  keys(source, ["description", "ogImage", "favicon", "noindex", "structuredData"], path);
+  keys(source, ["description", "ogImage", "favicon", "noindex", "targetReviewBeforePublish", "structuredData"], path);
   if (source.description !== undefined) result.description = line(source.description, `${path}.description`, metaLimits.descriptionLength);
   if (source.ogImage !== undefined) result.ogImage = parsePageImage(source.ogImage, `${path}.ogImage`);
   if (source.favicon !== undefined) result.favicon = assetUrl(source.favicon, `${path}.favicon`);
   if (source.noindex !== undefined) {
     if (typeof source.noindex !== "boolean") fail(`${path}.noindex`, "expected boolean");
     if (source.noindex) result.noindex = true;
+  }
+  if (source.targetReviewBeforePublish !== undefined) {
+    if (typeof source.targetReviewBeforePublish !== "boolean") fail(`${path}.targetReviewBeforePublish`, "expected boolean");
+    result.targetReviewBeforePublish = source.targetReviewBeforePublish;
   }
   if (source.structuredData !== undefined) {
     const at = `${path}.structuredData`;
