@@ -106,7 +106,7 @@ test("the host component shares context, current width and read-only preview/his
     const link = new app.frame.contentWindow.MouseEvent("click", { bubbles: true, cancelable: true });
     await act(async () => app.frame.contentDocument.querySelector("[data-host-link]").dispatchEvent(link)); assert.equal(link.defaultPrevented, true);
     await press(toolbar("プレビュー")); assert.equal(host().dataset.mode, "preview"); assert.equal(host().dataset.readonly, "true");
-    await press(toolbar("編集に戻る")); await press(toolbar("履歴"));
+    await press(toolbar("編集に戻る")); await press(document.querySelector('.e-tools [aria-label="履歴"]'));
     await press(document.querySelector(".e-version:not(.is-current)"));
     assert.equal(host().dataset.mode, "history"); assert.equal(host().dataset.readonly, "true");
     assert.equal(host().dataset.title, "Earlier page");

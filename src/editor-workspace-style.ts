@@ -44,6 +44,7 @@ export const workspaceCss = `${uiTokensCss}
 .nw-editor .e-crumb,.nw-editor .e-crumb>span,.nw-editor .e-crumb-path{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.nw-editor .e-crumb{display:flex;align-items:baseline;gap:4px;font-size:12px}
 .nw-editor .e-crumb-site{flex:0 1 auto;color:var(--e-muted);font-weight:500}.nw-editor .e-crumb-sep{flex:none;color:var(--nw-text-faint);font-weight:400}.nw-editor .e-crumb-page{flex:1 1 auto}.nw-editor .e-crumb-path{color:var(--e-muted);font-size:10px;font-variant-numeric:tabular-nums}
 .nw-editor .e-panel{min-width:0;min-height:0;flex:1;overflow:auto}.nw-editor .e-panel>section{padding:14px 12px 22px}.nw-editor .e-panel-head{margin-bottom:12px}.nw-editor .e-panel-head h2{margin:0;font-size:13px}.nw-editor .e-panel-head p{display:none}
+.nw-editor .e-panel>section.e-history-panel{padding:0}
 
 /* Layout zoom keeps fixed iframe layers intact; transforming the iframe can drop their initial paint in Chromium. */
 /* Canvas begins at the workspace top; only the stage scrolls. */
