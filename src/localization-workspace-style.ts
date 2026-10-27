@@ -56,7 +56,7 @@ const localizationCss = `
 .nw-localization .lw-item-meta{display:flex;flex-wrap:wrap;gap:4px 16px;margin:0;color:var(--nw-text-sub);font-size:12.5px}
 .nw-localization .lw-related{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin:-3px 0 2px}
 .nw-localization .lw-related-label{margin-right:3px;color:var(--nw-text-sub);font-size:12px;font-weight:650}
-.nw-localization .lw-related-link{display:inline-flex;align-items:center;gap:8px;min-height:32px;padding:5px 10px;border:1px solid var(--nw-border);border-radius:var(--nw-radius-pill);background:var(--nw-surface);color:var(--nw-text);font:inherit;font-size:12px;font-weight:650;cursor:pointer}
+.nw-localization .lw-related-link{display:inline-flex;align-items:center;gap:8px;min-height:32px;padding:5px 10px;border:1px solid var(--nw-border);border-radius:var(--nw-radius-pill);background:var(--nw-surface);color:var(--nw-text);font:inherit;font-size:12px;font-weight:650;text-decoration:none;cursor:pointer}
 .nw-localization .lw-related-link:hover{border-color:var(--nw-accent);color:var(--nw-accent-strong)}
 .nw-localization .lw-related-link:focus-visible{outline:2px solid var(--nw-focus);outline-offset:2px}
 .nw-localization .lw-related-link:disabled{opacity:.55;cursor:wait}

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
-import { LocalizationWorkspace, type LocalizationNavigationState } from "@niho/web/localization-workspace";
+import { LocalizationItemWorkspace, LocalizationWorkspace, type LocalizationNavigationState } from "@niho/web/localization-workspace";
 import { ALL_PERMISSIONS, createLocalizationMemory } from "./localization-workspace-memory.mjs";
 
 // 公開できる架空のデータだけを使う。認証・本番 API・実在の人やサイトには接続しない。変更はこのタブのメモリだけ。
@@ -32,6 +32,7 @@ function readLocation(): { itemKey?: string; view?: "settings" } {
 
 function App() {
   const start = readLocation();
+  const embedded = new URLSearchParams(location.search).get("embedded") === "1";
   const [preset, setPreset] = useState<Preset>("owner");
   const [generation, setGeneration] = useState(0);
   const [opened, setOpened] = useState<string | null>(start.itemKey ?? null);
@@ -79,8 +80,11 @@ function App() {
       }} />公開できない理由を消す（公開の手順を試す）</label>
       {note && <span role="status">{note}</span>}
     </div>
-    <LocalizationWorkspace key={generation} adapter={memory.adapter} {...(start.itemKey && generation === 0 ? { initialItemKey: start.itemKey } : {})}
-      {...(start.view && generation === 0 ? { initialView: start.view } : {})} onNavigate={navigate} />
+    {embedded ? <LocalizationItemWorkspace key={generation} adapter={memory.adapter} itemKey={start.itemKey ?? "YWJvdXQ"}
+      onBack={() => window.location.assign("/")} onOpenRelated={(itemKey) => window.location.assign(`/?embedded=1&item=${encodeURIComponent(itemKey)}`)}
+      relatedPageLink={{ href: "/?item=aG9tZQ", label: "英語の詳細ページ" }} />
+      : <LocalizationWorkspace key={generation} adapter={memory.adapter} {...(start.itemKey && generation === 0 ? { initialItemKey: start.itemKey } : {})}
+        {...(start.view && generation === 0 ? { initialView: start.view } : {})} onNavigate={navigate} />}
   </>;
 }
 

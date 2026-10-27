@@ -41,8 +41,8 @@ export function LocalizationWorkspace(props: LocalizationWorkspaceProps) {
 }
 
 /** CMS など、原文の編集画面の中で同じ 1 件だけを直す入口。 */
-export function LocalizationItemWorkspace({ adapter, itemKey, onBack, onOpenRelated, registerBack, timeZone = "Asia/Tokyo", autosaveDelay = 1000, pollInterval = 2000 }: {
-  adapter: LocalizationWorkspaceAdapter; itemKey: string; onBack: () => void; onOpenRelated?: (itemKey: string) => void; registerBack?: (back: (() => void) | null) => void; timeZone?: string; autosaveDelay?: number; pollInterval?: number;
+export function LocalizationItemWorkspace({ adapter, itemKey, onBack, onOpenRelated, relatedPageLink, registerBack, timeZone = "Asia/Tokyo", autosaveDelay = 1000, pollInterval = 2000 }: {
+  adapter: LocalizationWorkspaceAdapter; itemKey: string; onBack: () => void; onOpenRelated?: (itemKey: string) => void; relatedPageLink?: { readonly href: string; readonly label: string }; registerBack?: (back: (() => void) | null) => void; timeZone?: string; autosaveDelay?: number; pollInterval?: number;
 }) {
   const [overview, setOverview] = useState<OverviewState>({ status: "loading" });
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
@@ -76,7 +76,7 @@ export function LocalizationItemWorkspace({ adapter, itemKey, onBack, onOpenRela
     <style dangerouslySetInnerHTML={{ __html: localizationWorkspaceCss }} />
     {overview.status === "ready" && isLocalizationItemKey(itemKey)
       ? <ItemEditor key={itemKey} adapter={adapter} overview={overview.overview} itemKey={itemKey} timeZone={timeZone} autosaveDelay={autosaveDelay} pollInterval={pollInterval}
-          backLabel={`${overview.overview.languages.source}へ`} hideSourceLink {...(onOpenRelated ? { onOpenRelated } : {})} {...(registerBack ? { registerBack } : {})} confirm={setConfirm} onSummary={() => {}} onForbidden={() => setOverview({ status: "forbidden" })} onBack={onBack} />
+          backLabel={`${overview.overview.languages.source}へ`} hideSourceLink {...(onOpenRelated ? { onOpenRelated } : {})} {...(relatedPageLink ? { relatedPageLink } : {})} {...(registerBack ? { registerBack } : {})} confirm={setConfirm} onSummary={() => {}} onForbidden={() => setOverview({ status: "forbidden" })} onBack={onBack} />
       : syncProgress && overview.status === "loading" ? <div className="cw-notice"><p role="status">{syncProgress}</p></div>
         : <Notice status={overview.status === "ready" ? "error" : overview.status} noun="翻訳" retry={() => setRetry((count) => count + 1)} />}
     {confirm && <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />}
