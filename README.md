@@ -43,7 +43,7 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 | `@niho/web/project-manager` | 認証済みホストadapterへ接続する `ProjectManager`。React / React DOM が必要 |
 | `@niho/web/project-directory` | 管理フォームと独立した日常の `ProjectDirectory`。内部またはhost shellの名前・ドメイン検索、OG画像／頭文字カード、更新順の一覧表、Dashboard / Editorメニュー |
 | `@niho/web/project-dashboard` | 選択した1 Project・1 Siteに固定した共通Studio shellの `ProjectDashboard`。上部のタブ（ホーム・サイト機能・アナリティクス）で画面全体を切り替え、公開状況・変更履歴表・メンバー表・アクセス解析・設定を表示 |
-| `@niho/web/site-language-settings` | サイト設定に置く日英2言語のシンプルな選択画面 `SiteLanguageSettings`。原文言語からサブを明示し、初回サブ公開後は固定表示にする。Studio は既存サイトの明示した原文言語を設定画面に表示する。保存・認可・版の競合確認はホストが行う（[デモ](examples/site-language-settings-demo.mjs)） |
+| `@niho/web/site-language-settings` | サイト設定に置く日英2言語のシンプルな選択画面 `SiteLanguageSettings`。原文言語からサブを明示し、初回サブ公開後は固定表示にする。Studio は既存サイトの明示した原文言語を設定画面に表示し、CSP 対応の CSS を自身の束に含める。保存・認可・版の競合確認はホストが行う（[デモ](examples/site-language-settings-demo.mjs)） |
 | `@niho/web/project-read-model` | summary / dashboardの型・読み取りadapter・runtime parser。React不要 |
 | `@niho/web/collection-workspace` | コレクション（CMS）の一覧と項目の編集の `CollectionWorkspace`。ホストの adapter で読み書き・自動保存・公開・予約、本文と独立した任意の英語公開状態の更新／安全な再試行、同じ画面で切り替える任意の原文／翻訳タブと訳文タブへの直接リンク（[接続方法](docs/collection-contract.md)） |
 | `@niho/web/localization-workspace` | 要対応から始まる翻訳一覧・対象外の理由別表示・自動翻訳の設定・任意の版付き用語集の確認・初回公開の内訳確認を含む `LocalizationWorkspace` と、CMS 項目に埋め込む `LocalizationItemWorkspace`。一覧の含む内容と関連する訳文への導線、ホストの編集先（Kamakura の共通ページは English キャンバス、CMS は同じ項目の English タブ）、CMS 詳細ページの英語テンプレートへのリンク、保存済みの未公開原文、訳文の自動保存・出どころ別の未確認表示・確認済み・翻訳案・プレビューを共通化する（[接続方法](docs/localization-workspace-contract.md)）。型と parser は `@niho/web/localization-workspace-model` |
