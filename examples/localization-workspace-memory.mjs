@@ -35,7 +35,7 @@ export function seedItems(mediaBase = "https://media.example.test") {
       ],
     },
     {
-      key: "YWJvdXQ", groupId: "pages", title: "私たちについて", path: "/about", includedParts: ["ページ本文", "案内カード"], excluded: null, sourceDraftPending: true, updatedAt: "2026-10-22T03:00:00.000Z", updatedBy: "書き手（架空）",
+      key: "YWJvdXQ", groupId: "pages", title: "私たちについて", path: "/about", includedParts: ["ページ本文", "案内カード"], relatedItems: [{ key: "aG9tZQ", label: "トップの案内文" }], excluded: null, sourceDraftPending: true, updatedAt: "2026-10-22T03:00:00.000Z", updatedBy: "書き手（架空）",
       previews: [{ id: "about", label: "私たちについて" }],
       units: [
         text("title", "題名", "私たちについて", { singleLine: true, value: "About us", reviewedSource: "s1" }),
@@ -162,7 +162,7 @@ export function createLocalizationMemory(options = {}) {
   };
   const settings = () => ({ version: `set${state.settings.version}`, autoDraft: state.settings.autoDraft, translator: { connected: state.settings.connected },
     queue: { waiting: state.settings.waiting, failed: state.settings.failed, nextRetryAt: state.settings.nextRetryAt } });
-  const exportItem = (item) => ({ ...summarize(item), units: item.units.map(exportUnit), previews: structuredClone(item.previews), job: null });
+  const exportItem = (item) => ({ ...summarize(item), units: item.units.map(exportUnit), previews: structuredClone(item.previews), ...(item.relatedItems ? { relatedItems: structuredClone(item.relatedItems) } : {}), job: null });
 
   const wrap = (name, run) => async (...args) => {
     const input = args.length > 1 ? args[0] : undefined;

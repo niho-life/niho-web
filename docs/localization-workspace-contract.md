@@ -52,7 +52,7 @@ const adapter: LocalizationWorkspaceAdapter = {
 | `autosaveDelay` | 直してから自動で保存するまでの待ち時間（ms）。既定は 1000。 |
 | `pollInterval` | 翻訳の依頼・原文の取り込み・公開の進み具合を読み直す間隔（ms）。既定は 2000。 |
 
-`LocalizationItemWorkspace` には同じ `adapter`、対象の `itemKey`、原文のタブへ戻る `onBack` を渡します。原文の取り込みが進行中なら先に `advanceCatalog` を進め、完了後に対象の 1 件を読みます。一覧全体や公開画面は読みません。`timeZone`・`autosaveDelay`・`pollInterval` も共通です。CMS の言語タブから安全に戻るため、`registerBack` に項目エディタの保存処理を登録します。原文の入力は切替中も残り、訳文は保存してから閉じるので、次に開くと最新の原文を読みます。
+`LocalizationItemWorkspace` には同じ `adapter`、対象の `itemKey`、原文のタブへ戻る `onBack` を渡します。原文の取り込みが進行中なら先に `advanceCatalog` を進め、完了後に対象の 1 件を読みます。一覧全体や公開画面は読みません。`timeZone`・`autosaveDelay`・`pollInterval` も共通です。CMS の言語タブから安全に戻るため、`registerBack` に項目エディタの保存処理を登録します。原文の入力は切替中も残り、訳文は保存してから閉じるので、次に開くと最新の原文を読みます。ホストが `onOpenRelated(itemKey)` を渡すと、同じ一覧行に含まれる別の保存単位へ移れます。移る前に保存待ちを完了し、失敗した場合は確認を出します。
 
 部品は `<style>` で `localizationWorkspaceCss` を入れます（CMS の画面の `collectionCss` を含みます）。inline の `<style>` を CSP で拒むホストは、この文字列をファイルにして読み込んでください。根の class は `.nw-collection.nw-localization`、翻訳の画面だけのクラスの接頭辞は `lw-` です。色・角丸・文字は CMS の画面と同じ `@niho/web/ui-tokens` のトークン（`--nw-*`）を使います。
 
@@ -163,6 +163,7 @@ type LocalizationItemSummary = {
   sourceDraftPending: boolean;    // 原文のページまたは CMS に未公開の下書きがある。ホストは保存済み下書きを翻訳原文として取り込む
   updatedAt: string | null; updatedBy: string | null;
 };
+
 ```
 
 | state | 意味 | 印 | 絞り込み |
@@ -183,6 +184,7 @@ type LocalizationItemSummary = {
 type LocalizationItem = LocalizationItemSummary & {
   units: LocalizationWorkspaceUnit[];   // 並び順どおりに出す
   previews: { id: string; label: string }[];   // プレビューで表示できるページ（例「トップ」）。空ならプレビューを出さない
+  relatedItems?: { key: string; label: string }[]; // 同じ行の別の保存単位。最大 8 件。個別の read/command/CAS を維持
   job: LocalizationJob | null;          // この 1 件の翻訳の依頼で、まだ終わっていないもの
 };
 type LocalizationWorkspaceUnit = {

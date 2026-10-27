@@ -54,6 +54,12 @@ const localizationCss = `
 .nw-localization .lw-item-body.lw-with-preview{grid-template-columns:minmax(0,1fr) minmax(320px,42%)}
 .nw-localization .lw-units{display:grid;gap:14px;min-width:0;padding:20px 28px 72px}
 .nw-localization .lw-item-meta{display:flex;flex-wrap:wrap;gap:4px 16px;margin:0;color:var(--nw-text-sub);font-size:12.5px}
+.nw-localization .lw-related{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin:-3px 0 2px}
+.nw-localization .lw-related-label{margin-right:3px;color:var(--nw-text-sub);font-size:12px;font-weight:650}
+.nw-localization .lw-related-link{display:inline-flex;align-items:center;gap:8px;min-height:32px;padding:5px 10px;border:1px solid var(--nw-border);border-radius:var(--nw-radius-pill);background:var(--nw-surface);color:var(--nw-text);font:inherit;font-size:12px;font-weight:650;cursor:pointer}
+.nw-localization .lw-related-link:hover{border-color:var(--nw-accent);color:var(--nw-accent-strong)}
+.nw-localization .lw-related-link:focus-visible{outline:2px solid var(--nw-focus);outline-offset:2px}
+.nw-localization .lw-related-link:disabled{opacity:.55;cursor:wait}
 .nw-localization .lw-changed{display:grid;gap:12px;padding:14px;border-radius:var(--nw-radius-lg);background:var(--nw-warning-soft)}
 .nw-localization .lw-group-title{display:flex;align-items:center;gap:8px;margin:0;color:var(--nw-warning);font-size:14px}
 .nw-localization .lw-group-title .lw-shape{width:0;height:0;border:0;border-left:6px solid transparent;border-right:6px solid transparent;border-bottom:11px solid currentColor;border-radius:0}
