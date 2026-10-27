@@ -137,6 +137,8 @@ export type PageMeta = {
   ogImage?: PageImage;
   favicon?: string;
   noindex?: boolean;
+  /** サブの言語を公開する前に確認済みの訳を要求する。false もホスト既定値を上書きするため保存する。 */
+  targetReviewBeforePublish?: boolean;
   /** ホストが許可した構造化データの ID。JSON-LD はホストが生成する。 */
   structuredData?: string[];
 };

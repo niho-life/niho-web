@@ -252,6 +252,26 @@ async function setupSharedComponents() {
   return { pages, components, calls, librarySaves, get siteReads() { return siteReads; }, cleanup: async () => { await act(async () => root.unmount()); container.remove(); } };
 }
 
+test("source page setting saves the target review policy while target mode cannot change it", async () => {
+  const app = await setup();
+  try {
+    await showInspector("page");
+    const check = [...document.querySelectorAll("label.e-check")].find((node) => node.textContent.includes("サブは確認してから公開"))?.querySelector("input");
+    assert.ok(check, "localized source pages offer a per-page publication policy");
+    assert.equal(check.checked, false);
+    await act(async () => check.click()); await flush();
+    assert.equal(check.checked, true);
+    await click("下書き保存");
+    assert.equal(app.calls.saves[0].document.meta.targetReviewBeforePublish, true);
+  } finally { await app.cleanup(); }
+
+  const target = await setup({ initialTarget: { siteId: "kamakura", pageId: "home", locale: "en-US" } });
+  try {
+    await showInspector("page");
+    assert.equal(document.body.textContent.includes("サブは確認してから公開"), false);
+  } finally { await target.cleanup(); }
+});
+
 test("same logical page switches locale through the dirty guard, saves real target content and keeps source unchanged", async () => {
   const app = await setup();
   try {

@@ -473,10 +473,10 @@ function SearchPreview({ metadata, url }: { metadata: PageMetadata | undefined; 
 }
 
 /** 右レール「ページ」タブの内容。ページ操作は確認付き、公開情報は文書の編集として undo/redo の対象にする。 */
-export function PageSettings({ document, page, site, settings, field, apply, report, disabled, targetMode = false, cover, operations, operationsDisabled, unsaved, start }: {
+export function PageSettings({ document, page, site, settings, field, apply, report, disabled, targetMode = false, hasTargetLocale = false, cover, operations, operationsDisabled, unsaved, start }: {
   document: PageDocument; page: EditorPage | undefined; site: EditorSite | undefined; settings: SiteSettingsState;
   field: FieldRenderer; apply: (operation: EditorOperation) => string | undefined; report: (message: string) => void; disabled: boolean;
-  targetMode?: boolean; cover?: CoverPicker | undefined;
+  targetMode?: boolean; hasTargetLocale?: boolean; cover?: CoverPicker | undefined;
   operations: boolean; operationsDisabled: boolean; unsaved: boolean; start: (start: PageChangeStart) => void;
 }) {
   const meta = document.meta ?? {}, kind = page?.kind ?? "page", domain = site?.domains[0], path = publicPath(page);
@@ -503,6 +503,11 @@ export function PageSettings({ document, page, site, settings, field, apply, rep
         {operations && page && kind !== "page" && <small className="e-help">このテンプレートの名前とURLは変更できません。</small>}
         {canChange && unsaved && <small className="e-help">未保存の変更を保存してから操作できます。</small>}
       </section>
+      {hasTargetLocale && kind === "page" && !targetMode && <section className="e-section"><h3>サブの言語の公開</h3>
+        <label className="e-check"><input type="checkbox" checked={meta.targetReviewBeforePublish ?? false} disabled={disabled}
+          onChange={(event) => run({ type: "meta", field: "targetReviewBeforePublish", value: event.target.checked })} />サブは確認してから公開</label>
+        <small className="e-help">オンにすると、今の原文に対応する訳を確認済みにするまで、サブの言語を公開しません。</small>
+      </section>}
       <section className="e-section"><h3>公開情報</h3>
         {field("ページタイトル", document.title, (value) => ({ type: "title", value }), "title")}
         {field("説明文", meta.description ?? "", (value) => ({ type: "meta", field: "description", value: value.trim() ? value.replace(/[\r\n]+/g, " ") : undefined }), "meta.description",
