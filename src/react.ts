@@ -47,7 +47,7 @@ export type PageRendererProps = {
    * @internal エディターのキャンバスだけが渡す。viewportHeight は viewport 高さの単位を倍率 100% の高さの px に置き換える基準、
    * siteOrigin は文書の root-relative な画像 URL（`/x.svg`）をサイトの公開 origin で解決する（キャンバスの iframe は Studio の origin のため）。
    */
-  canvas?: { viewportHeight?: number | undefined; siteOrigin?: string | undefined } | undefined;
+  canvas?: { viewportHeight?: number | undefined; siteOrigin?: string | undefined; /** Studio previewだけで標準media操作を許可する。 */ interactive?: boolean | undefined } | undefined;
 };
 
 const canvasCssText = (css: string, canvas: PageRendererProps["canvas"]) => canvas?.viewportHeight ? resolveViewportHeightUnits(css, canvas.viewportHeight) : css;
@@ -65,7 +65,10 @@ export function PageRenderer({ document: input, blocks = {}, assets: assetInput,
   const document = resolvePageStyles(parsePageDocument(input, blocks, siteStyles ? { siteStyles } : {}), siteStyles);
   const assets = assetInput === undefined ? {} : parseResolvedAssets(assetInput);
   const scope = pageScope(document);
-  function render(node: PageNode): ReactElement | string | null {
+  type VideoInteractionChild = { role: "video" | "button"; ready: boolean };
+  const videoReady = (node: PageNode | undefined): boolean => node?.type === "element" && node.tag === "video" &&
+    (typeof node.attrs?.src === "string" || !!node.asset && !!resolvedAsset(assets, node.asset));
+  function render(node: PageNode, videoInteraction?: VideoInteractionChild): ReactElement | string | null {
     if (node.type === "text") return node.text;
     // 部品ライブラリなしの検証で拒否済み。下書きは resolvePageDocument で展開してから描画する。
     if (node.type === "instance") throw new Error("Unresolved component instance: resolve the document before rendering");
@@ -101,6 +104,17 @@ export function PageRenderer({ document: input, blocks = {}, assets: assetInput,
       if (binding?.previousIds?.includes(node.id)) attrs["data-nw-carousel-previous"] = "";
       if (binding?.nextIds?.includes(node.id)) attrs["data-nw-carousel-next"] = "";
       if (binding?.playPauseIds?.includes(node.id)) { attrs["data-nw-carousel-play-pause"] = ""; attrs["aria-pressed"] = String(binding.initiallyPlaying === false); }
+    }
+    if (node.interaction?.type === "video-toggle") attrs["data-nw-video-with-button"] = "";
+    if (videoInteraction?.role === "video") {
+      attrs["data-nw-video"] = "";
+      attrs.controls = true;
+    }
+    if (videoInteraction?.role === "button") {
+      attrs["data-nw-video-toggle"] = "";
+      attrs["aria-label"] = typeof node.attrs?.["aria-label"] === "string" ? node.attrs["aria-label"] : "動画を再生";
+      attrs["aria-pressed"] = "false";
+      if (!videoInteraction.ready) attrs.disabled = true;
     }
     const htmlId = typeof attrs.id === "string" ? attrs.id : undefined;
     const opens = htmlId ? overlayBindings.find((overlay) => overlay.triggerIds.includes(htmlId)) : undefined;
@@ -148,14 +162,15 @@ export function PageRenderer({ document: input, blocks = {}, assets: assetInput,
       ...(frame.allowFullScreen ? { allowFullScreen: true } : {}) });
     // children を渡さないことで React の void element 契約を守る。
     return createElement(node.tag, { ...attrs,
-      ...(canvas && node.tag === "video" ? { onPlay: (event: { currentTarget: { pause(): void } }) => event.currentTarget.pause() } : {}), key: node.id, "data-nw-node": node.id, "data-nw-owner": scope },
-      ...(node.children.length ? node.children.map(render) : []));
+      ...(canvas && node.tag === "video" && (!canvas.interactive || videoInteraction?.role !== "video") ? { onPlay: (event: { currentTarget: { pause(): void } }) => event.currentTarget.pause() } : {}), key: node.id, "data-nw-node": node.id, "data-nw-owner": scope },
+      ...(node.children.length ? node.children.map((child, index) => render(child, node.interaction?.type === "video-toggle"
+        ? { role: index === 0 ? "video" : "button", ready: videoReady(node.children[0]) } : undefined)) : []));
   }
   return createElement(Fragment, null,
     // React 18 HTML-escapes text children inside <style>, which changes CSS selectors.
     // cssForDocument only emits identifiers and values accepted by the closed CSS schema.
     createElement("style", { "data-nw-style": scope, dangerouslySetInnerHTML: { __html: canvasCssText(cssForDocument(document, assets), canvas) } }),
-    createElement("div", { "data-nw-scope": scope, lang: document.locale }, ...document.body.map(render)));
+    createElement("div", { "data-nw-scope": scope, lang: document.locale }, ...document.body.map((node) => render(node))));
 }
 
 export type SitePageRendererProps = PageRendererProps & { presentation: unknown };

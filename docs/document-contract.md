@@ -35,6 +35,8 @@ element / component / instance の `id` は文書全体で一意です。element
 
 `video` は安全な HTTPS / root-relative `attrs.src` か `asset: { provider, id }` のいずれか一方、または編集中のソース未設定状態を持ち、children は空です。asset の配信URLは文書に保存せず、画像と同じ解決済み map から描画時に得ます。`aria-label` または `title` の空でないアクセシブル名が必須です。許可属性は `src` / `poster` / `width` / `height` / `controls` / `loop` / `muted` / `preload`（`none` / `metadata` / `auto`）/ `playsInline` と global allowlist だけです。renderer は未指定の `controls` を true、`preload` を `metadata` として出力し、`autoplay` は受け付けません。未解決 asset とソース未設定の動画は公開出力では省略し、editor の placeholder mode ではそれぞれ「動画を表示できません」「動画を選んでください」と示します。editor の素材選択は ready な `video/mp4` を最低限の対応形式としますが、MIME検査・配信URL発行・保存・認可はホスト責務です。iframe・外部embed・remote code はこの native video 契約に含みません。
 
+VideoWithButton は `tag: "div"` に `interaction: { type: "video-toggle" }` を持たせ、直下に `video` と `button[type=button]` をこの順に1つずつ置きます。button の子は表示文言1件だけで、両要素のID参照や任意コードを保存しません。構造を壊す部分削除・移動は検証で拒否します。描画時は既知のdata属性を付け、native video controlsを残します。公開側で `initializeSitePresentation` を起動するとbuttonが再生・一時停止に結び付き、ボタンの押下状態とラベルが動画の状態に同期します。起動できない場合もnative controlsで操作できます。動画ソースが未設定・未解決ならbuttonを無効にし、公開時は外部要求をしません。
+
 ### 標準埋め込み
 
 Map / YouTube / Vimeo は `tag: "div"` の element に `embed: { provider, title, source? }` を持たせます。`provider` は `map | youtube | vimeo` の閉じた値、`title` は空でない300文字以内の1行、`source` は任意です。embed node の `children` は空で、`asset` / `icon` を併用できません。文書から iframe tag、HTML、`src` 属性、sandbox、allow、referrer policy、loading、JavaScript を渡す入口はありません。provider は挿入時に固定し、editor は `embedSource` と `embedTitle` の専用操作だけで値を更新します。

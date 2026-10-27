@@ -23,3 +23,23 @@ export function togglePreset(id: IdFactory): ElementNode {
     children: [text(id(), "summary", "開閉する見出し"), text(id(), "p", "開いたときに表示する内容です。")]
   };
 }
+
+/** video と重なる再生ボタン。binding は親の閉じた descriptor と固定された直下構造だけで表す。 */
+export function videoWithButtonPreset(id: IdFactory): ElementNode {
+  return {
+    type: "element", id: id(), tag: "div", interaction: { type: "video-toggle" },
+    style: { base: { position: "relative", width: "100%", minHeight: 240, overflow: "hidden", backgroundColor: "#111111" } },
+    children: [
+      {
+        type: "element", id: id(), tag: "video",
+        attrs: { "aria-label": "動画", controls: true, preload: "metadata", playsInline: true },
+        style: { base: { display: "block", width: "100%", height: "100%", minHeight: 240, objectFit: "cover" } }, children: []
+      },
+      {
+        type: "element", id: id(), tag: "button", attrs: { type: "button", "aria-label": "動画を再生", "aria-pressed": "false" },
+        style: { base: { position: "absolute", right: 16, bottom: 16, zIndex: 1, width: 52, height: 52, padding: 0, borderWidth: 0, borderRadius: 999, backgroundColor: "#ffffff", color: "#111111", fontSize: 14, fontWeight: 700 } },
+        children: [{ type: "text", text: "再生" }]
+      }
+    ]
+  };
+}

@@ -300,12 +300,12 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
     format("createLink", linkHref); setLinkOpen(false); setLinkError("");
     const element = body?.querySelector<HTMLElement>(`[data-nw-owner="${scope}"][data-nw-node="${editingId}"]`); element?.focus();
   }
-  const canvasRendering = useMemo(() => ({ viewportHeight, siteOrigin }), [viewportHeight, siteOrigin]);
+  const canvasRendering = useMemo(() => ({ viewportHeight, siteOrigin, interactive: mode === "preview" }), [viewportHeight, siteOrigin, mode]);
   const defaultPreview = presentation
     ? <SitePageRenderer key={replay} document={rendered} presentation={presentation} blocks={blocks} {...(externalFramePolicy ? { externalFramePolicy } : {})} assets={assets} missingAssets="placeholder" canvas={canvasRendering} />
     : <StablePageRenderer key={replay} document={rendered} blocks={blocks} assets={assets} missingAssets="placeholder" canvas={canvasRendering} />;
   useEffect(() => {
-    if (!body || !presentation) return;
+    if (!body) return;
     return initializeSitePresentation(body, { interactive: presentationRuntime });
   }, [body, presentation, presentationRuntime, rendered, replay]);
   const hasEmbed = (source: PageDocument) => walkNodes(source).some(({ node }) => node.type === "element" && !!node.embed?.source);
@@ -318,6 +318,7 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
       if (preview) {
         const target = asElement(event.target);
         if (target?.closest("summary")) return;
+        if (target?.closest("[data-nw-video-toggle],[data-nw-video-with-button] video")) return;
         if (presentation && target?.closest("[data-nw-overlay-open],[data-nw-overlay-close],[data-nw-carousel-previous],[data-nw-carousel-next],[data-nw-carousel-play-pause]")) { event.preventDefault(); return; }
         const anchor = target?.closest<HTMLAnchorElement>("a[href]"), href = anchor?.getAttribute("href") ?? "";
         let targetId: string | undefined;

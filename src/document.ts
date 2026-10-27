@@ -14,7 +14,7 @@ const phrasing = new Set("span a img strong em b i small br time label input tex
 const phrasingParents = new Set("p span h1 h2 h3 h4 h5 h6 a strong em b i small time summary label button option legend".split(" "));
 // 開閉（details / summary）は JS なしで動く。summary の中にリンクや入れ子の開閉は置けない。
 const interactive = new Set(["a", "video", "details", "summary", "label", "input", "textarea", "select", "button"]);
-const globalAttributes = ["id", "title", "lang", "dir", "role", "hidden", "tabIndex", "aria-label", "aria-labelledby", "aria-describedby", "aria-hidden", "aria-current"];
+const globalAttributes = ["id", "title", "lang", "dir", "role", "hidden", "tabIndex", "aria-label", "aria-labelledby", "aria-describedby", "aria-hidden", "aria-current", "aria-pressed"];
 const tagAttributes: Partial<Record<ElementTag, string[]>> = {
   a: ["href", "target", "rel", "hrefLang"], img: ["src", "srcSet", "alt", "width", "height", "loading", "decoding"],
   source: ["srcSet", "type", "media"], video: ["src", "poster", "width", "height", "controls", "loop", "muted", "preload", "playsInline"],
@@ -54,6 +54,8 @@ function attributes(value: unknown, tag: ElementTag, path: string, asset = false
       if (name === "accept" && (tag !== "input" || !/^(?:[a-z]+\/[a-z0-9.+*-]+|\.[a-z0-9]+)(?:\s*,\s*(?:[a-z]+\/[a-z0-9.+*-]+|\.[a-z0-9]+)){0,15}$/i.test(text))) fail(at, "invalid file accept list");
       if (["aria-labelledby", "aria-describedby"].includes(name) && !/^[A-Za-z][A-Za-z0-9_-]*(?: [A-Za-z][A-Za-z0-9_-]*)*$/.test(text)) fail(at, "invalid ID references");
       if (name === "aria-hidden" && !["true", "false"].includes(text)) fail(at, "invalid aria-hidden");
+      if (name === "aria-pressed" && tag !== "button") fail(at, "aria-pressed requires a button");
+      if (name === "aria-pressed" && !["true", "false"].includes(text)) fail(at, "invalid aria-pressed");
       if (name === "aria-current" && !["page", "step", "location", "date", "time", "true", "false"].includes(text)) fail(at, "invalid aria-current");
       if (name === "target" && !["_blank", "_self"].includes(text)) fail(at, "unsupported target");
       if (name === "rel" && !/^(?:noopener|noreferrer|nofollow|sponsored|ugc)(?: (?:noopener|noreferrer|nofollow|sponsored|ugc))*$/.test(text)) fail(at, "unsupported rel");
@@ -226,13 +228,13 @@ function slotStyles(value: unknown, contract: BlockContract, tokens: Record<stri
 }
 
 /** @internal 文書の body と部品の root を同じ規則で検証し、新しいノードを返す。 */
-export function parseNodes(input: unknown, path: string, context: NodeContext, depth = 0, parent?: string, insideLink = false, inline = false, insideForm = false): PageNode[] {
+export function parseNodes(input: unknown, path: string, context: NodeContext, depth = 0, parent?: string, insideLink = false, inline = false, insideForm = false, parentInteraction?: "video-toggle"): PageNode[] {
   if (!Array.isArray(input)) fail(path, "expected node array");
   if (depth > 48 || input.length > 5000) fail(path, "document exceeds limits");
-  return input.map((raw, index) => parseNode(raw, `${path}[${index}]`, context, depth, parent, insideLink, inline, insideForm));
+  return input.map((raw, index) => parseNode(raw, `${path}[${index}]`, context, depth, parent, insideLink, inline, insideForm, parentInteraction));
 }
 /** @internal depth はノードを含む配列の深さ。 */
-export function parseNode(raw: unknown, at: string, context: NodeContext, depth = 0, parent?: string, insideLink = false, inline = false, insideForm = false): PageNode {
+export function parseNode(raw: unknown, at: string, context: NodeContext, depth = 0, parent?: string, insideLink = false, inline = false, insideForm = false, parentInteraction?: "video-toggle"): PageNode {
   const node = record(raw, at), { blocks, tokens, ids, htmlIds, usage } = context;
   if (++usage.nodes > 5000) fail(at, "too many nodes");
   if (node.type === "text") {
@@ -245,7 +247,7 @@ export function parseNode(raw: unknown, at: string, context: NodeContext, depth 
   }
   if (node.type === "instance" && !context.components) fail(at, "component instance requires a component library");
   if (node.type !== "element" && node.type !== "component" && node.type !== "instance") fail(`${at}.type`, "unknown node type");
-  keys(node, node.type === "element" ? ["type", "id", "tag", "asset", "icon", "embed", "attrs", "style", "children"] : node.type === "component" ? ["type", "id", "block", "props", "style", "slots"] : ["type", "id", "component", "props", "style"], at);
+  keys(node, node.type === "element" ? ["type", "id", "tag", "asset", "icon", "embed", "interaction", "attrs", "style", "children"] : node.type === "component" ? ["type", "id", "block", "props", "style", "slots"] : ["type", "id", "component", "props", "style"], at);
   const id = identifier(node.id, `${at}.id`);
   if (ids.has(id)) fail(`${at}.id`, "duplicate node ID");
   ids.add(id);
@@ -277,13 +279,20 @@ export function parseNode(raw: unknown, at: string, context: NodeContext, depth 
   const tag = node.tag;
   if (inline && !phrasing.has(tag) || constrainedParent && !constrainedParent.includes(tag) || insideLink && interactive.has(tag)) fail(at, "invalid HTML content nesting");
   if (tag === "form" && insideForm) fail(at, "forms cannot be nested");
-  if (["label", "input", "textarea", "select", "button", "fieldset"].includes(tag) && !insideForm) fail(at, "form control requires a form parent");
+  if (["label", "input", "textarea", "select", "button", "fieldset"].includes(tag) && !insideForm && !(tag === "button" && parentInteraction === "video-toggle")) fail(at, "form control requires a form parent");
   if (tag === "option" && parent !== "select") fail(at, "option requires select parent");
   if (tag === "legend" && parent !== "fieldset") fail(at, "legend requires fieldset parent");
   if (tag === "summary" && parent !== "details") fail(at, "summary must be the first child of details");
   if (node.asset !== undefined && tag !== "img" && tag !== "video") fail(`${at}.asset`, "only img or video can reference an asset");
   if (node.icon !== undefined && (tag !== "span" || !isIconName(node.icon))) fail(`${at}.icon`, "unsupported built-in icon");
   if (node.embed !== undefined && tag !== "div") fail(`${at}.embed`, "only div can contain a standard embed");
+  let interaction: { interaction?: { type: "video-toggle" } } = {};
+  if (node.interaction !== undefined) {
+    const descriptor = record(node.interaction, `${at}.interaction`);
+    keys(descriptor, ["type"], `${at}.interaction`);
+    if (descriptor.type !== "video-toggle" || tag !== "div" || node.asset !== undefined || node.icon !== undefined || node.embed !== undefined) fail(`${at}.interaction`, "unsupported interaction descriptor");
+    interaction = { interaction: { type: "video-toggle" } };
+  }
   const asset = node.asset === undefined ? {} : { asset: parseAssetReference(node.asset, `${at}.asset`) };
   const icon = node.icon === undefined ? {} : { icon: node.icon };
   const embed = node.embed === undefined ? {} : { embed: parseEmbedDescriptor(node.embed, `${at}.embed`) };
@@ -301,7 +310,7 @@ export function parseNode(raw: unknown, at: string, context: NodeContext, depth 
   if (tag === "img" && !attrs.attrs) fail(at, "img requires attributes");
   if (tag === "video" && !attrs.attrs) fail(at, "video requires attributes");
   if (node.icon !== undefined && (attrs.attrs?.role !== "img" || typeof attrs.attrs["aria-label"] !== "string" || !attrs.attrs["aria-label"].trim() || attrs.attrs["aria-hidden"] === "true")) fail(at, "icon requires role img and aria-label");
-  const children = parseNodes(node.children, `${at}.children`, context, depth + 1, tag, insideLink || interactive.has(tag) && tag !== "details", inline || phrasingParents.has(tag), insideForm || tag === "form");
+  const children = parseNodes(node.children, `${at}.children`, context, depth + 1, tag, insideLink || interactive.has(tag) && tag !== "details", inline || phrasingParents.has(tag), insideForm || tag === "form", interaction.interaction?.type);
   if (voidTags.has(tag) && children.length) fail(at, "void element cannot have children");
   if ((tag === "video" || node.icon !== undefined || node.embed !== undefined) && children.length) fail(at, "media element cannot have children");
   if (tag === "label" && !children.some((child) => child.type === "text" ? !!child.text.trim() : true)) fail(at, "label requires text");
@@ -325,7 +334,12 @@ export function parseNode(raw: unknown, at: string, context: NodeContext, depth 
       fail(`${at}.children`, "picture requires source elements followed by one img");
     }
   }
-  return { type: "element", id, tag, ...asset, ...icon, ...embed, ...attrs, ...style, children };
+  if (interaction.interaction?.type === "video-toggle") {
+    const [video, button] = children;
+    if (children.length !== 2 || video?.type !== "element" || video.tag !== "video" || button?.type !== "element" || button.tag !== "button" ||
+        video.attrs?.controls === false || button.attrs?.type !== "button" || button.children.length !== 1 || button.children[0]?.type !== "text") fail(`${at}.children`, "video-toggle requires one controlled video followed by one text button");
+  }
+  return { type: "element", id, tag, ...asset, ...icon, ...embed, ...interaction, ...attrs, ...style, children };
 }
 
 export type PageParseOptions = {

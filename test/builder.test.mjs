@@ -44,6 +44,26 @@ test("Basic catalog includes safe icons, native video and closed embeds in the r
   assert.ok(html.includes("★")); assert.ok(html.includes('src="/media/intro.mp4"'));
 });
 
+test("VideoWithButton uses a closed structural binding that survives reload, duplication and deletion", () => {
+  const preset = resolveBuilderDefinition().insertions.find((entry) => entry.id === "video-with-button");
+  assert.ok(preset); assert.equal(preset.group, "インタラクション");
+  let page = editDocument(doc(), { type: "add", parentId: null, node: createInsertionNode(preset, { document: doc() }) });
+  const index = page.body.length - 1, root = page.body[index];
+  assert.deepEqual(root.interaction, { type: "video-toggle" });
+  assert.deepEqual(root.children.map((child) => child.tag), ["video", "button"]);
+  assert.equal(root.children[0].attrs.src, undefined); assert.equal(root.children[0].attrs.controls, true);
+  page = editDocument(page, { type: "video", path: [index, 0], source: { src: "/intro.mp4" } });
+  const reloaded = parsePageDocument(JSON.parse(JSON.stringify(page)));
+  const duplicated = editDocument(reloaded, { type: "duplicate", path: [index] });
+  assert.deepEqual(duplicated.body.slice(-2).map((node) => node.interaction), [{ type: "video-toggle" }, { type: "video-toggle" }]);
+  assert.equal(new Set(duplicated.body.slice(-2).flatMap((node) => [node.id, ...node.children.map((child) => child.id)])).size, 6);
+  const removed = editDocument(duplicated, { type: "remove", path: [index + 1] });
+  assert.equal(removed.body.filter((node) => node.type === "element" && node.interaction?.type === "video-toggle").length, 1);
+  assert.throws(() => parsePageDocument({ ...page, body: [{ ...root, interaction: { type: "video-toggle", script: "alert(1)" } }] }), /interaction/);
+  assert.throws(() => editDocument(page, { type: "remove", path: [index, 0] }), /video-toggle/);
+  assert.throws(() => parsePageDocument({ ...page, body: [{ ...root, children: [root.children[0], { ...root.children[1], children: [{ type: "element", id: "nested-control", tag: "span", children: [{ type: "text", text: "再生" }] }] }] }] }), /video-toggle/);
+});
+
 test("Map, YouTube and Vimeo presets start empty and keep provider fixed through source edits and history", () => {
   const basic = resolveBuilderDefinition().insertions.filter((entry) => (entry.category ?? "basic") === "basic");
   let page = doc();

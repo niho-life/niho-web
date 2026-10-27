@@ -86,6 +86,8 @@ export type EmbedDescriptor = {
   /** provider ごとの canonical URL。未設定なら公開 renderer は何も読み込まない。 */
   source?: string;
 };
+/** 実行コードやID参照を持たず、検証済みの固定部分木だけへ結び付く標準操作。 */
+export type ElementInteraction = { type: "video-toggle" };
 export type TextNode = { type: "text"; text: string };
 export type ElementNode = {
   type: "element";
@@ -97,6 +99,8 @@ export type ElementNode = {
   icon?: IconName;
   /** div だけが持てる、閉じた標準埋め込み descriptor。 */
   embed?: EmbedDescriptor;
+  /** div だけが持てる、trusted runtime 用の閉じた標準操作 descriptor。 */
+  interaction?: ElementInteraction;
   attrs?: ElementAttributes;
   style?: NodeStyle;
   children: PageNode[];
