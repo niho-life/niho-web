@@ -21,7 +21,7 @@ import { PageChangeDialog, PageSettings, PagePanel, ReleaseSearchSummary, SiteSe
 import { AutosaveSwitch, ConflictDialog, HistoryBar, HistoryDialogs, LibraryRecoveryBanner, RecoveryBanner, RecoveryCompareDialog, ReleaseAffected, SaveStatus, VersionPanel, autosaveDelay, classifySaveError, formatDateTime, isOffline, saveProblemNotice, saveStatus, targetKeyOf, useAutosave, useLibraryRecovery, useOnline, useRecovery, useVersionHistory, type LatestSnapshot, type SaveProblem } from "./editor-history.js";
 import { isDirectlyEditable, readEditableChildren } from "./editor-rich-text.js";
 import { isSafePublicLink } from "./validation-utils.js";
-import type { ComponentUsageEntry, EditorBlockRegistry, EditorCanvasPreviewProps, EditorLocaleReleasePlan, EditorLocaleReleaseState, EditorLock, EditorPage, EditorPageChange, EditorReleasePlan, EditorReleaseRequest, EditorSite, EditorTarget, PageEditorProps } from "./editor-types.js";
+import type { ComponentUsageEntry, EditorBlockRegistry, EditorCanvasPreviewProps, EditorLocaleReleasePlan, EditorLocaleReleaseState, EditorLock, EditorPage, EditorPageChange, EditorReleasePlan, EditorReleaseRequest, EditorSite, EditorTarget, EnglishPublication, PageEditorProps } from "./editor-types.js";
 import type { ComponentKind, ComponentLibrary, IconName, PageDocument, PageNode, SitePresentation } from "./types.js";
 import { AssetLibraryPanel, BackgroundImageField, ImageSourceField, VideoSourceField, assetPlacement, socialImageProblem, useLocalAssetUsage, useResolvedAssets, type AssetAction, type AssetPicker } from "./editor-assets.js";
 import { assetEditorCss, canvasAssetCss } from "./editor-assets-style.js";
@@ -46,6 +46,7 @@ import { LayerTreePanel } from "./editor-layers.js";
 import { CanvasViewportToolbar, EditorWorkspace, InspectorTabs, PanelToggle, ViewportEdgeHandle, WorkspaceIcon, WorkspaceScaleSelect, viewportPresets, type WorkspaceScale, type WorkspaceTab } from "./editor-workspace.js";
 import { workspaceCss } from "./editor-workspace-style.js";
 import { iconCatalog } from "./icons.js";
+import { parseEnglishPublication } from "./english-publication.js";
 
 export type * from "./editor-types.js";
 export { EditorSessionLoadError } from "./editor-session.js";
@@ -58,6 +59,29 @@ type Session = EditorSession;
 /** 部品を読み直す確認中の状態。library・page は確認を始めた時点の作業コピーの fingerprint（変わっていれば適用しない）。 */
 type LibraryReload = { fresh: LibrarySession; plan: LibraryReloadPlan; library: string; page: string | undefined };
 type Inspector = "element" | "page" | "site" | "localization";
+const englishPublicationLabels: Readonly<Record<EnglishPublication["state"], string>> = {
+  "initial-release-required": "最初の英語版公開待ち",
+  queued: "処理待ち",
+  translating: "翻訳中",
+  "review-required": "確認待ち",
+  publishing: "公開中",
+  published: "公開済み",
+  withdrawn: "取り下げ",
+  "retryable-failure": "失敗（再試行可能）",
+  superseded: "新しい版に置換済み"
+};
+
+function EnglishPublicationBanner({ publication, busy, refresh, retry }: { readonly publication: EnglishPublication; readonly busy: "refresh" | "retry" | null; readonly refresh?: () => void; readonly retry?: () => void }) {
+  const label = englishPublicationLabels[publication.state];
+  const updated = publication.updatedAt ? new Date(publication.updatedAt).toLocaleString("ja-JP") : null;
+  return <div className={`e-english-publication is-${publication.state}`} role="status" aria-live="polite">
+    <span><strong>英語版: {label}</strong>{updated && <small>更新 {updated}</small>}{publication.state === "review-required" && <small>翻訳画面で内容を確認してください。</small>}</span>
+    <span className="e-english-publication-actions">
+      {refresh && <button type="button" className="e-small" disabled={busy !== null} aria-label="英語公開状態を更新" onClick={refresh}>{busy === "refresh" ? "更新中…" : "状態を更新"}</button>}
+      {retry && <button type="button" className="e-small" disabled={busy !== null} onClick={retry}>{busy === "retry" ? "再試行中…" : "英語公開を再試行"}</button>}
+    </span>
+  </div>;
+}
 const textInspectorTabs: readonly WorkspaceTab<InspectorTab>[] = [
   { value: "text", label: "テキスト" }, { value: "box", label: "ボックス" }, { value: "transform", label: "変形" }, { value: "settings", label: "設定" }
 ];
@@ -441,7 +465,13 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const [libraryReload, setLibraryReload] = useState<LibraryReload | null>(null), [libraryEpoch, setLibraryEpoch] = useState(0);
   const [editing, setEditing] = useState<string | null>(null), [componentDialog, setComponentDialog] = useState<ComponentDialogState | null>(null), usageRequest = useRef<AbortController | null>(null);
   const request = useRef<AbortController | null>(null), action = useRef<AbortController | null>(null), pageList = useRef<AbortController | null>(null), releaseRead = useRef<AbortController | null>(null);
+  const englishPublicationRequest = useRef<AbortController | null>(null);
+  const [englishPublicationBusy, setEnglishPublicationBusy] = useState<"refresh" | "retry" | null>(null);
   useEffect(() => () => action.current?.abort(), [adapter]);
+  useEffect(() => {
+    englishPublicationRequest.current?.abort(); englishPublicationRequest.current = null; setEnglishPublicationBusy(null);
+    return () => englishPublicationRequest.current?.abort();
+  }, [adapter, session?.target.siteId, session?.target.pageId, session?.target.locale]);
   const [pageChange, setPageChange] = useState<PageChangeStart | null>(null), siteSettings = useSiteSettings(adapter, siteId, blocks, libraryPresent);
   const [styleMigration, setStyleMigration] = useState<{ target: EditorTarget; source: string; document: PageDocument; styles: SiteStyles } | null>(null);
   const siteWorkBlocked = siteSettings.stylesDirty || siteSettings.busy;
@@ -826,10 +856,43 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       const result = await adapter.release(plan, controller.signal);
       if (controller.signal.aborted) return;
       if (result.status === "conflict") { setNotice("公開が競合しました（409）。編集内容を保持しています。最新状態を確認してからやり直してください。"); setPlan(null); return; }
-      replace(editorSessionFrom(result.snapshot, current.target, blocks, libraryRef.current?.history.present, siteSettingsRef.current.settings, !siteSettingsRef.current.settings)); setSelection(null); setFieldEpoch((value) => value + 1); setPlan(null); setProblem(null); setNotice(plan.action === "rollback" ? "指定した版に戻しました。" : "公開しました。");
+      replace(editorSessionFrom(result.snapshot, current.target, blocks, libraryRef.current?.history.present, siteSettingsRef.current.settings, !siteSettingsRef.current.settings)); setSelection(null); setFieldEpoch((value) => value + 1); setPlan(null); setProblem(null);
+      setNotice(result.snapshot.englishPublication
+        ? plan.action === "rollback" ? "日本語ページを指定した版に戻しました。英語版の状態は上の表示で確認してください。" : "日本語ページを公開しました。英語版の状態は上の表示で確認してください。"
+        : plan.action === "rollback" ? "指定した版に戻しました。" : "公開しました。");
       setPicker(null);
     } catch { if (!controller.signal.aborted) { setNotice("反映結果を確認できませんでした。再試行前に公開状態をホスト側で確認してください。編集内容は保持しています。"); setPlan(null); } }
     finally { if (!controller.signal.aborted) setBusy(""); action.current = null; }
+  }
+  async function updateEnglishPublication(kind: "refresh" | "retry") {
+    const current = sessionRef.current, capability = adapter.englishPublication;
+    if (!current || !current.englishPublication || !capability || englishPublicationRequest.current) return;
+    if (kind === "retry" && (!current.englishPublication.retryable || current.englishPublication.state === "initial-release-required")) return;
+    const controller = new AbortController(), startedAdapter = adapter, startedTarget = current.target, startedVersion = current.version;
+    englishPublicationRequest.current = controller; setEnglishPublicationBusy(kind);
+    try {
+      const result = kind === "refresh" ? await capability.refresh(startedTarget, controller.signal) : await capability.retry(startedTarget, controller.signal);
+      if (controller.signal.aborted || adapterRef.current !== startedAdapter) return;
+      const latest = sessionRef.current;
+      if (!latest || !sameTarget(latest.target, startedTarget) || latest.version !== startedVersion) return;
+      let value: EnglishPublication | undefined;
+      if (kind === "retry") {
+        const retryResult = result as Awaited<ReturnType<typeof capability.retry>>;
+        if (retryResult.status === "conflict") {
+          setNotice("英語公開の状態が更新されています（409）。状態を更新してから再試行してください。編集内容は保持しています。");
+          return;
+        }
+        value = retryResult.englishPublication;
+      } else value = result as EnglishPublication | undefined;
+      const publication = value === undefined ? undefined : parseEnglishPublication(value);
+      if (publication) replace({ ...latest, englishPublication: publication });
+      else { const { englishPublication: _discarded, ...withoutPublication } = latest; replace(withoutPublication); }
+      setNotice(kind === "retry" ? "英語公開の再試行を受け付けました。現在の処理状態を表示しています。" : "英語公開の状態を更新しました。");
+    } catch {
+      if (!controller.signal.aborted) setNotice(kind === "retry" ? "英語公開を再試行できませんでした。編集内容は保持しています。状態を更新してから、もう一度お試しください。" : "英語公開の状態を更新できませんでした。編集内容は保持しています。時間をおいて再試行してください。");
+    } finally {
+      if (englishPublicationRequest.current === controller) { englishPublicationRequest.current = null; setEnglishPublicationBusy(null); }
+    }
   }
   async function prepareLocaleRelease(actionType: "publish" | "rollback") {
     const current = sessionRef.current, siteState = localization.site, selected = selectedLocale, rollback = localeRelease?.history.find((entry) => entry.releaseId === localeRollbackId);
@@ -1378,6 +1441,9 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     {assets && <style dangerouslySetInnerHTML={{ __html: assetEditorCss }} />}
     {notice && <div className="e-notice" role="alert">{notice}</div>}
     {session?.readOnly && <div className="e-readonly" role="status"><div><strong>{isSiteComponent ? "コンポーネント（読み取り専用）" : targetMode ? "この言語（読み取り専用）" : "原文（読み取り専用）"}</strong><span>{session.readOnly.reason}</span></div>{session.readOnly.editUrl && <a className="e-small" href={session.readOnly.editUrl} {...(/^https:\/\//iu.test(session.readOnly.editUrl) ? { target: "_blank", rel: "noopener noreferrer" } : {})}>{session.readOnly.editLabel ?? (targetMode ? "原文の編集画面を開く" : "編集画面を開く")}</a>}</div>}
+    {session?.englishPublication && <EnglishPublicationBanner publication={session.englishPublication} busy={englishPublicationBusy}
+      {...(adapter.englishPublication ? { refresh: () => void updateEnglishPublication("refresh") } : {})}
+      {...(adapter.englishPublication && session.englishPublication.retryable && session.englishPublication.state !== "initial-release-required" ? { retry: () => void updateEnglishPublication("retry") } : {})} />}
     {components && libraryFailed && <div className="e-notice" role="alert">再利用コンポーネントを読み込めませんでした。配置済みのページは表示できない場合があります。</div>}
     {localizationGate && <div className="e-localization-gate" role={localization.siteState === "error" || localization.pageState === "error" ? "alert" : "status"}><span>{localizationGate}</span><button type="button" className="e-small" disabled={localization.siteState === "loading" || localization.pageState === "loading"} onClick={localization.reloadAll}>再試行</button></div>}</>} left={<aside className="e-rail e-left" aria-label="サイト・ページ・レイヤー" hidden={preview}>
       <nav className="e-tools" aria-label="編集ツール"><PanelToggle side="left" open={leftPanelOpen} onClick={() => setLeftPanelOpen((value) => !value)} />{tools.map(([key, name]) => { const common = targetMode && ["add", "styles"].includes(key); return <button key={key} type="button" aria-label={name} aria-pressed={visiblePanel === key && leftPanelOpen} title={common ? "共通デザインは原文側で編集" : name} disabled={common} onClick={() => { setPicker(null); setPanel(key); setLeftPanelOpen(true); }}><ToolGlyph tool={key} /><small className="e-vh">{name}</small></button>; })}</nav>

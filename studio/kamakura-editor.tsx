@@ -12,6 +12,7 @@ import { parsePageDocument, parseSitePresentation, type BlockContracts } from ".
 import { parseLocalizationOverlay, parseSiteLocalizationConfig } from "../src/localization.js";
 import { KAMAKURA_CATALOG_CONTRACT_ERROR_CODE, KAMAKURA_CATALOG_CONTRACT_ERROR_STATUS, KAMAKURA_COMMON_PAGE_ID as COMMON_PAGE_ID, KAMAKURA_EDITOR_DOMAIN as DOMAIN, KAMAKURA_EDITOR_SITE_ID, KamakuraCatalogContractError, parseKamakuraCatalog } from "./kamakura-catalog.js";
 import type { KamakuraCatalog } from "./kamakura-catalog.js";
+import { parseEnglishPublication, parseEnglishPublicationAccepted } from "../src/english-publication.js";
 
 const BASE = "/api/projects/project-kamakura/sites/kamakura/editor";
 const LOCALIZATION_BASE = "/api/projects/project-kamakura/sites/kamakura/localization";
@@ -108,7 +109,9 @@ function parseSnapshot(value: unknown, target: EditorTarget, blocks: BlockContra
   const parsed = parsePageDocument(source.document, blocks);
   if (required && source.presentation === undefined) throw new Error("このサイトに必要な表示コンテキストがありません。");
   if (source.presentation !== undefined) parseSitePresentation(source.presentation, parsed, blocks);
-  return structuredClone(value) as EditorSnapshot;
+  const snapshot = structuredClone(value) as EditorSnapshot;
+  if (source.englishPublication !== undefined) snapshot.englishPublication = parseEnglishPublication(source.englishPublication);
+  return snapshot;
 }
 
 function safeLine(value: unknown, maximum: number): value is string {
@@ -272,6 +275,10 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
       if (!releaseMatches(plan, plan)) throw new Error("公開確認が不正です。再度確認してください。");
       return parseReleased(await api(`${pagePath(plan.target)}/release`, "POST", { expectedVersion: plan.expectedVersion, presentationVersion: plan.presentationVersion, confirmationToken: plan.confirmationToken }, signal), plan.target, catalog.blockContracts, catalog.nativePresentationPages.includes(plan.target.pageId));
     })),
+    englishPublication: {
+      refresh: (target, signal) => request(signal, async () => parseSnapshot(await api(pagePath(target), "GET", undefined, signal), target, catalog.blockContracts, catalog.nativePresentationPages.includes(target.pageId)).englishPublication),
+      retry: (target, signal) => conflict(() => request(signal, async () => parseEnglishPublicationAccepted(await api(`${pagePath(target)}/english-publication-retry`, "POST", {}, signal))))
+    },
     localization: {
       requestPageTranslation: false,
       readSite: (siteId, signal) => request(signal, async () => {

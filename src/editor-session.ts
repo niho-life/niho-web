@@ -6,8 +6,9 @@ import type { EditorAdapter, EditorBlockRegistry, EditorLock, EditorReadOnly, Ed
 import type { SiteStyles } from "./site-styles.js";
 import { parseSitePresentation } from "./presentation.js";
 import type { SitePresentation } from "./types.js";
+import { parseEnglishPublication } from "./english-publication.js";
 
-export type EditorSession = { target: EditorTarget; history: EditorHistory; version: string; saved: string; hasSavedDraft?: boolean | undefined; locks: readonly EditorLock[]; releases: NonNullable<EditorSnapshot["releases"]>; readOnly?: EditorReadOnly; siteStyles?: SiteStyles; presentation?: SitePresentation; selfContained: boolean };
+export type EditorSession = { target: EditorTarget; history: EditorHistory; version: string; saved: string; hasSavedDraft?: boolean | undefined; locks: readonly EditorLock[]; releases: NonNullable<EditorSnapshot["releases"]>; readOnly?: EditorReadOnly; siteStyles?: SiteStyles; presentation?: SitePresentation; englishPublication?: EditorSnapshot["englishPublication"]; selfContained: boolean };
 export type EditorSessionLoad = { session: EditorSession; warning?: string };
 
 export class EditorSessionLoadError extends Error {
@@ -20,7 +21,8 @@ export function editorSessionFrom(snapshot: EditorSnapshot, target: EditorTarget
   if (snapshot.hasSavedDraft !== undefined && typeof snapshot.hasSavedDraft !== "boolean") throw new Error("公開状態が正しくありません。");
   const readOnly = parseEditorReadOnly(snapshot.readOnly);
   const presentation = snapshot.presentation === undefined ? undefined : parseSitePresentation(snapshot.presentation, document, blocks);
-  return { ...(siteStyles ? { siteStyles } : {}), ...(presentation ? { presentation } : {}), target, history: { past: [], present: document, future: [] }, version: snapshot.version, saved: fingerprint(document), locks: snapshot.locks ?? [], releases: snapshot.releases ?? [], selfContained,
+  const englishPublication = snapshot.englishPublication === undefined ? undefined : parseEnglishPublication(snapshot.englishPublication);
+  return { ...(siteStyles ? { siteStyles } : {}), ...(presentation ? { presentation } : {}), ...(englishPublication ? { englishPublication } : {}), target, history: { past: [], present: document, future: [] }, version: snapshot.version, saved: fingerprint(document), locks: snapshot.locks ?? [], releases: snapshot.releases ?? [], selfContained,
     ...(snapshot.hasSavedDraft === undefined ? {} : { hasSavedDraft: snapshot.hasSavedDraft }), ...(readOnly ? { readOnly } : {}) };
 }
 

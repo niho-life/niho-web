@@ -21,6 +21,7 @@ import {
 } from "../src/localization-workspace-model.js";
 import { parseLocalizationOverlay, parseLocalizationValue, parseSiteLocalizationConfig } from "../src/localization.js";
 import { DocumentValidationError } from "../src/validation-utils.js";
+import { parseEnglishPublicationAccepted } from "../src/english-publication.js";
 
 type D1Meta = { readonly changes?: number };
 type D1Result<T> = { readonly results?: readonly T[]; readonly success: boolean; readonly meta?: D1Meta };
@@ -159,6 +160,7 @@ type KamakuraBridgeOperation =
   | "draft_save"
   | "release_plan"
   | "release"
+  | "english_publication_retry"
   | "asset_list"
   | "asset_upload_intent"
   | "asset_update"
@@ -1091,7 +1093,7 @@ async function enforceMutationBoundary(request: Request): Promise<Record<string,
 }
 
 type KamakuraAssetOperation = "list" | "upload-intent" | "update" | "usages" | "resolve";
-type EditorRoute = { readonly upstreamPath: string; readonly bodyLimit: number; readonly assetOperation?: KamakuraAssetOperation; readonly embedOperation?: "import" | "status" };
+type EditorRoute = { readonly upstreamPath: string; readonly bodyLimit: number; readonly assetOperation?: KamakuraAssetOperation; readonly embedOperation?: "import" | "status"; readonly englishPublicationRetry?: true };
 
 /** kamakura-site の worker/studio-assets.ts と同じ固定表。kamakura-upload だけが Studio からのアップロード先。 */
 const KAMAKURA_ASSET_PROVIDERS = new Set(["kamakura-upload", "kamakura-admin-upload", "kamakura-studio", "kamakura-cms", "kamakura-approved-remote"]);
@@ -1189,12 +1191,13 @@ function kamakuraEditorRoute(action: string, method: string): EditorRoute | "met
     if (method !== "GET") return "method_not_allowed";
     return { upstreamPath: `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/catalog`, bodyLimit: MAX_MUTATION_BODY_BYTES };
   }
-  const page = /^\/editor\/((?!(?:catalog|create|index)$)[a-z][a-z0-9-]{0,59})(\/draft|\/release-plan|\/release)?$/u.exec(action);
+  const page = /^\/editor\/((?!(?:catalog|create|index)$)[a-z][a-z0-9-]{0,59})(\/draft|\/release-plan|\/release|\/english-publication-retry)?$/u.exec(action);
   if (!page || !COMMON_PAGE_ID.test(page[1]!)) return null;
   const suffix = page[2] ?? "";
-  const expected = suffix === "/draft" ? "PUT" : suffix === "/release-plan" || suffix === "/release" ? "POST" : "GET";
+  const expected = suffix === "/draft" ? "PUT" : suffix === "/release-plan" || suffix === "/release" || suffix === "/english-publication-retry" ? "POST" : "GET";
   if (method !== expected) return "method_not_allowed";
-  return { upstreamPath: `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/${page[1]}${suffix}`, bodyLimit: suffix === "/draft" ? MAX_EDITOR_SAVE_BODY_BYTES : MAX_MUTATION_BODY_BYTES };
+  return { upstreamPath: `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/${page[1]}${suffix}`, bodyLimit: suffix === "/draft" ? MAX_EDITOR_SAVE_BODY_BYTES : MAX_MUTATION_BODY_BYTES,
+    ...(suffix === "/english-publication-retry" ? { englishPublicationRetry: true as const } : {}) };
 }
 
 /** サイト側の管理画面を枠で開くための origin とパス、CMS・翻訳の開き方（frame / workspace）。参加者（owner・editor）だけに返す */
@@ -1353,6 +1356,7 @@ function kamakuraBridgeOperation(route: EditorRoute): KamakuraBridgeOperation {
   if (route.upstreamPath === `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/catalog`) return "catalog";
   if (route.upstreamPath.endsWith("/draft")) return "draft_save";
   if (route.upstreamPath.endsWith("/release-plan")) return "release_plan";
+  if (route.englishPublicationRetry) return "english_publication_retry";
   if (route.upstreamPath.endsWith("/release")) return "release";
   return "page_read";
 }
@@ -1417,7 +1421,14 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
   const operation = kamakuraBridgeOperation(route);
   if (request.method === "GET" && (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length")))) throw new AuthenticationError("GET body rejected");
   const rawBody = request.method === "GET" ? new Uint8Array() : await readBoundedBody(request, route.bodyLimit);
-  const body = route.assetOperation ? validateKamakuraAssetBody(rawBody, route.assetOperation) : rawBody;
+  let body = route.assetOperation ? validateKamakuraAssetBody(rawBody, route.assetOperation) : rawBody;
+  if (route.englishPublicationRetry) {
+    let parsed: unknown;
+    try { parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(rawBody)) as unknown; }
+    catch { throw new AuthenticationError("invalid english publication retry request"); }
+    if (!isRecord(parsed) || Object.keys(parsed).length !== 0) throw new AuthenticationError("invalid english publication retry request");
+    body = new TextEncoder().encode("{}");
+  }
   const bodyBytes = body.slice().buffer;
   const headers = await kamakuraSignedHeaders(env, identity, request.method, route.upstreamPath, body, supportId, operation);
   const controller = new AbortController();
@@ -1443,7 +1454,7 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
     if (response.status === 409) {
       // 凍結中の保存・公開（kamakura-site#84）は競合と分けて返し、画面で凍結中と案内する。
       const frozen = await readBoundedResponse(response).then((value) => isRecord(value) && value.error === "visual_editor_frozen", () => false);
-      if (frozen) return json({ error: "visual_editor_frozen" }, 409);
+      if (frozen && !route.englishPublicationRetry) return json({ error: "visual_editor_frozen" }, 409);
       if (!isCatalog) return json({ error: "conflict" }, 409);
       throw kamakuraBridgeFailure(supportId, operation, "upstream_contract_invalid", response.status);
     }
@@ -1470,6 +1481,10 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
       if (timedOut) throw kamakuraBridgeFailure(supportId, operation, "service_binding_timeout");
       if (isCatalog) throw kamakuraBridgeFailure(supportId, operation, "upstream_contract_invalid", response.status);
       throw kamakuraBridgeFailure(supportId, operation, "upstream_invalid_response", response.status);
+    }
+    if (route.englishPublicationRetry) {
+      try { return json(parseEnglishPublicationAccepted(value), response.status); }
+      catch { throw kamakuraBridgeFailure(supportId, operation, "upstream_contract_invalid", response.status); }
     }
     if (!isCatalog) return json(value, response.status);
     try { return json(parseKamakuraCatalog(value), response.status); }

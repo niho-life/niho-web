@@ -1,6 +1,6 @@
 import { createContext, useContext } from "react";
 import { createRoot } from "react-dom/client";
-import { PageEditor, type EditorAdapter, type EditorBlockRegistry, type EditorComponentAdapter, type EditorPage, type EditorPageChange, type EditorPageImpact, type EditorRevisionEntry } from "@niho/web/editor";
+import { PageEditor, type EditorAdapter, type EditorBlockRegistry, type EditorComponentAdapter, type EditorPage, type EditorPageChange, type EditorPageImpact, type EditorRevisionEntry, type EnglishPublication } from "@niho/web/editor";
 import { createBrowserRecoveryStore, diffDocuments } from "@niho/web/history";
 import { findInternalLinks, findPathConflict, pageUrl, parseSiteSettings, rewriteInternalLinks, validatePagePath, type SiteSettings } from "@niho/web/pages";
 import fixture from "./page.json";
@@ -89,7 +89,9 @@ const listed = (item: Entry): EditorPage => ({ ...structuredClone(item.page), pu
 /** 公開・rollback した版だけを戻せる公開版として返す。 */
 const releases = (item: Entry) => [...new Map(item.revisions.filter(({ entry }) => entry.kind === "publish" || entry.kind === "rollback")
   .map(({ entry }) => [entry.revision, { revision: entry.revision, label: `版 ${entry.revision}（${entry.label ?? (entry.kind === "rollback" ? "公開版に戻した版" : "公開")}）` }])).values()].reverse();
-const snapshot = (item: Entry) => ({ document: item.draft, version: `draft-${item.version}`, releases: releases(item) });
+const englishPublications = new Map<string, EnglishPublication>([["home", { state: "retryable-failure", retryable: true, updatedAt: new Date().toISOString() }]]);
+const snapshot = (item: Entry) => ({ document: item.draft, version: `draft-${item.version}`, releases: releases(item),
+  ...(englishPublications.get(item.page.pageId) ? { englishPublication: englishPublications.get(item.page.pageId)! } : {}) });
 const blank = (document: PageDocument): PageDocument => ({ schemaVersion: 1, siteId: document.siteId, pageId: document.pageId, locale: document.locale, revision: document.revision, title: "", tokens: {}, body: [] });
 function releasedDocument(item: Entry, revision: number | undefined): PageDocument {
   const found = [...item.revisions].reverse().find(({ entry }) => entry.revision === revision && (entry.kind === "publish" || entry.kind === "rollback"));
@@ -217,6 +219,16 @@ const adapter: EditorAdapter = {
     { id: "organization", label: "組織", description: "運営者の名前とロゴ" }, { id: "localBusiness", label: "店舗・施設", description: "住所と営業時間" }] }],
   listPages: async () => [...entries.values()].map(listed),
   readDocument: async (target) => snapshot(entry(target.pageId)),
+  englishPublication: {
+    refresh: async (target) => englishPublications.get(target.pageId),
+    retry: async (target) => {
+      const current = englishPublications.get(target.pageId);
+      if (!current?.retryable) return { status: "conflict" };
+      const next: EnglishPublication = { state: "queued", retryable: false, updatedAt: new Date().toISOString() };
+      englishPublications.set(target.pageId, next);
+      return { status: "accepted", englishPublication: next };
+    }
+  },
   saveDraft: async (request) => {
     const item = entry(request.target.pageId);
     if (request.expectedVersion !== `draft-${item.version}`) return { status: "conflict" };

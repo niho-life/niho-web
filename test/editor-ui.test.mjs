@@ -44,7 +44,7 @@ async function setup(options = {}) {
   const adapter = {
     listSites: async () => [{ id: "demo", name: "デモサイト", domains: ["https://example.test"] }],
     listPages: async () => [{ siteId: "demo", pageId: "home", locale: "ja-JP", title: "ホーム" }, { siteId: "demo", pageId: "other", locale: "ja-JP", title: "別ページ" }],
-    readDocument: async (target) => { calls.reads.push(structuredClone(target)); return { document: { ...structuredClone(stored), pageId: target.pageId }, version, releases: [{ revision: 1, label: "最初の公開" }], ...(options.locks ? { locks: options.locks } : {}), ...(options.readOnly ? { readOnly: options.readOnly } : {}) }; },
+    readDocument: async (target) => { calls.reads.push(structuredClone(target)); return { document: { ...structuredClone(stored), pageId: target.pageId, locale: target.locale }, version, releases: [{ revision: 1, label: "最初の公開" }], ...(options.locks ? { locks: options.locks } : {}), ...(options.readOnly ? { readOnly: options.readOnly } : {}), ...(options.englishPublication ? { englishPublication: options.englishPublication } : {}) }; },
     saveDraft: async (request) => {
       calls.saves.push(structuredClone(request));
       if (options.save) return options.save(request);
@@ -66,6 +66,92 @@ test("initialTarget opens the requested page and falls back when the page is abs
   const absent = await setup({ props: { initialTarget: { siteId: "demo", pageId: "missing", locale: "ja-JP" } } });
   try { assert.deepEqual(absent.calls.reads, [{ siteId: "demo", pageId: "home", locale: "ja-JP" }]); }
   finally { await absent.cleanup(); }
+});
+
+test("English publication states stay separate from the Japanese draft and retry only when allowed", async () => {
+  const states = [
+    ["queued", "処理待ち"], ["translating", "翻訳中"], ["review-required", "確認待ち"], ["publishing", "公開中"],
+    ["published", "公開済み"], ["withdrawn", "取り下げ"], ["superseded", "新しい版に置換済み"], ["retryable-failure", "失敗（再試行可能）"]
+  ];
+  let refreshIndex = 0;
+  const app = await setup({
+    englishPublication: { state: "initial-release-required", retryable: true, updatedAt: "2026-10-27T01:02:03.000Z" },
+    adapter: {
+      listPages: async () => [{ siteId: "demo", pageId: "home", locale: "ja", title: "ホーム" }, { siteId: "demo", pageId: "other", locale: "ja", title: "別ページ" }],
+      englishPublication: {
+        refresh: async () => {
+          const [state] = states[refreshIndex++];
+          return { state, retryable: state === "retryable-failure" };
+        },
+        retry: async () => ({ status: "accepted", englishPublication: { state: "queued", retryable: false } })
+      }
+    }
+  });
+  try {
+    const publication = () => document.querySelector(".e-english-publication");
+    assert.match(publication().textContent, /最初の英語版公開待ち/u);
+    assert.equal(button("英語公開を再試行"), undefined, "初回公開待ちは retryable が不正に true でも再試行しない");
+
+    await change(input("ページタイトル"), "保存前の日本語タイトル");
+    await click("状態を更新");
+    assert.equal(input("ページタイトル").value, "保存前の日本語タイトル", "状態更新は未保存文書を上書きしない");
+    await click("元に戻す");
+    assert.equal(input("ページタイトル").value, fixture.title, "状態更新後も undo 履歴を保持する");
+
+    for (const [, label] of states.slice(1)) {
+      await click("状態を更新");
+      assert.ok(publication().querySelector("strong").textContent.includes(label), label);
+    }
+    assert.ok(button("英語公開を再試行"));
+    await click("英語公開を再試行");
+    assert.match(publication().textContent, /処理待ち/u);
+    assert.doesNotMatch(publication().textContent, /公開済み/u, "accepted を公開済みと決めつけない");
+
+    await change(input("ページタイトル"), "保存する日本語タイトル");
+    await click("下書き保存");
+    assert.equal(app.calls.saves.at(-1).expectedVersion, "v1", "状態操作は文書 version を進めない");
+  } finally { await app.cleanup(); }
+});
+
+test("a late English publication refresh is ignored after switching pages", async () => {
+  let resolveRefresh;
+  const app = await setup({ adapter: {
+    listPages: async () => [{ siteId: "demo", pageId: "home", locale: "ja", title: "ホーム" }, { siteId: "demo", pageId: "other", locale: "ja", title: "別ページ" }],
+    readDocument: async (target) => ({ document: { ...structuredClone(fixture), pageId: target.pageId, locale: "ja" }, version: `v-${target.pageId}`,
+      englishPublication: target.pageId === "home" ? { state: "queued", retryable: false } : { state: "withdrawn", retryable: false } }),
+    englishPublication: {
+      refresh: () => new Promise((resolve) => { resolveRefresh = resolve; }),
+      retry: async () => ({ status: "accepted", englishPublication: { state: "queued", retryable: false } })
+    }
+  } });
+  try {
+    await click("状態を更新");
+    await clickPage("別ページ");
+    assert.match(document.querySelector(".e-english-publication").textContent, /取り下げ/u);
+    await act(async () => resolveRefresh({ state: "published", retryable: false })); await flush();
+    assert.match(document.querySelector(".e-english-publication").textContent, /取り下げ/u);
+    assert.doesNotMatch(document.querySelector(".e-english-publication").textContent, /公開済み/u);
+  } finally { await app.cleanup(); }
+});
+
+test("English publication retry failures show only a safe message and keep the draft", async () => {
+  const app = await setup({
+    englishPublication: { state: "retryable-failure", retryable: true },
+    adapter: {
+      listPages: async () => [{ siteId: "demo", pageId: "home", locale: "ja", title: "ホーム" }],
+      englishPublication: {
+        refresh: async () => ({ state: "retryable-failure", retryable: true }),
+        retry: async () => { throw new Error("SENSITIVE_UPSTREAM_ERROR"); }
+      }
+    }
+  });
+  try {
+    await change(input("ページタイトル"), "保持する日本語下書き");
+    await click("英語公開を再試行");
+    assert.equal(input("ページタイトル").value, "保持する日本語下書き");
+    assert.match(document.body.textContent, /英語公開を再試行できませんでした/u);
+    assert.doesNotMatch(document.body.textContent, /SENSITIVE_UPSTREAM_ERROR/u);
+  } finally { await app.cleanup(); }
 });
 
 test("editor opens the page tree in a full-width quiet workspace", async () => {
