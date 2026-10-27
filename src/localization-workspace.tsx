@@ -6,7 +6,7 @@ import {
   isLocalizationItemKey, isSafeNavigationUrl, LOCALIZATION_LIMITS, localizationItemFilter, parseLocalizationCatalogResult, parseLocalizationListResult, parseLocalizationOverviewResult,
   parseLocalizationSettingsResult,
   type LocaleReleaseHistoryEntry, type LocaleReleasePending, type LocalizationFilter, type LocalizationItemSummary, type LocalizationListResult, type LocalizationOverview,
-  type LocalizationSettings, type LocalizationWorkspaceAdapter,
+  type LocalizationSettings, type LocalizationSettingsInput, type LocalizationWorkspaceAdapter,
 } from "./localization-workspace-model.js";
 import { ItemEditor } from "./localization-workspace-item.js";
 import { HistoryDialog, ReleaseDialog, type ReleaseStart } from "./localization-workspace-release.js";
@@ -210,7 +210,10 @@ function Session({ adapter, initialItemKey, initialView, onNavigate, timeZone = 
         }} />;
     } else if (view.view === "settings") {
       body = <SettingsView adapter={adapter} overview={current} timeZone={timeZone} onBack={() => go({ view: "list", itemKey: null })}
-        onSaved={(settings) => setOverview({ status: "ready", overview: { ...current, settings } })} />;
+        onSaved={async (settings, refreshOverview) => {
+          setOverview((previous) => previous.status === "ready" ? { status: "ready", overview: { ...previous.overview, settings } } : previous);
+          if (refreshOverview) await loadOverview(true);
+        }} />;
     } else {
       body = <>
         <LocaleBand overview={current} list={list} timeZone={timeZone} catalogStalled={catalogStalled}
@@ -390,28 +393,37 @@ function ListView({ adapter, overview, list, group, onGroup, timeZone, focusItem
 /* ---------- 設定 ---------- */
 
 function SettingsView({ adapter, overview, timeZone, onBack, onSaved }: {
-  adapter: LocalizationWorkspaceAdapter; overview: LocalizationOverview; timeZone: string; onBack: () => void; onSaved: (settings: LocalizationSettings) => void;
+  adapter: LocalizationWorkspaceAdapter; overview: LocalizationOverview; timeZone: string; onBack: () => void;
+  onSaved: (settings: LocalizationSettings, refreshOverview: boolean) => void | Promise<void>;
 }) {
   const requests = useRequests();
   const settings = overview.settings, canChange = overview.permissions.includes("settings");
   const [autoDraft, setAutoDraft] = useState(settings.autoDraft);
   const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState<{ readonly text: string; readonly error: boolean } | null>(null);
+  const [autoNote, setAutoNote] = useState<{ readonly text: string; readonly error: boolean } | null>(null);
+  const [glossaryNote, setGlossaryNote] = useState<{ readonly text: string; readonly error: boolean } | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => { heading.current?.focus(); }, []);
-  const save = async () => {
+  const save = async (input: LocalizationSettingsInput, kind: "auto" | "glossary") => {
     if (busy) return;
     setBusy(true);
-    setNote(null);
+    const note = kind === "auto" ? setAutoNote : setGlossaryNote;
+    note(null);
     try {
-      const outcome = await requests.current.run(async (signal) => parseLocalizationSettingsResult(await adapter.saveSettings({ expectedVersion: settings.version, autoDraft }, signal)));
+      const outcome = await requests.current.run(async (signal) => parseLocalizationSettingsResult(await adapter.saveSettings(input, signal)));
       if (outcome.kind === "aborted") return;
-      if (outcome.kind === "error") { setNote({ text: "保存できませんでした。もう一度試してください。", error: true }); return; }
+      if (outcome.kind === "error") { note({ text: kind === "glossary" ? "用語集の確認を保存できませんでした。もう一度試してください。" : "保存できませんでした。もう一度試してください。", error: true }); return; }
       const result = outcome.value;
-      if (result.status === "saved") { onSaved(result.settings); setAutoDraft(result.settings.autoDraft); setNote({ text: "保存しました。", error: false }); }
-      else if (result.status === "conflict") { onSaved(result.settings); setAutoDraft(result.settings.autoDraft); setNote({ text: "ほかの人が先に変えていました。最新の設定を出しています。", error: true }); }
-      else if (result.status === "invalid") setNote({ text: result.message, error: true });
-      else setNote({ text: "設定を変える権限がありません。", error: true });
+      if (result.status === "saved") {
+        await onSaved(result.settings, kind === "glossary");
+        setAutoDraft(result.settings.autoDraft);
+        note({ text: kind === "glossary" ? "用語集を確認済みにしました。" : "保存しました。", error: false });
+      } else if (result.status === "conflict") {
+        await onSaved(result.settings, false);
+        setAutoDraft(result.settings.autoDraft);
+        note({ text: kind === "glossary" ? "用語集か設定が更新されました。最新の内容を確認してください。" : "ほかの人が先に変えていました。最新の設定を出しています。", error: true });
+      } else if (result.status === "invalid") note({ text: result.message, error: true });
+      else note({ text: "設定を変える権限がありません。", error: true });
     } finally { setBusy(false); }
   };
   return <div className="cw-editor lw-settings">
@@ -424,9 +436,20 @@ function SettingsView({ adapter, overview, timeZone, onBack, onSaved }: {
         <label className="lw-check"><input type="checkbox" checked={autoDraft} disabled={!canChange || busy} onChange={(event) => setAutoDraft(event.target.checked)} />
           <span>{overview.languages.source}の変更した箇所を自動翻訳する</span></label>
         <p className="cw-hint">自動翻訳のまま公開できます。人が直した・確認した訳は上書きせず、原文が変わると新しい訳を翻訳案に残します。</p>
-        {canChange && <div className="lw-settings-actions"><button type="button" className="cw-button cw-primary" disabled={busy || autoDraft === settings.autoDraft} onClick={() => void save()}>{busy ? "保存しています…" : "保存する"}</button></div>}
-        {note && <p className={note.error ? "cw-error" : "lw-note"} role={note.error ? "alert" : "status"}>{note.error && <Icon name="alert" />}{note.text}</p>}
+        {canChange && <div className="lw-settings-actions"><button type="button" className="cw-button cw-primary" disabled={busy || autoDraft === settings.autoDraft} onClick={() => void save({ expectedVersion: settings.version, autoDraft }, "auto")}>{busy ? "保存しています…" : "保存する"}</button></div>}
+        {autoNote && <p className={autoNote.error ? "cw-error" : "lw-note"} role={autoNote.error ? "alert" : "status"}>{autoNote.error && <Icon name="alert" />}{autoNote.text}</p>}
       </section>
+      {settings.glossary && <section className="lw-settings-card" aria-labelledby="lw-settings-glossary">
+        <h3 id="lw-settings-glossary">用語集の確認</h3>
+        <p className="cw-hint">版：{settings.glossary.version}</p>
+        <dl className="cw-facts lw-glossary">{settings.glossary.entries.map((entry) => <div key={entry.source}><dt>{entry.source}</dt><dd>{entry.target}</dd></div>)}</dl>
+        <p className="lw-glossary-status">{settings.glossary.reviewed
+          ? <span className="cw-pill" data-status="published"><span className="cw-dot" aria-hidden="true" />確認済み</span>
+          : <span className="cw-pill" data-status="scheduled"><span className="cw-dot" aria-hidden="true" />未確認</span>}</p>
+        {canChange && !settings.glossary.reviewed && <div className="lw-settings-actions"><button type="button" className="cw-button cw-primary" disabled={busy}
+          onClick={() => void save({ expectedVersion: settings.version, reviewGlossaryVersion: settings.glossary!.version }, "glossary")}>{busy ? "保存しています…" : "この用語集を確認済みにする"}</button></div>}
+        {glossaryNote && <p className={glossaryNote.error ? "cw-error" : "lw-note"} role={glossaryNote.error ? "alert" : "status"}>{glossaryNote.error && <Icon name="alert" />}{glossaryNote.text}</p>}
+      </section>}
       <section className="lw-settings-card" aria-labelledby="lw-settings-service">
         <h3 id="lw-settings-service">翻訳サービス</h3>
         <dl className="cw-facts">

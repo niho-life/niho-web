@@ -223,7 +223,7 @@ log は editor と同じく問い合わせ ID・固定の operation（`cms_schem
 
 - ブラウザが呼ぶのは同一 origin の `/api/projects/project-kamakura/sites/kamakura/localization/...` と、画像本体の `PUT https://next-kamakura.niho.life/internal/studio/localization-upload/<uuid>` だけです。BFF は service binding `KAMAKURA_SITE` の `/internal/studio/localization/...` へ、editor・CMS と同じ HMAC の header（同じ関数・`KAMAKURA_STUDIO_BRIDGE_SECRET`）で署名して渡します。追加の secret はありません。
 - 鎌倉以外の Project / Site は 404 です。要求ごとに Access の `sub` と D1 の現在の `owner` / `editor` を確かめ（無ければ 403）、その役割を上流へ渡します。query string、知らない route（404）・method（405）は拒否します。読み取りも POST と本文です。
-- 本文は同一 origin（`Origin` 一致・`Sec-Fetch-Site: same-origin`）・`application/json`・JSON object を要求し、操作ごと（`command` は action ごと）の key の集合が完全に一致し、値が W1 の形（itemKey・unitId・operationId・版・cursor・token・訳文の大きさ）のときだけ通します。BFF は確かめた値だけで JSON を作り直し、Access で確かめた email と D1 の役割を `actor: { email, role }` に入れます。ブラウザが `actor` を送ってきたら 400 です。できる操作（`permissions`）は鎌倉の Worker が役割から決め、書き込みでも確かめます。
+- 本文は同一 origin（`Origin` 一致・`Sec-Fetch-Site: same-origin`）・`application/json`・JSON object を要求し、操作ごと（`command` は action ごと）の key の集合が完全に一致し、値が W1 の形（itemKey・unitId・operationId・版・cursor・token・訳文の大きさ）のときだけ通します。BFF は確かめた値だけで JSON を作り直し、Access で確かめた email と D1 の役割を `actor: { email, role }` に入れます。`overview` と `settings` では上流にだけ `includeGlossary: true` も加えます。ブラウザが `actor` や `includeGlossary` を送ってきたら 400 です。できる操作（`permissions`）は鎌倉の Worker が役割から決め、書き込みでも確かめます。
 
 | route（`localization/` の後ろ） | ブラウザの本文（`actor` は BFF） | 上流の待ち時間 |
 | --- | --- | --- |
@@ -241,12 +241,12 @@ log は editor と同じく問い合わせ ID・固定の operation（`cms_schem
 | `POST catalog/advance` | `{}` | 30 秒 |
 | `POST preview/items` | `{ itemKey, previewId, cursor }` | 30 秒 |
 | `POST release`・`release/prepare`・`release/apply` | `{}`・`{ operation, releaseId, expectedVersion, expectedCurrentVersion, resumeToken }`・`{ confirmationToken, resumeToken }` | 30 秒 |
-| `PUT settings` | `{ expectedVersion, autoDraft }` | 12 秒 |
+| `PUT settings` | `{ expectedVersion, autoDraft }` または `{ expectedVersion, reviewGlossaryVersion }`（両方・どちらも無しは拒否） | 12 秒 |
 | `POST uploads/intent` | `{ itemKey, unitId, name, mimeType, bytes }` | 12 秒 |
 
 - `set-image` の `image` は `null`（原文と同じに戻す）か `{ kind: "image-url", src }` だけです（どの URL を使えるかは鎌倉の Worker が確かめる）。
 - 上限: 訳文の保存（`command`・`editor/pages/:pageId/save`・`editor/pages/:pageId/command`）の本文は 1 MiB − 4 KiB（鎌倉の Worker の 1 MiB から actor の分を引く）、ほかの本文 16 KiB、上流の応答 4 MiB（upload intent は 16 KiB）。画像は jpeg / png / webp / avif / gif で 50 MiB まで（実際の上限は鎌倉の Worker の 413）。
-- プレビューの材料（`preview/items` の 200）は、確かめずに 2 MiB + 64 KiB の上限つきでそのまま流します（ブラウザの adapter と画面が W1 の parser で確かめる。上限を超えたら途中で切る）。ほかの応答は W1 の parser（`src/localization-workspace-model.ts`）または editor 専用 parser で確かめ、既知の field だけを返します。`editor/site` は設定・ページ ID の重複・言語別状態・公開状態・版を検証します。`editor/pages/:pageId` は原文の site・page・locale（移行中の `ja` と正規化済み `ja-JP`）・revision、訳文 overlay の scope、両版を確かめて返します。`snapshot` は English の document と presentation 内の全表示文書について site・page/locale・版を検証し、`conflict` / `unavailable` をそのまま明示します。文書本文のブロック契約はホストの editor adapter で catalog と組み合わせて検証します。`save` は文書の対象と版を絞って上流の構造検証へ渡し、`command` は操作ごとの入力を絞ります。概要の `preview.frameUrl` は鎌倉の Worker の `/_studio/localization-preview`（`.html` 付きも可）だけを受けます。
+- プレビューの材料（`preview/items` の 200）は、確かめずに 2 MiB + 64 KiB の上限つきでそのまま流します（ブラウザの adapter と画面が W1 の parser で確かめる。上限を超えたら途中で切る）。ほかの応答は W1 の parser（`src/localization-workspace-model.ts`）または editor 専用 parser で確かめ、既知の field だけを返します。`settings.glossary` は任意で、ある場合は版、500件までの重複しない1行の対照（各500文字まで）、確認状態を厳密に検証します。旧形の `settings` も受けます。`editor/site` は設定・ページ ID の重複・言語別状態・公開状態・版を検証します。`editor/pages/:pageId` は原文の site・page・locale（移行中の `ja` と正規化済み `ja-JP`）・revision、訳文 overlay の scope、両版を確かめて返します。`snapshot` は English の document と presentation 内の全表示文書について site・page/locale・版を検証し、`conflict` / `unavailable` をそのまま明示します。文書本文のブロック契約はホストの editor adapter で catalog と組み合わせて検証します。`save` は文書の対象と版を絞って上流の構造検証へ渡し、`command` は操作ごとの入力を絞ります。概要の `preview.frameUrl` は鎌倉の Worker の `/_studio/localization-preview`（`.html` 付きも可）だけを受けます。
 
 | 上流 | ブラウザへ |
 | --- | --- |

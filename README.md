@@ -45,7 +45,7 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 | `@niho/web/project-dashboard` | 選択した1 Project・1 Siteに固定した共通Studio shellの `ProjectDashboard`。上部のタブ（ホーム・サイト機能・アナリティクス）で画面全体を切り替え、公開状況・変更履歴表・メンバー表・アクセス解析・設定を表示 |
 | `@niho/web/project-read-model` | summary / dashboardの型・読み取りadapter・runtime parser。React不要 |
 | `@niho/web/collection-workspace` | コレクション（CMS）の一覧と項目の編集の `CollectionWorkspace`。ホストの adapter で読み書き・自動保存・公開・予約、本文と独立した任意の英語公開状態の更新／安全な再試行、同じ画面で切り替える任意の原文／翻訳タブと訳文タブへの直接リンク（[接続方法](docs/collection-contract.md)） |
-| `@niho/web/localization-workspace` | 要対応から始まる翻訳一覧・対象外の理由別表示・自動翻訳の設定・初回公開の内訳確認を含む `LocalizationWorkspace` と、CMS 項目に埋め込む `LocalizationItemWorkspace`。一覧の含む内容と関連する訳文への導線、ホストの編集先（Kamakura の共通ページは English キャンバス、CMS は同じ項目の English タブ）、CMS 詳細ページの英語テンプレートへのリンク、保存済みの未公開原文、訳文の自動保存・出どころ別の未確認表示・確認済み・翻訳案・プレビューを共通化する（[接続方法](docs/localization-workspace-contract.md)）。型と parser は `@niho/web/localization-workspace-model` |
+| `@niho/web/localization-workspace` | 要対応から始まる翻訳一覧・対象外の理由別表示・自動翻訳の設定・任意の版付き用語集の確認・初回公開の内訳確認を含む `LocalizationWorkspace` と、CMS 項目に埋め込む `LocalizationItemWorkspace`。一覧の含む内容と関連する訳文への導線、ホストの編集先（Kamakura の共通ページは English キャンバス、CMS は同じ項目の English タブ）、CMS 詳細ページの英語テンプレートへのリンク、保存済みの未公開原文、訳文の自動保存・出どころ別の未確認表示・確認済み・翻訳案・プレビューを共通化する（[接続方法](docs/localization-workspace-contract.md)）。型と parser は `@niho/web/localization-workspace-model` |
 | `@niho/web/collection-model` | コレクションの定義・項目の型、adapter の応答の runtime parser、公開前の値の検証、本文の HTML の無害化。React不要 |
 | `@niho/web/project-editor` | 既存 `EditorAdapter` をProjectの唯一のSiteへ限定するwrapper |
 | `@niho/web/pages` | ページのパス検証・ツリー・内部リンク影響、公開メタ情報（title / description / OG画像 / robots / canonical）の解決と `<head>` 出力。React不要 |

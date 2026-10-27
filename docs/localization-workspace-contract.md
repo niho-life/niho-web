@@ -76,6 +76,7 @@ parser は未知の key を拒み、次の形と上限を確かめます。上�
 | 1 件の項目 | — | 2000 項目 |
 | 文字の値 | — | 100,000 文字・印 200 個 |
 | リッチテキスト | niho-web の `LocalizedRichText`（下） | 本文 100,000 文字・入れ子 48 段 |
+| 用語集 | `source` が重複しない、空でない1行の `source` / `target` | 500 件・各 500 文字 |
 | まとまり・公開できない理由・履歴・プレビューの候補 | — | 50・200・1000・50 |
 | プレビューの材料 | JSON | 1 回の応答 2 MiB・1 回の表示で 40 回・合計 16 MiB |
 | 日時 | タイムゾーン付きの ISO 8601 | 40 文字 |
@@ -99,7 +100,7 @@ parser は未知の key を拒み、次の形と上限を確かめます。上�
 | `readRelease` | — | `{ status: "ready", current, history, pending }` |
 | `prepareRelease` | `{ operation, releaseId, expectedVersion, expectedCurrentVersion, resumeToken }` | `{ status: "preparing", progress, resumeToken }` / `{ status: "ready", plan }` / `{ status: "blocked", blockers }` / `{ status: "conflict" }` |
 | `applyRelease` | `{ confirmationToken, resumeToken }`（どちらか 1 つだけ文字列） | `{ status: "applying", progress, resumeToken }` / `{ status: "applied", current }` / `{ status: "expired" }` / `{ status: "conflict" }` |
-| `saveSettings` | `{ expectedVersion, autoDraft }` | `{ status: "saved", settings }` / `{ status: "conflict", settings }` / invalid |
+| `saveSettings` | `{ expectedVersion, autoDraft }` または `{ expectedVersion, reviewGlossaryVersion }` | `{ status: "saved", settings }` / `{ status: "conflict", settings }` / invalid |
 | `uploadImage`（任意） | `{ itemKey, unitId, file }` | `{ status: "uploaded", image }` / `{ status: "rejected", reason: "type" \| "size" \| "permission" \| "invalid" }` |
 | `pickAsset`（任意） | `{ itemKey, unitId }` | `{ status: "picked", image }` / `{ status: "cancelled" }`（素材の選び方の画面はホストが出す） |
 | `sourceLink?(itemKey)` | —（同期） | 原文を CMS で開く URL（https、または `/` から始まる同じサイトの path）か `null` |
@@ -129,6 +130,11 @@ type LocalizationSettings = {
   autoDraft: boolean;                      // 原文の変更箇所を自動翻訳するか。人が直した・確認した訳は候補に留める
   translator: { connected: boolean };      // 翻訳サービスにつながっているか（設定の中身は出さない）
   queue: { waiting: number; failed: number; nextRetryAt: string | null };
+  glossary?: {                             // 任意。無ければ用語集の section は出さない
+    version: string;
+    entries: { source: string; target: string }[];
+    reviewed: boolean;
+  };
 };
 ```
 
@@ -337,7 +343,11 @@ type LocaleReleaseWorkspacePlan = {
 
 ### 設定（saveSettings）
 
-画面で変えられるのは `autoDraft` だけです。有効にすると、原文の変更箇所を自動翻訳します。自動翻訳のままの訳は新しい訳で更新し、人が直した・確認した訳は保持して新しい訳を翻訳案に残します。自動翻訳のままでも公開できます。翻訳サービスの接続の有無・待っている件数・失敗と次の再試行は読むだけです。`expectedVersion` は `settings.version` で、違えば `conflict` と最新の `settings` を返します。
+画面で変えられるのは `autoDraft` と、任意の固定用語集の確認状態です。`autoDraft` を有効にすると、原文の変更箇所を自動翻訳します。自動翻訳のままの訳は新しい訳で更新し、人が直した・確認した訳は保持して新しい訳を翻訳案に残します。自動翻訳のままでも公開できます。翻訳サービスの接続の有無・待っている件数・失敗と次の再試行は読むだけです。
+
+`settings.glossary` があるときだけ、画面は版・`source` と `target` の対照・未確認／確認済みを表示します。`settings` 権限があり未確認のときだけ「この用語集を確認済みにする」を出し、`saveSettings({ expectedVersion: settings.version, reviewGlossaryVersion: settings.glossary.version })` で保存します。`reviewGlossaryVersion` は現行版と完全一致させ、違う版や CAS 競合は `conflict` と最新の `settings` を返してください。同じ版の再確認は `saved` の no-op でかまいません。保存成功後、画面は `loadOverview` を再実行して初回公開の `blockers` を更新します。
+
+どちらの保存も `expectedVersion` は `settings.version` です。`autoDraft` と `reviewGlossaryVersion` を同じ画面要求へ混ぜず、安全な union の片方だけを送ります。一般ホストと古い adapter は `glossary` を返さなくてよく、その場合の設定画面は従来どおりです。
 
 ### 画像（uploadImage・pickAsset）
 
@@ -409,5 +419,6 @@ type PreviewRenderMessage = {
 ## デモと検証
 
 `npm run demo:localization-workspace`（`http://127.0.0.1:4180`）で、架空のデータとメモリ上の adapter で動く画面と、デモ用の描画の枠を出します。
+`?first=1&glossary=1&view=settings` で初回公開前の用語集を表示し、確認操作と公開できない理由の更新を試せます。
 
 `test/localization-workspace-model.test.mjs` は parser（未知の key・大きすぎる値・印の対応・状態の組み合わせ）と、印・リッチテキストの札の変換を確かめます。`test/localization-workspace-ui.test.mjs` は jsdom で、一覧・絞り込み・自動保存・確認済み・衝突・札・公開の手順（理由・再開・戻し）・権限・古い応答の破棄を確かめます。

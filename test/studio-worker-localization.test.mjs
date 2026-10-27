@@ -34,7 +34,7 @@ async function loadWorker() {
 
 /** 上流（鎌倉の Worker）が返す契約の結果。W1 のデモ用のメモリの adapter から作る。 */
 async function fixtures() {
-  const memory = createLocalizationMemory({ frameUrl: FRAME });
+  const memory = createLocalizationMemory({ frameUrl: FRAME, glossary: { version: "kamakura-glossary-v1", entries: [{ source: "NIHO", target: "NIHO" }, { source: "鎌倉", target: "Kamakura" }], reviewed: false } });
   const signal = new AbortController().signal;
   const overview = await memory.adapter.loadOverview(signal);
   const list = await memory.adapter.listItems({ cursor: null }, signal);
@@ -129,9 +129,14 @@ test("翻訳 BFF: Access と D1 の owner/editor を要求ごとに確かめ、�
     const call = h.calls.at(-1);
     assert.equal(call.method, "POST");
     assert.equal(call.path, `${UPSTREAM}/overview`);
-    assert.equal(call.body, JSON.stringify({ actor: { email: EMAIL, role } }), "email は Access で確かめた小文字・role は D1");
+    assert.equal(call.body, JSON.stringify({ includeGlossary: true, actor: { email: EMAIL, role } }), "glossary opt-in は BFF だけが加え、email は Access、role は D1 から得る");
     h.verifySignature(call);
   }
+  const legacyOverview = structuredClone(data.overview);
+  delete legacyOverview.overview.settings.glossary;
+  h.setRespond(() => Response.json(legacyOverview));
+  assert.deepEqual(await expectJson(await h.send("POST", "/overview", {}), 200), legacyOverview, "旧形の応答も許容する");
+  assert.deepEqual(JSON.parse(h.calls.at(-1).body), { includeGlossary: true, actor: { email: EMAIL, role: "owner" } }, "旧上流にも opt-in は送る");
 
   const before = h.calls.length;
   for (const [method, path, status] of [
@@ -361,7 +366,8 @@ test("翻訳 BFF: 本文を操作ごとの key の集合と W1 の形で確か�
     ["POST", "/release/prepare", { ...prepare, operation: "rollback", releaseId: "en-2026-09-15", resumeToken: "prep-1" }, { ...prepare, operation: "rollback", releaseId: "en-2026-09-15", resumeToken: "prep-1" }, 200, { status: "conflict" }],
     ["POST", "/release/apply", { confirmationToken: "confirm.token+1=", resumeToken: null }, { confirmationToken: "confirm.token+1=", resumeToken: null }, 200, { status: "applying", progress: { done: 1, total: 2 }, resumeToken: "apply-1" }],
     ["POST", "/release/apply", { confirmationToken: null, resumeToken: "apply-1" }, { confirmationToken: null, resumeToken: "apply-1" }, 200, { status: "expired" }],
-    ["PUT", "/settings", { expectedVersion: "set1", autoDraft: false }, { expectedVersion: "set1", autoDraft: false }, 200, data.settings],
+    ["PUT", "/settings", { expectedVersion: "set1", autoDraft: false }, { expectedVersion: "set1", autoDraft: false, includeGlossary: true }, 200, data.settings],
+    ["PUT", "/settings", { expectedVersion: "set2", reviewGlossaryVersion: "kamakura-glossary-v1" }, { expectedVersion: "set2", reviewGlossaryVersion: "kamakura-glossary-v1", includeGlossary: true }, 200, data.settings],
     ["POST", "/uploads/intent", { itemKey: "aG9tZQ", unitId: "cover", name: "海.png", mimeType: "image/png", bytes: 2048 }, { itemKey: "aG9tZQ", unitId: "cover", name: "海.png", mimeType: "image/png", bytes: 2048 }, 201, { uploadUrl, uploadToken: "token.value", uploadId: UUID }]
   ]) {
     h.setRespond(() => Response.json(reply, { status }));
@@ -377,6 +383,7 @@ test("翻訳 BFF: 本文を操作ごとの key の集合と W1 の形で確か�
   const before = h.calls.length;
   for (const [method, path, body, headers] of [
     ["POST", "/overview", { actor: { email: "someone@example.test", role: "owner" } }],
+    ["POST", "/overview", { includeGlossary: true }],
     ["POST", "/overview", { extra: true }],
     ["POST", "/items/aG9tZQ", { itemKey: "aG9tZQ" }],
     ["POST", "/items/aG9tZQ/command", { ...command, action: "review-current", actor }],
@@ -412,6 +419,11 @@ test("翻訳 BFF: 本文を操作ごとの key の集合と W1 の形で確か�
     ["POST", "/release/apply", { confirmationToken: "a", resumeToken: "b" }],
     ["POST", "/release/apply", { confirmationToken: null, resumeToken: null }],
     ["PUT", "/settings", { expectedVersion: "set1", autoDraft: "yes" }],
+    ["PUT", "/settings", { expectedVersion: "set1" }],
+    ["PUT", "/settings", { expectedVersion: "set1", autoDraft: true, reviewGlossaryVersion: "kamakura-glossary-v1" }],
+    ["PUT", "/settings", { expectedVersion: "set1", reviewGlossaryVersion: "bad\nversion" }],
+    ["PUT", "/settings", { expectedVersion: "set1", reviewGlossaryVersion: "kamakura-glossary-v1", includeGlossary: true }],
+    ["PUT", "/settings", { expectedVersion: "set1", reviewGlossaryVersion: "kamakura-glossary-v1", actor }],
     ["POST", "/uploads/intent", { itemKey: "aG9tZQ", unitId: "cover", name: "a.svg", mimeType: "image/svg+xml", bytes: 10 }],
     ["POST", "/uploads/intent", { itemKey: "aG9tZQ", unitId: "cover", name: "a.png", mimeType: "image/png", bytes: 0 }],
     ["POST", "/uploads/intent", { itemKey: "aG9tZQ", unitId: "cover", name: "a.png", mimeType: "image/png", bytes: 50 * 1024 * 1024 + 1 }],
@@ -488,10 +500,13 @@ test("翻訳 BFF: 上流の契約の結果を写し、合わない応答は 502�
 
   // 契約に合わない応答
   const otherOverview = (preview) => ({ ...data.overview, overview: { ...data.overview.overview, preview } });
+  const duplicateGlossary = structuredClone(data.overview);
+  duplicateGlossary.overview.settings.glossary.entries[1].source = duplicateGlossary.overview.settings.glossary.entries[0].source;
   for (const [path, body, reply, status] of [
     ["/overview", {}, { ...data.overview, extra: true }, 200],
     ["/overview", {}, otherOverview({ frameUrl: "https://evil.example/_studio/localization-preview" }), 200],
     ["/overview", {}, otherOverview({ frameUrl: `${SITE}/admin/localization` }), 200],
+    ["/overview", {}, duplicateGlossary, 200],
     ["/overview", {}, { status: "forbidden" }, 200],
     ["/overview", {}, data.overview, 403],
     ["/overview", {}, { status: "not_found" }, 404],

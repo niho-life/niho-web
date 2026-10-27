@@ -139,6 +139,9 @@ const localizationCss = `
 .nw-localization .lw-settings-body h2:focus-visible{outline:none}
 .nw-localization .lw-settings-card{display:grid;gap:10px;padding:18px;border-radius:var(--nw-radius-lg);background:var(--nw-bg);box-shadow:0 0 0 1px var(--nw-border)}
 .nw-localization .lw-settings-card h3{margin:0;font-size:14px}
+.nw-localization .lw-glossary>div{padding:6px 0;border-bottom:1px solid var(--nw-border)}
+.nw-localization .lw-glossary>div:last-child{border-bottom:0}
+.nw-localization .lw-glossary-status{margin:0}
 .nw-localization .lw-check{display:flex;align-items:flex-start;gap:10px;min-height:40px;cursor:pointer}
 .nw-localization .lw-check input{width:20px;height:20px;margin:2px 0 0;flex:none;accent-color:var(--nw-accent)}
 .nw-localization .lw-settings-actions{display:flex;gap:8px}
