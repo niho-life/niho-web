@@ -25,7 +25,7 @@ test("layout compositions are opt-in and every catalog entry creates a valid doc
 
 test("Basic catalog includes safe icons, native video and closed embeds in the reference-like order", () => {
   const basic = resolveBuilderDefinition().insertions.filter((entry) => (entry.category ?? "basic") === "basic");
-  const ordered = ["section", "box", "img", "text", "icon", "richtext", "video", "embed-map", "embed-youtube", "embed-vimeo"];
+  const ordered = ["section", "box", "img", "text", "icon", "richtext", "video", "embed-map", "embed-youtube", "embed-vimeo", "embed-lottie"];
   assert.deepEqual(basic.filter((entry) => ordered.includes(entry.id)).map((entry) => entry.id), ordered);
   assert.ok(basic.filter((entry) => ordered.slice(0, 7).includes(entry.id)).every((entry) => entry.group === "基本"));
   assert.ok(basic.filter((entry) => ordered.slice(7).includes(entry.id)).every((entry) => entry.group === "埋め込み"));
@@ -87,14 +87,14 @@ test("Loop Box uses a bounded closed descriptor and survives edit, reload and du
   reject({ type: "loop-box", speed: 60, pauseOnHover: true }, [{ ...root.children[0], interaction: { type: "loop-box", speed: 60, pauseOnHover: false } }, ...root.children.slice(1)]);
 });
 
-test("Map, YouTube and Vimeo presets start empty and keep provider fixed through source edits and history", () => {
+test("Map, YouTube, Vimeo and Lottie presets start empty and keep provider fixed through source edits and history", () => {
   const basic = resolveBuilderDefinition().insertions.filter((entry) => (entry.category ?? "basic") === "basic");
   let page = doc();
-  for (const id of ["embed-map", "embed-youtube", "embed-vimeo"]) {
+  for (const id of ["embed-map", "embed-youtube", "embed-vimeo", "embed-lottie"]) {
     page = editDocument(page, { type: "add", parentId: null, node: createInsertionNode(basic.find((entry) => entry.id === id), { document: page }) });
   }
-  const start = page.body.length - 3;
-  assert.deepEqual(page.body.slice(start).map((node) => node.embed.provider), ["map", "youtube", "vimeo"]);
+  const start = page.body.length - 4;
+  assert.deepEqual(page.body.slice(start).map((node) => node.embed.provider), ["map", "youtube", "vimeo", "lottie"]);
   assert.ok(page.body.slice(start).every((node) => node.embed.source === undefined && node.children.length === 0));
   const edited = editDocument(page, { type: "embedSource", path: [start + 1], source: "https://youtu.be/dQw4w9WgXcQ" });
   const titled = editDocument(edited, { type: "embedTitle", path: [start + 1], title: "紹介動画" });
@@ -103,6 +103,8 @@ test("Map, YouTube and Vimeo presets start empty and keep provider fixed through
   assert.equal(travelHistory(history, "undo", {}, []).present.body[start + 1].embed.title, "YouTube 動画");
   const reloaded = parsePageDocument(JSON.parse(JSON.stringify(titled)));
   assert.deepEqual(reloaded.body[start + 1].embed, titled.body[start + 1].embed);
+  const lottie = editDocument(reloaded, { type: "embedSource", path: [start + 3], source: "https://lottie.host/123e4567-e89b-42d3-a456-426614174000/intro.json" });
+  assert.equal(lottie.body[start + 3].embed.source, "https://lottie.host/embed/123e4567-e89b-42d3-a456-426614174000/intro.json");
   assert.throws(() => editDocument(titled, { type: "embedSource", path: [start + 1], source: "https://example.test/video" }), /YouTube/);
 });
 

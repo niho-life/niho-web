@@ -119,7 +119,7 @@ v1\n${timestamp}\n${method}\n${pathname}\n${sha256hex(rawBody)}\n${project}\n${s
 
 STG検証は同じ allowlist と署名契約を使いますが、上流は固定 `https://api-stg.niho.life`、鍵は `NIHO_STUDIO_BRIDGE_SECRET_STG` です。STG UI は環境を明示します。通常の Experience editor ルートや本番用 key/origin は切り替えません。STG API が未配備、secret が無効、または owner 以外なら閉じます。公開・復元の受入操作は STG API 上でのみ行い、本番 API へは送信しません。
 
-Editor HTML route だけ `PageEditor` の inline style と `iframe srcDoc` に必要な `style-src 'unsafe-inline'` / `frame-src 'self'` を追加します。鎌倉の editor route では、標準埋め込みの Google Maps・YouTube・Vimeo の固定配信元も `frame-src` に加えます。`script-src 'self'` は維持し、Directory / Dashboard など他 route の CSP は緩和しません。
+Editor HTML route だけ `PageEditor` の inline style と `iframe srcDoc` に必要な `style-src 'unsafe-inline'` / `frame-src 'self'` を追加します。鎌倉の editor route では、標準埋め込みの Google Maps・YouTube・Vimeo の固定配信元と、Lottie preview専用の `https://lottie.host/embed/` だけを `frame-src` に加えます。Lottieのdirect asset pathや任意のlottie.host pathは許可しません。`script-src 'self'` は維持し、Directory / Dashboard など他 route の CSP は緩和しません。
 
 ## Kamakura editor bridge
 

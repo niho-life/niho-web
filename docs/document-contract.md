@@ -45,17 +45,22 @@ runtime複製は`aria-hidden`かつ`inert`で、focus可能要素をtab順から
 
 ### 標準埋め込み
 
-Map / YouTube / Vimeo は `tag: "div"` の element に `embed: { provider, title, source? }` を持たせます。`provider` は `map | youtube | vimeo` の閉じた値、`title` は空でない300文字以内の1行、`source` は任意です。embed node の `children` は空で、`asset` / `icon` を併用できません。文書から iframe tag、HTML、`src` 属性、sandbox、allow、referrer policy、loading、JavaScript を渡す入口はありません。provider は挿入時に固定し、editor は `embedSource` と `embedTitle` の専用操作だけで値を更新します。
+Map / YouTube / Vimeo / Lottie は `tag: "div"` の element に `embed: { provider, title, source? }` を持たせます。`provider` は `map | youtube | vimeo | lottie` の閉じた値、`title` は空でない300文字以内の1行、`source` は任意です。embed node の `children` は空で、`asset` / `icon` を併用できません。文書から iframe tag、HTML、`src` 属性、sandbox、allow、referrer policy、loading、JavaScript、任意originを渡す入口はありません。provider は挿入時に固定し、editor は `embedSource` と `embedTitle` の専用操作だけで値を更新します。
 
 入力URLは資格情報・port・fragmentのないHTTPSだけを受け、providerごとに次の形へ正規化します。HTTP、任意host、`javascript:` / `data:`、iframe markup、許可外queryを拒否します。YouTubeの共有リンクに付く`si`は検証後に取り除きます。
 
 - YouTube は `youtube.com/watch?v=ID`、`youtube.com/embed/ID`、`youtube.com/shorts/ID`、`youtu.be/ID` の11文字IDだけを受け、`https://www.youtube-nocookie.com/embed/ID` を保存します。
 - Vimeo は `vimeo.com/数字ID` または `player.vimeo.com/video/数字ID` を受けます。任意の単一 `h` query は安全なunlisted hashとして保持し、`https://player.vimeo.com/video/ID`（必要なら `?h=…`）を保存します。
 - Map は `https://www.google.com/maps/embed?pb=...` だけを受けます。`/maps/embed/v1` とAPI key方式は対象外です。`pb` は最大16,000文字の共有URL payloadを許し、制御文字とmarkupを拒否して再エンコードします。
+- Lottie はLottieFiles Handoff & Embedの `https://lottie.host/UUID/安全なファイル名.json`（または`.lottie`）と、同じURLの `/embed/` 形だけを受け、`https://lottie.host/embed/UUID/ファイル名` を保存します。UUIDはハイフン区切りの16進数1 segment、ファイル名は英数字で始まる英数字・`.`・`_`・`-`だけです。資格情報、port、query、fragment、追加path、percent encoding、別hostを拒否します。
 
-rendererはsource未設定なら公開HTMLにnodeもiframeも出さず、外部リクエストを発生させません。editorのplaceholder modeだけ設定案内を出します。source設定後はnodeの`div`内にtrusted rendererがiframeを生成し、全providerで `sandbox="allow-scripts allow-same-origin"`、`loading="lazy"`、`referrerPolicy="strict-origin-when-cross-origin"` を固定します。YouTube/Vimeoのallowとfullscreenもrendererのprovider別定数だけから付与します。
+rendererはsource未設定なら公開HTMLにnodeもiframeも出さず、外部リクエストを発生させません。editorのplaceholder modeだけ設定案内を出します。Map / YouTube / Vimeoはsource設定後にnodeの`div`内へtrusted rendererがiframeを生成し、`sandbox="allow-scripts allow-same-origin"`、`loading="lazy"`、`referrerPolicy="strict-origin-when-cross-origin"` を固定します。YouTube/Vimeoのallowとfullscreenもrendererのprovider別定数だけから付与します。
 
-このpage node側の標準埋め込みと、`SitePresentationExternalFrame` は別の信頼境界です。標準埋め込みは上の3 provider・URL形・固定iframe属性だけで、host固有policyを受けません。presentation external frameはhost view内の空divを実行側descriptorで置換し、接続先host/pathとorigin保持の要否をtrustedな `externalFramePolicy` が決めます。page JSONからpresentation policy、任意origin、sandbox権限へ昇格することはできません。
+LottieのSSRはcanonical sourceを`data-nw-lottie-source`に持つwrapperと、titleを示す静的でアクセシブルなfallbackだけを出し、iframeやscriptを出しません。公開ホストとStudio previewが`initializeSitePresentation`を起動し、`prefers-reduced-motion: reduce`でない間だけruntimeが `https://lottie.host/embed/` のcanonical URLからiframeを生成します。iframeは `sandbox="allow-scripts"`（origin保持なし）、`referrerPolicy="no-referrer"`、`loading="lazy"`、descriptor由来のtitle、`tabindex="-1"`、`aria-hidden="true"`、pointer操作なしに固定し、allow/fullscreenは付けません。media queryがreduceへ変わるとiframeを除き、戻ると再生成します。cleanupは生成iframeとlistenerをすべて除きます。編集canvasはruntimeを非操作で初期化するため外部playerを読み込まず、静的fallbackのままです。壊れたdata属性をruntimeで再検証して読み込まず、playerが表示できない場合もSSR fallbackはDOMに残ります。
+
+このLottie実装が扱う編集項目はAsset link、アクセシブルなtitle、通常のbox/layout styleだけです。motion許可時にlottie.host hosted iframeの既定playerを表示しますが、STUDIOの6種類のplayback modeやtrigger・速度・方向を文書設定として提供しません。hosted iframeの閉じたURL契約から制御できない設定を推測して追加しません。
+
+このpage node側の標準埋め込みと、`SitePresentationExternalFrame` は別の信頼境界です。標準埋め込みは上の4 provider・URL形・固定iframe属性だけで、host固有policyを受けません。presentation external frameはhost view内の空divを実行側descriptorで置換し、接続先host/pathとorigin保持の要否をtrustedな `externalFramePolicy` が決めます。page JSONからpresentation policy、任意origin、sandbox権限へ昇格することはできません。
 
 ### フォーム
 

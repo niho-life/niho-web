@@ -227,7 +227,7 @@ test("Basic embeds expose the existing card UI, normalize inspector input and su
   try {
     await click("追加");
     const embedGroup = [...document.querySelectorAll(".e-palette-group")].find((group) => group.querySelector("h3")?.textContent === "埋め込み");
-    assert.deepEqual([...embedGroup.querySelectorAll(".e-preset-card")].map((card) => card.querySelector(".e-preset-label").lastChild.textContent), ["Map", "YouTube", "Vimeo"]);
+    assert.deepEqual([...embedGroup.querySelectorAll(".e-preset-card")].map((card) => card.querySelector(".e-preset-label").lastChild.textContent), ["Map", "YouTube", "Vimeo", "Lottie"]);
     await addPreset("embed-map");
     assert.equal(document.querySelector('[aria-label="インスペクタ"] .e-inspector-context strong').textContent, "Map");
     assert.ok(document.querySelector("iframe").contentDocument.body.textContent.includes("Map の URL を設定してください"));
@@ -247,14 +247,33 @@ test("Basic embeds expose the existing card UI, normalize inspector input and su
     assert.equal(document.querySelector("iframe").getAttribute("sandbox"), "allow-same-origin");
     await change(input("埋め込み URL"), "https://youtube.com/shorts/dQw4w9WgXcQ");
     await addPreset("embed-vimeo");
+    await addPreset("embed-lottie");
+    assert.equal(document.querySelector('[aria-label="インスペクタ"] .e-inspector-context strong').textContent, "Lottie");
+    assert.ok(document.querySelector('[aria-label="インスペクタ"]').textContent.includes("Handoff & Embed"));
+    assert.ok(document.querySelector("iframe").contentDocument.body.textContent.includes("Lottie の URL を設定してください"));
+    await change(input("LottieFiles Asset link"), "https://lottie.host/123E4567-E89B-42D3-A456-426614174000/intro.json");
+    await change(input("アクセシブルなタイトル"), "ローディングアニメーション");
+    let canvas = document.querySelector("iframe"), lottieRoot = canvas.contentDocument.querySelector('[data-nw-embed="lottie"]');
+    const lottieId = lottieRoot.dataset.nwNode;
+    assert.equal(lottieRoot.dataset.nwLottieSource, "https://lottie.host/embed/123e4567-e89b-42d3-a456-426614174000/intro.json");
+    assert.equal(lottieRoot.querySelector("iframe"), null, "edit canvas keeps the external player unloaded");
+    await click("アニメーションを再生"); await settle();
+    canvas = document.querySelector("iframe"); lottieRoot = canvas.contentDocument.querySelector('[data-nw-embed="lottie"]');
+    assert.equal(lottieRoot.querySelector("iframe"), null, "the edit-mode motion replay also keeps Lottie static");
     await click("下書き保存");
-    assert.deepEqual(app.stored().body.slice(-3).map((node) => node.embed.provider), ["map", "youtube", "vimeo"]);
-    assert.equal(app.stored().body.at(-2).embed.title, "施設紹介");
+    assert.deepEqual(app.stored().body.slice(-4).map((node) => node.embed.provider), ["map", "youtube", "vimeo", "lottie"]);
+    assert.equal(app.stored().body.at(-3).embed.title, "施設紹介");
+    assert.deepEqual(app.stored().body.at(-1).embed, { provider: "lottie", title: "ローディングアニメーション", source: "https://lottie.host/embed/123e4567-e89b-42d3-a456-426614174000/intro.json" });
     await click("最新の文書を再読込"); await clickLayer("node_2");
     assert.equal(input("埋め込み URL").value, "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ");
     assert.equal(input("アクセシブルなタイトル").value, "施設紹介");
+    await clickLayer(lottieId); assert.equal(input("LottieFiles Asset link").value, "https://lottie.host/embed/123e4567-e89b-42d3-a456-426614174000/intro.json");
     const html = renderPageToHtml(app.stored());
     assert.match(html, /youtube-nocookie\.com\/embed\/dQw4w9WgXcQ/); assert.match(html, /title="施設紹介"/);
+    assert.doesNotMatch(html, /<iframe[^>]+lottie\.host/); assert.match(html, /data-nw-lottie-source="https:\/\/lottie\.host\/embed\//);
+    await click("プレビュー"); await settle();
+    canvas = document.querySelector("iframe"); lottieRoot = canvas.contentDocument.querySelector('[data-nw-embed="lottie"]');
+    assert.equal(lottieRoot.querySelector("iframe")?.getAttribute("src"), "https://lottie.host/embed/123e4567-e89b-42d3-a456-426614174000/intro.json");
   } finally { await app.cleanup(); }
 });
 test("Basic のフォーム一覧とインスペクタでフォーム項目を編集し、既存フォームへ安全に追加できる", async () => {
