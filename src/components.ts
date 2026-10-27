@@ -21,7 +21,7 @@ export function fitsPropField(node: ElementNode, field: ComponentPropField): boo
   // 素材ライブラリの画像（asset）は src と併用できないため、URL の画像だけ src を公開できる。
   if (field === "src") return node.tag === "img" && node.asset === undefined;
   if (field === "alt") return node.tag === "img";
-  return !node.icon && !textless.has(node.tag) && (!node.children.length || node.children.length === 1 && node.children[0]!.type === "text");
+  return !node.icon && !node.embed && !textless.has(node.tag) && (!node.children.length || node.children.length === 1 && node.children[0]!.type === "text");
 }
 function displayText(value: unknown, path: string, max: number): string {
   if (typeof value !== "string" || value.length > max || !value.trim() || /[\u0000-\u001f\u007f]/u.test(value)) fail(path, "invalid string");

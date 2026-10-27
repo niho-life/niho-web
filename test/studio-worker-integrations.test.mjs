@@ -104,7 +104,7 @@ test("Experience editor stays frozen while Kamakura reads pass and site freezes 
     const csp = response.headers.get("Content-Security-Policy");
     assert.match(csp, /connect-src 'self' https:\/\/next-kamakura\.niho\.life;/u, path);
     assert.match(csp, /font-src 'self' https:\/\/kamakura-media\.niho\.life\/niho-web\/fonts\/v1\//u, path);
-    assert.match(csp, /frame-src 'self' https:\/\/kamakura-media\.niho\.life\/niho-web\/embeds\/v1\/ https:\/\/www\.google\.com\/maps\/embed;/u, path);
+    assert.match(csp, /frame-src 'self' https:\/\/kamakura-media\.niho\.life\/niho-web\/embeds\/v1\/ https:\/\/www\.google\.com\/maps\/embed https:\/\/www\.youtube-nocookie\.com\/embed\/ https:\/\/player\.vimeo\.com\/video\/;/u, path);
   }
   assert.equal((await call("/api/session")).status, 200);
   assert.equal(upstream.length, 0);

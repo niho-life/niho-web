@@ -52,6 +52,8 @@ export type PageRendererProps = {
 
 const canvasCssText = (css: string, canvas: PageRendererProps["canvas"]) => canvas?.viewportHeight ? resolveViewportHeightUnits(css, canvas.viewportHeight) : css;
 const rootRelative = (value: string) => value.startsWith("/") && !value.startsWith("//");
+const embedAllow = { map: undefined, youtube: "encrypted-media; picture-in-picture; fullscreen", vimeo: "picture-in-picture; fullscreen" } as const;
+const embedLabel = { map: "Map", youtube: "YouTube", vimeo: "Vimeo" } as const;
 function withSiteOrigin(attrs: Record<string, unknown>, siteOrigin: string): void {
   if (typeof attrs.src === "string" && rootRelative(attrs.src)) attrs.src = siteOrigin + attrs.src;
   if (typeof attrs.poster === "string" && rootRelative(attrs.poster)) attrs.poster = siteOrigin + attrs.poster;
@@ -114,6 +116,18 @@ export function PageRenderer({ document: input, blocks = {}, assets: assetInput,
       if (node.tag === "img" && attrs.width === undefined && attrs.height === undefined && resolved.width !== undefined && resolved.height !== undefined) { attrs.width = resolved.width; attrs.height = resolved.height; }
     }
     if (node.icon) return createElement("span", { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope }, iconGlyph(node.icon));
+    // trusted presentation binding は従来どおり空div置換を優先し、標準embedのpolicyへ混ぜない。
+    if (node.embed && !hostViewBinding?.externalFrames?.some((candidate) => candidate.nodeId === node.id)) {
+      if (!node.embed.source) return missingAssets === "placeholder" ? createElement("div", { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope,
+        "data-nw-empty-embed": node.embed.provider, role: "status" }, `${embedLabel[node.embed.provider]} の URL を設定してください`) : null;
+      const frame = createElement("iframe", {
+        src: node.embed.source, title: node.embed.title, loading: "lazy", referrerPolicy: "strict-origin-when-cross-origin",
+        sandbox: "allow-scripts allow-same-origin", ...(embedAllow[node.embed.provider] ? { allow: embedAllow[node.embed.provider] } : {}),
+        ...(node.embed.provider === "youtube" || node.embed.provider === "vimeo" ? { allowFullScreen: true } : {}),
+        style: { width: "100%", height: "100%", border: 0, display: "block", ...(canvas ? { pointerEvents: "none" } : {}) }
+      });
+      return createElement("div", { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-embed": node.embed.provider }, frame);
+    }
     if (node.tag === "video") {
       if (typeof attrs.src !== "string") return missingAssets === "placeholder" ? createElement("span", { key: node.id, "data-nw-node": node.id, "data-nw-owner": scope,
         "data-nw-missing-asset": "", role: "status", "aria-label": "動画を選んでください" }, "動画を選んでください") : null;

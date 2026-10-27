@@ -2329,7 +2329,7 @@ const KAMAKURA_EDITOR_ADAPTER: WorkerEditorAdapter = {
   dispatchAssetPreview: signedKamakuraAssetPreview,
   connectOrigins: [KAMAKURA_EDITOR_UPSTREAM_ORIGIN],
   fontSources: [`${KAMAKURA_MEDIA_ORIGIN}/niho-web/fonts/v1/`],
-  frameSources: [`${KAMAKURA_MEDIA_ORIGIN}/niho-web/embeds/v1/`, "https://www.google.com/maps/embed"]
+  frameSources: [`${KAMAKURA_MEDIA_ORIGIN}/niho-web/embeds/v1/`, "https://www.google.com/maps/embed", "https://www.youtube-nocookie.com/embed/", "https://player.vimeo.com/video/"]
 };
 
 function liveEditorAdapter(resolved: ResolvedTrustedIntegration): WorkerEditorAdapter | null {

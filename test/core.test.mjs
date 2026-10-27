@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { DocumentValidationError, generatePageCss, isSafePublicUrl, pageScope, parsePageDocument, validateDocument } from "@niho/web";
+import { DocumentValidationError, generatePageCss, isSafePublicUrl, normalizeEmbedSource, pageScope, parsePageDocument, validateDocument } from "@niho/web";
 import { validateDocument as validateCore } from "@niho/web/core";
 
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
@@ -125,6 +125,47 @@ test("built-in icons and native videos use closed, accessible document shapes", 
   const linked = doc();
   linked.body = [{ type: "element", id: "link", tag: "a", attrs: { href: "/watch" }, children: [media.body[1]] }];
   reject(linked);
+});
+
+test("standard embeds normalize only closed Map, YouTube and Vimeo sources", () => {
+  const sources = [
+    ["youtube", "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ"],
+    ["youtube", "https://youtube.com/embed/dQw4w9WgXcQ", "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ"],
+    ["youtube", "https://youtube.com/shorts/dQw4w9WgXcQ", "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ"],
+    ["youtube", "https://youtu.be/dQw4w9WgXcQ", "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ"],
+    ["youtube", "https://youtu.be/dQw4w9WgXcQ?si=ShareToken_1", "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ"],
+    ["vimeo", "https://vimeo.com/123456789", "https://player.vimeo.com/video/123456789"],
+    ["vimeo", "https://player.vimeo.com/video/123456789?h=Unlisted_1", "https://player.vimeo.com/video/123456789?h=Unlisted_1"],
+    ["map", "https://www.google.com/maps/embed?pb=!1m18!2m3%20Public%20Place", "https://www.google.com/maps/embed?pb=!1m18!2m3%20Public%20Place"]
+  ];
+  for (const [provider, source, expected] of sources) assert.equal(normalizeEmbedSource(provider, source), expected);
+  const input = doc(); input.body = sources.map(([provider, source], index) => ({
+    type: "element", id: `embed_${index}`, tag: "div", embed: { provider, title: `${provider} preview`, source }, children: []
+  }));
+  const parsed = parsePageDocument(input);
+  assert.deepEqual(parsed.body.map((node) => node.embed.source), sources.map((entry) => entry[2]));
+  const empty = doc(); empty.body = [{ type: "element", id: "map", tag: "div", embed: { provider: "map", title: "地図" }, children: [] }];
+  assert.deepEqual(parsePageDocument(empty).body, empty.body);
+});
+
+test("standard embeds reject arbitrary iframe data and malformed provider URLs", () => {
+  const invalidSources = [
+    ["youtube", "http://youtube.com/watch?v=dQw4w9WgXcQ"], ["youtube", "https://user@example.com/watch?v=dQw4w9WgXcQ"],
+    ["youtube", "https://youtube.com:443/watch?v=dQw4w9WgXcQ"], ["youtube", "https://youtube.com/watch?v=dQw4w9WgXcQ&autoplay=1"],
+    ["youtube", "https://youtube.com/watch?v=short"], ["youtube", "https://youtube.com/embed/dQw4w9WgXcQ#x"],
+    ["youtube", "javascript:alert(1)"], ["youtube", "<iframe src=\"https://youtu.be/dQw4w9WgXcQ\"></iframe>"],
+    ["vimeo", "https://vimeo.com/channels/staffpicks/123456789"], ["vimeo", "https://vimeo.com/123456789?autoplay=1"],
+    ["vimeo", "https://player.vimeo.com/video/not-a-number"], ["map", "https://www.google.com/maps/embed/v1/place?key=public&query=place"],
+    ["map", "https://maps.google.com/maps/embed?pb=!1m18!2m3"], ["map", "https://www.google.com/maps/embed?pb=!1m18!2m3&output=embed"],
+    ["map", "https://www.google.com/maps/embed?pb=!1m18%3Cscript%3E"]
+  ];
+  for (const [provider, source] of invalidSources) assert.throws(() => normalizeEmbedSource(provider, source), Error, `${provider}: ${source}`);
+  const base = { type: "element", id: "embed", tag: "div", embed: { provider: "youtube", title: "動画", source: "https://youtu.be/dQw4w9WgXcQ" }, children: [] };
+  for (const change of [
+    (node) => { node.embed.provider = "other"; }, (node) => { node.embed.title = ""; }, (node) => { node.embed.sandbox = "allow-scripts"; },
+    (node) => { node.embed.src = "https://example.test"; }, (node) => { node.tag = "iframe"; }, (node) => { node.asset = { provider: "uploads", id: "x" }; },
+    (node) => { node.icon = "check"; }, (node) => { node.children = [{ type: "text", text: "fallback" }]; }
+  ]) { const input = doc(); input.body = [structuredClone(base)]; change(input.body[0]); reject(input); }
 });
 
 test("depth and node limits reject pathological documents", () => {

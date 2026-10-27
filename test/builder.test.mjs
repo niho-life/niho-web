@@ -23,11 +23,12 @@ test("layout compositions are opt-in and every catalog entry creates a valid doc
   assert.equal(resolveBuilderDefinition().motions.length, 0);
 });
 
-test("Basic catalog includes safe editable icons and native videos in the reference-like order", () => {
+test("Basic catalog includes safe icons, native video and closed embeds in the reference-like order", () => {
   const basic = resolveBuilderDefinition().insertions.filter((entry) => (entry.category ?? "basic") === "basic");
-  const ordered = ["section", "box", "img", "text", "icon", "richtext", "video"];
+  const ordered = ["section", "box", "img", "text", "icon", "richtext", "video", "embed-map", "embed-youtube", "embed-vimeo"];
   assert.deepEqual(basic.filter((entry) => ordered.includes(entry.id)).map((entry) => entry.id), ordered);
-  assert.ok(basic.filter((entry) => ordered.includes(entry.id)).every((entry) => entry.group === "基本"));
+  assert.ok(basic.filter((entry) => ordered.slice(0, 7).includes(entry.id)).every((entry) => entry.group === "基本"));
+  assert.ok(basic.filter((entry) => ordered.slice(7).includes(entry.id)).every((entry) => entry.group === "埋め込み"));
   let page = doc();
   for (const id of ["icon", "video"]) page = editDocument(page, { type: "add", parentId: null, node: createInsertionNode(basic.find((entry) => entry.id === id), { document: page }) });
   const iconIndex = page.body.findIndex((node) => node.type === "element" && node.icon);
@@ -41,6 +42,25 @@ test("Basic catalog includes safe editable icons and native videos in the refere
   assert.deepEqual(reloaded.body[videoIndex].asset, { provider: "uploads", id: "intro" }); assert.equal(reloaded.body[videoIndex].attrs.src, undefined);
   const html = renderPageToHtml(reloaded, {}, { assets: { "uploads:intro": { src: "/media/intro.mp4" } } });
   assert.ok(html.includes("★")); assert.ok(html.includes('src="/media/intro.mp4"'));
+});
+
+test("Map, YouTube and Vimeo presets start empty and keep provider fixed through source edits and history", () => {
+  const basic = resolveBuilderDefinition().insertions.filter((entry) => (entry.category ?? "basic") === "basic");
+  let page = doc();
+  for (const id of ["embed-map", "embed-youtube", "embed-vimeo"]) {
+    page = editDocument(page, { type: "add", parentId: null, node: createInsertionNode(basic.find((entry) => entry.id === id), { document: page }) });
+  }
+  const start = page.body.length - 3;
+  assert.deepEqual(page.body.slice(start).map((node) => node.embed.provider), ["map", "youtube", "vimeo"]);
+  assert.ok(page.body.slice(start).every((node) => node.embed.source === undefined && node.children.length === 0));
+  const edited = editDocument(page, { type: "embedSource", path: [start + 1], source: "https://youtu.be/dQw4w9WgXcQ" });
+  const titled = editDocument(edited, { type: "embedTitle", path: [start + 1], title: "紹介動画" });
+  assert.deepEqual(titled.body[start + 1].embed, { provider: "youtube", source: "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ", title: "紹介動画" });
+  const history = commitHistory(commitHistory({ past: [], present: page, future: [] }, edited), titled);
+  assert.equal(travelHistory(history, "undo", {}, []).present.body[start + 1].embed.title, "YouTube 動画");
+  const reloaded = parsePageDocument(JSON.parse(JSON.stringify(titled)));
+  assert.deepEqual(reloaded.body[start + 1].embed, titled.body[start + 1].embed);
+  assert.throws(() => editDocument(titled, { type: "embedSource", path: [start + 1], source: "https://example.test/video" }), /YouTube/);
 });
 
 test("Basic のフォームと全フォームパーツは有効な部分木として保存・再読込できる", () => {

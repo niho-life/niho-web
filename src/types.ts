@@ -77,6 +77,15 @@ export type ElementTag =
 export type ElementAttributes = Record<string, string | number | boolean>;
 /** 任意の SVG/HTML ではなく、trusted code の閉じたカタログだけを参照する。 */
 export type IconName = "arrow-right" | "arrow-left" | "check" | "close" | "plus" | "minus" | "star" | "heart" | "location" | "info";
+/** 標準埋め込みは trusted renderer が知る静的 provider だけ。任意 iframe 設定は保存しない。 */
+export type EmbedProvider = "map" | "youtube" | "vimeo";
+export type EmbedDescriptor = {
+  provider: EmbedProvider;
+  /** iframe のアクセシブルな名前。 */
+  title: string;
+  /** provider ごとの canonical URL。未設定なら公開 renderer は何も読み込まない。 */
+  source?: string;
+};
 export type TextNode = { type: "text"; text: string };
 export type ElementNode = {
   type: "element";
@@ -86,6 +95,8 @@ export type ElementNode = {
   asset?: AssetReference;
   /** span だけが持てる組み込みアイコン名。glyph や markup は trusted code から描画する。 */
   icon?: IconName;
+  /** div だけが持てる、閉じた標準埋め込み descriptor。 */
+  embed?: EmbedDescriptor;
   attrs?: ElementAttributes;
   style?: NodeStyle;
   children: PageNode[];

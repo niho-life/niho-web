@@ -50,4 +50,8 @@ export const historyCss = `
 .nw-editor .e-form-items li{margin:0;padding:0}
 .nw-editor .e-form-items button{width:100%;display:flex;justify-content:space-between;align-items:center;text-align:left;min-height:30px;padding:6px 8px;border:1px solid var(--e-border);border-radius:var(--nw-radius);background:var(--nw-bg);color:var(--e-ink);font-size:12px}
 .nw-editor .e-form-items button:hover{border-color:var(--e-blue)}
+.nw-editor .e-preset-preview[data-preset^=embed-]{align-items:center;border:1px solid var(--e-border);background:var(--nw-surface)}
+.nw-editor .e-preset-preview[data-preset^=embed-] i:first-child{width:70%;height:22px;border:1px solid currentColor;border-radius:3px;background:transparent}
+.nw-editor .e-preset-preview[data-preset^=embed-] i:nth-child(2){width:8px;height:8px;margin-top:-19px;border-radius:50%}
+.nw-editor .e-preset-preview[data-preset^=embed-] i:nth-child(3){display:none}
 `;

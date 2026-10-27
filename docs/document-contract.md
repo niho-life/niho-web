@@ -12,7 +12,7 @@
 
 文書契約の非互換変更は `schemaVersion` を上げ、移行処理を明示してから導入します。未知版の暗黙変換は行いません。既存の鎌倉サイトの文書を直接受け入れる形式ではありません。移行時には現行の HTML / CSS を新しい許可リストに対応付ける adapter と視覚確認が必要です。
 
-token の `label`、`textStyles`、node style の `textStyle`、文字の見た目プロパティ（`fontStyle` / `textDecorationLine`）、辺ごとの枠線幅（`borderTopWidth` / `borderRightWidth` / `borderBottomWidth` / `borderLeftWidth`）、element の組み込み `icon`・`video`・フォーム要素は v1 への後方互換な追加で、`schemaVersion` は 1 のままです。入力に無いキーは出力にも付けないため、既存文書の検証結果・直列化・fingerprint・CSS は変わりません。これらのキーを含む文書は、追加前のパッケージでは未知フィールドとして拒否されます。ホストは保存・公開側の検証も新しい commit SHA へ更新してから、新しい編集機能を使ってください。
+token の `label`、`textStyles`、node style の `textStyle`、文字の見た目プロパティ（`fontStyle` / `textDecorationLine`）、辺ごとの枠線幅（`borderTopWidth` / `borderRightWidth` / `borderBottomWidth` / `borderLeftWidth`）、element の組み込み `icon`・`video`・`embed`・フォーム要素は v1 への後方互換な追加で、`schemaVersion` は 1 のままです。入力に無いキーは出力にも付けないため、既存文書の検証結果・直列化・fingerprint・CSS は変わりません。これらのキーを含む文書は、追加前のパッケージでは未知フィールドとして拒否されます。ホストは保存・公開側の検証も新しい commit SHA へ更新してから、新しい編集機能を使ってください。
 
 `@niho/web/builder` の挿入・モーション定義は編集時だけの設定で、文書wireには保存しません。挿入結果は既存の `PageNode`、モーション結果は既存の `NodeStyle.base/states/appear` です。定義名、関数、任意JS/CSS、新しい識別fieldは `PageDocument` に加わらないため、この拡張を使わない既存ホストと既存文書の直列化は変わりません。
 
@@ -23,7 +23,7 @@ token の `label`、`textStyles`、node style の `textStyle`、文字の見た�
 | type | 内容 | 制約 |
 | --- | --- | --- |
 | `text` | `text` | HTML として解釈せず React が escape |
-| `element` | `id`, `tag`, `attrs?`, `asset?`, `icon?`, `style?`, `children` | 安全な HTML タグ・属性のみ。子配列は必須。`asset` と `icon` は下記の閉じた用途だけ |
+| `element` | `id`, `tag`, `attrs?`, `asset?`, `icon?`, `embed?`, `style?`, `children` | 安全な HTML タグ・属性のみ。子配列は必須。`asset`・`icon`・`embed` は下記の閉じた用途だけ |
 | `component` | `id`, `block`, `props`, `style?`, `slots?` | 登録済み名・許可された primitive props のみ。独自の children は持たない。`slots` は registry が宣言した表示領域ごとの見た目（[業務ブロックの表示領域契約](block-slot-contract.md)） |
 | `instance` | `id`, `component`, `props?`, `style?` | 下書きだけで使う共通部品の参照。部品ライブラリを渡した検証でだけ受け付け、公開前に通常の element へ展開する（[共通部品契約](component-contract.md)） |
 
@@ -35,6 +35,20 @@ element / component / instance の `id` は文書全体で一意です。element
 
 `video` は安全な HTTPS / root-relative `attrs.src` か `asset: { provider, id }` のいずれか一方、または編集中のソース未設定状態を持ち、children は空です。asset の配信URLは文書に保存せず、画像と同じ解決済み map から描画時に得ます。`aria-label` または `title` の空でないアクセシブル名が必須です。許可属性は `src` / `poster` / `width` / `height` / `controls` / `loop` / `muted` / `preload`（`none` / `metadata` / `auto`）/ `playsInline` と global allowlist だけです。renderer は未指定の `controls` を true、`preload` を `metadata` として出力し、`autoplay` は受け付けません。未解決 asset とソース未設定の動画は公開出力では省略し、editor の placeholder mode ではそれぞれ「動画を表示できません」「動画を選んでください」と示します。editor の素材選択は ready な `video/mp4` を最低限の対応形式としますが、MIME検査・配信URL発行・保存・認可はホスト責務です。iframe・外部embed・remote code はこの native video 契約に含みません。
 
+### 標準埋め込み
+
+Map / YouTube / Vimeo は `tag: "div"` の element に `embed: { provider, title, source? }` を持たせます。`provider` は `map | youtube | vimeo` の閉じた値、`title` は空でない300文字以内の1行、`source` は任意です。embed node の `children` は空で、`asset` / `icon` を併用できません。文書から iframe tag、HTML、`src` 属性、sandbox、allow、referrer policy、loading、JavaScript を渡す入口はありません。provider は挿入時に固定し、editor は `embedSource` と `embedTitle` の専用操作だけで値を更新します。
+
+入力URLは資格情報・port・fragmentのないHTTPSだけを受け、providerごとに次の形へ正規化します。HTTP、任意host、`javascript:` / `data:`、iframe markup、許可外queryを拒否します。YouTubeの共有リンクに付く`si`は検証後に取り除きます。
+
+- YouTube は `youtube.com/watch?v=ID`、`youtube.com/embed/ID`、`youtube.com/shorts/ID`、`youtu.be/ID` の11文字IDだけを受け、`https://www.youtube-nocookie.com/embed/ID` を保存します。
+- Vimeo は `vimeo.com/数字ID` または `player.vimeo.com/video/数字ID` を受けます。任意の単一 `h` query は安全なunlisted hashとして保持し、`https://player.vimeo.com/video/ID`（必要なら `?h=…`）を保存します。
+- Map は `https://www.google.com/maps/embed?pb=...` だけを受けます。`/maps/embed/v1` とAPI key方式は対象外です。`pb` は最大16,000文字の共有URL payloadを許し、制御文字とmarkupを拒否して再エンコードします。
+
+rendererはsource未設定なら公開HTMLにnodeもiframeも出さず、外部リクエストを発生させません。editorのplaceholder modeだけ設定案内を出します。source設定後はnodeの`div`内にtrusted rendererがiframeを生成し、全providerで `sandbox="allow-scripts allow-same-origin"`、`loading="lazy"`、`referrerPolicy="strict-origin-when-cross-origin"` を固定します。YouTube/Vimeoのallowとfullscreenもrendererのprovider別定数だけから付与します。
+
+このpage node側の標準埋め込みと、`SitePresentationExternalFrame` は別の信頼境界です。標準埋め込みは上の3 provider・URL形・固定iframe属性だけで、host固有policyを受けません。presentation external frameはhost view内の空divを実行側descriptorで置換し、接続先host/pathとorigin保持の要否をtrustedな `externalFramePolicy` が決めます。page JSONからpresentation policy、任意origin、sandbox権限へ昇格することはできません。
+
 ### フォーム
 
 `form` / `label` / `input` / `textarea` / `select` / `option` / `button` / `fieldset` / `legend` を通常の `element` として扱います。フォームの `name`、ラベルの `htmlFor`、入力項目の `type` / `name` / `placeholder` / `required` / `value` / `checked` / `disabled` / `autocomplete` / `accept`、textarea の `rows` 等、タグごとの閉じた属性だけを許可します。input type は `text` / `email` / `tel` / `radio` / `checkbox` / `file` / `submit` / `search` / `password`、button type は `button` / `submit` に限定します。`accept` は MIME type または拡張子の最大16件です。`action` / `method` / イベント属性 / 任意 data 属性は JSON から受け付けません。
@@ -43,7 +57,7 @@ element / component / instance の `id` は文書全体で一意です。element
 
 `PageRenderer` / SSR は label、required、option 等をそのまま意味のあるHTMLとして出力します。一方、このリリースは問い合わせ送信、ファイル保存、完了画面、スパム対策、認証・認可を実装しません。文書から送信先を指定できず、renderer は form を trusted な `method="dialog"` で出力します。dialog外のformではこのmethodの送信処理が中止されるため、静的HTMLでも既定では現在URLにも外部URLにも入力値を送りません。ホストは検証済み文書を描画した外側で、認証・CSRF・サーバー側再検証を含む独自の送信bindingを実装してください。静的HTML中の `method="dialog"` は保存文書へ逆輸入せず、ホスト接続後も action URL や実行コードをページJSONへ追加しません。
 
-複数候補の srcset、任意 SVG、iframe、script、style、イベント属性は v1 の対象外です。
+複数候補の srcset、任意 SVG、任意 iframe tag/HTML、script、style、イベント属性は v1 の対象外です。
 
 `p` や見出しなどの phrasing content の中への block element、入れ子のリンク、void element の子、不正な list / picture / form の子を拒否し、初期 HTML をブラウザが組み替えて hydration と食い違うことを防ぎます。ブロックは `<div data-nw-node="…" data-nw-block="…">` に包むため、flow content の中だけで利用できます。ブロック自身が返す HTML の妥当性は利用側で保証します。
 
@@ -116,7 +130,7 @@ renderer は同期の React ツリーを返します。データ取得は呼び�
 
 無効入力は `DocumentValidationError` で止め、`path` に原因の位置を返します。実際の入力値はエラー文へ埋め込みません。描画 API と CSS API は毎回検証し、無効文書の途中までを公開しません。登録コンポーネント自身が投げる例外は呼び出し側へ伝わります。ページ配信時のエラーページ・直前の公開 revision の利用はアプリ側で決めます。
 
-上限は 5,000 ノード、深さ 48 段、単一 text 100,000 文字、本文 text 合計 1,000,000 文字、属性 2,048 文字、URL 2,048 文字、CSS 値 256 文字、レスポンシブ指定 12 個、幅別の非表示 12 個、token 128 件、文字スタイル 64 件です。これらはパース済みオブジェクトの上限です。HTTP リクエスト・ファイルのバイト上限と JSON parse は受け取り側で管理します。
+上限は 5,000 ノード、深さ 48 段、単一 text 100,000 文字、本文 text 合計 1,000,000 文字、属性 2,048 文字、通常URL 2,048 文字、Map embed URL 16,384文字（`pb`は16,000文字）、CSS 値 256 文字、レスポンシブ指定 12 個、幅別の非表示 12 個、token 128 件、文字スタイル 64 件です。これらはパース済みオブジェクトの上限です。HTTP リクエスト・ファイルのバイト上限と JSON parse は受け取り側で管理します。
 
 ## 検証範囲
 

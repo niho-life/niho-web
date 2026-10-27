@@ -4,7 +4,7 @@ import { carouselPreset, togglePreset } from "./interaction-presets.js";
 import { stateNames, stateProperties } from "./style-values.js";
 import type { SiteStyles } from "./site-styles.js";
 import type {
-  Appear, BlockContracts, ComponentLibrary, ElementNode, NodeStyle, PageDocument, PageNode, StateDeclarations, StateName, StyleProperty, StyleValue
+  Appear, BlockContracts, ComponentLibrary, ElementNode, EmbedProvider, NodeStyle, PageDocument, PageNode, StateDeclarations, StateName, StyleProperty, StyleValue
 } from "./types.js";
 
 /** プリセットが作る全ノード ID の採番口。呼ぶたびに文書内で未使用の ID を返す。 */
@@ -96,6 +96,10 @@ const icon = (id: BuilderIdFactory): ElementNode => ({
 });
 const richText = (id: BuilderIdFactory): ElementNode => ({
   type: "element", id: id(), tag: "div", attrs: { role: "group", "aria-label": "リッチテキスト" }, children: [element(id, "p", "新しいテキスト")]
+});
+const embed = (id: BuilderIdFactory, provider: EmbedProvider, title: string): ElementNode => ({
+  type: "element", id: id(), tag: "div", embed: { provider, title },
+  style: { base: { width: "100%", height: 360, overflow: "hidden", borderRadius: 8, backgroundColor: "#f2f2f2" } }, children: []
 });
 const list = (id: BuilderIdFactory): ElementNode => ({
   type: "element", id: id(), tag: "ul", children: ["項目 1", "項目 2", "項目 3"].map((value) => element(id, "li", value))
@@ -246,6 +250,9 @@ export const standardBuilderDefinition: BuilderDefinition = {
     { id: "icon", label: "アイコン", group: "基本", glyph: "✓", create: ({ id }) => icon(id) },
     { id: "richtext", label: "リッチテキスト", group: "基本", glyph: "¶", create: ({ id }) => richText(id) },
     { id: "video", label: "動画", group: "基本", glyph: "▶", create: ({ id }) => element(id, "video") },
+    { id: "embed-map", label: "Map", description: "Google Maps の共有地図", group: "埋め込み", glyph: "⌖", create: ({ id }) => embed(id, "map", "地図") },
+    { id: "embed-youtube", label: "YouTube", description: "YouTube の動画", group: "埋め込み", glyph: "▶", create: ({ id }) => embed(id, "youtube", "YouTube 動画") },
+    { id: "embed-vimeo", label: "Vimeo", description: "Vimeo の動画", group: "埋め込み", glyph: "▶", create: ({ id }) => embed(id, "vimeo", "Vimeo 動画") },
     { id: "h2", label: "見出し", group: "文字", glyph: "H", create: ({ id }) => element(id, "h2", "新しいテキスト") },
     { id: "a", label: "リンク", group: "文字", glyph: "↗", create: ({ id }) => element(id, "a", "リンク") },
     { id: "carousel", label: "カルーセル", group: "インタラクション", glyph: "⇆", create: ({ id }) => carouselPreset(id) },

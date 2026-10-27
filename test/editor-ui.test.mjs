@@ -137,7 +137,7 @@ test("Basic Icon and Video can be selected, edited, saved, reloaded and rendered
   };
   try {
     await click("追加");
-    assert.deepEqual([...document.querySelectorAll(".e-add-category .e-preset-preview")].slice(0, 7).map((item) => item.dataset.preset), ["section", "box", "img", "text", "icon", "richtext", "video"]);
+    assert.deepEqual([...document.querySelectorAll(".e-add-category .e-preset-preview")].slice(0, 10).map((item) => item.dataset.preset), ["section", "box", "img", "text", "icon", "richtext", "video", "embed-map", "embed-youtube", "embed-vimeo"]);
     await addPreset("icon");
     assert.equal(document.querySelector('[aria-label="インスペクタ"] .e-inspector-context strong').textContent, "アイコン");
     assert.deepEqual([...document.querySelectorAll('.e-inspector-tabs [role="tab"]')].map((tab) => tab.textContent), ["アイコン", "文字", "ボックス", "変形"]);
@@ -161,6 +161,45 @@ test("Basic Icon and Video can be selected, edited, saved, reloaded and rendered
     const html = renderPageToHtml(app.stored()), video = html.match(/<video[^>]*data-nw-node="node_2"[^>]*><\/video>/)?.[0];
     assert.ok(video.includes('src="https://media.example.test/intro.mp4"')); assert.ok(video.includes('aria-label="施設の紹介動画"'));
     assert.ok(video.includes('poster="/poster.webp"')); assert.ok(video.includes('loop=""')); assert.ok(!video.includes("controls=")); assert.ok(!video.includes("autoplay"));
+  } finally { await app.cleanup(); }
+});
+test("Basic embeds expose the existing card UI, normalize inspector input and survive save/reload", async () => {
+  const app = await setup();
+  const addPreset = async (id) => {
+    await click("追加"); const target = document.querySelector(`.e-preset-preview[data-preset="${id}"]`)?.closest("button");
+    assert.ok(target, id); await act(async () => target.click()); await flush();
+  };
+  try {
+    await click("追加");
+    const embedGroup = [...document.querySelectorAll(".e-palette-group")].find((group) => group.querySelector("h3")?.textContent === "埋め込み");
+    assert.deepEqual([...embedGroup.querySelectorAll(".e-preset-card")].map((card) => card.querySelector(".e-preset-label").lastChild.textContent), ["Map", "YouTube", "Vimeo"]);
+    await addPreset("embed-map");
+    assert.equal(document.querySelector('[aria-label="インスペクタ"] .e-inspector-context strong').textContent, "Map");
+    assert.ok(document.querySelector("iframe").contentDocument.body.textContent.includes("Map の URL を設定してください"));
+    await addPreset("embed-youtube");
+    assert.equal(document.querySelector('[aria-label="インスペクタ"] .e-inspector-context strong').textContent, "YouTube");
+    assert.deepEqual([...document.querySelectorAll('.e-inspector-tabs [role="tab"]')].map((tab) => tab.textContent), ["埋め込み", "ボックス", "変形"]);
+    const staticCanvas = document.querySelector("iframe");
+    await change(input("埋め込み URL"), "https://youtube.com/shorts/dQw4w9WgXcQ");
+    await change(input("アクセシブルなタイトル"), "施設紹介");
+    assert.equal(input("埋め込み URL").value, "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ");
+    assert.equal(document.querySelector("iframe").getAttribute("sandbox"), "allow-same-origin allow-scripts");
+    assert.notEqual(document.querySelector("iframe"), staticCanvas, "sandbox flags take effect only after a frame navigation");
+    assert.equal(document.querySelector("iframe").contentDocument.querySelector('[data-nw-embed="youtube"] iframe').style.pointerEvents, "none");
+    const trustedCanvas = document.querySelector("iframe");
+    await change(input("埋め込み URL"), "");
+    assert.notEqual(document.querySelector("iframe"), trustedCanvas);
+    assert.equal(document.querySelector("iframe").getAttribute("sandbox"), "allow-same-origin");
+    await change(input("埋め込み URL"), "https://youtube.com/shorts/dQw4w9WgXcQ");
+    await addPreset("embed-vimeo");
+    await click("下書き保存");
+    assert.deepEqual(app.stored().body.slice(-3).map((node) => node.embed.provider), ["map", "youtube", "vimeo"]);
+    assert.equal(app.stored().body.at(-2).embed.title, "施設紹介");
+    await click("最新の文書を再読込"); await clickLayer("node_2");
+    assert.equal(input("埋め込み URL").value, "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ");
+    assert.equal(input("アクセシブルなタイトル").value, "施設紹介");
+    const html = renderPageToHtml(app.stored());
+    assert.match(html, /youtube-nocookie\.com\/embed\/dQw4w9WgXcQ/); assert.match(html, /title="施設紹介"/);
   } finally { await app.cleanup(); }
 });
 test("Basic のフォーム一覧とインスペクタでフォーム項目を編集し、既存フォームへ安全に追加できる", async () => {

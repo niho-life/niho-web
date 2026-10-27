@@ -69,6 +69,8 @@ function compareNodes(changes: DocumentChange[], before: Owned, after: Owned): v
     compareFields(changes, `${label} の `, before.attrs ?? {}, after.attrs ?? {});
     if (!same(before.asset, after.asset)) changes.push({ path: `${label} のアセット`, before: show(before.asset), after: show(after.asset) });
     if (!same(before.icon, after.icon)) changes.push({ path: `${label} のアイコン`, before: show(before.icon), after: show(after.icon) });
+    if (!same(before.embed?.source, after.embed?.source)) changes.push({ path: `${label} の埋め込み URL`, before: show(before.embed?.source), after: show(after.embed?.source) });
+    if (!same(before.embed?.title, after.embed?.title)) changes.push({ path: `${label} の埋め込みタイトル`, before: show(before.embed?.title), after: show(after.embed?.title) });
   } else if (before.type === "component" && after.type === "component") {
     compareFields(changes, `${label} の `, before.props, after.props);
     for (const slot of unionKeys(Object.keys(after.slots ?? {}), Object.keys(before.slots ?? {}))) compareStyle(changes, `${label} の領域 ${slot}`, before.slots?.[slot], after.slots?.[slot]);

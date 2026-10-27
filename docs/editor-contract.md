@@ -81,15 +81,19 @@ HTTP 409 は adapter で `{ status: 'conflict' }` へ変換します。`status: 
 
 ## 安全な入力と編集範囲
 
-テキスト、リンク、画像（素材ライブラリまたはURL）/alt、背景画像、組み込みアイコン、native動画（素材ライブラリまたはURL）、フォーム、文字色・背景色・フォント・サイズ・余白・Flex/Grid・位置・幅の段ごとの指定、共通カラー・テキストスタイル等の共通の値を編集できます。要素や登録ブロックの追加、複製、親/兄弟間の移動、削除、undo/redo に対応します。複製時はノードIDとHTML IDを作り直し、複製内のアンカー・ARIA ID参照・label参照を付け替えます。
+テキスト、リンク、画像（素材ライブラリまたはURL）/alt、背景画像、組み込みアイコン、native動画（素材ライブラリまたはURL）、標準のMap / YouTube / Vimeo埋め込み、フォーム、文字色・背景色・フォント・サイズ・余白・Flex/Grid・位置・幅の段ごとの指定、共通カラー・テキストスタイル等の共通の値を編集できます。要素や登録ブロックの追加、複製、親/兄弟間の移動、削除、undo/redo に対応します。複製時はノードIDとHTML IDを作り直し、複製内のアンカー・ARIA ID参照・label参照を付け替えます。
 
-追加パレットは Basic / Parts / Sections のタブで分けます。Basic は参照に近い主要順としてセクション・ボックス・画像・テキスト・アイコン・リッチテキスト・動画を揃え、続けて見出し・リンク・native interactionを提供します。「フォーム」には Form1 / Form2 / Form3、「フォームパーツ」には Input / Textarea / Select / Radio / Confirm / Checkbox / File / Submit / Search / Password を4列の既存カタログで表示します。Parts はボタン・カード・見出しセット・リスト、Sections はヘッダー・ヒーロー・特徴グリッド・CTA・FAQ・フッターを提供します。各項目は形と構成を示す簡潔な skeleton preview を持ちます。クリックで選択した親の末尾へ追加するか、キャンバス／レイヤーへドラッグして挿入位置を指定します。フォームパーツをページや通常ボックスへ直接置く場合は有効なformを自動で外側に作り、既存formを追加先に選んだ場合だけそのformの直下へラベルと入力項目を追加します。入れ子のformやform外の入力項目は作りません。既存要素も選択後にキャンバスまたはレイヤーから移動でき、選択枠の右下をドラッグすると現在選んだ編集幅の幅・高さを一操作として変更します。キーボード向けには追加先の選択と上／下／末尾への移動、右インスペクタのサイズ欄を残します。不正な入れ子、循環、ロックされた変更はモデルの検証で拒否します。
+追加パレットは Basic / Parts / Sections のタブで分けます。Basic は参照に近い主要順としてセクション・ボックス・画像・テキスト・アイコン・リッチテキスト・動画を揃え、「埋め込み」群にMap / YouTube / Vimeo、続けて見出し・リンク・native interactionを提供します。「フォーム」には Form1 / Form2 / Form3、「フォームパーツ」には Input / Textarea / Select / Radio / Confirm / Checkbox / File / Submit / Search / Password を4列の既存カタログで表示します。Parts はボタン・カード・見出しセット・リスト、Sections はヘッダー・ヒーロー・特徴グリッド・CTA・FAQ・フッターを提供します。各項目は形と構成を示す簡潔な skeleton preview を持ちます。クリックで選択した親の末尾へ追加するか、キャンバス／レイヤーへドラッグして挿入位置を指定します。フォームパーツをページや通常ボックスへ直接置く場合は有効なformを自動で外側に作り、既存formを追加先に選んだ場合だけそのformの直下へラベルと入力項目を追加します。入れ子のformやform外の入力項目は作りません。既存要素も選択後にキャンバスまたはレイヤーから移動でき、選択枠の右下をドラッグすると現在選んだ編集幅の幅・高さを一操作として変更します。キーボード向けには追加先の選択と上／下／末尾への移動、右インスペクタのサイズ欄を残します。不正な入れ子、循環、ロックされた変更はモデルの検証で拒否します。
 
 フォームのインスペクタはフォーム名、未接続の完了設定、項目一覧を表示します。input / textarea / select は項目名・必須・入力タイプ・placeholder、select と radio fieldset は1行1件（1〜20件）の選択肢、checkbox は対応するlabel、fileは`accept`、submit buttonは表示文言を編集します。項目一覧から入力欄を選べ、フォーム選択中のパーツ追加はそのフォーム内に配置します。ラベルと入力欄は削除・複製時に対として扱います。各変更は通常の `EditorOperation` とロック検査を経て、操作のたびに `parsePageDocument` を通ります。password / file の利用者入力値は作業コピーにも保存しません。
 
 編集キャンバスは編集時・preview時とも submit を捕捉して止めます。公開rendererも初期状態では送信先を持たず、dialog外では送信を中止するtrustedな`method="dialog"`を付けます。`PageEditor` のadapter、下書き保存、公開処理はフォーム回答を扱いません。回答送信、ファイル保存、完了画面、検証、CSRF、スパム対策、認証・認可はホストが別のtrusted binding/APIとして所有し、ページJSONへaction URL・method・イベントコードを保存しないでください。文書とSSRの詳細は[文書・描画契約の「フォーム」](document-contract.md#フォーム)を正とします。
 
-アイコンのインスペクタは組み込みカタログだけを選択肢にし、アクセシブルな名前を必須とします。任意 SVG/HTML/URL は入力できません。色と大きさは既存の文字style、配置と余白は既存のbox styleで編集します。動画のインスペクタは HTTPS / root-relative URL と ready な MP4 asset の置換、アクセシブルな説明、poster URL、controls / loop / muted / playsInline / preload を扱います。URLとassetは常に排他で、assetの解決URLは保存文書に戻しません。新規動画はソース未設定として保存でき、編集画面には設定案内を表示し、公開画面ではソースが決まるまで描画しません。ソース設定後のeditor canvas は公開と同じvideo要素を描画しますが、`onPlay` で直ちに停止し、クリックやsubmitも既存canvas境界で止めるため、編集・preview中に意図せず再生や操作送信を始めません。外部iframe/embed、認証、asset保存・検査・配信URL発行はこの追加に含めず、ホスト境界を維持します。
+アイコンのインスペクタは組み込みカタログだけを選択肢にし、アクセシブルな名前を必須とします。任意 SVG/HTML/URL は入力できません。色と大きさは既存の文字style、配置と余白は既存のbox styleで編集します。動画のインスペクタは HTTPS / root-relative URL と ready な MP4 asset の置換、アクセシブルな説明、poster URL、controls / loop / muted / playsInline / preload を扱います。URLとassetは常に排他で、assetの解決URLは保存文書に戻しません。新規動画はソース未設定として保存でき、編集画面には設定案内を表示し、公開画面ではソースが決まるまで描画しません。ソース設定後のeditor canvas は公開と同じvideo要素を描画しますが、`onPlay` で直ちに停止し、クリックやsubmitも既存canvas境界で止めるため、編集・preview中に意図せず再生や操作送信を始めません。認証、asset保存・検査・配信URL発行はこのnative動画追加に含めず、ホスト境界を維持します。
+
+標準埋め込みのインスペクタはprovider固定のまま「埋め込み URL」と「アクセシブルなタイトル」を編集します。挿入直後はsourceを持たず、キャンバスだけに設定案内、公開rendererでは何も出しません。URL更新は専用の`embedSource` operationで正規化し、title更新も`embedTitle` operationとして通常のvalidator・lock・undo/redo・保存・再読込を通ります。embed nodeは追加先にならず、children・asset・iconを持ちません。ホストのCSPは編集画面と公開画面の `frame-src` に、この3サービスの正規化済み配信元を明示して初めて表示できます。URL形と公開iframe属性は[文書・描画契約の標準埋め込み](document-contract.md#標準埋め込み)を正とします。
+
+標準埋め込みを含むキャンバスは、内側provider iframeまでsandboxが継承されても動くよう、source設定済みのtrusted embedがある場合だけ外側`srcdoc` frameへ`allow-scripts`を追加します。通常は従来どおり`allow-same-origin`だけです。provider iframeは編集・preview中ともpointer eventを受けず、選択やドラッグを妨げません。公開rendererではpointer eventを戻します。`SitePresentationExternalFrame`はhost viewとtrusted `externalFramePolicy`が所有する別境界であり、標準embedからhost固有origin保持policyや任意sandboxへ接続しません。
 
 ### 挿入カタログの拡張
 
@@ -205,7 +209,7 @@ function HostPreview({ document, blocks, assets, presentation, externalFramePoli
 制約と従来どおりの点:
 
 - 受け付けるのは `ComponentType<EditorCanvasPreviewProps>`（関数・class・`memo` / `forwardRef` / `lazy`）だけです。文字列・数値・配列・プレーンオブジェクトなど React コンポーネントでない値は実行時に無視し、従来の描画を使います。任意の HTML 文字列・実行文字列・URL からの読み込みは受け取りません。
-- ホスト画面の global CSS は iframe へ自動では入りません。表示部品と同じ版の CSS・font・画像を、部品の中の `<style>` / `<link rel="stylesheet">` で供給します。iframe は `srcdoc` のためホスト画面の CSP を継承し、sandbox（`allow-same-origin`、外部枠を持つ presentation のときだけ `allow-scripts` を追加）は変えません。
+- ホスト画面の global CSS は iframe へ自動では入りません。表示部品と同じ版の CSS・font・画像を、部品の中の `<style>` / `<link rel="stylesheet">` で供給します。iframe は `srcdoc` のためホスト画面の CSP を継承し、sandbox（通常は`allow-same-origin`、source設定済み標準embedまたは外部枠を持つpresentationのときだけ`allow-scripts`を追加）は変えません。
 - プレビュー・履歴の読み取り専用状態、リンク移動と form 送信の抑制、未保存編集・選択言語・履歴の整合性、描画に失敗したときの error boundary（「ブロックのプレビューを表示できません」）は従来の Canvas が扱います。
 - ページの保存方式、公開権限、認証・API・予約・翻訳の判断は変わりません。ホスト固有の処理は表示部品と provider の側に置きます。
 
@@ -270,7 +274,7 @@ registry の `slots` で表示領域を宣言したブロックは、内側の�
 
 「表示幅」は iframe の実 viewport を変更するため、media query と固定位置のレイアウトを確認できます。編集中のキャンバス内のリンクやブロック操作は選択に使い、プレビュー中もリンク遷移とフォーム送信を止めます。サーバー描画用と同じ `PageRenderer` と host registry を使います。
 
-iframe は scripts を許可しない sandbox として表示し、公開ページのCSS・fixed要素が編集UIへ重ならないようにします。registry は依然として信頼できるホストコードです。React の effect や親 window からの処理までは隔離できないため、プレビュー用ブロックで課金・予約・データ更新などの副作用を起こさないでください。
+iframe は通常scriptsを許可しないsandboxとして表示し、公開ページのCSS・fixed要素が編集UIへ重ならないようにします。source設定済みの標準embedまたはpresentation external frameを描く場合だけ、内側frameのsandbox継承に必要な`allow-scripts`を外側へ追加します。registry は依然として信頼できるホストコードです。React の effect や親 window からの処理までは隔離できないため、プレビュー用ブロックで課金・予約・データ更新などの副作用を起こさないでください。
 
 `insertableBlocks` を空配列にすると、登録済み業務ブロックの新規追加を隠し、既存ブロックの表示 props 編集だけを残せます。省略時はすべての登録ブロックを追加できます。サイト固有の配置条件は保存 API でも検証してください。
 
