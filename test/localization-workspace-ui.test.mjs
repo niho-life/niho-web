@@ -532,7 +532,7 @@ test("stale responses: a late item, list or adapter response is dropped", async 
     assert.ok(card("intro"));
     assert.ok(document.querySelector(".lw-changed").textContent.includes("原文が更新された項目（1）"), "changed units are shown first");
     assert.ok(card("intro").querySelector("details").textContent.includes("小さな町の工房です。"));
-    assert.ok(document.body.textContent.includes("まだ公開していない下書きがあります"));
+    assert.ok(document.body.textContent.includes("原文に未公開の下書きがあります"));
   } finally { await app.cleanup(); }
 
   const slow = createLocalizationMemory();

@@ -452,8 +452,7 @@ export function ItemEditor({ adapter, overview, itemKey, timeZone, autosaveDelay
         {canTranslate && <button type="button" className="cw-button" disabled={!!job} onClick={() => void requestTranslation()}>{job ? "翻訳案を作っています…" : "翻訳案を作る"}</button>}
       </div>
     </header>
-    {item.sourceDraftPending && <div className="cw-banner" role="note"><p><strong>{overview.languages.source}の CMS に、まだ公開していない下書きがあります。</strong>翻訳は公開中の{overview.languages.source}をもとにしています。下書きを公開すると、変わった項目が「原文が更新」として出ます。</p>
-      {link && <a className="cw-button" href={link} target="_blank" rel="noopener noreferrer">CMS で開く<span className="cw-sr">（新しいタブで開く）</span></a>}</div>}
+    {item.sourceDraftPending && <div className="cw-banner" role="note"><p><strong>{overview.languages.source}の原文に未公開の下書きがあります。</strong>訳文は保存済みの原文をもとに確認してください。公開前に原文と訳文を確かめましょう。</p></div>}
     {!canEdit && <div className="cw-banner" role="note"><p>訳文を直す権限がありません。見ることだけできます。</p></div>}
     {item.state === "excluded" && item.excludedReason && <div className="cw-banner" role="note"><p>この 1 件は訳しません：{item.excludedReason}</p></div>}
     {job && <div className="cw-banner" role="status"><p>翻訳案を作っています（{job.state === "queued" ? "順番を待っています" : "作っています"}）。できたら項目ごとに出ます。</p></div>}

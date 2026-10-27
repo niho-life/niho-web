@@ -160,7 +160,7 @@ type LocalizationItemSummary = {
   excludedReason: string | null;  // state が excluded のときだけ・必須（例「英語版を作らない設定です」）
   totalUnits: number; reviewedUnits: number;    // 確認済み n/m（reviewedUnits <= totalUnits）
   imagesUnreviewed: number;       // 差し替えたのにまだ確認していない画像の数
-  sourceDraftPending: boolean;    // 原文の CMS に未公開の下書きがある
+  sourceDraftPending: boolean;    // 原文のページまたは CMS に未公開の下書きがある。ホストは保存済み下書きを翻訳原文として取り込む
   updatedAt: string | null; updatedBy: string | null;
 };
 ```
