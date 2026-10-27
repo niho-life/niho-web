@@ -82,6 +82,7 @@ function fakeApi(t, cmsView) {
     if (target === `${CMS}/schema`) return json(schema);
     if (target === `${CMS}/collections/posts/items`) return json({ status: "ready", collectionId: "posts", items: [summary] });
     if (target === `${CMS}/collections/posts/items/morning-walk`) return json({ status: "ready", item });
+    if (target === `${CMS}/collections/posts/items/morning-walk/english-publication`) return json({ status: "ready", englishPublications: { "cms:posts:morning-walk": { state: "retryable-failure", retryable: true, updatedAt: at } } });
     return json({ error: "not_found" }, 404);
   });
   return calls;
@@ -147,7 +148,10 @@ test("切替が on（workspace）の CMS は、コレクション画面で項目
   assert.equal(legacy.getAttribute("rel"), "noopener");
   // URL の項目を最初に開き、本文は TipTap の部品（ProseMirror）で出す
   assert.ok(calls.includes(`GET ${CMS}/collections/posts/items/morning-walk`));
+  assert.ok(calls.includes(`GET ${CMS}/collections/posts/items/morning-walk/english-publication`));
   assert.equal(document.querySelector('[data-field="title"] input')?.value, "海辺の朝さんぽ");
+  assert.match(document.querySelector(".cw-english-publications")?.textContent ?? "", /記事ページ.*失敗（再試行可能）/su);
+  assert.equal(document.querySelector(".cw-english-publications")?.textContent.includes("cms:posts"), false);
   const prose = document.querySelector('[data-field="body"] .studio-rich-mount .ProseMirror');
   assert.ok(prose, "TipTap");
   assert.match(prose.textContent, /はじめに/u);

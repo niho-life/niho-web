@@ -6,6 +6,7 @@ import {
   KAMAKURA_CMS_IMAGE_TYPES, KAMAKURA_CMS_LIMITS, KAMAKURA_CMS_PROJECT_ID, KAMAKURA_CMS_SITE_ID, KAMAKURA_CMS_UPLOAD_ORIGIN, KAMAKURA_CMS_UPSTREAM_PREFIX,
   KAMAKURA_MEDIA_ORIGIN, KamakuraCmsContractError,
   isKamakuraCmsCollectionId, isKamakuraCmsItemId, isKamakuraCmsLine, isKamakuraCmsSitePath, isKamakuraCmsVersion, normalizeKamakuraCmsTimestamp,
+  parseKamakuraCmsEnglishPublications,
   parseKamakuraCmsConflict, parseKamakuraCmsInvalid, parseKamakuraCmsItemEnvelope, parseKamakuraCmsList, parseKamakuraCmsListChange,
   parseKamakuraCmsListConflict, parseKamakuraCmsRemoved, parseKamakuraCmsSchema, parseKamakuraCmsUploadIntent, parseKamakuraCmsValues
 } from "./kamakura-cms-contract.js";
@@ -171,6 +172,8 @@ type KamakuraBridgeOperation =
   | "cms_schema"
   | "cms_list"
   | "cms_read"
+  | "cms_english_publication_read"
+  | "cms_english_publication_retry"
   | "cms_create"
   | "cms_draft_save"
   | "cms_publish"
@@ -1563,7 +1566,7 @@ async function signedKamakuraAssetPreview(request: Request, env: Env, identity: 
 
 /* ---------- Kamakura の CMS（記事・サークル・会社）の BFF ---------- */
 
-type KamakuraCmsOperation = "schema" | "list" | "read" | "create" | "draft" | "publish" | "discard-draft" | "unpublish" | "duplicate" | "remove" | "schedule" | "cancel-schedule" | "retry-schedule" | "reorder" | "bulk" | "upload-intent";
+type KamakuraCmsOperation = "schema" | "list" | "read" | "english-publication-read" | "english-publication-retry" | "create" | "draft" | "publish" | "discard-draft" | "unpublish" | "duplicate" | "remove" | "schedule" | "cancel-schedule" | "retry-schedule" | "reorder" | "bulk" | "upload-intent";
 type KamakuraCmsRoute = { readonly operation: KamakuraCmsOperation; readonly upstreamPath: string; readonly collectionId: string | null; readonly itemId: string | null };
 type KamakuraCmsOperationSpec = {
   readonly method: "GET" | "POST" | "PUT"; readonly success: readonly (200 | 201 | 202)[]; readonly log: KamakuraBridgeOperation;
@@ -1576,6 +1579,8 @@ const KAMAKURA_CMS_OPERATIONS: Readonly<Record<KamakuraCmsOperation, KamakuraCms
   schema: { method: "GET", success: [200], log: "cms_schema", bodyKeys: null },
   list: { method: "GET", success: [200], log: "cms_list", bodyKeys: null },
   read: { method: "GET", success: [200], log: "cms_read", bodyKeys: null },
+  "english-publication-read": { method: "GET", success: [200], log: "cms_english_publication_read", bodyKeys: null },
+  "english-publication-retry": { method: "POST", success: [200], log: "cms_english_publication_retry", bodyKeys: [] },
   create: { method: "POST", success: [201], log: "cms_create", bodyKeys: [] },
   draft: { method: "PUT", success: [200], log: "cms_draft_save", bodyKeys: ["version", "values"] },
   publish: { method: "POST", success: [202], log: "cms_publish", bodyKeys: ["version"], optionalKeys: ["redirect"] },
@@ -1614,7 +1619,10 @@ function kamakuraCmsRoute(action: string, method: string): KamakuraCmsRoute | "m
       if (!isKamakuraCmsItemId(match[2])) return null;
       itemId = match[2];
       if (match[3] === undefined) operation = "read";
-      else if (KAMAKURA_CMS_ITEM_ACTIONS.has(match[3])) operation = match[3] as KamakuraCmsOperation;
+      else if (match[3] === "english-publication") {
+        if (method !== "GET" && method !== "POST") return "method_not_allowed";
+        operation = method === "GET" ? "english-publication-read" : "english-publication-retry";
+      } else if (KAMAKURA_CMS_ITEM_ACTIONS.has(match[3])) operation = match[3] as KamakuraCmsOperation;
       else return null;
     }
   }
@@ -1633,6 +1641,7 @@ function kamakuraCmsBody(route: KamakuraCmsRoute, raw: Uint8Array, identity: Acc
   if (keys.some((key) => !Object.hasOwn(body, key)) || Object.keys(body).some((key) => !keys.includes(key) && !optionalKeys.includes(key))) throw new AuthenticationError("unexpected CMS body fields");
   const actor = { email: identity.email };
   if (route.operation === "create") return new TextEncoder().encode(JSON.stringify({ actor }));
+  if (route.operation === "english-publication-retry") return new TextEncoder().encode(JSON.stringify({ actor }));
   if (route.operation === "reorder") {
     const { ids, from, to } = body;
     if (!Array.isArray(ids) || ids.length < 2 || ids.length > KAMAKURA_CMS_LIMITS.reorderIds || !ids.every((id) => isKamakuraCmsItemId(id)) || new Set(ids).size !== ids.length) throw new AuthenticationError("invalid CMS reorder ids");
@@ -1690,6 +1699,8 @@ function kamakuraCmsSuccess(route: KamakuraCmsRoute, value: unknown, status: num
     case "schema": return parseKamakuraCmsSchema(value);
     case "list": return parseKamakuraCmsList(value, route.collectionId!);
     case "read": return parseKamakuraCmsItemEnvelope(value, "ready", itemId);
+    case "english-publication-read": return parseKamakuraCmsEnglishPublications(value, "ready", route.collectionId!, route.itemId!);
+    case "english-publication-retry": return parseKamakuraCmsEnglishPublications(value, "accepted", route.collectionId!, route.itemId!);
     case "create": return parseKamakuraCmsItemEnvelope(value, "created");
     case "duplicate": {
       const created = parseKamakuraCmsItemEnvelope(value, "created");
@@ -1716,7 +1727,8 @@ async function signedKamakuraCmsRequest(request: Request, env: Env, identity: Ac
     : kamakuraCmsBody(route, await readBoundedBody(request, route.operation === "draft" ? KAMAKURA_CMS_LIMITS.draftBodyBytes
       : route.operation === "reorder" || route.operation === "bulk" ? KAMAKURA_CMS_LIMITS.listBodyBytes : KAMAKURA_CMS_LIMITS.bodyBytes), identity);
   const headers = await kamakuraSignedHeaders(env, identity, method, route.upstreamPath, body, supportId, operation);
-  const responseLimit = route.operation === "upload-intent" ? KAMAKURA_CMS_LIMITS.bodyBytes : KAMAKURA_CMS_LIMITS.responseBytes;
+  const responseLimit = route.operation === "upload-intent" || route.operation === "english-publication-read" || route.operation === "english-publication-retry"
+    ? KAMAKURA_CMS_LIMITS.bodyBytes : KAMAKURA_CMS_LIMITS.responseBytes;
   const controller = new AbortController();
   let timedOut = false;
   const abortForRequest = () => controller.abort();
@@ -1748,6 +1760,10 @@ async function signedKamakuraCmsRequest(request: Request, env: Env, identity: Ac
     if (status === 401 || status === 403) throw kamakuraBridgeFailure(supportId, operation, "upstream_auth_rejected", status);
     if (status === 429) throw kamakuraBridgeFailure(supportId, operation, "upstream_rate_limited", status);
     if (status >= 500) throw kamakuraBridgeFailure(supportId, operation, "upstream_server_error", status);
+    if (status === 409 && route.operation === "english-publication-retry") {
+      await discard(response);
+      return json({ error: "conflict" }, 409);
+    }
     if (status === 409 && route.itemId !== null) {
       const value = await read(response);
       return checked(response, () => parseKamakuraCmsConflict(value, route.itemId!));

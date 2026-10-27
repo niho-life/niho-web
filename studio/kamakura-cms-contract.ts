@@ -3,6 +3,7 @@ import {
   type CollectionDefinition, type CollectionFieldError, type CollectionGalleryEntry, type CollectionItem, type CollectionItemSummary, type CollectionValue
 } from "../src/collection-model.js";
 import { DocumentValidationError, fail, record } from "../src/validation-utils.js";
+import { parseEnglishPublicationsResult, type EnglishPublicationsResult } from "../src/english-publication.js";
 
 /**
  * 鎌倉サイトの CMS（記事・サークル・会社）を Studio のコレクション画面から編集する契約。
@@ -89,6 +90,27 @@ export class KamakuraCmsContractError extends Error {
     super(`Kamakura CMS response does not match the contract at ${path}`);
     this.name = "KamakuraCmsContractError";
   }
+}
+
+export type KamakuraCmsEnglishPublicationRoute = { readonly key: string; readonly label: string; readonly pageId: string };
+/** raw page ID はこの境界でだけ扱い、画面には人が読める label と不透明でない短い key を渡す。 */
+export function kamakuraCmsEnglishPublicationRoutes(collectionId: string, itemId: string): readonly KamakuraCmsEnglishPublicationRoute[] {
+  if (!isKamakuraCmsItemId(itemId)) return [];
+  if (collectionId === "posts") return [{ key: "post", label: "記事ページ", pageId: `cms:posts:${itemId}` }];
+  if (collectionId === "circles") return [{ key: "circle", label: "サークルページ", pageId: `cms:circles:${itemId}` }];
+  if (collectionId === "companies") return [
+    { key: "company", label: "会社ページ", pageId: `cms:companies:${itemId}` },
+    { key: "creator", label: "クリエイターページ", pageId: `cms:creators:${itemId}` },
+  ];
+  return [];
+}
+
+/** Kamakura CMS の page ID map を collection / item から導いた完全な key 集合で検証する。 */
+export function parseKamakuraCmsEnglishPublications<S extends "ready" | "accepted">(value: unknown, status: S, collectionId: string, itemId: string): EnglishPublicationsResult<S> {
+  const routes = kamakuraCmsEnglishPublicationRoutes(collectionId, itemId);
+  if (routes.length === 0) throw new KamakuraCmsContractError("response.englishPublications");
+  try { return parseEnglishPublicationsResult(value, status, routes.map((route) => route.pageId)); }
+  catch { throw new KamakuraCmsContractError("response.englishPublications"); }
 }
 
 function guarded<T>(parse: () => T): T {

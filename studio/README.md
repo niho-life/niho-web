@@ -170,6 +170,8 @@ Kamakura の `PageEditor` には `studio/kamakura-assets.ts` の素材 adapter �
 | `GET schema` | – | 200 `{ status: "ready", collections }` |
 | `GET collections/:col/items` | – | 200 `{ status: "ready", collectionId, items }` |
 | `GET collections/:col/items/:id` | – | 200 `{ status: "ready", item }` |
+| `GET …/:id/english-publication` | – | 200 `{ status: "ready", englishPublications }` |
+| `POST …/:id/english-publication` | `{}` | 200 `{ status: "accepted", englishPublications }`（BFF が `actor` を追加） |
 | `POST collections/:col/items` | `{}` | 201 `{ status: "created", item }` |
 | `PUT …/:id/draft` | `{ version, values }`（直した key だけ） | 200 `{ status: "saved", item }` |
 | `POST …/:id/publish` | `{ version, redirect? }`（`redirect` は boolean） | 202 `{ status: "publishing", item }` |
@@ -199,13 +201,14 @@ Kamakura の `PageEditor` には `studio/kamakura-assets.ts` の素材 adapter �
 | 401 / 403 / 429 / 5xx / 3xx / JSON でない / 上限超え / timeout / 想定外の 4xx | 503 `{ error: "service_unavailable", supportId }` |
 | 契約に合わない応答（field の過不足・id の不一致・成功の status 違いなど） | 502 `{ error: "upstream_contract_invalid", supportId }` |
 
-log は editor と同じく問い合わせ ID・固定の operation（`cms_schema`・`cms_list`・`cms_read`・`cms_create`・`cms_draft_save`・`cms_publish`・`cms_discard_draft`・`cms_unpublish`・`cms_duplicate`・`cms_remove`・`cms_schedule`・`cms_cancel_schedule`・`cms_retry_schedule`・`cms_reorder`・`cms_bulk`・`cms_upload_intent`）・固定の分類（editor の分類と `cms_endpoint_missing`）・上流の status だけで、本文・email・subject は出しません。
+log は editor と同じく問い合わせ ID・固定の operation（`cms_schema`・`cms_list`・`cms_read`・`cms_english_publication_read`・`cms_english_publication_retry`・`cms_create`・`cms_draft_save`・`cms_publish`・`cms_discard_draft`・`cms_unpublish`・`cms_duplicate`・`cms_remove`・`cms_schedule`・`cms_cancel_schedule`・`cms_retry_schedule`・`cms_reorder`・`cms_bulk`・`cms_upload_intent`）・固定の分類（editor の分類と `cms_endpoint_missing`）・上流の status だけで、本文・email・subject は出しません。
 
 ブラウザ側は `studio/kamakura-cms.ts` の `createKamakuraCmsAdapter({ siteOrigin })` が `CollectionAdapter` を返します（`siteOrigin` は Project の `site.domains[0]`）。
 
 - 項目ごとに最後に読んだ version と値を覚え、`saveDraft` は**その値との差分だけ**を送ります（触っていない本文などを、画面側の正規化で書き換えないため）。覚えていない version なら読み直し、違えば保存せずに conflict を返します。
 - 403 → forbidden、404 → not_found、409 → conflict、422 → invalid。非公開（上流は 202 publishing）は画面の契約に合わせて saved で返します。複製は覚えている version で呼び、競合なら最新の version でもう一度だけ試します。
 - `publish`・`schedule` の `redirect`、`remove` の `redirectTo` は、画面が付けたときだけ送ります。`reorder`・`bulk` は成功（並べ替えは 202、まとめての操作は 202 / 200）と 409 の一覧をそのまま画面へ返し、触った項目の覚えた version を捨てます（次に開いたときに読み直す）。`retrySchedule` は `retry-schedule` を呼びます。
+- 英語公開状態は項目本文と別の署名済み endpoint で読み、再試行します。`englishPublications` の page ID は posts / circles の1件、companies / creators の2件に完全一致させ、状態の余分な field も拒否します。adapter は raw page ID を落として「記事ページ」「サークルページ」「会社ページ」「クリエイターページ」に直し、本文の既知 version・値を変更しません。
 - 上流の schema が 5 つの capabilities だけでも、新しい 4 つ（`redirects`・`reorder`・`bulk`・`retrySchedule`）と項目の型 `gallery` を返しても読めます（新しい key は無ければ false）。Studio を先に配備し、鎌倉の Worker の新しい key・型は後から出します。
 - 画像: BFF の `uploads/intent` を呼び、`uploadUrl` が鎌倉の Worker の `/internal/studio/cms-upload/<uploadId>` であることを確かめてから、`credentials: "omit"`・`Authorization: Bearer <uploadToken>` で直接 PUT します。結果の URL は `https://kamakura-media.niho.life/uploads/...` だけを受けます。拒否は type / size / permission / invalid で返します。
 - `imageUrl` は `kamakura-media.niho.life` の画像だけ `/cdn-cgi/image/width=<w>,format=auto/` の URL にします。`previewUrl` は公開中（変更ありを含む）の項目だけ、サイトの公開 URL と `item.path` から作ります（下書きのプレビューはありません）。
@@ -349,7 +352,7 @@ Project 固有 API はすべて次の prefix 配下です。
 - Kamakura: `GET editor/catalog`、`GET editor/:pageId`
 - Kamakura: `PUT editor/:pageId/draft`、`POST editor/:pageId/release-plan`、`POST editor/:pageId/release`
 - Kamakura: `POST editor/assets/{list,upload-intent,update,usages,resolve}`、`GET editor/assets/:uuid/preview`（owner/editor）
-- Kamakura CMS: `GET cms/schema`、`GET|POST cms/collections/:col/items`、`GET cms/collections/:col/items/:id`、`PUT …/:id/draft`、`POST …/:id/{publish,discard-draft,unpublish,duplicate,remove,schedule,cancel-schedule}`、`POST cms/uploads/intent`（owner/editor・鎌倉以外は 404）
+- Kamakura CMS: `GET cms/schema`、`GET|POST cms/collections/:col/items`、`GET cms/collections/:col/items/:id`、`GET|POST …/:id/english-publication`、`PUT …/:id/draft`、`POST …/:id/{publish,discard-draft,unpublish,duplicate,remove,schedule,cancel-schedule,retry-schedule}`、`POST cms/uploads/intent`（owner/editor・鎌倉以外は 404）
 - Kamakura 翻訳: `POST localization/{overview,items,catalog/advance,preview/items,release,release/prepare,release/apply,uploads/intent,editor/site}`、`POST localization/editor/pages/:pageId{,/snapshot,/save,/command}`、`POST localization/items/after/:cursor`、`POST localization/items/:itemKey{,/command,/translate}`、`POST localization/jobs/:jobId`、`PUT localization/settings`（owner/editor・役割を上流へ渡す・鎌倉以外は 404）
 
 unknown Project/Site と権限のない Project/Site は、外部から区別できる詳細を返しません。owner API が返す member 情報は、その owner が管理する同一 Project に限定します。

@@ -3,11 +3,11 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import {
   COLLECTION_BULK_LIMIT, collectionDateFromInput, collectionItemFilter, collectionReorderSequence, isDisplayableImageUrl, moveCollectionIds,
-  parseCollectionBulkResult, parseCollectionCreateResult, parseCollectionItemResult, parseCollectionListResult, parseCollectionPublishResult,
+  parseCollectionBulkResult, parseCollectionCreateResult, parseCollectionEnglishPublicationsReadResult, parseCollectionEnglishPublicationsRetryResult, parseCollectionItemResult, parseCollectionListResult, parseCollectionPublishResult,
   parseCollectionRemoveResult, parseCollectionReorderResult, parseCollectionSaveResult, parseCollectionSchemaResult, parseCollectionUploadResult,
   sanitizeRichTextHtml, sortCollectionItems, validateCollectionValues,
-  type CollectionAdapter, type CollectionBulkAction, type CollectionDefinition, type CollectionFieldError, type CollectionFilter, type CollectionItem,
-  type CollectionItemStatus, type CollectionItemSummary, type CollectionValue, type CollectionValues,
+  type CollectionAdapter, type CollectionBulkAction, type CollectionDefinition, type CollectionEnglishPublication, type CollectionFieldError, type CollectionFilter, type CollectionItem,
+  type CollectionItemStatus, type CollectionItemSummary, type CollectionTarget, type CollectionValue, type CollectionValues,
 } from "./collection-model.js";
 import { displayImage, FieldView, fieldControlId, rejectMessages, type CollectionRichTextEditorProps, type FieldContext, type ReferenceCandidates } from "./collection-fields.js";
 import { ConfirmDialog, DateTime, formatDateTime, Icon, MenuButton, StatusBadges, useRequests, zoneLabel, type ConfirmRequest, type MenuItem } from "./collection-ui.js";
@@ -16,7 +16,7 @@ import { collectionCss } from "./collection-style.js";
 export {
   collectionDateFromInput, collectionDateInputValue, collectionItemFilter, collectionReorderSequence, isIsoTimestamp, isRichTextLinkAllowed,
   moveCollectionIds, parseCollectionBulkResult, parseCollectionCreateResult, parseCollectionItem, parseCollectionItemResult, parseCollectionItemSummary,
-  parseCollectionListResult, parseCollectionPublishResult, parseCollectionRemoveResult, parseCollectionReorderResult, parseCollectionSaveResult,
+  parseCollectionEnglishPublicationsReadResult, parseCollectionEnglishPublicationsRetryResult, parseCollectionListResult, parseCollectionPublishResult, parseCollectionRemoveResult, parseCollectionReorderResult, parseCollectionSaveResult,
   parseCollectionSchemaResult, parseCollectionUploadResult, parseCollectionValues, sanitizeRichTextHtml, sortCollectionItems, validateCollectionValues,
 } from "./collection-model.js";
 export type * from "./collection-model.js";
@@ -631,6 +631,89 @@ export function editorStatus(status: CollectionItemStatus, dirty: boolean, busy:
   return dirty && status === "published" ? "changed" : status;
 }
 
+const englishPublicationMeaning: Readonly<Record<CollectionEnglishPublication["publication"]["state"], string>> = {
+  "initial-release-required": "最初の English 版をサイト全体で公開すると、この項目も対象になります。",
+  queued: "英語版の処理を待っています。",
+  translating: "英語版を翻訳しています。",
+  "review-required": "翻訳画面で内容を確認してください。",
+  publishing: "英語版をサイトへ反映しています。",
+  published: "英語版を公開しています。",
+  withdrawn: "英語版を取り下げました。",
+  "retryable-failure": "英語版の処理に失敗しました。安全に再試行できます。",
+  superseded: "新しい日本語版の処理に置き換わりました。",
+};
+const englishPublicationStateLabel: Readonly<Record<CollectionEnglishPublication["publication"]["state"], string>> = {
+  "initial-release-required": "初回公開待ち", queued: "処理待ち", translating: "翻訳中", "review-required": "確認待ち",
+  publishing: "反映中", published: "公開済み", withdrawn: "取り下げ済み", "retryable-failure": "失敗（再試行可能）", superseded: "新しい版に置換済み",
+};
+
+/** 本文の state・保存・version とは別の request/epoch で英語公開だけを扱う。 */
+function EnglishPublicationsPanel({ adapter, target, timeZone }: { readonly adapter: CollectionAdapter; readonly target: CollectionTarget; readonly timeZone: string }) {
+  const requests = useRequests();
+  const headingId = useId();
+  const epoch = useRef(0);
+  const [publications, setPublications] = useState<readonly CollectionEnglishPublication[] | null>(null);
+  const [busy, setBusy] = useState<"refresh" | "retry" | null>("refresh");
+  const [problem, setProblem] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const refresh = useCallback(async () => {
+    if (!adapter.loadEnglishPublications) return;
+    const current = ++epoch.current;
+    setBusy("refresh"); setProblem(null); setNotice(null);
+    try {
+      const outcome = await requests.current.run(async (signal) => parseCollectionEnglishPublicationsReadResult(
+        await adapter.loadEnglishPublications!({ collectionId: target.collectionId, itemId: target.itemId }, signal)
+      ));
+      if (current !== epoch.current || outcome.kind === "aborted") return;
+      if (outcome.kind === "error") { setProblem("英語版の状態を取得できませんでした。日本語版の編集は続けられます。"); return; }
+      setPublications(outcome.value.englishPublications);
+    } finally { if (current === epoch.current) setBusy(null); }
+  }, [adapter, target.collectionId, target.itemId]);
+  useEffect(() => {
+    void refresh();
+    return () => { epoch.current++; };
+  }, [refresh]);
+  const retry = async () => {
+    if (!adapter.retryEnglishPublications) return;
+    const current = ++epoch.current;
+    let refreshAfter = false;
+    setBusy("retry"); setProblem(null); setNotice(null);
+    try {
+      const outcome = await requests.current.run(async (signal) => parseCollectionEnglishPublicationsRetryResult(
+        await adapter.retryEnglishPublications!({ collectionId: target.collectionId, itemId: target.itemId }, signal)
+      ));
+      if (current !== epoch.current || outcome.kind === "aborted") return;
+      if (outcome.kind === "error") { setProblem("英語公開を再試行できませんでした。状態を更新して、もう一度試してください。"); return; }
+      if (outcome.value.status === "conflict") {
+        refreshAfter = true;
+        setNotice("英語版の状態が変わったため、最新の状態を読み込みます。");
+      } else {
+        setPublications(outcome.value.englishPublications);
+        setNotice("英語公開の再試行を受け付けました。");
+      }
+    } finally {
+      if (current === epoch.current) setBusy(null);
+    }
+    if (refreshAfter && current === epoch.current) void refresh();
+  };
+  const retryable = publications?.some(({ publication }) => publication.retryable) ?? false;
+  return <section className="cw-side-section cw-english-publications" aria-labelledby={headingId}>
+    <h3 id={headingId}>英語版</h3>
+    {publications === null && busy === "refresh" && !problem && <p className="cw-hint" role="status">状態を読み込んでいます…</p>}
+    {publications && <ul>{publications.map(({ key, label, publication }) => <li key={key}>
+      <div><strong>{label}</strong><span className="cw-english-state" data-state={publication.state}>{englishPublicationStateLabel[publication.state]}</span></div>
+      <p>{englishPublicationMeaning[publication.state]}</p>
+      {publication.updatedAt && <small>更新 <time dateTime={publication.updatedAt}>{formatDateTime(publication.updatedAt, timeZone)}</time></small>}
+    </li>)}</ul>}
+    {problem && <p className="cw-error" role="alert"><Icon name="alert" />{problem}</p>}
+    {notice && <p className="cw-hint" role="status">{notice}</p>}
+    <div className="cw-inline">
+      <button type="button" className="cw-button" disabled={busy !== null} onClick={() => void refresh()}>{busy === "refresh" ? "更新中…" : "状態を更新"}</button>
+      {retryable && adapter.retryEnglishPublications && <button type="button" className="cw-button" disabled={busy !== null} onClick={() => void retry()}>{busy === "retry" ? "再試行中…" : "英語公開を再試行"}</button>}
+    </div>
+  </section>;
+}
+
 function ItemEditor({ adapter, definition, itemId, created, timeZone, autosaveDelay, itemLanguages, renderRichText, references, retryReferences, confirm, redirectCandidates: candidatesFor, onSaved, onBack, onRemoved, onOpenItem }: EditorProps) {
   let targetHref: string | null = null;
   try { targetHref = itemLanguages?.targetHref({ collectionId: definition.id, itemId }) ?? null; } catch { targetHref = null; }
@@ -987,6 +1070,7 @@ function ItemEditor({ adapter, definition, itemId, created, timeZone, autosaveDe
         : <><span aria-current="page">{itemLanguages.source}<span className="cw-sr">（編集中）</span></span>
           <a href={targetHref} target="_blank" rel="noopener noreferrer">{itemLanguages.target}<span className="cw-sr">（翻訳を新しいタブで開く）</span></a></>}
     </nav>}
+    {adapter.loadEnglishPublications && <EnglishPublicationsPanel adapter={adapter} target={{ collectionId: definition.id, itemId }} timeZone={timeZone} />}
     <div style={language === "target" ? { display: "none" } : undefined}>
     <header className="cw-editor-bar">
       <button type="button" className="cw-back" onClick={() => void back()} disabled={busy === "back"}><Icon name="back" /><span className="cw-back-label">一覧へ</span></button>

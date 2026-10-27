@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { CollectionWorkspace, type CollectionNavigationState } from "@niho/web/collection-workspace";
+import { CollectionWorkspace, type CollectionAdapter, type CollectionNavigationState } from "@niho/web/collection-workspace";
 import { LocalizationItemWorkspace } from "@niho/web/localization-workspace";
 import { createStudioRichText } from "../studio/rich-text-editor.js";
 import { studioRichTextCss } from "../studio/rich-text-style.js";
@@ -22,8 +22,23 @@ function readLocation(): { collectionId?: string; itemId?: string } {
 }
 let opened: CollectionNavigationState | null = null;
 const tiptap = new URLSearchParams(location.search).get("rich") === "tiptap";
+const englishStatusDemo = new URLSearchParams(location.search).get("en-status") === "1";
 const renderRichText = tiptap ? createStudioRichText() : undefined;
 const switchHref = (next: boolean) => { const params = new URLSearchParams(location.search); if (next) params.set("rich", "tiptap"); else params.delete("rich"); return `?${params}`; };
+const statusHref = () => { const params = new URLSearchParams(location.search); if (englishStatusDemo) params.delete("en-status"); else params.set("en-status", "1"); return `?${params}`; };
+const englishStates = new Map<string, "retryable-failure" | "queued">();
+const publicationRows = (collectionId: string, itemId: string) => {
+  const key = `${collectionId}/${itemId}`, state = englishStates.get(key) ?? "retryable-failure";
+  return [{ key: "detail", label: collectionId === "posts" ? "記事ページ" : collectionId === "circles" ? "サークルページ" : "デモ項目", publication: { state, retryable: state === "retryable-failure" } }];
+};
+const statusAdapter: CollectionAdapter = {
+  ...adapter,
+  loadEnglishPublications: async ({ collectionId, itemId }) => ({ status: "ready", englishPublications: publicationRows(collectionId, itemId) }),
+  retryEnglishPublications: async ({ collectionId, itemId }) => {
+    englishStates.set(`${collectionId}/${itemId}`, "queued");
+    return { status: "accepted", englishPublications: publicationRows(collectionId, itemId) };
+  },
+};
 
 /** 開いている記事の本文が、読み込んだときからどう変わったか（保存した値で比べる）。 */
 function BodyChange({ itemId }: { itemId: string | null }) {
@@ -50,7 +65,7 @@ function App() {
   const navigate = (state: CollectionNavigationState) => {
     opened = state;
     setOpenItem(state.collectionId === "posts" ? state.itemId ?? null : null);
-    const params = new URLSearchParams({ c: state.collectionId, ...(state.itemId ? { i: state.itemId } : {}), ...(tiptap ? { rich: "tiptap" } : {}) });
+    const params = new URLSearchParams({ c: state.collectionId, ...(state.itemId ? { i: state.itemId } : {}), ...(tiptap ? { rich: "tiptap" } : {}), ...(englishStatusDemo ? { "en-status": "1" } : {}) });
     history.replaceState(null, "", `?${params}`);
   };
   const bump = () => {
@@ -65,12 +80,13 @@ function App() {
     {tiptap && <style dangerouslySetInnerHTML={{ __html: studioRichTextCss }} />}
     <div className="demo-tools">
       <a href={switchHref(!tiptap)} style={{ color: "inherit" }}>{tiptap ? "本文: TipTap（Studio の部品）→ 既定に戻す" : "本文: 既定 → TipTap（Studio の部品）にする"}</a>
+      <a href={statusHref()} style={{ color: "inherit" }}>{englishStatusDemo ? "英語公開状態のデモを閉じる" : "英語公開状態のデモを開く"}</a>
       <button type="button" onClick={bump}>開いている項目をほかの人が保存したことにする</button>
       <label><input type="checkbox" checked={forbidden} onChange={(event) => { demo.forbidden = event.target.checked; setForbidden(event.target.checked); }} />権限を外す（次の読み書きから）</label>
       {note && <span role="status">{note}</span>}
       <BodyChange itemId={openItem} />
     </div>
-    <CollectionWorkspace adapter={adapter} {...(renderRichText ? { renderRichText } : {})} {...(start.collectionId ? { initialCollectionId: start.collectionId } : {})} {...(start.itemId ? { initialItemId: start.itemId } : {})} onNavigate={navigate}
+    <CollectionWorkspace adapter={englishStatusDemo ? statusAdapter : adapter} {...(renderRichText ? { renderRichText } : {})} {...(start.collectionId ? { initialCollectionId: start.collectionId } : {})} {...(start.itemId ? { initialItemId: start.itemId } : {})} onNavigate={navigate}
       itemLanguages={{ source: "日本語", target: "English", initialLanguage: new URLSearchParams(location.search).get("lang") === "en" ? "target" : "source",
         onLanguageChange: (language) => { const params = new URLSearchParams(location.search); if (language === "target") params.set("lang", "en"); else params.delete("lang"); history.replaceState(null, "", `?${params}`); },
         targetHref: ({ collectionId, itemId }) => `/translation-demo?item=${keyFor(collectionId, itemId)}`,
