@@ -194,6 +194,30 @@ test("VideoWithButton saves and reloads its closed tree, stays inert while editi
     assert.equal(plays, 1); assert.equal(control.getAttribute("aria-label"), "動画を一時停止"); assert.equal(control.getAttribute("aria-pressed"), "true"); assert.equal(video.controls, true);
   } finally { await app.cleanup(); }
 });
+test("Loop Box palette and inspector save, reload and activate only in preview", async () => {
+  const app = await setup();
+  try {
+    await click("追加");
+    const card = document.querySelector('.e-preset-preview[data-preset="loop-box"]')?.closest("button");
+    assert.ok(card); assert.equal(card.closest(".e-palette-group").querySelector("h3").textContent, "インタラクション");
+    await act(async () => card.click()); await settle();
+    assert.deepEqual([...document.querySelectorAll('.e-inspector-tabs [role="tab"]')].map((tab) => tab.textContent), ["Loop Box", "ボックス", "変形"]);
+    let frame = document.querySelector("iframe"), rootElement = frame.contentDocument.querySelector("[data-nw-loop-box-static]");
+    assert.ok(rootElement); assert.equal(frame.contentDocument.querySelector("[data-nw-loop-box]"), null, "edit canvas stays inert");
+    const rootId = rootElement.dataset.nwNode;
+    await change(input("方向"), "column-reverse"); await change(input("速度（px/秒）"), "90");
+    const pause = [...document.querySelectorAll("label.e-check")].find((label) => label.textContent.includes("ホバー中は一時停止"))?.querySelector("input");
+    assert.equal(pause.checked, true); await act(async () => pause.click()); await settle();
+    await click("下書き保存");
+    let stored = app.stored().body.find((node) => node.id === rootId);
+    assert.deepEqual(stored.interaction, { type: "loop-box", speed: 90, pauseOnHover: false }); assert.equal(stored.style.base.flexDirection, "column-reverse");
+    await click("最新の文書を再読込"); await clickLayer(rootId);
+    assert.equal(input("方向").value, "column-reverse"); assert.equal(input("速度（px/秒）").value, "90");
+    assert.equal([...document.querySelectorAll("label.e-check")].find((label) => label.textContent.includes("ホバー中は一時停止"))?.querySelector("input").checked, false);
+    await click("プレビュー"); await settle();
+    frame = document.querySelector("iframe"); assert.ok(frame.contentDocument.querySelector("[data-nw-loop-box]")); assert.equal(frame.contentDocument.querySelector("[data-nw-loop-box-static]"), null);
+  } finally { await app.cleanup(); }
+});
 test("Basic embeds expose the existing card UI, normalize inspector input and survive save/reload", async () => {
   const app = await setup();
   const addPreset = async (id) => {

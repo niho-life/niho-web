@@ -50,6 +50,99 @@ export function initializeSitePresentation(scope: ParentNode = document, options
   }
   // Frame sizing is required while editing too. Navigation and animation are preview-only.
   if (options.interactive === false) return () => { for (const cleanup of cleanups.splice(0)) cleanup(); };
+  for (const root of Array.from(scope.querySelectorAll<HTMLElement>("[data-nw-loop-box]"))) {
+    const view = ownerDocument.defaultView; if (!view) continue;
+    const direct = Array.from(root.children), track = direct.find((child): child is HTMLElement => child instanceof view.HTMLElement && child.hasAttribute("data-nw-loop-box-track"));
+    const cloneMount = direct.find((child): child is HTMLElement => child instanceof view.HTMLElement && child.hasAttribute("data-nw-loop-box-clones"));
+    const speed = Number(root.dataset.nwLoopSpeed), pauseOnHover = root.dataset.nwLoopPauseHover === "true";
+    if (!track || !cloneMount || !Number.isFinite(speed) || speed < 0 || speed > 1000) continue;
+    const reducedMotion = view.matchMedia?.("(prefers-reduced-motion: reduce)");
+    const rootStyle = root.getAttribute("style"), trackStyle = track.getAttribute("style");
+    let animations: Animation[] = [], hoverPaused = false, disposed = false, pendingFrame: number | undefined, pendingTimer: number | undefined;
+    const cancelAnimations = () => { const previous = animations; animations = []; previous.forEach((animation) => animation.cancel()); };
+    const clearCopies = () => { cancelAnimations(); cloneMount.replaceChildren(); };
+    const restoreAttribute = (element: HTMLElement, name: string, value: string | null) => value === null ? element.removeAttribute(name) : element.setAttribute(name, value);
+    const inertCopy = (source: HTMLElement): HTMLElement => {
+      const references = new Set(["id", "for", "aria-labelledby", "aria-describedby", "aria-controls", "aria-owns", "aria-activedescendant"]);
+      const resources = new Set(["src", "srcset", "poster", "href", "xlink:href", "data", "action", "formaction", "srcdoc", "autoplay"]);
+      // The scoped style selector needs node/owner; runtime markers and slot bindings must not recur.
+      const styleScope = new Set(["data-nw-node", "data-nw-owner"]);
+      const blockedTags = new Set(["SCRIPT", "STYLE", "LINK", "OBJECT", "EMBED", "META", "BASE"]);
+      const clone = (node: Node): Node => {
+        if (!(node instanceof view.Element)) return ownerDocument.createTextNode(node.nodeType === 3 ? node.textContent ?? "" : "");
+        const original = node, blocked = blockedTags.has(original.tagName) || original.localName.includes("-") || original.namespaceURI !== "http://www.w3.org/1999/xhtml";
+        const copy = ownerDocument.createElement(blocked ? "span" : original.localName);
+        if (!blocked) for (const attribute of Array.from(original.attributes)) {
+          const name = attribute.name.toLowerCase();
+          const visualImageSource = (original.tagName === "IMG" && (name === "src" || name === "srcset")) || original.tagName === "SOURCE" && name === "srcset";
+          if (name === "style" || references.has(name) || resources.has(name) && !visualImageSource || /^on/iu.test(name) || name.startsWith("data-nw-") && !styleScope.has(name) ||
+              name === "name" && original.matches("input,button,select,textarea,fieldset,form")) continue;
+          copy.setAttribute(attribute.name, attribute.value);
+        }
+        if (original instanceof view.HTMLElement) for (const property of Array.from(original.style)) {
+          const value = original.style.getPropertyValue(property);
+          if (!/url\(|image-set\(|@import/iu.test(value)) copy.style.setProperty(property, value, original.style.getPropertyPriority(property));
+        }
+        if (["A", "AREA"].includes(original.tagName) || original.matches('button,input,select,textarea,summary,[tabindex],[contenteditable="true"]')) copy.tabIndex = -1;
+        copy.removeAttribute("contenteditable");
+        if (original.matches("input,button,select,textarea,fieldset")) (copy as HTMLInputElement).disabled = true;
+        if (original.tagName === "IMG") copy.setAttribute("loading", "lazy");
+        if (["VIDEO", "AUDIO", "IFRAME"].includes(original.tagName)) copy.style.visibility = "hidden";
+        if (!blocked) for (const child of Array.from(original.childNodes)) copy.append(clone(child));
+        return copy;
+      };
+      const copy = clone(source) as HTMLElement;
+      copy.setAttribute("aria-hidden", "true"); copy.setAttribute("inert", "");
+      return copy;
+    };
+    const rebuild = () => {
+      if (disposed) return;
+      clearCopies();
+      restoreAttribute(root, "style", rootStyle); restoreAttribute(track, "style", trackStyle);
+      const computed = view.getComputedStyle(root), direction = ["row", "row-reverse", "column", "column-reverse"].includes(computed.flexDirection) ? computed.flexDirection : "row";
+      const vertical = direction.startsWith("column"), reverse = direction.endsWith("reverse");
+      root.style.display = "flex"; root.style.flexDirection = direction; root.style.overflow = "hidden";
+      track.style.display = "flex"; track.style.flexDirection = direction; track.style.alignItems = computed.alignItems; track.style.gap = computed.gap; track.style.flex = "0 0 auto";
+      const rootRect = root.getBoundingClientRect(), trackRect = track.getBoundingClientRect();
+      const viewport = vertical ? root.clientHeight || rootRect.height : root.clientWidth || rootRect.width;
+      const content = vertical ? trackRect.height : trackRect.width;
+      const gapText = vertical ? computed.rowGap : computed.columnGap, gap = Number.parseFloat(gapText) || 0, distance = content + gap;
+      if (!(viewport > 0) || !(content > 0) || speed === 0 || reducedMotion?.matches || typeof track.animate !== "function") return;
+      const copies = Math.max(2, Math.ceil(viewport / distance) + 2), nodeCount = track.querySelectorAll("*").length + 1;
+      // 極端に小さいtrackや巨大な部分木は、不完全なloopを流さず静止fallbackにする。
+      if (copies > 32 || copies * nodeCount > 20000) return;
+      // column のauto heightがruntime clone分まで伸びないよう、複製前のviewportを固定する。
+      if (vertical) root.style.height = `${viewport}px`;
+      for (let index = 0; index < copies; index++) cloneMount.append(inertCopy(track));
+      const translate = vertical ? `translate3d(0,${reverse ? distance : -distance}px,0)` : `translate3d(${reverse ? distance : -distance}px,0,0)`;
+      const duration = Math.max(1, distance / speed * 1000);
+      const candidates = [track, ...Array.from(cloneMount.children).filter((child): child is HTMLElement => child instanceof view.HTMLElement)];
+      animations = candidates.map((candidate) => candidate.animate([{ transform: "translate3d(0,0,0)" }, { transform: translate }], { duration, iterations: Infinity, easing: "linear" }));
+      animations.forEach((animation) => { animation.currentTime = 0; });
+      if (hoverPaused) animations.forEach((animation) => animation.pause());
+    };
+    const queueRebuild = () => {
+      if (disposed || pendingFrame !== undefined || pendingTimer !== undefined) return;
+      if (typeof view.requestAnimationFrame === "function") pendingFrame = view.requestAnimationFrame(() => { pendingFrame = undefined; rebuild(); });
+      else pendingTimer = view.setTimeout(() => { pendingTimer = undefined; rebuild(); }, 0);
+    };
+    if (pauseOnHover) {
+      listen(root, "mouseenter", (() => { hoverPaused = true; animations.forEach((animation) => animation.pause()); }) as EventListener);
+      listen(root, "mouseleave", (() => { hoverPaused = false; animations.forEach((animation) => animation.play()); }) as EventListener);
+    }
+    if (reducedMotion) listen(reducedMotion, "change", queueRebuild as EventListener);
+    const ResizeObserverConstructor = view.ResizeObserver;
+    if (ResizeObserverConstructor) {
+      const observer = new ResizeObserverConstructor(queueRebuild); observer.observe(root); observer.observe(track); cleanups.push(() => observer.disconnect());
+    } else listen(view, "resize", queueRebuild as EventListener);
+    rebuild();
+    cleanups.push(() => {
+      disposed = true;
+      if (pendingFrame !== undefined) view.cancelAnimationFrame(pendingFrame);
+      if (pendingTimer !== undefined) view.clearTimeout(pendingTimer);
+      clearCopies(); restoreAttribute(root, "style", rootStyle); restoreAttribute(track, "style", trackStyle);
+    });
+  }
   for (const root of Array.from(scope.querySelectorAll<HTMLElement>("[data-nw-video-with-button]"))) {
     const direct = Array.from(root.children), video = direct.find((child): child is HTMLVideoElement => child.tagName === "VIDEO" && child.hasAttribute("data-nw-video"));
     const control = direct.find((child): child is HTMLButtonElement => child.tagName === "BUTTON" && child.hasAttribute("data-nw-video-toggle"));

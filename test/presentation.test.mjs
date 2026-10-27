@@ -47,6 +47,62 @@ test("public runtime toggles VideoWithButton by click and native media events, t
   control.click(); assert.equal(plays, 1, "cleanup removes the binding"); dom.window.close();
 });
 
+test("Loop Box fills the viewport with inert safe copies, pauses, honors reduced motion and cleans up", async () => {
+  const document = page("synthetic", "en", "loop", [{ type: "element", id: "loop", tag: "div", interaction: { type: "loop-box", speed: 60, pauseOnHover: true },
+    attrs: { "aria-label": "Highlights" }, style: { base: { display: "flex", flexDirection: "row", gap: 0, overflow: "hidden" } }, children: [
+      { type: "element", id: "link", tag: "a", attrs: { id: "featured", href: "/details" }, children: [{ type: "text", text: "Original link" }] },
+      { type: "element", id: "photo", tag: "img", attrs: { src: "/photo.webp", alt: "Photo", width: 200, height: 100 }, children: [] }
+    ] }]);
+  const dom = new JSDOM(`<!doctype html><body>${renderPageToHtml(document)}</body>`, { url: "https://example.test" });
+  const root = dom.window.document.querySelector("[data-nw-loop-box]"), track = root.querySelector("[data-nw-loop-box-track]"), mount = root.querySelector("[data-nw-loop-box-clones]");
+  Object.defineProperty(root, "clientWidth", { configurable: true, value: 500 });
+  root.getBoundingClientRect = () => ({ width: 500, height: 100, top: 0, right: 500, bottom: 100, left: 0, x: 0, y: 0, toJSON() {} });
+  track.getBoundingClientRect = () => ({ width: 200, height: 100, top: 0, right: 200, bottom: 100, left: 0, x: 0, y: 0, toJSON() {} });
+  let reduced = false, mediaListeners = [];
+  dom.window.matchMedia = () => ({ get matches() { return reduced; }, addEventListener: (_type, listener) => mediaListeners.push(listener), removeEventListener: (_type, listener) => { mediaListeners = mediaListeners.filter((entry) => entry !== listener); } });
+  const animations = [];
+  dom.window.HTMLElement.prototype.animate = function (frames, options) {
+    const animation = { frames, options, pauses: 0, plays: 0, cancelled: false, pause() { this.pauses++; }, play() { this.plays++; }, cancel() { this.cancelled = true; } };
+    animations.push(animation); return animation;
+  };
+  const cleanup = initializeSitePresentation(dom.window.document);
+  assert.equal(mount.children.length, 5, "copies cover the 500px viewport beyond one 200px sequence");
+  assert.equal(animations.length, 6); assert.equal(animations[0].options.duration, 200 / 60 * 1000); assert.equal(animations[0].frames[1].transform, "translate3d(-200px,0,0)");
+  const copy = mount.firstElementChild;
+  assert.equal(copy.getAttribute("aria-hidden"), "true"); assert.equal(copy.hasAttribute("inert"), true);
+  assert.equal(copy.hasAttribute("data-nw-loop-box-track"), false, "runtime markers are not duplicated");
+  assert.equal(copy.querySelector("#featured"), null); assert.equal(copy.querySelector("a").hasAttribute("href"), false); assert.equal(copy.querySelector("a").tabIndex, -1);
+  assert.equal(copy.querySelector("img").getAttribute("src"), "/photo.webp"); assert.equal(copy.querySelector("img").getAttribute("loading"), "lazy");
+  assert.notEqual(copy.querySelector("img").style.visibility, "hidden", "image marquees keep their visual content");
+  assert.equal(root.querySelector('[data-nw-loop-box-track] #featured').getAttribute("href"), "/details", "the accessible original is unchanged");
+  root.dispatchEvent(new dom.window.MouseEvent("mouseenter")); assert.ok(animations.every((animation) => animation.pauses === 1));
+  root.dispatchEvent(new dom.window.MouseEvent("mouseleave")); assert.ok(animations.every((animation) => animation.plays === 1));
+  reduced = true; mediaListeners.forEach((listener) => listener(new dom.window.Event("change"))); await new Promise((resolve) => dom.window.setTimeout(resolve, 0));
+  assert.equal(mount.children.length, 0); assert.ok(animations.every((animation) => animation.cancelled));
+  reduced = false; mediaListeners.forEach((listener) => listener(new dom.window.Event("change"))); await new Promise((resolve) => dom.window.setTimeout(resolve, 0));
+  assert.equal(mount.children.length, 5);
+  const count = animations.length; cleanup(); assert.equal(mount.children.length, 0); assert.equal(root.getAttribute("style"), null);
+  dom.window.dispatchEvent(new dom.window.Event("resize")); await new Promise((resolve) => dom.window.setTimeout(resolve, 0));
+  assert.equal(mount.children.length, 0); assert.equal(animations.length, count, "cleanup removes resize and media listeners");
+  root.dataset.nwLoopSpeed = "0"; const stopped = initializeSitePresentation(dom.window.document);
+  assert.equal(mount.children.length, 0); assert.equal(animations.length, count, "speed 0 keeps the original static"); stopped(); dom.window.close();
+});
+
+test("Loop Box flexDirection selects the horizontal or vertical axis and reverse sign", () => {
+  for (const [direction, expected] of [["row", "translate3d(-100px,0,0)"], ["row-reverse", "translate3d(100px,0,0)"], ["column", "translate3d(0,-100px,0)"], ["column-reverse", "translate3d(0,100px,0)"]]) {
+    const document = page("synthetic", "en", `loop-${direction}`, [{ type: "element", id: "loop", tag: "div", interaction: { type: "loop-box", speed: 50, pauseOnHover: false },
+      style: { base: { display: "flex", flexDirection: direction, gap: 0, overflow: "hidden" } }, children: [element("card", "p", "Card")] }]);
+    const dom = new JSDOM(`<!doctype html><body>${renderPageToHtml(document)}</body>`), root = dom.window.document.querySelector("[data-nw-loop-box]"), track = root.querySelector("[data-nw-loop-box-track]");
+    Object.defineProperties(root, { clientWidth: { configurable: true, value: 300 }, clientHeight: { configurable: true, value: 300 } });
+    root.getBoundingClientRect = () => ({ width: 300, height: 300, top: 0, right: 300, bottom: 300, left: 0, x: 0, y: 0, toJSON() {} });
+    track.getBoundingClientRect = () => ({ width: 100, height: 100, top: 0, right: 100, bottom: 100, left: 0, x: 0, y: 0, toJSON() {} });
+    dom.window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+    let frames; dom.window.HTMLElement.prototype.animate = (keyframes) => { frames ??= keyframes; return { cancel() {}, pause() {}, play() {} }; };
+    const cleanup = initializeSitePresentation(dom.window.document);
+    assert.equal(frames[1].transform, expected, direction); cleanup(); dom.window.close();
+  }
+});
+
 test("native presentation is generic and canvas/SSR share one reset, font and scoped composition", () => {
   const document = page("synthetic-two", "fr", "business", [element("body-copy", "p", "Body copy")]);
   const presentation = site("synthetic-two", "fr");

@@ -37,6 +37,12 @@ element / component / instance の `id` は文書全体で一意です。element
 
 VideoWithButton は `tag: "div"` に `interaction: { type: "video-toggle" }` を持たせ、直下に `video` と `button[type=button]` をこの順に1つずつ置きます。button の子は表示文言1件だけで、両要素のID参照や任意コードを保存しません。構造を壊す部分削除・移動は検証で拒否します。描画時は既知のdata属性を付け、native video controlsを残します。公開側で `initializeSitePresentation` を起動するとbuttonが再生・一時停止に結び付き、ボタンの押下状態とラベルが動画の状態に同期します。起動できない場合もnative controlsで操作できます。動画ソースが未設定・未解決ならbuttonを無効にし、公開時は外部要求をしません。
 
+Loop Box は `tag: "div"` に `interaction: { type: "loop-box", speed, pauseOnHover }` を持たせます。`speed` は有限な0〜1000のpx/秒で、0は停止、標準presetは60です。`pauseOnHover` は真偽値です。進行軸と逆方向は別の自由入力ではなく、同じnodeの検証済み`style.flexDirection`（`row` / `row-reverse` / `column` / `column-reverse`）から決まります。childrenは1件以上必要で、Loop Box内に別のinteractionは入れられません。descriptorにHTML、script、selector、keyframes、イベントhandler、任意style文字列、DOM ID参照は保存しません。
+
+SSRは元のchildrenを固定track内に1組だけ描き、支援技術から読める正本とします。編集canvasではこの正本を静止したまま選択・編集・dropできます。公開ページとStudio previewで`initializeSitePresentation`を起動すると、runtimeはtrack寸法とviewportから必要な複製数を計算し、resize時にも作り直してWeb Animations APIで無限に流します。`prefers-reduced-motion: reduce`、速度0、未対応APIでは動かさず内容を保持します。ホバー停止が有効ならpointer hover中だけ一時停止します。
+
+runtime複製は`aria-hidden`かつ`inert`で、focus可能要素をtab順から外します。HTML IDとID参照、リンク先、form name、動画・iframe等の読込属性、別runtimeのbinding属性を複製から除きます。画像は元の検証済みsourceを保って表示し、動画・iframe等は追加通信を起こさない不可視placeholderとして寸法だけを保ちます。cleanupはanimationをcancelし、複製、resize・hover・media-query listener、runtimeが加えたinline styleをすべて除去します。runtimeが無い場合も元内容はそのまま利用できます。
+
 ### 標準埋め込み
 
 Map / YouTube / Vimeo は `tag: "div"` の element に `embed: { provider, title, source? }` を持たせます。`provider` は `map | youtube | vimeo` の閉じた値、`title` は空でない300文字以内の1行、`source` は任意です。embed node の `children` は空で、`asset` / `icon` を併用できません。文書から iframe tag、HTML、`src` 属性、sandbox、allow、referrer policy、loading、JavaScript を渡す入口はありません。provider は挿入時に固定し、editor は `embedSource` と `embedTitle` の専用操作だけで値を更新します。
