@@ -149,7 +149,7 @@ test("closed standard embeds render fixed trusted iframe attributes and empty so
   assert.match(html, /data-nw-embed="map"><iframe src="https:\/\/www\.google\.com\/maps\/embed\?pb=/);
   assert.match(html, /title="周辺地図" loading="lazy" referrerPolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-same-origin"/);
   assert.match(html, /src="https:\/\/www\.youtube-nocookie\.com\/embed\/dQw4w9WgXcQ"/);
-  assert.match(html, /allow="encrypted-media; picture-in-picture; fullscreen" allowFullScreen=""/);
+  assert.match(html, /allow="encrypted-media; picture-in-picture; fullscreen" allowfullscreen=""/i);
   assert.match(html, /src="https:\/\/player\.vimeo\.com\/video\/123456789\?h=Unlisted_1"/);
   assert.ok(!html.includes("javascript:")); assert.ok(!html.includes("srcDoc=")); assert.ok(!html.includes("pointer-events"));
   const placeholder = renderToString(createElement(PageRenderer, { document: doc, missingAssets: "placeholder" }));
