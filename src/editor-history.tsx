@@ -416,7 +416,7 @@ export function useVersionHistory({ adapter, blocks, components, target, version
 }
 export type VersionHistory = ReturnType<typeof useVersionHistory>;
 
-/** 右レールの「バージョン管理」。先頭は現在の編集内容、続いて新しい順の版。 */
+/** 左レールの「バージョン管理」。先頭は現在の編集内容、続いて新しい順の版。 */
 export function VersionPanel({ history, status, snapshotBlock }: { history: VersionHistory; status: string;
   /** 作成できない理由。空文字は理由を出さずに無効化、undefined は作成できる。 */
   snapshotBlock: string | undefined }) {

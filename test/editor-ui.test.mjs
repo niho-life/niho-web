@@ -1676,12 +1676,13 @@ function historyHost(overrides = {}) {
   return { calls, adapter, entries };
 }
 const versionRows = () => [...document.querySelectorAll(".e-versions .e-version")];
+const historyButton = () => document.querySelector('.e-tools [aria-label="履歴"]');
 
 test("the version panel lists revisions, loads more, shows a revision read-only, compares it and restores it as an edit", async () => {
   const host = historyHost(), app = await setup({ adapter: host.adapter });
   try {
-    await press(toolbarButton("履歴")); assert.equal(toolbarButton("履歴").getAttribute("aria-pressed"), "true");
-    assert.ok(document.querySelector('.e-right [aria-label="バージョン管理"]')); assert.equal(document.querySelector(".e-inspector-tabs"), null);
+    await press(historyButton()); assert.equal(historyButton().getAttribute("aria-pressed"), "true");
+    assert.ok(document.querySelector('.e-left [aria-label="バージョン管理"]')); assert.ok(document.querySelector(".e-inspector-context"));
     assert.deepEqual(host.calls.lists[0], { target: homeTarget });
     assert.deepEqual(versionRows().map((row) => row.querySelector(".e-version-time").textContent), ["現在の編集内容", localTime(host.entries[0].createdAt), localTime(host.entries[1].createdAt)]);
     assert.ok(versionRows()[1].textContent.includes("自動保存") && versionRows()[1].textContent.includes("編集者A"));
@@ -1700,7 +1701,7 @@ test("the version panel lists revisions, loads more, shows a revision read-only,
     await press(buttonIn(document.querySelector(".e-history-bar"), "この版を復元"));
     assert.equal(document.querySelector(".e-history-bar"), null); assert.equal(status(), "未保存の変更あり"); assert.equal(toolbarButton("下書き保存").disabled, false);
     assert.ok(document.querySelector(".e-notice").textContent.includes(`${localTime(host.entries[0].createdAt)} の版を作業コピーに復元しました。`));
-    await press(toolbarButton("履歴")); assert.equal(input("ページタイトル").value, "以前のタイトル");
+    await press(historyButton()); assert.equal(input("ページタイトル").value, "以前のタイトル");
     await click("元に戻す"); assert.equal(input("ページタイトル").value, fixture.title);
   } finally { await app.cleanup(); }
 });
@@ -1709,7 +1710,7 @@ test("published revisions can start the rollback confirmation, snapshots require
   let snapshotResult;
   const host = historyHost({ snapshot: () => snapshotResult }), app = await setup({ adapter: host.adapter });
   try {
-    await press(toolbarButton("履歴")); await click("さらに表示");
+    await press(historyButton()); await click("さらに表示");
     await press(versionRows()[3]);
     assert.ok(document.querySelector(".e-versions").textContent.includes("版の表示を閉じてから作成できます。"));
     await press(buttonIn(document.querySelector(".e-history-bar"), "公開版をこの版に戻す…"));
@@ -1730,7 +1731,8 @@ test("published revisions can start the rollback confirmation, snapshots require
     assert.ok(document.querySelector(".e-versions").textContent.includes("スナップショットは保存済みの状態にだけ作成できます。"));
     await press(buttonIn(document.querySelector(".e-history-bar"), "閉じる"));
     await click("下書き保存"); assert.equal(document.querySelector('[aria-label="スナップショットを作成"]').disabled, false);
-    await clickPage("別ページ"); assert.equal(document.querySelector(".e-versions"), null); assert.equal(toolbarButton("履歴").getAttribute("aria-pressed"), "false");
+    await click("ページ"); assert.equal(historyButton().getAttribute("aria-pressed"), "false");
+    await clickPage("別ページ"); assert.equal(document.querySelector(".e-versions"), null);
   } finally { await app.cleanup(); }
 });
 
