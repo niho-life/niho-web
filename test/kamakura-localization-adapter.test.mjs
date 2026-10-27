@@ -54,7 +54,7 @@ function fakeBff(t, routes) {
 }
 
 async function fixtures() {
-  const memory = createLocalizationMemory({ frameUrl: "https://next-kamakura.niho.life/_studio/localization-preview" });
+  const memory = createLocalizationMemory({ frameUrl: "https://next-kamakura.niho.life/_studio/localization-preview", glossary: true });
   const s = signal();
   const item = await memory.adapter.loadItem({ itemKey: "aG9tZQ" }, s);
   const { units: _units, previews: _previews, job: _job, ...summary } = item.item;
@@ -102,7 +102,8 @@ test("翻訳 adapter: 各メソッドは同一 origin の BFF を契約の経路
     [() => adapter.readRelease(s), "POST", "/release", {}, parseLocaleReleaseStateResult],
     [() => adapter.prepareRelease(prepare, s), "POST", "/release/prepare", prepare, (value) => parseLocaleReleasePrepareResult(value, prepare)],
     [() => adapter.applyRelease({ confirmationToken: "c1", resumeToken: null }, s), "POST", "/release/apply", { confirmationToken: "c1", resumeToken: null }, (value) => parseLocaleReleaseApplyResult(value, { prepared: null })],
-    [() => adapter.saveSettings({ expectedVersion: "set1", autoDraft: false }, s), "PUT", "/settings", { expectedVersion: "set1", autoDraft: false }, parseLocalizationSettingsResult]
+    [() => adapter.saveSettings({ expectedVersion: "set1", autoDraft: false }, s), "PUT", "/settings", { expectedVersion: "set1", autoDraft: false }, parseLocalizationSettingsResult],
+    [() => adapter.saveSettings({ expectedVersion: "set2", reviewGlossaryVersion: "demo-glossary-v1" }, s), "PUT", "/settings", { expectedVersion: "set2", reviewGlossaryVersion: "demo-glossary-v1" }, parseLocalizationSettingsResult]
   ]) {
     const result = await run();
     const call = calls.at(-1);

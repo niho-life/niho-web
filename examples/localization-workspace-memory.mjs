@@ -112,6 +112,7 @@ const richPrefix = (value, prefix) => {
  * - upload: (file) => Promise<string>（上げた画像の URL）
  * - by: 操作した人の名前
  * - mediaBase: 画像の置き場（既定は https://media.example.test。デモはローカルの /media）
+ * - glossary: true または { version, entries, reviewed }（省略時は用語集なし）
  */
 export function createLocalizationMemory(options = {}) {
   const now = () => Date.now();
@@ -122,7 +123,12 @@ export function createLocalizationMemory(options = {}) {
     groups: [{ id: "pages", label: "固定ページ" }, { id: "shared", label: "共通部分" }, { id: "posts", label: "記事" }],
     overviewVersion: 1,
     blockersOverride: null,
-    settings: { version: 1, autoDraft: true, connected: true, waiting: 0, failed: 0, nextRetryAt: null },
+    settings: {
+      version: 1, autoDraft: true, connected: true, waiting: 0, failed: 0, nextRetryAt: null,
+      glossary: options.glossary === true
+        ? { version: "demo-glossary-v1", entries: [{ source: "NIHO", target: "NIHO" }, { source: "光町", target: "Hikari" }], reviewed: false }
+        : options.glossary ? structuredClone(options.glossary) : null,
+    },
     catalog: options.catalogRounds ? { done: 0, total: options.catalogRounds } : null,
     current: options.firstRelease ? null : { releaseId: "en-2026-10-01", version: "r2", label: "10/1 の公開", publishedAt: "2026-10-01T01:00:00.000Z", pages: 3, sharedResources: 1 },
     history: options.firstRelease ? [] : [{ releaseId: "en-2026-09-15", version: "r1", label: "9/15 の公開", publishedAt: "2026-09-15T01:00:00.000Z", pages: 2, sharedResources: 1, operation: "publish", by: "管理者（架空）", restorable: true }],
@@ -141,8 +147,13 @@ export function createLocalizationMemory(options = {}) {
 
   const find = (key) => state.items.find((item) => item.key === key);
   const allowed = (permission) => state.permissions.includes(permission);
-  const blockers = () => state.blockersOverride ?? state.items.filter((item) => !item.excluded && summarize(item).state !== "reviewed")
-    .map((item) => ({ id: `item-${item.key}`, message: `「${item.title}」に、まだ確認していない項目があります。`, itemKey: item.key }));
+  const blockers = () => state.blockersOverride ?? [
+    ...state.items.filter((item) => !item.excluded && summarize(item).state !== "reviewed")
+      .map((item) => ({ id: `item-${item.key}`, message: `「${item.title}」に、まだ確認していない項目があります。`, itemKey: item.key })),
+    ...(!state.current && state.settings.glossary && !state.settings.glossary.reviewed
+      ? [{ id: "glossary-review", message: "用語集を確認してください。", itemKey: null }]
+      : []),
+  ];
   const overview = () => {
     const summaries = state.items.map(summarize);
     return {
@@ -161,7 +172,8 @@ export function createLocalizationMemory(options = {}) {
     };
   };
   const settings = () => ({ version: `set${state.settings.version}`, autoDraft: state.settings.autoDraft, translator: { connected: state.settings.connected },
-    queue: { waiting: state.settings.waiting, failed: state.settings.failed, nextRetryAt: state.settings.nextRetryAt } });
+    queue: { waiting: state.settings.waiting, failed: state.settings.failed, nextRetryAt: state.settings.nextRetryAt },
+    ...(state.settings.glossary ? { glossary: structuredClone(state.settings.glossary) } : {}) });
   const exportItem = (item) => ({ ...summarize(item), units: item.units.map(exportUnit), previews: structuredClone(item.previews), ...(item.relatedItems ? { relatedItems: structuredClone(item.relatedItems) } : {}), job: null });
 
   const wrap = (name, run) => async (...args) => {
@@ -314,10 +326,16 @@ export function createLocalizationMemory(options = {}) {
       state.pending = null; state.plan = null; state.overviewVersion++;
       return { status: "applied", current: { ...state.current } };
     }),
-    saveSettings: wrap("saveSettings", ({ expectedVersion, autoDraft }) => {
+    saveSettings: wrap("saveSettings", (input) => {
       if (!allowed("settings")) return { status: "forbidden" };
-      if (expectedVersion !== `set${state.settings.version}`) return { status: "conflict", settings: settings() };
-      state.settings.autoDraft = autoDraft; state.settings.version++;
+      if (input.expectedVersion !== `set${state.settings.version}`) return { status: "conflict", settings: settings() };
+      if (Object.hasOwn(input, "autoDraft")) {
+        state.settings.autoDraft = input.autoDraft; state.settings.version++;
+      } else {
+        if (!state.settings.glossary || input.reviewGlossaryVersion !== state.settings.glossary.version) return { status: "conflict", settings: settings() };
+        if (state.settings.glossary.reviewed) return { status: "saved", settings: settings() };
+        state.settings.glossary.reviewed = true; state.settings.version++; state.overviewVersion++;
+      }
       return { status: "saved", settings: settings() };
     }),
     pickAsset: wrap("pickAsset", () => {

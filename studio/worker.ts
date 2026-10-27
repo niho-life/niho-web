@@ -1836,7 +1836,7 @@ const KAMAKURA_LOCALIZATION_OPERATIONS: Readonly<Record<KamakuraLocalizationOper
   release: { method: "POST", log: "localization_release", bodyKeys: [], long: true },
   prepare: { method: "POST", log: "localization_release_prepare", bodyKeys: ["operation", "releaseId", "expectedVersion", "expectedCurrentVersion", "resumeToken"], long: true },
   apply: { method: "POST", log: "localization_release_apply", bodyKeys: ["confirmationToken", "resumeToken"], long: true },
-  settings: { method: "PUT", log: "localization_settings", bodyKeys: ["expectedVersion", "autoDraft"], long: false },
+  settings: { method: "PUT", log: "localization_settings", bodyKeys: null, long: false },
   "upload-intent": { method: "POST", log: "localization_upload_intent", bodyKeys: ["itemKey", "unitId", "name", "mimeType", "bytes"], long: false },
   "editor-site": { method: "POST", log: "localization_editor_site", bodyKeys: [], long: true },
   "editor-page": { method: "POST", log: "localization_editor_page", bodyKeys: [], long: true },
@@ -1980,9 +1980,14 @@ function kamakuraLocalizationValues(route: KamakuraLocalizationRoute, body: Reco
       if ((confirmationToken === null) === (resumeToken === null)) invalidLocalizationBody("release token");
       return { confirmationToken, resumeToken };
     }
-    case "settings":
-      if (typeof body.autoDraft !== "boolean") invalidLocalizationBody("settings");
-      return { expectedVersion: version(body.expectedVersion), autoDraft: body.autoDraft };
+    case "settings": {
+      const expectedVersion = version(body.expectedVersion);
+      if (Object.hasOwn(body, "autoDraft")) {
+        if (typeof body.autoDraft !== "boolean") invalidLocalizationBody("settings");
+        return { expectedVersion, autoDraft: body.autoDraft };
+      }
+      return { expectedVersion, reviewGlossaryVersion: version(body.reviewGlossaryVersion) };
+    }
     case "upload-intent": {
       const { name, mimeType, bytes } = body;
       if (!isKamakuraCmsLine(name, KAMAKURA_LOCALIZATION_LIMITS.uploadNameLength) || typeof mimeType !== "string" || !KAMAKURA_LOCALIZATION_IMAGE_TYPES.has(mimeType)
@@ -2027,16 +2032,24 @@ function kamakuraLocalizationBody(route: KamakuraLocalizationRoute, raw: Uint8Ar
   const action = parsed.action;
   const commandKeys = typeof action === "string" && Object.hasOwn(KAMAKURA_LOCALIZATION_COMMAND_KEYS, action) ? KAMAKURA_LOCALIZATION_COMMAND_KEYS[action] : undefined;
   const editorCommandKeys = typeof action === "string" && Object.hasOwn(KAMAKURA_EDITOR_LOCALIZATION_COMMAND_KEYS, action) ? KAMAKURA_EDITOR_LOCALIZATION_COMMAND_KEYS[action] : undefined;
+  const settingsKeys = route.operation === "settings"
+    ? Object.hasOwn(parsed, "autoDraft") === Object.hasOwn(parsed, "reviewGlossaryVersion")
+      ? undefined
+      : ["expectedVersion", Object.hasOwn(parsed, "autoDraft") ? "autoDraft" : "reviewGlossaryVersion"]
+    : undefined;
   const keys = route.operation === "command"
     ? commandKeys && ["itemKey", "operationId", "action", "unitId", "expectedVersion", "expectedSourceVersion", ...commandKeys]
     : route.operation === "editor-command"
       ? editorCommandKeys && ["action", "expectedSourceVersion", "expectedVersion", "expectedOverlayVersion", ...editorCommandKeys]
+    : route.operation === "settings"
+      ? settingsKeys
     : KAMAKURA_LOCALIZATION_OPERATIONS[route.operation].bodyKeys;
-  if (!keys) invalidLocalizationBody("action");
+  if (!keys) invalidLocalizationBody(route.operation === "settings" ? "fields" : "action");
   const actual = Object.keys(parsed).sort(), expected = [...keys].sort();
   if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) invalidLocalizationBody("fields");
   const values = kamakuraLocalizationValues(route, parsed);
-  return { body: new TextEncoder().encode(JSON.stringify({ ...values, actor: { email: actor.email, role: actor.role } })), values };
+  const upstreamValues = route.operation === "overview" || route.operation === "settings" ? { ...values, includeGlossary: true } : values;
+  return { body: new TextEncoder().encode(JSON.stringify({ ...upstreamValues, actor: { email: actor.email, role: actor.role } })), values };
 }
 
 /** ページ一覧の言語状態は UI に直接出るため、上流の余分な値を通さず確かめ直す。 */

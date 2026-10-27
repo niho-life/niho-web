@@ -503,6 +503,7 @@ test("permissions: the site's list of allowed actions decides what the screen sh
   const owner = createLocalizationMemory();
   app = await setup({ adapter: owner.adapter, initialView: "settings" });
   try {
+    assert.equal(document.body.textContent.includes("用語集の確認"), false, "adapters without a glossary keep the old settings screen");
     const checkbox = document.querySelector('.lw-settings input[type="checkbox"]');
     await click(checkbox, "checkbox");
     await press("保存する");
@@ -514,6 +515,59 @@ test("permissions: the site's list of allowed actions decides what the screen sh
   denied.state.forbidden = true;
   app = await setup({ adapter: denied.adapter });
   try { assert.ok(document.body.textContent.includes("翻訳を見る権限がありません")); } finally { await app.cleanup(); }
+});
+
+test("glossary settings: owners review the current version, refresh blockers, and repeated review is a no-op", async () => {
+  const memory = createLocalizationMemory({ glossary: true, firstRelease: true });
+  const app = await setup({ adapter: memory.adapter, initialView: "settings" });
+  try {
+    const glossary = document.querySelector('[aria-labelledby="lw-settings-glossary"]');
+    assert.ok(glossary);
+    assert.ok(glossary.textContent.includes("版：demo-glossary-v1"));
+    assert.ok(glossary.textContent.includes("NIHONIHO"));
+    assert.ok(glossary.textContent.includes("光町Hikari"));
+    assert.ok(glossary.textContent.includes("未確認"));
+    assert.ok(button("この用語集を確認済みにする", glossary));
+    assert.equal((await memory.adapter.loadOverview(new AbortController().signal)).overview.blockers.some((entry) => entry.id === "glossary-review"), true);
+
+    const overviewReads = memory.named("loadOverview").length;
+    await press("この用語集を確認済みにする", glossary);
+    assert.deepEqual(memory.named("saveSettings")[0].input, { expectedVersion: "set1", reviewGlossaryVersion: "demo-glossary-v1" });
+    assert.ok(document.body.textContent.includes("用語集を確認済みにしました。"));
+    assert.ok(document.querySelector('[aria-labelledby="lw-settings-glossary"]').textContent.includes("確認済み"));
+    assert.equal(button("この用語集を確認済みにする"), undefined);
+    assert.ok(memory.named("loadOverview").length > overviewReads, "overview is refreshed after saving the review");
+    assert.equal((await memory.adapter.loadOverview(new AbortController().signal)).overview.blockers.some((entry) => entry.id === "glossary-review"), false);
+
+    const noOp = await memory.adapter.saveSettings({ expectedVersion: "set2", reviewGlossaryVersion: "demo-glossary-v1" }, new AbortController().signal);
+    assert.deepEqual([noOp.status, noOp.settings.version, noOp.settings.glossary.reviewed], ["saved", "set2", true]);
+  } finally { await app.cleanup(); }
+});
+
+test("glossary settings: read-only and reviewed views hide the action; conflicts keep the latest safe state", async () => {
+  const viewer = createLocalizationMemory({ glossary: true, permissions: [] });
+  let app = await setup({ adapter: viewer.adapter, initialView: "settings" });
+  try {
+    assert.ok(document.body.textContent.includes("用語集の確認"));
+    assert.equal(button("この用語集を確認済みにする"), undefined);
+  } finally { await app.cleanup(); }
+
+  const reviewed = createLocalizationMemory({ glossary: { version: "demo-glossary-v1", entries: [{ source: "NIHO", target: "NIHO" }], reviewed: true } });
+  app = await setup({ adapter: reviewed.adapter, initialView: "settings" });
+  try {
+    assert.ok(document.querySelector('[aria-labelledby="lw-settings-glossary"]').textContent.includes("確認済み"));
+    assert.equal(button("この用語集を確認済みにする"), undefined);
+  } finally { await app.cleanup(); }
+
+  const conflict = createLocalizationMemory({ glossary: true });
+  app = await setup({ adapter: conflict.adapter, initialView: "settings" });
+  try {
+    conflict.state.settings.version++;
+    await press("この用語集を確認済みにする");
+    assert.ok(document.body.textContent.includes("用語集か設定が更新されました。最新の内容を確認してください。"));
+    assert.ok(button("この用語集を確認済みにする"), "the latest unreviewed glossary remains actionable");
+    assert.equal(conflict.state.settings.glossary.reviewed, false);
+  } finally { await app.cleanup(); }
 });
 
 test("stale responses: a late item, list or adapter response is dropped", async () => {

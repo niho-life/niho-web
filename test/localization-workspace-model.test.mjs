@@ -46,6 +46,26 @@ test("the fictional memory adapter speaks the contract the parsers accept", asyn
   assert.throws(() => parseLocalizationOverviewResult({ status: "forbidden", reason: "secret" }), /unknown field/);
 });
 
+test("settings glossary is optional and strictly validates its version, entries and review state", async () => {
+  const memory = createLocalizationMemory({ glossary: true });
+  const raw = await memory.adapter.loadOverview(signal);
+  const parsed = parseLocalizationOverviewResult(raw);
+  assert.deepEqual(parsed.overview.settings.glossary, {
+    version: "demo-glossary-v1",
+    entries: [{ source: "NIHO", target: "NIHO" }, { source: "光町", target: "Hikari" }],
+    reviewed: false,
+  });
+  const glossary = parsed.overview.settings.glossary;
+  const changed = (next) => ({ ...clone(raw), overview: { ...clone(raw.overview), settings: { ...clone(raw.overview.settings), glossary: next } } });
+  assert.throws(() => parseLocalizationOverviewResult(changed({ ...glossary, extra: true })), /unknown field/);
+  assert.throws(() => parseLocalizationOverviewResult(changed({ ...glossary, version: "bad\nversion" })), /invalid text/);
+  assert.throws(() => parseLocalizationOverviewResult(changed({ ...glossary, reviewed: "yes" })), /boolean/);
+  assert.throws(() => parseLocalizationOverviewResult(changed({ ...glossary, entries: [{ source: "NIHO", target: "NIHO" }, { source: "NIHO", target: "Niho" }] })), /duplicate glossary source/);
+  assert.throws(() => parseLocalizationOverviewResult(changed({ ...glossary, entries: [{ source: "鎌倉\n市", target: "Kamakura" }] })), /invalid text/);
+  assert.throws(() => parseLocalizationOverviewResult(changed({ ...glossary, entries: [{ source: "x".repeat(501), target: "X" }] })), /invalid text/);
+  assert.throws(() => parseLocalizationOverviewResult(changed({ ...glossary, entries: Array.from({ length: 501 }, (_, index) => ({ source: `s${index}`, target: `t${index}` })) })), /bounded array/);
+});
+
 test("parsers reject unknown keys, mismatched states and oversized values", async () => {
   const { overview, list, item } = await samples();
   const withKey = (value, at, key) => { const copy = clone(value); at(copy)[key] = 1; return copy; };

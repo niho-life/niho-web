@@ -31,12 +31,20 @@ export type LocalizationGroup = {
   readonly id: string; readonly label: string;
   readonly items: number; readonly needsWork: number; readonly reviewed: number; readonly excluded: number;
 };
+export type LocalizationGlossaryEntry = { readonly source: string; readonly target: string };
+export type LocalizationGlossary = {
+  readonly version: string;
+  readonly entries: readonly LocalizationGlossaryEntry[];
+  readonly reviewed: boolean;
+};
 export type LocalizationSettings = {
   readonly version: string;
-  /** 原文の変更箇所を自動翻訳するか。人が直した・確認した訳は保持して候補に留める。画面で変えられるのはこれだけ。 */
+  /** 原文の変更箇所を自動翻訳するか。人が直した・確認した訳は保持して候補に留める。 */
   readonly autoDraft: boolean;
   readonly translator: { readonly connected: boolean };
   readonly queue: { readonly waiting: number; readonly failed: number; readonly nextRetryAt: string | null };
+  /** 任意。ホストが公開前に確認を求める固定用語集。古い adapter は省略できる。 */
+  readonly glossary?: LocalizationGlossary;
 };
 export type LocalizationCatalog = { readonly state: "current" } | { readonly state: "updating"; readonly progress: LocaleReleaseProgress };
 export type LocalizationOverview = {
@@ -135,6 +143,9 @@ export type LocalizationJobResult = { readonly status: "ready"; readonly job: Lo
 export type LocalizationCatalogResult = { readonly status: "updating"; readonly progress: LocaleReleaseProgress } | { readonly status: "current" } | LocalizationForbidden;
 export type LocalizationPreviewResult = { readonly status: "ready"; readonly material: unknown; readonly nextCursor: string | null } | LocalizationNotFound | LocalizationForbidden;
 export type LocalizationSettingsResult = { readonly status: "saved" | "conflict"; readonly settings: LocalizationSettings } | LocalizationInvalid | LocalizationForbidden;
+export type LocalizationSettingsInput =
+  | { readonly expectedVersion: string; readonly autoDraft: boolean; readonly reviewGlossaryVersion?: never }
+  | { readonly expectedVersion: string; readonly reviewGlossaryVersion: string; readonly autoDraft?: never };
 export type LocalizationImageRejectReason = "type" | "size" | "permission" | "invalid";
 export type LocalizationImageResult =
   | { readonly status: "uploaded" | "picked"; readonly image: LocalizationImage }
@@ -174,7 +185,7 @@ export interface LocalizationWorkspaceAdapter {
   readRelease(signal: AbortSignal): Promise<unknown>;
   prepareRelease(input: LocaleReleasePrepareInput, signal: AbortSignal): Promise<unknown>;
   applyRelease(input: LocaleReleaseApplyInput, signal: AbortSignal): Promise<unknown>;
-  saveSettings(input: { readonly expectedVersion: string; readonly autoDraft: boolean }, signal: AbortSignal): Promise<unknown>;
+  saveSettings(input: LocalizationSettingsInput, signal: AbortSignal): Promise<unknown>;
   /** 任意。訳す言語の画像を上げる。 */
   uploadImage?(input: { readonly itemKey: string; readonly unitId: string; readonly file: File }, signal: AbortSignal): Promise<unknown>;
   /** 任意。ホストの素材の選び方の画面を出し、選んだ画像を返す。 */
@@ -189,6 +200,7 @@ export interface LocalizationWorkspaceAdapter {
 
 export const LOCALIZATION_LIMITS = {
   listPage: 500, listPages: 100, units: 2000, text: 100_000, marks: 200, groups: 50, previews: 50,
+  glossaryEntries: 500, glossaryText: 500,
   previewBytes: 2 * 1024 * 1024, previewParts: 40, previewTotalBytes: 16 * 1024 * 1024,
 } as const;
 const ITEM_KEY_RE = /^[A-Za-z0-9_-]{1,200}$/u;
@@ -405,15 +417,28 @@ export function richPlainText(value: LocalizedRichText): string {
 
 function parseSettings(input: unknown, path: string): LocalizationSettings {
   const source = record(input, path);
-  keys(source, ["version", "autoDraft", "translator", "queue"], path);
+  keys(source, ["version", "autoDraft", "translator", "queue", "glossary"], path);
   const translator = record(source.translator, `${path}.translator`);
   keys(translator, ["connected"], `${path}.translator`);
   const queue = record(source.queue, `${path}.queue`);
   keys(queue, ["waiting", "failed", "nextRetryAt"], `${path}.queue`);
+  let glossary: LocalizationGlossary | undefined;
+  if (source.glossary !== undefined) {
+    const glossaryPath = `${path}.glossary`, glossarySource = record(source.glossary, glossaryPath);
+    keys(glossarySource, ["version", "entries", "reviewed"], glossaryPath);
+    const entries = array(glossarySource.entries, `${glossaryPath}.entries`, LOCALIZATION_LIMITS.glossaryEntries).map((entry, index) => {
+      const entryPath = `${glossaryPath}.entries[${index}]`, value = record(entry, entryPath);
+      keys(value, ["source", "target"], entryPath);
+      return { source: name(value.source, `${entryPath}.source`, LOCALIZATION_LIMITS.glossaryText), target: name(value.target, `${entryPath}.target`, LOCALIZATION_LIMITS.glossaryText) };
+    });
+    if (new Set(entries.map((entry) => entry.source)).size !== entries.length) fail(`${glossaryPath}.entries`, "duplicate glossary source");
+    glossary = { version: version(glossarySource.version, `${glossaryPath}.version`), entries, reviewed: bool(glossarySource.reviewed, `${glossaryPath}.reviewed`) };
+  }
   return {
     version: version(source.version, `${path}.version`), autoDraft: bool(source.autoDraft, `${path}.autoDraft`),
     translator: { connected: bool(translator.connected, `${path}.translator.connected`) },
     queue: { waiting: count(queue.waiting, `${path}.queue.waiting`), failed: count(queue.failed, `${path}.queue.failed`), nextRetryAt: timestamp(queue.nextRetryAt, `${path}.queue.nextRetryAt`) },
+    ...(glossary === undefined ? {} : { glossary }),
   };
 }
 function locale(value: unknown, path: string): LocalizationLocale {

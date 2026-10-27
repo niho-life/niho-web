@@ -164,8 +164,11 @@ export function createKamakuraLocalizationAdapter(options: KamakuraLocalizationA
       return settle(await call("POST", "release/apply", { confirmationToken, resumeToken }, signal), (value) => parseLocaleReleaseApplyResult(value, { prepared: null }));
     },
 
-    async saveSettings({ expectedVersion, autoDraft }, signal) {
-      return settle(await call("PUT", "settings", { expectedVersion, autoDraft }, signal), parseLocalizationSettingsResult);
+    async saveSettings(input, signal) {
+      const body = "autoDraft" in input
+        ? { expectedVersion: input.expectedVersion, autoDraft: input.autoDraft }
+        : { expectedVersion: input.expectedVersion, reviewGlossaryVersion: input.reviewGlossaryVersion };
+      return settle(await call("PUT", "settings", body, signal), parseLocalizationSettingsResult);
     },
 
     async uploadImage({ itemKey, unitId, file }, signal) {

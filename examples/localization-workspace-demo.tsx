@@ -13,6 +13,7 @@ type Preset = keyof typeof presets;
 
 const memory = createLocalizationMemory({
   firstRelease: new URLSearchParams(location.search).get("first") === "1",
+  glossary: new URLSearchParams(location.search).get("glossary") === "1",
   frameUrl: `${location.origin}/frame.html`,
   mediaBase: "/media",
   pageSize: 2,
