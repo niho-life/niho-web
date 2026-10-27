@@ -14,7 +14,7 @@ function focusableElements(overlay: HTMLElement): HTMLElement[] {
   });
 }
 
-/** 検証済みdata属性だけを解釈する、公開SSRとeditor preview共通のoverlay runtime。 */
+/** 検証済みdata属性だけを解釈する、公開SSRとeditor preview共通の標準操作runtime。 */
 export function initializeSitePresentation(scope: ParentNode = document, options: { interactive?: boolean } = {}): () => void {
   const ownerDocument = scope.nodeType === 9 ? scope as Document : (scope as Node).ownerDocument;
   if (!ownerDocument) return () => {};
@@ -50,6 +50,38 @@ export function initializeSitePresentation(scope: ParentNode = document, options
   }
   // Frame sizing is required while editing too. Navigation and animation are preview-only.
   if (options.interactive === false) return () => { for (const cleanup of cleanups.splice(0)) cleanup(); };
+  for (const root of Array.from(scope.querySelectorAll<HTMLElement>("[data-nw-video-with-button]"))) {
+    const direct = Array.from(root.children), video = direct.find((child): child is HTMLVideoElement => child.tagName === "VIDEO" && child.hasAttribute("data-nw-video"));
+    const control = direct.find((child): child is HTMLButtonElement => child.tagName === "BUTTON" && child.hasAttribute("data-nw-video-toggle"));
+    if (!video || !control || control.disabled) continue;
+    const original = { label: control.getAttribute("aria-label"), pressed: control.getAttribute("aria-pressed"), text: control.textContent };
+    const pausedLabel = original.label || "動画を再生", pausedText = original.text?.trim() || "再生";
+    let active = true;
+    const renderVideoState = () => {
+      if (!active) return;
+      const playing = !video.paused && !video.ended;
+      control.setAttribute("aria-label", playing ? "動画を一時停止" : pausedLabel);
+      control.setAttribute("aria-pressed", String(playing));
+      control.textContent = playing ? "一時停止" : pausedText;
+    };
+    listen(control, "click", ((event: Event) => {
+      event.preventDefault(); event.stopPropagation();
+      if (!video.paused && !video.ended) { video.pause(); renderVideoState(); return; }
+      try {
+        const result = video.play();
+        if (result && typeof result.catch === "function") void result.then(renderVideoState, renderVideoState);
+        else renderVideoState();
+      } catch { renderVideoState(); }
+    }) as EventListener);
+    for (const type of ["play", "pause", "ended", "emptied", "error"]) listen(video, type, renderVideoState as EventListener);
+    renderVideoState();
+    cleanups.push(() => {
+      active = false;
+      if (original.label === null) control.removeAttribute("aria-label"); else control.setAttribute("aria-label", original.label);
+      if (original.pressed === null) control.removeAttribute("aria-pressed"); else control.setAttribute("aria-pressed", original.pressed);
+      control.textContent = original.text;
+    });
+  }
   for (const root of Array.from(scope.querySelectorAll<HTMLElement>("[data-nw-carousel]"))) {
     const id = root.dataset.nwCarousel;
     if (!id) continue;

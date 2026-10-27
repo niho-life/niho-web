@@ -136,6 +136,22 @@ test("icons and videos render accessibly in SSR and unresolved video assets fail
   assert.ok(canvas.includes('poster="https://site.example/poster.webp"'));
 });
 
+test("VideoWithButton SSR keeps native controls and emits only the closed runtime binding", () => {
+  const doc = structuredClone(fixture);
+  doc.body = [{ type: "element", id: "video-box", tag: "div", interaction: { type: "video-toggle" }, style: { base: { position: "relative" } }, children: [
+    { type: "element", id: "movie", tag: "video", attrs: { src: "/intro.mp4", "aria-label": "紹介動画", controls: true, preload: "metadata" }, children: [] },
+    { type: "element", id: "toggle", tag: "button", attrs: { type: "button", "aria-label": "動画を再生", "aria-pressed": "false" }, style: { base: { position: "absolute", right: 16, bottom: 16 } }, children: [{ type: "text", text: "再生" }] }
+  ] }];
+  const html = renderPageToHtml(doc);
+  assert.match(html, /data-nw-video-with-button=""/); assert.match(html, /<video[^>]*controls=""[^>]*data-nw-video=""/);
+  assert.match(html, /<button[^>]*aria-label="動画を再生"[^>]*aria-pressed="false"[^>]*data-nw-video-toggle=""/);
+  assert.match(html, /position:absolute/); assert.ok(!html.includes("autoplay")); assert.ok(!html.includes("onclick"));
+
+  doc.body[0].children[0].attrs = { "aria-label": "未設定動画", controls: true };
+  const empty = renderToString(createElement(PageRenderer, { document: doc, missingAssets: "placeholder" }));
+  assert.match(empty, /動画を選んでください/); assert.match(empty, /data-nw-video-toggle=""[^>]*disabled=""/);
+});
+
 test("closed standard embeds render fixed trusted iframe attributes and empty sources make no request", () => {
   const doc = structuredClone(fixture);
   doc.body = [

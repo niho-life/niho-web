@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { cssForSitePresentation, initializeSitePresentation, parsePageDocument, parseSitePresentation, presentationAssetDocument } from "@niho/web/core";
-import { renderSitePageToHtml } from "@niho/web/server";
+import { renderPageToHtml, renderSitePageToHtml } from "@niho/web/server";
 import { createExternalFramePolicy } from "@niho/web";
 import { JSDOM } from "jsdom";
 
@@ -26,6 +26,26 @@ const siteWithMenu = (siteId = "synthetic", locale = "en") => {
     ] }]) }];
   return presentation;
 };
+
+test("public runtime toggles VideoWithButton by click and native media events, then cleans up", async () => {
+  const document = page("synthetic", "en", "video", [{ type: "element", id: "video-box", tag: "div", interaction: { type: "video-toggle" }, children: [
+    { type: "element", id: "movie", tag: "video", attrs: { src: "/intro.mp4", "aria-label": "Intro", controls: true }, children: [] },
+    { type: "element", id: "toggle", tag: "button", attrs: { type: "button", "aria-label": "動画を視聴", "aria-pressed": "false" }, children: [{ type: "text", text: "見る" }] }
+  ] }]);
+  const dom = new JSDOM(`<!doctype html><body>${renderPageToHtml(document)}</body>`), video = dom.window.document.querySelector("video"), control = dom.window.document.querySelector("button");
+  let paused = true, plays = 0, pauses = 0;
+  Object.defineProperty(video, "paused", { configurable: true, get: () => paused });
+  Object.defineProperty(video, "ended", { configurable: true, get: () => false });
+  video.play = () => { plays++; paused = false; video.dispatchEvent(new dom.window.Event("play")); return Promise.resolve(); };
+  video.pause = () => { pauses++; paused = true; video.dispatchEvent(new dom.window.Event("pause")); };
+  const cleanup = initializeSitePresentation(dom.window.document);
+  control.click(); await Promise.resolve();
+  assert.equal(plays, 1); assert.equal(control.getAttribute("aria-label"), "動画を一時停止"); assert.equal(control.getAttribute("aria-pressed"), "true"); assert.equal(control.textContent, "一時停止");
+  control.click(); assert.equal(pauses, 1); assert.equal(control.getAttribute("aria-label"), "動画を視聴"); assert.equal(control.getAttribute("aria-pressed"), "false"); assert.equal(control.textContent, "見る");
+  paused = false; video.dispatchEvent(new dom.window.Event("play")); assert.equal(control.getAttribute("aria-pressed"), "true", "native controls also synchronize the button");
+  cleanup(); assert.equal(control.getAttribute("aria-label"), "動画を視聴"); assert.equal(control.getAttribute("aria-pressed"), "false"); assert.equal(control.textContent, "見る");
+  control.click(); assert.equal(plays, 1, "cleanup removes the binding"); dom.window.close();
+});
 
 test("native presentation is generic and canvas/SSR share one reset, font and scoped composition", () => {
   const document = page("synthetic-two", "fr", "business", [element("body-copy", "p", "Body copy")]);

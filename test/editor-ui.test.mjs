@@ -163,6 +163,37 @@ test("Basic Icon and Video can be selected, edited, saved, reloaded and rendered
     assert.ok(video.includes('poster="/poster.webp"')); assert.ok(video.includes('loop=""')); assert.ok(!video.includes("controls=")); assert.ok(!video.includes("autoplay"));
   } finally { await app.cleanup(); }
 });
+test("VideoWithButton saves and reloads its closed tree, stays inert while editing and runs in preview", async () => {
+  const app = await setup();
+  try {
+    await click("追加");
+    const card = document.querySelector('.e-preset-preview[data-preset="video-with-button"]')?.closest("button");
+    assert.ok(card); assert.equal(card.closest(".e-palette-group").querySelector("h3").textContent, "インタラクション");
+    await act(async () => card.click()); await settle();
+    let frame = document.querySelector("iframe"), rootElement = frame.contentDocument.querySelector("[data-nw-video-with-button]"), video = frame.contentDocument.querySelector("[data-nw-video]"), control = frame.contentDocument.querySelector("[data-nw-video-toggle]");
+    assert.equal(video, null); assert.equal(control.disabled, true, "source未設定では外部要求も無効な操作も行わない");
+    const rootId = rootElement.dataset.nwNode;
+    const storedRoot = () => app.stored().body.find((node) => node.id === rootId);
+    const videoId = rootElement.querySelector("[data-nw-missing-asset]").dataset.nwNode;
+    await clickCanvas(videoId); await change(input("動画 URL"), "/intro.mp4"); await settle();
+    frame = document.querySelector("iframe"); video = frame.contentDocument.querySelector("[data-nw-video]"); control = frame.contentDocument.querySelector("[data-nw-video-toggle]");
+    let plays = 0; video.play = () => { plays++; return Promise.resolve(); };
+    await act(async () => control.click()); await settle(); assert.equal(plays, 0, "edit canvas does not bind playback");
+    await click("下書き保存");
+    assert.deepEqual(storedRoot().interaction, { type: "video-toggle" }); assert.equal(storedRoot().children[0].attrs.src, "/intro.mp4");
+    await click("最新の文書を再読込"); await settle();
+    assert.ok(document.querySelector("iframe").contentDocument.querySelector("[data-nw-video-with-button]"));
+    await click("プレビュー"); await settle();
+    frame = document.querySelector("iframe"); video = frame.contentDocument.querySelector("[data-nw-video]"); control = frame.contentDocument.querySelector("[data-nw-video-toggle]");
+    let paused = true;
+    Object.defineProperty(video, "paused", { configurable: true, get: () => paused });
+    Object.defineProperty(video, "ended", { configurable: true, get: () => false });
+    video.play = () => { plays++; paused = false; video.dispatchEvent(new frame.contentWindow.Event("play")); return Promise.resolve(); };
+    video.pause = () => { paused = true; video.dispatchEvent(new frame.contentWindow.Event("pause")); };
+    await act(async () => control.click()); await settle();
+    assert.equal(plays, 1); assert.equal(control.getAttribute("aria-label"), "動画を一時停止"); assert.equal(control.getAttribute("aria-pressed"), "true"); assert.equal(video.controls, true);
+  } finally { await app.cleanup(); }
+});
 test("Basic embeds expose the existing card UI, normalize inspector input and survive save/reload", async () => {
   const app = await setup();
   const addPreset = async (id) => {

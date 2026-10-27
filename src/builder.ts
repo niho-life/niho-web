@@ -1,6 +1,6 @@
 import { parsePageDocument } from "./document.js";
 import { walkNodes, type NodePath } from "./node-tree.js";
-import { carouselPreset, togglePreset } from "./interaction-presets.js";
+import { carouselPreset, togglePreset, videoWithButtonPreset } from "./interaction-presets.js";
 import { stateNames, stateProperties } from "./style-values.js";
 import type { SiteStyles } from "./site-styles.js";
 import type {
@@ -257,6 +257,7 @@ export const standardBuilderDefinition: BuilderDefinition = {
     { id: "a", label: "リンク", group: "文字", glyph: "↗", create: ({ id }) => element(id, "a", "リンク") },
     { id: "carousel", label: "カルーセル", group: "インタラクション", glyph: "⇆", create: ({ id }) => carouselPreset(id) },
     { id: "toggle", label: "トグル（開閉）", group: "インタラクション", glyph: "▾", create: ({ id }) => togglePreset(id) },
+    { id: "video-with-button", label: "VideoWithButton", description: "動画に重なる再生・一時停止ボタン", group: "インタラクション", glyph: "▶", create: ({ id }) => videoWithButtonPreset(id) },
     ...formInsertionPresets,
     ...partInsertionPresets,
     ...sectionInsertionPresets
