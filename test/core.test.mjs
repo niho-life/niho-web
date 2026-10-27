@@ -127,7 +127,7 @@ test("built-in icons and native videos use closed, accessible document shapes", 
   reject(linked);
 });
 
-test("standard embeds normalize only closed Map, YouTube, Vimeo and Lottie sources", () => {
+test("standard embeds normalize only closed Map, YouTube, Vimeo, Lottie and Facebook sources", () => {
   const sources = [
     ["youtube", "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ"],
     ["youtube", "https://youtube.com/embed/dQw4w9WgXcQ", "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ"],
@@ -138,7 +138,10 @@ test("standard embeds normalize only closed Map, YouTube, Vimeo and Lottie sourc
     ["vimeo", "https://player.vimeo.com/video/123456789?h=Unlisted_1", "https://player.vimeo.com/video/123456789?h=Unlisted_1"],
     ["map", "https://www.google.com/maps/embed?pb=!1m18!2m3%20Public%20Place", "https://www.google.com/maps/embed?pb=!1m18!2m3%20Public%20Place"],
     ["lottie", "https://lottie.host/123E4567-E89B-42D3-A456-426614174000/intro-animation.json", "https://lottie.host/embed/123e4567-e89b-42d3-a456-426614174000/intro-animation.json"],
-    ["lottie", "https://lottie.host/embed/123e4567-e89b-42d3-a456-426614174000/intro.lottie", "https://lottie.host/embed/123e4567-e89b-42d3-a456-426614174000/intro.lottie"]
+    ["lottie", "https://lottie.host/embed/123e4567-e89b-42d3-a456-426614174000/intro.lottie", "https://lottie.host/embed/123e4567-e89b-42d3-a456-426614174000/intro.lottie"],
+    ["facebook", "https://facebook.com/example.page/posts/123456789/", "https://www.facebook.com/example.page/posts/123456789"],
+    ["facebook", "https://www.facebook.com/Engineering/posts/a-public-announcement/1091181673044313/", "https://www.facebook.com/Engineering/posts/1091181673044313"],
+    ["facebook", "https://www.facebook.com/permalink.php?story_fbid=pfbid012345678901234567890&id=123456789", "https://www.facebook.com/permalink.php?story_fbid=pfbid012345678901234567890&id=123456789"]
   ];
   for (const [provider, source, expected] of sources) assert.equal(normalizeEmbedSource(provider, source), expected);
   const input = doc(); input.body = sources.map(([provider, source], index) => ({
@@ -172,7 +175,29 @@ test("standard embeds reject arbitrary iframe data and malformed provider URLs",
     ["lottie", "https://lottie.host/123e4567-e89b-42d3-a456-426614174000/a.json?autoplay=1"],
     ["lottie", "https://lottie.host/123e4567-e89b-42d3-a456-426614174000/a.json?"],
     ["lottie", "https://lottie.host/123e4567-e89b-42d3-a456-426614174000/a.json#fragment"],
-    ["lottie", "https://lottie.host/123e4567-e89b-42d3-a456-426614174000/a.json#"]
+    ["lottie", "https://lottie.host/123e4567-e89b-42d3-a456-426614174000/a.json#"],
+    ["facebook", "http://www.facebook.com/example/posts/123456789"],
+    ["facebook", "https://user@www.facebook.com/example/posts/123456789"],
+    ["facebook", "https://www.facebook.com:443/example/posts/123456789"],
+    ["facebook", "//www.facebook.com/example/posts/123456789"],
+    ["facebook", "https://m.facebook.com/example/posts/123456789"],
+    ["facebook", "https://www.facebook.com/example/videos/123456789"],
+    ["facebook", "https://www.facebook.com/groups/public/permalink/123456789"],
+    ["facebook", "https://www.facebook.com/share/p/AbCdEf/"],
+    ["facebook", "https://www.facebook.com/example/posts/123456789?comment_id=1"],
+    ["facebook", "https://www.facebook.com/example/posts/123456789#comments"],
+    ["facebook", "https://www.facebook.com/example%2Fposts%2F123456789"],
+    ["facebook", "https://www.facebook.com/example/posts/123%2F456"],
+    ["facebook", "https://www.facebook.com/example/posts/a%2Fslug/123456789"],
+    ["facebook", "https://www.facebook.com/example/posts/one/two/123456789"],
+    ["facebook", "https://www.facebook.com/example/../other/posts/123456789"],
+    ["facebook", "https://www.facebook.com/example/%2e%2e/other/posts/123456789"],
+    ["facebook", "https://www.facebook.com/example..page/posts/123456789"],
+    ["facebook", `https://www.facebook.com/${"1".repeat(33)}/posts/123456789`],
+    ["facebook", "https://www.facebook.com/permalink.php?story_fbid=123456789&id=123&next=https%3A%2F%2Fevil.example"],
+    ["facebook", "https://www.facebook.com/permalink.php?id=123&story_fbid=123456789"],
+    ["facebook", "https://www.facebook.com/permalink.php?story_fbid=123456789%26id%3D123&id=123"],
+    ["facebook", "<iframe src=\"https://www.facebook.com/example/posts/123456789\"></iframe>"]
   ];
   for (const [provider, source] of invalidSources) assert.throws(() => normalizeEmbedSource(provider, source), Error, `${provider}: ${source}`);
   const base = { type: "element", id: "embed", tag: "div", embed: { provider: "youtube", title: "動画", source: "https://youtu.be/dQw4w9WgXcQ" }, children: [] };

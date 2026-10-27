@@ -1,3 +1,5 @@
+import { normalizeEmbedSource } from "./embeds.js";
+
 type OverlayElement = HTMLElement & { hidden: boolean };
 
 const focusableSelector = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),summary,[tabindex]';
@@ -76,6 +78,39 @@ export function initializeSitePresentation(scope: ParentNode = document, options
     renderLottie();
     cleanups.push(() => lottieBindings.forEach((binding) => { binding.frame?.remove(); binding.frame = null; }));
   }
+  const facebookBindings = Array.from(scope.querySelectorAll<HTMLElement>('[data-nw-embed="facebook"][data-nw-facebook-source]')).flatMap((root) => {
+    if (root.hasAttribute("data-nw-facebook-static")) return [];
+    const source = root.dataset.nwFacebookSource ?? "", title = root.dataset.nwFacebookTitle ?? "";
+    const ViewHTMLElement = ownerDocument.defaultView?.HTMLElement;
+    const direct = ViewHTMLElement ? Array.from(root.children).filter((child): child is HTMLElement => child instanceof ViewHTMLElement) : [];
+    const player = direct.find((child) => child.hasAttribute("data-nw-facebook-player"));
+    const mount = ViewHTMLElement && player ? Array.from(player.children).find((child): child is HTMLElement => child instanceof ViewHTMLElement && child.hasAttribute("data-nw-facebook-frame-mount")) : undefined;
+    const status = mount?.querySelector<HTMLElement>("[data-nw-facebook-status]");
+    const button = player?.querySelector<HTMLButtonElement>("button[data-nw-facebook-load]");
+    const link = player?.querySelector<HTMLAnchorElement>("a[data-nw-facebook-link]");
+    let canonical = false;
+    try { canonical = normalizeEmbedSource("facebook", source) === source; } catch { /* Untrusted or edited runtime attributes stay static. */ }
+    return canonical && title.trim() && mount && status && button && link?.getAttribute("href") === source
+      ? [{ source, title, mount, status, button, frame: null as HTMLIFrameElement | null }]
+      : [];
+  });
+  for (const binding of facebookBindings) {
+    binding.button.hidden = false;
+    const activate = () => {
+      if (binding.frame?.isConnected) return;
+      const plugin = new URL("https://www.facebook.com/plugins/post.php");
+      plugin.searchParams.set("href", binding.source);
+      const frame = ownerDocument.createElement("iframe");
+      frame.src = plugin.href; frame.title = binding.title;
+      frame.setAttribute("loading", "lazy"); frame.setAttribute("referrerpolicy", "no-referrer"); frame.setAttribute("sandbox", "allow-scripts allow-same-origin");
+      frame.setAttribute("data-nw-facebook-frame", "");
+      frame.style.gridArea = "1 / 1"; frame.style.width = "100%"; frame.style.height = "100%"; frame.style.border = "0"; frame.style.display = "block";
+      if (binding.mount.closest("[data-nw-facebook-canvas]")) frame.style.pointerEvents = "none";
+      binding.mount.append(frame); binding.frame = frame; binding.status.style.visibility = "hidden"; binding.button.hidden = true;
+    };
+    listen(binding.button, "click", activate as EventListener);
+  }
+  cleanups.push(() => facebookBindings.forEach((binding) => { binding.frame?.remove(); binding.frame = null; binding.status.style.visibility = ""; binding.button.hidden = true; }));
   for (const root of Array.from(scope.querySelectorAll<HTMLElement>("[data-nw-loop-box]"))) {
     const view = ownerDocument.defaultView; if (!view) continue;
     const direct = Array.from(root.children), track = direct.find((child): child is HTMLElement => child instanceof view.HTMLElement && child.hasAttribute("data-nw-loop-box-track"));

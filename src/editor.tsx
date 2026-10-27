@@ -346,7 +346,7 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
       if (preview) {
         const target = asElement(event.target);
         if (target?.closest("summary")) return;
-        if (target?.closest("[data-nw-video-toggle],[data-nw-video-with-button] video")) return;
+        if (target?.closest("[data-nw-video-toggle],[data-nw-video-with-button] video,[data-nw-facebook-load]")) return;
         if (presentation && target?.closest("[data-nw-overlay-open],[data-nw-overlay-close],[data-nw-carousel-previous],[data-nw-carousel-next],[data-nw-carousel-play-pause]")) { event.preventDefault(); return; }
         const anchor = target?.closest<HTMLAnchorElement>("a[href]"), href = anchor?.getAttribute("href") ?? "";
         let targetId: string | undefined;
@@ -1618,9 +1618,9 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
           <small className="e-help">大きさと色は「文字」、余白や配置は「ボックス」で変更できます。</small>
         </>}
         {elementTab === "settings" && node.embed && <>
-          {field(node.embed.provider === "lottie" ? "LottieFiles Asset link" : "埋め込み URL", String(node.embed.source ?? ""), (value) => ({ type: "embedSource", path: selection, source: value }), "embed.source", { reason: reason("embed.source"), placeholder: node.embed.provider === "map" ? "https://www.google.com/maps/embed?pb=..." : node.embed.provider === "youtube" ? "https://www.youtube.com/watch?v=..." : node.embed.provider === "vimeo" ? "https://vimeo.com/..." : "https://lottie.host/00000000-0000-4000-8000-000000000000/animation.json" })}
+          {field(node.embed.provider === "lottie" ? "LottieFiles Asset link" : node.embed.provider === "facebook" ? "Facebook の投稿 URL" : "埋め込み URL", String(node.embed.source ?? ""), (value) => ({ type: "embedSource", path: selection, source: value }), "embed.source", { reason: reason("embed.source"), placeholder: node.embed.provider === "map" ? "https://www.google.com/maps/embed?pb=..." : node.embed.provider === "youtube" ? "https://www.youtube.com/watch?v=..." : node.embed.provider === "vimeo" ? "https://vimeo.com/..." : node.embed.provider === "facebook" ? "https://www.facebook.com/example/posts/123456789" : "https://lottie.host/00000000-0000-4000-8000-000000000000/animation.json" })}
           {field("アクセシブルなタイトル", node.embed.title, (value) => ({ type: "embedTitle", path: selection, title: value }), "embed.title", { reason: reason("embed.title") })}
-          <small className="e-help">{node.embed.provider === "map" ? "Google Maps の共有画面にある「地図を埋め込む」の URL だけを使用できます。" : node.embed.provider === "youtube" ? "YouTube の動画 URL をプライバシー強化モードの埋め込み先へ変換します。" : node.embed.provider === "vimeo" ? "Vimeo の動画 URL を安全な player URL へ変換します。" : "LottieFiles の Handoff & Embed で取得した lottie.host の Asset link（.json / .lottie）または /embed/ URL を使用できます。動きを減らす設定では読み込みません。"}</small>
+          <small className="e-help">{node.embed.provider === "map" ? "Google Maps の共有画面にある「地図を埋め込む」の URL だけを使用できます。" : node.embed.provider === "youtube" ? "YouTube の動画 URL をプライバシー強化モードの埋め込み先へ変換します。" : node.embed.provider === "vimeo" ? "Vimeo の動画 URL を安全な player URL へ変換します。" : node.embed.provider === "facebook" ? "公開投稿の facebook.com URL だけを使用できます。編集画面では読み込まず、プレビューと公開ページでも「Facebook の投稿を表示」を押すまで外部通信しません。" : "LottieFiles の Handoff & Embed で取得した lottie.host の Asset link（.json / .lottie）または /embed/ URL を使用できます。動きを減らす設定では読み込みません。"}</small>
         </>}
         {((elementTab === "settings" && node.tag === "a") || (elementTab === "image" && node.tag === "img")) && [...(node.tag === "a" ? [["href", "リンク先 URL"]] : []), ...(node.tag === "img" ? [["alt", "画像の説明"]] : [])].map(([name, caption]) => field(caption!, String(node.attrs?.[name!] ?? ""), (value) => ({ type: "attribute", path: selection, name: name!, value }), `attrs.${name}`, { reason: reason(`attrs.${name}`) }))}</>}
       {elementTab === "settings" && node?.type === "component" && selection && <><p className="e-help">表示用 props のみ編集できます。データ連動値はホストが管理します。</p>{!blocks[node.block]!.settings && Object.entries(blocks[node.block]!.props).map(([name, rule]) => {

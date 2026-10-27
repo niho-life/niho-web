@@ -174,6 +174,7 @@ test("closed standard embeds render fixed trusted iframe attributes and empty so
     { type: "element", id: "youtube", tag: "div", embed: { provider: "youtube", title: "紹介動画", source: "https://youtu.be/dQw4w9WgXcQ" }, children: [] },
     { type: "element", id: "vimeo", tag: "div", embed: { provider: "vimeo", title: "作品動画", source: "https://vimeo.com/123456789?h=Unlisted_1" }, children: [] },
     { type: "element", id: "lottie", tag: "div", embed: { provider: "lottie", title: "読み込み中も伝わるアニメーション", source: "https://lottie.host/123e4567-e89b-42d3-a456-426614174000/intro.json" }, children: [] },
+    { type: "element", id: "facebook", tag: "div", embed: { provider: "facebook", title: "公開されたお知らせ", source: "https://facebook.com/example.page/posts/123456789/" }, children: [] },
     { type: "element", id: "empty", tag: "div", embed: { provider: "map", title: "準備中の地図" }, children: [] }
   ];
   const html = renderPageToHtml(doc);
@@ -185,14 +186,20 @@ test("closed standard embeds render fixed trusted iframe attributes and empty so
   assert.match(html, /src="https:\/\/player\.vimeo\.com\/video\/123456789\?h=Unlisted_1"/);
   assert.match(html, /data-nw-embed="lottie"[^>]*data-nw-lottie-source="https:\/\/lottie\.host\/embed\/123e4567-e89b-42d3-a456-426614174000\/intro\.json"/);
   assert.match(html, /data-nw-lottie-fallback=""[^>]*role="img"[^>]*aria-label="読み込み中も伝わるアニメーション"/);
-  assert.equal((html.match(/<iframe/g) ?? []).length, 3, "Lottie SSR must not start a network request");
+  assert.match(html, /data-nw-embed="facebook"[^>]*data-nw-facebook-source="https:\/\/www\.facebook\.com\/example\.page\/posts\/123456789"/);
+  assert.match(html, /data-nw-facebook-status=""[^>]*role="status"[^>]*>Facebook の投稿はまだ読み込まれていません。<\/span>/);
+  assert.match(html, /href="https:\/\/www\.facebook\.com\/example\.page\/posts\/123456789"[^>]*target="_blank"[^>]*rel="noopener noreferrer"/);
+  assert.match(html, /data-nw-facebook-load="" hidden=""[^>]*>Facebook の投稿を表示<\/button>/);
+  assert.equal((html.match(/<iframe/g) ?? []).length, 3, "Lottie and Facebook SSR must not start a network request");
+  assert.ok(!html.includes("/plugins/post.php"));
   assert.ok(!html.includes('src="https://lottie.host/')); assert.ok(!html.includes(" inert="), "SSR markup avoids React 18/19 boolean inert serialization");
   assert.ok(!html.includes("javascript:")); assert.ok(!html.includes("srcDoc=")); assert.ok(!html.includes("pointer-events"));
   const placeholder = renderToString(createElement(PageRenderer, { document: doc, missingAssets: "placeholder" }));
   assert.match(placeholder, /data-nw-node="empty"[^>]*data-nw-empty-embed="map"[^>]*role="status"[^>]*>Map の URL を設定してください<\/div>/);
   const canvas = renderToString(createElement(PageRenderer, { document: doc, canvas: {} }));
   assert.match(canvas, /<iframe[^>]*style="[^"]*pointer-events:none/);
-  assert.equal((canvas.match(/<iframe/g) ?? []).length, 3, "the edit canvas also keeps Lottie static");
+  assert.match(canvas, /data-nw-embed="facebook"[^>]*data-nw-facebook-static=""/);
+  assert.equal((canvas.match(/<iframe/g) ?? []).length, 3, "the edit canvas also keeps Lottie and Facebook static");
 });
 
 test("unsafe resolved asset maps throw before any block executes", () => {

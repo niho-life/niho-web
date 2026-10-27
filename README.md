@@ -32,11 +32,11 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 
 | 入口 | 用途 |
 | --- | --- |
-| `@niho/web` | JSON 型、`validateDocument` / `parsePageDocument`、閉じた組み込みアイコン・フォーム・Map / YouTube / Vimeo / Lottie埋め込み・VideoWithButton・Loop Box、CSS、画像・native動画を含む React SSR の `PageRenderer` |
+| `@niho/web` | JSON 型、`validateDocument` / `parsePageDocument`、閉じた組み込みアイコン・フォーム・Map / YouTube / Vimeo / Lottie / Facebook埋め込み・VideoWithButton・Loop Box、CSS、画像・native動画を含む React SSR の `PageRenderer` |
 | `@niho/web/core` | 検証・文書型・embed URL正規化・CSS・共通部品の検証と展開だけの入口。React の runtime import を含みません |
 | `@niho/web/builder` | 汎用の挿入カタログ、モーション定義、host拡張の型と検証。React非依存 |
 | `@niho/web/react` | `PageRenderer` とブロック registry の型 |
-| `@niho/web/presentation-runtime` | SSR後の検証済みDOMへ、native presentation、VideoWithButton、Loop Box、reduced-motion対応Lottie playerの標準操作を接続するclient runtime。返されたcleanupを再初期化前に呼ぶ |
+| `@niho/web/presentation-runtime` | SSR後の検証済みDOMへ、native presentation、VideoWithButton、Loop Box、reduced-motion対応Lottie player、明示操作後だけ読み込むFacebook投稿の標準操作を接続するclient runtime。返されたcleanupを再初期化前に呼ぶ |
 | `@niho/web/server` | Astro の build / server で使える `renderPageToHtml` |
 | `@niho/web/editor` | 認証済みホストadapterへ接続する `PageEditor` と型。50pxの左ツール列＋300pxの追加パネル、左レールの版履歴、300pxの右インスペクタ、サイトごとに設定できる表示幅・端末切替の下部ツールバーとキャンバス左右端の表示幅ドラッグを共通化する。`initialTarget`、任意の日英切替、許可ブロック、trusted host 固有の設定 UI を扱う。原文 snapshot の任意な英語公開状態と、安全な明示更新・再試行も本文 version と独立して扱う。Kamakura の日英一覧は Studio BFF の `localization/editor/site`、English キャンバスは `editor/pages/:pageId/snapshot` から読み、保存はサイト側の正本 overlay へ戻す（[編集・公開契約](docs/editor-contract.md)、[多言語 editor 契約](docs/localization-editor.md)、[ManagedEmbed 契約](docs/managed-embed-contract.md)）。React / React DOM が必要 |
 | `@niho/web/projects` | 1 Project = 1 Site の検証、純粋操作、atomic CAS契約。React不要 |
@@ -114,7 +114,7 @@ export default function Page() {
 }
 ```
 
-`PageRenderer` は `useEffect` やクライアントでの JSON fetch を必要としません。scoped `<style>` と本文の `<div lang="…">` を返します。`title` は文書の情報として保持し、Next.js の `metadata` / Astro の `<head>` へ設定するのは利用側の責務です。読み込む文書を site / page / locale から選ぶ処理も利用側に置きます。VideoWithButton・Loop Box・Lottieを公開ページで動かす場合は、client側で `initializeSitePresentation(document)` を1回呼び、再初期化前にcleanupします。LottieはSSRで静的fallbackだけを返し、このruntimeを呼ばない限り外部playerを読み込みません。runtimeも`prefers-reduced-motion: reduce`ではplayerを読み込まず、設定変更に追従します。Loop Boxはruntimeが無くても元内容を1組SSRし、runtime起動時だけ画面幅を満たす非アクセシブルな複製を作って無限スクロールします。文書が保存するのは検証済みの固定構造と閉じたdescriptorだけで、イベントコードは保存しません。フォームはアクセシブルなlabel・required・選択肢をSSRしますが、既定では送信しません。回答送信、ファイル保存、完了画面、検証・CSRF・認可はホストがtrusted codeで接続し、action URLやイベントコードをページJSONへ保存しません（[フォーム契約](docs/document-contract.md#フォーム)）。
+`PageRenderer` は `useEffect` やクライアントでの JSON fetch を必要としません。scoped `<style>` と本文の `<div lang="…">` を返します。`title` は文書の情報として保持し、Next.js の `metadata` / Astro の `<head>` へ設定するのは利用側の責務です。読み込む文書を site / page / locale から選ぶ処理も利用側に置きます。VideoWithButton・Loop Box・Lottie・Facebook投稿を公開ページで動かす場合は、client側で `initializeSitePresentation(document)` を1回呼び、再初期化前にcleanupします。LottieはSSRで静的fallbackだけを返し、このruntimeを呼ばない限り外部playerを読み込みません。runtimeも`prefers-reduced-motion: reduce`ではplayerを読み込まず、設定変更に追従します。Facebook投稿はSSRと編集canvasで投稿リンクと静的状態だけを返し、runtimeが表示したボタンを訪問者が押した後にだけ公式plugin iframeを生成します。投稿が非公開・削除済みの場合やブラウザがiframeを拒否した場合もリンクは残ります。Loop Boxはruntimeが無くても元内容を1組SSRし、runtime起動時だけ画面幅を満たす非アクセシブルな複製を作って無限スクロールします。文書が保存するのは検証済みの固定構造と閉じたdescriptorだけで、イベントコードは保存しません。フォームはアクセシブルなlabel・required・選択肢をSSRしますが、既定では送信しません。回答送信、ファイル保存、完了画面、検証・CSRF・認可はホストがtrusted codeで接続し、action URLやイベントコードをページJSONへ保存しません（[フォーム契約](docs/document-contract.md#フォーム)）。
 
 ## 登録済み動的ブロック
 
@@ -190,7 +190,7 @@ const html = renderPageToHtml(document);
 ## 検証と対応範囲
 
 - 未知フィールド、schema の版違い、重複 ID、画像の `alt` 不足、代表的な不正 HTML の入れ子を拒否します。
-- アイコンは閉じた名前カタログだけを保存し、任意 SVG/HTML を受け付けません。動画は HTTPS / root-relative URL または asset 参照の一方を持つか、編集中はソース未設定にでき、アクセシブル名と限定した media 属性を検証します。asset URL は文書へ保存しません。標準embedはMap / YouTube / Vimeoだけをprovider固有URLへ正規化し、任意iframe HTML・src・sandbox・JavaScriptを受け付けません。
+- アイコンは閉じた名前カタログだけを保存し、任意 SVG/HTML を受け付けません。動画は HTTPS / root-relative URL または asset 参照の一方を持つか、編集中はソース未設定にでき、アクセシブル名と限定した media 属性を検証します。asset URL は文書へ保存しません。標準embedはMap / YouTube / Vimeo / Lottie / Facebookだけをprovider固有URLへ正規化し、任意iframe HTML・src・sandbox・JavaScriptを受け付けません。
 - HTML タグ・属性・CSS プロパティは許可リスト方式です。任意 HTML / CSS / selector / JavaScript / event handler は扱いません。
 - URL は資格情報のない HTTPS、`/` から始まる同一サイト内パス、`#id` に限定します。HTTP、protocol relative、data、javascript、制御文字を含む値を拒否します。
 - 色・フォント・寸法・余白・Flex・Grid・位置・画像の収まり等を扱います。名前付きの文字スタイル（`textStyles`）と表示名付きの token で見た目を共通化できます。任意 CSS 関数や `url()` は許可しません。背景画像は素材参照だけを指定でき、`url()` はホストが解決した安全な URL から描画時に生成します。数値の寸法は px、line-height 等の数値プロパティは単位なしです。
@@ -200,7 +200,7 @@ const html = renderPageToHtml(document);
 
 ## 開発
 
-スタッフ向けエディターは `@niho/web/editor` の `PageEditor` を使います。左の追加パネルは Basic / Parts / Sections に分かれ、Basic のセクション・ボックス・画像・テキスト・組み込みアイコン・リッチテキスト・native動画、埋め込み群のMap / YouTube / Vimeo、Form1/2/3とInput・Textarea・Select・Radio・Confirm・Checkbox・File・Submit・Search・Passwordに加えて、編集可能なボタン・カード・見出しセット・リストと、ヘッダー・ヒーロー・特徴グリッド・CTA・FAQ・フッターをクリックまたはドラッグで配置できます。フォーム名、項目名、必須、入力型、placeholder、選択肢、checkbox label、file accept、submit captionは右インスペクタで編集できます。動画は直接URLまたは素材ライブラリのready MP4を選び、配信URLを文書へ保存しません。標準埋め込みはprovider固定のままURLとアクセシブルなタイトルを編集し、未設定なら公開出力から省きます。ページ・レイヤーパネル、中央キャンバスでの直接文字編集とドラッグ配置、右インスペクタ（編集段と表示段の要約、幅・高さ、マージン、パディング、方向、ギャップ、9点＋横・縦の配置、外観、位置。`flex` 比率と高さの `dvh` を含む）、下書き保存、楽観ロック、公開/rollbackの対象ドメインと差分確認も提供します。[ホスト接続・編集・公開の契約](docs/editor-contract.md)と `npm run demo` のインメモリ動作例を参照してください。ホストが所有する表示部品（カレンダー・地図・カルーセル・一覧など）をキャンバスの同じ iframe に公開と同じ見た目で出すには、`PageEditor` の `previewComponent` に表示中の文書・幅・表示モード・従来の描画を受けるコンポーネントを渡します（[ホストの表示部品を同じ iframe へ差し込む](docs/editor-contract.md#ホストの表示部品を同じ-iframe-へ差し込む)、`npm run demo:host-preview`）。
+スタッフ向けエディターは `@niho/web/editor` の `PageEditor` を使います。左の追加パネルは Basic / Parts / Sections に分かれ、Basic のセクション・ボックス・画像・テキスト・組み込みアイコン・リッチテキスト・native動画、埋め込み群のMap / YouTube / Vimeo / Lottie / Facebook、Form1/2/3とInput・Textarea・Select・Radio・Confirm・Checkbox・File・Submit・Search・Passwordに加えて、編集可能なボタン・カード・見出しセット・リストと、ヘッダー・ヒーロー・特徴グリッド・CTA・FAQ・フッターをクリックまたはドラッグで配置できます。フォーム名、項目名、必須、入力型、placeholder、選択肢、checkbox label、file accept、submit captionは右インスペクタで編集できます。動画は直接URLまたは素材ライブラリのready MP4を選び、配信URLを文書へ保存しません。標準埋め込みはprovider固定のままURLとアクセシブルなタイトルを編集し、未設定なら公開出力から省きます。ページ・レイヤーパネル、中央キャンバスでの直接文字編集とドラッグ配置、右インスペクタ（編集段と表示段の要約、幅・高さ、マージン、パディング、方向、ギャップ、9点＋横・縦の配置、外観、位置。`flex` 比率と高さの `dvh` を含む）、下書き保存、楽観ロック、公開/rollbackの対象ドメインと差分確認も提供します。[ホスト接続・編集・公開の契約](docs/editor-contract.md)と `npm run demo` のインメモリ動作例を参照してください。ホストが所有する表示部品（カレンダー・地図・カルーセル・一覧など）をキャンバスの同じ iframe に公開と同じ見た目で出すには、`PageEditor` の `previewComponent` に表示中の文書・幅・表示モード・従来の描画を受けるコンポーネントを渡します（[ホストの表示部品を同じ iframe へ差し込む](docs/editor-contract.md#ホストの表示部品を同じ-iframe-へ差し込む)、`npm run demo:host-preview`）。
 
 Studioへの新しいサイト接続と、独自挿入・motion・block・共通部品・画像・CAS保存・SSRを持つ第三サイト `atelier` の動作例は[ビルダー接続ガイド](docs/builder-integration-guide.md)を参照してください。`npm run demo:builder` で `127.0.0.1` 限定のdemoを起動できます。
 

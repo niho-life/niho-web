@@ -45,7 +45,7 @@ runtime複製は`aria-hidden`かつ`inert`で、focus可能要素をtab順から
 
 ### 標準埋め込み
 
-Map / YouTube / Vimeo / Lottie は `tag: "div"` の element に `embed: { provider, title, source? }` を持たせます。`provider` は `map | youtube | vimeo | lottie` の閉じた値、`title` は空でない300文字以内の1行、`source` は任意です。embed node の `children` は空で、`asset` / `icon` を併用できません。文書から iframe tag、HTML、`src` 属性、sandbox、allow、referrer policy、loading、JavaScript、任意originを渡す入口はありません。provider は挿入時に固定し、editor は `embedSource` と `embedTitle` の専用操作だけで値を更新します。
+Map / YouTube / Vimeo / Lottie / Facebook は `tag: "div"` の element に `embed: { provider, title, source? }` を持たせます。`provider` は `map | youtube | vimeo | lottie | facebook` の閉じた値、`title` は空でない300文字以内の1行、`source` は任意です。embed node の `children` は空で、`asset` / `icon` を併用できません。文書から iframe tag、HTML、`src` 属性、sandbox、allow、referrer policy、loading、JavaScript、任意originを渡す入口はありません。provider は挿入時に固定し、editor は `embedSource` と `embedTitle` の専用操作だけで値を更新します。
 
 入力URLは資格情報・port・fragmentのないHTTPSだけを受け、providerごとに次の形へ正規化します。HTTP、任意host、`javascript:` / `data:`、iframe markup、許可外queryを拒否します。YouTubeの共有リンクに付く`si`は検証後に取り除きます。
 
@@ -53,14 +53,17 @@ Map / YouTube / Vimeo / Lottie は `tag: "div"` の element に `embed: { provid
 - Vimeo は `vimeo.com/数字ID` または `player.vimeo.com/video/数字ID` を受けます。任意の単一 `h` query は安全なunlisted hashとして保持し、`https://player.vimeo.com/video/ID`（必要なら `?h=…`）を保存します。
 - Map は `https://www.google.com/maps/embed?pb=...` だけを受けます。`/maps/embed/v1` とAPI key方式は対象外です。`pb` は最大16,000文字の共有URL payloadを許し、制御文字とmarkupを拒否して再エンコードします。
 - Lottie はLottieFiles Handoff & Embedの `https://lottie.host/UUID/安全なファイル名.json`（または`.lottie`）と、同じURLの `/embed/` 形だけを受け、`https://lottie.host/embed/UUID/ファイル名` を保存します。UUIDはハイフン区切りの16進数1 segment、ファイル名は英数字で始まる英数字・`.`・`_`・`-`だけです。資格情報、port、query、fragment、追加path、percent encoding、別hostを拒否します。
+- Facebook は `facebook.com` / `www.facebook.com` の `/{actor}/posts/{post-id}`、`/{actor}/posts/{説明slug}/{post-id}`、`/permalink.php?story_fbid={post-id}&id={数字actor-id}` だけを受けます。説明slugは英数字・`_`・`-` の1〜200文字に限り、保存時に除きます。hostを `www.facebook.com`、末尾slashを無しに正規化した公開投稿URLを保存します。actorは1〜80文字の英数字と連続しない内側の`.`、数字actor IDと数字post IDは最大32桁、opaque post IDは`pfbid`に続く20〜195文字の英数字に限定します。資格情報、port、fragment、未知・重複・順序違いquery、短縮共有URL、写真・動画・group path、dot segment、percent encoding、nested URL、protocol-relative URL、markupを拒否します。plugin URLやiframe HTMLは保存しません。
 
 rendererはsource未設定なら公開HTMLにnodeもiframeも出さず、外部リクエストを発生させません。editorのplaceholder modeだけ設定案内を出します。Map / YouTube / Vimeoはsource設定後にnodeの`div`内へtrusted rendererがiframeを生成し、`sandbox="allow-scripts allow-same-origin"`、`loading="lazy"`、`referrerPolicy="strict-origin-when-cross-origin"` を固定します。YouTube/Vimeoのallowとfullscreenもrendererのprovider別定数だけから付与します。
 
 LottieのSSRはcanonical sourceを`data-nw-lottie-source`に持つwrapperと、titleを示す静的でアクセシブルなfallbackだけを出し、iframeやscriptを出しません。公開ホストとStudio previewが`initializeSitePresentation`を起動し、`prefers-reduced-motion: reduce`でない間だけruntimeが `https://lottie.host/embed/` のcanonical URLからiframeを生成します。iframeは `sandbox="allow-scripts"`（origin保持なし）、`referrerPolicy="no-referrer"`、`loading="lazy"`、descriptor由来のtitle、`tabindex="-1"`、`aria-hidden="true"`、pointer操作なしに固定し、allow/fullscreenは付けません。media queryがreduceへ変わるとiframeを除き、戻ると再生成します。cleanupは生成iframeとlistenerをすべて除きます。編集canvasはruntimeを非操作で初期化するため外部playerを読み込まず、静的fallbackのままです。壊れたdata属性をruntimeで再検証して読み込まず、playerが表示できない場合もSSR fallbackはDOMに残ります。
 
+FacebookのSSRはcanonical投稿URLへの実リンク、静的status、非表示の明示読込buttonだけを出し、plugin iframeやscriptを出しません。編集canvasは同じ静的表示のままです。Studioのinteractive previewまたは公開ホストで`initializeSitePresentation`を起動するとbuttonを表示し、利用者が「Facebook の投稿を表示」を押したときだけ、runtimeがcanonical URLを再検証して `https://www.facebook.com/plugins/post.php?href={canonical投稿URL}` のiframeを1つ生成します。iframeは `sandbox="allow-scripts allow-same-origin"`、`referrerPolicy="no-referrer"`、`loading="lazy"`、descriptor由来のtitleに固定し、allow/fullscreenは付けません。`interactive: false`ではbuttonを表示せず、通信もしません。cleanupはbutton listenerと生成iframeを除きます。投稿リンクは常に残るため、pluginがブラウザに拒否された場合や投稿が非公開・削除済みの場合もfallbackとして利用できます。sandboxはplugin自身のscriptとFacebook origin保持だけを許し、top navigation、popup、download、form、位置情報・カメラ・マイク等の権限は付与しません。plugin内のログイン・共有・外部遷移などが動くことは保証しません。
+
 このLottie実装が扱う編集項目はAsset link、アクセシブルなtitle、通常のbox/layout styleだけです。motion許可時にlottie.host hosted iframeの既定playerを表示しますが、STUDIOの6種類のplayback modeやtrigger・速度・方向を文書設定として提供しません。hosted iframeの閉じたURL契約から制御できない設定を推測して追加しません。
 
-このpage node側の標準埋め込みと、`SitePresentationExternalFrame` は別の信頼境界です。標準埋め込みは上の4 provider・URL形・固定iframe属性だけで、host固有policyを受けません。presentation external frameはhost view内の空divを実行側descriptorで置換し、接続先host/pathとorigin保持の要否をtrustedな `externalFramePolicy` が決めます。page JSONからpresentation policy、任意origin、sandbox権限へ昇格することはできません。
+このpage node側の標準埋め込みと、`SitePresentationExternalFrame` は別の信頼境界です。標準埋め込みは上の5 provider・URL形・固定iframe属性だけで、host固有policyを受けません。presentation external frameはhost view内の空divを実行側descriptorで置換し、接続先host/pathとorigin保持の要否をtrustedな `externalFramePolicy` が決めます。page JSONからpresentation policy、任意origin、sandbox権限へ昇格することはできません。
 
 ### フォーム
 
