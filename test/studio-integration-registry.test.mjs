@@ -7,6 +7,8 @@ import { parseProjectAliasPath, projectRoutePath } from "../studio/project-route
 
 test("trusted Studio integrations resolve canonical, alias and environment routes from one registration", () => {
   assert.equal(resolveTrustedIntegration("project-kamakura", "kamakura")?.environment, "production");
+  assert.equal(resolveTrustedIntegration("project-kamakura", "kamakura")?.registration.sourceLocale, "ja");
+  assert.equal(resolveTrustedIntegration("project-experience", "experience")?.registration.sourceLocale, "en");
   assert.equal(resolveTrustedIntegration("project-experience", "experience", "staging")?.config.apiPrefix, "/editor-staging");
   assert.equal(resolveTrustedEditorPage("/projects/project-experience/sites/experience/editor/staging/")?.environment, "staging");
   assert.equal(resolveTrustedEditorPage("/projects/niho-experience/admin/editor/staging")?.environment, "staging");
@@ -21,6 +23,7 @@ test("a new trusted site round-trips without adding a resolver branch and longer
   const registry = createTrustedIntegrationRegistry([{
     projectId: "project-atelier",
     siteId: "atelier",
+    sourceLocale: "en",
     aliases: ["atelier-site"],
     environments: {
       production: { editorPathSuffix: "", apiPrefix: "/editor" },
@@ -43,15 +46,19 @@ test("unknown, mismatched and ambiguous integration definitions fail closed", ()
   assert.equal(resolveTrustedEditorApi("project-experience", "kamakura", "/editor/sites"), null);
   assert.equal(resolveTrustedEditorApi("project-experience", "experience", "/external/editor"), null);
   assert.throws(() => createTrustedIntegrationRegistry([
-    { projectId: "project-one", siteId: "site-one", aliases: ["same"], environments: { production: { editorPathSuffix: "", apiPrefix: "/editor" } } },
-    { projectId: "project-two", siteId: "site-two", aliases: ["same"], environments: { production: { editorPathSuffix: "", apiPrefix: "/editor" } } }
+    { projectId: "project-one", siteId: "site-one", sourceLocale: "ja", aliases: ["same"], environments: { production: { editorPathSuffix: "", apiPrefix: "/editor" } } },
+    { projectId: "project-two", siteId: "site-two", sourceLocale: "en", aliases: ["same"], environments: { production: { editorPathSuffix: "", apiPrefix: "/editor" } } }
   ]), /duplicate or invalid/);
   assert.throws(() => createTrustedIntegrationRegistry([{
-    projectId: "project-one", siteId: "site-one", aliases: [],
+    projectId: "project-one", siteId: "site-one", sourceLocale: "ja", aliases: [],
     environments: { production: { editorPathSuffix: "", apiPrefix: "/editor" }, preview: { editorPathSuffix: "", apiPrefix: "/editor-preview" } }
   }]), /duplicate trusted integration route/);
   assert.throws(() => createTrustedIntegrationRegistry([{
-    projectId: "project-one", siteId: "site-one", aliases: [],
+    projectId: "project-one", siteId: "site-one", sourceLocale: "ja", aliases: [],
     environments: { production: { editorPathSuffix: "", apiPrefix: "/editor" }, preview: { editorPathSuffix: "/preview", apiPrefix: "/editor" } }
   }]), /duplicate trusted integration route/);
+  assert.throws(() => createTrustedIntegrationRegistry([{
+    projectId: "project-one", siteId: "site-one", aliases: [],
+    environments: { production: { editorPathSuffix: "", apiPrefix: "/editor" } }
+  }]), /invalid trusted integration registration/);
 });

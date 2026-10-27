@@ -6,7 +6,7 @@ import { createTrustedIntegrationRegistry, isTrustedEditorAction } from "../../s
 
 test("the scoped API entrance follows registered prefixes, including a new integration namespace", () => {
   const registry = createTrustedIntegrationRegistry([{
-    projectId: "project-atelier", siteId: "atelier", aliases: [],
+    projectId: "project-atelier", siteId: "atelier", sourceLocale: "ja", aliases: [],
     environments: { production: { editorPathSuffix: "", apiPrefix: "/design" } }
   }]);
   assert.equal(registry.isEditorAction("/design"), true);
