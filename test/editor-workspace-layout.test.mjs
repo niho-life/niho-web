@@ -56,8 +56,8 @@ test("the workspace keeps three fixed columns on desktop, overlays panels under 
   try {
     const css = document.querySelector(".nw-editor style").textContent;
     assert.ok(css.includes(".nw-editor{") && css.includes("height:100dvh;max-height:100dvh") && css.includes("overflow:hidden"), "the shell owns the viewport height so the host page does not scroll");
-    assert.ok(css.includes("grid-template-columns:296px minmax(0,1fr) 300px"));
-    assert.ok(css.includes("@media(max-width:820px)") && css.includes("width:min(296px,calc(100vw - 44px))"), "narrow screens overlay the panels on the canvas");
+    assert.ok(css.includes("grid-template-columns:350px minmax(0,1fr) 300px"));
+    assert.ok(css.includes("@media(max-width:820px)") && css.includes(".e-left{left:0;width:min(350px,calc(100vw - 50px))") && css.includes(".e-right{right:0;left:auto;width:min(300px,calc(100vw - 50px))"), "narrow screens overlay the panels on the canvas");
     const narrow = css.slice(css.indexOf("@media(max-width:480px)"));
     assert.ok(narrow.includes(".nw-editor .e-inspector-context{flex-wrap:wrap"), "the inspector header wraps so the close toggle stays reachable");
     assert.ok(narrow.includes(".nw-editor .e-inspector-context strong{flex:1 1 100%}"));
