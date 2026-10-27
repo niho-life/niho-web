@@ -1,4 +1,5 @@
 import { build } from "esbuild";
+import { createHash } from "node:crypto";
 import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -45,16 +46,6 @@ await Promise.all([
     const eagerTranslations = eagerInputs.filter((input) => /(?:src\/localization-workspace(?:-[a-z]+)?\.tsx?|studio\/kamakura-localization(?:-workspace|-contract)?\.tsx?)$/u.test(input));
     if (eagerTranslations.length) throw new Error(`Translation workspace code entered the initial Studio client bundle: ${eagerTranslations.slice(0, 5).join(", ")}`);
   })(),
-  build({
-    entryPoints: [join(studioDirectory, "worker.ts")],
-    outfile: join(outputDirectory, "worker.js"),
-    bundle: true,
-    format: "esm",
-    platform: "browser",
-    target: "es2022",
-    minify: true,
-    legalComments: "none"
-  }),
   copyFile(join(studioDirectory, "public", "index.html"), join(publicOutput, "index.html")),
   // 配色・角丸・文字のトークン（src/ui-tokens.ts）は全ページが最初に読む studio.css の先頭に置く（#159）。
   // 本文の編集部品の CSS（CSP で inline の <style> を使えない）は studio.css の後ろに足す
@@ -82,6 +73,38 @@ await Promise.all([
     await writeFile(join(publicOutput, "assets", "localization.css"), localizationWorkspaceCss.slice(collectionCss.length));
   })()
 ]);
+
+// Cloudflare の asset cache は配備後も同じ URL の旧 app.js を返し得る。HTML とその参照先を内容で版付けし、
+// 旧 entry と新 chunk の組み合わせで Studio が白画面になるのを防ぐ。
+let indexHtml = await readFile(join(publicOutput, "index.html"), "utf8");
+for (const name of ["studio.css", "project-view.css", "collection.css", "localization.css", "app.js"]) {
+  const source = join(publicOutput, "assets", name);
+  const versioned = name.replace(/\.(css|js)$/u, `-${fingerprint(await readFile(source))}.$1`);
+  const reference = `/assets/${name}`;
+  if (!indexHtml.includes(reference)) throw new Error(`Studio HTML is missing ${reference}`);
+  await copyFile(source, join(publicOutput, "assets", versioned));
+  indexHtml = indexHtml.replace(reference, `/assets/${versioned}`);
+}
+const indexName = `index-${fingerprint(indexHtml)}.html`;
+await Promise.all([
+  writeFile(join(publicOutput, "index.html"), indexHtml),
+  writeFile(join(publicOutput, indexName), indexHtml)
+]);
+await build({
+  entryPoints: [join(studioDirectory, "worker.ts")],
+  outfile: join(outputDirectory, "worker.js"),
+  bundle: true,
+  format: "esm",
+  platform: "browser",
+  target: "es2022",
+  minify: true,
+  legalComments: "none",
+  define: { __STUDIO_INDEX_PATH__: JSON.stringify(`/${indexName}`) }
+});
+
+function fingerprint(value) {
+  return createHash("sha256").update(value).digest("hex").slice(0, 12);
+}
 
 /** src/ui-tokens.ts のトークンの CSS。 */
 async function tokensCss() {

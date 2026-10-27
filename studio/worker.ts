@@ -1,4 +1,5 @@
 import { parseProjectAliasPath, projectShortcutTarget } from "./project-routes.mjs";
+declare const __STUDIO_INDEX_PATH__: string;
 import { siteAdmin } from "./site-admin.mjs";
 import { integrationIdentity, isTrustedEditorAction, resolveTrustedEditorApi, resolveTrustedEditorPage, type ResolvedTrustedIntegration } from "./integration-registry.mjs";
 import { KAMAKURA_CATALOG_CONTRACT_ERROR_CODE, KAMAKURA_CATALOG_CONTRACT_ERROR_STATUS, KamakuraCatalogContractError, KAMAKURA_COMMON_PAGE_ID, KAMAKURA_EDITOR_SITE_ID, parseKamakuraCatalog } from "./kamakura-catalog.js";
@@ -2517,7 +2518,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
   const dashboardPage = /^\/projects\/([A-Za-z][A-Za-z0-9_-]{0,79})\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/?$/u.exec(url.pathname);
   if (url.pathname === "/" || dashboardPage || /^\/projects\/[A-Za-z][A-Za-z0-9_-]{0,79}\/sites\/[A-Za-z][A-Za-z0-9_-]{0,79}\/invite\/?$/u.test(url.pathname) || isEditor || projectAlias !== null) {
     if (editorPage?.environment === "staging" && !await experienceEditorOwner(env, identity)) return htmlError("このページを表示できません。", 403);
-    const indexUrl = new URL("/index.html", url);
+    const indexUrl = new URL(typeof __STUDIO_INDEX_PATH__ === "string" ? __STUDIO_INDEX_PATH__ : "/index.html", url);
     // Dashboard（ID の URL と alias の URL）は、そのサイトの管理画面を枠で開ける。editor は従来どおり
     const dashboardTarget = isEditor ? null : projectAlias ?? (dashboardPage ? { projectId: dashboardPage[1]!, siteId: dashboardPage[2]! } : null);
     const admin = dashboardTarget ? siteAdmin(env as unknown as Record<string, unknown>, dashboardTarget.projectId, dashboardTarget.siteId) : null;
