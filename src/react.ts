@@ -169,7 +169,7 @@ export function PageRenderer({ document: input, blocks = {}, assets: assetInput,
       const children = node.children.map((child) => render(child));
       return createElement(node.tag, { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope },
         createElement("div", { "data-nw-loop-box-track": "", style: { display: "flex", flexDirection: "inherit", alignItems: "inherit", gap: "inherit", flex: "0 0 auto" } }, ...children),
-        createElement("div", { "data-nw-loop-box-clones": "", "aria-hidden": "true", inert: true, style: { display: "contents" } }));
+        createElement("div", { "data-nw-loop-box-clones": "", "aria-hidden": "true", style: { display: "contents" } }));
     }
     // children を渡さないことで React の void element 契約を守る。
     return createElement(node.tag, { ...attrs,

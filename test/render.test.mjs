@@ -161,7 +161,7 @@ test("Loop Box SSR keeps one accessible original and a fixed empty runtime mount
   const html = renderPageToHtml(doc);
   assert.equal((html.match(/Accessible original/g) ?? []).length, 1);
   assert.match(html, /data-nw-loop-box=""[^>]*data-nw-loop-speed="60"[^>]*data-nw-loop-pause-hover="true"/);
-  assert.match(html, /data-nw-loop-box-track=""/); assert.match(html, /data-nw-loop-box-clones=""[^>]*aria-hidden="true"[^>]*inert=""/);
+  assert.match(html, /data-nw-loop-box-track=""/); assert.match(html, /data-nw-loop-box-clones=""[^>]*aria-hidden="true"/);
   assert.match(html, /href="\/details"/); assert.ok(!html.includes("onclick"));
   const editCanvas = renderToString(createElement(PageRenderer, { document: doc, canvas: { interactive: false } }));
   assert.match(editCanvas, /data-nw-loop-box-static=""/); assert.doesNotMatch(editCanvas, /data-nw-loop-box=""/);
