@@ -30,11 +30,11 @@ export const workspaceCss = `${uiTokensCss}
 .nw-editor .e-domain-small{padding:8px;border-radius:var(--nw-radius-sm);background:var(--nw-surface-2);font-size:var(--nw-font-size-sub);word-break:break-all}
 
 /* Workspace columns and bounded scrolling */
-.nw-editor .e-body{position:relative;display:grid;grid-template-columns:296px minmax(0,1fr) 300px;min-height:0;flex:1;overflow:hidden}
-.nw-editor .e-body.is-left-closed{grid-template-columns:44px minmax(0,1fr) 300px}.nw-editor .e-body.is-right-closed{grid-template-columns:296px minmax(0,1fr)}.nw-editor .e-body.is-left-closed.is-right-closed{grid-template-columns:44px minmax(0,1fr)}
+.nw-editor .e-body{position:relative;display:grid;grid-template-columns:350px minmax(0,1fr) 300px;min-height:0;flex:1;overflow:hidden}
+.nw-editor .e-body.is-left-closed{grid-template-columns:50px minmax(0,1fr) 300px}.nw-editor .e-body.is-right-closed{grid-template-columns:350px minmax(0,1fr)}.nw-editor .e-body.is-left-closed.is-right-closed{grid-template-columns:50px minmax(0,1fr)}
 .nw-editor .e-rail{height:100%;min-height:0;background:var(--nw-bg)}.nw-editor .e-left{display:flex;min-width:0;overflow:hidden;border-right:1px solid var(--e-border)}
-/* Tool rail: 44px column, 32px buttons, 18px line icons (stroke 1.5). The open tool gets a small grey square like STUDIO's navigation. */
-.nw-editor .e-tools{display:flex;width:44px;flex:none;flex-direction:column;align-items:center;gap:4px;padding:8px 4px;border-right:1px solid var(--e-border);background:var(--nw-bg)}
+/* Tool rail: 50px column, 32px buttons, 18px line icons (stroke 1.5). The open tool gets a small grey square like STUDIO's navigation. */
+.nw-editor .e-tools{display:flex;width:50px;flex:none;flex-direction:column;align-items:center;gap:4px;padding:8px 4px;border-right:1px solid var(--e-border);background:var(--nw-bg)}
 .nw-editor .e-tools button{display:flex;width:32px;height:32px;min-width:32px;min-height:32px;align-items:center;justify-content:center;padding:0;border:0;border-radius:var(--nw-radius);background:transparent;color:var(--e-muted)}
 .nw-editor .e-tools button:hover:not(:disabled){border-color:transparent;background:var(--e-hover);color:var(--e-ink)}.nw-editor .e-tools button[aria-pressed=true]{border-color:transparent;background:var(--nw-pressed);color:var(--e-ink)}
 .nw-editor .e-tools button:disabled{opacity:.35}.nw-editor .e-tools .e-panel-toggle{margin-bottom:4px}.nw-editor .e-tool-icon{display:block;width:18px;height:18px;flex:none}
@@ -77,12 +77,12 @@ export const workspaceCss = `${uiTokensCss}
 .nw-editor .e-notice,.nw-editor .e-readonly,.nw-editor .e-localization-gate{max-height:96px;flex:none;overflow:auto}.nw-editor .e-notice{padding:8px 12px;border-bottom:1px solid var(--e-border);background:var(--nw-warning-soft);overflow-wrap:anywhere}
 
 .nw-editor.is-preview .e-body{grid-template-columns:minmax(0,1fr)}.nw-editor.is-preview .e-left,.nw-editor.is-preview .e-right{display:none}.nw-editor.is-preview .e-canvas-tools{display:flex}
-@media(max-width:1050px){.nw-editor .e-body{grid-template-columns:276px minmax(0,1fr) 292px}}
+@media(max-width:1050px){.nw-editor .e-body{grid-template-columns:296px minmax(0,1fr) 292px}.nw-editor .e-body.is-right-closed{grid-template-columns:296px minmax(0,1fr)}}
 @media(max-width:820px){
-  .nw-editor .e-part-banner{margin-left:44px}
+  .nw-editor .e-part-banner{margin-left:50px}
   .nw-editor .e-body,.nw-editor .e-body.is-left-closed,.nw-editor .e-body.is-right-closed,.nw-editor .e-body.is-left-closed.is-right-closed{display:grid;grid-template-columns:minmax(0,1fr)}
-  .nw-editor .e-left,.nw-editor .e-right{position:absolute;z-index:20;inset-block:0;width:min(296px,calc(100vw - 44px))}.nw-editor .e-left{left:0}.nw-editor .e-right{right:0;left:auto}
-  .nw-editor .e-body.is-left-closed .e-left{width:44px}
+  .nw-editor .e-left,.nw-editor .e-right{position:absolute;z-index:20;inset-block:0}.nw-editor .e-left{left:0;width:min(350px,calc(100vw - 50px))}.nw-editor .e-right{right:0;left:auto;width:min(300px,calc(100vw - 50px))}
+  .nw-editor .e-body.is-left-closed .e-left{width:50px}
 }
 /* 320px: the inspector header wraps instead of pushing its close button out, and the viewport bar stays inside the stage. */
 @media(max-width:480px){
