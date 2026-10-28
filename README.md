@@ -37,7 +37,7 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 | `@niho/web` | JSON 型、`validateDocument` / `parsePageDocument`、閉じた組み込みアイコン・フォーム・Map / YouTube / Vimeo / Lottie / Facebook / X / Instagram / host承認済みBlank埋め込み・VideoWithButton・Loop Box、CSS、リストの印と画像の行内縦位置、画像・native動画を含む React SSR の `PageRenderer` |
 | `@niho/web/core` | 検証・文書型・embed URL正規化・CSS・共通部品の検証と展開だけの入口。React の runtime import を含みません |
 | `@niho/web/builder` | 汎用の挿入カタログ、モーション定義、host拡張の型と検証。React非依存 |
-| `@niho/web/react` | `PageRenderer` とブロック registry の型 |
+| `@niho/web/react` | `PageRenderer` / `SitePageRenderer` とブロック registry の型。編集キャンバスでは props と一致する host view が無いブロックだけ見本または空の枠へ戻し、他の要素を表示し続ける |
 | `@niho/web/presentation-runtime` | SSR後の検証済みDOMへ、native presentation、VideoWithButton、Loop Box、reduced-motion対応Lottie player、明示操作後だけ読み込むFacebook / X / Instagram投稿の標準操作を接続するclient runtime。返されたcleanupを再初期化前に呼ぶ |
 | `@niho/web/server` | Astro の build / server で使える `renderPageToHtml` |
 | `@niho/web/editor` | 認証済みホストadapterへ接続する `PageEditor` と型。50pxの左ツール列＋300pxの追加パネル、左レールの版履歴、300pxの右インスペクタ、表示幅・端末切替とサイト単位の「編集モード」（Mini / Mobile / Tablet / Small / PC、opaque version CAS）の下部ツールバー、キャンバス左右端の表示幅ドラッグを共通化する。未接続ホストでは従来の `breakpoints` を読み取り専用表示する。`initialTarget`、任意の日英切替、原文ページの「サブは確認してから公開」、許可ブロック、trusted host 固有の設定 UI を扱う。原文の保存 locale が翻訳用 mapping と異なる場合も、ページ一覧の原文 locale を使って開き直せる。原文 snapshot の任意な英語公開状態と、安全な明示更新・再試行も本文 version と独立して扱う。Kamakura の日英一覧は Studio BFF の `localization/editor/site`、English キャンバスは `editor/pages/:pageId/snapshot` から読み、保存はサイト側の正本 overlay へ戻す（[編集・公開契約](docs/editor-contract.md)、[UI設計](docs/editor-ui-design.md)、[多言語 editor 契約](docs/localization-editor.md)、[ManagedEmbed 契約](docs/managed-embed-contract.md)）。React / React DOM が必要 |

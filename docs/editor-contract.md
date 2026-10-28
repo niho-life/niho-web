@@ -299,6 +299,8 @@ registry の `slots` で表示領域を宣言したブロックは、内側の�
 
 「表示幅」は iframe の実 viewport を変更するため、media query と固定位置のレイアウトを確認できます。編集中のキャンバス内のリンクやブロック操作は選択に使い、プレビュー中もリンク遷移とフォーム送信を止めます。サーバー描画用と同じ `PageRenderer` と host registry を使います。
 
+`presentation.hostViews` に同じブロックの表示例があっても、編集中の props と完全一致する view が無い場合は、そのブロックだけ登録済みの React 見本へ戻します。見本も無い場合は静的な空の枠を表示し、前後のページ要素は描画し続けます。公開 SSR は従来どおり一致する host view を要求して失敗させ、公開前の不整合を隠しません。
+
 iframe は通常scriptsを許可しないsandboxとして表示し、公開ページのCSS・fixed要素が編集UIへ重ならないようにします。source設定済みの標準embedまたはpresentation external frameを描く場合だけ、内側frameのsandbox継承に必要な`allow-scripts`を外側へ追加します。registry は依然として信頼できるホストコードです。React の effect や親 window からの処理までは隔離できないため、プレビュー用ブロックで課金・予約・データ更新などの副作用を起こさないでください。
 
 `insertableBlocks` を空配列にすると、登録済み業務ブロックの新規追加を隠し、既存ブロックの表示 props 編集だけを残せます。省略時はすべての登録ブロックを追加できます。サイト固有の配置条件は保存 API でも検証してください。
