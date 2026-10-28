@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { DocumentValidationError, generatePageCss, isSafePublicUrl, normalizeEmbedSource, pageScope, parsePageDocument, validateDocument } from "@niho/web";
+import { createBlankEmbedRegistry, DocumentValidationError, generatePageCss, isSafePublicUrl, normalizeEmbedSource, pageScope, parseBlankEmbedRegistry, parsePageDocument, validateDocument } from "@niho/web";
 import { validateDocument as validateCore } from "@niho/web/core";
 
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
@@ -234,6 +234,40 @@ test("標準埋め込みは任意 iframe データと不正な provider URL を�
     (node) => { node.embed.src = "https://example.test"; }, (node) => { node.tag = "iframe"; }, (node) => { node.asset = { provider: "uploads", id: "x" }; },
     (node) => { node.icon = "check"; }, (node) => { node.children = [{ type: "text", text: "fallback" }]; }
   ]) { const input = doc(); input.body = [structuredClone(base)]; change(input.body[0]); reject(input); }
+});
+
+test("Blank 埋め込みは文書に短い key だけを保存し、trusted registry を厳格に検証する", () => {
+  assert.equal(normalizeEmbedSource("blank", "public-guide"), "public-guide");
+  for (const value of ["https://embed.example.test/guide", "Public", "a_b", "-bad", "a".repeat(33), "a<script>"]) assert.throws(() => normalizeEmbedSource("blank", value));
+  const input = doc(); input.body = [{ type: "element", id: "blank", tag: "div", embed: { provider: "blank", title: "公開ガイド", source: "public-guide" }, children: [] }];
+  assert.deepEqual(parsePageDocument(input).body[0].embed, { provider: "blank", title: "公開ガイド", source: "public-guide" });
+  for (const source of ["https://embed.example.test/guide", "unknown key", "../guide", "public-guide?x=1"]) {
+    const unsafe = structuredClone(input); unsafe.body[0].embed.source = source; reject(unsafe);
+  }
+  const registry = createBlankEmbedRegistry({ parentOrigin: "https://site.example.test", entries: [
+    { key: "public-guide", label: "公開ガイド", src: "https://embed.example.test/public/guide", sandbox: "same-origin-scripts-forms" }
+  ] });
+  assert.deepEqual(parseBlankEmbedRegistry(registry), registry);
+  const invalid = [
+    { parentOrigin: "http://site.example.test", entries: [] },
+    { parentOrigin: "https://site.example.test/path", entries: [] },
+    { parentOrigin: "https://site.example.test", entries: [{ key: "x", label: "X", src: "http://embed.example.test/x", sandbox: "strict" }] },
+    { parentOrigin: "https://site.example.test", entries: [{ key: "x", label: "X", src: "https://user@embed.example.test/x", sandbox: "strict" }] },
+    { parentOrigin: "https://site.example.test", entries: [{ key: "x", label: "X", src: "https://embed.example.test/x?q=1", sandbox: "strict" }] },
+    { parentOrigin: "https://site.example.test", entries: [{ key: "x", label: "X", src: "https://embed.example.test/x?", sandbox: "strict" }] },
+    { parentOrigin: "https://site.example.test", entries: [{ key: "x", label: "X", src: "https://embed.example.test/x#part", sandbox: "strict" }] },
+    { parentOrigin: "https://site.example.test", entries: [{ key: "x", label: "X", src: "https://embed.example.test/x#", sandbox: "strict" }] },
+    { parentOrigin: "https://site.example.test", entries: [{ key: "x", label: "X", src: "https://embed.example.test:443/x", sandbox: "strict" }] },
+    { parentOrigin: "https://site.example.test", entries: [{ key: "x", label: "X", src: "https://embed.example.test/x", sandbox: "allow-popups" }] },
+    { parentOrigin: "https://site.example.test", entries: [{ key: "x", label: "X", src: "https://site.example.test/x", sandbox: "same-origin-scripts" }] },
+    { parentOrigin: "https://site.example.test", entries: [{ key: "x", label: "X", src: "https://embed.example.test/x", sandbox: "strict" }, { key: "x", label: "Y", src: "https://embed.example.test/y", sandbox: "strict" }] },
+    { parentOrigin: "https://site.example.test", entries: Array.from({ length: 17 }, (_, index) => ({ key: `x${index}`, label: `X ${index}`, src: `https://embed.example.test/x${index}`, sandbox: "strict" })) }
+  ];
+  for (const value of invalid) assert.throws(() => createBlankEmbedRegistry(value));
+  for (const sandbox of ["constructor", "toString", "__proto__"]) {
+    assert.throws(() => parseBlankEmbedRegistry({ parentOrigin: "https://site.example.test", entries: [{ key: "x", label: "X", src: "https://embed.example.test/x", sandbox }] }), /sandbox/u);
+  }
+  assert.throws(() => parseBlankEmbedRegistry({ parentOrigin: "https://site.example.test", entries: [], script: "alert(1)" }));
 });
 
 test("depth and node limits reject pathological documents", () => {

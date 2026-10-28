@@ -4,7 +4,7 @@ import { PageEditor, type EditorAdapter, type EditorBlockRegistry, type EditorCo
 import { createBrowserRecoveryStore, diffDocuments } from "@niho/web/history";
 import { findInternalLinks, findPathConflict, pageUrl, parseSiteSettings, rewriteInternalLinks, validatePagePath, type SiteSettings } from "@niho/web/pages";
 import fixture from "./page.json";
-import { componentUsage, detachRemovedSiteStyles, parseComponentLibrary, parsePageDocument, parseSiteStyles, resolvePageDocument, type ComponentLibrary, type ElementNode, type PageDocument, type PageNode, type PublicPropValue, type SiteStyles } from "@niho/web/core";
+import { componentUsage, createBlankEmbedRegistry, detachRemovedSiteStyles, parseComponentLibrary, parsePageDocument, parseSiteStyles, resolvePageDocument, type ComponentLibrary, type ElementNode, type PageDocument, type PageNode, type PublicPropValue, type SiteStyles } from "@niho/web/core";
 import { createMemoryAssetLibrary } from "./memory-asset-library.mjs";
 
 /** editor-demo.mjs がサーバーで生成した、出所ごとの素材のメタデータ。 */
@@ -12,6 +12,9 @@ declare const DEMO_ASSET_SEED: Readonly<Record<"uploads" | "experience" | "stock
 
 // 公開可能なインメモリ動作例。認証や本番 API には接続しない。
 const domain = "https://demo.example.test", domains = [domain];
+const blankEmbeds = createBlankEmbedRegistry({ parentOrigin: domain, entries: [
+  { key: "public-map", label: "OpenStreetMap（公開例）", src: "https://www.openstreetmap.org/export/embed.html", sandbox: "same-origin-scripts" }
+] });
 /** siteStyles はその版が参照していたサイト共通スタイル。履歴の表示・復元で現在の設定を過去版へ混ぜない。 */
 type Revision = { entry: EditorRevisionEntry; document: PageDocument; siteStyles: SiteStyles };
 /**
@@ -36,7 +39,8 @@ const home = structuredClone(fixture) as PageDocument;
 // 標準埋め込みの安全な未設定状態。URLを入れるまで公開出力と外部通信はなく、編集canvasだけが設定案内を示す。
 home.body.push(
   { type: "element", id: "x_post", tag: "div", embed: { provider: "x", title: "X のポスト" }, style: { base: { width: "100%", maxWidth: 550, height: 650, margin: "0 auto", overflow: "hidden", borderRadius: 8, backgroundColor: "#f2f2f2" } }, children: [] },
-  { type: "element", id: "instagram_post", tag: "div", embed: { provider: "instagram", title: "Instagram の投稿" }, style: { base: { width: "100%", maxWidth: 540, height: 720, margin: "0 auto", overflow: "hidden", borderRadius: 8, backgroundColor: "#f2f2f2" } }, children: [] }
+  { type: "element", id: "instagram_post", tag: "div", embed: { provider: "instagram", title: "Instagram の投稿" }, style: { base: { width: "100%", maxWidth: 540, height: 720, margin: "0 auto", overflow: "hidden", borderRadius: 8, backgroundColor: "#f2f2f2" } }, children: [] },
+  { type: "element", id: "blank_public_map", tag: "div", embed: { provider: "blank", title: "公開地図", source: "public-map" }, style: { base: { width: "100%", height: 360, overflow: "hidden", borderRadius: 8, backgroundColor: "#f2f2f2" } }, children: [] }
 );
 home.body.push({ type: "component", id: "notice", block: "PublicNotice", props: { heading: "今月のお知らせ", count: 3 }, style: { base: { marginTop: 24 } } }); home.revision++;
 // このページだけのカラーの例。メインの色（brand）と見出し・本文のテキストスタイルはサイト共通（siteSettings）にあり、ホームと「私たちについて」の両方が参照する。
@@ -358,4 +362,4 @@ const assets = createMemoryAssetLibrary({
     return await response.json();
   }
 });
-createRoot(document.getElementById("root")!).render(<PageEditor adapter={adapter} blocks={blocks} assets={assets} autosave={{ delayMs: 1500 }} recovery={recovery} />);
+createRoot(document.getElementById("root")!).render(<PageEditor adapter={adapter} blocks={blocks} assets={assets} blankEmbeds={blankEmbeds} autosave={{ delayMs: 1500 }} recovery={recovery} />);

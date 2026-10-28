@@ -11,6 +11,7 @@ import type {
   EditorLocaleReleaseApplyRequest, EditorLocaleReleaseApplyResult, EditorLocaleReleasePlan, EditorLocaleReleasePrepareRequest, EditorLocaleReleaseState
 } from "./locale-release-contract.js";
 import type { EnglishPublication, EnglishPublicationRetryResult } from "./english-publication.js";
+import type { BlankEmbedRegistry } from "./embeds.js";
 export type { EnglishPublication, EnglishPublicationRetryResult, EnglishPublicationState } from "./english-publication.js";
 export type { PageKind, PageVisibility, SiteSettings } from "./pages.js";
 /** 言語全体の公開の型は locale-release-contract.ts に移した。互換のためここからも export する。 */
@@ -272,6 +273,8 @@ export type EditorCanvasPreviewProps = {
   presentation?: SitePresentation;
   /** PageEditor に渡した外部枠の policy。 */
   externalFramePolicy?: ExternalFramePolicy;
+  /** PageEditor に渡した Blank iframe registry。 */
+  blankEmbeds?: BlankEmbedRegistry;
   /** 従来の文書描画。編集文書を置き換えない場合はそのまま返せる。 */
   children: ReactNode;
 };
@@ -284,6 +287,8 @@ export type PageEditorProps = {
   blocks?: EditorBlockRegistry;
   /** 信頼する外部サービスにだけorigin保持を許す、ホスト所有の実行時policy。 */
   externalFramePolicy?: ExternalFramePolicy;
+  /** trusted host が承認した Blank iframe の固定 registry。未指定時は Blank を選択できない。 */
+  blankEmbeds?: BlankEmbedRegistry;
   /** 標準の挿入・モーションカタログを同じ ID で置換、または新しい項目で拡張する。 */
   builder?: BuilderDefinition;
   /** Canvasと同じiframe内で描画する。予約・送信などの副作用を起こさず、未指定時は従来どおり。 */

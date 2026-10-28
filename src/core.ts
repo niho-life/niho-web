@@ -1,6 +1,9 @@
 export type * from "./types.js";
 export { iconCatalog } from "./icons.js";
-export { normalizeEmbedSource } from "./embeds.js";
+export {
+  createBlankEmbedRegistry, normalizeEmbedSource, parseBlankEmbedRegistry, resolveBlankEmbed,
+  type BlankEmbedRegistry, type BlankEmbedRegistryEntry, type BlankEmbedSandboxMode
+} from "./embeds.js";
 export { parsePageDocument, parsePageDocument as validateDocument, parsePageMeta, type PageParseOptions } from "./document.js";
 export { generatePageCss, pageScope } from "./css.js";
 export { SITE_PRESENTATION_LIMITS, cssForSitePresentation, parseSitePresentation, presentationAssetDocument, presentationLayoutDocument, sitePresentationHostViewKey } from "./presentation.js";

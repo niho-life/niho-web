@@ -90,9 +90,11 @@ HTTP 409 は adapter で `{ status: 'conflict' }` へ変換します。`status: 
 
 ## 安全な入力と編集範囲
 
-テキスト、リンク、画像（素材ライブラリまたはURL）/alt、背景画像、組み込みアイコン、native動画（素材ライブラリまたはURL）、標準のMap / YouTube / Vimeo / Lottie / Facebook / X / Instagram埋め込み、フォーム、文字色・背景色・フォント・サイズ・余白・Flex/Grid・位置・幅の段ごとの指定、共通カラー・テキストスタイル等の共通の値を編集できます。要素や登録ブロックの追加、複製、親/兄弟間の移動、削除、undo/redo に対応します。複製時はノードIDとHTML IDを作り直し、複製内のアンカー・ARIA ID参照・label参照を付け替えます。
+Basicの「埋め込み」群はBlankを先頭に置き、続けてMap / YouTube / Vimeo / Lottie / Facebook / X / Instagramを表示します。Blankは`PageEditor`の任意`blankEmbeds`にある承認済みkeyのselectとアクセシブルなtitleだけを編集し、keyの手入力、URL、HTML、iframe属性を受けません。挿入直後はsource未設定です。registry未接続・空の場合は追加カードと詳細selectを「未接続」として無効化し、中心の追加経路でも拒否します。既存Blank nodeの設定には管理者向け理由を表示し、編集・削除は維持します。
 
-追加パレットは Basic / Parts / Sections のタブで分けます。Basic は参照に近い主要順としてセクション・ボックス・画像・テキスト・アイコン・リッチテキスト・動画を揃え、「埋め込み」群にMap / YouTube / Vimeo / Lottie / Facebook / X / Instagram、続けて見出し・リンク・native interaction（カルーセル、トグル、VideoWithButton）を提供します。「フォーム」には Form1 / Form2 / Form3、「フォームパーツ」には Input / Textarea / Select / Radio / Confirm / Checkbox / File / Submit / Search / Password を4列の既存カタログで表示します。Parts はボタン・カード・見出しセット・リスト、Sections はヘッダー・ヒーロー・特徴グリッド・CTA・FAQ・フッターを提供します。各項目は形と構成を示す簡潔な skeleton preview を持ちます。クリックで選択した親の末尾へ追加するか、キャンバス／レイヤーへドラッグして挿入位置を指定します。フォームパーツをページや通常ボックスへ直接置く場合は有効なformを自動で外側に作り、既存formを追加先に選んだ場合だけそのformの直下へラベルと入力項目を追加します。入れ子のformやform外の入力項目は作りません。既存要素も選択後にキャンバスまたはレイヤーから移動でき、選択枠の右下をドラッグすると現在選んだ編集幅の幅・高さを一操作として変更します。キーボード向けには追加先の選択と上／下／末尾への移動、右インスペクタのサイズ欄を残します。不正な入れ子、循環、ロックされた変更はモデルの検証で拒否します。
+テキスト、リンク、画像（素材ライブラリまたはURL）/alt、背景画像、組み込みアイコン、native動画（素材ライブラリまたはURL）、標準のBlank / Map / YouTube / Vimeo / Lottie / Facebook / X / Instagram埋め込み、フォーム、文字色・背景色・フォント・サイズ・余白・Flex/Grid・位置・幅の段ごとの指定、共通カラー・テキストスタイル等の共通の値を編集できます。要素や登録ブロックの追加、複製、親/兄弟間の移動、削除、undo/redo に対応します。複製時はノードIDとHTML IDを作り直し、複製内のアンカー・ARIA ID参照・label参照を付け替えます。
+
+追加パレットは Basic / Parts / Sections のタブで分けます。Basic は参照に近い主要順としてセクション・ボックス・画像・テキスト・アイコン・リッチテキスト・動画を揃え、「埋め込み」群にBlank / Map / YouTube / Vimeo / Lottie / Facebook / X / Instagram、続けて見出し・リンク・native interaction（カルーセル、トグル、VideoWithButton）を提供します。「フォーム」には Form1 / Form2 / Form3、「フォームパーツ」には Input / Textarea / Select / Radio / Confirm / Checkbox / File / Submit / Search / Password を4列の既存カタログで表示します。Parts はボタン・カード・見出しセット・リスト、Sections はヘッダー・ヒーロー・特徴グリッド・CTA・FAQ・フッターを提供します。各項目は形と構成を示す簡潔な skeleton preview を持ちます。クリックで選択した親の末尾へ追加するか、キャンバス／レイヤーへドラッグして挿入位置を指定します。フォームパーツをページや通常ボックスへ直接置く場合は有効なformを自動で外側に作り、既存formを追加先に選んだ場合だけそのformの直下へラベルと入力項目を追加します。入れ子のformやform外の入力項目は作りません。既存要素も選択後にキャンバスまたはレイヤーから移動でき、選択枠の右下をドラッグすると現在選んだ編集幅の幅・高さを一操作として変更します。キーボード向けには追加先の選択と上／下／末尾への移動、右インスペクタのサイズ欄を残します。不正な入れ子、循環、ロックされた変更はモデルの検証で拒否します。
 
 フォームのインスペクタはフォーム名、未接続の完了設定、項目一覧を表示します。input / textarea / select は項目名・必須・入力タイプ・placeholder、select と radio fieldset は1行1件（1〜20件）の選択肢、checkbox は対応するlabel、fileは`accept`、submit buttonは表示文言を編集します。項目一覧から入力欄を選べ、フォーム選択中のパーツ追加はそのフォーム内に配置します。ラベルと入力欄は削除・複製時に対として扱います。各変更は通常の `EditorOperation` とロック検査を経て、操作のたびに `parsePageDocument` を通ります。password / file の利用者入力値は作業コピーにも保存しません。
 
@@ -111,6 +113,8 @@ XのカードはURLの保存と投稿リンクまで使えます。現在のChro
 標準埋め込みを含むキャンバスは、内側provider iframeまでsandboxが継承されても動くよう、source設定済みのtrusted embedがある場合だけ外側`srcdoc` frameへ`allow-scripts`を追加します。通常は従来どおり`allow-same-origin`だけです。provider iframeは編集・preview中ともpointer eventを受けず、選択やドラッグを妨げません。公開rendererではpointer eventを戻します。`SitePresentationExternalFrame`はhost viewとtrusted `externalFramePolicy`が所有する別境界であり、標準embedからhost固有origin保持policyや任意sandboxへ接続しません。
 
 ### 挿入カタログの拡張
+
+Blankのkey・title変更は通常のeditor model、lock、undo/redo、保存・再読込を通ります。編集canvasは外部通信せず、previewだけ公開rendererと同じregistryを使います。ホストは公開CSPの`frame-src`を別途許可し、`blankEmbeds`を`PageRenderer` / SSRにも同じ版で渡します。Studio WorkerのCSPと鎌倉本番registryはこの機能では変更せず、ManagedEmbedの独自保存・解決フローも流用しません。詳細は[文書・描画契約の標準埋め込み](document-contract.md#標準埋め込み)を正とします。
 
 `PageEditor` の任意prop `builder` で、信頼済みホストが通常の `PageNode` 部分木を追加パレットへ登録できます。公開型と標準定義は `@niho/web/builder` から読み込みます。`InsertionPreset.category` は任意の `basic | parts | sections` で、未知の値は `defineBuilder` が拒否します。省略した既存・host独自プリセットは後方互換のため Basic に表示します。同じ定義IDを指定すると標準項目を置換し、新しいIDは標準項目の後へ追加します。
 

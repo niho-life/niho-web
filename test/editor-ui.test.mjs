@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { JSDOM } from "jsdom";
-import { pageScope, parsePageDocument } from "@niho/web/core";
+import { createBlankEmbedRegistry, pageScope, parsePageDocument } from "@niho/web/core";
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: "https://editor.example.test" });
 for (const key of ["window", "document", "HTMLElement", "HTMLInputElement", "Element", "Event", "MouseEvent"]) globalThis[key] = dom.window[key];
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -223,7 +223,7 @@ test("Basic Icon and Video can be selected, edited, saved, reloaded and rendered
   };
   try {
     await click("追加");
-    assert.deepEqual([...document.querySelectorAll(".e-add-category .e-preset-preview")].slice(0, 10).map((item) => item.dataset.preset), ["section", "box", "img", "text", "icon", "richtext", "video", "embed-map", "embed-youtube", "embed-vimeo"]);
+    assert.deepEqual([...document.querySelectorAll(".e-add-category .e-preset-preview")].slice(0, 10).map((item) => item.dataset.preset), ["section", "box", "img", "text", "icon", "richtext", "video", "embed-blank", "embed-map", "embed-youtube"]);
     await addPreset("icon");
     assert.equal(document.querySelector('[aria-label="インスペクタ"] .e-inspector-context strong').textContent, "アイコン");
     assert.deepEqual([...document.querySelectorAll('.e-inspector-tabs [role="tab"]')].map((tab) => tab.textContent), ["アイコン", "文字", "ボックス", "変形"]);
@@ -313,7 +313,7 @@ test("Basic の標準埋め込みはカード UI、URL 正規化、保存・再�
   try {
     await click("追加");
     const embedGroup = [...document.querySelectorAll(".e-palette-group")].find((group) => group.querySelector("h3")?.textContent === "埋め込み");
-    assert.deepEqual([...embedGroup.querySelectorAll(".e-preset-card")].map((card) => card.querySelector(".e-preset-label").lastChild.textContent), ["Map", "YouTube", "Vimeo", "Lottie", "Facebook", "X", "Instagram"]);
+    assert.deepEqual([...embedGroup.querySelectorAll(".e-preset-card")].map((card) => card.querySelector(".e-preset-label").lastChild.textContent), ["Blank", "Map", "YouTube", "Vimeo", "Lottie", "Facebook", "X", "Instagram"]);
     await addPreset("embed-map");
     assert.equal(document.querySelector('[aria-label="インスペクタ"] .e-inspector-context strong').textContent, "Map");
     assert.ok(document.querySelector("iframe").contentDocument.body.textContent.includes("Map の URL を設定してください"));
@@ -405,6 +405,68 @@ test("Basic の標準埋め込みはカード UI、URL 正規化、保存・再�
       assert.equal(frame.getAttribute("sandbox"), "allow-scripts"); assert.equal(frame.hasAttribute("src"), false); assert.ok(frame.getAttribute("srcdoc").includes(provider === "x" ? "platform.twitter.com/widgets.js" : "instagram.com/embed.js"));
       assert.equal(frame.style.pointerEvents, "none"); assert.ok(socialRoot.querySelector('[data-nw-social-link]'));
     }
+  } finally { await app.cleanup(); }
+});
+test("Blank は承認済み key だけを選択し、未接続案内・保存・undo・preview を共有する", async () => {
+  const disconnectedDocument = structuredClone(fixture);
+  disconnectedDocument.body.push({ type: "element", id: "blank_existing", tag: "div", embed: { provider: "blank", title: "公開ガイド" }, children: [] });
+  const disconnected = await setup({ document: disconnectedDocument });
+  try {
+    await click("追加");
+    const card = document.querySelector('.e-preset-preview[data-preset="embed-blank"]').closest("button");
+    assert.equal(card.disabled, true); assert.match(card.textContent, /未接続/u); assert.match(card.title, /接続されていません/u);
+    const detailSelect = input("追加する要素"), blankOption = [...detailSelect.options].find((option) => option.value === "embed-blank");
+    assert.equal(blankOption.disabled, true); assert.match(blankOption.textContent, /未接続/u);
+    await change(detailSelect, "embed-blank");
+    const addButton = button("要素を追加");
+    assert.equal(addButton.disabled, true); assert.match(addButton.title, /接続されていません/u); assert.match(document.body.textContent, /追加できません/u);
+    const blankCount = document.querySelector("iframe").contentDocument.querySelectorAll('[data-nw-embed="blank"]').length;
+    const reactProps = Object.keys(addButton).find((key) => key.startsWith("__reactProps$"));
+    assert.ok(reactProps, "中心 add handler");
+    await act(async () => addButton[reactProps].onClick()); await flush();
+    assert.match(document.querySelector('[role="alert"]').textContent, /追加できません/u);
+    assert.equal(document.querySelector("iframe").contentDocument.querySelectorAll('[data-nw-embed="blank"]').length, blankCount, "中心の add 経路も未接続 Blank を拒否する");
+    await clickLayer("blank_existing");
+    assert.equal(input("承認済みの埋め込み").disabled, true);
+    assert.match(document.querySelector('[aria-label="インスペクタ"]').textContent, /管理者に確認/u);
+    assert.equal(input("アクセシブルなタイトル").disabled, false);
+    await change(input("アクセシブルなタイトル"), "更新した公開ガイド");
+    assert.equal(input("アクセシブルなタイトル").value, "更新した公開ガイド");
+    await click("削除");
+    assert.equal(document.querySelector("iframe").contentDocument.querySelector('[data-nw-node="blank_existing"]'), null);
+    await click("元に戻す");
+    assert.ok(document.querySelector("iframe").contentDocument.querySelector('[data-nw-node="blank_existing"]'));
+  } finally { await disconnected.cleanup(); }
+
+  const blankEmbeds = createBlankEmbedRegistry({ parentOrigin: "https://example.test", entries: [
+    { key: "public-guide", label: "公開ガイド", src: "https://embed.example.test/public/guide", sandbox: "scripts" }
+  ] });
+  const app = await setup({ props: { blankEmbeds } });
+  try {
+    await click("追加");
+    const card = document.querySelector('.e-preset-preview[data-preset="embed-blank"]').closest("button");
+    assert.equal(card.disabled, false);
+    await act(async () => card.click()); await flush();
+    assert.equal(document.querySelector('[aria-label="インスペクタ"] .e-inspector-context strong').textContent, "Blank");
+    assert.match(document.querySelector("iframe").contentDocument.body.textContent, /承認済みの埋め込みを選択/u);
+    await change(input("承認済みの埋め込み"), "public-guide");
+    await change(input("アクセシブルなタイトル"), "施設の公開ガイド");
+    let canvas = document.querySelector("iframe"), root = canvas.contentDocument.querySelector('[data-nw-embed="blank"]');
+    assert.ok(root); assert.equal(root.querySelector("iframe"), null, "edit canvas keeps Blank unloaded");
+    assert.match(root.textContent, /公開ガイド（プレビューで表示）/u);
+    await click("元に戻す");
+    assert.equal(input("アクセシブルなタイトル").value, "埋め込みコンテンツ");
+    await click("やり直す");
+    assert.equal(input("アクセシブルなタイトル").value, "施設の公開ガイド");
+    await click("下書き保存");
+    assert.deepEqual(app.stored().body.at(-1).embed, { provider: "blank", title: "施設の公開ガイド", source: "public-guide" });
+    await click("最新の文書を再読込"); await clickLayer(app.stored().body.at(-1).id);
+    assert.equal(input("承認済みの埋め込み").value, "public-guide");
+    await click("プレビュー"); await settle();
+    canvas = document.querySelector("iframe"); root = canvas.contentDocument.querySelector('[data-nw-embed="blank"]');
+    assert.equal(root.querySelector("iframe").getAttribute("src"), "https://embed.example.test/public/guide");
+    assert.equal(root.querySelector("iframe").getAttribute("sandbox"), "allow-scripts");
+    assert.equal(root.querySelector('[data-nw-blank-fallback]').getAttribute("href"), "https://embed.example.test/public/guide");
   } finally { await app.cleanup(); }
 });
 test("Basic のフォーム一覧とインスペクタでフォーム項目を編集し、既存フォームへ安全に追加できる", async () => {

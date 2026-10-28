@@ -6,6 +6,7 @@ import { cssForDocument, pageScope, resolveViewportHeightUnits } from "./css.js"
 import { parseResolvedAssets, resolvedAsset, type ResolvedAssetMap } from "./assets.js";
 import { cssForSitePresentation, parseSitePresentation, presentationLayoutDocument, sitePresentationHostViewKey } from "./presentation.js";
 import { iconGlyph } from "./icons.js";
+import { parseBlankEmbedRegistry, resolveBlankEmbed, type BlankEmbedRegistry } from "./embeds.js";
 
 export type BlockDefinition = BlockContract & {
   /** ホストアプリが所有する同期 React コンポーネント。JSON から実行コードを読まない。 */
@@ -43,6 +44,8 @@ export type PageRendererProps = {
   /** display-only host viewの優先方法。公開hostはfallback/offで実componentを選べる。 */
   hostViewMode?: "prefer" | "fallback" | "off";
   externalFramePolicy?: ExternalFramePolicy;
+  /** trusted host code が作った Blank iframe registry。文書の key を固定 URL と sandbox へ解決する。 */
+  blankEmbeds?: BlankEmbedRegistry;
   /**
    * @internal エディターのキャンバスだけが渡す。viewportHeight は viewport 高さの単位を倍率 100% の高さの px に置き換える基準、
    * siteOrigin は文書の root-relative な画像 URL（`/x.svg`）をサイトの公開 origin で解決する（キャンバスの iframe は Studio の origin のため）。
@@ -53,7 +56,7 @@ export type PageRendererProps = {
 const canvasCssText = (css: string, canvas: PageRendererProps["canvas"]) => canvas?.viewportHeight ? resolveViewportHeightUnits(css, canvas.viewportHeight) : css;
 const rootRelative = (value: string) => value.startsWith("/") && !value.startsWith("//");
 const embedAllow = { map: undefined, youtube: "encrypted-media; picture-in-picture; fullscreen", vimeo: "picture-in-picture; fullscreen" } as const;
-const embedLabel = { map: "Map", youtube: "YouTube", vimeo: "Vimeo", lottie: "Lottie", facebook: "Facebook", x: "X", instagram: "Instagram" } as const;
+const embedLabel = { map: "Map", youtube: "YouTube", vimeo: "Vimeo", lottie: "Lottie", facebook: "Facebook", x: "X", instagram: "Instagram", blank: "Blank" } as const;
 function withSiteOrigin(attrs: Record<string, unknown>, siteOrigin: string): void {
   if (typeof attrs.src === "string" && rootRelative(attrs.src)) attrs.src = siteOrigin + attrs.src;
   if (typeof attrs.poster === "string" && rootRelative(attrs.poster)) attrs.poster = siteOrigin + attrs.poster;
@@ -61,8 +64,9 @@ function withSiteOrigin(attrs: Record<string, unknown>, siteOrigin: string): voi
 }
 
 /** useEffect を使わず、Next.js の初期 HTML と静的 SSR の両方で本文を返す。 */
-export function PageRenderer({ document: input, blocks = {}, assets: assetInput, missingAssets = "omit", siteStyles, overlayBindings = [], hostViews = [], hostViewBinding, hostViewMode = "prefer", externalFramePolicy, canvas }: PageRendererProps): ReactElement {
+export function PageRenderer({ document: input, blocks = {}, assets: assetInput, missingAssets = "omit", siteStyles, overlayBindings = [], hostViews = [], hostViewBinding, hostViewMode = "prefer", externalFramePolicy, blankEmbeds: blankEmbedInput, canvas }: PageRendererProps): ReactElement {
   const document = resolvePageStyles(parsePageDocument(input, blocks, siteStyles ? { siteStyles } : {}), siteStyles);
+  const blankEmbeds = blankEmbedInput === undefined ? undefined : parseBlankEmbedRegistry(blankEmbedInput);
   const assets = assetInput === undefined ? {} : parseResolvedAssets(assetInput);
   const scope = pageScope(document);
   type VideoInteractionChild = { role: "video" | "button"; ready: boolean };
@@ -79,7 +83,7 @@ export function PageRenderer({ document: input, blocks = {}, assets: assetInput,
         const view = candidates.find((candidate) => sitePresentationHostViewKey(candidate.block, candidate.props) === sitePresentationHostViewKey(node.block, node.props));
         if (!view) throw new Error(`Registered host view is missing for block props: ${node.block}`);
         return createElement("div", { key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-block": node.block, "data-nw-host-view": view.id },
-          createElement(PageRenderer, { document: view.document, assets, missingAssets, hostViewBinding: view, hostViewMode: "off", overlayBindings, ...(externalFramePolicy ? { externalFramePolicy } : {}), ...(canvas ? { canvas } : {}) }));
+          createElement(PageRenderer, { document: view.document, assets, missingAssets, hostViewBinding: view, hostViewMode: "off", overlayBindings, ...(externalFramePolicy ? { externalFramePolicy } : {}), ...(blankEmbeds ? { blankEmbeds } : {}), ...(canvas ? { canvas } : {}) }));
       }
       if (!definition?.component) throw new Error(`Registered block has no React component: ${node.block}`);
       // 枠の属性や style をブロックの props へ混ぜない。
@@ -138,7 +142,19 @@ export function PageRenderer({ document: input, blocks = {}, assets: assetInput,
     // trusted presentation binding は従来どおり空div置換を優先し、標準embedのpolicyへ混ぜない。
     if (node.embed && !hostViewBinding?.externalFrames?.some((candidate) => candidate.nodeId === node.id)) {
       if (!node.embed.source) return missingAssets === "placeholder" ? createElement("div", { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope,
-        "data-nw-empty-embed": node.embed.provider, role: "status" }, `${embedLabel[node.embed.provider]} の URL を設定してください`) : null;
+        "data-nw-empty-embed": node.embed.provider, role: "status" }, node.embed.provider === "blank" ? "承認済みの埋め込みを選択してください" : `${embedLabel[node.embed.provider]} の URL を設定してください`) : null;
+      if (node.embed.provider === "blank") {
+        const entry = resolveBlankEmbed(blankEmbeds, node.embed.source);
+        if (!entry) return missingAssets === "placeholder" ? createElement("div", { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope,
+          "data-nw-empty-embed": "blank", role: "status" }, blankEmbeds ? "この埋め込みはホストで承認されていません" : "Blank 埋め込み registry が接続されていません") : null;
+        if (canvas && !canvas.interactive) return createElement("div", { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope,
+          "data-nw-embed": "blank", "data-nw-blank-static": "", role: "status" }, `${entry.label}（プレビューで表示）`);
+        return createElement("div", { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-embed": "blank", "data-nw-blank-key": entry.key },
+          createElement("div", { "data-nw-blank-player": "", style: { display: "flex", flexDirection: "column", width: "100%", height: "100%" } },
+            createElement("iframe", { src: entry.src, title: node.embed.title, loading: "lazy", referrerPolicy: "strict-origin-when-cross-origin", sandbox: entry.sandboxValue,
+              style: { width: "100%", minHeight: 0, flex: "1 1 auto", border: 0, display: "block", ...(canvas ? { pointerEvents: "none" } : {}) } }),
+            createElement("a", { href: entry.src, target: "_blank", rel: "noopener noreferrer", "data-nw-blank-fallback": "", style: { flex: "0 0 auto", padding: 8, textAlign: "center" } }, `${entry.label}を新しいタブで開く`)));
+      }
       if (node.embed.provider === "lottie") return createElement("div", { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope,
         "data-nw-embed": "lottie", "data-nw-lottie-source": node.embed.source, "data-nw-lottie-title": node.embed.title,
         ...(canvas && !canvas.interactive ? { "data-nw-lottie-static": "" } : {}) },
@@ -218,14 +234,15 @@ export type SitePageRendererProps = PageRendererProps & { presentation: unknown 
  * PageEditor と SSR が共有する native site composition。
  * 編集対象が canonical header/footer 自身なら、その文書を該当 slot にだけ置き、本文へ複製しない。
  */
-export function SitePageRenderer({ document: input, presentation: presentationInput, blocks = {}, assets: assetInput, missingAssets = "omit", siteStyles, hostViewMode = "prefer", externalFramePolicy, canvas }: SitePageRendererProps): ReactElement {
+export function SitePageRenderer({ document: input, presentation: presentationInput, blocks = {}, assets: assetInput, missingAssets = "omit", siteStyles, hostViewMode = "prefer", externalFramePolicy, blankEmbeds: blankEmbedInput, canvas }: SitePageRendererProps): ReactElement {
   const document = resolvePageStyles(parsePageDocument(input, blocks, siteStyles ? { siteStyles } : {}), siteStyles);
+  const blankEmbeds = blankEmbedInput === undefined ? undefined : parseBlankEmbedRegistry(blankEmbedInput);
   const presentation: SitePresentation = parseSitePresentation(presentationInput, document, blocks);
   const assets = assetInput === undefined ? {} : parseResolvedAssets(assetInput);
   const output = cssForSitePresentation(presentation, document, blocks, assets), layout = presentationLayoutDocument(presentation);
   const layoutScope = pageScope(layout), shared = presentation.shared;
   const overlays = presentation.overlays ?? [], hostViews = presentation.hostViews ?? [];
-  const hostOptions = { hostViews, hostViewMode, ...(externalFramePolicy ? { externalFramePolicy } : {}), ...(canvas ? { canvas } : {}) };
+  const hostOptions = { hostViews, hostViewMode, ...(externalFramePolicy ? { externalFramePolicy } : {}), ...(blankEmbeds ? { blankEmbeds } : {}), ...(canvas ? { canvas } : {}) };
   const header: PageDocument = document.pageId === shared.header.pageId ? document : shared.header;
   const footer: PageDocument = document.pageId === shared.footer.pageId ? document : shared.footer;
   const body = document.pageId === shared.header.pageId || document.pageId === shared.footer.pageId ? null

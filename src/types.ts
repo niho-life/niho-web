@@ -78,13 +78,13 @@ export type ElementTag =
 export type ElementAttributes = Record<string, string | number | boolean>;
 /** 任意の SVG/HTML ではなく、trusted code の閉じたカタログだけを参照する。 */
 export type IconName = "arrow-right" | "arrow-left" | "check" | "close" | "plus" | "minus" | "star" | "heart" | "location" | "info";
-/** 標準埋め込みは trusted renderer が知る静的 provider だけ。任意 iframe 設定は保存しない。 */
-export type EmbedProvider = "map" | "youtube" | "vimeo" | "lottie" | "facebook" | "x" | "instagram";
+/** 標準埋め込みは trusted renderer が知る静的 provider だけ。blank も任意 iframe 設定は保存しない。 */
+export type EmbedProvider = "map" | "youtube" | "vimeo" | "lottie" | "facebook" | "x" | "instagram" | "blank";
 export type EmbedDescriptor = {
   provider: EmbedProvider;
   /** iframe のアクセシブルな名前。 */
   title: string;
-  /** provider ごとの canonical URL。未設定なら公開 renderer は何も読み込まない。 */
+  /** provider ごとの canonical URL。blank だけはホスト登録済みの短い key。未設定なら公開 renderer は何も読み込まない。 */
   source?: string;
 };
 /** 実行コードやID参照を持たず、検証済みの固定部分木だけへ結び付く標準操作。 */

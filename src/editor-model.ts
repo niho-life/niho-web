@@ -45,7 +45,7 @@ export type EditorOperation =
   | { type: "replaceChildren"; path: NodePath; children: PageNode[] }
   | { type: "image"; path: NodePath; source: { asset: AssetReference } | { src: string; srcset?: string }; alt?: string }
   | { type: "video"; path: NodePath; source: { asset: AssetReference } | { src: string } }
-  /** provider は挿入時に固定し、入力 URL だけを provider 固有の canonical source へ更新する。 */
+  /** provider は挿入時に固定。標準 provider は canonical URL、blank はホスト承認済み key へ更新する。 */
   | { type: "embedSource"; path: NodePath; source: string }
   | { type: "embedTitle"; path: NodePath; title: string }
   /** Loop Box の閉じた runtime 設定。方向は通常の flexDirection style で編集する。 */

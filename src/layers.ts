@@ -19,7 +19,7 @@ export type LayerLabels = {
 const textTags = new Set(["p", "h1", "h2", "h3", "h4", "h5", "h6", "span", "label", "button", "a"]);
 const plain = (node: PageNode): string => node.type === "text" ? node.text : node.type === "element" ? node.children.map(plain).join(" ") : "";
 const excerpt = (value: string) => value.replace(/\s+/g, " ").trim().slice(0, 32);
-const embedLabels: Record<EmbedProvider, string> = { map: "Map", youtube: "YouTube", vimeo: "Vimeo", lottie: "Lottie", facebook: "Facebook", x: "X", instagram: "Instagram" };
+const embedLabels: Record<EmbedProvider, string> = { map: "Map", youtube: "YouTube", vimeo: "Vimeo", lottie: "Lottie", facebook: "Facebook", x: "X", instagram: "Instagram", blank: "Blank" };
 
 /** 要素の種類の表示名。レイヤー行・移動先・インスペクタの見出しで共通に使う。 */
 export const elementTypeLabel: Record<ElementTag, string> = {
