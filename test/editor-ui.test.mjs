@@ -396,7 +396,8 @@ test("Loop Box palette and inspector save, reload and activate only in preview",
   } finally { await app.cleanup(); }
 });
 test("Basic の標準埋め込みはカード UI、URL 正規化、保存・再読込、プレビューを共有する", async () => {
-  const app = await setup();
+  const xPostFrameUrl = "https://frame.example.test/widgets/x-post.html";
+  const app = await setup({ props: { xPostFrameUrl } });
   const addPreset = async (id) => {
     await click("追加"); const target = document.querySelector(`.e-preset-preview[data-preset="${id}"]`)?.closest("button");
     assert.ok(target, id); await act(async () => target.click()); await flush();
@@ -493,7 +494,12 @@ test("Basic の標準埋め込みはカード UI、URL 正規化、保存・再�
       assert.equal(socialButton.hidden, false); assert.equal(socialRoot.querySelector("iframe"), null);
       await act(async () => socialButton.click()); await flush();
       const frame = socialRoot.querySelector("iframe");
-      assert.equal(frame.getAttribute("sandbox"), "allow-scripts"); assert.equal(frame.hasAttribute("src"), false); assert.ok(frame.getAttribute("srcdoc").includes(provider === "x" ? "platform.twitter.com/widgets.js" : "instagram.com/embed.js"));
+      if (provider === "x") {
+        const frameUrl = new URL(frame.getAttribute("src"));
+        assert.equal(frame.getAttribute("sandbox"), "allow-scripts allow-same-origin"); assert.equal(`${frameUrl.origin}${frameUrl.pathname}`, xPostFrameUrl); assert.deepEqual([...frameUrl.searchParams], [["url", "https://x.com/example/status/1234567890123456789"]]); assert.equal(frame.hasAttribute("srcdoc"), false);
+      } else {
+        assert.equal(frame.getAttribute("sandbox"), "allow-scripts"); assert.equal(frame.hasAttribute("src"), false); assert.ok(frame.getAttribute("srcdoc").includes("instagram.com/embed.js"));
+      }
       assert.equal(frame.style.pointerEvents, "none"); assert.ok(socialRoot.querySelector('[data-nw-social-link]'));
     }
   } finally { await app.cleanup(); }

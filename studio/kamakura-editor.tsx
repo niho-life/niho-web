@@ -18,6 +18,7 @@ import { parseBreakpointSettings } from "../src/style-model.js";
 const BASE = "/api/projects/project-kamakura/sites/kamakura/editor";
 const LOCALIZATION_BASE = "/api/projects/project-kamakura/sites/kamakura/localization";
 const BREAKPOINTS_BASE = "/api/projects/project-kamakura/sites/kamakura/breakpoints";
+const X_POST_FRAME_URL = "https://kamakura-media.niho.life/niho-web/embeds/v1/x-post-frame-v1.html";
 // kamakura-site が見た目の編集を凍結している間の保存・公開の 409。競合とは分けて案内する（kamakura-site#84）。
 const VISUAL_EDITOR_FROZEN = "visual_editor_frozen";
 const FROZEN_MESSAGE = "サイトの見た目の編集は凍結中です。表示の確認だけでき、保存と公開はできません。";
@@ -381,6 +382,6 @@ export function KamakuraEditor({ project, environment }: { readonly project: Pro
     {catalog.status === "error" && <section className="studio-kamakura-state" role="alert"><h1>ページを読み込めませんでした</h1><p>{catalog.errorCode === KAMAKURA_CATALOG_CONTRACT_ERROR_CODE ? "ページ一覧の形式に対応できません。編集内容は変更されていません。管理者へ確認してください。" : catalog.errorCode === VISUAL_EDITOR_FROZEN ? `${FROZEN_MESSAGE}ページ一覧はサイト側の更新後に開けます。` : "編集内容は変更されていません。接続状態を確認して再試行してください。"}</p>{catalog.supportId !== null && <p>問い合わせID: <code>{catalog.supportId}</code></p>}<button type="button" onClick={() => setReload((value) => value + 1)}>再試行</button></section>}
     {ready && (ready.pages.length === 0
       ? <section className="studio-kamakura-state"><h1>編集できるページはありません</h1><p>編集対象のページがありません。ページ一覧を再読み込みしてください。</p><button type="button" onClick={() => setReload((value) => value + 1)}>再読み込み</button></section>
-      : adapter && <PageEditor adapter={adapter} {...(initialTarget ? { initialTarget } : {})} externalFramePolicy={externalFramePolicy} blankEmbeds={blankEmbeds} blocks={blocks} assets={kamakuraAssetLibrary} insertableBlocks={["ManagedEmbed"]} builder={studioBuilderDefinition} breakpoints={KAMAKURA_BREAKPOINTS} mobilePreviewWidth={480} toolbarStart={<a href={projectRoutePath(window.location.pathname, project.id, project.site.id, "dashboard")} aria-label="ダッシュボードに戻る" title="ダッシュボードに戻る">←</a>} />)}
+      : adapter && <PageEditor adapter={adapter} {...(initialTarget ? { initialTarget } : {})} externalFramePolicy={externalFramePolicy} blankEmbeds={blankEmbeds} xPostFrameUrl={X_POST_FRAME_URL} blocks={blocks} assets={kamakuraAssetLibrary} insertableBlocks={["ManagedEmbed"]} builder={studioBuilderDefinition} breakpoints={KAMAKURA_BREAKPOINTS} mobilePreviewWidth={480} toolbarStart={<a href={projectRoutePath(window.location.pathname, project.id, project.site.id, "dashboard")} aria-label="ダッシュボードに戻る" title="ダッシュボードに戻る">←</a>} />)}
   </main>;
 }

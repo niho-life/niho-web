@@ -104,9 +104,10 @@ test("Experience editor stays frozen while Kamakura reads pass and site freezes 
     assert.equal(response.status, 200, path);
     const csp = response.headers.get("Content-Security-Policy");
     assert.match(csp, /connect-src 'self' https:\/\/next-kamakura\.niho\.life;/u, path);
-    assert.match(csp, /script-src 'self' https:\/\/platform\.twitter\.com\/widgets\.js https:\/\/www\.instagram\.com\/embed\.js;/u, path); assert.doesNotMatch(csp, /script-src[^;]*facebook/iu, path);
+    assert.match(csp, /script-src 'self' https:\/\/www\.instagram\.com\/embed\.js;/u, path); assert.doesNotMatch(csp, /script-src[^;]*(?:facebook|platform\.twitter\.com)/iu, path);
     assert.match(csp, /font-src 'self' https:\/\/kamakura-media\.niho\.life\/niho-web\/fonts\/v1\//u, path);
-    assert.match(csp, /frame-src 'self' https:\/\/kamakura-media\.niho\.life\/niho-web\/embeds\/v1\/ https:\/\/www\.google\.com\/maps\/embed https:\/\/www\.openstreetmap\.org\/export\/embed\.html https:\/\/www\.youtube-nocookie\.com\/embed\/ https:\/\/player\.vimeo\.com\/video\/ https:\/\/lottie\.host\/embed\/ https:\/\/www\.facebook\.com\/plugins\/post\.php https:\/\/platform\.twitter\.com https:\/\/www\.instagram\.com;/u, path);
+    assert.match(csp, /frame-src 'self' https:\/\/kamakura-media\.niho\.life\/niho-web\/embeds\/v1\/ https:\/\/www\.google\.com\/maps\/embed https:\/\/www\.openstreetmap\.org\/export\/embed\.html https:\/\/www\.youtube-nocookie\.com\/embed\/ https:\/\/player\.vimeo\.com\/video\/ https:\/\/lottie\.host\/embed\/ https:\/\/www\.facebook\.com\/plugins\/post\.php https:\/\/www\.instagram\.com;/u, path);
+    assert.doesNotMatch(csp, /frame-src[^;]*platform\.twitter\.com/iu, path);
   }
   assert.equal((await call("/api/session")).status, 200);
   assert.equal(upstream.length, 0);
