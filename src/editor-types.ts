@@ -233,6 +233,10 @@ export interface EditorAdapter {
   components?: EditorComponentAdapter;
   /** 省略したホストは従来どおり単言語で動作する。認証・永続化・翻訳providerはホストの責務。 */
   localization?: EditorLocalizationAdapter;
+  /** false のホストでは update はページ名だけ。URL は表示のみ。 */
+  pagePathEditable?: boolean;
+  /** 省略時は全操作。部分接続するホストは対応する操作だけを宣言する。 */
+  pageChangeActions?: readonly EditorPageChange["action"][];
   /** ページ操作の影響と確認 token。両方を実装した場合だけページ操作を表示する。 */
   preparePageChange?(change: EditorPageChange, signal: AbortSignal): Promise<EditorPageChangePlan>;
   applyPageChange?(plan: EditorPageChangePlan, signal: AbortSignal): Promise<EditorPageChangeResult>;

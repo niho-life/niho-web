@@ -671,7 +671,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     } catch { if (!controller.signal.aborted) setNotice("ページ一覧を読み込めませんでした。"); return false; }
   }
   async function pageApplied(page: EditorPage, change: EditorPageChange) {
-    setBusy("読込中"); setPageChange(null); const done = pageChangeNotice(change);
+    setBusy("読込中"); setPageChange(null); const done = pageChangeNotice(change, adapter.pagePathEditable);
     const listed = await reloadPages(), loaded = await load({ siteId: page.siteId, pageId: page.pageId, locale: page.locale });
     setNotice(listed && loaded ? done : `${done}${loaded ? "ページ一覧" : "変更後の文書"}を読み込めませんでした。再読込してください。`);
     // ページの追加・複製・公開範囲の変更で使用状況が変わるため取り直す。
@@ -1464,7 +1464,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const siteComponentBack = regularPages.find((page) => page.siteId === siteComponentReturn?.siteId && page.pageId === siteComponentReturn?.pageId) ?? regularPages[0];
   const pageOperations = !!adapter.preparePageChange && !!adapter.applyPageChange, unsaved = dirty || hasInput;
   const pageOperationsDisabled = siteWorkBlocked || unsaved || blocked || !!navigation || !site || historyMode || targetMode || !!session?.readOnly;
-  const startPageChange = (start: PageChangeStart) => { if (pageOperations && !pageOperationsDisabled) setPageChange(start); };
+  const startPageChange = (start: PageChangeStart) => { if (pageOperations && !pageOperationsDisabled && (!adapter.pageChangeActions || adapter.pageChangeActions.includes(start.action))) setPageChange(start); };
   const status = saveStatus({ busy, hasInput, problem, dirty: pendingChanges, online, autosave: autosaveActive, savedAt, loaded: !!session });
   const recoveryStale = !!recoveryState.offer && !!session && recoveryState.offer.baseVersion !== session.version;
   const viewed = versions.viewing?.entry, viewedRelease = viewed && (viewed.kind === "publish" || viewed.kind === "rollback") && session?.releases.some((release) => release.revision === viewed.revision) ? viewed.revision : undefined;
@@ -1533,7 +1533,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
             <button onClick={() => add()} title={blankAddUnavailable ? "ホストで承認済みの Blank 埋め込みが接続されていません。" : undefined} disabled={!document || editBlocked || hasInput || targetMode || blankAddUnavailable}>要素を追加</button></details>
         </section>
         <section hidden={visiblePanel !== "pages"} aria-label="ページ一覧">
-          <PagePanel pages={panelPages} {...(localization.site ? { localizedPages: localization.site.pages } : {})} current={session?.target} disabled={blocked} operations={pageOperations} operationsDisabled={pageOperationsDisabled} unsaved={unsaved}
+          <PagePanel pages={panelPages} {...(localization.site ? { localizedPages: localization.site.pages } : {})} current={session?.target} disabled={blocked} operations={pageOperations} pathEditable={adapter.pagePathEditable ?? true} {...(adapter.pageChangeActions ? { actions: adapter.pageChangeActions } : {})} operationsDisabled={pageOperationsDisabled} unsaved={unsaved}
             select={(target) => { if (!session || !sameTarget(session.target, target)) requestNavigation({ type: "page", target }); }} start={startPageChange}>
             <label className="e-field"><span>編集するサイト</span><select aria-label="編集するサイト" value={siteId} disabled={blocked} onChange={(event) => requestNavigation({ type: "site", id: event.target.value })}>{sites.map((site) => <option key={site.id} value={site.id}>{site.name}</option>)}</select></label>
             {localization.site && adapter.localization?.requestSiteTranslation && <button type="button" className="e-small" disabled={blocked || unsaved || libraryDirty || localization.site.job?.state === "queued" || localization.site.job?.state === "running"} onClick={() => void requestSiteTranslation()}>{localization.site.job?.state === "failed" ? "サイト全体の翻訳を再試行" : "サイト全体を翻訳"}</button>}
@@ -1630,7 +1630,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       {inspector === "page" && !masterComponent && !isSiteComponent && <section className="e-inspector-content">{document && <PageSettings document={document} page={page} site={site} settings={siteSettings} field={field} apply={apply} report={setNotice} disabled={editBlocked} targetMode={targetMode} hasTargetLocale={localization.supported}
         cover={assets ? { assets: resolvedAssets.map, failed: resolvedAssets.failed, pick: () => setPicker({ purpose: "ogImage" }) } : undefined}
 
-        operations={pageOperations} operationsDisabled={pageOperationsDisabled} unsaved={unsaved} start={startPageChange} />}</section>}
+        operations={pageOperations} pathEditable={adapter.pagePathEditable ?? true} {...(adapter.pageChangeActions ? { actions: adapter.pageChangeActions } : {})} operationsDisabled={pageOperationsDisabled} unsaved={unsaved} start={startPageChange} />}</section>}
       {inspector === "page" && isSiteComponent && page && <SiteComponentSettings name={page.title} readOnly={session?.readOnly?.reason} />}
       {inspector === "page" && masterComponent && <ComponentSettings component={masterComponent} usage={usageSummary?.get(masterComponent.id)} usageLoading={usage === undefined} field={input} disabled={libraryBlocked || hasInput}
         rename={(name) => updateLibrary((library) => renameComponent(library, masterComponent.id, name, blocks))} setKind={(kind) => reportProblem(updateLibrary((library) => setComponentKind(library, masterComponent.id, kind, blocks)))}
@@ -1750,7 +1750,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     </Dialog>}
     {componentDialog && libraryPresent && <Dialog name={componentDialogTitle(componentDialog)} dismiss={() => setComponentDialog(null)}>
       <ComponentDialogBody dialog={componentDialog} library={libraryPresent} cancel={() => setComponentDialog(null)} submit={(values) => submitComponentDialog(componentDialog, values)} notice={componentDialogNotice} /></Dialog>}
-    {pageChange && site && adapter.preparePageChange && adapter.applyPageChange && <PageChangeDialog start={pageChange} site={site} pages={pages} locale={session?.target.locale ?? pages[0]?.locale ?? siteSettings.settings?.locale ?? "ja"}
+    {pageChange && site && adapter.preparePageChange && adapter.applyPageChange && <PageChangeDialog pathEditable={adapter.pagePathEditable ?? true} start={pageChange} site={site} pages={pages} locale={session?.target.locale ?? pages[0]?.locale ?? siteSettings.settings?.locale ?? "ja"}
       prepare={(change, signal) => adapter.preparePageChange!(change, signal)} apply={(plan, signal) => adapter.applyPageChange!(plan, signal)}
       applied={(page, change) => void pageApplied(page, change)} conflicted={() => void reloadPages()} close={() => setPageChange(null)}
       reload={() => { const current = sessionRef.current?.target; setPageChange(null); void reloadPages().then(() => current && load(current)); }} />}

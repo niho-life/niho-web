@@ -292,6 +292,8 @@ export function createProjectEditorAdapter(adapter: EditorAdapter, projectInput:
     },
     ...(adapter.components ? { components: componentsForProject(adapter.components, site) } : {}),
     ...(adapter.localization ? { localization: localizationForProject(adapter.localization, site) } : {}),
+    ...(adapter.pagePathEditable === undefined ? {} : { pagePathEditable: adapter.pagePathEditable }),
+    ...(adapter.pageChangeActions ? { pageChangeActions: [...adapter.pageChangeActions] } : {}),
     ...(adapter.preparePageChange ? {
       async preparePageChange(change, signal) {
         const checked = changeForProject(change, site);

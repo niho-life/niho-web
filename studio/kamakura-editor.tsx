@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { PageEditor } from "../src/editor.js";
 import { createExternalFramePolicy } from "../src/react.js";
 import { createProjectEditorAdapter } from "../src/project-editor-adapter.js";
-import type { EditorAdapter, EditorBreakpoint, EditorLocalizedPage, EditorLocalizationCommandResult, EditorLocalizationPageSnapshot, EditorLocalizationSiteSnapshot, EditorReleasePlan, EditorReleaseRequest, EditorReleaseResult, EditorSaveResult, EditorSnapshot, EditorTarget } from "../src/editor-types.js";
+import type { EditorAdapter, EditorPageChange, EditorPageChangePlan, EditorBreakpoint, EditorLocalizedPage, EditorLocalizationCommandResult, EditorLocalizationPageSnapshot, EditorLocalizationSiteSnapshot, EditorReleasePlan, EditorReleaseRequest, EditorReleaseResult, EditorSaveResult, EditorSnapshot, EditorTarget } from "../src/editor-types.js";
 import type { Project } from "../src/projects.js";
 import { studioBuilderDefinition } from "./integration-builder.js";
 import { projectRoutePath } from "./project-routes.mjs";
@@ -13,6 +13,7 @@ import { parseLocalizationOverlay, parseSiteLocalizationConfig } from "../src/lo
 import { KAMAKURA_CATALOG_CONTRACT_ERROR_CODE, KAMAKURA_CATALOG_CONTRACT_ERROR_STATUS, KAMAKURA_COMMON_PAGE_ID as COMMON_PAGE_ID, KAMAKURA_EDITOR_DOMAIN as DOMAIN, KAMAKURA_EDITOR_SITE_ID, KamakuraCatalogContractError, parseKamakuraCatalog } from "./kamakura-catalog.js";
 import type { KamakuraCatalog } from "./kamakura-catalog.js";
 import { parseEnglishPublication, parseEnglishPublicationAccepted } from "../src/english-publication.js";
+import { normalizePageChange, validatePageChangePlan } from "../src/editor-model.js";
 import { parseBreakpointSettings } from "../src/style-model.js";
 
 const BASE = "/api/projects/project-kamakura/sites/kamakura/editor";
@@ -260,8 +261,30 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
     listSites: (signal) => request(signal, async () => catalog.sites),
     listPages: (siteId, signal) => request(signal, async () => {
       if (siteId !== "kamakura") throw new Error("編集対象のサイトがありません。");
+      catalog = parseKamakuraCatalog(await api(`${BASE}/catalog`, "GET", undefined, signal));
       return catalog.pages;
     }),
+    ...(catalog.pageChangeActions ? {
+      pageChangeActions: catalog.pageChangeActions,
+      pagePathEditable: false,
+      preparePageChange: (input: EditorPageChange, signal: AbortSignal) => request(signal, async () => {
+        const change = normalizePageChange(input);
+        if (!change || change.action !== "update") throw new Error("このページ操作は利用できません。");
+        validTarget(change.target);
+        return validatePageChangePlan(await api(`${BASE}/page-changes/prepare`, "POST", { change }, signal) as EditorPageChangePlan, change, catalog.sites[0]!);
+      }),
+      applyPageChange: (input: EditorPageChangePlan, signal: AbortSignal) => conflict(() => request(signal, async () => {
+        const normalized = normalizePageChange(input.change);
+        if (!normalized) throw new Error("ページ操作を確認してください。");
+        const plan = validatePageChangePlan(input, normalized, catalog.sites[0]!);
+        if (plan.change.action !== "update") throw new Error("このページ操作は利用できません。");
+        validTarget(plan.change.target);
+        const result = record(await api(`${BASE}/page-changes/apply`, "POST", { change: plan.change, confirmationToken: plan.confirmationToken }, signal));
+        const page = record(result.page);
+        if (result.status !== "applied" || page.siteId !== plan.change.target.siteId || page.pageId !== plan.change.target.pageId || page.locale !== "ja" || page.title !== plan.change.title || page.path !== plan.change.path || page.kind !== "page") throw new Error("ページ操作の結果が一致しません。");
+        return { status: "applied" as const, page: { ...plan.change.target, title: plan.change.title, path: plan.change.path, kind: "page" as const } };
+      }))
+    } : {}),
     listFormCompletionPages: (target, signal) => request(signal, async () => {
       if (target.siteId !== KAMAKURA_EDITOR_SITE_ID || !COMMON_PAGE_ID.test(target.pageId) || !["ja", "en"].includes(target.locale)) throw new Error("完了ページの対象が正しくありません。");
       if (target.locale !== "ja") return [];
