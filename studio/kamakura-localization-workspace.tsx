@@ -7,7 +7,6 @@ import { KAMAKURA_CMS_PROJECT_ID, KAMAKURA_CMS_SITE_ID } from "./kamakura-cms-co
 import { createKamakuraLocalizationAdapter } from "./kamakura-localization.js";
 import { kamakuraLocalizationCmsSource } from "./kamakura-localization-contract.js";
 import { projectAliasPath, type ProjectTranslationsRoute } from "./project-routes.mjs";
-import type { SiteCmsView } from "./site-admin.mjs";
 
 const adapters = new Map<string, LocalizationWorkspaceAdapter>();
 const cmsTemplatePages: Readonly<Record<string, string>> = {
@@ -15,11 +14,11 @@ const cmsTemplatePages: Readonly<Record<string, string>> = {
 };
 
 /**
- * adapter は描画の外でサイトと CMS の開き方ごとに 1 回だけ作る。作り直すと LocalizationWorkspace が中身を読み直し、進行中の保存を止める。
- * 原文が CMS の項目なら Studio の CMS で開く（CMS がコレクション画面ならその項目、枠なら CMS の入口）。
+ * adapter は描画の外でサイトごとに 1 回だけ作る。作り直すと LocalizationWorkspace が中身を読み直し、進行中の保存を止める。
+ * 原文が CMS の項目なら Studio の CMS の該当項目で開く。
  */
-function adapterFor(cmsView: SiteCmsView, siteOrigin: string | null): LocalizationWorkspaceAdapter {
-  const key = `${cmsView}\u0000${siteOrigin ?? ""}`;
+function adapterFor(siteOrigin: string | null): LocalizationWorkspaceAdapter {
+  const key = siteOrigin ?? "";
   const existing = adapters.get(key);
   if (existing) return existing;
   const adapter = createKamakuraLocalizationAdapter({
@@ -28,19 +27,17 @@ function adapterFor(cmsView: SiteCmsView, siteOrigin: string | null): Localizati
       const path = projectAliasPath(KAMAKURA_CMS_PROJECT_ID, KAMAKURA_CMS_SITE_ID, "editor");
       return path ? `${path}?page=${encodeURIComponent(pageId)}&lang=en` : null;
     },
-    cmsItemUrl: (collectionId, itemId) => projectAliasPath(KAMAKURA_CMS_PROJECT_ID, KAMAKURA_CMS_SITE_ID, "cms", cmsView === "workspace" ? { collectionId, itemId } : null),
-    ...(cmsView === "workspace" ? { cmsTranslationUrl: (collectionId: string, itemId: string) => {
+    cmsItemUrl: (collectionId, itemId) => projectAliasPath(KAMAKURA_CMS_PROJECT_ID, KAMAKURA_CMS_SITE_ID, "cms", { collectionId, itemId }),
+    cmsTranslationUrl: (collectionId, itemId) => {
       const path = projectAliasPath(KAMAKURA_CMS_PROJECT_ID, KAMAKURA_CMS_SITE_ID, "cms", { collectionId, itemId });
       return path ? `${path}?lang=en` : null;
-    } } : {})
+    }
   });
   adapters.set(key, adapter);
   return adapter;
 }
 
 export type KamakuraLocalizationWorkspaceProps = {
-  /** Dashboard の CMS の開き方。原文へのリンクの行き先に使う。 */
-  readonly cmsView: SiteCmsView;
   /** サイトの公開 URL の origin（Project の site.domains[0]）。サイトの中の画像（"/" から始まる）を表示するのに使う。 */
   readonly siteOrigin: string | null;
   /** URL の `/translations/<itemKey>`。最初の表示だけに使う（開き直すときはホストが key を替える）。 */
@@ -49,9 +46,9 @@ export type KamakuraLocalizationWorkspaceProps = {
   readonly onNavigate: (state: LocalizationNavigationState) => void;
 };
 
-export function KamakuraLocalizationWorkspace({ cmsView, siteOrigin, route, onNavigate }: KamakuraLocalizationWorkspaceProps) {
+export function KamakuraLocalizationWorkspace({ siteOrigin, route, onNavigate }: KamakuraLocalizationWorkspaceProps) {
   const itemKey = route?.itemKey ?? null;
-  return <LocalizationWorkspace adapter={adapterFor(cmsView, siteOrigin)} onNavigate={onNavigate} {...(itemKey === null ? {} : { initialItemKey: itemKey })} />;
+  return <LocalizationWorkspace adapter={adapterFor(siteOrigin)} onNavigate={onNavigate} {...(itemKey === null ? {} : { initialItemKey: itemKey })} />;
 }
 
 /** CMS の同じ項目画面内で開く訳文。翻訳一覧は読み込まない。 */
@@ -60,7 +57,7 @@ export function KamakuraCmsTranslation({ siteOrigin, itemKey, onBack, registerBa
   const template = collectionId ? cmsTemplatePages[collectionId] : undefined;
   const editorPath = template ? projectAliasPath(KAMAKURA_CMS_PROJECT_ID, KAMAKURA_CMS_SITE_ID, "editor") : null;
   const relatedPageLink = template && editorPath ? { href: `${editorPath}?page=${encodeURIComponent(template)}&lang=en`, label: "英語の詳細ページ" } : null;
-  return <LocalizationItemWorkspace adapter={adapterFor("workspace", siteOrigin)} itemKey={itemKey} onBack={onBack} registerBack={registerBack}
+  return <LocalizationItemWorkspace adapter={adapterFor(siteOrigin)} itemKey={itemKey} onBack={onBack} registerBack={registerBack}
     {...(relatedPageLink ? { relatedPageLink } : {})}
     onOpenRelated={(relatedKey) => {
       const path = projectAliasPath(KAMAKURA_CMS_PROJECT_ID, KAMAKURA_CMS_SITE_ID, "translations", { itemKey: relatedKey });
