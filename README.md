@@ -206,6 +206,7 @@ const html = renderPageToHtml(document);
 ## 開発
 
 Basicの埋め込み群はBlankを先頭に置き、続けてMap / YouTube / Vimeo / Lottie / Facebook / X / Instagramを表示します。registry未接続時はBlankのカードと詳細selectを無効化し、中心の追加経路でも配置を拒否します。
+鎌倉サイトでは公開ホストとStudioの両方に同じ`public-map` keyを登録し、OpenStreetMapの固定埋め込み先だけを双方のCSPに許可します。編集キャンバスでは外部通信せず、プレビューと公開描画で承認済みkeyを解決します。
 
 スタッフ向けエディターは `@niho/web/editor` の `PageEditor` を使います。左の追加パネルは Basic / Parts / Sections に分かれ、Basic のセクション・ボックス・画像・テキスト・組み込みアイコン・リッチテキスト・native動画、埋め込み群のBlank / Map / YouTube / Vimeo / Lottie / Facebook / X / Instagram、Form1/2/3とInput・Textarea・Select・Radio・Confirm・Checkbox・File・Submit・Search・Passwordに加えて、編集可能なボタン・カード・見出しセット・リストと、ヘッダー・ヒーロー・特徴グリッド・CTA・FAQ・フッターをクリックまたはドラッグで配置できます。フォーム名、項目名、必須、入力型、placeholder、選択肢、checkbox label、file accept、submit captionは右インスペクタで編集できます。動画は直接URLまたは素材ライブラリのready MP4を選び、配信URLを文書へ保存しません。標準埋め込みはprovider固定のままURLとアクセシブルなタイトルを編集し、未設定なら公開出力から省きます。`npm run demo` では追加パネルから X / Instagram カードを配置し、URL保存、編集時の静的表示、プレビューでの明示読込を確認できます。ページ・レイヤーパネル、中央キャンバスでの直接文字編集とドラッグ配置、右インスペクタ（編集段と表示段の要約、幅・高さ、マージン、パディング、方向、ギャップ、9点＋横・縦の配置、外観、位置。`flex` 比率と高さの `dvh` を含む）、下書き保存、楽観ロック、公開/rollbackの対象ドメインと差分確認も提供します。[ホスト接続・編集・公開の契約](docs/editor-contract.md)と `npm run demo` のインメモリ動作例を参照してください。ホストが所有する表示部品（カレンダー・地図・カルーセル・一覧など）をキャンバスの同じ iframe に公開と同じ見た目で出すには、`PageEditor` の `previewComponent` に表示中の文書・幅・表示モード・従来の描画を受けるコンポーネントを渡します（[ホストの表示部品を同じ iframe へ差し込む](docs/editor-contract.md#ホストの表示部品を同じ-iframe-へ差し込む)、`npm run demo:host-preview`）。
 

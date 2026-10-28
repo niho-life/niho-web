@@ -5,6 +5,8 @@
 > 2026-10-25（niho-life/kamakura-site#84）: Kamakura だけ読み取りを再接続した。`GET catalog`・`GET :pageId`・素材の参照は service binding で kamakura-site へ通し、Kamakura の editor route だけ editor 用 CSP を付ける。保存・公開を止めるのは kamakura-site 側で、ページ文書の `readOnly` を `PageEditor` が読み取り専用の帯として出し、上流の `409 visual_editor_frozen` は競合（`conflict`）と分けて `409 { "error": "visual_editor_frozen" }` で返す。凍結の切り替えは kamakura-site の `worker/visual-freeze.ts` 1 か所。Experience は従来どおり凍結し、上流を呼ばない。
 >
 > 2026-10-28: Kamakura の native 化済みページはサイト側の段階解除で Studio から日本語の保存・公開が可能。原文ページの保存 locale `ja` と翻訳設定の原文 mapping `ja-JP` は PageEditor 内で区別し、日英切替後もページ一覧の保存 locale に戻る。Experience は凍結中。
+>
+> 鎌倉の Blank 埋め込みは、公開ホストと同じ `public-map` key / OpenStreetMap の固定URLを Studio に登録する。Studioの編集カードは接続済みとなり、previewだけ iframe を作る。Studio Workerの `frame-src` は鎌倉 editor route に限って当該pathを許可する。
 
 Issue #68 / #69 / #70 の Studio host です。共有 `@niho/web` ライブラリとは別に Cloudflare Workers へ配置し、静的 React UI、Worker API、Studio 専用 D1 registry、Experience / Kamakura editor BFF を1つの境界として運用します。
 
