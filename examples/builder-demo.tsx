@@ -30,6 +30,7 @@ const adapter: EditorAdapter = {
   saveDraft: (input, signal) => request<EditorSaveResult>("/api/document", signal, "PUT", input),
   prepareRelease: (input, signal) => request<EditorReleasePlan>("/api/release-plan", signal, "POST", input),
   release: (input, signal) => request<EditorReleaseResult>("/api/release", signal, "POST", input),
+  responsiveProposal: { propose: (input, signal) => request<unknown>("/api/responsive-proposal", signal, "POST", input) },
   components
 };
 

@@ -35,6 +35,8 @@ test("third-site builder performs insert, hierarchy move, style, motion, history
   const reloaded = host.readDocument(ATELIER_TARGET);
   assert.equal(reloaded.version, saved.version);
   assert.ok(walkNodes(reloaded.document).some(({ node }) => node.type !== "text" && node.id === inserted.id));
+  const proposal = host.responsiveProposal({ target: ATELIER_TARGET, document: reloaded.document, fingerprint: JSON.stringify(reloaded.document), scope: { type: "page" }, breakpoints: [768] });
+  assert.deepEqual(proposal, { fingerprint: JSON.stringify(reloaded.document), changes: [{ nodeId: "atelier_main", breakpoint: 768, property: "padding", value: "32px" }] });
 
   const componentSnapshot = host.readLibrary("atelier");
   const releaseRequest = { target: ATELIER_TARGET, expectedVersion: reloaded.version, action: "publish", componentsVersion: componentSnapshot.version };

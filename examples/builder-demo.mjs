@@ -57,6 +57,7 @@ createServer((request, response) => {
     if (request.method === "GET" && url.pathname === "/api/components" && [...url.searchParams.keys()].every((key) => key === "siteId")) { json(response, host.readLibrary(url.searchParams.get("siteId"))); return; }
     if (request.method === "PUT" && url.pathname === "/api/components" && !url.search) { json(response, host.saveLibrary(await body(request))); return; }
     if (request.method === "GET" && url.pathname === "/api/components/usage" && [...url.searchParams.keys()].every((key) => key === "siteId")) { json(response, host.listUsage(url.searchParams.get("siteId"))); return; }
+    if (request.method === "POST" && url.pathname === "/api/responsive-proposal" && !url.search) { json(response, host.responsiveProposal(await body(request))); return; }
     if (request.method === "POST" && url.pathname === "/api/release-plan" && !url.search) { json(response, host.prepareRelease(await body(request))); return; }
     if (request.method === "POST" && url.pathname === "/api/release" && !url.search) { json(response, host.release(await body(request))); return; }
     json(response, { error: "not_found" }, 404);

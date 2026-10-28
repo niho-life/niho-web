@@ -146,7 +146,7 @@ test("project editor forwards site frame sources without sharing the source arra
 });
 test("optional page and site methods are absent unless the host implements them", () => {
   const { wrapped } = setup();
-  for (const name of ["listFormCompletionPages", "preparePageChange", "applyPageChange", "readSiteSettings", "saveSiteSettings", "breakpointSettings", "localization"]) assert.equal(name in wrapped, false, name);
+  for (const name of ["listFormCompletionPages", "preparePageChange", "applyPageChange", "readSiteSettings", "saveSiteSettings", "breakpointSettings", "responsiveProposal", "localization"]) assert.equal(name in wrapped, false, name);
   const calls = { pageChanges: [], applies: [], settings: [], settingsSaves: [] };
   const partial = setup({ readSiteSettings: pageHostMethods(calls).readSiteSettings }).wrapped;
   assert.equal(typeof partial.readSiteSettings, "function"); assert.equal("saveSiteSettings" in partial, false); assert.equal("preparePageChange" in partial, false);
@@ -179,6 +179,20 @@ test("site breakpoint adapter is project-scoped, detached and forwards only CAS 
   assert.deepEqual(calls[1], ["save", { siteId: "demo", settings: snapshot.settings, expectedVersion: "b.1" }]);
   await assert.rejects(() => wrapped.breakpointSettings.save({ ...request, siteId: "other" }, signal()), /プロジェクト外/);
   await assert.rejects(() => setup({ breakpointSettings: { read: async () => ({ settings: { ...snapshot.settings, breakpoints: snapshot.settings.breakpoints.slice(0, -1) }, version: "b.1" }), save: async () => ({ status: "conflict" }) } }).wrapped.breakpointSettings.read("demo", signal()), /ブレークポイント/);
+});
+test("responsive proposal adapter is optional, project-scoped and forwards a detached closed request", async () => {
+  const calls = [], response = { fingerprint: "pending", changes: [] };
+  const { wrapped } = setup({ responsiveProposal: { propose: async (request) => { calls.push(structuredClone(request)); response.fingerprint = request.fingerprint; return response; } } });
+  const source = { ...structuredClone(fixture), siteId: "demo", pageId: "home", locale: "ja-JP" };
+  const input = { target: { siteId: "demo", pageId: "home", locale: "ja-JP", ignored: true }, document: source, fingerprint: JSON.stringify(source),
+    scope: { type: "node", nodeId: "hero", ignored: true }, breakpoints: [768], ignored: true };
+  const result = await wrapped.responsiveProposal.propose(input, signal());
+  assert.deepEqual(Object.keys(calls[0]).sort(), ["breakpoints", "document", "fingerprint", "scope", "target"]);
+  assert.deepEqual(calls[0].target, { siteId: "demo", pageId: "home", locale: "ja-JP" });
+  assert.deepEqual(calls[0].scope, { type: "node", nodeId: "hero" });
+  response.changes.push({ nodeId: "hero" }); assert.deepEqual(result.changes, [], "host response is detached");
+  await assert.rejects(() => wrapped.responsiveProposal.propose({ ...input, target: { ...input.target, siteId: "other" } }, signal()), /一致/u);
+  await assert.rejects(() => wrapped.responsiveProposal.propose({ ...input, fingerprint: "stale" }, signal()), /文書/u);
 });
 test("localization methods remain project-scoped and preserve optimistic command fields", async () => {
   const calls = [];

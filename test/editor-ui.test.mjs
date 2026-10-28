@@ -59,6 +59,45 @@ async function setup(options = {}) {
   return { calls, adapter, root, stored: () => stored, cleanup: async () => { await act(async () => root.unmount()); container.remove(); } };
 }
 
+test("responsive proposal control is absent without the optional host adapter", async () => {
+  const absent = await setup();
+  try { assert.equal(button("レスポンシブ提案"), undefined); }
+  finally { await absent.cleanup(); }
+  const present = await setup({ adapter: { responsiveProposal: { propose: async (request) => ({ fingerprint: request.fingerprint, changes: [] }) } } });
+  try { assert.ok(button("レスポンシブ提案")); }
+  finally { await present.cleanup(); }
+});
+
+test("responsive proposal reviews exact changes, applies once and undo restores them", async () => {
+  let requested;
+  const app = await setup({ adapter: { responsiveProposal: { propose: async (request) => {
+    requested = structuredClone(request);
+    return { fingerprint: request.fingerprint, changes: [
+      { nodeId: "hero", breakpoint: 768, property: "padding", value: "2rem" },
+      { nodeId: "heading", breakpoint: 1280, property: "fontSize", value: 48 }
+    ] };
+  } } } });
+  try {
+    await click("レスポンシブ提案");
+    assert.match(document.querySelector('[role="dialog"]').textContent, /ページ全体/u);
+    await click("提案を依頼");
+    assert.deepEqual(requested.target, { siteId: "demo", pageId: "home", locale: "ja-JP" });
+    assert.deepEqual(requested.scope, { type: "page" });
+    assert.deepEqual(requested.breakpoints, [768, 1280]);
+    const review = document.querySelector(".e-responsive-proposal-review");
+    assert.match(review.textContent, /768px以上.*内側余白.*指定なし.*2rem/us);
+    assert.match(review.textContent, /1280px以上.*文字サイズ.*指定なし.*48/us);
+    await click("この変更を適用");
+    await click("下書き保存");
+    assert.equal(app.calls.saves.at(-1).document.body[0].style.responsive.find((entry) => entry.minWidth === 768).declarations.padding, "2rem");
+    assert.equal(app.calls.saves.at(-1).document.body[0].children[0].style.responsive.find((entry) => entry.minWidth === 1280).declarations.fontSize, 48);
+    await click("元に戻す");
+    await click("下書き保存");
+    assert.equal(app.calls.saves.at(-1).document.body[0].style.responsive.find((entry) => entry.minWidth === 768).declarations.padding, undefined);
+    assert.equal(app.calls.saves.at(-1).document.body[0].children[0].style, undefined);
+  } finally { await app.cleanup(); }
+});
+
 test("initialTarget opens the requested page and falls back when the page is absent", async () => {
   const requested = await setup({ props: { initialTarget: { siteId: "demo", pageId: "other", locale: "ja-JP" } } });
   try { assert.deepEqual(requested.calls.reads, [{ siteId: "demo", pageId: "other", locale: "ja-JP" }]); }
