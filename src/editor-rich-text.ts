@@ -1,4 +1,6 @@
 import type { ElementNode, ElementTag, PageNode } from "./types.js";
+import type { SitePresentationLinks } from "./types.js";
+import { resolvePageLink } from "./presentation-links.js";
 import { isSafePublicLink } from "./validation-utils.js";
 
 const inlineTags = new Set<ElementTag>(["a", "strong", "em", "span", "small", "br", "img"]);
@@ -11,7 +13,7 @@ export function isDirectlyEditable(node: PageNode): node is ElementNode {
 }
 
 /** Browser contenteditable markup is only an input format; it is never saved as HTML. */
-export function readEditableChildren(root: HTMLElement, original: ElementNode): PageNode[] {
+export function readEditableChildren(root: HTMLElement, original: ElementNode, links?: SitePresentationLinks): PageNode[] {
   const old = new Map<string, ElementNode>(), claimed = new Set<string>();
   const visit = (node: PageNode): void => {
     if (node.type !== "element") return;
@@ -41,7 +43,9 @@ export function readEditableChildren(root: HTMLElement, original: ElementNode): 
     if (tag === "a") {
       const href = element.getAttribute("href") ?? "/";
       if (!isSafePublicLink(href)) throw new Error("リンク先には安全なHTTPS、サイト内URL、mailto、telを指定してください。");
-      attrs.href = href;
+      // 表示用aliasがDOMへ反映されていても、文字だけの編集では原稿のhrefを保持する。
+      const originalHref = previous?.attrs?.href;
+      attrs.href = typeof originalHref === "string" && links && href === resolvePageLink(originalHref, links) ? originalHref : href;
     }
     return { type: "element", id: previous?.id ?? id(), tag: preservedTag, ...(Object.keys(attrs).length ? { attrs } : {}),
       ...(previous?.style ? { style: previous.style } : {}), children };
