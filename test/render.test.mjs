@@ -175,6 +175,8 @@ test("closed standard embeds render fixed trusted iframe attributes and empty so
     { type: "element", id: "vimeo", tag: "div", embed: { provider: "vimeo", title: "作品動画", source: "https://vimeo.com/123456789?h=Unlisted_1" }, children: [] },
     { type: "element", id: "lottie", tag: "div", embed: { provider: "lottie", title: "読み込み中も伝わるアニメーション", source: "https://lottie.host/123e4567-e89b-42d3-a456-426614174000/intro.json" }, children: [] },
     { type: "element", id: "facebook", tag: "div", embed: { provider: "facebook", title: "公開されたお知らせ", source: "https://facebook.com/example.page/posts/123456789/" }, children: [] },
+    { type: "element", id: "x", tag: "div", embed: { provider: "x", title: "X の公開ポスト", source: "https://x.com/Example/status/1234567890123456789/" }, children: [] },
+    { type: "element", id: "instagram", tag: "div", embed: { provider: "instagram", title: "Instagram の公開投稿", source: "https://instagram.com/p/AbCdEf12345" }, children: [] },
     { type: "element", id: "empty", tag: "div", embed: { provider: "map", title: "準備中の地図" }, children: [] }
   ];
   const html = renderPageToHtml(doc);
@@ -190,8 +192,14 @@ test("closed standard embeds render fixed trusted iframe attributes and empty so
   assert.match(html, /data-nw-facebook-status=""[^>]*role="status"[^>]*>Facebook の投稿はまだ読み込まれていません。<\/span>/);
   assert.match(html, /href="https:\/\/www\.facebook\.com\/example\.page\/posts\/123456789"[^>]*target="_blank"[^>]*rel="noopener noreferrer"/);
   assert.match(html, /data-nw-facebook-load="" hidden=""[^>]*>Facebook の投稿を表示<\/button>/);
-  assert.equal((html.match(/<iframe/g) ?? []).length, 3, "Lottie and Facebook SSR must not start a network request");
+  assert.match(html, /data-nw-embed="x"[^>]*data-nw-social-source="https:\/\/x\.com\/example\/status\/1234567890123456789"/);
+  assert.match(html, /data-nw-social-status=""[^>]*role="status"[^>]*>X のポストはまだ読み込まれていません。<\/span>/);
+  assert.match(html, /href="https:\/\/x\.com\/example\/status\/1234567890123456789"[^>]*data-nw-social-link=""/);
+  assert.match(html, /data-nw-embed="instagram"[^>]*data-nw-social-source="https:\/\/www\.instagram\.com\/p\/AbCdEf12345\/"/);
+  assert.match(html, /data-nw-social-load="" hidden=""[^>]*>Instagram の投稿を表示<\/button>/);
+  assert.equal((html.match(/<iframe/g) ?? []).length, 3, "遅延埋め込みの SSR は外部通信を開始しない");
   assert.ok(!html.includes("/plugins/post.php"));
+  assert.ok(!html.includes("platform.twitter.com/widgets.js")); assert.ok(!html.includes("instagram.com/embed.js"));
   assert.ok(!html.includes('src="https://lottie.host/')); assert.ok(!html.includes(" inert="), "SSR markup avoids React 18/19 boolean inert serialization");
   assert.ok(!html.includes("javascript:")); assert.ok(!html.includes("srcDoc=")); assert.ok(!html.includes("pointer-events"));
   const placeholder = renderToString(createElement(PageRenderer, { document: doc, missingAssets: "placeholder" }));
@@ -199,7 +207,9 @@ test("closed standard embeds render fixed trusted iframe attributes and empty so
   const canvas = renderToString(createElement(PageRenderer, { document: doc, canvas: {} }));
   assert.match(canvas, /<iframe[^>]*style="[^"]*pointer-events:none/);
   assert.match(canvas, /data-nw-embed="facebook"[^>]*data-nw-facebook-static=""/);
-  assert.equal((canvas.match(/<iframe/g) ?? []).length, 3, "the edit canvas also keeps Lottie and Facebook static");
+  assert.match(canvas, /data-nw-embed="x"[^>]*data-nw-social-static=""/);
+  assert.match(canvas, /data-nw-embed="instagram"[^>]*data-nw-social-static=""/);
+  assert.equal((canvas.match(/<iframe/g) ?? []).length, 3, "編集キャンバスは遅延埋め込みを静的に保つ");
 });
 
 test("unsafe resolved asset maps throw before any block executes", () => {

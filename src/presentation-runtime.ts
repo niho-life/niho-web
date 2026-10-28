@@ -1,6 +1,19 @@
 import { normalizeEmbedSource } from "./embeds.js";
 
 type OverlayElement = HTMLElement & { hidden: boolean };
+type ScriptSocialProvider = "x" | "instagram";
+
+function escapeEmbedAttribute(value: string): string {
+  return value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+/** canonical URLを固定の公式markupへだけ差し込む。文書由来のHTML・script・iframe URLは使わない。 */
+function scriptSocialSrcDoc(provider: ScriptSocialProvider, source: string): string {
+  const escaped = escapeEmbedAttribute(source);
+  return provider === "x"
+    ? `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><blockquote class="twitter-tweet"><a href="${escaped}"></a></blockquote><script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script></body></html>`
+    : `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><blockquote class="instagram-media" data-instgrm-permalink="${escaped}" data-instgrm-version="14"><a href="${escaped}">Instagramで投稿を見る</a></blockquote><script async src="https://www.instagram.com/embed.js"></script></body></html>`;
+}
 
 const focusableSelector = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),summary,[tabindex]';
 
@@ -111,6 +124,38 @@ export function initializeSitePresentation(scope: ParentNode = document, options
     listen(binding.button, "click", activate as EventListener);
   }
   cleanups.push(() => facebookBindings.forEach((binding) => { binding.frame?.remove(); binding.frame = null; binding.status.style.visibility = ""; binding.button.hidden = true; }));
+  const socialProviders: readonly ScriptSocialProvider[] = ["x", "instagram"];
+  const socialBindings = socialProviders.flatMap((provider) => Array.from(scope.querySelectorAll<HTMLElement>(`[data-nw-embed="${provider}"][data-nw-social-source]`)).flatMap((root) => {
+    if (root.hasAttribute("data-nw-social-static")) return [];
+    const source = root.dataset.nwSocialSource ?? "", title = root.dataset.nwSocialTitle ?? "";
+    const ViewHTMLElement = ownerDocument.defaultView?.HTMLElement;
+    const direct = ViewHTMLElement ? Array.from(root.children).filter((child): child is HTMLElement => child instanceof ViewHTMLElement) : [];
+    const player = direct.find((child) => child.hasAttribute("data-nw-social-player"));
+    const mount = ViewHTMLElement && player ? Array.from(player.children).find((child): child is HTMLElement => child instanceof ViewHTMLElement && child.hasAttribute("data-nw-social-frame-mount")) : undefined;
+    const status = mount?.querySelector<HTMLElement>("[data-nw-social-status]");
+    const button = player?.querySelector<HTMLButtonElement>("button[data-nw-social-load]");
+    const link = player?.querySelector<HTMLAnchorElement>("a[data-nw-social-link]");
+    let canonical = false;
+    try { canonical = normalizeEmbedSource(provider, source) === source; } catch { /* Untrusted or edited runtime attributes stay static. */ }
+    return canonical && title.trim() && mount && status && button && link?.getAttribute("href") === source
+      ? [{ provider, source, title, mount, status, button, frame: null as HTMLIFrameElement | null }]
+      : [];
+  }));
+  for (const binding of socialBindings) {
+    binding.button.hidden = false;
+    const activate = () => {
+      if (binding.frame?.isConnected) return;
+      const frame = ownerDocument.createElement("iframe");
+      frame.srcdoc = scriptSocialSrcDoc(binding.provider, binding.source); frame.title = binding.title;
+      frame.setAttribute("loading", "lazy"); frame.setAttribute("referrerpolicy", "no-referrer"); frame.setAttribute("sandbox", "allow-scripts");
+      frame.setAttribute(`data-nw-${binding.provider}-frame`, "");
+      frame.style.gridArea = "1 / 1"; frame.style.width = "100%"; frame.style.height = "100%"; frame.style.border = "0"; frame.style.display = "block";
+      if (binding.mount.closest("[data-nw-social-canvas]")) frame.style.pointerEvents = "none";
+      binding.mount.append(frame); binding.frame = frame; binding.status.style.visibility = "hidden"; binding.button.hidden = true;
+    };
+    listen(binding.button, "click", activate as EventListener);
+  }
+  cleanups.push(() => socialBindings.forEach((binding) => { binding.frame?.remove(); binding.frame = null; binding.status.style.visibility = ""; binding.button.hidden = true; }));
   for (const root of Array.from(scope.querySelectorAll<HTMLElement>("[data-nw-loop-box]"))) {
     const view = ownerDocument.defaultView; if (!view) continue;
     const direct = Array.from(root.children), track = direct.find((child): child is HTMLElement => child instanceof view.HTMLElement && child.hasAttribute("data-nw-loop-box-track"));

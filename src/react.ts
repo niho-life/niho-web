@@ -53,7 +53,7 @@ export type PageRendererProps = {
 const canvasCssText = (css: string, canvas: PageRendererProps["canvas"]) => canvas?.viewportHeight ? resolveViewportHeightUnits(css, canvas.viewportHeight) : css;
 const rootRelative = (value: string) => value.startsWith("/") && !value.startsWith("//");
 const embedAllow = { map: undefined, youtube: "encrypted-media; picture-in-picture; fullscreen", vimeo: "picture-in-picture; fullscreen" } as const;
-const embedLabel = { map: "Map", youtube: "YouTube", vimeo: "Vimeo", lottie: "Lottie", facebook: "Facebook" } as const;
+const embedLabel = { map: "Map", youtube: "YouTube", vimeo: "Vimeo", lottie: "Lottie", facebook: "Facebook", x: "X", instagram: "Instagram" } as const;
 function withSiteOrigin(attrs: Record<string, unknown>, siteOrigin: string): void {
   if (typeof attrs.src === "string" && rootRelative(attrs.src)) attrs.src = siteOrigin + attrs.src;
   if (typeof attrs.poster === "string" && rootRelative(attrs.poster)) attrs.poster = siteOrigin + attrs.poster;
@@ -155,6 +155,19 @@ export function PageRenderer({ document: input, blocks = {}, assets: assetInput,
           createElement("div", { style: { display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "center", gap: 12, padding: 12 } },
             createElement("button", { type: "button", "data-nw-facebook-load": "", hidden: true }, "Facebook の投稿を表示"),
             createElement("a", { href: node.embed.source, target: "_blank", rel: "noopener noreferrer", "data-nw-facebook-link": "" }, "Facebook で投稿を見る"))));
+      if (node.embed.provider === "x" || node.embed.provider === "instagram") {
+        const provider = node.embed.provider, service = embedLabel[provider], content = provider === "x" ? "ポスト" : "投稿";
+        return createElement("div", { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope,
+          "data-nw-embed": provider, "data-nw-social-source": node.embed.source, "data-nw-social-title": node.embed.title,
+          ...(canvas ? { "data-nw-social-canvas": "" } : {}),
+          ...(canvas && !canvas.interactive ? { "data-nw-social-static": "" } : {}) },
+          createElement("div", { "data-nw-social-player": "", style: { display: "flex", flexDirection: "column", width: "100%", height: "100%" } },
+            createElement("div", { "data-nw-social-frame-mount": "", style: { display: "grid", flex: "1 1 auto", minHeight: 0 } },
+              createElement("span", { "data-nw-social-status": "", role: "status", style: { gridArea: "1 / 1", display: "flex", alignItems: "center", justifyContent: "center", padding: 16, textAlign: "center" } }, `${service} の${content}はまだ読み込まれていません。`)),
+            createElement("div", { style: { display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "center", gap: 12, padding: 12 } },
+              createElement("button", { type: "button", "data-nw-social-load": "", hidden: true }, `${service} の${content}を表示`),
+              createElement("a", { href: node.embed.source, target: "_blank", rel: "noopener noreferrer", "data-nw-social-link": "" }, `${service} で${content}を見る`))));
+      }
       const frame = createElement("iframe", {
         src: node.embed.source, title: node.embed.title, loading: "lazy", referrerPolicy: "strict-origin-when-cross-origin",
         sandbox: "allow-scripts allow-same-origin", ...(embedAllow[node.embed.provider] ? { allow: embedAllow[node.embed.provider] } : {}),

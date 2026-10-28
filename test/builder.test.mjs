@@ -25,7 +25,7 @@ test("layout compositions are opt-in and every catalog entry creates a valid doc
 
 test("Basic catalog includes safe icons, native video and closed embeds in the reference-like order", () => {
   const basic = resolveBuilderDefinition().insertions.filter((entry) => (entry.category ?? "basic") === "basic");
-  const ordered = ["section", "box", "img", "text", "icon", "richtext", "video", "embed-map", "embed-youtube", "embed-vimeo", "embed-lottie", "embed-facebook"];
+  const ordered = ["section", "box", "img", "text", "icon", "richtext", "video", "embed-map", "embed-youtube", "embed-vimeo", "embed-lottie", "embed-facebook", "embed-x", "embed-instagram"];
   assert.deepEqual(basic.filter((entry) => ordered.includes(entry.id)).map((entry) => entry.id), ordered);
   assert.ok(basic.filter((entry) => ordered.slice(0, 7).includes(entry.id)).every((entry) => entry.group === "基本"));
   assert.ok(basic.filter((entry) => ordered.slice(7).includes(entry.id)).every((entry) => entry.group === "埋め込み"));
@@ -87,17 +87,20 @@ test("Loop Box uses a bounded closed descriptor and survives edit, reload and du
   reject({ type: "loop-box", speed: 60, pauseOnHover: true }, [{ ...root.children[0], interaction: { type: "loop-box", speed: 60, pauseOnHover: false } }, ...root.children.slice(1)]);
 });
 
-test("Map, YouTube, Vimeo, Lottie and Facebook presets start empty and keep provider fixed through source edits and history", () => {
+test("標準埋め込み preset は空で始まり provider を固定して保存・再読込できる", () => {
   const basic = resolveBuilderDefinition().insertions.filter((entry) => (entry.category ?? "basic") === "basic");
   let page = doc();
-  for (const id of ["embed-map", "embed-youtube", "embed-vimeo", "embed-lottie", "embed-facebook"]) {
+  const embedIds = ["embed-map", "embed-youtube", "embed-vimeo", "embed-lottie", "embed-facebook", "embed-x", "embed-instagram"];
+  for (const id of embedIds) {
     page = editDocument(page, { type: "add", parentId: null, node: createInsertionNode(basic.find((entry) => entry.id === id), { document: page }) });
   }
-  const start = page.body.length - 5;
-  assert.deepEqual(page.body.slice(start).map((node) => node.embed.provider), ["map", "youtube", "vimeo", "lottie", "facebook"]);
+  const start = page.body.length - embedIds.length;
+  assert.deepEqual(page.body.slice(start).map((node) => node.embed.provider), ["map", "youtube", "vimeo", "lottie", "facebook", "x", "instagram"]);
   assert.ok(page.body.slice(start).every((node) => node.embed.source === undefined && node.children.length === 0));
   assert.equal(page.body[start + 4].style.base.height, 650);
   assert.equal(page.body[start + 4].style.base.maxWidth, 550);
+  assert.equal(page.body[start + 5].style.base.maxWidth, 550);
+  assert.equal(page.body[start + 6].style.base.maxWidth, 540);
   const edited = editDocument(page, { type: "embedSource", path: [start + 1], source: "https://youtu.be/dQw4w9WgXcQ" });
   const titled = editDocument(edited, { type: "embedTitle", path: [start + 1], title: "紹介動画" });
   assert.deepEqual(titled.body[start + 1].embed, { provider: "youtube", source: "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ", title: "紹介動画" });
@@ -109,6 +112,11 @@ test("Map, YouTube, Vimeo, Lottie and Facebook presets start empty and keep prov
   assert.equal(lottie.body[start + 3].embed.source, "https://lottie.host/embed/123e4567-e89b-42d3-a456-426614174000/intro.json");
   const facebook = editDocument(lottie, { type: "embedSource", path: [start + 4], source: "https://facebook.com/example.page/posts/123456789/" });
   assert.equal(facebook.body[start + 4].embed.source, "https://www.facebook.com/example.page/posts/123456789");
+  const x = editDocument(facebook, { type: "embedSource", path: [start + 5], source: "https://x.com/Example/status/1234567890123456789/" });
+  assert.equal(x.body[start + 5].embed.source, "https://x.com/example/status/1234567890123456789");
+  const instagram = editDocument(x, { type: "embedSource", path: [start + 6], source: "https://instagram.com/reel/AbCdEf12345" });
+  assert.equal(instagram.body[start + 6].embed.source, "https://www.instagram.com/reel/AbCdEf12345/");
+  assert.deepEqual(parsePageDocument(JSON.parse(JSON.stringify(instagram))).body.slice(start + 5).map((node) => node.embed.provider), ["x", "instagram"]);
   assert.throws(() => editDocument(titled, { type: "embedSource", path: [start + 1], source: "https://example.test/video" }), /YouTube/);
 });
 

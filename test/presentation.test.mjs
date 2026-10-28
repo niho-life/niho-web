@@ -97,6 +97,42 @@ test("Facebook runtime waits for explicit activation, revalidates canonical data
   const invalidCleanup = initializeSitePresentation(dom.window.document); assert.equal(button.hidden, true); button.click(); assert.equal(root.querySelector("iframe"), null); invalidCleanup(); dom.window.close();
 });
 
+test("X と Instagram runtime は明示操作後だけ opaque srcdoc を生成して cleanup する", () => {
+  const cases = [
+    { provider: "x", source: "https://x.com/example/status/1234567890123456789", title: "X のお知らせ", script: "https://platform.twitter.com/widgets.js", markup: "twitter-tweet" },
+    { provider: "instagram", source: "https://www.instagram.com/reel/AbCdEf12345/", title: "Instagram のお知らせ", script: "https://www.instagram.com/embed.js", markup: "instagram-media" }
+  ];
+  const document = page("synthetic", "ja", "social", cases.map(({ provider, source, title }) => ({ type: "element", id: provider, tag: "div", embed: { provider, source, title }, children: [] })));
+  const dom = new JSDOM(`<!doctype html><body>${renderPageToHtml(document)}</body>`);
+  for (const entry of cases) {
+    const root = dom.window.document.querySelector(`[data-nw-embed="${entry.provider}"]`), button = root.querySelector("[data-nw-social-load]"), link = root.querySelector("[data-nw-social-link]");
+    assert.equal(root.querySelector("iframe"), null); assert.equal(button.hidden, true); assert.equal(link.getAttribute("href"), entry.source);
+  }
+  const staticCleanup = initializeSitePresentation(dom.window.document, { interactive: false });
+  for (const entry of cases) assert.equal(dom.window.document.querySelector(`[data-nw-embed="${entry.provider}"] [data-nw-social-load]`).hidden, true);
+  staticCleanup();
+  const cleanup = initializeSitePresentation(dom.window.document);
+  for (const entry of cases) {
+    const root = dom.window.document.querySelector(`[data-nw-embed="${entry.provider}"]`), button = root.querySelector("[data-nw-social-load]");
+    assert.equal(button.hidden, false); assert.equal(root.querySelector("iframe"), null, "buttonを表示しただけでは外部通信しない");
+    button.click();
+    const frame = root.querySelector(`iframe[data-nw-${entry.provider}-frame]`), srcdoc = frame.getAttribute("srcdoc");
+    assert.equal(frame.hasAttribute("src"), false); assert.equal(frame.getAttribute("sandbox"), "allow-scripts"); assert.equal(frame.getAttribute("referrerpolicy"), "no-referrer");
+    assert.equal(frame.getAttribute("loading"), "lazy"); assert.equal(frame.getAttribute("title"), entry.title); assert.equal(frame.hasAttribute("allow"), false); assert.equal(frame.hasAttribute("allowfullscreen"), false);
+    assert.match(srcdoc, new RegExp(entry.markup)); assert.ok(srcdoc.includes(entry.script)); assert.ok(srcdoc.includes(entry.source));
+    assert.equal(root.querySelector("[data-nw-social-status]").style.visibility, "hidden"); assert.equal(button.hidden, true); assert.ok(root.querySelector("[data-nw-social-link]").isConnected);
+  }
+  cleanup();
+  for (const entry of cases) {
+    const root = dom.window.document.querySelector(`[data-nw-embed="${entry.provider}"]`), button = root.querySelector("[data-nw-social-load]");
+    assert.equal(root.querySelector("iframe"), null); assert.equal(button.hidden, true); assert.equal(root.querySelector("[data-nw-social-status]").style.visibility, "");
+    button.click(); assert.equal(root.querySelector("iframe"), null, "cleanup は activation listener も除く");
+  }
+  const xRoot = dom.window.document.querySelector('[data-nw-embed="x"]');
+  xRoot.dataset.nwSocialSource = "https://evil.example/post"; xRoot.querySelector("[data-nw-social-link]").setAttribute("href", "https://evil.example/post");
+  const invalidCleanup = initializeSitePresentation(dom.window.document); assert.equal(xRoot.querySelector("[data-nw-social-load]").hidden, true); invalidCleanup(); dom.window.close();
+});
+
 test("Loop Box fills the viewport with inert safe copies, pauses, honors reduced motion and cleans up", async () => {
   const document = page("synthetic", "en", "loop", [{ type: "element", id: "loop", tag: "div", interaction: { type: "loop-box", speed: 60, pauseOnHover: true },
     attrs: { "aria-label": "Highlights" }, style: { base: { display: "flex", flexDirection: "row", gap: 0, overflow: "hidden" } }, children: [

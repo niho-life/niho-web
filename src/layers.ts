@@ -1,4 +1,4 @@
-import type { ElementTag, PageDocument, PageNode } from "./types.js";
+import type { ElementTag, EmbedProvider, PageDocument, PageNode } from "./types.js";
 
 export type LayerKind = "box" | "image" | "text" | "component" | "instance";
 export type LayerEntry = {
@@ -19,6 +19,7 @@ export type LayerLabels = {
 const textTags = new Set(["p", "h1", "h2", "h3", "h4", "h5", "h6", "span", "label", "button", "a"]);
 const plain = (node: PageNode): string => node.type === "text" ? node.text : node.type === "element" ? node.children.map(plain).join(" ") : "";
 const excerpt = (value: string) => value.replace(/\s+/g, " ").trim().slice(0, 32);
+const embedLabels: Record<EmbedProvider, string> = { map: "Map", youtube: "YouTube", vimeo: "Vimeo", lottie: "Lottie", facebook: "Facebook", x: "X", instagram: "Instagram" };
 
 /** 要素の種類の表示名。レイヤー行・移動先・インスペクタの見出しで共通に使う。 */
 export const elementTypeLabel: Record<ElementTag, string> = {
@@ -34,7 +35,7 @@ export function layerLabel(node: Exclude<PageNode, { type: "text" }>, labels: La
   if (node.type === "component") return labels.blocks?.[node.block] ?? "コンポーネント";
   if (node.type === "instance") return labels.components?.get(node.component) ?? "コンポーネント";
   if (node.icon) return "アイコン";
-  if (node.embed) return node.embed.provider === "map" ? "Map" : node.embed.provider === "youtube" ? "YouTube" : node.embed.provider === "vimeo" ? "Vimeo" : node.embed.provider === "lottie" ? "Lottie" : "Facebook";
+  if (node.embed) return embedLabels[node.embed.provider];
   if (node.tag === "video") return "動画";
   if (node.tag === "img" || node.tag === "picture") return "画像";
   if (textTags.has(node.tag)) {

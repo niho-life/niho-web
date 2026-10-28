@@ -9,14 +9,19 @@ const lottieFilename = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,198}[A-Za-z0-9_-])?\.(?:
 const facebookActor = /^[A-Za-z0-9](?:[A-Za-z0-9.]{0,78}[A-Za-z0-9])?$/u;
 const facebookActorId = /^[0-9]{1,32}$/u;
 const facebookPostId = /^(?:[0-9]{1,32}|pfbid[A-Za-z0-9]{20,195})$/u;
-const providers = new Set<EmbedProvider>(["map", "youtube", "vimeo", "lottie", "facebook"]);
+const xHandle = /^[A-Za-z0-9_]{1,15}$/u;
+const xPostId = /^[0-9]{1,20}$/u;
+const instagramShortcode = /^[A-Za-z0-9_-]{1,64}$/u;
+const providers = new Set<EmbedProvider>(["map", "youtube", "vimeo", "lottie", "facebook", "x", "instagram"]);
 
 function invalid(provider: EmbedProvider): never {
   throw new Error(provider === "map" ? "Google Maps の共有画面で取得した埋め込み URL を入力してください。"
     : provider === "youtube" ? "YouTube の動画 URL を入力してください。"
     : provider === "vimeo" ? "Vimeo の動画 URL を入力してください。"
     : provider === "lottie" ? "LottieFiles の lottie.host Asset link を入力してください。"
-    : "Facebook の公開投稿 URL を入力してください。");
+    : provider === "facebook" ? "Facebook の公開投稿 URL を入力してください。"
+    : provider === "x" ? "X の公開ポスト URL を入力してください。"
+    : "Instagram の公開投稿またはリール URL を入力してください。");
 }
 
 function safeUrl(value: string, provider: EmbedProvider): URL {
@@ -49,6 +54,18 @@ function youtubeQuery(url: URL, watch: boolean): boolean {
 export function normalizeEmbedSource(provider: EmbedProvider, value: string): string {
   if (!providers.has(provider)) throw new Error("未対応の埋め込みサービスです。");
   const url = safeUrl(value, provider), host = url.hostname.toLowerCase();
+  if (provider === "x") {
+    if (host !== "x.com") invalid(provider);
+    const post = /^https:\/\/x\.com\/([^/?#]+)\/status\/([^/?#]+)\/?$/u.exec(value);
+    if (!post || !xHandle.test(post[1]!) || !xPostId.test(post[2]!)) invalid(provider);
+    return `https://x.com/${post[1]!.toLowerCase()}/status/${post[2]!}`;
+  }
+  if (provider === "instagram") {
+    if (host !== "instagram.com" && host !== "www.instagram.com") invalid(provider);
+    const post = /^https:\/\/(?:www\.)?instagram\.com\/(p|reel)\/([^/?#]+)\/?$/u.exec(value);
+    if (!post || !instagramShortcode.test(post[2]!)) invalid(provider);
+    return `https://www.instagram.com/${post[1]!.toLowerCase()}/${post[2]!}/`;
+  }
   if (provider === "facebook") {
     if (host !== "facebook.com" && host !== "www.facebook.com") invalid(provider);
     const post = /^https:\/\/(?:www\.)?facebook\.com\/([^/?#]+)\/posts\/(?:[A-Za-z0-9_-]{1,200}\/)?([^/?#]+)\/?$/u.exec(value);

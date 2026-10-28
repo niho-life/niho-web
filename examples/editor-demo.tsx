@@ -33,6 +33,11 @@ function pageDocument(pageId: string, title: string, children: PageNode[]): Page
 }
 const home = structuredClone(fixture) as PageDocument;
 (home.body[0] as ElementNode).children.push({ type: "element", id: "photo", tag: "img", asset: { provider: "uploads", id: "seed-sea" }, attrs: { alt: "朝の海辺の景色" }, style: { base: { maxWidth: "100%", height: "auto", borderRadius: 12 } }, children: [] });
+// 標準埋め込みの安全な未設定状態。URLを入れるまで公開出力と外部通信はなく、編集canvasだけが設定案内を示す。
+home.body.push(
+  { type: "element", id: "x_post", tag: "div", embed: { provider: "x", title: "X のポスト" }, style: { base: { width: "100%", maxWidth: 550, height: 650, margin: "0 auto", overflow: "hidden", borderRadius: 8, backgroundColor: "#f2f2f2" } }, children: [] },
+  { type: "element", id: "instagram_post", tag: "div", embed: { provider: "instagram", title: "Instagram の投稿" }, style: { base: { width: "100%", maxWidth: 540, height: 720, margin: "0 auto", overflow: "hidden", borderRadius: 8, backgroundColor: "#f2f2f2" } }, children: [] }
+);
 home.body.push({ type: "component", id: "notice", block: "PublicNotice", props: { heading: "今月のお知らせ", count: 3 }, style: { base: { marginTop: 24 } } }); home.revision++;
 // このページだけのカラーの例。メインの色（brand）と見出し・本文のテキストスタイルはサイト共通（siteSettings）にあり、ホームと「私たちについて」の両方が参照する。
 home.tokens = { ...home.tokens, ink: { type: "color", value: "#172d25", label: "文字の色" }, accent: { type: "color", value: "#f2b70533", label: "アクセント" } };
