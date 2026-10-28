@@ -37,9 +37,9 @@ import {
   acceptSavedLibrary, commitLibrary, componentProblem, exposeComponentProp, fitsLibrary, libraryFingerprint, librarySessionFrom, mergeRecoveredLibrary, parseUsage, placementProblem, planLibraryReload,
   relabelComponentProp, releaseAffected, resolveCanvas, summarizeUsage, textStylePaths, travelLibrary, trimReloadedHistory, usageText, type LibraryReloadPlan, type LibrarySession
 } from "./component-session.js";
-import { LanguageSelector, LocalizationPanel, localizationEditorCss, localizedOperationProblem, useEditorLocalization, type EditorLocalizationCommandOutcome, type EditorLocalizationManualBuffer } from "./editor-localization.js";
+import { LanguageSelector, LocalizationPanel, editorLocalizationLocaleFor, localizationEditorCss, localizedOperationProblem, useEditorLocalization, type EditorLocalizationCommandOutcome, type EditorLocalizationManualBuffer } from "./editor-localization.js";
 import { parseEditorLocaleReleaseApplyResult, parseEditorLocaleReleasePlan, parseEditorLocaleReleaseState } from "./editor-locale-release.js";
-import { documentLocaleFor, localizationLocaleFor, validateLocalizedDocumentSave, type LocalizationLocale } from "./localization.js";
+import { documentLocaleFor, validateLocalizedDocumentSave, type LocalizationLocale } from "./localization.js";
 import { editorSessionFrom, readEditorSession, type EditorSession } from "./editor-session.js";
 import { canvasViewportHeight, elementTypeLabel, fitCanvasScale, layerLabel, pathForNodeId, projectLayers, visibleLayers } from "./layers.js";
 import { LayerTreePanel } from "./editor-layers.js";
@@ -485,7 +485,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const savedSiteStyles = siteSettings.status === "ready" ? siteSettings.settings : session?.siteStyles;
   const localization = useEditorLocalization(adapter, siteId, session?.target, blocks, libraryPresent, savedSiteStylesReady, savedSiteStyles, loadEpoch, setNotice);
   let selectedLocale: LocalizationLocale | undefined;
-  try { if (localization.site && session) selectedLocale = localizationLocaleFor(localization.site.config, session.target.locale); } catch { /* read hook reports the invalid mapping */ }
+  try { if (localization.site && session) selectedLocale = editorLocalizationLocaleFor(localization.site.config, session.target.locale); } catch { /* read hook reports the invalid mapping */ }
   const targetMode = !!localization.site && !!selectedLocale && selectedLocale !== localization.site.config.sourceLocale;
   const localePublication = !!adapter.localization?.readRelease && !!adapter.localization.prepareRelease && !!adapter.localization.applyRelease && !!adapter.localization.rollbackRelease;
   const localizationReady = !localization.supported || localization.siteState === "ready" && !!localization.site && !!selectedLocale &&
@@ -1388,7 +1388,9 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     if (locale === selectedLocale) return;
     // 訳文のCASは保存済みの原文＋部品versionに結び付く。未保存の部品を表示用sourceとして持ち込まない。
     if (libraryDirty) { setNotice("コンポーネントの変更を保存してから言語を切り替えてください。"); return; }
-    requestNavigation({ type: "page", target: { siteId: current.target.siteId, pageId: current.target.pageId, locale: documentLocaleFor(currentSite.config, locale) } });
+    const sourcePage = pages.find((page) => page.siteId === current.target.siteId && page.pageId === current.target.pageId);
+    const targetLocale = locale === currentSite.config.sourceLocale ? sourcePage?.locale ?? documentLocaleFor(currentSite.config, locale) : documentLocaleFor(currentSite.config, locale);
+    requestNavigation({ type: "page", target: { siteId: current.target.siteId, pageId: current.target.pageId, locale: targetLocale } });
   };
   const panelLocale = selectedLocale ?? localization.site?.config.sourceLocale;
   const panelPages: readonly EditorPage[] = localization.site && panelLocale ? localization.site.pages.map(({ locales, ...page }) => {
@@ -1396,7 +1398,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     const kind = page.kind ?? sourcePage?.kind;
     return {
       ...sourcePage, ...page, ...(kind ? { kind } : {}),
-      locale: documentLocaleFor(localization.site!.config, panelLocale),
+      locale: panelLocale === localization.site!.config.sourceLocale ? sourcePage?.locale ?? documentLocaleFor(localization.site!.config, panelLocale) : documentLocaleFor(localization.site!.config, panelLocale),
       ...(locales[panelLocale]?.published === undefined ? {} : { published: locales[panelLocale]!.published })
     };
   }) : pages;
