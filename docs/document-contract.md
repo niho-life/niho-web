@@ -79,6 +79,8 @@ FacebookのSSRはcanonical投稿URLへの実リンク、静的status、非表示
 
 ## トークンと style
 
+リストの `listStyleType` は `none`・丸・四角・十進番号・アルファベット・ローマ数字の定義済み値、`listStylePosition` は `inside` / `outside` に限定します。画像など行内要素の `verticalAlign` は定義済みの揃え方、または上限付きの長さだけを受け付けます。いずれも base と responsive に指定でき、公開 CSS と編集キャンバスで同じ値を使います。任意の画像 URL を印にする `list-style-image` や CSS 関数は受け付けません。
+
 tokens は最大 128 件です。名前は小文字英字から始まる英数字・`-` とし、`color` / `length` / `fontFamily` / `number` の型を持ちます。任意の `label` は編集画面の表示名で、前後の空白を除いて 1 文字以上・60 文字以内、制御文字を含みません。CSS には出力しません。`{ token: 'ink' }` は定義済みかつプロパティと型が一致し、解決した値自体もそのプロパティに適合するときだけ使えます。token value から別 token への参照はできません。
 
 `color` は HEX（3/4/6/8桁）と限定した基本色名、`length` は 0 または px / rem / em / % / vh / dvh / vw / vmin / vmax / ch、`fontFamily` は引用符を要しない名前のカンマ区切り、`number` は有限数です。幅・高さ・最小幅・最大幅に限り、`calc(<数値>% ± <数値>px)` の形も使えます（割合は 1,000 以下、px は 10,000 以下）。細かい値の正は `src/style-values.ts` の検証です。`rgb()`、`hsl()`、任意の `calc()`、カスタム CSS 変数、任意の selector・擬似クラス・擬似要素、任意のアニメーション・`transform` 文字列は v1 に含めません。状態（hover・focus・active）、変形、遷移、登場、幅別の非表示は下の「演出」の範囲だけを許可します。画像 URL は style に直接書けません。背景画像は `backgroundImage: { asset: { provider, id } }` の素材参照だけを受け付け、解決済みの安全な URL から `background-image:url("…")` を生成します。未解決の背景画像は宣言を出しません。`backgroundSize` / `backgroundPosition` / `backgroundRepeat` は列挙値です。
