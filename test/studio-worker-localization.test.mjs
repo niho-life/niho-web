@@ -601,50 +601,32 @@ test("翻訳 BFF: 読み取りと保存は 12 秒、概要・公開・取り込�
   }
 });
 
-test("翻訳の切替: on のときだけ鎌倉の Dashboard の HTML に、プレビューの枠と画像の直接 PUT 先を足す", async (t) => {
+test("鎌倉の Dashboard だけ翻訳プレビューの枠と画像 PUT 先を許す", async (t) => {
   const auth = await accessFixture();
   const worker = await loadWorker();
   mockAccess(t, auth);
   const h = harness(auth, worker);
-  const env = { ...h.env, KAMAKURA_ADMIN_ORIGIN: "https://admin.example.test" };
-  const page = async (path, extra = {}) => (await worker.fetch(new Request(`${STUDIO}${path}`, { headers: { "Cf-Access-Jwt-Assertion": auth.jwt } }), { ...env, ...extra })).headers.get("Content-Security-Policy");
-  const issuer = auth.issuer.replaceAll(".", "\\.").replaceAll("/", "\\/");
+  const page = async (path) => (await worker.fetch(new Request(`${STUDIO}${path}`, { headers: { "Cf-Access-Jwt-Assertion": auth.jwt } }), h.env)).headers.get("Content-Security-Policy");
   const dashboards = ["/projects/kamakura-site/admin", "/projects/kamakura-site/admin/translations", "/projects/kamakura-site/admin/translations/aG9tZQ", "/projects/project-kamakura/sites/kamakura"];
-
-  for (const value of [undefined, "frame", "Workspace", "true"]) {
-    for (const path of dashboards) {
-      const csp = await page(path, { KAMAKURA_TRANSLATIONS_VIEW: value });
-      assert.match(csp, / connect-src 'self';/u, `${value} ${path}`);
-      assert.match(csp, new RegExp(` frame-src https://admin\\.example\\.test ${issuer};`, "u"), `${value} ${path}`);
-    }
-  }
-  const editorOff = await page("/projects/kamakura-site/admin/editor");
   for (const path of dashboards) {
-    const csp = await page(path, { KAMAKURA_TRANSLATIONS_VIEW: "workspace" });
+    const csp = await page(path);
     assert.match(csp, / connect-src 'self' https:\/\/next-kamakura\.niho\.life;/u, path);
-    assert.match(csp, new RegExp(` frame-src https://admin\\.example\\.test ${issuer} https://next-kamakura\\.niho\\.life;`, "u"), path);
+    assert.match(csp, / frame-src https:\/\/next-kamakura\.niho\.life;/u, path);
+    assert.doesNotMatch(csp, /site-admin-test\.example|admin\.example\.test/u, path);
     assert.match(csp, / img-src 'self' https:;/u, path);
     assert.match(csp, / style-src 'self';/u, path);
     assert.match(csp, /frame-ancestors 'none'/u, path);
   }
-  // CMS の切替も on なら、同じ PUT 先は 1 回だけ
-  const both = await page("/projects/kamakura-site/admin/translations", { KAMAKURA_TRANSLATIONS_VIEW: "workspace", KAMAKURA_CMS_VIEW: "workspace" });
-  assert.match(both, / connect-src 'self' https:\/\/next-kamakura\.niho\.life;/u);
-  // ほかのサイト・editor・管理画面の origin が無いときは変えない
   for (const path of ["/", "/projects/niho-experience/admin", "/projects/project-experience/sites/experience"]) {
-    const csp = await page(path, { KAMAKURA_TRANSLATIONS_VIEW: "workspace" });
+    const csp = await page(path);
     assert.match(csp, / connect-src 'self';/u, path);
     assert.doesNotMatch(csp, /frame-src/u, path);
   }
-  assert.equal(await page("/projects/kamakura-site/admin/editor", { KAMAKURA_TRANSLATIONS_VIEW: "workspace" }), editorOff);
-  const noAdmin = await page("/projects/kamakura-site/admin/translations", { KAMAKURA_TRANSLATIONS_VIEW: "workspace", KAMAKURA_ADMIN_ORIGIN: undefined });
-  assert.match(noAdmin, / connect-src 'self';/u);
-  assert.doesNotMatch(noAdmin, /frame-src/u);
-
-  // site-admin は切替の値を返す（CMS とは別）
+  const editor = await page("/projects/kamakura-site/admin/editor");
+  assert.doesNotMatch(editor, /site-admin-test\.example|admin\.example\.test/u);
   h.roles.set("project-kamakura/kamakura", "editor");
-  const admin = await worker.fetch(new Request(`${STUDIO}/api/projects/project-kamakura/sites/kamakura/site-admin`, { headers: { "Cf-Access-Jwt-Assertion": auth.jwt } }), { ...env, KAMAKURA_TRANSLATIONS_VIEW: "workspace" });
-  assert.deepEqual(await admin.json(), { origin: "https://admin.example.test", paths: { cms: "/admin", translations: "/admin/localization" }, cmsView: "frame", translationsView: "workspace" });
+  const admin = await worker.fetch(new Request(`${STUDIO}/api/projects/project-kamakura/sites/kamakura/site-admin`, { headers: { "Cf-Access-Jwt-Assertion": auth.jwt } }), h.env);
+  assert.deepEqual(await admin.json(), { connected: true });
   assert.equal(h.calls.length, 0);
 });
 

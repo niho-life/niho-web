@@ -9,7 +9,7 @@ Refs #112 / #105。オーナーの指定に従い、STUDIOのデザインエデ�
 - [公式: エディタ全体](https://downloads.intercomcdn.com/i/o/xqogzym4/1840178597/50fd58dd61745f0158018d4b6e89/right_1.png)
 - [公式: 画像選択時の右パネル](https://downloads.intercomcdn.com/i/o/xqogzym4/1840178602/c320316e6aa8822f047aa37eadd8/right_2.png)
 - [公式: 左ナビゲーション](https://downloads.intercomcdn.com/i/o/xqogzym4/1840178596/3a8a3f00ac23c2fadadbef8a235f/right_3.png)
-- [既存の鎌倉編集画面](https://next-kamakura.niho.life/admin/pages?page=%2F)
+- [鎌倉の現行編集画面](https://studio.niho.life/projects/project-kamakura/sites/kamakura/editor)
 - [右パネルの公式仕様](https://help.studio.design/ja/articles/12889360)
 
 ## 作業領域と操作の位置
