@@ -558,3 +558,23 @@ test("host view scopes cannot collide with the target and overlay bindings reach
   assert.equal(dom.window.document.querySelector('[data-nw-overlay="site-menu"]').hidden, false);
   cleanup(); dom.window.close();
 });
+
+
+test("表示専用のリンク対応をSSRとcanvasで共有し原稿・共通枠を変更しない", () => {
+  const document = page("synthetic", "en", "links", [{ type: "element", id: "link", tag: "a", attrs: { href: "/old?q=1#part" }, children: [{ type: "text", text: "Old" }] }]);
+  const presentation = siteWithMenu();
+  presentation.hostViews = siteWithHostView().hostViews;
+  presentation.hostViews[0].document.body[0].children.push({ type: "element", id: "host-old-link", tag: "a", attrs: { href: "/old#host" }, children: [{ type: "text", text: "Host link" }] });
+  document.body.push({ type: "component", id: "gallery-link", block: "Gallery", props: { variant: "wide" } });
+  presentation.links = { origin: "https://example.test", sourcePath: "/nested/page", paths: { "/old": "/new", "/one": "/first" } };
+  const before = JSON.stringify({ document, presentation });
+  for (const canvas of [undefined, { interactive: true, siteOrigin: "https://example.test" }]) {
+    const html = renderToStaticMarkup(createElement(SitePageRenderer, { document, presentation, blocks: hostBlocks, ...(canvas ? { canvas } : {}) }));
+    assert.match(html, /href="\/new\?q=1#part"/);
+    assert.match(html, /href="\/first"/);
+    assert.match(html, /href="\/new#host"/);
+    assert.match(html, /href="#site-menu"/);
+  }
+  assert.equal(JSON.stringify({ document, presentation }), before);
+  for (const links of [ { ...presentation.links, origin: "javascript:bad" }, { ...presentation.links, paths: { "/old": "https://other.test" } }, { ...presentation.links, sourcePath: "/../x" } ]) assert.throws(() => parseSitePresentation({ ...presentation, links }, document));
+});

@@ -1,3 +1,4 @@
+import { resolvePageLink } from "./presentation-links.js";
 import { resolvePageStyles, type SiteStyles } from "./site-styles.js";
 import { createElement, Fragment, type ComponentType, type ReactElement } from "react";
 import type { BlockContract, PageDocument, PageNode, PublicPropValue, SitePresentation, SitePresentationExternalFrame, SitePresentationHostView, SitePresentationOverlay } from "./types.js";
@@ -44,6 +45,8 @@ export type PageRendererProps = {
   assets?: ResolvedAssetMap;
   /** 解決できない素材画像。既定は描画しない。placeholder はエディター用。 */
   missingAssets?: "omit" | "placeholder";
+  /** @internal SitePageRendererが検証済みの表示専用URL対応を渡す。 */
+  links?: SitePresentation["links"];
   /** @internal SitePageRendererが検証済みoverlay controlへ付ける既知属性。 */
   overlayBindings?: readonly SitePresentationOverlay[];
   /** @internal SitePageRendererが検証済みhost block viewを解決する。 */
@@ -73,7 +76,7 @@ function withSiteOrigin(attrs: Record<string, unknown>, siteOrigin: string): voi
 }
 
 /** useEffect を使わず、Next.js の初期 HTML と静的 SSR の両方で本文を返す。 */
-export function PageRenderer({ document: input, blocks = {}, assets: assetInput, missingAssets = "omit", siteStyles, overlayBindings = [], hostViews = [], hostViewBinding, hostViewMode = "prefer", externalFramePolicy, blankEmbeds: blankEmbedInput, canvas }: PageRendererProps): ReactElement {
+export function PageRenderer({ document: input, blocks = {}, assets: assetInput, missingAssets = "omit", siteStyles, overlayBindings = [], hostViews = [], hostViewBinding, hostViewMode = "prefer", externalFramePolicy, blankEmbeds: blankEmbedInput, canvas, links }: PageRendererProps): ReactElement {
   const document = resolvePageStyles(parsePageDocument(input, blocks, siteStyles ? { siteStyles } : {}), siteStyles);
   const blankEmbeds = blankEmbedInput === undefined ? undefined : parseBlankEmbedRegistry(blankEmbedInput);
   const assets = assetInput === undefined ? {} : parseResolvedAssets(assetInput);
@@ -91,7 +94,7 @@ export function PageRenderer({ document: input, blocks = {}, assets: assetInput,
       if (candidates.length && hostViewMode !== "off" && (hostViewMode === "prefer" || !definition?.component)) {
         const view = candidates.find((candidate) => sitePresentationHostViewKey(candidate.block, candidate.props) === sitePresentationHostViewKey(node.block, node.props));
         if (view) return createElement("div", { key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-block": node.block, "data-nw-host-view": view.id },
-          createElement(PageRenderer, { document: view.document, assets, missingAssets, hostViewBinding: view, hostViewMode: "off", overlayBindings, ...(externalFramePolicy ? { externalFramePolicy } : {}), ...(blankEmbeds ? { blankEmbeds } : {}), ...(canvas ? { canvas } : {}) }));
+          createElement(PageRenderer, { document: view.document, assets, missingAssets, hostViewBinding: view, hostViewMode: "off", overlayBindings, ...(links ? { links } : {}), ...(externalFramePolicy ? { externalFramePolicy } : {}), ...(blankEmbeds ? { blankEmbeds } : {}), ...(canvas ? { canvas } : {}) }));
         if (!canvas) throw new Error(`Registered host view is missing for block props: ${node.block}`);
       }
       if (!definition?.component) {
@@ -102,6 +105,7 @@ export function PageRenderer({ document: input, blocks = {}, assets: assetInput,
       return createElement("div", { key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-block": node.block }, createElement(definition.component, node.props));
     }
     const attrs = { ...node.attrs };
+    if (links && typeof attrs.href === "string") attrs.href = resolvePageLink(attrs.href, links);
     if (typeof attrs.autocomplete === "string") { attrs.autoComplete = attrs.autocomplete; delete attrs.autocomplete; }
     if (canvas?.siteOrigin) withSiteOrigin(attrs, canvas.siteOrigin);
     if (hostViewBinding) {
@@ -258,7 +262,7 @@ export function SitePageRenderer({ document: input, presentation: presentationIn
   const output = cssForSitePresentation(presentation, document, blocks, assets), layout = presentationLayoutDocument(presentation);
   const layoutScope = pageScope(layout), shared = presentation.shared;
   const overlays = presentation.overlays ?? [], hostViews = presentation.hostViews ?? [];
-  const hostOptions = { hostViews, hostViewMode, ...(externalFramePolicy ? { externalFramePolicy } : {}), ...(blankEmbeds ? { blankEmbeds } : {}), ...(canvas ? { canvas } : {}) };
+  const hostOptions = { hostViews, hostViewMode, ...(presentation.links ? { links: presentation.links } : {}), ...(externalFramePolicy ? { externalFramePolicy } : {}), ...(blankEmbeds ? { blankEmbeds } : {}), ...(canvas ? { canvas } : {}) };
   const header: PageDocument = document.pageId === shared.header.pageId ? document : shared.header;
   const footer: PageDocument = document.pageId === shared.footer.pageId ? document : shared.footer;
   const body = document.pageId === shared.header.pageId || document.pageId === shared.footer.pageId ? null

@@ -192,6 +192,10 @@ Next.js では `metadata` の各項目へ対応付けます。Astro では `rend
 
 ## 鎌倉Studioの接続範囲
 
-鎌倉ホストが返す capability は `pageChangeActions: ["update"]` / `pagePathEditable: false` です。日本語の既存native固定ページの一覧名だけを変更します。ページタイトルとは別の値をホストの対応表へ保存し、ページ一覧は現在のホスト正本を再取得します。作成・複製・非公開切替は表示しません。テンプレート・共通枠と英語文書への変更はホストでも拒否します。
+鎌倉ホストが返す capability は `pageChangeActions: ["update"]` / `pagePathEditable: true` です。日本語の既存native固定ページの一覧名とURLを変更し、成功後に現在のホスト正本から一覧を再取得します。ホームのURL・テンプレート・共通枠・英語文書、新規・複製・公開切替はホストが拒否します。`pagePathEditable` を省略する旧ホストではURLを読み取り専用にします。
 
-URL変更は未接続です。native公開文書の内部リンク、共通枠、CMSホストの参照、R2の未公開下書き、公開履歴、翻訳overlayと公開済み英語URLを一緒に扱う原子的な移行が必要です。Gitだけで公開文書を書き換えると、R2下書きの基準blobとの不整合や後の公開による旧リンクの再混入を防げません。全対象の版確認・ロックと、失敗時に一部だけ反映されない仕組みを用意し、この文書の内部リンク・redirect・canonical・sitemap契約を満たしてから有効化します。
+ホストは旧path→安定pageIdの永続alias、現行path、SEO、索引、平坦化した301を同じGit CAS commitで保存します。内部hrefは `presentation.links` の表示専用対応と公開側の最終HTML処理で現行URLへ解決します。原稿・R2下書き・公開履歴・翻訳overlayのidentityを保持し、後の保存・公開・履歴復元にも同じ表示規則を使います。対象はホストが指定する同一公開originの内部リンクで、確認用originへの置換は含みません。既存英語delivery URLは据え置き、日本語counterpart・hreflang・sitemapが現行pathを参照します。次回の英語公開もbase releaseにある既存deliveryを引き継ぎます。英語を取り下げてbaseからrouteが消えた後の再公開URLは今回の保護範囲外です。
+
+### 表示専用の内部リンク対応
+
+`SitePresentation.links?: { origin: string; sourcePath: string; paths: Record<string, string> }` は、ホストが現在のURL正本から解決した旧path→現在pathの対応です。HTTPS originと安全なroot-relative pathだけを受け付け、最大2,000対応に制限します。`SitePageRenderer` は本文・共通枠・メニュー・hostViewのhrefを表示時だけ解決し、文書を変更しません。同一originの絶対URL、protocol-relative、root-relative、page-relativeを扱いquery/hashを保ちます。fragment/queryだけと外部リンクは保持します。ホストの独自Reactブロック出力にはホスト側で同じ最終解決を適用してください。対応の版はホストのpresentation versionへ含め、古い公開計画を拒否します。

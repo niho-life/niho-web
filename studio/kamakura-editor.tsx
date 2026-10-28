@@ -266,7 +266,7 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
     }),
     ...(catalog.pageChangeActions ? {
       pageChangeActions: catalog.pageChangeActions,
-      pagePathEditable: false,
+      pagePathEditable: catalog.pagePathEditable === true,
       preparePageChange: (input: EditorPageChange, signal: AbortSignal) => request(signal, async () => {
         const change = normalizePageChange(input);
         if (!change || change.action !== "update") throw new Error("このページ操作は利用できません。");

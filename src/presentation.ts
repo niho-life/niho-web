@@ -1,3 +1,4 @@
+import { parsePresentationLinks } from "./presentation-links.js";
 import { blockSlots, parsePageDocument } from "./document.js";
 import { cssForDocument, pageScope } from "./css.js";
 import { parseResolvedAssets, type ResolvedAssetMap } from "./assets.js";
@@ -135,7 +136,7 @@ function carousel(input: unknown, nodes: ReadonlyMap<string, ElementNode>, path:
 /** 外部 snapshot の presentation を対象ページへ固定して検証する。 */
 export function parseSitePresentation(input: unknown, target: Pick<PageDocument, "siteId" | "locale"> & Partial<Pick<PageDocument, "pageId">>, blocks: BlockContracts = {}): SitePresentation {
   const source = record(input, "presentation");
-  keys(source, ["schemaVersion", "siteId", "locale", "version", "reset", "tokens", "layout", "fonts", "shared", "overlays", "hostViews"], "presentation");
+  keys(source, ["schemaVersion", "siteId", "locale", "version", "reset", "tokens", "layout", "fonts", "shared", "overlays", "hostViews", "links"], "presentation");
   if (source.schemaVersion !== 1) fail("presentation.schemaVersion", "unsupported schema version");
   const siteId = identifier(source.siteId, "presentation.siteId"), locale = localeCode(source.locale, "presentation.locale");
   if (siteId !== target.siteId || locale !== target.locale) fail("presentation", "target mismatch");
@@ -201,7 +202,7 @@ export function parseSitePresentation(input: unknown, target: Pick<PageDocument,
     const frames = externalFrames(view.externalFrames, nodes, `${path}.externalFrames`), binding = carousel(view.carousel, nodes, `${path}.carousel`);
     return { id, block, props, document, ...(Object.keys(slots).length ? { slotBindings: slots } : {}), ...(frames.length ? { externalFrames: frames } : {}), ...(binding ? { carousel: binding } : {}) };
   });
-  return { schemaVersion: 1, siteId, locale, version, reset: "neutral-v1", tokens, ...(layout ? { layout } : {}), fonts, shared: { header, footer }, ...(overlays.length ? { overlays } : {}), ...(hostViews.length ? { hostViews } : {}) };
+  return { schemaVersion: 1, siteId, locale, version, reset: "neutral-v1", tokens, ...(layout ? { layout } : {}), fonts, shared: { header, footer }, ...(overlays.length ? { overlays } : {}), ...(hostViews.length ? { hostViews } : {}), ...(source.links === undefined ? {} : { links: parsePresentationLinks(source.links) }) };
 }
 
 /** renderer用の安定した完全一致key。parseSitePresentationでprops検証後だけ使う。 */

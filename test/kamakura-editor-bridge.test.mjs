@@ -427,6 +427,7 @@ test("鎌倉のページ名操作はホストcapabilityがある時だけ接続�
   });
   const adapter = createKamakuraAdapter(contract.parseKamakuraCatalog(source), () => {});
   assert.deepEqual(adapter.pageChangeActions, ["update"]); assert.equal(adapter.pagePathEditable, false);
+  assert.equal(createKamakuraAdapter(contract.parseKamakuraCatalog({ ...source, pagePathEditable: true }), () => {}).pagePathEditable, true);
   assert.deepEqual(await adapter.preparePageChange(change, signal), plan);
   assert.equal((await adapter.applyPageChange(plan, signal)).status, "applied");
   assert.deepEqual(calls.at(-1).body, { change, confirmationToken: plan.confirmationToken });

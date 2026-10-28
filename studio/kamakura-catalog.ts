@@ -18,7 +18,7 @@ export type KamakuraCatalog = {
   readonly pages: readonly EditorPage[];
   readonly legacy: readonly KamakuraLegacyPage[];
   readonly blockContracts: BlockContracts;
-  readonly pagePathEditable?: false;
+  readonly pagePathEditable?: boolean;
   readonly pageChangeActions?: readonly ["update"];
   readonly nativePresentationPages: readonly string[];
 };
@@ -182,8 +182,8 @@ export function parseKamakuraCatalog(value: unknown): KamakuraCatalog {
   }
 
   if (value.pageChangeActions !== undefined && (!Array.isArray(value.pageChangeActions) || value.pageChangeActions.length !== 1 || value.pageChangeActions[0] !== "update")) throw new KamakuraCatalogContractError();
-  if (value.pagePathEditable !== undefined && value.pagePathEditable !== false) throw new KamakuraCatalogContractError();
-  const pageChangeActions = value.pageChangeActions === undefined ? {} : { pageChangeActions: ["update"] as const, pagePathEditable: false as const };
+  if (value.pagePathEditable !== undefined && typeof value.pagePathEditable !== "boolean") throw new KamakuraCatalogContractError();
+  const pageChangeActions = value.pageChangeActions === undefined ? {} : { pageChangeActions: ["update"] as const, pagePathEditable: value.pagePathEditable === true };
   const blockContracts = parseBlockContracts(value.blockContracts);
   const nativePresentationPages = value.nativePresentationPages ?? [];
   if (!Array.isArray(nativePresentationPages) || nativePresentationPages.length > 500 ||

@@ -305,7 +305,7 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
     if (!element) { pending(`direct-${editingId}`, false); setEditingId(null); return; }
     if (commit) {
       try {
-        const problem = editText(editing.path, editing.node.id, readEditableChildren(element, editing.node));
+        const problem = editText(editing.path, editing.node.id, readEditableChildren(element, editing.node, presentation?.links));
         if (problem) element.innerHTML = originalHtml.current;
       } catch (error) { element.innerHTML = originalHtml.current; reportError(error instanceof Error ? error.message : "文字の変更を適用できませんでした。"); }
     } else element.innerHTML = originalHtml.current;

@@ -12,7 +12,7 @@ if (!process.env.KAMAKURA_SITE_FIXTURE) throw new Error("KAMAKURA_SITE_FIXTURE m
 const siteRoot = resolve(process.env.KAMAKURA_SITE_FIXTURE);
 const json = (path) => JSON.parse(readFileSync(resolve(siteRoot, path), "utf8"));
 const document = parsePageDocument(json("src/site/niho-web/business-plan.json"));
-const { nativePageIds: _nativePageIds, ...config } = json("src/site/niho-web-presentation.json"), fonts = json("src/site/niho-web-fonts.json");
+const { nativePageIds: _nativePageIds, centeredPageIds: _centeredPageIds, framelessPageIds: _framelessPageIds, ...config } = json("src/site/niho-web-presentation.json"), fonts = json("src/site/niho-web-fonts.json");
 const presentation = parseSitePresentation({ ...config, version: `${config.version}:local-fixture`, fonts, shared: {
   header: json("src/site/niho-web/shared-header.json"), footer: json("src/site/niho-web/shared-footer.json"),
 }, overlays: config.overlays.map(({ pageId, ...overlay }) => ({ ...overlay, document: json(`src/site/niho-web/${pageId}.json`) })) }, document);
