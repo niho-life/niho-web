@@ -34,6 +34,7 @@ React 18.3 または 19 と、同じ版の React DOM を利用側で用意して
 | `englishPublication`（任意） | 原文と独立した英語版公開状態の明示更新と、ホストが許した失敗だけの再試行 |
 | `preparePageChange` / `applyPageChange`（任意） | ページの作成・複製・名前とURLの変更・公開切替。影響の確認と一回限りの確認 token。[ページ管理の契約](page-contract.md) |
 | `readSiteSettings` / `saveSiteSettings`（任意） | サイト共通の公開情報とカラー・文字スタイル。楽観ロック付き（[サイト共通スタイルの契約](site-styles-contract.md)） |
+| `responsiveProposal.propose(request, signal)`（任意） | 現在文書のレスポンシブstyle提案。AI/provider/auth/storage/利用量はホスト所有。省略時は操作を表示しない |
 | `listRevisions` / `readRevision` / `createSnapshot`（任意） | 版履歴の一覧・読み取り専用の表示・名前付きスナップショット。[保存・履歴の契約](save-history-contract.md) |
 
 `listPages` の各ページに任意で `path`・`kind`（page / template / shared）・`visibility`・`published` を返すと、左のページパネルにフォルダ（`template` は「テンプレート」の見出しの下）と公開状態の点（緑＝公開中、灰＝未公開、輪郭＝非公開）を表示します。`publication` があれば、その label と description を点のツールチップと読み上げに使います。任意メソッドを実装しないホストでは、ページ操作とサイト設定の保存を表示しません。
@@ -73,6 +74,28 @@ target は `siteId/pageId/locale` の組です。文書の組と一致しない�
 これはdocument-levelの表示ポリシーで、認可機構ではありません。ホストは`saveDraft`、公開、page操作等の各書込APIで現在の正本ポリシーを再読込し、read-only targetへの直接要求も403等で拒否してください。原文snapshotのポリシーを派生言語へコピーせず、その派生snapshotに`readOnly`が無ければ編集できます。別の共通部品master編集、site設定、素材libraryの権限もこの値から推測しません。
 
 `AbortSignal` は読込の切替と unmount 時に abort します。公開処理は signal が abort されてもサーバーで成立する可能性があるため、ホスト側で結果の照会と重複実行の防止を実装します。例外の生メッセージ・token・秘密を UI に表示しません。
+
+### ホスト所有のレスポンシブ提案
+
+`EditorAdapter.responsiveProposal` は任意です。省略時はボタン、無効なAI表示、接続案内を含めて入口を出しません。実装時もniho-webはAI/providerへ直接接続せず、認証・認可・provider選択・prompt・利用量・ログ・保存はホストが所有します。文書schema、`saveDraft`、公開APIは変わりません。
+
+`propose` には次を渡します。
+
+```ts
+{
+  target: { siteId, pageId, locale },
+  document,                         // 現在の検証済みPageDocument
+  fingerprint,                      // JSON直列化した現在文書との一致確認用
+  scope: { type: 'page' } | { type: 'node', nodeId },
+  breakpoints: [768, 1024]          // 利用者が選んだ、設定済みminWidthだけ
+}
+```
+
+応答は `{ fingerprint, changes }` だけです。`changes` は最大40件で、各項目は `{ nodeId, breakpoint, property, value }` だけを持ちます。`value: null` はその幅の直接指定を外します。許すpropertyは既存style操作で扱うレイアウト・余白・サイズ（寸法、margin/padding、Flex/Grid、位置、overflow、objectFit、文字サイズ・行高・字間）だけです。色、内容、構造、meta、素材、リンク、状態style、演出は提案から変更できません。
+
+エディターはhost応答を信頼しません。fingerprint、40件上限、要求した幅、選択subtree、node ID、`(nodeId, breakpoint, property)`重複、閉じたproperty、値を確認し、全変更を既存`editDocument`へ順に通します。1件でも不正なら文書へ何も適用しません。レビュー時と適用時にnode IDから現在pathを解決し直し、適用時にも文書fingerprintを再確認します。レビューには幅と各値の変更前・変更後を表示し、明示的な適用またはキャンセルだけを受けます。適用は既存履歴の1操作なので、undo 1回で全件を戻せます。
+
+提案中は30秒でtimeoutし、キャンセル・ページ移動・対象/文書変更・unmountで`AbortSignal`をabortします。遅い応答、別文書の応答、staleなレビューは適用しません。レビュー中はlive文書を変更しません。版履歴、翻訳側、読み取り専用、ロックを含む文書、未確定のfield入力、コンポーネント本体編集中、処理中には開始できず、理由を画面に表示します。ホストも要求を受けた時点でtarget権限と文書を再検証し、UIの制限を認可の代わりにしないでください。
 
 ## 楽観ロックと編集の保持
 

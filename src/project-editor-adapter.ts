@@ -1,5 +1,5 @@
 import { parseSiteStyles } from "./site-styles.js";
-import { normalizePageChange, parseEditorReadOnly, validatePageChangePlan, validateReleasePlan } from "./editor-model.js";
+import { fingerprint, normalizePageChange, parseEditorReadOnly, validatePageChangePlan, validateReleasePlan } from "./editor-model.js";
 import { parseEditorLocaleReleaseApplyResult, parseEditorLocaleReleasePlan, parseEditorLocaleReleaseState } from "./editor-locale-release.js";
 import type { EditorAdapter, EditorComponentAdapter, EditorLocaleReleaseApplyRequest, EditorLocaleReleasePrepareRequest, EditorLocalizationAdapter, EditorLocalizationCommand, EditorPage, EditorPageChange, EditorPagePublication, EditorReleasePlan, EditorReleaseRequest, EditorSite, EditorStructuredDataPreset, EditorTarget } from "./editor-types.js";
 import { parseRevisionEntry, parseRevisionPage } from "./history.js";
@@ -322,6 +322,18 @@ export function createProjectEditorAdapter(adapter: EditorAdapter, projectInput:
         if (result.status === "conflict") return { status: "conflict" as const };
         if (result.status !== "saved") throw new Error("ブレークポイント設定の保存結果が正しくありません。");
         return { status: "saved" as const, version: line(result.version, "breakpointSettings.version", 512) };
+      }
+    } } : {}),
+    ...(adapter.responsiveProposal ? { responsiveProposal: {
+      async propose(request, signal) {
+        const target = targetForProject(request.target, site), document = structuredClone(request.document);
+        assertDocumentTarget(document, target);
+        if (request.fingerprint !== fingerprint(document)) throw new Error("レスポンシブ提案の文書が一致しません。");
+        const scope = request.scope?.type === "page" ? { type: "page" as const }
+          : request.scope?.type === "node" && typeof request.scope.nodeId === "string" ? { type: "node" as const, nodeId: request.scope.nodeId }
+            : null;
+        if (!scope || !Array.isArray(request.breakpoints) || request.breakpoints.length > 12 || request.breakpoints.some((width) => !Number.isInteger(width))) throw new Error("レスポンシブ提案の範囲が正しくありません。");
+        return structuredClone(await adapter.responsiveProposal!.propose({ target, document, fingerprint: request.fingerprint, scope, breakpoints: [...request.breakpoints] }, signal));
       }
     } } : {}),
     ...(adapter.readSiteSettings ? {
