@@ -261,6 +261,12 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
       if (siteId !== "kamakura") throw new Error("編集対象のサイトがありません。");
       return catalog.pages;
     }),
+    listFormCompletionPages: (target, signal) => request(signal, async () => {
+      if (target.siteId !== KAMAKURA_EDITOR_SITE_ID || !COMMON_PAGE_ID.test(target.pageId) || !["ja", "en"].includes(target.locale)) throw new Error("完了ページの対象が正しくありません。");
+      if (target.locale !== "ja") return [];
+      return catalog.pages.filter((page) => page.kind === "page" && page.path?.endsWith("-success") && page.pageId !== target.pageId && page.visibility !== "private" && page.published !== false)
+        .map((page) => ({ ...page, visibility: "public" as const, published: true }));
+    }),
     breakpointSettings: {
       read: (siteId, signal) => request(signal, async () => {
         if (siteId !== KAMAKURA_EDITOR_SITE_ID) throw new Error("編集対象のサイトがありません。");

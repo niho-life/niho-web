@@ -32,8 +32,8 @@ test("text and attribute values are escaped and blank targets gain safe rel", ()
   assert.ok(html.includes("rel=\"nofollow noopener noreferrer\""));
 });
 
-test("フォーム SSR はラベル・必須・選択肢を保ち、既定では送信先を持たない", () => {
-  const doc = structuredClone(fixture); doc.body = [{ type: "element", id: "form", tag: "form", attrs: { name: "contact", "aria-label": "お問い合わせ" }, children: [
+test("フォーム SSR はラベル・必須・選択肢を保ち、完了ページ設定があっても送信先を持たない", () => {
+  const doc = structuredClone(fixture); doc.body = [{ type: "element", id: "form", tag: "form", formCompletionPageId: "thanks", attrs: { name: "contact", "aria-label": "お問い合わせ" }, children: [
     { type: "element", id: "label", tag: "label", attrs: { htmlFor: "email" }, children: [{ type: "text", text: "メール" }] },
     { type: "element", id: "email", tag: "input", attrs: { id: "email", type: "email", name: "email", required: true }, children: [] },
     { type: "element", id: "choice-label", tag: "label", attrs: { htmlFor: "choice" }, children: [{ type: "text", text: "選択" }] },
@@ -42,6 +42,7 @@ test("フォーム SSR はラベル・必須・選択肢を保ち、既定では
   ] }];
   const html = renderPageToHtml(doc);
   assert.match(html, /<form[^>]*method="dialog"/); assert.ok(!/<form[^>]*(?:action=|method="(?:get|post)")/.test(html));
+  assert.ok(!html.includes("thanks")); assert.ok(!html.includes("formCompletionPageId"));
   assert.match(html, /<label[^>]*for="email"[^>]*>メール<\/label>/); assert.match(html, /<input[^>]*required=""/);
   assert.match(html, /<option value="one"[^>]*>選択肢<\/option>/); assert.match(html, /<button type="submit"/);
 });

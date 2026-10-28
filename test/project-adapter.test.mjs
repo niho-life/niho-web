@@ -137,10 +137,21 @@ test("page list optional fields and structured data presets pass through validat
 });
 test("optional page and site methods are absent unless the host implements them", () => {
   const { wrapped } = setup();
-  for (const name of ["preparePageChange", "applyPageChange", "readSiteSettings", "saveSiteSettings", "breakpointSettings", "localization"]) assert.equal(name in wrapped, false, name);
+  for (const name of ["listFormCompletionPages", "preparePageChange", "applyPageChange", "readSiteSettings", "saveSiteSettings", "breakpointSettings", "localization"]) assert.equal(name in wrapped, false, name);
   const calls = { pageChanges: [], applies: [], settings: [], settingsSaves: [] };
   const partial = setup({ readSiteSettings: pageHostMethods(calls).readSiteSettings }).wrapped;
   assert.equal(typeof partial.readSiteSettings, "function"); assert.equal("saveSiteSettings" in partial, false); assert.equal("preparePageChange" in partial, false);
+});
+test("form completion candidates are optional and project-scoped", async () => {
+  const calls = [];
+  const candidate = { siteId: "demo", pageId: "thanks", locale: "ja-JP", title: "送信完了", path: "/thanks", kind: "page", visibility: "public", published: true, ignored: true };
+  const { wrapped } = setup({ listFormCompletionPages: async (target) => { calls.push(structuredClone(target)); return [candidate]; } });
+  const target = { siteId: "demo", pageId: "home", locale: "ja-JP", ignored: true };
+  assert.deepEqual(await wrapped.listFormCompletionPages(target, signal()), [{ siteId: "demo", pageId: "thanks", locale: "ja-JP", title: "送信完了", path: "/thanks", kind: "page", visibility: "public", published: true }]);
+  assert.deepEqual(calls, [{ siteId: "demo", pageId: "home", locale: "ja-JP" }]);
+  await assert.rejects(() => wrapped.listFormCompletionPages({ ...target, siteId: "other" }, signal()), /一致|プロジェクト外/u);
+  const foreign = setup({ listFormCompletionPages: async () => [{ ...candidate, siteId: "other" }] }).wrapped;
+  await assert.rejects(() => foreign.listFormCompletionPages(target, signal()), /別サイト/u);
 });
 test("site breakpoint adapter is project-scoped, detached and forwards only CAS fields", async () => {
   const calls = [], settings = { base: { name: "Mobile", previewWidth: 480 }, breakpoints: [

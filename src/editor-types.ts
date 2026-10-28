@@ -182,6 +182,8 @@ export type EditorBreakpointSettingsSaveResult = { status: "saved"; version: str
 export interface EditorAdapter {
   listSites(signal: AbortSignal): Promise<readonly EditorSite[]>;
   listPages(siteId: string, signal: AbortSignal): Promise<readonly EditorPage[]>;
+  /** form の送信成功後に選べるページ候補。省略時は完了先設定を接続しない。 */
+  listFormCompletionPages?(target: EditorTarget, signal: AbortSignal): Promise<readonly EditorPage[]>;
   readDocument(target: EditorTarget, signal: AbortSignal): Promise<EditorSnapshot>;
   /** trigger は自動保存のときだけ "autosave"。ホストは履歴の種類の区別に使える。 */
   saveDraft(request: { target: EditorTarget; document: PageDocument; expectedVersion: string; presentationVersion?: string; trigger?: "autosave";

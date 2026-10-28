@@ -7,6 +7,8 @@
 > 2026-10-28: Kamakura の native 化済みページはサイト側の段階解除で Studio から日本語の保存・公開が可能。原文ページの保存 locale `ja` と翻訳設定の原文 mapping `ja-JP` は PageEditor 内で区別し、日英切替後もページ一覧の保存 locale に戻る。Experience は凍結中。
 >
 > 鎌倉の Blank 埋め込みは、公開ホストと同じ `public-map` key / OpenStreetMap の固定URLを Studio に登録する。Studioの編集カードは接続済みとなり、previewだけ iframe を作る。Studio Workerの `frame-src` は鎌倉 editor route に限って当該pathを許可する。
+>
+> フォームの完了ページ候補は鎌倉の検証済み catalog の固定通常ページから、公開済みの完了ページだけを返す。英語側は対応する完了ページがないため候補を返さない。本文にはページIDだけを保存し、実送信と成功判定・移動は鎌倉ホスト側の接続が必要。
 
 Issue #68 / #69 / #70 の Studio host です。共有 `@niho/web` ライブラリとは別に Cloudflare Workers へ配置し、静的 React UI、Worker API、Studio 専用 D1 registry、Experience / Kamakura editor BFF を1つの境界として運用します。
 

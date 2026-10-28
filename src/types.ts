@@ -97,6 +97,8 @@ export type ElementNode = {
   type: "element";
   id: string;
   tag: ElementTag;
+  /** form だけが持てる、送信成功後の候補ページ ID。URL や送信処理はホストが所有する。 */
+  formCompletionPageId?: string;
   /** img / video だけが持てる。持つ場合 attrs.src は持たない。 */
   asset?: AssetReference;
   /** span だけが持てる組み込みアイコン名。glyph や markup は trusted code から描画する。 */

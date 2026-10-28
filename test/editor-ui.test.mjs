@@ -68,6 +68,58 @@ test("initialTarget opens the requested page and falls back when the page is abs
   finally { await absent.cleanup(); }
 });
 
+test("form completion inspector filters candidates, shows loading and unresolved IDs, and saves only an eligible page ID", async () => {
+  let resolvePages;
+  const page = structuredClone(fixture); page.body.push({ type: "element", id: "contact_form", tag: "form", formCompletionPageId: "removed", attrs: { name: "contact" }, children: [
+    { type: "element", id: "contact_submit", tag: "button", attrs: { type: "submit" }, children: [{ type: "text", text: "送信" }] }
+  ] });
+  const app = await setup({ document: page, adapter: { listFormCompletionPages: (_target, signal) => new Promise((resolve, reject) => {
+    resolvePages = resolve; signal.addEventListener("abort", () => reject(new dom.window.DOMException("aborted", "AbortError")), { once: true });
+  }) } });
+  try {
+    await clickLayer("contact_form"); await editorTab("フォーム");
+    assert.match(document.querySelector('[aria-label="インスペクタ"]').textContent, /完了ページを読み込んでいます/u);
+    await act(async () => resolvePages([
+      { siteId: "demo", pageId: "thanks", locale: "ja-JP", title: "送信完了", path: "/thanks", kind: "page", visibility: "public", published: true },
+      { siteId: "demo", pageId: "home", locale: "ja-JP", title: "現在", path: "/", kind: "page", visibility: "public", published: true },
+      { siteId: "demo", pageId: "private", locale: "ja-JP", title: "非公開", path: "/private", kind: "page", visibility: "private", published: true },
+      { siteId: "demo", pageId: "draft", locale: "ja-JP", title: "未公開", path: "/draft", kind: "page", visibility: "public", published: false },
+      { siteId: "demo", pageId: "template", locale: "ja-JP", title: "テンプレート", path: "/items/[slug]", kind: "template", visibility: "public", published: true },
+      { siteId: "other", pageId: "foreign", locale: "ja-JP", title: "別サイト", path: "/foreign", kind: "page", visibility: "public", published: true }
+    ])); await flush();
+    const select = input("完了ページ");
+    assert.deepEqual([...select.options].map((option) => [option.value, option.disabled]), [["", false], ["removed", true], ["thanks", false]]);
+    assert.match(select.selectedOptions[0].textContent, /未解決/u);
+    await change(select, "thanks"); await click("下書き保存");
+    assert.equal(app.stored().body.find((node) => node.id === "contact_form").formCompletionPageId, "thanks");
+    assert.equal(document.querySelector("iframe").contentDocument.querySelector('[data-nw-node="contact_form"]').getAttribute("formCompletionPageId"), null);
+  } finally { await app.cleanup(); }
+});
+
+test("form completion inspector is unconnected without the capability and ignores a late result from the previous page", async () => {
+  const page = structuredClone(fixture); page.body.push({ type: "element", id: "contact_form", tag: "form", formCompletionPageId: "removed", children: [] });
+  const unconnected = await setup({ document: page });
+  try {
+    await clickLayer("contact_form"); await editorTab("フォーム");
+    assert.match(document.querySelector('[aria-label="インスペクタ"]').textContent, /完了ページは未接続/u);
+    assert.equal(input("完了ページ"), undefined);
+  } finally { await unconnected.cleanup(); }
+
+  const pending = new Map();
+  const app = await setup({ document: page, adapter: { listFormCompletionPages: (target, signal) => new Promise((resolve, reject) => {
+    pending.set(target.pageId, resolve); signal.addEventListener("abort", () => reject(new dom.window.DOMException("aborted", "AbortError")), { once: true });
+  }) } });
+  try {
+    await clickLayer("contact_form"); await editorTab("フォーム");
+    const old = pending.get("home"); await clickPage("別ページ"); await clickLayer("contact_form"); await editorTab("フォーム");
+    await act(async () => old([{ siteId: "demo", pageId: "old", locale: "ja-JP", title: "古い候補", path: "/old", kind: "page", visibility: "public", published: true }])); await flush();
+    assert.match(document.querySelector('[aria-label="インスペクタ"]').textContent, /読み込んでいます/u);
+    assert.doesNotMatch(document.querySelector('[aria-label="インスペクタ"]').textContent, /古い候補/u);
+    await act(async () => pending.get("other")([{ siteId: "demo", pageId: "done", locale: "ja-JP", title: "新しい候補", path: "/done", kind: "page", visibility: "public", published: true }])); await flush();
+    assert.deepEqual([...input("完了ページ").options].map((option) => option.value), ["", "removed", "done"]);
+  } finally { await app.cleanup(); }
+});
+
 test("English publication states stay separate from the Japanese draft and retry only when allowed", async () => {
   const states = [
     ["queued", "処理待ち"], ["translating", "翻訳中"], ["review-required", "確認待ち"], ["publishing", "公開中"],
