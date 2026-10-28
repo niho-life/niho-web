@@ -143,6 +143,16 @@ const destinationLabel = (node: Exclude<PageNode, { type: "text" }>, path: reado
   return `${"　".repeat(depth)}${depth ? "└ " : ""}${name}${name === type ? "" : `（${type}）`}`;
 };
 type ToolName = "add" | "pages" | "layers" | "styles" | "assets" | "upload" | "stock" | "connect" | "components";
+function moveRailFocus(event: React.KeyboardEvent<HTMLElement>) {
+  if (!["ArrowDown", "ArrowUp", "ArrowRight", "ArrowLeft", "Home", "End"].includes(event.key)) return;
+  const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"));
+  const current = buttons.indexOf(event.target as HTMLButtonElement);
+  if (current < 0 || !buttons.length) return;
+  event.preventDefault();
+  const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1
+    : (current + (["ArrowDown", "ArrowRight"].includes(event.key) ? 1 : -1) + buttons.length) % buttons.length;
+  buttons[next]?.focus();
+}
 /** 左レールのアイコン。STUDIO の左ナビゲーション（24px の線画・線幅 1.5）の各ツールと同じ形: 追加は 3 つの塗りの四角と＋、ページは折り目の付いた 1 枚、レイヤーは最上段を塗った 3 段、スタイルは A と小さな○、アップロードはフォルダー、ストックは画像と＋、接続は 2 本のつまみ、コンポーネントは 4 つのひし形。 */
 const folderGlyph = <path d="M3.5 6.5A1.5 1.5 0 0 1 5 5h4.2l2 2H19a1.5 1.5 0 0 1 1.5 1.5V18a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 18z" />;
 function ToolGlyph({ tool }: { tool: ToolName }) {
@@ -1483,7 +1493,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       {...(adapter.englishPublication && session.englishPublication.retryable && session.englishPublication.state !== "initial-release-required" ? { retry: () => void updateEnglishPublication("retry") } : {})} />}
     {components && libraryFailed && <div className="e-notice" role="alert">再利用コンポーネントを読み込めませんでした。配置済みのページは表示できない場合があります。</div>}
     {localizationGate && <div className="e-localization-gate" role={localization.siteState === "error" || localization.pageState === "error" ? "alert" : "status"}><span>{localizationGate}</span><button type="button" className="e-small" disabled={localization.siteState === "loading" || localization.pageState === "loading"} onClick={localization.reloadAll}>再試行</button></div>}</>} left={<aside className="e-rail e-left" aria-label="サイト・ページ・レイヤー" hidden={preview}>
-      <nav className="e-tools" aria-label="編集ツール"><PanelToggle side="left" open={leftPanelOpen} onClick={() => setLeftPanelOpen((value) => !value)} />{tools.map(([key, name]) => { const common = targetMode && ["add", "styles"].includes(key); return <button key={key} type="button" aria-label={name} aria-pressed={visiblePanel === key && leftPanelOpen} title={common ? "共通デザインは原文側で編集" : name} disabled={common} onClick={() => { if (versions.open) versions.close(); setPicker(null); setPanel(key); setLeftPanelOpen(true); }}><ToolGlyph tool={key} /><small className="e-vh">{name}</small></button>; })}
+      <nav className="e-tools" aria-label="編集ツール" onKeyDown={moveRailFocus}><PanelToggle side="left" open={leftPanelOpen} onClick={() => setLeftPanelOpen((value) => !value)} />{tools.map(([key, name]) => { const common = targetMode && ["add", "styles"].includes(key); return <button key={key} type="button" aria-label={name} aria-pressed={visiblePanel === key && leftPanelOpen} title={common ? "共通デザインは原文側で編集" : name} disabled={common} onClick={() => { if (versions.open) versions.close(); setPicker(null); setPanel(key); setLeftPanelOpen(true); }}><ToolGlyph tool={key} /><small className="e-vh">{name}</small></button>; })}
         {versions.supported && <button type="button" aria-label="履歴" aria-pressed={panel === "history" && leftPanelOpen && versions.open} title="履歴" disabled={!session || !!masterId || targetMode} onClick={() => { setPicker(null); setLeftPanelOpen(true); if (panel === "history" && versions.open) { versions.close(); setPanel("pages"); } else { setPanel("history"); if (!versions.open) versions.toggle(); } }}><WorkspaceIcon name="history" /><small className="e-vh">履歴</small></button>}
       </nav>
       <div className="e-left-column"><div className="e-project-context" title={`${contextSite} / ${contextTitle}${contextDetail ? ` · ${contextDetail}` : ""}`}><div className="e-toolbar-start">{toolbarStart}</div>

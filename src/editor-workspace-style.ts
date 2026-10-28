@@ -34,7 +34,7 @@ export const workspaceCss = `${uiTokensCss}
 .nw-editor .e-body.is-left-closed{grid-template-columns:50px minmax(0,1fr) 300px}.nw-editor .e-body.is-right-closed{grid-template-columns:350px minmax(0,1fr)}.nw-editor .e-body.is-left-closed.is-right-closed{grid-template-columns:50px minmax(0,1fr)}
 .nw-editor .e-rail{height:100%;min-height:0;background:var(--nw-bg)}.nw-editor .e-left{display:flex;min-width:0;overflow:hidden;border-right:1px solid var(--e-border)}
 /* Tool rail: 50px column, 32px buttons, 18px line icons (stroke 1.5). The open tool gets a small grey square like STUDIO's navigation. */
-.nw-editor .e-tools{display:flex;width:50px;flex:none;flex-direction:column;align-items:center;gap:4px;padding:8px 4px;border-right:1px solid var(--e-border);background:var(--nw-bg)}
+.nw-editor .e-tools{display:flex;width:50px;min-height:0;flex:none;flex-direction:column;align-items:center;gap:4px;padding:8px 4px;border-right:1px solid var(--e-border);background:var(--nw-bg);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin}
 .nw-editor .e-tools button{display:flex;width:32px;height:32px;min-width:32px;min-height:32px;align-items:center;justify-content:center;padding:0;border:0;border-radius:var(--nw-radius);background:transparent;color:var(--e-muted)}
 .nw-editor .e-tools button:hover:not(:disabled){border-color:transparent;background:var(--e-hover);color:var(--e-ink)}.nw-editor .e-tools button[aria-pressed=true]{border-color:transparent;background:var(--nw-pressed);color:var(--e-ink)}
 .nw-editor .e-tools button:disabled{opacity:.35}.nw-editor .e-tools .e-panel-toggle{margin-bottom:4px}.nw-editor .e-tool-icon{display:block;width:18px;height:18px;flex:none}
