@@ -100,40 +100,60 @@ test("Facebook runtime waits for explicit activation, revalidates canonical data
   const invalidCleanup = initializeSitePresentation(dom.window.document); assert.equal(button.hidden, true); button.click(); assert.equal(root.querySelector("iframe"), null); invalidCleanup(); dom.window.close();
 });
 
-test("X と Instagram runtime は明示操作後だけ opaque srcdoc を生成して cleanup する", () => {
-  const cases = [
-    { provider: "x", source: "https://x.com/example/status/1234567890123456789", title: "X のお知らせ", script: "https://platform.twitter.com/widgets.js", markup: "twitter-tweet" },
-    { provider: "instagram", source: "https://www.instagram.com/reel/AbCdEf12345/", title: "Instagram のお知らせ", script: "https://www.instagram.com/embed.js", markup: "instagram-media" }
-  ];
-  const document = page("synthetic", "ja", "social", cases.map(({ provider, source, title }) => ({ type: "element", id: provider, tag: "div", embed: { provider, source, title }, children: [] })));
-  const dom = new JSDOM(`<!doctype html><body>${renderPageToHtml(document)}</body>`);
-  for (const entry of cases) {
-    const root = dom.window.document.querySelector(`[data-nw-embed="${entry.provider}"]`), button = root.querySelector("[data-nw-social-load]"), link = root.querySelector("[data-nw-social-link]");
-    assert.equal(root.querySelector("iframe"), null); assert.equal(button.hidden, true); assert.equal(link.getAttribute("href"), entry.source);
+test("X runtime は別originの固定HTTPS endpointが無いか不正ならfail closedにする", () => {
+  const source = "https://x.com/example/status/1234567890123456789";
+  const document = page("synthetic", "ja", "x", [{ type: "element", id: "x", tag: "div", embed: { provider: "x", source, title: "X のお知らせ" }, children: [] }]);
+  for (const xPostFrameUrl of [undefined, "http://frame.example.test/x.html", "https://user@frame.example.test/x.html", "https://frame.example.test/x.html?mode=post", "https://frame.example.test/x.html#post", "https://site.example.test/x.html"]) {
+    const dom = new JSDOM(`<!doctype html><body>${renderPageToHtml(document)}</body>`, { url: "https://site.example.test/page" });
+    const root = dom.window.document.querySelector('[data-nw-embed="x"]'), button = root.querySelector("[data-nw-social-load]");
+    const cleanup = initializeSitePresentation(dom.window.document, { ...(xPostFrameUrl ? { xPostFrameUrl } : {}) });
+    assert.equal(button.hidden, true, xPostFrameUrl); button.click(); assert.equal(root.querySelector("iframe"), null, xPostFrameUrl); cleanup(); dom.window.close();
   }
-  const staticCleanup = initializeSitePresentation(dom.window.document, { interactive: false });
-  for (const entry of cases) assert.equal(dom.window.document.querySelector(`[data-nw-embed="${entry.provider}"] [data-nw-social-load]`).hidden, true);
-  staticCleanup();
-  const cleanup = initializeSitePresentation(dom.window.document);
-  for (const entry of cases) {
-    const root = dom.window.document.querySelector(`[data-nw-embed="${entry.provider}"]`), button = root.querySelector("[data-nw-social-load]");
-    assert.equal(button.hidden, false); assert.equal(root.querySelector("iframe"), null, "buttonを表示しただけでは外部通信しない");
-    button.click();
-    const frame = root.querySelector(`iframe[data-nw-${entry.provider}-frame]`), srcdoc = frame.getAttribute("srcdoc");
-    assert.equal(frame.hasAttribute("src"), false); assert.equal(frame.getAttribute("sandbox"), "allow-scripts"); assert.equal(frame.getAttribute("referrerpolicy"), "no-referrer");
-    assert.equal(frame.getAttribute("loading"), "lazy"); assert.equal(frame.getAttribute("title"), entry.title); assert.equal(frame.hasAttribute("allow"), false); assert.equal(frame.hasAttribute("allowfullscreen"), false);
-    assert.match(srcdoc, new RegExp(entry.markup)); assert.ok(srcdoc.includes(entry.script)); assert.ok(srcdoc.includes(entry.source));
-    assert.equal(root.querySelector("[data-nw-social-status]").style.visibility, "hidden"); assert.equal(button.hidden, true); assert.ok(root.querySelector("[data-nw-social-link]").isConnected);
-  }
+});
+
+test("X runtime は明示操作後だけ固定endpointへcanonical URLだけを渡しcleanupする", () => {
+  const source = "https://x.com/example/status/1234567890123456789", xPostFrameUrl = "https://frame.example.test/widgets/x-post.html";
+  const document = page("synthetic", "ja", "x", [{ type: "element", id: "x", tag: "div", embed: { provider: "x", source, title: "X のお知らせ" }, children: [] }]);
+  const dom = new JSDOM(`<!doctype html><body>${renderPageToHtml(document)}</body>`, { url: "https://site.example.test/page" });
+  const root = dom.window.document.querySelector('[data-nw-embed="x"]'), button = root.querySelector("[data-nw-social-load]");
+  const staticCleanup = initializeSitePresentation(dom.window.document, { interactive: false, xPostFrameUrl }); assert.equal(button.hidden, true); staticCleanup();
+  const cleanup = initializeSitePresentation(dom.window.document, { xPostFrameUrl });
+  assert.equal(button.hidden, false); assert.equal(root.querySelector("iframe"), null, "buttonを表示しただけでは外部通信しない");
+  button.click();
+  const frame = root.querySelector("iframe[data-nw-x-frame]"), frameUrl = new URL(frame.getAttribute("src"));
+  assert.equal(`${frameUrl.origin}${frameUrl.pathname}`, xPostFrameUrl); assert.deepEqual([...frameUrl.searchParams], [["url", source]]);
+  assert.match(frame.getAttribute("src"), /\?url=https%3A%2F%2Fx\.com%2Fexample%2Fstatus%2F1234567890123456789$/u);
+  assert.equal(frame.hasAttribute("srcdoc"), false); assert.equal(frame.getAttribute("sandbox"), "allow-scripts allow-same-origin"); assert.equal(frame.getAttribute("referrerpolicy"), "no-referrer");
+  assert.equal(frame.getAttribute("loading"), "lazy"); assert.equal(frame.getAttribute("title"), "X のお知らせ"); assert.equal(frame.hasAttribute("allow"), false); assert.equal(frame.hasAttribute("allowfullscreen"), false);
+  assert.equal(root.querySelector("[data-nw-social-status]").style.visibility, "hidden"); assert.equal(button.hidden, true); assert.ok(root.querySelector("[data-nw-social-link]").isConnected);
+  assert.match(root.querySelector("[data-nw-x-fallback][role=status]").textContent, /表示されない場合/);
   cleanup();
-  for (const entry of cases) {
-    const root = dom.window.document.querySelector(`[data-nw-embed="${entry.provider}"]`), button = root.querySelector("[data-nw-social-load]");
-    assert.equal(root.querySelector("iframe"), null); assert.equal(button.hidden, true); assert.equal(root.querySelector("[data-nw-social-status]").style.visibility, "");
-    button.click(); assert.equal(root.querySelector("iframe"), null, "cleanup は activation listener も除く");
+  assert.equal(root.querySelector("iframe"), null); assert.equal(root.querySelector("[data-nw-x-fallback]"), null); assert.equal(button.hidden, true); assert.equal(root.querySelector("[data-nw-social-status]").style.visibility, "");
+  button.click(); assert.equal(root.querySelector("iframe"), null, "cleanup は activation listener も除く"); dom.window.close();
+});
+
+test("X runtime は初期化後のcanonical sourceまたは外部リンク改変も拒否する", () => {
+  const source = "https://x.com/example/status/1234567890123456789";
+  const document = page("synthetic", "ja", "x", [{ type: "element", id: "x", tag: "div", embed: { provider: "x", source, title: "X のお知らせ" }, children: [] }]);
+  for (const tamper of ["source", "link"]) {
+    const dom = new JSDOM(`<!doctype html><body>${renderPageToHtml(document)}</body>`, { url: "https://site.example.test/page" });
+    const root = dom.window.document.querySelector('[data-nw-embed="x"]'), button = root.querySelector("[data-nw-social-load]");
+    const cleanup = initializeSitePresentation(dom.window.document, { xPostFrameUrl: "https://frame.example.test/widgets/x-post.html" });
+    if (tamper === "source") root.dataset.nwSocialSource = "https://evil.example.test/post";
+    else root.querySelector("[data-nw-social-link]").setAttribute("href", "https://evil.example.test/post");
+    button.click(); assert.equal(root.querySelector("iframe"), null, tamper); cleanup(); dom.window.close();
   }
-  const xRoot = dom.window.document.querySelector('[data-nw-embed="x"]');
-  xRoot.dataset.nwSocialSource = "https://evil.example/post"; xRoot.querySelector("[data-nw-social-link]").setAttribute("href", "https://evil.example/post");
-  const invalidCleanup = initializeSitePresentation(dom.window.document); assert.equal(xRoot.querySelector("[data-nw-social-load]").hidden, true); invalidCleanup(); dom.window.close();
+});
+
+test("Instagram runtime は明示操作後だけopaque srcdocを生成してcleanupする", () => {
+  const source = "https://www.instagram.com/reel/AbCdEf12345/";
+  const document = page("synthetic", "ja", "instagram", [{ type: "element", id: "instagram", tag: "div", embed: { provider: "instagram", source, title: "Instagram のお知らせ" }, children: [] }]);
+  const dom = new JSDOM(`<!doctype html><body>${renderPageToHtml(document)}</body>`, { url: "https://site.example.test/page" });
+  const root = dom.window.document.querySelector('[data-nw-embed="instagram"]'), button = root.querySelector("[data-nw-social-load]");
+  const cleanup = initializeSitePresentation(dom.window.document); assert.equal(button.hidden, false); assert.equal(root.querySelector("iframe"), null);
+  button.click(); const frame = root.querySelector("iframe[data-nw-instagram-frame]"), srcdoc = frame.getAttribute("srcdoc");
+  assert.equal(frame.hasAttribute("src"), false); assert.equal(frame.getAttribute("sandbox"), "allow-scripts"); assert.ok(srcdoc.includes("instagram-media")); assert.ok(srcdoc.includes("https://www.instagram.com/embed.js")); assert.ok(srcdoc.includes(source));
+  cleanup(); assert.equal(root.querySelector("iframe"), null); assert.equal(button.hidden, true); dom.window.close();
 });
 
 test("Loop Box fills the viewport with inert safe copies, pauses, honors reduced motion and cleans up", async () => {

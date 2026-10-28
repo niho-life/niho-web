@@ -3,16 +3,30 @@ import { normalizeEmbedSource } from "./embeds.js";
 type OverlayElement = HTMLElement & { hidden: boolean };
 type ScriptSocialProvider = "x" | "instagram";
 
+export type SitePresentationOptions = {
+  interactive?: boolean;
+  /** trusted host code が所有する、親documentとは別originの固定X投稿frame endpoint。 */
+  xPostFrameUrl?: string;
+};
+
 function escapeEmbedAttribute(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
 /** canonical URLを固定の公式markupへだけ差し込む。文書由来のHTML・script・iframe URLは使わない。 */
-function scriptSocialSrcDoc(provider: ScriptSocialProvider, source: string): string {
+function instagramSrcDoc(source: string): string {
   const escaped = escapeEmbedAttribute(source);
-  return provider === "x"
-    ? `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><blockquote class="twitter-tweet"><a href="${escaped}"></a></blockquote><script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script></body></html>`
-    : `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><blockquote class="instagram-media" data-instgrm-permalink="${escaped}" data-instgrm-version="14"><a href="${escaped}">Instagramで投稿を見る</a></blockquote><script async src="https://www.instagram.com/embed.js"></script></body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><blockquote class="instagram-media" data-instgrm-permalink="${escaped}" data-instgrm-version="14"><a href="${escaped}">Instagramで投稿を見る</a></blockquote><script async src="https://www.instagram.com/embed.js"></script></body></html>`;
+}
+
+function trustedXPostFrameEndpoint(value: unknown, ownerDocument: Document): URL | null {
+  if (typeof value !== "string") return null;
+  try {
+    const endpoint = new URL(value);
+    if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash || value.includes("?") || value.includes("#")) return null;
+    if (endpoint.origin === ownerDocument.location.origin) return null;
+    return endpoint;
+  } catch { return null; }
 }
 
 const focusableSelector = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),summary,[tabindex]';
@@ -30,7 +44,7 @@ function focusableElements(overlay: HTMLElement): HTMLElement[] {
 }
 
 /** 検証済みdata属性だけを解釈する、公開SSRとeditor preview共通の標準操作runtime。 */
-export function initializeSitePresentation(scope: ParentNode = document, options: { interactive?: boolean } = {}): () => void {
+export function initializeSitePresentation(scope: ParentNode = document, options: SitePresentationOptions = {}): () => void {
   const ownerDocument = scope.nodeType === 9 ? scope as Document : (scope as Node).ownerDocument;
   if (!ownerDocument) return () => {};
   const cleanups: Array<() => void> = [], html = ownerDocument.documentElement;
@@ -124,8 +138,10 @@ export function initializeSitePresentation(scope: ParentNode = document, options
     listen(binding.button, "click", activate as EventListener);
   }
   cleanups.push(() => facebookBindings.forEach((binding) => { binding.frame?.remove(); binding.frame = null; binding.status.style.visibility = ""; binding.button.hidden = true; }));
+  const xPostFrameEndpoint = trustedXPostFrameEndpoint(options.xPostFrameUrl, ownerDocument);
   const socialProviders: readonly ScriptSocialProvider[] = ["x", "instagram"];
   const socialBindings = socialProviders.flatMap((provider) => Array.from(scope.querySelectorAll<HTMLElement>(`[data-nw-embed="${provider}"][data-nw-social-source]`)).flatMap((root) => {
+    if (provider === "x" && !xPostFrameEndpoint) return [];
     if (root.hasAttribute("data-nw-social-static")) return [];
     const source = root.dataset.nwSocialSource ?? "", title = root.dataset.nwSocialTitle ?? "";
     const ViewHTMLElement = ownerDocument.defaultView?.HTMLElement;
@@ -138,24 +154,39 @@ export function initializeSitePresentation(scope: ParentNode = document, options
     let canonical = false;
     try { canonical = normalizeEmbedSource(provider, source) === source; } catch { /* Untrusted or edited runtime attributes stay static. */ }
     return canonical && title.trim() && mount && status && button && link?.getAttribute("href") === source
-      ? [{ provider, source, title, mount, status, button, frame: null as HTMLIFrameElement | null }]
+      ? [{ provider, source, title, root, link, mount, status, button, frame: null as HTMLIFrameElement | null, fallback: null as HTMLElement | null }]
       : [];
   }));
   for (const binding of socialBindings) {
     binding.button.hidden = false;
     const activate = () => {
       if (binding.frame?.isConnected) return;
+      const currentSource = binding.root.dataset.nwSocialSource ?? "";
+      try {
+        if (currentSource !== binding.source || normalizeEmbedSource(binding.provider, currentSource) !== currentSource || binding.link.getAttribute("href") !== currentSource) return;
+      } catch { return; }
       const frame = ownerDocument.createElement("iframe");
-      frame.srcdoc = scriptSocialSrcDoc(binding.provider, binding.source); frame.title = binding.title;
-      frame.setAttribute("loading", "lazy"); frame.setAttribute("referrerpolicy", "no-referrer"); frame.setAttribute("sandbox", "allow-scripts");
+      if (binding.provider === "x") {
+        const source = new URL(xPostFrameEndpoint!.href);
+        source.searchParams.set("url", binding.source);
+        frame.src = source.href;
+      } else frame.srcdoc = instagramSrcDoc(binding.source);
+      frame.title = binding.title;
+      frame.setAttribute("loading", "lazy"); frame.setAttribute("referrerpolicy", "no-referrer"); frame.setAttribute("sandbox", binding.provider === "x" ? "allow-scripts allow-same-origin" : "allow-scripts");
       frame.setAttribute(`data-nw-${binding.provider}-frame`, "");
       frame.style.gridArea = "1 / 1"; frame.style.width = "100%"; frame.style.height = "100%"; frame.style.border = "0"; frame.style.display = "block";
       if (binding.mount.closest("[data-nw-social-canvas]")) frame.style.pointerEvents = "none";
+      if (binding.provider === "x") {
+        const fallback = ownerDocument.createElement("span");
+        fallback.setAttribute("role", "status"); fallback.setAttribute("data-nw-x-fallback", "");
+        fallback.textContent = "表示されない場合は元投稿をXで開いてください。";
+        binding.link.before(fallback); binding.fallback = fallback;
+      }
       binding.mount.append(frame); binding.frame = frame; binding.status.style.visibility = "hidden"; binding.button.hidden = true;
     };
     listen(binding.button, "click", activate as EventListener);
   }
-  cleanups.push(() => socialBindings.forEach((binding) => { binding.frame?.remove(); binding.frame = null; binding.status.style.visibility = ""; binding.button.hidden = true; }));
+  cleanups.push(() => socialBindings.forEach((binding) => { binding.frame?.remove(); binding.frame = null; binding.fallback?.remove(); binding.fallback = null; binding.status.style.visibility = ""; binding.button.hidden = true; }));
   for (const root of Array.from(scope.querySelectorAll<HTMLElement>("[data-nw-loop-box]"))) {
     const view = ownerDocument.defaultView; if (!view) continue;
     const direct = Array.from(root.children), track = direct.find((child): child is HTMLElement => child instanceof view.HTMLElement && child.hasAttribute("data-nw-loop-box-track"));

@@ -127,7 +127,7 @@ v1\n${timestamp}\n${method}\n${pathname}\n${sha256hex(rawBody)}\n${project}\n${s
 
 STG検証は同じ allowlist と署名契約を使いますが、上流は固定 `https://api-stg.niho.life`、鍵は `NIHO_STUDIO_BRIDGE_SECRET_STG` です。STG UI は環境を明示します。通常の Experience editor ルートや本番用 key/origin は切り替えません。STG API が未配備、secret が無効、または owner 以外なら閉じます。公開・復元の受入操作は STG API 上でのみ行い、本番 API へは送信しません。
 
-Editor HTML route だけ `PageEditor` の inline style と `iframe srcDoc` に必要な `style-src 'unsafe-inline'` / `frame-src 'self'` を追加します。鎌倉の editor route では、標準埋め込みの Google Maps・YouTube・Vimeo の固定配信元、Lottie preview専用の `https://lottie.host/embed/`、Facebook投稿専用の `https://www.facebook.com/plugins/post.php`、X / Instagram の公式表示先だけを `frame-src` に加えます。X / Instagram の固定公式script URLだけを `script-src` に加えます。Lottieのdirect asset path、Facebookの他path、各hostの任意pathは許可しません。Directory / Dashboard など他 route の CSP は緩和しません。Xは現時点のChromeでは隔離枠内で投稿を描画できず、投稿リンクが残ります。
+Editor HTML route だけ `PageEditor` の inline style と `iframe srcDoc` に必要な `style-src 'unsafe-inline'` / `frame-src 'self'` を追加します。鎌倉の editor route では、標準埋め込みの Google Maps・YouTube・Vimeo の固定配信元、Lottie preview専用の `https://lottie.host/embed/`、Facebook投稿専用の `https://www.facebook.com/plugins/post.php`、Instagramの公式表示先、将来X endpointを置ける既存media frame pathだけを`frame-src`に加えます。Instagramの固定公式script URLだけを`script-src`に加え、不要になった`platform.twitter.com`の親script/frame許可は持ちません。X endpointは別originのCSPで公式widgetの許可を所有しますが、このStudio hostは固定`xPostFrameUrl`を`PageEditor`へ接続します。Lottieのdirect asset path、Facebookの他path、各hostの任意pathは許可しません。Directory / Dashboardなど他routeのCSPは緩和しません。
 
 ## Kamakura editor bridge
 

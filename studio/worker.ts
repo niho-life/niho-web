@@ -2430,8 +2430,8 @@ const KAMAKURA_EDITOR_ADAPTER: WorkerEditorAdapter = {
   dispatchAssetPreview: signedKamakuraAssetPreview,
   connectOrigins: [KAMAKURA_EDITOR_UPSTREAM_ORIGIN],
   fontSources: [`${KAMAKURA_MEDIA_ORIGIN}/niho-web/fonts/v1/`],
-  scriptSources: ["https://platform.twitter.com/widgets.js", "https://www.instagram.com/embed.js"],
-  frameSources: [`${KAMAKURA_MEDIA_ORIGIN}/niho-web/embeds/v1/`, "https://www.google.com/maps/embed", "https://www.openstreetmap.org/export/embed.html", "https://www.youtube-nocookie.com/embed/", "https://player.vimeo.com/video/", "https://lottie.host/embed/", "https://www.facebook.com/plugins/post.php", "https://platform.twitter.com", "https://www.instagram.com"]
+  scriptSources: ["https://www.instagram.com/embed.js"],
+  frameSources: [`${KAMAKURA_MEDIA_ORIGIN}/niho-web/embeds/v1/`, "https://www.google.com/maps/embed", "https://www.openstreetmap.org/export/embed.html", "https://www.youtube-nocookie.com/embed/", "https://player.vimeo.com/video/", "https://lottie.host/embed/", "https://www.facebook.com/plugins/post.php", "https://www.instagram.com"]
 };
 
 function liveEditorAdapter(resolved: ResolvedTrustedIntegration): WorkerEditorAdapter | null {

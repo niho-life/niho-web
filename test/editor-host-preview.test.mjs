@@ -53,7 +53,7 @@ async function setup(previewComponent, options = {}) {
     readRevision: async () => ({ document: old }),
   };
   await act(async () => root.render(createElement(context.Provider, { value: "host context" }, createElement(displayData.Provider, { value: { events: ["Synthetic market"] } },
-    createElement(PageEditor, { adapter, ...(options.blocks ? { blocks: options.blocks } : {}), ...(previewComponent ? { previewComponent } : {}) })))));
+    createElement(PageEditor, { adapter, ...(options.blocks ? { blocks: options.blocks } : {}), ...(options.xPostFrameUrl ? { xPostFrameUrl: options.xPostFrameUrl } : {}), ...(previewComponent ? { previewComponent } : {}) })))));
   await flush();
   const frame = document.querySelector("iframe"); assert.ok(frame, document.body.textContent);
   await act(async () => frame.dispatchEvent(new dom.window.Event("load"))); await flush();
@@ -85,11 +85,11 @@ test("strings, numbers, arrays and plain objects are ignored and keep the defaul
 test("the host component shares context, current width and read-only preview/history inside the same iframe", async () => {
   function Preview(props) {
     return createElement("section", { "data-host-preview": "", "data-base-version": props.baseVersion, "data-history-id": props.historyRevision?.id ?? "", "data-context": useContext(context), "data-width": props.width, "data-mode": props.mode, "data-readonly": String(props.readOnly), "data-title": props.document.title,
-      "data-assets": typeof props.assets, "data-blocks": Object.keys(props.blocks).join(","), "data-presentation": String(props.presentation === undefined) },
+      "data-assets": typeof props.assets, "data-blocks": Object.keys(props.blocks).join(","), "data-presentation": String(props.presentation === undefined), "data-x-post-frame-url": props.xPostFrameUrl ?? "" },
       createElement("form", { "data-host-form": "" }, createElement("button", { type: "submit" }, "Synthetic submit")),
       createElement("a", { href: "/synthetic", "data-host-link": "" }, "Synthetic link"), props.children);
   }
-  const app = await setup(Preview);
+  const app = await setup(Preview, { xPostFrameUrl: "https://frame.example.test/widgets/x-post.html" });
   const host = () => app.frame.contentDocument.querySelector("[data-host-preview]");
   try {
     assert.equal(document.querySelector("[data-host-preview]"), null);
@@ -97,6 +97,7 @@ test("the host component shares context, current width and read-only preview/his
     assert.equal(host().dataset.baseVersion, "v1");
     assert.equal(host().dataset.historyId, "");
     assert.equal(host().dataset.assets, "object"); assert.equal(host().dataset.blocks, ""); assert.equal(host().dataset.presentation, "true");
+    assert.equal(host().dataset.xPostFrameUrl, "https://frame.example.test/widgets/x-post.html");
     assert.equal(host().dataset.mode, "edit"); assert.equal(host().dataset.readonly, "false");
     assert.equal(host().querySelector("h1").textContent, "Synthetic heading");
     await change(document.querySelector('[aria-label="表示幅"]'), "375"); assert.equal(host().dataset.width, "375");

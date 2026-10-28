@@ -311,6 +311,8 @@ export type EditorCanvasPreviewProps = {
   externalFramePolicy?: ExternalFramePolicy;
   /** PageEditor に渡した Blank iframe registry。 */
   blankEmbeds?: BlankEmbedRegistry;
+  /** PageEditor に渡した、別originの固定X投稿frame endpoint。 */
+  xPostFrameUrl?: string;
   /** 従来の文書描画。編集文書を置き換えない場合はそのまま返せる。 */
   children: ReactNode;
 };
@@ -325,6 +327,8 @@ export type PageEditorProps = {
   externalFramePolicy?: ExternalFramePolicy;
   /** trusted host が承認した Blank iframe の固定 registry。未指定時は Blank を選択できない。 */
   blankEmbeds?: BlankEmbedRegistry;
+  /** trusted host code が所有する、親documentとは別originの固定HTTPS X投稿frame endpoint。 */
+  xPostFrameUrl?: string;
   /** 標準の挿入・モーションカタログを同じ ID で置換、または新しい項目で拡張する。 */
   builder?: BuilderDefinition;
   /** Canvasと同じiframe内で描画する。予約・送信などの副作用を起こさず、未指定時は従来どおり。 */
