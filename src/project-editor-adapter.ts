@@ -19,6 +19,17 @@ function sameSite(left: EditorSite, right: EditorSite): boolean {
     new Set(left.domains).size === left.domains.length && left.domains.every((domain) => right.domains.includes(domain));
 }
 
+function siteFrameSources(input: unknown, domains: readonly string[]): string[] {
+  if (!Array.isArray(input) || input.length > 16) throw new Error("サイトの外部フレーム設定が正しくありません。");
+  return input.map((source) => {
+    if (typeof source !== "string") throw new Error("サイトの外部フレーム設定が正しくありません。");
+    let url: URL;
+    try { url = new URL(source); } catch { throw new Error("サイトの外部フレーム設定が正しくありません。"); }
+    if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || domains.includes(url.origin)) throw new Error("サイトの外部フレーム設定が正しくありません。");
+    return source;
+  });
+}
+
 function assertDocumentTarget(document: unknown, target: EditorTarget): void {
   const value = record(document, "document");
   if (value.siteId !== target.siteId || value.pageId !== target.pageId || value.locale !== target.locale) throw new Error("文書の対象が一致しません。");
@@ -229,7 +240,7 @@ export function createProjectEditorAdapter(adapter: EditorAdapter, projectInput:
       const sites = await adapter.listSites(signal);
       const matched = sites.find((candidate) => candidate.id === site.id);
       if (!matched || !sameSite(matched, site)) throw new Error("プロジェクトのサイト情報を確認できません。");
-      return [{ id: site.id, name: site.name, domains: [...site.domains], ...(matched.structuredData === undefined ? {} : { structuredData: structuredDataPresets(matched.structuredData) }) }];
+      return [{ id: site.id, name: site.name, domains: [...site.domains], ...(matched.structuredData === undefined ? {} : { structuredData: structuredDataPresets(matched.structuredData) }), ...(matched.externalFrameSources === undefined ? {} : { externalFrameSources: siteFrameSources(matched.externalFrameSources, site.domains) }) }];
     },
     async listPages(siteId, signal) {
       if (siteId !== site.id) throw new Error("プロジェクト外のサイトは参照できません。");

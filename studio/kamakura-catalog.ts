@@ -8,6 +8,7 @@ export const KAMAKURA_CATALOG_CONTRACT_ERROR_STATUS = 502 as const;
 export const KAMAKURA_EDITOR_SITE_ID = "kamakura" as const;
 export const KAMAKURA_EDITOR_SITE_NAME = "鎌倉サイト（新サイト確認用）";
 export const KAMAKURA_EDITOR_DOMAIN = "https://next-kamakura.niho.life";
+export const KAMAKURA_EXTERNAL_FRAME_SOURCES = ["https://www.google.com/maps/embed"] as const;
 export const KAMAKURA_COMMON_PAGE_ID = /^(?!(?:catalog|create|index)$)[a-z][a-z0-9-]{0,59}$/u;
 
 export type KamakuraLegacyPage = { readonly name: string; readonly path: string };
@@ -44,7 +45,7 @@ function parseSite(value: unknown): EditorSite {
   if (!isRecord(value) || value.id !== KAMAKURA_EDITOR_SITE_ID || value.name !== KAMAKURA_EDITOR_SITE_NAME || !Array.isArray(value.domains) || value.domains.length !== 1 || value.domains[0] !== KAMAKURA_EDITOR_DOMAIN) {
     throw new KamakuraCatalogContractError();
   }
-  return { id: KAMAKURA_EDITOR_SITE_ID, name: KAMAKURA_EDITOR_SITE_NAME, domains: [KAMAKURA_EDITOR_DOMAIN] };
+  return { id: KAMAKURA_EDITOR_SITE_ID, name: KAMAKURA_EDITOR_SITE_NAME, domains: [KAMAKURA_EDITOR_DOMAIN], externalFrameSources: KAMAKURA_EXTERNAL_FRAME_SOURCES };
 }
 
 function parsePropRule(value: unknown): PropRule {

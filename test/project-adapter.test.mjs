@@ -135,6 +135,15 @@ test("page list optional fields and structured data presets pass through validat
   await assert.rejects(() => setup({ listSites: async () => [{ ...project.site, structuredData: [{ id: "a", label: "A" }, { id: "a", label: "B" }] }] }).wrapped.listSites(signal()), /重複/);
   await assert.rejects(() => setup({ listSites: async () => [{ ...project.site, structuredData: [{ id: "1bad", label: "A" }] }] }).wrapped.listSites(signal()));
 });
+test("project editor forwards site frame sources without sharing the source array", async () => {
+  const sources = ["https://maps.example.test/embed"];
+  const { wrapped } = setup({ listSites: async () => [{ ...project.site, externalFrameSources: sources }] });
+  const [site] = await wrapped.listSites(signal());
+  assert.deepEqual(site.externalFrameSources, sources);
+  assert.notEqual(site.externalFrameSources, sources);
+  await assert.rejects(() => setup({ listSites: async () => [{ ...project.site, externalFrameSources: ["http://maps.example.test/embed"] }] }).wrapped.listSites(signal()));
+  await assert.rejects(() => setup({ listSites: async () => [{ ...project.site, externalFrameSources: [`${project.site.domains[0]}/embed`] }] }).wrapped.listSites(signal()));
+});
 test("optional page and site methods are absent unless the host implements them", () => {
   const { wrapped } = setup();
   for (const name of ["listFormCompletionPages", "preparePageChange", "applyPageChange", "readSiteSettings", "saveSiteSettings", "breakpointSettings", "localization"]) assert.equal(name in wrapped, false, name);

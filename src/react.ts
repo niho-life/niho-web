@@ -14,18 +14,27 @@ export type BlockDefinition = BlockContract & {
 };
 export type BlockRegistry = Readonly<Record<string, BlockDefinition>>;
 /** 実行コード側だけで指定する外部frame policy。snapshotから権限を要求できない。 */
-export type ExternalFramePolicy = (frame: Readonly<SitePresentationExternalFrame>) => "opaque" | "retain-origin";
-export function createExternalFramePolicy({ parentOrigin, sources }: { parentOrigin: string; sources: readonly string[] }): ExternalFramePolicy {
+export type ExternalFramePolicy = (frame: Readonly<SitePresentationExternalFrame>) => "blocked" | "opaque" | "retain-origin";
+export function createExternalFramePolicy({ parentOrigin, sources, siteSources }: { parentOrigin: string; sources: readonly string[]; siteSources?: readonly string[] }): ExternalFramePolicy {
   const parent = new URL(parentOrigin);
-  if (!Array.isArray(sources) || sources.length > 16) throw new Error("Invalid external frame policy");
-  const allowed = sources.map((source) => {
-    const url = new URL(source);
-    if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || url.origin === parent.origin) throw new Error("Frame origin retention requires a trusted external HTTPS source");
-    return url;
-  });
+  const parseSources = (list: readonly string[] | undefined) => {
+    if (!Array.isArray(list) || list.length > 16) throw new Error("Invalid external frame policy");
+    return list.map((source) => {
+      if (typeof source !== "string") throw new Error("Invalid external frame policy");
+      const url = new URL(source);
+      if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || url.origin === parent.origin) throw new Error("Frame origin retention requires a trusted external HTTPS source");
+      return url;
+    });
+  };
+  const allowed = parseSources(sources);
+  const siteAllowed = siteSources === undefined ? undefined : parseSources(siteSources);
+  const matches = (source: URL, candidate: URL, prefix: boolean) => source.origin === candidate.origin && (source.pathname === candidate.pathname || prefix && candidate.pathname.startsWith(source.pathname.endsWith("/") ? source.pathname : `${source.pathname}/`));
   return (frame) => {
-    const url = new URL(frame.src);
-    return !url.username && !url.password && !url.hash && allowed.some((source) => source.origin === url.origin && source.pathname === url.pathname) ? "retain-origin" : "opaque";
+    let url: URL;
+    try { url = new URL(frame.src); } catch { return siteAllowed ? "blocked" : "opaque"; }
+    if (url.protocol !== "https:" || url.username || url.password || url.hash) return siteAllowed ? "blocked" : "opaque";
+    const prefix = siteAllowed !== undefined;
+    return allowed.some((source) => matches(source, url, prefix)) && (siteAllowed === undefined || siteAllowed.some((source) => matches(source, url, true))) ? "retain-origin" : siteAllowed ? "blocked" : "opaque";
   };
 }
 export type PageRendererProps = {
@@ -208,11 +217,15 @@ export function PageRenderer({ document: input, blocks = {}, assets: assetInput,
     // 静的 HTML でも現在 URL へ入力値を誤送信しない。送信処理はホストの trusted code が所有する。
     if (node.tag === "form") attrs.method = "dialog";
     const frame = hostViewBinding?.externalFrames?.find((candidate) => candidate.nodeId === node.id);
-    if (frame) return createElement("iframe", { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, src: frame.src, title: frame.title,
-      loading: frame.loading ?? "lazy", referrerPolicy: frame.referrerPolicy ?? "strict-origin-when-cross-origin", sandbox: externalFramePolicy?.(frame) === "retain-origin" ? "allow-scripts allow-same-origin" : "allow-scripts",
+    if (frame) {
+      const frameAccess = externalFramePolicy?.(frame);
+      if (frameAccess === "blocked") return createElement("div", { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-frame-blocked": "", role: "status" }, "外部コンテンツを表示できません");
+      return createElement("iframe", { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, src: frame.src, title: frame.title,
+      loading: frame.loading ?? "lazy", referrerPolicy: frame.referrerPolicy ?? "strict-origin-when-cross-origin", sandbox: frameAccess === "retain-origin" ? "allow-scripts allow-same-origin" : "allow-scripts",
       style: { width: "100%", height: "100%", border: 0, display: "block" },
       ...(frame.frameKey ? { "data-nw-frame-key": frame.frameKey, "data-nw-frame-max-height": frame.autoHeightMax ?? 1200 } : {}),
       ...(frame.allowFullScreen ? { allowFullScreen: true } : {}) });
+    }
     if (node.interaction?.type === "loop-box") {
       const children = node.children.map((child) => render(child));
       return createElement(node.tag, { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope },

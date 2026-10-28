@@ -26,6 +26,8 @@ export type EditorStructuredDataPreset = { id: string; label: string; descriptio
 export type EditorSite = {
   id: string; name: string; /** 許可済み HTTPS origin（末尾 / なし）。 */ domains: readonly string[];
   structuredData?: readonly EditorStructuredDataPreset[];
+  /** ホストがサイト単位で許可した外部 frame の HTTPS origin と path prefix。trusted policy の sources と交差させる。 */
+  externalFrameSources?: readonly string[];
 };
 /** title はページ一覧の名前。任意項目を省いたホストは従来どおり動作する。 */
 /**

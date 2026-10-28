@@ -369,7 +369,7 @@ export function KamakuraEditor({ project, environment }: { readonly project: Pro
   const ready = catalog.status === "ready" ? catalog.value : null;
   const adapter = useMemo(() => ready ? createProjectEditorAdapter(createKamakuraAdapter(ready, setStatus), project) : null, [ready, project]);
   const blocks = useMemo(() => ready ? createKamakuraEditorBlocks(ready.blockContracts) : {}, [ready]);
-  const externalFramePolicy = useMemo(() => createExternalFramePolicy({ parentOrigin: window.location.origin, sources: ["https://www.google.com/maps/embed"] }), []);
+  const externalFramePolicy = useMemo(() => createExternalFramePolicy({ parentOrigin: window.location.origin, sources: ["https://www.google.com/maps/embed"], siteSources: ready?.sites[0]?.externalFrameSources ?? [] }), [ready]);
   const blankEmbeds = useMemo(() => createBlankEmbedRegistry({
     parentOrigin: window.location.origin,
     entries: [{ key: "public-map", label: "OpenStreetMap", src: "https://www.openstreetmap.org/export/embed.html", sandbox: "same-origin-scripts" }]

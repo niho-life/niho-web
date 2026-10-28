@@ -462,6 +462,24 @@ test("only trusted host code can retain a different frame origin, including shar
   assert.throws(() => createExternalFramePolicy({ parentOrigin: "https://editor.example.test", sources: ["http://maps.example.test/embed/exact"] }));
 });
 
+test("site frame sources narrow trusted origins and match path boundaries", () => {
+  const policy = createExternalFramePolicy({
+    parentOrigin: "https://editor.example.test",
+    sources: ["https://maps.example.test/embed", "https://video.example.test/player"],
+    siteSources: ["https://maps.example.test/embed"]
+  });
+  assert.equal(policy({ src: "https://maps.example.test/embed/place?id=1" }), "retain-origin");
+  assert.equal(policy({ src: "https://maps.example.test/embedding" }), "blocked");
+  assert.equal(policy({ src: "https://video.example.test/player" }), "blocked");
+  assert.equal(policy({ src: "https://editor.example.test/embed" }), "blocked");
+  assert.equal(policy({ src: "not-a-url" }), "blocked");
+  assert.equal(createExternalFramePolicy({ parentOrigin: "https://editor.example.test", sources: ["https://maps.example.test/embed"], siteSources: [] })({ src: "https://maps.example.test/embed" }), "blocked");
+  const blocked = renderSitePageToHtml(page("synthetic", "en", "body", [{ type: "component", id: "gallery", block: "Gallery", props: { variant: "wide" } }]), siteWithHostView(), hostBlocks, { externalFramePolicy: createExternalFramePolicy({ parentOrigin: "https://editor.example.test", sources: ["https://maps.example.test/embed"], siteSources: [] }) });
+  assert.doesNotMatch(blocked, /<iframe/);
+  assert.match(blocked, /data-nw-frame-blocked/);
+  assert.throws(() => createExternalFramePolicy({ parentOrigin: "https://editor.example.test", sources: ["https://maps.example.test/embed"], siteSources: ["http://maps.example.test/embed"] }));
+});
+
 test("editing keeps frame sizing active without starting interactive controls", () => {
   const document = page("synthetic", "en", "body", [{ type: "component", id: "gallery-block", block: "Gallery", props: { variant: "wide" } }]);
   const dom = new JSDOM(`<!doctype html><body>${renderSitePageToHtml(document, siteWithHostView(), hostBlocks)}</body>`, { url: "https://editor.example.test" });
