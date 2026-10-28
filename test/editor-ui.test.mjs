@@ -1415,7 +1415,7 @@ test("upload, stock and connect tools scope their libraries while the image pick
   const { adapter } = spy(sourceLibrary());
   const app = await setup({ document: withImage(), assets: adapter });
   try {
-    assert.deepEqual([...document.querySelectorAll(".e-tools button")].filter((node) => !node.classList.contains("e-panel-toggle")).map((node) => node.title), ["追加", "ページ", "レイヤー", "スタイル", "アップロード", "ストック", "接続", "コンポーネント"]);
+    assert.deepEqual([...document.querySelectorAll(".e-tools button")].filter((node) => !node.classList.contains("e-panel-toggle")).map((node) => node.title), ["追加", "ページ", "レイヤー", "スタイル", "アップロード", "ストック", "接続", "コンポーネント", "コンテンツ編集"]);
     await tool("アップロード");
     assert.deepEqual(sourceTabs().map((node) => node.getAttribute("aria-label") ?? node.textContent), ["サイト"]);
     assert.deepEqual(cardNames(), ["庭の緑.png"]); assert.ok(button("アップロード"));
