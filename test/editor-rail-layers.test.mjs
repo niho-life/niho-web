@@ -43,7 +43,7 @@ test("the tool rail shows one line icon per STUDIO tool, names it for assistive 
   const app = await setup();
   try {
     const buttons = [...document.querySelectorAll(".e-tools button")].filter((node) => !node.classList.contains("e-panel-toggle"));
-    assert.deepEqual(buttons.map((node) => node.getAttribute("aria-label")), ["追加", "ページ", "レイヤー", "スタイル", "コンポーネント"], "without an asset adapter the upload, stock and connect tools stay hidden");
+    assert.deepEqual(buttons.map((node) => node.getAttribute("aria-label")), ["追加", "ページ", "レイヤー", "スタイル", "コンポーネント", "コンテンツ編集"], "without an asset adapter the upload, stock and connect tools stay hidden");
     for (const button of buttons) {
       const icon = button.querySelector("svg.e-tool-icon");
       assert.ok(icon, button.getAttribute("aria-label"));
@@ -87,12 +87,28 @@ test("the rail keeps the selected tool distinct from keyboard focus and scrolls 
   } finally { await app.cleanup(); }
 });
 
+test("content edit rail finds document text and opens the existing text inspector", async () => {
+  const app = await setup();
+  try {
+    await click(tool("コンテンツ編集"));
+    const panel = document.querySelector('section[aria-label="コンテンツ編集"]');
+    assert.equal(panel.hidden, false);
+    assert.equal(tool("コンテンツ編集").getAttribute("aria-pressed"), "true");
+    const heading = [...panel.querySelectorAll(".e-content-list button")].find((item) => item.textContent.includes("見出し"));
+    assert.ok(heading, "the heading is available as content");
+    await click(heading);
+    assert.equal(heading.getAttribute("aria-current"), "true");
+    assert.equal(document.querySelector('.e-inspector-tabs [role="tab"][aria-selected="true"]')?.textContent, "テキスト");
+    assert.equal(tool("コンテンツ編集").getAttribute("aria-pressed"), "true");
+  } finally { await app.cleanup(); }
+});
+
 test("asset tools split into upload, stock and connect when the host lists providers, each with its own icon", async () => {
   const assets = { listProviders: async () => [], listAssets: async () => ({ assets: [], folders: [] }), resolveAssets: async () => ({}) };
   const app = await setup({ assets });
   try {
     const labels = [...document.querySelectorAll(".e-tools button")].map((node) => node.getAttribute("aria-label"));
-    assert.deepEqual(labels.slice(-5), ["スタイル", "アップロード", "ストック", "接続", "コンポーネント"]);
+    assert.deepEqual(labels.slice(-6), ["スタイル", "アップロード", "ストック", "接続", "コンポーネント", "コンテンツ編集"]);
     const shapes = ["アップロード", "ストック", "接続"].map((name) => tool(name).querySelector("svg").innerHTML);
     assert.equal(new Set(shapes).size, 3, "the three asset tools are visually distinct");
     assert.ok(tool("ストック").querySelector("rect") && tool("ストック").querySelector("circle"), "stock is a picture with a plus");

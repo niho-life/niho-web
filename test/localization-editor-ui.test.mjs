@@ -601,6 +601,7 @@ test("localization config and target context fail closed while loading, on error
   try {
     assert.match(document.body.textContent, /言語設定と翻訳状態を読み込み中/);
     assert.doesNotMatch(document.body.textContent, /言語設定または翻訳状態を確認できません/);
+    assert.equal(button("再試行"), undefined);
     assert.equal(button("公開").disabled, true);
     initial.resolveDelayedSites(); await flush(6);
     assert.doesNotMatch(document.body.textContent, /言語設定または翻訳状態を確認できません/);
