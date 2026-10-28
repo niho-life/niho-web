@@ -1969,3 +1969,18 @@ test("ページ名だけを許可するホストでは追加・複製・非公�
     assert.equal(document.querySelector('.e-page-settings [role="switch"]'), null);
   } finally { await app.cleanup(); }
 });
+
+test("URL変更対応ホストでもホームのURLは固定し、ページ名だけ変更できると示す", async () => {
+  const host = pageHost(), app = await setup({ adapter: { ...host.adapter, pagePathEditable: true } });
+  try {
+    await click("ホーム の操作");
+    assert.ok(button("ページ名を変更"));
+    await click("ページ名を変更");
+    assert.equal(dialog().getAttribute("aria-label"), "ページ名を変更");
+    assert.equal(inputIn(dialog(), "URL パス").readOnly, true);
+    assert.ok(dialog().textContent.includes("ホームのURLは固定です"));
+    await click("キャンセル");
+    await panel("ページ");
+    assert.ok(button("ページ名を変更"));
+  } finally { await app.cleanup(); }
+});

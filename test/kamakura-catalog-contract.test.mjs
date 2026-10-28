@@ -103,3 +103,12 @@ test("shared catalog contract keeps collection limits at the bridge boundary", (
     (error) => error instanceof contract.KamakuraCatalogContractError
   );
 });
+
+
+test("URL変更はホストの明示capabilityで有効になる", () => {
+  const source = { ...catalog(), pageChangeActions: ["update"], pagePathEditable: true };
+  assert.equal(contract.parseKamakuraCatalog(source).pagePathEditable, true);
+  assert.equal(contract.parseKamakuraCatalog({ ...source, pagePathEditable: false }).pagePathEditable, false);
+  assert.equal(contract.parseKamakuraCatalog({ ...source, pagePathEditable: undefined }).pagePathEditable, false);
+  assert.throws(() => contract.parseKamakuraCatalog({ ...source, pagePathEditable: "true" }), contract.KamakuraCatalogContractError);
+});

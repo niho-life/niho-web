@@ -216,6 +216,8 @@ export type SitePresentationHostView = {
  * ページ本文とは独立した、版固定のサイト表示コンテキスト。
  * header/footer はそれぞれ独立して編集・保存する canonical PageDocument であり、本文へ複製しない。
  */
+/** ホストが解決した表示専用の内部URL対応。原稿の値やidentityを変更しない。 */
+export type SitePresentationLinks = { origin: string; sourcePath: string; paths: Record<string, string> };
 export type SitePresentation = {
   schemaVersion: 1;
   siteId: string;
@@ -228,6 +230,7 @@ export type SitePresentation = {
   shared: { header: PageDocument; footer: PageDocument };
   overlays?: SitePresentationOverlay[];
   hostViews?: SitePresentationHostView[];
+  links?: SitePresentationLinks;
 };
 
 export type ComponentKind = "header" | "footer" | "navigation" | "section" | "part";
