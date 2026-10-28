@@ -70,6 +70,23 @@ test("the tool rail shows one line icon per STUDIO tool, names it for assistive 
   } finally { await app.cleanup(); }
 });
 
+test("the rail keeps the selected tool distinct from keyboard focus and scrolls on short screens", async () => {
+  const app = await setup();
+  try {
+    const nav = document.querySelector('nav[aria-label="編集ツール"]');
+    const buttons = [...nav.querySelectorAll("button:not(:disabled)")];
+    const press = async (key) => act(async () => document.activeElement.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })));
+    tool("ページ").focus();
+    await press("End"); assert.equal(document.activeElement, buttons.at(-1));
+    await press("ArrowDown"); assert.equal(document.activeElement, buttons[0]);
+    await press("Home"); assert.equal(document.activeElement, buttons[0]);
+    await press("ArrowUp"); assert.equal(document.activeElement, buttons.at(-1));
+    assert.equal(tool("ページ").getAttribute("aria-pressed"), "true", "focus must not switch the open panel");
+    const css = document.querySelector(".nw-editor style").textContent;
+    assert.match(css, /\.nw-editor \.e-tools\{[^}]*overflow-y:auto;overscroll-behavior:contain/);
+  } finally { await app.cleanup(); }
+});
+
 test("asset tools split into upload, stock and connect when the host lists providers, each with its own icon", async () => {
   const assets = { listProviders: async () => [], listAssets: async () => ({ assets: [], folders: [] }), resolveAssets: async () => ({}) };
   const app = await setup({ assets });
