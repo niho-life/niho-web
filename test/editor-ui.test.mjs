@@ -304,7 +304,7 @@ test("Loop Box palette and inspector save, reload and activate only in preview",
     frame = document.querySelector("iframe"); assert.ok(frame.contentDocument.querySelector("[data-nw-loop-box]")); assert.equal(frame.contentDocument.querySelector("[data-nw-loop-box-static]"), null);
   } finally { await app.cleanup(); }
 });
-test("Basic embeds expose the existing card UI, normalize inspector input and survive save/reload", async () => {
+test("Basic の標準埋め込みはカード UI、URL 正規化、保存・再読込、プレビューを共有する", async () => {
   const app = await setup();
   const addPreset = async (id) => {
     await click("追加"); const target = document.querySelector(`.e-preset-preview[data-preset="${id}"]`)?.closest("button");
@@ -313,7 +313,7 @@ test("Basic embeds expose the existing card UI, normalize inspector input and su
   try {
     await click("追加");
     const embedGroup = [...document.querySelectorAll(".e-palette-group")].find((group) => group.querySelector("h3")?.textContent === "埋め込み");
-    assert.deepEqual([...embedGroup.querySelectorAll(".e-preset-card")].map((card) => card.querySelector(".e-preset-label").lastChild.textContent), ["Map", "YouTube", "Vimeo", "Lottie", "Facebook"]);
+    assert.deepEqual([...embedGroup.querySelectorAll(".e-preset-card")].map((card) => card.querySelector(".e-preset-label").lastChild.textContent), ["Map", "YouTube", "Vimeo", "Lottie", "Facebook", "X", "Instagram"]);
     await addPreset("embed-map");
     assert.equal(document.querySelector('[aria-label="インスペクタ"] .e-inspector-context strong').textContent, "Map");
     assert.ok(document.querySelector("iframe").contentDocument.body.textContent.includes("Map の URL を設定してください"));
@@ -355,20 +355,39 @@ test("Basic embeds expose the existing card UI, normalize inspector input and su
     assert.equal(document.querySelector("iframe").contentDocument.querySelector('[data-nw-facebook-link]').getAttribute("href"), "https://www.facebook.com/example.page/posts/123456789");
     assert.equal(document.querySelector("iframe").contentDocument.querySelector('[data-nw-facebook-load]').hidden, true, "edit canvas keeps Facebook static");
     assert.equal(document.querySelector("iframe").contentDocument.querySelector('[data-nw-embed="facebook"] iframe'), null);
+    await addPreset("embed-x");
+    assert.equal(document.querySelector('[aria-label="インスペクタ"] .e-inspector-context strong').textContent, "X");
+    assert.ok(document.querySelector('[aria-label="インスペクタ"]').textContent.includes("押すまで外部通信しません"));
+    await change(input("X のポスト URL"), "https://x.com/Example/status/1234567890123456789/");
+    await change(input("アクセシブルなタイトル"), "X のお知らせ");
+    const xRoot = document.querySelector("iframe").contentDocument.querySelector('[data-nw-embed="x"]'), xId = xRoot.dataset.nwNode;
+    assert.equal(xRoot.dataset.nwSocialSource, "https://x.com/example/status/1234567890123456789"); assert.equal(xRoot.querySelector('[data-nw-social-load]').hidden, true); assert.equal(xRoot.querySelector("iframe"), null);
+    await addPreset("embed-instagram");
+    assert.equal(document.querySelector('[aria-label="インスペクタ"] .e-inspector-context strong').textContent, "Instagram");
+    await change(input("Instagram の投稿・リール URL"), "https://instagram.com/reel/AbCdEf12345");
+    await change(input("アクセシブルなタイトル"), "Instagram のお知らせ");
+    const instagramRoot = document.querySelector("iframe").contentDocument.querySelector('[data-nw-embed="instagram"]'), instagramId = instagramRoot.dataset.nwNode;
+    assert.equal(instagramRoot.dataset.nwSocialSource, "https://www.instagram.com/reel/AbCdEf12345/"); assert.equal(instagramRoot.querySelector('[data-nw-social-load]').hidden, true); assert.equal(instagramRoot.querySelector("iframe"), null);
     await click("下書き保存");
-    assert.deepEqual(app.stored().body.slice(-5).map((node) => node.embed.provider), ["map", "youtube", "vimeo", "lottie", "facebook"]);
-    assert.equal(app.stored().body.at(-4).embed.title, "施設紹介");
-    assert.deepEqual(app.stored().body.at(-2).embed, { provider: "lottie", title: "ローディングアニメーション", source: "https://lottie.host/embed/123e4567-e89b-42d3-a456-426614174000/intro.json" });
-    assert.deepEqual(app.stored().body.at(-1).embed, { provider: "facebook", title: "Facebook のお知らせ", source: "https://www.facebook.com/example.page/posts/123456789" });
+    assert.deepEqual(app.stored().body.slice(-7).map((node) => node.embed.provider), ["map", "youtube", "vimeo", "lottie", "facebook", "x", "instagram"]);
+    assert.equal(app.stored().body.at(-6).embed.title, "施設紹介");
+    assert.deepEqual(app.stored().body.at(-4).embed, { provider: "lottie", title: "ローディングアニメーション", source: "https://lottie.host/embed/123e4567-e89b-42d3-a456-426614174000/intro.json" });
+    assert.deepEqual(app.stored().body.at(-3).embed, { provider: "facebook", title: "Facebook のお知らせ", source: "https://www.facebook.com/example.page/posts/123456789" });
+    assert.deepEqual(app.stored().body.at(-2).embed, { provider: "x", title: "X のお知らせ", source: "https://x.com/example/status/1234567890123456789" });
+    assert.deepEqual(app.stored().body.at(-1).embed, { provider: "instagram", title: "Instagram のお知らせ", source: "https://www.instagram.com/reel/AbCdEf12345/" });
     await click("最新の文書を再読込"); await clickLayer("node_2");
     assert.equal(input("埋め込み URL").value, "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ");
     assert.equal(input("アクセシブルなタイトル").value, "施設紹介");
     await clickLayer(lottieId); assert.equal(input("LottieFiles Asset link").value, "https://lottie.host/embed/123e4567-e89b-42d3-a456-426614174000/intro.json");
     await clickLayer(facebookId); assert.equal(input("Facebook の投稿 URL").value, "https://www.facebook.com/example.page/posts/123456789");
+    await clickLayer(xId); assert.equal(input("X のポスト URL").value, "https://x.com/example/status/1234567890123456789");
+    await clickLayer(instagramId); assert.equal(input("Instagram の投稿・リール URL").value, "https://www.instagram.com/reel/AbCdEf12345/");
     const html = renderPageToHtml(app.stored());
     assert.match(html, /youtube-nocookie\.com\/embed\/dQw4w9WgXcQ/); assert.match(html, /title="施設紹介"/);
     assert.doesNotMatch(html, /<iframe[^>]+lottie\.host/); assert.match(html, /data-nw-lottie-source="https:\/\/lottie\.host\/embed\//);
     assert.doesNotMatch(html, /facebook\.com\/plugins\/post\.php/); assert.match(html, /href="https:\/\/www\.facebook\.com\/example\.page\/posts\/123456789"/);
+    assert.doesNotMatch(html, /platform\.twitter\.com\/widgets\.js/); assert.doesNotMatch(html, /instagram\.com\/embed\.js/);
+    assert.match(html, /href="https:\/\/x\.com\/example\/status\/1234567890123456789"/); assert.match(html, /href="https:\/\/www\.instagram\.com\/reel\/AbCdEf12345\/"/);
     await click("プレビュー"); await settle();
     canvas = document.querySelector("iframe"); lottieRoot = canvas.contentDocument.querySelector('[data-nw-embed="lottie"]');
     assert.equal(lottieRoot.querySelector("iframe")?.getAttribute("src"), "https://lottie.host/embed/123e4567-e89b-42d3-a456-426614174000/intro.json");
@@ -378,6 +397,14 @@ test("Basic embeds expose the existing card UI, normalize inspector input and su
     assert.match(facebookRoot.querySelector("iframe").getAttribute("src"), /^https:\/\/www\.facebook\.com\/plugins\/post\.php\?href=/u);
     assert.equal(facebookRoot.querySelector("iframe").style.pointerEvents, "none");
     assert.ok(facebookRoot.querySelector('[data-nw-facebook-link]'));
+    for (const provider of ["x", "instagram"]) {
+      const socialRoot = canvas.contentDocument.querySelector(`[data-nw-embed="${provider}"]`), socialButton = socialRoot.querySelector('[data-nw-social-load]');
+      assert.equal(socialButton.hidden, false); assert.equal(socialRoot.querySelector("iframe"), null);
+      await act(async () => socialButton.click()); await flush();
+      const frame = socialRoot.querySelector("iframe");
+      assert.equal(frame.getAttribute("sandbox"), "allow-scripts"); assert.equal(frame.hasAttribute("src"), false); assert.ok(frame.getAttribute("srcdoc").includes(provider === "x" ? "platform.twitter.com/widgets.js" : "instagram.com/embed.js"));
+      assert.equal(frame.style.pointerEvents, "none"); assert.ok(socialRoot.querySelector('[data-nw-social-link]'));
+    }
   } finally { await app.cleanup(); }
 });
 test("Basic のフォーム一覧とインスペクタでフォーム項目を編集し、既存フォームへ安全に追加できる", async () => {

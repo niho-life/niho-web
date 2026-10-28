@@ -2361,6 +2361,7 @@ type WorkerEditorAdapter = {
   readonly dispatchAssetPreview?: (request: Request, env: Env, identity: AccessIdentity, assetId: string) => Promise<Response>;
   readonly connectOrigins?: readonly string[];
   readonly fontSources?: readonly string[];
+  readonly scriptSources?: readonly string[];
   readonly frameSources?: readonly string[];
 };
 
@@ -2374,7 +2375,8 @@ const KAMAKURA_EDITOR_ADAPTER: WorkerEditorAdapter = {
   dispatchAssetPreview: signedKamakuraAssetPreview,
   connectOrigins: [KAMAKURA_EDITOR_UPSTREAM_ORIGIN],
   fontSources: [`${KAMAKURA_MEDIA_ORIGIN}/niho-web/fonts/v1/`],
-  frameSources: [`${KAMAKURA_MEDIA_ORIGIN}/niho-web/embeds/v1/`, "https://www.google.com/maps/embed", "https://www.youtube-nocookie.com/embed/", "https://player.vimeo.com/video/", "https://lottie.host/embed/", "https://www.facebook.com/plugins/post.php"]
+  scriptSources: ["https://platform.twitter.com/widgets.js", "https://www.instagram.com/embed.js"],
+  frameSources: [`${KAMAKURA_MEDIA_ORIGIN}/niho-web/embeds/v1/`, "https://www.google.com/maps/embed", "https://www.youtube-nocookie.com/embed/", "https://player.vimeo.com/video/", "https://lottie.host/embed/", "https://www.facebook.com/plugins/post.php", "https://platform.twitter.com", "https://www.instagram.com"]
 };
 
 function liveEditorAdapter(resolved: ResolvedTrustedIntegration): WorkerEditorAdapter | null {
@@ -2437,13 +2439,13 @@ async function editorApi(request: Request, env: Env, identity: AccessIdentity, u
   return json({ error: "visual_editor_frozen", message: "Site layout and styling are maintained in code." }, 409);
 }
 
-function withStaticSecurity(response: Response, editor = false, connectOrigins: readonly string[] = [], fontSources: readonly string[] = [], frameSources: readonly string[] = []): Response {
+function withStaticSecurity(response: Response, editor = false, connectOrigins: readonly string[] = [], fontSources: readonly string[] = [], scriptSources: readonly string[] = [], frameSources: readonly string[] = []): Response {
   const headers = new Headers(response.headers);
   headers.set("Cache-Control", "no-store");
   const connectSrc = `connect-src 'self'${connectOrigins.map((origin) => ` ${origin}`).join("")};`;
   // editor は自分のプレビュー枠（'self'）と接続先、Dashboard はサイト側の管理画面の origin だけを枠に許す
   const frames = editor ? ["'self'", ...frameSources] : frameSources;
-  headers.set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'" + (editor ? " 'unsafe-inline'" : "") + "; img-src 'self' https:; " + connectSrc + ` font-src 'self'${fontSources.map((source) => ` ${source}`).join("")};` + (frames.length ? ` frame-src ${frames.join(" ")};` : "") + " frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
+  headers.set("Content-Security-Policy", `default-src 'none'; script-src 'self'${scriptSources.map((source) => ` ${source}`).join("")}; style-src 'self'` + (editor ? " 'unsafe-inline'" : "") + "; img-src 'self' https:; " + connectSrc + ` font-src 'self'${fontSources.map((source) => ` ${source}`).join("")};` + (frames.length ? ` frame-src ${frames.join(" ")};` : "") + " frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
   headers.set("Cross-Origin-Opener-Policy", "same-origin");
   headers.set("Cross-Origin-Resource-Policy", "same-origin");
   headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()");
@@ -2532,7 +2534,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
     const translations = admin?.translationsView === "workspace" && kamakuraDashboard;
     const dashboardConnect = [...new Set([...cmsConnect, ...(translations ? [KAMAKURA_LOCALIZATION_UPLOAD_ORIGIN] : [])])];
     const dashboardFrames = [...new Set([...adminFrames, ...(translations ? [KAMAKURA_LOCALIZATION_PREVIEW_ORIGIN] : [])])];
-    return withStaticSecurity(await env.ASSETS.fetch(new Request(indexUrl, { method: request.method, headers: request.headers })), pageAdapter !== null, pageAdapter ? pageAdapter.connectOrigins ?? [] : dashboardConnect, pageAdapter?.fontSources ?? [], pageAdapter ? pageAdapter.frameSources ?? [] : dashboardFrames);
+    return withStaticSecurity(await env.ASSETS.fetch(new Request(indexUrl, { method: request.method, headers: request.headers })), pageAdapter !== null, pageAdapter ? pageAdapter.connectOrigins ?? [] : dashboardConnect, pageAdapter?.fontSources ?? [], pageAdapter?.scriptSources ?? [], pageAdapter ? pageAdapter.frameSources ?? [] : dashboardFrames);
   }
   return withStaticSecurity(await env.ASSETS.fetch(request));
 }

@@ -99,7 +99,7 @@ const richText = (id: BuilderIdFactory): ElementNode => ({
 });
 const embed = (id: BuilderIdFactory, provider: EmbedProvider, title: string, height = 360): ElementNode => ({
   type: "element", id: id(), tag: "div", embed: { provider, title },
-  style: { base: { width: "100%", ...(provider === "facebook" ? { maxWidth: 550, margin: "0 auto" } : {}), height, overflow: "hidden", borderRadius: 8, backgroundColor: "#f2f2f2" } }, children: []
+  style: { base: { width: "100%", ...(["facebook", "x", "instagram"].includes(provider) ? { maxWidth: provider === "instagram" ? 540 : 550, margin: "0 auto" } : {}), height, overflow: "hidden", borderRadius: 8, backgroundColor: "#f2f2f2" } }, children: []
 });
 const list = (id: BuilderIdFactory): ElementNode => ({
   type: "element", id: id(), tag: "ul", children: ["項目 1", "項目 2", "項目 3"].map((value) => element(id, "li", value))
@@ -255,6 +255,8 @@ export const standardBuilderDefinition: BuilderDefinition = {
     { id: "embed-vimeo", label: "Vimeo", description: "Vimeo の動画", group: "埋め込み", glyph: "▶", create: ({ id }) => embed(id, "vimeo", "Vimeo 動画") },
     { id: "embed-lottie", label: "Lottie", description: "LottieFiles のアニメーション", group: "埋め込み", glyph: "◌", create: ({ id }) => embed(id, "lottie", "Lottie アニメーション") },
     { id: "embed-facebook", label: "Facebook", description: "Facebook の公開投稿", group: "埋め込み", glyph: "f", create: ({ id }) => embed(id, "facebook", "Facebook の投稿", 650) },
+    { id: "embed-x", label: "X", description: "X の公開ポスト", group: "埋め込み", glyph: "X", create: ({ id }) => embed(id, "x", "X のポスト", 650) },
+    { id: "embed-instagram", label: "Instagram", description: "Instagram の公開投稿・リール", group: "埋め込み", glyph: "◎", create: ({ id }) => embed(id, "instagram", "Instagram の投稿", 720) },
     { id: "h2", label: "見出し", group: "文字", glyph: "H", create: ({ id }) => element(id, "h2", "新しいテキスト") },
     { id: "a", label: "リンク", group: "文字", glyph: "↗", create: ({ id }) => element(id, "a", "リンク") },
     { id: "carousel", label: "カルーセル", group: "インタラクション", glyph: "⇆", create: ({ id }) => carouselPreset(id) },

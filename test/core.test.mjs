@@ -127,7 +127,7 @@ test("built-in icons and native videos use closed, accessible document shapes", 
   reject(linked);
 });
 
-test("standard embeds normalize only closed Map, YouTube, Vimeo, Lottie and Facebook sources", () => {
+test("標準埋め込みは閉じた provider ごとの URL だけを正規化する", () => {
   const sources = [
     ["youtube", "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ"],
     ["youtube", "https://youtube.com/embed/dQw4w9WgXcQ", "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ"],
@@ -141,7 +141,10 @@ test("standard embeds normalize only closed Map, YouTube, Vimeo, Lottie and Face
     ["lottie", "https://lottie.host/embed/123e4567-e89b-42d3-a456-426614174000/intro.lottie", "https://lottie.host/embed/123e4567-e89b-42d3-a456-426614174000/intro.lottie"],
     ["facebook", "https://facebook.com/example.page/posts/123456789/", "https://www.facebook.com/example.page/posts/123456789"],
     ["facebook", "https://www.facebook.com/Engineering/posts/a-public-announcement/1091181673044313/", "https://www.facebook.com/Engineering/posts/1091181673044313"],
-    ["facebook", "https://www.facebook.com/permalink.php?story_fbid=pfbid012345678901234567890&id=123456789", "https://www.facebook.com/permalink.php?story_fbid=pfbid012345678901234567890&id=123456789"]
+    ["facebook", "https://www.facebook.com/permalink.php?story_fbid=pfbid012345678901234567890&id=123456789", "https://www.facebook.com/permalink.php?story_fbid=pfbid012345678901234567890&id=123456789"],
+    ["x", "https://x.com/Example_Account/status/1234567890123456789/", "https://x.com/example_account/status/1234567890123456789"],
+    ["instagram", "https://instagram.com/p/AbCdEf_123-/", "https://www.instagram.com/p/AbCdEf_123-/"],
+    ["instagram", "https://www.instagram.com/reel/ZYX987_-abc", "https://www.instagram.com/reel/ZYX987_-abc/"]
   ];
   for (const [provider, source, expected] of sources) assert.equal(normalizeEmbedSource(provider, source), expected);
   const input = doc(); input.body = sources.map(([provider, source], index) => ({
@@ -153,7 +156,7 @@ test("standard embeds normalize only closed Map, YouTube, Vimeo, Lottie and Face
   assert.deepEqual(parsePageDocument(empty).body, empty.body);
 });
 
-test("standard embeds reject arbitrary iframe data and malformed provider URLs", () => {
+test("標準埋め込みは任意 iframe データと不正な provider URL を拒否する", () => {
   const invalidSources = [
     ["youtube", "http://youtube.com/watch?v=dQw4w9WgXcQ"], ["youtube", "https://user@example.com/watch?v=dQw4w9WgXcQ"],
     ["youtube", "https://youtube.com:443/watch?v=dQw4w9WgXcQ"], ["youtube", "https://youtube.com/watch?v=dQw4w9WgXcQ&autoplay=1"],
@@ -197,7 +200,32 @@ test("standard embeds reject arbitrary iframe data and malformed provider URLs",
     ["facebook", "https://www.facebook.com/permalink.php?story_fbid=123456789&id=123&next=https%3A%2F%2Fevil.example"],
     ["facebook", "https://www.facebook.com/permalink.php?id=123&story_fbid=123456789"],
     ["facebook", "https://www.facebook.com/permalink.php?story_fbid=123456789%26id%3D123&id=123"],
-    ["facebook", "<iframe src=\"https://www.facebook.com/example/posts/123456789\"></iframe>"]
+    ["facebook", "<iframe src=\"https://www.facebook.com/example/posts/123456789\"></iframe>"],
+    ["x", "http://x.com/example/status/123456789"],
+    ["x", "https://user@x.com/example/status/123456789"],
+    ["x", "https://x.com:443/example/status/123456789"],
+    ["x", "https://www.x.com/example/status/123456789"],
+    ["x", "https://twitter.com/example/status/123456789"],
+    ["x", "https://x.com/example/status/not-numeric"],
+    ["x", "https://x.com/example/status/123456789?ref=share"],
+    ["x", "https://x.com/example/status/123456789#reply"],
+    ["x", "https://x.com/example/status/123456789/extra"],
+    ["x", "https://x.com/example/../other/status/123456789"],
+    ["x", "https://x.com/example%2Fother/status/123456789"],
+    ["x", `https://x.com/${"a".repeat(16)}/status/123456789`],
+    ["x", "<blockquote><a href=\"https://x.com/example/status/123456789\"></a></blockquote>"],
+    ["instagram", "http://www.instagram.com/p/AbCdEf12345/"],
+    ["instagram", "https://user@www.instagram.com/p/AbCdEf12345/"],
+    ["instagram", "https://www.instagram.com:443/p/AbCdEf12345/"],
+    ["instagram", "https://m.instagram.com/p/AbCdEf12345/"],
+    ["instagram", "https://www.instagram.com/example/"],
+    ["instagram", "https://www.instagram.com/tv/AbCdEf12345/"],
+    ["instagram", "https://www.instagram.com/p/AbCdEf12345/?utm_source=embed"],
+    ["instagram", "https://www.instagram.com/p/AbCdEf12345/#comments"],
+    ["instagram", "https://www.instagram.com/p/AbCdEf12345/extra"],
+    ["instagram", "https://www.instagram.com/p/../reel/AbCdEf12345/"],
+    ["instagram", "https://www.instagram.com/p/AbCd%2FEf12345/"],
+    ["instagram", "<script src=\"https://www.instagram.com/embed.js\"></script>"]
   ];
   for (const [provider, source] of invalidSources) assert.throws(() => normalizeEmbedSource(provider, source), Error, `${provider}: ${source}`);
   const base = { type: "element", id: "embed", tag: "div", embed: { provider: "youtube", title: "動画", source: "https://youtu.be/dQw4w9WgXcQ" }, children: [] };

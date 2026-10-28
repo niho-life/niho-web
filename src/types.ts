@@ -79,7 +79,7 @@ export type ElementAttributes = Record<string, string | number | boolean>;
 /** 任意の SVG/HTML ではなく、trusted code の閉じたカタログだけを参照する。 */
 export type IconName = "arrow-right" | "arrow-left" | "check" | "close" | "plus" | "minus" | "star" | "heart" | "location" | "info";
 /** 標準埋め込みは trusted renderer が知る静的 provider だけ。任意 iframe 設定は保存しない。 */
-export type EmbedProvider = "map" | "youtube" | "vimeo" | "lottie" | "facebook";
+export type EmbedProvider = "map" | "youtube" | "vimeo" | "lottie" | "facebook" | "x" | "instagram";
 export type EmbedDescriptor = {
   provider: EmbedProvider;
   /** iframe のアクセシブルな名前。 */
