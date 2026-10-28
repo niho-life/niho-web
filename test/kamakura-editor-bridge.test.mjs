@@ -85,6 +85,22 @@ function catalog(pageTitle = "NIHO Kamakura") {
   };
 }
 
+test("鎌倉のフォーム完了先は固定の公開済み完了ページだけを候補にする", async () => {
+  const source = catalog();
+  source.pages.push(
+    { siteId: "kamakura", pageId: "contact-success", locale: "ja", title: "お問い合わせ完了", path: "/contact-success", kind: "page" },
+    { siteId: "kamakura", pageId: "business-plan", locale: "ja", title: "法人向け", path: "/business-plan", kind: "page" },
+    { siteId: "kamakura", pageId: "draft-success", locale: "ja", title: "下書き", path: "/draft-success", kind: "page", published: false },
+    { siteId: "kamakura", pageId: "private-success", locale: "ja", title: "非公開", path: "/private-success", kind: "page", visibility: "private" }
+  );
+  const { createKamakuraAdapter } = await loadKamakuraEditor();
+  const adapter = createKamakuraAdapter(contract.parseKamakuraCatalog(source), () => {});
+  const signal = new AbortController().signal;
+  assert.deepEqual(await adapter.listFormCompletionPages({ siteId: "kamakura", pageId: "business-plan", locale: "ja" }, signal),
+    [{ siteId: "kamakura", pageId: "contact-success", locale: "ja", title: "お問い合わせ完了", path: "/contact-success", kind: "page", visibility: "public", published: true }]);
+  assert.deepEqual(await adapter.listFormCompletionPages({ siteId: "kamakura", pageId: "business-plan", locale: "en" }, signal), []);
+});
+
 test("Kamakura editor adapter は日本語経路を維持し、英語 snapshot・overlay 保存・翻訳操作を localization BFF に限定する", async (t) => {
   const { createKamakuraAdapter } = await loadKamakuraEditor();
   const parsedCatalog = contract.parseKamakuraCatalog(catalog());

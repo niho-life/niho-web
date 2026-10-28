@@ -251,7 +251,7 @@ export function parseNode(raw: unknown, at: string, context: NodeContext, depth 
   }
   if (node.type === "instance" && !context.components) fail(at, "component instance requires a component library");
   if (node.type !== "element" && node.type !== "component" && node.type !== "instance") fail(`${at}.type`, "unknown node type");
-  keys(node, node.type === "element" ? ["type", "id", "tag", "asset", "icon", "embed", "interaction", "attrs", "style", "children"] : node.type === "component" ? ["type", "id", "block", "props", "style", "slots"] : ["type", "id", "component", "props", "style"], at);
+  keys(node, node.type === "element" ? ["type", "id", "tag", "formCompletionPageId", "asset", "icon", "embed", "interaction", "attrs", "style", "children"] : node.type === "component" ? ["type", "id", "block", "props", "style", "slots"] : ["type", "id", "component", "props", "style"], at);
   const id = identifier(node.id, `${at}.id`);
   if (ids.has(id)) fail(`${at}.id`, "duplicate node ID");
   ids.add(id);
@@ -281,6 +281,8 @@ export function parseNode(raw: unknown, at: string, context: NodeContext, depth 
   }
   if (!isElementTag(node.tag)) fail(`${at}.tag`, "unsupported element");
   const tag = node.tag;
+  if (node.formCompletionPageId !== undefined && tag !== "form") fail(`${at}.formCompletionPageId`, "only form can have a completion page");
+  const formCompletion = node.formCompletionPageId === undefined ? {} : { formCompletionPageId: identifier(node.formCompletionPageId, `${at}.formCompletionPageId`) };
   if (inline && !phrasing.has(tag) || constrainedParent && !constrainedParent.includes(tag) || insideLink && interactive.has(tag)) fail(at, "invalid HTML content nesting");
   if (tag === "form" && insideForm) fail(at, "forms cannot be nested");
   if (["label", "input", "textarea", "select", "button", "fieldset"].includes(tag) && !insideForm && !(tag === "button" && ancestorInteraction === "video-toggle")) fail(at, "form control requires a form parent");
@@ -351,7 +353,7 @@ export function parseNode(raw: unknown, at: string, context: NodeContext, depth 
         video.attrs?.controls === false || button.attrs?.type !== "button" || button.children.length !== 1 || button.children[0]?.type !== "text") fail(`${at}.children`, "video-toggle requires one controlled video followed by one text button");
   }
   if (interaction.interaction?.type === "loop-box" && !children.length) fail(`${at}.children`, "loop-box requires content");
-  return { type: "element", id, tag, ...asset, ...icon, ...embed, ...interaction, ...attrs, ...style, children };
+  return { type: "element", id, tag, ...formCompletion, ...asset, ...icon, ...embed, ...interaction, ...attrs, ...style, children };
 }
 
 export type PageParseOptions = {

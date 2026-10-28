@@ -17,6 +17,8 @@ export type EditorOperation =
   | { type: "booleanAttribute"; path: NodePath; name: "controls" | "loop" | "muted" | "playsInline" | "required" | "checked" | "disabled"; value: boolean }
   /** select / radio fieldset の表示値。空行を除いた1〜20件へ置き換える。 */
   | { type: "formChoices"; path: NodePath; values: readonly string[] }
+  /** form の送信成功後にホストが解決するページ ID。undefined で解除する。 */
+  | { type: "formCompletionPage"; path: NodePath; pageId: string | undefined }
   | { type: "icon"; path: NodePath; name: IconName }
   | { type: "tag"; path: NodePath; value: "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" }
   | { type: "prop"; path: NodePath; name: string; value: PublicPropValue | undefined }
@@ -354,6 +356,10 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
             { type: "element", id: labelId, tag: "label", attrs: { htmlFor: inputId }, children: [{ type: "text", text: value }] }];
         })];
       }
+    } else if (operation.type === "formCompletionPage") {
+      if (node.type !== "element" || node.tag !== "form") throw new Error("フォームを選択してください。");
+      if (operation.pageId === undefined) delete node.formCompletionPageId;
+      else node.formCompletionPageId = operation.pageId;
     } else if (operation.type === "icon") {
       if (node.type !== "element" || node.tag !== "span" || !node.icon) throw new Error("アイコンを選択してください。");
       node.icon = operation.name;

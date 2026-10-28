@@ -12,7 +12,7 @@
 
 文書契約の非互換変更は `schemaVersion` を上げ、移行処理を明示してから導入します。未知版の暗黙変換は行いません。既存の鎌倉サイトの文書を直接受け入れる形式ではありません。移行時には現行の HTML / CSS を新しい許可リストに対応付ける adapter と視覚確認が必要です。
 
-token の `label`、`textStyles`、node style の `textStyle`、文字の見た目プロパティ（`fontStyle` / `textDecorationLine`）、辺ごとの枠線幅（`borderTopWidth` / `borderRightWidth` / `borderBottomWidth` / `borderLeftWidth`）、element の組み込み `icon`・`video`・`embed`・フォーム要素は v1 への後方互換な追加で、`schemaVersion` は 1 のままです。入力に無いキーは出力にも付けないため、既存文書の検証結果・直列化・fingerprint・CSS は変わりません。これらのキーを含む文書は、追加前のパッケージでは未知フィールドとして拒否されます。ホストは保存・公開側の検証も新しい commit SHA へ更新してから、新しい編集機能を使ってください。
+token の `label`、`textStyles`、node style の `textStyle`、文字の見た目プロパティ（`fontStyle` / `textDecorationLine`）、辺ごとの枠線幅（`borderTopWidth` / `borderRightWidth` / `borderBottomWidth` / `borderLeftWidth`）、element の組み込み `icon`・`video`・`embed`・フォーム要素・`formCompletionPageId` は v1 への後方互換な追加で、`schemaVersion` は 1 のままです。入力に無いキーは出力にも付けないため、既存文書の検証結果・直列化・fingerprint・CSS は変わりません。これらのキーを含む文書は、追加前のパッケージでは未知フィールドとして拒否されます。ホストは保存・公開側の検証も新しい commit SHA へ更新してから、新しい編集機能を使ってください。
 
 `@niho/web/builder` の挿入・モーション定義は編集時だけの設定で、文書wireには保存しません。挿入結果は既存の `PageNode`、モーション結果は既存の `NodeStyle.base/states/appear` です。定義名、関数、任意JS/CSS、新しい識別fieldは `PageDocument` に加わらないため、この拡張を使わない既存ホストと既存文書の直列化は変わりません。
 
@@ -23,7 +23,7 @@ token の `label`、`textStyles`、node style の `textStyle`、文字の見た�
 | type | 内容 | 制約 |
 | --- | --- | --- |
 | `text` | `text` | HTML として解釈せず React が escape |
-| `element` | `id`, `tag`, `attrs?`, `asset?`, `icon?`, `embed?`, `style?`, `children` | 安全な HTML タグ・属性のみ。子配列は必須。`asset`・`icon`・`embed` は下記の閉じた用途だけ |
+| `element` | `id`, `tag`, `attrs?`, `formCompletionPageId?`, `asset?`, `icon?`, `embed?`, `style?`, `children` | 安全な HTML タグ・属性のみ。子配列は必須。`formCompletionPageId` は form だけ、`asset`・`icon`・`embed` は下記の閉じた用途だけ |
 | `component` | `id`, `block`, `props`, `style?`, `slots?` | 登録済み名・許可された primitive props のみ。独自の children は持たない。`slots` は registry が宣言した表示領域ごとの見た目（[業務ブロックの表示領域契約](block-slot-contract.md)） |
 | `instance` | `id`, `component`, `props?`, `style?` | 下書きだけで使う共通部品の参照。部品ライブラリを渡した検証でだけ受け付け、公開前に通常の element へ展開する（[共通部品契約](component-contract.md)） |
 
@@ -81,7 +81,11 @@ X / InstagramのSSRもcanonical投稿URLへの実リンク、静的status、非�
 
 フォームの入れ子、form 外の label・入力項目、子を持つ input、select 外の option、fieldset の先頭以外の legend、空の option を拒否します。submit 以外の input・textarea・select は `aria-label`、または同じ文書内で `label.htmlFor` が参照する一意な HTML IDを必要とします。参照先のない label も拒否します。password と file の `value` は保存できません。radio / checkbox の初期値と checked は公開設定であり、利用者が入力した現在値ではありません。
 
-`PageRenderer` / SSR は label、required、option 等をそのまま意味のあるHTMLとして出力します。一方、このリリースは問い合わせ送信、ファイル保存、完了画面、スパム対策、認証・認可を実装しません。文書から送信先を指定できず、renderer は form を trusted な `method="dialog"` で出力します。dialog外のformではこのmethodの送信処理が中止されるため、静的HTMLでも既定では現在URLにも外部URLにも入力値を送りません。ホストは検証済み文書を描画した外側で、認証・CSRF・サーバー側再検証を含む独自の送信bindingを実装してください。静的HTML中の `method="dialog"` は保存文書へ逆輸入せず、ホスト接続後も action URL や実行コードをページJSONへ追加しません。
+form は任意の `formCompletionPageId` を持てます。値は他の ID と同じく英字で始まる英数字・`_`・`-` の最大80文字だけで、form 以外では拒否します。これは URL、HTML属性、action、method、イベントhandlerではなく、trusted host が送信成功後に候補ページへ照合する不透明なページ ID です。renderer は DOM 属性へ出力しません。通常の文書データなので parse/save/undo/redo/複製で保持します。
+
+`PageRenderer` / SSR は label、required、option 等をそのまま意味のあるHTMLとして出力します。一方、このリリースは問い合わせ送信、ファイル保存、完了画面、スパム対策、認証・認可を実装しません。`formCompletionPageId` があっても文書から送信先を指定できず、renderer は form を trusted な `method="dialog"` で出力します。dialog外のformではこのmethodの送信処理が中止されるため、静的HTMLでも既定では現在URLにも外部URLにも入力値を送りません。ホストは検証済み文書を描画した外側で、認証・CSRF・サーバー側再検証を含む独自の送信bindingを実装してください。静的HTML中の `method="dialog"` は保存文書へ逆輸入せず、ホスト接続後も action URL や実行コードをページJSONへ追加しません。
+
+trusted public host は送信成功後に `resolveFormCompletionPath(document, formNodeId, currentCandidates)` を呼べます。検証済み文書と、その時点でホストが取得した候補を渡すと、同じ site/locale、通常ページ、public、published、安全な root-relative 非template path、現在ページ以外という条件を毎回再検証し、現在の path または `null` を返します。削除、別サイト・別言語化、非公開化、未公開化、template化、不正path、重複ID、保存IDの不一致では `null` です。この関数は送信、通信、遷移を行いません。ホストが成功判定、利用者入力の保持、失敗表示、永続化、CSRF、実際の navigation を所有します。
 
 複数候補の srcset、任意 SVG、任意 iframe tag/HTML、script、style、イベント属性は v1 の対象外です。
 

@@ -237,6 +237,14 @@ export function createProjectEditorAdapter(adapter: EditorAdapter, projectInput:
       if (pages.some((page) => page.siteId !== site.id)) throw new Error("ページ一覧に別サイトの項目が含まれています。");
       return pages.map(pageEntry);
     },
+    ...(adapter.listFormCompletionPages ? {
+      async listFormCompletionPages(target, signal) {
+        const checked = targetForProject(target, site);
+        const pages = await adapter.listFormCompletionPages!(checked, signal);
+        if (pages.some((page) => page.siteId !== site.id)) throw new Error("完了ページ候補に別サイトの項目が含まれています。");
+        return pages.map(pageEntry);
+      }
+    } satisfies Pick<EditorAdapter, "listFormCompletionPages"> : {}),
     async readDocument(target, signal) {
       const checkedTarget = targetForProject(target, site);
       const snapshot = structuredClone(await adapter.readDocument(checkedTarget, signal));

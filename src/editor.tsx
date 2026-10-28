@@ -34,6 +34,7 @@ import { bumpChangedComponentVersions, componentCreationLock, componentDocument,
 import { ComponentBanner, ComponentDialogBody, ComponentPanel, ComponentSettings, CreateComponentSection, InstanceInspector, LibraryReloadDialogBody, MasterPropFields, SiteComponentBanner, SiteComponentSettings, componentDialogTitle, type ComponentDialogState, type InputRenderer } from "./component-panel.js";
 import { BlockSlotInspector, BlockSlotList, applyToSlot, declaredSlot, previewRegistry, slotFromTarget } from "./block-slot-panel.js";
 import { parseBlankEmbedRegistry } from "./embeds.js";
+import { eligibleFormCompletionPages } from "./form-completion.js";
 import {
   acceptSavedLibrary, commitLibrary, componentProblem, exposeComponentProp, fitsLibrary, libraryFingerprint, librarySessionFrom, mergeRecoveredLibrary, parseUsage, placementProblem, planLibraryReload,
   relabelComponentProp, releaseAffected, resolveCanvas, summarizeUsage, textStylePaths, travelLibrary, trimReloadedHistory, usageText, type LibraryReloadPlan, type LibrarySession
@@ -424,6 +425,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const initialTargetRef = useRef<EditorTarget | null>(initialTarget ?? null);
   const [sites, setSites] = useState<readonly EditorSite[]>([]), [siteId, setSiteId] = useState("");
   const [pages, setPages] = useState<readonly EditorPage[]>([]), [session, setSession] = useState<Session | null>(null);
+  const [formCompletionPages, setFormCompletionPages] = useState<{ target: string; status: "idle" | "loading" | "ready" | "error"; pages: readonly EditorPage[] }>({ target: "", status: "idle", pages: [] });
   const sessionRef = useRef(session); sessionRef.current = session;
   const [selectedId, setSelectedId] = useState<string | null>(null), [selectedLocalizationUnit, setSelectedLocalizationUnit] = useState<string | null>(null), [selectedCanvasNode, setSelectedCanvasNode] = useState<string | null>(null), [width, setWidth] = useState(1280), [widthField, setWidthField] = useState("1280");
   useEffect(() => { setWidthField(String(width)); }, [width]);
@@ -481,6 +483,20 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   useEffect(() => {
     englishPublicationRequest.current?.abort(); englishPublicationRequest.current = null; setEnglishPublicationBusy(null);
     return () => englishPublicationRequest.current?.abort();
+  }, [adapter, session?.target.siteId, session?.target.pageId, session?.target.locale]);
+  useEffect(() => {
+    const target = session?.target, list = adapter.listFormCompletionPages;
+    if (!target || !list) { setFormCompletionPages({ target: "", status: "idle", pages: [] }); return; }
+    const key = targetKeyOf(target), controller = new AbortController();
+    setFormCompletionPages({ target: key, status: "loading", pages: [] });
+    list.call(adapter, { siteId: target.siteId, pageId: target.pageId, locale: target.locale }, controller.signal).then((result) => {
+      const current = sessionRef.current;
+      if (!controller.signal.aborted && current && sameTarget(current.target, target)) setFormCompletionPages({ target: key, status: "ready", pages: Array.isArray(result) ? result : [] });
+    }).catch(() => {
+      const current = sessionRef.current;
+      if (!controller.signal.aborted && current && sameTarget(current.target, target)) setFormCompletionPages({ target: key, status: "error", pages: [] });
+    });
+    return () => controller.abort();
   }, [adapter, session?.target.siteId, session?.target.pageId, session?.target.locale]);
   const [pageChange, setPageChange] = useState<PageChangeStart | null>(null), siteSettings = useSiteSettings(adapter, siteId, blocks, libraryPresent);
   const [styleMigration, setStyleMigration] = useState<{ target: EditorTarget; source: string; document: PageDocument; styles: SiteStyles } | null>(null);
@@ -1099,6 +1115,9 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     [usage, session?.target, pageDocument, pageTitle, libraryPresent, pages]);
   const masterComponent = masterId ? libraryPresent?.components.find((component) => component.id === masterId) : undefined;
   const node = document && selection ? nodeAt(document, selection) : undefined;
+  const formCompletionTarget = session?.target, formCompletionTargetKey = formCompletionTarget ? targetKeyOf(formCompletionTarget) : "";
+  const formCompletionCandidates = useMemo(() => formCompletionTarget && formCompletionPages.status === "ready" && formCompletionPages.target === formCompletionTargetKey
+    ? eligibleFormCompletionPages(formCompletionPages.pages, formCompletionTarget) as readonly EditorPage[] : [], [formCompletionPages, formCompletionTargetKey]);
   const staleProps = node?.type === "instance" && document && libraryPresent ? componentIssues(document, libraryPresent).find((issue) => issue.nodeId === node.id)?.staleProps ?? [] : [];
   const locks = document ? effectiveLocks(document, masterId ? [] : session?.locks ?? [], blocks) : [];
   const reason = (field: string) => document && selection ? lockReason(document, selection, field, locks) : undefined;
@@ -1583,7 +1602,13 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       {node?.type === "element" && selection && <>
         {elementTab === "settings" && node.tag === "form" && <>
           {field("フォーム名", String(node.attrs?.name ?? ""), (value) => ({ type: "attribute", path: selection, name: "name", value }), "attrs.name", { reason: reason("attrs.name") })}
-          <h4>完了設定</h4><p className="e-help">送信は未接続です。公開出力も入力値を現在のURLや外部URLへ送りません。送信処理、保存、完了画面はホスト側で接続します。</p>
+          <h4>完了設定</h4>
+          {!adapter.listFormCompletionPages ? <p className="e-help">完了ページは未接続です。送信処理、保存、失敗時の入力保持、完了後の移動はホスト側で接続します。</p> : formCompletionPages.target !== formCompletionTargetKey || formCompletionPages.status === "loading" ? <p className="e-help">完了ページを読み込んでいます。</p> : formCompletionPages.status === "error" ? <p className="e-help" role="alert">完了ページを読み込めませんでした。接続を確認してページを開き直してください。</p> : <label className="e-field"><span>完了ページ</span><select aria-label="完了ページ" value={node.formCompletionPageId ?? ""} disabled={editBlocked || !!reason("formCompletionPageId")} onChange={(event) => {
+            const pageId = event.target.value || undefined;
+            if (pageId && !formCompletionCandidates.some((candidate) => candidate.pageId === pageId)) { setNotice("選択した完了ページを確認できません。候補を再読込してください。"); return; }
+            const error = apply({ type: "formCompletionPage", path: selection, pageId }); if (error) setNotice(error);
+          }}><option value="">完了ページを指定しない</option>{node.formCompletionPageId && !formCompletionCandidates.some((candidate) => candidate.pageId === node.formCompletionPageId) && <option value={node.formCompletionPageId} disabled>未解決の完了ページ（{node.formCompletionPageId}）</option>}{formCompletionCandidates.map((candidate) => <option key={candidate.pageId} value={candidate.pageId}>{candidate.title}（{candidate.path}）</option>)}</select>{reason("formCompletionPageId") && <small>ロック: {reason("formCompletionPageId")}</small>}</label>}
+          <p className="e-help">公開フォームは常に送信先なしのままです。ホストは送信成功後に現在の候補一覧で完了ページを再検証して移動します。</p>
           <h4>項目一覧</h4>{formItems.length ? <ul className="e-form-items">{formItems.map((item) => <li key={item.id}><button type="button" onClick={() => selectId(item.id)}>{item.label}<span aria-hidden="true">→</span></button></li>)}</ul> : <p className="e-help">入力項目はありません。</p>}
         </>}
         {elementTab === "settings" && ["input", "textarea", "select"].includes(node.tag) && node.attrs?.type !== "submit" && <>
