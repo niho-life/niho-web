@@ -250,6 +250,7 @@ export const standardBuilderDefinition: BuilderDefinition = {
     { id: "icon", label: "アイコン", group: "基本", glyph: "✓", create: ({ id }) => icon(id) },
     { id: "richtext", label: "リッチテキスト", group: "基本", glyph: "¶", create: ({ id }) => richText(id) },
     { id: "video", label: "動画", group: "基本", glyph: "▶", create: ({ id }) => element(id, "video") },
+    { id: "embed-blank", label: "Blank", description: "ホストが承認した iframe", group: "埋め込み", glyph: "□", create: ({ id }) => embed(id, "blank", "埋め込みコンテンツ") },
     { id: "embed-map", label: "Map", description: "Google Maps の共有地図", group: "埋め込み", glyph: "⌖", create: ({ id }) => embed(id, "map", "地図") },
     { id: "embed-youtube", label: "YouTube", description: "YouTube の動画", group: "埋め込み", glyph: "▶", create: ({ id }) => embed(id, "youtube", "YouTube 動画") },
     { id: "embed-vimeo", label: "Vimeo", description: "Vimeo の動画", group: "埋め込み", glyph: "▶", create: ({ id }) => embed(id, "vimeo", "Vimeo 動画") },

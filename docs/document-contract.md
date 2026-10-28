@@ -45,7 +45,7 @@ runtime複製は`aria-hidden`かつ`inert`で、focus可能要素をtab順から
 
 ### 標準埋め込み
 
-Map / YouTube / Vimeo / Lottie / Facebook / X / Instagram は `tag: "div"` の element に `embed: { provider, title, source? }` を持たせます。`provider` は `map | youtube | vimeo | lottie | facebook | x | instagram` の閉じた値、`title` は空でない300文字以内の1行、`source` は任意です。embed node の `children` は空で、`asset` / `icon` を併用できません。文書から iframe tag、HTML、`src` 属性、sandbox、allow、referrer policy、loading、JavaScript、任意originを渡す入口はありません。provider は挿入時に固定し、editor は `embedSource` と `embedTitle` の専用操作だけで値を更新します。
+Map / YouTube / Vimeo / Lottie / Facebook / X / Instagram / Blank は `tag: "div"` の element に `embed: { provider, title, source? }` を持たせます。`provider` は `map | youtube | vimeo | lottie | facebook | x | instagram | blank` の閉じた値、`title` は空でない300文字以内の1行、`source` は任意です。通常providerの`source`はcanonical URLですが、`blank`だけはホストが登録した小文字英数字・`-`の1〜32文字のkeyです。embed node の `children` は空で、`asset` / `icon` を併用できません。文書から iframe tag、HTML、`src` 属性、sandbox、allow、referrer policy、loading、JavaScript、任意originを渡す入口はありません。provider は挿入時に固定し、editor は `embedSource` と `embedTitle` の専用操作だけで値を更新します。
 
 入力URLは資格情報・port・fragmentのないHTTPSだけを受け、providerごとに次の形へ正規化します。HTTP、任意host、`javascript:` / `data:`、iframe markup、許可外queryを拒否します。YouTubeの共有リンクに付く`si`は検証後に取り除きます。
 
@@ -56,6 +56,10 @@ Map / YouTube / Vimeo / Lottie / Facebook / X / Instagram は `tag: "div"` の e
 - Facebook は `facebook.com` / `www.facebook.com` の `/{actor}/posts/{post-id}`、`/{actor}/posts/{説明slug}/{post-id}`、`/permalink.php?story_fbid={post-id}&id={数字actor-id}` だけを受けます。説明slugは英数字・`_`・`-` の1〜200文字に限り、保存時に除きます。hostを `www.facebook.com`、末尾slashを無しに正規化した公開投稿URLを保存します。actorは1〜80文字の英数字と連続しない内側の`.`、数字actor IDと数字post IDは最大32桁、opaque post IDは`pfbid`に続く20〜195文字の英数字に限定します。資格情報、port、fragment、未知・重複・順序違いquery、短縮共有URL、写真・動画・group path、dot segment、percent encoding、nested URL、protocol-relative URL、markupを拒否します。plugin URLやiframe HTMLは保存しません。
 - X は `https://x.com/{handle}/status/{数字ID}` だけを受け、handleを小文字、末尾slashを無しに正規化します。handleは英数字と`_`の1〜15文字、IDは1〜20桁です。X公式ヘルプが埋め込みをx.comでだけ提供すると案内しているため、`twitter.com`、`www.x.com`、query、fragment、追加path、dot segment、percent encoding、markupを受けず、暗黙変換もしません（[X公式の埋め込み案内](https://help.x.com/en/using-x/how-to-embed-a-post)）。
 - Instagram は `instagram.com` / `www.instagram.com` の `/p/{shortcode}` と `/reel/{shortcode}` だけを受け、hostを`www.instagram.com`、末尾slashありに正規化します。shortcodeは英数字・`_`・`-`の1〜64文字です。profile、Story、`/tv/`、query、fragment、追加path、dot segment、percent encoding、markupを拒否します。公式実装が対応を明示する公開投稿とReelだけを対象にします（[Meta公式実装](https://github.com/facebook/meta-embeds-for-wordpress)）。
+
+Blank は trusted host code が `createBlankEmbedRegistry({ parentOrigin, entries })` で作る静的registryだけから解決します。registryは最大16件でkey重複を許さず、各項目は`key`、表示用`label`、query・fragment・userinfo・portを持たない固定HTTPS絶対`src`、閉じた`sandbox` mode（`strict` / `scripts` / `forms` / `scripts-forms` / `same-origin` / `same-origin-forms` / `same-origin-scripts` / `same-origin-scripts-forms`）を持ちます。top navigation、popup、download等のtokenはありません。親と同一originの`src`でscriptsとsame-originを同時に許可する設定は拒否します。`parseBlankEmbedRegistry`はJavaScript入力も同じ規則で再検証します。
+
+`PageRenderer` / `SitePageRenderer` と `renderPageToHtml` / `renderSitePageToHtml` は任意の`blankEmbeds`を受け、文書keyがregistryに無い場合はfail closedで外部通信しません。編集canvasは承認済みkeyでも静的案内だけを出し、Studio previewと公開rendererだけがregistryの`src`とsandboxからiframeを作ります。iframeを表示できない場合のため固定URLへの外部リンクを残します。ホストはregistry登録とは別に公開・previewのCSP `frame-src`へ各origin/pathを承認する必要があります。niho-webはStudio WorkerのCSPを広げず、鎌倉本番にもregistryを登録しません。BlankはManagedEmbedのprivate参照・解決フローを流用しません。
 
 rendererはsource未設定なら公開HTMLにnodeもiframeも出さず、外部リクエストを発生させません。editorのplaceholder modeだけ設定案内を出します。Map / YouTube / Vimeoはsource設定後にnodeの`div`内へtrusted rendererがiframeを生成し、`sandbox="allow-scripts allow-same-origin"`、`loading="lazy"`、`referrerPolicy="strict-origin-when-cross-origin"` を固定します。YouTube/Vimeoのallowとfullscreenもrendererのprovider別定数だけから付与します。
 
@@ -69,7 +73,7 @@ X / InstagramのSSRもcanonical投稿URLへの実リンク、静的status、非�
 
 このLottie実装が扱う編集項目はAsset link、アクセシブルなtitle、通常のbox/layout styleだけです。motion許可時にlottie.host hosted iframeの既定playerを表示しますが、STUDIOの6種類のplayback modeやtrigger・速度・方向を文書設定として提供しません。hosted iframeの閉じたURL契約から制御できない設定を推測して追加しません。
 
-このpage node側の標準埋め込みと、`SitePresentationExternalFrame` は別の信頼境界です。標準埋め込みは上の7 provider・URL形・固定iframe属性だけで、host固有policyを受けません。presentation external frameはhost view内の空divを実行側descriptorで置換し、接続先host/pathとorigin保持の要否をtrustedな `externalFramePolicy` が決めます。page JSONからpresentation policy、任意origin、sandbox権限へ昇格することはできません。
+このpage node側の埋め込みと、`SitePresentationExternalFrame` は別の信頼境界です。既存7 providerは従来のURL形・固定iframe属性だけ、Blankは明示された`blankEmbeds`だけを使い、presentation policyを受けません。presentation external frameはhost view内の空divを実行側descriptorで置換し、接続先host/pathとorigin保持の要否をtrustedな `externalFramePolicy` が決めます。page JSONからpresentation policy、任意origin、sandbox権限へ昇格することはできません。
 
 ### フォーム
 

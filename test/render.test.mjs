@@ -3,9 +3,9 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { createElement } from "react";
 import { renderToString } from "react-dom/server";
-import { DocumentValidationError, pageScope, PageRenderer as RootPageRenderer } from "@niho/web";
-import { PageRenderer } from "@niho/web/react";
-import { renderPageToHtml } from "@niho/web/server";
+import { createBlankEmbedRegistry, DocumentValidationError, pageScope, PageRenderer as RootPageRenderer } from "@niho/web";
+import { PageRenderer, SitePageRenderer } from "@niho/web/react";
+import { renderPageToHtml, renderSitePageToHtml } from "@niho/web/server";
 import { generatePageCss } from "@niho/web/core";
 
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
@@ -210,6 +210,39 @@ test("closed standard embeds render fixed trusted iframe attributes and empty so
   assert.match(canvas, /data-nw-embed="x"[^>]*data-nw-social-static=""/);
   assert.match(canvas, /data-nw-embed="instagram"[^>]*data-nw-social-static=""/);
   assert.equal((canvas.match(/<iframe/g) ?? []).length, 3, "編集キャンバスは遅延埋め込みを静的に保つ");
+});
+
+test("Blank embed resolves only an approved key and edit canvas never starts external communication", () => {
+  const doc = structuredClone(fixture); doc.body = [
+    { type: "element", id: "approved", tag: "div", embed: { provider: "blank", title: "公開ガイド", source: "public-guide" }, children: [] },
+    { type: "element", id: "unknown", tag: "div", embed: { provider: "blank", title: "不明", source: "unknown-card" }, children: [] },
+    { type: "element", id: "empty", tag: "div", embed: { provider: "blank", title: "未設定" }, children: [] }
+  ];
+  const blankEmbeds = createBlankEmbedRegistry({ parentOrigin: "https://site.example.test", entries: [
+    { key: "public-guide", label: "公開ガイド", src: "https://embed.example.test/public/guide", sandbox: "scripts-forms" }
+  ] });
+  const withoutRegistry = renderPageToHtml(doc);
+  assert.doesNotMatch(withoutRegistry, /embed\.example\.test|<iframe/u);
+  const placeholder = renderToString(createElement(PageRenderer, { document: doc, missingAssets: "placeholder" }));
+  assert.match(placeholder, /registry が接続されていません/u); assert.doesNotMatch(placeholder, /embed\.example\.test|<iframe/u);
+  const editCanvas = renderToString(createElement(PageRenderer, { document: doc, blankEmbeds, missingAssets: "placeholder", canvas: { interactive: false } }));
+  assert.match(editCanvas, /data-nw-blank-static=""/u); assert.match(editCanvas, /公開ガイド（プレビューで表示）/u);
+  assert.doesNotMatch(editCanvas, /embed\.example\.test|<iframe/u);
+  assert.match(editCanvas, /この埋め込みはホストで承認されていません/u);
+  const html = renderPageToHtml(doc, {}, { blankEmbeds });
+  assert.equal((html.match(/<iframe/g) ?? []).length, 1);
+  assert.match(html, /data-nw-blank-key="public-guide"/u);
+  assert.match(html, /src="https:\/\/embed\.example\.test\/public\/guide"[^>]*title="公開ガイド"[^>]*sandbox="allow-scripts allow-forms"/u);
+  assert.match(html, /href="https:\/\/embed\.example\.test\/public\/guide"[^>]*rel="noopener noreferrer"[^>]*data-nw-blank-fallback=""/u);
+  assert.doesNotMatch(html, /unknown-card|data-nw-node="unknown"/u);
+  const preview = renderToString(createElement(PageRenderer, { document: doc, blankEmbeds, canvas: { interactive: true } }));
+  assert.match(preview, /src="https:\/\/embed\.example\.test\/public\/guide"/u);
+  const shared = (pageId) => ({ schemaVersion: 1, siteId: doc.siteId, pageId, locale: doc.locale, revision: 1, title: pageId, tokens: {}, body: [] });
+  const presentation = { schemaVersion: 1, siteId: doc.siteId, locale: doc.locale, version: "site-v1", reset: "neutral-v1", tokens: {}, fonts: [], layout: { base: {} },
+    shared: { header: shared("shared-header"), footer: shared("shared-footer") } };
+  const siteHtml = renderSitePageToHtml(doc, presentation, {}, { blankEmbeds });
+  assert.match(siteHtml, /data-nw-blank-key="public-guide"/u); assert.equal((siteHtml.match(/<iframe/g) ?? []).length, 1);
+  assert.match(renderToString(createElement(SitePageRenderer, { document: doc, presentation, blankEmbeds })), /embed\.example\.test\/public\/guide/u);
 });
 
 test("unsafe resolved asset maps throw before any block executes", () => {

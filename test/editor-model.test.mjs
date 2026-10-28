@@ -232,6 +232,11 @@ test("embed source and title operations are provider-bound, validated, locked an
   assert.throws(() => editDocument(original, { type: "embedTitle", path: [1], title: "" }), DocumentValidationError);
   assert.throws(() => editDocument(original, { type: "embedSource", path: [1], source: "https://youtu.be/dQw4w9WgXcQ" }, {}, [{ nodeId: "tour", fields: ["embed.source"], reason: "固定埋め込み" }]), /固定埋め込み/);
   assert.throws(() => editDocument(original, { type: "embedTitle", path: [1], title: "変更" }, {}, [{ nodeId: "tour", fields: ["embed.title"], reason: "固定タイトル" }]), /固定タイトル/);
+  const blank = doc(); blank.body.push({ type: "element", id: "approved", tag: "div", embed: { provider: "blank", title: "埋め込み" }, children: [] });
+  const selected = editDocument(blank, { type: "embedSource", path: [1], source: "public-guide" });
+  assert.equal(selected.body[1].embed.source, "public-guide");
+  assert.deepEqual(parsePageDocument(JSON.parse(JSON.stringify(selected))).body[1].embed, selected.body[1].embed);
+  assert.throws(() => editDocument(blank, { type: "embedSource", path: [1], source: "https://embed.example.test/public/guide" }), /Blank/);
 });
 test("image source locks cover src, srcSet, assets, restoration and history together", () => {
   const original = withPhoto({ attrs: { src: "/photo.webp", srcSet: "/photo-large.webp", alt: "Sea" } });
