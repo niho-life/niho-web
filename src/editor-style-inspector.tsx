@@ -66,6 +66,7 @@ const selfAligns: Choice[] = [["auto", "親に合わせる"], ["flex-start", "�
 const contentAligns: Choice[] = [["normal", "標準"], ["flex-start", "先頭"], ["center", "中央"], ["flex-end", "末尾"], ["stretch", "引き伸ばす"], ["space-between", "両端"], ["space-around", "均等（外側半分）"], ["space-evenly", "均等"]];
 const wrapChoices: Choice[] = [["normal", "標準"], ["break-word", "長い単語を折る"], ["anywhere", "必要な位置で折る"]];
 const wordBreakChoices: Choice[] = [["normal", "標準"], ["break-all", "文字単位で折る"], ["keep-all", "単語を保つ"], ["break-word", "長い単語を折る"]];
+const listStyleChoices: Choice[] = [["none", "なし"], ["disc", "黒丸"], ["circle", "白丸"], ["square", "四角"], ["decimal", "番号"], ["decimal-leading-zero", "ゼロ付き番号"], ["lower-alpha", "小文字アルファベット"], ["upper-alpha", "大文字アルファベット"], ["lower-roman", "小文字ローマ数字"], ["upper-roman", "大文字ローマ数字"]];
 const fits: Choice[] = [["fill", "引き伸ばす"], ["contain", "全体を収める"], ["cover", "全体を覆う"], ["none", "元のサイズ"], ["scale-down", "縮小のみ"]];
 const hasText = (node: PageNode): boolean => node.type === "text" ? !!node.text.trim() : node.type === "element" && node.children.some(hasText);
 const norm = (value: unknown): Align | undefined => value === "flex-start" || value === "start" ? "start" : value === "flex-end" || value === "end" ? "end" : value === "center" ? "center" : undefined;
@@ -295,13 +296,15 @@ export function StyleInspector(props: StyleInspectorProps) {
         disabled={disabled || !!lock("zIndex")} status={status(["zIndex"])} placeholder={text(state("zIndex").inherited?.value)} />}
       {ui.select("overflow", "はみ出し", overflows)}
     </section>}
-    {show("box") && normal && (["flexGrow", "flexShrink", "flexBasis", "gridColumn", "gridRow", "alignSelf", "objectFit", "overflowWrap", "wordBreak", "writingMode"] as const).some(can) && <Collapse key={key("detail-section")} title="詳細">
+    {show("box") && normal && (["flexGrow", "flexShrink", "flexBasis", "gridColumn", "gridRow", "alignSelf", "objectFit", "overflowWrap", "wordBreak", "writingMode", "listStyleType", "listStylePosition", "verticalAlign"] as const).some(can) && <Collapse key={key("detail-section")} title="詳細">
       <div className="e-grid2">{ui.unit("flexGrow", "伸びる比率", { units: [""], numberUnit: "" })}{ui.unit("flexShrink", "縮む比率", { units: [""], numberUnit: "" })}</div>
       {ui.unit("flexBasis", "基準サイズ", { keywords: sizes })}
       <div className="e-grid2">{ui.unit("gridColumn", "グリッドの列位置", { units: [] })}{ui.unit("gridRow", "グリッドの行位置", { units: [] })}</div>
       {ui.select("alignSelf", "自身の揃え", selfAligns)}
       {ui.select("overflowWrap", "長い文字の折り返し", wrapChoices)}
       {ui.select("wordBreak", "単語の改行", wordBreakChoices)}
+      {(element?.tag === "ul" || element?.tag === "ol" || element?.tag === "li") && <div className="e-grid2">{ui.select("listStyleType", "リストの印", listStyleChoices)}{ui.select("listStylePosition", "印の位置", [["outside", "外側"], ["inside", "内側"]])}</div>}
+      {(element?.tag === "img" || element?.tag === "video") && ui.unit("verticalAlign", "行内の縦位置", { units: ["px", "rem", "em", "%"], keywords: [["baseline", "基準線"], ["top", "上"], ["middle", "中央"], ["bottom", "下"], ["text-top", "文字の上端"], ["text-bottom", "文字の下端"], ["sub", "下付き"], ["super", "上付き"]] })}
       {ui.select("writingMode", "文字の向き", [["horizontal-tb", "横書き"], ["vertical-rl", "縦書き（右から）"], ["vertical-lr", "縦書き（左から）"]])}
       {(element?.tag === "img" || element?.tag === "video" || slot) && ui.select("objectFit", element?.tag === "video" ? "動画の収まり" : "画像の収まり", fits)}
     </Collapse>}

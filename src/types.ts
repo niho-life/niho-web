@@ -18,6 +18,7 @@ export type StyleProperty =
   | "borderStyle" | "borderTopStyle" | "borderRightStyle" | "borderBottomStyle" | "borderLeftStyle"
   | "borderTopColor" | "borderRightColor" | "borderBottomColor" | "borderLeftColor"
   | "borderRadius" | "overflow" | "objectFit" | "opacity" | "overflowWrap" | "wordBreak"
+  | "listStyleType" | "listStylePosition" | "verticalAlign"
   | "backgroundSize" | "backgroundPosition" | "backgroundRepeat" | "backgroundFilter"
   | "fontStyle" | "textDecorationLine" | "writingMode" | "boxShadow" | "textShadow" | "outlineOffset"
   | "translate" | "rotate" | "scale" | "skew" | "transformOrigin"

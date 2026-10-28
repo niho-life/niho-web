@@ -96,6 +96,20 @@ test("native layout additions serialize as a closed style vocabulary", () => {
   }
 });
 
+test("list markers and inline image alignment survive document validation and scoped CSS", () => {
+  const input = doc();
+  input.body[0].children.push({ type: "element", id: "list", tag: "ol", style: { base: { listStyleType: "decimal", listStylePosition: "outside" }, responsive: [{ minWidth: 768, declarations: { listStylePosition: "inside" } }] }, children: [
+    { type: "element", id: "item", tag: "li", children: [{ type: "text", text: "項目" }] }
+  ] });
+  input.body[0].children.push({ type: "element", id: "photo", tag: "img", attrs: { src: "/photo.png", alt: "写真" }, style: { base: { verticalAlign: "bottom" }, responsive: [{ minWidth: 768, declarations: { verticalAlign: -2 } }] }, children: [] });
+  const parsed = parsePageDocument(input), css = generatePageCss(parsed);
+  for (const fragment of ["list-style-type:decimal;", "list-style-position:outside;", "list-style-position:inside;", "vertical-align:bottom;", "vertical-align:-2px;"]) assert.ok(css.includes(fragment), fragment);
+  assert.ok(renderPageToHtml(parsed).includes("<ol"));
+  for (const [property, value] of [["listStyleType", "url(https://example.test/a.svg)"], ["listStyleType", "decimal;color:red"], ["listStylePosition", "inside outside"], ["verticalAlign", "calc(1px + 2px)"], ["verticalAlign", "10001px"]]) {
+    const copy = doc(); copy.body[0].style.base[property] = value; reject(copy);
+  }
+});
+
 test("home-native visual properties remain declarative and reject CSS injection", () => {
   const input = doc();
   input.body[0].style.base = {
