@@ -114,7 +114,7 @@ XのカードはURLの保存と投稿リンクまで使えます。現在のChro
 
 ### 挿入カタログの拡張
 
-Blankのkey・title変更は通常のeditor model、lock、undo/redo、保存・再読込を通ります。編集canvasは外部通信せず、previewだけ公開rendererと同じregistryを使います。ホストは公開CSPの`frame-src`を別途許可し、`blankEmbeds`を`PageRenderer` / SSRにも同じ版で渡します。Studio WorkerのCSPと鎌倉本番registryはこの機能では変更せず、ManagedEmbedの独自保存・解決フローも流用しません。詳細は[文書・描画契約の標準埋め込み](document-contract.md#標準埋め込み)を正とします。
+Blankのkey・title変更は通常のeditor model、lock、undo/redo、保存・再読込を通ります。編集canvasは外部通信せず、previewだけ公開rendererと同じregistryを使います。ホストは公開CSPの`frame-src`を別途許可し、`blankEmbeds`を`PageRenderer` / SSRにも同じ版で渡します。鎌倉のStudioと公開ホストは同じ`public-map` keyとOpenStreetMapの固定埋め込み先を登録し、双方のCSPをその接続先に限定します。ManagedEmbedの独自保存・解決フローは流用しません。詳細は[文書・描画契約の標準埋め込み](document-contract.md#標準埋め込み)を正とします。
 
 `PageEditor` の任意prop `builder` で、信頼済みホストが通常の `PageNode` 部分木を追加パレットへ登録できます。公開型と標準定義は `@niho/web/builder` から読み込みます。`InsertionPreset.category` は任意の `basic | parts | sections` で、未知の値は `defineBuilder` が拒否します。省略した既存・host独自プリセットは後方互換のため Basic に表示します。同じ定義IDを指定すると標準項目を置換し、新しいIDは標準項目の後へ追加します。
 
