@@ -40,7 +40,7 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 | `@niho/web/react` | `PageRenderer` とブロック registry の型 |
 | `@niho/web/presentation-runtime` | SSR後の検証済みDOMへ、native presentation、VideoWithButton、Loop Box、reduced-motion対応Lottie player、明示操作後だけ読み込むFacebook / X / Instagram投稿の標準操作を接続するclient runtime。返されたcleanupを再初期化前に呼ぶ |
 | `@niho/web/server` | Astro の build / server で使える `renderPageToHtml` |
-| `@niho/web/editor` | 認証済みホストadapterへ接続する `PageEditor` と型。50pxの左ツール列＋300pxの追加パネル、左レールの版履歴、300pxの右インスペクタ、サイトごとに設定できる表示幅・端末切替の下部ツールバーとキャンバス左右端の表示幅ドラッグを共通化する。`initialTarget`、任意の日英切替、原文ページの「サブは確認してから公開」、許可ブロック、trusted host 固有の設定 UI を扱う。原文の保存 locale が翻訳用 mapping と異なる場合も、ページ一覧の原文 locale を使って開き直せる。原文 snapshot の任意な英語公開状態と、安全な明示更新・再試行も本文 version と独立して扱う。Kamakura の日英一覧は Studio BFF の `localization/editor/site`、English キャンバスは `editor/pages/:pageId/snapshot` から読み、保存はサイト側の正本 overlay へ戻す（[編集・公開契約](docs/editor-contract.md)、[多言語 editor 契約](docs/localization-editor.md)、[ManagedEmbed 契約](docs/managed-embed-contract.md)）。React / React DOM が必要 |
+| `@niho/web/editor` | 認証済みホストadapterへ接続する `PageEditor` と型。50pxの左ツール列＋300pxの追加パネル、左レールの版履歴、300pxの右インスペクタ、表示幅・端末切替とサイト単位の「編集モード」（Mini / Mobile / Tablet / Small / PC、opaque version CAS）の下部ツールバー、キャンバス左右端の表示幅ドラッグを共通化する。未接続ホストでは従来の `breakpoints` を読み取り専用表示する。`initialTarget`、任意の日英切替、原文ページの「サブは確認してから公開」、許可ブロック、trusted host 固有の設定 UI を扱う。原文の保存 locale が翻訳用 mapping と異なる場合も、ページ一覧の原文 locale を使って開き直せる。原文 snapshot の任意な英語公開状態と、安全な明示更新・再試行も本文 version と独立して扱う。Kamakura の日英一覧は Studio BFF の `localization/editor/site`、English キャンバスは `editor/pages/:pageId/snapshot` から読み、保存はサイト側の正本 overlay へ戻す（[編集・公開契約](docs/editor-contract.md)、[UI設計](docs/editor-ui-design.md)、[多言語 editor 契約](docs/localization-editor.md)、[ManagedEmbed 契約](docs/managed-embed-contract.md)）。React / React DOM が必要 |
 | `@niho/web/projects` | 1 Project = 1 Site の検証、純粋操作、atomic CAS契約。React不要 |
 | `@niho/web/project-manager` | 認証済みホストadapterへ接続する `ProjectManager`。React / React DOM が必要 |
 | `@niho/web/project-directory` | 管理フォームと独立した日常の `ProjectDirectory`。内部またはhost shellの名前・ドメイン検索、OG画像／頭文字カード、更新順の一覧表、Dashboard / Editorメニュー |
@@ -50,7 +50,7 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 | `@niho/web/collection-workspace` | コレクション（CMS）の一覧と項目の編集の `CollectionWorkspace`。ホストの adapter で読み書き・自動保存・公開・予約、本文と独立した任意の英語公開状態の更新／安全な再試行、同じ画面で切り替える任意の原文／翻訳タブと訳文タブへの直接リンク（[接続方法](docs/collection-contract.md)） |
 | `@niho/web/localization-workspace` | 要対応から始まる翻訳一覧・対象外の理由別表示・自動翻訳の設定・任意の版付き用語集の確認・初回公開の内訳確認を含む `LocalizationWorkspace` と、CMS 項目に埋め込む `LocalizationItemWorkspace`。一覧の含む内容と関連する訳文への導線、ホストの編集先（Kamakura の共通ページは English キャンバス、CMS は同じ項目の English タブ）、CMS 詳細ページの英語テンプレートへのリンク、保存済みの未公開原文、訳文の自動保存・出どころ別の未確認表示・確認済み・翻訳案・プレビューを共通化する（[接続方法](docs/localization-workspace-contract.md)）。型と parser は `@niho/web/localization-workspace-model` |
 | `@niho/web/collection-model` | コレクションの定義・項目の型、adapter の応答の runtime parser、公開前の値の検証、本文の HTML の無害化。React不要 |
-| `@niho/web/project-editor` | 既存 `EditorAdapter` をProjectの唯一のSiteへ限定するwrapper |
+| `@niho/web/project-editor` | 既存 `EditorAdapter` をProjectの唯一のSiteへ限定するwrapper。サイト単位ブレークポイントの read / save も site ID と応答を再検証する |
 | `@niho/web/pages` | ページのパス検証・ツリー・内部リンク影響、公開メタ情報（title / description / OG画像 / robots / canonical）の解決と `<head>` 出力。React不要 |
 | `@niho/web/site-analytics` | GA4 / Search Console の接続状態・所有確認・変更計画の型と境界検証。React不要 |
 | `@niho/web/site-apps` | サイト設定の `SiteApps`。計測タグ・所有権確認・レポート接続を分け、変更確認・再試行・解除を提供（[接続方法](docs/site-apps.md)） |

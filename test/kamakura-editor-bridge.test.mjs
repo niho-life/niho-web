@@ -98,9 +98,12 @@ test("Kamakura editor adapter は日本語経路を維持し、英語 snapshot�
   const localizedPage = { siteId: "kamakura", pageId, title: "Community Dinner", locales: { ja: { state: "source" }, en: { state: "review-needed", changed: 1, published: false } } };
   const normalizedLocalizedPage = { ...localizedPage, title: parsedCatalog.pages[0].title };
   const englishPublication = { state: "retryable-failure", retryable: true, updatedAt: "2026-10-27T01:02:03.000Z" };
+  const breakpointSettings = { base: { name: "Mobile", previewWidth: 480 }, breakpoints: [{ name: "Tablet", minWidth: 691, previewWidth: 840 }, { name: "Small", minWidth: 991, previewWidth: 991 }, { name: "PC", minWidth: 1280, previewWidth: 1280 }] };
   const releasePlan = { target: { siteId: "kamakura", pageId, locale: "ja" }, expectedVersion: "ja-version", presentationVersion: "presentation-version", action: "publish",
     confirmationToken: "00000000-0000-4000-8000-00000000000011111111-1111-4111-8111-111111111111", domain: "https://next-kamakura.niho.life", changes: [] };
   const replies = new Map([
+    ["GET /api/projects/project-kamakura/sites/kamakura/breakpoints", { settings: breakpointSettings, version: "b.1" }],
+    ["PUT /api/projects/project-kamakura/sites/kamakura/breakpoints", { status: "saved", version: "b.2" }],
     [`GET /api/projects/project-kamakura/sites/kamakura/editor/${pageId}`, { document: document(pageId, "ja"), version: "ja-version", englishPublication }],
     [`POST /api/projects/project-kamakura/sites/kamakura/editor/${pageId}/english-publication-retry`, { status: "accepted", englishPublication: { state: "queued", retryable: false } }],
     [`POST /api/projects/project-kamakura/sites/kamakura/editor/${pageId}/release`, { status: "released", snapshot: { document: document(pageId, "ja"), version: "released-version", englishPublication: { state: "publishing", retryable: false } } }],
@@ -116,7 +119,7 @@ test("Kamakura editor adapter は日本語経路を維持し、英語 snapshot�
     calls.push({ key, body });
     const reply = replies.get(key);
     if (!reply) throw new Error(`unexpected request: ${key}`);
-    return Response.json(reply);
+    return reply instanceof Response ? reply : Response.json(reply);
   });
   const adapter = createKamakuraAdapter(parsedCatalog, () => {}), signal = new AbortController().signal;
   const ja = { siteId: "kamakura", pageId, locale: "ja" }, en = { siteId: "kamakura", pageId, locale: "en" };
@@ -124,6 +127,9 @@ test("Kamakura editor adapter は日本語経路を維持し、英語 snapshot�
   const japanese = await adapter.readDocument(ja, signal);
   assert.equal(japanese.document.locale, "ja");
   assert.deepEqual(japanese.englishPublication, englishPublication);
+  assert.deepEqual(await adapter.breakpointSettings.read("kamakura", signal), { settings: breakpointSettings, version: "b.1" });
+  assert.deepEqual(await adapter.breakpointSettings.save({ siteId: "kamakura", settings: breakpointSettings, expectedVersion: "b.1" }, signal), { status: "saved", version: "b.2" });
+  assert.deepEqual(calls.at(-1).body, { settings: breakpointSettings, expectedVersion: "b.1" });
   const english = await adapter.readDocument(en, signal);
   assert.equal(english.document.locale, "en");
   assert.equal(english.presentation.version, presentation.version);
@@ -144,6 +150,11 @@ test("Kamakura editor adapter は日本語経路を維持し、英語 snapshot�
   assert.equal(calls.length, before, "未対応の翻訳依頼を成功扱いせず BFF にも送らない");
   await assert.rejects(adapter.saveDraft({ target: en, document: english.document, expectedVersion: `l.${"f".repeat(64)}`, presentationVersion: presentation.version, localization: versions }, signal), /版が正しくありません/u);
   assert.equal(calls.length, before);
+
+  replies.set("PUT /api/projects/project-kamakura/sites/kamakura/breakpoints", Response.json({ error: "conflict" }, { status: 409 }));
+  assert.deepEqual(await adapter.breakpointSettings.save({ siteId: "kamakura", settings: breakpointSettings, expectedVersion: "b.1" }, signal), { status: "conflict" });
+  replies.set("GET /api/projects/project-kamakura/sites/kamakura/breakpoints", { settings: breakpointSettings, version: "b.2", extra: true });
+  await assert.rejects(adapter.breakpointSettings.read("kamakura", signal), /応答が正しくありません/u);
 
   replies.set(`POST /api/projects/project-kamakura/sites/kamakura/localization/editor/pages/${pageId}/snapshot`, { status: "unavailable", message: "このページの英語表示材料はまだありません。" });
   await assert.rejects(adapter.readDocument(en, signal), /英語表示材料/u);

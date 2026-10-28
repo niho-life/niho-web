@@ -107,15 +107,15 @@ export function ViewportEdgeHandle({ side, width, scale, disabled, onWidthChange
     }} />;
 }
 
-/** Site breakpoints determine the selectable widths; the mobile-first base gets its own preview. */
-export function viewportPresets(breakpoints: readonly EditorBreakpoint[], mobilePreviewWidth = 375): ViewportPreset[] {
+/** Site breakpoints determine the selectable widths; the mobile-first base gets its own preview and optional saved label. */
+export function viewportPresets(breakpoints: readonly EditorBreakpoint[], mobilePreviewWidth = 375, baseLabel = "モバイル"): ViewportPreset[] {
   const usable = breakpoints.filter((entry) => entry.minWidth <= 1920);
   const first = breakpoints[0]?.minWidth ?? 1921;
   const base = Number.isInteger(mobilePreviewWidth) && mobilePreviewWidth >= 320 && mobilePreviewWidth <= 1920 && mobilePreviewWidth < first
     ? mobilePreviewWidth : Math.min(375, first - 1);
   const icon = (width: number): ViewportPreset["icon"] => width >= 1100 ? "desktop" : width >= 900 ? "laptop" : width >= 600 ? "tablet" : "mobile";
   return [...usable].reverse().map((entry) => ({ width: entry.previewWidth ?? entry.minWidth, start: entry.minWidth, label: entry.label, icon: icon(entry.minWidth) }))
-    .concat(base >= 320 ? [{ width: base, start: 0, label: "モバイル", icon: "mobile" }] : []);
+    .concat(base >= 320 ? [{ width: base, start: 0, label: baseLabel, icon: icon(base) }] : []);
 }
 
 export function CanvasViewportToolbar({ width, widthField, leftOpen, rightOpen, disabled, presets = viewportPresets([{ minWidth: 768, label: "タブレット" }, { minWidth: 1280, label: "PC" }]), onWidthInput, onWidthCommit, toggleLeft, toggleRight, children }: {
