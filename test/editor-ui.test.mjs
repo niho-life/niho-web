@@ -1948,3 +1948,24 @@ test("release confirmation shows the plan URL and the affected shared parts, pag
     for (const expected of ["公開URL", "https://example.test/about-us", "影響するコンポーネント・ページ・サイト設定", "コンポーネント", "ヘッダー", "全ページのナビゲーション", "ページ", "サイト設定", "サイト共通の設定"]) assert.ok(text.includes(expected), expected);
   } finally { await app.cleanup(); }
 });
+
+test("ページ名だけを許可するホストでは追加・複製・非公開操作を出さずURL入力を読み取り専用にする", async () => {
+  const page = { siteId: "demo", pageId: "home", locale: "ja-JP", title: "ホーム", path: "/", kind: "page" };
+  const app = await setup({ adapter: { listPages: async () => [page], pageChangeActions: ["update"], pagePathEditable: false,
+    preparePageChange: async () => { throw new Error("このテストでは反映しない"); }, applyPageChange: async () => { throw new Error("このテストでは反映しない"); } } });
+  try {
+    assert.equal(button("ページを追加"), undefined);
+    await click("ホーム の操作");
+    const menu = document.querySelector('[role="menu"]');
+    assert.deepEqual([...menu.querySelectorAll('[role="menuitem"]')].map((node) => node.textContent), ["ページ名を変更"]);
+    await click("ページ名を変更");
+    assert.equal(dialog().getAttribute("aria-label"), "ページ名を変更");
+    const path = [...dialog().querySelectorAll("input")].find((node) => node.value === "/");
+    assert.equal(path.readOnly, true);
+    assert.ok(dialog().textContent.includes("URL変更はまだ利用できません"));
+    await click("キャンセル");
+    await panel("ページ");
+    assert.ok(button("ページ名を変更"));
+    assert.equal(document.querySelector('.e-page-settings [role="switch"]'), null);
+  } finally { await app.cleanup(); }
+});

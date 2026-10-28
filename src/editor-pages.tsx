@@ -66,7 +66,7 @@ export function publicInfoMessage(error: unknown): string | undefined {
   return "公開情報の値を確認してください。";
 }
 
-function PageMenu({ page, open, setOpen, disabled, start }: { page: EditorPage; open: boolean; setOpen: (open: boolean) => void; disabled: boolean; start: (start: PageChangeStart) => void }) {
+function PageMenu({ page, open, setOpen, disabled, start, actions, pathEditable = true }: { page: EditorPage; open: boolean; setOpen: (open: boolean) => void; disabled: boolean; start: (start: PageChangeStart) => void; actions?: readonly EditorPageChange["action"][]; pathEditable?: boolean }) {
   const trigger = useRef<HTMLButtonElement>(null), list = useRef<HTMLDivElement>(null), toggle = useRef(setOpen);
   toggle.current = setOpen;
   const shown = open && !disabled;
@@ -90,21 +90,21 @@ function PageMenu({ page, open, setOpen, disabled, start }: { page: EditorPage; 
   return <>
     <button ref={trigger} type="button" className="e-icon-button e-page-more" aria-label={`${page.title} の操作`} aria-haspopup="menu" aria-expanded={shown} disabled={disabled} onClick={() => setOpen(!open)}><Icon name="more" className="e-icon-dots" /></button>
     {shown && <div ref={list} className="e-menu" role="menu" aria-label={`${page.title} の操作`} onKeyDown={keys}>
-      <button type="button" role="menuitem" onClick={() => choose({ action: "update", page })}>名前とURLを変更</button>
-      <button type="button" role="menuitem" onClick={() => choose({ action: "duplicate", page })}>複製</button>
-      <button type="button" role="menuitem" className={makePrivate ? "e-danger" : undefined} onClick={() => choose({ action: "visibility", page, visibility: makePrivate ? "private" : "public" })}>{makePrivate ? "非公開にする" : "公開する"}</button>
+      {(!actions || actions.includes("update")) && <button type="button" role="menuitem" onClick={() => choose({ action: "update", page })}>{pathEditable ? "名前とURLを変更" : "ページ名を変更"}</button>}
+      {(!actions || actions.includes("duplicate")) && <button type="button" role="menuitem" onClick={() => choose({ action: "duplicate", page })}>複製</button>}
+      {(!actions || actions.includes("visibility")) && <button type="button" role="menuitem" className={makePrivate ? "e-danger" : undefined} onClick={() => choose({ action: "visibility", page, visibility: makePrivate ? "private" : "public" })}>{makePrivate ? "非公開にする" : "公開する"}</button>}
     </div>}
   </>;
 }
 
 /** 左レールのページ一覧。検索、パスごとのフォルダ、種類と公開状態、行ごとの操作を表示する。 */
-export function PagePanel({ pages, localizedPages, current, disabled, operations, operationsDisabled, unsaved, select, start, children }: {
+export function PagePanel({ pages, localizedPages, current, disabled, operations, actions, pathEditable = true, operationsDisabled, unsaved, select, start, children }: {
   pages: readonly EditorPage[]; current: EditorTarget | undefined; disabled: boolean;
   localizedPages?: readonly EditorLocalizedPage[];
   /** 見出しの下に置くホスト側の部品（サイトの選択など）。 */
   children?: ReactNode;
   /** ホストがページ操作を実装しているか。 */
-  operations: boolean; operationsDisabled: boolean; unsaved: boolean;
+  operations: boolean; actions?: readonly EditorPageChange["action"][]; pathEditable?: boolean; operationsDisabled: boolean; unsaved: boolean;
   select: (page: EditorPage) => void; start: (start: PageChangeStart) => void;
 }) {
   const [searching, setSearching] = useState(false), [query, setQuery] = useState("");
@@ -145,13 +145,13 @@ export function PagePanel({ pages, localizedPages, current, disabled, operations
         </span>
         <span className={`e-page-state is-${status.state}`} role="img" aria-label={status.text} title={status.text} />
       </button>
-      {operations && (kind === "page" ? <PageMenu page={page} open={menu === key} setOpen={(open) => setMenu(open ? key : "")} disabled={disabled || operationsDisabled} start={start} /> : <span className="e-page-more-spacer" aria-hidden="true" />)}
+      {operations && (!actions || actions.some((action) => action !== "create")) && (kind === "page" ? <PageMenu page={page} open={menu === key} setOpen={(open) => setMenu(open ? key : "")} disabled={disabled || operationsDisabled} start={start} pathEditable={pathEditable} {...(actions ? { actions } : {})} /> : <span className="e-page-more-spacer" aria-hidden="true" />)}
     </div></li>;
   }
   return <div className="e-pages">
     <div className="e-panel-head e-pages-head"><div><h2>ページ</h2><p>編集するページを選択</p></div>
       <div className="e-pages-actions"><button type="button" className="e-icon-button" aria-label="検索" aria-pressed={searching} onClick={() => searching ? closeSearch() : setSearching(true)}><Icon name="search" /></button>
-        {operations && <button type="button" className="e-icon-button" aria-label="ページを追加" disabled={disabled || operationsDisabled} onClick={() => start({ action: "create" })}><Icon name="plus" /></button>}</div>
+        {operations && (!actions || actions.includes("create")) && <button type="button" className="e-icon-button" aria-label="ページを追加" disabled={disabled || operationsDisabled} onClick={() => start({ action: "create" })}><Icon name="plus" /></button>}</div>
     </div>
     {children}
     {searching && <input className="e-page-search" type="search" aria-label="ページを検索" placeholder="ページ名・パスで検索" value={query} autoFocus
@@ -164,12 +164,12 @@ export function PagePanel({ pages, localizedPages, current, disabled, operations
   </div>;
 }
 
-export function pageChangeNotice(change: EditorPageChange): string {
-  return change.action === "create" ? "ページを作成しました。" : change.action === "duplicate" ? "ページを複製しました。" : change.action === "update" ? "ページ名とURLを変更しました。"
+export function pageChangeNotice(change: EditorPageChange, pathEditable = true): string {
+  return change.action === "create" ? "ページを作成しました。" : change.action === "duplicate" ? "ページを複製しました。" : change.action === "update" ? pathEditable ? "ページ名とURLを変更しました。" : "ページ名を変更しました。"
     : change.visibility === "private" ? "ページを非公開にしました。" : "ページを公開状態にしました。";
 }
-const dialogTitle = (start: PageChangeStart) => start.action === "visibility" ? start.visibility === "private" ? "ページを非公開にする" : "ページを公開する"
-  : start.action === "create" ? "ページを追加" : start.action === "duplicate" ? "ページを複製" : "ページ名とURLを変更";
+const dialogTitle = (start: PageChangeStart, pathEditable = true) => start.action === "visibility" ? start.visibility === "private" ? "ページを非公開にする" : "ページを公開する"
+  : start.action === "create" ? "ページを追加" : start.action === "duplicate" ? "ページを複製" : pathEditable ? "ページ名とURLを変更" : "ページ名を変更";
 function initialValues(start: PageChangeStart, pages: readonly EditorPage[], site: EditorSite, locale: string): { title: string; path: string } {
   const free = (base: string, pageLocale: string) => {
     for (let index = 1; index < 100; index++) { const candidate = index === 1 ? base : `${base}-${index}`; if (!findPathConflict(pages, { siteId: site.id, locale: pageLocale, path: candidate })) return candidate; }
@@ -181,7 +181,8 @@ function initialValues(start: PageChangeStart, pages: readonly EditorPage[], sit
 }
 
 /** ページ操作の二段階確認。影響を確認し、明示の同意後だけ反映する。 */
-export function PageChangeDialog({ start, site, pages, locale, prepare, apply, applied, conflicted, reload, close }: {
+export function PageChangeDialog({ start, site, pages, locale, prepare, apply, applied, conflicted, reload, close, pathEditable = true }: {
+  pathEditable?: boolean;
   start: PageChangeStart; site: EditorSite; pages: readonly EditorPage[];
   /** 新しいページの locale。 */
   locale: string;
@@ -238,8 +239,9 @@ export function PageChangeDialog({ start, site, pages, locale, prepare, apply, a
   let body: ReactNode;
   if (!plan) {
     body = <>
-      <h2>{dialogTitle(start)}</h2>
+      <h2>{dialogTitle(start, pathEditable)}</h2>
       {start.action !== "create" && <p className="e-help">{start.page.title}{start.page.path ? ` · ${start.page.path}` : ""}</p>}
+      {start.action === "update" && !pathEditable && <p className="e-help">URL変更はまだ利用できません。ページ名だけを変更できます。</p>}
       {start.action === "visibility" ? <p>{makePrivate ? "公開中のURLは表示されなくなり、検索エンジンと sitemap からも外れます。次の画面でリンク元とナビゲーションへの影響を確認できます。" : "公開サイトにこのページを表示できる状態にします。表示する内容は、公開済みの版です。"}</p> : <>
         <label className="e-field" htmlFor={`${id}-title`}><span>ページ名</span>
           <input id={`${id}-title`} value={title} autoFocus disabled={!!busy} aria-invalid={!!titleProblem} aria-describedby={titleProblem ? `${id}-title-problem` : undefined}
@@ -248,10 +250,10 @@ export function PageChangeDialog({ start, site, pages, locale, prepare, apply, a
         </label>
         <label className="e-field" htmlFor={`${id}-path`}><span>URL パス</span>
           <span className="e-url-input">{site.domains[0] && <span className="e-url-prefix" aria-hidden="true">{site.domains[0]}</span>}
-            <input id={`${id}-path`} value={path} disabled={!!busy} spellCheck={false} autoCapitalize="off" aria-invalid={!!pathProblem} aria-describedby={`${id}-path-help`}
+            <input id={`${id}-path`} readOnly={start.action === "update" && !pathEditable} value={path} disabled={!!busy} spellCheck={false} autoCapitalize="off" aria-invalid={!!pathProblem} aria-describedby={`${id}-path-help`}
               onChange={(event) => setPath(event.target.value)} onBlur={() => touch("path")} /></span>
           {pathProblem && <small className="e-help e-problem" role="alert">{pathProblem}</small>}
-          <small id={`${id}-path-help`} className="e-help">半角英小文字・数字と - _ を / で区切ります。例: /about/team</small>
+          <small id={`${id}-path-help`} className="e-help">{start.action === "update" && !pathEditable ? "このホストではURLは表示のみです。" : "半角英小文字・数字と - _ を / で区切ります。例: /about/team"}</small>
         </label>
       </>}
       {changeProblem && <p className="e-help">{changeProblem}</p>}
@@ -280,7 +282,7 @@ export function PageChangeDialog({ start, site, pages, locale, prepare, apply, a
           <button type="button" className={makePrivate ? "e-danger-primary" : "e-primary"} disabled={!confirmed || !!busy} onClick={() => void confirm()}>{makePrivate ? "非公開にする" : "変更を反映"}</button></>}</div>
     </>;
   }
-  return <Dialog name={dialogTitle(start)} dismiss={() => { if (!busy) close(); }}>{body}</Dialog>;
+  return <Dialog name={dialogTitle(start, pathEditable)} dismiss={() => { if (!busy) close(); }}>{body}</Dialog>;
 }
 
 /** imageAsset があれば imageSrc より優先する（素材とURLはどちらか一方）。 */
@@ -473,14 +475,14 @@ function SearchPreview({ metadata, url }: { metadata: PageMetadata | undefined; 
 }
 
 /** 右レール「ページ」タブの内容。ページ操作は確認付き、公開情報は文書の編集として undo/redo の対象にする。 */
-export function PageSettings({ document, page, site, settings, field, apply, report, disabled, targetMode = false, hasTargetLocale = false, cover, operations, operationsDisabled, unsaved, start }: {
+export function PageSettings({ document, page, site, settings, field, apply, report, disabled, targetMode = false, hasTargetLocale = false, cover, operations, actions, pathEditable = true, operationsDisabled, unsaved, start }: {
   document: PageDocument; page: EditorPage | undefined; site: EditorSite | undefined; settings: SiteSettingsState;
   field: FieldRenderer; apply: (operation: EditorOperation) => string | undefined; report: (message: string) => void; disabled: boolean;
   targetMode?: boolean; hasTargetLocale?: boolean; cover?: CoverPicker | undefined;
-  operations: boolean; operationsDisabled: boolean; unsaved: boolean; start: (start: PageChangeStart) => void;
+  operations: boolean; actions?: readonly EditorPageChange["action"][]; pathEditable?: boolean; operationsDisabled: boolean; unsaved: boolean; start: (start: PageChangeStart) => void;
 }) {
   const meta = document.meta ?? {}, kind = page?.kind ?? "page", domain = site?.domains[0], path = publicPath(page);
-  const canChange = operations && !!page && kind === "page", changeDisabled = disabled || operationsDisabled;
+  const canChange = operations && (!actions || actions.includes("update")) && !!page && kind === "page", canVisibility = operations && (!actions || actions.includes("visibility")) && !!page && kind === "page", changeDisabled = disabled || operationsDisabled;
   const run = (operation: EditorOperation) => { const problem = apply(operation); if (problem) report(problem); };
   const offered = (site?.structuredData ?? []).filter((preset, index, all) => all.findIndex((other) => other.id === preset.id) === index);
   const selected = meta.structuredData ?? [], unsupported = selected.filter((value) => !offered.some((preset) => preset.id === value));
@@ -490,14 +492,14 @@ export function PageSettings({ document, page, site, settings, field, apply, rep
   const coverUrl = (value: string): EditorOperation => ({ type: "meta", field: "ogImage", value: value ? { src: value, alt: image?.alt ?? "" } : image && "asset" in image ? image : undefined });
   return <div className="e-page-settings">
       <section className="e-section">
-        <div className="e-section-head"><h3>ページ設定</h3>{canChange && <button type="button" className="e-small" aria-label="ページ名とURLを変更" disabled={changeDisabled} onClick={() => start({ action: "update", page })}>変更</button>}</div>
+        <div className="e-section-head"><h3>ページ設定</h3>{canChange && <button type="button" className="e-small" aria-label={pathEditable ? "ページ名とURLを変更" : "ページ名を変更"} disabled={changeDisabled} onClick={() => start({ action: "update", page })}>変更</button>}</div>
         <dl className="e-rows">
           <div><dt>ページ名</dt><dd>{page?.title ?? "—"}</dd></div>
           <div><dt>パス</dt><dd>{page?.path ?? "未設定"}</dd></div>
           <div><dt>種類</dt><dd>{kindLabels[kind] ?? kind}</dd></div>
-          {!canChange && <div><dt>公開状態</dt><dd>{page?.visibility === "private" ? "非公開" : page?.publication ? <>{page.publication.label}<small>{page.publication.description}</small></> : page?.published === false ? "未公開" : "公開"}</dd></div>}
+          {!canVisibility && <div><dt>公開状態</dt><dd>{page?.visibility === "private" ? "非公開" : page?.publication ? <>{page.publication.label}<small>{page.publication.description}</small></> : page?.published === false ? "未公開" : "公開"}</dd></div>}
         </dl>
-        {canChange && <button type="button" role="switch" className="e-switch" aria-checked={page.visibility === "private"} disabled={changeDisabled}
+        {canVisibility && <button type="button" role="switch" className="e-switch" aria-checked={page.visibility === "private"} disabled={changeDisabled}
           onClick={() => start({ action: "visibility", page, visibility: page.visibility === "private" ? "public" : "private" })}>
           <span className="e-switch-track" aria-hidden="true"><span className="e-switch-thumb" /></span>ページを非公開にする</button>}
         {operations && page && kind !== "page" && <small className="e-help">このテンプレートの名前とURLは変更できません。</small>}

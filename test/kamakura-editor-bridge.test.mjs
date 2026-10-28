@@ -241,6 +241,24 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
   assert.deepEqual(acceptedCatalog.blockContracts, catalog().blockContracts);
   assert.match(boundRequestIds[0], /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu);
 
+  const pageChange = { action: "update", target: { siteId: "kamakura", pageId: "community", locale: "ja" }, title: "地域のコミュニティ", path: "/community" };
+  let pageChangeUpstream;
+  bindingResponseFactory = async (request) => {
+    pageChangeUpstream = { path: new URL(request.url).pathname, body: await request.json(), signature: request.headers.get("X-NIHO-Studio-Signature") };
+    return Response.json({ status: "fixture" });
+  };
+  const callPageChange = (body, headers = {}) => workerModule.default.fetch(new Request("https://studio.niho.life/api/projects/project-kamakura/sites/kamakura/editor/page-changes/prepare", {
+    method: "POST", headers: { "Cf-Access-Jwt-Assertion": token, "Content-Type": "application/json", Origin: "https://studio.niho.life", "Sec-Fetch-Site": "same-origin", ...headers }, body: JSON.stringify(body)
+  }), env);
+  assert.equal((await callPageChange({ change: pageChange })).status, 200);
+  assert.deepEqual(pageChangeUpstream.body, { change: pageChange });
+  assert.equal(pageChangeUpstream.path, "/internal/studio/web-content/_site/page-changes/prepare");
+  assert.match(pageChangeUpstream.signature, /^v1=[0-9a-f]{64}$/u);
+  assert.equal((await callPageChange({ change: pageChange, impact: {} })).status, 400);
+  assert.equal((await callPageChange({ change: pageChange }, { Origin: "https://other.example" })).status, 400);
+  assert.equal((await callPageChange({ change: pageChange }, { "Cf-Access-Jwt-Assertion": "" })).status, 401);
+  bindingResponseFactory = null;
+
   let embedUpstream;
   bindingResponseFactory = async (request) => {
     embedUpstream = { url: request.url, method: request.method, body: await request.json(), signature: request.headers.get("X-NIHO-Studio-Signature") };
@@ -390,4 +408,29 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
   assert.equal(serializedLogs.includes("response body aborted"), false);
   assert.equal(boundRequestIds.includes(incompatibleId), true, "the same support ID must cross the service binding");
   assert.equal(jwksReads, 1);
+});
+
+test("鎌倉のページ名操作はホストcapabilityがある時だけ接続し、再読込で最新一覧を取得する", async (t) => {
+  const { createKamakuraAdapter } = await loadKamakuraEditor();
+  const source = catalog(), signal = new AbortController().signal;
+  assert.equal(createKamakuraAdapter(contract.parseKamakuraCatalog(source), () => {}).preparePageChange, undefined);
+  source.pageChangeActions = ["update"]; source.pagePathEditable = false;
+  source.pages[0] = { ...source.pages[0], path: "/dinner", kind: "page" };
+  const change = { action: "update", target: { siteId: "kamakura", pageId: source.pages[0].pageId, locale: "ja" }, title: "地域の夕食会", path: "/dinner" };
+  const plan = { change, confirmationToken: "00000000-0000-4000-8000-00000000000011111111-1111-4111-8111-111111111111", domain: "https://next-kamakura.niho.life", impact: { before: "https://next-kamakura.niho.life/dinner", after: "https://next-kamakura.niho.life/dinner", linkedFrom: [], navigation: [], notes: [] } };
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (path, init) => {
+    const body = init.body ? JSON.parse(init.body) : undefined; calls.push({ path, body });
+    if (String(path).endsWith("/prepare")) return Response.json(plan);
+    if (String(path).endsWith("/apply")) return Response.json({ status: "applied", page: { ...change.target, title: change.title, path: change.path, kind: "page" } });
+    assert.ok(String(path).endsWith("/catalog")); return Response.json({ ...source, pages: [{ ...source.pages[0], title: change.title }] });
+  });
+  const adapter = createKamakuraAdapter(contract.parseKamakuraCatalog(source), () => {});
+  assert.deepEqual(adapter.pageChangeActions, ["update"]); assert.equal(adapter.pagePathEditable, false);
+  assert.deepEqual(await adapter.preparePageChange(change, signal), plan);
+  assert.equal((await adapter.applyPageChange(plan, signal)).status, "applied");
+  assert.deepEqual(calls.at(-1).body, { change, confirmationToken: plan.confirmationToken });
+  assert.equal((await adapter.listPages("kamakura", signal))[0].title, change.title);
+  await assert.rejects(adapter.preparePageChange({ action: "visibility", target: change.target, visibility: "private" }, signal), /利用できません/u);
+  await assert.rejects(adapter.preparePageChange({ ...change, target: { ...change.target, locale: "en" } }, signal), /編集対象/u);
 });
