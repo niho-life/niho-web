@@ -24,6 +24,7 @@ import {
 import { parseLocalizationOverlay, parseLocalizationValue, parseSiteLocalizationConfig } from "../src/localization.js";
 import { DocumentValidationError } from "../src/validation-utils.js";
 import { parseEnglishPublicationAccepted } from "../src/english-publication.js";
+import { parseBreakpointSettings } from "../src/style-model.js";
 
 type D1Meta = { readonly changes?: number };
 type D1Result<T> = { readonly results?: readonly T[]; readonly success: boolean; readonly meta?: D1Meta };
@@ -107,6 +108,7 @@ type InvitationPreviewRow = {
   readonly role: Role;
   readonly expires_at: number;
 };
+type BreakpointSettingsRow = { readonly settings_json: string; readonly version: number };
 
 const MAX_MUTATION_BODY_BYTES = 16 * 1024;
 const MAX_EDITOR_SAVE_BODY_BYTES = 600 * 1024;
@@ -1235,6 +1237,59 @@ async function editorRole(env: Env, identity: AccessIdentity, projectId: string,
   `).bind(identity.subject, projectId, siteId).first<{ readonly role: unknown }>();
   const role = row?.role;
   return role === "owner" || role === "editor" ? role : null;
+}
+
+function breakpointVersion(value: unknown): number | null {
+  if (typeof value !== "string" || !/^b\.[1-9][0-9]{0,14}$/u.test(value)) return null;
+  const parsed = Number(value.slice(2));
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function storedBreakpointSettings(row: BreakpointSettingsRow): { settings: ReturnType<typeof parseBreakpointSettings>; version: string } {
+  if (!Number.isSafeInteger(row.version) || row.version < 1 || typeof row.settings_json !== "string" || row.settings_json.length > MAX_MUTATION_BODY_BYTES) throw new Error("invalid stored breakpoint settings");
+  let value: unknown;
+  try { value = JSON.parse(row.settings_json) as unknown; }
+  catch { throw new Error("invalid stored breakpoint settings"); }
+  return { settings: parseBreakpointSettings(value), version: `b.${row.version}` };
+}
+
+/** 鎌倉 Studio 自身が所有する D1 のサイト単位ブレークポイント。 */
+async function breakpointSettingsApi(request: Request, env: Env, identity: AccessIdentity, url: URL, projectId: string, siteId: string): Promise<Response> {
+  if (projectId !== KAMAKURA_EDITOR_PROJECT_ID || siteId !== KAMAKURA_EDITOR_SITE_ID) return json({ error: "not_found" }, 404);
+  if (url.href.includes("?")) return json({ error: "invalid_request" }, 400);
+  if (request.method !== "GET" && request.method !== "PUT") return json({ error: "method_not_allowed" }, 405);
+  if (!await editorMember(env, identity, projectId, siteId)) return json({ error: "forbidden" }, 403);
+  if (request.method === "GET") {
+    const row = await env.DB.prepare(`
+      SELECT settings_json, version
+        FROM site_breakpoint_settings
+       WHERE site_id = ?1
+       LIMIT 1
+    `).bind(siteId).first<BreakpointSettingsRow>();
+    return row ? json(storedBreakpointSettings(row)) : json({ error: "not_found" }, 404);
+  }
+  let body: Record<string, unknown>;
+  try { body = await enforceMutationBoundary(request); exactKeys(body, ["settings", "expectedVersion"]); }
+  catch { return json({ error: "invalid_request" }, 400); }
+  const expected = breakpointVersion(body.expectedVersion);
+  let settings: ReturnType<typeof parseBreakpointSettings>;
+  try { settings = parseBreakpointSettings(body.settings); }
+  catch { return json({ error: "invalid_request" }, 400); }
+  if (expected === null) return json({ error: "invalid_request" }, 400);
+  const results = await env.DB.batch<unknown>([env.DB.prepare(`
+    UPDATE site_breakpoint_settings
+       SET settings_json = ?1, version = version + 1, updated_at = CURRENT_TIMESTAMP
+     WHERE site_id = ?2 AND version = ?3
+       AND EXISTS (
+         SELECT 1
+           FROM project_members AS m
+           JOIN sites AS s ON s.project_id = m.project_id
+          WHERE m.access_subject = ?4 AND m.project_id = ?5 AND s.id = ?2
+            AND m.role IN ('owner', 'editor')
+       )
+  `).bind(JSON.stringify(settings), siteId, expected, identity.subject, projectId)]);
+  if (!changed(results[0])) return json({ error: "conflict" }, 409);
+  return json({ status: "saved", version: `b.${expected + 1}` });
 }
 
 async function experienceEditorOwner(env: Env, identity: AccessIdentity): Promise<boolean> {
@@ -2463,6 +2518,7 @@ async function scopedApi(request: Request, env: Env, identity: AccessIdentity, u
   const action = match[3] ?? "";
   if (action === "/cms" || action.startsWith("/cms/")) return kamakuraCmsApi(request, env, identity, url, projectId, siteId, action.slice("/cms".length));
   if (action === "/localization" || action.startsWith("/localization/")) return kamakuraLocalizationApi(request, env, identity, url, projectId, siteId, action.slice("/localization".length));
+  if (action === "/breakpoints") return breakpointSettingsApi(request, env, identity, url, projectId, siteId);
   if (isTrustedEditorAction(action)) return editorApi(request, env, identity, url, projectId, siteId, action);
   if (request.method === "GET") {
     if (action === "/dashboard") return dashboard(env, identity, projectId, siteId);

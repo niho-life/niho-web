@@ -15,7 +15,7 @@ import { SharedStyleLibrary, sharedTokenReason } from "./editor-shared-styles.js
 import { detachRemovedSiteStyles, parseSiteStyles, resolveComponentStyles, resolvePageStyles, type SiteStyles } from "./site-styles.js";
 import type { StyleState } from "./editor-style-motion.js";
 import { createInsertionNode, resolveBuilderDefinition, type InsertionCategory } from "./builder.js";
-import { editorTiers, hiddenAt, normalizeBreakpoints, tierForWidth, tierName } from "./style-model.js";
+import { breakpointSettingsFromLegacy, editorTiers, hiddenAt, normalizeBreakpoints, tierForWidth, tierName } from "./style-model.js";
 import { Dialog } from "./editor-dialog.js";
 import { PageChangeDialog, PageSettings, PagePanel, ReleaseSearchSummary, SiteSettingsPanel, chooseSiteCover, coverReferences, pageChangeNotice, publicInfoMessage, useSiteSettings, type FieldOptions, type PageChangeStart } from "./editor-pages.js";
 import { AutosaveSwitch, ConflictDialog, HistoryBar, HistoryDialogs, LibraryRecoveryBanner, RecoveryBanner, RecoveryCompareDialog, ReleaseAffected, SaveStatus, VersionPanel, autosaveDelay, classifySaveError, formatDateTime, isOffline, saveProblemNotice, saveStatus, targetKeyOf, useAutosave, useLibraryRecovery, useOnline, useRecovery, useVersionHistory, type LatestSnapshot, type SaveProblem } from "./editor-history.js";
@@ -47,6 +47,7 @@ import { CanvasViewportToolbar, EditorWorkspace, InspectorTabs, PanelToggle, Vie
 import { workspaceCss } from "./editor-workspace-style.js";
 import { iconCatalog } from "./icons.js";
 import { parseEnglishPublication } from "./english-publication.js";
+import { BreakpointSettingsDialog, breakpointPreview, useBreakpointSettings } from "./editor-breakpoints.js";
 
 export type * from "./editor-types.js";
 export { EditorSessionLoadError } from "./editor-session.js";
@@ -433,7 +434,11 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const [styleState, setStyleState] = useState<StyleState>("normal"), [motion, setMotion] = useState(false), [replay, setReplay] = useState(0);
   const [scaleMode, setScaleMode] = useState<WorkspaceScale>("fit"), [stageSize, setStageSize] = useState({ width: 0, height: 0 }), stageRef = useRef<HTMLDivElement>(null);
   const builderDefinition = useMemo(() => resolveBuilderDefinition(builder), [builder]);
-  const breakpoints = normalizeBreakpoints(hostBreakpoints), canvasPreview = hostPreviewComponent(previewComponent);
+  const fallbackBreakpointSettings = useMemo(() => breakpointSettingsFromLegacy(hostBreakpoints, mobilePreviewWidth), [hostBreakpoints, mobilePreviewWidth]);
+  const breakpointSettings = useBreakpointSettings(adapter, siteId, fallbackBreakpointSettings), breakpointView = breakpointPreview(breakpointSettings.settings);
+  const breakpoints = breakpointSettings.editable ? breakpointView.breakpoints : normalizeBreakpoints(hostBreakpoints);
+  const basePreviewWidth = breakpointSettings.editable ? breakpointView.basePreviewWidth : mobilePreviewWidth;
+  const baseBreakpointLabel = breakpointSettings.editable ? breakpointView.baseLabel : "モバイル", canvasPreview = hostPreviewComponent(previewComponent);
   const [busy, setBusy] = useState(""), [pendingFields, setPendingFields] = useState<Record<string, "page" | "site">>({});
   const [navigation, setNavigation] = useState<Navigation | null>(null), [plan, setPlan] = useState<EditorReleasePlan | null>(null), [confirmed, setConfirmed] = useState(false);
   const [localeRelease, setLocaleRelease] = useState<EditorLocaleReleaseState | null>(null), [localeReleasePlan, setLocaleReleasePlan] = useState<EditorLocaleReleasePlan | null>(null);
@@ -443,6 +448,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const [panel, setPanel] = useState<"add" | "pages" | "layers" | "styles" | "assets" | "upload" | "stock" | "connect" | "components" | "history">("pages");
   const [inspector, setInspector] = useState<Inspector>("page"), [elementTab, setElementTab] = useState<InspectorTab>("text"), [preview, setPreview] = useState(false);
   const [leftPanelOpen, setLeftPanelOpen] = useState(true), [rightPanelOpen, setRightPanelOpen] = useState(true);
+  const [breakpointSettingsOpen, setBreakpointSettingsOpen] = useState(false);
   const [localizationManual, setLocalizationManual] = useState<EditorLocalizationManualBuffer | null>(null);
   const [siteComponentReturn, setSiteComponentReturn] = useState<EditorTarget | null>(null);
   const [layerDrop, setLayerDrop] = useState<{ id: string; position: "before" | "inside" | "after" } | null>(null);
@@ -520,7 +526,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const autosaveMs = autosaveDelay(autosave), autosaveActive = autosaveMs !== undefined && autosaveOn;
   // オフラインで失敗した後、接続が戻ったら自動保存は1回だけ再試行する。
   const online = useOnline(() => { if (problemRef.current !== "offline") return; if (!autosaveActive) setProblem("failed"); else if (!pendingChanges) setProblem(null); else void save("auto"); });
-  const modal = !!plan || !!localeReleasePlan || !!navigation || !!pageChange || conflictView > 0 || recoveryCompare || versions.dialog !== null || !!componentDialog || !!libraryReload;
+  const modal = !!plan || !!localeReleasePlan || !!navigation || !!pageChange || breakpointSettingsOpen || conflictView > 0 || recoveryCompare || versions.dialog !== null || !!componentDialog || !!libraryReload;
   // 自動保存は手動保存と同じく部品 → ページの順に保存する。部品とページのどちらが変わっても待ち直す。
   const autosaveSubject = useMemo(() => [session?.history.present, libraryPresent], [session?.history.present, libraryPresent]);
   // ページが無いサイトでも、部品の変更は部品ライブラリ単位の key で自動保存する（部品の端末への退避は、ストアが対応する場合だけのため）。
@@ -1510,10 +1516,11 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
           : <details className="e-history" hidden={visiblePanel === "history"}><summary>公開済みの版に戻す</summary><label className="e-field"><span>戻す版</span><select aria-label="戻す版" value={rollbackRevision} disabled={blocked || !!session?.readOnly} onChange={(event) => setRollbackRevision(event.target.value)}><option value="">版を選択</option>{session?.releases.map((release) => <option key={release.revision} value={release.revision}>{release.label}</option>)}</select></label><button disabled={siteSettings.dirty || siteSettings.busy || !rollbackRevision || !!session?.readOnly || session?.hasSavedDraft === false || dirty || libraryDirty || !!masterId || blocked || hasInput} onClick={() => void prepare("rollback")}>戻す内容を確認</button><small className="e-help">{session?.readOnly?.reason ?? "未保存の変更がある間は実行できません。"}</small>{publishHold && <small className="e-help">{publishHold}</small>}</details>}
       </div></div>
     </aside>} canvas={<section className="e-canvas" aria-label="ライブプレビュー">{preview && <button className="e-preview-exit" aria-label="編集に戻る" title="編集に戻る" onClick={() => setPreview(false)}><WorkspaceIcon name="preview" /><span>編集に戻る</span></button>}{masterComponent && <ComponentBanner name={masterComponent.name} back={leaveComponent} />}{isSiteComponent && page && <SiteComponentBanner name={page.title} {...(siteComponentBack ? { back: () => requestNavigation({ type: "page", target: siteComponentBack }) } : {})} />}
-      <CanvasViewportToolbar width={width} widthField={widthField} leftOpen={leftPanelOpen} rightOpen={rightPanelOpen} disabled={historyMode} presets={viewportPresets(breakpoints, mobilePreviewWidth)}
+      <CanvasViewportToolbar width={width} widthField={widthField} leftOpen={leftPanelOpen} rightOpen={rightPanelOpen} disabled={historyMode} presets={viewportPresets(breakpoints, basePreviewWidth, baseBreakpointLabel)}
         onWidthInput={(value) => { setWidthField(value); const parsed = Number(value); if (value !== "" && Number.isInteger(parsed) && parsed >= 320 && parsed <= 1920) setWidth(parsed); }}
         onWidthCommit={() => { const parsed = Number(widthField); const normalized = Number.isFinite(parsed) ? Math.max(320, Math.min(1920, Math.round(parsed))) : width; setWidth(normalized); setWidthField(String(normalized)); }}
         toggleLeft={() => setLeftPanelOpen((value) => !value)} toggleRight={() => setRightPanelOpen((value) => !value)}>
+        <button type="button" className="e-small e-breakpoint-open" aria-haspopup="dialog" onClick={() => setBreakpointSettingsOpen(true)}>編集モード</button>
         {resolvedAssets.failed && <button type="button" className="e-small" onClick={resolvedAssets.retry}>アセットを再読み込み</button>}
         {document && <span className="e-tier-note" title={`${tierName(shownTier)} の指定が効く幅です`}>表示中: {width}px（{shownTier.label} の段）</span>}
         {document && <button type="button" className="e-small e-motion-toggle" aria-label="アニメーションを再生" aria-pressed={motion || preview} disabled={preview} title={preview ? "プレビュー中はアニメーションを再生します" : "登場や状態の変化をアニメーションで再生します"}
@@ -1670,6 +1677,9 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       prepare={(change, signal) => adapter.preparePageChange!(change, signal)} apply={(plan, signal) => adapter.applyPageChange!(plan, signal)}
       applied={(page, change) => void pageApplied(page, change)} conflicted={() => void reloadPages()} close={() => setPageChange(null)}
       reload={() => { const current = sessionRef.current?.target; setPageChange(null); void reloadPages().then(() => current && load(current)); }} />}
+    {breakpointSettingsOpen && <BreakpointSettingsDialog state={breakpointSettings} {...(pageDocument ? { document: pageDocument } : {})}
+      {...(dirty || libraryDirty || hasInput || siteSettings.dirty || siteSettings.busy || !!busy ? { saveBlockedReason: "ページ、コンポーネント、共通スタイル、サイト設定の未保存変更や処理を完了してから保存してください。" } : {})}
+      close={() => setBreakpointSettingsOpen(false)} />}
     {conflictView > 0 && session && pageDocument && <ConflictDialog key={conflictView} adapter={adapter} target={session.target} present={pageDocument} blocks={blocks} components={libraryPresent} siteStyles={siteSettings.settings} close={() => setConflictView(0)} discard={loadLatest} overwrite={overwriteWith} />}
     {libraryReload && <Dialog name="コンポーネントを読み直す" dismiss={() => setLibraryReload(null)}><LibraryReloadDialogBody plan={libraryReload.plan} close={() => setLibraryReload(null)} apply={() => applyLibraryReload(libraryReload)} /></Dialog>}
     {recoveryCompare && recoveryState.offer && pageDocument && <RecoveryCompareDialog base={pageDocument} baseLabel={dirty ? "現在の編集内容" : "保存済みの内容"} recovered={recoveryState.offer} stale={recoveryStale} close={() => setRecoveryCompare(false)} apply={restoreRecovered} />}

@@ -78,7 +78,7 @@ Alias は Worker と client router の固定対応表で内部の Project / Site
 
 Experience と Kamakura の Editor UI / BFF は実装されています。Experience の本番編集は niho-app Backend Draft PR #19268 が本番反映済みで、NIHO API と Studio Worker の `NIHO_STUDIO_BRIDGE_SECRET` が同じ値に設定されている場合に限り有効です。STG検証画面は `/projects/project-experience/sites/experience/editor/staging` に限り、D1 の Experience owner のみ開けます。画面・APIの両方で owner を確認し、固定した `https://api-stg.niho.life` と別の `NIHO_STUDIO_BRIDGE_SECRET_STG` を使います。Kamakura は `kamakura-site` の内部 endpoint、service binding `KAMAKURA_SITE`、両 Worker の `KAMAKURA_STUDIO_BRIDGE_SECRET` が揃った後に利用します。この host は Dashboard の公開状態や解析値を合成せず、`unknown` / `unavailable` / `disconnected` / `null` のまま表示します。Kamakura の公開情報だけはサイト側から読みます（下の「Kamakura の Dashboard 公開情報」）。解析はどのサイトも `disconnected` です。Dashboard の「メンバー」は `GET …/dashboard` の `members` で、D1 の `project_members` から参加者全員の表示名と役割（owner / editor）を owner 先頭で返します（参加している owner / editor なら誰でも読める。Access subject・メール・日時は返さない）。招待・権限変更・参加解除は従来どおり membership API の owner 操作だけで、D1 が読めないときは `members` だけ `unavailable` にして Dashboard 全体は返します。
 
-両Editorは `PageEditor` の共通workspaceを使います。左のツール列とパネル、中央キャンバス、右インスペクター上段の倍率と編集操作、下部の表示幅操作はサイト間で共通です。各hostはダッシュボードへ戻る入口だけを `toolbarStart` に渡し、サイト固有のレイアウト指定は行いません。左右パネルは開閉でき、狭い表示でもoverlayで編集を続けられます。
+両Editorは `PageEditor` の共通workspaceを使います。左のツール列とパネル、中央キャンバス、右インスペクター上段の倍率と編集操作、下部の表示幅操作と「編集モード」はサイト間で共通です。Kamakura の編集モードは Studio D1 のサイト単位設定へ接続し、未接続hostは現在値の読み取り専用表示になります。各hostはダッシュボードへ戻る入口だけを `toolbarStart` に渡し、サイト固有のレイアウト指定は行いません。左右パネルは開閉でき、狭い表示でもoverlayで編集を続けられます。
 
 ## 認証・認可境界
 
@@ -97,6 +97,8 @@ Cloudflare Access 側で Studio hostname 全体を Access application として�
 - API と静的応答は `no-store`。CSP、frame 拒否、MIME sniff 拒否等を付与する
 
 Member 管理 mutation は従来どおり `POST` のみです。request URL と完全一致する `Origin`、`Sec-Fetch-Site: same-origin`、`application/json`、16 KiB の streaming 上限、JSON object、endpoint ごとの完全な key set を必須にします。この 16 KiB 境界は editor 追加後も変更しません。Editor mutation も同じ same-origin / JSON 条件を要求し、draft だけ 600 KiB、release-plan / release は 16 KiB の streaming 上限です。token、token hash、JWT、HMAC secret、request body は application log に出力しません。
+
+Kamakura のサイト単位ブレークポイントは `GET/PUT /api/projects/project-kamakura/sites/kamakura/breakpoints` です。`0006_site_breakpoint_settings.sql` が D1 に設定 JSON と整数 version を保存し、従来表示と同じ Mobile preview 480、Tablet 691 / preview 840、Small 991、PC 1280 を初期化します。GET/PUT は Access と現在の owner/editor membership を毎回確認し、別 Project/Site は404、未知methodは405です。PUTは上記の同一origin・JSON境界、固定key、320〜1920px・固定語彙・昇順・段内previewの検証を通し、`b.<integer>` の opaque versionをSQLのWHERE句でCASします。不一致は409で、ページ文書・公開API・上流bridgeは変更しません。
 
 ## Experience editor bridge
 

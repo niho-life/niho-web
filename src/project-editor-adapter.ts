@@ -5,6 +5,7 @@ import type { EditorAdapter, EditorComponentAdapter, EditorLocaleReleaseApplyReq
 import { parseRevisionEntry, parseRevisionPage } from "./history.js";
 import { parseSiteSettings } from "./pages.js";
 import { parseProject, type Project } from "./projects.js";
+import { parseBreakpointSettings } from "./style-model.js";
 import { identifier, keys, line, record } from "./validation-utils.js";
 
 function targetForProject(target: EditorTarget, site: EditorSite): EditorTarget {
@@ -288,6 +289,22 @@ export function createProjectEditorAdapter(adapter: EditorAdapter, projectInput:
       }
     } satisfies Pick<EditorAdapter, "applyPageChange"> : {}),
     ...(adapter.siteStyleCapabilities ? { siteStyleCapabilities: adapter.siteStyleCapabilities } : {}),
+    ...(adapter.breakpointSettings ? { breakpointSettings: {
+      async read(siteId, signal) {
+        if (siteId !== site.id) throw new Error("プロジェクト外のサイトは参照できません。");
+        const snapshot = await adapter.breakpointSettings!.read(site.id, signal);
+        return { settings: parseBreakpointSettings(structuredClone(snapshot.settings)), version: line(snapshot.version, "breakpointSettings.version", 512) };
+      },
+      async save(request, signal) {
+        if (request.siteId !== site.id) throw new Error("プロジェクト外のサイトには保存できません。");
+        const settings = parseBreakpointSettings(structuredClone(request.settings));
+        const expectedVersion = line(request.expectedVersion, "breakpointSettings.expectedVersion", 512);
+        const result = await adapter.breakpointSettings!.save({ siteId: site.id, settings, expectedVersion }, signal);
+        if (result.status === "conflict") return { status: "conflict" as const };
+        if (result.status !== "saved") throw new Error("ブレークポイント設定の保存結果が正しくありません。");
+        return { status: "saved" as const, version: line(result.version, "breakpointSettings.version", 512) };
+      }
+    } } : {}),
     ...(adapter.readSiteSettings ? {
       async readSiteSettings(siteId, signal) {
         if (siteId !== site.id) throw new Error("プロジェクト外のサイトは参照できません。");

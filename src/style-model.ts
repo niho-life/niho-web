@@ -1,6 +1,6 @@
 import { expandDocument, instancesOf } from "./component-expand.js";
 import { inheritedStyle, walkNodes, type InheritedStyle, type NodePath } from "./editor-model.js";
-import type { EditorBreakpoint } from "./editor-types.js";
+import type { EditorBreakpoint, EditorBreakpointName, EditorBreakpointSettings } from "./editor-types.js";
 import { detachRemovedSiteStyles, resolvePageStyles, type SiteStyles } from "./site-styles.js";
 import type { ComponentLibrary, ComponentNode, ElementNode, HiddenRange, InstanceNode, NodeStyle, PageDocument, StateName, StyleDeclarations, StyleProperty, StyleValue, TextStyleProperty } from "./types.js";
 import { fail } from "./validation-utils.js";
@@ -14,6 +14,121 @@ export type FieldState = {
   overriddenAt: number[];
 };
 export const defaultBreakpoints: readonly EditorBreakpoint[] = [{ minWidth: 768, label: "タブレット" }, { minWidth: 1280, label: "PC" }];
+export const breakpointLabels: Readonly<Record<EditorBreakpointName, string>> = { Mini: "ミニ", Mobile: "モバイル", Tablet: "タブレット", Small: "スモール", PC: "PC" };
+export const defaultBreakpointSettings: EditorBreakpointSettings = {
+  base: { name: "Mobile", previewWidth: 375 },
+  breakpoints: [{ name: "Tablet", minWidth: 768, previewWidth: 768 }, { name: "PC", minWidth: 1280, previewWidth: 1280 }]
+};
+
+const breakpointOrder: readonly EditorBreakpointName[] = ["Mini", "Mobile", "Tablet", "Small", "PC"];
+export const breakpointDefaultValues: Readonly<Record<EditorBreakpointName, { minWidth: number; previewWidth: number }>> = {
+  Mini: { minWidth: 320, previewWidth: 320 },
+  Mobile: { minWidth: 480, previewWidth: 480 },
+  Tablet: { minWidth: 691, previewWidth: 840 },
+  Small: { minWidth: 991, previewWidth: 991 },
+  PC: { minWidth: 1280, previewWidth: 1280 }
+};
+const plainRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
+const exact = (value: Record<string, unknown>, names: readonly string[]) => Object.keys(value).length === names.length && names.every((name) => Object.hasOwn(value, name));
+const width = (value: unknown) => typeof value === "number" && Number.isInteger(value) && value >= 320 && value <= 1920;
+const clamp = (value: number, minimum: number, maximum: number) => Math.min(maximum, Math.max(minimum, value));
+
+/** Adapter・API・UI が共有する保存値の厳格な検証。 */
+export function parseBreakpointSettings(input: unknown): EditorBreakpointSettings {
+  if (!plainRecord(input) || !exact(input, ["base", "breakpoints"]) || !plainRecord(input.base) || !exact(input.base, ["name", "previewWidth"]) || !Array.isArray(input.breakpoints)) throw new Error("ブレークポイント設定が正しくありません。");
+  const baseName = input.base.name;
+  if (!breakpointOrder.includes(baseName as EditorBreakpointName) || !width(input.base.previewWidth) || input.breakpoints.length > 4) throw new Error("ブレークポイント設定が正しくありません。");
+  const entries = input.breakpoints.map((item) => {
+    if (!plainRecord(item) || !exact(item, ["name", "minWidth", "previewWidth"]) || !breakpointOrder.includes(item.name as EditorBreakpointName) || !width(item.minWidth) || !width(item.previewWidth)) throw new Error("ブレークポイント設定が正しくありません。");
+    return { name: item.name as EditorBreakpointName, minWidth: item.minWidth as number, previewWidth: item.previewWidth as number };
+  });
+  const names = [baseName as EditorBreakpointName, ...entries.map((entry) => entry.name)];
+  if (new Set(names).size !== names.length || names.at(-1) !== "PC") throw new Error("ブレークポイントの PC を最も広い有効段として指定してください。");
+  let previousName = breakpointOrder.indexOf(baseName as EditorBreakpointName), previousWidth = 0;
+  for (const entry of entries) {
+    const order = breakpointOrder.indexOf(entry.name);
+    if (order <= previousName || entry.minWidth <= previousWidth) throw new Error("ブレークポイントは狭い順で重複なく指定してください。");
+    previousName = order; previousWidth = entry.minWidth;
+  }
+  const starts = entries.map((entry) => entry.minWidth);
+  if (starts[0] !== undefined && (input.base.previewWidth as number) >= starts[0]) throw new Error("プレビュー幅はその段の範囲内で指定してください。");
+  entries.forEach((entry, index) => {
+    const next = starts[index + 1] ?? 1921;
+    if (entry.previewWidth < entry.minWidth || entry.previewWidth >= next) throw new Error("プレビュー幅はその段の範囲内で指定してください。");
+  });
+  return { base: { name: baseName as EditorBreakpointName, previewWidth: input.base.previewWidth as number }, breakpoints: entries };
+}
+
+/** 有効段を追加し、隣接段と重ならない初期値へ収める。より狭い段なら現在の base を開始幅付き段へ移す。 */
+export function addBreakpointSetting(settings: EditorBreakpointSettings, name: EditorBreakpointName): EditorBreakpointSettings {
+  const current = parseBreakpointSettings(settings);
+  const active = [current.base.name, ...current.breakpoints.map((entry) => entry.name)];
+  if (active.includes(name)) throw new Error(`${breakpointLabels[name]}はすでに有効です。`);
+  const rank = breakpointOrder.indexOf(name), baseRank = breakpointOrder.indexOf(current.base.name);
+  if (rank < baseRank) {
+    const previewWidth = Math.min(breakpointDefaultValues[name].previewWidth, current.base.previewWidth - 1);
+    if (previewWidth < 320) throw new Error(`${breakpointLabels[current.base.name]}のプレビュー幅を 321px 以上にしてから追加してください。`);
+    const promotedMinWidth = clamp(breakpointDefaultValues[current.base.name].minWidth, previewWidth + 1, current.base.previewWidth);
+    return parseBreakpointSettings({
+      base: { name, previewWidth },
+      breakpoints: [{ name: current.base.name, minWidth: promotedMinWidth, previewWidth: current.base.previewWidth }, ...current.breakpoints]
+    });
+  }
+  const insertion = current.breakpoints.findIndex((entry) => breakpointOrder.indexOf(entry.name) > rank);
+  const index = insertion < 0 ? current.breakpoints.length : insertion;
+  const previous = index === 0 ? { minWidth: 320, previewWidth: current.base.previewWidth } : current.breakpoints[index - 1]!;
+  const next = current.breakpoints[index];
+  const minimum = Math.max(320, previous.minWidth + 1, previous.previewWidth + 1);
+  const maximum = (next?.minWidth ?? 1921) - 1;
+  if (minimum > maximum) throw new Error("隣接する段の開始幅またはプレビュー幅を調整してから追加してください。");
+  const defaults = breakpointDefaultValues[name];
+  const minWidth = clamp(defaults.minWidth, minimum, maximum);
+  const previewWidth = clamp(defaults.previewWidth, minWidth, maximum);
+  const breakpoints = [...current.breakpoints];
+  breakpoints.splice(index, 0, { name, minWidth, previewWidth });
+  return parseBreakpointSettings({ base: current.base, breakpoints });
+}
+
+/** PC 以外の有効段を削除する。base を削除した場合は次の段を base へ昇格する。 */
+export function removeBreakpointSetting(settings: EditorBreakpointSettings, name: EditorBreakpointName): EditorBreakpointSettings {
+  const current = parseBreakpointSettings(settings);
+  if (name === "PC") throw new Error("PC は削除できません。");
+  if (current.base.name === name) {
+    const next = current.breakpoints[0];
+    if (!next) throw new Error("PC は削除できません。");
+    return parseBreakpointSettings({ base: { name: next.name, previewWidth: next.previewWidth }, breakpoints: current.breakpoints.slice(1) });
+  }
+  if (!current.breakpoints.some((entry) => entry.name === name)) throw new Error(`${breakpointLabels[name]}は有効ではありません。`);
+  return parseBreakpointSettings({ base: current.base, breakpoints: current.breakpoints.filter((entry) => entry.name !== name) });
+}
+
+export function breakpointSettingsBreakpoints(settings: EditorBreakpointSettings): readonly EditorBreakpoint[] {
+  const parsed = parseBreakpointSettings(settings);
+  return parsed.breakpoints.map((entry) => ({ minWidth: entry.minWidth, label: breakpointLabels[entry.name], previewWidth: entry.previewWidth }));
+}
+
+/** 既存 PageEditorProps を管理画面の読み取り専用表示へ写す互換入口。 */
+export function breakpointSettingsFromLegacy(input: readonly EditorBreakpoint[] | undefined, mobilePreviewWidth = 375): EditorBreakpointSettings {
+  const source = normalizeBreakpoints(input), reverseLabels = new Map(Object.entries(breakpointLabels).map(([name, label]) => [label, name as EditorBreakpointName]));
+  const names = source.map((entry, index) => reverseLabels.get(entry.label) ?? (index === source.length - 1 ? "PC" : source.length - index === 2 ? "Tablet" : "Small"));
+  const entries = source.map((entry, index) => ({ name: names[index]!, minWidth: entry.minWidth, previewWidth: entry.previewWidth ?? entry.minWidth }));
+  const first = entries[0]?.minWidth ?? 1921, basePreview = Number.isInteger(mobilePreviewWidth) && mobilePreviewWidth >= 320 && mobilePreviewWidth < first ? mobilePreviewWidth : Math.min(375, first - 1);
+  try { return parseBreakpointSettings({ base: { name: "Mobile", previewWidth: basePreview }, breakpoints: entries }); }
+  catch { return structuredClone(defaultBreakpointSettings); }
+}
+
+/** 指定開始幅を現在のページ文書が保持する件数。設定を変えても文書からは削除しない。 */
+export function breakpointUsageCount(document: PageDocument, minWidth: number): number {
+  let count = 0;
+  for (const { node } of walkNodes(document)) {
+    if (node.type === "text") continue;
+    count += (node.style?.responsive ?? []).filter((entry) => entry.minWidth === minWidth).length;
+    count += (node.style?.hidden ?? []).filter((entry) => entry.minWidth === minWidth || entry.maxWidth === minWidth - 1).length;
+    if (node.type === "component") for (const style of Object.values(node.slots ?? {})) count += (style.responsive ?? []).filter((entry) => entry.minWidth === minWidth).length;
+  }
+  for (const style of Object.values(document.textStyles ?? {})) count += (style.responsive ?? []).filter((entry) => entry.minWidth === minWidth).length;
+  return count;
+}
 
 /** ホスト指定の段を検証し、不正なら既定値へ戻す。 */
 export function normalizeBreakpoints(input: readonly EditorBreakpoint[] | undefined): readonly EditorBreakpoint[] {

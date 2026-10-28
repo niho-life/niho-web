@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { parseComponentLibrary, parsePageDocument } from "@niho/web/core";
-import { affectedBySiteStyles, colorParts, editorTiers, expandBox, fieldState, formatColor, nextName, normalizeBreakpoints, splitLength, textStyleUsage, tierForWidth, tokenUsage, withAlpha } from "../dist/style-model.js";
+import { addBreakpointSetting, affectedBySiteStyles, breakpointSettingsBreakpoints, breakpointUsageCount, colorParts, editorTiers, expandBox, fieldState, formatColor, nextName, normalizeBreakpoints, parseBreakpointSettings, removeBreakpointSetting, splitLength, textStyleUsage, tierForWidth, tokenUsage, withAlpha } from "../dist/style-model.js";
 
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 const styled = () => {
@@ -26,6 +26,49 @@ test("tiers combine host breakpoints with widths used by the document", () => {
   assert.deepEqual(editorTiers({ ...fixture, body: [] }, []), [{ key: "base", start: 0, end: null, label: "基本" }]);
   for (const invalid of [[{ minWidth: 100, label: "x" }], [{ minWidth: 800, label: "a" }, { minWidth: 700, label: "b" }], [{ minWidth: 768.5, label: "x" }], [{ minWidth: 768, label: " " }], [{ minWidth: 691, label: "タブレット", previewWidth: 991 }, { minWidth: 991, label: "スモール" }], "768"]) assert.equal(normalizeBreakpoints(invalid).length, 2);
   const custom = [{ minWidth: 600, label: "小" }]; assert.equal(normalizeBreakpoints(custom), custom);
+});
+
+test("site breakpoint settings accept any narrowest base, including PC-only, and strictly validate wider tiers", () => {
+  const settings = parseBreakpointSettings({ base: { name: "Mobile", previewWidth: 480 }, breakpoints: [
+    { name: "Tablet", minWidth: 691, previewWidth: 840 }, { name: "Small", minWidth: 991, previewWidth: 991 }, { name: "PC", minWidth: 1280, previewWidth: 1280 }
+  ] });
+  assert.deepEqual(breakpointSettingsBreakpoints(settings), [
+    { minWidth: 691, label: "タブレット", previewWidth: 840 }, { minWidth: 991, label: "スモール", previewWidth: 991 }, { minWidth: 1280, label: "PC", previewWidth: 1280 }
+  ]);
+  assert.deepEqual(parseBreakpointSettings({ base: { name: "Mini", previewWidth: 320 }, breakpoints: [
+    { name: "Mobile", minWidth: 480, previewWidth: 480 }, ...settings.breakpoints
+  ] }).base, { name: "Mini", previewWidth: 320 });
+  assert.deepEqual(parseBreakpointSettings({ base: { name: "Small", previewWidth: 991 }, breakpoints: [{ name: "PC", minWidth: 1280, previewWidth: 1280 }] }).base, { name: "Small", previewWidth: 991 });
+  assert.deepEqual(parseBreakpointSettings({ base: { name: "PC", previewWidth: 1280 }, breakpoints: [] }), { base: { name: "PC", previewWidth: 1280 }, breakpoints: [] });
+  for (const invalid of [
+    { base: { name: "Mobile", previewWidth: 480 }, breakpoints: settings.breakpoints.filter((entry) => entry.name !== "PC") },
+    { base: { name: "PC", previewWidth: 1280 }, breakpoints: [{ name: "PC", minWidth: 1400, previewWidth: 1400 }] },
+    { base: { name: "Tablet", previewWidth: 840 }, breakpoints: [{ name: "Mobile", minWidth: 900, previewWidth: 900 }, { name: "PC", minWidth: 1280, previewWidth: 1280 }] },
+    { base: { name: "Mobile", previewWidth: 700 }, breakpoints: settings.breakpoints },
+    { base: { name: "Mobile", previewWidth: 480 }, breakpoints: settings.breakpoints.map((entry) => entry.name === "Tablet" ? { ...entry, previewWidth: 1000 } : entry) },
+    { base: { name: "Mobile", previewWidth: 480 }, breakpoints: [{ name: "Small", minWidth: 991, previewWidth: 991 }, { name: "Tablet", minWidth: 1100, previewWidth: 1100 }, { name: "PC", minWidth: 1280, previewWidth: 1280 }] }
+  ]) assert.throws(() => parseBreakpointSettings(invalid), /ブレークポイント|プレビュー|PC/);
+});
+
+test("all optional breakpoint tiers can be added and removed while PC remains required", () => {
+  let settings = { base: { name: "PC", previewWidth: 1280 }, breakpoints: [] };
+  for (const name of ["Small", "Tablet", "Mobile", "Mini"]) settings = addBreakpointSetting(settings, name);
+  assert.deepEqual([settings.base.name, ...settings.breakpoints.map((entry) => entry.name)], ["Mini", "Mobile", "Tablet", "Small", "PC"]);
+  assert.equal(settings.base.previewWidth, 320, "Mini uses the official 320px default preview");
+  assert.deepEqual(removeBreakpointSetting(settings, "Tablet").breakpoints.map((entry) => entry.name), ["Mobile", "Small", "PC"], "a non-base tier is removed directly");
+  for (const name of ["Mini", "Mobile", "Tablet", "Small"]) settings = removeBreakpointSetting(settings, name);
+  assert.deepEqual(settings, { base: { name: "PC", previewWidth: 1280 }, breakpoints: [] }, "deleting a base promotes the next tier until PC is the base");
+  assert.throws(() => addBreakpointSetting(settings, "PC"), /すでに有効/);
+  assert.throws(() => removeBreakpointSetting(settings, "PC"), /削除できません/);
+});
+
+test("breakpoint impact counts current document values without migrating them", () => {
+  const document = styled();
+  document.body[0].style.hidden = [{ minWidth: 768, maxWidth: 1023 }];
+  document.body.push({ type: "component", id: "block", block: "Demo", props: {}, slots: { body: { responsive: [{ minWidth: 768, declarations: { padding: 8 } }] } } });
+  assert.equal(breakpointUsageCount(document, 768), 4, "node responsive values, hidden range and component slot are retained");
+  assert.equal(breakpointUsageCount(document, 1024), 2, "text style responsive and the preceding hidden max boundary are retained");
+  assert.equal(breakpointUsageCount(document, 991), 0);
 });
 
 test("field state separates own values, inherited values and higher overrides", () => {

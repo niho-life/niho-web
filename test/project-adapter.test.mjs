@@ -137,10 +137,28 @@ test("page list optional fields and structured data presets pass through validat
 });
 test("optional page and site methods are absent unless the host implements them", () => {
   const { wrapped } = setup();
-  for (const name of ["preparePageChange", "applyPageChange", "readSiteSettings", "saveSiteSettings", "localization"]) assert.equal(name in wrapped, false, name);
+  for (const name of ["preparePageChange", "applyPageChange", "readSiteSettings", "saveSiteSettings", "breakpointSettings", "localization"]) assert.equal(name in wrapped, false, name);
   const calls = { pageChanges: [], applies: [], settings: [], settingsSaves: [] };
   const partial = setup({ readSiteSettings: pageHostMethods(calls).readSiteSettings }).wrapped;
   assert.equal(typeof partial.readSiteSettings, "function"); assert.equal("saveSiteSettings" in partial, false); assert.equal("preparePageChange" in partial, false);
+});
+test("site breakpoint adapter is project-scoped, detached and forwards only CAS fields", async () => {
+  const calls = [], settings = { base: { name: "Mobile", previewWidth: 480 }, breakpoints: [
+    { name: "Tablet", minWidth: 691, previewWidth: 840 }, { name: "Small", minWidth: 991, previewWidth: 991 }, { name: "PC", minWidth: 1280, previewWidth: 1280 }
+  ] };
+  const { wrapped } = setup({ breakpointSettings: {
+    read: async (siteId) => { calls.push(["read", siteId]); return { settings, version: "b.1", ignored: true }; },
+    save: async (request) => { calls.push(["save", structuredClone(request)]); return { status: "saved", version: "b.2", ignored: true }; }
+  } });
+  const snapshot = await wrapped.breakpointSettings.read("demo", signal());
+  assert.deepEqual(snapshot, { settings, version: "b.1" });
+  settings.base.previewWidth = 500; assert.equal(snapshot.settings.base.previewWidth, 480, "host object is detached");
+  await assert.rejects(() => wrapped.breakpointSettings.read("other", signal()), /プロジェクト外/);
+  const request = { siteId: "demo", settings: snapshot.settings, expectedVersion: "b.1", ignored: true };
+  assert.deepEqual(await wrapped.breakpointSettings.save(request, signal()), { status: "saved", version: "b.2" });
+  assert.deepEqual(calls[1], ["save", { siteId: "demo", settings: snapshot.settings, expectedVersion: "b.1" }]);
+  await assert.rejects(() => wrapped.breakpointSettings.save({ ...request, siteId: "other" }, signal()), /プロジェクト外/);
+  await assert.rejects(() => setup({ breakpointSettings: { read: async () => ({ settings: { ...snapshot.settings, breakpoints: snapshot.settings.breakpoints.slice(0, -1) }, version: "b.1" }), save: async () => ({ status: "conflict" }) } }).wrapped.breakpointSettings.read("demo", signal()), /ブレークポイント/);
 });
 test("localization methods remain project-scoped and preserve optimistic command fields", async () => {
   const calls = [];

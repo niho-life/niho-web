@@ -168,6 +168,15 @@ export type EditorPageChangePlan = { change: EditorPageChange; confirmationToken
 export type EditorPageChangeResult = { status: "applied"; page: EditorPage } | { status: "conflict" };
 export type EditorSiteSettingsSnapshot = { settings: unknown; version: string };
 export type EditorSiteSettingsSaveResult = { status: "saved"; version: string } | { status: "conflict" };
+export type EditorBreakpointName = "Mini" | "Mobile" | "Tablet" | "Small" | "PC";
+export type EditorBreakpointSettings = {
+  /** mobile-first の最も狭い有効段。PC だけが有効な場合は PC。 */
+  base: { name: EditorBreakpointName; previewWidth: number };
+  /** base より広い有効段。PC は必須で、name と minWidth は狭い順。PC が base の場合は空。 */
+  breakpoints: readonly { name: EditorBreakpointName; minWidth: number; previewWidth: number }[];
+};
+export type EditorBreakpointSettingsSnapshot = { settings: EditorBreakpointSettings; version: string };
+export type EditorBreakpointSettingsSaveResult = { status: "saved"; version: string } | { status: "conflict" };
 /** 認証・認可・通信・公開処理は、認証済みホストの責務。 */
 export interface EditorAdapter {
   listSites(signal: AbortSignal): Promise<readonly EditorSite[]>;
@@ -200,6 +209,11 @@ export interface EditorAdapter {
     /** スタイル変更時の保存済み基準。削除参照を全ページで切り離し、設定と原子的に保存する。 */
     previousStyles?: SiteStyles;
   }, signal: AbortSignal): Promise<EditorSiteSettingsSaveResult>;
+  /** サイト単位の表示幅の段。PC は必須、ほかの段は任意で、base は最も狭い有効段。省略したホストでは PageEditorProps の値を読み取り専用で表示する。 */
+  breakpointSettings?: {
+    read(siteId: string, signal: AbortSignal): Promise<EditorBreakpointSettingsSnapshot>;
+    save(request: { siteId: string; settings: EditorBreakpointSettings; expectedVersion: string }, signal: AbortSignal): Promise<EditorBreakpointSettingsSaveResult>;
+  };
   /** 版履歴。新しい順で、続きは next を cursor に渡す。実装した場合だけ「履歴」を表示する。 */
   listRevisions?(request: { target: EditorTarget; cursor?: string }, signal: AbortSignal): Promise<EditorRevisionPage>;
   /** 共通スタイルを参照する版は、その版に対応する不変のスタイル snapshot も返す。 */
@@ -231,7 +245,7 @@ export type EditorBlockRegistry = Readonly<Record<string, BlockDefinition & {
   /** trusted host 固有の設定 UI。文書へは setProp で block contract の公開 props だけを書き込む。 */
   settings?: ComponentType<EditorBlockSettingsProps>;
 }>>;
-/** 編集する幅の段。minWidth は 320〜3840 の整数・昇順。 */
+/** 従来のホスト指定用。サイト単位の保存には EditorBreakpointSettings を使う。 */
 export type EditorBreakpoint = { minWidth: number; label: string; previewWidth?: number };
 /**
  * 同じiframeへ表示する、ホスト所有の同期Reactプレビュー。文書を直接変更しない。
