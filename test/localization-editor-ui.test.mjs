@@ -78,11 +78,11 @@ async function localizedSite(siteId, sourceLocale, labels) {
   const targetDocument = (await materializeLocalizedPage(cfg, sourceDocument, collection, overlay)).document;
   return { cfg, sourceDocument, targetDocument, collection, overlay, labels, documentVersion: 1, localizationVersion: 1, siteVersion: 1, job: { state: "failed", message: "合成した失敗" } };
 }
-async function setup({ conflictOnce = false, conflictSourceChange = false, rejectCommandOnce = false, delayedRead = false, delayedSite = false, delayedSiteAfterFirst = false, rejectSiteOnce = false, rejectPageOnce = false, unsupportedLocale = false, extraPublicPage = false, recovery, localeRelease, readOnlySource = false, readOnlyTarget = false, previewComponent, initialTarget, pageTranslationUnavailable = false, hostSourceLocale = false } = {}) {
+async function setup({ conflictOnce = false, conflictSourceChange = false, rejectCommandOnce = false, delayedRead = false, delayedSites = false, delayedSite = false, delayedSiteAfterFirst = false, rejectSiteOnce = false, rejectPageOnce = false, unsupportedLocale = false, extraPublicPage = false, recovery, localeRelease, readOnlySource = false, readOnlyTarget = false, previewComponent, initialTarget, pageTranslationUnavailable = false, hostSourceLocale = false } = {}) {
   const kamakura = await localizedSite("kamakura", "ja", { source: "鎌倉ホーム", manual: "Manual Kamakura", candidate: "Candidate Kamakura" });
   if (hostSourceLocale) kamakura.sourceDocument.locale = "ja";
   const experience = await localizedSite("experience", "en", { source: "Experience home", manual: "体験（手修正）", candidate: "体験（翻訳案）" });
-  const sites = { kamakura, experience }, calls = { saves: [], commands: [], siteReads: 0, pageReads: 0 }; let conflict = conflictOnce, rejectCommand = rejectCommandOnce, delayedResolve, delayedSiteResolve, failSite = rejectSiteOnce, failPage = rejectPageOnce;
+  const sites = { kamakura, experience }, calls = { saves: [], commands: [], siteReads: 0, pageReads: 0 }; let conflict = conflictOnce, rejectCommand = rejectCommandOnce, delayedResolve, delayedSitesResolve, delayedSiteResolve, failSite = rejectSiteOnce, failPage = rejectPageOnce;
   const stateFor = (target) => sites[target.siteId], isSource = (state, target) => target.locale === state.sourceDocument.locale;
   const readPage = async (target, signal) => {
     calls.pageReads++;
@@ -92,7 +92,8 @@ async function setup({ conflictOnce = false, conflictSourceChange = false, rejec
     return { sourceDocument: { ...structuredClone(state.sourceDocument), locale: state.cfg.documentLocales[state.cfg.sourceLocale] }, sourceVersion: `source-${state.sourceDocument.revision}`, overlay: structuredClone(state.overlay), version: `loc-${state.localizationVersion}`, job: structuredClone(state.job) };
   };
   const adapter = {
-    listSites: async () => [{ id: "kamakura", name: "鎌倉", domains: ["https://kamakura.example"] }, { id: "experience", name: "Experience", domains: ["https://experience.example"] }],
+    listSites: async (signal) => { if (delayedSites) await new Promise((resolve) => { delayedSitesResolve = resolve; signal.addEventListener("abort", resolve, { once: true }); });
+      return [{ id: "kamakura", name: "鎌倉", domains: ["https://kamakura.example"] }, { id: "experience", name: "Experience", domains: ["https://experience.example"] }]; },
     listPages: async (siteId) => [{ siteId, pageId: "home", locale: unsupportedLocale && siteId === "kamakura" ? "fr-FR" : sites[siteId].sourceDocument.locale, title: sites[siteId].labels.source }],
     readDocument: async (target) => { const state = stateFor(target), source = isSource(state, target), value = structuredClone(source ? state.sourceDocument : state.targetDocument); if (unsupportedLocale && target.locale === "fr-FR") value.locale = target.locale; return { document: value, version: `doc-${state.documentVersion}`,
       ...((readOnlySource && source || readOnlyTarget && !source) ? { readOnly: { reason: source ? "業務公開テキストの原文は既存の業務編集画面が正本です。" : "この派生原稿はホスト側で固定されています。", editUrl: "/staff/business/public-text", editLabel: "業務原稿を編集" } } : {}) }; },
@@ -156,7 +157,7 @@ async function setup({ conflictOnce = false, conflictSourceChange = false, rejec
   if (localeRelease) Object.assign(adapter.localization, localeRelease);
   const container = document.createElement("div"); document.body.append(container); const root = createRoot(container);
   await act(async () => root.render(createElement(PageEditor, { adapter, ...(recovery ? { recovery } : {}), ...(previewComponent ? { previewComponent } : {}), ...(initialTarget ? { initialTarget } : {}) }))); await flush(6);
-  return { sites, calls, adapter, resolveDelayed: () => delayedResolve?.(), resolveDelayedSite: () => delayedSiteResolve?.(),
+  return { sites, calls, adapter, resolveDelayed: () => delayedResolve?.(), resolveDelayedSites: () => delayedSitesResolve?.(), resolveDelayedSite: () => delayedSiteResolve?.(),
     rerenderAdapter: async (next) => { await act(async () => root.render(createElement(PageEditor, { adapter: next, ...(recovery ? { recovery } : {}), ...(previewComponent ? { previewComponent } : {}) }))); await flush(4); },
     cleanup: async () => { await act(async () => root.unmount()); container.remove(); } };
 }
@@ -596,6 +597,15 @@ test("manual save keeps its buffer through 409 and rejection, reloads current co
 });
 
 test("localization config and target context fail closed while loading, on errors, on retry, and for an unmapped document locale", async () => {
+  let initial = await setup({ delayedSites: true });
+  try {
+    assert.match(document.body.textContent, /言語設定と翻訳状態を読み込み中/);
+    assert.doesNotMatch(document.body.textContent, /言語設定または翻訳状態を確認できません/);
+    assert.equal(button("公開").disabled, true);
+    initial.resolveDelayedSites(); await flush(6);
+    assert.doesNotMatch(document.body.textContent, /言語設定または翻訳状態を確認できません/);
+  } finally { await initial.cleanup(); }
+
   let app = await setup({ delayedSite: true });
   try {
     assert.match(document.body.textContent, /言語設定と翻訳状態を読み込み中/);

@@ -1480,9 +1480,9 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   // 左上の文脈: サイト / 開いているもの（ページ・コンポーネント）と、そのパスか種類。常に現在地が分かるようにする。
   const contextSite = site?.name ?? "サイト", contextTitle = masterComponent?.name ?? page?.title ?? session?.history.present.title ?? "ページ編集";
   const contextDetail = masterComponent ? "コンポーネント本体" : isSiteComponent ? "サイト全体のコンポーネント" : page?.path ?? (page?.kind === "template" ? "テンプレート" : "");
-  const localizationGate = localization.supported && !localizationReady ? localization.siteState === "loading" || localization.pageState === "loading"
-    ? "言語設定と翻訳状態を読み込み中です。完了するまで編集・保存・公開はできません。"
-    : "言語設定または翻訳状態を確認できません。編集内容を保持したまま停止しています。再試行してください。" : "";
+  const localizationGate = localization.supported && !localizationReady ? localization.siteState === "error" || localization.pageState === "error"
+    ? "言語設定または翻訳状態を確認できません。編集内容を保持したまま停止しています。再試行してください。"
+    : "言語設定と翻訳状態を読み込み中です。完了するまで編集・保存・公開はできません。" : "";
   const blankAddUnavailable = addType === "embed-blank" && !blankEmbedReady;
   return <EditorWorkspace preview={preview} leftOpen={leftPanelOpen} rightOpen={rightPanelOpen} setBody={(element) => { if (element) element.inert = modal; }} chrome={<><style dangerouslySetInnerHTML={{ __html: workspaceCss + editorCss + pagesCss + styleEditorCss + historyCss + localizationEditorCss }} />
     {assets && <style dangerouslySetInnerHTML={{ __html: assetEditorCss }} />}

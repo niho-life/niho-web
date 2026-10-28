@@ -8,6 +8,8 @@ Kamakura の Studio host を接続するときは、翻訳 BFF の `editor/site`
 
 原文ページの保存 locale が `ja` で翻訳用 `documentLocales.ja` が `ja-JP` の場合、PageEditor は `sourceLocale` と一致する `ja` を原文として扱います。原文へ戻る際は `listPages` が返した保存 locale を使います。訳文は引き続き `documentLocales` との完全一致を要求し、未知の locale は編集・保存を止めます。
 
+初回のサイト・ページ選択前を含む `idle` と取得中の `loading` は「読み込み中」と表示し、編集・保存・公開を止めます。取得または検証が明示的に失敗した `error` だけ「確認できません」と再試行を表示します。読込中を接続障害として見せません。
+
 ## adapter
 
 ```ts
