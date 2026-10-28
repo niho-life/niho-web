@@ -93,7 +93,7 @@ test("Kamakura editor adapter は日本語経路を維持し、英語 snapshot�
   const presentation = { schemaVersion: 1, siteId: "kamakura", locale: "en", version: "presentation-1", reset: "neutral-v1", tokens: {}, fonts: [],
     shared: { header: document("site-header", "en"), footer: document("site-footer", "en") } };
   const versions = { expectedSourceVersion: `p.${"a".repeat(64)}`, expectedVersion: `l.${"b".repeat(64)}`, expectedOverlayVersion: 1 };
-  const config = { schemaVersion: 1, siteId: "kamakura", sourceLocale: "ja", defaultLocale: "ja", enabledLocales: ["ja", "en"], documentLocales: { ja: "ja", en: "en" }, glossaryVersion: "g1", contextVersion: "c1" };
+  const config = { schemaVersion: 1, siteId: "kamakura", sourceLocale: "ja", defaultLocale: "ja", enabledLocales: ["ja", "en"], documentLocales: { ja: "ja-JP", en: "en" }, glossaryVersion: "g1", contextVersion: "c1" };
   const overlay = { schemaVersion: 1, siteId: "kamakura", pageId, sourceLocale: "ja", targetLocale: "en", version: 1, entries: [] };
   const localizedPage = { siteId: "kamakura", pageId, title: "Community Dinner", locales: { ja: { state: "source" }, en: { state: "review-needed", changed: 1, published: false } } };
   const normalizedLocalizedPage = { ...localizedPage, title: parsedCatalog.pages[0].title };
@@ -105,7 +105,7 @@ test("Kamakura editor adapter は日本語経路を維持し、英語 snapshot�
     [`POST /api/projects/project-kamakura/sites/kamakura/editor/${pageId}/english-publication-retry`, { status: "accepted", englishPublication: { state: "queued", retryable: false } }],
     [`POST /api/projects/project-kamakura/sites/kamakura/editor/${pageId}/release`, { status: "released", snapshot: { document: document(pageId, "ja"), version: "released-version", englishPublication: { state: "publishing", retryable: false } } }],
     [`POST /api/projects/project-kamakura/sites/kamakura/localization/editor/site`, { status: "ready", config, pages: [localizedPage], version: `s.${"c".repeat(64)}` }],
-    [`POST /api/projects/project-kamakura/sites/kamakura/localization/editor/pages/${pageId}`, { status: "ready", sourceDocument: document(pageId, "ja"), sourceVersion: versions.expectedSourceVersion, overlay, version: versions.expectedVersion }],
+    [`POST /api/projects/project-kamakura/sites/kamakura/localization/editor/pages/${pageId}`, { status: "ready", sourceDocument: document(pageId, "ja-JP"), sourceVersion: versions.expectedSourceVersion, overlay, version: versions.expectedVersion }],
     [`POST /api/projects/project-kamakura/sites/kamakura/localization/editor/pages/${pageId}/snapshot`, { status: "ready", document: document(pageId, "en", "Community Dinner"), version: versions.expectedVersion, presentation }],
     [`POST /api/projects/project-kamakura/sites/kamakura/localization/editor/pages/${pageId}/save`, { status: "saved", version: `l.${"d".repeat(64)}`, revision: 3 }],
     [`POST /api/projects/project-kamakura/sites/kamakura/localization/editor/pages/${pageId}/command`, { status: "applied", version: `l.${"e".repeat(64)}` }]
@@ -128,7 +128,7 @@ test("Kamakura editor adapter は日本語経路を維持し、英語 snapshot�
   assert.equal(english.document.locale, "en");
   assert.equal(english.presentation.version, presentation.version);
   assert.deepEqual(await adapter.localization.readSite("kamakura", signal), { config, pages: [normalizedLocalizedPage], version: `s.${"c".repeat(64)}` });
-  assert.deepEqual(await adapter.localization.readPage(en, signal), { sourceDocument: document(pageId, "ja"), sourceVersion: versions.expectedSourceVersion, overlay, version: versions.expectedVersion });
+  assert.deepEqual(await adapter.localization.readPage(en, signal), { sourceDocument: document(pageId, "ja-JP"), sourceVersion: versions.expectedSourceVersion, overlay, version: versions.expectedVersion });
   const saved = await adapter.saveDraft({ target: en, document: english.document, expectedVersion: versions.expectedVersion, presentationVersion: presentation.version, localization: versions }, signal);
   assert.equal(saved.status, "saved");
   const saveCall = calls.at(-1);

@@ -18,6 +18,11 @@ import type { ComponentLibrary, ElementNode, PageDocument, PageNode } from "./ty
 import type { SiteStyles } from "./site-styles.js";
 import { publicImageSrcSet, publicImageUrl } from "./validation-utils.js";
 
+/** The source page may retain its host locale (for example ja) while translation uses an explicit ja-JP mapping. */
+export function editorLocalizationLocaleFor(config: SiteLocalizationConfig, documentLocale: string): LocalizationLocale {
+  return documentLocale === config.sourceLocale ? config.sourceLocale : localizationLocaleFor(config, documentLocale);
+}
+
 export type EditorLocalizationSite = {
   config: SiteLocalizationConfig;
   pages: readonly EditorLocalizedPage[];
@@ -124,7 +129,7 @@ export function useEditorLocalization(adapter: EditorAdapter, siteId: string, ta
       setPageState("idle"); return;
     }
     let locale: LocalizationLocale;
-    try { locale = localizationLocaleFor(site.config, target.locale); } catch { setContext(null); setPageState("error"); report("文書の言語がサイトの明示設定にありません。編集と保存を停止しました。"); return; }
+    try { locale = editorLocalizationLocaleFor(site.config, target.locale); } catch { setContext(null); setPageState("error"); report("文書の言語がサイトの明示設定にありません。編集と保存を停止しました。"); return; }
     if (!site.config.enabledLocales.includes(locale)) { setContext(null); setPageState("error"); report("無効な言語の文書です。編集と保存を停止しました。"); return; }
     if (locale === site.config.sourceLocale) { setContext(null); setPageState("ready"); return; }
     if (!siteStylesReady) { setPageState("loading"); return; }

@@ -6,6 +6,8 @@
 
 Kamakura の Studio host を接続するときは、翻訳 BFF の `editor/site` で native ページごとの日英状態と公開状態を読み、`editor/pages/:pageId`、`snapshot`、`save`、`command` を介してサイト側の唯一の翻訳 overlay を読み書きします。English の `readDocument` は `snapshot` が返す `document` と同じ言語・版の `presentation` だけを使い、`unavailable` を日本語文書や仮データへ置き換えません。BFF は所属・署名・対象と版を確認し、サイト側は `save` で下記の文書構造検証と条件付き保存を実行します。原文は `ja-JP` の文書localeへ正規化してから多言語 adapter に渡します。
 
+原文ページの保存 locale が `ja` で翻訳用 `documentLocales.ja` が `ja-JP` の場合、PageEditor は `sourceLocale` と一致する `ja` を原文として扱います。原文へ戻る際は `listPages` が返した保存 locale を使います。訳文は引き続き `documentLocales` との完全一致を要求し、未知の locale は編集・保存を止めます。
+
 ## adapter
 
 ```ts

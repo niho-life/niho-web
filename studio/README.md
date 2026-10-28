@@ -3,6 +3,8 @@
 > 2026-10-22: Experience / Kamakura のvisual editorは凍結した。canonical・alias・stagingの既知editor URLはAccess認証後に凍結案内を表示し、editor APIはmembership確認後に `409 visual_editor_frozen` を返して上流を呼ばない。`integration-entry`、各site editor、`PageEditor` は実client bundleへ含めない。source/coreと保存データは将来用に保持するが、サイト変更のpreview一致・schema同期・版同期を受入条件にしない。Dashboard、membership、招待は継続する。以下のBFF説明は再接続時の履歴資料である。
 >
 > 2026-10-25（niho-life/kamakura-site#84）: Kamakura だけ読み取りを再接続した。`GET catalog`・`GET :pageId`・素材の参照は service binding で kamakura-site へ通し、Kamakura の editor route だけ editor 用 CSP を付ける。保存・公開を止めるのは kamakura-site 側で、ページ文書の `readOnly` を `PageEditor` が読み取り専用の帯として出し、上流の `409 visual_editor_frozen` は競合（`conflict`）と分けて `409 { "error": "visual_editor_frozen" }` で返す。凍結の切り替えは kamakura-site の `worker/visual-freeze.ts` 1 か所。Experience は従来どおり凍結し、上流を呼ばない。
+>
+> 2026-10-28: Kamakura の native 化済みページはサイト側の段階解除で Studio から日本語の保存・公開が可能。原文ページの保存 locale `ja` と翻訳設定の原文 mapping `ja-JP` は PageEditor 内で区別し、日英切替後もページ一覧の保存 locale に戻る。Experience は凍結中。
 
 Issue #68 / #69 / #70 の Studio host です。共有 `@niho/web` ライブラリとは別に Cloudflare Workers へ配置し、静的 React UI、Worker API、Studio 専用 D1 registry、Experience / Kamakura editor BFF を1つの境界として運用します。
 
@@ -133,7 +135,7 @@ catalog がこの契約に合わない場合は `502 { "error": "upstream_contra
 
 失敗カテゴリは `bridge_secret_missing_or_invalid`、`bridge_signing_failed`、`service_binding_failed` / `service_binding_timeout`、`upstream_auth_rejected`、`upstream_unexpected_4xx`、`catalog_endpoint_missing`、`upstream_rate_limited`、`upstream_server_error`、`upstream_redirect_rejected`、`upstream_invalid_response`、`upstream_contract_invalid`、`bridge_processing_failed` です。operation は `catalog`、`page_read`、`draft_save`、`release_plan`、`release`、`embed_import`、`embed_status`、`asset_list`、`asset_upload_intent`、`asset_update`、`asset_usages`、`asset_resolve` の固定値です。画面で問い合わせIDを受け取ったら、Studio Worker のログから同一IDの行を検索してください。HTTP status が無い `service_binding_*` はStudio側のbinding・到達性を、`upstream_auth_rejected` は両Workerのsecret設定と署名検証を、`catalog_endpoint_missing` は kamakura-site のendpoint配備を確認します。
 
-Kamakura の `PageEditor` が編集するのは `src/site/niho-web` の新形式ページだけです。現時点では0件のため、UI は移行待ちを明示し、catalog の旧形式一覧を読み取り専用で表示します。旧形式のデザインは `https://next-kamakura.niho.life/admin/pages`、記事・サークル・会社などの CMS は `https://next-kamakura.niho.life/admin` で引き続き編集します。Studio は CMS を変更せず、STUDIO からの全面移行を完了扱いにしません。source of truth は `studio` のままで、移行作業は kamakura-site #42 に残ります。
+Kamakura の `PageEditor` が編集するのは `src/site/niho-web` の native 化済みページです。日本語ページの下書き保存とページ単位公開は、サイト側が返す版と表示コンテキストを照合して行います。未変換のページは `readOnly.reason` で停止します。CMS の操作はサイト側の管理機能で扱います。
 
 Kamakura の editor route にも Experience と同じ範囲限定 CSP 緩和を適用します。native presentation のフォントだけは `https://kamakura-media.niho.life/niho-web/fonts/v1/` を font-src に追加します。manifest・共有枠・保存CASの契約は [site-presentation.md](../docs/site-presentation.md) に従います。Directory / Dashboard / invite route の CSP は変えません。
 
@@ -375,7 +377,7 @@ wrangler dev --config studio/wrangler.toml
 ## 制約と follow-up
 
 - Experience editor の本番UIは Backend Draft PR #19268 の本番配備と、Studio Worker／NIHO API の本番 secret 設定が揃った場合だけ有効にします。secret が欠落・不正なら API 接続は 503 で fail-closed します。STG用 secret は本番で再利用しません。
-- Kamakura editor は新形式の共通ページだけを扱います。ブロック契約は kamakura-site の `GET catalog` が保存時検証と同じ正本から返し、Studio はそれを検証して安全なローカルプレビューを組み立てます。外部表示・予約・送信・CMS取得のコードは実行しません。旧形式一覧は読み取り専用です。素材は「Kamakura の素材ライブラリ」のとおり接続済みで、アップロードと更新は kamakura-site の凍結解除後に通ります。作成、旧形式ページ編集、CMS 操作、全面移行はこの bridge の対象外です。
+- Kamakura editor は native 化済みの共通ページだけを扱います。ブロック契約は kamakura-site の `GET catalog` が保存時検証と同じ正本から返し、Studio はそれを検証して安全なローカルプレビューを組み立てます。外部表示・予約・送信・CMS取得のコードは実行しません。未変換ページは読み取り専用です。素材は「Kamakura の素材ライブラリ」のとおり接続済みで、サイト側の段階解除が適用されたページ用にアップロードと更新を受け付けます。作成、旧形式ページ編集、CMS 操作はこの bridge の対象外です。
 - Experience editor は production API が提供するページ文書・下書き・公開・復元だけを扱います。自由追加できない NIHO 業務ブロックは `insertableBlocks=[]` とし、components / localization / assets は未実装です。
 - 招待メールの配信、再送、token の再表示はありません。URL の安全な共有は owner の運用責任です。
 - Access email の変更や IdP account の統合は自動追従しません。membership の主体は安定 `sub` で、保存 email は招待照合と owner 表示用です。
