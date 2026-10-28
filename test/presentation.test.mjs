@@ -4,6 +4,9 @@ import { cssForSitePresentation, initializeSitePresentation, parsePageDocument, 
 import { renderPageToHtml, renderSitePageToHtml } from "@niho/web/server";
 import { createExternalFramePolicy } from "@niho/web";
 import { JSDOM } from "jsdom";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { SitePageRenderer } from "@niho/web/react";
 
 const element = (id, tag, text, style) => ({ type: "element", id, tag, ...(style ? { style } : {}), children: text === undefined ? [] : [{ type: "text", text }] });
 const page = (siteId, locale, pageId, body) => ({ schemaVersion: 1, siteId, pageId, locale, revision: 1, title: pageId, tokens: {}, body });
@@ -344,6 +347,14 @@ test("host block views require exact normalized props, render in a distinct scop
   const assets = presentationAssetDocument(document, presentation);
   assert.ok(assets.body.some((node) => node.id === "gallery-root"), "view assets are collected through the transient presentation document");
   assert.throws(() => renderSitePageToHtml({ ...document, body: [{ ...document.body[0], props: { variant: "compact" } }] }, presentation, hostBlocks), /host view is missing/);
+  const changed = { ...document, body: [element("before", "p", "Before"), { ...document.body[0], props: { variant: "compact" } }, element("after", "p", "After")] };
+  const canvas = renderToStaticMarkup(createElement(SitePageRenderer, { document: changed, presentation, blocks: hostBlocks, canvas: { viewportHeight: 900 } }));
+  assert.match(canvas, /Before.*REAL HOST COMPONENT.*After/u);
+  assert.doesNotMatch(canvas, /data-nw-host-view="gallery-wide"/u);
+  const withoutComponent = { Gallery: { ...hostBlocks.Gallery, component: undefined } };
+  const placeholder = renderToStaticMarkup(createElement(SitePageRenderer, { document: changed, presentation, blocks: withoutComponent, canvas: { viewportHeight: 900 } }));
+  assert.match(placeholder, /Before.*data-nw-missing-host-view=""[^>]*role="status"[^>]*>このブロックの表示例はありません.*After/u);
+  assert.throws(() => renderSitePageToHtml(changed, presentation, withoutComponent), /host view is missing/u);
   assert.match(renderSitePageToHtml(document, presentation, hostBlocks, { hostViewMode: "fallback" }), /REAL HOST COMPONENT/);
   assert.doesNotMatch(renderSitePageToHtml(document, presentation, hostBlocks, { hostViewMode: "off" }), /data-nw-host-view="/);
 });
