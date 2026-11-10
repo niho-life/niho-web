@@ -500,6 +500,32 @@ test("site frame sources narrow trusted origins and match path boundaries", () =
   assert.throws(() => createExternalFramePolicy({ parentOrigin: "https://editor.example.test", sources: ["https://maps.example.test/embed"], siteSources: ["http://maps.example.test/embed"] }));
 });
 
+test("site-allowed frames outside the origin-retaining limit load as opaque and never gain same-origin", () => {
+  const policy = createExternalFramePolicy({
+    parentOrigin: "https://editor.example.test",
+    sources: ["https://maps.example.test/embed"],
+    siteSources: ["https://maps.example.test/embed", "https://embeds.example.test/v1/"]
+  });
+  assert.equal(policy({ src: "https://maps.example.test/embed/place?id=1" }), "retain-origin");
+  for (const src of ["https://embeds.example.test/v1/calendar.html", "https://embeds.example.test/v1/calendar.html?view=week", "https://embeds.example.test/v1/a/b.html", "https://embeds.example.test/v1/"]) assert.equal(policy({ src }), "opaque", src);
+  // サイト単位の許可の外・https以外・資格情報つき・hashつき・path境界の外・正規化で外へ出るpathは読み込まない。
+  for (const src of ["https://embeds.example.test/v1", "https://embeds.example.test/v2/calendar.html", "https://embeds.example.test/v1/../v2/x.html", "https://embeds.example.test/v1/%2e%2e/v2/x.html",
+    "https://embeds.example.test:8443/v1/x.html", "https://other.example.test/v1/x.html", "http://embeds.example.test/v1/x.html", "https://user:pass@embeds.example.test/v1/x.html",
+    "https://embeds.example.test/v1/x.html#top", "https://maps.example.test/other", "https://editor.example.test/v1/x.html", "javascript:alert(1)", "not-a-url"]) assert.equal(policy({ src }), "blocked", src);
+  // 同一originはサイト単位の許可にも入れられない。
+  assert.throws(() => createExternalFramePolicy({ parentOrigin: "https://editor.example.test", sources: [], siteSources: ["https://editor.example.test/v1/"] }));
+  // siteSourcesを渡さない従来の使い方は変わらない（完全一致だけorigin維持、他はopaque）。
+  const legacy = createExternalFramePolicy({ parentOrigin: "https://editor.example.test", sources: ["https://maps.example.test/embed"] });
+  assert.equal(legacy({ src: "https://maps.example.test/embed" }), "retain-origin");
+  assert.equal(legacy({ src: "https://embeds.example.test/v1/calendar.html" }), "opaque");
+  const presentation = siteWithHostView();
+  presentation.hostViews[0].externalFrames[0].src = "https://embeds.example.test/v1/calendar.html";
+  const html = renderSitePageToHtml(page("synthetic", "en", "body", [{ type: "component", id: "gallery", block: "Gallery", props: { variant: "wide" } }]), presentation, hostBlocks, { externalFramePolicy: policy });
+  assert.match(html, /<iframe[^>]*src="https:\/\/embeds\.example\.test\/v1\/calendar\.html"[^>]*sandbox="allow-scripts"/);
+  assert.doesNotMatch(html, /allow-same-origin/);
+  assert.doesNotMatch(html, /data-nw-frame-blocked/);
+});
+
 test("editing keeps frame sizing active without starting interactive controls", () => {
   const document = page("synthetic", "en", "body", [{ type: "component", id: "gallery-block", block: "Gallery", props: { variant: "wide" } }]);
   const dom = new JSDOM(`<!doctype html><body>${renderSitePageToHtml(document, siteWithHostView(), hostBlocks)}</body>`, { url: "https://editor.example.test" });
