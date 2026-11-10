@@ -113,6 +113,7 @@ const richPrefix = (value, prefix) => {
  * - by: 操作した人の名前
  * - mediaBase: 画像の置き場（既定は https://media.example.test。デモはローカルの /media）
  * - glossary: true または { version, entries, reviewed }（省略時は用語集なし）
+ * - attention: { label, keys }（原文が更新されたとき目立たせる項目。省略時は出さない）
  */
 export function createLocalizationMemory(options = {}) {
   const now = () => Date.now();
@@ -169,6 +170,8 @@ export function createLocalizationMemory(options = {}) {
       catalog: state.catalog ? { state: "updating", progress: { ...state.catalog } } : { state: "current" },
       preview: options.frameUrl ? { frameUrl: options.frameUrl } : null,
       settings: settings(),
+      ...(options.attention ? { attention: { label: options.attention.label,
+        items: summaries.filter((summary) => options.attention.keys.includes(summary.key) && summary.state === "source-changed").map((summary) => ({ key: summary.key, title: summary.title })) } } : {}),
     };
   };
   const settings = () => ({ version: `set${state.settings.version}`, autoDraft: state.settings.autoDraft, translator: { connected: state.settings.connected },

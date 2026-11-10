@@ -78,6 +78,7 @@ parser は未知の key を拒み、次の形と上限を確かめます。上�
 | リッチテキスト | niho-web の `LocalizedRichText`（下） | 本文 100,000 文字・入れ子 48 段 |
 | 用語集 | `source` が重複しない、空でない1行の `source` / `target` | 500 件・各 500 文字 |
 | まとまり・公開できない理由・履歴・プレビューの候補 | — | 50・200・1000・50 |
+| `attention` の項目 | `itemKey` と題名 | 20 件 |
 | プレビューの材料 | JSON | 1 回の応答 2 MiB・1 回の表示で 40 回・合計 16 MiB |
 | 日時 | タイムゾーン付きの ISO 8601 | 40 文字 |
 
@@ -123,6 +124,10 @@ type LocalizationOverview = {
   catalog: { state: 'current' } | { state: 'updating'; progress: { done: number; total: number } };
   preview: { frameUrl: string } | null;    // 描画用の枠。null ならプレビューを出さない
   settings: LocalizationSettings;
+  attention?: {                            // 任意。原文が更新されたとき目立たせたい項目（価格・条件・法務のページなど）
+    label: string;                         // 例 "価格・条件・法務のページ"（1 行・60 文字まで）
+    items: { key: string; title: string }[];   // 今、原文が更新されているものだけ（最大 20・key は重複しない）
+  };
 };
 type LocalizationPermission = 'edit' | 'review' | 'translate' | 'publish' | 'rollback' | 'settings';
 type LocalizationSettings = {
@@ -150,6 +155,8 @@ type LocalizationSettings = {
 推奨の割り当て（オーナー判断の 1）: `publish`・`rollback`・`settings` は owner だけ。editor は `edit`・`review`・`translate` まで。
 
 `groups` は左に出すまとまり（例: 固定ページ・共通部分・記事）です。件数はサイトが数えます（一覧を全部読み終える前から出すため）。`needsWork` は要対応（下の状態の `untranslated`・`draft`・`source-changed`）の件数です。
+
+`attention` は、原文を直したあと公開済みの訳が前の版のまま残ると事故になる項目（価格・条件・法務のページ）を、一覧の上に目立たせるためのものです（2026-11-10、#171）。どの項目を対象にするかはサイトが決め、`items` には、その中で今「原文が更新」（`source-changed`）になっているものだけを入れます。無いとき（空の `items`）と省略した adapter は、何も出しません。画面は「{label}の原文が更新されています（n 件）」と、公開中の訳が前の版のままであること、直して「確認済み」にしてから更新を公開することを出し、題名から項目を開けます（`editLink` があればそちら）。公開済みの訳を外す操作はありません。
 
 `catalog` が `updating` のあいだ、`edit` の権限がある画面は `advanceCatalog` を `pollInterval` ごとに呼び、帯に「原文を取り込んでいます n/m」と出します。`current` が返ったら概要と一覧を読み直します。人が押すボタンにはしません。取り込みの途中でも、前の版の原文で一覧・項目を読め、直せるようにしてください（差分の取り込み）。
 
@@ -387,6 +394,7 @@ type PreviewRenderMessage = {
 一覧:
 
 - 上に「{訳す言語}版」の帯: 公開中の版と日時、確認済み n/m 件、「{訳す言語}版を公開…」（`publish`）、「公開の履歴」、原文の取り込みの進み具合、途中の公開の「続ける」。初回公開を止める `blockers` があれば件数と公開ダイアログへの案内を表示する。翻訳サービスが未接続なら、翻訳案は作れないが手入力はできることを表示する。確認済み件数だけで公開可能とは判定しない。
+- 帯の下に、`attention` に項目があれば「{label}の原文が更新されています」の呼びかけ（警告色・題名のリンク）。
 - 左にコンテンツの種類と件数（「すべて」を先頭に）。幅 900px 以下は上に横並び。
 - 絞り込み: 初回は「要対応」。要対応／確認済み／すべて／対象外（件数つき）を切り替えられる。検索を始めると全件から題名とアドレスを探し、項目から一覧へ戻ったときは元の行を見つけられるよう「すべて」を表示する。「要対応」が空なら「すべてを見る」で切り替えられる。
 - 行: 状態の印（形と言葉）・題名（下にアドレス）・任意の「含むもの」・確認済み n/m・未確認の画像の数・最終更新。対象外は `excludedReason` ごとに見出しと件数をまとめ、題名・アドレス・理由で検索できる。ホストが同じページや項目の部品を 1 件に集約し、内部名の代わりに `includedParts` へ人が読む名前を返す。`editLink` が安全な URL を返す行はホストのサブ言語編集画面へ移り、無ければこの画面の項目を開く。`sourceLink` が安全な URL を返す行には「原文を編集」を出す。
@@ -419,6 +427,6 @@ type PreviewRenderMessage = {
 ## デモと検証
 
 `npm run demo:localization-workspace`（`http://127.0.0.1:4180`）で、架空のデータとメモリ上の adapter で動く画面と、デモ用の描画の枠を出します。
-`?first=1&glossary=1&view=settings` で初回公開前の用語集を表示し、確認操作と公開できない理由の更新を試せます。
+`?first=1&glossary=1&view=settings` で初回公開前の用語集を表示し、確認操作と公開できない理由の更新を試せます。`?attention=1` で、原文が変わった項目を一覧の上で目立たせる呼びかけを試せます（「原文が変わったことにする」を押すと出ます）。
 
 `test/localization-workspace-model.test.mjs` は parser（未知の key・大きすぎる値・印の対応・状態の組み合わせ）と、印・リッチテキストの札の変換を確かめます。`test/localization-workspace-ui.test.mjs` は jsdom で、一覧・絞り込み・自動保存・確認済み・衝突・札・公開の手順（理由・再開・戻し）・権限・古い応答の破棄を確かめます。

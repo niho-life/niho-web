@@ -14,6 +14,8 @@ type Preset = keyof typeof presets;
 const memory = createLocalizationMemory({
   firstRelease: new URLSearchParams(location.search).get("first") === "1",
   glossary: new URLSearchParams(location.search).get("glossary") === "1",
+  // ?attention=1: 原文が更新されたら一覧の上で目立たせる項目を、全件にする（本番は価格・条件・法務のページだけ）
+  ...(new URLSearchParams(location.search).get("attention") === "1" ? { attention: { label: "価格・条件・法務のページ", keys: ["aG9tZQ", "YWJvdXQ", "Zm9vdGVy", "bmV3cw", "bWVtYmVycw"] } } : {}),
   frameUrl: `${location.origin}/frame.html`,
   mediaBase: "/media",
   pageSize: 2,

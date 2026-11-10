@@ -278,6 +278,23 @@ function LocaleBand({ overview, list, timeZone, catalogStalled, onRetryCatalog, 
 
 /* ---------- 一覧 ---------- */
 
+/** 原文が変わった価格・条件・法務のページなどを、一覧の上に目立たせる。公開済みの訳は前の版のまま残るため、直して確認済みにするよう促す。 */
+function AttentionBand({ adapter, overview, onOpen }: { adapter: LocalizationWorkspaceAdapter; overview: LocalizationOverview; onOpen: (itemKey: string) => void }) {
+  const attention = overview.attention;
+  if (!attention || attention.items.length === 0) return null;
+  return <section className="lw-attention" aria-label={`${attention.label}の原文が更新されています`}>
+    <p className="lw-attention-title"><Icon name="alert" /><strong>{attention.label}の原文が更新されています（{attention.items.length} 件）</strong></p>
+    <p className="lw-attention-text">公開中の{overview.languages.target}版は前の版のままです。直して「確認済み」にしてから、更新を公開してください。</p>
+    <ul className="lw-attention-list">{attention.items.map((item) => {
+      let edit: string | null = null;
+      try { edit = adapter.editLink?.(item.key) ?? null; } catch { edit = null; }
+      if (edit !== null && !isSafeNavigationUrl(edit)) edit = null;
+      return <li key={item.key}>{edit ? <a className="lw-edit-link" href={edit} referrerPolicy="no-referrer">{item.title || "無題"}</a>
+        : <button type="button" className="cw-link-button" onClick={() => onOpen(item.key)}>{item.title || "無題"}</button>}</li>;
+    })}</ul>
+  </section>;
+}
+
 const filterTabs: readonly [LocalizationFilter, string][] = [["needs-work", "要対応"], ["reviewed", "確認済み"], ["all", "すべて"], ["excluded", "対象外"]];
 
 function ListView({ adapter, overview, list, group, onGroup, timeZone, focusItem, onFocused, onOpen, onRetry }: {
@@ -358,6 +375,7 @@ function ListView({ adapter, overview, list, group, onGroup, timeZone, focusItem
       </ul>
     </nav>
     <div className="cw-main">
+      <AttentionBand adapter={adapter} overview={overview} onOpen={onOpen} />
       <div className="cw-list" ref={rowsRef}>
         <header className="cw-list-head">
           <div className="cw-list-title"><h2>{groupLabel}</h2>{items && <span className="cw-count">{inGroup.length} 件</span>}</div>
