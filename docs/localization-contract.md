@@ -135,6 +135,8 @@ const withCandidates = acceptTranslationResult(overlay, jaToEn, result);
 
 自動翻訳ジョブの結果は `applyAutomaticTranslationResult` で受け取ります。訳がない単位と、まだ人が触れていない `AUTO` の単位は、検証済みの新しい訳をそのままdraftへ入れます。`MANUAL` の単位と、`AUTO` でも人が確認済みにした単位はdraftを残してcandidateを付けます。明示的に翻訳案だけを作る操作には従来の `acceptTranslationResult` を使います。どちらも同じ検証と版比較を通ります。
 
+どちらを、いつ呼ぶかはホストが決めます。保存のたびに呼ぶ（自動下書きを有効にする）か、最初の一括下書きと「翻訳案を作る」を押したときだけ呼ぶかを選べます。鎌倉は後者で運用します（2026-11-10、#171）。`AUTO` のまま確認していない訳は未確認で、公開するのは人が確認したページだけです。ライブラリはこの運用を強制せず、公開の条件は `docs/localization-release.md` とホストが定めます。
+
 draftには `editOrigin`（`AUTO` / `MANUAL`）と `draftSourceFingerprint` を保存します。原文が変わった人のdraftは、確認前の手修正でも `review-needed` になります。旧overlayに `draftSourceFingerprint` がない場合は、原文との対応を推測せず従来の状態判定を保ち、次の編集・候補採用・確認時に記録します。
 
 操作は分離されています。

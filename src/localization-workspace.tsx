@@ -434,8 +434,8 @@ function SettingsView({ adapter, overview, timeZone, onBack, onSaved }: {
       <section className="lw-settings-card" aria-labelledby="lw-settings-auto">
         <h3 id="lw-settings-auto">自動翻訳</h3>
         <label className="lw-check"><input type="checkbox" checked={autoDraft} disabled={!canChange || busy} onChange={(event) => setAutoDraft(event.target.checked)} />
-          <span>{overview.languages.source}の変更した箇所を自動翻訳する</span></label>
-        <p className="cw-hint">自動翻訳のまま公開できます。人が直した・確認した訳は上書きせず、原文が変わると新しい訳を翻訳案に残します。</p>
+          <span>{overview.languages.source}を保存するたびに、変わった箇所を自動翻訳する</span></label>
+        <p className="cw-hint">オフのときは、変わった箇所を「原文が更新」にするだけです。自動翻訳の訳は未確認なので、確認してから公開します。人が直した・確認した訳は上書きせず、原文が変わると新しい訳を翻訳案に残します。</p>
         {canChange && <div className="lw-settings-actions"><button type="button" className="cw-button cw-primary" disabled={busy || autoDraft === settings.autoDraft} onClick={() => void save({ expectedVersion: settings.version, autoDraft }, "auto")}>{busy ? "保存しています…" : "保存する"}</button></div>}
         {autoNote && <p className={autoNote.error ? "cw-error" : "lw-note"} role={autoNote.error ? "alert" : "status"}>{autoNote.error && <Icon name="alert" />}{autoNote.text}</p>}
       </section>

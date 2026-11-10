@@ -127,7 +127,7 @@ type LocalizationOverview = {
 type LocalizationPermission = 'edit' | 'review' | 'translate' | 'publish' | 'rollback' | 'settings';
 type LocalizationSettings = {
   version: string;
-  autoDraft: boolean;                      // 原文の変更箇所を自動翻訳するか。人が直した・確認した訳は候補に留める
+  autoDraft: boolean;                      // 原文を保存するたびに、変更箇所を自動翻訳するか。人が直した・確認した訳は候補に留める。鎌倉は OFF で運用する
   translator: { connected: boolean };      // 翻訳サービスにつながっているか（設定の中身は出さない）
   queue: { waiting: number; failed: number; nextRetryAt: string | null };
   glossary?: {                             // 任意。無ければ用語集の section は出さない
@@ -343,7 +343,7 @@ type LocaleReleaseWorkspacePlan = {
 
 ### 設定（saveSettings）
 
-画面で変えられるのは `autoDraft` と、任意の固定用語集の確認状態です。`autoDraft` を有効にすると、原文の変更箇所を自動翻訳します。自動翻訳のままの訳は新しい訳で更新し、人が直した・確認した訳は保持して新しい訳を翻訳案に残します。自動翻訳のままでも公開できます。翻訳サービスの接続の有無・待っている件数・失敗と次の再試行は読むだけです。
+画面で変えられるのは `autoDraft` と、任意の固定用語集の確認状態です。`autoDraft` を有効にすると、原文を保存するたびに、変更箇所を自動翻訳します。自動翻訳のままの訳は新しい訳で更新し、人が直した・確認した訳は保持して新しい訳を翻訳案に残します。無効のあいだは、原文が変わった箇所を「原文が更新」にするだけで、翻訳は最初の一括下書きと「翻訳案を作る」（`translate`）を押したときだけ行います。どちらでも、自動翻訳の訳は未確認で、公開するのは確認したページです（2026-11-10、#171。鎌倉は `autoDraft` を無効のまま運用します）。翻訳サービスの接続の有無・待っている件数・失敗と次の再試行は読むだけです。
 
 `settings.glossary` があるときだけ、画面は版・`source` と `target` の対照・未確認／確認済みを表示します。`settings` 権限があり未確認のときだけ「この用語集を確認済みにする」を出し、`saveSettings({ expectedVersion: settings.version, reviewGlossaryVersion: settings.glossary.version })` で保存します。`reviewGlossaryVersion` は現行版と完全一致させ、違う版や CAS 競合は `conflict` と最新の `settings` を返してください。同じ版の再確認は `saved` の no-op でかまいません。保存成功後、画面は `loadOverview` を再実行して初回公開の `blockers` を更新します。
 
