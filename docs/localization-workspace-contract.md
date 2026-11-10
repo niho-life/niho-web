@@ -427,6 +427,6 @@ type PreviewRenderMessage = {
 ## デモと検証
 
 `npm run demo:localization-workspace`（`http://127.0.0.1:4180`）で、架空のデータとメモリ上の adapter で動く画面と、デモ用の描画の枠を出します。
-`?first=1&glossary=1&view=settings` で初回公開前の用語集を表示し、確認操作と公開できない理由の更新を試せます。
+`?first=1&glossary=1&view=settings` で初回公開前の用語集を表示し、確認操作と公開できない理由の更新を試せます。`?attention=1` で、原文が変わった項目を一覧の上で目立たせる呼びかけを試せます（「原文が変わったことにする」を押すと出ます）。
 
 `test/localization-workspace-model.test.mjs` は parser（未知の key・大きすぎる値・印の対応・状態の組み合わせ）と、印・リッチテキストの札の変換を確かめます。`test/localization-workspace-ui.test.mjs` は jsdom で、一覧・絞り込み・自動保存・確認済み・衝突・札・公開の手順（理由・再開・戻し）・権限・古い応答の破棄を確かめます。
