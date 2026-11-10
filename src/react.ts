@@ -34,8 +34,12 @@ export function createExternalFramePolicy({ parentOrigin, sources, siteSources }
     let url: URL;
     try { url = new URL(frame.src); } catch { return siteAllowed ? "blocked" : "opaque"; }
     if (url.protocol !== "https:" || url.username || url.password || url.hash) return siteAllowed ? "blocked" : "opaque";
-    const prefix = siteAllowed !== undefined;
-    return allowed.some((source) => matches(source, url, prefix)) && (siteAllowed === undefined || siteAllowed.some((source) => matches(source, url, true))) ? "retain-origin" : siteAllowed ? "blocked" : "opaque";
+    // siteSources を渡さない従来の使い方: sources との完全一致だけがorigin維持、他はopaque。
+    if (siteAllowed === undefined) return allowed.some((source) => matches(source, url, false)) ? "retain-origin" : "opaque";
+    // サイト単位の許可の外は読み込まない。許可の中でも、origin維持は実行コードの上限（sources）にも一致するときだけで、
+    // 一致しない不変embedなどは権限なし（allow-same-originなし）のopaque iframeにする。
+    if (!siteAllowed.some((source) => matches(source, url, true))) return "blocked";
+    return allowed.some((source) => matches(source, url, true)) ? "retain-origin" : "opaque";
   };
 }
 export type PageRendererProps = {

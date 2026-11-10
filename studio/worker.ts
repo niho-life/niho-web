@@ -2,7 +2,7 @@ import { parseProjectAliasPath, projectShortcutTarget } from "./project-routes.m
 declare const __STUDIO_INDEX_PATH__: string;
 import { siteAdmin } from "./site-admin.mjs";
 import { integrationIdentity, isTrustedEditorAction, resolveTrustedEditorApi, resolveTrustedEditorPage, type ResolvedTrustedIntegration } from "./integration-registry.mjs";
-import { KAMAKURA_CATALOG_CONTRACT_ERROR_CODE, KAMAKURA_CATALOG_CONTRACT_ERROR_STATUS, KamakuraCatalogContractError, KAMAKURA_COMMON_PAGE_ID, KAMAKURA_EDITOR_SITE_ID, parseKamakuraCatalog } from "./kamakura-catalog.js";
+import { KAMAKURA_CATALOG_CONTRACT_ERROR_CODE, KAMAKURA_CATALOG_CONTRACT_ERROR_STATUS, KamakuraCatalogContractError, KAMAKURA_COMMON_PAGE_ID, KAMAKURA_EDITOR_SITE_ID, KAMAKURA_EMBED_FRAME_SOURCE, parseKamakuraCatalog } from "./kamakura-catalog.js";
 import {
   KAMAKURA_CMS_IMAGE_TYPES, KAMAKURA_CMS_LIMITS, KAMAKURA_CMS_PROJECT_ID, KAMAKURA_CMS_SITE_ID, KAMAKURA_CMS_UPLOAD_ORIGIN, KAMAKURA_CMS_UPSTREAM_PREFIX,
   KAMAKURA_MEDIA_ORIGIN, KamakuraCmsContractError,
@@ -2443,7 +2443,7 @@ const KAMAKURA_EDITOR_ADAPTER: WorkerEditorAdapter = {
   connectOrigins: [KAMAKURA_EDITOR_UPSTREAM_ORIGIN],
   fontSources: [`${KAMAKURA_MEDIA_ORIGIN}/niho-web/fonts/v1/`],
   scriptSources: ["https://www.instagram.com/embed.js"],
-  frameSources: [`${KAMAKURA_MEDIA_ORIGIN}/niho-web/embeds/v1/`, "https://www.google.com/maps/embed", "https://www.openstreetmap.org/export/embed.html", "https://www.youtube-nocookie.com/embed/", "https://player.vimeo.com/video/", "https://lottie.host/embed/", "https://www.facebook.com/plugins/post.php", "https://www.instagram.com"]
+  frameSources: [KAMAKURA_EMBED_FRAME_SOURCE, "https://www.google.com/maps/embed", "https://www.openstreetmap.org/export/embed.html", "https://www.youtube-nocookie.com/embed/", "https://player.vimeo.com/video/", "https://lottie.host/embed/", "https://www.facebook.com/plugins/post.php", "https://www.instagram.com"]
 };
 
 function liveEditorAdapter(resolved: ResolvedTrustedIntegration): WorkerEditorAdapter | null {

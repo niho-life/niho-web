@@ -2,13 +2,19 @@ import { isStyleProperty } from "../src/style-values.js";
 import { isTemplatePath, validatePagePath } from "../src/pages.js";
 import type { EditorPage, EditorSite } from "../src/editor-types.js";
 import type { BlockContracts, BlockSlot, PropRule, StyleProperty } from "../src/types.js";
+import { KAMAKURA_MEDIA_ORIGIN } from "./kamakura-cms-contract.js";
 
 export const KAMAKURA_CATALOG_CONTRACT_ERROR_CODE = "upstream_contract_invalid" as const;
 export const KAMAKURA_CATALOG_CONTRACT_ERROR_STATUS = 502 as const;
 export const KAMAKURA_EDITOR_SITE_ID = "kamakura" as const;
 export const KAMAKURA_EDITOR_SITE_NAME = "鎌倉サイト（新サイト確認用）";
 export const KAMAKURA_EDITOR_DOMAIN = "https://next-kamakura.niho.life";
-export const KAMAKURA_EXTERNAL_FRAME_SOURCES = ["https://www.google.com/maps/embed"] as const;
+/** キャンバスでorigin維持（`allow-same-origin`）を許す外部frameの上限。実行コード（editor）だけが持ち、サイト単位の許可とJSONからは増やせない。 */
+export const KAMAKURA_ORIGIN_RETAINING_FRAME_SOURCES = ["https://www.google.com/maps/embed"] as const;
+/** 不変HTML embedの置き場（Studio editor routeのCSP `frame-src` と同じprefix）。キャンバスでは権限なしのopaque iframeで描く。 */
+export const KAMAKURA_EMBED_FRAME_SOURCE = `${KAMAKURA_MEDIA_ORIGIN}/niho-web/embeds/v1/` as const;
+/** サイト単位で許可する外部frame。上限（origin維持）に入るものはorigin維持、入らない不変embedはopaqueで描かれる。 */
+export const KAMAKURA_EXTERNAL_FRAME_SOURCES = [...KAMAKURA_ORIGIN_RETAINING_FRAME_SOURCES, KAMAKURA_EMBED_FRAME_SOURCE] as const;
 export const KAMAKURA_COMMON_PAGE_ID = /^(?!(?:catalog|create|index)$)[a-z][a-z0-9-]{0,59}$/u;
 
 export type KamakuraLegacyPage = { readonly name: string; readonly path: string };

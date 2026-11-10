@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { build } from "esbuild";
+import { createExternalFramePolicy } from "@niho/web";
 
 async function loadKamakuraCatalogContract() {
   const result = await build({
@@ -111,4 +112,17 @@ test("URL変更はホストの明示capabilityで有効になる", () => {
   assert.equal(contract.parseKamakuraCatalog({ ...source, pagePathEditable: false }).pagePathEditable, false);
   assert.equal(contract.parseKamakuraCatalog({ ...source, pagePathEditable: undefined }).pagePathEditable, false);
   assert.throws(() => contract.parseKamakuraCatalog({ ...source, pagePathEditable: "true" }), contract.KamakuraCatalogContractError);
+});
+
+test("鎌倉のキャンバスは不変embedの置き場をopaque、Google Mapsをorigin維持にし、それ以外は読み込まない", () => {
+  const sources = contract.parseKamakuraCatalog(catalog()).project.site.externalFrameSources;
+  assert.deepEqual(sources, contract.KAMAKURA_EXTERNAL_FRAME_SOURCES);
+  // Studio editor routeのCSP frame-srcと同じprefix。
+  assert.equal(contract.KAMAKURA_EMBED_FRAME_SOURCE, "https://kamakura-media.niho.life/niho-web/embeds/v1/");
+  assert.deepEqual(contract.KAMAKURA_ORIGIN_RETAINING_FRAME_SOURCES, ["https://www.google.com/maps/embed"]);
+  const policy = createExternalFramePolicy({ parentOrigin: "https://studio.example.test", sources: contract.KAMAKURA_ORIGIN_RETAINING_FRAME_SOURCES, siteSources: sources });
+  assert.equal(policy({ src: "https://www.google.com/maps/embed?pb=!1m18!2m3" }), "retain-origin");
+  assert.equal(policy({ src: "https://kamakura-media.niho.life/niho-web/embeds/v1/calendar-0123abcd.html" }), "opaque");
+  for (const src of ["https://kamakura-media.niho.life/uploads/a.html", "https://kamakura-media.niho.life/niho-web/embeds/v2/x.html", "https://kamakura-media.niho.life/niho-web/embeds/v1/../../uploads/x.html",
+    "https://kamakura-media.niho.life/niho-web/embeds/v1", "http://kamakura-media.niho.life/niho-web/embeds/v1/x.html", "https://www.google.com/maps/other", "https://www.youtube.com/embed/abc", "https://studio.example.test/niho-web/embeds/v1/x.html"]) assert.equal(policy({ src }), "blocked", src);
 });
