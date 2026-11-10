@@ -205,6 +205,8 @@ const html = renderPageToHtml(document);
 
 ## 開発
 
+seat の再利用と topic branch の準備は [Pane 作業フロー](docs/panes/panes-workflow.md) を参照してください。
+
 Basicの埋め込み群はBlankを先頭に置き、続けてMap / YouTube / Vimeo / Lottie / Facebook / X / Instagramを表示します。registry未接続時はBlankのカードと詳細selectを無効化し、中心の追加経路でも配置を拒否します。
 鎌倉サイトでは公開ホストとStudioの両方に同じ`public-map` keyを登録し、OpenStreetMapの固定埋め込み先だけを双方のCSPに許可します。編集キャンバスでは外部通信せず、プレビューと公開描画で承認済みkeyを解決します。
 
