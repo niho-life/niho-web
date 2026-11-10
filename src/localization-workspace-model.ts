@@ -46,6 +46,15 @@ export type LocalizationSettings = {
   /** 任意。ホストが公開前に確認を求める固定用語集。古い adapter は省略できる。 */
   readonly glossary?: LocalizationGlossary;
 };
+/**
+ * 原文が変わったら目立たせたい項目（価格・条件・法務のページなど）。
+ * ホストが、全件のうち「原文が更新」になっているものだけを選んで返す。ひとつも無ければ省略するか、items を空にする。
+ */
+export type LocalizationAttention = {
+  /** 例「価格・条件・法務のページ」。 */
+  readonly label: string;
+  readonly items: readonly { readonly key: string; readonly title: string }[];
+};
 export type LocalizationCatalog = { readonly state: "current" } | { readonly state: "updating"; readonly progress: LocaleReleaseProgress };
 export type LocalizationOverview = {
   readonly version: string;
@@ -60,6 +69,8 @@ export type LocalizationOverview = {
   readonly catalog: LocalizationCatalog;
   readonly preview: { readonly frameUrl: string } | null;
   readonly settings: LocalizationSettings;
+  /** 任意。省略した adapter は、これまでどおり印を出さない。 */
+  readonly attention?: LocalizationAttention;
 };
 
 /** untranslated・draft・source-changed は「要対応」。 */
@@ -200,7 +211,7 @@ export interface LocalizationWorkspaceAdapter {
 
 export const LOCALIZATION_LIMITS = {
   listPage: 500, listPages: 100, units: 2000, text: 100_000, marks: 200, groups: 50, previews: 50,
-  glossaryEntries: 500, glossaryText: 500,
+  glossaryEntries: 500, glossaryText: 500, attentionItems: 20,
   previewBytes: 2 * 1024 * 1024, previewParts: 40, previewTotalBytes: 16 * 1024 * 1024,
 } as const;
 const ITEM_KEY_RE = /^[A-Za-z0-9_-]{1,200}$/u;
@@ -453,7 +464,7 @@ export function parseLocalizationOverviewResult(input: unknown): LocalizationOve
   keys(value, ["status", "overview"], "overview");
   if (value.status !== "ready") fail("overview.status", "invalid status");
   const path = "overview.overview", source = record(value.overview, path);
-  keys(source, ["version", "sourceLocale", "targetLocale", "languages", "permissions", "groups", "release", "blockers", "catalog", "preview", "settings"], path);
+  keys(source, ["version", "sourceLocale", "targetLocale", "languages", "permissions", "groups", "release", "blockers", "catalog", "preview", "settings", "attention"], path);
   const sourceLocale = locale(source.sourceLocale, `${path}.sourceLocale`), targetLocale = locale(source.targetLocale, `${path}.targetLocale`);
   if (sourceLocale === targetLocale) fail(`${path}.targetLocale`, "target locale must differ from source locale");
   const languages = record(source.languages, `${path}.languages`);
@@ -489,6 +500,18 @@ export function parseLocalizationOverviewResult(input: unknown): LocalizationOve
     if (!isPreviewFrameUrl(frame.frameUrl)) fail(`${path}.preview.frameUrl`, "invalid preview frame URL");
     preview = { frameUrl: frame.frameUrl };
   }
+  let attention: LocalizationAttention | undefined;
+  if (source.attention !== undefined) {
+    const at = `${path}.attention`, entry = record(source.attention, at);
+    keys(entry, ["label", "items"], at);
+    const items = array(entry.items, `${at}.items`, LOCALIZATION_LIMITS.attentionItems).map((item, index) => {
+      const itemAt = `${at}.items[${index}]`, value = record(item, itemAt);
+      keys(value, ["key", "title"], itemAt);
+      return { key: itemKey(value.key, `${itemAt}.key`), title: name(value.title, `${itemAt}.title`, 1000) };
+    });
+    if (new Set(items.map((item) => item.key)).size !== items.length) fail(`${at}.items`, "duplicate item");
+    attention = { label: name(entry.label, `${at}.label`, 60), items };
+  }
   return {
     status: "ready",
     overview: {
@@ -501,6 +524,7 @@ export function parseLocalizationOverviewResult(input: unknown): LocalizationOve
       },
       blockers: parseLocaleReleaseBlockers(source.blockers, `${path}.blockers`),
       catalog, preview, settings: parseSettings(source.settings, `${path}.settings`),
+      ...(attention === undefined ? {} : { attention }),
     },
   };
 }

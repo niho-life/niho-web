@@ -46,6 +46,25 @@ test("the fictional memory adapter speaks the contract the parsers accept", asyn
   assert.throws(() => parseLocalizationOverviewResult({ status: "forbidden", reason: "secret" }), /unknown field/);
 });
 
+test("overview attention is optional and strictly validates its label and items", async () => {
+  const raw = await createLocalizationMemory().adapter.loadOverview(signal);
+  const withAttention = (attention) => ({ ...clone(raw), overview: { ...clone(raw.overview), attention } });
+  const ok = { label: "価格・条件・法務のページ", items: [{ key: "aG9tZQ", title: "トップ" }, { key: "YWJvdXQ", title: "私たちについて" }] };
+  assert.equal("attention" in parseLocalizationOverviewResult(raw).overview, false, "an adapter that omits it shows no mark");
+  assert.deepEqual(parseLocalizationOverviewResult(withAttention(ok)).overview.attention, ok);
+  assert.deepEqual(parseLocalizationOverviewResult(withAttention({ ...ok, items: [] })).overview.attention.items, []);
+  const memory = createLocalizationMemory({ attention: { label: "価格・条件・法務のページ", keys: ["aG9tZQ"] } });
+  assert.deepEqual(parseLocalizationOverviewResult(await memory.adapter.loadOverview(signal)).overview.attention, { label: "価格・条件・法務のページ", items: [] }, "only items whose source changed are listed");
+  assert.throws(() => parseLocalizationOverviewResult(withAttention({ ...ok, extra: true })), /unknown field/);
+  assert.throws(() => parseLocalizationOverviewResult(withAttention({ label: "", items: [] })), /invalid text/);
+  assert.throws(() => parseLocalizationOverviewResult(withAttention({ label: "価格\nページ", items: [] })), /invalid text/);
+  assert.throws(() => parseLocalizationOverviewResult(withAttention({ ...ok, items: [{ key: "bad key", title: "トップ" }] })), /invalid item key/);
+  assert.throws(() => parseLocalizationOverviewResult(withAttention({ ...ok, items: [{ key: "aG9tZQ", title: "" }] })), /invalid text/);
+  assert.throws(() => parseLocalizationOverviewResult(withAttention({ ...ok, items: [{ key: "aG9tZQ", title: "トップ", extra: 1 }] })), /unknown field/);
+  assert.throws(() => parseLocalizationOverviewResult(withAttention({ ...ok, items: [ok.items[0], ok.items[0]] })), /duplicate item/);
+  assert.throws(() => parseLocalizationOverviewResult(withAttention({ ...ok, items: Array.from({ length: 21 }, (_, index) => ({ key: `k${index}`, title: "ページ" })) })), /bounded array/);
+});
+
 test("settings glossary is optional and strictly validates its version, entries and review state", async () => {
   const memory = createLocalizationMemory({ glossary: true });
   const raw = await memory.adapter.loadOverview(signal);

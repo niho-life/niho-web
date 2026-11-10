@@ -468,6 +468,32 @@ test("release: roll back by choosing a version from the history", async () => {
   } finally { await app.cleanup(); }
 });
 
+test("attention: pages whose source changed (price, terms, legal) are called out above the list and open from there", async () => {
+  const memory = createLocalizationMemory();
+  const attention = (items) => ({ label: "価格・条件・法務のページ", items });
+  let shown = attention([{ key: "YWJvdXQ", title: "私たちについて" }]);
+  const adapter = { ...memory.adapter, loadOverview: async (signal) => { const result = await memory.adapter.loadOverview(signal); return { ...result, overview: { ...result.overview, ...(shown ? { attention: shown } : {}) } }; } };
+  const app = await setup({ adapter });
+  try {
+    const band = document.querySelector(".lw-attention");
+    assert.ok(band, "the call-out is shown");
+    assert.ok(band.textContent.includes("価格・条件・法務のページの原文が更新されています（1 件）"));
+    assert.ok(band.textContent.includes("公開中のEnglish版は前の版のままです"));
+    assert.ok(band.compareDocumentPosition(document.querySelector(".cw-list")) & dom.window.Node.DOCUMENT_POSITION_FOLLOWING, "it comes before the list");
+    await press("私たちについて", band);
+    assert.ok(button("一覧へ"), "the item opens from the call-out");
+    await press("一覧へ");
+    assert.ok(document.querySelector(".lw-attention"), "and it is still there on the list");
+  } finally { await app.cleanup(); }
+
+  shown = attention([]);
+  const empty = await setup({ adapter });
+  try { assert.equal(document.querySelector(".lw-attention"), null, "nothing is shown when no such page changed"); } finally { await empty.cleanup(); }
+  shown = null;
+  const omitted = await setup({ adapter });
+  try { assert.equal(document.querySelector(".lw-attention"), null, "an adapter that omits it shows nothing"); } finally { await omitted.cleanup(); }
+});
+
 test("permissions: the site's list of allowed actions decides what the screen shows", async () => {
   const editor = createLocalizationMemory({ permissions: ["edit", "review", "translate"] });
   let app = await setup({ adapter: editor.adapter });
