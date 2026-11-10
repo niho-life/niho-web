@@ -477,7 +477,8 @@ test("permissions: the site's list of allowed actions decides what the screen sh
     assert.equal(buttons(dialog()).filter((node) => nameOf(node).endsWith("に戻す…")).length, 0, "editors cannot roll back");
     await press("閉じる", dialog());
     await press("設定");
-    assert.ok(document.body.textContent.includes("自動翻訳のまま公開できます。"));
+    assert.ok(document.body.textContent.includes("自動翻訳の訳は未確認なので、確認してから公開します。"));
+    assert.ok(!document.body.textContent.includes("自動翻訳のまま公開できます"));
     assert.ok(document.body.textContent.includes("人が直した・確認した訳は上書きせず"));
     assert.ok(document.body.textContent.includes("設定を変える権限がありません"));
     assert.equal(document.querySelector('.lw-settings input[type="checkbox"]').disabled, true);

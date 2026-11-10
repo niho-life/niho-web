@@ -39,7 +39,7 @@ export type LocalizationGlossary = {
 };
 export type LocalizationSettings = {
   readonly version: string;
-  /** 原文の変更箇所を自動翻訳するか。人が直した・確認した訳は保持して候補に留める。 */
+  /** 原文を保存するたびに、変更箇所を自動翻訳するか。人が直した・確認した訳は保持して候補に留める。鎌倉は false で運用する。 */
   readonly autoDraft: boolean;
   readonly translator: { readonly connected: boolean };
   readonly queue: { readonly waiting: number; readonly failed: number; readonly nextRetryAt: string | null };
