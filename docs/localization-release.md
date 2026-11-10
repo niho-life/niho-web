@@ -16,7 +16,7 @@
 - host allowlistに含まれる業務blockだけ
 - source / config / target overlayのversionとdigest
 - CSS、CMS、asset等、PageDocument外にあるものをhostが渡した範囲だけのresource binding
-- target言語では全公開ページに現在の原文に合う訳があり、共通内容・用語集と確認必須ページの確認が完了し、抽出issueが0件であること。ページの自動訳は未確認でもよい
+- target言語では、その言語で公開するページ（`publicPageIds`。hostが選ぶ）のすべてに現在の原文に合う訳があり、共通内容・用語集と確認必須ページの確認が完了し、抽出issueが0件であること。サイトの全ページに訳が揃うことは求めない。訳さない・未確認のページを `publicPageIds` に入れなければ、そのページはtargetに出ない（source-onlyのまま）。ページの自動訳を未確認のまま公開するかはhostの運用で決める。鎌倉は確認済みのページだけを公開する（2026-11-10、#171）
 
 source言語は翻訳reviewを要求しませんが、文書identity、公開catalogue、block、共有参照、resource bindingはtargetと同じく検証します。`requiredResourceIds` に指定したCSS/CMS等のbindingが無ければ失敗します。指定されていない外部resourceを「snapshotに固定済み」とは扱いません。
 
