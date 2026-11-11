@@ -591,6 +591,33 @@ testWithD1("invalid CLI preview origins fail closed before the Kamakura binding 
   }
 });
 
+testWithD1("page draft recovery requires edit grants and stays scoped to the requested page", async (t) => {
+  const h = await fixture(t);
+  const read = "pages.draft-conflict/contact", write = "pages.draft-resolve/contact";
+  const published = { schemaVersion: 1, siteId: SITE, pageId: "contact", locale: "ja", revision: 2, title: "Current", body: [] };
+  const draft = { ...published, revision: 3, title: "Saved draft" };
+  const snapshot = { status: "conflict", version: "draft-version", published, draft };
+  const resolved = { expectedVersion: snapshot.version, document: { ...draft, title: "Reconciled" } };
+  h.grant("pages.read");
+  await check(await h.request("GET", read), 403, "forbidden");
+  await check(await h.request("PUT", write, resolved), 403, "forbidden");
+  assert.equal(h.calls.length, 0);
+
+  h.grant("pages.edit");
+  h.replyWith(({ method, body, path }) => {
+    assert.equal(path, "/internal/studio/web-content/contact/draft-conflict");
+    if (method === "GET") return Response.json(snapshot);
+    assert.deepEqual(JSON.parse(body), resolved);
+    return Response.json({ status: "saved", revision: 4, version: "resolved-version" });
+  });
+  assert.deepEqual(await check(await h.request("GET", read), 200), snapshot);
+  assert.deepEqual(await check(await h.request("PUT", write, resolved), 200), { status: "saved", revision: 4, version: "resolved-version" });
+  await check(await h.request("PUT", write, { ...resolved, document: { ...draft, pageId: "rentalspace" } }), 400, "invalid_request");
+  assert.equal(h.calls.length, 2);
+  h.replyWith(() => Response.json({ ...snapshot, draft: { ...draft, pageId: "rentalspace" } }));
+  await check(await h.request("GET", read), 502, "upstream_contract_invalid");
+});
+
 testWithD1("all advertised CLI capabilities fit the migration and have unique operation IDs", async (t) => {
   const h = await fixture(t);
   const ids = OPERATIONS.map(({ id }) => id);

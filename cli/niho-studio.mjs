@@ -2,7 +2,7 @@
 import { createReadStream, openAsBlob } from "node:fs";
 import { basename } from "node:path";
 import { parseArgs } from "node:util";
-import { API_PREFIX, API_VERSION, OPERATION_KEY_HEADER, SERVICE_CLIENT_ID, SCOPE_ID, UUID_V4, normalizeOperationKey, resolveOperation } from "./operations.mjs";
+import { DRAFT_RECOVERY_MAX_INPUT_BYTES, DRAFT_RECOVERY_MAX_OUTPUT_BYTES, API_PREFIX, API_VERSION, OPERATION_KEY_HEADER, SERVICE_CLIENT_ID, SCOPE_ID, UUID_V4, normalizeOperationKey, resolveOperation } from "./operations.mjs";
 
 const USAGE = `niho-studio --origin <https-origin> --project <project-id> --site <site-id> discover
 niho-studio --origin <https-origin> --project <project-id> --site <site-id> request <operation> [args...] [--json <file|->] [--operation-id <UUIDv4>]
@@ -63,10 +63,10 @@ async function readObject(stream, limit) {
   return value;
 }
 
-async function inputBody(path, action) {
+async function inputBody(path, action, maximumBytes = MAX_INPUT_BYTES) {
   let input = {};
   if (path !== undefined) {
-    try { input = await readObject(path === "-" ? process.stdin : createReadStream(path), MAX_INPUT_BYTES); }
+    try { input = await readObject(path === "-" ? process.stdin : createReadStream(path), maximumBytes); }
     catch { throw new InputError("invalid_json_input"); }
   }
   if (action === undefined) return JSON.stringify(input);
@@ -165,7 +165,7 @@ async function main() {
       body = upload.body;
     } else {
       if (operation.spec.upload) throw new InputError("use_upload_command");
-      if (method !== "GET") body = await inputBody(values.json, operation.spec.action);
+      if (method !== "GET") body = await inputBody(values.json, operation.spec.action, id === "pages.draft-resolve" ? DRAFT_RECOVERY_MAX_INPUT_BYTES : undefined);
     }
   } else {
     throw new InputError("invalid_arguments");
@@ -204,7 +204,7 @@ async function main() {
       await response.body?.cancel().catch(() => {});
       throw new Error("Expected JSON response");
     }
-    result = await readObject(response.body, MAX_RESPONSE_BYTES);
+    result = await readObject(response.body, id === "pages.draft-conflict" ? DRAFT_RECOVERY_MAX_OUTPUT_BYTES : MAX_RESPONSE_BYTES);
   } catch {
     const error = response.status === 401 ? "authentication_required" : response.status === 403 ? "forbidden" : "invalid_response";
     write({ error }, response.status, 1, operationId);

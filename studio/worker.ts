@@ -26,7 +26,7 @@ import { parseLocalizationOverlay, parseLocalizationValue, parseSiteLocalization
 import { DocumentValidationError } from "../src/validation-utils.js";
 import { parseEnglishPublicationAccepted } from "../src/english-publication.js";
 import { parseBreakpointSettings } from "../src/style-model.js";
-import { API_PREFIX, API_VERSION, OPERATIONS, OPERATION_KEY_HEADER, SERVICE_CLIENT_ID, SCOPE_ID, normalizeOperationKey, resolveOperation, type CliOperation } from "../cli/operations.mjs";
+import { DRAFT_RECOVERY_MAX_INPUT_BYTES, DRAFT_RECOVERY_MAX_OUTPUT_BYTES, API_PREFIX, API_VERSION, OPERATIONS, OPERATION_KEY_HEADER, SERVICE_CLIENT_ID, SCOPE_ID, normalizeOperationKey, resolveOperation, type CliOperation } from "../cli/operations.mjs";
 
 type D1Meta = { readonly changes?: number };
 type D1Result<T> = { readonly results?: readonly T[]; readonly success: boolean; readonly meta?: D1Meta };
@@ -169,6 +169,8 @@ type KamakuraBridgeOperation =
   | "page_change_prepare"
   | "page_change_apply"
   | "draft_save"
+  | "draft_conflict"
+  | "draft_resolve"
   | "release_plan"
   | "release"
   | "english_publication_retry"
@@ -1116,7 +1118,7 @@ async function enforceMutationBoundary(request: Request, identity?: SiteActor): 
 }
 
 type KamakuraAssetOperation = "list" | "upload-intent" | "update" | "usages" | "resolve";
-type EditorRoute = { readonly upstreamPath: string; readonly bodyLimit: number; readonly assetOperation?: KamakuraAssetOperation; readonly embedOperation?: "import" | "status"; readonly englishPublicationRetry?: true; readonly pageChange?: "prepare" | "apply" };
+type EditorRoute = { readonly upstreamPath: string; readonly bodyLimit: number; readonly assetOperation?: KamakuraAssetOperation; readonly embedOperation?: "import" | "status"; readonly englishPublicationRetry?: true; readonly pageChange?: "prepare" | "apply"; readonly draftRecovery?: { readonly action: "read" | "resolve"; readonly pageId: string } };
 
 /** kamakura-site の worker/studio-assets.ts と同じ固定表。kamakura-upload だけが Studio からのアップロード先。 */
 const KAMAKURA_ASSET_PROVIDERS = new Set(["kamakura-upload", "kamakura-admin-upload", "kamakura-studio", "kamakura-cms", "kamakura-approved-remote"]);
@@ -1222,9 +1224,14 @@ function kamakuraEditorRoute(action: string, method: string): EditorRoute | "met
     if (method !== "GET") return "method_not_allowed";
     return { upstreamPath: `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/catalog`, bodyLimit: MAX_MUTATION_BODY_BYTES };
   }
-  const page = /^\/editor\/((?!(?:catalog|create|index)$)[a-z][a-z0-9-]{0,59})(\/draft|\/release-plan|\/release|\/english-publication-retry)?$/u.exec(action);
+  const page = /^\/editor\/((?!(?:catalog|create|index)$)[a-z][a-z0-9-]{0,59})(\/draft|\/draft-conflict|\/release-plan|\/release|\/english-publication-retry)?$/u.exec(action);
   if (!page || !COMMON_PAGE_ID.test(page[1]!)) return null;
   const suffix = page[2] ?? "";
+  if (suffix === "/draft-conflict") {
+    if (method !== "GET" && method !== "PUT") return "method_not_allowed";
+    return { upstreamPath: `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/${page[1]}${suffix}`, bodyLimit: DRAFT_RECOVERY_MAX_INPUT_BYTES,
+      draftRecovery: { action: method === "GET" ? "read" : "resolve", pageId: page[1]! } };
+  }
   const expected = suffix === "/draft" ? "PUT" : suffix === "/release-plan" || suffix === "/release" || suffix === "/english-publication-retry" ? "POST" : "GET";
   if (method !== expected) return "method_not_allowed";
   return { upstreamPath: `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/${page[1]}${suffix}`, bodyLimit: suffix === "/draft" ? MAX_EDITOR_SAVE_BODY_BYTES : MAX_MUTATION_BODY_BYTES,
@@ -1442,6 +1449,7 @@ async function signedEditorRequest(
 }
 
 function kamakuraBridgeOperation(route: EditorRoute): KamakuraBridgeOperation {
+  if (route.draftRecovery) return route.draftRecovery.action === "read" ? "draft_conflict" : "draft_resolve";
   if (route.pageChange) return route.pageChange === "prepare" ? "page_change_prepare" : "page_change_apply";
   if (route.embedOperation === "import") return "embed_import";
   if (route.embedOperation === "status") return "embed_status";
@@ -1527,12 +1535,25 @@ function kamakuraCliPreviewOrigin(env: Env, identity: BridgeActor): string | und
   return origin;
 }
 
+function isKamakuraDraftDocument(value: unknown, pageId: string): boolean {
+  return isRecord(value) && value.schemaVersion === 1 && value.siteId === KAMAKURA_EDITOR_SITE_ID
+    && value.pageId === pageId && value.locale === "ja" && Number.isSafeInteger(value.revision)
+    && Number(value.revision) > 0 && typeof value.title === "string" && Array.isArray(value.body);
+}
+
 async function signedKamakuraEditorRequest(request: Request, env: Env, identity: BridgeActor, route: EditorRoute): Promise<Response> {
   const supportId = identity.kind === "cli" ? identity.requestId : crypto.randomUUID();
   const operation = kamakuraBridgeOperation(route);
   if (request.method === "GET" && (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length")))) throw new AuthenticationError("GET body rejected");
   const rawBody = request.method === "GET" ? new Uint8Array() : await readBoundedBody(request, route.bodyLimit, identity);
   let body = route.assetOperation ? validateKamakuraAssetBody(rawBody, route.assetOperation) : rawBody;
+  if (route.draftRecovery?.action === "resolve") {
+    let parsed: unknown;
+    try { parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(rawBody)); }
+    catch { throw new AuthenticationError("invalid draft recovery JSON"); }
+    if (!isRecord(parsed) || Object.keys(parsed).sort().join(",") !== "document,expectedVersion" || !assetText(parsed.expectedVersion, 200)
+      || !isKamakuraDraftDocument(parsed.document, route.draftRecovery.pageId)) throw new AuthenticationError("invalid draft recovery");
+  }
   if (route.englishPublicationRetry) {
     let parsed: unknown;
     try { parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(rawBody)) as unknown; }
@@ -1598,11 +1619,23 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
       throw kamakuraBridgeFailure(supportId, operation, "upstream_unexpected_4xx", response.status);
     }
     let value: unknown;
-    try { value = await readBoundedResponse(response); }
+    try { value = await readBoundedResponse(response, route.draftRecovery?.action === "read" ? DRAFT_RECOVERY_MAX_OUTPUT_BYTES : undefined); }
     catch {
       if (timedOut) throw kamakuraBridgeFailure(supportId, operation, "service_binding_timeout");
       if (isCatalog) throw kamakuraBridgeFailure(supportId, operation, "upstream_contract_invalid", response.status);
       throw kamakuraBridgeFailure(supportId, operation, "upstream_invalid_response", response.status);
+    }
+    if (route.draftRecovery) {
+      const invalid = () => kamakuraBridgeFailure(supportId, operation, "upstream_contract_invalid", response.status);
+      if (!isRecord(value)) throw invalid();
+      const keys = Object.keys(value).sort().join(",");
+      if (route.draftRecovery.action === "read") {
+        if (value.status === "clean" && keys === "status") return json(value, 200);
+        if (value.status !== "conflict" || keys !== "draft,published,status,version" || !assetText(value.version, 200)
+          || !isKamakuraDraftDocument(value.draft, route.draftRecovery.pageId) || !isKamakuraDraftDocument(value.published, route.draftRecovery.pageId)) throw invalid();
+      } else if (value.status !== "saved" || keys !== "revision,status,version" || !assetText(value.version, 200)
+        || !Number.isSafeInteger(value.revision) || Number(value.revision) < 1) throw invalid();
+      return json(value, 200);
     }
     if (route.englishPublicationRetry) {
       try { return json(parseEnglishPublicationAccepted(value), response.status); }

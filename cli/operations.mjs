@@ -18,6 +18,9 @@ function operation(id, capability, method, bridgePath, options = {}) {
   return Object.freeze({ id, capability, method, bridgePath, parameters: Object.freeze(parameters), ...options });
 }
 
+export const DRAFT_RECOVERY_MAX_INPUT_BYTES = 4 * 1024 * 1024;
+export const DRAFT_RECOVERY_MAX_OUTPUT_BYTES = 7 * 1024 * 1024;
+
 export const OPERATIONS = Object.freeze([
   operation("site.breakpoints.read", "site.settings.read", "GET", "/breakpoints"),
   operation("site.breakpoints.save", "site.settings.write", "PUT", "/breakpoints"),
@@ -30,6 +33,8 @@ export const OPERATIONS = Object.freeze([
   operation("pages.catalog", "pages.read", "GET", "/editor/catalog"),
   operation("pages.read", "pages.read", "GET", "/editor/:pageId"),
   operation("pages.save", "pages.edit", "PUT", "/editor/:pageId/draft"),
+  operation("pages.draft-conflict", "pages.edit", "GET", "/editor/:pageId/draft-conflict"),
+  operation("pages.draft-resolve", "pages.edit", "PUT", "/editor/:pageId/draft-conflict"),
   operation("pages.release-plan", "pages.publish", "POST", "/editor/:pageId/release-plan"),
   operation("pages.release", "pages.publish", "POST", "/editor/:pageId/release"),
   operation("pages.change-prepare", "pages.publish", "POST", "/editor/page-changes/prepare"),
