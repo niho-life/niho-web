@@ -148,7 +148,7 @@ export function ComponentPanel({ library, librarySupported, failed, visible, sit
             {removeProblem && <small className="e-help">{removeProblem}</small>}</details>
         </article>;
       })}</div> : <p className="e-help">「{query.trim()}」に一致する再利用コンポーネントはありません。</p>}
-    </> : <p className="e-help">再利用コンポーネントはまだありません。ページの要素を選び、右側の「コンポーネントにする」から登録できます。</p>}
+    </> : <p className="e-help">コンポーネントはまだありません。</p>}
     </section>}
   </>;
 }
@@ -168,8 +168,6 @@ export function SiteComponentBanner({ name, back }: { name: string; back?: (() =
 export function SiteComponentSettings({ name, readOnly }: { name: string; readOnly?: string | undefined }) {
   return <section className="e-inspector-content"><h2><Glyph />コンポーネントを編集</h2>
     <dl className="e-rows"><div><dt>コンポーネント名</dt><dd>{name}</dd></div></dl>
-    <p className="e-help">キャンバスまたはレイヤーで要素を選択して編集します。</p>
-    <p className="e-help">下書き保存だけでは公開中のページは変わりません。公開すると、このコンポーネントを使用するページに反映されます。</p>
     {readOnly && <p className="e-help e-problem">{readOnly}</p>}
   </section>;
 }
@@ -178,7 +176,7 @@ export function SiteComponentSettings({ name, readOnly }: { name: string; readOn
 export function CreateComponentSection({ disabled, reason, open }: { disabled: boolean; reason: string | undefined; open: () => void }) {
   return <section className="e-sec" aria-label="コンポーネント"><h3>コンポーネント</h3>
     <button type="button" onClick={open} disabled={disabled || !!reason}>コンポーネントにする</button>
-    <small className="e-help">選んだ要素を再利用コンポーネントに登録し、ほかのページでも使えるようにします。</small>{reason && <small className="e-help">ロック: {reason}</small>}</section>;
+    {reason && <small className="e-help">ロック: {reason}</small>}</section>;
 }
 
 /** ページに置いたインスタンスの設定。 */
@@ -192,7 +190,6 @@ export function InstanceInspector({ instance, definition, usage, staleProps, fie
   const multiline = (prop: { node: string; field: ComponentPropField }) => prop.field === "text" && longTextTags.has(elements.get(prop.node)?.tag ?? "");
   return <section className="e-sec" aria-label="配置したコンポーネントの設定">
     <p className="e-part-kind">配置したコンポーネント · {kindLabel(definition.kind)} · {usage}</p>
-    <small className="e-help">中身の見た目と構成は「コンポーネントを編集」で変更します。保存後、使用するページには各ページの次回公開時に反映されます。</small>
     <div className="e-actions"><button type="button" onClick={edit} disabled={disabled}>コンポーネントを編集</button><button type="button" className="e-danger" onClick={detach} disabled={disabled}>コンポーネントを解除</button></div>
     <h3>ページごとの値</h3>
     {props.length ? props.map(([name, prop]) => {
@@ -200,9 +197,8 @@ export function InstanceInspector({ instance, definition, usage, staleProps, fie
       return <div key={name} className="e-part-value">{field(prop.label, overridden ? values[name]! : master, (value) => setValue(name, value === master ? undefined : value), `instance-${name}`, { multiline: multiline(prop) })}
         {overridden ? <><small className="e-help">このページだけの値</small><button type="button" className="e-small" disabled={disabled} onClick={() => setValue(name, undefined)}>コンポーネント本体の値に戻す</button></>
           : <small className="e-help">コンポーネント本体の値を使用中</small>}</div>;
-    }) : <p className="e-help">このコンポーネントにはページごとに変えられる値がありません。「コンポーネントを編集」で設定できます。</p>}
+    }) : <p className="e-help">ページごとに変えられる値はありません。</p>}
     {staleProps.length > 0 && <div className="e-part-value"><p className="e-help">コンポーネントの更新で使われなくなった値が{staleProps.length}件あります。</p><button type="button" className="e-small" disabled={disabled} onClick={clean}>整理する</button></div>}
-    <p className="e-help">外枠の見た目はこのページだけに適用されます。</p>
   </section>;
 }
 
@@ -222,8 +218,7 @@ export function ComponentSettings({ component, usage, usageLoading, field, disab
     <h3>ページごとに変えられる値</h3>
     {props.length ? <ul className="e-part-usage">{props.map(([name, prop]) => <li key={name}><span>{prop.label}<small> · {fieldCaptions[prop.field]}</small></span>
       <button type="button" className="e-small" aria-label={`「${prop.label}」の公開をやめる`} disabled={disabled} onClick={() => unpublish(name)}>公開をやめる</button></li>)}</ul>
-      : <p className="e-help">要素を選ぶと、ページごとに変えられる値を設定できます。</p>}
-    <p className="e-help">保存後、使用するページには各ページの次回公開時に反映されます。</p>
+      : <p className="e-help">要素を選択してください。</p>}
     <div className="e-actions"><button type="button" onClick={back}>ページに戻る</button></div>
   </section>;
 }

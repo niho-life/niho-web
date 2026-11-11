@@ -178,7 +178,7 @@ export function MotionFields(props: MotionProps) {
       {appear && <>
         <Row caption="きっかけ" group status={{}}><Segmented label="登場のきっかけ" value={appear.trigger} disabled={appearOff} onChange={(trigger) => report(setAppear({ ...appear, trigger }))}
           options={[{ value: "load", text: "ページを開いたとき" }, { value: "view", text: "画面に入ったとき" }] as const} /></Row>
-        {appear.trigger === "view" && <small className="e-help">画面に入ったときはスクロール量に合わせて動きます。時間と遅れは使いません。</small>}
+
         <div className="e-grid2">
           <NumberField key={`${fieldKey}-appear-duration`} caption="登場の時間" suffix="秒" {...seconds} min={0.1} max={3} value={appear.duration} disabled={appearOff || appear.trigger === "view"} pending={pending} fieldKey={`${fieldKey}-appear-duration`}
             apply={(value) => typeof value === "number" ? setAppear({ ...appear, duration: value }) : "0.1〜3 の数値で入力してください。"} />
@@ -188,7 +188,7 @@ export function MotionFields(props: MotionProps) {
         <SelectField key={`${fieldKey}-appear-easing`} caption="登場のイージング" value={appear.easing} options={easings} disabled={appearOff}
           apply={(value) => { const { easing: _easing, ...rest } = appear; return setAppear(typeof value === "string" ? { ...rest, easing: value as Appear["easing"] & string } : rest); }} />
       </>}
-      <small className="e-help">動きを減らす設定の利用者には動きなしで表示します。</small></>}
+</>}
     {showSettings && can("hidden") && <fieldset className="e-widths" aria-labelledby={legend} disabled={disabled || !!hiddenLock}><span className="e-cap-text" id={legend}>表示する幅</span>
       {tiers.map((entry) => <label className="e-check" key={String(entry.key)}><input type="checkbox" checked={!hiddenKeys.includes(entry.key)} onChange={(event) => {
         const next = event.target.checked ? hiddenKeys.filter((key) => key !== entry.key) : [...hiddenKeys, entry.key];

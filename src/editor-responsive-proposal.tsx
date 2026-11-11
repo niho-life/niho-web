@@ -199,7 +199,7 @@ export function ResponsiveProposalControl(props: ControlProps) {
       onClick={() => { setScope(props.selectedNodeId ? "node" : "page"); setWidths(props.breakpoints.map((entry) => entry.minWidth)); setPhase({ type: "configure" }); setOpen(true); props.onOpenChange?.(true); }}>レスポンシブ提案</button>
     {props.disabledReason && <small className="e-responsive-proposal-hint">{props.disabledReason}</small>}
     {open && createPortal(<Dialog name="レスポンシブ提案" dismiss={close}><h2>レスポンシブ提案</h2>
-      {phase.type === "configure" && <><p className="e-help">ホストが現在の文書を使って提案します。内容・構造・リンクは変更せず、選んだ幅のレイアウト、余白、サイズだけを確認後に適用します。</p>
+      {phase.type === "configure" && <>
         <fieldset className="e-responsive-proposal-options"><legend>対象</legend>
           <label><input type="radio" name="responsive-scope" checked={scope === "node"} disabled={!props.selectedNodeId} autoFocus={!!props.selectedNodeId} onChange={() => setScope("node")} />選択中の要素とその内側</label>
           <label><input type="radio" name="responsive-scope" checked={scope === "page"} autoFocus={!props.selectedNodeId} onChange={() => setScope("page")} />ページ全体</label>

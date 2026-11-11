@@ -162,7 +162,7 @@ test("shared documents stay out of pages and remain editable as site components 
     await click(button("コンポーネントを編集", siteCard("サイトの共通枠"))); await loadCanvas();
     assert.ok(document.querySelector(".e-part-banner").textContent.includes("サイト全体のコンポーネント「サイトの共通枠」を編集中"));
     assert.ok(text().includes("公開すると、このコンポーネントを使用するページに反映されます"));
-    assert.ok(text().includes("キャンバスまたはレイヤーで要素を選択して編集します"));
+    assert.ok(!text().includes("キャンバスまたはレイヤーで要素を選択して編集します"));
     await click("h1 · heading"); await change(input("テキスト"), "共通ヘッダー"); await click("下書き保存");
     assert.deepEqual(app.calls.saves[0].target, target("chrome"));
     await click("section · hero");
@@ -196,7 +196,7 @@ test("localized component navigation keeps host page kinds and returns to the or
     assert.equal(pageRow("サイトの共通枠"), undefined);
     await openPage("別ページ");
     assert.ok(siteCard("サイトの共通枠"));
-    await click("English（訳文）");
+    await click("English");
     assert.ok(siteCard("サイトの共通枠"));
     await click(button("コンポーネントを編集", siteCard("サイトの共通枠")));
     assert.ok(document.querySelector(".e-part-banner")?.textContent.includes("サイトの共通枠"));
@@ -309,7 +309,7 @@ test("配置 adds an instance to the page draft without saving the library", asy
 test("コンポーネントにする registers the selection and saves the library before the page", async () => {
   const app = await setup();
   try {
-    await click("section · hero"); await editorTab("設定"); assert.ok(text().includes("選んだ要素を再利用コンポーネントに登録し、ほかのページでも使えるようにします。"));
+    await click("section · hero"); await editorTab("設定"); assert.ok(!text().includes("選んだ要素を再利用コンポーネントに登録し、ほかのページでも使えるようにします。"));
     await click("コンポーネントにする");
     assert.equal(dialog().getAttribute("aria-label"), "コンポーネントにする"); assert.equal(input("種類", dialog()).value, "section");
     await click(button("登録する", dialog())); assert.ok(dialog().textContent.includes("コンポーネント名を入力してください。"));
@@ -317,7 +317,7 @@ test("コンポーネントにする registers the selection and saves the libra
     assert.ok(dialog().textContent.includes("同じ名前のコンポーネントがあります。"));
     await change(input("コンポーネント名", dialog()), "紹介セクション"); await click(button("登録する", dialog()));
     assert.equal(dialog(), null);
-    assert.ok(layerButton("紹介セクション")); assert.ok(text().includes("このコンポーネントにはページごとに変えられる値がありません。「コンポーネントを編集」で設定できます。"));
+    assert.ok(layerButton("紹介セクション")); assert.ok(text().includes("ページごとに変えられる値はありません。"));
     assert.equal(rendered("hero--n2").textContent, "海のそばで過ごす");
     assert.equal(button("公開").disabled, true);
     await click("下書き保存");
@@ -405,7 +405,7 @@ test("page values override public props, can return to the master value and stal
   const app = await setup({ document: page({ props: { oldLabel: "旧" } }) });
   try {
     await click("◇ サイトヘッダー");
-    assert.ok(text().includes("配置したコンポーネント · ナビゲーション · 3件で使用")); assert.ok(text().includes("外枠の見た目はこのページだけに適用されます。"));
+    assert.ok(text().includes("配置したコンポーネント · ナビゲーション · 3件で使用")); assert.ok(!text().includes("外枠の見た目はこのページだけに適用されます。"));
     assert.equal(input("2つ目のリンク").value, "紹介"); assert.ok(text().includes("コンポーネント本体の値を使用中"));
     await change(input("2つ目のリンク"), "会社概要");
     assert.equal(rendered("top_nav--n3").textContent, "会社概要"); assert.ok(text().includes("このページだけの値"));
@@ -1071,7 +1071,7 @@ test("the component editor's style panel names who owns each library token and l
   try {
     await openPanel(); await click(button("コンポーネントを編集", card("サイトヘッダー"))); await loadCanvas();
     await click(document.querySelector('nav[aria-label="編集ツール"] button[title="スタイル"]'));
-    assert.ok(styles().textContent.includes("サイト共通と同じ名前の値は、ページに置いたときと同じくサイト共通の値で表示します。"));
+    assert.ok(!styles().textContent.includes("サイト共通と同じ名前の値は、ページに置いたときと同じくサイト共通の値で表示します。"));
     assert.deepEqual(rows().map((node) => node.textContent), ["ブランドサイト共通 · #336655 · 1 か所", "アクセントコンポーネント本体 · #0055AA · 1 か所"], "site-only values are not offered");
     // サイト共通の値は名前・色の変更と削除ができない。コンポーネントの中の要素へは適用できる。
     await click("a · n2"); await click(row("ブランド"));

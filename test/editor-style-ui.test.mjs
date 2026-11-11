@@ -37,6 +37,8 @@ async function change(target, value) {
   if (target.tagName !== "SELECT") await act(async () => target.dispatchEvent(new dom.window.FocusEvent("focusout", { bubbles: true })));
   await flush();
 }
+/** ブラウザの再読込と同じく、エディタを開き直して保存済みの文書を読み直す。 */
+let reloadEditor = async () => {};
 async function setup(options = {}) {
   const container = document.createElement("div"); document.body.append(container); const root = createRoot(container);
   const calls = { saves: [] }; let stored = structuredClone(options.document ?? fixture), version = "v1";
@@ -48,8 +50,12 @@ async function setup(options = {}) {
     prepareRelease: async () => { throw new Error("not used"); }, release: async () => { throw new Error("not used"); },
     ...options.adapter
   };
-  await act(async () => root.render(createElement(PageEditor, { adapter, ...options.props }))); await flush();
-  await act(async () => frame().dispatchEvent(new dom.window.Event("load")));
+  let mount = 0;
+  const render = async () => {
+    await act(async () => root.render(createElement(PageEditor, { key: ++mount, adapter, ...options.props }))); await flush();
+    await act(async () => frame().dispatchEvent(new dom.window.Event("load")));
+  };
+  await render(); reloadEditor = render;
   return { calls, stored: () => stored, cleanup: async () => { await act(async () => root.unmount()); container.remove(); } };
 }
 
@@ -218,7 +224,7 @@ test("a menu span with a line break edits only its own document, preserves its l
     assert.equal(savedLabel.children[0].text, "Edited menu label"); assert.equal(savedLabel.children[1].id, "menu_break");
     assert.deepEqual(savedLabel.style, label.style);
     assert.equal(JSON.stringify(saved).includes("HEADER_STAYS_UNCHANGED"), false);
-    await click(button("最新の文書を再読込"));
+    await reloadEditor();
     assert.ok(frame().contentDocument.querySelector('[data-nw-overlay-editing]').textContent.includes("Edited menu label"));
   } finally { await app.cleanup(); }
 });
@@ -258,7 +264,7 @@ test("a tablet override is shown in the tier color, can be reset, and matches th
     await click(button("下書き保存"));
     assert.deepEqual(app.calls.saves[0].document.body[0].style.responsive, [{ minWidth: 768, declarations: { maxWidth: "64rem", margin: "0 auto", flexDirection: "row" } }]);
     assert.equal(app.calls.saves[0].document.body[0].style.base.width, "80%");
-    await click(button("最新の文書を再読込"));
+    await reloadEditor();
     const html = renderPageToHtml(app.stored()), published = html.match(/<style data-nw-style="[^"]+">([^]*?)<\/style>/)[1];
     assert.ok(published.includes("@media (min-width:768px)") && published.includes("flex-direction:row;"));
     assert.equal(canvasCss(), published);
@@ -341,7 +347,7 @@ test("flex width and dvh height round-trip through the inspector, undo, and publ
     const saved = app.calls.saves[0].document.body[0].children[0].style.base;
     assert.deepEqual({ width: saved.width, flexGrow: saved.flexGrow, flexBasis: saved.flexBasis, height: saved.height },
       { width: "auto", flexGrow: 2, flexBasis: "0px", height: "100dvh" });
-    await click(button("最新の文書を再読込"));
+    await reloadEditor();
     await click(button("h1 · heading")); await editorTab("ボックス");
     assert.equal(widthUnit().value, "u:flex");
     assert.equal(field("高さ", right()).querySelector("select").value, "u:dvh");
@@ -387,7 +393,7 @@ test("height flex divides a vertical parent's remaining space and switches back 
     await click(button("下書き保存"));
     const saved = app.calls.saves[0].document.body[0].children[0].style.base;
     assert.deepEqual({ height: saved.height, flexGrow: saved.flexGrow, flexBasis: saved.flexBasis }, { height: "auto", flexGrow: 2, flexBasis: "0px" });
-    await click(button("最新の文書を再読込")); await click(button("h1 · heading")); await editorTab("ボックス");
+    await reloadEditor(); await click(button("h1 · heading")); await editorTab("ボックス");
     assert.equal(heightUnit().value, "u:flex");
     await change(heightUnit(), "u:px");
     await click(button("下書き保存"));

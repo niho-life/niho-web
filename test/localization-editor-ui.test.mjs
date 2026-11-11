@@ -166,24 +166,24 @@ test("initialTarget opens the translated language on the canvas", async () => {
   const app = await setup({ initialTarget: { siteId: "kamakura", pageId: "home", locale: "en-US" } });
   try {
     await waitForUi(() => document.querySelector('.e-language-selector [aria-pressed="true"]')?.textContent?.includes("English"), "English is selected from the initial target");
-    assert.equal(document.querySelector('.e-language-selector [aria-pressed="true"]')?.textContent, "English（訳文）");
+    assert.equal(document.querySelector('.e-language-selector [aria-pressed="true"]')?.textContent, "English");
   } finally { await app.cleanup(); }
 });
 
 test("host source locale opens, saves, and survives switching back from the explicit translation locale", async () => {
   const app = await setup({ hostSourceLocale: true });
   try {
-    await waitForUi(() => document.querySelector('.e-language-selector [aria-pressed="true"]')?.textContent === "日本語（原文）", "host source language is selected");
+    await waitForUi(() => document.querySelector('.e-language-selector [aria-pressed="true"]')?.textContent === "日本語", "host source language is selected");
     assert.equal(input("ページタイトル").disabled, false);
     assert.equal(button("公開").disabled, false);
     await change(input("ページタイトル"), "保存できる鎌倉ページ");
     await click("下書き保存");
     assert.equal(app.calls.saves.at(-1).target.locale, "ja");
     assert.equal(app.sites.kamakura.sourceDocument.locale, "ja");
-    await click("English（訳文）");
-    await waitForUi(() => document.querySelector('.e-language-selector [aria-pressed="true"]')?.textContent === "English（訳文）", "translation opens");
-    await click("日本語（原文）");
-    await waitForUi(() => document.querySelector('.e-language-selector [aria-pressed="true"]')?.textContent === "日本語（原文）", "host source reopens");
+    await click("English");
+    await waitForUi(() => document.querySelector('.e-language-selector [aria-pressed="true"]')?.textContent === "English", "translation opens");
+    await click("日本語");
+    await waitForUi(() => document.querySelector('.e-language-selector [aria-pressed="true"]')?.textContent === "日本語", "host source reopens");
     assert.equal(input("ページタイトル").value, "保存できる鎌倉ページ");
     assert.equal(button("公開").disabled, false);
     assert.equal(document.body.textContent.includes("文書の言語がサイトの明示設定にありません"), false);
@@ -195,7 +195,7 @@ test("page translation capability can be explicitly unavailable without pretendi
   try {
     await waitForUi(() => document.querySelector('.e-language-selector [aria-pressed="true"]')?.textContent?.includes("English"), "English is selected");
     await showLocalization();
-    assert.match(document.querySelector(".e-localization-panel").textContent, /このページからの自動翻訳依頼には対応していません/u);
+    assert.match(document.querySelector(".e-localization-panel").textContent, /自動翻訳は翻訳画面から依頼します/u);
     assert.equal(button("翻訳を再試行"), undefined);
     assert.equal(app.calls.commands.length, 0);
   } finally { await app.cleanup(); }
@@ -278,7 +278,7 @@ test("source page setting saves the target review policy while target mode canno
   const app = await setup();
   try {
     await showInspector("page");
-    const check = [...document.querySelectorAll("label.e-check")].find((node) => node.textContent.includes("サブは確認してから公開"))?.querySelector("input");
+    const check = [...document.querySelectorAll("label.e-check")].find((node) => node.textContent.includes("サブ言語は確認してから公開"))?.querySelector("input");
     assert.ok(check, "localized source pages offer a per-page publication policy");
     assert.equal(check.checked, false);
     await act(async () => check.click()); await flush();
@@ -290,22 +290,22 @@ test("source page setting saves the target review policy while target mode canno
   const target = await setup({ initialTarget: { siteId: "kamakura", pageId: "home", locale: "en-US" } });
   try {
     await showInspector("page");
-    assert.equal(document.body.textContent.includes("サブは確認してから公開"), false);
+    assert.equal(document.body.textContent.includes("サブ言語は確認してから公開"), false);
   } finally { await target.cleanup(); }
 });
 
 test("same logical page switches locale through the dirty guard, saves real target content and keeps source unchanged", async () => {
   const app = await setup();
   try {
-    assert.ok(button("日本語（原文）")); assert.ok(button("English（訳文）"));
+    assert.ok(button("日本語")); assert.ok(button("English"));
     await clickTool("ページ");
     assert.equal([...document.querySelectorAll(".e-page-name")].filter((node) => node.textContent === "鎌倉ホーム").length, 1);
-    assert.ok(document.body.textContent.includes("JA 原文")); assert.ok(document.body.textContent.includes("EN 更新あり"));
+    assert.ok(!document.body.textContent.includes("JA 原文"), "ページ一覧に言語ごとの翻訳状態を出さない"); assert.ok(!document.body.textContent.includes("EN 翻訳済み"));
     await click("ページ"); await typeWithoutBlur(input("ページタイトル"), "入力途中の原文");
-    await click("English（訳文）"); assert.ok(document.querySelector('[role="dialog"]')); await click("編集を続ける");
+    await click("English"); assert.ok(document.querySelector('[role="dialog"]')); await click("編集を続ける");
     assert.equal(input("ページタイトル").value, "入力途中の原文");
     await act(async () => input("ページタイトル").dispatchEvent(new dom.window.FocusEvent("focusout", { bubbles: true }))); await flush();
-    await click("English（訳文）"); await click("保存して移動"); await flush(5);
+    await click("English"); await click("保存して移動"); await flush(5);
     assert.equal(input("ページタイトル").value, "Manual Kamakura");
     assert.equal(tool("スタイル").disabled, true); assert.ok(button("元に戻す").disabled);
     await click("h1 · heading"); await change(input("テキスト"), "Edited target heading");
@@ -317,7 +317,7 @@ test("same logical page switches locale through the dirty guard, saves real targ
     assert.ok(app.calls.saves.at(-1).localization.expectedSourceVersion.startsWith("source-"));
     await clickTool("レイヤー"); await click("a · details"); await selectInspectorTab("設定"); assert.equal(input("リンク先 URL").disabled, true); assert.ok(document.body.textContent.includes("共通デザインは原文側で編集"));
     await change([...document.querySelectorAll('select[aria-label="編集するサイト"]')][0], "experience"); await flush(6);
-    assert.ok(button("English（原文）")); assert.ok(button("日本語（訳文）")); assert.equal(input("ページタイトル").value, "Experience home");
+    assert.ok(button("English")); assert.ok(button("日本語")); assert.equal(input("ページタイトル").value, "Experience home");
   } finally { await app.cleanup(); }
 });
 
@@ -333,7 +333,7 @@ test("source draft save refreshes site localization status once without waiting 
 test("URL画像の手修正は親bufferでcancel・離脱guard・409再試行を保ち、target canvasだけを更新する", async () => {
   const app = await setup({ conflictOnce: true });
   try {
-    await click("English（訳文）"); await flush(5); await showLocalization();
+    await click("English"); await flush(5); await showLocalization();
     const section = document.querySelector('[data-unit-id="page.node.urlPhoto.asset"]'); assert.ok(section);
     const url = [...section.querySelectorAll("label")].find((label) => label.querySelector("span")?.textContent === "言語別の画像 URL")?.querySelector("input");
     const save = [...section.querySelectorAll("button")].find((node) => node.textContent === "URLを保存"), cancel = [...section.querySelectorAll("button")].find((node) => node.textContent === "入力を取り消す");
@@ -343,7 +343,7 @@ test("URL画像の手修正は親bufferでcancel・離脱guard・409再試行を
     const accepted = frameImage().getAttribute("src"), acceptedAlt = frameImage().getAttribute("alt");
     await change(url, "/manual-cancel.webp"); assert.equal(frameImage().getAttribute("src"), accepted);
     const unload = new dom.window.Event("beforeunload", { cancelable: true }); window.dispatchEvent(unload); assert.equal(unload.defaultPrevented, true);
-    await click("日本語（原文）"); assert.ok(document.querySelector('[role="dialog"]')); await click("編集を続ける"); assert.equal(url.value, "/manual-cancel.webp");
+    await click("日本語"); assert.ok(document.querySelector('[role="dialog"]')); await click("編集を続ける"); assert.equal(url.value, "/manual-cancel.webp");
     await act(async () => cancel.click()); await flush(); assert.equal(url.value, docSrc(accepted));
     await change(url, "/manual-target.webp"); await act(async () => save.click()); await flush(7);
     assert.ok(document.body.textContent.includes("409")); assert.equal(url.value, "/manual-target.webp"); assert.equal(frameImage().getAttribute("src"), accepted);
@@ -362,7 +362,7 @@ test("URL画像の手修正は親bufferでcancel・離脱guard・409再試行を
     const current = document.querySelector('[data-unit-id="page.node.urlPhoto.asset"]'), review = [...current.querySelectorAll("button")].find((node) => node.textContent === "現在の訳を確認済みにする");
     await act(async () => review.click()); await flush(7);
     assert.ok(app.sites.kamakura.overlay.entries.find((entry) => entry.unitId === "page.node.urlPhoto.asset").reviewedSourceFingerprint);
-    await click("日本語（原文）"); await flush(7); assert.equal(frameImage().getAttribute("src"), origin + "/kamakura-source.webp");
+    await click("日本語"); await flush(7); assert.equal(frameImage().getAttribute("src"), origin + "/kamakura-source.webp");
   } finally { await app.cleanup(); }
 });
 
@@ -370,9 +370,9 @@ test("read-only original policy stays on its snapshot while the Japanese derivat
   const app = await setup({ readOnlySource: true });
   try {
     assert.ok(document.body.textContent.includes("原文（読み取り専用）")); assert.equal(input("ページタイトル").disabled, true);
-    await clickTool("ページ"); await change(input("編集するサイト"), "experience"); await flush(7);
-    assert.ok(document.body.textContent.includes("原文（読み取り専用）")); assert.equal(button("English（原文）").disabled, true);
-    await click("日本語（訳文）"); await flush(7);
+    await clickTool("ページ"); await change(document.querySelector('select[aria-label="編集するサイト"]'), "experience"); await flush(7);
+    assert.ok(document.body.textContent.includes("原文（読み取り専用）")); assert.equal(button("English").disabled, true);
+    await click("日本語"); await flush(7);
     assert.equal(document.body.textContent.includes("原文（読み取り専用）"), false); assert.equal(input("ページタイトル").disabled, false);
     await change(input("ページタイトル"), "編集できる日本語派生原稿"); assert.equal(button("下書き保存").disabled, false);
     assert.equal(app.sites.experience.sourceDocument.title, "Experience home");
@@ -383,10 +383,10 @@ test("a target is read-only only when its own snapshot carries the policy", asyn
   const app = await setup({ readOnlyTarget: true });
   try {
     assert.equal(document.body.textContent.includes("読み取り専用"), false); assert.equal(input("ページタイトル").disabled, false);
-    await click("English（訳文）"); await flush(7);
+    await click("English"); await flush(7);
     assert.ok(document.body.textContent.includes("この言語（読み取り専用）")); assert.equal(input("ページタイトル").disabled, true); assert.equal(button("下書き保存").disabled, true);
     await showLocalization(); assert.equal(document.querySelector('[data-unit-id="page.title"] input, [data-unit-id="page.title"] textarea').disabled, true);
-    await click("日本語（原文）"); await flush(7);
+    await click("日本語"); await flush(7);
     assert.equal(document.body.textContent.includes("読み取り専用"), false); assert.equal(input("ページタイトル").disabled, false);
   } finally { await app.cleanup(); }
 });
@@ -394,7 +394,7 @@ test("a target is read-only only when its own snapshot carries the policy", asyn
 test("candidate stays separate until adoption, command conflicts retry, failures are visible, and late target reads are ignored", async () => {
   const app = await setup({ conflictOnce: true });
   try {
-    await click("English（訳文）"); await flush(5); await showLocalization();
+    await click("English"); await flush(5); await showLocalization();
     assert.ok(document.body.textContent.includes("Manual Kamakura")); assert.ok(document.body.textContent.includes("Candidate Kamakura"));
     assert.ok(document.body.textContent.includes("翻訳に失敗しました"));
     await click("翻訳案を採用"); assert.ok(document.body.textContent.includes("409")); assert.equal(app.sites.kamakura.targetDocument.title, "Manual Kamakura");
@@ -407,7 +407,7 @@ test("candidate stays separate until adoption, command conflicts retry, failures
   } finally { await app.cleanup(); }
   const late = await setup({ delayedRead: true });
   try {
-    await click("English（訳文）"); await click("日本語（原文）"); late.resolveDelayed(); await flush(5);
+    await click("English"); await click("日本語"); late.resolveDelayed(); await flush(5);
     assert.equal(button("翻訳"), undefined); assert.equal(input("ページタイトル").value, "鎌倉ホーム");
   } finally { await late.cleanup(); }
 });
@@ -422,7 +422,7 @@ test("source component editing saves through the canonical library session and t
     assert.equal(app.siteReads, initialSiteReads + 1, "shared source saves refresh site localization once");
     assert.equal(app.components.components[0].root.children[0].children[0].text, "共有原文を更新");
 
-    await click("ページに戻る"); await click("English（訳文）"); await flush(7);
+    await click("ページに戻る"); await click("English"); await flush(7);
     const frame = document.querySelector('iframe[title="ページのライブキャンバス"]'); assert.ok(frame);
     await act(async () => frame.dispatchEvent(new dom.window.Event("load"))); await flush();
     assert.equal((frame.contentDocument.body.textContent.match(/Shared draft/g) ?? []).length, 2);
@@ -438,7 +438,7 @@ test("shared component units are shown once, manually edited, adopted, reviewed 
   const section = () => document.querySelector('[data-unit-id="component.header.node.sharedText.text"]');
   const sectionButton = (label) => [...section().querySelectorAll("button")].find((item) => item.textContent === label);
   try {
-    await click("English（訳文）"); await flush(7);
+    await click("English"); await flush(7);
     const expanded = document.querySelector("iframe")?.contentDocument?.querySelector('[data-nw-node="homeHeaderA--sharedText"]'); assert.ok(expanded);
     await act(async () => expanded.click()); await flush();
     assert.equal(document.querySelectorAll('[data-unit-id="component.header.node.sharedText.text"]').length, 1);
@@ -508,23 +508,23 @@ test("manual text input guards locale, site and inspector navigation, participat
   const titleSection = () => document.querySelector('[data-unit-id="page.title"]');
   const manual = () => titleSection()?.querySelector("input,textarea");
   try {
-    await click("English（訳文）"); await flush(5); await showLocalization();
+    await click("English"); await flush(5); await showLocalization();
     await change(manual(), "Keep this localized title");
     assert.equal(document.querySelector(".e-status").textContent, "入力を確認中");
     const unload = new dom.window.Event("beforeunload", { cancelable: true }); window.dispatchEvent(unload); assert.equal(unload.defaultPrevented, true);
     assert.equal([...titleSection().querySelectorAll("button")].find((item) => item.textContent === "翻訳案を採用").disabled, true);
     assert.equal(button("翻訳を再試行").disabled, true);
 
-    await click("日本語（原文）"); assert.ok(document.querySelector('[role="dialog"]')); await click("編集を続ける");
+    await click("日本語"); assert.ok(document.querySelector('[role="dialog"]')); await click("編集を続ける");
     assert.equal(manual().value, "Keep this localized title");
     await showInspector("page"); assert.ok(document.querySelector('[role="dialog"]')); await click("編集を続ける");
     assert.equal(manual().value, "Keep this localized title");
     await change(document.querySelector('select[aria-label="編集するサイト"]'), "experience"); assert.ok(document.querySelector('[role="dialog"]')); await click("編集を続ける");
     assert.equal(manual().value, "Keep this localized title");
 
-    await click("日本語（原文）"); await click("変更を破棄して移動"); await flush(6);
+    await click("日本語"); await click("変更を破棄して移動"); await flush(6);
     assert.equal(input("ページタイトル").value, "鎌倉ホーム");
-    await click("English（訳文）"); await flush(5); await showLocalization();
+    await click("English"); await flush(5); await showLocalization();
     assert.equal(manual().value, "Manual Kamakura");
   } finally { await app.cleanup(); }
 });
@@ -535,7 +535,7 @@ test("rich manual input guards node, page and inspector changes; discard is scop
   const richEditor = () => richSection()?.querySelector('.e-localization-rich');
   const sectionButton = (label) => [...richSection().querySelectorAll("button")].find((item) => item.textContent === label);
   try {
-    await click("English（訳文）"); await flush(6); await showLocalization();
+    await click("English"); await flush(6); await showLocalization();
     assert.equal(richEditor().getAttribute("role"), "textbox"); assert.equal(richEditor().getAttribute("aria-multiline"), "true");
     await act(async () => { richEditor().querySelector('[data-nw-node="sharedMark"]').textContent = "編集中"; richEditor().dispatchEvent(new dom.window.Event("input", { bubbles: true })); }); await flush();
     await showInspector("page"); assert.ok(document.querySelector('[role="dialog"]')); await click("編集を続ける");
@@ -569,11 +569,11 @@ test("manual save keeps its buffer through 409 and rejection, reloads current co
   const manual = () => titleSection()?.querySelector("input,textarea");
   const manualButton = (label) => [...titleSection().querySelectorAll("button")].find((item) => item.textContent === label);
   try {
-    await click("English（訳文）"); await flush(5); await showLocalization(); await change(manual(), "My conflict-safe value");
+    await click("English"); await flush(5); await showLocalization(); await change(manual(), "My conflict-safe value");
     const beforeUnload = new dom.window.Event("beforeunload", { cancelable: true }); window.dispatchEvent(beforeUnload); assert.equal(beforeUnload.defaultPrevented, true);
     await act(async () => manualButton("手修正を保存").click()); await flush(10);
     assert.equal(manual().value, "My conflict-safe value"); assert.equal(document.querySelector(".e-status").textContent, "入力を確認中");
-    assert.match(titleSection().textContent, /Remote source title/); assert.match(titleSection().textContent, /Remote accepted/); assert.match(titleSection().textContent, /更新あり/);
+    assert.match(titleSection().textContent, /Remote source title/); assert.match(titleSection().textContent, /Remote accepted/); assert.match(titleSection().textContent, /翻訳済み/);
     assert.equal(manualButton("翻訳案を採用")?.disabled ?? true, true); assert.equal(manualButton("現在の訳を確認済みにする").disabled, true);
     const first = app.calls.commands.at(-1);
     await act(async () => manualButton("手修正を保存").click()); await flush(12);
@@ -587,7 +587,7 @@ test("manual save keeps its buffer through 409 and rejection, reloads current co
 
   app = await setup({ rejectCommandOnce: true });
   try {
-    await click("English（訳文）"); await flush(5); await showLocalization(); await change(manual(), "Keep after network rejection");
+    await click("English"); await flush(5); await showLocalization(); await change(manual(), "Keep after network rejection");
     await act(async () => manualButton("手修正を保存").click()); await flush(5);
     assert.equal(manual().value, "Keep after network rejection"); assert.equal(document.querySelector(".e-status").textContent, "入力を確認中");
     assert.match(document.body.textContent, /入力は保持されています/);
@@ -626,7 +626,7 @@ test("localization config and target context fail closed while loading, on error
 
   app = await setup({ rejectPageOnce: true });
   try {
-    await click("English（訳文）"); await flush(5);
+    await click("English"); await flush(5);
     assert.match(document.body.textContent, /言語設定または翻訳状態を確認できません/);
     assert.equal(input("ページタイトル").disabled, true);
     await click("再試行"); await flush(6);
@@ -644,7 +644,7 @@ test("localization config and target context fail closed while loading, on error
 test("a target save stays fail closed while site and page localization state reloads", async () => {
   const app = await setup({ delayedSiteAfterFirst: true });
   try {
-    await click("English（訳文）"); await flush(5);
+    await click("English"); await flush(5);
     await click("h1 · heading"); await change(input("テキスト"), "Saved before refresh"); await click("下書き保存"); await flush();
     assert.match(document.body.textContent, /言語設定と翻訳状態を読み込み中/);
     assert.equal(input("テキスト").disabled, true);
@@ -669,7 +669,7 @@ test("optional locale release host shows the whole-language plan and applies onl
     rollbackRelease: async () => ({ status: "conflict" })
   } });
   try {
-    await click("English（訳文）"); await flush(7);
+    await click("English"); await flush(7);
     assert.equal(button("言語全体の公開確認").disabled, false);
     await click("言語全体の公開確認");
     assert.ok(document.querySelector('[role="dialog"][aria-label="言語全体の公開前確認"]'));
@@ -697,7 +697,7 @@ test("locale release conflicts and unknown outcomes keep drafts, close stale pla
   const app = await setup({ localeRelease: releaseHost });
   async function prepareAndConfirm() { await click("言語全体の公開確認"); const confirm = document.querySelector('[role="dialog"] input[type="checkbox"]'); await act(async () => confirm.click()); await flush(); await click("この言語全体を公開"); await flush(8); }
   try {
-    await click("English（訳文）"); await flush(6); const draftBefore = structuredClone(app.sites.kamakura.targetDocument);
+    await click("English"); await flush(6); const draftBefore = structuredClone(app.sites.kamakura.targetDocument);
     await prepareAndConfirm(); assert.match(document.body.textContent, /競合しました/); assert.equal(document.querySelector('[role="dialog"]'), null); assert.deepEqual(app.sites.kamakura.targetDocument, draftBefore);
     mode = "unknown"; await prepareAndConfirm(); assert.match(document.body.textContent, /反映結果を確認できませんでした/); assert.equal(document.querySelector('[role="dialog"]'), null); assert.deepEqual(app.sites.kamakura.targetDocument, draftBefore);
     assert.ok(reads >= 3); assert.equal(applyCalls, 2);
@@ -708,7 +708,7 @@ test("old localization hosts keep target publication disabled and source publica
   const app = await setup();
   try {
     assert.equal(button("公開").disabled, false, "source legacy publish remains available");
-    await click("English（訳文）"); await flush(5);
+    await click("English"); await flush(5);
     assert.equal(button("公開").disabled, true); assert.match(document.body.textContent, /このサイトでは訳文の公開を利用できません/);
     assert.equal(button("言語全体の公開確認"), undefined);
   } finally { await app.cleanup(); }
@@ -725,10 +725,10 @@ test("late locale-release reads are ignored and incomplete page/shared reasons b
     applyRelease: async () => { throw new Error("must not apply"); }, rollbackRelease: async () => ({ status: "conflict" })
   } });
   try {
-    await click("English（訳文）"); await flush(4);
+    await click("English"); await flush(4);
     await change(document.querySelector('select[aria-label="編集するサイト"]'), "experience"); await flush(7);
     resolveOld(); await flush(4);
-    await click("日本語（訳文）"); await flush(7);
+    await click("日本語"); await flush(7);
     assert.equal(button("言語全体の公開確認").disabled, false);
     await click("言語全体の公開確認");
     assert.match(document.body.textContent, /experience\.example/); assert.match(document.body.textContent, /見出しが未確認/); assert.match(document.body.textContent, /メニュー翻訳が未確認/); assert.match(document.body.textContent, /未確認の内容が2件/);
@@ -745,7 +745,7 @@ test("late whole-locale prepare and apply replies cannot install state after ada
   let app = await setup({ localeRelease: { readRelease: async ({ siteId, locale }) => ({ siteId, locale, current: summary, history: [] }), prepareRelease: async (request) => new Promise((resolve) => { resolvePrepare = () => resolve(plan(request)); }),
     applyRelease: async (request) => ({ status: "applied", siteId: request.siteId, locale: request.locale, current: prepared }), rollbackRelease: async () => ({ status: "conflict" }) } });
   try {
-    await click("English（訳文）"); await flush(5); await click("言語全体の公開確認");
+    await click("English"); await flush(5); await click("言語全体の公開確認");
     await app.rerenderAdapter({ ...app.adapter, localization: { ...app.adapter.localization } }); resolvePrepare(); await flush(6);
     assert.equal(document.querySelector('[role="dialog"][aria-label="言語全体の公開前確認"]'), null);
   } finally { await app.cleanup(); }
@@ -754,7 +754,7 @@ test("late whole-locale prepare and apply replies cannot install state after ada
   app = await setup({ localeRelease: { readRelease: async ({ siteId, locale }) => ({ siteId, locale, current: summary, history: [] }), prepareRelease: async (request) => plan(request),
     applyRelease: async (request) => new Promise((resolve) => { resolveApply = () => resolve({ status: "applied", siteId: request.siteId, locale: request.locale, current: prepared }); }), rollbackRelease: async () => ({ status: "conflict" }) } });
   try {
-    await click("English（訳文）"); await flush(5); await click("言語全体の公開確認"); const confirm = document.querySelector('[role="dialog"] input[type="checkbox"]');
+    await click("English"); await flush(5); await click("言語全体の公開確認"); const confirm = document.querySelector('[role="dialog"] input[type="checkbox"]');
     await act(async () => confirm.click()); await flush(); await click("この言語全体を公開");
     await app.rerenderAdapter({ ...app.adapter, localization: { ...app.adapter.localization } }); resolveApply(); await flush(6);
     assert.doesNotMatch(document.body.textContent, /言語全体を公開しました/);
@@ -771,7 +771,7 @@ test("translated rollback preserves an older catalogue while newly published sou
     applyRelease: async () => ({ status: "conflict" }), rollbackRelease: async (request) => { calls.rollbacks.push(structuredClone(request)); return { status: "applied", siteId: request.siteId, locale: request.locale, current: prepared }; }
   } });
   try {
-    await click("English（訳文）"); await flush(6);
+    await click("English"); await flush(6);
     assert.match(document.body.textContent, /公開中 1 \/ 2 ページ/);
     await change(input("戻す言語全体版"), "en-1"); await click("言語全体の復元内容を確認");
     assert.match(document.body.textContent, /English v2/); assert.match(document.body.textContent, /English rollback v3/);
@@ -796,7 +796,7 @@ test("a prepare conflict refreshes source and release versions before a manual r
     applyRelease: async () => ({ status: "conflict" }), rollbackRelease: async () => ({ status: "conflict" })
   } });
   try {
-    await click("English（訳文）"); await flush(7);
+    await click("English"); await flush(7);
     const original = structuredClone(app.sites.kamakura.targetDocument), reads = app.calls.siteReads;
     await click("言語全体の公開確認"); await flush(8);
     assert.equal(document.querySelector('[role="dialog"]'), null);
@@ -819,7 +819,7 @@ test("target content undo/redo works and emergency recovery accepts content but 
   try {
     const recoveryDocument = structuredClone(app.sites.kamakura.targetDocument); recoveryDocument.title = "Recovered target title";
     recovered = { target: { siteId: "kamakura", pageId: "home", locale: "en-US" }, baseVersion: "doc-1", baseRevision: recoveryDocument.revision, document: recoveryDocument, updatedAt: new Date().toISOString() };
-    await click("English（訳文）"); await flush(6);
+    await click("English"); await flush(6);
     assert.ok(document.querySelector(".e-recovery")); await click("復元する"); await flush(5);
     assert.equal(input("ページタイトル").value, "Recovered target title");
     assert.equal(button("元に戻す").disabled, false); await click("元に戻す"); assert.equal(input("ページタイトル").value, "Manual Kamakura");
@@ -830,7 +830,7 @@ test("target content undo/redo works and emergency recovery accepts content but 
   try {
     const recoveryDocument = structuredClone(app.sites.kamakura.targetDocument); recoveryDocument.body[0].style.base.padding = 999;
     recovered = { target: { siteId: "kamakura", pageId: "home", locale: "en-US" }, baseVersion: "doc-1", baseRevision: recoveryDocument.revision, document: recoveryDocument, updatedAt: new Date().toISOString() };
-    await click("English（訳文）"); await flush(6); await click("復元する"); await flush(5);
+    await click("English"); await flush(6); await click("復元する"); await flush(5);
     assert.match(document.body.textContent, /共通構造|non-localizable|文書のルール|変更できません/);
     assert.notEqual(app.sites.kamakura.targetDocument.body[0].style.base.padding, 999);
   } finally { await app.cleanup(); }
@@ -845,7 +845,7 @@ test("host preview follows the displayed locale and unsaved target without repla
   const host = () => frame().contentDocument.querySelector("[data-host-locale]");
   try {
     await load(); assert.equal(host().dataset.hostLocale, "ja-JP");
-    await click("English（訳文）"); await flush(5); await load();
+    await click("English"); await flush(5); await load();
     assert.equal(host().dataset.hostLocale, "en-US");
     assert.equal(frame().contentDocument.documentElement.lang, "en-US");
     const sourceTitle = app.sites.kamakura.sourceDocument.title;
@@ -853,7 +853,7 @@ test("host preview follows the displayed locale and unsaved target without repla
     assert.equal(host().dataset.hostTitle, "Unsaved translated title");
     assert.equal(app.sites.kamakura.sourceDocument.title, sourceTitle);
     assert.equal(app.calls.saves.length, 0);
-    await click("日本語（原文）"); assert.ok(document.querySelector('[role="dialog"]'));
+    await click("日本語"); assert.ok(document.querySelector('[role="dialog"]'));
     assert.equal(host().dataset.hostLocale, "en-US");
     await click("編集を続ける"); assert.equal(host().dataset.hostTitle, "Unsaved translated title");
   } finally { await app.cleanup(); }

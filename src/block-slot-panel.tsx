@@ -85,7 +85,6 @@ export function BlockSlotList({ slots, choose, disabled, focus }: { slots: Reado
   const entries = Object.entries(slots ?? {});
   if (!entries.length) return null;
   return <section className="e-sec" aria-label="表示領域"><h3>表示領域</h3>
-    <p className="e-help">領域を選ぶと、見た目の設定と値の正本を確認できます。キャンバスで押しても選べます。</p>
     <ul className="e-slot-list">{entries.map(([name, slot]) => <SlotRow key={name} slot={slot} choose={() => choose(name)} disabled={disabled} focus={focus === name} />)}</ul>
   </section>;
 }
@@ -141,7 +140,6 @@ export function BlockSlotInspector({ document, node, path, slot, blocks, saved, 
   return <>
     <h2 ref={heading} tabIndex={-1}>{definition.label ?? "業務ブロック"} · {declared.label}</h2>
     <div className="e-actions"><button type="button" disabled={style.disabled} onClick={back}>ブロック全体に戻る</button></div>
-    <p className="e-help">ブロックの中の同じ領域（繰り返すカードなど）すべてに同じ見た目を適用します。</p>
     {declared.data && <p className="e-slot-note" role="note">値は{declared.data.source}が正本です。{declared.data.reason}</p>}
     {style.tab === "text" && text && rule && input(`${declared.label}の文字`, String(node.props[text] ?? ""), change, `slot-${slot}-text`,
       { reason: reason(`props.${text}`), ...(rule.type === "string" && rule.maxLength !== undefined ? { hint: (value: string) => `${value.length} / ${max}文字` } : {}) })}

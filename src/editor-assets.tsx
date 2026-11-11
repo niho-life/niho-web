@@ -51,7 +51,7 @@ export function assetPlacement(document: PageDocument, asset: LibraryAsset, targ
   if (target.purpose === "ogImage") {
     const problem = socialImageProblem(asset);
     if (problem) throw new Error(problem);
-    return { operation: { type: "meta", field: "ogImage", value: { asset: reference, alt: coverAlt(asset, document.meta?.ogImage?.alt ?? "") } }, notice: "ソーシャルカバーを設定しました。画像の説明を確認してください。" };
+    return { operation: { type: "meta", field: "ogImage", value: { asset: reference, alt: coverAlt(asset, document.meta?.ogImage?.alt ?? "") } }, notice: "ソーシャルカバーを設定しました。" };
   }
   if (target.purpose === "background") return { operation: { type: "background", path: target.path, breakpoint: target.breakpoint, asset: reference } };
   if (target.purpose === "video") return { operation: { type: "video", path: target.path, source: { asset: reference } }, notice: "動画を置き換えました。" };
@@ -370,7 +370,7 @@ export function AssetLibraryPanel(props: AssetLibraryPanelProps) {
       {scopedProviders?.map((item) => <button key={item.id} type="button" aria-pressed={source === item.id} aria-label={item.status === "unavailable" ? `${item.label}（未接続）` : undefined} onClick={() => selectSource(item.id)}>
         {item.label}{item.status === "unavailable" && <span className="e-asset-offline">未接続</span>}</button>)}</div>}
     {providerKind && providers && scopedProviders?.length === 0 && <p className="e-help" role="status">{providerKind === "stock" ? "ストックアセットはまだ接続されていません。" : providerKind === "cms" ? "接続済みのCMSアセットはありません。" : "アップロード先が利用できません。"}</p>}
-    {current && !offline && <small className="e-help e-asset-origin">{current.origin}</small>}
+    
     {(showFolders || !!uploadTarget) && <div className="e-asset-tools">
       {showFolders && <select aria-label="フォルダ" value={folderId ?? ""} onChange={(event) => setFolderId(event.target.value || null)}><option value="">すべて</option>{visibleList.folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}</select>}
       {visibleList.upload && (legacy || uploadTarget) && <><button type="button" className="e-primary" title={all && uploadTarget ? `${uploadTarget.label}へ追加` : undefined} onClick={() => fileInput.current?.click()}>アップロード</button>
@@ -496,13 +496,13 @@ function AssetDetail({ adapter, siteId, asset, provider, managed, focus, notice,
     </dl>}
     <label className="e-field"><span>名前</span><input value={name} maxLength={200} readOnly={!editable} onChange={(event) => { setName(event.target.value); setSaveMessage(null); }} /></label>
     <label className="e-field"><span>代替テキスト</span><textarea ref={altInput} value={alt} maxLength={1000} readOnly={!editable} onChange={(event) => { setAlt(event.target.value); setSaveMessage(null); }} />
-      <small className="e-help">ページに配置したときの画像の説明の初期値です。配置後は要素ごとに変更できます。</small></label>
+      </label>
     {(!managed || provider?.status === "available" && provider.capabilities.folders) && <label className="e-field"><span>保存先フォルダ</span><select value={folder} disabled={!editable} onChange={(event) => { setFolder(event.target.value); setSaveMessage(null); }}><option value="">フォルダなし</option>
       {folder && !folders.some((item) => item.id === folder) && <option value={folder}>{folder}</option>}{folders.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
     <dl><dt>種類</dt><dd>{kindLabels[asset.kind]}・{asset.mimeType}</dd><dt>寸法</dt><dd>{asset.width && asset.height ? `${asset.width} × ${asset.height} px` : "—"}</dd><dt>容量</dt><dd>{formatBytes(asset.bytes)}</dd><dt>更新日</dt><dd>{formatDate(asset.updatedAt)}</dd></dl>
     {editable ? <><button type="button" className="e-primary" disabled={!changed || saving} onClick={() => void save()}>変更を保存</button>
       {saveMessage && <small className={`e-help${saveMessage.error ? " e-problem" : ""}`} role={saveMessage.error ? "alert" : "status"}>{saveMessage.text}</small>}</>
-      : <small className="e-help">このアセットは「{provider?.label}」で管理しています。名前・説明・写真の差し替えは出所で行ってください。</small>}
+      : <small className="e-help">「{provider?.label}」で管理しています</small>}
     <h3>配置</h3>
     {isInsertableImage(asset) ? <>
       <div ref={placeActions} className="e-actions">{actions.replace && <button type="button" className="e-primary" disabled={placeBlocked} onClick={() => void place("replace")}>選択中の画像を置き換え</button>}
@@ -511,7 +511,7 @@ function AssetDetail({ adapter, siteId, asset, provider, managed, focus, notice,
       {disabledReason && <small className="e-help">{disabledReason}</small>}
       {unavailable && <small className="e-help e-problem">{unavailable}</small>}
       {acquiring && <small className="e-help" role="status">利用の準備中…</small>}
-      {!actions.replace && !actions.background && <small className="e-help">キャンバスで画像や要素を選ぶと、置き換えや背景にも使えます。</small>}
+      
     </> : <p className="e-help">{asset.kind === "image" && asset.status === "processing" ? waitText : notPlaceable}</p>}
     {placeMessage && <small className={`e-help${placeMessage.error ? " e-problem" : ""}`} role={placeMessage.error ? "alert" : "status"}>{placeMessage.text}</small>}
     <h3>使用状況</h3>
