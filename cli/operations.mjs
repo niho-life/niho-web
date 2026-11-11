@@ -12,13 +12,21 @@ export function normalizeOperationKey(value) {
 
 const ARGUMENT = /^[A-Za-z0-9_][A-Za-z0-9._~-]{0,511}$/u;
 
-// Each entry maps one public v1 operation to an existing, separately validated bridge route.
+// Each entry maps one public v1 operation to an existing, separately validated route.
 function operation(id, capability, method, bridgePath, options = {}) {
   const parameters = [...bridgePath.matchAll(/:([A-Za-z]+)/gu)].map((match) => match[1]);
   return Object.freeze({ id, capability, method, bridgePath, parameters: Object.freeze(parameters), ...options });
 }
 
 export const OPERATIONS = Object.freeze([
+  operation("site.breakpoints.read", "site.settings.read", "GET", "/breakpoints"),
+  operation("site.breakpoints.save", "site.settings.write", "PUT", "/breakpoints"),
+  operation("site.members.read", "site.members.read", "GET", "/membership"),
+  operation("site.members.role", "site.members.manage", "POST", "/members/role"),
+  operation("site.members.remove", "site.members.manage", "POST", "/members/remove"),
+  operation("site.invitations.create", "site.members.manage", "POST", "/invitations"),
+  operation("site.invitations.revoke", "site.members.manage", "POST", "/invitations/revoke"),
+
   operation("pages.catalog", "pages.read", "GET", "/editor/catalog"),
   operation("pages.read", "pages.read", "GET", "/editor/:pageId"),
   operation("pages.save", "pages.edit", "PUT", "/editor/:pageId/draft"),

@@ -28,8 +28,8 @@ const HUMAN = "fixture-editor";
 const SECRET = Buffer.alloc(32, 17);
 const REQUEST_KEY = "a0000000-0000-4000-a000-000000000001";
 const migrationDirectory = new URL("../studio/migrations/", import.meta.url);
-const migrations = await Promise.all((await readdir(migrationDirectory)).filter((name) => name.endsWith(".sql")).sort()
-  .map((name) => readFile(new URL(name, migrationDirectory), "utf8")));
+const migrationNames = (await readdir(migrationDirectory)).filter((name) => name.endsWith(".sql")).sort();
+const migrations = await Promise.all(migrationNames.map((name) => readFile(new URL(name, migrationDirectory), "utf8")));
 const { outputFiles } = await build({
   entryPoints: [fileURLToPath(new URL("../studio/worker.ts", import.meta.url))],
   bundle: true, format: "esm", platform: "node", target: "node22", write: false
@@ -64,6 +64,7 @@ async function fixture(t) {
   member.run("project-experience", OWNER, "owner", "Fixture owner");
   const calls = [];
   let respond = () => Response.json({ status: "ready" });
+  let beforeBatch;
 
   const env = {
     DB: {
@@ -73,11 +74,26 @@ async function fixture(t) {
         return {
           bind(...values) { params = values; return this; },
           async first() { return statement.get(...params) ?? null; },
-          async all() {
-            if (/^UPDATE\b/u.test(query)) return { success: true, meta: statement.run(...params) };
+          execute() {
+            if (/^\s*(?:UPDATE|INSERT|DELETE)\b/u.test(query)) return { success: true, meta: statement.run(...params) };
             return { success: true, results: statement.all(...params) };
-          }
+          },
+          async all() { return this.execute(); }
         };
+      },
+      async batch(statements) {
+        const before = beforeBatch;
+        beforeBatch = undefined;
+        before?.();
+        db.exec("BEGIN");
+        try {
+          const results = statements.map((statement) => statement.execute());
+          db.exec("COMMIT");
+          return results;
+        } catch (error) {
+          db.exec("ROLLBACK");
+          throw error;
+        }
       }
     },
     ACCESS_ISSUER: issuer,
@@ -96,7 +112,7 @@ async function fixture(t) {
   const insert = db.prepare(`INSERT INTO studio_cli_grants
     (client_id, project_id, site_id, capability, delegated_by_subject, created_at, expires_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)`);
-  const grant = (capability, options = {}) => insert.run(options.client ?? CLIENT, options.project ?? PROJECT, options.site ?? SITE, capability, options.owner ?? OWNER, now - 600, options.expiry ?? now + 600);
+  const grant = (capability, options = {}) => insert.run(options.client ?? CLIENT, options.project ?? PROJECT, options.site ?? SITE, capability, options.owner ?? OWNER, now - 600, options.expiry === undefined ? now + 600 : options.expiry);
   function send(method, path, body, options = {}) {
     const headers = new Headers({
       ...(body === undefined ? {} : { "Content-Type": "application/json" }),
@@ -111,6 +127,7 @@ async function fixture(t) {
   return {
     calls, db, jwt, now, grant, send, request, token, humanToken,
     replyWith: (next) => { respond = next; },
+    beforeNextBatch: (callback) => { beforeBatch = callback; },
     audit: () => db.prepare("SELECT * FROM studio_cli_audit ORDER BY rowid").all()
   };
 }
@@ -350,14 +367,147 @@ testWithD1("a keyed CLI operation dispatches once and exposes only its receipt s
 testWithD1("operation key migration preserves existing audit rows without requiring a key", (t) => {
   const db = new DatabaseSync(":memory:");
   t.after(() => db.close());
-  for (const migration of migrations.slice(0, -1)) db.exec(migration);
+  const migrationIndex = migrationNames.findIndex((name) => name.startsWith("0008_"));
+  for (const migration of migrations.slice(0, migrationIndex)) db.exec(migration);
   db.prepare(`
     INSERT INTO studio_cli_audit (id, actor_subject, delegated_by_subject, project_id, site_id, capability, operation, target_json, http_status)
     VALUES ('legacy-audit', ?, ?, ?, ?, 'pages.read', 'pages.read', '{}', 200)
   `).run(CLI_SUBJECT, OWNER, PROJECT, SITE);
-  db.exec(migrations.at(-1));
+  db.exec(migrations[migrationIndex]);
   const row = db.prepare("SELECT id, http_status, request_key FROM studio_cli_audit").get();
   assert.deepEqual({ ...row }, { id: "legacy-audit", http_status: 200, request_key: null });
+});
+
+testWithD1("CLI breakpoint grants are independent and recheck the delegating owner inside the version CAS", async (t) => {
+  const h = await fixture(t);
+  h.grant("site.settings.read", { expiry: null, owner: "fixture-second-owner" });
+  h.grant("site.settings.write", { expiry: h.now - 1 });
+  const read = () => h.request("GET", "site.breakpoints.read");
+  const save = (body) => h.request("PUT", "site.breakpoints.save", body);
+  const initial = await check(await read(), 200);
+  assert.equal(initial.version, "b.1");
+  const settings = structuredClone(initial.settings);
+  settings.breakpoints[1].minWidth = 1000;
+  settings.breakpoints[1].previewWidth = 1000;
+  await check(await save({ settings, expectedVersion: initial.version }), 403, "forbidden");
+  assert.equal(h.audit().at(-1).delegated_by_subject, "fixture-second-owner");
+
+  const deleteGrant = h.db.prepare("DELETE FROM studio_cli_grants WHERE client_id = ? AND capability = ?");
+  deleteGrant.run(CLIENT, "site.settings.write");
+  h.grant("site.settings.write", { expiry: null });
+  const discover = await check(await h.send("GET", `${SCOPE}/capabilities`), 200);
+  assert.deepEqual(discover.capabilities, ["site.settings.read", "site.settings.write"]);
+  await check(await save({ settings, expectedVersion: "b.1", delegatedBySubject: "fixture-second-owner" }), 400, "invalid_request");
+  await check(await save({ settings: {}, expectedVersion: "b.1" }), 400, "invalid_request");
+  assert.deepEqual(await check(await save({ settings, expectedVersion: "b.1" }), 200), { status: "saved", version: "b.2" });
+  await check(await save({ settings, expectedVersion: "b.1" }), 409, "conflict");
+  assert.deepEqual(await check(await read(), 200), { settings, version: "b.2" });
+
+  // Revoke the delegator after the CLI audit reservation and before the settings batch.
+  h.beforeNextBatch(() => h.db.prepare("UPDATE project_members SET role = 'editor' WHERE project_id = ? AND access_subject = ?").run(PROJECT, OWNER));
+  await check(await save({ settings: initial.settings, expectedVersion: "b.2" }), 403, "forbidden");
+  assert.deepEqual(await check(await read(), 200), { settings, version: "b.2" });
+  await check(await save({ settings, expectedVersion: "b.2" }), 403, "forbidden");
+  assert.equal(h.calls.length, 0);
+});
+
+testWithD1("CLI membership management reuses owner guards and records the machine as the actor", async (t) => {
+  const h = await fixture(t);
+  h.grant("site.members.read");
+  const members = () => h.request("GET", "site.members.read");
+  const mutate = (operation, body) => h.request("POST", operation, body);
+  const invitation = { email: "invitee@example.test", role: "editor", expiresInDays: 3 };
+  await check(await mutate("site.invitations.create", invitation), 403, "forbidden");
+  const first = await check(await members(), 200);
+  assert.ok(first.members.some(({ subject, role }) => subject === OWNER && role === "owner"));
+  assert.ok(first.members.every(({ isCurrent }) => !isCurrent));
+
+  h.grant("site.members.manage", { expiry: null });
+  await check(await mutate("site.members.role", { subject: CLI_SUBJECT, role: "owner" }), 400, "invalid_request");
+  await check(await mutate("site.invitations.create", { ...invitation, email: CLI_EMAIL }), 400, "invalid_request");
+  await check(await mutate("site.invitations.accept", { token: "unused" }), 404, "not_found");
+  await check(await mutate("site.grants.create", {}), 404, "not_found");
+  const created = await check(await mutate("site.invitations.create", invitation), 201);
+  assert.equal(new URL(created.invitationUrl).origin, ORIGIN);
+  assert.equal(created.invitation.email, invitation.email);
+  await check(await mutate("site.invitations.create", invitation), 409, "operation_rejected");
+  const inviteId = created.invitation.id;
+  await check(await mutate("site.invitations.revoke", { invitationId: inviteId }), 200);
+  await check(await mutate("site.invitations.revoke", { invitationId: inviteId }), 409, "operation_rejected");
+  const inviteRow = h.db.prepare("SELECT invited_by_subject, revoked_by_subject FROM project_invitations WHERE id = ?").get(inviteId);
+  assert.deepEqual({ ...inviteRow }, { invited_by_subject: CLI_SUBJECT, revoked_by_subject: CLI_SUBJECT });
+  const listing = await check(await members(), 200);
+  assert.equal(listing.invitations.find(({ id }) => id === inviteId).status, "revoked");
+  assert.ok(!JSON.stringify(listing).includes(new URL(created.invitationUrl).searchParams.get("token")));
+
+  await check(await mutate("site.members.role", { subject: HUMAN, role: "owner" }), 200);
+  await check(await mutate("site.members.role", { subject: HUMAN, role: "editor" }), 200);
+  await check(await mutate("site.members.remove", { subject: "fixture-second-owner" }), 200);
+  await check(await mutate("site.members.role", { subject: OWNER, role: "editor" }), 409, "final_owner_required");
+  await check(await mutate("site.members.remove", { subject: OWNER }), 409, "final_owner_required");
+  const membershipAudit = h.db.prepare("SELECT actor_subject, action, target FROM studio_audit_records ORDER BY id").all();
+  assert.deepEqual(membershipAudit.map(({ actor_subject, action, target }) => [actor_subject, action, target]), [
+    [CLI_SUBJECT, "invitation.created.editor", invitation.email],
+    [CLI_SUBJECT, "invitation.revoked", inviteId],
+    [CLI_SUBJECT, "member.promoted", HUMAN],
+    [CLI_SUBJECT, "member.demoted", HUMAN],
+    [CLI_SUBJECT, "member.removed", "fixture-second-owner"]
+  ]);
+  const cliAudit = h.audit();
+  assert.ok(cliAudit.every(({ actor_subject, delegated_by_subject }) => actor_subject === CLI_SUBJECT && delegated_by_subject === OWNER));
+  assert.ok(!JSON.stringify(cliAudit).includes(created.invitationUrl));
+  assert.equal(h.calls.length, 0);
+});
+
+testWithD1("human membership operations keep Access, the CSRF boundary and invitation acceptance", async (t) => {
+  const h = await fixture(t);
+  const browser = `/api/projects/${PROJECT}/sites/${SITE}`;
+  const ownerToken = h.jwt({ sub: OWNER, common_name: undefined, email: "owner@example.test" });
+  const owner = { token: ownerToken };
+  const sameOrigin = { Origin: ORIGIN, "Sec-Fetch-Site": "same-origin" };
+  const listing = await check(await h.send("GET", `${browser}/membership`, undefined, owner), 200);
+  assert.deepEqual(listing.members.filter(({ isCurrent }) => isCurrent).map(({ subject }) => subject), [OWNER]);
+  await check(await h.send("GET", `${browser}/membership`, undefined, { token: h.humanToken }), 403, "forbidden");
+  const body = { email: "new-member@example.test", role: "editor", expiresInDays: 1 };
+  await check(await h.send("POST", `${browser}/invitations`, body, owner), 400, "invalid_request");
+  const invite = await check(await h.send("POST", `${browser}/invitations`, body, { ...owner, headers: sameOrigin }), 201);
+  const token = new URL(invite.invitationUrl).searchParams.get("token");
+  await check(await h.send("POST", `${browser}/invitations/accept`, { token }, { headers: sameOrigin }), 401, "session_expired");
+  const invitee = h.jwt({ sub: "new-human", common_name: undefined, email: body.email });
+  await check(await h.send("POST", `${browser}/invitations/accept`, { token }, { token: invitee, headers: sameOrigin }), 200);
+  assert.deepEqual(h.db.prepare("SELECT actor_subject FROM studio_audit_records ORDER BY id").all().map((row) => row.actor_subject), [OWNER, "new-human"]);
+  assert.equal(h.audit().length, 0);
+});
+
+testWithD1("site administration migration preserves finite grants and audits with owner and foreign-key safeguards", (t) => {
+  const db = new DatabaseSync(":memory:");
+  t.after(() => db.close());
+  const migrationIndex = migrationNames.findIndex((name) => name.startsWith("0009_"));
+  for (const migration of migrations.slice(0, migrationIndex)) db.exec(migration);
+  const add = db.prepare("INSERT INTO project_members (project_id, access_subject, role, display_name) VALUES (?, ?, ?, ?)");
+  add.run(PROJECT, OWNER, "owner", "Owner");
+  add.run(PROJECT, "second-owner", "owner", "Second owner");
+  add.run(PROJECT, HUMAN, "editor", "Editor");
+  const insert = () => db.prepare(`INSERT INTO studio_cli_grants
+    (client_id, project_id, site_id, capability, delegated_by_subject, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+  insert().run(CLIENT, PROJECT, SITE, "pages.read", OWNER, 100, 200);
+  db.prepare(`INSERT INTO studio_cli_audit
+    (id, actor_subject, delegated_by_subject, project_id, site_id, capability, operation, target_json, http_status, request_key)
+    VALUES ('legacy-audit', ?, ?, ?, ?, 'pages.read', 'pages.read', '{}', 200, ?)`).run(CLI_SUBJECT, OWNER, PROJECT, SITE, REQUEST_KEY);
+
+  db.exec(migrations[migrationIndex]);
+  const row = db.prepare("SELECT * FROM studio_cli_grants").get();
+  assert.deepEqual({ ...row }, { client_id: CLIENT, project_id: PROJECT, site_id: SITE, capability: "pages.read", delegated_by_subject: OWNER, created_at: 100, expires_at: 200 });
+  const audit = db.prepare("SELECT id, http_status, request_key FROM studio_cli_audit").get();
+  assert.deepEqual({ ...audit }, { id: "legacy-audit", http_status: 200, request_key: REQUEST_KEY });
+  insert().run(CLIENT, PROJECT, SITE, "site.members.manage", OWNER, 100, null);
+  assert.throws(() => insert().run(CLIENT, PROJECT, SITE, "site.settings.read", HUMAN, 100, null), /require a project owner/u);
+  assert.throws(() => insert().run(CLIENT, PROJECT, "experience", "site.settings.read", OWNER, 100, null), /FOREIGN KEY/u);
+  assert.throws(() => db.prepare("UPDATE studio_cli_grants SET expires_at = NULL WHERE capability = 'pages.read'").run(), /replace a CLI grant/u);
+  db.prepare("UPDATE project_members SET role = 'editor' WHERE project_id = ? AND access_subject = ?").run(PROJECT, OWNER);
+  assert.equal(db.prepare("SELECT count(*) AS total FROM studio_cli_grants").get().total, 0);
+  assert.equal(db.prepare("SELECT count(*) AS total FROM studio_cli_audit").get().total, 1);
+  assert.deepEqual(db.prepare("PRAGMA foreign_key_check").all(), []);
 });
 
 testWithD1("all advertised CLI capabilities fit the migration and have unique operation IDs", async (t) => {

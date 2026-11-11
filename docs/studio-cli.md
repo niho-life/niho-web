@@ -23,11 +23,17 @@ Cloudflare AccessのService Authで認証する。StudioはAccessが署名した
 
 サービスの識別子はホストへの署名と監査に利用する。委任元は別に記録する。クライアントがactorを指定することはできない。既存のブラウザ経路は人のAccessログインと同一オリジンの検証を行う。
 
-配備前に `studio/migrations/0007_cli_grants.sql` を適用する。Studio運用担当は、認証済みのプロジェクトownerから委任を受けたことを確認し、`studio_cli_grants` へ必要な権限を1行ずつ登録する。各行は `client_id`、`project_id`、`site_id`、`capability`、`delegated_by_subject`、期限 `expires_at`（Unix秒）を持つ。Client SecretはD1に格納しない。編集・公開・レビュー・翻訳サービス起動は個別に付与する。委任行の削除、期限切れ、委任元のowner権限の喪失が次回リクエストから反映される。
+配備前にStudioのD1 migrationを0009まで適用する。Studio運用担当は、認証済みのプロジェクトownerから委任を受けたことを確認し、`studio_cli_grants` へ必要な権限を1行ずつ登録する。各行は `client_id`、`project_id`、`site_id`、`capability`、`delegated_by_subject`、`expires_at` を持つ。`expires_at` はUnix秒の期限か、無期限を表す `NULL` を指定する。Client SecretはD1に格納しない。編集・公開・レビュー・翻訳サービス起動・サイト管理は個別に付与する。委任行の削除、期限切れ、委任元のowner権限の喪失が次回リクエストから反映される。
 
 利用可能な操作名と必要権限は `discover` で確認する。APIでは `GET /api/cli/v1/projects/:projectId/sites/:siteId/capabilities` に対応し、操作実行は `.../operations/:operation[/…]` を使う。操作名・メソッド・引数は[操作定義](../cli/operations.mjs)の許可リストで決まる。Studioは任意の上流URLやブラウザAPIのパスを受け取らない。CLIの権限は `discover` の結果を使う。
 
 確認用Studioでは、ホストの確認用WorkerをService Bindingに設定し、`KAMAKURA_CLI_PREVIEW_ORIGIN` にそのHTTPSオリジンを指定する。ページ操作で使うURLと、ホストのページ一覧が返すオリジンを照合する。確認用Studioには専用のAccessアプリとD1を使い、ホストのGitブランチとR2も本番と分ける。
+
+## サイト設定とメンバー管理
+
+`site.breakpoints.read` でブレークポイント設定と版を取得し、`site.breakpoints.save` に `settings` と `expectedVersion` を渡す。409のときは現在の設定を取り直す。変更前の `settings` を保存しておけば、取得し直した版を使って元に戻せる。
+
+`site.members.read` でメンバーと招待を取得する。メンバーの役割変更・削除は `site.members.role` と `site.members.remove`、招待の発行・取消は `site.invitations.create` と `site.invitations.revoke` を使う。招待の受理には招待された本人のAccess認証が必要。サイト設定とメンバー管理は読み取り・変更をそれぞれ委任し、変更の監査には機械クライアント自身を記録する。
 
 ## 編集と公開
 
