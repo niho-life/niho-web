@@ -192,6 +192,7 @@ function localizationForProject(localization: EditorLocalizationAdapter, site: E
   };
   return {
     ...(localization.requestPageTranslation === false ? { requestPageTranslation: false as const } : {}),
+    ...(localization.sourceDocumentLocale ? { sourceDocumentLocale: (siteId: string) => siteId === site.id ? localization.sourceDocumentLocale!(site.id) : undefined } : {}),
     async readSite(siteId, signal) {
       if (siteId !== site.id) throw new Error("プロジェクト外のサイトは参照できません。");
       const snapshot = structuredClone(await localization.readSite(site.id, signal));

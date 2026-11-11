@@ -78,7 +78,7 @@ async function localizedSite(siteId, sourceLocale, labels) {
   const targetDocument = (await materializeLocalizedPage(cfg, sourceDocument, collection, overlay)).document;
   return { cfg, sourceDocument, targetDocument, collection, overlay, labels, documentVersion: 1, localizationVersion: 1, siteVersion: 1, job: { state: "failed", message: "合成した失敗" } };
 }
-async function setup({ conflictOnce = false, conflictSourceChange = false, rejectCommandOnce = false, delayedRead = false, delayedSites = false, delayedSite = false, delayedSiteAfterFirst = false, rejectSiteOnce = false, rejectPageOnce = false, unsupportedLocale = false, extraPublicPage = false, recovery, localeRelease, readOnlySource = false, readOnlyTarget = false, previewComponent, initialTarget, pageTranslationUnavailable = false, hostSourceLocale = false } = {}) {
+async function setup({ conflictOnce = false, conflictSourceChange = false, rejectCommandOnce = false, delayedRead = false, delayedSites = false, delayedSite = false, delayedSiteAfterFirst = false, rejectSiteOnce = false, rejectPageOnce = false, unsupportedLocale = false, extraPublicPage = false, recovery, localeRelease, readOnlySource = false, readOnlyTarget = false, previewComponent, initialTarget, pageTranslationUnavailable = false, hostSourceLocale = false, declaredSourceLocale = false } = {}) {
   const kamakura = await localizedSite("kamakura", "ja", { source: "鎌倉ホーム", manual: "Manual Kamakura", candidate: "Candidate Kamakura" });
   if (hostSourceLocale) kamakura.sourceDocument.locale = "ja";
   const experience = await localizedSite("experience", "en", { source: "Experience home", manual: "体験（手修正）", candidate: "体験（翻訳案）" });
@@ -114,6 +114,7 @@ async function setup({ conflictOnce = false, conflictSourceChange = false, rejec
     prepareRelease: async (request) => ({ ...request, confirmationToken: "demo", domain: "https://example.test", changes: [] }),
     release: async () => ({ status: "conflict" }),
     localization: {
+      ...(declaredSourceLocale ? { sourceDocumentLocale: (siteId) => siteId === "kamakura" ? "ja" : undefined } : {}),
       ...(pageTranslationUnavailable ? { requestPageTranslation: false } : {}),
       readSite: async (siteId, signal) => { calls.siteReads++; if (failSite) { failSite = false; throw new Error("synthetic site failure"); }
         if (delayedSite || delayedSiteAfterFirst && calls.siteReads > 1) await new Promise((resolve) => { delayedSiteResolve = resolve; signal.addEventListener("abort", resolve, { once: true }); });
@@ -639,6 +640,26 @@ test("localization config and target context fail closed while loading, on error
     assert.equal(input("ページタイトル").disabled, true);
     assert.equal(button("公開").disabled, true);
   } finally { await app.cleanup(); }
+});
+
+test("the host's fixed source locale permits source edits and publication before translation settings arrive", async () => {
+  for (const translation of [{ delayedSite: true }, { rejectSiteOnce: true }]) {
+    const app = await setup({ hostSourceLocale: true, declaredSourceLocale: true, ...translation });
+    try {
+      assert.doesNotMatch(document.body.textContent, /完了するまで編集・保存・公開はできません/);
+      assert.equal(input("ページタイトル").disabled, false);
+      assert.equal(button("公開").disabled, false);
+      await change(input("ページタイトル"), "翻訳設定を待たずに保存");
+      await click("下書き保存");
+      await flush(5);
+      const saved = app.calls.saves.at(-1);
+      assert.equal(saved.target.locale, "ja");
+      assert.equal(saved.document.title, "翻訳設定を待たずに保存");
+      assert.equal(saved.localization, undefined);
+      assert.equal(button("公開").disabled, false);
+      assert.equal(app.calls.pageReads, 0);
+    } finally { await app.cleanup(); }
+  }
 });
 
 test("a target save stays fail closed while site and page localization state reloads", async () => {

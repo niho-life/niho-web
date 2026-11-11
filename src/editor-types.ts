@@ -69,6 +69,8 @@ export type EditorLocalizationCommand =
     expectedSourceVersion: string; expectedVersion: string; expectedOverlayVersion: number };
 export type EditorLocalizationCommandResult = { status: "applied"; version: string } | { status: "conflict" };
 export interface EditorLocalizationAdapter {
+  /** 原文の保存localeが接続時に固定されているサイトだけ返す。翻訳APIの状態を使わず判定できる契約。 */
+  sourceDocumentLocale?(siteId: string): string | undefined;
   readSite(siteId: string, signal: AbortSignal): Promise<EditorLocalizationSiteSnapshot>;
   readPage(target: EditorTarget, signal: AbortSignal): Promise<EditorLocalizationPageSnapshot>;
   command(request: EditorLocalizationCommand, signal: AbortSignal): Promise<EditorLocalizationCommandResult>;

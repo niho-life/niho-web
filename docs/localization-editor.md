@@ -8,7 +8,7 @@ Kamakura の Studio host を接続するときは、翻訳 BFF の `editor/site`
 
 原文ページの保存 locale が `ja` で翻訳用 `documentLocales.ja` が `ja-JP` の場合、PageEditor は `sourceLocale` と一致する `ja` を原文として扱います。原文へ戻る際は `listPages` が返した保存 locale を使います。訳文は引き続き `documentLocales` との完全一致を要求し、未知の locale は編集・保存を止めます。
 
-初回のサイト・ページ選択前を含む `idle` と取得中の `loading` は「読み込み中」と表示し、編集・保存・公開を止めます。取得または検証が明示的に失敗した `error` だけ「確認できません」と再試行を表示します。読込中を接続障害として見せません。
+言語の判定を待つ文書では、初回の `idle` と取得中の `loading` に「読み込み中」と表示し、編集・保存・公開を止めます。取得または検証が失敗した `error` では「確認できません」と再試行を表示します。
 
 ## adapter
 
@@ -41,7 +41,7 @@ const adapter: EditorAdapter = {
 - `requestSiteTranslation` は任意です。実装すると「サイト全体を翻訳」を表示します。queued / running / failedを`readSite`で返してください。エディターは常時pollせず、操作・保存・再読込時だけ状態を読み直します。
 - ページ単位の翻訳依頼を提供しないホストは `requestPageTranslation: false` を指定します。画面は成功を装うボタンを出さず、翻訳画面を使うか手修正するよう明示します。Kamakura は現在この指定で、`request-translation` の backend 対応後にだけ有効化します。
 
-`localization`を実装したホストでは、`readSite`の設定・状態が検証でき、現在の`PageDocument.locale`が明示mappingに一致するまで、エディターは原文／訳文を推測せず編集・保存・公開を停止します。再読込失敗を単言語モードへのopt-inとして扱いません。queued / running中は「翻訳状況を更新」で`readSite`と`readPage`を明示的に再読込できます。
+`localization` を実装するホストは、原文の保存 locale が接続時に固定されている場合に `sourceDocumentLocale(siteId)` を指定できます。鎌倉は `ja` を返します。現在の文書の locale がこの指定に一致すれば、翻訳の設定取得中や取得失敗時も原文の編集・保存・公開ができます。訳文の操作は言語設定と訳文の版の検証後に受け付けます。原文の保存 locale を指定していないホストでは、原文も言語設定の検証後に操作できます。queued / running 中は「翻訳状況を更新」で `readSite` と `readPage` を再読込できます。
 
 エディター上の訳の状態の表示は「原文 / 未翻訳 / 翻訳中 / 翻訳済み / 失敗」の5つにまとめます。自動翻訳でも手修正でも訳があれば「翻訳済み」とし、draft・review-needed・reviewed を出し分けません（状態の値そのものは従来どおり保存・判定に使います）。左のページ一覧には言語ごとの状態を出しません。言語の切り替えは「日本語 / English」だけを表示し、原文・訳文の区別は添えません。
 
