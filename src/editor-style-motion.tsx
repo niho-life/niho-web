@@ -162,7 +162,7 @@ export function MotionFields(props: MotionProps) {
       <TransformFields prefix={`${fieldKey}-${tier.key}-transform`} disabled={disabled || !!tier.lock("translate")} get={tier.get} resolve={(value) => resolveValue(document, value)} set={tier.set} preview={tier.preview} status={tier.status} pending={pending} />
       {can("transformOrigin") && <Row caption="変形の原点" group status={tier.status("transformOrigin")}><AlignGrid label="変形の原点" value={originAlign(tier.effective("transformOrigin"))} disabled={disabled || !!tier.lock("transformOrigin")}
         onChange={(x, y) => report(tier.set({ transformOrigin: origin(x, y) }))} /></Row>}</>}
-    {showTransform && motion && <><h4>アニメーション</h4>
+    {showTransform && motion && <><h4 title={motionReason}>アニメーション</h4>
       <SelectField key={`${fieldKey}-${tier.key}-easing`} caption="イージング" value={typeof tier.get("transitionTimingFunction") === "string" ? String(tier.get("transitionTimingFunction")) : undefined} options={easings}
         apply={(value) => tier.set({ transitionTimingFunction: value })} disabled={disabled || !hasStates || !!tier.lock("transitionTimingFunction")} status={tier.status("transitionTimingFunction")} />
       <div className="e-grid2">
@@ -171,7 +171,7 @@ export function MotionFields(props: MotionProps) {
         <NumberField key={`${fieldKey}-${tier.key}-delay`} caption="遅延" suffix="秒" {...seconds} min={0} max={5} value={tier.get("transitionDelay")} apply={(value) => tier.set({ transitionDelay: value })}
           pending={pending} fieldKey={`${fieldKey}-${tier.key}-delay`} disabled={disabled || !hasStates || !!tier.lock("transitionDelay")} status={tier.status("transitionDelay")} placeholder={secondsHint("transitionDelay") ?? "0"} />
       </div>
-      {motionReason && <small className="e-help">{motionReason}</small>}</>}
+</>}
     {showTransform && can("appear") && <><h4>登場</h4>
       <SelectField key={`${fieldKey}-appear-effect`} caption="登場の効果" empty="なし" value={appear?.effect} options={effects} disabled={appearOff} status={{ lock: appearLock }}
         apply={(value) => setAppear(typeof value === "string" ? { ...(appear ?? { trigger: "load", duration: 600, delay: 0 }), effect: value as AppearEffect } : undefined)} />

@@ -105,7 +105,7 @@ test("the four tabs reach the existing settings and the transform tab orders tra
     await editorTab("変形");
     assert.deepEqual([...right().querySelectorAll(".e-inspector-content h4")].map((node) => node.textContent), ["トランスフォーム", "移動", "拡大・縮小", "傾き", "アニメーション", "登場"]);
     for (const name of ["イージング", "時間", "遅延"]) { const control = input(name, right()); assert.ok(control, name); assert.equal(control.disabled, true, `${name} waits for a hover, focus or active style`); }
-    assert.ok(right().textContent.includes("ホバー・フォーカス・押下中の見た目を作ると使えます。"));
+    assert.ok(!right().textContent.includes("ホバー・フォーカス・押下中の見た目を作ると使えます。")); assert.equal([...right().querySelectorAll("h4")].find((node) => node.textContent === "アニメーション").title, "ホバー・フォーカス・押下中の見た目を作ると使えます。");
     assert.ok(input("回転", right())); assert.ok(right().querySelector('[aria-label="変形の原点"]'));
     await editorTab("設定"); assert.ok(input("文字の種類", right())); assert.ok(right().querySelector(".e-widths"), "visible widths live in settings");
     await editorTab("ボックス"); assert.ok(input("幅", right())); assert.ok(input("配置方式", right())); assert.equal(input("テキスト", right()), undefined);
