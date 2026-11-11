@@ -126,3 +126,22 @@ test("鎌倉のキャンバスは不変embedの置き場をopaque、Google Maps�
   for (const src of ["https://kamakura-media.niho.life/uploads/a.html", "https://kamakura-media.niho.life/niho-web/embeds/v2/x.html", "https://kamakura-media.niho.life/niho-web/embeds/v1/../../uploads/x.html",
     "https://kamakura-media.niho.life/niho-web/embeds/v1", "http://kamakura-media.niho.life/niho-web/embeds/v1/x.html", "https://www.google.com/maps/other", "https://www.youtube.com/embed/abc", "https://studio.example.test/niho-web/embeds/v1/x.html"]) assert.equal(policy({ src }), "blocked", src);
 });
+
+
+test("catalogの本番・確認用公開先を保ち、任意originとProject/Site間の不一致は拒否する", () => {
+  for (const origin of ["https://next-kamakura.niho.life", "https://kamakura.niho.life"]) {
+    const source = catalog();
+    source.project.site.domains = [origin];
+    const parsed = contract.parseKamakuraCatalog(source);
+    assert.deepEqual(parsed.project.site.domains, [origin]);
+    assert.deepEqual(parsed.sites[0].domains, [origin]);
+  }
+  for (const domains of [["https://other.example"], ["https://kamakura.niho.life/"], ["http://kamakura.niho.life"], ["https://kamakura.niho.life:443"], [], ["https://kamakura.niho.life", "https://next-kamakura.niho.life"]]) {
+    const source = catalog();
+    source.project.site.domains = domains;
+    assert.throws(() => contract.parseKamakuraCatalog(source), contract.KamakuraCatalogContractError);
+  }
+  const source = catalog();
+  source.sites = [{ ...source.sites[0], domains: ["https://kamakura.niho.life"] }];
+  assert.throws(() => contract.parseKamakuraCatalog(source), contract.KamakuraCatalogContractError);
+});

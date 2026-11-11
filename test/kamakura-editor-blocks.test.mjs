@@ -43,7 +43,7 @@ const contracts = {
   },
   FutureServiceBlock: { props: {}, slots: { frame: { label: "外部枠", style: ["width", "height"] } } }
 };
-const blocks = createKamakuraEditorBlocks(contracts);
+const blocks = createKamakuraEditorBlocks(contracts, "https://next-kamakura.niho.life");
 
 test("catalog-provided block contracts let existing Kamakura documents parse and remain editable", () => {
   const title = "Kamakura: Community Dinner with Locals  | NIHO kamakura -- Shared living-room in Kamakura, where tourists and locals can get together";

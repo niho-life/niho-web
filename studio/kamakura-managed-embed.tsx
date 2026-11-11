@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { EditorBlockSettingsProps } from "../src/editor-types.js";
+import { isKamakuraEditorDomain } from "./kamakura-catalog.js";
 
 const BASE = "/api/projects/project-kamakura/sites/kamakura/editor/embeds";
 const REF_ID = /^emb_[0-9a-f]{32}$/u;
@@ -40,10 +41,11 @@ function pathAllowed(prefix: unknown, path: string): boolean {
   return path === normalized || path.startsWith(`${normalized}/`);
 }
 
-export function inspectKamakuraManagedEmbed(input: string, path: string): { flow: Flow } {
+export function inspectKamakuraManagedEmbed(input: string, path: string, publicOrigin: string): { flow: Flow } {
+  if (!isKamakuraEditorDomain(publicOrigin)) throw new Error("公開先ドメインを確認できません。ページ一覧を読み直してください。");
   let url: URL;
   try { url = new URL(extractKamakuraManagedEmbedUrl(input)); } catch (error) { if (error instanceof Error) throw error; throw new Error("iframe URL を確認してください。"); }
-  if (url.origin !== "https://niho.life" || url.username || url.password || url.port || url.hash) throw new Error("next-kamakura.niho.life 用ではない NIHO 環境またはドメインです。");
+  if (url.origin !== "https://niho.life" || url.username || url.password || url.port || url.hash) throw new Error("公開先用ではない NIHO 環境またはドメインです。");
   const route = /^\/embed\/(dropin|rental)\/([A-Za-z0-9_-]+)$/u.exec(url.pathname);
   if (!route) throw new Error("ドロップインまたは貸切の iframe URL を貼り付けてください。");
   const allowed = new Set(["launchToken", "embed", "bg", "accent"]);
@@ -54,7 +56,7 @@ export function inspectKamakuraManagedEmbed(input: string, path: string): { flow
   if (launchTokens.length !== 1 || !launchTokens[0]) throw new Error("launchToken が1つ必要です。");
   const payload = tokenPayload(launchTokens[0]);
   if (payload.v !== 1 || payload.flow !== route[1] || payload.spotId !== route[2]) throw new Error("URL と launchToken の flow／対象が一致しません。");
-  if (payload.parentOrigin !== "https://next-kamakura.niho.life") throw new Error("launchToken の公開先ドメインが next-kamakura.niho.life と一致しません。");
+  if (payload.parentOrigin !== publicOrigin) throw new Error("launchToken の公開先ドメインが現在の公開先と一致しません。");
   if (!pathAllowed(payload.allowedPathPrefix, path)) throw new Error("launchToken の許可 path がこのページと一致しません。");
   return { flow: route[1] as Flow };
 }
@@ -74,7 +76,7 @@ function connection(value: unknown): Connection {
   return source as Connection;
 }
 
-export function KamakuraManagedEmbedSettings({ node, target, pagePath, disabled, setProp, notify }: EditorBlockSettingsProps) {
+export function KamakuraManagedEmbedSettings({ node, target, pagePath, disabled, setProp, notify, publicOrigin }: EditorBlockSettingsProps & { publicOrigin: string }) {
   const refId = typeof node.props.refId === "string" && REF_ID.test(node.props.refId) ? node.props.refId : null;
   const [source, setSource] = useState("");
   const [state, setState] = useState<Connection>({ status: refId ? "draft" : "unconfigured" });
@@ -92,7 +94,7 @@ export function KamakuraManagedEmbedSettings({ node, target, pagePath, disabled,
     try {
       if (!pagePath || pagePath.includes("[")) throw new Error("このページでは埋め込みを設定できません。");
       const path = pagePath;
-      inspectKamakuraManagedEmbed(source, path);
+      inspectKamakuraManagedEmbed(source, path, publicOrigin);
       setBusy(true);
       const next = connection(await request(target.pageId, "import", { source, ...(refId ? { refId, expectedVersion: state.version } : {}) }));
       setState(next);
