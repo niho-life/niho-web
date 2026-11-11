@@ -50,7 +50,7 @@ function studioOrigin(value) {
   throw new InputError("invalid_origin");
 }
 
-async function readObject(stream, limit) {
+async function readJson(stream, limit, array = false) {
   const chunks = [];
   let bytes = 0;
   for await (const chunk of stream) {
@@ -59,14 +59,14 @@ async function readObject(stream, limit) {
     chunks.push(chunk);
   }
   const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
-  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("Expected JSON object");
+  if (value === null || typeof value !== "object" || Array.isArray(value) !== array) throw new Error("Unexpected JSON result shape");
   return value;
 }
 
 async function inputBody(path, action, maximumBytes = MAX_INPUT_BYTES) {
   let input = {};
   if (path !== undefined) {
-    try { input = await readObject(path === "-" ? process.stdin : createReadStream(path), maximumBytes); }
+    try { input = await readJson(path === "-" ? process.stdin : createReadStream(path), maximumBytes); }
     catch { throw new InputError("invalid_json_input"); }
   }
   if (action === undefined) return JSON.stringify(input);
@@ -118,7 +118,7 @@ async function uploadFile(upload, intent, studio, operationId) {
     return write({ error: "upload_failed" }, response.status, 1, operationId);
   }
   try {
-    const result = await readObject(response.body, MAX_RESPONSE_BYTES);
+    const result = await readJson(response.body, MAX_RESPONSE_BYTES);
     write(result, response.status, 0, operationId);
   } catch {
     write({ error: "invalid_upload_response" }, response.status, 1, operationId);
@@ -204,7 +204,7 @@ async function main() {
       await response.body?.cancel().catch(() => {});
       throw new Error("Expected JSON response");
     }
-    result = await readObject(response.body, id === "pages.draft-conflict" ? DRAFT_RECOVERY_MAX_OUTPUT_BYTES : MAX_RESPONSE_BYTES);
+    result = await readJson(response.body, id === "pages.draft-conflict" ? DRAFT_RECOVERY_MAX_OUTPUT_BYTES : MAX_RESPONSE_BYTES, response.ok && id === "assets.usages");
   } catch {
     const error = response.status === 401 ? "authentication_required" : response.status === 403 ? "forbidden" : "invalid_response";
     write({ error }, response.status, 1, operationId);
