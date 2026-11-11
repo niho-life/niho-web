@@ -14,6 +14,8 @@
 
 `studio/` には、このライブラリとは独立して配置する NIHO Web Studio host があります。Cloudflare Access の Google 認証、Studio専用D1のProject/Site・membership、参加Project一覧とDashboardを所有し、niho-appのUser/Project DBやcookieには接続しません。Experience のサイト編集routeは凍結案内を返し、editor APIは上流へproxyしません。Kamakura は native 化済みの日本語ページの保存・公開と、サイト側の正本 overlay を使う English 下書き編集を提供します。Studio の HTML・JS・CSS は配備間の cache 混在を防ぐため内容ごとの URL で読みます。構成、security boundary、D1 migration、owner bootstrap、配置手順は [Studio runbook](studio/README.md) を参照してください。
 
+ブラウザを使わないStudio操作は [CLIの契約と運用](docs/studio-cli.md) を参照してください。
+
 ソースは公開されていますが、第三者への再利用ライセンスは付与していません（`UNLICENSED`）。
 
 ## 利用開始

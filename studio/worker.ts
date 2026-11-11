@@ -25,6 +25,7 @@ import { parseLocalizationOverlay, parseLocalizationValue, parseSiteLocalization
 import { DocumentValidationError } from "../src/validation-utils.js";
 import { parseEnglishPublicationAccepted } from "../src/english-publication.js";
 import { parseBreakpointSettings } from "../src/style-model.js";
+import { API_PREFIX, API_VERSION, OPERATIONS, SERVICE_CLIENT_ID, SCOPE_ID, resolveOperation, type CliOperation } from "../cli/operations.mjs";
 
 type D1Meta = { readonly changes?: number };
 type D1Result<T> = { readonly results?: readonly T[]; readonly success: boolean; readonly meta?: D1Meta };
@@ -57,13 +58,18 @@ export interface Env {
 }
 
 type Role = "owner" | "editor";
-type AccessIdentity = { readonly subject: string; readonly email: string };
+type AccessIdentity = { readonly kind: "human"; readonly subject: string; readonly email: string };
+type ServiceIdentity = { readonly kind: "service"; readonly clientId: string };
+type CliActor = { readonly kind: "cli"; readonly subject: string; readonly email: string; readonly requestId: string };
+type BridgeActor = AccessIdentity | CliActor;
+const CLI_SUBJECT_PREFIX = "studio-cli:";
 type JwtHeader = { readonly alg?: unknown; readonly kid?: unknown; readonly typ?: unknown };
 type JwtClaims = {
   readonly iss?: unknown;
   readonly aud?: unknown;
   readonly sub?: unknown;
   readonly email?: unknown;
+  readonly common_name?: unknown;
   readonly type?: unknown;
   readonly exp?: unknown;
   readonly iat?: unknown;
@@ -374,7 +380,7 @@ function normalizeEmail(value: unknown, ErrorType: typeof AuthenticationError | 
   return email;
 }
 
-async function authenticate(request: Request, env: Env): Promise<AccessIdentity> {
+async function authenticate(request: Request, env: Env): Promise<AccessIdentity | ServiceIdentity> {
   const token = request.headers.get("Cf-Access-Jwt-Assertion");
   if (!token || token.length > 64 * 1024) throw new AuthenticationError("missing Access assertion");
   const segments = token.split(".");
@@ -400,8 +406,12 @@ async function authenticate(request: Request, env: Env): Promise<AccessIdentity>
   if (claims.iss !== configuration.issuer || !audiences.includes(configuration.audience) || claims.type !== "app") throw new AuthenticationError("invalid Access claims");
   if (!finiteInteger(claims.exp) || !finiteInteger(claims.iat) || claims.exp <= now || claims.iat > now + 60 || claims.exp <= claims.iat) throw new AuthenticationError("expired Access assertion");
   if (claims.nbf !== undefined && (!finiteInteger(claims.nbf) || claims.nbf > now + 60)) throw new AuthenticationError("inactive Access assertion");
-  if (!validSubject(claims.sub)) throw new AuthenticationError("invalid Access subject");
-  return { subject: claims.sub, email: normalizeEmail(claims.email, AuthenticationError) };
+  const serviceClientId = typeof claims.common_name === "string" && SERVICE_CLIENT_ID.test(claims.common_name) ? claims.common_name : null;
+  if (claims.sub === "" && claims.email === undefined && serviceClientId !== null) return { kind: "service", clientId: serviceClientId };
+  if (serviceClientId !== null || !validSubject(claims.sub) || claims.sub.startsWith(CLI_SUBJECT_PREFIX)) {
+    throw new AuthenticationError("invalid Access subject");
+  }
+  return { kind: "human", subject: claims.sub, email: normalizeEmail(claims.email, AuthenticationError) };
 }
 
 function validIdentifier(value: string): boolean { return /^[A-Za-z][A-Za-z0-9_-]{0,79}$/u.test(value); }
@@ -1305,9 +1315,10 @@ async function experienceEditorOwner(env: Env, identity: AccessIdentity): Promis
   return row?.allowed === 1;
 }
 
-async function readBoundedBody(request: Request, maximumBytes: number): Promise<Uint8Array> {
-  const requestUrl = new URL(request.url);
-  if (request.headers.get("Origin") !== requestUrl.origin || request.headers.get("Sec-Fetch-Site") !== "same-origin") throw new AuthenticationError("invalid editor request origin");
+async function readBoundedBody(request: Request, maximumBytes: number, actor: BridgeActor): Promise<Uint8Array> {
+  if (actor.kind === "human" && (request.headers.get("Origin") !== new URL(request.url).origin || request.headers.get("Sec-Fetch-Site") !== "same-origin")) {
+    throw new AuthenticationError("invalid editor request origin");
+  }
   if (request.headers.get("Content-Type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") throw new AuthenticationError("editor JSON required");
   const declaredLength = request.headers.get("Content-Length");
   if (declaredLength !== null && (!/^\d+$/u.test(declaredLength) || Number(declaredLength) > maximumBytes)) throw new AuthenticationError("editor request body too large");
@@ -1367,7 +1378,7 @@ async function signedEditorRequest(
   route: EditorRoute,
   bridge: { readonly origin: string; readonly secret: string | undefined }
 ): Promise<Response> {
-  const body = request.method === "GET" ? new Uint8Array() : await readBoundedBody(request, route.bodyLimit);
+  const body = request.method === "GET" ? new Uint8Array() : await readBoundedBody(request, route.bodyLimit, identity);
   const timestamp = Math.floor(Date.now() / 1000).toString();
   const bodyBytes = body.slice().buffer;
   const bodyHash = hexadecimal(await crypto.subtle.digest("SHA-256", bodyBytes));
@@ -1432,6 +1443,11 @@ function logKamakuraBridgeFailure(error: KamakuraBridgeFailureError): void {
   });
 }
 
+function kamakuraBridgeErrorResponse(error: KamakuraBridgeFailureError): Response {
+  logKamakuraBridgeFailure(error);
+  return json({ error: error.code, supportId: error.supportId }, error.httpStatus);
+}
+
 function kamakuraBridgeFailure(
   supportId: string,
   operation: KamakuraBridgeOperation,
@@ -1447,7 +1463,7 @@ function kamakuraBridgeFailure(
  */
 async function kamakuraSignedHeaders(
   env: Env,
-  identity: AccessIdentity,
+  identity: BridgeActor,
   method: string,
   upstreamPath: string,
   body: Uint8Array,
@@ -1477,11 +1493,11 @@ async function kamakuraSignedHeaders(
   };
 }
 
-async function signedKamakuraEditorRequest(request: Request, env: Env, identity: AccessIdentity, route: EditorRoute): Promise<Response> {
-  const supportId = crypto.randomUUID();
+async function signedKamakuraEditorRequest(request: Request, env: Env, identity: BridgeActor, route: EditorRoute): Promise<Response> {
+  const supportId = identity.kind === "cli" ? identity.requestId : crypto.randomUUID();
   const operation = kamakuraBridgeOperation(route);
   if (request.method === "GET" && (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length")))) throw new AuthenticationError("GET body rejected");
-  const rawBody = request.method === "GET" ? new Uint8Array() : await readBoundedBody(request, route.bodyLimit);
+  const rawBody = request.method === "GET" ? new Uint8Array() : await readBoundedBody(request, route.bodyLimit, identity);
   let body = route.assetOperation ? validateKamakuraAssetBody(rawBody, route.assetOperation) : rawBody;
   if (route.englishPublicationRetry) {
     let parsed: unknown;
@@ -1699,7 +1715,7 @@ function kamakuraCmsRoute(action: string, method: string): KamakuraCmsRoute | "m
 }
 
 /** ブラウザの本文を操作ごとの key の集合で確かめ、BFF が確かめた email を actor に入れて JSON を作り直す。actor を送ってきたら拒否。 */
-function kamakuraCmsBody(route: KamakuraCmsRoute, raw: Uint8Array, identity: AccessIdentity): Uint8Array {
+function kamakuraCmsBody(route: KamakuraCmsRoute, raw: Uint8Array, identity: BridgeActor): Uint8Array {
   const spec = KAMAKURA_CMS_OPERATIONS[route.operation], keys = spec.bodyKeys, optionalKeys = spec.optionalKeys ?? [];
   let parsed: unknown;
   try { parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw)) as unknown; }
@@ -1785,15 +1801,15 @@ function kamakuraCmsSuccess(route: KamakuraCmsRoute, value: unknown, status: num
   }
 }
 
-async function signedKamakuraCmsRequest(request: Request, env: Env, identity: AccessIdentity, route: KamakuraCmsRoute): Promise<Response> {
-  const supportId = crypto.randomUUID();
+async function signedKamakuraCmsRequest(request: Request, env: Env, identity: BridgeActor, route: KamakuraCmsRoute): Promise<Response> {
+  const supportId = identity.kind === "cli" ? identity.requestId : crypto.randomUUID();
   const spec = KAMAKURA_CMS_OPERATIONS[route.operation];
   const operation = spec.log, method = spec.method;
   if (method === "GET" && (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length")))) throw new AuthenticationError("GET body rejected");
   const body = method === "GET"
     ? new Uint8Array()
     : kamakuraCmsBody(route, await readBoundedBody(request, route.operation === "draft" ? KAMAKURA_CMS_LIMITS.draftBodyBytes
-      : route.operation === "reorder" || route.operation === "bulk" ? KAMAKURA_CMS_LIMITS.listBodyBytes : KAMAKURA_CMS_LIMITS.bodyBytes), identity);
+      : route.operation === "reorder" || route.operation === "bulk" ? KAMAKURA_CMS_LIMITS.listBodyBytes : KAMAKURA_CMS_LIMITS.bodyBytes, identity), identity);
   const headers = await kamakuraSignedHeaders(env, identity, method, route.upstreamPath, body, supportId, operation);
   const responseLimit = route.operation === "upload-intent" || route.operation === "english-publication-read" || route.operation === "english-publication-retry"
     ? KAMAKURA_CMS_LIMITS.bodyBytes : KAMAKURA_CMS_LIMITS.responseBytes;
@@ -2218,7 +2234,7 @@ function parseKamakuraLocalizationEditorSnapshot(input: unknown, pageId: string)
  * 上流の契約の結果（本文 `{ status, … }`）を W1 の parser で確かめ、既知の field だけにする。
  * forbidden は 403・not_found は 404・ほかは 200 で返る約束なので、HTTP の status と合わなければ契約違反。
  */
-function kamakuraLocalizationResult(route: KamakuraLocalizationRoute, request: Record<string, unknown>, value: unknown, httpStatus: number): { readonly status: string } {
+function kamakuraLocalizationResult(route: KamakuraLocalizationRoute, request: Record<string, unknown>, value: unknown, httpStatus: number, exposeReleasePending: boolean): { readonly status: string } {
   const parse = (): { readonly status: string; readonly sourceDocument?: unknown; readonly sourceVersion?: string; readonly overlay?: unknown; readonly document?: unknown; readonly presentation?: unknown; readonly version?: string; readonly revision?: number; readonly message?: string } => {
     switch (route.operation) {
       case "overview": {
@@ -2226,6 +2242,11 @@ function kamakuraLocalizationResult(route: KamakuraLocalizationRoute, request: R
         // プレビューの枠は鎌倉の Worker のものだけ（CSP の frame-src に足すのもその origin だけ）
         if (result.status === "ready" && result.overview.preview !== null && !isKamakuraLocalizationPreviewFrame(result.overview.preview.frameUrl)) {
           throw new DocumentValidationError("overview.preview.frameUrl", "unexpected preview frame");
+        }
+        if (!exposeReleasePending && result.status === "ready") {
+          const overview = { ...result.overview, release: { ...result.overview.release, pending: null } };
+          const redacted = { ...result, overview };
+          return redacted;
         }
         return result;
       }
@@ -2236,7 +2257,14 @@ function kamakuraLocalizationResult(route: KamakuraLocalizationRoute, request: R
       case "job": return parseLocalizationJobResult(value, route.jobId!);
       case "catalog": return parseLocalizationCatalogResult(value);
       case "preview": return parseLocalizationPreviewResult(value);
-      case "release": return parseLocaleReleaseStateResult(value);
+      case "release": {
+        const result = parseLocaleReleaseStateResult(value);
+        if (!exposeReleasePending && result.status === "ready") {
+          const redacted = { ...result, pending: null };
+          return redacted;
+        }
+        return result;
+      }
       case "prepare": return parseLocaleReleasePrepareResult(value, request as unknown as LocaleReleasePrepareInput);
       case "apply": return parseLocaleReleaseApplyResult(value, { prepared: null });
       case "settings": return parseLocalizationSettingsResult(value);
@@ -2330,13 +2358,16 @@ function boundedJsonStream(response: Response, maximumBytes: number, failure: (c
   return new Response(stream, { status: 200, headers: securityHeaders("application/json; charset=utf-8") });
 }
 
-async function signedKamakuraLocalizationRequest(request: Request, env: Env, identity: AccessIdentity, role: Role, route: KamakuraLocalizationRoute): Promise<Response> {
-  const supportId = crypto.randomUUID();
+async function signedKamakuraLocalizationRequest(request: Request, env: Env, identity: BridgeActor, role: Role, route: KamakuraLocalizationRoute, cliOperation?: CliOperation): Promise<Response> {
+  const supportId = identity.kind === "cli" ? identity.requestId : crypto.randomUUID();
   const spec = KAMAKURA_LOCALIZATION_OPERATIONS[route.operation];
   const operation = spec.log, method = spec.method;
   const raw = await readBoundedBody(request, ["command", "editor-save", "editor-command"].includes(route.operation)
-    ? KAMAKURA_LOCALIZATION_LIMITS.commandBodyBytes : KAMAKURA_LOCALIZATION_LIMITS.bodyBytes);
+    ? KAMAKURA_LOCALIZATION_LIMITS.commandBodyBytes : KAMAKURA_LOCALIZATION_LIMITS.bodyBytes, identity);
   const { body, values } = kamakuraLocalizationBody(route, raw, { email: identity.email, role });
+  if (identity.kind === "cli" && (route.operation === "command" || route.operation === "editor-command")
+    && (!cliOperation?.action || cliOperation.action !== values.action)) invalidLocalizationBody("CLI action");
+  const exposeReleasePending = identity.kind === "human" || cliOperation?.releasePending === true;
   const headers = await kamakuraSignedHeaders(env, identity, method, route.upstreamPath, body, supportId, operation);
   const failure = (category: KamakuraBridgeFailureCategory, status?: number) => kamakuraBridgeFailure(supportId, operation, category, status);
   const controller = new AbortController();
@@ -2382,7 +2413,7 @@ async function signedKamakuraLocalizationRequest(request: Request, env: Env, ide
       let value: unknown = null;
       if (status !== 404 || isJsonResponse(response)) value = await read(response, limit);
       else await discard(response);
-      if (isRecord(value) && Object.hasOwn(value, "status")) return checked(status, () => kamakuraLocalizationResult(route, values, value, status));
+      if (isRecord(value) && Object.hasOwn(value, "status")) return checked(status, () => kamakuraLocalizationResult(route, values, value, status, exposeReleasePending));
       if (status === 404) {
         // 概要は画面が最初に読む。ここが経路ごと無いのは、鎌倉の Worker の翻訳の API がまだ配備されていない
         if (route.operation === "overview") throw failure("localization_endpoint_missing", status);
@@ -2556,15 +2587,119 @@ async function scopedApi(request: Request, env: Env, identity: AccessIdentity, u
   return json({ error: "not_found" }, 404);
 }
 
+// Grant checks use the D1 primary on every request. The owner, project and site
+// are resolved together, and dispatch requires an audit row from the same write.
+const ACTIVE_CLI_GRANTS = `
+  FROM studio_cli_grants AS g
+  JOIN project_members AS m
+    ON m.project_id = g.project_id AND m.access_subject = g.delegated_by_subject AND m.role = 'owner'
+  JOIN sites AS s ON s.project_id = g.project_id AND s.id = g.site_id
+ WHERE g.client_id = ?1 AND g.project_id = ?2 AND g.site_id = ?3 AND g.expires_at > unixepoch()
+`;
+
+function resolveCliBridge(request: Request, env: Env, bridgePath: string, spec: CliOperation): ((actor: CliActor) => Promise<Response>) | Response {
+  if (bridgePath.startsWith("/cms/")) {
+    const route = kamakuraCmsRoute(bridgePath.slice("/cms".length), request.method);
+    if (route && route !== "method_not_allowed") return (actor) => signedKamakuraCmsRequest(request, env, actor, route);
+  } else if (bridgePath.startsWith("/localization/")) {
+    const route = kamakuraLocalizationRoute(bridgePath.slice("/localization".length), request.method);
+    if (route && route !== "method_not_allowed") return (actor) => signedKamakuraLocalizationRequest(request, env, actor, spec.owner ? "owner" : "editor", route, spec);
+  } else if (bridgePath.startsWith("/editor/")) {
+    const resolved = resolveTrustedEditorApi(KAMAKURA_EDITOR_PROJECT_ID, KAMAKURA_EDITOR_SITE_ID, bridgePath);
+    if (!resolved) return json({ error: "not_found" }, 404);
+    const adapter = liveEditorAdapter(resolved);
+    if (!adapter) return json({ error: "visual_editor_frozen" }, 409);
+    const route = adapter.route(bridgePath, request.method, resolved.environment);
+    if (route && route !== "method_not_allowed") return (actor) => signedKamakuraEditorRequest(request, env, actor, route);
+  }
+  return json({ error: "not_found" }, 404);
+}
+
+async function studioCliApi(request: Request, env: Env, url: URL, identity: ServiceIdentity): Promise<Response> {
+  if (url.href.includes("?")) return json({ error: "invalid_request" }, 400);
+  const match = /^\/projects\/([^/]+)\/sites\/([^/]+)\/(capabilities|operations\/(.+))$/u.exec(url.pathname.slice(API_PREFIX.length));
+  if (!match) return json({ error: "not_found" }, 404);
+  const [, projectId, siteId, , operationPath] = match;
+  if (!projectId || !siteId || !SCOPE_ID.test(projectId) || !SCOPE_ID.test(siteId)
+    || projectId !== KAMAKURA_EDITOR_PROJECT_ID || siteId !== KAMAKURA_EDITOR_SITE_ID) return json({ error: "not_found" }, 404);
+  const grantScope = [identity.clientId, projectId, siteId] as const;
+
+  if (operationPath === undefined) {
+    if (request.method !== "GET") return json({ error: "method_not_allowed" }, 405);
+    if (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length"))) return json({ error: "invalid_request" }, 400);
+    const grants = await env.DB.prepare(`SELECT g.capability ${ACTIVE_CLI_GRANTS} ORDER BY g.capability`)
+      .bind(...grantScope).all<{ readonly capability: string }>();
+    if (!grants.success || !grants.results) throw new Error("CLI grant lookup failed");
+    const active = new Set(grants.results.map(({ capability }) => capability));
+    const operations = OPERATIONS.filter((operation) => active.has(operation.capability))
+      .map(({ id, capability, method, parameters, action }) => ({ id, capability, method, parameters, ...(action === undefined ? {} : { action }) }));
+    if (operations.length === 0) return json({ error: "forbidden" }, 403);
+    return json({ apiVersion: API_VERSION, projectId, siteId, capabilities: [...active], operations });
+  }
+
+  const [id, ...args] = operationPath.split("/");
+  const operation = id ? resolveOperation(id, args) : null;
+  if (!operation) return json({ error: "not_found" }, 404);
+  const { spec, bridgePath } = operation;
+  if (request.method !== spec.method) return json({ error: "method_not_allowed" }, 405);
+  const dispatch = resolveCliBridge(request, env, bridgePath, spec);
+  if (dispatch instanceof Response) return dispatch;
+  const target = Object.fromEntries(spec.parameters.flatMap((parameter, index) =>
+    ["pageId", "collectionId", "itemId", "itemKey", "jobId"].includes(parameter) ? [[parameter, args[index]]] : []));
+  const actor: CliActor = {
+    kind: "cli",
+    subject: `${CLI_SUBJECT_PREFIX}${identity.clientId}`,
+    email: `cli-${identity.clientId}@studio.invalid`,
+    requestId: crypto.randomUUID()
+  };
+  const grant = await env.DB.prepare(`
+    INSERT INTO studio_cli_audit (id, actor_subject, delegated_by_subject, project_id, site_id, capability, operation, target_json)
+    SELECT ?5, ?6, g.delegated_by_subject, g.project_id, g.site_id, g.capability, ?7, ?8
+    ${ACTIVE_CLI_GRANTS} AND g.capability = ?4
+    RETURNING id
+  `).bind(...grantScope, spec.capability, actor.requestId, actor.subject, spec.id, JSON.stringify(target)).first<{ readonly id: string }>();
+  if (!grant) return json({ error: "forbidden" }, 403);
+
+  let status = 503;
+  try {
+    let response: Response;
+    try {
+      response = await dispatch(actor);
+    } catch (error) {
+      if (error instanceof AuthenticationError) response = json({ error: "invalid_request" }, 400);
+      else if (error instanceof KamakuraBridgeFailureError) response = kamakuraBridgeErrorResponse(error);
+      else throw error;
+    }
+    status = response.status;
+    response.headers.set("X-Studio-Operation-Id", actor.requestId);
+    return response;
+  } finally {
+    try {
+      const result = await env.DB.prepare("UPDATE studio_cli_audit SET http_status = ?2 WHERE id = ?1 AND http_status IS NULL")
+        .bind(actor.requestId, status).all();
+      if (!result.success || result.meta?.changes !== 1) throw new Error("CLI audit status update failed");
+    } catch {
+      // Dispatch may already have changed the host. Keep the response and correlate
+      // the outcome with the existing audit row without logging request data.
+      console.error("NIHO Studio CLI audit status update failed", { requestId: actor.requestId, status });
+    }
+  }
+}
+
 async function handle(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const isApi = url.pathname === "/api" || url.pathname.startsWith("/api/");
-  let identity: AccessIdentity;
-  try { identity = await authenticate(request, env); }
-  catch (error) {
+  const isCli = url.pathname === API_PREFIX || url.pathname.startsWith(`${API_PREFIX}/`);
+  let identity: AccessIdentity | ServiceIdentity;
+  try {
+    identity = await authenticate(request, env);
+    if (isCli !== (identity.kind === "service")) throw new AuthenticationError("wrong Access identity for route");
+  } catch (error) {
     if (!(error instanceof AuthenticationError)) throw error;
+    if (isCli) return json({ error: "authentication_required" }, 401);
     return isApi ? json({ error: "session_expired" }, 401) : htmlError("セッションを確認できません。Cloudflare Access から再度ログインしてください。", 401);
   }
+  if (identity.kind === "service") return studioCliApi(request, env, url, identity);
 
   if (isApi) {
     if (request.method === "GET" && url.pathname === "/api/session") return json({ status: "authenticated", subject: identity.subject, email: identity.email });
@@ -2605,10 +2740,7 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     try { return await handle(request, env); }
     catch (error) {
-      if (error instanceof KamakuraBridgeFailureError) {
-        logKamakuraBridgeFailure(error);
-        return json({ error: error.code, supportId: error.supportId }, error.httpStatus);
-      }
+      if (error instanceof KamakuraBridgeFailureError) return kamakuraBridgeErrorResponse(error);
       console.error("NIHO Studio request failed", error instanceof Error ? error.name : "UnknownError");
       if (error instanceof KamakuraCatalogContractError) return json({ error: KAMAKURA_CATALOG_CONTRACT_ERROR_CODE }, KAMAKURA_CATALOG_CONTRACT_ERROR_STATUS);
       return new URL(request.url).pathname.startsWith("/api/") ? json({ error: "service_unavailable" }, 503) : htmlError("一時的に利用できません。時間をおいて再度お試しください。", 503);
