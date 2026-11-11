@@ -562,6 +562,24 @@ testWithD1("CLI upload intents are bound to the configured preview origin while 
   assert.equal(h.calls.at(-1).origin, productionOrigin);
 });
 
+testWithD1("Studio and CLI translate asset metadata updates to the same signed host contract", async (t) => {
+  const h = await fixture(t);
+  h.grant("assets.edit");
+  const reference = { provider: "kamakura-upload", id: "a0000000-0000-4000-a000-000000000003" };
+  const changes = { alt: "Description" };
+  const payload = { siteId: SITE, reference, expectedVersion: "stored-version", changes };
+  h.replyWith(({ body }) => {
+    assert.deepEqual(JSON.parse(body), { siteId: SITE, ...reference, expectedVersion: "stored-version", changes });
+    return Response.json({ status: "conflict" });
+  });
+  assert.deepEqual(await check(await h.request("POST", "assets.update", payload), 200), { status: "conflict" });
+  assert.deepEqual(await check(await h.send("POST", `/api/projects/${PROJECT}/sites/${SITE}/editor/assets/update`, payload, {
+    token: h.humanToken, headers: { Origin: ORIGIN, "Sec-Fetch-Site": "same-origin" }
+  }), 200), { status: "conflict" });
+  await check(await h.request("POST", "assets.update", { ...payload, reference: { ...reference, provider: "kamakura-cms" } }), 400, "invalid_request");
+  assert.equal(h.calls.length, 2);
+});
+
 testWithD1("invalid CLI preview origins fail closed before the Kamakura binding is called", async (t) => {
   for (const previewOrigin of ["https://site-preview.example/path", "https://next-kamakura.niho.life"]) {
     await t.test(previewOrigin, async (t) => {
