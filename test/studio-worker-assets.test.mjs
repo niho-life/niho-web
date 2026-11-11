@@ -97,6 +97,8 @@ test("Kamakura asset BFF re-checks membership, validates every body, signs upstr
     ["update", { siteId: "kamakura", reference: { provider: "kamakura-upload", id: UUID }, expectedVersion: "v", changes: { folderId: null } }],
     ["update", { siteId: "kamakura", reference: { provider: "kamakura-upload", id: UUID }, expectedVersion: "v", changes: {} }],
     ["usages", { siteId: "kamakura", reference: { provider: "kamakura-studio", id: "a" }, extra: 1 }],
+    ["delete", { siteId: "kamakura" }],
+    ["restore", { siteId: "kamakura", reference: { provider: "kamakura-admin-upload", id: ADMIN_ID }, expectedVersion: "v" }],
     ["upload-intent", { siteId: "kamakura", folderId: null, name: "a.png", mimeType: "image/svg+xml", bytes: 10, provider: "kamakura-upload" }],
     ["upload-intent", { siteId: "kamakura", folderId: null, name: "a.png", mimeType: "image/png", bytes: 10, provider: "kamakura-admin-upload" }],
     ["upload-intent", { siteId: "kamakura", folderId: null, name: "a.png", mimeType: "image/png", bytes: 50 * 1024 * 1024 + 1, provider: "kamakura-upload" }],
@@ -106,7 +108,6 @@ test("Kamakura asset BFF re-checks membership, validates every body, signs upstr
   ]) await expectJson(await post(action, body, { headers }), 400, "invalid_request");
   assert.equal(calls.length, before);
   assert.equal((await worker.fetch(new Request(`${STUDIO}${BASE}/list`, { headers: { "Cf-Access-Jwt-Assertion": auth.jwt } }), env)).status, 405);
-  assert.equal((await post("delete", { siteId: "kamakura" })).status, 404);
   assert.equal((await worker.fetch(new Request(`${STUDIO}${BASE}/list?x=1`, { method: "POST", headers: { "Cf-Access-Jwt-Assertion": auth.jwt, Origin: STUDIO, "Sec-Fetch-Site": "same-origin", "Content-Type": "application/json" }, body: JSON.stringify(list) }), env)).status, 400);
   assert.equal(calls.length, before);
 
@@ -123,6 +124,15 @@ test("Kamakura asset BFF re-checks membership, validates every body, signs upstr
   respond = () => Response.json({ status: "conflict" });
   assert.deepEqual(await expectJson(await post("update", { siteId: "kamakura", reference: { provider: "kamakura-upload", id: UUID }, expectedVersion: "v1", changes: { name: "n", alt: "" } }), 200), { status: "conflict" });
   assert.equal(calls.at(-1).path, `${UPSTREAM}/update`);
+
+  const lifecycle = { siteId: "kamakura", reference: { provider: "kamakura-upload", id: UUID } };
+  const ready = { reference: lifecycle.reference, state: "ready", version: "v1" };
+  respond = () => Response.json(ready);
+  assert.deepEqual(await expectJson(await post("state", lifecycle), 200), ready);
+  respond = () => Response.json({ error: "asset_in_use" }, { status: 409 });
+  await expectJson(await post("delete", { ...lifecycle, expectedVersion: "v1" }), 409, "asset_in_use");
+  assert.deepEqual(JSON.parse(calls.at(-1).body), { ...lifecycle, expectedVersion: "v1" });
+  verifySignature(calls.at(-1), auth.subject);
 
   // アップロード開始: 上流の拒否 status を画面へ保つ
   const intent = { siteId: "kamakura", folderId: null, name: "a.png", mimeType: "image/png", bytes: 10, provider: "kamakura-upload" };
