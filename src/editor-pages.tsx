@@ -492,12 +492,14 @@ export function PageSettings({ document, page, site, settings, field, apply, rep
           locked={targetMode && !image ? "ソーシャルカバーは原文で設定します" : undefined} clear={targetMode ? undefined : () => run({ type: "meta", field: "ogImage", value: undefined })}
           url={field("画像 URL", image && "src" in image ? image.src : "", coverUrl, "meta.ogImage.src", { placeholder: "https://… または /images/cover.jpg" })}
           alt={image && field("画像の説明", image.alt, (value) => ({ type: "meta", field: "ogImage", value: { ...image, alt: value } }), "meta.ogImage.alt")} />
-        {field("ファビコン URL", meta.favicon ?? "", (value) => ({ type: "meta", field: "favicon", value: value || undefined }), "meta.favicon")}
-        <label className="e-check"><input type="checkbox" checked={!!meta.noindex} disabled={disabled || targetMode} onChange={(event) => run({ type: "meta", field: "noindex", value: event.target.checked })} />検索エンジンに表示しない</label>
-        {(offered.length > 0 || unsupported.length > 0) && <><h4>構造化データ</h4>
-          {offered.map((preset) => <label className="e-check" key={preset.id} title={preset.description}><input type="checkbox" checked={selected.includes(preset.id)} disabled={disabled || targetMode} onChange={(event) => structured(preset.id, event.target.checked)} />{preset.label}</label>)}
-          {unsupported.map((value) => <div className="e-unsupported" key={value}><span>未対応: {value}</span><button type="button" className="e-small" aria-label={`${value} を外す`} disabled={disabled} onClick={() => structured(value, false)}>外す</button></div>)}
-</>}
+        {/* ファビコン・noindex・構造化データは言語で変わらない共通の設定なので、訳文では出さない（原文で編集する）。 */}
+        {!targetMode && <>
+          {field("ファビコン URL", meta.favicon ?? "", (value) => ({ type: "meta", field: "favicon", value: value || undefined }), "meta.favicon")}
+          <label className="e-check"><input type="checkbox" checked={!!meta.noindex} disabled={disabled} onChange={(event) => run({ type: "meta", field: "noindex", value: event.target.checked })} />検索エンジンに表示しない</label>
+          {(offered.length > 0 || unsupported.length > 0) && <><h4>構造化データ</h4>
+            {offered.map((preset) => <label className="e-check" key={preset.id} title={preset.description}><input type="checkbox" checked={selected.includes(preset.id)} disabled={disabled} onChange={(event) => structured(preset.id, event.target.checked)} />{preset.label}</label>)}
+            {unsupported.map((value) => <div className="e-unsupported" key={value}><span>未対応: {value}</span><button type="button" className="e-small" aria-label={`${value} を外す`} disabled={disabled} onClick={() => structured(value, false)}>外す</button></div>)}</>}
+        </>}
       </section>
   </div>;
 }
