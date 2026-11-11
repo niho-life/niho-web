@@ -19,6 +19,8 @@ export const OPERATIONS = Object.freeze([
   operation("pages.change-prepare", "pages.publish", "POST", "/editor/page-changes/prepare"),
   operation("pages.change-apply", "pages.publish", "POST", "/editor/page-changes/apply"),
   operation("pages.english-publication-retry", "pages.publish", "POST", "/editor/:pageId/english-publication-retry"),
+  operation("pages.embed-status", "pages.read", "POST", "/editor/embeds/:pageId/status"),
+  operation("pages.embed-import", "pages.edit", "POST", "/editor/embeds/:pageId/import"),
 
   operation("cms.schema", "cms.read", "GET", "/cms/schema"),
   operation("cms.list", "cms.read", "GET", "/cms/collections/:collectionId/items"),
@@ -37,11 +39,13 @@ export const OPERATIONS = Object.freeze([
   operation("cms.retry-schedule", "cms.publish", "POST", "/cms/collections/:collectionId/items/:itemId/retry-schedule"),
   operation("cms.reorder", "cms.publish", "POST", "/cms/collections/:collectionId/reorder"),
   operation("cms.bulk", "cms.publish", "POST", "/cms/collections/:collectionId/bulk"),
+  operation("cms.upload-intent", "cms.edit", "POST", "/cms/uploads/intent", { upload: "cms" }),
 
   operation("assets.list", "assets.read", "POST", "/editor/assets/list"),
   operation("assets.usages", "assets.read", "POST", "/editor/assets/usages"),
   operation("assets.resolve", "assets.read", "POST", "/editor/assets/resolve"),
   operation("assets.update", "assets.edit", "POST", "/editor/assets/update"),
+  operation("assets.upload-intent", "assets.edit", "POST", "/editor/assets/upload-intent", { upload: "asset" }),
 
   operation("translations.overview", "translations.read", "POST", "/localization/overview"),
   operation("translations.list", "translations.read", "POST", "/localization/items"),
@@ -60,6 +64,7 @@ export const OPERATIONS = Object.freeze([
   operation("translations.clear-value", "translations.edit", "POST", "/localization/items/:itemKey/command", { action: "clear-value" }),
   operation("translations.adopt-candidate", "translations.edit", "POST", "/localization/items/:itemKey/command", { action: "adopt-candidate" }),
   operation("translations.set-image", "translations.edit", "POST", "/localization/items/:itemKey/command", { action: "set-image" }),
+  operation("translations.upload-intent", "translations.edit", "POST", "/localization/uploads/intent", { upload: "localization" }),
   operation("translations.editor-save", "translations.edit", "POST", "/localization/editor/pages/:pageId/save"),
   operation("translations.editor-set-value", "translations.edit", "POST", "/localization/editor/pages/:pageId/command", { action: "set-value" }),
   operation("translations.editor-adopt-candidate", "translations.edit", "POST", "/localization/editor/pages/:pageId/command", { action: "adopt-candidate" }),

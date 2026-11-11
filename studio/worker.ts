@@ -2632,7 +2632,11 @@ async function studioCliApi(request: Request, env: Env, url: URL, identity: Serv
     if (!grants.success || !grants.results) throw new Error("CLI grant lookup failed");
     const active = new Set(grants.results.map(({ capability }) => capability));
     const operations = OPERATIONS.filter((operation) => active.has(operation.capability))
-      .map(({ id, capability, method, parameters, action }) => ({ id, capability, method, parameters, ...(action === undefined ? {} : { action }) }));
+      .map(({ id, capability, method, parameters, action, upload }) => ({
+        id, capability, method, parameters,
+        ...(action === undefined ? {} : { action }),
+        ...(upload === undefined ? {} : { upload })
+      }));
     if (operations.length === 0) return json({ error: "forbidden" }, 403);
     return json({ apiVersion: API_VERSION, projectId, siteId, capabilities: [...active], operations });
   }

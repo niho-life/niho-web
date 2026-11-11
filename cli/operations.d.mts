@@ -10,6 +10,7 @@ export type CliOperation = {
   readonly bridgePath: string;
   readonly parameters: readonly string[];
   readonly action?: string;
+  readonly upload?: "asset" | "cms" | "localization";
   readonly owner?: true;
   readonly releasePending?: true;
 };
