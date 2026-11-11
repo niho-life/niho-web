@@ -1166,7 +1166,10 @@ function validateKamakuraAssetBody(body: Uint8Array, operation: KamakuraAssetOpe
     if (!assetText(parsed.expectedVersion, 200) || !isRecord(parsed.changes)) throw new AuthenticationError("invalid asset update request");
     onlyAssetKeys(parsed.changes, [], ["name", "alt"]);
     if (Object.keys(parsed.changes).length === 0 || parsed.changes.name !== undefined && !assetText(parsed.changes.name, 200) || parsed.changes.alt !== undefined && !assetText(parsed.changes.alt, 1000, true)) throw new AuthenticationError("invalid asset metadata");
-    parsed.reference = reference;
+    // The Kamakura host accepts a flat reference on its signed update endpoint.
+    return new TextEncoder().encode(JSON.stringify({
+      siteId: parsed.siteId, ...reference, expectedVersion: parsed.expectedVersion, changes: parsed.changes
+    }));
   } else if (operation === "usages") {
     exactAssetKeys(parsed, ["siteId", "reference"]);
     parsed.reference = kamakuraAssetReference(parsed.reference);
