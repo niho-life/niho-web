@@ -29,9 +29,24 @@ Cloudflare AccessのService Authで認証する。StudioはAccessが署名した
 
 ## 編集と公開
 
-編集は対象の最新状態と版を読み、既存の保存契約へ変更と版を渡す。公開の確認計画で対象サイト、ページ、差分、版を照合し、その計画を公開に適用する。競合時は最新版と手元の変更を比較してから再実行する。公開時に応答が得られなかった場合は、現在の公開版とホストの配備状況を照合する。
+編集は対象の最新状態と版を読み、既存の保存契約へ変更と版を渡す。公開の確認計画で対象サイト、ページ、差分、版を照合し、その計画を公開に適用する。競合時は最新版と手元の変更を比較してから再実行する。
 
 公開処理の成功は、配備や公開URLでの反映完了と区別する。ホストがビルドを行う場合は、配備結果と公開URLまで確認する。翻訳の確認と公開は、対象サイトの承認方針と権限に従う。
+
+## 操作の応答を受け取れなかった場合
+
+配備前に `studio/migrations/0008_cli_operation_keys.sql` を適用する。操作を送る前にUUID v4を作り、対象サイト、操作、入力の版と合わせて保存する。例では `STUDIO_OPERATION_KEY` に保存済みのUUIDを指定する。
+
+```sh
+niho-studio --origin https://studio.example --project demo-project --site demo-site \
+  request pages.release home --operation-id "$STUDIO_OPERATION_KEY" --json release.json
+niho-studio --origin https://studio.example --project demo-project --site demo-site \
+  status "$STUDIO_OPERATION_KEY"
+```
+
+`--operation-id` はリクエストの照会に使うキー。応答の `operationId` はStudioが発行する監査ID。Studioは同じ機械クライアント・プロジェクト・サイトで同じキーを使った操作を一度だけ受け付ける。重複リクエストは `duplicate_operation` を返す。照会時にも同じサイトの操作権限を検証する。
+
+`status` は `result.status` に、受付済みの `received` またはHTTP結果を記録済みの `completed` を返す。後者では `result.httpStatus` を確認する。Studioが受付済みなら、ホストの公開版・履歴と配備結果を照合してから次の操作を判断する。アップロードで照会できるのはStudioのアップロード許可の受付までで、転送先へのPUTの結果は素材一覧またはホストの状態で確認する。
 
 ## 素材のアップロード
 

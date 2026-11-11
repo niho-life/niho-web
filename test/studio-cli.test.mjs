@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
-import { OPERATIONS } from "../cli/operations.mjs";
+import { OPERATIONS, OPERATION_KEY_HEADER } from "../cli/operations.mjs";
 
 const { DatabaseSync } = await import("node:sqlite").catch((error) => {
   if (error.code !== "ERR_UNKNOWN_BUILTIN_MODULE") throw error;
@@ -26,6 +26,7 @@ const CLI_EMAIL = `cli-${CLIENT}@studio.invalid`;
 const OWNER = "fixture-owner";
 const HUMAN = "fixture-editor";
 const SECRET = Buffer.alloc(32, 17);
+const REQUEST_KEY = "a0000000-0000-4000-a000-000000000001";
 const migrationDirectory = new URL("../studio/migrations/", import.meta.url);
 const migrations = await Promise.all((await readdir(migrationDirectory)).filter((name) => name.endsWith(".sql")).sort()
   .map((name) => readFile(new URL(name, migrationDirectory), "utf8")));
@@ -280,6 +281,85 @@ testWithD1("CLI separates localization reads, edits, reviews, translation and pu
   assert.ok(!JSON.stringify(h.audit()).includes(resumeToken));
 });
 
+testWithD1("a keyed CLI operation dispatches once and exposes only its receipt status after a lost response", async (t) => {
+  const h = await fixture(t);
+  h.grant("pages.edit");
+  h.grant("pages.read");
+  h.grant("pages.edit", { client: OTHER_CLIENT });
+  const endpoint = `${SCOPE}/operation-status/${REQUEST_KEY}`;
+  const options = { headers: { [OPERATION_KEY_HEADER]: REQUEST_KEY } };
+  const hostEntered = Promise.withResolvers();
+  const hostResponse = Promise.withResolvers();
+  h.replyWith((call) => {
+    hostEntered.resolve(call);
+    return hostResponse.promise;
+  });
+  const body = { expectedVersion: "test-version", document: { title: "private draft fixture" } };
+
+  await check(await h.send("GET", endpoint), 404, "not_found");
+  await check(await h.send("GET", `${SCOPE}/operation-status/malformed`), 400, "invalid_request");
+  await check(await h.send("POST", endpoint, {}), 405, "method_not_allowed");
+  await check(await h.send("GET", endpoint, undefined, { token: h.humanToken }), 401, "authentication_required");
+  await check(await h.request("PUT", "pages.save/fixture-page", body, { headers: { [OPERATION_KEY_HEADER]: "malformed" } }), 400, "invalid_request");
+  assert.equal(h.audit().length, 0);
+
+  const initial = h.request("PUT", "pages.save/fixture-page", body, options);
+  try {
+    const call = await Promise.race([hostEntered.promise, initial.then(() => assert.fail("host not dispatched"))]);
+    assert.equal(call.headers.get(OPERATION_KEY_HEADER), null);
+    const [row] = h.audit();
+    assert.equal(row.request_key, REQUEST_KEY);
+    assert.notEqual(row.id, REQUEST_KEY);
+    assert.equal(row.id, call.headers.get("X-NIHO-Studio-Request-ID"));
+    const received = await check(await h.send("GET", `${SCOPE}/operation-status/${REQUEST_KEY.toUpperCase()}`), 200);
+    assert.deepEqual(received, {
+      status: "received", operationId: row.id, operation: "pages.save",
+      startedAt: new Date(row.started_at * 1000).toISOString(), httpStatus: null
+    });
+
+    const duplicates = await Promise.all([
+      h.request("PUT", "pages.save/fixture-page", body, options),
+      h.request("PUT", "pages.save/other-page", body, { headers: { [OPERATION_KEY_HEADER]: REQUEST_KEY.toUpperCase() } }),
+      h.request("GET", "pages.read/fixture-page", undefined, options)
+    ]);
+    for (const response of duplicates) await check(response, 409, "duplicate_operation");
+    await check(await h.request("POST", "pages.release-plan/fixture-page", {}, options), 403, "forbidden");
+    await check(await h.send("GET", endpoint, undefined, { token: h.jwt({ common_name: OTHER_CLIENT }) }), 404, "not_found");
+    await check(await h.send("GET", endpoint.replace("/sites/kamakura/", "/sites/other/")), 404, "not_found");
+    assert.equal(h.calls.length, 1);
+    assert.equal(h.audit().length, 1);
+
+    // Drop the original response; receipt status must remain independently retrievable.
+    hostResponse.resolve(Response.json({ version: "fixture-result-must-not-be-replayed" }));
+    await (await initial).body.cancel();
+    const completed = await check(await h.send("GET", endpoint), 200);
+    assert.deepEqual(completed, { ...received, status: "completed", httpStatus: 200 });
+    assert.equal(h.calls.length, 1);
+
+    h.db.prepare("DELETE FROM studio_cli_grants WHERE client_id = ? AND capability = ?").run(CLIENT, "pages.edit");
+    await check(await h.send("GET", endpoint), 404, "not_found");
+    await check(await h.request("PUT", "pages.save/fixture-page", body, options), 403, "forbidden");
+    await check(await h.request("GET", "pages.read/fixture-page", undefined, options), 403, "forbidden");
+    assert.equal(h.calls.length, 1);
+  } finally {
+    hostResponse.resolve(Response.json({ status: "ready" }));
+    await initial;
+  }
+});
+
+testWithD1("operation key migration preserves existing audit rows without requiring a key", (t) => {
+  const db = new DatabaseSync(":memory:");
+  t.after(() => db.close());
+  for (const migration of migrations.slice(0, -1)) db.exec(migration);
+  db.prepare(`
+    INSERT INTO studio_cli_audit (id, actor_subject, delegated_by_subject, project_id, site_id, capability, operation, target_json, http_status)
+    VALUES ('legacy-audit', ?, ?, ?, ?, 'pages.read', 'pages.read', '{}', 200)
+  `).run(CLI_SUBJECT, OWNER, PROJECT, SITE);
+  db.exec(migrations.at(-1));
+  const row = db.prepare("SELECT id, http_status, request_key FROM studio_cli_audit").get();
+  assert.deepEqual({ ...row }, { id: "legacy-audit", http_status: 200, request_key: null });
+});
+
 testWithD1("all advertised CLI capabilities fit the migration and have unique operation IDs", async (t) => {
   const h = await fixture(t);
   const ids = OPERATIONS.map(({ id }) => id);
@@ -335,12 +415,43 @@ test("CLI uses JSON input and a fixed HTTPS origin and never follows Access redi
   assert.deepEqual(bad, { exitCode: 2, stdout: '{"apiVersion":"v1","httpStatus":null,"operationId":null,"result":{"error":"invalid_origin"}}\n', stderr: "" });
 });
 
+test("CLI sends an explicit operation key and can look up the receipt after a transport failure", async () => {
+  const attempt = await cli(["request", "pages.read", "fixture-page", "--operation-id", REQUEST_KEY.toUpperCase()], {
+    fetchImpl: `async (url, init) => {
+      if (url !== "${ORIGIN}${SCOPE}/operations/pages.read/fixture-page" || init.method !== "GET" ||
+        init.headers["${OPERATION_KEY_HEADER}"] !== "${REQUEST_KEY}") return Response.json({ error: "bad request" }, { status: 400 });
+      throw new Error("lost response");
+    }`
+  });
+  assert.equal(attempt.exitCode, 1);
+  assert.deepEqual(JSON.parse(attempt.stdout), { apiVersion: "v1", httpStatus: null, operationId: null, result: { error: "transport_error" } });
+  const receipt = { status: "completed", operationId: "00000000-0000-4000-8000-000000000001", operation: "pages.read", startedAt: "2026-11-11T00:00:00.000Z", httpStatus: 200 };
+  const status = await cli(["status", REQUEST_KEY.toUpperCase()], {
+    fetchImpl: `async (url, init) => {
+      if (url !== "${ORIGIN}${SCOPE}/operation-status/${REQUEST_KEY}" || init.method !== "GET" || init.body !== undefined ||
+        init.headers["CF-Access-Client-Id"] !== "${CLIENT}" || Object.hasOwn(init.headers, "${OPERATION_KEY_HEADER}")) throw new Error("bad status request");
+      return Response.json(${JSON.stringify(receipt)});
+    }`
+  });
+  assert.equal(status.exitCode, 0);
+  assert.deepEqual(JSON.parse(status.stdout), { apiVersion: "v1", httpStatus: 200, operationId: null, result: receipt });
+  for (const [args, error] of [
+    [["status", "wrong-id"], "invalid_operation_id"],
+    [["request", "pages.read", "fixture-page", "--operation-id", "wrong-id"], "invalid_operation_id"],
+    [["discover", "--operation-id", REQUEST_KEY], "invalid_arguments"]
+  ]) {
+    const rejected = await cli(args);
+    assert.equal(rejected.exitCode, 2);
+    assert.equal(JSON.parse(rejected.stdout).result.error, error);
+  }
+});
+
 test("CLI uploads a file with only the one-use token and rejects a different upload origin", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "studio-cli-upload-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const path = join(dir, "cover.png");
   await writeFile(path, Buffer.from([1, 2, 3]));
-  const args = ["upload", "cms.upload-intent", "--file", path, "--upload-origin", "https://media.example", "--json", "-"];
+  const args = ["upload", "cms.upload-intent", "--file", path, "--upload-origin", "https://media.example", "--json", "-", "--operation-id", REQUEST_KEY];
   const input = '{"collectionId":"posts","mimeType":"image/png"}';
   const id = "00000000-0000-4000-8000-000000000001";
   const destination = `https://media.example/internal/studio/cms-upload/${id}`;
@@ -349,7 +460,7 @@ test("CLI uploads a file with only the one-use token and rejects a different upl
     fetchImpl: `async (url, init) => {
       if (url === "${ORIGIN}${SCOPE}/operations/cms.upload-intent") {
         if (init.method !== "POST" || init.headers["CF-Access-Client-Secret"] !== "fixture-secret" ||
-          init.body !== '{"name":"cover.png","collectionId":"posts","mimeType":"image/png","bytes":3}') throw new Error("bad intent");
+          init.headers["${OPERATION_KEY_HEADER}"] !== "${REQUEST_KEY}" || init.body !== '{"name":"cover.png","collectionId":"posts","mimeType":"image/png","bytes":3}') throw new Error("bad intent");
         return Response.json({ uploadUrl: "${destination}", uploadToken: "fixture-upload-token", uploadId: "${id}" }, {
           status: 201, headers: { "X-Studio-Operation-Id": "${id}" }
         });
@@ -372,4 +483,14 @@ test("CLI uploads a file with only the one-use token and rejects a different upl
   });
   assert.equal(rejected.exitCode, 1);
   assert.deepEqual(JSON.parse(rejected.stdout).result, { error: "invalid_upload_intent" });
+
+  const duplicate = await cli(args, {
+    input,
+    fetchImpl: `async (url) => {
+      if (url !== "${ORIGIN}${SCOPE}/operations/cms.upload-intent") throw new Error("unexpected upload");
+      return Response.json({ error: "duplicate_operation" }, { status: 409 });
+    }`
+  });
+  assert.equal(duplicate.exitCode, 1);
+  assert.deepEqual(JSON.parse(duplicate.stdout), { apiVersion: "v1", httpStatus: 409, operationId: null, result: { error: "duplicate_operation" } });
 });

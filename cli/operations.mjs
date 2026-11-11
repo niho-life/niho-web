@@ -2,6 +2,14 @@ export const API_VERSION = "v1";
 export const API_PREFIX = `/api/cli/${API_VERSION}`;
 export const SERVICE_CLIENT_ID = /^[0-9a-f]{32}\.access$/u;
 export const SCOPE_ID = /^[A-Za-z][A-Za-z0-9_-]{0,79}$/u;
+export const OPERATION_KEY_HEADER = "X-Studio-Operation-Key";
+export const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+
+export function normalizeOperationKey(value) {
+  const key = typeof value === "string" ? value.toLowerCase() : "";
+  return UUID_V4.test(key) ? key : null;
+}
+
 const ARGUMENT = /^[A-Za-z0-9_][A-Za-z0-9._~-]{0,511}$/u;
 
 // Each entry maps one public v1 operation to an existing, separately validated bridge route.
