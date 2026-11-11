@@ -27,7 +27,7 @@ Cloudflare AccessのService Authで認証する。StudioはAccessが署名した
 
 利用可能な操作名と必要権限は `discover` で確認する。APIでは `GET /api/cli/v1/projects/:projectId/sites/:siteId/capabilities` に対応し、操作実行は `.../operations/:operation[/…]` を使う。操作名・メソッド・引数は[操作定義](../cli/operations.mjs)の許可リストで決まる。Studioは任意の上流URLやブラウザAPIのパスを受け取らない。CLIの権限は `discover` の結果を使う。
 
-確認用Studioでは、ホストの確認用WorkerをService Bindingに設定し、`KAMAKURA_CLI_PREVIEW_ORIGIN` にそのHTTPSオリジンを指定する。ページ操作で使うURLと、ホストのページ一覧が返すオリジンを照合する。確認用Studioには専用のAccessアプリとD1を使い、ホストのGitブランチとR2も本番と分ける。
+確認用Studioでは、ホストの確認用WorkerをService Bindingに設定し、`KAMAKURA_CLI_PREVIEW_ORIGIN` にそのHTTPSオリジンを指定する。ページ・CMS・翻訳はその確認用Workerへ接続する。ページ一覧・翻訳プレビュー・画像アップロード許可が返すURLも、設定したオリジンと照合する。確認用Studioには専用のAccessアプリとD1を使い、ホストのGitブランチとR2も本番と分ける。
 
 ## サイト設定とメンバー管理
 
@@ -68,4 +68,4 @@ printf '%s\n' '{"collectionId":"articles","mimeType":"image/png"}' |
 
 JSONの項目は既存のアップロード許可と同じ。`name` の既定値はファイル名で、`bytes` はCLIがファイルのサイズから指定する。共通の素材には `assets.upload-intent`、翻訳の差し替え画像には `translations.upload-intent` を使う。転送先のオリジンとパスを照合し、転送には短時間だけ有効なアップロード用トークンを使う。
 
-現在の対応は接続済みのページ文書・埋め込み設定、CMS項目、素材、翻訳の操作。サイトのソース編集と管理機能の追加は #270 の後続で扱う。
+確認環境では `--upload-origin` に `KAMAKURA_CLI_PREVIEW_ORIGIN` と同じオリジンを指定する。ホスト側でも確認用Studioと確認用アップロード先を設定し、専用の素材ストレージを接続する。

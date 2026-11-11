@@ -8,6 +8,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { OPERATIONS, OPERATION_KEY_HEADER } from "../cli/operations.mjs";
+import { createLocalizationMemory } from "../examples/localization-workspace-memory.mjs";
 
 const { DatabaseSync } = await import("node:sqlite").catch((error) => {
   if (error.code !== "ERR_UNKNOWN_BUILTIN_MODULE") throw error;
@@ -38,7 +39,7 @@ const worker = (await import(`data:text/javascript;base64,${Buffer.from(outputFi
 const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const jwk = { ...publicKey.export({ format: "jwk" }), kid: "test-key", alg: "RS256", use: "sig" };
 
-async function fixture(t) {
+async function fixture(t, { previewOrigin } = {}) {
   const issuer = `https://access-${crypto.randomUUID()}.example`;
   const audience = "test-audience";
   const now = Math.floor(Date.now() / 1000);
@@ -99,12 +100,13 @@ async function fixture(t) {
     ACCESS_ISSUER: issuer,
     ACCESS_AUDIENCE: audience,
     KAMAKURA_STUDIO_BRIDGE_SECRET: SECRET.toString("base64url"),
+    KAMAKURA_CLI_PREVIEW_ORIGIN: previewOrigin,
     ASSETS: { async fetch() { return new Response("public asset"); } },
     KAMAKURA_SITE: {
       async fetch(request) {
         const body = await request.text();
-        const path = new URL(request.url).pathname;
-        calls.push({ path, body, method: request.method, headers: request.headers });
+        const { origin, pathname: path } = new URL(request.url);
+        calls.push({ origin, path, body, method: request.method, headers: request.headers });
         return respond(calls.at(-1));
       }
     }
@@ -508,6 +510,67 @@ testWithD1("site administration migration preserves finite grants and audits wit
   assert.equal(db.prepare("SELECT count(*) AS total FROM studio_cli_grants").get().total, 0);
   assert.equal(db.prepare("SELECT count(*) AS total FROM studio_cli_audit").get().total, 1);
   assert.deepEqual(db.prepare("PRAGMA foreign_key_check").all(), []);
+});
+
+testWithD1("CLI upload intents are bound to the configured preview origin while browser uploads retain the production origin", async (t) => {
+  const previewOrigin = "https://site-preview.example";
+  const productionOrigin = "https://next-kamakura.niho.life";
+  const h = await fixture(t, { previewOrigin });
+  const uploadId = "a0000000-0000-4000-a000-000000000003";
+  const image = { name: "fixture.png", mimeType: "image/png", bytes: 123 };
+  const browserScope = `/api/projects/${PROJECT}/sites/${SITE}`;
+  const browser = { token: h.humanToken, headers: { Origin: ORIGIN, "Sec-Fetch-Site": "same-origin" } };
+  const routes = [
+    { operation: "cms.upload-intent", capability: "cms.edit", route: "/cms/uploads/intent", uploadPath: "cms-upload", idKey: "uploadId", body: { ...image, collectionId: "posts" } },
+    { operation: "translations.upload-intent", capability: "translations.edit", route: "/localization/uploads/intent", uploadPath: "localization-upload", idKey: "uploadId", body: { ...image, itemKey: "fixture-item", unitId: "image" } },
+    { operation: "assets.upload-intent", capability: "assets.edit", route: "/editor/assets/upload-intent", uploadPath: "asset-upload", idKey: "assetId", body: { ...image, siteId: SITE, folderId: null, provider: "kamakura-upload" } }
+  ];
+  for (const { operation, capability, route, uploadPath, idKey, body } of routes) {
+    h.grant(capability);
+    const intent = (origin) => ({ uploadUrl: `${origin}/internal/studio/${uploadPath}/${uploadId}`, uploadToken: "fixture-upload-token", [idKey]: uploadId });
+    const reply = (origin) => h.replyWith(() => Response.json(intent(origin), { status: 201 }));
+    reply(previewOrigin);
+    assert.deepEqual(await check(await h.request("POST", operation, body, {
+      headers: { "X-Preview-Origin": "https://untrusted.example" }
+    }), 201), intent(previewOrigin));
+    assert.equal(h.calls.at(-1).origin, previewOrigin);
+    assert.equal(h.calls.at(-1).headers.get("X-Preview-Origin"), null);
+    assert.equal(h.calls.at(-1).headers.get("X-NIHO-Studio-Subject"), CLI_SUBJECT);
+
+    for (const origin of [productionOrigin, "https://untrusted.example"]) {
+      reply(origin);
+      const denied = await check(await h.request("POST", operation, body), 502, "upstream_contract_invalid");
+      assert.deepEqual(Object.keys(denied).sort(), ["error", "supportId"]);
+      assert.equal(h.calls.at(-1).origin, previewOrigin);
+    }
+    reply(previewOrigin);
+    await check(await h.send("POST", browserScope + route, body, browser), 502, "upstream_contract_invalid");
+    assert.equal(h.calls.at(-1).origin, productionOrigin);
+    reply(productionOrigin);
+    assert.deepEqual(await check(await h.send("POST", browserScope + route, body, browser), 201), intent(productionOrigin));
+    assert.equal(h.calls.at(-1).origin, productionOrigin);
+  }
+
+  h.grant("translations.read");
+  const frameUrl = `${previewOrigin}/_studio/localization-preview`;
+  const { adapter } = createLocalizationMemory({ frameUrl });
+  h.replyWith(async () => Response.json(await adapter.loadOverview(new AbortController().signal)));
+  const overview = await check(await h.request("POST", "translations.overview", {}), 200);
+  assert.equal(overview.overview.preview.frameUrl, frameUrl);
+  assert.equal(h.calls.at(-1).origin, previewOrigin);
+  await check(await h.send("POST", browserScope + "/localization/overview", {}, browser), 502, "upstream_contract_invalid");
+  assert.equal(h.calls.at(-1).origin, productionOrigin);
+});
+
+testWithD1("invalid CLI preview origins fail closed before the Kamakura binding is called", async (t) => {
+  for (const previewOrigin of ["https://site-preview.example/path", "https://next-kamakura.niho.life"]) {
+    await t.test(previewOrigin, async (t) => {
+      const h = await fixture(t, { previewOrigin });
+      h.grant("cms.edit");
+      await check(await h.request("POST", "cms.upload-intent", { name: "a.png", mimeType: "image/png", bytes: 100, collectionId: "posts" }), 503, "service_unavailable");
+      assert.equal(h.calls.length, 0);
+    });
+  }
 });
 
 testWithD1("all advertised CLI capabilities fit the migration and have unique operation IDs", async (t) => {

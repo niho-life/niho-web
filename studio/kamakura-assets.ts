@@ -3,6 +3,7 @@ import {
   parseResolvedAssets, assetKey,
   type AssetLibraryAdapter, type AssetListQuery, type AssetProvider, type AssetReference, type AssetUploadRequest
 } from "../src/assets.js";
+import { parseKamakuraAssetUploadIntent } from "./kamakura-asset-upload-contract.js";
 
 const SITE_ID = "kamakura";
 const UPLOAD_PROVIDER = "kamakura-upload";
@@ -10,8 +11,6 @@ const ADMIN_PROVIDER = "kamakura-admin-upload";
 /** kamakura-site の worker/studio-assets.ts と同じ固定表。 */
 const PROVIDER_IDS = new Set([UPLOAD_PROVIDER, ADMIN_PROVIDER, "kamakura-studio", "kamakura-cms", "kamakura-approved-remote"]);
 const BASE = "/api/projects/project-kamakura/sites/kamakura/editor/assets";
-const UPLOAD_ORIGIN = "https://next-kamakura.niho.life";
-const UPLOAD_PATH = /^\/internal\/studio\/asset-upload\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/iu;
 const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/avif", "image/gif"]);
 
 class KamakuraAssetApiError extends Error {
@@ -65,18 +64,6 @@ function provider(reference: AssetReference): boolean {
   return PROVIDER_IDS.has(reference.provider);
 }
 
-function parseUploadIntent(input: unknown, expectedProvider: string): { readonly uploadUrl: string; readonly uploadToken: string; readonly assetId: string } {
-  const value = record(input);
-  exactKeys(value, ["uploadUrl", "uploadToken", "assetId"]);
-  if (typeof value.uploadUrl !== "string" || value.uploadUrl.length > 2048 || typeof value.uploadToken !== "string" || value.uploadToken.length < 1 || value.uploadToken.length > 4096 || /[\u0000-\u001f\u007f]/u.test(value.uploadToken)) throw new Error("アップロード開始情報が正しくありません。");
-  if (typeof value.assetId !== "string") throw new Error("アップロード開始情報が正しくありません。");
-  const parsed = new URL(value.uploadUrl);
-  const match = UPLOAD_PATH.exec(parsed.pathname);
-  if (parsed.protocol !== "https:" || parsed.origin !== UPLOAD_ORIGIN || parsed.username || parsed.password || parsed.search || parsed.hash || !match || match[1]!.toLowerCase() !== value.assetId.toLowerCase()) throw new Error("アップロード先が正しくありません。");
-  if (expectedProvider !== UPLOAD_PROVIDER) throw new Error("アップロード元が正しくありません。");
-  return { uploadUrl: value.uploadUrl, uploadToken: value.uploadToken, assetId: value.assetId };
-}
-
 const READ_ONLY = { upload: false, editMetadata: false, delete: false, folders: false, acquire: false } as const;
 /** 出所の表示。ID と権限は kamakura-site 側の契約（docs/asset-contract.md「鎌倉サイトでの接続」）と一致させる。削除はどの出所でも不可。 */
 const PROVIDERS: AssetProvider[] = parseAssetProviders([
@@ -105,9 +92,9 @@ export const kamakuraAssetLibrary: AssetLibraryAdapter = {
     const providerId = request.provider ?? UPLOAD_PROVIDER;
     if (providerId !== UPLOAD_PROVIDER || request.folderId !== null || request.file.size !== request.bytes || request.file.type !== request.mimeType || !IMAGE_TYPES.has(request.mimeType)) return { status: "rejected", reason: "invalid" };
 
-    const intent = parseUploadIntent(await post("upload-intent", {
+    const intent = parseKamakuraAssetUploadIntent(await post("upload-intent", {
       siteId: SITE_ID, folderId: null, name: request.name, mimeType: request.mimeType, bytes: request.bytes, provider: providerId
-    }, signal), providerId);
+    }, signal));
     const response = await fetch(intent.uploadUrl, {
       method: "PUT", mode: "cors", credentials: "omit", cache: "no-store", redirect: "error", signal,
       headers: { Authorization: `Bearer ${intent.uploadToken}`, "Content-Type": request.mimeType },
