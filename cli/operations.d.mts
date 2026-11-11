@@ -4,6 +4,8 @@ export const SERVICE_CLIENT_ID: RegExp;
 export const SCOPE_ID: RegExp;
 export const OPERATION_KEY_HEADER: "X-Studio-Operation-Key";
 export const UUID_V4: RegExp;
+export const DRAFT_RECOVERY_MAX_INPUT_BYTES: number;
+export const DRAFT_RECOVERY_MAX_OUTPUT_BYTES: number;
 export function normalizeOperationKey(value: unknown): string | null;
 
 export type CliOperation = {
