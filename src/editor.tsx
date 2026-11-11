@@ -538,12 +538,15 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const savedSiteStylesReady = !adapter.readSiteSettings || siteSettings.status === "ready" || siteSettings.status === "error";
   const savedSiteStyles = siteSettings.status === "ready" ? siteSettings.settings : session?.siteStyles;
   const localization = useEditorLocalization(adapter, siteId, session?.target, blocks, libraryPresent, savedSiteStylesReady, savedSiteStyles, loadEpoch, setNotice);
+  const sessionLocalizationSite = localization.site?.config.siteId === session?.target.siteId ? localization.site : null;
   let selectedLocale: LocalizationLocale | undefined;
-  try { if (localization.site && session) selectedLocale = editorLocalizationLocaleFor(localization.site.config, session.target.locale); } catch { /* read hook reports the invalid mapping */ }
-  const targetMode = !!localization.site && !!selectedLocale && selectedLocale !== localization.site.config.sourceLocale;
+  try { if (sessionLocalizationSite && session) selectedLocale = editorLocalizationLocaleFor(sessionLocalizationSite.config, session.target.locale); } catch { /* read hook reports the invalid mapping */ }
+  const targetMode = !!sessionLocalizationSite && !!selectedLocale && selectedLocale !== sessionLocalizationSite.config.sourceLocale;
+  const hostSourceReady = !!session && adapter.localization?.sourceDocumentLocale?.(session.target.siteId) === session.target.locale
+    && (!sessionLocalizationSite || selectedLocale === sessionLocalizationSite.config.sourceLocale);
   const localePublication = !!adapter.localization?.readRelease && !!adapter.localization.prepareRelease && !!adapter.localization.applyRelease && !!adapter.localization.rollbackRelease;
-  const localizationReady = !localization.supported || localization.siteState === "ready" && !!localization.site && !!selectedLocale &&
-    (selectedLocale === localization.site.config.sourceLocale || localization.pageState === "ready" && !!localization.context && !!session && sameTarget(localization.context.target, session.target));
+  const localizationReady = !localization.supported || hostSourceReady || localization.siteState === "ready" && !!sessionLocalizationSite && !!selectedLocale &&
+    (selectedLocale === sessionLocalizationSite.config.sourceLocale || localization.pageState === "ready" && !!localization.context && !!session && sameTarget(localization.context.target, session.target));
   const problemRef = useRef(problem); problemRef.current = problem;
   // 入力途中の欄を持ち主ごとに記録する。「サイト共通」の欄はページの未確定の入力に数えず、自身の入力でサイト共通の編集を止めない。
   const pendingFor = (owner: "page" | "site") => (key: string, value: boolean) => setPendingFields((previous) => {

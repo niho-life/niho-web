@@ -335,6 +335,7 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
       retry: (target, signal) => conflict(() => request(signal, async () => parseEnglishPublicationAccepted(await api(`${pagePath(target)}/english-publication-retry`, "POST", {}, signal))))
     },
     localization: {
+      sourceDocumentLocale: (siteId) => siteId === KAMAKURA_EDITOR_SITE_ID ? "ja" : undefined,
       requestPageTranslation: false,
       readSite: (siteId, signal) => request(signal, async () => {
         if (siteId !== KAMAKURA_EDITOR_SITE_ID) throw new Error("編集対象のサイトがありません。");
