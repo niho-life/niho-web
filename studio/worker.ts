@@ -25,7 +25,7 @@ import { parseLocalizationOverlay, parseLocalizationValue, parseSiteLocalization
 import { DocumentValidationError } from "../src/validation-utils.js";
 import { parseEnglishPublicationAccepted } from "../src/english-publication.js";
 import { parseBreakpointSettings } from "../src/style-model.js";
-import { API_PREFIX, API_VERSION, OPERATIONS, SERVICE_CLIENT_ID, SCOPE_ID, resolveOperation, type CliOperation } from "../cli/operations.mjs";
+import { API_PREFIX, API_VERSION, OPERATIONS, OPERATION_KEY_HEADER, SERVICE_CLIENT_ID, SCOPE_ID, normalizeOperationKey, resolveOperation, type CliOperation } from "../cli/operations.mjs";
 
 type D1Meta = { readonly changes?: number };
 type D1Result<T> = { readonly results?: readonly T[]; readonly success: boolean; readonly meta?: D1Meta };
@@ -2597,6 +2597,19 @@ const ACTIVE_CLI_GRANTS = `
  WHERE g.client_id = ?1 AND g.project_id = ?2 AND g.site_id = ?3 AND g.expires_at > unixepoch()
 `;
 
+type CliGrantScope = readonly [clientId: string, projectId: string, siteId: string];
+type CliAuditRow = { readonly id: string; readonly operation: string; readonly started_at: number; readonly http_status: number | null };
+
+async function cliAuditRecord(env: Env, scope: CliGrantScope, subject: string, requestKey: string, requestedCapability: string | null = null): Promise<CliAuditRow | null> {
+  return env.DB.prepare(`
+    SELECT a.id, a.operation, a.started_at, a.http_status
+      FROM studio_cli_audit AS a
+     WHERE a.project_id = ?2 AND a.site_id = ?3 AND a.actor_subject = ?4 AND a.request_key = ?5
+       AND EXISTS (SELECT 1 ${ACTIVE_CLI_GRANTS} AND g.capability = a.capability)
+       AND (?6 IS NULL OR EXISTS (SELECT 1 ${ACTIVE_CLI_GRANTS} AND g.capability = ?6))
+  `).bind(...scope, subject, requestKey, requestedCapability).first<CliAuditRow>();
+}
+
 function resolveCliBridge(request: Request, env: Env, bridgePath: string, spec: CliOperation): ((actor: CliActor) => Promise<Response>) | Response {
   if (bridgePath.startsWith("/cms/")) {
     const route = kamakuraCmsRoute(bridgePath.slice("/cms".length), request.method);
@@ -2617,16 +2630,30 @@ function resolveCliBridge(request: Request, env: Env, bridgePath: string, spec: 
 
 async function studioCliApi(request: Request, env: Env, url: URL, identity: ServiceIdentity): Promise<Response> {
   if (url.href.includes("?")) return json({ error: "invalid_request" }, 400);
-  const match = /^\/projects\/([^/]+)\/sites\/([^/]+)\/(capabilities|operations\/(.+))$/u.exec(url.pathname.slice(API_PREFIX.length));
+  const match = /^\/projects\/([^/]+)\/sites\/([^/]+)\/(?:capabilities|operations\/(.+)|operation-status\/([^/]+))$/u.exec(url.pathname.slice(API_PREFIX.length));
   if (!match) return json({ error: "not_found" }, 404);
-  const [, projectId, siteId, , operationPath] = match;
+  const [, projectId, siteId, operationPath, statusKey] = match;
   if (!projectId || !siteId || !SCOPE_ID.test(projectId) || !SCOPE_ID.test(siteId)
     || projectId !== KAMAKURA_EDITOR_PROJECT_ID || siteId !== KAMAKURA_EDITOR_SITE_ID) return json({ error: "not_found" }, 404);
-  const grantScope = [identity.clientId, projectId, siteId] as const;
+  const grantScope: CliGrantScope = [identity.clientId, projectId, siteId];
+  const subject = `${CLI_SUBJECT_PREFIX}${identity.clientId}`;
 
   if (operationPath === undefined) {
     if (request.method !== "GET") return json({ error: "method_not_allowed" }, 405);
     if (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length"))) return json({ error: "invalid_request" }, 400);
+    if (statusKey !== undefined) {
+      const key = normalizeOperationKey(statusKey);
+      if (!key) return json({ error: "invalid_request" }, 400);
+      const record = await cliAuditRecord(env, grantScope, subject, key);
+      if (!record) return json({ error: "not_found" }, 404);
+      return json({
+        status: record.http_status === null ? "received" : "completed",
+        operationId: record.id,
+        operation: record.operation,
+        startedAt: unixTimestamp(record.started_at),
+        httpStatus: record.http_status
+      });
+    }
     const grants = await env.DB.prepare(`SELECT g.capability ${ACTIVE_CLI_GRANTS} ORDER BY g.capability`)
       .bind(...grantScope).all<{ readonly capability: string }>();
     if (!grants.success || !grants.results) throw new Error("CLI grant lookup failed");
@@ -2646,23 +2673,32 @@ async function studioCliApi(request: Request, env: Env, url: URL, identity: Serv
   if (!operation) return json({ error: "not_found" }, 404);
   const { spec, bridgePath } = operation;
   if (request.method !== spec.method) return json({ error: "method_not_allowed" }, 405);
+  const rawRequestKey = request.headers.get(OPERATION_KEY_HEADER);
+  const requestKey = normalizeOperationKey(rawRequestKey);
+  if (rawRequestKey !== null && requestKey === null) return json({ error: "invalid_request" }, 400);
   const dispatch = resolveCliBridge(request, env, bridgePath, spec);
   if (dispatch instanceof Response) return dispatch;
   const target = Object.fromEntries(spec.parameters.flatMap((parameter, index) =>
     ["pageId", "collectionId", "itemId", "itemKey", "jobId"].includes(parameter) ? [[parameter, args[index]]] : []));
   const actor: CliActor = {
     kind: "cli",
-    subject: `${CLI_SUBJECT_PREFIX}${identity.clientId}`,
+    subject,
     email: `cli-${identity.clientId}@studio.invalid`,
     requestId: crypto.randomUUID()
   };
   const grant = await env.DB.prepare(`
-    INSERT INTO studio_cli_audit (id, actor_subject, delegated_by_subject, project_id, site_id, capability, operation, target_json)
-    SELECT ?5, ?6, g.delegated_by_subject, g.project_id, g.site_id, g.capability, ?7, ?8
+    INSERT INTO studio_cli_audit (id, actor_subject, delegated_by_subject, project_id, site_id, capability, operation, target_json, request_key)
+    SELECT ?5, ?6, g.delegated_by_subject, g.project_id, g.site_id, g.capability, ?7, ?8, ?9
     ${ACTIVE_CLI_GRANTS} AND g.capability = ?4
+    ON CONFLICT(project_id, site_id, actor_subject, request_key) DO NOTHING
     RETURNING id
-  `).bind(...grantScope, spec.capability, actor.requestId, actor.subject, spec.id, JSON.stringify(target)).first<{ readonly id: string }>();
-  if (!grant) return json({ error: "forbidden" }, 403);
+  `).bind(...grantScope, spec.capability, actor.requestId, actor.subject, spec.id, JSON.stringify(target), requestKey).first<{ readonly id: string }>();
+  if (!grant) {
+    if (requestKey && await cliAuditRecord(env, grantScope, subject, requestKey, spec.capability)) {
+      return json({ error: "duplicate_operation" }, 409);
+    }
+    return json({ error: "forbidden" }, 403);
+  }
 
   let status = 503;
   try {

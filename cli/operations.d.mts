@@ -2,6 +2,9 @@ export const API_VERSION: "v1";
 export const API_PREFIX: "/api/cli/v1";
 export const SERVICE_CLIENT_ID: RegExp;
 export const SCOPE_ID: RegExp;
+export const OPERATION_KEY_HEADER: "X-Studio-Operation-Key";
+export const UUID_V4: RegExp;
+export function normalizeOperationKey(value: unknown): string | null;
 
 export type CliOperation = {
   readonly id: string;

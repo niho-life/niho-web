@@ -2,18 +2,18 @@
 import { createReadStream, openAsBlob } from "node:fs";
 import { basename } from "node:path";
 import { parseArgs } from "node:util";
-import { API_PREFIX, API_VERSION, SERVICE_CLIENT_ID, SCOPE_ID, resolveOperation } from "./operations.mjs";
+import { API_PREFIX, API_VERSION, OPERATION_KEY_HEADER, SERVICE_CLIENT_ID, SCOPE_ID, UUID_V4, normalizeOperationKey, resolveOperation } from "./operations.mjs";
 
 const USAGE = `niho-studio --origin <https-origin> --project <project-id> --site <site-id> discover
-niho-studio --origin <https-origin> --project <project-id> --site <site-id> request <operation> [args...] [--json <file|->]
-niho-studio --origin <https-origin> --project <project-id> --site <site-id> upload <upload-operation> --file <image> --upload-origin <https-origin> --json <file|->
+niho-studio --origin <https-origin> --project <project-id> --site <site-id> request <operation> [args...] [--json <file|->] [--operation-id <UUIDv4>]
+niho-studio --origin <https-origin> --project <project-id> --site <site-id> upload <upload-operation> --file <image> --upload-origin <https-origin> --json <file|-> [--operation-id <UUIDv4>]
+niho-studio --origin <https-origin> --project <project-id> --site <site-id> status <UUIDv4>
 
 Set CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET in the environment. Use --json - to read a JSON object from stdin.`;
 const MAX_INPUT_BYTES = 1024 * 1024;
 const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/avif", "image/gif"]);
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
 class InputError extends Error {}
 
@@ -33,6 +33,7 @@ function argumentsFromCommandLine() {
         json: { type: "string" },
         file: { type: "string" },
         "upload-origin": { type: "string" },
+        "operation-id": { type: "string" },
         help: { type: "boolean", short: "h" }
       }
     });
@@ -95,7 +96,7 @@ async function uploadFile(upload, intent, studio, operationId) {
     const prefix = `/internal/studio/${upload.kind}-upload/`;
     const assetId = upload.kind === "asset" ? intent.assetId : intent.uploadId;
     if (destination.origin !== upload.origin || destination.username || destination.password || destination.search || destination.hash
-      || typeof assetId !== "string" || !UUID.test(assetId) || destination.pathname !== `${prefix}${assetId}`
+      || typeof assetId !== "string" || !UUID_V4.test(assetId) || destination.pathname !== `${prefix}${assetId}`
       || typeof intent.uploadToken !== "string" || !/^[A-Za-z0-9_.-]{1,4096}$/u.test(intent.uploadToken)) throw new Error("Invalid upload intent");
   } catch {
     return write({ error: "invalid_upload_intent" }, null, 1, operationId);
@@ -136,10 +137,21 @@ async function main() {
   const base = `${origin}${API_PREFIX}/projects/${values.project}/sites/${values.site}`;
 
   let url, method, body, upload;
+  const operationKey = normalizeOperationKey(values["operation-id"]);
+  if (values["operation-id"] !== undefined) {
+    if (command !== "request" && command !== "upload") throw new InputError("invalid_arguments");
+    if (!operationKey) throw new InputError("invalid_operation_id");
+  }
   if (command !== "upload" && (values.file !== undefined || values["upload-origin"] !== undefined)) throw new InputError("invalid_arguments");
   if (command === "discover") {
     if (id !== undefined || values.json !== undefined) throw new InputError("invalid_arguments");
     url = `${base}/capabilities`;
+    method = "GET";
+  } else if (command === "status") {
+    if (args.length !== 0 || values.json !== undefined) throw new InputError("invalid_arguments");
+    const key = normalizeOperationKey(id);
+    if (!key) throw new InputError("invalid_operation_id");
+    url = `${base}/operation-status/${key}`;
     method = "GET";
   } else if (command === "request" || command === "upload") {
     const operation = resolveOperation(id, args);
@@ -166,6 +178,7 @@ async function main() {
     Accept: "application/json",
     "CF-Access-Client-Id": clientId,
     "CF-Access-Client-Secret": clientSecret,
+    ...(operationKey === null ? {} : { [OPERATION_KEY_HEADER]: operationKey }),
     ...(body === undefined ? {} : { "Content-Type": "application/json" })
   };
   let response;
@@ -184,7 +197,7 @@ async function main() {
     return;
   }
   const header = response.headers.get("X-Studio-Operation-Id");
-  const operationId = header && UUID.test(header) ? header : null;
+  const operationId = header && UUID_V4.test(header) ? header : null;
   let result;
   try {
     if (response.headers.get("Content-Type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json" || !response.body) {
@@ -198,7 +211,10 @@ async function main() {
     return;
   }
   if (upload) {
-    if (!response.ok) return write({ error: "upload_intent_failed" }, response.status, 1, operationId);
+    if (!response.ok) {
+      const error = response.status === 409 && result.error === "duplicate_operation" ? "duplicate_operation" : "upload_intent_failed";
+      return write({ error }, response.status, 1, operationId);
+    }
     return uploadFile(upload, result, origin, operationId);
   }
   write(result, response.status, response.ok ? 0 : 1, operationId);
