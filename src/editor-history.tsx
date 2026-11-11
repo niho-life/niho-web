@@ -457,7 +457,6 @@ export function HistoryBar({ history, restore, restoreBlocked, rollback, rollbac
 function SnapshotDialog({ history }: { history: VersionHistory }) {
   const id = useId(), { label, error, busy } = history.snapshot;
   return <Dialog name="スナップショットを作成" dismiss={() => { if (!busy) history.closeDialog(); }}><h2>スナップショットを作成</h2>
-    <p className="e-help">保存済みの状態に名前を付けて、版の一覧に残します。個人情報や秘密は名前に入れないでください。</p>
     <label className="e-field" htmlFor={id}><span>スナップショット名</span><input id={id} value={label} disabled={busy} autoFocus aria-invalid={!!error}
       onChange={(event) => history.editSnapshot(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); history.createSnapshot(); } }} /></label>
     {error && <p className="e-help e-problem" role="alert">{error}</p>}

@@ -43,6 +43,8 @@ const adapter: EditorAdapter = {
 
 `localization`を実装したホストでは、`readSite`の設定・状態が検証でき、現在の`PageDocument.locale`が明示mappingに一致するまで、エディターは原文／訳文を推測せず編集・保存・公開を停止します。再読込失敗を単言語モードへのopt-inとして扱いません。queued / running中は「翻訳状況を更新」で`readSite`と`readPage`を明示的に再読込できます。
 
+エディター上の訳の状態の表示は「原文 / 未翻訳 / 翻訳中 / 翻訳済み / 失敗」の5つにまとめます。自動翻訳でも手修正でも訳があれば「翻訳済み」とし、draft・review-needed・reviewed を出し分けません（状態の値そのものは従来どおり保存・判定に使います）。左のページ一覧には言語ごとの状態を出しません。言語の切り替えは「日本語 / English」だけを表示し、原文・訳文の区別は添えません。
+
 候補は現在の訳を上書きしません。「翻訳案を採用」で初めてdraftへ入り、確認済みにはなりません。「現在の訳を確認済みにする」は候補を採用せず、現在のdraftを現在の原文fingerprintに結び付けます。
 
 訳文側の`readDocument`は、現在の正本原文とoverlayを`materializeLocalizedPage`した最新の共通構造を返してください。原文の構造・style変更後も手修正済みの訳値は保持し、変更された原文unitだけを`review-needed`にします。これは編集用draftの契約です。公開中の訳文snapshotは独立して保持し、draft再materializeで置き換えません。
@@ -114,7 +116,7 @@ npm run demo:localization
 
 訳文の公開には `EditorLocalizationAdapter` の `readRelease / prepareRelease / applyRelease / rollbackRelease` を4つとも実装します。実装済みhostでは、従来無効だった訳文の公開ボタンが「言語全体の公開確認」になり、全ページ、共通部品、ナビ、style、外部resource、domain、現在版、準備版、期限、確認用の依存版、未完了理由を表示します。未完了項目が1つでもあればapplyできません。
 
-原文ページの「ページ設定」には、`EditorLocalizationAdapter` があるサイトだけ「サブは確認してから公開」を表示します。値は原文 `PageDocument.meta.targetReviewBeforePublish` に `true` / `false` として保存し、英語キャンバスからは変更できません。省略時の既定値、確認済みを求める対象と公開直前の判定はホストが決めます。`false` はホストの既定値を明示的に解除する値なので、文書 parser と保存処理は削除せず保持します。
+原文ページの「ページ設定」には、`EditorLocalizationAdapter` があるサイトだけ「サブ言語は確認してから公開」のトグルを表示します（説明文は添えません）。値は原文 `PageDocument.meta.targetReviewBeforePublish` に `true` / `false` として保存し、英語キャンバスからは変更できません。省略時の既定値、確認済みを求める対象と公開直前の判定はホストが決めます。`false` はホストの既定値を明示的に解除する値なので、文書 parser と保存処理は削除せず保持します。
 `npm run demo:page-review-policy` で架空のページの設定をブラウザ上で試せます。
 
 未保存ページ、未保存のsource component library、入力途中の翻訳手動bufferはprepareを止めます。applyはhost発行のopaqueなconfirmation tokenと準備時identityだけを返し、任意snapshotを送りません。409、期限切れ、通信断では下書きを保持して確認を閉じ、現在の言語releaseと同じページの翻訳公開状態を読み直します。通信断は成立状況不明なので、再実行前に現在状態を確認します。

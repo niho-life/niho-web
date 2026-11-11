@@ -58,7 +58,7 @@ export function SharedStyleLibrary({ adapter, pages, blocks, components, siteDis
     // ライブラリの写しを変えても見た目が変わらないため、ここでは変更・削除しない。新しい値の名前にもサイト共通の名前を使わない。
     const shared = after.tokens ?? {}, names = Object.keys(props.document.tokens);
     return <>
-      {names.some((name) => Object.hasOwn(shared, name)) && <p className="e-help">サイト共通と同じ名前の値は、ページに置いたときと同じくサイト共通の値で表示します。</p>}
+      
       <StyleLibrary {...props} origins={state.supported ? Object.fromEntries(names.map((name) => [`token:${name}`, Object.hasOwn(shared, name) ? "サイト共通" : "コンポーネント本体"])) : undefined}
         readOnlyToken={(name) => Object.hasOwn(shared, name) ? sharedTokenReason(state.editable) : undefined} reservedNames={Object.keys(shared)} />
     </>;
@@ -102,7 +102,7 @@ export function SharedStyleLibrary({ adapter, pages, blocks, components, siteDis
   const readyImpact = impact?.key === impactKey ? impact : null;
   return <>
     {supported && <div className="e-seg" role="group" aria-label="スタイルの保存先"><button type="button" aria-pressed={scope === "page"} onClick={() => { setScope("page"); setProblem(""); }}>このページ</button><button type="button" aria-pressed={scope === "site"} onClick={() => { setScope("site"); setProblem(""); }}>サイト共通</button></div>}
-    {supported && <p className="e-help">同じ名前は「このページ」の指定を優先します。サイト共通の変更は保存後、次の公開で反映されます。</p>}
+    
     {supported && scope === "site" && pageDirty && <p className="e-help">{pageHold}</p>}
     {supported && scope === "site" ? <StyleLibrary {...props} document={siteDocument} selection={null} apply={applySite} preview={undefined} pending={sitePending} disabled={siteDisabled || state.busy || pageDirty} scopeLabel="サイト共通" fieldKey={`${props.fieldKey}-site`} />
       : <StyleLibrary {...props} origins={supported ? origins : undefined} onPromote={supported && !state.stylesDirty ? promote : undefined} canPromote={(kind, name) => Object.hasOwn(kind === "token" ? rawDocument.tokens : rawDocument.textStyles ?? {}, name)} />}
@@ -110,7 +110,6 @@ export function SharedStyleLibrary({ adapter, pages, blocks, components, siteDis
     {supported && state.stylesDirty && <section className="e-section" aria-label="サイト共通スタイルの変更確認"><h3>サイト共通スタイルの変更</h3>
       {!readyImpact ? <p role="status">全ページの参照と影響を確認中…</p> : readyImpact.failed ? <><p role="alert" className="e-problem">影響を検証できません。参照の種類・ページの取得権限を確認してください。編集内容は保持しています。</p><button type="button" onClick={() => setImpactEpoch((value) => value + 1)}>影響を再確認</button></> : <><p>{readyImpact.affected.length} ページの参照または見た目に反映されます。</p>{!!readyImpact.affected.length && <ul>{readyImpact.affected.map((name, index) => <li key={`${index}-${name}`}>{name}</li>)}</ul>}</>}
       <details><summary>保存済み設定からの差分</summary><table><thead><tr><th>名前</th><th>保存済み</th><th>編集中</th></tr></thead><tbody>{(["tokens", "textStyles"] as const).flatMap((kind) => [...new Set([...Object.keys(before[kind] ?? {}), ...Object.keys(after[kind] ?? {})])].filter((name) => !equal(before[kind]?.[name], after[kind]?.[name])).map((name) => <tr key={`${kind}-${name}`}><td>{kind} / {name}</td><td>{JSON.stringify(before[kind]?.[name]) ?? "なし"}</td><td>{JSON.stringify(after[kind]?.[name]) ?? "削除（参照の見た目を保持）"}</td></tr>))}</tbody></table></details>
-      <p className="e-help">公開中の値との差分は「公開前の確認」にサイト共通の変更として表示されます。</p>
       {state.message && <p role={state.message.alert ? "alert" : "status"}>{state.message.text}</p>}
       {state.latest && <details><summary>競合した最新設定と比較</summary><pre>{JSON.stringify(state.latest, null, 2)}</pre><p>編集中</p><pre>{JSON.stringify(after, null, 2)}</pre></details>}
       <div className="e-actions"><button type="button" className="e-primary" disabled={siteDisabled || !state.canSave || !readyImpact || readyImpact.failed} onClick={() => void state.save()}>サイト共通スタイルを保存</button><button type="button" disabled={state.busy} onClick={state.reset}>サイトの変更を取り消す</button></div>

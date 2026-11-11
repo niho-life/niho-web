@@ -26,6 +26,8 @@ const input = (text) => [...document.querySelectorAll("label")].find((node) => n
 async function click(text) { const target = button(text); assert.ok(target, text); await act(async () => target.click()); await flush(); }
 async function clickLayer(nodeId) { const target = document.querySelector(`[data-node-id="${nodeId}"] button.e-layer`); assert.ok(target, nodeId); await act(async () => target.click()); await flush(); }
 async function editorTab(name) { const target = [...document.querySelectorAll('.e-inspector-tabs [role="tab"]')].find((node) => node.textContent === name); assert.ok(target, name); if (target.getAttribute("aria-selected") !== "true") await act(async () => target.click()); await flush(); }
+/** ブラウザの再読込と同じく、エディタを開き直して保存済みの文書を読み直す。 */
+let reloadEditor = async () => {};
 const pageRow = (title) => [...document.querySelectorAll("button.e-page")].find((node) => node.querySelector(".e-page-name")?.textContent === title);
 async function clickPage(title) { const target = pageRow(title); assert.ok(target, title); await act(async () => target.click()); await flush(); }
 async function change(target, value) {
@@ -54,8 +56,12 @@ async function setup(options = {}) {
     release: async (request) => { calls.releases.push(request); return { status: "released", snapshot: { document: stored, version: "released-v3" } }; },
     ...options.adapter
   };
-  await act(async () => root.render(createElement(PageEditor, { adapter, ...(options.blocks ? { blocks: options.blocks } : {}), ...(options.insertableBlocks ? { insertableBlocks: options.insertableBlocks } : {}), ...(options.assets ? { assets: options.assets } : {}), ...options.props }))); await flush();
-  const frame = document.querySelector("iframe"); if (frame) await act(async () => frame.dispatchEvent(new dom.window.Event("load")));
+  let mount = 0;
+  const render = async () => {
+    await act(async () => root.render(createElement(PageEditor, { key: ++mount, adapter, ...(options.blocks ? { blocks: options.blocks } : {}), ...(options.insertableBlocks ? { insertableBlocks: options.insertableBlocks } : {}), ...(options.assets ? { assets: options.assets } : {}), ...options.props }))); await flush();
+    const frame = document.querySelector("iframe"); if (frame) await act(async () => frame.dispatchEvent(new dom.window.Event("load")));
+  };
+  await render(); reloadEditor = render;
   return { calls, adapter, root, stored: () => stored, cleanup: async () => { await act(async () => root.unmount()); container.remove(); } };
 }
 
@@ -322,7 +328,7 @@ test("Basic Icon and Video can be selected, edited, saved, reloaded and rendered
     await editorTab("文字"); await change(input("文字サイズ"), "40"); await change(input("文字色"), "#123456");
     await click("下書き保存");
     assert.equal(app.stored().body.at(-1).icon, "star"); assert.equal(app.stored().body.at(-1).attrs["aria-label"], "おすすめ");
-    await click("最新の文書を再読込"); await clickLayer("node_1");
+    await reloadEditor(); await clickLayer("node_1");
     assert.equal(input("アイコン").value, "star"); assert.equal(input("アクセシブルな名前").value, "おすすめ");
 
     await addPreset("video");
@@ -332,7 +338,7 @@ test("Basic Icon and Video can be selected, edited, saved, reloaded and rendered
     const check = (caption) => [...document.querySelectorAll("label.e-check")].find((label) => label.textContent.includes(caption))?.querySelector("input");
     const controls = check("再生コントロールを表示"), loop = check("繰り返す");
     assert.equal(controls.checked, true); await act(async () => controls.click()); await act(async () => loop.click()); await flush();
-    await click("下書き保存"); await click("最新の文書を再読込"); await clickLayer("node_2");
+    await click("下書き保存"); await reloadEditor(); await clickLayer("node_2");
     assert.equal(input("動画 URL").value, "https://media.example.test/intro.mp4"); assert.equal(input("動画の説明").value, "施設の紹介動画");
     assert.equal(check("再生コントロールを表示").checked, false); assert.equal(check("繰り返す").checked, true); assert.equal(input("先読み").value, "none");
     const html = renderPageToHtml(app.stored()), video = html.match(/<video[^>]*data-nw-node="node_2"[^>]*><\/video>/)?.[0];
@@ -358,7 +364,7 @@ test("VideoWithButton saves and reloads its closed tree, stays inert while editi
     await act(async () => control.click()); await settle(); assert.equal(plays, 0, "edit canvas does not bind playback");
     await click("下書き保存");
     assert.deepEqual(storedRoot().interaction, { type: "video-toggle" }); assert.equal(storedRoot().children[0].attrs.src, "/intro.mp4");
-    await click("最新の文書を再読込"); await settle();
+    await reloadEditor(); await settle();
     assert.ok(document.querySelector("iframe").contentDocument.querySelector("[data-nw-video-with-button]"));
     await click("プレビュー"); await settle();
     frame = document.querySelector("iframe"); video = frame.contentDocument.querySelector("[data-nw-video]"); control = frame.contentDocument.querySelector("[data-nw-video-toggle]");
@@ -388,7 +394,7 @@ test("Loop Box palette and inspector save, reload and activate only in preview",
     await click("下書き保存");
     let stored = app.stored().body.find((node) => node.id === rootId);
     assert.deepEqual(stored.interaction, { type: "loop-box", speed: 90, pauseOnHover: false }); assert.equal(stored.style.base.flexDirection, "column-reverse");
-    await click("最新の文書を再読込"); await clickLayer(rootId);
+    await reloadEditor(); await clickLayer(rootId);
     assert.equal(input("方向").value, "column-reverse"); assert.equal(input("速度（px/秒）").value, "90");
     assert.equal([...document.querySelectorAll("label.e-check")].find((label) => label.textContent.includes("ホバー中は一時停止"))?.querySelector("input").checked, false);
     await click("プレビュー"); await settle();
@@ -427,7 +433,7 @@ test("Basic の標準埋め込みはカード UI、URL 正規化、保存・再�
     await addPreset("embed-vimeo");
     await addPreset("embed-lottie");
     assert.equal(document.querySelector('[aria-label="インスペクタ"] .e-inspector-context strong').textContent, "Lottie");
-    assert.ok(document.querySelector('[aria-label="インスペクタ"]').textContent.includes("Handoff & Embed"));
+    assert.ok(document.querySelector('[aria-label="インスペクタ"]').textContent.includes("lottie.host の Asset link"));
     assert.ok(document.querySelector("iframe").contentDocument.body.textContent.includes("Lottie の URL を設定してください"));
     await change(input("LottieFiles Asset link"), "https://lottie.host/123E4567-E89B-42D3-A456-426614174000/intro.json");
     await change(input("アクセシブルなタイトル"), "ローディングアニメーション");
@@ -440,7 +446,7 @@ test("Basic の標準埋め込みはカード UI、URL 正規化、保存・再�
     assert.equal(lottieRoot.querySelector("iframe"), null, "the edit-mode motion replay also keeps Lottie static");
     await addPreset("embed-facebook");
     assert.equal(document.querySelector('[aria-label="インスペクタ"] .e-inspector-context strong').textContent, "Facebook");
-    assert.ok(document.querySelector('[aria-label="インスペクタ"]').textContent.includes("押すまで外部通信しません"));
+    assert.ok(document.querySelector('[aria-label="インスペクタ"]').textContent.includes("公開投稿の facebook.com URL"));
     await change(input("Facebook の投稿 URL"), "https://facebook.com/example.page/posts/123456789/");
     await change(input("アクセシブルなタイトル"), "Facebook のお知らせ");
     const facebookId = document.querySelector("iframe").contentDocument.querySelector('[data-nw-embed="facebook"]').dataset.nwNode;
@@ -449,7 +455,7 @@ test("Basic の標準埋め込みはカード UI、URL 正規化、保存・再�
     assert.equal(document.querySelector("iframe").contentDocument.querySelector('[data-nw-embed="facebook"] iframe'), null);
     await addPreset("embed-x");
     assert.equal(document.querySelector('[aria-label="インスペクタ"] .e-inspector-context strong').textContent, "X");
-    assert.ok(document.querySelector('[aria-label="インスペクタ"]').textContent.includes("押すまで外部通信しません"));
+    assert.ok(document.querySelector('[aria-label="インスペクタ"]').textContent.includes("公開ポストの x.com URL"));
     await change(input("X のポスト URL"), "https://x.com/Example/status/1234567890123456789/");
     await change(input("アクセシブルなタイトル"), "X のお知らせ");
     const xRoot = document.querySelector("iframe").contentDocument.querySelector('[data-nw-embed="x"]'), xId = xRoot.dataset.nwNode;
@@ -467,7 +473,7 @@ test("Basic の標準埋め込みはカード UI、URL 正規化、保存・再�
     assert.deepEqual(app.stored().body.at(-3).embed, { provider: "facebook", title: "Facebook のお知らせ", source: "https://www.facebook.com/example.page/posts/123456789" });
     assert.deepEqual(app.stored().body.at(-2).embed, { provider: "x", title: "X のお知らせ", source: "https://x.com/example/status/1234567890123456789" });
     assert.deepEqual(app.stored().body.at(-1).embed, { provider: "instagram", title: "Instagram のお知らせ", source: "https://www.instagram.com/reel/AbCdEf12345/" });
-    await click("最新の文書を再読込"); await clickLayer("node_2");
+    await reloadEditor(); await clickLayer("node_2");
     assert.equal(input("埋め込み URL").value, "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ");
     assert.equal(input("アクセシブルなタイトル").value, "施設紹介");
     await clickLayer(lottieId); assert.equal(input("LottieFiles Asset link").value, "https://lottie.host/embed/123e4567-e89b-42d3-a456-426614174000/intro.json");
@@ -525,7 +531,7 @@ test("Blank は承認済み key だけを選択し、未接続案内・保存・
     assert.equal(document.querySelector("iframe").contentDocument.querySelectorAll('[data-nw-embed="blank"]').length, blankCount, "中心の add 経路も未接続 Blank を拒否する");
     await clickLayer("blank_existing");
     assert.equal(input("承認済みの埋め込み").disabled, true);
-    assert.match(document.querySelector('[aria-label="インスペクタ"]').textContent, /管理者に確認/u);
+    assert.match(document.querySelector('[aria-label="インスペクタ"]').textContent, /Blank 埋め込みが未接続です/u);
     assert.equal(input("アクセシブルなタイトル").disabled, false);
     await change(input("アクセシブルなタイトル"), "更新した公開ガイド");
     assert.equal(input("アクセシブルなタイトル").value, "更新した公開ガイド");
@@ -557,7 +563,7 @@ test("Blank は承認済み key だけを選択し、未接続案内・保存・
     assert.equal(input("アクセシブルなタイトル").value, "施設の公開ガイド");
     await click("下書き保存");
     assert.deepEqual(app.stored().body.at(-1).embed, { provider: "blank", title: "施設の公開ガイド", source: "public-guide" });
-    await click("最新の文書を再読込"); await clickLayer(app.stored().body.at(-1).id);
+    await reloadEditor(); await clickLayer(app.stored().body.at(-1).id);
     assert.equal(input("承認済みの埋め込み").value, "public-guide");
     await click("プレビュー"); await settle();
     canvas = document.querySelector("iframe"); root = canvas.contentDocument.querySelector('[data-nw-embed="blank"]');
@@ -729,7 +735,7 @@ test("discarding a pending invalid buffer resets fields even when the loaded val
   const app = await setup();
   try {
     await change(input("ページタイトル"), ""); assert.equal(input("ページタイトル").value, "");
-    await click("最新の文書を再読込"); await click("変更を破棄して移動");
+    await clickPage("別ページ"); await click("変更を破棄して移動");
     assert.equal(input("ページタイトル").value, fixture.title); assert.equal(button("公開").disabled, false);
   } finally { await app.cleanup(); }
 });
@@ -850,7 +856,7 @@ test("host publication notes replace the generic unpublished badge in the page l
     assert.ok(!pageRow("私たちについて").textContent.includes("未公開"));
     assert.ok(pageRow("私たちについて").title.includes(preview.description));
     assert.equal(pageRow("私たちについて").querySelector(".e-page-label > .e-page-name").textContent, "私たちについて");
-    assert.deepEqual([...pageRow("私たちについて").querySelector(".e-page-meta").children].map((node) => node.textContent), ["/about"]);
+    assert.deepEqual([...pageRow("私たちについて").querySelectorAll(".e-page-label > .e-page-path")].map((node) => node.textContent), ["/about"]);
     assert.equal(dot("準備中").className, "e-page-state is-unpublished"); assert.equal(dot("準備中").getAttribute("aria-label"), "未公開"); assert.ok(!pageRow("準備中").textContent.includes("未公開"));
     assert.equal(dot("ホーム").className, "e-page-state is-live"); assert.equal(pageRow("ホーム").querySelector(".e-badge-publication"), null);
     assert.ok(document.body.textContent.includes("公開中 1 / 3 ページ"));
@@ -883,15 +889,15 @@ test("public information edits are undoable document edits saved in meta", async
     const page = await panel("ページ");
     await change(inputIn(page, "説明文"), "海のそばの暮らしを\n紹介します。");
     assert.equal(document.querySelector('[role="status"]').textContent, "未保存の変更あり");
-    assert.ok(page.textContent.includes("16 / 500")); assert.ok(page.textContent.includes("検索結果に表示される文章です。"));
+    assert.ok(page.textContent.includes("16 / 500")); assert.ok(!page.textContent.includes("検索結果に表示される文章です。"), "説明文の欄は文字数だけを出す");
     assert.equal(buttonIn(page, "画像を選ぶ"), undefined); assert.equal(inputIn(page, "画像 URL").closest("details"), null);
     await change(inputIn(page, "画像 URL"), "javascript:alert(1)");
     assert.ok(page.textContent.includes("URL は https:// か / から始まる形式")); assert.equal(button("下書き保存").disabled, true);
     await change(inputIn(page, "画像 URL"), "/cover.jpg"); await change(inputIn(page, "画像の説明"), "海の写真");
-    await act(async () => [...page.querySelectorAll("label.e-check")].find((node) => node.textContent.includes("noindex")).querySelector("input").click()); await flush();
+    await act(async () => [...page.querySelectorAll("label.e-check")].find((node) => node.textContent.includes("検索エンジンに表示しない")).querySelector("input").click()); await flush();
     await act(async () => [...page.querySelectorAll("label.e-check")].find((node) => node.textContent.includes("組織")).querySelector("input").click()); await flush();
-    assert.ok(page.textContent.includes("検索エンジンには表示されません"));
-    assert.ok(page.textContent.includes("https://example.test/")); assert.ok(page.textContent.includes("海のそばの暮らしを 紹介します。"));
+    assert.ok(!page.textContent.includes("検索結果での見え方"), "検索結果の見本は出さない");
+    assert.equal(inputIn(page, "説明文").value, "海のそばの暮らしを 紹介します。");
     await click("下書き保存");
     assert.deepEqual(app.calls.saves[0].document.meta, { description: "海のそばの暮らしを 紹介します。", ogImage: { src: "/cover.jpg", alt: "海の写真" }, noindex: true, structuredData: ["organization"] });
     await click("元に戻す"); assert.equal(button("下書き保存").disabled, false);
@@ -1010,7 +1016,7 @@ test("page operations wait for unsaved edits and the page tab switch opens the v
     await change(input("ページタイトル"), "未保存のタイトル");
     assert.equal(document.querySelector('[aria-label="ページを追加"]').disabled, true); assert.equal(toggle.disabled, true);
     assert.equal(document.querySelector('[aria-label="私たちについて の操作"]').disabled, true);
-    assert.ok(document.body.textContent.includes("未保存の変更を保存してから操作できます。"));
+    assert.ok(!document.body.textContent.includes("未保存の変更を保存してから操作できます。")); assert.equal(toggle.title, "保存してから変更できます");
     await click("下書き保存"); assert.equal(toggle.disabled, false);
     await press(toggle); assert.equal(dialog().getAttribute("aria-label"), "ページを非公開にする");
     await act(async () => dialog().dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }))); await flush();
@@ -1079,7 +1085,7 @@ test("an invalid reload keeps the current session when site settings also fail",
   } });
   try {
     assert.ok(document.querySelector("iframe").contentDocument.body.textContent.includes("海のそばで過ごす"));
-    invalid = true; await click("最新の文書を再読込"); await settle();
+    invalid = true; await clickPage("別ページ"); await settle();
     assert.ok(document.body.textContent.includes("現在の編集内容は保持されています"));
     assert.ok(document.querySelector("iframe").contentDocument.body.textContent.includes("海のそばで過ごす"));
   } finally { await app.cleanup(); }
@@ -1130,7 +1136,7 @@ test("a ready MP4 can replace a native video without storing its resolved URL", 
     await click("下書き保存");
     const saved = app.calls.saves.at(-1).document.body.find((node) => node.id === "movie");
     assert.deepEqual(saved.asset, { provider: "uploads", id: "intro" }); assert.equal(saved.attrs.src, undefined); assert.equal(edited, null);
-    await click("最新の文書を再読込"); await settle(); assert.ok(canvasNode("movie").getAttribute("src").endsWith("/media/intro.mp4"));
+    await reloadEditor(); await settle(); assert.ok(canvasNode("movie").getAttribute("src").endsWith("/media/intro.mp4"));
   } finally { await app.cleanup(); }
 });
 
@@ -1241,13 +1247,14 @@ test("staff upload an image, set its alt, replace a page image, save the draft a
     await click("下書き保存");
     const saved = app.calls.saves[0].document.body[0].children.at(-1);
     assert.deepEqual(saved.asset, { provider: "uploads", id: "asset-1" }); assert.deepEqual(saved.attrs, { alt: "朝の海辺" });
-    await click("最新の文書を再読込");
+    await reloadEditor();
     assert.equal(app.calls.reads.length, 2); assert.equal(canvasNode("photo").getAttribute("src"), "/media/asset-1.png");
   } finally { await app.cleanup(); }
 });
 
 const night = { id: "night", name: "夜の海.avif", mimeType: "image/avif", bytes: 1024, width: 1200, height: 630, alt: "夜の海", src: "/media/night.avif", thumbnailUrl: "/media/night.avif" };
 const coverFrame = (root) => root.querySelector(".e-cover-frame");
+const coverRemove = (root) => root.querySelector(".e-cover-remove") ?? undefined;
 test("staff choose the page social cover from the library, save it as an asset reference and see it after reload", async () => {
   let app;
   const terrace = { id: "terrace", name: "テラス.jpg", mimeType: "image/jpeg", bytes: 1024, width: 1200, height: 630, alt: "テラス", src: "/media/terrace.jpg", thumbnailUrl: "/media/terrace.jpg" };
@@ -1255,25 +1262,24 @@ test("staff choose the page social cover from the library, save it as an asset r
   app = await setup({ adapter: host.adapter, assets: library });
   try {
     let page = await panel("ページ");
-    assert.equal(coverFrame(page).textContent, "画像は未設定です"); assert.equal(buttonIn(page, "画像を外す"), undefined);
-    await press(buttonIn(page, "画像を選ぶ"));
+    assert.equal(coverFrame(page).textContent, "画像は未設定です"); assert.equal(coverFrame(page).getAttribute("aria-label"), "画像を選ぶ"); assert.equal(coverRemove(page), undefined);
+    assert.equal(inputIn(page, "画像 URL"), undefined, "素材を選べる画面では URL 入力を出さない"); assert.equal(inputIn(page, "画像の説明"), undefined);
+    await press(coverFrame(page));
     assert.equal(assetPanel().closest("[hidden]"), null); assert.equal(assetPanel().querySelector("h2").textContent, "ソーシャルカバーを選ぶ");
     await chooseAsset("夜の海.avif");
     assert.equal(assetPanel().querySelector('[role="alert"]').textContent, "ソーシャルカバーに使えるのは JPEG・PNG・WebP・GIF の画像です。");
     assert.equal(app.stored().meta, undefined); assert.equal(button("下書き保存").disabled, true);
     await chooseAsset("庭の緑.png");
-    assert.ok(document.body.textContent.includes("ソーシャルカバーを設定しました。画像の説明を確認してください。"));
+    assert.ok(document.body.textContent.includes("ソーシャルカバーを設定しました。"));
     assert.equal(assetPanel().closest("[hidden]") !== null, true);
     page = await panel("ページ");
     assert.equal(coverFrame(page).querySelector("img").getAttribute("src"), "/media/garden.png");
-    assert.ok(page.textContent.includes("アセットの画像")); assert.equal(inputIn(page, "画像の説明").value, "庭の緑");
-    assert.equal(inputIn(page, "画像 URL").value, ""); assert.equal(inputIn(page, "画像 URL").closest("details").open, false);
-    await change(inputIn(page, "画像の説明"), "庭に面したリビング");
+    assert.equal(coverFrame(page).getAttribute("aria-label"), "画像を変更"); assert.ok(coverRemove(page));
     await click("下書き保存");
-    assert.deepEqual(app.calls.saves[0].document.meta, { ogImage: { asset: { provider: "uploads", id: "garden" }, alt: "庭に面したリビング" } });
-    await click("最新の文書を再読込");
+    assert.deepEqual(app.calls.saves[0].document.meta, { ogImage: { asset: { provider: "uploads", id: "garden" }, alt: "庭の緑" } }, "画像の説明は素材の説明を使う");
+    await reloadEditor();
     page = await panel("ページ");
-    assert.equal(coverFrame(page).querySelector("img").getAttribute("src"), "/media/garden.png"); assert.equal(inputIn(page, "画像の説明").value, "庭に面したリビング");
+    assert.equal(coverFrame(page).querySelector("img").getAttribute("src"), "/media/garden.png");
     // ソーシャルカバーで使っているアセットは削除できず、使用箇所の置き換えでカバーも差し替わる（SNS で表示できない形式は拒否）。
     await tool("アセット"); await chooseAsset("庭の緑.png");
     assert.equal(button("削除…").disabled, true); assert.ok(assetPanel().textContent.includes("このページで使用中です。"));
@@ -1281,12 +1287,8 @@ test("staff choose the page social cover from the library, save it as an asset r
     assert.equal(assetPanel().querySelector('[role="alert"]').textContent, "この画像はソーシャルカバーにも使われています。ソーシャルカバーに使えるのは JPEG・PNG・WebP・GIF の画像です。");
     await chooseAsset("テラス.jpg"); assert.ok(document.body.textContent.includes("このページの使用箇所を置き換えました。"));
     page = await panel("ページ");
-    assert.equal(coverFrame(page).querySelector("img").getAttribute("src"), "/media/terrace.jpg"); assert.equal(inputIn(page, "画像の説明").value, "庭に面したリビング");
-    // URL を空で確定してもアセットの画像は外れない。URL を入れると URL の画像へ切り替わる。
-    await change(inputIn(page, "画像 URL"), ""); assert.ok(page.textContent.includes("アセットの画像")); assert.equal(coverFrame(page).querySelector("img").getAttribute("src"), "/media/terrace.jpg");
-    await change(inputIn(page, "画像 URL"), "/cover.jpg");
-    assert.ok(page.textContent.includes("URL で指定した画像")); assert.equal(coverFrame(page).querySelector("img").getAttribute("src"), "https://example.test/cover.jpg");
-    await press(buttonIn(page, "画像を外す")); assert.equal(coverFrame(page).textContent, "画像は未設定です");
+    assert.equal(coverFrame(page).querySelector("img").getAttribute("src"), "/media/terrace.jpg");
+    await press(coverRemove(page)); assert.equal(coverFrame(page).textContent, "画像は未設定です"); assert.equal(coverRemove(page), undefined);
     await click("下書き保存"); assert.equal(app.calls.saves[1].document.meta, undefined);
   } finally { await app.cleanup(); }
 });
@@ -1296,12 +1298,12 @@ test("the site social cover is chosen from the library, saved with site settings
   let app = await setup({ adapter: host.adapter, assets: library });
   try {
     const site = await panel("サイト");
-    assert.equal(inputIn(site, "画像の説明").disabled, true);
-    await press(buttonIn(site, "画像を選ぶ"));
+    assert.equal(inputIn(site, "画像の説明"), undefined);
+    await press(coverFrame(site));
     assert.equal(assetPanel().querySelector("h2").textContent, "ソーシャルカバーを選ぶ");
     await chooseAsset("庭の緑.png");
     assert.equal(assetPanel().closest("[hidden]") !== null, true); assert.equal(button("下書き保存").disabled, true);
-    assert.equal(coverFrame(site).querySelector("img").getAttribute("src"), "/media/garden.png"); assert.equal(inputIn(site, "画像の説明").value, "庭の緑");
+    assert.equal(coverFrame(site).querySelector("img").getAttribute("src"), "/media/garden.png");
     await press(buttonIn(site, "サイト設定を保存"));
     assert.deepEqual(host.calls.settingsSaves[0].settings, { title: "デモサイト", description: "サイトの説明", ogImage: { asset: { provider: "uploads", id: "garden" }, alt: "庭の緑" }, locale: "ja" });
     const page = await panel("ページ"); assert.equal(coverFrame(page).textContent, "サイト共通の画像を使います");
@@ -1310,8 +1312,7 @@ test("the site social cover is chosen from the library, saved with site settings
   try {
     const site = await panel("サイト");
     assert.equal(coverFrame(site).querySelector("img").getAttribute("src"), "/media/garden.png");
-    assert.ok(site.textContent.includes("アセットの画像"));
-    await press(buttonIn(site, "画像を外す")); assert.equal(inputIn(site, "画像の説明").value, "");
+    await press(coverRemove(site)); assert.equal(coverFrame(site).textContent, "画像は未設定です");
     await press(buttonIn(site, "サイト設定を保存"));
     assert.deepEqual(host.calls.settingsSaves[1].settings, { title: "デモサイト", description: "サイトの説明", locale: "ja" });
   } finally { await app.cleanup(); }
@@ -1515,12 +1516,12 @@ test("CMS photos show their origin and terms read-only, without save, upload, fo
     assert.equal(button("変更を保存"), undefined); assert.equal(button("削除…"), undefined); assert.ok(button("ページに追加"));
     const text = assetPanel().textContent;
     for (const expected of ["出所体験写真NIHO の体験原稿で公開を許可された写真体験「鎌倉の朝ヨガ」の写真", "利用条件体験の公開中だけ表示されます。写真の差し替え・非公開は体験原稿で行います。",
-      "このアセットは「体験写真」で管理しています。名前・説明・写真の差し替えは出所で行ってください。", "「体験写真」のアセットはここでは削除できません。", "このページ: 0 か所"]) assert.ok(text.includes(expected), expected);
+      "「体験写真」で管理しています", "「体験写真」のアセットはここでは削除できません。", "このページ: 0 か所"]) assert.ok(text.includes(expected), expected);
     await click("一覧に戻る"); await tool("アップロード"); await chooseAsset("庭の緑.png");
     assert.equal(input("名前").readOnly, false); assert.ok(button("変更を保存")); assert.ok(button("削除…")); assert.ok(input("保存先フォルダ"));
     await click("一覧に戻る"); await tool("接続");
     assert.equal(calls.lists.at(-1).provider, "experience"); assert.deepEqual(cardNames(), ["朝ヨガ.png"]);
-    assert.ok(assetPanel().textContent.includes("NIHO の体験原稿で公開を許可された写真"));
+    assert.ok(!assetPanel().textContent.includes("NIHO の体験原稿で公開を許可された写真"), "一覧の上に出所の説明文を出さない");
     assert.equal(assetButton("アップロード"), undefined); assert.equal(button("フォルダを追加"), undefined); assert.equal(assetPanel().querySelector('select[aria-label="フォルダ"]'), null);
     assert.ok(!assetPanel().textContent.includes("このサイトにアセットを追加する権限がありません。"));
     await tool("アップロード"); assert.ok(assetButton("アップロード")); assert.ok(assetPanel().querySelector('select[aria-label="フォルダ"]')); assert.deepEqual(cardNames(), ["庭の緑.png"]);
@@ -1576,7 +1577,7 @@ test("a removed provider leaves its open asset detail read-only and blocks place
   try {
     await tool("接続"); await chooseAsset("朝ヨガ.png");
     removed = true;
-    await click("最新の文書を再読込"); await settle();
+    await clickPage("別ページ"); await settle();
     assert.equal(input("名前").readOnly, true);
     assert.equal(input("代替テキスト").readOnly, true);
     assert.equal(button("変更を保存"), undefined);
@@ -1612,7 +1613,7 @@ test("photos unpublished in the CMS become placeholders after the editor reloads
     assert.equal(canvasNode("photo").getAttribute("src"), "/cms/yoga.png"); assert.ok((await publicHtml()).includes('src="/cms/yoga.png"'));
     library.setPublished(reference, false);
     // エディター内の再読込で解決をやり直し、非公開になった写真をプレビューから外す。
-    await click("最新の文書を再読込"); await settle();
+    await reloadEditor(); await settle();
     assert.equal(canvasNode("photo").hasAttribute("data-nw-missing-asset"), true); assert.equal(canvasNode("photo").getAttribute("src"), null);
     await clickCanvas("photo"); await editorTab("画像"); assert.ok(document.querySelector('[aria-label="インスペクタ"]').textContent.includes("画像を表示できません"));
     const html = await publicHtml(); assert.ok(!html.includes("/cms/yoga.png")); assert.ok(!html.includes('data-nw-node="photo"'));

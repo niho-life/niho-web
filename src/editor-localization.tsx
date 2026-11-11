@@ -216,7 +216,8 @@ export function localizedOperationProblem(document: PageDocument, operation: Edi
   return denied;
 }
 
-export const localizationStateLabel = (state: string) => ({ source: "原文", missing: "未翻訳", translating: "翻訳中", draft: "下書き", "review-needed": "更新あり", reviewed: "確認済み", failed: "失敗" }[state] ?? state);
+/** 訳の状態の表示名。自動翻訳でも手修正でも、訳があれば「翻訳済み」にまとめる（確認済み・更新ありは出し分けない）。 */
+export const localizationStateLabel = (state: string) => ({ source: "原文", missing: "未翻訳", translating: "翻訳中", draft: "翻訳済み", "review-needed": "翻訳済み", reviewed: "翻訳済み", failed: "失敗" }[state] ?? state);
 const textOf = (value: LocalizationValue | undefined): string => value === undefined ? "（なし）" : typeof value === "string" ? value : value.kind === "asset" ? `${value.asset.provider} / ${value.asset.id}`
   : value.kind === "image-url" ? `${value.src}${value.srcset ? ` / ${value.srcset}` : ""}`
     : value.children.map(function flatten(node): string { return node.type === "text" ? node.text : node.children.map(flatten).join(""); }).join("");
@@ -353,13 +354,12 @@ export function LocalizationPanel({ context, document, disabled, selectedUnit, r
   const bufferFor = (unit: LocalizationUnit) => manualBuffer && sameTarget(manualBuffer.target, context.target) && manualBuffer.unitId === unit.unitId ? manualBuffer : null;
   const manualPending = !!manualBuffer?.pending && sameTarget(manualBuffer.target, context.target);
   return <div ref={panel} className="e-localization-panel"><section className="e-section"><h3>翻訳の比較</h3>
-    <p className="e-help">原文の現在値・現在の訳・翻訳案を比較します。訳文は中央キャンバスか要素欄で編集できます。</p>
     {manualPending && <p className="e-help e-problem" role="status">手修正の入力中です。保存するか「入力を取り消す」で戻すまで、ほかの翻訳操作と画面移動はできません。</p>}
     {manualPending && !bufferedUnit && <button type="button" className="e-small" disabled={disabled} onClick={() => setManualBuffer(null)}>入力を取り消す</button>}
     {context.job?.state === "failed" && <p className="e-help e-problem" role="alert">翻訳に失敗しました。{context.job.message ? ` ${context.job.message}` : ""}</p>}
     {context.job && ["queued", "running"].includes(context.job.state) && <p className="e-help" role="status">{context.job.state === "queued" ? "翻訳を待機中です。" : "翻訳中です。"}</p>}
     {requestTranslation ? <button type="button" className="e-small" disabled={disabled || manualPending || context.job?.state === "queued" || context.job?.state === "running"} onClick={() => void request("request-translation")}>{context.job?.state === "failed" ? "翻訳を再試行" : "このページを翻訳"}</button>
-      : <p className="e-help">このページからの自動翻訳依頼には対応していません。翻訳画面で依頼するか、訳文を手修正してください。</p>}
+      : <p className="e-help">自動翻訳は翻訳画面から依頼します。</p>}
     {context.job && ["queued", "running", "failed"].includes(context.job.state) && <button type="button" className="e-small" disabled={disabled || manualPending} onClick={refresh}>翻訳状況を更新</button>}
   </section>{context.collection.issues.length > 0 && <p className="e-help e-problem" role="alert">原文に未対応またはIDのない内容が {context.collection.issues.length} 件あります。公開可能な訳文にはできません。</p>}
   {context.collection.units.map((unit) => {
@@ -381,14 +381,13 @@ export function LocalizationPanel({ context, document, disabled, selectedUnit, r
 }
 
 export function LanguageSelector({ config, locale, disabled, select }: { config: SiteLocalizationConfig; locale: LocalizationLocale; disabled: boolean; select: (locale: LocalizationLocale) => void }) {
-  return <div className="e-language-selector" role="group" aria-label="編集する言語">{config.enabledLocales.map((value) => <button type="button" key={value} aria-pressed={value === locale} disabled={disabled || value === locale} onClick={() => select(value)}>{value === "ja" ? "日本語" : "English"}{value === config.sourceLocale ? "（原文）" : "（訳文）"}</button>)}</div>;
+  return <div className="e-language-selector" role="group" aria-label="編集する言語">{config.enabledLocales.map((value) => <button type="button" key={value} aria-pressed={value === locale} disabled={disabled || value === locale} onClick={() => select(value)}>{value === "ja" ? "日本語" : "English"}</button>)}</div>;
 }
 
 /** 多言語の編集の CSS。編集画面の <style> に連結する。色は ./ui-tokens.ts のトークンだけを使う（#159）。 */
 export const localizationEditorCss = `
-.e-language-selector{display:flex;gap:4px;align-items:center}.e-language-selector button[aria-pressed=true]{border-color:var(--nw-accent-border);background:var(--e-blue-soft);color:var(--nw-accent-strong)}
+.e-language-selector{display:flex;gap:1px;align-items:center;padding:2px;border-radius:var(--nw-radius-sm);background:var(--e-input)}.e-language-selector button{flex:1;min-height:26px;padding:3px 10px;border:0;border-radius:var(--nw-radius-sm);background:transparent;color:var(--e-muted)}.e-language-selector button[aria-pressed=true]{background:var(--nw-bg);color:var(--e-ink);font-weight:600;box-shadow:0 0 0 1px var(--e-border)}.e-language-selector button[aria-pressed=true]:disabled{opacity:1}
 .e-localization-gate{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 18px;border-bottom:1px solid var(--e-border);background:var(--nw-warning-soft);color:var(--nw-warning)}
 .e-localization-panel .e-localization-unit{border-top:1px solid var(--e-border);padding:10px}.e-localization-panel .e-localization-unit.is-selected{outline:2px solid var(--e-blue);outline-offset:-2px}.e-localization-unit dd{white-space:pre-wrap;overflow-wrap:anywhere}
 .e-localization-unit .e-section-head{justify-content:flex-start}.e-localization-unit .e-section-head h3{margin-right:auto}.e-localization-manual{margin:10px 0}.e-localization-rich{min-height:64px;padding:8px;border:1px solid var(--e-border);border-radius:var(--nw-radius);background:inherit}.e-localization-rich:focus{outline:2px solid var(--e-focus);outline-offset:1px}
-.e-locale-states{display:flex;gap:6px;min-width:0}.e-locale-state{color:var(--e-muted);font-size:var(--nw-font-size-sub);white-space:nowrap}
 `;

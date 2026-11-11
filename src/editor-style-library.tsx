@@ -164,6 +164,6 @@ export function StyleLibrary({ document, selection, apply, select, disabled, bre
     {rows.length ? <ul className="e-lib-list">{rows.map(([name, icon, title, detail, editor]) => <li key={name}>
       <button type="button" className="e-lib-row" aria-expanded={open === name} onClick={() => toggle(name)}>{icon}<span className="e-lib-text"><span className="e-lib-name">{title}</span><small>{scopeLabel ?? origins?.[`${tab === "text" ? "textStyle" : "token"}:${name}`]}{(scopeLabel || origins) && " · "}{detail}</small></span></button>
       {open === name && <>{editor()}{onPromote && canPromote?.(tab === "text" ? "textStyle" : "token", name) && <button type="button" className="e-small" disabled={disabled} onClick={() => onPromote(tab === "text" ? "textStyle" : "token", name)}>サイト共通へ移す</button>}</>}
-    </li>)}</ul> : <p className="e-help">{tab === "color" ? "共通カラーはまだありません。＋で追加すると、複数の要素で同じ色を使えます。" : tab === "text" ? "テキストスタイルはまだありません。＋で追加すると、見出しや本文の文字の見た目をそろえられます。" : "共通の長さ・フォント・数値はまだありません。"}</p>}
+    </li>)}</ul> : <p className="e-help">{tab === "color" ? "共通カラーはまだありません。" : tab === "text" ? "テキストスタイルはまだありません。" : "共通の長さ・フォント・数値はまだありません。"}</p>}
   </div>;
 }

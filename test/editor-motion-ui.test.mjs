@@ -35,6 +35,8 @@ async function change(target, value) {
   if (target.tagName !== "SELECT") await act(async () => target.dispatchEvent(new dom.window.FocusEvent("focusout", { bubbles: true })));
   await flush();
 }
+/** ブラウザの再読込と同じく、エディタを開き直して保存済みの文書を読み直す。 */
+let reloadEditor = async () => {};
 async function setup(options = {}) {
   const container = document.createElement("div"); document.body.append(container); const root = createRoot(container);
   const calls = { saves: [] }; let stored = structuredClone(options.document ?? fixture), version = "v1";
@@ -45,8 +47,12 @@ async function setup(options = {}) {
     saveDraft: async (request) => { calls.saves.push(structuredClone(request)); stored = { ...structuredClone(request.document), revision: stored.revision + 1 }; version = `v${Number(version.slice(1)) + 1}`; return { status: "saved", version, revision: stored.revision }; },
     prepareRelease: async () => { throw new Error("not used"); }, release: async () => { throw new Error("not used"); }
   };
-  await act(async () => root.render(createElement(PageEditor, { adapter, ...options.props }))); await flush();
-  await act(async () => frame().dispatchEvent(new dom.window.Event("load")));
+  let mount = 0;
+  const render = async () => {
+    await act(async () => root.render(createElement(PageEditor, { key: ++mount, adapter, ...options.props }))); await flush();
+    await act(async () => frame().dispatchEvent(new dom.window.Event("load")));
+  };
+  await render(); reloadEditor = render;
   return { calls, stored: () => stored, cleanup: async () => { await act(async () => root.unmount()); container.remove(); } };
 }
 const stateSelect = () => right().querySelector('select[aria-label="条件スタイル"]');
@@ -80,7 +86,7 @@ test("a link's hover and focus look is created with the keyboard, forced on the 
     const saved = app.calls.saves[0].document.body[0].children[2].style;
     assert.deepEqual(saved.states, { hover: { color: "#c0392b", translate: "0 -2px" }, focus: { color: "#c0392b", translate: "0 -2px" } });
     assert.equal(saved.base.transitionDuration, 200);
-    await click(button("最新の文書を再読込"));
+    await reloadEditor();
     const css = publishedCss(app.stored());
     assert.equal(pageCss(), css);
     assert.match(css, /@media \(hover:hover\)\{[^}]*link"\]:hover\{color:#c0392b;translate:0 -2px;\}\}/);
@@ -122,15 +128,15 @@ test("a section hidden only on tablets is marked in layers, cannot hide everywhe
   } finally { await app.cleanup(); }
 });
 
-test("appear settings explain reduced motion and scroll timing and are saved", async () => {
+test("appear settings stay free of explanations and are saved", async () => {
   const app = await setup();
   try {
     await click(button("section · hero")); await editorTab("変形");
-    assert.ok(right().textContent.includes("動きを減らす設定の利用者には動きなしで表示します。"));
+    assert.ok(!right().textContent.includes("動きを減らす設定の利用者には動きなしで表示します。"));
     await change(input("登場の効果", right()), "fade-up");
     await change(input("登場の時間", right()), "0.8");
     await click(right().querySelector('[aria-label="登場のきっかけ"] button[title="画面に入ったとき"]'));
-    assert.ok(right().textContent.includes("画面に入ったときはスクロール量に合わせて動きます。"));
+    assert.ok(!right().textContent.includes("画面に入ったときはスクロール量に合わせて動きます。"));
     assert.equal(input("登場の時間", right()).disabled, true);
     await click(button("下書き保存"));
     assert.deepEqual(app.calls.saves[0].document.body[0].style.appear, { effect: "fade-up", trigger: "view", duration: 800, delay: 0 });

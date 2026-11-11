@@ -37,8 +37,8 @@ test("the actual bundled localization demo initializes in a DOM runtime", async 
     for (let attempt = 0; attempt < 150; attempt++) { if (condition()) return; await new Promise((resolve) => setTimeout(resolve, 10)); }
     assert.ok(condition(), "demo UI did not reach its expected state");
   };
-  await waitFor(() => button("English（訳文）"));
-  button("English（訳文）").click();
+  await waitFor(() => button("English"));
+  button("English").click();
   await waitFor(() => button("言語全体の公開確認") && !button("言語全体の公開確認").disabled);
   button("言語全体の公開確認").click();
   await waitFor(() => document.querySelector('[role="dialog"]'));

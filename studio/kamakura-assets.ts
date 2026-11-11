@@ -67,11 +67,11 @@ function provider(reference: AssetReference): boolean {
 const READ_ONLY = { upload: false, editMetadata: false, delete: false, folders: false, acquire: false } as const;
 /** 出所の表示。ID と権限は kamakura-site 側の契約（docs/asset-contract.md「鎌倉サイトでの接続」）と一致させる。削除はどの出所でも不可。 */
 const PROVIDERS: AssetProvider[] = parseAssetProviders([
-  { id: UPLOAD_PROVIDER, kind: "upload", label: "NIHO Studio", origin: "NIHO Studio からアップロードした画像。公開時に公開 R2 へ昇格する", status: "available", capabilities: { upload: true, editMetadata: true, delete: false, folders: false, acquire: false } },
-  { id: ADMIN_PROVIDER, kind: "cms", label: "管理画面の画像", origin: "鎌倉サイトの管理画面（/admin）からアップロードした画像。読み取り専用", status: "available", capabilities: READ_ONLY },
-  { id: "kamakura-studio", kind: "cms", label: "STUDIO 素材", origin: "STUDIO から移した素材。読み取り専用", status: "available", capabilities: READ_ONLY },
-  { id: "kamakura-cms", kind: "cms", label: "CMS 素材", origin: "STUDIO の CMS 素材。読み取り専用", status: "available", capabilities: READ_ONLY },
-  { id: "kamakura-approved-remote", kind: "cms", label: "承認済み外部素材", origin: "承認済みの外部画像の固定表。読み取り専用", status: "available", capabilities: READ_ONLY }
+  { id: UPLOAD_PROVIDER, kind: "upload", label: "NIHO Studio", origin: "NIHO Studio でアップロードした画像", status: "available", capabilities: { upload: true, editMetadata: true, delete: false, folders: false, acquire: false } },
+  { id: ADMIN_PROVIDER, kind: "cms", label: "管理画面の画像", origin: "鎌倉サイトの管理画面の画像（読み取り専用）", status: "available", capabilities: READ_ONLY },
+  { id: "kamakura-studio", kind: "cms", label: "STUDIO 素材", origin: "STUDIO から移した画像（読み取り専用）", status: "available", capabilities: READ_ONLY },
+  { id: "kamakura-cms", kind: "cms", label: "CMS 素材", origin: "STUDIO の CMS 画像（読み取り専用）", status: "available", capabilities: READ_ONLY },
+  { id: "kamakura-approved-remote", kind: "cms", label: "承認済み外部素材", origin: "承認済みの外部画像（読み取り専用）", status: "available", capabilities: READ_ONLY }
 ]);
 
 export const kamakuraAssetLibrary: AssetLibraryAdapter = {

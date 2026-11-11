@@ -5,8 +5,7 @@ import { detachRemovedSiteStyles, parseSiteStyles, type SiteStyles } from "./sit
 import { parsePageDocument } from "./document.js";
 import { Dialog } from "./editor-dialog.js";
 import { pageChangeProblems, sameTarget, validatePageChangePlan, type EditorOperation } from "./editor-model.js";
-import type { EditorAdapter, EditorBlockRegistry, EditorLocalizedPage, EditorPage, EditorPageChange, EditorPageChangePlan, EditorPageChangeResult, EditorSite, EditorTarget } from "./editor-types.js";
-import { localizationStateLabel } from "./editor-localization.js";
+import type { EditorAdapter, EditorBlockRegistry, EditorPage, EditorPageChange, EditorPageChangePlan, EditorPageChangeResult, EditorSite, EditorTarget } from "./editor-types.js";
 import { resolvedAsset, type LibraryAsset, type ResolvedAssetMap } from "./assets.js";
 import { coverAlt, socialImageProblem } from "./editor-assets.js";
 import { buildPageTree, findPathConflict, pageUrl, parseSiteSettings, resolvePageMetadata, validatePagePath, type PageMetadata, type PageTreeNode, type PageVisibility, type SiteSettings } from "./pages.js";
@@ -97,10 +96,9 @@ function PageMenu({ page, open, setOpen, disabled, start, actions, pathEditable 
   </>;
 }
 
-/** 左レールのページ一覧。検索、パスごとのフォルダ、種類と公開状態、行ごとの操作を表示する。 */
-export function PagePanel({ pages, localizedPages, current, disabled, operations, actions, pathEditable = true, operationsDisabled, unsaved, select, start, children }: {
+/** 左レールのページ一覧。検索、パスごとのフォルダ、公開状態の点、行ごとの操作を表示する。行はページ名とパスの 1 行にし、言語ごとの翻訳状態は出さない（翻訳画面で見る）。 */
+export function PagePanel({ pages, current, disabled, operations, actions, pathEditable = true, operationsDisabled, unsaved, select, start, children }: {
   pages: readonly EditorPage[]; current: EditorTarget | undefined; disabled: boolean;
-  localizedPages?: readonly EditorLocalizedPage[];
   /** 見出しの下に置くホスト側の部品（サイトの選択など）。 */
   children?: ReactNode;
   /** ホストがページ操作を実装しているか。 */
@@ -130,19 +128,13 @@ export function PagePanel({ pages, localizedPages, current, disabled, operations
       </li>;
     }
     const page: EditorPage = node.page, kind = page.kind ?? "page", key = pageKey(page), status = pageStatus(page);
-    const localized = localizedPages?.find((entry) => entry.pageId === page.pageId);
     const secondary = [page.path, multiLocale ? page.locale : undefined].filter(Boolean).join(" · ");
     return <li key={key}><div className="e-page-row">
       <button type="button" className="e-page" aria-current={current && sameTarget(page, current) ? "page" : undefined} style={{ paddingLeft: 8 + node.depth * 14 }}
         disabled={disabled} title={[page.title, secondary, status.text].filter(Boolean).join(" · ")} onClick={() => select(page)}>
         <Icon name={kind === "template" ? "template" : page.path === "/" ? "home" : "page"} />
-        {/* ページ名は 1 段目、パスは 2 段目。状態は札ではなく右端の点で示し（緑＝公開中・灰＝未公開・輪郭＝非公開）、文言はツールチップと読み上げに回す。 */}
-        <span className="e-page-label"><span className="e-page-name">{page.title}</span>
-          {(secondary || localized) && <span className="e-page-meta">
-            {secondary && <span className="e-page-path">{secondary}</span>}
-            {localized && <span className="e-locale-states">{(["ja", "en"] as const).map((locale) => localized.locales[locale] && <span className="e-locale-state" key={locale}>{locale.toUpperCase()} {localizationStateLabel(localized.locales[locale]!.state)}</span>)}</span>}
-          </span>}
-        </span>
+        {/* STUDIO と同じく、ページ名とパスを 1 行に並べる。状態は札ではなく右端の点で示し（緑＝公開中・灰＝未公開・輪郭＝非公開）、文言はツールチップと読み上げに回す。 */}
+        <span className="e-page-label"><span className="e-page-name">{page.title}</span>{secondary && <span className="e-page-path">{secondary}</span>}</span>
         <span className={`e-page-state is-${status.state}`} role="img" aria-label={status.text} title={status.text} />
       </button>
       {operations && (!actions || actions.some((action) => action !== "create")) && (kind === "page" ? <PageMenu page={page} open={menu === key} setOpen={(open) => setMenu(open ? key : "")} disabled={disabled || operationsDisabled} start={start} pathEditable={pathEditable} {...(actions ? { actions } : {})} /> : <span className="e-page-more-spacer" aria-hidden="true" />)}
@@ -151,7 +143,7 @@ export function PagePanel({ pages, localizedPages, current, disabled, operations
   return <div className="e-pages">
     <div className="e-panel-head e-pages-head"><div><h2>ページ</h2><p>編集するページを選択</p></div>
       <div className="e-pages-actions"><button type="button" className="e-icon-button" aria-label="検索" aria-pressed={searching} onClick={() => searching ? closeSearch() : setSearching(true)}><Icon name="search" /></button>
-        {operations && (!actions || actions.includes("create")) && <button type="button" className="e-icon-button" aria-label="ページを追加" disabled={disabled || operationsDisabled} onClick={() => start({ action: "create" })}><Icon name="plus" /></button>}</div>
+        {operations && (!actions || actions.includes("create")) && <button type="button" className="e-icon-button" aria-label="ページを追加" title={unsaved ? "保存してから追加できます" : "ページを追加"} disabled={disabled || operationsDisabled} onClick={() => start({ action: "create" })}><Icon name="plus" /></button>}</div>
     </div>
     {children}
     {searching && <input className="e-page-search" type="search" aria-label="ページを検索" placeholder="ページ名・パスで検索" value={query} autoFocus
@@ -159,7 +151,6 @@ export function PagePanel({ pages, localizedPages, current, disabled, operations
     {tree.length > 0 && <ul className="e-page-tree">{tree.map(row)}</ul>}
     {templates.length > 0 && <section className="e-page-section" aria-label="テンプレート"><h3>テンプレート</h3><ul className="e-page-tree e-page-templates">{templates.map((page) => row({ type: "page", page, depth: 0 }))}</ul></section>}
     {!tree.length && !templates.length && <p className="e-help">{searching && query.trim() ? "一致するページはありません" : "ページがありません"}</p>}
-    {operations && unsaved && <small className="e-help">未保存の変更を保存してから操作できます。</small>}
     <p className="e-page-count">公開中 {published} / {normal.length} ページ</p>
   </div>;
 }
@@ -404,24 +395,23 @@ export function chooseSiteCover(state: SiteSettingsState, asset: LibraryAsset): 
   state.edit({ imageAsset: { provider: asset.provider, id: asset.id }, imageSrc: "", imageAlt: coverAlt(asset, state.form.imageAlt) });
   return undefined;
 }
-/** ソーシャルカバー。cover があれば素材から選び、URL 指定は「URL で指定」にたたむ。 */
+/**
+ * ソーシャルカバー。素材を選べる画面では STUDIO と同じく、画像のタイルを押して素材から選び、右上の × で外す。
+ * URL の入力と画像の説明の欄は、素材を使えないホストだけに出す（素材から選んだ画像の説明は素材の説明を使う）。
+ */
 function SocialCoverField({ image, src, cover, disabled, locked, empty, clear, url, alt }: {
   image: PageImage | undefined; src: string | undefined; cover: CoverPicker | undefined; disabled: boolean; locked?: string | undefined; empty: string;
-  /** 無ければ「画像を外す」を出さない（訳文では原文の画像を外せない）。 */
+  /** 無ければ × を出さない（訳文では原文の画像を外せない）。 */
   clear: (() => void) | undefined; url: ReactNode; alt: ReactNode;
 }) {
   if (!cover) return <>{url}{alt}{src && <img className="e-cover" src={src} alt="" />}</>;
-  const asset = !!image && "asset" in image;
+  const action = image ? "画像を変更" : "画像を選ぶ", off = disabled || !!locked;
   return <div className="e-cover-field">
-    <div className="e-cover e-cover-frame">{src ? <img src={src} alt="" /> : <span>{image ? "画像を表示できません" : empty}</span>}</div>
-    {image && <small className="e-help">{asset ? "アセットの画像" : "URL で指定した画像"}</small>}
-    {asset && !src && cover.failed && <small className="e-help e-problem">アセットの情報を取得できませんでした。</small>}
-    <div className="e-actions"><button type="button" disabled={disabled || !!locked} onClick={cover.pick}>{image ? "画像を置き換え" : "画像を選ぶ"}</button>
-      {image && clear && <button type="button" disabled={disabled || !!locked} onClick={clear}>画像を外す</button>}</div>
-    {locked && <small className="e-help">{locked}</small>}
-    <small className="e-help">リンクを SNS で共有したときに表示されます。1200×630px（横長）を推奨します。</small>
-    <details open={!!image && !asset}><summary>URL で指定</summary>{url}</details>
-    {alt}
+    <button type="button" className="e-cover e-cover-frame" aria-label={action} title={locked ?? action} data-action={action} disabled={off} onClick={cover.pick}>
+      {src ? <img src={src} alt="" /> : <span>{image ? "画像を表示できません" : empty}</span>}
+    </button>
+    {image && clear && <button type="button" className="e-cover-remove" aria-label="画像を外す" title="画像を外す" disabled={off} onClick={clear}><Icon name="close" /></button>}
+    {image && "asset" in image && !src && cover.failed && <small className="e-help e-problem">画像の情報を取得できませんでした。</small>}
   </div>;
 }
 
@@ -432,7 +422,7 @@ function TextInput({ label, value, change, disabled, multiline = false, placehol
 /** 右レール「サイト」タブの内容。サイト設定は文書と別に保存する。 */
 export function SiteSettingsPanel({ site, state, cover }: { site: EditorSite | undefined; state: SiteSettingsState; cover?: CoverPicker | undefined }) {
   const { form, status } = state, locked = !state.editable || state.busy, image = formImage(form);
-  return <>
+  return <div className="e-site-settings">
     <section className="e-section"><h3>公開ドメイン</h3>{site && <p className="e-help">{site.name}</p>}
       {site?.domains.length ? <ul className="e-domains">{site.domains.map((domain) => <li key={domain}>{domain}</li>)}</ul> : <p className="e-help">公開ドメインはありません。</p>}
     </section>
@@ -454,25 +444,12 @@ export function SiteSettingsPanel({ site, state, cover }: { site: EditorSite | u
           {state.message && <p className={state.message.alert ? "e-help e-problem" : "e-help"} role={state.message.alert ? "alert" : "status"}>{state.message.text}</p>}
           {state.latest && <details><summary>競合した保存内容と入力を比較</summary><p>最新の保存内容</p><pre>{JSON.stringify(state.latest, null, 2)}</pre><p>あなたの入力</p><pre>{JSON.stringify({ ...settingsFrom(form), ...state.styles }, null, 2)}</pre></details>}
           {state.conflict && <button type="button" className="e-small" disabled={state.busy} onClick={state.reload}>最新の設定を読み込む（入力を破棄）</button>}
-          {state.editable ? <><div className="e-actions"><button type="button" className="e-primary" disabled={!state.canSave} onClick={() => void state.save()}>サイト設定を保存</button>
+          {state.editable ? <div className="e-actions"><button type="button" className="e-primary" disabled={!state.canSave} onClick={() => void state.save()}>サイト設定を保存</button>
             <button type="button" disabled={!state.dirty || state.busy} onClick={state.reset}>変更を取り消す</button></div>
-            <small className="e-help">保存したサイト設定は、次の公開で反映されます。</small></>
             : <small className="e-help">このサイトではサイト設定を表示だけできます。</small>}
         </>}
     </section>
-  </>;
-}
-
-function SearchPreview({ metadata, url }: { metadata: PageMetadata | undefined; url: string | undefined }) {
-  if (!metadata) return null;
-  return <section className="e-section"><h3>検索結果での見え方</h3>
-    <div className="e-serp">
-      {url && <p className="e-serp-url">{url}</p>}
-      <p className="e-serp-title">{metadata.title}</p>
-      <p className="e-serp-desc">{metadata.description ?? "説明文が未設定です。"}</p>
-    </div>
-    {metadata.robots !== "index, follow" && <p className="e-help e-problem">検索エンジンには表示されません</p>}
-  </section>;
+  </div>;
 }
 
 /** 右レール「ページ」タブの内容。ページ操作は確認付き、公開情報は文書の編集として undo/redo の対象にする。 */
@@ -482,7 +459,7 @@ export function PageSettings({ document, page, site, settings, field, apply, rep
   targetMode?: boolean; hasTargetLocale?: boolean; cover?: CoverPicker | undefined;
   operations: boolean; actions?: readonly EditorPageChange["action"][]; pathEditable?: boolean; operationsDisabled: boolean; unsaved: boolean; start: (start: PageChangeStart) => void;
 }) {
-  const meta = document.meta ?? {}, kind = page?.kind ?? "page", domain = site?.domains[0], path = publicPath(page);
+  const meta = document.meta ?? {}, kind = page?.kind ?? "page", domain = site?.domains[0], waitSave = unsaved ? "保存してから変更できます" : undefined;
   const canChange = operations && (!actions || actions.includes("update")) && !!page && kind === "page", canVisibility = operations && (!actions || actions.includes("visibility")) && !!page && kind === "page", changeDisabled = disabled || operationsDisabled;
   const run = (operation: EditorOperation) => { const problem = apply(operation); if (problem) report(problem); };
   const offered = (site?.structuredData ?? []).filter((preset, index, all) => all.findIndex((other) => other.id === preset.id) === index);
@@ -493,42 +470,37 @@ export function PageSettings({ document, page, site, settings, field, apply, rep
   const coverUrl = (value: string): EditorOperation => ({ type: "meta", field: "ogImage", value: value ? { src: value, alt: image?.alt ?? "" } : image && "asset" in image ? image : undefined });
   return <div className="e-page-settings">
       <section className="e-section">
-        <div className="e-section-head"><h3>ページ設定</h3>{canChange && <button type="button" className="e-small" aria-label={pathEditable && page.path !== "/" ? "ページ名とURLを変更" : "ページ名を変更"} disabled={changeDisabled} onClick={() => start({ action: "update", page })}>変更</button>}</div>
+        <div className="e-section-head"><h3>ページ設定</h3>{canChange && <button type="button" className="e-small" aria-label={pathEditable && page.path !== "/" ? "ページ名とURLを変更" : "ページ名を変更"} title={waitSave} disabled={changeDisabled} onClick={() => start({ action: "update", page })}>変更</button>}</div>
         <dl className="e-rows">
           <div><dt>ページ名</dt><dd>{page?.title ?? "—"}</dd></div>
           <div><dt>パス</dt><dd>{page?.path ?? "未設定"}</dd></div>
-          <div><dt>種類</dt><dd>{kindLabels[kind] ?? kind}</dd></div>
+          {kind !== "page" && <div><dt>種類</dt><dd>{kindLabels[kind] ?? kind}</dd></div>}
           {!canVisibility && <div><dt>公開状態</dt><dd>{page?.visibility === "private" ? "非公開" : page?.publication ? <>{page.publication.label}<small>{page.publication.description}</small></> : page?.published === false ? "未公開" : "公開"}</dd></div>}
         </dl>
-        {canVisibility && <button type="button" role="switch" className="e-switch" aria-checked={page.visibility === "private"} disabled={changeDisabled}
+        {canVisibility && <button type="button" role="switch" className="e-switch" aria-checked={page.visibility === "private"} title={waitSave} disabled={changeDisabled}
           onClick={() => start({ action: "visibility", page, visibility: page.visibility === "private" ? "public" : "private" })}>
           <span className="e-switch-track" aria-hidden="true"><span className="e-switch-thumb" /></span>ページを非公開にする</button>}
-        {operations && page && kind !== "page" && <small className="e-help">このテンプレートの名前とURLは変更できません。</small>}
-        {canChange && unsaved && <small className="e-help">未保存の変更を保存してから操作できます。</small>}
+        {hasTargetLocale && kind === "page" && !targetMode && <label className="e-check"><input type="checkbox" checked={meta.targetReviewBeforePublish ?? false} disabled={disabled}
+          onChange={(event) => run({ type: "meta", field: "targetReviewBeforePublish", value: event.target.checked })} />サブ言語は確認してから公開</label>}
       </section>
-      {hasTargetLocale && kind === "page" && !targetMode && <section className="e-section"><h3>サブの言語の公開</h3>
-        <label className="e-check"><input type="checkbox" checked={meta.targetReviewBeforePublish ?? false} disabled={disabled}
-          onChange={(event) => run({ type: "meta", field: "targetReviewBeforePublish", value: event.target.checked })} />サブは確認してから公開</label>
-        <small className="e-help">オンにすると、今の原文に対応する訳を確認済みにするまで、サブの言語を公開しません。</small>
-      </section>}
       <section className="e-section"><h3>公開情報</h3>
         {field("ページタイトル", document.title, (value) => ({ type: "title", value }), "title")}
         {field("説明文", meta.description ?? "", (value) => ({ type: "meta", field: "description", value: value.trim() ? value.replace(/[\r\n]+/g, " ") : undefined }), "meta.description",
-          { multiline: true, hint: (value) => `${value.length} / 500 · 検索結果に表示される文章です。` })}
+          { multiline: true, hint: (value) => `${value.length} / 500` })}
         <h4>ソーシャルカバー</h4>
         <SocialCoverField image={image} src={coverSource(image, cover?.assets, domain)} cover={cover} disabled={disabled} empty={settings.settings?.ogImage ? "サイト共通の画像を使います" : "画像は未設定です"}
-          locked={targetMode && !image ? "ソーシャルカバーの追加は原文側で行ってください。" : undefined} clear={targetMode ? undefined : () => run({ type: "meta", field: "ogImage", value: undefined })}
+          locked={targetMode && !image ? "ソーシャルカバーは原文で設定します" : undefined} clear={targetMode ? undefined : () => run({ type: "meta", field: "ogImage", value: undefined })}
           url={field("画像 URL", image && "src" in image ? image.src : "", coverUrl, "meta.ogImage.src", { placeholder: "https://… または /images/cover.jpg" })}
           alt={image && field("画像の説明", image.alt, (value) => ({ type: "meta", field: "ogImage", value: { ...image, alt: value } }), "meta.ogImage.alt")} />
-        {field("ファビコン URL", meta.favicon ?? "", (value) => ({ type: "meta", field: "favicon", value: value || undefined }), "meta.favicon")}
-        <label className="e-check"><input type="checkbox" checked={!!meta.noindex} disabled={disabled || targetMode} onChange={(event) => run({ type: "meta", field: "noindex", value: event.target.checked })} />検索エンジンに表示しない（noindex）{targetMode && <small className="e-help">共通設定は原文側で編集してください。</small>}</label>
-        {(offered.length > 0 || unsupported.length > 0) && <><h4>構造化データ</h4>
-          {offered.map((preset) => <label className="e-check" key={preset.id}><input type="checkbox" checked={selected.includes(preset.id)} disabled={disabled || targetMode} onChange={(event) => structured(preset.id, event.target.checked)} />
-            <span>{preset.label}{preset.description && <small className="e-help">{preset.description}</small>}</span></label>)}
-          {unsupported.map((value) => <div className="e-unsupported" key={value}><span>未対応: {value}</span><button type="button" className="e-small" aria-label={`${value} を外す`} disabled={disabled} onClick={() => structured(value, false)}>外す</button></div>)}
-          <small className="e-help">中身はサイトのデータからホストが作成します。</small></>}
+        {/* ファビコン・noindex・構造化データは言語で変わらない共通の設定なので、訳文では出さない（原文で編集する）。 */}
+        {!targetMode && <>
+          {field("ファビコン URL", meta.favicon ?? "", (value) => ({ type: "meta", field: "favicon", value: value || undefined }), "meta.favicon")}
+          <label className="e-check"><input type="checkbox" checked={!!meta.noindex} disabled={disabled} onChange={(event) => run({ type: "meta", field: "noindex", value: event.target.checked })} />検索エンジンに表示しない</label>
+          {(offered.length > 0 || unsupported.length > 0) && <><h4>構造化データ</h4>
+            {offered.map((preset) => <label className="e-check" key={preset.id} title={preset.description}><input type="checkbox" checked={selected.includes(preset.id)} disabled={disabled} onChange={(event) => structured(preset.id, event.target.checked)} />{preset.label}</label>)}
+            {unsupported.map((value) => <div className="e-unsupported" key={value}><span>未対応: {value}</span><button type="button" className="e-small" aria-label={`${value} を外す`} disabled={disabled} onClick={() => structured(value, false)}>外す</button></div>)}</>}
+        </>}
       </section>
-      <SearchPreview metadata={metadataFor(document, page, domain, settings.settings, cover?.assets)} url={domain && path ? pageUrl(domain, path) : undefined} />
   </div>;
 }
 
