@@ -300,7 +300,7 @@ export function parseKamakuraCmsInvalid(input: unknown): { readonly error: "inva
 
 export type KamakuraCmsUploadIntent = { readonly uploadUrl: string; readonly uploadToken: string; readonly uploadId: string };
 /** POST uploads/intent の 201。uploadUrl は鎌倉の Worker の /internal/studio/cms-upload/<uploadId> だけ。 */
-export function parseKamakuraCmsUploadIntent(input: unknown): KamakuraCmsUploadIntent {
+export function parseKamakuraCmsUploadIntent(input: unknown, trustedOrigin = KAMAKURA_CMS_UPLOAD_ORIGIN): KamakuraCmsUploadIntent {
   return guarded(() => {
     const value = record(input, "intent");
     exact(value, ["uploadUrl", "uploadToken", "uploadId"], "intent");
@@ -311,7 +311,7 @@ export function parseKamakuraCmsUploadIntent(input: unknown): KamakuraCmsUploadI
     let url: URL;
     try { url = new URL(uploadUrl); } catch { fail("intent.uploadUrl", "invalid upload URL"); }
     const match = UPLOAD_PATH.exec(url.pathname);
-    if (url.protocol !== "https:" || url.origin !== KAMAKURA_CMS_UPLOAD_ORIGIN || url.username || url.password || url.search || url.hash || uploadUrl.includes("?") || uploadUrl.includes("#") || !match || match[1]!.toLowerCase() !== uploadId.toLowerCase()) fail("intent.uploadUrl", "unexpected upload URL");
+    if (url.protocol !== "https:" || url.origin !== trustedOrigin || url.username || url.password || url.search || url.hash || uploadUrl.includes("?") || uploadUrl.includes("#") || !match || match[1]!.toLowerCase() !== uploadId.toLowerCase()) fail("intent.uploadUrl", "unexpected upload URL");
     return { uploadUrl: url.href, uploadToken, uploadId };
   });
 }

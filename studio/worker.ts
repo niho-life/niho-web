@@ -1,3 +1,4 @@
+import { parseKamakuraAssetUploadIntent } from "./kamakura-asset-upload-contract.js";
 import { parseProjectAliasPath, projectShortcutTarget } from "./project-routes.mjs";
 declare const __STUDIO_INDEX_PATH__: string;
 import { siteAdmin } from "./site-admin.mjs";
@@ -1514,6 +1515,15 @@ async function kamakuraSignedHeaders(
   };
 }
 
+function kamakuraCliPreviewOrigin(env: Env, identity: BridgeActor): string | undefined {
+  const origin = identity.kind === "cli" ? env.KAMAKURA_CLI_PREVIEW_ORIGIN : undefined;
+  if (origin !== undefined) {
+    const url = new URL(origin);
+    if (url.protocol !== "https:" || url.origin !== origin || isKamakuraEditorDomain(origin)) throw new Error("invalid CLI preview origin");
+  }
+  return origin;
+}
+
 async function signedKamakuraEditorRequest(request: Request, env: Env, identity: BridgeActor, route: EditorRoute): Promise<Response> {
   const supportId = identity.kind === "cli" ? identity.requestId : crypto.randomUUID();
   const operation = kamakuraBridgeOperation(route);
@@ -1546,11 +1556,7 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
   request.signal.addEventListener("abort", abortForRequest, { once: true });
   const timeout = setTimeout(abortForTimeout, (operation === "release" || route.pageChange) ? KAMAKURA_RELEASE_TIMEOUT_MILLISECONDS : EDITOR_TIMEOUT_MILLISECONDS);
   try {
-    const previewOrigin = identity.kind === "cli" ? env.KAMAKURA_CLI_PREVIEW_ORIGIN : undefined;
-    if (previewOrigin !== undefined) {
-      const configured = new URL(previewOrigin);
-      if (configured.protocol !== "https:" || configured.origin !== previewOrigin || isKamakuraEditorDomain(previewOrigin)) throw new Error("invalid CLI preview origin");
-    }
+    const previewOrigin = kamakuraCliPreviewOrigin(env, identity);
     const upstream = new Request(`${previewOrigin ?? KAMAKURA_EDITOR_UPSTREAM_ORIGIN}${route.upstreamPath}`, {
       method: request.method,
       cache: "no-store",
@@ -1597,6 +1603,10 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
     }
     if (route.englishPublicationRetry) {
       try { return json(parseEnglishPublicationAccepted(value), response.status); }
+      catch { throw kamakuraBridgeFailure(supportId, operation, "upstream_contract_invalid", response.status); }
+    }
+    if (route.assetOperation === "upload-intent") {
+      try { return json(parseKamakuraAssetUploadIntent(value, previewOrigin), response.status); }
       catch { throw kamakuraBridgeFailure(supportId, operation, "upstream_contract_invalid", response.status); }
     }
     if (!isCatalog) return json(value, response.status);
@@ -1803,7 +1813,7 @@ function kamakuraCmsBody(route: KamakuraCmsRoute, raw: Uint8Array, identity: Bri
 }
 
 /** 上流の成功の応答を契約の parser で確かめ、既知の field だけにする。 */
-function kamakuraCmsSuccess(route: KamakuraCmsRoute, value: unknown, status: number): unknown {
+function kamakuraCmsSuccess(route: KamakuraCmsRoute, value: unknown, status: number, previewOrigin?: string): unknown {
   const itemId = route.itemId ?? undefined;
   switch (route.operation) {
     case "schema": return parseKamakuraCmsSchema(value);
@@ -1819,7 +1829,7 @@ function kamakuraCmsSuccess(route: KamakuraCmsRoute, value: unknown, status: num
     }
     case "publish": case "unpublish": return parseKamakuraCmsItemEnvelope(value, "publishing", itemId);
     case "remove": return parseKamakuraCmsRemoved(value);
-    case "upload-intent": return parseKamakuraCmsUploadIntent(value);
+    case "upload-intent": return parseKamakuraCmsUploadIntent(value, previewOrigin);
     case "draft": case "discard-draft": case "schedule": case "cancel-schedule": case "retry-schedule": return parseKamakuraCmsItemEnvelope(value, "saved", itemId);
     // 並べ替え・まとめての操作は commit したら 202 publishing、commit が無ければ（同じ番号どうしの入れ替え・下書きを捨てただけ）200 saved
     case "reorder":
@@ -1858,7 +1868,8 @@ async function signedKamakuraCmsRequest(request: Request, env: Env, identity: Br
   };
   const discard = async (response: Response) => { try { await response.body?.cancel(); } catch { /* 本文は使わない */ } };
   try {
-    const upstream = new Request(`${KAMAKURA_EDITOR_UPSTREAM_ORIGIN}${route.upstreamPath}`, {
+    const previewOrigin = kamakuraCliPreviewOrigin(env, identity);
+    const upstream = new Request(`${previewOrigin ?? KAMAKURA_EDITOR_UPSTREAM_ORIGIN}${route.upstreamPath}`, {
       method, cache: "no-store", redirect: "manual", signal: controller.signal, headers,
       ...(method === "GET" ? {} : { body: body.slice().buffer })
     });
@@ -1899,7 +1910,7 @@ async function signedKamakuraCmsRequest(request: Request, env: Env, identity: Br
       throw kamakuraBridgeFailure(supportId, operation, status >= 200 && status < 300 ? "upstream_contract_invalid" : "upstream_unexpected_4xx", status);
     }
     const value = await read(response);
-    return checked(response, () => kamakuraCmsSuccess(route, value, status));
+    return checked(response, () => kamakuraCmsSuccess(route, value, status, previewOrigin));
   } catch (error) {
     if (error instanceof KamakuraBridgeFailureError) throw error;
     throw kamakuraBridgeFailure(supportId, operation, "bridge_processing_failed");
@@ -2260,13 +2271,13 @@ function parseKamakuraLocalizationEditorSnapshot(input: unknown, pageId: string)
  * 上流の契約の結果（本文 `{ status, … }`）を W1 の parser で確かめ、既知の field だけにする。
  * forbidden は 403・not_found は 404・ほかは 200 で返る約束なので、HTTP の status と合わなければ契約違反。
  */
-function kamakuraLocalizationResult(route: KamakuraLocalizationRoute, request: Record<string, unknown>, value: unknown, httpStatus: number, exposeReleasePending: boolean): { readonly status: string } {
+function kamakuraLocalizationResult(route: KamakuraLocalizationRoute, request: Record<string, unknown>, value: unknown, httpStatus: number, exposeReleasePending: boolean, previewOrigin?: string): { readonly status: string } {
   const parse = (): { readonly status: string; readonly sourceDocument?: unknown; readonly sourceVersion?: string; readonly overlay?: unknown; readonly document?: unknown; readonly presentation?: unknown; readonly version?: string; readonly revision?: number; readonly message?: string } => {
     switch (route.operation) {
       case "overview": {
         const result = parseLocalizationOverviewResult(value);
         // プレビューの枠は鎌倉の Worker のものだけ（CSP の frame-src に足すのもその origin だけ）
-        if (result.status === "ready" && result.overview.preview !== null && !isKamakuraLocalizationPreviewFrame(result.overview.preview.frameUrl)) {
+        if (result.status === "ready" && result.overview.preview !== null && !isKamakuraLocalizationPreviewFrame(result.overview.preview.frameUrl, previewOrigin)) {
           throw new DocumentValidationError("overview.preview.frameUrl", "unexpected preview frame");
         }
         if (!exposeReleasePending && result.status === "ready") {
@@ -2413,7 +2424,8 @@ async function signedKamakuraLocalizationRequest(request: Request, env: Env, ide
   };
   const discard = async (response: Response) => { try { await response.body?.cancel(); } catch { /* 本文は使わない */ } };
   try {
-    const upstream = new Request(`${KAMAKURA_EDITOR_UPSTREAM_ORIGIN}${route.upstreamPath}`, {
+    const previewOrigin = kamakuraCliPreviewOrigin(env, identity);
+    const upstream = new Request(`${previewOrigin ?? KAMAKURA_EDITOR_UPSTREAM_ORIGIN}${route.upstreamPath}`, {
       method, cache: "no-store", redirect: "manual", signal: controller.signal, headers, body: body.slice().buffer
     });
     let response: Response;
@@ -2431,7 +2443,7 @@ async function signedKamakuraLocalizationRequest(request: Request, env: Env, ide
     }
     if (status === 201 && route.operation === "upload-intent") {
       const value = await read(response, KAMAKURA_LOCALIZATION_LIMITS.bodyBytes);
-      return checked(201, () => parseKamakuraLocalizationUploadIntent(value));
+      return checked(201, () => parseKamakuraLocalizationUploadIntent(value, previewOrigin));
     }
     if (status === 200 || status === 403 || status === 404) {
       // 契約の結果は本文に status がある。経路の誤り（{ error }）や JSON でない 404 は契約の結果ではない
@@ -2439,7 +2451,7 @@ async function signedKamakuraLocalizationRequest(request: Request, env: Env, ide
       let value: unknown = null;
       if (status !== 404 || isJsonResponse(response)) value = await read(response, limit);
       else await discard(response);
-      if (isRecord(value) && Object.hasOwn(value, "status")) return checked(status, () => kamakuraLocalizationResult(route, values, value, status, exposeReleasePending));
+      if (isRecord(value) && Object.hasOwn(value, "status")) return checked(status, () => kamakuraLocalizationResult(route, values, value, status, exposeReleasePending, previewOrigin));
       if (status === 404) {
         // 概要は画面が最初に読む。ここが経路ごと無いのは、鎌倉の Worker の翻訳の API がまだ配備されていない
         if (route.operation === "overview") throw failure("localization_endpoint_missing", status);

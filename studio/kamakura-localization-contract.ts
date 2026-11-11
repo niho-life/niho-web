@@ -37,16 +37,16 @@ export const KAMAKURA_LOCALIZATION_LIMITS = Object.freeze({
 });
 
 /** overview.preview.frameUrl が鎌倉の Worker のプレビューの枠か（CSP の frame-src に足す origin と合わせる）。 */
-export function isKamakuraLocalizationPreviewFrame(value: unknown): value is string {
+export function isKamakuraLocalizationPreviewFrame(value: unknown, trustedOrigin = KAMAKURA_LOCALIZATION_PREVIEW_ORIGIN): value is string {
   if (typeof value !== "string" || value.length > 2048 || value.includes("?") || value.includes("#")) return false;
   let url: URL;
   try { url = new URL(value); } catch { return false; }
-  return url.protocol === "https:" && url.origin === KAMAKURA_LOCALIZATION_PREVIEW_ORIGIN && !url.username && !url.password && PREVIEW_PATHS.has(url.pathname);
+  return url.protocol === "https:" && url.origin === trustedOrigin && !url.username && !url.password && PREVIEW_PATHS.has(url.pathname);
 }
 
 export type KamakuraLocalizationUploadIntent = { readonly uploadUrl: string; readonly uploadToken: string; readonly uploadId: string };
 /** POST uploads/intent の 201。uploadUrl は鎌倉の Worker の /internal/studio/localization-upload/<uploadId> だけ。 */
-export function parseKamakuraLocalizationUploadIntent(input: unknown): KamakuraLocalizationUploadIntent {
+export function parseKamakuraLocalizationUploadIntent(input: unknown, trustedOrigin = KAMAKURA_LOCALIZATION_UPLOAD_ORIGIN): KamakuraLocalizationUploadIntent {
   const value = record(input, "intent");
   keys(value, ["uploadUrl", "uploadToken", "uploadId"], "intent");
   const { uploadUrl, uploadToken, uploadId } = value;
@@ -56,7 +56,7 @@ export function parseKamakuraLocalizationUploadIntent(input: unknown): KamakuraL
   let url: URL;
   try { url = new URL(uploadUrl); } catch { fail("intent.uploadUrl", "invalid upload URL"); }
   const match = UPLOAD_PATH.exec(url.pathname);
-  if (url.protocol !== "https:" || url.origin !== KAMAKURA_LOCALIZATION_UPLOAD_ORIGIN || url.username || url.password || !match || match[1]!.toLowerCase() !== uploadId.toLowerCase()) fail("intent.uploadUrl", "unexpected upload URL");
+  if (url.protocol !== "https:" || url.origin !== trustedOrigin || url.username || url.password || !match || match[1]!.toLowerCase() !== uploadId.toLowerCase()) fail("intent.uploadUrl", "unexpected upload URL");
   return { uploadUrl: url.href, uploadToken, uploadId };
 }
 
