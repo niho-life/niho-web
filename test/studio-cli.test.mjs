@@ -673,6 +673,17 @@ test("CLI uses JSON input and a fixed HTTPS origin and never follows Access redi
   assert.deepEqual(bad, { exitCode: 2, stdout: '{"apiVersion":"v1","httpStatus":null,"operationId":null,"result":{"error":"invalid_origin"}}\n', stderr: "" });
 });
 
+test("CLI accepts array results for asset usage and keeps object errors", async () => {
+  const invocation = ["request", "assets.usages", "--json", "-"];
+  const usage = { pageId: "home", locale: "ja", title: "Home", state: "published" };
+  const success = await cli(invocation, { input: "{}", fetchImpl: `async () => Response.json([${JSON.stringify(usage)}])` });
+  assert.equal(success.exitCode, 0);
+  assert.deepEqual(JSON.parse(success.stdout).result, [usage]);
+  const denied = await cli(invocation, { input: "{}", fetchImpl: 'async () => Response.json({ error: "forbidden" }, { status: 403 })' });
+  assert.equal(denied.exitCode, 1);
+  assert.deepEqual(JSON.parse(denied.stdout).result, { error: "forbidden" });
+});
+
 test("CLI sends an explicit operation key and can look up the receipt after a transport failure", async () => {
   const attempt = await cli(["request", "pages.read", "fixture-page", "--operation-id", REQUEST_KEY.toUpperCase()], {
     fetchImpl: `async (url, init) => {
