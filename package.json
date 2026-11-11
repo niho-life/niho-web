@@ -4,11 +4,15 @@
   "license": "UNLICENSED",
   "description": "Versioned public page documents and shared React/server renderers",
   "type": "module",
+  "bin": {
+    "niho-studio": "cli/niho-studio.mjs"
+  },
   "files": [
     "dist",
     "README.md",
     "docs",
-    "examples"
+    "examples",
+    "cli"
   ],
   "exports": {
     ".": {

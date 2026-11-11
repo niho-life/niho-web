@@ -65,6 +65,10 @@ Member 管理 mutation は従来どおり `POST` のみです。request URL と�
 
 Kamakura のサイト単位ブレークポイントは `GET/PUT /api/projects/project-kamakura/sites/kamakura/breakpoints` です。`0006_site_breakpoint_settings.sql` が D1 に設定 JSON と整数 version を保存し、従来表示と同じ Mobile preview 480、Tablet 691 / preview 840、Small 991、PC 1280 を初期化します。GET/PUT は Access と現在の owner/editor membership を毎回確認し、別 Project/Site は404、未知methodは405です。PUTは上記の同一origin・JSON境界、固定key、320〜1920px・固定語彙・昇順・段内previewの検証を通し、`b.<integer>` の opaque versionをSQLのWHERE句でCASします。不一致は409で、ページ文書・公開API・上流bridgeは変更しません。
 
+## CLIの認証・操作契約
+
+機械クライアントの認証と操作手順は [Studio CLI](../docs/studio-cli.md) を参照してください。
+
 ## Experience editor bridge
 
 通常編集は同一 origin の `/api/projects/project-experience/sites/experience/editor`、STG検証は `/api/projects/project-experience/sites/experience/editor-staging` だけを呼びます。ブラウザは NIHO API、NIHO cookie、bridge secret へ直接アクセスしません。BFF は query string、別 Project/Site、allowlist 外 page ID、未知の route/method を拒否します。対象 page ID は `home`、`experiences`、`experience-detail`、`booking`、`host`、`chrome`、locale は `en`、公開先は `https://experience.niho.life` に固定します。components / localization / assets API は backend にないため接続しません。
