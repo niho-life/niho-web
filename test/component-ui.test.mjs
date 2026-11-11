@@ -901,7 +901,7 @@ test("device copies of component changes are never offered on another site", asy
     await flush();
     assert.deepEqual(app.calls.libraryReads, ["other"]); assert.equal(libraryBanner(), null, "the demo copy is not offered on the other site");
     await openPanel(); assert.ok(card("予備の帯")); assert.equal(card("デモの帯"), null);
-    await change(input("編集するサイト"), "demo"); await flush(); await flush();
+    await change(document.querySelector('select[aria-label="編集するサイト"]'), "demo"); await flush(); await flush();
     assert.ok(libraryBanner().textContent.includes("デモの帯"), "the copy is offered on its own site");
   } finally { await app.cleanup(); }
   // 退避先が別サイトの内容を返しても使わず、その鍵を消す。
@@ -925,7 +925,7 @@ test("discarding unsaved component changes also removes their device copy", asyn
     assert.equal(storage.data.has(key), false, "コンポーネントを読み直す removes the discarded copy");
     await renameCard("予備の帯", "予備の帯 再"); await wait(900);
     assert.ok(storage.data.has(key));
-    await change(input("編集するサイト"), "other");
+    await change(document.querySelector('select[aria-label="編集するサイト"]'), "other");
     assert.equal(dialog().getAttribute("aria-label"), "未保存の変更");
     await click(button("変更を破棄して移動", dialog())); await flush();
     assert.equal(storage.data.has(key), false, "leaving the site with 変更を破棄して移動 removes the copy");

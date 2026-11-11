@@ -433,7 +433,7 @@ test("Basic の標準埋め込みはカード UI、URL 正規化、保存・再�
     await addPreset("embed-vimeo");
     await addPreset("embed-lottie");
     assert.equal(document.querySelector('[aria-label="インスペクタ"] .e-inspector-context strong').textContent, "Lottie");
-    assert.ok(document.querySelector('[aria-label="インスペクタ"]').textContent.includes("Handoff & Embed"));
+    assert.ok(document.querySelector('[aria-label="インスペクタ"]').textContent.includes("lottie.host の Asset link"));
     assert.ok(document.querySelector("iframe").contentDocument.body.textContent.includes("Lottie の URL を設定してください"));
     await change(input("LottieFiles Asset link"), "https://lottie.host/123E4567-E89B-42D3-A456-426614174000/intro.json");
     await change(input("アクセシブルなタイトル"), "ローディングアニメーション");
@@ -531,7 +531,7 @@ test("Blank は承認済み key だけを選択し、未接続案内・保存・
     assert.equal(document.querySelector("iframe").contentDocument.querySelectorAll('[data-nw-embed="blank"]').length, blankCount, "中心の add 経路も未接続 Blank を拒否する");
     await clickLayer("blank_existing");
     assert.equal(input("承認済みの埋め込み").disabled, true);
-    assert.match(document.querySelector('[aria-label="インスペクタ"]').textContent, /管理者に確認/u);
+    assert.match(document.querySelector('[aria-label="インスペクタ"]').textContent, /Blank 埋め込みが未接続です/u);
     assert.equal(input("アクセシブルなタイトル").disabled, false);
     await change(input("アクセシブルなタイトル"), "更新した公開ガイド");
     assert.equal(input("アクセシブルなタイトル").value, "更新した公開ガイド");
@@ -856,7 +856,7 @@ test("host publication notes replace the generic unpublished badge in the page l
     assert.ok(!pageRow("私たちについて").textContent.includes("未公開"));
     assert.ok(pageRow("私たちについて").title.includes(preview.description));
     assert.equal(pageRow("私たちについて").querySelector(".e-page-label > .e-page-name").textContent, "私たちについて");
-    assert.deepEqual([...pageRow("私たちについて").querySelector(".e-page-meta").children].map((node) => node.textContent), ["/about"]);
+    assert.deepEqual([...pageRow("私たちについて").querySelectorAll(".e-page-label > .e-page-path")].map((node) => node.textContent), ["/about"]);
     assert.equal(dot("準備中").className, "e-page-state is-unpublished"); assert.equal(dot("準備中").getAttribute("aria-label"), "未公開"); assert.ok(!pageRow("準備中").textContent.includes("未公開"));
     assert.equal(dot("ホーム").className, "e-page-state is-live"); assert.equal(pageRow("ホーム").querySelector(".e-badge-publication"), null);
     assert.ok(document.body.textContent.includes("公開中 1 / 3 ページ"));
@@ -1577,7 +1577,7 @@ test("a removed provider leaves its open asset detail read-only and blocks place
   try {
     await tool("接続"); await chooseAsset("朝ヨガ.png");
     removed = true;
-    await reloadEditor(); await settle();
+    await clickPage("別ページ"); await settle();
     assert.equal(input("名前").readOnly, true);
     assert.equal(input("代替テキスト").readOnly, true);
     assert.equal(button("変更を保存"), undefined);
