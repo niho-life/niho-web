@@ -64,6 +64,8 @@ type AccessIdentity = { readonly kind: "human"; readonly subject: string; readon
 type ServiceIdentity = { readonly kind: "service"; readonly clientId: string };
 type CliActor = { readonly kind: "cli"; readonly subject: string; readonly email: string; readonly requestId: string };
 type BridgeActor = AccessIdentity | CliActor;
+type CliDelegatedActor = CliActor & { readonly delegatedBySubject: string };
+type SiteActor = AccessIdentity | CliDelegatedActor;
 const CLI_SUBJECT_PREFIX = "studio-cli:";
 type JwtHeader = { readonly alg?: unknown; readonly kid?: unknown; readonly typ?: unknown };
 type JwtClaims = {
@@ -776,7 +778,11 @@ async function kamakuraOverview(env: Env, identity: AccessIdentity, domains: rea
   }
 }
 
-function ownerContextStatement(env: Env, identity: AccessIdentity, projectId: string, siteId: string): D1Statement {
+function ownerSubject(actor: SiteActor): string {
+  return actor.kind === "cli" ? actor.delegatedBySubject : actor.subject;
+}
+
+function ownerContextStatement(env: Env, identity: SiteActor, projectId: string, siteId: string): D1Statement {
   return env.DB.prepare(`
     SELECT p.name AS project_name, s.name AS site_name
       FROM project_members AS actor
@@ -785,7 +791,7 @@ function ownerContextStatement(env: Env, identity: AccessIdentity, projectId: st
      WHERE actor.access_subject = ?1 AND actor.role = 'owner'
        AND p.id = ?2 AND s.id = ?3
      LIMIT 1
-  `).bind(identity.subject, projectId, siteId);
+  `).bind(ownerSubject(identity), projectId, siteId);
 }
 
 function firstRow<T>(result: D1Result<unknown> | undefined): T | undefined {
@@ -801,7 +807,7 @@ function unixTimestamp(value: number): string {
   return new Date(value * 1000).toISOString();
 }
 
-async function membershipAdministration(env: Env, identity: AccessIdentity, projectId: string, siteId: string): Promise<Response> {
+async function membershipAdministration(env: Env, identity: SiteActor, projectId: string, siteId: string): Promise<Response> {
   const results = await env.DB.batch<unknown>([
     ownerContextStatement(env, identity, projectId, siteId),
     env.DB.prepare(`
@@ -816,7 +822,7 @@ async function membershipAdministration(env: Env, identity: AccessIdentity, proj
          )
        ORDER BY CASE m.role WHEN 'owner' THEN 0 ELSE 1 END, m.display_name COLLATE NOCASE, m.access_subject
        LIMIT 500
-    `).bind(identity.subject, projectId, siteId),
+    `).bind(ownerSubject(identity), projectId, siteId),
     env.DB.prepare(`
       SELECT i.id, i.email, i.role, i.created_at, i.expires_at,
              CASE
@@ -835,7 +841,7 @@ async function membershipAdministration(env: Env, identity: AccessIdentity, proj
          )
        ORDER BY i.created_at DESC, i.id DESC
        LIMIT 100
-    `).bind(identity.subject, projectId, siteId)
+    `).bind(ownerSubject(identity), projectId, siteId)
   ]);
   const context = firstRow<AdminContextRow>(results[0]);
   if (!context) return json({ error: "forbidden" }, 403);
@@ -846,7 +852,7 @@ async function membershipAdministration(env: Env, identity: AccessIdentity, proj
     role: member.role,
     displayName: member.display_name,
     createdAt: member.created_at,
-    isCurrent: member.access_subject === identity.subject
+    isCurrent: identity.kind === "human" && member.access_subject === identity.subject
   }));
   const invitations = ((results[2]?.results ?? []) as readonly InvitationRow[]).map((invitation) => ({
     id: invitation.id,
@@ -873,9 +879,10 @@ function auditActionForInvite(prefix: "invitation.created" | "invitation.accepte
   return `${prefix}.${role}`;
 }
 
-async function createInvitation(request: Request, env: Env, identity: AccessIdentity, projectId: string, siteId: string, body: Record<string, unknown>): Promise<Response> {
+async function createInvitation(request: Request, env: Env, identity: SiteActor, projectId: string, siteId: string, body: Record<string, unknown>): Promise<Response> {
   exactKeys(body, ["email", "role", "expiresInDays"]);
   const email = normalizeEmail(body.email, InvalidInputError);
+  if (identity.kind === "cli" && email.endsWith("@studio.invalid")) throw new InvalidInputError("invalid member email");
   if (!validRole(body.role)) throw new InvalidInputError("invalid role");
   if (!Number.isSafeInteger(body.expiresInDays) || (body.expiresInDays as number) < 1 || (body.expiresInDays as number) > 7) throw new InvalidInputError("invalid expiry");
   const role = body.role;
@@ -889,7 +896,7 @@ async function createInvitation(request: Request, env: Env, identity: AccessIden
     env.DB.prepare(`
       INSERT INTO project_invitations
         (id, project_id, email, role, token_hash, invited_by_subject, created_at, expires_at)
-      SELECT ?4, ?2, ?5, ?6, ?7, ?1, ?8, ?9
+      SELECT ?4, ?2, ?5, ?6, ?7, ?11, ?8, ?9
        WHERE EXISTS (
          SELECT 1 FROM project_members AS actor
          JOIN sites AS s ON s.project_id = actor.project_id
@@ -907,7 +914,7 @@ async function createInvitation(request: Request, env: Env, identity: AccessIden
             WHERE project_id = ?2 AND email = ?5
               AND used_at IS NULL AND revoked_at IS NULL AND expires_at > unixepoch()
          )
-    `).bind(identity.subject, projectId, siteId, invitationId, email, role, hash, now, expiresAt, MAX_PENDING_INVITATIONS),
+    `).bind(ownerSubject(identity), projectId, siteId, invitationId, email, role, hash, now, expiresAt, MAX_PENDING_INVITATIONS, identity.subject),
     env.DB.prepare(`
       INSERT INTO studio_audit_records (project_id, actor_subject, action, target)
       SELECT ?2, ?1, ?3, ?4 WHERE changes() = 1
@@ -982,14 +989,14 @@ async function acceptInvitation(env: Env, identity: AccessIdentity, projectId: s
   return json({ status: "accepted" });
 }
 
-async function revokeInvitation(env: Env, identity: AccessIdentity, projectId: string, siteId: string, body: Record<string, unknown>): Promise<Response> {
+async function revokeInvitation(env: Env, identity: SiteActor, projectId: string, siteId: string, body: Record<string, unknown>): Promise<Response> {
   exactKeys(body, ["invitationId"]);
   if (!validInvitationId(body.invitationId)) throw new InvalidInputError("invalid invitation id");
   const results = await env.DB.batch<unknown>([
     ownerContextStatement(env, identity, projectId, siteId),
     env.DB.prepare(`
       UPDATE project_invitations
-         SET revoked_at = unixepoch(), revoked_by_subject = ?1
+         SET revoked_at = unixepoch(), revoked_by_subject = ?5
        WHERE id = ?4 AND project_id = ?2
          AND used_at IS NULL AND revoked_at IS NULL AND expires_at > unixepoch()
          AND EXISTS (
@@ -998,7 +1005,7 @@ async function revokeInvitation(env: Env, identity: AccessIdentity, projectId: s
             WHERE actor.access_subject = ?1 AND actor.role = 'owner'
               AND actor.project_id = ?2 AND s.id = ?3
          )
-    `).bind(identity.subject, projectId, siteId, body.invitationId),
+    `).bind(ownerSubject(identity), projectId, siteId, body.invitationId, identity.subject),
     env.DB.prepare(`
       INSERT INTO studio_audit_records (project_id, actor_subject, action, target)
       SELECT ?2, ?1, 'invitation.revoked', ?3 WHERE changes() = 1
@@ -1009,9 +1016,9 @@ async function revokeInvitation(env: Env, identity: AccessIdentity, projectId: s
   return json({ status: "revoked" });
 }
 
-async function changeMemberRole(env: Env, identity: AccessIdentity, projectId: string, siteId: string, body: Record<string, unknown>): Promise<Response> {
+async function changeMemberRole(env: Env, identity: SiteActor, projectId: string, siteId: string, body: Record<string, unknown>): Promise<Response> {
   exactKeys(body, ["subject", "role"]);
-  if (!validSubject(body.subject) || !validRole(body.role)) throw new InvalidInputError("invalid member role input");
+  if (!validSubject(body.subject) || !validRole(body.role) || (identity.kind === "cli" && body.subject.startsWith(CLI_SUBJECT_PREFIX))) throw new InvalidInputError("invalid member role input");
   const action = body.role === "owner" ? "member.promoted" : "member.demoted";
   let results: readonly D1Result<unknown>[];
   try {
@@ -1027,7 +1034,7 @@ async function changeMemberRole(env: Env, identity: AccessIdentity, projectId: s
               WHERE actor.access_subject = ?1 AND actor.role = 'owner'
                 AND actor.project_id = ?2 AND s.id = ?3
            )
-      `).bind(identity.subject, projectId, siteId, body.subject, body.role),
+      `).bind(ownerSubject(identity), projectId, siteId, body.subject, body.role),
       env.DB.prepare(`
         INSERT INTO studio_audit_records (project_id, actor_subject, action, target)
         SELECT ?2, ?1, ?3, ?4 WHERE changes() = 1
@@ -1042,9 +1049,9 @@ async function changeMemberRole(env: Env, identity: AccessIdentity, projectId: s
   return json({ status: "changed" });
 }
 
-async function removeMember(env: Env, identity: AccessIdentity, projectId: string, siteId: string, body: Record<string, unknown>): Promise<Response> {
+async function removeMember(env: Env, identity: SiteActor, projectId: string, siteId: string, body: Record<string, unknown>): Promise<Response> {
   exactKeys(body, ["subject"]);
-  if (!validSubject(body.subject)) throw new InvalidInputError("invalid member input");
+  if (!validSubject(body.subject) || (identity.kind === "cli" && body.subject.startsWith(CLI_SUBJECT_PREFIX))) throw new InvalidInputError("invalid member input");
   let results: readonly D1Result<unknown>[];
   try {
     results = await env.DB.batch<unknown>([
@@ -1058,7 +1065,7 @@ async function removeMember(env: Env, identity: AccessIdentity, projectId: strin
               WHERE actor.access_subject = ?1 AND actor.role = 'owner'
                 AND actor.project_id = ?2 AND s.id = ?3
            )
-      `).bind(identity.subject, projectId, siteId, body.subject),
+      `).bind(ownerSubject(identity), projectId, siteId, body.subject),
       env.DB.prepare(`
         INSERT INTO studio_audit_records (project_id, actor_subject, action, target)
         SELECT ?2, ?1, 'member.removed', ?3 WHERE changes() = 1
@@ -1073,10 +1080,11 @@ async function removeMember(env: Env, identity: AccessIdentity, projectId: strin
   return json({ status: "removed" });
 }
 
-async function enforceMutationBoundary(request: Request): Promise<Record<string, unknown>> {
-  const requestUrl = new URL(request.url);
-  if (request.headers.get("Origin") !== requestUrl.origin) throw new AuthenticationError("invalid request origin");
-  if (request.headers.get("Sec-Fetch-Site") !== "same-origin") throw new AuthenticationError("invalid request site");
+async function enforceMutationBoundary(request: Request, identity?: SiteActor): Promise<Record<string, unknown>> {
+  if (identity?.kind !== "cli") {
+    if (request.headers.get("Origin") !== new URL(request.url).origin) throw new AuthenticationError("invalid request origin");
+    if (request.headers.get("Sec-Fetch-Site") !== "same-origin") throw new AuthenticationError("invalid request site");
+  }
   const mediaType = request.headers.get("Content-Type")?.split(";", 1)[0]?.trim().toLowerCase();
   if (mediaType !== "application/json") throw new AuthenticationError("JSON required");
   const declaredLength = request.headers.get("Content-Length");
@@ -1267,29 +1275,38 @@ function storedBreakpointSettings(row: BreakpointSettingsRow): { settings: Retur
 }
 
 /** 鎌倉 Studio 自身が所有する D1 のサイト単位ブレークポイント。 */
-async function breakpointSettingsApi(request: Request, env: Env, identity: AccessIdentity, url: URL, projectId: string, siteId: string): Promise<Response> {
+async function breakpointSettingsApi(request: Request, env: Env, identity: SiteActor, url: URL, projectId: string, siteId: string): Promise<Response> {
   if (projectId !== KAMAKURA_EDITOR_PROJECT_ID || siteId !== KAMAKURA_EDITOR_SITE_ID) return json({ error: "not_found" }, 404);
   if (url.href.includes("?")) return json({ error: "invalid_request" }, 400);
   if (request.method !== "GET" && request.method !== "PUT") return json({ error: "method_not_allowed" }, 405);
-  if (!await editorMember(env, identity, projectId, siteId)) return json({ error: "forbidden" }, 403);
+  if (identity.kind === "human" && !await editorMember(env, identity, projectId, siteId)) return json({ error: "forbidden" }, 403);
+  const cliOwner = identity.kind === "cli" ? ownerContextStatement(env, identity, projectId, siteId) : undefined;
   if (request.method === "GET") {
-    const row = await env.DB.prepare(`
+    const read = env.DB.prepare(`
       SELECT settings_json, version
         FROM site_breakpoint_settings
        WHERE site_id = ?1
        LIMIT 1
-    `).bind(siteId).first<BreakpointSettingsRow>();
+    `).bind(siteId);
+    let row: BreakpointSettingsRow | null | undefined;
+    if (cliOwner) {
+      const [owner, settings] = await env.DB.batch<unknown>([cliOwner, read]);
+      if (!firstRow<AdminContextRow>(owner)) return json({ error: "forbidden" }, 403);
+      row = firstRow<BreakpointSettingsRow>(settings);
+    } else {
+      row = await read.first<BreakpointSettingsRow>();
+    }
     return row ? json(storedBreakpointSettings(row)) : json({ error: "not_found" }, 404);
   }
   let body: Record<string, unknown>;
-  try { body = await enforceMutationBoundary(request); exactKeys(body, ["settings", "expectedVersion"]); }
+  try { body = await enforceMutationBoundary(request, identity); exactKeys(body, ["settings", "expectedVersion"]); }
   catch { return json({ error: "invalid_request" }, 400); }
   const expected = breakpointVersion(body.expectedVersion);
   let settings: ReturnType<typeof parseBreakpointSettings>;
   try { settings = parseBreakpointSettings(body.settings); }
   catch { return json({ error: "invalid_request" }, 400); }
   if (expected === null) return json({ error: "invalid_request" }, 400);
-  const results = await env.DB.batch<unknown>([env.DB.prepare(`
+  const write = env.DB.prepare(`
     UPDATE site_breakpoint_settings
        SET settings_json = ?1, version = version + 1, updated_at = CURRENT_TIMESTAMP
      WHERE site_id = ?2 AND version = ?3
@@ -1298,10 +1315,12 @@ async function breakpointSettingsApi(request: Request, env: Env, identity: Acces
            FROM project_members AS m
            JOIN sites AS s ON s.project_id = m.project_id
           WHERE m.access_subject = ?4 AND m.project_id = ?5 AND s.id = ?2
-            AND m.role IN ('owner', 'editor')
+            AND m.role IN (${cliOwner ? "'owner'" : "'owner', 'editor'"})
        )
-  `).bind(JSON.stringify(settings), siteId, expected, identity.subject, projectId)]);
-  if (!changed(results[0])) return json({ error: "conflict" }, 409);
+  `).bind(JSON.stringify(settings), siteId, expected, ownerSubject(identity), projectId);
+  const results = await env.DB.batch<unknown>(cliOwner ? [cliOwner, write] : [write]);
+  if (cliOwner && !firstRow<AdminContextRow>(results[0])) return json({ error: "forbidden" }, 403);
+  if (!changed(results.at(-1))) return json({ error: "conflict" }, 409);
   return json({ status: "saved", version: `b.${expected + 1}` });
 }
 
@@ -2560,6 +2579,16 @@ function withStaticSecurity(response: Response, editor = false, connectOrigins: 
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
+function membershipMutation(request: Request, env: Env, identity: SiteActor, projectId: string, siteId: string, action: string, body: Record<string, unknown>): Promise<Response> | null {
+  switch (action) {
+    case "/invitations": return createInvitation(request, env, identity, projectId, siteId, body);
+    case "/invitations/revoke": return revokeInvitation(env, identity, projectId, siteId, body);
+    case "/members/role": return changeMemberRole(env, identity, projectId, siteId, body);
+    case "/members/remove": return removeMember(env, identity, projectId, siteId, body);
+    default: return null;
+  }
+}
+
 async function scopedApi(request: Request, env: Env, identity: AccessIdentity, url: URL): Promise<Response | null> {
   const match = /^\/api\/projects\/([A-Za-z][A-Za-z0-9_-]{0,79})\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})(\/[^?]*)?$/u.exec(url.pathname);
   if (!match) return null;
@@ -2581,17 +2610,13 @@ async function scopedApi(request: Request, env: Env, identity: AccessIdentity, u
   try { body = await enforceMutationBoundary(request); }
   catch { return json({ error: "invalid_request" }, 400); }
   try {
-    if (action === "/invitations") return await createInvitation(request, env, identity, projectId, siteId, body);
     if (action === "/invitations/preview") return await invitationPreview(env, identity, projectId, siteId, body);
     if (action === "/invitations/accept") return await acceptInvitation(env, identity, projectId, siteId, body);
-    if (action === "/invitations/revoke") return await revokeInvitation(env, identity, projectId, siteId, body);
-    if (action === "/members/role") return await changeMemberRole(env, identity, projectId, siteId, body);
-    if (action === "/members/remove") return await removeMember(env, identity, projectId, siteId, body);
+    return await membershipMutation(request, env, identity, projectId, siteId, action, body) ?? json({ error: "not_found" }, 404);
   } catch (error) {
     if (error instanceof InvalidInputError) return json({ error: "invalid_request" }, 400);
     throw error;
   }
-  return json({ error: "not_found" }, 404);
 }
 
 // Grant checks use the D1 primary on every request. The owner, project and site
@@ -2601,7 +2626,7 @@ const ACTIVE_CLI_GRANTS = `
   JOIN project_members AS m
     ON m.project_id = g.project_id AND m.access_subject = g.delegated_by_subject AND m.role = 'owner'
   JOIN sites AS s ON s.project_id = g.project_id AND s.id = g.site_id
- WHERE g.client_id = ?1 AND g.project_id = ?2 AND g.site_id = ?3 AND g.expires_at > unixepoch()
+ WHERE g.client_id = ?1 AND g.project_id = ?2 AND g.site_id = ?3 AND (g.expires_at IS NULL OR g.expires_at > unixepoch())
 `;
 
 type CliGrantScope = readonly [clientId: string, projectId: string, siteId: string];
@@ -2617,7 +2642,19 @@ async function cliAuditRecord(env: Env, scope: CliGrantScope, subject: string, r
   `).bind(...scope, subject, requestKey, requestedCapability).first<CliAuditRow>();
 }
 
-function resolveCliBridge(request: Request, env: Env, bridgePath: string, spec: CliOperation): ((actor: CliActor) => Promise<Response>) | Response {
+function resolveCliDispatch(request: Request, env: Env, url: URL, projectId: string, siteId: string, bridgePath: string, spec: CliOperation): ((actor: CliDelegatedActor) => Promise<Response>) | Response {
+  if (bridgePath === "/breakpoints" || bridgePath === "/membership") {
+    if (request.method === "GET" && (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length")))) return json({ error: "invalid_request" }, 400);
+    return bridgePath === "/breakpoints"
+      ? (actor) => breakpointSettingsApi(request, env, actor, url, projectId, siteId)
+      : (actor) => membershipAdministration(env, actor, projectId, siteId);
+  }
+  if (bridgePath === "/invitations" || bridgePath === "/invitations/revoke" || bridgePath === "/members/role" || bridgePath === "/members/remove") {
+    return async (actor) => {
+      const body = await enforceMutationBoundary(request, actor);
+      return await membershipMutation(request, env, actor, projectId, siteId, bridgePath, body) ?? json({ error: "not_found" }, 404);
+    };
+  }
   if (bridgePath.startsWith("/cms/")) {
     const route = kamakuraCmsRoute(bridgePath.slice("/cms".length), request.method);
     if (route && route !== "method_not_allowed") return (actor) => signedKamakuraCmsRequest(request, env, actor, route);
@@ -2683,7 +2720,7 @@ async function studioCliApi(request: Request, env: Env, url: URL, identity: Serv
   const rawRequestKey = request.headers.get(OPERATION_KEY_HEADER);
   const requestKey = normalizeOperationKey(rawRequestKey);
   if (rawRequestKey !== null && requestKey === null) return json({ error: "invalid_request" }, 400);
-  const dispatch = resolveCliBridge(request, env, bridgePath, spec);
+  const dispatch = resolveCliDispatch(request, env, url, projectId, siteId, bridgePath, spec);
   if (dispatch instanceof Response) return dispatch;
   const target = Object.fromEntries(spec.parameters.flatMap((parameter, index) =>
     ["pageId", "collectionId", "itemId", "itemKey", "jobId"].includes(parameter) ? [[parameter, args[index]]] : []));
@@ -2698,8 +2735,8 @@ async function studioCliApi(request: Request, env: Env, url: URL, identity: Serv
     SELECT ?5, ?6, g.delegated_by_subject, g.project_id, g.site_id, g.capability, ?7, ?8, ?9
     ${ACTIVE_CLI_GRANTS} AND g.capability = ?4
     ON CONFLICT(project_id, site_id, actor_subject, request_key) DO NOTHING
-    RETURNING id
-  `).bind(...grantScope, spec.capability, actor.requestId, actor.subject, spec.id, JSON.stringify(target), requestKey).first<{ readonly id: string }>();
+    RETURNING id, delegated_by_subject
+  `).bind(...grantScope, spec.capability, actor.requestId, actor.subject, spec.id, JSON.stringify(target), requestKey).first<{ readonly id: string; readonly delegated_by_subject: string }>();
   if (!grant) {
     if (requestKey && await cliAuditRecord(env, grantScope, subject, requestKey, spec.capability)) {
       return json({ error: "duplicate_operation" }, 409);
@@ -2711,9 +2748,9 @@ async function studioCliApi(request: Request, env: Env, url: URL, identity: Serv
   try {
     let response: Response;
     try {
-      response = await dispatch(actor);
+      response = await dispatch({ ...actor, delegatedBySubject: grant.delegated_by_subject });
     } catch (error) {
-      if (error instanceof AuthenticationError) response = json({ error: "invalid_request" }, 400);
+      if (error instanceof AuthenticationError || error instanceof InvalidInputError) response = json({ error: "invalid_request" }, 400);
       else if (error instanceof KamakuraBridgeFailureError) response = kamakuraBridgeErrorResponse(error);
       else throw error;
     }
