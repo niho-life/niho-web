@@ -446,7 +446,7 @@ test("Basic の標準埋め込みはカード UI、URL 正規化、保存・再�
     assert.equal(lottieRoot.querySelector("iframe"), null, "the edit-mode motion replay also keeps Lottie static");
     await addPreset("embed-facebook");
     assert.equal(document.querySelector('[aria-label="インスペクタ"] .e-inspector-context strong').textContent, "Facebook");
-    assert.ok(document.querySelector('[aria-label="インスペクタ"]').textContent.includes("押すまで外部通信しません"));
+    assert.ok(document.querySelector('[aria-label="インスペクタ"]').textContent.includes("公開投稿の facebook.com URL"));
     await change(input("Facebook の投稿 URL"), "https://facebook.com/example.page/posts/123456789/");
     await change(input("アクセシブルなタイトル"), "Facebook のお知らせ");
     const facebookId = document.querySelector("iframe").contentDocument.querySelector('[data-nw-embed="facebook"]').dataset.nwNode;
@@ -455,7 +455,7 @@ test("Basic の標準埋め込みはカード UI、URL 正規化、保存・再�
     assert.equal(document.querySelector("iframe").contentDocument.querySelector('[data-nw-embed="facebook"] iframe'), null);
     await addPreset("embed-x");
     assert.equal(document.querySelector('[aria-label="インスペクタ"] .e-inspector-context strong').textContent, "X");
-    assert.ok(document.querySelector('[aria-label="インスペクタ"]').textContent.includes("押すまで外部通信しません"));
+    assert.ok(document.querySelector('[aria-label="インスペクタ"]').textContent.includes("公開ポストの x.com URL"));
     await change(input("X のポスト URL"), "https://x.com/Example/status/1234567890123456789/");
     await change(input("アクセシブルなタイトル"), "X のお知らせ");
     const xRoot = document.querySelector("iframe").contentDocument.querySelector('[data-nw-embed="x"]'), xId = xRoot.dataset.nwNode;
@@ -1521,7 +1521,7 @@ test("CMS photos show their origin and terms read-only, without save, upload, fo
     assert.equal(input("名前").readOnly, false); assert.ok(button("変更を保存")); assert.ok(button("削除…")); assert.ok(input("保存先フォルダ"));
     await click("一覧に戻る"); await tool("接続");
     assert.equal(calls.lists.at(-1).provider, "experience"); assert.deepEqual(cardNames(), ["朝ヨガ.png"]);
-    assert.ok(assetPanel().textContent.includes("NIHO の体験原稿で公開を許可された写真"));
+    assert.ok(!assetPanel().textContent.includes("NIHO の体験原稿で公開を許可された写真"), "一覧の上に出所の説明文を出さない");
     assert.equal(assetButton("アップロード"), undefined); assert.equal(button("フォルダを追加"), undefined); assert.equal(assetPanel().querySelector('select[aria-label="フォルダ"]'), null);
     assert.ok(!assetPanel().textContent.includes("このサイトにアセットを追加する権限がありません。"));
     await tool("アップロード"); assert.ok(assetButton("アップロード")); assert.ok(assetPanel().querySelector('select[aria-label="フォルダ"]')); assert.deepEqual(cardNames(), ["庭の緑.png"]);
