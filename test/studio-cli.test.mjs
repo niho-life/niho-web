@@ -658,6 +658,31 @@ testWithD1("scheduled releases and asset lifecycle use scoped Studio grants", as
   assert.equal(h.calls.length, 6);
 });
 
+testWithD1("batch preparation uses the page and CMS publish grants and forwards migration errors", async (t) => {
+  const h = await fixture(t);
+  const batch = { expectedVersion: "doc-version", confirmationToken: "fixture-token" };
+  const cms = { cmsMigrations: [{ collection: "posts", from: "old", to: "new", expectedRecords: 1, conversion: "long-text-to-text" }] };
+  await check(await h.request("POST", "pages.batch-stage/contact", batch), 403, "forbidden");
+  await check(await h.request("POST", "cms.migration-preflight", cms), 403, "forbidden");
+  assert.equal(h.calls.length, 0);
+  h.grant("pages.publish");
+  h.grant("cms.publish");
+  h.replyWith(({ path, method, body }) => {
+    assert.equal(method, "POST");
+    if (path === "/internal/studio/web-content/contact/batch-stage") {
+      assert.deepEqual(JSON.parse(body), batch);
+      return Response.json({ receipt: { pageId: "contact" }, source: "{}" }, { status: 201 });
+    }
+    assert.equal(path, "/internal/studio/web-content/_site/cms-migration-preflight");
+    assert.deepEqual(JSON.parse(body), cms);
+    return Response.json({ error: "cms_migration_value", location: "posts/item.json" }, { status: 409 });
+  });
+  const staged = await check(await h.request("POST", "pages.batch-stage/contact", batch), 201);
+  assert.equal(staged.receipt.pageId, "contact");
+  const invalid = await check(await h.request("POST", "cms.migration-preflight", cms), 409, "cms_migration_value");
+  assert.equal(invalid.location, "posts/item.json");
+});
+
 testWithD1("all advertised CLI capabilities fit the migration and have unique operation IDs", async (t) => {
   const h = await fixture(t);
   const ids = OPERATIONS.map(({ id }) => id);

@@ -173,6 +173,8 @@ type KamakuraBridgeOperation =
   | "draft_resolve"
   | "release_plan"
   | "page_schedule"
+  | "page_batch_stage"
+  | "cms_migration_preflight"
   | "release"
   | "english_publication_retry"
   | "asset_list"
@@ -1212,6 +1214,11 @@ function experienceEditorRoute(action: string, method: string, staging = false):
 }
 
 function kamakuraEditorRoute(action: string, method: string): EditorRoute | "method_not_allowed" | null {
+  if (action === "/editor/cms-migration-preflight") {
+    return method === "POST"
+      ? { upstreamPath: `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/_site/cms-migration-preflight`, bodyLimit: MAX_MUTATION_BODY_BYTES }
+      : "method_not_allowed";
+  }
   const pageChange = /^\/editor\/page-changes\/(prepare|apply)$/u.exec(action);
   if (pageChange) {
     if (method !== "POST") return "method_not_allowed";
@@ -1233,7 +1240,7 @@ function kamakuraEditorRoute(action: string, method: string): EditorRoute | "met
     if (method !== "GET") return "method_not_allowed";
     return { upstreamPath: `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/catalog`, bodyLimit: MAX_MUTATION_BODY_BYTES };
   }
-  const page = /^\/editor\/((?!(?:catalog|create|index)$)[a-z][a-z0-9-]{0,59})(\/draft|\/draft-conflict|\/release-plan|\/release|\/schedule|\/schedule-cancel|\/english-publication-retry)?$/u.exec(action);
+  const page = /^\/editor\/((?!(?:catalog|create|index)$)[a-z][a-z0-9-]{0,59})(\/draft|\/draft-conflict|\/release-plan|\/release|\/batch-stage|\/schedule|\/schedule-cancel|\/english-publication-retry)?$/u.exec(action);
   if (!page || !COMMON_PAGE_ID.test(page[1]!)) return null;
   const suffix = page[2] ?? "";
   if (suffix === "/draft-conflict") {
@@ -1245,7 +1252,7 @@ function kamakuraEditorRoute(action: string, method: string): EditorRoute | "met
     if (method !== "GET" && method !== "POST") return "method_not_allowed";
     return { upstreamPath: `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/${page[1]}${suffix}`, bodyLimit: MAX_MUTATION_BODY_BYTES };
   }
-  const expected = suffix === "/draft" ? "PUT" : ["/release-plan", "/release", "/schedule-cancel", "/english-publication-retry"].includes(suffix) ? "POST" : "GET";
+  const expected = suffix === "/draft" ? "PUT" : ["/release-plan", "/release", "/batch-stage", "/schedule-cancel", "/english-publication-retry"].includes(suffix) ? "POST" : "GET";
   if (method !== expected) return "method_not_allowed";
   return { upstreamPath: `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/${page[1]}${suffix}`, bodyLimit: suffix === "/draft" ? MAX_EDITOR_SAVE_BODY_BYTES : MAX_MUTATION_BODY_BYTES,
     ...(suffix === "/english-publication-retry" ? { englishPublicationRetry: true as const } : {}) };
@@ -1477,6 +1484,8 @@ function kamakuraBridgeOperation(route: EditorRoute): KamakuraBridgeOperation {
   if (route.upstreamPath === `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/catalog`) return "catalog";
   if (route.upstreamPath.endsWith("/draft")) return "draft_save";
   if (route.upstreamPath.endsWith("/release-plan")) return "release_plan";
+  if (route.upstreamPath.endsWith("/batch-stage")) return "page_batch_stage";
+  if (route.upstreamPath.endsWith("/cms-migration-preflight")) return "cms_migration_preflight";
   if (/\/schedule(?:-cancel)?$/u.test(route.upstreamPath)) return "page_schedule";
   if (route.englishPublicationRetry) return "english_publication_retry";
   if (route.upstreamPath.endsWith("/release")) return "release";
@@ -1595,7 +1604,7 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
   const abortForRequest = () => controller.abort();
   const abortForTimeout = () => { timedOut = true; controller.abort(); };
   request.signal.addEventListener("abort", abortForRequest, { once: true });
-  const timeout = setTimeout(abortForTimeout, (operation === "release" || operation === "asset_delete" || route.pageChange) ? KAMAKURA_RELEASE_TIMEOUT_MILLISECONDS : EDITOR_TIMEOUT_MILLISECONDS);
+  const timeout = setTimeout(abortForTimeout, (operation === "release" || operation === "page_batch_stage" || operation === "cms_migration_preflight" || operation === "asset_delete" || route.pageChange) ? KAMAKURA_RELEASE_TIMEOUT_MILLISECONDS : EDITOR_TIMEOUT_MILLISECONDS);
   try {
     const previewOrigin = kamakuraCliPreviewOrigin(env, identity);
     const upstream = new Request(`${previewOrigin ?? KAMAKURA_EDITOR_UPSTREAM_ORIGIN}${route.upstreamPath}`, {
@@ -1611,6 +1620,14 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
     try { response = await env.KAMAKURA_SITE.fetch(upstream); }
     catch { throw kamakuraBridgeFailure(supportId, operation, timedOut ? "service_binding_timeout" : "service_binding_failed"); }
     if (response.status >= 300 && response.status < 400) throw kamakuraBridgeFailure(supportId, operation, "upstream_redirect_rejected", response.status);
+    if (operation === "cms_migration_preflight" && (response.status === 400 || response.status === 409)) {
+      const value = await readBoundedResponse(response).catch(() => null);
+      if (isRecord(value) && typeof value.error === "string" && /^[a-z_]{1,80}$/u.test(value.error)
+        && (value.location === undefined || typeof value.location === "string" && /^[A-Za-z0-9_./-]{1,200}$/u.test(value.location))) {
+        return json({ error: value.error, ...(value.location === undefined ? {} : { location: value.location }) }, response.status);
+      }
+      return json({ error: response.status === 409 ? "conflict" : "invalid_request" }, response.status);
+    }
     if (response.status === 409) {
       // 凍結中の保存・公開（kamakura-site#84）は競合と分けて返し、画面で凍結中と案内する。
       const error = await readBoundedResponse(response).then((value) => isRecord(value) ? value.error : undefined, () => undefined);
@@ -1637,7 +1654,7 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
       throw kamakuraBridgeFailure(supportId, operation, "upstream_unexpected_4xx", response.status);
     }
     let value: unknown;
-    try { value = await readBoundedResponse(response, route.draftRecovery?.action === "read" ? DRAFT_RECOVERY_MAX_OUTPUT_BYTES : undefined); }
+    try { value = await readBoundedResponse(response, route.draftRecovery?.action === "read" || operation === "page_batch_stage" ? DRAFT_RECOVERY_MAX_OUTPUT_BYTES : undefined); }
     catch {
       if (timedOut) throw kamakuraBridgeFailure(supportId, operation, "service_binding_timeout");
       if (isCatalog) throw kamakuraBridgeFailure(supportId, operation, "upstream_contract_invalid", response.status);

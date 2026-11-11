@@ -37,6 +37,7 @@ export const OPERATIONS = Object.freeze([
   operation("pages.draft-resolve", "pages.edit", "PUT", "/editor/:pageId/draft-conflict"),
   operation("pages.release-plan", "pages.publish", "POST", "/editor/:pageId/release-plan"),
   operation("pages.release", "pages.publish", "POST", "/editor/:pageId/release"),
+  operation("pages.batch-stage", "pages.publish", "POST", "/editor/:pageId/batch-stage"),
   operation("pages.schedule-status", "pages.read", "GET", "/editor/:pageId/schedule"),
   operation("pages.schedule", "pages.publish", "POST", "/editor/:pageId/schedule"),
   operation("pages.schedule-cancel", "pages.publish", "POST", "/editor/:pageId/schedule-cancel"),
@@ -47,6 +48,7 @@ export const OPERATIONS = Object.freeze([
   operation("pages.embed-import", "pages.edit", "POST", "/editor/embeds/:pageId/import"),
 
   operation("cms.schema", "cms.read", "GET", "/cms/schema"),
+  operation("cms.migration-preflight", "cms.publish", "POST", "/editor/cms-migration-preflight"),
   operation("cms.list", "cms.read", "GET", "/cms/collections/:collectionId/items"),
   operation("cms.read", "cms.read", "GET", "/cms/collections/:collectionId/items/:itemId"),
   operation("cms.english-publication", "cms.read", "GET", "/cms/collections/:collectionId/items/:itemId/english-publication"),
