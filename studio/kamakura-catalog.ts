@@ -8,7 +8,10 @@ export const KAMAKURA_CATALOG_CONTRACT_ERROR_CODE = "upstream_contract_invalid" 
 export const KAMAKURA_CATALOG_CONTRACT_ERROR_STATUS = 502 as const;
 export const KAMAKURA_EDITOR_SITE_ID = "kamakura" as const;
 export const KAMAKURA_EDITOR_SITE_NAME = "鎌倉サイト（新サイト確認用）";
-export const KAMAKURA_EDITOR_DOMAIN = "https://next-kamakura.niho.life";
+const KAMAKURA_EDITOR_DOMAINS = ["https://next-kamakura.niho.life", "https://kamakura.niho.life"] as const;
+export function isKamakuraEditorDomain(value: unknown): value is string {
+  return typeof value === "string" && KAMAKURA_EDITOR_DOMAINS.some((domain) => domain === value);
+}
 /** キャンバスでorigin維持（`allow-same-origin`）を許す外部frameの上限。実行コード（editor）だけが持ち、サイト単位の許可とJSONからは増やせない。 */
 export const KAMAKURA_ORIGIN_RETAINING_FRAME_SOURCES = ["https://www.google.com/maps/embed"] as const;
 /** 不変HTML embedの置き場（Studio editor routeのCSP `frame-src` と同じprefix）。キャンバスでは権限なしのopaque iframeで描く。 */
@@ -50,10 +53,10 @@ function catalogText(value: unknown, maximum?: number): string {
 }
 
 function parseSite(value: unknown): EditorSite {
-  if (!isRecord(value) || value.id !== KAMAKURA_EDITOR_SITE_ID || value.name !== KAMAKURA_EDITOR_SITE_NAME || !Array.isArray(value.domains) || value.domains.length !== 1 || value.domains[0] !== KAMAKURA_EDITOR_DOMAIN) {
+  if (!isRecord(value) || value.id !== KAMAKURA_EDITOR_SITE_ID || value.name !== KAMAKURA_EDITOR_SITE_NAME || !Array.isArray(value.domains) || value.domains.length !== 1 || !isKamakuraEditorDomain(value.domains[0])) {
     throw new KamakuraCatalogContractError();
   }
-  return { id: KAMAKURA_EDITOR_SITE_ID, name: KAMAKURA_EDITOR_SITE_NAME, domains: [KAMAKURA_EDITOR_DOMAIN], externalFrameSources: KAMAKURA_EXTERNAL_FRAME_SOURCES };
+  return { id: KAMAKURA_EDITOR_SITE_ID, name: KAMAKURA_EDITOR_SITE_NAME, domains: [value.domains[0]], externalFrameSources: KAMAKURA_EXTERNAL_FRAME_SOURCES };
 }
 
 function parsePropRule(value: unknown): PropRule {
@@ -145,6 +148,7 @@ export function parseKamakuraCatalog(value: unknown): KamakuraCatalog {
   }
 
   const site = parseSite(value.sites[0]);
+  if (projectSite.domains[0] !== site.domains[0]) throw new KamakuraCatalogContractError();
   const pages: EditorPage[] = value.pages.map((candidate): EditorPage => {
     if (!isRecord(candidate) || candidate.siteId !== KAMAKURA_EDITOR_SITE_ID || candidate.locale !== "ja" || typeof candidate.pageId !== "string" || !KAMAKURA_COMMON_PAGE_ID.test(candidate.pageId)) {
       throw new KamakuraCatalogContractError();

@@ -7,3 +7,6 @@ Kamakura 接続では「追加」に出す業務ブロックを `ManagedEmbed` �
 接続設定は Studio の認証と Kamakura bridge の HMAC 署名を通して private R2 に CAS 保存します。公開 plan はページ内の全参照と接続設定の版を固定し、設定の後発更新、未設定参照、別ページ・別 origin の参照を拒否します。公開時は文書 revision と接続設定の不変 snapshot を対応させ、rollback はその revision の snapshot を復元します。公開中の解決情報を閉じてから新しい文書を反映するため、途中失敗時は以前の token を誤表示せず fail closed になります。
 
 公開 HTML は URL を含まず `refId` の placeholder だけを描きます。同一 origin の Worker API は現在の path に対応する公開済み参照だけを URL に解決し、信頼済み `niho-embeds.js` が iframe を生成します。親 URL は origin と path だけを NIHO へ渡し、resize、申込完了、checkout は NIHO origin と対象 iframe window の両方を照合します。Studio キャンバスは接続しない表示サンプルを使います。
+
+
+ブラウザの親 origin 検証には、検証済み catalog の現在の公開ドメインを渡します。catalog は既知の確認用・本番ドメインを1つだけ受け入れ、Project と Site の値も一致を必須にします。両方を同時に接続先として許可せず、現在の公開先と異なる token は拒否します。公開先の切替時は新しい接続参照を作ってページを公開し、既存参照の origin を上書きしません。

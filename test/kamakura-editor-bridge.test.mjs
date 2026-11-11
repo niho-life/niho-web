@@ -435,3 +435,25 @@ test("鎌倉のページ名操作はホストcapabilityがある時だけ接続�
   await assert.rejects(adapter.preparePageChange({ action: "visibility", target: change.target, visibility: "private" }, signal), /利用できません/u);
   await assert.rejects(adapter.preparePageChange({ ...change, target: { ...change.target, locale: "en" } }, signal), /編集対象/u);
 });
+
+
+test("公開確認と公開はcatalogの現在のドメインに限定し、切替前後の取り違えを拒否する", async (t) => {
+  const { createKamakuraAdapter } = await loadKamakuraEditor();
+  const input = { target: { siteId: "kamakura", pageId: "kamakura-community-dinner", locale: "ja" }, expectedVersion: "ja-version", presentationVersion: "presentation-version", action: "publish" };
+  const token = "00000000-0000-4000-8000-00000000000011111111-1111-4111-8111-111111111111";
+  let reply, calls = 0;
+  t.mock.method(globalThis, "fetch", async () => { calls++; return Response.json(reply); });
+  for (const origin of ["https://next-kamakura.niho.life", "https://kamakura.niho.life"]) {
+    const source = catalog();
+    source.project.site.domains = [origin];
+    const adapter = createKamakuraAdapter(contract.parseKamakuraCatalog(source), () => {}), signal = new AbortController().signal;
+    reply = { ...input, confirmationToken: token, domain: origin, changes: [] };
+    assert.equal((await adapter.prepareRelease(input, signal)).domain, origin);
+    const other = origin.includes("next-") ? "https://kamakura.niho.life" : "https://next-kamakura.niho.life";
+    reply = { ...reply, domain: other };
+    await assert.rejects(adapter.prepareRelease(input, signal), /ドメインが一致しません/);
+    const before = calls;
+    await assert.rejects(adapter.release(reply, signal), /公開確認が不正/);
+    assert.equal(calls, before, "別ドメインのplanはサーバーへ送らない");
+  }
+});

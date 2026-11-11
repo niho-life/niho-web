@@ -94,6 +94,8 @@ Editor HTML route だけ `PageEditor` の inline style と `iframe srcDoc` に�
 
 ## Kamakura editor bridge
 
+公開ドメインは catalog の `project.site` と `sites[0]` で一致する単一値を使い、`https://next-kamakura.niho.life` または `https://kamakura.niho.life` に限定します。公開確認と ManagedEmbed の親 origin 検証もその値に揃えます。切替前に両ホスト対応版を配備し、切替時にホストの公開先と D1 の `sites.public_origin` を揃え、Studio を再読込してください。切戻しは両方を元へ戻して再読込します。署名済み service binding と素材直接 PUT の確認用ホストは維持します。
+
 ブラウザは同一 origin の `/api/projects/project-kamakura/sites/kamakura/editor` 配下だけを呼びます。利用できる route は `GET catalog`、`GET :pageId`、`PUT :pageId/draft`、`POST :pageId/release-plan`、`POST :pageId/release`、素材の `POST assets/{list,upload-intent,update,usages,resolve}`・`GET assets/:uuid/preview`（下記）だけです。`pageId` は `^(?!(?:catalog|create|index)$)[a-z][a-z0-9-]{0,59}$` に固定し、query string、未知の route / method、600 KiB を超える draft を拒否します。
 
 上流は Cloudflare service binding `KAMAKURA_SITE`（service `kamakura-site`）だけです。署名用 URL は `https://next-kamakura.niho.life/internal/studio/web-content/...` に固定し、任意 origin のネットワーク fetch や generic proxy にはしません。browser cookie、Cloudflare Access JWT、NIHO account 情報は転送しません。各 request は Experience と同じ HMAC message 形式で、Project header だけ `project-kamakura` を使います。secret は別の `KAMAKURA_STUDIO_BRIDGE_SECRET` とし、canonical base64url、decode 後 32 byte 以上を必須にします。

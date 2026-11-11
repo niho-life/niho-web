@@ -10,7 +10,7 @@ import { kamakuraAssetLibrary } from "./kamakura-assets.js";
 import { createKamakuraEditorBlocks } from "./kamakura-editor-blocks.js";
 import { createBlankEmbedRegistry, parsePageDocument, parseSitePresentation, type BlockContracts } from "../src/core.js";
 import { parseLocalizationOverlay, parseSiteLocalizationConfig } from "../src/localization.js";
-import { KAMAKURA_CATALOG_CONTRACT_ERROR_CODE, KAMAKURA_CATALOG_CONTRACT_ERROR_STATUS, KAMAKURA_COMMON_PAGE_ID as COMMON_PAGE_ID, KAMAKURA_EDITOR_DOMAIN as DOMAIN, KAMAKURA_EDITOR_SITE_ID, KAMAKURA_ORIGIN_RETAINING_FRAME_SOURCES, KamakuraCatalogContractError, parseKamakuraCatalog } from "./kamakura-catalog.js";
+import { KAMAKURA_CATALOG_CONTRACT_ERROR_CODE, KAMAKURA_CATALOG_CONTRACT_ERROR_STATUS, KAMAKURA_COMMON_PAGE_ID as COMMON_PAGE_ID, KAMAKURA_EDITOR_SITE_ID, KAMAKURA_ORIGIN_RETAINING_FRAME_SOURCES, KamakuraCatalogContractError, parseKamakuraCatalog } from "./kamakura-catalog.js";
 import type { KamakuraCatalog } from "./kamakura-catalog.js";
 import { parseEnglishPublication, parseEnglishPublicationAccepted } from "../src/english-publication.js";
 import { normalizePageChange, validatePageChangePlan } from "../src/editor-model.js";
@@ -218,19 +218,19 @@ function parseBreakpointSaved(value: unknown) {
   return { status: "saved" as const, version: source.version };
 }
 
-function releaseMatches(plan: EditorReleasePlan, request: EditorReleaseRequest): boolean {
+function releaseMatches(plan: EditorReleasePlan, request: EditorReleaseRequest, domain: string): boolean {
   let target: EditorTarget;
   try { target = validTarget(plan.target); validTarget(request.target); }
   catch { return false; }
-  if (target.siteId !== request.target.siteId || target.pageId !== request.target.pageId || target.locale !== request.target.locale || !validVersion(plan.expectedVersion) || plan.expectedVersion !== request.expectedVersion || !validVersion(plan.presentationVersion) || plan.presentationVersion !== request.presentationVersion || plan.action !== request.action || plan.revision !== request.revision || plan.domain !== DOMAIN) return false;
+  if (target.siteId !== request.target.siteId || target.pageId !== request.target.pageId || target.locale !== request.target.locale || !validVersion(plan.expectedVersion) || plan.expectedVersion !== request.expectedVersion || !validVersion(plan.presentationVersion) || plan.presentationVersion !== request.presentationVersion || plan.action !== request.action || plan.revision !== request.revision || plan.domain !== domain) return false;
   if (plan.action === "publish" ? plan.revision !== undefined : plan.action !== "rollback" || !Number.isSafeInteger(plan.revision) || plan.revision! <= 0) return false;
   if (typeof plan.confirmationToken !== "string" || !CONFIRMATION_TOKEN.test(plan.confirmationToken) || !Array.isArray(plan.changes) || plan.changes.length > 81) return false;
   return plan.changes.every((change) => !!change && typeof change.path === "string" && change.path.length <= 512 && typeof change.before === "string" && change.before.length <= 1_200 && typeof change.after === "string" && change.after.length <= 1_200);
 }
 
-function parsePlan(value: unknown, request: EditorReleaseRequest): EditorReleasePlan {
+function parsePlan(value: unknown, request: EditorReleaseRequest, domain: string): EditorReleasePlan {
   const plan = structuredClone(value) as EditorReleasePlan;
-  if (!releaseMatches(plan, request)) throw new Error("公開確認の対象・版・操作・ドメインが一致しません。再度確認してください。");
+  if (!releaseMatches(plan, request, domain)) throw new Error("公開確認の対象・版・操作・ドメインが一致しません。再度確認してください。");
   return plan;
 }
 
@@ -324,10 +324,10 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
       validTarget(input.target);
       if (!validVersion(input.expectedVersion) || !validVersion(input.presentationVersion) || (input.action === "publish" ? input.revision !== undefined : input.action !== "rollback" || !Number.isSafeInteger(input.revision) || input.revision! <= 0)) throw new Error("公開操作と版の指定が一致しません。");
       const body = { expectedVersion: input.expectedVersion, presentationVersion: input.presentationVersion, action: input.action, ...(input.action === "rollback" ? { revision: input.revision } : {}) };
-      return parsePlan(await api(`${pagePath(input.target)}/release-plan`, "POST", body, signal), input);
+      return parsePlan(await api(`${pagePath(input.target)}/release-plan`, "POST", body, signal), input, catalog.sites[0]!.domains[0]!);
     }),
     release: (plan, signal) => conflict(() => request(signal, async () => {
-      if (!releaseMatches(plan, plan)) throw new Error("公開確認が不正です。再度確認してください。");
+      if (!releaseMatches(plan, plan, catalog.sites[0]!.domains[0]!)) throw new Error("公開確認が不正です。再度確認してください。");
       return parseReleased(await api(`${pagePath(plan.target)}/release`, "POST", { expectedVersion: plan.expectedVersion, presentationVersion: plan.presentationVersion, confirmationToken: plan.confirmationToken }, signal), plan.target, catalog.blockContracts, catalog.nativePresentationPages.includes(plan.target.pageId));
     })),
     englishPublication: {
@@ -392,7 +392,7 @@ export function KamakuraEditor({ project, environment }: { readonly project: Pro
   }, [reload]);
   const ready = catalog.status === "ready" ? catalog.value : null;
   const adapter = useMemo(() => ready ? createProjectEditorAdapter(createKamakuraAdapter(ready, setStatus), project) : null, [ready, project]);
-  const blocks = useMemo(() => ready ? createKamakuraEditorBlocks(ready.blockContracts) : {}, [ready]);
+  const blocks = useMemo(() => ready ? createKamakuraEditorBlocks(ready.blockContracts, ready.sites[0]!.domains[0]!) : {}, [ready]);
   const externalFramePolicy = useMemo(() => createExternalFramePolicy({ parentOrigin: window.location.origin, sources: KAMAKURA_ORIGIN_RETAINING_FRAME_SOURCES, siteSources: ready?.sites[0]?.externalFrameSources ?? [] }), [ready]);
   const blankEmbeds = useMemo(() => createBlankEmbedRegistry({
     parentOrigin: window.location.origin,

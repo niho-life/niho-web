@@ -1,5 +1,5 @@
 import type { CSSProperties, ReactNode } from "react";
-import type { EditorBlockRegistry } from "../src/editor-types.js";
+import type { EditorBlockRegistry, EditorBlockSettingsProps } from "../src/editor-types.js";
 import type { BlockContract, BlockContracts, BlockSlot, PublicPropValue } from "../src/types.js";
 import { uiColor } from "../src/ui-tokens.js";
 import { KamakuraManagedEmbedSettings } from "./kamakura-managed-embed.js";
@@ -94,9 +94,10 @@ function KamakuraBlockPreview({ block, contract, props }: { block: string; contr
 }
 
 /** Build an editor registry from the site's validated schema, never remote code. */
-export function createKamakuraEditorBlocks(contracts: BlockContracts): EditorBlockRegistry {
+export function createKamakuraEditorBlocks(contracts: BlockContracts, publicOrigin: string): EditorBlockRegistry {
+  const embedSettings = (props: EditorBlockSettingsProps) => <KamakuraManagedEmbedSettings {...props} publicOrigin={publicOrigin} />;
   return Object.fromEntries(Object.entries(contracts).map(([block, contract]) => {
     const render = (props: PreviewProps) => <KamakuraBlockPreview block={block} contract={contract} props={props} />;
-    return [block, { ...contract, label: blockLabels[block] ?? block, component: render, preview: render, ...(block === "ManagedEmbed" ? { defaultProps: { background: "white", initialHeight: 720 }, settings: KamakuraManagedEmbedSettings } : {}) }];
+    return [block, { ...contract, label: blockLabels[block] ?? block, component: render, preview: render, ...(block === "ManagedEmbed" ? { defaultProps: { background: "white", initialHeight: 720 }, settings: embedSettings } : {}) }];
   }));
 }
