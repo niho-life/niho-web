@@ -1,14 +1,19 @@
 #!/usr/bin/env node
-import { createReadStream } from "node:fs";
+import { createReadStream, openAsBlob } from "node:fs";
+import { basename } from "node:path";
 import { parseArgs } from "node:util";
 import { API_PREFIX, API_VERSION, SERVICE_CLIENT_ID, SCOPE_ID, resolveOperation } from "./operations.mjs";
 
 const USAGE = `niho-studio --origin <https-origin> --project <project-id> --site <site-id> discover
 niho-studio --origin <https-origin> --project <project-id> --site <site-id> request <operation> [args...] [--json <file|->]
+niho-studio --origin <https-origin> --project <project-id> --site <site-id> upload <upload-operation> --file <image> --upload-origin <https-origin> --json <file|->
 
 Set CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET in the environment. Use --json - to read a JSON object from stdin.`;
 const MAX_INPUT_BYTES = 1024 * 1024;
 const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/avif", "image/gif"]);
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
 class InputError extends Error {}
 
@@ -26,6 +31,8 @@ function argumentsFromCommandLine() {
         project: { type: "string" },
         site: { type: "string" },
         json: { type: "string" },
+        file: { type: "string" },
+        "upload-origin": { type: "string" },
         help: { type: "boolean", short: "h" }
       }
     });
@@ -66,6 +73,57 @@ async function inputBody(path, action) {
   return JSON.stringify({ ...input, action });
 }
 
+async function uploadInput(values, kind) {
+  if (!values.file || values.json === undefined || !values["upload-origin"]) throw new InputError("invalid_upload_arguments");
+  const origin = studioOrigin(values["upload-origin"]);
+  const metadata = JSON.parse(await inputBody(values.json));
+  if (!IMAGE_TYPES.has(metadata.mimeType)) throw new InputError("invalid_image_type");
+  let file;
+  try { file = await openAsBlob(values.file, { type: metadata.mimeType }); }
+  catch { throw new InputError("invalid_image_file"); }
+  if (!file.size || file.size > MAX_UPLOAD_BYTES || (metadata.bytes !== undefined && metadata.bytes !== file.size)) {
+    throw new InputError("invalid_image_size");
+  }
+  const body = JSON.stringify({ name: basename(values.file), ...metadata, bytes: file.size });
+  return { kind, origin, file, body };
+}
+
+async function uploadFile(upload, intent, studio, operationId) {
+  let destination;
+  try {
+    destination = new URL(intent.uploadUrl);
+    const prefix = `/internal/studio/${upload.kind}-upload/`;
+    const assetId = upload.kind === "asset" ? intent.assetId : intent.uploadId;
+    if (destination.origin !== upload.origin || destination.username || destination.password || destination.search || destination.hash
+      || typeof assetId !== "string" || !UUID.test(assetId) || destination.pathname !== `${prefix}${assetId}`
+      || typeof intent.uploadToken !== "string" || !/^[A-Za-z0-9_.-]{1,4096}$/u.test(intent.uploadToken)) throw new Error("Invalid upload intent");
+  } catch {
+    return write({ error: "invalid_upload_intent" }, null, 1, operationId);
+  }
+  let response;
+  try {
+    // The site receives only its one-use upload token. Origin is the value
+    // expected by the site's upload contract, separate from Studio authentication.
+    response = await fetch(destination.href, {
+      method: "PUT", credentials: "omit", redirect: "manual", cache: "no-store", signal: AbortSignal.timeout(90_000),
+      headers: { Authorization: `Bearer ${intent.uploadToken}`, Origin: studio, "Content-Type": upload.file.type },
+      body: upload.file
+    });
+  } catch {
+    return write({ error: "upload_transport_error" }, null, 1, operationId);
+  }
+  if (!response.ok || !response.body || response.headers.get("Content-Type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
+    await response.body?.cancel().catch(() => {});
+    return write({ error: "upload_failed" }, response.status, 1, operationId);
+  }
+  try {
+    const result = await readObject(response.body, MAX_RESPONSE_BYTES);
+    write(result, response.status, 0, operationId);
+  } catch {
+    write({ error: "invalid_upload_response" }, response.status, 1, operationId);
+  }
+}
+
 async function main() {
   const { values, positionals } = argumentsFromCommandLine();
   if (values.help) {
@@ -77,18 +135,26 @@ async function main() {
   if (!SCOPE_ID.test(values.project ?? "") || !SCOPE_ID.test(values.site ?? "")) throw new InputError("invalid_scope");
   const base = `${origin}${API_PREFIX}/projects/${values.project}/sites/${values.site}`;
 
-  let url, method, body;
+  let url, method, body, upload;
+  if (command !== "upload" && (values.file !== undefined || values["upload-origin"] !== undefined)) throw new InputError("invalid_arguments");
   if (command === "discover") {
     if (id !== undefined || values.json !== undefined) throw new InputError("invalid_arguments");
     url = `${base}/capabilities`;
     method = "GET";
-  } else if (command === "request") {
+  } else if (command === "request" || command === "upload") {
     const operation = resolveOperation(id, args);
     if (!operation) throw new InputError("invalid_operation");
     method = operation.spec.method;
     if (method === "GET" && values.json !== undefined) throw new InputError("unexpected_json_input");
     url = `${base}/operations/${[id, ...args].join("/")}`;
-    if (method !== "GET") body = await inputBody(values.json, operation.spec.action);
+    if (command === "upload") {
+      if (!operation.spec.upload) throw new InputError("invalid_upload_operation");
+      upload = await uploadInput(values, operation.spec.upload);
+      body = upload.body;
+    } else {
+      if (operation.spec.upload) throw new InputError("use_upload_command");
+      if (method !== "GET") body = await inputBody(values.json, operation.spec.action);
+    }
   } else {
     throw new InputError("invalid_arguments");
   }
@@ -118,7 +184,7 @@ async function main() {
     return;
   }
   const header = response.headers.get("X-Studio-Operation-Id");
-  const operationId = header && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(header) ? header : null;
+  const operationId = header && UUID.test(header) ? header : null;
   let result;
   try {
     if (response.headers.get("Content-Type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json" || !response.body) {
@@ -130,6 +196,10 @@ async function main() {
     const error = response.status === 401 ? "authentication_required" : response.status === 403 ? "forbidden" : "invalid_response";
     write({ error }, response.status, 1, operationId);
     return;
+  }
+  if (upload) {
+    if (!response.ok) return write({ error: "upload_intent_failed" }, response.status, 1, operationId);
+    return uploadFile(upload, result, origin, operationId);
   }
   write(result, response.status, response.ok ? 0 : 1, operationId);
 }

@@ -33,4 +33,16 @@ Cloudflare AccessのService Authで認証する。StudioはAccessが署名した
 
 公開処理の成功は、配備や公開URLでの反映完了と区別する。ホストがビルドを行う場合は、配備結果と公開URLまで確認する。翻訳の確認と公開は、対象サイトの承認方針と権限に従う。
 
-現在の対応は接続済みのページ文書、CMS項目、素材のメタ情報、翻訳の操作。素材本体の転送、サイトのソース編集、管理機能の追加は #270 の後続で扱う。
+## 素材のアップロード
+
+`discover` の操作に `upload` がある場合、`upload` コマンドでアップロード許可の取得とファイルの転送を行う。例のアップロード先は架空の値。実際にはホストが指定したHTTPSオリジンを使用する。
+
+```sh
+printf '%s\n' '{"collectionId":"articles","mimeType":"image/png"}' |
+  niho-studio --origin https://studio.example --project demo-project --site demo-site \
+  upload cms.upload-intent --upload-origin https://media.example --file cover.png --json -
+```
+
+JSONの項目は既存のアップロード許可と同じ。`name` の既定値はファイル名で、`bytes` はCLIがファイルのサイズから指定する。共通の素材には `assets.upload-intent`、翻訳の差し替え画像には `translations.upload-intent` を使う。転送先のオリジンとパスを照合し、転送には短時間だけ有効なアップロード用トークンを使う。
+
+現在の対応は接続済みのページ文書・埋め込み設定、CMS項目、素材、翻訳の操作。サイトのソース編集と管理機能の追加は #270 の後続で扱う。

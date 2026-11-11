@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, createHmac, generateKeyPairSync, sign } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
@@ -160,7 +162,8 @@ testWithD1("CLI grants are isolated by client, project, site, capability, expiry
     apiVersion: "v1", projectId: PROJECT, siteId: SITE, capabilities: ["pages.read"],
     operations: [
       { id: "pages.catalog", capability: "pages.read", method: "GET", parameters: [] },
-      { id: "pages.read", capability: "pages.read", method: "GET", parameters: ["pageId"] }
+      { id: "pages.read", capability: "pages.read", method: "GET", parameters: ["pageId"] },
+      { id: "pages.embed-status", capability: "pages.read", method: "POST", parameters: ["pageId"] }
     ]
   });
   await check(await h.send("GET", "/api/cli/v1/projects/project-experience/sites/experience/capabilities"), 404, "not_found");
@@ -169,7 +172,8 @@ testWithD1("CLI grants are isolated by client, project, site, capability, expiry
   await check(await h.request("GET", "pages.read/fixture-page?next=https://other.example"), 400, "invalid_request");
   await check(await h.request("POST", "pages.read/fixture-page", {}), 405, "method_not_allowed");
   await check(await h.request("GET", "pages.read/fixture%2Fpage"), 404, "not_found");
-  await check(await h.request("POST", "assets.upload-intent", {}), 404, "not_found");
+  await check(await h.request("POST", "assets.upload-intent", {}), 403, "forbidden");
+  await check(await h.request("POST", "pages.embed-import/fixture-page", {}), 403, "forbidden");
   await check(await h.request("GET", "cms.schema"), 403, "forbidden");
   await check(await h.request("PUT", "pages.save/fixture-page", {}), 403, "forbidden");
   await check(await h.request("POST", "pages.release-plan/fixture-page", {}), 403, "forbidden");
@@ -283,6 +287,9 @@ testWithD1("all advertised CLI capabilities fit the migration and have unique op
   for (const capability of new Set(OPERATIONS.map((spec) => spec.capability))) h.grant(capability);
   const discovery = await check(await h.send("GET", `${SCOPE}/capabilities`), 200);
   assert.deepEqual(discovery.operations.map(({ id }) => id), ids);
+  assert.deepEqual(discovery.operations.filter(({ upload }) => upload).map(({ id, upload }) => [id, upload]), [
+    ["cms.upload-intent", "cms"], ["assets.upload-intent", "asset"], ["translations.upload-intent", "localization"]
+  ]);
 });
 
 function cli(args, { input = "", fetchImpl } = {}) {
@@ -326,4 +333,43 @@ test("CLI uses JSON input and a fixed HTTPS origin and never follows Access redi
 
   const bad = await cli(["request", "pages.read", "fixture-page", "--origin", "http://wrong.example"]);
   assert.deepEqual(bad, { exitCode: 2, stdout: '{"apiVersion":"v1","httpStatus":null,"operationId":null,"result":{"error":"invalid_origin"}}\n', stderr: "" });
+});
+
+test("CLI uploads a file with only the one-use token and rejects a different upload origin", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "studio-cli-upload-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, "cover.png");
+  await writeFile(path, Buffer.from([1, 2, 3]));
+  const args = ["upload", "cms.upload-intent", "--file", path, "--upload-origin", "https://media.example", "--json", "-"];
+  const input = '{"collectionId":"posts","mimeType":"image/png"}';
+  const id = "00000000-0000-4000-8000-000000000001";
+  const destination = `https://media.example/internal/studio/cms-upload/${id}`;
+  const result = await cli(args, {
+    input,
+    fetchImpl: `async (url, init) => {
+      if (url === "${ORIGIN}${SCOPE}/operations/cms.upload-intent") {
+        if (init.method !== "POST" || init.headers["CF-Access-Client-Secret"] !== "fixture-secret" ||
+          init.body !== '{"name":"cover.png","collectionId":"posts","mimeType":"image/png","bytes":3}') throw new Error("bad intent");
+        return Response.json({ uploadUrl: "${destination}", uploadToken: "fixture-upload-token", uploadId: "${id}" }, {
+          status: 201, headers: { "X-Studio-Operation-Id": "${id}" }
+        });
+      }
+      if (url !== "${destination}" || init.method !== "PUT" || init.redirect !== "manual" || init.credentials !== "omit" ||
+        Object.keys(init.headers).sort().join(",") !== "Authorization,Content-Type,Origin" ||
+        init.headers.Authorization !== "Bearer fixture-upload-token" || init.headers.Origin !== "${ORIGIN}" ||
+        init.headers["Content-Type"] !== "image/png" || String(new Uint8Array(await init.body.arrayBuffer())) !== "1,2,3") throw new Error("bad transfer");
+      return Response.json({ url: "https://media.example/cover.png" }, { status: 201 });
+    }`
+  });
+  assert.equal(result.exitCode, 0, result.stdout);
+  assert.deepEqual(JSON.parse(result.stdout), { apiVersion: "v1", httpStatus: 201, operationId: id, result: { url: "https://media.example/cover.png" } });
+  const rejected = await cli(args, {
+    input,
+    fetchImpl: `async (url) => {
+      if (url !== "${ORIGIN}${SCOPE}/operations/cms.upload-intent") throw new Error("unexpected upload");
+      return Response.json({ uploadUrl: "${destination.replace("media.example", "outside.example")}", uploadToken: "fixture-upload-token", uploadId: "${id}" }, { status: 201 });
+    }`
+  });
+  assert.equal(rejected.exitCode, 1);
+  assert.deepEqual(JSON.parse(rejected.stdout).result, { error: "invalid_upload_intent" });
 });
