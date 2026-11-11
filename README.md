@@ -63,7 +63,7 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 | `@niho/web/analytics-data` | サーバーで使う分析DTO・adapterの型と応答検証。React不要。画面と同じパーサーを使用 |
 | `@niho/web/localization` | 明示的な日英設定、安定IDの翻訳単位、自動訳の更新・人の訳の保護、候補・手編集・確認、共通構造からの文書生成。React不要 |
 | `@niho/web/localization-release` | 言語単位の不変snapshot、公開するページ（hostが選ぶ。全ページは要らない）の訳・確認必須ページ・共通部分・用語集の公開条件、route・内部リンク・SEO、prepare/apply/rollback検証。React不要 |
-| `niho-studio` | 機械認証でページ・CMS・翻訳の編集と公開、素材・サイト設定・メンバー管理、ページ下書きの競合解消、操作の受付照会を行うCLI。確認用Studioの接続設定も [Studio CLIの契約](docs/studio-cli.md) を参照 |
+| `niho-studio` | 機械認証でページの編集と公開予約、CMS・翻訳の編集と公開、素材の削除・復元、サイト設定・メンバー管理、ページ下書きの競合解消、操作の受付照会を行うCLI。確認用Studioの接続設定も [Studio CLIの契約](docs/studio-cli.md) を参照 |
 
 React は optional peer dependency です。API サーバーなど React を入れない利用先では `import { parsePageDocument } from '@niho/web/core'` を使います。root と `/react` は React runtime を import します。
 

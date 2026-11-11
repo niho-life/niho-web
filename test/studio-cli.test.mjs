@@ -183,6 +183,7 @@ testWithD1("CLI grants are isolated by client, project, site, capability, expiry
     operations: [
       { id: "pages.catalog", capability: "pages.read", method: "GET", parameters: [] },
       { id: "pages.read", capability: "pages.read", method: "GET", parameters: ["pageId"] },
+      { id: "pages.schedule-status", capability: "pages.read", method: "GET", parameters: ["pageId"] },
       { id: "pages.embed-status", capability: "pages.read", method: "POST", parameters: ["pageId"] }
     ]
   });
@@ -616,6 +617,45 @@ testWithD1("page draft recovery requires edit grants and stays scoped to the req
   assert.equal(h.calls.length, 2);
   h.replyWith(() => Response.json({ ...snapshot, draft: { ...draft, pageId: "rentalspace" } }));
   await check(await h.request("GET", read), 502, "upstream_contract_invalid");
+});
+
+testWithD1("scheduled releases and asset lifecycle use scoped Studio grants", async (t) => {
+  const h = await fixture(t);
+  h.grant("pages.read");
+  h.grant("assets.read");
+  const reference = { provider: "kamakura-upload", id: "a0000000-0000-4000-a000-000000000003" };
+  const schedule = { scheduledAt: "2027-01-01T01:00:00.000Z", expectedVersion: "release-version", confirmationToken: "fixture-token" };
+  const asset = { siteId: SITE, reference, expectedVersion: "asset-version" };
+  await check(await h.request("POST", "pages.schedule/contact", schedule), 403, "forbidden");
+  await check(await h.request("POST", "assets.delete", asset), 403, "forbidden");
+  assert.equal(h.calls.length, 0);
+
+  h.grant("pages.publish");
+  h.grant("assets.edit");
+  h.replyWith(({ path, method, body }) => {
+    if (path === "/internal/studio/web-content/contact/schedule") {
+      if (method === "GET") return Response.json({ status: "none" });
+      assert.deepEqual(JSON.parse(body), schedule);
+      return Response.json({ status: "scheduled", version: "schedule-version" }, { status: 202 });
+    }
+    if (path === "/internal/studio/web-content/contact/schedule-cancel") {
+      assert.deepEqual(JSON.parse(body), { expectedVersion: "schedule-version" });
+      return Response.json({ status: "cancelled" });
+    }
+    if (path === "/internal/studio/web-content/assets/state") return Response.json({ state: "ready", reference, version: "asset-version" });
+    assert.deepEqual(JSON.parse(body), asset);
+    if (path === "/internal/studio/web-content/assets/delete") return Response.json({ error: "asset_in_use" }, { status: 409 });
+    assert.equal(path, "/internal/studio/web-content/assets/restore");
+    return Response.json({ state: "ready", reference, version: "restored-version" });
+  });
+  await check(await h.request("GET", "pages.schedule-status/contact"), 200);
+  await check(await h.request("POST", "pages.schedule/contact", schedule), 202);
+  await check(await h.request("POST", "pages.schedule-cancel/contact", { expectedVersion: "schedule-version" }), 200);
+  await check(await h.request("POST", "assets.state", { siteId: SITE, reference }), 200);
+  await check(await h.request("POST", "assets.delete", asset), 409, "asset_in_use");
+  await check(await h.request("POST", "assets.restore", asset), 200);
+  await check(await h.request("POST", "assets.delete", { ...asset, reference: { ...reference, provider: "kamakura-cms" } }), 400, "invalid_request");
+  assert.equal(h.calls.length, 6);
 });
 
 testWithD1("all advertised CLI capabilities fit the migration and have unique operation IDs", async (t) => {

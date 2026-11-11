@@ -172,11 +172,15 @@ type KamakuraBridgeOperation =
   | "draft_conflict"
   | "draft_resolve"
   | "release_plan"
+  | "page_schedule"
   | "release"
   | "english_publication_retry"
   | "asset_list"
   | "asset_upload_intent"
   | "asset_update"
+  | "asset_state"
+  | "asset_delete"
+  | "asset_restore"
   | "asset_usages"
   | "asset_resolve"
   | "embed_import"
@@ -1117,7 +1121,7 @@ async function enforceMutationBoundary(request: Request, identity?: SiteActor): 
   return parsed;
 }
 
-type KamakuraAssetOperation = "list" | "upload-intent" | "update" | "usages" | "resolve";
+type KamakuraAssetOperation = "list" | "upload-intent" | "update" | "usages" | "resolve" | "state" | "delete" | "restore";
 type EditorRoute = { readonly upstreamPath: string; readonly bodyLimit: number; readonly assetOperation?: KamakuraAssetOperation; readonly embedOperation?: "import" | "status"; readonly englishPublicationRetry?: true; readonly pageChange?: "prepare" | "apply"; readonly draftRecovery?: { readonly action: "read" | "resolve"; readonly pageId: string } };
 
 /** kamakura-site の worker/studio-assets.ts と同じ固定表。kamakura-upload だけが Studio からのアップロード先。 */
@@ -1172,6 +1176,11 @@ function validateKamakuraAssetBody(body: Uint8Array, operation: KamakuraAssetOpe
     return new TextEncoder().encode(JSON.stringify({
       siteId: parsed.siteId, ...reference, expectedVersion: parsed.expectedVersion, changes: parsed.changes
     }));
+  } else if (operation === "state" || operation === "delete" || operation === "restore") {
+    const mutation = operation !== "state";
+    exactAssetKeys(parsed, mutation ? ["siteId", "reference", "expectedVersion"] : ["siteId", "reference"]);
+    parsed.reference = kamakuraAssetReference(parsed.reference, true);
+    if (mutation && !assetText(parsed.expectedVersion, 200)) throw new AuthenticationError("invalid asset version");
   } else if (operation === "usages") {
     exactAssetKeys(parsed, ["siteId", "reference"]);
     parsed.reference = kamakuraAssetReference(parsed.reference);
@@ -1214,7 +1223,7 @@ function kamakuraEditorRoute(action: string, method: string): EditorRoute | "met
     if (!COMMON_PAGE_ID.test(embed[1]!)) return null;
     return { upstreamPath: `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/embeds/${embed[1]}/${embed[2]}`, bodyLimit: MAX_MUTATION_BODY_BYTES, embedOperation: embed[2] as "import" | "status" };
   }
-  const asset = /^\/editor\/assets\/(list|upload-intent|update|usages|resolve)$/u.exec(action);
+  const asset = /^\/editor\/assets\/(list|upload-intent|update|usages|resolve|state|delete|restore)$/u.exec(action);
   if (asset) {
     if (method !== "POST") return "method_not_allowed";
     const operation = asset[1] as KamakuraAssetOperation;
@@ -1224,7 +1233,7 @@ function kamakuraEditorRoute(action: string, method: string): EditorRoute | "met
     if (method !== "GET") return "method_not_allowed";
     return { upstreamPath: `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/catalog`, bodyLimit: MAX_MUTATION_BODY_BYTES };
   }
-  const page = /^\/editor\/((?!(?:catalog|create|index)$)[a-z][a-z0-9-]{0,59})(\/draft|\/draft-conflict|\/release-plan|\/release|\/english-publication-retry)?$/u.exec(action);
+  const page = /^\/editor\/((?!(?:catalog|create|index)$)[a-z][a-z0-9-]{0,59})(\/draft|\/draft-conflict|\/release-plan|\/release|\/schedule|\/schedule-cancel|\/english-publication-retry)?$/u.exec(action);
   if (!page || !COMMON_PAGE_ID.test(page[1]!)) return null;
   const suffix = page[2] ?? "";
   if (suffix === "/draft-conflict") {
@@ -1232,7 +1241,11 @@ function kamakuraEditorRoute(action: string, method: string): EditorRoute | "met
     return { upstreamPath: `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/${page[1]}${suffix}`, bodyLimit: DRAFT_RECOVERY_MAX_INPUT_BYTES,
       draftRecovery: { action: method === "GET" ? "read" : "resolve", pageId: page[1]! } };
   }
-  const expected = suffix === "/draft" ? "PUT" : suffix === "/release-plan" || suffix === "/release" || suffix === "/english-publication-retry" ? "POST" : "GET";
+  if (suffix === "/schedule") {
+    if (method !== "GET" && method !== "POST") return "method_not_allowed";
+    return { upstreamPath: `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/${page[1]}${suffix}`, bodyLimit: MAX_MUTATION_BODY_BYTES };
+  }
+  const expected = suffix === "/draft" ? "PUT" : ["/release-plan", "/release", "/schedule-cancel", "/english-publication-retry"].includes(suffix) ? "POST" : "GET";
   if (method !== expected) return "method_not_allowed";
   return { upstreamPath: `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/${page[1]}${suffix}`, bodyLimit: suffix === "/draft" ? MAX_EDITOR_SAVE_BODY_BYTES : MAX_MUTATION_BODY_BYTES,
     ...(suffix === "/english-publication-retry" ? { englishPublicationRetry: true as const } : {}) };
@@ -1456,11 +1469,15 @@ function kamakuraBridgeOperation(route: EditorRoute): KamakuraBridgeOperation {
   if (route.assetOperation === "list") return "asset_list";
   if (route.assetOperation === "upload-intent") return "asset_upload_intent";
   if (route.assetOperation === "update") return "asset_update";
+  if (route.assetOperation === "state") return "asset_state";
+  if (route.assetOperation === "delete") return "asset_delete";
+  if (route.assetOperation === "restore") return "asset_restore";
   if (route.assetOperation === "usages") return "asset_usages";
   if (route.assetOperation === "resolve") return "asset_resolve";
   if (route.upstreamPath === `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/catalog`) return "catalog";
   if (route.upstreamPath.endsWith("/draft")) return "draft_save";
   if (route.upstreamPath.endsWith("/release-plan")) return "release_plan";
+  if (/\/schedule(?:-cancel)?$/u.test(route.upstreamPath)) return "page_schedule";
   if (route.englishPublicationRetry) return "english_publication_retry";
   if (route.upstreamPath.endsWith("/release")) return "release";
   return "page_read";
@@ -1578,7 +1595,7 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
   const abortForRequest = () => controller.abort();
   const abortForTimeout = () => { timedOut = true; controller.abort(); };
   request.signal.addEventListener("abort", abortForRequest, { once: true });
-  const timeout = setTimeout(abortForTimeout, (operation === "release" || route.pageChange) ? KAMAKURA_RELEASE_TIMEOUT_MILLISECONDS : EDITOR_TIMEOUT_MILLISECONDS);
+  const timeout = setTimeout(abortForTimeout, (operation === "release" || operation === "asset_delete" || route.pageChange) ? KAMAKURA_RELEASE_TIMEOUT_MILLISECONDS : EDITOR_TIMEOUT_MILLISECONDS);
   try {
     const previewOrigin = kamakuraCliPreviewOrigin(env, identity);
     const upstream = new Request(`${previewOrigin ?? KAMAKURA_EDITOR_UPSTREAM_ORIGIN}${route.upstreamPath}`, {
@@ -1596,8 +1613,9 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
     if (response.status >= 300 && response.status < 400) throw kamakuraBridgeFailure(supportId, operation, "upstream_redirect_rejected", response.status);
     if (response.status === 409) {
       // 凍結中の保存・公開（kamakura-site#84）は競合と分けて返し、画面で凍結中と案内する。
-      const frozen = await readBoundedResponse(response).then((value) => isRecord(value) && value.error === "visual_editor_frozen", () => false);
-      if (frozen && !route.englishPublicationRetry) return json({ error: "visual_editor_frozen" }, 409);
+      const error = await readBoundedResponse(response).then((value) => isRecord(value) ? value.error : undefined, () => undefined);
+      if (error === "visual_editor_frozen" && !route.englishPublicationRetry) return json({ error: "visual_editor_frozen" }, 409);
+      if (error === "asset_in_use" && route.assetOperation === "delete") return json({ error: "asset_in_use" }, 409);
       if (!isCatalog) return json({ error: "conflict" }, 409);
       throw kamakuraBridgeFailure(supportId, operation, "upstream_contract_invalid", response.status);
     }
