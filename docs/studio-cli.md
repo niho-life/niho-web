@@ -27,6 +27,8 @@ Cloudflare AccessのService Authで認証する。StudioはAccessが署名した
 
 利用可能な操作名と必要権限は `discover` で確認する。APIでは `GET /api/cli/v1/projects/:projectId/sites/:siteId/capabilities` に対応し、操作実行は `.../operations/:operation[/…]` を使う。操作名・メソッド・引数は[操作定義](../cli/operations.mjs)の許可リストで決まる。Studioは任意の上流URLやブラウザAPIのパスを受け取らない。CLIの権限は `discover` の結果を使う。
 
+確認用Studioでは、ホストの確認用WorkerをService Bindingに設定し、`KAMAKURA_CLI_PREVIEW_ORIGIN` にそのHTTPSオリジンを指定する。ページ操作で使うURLと、ホストのページ一覧が返すオリジンを照合する。確認用Studioには専用のAccessアプリとD1を使い、ホストのGitブランチとR2も本番と分ける。
+
 ## 編集と公開
 
 編集は対象の最新状態と版を読み、既存の保存契約へ変更と版を渡す。公開の確認計画で対象サイト、ページ、差分、版を照合し、その計画を公開に適用する。競合時は最新版と手元の変更を比較してから再実行する。

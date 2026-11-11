@@ -2,7 +2,7 @@ import { parseProjectAliasPath, projectShortcutTarget } from "./project-routes.m
 declare const __STUDIO_INDEX_PATH__: string;
 import { siteAdmin } from "./site-admin.mjs";
 import { integrationIdentity, isTrustedEditorAction, resolveTrustedEditorApi, resolveTrustedEditorPage, type ResolvedTrustedIntegration } from "./integration-registry.mjs";
-import { KAMAKURA_CATALOG_CONTRACT_ERROR_CODE, KAMAKURA_CATALOG_CONTRACT_ERROR_STATUS, KamakuraCatalogContractError, KAMAKURA_COMMON_PAGE_ID, KAMAKURA_EDITOR_SITE_ID, KAMAKURA_EMBED_FRAME_SOURCE, parseKamakuraCatalog } from "./kamakura-catalog.js";
+import { KAMAKURA_CATALOG_CONTRACT_ERROR_CODE, KAMAKURA_CATALOG_CONTRACT_ERROR_STATUS, KamakuraCatalogContractError, KAMAKURA_COMMON_PAGE_ID, KAMAKURA_EDITOR_SITE_ID, KAMAKURA_EMBED_FRAME_SOURCE, isKamakuraEditorDomain, parseKamakuraCatalog } from "./kamakura-catalog.js";
 import {
   KAMAKURA_CMS_IMAGE_TYPES, KAMAKURA_CMS_LIMITS, KAMAKURA_CMS_PROJECT_ID, KAMAKURA_CMS_SITE_ID, KAMAKURA_CMS_UPLOAD_ORIGIN, KAMAKURA_CMS_UPSTREAM_PREFIX,
   KAMAKURA_MEDIA_ORIGIN, KamakuraCmsContractError,
@@ -55,6 +55,8 @@ export interface Env {
   readonly NIHO_STUDIO_BRIDGE_SECRET_STG?: string;
   /** kamakura-site Studio bridgeと共有するbase64url HMAC key。 */
   readonly KAMAKURA_STUDIO_BRIDGE_SECRET?: string;
+  /** 公開サイトのService Bindingと対で指定する、確認用CLIのHTTPS origin。 */
+  readonly KAMAKURA_CLI_PREVIEW_ORIGIN?: string;
 }
 
 type Role = "owner" | "editor";
@@ -1525,7 +1527,12 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
   request.signal.addEventListener("abort", abortForRequest, { once: true });
   const timeout = setTimeout(abortForTimeout, (operation === "release" || route.pageChange) ? KAMAKURA_RELEASE_TIMEOUT_MILLISECONDS : EDITOR_TIMEOUT_MILLISECONDS);
   try {
-    const upstream = new Request(`${KAMAKURA_EDITOR_UPSTREAM_ORIGIN}${route.upstreamPath}`, {
+    const previewOrigin = identity.kind === "cli" ? env.KAMAKURA_CLI_PREVIEW_ORIGIN : undefined;
+    if (previewOrigin !== undefined) {
+      const configured = new URL(previewOrigin);
+      if (configured.protocol !== "https:" || configured.origin !== previewOrigin || isKamakuraEditorDomain(previewOrigin)) throw new Error("invalid CLI preview origin");
+    }
+    const upstream = new Request(`${previewOrigin ?? KAMAKURA_EDITOR_UPSTREAM_ORIGIN}${route.upstreamPath}`, {
       method: request.method,
       cache: "no-store",
       redirect: "manual",
@@ -1574,7 +1581,7 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
       catch { throw kamakuraBridgeFailure(supportId, operation, "upstream_contract_invalid", response.status); }
     }
     if (!isCatalog) return json(value, response.status);
-    try { return json(parseKamakuraCatalog(value), response.status); }
+    try { return json(parseKamakuraCatalog(value, previewOrigin), response.status); }
     catch (error) {
       if (error instanceof KamakuraCatalogContractError) throw kamakuraBridgeFailure(supportId, operation, "upstream_contract_invalid", response.status);
       throw kamakuraBridgeFailure(supportId, operation, "bridge_processing_failed", response.status);

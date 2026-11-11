@@ -39,6 +39,17 @@ function catalog(pageTitle = "NIHO Kamakura") {
   };
 }
 
+test("an explicitly configured CLI preview only accepts the bound preview origin", () => {
+  const production = catalog();
+  const origin = "https://site-preview.example";
+  const site = { ...production.sites[0], name: "鎌倉サイト（Preview）", domains: [origin] };
+  const preview = { ...production, project: { ...production.project, site }, sites: [site] };
+  assert.equal(contract.parseKamakuraCatalog(preview, origin).sites[0].domains[0], origin);
+  assert.throws(() => contract.parseKamakuraCatalog(preview), contract.KamakuraCatalogContractError);
+  assert.throws(() => contract.parseKamakuraCatalog(preview, "https://other.example"), contract.KamakuraCatalogContractError);
+  assert.throws(() => contract.parseKamakuraCatalog(production, origin), contract.KamakuraCatalogContractError);
+});
+
 test("shared catalog contract accepts the current 133-character page title", () => {
   assert.equal(communityDinnerTitle.length, 133);
   const result = contract.parseKamakuraCatalog(catalog(communityDinnerTitle));
