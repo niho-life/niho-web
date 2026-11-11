@@ -43,6 +43,8 @@ Gitから原文が更新されてページの下書きが競合した場合は�
 
 公開処理の成功は、配備や公開URLでの反映完了と区別する。ホストがビルドを行う場合は、配備結果と公開URLまで確認する。翻訳の確認と公開は、対象サイトの承認方針と権限に従う。
 
+`discover` にページの予約操作があるサイトでは、`pages.release-plan <pageId>` の公開計画から `confirmationToken` と版を取り、`pages.schedule <pageId>` にUTCのISO 8601日時を `scheduledAt` として添える。予約を `pages.schedule-status <pageId>` で取得し、待機中なら取得した `version` を `expectedVersion` として `pages.schedule-cancel <pageId>` に渡せる。ホストが公開を受理したあとに、配備結果と公開URLを確認する。元の版への復元には通常の公開計画と適用を使う。
+
 ## 操作の応答を受け取れなかった場合
 
 配備前に `studio/migrations/0008_cli_operation_keys.sql` を適用する。操作を送る前にUUID v4を作り、対象サイト、操作、入力の版と合わせて保存する。例では `STUDIO_OPERATION_KEY` に保存済みのUUIDを指定する。
@@ -71,3 +73,5 @@ printf '%s\n' '{"collectionId":"articles","mimeType":"image/png"}' |
 JSONの項目は既存のアップロード許可と同じ。`name` の既定値はファイル名で、`bytes` はCLIがファイルのサイズから指定する。共通の素材には `assets.upload-intent`、翻訳の差し替え画像には `translations.upload-intent` を使う。転送先のオリジンとパスを照合し、転送には短時間だけ有効なアップロード用トークンを使う。
 
 確認環境では `--upload-origin` に `KAMAKURA_CLI_PREVIEW_ORIGIN` と同じオリジンを指定する。ホスト側でも確認用Studioと確認用アップロード先を設定し、専用の素材ストレージを接続する。
+
+`assets.state` には `siteId` と `reference` を渡す。ホストが `assets.delete` と `assets.restore` を提供する場合は、その結果の `version` を `expectedVersion` に指定する。削除後も復元に必要な素材データをホストが保持する。利用中の素材の扱いと、公開済みファイルの保持はホストの契約に従う。
