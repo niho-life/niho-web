@@ -75,3 +75,5 @@ JSONの項目は既存のアップロード許可と同じ。`name` の既定値
 確認環境では `--upload-origin` に `KAMAKURA_CLI_PREVIEW_ORIGIN` と同じオリジンを指定する。ホスト側でも確認用Studioと確認用アップロード先を設定し、専用の素材ストレージを接続する。
 
 `assets.state` には `siteId` と `reference` を渡す。ホストが `assets.delete` と `assets.restore` を提供する場合は、その結果の `version` を `expectedVersion` に指定する。削除後も復元に必要な素材データをホストが保持する。利用中の素材の扱いと、公開済みファイルの保持はホストの契約に従う。
+
+`pages.batch-stage` は `pages.release-plan` のトークンと版を使い、公開原稿と素材・埋め込みの参照を一括公開用に固定します。必要な委任は `pages.publish` です。 `cms.migration-preflight` は型変換する `cmsMigrations` を受け取り、保存済みの下書き・予約を検査します。必要な委任は `cms.publish` です。返された結果を、サイト側のGit公開計画に渡します。

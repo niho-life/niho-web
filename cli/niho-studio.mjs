@@ -204,7 +204,7 @@ async function main() {
       await response.body?.cancel().catch(() => {});
       throw new Error("Expected JSON response");
     }
-    result = await readJson(response.body, id === "pages.draft-conflict" ? DRAFT_RECOVERY_MAX_OUTPUT_BYTES : MAX_RESPONSE_BYTES, response.ok && id === "assets.usages");
+    result = await readJson(response.body, id === "pages.draft-conflict" || id === "pages.batch-stage" ? DRAFT_RECOVERY_MAX_OUTPUT_BYTES : MAX_RESPONSE_BYTES, response.ok && id === "assets.usages");
   } catch {
     const error = response.status === 401 ? "authentication_required" : response.status === 403 ? "forbidden" : "invalid_response";
     write({ error }, response.status, 1, operationId);
