@@ -130,6 +130,10 @@ test("URL変更はホストの明示capabilityで有効になる", () => {
   assert.equal(contract.parseKamakuraCatalog({ ...source, pagePathEditable: false }).pagePathEditable, false);
   assert.equal(contract.parseKamakuraCatalog({ ...source, pagePathEditable: undefined }).pagePathEditable, false);
   assert.throws(() => contract.parseKamakuraCatalog({ ...source, pagePathEditable: "true" }), contract.KamakuraCatalogContractError);
+  assert.deepEqual(contract.parseKamakuraCatalog({ ...source, pageChangeActions: ["create", "update", "visibility"] }).pageChangeActions, ["create", "update", "visibility"]);
+  for (const pageChangeActions of [[], ["duplicate"], ["update", "update"]]) {
+    assert.throws(() => contract.parseKamakuraCatalog({ ...source, pageChangeActions }), contract.KamakuraCatalogContractError);
+  }
 });
 
 test("鎌倉のキャンバスは不変embedの置き場をopaque、Google Mapsをorigin維持にし、それ以外は読み込まない", () => {

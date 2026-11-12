@@ -10,7 +10,7 @@ import { kamakuraAssetLibrary } from "./kamakura-assets.js";
 import { createKamakuraEditorBlocks } from "./kamakura-editor-blocks.js";
 import { createBlankEmbedRegistry, parsePageDocument, parseSitePresentation, type BlockContracts } from "../src/core.js";
 import { parseLocalizationOverlay, parseSiteLocalizationConfig } from "../src/localization.js";
-import { KAMAKURA_CATALOG_CONTRACT_ERROR_CODE, KAMAKURA_CATALOG_CONTRACT_ERROR_STATUS, KAMAKURA_COMMON_PAGE_ID as COMMON_PAGE_ID, KAMAKURA_EDITOR_SITE_ID, KAMAKURA_ORIGIN_RETAINING_FRAME_SOURCES, KamakuraCatalogContractError, parseKamakuraCatalog } from "./kamakura-catalog.js";
+import { KAMAKURA_CATALOG_CONTRACT_ERROR_CODE, KAMAKURA_CATALOG_CONTRACT_ERROR_STATUS, KAMAKURA_COMMON_PAGE_ID as COMMON_PAGE_ID, KAMAKURA_EDITOR_SITE_ID, KAMAKURA_ORIGIN_RETAINING_FRAME_SOURCES, KamakuraCatalogContractError, parseKamakuraCatalog, parseKamakuraCatalogPage } from "./kamakura-catalog.js";
 import type { KamakuraCatalog } from "./kamakura-catalog.js";
 import { parseEnglishPublication, parseEnglishPublicationAccepted } from "../src/english-publication.js";
 import { normalizePageChange, validatePageChangePlan } from "../src/editor-model.js";
@@ -257,6 +257,14 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
     try { return await run(); }
     catch (error) { if (error instanceof EditorApiError && error.status === 409 && error.code !== VISUAL_EDITOR_FROZEN) return { status: "conflict" }; throw error; }
   }
+  function supportedPageChange(input: EditorPageChange) {
+    const change = normalizePageChange(input);
+    if (!change || change.action === "duplicate" || !catalog.pageChangeActions?.includes(change.action)) throw new Error("このページ操作は利用できません。");
+    if (change.action === "create") {
+      if (change.siteId !== KAMAKURA_EDITOR_SITE_ID || change.locale !== "ja") throw new Error("新形式の編集対象ではありません。");
+    } else validTarget(change.target);
+    return change;
+  }
   return {
     listSites: (signal) => request(signal, async () => catalog.sites),
     listPages: (siteId, signal) => request(signal, async () => {
@@ -268,21 +276,21 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
       pageChangeActions: catalog.pageChangeActions,
       pagePathEditable: catalog.pagePathEditable === true,
       preparePageChange: (input: EditorPageChange, signal: AbortSignal) => request(signal, async () => {
-        const change = normalizePageChange(input);
-        if (!change || change.action !== "update") throw new Error("このページ操作は利用できません。");
-        validTarget(change.target);
+        const change = supportedPageChange(input);
         return validatePageChangePlan(await api(`${BASE}/page-changes/prepare`, "POST", { change }, signal) as EditorPageChangePlan, change, catalog.sites[0]!);
       }),
       applyPageChange: (input: EditorPageChangePlan, signal: AbortSignal) => conflict(() => request(signal, async () => {
-        const normalized = normalizePageChange(input.change);
-        if (!normalized) throw new Error("ページ操作を確認してください。");
-        const plan = validatePageChangePlan(input, normalized, catalog.sites[0]!);
-        if (plan.change.action !== "update") throw new Error("このページ操作は利用できません。");
-        validTarget(plan.change.target);
-        const result = record(await api(`${BASE}/page-changes/apply`, "POST", { change: plan.change, confirmationToken: plan.confirmationToken }, signal));
-        const page = record(result.page);
-        if (result.status !== "applied" || page.siteId !== plan.change.target.siteId || page.pageId !== plan.change.target.pageId || page.locale !== "ja" || page.title !== plan.change.title || page.path !== plan.change.path || page.kind !== "page") throw new Error("ページ操作の結果が一致しません。");
-        return { status: "applied" as const, page: { ...plan.change.target, title: plan.change.title, path: plan.change.path, kind: "page" as const } };
+        const change = supportedPageChange(input.change);
+        const plan = validatePageChangePlan(input, change, catalog.sites[0]!);
+        const result = record(await api(`${BASE}/page-changes/apply`, "POST", { change, confirmationToken: plan.confirmationToken }, signal));
+        const page = parseKamakuraCatalogPage(result.page);
+        const matchesChange = change.action === "create"
+          ? page.title === change.title && page.path === change.path && page.published === false && page.visibility === "private"
+          : page.pageId === change.target.pageId && (change.action === "visibility"
+            ? page.visibility === change.visibility
+            : page.title === change.title && page.path === change.path);
+        if (result.status !== "applied" || page.kind !== "page" || !page.path || !matchesChange) throw new Error("ページ操作の結果が一致しません。");
+        return { status: "applied" as const, page };
       }))
     } : {}),
     listFormCompletionPages: (target, signal) => request(signal, async () => {
