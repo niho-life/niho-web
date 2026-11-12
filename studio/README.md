@@ -359,6 +359,6 @@ wrangler dev --config studio/wrangler.toml
 - out-of-band bootstrap SQL 自体は application audit に自動記録されません。operator 側の変更記録を残してください。
 - audit の閲覧 UI/API、保持期間、export は未実装です。D1 には改変・削除を拒否する record として保存します。
 
-### 鎌倉のページ名変更
+### 鎌倉のページ操作
 
-native固定ページの日本語一覧名だけを、ページ操作の二段階確認で変更できる。`editor/page-changes/prepare` と `editor/page-changes/apply` は既存のAccess・Project membership・same-origin検査を通し、要求と確認tokenだけを署名済みのホストAPIへ送る。ホストがcapabilityを返さない間は操作を出さない。作成・複製・非公開切替は未接続、URL欄は読み取り専用。詳細は [ページ管理契約](../docs/page-contract.md#鎌倉studioの接続範囲)。
+固定ページの一覧名・URLの変更、作成、公開範囲の切り替えは、ホストが `pageChangeActions` で公開した操作を使います。`editor/page-changes/prepare` と `editor/page-changes/apply` は Access・プロジェクトの権限・same-origin を検証してから、要求と確認トークンを署名付きでホスト API に送ります。公式 CLI も同じ API を使います。詳細は [ページ管理契約](../docs/page-contract.md#鎌倉studioの接続範囲)。

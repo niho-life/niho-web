@@ -192,9 +192,9 @@ Next.js では `metadata` の各項目へ対応付けます。Astro では `rend
 
 ## 鎌倉Studioの接続範囲
 
-鎌倉ホストが返す capability は `pageChangeActions: ["update"]` / `pagePathEditable: true` です。日本語の既存native固定ページの一覧名とURLを変更し、成功後に現在のホスト正本から一覧を再取得します。ホームのURL・テンプレート・共通枠・英語文書、新規・複製・公開切替はホストが拒否します。`pagePathEditable` を省略する旧ホストではURLを読み取り専用にします。
+鎌倉 Studio はホストが `pageChangeActions` で示す操作を公開します。`update` は日本語の固定ページの一覧名と URL の変更です。`create` は初期状態が `visibility: "private"`、`published: false` のページを作成します。`visibility` は既存ページの公開範囲を切り替えます。作成と公開範囲の切り替えは、ホストがその操作を一覧に加えた時点で使えます。成功後はホストの一覧を再取得します。URL の入力可否は `pagePathEditable` を使います。
 
-ホストは旧path→安定pageIdの永続alias、現行path、SEO、索引、平坦化した301を同じGit CAS commitで保存します。内部hrefは `presentation.links` の表示専用対応と公開側の最終HTML処理で現行URLへ解決します。原稿・R2下書き・公開履歴・翻訳overlayのidentityを保持し、後の保存・公開・履歴復元にも同じ表示規則を使います。対象はホストが指定する同一公開originの内部リンクで、確認用originへの置換は含みません。既存英語delivery URLは据え置き、日本語counterpart・hreflang・sitemapが現行pathを参照します。次回の英語公開もbase releaseにある既存deliveryを引き継ぎます。英語を取り下げてbaseからrouteが消えた後の再公開URLは今回の保護範囲外です。
+ホストはページストアで現行 URL と旧 URL から安定したページ ID への対応を管理します。公開配信はその対応から 301 とサイトマップを生成します。本文・共通枠の内部リンクは `presentation.links` と公開 HTML の処理で現行 URL に解決します。既存の英語 URL と日本語の対応は英語の配信に引き継ぎます。
 
 ### 表示専用の内部リンク対応
 

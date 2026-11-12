@@ -1591,10 +1591,17 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
     let input: unknown;
     try { input = JSON.parse(new TextDecoder().decode(rawBody)); } catch { throw new AuthenticationError("invalid page change"); }
     if (!isRecord(input) || Object.keys(input).sort().join(",") !== (route.pageChange === "prepare" ? "change" : "change,confirmationToken") || !isRecord(input.change)) throw new AuthenticationError("invalid page change");
-    const change = input.change;
-    if (Object.keys(change).sort().join(",") !== "action,path,target,title" || change.action !== "update" || !isRecord(change.target)
-      || Object.keys(change.target).sort().join(",") !== "locale,pageId,siteId" || change.target.siteId !== "kamakura" || change.target.locale !== "ja" || typeof change.target.pageId !== "string" || !COMMON_PAGE_ID.test(change.target.pageId)
-      || !assetText(change.title, 200) || typeof change.path !== "string" || change.path.length > 160 || (route.pageChange === "apply" && (typeof input.confirmationToken !== "string" || !/^[a-f0-9-]{72}$/u.test(input.confirmationToken)))) throw new AuthenticationError("invalid page change");
+    const { change } = input, changeKeys = Object.keys(change).sort().join(","), target = change.target;
+    const targetValid = isRecord(target) && Object.keys(target).sort().join(",") === "locale,pageId,siteId"
+      && target.siteId === KAMAKURA_EDITOR_SITE_ID && target.locale === "ja" && typeof target.pageId === "string" && COMMON_PAGE_ID.test(target.pageId);
+    const titleAndPathValid = assetText(change.title, 200) && typeof change.path === "string" && change.path.length <= 160;
+    const changeValid = change.action === "create"
+      ? changeKeys === "action,locale,path,siteId,title" && change.siteId === KAMAKURA_EDITOR_SITE_ID && change.locale === "ja" && titleAndPathValid
+      : change.action === "update"
+        ? changeKeys === "action,path,target,title" && targetValid && titleAndPathValid
+        : change.action === "visibility" && changeKeys === "action,target,visibility" && targetValid && (change.visibility === "public" || change.visibility === "private");
+    const tokenValid = route.pageChange === "prepare" || typeof input.confirmationToken === "string" && /^[a-f0-9-]{72}$/u.test(input.confirmationToken);
+    if (!changeValid || !tokenValid) throw new AuthenticationError("invalid page change");
     body = new TextEncoder().encode(JSON.stringify(input));
   }
   const bodyBytes = body.slice().buffer;
