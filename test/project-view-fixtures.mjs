@@ -8,5 +8,5 @@ export const directory = () => ({ status: "ready", entries: [entry("one"), entry
 export const dashboard = (selected = project()) => ({
   status: "ready", projectId: selected.id, siteId: selected.site.id, fetchedAt: at,
   overview: { status: "ready", data: { publicationStatus: "published", publishedUrl: selected.site.domains[0], lastPublishedAt: at, publishedPageCount: 7, assetBytes: null, recentChanges: [{ id: "change_one", label: "合成ページを更新", changedAt: at }] } },
-  analytics: { status: "ready", data: { period: { start: "2026-10-01T00:00:00Z", end: "2026-10-20T23:59:59Z" }, fetchedAt: at, uniqueVisitors: 0, pageViews: null } }
+  analytics: { status: "ready", data: { period: { start: "2026-10-01T00:00:00Z", end: "2026-10-20T23:59:59Z" }, fetchedAt: at, activeUsers: 0, pageViews: null } }
 });

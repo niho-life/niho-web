@@ -18,7 +18,7 @@ const adapter: SiteAnalyticsConnectionAdapter = hostSiteAnalyticsAdapter;
 />;
 ```
 
-`ProjectDashboard.onOpenSettings(project, 'analytics')` からホストの設定画面へ遷移し、このコンポーネントを表示してください。ホストが運営承認済みの正確な公開originを渡します。名前は任意で、未指定時はIDを表示します。認証・権限変更時にはadapter参照を差し替えるかunmountしてください。同じ対象の通常再描画ではadapter参照を維持します。
+`ProjectDashboard.onOpenSettings(project, 'analytics')` からホストの設定画面へ遷移し、このコンポーネントを表示してください。分析の画面を `ProjectDashboard` の `analyticsContent` に渡すホストは、その中（`SiteAnalytics` の下など）に置けます。ホストが運営承認済みの正確な公開originを渡します。名前は任意で、未指定時はIDを表示します。認証・権限変更時にはadapter参照を差し替えるかunmountしてください。同じ対象の通常再描画ではadapter参照を維持します。
 
 状態と変更計画は既存の [サイト分析接続契約](site-analytics-contract.md) のparserで検証します。変更はprepare → parser → 対象project/site/origin・現在値と次値の確認 → apply → `readConnection` の順です。所有権確認はpropertyとmethodも要求と照合し、公開確認コードだけを表示します。一回用のconfirmation tokenは表示・保存しません。有効期限は適用直前にも検証します。
 
@@ -27,5 +27,15 @@ apply、接続確認、同期retryの返り値は画面の状態として採用�
 画面全体の権限なしは、ホストが `SiteAppsPermissionError`、または数値 `status: 401 | 403` を持つ例外を投げて通知します。権限エラーでは接続詳細と操作を隠し、管理者確認と再読込を案内します。サービス側の権限不足・失効は `reportingState` で別に表示します。任意の例外文は画面に出しません。
 
 URLプレフィックスとdomain propertyはそのまま保持します。domain propertyはDNS所有確認に使えますが、レポート接続は対象originのルートURLプレフィックス完全一致だけに限定します。所有確認・レポート解除・計測タグ削除はそれぞれ別操作です。解除や差替え時の集計キャッシュ無効化、確認タグの公開範囲、Google権限検証はホストの責務です。
+
+## ホストが提供しない操作（`capabilities`）
+
+```tsx
+<SiteApps target={target} adapter={adapter} capabilities={{ trackingTag: false, ownershipVerification: false }} />
+```
+
+`capabilities` は任意で、既定はすべて `true` です。`trackingTag: false` では計測タグの状態バッジと測定IDだけを示し、タグの設定フォーム・削除ボタンと説明を出しません。`ownershipVerification: false` では「サイト所有権」の欄ごと出さず（状態を持たないホストで「未確認」と誤って見せない）、「所有権確認の準備」・プロパティの種類と確認方法の選択も出しません。Search Console の設定はURLプレフィックスの入力と「レポート接続の準備」（フォームの送信）だけになります。レポートの接続・確認・再試行・解除はどちらの値でも変わりません。説明文は増やしません。
+
+Studio（`studio.niho.life`）は計測タグの公開・削除と所有権確認を扱わないため、owner に両方 `false` で表示し、editor には表示しません。ホスト側の API とガードは [Studio host README](../studio/README.md#サイト分析ga4--search-console) を参照してください。
 
 フォームはnative label/input/buttonと折返しを使います。確認画面はfocus移動・Tab循環・Escape取消・終了時のfocus復帰を持ち、背面はinertにします。320pxでも単一列で操作できます。

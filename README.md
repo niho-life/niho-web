@@ -46,7 +46,7 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 | `@niho/web/projects` | 1 Project = 1 Site の検証、純粋操作、atomic CAS契約。React不要 |
 | `@niho/web/project-manager` | 認証済みホストadapterへ接続する `ProjectManager`。React / React DOM が必要 |
 | `@niho/web/project-directory` | 管理フォームと独立した日常の `ProjectDirectory`。内部またはhost shellの名前・ドメイン検索、OG画像／頭文字カード、更新順の一覧表、Dashboard / Editorメニュー |
-| `@niho/web/project-dashboard` | 選択した1 Project・1 Siteに固定した共通Studio shellの `ProjectDashboard`。上部のタブ（ホーム・サイト機能・アナリティクス）で画面全体を切り替え、公開状況・変更履歴表・メンバー表・アクセス解析・設定を表示 |
+| `@niho/web/project-dashboard` | 選択した1 Project・1 Siteに固定した共通Studio shellの `ProjectDashboard`。上部のタブ（ホーム・サイト機能・アナリティクス）で画面全体を切り替え、公開状況・変更履歴表・メンバー表・アクセス解析（GA4 の指標名のまま。ホストの分析画面を `analyticsContent` で出せる）・設定を表示 |
 | `@niho/web/site-language-settings` | サイト設定に置く日英2言語のシンプルな選択画面 `SiteLanguageSettings`。原文言語からサブを明示し、初回サブ公開後は固定表示にする。Studio は既存サイトの明示した原文言語を設定画面に表示し、CSP 対応の CSS を自身の束に含める。保存・認可・版の競合確認はホストが行う（[デモ](examples/site-language-settings-demo.mjs)） |
 | `@niho/web/project-read-model` | summary / dashboardの型・読み取りadapter・runtime parser。React不要 |
 | `@niho/web/collection-workspace` | コレクション（CMS）の一覧と項目の編集の `CollectionWorkspace`。ホストの adapter で読み書き・自動保存・公開・予約、本文と独立した任意の英語公開状態の更新／安全な再試行、同じ画面で切り替える任意の原文／翻訳タブと訳文タブへの直接リンク（[接続方法](docs/collection-contract.md)） |
@@ -55,7 +55,7 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 | `@niho/web/project-editor` | 既存 `EditorAdapter` をProjectの唯一のSiteへ限定するwrapper。サイト単位ブレークポイントの read / save も site ID と応答を再検証する |
 | `@niho/web/pages` | ページのパス検証・ツリー・内部リンク影響、公開メタ情報（title / description / OG画像 / robots / canonical）の解決と `<head>` 出力。React不要。ページ操作の部分接続と、作成直後の下書きを `published: false` で示す鎌倉 Studio の契約は [ページ管理契約](docs/page-contract.md#鎌倉studioの接続範囲) |
 | `@niho/web/site-analytics` | GA4 / Search Console の接続状態・所有確認・変更計画の型と境界検証。React不要 |
-| `@niho/web/site-apps` | サイト設定の `SiteApps`。計測タグ・所有権確認・レポート接続を分け、変更確認・再試行・解除を提供（[接続方法](docs/site-apps.md)） |
+| `@niho/web/site-apps` | サイト設定の `SiteApps`。計測タグ・所有権確認・レポート接続を分け、変更確認・再試行・解除を提供。ホストが扱わない操作は `capabilities` で状態表示だけにできる（[接続方法](docs/site-apps.md)、Studio のホスト実装は [Studio host README](studio/README.md#サイト分析ga4--search-console)） |
 | `@niho/web/ui-tokens` | Studio と各画面が共有する配色・角丸・文字のトークン（`uiTokensCss`・`uiColor`）。値は STUDIO 社の実測（本文 `#222`）。各画面の CSS は先頭にこれを持ち、ホストは `--nw-*` を上書きできる。一覧・CMS・翻訳は左の縦の太線とタブの下線を使わず、太さは 400／600。React不要（[見た目と実装の契約](docs/editor-ui-design.md#見た目と実装の契約)） |
 | `@niho/web/assets` | 素材参照の列挙・解決済み素材 map の検証、素材ライブラリ adapter の型と応答検証。React不要 |
 | `@niho/web/history` | 文書の差分（`diffDocuments`）、版履歴の項目の検証、端末内の緊急復元ストア（ページ・サイトごとの共通部品）。React不要 |

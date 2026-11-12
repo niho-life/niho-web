@@ -78,12 +78,29 @@ test("dashboard rejects wrong Project/Site, malformed statistics, timestamps, an
 test("unavailable, disconnected, unknown, true zero and forbidden retain distinct meanings", () => {
   const input = dashboard(); const checked = parseProjectDashboardResult(input, project());
   assert.equal(checked.overview.data.assetBytes, null);
-  assert.equal(checked.analytics.data.uniqueVisitors, 0);
+  assert.equal(checked.analytics.data.activeUsers, 0);
   assert.equal(checked.analytics.data.pageViews, null);
   input.overview = { status: "unavailable" }; input.analytics = { status: "disconnected" };
   assert.deepEqual(parseProjectDashboardResult(input, project()), { ...input, fetchedAt: at });
   assert.deepEqual(parseProjectDashboardResult({ status: "forbidden", projectId: "project_one", siteId: "site_one" }, project()), { status: "forbidden", projectId: "project_one", siteId: "site_one" });
   assert.deepEqual(parseProjectDirectoryResult({ status: "forbidden" }, () => true), { status: "forbidden" });
+});
+
+test("analytics summary uses GA4 metric names and never reads a legacy visitor count as active users", () => {
+  const input = dashboard(); input.analytics.data = { ...input.analytics.data, activeUsers: 12, pageViews: 34 };
+  assert.deepEqual(parseProjectDashboardResult(input, project()).analytics.data, { period: input.analytics.data.period, fetchedAt: at, activeUsers: 12, pageViews: 34 });
+  // 旧ホストの uniqueVisitors は検証だけして、アクティブユーザーに読み替えない（未取得の null）
+  const legacy = dashboard(); legacy.analytics.data = { period: legacy.analytics.data.period, fetchedAt: at, uniqueVisitors: 99, pageViews: 7 };
+  const parsed = parseProjectDashboardResult(legacy, project()).analytics.data;
+  assert.equal(parsed.activeUsers, null); assert.equal(parsed.pageViews, 7); assert.equal("uniqueVisitors" in parsed, false);
+  for (const data of [
+    { period: legacy.analytics.data.period, fetchedAt: at, uniqueVisitors: -1, pageViews: 7 },
+    { period: legacy.analytics.data.period, fetchedAt: at, uniqueVisitors: 1, activeUsers: 1, pageViews: 7 },
+    { period: legacy.analytics.data.period, fetchedAt: at, pageViews: 7 }
+  ]) {
+    const invalid = dashboard(); invalid.analytics.data = data;
+    assert.throws(() => parseProjectDashboardResult(invalid, project()));
+  }
 });
 
 test("dashboard members carry display names and roles, degrade separately, and stay optional", () => {

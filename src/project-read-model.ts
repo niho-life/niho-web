@@ -38,7 +38,9 @@ export type ProjectOverview = {
 export type ProjectAnalytics = {
   readonly period: { readonly start: string; readonly end: string };
   readonly fetchedAt: string;
-  readonly uniqueVisitors: number | null;
+  /** GA4 の activeUsers。訪問者数（Visitor）として読み替えない。 */
+  readonly activeUsers: number | null;
+  /** GA4 の screenPageViews（ページ表示）。 */
   readonly pageViews: number | null;
 };
 export type ProjectDashboardResult =
@@ -165,11 +167,14 @@ export function parseProjectDashboardResult(input: unknown, inputProject: Projec
   const parsedAnalytics = rawAnalytics.status === "disconnected"
     ? (keys(rawAnalytics, ["status"], "analytics"), { status: "disconnected" as const })
     : section(rawAnalytics, "analytics", (data): ProjectAnalytics => {
-      keys(data, ["period", "fetchedAt", "uniqueVisitors", "pageViews"], "analytics.data");
+      // 旧ホストの uniqueVisitors は検証だけして捨てる（GA4 の別の指標に読み替えず、activeUsers は未取得の null）
+      const legacy = Object.hasOwn(data, "uniqueVisitors") && !Object.hasOwn(data, "activeUsers");
+      keys(data, ["period", "fetchedAt", legacy ? "uniqueVisitors" : "activeUsers", "pageViews"], "analytics.data");
+      if (legacy) count(data.uniqueVisitors, "analytics.uniqueVisitors");
       const period = record(data.period, "analytics.period"); keys(period, ["start", "end"], "analytics.period");
       const start = date(period.start, "analytics.period.start"), end = date(period.end, "analytics.period.end");
       if (Date.parse(end) < Date.parse(start)) fail("analytics.period", "invalid period");
-      return { period: { start, end }, fetchedAt: date(data.fetchedAt, "analytics.fetchedAt"), uniqueVisitors: count(data.uniqueVisitors, "analytics.uniqueVisitors"), pageViews: count(data.pageViews, "analytics.pageViews") };
+      return { period: { start, end }, fetchedAt: date(data.fetchedAt, "analytics.fetchedAt"), activeUsers: legacy ? null : count(data.activeUsers, "analytics.activeUsers"), pageViews: count(data.pageViews, "analytics.pageViews") };
     });
   // members は任意。返さないホストでは画面が Project.members を使う（未取得と区別するため undefined のまま）
   const members = value.members === undefined ? undefined : membersSection(value.members);

@@ -19,6 +19,11 @@ export type SiteAppsProps = {
   readonly adapter: SiteAnalyticsConnectionAdapter;
   readonly projectName?: string;
   readonly siteName?: string;
+  /**
+   * ホストが提供する操作（既定はすべて true）。trackingTag: false は状態バッジと測定IDだけを示し、ownershipVerification: false は所有権の欄ごと出さない。
+   * `trackingTag` は計測タグの公開・削除、`ownershipVerification` は Search Console の所有権確認（準備・確認）。
+   */
+  readonly capabilities?: { readonly trackingTag?: boolean; readonly ownershipVerification?: boolean };
 };
 
 /** Hosts may throw this for session or project permission failures. Never put secrets in error messages. */
@@ -75,7 +80,8 @@ export function SiteApps(props: SiteAppsProps) {
   return <SiteAppsSession key={source.generation} {...props} />;
 }
 
-function SiteAppsSession({ target: inputTarget, adapter, projectName, siteName }: SiteAppsProps) {
+function SiteAppsSession({ target: inputTarget, adapter, projectName, siteName, capabilities }: SiteAppsProps) {
+  const trackingTag = capabilities?.trackingTag !== false, ownership = capabilities?.ownershipVerification !== false;
   const target = useMemo(() => { try { return parseSiteAnalyticsTarget(inputTarget); } catch { return null; } }, [inputTarget.projectId, inputTarget.siteId, inputTarget.siteOrigin]);
   const [connection, setConnection] = useState<SiteAnalyticsConnection | null>(null);
   const [loading, setLoading] = useState(true), [busy, setBusy] = useState(false), [forbidden, setForbidden] = useState(false);
@@ -225,11 +231,11 @@ function SiteAppsSession({ target: inputTarget, adapter, projectName, siteName }
               <p>公開サイトのアクセスを計測し、GA4レポートを分析画面に表示します。</p>
               <div className="sa-row"><div className="sa-row-head"><h3>計測タグ</h3><Badge status={connection.ga4.trackingTagState} /></div>
                 <p className="sa-value">測定ID: {connection.ga4.measurementId ?? "未設定"}</p>
-                <p className="sa-muted">公開サイトへ計測タグを設定します。レポート接続は別に設定します。</p>
+                {trackingTag && <><p className="sa-muted">公開サイトへ計測タグを設定します。レポート接続は別に設定します。</p>
                 <details><summary>計測タグの設定</summary><form className="sa-form" onSubmit={(event) => { event.preventDefault(); prepare("publish-ga4-tag"); }}>
                   <label><span>GA4測定ID</span><input value={measurementId} onChange={(event) => setMeasurementId(event.target.value)} placeholder="G-XXXXXXXXXX" required pattern="G-[A-Za-z0-9]{4,24}" maxLength={26} autoComplete="off" /></label>
                   <div className="sa-actions"><button type="submit">タグの変更を確認</button>{connection.ga4.measurementId && <button type="button" className="sa-danger" onClick={() => prepare("remove-ga4-tag")}>タグを削除</button>}</div>
-                </form></details>
+                </form></details></>}
               </div>
               <div className="sa-row"><div className="sa-row-head"><h3>レポート接続</h3><Badge status={connection.ga4.reportingState} /></div>
                 <p className="sa-value">プロパティID: {connection.ga4.propertyId ?? "未設定"}</p><p className="sa-muted">{reportHint(connection.ga4.reportingState)}</p>
@@ -244,21 +250,22 @@ function SiteAppsSession({ target: inputTarget, adapter, projectName, siteName }
               <div className="sa-service-head"><h2 id={`${id}-gsc`}>Search Console</h2><Badge status={connection.searchConsole.reportingState} /></div>
               <p>Google検索での表示回数やクリックを分析画面に表示します。</p>
               <p className="sa-value">プロパティ: {connection.searchConsole.property?.value ?? "未設定"}</p>
-              <div className="sa-row"><div className="sa-row-head"><h3>サイト所有権</h3><Badge status={connection.searchConsole.ownershipState} /></div>
+              {/* 所有権確認を扱わないホストは、状態を持たないので欄ごと出さない（未確認と誤って見せない） */}
+              {ownership && <div className="sa-row"><div className="sa-row-head"><h3>サイト所有権</h3><Badge status={connection.searchConsole.ownershipState} /></div>
                 <p className="sa-muted">{connection.searchConsole.ownershipState === "verified" ? "公開サイトの所有権は確認済みです。" : connection.searchConsole.ownershipState === "failed" ? "所有権を確認できませんでした。確認コードの反映後に再確認してください。" : "公開サイトの確認コードまたはDNSで所有権を確認します。"}</p>
                 {connection.searchConsole.verificationMethod && <p className="sa-value">確認方法: {methodLabel(connection.searchConsole.verificationMethod)}</p>}
                 {connection.searchConsole.property && <div className="sa-actions"><button type="button" onClick={() => check("ownership-verify")}>所有権を確認</button></div>}
-              </div>
+              </div>}
               <div className="sa-row"><div className="sa-row-head"><h3>レポート接続</h3><Badge status={connection.searchConsole.reportingState} /></div>
                 <p className="sa-muted">{reportHint(connection.searchConsole.reportingState)}</p>
                 {connection.searchConsole.property && <div className="sa-actions"><button type="button" onClick={() => check("search-verify")}>接続を確認</button><button type="button" onClick={() => check("search-retry")}>同期を再試行</button><button type="button" className="sa-danger" onClick={() => prepare("disconnect-search-console")}>レポートを解除</button></div>}
               </div>
-              <details><summary>Search Consoleの設定</summary><form className="sa-form" onSubmit={(event) => { event.preventDefault(); prepareVerification(); }}>
-                <label><span>プロパティの種類</span><select value={propertyKind} onChange={(event) => { const kind = event.target.value as SearchConsoleProperty["kind"]; setPropertyKind(kind); setPropertyValue(kind === "url-prefix" ? `${target.siteOrigin}/` : `sc-domain:${new URL(target.siteOrigin).hostname}`); if (kind === "domain") setMethod("dns"); }}><option value="url-prefix">URLプレフィックス</option><option value="domain">ドメイン</option></select></label>
+              <details><summary>Search Consoleの設定</summary><form className="sa-form" onSubmit={(event) => { event.preventDefault(); if (ownership) prepareVerification(); else prepare("connect-search-console"); }}>
+                {ownership && <label><span>プロパティの種類</span><select value={propertyKind} onChange={(event) => { const kind = event.target.value as SearchConsoleProperty["kind"]; setPropertyKind(kind); setPropertyValue(kind === "url-prefix" ? `${target.siteOrigin}/` : `sc-domain:${new URL(target.siteOrigin).hostname}`); if (kind === "domain") setMethod("dns"); }}><option value="url-prefix">URLプレフィックス</option><option value="domain">ドメイン</option></select></label>}
                 <label><span>Search Consoleプロパティ</span><input value={propertyValue} onChange={(event) => setPropertyValue(event.target.value)} required maxLength={2048} autoComplete="off" spellCheck={false} /></label>
                 <p className="sa-muted">Googleに表示される値をそのまま入力してください。レポートは {target.siteOrigin}/ に完全一致するURLプレフィックスを使います。</p>
-                <label><span>所有権の確認方法</span><select value={method} onChange={(event) => setMethod(event.target.value as SearchConsoleVerificationMethod)}><option value="meta-tag" disabled={propertyKind === "domain"}>メタタグ</option><option value="dns">DNS TXTレコード</option></select></label>
-                <div className="sa-actions"><button type="submit">所有権確認の準備</button><button type="button" disabled={propertyKind !== "url-prefix" || propertyValue !== `${target.siteOrigin}/`} onClick={() => prepare("connect-search-console")}>レポート接続の準備</button></div>
+                {ownership && <label><span>所有権の確認方法</span><select value={method} onChange={(event) => setMethod(event.target.value as SearchConsoleVerificationMethod)}><option value="meta-tag" disabled={propertyKind === "domain"}>メタタグ</option><option value="dns">DNS TXTレコード</option></select></label>}
+                <div className="sa-actions">{ownership && <button type="submit">所有権確認の準備</button>}<button type={ownership ? "button" : "submit"} disabled={propertyKind !== "url-prefix" || propertyValue !== `${target.siteOrigin}/`} onClick={ownership ? () => prepare("connect-search-console") : undefined}>レポート接続の準備</button></div>
               </form></details>
             </section>
           </fieldset>
