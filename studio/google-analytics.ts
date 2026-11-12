@@ -23,6 +23,10 @@ const MAX_SERVICE_ACCOUNT_BYTES = 16 * 1024;
 const SEARCH_CONSOLE_TIME_ZONE = "America/Los_Angeles";
 const TOP_PAGES = 20;
 const SEARCH_CONSOLE_PREVIOUS_PAGE_ROWS = 1000;
+/** final データとして扱う遅れ（Pacific Time の今日から何日前まで）。 */
+const SEARCH_CONSOLE_FINAL_DELAY_DAYS = 3;
+/** Search Analytics API が返す履歴の長さ。 */
+const SEARCH_CONSOLE_RETENTION_MONTHS = 16;
 
 export type GoogleFailureCategory =
   | "credentials" | "permission" | "not-found" | "quota" | "upstream" | "invalid-response" | "timeout" | "network" | "redirect";
@@ -499,16 +503,21 @@ export type SearchConsoleTarget = { readonly siteUrl: string; readonly siteOrigi
 export async function loadSearchConsoleReport(client: GoogleAnalyticsClient, target: SearchConsoleTarget, window: ReportWindow, fetchedAt: string): Promise<SourceResult<SearchConsoleReport>> {
   const query = (range: LocalRange, dimensions: SearchConsoleQuery["dimensions"], rowLimit: number) =>
     client.searchConsoleQuery(target.siteUrl, { startDate: range.start, endDate: range.end, dimensions, rowLimit });
+  // Search Analytics が返す履歴は16か月まで。直前期がそれより古い日を含む（12か月表示など）ときは、
+  // 一部の日だけの値を比較値に見せないよう、直前期は取得せず未取得（null）にする
+  const retentionStart = monthsBack(addDays(window.range.end, SEARCH_CONSOLE_FINAL_DELAY_DAYS), SEARCH_CONSOLE_RETENTION_MONTHS);
+  const previousAvailable = window.previousRange.start >= retentionStart;
+  const none = Promise.resolve({ rows: [] as readonly SearchConsoleRow[] });
   const [currentTotal, previousTotal, daily, currentPages, previousPages] = await Promise.all([
     query(window.range, [], 1),
-    query(window.previousRange, [], 1),
+    previousAvailable ? query(window.previousRange, [], 1) : none,
     query(window.range, ["date"], 400),
     query(window.range, ["page"], 100),
-    query(window.previousRange, ["page"], SEARCH_CONSOLE_PREVIOUS_PAGE_ROWS)
+    previousAvailable ? query(window.previousRange, ["page"], SEARCH_CONSOLE_PREVIOUS_PAGE_ROWS) : none
   ]);
   const totalOf = (rows: readonly SearchConsoleRow[]) => rows[0] ?? null;
   const current = totalOf(currentTotal.rows), previous = totalOf(previousTotal.rows);
-  const pair = (pick: (row: SearchConsoleRow | null) => number | null): Metric => ({ current: pick(current), previous: pick(previous) });
+  const pair = (pick: (row: SearchConsoleRow | null) => number | null): Metric => ({ current: pick(current), previous: previousAvailable ? pick(previous) : null });
   const counted = (key: "clicks" | "impressions") => (row: SearchConsoleRow | null) => row ? row[key] : 0;
   const rated = (key: "ctr" | "position") => (row: SearchConsoleRow | null) => row && row.impressions > 0 ? row[key] : null;
 
@@ -539,7 +548,7 @@ export async function loadSearchConsoleReport(client: GoogleAnalyticsClient, tar
   }
   // 直前期の page 行が上限まであるとき、無い行は 0 と断定できない
   const previousComplete = previousPages.rows.length < SEARCH_CONSOLE_PREVIOUS_PAGE_ROWS;
-  const previousPage = (path: string, key: "clicks" | "impressions") => previousByPath.get(path)?.[key] ?? (previousComplete ? 0 : null);
+  const previousPage = (path: string, key: "clicks" | "impressions") => !previousAvailable ? null : previousByPath.get(path)?.[key] ?? (previousComplete ? 0 : null);
 
   const update = { lastUpdatedAt: fetchedAt, dataThrough: window.range.end };
   if (!currentTotal.rows.length && !previousTotal.rows.length && !daily.rows.length && !currentPages.rows.length && !previousPages.rows.length) {
@@ -607,7 +616,7 @@ export function ga4Window(period: AnalyticsPeriod, timeZone: string, now: number
 
 /** Search Console は Pacific Time の今日から3日前まで（final データ）。 */
 export function searchConsoleWindow(period: AnalyticsPeriod, now: number): ReportWindow {
-  return analyticsWindow(period, addDays(localDate(now, SEARCH_CONSOLE_TIME_ZONE), -3), SEARCH_CONSOLE_TIME_ZONE);
+  return analyticsWindow(period, addDays(localDate(now, SEARCH_CONSOLE_TIME_ZONE), -SEARCH_CONSOLE_FINAL_DELAY_DAYS), SEARCH_CONSOLE_TIME_ZONE);
 }
 
 function datesOf(range: LocalRange): string[] {

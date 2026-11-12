@@ -274,19 +274,25 @@ const STATE_COLUMN: Readonly<Record<Source, { readonly state: string; readonly s
   "search-console": { state: "gsc_reporting_state", synced: "gsc_last_synced_at", property: "gsc_property_value" }
 };
 
-async function recordSuccess(env: SiteAnalyticsEnv, siteId: string, source: Source, period: AnalyticsPeriod, version: number, rangeEnd: string, result: AnySource): Promise<void> {
+/**
+ * 取得できた集計を cache に入れ、接続状態を connected に戻す。
+ * 通常の取得（recover=false）では、取得中にほかの要求が権限失効・不一致を記録していたら、cache も状態も書かない
+ * （失効の検知より前に始まった取得の遅い成功で、失効を connected に戻さない）。明示の再試行（recover=true）だけが失効から戻せる。
+ */
+async function recordSuccess(env: SiteAnalyticsEnv, siteId: string, source: Source, period: AnalyticsPeriod, version: number, rangeEnd: string, result: AnySource, recover: boolean): Promise<void> {
   const column = STATE_COLUMN[source];
+  const healthy = recover ? "" : `AND ${column.state} NOT IN ('permission-revoked', 'permission-required', 'property-mismatch')`;
   await env.DB.batch([
     env.DB.prepare(`
       INSERT INTO site_analytics_cache (site_id, source, period, connection_version, range_end, result_json, fetched_at, expires_at)
       SELECT ?1, ?2, ?3, ?4, ?5, ?6, unixepoch(), unixepoch() + ${CACHE_SECONDS}
-       WHERE EXISTS (SELECT 1 FROM site_analytics_connections WHERE site_id = ?1 AND version = ?4)
+       WHERE EXISTS (SELECT 1 FROM site_analytics_connections WHERE site_id = ?1 AND version = ?4 ${healthy})
       ON CONFLICT (site_id, source, period) DO UPDATE SET
         connection_version = excluded.connection_version, range_end = excluded.range_end, result_json = excluded.result_json,
         fetched_at = excluded.fetched_at, expires_at = excluded.expires_at
     `).bind(siteId, source, period, version, rangeEnd, JSON.stringify(result)),
     env.DB.prepare(`UPDATE site_analytics_connections SET ${column.state} = 'connected', ${column.synced} = unixepoch()
-                     WHERE site_id = ?1 AND version = ?2 AND ${column.property} IS NOT NULL`).bind(siteId, version)
+                     WHERE site_id = ?1 AND version = ?2 AND ${column.property} IS NOT NULL ${healthy}`).bind(siteId, version)
   ]);
 }
 
@@ -333,7 +339,7 @@ async function ga4Source(env: SiteAnalyticsEnv, context: LoaderContext, period: 
         propertyId: row.ga4_property_id, streamId: row.ga4_stream_id, hostName: new URL(origin).hostname, timeZone: row.ga4_time_zone
       }, window, new Date(now).toISOString()));
       if (!result) return { state: "failed" };
-      await recordSuccess(env, context.siteId, "ga4", period, row.version, window.range.end, result);
+      await recordSuccess(env, context.siteId, "ga4", period, row.version, window.range.end, result, force);
       return result;
     } catch (error) {
       return await failedSource(env, context.siteId, "ga4", row.version, error);
@@ -364,7 +370,7 @@ async function searchConsoleSource(env: SiteAnalyticsEnv, context: LoaderContext
     try {
       const result = checkedSource(context, period, "search-console", await loadSearchConsoleReport(new GoogleAnalyticsClient(account), { siteUrl, siteOrigin: origin }, window, new Date(now).toISOString()));
       if (!result) return { state: "failed" };
-      await recordSuccess(env, context.siteId, "search-console", period, row.version, window.range.end, result);
+      await recordSuccess(env, context.siteId, "search-console", period, row.version, window.range.end, result, force);
       return result;
     } catch (error) {
       return await failedSource(env, context.siteId, "search-console", row.version, error);

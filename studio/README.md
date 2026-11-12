@@ -275,7 +275,7 @@ log は editor・CMS と同じく問い合わせ ID・固定の operation（`loc
 - GA4: Admin API でプロパティの Web データストリームを読み、`defaultUri` の origin がサイトの origin と完全一致するストリームがちょうど1つのときだけ接続します。0件・複数は `409 property_mismatch` で保存しません。時間帯はプロパティの値を保存します。集計の `runReport` は必ず接続した `streamId` とサイトの `hostName` の両方で絞るので、同じプロパティに別のサイトが入っていても数えません。
 - Search Console: 公開 origin のルートの URL-prefix（`https://<origin>/`）と完全一致するものだけです。`sc-domain:`・別 origin・パス付きは `409 property_mismatch` です。`sites.get` の permissionLevel が `siteOwner` / `siteFullUser` / `siteRestrictedUser` のときだけ接続し、`siteUnverifiedUser`・403・404 は `409 permission_required` です。Search Analytics は `dataState: "final"` で、dimension は `date` と `page` だけです。検索語（`query`）は取得しません。page の行は同じ origin の安全な path だけを返します。
 - 接続の後に公開 origin が変わったら、前の origin で接続した source は不一致にし（集計は `failed`）、つなぎ直すまで値を返しません。鎌倉の公開 origin を切り替える日は、owner が接続し直します。
-- 接続の変更・解除で `version` が進みます。集計の cache は site・source・期間・`version`・期間の終端日に束縛し、古い cache は使いません。401/403 を検知したら `permission-revoked` にして cache を消し、権限が戻って「接続を確認」するまで集計を返しません。404 は `property-mismatch`、429・`RESOURCE_EXHAUSTED` は `quota-limited`、5xx・timeout・redirect は接続状態を変えずにその回だけ `failed` です。
+- 接続の変更・解除で `version` が進みます。集計の cache は site・source・期間・`version`・期間の終端日に束縛し、古い cache は使いません。401/403 を検知したら `permission-revoked` にして cache を消し、権限が戻って「接続を確認」か「同期を再試行」をするまで集計を返しません。失効の検知より前に始まった取得が遅れて成功しても、cache を作らず `connected` に戻しません。404 は `property-mismatch`、429・`RESOURCE_EXHAUSTED` は `quota-limited`、5xx・timeout・redirect は接続状態を変えずにその回だけ `failed` です。
 - Google への通信は redirect を追わず、10 秒で打ち切り、応答は 2 MiB までです。鍵・access token・Google の生の応答・検索語・個人単位の行は D1・ログ・ブラウザに出しません。ログは `NIHO Studio analytics failure` に固定の operation・分類・HTTP status だけです。
 
 ### API
@@ -300,7 +300,7 @@ log は editor・CMS と同じく問い合わせ ID・固定の operation（`loc
 ### 集計
 
 - GA4: 期間の終端はプロパティの時間帯で昨日です。7日・28日はちょうどその日数、3か月・12か月は暦の月（89〜92日・365〜366日）で数え、直前の同じ長さと比べます。sessions・activeUsers・screenPageViews（契約の pageViews）、日別の sessions、`sessionDefaultChannelGroup` 別の sessions（日本語名。自然検索・直接・参照元サイト・ソーシャル・有料検索・メール・不明のほかは「その他」）、`pagePath` 上位20件のページ表示（安全な path だけ・title なし）です。
-- Search Console: Pacific Time の今日の3日前までです。合計・日別・page 上位20件で、CTR は 0〜1 です。
+- Search Console: Pacific Time の今日の3日前までです。合計・日別・page 上位20件で、CTR は 0〜1 です。Search Analytics が返す履歴は16か月までなので、直前期がそれより古い日を含む場合（12か月表示）は直前期を問い合わせず、比較値を未取得（`null`、画面では「—」）にします。
 - 0 は実測値、取れなかった値は `null`、行の無い成功は `empty` です。片方の失敗はもう片方に影響しません。cache は正規化した集計だけを30分保存します。
 - 計測タグ: GA4 の接続と確認のときに、公開 origin の `/` を redirect なし・4 秒・1 MiB までで読み、ストリームの測定IDがあれば `published`、無ければ `not-configured`（測定IDは示さない）、読めなければ `failed` です。Tag Manager 経由の設置は見つけられません。
 - Dashboard の要約は GA4 の28日（cache があればそれ）で、「アクティブユーザー」「ページ表示」と表示します。

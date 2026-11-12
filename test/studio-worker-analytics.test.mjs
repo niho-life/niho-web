@@ -74,7 +74,9 @@ function googleState() {
       }
     },
     html: { [ALPHA]: { status: 200, body: tagHtml("G-ALPHA0001") } },
-    fail: { admin: null, ga4Report: null, gscSite: null, gscQuery: null }
+    fail: { admin: null, ga4Report: null, gscSite: null, gscQuery: null },
+    // runReport の応答を返す直前に呼ぶ（ほかの要求が同時に状態を書いた場合を再現する）
+    onRunReport: null
   };
 }
 
@@ -122,6 +124,7 @@ async function fixture(t, options = {}) {
       assert.ok(match, url.pathname);
       const body = JSON.parse(init.body);
       calls.runReport.push({ propertyId: match[1], body });
+      if (state.onRunReport) state.onRunReport();
       if (state.fail.ga4Report) return state.fail.ga4Report === 302 ? new Response(null, { status: 302, headers: { Location: "https://evil.example/" } }) : failWith(state.fail.ga4Report);
       return runReport(state, body);
     }
@@ -600,4 +603,41 @@ testWithD1("without the service-account secret nothing breaks and changes are un
       assertQuietLogs(h.logs);
     });
   }
+});
+
+testWithD1("Search Console leaves previous values unknown when the previous range is older than the 16-month history", async (t) => {
+  const h = await fixture(t);
+  await connectSearchConsole(h);
+  // 12か月の直前期は約24〜12か月前で、Search Analytics の16か月の履歴を超える。取得せず、比較値は未取得（null）
+  const yearly = await report(h, "12m");
+  assert.equal(yearly.searchConsole.state, "available");
+  const previousStart = yearly.searchConsole.report.previousRange.start;
+  assert.equal(h.calls.gsc.some((call) => call.body.startDate === previousStart), false, "直前期は問い合わせない");
+  for (const metric of ["clicks", "impressions", "ctr", "averagePosition"]) assert.equal(yearly.searchConsole.report[metric].previous, null, metric);
+  for (const page of yearly.searchConsole.report.topPages) { assert.equal(page.clicks.previous, null); assert.equal(page.impressions.previous, null); }
+  // 3か月の直前期は履歴の中なので、これまでどおり問い合わせて比較値を出す
+  const quarterly = await report(h, "3m");
+  const quarterStart = quarterly.searchConsole.report.previousRange.start;
+  assert.ok(h.calls.gsc.some((call) => call.body.startDate === quarterStart), "直前期を問い合わせる");
+  assert.equal(quarterly.searchConsole.report.clicks.previous, 0);
+});
+
+testWithD1("a late successful fetch does not revive a connection that another request marked as revoked", async (t) => {
+  const h = await fixture(t);
+  await connectGa4(h);
+  // 取得の途中で、ほかの要求が権限失効を記録した（cache も消した）状態を作る
+  h.state.onRunReport = () => {
+    h.sqlite.prepare("UPDATE site_analytics_connections SET ga4_reporting_state = 'permission-revoked' WHERE site_id = 'site-alpha'").run();
+    h.sqlite.prepare("DELETE FROM site_analytics_cache WHERE site_id = 'site-alpha'").run();
+  };
+  await report(h, "7d");
+  h.state.onRunReport = null;
+  // 遅れて届いた成功で connected に戻さず、cache も作らない
+  assert.equal((await body(await h.send("GET", `${api()}/connection`), 200)).ga4.reportingState, "permission-revoked");
+  assert.equal(h.count("site_analytics_cache", "site_id = 'site-alpha' AND source = 'ga4'"), 0);
+  assert.equal((await report(h, "7d")).ga4.state, "permission-expired");
+  // 明示の再試行で権限が確かめられたときだけ戻る
+  await body(await h.send("POST", `${api()}/ga4/reporting/retry`, {}), 200);
+  assert.equal((await body(await h.send("GET", `${api()}/connection`), 200)).ga4.reportingState, "connected");
+  assert.equal((await report(h, "7d")).ga4.state, "available");
 });
