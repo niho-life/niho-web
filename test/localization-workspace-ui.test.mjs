@@ -67,7 +67,7 @@ test("list: staged loading, groups, band, filters, search and excluded reasons",
     assert.deepEqual([...document.querySelectorAll(".cw-nav button")].map(nameOf), ["すべて（5 件）", "固定ページ（2 件・未翻訳 2 件）", "共通部分（1 件）", "記事（2 件・未翻訳 1 件）"]);
     const band = document.querySelector(".lw-band");
     assert.equal(band.querySelector("h2").textContent, "English版");
-    assert.ok(band.textContent.includes("公開中：10/1 の公開"));
+    assert.ok(band.textContent.includes("公開中：10/1 の公開（2026/10/1 10:00）"));
     assert.ok(band.textContent.includes("翻訳済み 1/4"));
     assert.ok(button("English版を公開…"));
     assert.deepEqual([...document.querySelectorAll(".cw-filters button")].map(nameOf), ["未翻訳（3 件）", "翻訳済み（1 件）", "すべて（5 件）", "対象外（1 件）"]);
@@ -715,5 +715,16 @@ test("translation job and preview frame", async () => {
     assert.equal(inputText("title"), "Unsaved title", "reloading after the job keeps unsaved input");
     await press("一覧へ");
     assert.equal(commands(memory, "set-value").at(-1).input.value, "Unsaved title", "going back saves first");
+  } finally { await app.cleanup(); }
+});
+
+test("band: a version named after its publish time does not repeat the time", async () => {
+  const memory = createLocalizationMemory({ currentLabel: "2026/10/1 10:00 の公開" });
+  const app = await setup({ adapter: memory.adapter });
+  try {
+    const line = document.querySelector(".lw-band .lw-band-line").textContent;
+    assert.equal(line, "公開中：2026/10/1 10:00 の公開");
+    assert.equal(document.querySelector(".cw-search input").getAttribute("placeholder"), "検索", "the placeholder fits the search box");
+    assert.ok(document.querySelector(".cw-search .cw-sr").textContent.includes("題名・アドレス"), "the label still says what is searched");
   } finally { await app.cleanup(); }
 });

@@ -119,6 +119,7 @@ const richPrefix = (value, prefix) => {
  * - mediaBase: 画像の置き場（既定は https://media.example.test。デモはローカルの /media）
  * - glossary: true または { version, entries, reviewed }（省略時は用語集なし。reviewed は旧い確認の記録で、公開の条件にしない）
  * - attention: { label, keys }（原文が更新されたとき目立たせる項目。省略時は出さない）
+ * - currentLabel: 公開中の版の名前（既定は「10/1 の公開」）
  */
 export function createLocalizationMemory(options = {}) {
   const now = () => Date.now();
@@ -136,7 +137,7 @@ export function createLocalizationMemory(options = {}) {
         : options.glossary ? structuredClone(options.glossary) : null,
     },
     catalog: options.catalogRounds ? { done: 0, total: options.catalogRounds } : null,
-    current: options.firstRelease ? null : { releaseId: "en-2026-10-01", version: "r2", label: "10/1 の公開", publishedAt: "2026-10-01T01:00:00.000Z", pages: 3, sharedResources: 1 },
+    current: options.firstRelease ? null : { releaseId: "en-2026-10-01", version: "r2", label: options.currentLabel ?? "10/1 の公開", publishedAt: "2026-10-01T01:00:00.000Z", pages: 3, sharedResources: 1 },
     history: options.firstRelease ? [] : [{ releaseId: "en-2026-09-15", version: "r1", label: "9/15 の公開", publishedAt: "2026-09-15T01:00:00.000Z", pages: 2, sharedResources: 1, operation: "publish", by: "管理者（架空）", restorable: true }],
     pending: null, plan: null, operations: new Map(), jobs: new Map(), releaseCount: options.firstRelease ? 0 : 2, forbidden: false,
   };

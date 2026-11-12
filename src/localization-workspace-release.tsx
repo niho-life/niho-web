@@ -7,7 +7,7 @@ import {
   type LocaleReleaseBlocker, type LocaleReleaseHistoryEntry, type LocaleReleasePending, type LocaleReleaseProgress, type LocaleReleaseSummary,
   type LocaleReleaseWorkspacePlan, type LocaleReleaseWorkspaceState, type LocalizationOverview, type LocalizationWorkspaceAdapter,
 } from "./localization-workspace-model.js";
-import { Progress, WorkspaceDialog } from "./localization-workspace-ui.js";
+import { Progress, releaseName, releaseTimeSuffix, WorkspaceDialog } from "./localization-workspace-ui.js";
 
 export type ReleaseStart =
   | { readonly kind: "publish" }
@@ -148,7 +148,7 @@ export function ReleaseDialog({ adapter, start, overview, timeZone, onClose, onO
     </>; break;
     case "start": body = <>
       {operation === "rollback" && start.kind === "rollback"
-        ? <p className="lw-dialog-lead">「{start.target.label}」（{formatDateTime(start.target.publishedAt, timeZone)}）に戻します。前に公開した版を、そのまま公開し直します。</p>
+        ? <p className="lw-dialog-lead">「{start.target.label}」{releaseTimeSuffix(start.target, timeZone)}に戻します。前に公開した版を、そのまま公開し直します。</p>
         : <p className="lw-dialog-lead">公開できない理由はありません。準備では、公開するページを組み立てて確かめます（まだ公開はしません）。</p>}
       <div className="cw-dialog-actions">
         <button type="button" className="cw-button" onClick={onClose}>やめる</button>
@@ -168,7 +168,7 @@ export function ReleaseDialog({ adapter, start, overview, timeZone, onClose, onO
         <dl className="cw-facts lw-plan">
           <div><dt>公開する先</dt><dd className="cw-address">{plan.address}</dd></div>
           <div><dt>ページ数</dt><dd>{plan.pages} ページ</dd></div>
-          <div><dt>今の公開中の版</dt><dd>{plan.previous ? `${plan.previous.label}（${formatDateTime(plan.previous.publishedAt, timeZone)}）` : "まだ公開していません"}</dd></div>
+          <div><dt>今の公開中の版</dt><dd>{plan.previous ? releaseName(plan.previous, timeZone) : "まだ公開していません"}</dd></div>
           <div><dt>{operation === "rollback" ? "戻す版" : "新しい版"}</dt><dd>{plan.prepared.label}</dd></div>
           <div><dt>確認の期限まで</dt><dd><span role="timer" aria-live="off">残り {clock(seconds)}</span></dd></div>
         </dl>
