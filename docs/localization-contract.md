@@ -108,7 +108,7 @@ paragraph内に安全に表現できないinstance等がある場合、短いtex
 
 fingerprintは変更検知・非同期結果の照合用です。認証、署名、改ざん防止の代わりではありません。hostは別途Project/Site権限を検証します。
 
-## Candidate、手編集、確認
+## Candidate、手編集、（旧い）確認
 
 overlayはページ・翻訳方向・楽観versionにscopeされます。provider結果は次のenvelopeで `acceptTranslationResult` に渡します。
 
@@ -133,11 +133,11 @@ const withCandidates = acceptTranslationResult(overlay, jaToEn, result);
 
 受理時にsite/page/direction、現在のsource fingerprint、overlayの `baseVersion`、重複・未知unit、値の型・長さ、rich-text保護要素を検証します。生成結果内のURL、メールアドレス、数値（桁区切りの表記差を除く）も原文と一致しなければ拒否します。固有名詞は推測で保護せずhost glossaryで管理します。同じ結果の再受理はversion不一致で拒否されます。
 
-自動翻訳ジョブの結果は `applyAutomaticTranslationResult` で受け取ります。訳がない単位と、まだ人が触れていない `AUTO` の単位は、検証済みの新しい訳をそのままdraftへ入れます。`MANUAL` の単位と、`AUTO` でも人が確認済みにした単位はdraftを残してcandidateを付けます。明示的に翻訳案だけを作る操作には従来の `acceptTranslationResult` を使います。どちらも同じ検証と版比較を通ります。
+自動翻訳ジョブの結果は `applyAutomaticTranslationResult` で受け取ります。訳がない単位（翻訳案だけの単位を含む）と `AUTO` の単位は、確認の記録（`reviewedSourceFingerprint`）の有無にかかわらず、検証済みの新しい訳でdraftを置き換えます（置き換えた単位に確認の記録とcandidateは残りません）。`MANUAL` の単位は、確認の記録の有無にかかわらずdraftを残してcandidateを付けます。2026-11-12 に人が確認する工程を廃止したため、以前の「`AUTO` でも人が確認済みにした単位はdraftを残す」規則はやめました。明示的に翻訳案だけを作る操作には従来の `acceptTranslationResult` を使います。どちらも同じ検証と版比較を通ります。
 
-どちらを、いつ呼ぶかはホストが決めます。保存のたびに呼ぶ（自動下書きを有効にする）か、最初の一括下書きと「翻訳案を作る」を押したときだけ呼ぶかを選べます。鎌倉は後者で運用します（2026-11-10、#171）。`AUTO` のまま確認していない訳は未確認で、公開するのは人が確認したページだけです。ライブラリはこの運用を強制せず、公開の条件は `docs/localization-release.md` とホストが定めます。
+どちらを、いつ呼ぶかはホストが決めます。保存のたびに呼ぶ（自動下書きを有効にする）か、最初の一括下書きと「翻訳案を作る」を押したときだけ呼ぶかを選べます。鎌倉は後者で運用します（2026-11-10、#171）。自動・手修正を問わず、今の原文に対応する訳（`draft` と `reviewed`）は翻訳済みで、人の確認なしに公開できます（2026-11-12）。ライブラリはこの運用を強制せず、公開の条件は `docs/localization-release.md` とホストが定めます。
 
-draftには `editOrigin`（`AUTO` / `MANUAL`）と `draftSourceFingerprint` を保存します。原文が変わった人のdraftは、確認前の手修正でも `review-needed` になります。旧overlayに `draftSourceFingerprint` がない場合は、原文との対応を推測せず従来の状態判定を保ち、次の編集・候補採用・確認時に記録します。
+draftには `editOrigin`（`AUTO` / `MANUAL`）と `draftSourceFingerprint` を保存します。原文が変わった単位のdraftは、手修正でも `review-needed`（今の原文に対応する訳が無いので、画面では「未翻訳」）になります。旧overlayに `draftSourceFingerprint` がない場合は、原文との対応を推測せず従来の状態判定を保ち、次の編集・候補採用時に記録します。
 
 操作は分離されています。
 
@@ -161,12 +161,12 @@ const reviewed = reviewLocalizedValue(adopted, jaToEn, {
 });
 ```
 
-- `editLocalizedValue`: draftだけを明示的に手編集し、以前の確認を解除します。candidateは比較用に残します。
-- `adoptTranslationCandidate`: 指定versionのcandidateをdraftへ採用し、以前の確認を解除します。採用だけでは人が確認したことにはしません。
-- `reviewLocalizedValue`: 現在のdraftを現在のsource fingerprintに対して確認済みにします。新candidateを採用せず、既存訳を維持したまま確認することもできます。
-- `localizationStatus`: `source / missing / draft / review-needed / reviewed` とcandidate、obsolete、issueの集計を返します。
+- `editLocalizedValue`: draftだけを明示的に手編集し（`MANUAL`）、旧い確認の記録を外します。candidateは比較用に残します。
+- `adoptTranslationCandidate`: 指定versionのcandidateをdraftへ採用し（`AUTO`）、旧い確認の記録を外します。採用したdraftはそのまま翻訳済みです。
+- `reviewLocalizedValue`: 現在のdraftを現在のsource fingerprintに対して確認済み（`reviewed`）にする旧い操作です。画面からは呼びませんが、互換のため残します。記録は自動翻訳の上書き規則に影響しません。
+- `localizationStatus`: `source / missing / draft / review-needed / reviewed` とcandidate、obsolete、issueの集計を返します。`draft` と `reviewed` はどちらも今の原文に対応する訳がある状態です。
 
-原文変更後は自動訳のdraftだけを新しい結果で置換し、人が編集・確認したdraftは保持して `review-needed` にします。英語原文の日本語draftを編集しても英語原文は変更しません。逆翻訳APIはありません。
+原文変更後は `AUTO` のdraftを新しい結果で置換し、人が編集した（`MANUAL`）draftは保持して `review-needed` にします。英語原文の日本語draftを編集しても英語原文は変更しません。逆翻訳APIはありません。
 
 ## Materialization
 
@@ -180,7 +180,7 @@ const reviewed = reviewLocalizedValue(adopted, jaToEn, {
 const preview = await materializeLocalizedPage(kamakura, japaneseDocument, jaToEn, reviewed, extraction);
 preview.document.locale; // "en"
 preview.document.pageId === japaneseDocument.pageId; // true
-preview.status.complete; // 全required unitがreviewedでissuesがなければtrue
+preview.status.complete; // 全required unitがreviewedでissuesがなければtrue（旧い確認の基準のまま。翻訳済みかは missing・reviewNeeded・issues が 0 かで見る）
 ```
 
 公開snapshotはこのcore overlayとは別です。hostは公開時点でページ、共通component、route/SEO manifestを同じreleaseへ固定し、過去の公開targetをdraft更新で置換しないでください。

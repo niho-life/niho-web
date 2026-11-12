@@ -78,9 +78,10 @@ async function localizedSite(siteId, sourceLocale, labels) {
   const targetDocument = (await materializeLocalizedPage(cfg, sourceDocument, collection, overlay)).document;
   return { cfg, sourceDocument, targetDocument, collection, overlay, labels, documentVersion: 1, localizationVersion: 1, siteVersion: 1, job: { state: "failed", message: "合成した失敗" } };
 }
-async function setup({ conflictOnce = false, conflictSourceChange = false, rejectCommandOnce = false, delayedRead = false, delayedSites = false, delayedSite = false, delayedSiteAfterFirst = false, rejectSiteOnce = false, rejectPageOnce = false, unsupportedLocale = false, extraPublicPage = false, recovery, localeRelease, readOnlySource = false, readOnlyTarget = false, previewComponent, initialTarget, pageTranslationUnavailable = false, hostSourceLocale = false, declaredSourceLocale = false } = {}) {
+async function setup({ conflictOnce = false, conflictSourceChange = false, rejectCommandOnce = false, delayedRead = false, delayedSites = false, delayedSite = false, delayedSiteAfterFirst = false, rejectSiteOnce = false, rejectPageOnce = false, unsupportedLocale = false, extraPublicPage = false, recovery, localeRelease, readOnlySource = false, readOnlyTarget = false, previewComponent, initialTarget, pageTranslationUnavailable = false, hostSourceLocale = false, declaredSourceLocale = false, legacyTargetReview } = {}) {
   const kamakura = await localizedSite("kamakura", "ja", { source: "鎌倉ホーム", manual: "Manual Kamakura", candidate: "Candidate Kamakura" });
   if (hostSourceLocale) kamakura.sourceDocument.locale = "ja";
+  if (legacyTargetReview !== undefined) kamakura.sourceDocument.meta = { ...kamakura.sourceDocument.meta, targetReviewBeforePublish: legacyTargetReview };
   const experience = await localizedSite("experience", "en", { source: "Experience home", manual: "体験（手修正）", candidate: "体験（翻訳案）" });
   const sites = { kamakura, experience }, calls = { saves: [], commands: [], siteReads: 0, pageReads: 0 }; let conflict = conflictOnce, rejectCommand = rejectCommandOnce, delayedResolve, delayedSitesResolve, delayedSiteResolve, failSite = rejectSiteOnce, failPage = rejectPageOnce;
   const stateFor = (target) => sites[target.siteId], isSource = (state, target) => target.locale === state.sourceDocument.locale;
@@ -275,17 +276,16 @@ async function setupSharedComponents() {
   return { pages, components, calls, librarySaves, get siteReads() { return siteReads; }, cleanup: async () => { await act(async () => root.unmount()); container.remove(); } };
 }
 
-test("source page setting saves the target review policy while target mode cannot change it", async () => {
-  const app = await setup();
+test("the retired per-page target review setting is not shown, and a stored false value is kept on save", async () => {
+  const app = await setup({ legacyTargetReview: false });
   try {
     await showInspector("page");
-    const check = [...document.querySelectorAll("label.e-check")].find((node) => node.textContent.includes("サブ言語は確認してから公開"))?.querySelector("input");
-    assert.ok(check, "localized source pages offer a per-page publication policy");
-    assert.equal(check.checked, false);
-    await act(async () => check.click()); await flush();
-    assert.equal(check.checked, true);
+    assert.equal(document.body.textContent.includes("サブ言語は確認してから公開"), false, "the review toggle was retired on 2026-11-12");
+    assert.equal([...document.querySelectorAll("label.e-check")].some((node) => node.textContent.includes("確認")), false);
+    await change(input("ページタイトル"), "鎌倉ホーム（更新）");
     await click("下書き保存");
-    assert.equal(app.calls.saves[0].document.meta.targetReviewBeforePublish, true);
+    assert.equal(app.calls.saves[0].document.title, "鎌倉ホーム（更新）");
+    assert.equal(app.calls.saves[0].document.meta.targetReviewBeforePublish, false, "the old value, including false, is kept as is");
   } finally { await app.cleanup(); }
 
   const target = await setup({ initialTarget: { siteId: "kamakura", pageId: "home", locale: "en-US" } });
@@ -360,9 +360,10 @@ test("URL画像の手修正は親bufferでcancel・離脱guard・409再試行を
     assert.equal(frameImage().hasAttribute("srcset"), false);
     assert.deepEqual(app.calls.commands.filter((entry) => entry.action === "set-value").at(-1).value, { kind: "image-url", src: "/manual-target.webp" });
     assert.equal(document.querySelector('[data-unit-id="page.meta.ogImage.src"]').querySelectorAll("input").length, 1);
-    const current = document.querySelector('[data-unit-id="page.node.urlPhoto.asset"]'), review = [...current.querySelectorAll("button")].find((node) => node.textContent === "現在の訳を確認済みにする");
-    await act(async () => review.click()); await flush(7);
-    assert.ok(app.sites.kamakura.overlay.entries.find((entry) => entry.unitId === "page.node.urlPhoto.asset").reviewedSourceFingerprint);
+    const current = document.querySelector('[data-unit-id="page.node.urlPhoto.asset"]');
+    assert.equal([...current.querySelectorAll("button")].some((node) => node.textContent.includes("確認済み")), false, "the retired review action is not offered");
+    assert.match(current.querySelector(".e-section-head").textContent, /翻訳済み/, "a replaced image for the current source counts as translated");
+    assert.doesNotMatch(current.textContent, /確認済み|未確認/);
     await click("日本語"); await flush(7); assert.equal(frameImage().getAttribute("src"), origin + "/kamakura-source.webp");
   } finally { await app.cleanup(); }
 });
@@ -400,11 +401,13 @@ test("candidate stays separate until adoption, command conflicts retry, failures
     assert.ok(document.body.textContent.includes("翻訳に失敗しました"));
     await click("翻訳案を採用"); assert.ok(document.body.textContent.includes("409")); assert.equal(app.sites.kamakura.targetDocument.title, "Manual Kamakura");
     await click("翻訳案を採用"); await flush(5); assert.equal(app.sites.kamakura.targetDocument.title, "Candidate Kamakura");
-    await showLocalization(); await click("現在の訳を確認済みにする");
-    assert.ok(app.sites.kamakura.overlay.entries.some((entry) => entry.reviewedSourceFingerprint));
-    await showInspector("page"); await change(input("ページタイトル"), "Manual after review"); await click("下書き保存");
-    await waitForUi(() => app.sites.kamakura.overlay.entries.find((entry) => entry.unitId === "page.title")?.reviewedSourceFingerprint === undefined, "保存後に確認済み状態が解除される");
-    assert.equal(app.sites.kamakura.overlay.entries.find((entry) => entry.unitId === "page.title").reviewedSourceFingerprint, undefined);
+    await showLocalization();
+    assert.match(document.querySelector('[data-unit-id="page.title"] .e-section-head').textContent, /翻訳済み/, "an adopted automatic translation counts as translated");
+    assert.equal(button("現在の訳を確認済みにする"), undefined, "the retired review action is not offered");
+    assert.doesNotMatch(document.querySelector(".e-localization-panel").textContent, /確認済み|未確認/);
+    await showInspector("page"); await change(input("ページタイトル"), "Manual after adoption"); await click("下書き保存");
+    await waitForUi(() => app.sites.kamakura.overlay.entries.find((entry) => entry.unitId === "page.title")?.editOrigin === "MANUAL", "保存した訳は手修正として残る");
+    assert.equal(app.sites.kamakura.overlay.entries.find((entry) => entry.unitId === "page.title").draftValue, "Manual after adoption");
   } finally { await app.cleanup(); }
   const late = await setup({ delayedRead: true });
   try {
@@ -431,7 +434,7 @@ test("source component editing saves through the canonical library session and t
   } finally { await app.cleanup(); }
 });
 
-test("shared component units are shown once, manually edited, adopted, reviewed and rendered in every instance without flattening", async () => {
+test("shared component units are shown once, manually edited, adopted and rendered in every instance without flattening", async () => {
   const app = await setupSharedComponents();
   const rail = document.querySelector(".e-right"), originalScroll = Object.getOwnPropertyDescriptor(rail, "scrollTop"), scrolled = [];
   let scrollTop = 0;
@@ -462,9 +465,9 @@ test("shared component units are shown once, manually edited, adopted, reviewed 
     await act(async () => sectionButton("翻訳案を採用").click()); await flush(8);
     assert.equal((canvasText().match(/Shared candidate/g) ?? []).length, 2);
     await showLocalization();
-    await act(async () => sectionButton("現在の訳を確認済みにする").click()); await flush(6);
-    await showLocalization();
-    assert.match(section().textContent, /確認済み/);
+    assert.equal(sectionButton("現在の訳を確認済みにする"), undefined, "the retired review action is not offered");
+    assert.match(section().querySelector(".e-section-head").textContent, /翻訳済み/);
+    assert.doesNotMatch(section().textContent, /確認済み|未確認/);
 
     const rich = document.querySelector('[data-unit-id="component.header.node.sharedRich.richText"]'), richEditor = rich.querySelector(".e-localization-rich");
     await act(async () => { richEditor.querySelector('[data-nw-node="sharedMark"]').textContent = "near"; richEditor.querySelector('[data-nw-node="sharedLink"]').textContent = "details"; richEditor.dispatchEvent(new dom.window.Event("input", { bubbles: true })); }); await flush();
@@ -574,8 +577,10 @@ test("manual save keeps its buffer through 409 and rejection, reloads current co
     const beforeUnload = new dom.window.Event("beforeunload", { cancelable: true }); window.dispatchEvent(beforeUnload); assert.equal(beforeUnload.defaultPrevented, true);
     await act(async () => manualButton("手修正を保存").click()); await flush(10);
     assert.equal(manual().value, "My conflict-safe value"); assert.equal(document.querySelector(".e-status").textContent, "入力を確認中");
-    assert.match(titleSection().textContent, /Remote source title/); assert.match(titleSection().textContent, /Remote accepted/); assert.match(titleSection().textContent, /翻訳済み/);
-    assert.equal(manualButton("翻訳案を採用")?.disabled ?? true, true); assert.equal(manualButton("現在の訳を確認済みにする").disabled, true);
+    assert.match(titleSection().textContent, /Remote source title/); assert.match(titleSection().textContent, /Remote accepted/);
+    assert.match(titleSection().querySelector(".e-section-head").textContent, /未翻訳/, "a translation of the previous source (review-needed) is shown as untranslated");
+    assert.doesNotMatch(titleSection().querySelector(".e-section-head").textContent, /翻訳済み|確認済み|更新あり/);
+    assert.equal(manualButton("翻訳案を採用")?.disabled ?? true, true); assert.equal(manualButton("現在の訳を確認済みにする"), undefined);
     const first = app.calls.commands.at(-1);
     await act(async () => manualButton("手修正を保存").click()); await flush(12);
     const retry = app.calls.commands.at(-1); assert.notEqual(retry.expectedVersion, first.expectedVersion); assert.ok(retry.expectedEntryVersion > first.expectedEntryVersion);
@@ -741,8 +746,8 @@ test("late locale-release reads are ignored and incomplete page/shared reasons b
   const app = await setup({ localeRelease: {
     readRelease: async ({ siteId, locale }) => siteId === "kamakura" ? new Promise((resolve) => { resolveOld = () => resolve({ siteId, locale, current: null, history: [] }); }) : { siteId, locale, current: summary, history: [] },
     prepareRelease: async (request) => ({ ...request, confirmationToken: "incomplete-token", domain: "https://experience.example", expiresAt: "2030-01-01T00:00:00.000Z", optimisticVersion: "prepare-ja-2", previous: summary,
-      prepared: { ...summary, releaseId: "ja-2", version: "release-ja-2", label: "日本語 v2" }, pages: [{ pageId: "home", title: "ホーム", path: "/ja/", complete: false, reasons: ["見出しが未確認です"] }],
-      sharedResources: [{ id: "nav", label: "Navigation", kind: "navigation", complete: false, reasons: ["メニュー翻訳が未確認です"] }], incompleteReasons: ["未確認の内容が2件あります"], complete: false }),
+      prepared: { ...summary, releaseId: "ja-2", version: "release-ja-2", label: "日本語 v2" }, pages: [{ pageId: "home", title: "ホーム", path: "/ja/", complete: false, reasons: ["見出しが未翻訳です"] }],
+      sharedResources: [{ id: "nav", label: "Navigation", kind: "navigation", complete: false, reasons: ["メニューが未翻訳です"] }], incompleteReasons: ["未翻訳の内容が2件あります"], complete: false }),
     applyRelease: async () => { throw new Error("must not apply"); }, rollbackRelease: async () => ({ status: "conflict" })
   } });
   try {
@@ -752,7 +757,7 @@ test("late locale-release reads are ignored and incomplete page/shared reasons b
     await click("日本語"); await flush(7);
     assert.equal(button("言語全体の公開確認").disabled, false);
     await click("言語全体の公開確認");
-    assert.match(document.body.textContent, /experience\.example/); assert.match(document.body.textContent, /見出しが未確認/); assert.match(document.body.textContent, /メニュー翻訳が未確認/); assert.match(document.body.textContent, /未確認の内容が2件/);
+    assert.match(document.body.textContent, /experience\.example/); assert.match(document.body.textContent, /見出しが未翻訳/); assert.match(document.body.textContent, /メニューが未翻訳/); assert.match(document.body.textContent, /未翻訳の内容が2件/);
     assert.equal(button("この言語全体を公開").disabled, true); assert.equal(document.querySelector('[role="dialog"] input[type="checkbox"]').disabled, true);
   } finally { await app.cleanup(); }
 });

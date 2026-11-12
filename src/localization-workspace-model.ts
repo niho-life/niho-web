@@ -39,11 +39,11 @@ export type LocalizationGlossary = {
 };
 export type LocalizationSettings = {
   readonly version: string;
-  /** 原文を保存するたびに、変更箇所を自動翻訳するか。人が直した・確認した訳は保持して候補に留める。鎌倉は false で運用する。 */
+  /** 原文を保存するたびに、変更箇所を自動翻訳するか。自動翻訳の訳は新しい訳で置き換え、人が直した訳は保持して候補に留める。鎌倉は false で運用する。 */
   readonly autoDraft: boolean;
   readonly translator: { readonly connected: boolean };
   readonly queue: { readonly waiting: number; readonly failed: number; readonly nextRetryAt: string | null };
-  /** 任意。ホストが公開前に確認を求める固定用語集。古い adapter は省略できる。 */
+  /** 任意。ホストの固定用語集。画面は版と対照だけを出す（reviewed は旧い確認の記録で、表示しない。2026-11-12）。古い adapter は省略できる。 */
   readonly glossary?: LocalizationGlossary;
 };
 /**
@@ -73,7 +73,7 @@ export type LocalizationOverview = {
   readonly attention?: LocalizationAttention;
 };
 
-/** untranslated・draft・source-changed は「要対応」。 */
+/** untranslated・draft・source-changed は「未翻訳」、reviewed は「翻訳済み」（今の原文に対応する訳がそろっている）と表示する。 */
 export type LocalizationItemState = "untranslated" | "draft" | "source-changed" | "reviewed" | "excluded";
 export type LocalizationItemSummary = {
   readonly key: string;
@@ -84,9 +84,11 @@ export type LocalizationItemSummary = {
   readonly includedParts?: readonly string[];
   readonly state: LocalizationItemState;
   readonly excludedReason: string | null;
-  /** 確認済み n/m の m（訳す項目の数）。 */
+  /** 翻訳済み n/m の m（訳す項目の数）。 */
   readonly totalUnits: number;
+  /** 翻訳済み n/m の n（今の原文に対応する訳がある項目の数。自動・手修正を問わない）。 */
   readonly reviewedUnits: number;
+  /** 旧い確認の記録の名残。画面は使わない（ホストは 0 を返してよい）。 */
   readonly imagesUnreviewed: number;
   readonly sourceDraftPending: boolean;
   readonly updatedAt: string | null;
@@ -170,6 +172,7 @@ type CommandBase = {
   /** 画面が見ていた原文の版。 */
   readonly expectedSourceVersion: string;
 };
+/** review-current / review-image は旧い確認の操作。画面からは送らないが、ホストとの互換のため型に残す（2026-11-12）。 */
 export type LocalizationCommandInput = CommandBase & (
   | { readonly action: "set-value"; readonly value: string | LocalizedRichText }
   | { readonly action: "adopt-candidate"; readonly candidateId: string }

@@ -635,7 +635,7 @@ const englishPublicationMeaning: Readonly<Record<CollectionEnglishPublication["p
   "initial-release-required": "最初の English 版をサイト全体で公開すると、この項目も対象になります。",
   queued: "英語版の処理を待っています。",
   translating: "英語版を翻訳しています。",
-  "review-required": "翻訳画面で内容を確認してください。",
+  "review-required": "英語の訳がそろっていません。翻訳画面で訳を用意してください。",
   publishing: "英語版をサイトへ反映しています。",
   published: "英語版を公開しています。",
   withdrawn: "英語版を取り下げました。",
@@ -643,7 +643,7 @@ const englishPublicationMeaning: Readonly<Record<CollectionEnglishPublication["p
   superseded: "新しい日本語版の処理に置き換わりました。",
 };
 const englishPublicationStateLabel: Readonly<Record<CollectionEnglishPublication["publication"]["state"], string>> = {
-  "initial-release-required": "初回公開待ち", queued: "処理待ち", translating: "翻訳中", "review-required": "確認待ち",
+  "initial-release-required": "初回公開待ち", queued: "処理待ち", translating: "翻訳中", "review-required": "未翻訳",
   publishing: "反映中", published: "公開済み", withdrawn: "取り下げ済み", "retryable-failure": "失敗（再試行可能）", superseded: "新しい版に置換済み",
 };
 

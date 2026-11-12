@@ -16,9 +16,9 @@
 - host allowlistに含まれる業務blockだけ
 - source / config / target overlayのversionとdigest
 - CSS、CMS、asset等、PageDocument外にあるものをhostが渡した範囲だけのresource binding
-- target言語では、その言語で公開するページ（`publicPageIds`。hostが選ぶ）のすべてに現在の原文に合う訳があり、共通内容・用語集と確認必須ページの確認が完了し、抽出issueが0件であること。サイトの全ページに訳が揃うことは求めない。訳さない・未確認のページを `publicPageIds` に入れなければ、そのページはtargetに出ない（source-onlyのまま）。ページの自動訳を未確認のまま公開するかはhostの運用で決める。鎌倉は確認済みのページだけを公開する（2026-11-10、#171）
+- target言語では、その言語で公開するページ（`publicPageIds`。hostが選ぶ）のすべてに現在の原文に合う訳があり、抽出issueが0件であること。サイトの全ページに訳が揃うことは求めない。訳さない・未翻訳のページを `publicPageIds` に入れなければ、そのページはtargetに出ない（source-onlyのまま）。訳は自動翻訳・手修正を問わない。鎌倉は訳のあるページを公開する。確認の工程は廃止（2026-11-12。以前は確認済みのページだけを公開していた、2026-11-10、#171）
 
-source言語は翻訳reviewを要求しませんが、文書identity、公開catalogue、block、共有参照、resource bindingはtargetと同じく検証します。`requiredResourceIds` に指定したCSS/CMS等のbindingが無ければ失敗します。指定されていない外部resourceを「snapshotに固定済み」とは扱いません。
+source言語は訳の完備を要求しませんが、文書identity、公開catalogue、block、共有参照、resource bindingはtargetと同じく検証します。`requiredResourceIds` に指定したCSS/CMS等のbindingが無ければ失敗します。指定されていない外部resourceを「snapshotに固定済み」とは扱いません。
 
 サイト共通スタイル（[契約](site-styles-contract.md)）を参照するページは、`createPublishedSiteLocaleSnapshot(input, { blocks, siteStyles })` に公開時点の保存済み `SiteSettings` を渡します。各ページを同じ設定で検証したうえで、実効 token / 文字スタイルを含む自己完結の文書として snapshot へ固定するため、保存済み snapshot の読込（`parsePublishedSiteLocaleSnapshot` / `verifyPublishedSiteLocaleSnapshot`）と投影・rollback に設定は要りません。後からサイト設定を変えても過去の release の見た目は変わらず、サイト共通の変更は次の release の `contentDigest` と差分に現れます。設定を渡さずに共通参照を持つページを渡すと検証で失敗し、途中までを公開しません。
 
@@ -48,8 +48,8 @@ const snapshot = await createPublishedSiteLocaleSnapshot({
   requiredResourceIds: ["siteCss"],
   completeness: {
     translatedPageIds: authoritativePublicCatalogue.map((page) => page.pageId),
-    reviewRequiredPageIds: authoritativePublicCatalogue.filter((page) => page.reviewBeforeTargetPublish).map((page) => page.pageId),
-    reviewedPageIds: authoritativePublicCatalogue.filter((page) => page.reviewBeforeTargetPublish).map((page) => page.pageId),
+    reviewRequiredPageIds: [],   // 確認の工程は廃止（2026-11-12）。確認を求めないhostは空にする
+    reviewedPageIds: [],
     sharedReviewed: true,
     glossaryReviewed: true,
     unresolvedIssues: []
@@ -57,7 +57,9 @@ const snapshot = await createPublishedSiteLocaleSnapshot({
 }, { blocks });
 ```
 
-`translatedPageIds`、`reviewRequiredPageIds`、`glossaryReviewed` は3つを同時に渡します。hostは現在の原文と照合でき、翻訳済みのページだけを `translatedPageIds` に入れます。`reviewRequiredPageIds` はサイト設定で「サブは確認してから公開」にした公開ページのIDです。target公開時に前者は公開ページ集合と完全一致し、後者は `reviewedPageIds` に含まれなければ失敗します。共通部分と用語集も確認済みである必要があります。3つを省いた既存hostには従来の全ページ確認条件を適用します。公開直前の原文版と実際の訳文の照合はhostの責務です。
+`translatedPageIds`、`reviewRequiredPageIds`、`glossaryReviewed` は3つを同時に渡します。hostは現在の原文と照合でき、今の原文に対応する訳がある（自動・手修正を問わない）ページだけを `translatedPageIds` に入れます。target公開時に `translatedPageIds` は公開ページ集合と完全一致しなければ失敗します。
+
+人が訳を確認する工程は 2026-11-12 に廃止しました。用語集の確認、共通部分・全ページの「確認済み」、ページの `targetReviewBeforePublish` は公開の条件にしません。この関数の入力の形は互換のため変えないので、確認を求めないhostは `reviewRequiredPageIds: []`・`reviewedPageIds: []`・`sharedReviewed: true`・`glossaryReviewed: true` を渡し、共通部分の訳の有無はhostが `translatedPageIds` と同じ基準で判定します。関数の判定は従来どおりで、`reviewRequiredPageIds` のページが `reviewedPageIds` に無いとき、`sharedReviewed`・`glossaryReviewed` が `false` のときは失敗します（以前は「サブは確認してから公開」にしたページのIDと、共通部分・用語集の確認の結果を渡していた）。3つを省いた古いhostには、従来どおり全ページの確認（`reviewedPageIds` が公開ページ集合と一致）を求めます。公開直前の原文版と実際の訳文の照合はhostの責務です。
 
 `contentDigest` はcanonical JSONに対するWeb Crypto SHA-256です。内容同一性の比較用であり、署名、認証、認可の代用ではありません。保存済みsnapshotの読込時は `verifyPublishedSiteLocaleSnapshot` でparserとdigestの両方を検証します。
 
@@ -111,7 +113,7 @@ applied応答はrequestと同じsite / locale、および準備済みrelease ID 
 
 4メソッドのどれかが無い旧hostでは訳文公開を無効のままにし、運用者向けの説明を表示します。source言語の既存ページ単位 `prepareRelease / release` は互換のままで、他のsource draftをまとめて公開しません。rollbackは過去の言語全体releaseを対象とし、ページrevision番号ではありません。
 
-`examples/localization-demo.tsx` の公開操作は、version付き一回限りnonce、期限、CAS、履歴を見せるためだけの明示的なインメモリ偽hostです。初期の未確認項目、公開成功、rollback、次回409、成立状況不明、source-onlyページ追加後も旧target公開版が維持される流れを確認できます。本番認証・安全性・保存・実サイト公開を代替しません。
+`examples/localization-demo.tsx` の公開操作は、version付き一回限りnonce、期限、CAS、履歴を見せるためだけの明示的なインメモリ偽hostです。初期の未翻訳項目、公開成功、rollback、次回409、成立状況不明、source-onlyページ追加後も旧target公開版が維持される流れを確認できます。本番認証・安全性・保存・実サイト公開を代替しません。
 
 ## routeではない共通resourceとpublic read
 

@@ -51,9 +51,9 @@ const translateValue = (value: LocalizationValue): LocalizationValue => typeof v
 async function makePage(config: SiteLocalizationConfig, components: ComponentLibrary, pageId: string, path: string, title: string, heading: string, body: string, initialIncomplete = false): Promise<PageState> {
   const source = makeDocument(config.siteId, pageId, config.documentLocales[config.sourceLocale], title, heading, body), targetLocale = config.sourceLocale === "ja" ? "en" : "ja", options = { components };
   const collection = await collectLocalizationUnits(config, source, targetLocale, options); let overlay = createLocalizationOverlay(collection);
-  for (const unit of collection.units) overlay = editLocalizedValue(overlay, collection, { unitId: unit.unitId, value: translateValue(unit.sourceValue), expectedVersion: overlay.version });
-  const required = collection.units.filter((entry) => entry.required), skipped = initialIncomplete ? required.find((entry) => entry.scope === "page")?.unitId : undefined;
-  for (const unit of required.filter((entry) => entry.unitId !== skipped)) overlay = reviewLocalizedValue(overlay, collection, { unitId: unit.unitId, expectedVersion: overlay.version });
+  // 確認の工程は廃止（2026-11-12）。今の原文に対応する訳があれば翻訳済み。initialIncomplete のページは、必須の 1 項目を未翻訳のまま残す。
+  const skipped = initialIncomplete ? collection.units.find((entry) => entry.required && entry.scope === "page")?.unitId : undefined;
+  for (const unit of collection.units.filter((entry) => entry.unitId !== skipped)) overlay = editLocalizedValue(overlay, collection, { unitId: unit.unitId, value: translateValue(unit.sourceValue), expectedVersion: overlay.version });
   // A distinct candidate demonstrates that generation never overwrites the current accepted/manual draft.
   const titleUnit = collection.units.find((unit) => unit.unitId === "page.title")!;
   overlay = acceptTranslationResult(overlay, collection, { schemaVersion: 1, resultId: `${config.siteId}_${pageId}_candidate`, siteId: config.siteId, pageId, sourceLocale: config.sourceLocale,
@@ -103,7 +103,7 @@ const readOnlyFor = (site: SiteState, target: EditorTarget) => site.config.siteI
   : undefined;
 const statusFor = (site: SiteState, page: PageState, locale: LocalizationLocale) => locale === site.config.sourceLocale ? { state: "source" as const, published: true } : (() => {
   const status = localizationStatus(page.overlay, page.collection), release = site.releases[locale], current = release.current && release.snapshots.get(release.current.releaseId);
-  return { state: page.job.state === "failed" ? "failed" as const : page.job.state === "queued" || page.job.state === "running" ? "translating" as const : status.reviewNeeded ? "review-needed" as const : status.complete ? "reviewed" as const : "review-needed" as const,
+  return { state: page.job.state === "failed" ? "failed" as const : page.job.state === "queued" || page.job.state === "running" ? "translating" as const : status.missing || status.reviewNeeded || status.issues ? "review-needed" as const : "reviewed" as const,
     changed: status.reviewNeeded, published: current?.pages.has(page.page.pageId) ?? false };
 })();
 const localizedDemoPath = (site: SiteState, locale: LocalizationLocale, path: string) => locale === site.config.defaultLocale ? path : path === "/" ? `/${locale}/` : `/${locale}${path}`;
@@ -112,14 +112,15 @@ function releasePlan(site: SiteState, request: EditorLocaleReleasePrepareRequest
   const release = site.releases[request.locale], previous = release.current;
   const restored = request.action === "rollback" ? release.snapshots.get(request.rollbackReleaseId ?? "") : undefined;
   if (request.action === "rollback" && !restored) throw new Error("synthetic prior release missing");
-  const pending = (state: string | undefined) => state !== "source" && state !== "reviewed";
+  // 今の原文に対応する訳が無いもの（未翻訳・原文が変わって古くなった訳）だけが公開を止める。自動・手修正の訳は確認しなくても使う。
+  const pending = (state: string | undefined) => state === "missing" || state === "review-needed";
   const pageEntries = restored ? [...restored.pages].filter(([id]) => site.pages.has(id)).map(([id, document]) => ({
     pageId: id, title: document.title, path: restored.paths.get(id)!, complete: true, reasons: [] as string[]
   })) : [...site.pages.values()].map((page) => {
     const details = localizationStatus(page.overlay, page.collection).details, pageUnitIds = new Set(page.collection.units.filter((unit) => unit.scope === "page").map((unit) => unit.unitId));
     const incomplete = details.filter((detail) => pageUnitIds.has(detail.unitId) && pending(detail.state));
     return { pageId: page.page.pageId, title: request.locale === site.config.sourceLocale ? page.source.title : page.target.title, path: localizedDemoPath(site, request.locale, page.page.path ?? "/"), complete: incomplete.length === 0,
-      reasons: incomplete.length ? [`未確認の項目が${incomplete.length}件あります`] : [] };
+      reasons: incomplete.length ? [`未翻訳の項目が${incomplete.length}件あります`] : [] };
   });
   const sharedIncomplete = !restored && [...site.pages.values()].some((page) => {
     const states = new Map(localizationStatus(page.overlay, page.collection).details.map((detail) => [detail.unitId, detail.state]));
@@ -130,10 +131,10 @@ function releasePlan(site: SiteState, request: EditorLocaleReleasePrepareRequest
     return page.collection.units.some((unit) => unit.kind === "asset" && pending(states.get(unit.unitId)));
   });
   const sharedResources = [
-    { id: "components", label: "共通ヘッダー・フッター", kind: "component" as const, complete: !sharedIncomplete, reasons: sharedIncomplete ? ["共通部品に未確認の翻訳があります"] : [] },
-    { id: "navigation", label: "サイトナビゲーション", kind: "navigation" as const, complete: !sharedIncomplete, reasons: sharedIncomplete ? ["ナビ表示に未確認の翻訳があります"] : [] },
+    { id: "components", label: "共通ヘッダー・フッター", kind: "component" as const, complete: !sharedIncomplete, reasons: sharedIncomplete ? ["共通部品に未翻訳の項目があります"] : [] },
+    { id: "navigation", label: "サイトナビゲーション", kind: "navigation" as const, complete: !sharedIncomplete, reasons: sharedIncomplete ? ["ナビ表示に未翻訳の項目があります"] : [] },
     { id: "styles", label: "サイトスタイル", kind: "style" as const, complete: true, reasons: [] },
-    { id: "assets", label: "画像・参照ファイル", kind: "resource" as const, complete: !imageIncomplete, reasons: imageIncomplete ? ["差し替えた画像の確認が必要です"] : [] }
+    { id: "assets", label: "画像・参照ファイル", kind: "resource" as const, complete: !imageIncomplete, reasons: imageIncomplete ? ["原文が変わった画像があります"] : [] }
   ];
   const incompleteReasons = [...pageEntries.filter((page) => !page.complete).map((page) => `${page.title}: ${page.reasons[0]}`), ...sharedResources.filter((resource) => !resource.complete).map((resource) => `${resource.label}: ${resource.reasons[0]}`)];
   const sequence = ++site.releaseSequence, prepared: EditorLocaleReleaseSummary = { releaseId: `${site.config.siteId}-${request.locale}-${request.action}-${sequence}`, version: `release-${sequence}`,

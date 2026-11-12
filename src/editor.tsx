@@ -80,7 +80,8 @@ const englishPublicationLabels: Readonly<Record<EnglishPublication["state"], str
   "initial-release-required": "最初の英語版公開待ち",
   queued: "処理待ち",
   translating: "翻訳中",
-  "review-required": "確認待ち",
+  // 訳がそろわず英語版を出せない状態（確認の工程は 2026-11-12 に廃止）
+  "review-required": "未翻訳",
   publishing: "公開中",
   published: "公開済み",
   withdrawn: "取り下げ",
@@ -1433,7 +1434,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       if (!result.version || result.version === context.version) throw new Error("version must advance");
       localization.reloadPage(); localization.reloadSite();
       if (command.action === "adopt-candidate" || command.action === "set-value") await load(current.target, { preserveView: true });
-      setNotice(command.action === "request-translation" ? "翻訳を依頼しました。" : command.action === "adopt-candidate" ? "翻訳案を採用しました。確認済みにはしていません。" : command.action === "set-value" ? "訳文を手修正しました。確認済みにはしていません。" : "現在の訳を現在の原文に対して確認済みにしました。");
+      setNotice(command.action === "request-translation" ? "翻訳を依頼しました。" : command.action === "adopt-candidate" ? "翻訳案を採用しました。" : command.action === "set-value" ? "訳文を直しました。" : "翻訳状態を更新しました。");
       return "applied";
     } catch { if (!controller.signal.aborted) setNotice("翻訳状態を更新できませんでした。入力は保持されています。再試行してください。"); return "failed"; }
     finally { if (!controller.signal.aborted) setBusy(""); action.current = null; }
@@ -1639,7 +1640,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       {inspector === "element" && <InspectorTabs tabs={activeInspectorTabs} active={elementTab} disabled={!node} onChange={(value) => { setElementTab(value); if (value !== "transform") setStyleState("normal"); }} />}
       {inspector === "site" && <section className="e-inspector-content">{targetMode ? <p className="e-help">サイト設定は原文で編集します。</p> : <SiteSettingsPanel site={site} state={siteSettings} cover={assets ? { assets: resolvedAssets.map, failed: resolvedAssets.failed, pick: () => setPicker({ purpose: "siteOgImage" }) } : undefined} />}</section>}
       {inspector === "localization" && localization.context && document && <section className="e-inspector-content"><LocalizationPanel context={localization.context} document={document} disabled={blocked || !!session?.readOnly || dirty || libraryDirty || pageInputPending || !localizationReady} selectedUnit={selectedLocalizationUnit} run={runLocalizationCommand} refresh={localization.reloadAll} requestTranslation={adapter.localization?.requestPageTranslation !== false} manualBuffer={localizationManual} setManualBuffer={setLocalizationManual} pickAsset={(unit) => { setPicker(null); setLocalizationAssetUnit(unit.unitId); }} /></section>}
-      {inspector === "page" && !masterComponent && !isSiteComponent && <section className="e-inspector-content">{document && <PageSettings document={document} page={page} site={site} settings={siteSettings} field={field} apply={apply} report={setNotice} disabled={editBlocked} targetMode={targetMode} hasTargetLocale={localization.supported}
+      {inspector === "page" && !masterComponent && !isSiteComponent && <section className="e-inspector-content">{document && <PageSettings document={document} page={page} site={site} settings={siteSettings} field={field} apply={apply} report={setNotice} disabled={editBlocked} targetMode={targetMode}
         cover={assets ? { assets: resolvedAssets.map, failed: resolvedAssets.failed, pick: () => setPicker({ purpose: "ogImage" }) } : undefined}
 
         operations={pageOperations} pathEditable={adapter.pagePathEditable ?? true} {...(adapter.pageChangeActions ? { actions: adapter.pageChangeActions } : {})} operationsDisabled={pageOperationsDisabled} unsaved={unsaved} start={startPageChange} />}</section>}

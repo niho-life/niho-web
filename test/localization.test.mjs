@@ -54,7 +54,7 @@ const resultFor = (overlay, collection, resultId, values) => ({
   values: values.map(([unitId, value]) => ({ unitId, sourceFingerprint: byId(collection, unitId).sourceFingerprint, value }))
 });
 
-test("automatic results update machine drafts and retain human edits or reviews as candidates", async () => {
+test("automatic results replace every automatic draft, reviewed or not, and keep human edits as candidates", async () => {
   const first = await collectLocalizationUnits(config(), page(), "en", options());
   const ids = ["page.title", "page.node.heading.text", "page.meta.description"];
   let overlay = createLocalizationOverlay(first);
@@ -63,29 +63,50 @@ test("automatic results update machine drafts and retain human edits or reviews 
   ]));
   assert.equal(overlay.entries.length, 3);
   assert.ok(overlay.entries.every((entry) => entry.editOrigin === "AUTO" && !entry.candidate));
+  // 旧い確認の記録（reviewLocalizedValue）は、確認の工程を廃止した後（2026-11-12）も上書きの規則に影響しない。
   overlay = reviewLocalizedValue(overlay, first, { unitId: ids[0], expectedVersion: overlay.version });
   overlay = editLocalizedValue(overlay, first, { unitId: ids[1], value: "Come visit", expectedVersion: overlay.version });
+  overlay = reviewLocalizedValue(overlay, first, { unitId: ids[1], expectedVersion: overlay.version });
 
   const changed = page();
   changed.title = "新しい体験";
   changed.body[0].children[0].children[0].text = "新しい挨拶";
   changed.meta.description = "新しい海辺の暮らし";
   const current = await collectLocalizationUnits(config(), changed, "en", options());
+  assert.equal(localizationStatus(overlay, current).details.find((item) => item.unitId === ids[0]).state, "review-needed");
   assert.equal(localizationStatus(overlay, current).details.find((item) => item.unitId === ids[1]).state, "review-needed");
   const previous = structuredClone(overlay);
   overlay = applyAutomaticTranslationResult(overlay, current, resultFor(overlay, current, "updated", [
     [ids[0], "New experience"], [ids[1], "New welcome"], [ids[2], "New life by the sea"]
   ]));
-  assert.deepEqual(previous.entries.find((entry) => entry.unitId === ids[0]).draftValue, "Experience");
-  assert.equal(overlay.entries.find((entry) => entry.unitId === ids[0]).draftValue, "Experience");
-  assert.equal(overlay.entries.find((entry) => entry.unitId === ids[0]).candidate.value, "New experience");
-  assert.equal(overlay.entries.find((entry) => entry.unitId === ids[1]).draftValue, "Come visit");
-  assert.equal(overlay.entries.find((entry) => entry.unitId === ids[1]).candidate.value, "New welcome");
-  assert.equal(overlay.entries.find((entry) => entry.unitId === ids[2]).draftValue, "New life by the sea");
-  assert.equal(overlay.entries.find((entry) => entry.unitId === ids[2]).candidate, undefined);
-  assert.equal(localizationStatus(overlay, current).details.find((item) => item.unitId === ids[0]).state, "review-needed");
+  const entry = (unitId) => overlay.entries.find((item) => item.unitId === unitId);
+  assert.deepEqual(previous.entries.find((item) => item.unitId === ids[0]).draftValue, "Experience");
+  assert.equal(entry(ids[0]).draftValue, "New experience", "an automatic draft is replaced even if it was reviewed before");
+  assert.equal(entry(ids[0]).editOrigin, "AUTO");
+  assert.equal(entry(ids[0]).candidate, undefined);
+  assert.equal(entry(ids[0]).reviewedSourceFingerprint, undefined, "the old review record does not carry over to the new translation");
+  assert.equal(entry(ids[1]).draftValue, "Come visit", "a manual draft is kept, reviewed or not");
+  assert.equal(entry(ids[1]).editOrigin, "MANUAL");
+  assert.equal(entry(ids[1]).candidate.value, "New welcome");
+  assert.equal(entry(ids[2]).draftValue, "New life by the sea");
+  assert.equal(entry(ids[2]).candidate, undefined);
+  assert.equal(localizationStatus(overlay, current).details.find((item) => item.unitId === ids[0]).state, "draft");
+  assert.equal(localizationStatus(overlay, current).details.find((item) => item.unitId === ids[1]).state, "review-needed");
   assert.equal(localizationStatus(overlay, current).details.find((item) => item.unitId === ids[2]).state, "draft");
   assert.throws(() => applyAutomaticTranslationResult(previous, current, resultFor(overlay, current, "stale", [[ids[2], "Stale"]])), /stale optimistic version/);
+});
+
+test("automatic results keep an unreviewed manual draft and replace a candidate-only entry", async () => {
+  const collection = await collectLocalizationUnits(config(), page(), "en", options());
+  const ids = ["page.title", "page.meta.description"];
+  let overlay = createLocalizationOverlay(collection);
+  overlay = editLocalizedValue(overlay, collection, { unitId: ids[0], value: "Hand-written title", expectedVersion: overlay.version });
+  overlay = acceptTranslationResult(overlay, collection, resultFor(overlay, collection, "suggested", [[ids[1], "Suggested description"]]));
+  assert.equal(overlay.entries.find((item) => item.unitId === ids[1]).draftValue, undefined);
+  overlay = applyAutomaticTranslationResult(overlay, collection, resultFor(overlay, collection, "automatic", [[ids[0], "Machine title"], [ids[1], "Machine description"]]));
+  const title = overlay.entries.find((item) => item.unitId === ids[0]), description = overlay.entries.find((item) => item.unitId === ids[1]);
+  assert.deepEqual([title.draftValue, title.editOrigin, title.candidate.value], ["Hand-written title", "MANUAL", "Machine title"]);
+  assert.deepEqual([description.draftValue, description.editOrigin, description.candidate], ["Machine description", "AUTO", undefined]);
 });
 
 test("config requires an explicit source locale and explicit ja/en document mappings in both directions", async () => {

@@ -453,10 +453,10 @@ export function SiteSettingsPanel({ site, state, cover }: { site: EditorSite | u
 }
 
 /** 右レール「ページ」タブの内容。ページ操作は確認付き、公開情報は文書の編集として undo/redo の対象にする。 */
-export function PageSettings({ document, page, site, settings, field, apply, report, disabled, targetMode = false, hasTargetLocale = false, cover, operations, actions, pathEditable = true, operationsDisabled, unsaved, start }: {
+export function PageSettings({ document, page, site, settings, field, apply, report, disabled, targetMode = false, cover, operations, actions, pathEditable = true, operationsDisabled, unsaved, start }: {
   document: PageDocument; page: EditorPage | undefined; site: EditorSite | undefined; settings: SiteSettingsState;
   field: FieldRenderer; apply: (operation: EditorOperation) => string | undefined; report: (message: string) => void; disabled: boolean;
-  targetMode?: boolean; hasTargetLocale?: boolean; cover?: CoverPicker | undefined;
+  targetMode?: boolean; cover?: CoverPicker | undefined;
   operations: boolean; actions?: readonly EditorPageChange["action"][]; pathEditable?: boolean; operationsDisabled: boolean; unsaved: boolean; start: (start: PageChangeStart) => void;
 }) {
   const meta = document.meta ?? {}, kind = page?.kind ?? "page", domain = site?.domains[0], waitSave = unsaved ? "保存してから変更できます" : undefined;
@@ -480,8 +480,6 @@ export function PageSettings({ document, page, site, settings, field, apply, rep
         {canVisibility && <button type="button" role="switch" className="e-switch" aria-checked={page.visibility === "private"} title={waitSave} disabled={changeDisabled}
           onClick={() => start({ action: "visibility", page, visibility: page.visibility === "private" ? "public" : "private" })}>
           <span className="e-switch-track" aria-hidden="true"><span className="e-switch-thumb" /></span>ページを非公開にする</button>}
-        {hasTargetLocale && kind === "page" && !targetMode && <label className="e-check"><input type="checkbox" checked={meta.targetReviewBeforePublish ?? false} disabled={disabled}
-          onChange={(event) => run({ type: "meta", field: "targetReviewBeforePublish", value: event.target.checked })} />サブ言語は確認してから公開</label>}
       </section>
       <section className="e-section"><h3>公開情報</h3>
         {field("ページタイトル", document.title, (value) => ({ type: "title", value }), "title")}

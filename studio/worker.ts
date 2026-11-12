@@ -2041,7 +2041,7 @@ const KAMAKURA_LOCALIZATION_FIXED: Readonly<Record<string, KamakuraLocalizationO
   "/overview": "overview", "/items": "list", "/catalog/advance": "catalog", "/preview/items": "preview", "/release": "release",
   "/release/prepare": "prepare", "/release/apply": "apply", "/settings": "settings", "/uploads/intent": "upload-intent", "/editor/site": "editor-site"
 };
-/** command の action ごとに足す本文の key。 */
+/** command の action ごとに足す本文の key。review-current / review-image は画面から送らない旧い確認の操作（2026-11-12 廃止）。ホストとの互換のため通し続ける。 */
 const KAMAKURA_LOCALIZATION_COMMAND_KEYS: Readonly<Record<string, readonly string[]>> = {
   "set-value": ["value"], "adopt-candidate": ["candidateId"], "review-current": [], "clear-value": [], "set-image": ["image"], "review-image": []
 };

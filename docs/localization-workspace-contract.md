@@ -1,12 +1,12 @@
 # 翻訳の画面（LocalizationWorkspace）と adapter の契約
 
-`LocalizationWorkspace` は、サイトの翻訳の残りを確認し、言語ごとまとめて公開する画面です。CMS の同じ項目で訳文を直すときは `LocalizationItemWorkspace` を `CollectionWorkspace.itemLanguages.renderTarget` に置きます。両方とも同じ adapter と項目エディタを使い、訳文・確認状態の正本を分けません。React 不要の型・runtime parser・印（置き換えてはいけない部分）の扱いは `@niho/web/localization-workspace-model` にあります。
+`LocalizationWorkspace` は、サイトの翻訳の残りを確認し、言語ごとまとめて公開する画面です。CMS の同じ項目で訳文を直すときは `LocalizationItemWorkspace` を `CollectionWorkspace.itemLanguages.renderTarget` に置きます。両方とも同じ adapter と項目エディタを使い、訳文・翻訳状態の正本を分けません。React 不要の型・runtime parser・印（置き換えてはいけない部分）の扱いは `@niho/web/localization-workspace-model` にあります。
 
 この段（W1）は画面と、ホスト（サイト）が実装する adapter の契約だけです。Studio の BFF・サイトごとの adapter・切替のフラグ・描画用の枠（サイト側の静的なページ）は含みません。
 
 ## 正本と責務
 
-原文・訳文・確認の記録・公開の正本はサイトにあります。ライブラリは表示・入力・その場の確かめ・自動保存のタイミング・古い応答の破棄・プレビューの枠への受け渡しだけを持ち、次のことはサイト（と BFF）の責務です。
+原文・訳文・翻訳状態・公開の正本はサイトにあります。ライブラリは表示・入力・その場の確かめ・自動保存のタイミング・古い応答の破棄・プレビューの枠への受け渡しだけを持ち、次のことはサイト（と BFF）の責務です。
 
 - **認証と認可。** 各呼び出しで、今の利用者がその操作をしてよいかを確かめます。画面から渡る `itemKey`・`unitId`・版・token は認可の証明ではありません。権限が無いときは `{ status: "forbidden" }` を返します。画面は表示していた中身を消し、権限が無いと出します。
 - **できる操作の一覧（`permissions`）を返すこと。** 画面はこの一覧で操作を出し分けるだけです。サーバーは同じ判断を書き込みの API でも必ず行ってください（画面の出し分けは防御ではありません）。
@@ -101,7 +101,7 @@ parser は未知の key を拒み、次の形と上限を確かめます。上�
 | `readRelease` | — | `{ status: "ready", current, history, pending }` |
 | `prepareRelease` | `{ operation, releaseId, expectedVersion, expectedCurrentVersion, resumeToken }` | `{ status: "preparing", progress, resumeToken }` / `{ status: "ready", plan }` / `{ status: "blocked", blockers }` / `{ status: "conflict" }` |
 | `applyRelease` | `{ confirmationToken, resumeToken }`（どちらか 1 つだけ文字列） | `{ status: "applying", progress, resumeToken }` / `{ status: "applied", current }` / `{ status: "expired" }` / `{ status: "conflict" }` |
-| `saveSettings` | `{ expectedVersion, autoDraft }` または `{ expectedVersion, reviewGlossaryVersion }` | `{ status: "saved", settings }` / `{ status: "conflict", settings }` / invalid |
+| `saveSettings` | `{ expectedVersion, autoDraft }`（旧い `{ expectedVersion, reviewGlossaryVersion }` も型に残るが、画面からは送らない） | `{ status: "saved", settings }` / `{ status: "conflict", settings }` / invalid |
 | `uploadImage`（任意） | `{ itemKey, unitId, file }` | `{ status: "uploaded", image }` / `{ status: "rejected", reason: "type" \| "size" \| "permission" \| "invalid" }` |
 | `pickAsset`（任意） | `{ itemKey, unitId }` | `{ status: "picked", image }` / `{ status: "cancelled" }`（素材の選び方の画面はホストが出す） |
 | `sourceLink?(itemKey)` | —（同期） | 原文を CMS で開く URL（https、または `/` から始まる同じサイトの path）か `null` |
@@ -132,13 +132,13 @@ type LocalizationOverview = {
 type LocalizationPermission = 'edit' | 'review' | 'translate' | 'publish' | 'rollback' | 'settings';
 type LocalizationSettings = {
   version: string;
-  autoDraft: boolean;                      // 原文を保存するたびに、変更箇所を自動翻訳するか。人が直した・確認した訳は候補に留める。鎌倉は OFF で運用する
+  autoDraft: boolean;                      // 原文を保存するたびに、変更箇所を自動翻訳するか。自動翻訳の訳は置き換え、人が直した訳は候補に留める。鎌倉は OFF で運用する
   translator: { connected: boolean };      // 翻訳サービスにつながっているか（設定の中身は出さない）
   queue: { waiting: number; failed: number; nextRetryAt: string | null };
   glossary?: {                             // 任意。無ければ用語集の section は出さない
     version: string;
     entries: { source: string; target: string }[];
-    reviewed: boolean;
+    reviewed: boolean;                     // 旧い確認の記録。parser は検証するが、画面は表示しない（2026-11-12）
   };
 };
 ```
@@ -146,17 +146,17 @@ type LocalizationSettings = {
 | 権限 | 画面で出すもの |
 | --- | --- |
 | `edit` | 訳文の入力・画像の操作・原文の取り込みを自動で進めること。無ければ入力は読むだけ |
-| `review` | 項目ごとの「確認済みにする」 |
+| `review` | なし（旧い確認の操作。2026-11-12 に確認の工程を廃止し、画面は `review-current`・`review-image` を出さない。値は互換のため残す） |
 | `translate` | 「翻訳案を作る」 |
 | `publish` | 「{訳す言語}版を公開…」と、途中の公開の「続ける」 |
 | `rollback` | 公開の履歴からの「この版に戻す…」 |
 | `settings` | 設定の変更（無ければ設定は読むだけ） |
 
-推奨の割り当て（オーナー判断の 1）: `publish`・`rollback`・`settings` は owner だけ。editor は `edit`・`review`・`translate` まで。
+推奨の割り当て（オーナー判断の 1）: `publish`・`rollback`・`settings` は owner だけ。editor は `edit`・`translate` まで（`review` を返してもかまわないが、画面は使わない）。
 
-`groups` は左に出すまとまり（例: 固定ページ・共通部分・記事）です。件数はサイトが数えます（一覧を全部読み終える前から出すため）。`needsWork` は要対応（下の状態の `untranslated`・`draft`・`source-changed`）の件数です。
+`groups` は左に出すまとまり（例: 固定ページ・共通部分・記事）です。件数はサイトが数えます（一覧を全部読み終える前から出すため）。`needsWork` は未翻訳（下の状態の `untranslated`・`draft`・`source-changed`）の件数、`reviewed` は翻訳済みの件数です。
 
-`attention` は、原文を直したあと公開済みの訳が前の版のまま残ると事故になる項目（価格・条件・法務のページ）を、一覧の上に目立たせるためのものです（2026-11-10、#171）。どの項目を対象にするかはサイトが決め、`items` には、その中で今「原文が更新」（`source-changed`）になっているものだけを入れます。無いとき（空の `items`）と省略した adapter は、何も出しません。画面は「{label}の原文が更新されています（n 件）」と、公開中の訳が前の版のままであること、直して「確認済み」にしてから更新を公開することを出し、題名から項目を開けます（`editLink` があればそちら）。公開済みの訳を外す操作はありません。
+`attention` は、原文を直したあと公開済みの訳が前の版のまま残ると事故になる項目（価格・条件・法務のページ）を、一覧の上に目立たせるためのものです（2026-11-10、#171）。どの項目を対象にするかはサイトが決め、`items` には、その中で今「原文が更新」（`source-changed`）になっているものだけを入れます。無いとき（空の `items`）と省略した adapter は、何も出しません。画面は「{label}の原文が更新されています（n 件）」と、公開中の訳が前の版のままであること、訳を直してから更新を公開することを出し、題名から項目を開けます（`editLink` があればそちら）。公開済みの訳を外す操作はありません。
 
 `catalog` が `updating` のあいだ、`edit` の権限がある画面は `advanceCatalog` を `pollInterval` ごとに呼び、帯に「原文を取り込んでいます n/m」と出します。`current` が返ったら概要と一覧を読み直します。人が押すボタンにはしません。取り込みの途中でも、前の版の原文で一覧・項目を読め、直せるようにしてください（差分の取り込み）。
 
@@ -171,23 +171,25 @@ type LocalizationItemSummary = {
   includedParts?: string[];       // 同じ行へまとめた内容（人が読む短い名前。最大 8 件）
   state: 'untranslated' | 'draft' | 'source-changed' | 'reviewed' | 'excluded';
   excludedReason: string | null;  // state が excluded のときだけ・必須（例「英語版を作らない設定です」）
-  totalUnits: number; reviewedUnits: number;    // 確認済み n/m（reviewedUnits <= totalUnits）
-  imagesUnreviewed: number;       // 差し替えたのにまだ確認していない画像の数
+  totalUnits: number; reviewedUnits: number;    // 翻訳済み n/m。reviewedUnits は今の原文に対応する訳がある項目の数（reviewedUnits <= totalUnits）
+  imagesUnreviewed: number;       // 旧い確認の名残。画面は使わない（鎌倉は常に 0）
   sourceDraftPending: boolean;    // 原文のページまたは CMS に未公開の下書きがある。ホストは保存済み下書きを翻訳原文として取り込む
   updatedAt: string | null; updatedBy: string | null;
 };
 
 ```
 
-| state | 意味 | 印 | 絞り込み |
+英訳は既定で自動翻訳し、人が手で直すこともできます。自動でも手修正でも、今の原文に対応する訳があれば「翻訳済み」です。人が「確認済みにする」工程は 2026-11-12 に廃止し、画面は「確認済み」「未確認」「更新あり」を出しません。状態の値（ワイヤ）は変えず、意味と表示だけを次のとおりにします。
+
+| state | 意味 | 印（表示） | 絞り込み |
 | --- | --- | --- | --- |
-| `untranslated` | 訳文がまだ無い項目がある | 未翻訳（中抜きの丸） | 要対応 |
-| `draft` | 訳文はあるが、確認していない項目がある | 未確認（半分の丸） | 要対応 |
-| `source-changed` | 確認した後に原文が変わった項目がある | 原文が更新（三角） | 要対応 |
-| `reviewed` | すべて確認済み | 確認済み（✓） | 確認済み |
+| `untranslated` | 訳文がまだ無い項目がある | 未翻訳（中抜きの丸） | 未翻訳 |
+| `draft` | 旧い値（確認していない訳がある）。鎌倉は返さない。返ったときは未翻訳として扱う | 未翻訳（中抜きの丸） | 未翻訳 |
+| `source-changed` | 訳の無い項目が、原文が変わって古くなった訳だけ | 未翻訳（中抜きの丸） | 未翻訳 |
+| `reviewed` | すべての項目に今の原文に対応する訳がある（自動・手修正を問わない） | 翻訳済み（✓） | 翻訳済み |
 | `excluded` | 訳さない（理由つき） | 対象外（斜線の四角） | 対象外 |
 
-複数が当てはまるときは表の上の方を優先してください（例: 未翻訳と原文の更新が両方ある → `untranslated`）。
+複数が当てはまるときは表の上の方を優先してください（例: 未翻訳と原文の更新が両方ある → `untranslated`）。印の `data-lw-state` は表示の 3 種（`untranslated`・`reviewed`・`excluded`）で、届いた値は `data-lw-item-state` に残します。
 
 `listItems` は段階で返します。最初は `cursor: null`、続きは前の応答の `nextCursor` で呼び、`null` で終わりです。画面は届いた分から出し、続きを読んでいるあいだは「残りを読み込んでいます」と出します。1 件の項目が多く、サイトの内部で分けて持っているもの（ページの分割など）は、1 件にまとめて返してください。
 
@@ -222,16 +224,17 @@ type LocalizationWorkspaceUnit = {
 type LocalizationImage = { asset: LocalizedAsset; url: string };   // asset は niho-web の LocalizedAsset。url は表示用（https か "/" から始まる path）
 ```
 
-| unit の state | 意味 | value |
-| --- | --- | --- |
-| `source` | 訳さず原文のまま使う（`required: false` の画像など） | `null` |
-| `missing` | 訳文がまだ無い | `null` |
-| `draft` | 訳文はあるが確認していない | あり |
-| `review-needed` | 確認した後に原文が変わった（画面では「原文が更新」）。`previousSource` に確認したときの原文を入れられる | あり |
-| `reviewed` | 今の原文に対して確認済み | あり |
+| unit の state | 意味 | 表示 | value |
+| --- | --- | --- | --- |
+| `source` | 訳さず原文のまま使う（`required: false` の画像など） | 原文のまま | `null` |
+| `missing` | 訳文がまだ無い | 未翻訳 | `null` |
+| `draft` | 今の原文に対応する訳がある（自動・手修正を問わない） | 翻訳済み | あり |
+| `review-needed` | 古い原文への訳だけがある。今の原文に対応する訳が無い。`previousSource` に訳したときの原文を入れられる | 未翻訳 | あり |
+| `reviewed` | 今の原文に対応する訳がある（過去に確認した記録が残っている訳。意味は `draft` と同じ） | 翻訳済み | あり |
 
-- `previousSource` は `review-needed` のときだけ値を持てます。
-- `editOrigin` は訳文を自動翻訳で保存したら `AUTO`、人が編集して保存したら `MANUAL` です。`draft` の項目に限り、画面はそれぞれ「自動翻訳（未確認）」「手修正（未確認）」と表示します。省略または `null` は「未確認」です。画像には付けません。
+- `previousSource` は `review-needed` のときだけ値を持てます。画面は「前の{原文の言語}を見る」で開けるようにします。
+- `editOrigin` は訳文を自動翻訳で保存したら `AUTO`、人が編集して保存したら `MANUAL` です。画面は出どころで表示を分けません（「自動翻訳（未確認）」「手修正（未確認）」は廃止）。画像には付けません。
+- 画像の差し替えは、確認の記録が無くても今の原文の画像に対するものなら使います（`draft`）。
 - `candidate` は翻訳サービスが作った案です。画面は「翻訳案を使う」で `adopt-candidate` を送ります。
 - 画像の `value: null` は「原文と同じ画像を使う」です。
 
@@ -270,20 +273,21 @@ type LocalizationCommandInput = {
 } & (
   | { action: 'set-value'; value: string | LocalizedRichText }     // 文字・リッチテキスト
   | { action: 'adopt-candidate'; candidateId: string }               // 翻訳案を使う
-  | { action: 'review-current' }                                     // 今の訳文を確認済みにする（文字・リッチテキスト）
+  | { action: 'review-current' }                                     // 旧い確認の操作。画面からは送らない（下）
   | { action: 'clear-value' }                                        // 訳文を消して未翻訳に戻す（文字・リッチテキスト）。翻訳案は残す
   | { action: 'set-image'; image: LocalizedAsset | null }            // 画像を差し替える。null は原文と同じに戻す
-  | { action: 'review-image' }                                       // 差し替えた画像を確認済みにする
+  | { action: 'review-image' }                                       // 旧い確認の操作。画面からは送らない（下）
 );
 ```
 
 - **CAS。** `expectedVersion` が今の項目の版と違う、または `expectedSourceVersion` が今の原文の版と違うときは、書かずに `{ status: "conflict", unit, summary }`（`unit` は最新）を返します。版は項目ごとに比べるので、同じ 1 件の別の項目を別の人が直していても衝突しません。
 - **冪等。** `operationId` は画面が操作ごとに作ります。同じ `operationId` の再送（通信が切れたときの再試行など）は二重に書かず、前回と同じ結果を返してください。保存しておく期間は 24 時間以上を推奨します。
-- **応答。** `applied` の `unit` は書いた後の項目、`summary` はその 1 件の一覧の行（状態・件数の更新に使う）です。`set-value` で訳文を直すと、確認済みだった項目は `draft` に戻します。
-- **訳を消す。** `clear-value` は訳文（下書き・確認済み）を消し、項目を未翻訳（必須なら `missing`・任意なら `source`）に戻します。翻訳案は残します。訳文の無い項目と画像は `invalid` です（画像は `set-image` に `null` で原文に戻します）。
+- **応答。** `applied` の `unit` は書いた後の項目、`summary` はその 1 件の一覧の行（状態・件数の更新に使う）です。`set-value` で訳文を直した項目は、今の原文への訳（`draft`）になります。
+- **訳を消す。** `clear-value` は訳文を消し、項目を未翻訳（必須なら `missing`・任意なら `source`）に戻します。翻訳案は残します。訳文の無い項目と画像は `invalid` です（画像は `set-image` に `null` で原文に戻します）。
 - **invalid。** 札が合わない・長すぎる・空にできない項目を空にした・画像が使えない、などは `{ status: "invalid", message }` で、`message` を項目の下に出します。
 - 項目が原文から消えたときは `not_found` です。画面は「この項目は原文から無くなりました」と出し、読み直しを勧めます。
-- 権限の確かめ: `set-value`・`adopt-candidate`・`clear-value`・`set-image` は `edit`、`review-current`・`review-image` は `review` です。
+- 権限の確かめ: `set-value`・`adopt-candidate`・`clear-value`・`set-image` は `edit` です。
+- **旧い確認の操作。** `review-current`・`review-image` は 2026-11-12 に廃止した確認の工程の操作です。画面からは送りませんが、Studio とホストの配備の順序がずれても壊れないよう、型と BFF の経路は残します。ホストは互換のため受けてよく（権限は `review`）、公開の条件には使いません。
 
 ### 翻訳の依頼（requestTranslation・readJob）
 
@@ -339,22 +343,20 @@ type LocaleReleaseWorkspacePlan = {
 
 1. 概要を読み直し、`blockers` が 1 つでもあれば一覧を出して先へ進めません（`itemKey` があれば「開く」で 1 件へ移れます）。
 2. 準備: `prepareRelease({ operation: "publish", releaseId: null, expectedVersion: overview.version, expectedCurrentVersion: current?.version ?? null, resumeToken: null })`。`preparing` なら `progress`（n/m）を出し、返った `resumeToken` を付けてすぐ呼び直します。`ready` で確認へ。`blocked` なら 1. の一覧に戻ります。`conflict` は「内容が変わりました。読み込み直して、もう一度試してください」。
-3. 確認: ページ数・公開する先・今の版 → 新しい版・期限の残り（`expiresAt` まで）を出します。初回公開の `firstRelease` があれば、まとまりごとのページ数と、そのうち未確認の自動訳があるページ数、対象外の件数と理由を出します。`changes` があれば、新しく出るページと外れるページも出します。公開で `pages` が 0 になるとき（すべて外れる）は、そのことをはっきり出します。期限が切れたら「準備し直す」だけを出します。
+3. 確認: ページ数・公開する先・今の版 → 新しい版・期限の残り（`expiresAt` まで）を出します。初回公開の `firstRelease` があれば、まとまりごとのページ数と、そのうち自動翻訳のままの訳があるページ数、対象外の件数と理由を出します。`changes` があれば、新しく出るページと外れるページも出します。公開で `pages` が 0 になるとき（すべて外れる）は、そのことをはっきり出します。期限が切れたら「準備し直す」だけを出します。
 4. 反映: `applyRelease({ confirmationToken, resumeToken: null })`。`applying` なら n/m を出し、`resumeToken` を付けて `applyRelease({ confirmationToken: null, resumeToken })` を呼び直します。`applied` で完了、`expired` は 2. からやり直し、`conflict` は読み直し。
 
 - 途中で閉じても、サイトは途中の状態を `overview.release.pending`（と `readRelease` の `pending`）で返してください。画面は帯に「前回の公開が途中です。」と「続ける」を出し、`stage` に合わせて `prepareRelease` か `applyRelease` を `resumeToken` だけで呼び直します（`publish`・`rollback` の権限が要ります）。
 - `confirmationToken` は URL・ログ・保存先に出さないでください。画面もタブのメモリにだけ持ちます。準備・反映の `resumeToken` も一回の公開の中でだけ使えるものにしてください。
-- **ページ単位の公開。** サイトは、訳がそろったページだけを公開してよいです（未訳のページは原文の言語のまま。言語の切替と hreflang も出たページだけ）。そのときの `blockers` は、公開そのものを止める理由（取り込み中・公開の途中・共通部分の訳が未確認で出せるページが無い、など）だけにし、未訳の項目は並べません。出る・外れるページは `changes` で返します。
+- **ページ単位の公開。** サイトは、訳がそろったページだけを公開してよいです（未訳のページは原文の言語のまま。言語の切替と hreflang も出たページだけ）。そのときの `blockers` は、公開そのものを止める理由（取り込み中・公開の途中・共通部分が未翻訳で出せるページが無い、など）だけにし、未訳の項目は並べません。出る・外れるページは `changes` で返します。
 - 戻し: 公開の履歴で `restorable` の版を選び、`prepareRelease({ operation: "rollback", releaseId, … })` から同じ手順です。戻しは前に公開した版をそのまま戻すので、`blockers` で止めません（サイトが止める理由を返したときは出します）。
 - 権限の確かめ: 公開は `publish`、戻しは `rollback` です。
 
 ### 設定（saveSettings）
 
-画面で変えられるのは `autoDraft` と、任意の固定用語集の確認状態です。`autoDraft` を有効にすると、原文を保存するたびに、変更箇所を自動翻訳します。自動翻訳のままの訳は新しい訳で更新し、人が直した・確認した訳は保持して新しい訳を翻訳案に残します。無効のあいだは、原文が変わった箇所を「原文が更新」にするだけで、翻訳は最初の一括下書きと「翻訳案を作る」（`translate`）を押したときだけ行います。どちらでも、自動翻訳の訳は未確認で、公開するのは確認したページです（2026-11-10、#171。鎌倉は `autoDraft` を無効のまま運用します）。翻訳サービスの接続の有無・待っている件数・失敗と次の再試行は読むだけです。
+画面で変えられるのは `autoDraft` だけです。`autoDraft` を有効にすると、原文を保存するたびに、変更箇所を自動翻訳します。自動翻訳の訳（`AUTO`）は、過去に確認した記録があっても新しい訳で置き換え、人が直した訳（`MANUAL`）は保持して新しい訳を翻訳案に残します。無効のあいだは、原文が変わった箇所を未翻訳（`review-needed`）にするだけで、翻訳は最初の一括下書きと「翻訳案を作る」（`translate`）を押したときだけ行います。どちらでも、自動・手修正を問わず今の原文に対応する訳があるページを公開でき、人の確認は要りません（2026-11-12。鎌倉は `autoDraft` を無効のまま運用します）。翻訳サービスの接続の有無・待っている件数・失敗と次の再試行は読むだけです。保存は `saveSettings({ expectedVersion: settings.version, autoDraft })` です。
 
-`settings.glossary` があるときだけ、画面は版・`source` と `target` の対照・未確認／確認済みを表示します。`settings` 権限があり未確認のときだけ「この用語集を確認済みにする」を出し、`saveSettings({ expectedVersion: settings.version, reviewGlossaryVersion: settings.glossary.version })` で保存します。`reviewGlossaryVersion` は現行版と完全一致させ、違う版や CAS 競合は `conflict` と最新の `settings` を返してください。同じ版の再確認は `saved` の no-op でかまいません。保存成功後、画面は `loadOverview` を再実行して初回公開の `blockers` を更新します。
-
-どちらの保存も `expectedVersion` は `settings.version` です。`autoDraft` と `reviewGlossaryVersion` を同じ画面要求へ混ぜず、安全な union の片方だけを送ります。一般ホストと古い adapter は `glossary` を返さなくてよく、その場合の設定画面は従来どおりです。
+`settings.glossary` があるときだけ、画面は「用語集」として版と `source`・`target` の対照を表示します。`glossary.reviewed` は旧い確認の記録で、parser は検証しますが画面は表示せず、公開の条件にもしません。用語集を確認済みにする操作（`saveSettings({ expectedVersion, reviewGlossaryVersion })`）は 2026-11-12 に画面から外しました。型と BFF の経路は、Studio とホストの配備の順序がずれても壊れないよう残します（ホストは互換のため受けてよい）。`autoDraft` と `reviewGlossaryVersion` を同じ要求へ混ぜない規則も変わりません。一般ホストと古い adapter は `glossary` を返さなくてよく、その場合は用語集の欄を出しません。
 
 ### 画像（uploadImage・pickAsset）
 
@@ -393,21 +395,21 @@ type PreviewRenderMessage = {
 
 一覧:
 
-- 上に「{訳す言語}版」の帯: 公開中の版と日時、確認済み n/m 件、「{訳す言語}版を公開…」（`publish`）、「公開の履歴」、原文の取り込みの進み具合、途中の公開の「続ける」。初回公開を止める `blockers` があれば件数と公開ダイアログへの案内を表示する。翻訳サービスが未接続なら、翻訳案は作れないが手入力はできることを表示する。確認済み件数だけで公開可能とは判定しない。
+- 上に「{訳す言語}版」の帯: 公開中の版と日時、翻訳済み n/m 件、「{訳す言語}版を公開…」（`publish`）、「公開の履歴」、原文の取り込みの進み具合、途中の公開の「続ける」。初回公開を止める `blockers` があれば件数と公開ダイアログへの案内を表示する。翻訳サービスが未接続なら、翻訳案は作れないが手入力はできることを表示する。翻訳済みの件数だけで公開可能とは判定しない（公開できるかは `blockers` で決める）。
 - 帯の下に、`attention` に項目があれば「{label}の原文が更新されています」の呼びかけ（警告色・題名のリンク）。
 - 左にコンテンツの種類と件数（「すべて」を先頭に）。幅 900px 以下は上に横並び。
-- 絞り込み: 初回は「要対応」。要対応／確認済み／すべて／対象外（件数つき）を切り替えられる。検索を始めると全件から題名とアドレスを探し、項目から一覧へ戻ったときは元の行を見つけられるよう「すべて」を表示する。「要対応」が空なら「すべてを見る」で切り替えられる。
-- 行: 状態の印（形と言葉）・題名（下にアドレス）・任意の「含むもの」・確認済み n/m・未確認の画像の数・最終更新。対象外は `excludedReason` ごとに見出しと件数をまとめ、題名・アドレス・理由で検索できる。ホストが同じページや項目の部品を 1 件に集約し、内部名の代わりに `includedParts` へ人が読む名前を返す。`editLink` が安全な URL を返す行はホストのサブ言語編集画面へ移り、無ければこの画面の項目を開く。`sourceLink` が安全な URL を返す行には「原文を編集」を出す。
+- 絞り込み: 初回は「未翻訳」。未翻訳／翻訳済み／すべて／対象外（件数つき）を切り替えられる（フィルタのキーは `needs-work`・`reviewed`・`all`・`excluded` のまま）。検索を始めると全件から題名とアドレスを探し、項目から一覧へ戻ったときは元の行を見つけられるよう「すべて」を表示する。「未翻訳」が空なら「すべてを見る」で切り替えられる。
+- 行: 状態の印（形と言葉）・題名（下にアドレス）・任意の「含むもの」・翻訳済み n/m・最終更新（`imagesUnreviewed` は出さない）。対象外は `excludedReason` ごとに見出しと件数をまとめ、題名・アドレス・理由で検索できる。ホストが同じページや項目の部品を 1 件に集約し、内部名の代わりに `includedParts` へ人が読む名前を返す。`editLink` が安全な URL を返す行はホストのサブ言語編集画面へ移り、無ければこの画面の項目を開く。`sourceLink` が安全な URL を返す行には「原文を編集」を出す。
 - 「すべて」と各種類では、対象外の行を一覧の下の折りたたみへ分ける。検索中は一致した対象外も見えるように開く。「対象外」の絞り込みでは直接一覧に出す。
 
 1 件の編集:
 
 - 上のバー: 「‹ 一覧へ」・状態・保存の状態・「翻訳案を作る」（`translate`）・「CMS で開く」（`sourceLink`）。本文の上には関連する訳文と、指定があれば詳細ページの英語エディタへのリンクを置く。
 - 原文の CMS に未公開の下書きがあれば帯で知らせ、CMS への入口を出します。
-- 「原文が更新」の項目は「原文が更新された項目」として先にまとめて出し、確認したときの原文（`previousSource`）を開いて見られます。
-- 項目ごとに原文（読むだけ）と訳文を横に並べます（900px 以下は縦）。訳文は直してから `autosaveDelay` 後に自動で保存し、項目ごとに「確認済みにする」（`review`）・「翻訳案を使う」を出します。
+- `review-needed` の項目は「原文が更新された項目」として先にまとめて出し（印は未翻訳）、「原文が変わりました。訳を直すか、翻訳案を入れてください。」と、前の原文（`previousSource`）を開いて見られる「前の{原文の言語}を見る」を出します。
+- 項目ごとに原文（読むだけ）と訳文を横に並べます（900px 以下は縦）。訳文は直してから `autosaveDelay` 後に自動で保存し、項目ごとに「翻訳案を使う」と「訳を消す」を出します。「確認済みにする」は出しません。
 - 保存の衝突（`conflict`）は上書きせず、その項目に「ほかの人が先に直しました」（原文の版が違うときは「原文が更新されました」）と「最新を読み込む」を出します。読み込むと、その項目でいま直したところは消えます。ほかの項目の入力は残します。
-- 画像: 原文の画像と訳文の画像を並べ、「素材から選ぶ」（`pickAsset`）・「画像を上げる」（`uploadImage`）・「原文と同じに戻す」・「確認済みにする」。
+- 画像: 原文の画像と訳文の画像を並べ、「素材から選ぶ」（`pickAsset`）・「画像を上げる」（`uploadImage`）・「原文と同じに戻す」。差し替えた画像はそのまま翻訳済みです。
 - プレビュー: 右（1100px 以下は下）に枠を出し、表示するページ・幅（PC・360・320）・言語を切り替えます。まだ保存していない入力も映します。
 - 保存待ちのまま一覧へ戻ると、先に保存します。保存できなければ「変更を捨てて戻る」かを確かめます。保存待ち・保存中にタブを閉じようとすると `beforeunload` で止めます。
 
@@ -427,6 +429,6 @@ type PreviewRenderMessage = {
 ## デモと検証
 
 `npm run demo:localization-workspace`（`http://127.0.0.1:4180`）で、架空のデータとメモリ上の adapter で動く画面と、デモ用の描画の枠を出します。
-`?first=1&glossary=1&view=settings` で初回公開前の用語集を表示し、確認操作と公開できない理由の更新を試せます。`?attention=1` で、原文が変わった項目を一覧の上で目立たせる呼びかけを試せます（「原文が変わったことにする」を押すと出ます）。
+`?first=1&glossary=1&view=settings` で初回公開前の用語集の表示を試せます。`?attention=1` で、原文が変わった項目を一覧の上で目立たせる呼びかけを試せます（「原文が変わったことにする」を押すと出ます）。
 
-`test/localization-workspace-model.test.mjs` は parser（未知の key・大きすぎる値・印の対応・状態の組み合わせ）と、印・リッチテキストの札の変換を確かめます。`test/localization-workspace-ui.test.mjs` は jsdom で、一覧・絞り込み・自動保存・確認済み・衝突・札・公開の手順（理由・再開・戻し）・権限・古い応答の破棄を確かめます。
+`test/localization-workspace-model.test.mjs` は parser（未知の key・大きすぎる値・印の対応・状態の組み合わせ）と、印・リッチテキストの札の変換を確かめます。`test/localization-workspace-ui.test.mjs` は jsdom で、一覧・絞り込み・状態の表示（未翻訳・翻訳済み・対象外、確認の文言を出さないこと）・自動保存・衝突・札・公開の手順（理由・再開・戻し）・権限・古い応答の破棄を確かめます。

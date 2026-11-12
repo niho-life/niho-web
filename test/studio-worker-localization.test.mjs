@@ -458,7 +458,7 @@ test("翻訳 BFF: 上流の契約の結果を写し、合わない応答は 502�
     ["/items/aG9tZQ", {}, 404, { status: "not_found" }],
     ["/items/aG9tZQ/command", command, 200, { status: "invalid", message: "札が足りません：リンク先" }],
     ["/items/aG9tZQ/command", command, 404, { status: "not_found" }],
-    ["/release/prepare", { operation: "publish", releaseId: null, expectedVersion: "o1", expectedCurrentVersion: null, resumeToken: null }, 200, { status: "blocked", blockers: [{ id: "unreviewed", message: "確認していない項目があります。", itemKey: "aG9tZQ" }] }],
+    ["/release/prepare", { operation: "publish", releaseId: null, expectedVersion: "o1", expectedCurrentVersion: null, resumeToken: null }, 200, { status: "blocked", blockers: [{ id: "unreviewed", message: "訳していない項目があります。", itemKey: "aG9tZQ" }] }],
     ["/uploads/intent", upload, 200, { status: "invalid", message: "この項目は画像ではありません。" }],
     ["/uploads/intent", upload, 403, { status: "forbidden" }]
   ]) {

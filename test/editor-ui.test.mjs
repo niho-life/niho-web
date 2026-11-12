@@ -167,7 +167,7 @@ test("form completion inspector is unconnected without the capability and ignore
 
 test("English publication states stay separate from the Japanese draft and retry only when allowed", async () => {
   const states = [
-    ["queued", "処理待ち"], ["translating", "翻訳中"], ["review-required", "確認待ち"], ["publishing", "公開中"],
+    ["queued", "処理待ち"], ["translating", "翻訳中"], ["review-required", "未翻訳"], ["publishing", "公開中"],
     ["published", "公開済み"], ["withdrawn", "取り下げ"], ["superseded", "新しい版に置換済み"], ["retryable-failure", "失敗（再試行可能）"]
   ];
   let refreshIndex = 0;
