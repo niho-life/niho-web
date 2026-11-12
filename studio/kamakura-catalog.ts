@@ -7,7 +7,9 @@ import { KAMAKURA_MEDIA_ORIGIN } from "./kamakura-cms-contract.js";
 export const KAMAKURA_CATALOG_CONTRACT_ERROR_CODE = "upstream_contract_invalid" as const;
 export const KAMAKURA_CATALOG_CONTRACT_ERROR_STATUS = 502 as const;
 export const KAMAKURA_EDITOR_SITE_ID = "kamakura" as const;
-export const KAMAKURA_EDITOR_SITE_NAME = "鎌倉サイト（新サイト確認用）";
+export const KAMAKURA_EDITOR_SITE_NAME = "鎌倉サイト";
+/** kamakura-site が以前返していた本番のサイト名。両 Worker の配備がそろうまで受け付け、表示は KAMAKURA_EDITOR_SITE_NAME にそろえる。 */
+const KAMAKURA_LEGACY_SITE_NAME = "鎌倉サイト（新サイト確認用）";
 const KAMAKURA_PREVIEW_SITE_NAME = "鎌倉サイト（Preview）";
 const KAMAKURA_EDITOR_DOMAINS = ["https://next-kamakura.niho.life", "https://kamakura.niho.life"] as const;
 export function isKamakuraEditorDomain(value: unknown): value is string {
@@ -55,7 +57,8 @@ function catalogText(value: unknown, maximum?: number): string {
 
 function parseSite(value: unknown, previewOrigin?: string): EditorSite {
   const expectedName = previewOrigin === undefined ? KAMAKURA_EDITOR_SITE_NAME : KAMAKURA_PREVIEW_SITE_NAME;
-  if (!isRecord(value) || value.id !== KAMAKURA_EDITOR_SITE_ID || value.name !== expectedName || !Array.isArray(value.domains) || value.domains.length !== 1
+  const acceptedNames: readonly string[] = previewOrigin === undefined ? [KAMAKURA_EDITOR_SITE_NAME, KAMAKURA_LEGACY_SITE_NAME] : [KAMAKURA_PREVIEW_SITE_NAME];
+  if (!isRecord(value) || value.id !== KAMAKURA_EDITOR_SITE_ID || typeof value.name !== "string" || !acceptedNames.includes(value.name) || !Array.isArray(value.domains) || value.domains.length !== 1
     || (previewOrigin === undefined ? !isKamakuraEditorDomain(value.domains[0]) : value.domains[0] !== previewOrigin)) {
     throw new KamakuraCatalogContractError();
   }
