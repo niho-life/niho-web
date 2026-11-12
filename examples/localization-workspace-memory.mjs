@@ -1,5 +1,7 @@
 // 翻訳の画面（LocalizationWorkspace）のデモとテスト用の、メモリ上の adapter。
 // データはすべて架空。実在のサイト・人・URL・内部の key は使わない。変更はこのメモリだけで、読み込み直すと戻る。
+// 状態はホストの意味（2026-11-12、確認の工程は廃止）にそろえる: 今の原文への訳は draft（過去に確認した訳は reviewed）、古い原文への訳は review-needed。
+// translatedSource は訳がどの原文の版に対するものか、reviewedSource は旧い確認の記録。
 
 export const ALL_PERMISSIONS = ["edit", "review", "translate", "publish", "rollback", "settings"];
 const T0 = "2026-10-20T09:00:00.000Z";
@@ -7,15 +9,15 @@ const M = (id) => `⟦${id}⟧`;
 
 const text = (unitId, label, source, extra = {}) => ({
   unitId, label, section: null, required: true, kind: "text", source, value: null, previousSource: null, candidate: null, marks: [], maxLength: null, singleLine: false,
-  version: 1, sourceVersion: "s1", reviewedSource: null, updatedAt: null, updatedBy: null, ...extra,
+  version: 1, sourceVersion: "s1", translatedSource: "s1", reviewedSource: null, updatedAt: null, updatedBy: null, ...extra,
 });
 const rich = (unitId, label, children, extra = {}) => ({
   unitId, label, section: null, required: true, kind: "rich-text", source: { kind: "rich-text", children }, value: null, previousSource: null, candidate: null,
-  version: 1, sourceVersion: "s1", reviewedSource: null, updatedAt: null, updatedBy: null, ...extra,
+  version: 1, sourceVersion: "s1", translatedSource: "s1", reviewedSource: null, updatedAt: null, updatedBy: null, ...extra,
 });
 const image = (unitId, label, url, extra = {}) => ({
   unitId, label, section: null, required: false, kind: "image", source: { asset: { kind: "image-url", src: url }, url }, value: null,
-  version: 1, sourceVersion: "s1", reviewedSource: null, updatedAt: null, updatedBy: null, ...extra,
+  version: 1, sourceVersion: "s1", translatedSource: "s1", reviewedSource: null, updatedAt: null, updatedBy: null, ...extra,
 });
 
 /** 架空の 1 件ずつ。key は ID を base64url にしたもの（の形だけをまねた架空の値）。 */
@@ -40,7 +42,7 @@ export function seedItems(mediaBase = "https://media.example.test") {
       units: [
         text("title", "題名", "私たちについて", { singleLine: true, value: "About us", reviewedSource: "s1" }),
         text("intro", "紹介文", "小さな町の工房です。週末は体験教室を開いています。", {
-          value: "A small workshop in a small town.", editOrigin: "MANUAL", sourceVersion: "s2", reviewedSource: "s1", previousSource: "小さな町の工房です。",
+          value: "A small workshop in a small town.", editOrigin: "MANUAL", sourceVersion: "s2", translatedSource: "s1", reviewedSource: "s1", previousSource: "小さな町の工房です。",
         }),
       ],
     },
@@ -62,9 +64,11 @@ export function seedItems(mediaBase = "https://media.example.test") {
 
 function unitState(unit) {
   if (unit.value === null) return unit.required ? "missing" : "source";
-  if (unit.reviewedSource === unit.sourceVersion) return "reviewed";
-  return unit.reviewedSource ? "review-needed" : "draft";
+  if (unit.translatedSource !== unit.sourceVersion) return "review-needed";
+  return unit.reviewedSource === unit.sourceVersion ? "reviewed" : "draft";
 }
+/** 今の原文に対応する訳を使う（自動・手修正を問わない）。 */
+const translate = (unit) => { unit.translatedSource = unit.sourceVersion; unit.reviewedSource = null; };
 function exportUnit(unit) {
   const state = unitState(unit);
   const base = { unitId: unit.unitId, label: unit.label, section: unit.section, required: unit.required, version: `v${unit.version}`, sourceVersion: unit.sourceVersion, state,
@@ -76,11 +80,12 @@ function exportUnit(unit) {
 function summarize(item) {
   const states = item.units.map(unitState);
   const counted = states.filter((state) => state !== "source");
-  const state = item.excluded ? "excluded" : states.includes("missing") ? "untranslated" : states.includes("review-needed") ? "source-changed" : states.includes("draft") ? "draft" : "reviewed";
+  // 項目の draft は返さない。今の原文に対応する訳がそろえば reviewed。
+  const state = item.excluded ? "excluded" : states.includes("missing") ? "untranslated" : states.includes("review-needed") ? "source-changed" : "reviewed";
   return {
     key: item.key, groupId: item.groupId, title: item.title, path: item.path, ...(item.includedParts ? { includedParts: [...item.includedParts] } : {}), state, excludedReason: item.excluded,
-    totalUnits: item.excluded ? 0 : counted.length, reviewedUnits: item.excluded ? 0 : counted.filter((entry) => entry === "reviewed").length,
-    imagesUnreviewed: item.units.filter((unit, index) => unit.kind === "image" && (states[index] === "draft" || states[index] === "review-needed")).length,
+    totalUnits: item.excluded ? 0 : counted.length, reviewedUnits: item.excluded ? 0 : counted.filter((entry) => entry === "draft" || entry === "reviewed").length,
+    imagesUnreviewed: 0,
     sourceDraftPending: item.sourceDraftPending, updatedAt: item.updatedAt, updatedBy: item.updatedBy,
   };
 }
@@ -112,7 +117,7 @@ const richPrefix = (value, prefix) => {
  * - upload: (file) => Promise<string>（上げた画像の URL）
  * - by: 操作した人の名前
  * - mediaBase: 画像の置き場（既定は https://media.example.test。デモはローカルの /media）
- * - glossary: true または { version, entries, reviewed }（省略時は用語集なし）
+ * - glossary: true または { version, entries, reviewed }（省略時は用語集なし。reviewed は旧い確認の記録で、公開の条件にしない）
  * - attention: { label, keys }（原文が更新されたとき目立たせる項目。省略時は出さない）
  */
 export function createLocalizationMemory(options = {}) {
@@ -150,10 +155,7 @@ export function createLocalizationMemory(options = {}) {
   const allowed = (permission) => state.permissions.includes(permission);
   const blockers = () => state.blockersOverride ?? [
     ...state.items.filter((item) => !item.excluded && summarize(item).state !== "reviewed")
-      .map((item) => ({ id: `item-${item.key}`, message: `「${item.title}」に、まだ確認していない項目があります。`, itemKey: item.key })),
-    ...(!state.current && state.settings.glossary && !state.settings.glossary.reviewed
-      ? [{ id: "glossary-review", message: "用語集を確認してください。", itemKey: null }]
-      : []),
+      .map((item) => ({ id: `item-${item.key}`, message: `「${item.title}」に、まだ訳していない項目があります。`, itemKey: item.key })),
   ];
   const overview = () => {
     const summaries = state.items.map(summarize);
@@ -208,24 +210,25 @@ export function createLocalizationMemory(options = {}) {
           } else if (unit.kind === "rich-text") {
             if (richShape(input.value) !== richShape(unit.source)) return { status: "invalid", message: "リンクや装飾の形が原文と合いません。" };
           } else return { status: "invalid", message: "画像は画像の操作で変えてください。" };
-          unit.value = input.value; unit.editOrigin = "MANUAL"; unit.reviewedSource = unitState(unit) === "reviewed" ? null : unit.reviewedSource;
+          unit.value = input.value; unit.editOrigin = "MANUAL"; translate(unit);
           break;
         case "adopt-candidate":
           if (!unit.candidate || unit.candidate.candidateId !== input.candidateId) return { status: "invalid", message: "この翻訳案はもう使えません。" };
-          unit.value = structuredClone(unit.candidate.value); unit.editOrigin = "AUTO"; unit.reviewedSource = null;
+          unit.value = structuredClone(unit.candidate.value); unit.editOrigin = "AUTO"; translate(unit);
           break;
         case "clear-value":
           if (unit.kind === "image" || unit.value === null) return { status: "invalid", message: "この項目には訳がありません。" };
           unit.value = null; unit.editOrigin = null; unit.reviewedSource = null;
           break;
         case "review-current": case "review-image":
+          // 旧い確認の操作。画面からは送らないが、ホストと同じく受ける。
           if (unit.value === null) return { status: "invalid", message: "まだ訳文がありません。" };
-          unit.reviewedSource = unit.sourceVersion;
+          unit.translatedSource = unit.sourceVersion; unit.reviewedSource = unit.sourceVersion;
           break;
         case "set-image":
           if (unit.kind !== "image") return { status: "invalid", message: "画像の項目ではありません。" };
           unit.value = input.image ? { asset: structuredClone(input.image), url: input.image.kind === "image-url" ? input.image.src : unit.source.url } : null;
-          unit.reviewedSource = null;
+          translate(unit);
           break;
         default: return { status: "invalid", message: "知らない操作です。" };
       }
@@ -360,7 +363,7 @@ export function createLocalizationMemory(options = {}) {
     /** ほかの人が直したことにする（項目の版が上がる）。 */
     externalEdit(itemKey, unitId, value) {
       const unit = find(itemKey).units.find((entry) => entry.unitId === unitId);
-      unit.value = value; unit.editOrigin = unit.kind === "image" ? null : "MANUAL"; unit.version++; unit.reviewedSource = null; unit.updatedBy = "ほかの編集者（架空）"; unit.updatedAt = iso(); state.overviewVersion++;
+      unit.value = value; unit.editOrigin = unit.kind === "image" ? null : "MANUAL"; unit.version++; translate(unit); unit.updatedBy = "ほかの編集者（架空）"; unit.updatedAt = iso(); state.overviewVersion++;
     },
     /** 原文が変わったことにする（原文の版が変わる）。 */
     changeSource(itemKey, unitId, source) {

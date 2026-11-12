@@ -43,8 +43,9 @@ test("the actual bundled localization demo initializes in a DOM runtime", async 
   button("言語全体の公開確認").click();
   await waitFor(() => document.querySelector('[role="dialog"]'));
   let dialog = document.querySelector('[role="dialog"]');
-  assert.match(dialog.textContent, /差し替えた画像の確認が必要/);
-  assert.equal(button("この言語全体を公開", dialog).disabled, true, "an optional but manually replaced image still needs review");
+  assert.match(dialog.textContent, /未翻訳の項目が1件あります/);
+  assert.doesNotMatch(dialog.textContent, /確認が必要|未確認/, "translations need no review step (2026-11-12)");
+  assert.equal(button("この言語全体を公開", dialog).disabled, true, "a required unit without a translation for the current source blocks the release");
   button("編集に戻る", dialog).click();
   await waitFor(() => !document.querySelector('[role="dialog"]'));
   const history = document.querySelector('select[aria-label="戻す言語全体版"]');
@@ -55,9 +56,9 @@ test("the actual bundled localization demo initializes in a DOM runtime", async 
   button("言語全体の復元内容を確認").click();
   await waitFor(() => document.querySelector('[role="dialog"]'));
   dialog = document.querySelector('[role="dialog"]');
-  assert.doesNotMatch(dialog.textContent, /まだ公開できません|未確認の項目/);
+  assert.doesNotMatch(dialog.textContent, /まだ公開できません|未翻訳の項目/);
   const confirmation = dialog.querySelector('input[type="checkbox"]');
-  assert.equal(confirmation.disabled, false, "unreviewed current drafts do not block restoring a prior approved release");
+  assert.equal(confirmation.disabled, false, "untranslated current units do not block restoring a prior release");
   confirmation.click();
   await waitFor(() => !button("この言語全体版を復元", dialog).disabled);
   button("この言語全体版を復元", dialog).click();

@@ -180,7 +180,7 @@ export type LocaleReleasePending = {
 export type LocaleReleaseBlocker = { readonly id: string; readonly message: string; readonly itemKey: string | null };
 /** 公開で出る・外れるページ（人が読む題名とアドレス）。 */
 export type LocaleReleasePageRef = { readonly path: string; readonly title: string };
-/** 初回公開の確認に見せる内訳。自動訳の件数は未確認の自動訳を含むページ数。 */
+/** 初回公開の確認に見せる内訳。自動訳の件数は、人が直していない自動翻訳の訳を含むページ数。 */
 export type LocaleFirstReleaseSummary = {
   readonly groups: readonly { readonly label: string; readonly pages: number; readonly automaticPages: number }[];
   readonly excluded: { readonly count: number; readonly examples: readonly (LocaleReleasePageRef & { readonly reason: string })[] };

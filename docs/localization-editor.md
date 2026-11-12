@@ -37,15 +37,15 @@ const adapter: EditorAdapter = {
 
 公開連携を実装するホストは、各ページの`locales.ja.published`／`locales.en.published`を現在の言語別公開版の所属から返してください。選択中の言語の公開状態・公開中ページ数に使用し、原文だけに公開した新ページを訳文側で公開済みと表示しません。
 - `readPage(target, signal)` は、現在の正本原文、`sourceVersion`、現在のoverlay、opaqueなversion、任意のblock allowlist・旧原文値・job状態を返します。遅い応答はsite / page / localeと読込epochで破棄されます。`components`を併用するホストでは、部品ライブラリは`components.readLibrary`から得た`LibrarySession`を使い、`readPage.components`は返しません。後者は旧ホスト向けのfallbackです。
-- `command` は `request-translation`、`adopt-candidate`、`review-current`、`set-value` を処理します。すべて `expectedSourceVersion`、opaque version、overlay versionをCASし、409は `{ status: "conflict" }` に変換します。手修正の`set-value`はさらに`sourceFingerprint`と`expectedEntryVersion`（未作成は0）を比較し、指定unit以外を変更しません。
+- `command` は `request-translation`、`adopt-candidate`、`review-current`、`set-value` を処理します（`review-current` は 2026-11-12 に廃止した確認の工程の旧操作で、エディターからは送りません。型と BFF の経路は互換のため残します）。すべて `expectedSourceVersion`、opaque version、overlay versionをCASし、409は `{ status: "conflict" }` に変換します。手修正の`set-value`はさらに`sourceFingerprint`と`expectedEntryVersion`（未作成は0）を比較し、指定unit以外を変更しません。
 - `requestSiteTranslation` は任意です。実装すると「サイト全体を翻訳」を表示します。queued / running / failedを`readSite`で返してください。エディターは常時pollせず、操作・保存・再読込時だけ状態を読み直します。
 - ページ単位の翻訳依頼を提供しないホストは `requestPageTranslation: false` を指定します。画面は成功を装うボタンを出さず、翻訳画面を使うか手修正するよう明示します。Kamakura は現在この指定で、`request-translation` の backend 対応後にだけ有効化します。
 
 `localization` を実装するホストは、原文の保存 locale が接続時に固定されている場合に `sourceDocumentLocale(siteId)` を指定できます。鎌倉は `ja` を返します。現在の文書の locale がこの指定に一致すれば、翻訳の設定取得中や取得失敗時も原文の編集・保存・公開ができます。訳文の操作は言語設定と訳文の版の検証後に受け付けます。原文の保存 locale を指定していないホストでは、原文も言語設定の検証後に操作できます。queued / running 中は「翻訳状況を更新」で `readSite` と `readPage` を再読込できます。
 
-エディター上の訳の状態の表示は「原文 / 未翻訳 / 翻訳中 / 翻訳済み / 失敗」の5つにまとめます。自動翻訳でも手修正でも訳があれば「翻訳済み」とし、draft・review-needed・reviewed を出し分けません（状態の値そのものは従来どおり保存・判定に使います）。左のページ一覧には言語ごとの状態を出しません。言語の切り替えは「日本語 / English」だけを表示し、原文・訳文の区別は添えません。
+エディター上の訳の状態の表示は「原文 / 未翻訳 / 翻訳中 / 翻訳済み / 失敗」の5つにまとめます。自動翻訳でも手修正でも今の原文に対応する訳があれば「翻訳済み」とし、draft と reviewed を出し分けません。原文が変わって訳が古くなった `review-needed` は、今の原文に対応する訳が無いので「未翻訳」と表示します（2026-11-12。状態の値そのものは従来どおり保存・判定に使います）。「確認済み」「未確認」「更新あり」は出しません。左のページ一覧には言語ごとの状態を出しません。言語の切り替えは「日本語 / English」だけを表示し、原文・訳文の区別は添えません。
 
-候補は現在の訳を上書きしません。「翻訳案を採用」で初めてdraftへ入り、確認済みにはなりません。「現在の訳を確認済みにする」は候補を採用せず、現在のdraftを現在の原文fingerprintに結び付けます。
+候補は現在の訳を上書きしません。「翻訳案を採用」で初めてdraftへ入り、そのまま翻訳済みです。人が訳を確認済みにする工程は 2026-11-12 に廃止し、「現在の訳を確認済みにする」ボタンは出しません（`reviewLocalizedValue` は互換のため残します）。
 
 訳文側の`readDocument`は、現在の正本原文とoverlayを`materializeLocalizedPage`した最新の共通構造を返してください。原文の構造・style変更後も手修正済みの訳値は保持し、変更された原文unitだけを`review-needed`にします。これは編集用draftの契約です。公開中の訳文snapshotは独立して保持し、draft再materializeで置き換えません。
 
@@ -81,7 +81,7 @@ const checked = await validateLocalizedDocumentSave(
 
 Kamakura の English `saveDraft` は通常の `expectedVersion` と `request.localization.expectedVersion` が同一であること、`presentationVersion` が snapshot 由来の有効な版であることも確認します。BFF の `save` allowlist には presentation や target を追加せず、検証済み `document` と3つの localization versionだけを渡します。
 
-ホストは文書versionに加えてこの3値を比較し、古い原文・overlayへの保存を409にしてください。手編集値を`editLocalizedValue`で反映すると、既存の確認は自動で解除されます。
+ホストは文書versionに加えてこの3値を比較し、古い原文・overlayへの保存を409にしてください。手編集値を`editLocalizedValue`で反映すると、旧い確認の記録は外れます（表示と公開の条件には使いません）。
 
 ## 編集できる範囲
 
@@ -98,9 +98,9 @@ Kamakura の English `saveDraft` は通常の `expectedVersion` と `request.loc
 
 URLと`srcset`は既存文書validatorと同じ制約です。各値は1〜2,048文字のHTTPS URLまたは`/`から始まるroot-relative URLで、空白・制御文字・引用符・`< >`・backslash、`http:`、`data:`、`javascript:`、protocol-relative、資格情報付きURL、fragment-onlyを拒否します。現行`srcset`は候補列ではなく**単一URLだけ**を許可し、commaや空白を含めません。width / height / style / href / ID / token / event / 業務propsは原文共通のままです。URLもasset参照も翻訳providerへ送りません。
 
-OG画像は`page.meta.ogImage.src`の任意・手動専用の画像unitと、従来の`page.meta.ogImage.alt` text unitに分かれます。画像unitの値は本文の画像と同じく素材参照（`{ kind: "asset" }`）か単一URL（`{ kind: "image-url" }`、`srcset`なし）で、「素材を選ぶ」から素材ライブラリの画像も選べます。画像の手動変更は未確認draftとなり、現在のsource fingerprintに対して確認するまで言語版を完成扱いにしません。原文画像が変わっても手動draftは保持し、`review-needed`へ戻します。素材の権利・出所・公開可否、immutable referenceの発行は引き続きホストの責務であり、このライブラリのURL検証は素材認可ではありません。
+OG画像は`page.meta.ogImage.src`の任意・手動専用の画像unitと、従来の`page.meta.ogImage.alt` text unitに分かれます。画像unitの値は本文の画像と同じく素材参照（`{ kind: "asset" }`）か単一URL（`{ kind: "image-url" }`、`srcset`なし）で、「素材を選ぶ」から素材ライブラリの画像も選べます。画像の手動変更は今の原文に対するdraftとなり、確認しなくても翻訳済みとして使います。原文画像が変わっても手動draftは保持し、`review-needed`（未翻訳）へ戻します。素材の権利・出所・公開可否、immutable referenceの発行は引き続きホストの責務であり、このライブラリのURL検証は素材認可ではありません。
 
-共通部品のunitは定義ID＋定義内node IDで一度だけ表示します。通常文字・空alt・rich text・asset referenceの手修正、候補採用、確認は`command`でoverlayへ保存します。ホストはshared-component unitをサイト＋target localeの共有値として永続化し、同じ定義を使う全ページの`readPage`で同じ値・確認状態を返してください。ページごとのoverlay表現を採る場合も、1ページでの`set-value`／採用／確認を同一transactionまたは整合する更新処理で全利用ページへ反映し、ページ移動で値を巻き戻してはいけません。正本`ComponentLibrary`自体は変更しません。
+共通部品のunitは定義ID＋定義内node IDで一度だけ表示します。通常文字・空alt・rich text・asset referenceの手修正と候補採用は`command`でoverlayへ保存します。ホストはshared-component unitをサイト＋target localeの共有値として永続化し、同じ定義を使う全ページの`readPage`で同じ値・状態を返してください。ページごとのoverlay表現を採る場合も、1ページでの`set-value`／採用（旧い確認の操作を受けるならそれも）を同一transactionまたは整合する更新処理で全利用ページへ反映し、ページ移動で値を巻き戻してはいけません。正本`ComponentLibrary`自体は変更しません。
 
 訳文のundo/redoは、そのセッション内で許可済みのcontent操作だけを戻します。端末内の緊急復元は現在の正本原文に対して`validateLocalizedDocumentSave`を再実行し、文字・画像だけの復元を許可して、ID・href・style・構造を変えた退避を拒否します。編集undo/redoと、下記の不変な言語全体公開履歴・rollbackは別の操作です。
 
@@ -110,14 +110,14 @@ OG画像は`page.meta.ogImage.src`の任意・手動専用の画像unitと、従
 npm run demo:localization
 ```
 
-`http://127.0.0.1:4176` に、NIHOkamakura（日本語→英語）とNIHO experience（英語→日本語）、各2ページを表示します。実際の`ComponentLibrary` instanceとして共有するヘッダー／フッター、ページ本文、AssetReference画像、URL画像、OG画像を持ち、静的辞書による候補生成、手編集、採用、確認、原文更新後の再materialize、遅延、失敗、409をインメモリで試せます。Experienceの「旅の準備」は英語原文を読み取り専用で示し、既存業務編集画面への合成routeと編集可能な日本語派生を確認できます。本番AI・実サイト・認証情報・永続化には接続しません。
+`http://127.0.0.1:4176` に、NIHOkamakura（日本語→英語）とNIHO experience（英語→日本語）、各2ページを表示します。実際の`ComponentLibrary` instanceとして共有するヘッダー／フッター、ページ本文、AssetReference画像、URL画像、OG画像を持ち、静的辞書による候補生成、手編集、採用、原文更新後の再materialize、遅延、失敗、409をインメモリで試せます。Experienceの「旅の準備」は英語原文を読み取り専用で示し、既存業務編集画面への合成routeと編集可能な日本語派生を確認できます。本番AI・実サイト・認証情報・永続化には接続しません。
 
 ## 言語全体の公開
 
 訳文の公開には `EditorLocalizationAdapter` の `readRelease / prepareRelease / applyRelease / rollbackRelease` を4つとも実装します。実装済みhostでは、従来無効だった訳文の公開ボタンが「言語全体の公開確認」になり、全ページ、共通部品、ナビ、style、外部resource、domain、現在版、準備版、期限、確認用の依存版、未完了理由を表示します。未完了項目が1つでもあればapplyできません。
 
-原文ページの「ページ設定」には、`EditorLocalizationAdapter` があるサイトだけ「サブ言語は確認してから公開」のトグルを表示します（説明文は添えません）。値は原文 `PageDocument.meta.targetReviewBeforePublish` に `true` / `false` として保存し、英語キャンバスからは変更できません。省略時の既定値、確認済みを求める対象と公開直前の判定はホストが決めます。`false` はホストの既定値を明示的に解除する値なので、文書 parser と保存処理は削除せず保持します。
-`npm run demo:page-review-policy` で架空のページの設定をブラウザ上で試せます。
+「サブ言語は確認してから公開」のトグルは 2026-11-12 に廃止し、ページ設定に出しません。原文 `PageDocument.meta.targetReviewBeforePublish` は旧設定として、文書 parser と保存処理が読み込んだ値（`false` を含む）を削除せず保持だけします。ホストはこの値を公開の条件に使いません。
+`npm run demo:page-review-policy` で、旧い値を持つ架空のページでトグルが出ず、保存値が残ることを確かめられます。
 
 未保存ページ、未保存のsource component library、入力途中の翻訳手動bufferはprepareを止めます。applyはhost発行のopaqueなconfirmation tokenと準備時identityだけを返し、任意snapshotを送りません。409、期限切れ、通信断では下書きを保持して確認を閉じ、現在の言語releaseと同じページの翻訳公開状態を読み直します。通信断は成立状況不明なので、再実行前に現在状態を確認します。
 

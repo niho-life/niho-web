@@ -254,7 +254,7 @@ test("release: progress, resume, blockers and history kinds are strict; editor p
   assert.throws(() => parseLocaleReleasePrepareResult({ status: "ready", plan: { ...plan, previous: null } }, request), /previous release mismatch/);
   assert.throws(() => parseLocaleReleasePrepareResult({ status: "ready", plan: { ...plan, address: "https://example.test/en/?token=x" } }, request), /address/);
   assert.throws(() => parseLocaleReleasePrepareResult({ status: "blocked", blockers: [] }, request), /at least one/);
-  assert.deepEqual(parseLocaleReleasePrepareResult({ status: "blocked", blockers: [{ id: "b1", message: "確認していない項目があります。", itemKey: "aG9tZQ" }] }, request).blockers[0].itemKey, "aG9tZQ");
+  assert.deepEqual(parseLocaleReleasePrepareResult({ status: "blocked", blockers: [{ id: "b1", message: "訳していない項目があります。", itemKey: "aG9tZQ" }] }, request).blockers[0].itemKey, "aG9tZQ");
   assert.throws(() => parseLocaleReleasePrepareResult({ status: "ready", plan: { ...plan, prepared: summary } }, { ...request, operation: "rollback", releaseId: "en-9" }), /equals the current|rollback target/);
   assert.throws(() => parseLocaleReleaseApplyResult({ status: "applied", current: summary }, { prepared: { releaseId: "en-2", version: "r2" } }), /mismatch/);
   assert.equal(parseLocaleReleaseApplyResult({ status: "applying", progress: { done: 1, total: 2 }, resumeToken: "apply-2" }, { prepared: null }).resumeToken, "apply-2");

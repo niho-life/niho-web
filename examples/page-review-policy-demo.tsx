@@ -5,6 +5,7 @@ import { editDocument } from "../src/editor-model.js";
 import type { PageDocument } from "../src/types.js";
 
 // 架空のページ。保存先はこのタブのメモリだけ。
+// 「サブ言語は確認してから公開」は廃止（2026-11-12）。画面には出さず、文書に残る旧い値（targetReviewBeforePublish）は保持だけする。
 const initial: PageDocument = {
   schemaVersion: 1, siteId: "demo", pageId: "terms", locale: "ja-JP", revision: 1,
   title: "利用規約", meta: { targetReviewBeforePublish: true }, tokens: {}, body: [],
@@ -14,11 +15,11 @@ function Demo() {
   const [document, setDocument] = useState(initial);
   const [notice, setNotice] = useState("");
   return <main className="nw-editor demo">
-    <header><span>NIHO Web · デモ</span><h1>ページの公開設定</h1><p>変更はブラウザの中だけに保存されます。</p></header>
+    <header><span>NIHO Web · デモ</span><h1>ページの公開設定</h1><p>変更はブラウザの中だけに保存されます。旧い確認の設定は表示せず、保存値を保持します。</p></header>
     <PageSettings document={document} page={{ siteId: "demo", pageId: "terms", locale: "ja-JP", title: "利用規約", path: "/terms" }}
       site={undefined} settings={{ settings: undefined } as SiteSettingsState} field={() => null}
       apply={(operation) => { setDocument((current) => editDocument(current, operation)); setNotice("設定を変更しました。公開条件にはホストが適用します。"); return undefined; }}
-      report={setNotice} disabled={false} hasTargetLocale operations={false} operationsDisabled={false} unsaved={false} start={() => undefined} />
+      report={setNotice} disabled={false} operations={false} operationsDisabled={false} unsaved={false} start={() => undefined} />
     <footer role="status">{notice || `保存値：${String(document.meta?.targetReviewBeforePublish)}`}</footer>
   </main>;
 }

@@ -1,19 +1,25 @@
 "use client";
 
 import { useEffect, useId, useRef, type ReactNode } from "react";
-import type { LocalizationEditOrigin, LocalizationItemState, LocalizationUnitState } from "./localization-workspace-model.js";
+import type { LocalizationItemState, LocalizationUnitState } from "./localization-workspace-model.js";
 
 /* ---------- 状態の印（色だけに頼らず、形と言葉でも分かるように） ---------- */
 
-const itemText: Record<LocalizationItemState, string> = { untranslated: "未翻訳", draft: "未確認", "source-changed": "原文が更新", reviewed: "確認済み", excluded: "対象外" };
+/**
+ * 確認の工程は廃止（2026-11-12）。今の原文に対応する訳があれば「翻訳済み」、無ければ（原文が変わって古くなった訳を含む）「未翻訳」。
+ * 印（data-lw-state）は表示に合わせた 3 種（untranslated・reviewed・excluded）にし、届いた状態の値は data-lw-item-state / data-lw-unit-state に残す。
+ */
+type Shape = "untranslated" | "reviewed" | "excluded";
+const itemShape: Record<LocalizationItemState, Shape> = { untranslated: "untranslated", draft: "untranslated", "source-changed": "untranslated", reviewed: "reviewed", excluded: "excluded" };
+const shapeText: Record<Shape, string> = { untranslated: "未翻訳", reviewed: "翻訳済み", excluded: "対象外" };
 export function ItemStateBadge({ state }: { state: LocalizationItemState }) {
-  return <span className="cw-pill lw-pill" data-lw-state={state}><span className="lw-shape" aria-hidden="true" />{itemText[state]}</span>;
+  const shape = itemShape[state];
+  return <span className="cw-pill lw-pill" data-lw-state={shape} data-lw-item-state={state}><span className="lw-shape" aria-hidden="true" />{shapeText[shape]}</span>;
 }
-const unitText: Record<LocalizationUnitState, string> = { source: "原文のまま", missing: "未翻訳", draft: "未確認", "review-needed": "原文が更新", reviewed: "確認済み" };
-const unitShape: Record<LocalizationUnitState, LocalizationItemState> = { source: "excluded", missing: "untranslated", draft: "draft", "review-needed": "source-changed", reviewed: "reviewed" };
-export function UnitStateBadge({ state, editOrigin }: { state: LocalizationUnitState; editOrigin?: LocalizationEditOrigin | null }) {
-  const label = state === "draft" && editOrigin ? editOrigin === "AUTO" ? "自動翻訳（未確認）" : "手修正（未確認）" : unitText[state];
-  return <span className="cw-pill lw-pill" data-lw-state={unitShape[state]} data-lw-unit-state={state}><span className="lw-shape" aria-hidden="true" />{label}</span>;
+const unitShape: Record<LocalizationUnitState, Shape> = { source: "excluded", missing: "untranslated", "review-needed": "untranslated", draft: "reviewed", reviewed: "reviewed" };
+export function UnitStateBadge({ state }: { state: LocalizationUnitState }) {
+  const shape = unitShape[state];
+  return <span className="cw-pill lw-pill" data-lw-state={shape} data-lw-unit-state={state}><span className="lw-shape" aria-hidden="true" />{state === "source" ? "原文のまま" : shapeText[shape]}</span>;
 }
 
 /* ---------- 進み具合（n/m） ---------- */

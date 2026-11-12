@@ -64,24 +64,29 @@ test("list: staged loading, groups, band, filters, search and excluded reasons",
   const app = await setup({ adapter: memory.adapter });
   try {
     assert.deepEqual(memory.named("listItems").map((call) => call.input.cursor), [null, "p2", "p4"], "follows nextCursor until null");
-    assert.deepEqual([...document.querySelectorAll(".cw-nav button")].map(nameOf), ["すべて（5 件）", "固定ページ（2 件・要対応 2 件）", "共通部分（1 件）", "記事（2 件・要対応 1 件）"]);
+    assert.deepEqual([...document.querySelectorAll(".cw-nav button")].map(nameOf), ["すべて（5 件）", "固定ページ（2 件・未翻訳 2 件）", "共通部分（1 件）", "記事（2 件・未翻訳 1 件）"]);
     const band = document.querySelector(".lw-band");
     assert.equal(band.querySelector("h2").textContent, "English版");
     assert.ok(band.textContent.includes("公開中：10/1 の公開"));
-    assert.ok(band.textContent.includes("確認済み 1/4"));
+    assert.ok(band.textContent.includes("翻訳済み 1/4"));
     assert.ok(button("English版を公開…"));
-    assert.deepEqual([...document.querySelectorAll(".cw-filters button")].map(nameOf), ["要対応（3 件）", "確認済み（1 件）", "すべて（5 件）", "対象外（1 件）"]);
-    assert.equal(document.querySelector('.cw-filters button[aria-pressed="true"]').textContent.replace(/\s+/gu, " ").trim(), "要対応（3 件）");
+    assert.deepEqual([...document.querySelectorAll(".cw-filters button")].map(nameOf), ["未翻訳（3 件）", "翻訳済み（1 件）", "すべて（5 件）", "対象外（1 件）"]);
+    assert.equal(document.querySelector('.cw-filters button[aria-pressed="true"]').textContent.replace(/\s+/gu, " ").trim(), "未翻訳（3 件）");
     assert.deepEqual(rowTitles(), ["トップ", "私たちについて", "お知らせ一覧"]);
     await press("すべて（5 件）", document.querySelector(".cw-filters"));
     assert.deepEqual(rowTitles(), ["トップ", "私たちについて", "フッター", "お知らせ一覧", "会員向けのお知らせ"]);
     const byTitle = (title) => rows().find((row) => row.querySelector(".cw-row-title").textContent === title);
     assert.ok(byTitle("トップ").textContent.includes("未翻訳"));
-    assert.ok(byTitle("トップ").querySelector(".lw-cell-reviewed").textContent.includes("0/3"));
-    assert.ok(byTitle("私たちについて").textContent.includes("原文が更新"));
+    assert.ok(byTitle("トップ").querySelector(".lw-cell-reviewed").textContent.includes("1/3"), "a translation for the current source counts, automatic or manual");
+    assert.ok(byTitle("私たちについて").textContent.includes("未翻訳"), "an item whose only gap is an outdated translation is untranslated");
+    assert.ok(!byTitle("私たちについて").textContent.includes("原文が更新"));
+    assert.deepEqual([byTitle("私たちについて").querySelector(".lw-pill").dataset.lwState, byTitle("私たちについて").querySelector(".lw-pill").dataset.lwItemState], ["untranslated", "source-changed"]);
     assert.ok(byTitle("私たちについて").textContent.includes("含むもの：ページ本文 · 案内カード"));
     assert.ok(byTitle("私たちについて").textContent.includes("原文に未公開の下書き"));
-    assert.ok(byTitle("フッター").textContent.includes("確認済み"));
+    assert.ok(byTitle("フッター").textContent.includes("翻訳済み"));
+    assert.equal(byTitle("フッター").querySelector(".lw-pill").dataset.lwState, "reviewed");
+    assert.equal(document.querySelector(".lw-rows-head").textContent, "題名状態翻訳済み最終更新");
+    assert.doesNotMatch(document.body.textContent, /確認済み|未確認|要対応/, "the list never mentions a review step");
     assert.equal(byTitle("会員向けのお知らせ").querySelector(".cw-row-sub").textContent, "/members/news");
     assert.equal(document.querySelector(".lw-excluded-reason h3").textContent.replace(/\s+/gu, " ").trim(), "会員だけが読むページなので訳しません。1 件");
     assert.equal(document.querySelector(".lw-excluded").open, false, "対象外は通常の一覧では閉じている");
@@ -94,7 +99,7 @@ test("list: staged loading, groups, band, filters, search and excluded reasons",
     assert.ok(!document.body.textContent.includes("⟦"), "internal mark tokens are never shown");
 
     const filters = document.querySelector(".cw-filters");
-    await press("要対応（3 件）", filters);
+    await press("未翻訳（3 件）", filters);
     assert.deepEqual(rowTitles(), ["トップ", "私たちについて", "お知らせ一覧"]);
     await press("対象外（1 件）", filters);
     assert.deepEqual(rowTitles(), ["会員向けのお知らせ"]);
@@ -106,6 +111,50 @@ test("list: staged loading, groups, band, filters, search and excluded reasons",
     await press("共通部分（1 件）");
     assert.deepEqual(rowTitles(), ["フッター"]);
     assert.equal(document.querySelector(".cw-list-title h2").textContent, "共通部分");
+  } finally { await app.cleanup(); }
+});
+
+test("list and editor: a legacy draft item is untranslated, while draft and reviewed units are both translated", async () => {
+  const memory = createLocalizationMemory();
+  const adapter = { ...memory.adapter, listItems: async (input, signal) => {
+    const result = await memory.adapter.listItems(input, signal);
+    return { ...result, items: result.items.map((item) => item.key === "Zm9vdGVy" ? { ...item, state: "draft" } : item) };
+  } };
+  const app = await setup({ adapter });
+  try {
+    await press("すべて（5 件）", document.querySelector(".cw-filters"));
+    const footer = rows().find((row) => row.querySelector(".cw-row-title").textContent === "フッター");
+    assert.ok(footer.textContent.includes("未翻訳"));
+    assert.deepEqual([footer.querySelector(".lw-pill").dataset.lwState, footer.querySelector(".lw-pill").dataset.lwItemState], ["untranslated", "draft"]);
+    await openRow("私たちについて");
+    const head = (unitId) => card(unitId).querySelector(".lw-unit-head .lw-pill");
+    assert.deepEqual([head("title").textContent, head("title").dataset.lwUnitState, head("title").dataset.lwState], ["翻訳済み", "reviewed", "reviewed"]);
+    assert.deepEqual([head("intro").textContent, head("intro").dataset.lwUnitState, head("intro").dataset.lwState], ["未翻訳", "review-needed", "untranslated"], "an outdated translation is untranslated");
+    await press("一覧へ");
+    await openRow("トップ");
+    assert.deepEqual([head("title").textContent, head("title").dataset.lwUnitState], ["翻訳済み", "draft"], "an automatic translation without review is translated");
+    assert.deepEqual([head("lead").textContent, head("lead").dataset.lwUnitState], ["未翻訳", "missing"]);
+    assert.deepEqual([head("cover").textContent, head("cover").dataset.lwUnitState], ["原文のまま", "source"]);
+    assert.doesNotMatch(document.querySelector(".lw-item").textContent, /確認済み|未確認|自動翻訳（|手修正（/);
+  } finally { await app.cleanup(); }
+});
+
+test("editor: an outdated translation can adopt a candidate even when the wording is the same", async () => {
+  const memory = createLocalizationMemory();
+  const adapter = { ...memory.adapter, loadItem: async (input, signal) => {
+    const result = await memory.adapter.loadItem(input, signal);
+    if (result.status !== "ready") return result;
+    return { ...result, item: { ...result.item, units: result.item.units.map((unit) => unit.unitId === "intro" && unit.state === "review-needed" && unit.value !== null
+      ? { ...unit, candidate: { candidateId: "same-wording", value: unit.value } } : unit) } };
+  } };
+  const app = await setup({ adapter });
+  try {
+    await press("すべて（5 件）", document.querySelector(".cw-filters"));
+    await openRow("私たちについて");
+    assert.equal(card("intro").dataset.state, "review-needed");
+    // 確認の操作は無いので、同じ文の翻訳案でも採用できないと今の原文に結び付けられず未翻訳のまま残る
+    await click(button("翻訳案を使う", card("intro")), "adopt same wording");
+    assert.deepEqual(commands(memory, "adopt-candidate").map((call) => [call.input.unitId, call.input.candidateId]), [["intro", "same-wording"]]);
   } finally { await app.cleanup(); }
 });
 
@@ -180,7 +229,7 @@ test("source catalog advances automatically and reloads when current", async () 
   } finally { await app.cleanup(); }
 });
 
-test("editor: source and translation side by side, autosave about a second after typing, review and candidate", async () => {
+test("editor: source and translation side by side, autosave about a second after typing, and candidate", async () => {
   const memory = createLocalizationMemory();
   const app = await setup({ adapter: memory.adapter });
   try {
@@ -190,7 +239,9 @@ test("editor: source and translation side by side, autosave about a second after
     assert.deepEqual([...card("title").querySelectorAll(".lw-col-label")].map((node) => node.textContent), ["日本語（読むだけ）", "English"]);
     assert.equal(card("title").querySelector(".lw-source .lw-text").textContent, "海の見える工房");
     assert.equal(inputText("title"), "Workshop by the sea");
-    assert.ok(card("title").querySelector(".lw-unit-head").textContent.includes("自動翻訳（未確認）"));
+    assert.ok(card("title").querySelector(".lw-unit-head").textContent.includes("翻訳済み"), "an automatic translation is translated without review");
+    assert.ok(document.querySelector(".lw-item-meta").textContent.includes("翻訳済み 1/3"));
+    assert.doesNotMatch(document.querySelector(".lw-item").textContent, /確認済み|未確認/);
     assert.equal(input("title").getAttribute("role"), "textbox");
     assert.equal(input("title").getAttribute("aria-multiline"), "false");
     assert.ok(input("title").getAttribute("aria-labelledby").split(" ").every((id) => document.getElementById(id)), "the input is labelled by the unit and the language");
@@ -200,7 +251,8 @@ test("editor: source and translation side by side, autosave about a second after
 
     await setText("title", "Workshop by");
     await setText("title", "Workshop by the sea!");
-    assert.ok(card("title").querySelector(".lw-unit-head").textContent.includes("手修正（未確認）"));
+    assert.ok(card("title").querySelector(".lw-unit-head").textContent.includes("翻訳済み"));
+    assert.doesNotMatch(card("title").querySelector(".lw-unit-head").textContent, /未確認|手修正|自動翻訳/);
     assert.equal(document.querySelector(".cw-editor-status .cw-save-state").textContent, "保存中…");
     await wait(500);
     assert.equal(commands(memory).length, 0, "waits before saving");
@@ -213,20 +265,19 @@ test("editor: source and translation side by side, autosave about a second after
     await flush();
     assert.equal(document.querySelector(".cw-editor-status .cw-save-state").textContent, "保存しました");
 
-    await click(button("確認済みにする", card("title")), "review");
-    assert.deepEqual({ ...commands(memory, "review-current")[0].input, operationId: "x" }, { itemKey: "aG9tZQ", operationId: "x", unitId: "title", expectedVersion: "v2", expectedSourceVersion: "s1", action: "review-current" });
-    assert.ok(card("title").querySelector(".lw-unit-head").textContent.includes("確認済み"));
-    assert.equal(button("確認済みにする", card("title")), undefined, "a reviewed unit has no review button");
+    assert.equal(buttons().some((node) => nameOf(node).includes("確認済み")), false, "there is no review action");
+    assert.equal(commands(memory, "review-current").length + commands(memory, "review-image").length, 0);
 
     const lead = card("lead");
     assert.ok(lead.querySelector(".lw-candidate").textContent.includes("Open"));
     await click(button("翻訳案を使う", lead), "adopt");
     assert.equal(commands(memory, "adopt-candidate")[0].input.candidateId, "c-lead-1");
     assert.equal(inputText("lead"), "Open [m0]. Contact us at [m1].", "the input is rebuilt from the adopted candidate");
-    assert.ok(card("lead").querySelector(".lw-unit-head").textContent.includes("未確認"));
+    assert.ok(card("lead").querySelector(".lw-unit-head").textContent.includes("翻訳済み"));
+    assert.equal(card("lead").querySelector(".lw-note").textContent, "翻訳案を入れました。");
     const row = await (async () => { await press("一覧へ"); return rows().find((entry) => entry.querySelector(".cw-row-title").textContent === "トップ"); })();
     assert.equal(document.activeElement, row.querySelector("button.cw-row-open"), "focus returns to the row");
-    assert.ok(row.querySelector(".lw-cell-reviewed").textContent.includes("1/3"), "the row is updated from the command summary");
+    assert.ok(row.querySelector(".lw-cell-reviewed").textContent.includes("2/3"), "the row is updated from the command summary");
   } finally { await app.cleanup(); }
 });
 
@@ -238,6 +289,8 @@ test("clear: the translation is cleared only after confirming, and the input is 
     assert.equal(button("訳を消す", card("cover")), undefined, "images are put back with their own button");
     await click(button("訳を消す", card("title")), "clear");
     assert.ok(dialog().textContent.includes("この項目の訳を消しますか"));
+    assert.ok(dialog().textContent.includes("訳文を消して未翻訳に戻します。翻訳案は残ります。"));
+    assert.ok(!dialog().textContent.includes("確認済み"));
     await press("やめる", dialog());
     assert.equal(commands(memory, "clear-value").length, 0, "cancel sends nothing");
     assert.equal(inputText("title"), "Workshop by the sea");
@@ -332,7 +385,7 @@ test("marks: chips cannot be deleted, a missing chip blocks saving, and chips ma
   } finally { await app.cleanup(); }
 });
 
-test("images: pick, review and go back to the source image", async () => {
+test("images: pick and go back to the source image", async () => {
   const memory = createLocalizationMemory();
   const app = await setup({ adapter: memory.adapter });
   try {
@@ -342,11 +395,14 @@ test("images: pick, review and go back to the source image", async () => {
     await click(button("素材から選ぶ", cover()), "pick");
     assert.deepEqual(commands(memory, "set-image")[0].input.image, { kind: "image-url", src: "https://media.example.test/cover-en.svg" });
     assert.equal(cover().querySelector(".lw-target img").getAttribute("src"), "https://media.example.test/cover-en.svg");
-    await click(button("確認済みにする", cover()), "review image");
-    assert.equal(commands(memory, "review-image").length, 1);
+    assert.equal(cover().querySelector(".lw-unit-head .lw-pill").textContent, "翻訳済み", "a replaced image for the current source is used without review");
+    assert.equal(cover().querySelector(".lw-note").textContent, "画像を差し替えました。");
+    assert.equal(button("確認済みにする", cover()), undefined);
+    assert.equal(commands(memory, "review-image").length, 0);
     await click(button("日本語と同じに戻す", cover()), "reset image");
     assert.equal(commands(memory, "set-image").at(-1).input.image, null);
     assert.ok(cover().textContent.includes("日本語と同じ画像を使います。"));
+    assert.equal(cover().querySelector(".lw-unit-head .lw-pill").textContent, "原文のまま");
   } finally { await app.cleanup(); }
 });
 
@@ -478,7 +534,8 @@ test("attention: pages whose source changed (price, terms, legal) are called out
     const band = document.querySelector(".lw-attention");
     assert.ok(band, "the call-out is shown");
     assert.ok(band.textContent.includes("価格・条件・法務のページの原文が更新されています（1 件）"));
-    assert.ok(band.textContent.includes("公開中のEnglish版は前の版のままです"));
+    assert.ok(band.textContent.includes("公開中のEnglish版は前の版のままです。訳を直してから、更新を公開してください。"));
+    assert.ok(!band.textContent.includes("確認済み"));
     assert.ok(band.compareDocumentPosition(document.querySelector(".cw-list")) & dom.window.Node.DOCUMENT_POSITION_FOLLOWING, "it comes before the list");
     await press("私たちについて", band);
     assert.ok(button("一覧へ"), "the item opens from the call-out");
@@ -503,9 +560,9 @@ test("permissions: the site's list of allowed actions decides what the screen sh
     assert.equal(buttons(dialog()).filter((node) => nameOf(node).endsWith("に戻す…")).length, 0, "editors cannot roll back");
     await press("閉じる", dialog());
     await press("設定");
-    assert.ok(document.body.textContent.includes("自動翻訳の訳は未確認なので、確認してから公開します。"));
-    assert.ok(!document.body.textContent.includes("自動翻訳のまま公開できます"));
-    assert.ok(document.body.textContent.includes("人が直した・確認した訳は上書きせず"));
+    assert.ok(document.body.textContent.includes("オフのときは、変わった箇所を未翻訳にするだけです。"));
+    assert.ok(document.body.textContent.includes("人が直した訳は上書きせず"));
+    assert.doesNotMatch(document.querySelector(".lw-settings").textContent, /未確認|確認してから|確認した訳|確認済み/);
     assert.ok(document.body.textContent.includes("設定を変える権限がありません"));
     assert.equal(document.querySelector('.lw-settings input[type="checkbox"]').disabled, true);
     assert.equal(button("保存する"), undefined);
@@ -530,7 +587,7 @@ test("permissions: the site's list of allowed actions decides what the screen sh
   const owner = createLocalizationMemory();
   app = await setup({ adapter: owner.adapter, initialView: "settings" });
   try {
-    assert.equal(document.body.textContent.includes("用語集の確認"), false, "adapters without a glossary keep the old settings screen");
+    assert.equal(document.querySelector('[aria-labelledby="lw-settings-glossary"]'), null, "adapters without a glossary show no glossary");
     const checkbox = document.querySelector('.lw-settings input[type="checkbox"]');
     await click(checkbox, "checkbox");
     await press("保存する");
@@ -544,57 +601,33 @@ test("permissions: the site's list of allowed actions decides what the screen sh
   try { assert.ok(document.body.textContent.includes("翻訳を見る権限がありません")); } finally { await app.cleanup(); }
 });
 
-test("glossary settings: owners review the current version, refresh blockers, and repeated review is a no-op", async () => {
+test("glossary settings: the glossary is listed without a review state or a review action", async () => {
   const memory = createLocalizationMemory({ glossary: true, firstRelease: true });
-  const app = await setup({ adapter: memory.adapter, initialView: "settings" });
+  let app = await setup({ adapter: memory.adapter, initialView: "settings" });
   try {
     const glossary = document.querySelector('[aria-labelledby="lw-settings-glossary"]');
     assert.ok(glossary);
+    assert.equal(glossary.querySelector("h3").textContent, "用語集");
     assert.ok(glossary.textContent.includes("版：demo-glossary-v1"));
     assert.ok(glossary.textContent.includes("NIHONIHO"));
     assert.ok(glossary.textContent.includes("光町Hikari"));
-    assert.ok(glossary.textContent.includes("未確認"));
-    assert.ok(button("この用語集を確認済みにする", glossary));
-    assert.equal((await memory.adapter.loadOverview(new AbortController().signal)).overview.blockers.some((entry) => entry.id === "glossary-review"), true);
-
-    const overviewReads = memory.named("loadOverview").length;
-    await press("この用語集を確認済みにする", glossary);
-    assert.deepEqual(memory.named("saveSettings")[0].input, { expectedVersion: "set1", reviewGlossaryVersion: "demo-glossary-v1" });
-    assert.ok(document.body.textContent.includes("用語集を確認済みにしました。"));
-    assert.ok(document.querySelector('[aria-labelledby="lw-settings-glossary"]').textContent.includes("確認済み"));
+    assert.doesNotMatch(glossary.textContent, /確認/);
+    assert.equal(buttons(glossary).length, 0, "there is no glossary review action");
     assert.equal(button("この用語集を確認済みにする"), undefined);
-    assert.ok(memory.named("loadOverview").length > overviewReads, "overview is refreshed after saving the review");
-    assert.equal((await memory.adapter.loadOverview(new AbortController().signal)).overview.blockers.some((entry) => entry.id === "glossary-review"), false);
-
-    const noOp = await memory.adapter.saveSettings({ expectedVersion: "set2", reviewGlossaryVersion: "demo-glossary-v1" }, new AbortController().signal);
-    assert.deepEqual([noOp.status, noOp.settings.version, noOp.settings.glossary.reviewed], ["saved", "set2", true]);
-  } finally { await app.cleanup(); }
-});
-
-test("glossary settings: read-only and reviewed views hide the action; conflicts keep the latest safe state", async () => {
-  const viewer = createLocalizationMemory({ glossary: true, permissions: [] });
-  let app = await setup({ adapter: viewer.adapter, initialView: "settings" });
-  try {
-    assert.ok(document.body.textContent.includes("用語集の確認"));
-    assert.equal(button("この用語集を確認済みにする"), undefined);
+    assert.equal((await memory.adapter.loadOverview(new AbortController().signal)).overview.blockers.some((entry) => entry.id === "glossary-review"), false, "the glossary review is not a release condition");
+    assert.equal(memory.named("saveSettings").length, 0, "the screen never sends reviewGlossaryVersion");
   } finally { await app.cleanup(); }
 
-  const reviewed = createLocalizationMemory({ glossary: { version: "demo-glossary-v1", entries: [{ source: "NIHO", target: "NIHO" }], reviewed: true } });
-  app = await setup({ adapter: reviewed.adapter, initialView: "settings" });
-  try {
-    assert.ok(document.querySelector('[aria-labelledby="lw-settings-glossary"]').textContent.includes("確認済み"));
-    assert.equal(button("この用語集を確認済みにする"), undefined);
-  } finally { await app.cleanup(); }
-
-  const conflict = createLocalizationMemory({ glossary: true });
-  app = await setup({ adapter: conflict.adapter, initialView: "settings" });
-  try {
-    conflict.state.settings.version++;
-    await press("この用語集を確認済みにする");
-    assert.ok(document.body.textContent.includes("用語集か設定が更新されました。最新の内容を確認してください。"));
-    assert.ok(button("この用語集を確認済みにする"), "the latest unreviewed glossary remains actionable");
-    assert.equal(conflict.state.settings.glossary.reviewed, false);
-  } finally { await app.cleanup(); }
+  for (const reviewed of [true, false]) {
+    const legacy = createLocalizationMemory({ glossary: { version: "demo-glossary-v1", entries: [{ source: "NIHO", target: "NIHO" }], reviewed } });
+    app = await setup({ adapter: legacy.adapter, initialView: "settings" });
+    try {
+      const glossary = document.querySelector('[aria-labelledby="lw-settings-glossary"]');
+      assert.ok(glossary.textContent.includes("NIHONIHO"));
+      assert.doesNotMatch(glossary.textContent, /確認/, "the stored review flag is not shown");
+      assert.equal(buttons(glossary).length, 0);
+    } finally { await app.cleanup(); }
+  }
 });
 
 test("stale responses: a late item, list or adapter response is dropped", async () => {
@@ -612,6 +645,8 @@ test("stale responses: a late item, list or adapter response is dropped", async 
     assert.equal(card("lead"), null, "the first item's late response is ignored");
     assert.ok(card("intro"));
     assert.ok(document.querySelector(".lw-changed").textContent.includes("原文が更新された項目（1）"), "changed units are shown first");
+    assert.equal(document.querySelector(".lw-changed .cw-hint").textContent, "原文が変わりました。訳を直すか、翻訳案を入れてください。");
+    assert.equal(card("intro").querySelector("details summary").textContent, "前の日本語を見る");
     assert.ok(card("intro").querySelector("details").textContent.includes("小さな町の工房です。"));
     assert.ok(document.body.textContent.includes("原文に未公開の下書きがあります"));
   } finally { await app.cleanup(); }

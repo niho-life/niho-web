@@ -6,7 +6,7 @@ import { ALL_PERMISSIONS, createLocalizationMemory } from "./localization-worksp
 // 公開できる架空のデータだけを使う。認証・本番 API・実在の人やサイトには接続しない。変更はこのタブのメモリだけ。
 const presets = {
   owner: { label: "オーナー（公開・戻し・設定まで）", permissions: ALL_PERMISSIONS },
-  editor: { label: "編集者（直す・確認済み・翻訳案）", permissions: ["edit", "review", "translate"] },
+  editor: { label: "編集者（直す・翻訳案）", permissions: ["edit", "review", "translate"] },
   viewer: { label: "見るだけ", permissions: [] as string[] },
 } as const;
 type Preset = keyof typeof presets;

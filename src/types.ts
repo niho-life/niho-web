@@ -140,7 +140,7 @@ export type PageMeta = {
   ogImage?: PageImage;
   favicon?: string;
   noindex?: boolean;
-  /** サブの言語を公開する前に確認済みの訳を要求する。false もホスト既定値を上書きするため保存する。 */
+  /** 旧設定（サブの言語を確認してから公開する）。確認の工程は廃止（2026-11-12）。画面には出さず、読み込んだ値（false を含む）を保持だけする。 */
   targetReviewBeforePublish?: boolean;
   /** ホストが許可した構造化データの ID。JSON-LD はホストが生成する。 */
   structuredData?: string[];

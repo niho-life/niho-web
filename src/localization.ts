@@ -576,7 +576,8 @@ function receiveTranslationResult(overlayInput: unknown, collection: Localizatio
       ? { unitId: unit.unitId, kind: unit.kind, version, draftValue: value, editOrigin: "AUTO", draftSourceFingerprint: unit.sourceFingerprint }
       : { unitId: unit.unitId, kind: unit.kind, version, candidate }, (entry) => {
       if (entry.kind !== unit.kind) fail(path, "stored value kind conflicts with current unit");
-      if (automatic && entry.editOrigin !== "MANUAL" && !entry.reviewedSourceFingerprint) return {
+      // 確認の工程は廃止（2026-11-12）。AUTO の訳（と翻訳案だけの項目）は確認の記録の有無にかかわらず新しい訳で置き換え、MANUAL の訳は翻訳案として残す。
+      if (automatic && entry.editOrigin !== "MANUAL") return {
         unitId: unit.unitId, kind: unit.kind, version, draftValue: value, editOrigin: "AUTO", draftSourceFingerprint: unit.sourceFingerprint
       };
       return { ...entry, version, candidate };
@@ -590,7 +591,7 @@ export function acceptTranslationResult(overlayInput: unknown, collection: Local
   return receiveTranslationResult(overlayInput, collection, resultInput, false);
 }
 
-/** Automatic jobs replace untouched machine drafts and preserve manual or reviewed drafts as candidates. */
+/** Automatic jobs replace every non-manual draft (reviewed or not) and preserve manual drafts as candidates. */
 export function applyAutomaticTranslationResult(overlayInput: unknown, collection: LocalizationCollection, resultInput: unknown): LocalizationOverlay {
   return receiveTranslationResult(overlayInput, collection, resultInput, true);
 }

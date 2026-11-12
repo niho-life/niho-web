@@ -17,7 +17,7 @@ type Value = string | LocalizedRichText;
 type UnitStatus = "idle" | "pending" | "saving" | "saved" | "error" | "conflict" | "invalid" | "gone";
 type CommandPayload =
   | { readonly action: "adopt-candidate"; readonly candidateId: string }
-  | { readonly action: "review-current" | "review-image" | "clear-value" }
+  | { readonly action: "clear-value" }
   | { readonly action: "set-image"; readonly image: LocalizedAsset | null };
 /** 項目ごとの、画面の中の状態（変えるたびに rev を上げて描き直す）。 */
 type UnitLive = {
@@ -89,7 +89,7 @@ export function ItemEditor({ adapter, overview, itemKey, timeZone, autosaveDelay
   const latest = useRef({ onSummary, onForbidden });
   latest.current = { onSummary, onForbidden };
   const can = (permission: LocalizationOverview["permissions"][number]) => overview.permissions.includes(permission);
-  const canEdit = can("edit"), canReview = can("review"), canTranslate = can("translate");
+  const canEdit = can("edit"), canTranslate = can("translate");
 
   const touch = (unit: UnitLive) => { unit.rev++; render(); };
   const lose = (status: "forbidden" | "not_found") => {
@@ -298,7 +298,7 @@ export function ItemEditor({ adapter, overview, itemKey, timeZone, autosaveDelay
     return results.every(Boolean);
   };
 
-  /* ---------- 項目ごとの操作（確認済み・翻訳案・画像） ---------- */
+  /* ---------- 項目ごとの操作（翻訳案・画像・訳を消す）。確認の操作（review-current / review-image）は画面から出さない（2026-11-12） ---------- */
   const runCommand = async (unitId: string, payload: CommandPayload, success: string) => {
     const unit = live.current.units.get(unitId);
     if (!unit || unit.busy) return;
@@ -347,7 +347,7 @@ export function ItemEditor({ adapter, overview, itemKey, timeZone, autosaveDelay
     const result = outcome.value;
     if (result.status === "rejected") { unit.actionMessage = { text: rejectText[result.reason], error: true }; touch(unit); return; }
     if (result.status === "cancelled") return;
-    await runCommand(unitId, { action: "set-image", image: result.image.asset }, "画像を差し替えました。確かめたら「確認済みにする」を押してください。");
+    await runCommand(unitId, { action: "set-image", image: result.image.asset }, "画像を差し替えました。");
   };
   const uploadImage = async (unitId: string, file: File) => {
     const unit = live.current.units.get(unitId);
@@ -363,11 +363,11 @@ export function ItemEditor({ adapter, overview, itemKey, timeZone, autosaveDelay
     const result = outcome.value;
     if (result.status === "rejected") { unit.actionMessage = { text: rejectText[result.reason], error: true }; touch(unit); return; }
     if (result.status === "cancelled") return;
-    await runCommand(unitId, { action: "set-image", image: result.image.asset }, "画像を差し替えました。確かめたら「確認済みにする」を押してください。");
+    await runCommand(unitId, { action: "set-image", image: result.image.asset }, "画像を差し替えました。");
   };
 
   const clearValue = (unitId: string) => confirm({
-    title: "この項目の訳を消しますか", body: "訳文を消して未翻訳に戻します。確認済みの記録も消えます。翻訳案は残ります。", confirmLabel: "訳を消す", tone: "danger",
+    title: "この項目の訳を消しますか", body: "訳文を消して未翻訳に戻します。翻訳案は残ります。", confirmLabel: "訳を消す", tone: "danger",
     run: () => runCommand(unitId, { action: "clear-value" }, "訳を消しました。"),
   });
 
@@ -427,7 +427,7 @@ export function ItemEditor({ adapter, overview, itemKey, timeZone, autosaveDelay
   const changed = units.filter((unit) => unit.server.state === "review-needed");
   const rest = units.filter((unit) => unit.server.state !== "review-needed");
   const unitNode = (unit: UnitLive) => <UnitCard key={unit.server.unitId} unit={unit} rev={unit.rev} languages={overview.languages} timeZone={timeZone}
-    canEdit={canEdit} canReview={canReview} canPick={!!adapter.pickAsset} canUpload={!!adapter.uploadImage} actions={stable.current} />;
+    canEdit={canEdit} canPick={!!adapter.pickAsset} canUpload={!!adapter.uploadImage} actions={stable.current} />;
   const sectioned = (list: readonly UnitLive[]) => {
     const nodes: ReactNode[] = [];
     let section: string | null = null;
@@ -461,7 +461,7 @@ export function ItemEditor({ adapter, overview, itemKey, timeZone, autosaveDelay
       <button type="button" className="cw-icon-button" aria-label="知らせを閉じる" onClick={() => setJobNote(null)}><Icon name="close" /></button></div>}
     <div className={`lw-item-body${showPreview ? " lw-with-preview" : ""}`}>
       <div className="lw-units">
-        <p className="lw-item-meta">{item.path && <span className="cw-address">{item.path}</span>}<span>確認済み {item.reviewedUnits}/{item.totalUnits}</span>
+        <p className="lw-item-meta">{item.path && <span className="cw-address">{item.path}</span>}<span>翻訳済み {item.reviewedUnits}/{item.totalUnits}</span>
           {item.updatedAt && <span>最終更新 <DateTime value={item.updatedAt} timeZone={timeZone} />{item.updatedBy ? `・${item.updatedBy}` : ""}</span>}</p>
         {((onOpenRelated && !!item.relatedItems?.length) || (relatedPageLink && isSafeNavigationUrl(relatedPageLink.href))) && <nav className="lw-related" aria-label="関連する訳文とページ">
           <span className="lw-related-label">あわせて確認</span>
@@ -471,8 +471,8 @@ export function ItemEditor({ adapter, overview, itemKey, timeZone, autosaveDelay
         </nav>}
         {units.length === 0 && <p className="cw-hint">訳す項目はありません。</p>}
         {changed.length > 0 && <section className="lw-changed" aria-labelledby={`${baseId}-changed`}>
-          <h3 id={`${baseId}-changed`} className="lw-group-title"><span className="lw-shape" data-lw-state="source-changed" aria-hidden="true" />原文が更新された項目（{changed.length}）</h3>
-          <p className="cw-hint">確認した後に原文が変わりました。訳文を直してから、もう一度「確認済みにする」を押してください。</p>
+          <h3 id={`${baseId}-changed`} className="lw-group-title"><span className="lw-shape" aria-hidden="true" />原文が更新された項目（{changed.length}）</h3>
+          <p className="cw-hint">原文が変わりました。訳を直すか、翻訳案を入れてください。</p>
           {sectioned(changed)}
         </section>}
         {rest.length > 0 && <section aria-label="項目">{sectioned(rest)}</section>}
@@ -490,11 +490,11 @@ type UnitActions = {
 };
 type UnitCardProps = {
   unit: UnitLive; rev: number; languages: LocalizationOverview["languages"]; timeZone: string;
-  canEdit: boolean; canReview: boolean; canPick: boolean; canUpload: boolean; actions: UnitActions;
+  canEdit: boolean; canPick: boolean; canUpload: boolean; actions: UnitActions;
 };
 
 /** 1 つの項目。原文（読むだけ）と訳文を並べる。 */
-const UnitCard = memo(function UnitCard({ unit, languages, timeZone, canEdit, canReview, canPick, canUpload, actions }: UnitCardProps) {
+const UnitCard = memo(function UnitCard({ unit, languages, timeZone, canEdit, canPick, canUpload, actions }: UnitCardProps) {
   const baseId = useId();
   const [protectedNote, setProtectedNote] = useState(0);
   const server = unit.server, unitId = server.unitId;
@@ -504,7 +504,6 @@ const UnitCard = memo(function UnitCard({ unit, languages, timeZone, canEdit, ca
   const unitSave = unit.problem ? "保存していません（直すところがあります）" : status === "pending" || status === "saving" ? "保存中…" : status === "saved" ? "保存しました"
     : status === "error" ? "保存できませんでした" : status === "invalid" ? "保存できませんでした" : "";
   const busy = unit.busy !== null;
-  const reviewable = server.value !== null && server.state !== "reviewed" && !unit.problem && status !== "conflict" && status !== "gone";
   const conflictBox = status === "conflict" && <div className="lw-conflict" role="alert">
     <p><strong>{unit.conflict === "source" ? "原文が更新されました。" : "ほかの人が先にこの項目を直しました。"}</strong>この項目の入力は保存していません。「最新を読み込む」と、いま直したところは消えます。</p>
     <button type="button" className="cw-button" onClick={() => actions.reload(unitId)}>最新を読み込む</button>
@@ -512,9 +511,6 @@ const UnitCard = memo(function UnitCard({ unit, languages, timeZone, canEdit, ca
   const goneBox = status === "gone" && <p className="cw-error" role="alert"><Icon name="alert" />この項目は原文から無くなりました。一覧へ戻って開き直してください。</p>;
   const actionNote = unit.actionMessage && <p className={unit.actionMessage.error ? "cw-error" : "lw-note"} role={unit.actionMessage.error ? "alert" : "status"}>
     {unit.actionMessage.error && <Icon name="alert" />}{unit.actionMessage.text}</p>;
-  const reviewButton = canReview && reviewable && <button type="button" className="cw-button" disabled={busy}
-    onClick={() => actions.command(unitId, { action: server.kind === "image" ? "review-image" : "review-current" }, "確認済みにしました。")}>
-    {unit.busy === "review-current" || unit.busy === "review-image" ? "記録しています…" : "確認済みにする"}</button>;
   const clearButton = canEdit && server.kind !== "image" && server.value !== null && status !== "conflict" && status !== "gone"
     && <button type="button" className="cw-link-button" disabled={busy} onClick={() => actions.clear(unitId)}>{unit.busy === "clear-value" ? "消しています…" : "訳を消す"}</button>;
 
@@ -549,23 +545,24 @@ const UnitCard = memo(function UnitCard({ unit, languages, timeZone, canEdit, ca
       {unit.problem && <div className="cw-error" id={problemId} role="alert"><Icon name="alert" /><span>{unit.problem}</span>
         {canEdit && <button type="button" className="cw-link-button" onClick={() => actions.restoreMarks(unitId)}>札を元に戻す</button>}</div>}
       {status === "invalid" && unit.message && <p className="cw-error" role="alert"><Icon name="alert" />{unit.message}</p>}
-      {server.candidate && !same(server.candidate.value, server.value) && <div className="lw-candidate">
+      {/* 原文が変わって古くなった訳（review-needed）は、翻訳案が今の訳と同じ文でも採用して今の原文に結び付けられるようにする（確認の操作は 2026-11-12 に廃止） */}
+      {server.candidate && (server.state === "review-needed" || !same(server.candidate.value, server.value)) && <div className="lw-candidate">
         <span className="lw-col-label">翻訳案</span>
         <MarkedText segments={server.kind === "text" ? textSegments(server.candidate.value as string) : richSegments(server.candidate.value as LocalizedRichText)} describe={describe} />
         {canEdit && <button type="button" className="cw-button" disabled={busy || status === "conflict" || status === "gone"}
-          onClick={() => actions.command(unitId, { action: "adopt-candidate", candidateId: server.candidate!.candidateId }, "翻訳案を入れました。確かめたら「確認済みにする」を押してください。")}>
+          onClick={() => actions.command(unitId, { action: "adopt-candidate", candidateId: server.candidate!.candidateId }, "翻訳案を入れました。")}>
           {unit.busy === "adopt-candidate" ? "入れています…" : "翻訳案を使う"}</button>}
       </div>}
     </>;
   }
   const previous = server.kind !== "image" && server.previousSource !== null && <details className="lw-previous">
-    <summary>確認したときの{languages.source}を見る</summary>
+    <summary>前の{languages.source}を見る</summary>
     <MarkedText segments={server.kind === "text" ? textSegments(server.previousSource as string) : richSegments(server.previousSource as LocalizedRichText)} describe={describe} />
   </details>;
   return <section className="lw-unit" data-unit-id={unitId} data-state={server.state} aria-labelledby={labelId}>
     <header className="lw-unit-head">
       <h4 id={labelId} className="lw-unit-label">{server.label}{server.required && <span className="cw-required">必須</span>}</h4>
-      <UnitStateBadge state={unit.dirty && server.kind !== "image" ? "draft" : server.state} editOrigin={unit.dirty ? "MANUAL" : (server.kind === "image" ? null : server.editOrigin ?? null)} />
+      <UnitStateBadge state={server.state} />
       <span className="cw-save-state lw-unit-save">{unitSave}{status === "error" && <button type="button" className="cw-link-button" onClick={() => actions.retry(unitId)}>再試行</button>}</span>
     </header>
     <div className="lw-pair">
@@ -573,10 +570,10 @@ const UnitCard = memo(function UnitCard({ unit, languages, timeZone, canEdit, ca
       <div className="lw-target"><span className="lw-col-label" id={targetId}>{languages.target}</span>{target}</div>
     </div>
     {conflictBox}{goneBox}{actionNote}
-    {(reviewButton || clearButton || server.updatedAt) && <footer className="lw-unit-foot">
+    {(clearButton || server.updatedAt) && <footer className="lw-unit-foot">
       {server.updatedAt && <span className="cw-by">最終更新 <DateTime value={server.updatedAt} timeZone={timeZone} />{server.updatedBy ? `・${server.updatedBy}` : ""}</span>}
-      {(clearButton || reviewButton) && <span style={{ display: "flex", alignItems: "center", gap: 12, marginInlineStart: "auto" }}>{clearButton}{reviewButton}</span>}
+      {clearButton && <span style={{ display: "flex", alignItems: "center", gap: 12, marginInlineStart: "auto" }}>{clearButton}</span>}
     </footer>}
   </section>;
-}, (previous, next) => previous.rev === next.rev && previous.unit === next.unit && previous.canEdit === next.canEdit && previous.canReview === next.canReview
+}, (previous, next) => previous.rev === next.rev && previous.unit === next.unit && previous.canEdit === next.canEdit
   && previous.languages === next.languages && previous.canPick === next.canPick && previous.canUpload === next.canUpload);

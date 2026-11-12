@@ -210,10 +210,7 @@ function Session({ adapter, initialItemKey, initialView, onNavigate, timeZone = 
         }} />;
     } else if (view.view === "settings") {
       body = <SettingsView adapter={adapter} overview={current} timeZone={timeZone} onBack={() => go({ view: "list", itemKey: null })}
-        onSaved={async (settings, refreshOverview) => {
-          setOverview((previous) => previous.status === "ready" ? { status: "ready", overview: { ...previous.overview, settings } } : previous);
-          if (refreshOverview) await loadOverview(true);
-        }} />;
+        onSaved={(settings) => setOverview((previous) => previous.status === "ready" ? { status: "ready", overview: { ...previous.overview, settings } } : previous)} />;
     } else {
       body = <>
         <LocaleBand overview={current} list={list} timeZone={timeZone} catalogStalled={catalogStalled}
@@ -258,7 +255,7 @@ function LocaleBand({ overview, list, timeZone, catalogStalled, onRetryCatalog, 
     <div className="lw-band-main">
       <h2>{target}版</h2>
       <p className="lw-band-line">{current ? <span>公開中：{current.label}（<time dateTime={current.publishedAt}>{formatDateTime(current.publishedAt, timeZone)}</time>）</span> : "まだ公開していません"}</p>
-      <Progress label="確認済み" done={totals.reviewed} total={totals.items} />
+      <Progress label="翻訳済み" done={totals.reviewed} total={totals.items} />
       {!current && overview.blockers.length > 0 && <p className="cw-banner" role="note">初回公開までに必要な準備が {overview.blockers.length} 件あります。{canPublish ? `「${target}版を公開…」で理由を確認できます。` : "公開する権限のある人に確認してください。"}</p>}
       {!overview.settings.translator.connected && <p className="cw-banner" role="note">翻訳サービスがつながっていません。翻訳案の自動作成は使えません。{overview.permissions.includes("edit") ? "訳文は手入力できます。" : "編集権限がある人は訳文を手入力できます。"}</p>}
       {list.status === "ready" && list.more === "loading" && <span className="cw-hint" role="status">残りを読み込んでいます…（{list.items.length} 件まで）</span>}
@@ -278,13 +275,13 @@ function LocaleBand({ overview, list, timeZone, catalogStalled, onRetryCatalog, 
 
 /* ---------- 一覧 ---------- */
 
-/** 原文が変わった価格・条件・法務のページなどを、一覧の上に目立たせる。公開済みの訳は前の版のまま残るため、直して確認済みにするよう促す。 */
+/** 原文が変わった価格・条件・法務のページなどを、一覧の上に目立たせる。公開済みの訳は前の版のまま残るため、訳を直してから更新を公開するよう促す。 */
 function AttentionBand({ adapter, overview, onOpen }: { adapter: LocalizationWorkspaceAdapter; overview: LocalizationOverview; onOpen: (itemKey: string) => void }) {
   const attention = overview.attention;
   if (!attention || attention.items.length === 0) return null;
   return <section className="lw-attention" aria-label={`${attention.label}の原文が更新されています`}>
     <p className="lw-attention-title"><Icon name="alert" /><strong>{attention.label}の原文が更新されています（{attention.items.length} 件）</strong></p>
-    <p className="lw-attention-text">公開中の{overview.languages.target}版は前の版のままです。直して「確認済み」にしてから、更新を公開してください。</p>
+    <p className="lw-attention-text">公開中の{overview.languages.target}版は前の版のままです。訳を直してから、更新を公開してください。</p>
     <ul className="lw-attention-list">{attention.items.map((item) => {
       let edit: string | null = null;
       try { edit = adapter.editLink?.(item.key) ?? null; } catch { edit = null; }
@@ -295,7 +292,8 @@ function AttentionBand({ adapter, overview, onOpen }: { adapter: LocalizationWor
   </section>;
 }
 
-const filterTabs: readonly [LocalizationFilter, string][] = [["needs-work", "要対応"], ["reviewed", "確認済み"], ["all", "すべて"], ["excluded", "対象外"]];
+/** キーは状態の値のまま（needs-work = 未翻訳・reviewed = 翻訳済み）。 */
+const filterTabs: readonly [LocalizationFilter, string][] = [["needs-work", "未翻訳"], ["reviewed", "翻訳済み"], ["all", "すべて"], ["excluded", "対象外"]];
 
 function ListView({ adapter, overview, list, group, onGroup, timeZone, focusItem, onFocused, onOpen, onRetry }: {
   adapter: LocalizationWorkspaceAdapter; overview: LocalizationOverview; list: ListState; group: string | null; onGroup: (group: string | null) => void; timeZone: string;
@@ -333,7 +331,7 @@ function ListView({ adapter, overview, list, group, onGroup, timeZone, focusItem
   const total = overview.groups.reduce((sum, entry) => sum + entry.items, 0);
   const groupLabel = group === null ? "すべて" : overview.groups.find((entry) => entry.id === group)?.label ?? "すべて";
   const rows = (entries: readonly LocalizationItemSummary[], label: string) => <>
-    <div className="cw-rows-head lw-rows-head" aria-hidden="true"><span>題名</span><span>状態</span><span>確認済み</span><span>最終更新</span></div>
+    <div className="cw-rows-head lw-rows-head" aria-hidden="true"><span>題名</span><span>状態</span><span>翻訳済み</span><span>最終更新</span></div>
     <ul className="cw-rows lw-rows" aria-label={label}>{entries.map((item) => {
       let source: string | null = null;
       try { source = adapter.sourceLink?.(item.key) ?? null; } catch { source = null; }
@@ -349,9 +347,8 @@ function ListView({ adapter, overview, list, group, onGroup, timeZone, focusItem
           : <button type="button" className="cw-row-open" data-item-key={item.key} onClick={() => onOpen(item.key)}>{title}</button>}
         <span className="cw-row-meta">
           <span className="cw-cell cw-cell-status"><span className="cw-cell-label">状態</span><span className="cw-badges"><ItemStateBadge state={item.state} />
-            {item.imagesUnreviewed > 0 && <span className="cw-pill lw-pill" data-lw-state="images"><Icon name="image" />未確認の画像 {item.imagesUnreviewed}</span>}
             {item.sourceDraftPending && <span className="cw-pill lw-pill" data-lw-state="pending-source">原文に未公開の下書き</span>}</span></span>
-          <span className="cw-cell lw-cell-reviewed"><span className="cw-cell-label">確認済み</span>{item.state === "excluded" ? "—" : `${item.reviewedUnits}/${item.totalUnits}`}</span>
+          <span className="cw-cell lw-cell-reviewed"><span className="cw-cell-label">翻訳済み</span>{item.state === "excluded" ? "—" : `${item.reviewedUnits}/${item.totalUnits}`}</span>
           <span className="cw-cell cw-cell-updated"><span className="cw-cell-label">最終更新</span><DateTime value={item.updatedAt} timeZone={timeZone} />{item.updatedBy && <span className="cw-by">{item.updatedBy}</span>}{source && <a className="lw-source-link" href={source} target="_blank" rel="noopener noreferrer">原文を編集<span className="cw-sr">（新しいタブで開く）</span></a>}</span>
         </span>
       </li>;
@@ -369,7 +366,7 @@ function ListView({ adapter, overview, list, group, onGroup, timeZone, focusItem
           <span className="cw-nav-count"><span className="cw-sr">（</span>{total}<span className="cw-sr"> 件）</span></span></button></li>
         {overview.groups.map((entry) => <li key={entry.id}><button type="button" aria-current={group === entry.id ? "page" : undefined} onClick={() => onGroup(entry.id)}>
           <span className="cw-nav-label">{entry.label}</span>
-          <span className="cw-nav-count"><span className="cw-sr">（</span>{entry.items}<span className="cw-sr"> 件{entry.needsWork ? `・要対応 ${entry.needsWork} 件` : ""}）</span></span>
+          <span className="cw-nav-count"><span className="cw-sr">（</span>{entry.items}<span className="cw-sr"> 件{entry.needsWork ? `・未翻訳 ${entry.needsWork} 件` : ""}）</span></span>
           {entry.needsWork > 0 && <span className="lw-needs" aria-hidden="true">{entry.needsWork}</span>}
         </button></li>)}
       </ul>
@@ -412,36 +409,36 @@ function ListView({ adapter, overview, list, group, onGroup, timeZone, focusItem
 
 function SettingsView({ adapter, overview, timeZone, onBack, onSaved }: {
   adapter: LocalizationWorkspaceAdapter; overview: LocalizationOverview; timeZone: string; onBack: () => void;
-  onSaved: (settings: LocalizationSettings, refreshOverview: boolean) => void | Promise<void>;
+  onSaved: (settings: LocalizationSettings) => void;
 }) {
   const requests = useRequests();
   const settings = overview.settings, canChange = overview.permissions.includes("settings");
   const [autoDraft, setAutoDraft] = useState(settings.autoDraft);
   const [busy, setBusy] = useState(false);
   const [autoNote, setAutoNote] = useState<{ readonly text: string; readonly error: boolean } | null>(null);
-  const [glossaryNote, setGlossaryNote] = useState<{ readonly text: string; readonly error: boolean } | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => { heading.current?.focus(); }, []);
-  const save = async (input: LocalizationSettingsInput, kind: "auto" | "glossary") => {
+  // 用語集の確認（reviewGlossaryVersion）は画面から送らない（確認の工程は廃止、2026-11-12）。
+  const save = async () => {
     if (busy) return;
     setBusy(true);
-    const note = kind === "auto" ? setAutoNote : setGlossaryNote;
-    note(null);
+    setAutoNote(null);
     try {
+      const input: LocalizationSettingsInput = { expectedVersion: settings.version, autoDraft };
       const outcome = await requests.current.run(async (signal) => parseLocalizationSettingsResult(await adapter.saveSettings(input, signal)));
       if (outcome.kind === "aborted") return;
-      if (outcome.kind === "error") { note({ text: kind === "glossary" ? "用語集の確認を保存できませんでした。もう一度試してください。" : "保存できませんでした。もう一度試してください。", error: true }); return; }
+      if (outcome.kind === "error") { setAutoNote({ text: "保存できませんでした。もう一度試してください。", error: true }); return; }
       const result = outcome.value;
       if (result.status === "saved") {
-        await onSaved(result.settings, kind === "glossary");
+        onSaved(result.settings);
         setAutoDraft(result.settings.autoDraft);
-        note({ text: kind === "glossary" ? "用語集を確認済みにしました。" : "保存しました。", error: false });
+        setAutoNote({ text: "保存しました。", error: false });
       } else if (result.status === "conflict") {
-        await onSaved(result.settings, false);
+        onSaved(result.settings);
         setAutoDraft(result.settings.autoDraft);
-        note({ text: kind === "glossary" ? "用語集か設定が更新されました。最新の内容を確認してください。" : "ほかの人が先に変えていました。最新の設定を出しています。", error: true });
-      } else if (result.status === "invalid") note({ text: result.message, error: true });
-      else note({ text: "設定を変える権限がありません。", error: true });
+        setAutoNote({ text: "ほかの人が先に変えていました。最新の設定を出しています。", error: true });
+      } else if (result.status === "invalid") setAutoNote({ text: result.message, error: true });
+      else setAutoNote({ text: "設定を変える権限がありません。", error: true });
     } finally { setBusy(false); }
   };
   return <div className="cw-editor lw-settings">
@@ -453,20 +450,14 @@ function SettingsView({ adapter, overview, timeZone, onBack, onSaved }: {
         <h3 id="lw-settings-auto">自動翻訳</h3>
         <label className="lw-check"><input type="checkbox" checked={autoDraft} disabled={!canChange || busy} onChange={(event) => setAutoDraft(event.target.checked)} />
           <span>{overview.languages.source}を保存するたびに、変わった箇所を自動翻訳する</span></label>
-        <p className="cw-hint">オフのときは、変わった箇所を「原文が更新」にするだけです。自動翻訳の訳は未確認なので、確認してから公開します。人が直した・確認した訳は上書きせず、原文が変わると新しい訳を翻訳案に残します。</p>
-        {canChange && <div className="lw-settings-actions"><button type="button" className="cw-button cw-primary" disabled={busy || autoDraft === settings.autoDraft} onClick={() => void save({ expectedVersion: settings.version, autoDraft }, "auto")}>{busy ? "保存しています…" : "保存する"}</button></div>}
+        <p className="cw-hint">オフのときは、変わった箇所を未翻訳にするだけです。人が直した訳は上書きせず、原文が変わると新しい訳を翻訳案に残します。</p>
+        {canChange && <div className="lw-settings-actions"><button type="button" className="cw-button cw-primary" disabled={busy || autoDraft === settings.autoDraft} onClick={() => void save()}>{busy ? "保存しています…" : "保存する"}</button></div>}
         {autoNote && <p className={autoNote.error ? "cw-error" : "lw-note"} role={autoNote.error ? "alert" : "status"}>{autoNote.error && <Icon name="alert" />}{autoNote.text}</p>}
       </section>
       {settings.glossary && <section className="lw-settings-card" aria-labelledby="lw-settings-glossary">
-        <h3 id="lw-settings-glossary">用語集の確認</h3>
+        <h3 id="lw-settings-glossary">用語集</h3>
         <p className="cw-hint">版：{settings.glossary.version}</p>
         <dl className="cw-facts lw-glossary">{settings.glossary.entries.map((entry) => <div key={entry.source}><dt>{entry.source}</dt><dd>{entry.target}</dd></div>)}</dl>
-        <p className="lw-glossary-status">{settings.glossary.reviewed
-          ? <span className="cw-pill" data-status="published"><span className="cw-dot" aria-hidden="true" />確認済み</span>
-          : <span className="cw-pill" data-status="scheduled"><span className="cw-dot" aria-hidden="true" />未確認</span>}</p>
-        {canChange && !settings.glossary.reviewed && <div className="lw-settings-actions"><button type="button" className="cw-button cw-primary" disabled={busy}
-          onClick={() => void save({ expectedVersion: settings.version, reviewGlossaryVersion: settings.glossary!.version }, "glossary")}>{busy ? "保存しています…" : "この用語集を確認済みにする"}</button></div>}
-        {glossaryNote && <p className={glossaryNote.error ? "cw-error" : "lw-note"} role={glossaryNote.error ? "alert" : "status"}>{glossaryNote.error && <Icon name="alert" />}{glossaryNote.text}</p>}
       </section>}
       <section className="lw-settings-card" aria-labelledby="lw-settings-service">
         <h3 id="lw-settings-service">翻訳サービス</h3>

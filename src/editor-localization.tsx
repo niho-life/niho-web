@@ -216,8 +216,11 @@ export function localizedOperationProblem(document: PageDocument, operation: Edi
   return denied;
 }
 
-/** 訳の状態の表示名。自動翻訳でも手修正でも、訳があれば「翻訳済み」にまとめる（確認済み・更新ありは出し分けない）。 */
-export const localizationStateLabel = (state: string) => ({ source: "原文", missing: "未翻訳", translating: "翻訳中", draft: "翻訳済み", "review-needed": "翻訳済み", reviewed: "翻訳済み", failed: "失敗" }[state] ?? state);
+/**
+ * 訳の状態の表示名。自動翻訳でも手修正でも、今の原文に対応する訳があれば「翻訳済み」にまとめる（2026-11-12）。
+ * 原文が変わって訳が古くなった review-needed は、今の原文に対応する訳が無いので「未翻訳」。
+ */
+export const localizationStateLabel = (state: string) => ({ source: "原文", missing: "未翻訳", translating: "翻訳中", draft: "翻訳済み", "review-needed": "未翻訳", reviewed: "翻訳済み", failed: "失敗" }[state] ?? state);
 const textOf = (value: LocalizationValue | undefined): string => value === undefined ? "（なし）" : typeof value === "string" ? value : value.kind === "asset" ? `${value.asset.provider} / ${value.asset.id}`
   : value.kind === "image-url" ? `${value.src}${value.srcset ? ` / ${value.srcset}` : ""}`
     : value.children.map(function flatten(node): string { return node.type === "text" ? node.text : node.children.map(flatten).join(""); }).join("");
@@ -343,8 +346,8 @@ export function LocalizationPanel({ context, document, disabled, selectedUnit, r
     if (manualBuffer && !manualBuffer.pending && bufferedAccepted !== undefined && sameValue(manualBuffer.value, bufferedAccepted)) setManualBuffer(null);
   }, [bufferedAcceptedKey, manualBuffer, setManualBuffer]);
   const request = (action: "request-translation") => run({ action, target: context.target, expectedSourceVersion: context.sourceVersion, expectedVersion: context.version, expectedOverlayVersion: context.overlay.version });
-  const command = (action: "adopt-candidate" | "review-current", unit: LocalizationUnit, entry: LocalizationDraftEntry) => run({ action, target: context.target, unitId: unit.unitId,
-    ...(action === "adopt-candidate" ? { candidateVersion: entry.candidate!.version } : {}), expectedSourceVersion: context.sourceVersion, expectedVersion: context.version, expectedOverlayVersion: context.overlay.version } as EditorLocalizationCommand);
+  const adopt = (unit: LocalizationUnit, candidateVersion: number) => run({ action: "adopt-candidate", target: context.target, unitId: unit.unitId, candidateVersion,
+    expectedSourceVersion: context.sourceVersion, expectedVersion: context.version, expectedOverlayVersion: context.overlay.version });
   const manual = async (unit: LocalizationUnit, entry: LocalizationDraftEntry | undefined, value: LocalizationValue) => {
     const outcome = await run({ action: "set-value", target: context.target, unitId: unit.unitId, value,
       sourceFingerprint: unit.sourceFingerprint, expectedEntryVersion: entry?.version ?? 0, expectedSourceVersion: context.sourceVersion, expectedVersion: context.version, expectedOverlayVersion: context.overlay.version });
@@ -374,8 +377,7 @@ export function LocalizationPanel({ context, document, disabled, selectedUnit, r
         change={(value, invalid = false) => setManualBuffer(!invalid && sameValue(value, currentValue) ? null : { target: { ...context.target }, unitId: unit.unitId, value, pending: true, ...(invalid ? { invalid: true } : {}) })}
         cancel={() => setManualBuffer(null)} save={(value) => manual(unit, entry, value)}
         {...(unit.kind === "asset" && pickAsset ? { pickAsset: () => pickAsset(unit) } : {})} />
-      <div className="e-actions">{entry?.candidate && currentCandidate && <button type="button" disabled={disabled || manualPending} onClick={() => void command("adopt-candidate", unit, entry)}>翻訳案を採用</button>}
-        {entry?.draftValue !== undefined && <button type="button" disabled={disabled || manualPending} onClick={() => void command("review-current", unit, entry)}>現在の訳を確認済みにする</button>}</div>
+      {entry?.candidate && currentCandidate && <div className="e-actions"><button type="button" disabled={disabled || manualPending} onClick={() => void adopt(unit, entry.candidate!.version)}>翻訳案を採用</button></div>}
     </section>;
   })}</div>;
 }

@@ -42,7 +42,7 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 | `@niho/web/react` | `PageRenderer` / `SitePageRenderer` とブロック registry の型。編集キャンバスでは props と一致する host view が無いブロックだけ見本または空の枠へ戻し、他の要素を表示し続ける。外部 frame は [サイト単位の許可リスト](docs/site-presentation.md) の外を読み込まず、許可の中でも実行コードの信頼済みリストに入るものだけ origin を維持し、入らない不変 embed などは権限なしの opaque iframe で描く |
 | `@niho/web/presentation-runtime` | SSR後の検証済みDOMへ、native presentation、VideoWithButton、Loop Box、reduced-motion対応Lottie player、明示操作後だけ読み込むFacebook / X / Instagram投稿の標準操作を接続するclient runtime。返されたcleanupを再初期化前に呼ぶ |
 | `@niho/web/server` | Astro の build / server で使える `renderPageToHtml` |
-| `@niho/web/editor` | 認証済みホストadapterへ接続する `PageEditor` と型。50pxの左ツール列＋300pxの追加パネル、左レールの版履歴と文章検索・選択、300pxの右インスペクタ、表示幅・端末切替とサイト単位の「編集モード」（Mini / Mobile / Tablet / Small / PC、opaque version CAS）の下部ツールバー、キャンバス左右端の表示幅ドラッグを共通化する。左ツール列は短い画面でも独立スクロールでき、方向キー・Home・Endで有効な操作へフォーカス移動する。未接続ホストでは従来の `breakpoints` を読み取り専用表示する。任意のhost-owned `responsiveProposal` は、選択範囲またはページ全体の幅別style提案をレビューし、1回のundo対象として適用する（未接続時は入口なし。AI/provider/auth/storageはホスト責務）。`initialTarget`、任意の日英切替（「日本語 / English」のみ表示）、原文ページの「サブ言語は確認してから公開」トグル、許可ブロック、trusted host 固有の設定 UI、任意の安全なform完了ページ候補を扱う。原文の保存 locale が翻訳用 mapping と異なる場合も、ページ一覧の原文 locale を使って開き直せる。 ホストが原文の保存 locale を指定すると、言語設定の取得中も原文の編集・保存・公開ができる。原文 snapshot の任意な英語公開状態と、安全な明示更新・再試行も本文 version と独立して扱う。Kamakura の日英一覧は Studio BFF の `localization/editor/site`、English キャンバスは `editor/pages/:pageId/snapshot` から読み、保存はサイト側の正本 overlay へ戻す（[編集・公開契約](docs/editor-contract.md)、[UI設計](docs/editor-ui-design.md)、[多言語 editor 契約](docs/localization-editor.md)、[ManagedEmbed 契約](docs/managed-embed-contract.md)。鎌倉の公開確認と埋め込み検証はcatalogの現在の公開ドメインに揃え、既知の確認用・本番ホストの切替に対応）。React / React DOM が必要 |
+| `@niho/web/editor` | 認証済みホストadapterへ接続する `PageEditor` と型。50pxの左ツール列＋300pxの追加パネル、左レールの版履歴と文章検索・選択、300pxの右インスペクタ、表示幅・端末切替とサイト単位の「編集モード」（Mini / Mobile / Tablet / Small / PC、opaque version CAS）の下部ツールバー、キャンバス左右端の表示幅ドラッグを共通化する。左ツール列は短い画面でも独立スクロールでき、方向キー・Home・Endで有効な操作へフォーカス移動する。未接続ホストでは従来の `breakpoints` を読み取り専用表示する。任意のhost-owned `responsiveProposal` は、選択範囲またはページ全体の幅別style提案をレビューし、1回のundo対象として適用する（未接続時は入口なし。AI/provider/auth/storageはホスト責務）。`initialTarget`、任意の日英切替（「日本語 / English」のみ表示。訳の状態は原文・未翻訳・翻訳中・翻訳済み・失敗）、許可ブロック、trusted host 固有の設定 UI、任意の安全なform完了ページ候補を扱う。原文の保存 locale が翻訳用 mapping と異なる場合も、ページ一覧の原文 locale を使って開き直せる。 ホストが原文の保存 locale を指定すると、言語設定の取得中も原文の編集・保存・公開ができる。原文 snapshot の任意な英語公開状態と、安全な明示更新・再試行も本文 version と独立して扱う。Kamakura の日英一覧は Studio BFF の `localization/editor/site`、English キャンバスは `editor/pages/:pageId/snapshot` から読み、保存はサイト側の正本 overlay へ戻す（[編集・公開契約](docs/editor-contract.md)、[UI設計](docs/editor-ui-design.md)、[多言語 editor 契約](docs/localization-editor.md)、[ManagedEmbed 契約](docs/managed-embed-contract.md)。鎌倉の公開確認と埋め込み検証はcatalogの現在の公開ドメインに揃え、既知の確認用・本番ホストの切替に対応）。React / React DOM が必要 |
 | `@niho/web/projects` | 1 Project = 1 Site の検証、純粋操作、atomic CAS契約。React不要 |
 | `@niho/web/project-manager` | 認証済みホストadapterへ接続する `ProjectManager`。React / React DOM が必要 |
 | `@niho/web/project-directory` | 管理フォームと独立した日常の `ProjectDirectory`。内部またはhost shellの名前・ドメイン検索、OG画像／頭文字カード、更新順の一覧表、Dashboard / Editorメニュー |
@@ -50,7 +50,7 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 | `@niho/web/site-language-settings` | サイト設定に置く日英2言語のシンプルな選択画面 `SiteLanguageSettings`。原文言語からサブを明示し、初回サブ公開後は固定表示にする。Studio は既存サイトの明示した原文言語を設定画面に表示し、CSP 対応の CSS を自身の束に含める。保存・認可・版の競合確認はホストが行う（[デモ](examples/site-language-settings-demo.mjs)） |
 | `@niho/web/project-read-model` | summary / dashboardの型・読み取りadapter・runtime parser。React不要 |
 | `@niho/web/collection-workspace` | コレクション（CMS）の一覧と項目の編集の `CollectionWorkspace`。ホストの adapter で読み書き・自動保存・公開・予約、本文と独立した任意の英語公開状態の更新／安全な再試行、同じ画面で切り替える任意の原文／翻訳タブと訳文タブへの直接リンク（[接続方法](docs/collection-contract.md)） |
-| `@niho/web/localization-workspace` | 要対応から始まる翻訳一覧・対象外の理由別表示・自動翻訳の設定（保存ごとの自動翻訳は任意。鎌倉は無効で運用し、確認したページだけ公開する）・価格・条件・法務のページなど原文が更新されたら一覧の上で目立たせる任意の呼びかけ・任意の版付き用語集の確認・初回公開の内訳確認を含む `LocalizationWorkspace` と、CMS 項目に埋め込む `LocalizationItemWorkspace`。一覧の含む内容と関連する訳文への導線、ホストの編集先（Kamakura の共通ページは English キャンバス、CMS は同じ項目の English タブ）、CMS 詳細ページの英語テンプレートへのリンク、保存済みの未公開原文、訳文の自動保存・出どころ別の未確認表示・確認済み・翻訳案・プレビューを共通化する（[接続方法](docs/localization-workspace-contract.md)）。型と parser は `@niho/web/localization-workspace-model` |
+| `@niho/web/localization-workspace` | 未翻訳から始まる翻訳一覧（状態は未翻訳・翻訳済み・対象外。人が確認する工程は 2026-11-12 に廃止）・対象外の理由別表示・自動翻訳の設定（保存ごとの自動翻訳は任意。鎌倉は無効で運用し、訳のあるページを公開する）・価格・条件・法務のページなど原文が更新されたら一覧の上で目立たせる任意の呼びかけ・任意の版付き用語集の表示・初回公開の内訳確認を含む `LocalizationWorkspace` と、CMS 項目に埋め込む `LocalizationItemWorkspace`。一覧の含む内容と関連する訳文への導線、ホストの編集先（Kamakura の共通ページは English キャンバス、CMS は同じ項目の English タブ）、CMS 詳細ページの英語テンプレートへのリンク、保存済みの未公開原文、訳文の自動保存・翻訳案・プレビューを共通化する（[接続方法](docs/localization-workspace-contract.md)）。型と parser は `@niho/web/localization-workspace-model` |
 | `@niho/web/collection-model` | コレクションの定義・項目の型、adapter の応答の runtime parser、公開前の値の検証、本文の HTML の無害化。React不要 |
 | `@niho/web/project-editor` | 既存 `EditorAdapter` をProjectの唯一のSiteへ限定するwrapper。サイト単位ブレークポイントの read / save も site ID と応答を再検証する |
 | `@niho/web/pages` | ページのパス検証・ツリー・内部リンク影響、公開メタ情報（title / description / OG画像 / robots / canonical）の解決と `<head>` 出力。React不要。ページ操作の部分接続・鎌倉Studioのページ名変更は [ページ管理契約](docs/page-contract.md#鎌倉studioの接続範囲) |
@@ -61,13 +61,13 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 | `@niho/web/history` | 文書の差分（`diffDocuments`）、版履歴の項目の検証、端末内の緊急復元ストア（ページ・サイトごとの共通部品）。React不要 |
 | `@niho/web/analytics` | GA4 / Search Console を分けて示す読取専用画面、型付きadapter、応答検証 |
 | `@niho/web/analytics-data` | サーバーで使う分析DTO・adapterの型と応答検証。React不要。画面と同じパーサーを使用 |
-| `@niho/web/localization` | 明示的な日英設定、安定IDの翻訳単位、自動訳の更新・人の訳の保護、候補・手編集・確認、共通構造からの文書生成。React不要 |
-| `@niho/web/localization-release` | 言語単位の不変snapshot、公開するページ（hostが選ぶ。全ページは要らない）の訳・確認必須ページ・共通部分・用語集の公開条件、route・内部リンク・SEO、prepare/apply/rollback検証。React不要 |
+| `@niho/web/localization` | 明示的な日英設定、安定IDの翻訳単位、自動訳の更新（確認の記録は問わない）・人の訳の保護、候補・手編集、共通構造からの文書生成。React不要 |
+| `@niho/web/localization-release` | 言語単位の不変snapshot、公開するページ（hostが選ぶ。全ページは要らない）の訳の公開条件（確認の工程は 2026-11-12 に廃止。旧い確認の入力は互換のため残る）、route・内部リンク・SEO、prepare/apply/rollback検証。React不要 |
 | `niho-studio` | 機械認証でページの編集と公開予約、一括公開の準備、CMS型移行の事前検査、CMS・翻訳の編集と公開、素材の削除・復元、サイト設定・メンバー管理、ページ下書きの競合解消、操作の受付照会を行うCLI。確認用Studioの接続設定も [Studio CLIの契約](docs/studio-cli.md) を参照 |
 
 React は optional peer dependency です。API サーバーなど React を入れない利用先では `import { parsePageDocument } from '@niho/web/core'` を使います。root と `/react` は React runtime を import します。
 
-多言語coreは共通構造を保ったまま、明示的な `sourceLocale` とlocale mapping、安定IDの翻訳単位、自動翻訳結果の反映（いつ呼ぶかはホストが選ぶ。鎌倉は一括下書きと「翻訳案を作る」を押したときだけ）と人の訳の保護、手編集、確認、target文書生成を扱います。翻訳provider・認可・永続化・公開snapshotはホスト責務です。詳細は [多言語core契約](docs/localization-contract.md) を参照してください。
+多言語coreは共通構造を保ったまま、明示的な `sourceLocale` とlocale mapping、安定IDの翻訳単位、自動翻訳結果の反映（いつ呼ぶかはホストが選ぶ。鎌倉は一括下書きと「翻訳案を作る」を押したときだけ）と人の訳の保護、手編集、target文書生成を扱います。翻訳provider・認可・永続化・公開snapshotはホスト責務です。詳細は [多言語core契約](docs/localization-contract.md) を参照してください。
 
 言語別公開は `@niho/web/localization-release` で、ページ・共通部品・ナビ・スタイル・外部resource hash・route・SEOを1つの完成版として検証します。token、認可、永続化、CAS、CDNと実サイト描画はhostが所有します。詳細は [言語別公開・ルート・SEO契約](docs/localization-release.md) を参照してください。
 
@@ -219,7 +219,7 @@ Studioへの新しいサイト接続と、独自挿入・motion・block・共通
 
 フォームの完了ページはoptionalな`EditorAdapter.listFormCompletionPages`を実装したときだけ、同じsite/localeの公開済み通常ページから選べます。保存するのはページIDだけで、URL・action・method・イベントコードは保存せず、公開rendererは`method="dialog"`のままです。送信成功後はtrusted hostが`resolveFormCompletionPath`へ検証済み文書と現在の候補一覧を渡し、削除・非公開化・未公開化・危険なpathを再検証してから移動します。送信、CSRF、永続化、失敗時の入力保持、navigationはホスト責務です。
 
-同じ論理ページの日英編集はoptionalな`EditorAdapter.localization`で追加できます。原文言語を明示し、訳文の実キャンバス編集、候補比較・採用・確認、サイト全体の翻訳job状態、サーバー側でも使える共通構造検証を提供します。初回のサイト選択前と取得中は読み込み中として操作を止め、明示的な取得失敗だけを再試行可能なエラーとして表示します。[多言語エディターのホスト接続](docs/localization-editor.md)と`npm run demo:localization`を参照してください。
+同じ論理ページの日英編集はoptionalな`EditorAdapter.localization`で追加できます。原文言語を明示し、訳文の実キャンバス編集、候補比較・採用、サイト全体の翻訳job状態、サーバー側でも使える共通構造検証を提供します。初回のサイト選択前と取得中は読み込み中として操作を止め、明示的な取得失敗だけを再試行可能なエラーとして表示します。[多言語エディターのホスト接続](docs/localization-editor.md)と`npm run demo:localization`を参照してください。
 
 ページ一覧（検索・フォルダ・テンプレートと共通枠の区別）、ページの作成・複製・URL変更・公開切替の影響確認、原稿を保持する表示専用リンク解決、ページ別とサイト共通の公開情報は [ページ管理・公開情報の契約](docs/page-contract.md) を参照してください。公開ページの `<head>` は `@niho/web/pages` の `resolvePageMetadata` で、編集画面と同じ値から作ります。
 画像とnative動画は URL を直接書く代わりに、サイト別の素材ライブラリの素材ID（`{ provider, id }`）で参照できます。`PageEditor` に `assets` adapter を渡すと、素材のアップロード・検索・代替テキスト編集・配置・置き換え・使用中素材の削除防止を使えます。サイトのアップロード素材、NIHO の公開許可済み CMS 画像、ライセンス確認済みストックを出所ごとに分けて、同じパネルから選べます。公開時の URL 解決は `PageRenderer` / `renderPageToHtml` の `assets` で行います。[素材ライブラリ契約](docs/asset-contract.md)を参照してください。

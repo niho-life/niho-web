@@ -218,12 +218,12 @@ log は editor と同じく問い合わせ ID・固定の operation（`cms_schem
 | `POST catalog/advance` | `{}` | 30 秒 |
 | `POST preview/items` | `{ itemKey, previewId, cursor }` | 30 秒 |
 | `POST release`・`release/prepare`・`release/apply` | `{}`・`{ operation, releaseId, expectedVersion, expectedCurrentVersion, resumeToken }`・`{ confirmationToken, resumeToken }` | 30 秒 |
-| `PUT settings` | `{ expectedVersion, autoDraft }` または `{ expectedVersion, reviewGlossaryVersion }`（両方・どちらも無しは拒否） | 12 秒 |
+| `PUT settings` | `{ expectedVersion, autoDraft }` または `{ expectedVersion, reviewGlossaryVersion }`（両方・どちらも無しは拒否。後者は 2026-11-12 に画面から外した旧い確認の操作で、互換のため通す） | 12 秒 |
 | `POST uploads/intent` | `{ itemKey, unitId, name, mimeType, bytes }` | 12 秒 |
 
 - `set-image` の `image` は `null`（原文と同じに戻す）か `{ kind: "image-url", src }` だけです（どの URL を使えるかは鎌倉の Worker が確かめる）。
 - 上限: 訳文の保存（`command`・`editor/pages/:pageId/save`・`editor/pages/:pageId/command`）の本文は 1 MiB − 4 KiB（鎌倉の Worker の 1 MiB から actor の分を引く）、ほかの本文 16 KiB、上流の応答 4 MiB（upload intent は 16 KiB）。画像は jpeg / png / webp / avif / gif で 50 MiB まで（実際の上限は鎌倉の Worker の 413）。
-- プレビューの材料（`preview/items` の 200）は、確かめずに 2 MiB + 64 KiB の上限つきでそのまま流します（ブラウザの adapter と画面が W1 の parser で確かめる。上限を超えたら途中で切る）。ほかの応答は W1 の parser（`src/localization-workspace-model.ts`）または editor 専用 parser で確かめ、既知の field だけを返します。`settings.glossary` は任意で、ある場合は版、500件までの重複しない1行の対照（各500文字まで）、確認状態を厳密に検証します。旧形の `settings` も受けます。`editor/site` は設定・ページ ID の重複・言語別状態・公開状態・版を検証します。`editor/pages/:pageId` は原文の site・page・locale（移行中の `ja` と正規化済み `ja-JP`）・revision、訳文 overlay の scope、両版を確かめて返します。`snapshot` は English の document と presentation 内の全表示文書について site・page/locale・版を検証し、`conflict` / `unavailable` をそのまま明示します。文書本文のブロック契約はホストの editor adapter で catalog と組み合わせて検証します。`save` は文書の対象と版を絞って上流の構造検証へ渡し、`command` は操作ごとの入力を絞ります。概要の `preview.frameUrl` は鎌倉の Worker の `/_studio/localization-preview`（`.html` 付きも可）だけを受けます。
+- プレビューの材料（`preview/items` の 200）は、確かめずに 2 MiB + 64 KiB の上限つきでそのまま流します（ブラウザの adapter と画面が W1 の parser で確かめる。上限を超えたら途中で切る）。ほかの応答は W1 の parser（`src/localization-workspace-model.ts`）または editor 専用 parser で確かめ、既知の field だけを返します。`settings.glossary` は任意で、ある場合は版、500件までの重複しない1行の対照（各500文字まで）、旧い確認状態（画面には出さない）を厳密に検証します。旧形の `settings` も受けます。`editor/site` は設定・ページ ID の重複・言語別状態・公開状態・版を検証します。`editor/pages/:pageId` は原文の site・page・locale（移行中の `ja` と正規化済み `ja-JP`）・revision、訳文 overlay の scope、両版を確かめて返します。`snapshot` は English の document と presentation 内の全表示文書について site・page/locale・版を検証し、`conflict` / `unavailable` をそのまま明示します。文書本文のブロック契約はホストの editor adapter で catalog と組み合わせて検証します。`save` は文書の対象と版を絞って上流の構造検証へ渡し、`command` は操作ごとの入力を絞ります。概要の `preview.frameUrl` は鎌倉の Worker の `/_studio/localization-preview`（`.html` 付きも可）だけを受けます。
 
 | 上流 | ブラウザへ |
 | --- | --- |
