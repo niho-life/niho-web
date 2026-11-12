@@ -276,7 +276,7 @@ npm run studio:build
 wrangler d1 migrations apply niho-web-studio --remote --config studio/wrangler.toml
 ```
 
-`0001_studio_registry.sql` は2つの Project/Site を seed し、membership を暗黙追加しません。`0002_membership_administration.sql` は既存 membership を保持したまま nullable email、招待、audit を追加します。`0003_experience_site_metadata.sql` は Experience site を API と同じ metadata に更新します。`0004_kamakura_site_metadata.sql` は Kamakura site を catalog と同じ `鎌倉サイト（新サイト確認用）` / `https://next-kamakura.niho.life` に更新します。`0010_kamakura_site_name.sql` は Kamakura site の名前を `鎌倉サイト` にします（catalog は配備がそろうまで旧名 `鎌倉サイト（新サイト確認用）` も受け付け、表示は `鎌倉サイト` にそろえます）。Migration は既存 membership と owner bootstrap を壊しません。
+`0001_studio_registry.sql` は2つの Project/Site を seed し、membership を暗黙追加しません。`0002_membership_administration.sql` は既存 membership を保持したまま nullable email、招待、audit を追加します。`0003_experience_site_metadata.sql` は Experience site を API と同じ metadata に更新します。`0004_kamakura_site_metadata.sql` は Kamakura site を catalog と同じ `鎌倉サイト（新サイト確認用）` / `https://next-kamakura.niho.life` に更新します。`0010_kamakura_site_name.sql` は Kamakura site の名前を catalog と同じ `鎌倉サイト` にします。Migration は既存 membership と owner bootstrap を壊しません。
 
 ## owner の out-of-band bootstrap
 
