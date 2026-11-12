@@ -12,7 +12,7 @@
 
 このリポジトリには公開可能な文書契約と描画処理を置きます。認証情報、管理 API、サイトの非公開データ、価格・在庫・予約の判断処理は利用側が所有します。
 
-`studio/` には、このライブラリとは独立して配置する NIHO Web Studio host があります。Cloudflare Access の Google 認証、Studio専用D1のProject/Site・membership、参加Project一覧とDashboardを所有し、niho-appのUser/Project DBやcookieには接続しません。Studioで作成したサイトはD1をページと公開版の正本にし、共通の公開origin上のpathへ、GUIと公式CLIから同じ操作で編集・公開できます。Experience のサイト編集routeは凍結案内を返し、editor APIは上流へproxyしません。Kamakura は native 化済みの日本語ページの保存・公開と、サイト側の正本 overlay を使う English 下書き編集を提供します。Studio の HTML・JS・CSS は配備間の cache 混在を防ぐため内容ごとの URL で読みます。構成、security boundary、D1 migration、owner bootstrap、配置手順は [Studio runbook](studio/README.md)、D1正本と公開境界は [Studio-native site契約](docs/studio-managed-sites.md) を参照してください。
+`studio/` には、このライブラリとは独立して配置する NIHO Web Studio host があります。Cloudflare Access の Google 認証、Studio専用D1のProject/Site・membership、参加Project一覧とDashboardを所有し、niho-appのUser/Project DBやcookieには接続しません。Studioで作成したサイトはD1をページと公開版の正本にし、共通の公開origin上のpathへ、GUIと公式CLIから同じ操作で編集・公開できます。Experience のサイト編集routeは凍結案内を返し、editor APIは上流へproxyしません。Kamakura は native 化済みの日本語ページの保存・公開と、サイト側の正本 overlay を使う English 下書き編集を提供します。Studio の HTML・JS・CSS は配備間の cache 混在を防ぐため内容ごとの URL で読みます。画面の書体（Inter・Noto Sans JP）は自前で配り、版付きの URL でブラウザに長くキャッシュさせます。構成、security boundary、D1 migration、owner bootstrap、配置手順は [Studio runbook](studio/README.md)、D1正本と公開境界は [Studio-native site契約](docs/studio-managed-sites.md) を参照してください。
 
 ブラウザを使わないStudio操作は [CLIの契約と運用](docs/studio-cli.md) を参照してください。
 

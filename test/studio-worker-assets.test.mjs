@@ -9,8 +9,9 @@ const UPSTREAM = "/internal/studio/web-content/assets";
 const UUID = "123e4567-e89b-42d3-a456-426614174000";
 const ADMIN_ID = Buffer.from("2026/10/aaaaaaaaaaaaaaaa.jpg").toString("base64url");
 
-async function accessFixture() {
-  const issuer = "https://asset-bff-test.example", audience = "asset-bff-test", subject = "asset-bff-subject", kid = "asset-bff-key";
+/** kid はテストごとに変える（同じ data: URL の Worker を読み直すと JWKS の cache を共有するため） */
+async function accessFixture(kid = "asset-bff-key") {
+  const issuer = "https://asset-bff-test.example", audience = "asset-bff-test", subject = "asset-bff-subject";
   const pair = await crypto.subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]);
   const encode = (value) => Buffer.from(typeof value === "string" ? value : JSON.stringify(value)).toString("base64url");
   const now = Math.floor(Date.now() / 1000);
@@ -198,4 +199,36 @@ test("Kamakura asset BFF re-checks membership, validates every body, signs upstr
   const csp = page.headers.get("Content-Security-Policy");
   assert.match(csp, /img-src 'self' https:;/u);
   assert.match(csp, /connect-src 'self' https:\/\/next-kamakura\.niho\.life;/u);
+});
+
+test("Studio's own web fonts are cached for a year, every other static response stays no-store", async (t) => {
+  const auth = await accessFixture("web-font-key");
+  const worker = await loadWorker();
+  t.mock.method(globalThis, "fetch", async (url) => {
+    if (String(url) === `${auth.issuer}/cdn-cgi/access/certs`) return Response.json({ keys: [auth.jwk] });
+    throw new Error(`unexpected network request: ${url}`);
+  });
+  const missing = new Set(["/assets/fonts/inter-5.3.0/missing.woff2"]);
+  const env = {
+    ACCESS_ISSUER: auth.issuer,
+    ACCESS_AUDIENCE: auth.audience,
+    ASSETS: { async fetch(request) {
+      const path = new URL(request.url).pathname;
+      return missing.has(path) ? new Response("not found", { status: 404 }) : new Response("asset", { headers: { "Content-Type": path.endsWith(".woff2") ? "font/woff2" : "text/css" } });
+    } }
+  };
+  const get = (path, jwt = auth.jwt) => worker.fetch(new Request(`${STUDIO}${path}`, { headers: jwt ? { "Cf-Access-Jwt-Assertion": jwt } : {} }), env);
+  for (const path of ["/assets/fonts/noto-sans-jp-5.3.1/noto-sans-jp-0-wght-normal.woff2", "/assets/fonts/inter-5.3.0/inter-latin-wght-normal.woff2", "/assets/fonts/fonts-0123456789ab.css"]) {
+    const response = await get(path);
+    assert.equal(response.status, 200, path);
+    assert.equal(response.headers.get("Cache-Control"), "private, max-age=31536000, immutable", path);
+    assert.match(response.headers.get("Content-Security-Policy"), /default-src 'none'/u, path);
+    assert.equal(response.headers.get("X-Content-Type-Options"), "nosniff", path);
+  }
+  // 版や hash の無い場所・別の拡張子・見つからない応答は今までどおり no-store
+  for (const path of ["/assets/studio.css", "/assets/studio-0123456789ab.css", "/assets/fonts/fonts.css", "/assets/fonts/inter/inter-latin-wght-normal.woff2", "/assets/fonts/inter-5.3.0/OFL.txt", "/assets/fonts/inter-5.3.0/missing.woff2"]) {
+    assert.equal((await get(path)).headers.get("Cache-Control"), "no-store", path);
+  }
+  // Access の確認は今までどおり先に通す
+  assert.equal((await get("/assets/fonts/inter-5.3.0/inter-latin-wght-normal.woff2", "")).status, 401);
 });
