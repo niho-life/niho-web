@@ -325,7 +325,7 @@ test("dashboard draws with the shared white tokens that a host can override", as
     assert.ok(css.includes(".nw-project-dashboard{padding:0;border-radius:0;background:var(--nw-bg)}"));
     // 帯は 1 段: 左にプロジェクト、中央にタブ、右にデザインエディタとホストの操作
     assert.ok(css.includes(".pv-project-bar{position:relative;z-index:2;display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:center;gap:16px;min-height:64px;padding:0 20px;background:var(--nw-bg);border-bottom:1px solid var(--nw-border)"));
-    assert.ok(css.includes(".pv-project-tabs button[aria-current]{color:var(--nw-text);font-weight:650;box-shadow:inset 0 -2px 0 var(--nw-text)}"));
+    assert.ok(css.includes(".pv-project-tabs button[aria-current]{color:var(--nw-text);font-weight:600;box-shadow:inset 0 -2px 0 var(--nw-text)}"));
     assert.ok(css.includes(".pv-dashboard-layout:not([data-section=home]){grid-template-columns:minmax(0,1fr)}"));
     assert.ok(css.includes(".pv-dashboard-nav{display:flex;flex-direction:column;gap:2px;margin:0;padding:22px 14px;border-right:1px solid var(--nw-border);background:var(--nw-bg)"));
     // 現在地は一段の灰色の面、公開中は緑の点だけ

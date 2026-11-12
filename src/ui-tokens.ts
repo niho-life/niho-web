@@ -17,7 +17,8 @@ export const uiColor = {
   surface2: "#f2f2f2",
   hover: "#efefef",
   pressed: "#e6e6e6",
-  text: "#1a1a1a",
+  /** 本文。STUDIO の通常の文字（typography-*-regular）と同じ #222。#1a1a1a より一段やわらかい（白の上で 15.9:1） */
+  text: "#222",
   /** 補助の文字。白の上で 5.9:1、--nw-surface の上で 5.7:1 */
   textSub: "rgba(34,34,34,.7)",
   /** 区切り記号・無効の印など、読まなくてもよい文字（白の上で 3.7:1） */
