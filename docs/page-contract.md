@@ -192,7 +192,7 @@ Next.js では `metadata` の各項目へ対応付けます。Astro では `rend
 
 ## 鎌倉Studioの接続範囲
 
-鎌倉 Studio はホストが `pageChangeActions` で示す操作を公開します。`update` は日本語の固定ページの一覧名と URL の変更です。`create` は初期状態が `visibility: "private"`、`published: false` のページを作成します。`visibility` は既存ページの公開範囲を切り替えます。作成と公開範囲の切り替えは、ホストがその操作を一覧に加えた時点で使えます。成功後はホストの一覧を再取得します。URL の入力可否は `pagePathEditable` を使います。
+鎌倉 Studio はホストが `pageChangeActions` で示す操作を公開します。`update` は日本語の固定ページの一覧名と URL の変更です。`create` は初期状態が `published: false` の下書きを作成します。`visibility` は既存ページの公開範囲を切り替えます。作成と公開範囲の切り替えは、ホストがその操作を一覧に加えた時点で使えます。成功後はホストの一覧を再取得します。URL の入力可否は `pagePathEditable` を使います。
 
 ホストはページストアで現行 URL と旧 URL から安定したページ ID への対応を管理します。公開配信はその対応から 301 とサイトマップを生成します。本文・共通枠の内部リンクは `presentation.links` と公開 HTML の処理で現行 URL に解決します。既存の英語 URL と日本語の対応は英語の配信に引き継ぎます。
 

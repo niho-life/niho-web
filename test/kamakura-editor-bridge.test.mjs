@@ -446,9 +446,9 @@ test("鎌倉のページ名操作はホストcapabilityがある時だけ接続�
   const lifecycle = createKamakuraAdapter(contract.parseKamakuraCatalog({ ...source, pageChangeActions: ["update", "create", "visibility"] }), () => {});
   const create = { action: "create", siteId: "kamakura", locale: "ja", title: "新しいページ", path: "/new-page" };
   returnedPlan = { ...plan, change: create, impact: { linkedFrom: [], navigation: [], notes: [] } };
-  returnedPage = { siteId: "kamakura", pageId: "new-page", locale: "ja", title: create.title, path: create.path, kind: "page", visibility: "private", published: false };
+  returnedPage = { siteId: "kamakura", pageId: "new-page", locale: "ja", title: create.title, path: create.path, kind: "page", published: false };
   assert.deepEqual(await lifecycle.applyPageChange(await lifecycle.preparePageChange(create, signal), signal), { status: "applied", page: returnedPage });
-  returnedPage = { ...returnedPage, visibility: "public" };
+  returnedPage = { ...returnedPage, published: true };
   await assert.rejects(lifecycle.applyPageChange(returnedPlan, signal), /操作の結果/u);
 
   const hide = { action: "visibility", target: change.target, visibility: "private" };

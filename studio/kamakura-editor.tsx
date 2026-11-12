@@ -285,7 +285,7 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
         const result = record(await api(`${BASE}/page-changes/apply`, "POST", { change, confirmationToken: plan.confirmationToken }, signal));
         const page = parseKamakuraCatalogPage(result.page);
         const matchesChange = change.action === "create"
-          ? page.title === change.title && page.path === change.path && page.published === false && page.visibility === "private"
+          ? page.title === change.title && page.path === change.path && page.published === false
           : page.pageId === change.target.pageId && (change.action === "visibility"
             ? page.visibility === change.visibility
             : page.title === change.title && page.path === change.path);
