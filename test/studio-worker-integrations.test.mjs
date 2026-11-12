@@ -24,7 +24,7 @@ test("Experience editor stays frozen while Kamakura reads pass and site freezes 
     upstream.push(String(url));
     return Response.json({ shouldNotBeCalled: true });
   });
-  const site = { id: "kamakura", name: "鎌倉サイト（新サイト確認用）", domains: ["https://next-kamakura.niho.life"] };
+  const site = { id: "kamakura", name: "鎌倉サイト", domains: ["https://next-kamakura.niho.life"] };
   const catalog = { project: { id: "kamakura-site", name: "NIHO kamakura", site }, sites: [site], pages: [{ siteId: "kamakura", pageId: "home", locale: "ja", title: "NIHO kamakura", path: "/", kind: "page" }], legacy: [], nativePresentationPages: ["home"], blockContracts: { KamakuraLegacyForm: { props: { formId: { type: "enum", values: ["community-dinner"] } } } } };
   const readOnly = { reason: "サイトの見た目の編集は凍結中です。" };
   let writeResponse = () => Response.json({ error: "visual_editor_frozen", message: "凍結中" }, { status: 409 });

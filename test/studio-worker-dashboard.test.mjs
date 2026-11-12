@@ -18,7 +18,7 @@ async function accessFixture() {
 }
 
 const rows = {
-  "project-kamakura/kamakura": { project_id: "project-kamakura", project_name: "NIHO kamakura", site_id: "kamakura", site_name: "鎌倉サイト（新サイト確認用）", public_origin: "https://next-kamakura.niho.life", display_name: "編集者" },
+  "project-kamakura/kamakura": { project_id: "project-kamakura", project_name: "NIHO kamakura", site_id: "kamakura", site_name: "鎌倉サイト", public_origin: "https://next-kamakura.niho.life", display_name: "編集者" },
   "project-experience/experience": { project_id: "project-experience", project_name: "NIHO Experience", site_id: "experience", site_name: "NIHO Experience", public_origin: "https://experience.niho.life", display_name: "編集者" },
 };
 const projectOf = (row, subject) => ({ id: row.project_id, name: row.project_name, site: { id: row.site_id, name: row.site_name, domains: [row.public_origin] }, members: [{ userId: subject, displayName: row.display_name }] });
