@@ -77,7 +77,8 @@ async function importServiceAccount(raw: string, fingerprint: string): Promise<S
   let der: Uint8Array;
   try { der = Uint8Array.from(atob(match[1]!.replace(/\s+/gu, "")), (character) => character.charCodeAt(0)); } catch { return null; }
   try {
-    const privateKey = await crypto.subtle.importKey("pkcs8", der, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["sign"]);
+    const keyData = der.buffer.slice(der.byteOffset, der.byteOffset + der.byteLength) as ArrayBuffer;
+    const privateKey = await crypto.subtle.importKey("pkcs8", keyData, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["sign"]);
     return { clientEmail, keyId: typeof keyId === "string" ? keyId : null, privateKey, fingerprint };
   } catch { return null; }
 }

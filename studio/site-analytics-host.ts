@@ -185,7 +185,8 @@ export async function siteAnalyticsApi(
   if (!context) return failure("forbidden", 403);
   if (route.method === "GET") {
     if (route.operation === "connection") return connection(context);
-    const keys = [...input.query.keys()];
+    const keys: string[] = [];
+    input.query.forEach((_value, key) => { keys.push(key); });
     const period = input.query.get("period");
     if (keys.length !== 1 || keys[0] !== "period" || !PERIODS.includes(period as AnalyticsPeriod)) return failure("invalid_request", 400);
     return ok(await report(env, context, period as AnalyticsPeriod, now));
@@ -401,16 +402,21 @@ export async function dashboardAnalyticsSummary(
     if (!row || row.ga4_property_id === null) return { status: "disconnected" };
     const result = await ga4Source(env, { projectId: target.projectId, siteId: target.siteId, origin, connection: row }, "28d", now);
     if (result.state === "not-connected") return { status: "disconnected" };
-    if (result.state === "permission-expired" || result.state === "failed") return { status: "unavailable" };
-    const window = result.state === "empty" ? result.metadata : result.report;
-    const timeZone = window.range.timezone;
+    // 取得できた（available / delayed）か、取得できて行が無い（empty）ときだけ要約を返す
+    const summary = result.state === "empty"
+      ? { window: result.metadata, fetchedAt: result.metadata.lastUpdatedAt, activeUsers: 0, pageViews: 0 }
+      : result.state === "available" || result.state === "delayed"
+        ? { window: result.report, fetchedAt: result.lastUpdatedAt, activeUsers: result.report.activeUsers.current, pageViews: result.report.pageViews.current }
+        : null;
+    if (!summary) return { status: "unavailable" };
+    const { range } = summary.window;
     return {
       status: "ready",
       data: {
-        period: { start: `${window.range.start}T00:00:00${zoneOffset(window.range.start, timeZone)}`, end: `${window.range.end}T23:59:59${zoneOffset(window.range.end, timeZone)}` },
-        fetchedAt: result.state === "empty" ? result.metadata.lastUpdatedAt : result.lastUpdatedAt,
-        activeUsers: result.state === "empty" ? 0 : result.report.activeUsers.current,
-        pageViews: result.state === "empty" ? 0 : result.report.pageViews.current
+        period: { start: `${range.start}T00:00:00${zoneOffset(range.start, range.timezone)}`, end: `${range.end}T23:59:59${zoneOffset(range.end, range.timezone)}` },
+        fetchedAt: summary.fetchedAt,
+        activeUsers: summary.activeUsers,
+        pageViews: summary.pageViews
       }
     };
   } catch {
