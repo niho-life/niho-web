@@ -4,7 +4,7 @@ Studioの操作を、権限を委任されたクライアントがNode.js 22以�
 
 ## 実行方法
 
-パッケージが提供する `niho-studio` を使用する。運用環境のシークレット管理から `CF_ACCESS_CLIENT_ID` と `CF_ACCESS_CLIENT_SECRET` を環境変数として渡す。実行例のサイトとプロジェクトは架空の値。
+パッケージが提供する `niho-studio` を使用する。既存の外部ホストは運用環境のシークレット管理から `CF_ACCESS_CLIENT_ID` と `CF_ACCESS_CLIENT_SECRET` を渡す。Studioで新規作成したmanaged projectは、人がCloudflare Accessへログインして取得した短時間の `CF_ACCESS_TOKEN` を渡す。2つの認証方式は同時に指定しない。実行例のサイトとプロジェクトは架空の値。
 
 ```sh
 niho-studio --origin https://studio.example --project demo-project --site demo-site discover
@@ -19,11 +19,20 @@ niho-studio --origin https://studio.example --project demo-project --site demo-s
 
 ## 認証と委任
 
-Cloudflare AccessのService Authで認証する。StudioはAccessが署名したアプリケーションJWTの発行者、audience、期限、署名とサービスのClient IDを検証する。Studioの操作権限はAccessポリシーと分離し、D1でサイトごとの委任と期限を検証する。CloudflareでのService Authの設定方法は [Service tokens](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/) を参照する。
+既存の外部ホストはCloudflare AccessのService Authで認証する。StudioはAccessが署名したアプリケーションJWTの発行者、audience、期限、署名とサービスのClient IDを検証する。Studioの操作権限はAccessポリシーと分離し、D1でサイトごとの委任と期限を検証する。CloudflareでのService Authの設定方法は [Service tokens](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/) を参照する。
+
+Studio-native siteでもoperatorが既に設定したservice grantは同じ仕組みで使えるが、新規作成時にservice grantを自動発行しない。grantがない場合は作成者または現在のmember本人が、[CloudflareのCLI手順](https://developers.cloudflare.com/cloudflare-one/tutorials/cli/)に従ってapplication tokenを取得する。
+
+```sh
+export CF_ACCESS_TOKEN="$(cloudflared access token -app=https://studio.example)"
+niho-studio --origin https://studio.example --project demo-project --site demo-site discover
+```
+
+CLIはこの値を `cf-access-token` headerだけに入れ、標準出力へ出さない。Workerはブラウザと同じ署名済みAccess JWTの検証後、tokenのhuman subjectと現在のD1 owner/editor membershipを毎回照合する。ブラウザcookieから付く `Cf-Access-Jwt-Assertion` だけではmanaged CLIを認可しない。tokenはAccess applicationのsession期間で失効するため、期限切れなら再取得する。
 
 サービスの識別子はホストへの署名と監査に利用する。委任元は別に記録する。クライアントがactorを指定することはできない。既存のブラウザ経路は人のAccessログインと同一オリジンの検証を行う。
 
-配備前にStudioのD1 migrationを0009まで適用する。Studio運用担当は、認証済みのプロジェクトownerから委任を受けたことを確認し、`studio_cli_grants` へ必要な権限を1行ずつ登録する。各行は `client_id`、`project_id`、`site_id`、`capability`、`delegated_by_subject`、`expires_at` を持つ。`expires_at` はUnix秒の期限か、無期限を表す `NULL` を指定する。Client SecretはD1に格納しない。編集・公開・レビュー・翻訳サービス起動・サイト管理は個別に付与する。委任行の削除、期限切れ、委任元のowner権限の喪失が次回リクエストから反映される。
+既存のservice認証では、配備前にStudioのD1 migrationを0009まで適用する。Studio運用担当は、認証済みのプロジェクトownerから委任を受けたことを確認し、`studio_cli_grants` へ必要な権限を1行ずつ登録する。各行は `client_id`、`project_id`、`site_id`、`capability`、`delegated_by_subject`、`expires_at` を持つ。`expires_at` はUnix秒の期限か、無期限を表す `NULL` を指定する。Client SecretはD1に格納しない。編集・公開・レビュー・翻訳サービス起動・サイト管理は個別に付与する。委任行の削除、期限切れ、委任元のowner権限の喪失が次回リクエストから反映される。Studio-native siteは0011も適用し、service grantがなければ上記のhuman tokenと現在membershipを使う。
 
 利用可能な操作名と必要権限は `discover` で確認する。APIでは `GET /api/cli/v1/projects/:projectId/sites/:siteId/capabilities` に対応し、操作実行は `.../operations/:operation[/…]` を使う。操作名・メソッド・引数は[操作定義](../cli/operations.mjs)の許可リストで決まる。Studioは任意の上流URLやブラウザAPIのパスを受け取らない。CLIの権限は `discover` の結果を使う。
 

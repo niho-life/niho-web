@@ -9,7 +9,7 @@ niho-studio --origin <https-origin> --project <project-id> --site <site-id> requ
 niho-studio --origin <https-origin> --project <project-id> --site <site-id> upload <upload-operation> --file <image> --upload-origin <https-origin> --json <file|-> [--operation-id <UUIDv4>]
 niho-studio --origin <https-origin> --project <project-id> --site <site-id> status <UUIDv4>
 
-Set CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET in the environment. Use --json - to read a JSON object from stdin.`;
+For an existing service grant, set CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET. For a managed project, set a short-lived CF_ACCESS_TOKEN returned by cloudflared access token --app. Use --json - to read a JSON object from stdin.`;
 const MAX_INPUT_BYTES = 1024 * 1024;
 const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
@@ -173,11 +173,13 @@ async function main() {
 
   const clientId = process.env.CF_ACCESS_CLIENT_ID;
   const clientSecret = process.env.CF_ACCESS_CLIENT_SECRET;
-  if (!SERVICE_CLIENT_ID.test(clientId ?? "") || !/^[\x21-\x7e]{1,512}$/u.test(clientSecret ?? "")) throw new InputError("invalid_access_credentials");
+  const accessToken = process.env.CF_ACCESS_TOKEN;
+  const serviceCredentials = SERVICE_CLIENT_ID.test(clientId ?? "") && /^[\x21-\x7e]{1,512}$/u.test(clientSecret ?? "");
+  const userToken = typeof accessToken === "string" && accessToken.length <= 64 * 1024 && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u.test(accessToken);
+  if (serviceCredentials === userToken) throw new InputError("invalid_access_credentials");
   const headers = {
     Accept: "application/json",
-    "CF-Access-Client-Id": clientId,
-    "CF-Access-Client-Secret": clientSecret,
+    ...(serviceCredentials ? { "CF-Access-Client-Id": clientId, "CF-Access-Client-Secret": clientSecret } : { "cf-access-token": accessToken }),
     ...(operationKey === null ? {} : { [OPERATION_KEY_HEADER]: operationKey }),
     ...(body === undefined ? {} : { "Content-Type": "application/json" })
   };

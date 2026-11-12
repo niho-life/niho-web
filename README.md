@@ -12,7 +12,7 @@
 
 このリポジトリには公開可能な文書契約と描画処理を置きます。認証情報、管理 API、サイトの非公開データ、価格・在庫・予約の判断処理は利用側が所有します。
 
-`studio/` には、このライブラリとは独立して配置する NIHO Web Studio host があります。Cloudflare Access の Google 認証、Studio専用D1のProject/Site・membership、参加Project一覧とDashboardを所有し、niho-appのUser/Project DBやcookieには接続しません。Experience のサイト編集routeは凍結案内を返し、editor APIは上流へproxyしません。Kamakura は native 化済みの日本語ページの保存・公開と、サイト側の正本 overlay を使う English 下書き編集を提供します。Studio の HTML・JS・CSS は配備間の cache 混在を防ぐため内容ごとの URL で読みます。構成、security boundary、D1 migration、owner bootstrap、配置手順は [Studio runbook](studio/README.md) を参照してください。
+`studio/` には、このライブラリとは独立して配置する NIHO Web Studio host があります。Cloudflare Access の Google 認証、Studio専用D1のProject/Site・membership、参加Project一覧とDashboardを所有し、niho-appのUser/Project DBやcookieには接続しません。Studioで作成したサイトはD1をページと公開版の正本にし、共通の公開origin上のpathへ、GUIと公式CLIから同じ操作で編集・公開できます。Experience のサイト編集routeは凍結案内を返し、editor APIは上流へproxyしません。Kamakura は native 化済みの日本語ページの保存・公開と、サイト側の正本 overlay を使う English 下書き編集を提供します。Studio の HTML・JS・CSS は配備間の cache 混在を防ぐため内容ごとの URL で読みます。構成、security boundary、D1 migration、owner bootstrap、配置手順は [Studio runbook](studio/README.md)、D1正本と公開境界は [Studio-native site契約](docs/studio-managed-sites.md) を参照してください。
 
 ブラウザを使わないStudio操作は [CLIの契約と運用](docs/studio-cli.md) を参照してください。
 
@@ -63,7 +63,7 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 | `@niho/web/analytics-data` | サーバーで使う分析DTO・adapterの型と応答検証。React不要。画面と同じパーサーを使用 |
 | `@niho/web/localization` | 明示的な日英設定、安定IDの翻訳単位、自動訳の更新（確認の記録は問わない）・人の訳の保護、候補・手編集、共通構造からの文書生成。React不要 |
 | `@niho/web/localization-release` | 言語単位の不変snapshot、公開するページ（hostが選ぶ。全ページは要らない）の訳の公開条件（確認の工程は 2026-11-12 に廃止。旧い確認の入力は互換のため残る）、route・内部リンク・SEO、prepare/apply/rollback検証。React不要 |
-| `niho-studio` | 機械認証でページの編集と公開予約、一括公開の準備、CMS型移行の事前検査、CMS・翻訳の編集と公開、素材の削除・復元、サイト設定・メンバー管理、ページ下書きの競合解消、操作の受付照会を行うCLI。確認用Studioの接続設定も [Studio CLIの契約](docs/studio-cli.md) を参照 |
+| `niho-studio` | Access service grant、またはStudio-native siteのmemberが取得した短時間のAccess user tokenを使い、discoverが返すページ編集・公開操作などを行うCLI。確認用Studioの接続設定も [Studio CLIの契約](docs/studio-cli.md) を参照 |
 
 React は optional peer dependency です。API サーバーなど React を入れない利用先では `import { parsePageDocument } from '@niho/web/core'` を使います。root と `/react` は React runtime を import します。
 
