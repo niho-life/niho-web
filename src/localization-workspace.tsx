@@ -11,7 +11,7 @@ import {
 import { ItemEditor } from "./localization-workspace-item.js";
 import { HistoryDialog, ReleaseDialog, type ReleaseStart } from "./localization-workspace-release.js";
 import { localizationWorkspaceCss } from "./localization-workspace-style.js";
-import { ItemStateBadge, pause, Progress } from "./localization-workspace-ui.js";
+import { ItemStateBadge, pause, Progress, releaseName } from "./localization-workspace-ui.js";
 
 export * from "./localization-workspace-model.js";
 export { localizationWorkspaceCss } from "./localization-workspace-style.js";
@@ -254,7 +254,7 @@ function LocaleBand({ overview, list, timeZone, catalogStalled, onRetryCatalog, 
   return <section className="lw-band" aria-label={`${target}版`}>
     <div className="lw-band-main">
       <h2>{target}版</h2>
-      <p className="lw-band-line">{current ? <span>公開中：{current.label}（<time dateTime={current.publishedAt}>{formatDateTime(current.publishedAt, timeZone)}</time>）</span> : "まだ公開していません"}</p>
+      <p className="lw-band-line">{current ? <span>公開中：{releaseName(current, timeZone)}</span> : "まだ公開していません"}</p>
       <Progress label="翻訳済み" done={totals.reviewed} total={totals.items} />
       {!current && overview.blockers.length > 0 && <p className="cw-banner" role="note">初回公開までに必要な準備が {overview.blockers.length} 件あります。{canPublish ? `「${target}版を公開…」で理由を確認できます。` : "公開する権限のある人に確認してください。"}</p>}
       {!overview.settings.translator.connected && <p className="cw-banner" role="note">翻訳サービスがつながっていません。翻訳案の自動作成は使えません。{overview.permissions.includes("edit") ? "訳文は手入力できます。" : "編集権限がある人は訳文を手入力できます。"}</p>}
@@ -378,7 +378,7 @@ function ListView({ adapter, overview, list, group, onGroup, timeZone, focusItem
           <div className="cw-list-title"><h2>{groupLabel}</h2>{items && <span className="cw-count">{inGroup.length} 件</span>}</div>
           <div className="cw-list-actions">
             <label className="cw-search"><Icon name="search" /><span className="cw-sr">題名・アドレス・対象外の理由で検索</span>
-              <input type="search" value={query} placeholder="題名・アドレス・理由で検索" autoComplete="off" onChange={(event) => { setQuery(event.target.value); if (event.target.value.trim()) setFilter("all"); }} /></label>
+              <input type="search" value={query} placeholder="検索" autoComplete="off" onChange={(event) => { setQuery(event.target.value); if (event.target.value.trim()) setFilter("all"); }} /></label>
           </div>
         </header>
         {list.status !== "ready" ? <Notice status={list.status} noun="一覧" retry={onRetry} /> : <>

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useId, useRef, type ReactNode } from "react";
+import { formatDateTime } from "./collection-ui.js";
 import type { LocalizationItemState, LocalizationUnitState } from "./localization-workspace-model.js";
 
 /* ---------- 状態の印（色だけに頼らず、形と言葉でも分かるように） ---------- */
@@ -21,6 +22,17 @@ export function UnitStateBadge({ state }: { state: LocalizationUnitState }) {
   const shape = unitShape[state];
   return <span className="cw-pill lw-pill" data-lw-state={shape} data-lw-unit-state={state}><span className="lw-shape" aria-hidden="true" />{state === "source" ? "原文のまま" : shapeText[shape]}</span>;
 }
+
+/* ---------- 公開の版の名前 ---------- */
+
+type ReleaseLabel = { readonly label: string; readonly publishedAt: string };
+/** 版の名前のあとに付ける公開の日時「（2026/10/1 10:00）」。名前に日時がもう入っているとき（既定の「2026/10/27 15:48 の公開」）は空にして、同じ日時を重ねない。 */
+export function releaseTimeSuffix(release: ReleaseLabel, timeZone: string): string {
+  const at = formatDateTime(release.publishedAt, timeZone);
+  return release.label.includes(at) ? "" : `（${at}）`;
+}
+/** 版の名前と公開の日時。 */
+export const releaseName = (release: ReleaseLabel, timeZone: string): string => release.label + releaseTimeSuffix(release, timeZone);
 
 /* ---------- 進み具合（n/m） ---------- */
 

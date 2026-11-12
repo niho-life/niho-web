@@ -59,7 +59,7 @@ function walk(directory, skip) {
 
 test("the tokens carry the STUDIO measurements and keep the input values of #71", () => {
   for (const declaration of [
-    "--nw-bg:#fff", "--nw-surface:#f7f7f7", "--nw-surface-2:#f2f2f2", "--nw-text:#1a1a1a", "--nw-text-sub:rgba(34,34,34,.7)",
+    "--nw-bg:#fff", "--nw-surface:#f7f7f7", "--nw-surface-2:#f2f2f2", "--nw-text:#222", "--nw-text-sub:rgba(34,34,34,.7)",
     "--nw-border:rgba(34,34,34,.1)", "--nw-accent:#0f70eb", "--nw-focus:var(--nw-accent)", "--nw-radius-sm:4px", "--nw-radius:6px", "--nw-radius-lg:8px",
     "--nw-font-size:14px", "--nw-font-size-label:12px", "--nw-font-size-sub:11px",
     "--e-input:#f2f2f2", "--e-input-border:#e3e3e3", "--e-input-disabled:#e9e9e9", "--e-placeholder:#858585", "--e-unit:#666", "--e-radius:6px", "--e-focus:var(--e-blue)"
@@ -96,6 +96,24 @@ test("screen stylesheets use the tokens only: no color values, shadows that floa
     for (const shadow of code.match(/box-shadow:[^;}]+/gu) ?? []) assert.match(shadow, /^box-shadow:(?:none|inset -?\d+(?:px)? -?\d+(?:px)? 0 |0 0 0 \dpx )/u, `${path} ${shadow}`);
   }
   assert.doesNotMatch(read("studio/client.tsx"), /studio-kicker/u, "the uppercase kicker above headings is gone");
+});
+
+test("dashboard screens follow STUDIO: no side accent bars, no underlined filter tabs, weights 400 / 600", () => {
+  // owner（2026-11-12）: 左の縦の太線と、選択中のタブの下の太線は使わない。太字は STUDIO と同じ 600 まで。
+  // 上の帯のタブ（ホーム・CMS・翻訳…）の下線は STUDIO のダッシュボードと同じなので残す。
+  for (const path of ["src/collection-style.ts", "src/localization-workspace-style.ts", "src/project-view-style.ts", "studio/public/studio.css"]) {
+    // 本文の道具の「B」ボタンだけは、太字そのものを見せるために太くする
+    const code = codeLines(read(path)).join("\n").replace("[data-tool=bold]{font-weight:800}", "");
+    assert.deepEqual(code.match(/inset [3-9]px 0 0 |border-left-width:[2-9]px|border-left:[2-9]px solid var\(--nw-(?:accent|warning|danger|text)\)/gu) ?? [], [], `${path} side accent bars`);
+    assert.deepEqual(code.match(/font-weight:(?:[5-9]50|[7-9]00)/gu) ?? [], [], `${path} weights above 600`);
+  }
+  const collection = read("src/collection-style.ts");
+  for (const selector of [".cw-filters button", ".cw-language-tabs>"]) {
+    for (const rule of collection.match(new RegExp(`${selector.replaceAll(".", "\\.")}[^{]*\\{[^}]*\\}`, "gu")) ?? []) {
+      assert.doesNotMatch(rule, /border-bottom|inset 0 -\dpx/u, `${selector} marks the selected tab with a surface, not an underline: ${rule}`);
+    }
+  }
+  assert.match(read("studio/public/studio.css"), /body\{[^}]*-webkit-font-smoothing:antialiased/u, "Studio draws text like STUDIO (grayscale antialiasing)");
 });
 
 test("every variable a screen stylesheet reads is defined by the tokens or by that stylesheet", () => {
