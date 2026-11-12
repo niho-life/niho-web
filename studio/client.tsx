@@ -7,6 +7,7 @@ import { parseProjectDirectoryResult, type ProjectDirectoryResult } from "../src
 import type { Project } from "../src/projects.js";
 import { integrationIdentity, resolveTrustedEditorPage, resolveTrustedIntegration, trustedEditorPath } from "./integration-registry.mjs";
 import { KamakuraEditor } from "./kamakura-editor.js";
+import { ManagedEditor } from "./managed-editor.js";
 import { parseProjectAliasPath, projectRoutePath, type ProjectCmsRoute, type ProjectSiteViewId, type ProjectTranslationsRoute } from "./project-routes.mjs";
 import { SiteCmsWorkspace } from "./site-cms.js";
 import { SiteTranslationsWorkspace } from "./site-translations.js";
@@ -24,7 +25,8 @@ type SessionState =
   | { readonly status: "loading" }
   | { readonly status: "expired" }
   | { readonly status: "error" }
-  | { readonly status: "ready"; readonly directory: ProjectDirectoryResult; readonly identity: { readonly subject: string; readonly email: string } };
+  | { readonly status: "ready"; readonly directory: ProjectDirectoryResult; readonly identity: { readonly subject: string; readonly email: string }; readonly config: StudioConfig };
+type StudioConfig = { readonly managedProjectsEnabled: boolean; readonly publicSitesOrigin: string | null };
 type Member = {
   readonly subject: string;
   readonly email: string | null;
@@ -87,6 +89,8 @@ function screenFromLocation(): Screen {
   }
   const editor = resolveTrustedEditorPage(window.location.pathname);
   if (editor) return { kind: "editor", projectId: editor.registration.projectId, siteId: editor.registration.siteId, environment: editor.environment };
+  const managedEditor = /^\/projects\/([A-Za-z][A-Za-z0-9_-]{0,79})\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/editor\/?$/u.exec(window.location.pathname);
+  if (managedEditor) return { kind: "editor", projectId: managedEditor[1]!, siteId: managedEditor[2]!, environment: "managed" };
   const dashboard = /^\/projects\/([A-Za-z][A-Za-z0-9_-]{0,79})\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/?$/u.exec(window.location.pathname);
   return dashboard ? { kind: "dashboard", projectId: dashboard[1]!, siteId: dashboard[2]! } : { kind: "directory" };
 }
@@ -174,14 +178,23 @@ function parseIdentity(value: unknown): { readonly subject: string; readonly ema
   return { subject: text(source.subject, 128), email: text(source.email) };
 }
 
+function parseConfig(value: unknown): StudioConfig {
+  const source = record(value);
+  if (typeof source.managedProjectsEnabled !== "boolean" || source.publicSitesOrigin !== null && typeof source.publicSitesOrigin !== "string") throw new Error("invalid Studio config");
+  return { managedProjectsEnabled: source.managedProjectsEnabled, publicSitesOrigin: source.publicSitesOrigin as string | null };
+}
+
 function dateLabel(value: string): string {
   return new Intl.DateTimeFormat("ja-JP", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
 }
 
 function roleLabel(value: Role): string { return value === "owner" ? "オーナー" : "編集者"; }
 
-function editorEnabled(project: Project): boolean {
-  return resolveTrustedIntegration(project.id, project.site.id) !== null;
+function managedProject(project: Project, config: StudioConfig): boolean {
+  return config.managedProjectsEnabled && config.publicSitesOrigin !== null && resolveTrustedIntegration(project.id, project.site.id) === null && project.site.domains.includes(config.publicSitesOrigin);
+}
+function editorEnabled(project: Project, config: StudioConfig): boolean {
+  return resolveTrustedIntegration(project.id, project.site.id) !== null || managedProject(project, config);
 }
 
 const STUDIO_THUMBNAIL_ORIGINS = new Set([
@@ -198,6 +211,35 @@ function isStudioThumbnailUrlAllowed(value: string): boolean {
 
 function Notice({ title, children, retry }: { readonly title: string; readonly children: string; readonly retry?: () => void }) {
   return <main className="studio-state"><h1>{title}</h1><p>{children}</p>{retry && <button type="button" onClick={retry}>再試行</button>}</main>;
+}
+
+function CreateProjectDialog({ close, created, expire }: { readonly close: () => void; readonly created: (projectId: string, siteId: string) => void; readonly expire: () => void }) {
+  const [title, setTitle] = useState(""), [slug, setSlug] = useState(""), [locale, setLocale] = useState("ja");
+  const [busy, setBusy] = useState(false), [message, setMessage] = useState("");
+  const submit = async (event: FormEvent) => {
+    event.preventDefault(); setBusy(true); setMessage("");
+    try {
+      const result = record(await api("/api/projects", { method: "POST", body: { title, slug, locale } }));
+      created(text(result.projectId, 80), text(result.siteId, 80));
+    } catch (error) {
+      if (error instanceof SessionExpiredError) expire();
+      else if (error instanceof ApiError && error.code === "slug_taken") setMessage("この公開スラッグは使われています。別のスラッグを入力してください。");
+      else if (error instanceof ApiError && error.code === "public_origin_must_be_separate") setMessage("公開サイト用ドメインの設定を確認してください。");
+      else setMessage("プロジェクトを作成できませんでした。タイトル、スラッグ、言語を確認してください。");
+    } finally { setBusy(false); }
+  };
+  return <div className="studio-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (!busy && event.target === event.currentTarget) close(); }}>
+    <section className="studio-dialog studio-create-project" role="dialog" aria-modal="true" aria-labelledby="create-project-title">
+      <h2 id="create-project-title">新規プロジェクト</h2>
+      <form onSubmit={(event) => { void submit(event); }}>
+        <label><span>タイトル</span><input required maxLength={120} autoFocus value={title} onChange={(event) => setTitle(event.target.value)} placeholder="新しいサイト" /></label>
+        <label><span>公開スラッグ</span><div className="studio-slug-input"><span>/s/</span><input required maxLength={63} pattern="[a-z0-9]+(?:-[a-z0-9]+)*" value={slug} onChange={(event) => setSlug(event.target.value.toLowerCase())} placeholder="my-site" /></div></label>
+        <label><span>言語</span><select value={locale} onChange={(event) => setLocale(event.target.value)}><option value="ja">日本語</option><option value="en">English</option></select></label>
+        {message && <p role="alert" className="studio-create-error">{message}</p>}
+        <div className="studio-create-actions"><button type="button" className="studio-secondary" disabled={busy} onClick={close}>キャンセル</button><button type="submit" disabled={busy}>{busy ? "作成中…" : "作成"}</button></div>
+      </form>
+    </section>
+  </div>;
 }
 
 type SiteAdmin = { readonly connected: true };
@@ -350,6 +392,7 @@ function App() {
   const [session, setSession] = useState<SessionState>({ status: "loading" });
   const [screen, setScreen] = useState<Screen>(screenFromLocation);
   const [pendingProject, setPendingProject] = useState<Project | null>(null);
+  const [creatingProject, setCreatingProject] = useState(false);
   const [directoryQuery, setDirectoryQuery] = useState("");
   const [siteAdmin, setSiteAdmin] = useState<{ readonly key: string; readonly value: SiteAdmin | null } | null>(null);
   /** 戻る・進むで CMS・翻訳の URL が変わったら、その画面を URL で開き直す（画面の中の移動では作り直さない） */
@@ -359,9 +402,12 @@ function App() {
   const loadSession = useCallback(() => {
     const controller = new AbortController();
     setSession({ status: "loading" });
-    void api("/api/session", { signal: controller.signal })
-      .then(async (value) => ({ identity: parseIdentity(value), directory: parseProjectDirectoryResult(await api("/api/projects", { signal: controller.signal }), isStudioThumbnailUrlAllowed) }))
-      .then(({ identity, directory }) => setSession({ status: "ready", directory, identity }))
+    void Promise.all([
+      api("/api/session", { signal: controller.signal }),
+      api("/api/projects", { signal: controller.signal }),
+      api("/api/config", { signal: controller.signal }).catch(() => ({ managedProjectsEnabled: false, publicSitesOrigin: null }))
+    ])
+      .then(([identity, directory, config]) => setSession({ status: "ready", identity: parseIdentity(identity), directory: parseProjectDirectoryResult(directory, isStudioThumbnailUrlAllowed), config: parseConfig(config) }))
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
         setSession({ status: error instanceof SessionExpiredError ? "expired" : "error" });
@@ -385,7 +431,7 @@ function App() {
     const path = next.kind === "directory"
       ? "/"
       : next.kind === "editor"
-        ? trustedEditorPath(next.projectId, next.siteId, next.environment) ?? "/"
+        ? next.environment === "managed" ? `/projects/${encodeURIComponent(next.projectId)}/sites/${encodeURIComponent(next.siteId)}/editor` : trustedEditorPath(next.projectId, next.siteId, next.environment) ?? "/"
         : projectRoutePath(window.location.pathname, next.projectId, next.siteId, next.view ?? "dashboard",
           next.kind !== "dashboard" ? null : next.view === "cms" ? next.cms ?? null : next.view === "translations" ? next.translations ?? null : null);
     window.history.pushState(null, "", path);
@@ -453,8 +499,12 @@ function App() {
       window.location.assign(projectRoutePath(window.location.pathname, project.id, project.site.id, "editor") || path);
       return;
     }
+    if (session.status === "ready" && managedProject(project, session.config)) {
+      window.location.assign(`/projects/${encodeURIComponent(project.id)}/sites/${encodeURIComponent(project.site.id)}/editor`);
+      return;
+    }
     setPendingProject(project);
-  }, []);
+  }, [session]);
 
   if (session.status === "loading") return <Notice title="Studio を準備しています">認証と参加プロジェクトを確認しています。</Notice>;
   if (session.status === "expired") return <Notice title="セッションの確認が必要です" retry={() => window.location.reload()}>Cloudflare Access から再度ログインしてください。</Notice>;
@@ -487,6 +537,7 @@ function App() {
   const resolvedEditor = screen.kind === "editor" && selected
     ? resolveTrustedIntegration(selected.id, selected.site.id, screen.environment)
     : null;
+  const managedEditor = screen.kind === "editor" && selected ? managedProject(selected, session.config) : false;
   // Kamakura は凍結中も表示の確認だけできる（kamakura-site#84）。Experience は休止のまま。
   const kamakuraEditor = resolvedEditor?.environment === "production" && integrationIdentity(resolvedEditor.registration.projectId, resolvedEditor.registration.siteId) === integrationIdentity("project-kamakura", "kamakura");
 
@@ -494,14 +545,16 @@ function App() {
   const projectShell = screen.kind === "dashboard" && selected !== undefined;
   const account = <details className="studio-account"><summary><span className="studio-account-avatar" aria-hidden="true">{Array.from(session.identity.email)[0]?.toUpperCase() ?? "?"}</span><span className="studio-account-email">{session.identity.email}</span></summary><div><small>Google / Cloudflare Access</small><label>Access ID <code>{session.identity.subject}</code></label></div></details>;
 
-  return <div className={`studio-app${kamakuraEditor ? " studio-editor-shell" : ""}`}>
+  return <div className={`studio-app${kamakuraEditor || managedEditor ? " studio-editor-shell" : ""}`}>
     {!projectShell && <header className="studio-shell-header"><a className="studio-logo" href="/" onClick={screen.kind === "editor" ? undefined : (event) => { event.preventDefault(); navigate({ kind: "directory" }); }}><span>NIHO</span><b>Studio</b></a>{screen.kind === "directory" ? <label className="studio-directory-search"><span>プロジェクトを検索</span><input type="search" value={directoryQuery} onChange={(event) => setDirectoryQuery(event.target.value)} placeholder="プロジェクトを検索" /></label> : <span /> }{account}</header>}
     <div className={`studio-content${screen.kind === "directory" ? " studio-content-directory" : ""}${screen.kind === "editor" ? " studio-content-editor" : ""}${kamakuraEditor ? " studio-editor-content" : ""}${projectShell ? " studio-content-project" : ""}`}>
       {screen.kind === "directory" && <nav className="studio-directory-nav" aria-label="メインメニュー"><a href="/" aria-current="page" onClick={(event) => event.preventDefault()}><span aria-hidden="true">▦</span><b>プロジェクト一覧</b></a></nav>}
       {(screen.kind === "dashboard" || screen.kind === "editor") && !selected
         ? <Notice title="プロジェクトを表示できません">プロジェクトが存在しないか、現在のアカウントには参加資格がありません。</Notice>
         : selected && screen.kind === "editor"
-          ? kamakuraEditor && resolvedEditor
+          ? managedEditor
+            ? <ManagedEditor project={selected} />
+            : kamakuraEditor && resolvedEditor
             ? <KamakuraEditor project={selected} environment={resolvedEditor.environment} />
             : resolvedEditor
             ? <Notice title="サイトデザイン編集は休止中です">ヘッダー、余白、レイアウトなどの変更は各サイトの開発で対応します。以前の編集内容は保管しています。記事や体験の原稿は、それぞれの管理画面で引き続き編集できます。</Notice>
@@ -514,7 +567,7 @@ function App() {
               headerEnd={account}
               onOpenEditor={openEditor}
               onOpenSettings={() => undefined}
-              editorAction={editorEnabled(selected) ? "enabled" : "pending"}
+              editorAction={editorEnabled(selected, session.config) ? "enabled" : "pending"}
               // 解析の接続設定の画面はまだ無い（GA4／Search Console の接続は別 Issue）。プロジェクト設定は settingsContent で開く
               settingsAction="disabled"
               settingsContent={<div className="studio-project-settings">
@@ -531,11 +584,11 @@ function App() {
             />
           : <div className="studio-directory-main"><ProjectDirectory
               adapter={directoryAdapter}
-              onCreateProject={() => undefined}
+              onCreateProject={() => setCreatingProject(true)}
               onOpenDashboard={(project) => navigate({ kind: "dashboard", projectId: project.id, siteId: project.site.id })}
               onOpenEditor={openEditor}
-              createAction="disabled"
-              editorAction={(project) => editorEnabled(project) ? "enabled" : "hidden"}
+              createAction={session.config.managedProjectsEnabled ? "enabled" : "disabled"}
+              editorAction={(project) => editorEnabled(project, session.config) ? "enabled" : "hidden"}
               memberDetails="summary"
               searchValue={directoryQuery}
               onSearchValueChange={setDirectoryQuery}
@@ -549,6 +602,11 @@ function App() {
         <button type="button" autoFocus onClick={() => setPendingProject(null)}>閉じる</button>
       </section>
     </div>}
+    {creatingProject && <CreateProjectDialog close={() => setCreatingProject(false)} expire={expire} created={(projectId, siteId) => {
+      setCreatingProject(false);
+      loadSession();
+      window.location.assign(`/projects/${encodeURIComponent(projectId)}/sites/${encodeURIComponent(siteId)}/editor`);
+    }} />}
   </div>;
 }
 

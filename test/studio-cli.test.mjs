@@ -33,7 +33,8 @@ const migrationNames = (await readdir(migrationDirectory)).filter((name) => name
 const migrations = await Promise.all(migrationNames.map((name) => readFile(new URL(name, migrationDirectory), "utf8")));
 const { outputFiles } = await build({
   entryPoints: [fileURLToPath(new URL("../studio/worker.ts", import.meta.url))],
-  bundle: true, format: "esm", platform: "node", target: "node22", write: false
+  bundle: true, format: "esm", platform: "node", target: "node22", write: false,
+  banner: { js: 'import { createRequire as __createRequire } from "node:module"; const require = __createRequire(`${process.cwd()}/studio-worker-test.mjs`);' }
 });
 const worker = (await import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].contents).toString("base64")}`)).default;
 const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -695,12 +696,12 @@ testWithD1("all advertised CLI capabilities fit the migration and have unique op
   ]);
 });
 
-function cli(args, { input = "", fetchImpl } = {}) {
+function cli(args, { input = "", fetchImpl, env = {} } = {}) {
   const preload = fetchImpl ? ["--import", `data:text/javascript,${encodeURIComponent(`globalThis.fetch = ${fetchImpl};`)}`] : [];
   const command = fileURLToPath(new URL("../cli/niho-studio.mjs", import.meta.url));
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [...preload, command, "--origin", ORIGIN, "--project", PROJECT, "--site", SITE, ...args], {
-      env: { ...process.env, CF_ACCESS_CLIENT_ID: CLIENT, CF_ACCESS_CLIENT_SECRET: "fixture-secret" }
+      env: { ...process.env, CF_ACCESS_CLIENT_ID: CLIENT, CF_ACCESS_CLIENT_SECRET: "fixture-secret", ...env }
     });
     let stdout = "", stderr = "";
     child.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk; });
@@ -710,6 +711,25 @@ function cli(args, { input = "", fetchImpl } = {}) {
     child.once("close", (exitCode) => resolve({ exitCode, stdout, stderr }));
   });
 }
+
+test("managed CLI sends only the explicit Access user token", async () => {
+  const accessToken = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJmaXh0dXJlIn0.c2lnbmF0dXJl";
+  const result = await cli(["discover"], {
+    env: { CF_ACCESS_CLIENT_ID: "", CF_ACCESS_CLIENT_SECRET: "", CF_ACCESS_TOKEN: accessToken },
+    fetchImpl: `async (url, init) => {
+      if (url !== "${ORIGIN}${SCOPE}/capabilities" || init.headers["cf-access-token"] !== "${accessToken}"
+        || Object.hasOwn(init.headers, "CF-Access-Client-Id") || Object.hasOwn(init.headers, "CF-Access-Client-Secret")
+        || Object.hasOwn(init.headers, "Cf-Access-Jwt-Assertion")) throw new Error("bad managed auth");
+      return Response.json({ apiVersion: "v1", capabilities: [], operations: [] });
+    }`
+  });
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout).result, { apiVersion: "v1", capabilities: [], operations: [] });
+
+  const ambiguous = await cli(["discover"], { env: { CF_ACCESS_TOKEN: accessToken } });
+  assert.equal(ambiguous.exitCode, 2);
+  assert.equal(JSON.parse(ambiguous.stdout).result.error, "invalid_access_credentials");
+});
 
 test("CLI uses JSON input and a fixed HTTPS origin and never follows Access redirects", async () => {
   const result = await cli(["request", "translations.review-current", "test-item", "--json", "-"], {

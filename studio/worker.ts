@@ -27,6 +27,10 @@ import { DocumentValidationError } from "../src/validation-utils.js";
 import { parseEnglishPublicationAccepted } from "../src/english-publication.js";
 import { parseBreakpointSettings } from "../src/style-model.js";
 import { DRAFT_RECOVERY_MAX_INPUT_BYTES, DRAFT_RECOVERY_MAX_OUTPUT_BYTES, API_PREFIX, API_VERSION, OPERATIONS, OPERATION_KEY_HEADER, SERVICE_CLIENT_ID, SCOPE_ID, normalizeOperationKey, resolveOperation, type CliOperation } from "../cli/operations.mjs";
+import {
+  MANAGED_CLI_OPERATION_IDS, createManagedProject, managedDashboardOverview, managedEditorOperation, managedPageUrl,
+  managedProjectRegistrations, managedPublicRequest, managedRegistration, publicSitesOrigin, type ManagedActor
+} from "./managed-sites.js";
 
 type D1Meta = { readonly changes?: number };
 type D1Result<T> = { readonly results?: readonly T[]; readonly success: boolean; readonly meta?: D1Meta };
@@ -58,6 +62,8 @@ export interface Env {
   readonly KAMAKURA_STUDIO_BRIDGE_SECRET?: string;
   /** 公開サイトのService Bindingと対で指定する、確認用CLIのHTTPS origin。 */
   readonly KAMAKURA_CLI_PREVIEW_ORIGIN?: string;
+  /** Studio-native siteをpath分離して配信する、Studio認証originとは別のHTTPS origin。 */
+  readonly PUBLIC_SITES_ORIGIN?: string;
 }
 
 type Role = "owner" | "editor";
@@ -393,8 +399,8 @@ function normalizeEmail(value: unknown, ErrorType: typeof AuthenticationError | 
   return email;
 }
 
-async function authenticate(request: Request, env: Env): Promise<AccessIdentity | ServiceIdentity> {
-  const token = request.headers.get("Cf-Access-Jwt-Assertion");
+async function authenticate(request: Request, env: Env, explicitToken?: string): Promise<AccessIdentity | ServiceIdentity> {
+  const token = explicitToken ?? request.headers.get("Cf-Access-Jwt-Assertion");
   if (!token || token.length > 64 * 1024) throw new AuthenticationError("missing Access assertion");
   const segments = token.split(".");
   if (segments.length !== 3) throw new AuthenticationError("invalid Access assertion");
@@ -441,12 +447,12 @@ function domainsFor(origin: string | null): readonly string[] {
   return [origin];
 }
 
-function projectFromRow(row: ProjectRow, subject: string) {
+function projectFromRow(row: ProjectRow, subject: string, managedOrigin?: string) {
   if (!validIdentifier(row.project_id) || !validIdentifier(row.site_id) || !validName(row.project_name) || !validName(row.site_name) || !validName(row.display_name)) throw new Error("invalid stored project");
   return {
     id: row.project_id,
     name: row.project_name,
-    site: { id: row.site_id, name: row.site_name, domains: domainsFor(row.public_origin) },
+    site: { id: row.site_id, name: row.site_name, domains: row.public_origin === null && managedOrigin ? [managedOrigin] : domainsFor(row.public_origin) },
     members: [{ userId: subject, displayName: row.display_name }]
   };
 }
@@ -580,6 +586,8 @@ async function directory(env: Env, identity: AccessIdentity): Promise<Response> 
   `).bind(identity.subject).all<ProjectRow>();
   if (!result.success) throw new Error("directory query failed");
   const rows = result.results ?? [];
+  const managedOrigin = publicSitesOrigin(env.PUBLIC_SITES_ORIGIN);
+  const managed = managedOrigin ? await managedProjectRegistrations(env.DB, identity.subject) : new Map();
   const publicPages = new Map<string, Promise<DirectoryPublicPage>>();
   for (const row of rows) {
     if (row.public_origin !== null && DIRECTORY_OG_SOURCES.has(row.public_origin) && !publicPages.has(row.public_origin)) {
@@ -590,18 +598,20 @@ async function directory(env: Env, identity: AccessIdentity): Promise<Response> 
   const resolvedPublicPages = new Map(await Promise.all([...publicPages].map(async ([origin, page]) => [origin, await page] as const)));
   const members = await membersPromise;
   const entries = rows.map((row) => {
-    const project = projectFromRow(row, identity.subject);
+    const registration = managed.get(`${row.project_id}\u0000${row.site_id}`);
+    const project = projectFromRow(row, identity.subject, registration ? managedOrigin ?? undefined : undefined);
     const publicPage = row.public_origin === null ? null : resolvedPublicPages.get(row.public_origin) ?? null;
     const thumbnailUrl = publicPage?.thumbnailUrl ?? null;
+    const managedPublished = registration?.published_path && managedOrigin ? managedPageUrl(managedOrigin, registration.slug, registration.published_path) : null;
     return {
       project,
       summary: {
         projectId: project.id,
         siteId: project.site.id,
-        publicationStatus: publicPage?.published ? "published" : "unknown",
-        publishedUrl: publicPage?.published ? row.public_origin : null,
+        publicationStatus: registration ? registration.published_page_count > 0 ? "published" : "unpublished" : publicPage?.published ? "published" : "unknown",
+        publishedUrl: managedPublished ?? (publicPage?.published ? row.public_origin : null),
         thumbnail: thumbnailUrl === null ? null : { url: thumbnailUrl, alt: `${project.site.name}のプレビュー` },
-        updatedAt: null,
+        updatedAt: registration?.updated_at == null ? null : new Date(registration.updated_at * 1000).toISOString(),
         lastAccessedAt: null,
         members: members?.get(project.id) ?? { status: "unavailable" }
       }
@@ -622,10 +632,15 @@ async function dashboard(env: Env, identity: AccessIdentity, projectId: string, 
      LIMIT 1
   `).bind(identity.subject, projectId, siteId).first<ProjectRow>();
   if (row === null) return json({ status: "forbidden", projectId, siteId });
-  const project = projectFromRow(row, identity.subject);
+  const managedOrigin = publicSitesOrigin(env.PUBLIC_SITES_ORIGIN);
+  const registration = managedOrigin ? await managedRegistration(env.DB, projectId, siteId) : null;
+  const project = projectFromRow(row, identity.subject, registration ? managedOrigin ?? undefined : undefined);
   // 公開情報は鎌倉だけサイト側から読む。ほかのサイトと解析は値を合成しない（unavailable / disconnected のまま）。
   const [overview, members] = await Promise.all([
-    projectId === KAMAKURA_EDITOR_PROJECT_ID && siteId === KAMAKURA_EDITOR_SITE_ID
+    registration && managedOrigin
+      ? managedDashboardOverview(env.DB, { subject: identity.subject, email: identity.email, cli: false }, projectId, siteId, managedOrigin)
+          .then((data): DashboardOverview => data ? { status: "ready", data: data as DashboardOverviewData } : { status: "unavailable" })
+      : projectId === KAMAKURA_EDITOR_PROJECT_ID && siteId === KAMAKURA_EDITOR_SITE_ID
       ? kamakuraOverview(env, identity, project.site.domains)
       : Promise.resolve<DashboardOverview>({ status: "unavailable" }),
     dashboardMembers(env, projectId)
@@ -2685,6 +2700,15 @@ async function scopedApi(request: Request, env: Env, identity: AccessIdentity, u
   const projectId = match[1]!;
   const siteId = match[2]!;
   const action = match[3] ?? "";
+  if (action === "/editor" || action.startsWith("/editor/")) {
+    const origin = publicSitesOrigin(env.PUBLIC_SITES_ORIGIN);
+    if (origin && origin !== url.origin) {
+      const managed = await managedRegistration(env.DB, projectId, siteId);
+      if (managed) {
+        return managedEditorOperation(request, env.DB, { subject: identity.subject, email: identity.email, cli: false }, projectId, siteId, action, origin);
+      }
+    }
+  }
   if (action === "/cms" || action.startsWith("/cms/")) return kamakuraCmsApi(request, env, identity, url, projectId, siteId, action.slice("/cms".length));
   if (action === "/localization" || action.startsWith("/localization/")) return kamakuraLocalizationApi(request, env, identity, url, projectId, siteId, action.slice("/localization".length));
   if (action === "/breakpoints") return breakpointSettingsApi(request, env, identity, url, projectId, siteId);
@@ -2762,13 +2786,15 @@ function resolveCliDispatch(request: Request, env: Env, url: URL, projectId: str
   return json({ error: "not_found" }, 404);
 }
 
-async function studioCliApi(request: Request, env: Env, url: URL, identity: ServiceIdentity): Promise<Response> {
+async function studioServiceCliApi(request: Request, env: Env, url: URL, identity: ServiceIdentity): Promise<Response> {
   if (url.href.includes("?")) return json({ error: "invalid_request" }, 400);
   const match = /^\/projects\/([^/]+)\/sites\/([^/]+)\/(?:capabilities|operations\/(.+)|operation-status\/([^/]+))$/u.exec(url.pathname.slice(API_PREFIX.length));
   if (!match) return json({ error: "not_found" }, 404);
   const [, projectId, siteId, operationPath, statusKey] = match;
-  if (!projectId || !siteId || !SCOPE_ID.test(projectId) || !SCOPE_ID.test(siteId)
-    || projectId !== KAMAKURA_EDITOR_PROJECT_ID || siteId !== KAMAKURA_EDITOR_SITE_ID) return json({ error: "not_found" }, 404);
+  if (!projectId || !siteId || !SCOPE_ID.test(projectId) || !SCOPE_ID.test(siteId)) return json({ error: "not_found" }, 404);
+  const managedOrigin = publicSitesOrigin(env.PUBLIC_SITES_ORIGIN);
+  const managed = managedOrigin && managedOrigin !== url.origin ? await managedRegistration(env.DB, projectId, siteId) : null;
+  if (!managed && (projectId !== KAMAKURA_EDITOR_PROJECT_ID || siteId !== KAMAKURA_EDITOR_SITE_ID)) return json({ error: "not_found" }, 404);
   const grantScope: CliGrantScope = [identity.clientId, projectId, siteId];
   const subject = `${CLI_SUBJECT_PREFIX}${identity.clientId}`;
 
@@ -2792,7 +2818,7 @@ async function studioCliApi(request: Request, env: Env, url: URL, identity: Serv
       .bind(...grantScope).all<{ readonly capability: string }>();
     if (!grants.success || !grants.results) throw new Error("CLI grant lookup failed");
     const active = new Set(grants.results.map(({ capability }) => capability));
-    const operations = OPERATIONS.filter((operation) => active.has(operation.capability))
+    const operations = OPERATIONS.filter((operation) => active.has(operation.capability) && (!managed || MANAGED_CLI_OPERATION_IDS.has(operation.id)))
       .map(({ id, capability, method, parameters, action, upload }) => ({
         id, capability, method, parameters,
         ...(action === undefined ? {} : { action }),
@@ -2810,7 +2836,10 @@ async function studioCliApi(request: Request, env: Env, url: URL, identity: Serv
   const rawRequestKey = request.headers.get(OPERATION_KEY_HEADER);
   const requestKey = normalizeOperationKey(rawRequestKey);
   if (rawRequestKey !== null && requestKey === null) return json({ error: "invalid_request" }, 400);
-  const dispatch = resolveCliDispatch(request, env, url, projectId, siteId, bridgePath, spec);
+  if (managed && !MANAGED_CLI_OPERATION_IDS.has(spec.id)) return json({ error: "not_found" }, 404);
+  const dispatch = managed && managedOrigin
+    ? (actor: CliDelegatedActor) => managedEditorOperation(request, env.DB, { subject: actor.delegatedBySubject, email: actor.email, cli: true }, projectId, siteId, bridgePath, managedOrigin)
+    : resolveCliDispatch(request, env, url, projectId, siteId, bridgePath, spec);
   if (dispatch instanceof Response) return dispatch;
   const target = Object.fromEntries(spec.parameters.flatMap((parameter, index) =>
     ["pageId", "collectionId", "itemId", "itemKey", "jobId"].includes(parameter) ? [[parameter, args[index]]] : []));
@@ -2860,24 +2889,123 @@ async function studioCliApi(request: Request, env: Env, url: URL, identity: Serv
   }
 }
 
+type ManagedCliAuditRow = { readonly id: string; readonly operation: string; readonly started_at: number; readonly http_status: number | null };
+
+async function managedCliAudit(env: Env, projectId: string, siteId: string, subject: string, key: string): Promise<ManagedCliAuditRow | null> {
+  return env.DB.prepare(`
+    SELECT audit.id, audit.operation, audit.started_at, audit.http_status
+      FROM studio_cli_audit AS audit
+      JOIN sites AS s ON s.project_id = audit.project_id AND s.id = audit.site_id
+      JOIN managed_sites AS ms ON ms.site_id = s.id
+      JOIN project_members AS member ON member.project_id = s.project_id
+     WHERE audit.project_id = ?1 AND audit.site_id = ?2 AND audit.actor_subject = ?3 AND audit.request_key = ?4
+       AND member.access_subject = ?3
+     LIMIT 1
+  `).bind(projectId, siteId, subject, key).first<ManagedCliAuditRow>();
+}
+
+async function studioManagedCliApi(request: Request, env: Env, url: URL, identity: AccessIdentity): Promise<Response> {
+  if (url.href.includes("?")) return json({ error: "invalid_request" }, 400);
+  const match = /^\/projects\/([^/]+)\/sites\/([^/]+)\/(?:capabilities|operations\/(.+)|operation-status\/([^/]+))$/u.exec(url.pathname.slice(API_PREFIX.length));
+  if (!match) return json({ error: "not_found" }, 404);
+  const [, projectId, siteId, operationPath, statusKey] = match;
+  if (!projectId || !siteId || !SCOPE_ID.test(projectId) || !SCOPE_ID.test(siteId)) return json({ error: "not_found" }, 404);
+  const origin = publicSitesOrigin(env.PUBLIC_SITES_ORIGIN);
+  if (!origin || origin === url.origin || !await managedRegistration(env.DB, projectId, siteId)) return json({ error: "not_found" }, 404);
+  const actor: ManagedActor = { subject: identity.subject, email: identity.email, cli: true };
+  const membership = await env.DB.prepare(`
+    SELECT member.role
+      FROM project_members AS member JOIN sites AS s ON s.project_id = member.project_id JOIN managed_sites AS ms ON ms.site_id = s.id
+     WHERE member.access_subject = ?1 AND member.project_id = ?2 AND s.id = ?3 LIMIT 1
+  `).bind(identity.subject, projectId, siteId).first<{ readonly role: Role }>();
+  if (!membership || !validRole(membership.role)) return json({ error: "forbidden" }, 403);
+
+  if (operationPath === undefined) {
+    if (request.method !== "GET") return json({ error: "method_not_allowed" }, 405);
+    if (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length"))) return json({ error: "invalid_request" }, 400);
+    if (statusKey !== undefined) {
+      const key = normalizeOperationKey(statusKey);
+      if (!key) return json({ error: "invalid_request" }, 400);
+      const audit = await managedCliAudit(env, projectId, siteId, identity.subject, key);
+      if (!audit) return json({ error: "not_found" }, 404);
+      return json({ status: audit.http_status === null ? "received" : "completed", operationId: audit.id, operation: audit.operation, startedAt: unixTimestamp(audit.started_at), httpStatus: audit.http_status });
+    }
+    const operations = OPERATIONS.filter((operation) => MANAGED_CLI_OPERATION_IDS.has(operation.id)).map(({ id, capability, method, parameters }) => ({ id, capability, method, parameters }));
+    const capabilities = [...new Set(operations.map(({ capability }) => capability))].sort();
+    return json({ apiVersion: API_VERSION, projectId, siteId, capabilities, operations });
+  }
+
+  const [id, ...args] = operationPath.split("/"), operation = id ? resolveOperation(id, args) : null;
+  if (!operation || !MANAGED_CLI_OPERATION_IDS.has(operation.spec.id)) return json({ error: "not_found" }, 404);
+  if (request.method !== operation.spec.method) return json({ error: "method_not_allowed" }, 405);
+  const rawKey = request.headers.get(OPERATION_KEY_HEADER), requestKey = normalizeOperationKey(rawKey);
+  if (rawKey !== null && requestKey === null) return json({ error: "invalid_request" }, 400);
+  const requestId = crypto.randomUUID();
+  const target = Object.fromEntries(operation.spec.parameters.flatMap((parameter, index) => parameter === "pageId" ? [[parameter, args[index]]] : []));
+  const inserted = await env.DB.prepare(`
+    INSERT INTO studio_cli_audit (id, actor_subject, delegated_by_subject, project_id, site_id, capability, operation, target_json, request_key)
+    SELECT ?1, member.access_subject, member.access_subject, member.project_id, s.id, ?5, ?6, ?7, ?8
+      FROM project_members AS member JOIN sites AS s ON s.project_id = member.project_id JOIN managed_sites AS ms ON ms.site_id = s.id
+     WHERE member.access_subject = ?2 AND member.project_id = ?3 AND s.id = ?4
+    ON CONFLICT(project_id, site_id, actor_subject, request_key) DO NOTHING
+    RETURNING id
+  `).bind(requestId, identity.subject, projectId, siteId, operation.spec.capability, operation.spec.id, JSON.stringify(target), requestKey)
+    .first<{ readonly id: string }>();
+  if (!inserted) {
+    if (requestKey && await managedCliAudit(env, projectId, siteId, identity.subject, requestKey)) return json({ error: "duplicate_operation" }, 409);
+    return json({ error: "forbidden" }, 403);
+  }
+
+  let status = 503;
+  try {
+    const response = await managedEditorOperation(request, env.DB, actor, projectId, siteId, operation.bridgePath, origin);
+    status = response.status;
+    response.headers.set("X-Studio-Operation-Id", requestId);
+    return response;
+  } finally {
+    try {
+      const updated = await env.DB.prepare("UPDATE studio_cli_audit SET http_status = ?2 WHERE id = ?1 AND http_status IS NULL").bind(requestId, status).all();
+      if (!updated.success || updated.meta?.changes !== 1) throw new Error("CLI audit status update failed");
+    } catch {
+      console.error("NIHO Studio CLI audit status update failed", { requestId, status });
+    }
+  }
+}
+
+async function studioCliApi(request: Request, env: Env, url: URL, identity: AccessIdentity | ServiceIdentity): Promise<Response> {
+  return identity.kind === "service" ? studioServiceCliApi(request, env, url, identity) : studioManagedCliApi(request, env, url, identity);
+}
+
 async function handle(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
+  const configuredPublicOrigin = publicSitesOrigin(env.PUBLIC_SITES_ORIGIN);
+  if (configuredPublicOrigin !== null && url.origin === configuredPublicOrigin) return managedPublicRequest(request, env.DB, configuredPublicOrigin);
   const isApi = url.pathname === "/api" || url.pathname.startsWith("/api/");
   const isCli = url.pathname === API_PREFIX || url.pathname.startsWith(`${API_PREFIX}/`);
   let identity: AccessIdentity | ServiceIdentity;
   try {
-    identity = await authenticate(request, env);
-    if (isCli !== (identity.kind === "service")) throw new AuthenticationError("wrong Access identity for route");
+    const userCliToken = isCli ? request.headers.get("cf-access-token") : null;
+    identity = await authenticate(request, env, userCliToken ?? undefined);
+    if (isCli ? userCliToken !== null ? identity.kind !== "human" : identity.kind !== "service" : identity.kind !== "human") throw new AuthenticationError("wrong Access identity for route");
   } catch (error) {
     if (!(error instanceof AuthenticationError)) throw error;
     if (isCli) return json({ error: "authentication_required" }, 401);
     return isApi ? json({ error: "session_expired" }, 401) : htmlError("セッションを確認できません。Cloudflare Access から再度ログインしてください。", 401);
   }
-  if (identity.kind === "service") return studioCliApi(request, env, url, identity);
+  if (isCli) return studioCliApi(request, env, url, identity);
+  if (identity.kind !== "human") throw new AuthenticationError("human Access identity required");
 
   if (isApi) {
     if (request.method === "GET" && url.pathname === "/api/session") return json({ status: "authenticated", subject: identity.subject, email: identity.email });
-    if (request.method === "GET" && url.pathname === "/api/projects") return directory(env, identity);
+    if (request.method === "GET" && url.pathname === "/api/config") return json({ managedProjectsEnabled: configuredPublicOrigin !== null && configuredPublicOrigin !== url.origin, publicSitesOrigin: configuredPublicOrigin !== url.origin ? configuredPublicOrigin : null });
+    if (url.pathname === "/api/projects") {
+      if (request.method === "GET") return directory(env, identity);
+      if (request.method === "POST") {
+        if (!configuredPublicOrigin) return json({ error: "managed_sites_unavailable" }, 503);
+        return createManagedProject(request, env.DB, { subject: identity.subject, email: identity.email, cli: false }, configuredPublicOrigin);
+      }
+      return json({ error: "method_not_allowed" }, 405);
+    }
     const scoped = await scopedApi(request, env, identity, url);
     if (scoped) return scoped;
     return json({ error: request.method === "GET" ? "not_found" : "method_not_allowed" }, request.method === "GET" ? 404 : 405);
@@ -2892,7 +3020,12 @@ async function handle(request: Request, env: Env): Promise<Response> {
   }
   const projectAlias = parseProjectAliasPath(url.pathname);
   const editorPage = resolveTrustedEditorPage(url.pathname);
-  const isEditor = editorPage !== null;
+  const managedEditorMatch = /^\/projects\/([A-Za-z][A-Za-z0-9_-]{0,79})\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/editor\/?$/u.exec(url.pathname);
+  const managedEditor = managedEditorMatch && configuredPublicOrigin && configuredPublicOrigin !== url.origin
+    ? await managedRegistration(env.DB, managedEditorMatch[1]!, managedEditorMatch[2]!)
+    : null;
+  if (managedEditorMatch && managedEditor && !await editorMember(env, identity, managedEditorMatch[1]!, managedEditorMatch[2]!)) return htmlError("このページを表示できません。", 403);
+  const isEditor = editorPage !== null || managedEditor !== null;
   const pageAdapter = editorPage ? liveEditorAdapter(editorPage) : null;
   const dashboardPage = /^\/projects\/([A-Za-z][A-Za-z0-9_-]{0,79})\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/?$/u.exec(url.pathname);
   if (url.pathname === "/" || dashboardPage || /^\/projects\/[A-Za-z][A-Za-z0-9_-]{0,79}\/sites\/[A-Za-z][A-Za-z0-9_-]{0,79}\/invite\/?$/u.test(url.pathname) || isEditor || projectAlias !== null) {
@@ -2905,7 +3038,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
     // 鎌倉の CMS・翻訳は常に Studio の画面。直接 PUT と翻訳プレビューの枠だけを許す。
     const dashboardConnect = admin && kamakuraDashboard ? [...new Set([KAMAKURA_CMS_UPLOAD_ORIGIN, KAMAKURA_LOCALIZATION_UPLOAD_ORIGIN])] : [];
     const dashboardFrames = admin && kamakuraDashboard ? [KAMAKURA_LOCALIZATION_PREVIEW_ORIGIN] : [];
-    return withStaticSecurity(await env.ASSETS.fetch(new Request(indexUrl, { method: request.method, headers: request.headers })), pageAdapter !== null, pageAdapter ? pageAdapter.connectOrigins ?? [] : dashboardConnect, pageAdapter?.fontSources ?? [], pageAdapter?.scriptSources ?? [], pageAdapter ? pageAdapter.frameSources ?? [] : dashboardFrames);
+    return withStaticSecurity(await env.ASSETS.fetch(new Request(indexUrl, { method: request.method, headers: request.headers })), pageAdapter !== null || managedEditor !== null, pageAdapter ? pageAdapter.connectOrigins ?? [] : dashboardConnect, pageAdapter?.fontSources ?? [], pageAdapter?.scriptSources ?? [], pageAdapter ? pageAdapter.frameSources ?? [] : dashboardFrames);
   }
   return withStaticSecurity(await env.ASSETS.fetch(request));
 }

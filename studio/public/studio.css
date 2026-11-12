@@ -1,5 +1,82 @@
 /* Studio の shell。色・角丸・文字は src/ui-tokens.ts のトークン（--nw-*）だけを使う（#159）。トークンの定義は studio/build.mjs が assets/studio.css の先頭に足す。 */
 *{box-sizing:border-box}body{margin:0;min-width:320px;min-height:100vh;background:var(--nw-bg);color:var(--nw-text);font:var(--nw-font-size)/1.6 var(--nw-font)}.studio-shell-header{height:64px;display:flex;align-items:center;justify-content:space-between;gap:20px;padding:0 clamp(16px,4vw,40px);border-bottom:1px solid var(--nw-border);background:var(--nw-bg);position:sticky;top:0;z-index:10}.studio-shell-header a{font-weight:650;color:inherit;text-decoration:none}.studio-shell-header a span{display:inline-grid;place-items:center;margin-right:8px;padding:4px 6px;border-radius:var(--nw-radius-sm);background:var(--nw-inverse);color:var(--nw-on-inverse);font-size:var(--nw-font-size-sub)}.studio-shell-header a:focus-visible{outline:2px solid var(--nw-focus);outline-offset:2px;border-radius:var(--nw-radius-sm)}.studio-access{font-size:var(--nw-font-size-label);color:var(--nw-text-sub)}.studio-content{width:min(1180px,100%);margin:0 auto;padding:clamp(20px,4vw,40px) clamp(14px,3vw,28px) 64px}.studio-state{width:min(560px,calc(100% - 32px));margin:clamp(40px,10vh,96px) auto;padding:clamp(24px,5vw,40px);border:1px solid var(--nw-border);border-radius:var(--nw-radius-lg);background:var(--nw-bg)}.studio-state h1,.studio-dialog h2{font-size:20px;line-height:1.4;margin:0 0 12px}.studio-state p,.studio-dialog p{line-height:1.7;color:var(--nw-text-sub)}.studio-state button,.studio-dialog button{font:inherit;border:0;border-radius:var(--nw-radius);padding:8px 14px;background:var(--nw-accent);color:var(--nw-on-accent);cursor:pointer}.studio-state button:hover,.studio-dialog button:hover{background:var(--nw-accent-strong)}.studio-state button:focus-visible,.studio-dialog button:focus-visible{outline:2px solid var(--nw-focus);outline-offset:2px}.studio-dialog-backdrop{position:fixed;inset:0;z-index:30;display:grid;place-items:center;padding:16px;background:var(--nw-overlay)}.studio-dialog{width:min(520px,100%);padding:24px;border:1px solid var(--nw-border);border-radius:var(--nw-radius-lg);background:var(--nw-bg)}.studio-dialog h2{font-size:18px}.studio-dialog .studio-dialog-site{margin:0 0 4px;font-size:var(--nw-font-size-label)}.studio-dialog button{margin-top:10px}@media(max-width:600px){.studio-shell-header{height:56px;padding:0 14px}.studio-access{display:none}.studio-content{padding:0 0 40px}.studio-content>.studio-state{margin-top:28px}.studio-dialog{padding:20px}}
+.studio-create-project form {
+  display:grid;
+  gap:16px;
+}
+
+.studio-create-project label {
+  display:grid;
+  gap:6px;
+  color:var(--nw-text-sub);
+  font-size:var(--nw-font-size-label);
+  font-weight:650;
+}
+
+.studio-create-project input,.studio-create-project select {
+  width:100%;
+  height:42px;
+  border:1px solid var(--nw-border);
+  border-radius:var(--nw-radius);
+  background:var(--nw-surface);
+  padding:0 11px;
+  color:var(--nw-text);
+  font:inherit;
+}
+
+.studio-create-project input:focus-visible,.studio-create-project select:focus-visible {
+  outline:2px solid var(--nw-focus);
+  outline-offset:1px;
+}
+
+.studio-slug-input {
+  display:grid;
+  grid-template-columns:auto minmax(0,1fr);
+  align-items:center;
+}
+
+.studio-slug-input>span {
+  display:grid;
+  align-items:center;
+  height:42px;
+  padding:0 10px;
+  border:1px solid var(--nw-border);
+  border-right:0;
+  border-radius:var(--nw-radius) 0 0 var(--nw-radius);
+  background:var(--nw-surface-2);
+  font-family:var(--nw-font-mono);
+  font-weight:400;
+}
+
+.studio-slug-input input {
+  border-radius:0 var(--nw-radius) var(--nw-radius) 0;
+}
+
+.studio-create-error {
+  margin:0!important;
+  padding:9px 11px;
+  border-radius:var(--nw-radius);
+  background:var(--nw-danger-soft);
+  color:var(--nw-danger)!important;
+  font-size:13px;
+}
+
+.studio-create-actions {
+  display:flex;
+  justify-content:flex-end;
+  gap:8px;
+}
+
+.studio-create-actions button:disabled {
+  cursor:wait;
+  opacity:.55;
+}
+
+.studio-create-actions .studio-secondary {
+  border:1px solid var(--nw-border-strong);
+  background:var(--nw-bg);
+  color:var(--nw-text);
+}
 
 .studio-members{margin-top:24px;padding:clamp(20px,3vw,32px);border:1px solid var(--nw-border);border-radius:var(--nw-radius-lg);background:var(--nw-bg)}
 .studio-project-settings .nw-language-settings{max-width:none}.studio-project-settings .studio-members{margin-top:16px}

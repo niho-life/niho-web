@@ -19,6 +19,8 @@ Issue #68 / #69 / #70 の Studio host です。共有 `@niho/web` ライブラ�
 - owner による期限付き one-time 招待、権限変更、参加解除、招待取消
 - `project-kamakura` / `kamakura` と `project-experience` / `experience` の安定した Project / Site ID
 - 参加 Project の一覧と、Project・Site ID を含む安定 URL の Dashboard、人向けの固定別名 URL
+- Studioで作成したProject/Siteと、そのページ下書き・公開版・公開履歴のD1正本
+- Studio-native siteを共有HTTPS originの `/s/<slug>/...` で配信するscriptなしの公開renderer
 - `project-experience` / `experience` に限定した、下書き・プレビュー・公開・公開版への復元用 editor BFF
 - `project-kamakura` / `kamakura` に限定し、Cloudflare service binding で `kamakura-site` の新形式共通ページだけへ接続する editor BFF
 
@@ -34,6 +36,14 @@ D1 が Project / Site / Member / Role / Invitation / Audit の正本です。NIH
 | NIHO Experience (`project-experience` / `experience`) | `/projects/niho-experience/admin` | `/projects/niho-experience/admin/editor` |
 
 覚えやすい入口として `/project/<別名>`（例: `/project/kamakura-site`）も使えます。Worker が認証の後に `/projects/<別名>/admin` へ 301 で移します。
+
+### Studio-native site
+
+`PUBLIC_SITES_ORIGIN` がStudioの管理originと異なる有効なHTTPS originなら、Project一覧からタイトル、公開スラッグ、言語を指定して新規作成できます。作成者をownerとするProject/Site、managed登録、未公開homeを1つのD1 batchで作り、`/projects/<Project>/sites/<Site>/editor` の共通 `PageEditor` を開きます。下書き保存、公開、公開済み版への復元、通常ページの作成・更新・visibility変更を提供します。
+
+公開originは、たとえば `https://sites.example.com` の1つだけを設定し、各サイトを `https://sites.example.com/s/<slug>/...` で分離します。Workerはこのoriginで `GET` / `HEAD /s/...` だけを扱い、他pathは404です。現在のvisibleな公開revisionだけを既存rendererで描画し、root-relative linkをsite prefixへ射影します。scriptは描画せず、制限的なCSPを付けます。サイトごとのcustom domainやGit接続は作りません。
+
+D1 schema、CAS、確認plan、GUI/CLI共通操作、公開rendererの詳細は [Studio-native site契約](../docs/studio-managed-sites.md) を参照してください。
 
 ### サイト機能（鎌倉）
 
@@ -252,7 +262,7 @@ log は editor・CMS と同じく問い合わせ ID・固定の operation（`loc
 
 前提: Node.js 22、依存関係、Wrangler CLI。Wrangler は環境側で管理し、Cloudflare にログイン済みの operator が実行します。
 
-1. NIHO アカウントに作成済みの `niho-web-studio` D1 と `studio/wrangler.toml` の binding・account ID を照合する。token、credential、実メールアドレスはリポジトリへ書かない。
+1. NIHO アカウントに作成済みの `niho-web-studio` D1 と `studio/wrangler.toml` の binding・account ID を照合する。token、credential、実メールアドレスはリポジトリへ書かない。Studio-native siteを有効にする環境では、管理originとは別の共有HTTPS originを `PUBLIC_SITES_ORIGIN` に設定する。ローカル例は `https://sites.example.com` とし、値にpathを含めない。DNSやcustom domainの作成はこのWorkerの配備手順に含めない。
 2. 作成済みの専用 Cloudflare Access application `NIHO Web Studio` が `studio.niho.life` 全体を保護し、専用ポリシー `Allow NIHO Web Studio staff`（Google ログインと `@niho.life`）のみを使うことを照合する。Cloudflare dashboard membership を Studio role として使わない。Access session は 12 時間、Cookie は HttpOnly。
 3. 作成済み Access application の AUD tag と `ACCESS_AUDIENCE`、issuer `https://niho-coliving.cloudflareaccess.com` を照合する。
 4. まず NIHO API STG と Studio Worker に、STG 専用 `NIHO_STUDIO_BRIDGE_SECRET_STG` を同じ値で設定する。STG用と本番用の secret は別にする。Kamakura の secret もExperienceとは共用しない。本番 Experience secret は本番受入時まで設定しない。値を shell 引数、リポジトリ、ログへ残さず、対話入力または承認済みの secret handling で設定する。
@@ -276,7 +286,7 @@ npm run studio:build
 wrangler d1 migrations apply niho-web-studio --remote --config studio/wrangler.toml
 ```
 
-`0001_studio_registry.sql` は2つの Project/Site を seed し、membership を暗黙追加しません。`0002_membership_administration.sql` は既存 membership を保持したまま nullable email、招待、audit を追加します。`0003_experience_site_metadata.sql` は Experience site を API と同じ metadata に更新します。`0004_kamakura_site_metadata.sql` は Kamakura site を catalog と同じ `鎌倉サイト（新サイト確認用）` / `https://next-kamakura.niho.life` に更新します。`0010_kamakura_site_name.sql` は Kamakura site の名前を catalog と同じ `鎌倉サイト` にします。Migration は既存 membership と owner bootstrap を壊しません。
+`0001_studio_registry.sql` は2つの Project/Site を seed し、membership を暗黙追加しません。`0002_membership_administration.sql` は既存 membership を保持したまま nullable email、招待、audit を追加します。`0003_experience_site_metadata.sql` は Experience site を API と同じ metadata に更新します。`0004_kamakura_site_metadata.sql` は Kamakura site のmetadataを更新し、`0010_kamakura_site_name.sql` はcatalogとsite名を揃えます。`0011_managed_sites.sql` はStudio-native site、ページ、immutable version/publication、短命plan、auditを追加し、既存 `sites.public_origin UNIQUE` を変更しません。Migration は既存 membership と owner bootstrap を壊しません。
 
 ## owner の out-of-band bootstrap
 
