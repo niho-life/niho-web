@@ -141,7 +141,7 @@ Kamakura の `PageEditor` には `studio/kamakura-assets.ts` の素材 adapter �
 - 応答は `ProjectOverview` の 6 つの key（`publicationStatus`・`publishedUrl`・`lastPublishedAt`・`publishedPageCount`・`assetBytes`・`recentChanges` 最大 20 件・id 重複なし）だけで組み立て直し、上流の未知の key は捨てます。日時は UTC の ISO に揃えます。
 - 上流の 3xx・401/403・404（endpoint 未配備＝`overview_endpoint_missing`）・429・5xx・本文や形の誤り・timeout・secret 未設定は、`overview: { "status": "unavailable" }` にして Dashboard 全体は 200 で返します。ログは他の Kamakura bridge と同じく問い合わせ ID・operation `site_overview`・分類・上流 status だけです。
 - `publishedUrl` は D1 の `sites.public_origin`（今は `https://next-kamakura.niho.life`）と同じ origin のときだけ出します。違うときは URL だけ `null` にします（client の parser が許可外の origin を拒むため）。11/3 の切替では、kamakura-site の `PUBLIC_SITE_ORIGIN` と D1 の `public_origin` を同じ日に `https://kamakura.niho.life` へ替えます。
-- 解析（`analytics`）は資格情報が無いので `disconnected` のままです。Experience の Dashboard は今までどおり上流を呼ばず `unavailable` / `disconnected` です。
+- 解析（`analytics`）は下の「サイト分析」で GA4 を接続したサイトだけ、28日の要約（アクティブユーザー・ページ表示）を返します。未接続は `disconnected`、失敗・権限失効は `unavailable` です。Experience の公開情報は今までどおり上流を呼ばず `unavailable` です。
 - 配備は kamakura-site を先に出します（後から出すと、それまで公開情報は `unavailable`・分類 `overview_endpoint_missing`）。テストは `test/studio-worker-dashboard.test.mjs` です。
 
 ## Kamakura の CMS bridge（コレクション）
@@ -258,6 +258,59 @@ log は editor・CMS と同じく問い合わせ ID・固定の operation（`loc
 
 テストは `test/studio-worker-localization.test.mjs`（BFF・CSP・bundle の分割）、`test/kamakura-localization-adapter.test.mjs`（adapter）、`test/studio-site-admin.test.mjs`（切替・URL）、`test/studio-client-translations.test.mjs`（client の枠と翻訳の画面の切り替え・URL・戻る/進む）です。
 
+## サイト分析（GA4 / Search Console）
+
+各プロジェクトのサイトの持ち主が、自分の GA4 プロパティと Search Console プロパティを Studio につなぎ、Dashboard の「アナリティクス」タブで集計を見ます。NIHO 専用ではなく、どの Studio プロジェクトでも同じ仕組みです。NIHO アプリの分析とは別のホストで、Studio はそれに依存しません。実装は `studio/site-analytics-host.ts`（API・D1・ガード）と `studio/google-analytics.ts`（Google API）、D1 は `0012_site_analytics.sql` です。
+
+### 認証と、サイトの持ち主がすること
+
+- Google への認証は Studio 専用のサービスアカウント1つです。JSON 鍵を Worker secret `STUDIO_ANALYTICS_GOOGLE_SA_JSON` に対話入力で設定します（`wrangler secret put STUDIO_ANALYTICS_GOOGLE_SA_JSON --config studio/wrangler.toml`）。scope は `https://www.googleapis.com/auth/analytics.readonly` と `https://www.googleapis.com/auth/webmasters.readonly` だけです。access token は isolate の中で期限の5分前まで使い回します。
+- secret が無い・壊れているときも落ちません。接続は未接続、集計は未接続（接続済みの source は `failed`）、Dashboard の要約は `disconnected`、prepare・verify・retry は `503 { "error": "analytics_unavailable" }` です。
+- サイトの持ち主は (1) GA4 の「プロパティのアクセス管理」でサービスアカウントのメールを「閲覧者」に、(2) Search Console の「ユーザーと権限」で同じメールを「ユーザー」（制限付きでよい）に追加し、(3) Studio のアナリティクスの「連携」で GA4 のプロパティID（数字）と Search Console の URL プレフィックス（`https://<公開origin>/`）を入れて、確認画面から適用します。
+- サービスアカウントのメール・鍵・プロパティIDはリポジトリ・Issue・PR に書かず、運用者からサイトの持ち主へ別経路で伝えます。
+
+### 他社のデータを混ぜないためのガード
+
+- 対象の origin は D1 の `sites.public_origin` と完全一致するものだけです。リクエスト由来の origin は受け付けず、`target` はサーバーが D1 から組み立てます。`public_origin` が無いサイトと、共有 origin + path で配信する Studio-native site は未対応です（接続は未接続、prepare は `409 { "error": "unsupported_site" }`）。
+- GA4: Admin API でプロパティの Web データストリームを読み、`defaultUri` の origin がサイトの origin と完全一致するストリームがちょうど1つのときだけ接続します。0件・複数は `409 property_mismatch` で保存しません。時間帯はプロパティの値を保存します。集計の `runReport` は必ず接続した `streamId` とサイトの `hostName` の両方で絞るので、同じプロパティに別のサイトが入っていても数えません。
+- Search Console: 公開 origin のルートの URL-prefix（`https://<origin>/`）と完全一致するものだけです。`sc-domain:`・別 origin・パス付きは `409 property_mismatch` です。`sites.get` の permissionLevel が `siteOwner` / `siteFullUser` / `siteRestrictedUser` のときだけ接続し、`siteUnverifiedUser`・403・404 は `409 permission_required` です。Search Analytics は `dataState: "final"` で、dimension は `date` と `page` だけです。検索語（`query`）は取得しません。page の行は同じ origin の安全な path だけを返します。
+- 接続の後に公開 origin が変わったら、前の origin で接続した source は不一致にし（集計は `failed`）、つなぎ直すまで値を返しません。鎌倉の公開 origin を切り替える日は、owner が接続し直します。
+- 接続の変更・解除で `version` が進みます。集計の cache は site・source・期間・`version`・期間の終端日に束縛し、古い cache は使いません。401/403 を検知したら `permission-revoked` にして cache を消し、権限が戻って「接続を確認」するまで集計を返しません。404 は `property-mismatch`、429・`RESOURCE_EXHAUSTED` は `quota-limited`、5xx・timeout・redirect は接続状態を変えずにその回だけ `failed` です。
+- Google への通信は redirect を追わず、10 秒で打ち切り、応答は 2 MiB までです。鍵・access token・Google の生の応答・検索語・個人単位の行は D1・ログ・ブラウザに出しません。ログは `NIHO Studio analytics failure` に固定の operation・分類・HTTP status だけです。
+
+### API
+
+すべて `/api/projects/:projectId/sites/:siteId/analytics/` の下です。毎リクエストで D1 の membership を確かめ、参加していなければ `403` です。
+
+| method と path | 権限 | 内容 |
+| --- | --- | --- |
+| `GET report?period=7d\|28d\|3m\|12m` | owner・editor | `SiteAnalyticsSnapshot`（閲覧契約の parser を通してから返す） |
+| `GET connection` | owner・editor | `SiteAnalyticsConnection` |
+| `POST ga4/reporting/prepare` `{ propertyId }` | owner | 接続の `SiteAnalyticsChangePlan` |
+| `POST ga4/reporting/apply` `{ confirmationToken }` | owner | 接続して計測タグの状態を確かめる |
+| `POST ga4/reporting/verify` `{}` | owner | 権限・ストリーム・時間帯・計測タグを確かめ直す |
+| `POST ga4/reporting/retry` `{}` | owner | cache を捨てて28日を取り直す |
+| `POST ga4/reporting/disconnect/prepare` `{}`・`disconnect/apply` `{ confirmationToken }` | owner | 接続と cache の解除（計測タグは変えない） |
+| `POST search-console/reporting/...` | owner | 上と同じ6つ。prepare は `{ property: { kind, value } }` |
+
+- POST は既存の same-origin・JSON・16 KiB の境界を使い、body の key は完全一致です。apply・verify・retry・解除の応答は状態として使わず、画面は `connection` を読み直します。
+- prepare は一回用の confirmation token を返します。D1 には SHA-256 の hash だけを、site・操作・actor・接続の `version`・payload・2分の期限と一緒に保存します。apply は plan と「今も owner であること」を書き込みと同じ文で確かめ、`version` の CAS で保存してから plan を消費します。期限切れ・使用済み・別の人・別の操作の token は `409 plan_invalid`、先に別の変更が入っていたら `409 version_conflict` です。
+- 計測タグの公開・削除（`ga4/tag/...`）と Search Console の所有権確認（`search-console/ownership/...`）は、Studio が HTML を配信していないサイトがあるため扱いません（`409 not_supported`）。CLI（studio-cli）には出していません。
+
+### 集計
+
+- GA4: 期間の終端はプロパティの時間帯で昨日です。7日・28日はちょうどその日数、3か月・12か月は暦の月（89〜92日・365〜366日）で数え、直前の同じ長さと比べます。sessions・activeUsers・screenPageViews（契約の pageViews）、日別の sessions、`sessionDefaultChannelGroup` 別の sessions（日本語名。自然検索・直接・参照元サイト・ソーシャル・有料検索・メール・不明のほかは「その他」）、`pagePath` 上位20件のページ表示（安全な path だけ・title なし）です。
+- Search Console: Pacific Time の今日の3日前までです。合計・日別・page 上位20件で、CTR は 0〜1 です。
+- 0 は実測値、取れなかった値は `null`、行の無い成功は `empty` です。片方の失敗はもう片方に影響しません。cache は正規化した集計だけを30分保存します。
+- 計測タグ: GA4 の接続と確認のときに、公開 origin の `/` を redirect なし・4 秒・1 MiB までで読み、ストリームの測定IDがあれば `published`、無ければ `not-configured`（測定IDは示さない）、読めなければ `failed` です。Tag Manager 経由の設置は見つけられません。
+- Dashboard の要約は GA4 の28日（cache があればそれ）で、「アクティブユーザー」「ページ表示」と表示します。
+
+### 画面
+
+アナリティクスのタブは、上に `SiteAnalytics`（集計）、owner には下に `SiteApps`（`capabilities={{ trackingTag: false, ownershipVerification: false }}`）を出します。owner かどうかは owner だけが読める `GET membership` で確かめ、editor には接続欄を出しません。Studio-native site にも接続欄は出しません。ホームの要約の「アクセス解析を見る」はこのタブを開きます。2つの部品の CSS は、CSP で inline の `<style>` を使えないので `studio:build` が `studio.css` に入れます。
+
+テストは `test/studio-worker-analytics.test.mjs`（API・ガード・cache・権限失効・secret 未設定）、`test/studio-client-analytics.test.mjs`（タブ）、`test/site-apps-ui.test.mjs`（capabilities）です。
+
 ## Migration と初回セットアップ
 
 前提: Node.js 22、依存関係、Wrangler CLI。Wrangler は環境側で管理し、Cloudflare にログイン済みの operator が実行します。
@@ -286,7 +339,7 @@ npm run studio:build
 wrangler d1 migrations apply niho-web-studio --remote --config studio/wrangler.toml
 ```
 
-`0001_studio_registry.sql` は2つの Project/Site を seed し、membership を暗黙追加しません。`0002_membership_administration.sql` は既存 membership を保持したまま nullable email、招待、audit を追加します。`0003_experience_site_metadata.sql` は Experience site を API と同じ metadata に更新します。`0004_kamakura_site_metadata.sql` は Kamakura site のmetadataを更新し、`0010_kamakura_site_name.sql` はcatalogとsite名を揃えます。`0011_managed_sites.sql` はStudio-native site、ページ、immutable version/publication、短命plan、auditを追加し、既存 `sites.public_origin UNIQUE` を変更しません。Migration は既存 membership と owner bootstrap を壊しません。
+`0001_studio_registry.sql` は2つの Project/Site を seed し、membership を暗黙追加しません。`0002_membership_administration.sql` は既存 membership を保持したまま nullable email、招待、audit を追加します。`0003_experience_site_metadata.sql` は Experience site を API と同じ metadata に更新します。`0004_kamakura_site_metadata.sql` は Kamakura site のmetadataを更新し、`0010_kamakura_site_name.sql` はcatalogとsite名を揃えます。`0011_managed_sites.sql` はStudio-native site、ページ、immutable version/publication、短命plan、auditを追加し、既存 `sites.public_origin UNIQUE` を変更しません。`0012_site_analytics.sql` はサイト分析の接続・一回用plan・集計cacheを追加するだけで既存tableを変えません。Worker より先に適用します。Migration は既存 membership と owner bootstrap を壊しません。
 
 ## owner の out-of-band bootstrap
 
@@ -340,6 +393,7 @@ Project 固有 API はすべて次の prefix 配下です。
 - Kamakura: `PUT editor/:pageId/draft`、`POST editor/:pageId/release-plan`、`POST editor/:pageId/release`
 - Kamakura: `POST editor/assets/{list,upload-intent,update,usages,resolve}`、`GET editor/assets/:uuid/preview`（owner/editor）
 - Kamakura CMS: `GET cms/schema`、`GET|POST cms/collections/:col/items`、`GET cms/collections/:col/items/:id`、`GET|POST …/:id/english-publication`、`PUT …/:id/draft`、`POST …/:id/{publish,discard-draft,unpublish,duplicate,remove,schedule,cancel-schedule,retry-schedule}`、`POST cms/uploads/intent`（owner/editor・鎌倉以外は 404）
+- サイト分析: `GET analytics/{report,connection}`（owner/editor）、`POST analytics/{ga4,search-console}/reporting/{prepare,apply,verify,retry,disconnect/prepare,disconnect/apply}`（owner）。詳細は上の「サイト分析」
 - Kamakura 翻訳: `POST localization/{overview,items,catalog/advance,preview/items,release,release/prepare,release/apply,uploads/intent,editor/site}`、`POST localization/editor/pages/:pageId{,/snapshot,/save,/command}`、`POST localization/items/after/:cursor`、`POST localization/items/:itemKey{,/command,/translate}`、`POST localization/jobs/:jobId`、`PUT localization/settings`（owner/editor・役割を上流へ渡す・鎌倉以外は 404）
 
 unknown Project/Site と権限のない Project/Site は、外部から区別できる詳細を返しません。owner API が返す member 情報は、その owner が管理する同一 Project に限定します。

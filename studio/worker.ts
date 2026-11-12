@@ -31,6 +31,7 @@ import {
   MANAGED_CLI_OPERATION_IDS, createManagedProject, managedDashboardOverview, managedEditorOperation, managedPageUrl,
   managedProjectRegistrations, managedPublicRequest, managedRegistration, publicSitesOrigin, type ManagedActor
 } from "./managed-sites.js";
+import { dashboardAnalyticsSummary, siteAnalyticsApi, siteAnalyticsRoute } from "./site-analytics-host.js";
 
 type D1Meta = { readonly changes?: number };
 type D1Result<T> = { readonly results?: readonly T[]; readonly success: boolean; readonly meta?: D1Meta };
@@ -64,6 +65,8 @@ export interface Env {
   readonly KAMAKURA_CLI_PREVIEW_ORIGIN?: string;
   /** Studio-native siteをpath分離して配信する、Studio認証originとは別のHTTPS origin。 */
   readonly PUBLIC_SITES_ORIGIN?: string;
+  /** サイト分析（GA4 / Search Console）を読む Studio 専用サービスアカウントの JSON 鍵。未設定なら分析は未接続のまま。 */
+  readonly STUDIO_ANALYTICS_GOOGLE_SA_JSON?: string;
 }
 
 type Role = "owner" | "editor";
@@ -635,15 +638,17 @@ async function dashboard(env: Env, identity: AccessIdentity, projectId: string, 
   const managedOrigin = publicSitesOrigin(env.PUBLIC_SITES_ORIGIN);
   const registration = managedOrigin ? await managedRegistration(env.DB, projectId, siteId) : null;
   const project = projectFromRow(row, identity.subject, registration ? managedOrigin ?? undefined : undefined);
-  // 公開情報は鎌倉だけサイト側から読む。ほかのサイトと解析は値を合成しない（unavailable / disconnected のまま）。
-  const [overview, members] = await Promise.all([
+  // 公開情報は鎌倉だけサイト側から読む。ほかのサイトは値を合成しない（unavailable のまま）。
+  // 解析はサイト分析に接続したサイトだけ GA4 の28日の要約を返す（未接続は disconnected、失敗は unavailable）。
+  const [overview, members, analytics] = await Promise.all([
     registration && managedOrigin
       ? managedDashboardOverview(env.DB, { subject: identity.subject, email: identity.email, cli: false }, projectId, siteId, managedOrigin)
           .then((data): DashboardOverview => data ? { status: "ready", data: data as DashboardOverviewData } : { status: "unavailable" })
       : projectId === KAMAKURA_EDITOR_PROJECT_ID && siteId === KAMAKURA_EDITOR_SITE_ID
       ? kamakuraOverview(env, identity, project.site.domains)
       : Promise.resolve<DashboardOverview>({ status: "unavailable" }),
-    dashboardMembers(env, projectId)
+    dashboardMembers(env, projectId),
+    dashboardAnalyticsSummary(env, { projectId, siteId, publicOrigin: row.public_origin, managed: registration !== null })
   ]);
   return json({
     status: "ready",
@@ -651,7 +656,7 @@ async function dashboard(env: Env, identity: AccessIdentity, projectId: string, 
     siteId,
     fetchedAt: new Date().toISOString(),
     overview,
-    analytics: { status: "disconnected" },
+    analytics,
     members
   });
 }
@@ -2694,6 +2699,20 @@ function membershipMutation(request: Request, env: Env, identity: SiteActor, pro
   }
 }
 
+/** サイト分析（GA4 / Search Console）。membership・owner 判定と他サイトのデータを混ぜないガードは site-analytics-host.ts。 */
+async function siteAnalyticsHttp(request: Request, env: Env, identity: AccessIdentity, url: URL, projectId: string, siteId: string, path: string): Promise<Response> {
+  const route = siteAnalyticsRoute(request.method, path);
+  if (route === "not_found") return json({ error: "not_found" }, 404);
+  if (route === "method_not_allowed") return json({ error: "method_not_allowed" }, 405);
+  let body: Record<string, unknown> | null = null;
+  if (route.method === "POST") {
+    try { body = await enforceMutationBoundary(request); }
+    catch { return json({ error: "invalid_request" }, 400); }
+  }
+  const result = await siteAnalyticsApi(env, { subject: identity.subject }, projectId, siteId, route, { query: url.searchParams, body });
+  return json(result.body, result.status);
+}
+
 async function scopedApi(request: Request, env: Env, identity: AccessIdentity, url: URL): Promise<Response | null> {
   const match = /^\/api\/projects\/([A-Za-z][A-Za-z0-9_-]{0,79})\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})(\/[^?]*)?$/u.exec(url.pathname);
   if (!match) return null;
@@ -2712,6 +2731,7 @@ async function scopedApi(request: Request, env: Env, identity: AccessIdentity, u
   if (action === "/cms" || action.startsWith("/cms/")) return kamakuraCmsApi(request, env, identity, url, projectId, siteId, action.slice("/cms".length));
   if (action === "/localization" || action.startsWith("/localization/")) return kamakuraLocalizationApi(request, env, identity, url, projectId, siteId, action.slice("/localization".length));
   if (action === "/breakpoints") return breakpointSettingsApi(request, env, identity, url, projectId, siteId);
+  if (action.startsWith("/analytics/")) return siteAnalyticsHttp(request, env, identity, url, projectId, siteId, action.slice("/analytics".length));
   if (isTrustedEditorAction(action)) return editorApi(request, env, identity, url, projectId, siteId, action);
   if (request.method === "GET") {
     if (action === "/dashboard") return dashboard(env, identity, projectId, siteId);

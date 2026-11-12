@@ -285,6 +285,29 @@ test("dashboard shows host site views as top tabs and project settings content i
   } finally { await app.cleanup(); }
 });
 
+test("dashboard labels GA4 metrics as-is and shows host analytics content in the Analytics tab", async () => {
+  const selected = project(), input = dashboard(selected);
+  input.analytics.data = { ...input.analytics.data, activeUsers: 12, pageViews: 34 };
+  const app = await setup(ProjectDashboard, { project: selected, adapter: dashboardAdapter(async () => input), analyticsContent: createElement("p", { id: "host-analytics" }, "ホストの分析画面") });
+  try {
+    const summary = document.querySelector(".pv-analytics-summary");
+    assert.deepEqual([...summary.querySelectorAll("dt")].map((node) => node.textContent), ["アクティブユーザー", "ページ表示"]);
+    assert.deepEqual([...summary.querySelectorAll("dd")].map((node) => node.textContent), ["12", "34"]);
+    assert.equal(document.body.textContent.includes("訪問者"), false, "activeUsers を訪問者と読み替えない");
+    // ホームの「アクセス解析を見る」はアナリティクスのタブを開き、組込みの要約パネルの代わりにホストの中身を出す
+    await click("アクセス解析を見る");
+    assert.equal(button("アナリティクス").getAttribute("aria-current"), "page");
+    assert.equal(document.querySelector(".pv-analytics-content #host-analytics")?.textContent, "ホストの分析画面");
+    assert.equal(button("解析接続設定"), undefined);
+    assert.equal(document.querySelector(".pv-dashboard-content .pv-stats"), null);
+    assert.equal(app.calls.settings.length, 0);
+    // 渡さないホストは従来どおり組込みの要約と接続設定（onOpenSettings）
+    await app.rerender({ analyticsContent: undefined });
+    await click("アナリティクス"); await click("解析接続設定");
+    assert.deepEqual(app.calls.settings.at(-1), [selected, "analytics"]);
+  } finally { await app.cleanup(); }
+});
+
 test("dashboard back navigation stays available while its read is pending", async () => {
   let resolve; const selected = project();
   const app = await setup(ProjectDashboard, { project: selected, adapter: dashboardAdapter(() => new Promise((done) => { resolve = done; })) });

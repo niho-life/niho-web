@@ -33,6 +33,11 @@ export type ProjectDashboardProps = {
   onSiteViewChange?: (id: string | null) => void;
   /** 上の帯の右端にホストが置くもの（アカウントのメニューなど）。ホストが自分のヘッダーの代わりにこの帯を使うときに渡す。 */
   headerEnd?: ReactNode;
+  /**
+   * 「アナリティクス」タブに出す中身（`SiteAnalytics` と接続欄など）。渡すと組込みの要約パネルと「解析接続設定」の代わりに出し、
+   * `onOpenSettings(project, "analytics")` は呼ばない（接続欄はこの中身に置く）。ホームの要約の「アクセス解析を見る」はこのタブを開く。
+   */
+  analyticsContent?: ReactNode;
 };
 
 type ReadyDashboard = Extract<ProjectDashboardResult, { status: "ready" }>;
@@ -42,11 +47,12 @@ const numberLabel = (value: number) => value.toLocaleString("ja-JP");
 const DISCONNECTED_TEXT = "アクセス解析はまだ接続されていません。";
 const ROLE_LABELS: Readonly<Record<ProjectMemberRole, string>> = { owner: "オーナー", editor: "編集者" };
 
-function AnalyticsMetrics({ uniqueVisitors, pageViews }: { uniqueVisitors: number | null; pageViews: number | null }) {
-  if (uniqueVisitors === null && pageViews === null) return <p className="pv-muted">この期間に表示できる解析値はありません。</p>;
+/** GA4 の指標名のまま示す（activeUsers を「訪問者」と読み替えない）。 */
+function AnalyticsMetrics({ activeUsers, pageViews }: { activeUsers: number | null; pageViews: number | null }) {
+  if (activeUsers === null && pageViews === null) return <p className="pv-muted">この期間に表示できる解析値はありません。</p>;
   return <dl className="pv-stats">
-    {uniqueVisitors !== null && <div><dt>訪問者数</dt><dd>{numberLabel(uniqueVisitors)}</dd></div>}
-    {pageViews !== null && <div><dt>ページ表示数</dt><dd>{numberLabel(pageViews)}</dd></div>}
+    {activeUsers !== null && <div><dt>アクティブユーザー</dt><dd>{numberLabel(activeUsers)}</dd></div>}
+    {pageViews !== null && <div><dt>ページ表示</dt><dd>{numberLabel(pageViews)}</dd></div>}
   </dl>;
 }
 
@@ -66,12 +72,12 @@ function Analytics({ result, connect, retry, settingsAction }: { result: ReadyDa
   if (result.status === "disconnected") return <><p>{DISCONNECTED_TEXT}</p><div className="pv-actions">{settingsButton}</div></>;
   if (result.status === "unavailable") return <><p role="alert">アクセス解析を取得できませんでした。</p><div className="pv-actions"><button type="button" onClick={retry}>再試行</button>{settingsButton}</div></>;
   return <><p className="pv-period">対象期間 <time dateTime={result.data.period.start}>{dateLabel(result.data.period.start)}</time> 〜 <time dateTime={result.data.period.end}>{dateLabel(result.data.period.end)}</time></p>
-    <AnalyticsMetrics uniqueVisitors={result.data.uniqueVisitors} pageViews={result.data.pageViews} />
+    <AnalyticsMetrics activeUsers={result.data.activeUsers} pageViews={result.data.pageViews} />
     <p className="pv-fetched">解析取得日時 <Timestamp value={result.data.fetchedAt} /></p><div className="pv-actions">{settingsButton}</div></>;
 }
 function AnalyticsSummary({ result, open }: { result: ReadyDashboard["analytics"]; open: () => void }) {
   return <section className="pv-panel pv-analytics-summary"><h3>アクセス解析</h3>
-    {result.status === "ready" ? <><AnalyticsMetrics uniqueVisitors={result.data.uniqueVisitors} pageViews={result.data.pageViews} />
+    {result.status === "ready" ? <><AnalyticsMetrics activeUsers={result.data.activeUsers} pageViews={result.data.pageViews} />
       <p className="pv-period">対象期間 <time dateTime={result.data.period.start}>{dateLabel(result.data.period.start)}</time> 〜 <time dateTime={result.data.period.end}>{dateLabel(result.data.period.end)}</time></p>
       <p className="pv-fetched">解析取得日時 <Timestamp value={result.data.fetchedAt} /></p></>
       : result.status === "disconnected" ? <p>{DISCONNECTED_TEXT}</p>
@@ -98,7 +104,7 @@ export function ProjectDashboard(props: ProjectDashboardProps) {
   }
   return <DashboardSession key={source.generation} {...props} />;
 }
-function DashboardSession({ project: inputProject, adapter, onBackToProjects, onOpenEditor, onOpenSettings, editorAction = "enabled", settingsAction = "enabled", settingsContent, siteViews = [], activeSiteView = null, onSiteViewChange, headerEnd }: ProjectDashboardProps) {
+function DashboardSession({ project: inputProject, adapter, onBackToProjects, onOpenEditor, onOpenSettings, editorAction = "enabled", settingsAction = "enabled", settingsContent, siteViews = [], activeSiteView = null, onSiteViewChange, headerEnd, analyticsContent }: ProjectDashboardProps) {
   const project = useMemo(() => { try { return parseProject(inputProject); } catch { return null; } }, [inputProject]);
   const reader = useCallback(async (signal: AbortSignal) => {
     if (!project) throw new Error("invalid selected project");
@@ -149,11 +155,12 @@ function DashboardSession({ project: inputProject, adapter, onBackToProjects, on
           : <main className="pv-dashboard-content">
             <h2 className="pv-page-title">{VIEW_TITLES[view]}</h2>
             {view === "settings" ? <div className="pv-settings">{settingsContent}</div>
-              : view === "analytics" ? <section className="pv-panel"><h3>アクセス解析</h3><Analytics result={result.analytics} connect={() => onOpenSettings(project, "analytics")} retry={reload} settingsAction={settingsAction} /></section>
+              : view === "analytics" ? analyticsContent !== undefined ? <div className="pv-analytics-content">{analyticsContent}</div>
+                : <section className="pv-panel"><h3>アクセス解析</h3><Analytics result={result.analytics} connect={() => onOpenSettings(project, "analytics")} retry={reload} settingsAction={settingsAction} /></section>
               : view === "members" ? <Members project={project} members={result.members} retry={reload} openSettings={settingsDisabled ? null : () => openSettings(project)} />
               : <div className="pv-sections"><section className="pv-panel"><h3>公開情報</h3>{result.overview.status === "ready" ? <Overview overview={result.overview.data} /> : <><p role="alert">公開情報を取得できませんでした。</p><button type="button" onClick={reload}>再試行</button></>}</section>
                 <section className="pv-panel"><h3>直近の変更</h3>{result.overview.status === "unavailable" ? <p role="alert">変更履歴を取得できませんでした。</p> : result.overview.data.recentChanges.length === 0 ? <p className="pv-muted">直近の変更はありません。</p> : <table className="pv-changes"><thead><tr><th scope="col">内容</th><th scope="col">更新日時</th></tr></thead><tbody>{result.overview.data.recentChanges.map((change) => <tr key={change.id}><th scope="row">{change.label}</th><td><Timestamp value={change.changedAt} /></td></tr>)}</tbody></table>}</section>
-                <AnalyticsSummary result={result.analytics} open={() => setView("analytics")} />
+                <AnalyticsSummary result={result.analytics} open={() => show("analytics")} />
               </div>}
             <div className="pv-footer"><p className="pv-fetched">ダッシュボード取得日時 <Timestamp value={result.fetchedAt} /></p><button type="button" onClick={reload}>再読込</button></div>
           </main>}

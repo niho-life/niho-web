@@ -57,4 +57,6 @@ Search ConsoleのAPI読取はSearch Analyticsのread-only queryだけを使い�
 
 状態変更前は対象プロジェクト名、公開origin、変更対象（タグ、property、確認方式、解除対象cache）を確認画面に示します。接続チェックやretryはread-onlyで実行できます。失敗時はホストが最新の状態を返し、別プロジェクトの値や古い集計を一時表示しません。
 
+Studio（`studio.niho.life`）は、プロジェクトごとの GA4 / Search Console 接続と集計をこの契約でホストします。サービスアカウント、D1 の接続・plan・cache、他サイトのデータを混ぜないガード、未対応の操作は [Studio host README](../studio/README.md#サイト分析ga4--search-console) を参照してください。
+
 今回の契約は公開ライブラリ側の範囲です。NIHOホストでの権限検証、運営承認台帳、サービスアカウントのSecret Manager設定、API・集計保存、および実サイトでの所有確認はホスト側の別実装と受入が必要です。
