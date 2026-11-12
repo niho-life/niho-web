@@ -9,6 +9,8 @@ const outputDirectory = join(studioDirectory, "dist");
 const publicOutput = join(outputDirectory, "public");
 
 await rm(outputDirectory, { recursive: true, force: true });
+/** webFonts() が書き出す @font-face の CSS の名前（assets/fonts/ の中）。index.html の /assets/fonts.css をこれに置き換える */
+let fontsStylesheet = null;
 await mkdir(join(publicOutput, "assets"), { recursive: true });
 
 await Promise.all([
@@ -58,6 +60,12 @@ await Promise.all([
     ]);
     await writeFile(join(publicOutput, "assets", "studio.css"), `${uiTokensCss.trim()}\n${studioCss.trim()}\n${studioRichTextCss.trim()}\n${withoutTokens(siteLanguageSettingsCss, uiTokensCss, "siteLanguageSettingsCss").trim()}\n`);
   })(),
+  // トークンの書体（Inter・Noto Sans JP）の @font-face は、中身で名前の変わる assets/fonts/fonts-<hash>.css に分ける（no-store の studio.css を太らせず、長くキャッシュさせる）
+  (async () => {
+    const css = await webFonts();
+    fontsStylesheet = `fonts-${fingerprint(css)}.css`;
+    await writeFile(join(publicOutput, "assets", "fonts", fontsStylesheet), css);
+  })(),
   // 部品の CSS は先頭にトークンを持つ（ほかのホストは <style> だけで描ける）。Studio は studio.css で読むので外す
   (async () => {
     const [{ projectViewCss }, uiTokensCss] = await Promise.all([cssModule("project-view-style.ts", join(studioDirectory, "..", "src")), tokensCss()]);
@@ -82,6 +90,8 @@ await Promise.all([
 // Cloudflare の asset cache は配備後も同じ URL の旧 app.js を返し得る。HTML とその参照先を内容で版付けし、
 // 旧 entry と新 chunk の組み合わせで Studio が白画面になるのを防ぐ。
 let indexHtml = await readFile(join(publicOutput, "index.html"), "utf8");
+if (!fontsStylesheet || !indexHtml.includes("/assets/fonts.css")) throw new Error("Studio HTML is missing /assets/fonts.css");
+indexHtml = indexHtml.replace("/assets/fonts.css", `/assets/fonts/${fontsStylesheet}`);
 for (const name of ["studio.css", "project-view.css", "collection.css", "localization.css", "app.js"]) {
   const source = join(publicOutput, "assets", name);
   const versioned = name.replace(/\.(css|js)$/u, `-${fingerprint(await readFile(source))}.$1`);
@@ -109,6 +119,42 @@ await build({
 
 function fingerprint(value) {
   return createHash("sha256").update(value).digest("hex").slice(0, 12);
+}
+
+/**
+ * Studio の画面の書体（トークン --nw-font の Inter と Noto Sans JP）を自前で配る。STUDIO 社と同じ書体で描き、CSP は font-src 'self' のまま。
+ * Fontsource の可変フォント（wght 100〜900）の woff2 を assets/fonts/<名前>-<版>/ に写し、その @font-face の CSS（assets/fonts/ から見た相対の url）を返す。
+ * unicode-range ごとに分かれているので、ブラウザは画面に出る文字の分だけ読む。版や中身ごとに場所が変わるので、Worker は長くキャッシュさせる（worker.ts の VERSIONED_FONT_PATH）。
+ */
+async function webFonts() {
+  // 関数の中に置く（build は上の top-level await で走るので、下の const はまだ初期化されていない）
+  const fonts = [
+    { packageName: "@fontsource-variable/inter", family: "Inter" },
+    { packageName: "@fontsource-variable/noto-sans-jp", family: "Noto Sans JP" }
+  ];
+  const faces = [];
+  for (const { packageName, family } of fonts) {
+    const packageDirectory = join(studioDirectory, "..", "node_modules", ...packageName.split("/"));
+    const { version } = JSON.parse(await readFile(join(packageDirectory, "package.json"), "utf8"));
+    if (!/^\d+\.\d+\.\d+$/u.test(version)) throw new Error(`${packageName} has an unexpected version: ${version}`);
+    const directory = `${packageName.split("/")[1]}-${version}`;
+    const output = join(publicOutput, "assets", "fonts", directory);
+    await mkdir(output, { recursive: true });
+    const rules = (await readFile(join(packageDirectory, "wght.css"), "utf8")).match(/@font-face\s*\{[^}]*\}/gu) ?? [];
+    if (rules.length === 0) throw new Error(`${packageName}/wght.css has no @font-face`);
+    for (const rule of rules) {
+      const file = /src:\s*url\(\.\/files\/([a-z0-9-]+\.woff2)\)/u.exec(rule)?.[1];
+      if (!file || !/font-family:\s*'[^']+ Variable';/u.test(rule) || !/font-weight:\s*100 900;/u.test(rule)) throw new Error(`${packageName}/wght.css has an unexpected @font-face`);
+      await copyFile(join(packageDirectory, "files", file), join(output, file));
+      faces.push(rule
+        .replace(/font-family:\s*'[^']+';/u, `font-family:"${family}";`)
+        .replace(`url(./files/${file})`, `url(${directory}/${file})`)
+        .replace(/\s*([{};:,])\s*/gu, "$1"));
+    }
+    // SIL Open Font License 1.1。フォントと一緒に配る
+    await copyFile(join(packageDirectory, "LICENSE"), join(output, "OFL.txt"));
+  }
+  return faces.join("\n");
 }
 
 /** src/ui-tokens.ts のトークンの CSS。 */

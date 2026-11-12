@@ -91,7 +91,7 @@ hostが任意の`responsiveProposal`を接続した場合だけ、右パネル�
 | `--nw-live` | `#1f9d45` | 「公開中」の点だけ |
 | `--nw-component` | `#6d4bc3` | 共通部品（コンポーネント）の印 |
 | `--nw-radius-sm` / `--nw-radius` / `--nw-radius-lg` / `--nw-radius-pill` | `4px` / `6px` / `8px` / `9999px` | 角丸。札とアバターだけ 9999px |
-| `--nw-font` | Inter → Noto Sans JP → system | 文字 |
+| `--nw-font` | Inter → Noto Sans JP → system | 文字（Studio は両方を自前で配る） |
 | `--nw-font-size` / `--nw-font-size-label` / `--nw-font-size-sub` | `14px` / `12px` / `11px` | 本文 / ラベル / 補助 |
 
 文字のコントラストは 4.5:1 以上、補助の文字と印は 3:1 以上を保つ。`test/ui-tokens.test.mjs` が値・コントラスト、各画面の CSS に色の値・浮かせる影・kicker・大きい角丸が無いこと、`src/`・`studio/` に緑がかった色と暖色の灰色が「公開中」の点のほかに無いことを確かめる。
@@ -114,7 +114,7 @@ hostが任意の`responsiveProposal`を接続した場合だけ、右パネル�
 
 状態は色だけで表さない。無効は `disabled` と not-allowed カーソル、入力途中は破線の枠、無効な値は赤の枠と `role="alert"` の文、この幅で指定している欄（`.e-own`）は青の面に加えて項目名の色と「この幅の指定を解除」ボタン、保存前の変更は点で示す。
 
-フォントはInter/Noto Sans JPが使用可能なら優先し、system UIの日本語フォントへfallbackする。編集画面の通常の操作文字は11〜13px、操作高さは28〜34pxを目安とする。編集画面の外（一覧・設定・CMS・翻訳）の本文は14px、ラベルは12px、補助は11px。装飾的な影・カード・大見出し・長い操作説明を作業領域へ並べない。ツールチップとaria-labelでアイコンを説明する。
+フォントはInter/Noto Sans JPが使用可能なら優先し、system UIの日本語フォントへfallbackする。Studio は STUDIO 社と同じ書体で描くため、Fontsource の可変フォント（wght 100〜900、SIL Open Font License 1.1）を `studio/build.mjs` が `assets/fonts/<名前>-<版>/` に写して自前で配る（CSP は `font-src 'self'` のまま）。日本語は unicode-range ごとの分割なので、ブラウザは画面に出る文字の分だけ読む。@font-face は中身の hash を名前に持つ `assets/fonts/fonts-<hash>.css` に置き、フォントとこの CSS だけはブラウザに 1 年キャッシュさせる。編集画面の通常の操作文字は11〜13px、操作高さは28〜34pxを目安とする。編集画面の外（一覧・設定・CMS・翻訳）の本文は14px、ラベルは12px、補助は11px。装飾的な影・カード・大見出し・長い操作説明を作業領域へ並べない。ツールチップとaria-labelでアイコンを説明する。
 
 全サイトが同じ編集shellを使う。`kamakura`等のサイト名を共通UIのレイアウト種別にしない。hostの入口は汎用のtoolbar slotで渡し、文書・保存・公開・入力中保護・read-only・ロックの意味を保つ。手動保存が必要なadapterでは保存操作を消さない。
 

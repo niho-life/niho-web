@@ -69,7 +69,7 @@ Cloudflare Access 側で Studio hostname 全体を Access application として�
 - 非参加者には Project の存在・名称を返さない。ただし、検証済み email に明示的に宛てられた有効な招待 token を提示した場合だけ、受諾に必要な Project / Site 名と role を返す
 - membership revoke は次の API request から有効になる
 - Experience / Kamakura editor の list/read/save/release 各 request と Kamakura CMS の各 request でも、Access `sub`、固定 Project/Site、D1 の現在の `owner` / `editor` membership を再照合する
-- API と静的応答は `no-store`。CSP、frame 拒否、MIME sniff 拒否等を付与する
+- API と静的応答は `no-store`。CSP、frame 拒否、MIME sniff 拒否等を付与する。例外は build が版付きの場所に置く Studio の書体（`assets/fonts/<名前>-<版>/*.woff2` と `assets/fonts/fonts-<hash>.css`）で、`private, max-age=31536000, immutable`
 
 Member 管理 mutation は従来どおり `POST` のみです。request URL と完全一致する `Origin`、`Sec-Fetch-Site: same-origin`、`application/json`、16 KiB の streaming 上限、JSON object、endpoint ごとの完全な key set を必須にします。この 16 KiB 境界は editor 追加後も変更しません。Editor mutation も同じ same-origin / JSON 条件を要求し、draft だけ 600 KiB、release-plan / release は 16 KiB の streaming 上限です。token、token hash、JWT、HMAC secret、request body は application log に出力しません。
 
