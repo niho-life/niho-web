@@ -15,6 +15,7 @@ import type {
 const parseOptions = (components: ComponentLibrary | undefined, siteStyles: SiteStyles | undefined) => ({ ...(components ? { components } : {}), ...(siteStyles ? { siteStyles } : {}) });
 
 export type * from "./localization-types.js";
+export * from "./localization-glossary.js";
 
 const LOCALES: readonly LocalizationLocale[] = ["ja", "en"];
 const INLINE_TAGS = new Set(["a", "strong", "em", "b", "i", "small", "span", "br"]);

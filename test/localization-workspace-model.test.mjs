@@ -79,6 +79,10 @@ test("settings glossary is optional and strictly validates its version, entries 
   assert.throws(() => parseLocalizationOverviewResult(changed({ ...glossary, extra: true })), /unknown field/);
   assert.throws(() => parseLocalizationOverviewResult(changed({ ...glossary, version: "bad\nversion" })), /invalid text/);
   assert.throws(() => parseLocalizationOverviewResult(changed({ ...glossary, reviewed: "yes" })), /boolean/);
+  assert.equal(parseLocalizationOverviewResult(changed({ ...glossary, editable: true })).overview.settings.glossary.editable, true, "editable は任意の boolean");
+  assert.equal(parseLocalizationOverviewResult(changed({ ...glossary, editable: false })).overview.settings.glossary.editable, false);
+  assert.equal("editable" in glossary, false, "無ければ付けない（古いホスト）");
+  assert.throws(() => parseLocalizationOverviewResult(changed({ ...glossary, editable: "yes" })), /boolean/);
   assert.throws(() => parseLocalizationOverviewResult(changed({ ...glossary, entries: [{ source: "NIHO", target: "NIHO" }, { source: "NIHO", target: "Niho" }] })), /duplicate glossary source/);
   assert.throws(() => parseLocalizationOverviewResult(changed({ ...glossary, entries: [{ source: "鎌倉\n市", target: "Kamakura" }] })), /invalid text/);
   assert.throws(() => parseLocalizationOverviewResult(changed({ ...glossary, entries: [{ source: "x".repeat(501), target: "X" }] })), /invalid text/);

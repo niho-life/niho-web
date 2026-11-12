@@ -728,3 +728,76 @@ test("band: a version named after its publish time does not repeat the time", as
     assert.ok(document.querySelector(".cw-search .cw-sr").textContent.includes("題名・アドレス"), "the label still says what is searched");
   } finally { await app.cleanup(); }
 });
+
+const typeInto = async (node, value) => {
+  assert.ok(node, "input not found");
+  await act(async () => { Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value").set.call(node, value); node.dispatchEvent(new dom.window.Event("input", { bubbles: true })); });
+  await flush();
+};
+
+test("glossary settings: an editable glossary is edited, checked and saved as a whole (a hint for translation, not a review)", async () => {
+  const memory = createLocalizationMemory({ glossary: "editable" });
+  let app = await setup({ adapter: memory.adapter, initialView: "settings" });
+  try {
+    const section = () => document.querySelector('[aria-labelledby="lw-settings-glossary"]');
+    assert.ok(section().textContent.includes("翻訳のヒントとして渡します。合わない訳が出たら、確認して直してください。"));
+    const fields = () => [...section().querySelectorAll("input")].map((node) => node.value);
+    assert.deepEqual(fields(), ["NIHO", "NIHO", "光町", "Hikari"]);
+    assert.equal(button("保存する", section()).disabled, true, "変えていない間は保存できない");
+
+    // 片方だけの行・同じ語の重なりは保存できず、理由を出す
+    await click(button("語を足す", section()), "add");
+    assert.equal(section().querySelectorAll(".lw-glossary-row").length, 3);
+    assert.equal(button("保存する", section()).disabled, true, "空の行だけでは変わっていない");
+    await typeInto(section().querySelector('[aria-label="語 3"]'), "シェアリビング");
+    assert.equal(button("保存する", section()).disabled, true);
+    assert.ok(section().textContent.includes("語と訳語の両方を入れてください。"));
+    await typeInto(section().querySelector('[aria-label="訳語 3"]'), "shared living");
+    assert.equal(button("保存する", section()).disabled, false);
+    await typeInto(section().querySelector('[aria-label="語 3"]'), "niho");
+    assert.ok(section().textContent.includes("「niho」が重なっています。"), "大文字小文字を区別しない");
+    assert.equal(button("保存する", section()).disabled, true);
+    await typeInto(section().querySelector('[aria-label="語 3"]'), " シェアリビング ");
+
+    // 1 行消して、全体を保存する（前後の空白は除く）
+    await click(button("2 行目を消す", section()), "remove");
+    assert.deepEqual(fields(), ["NIHO", "NIHO", " シェアリビング ", "shared living"]);
+    await press("保存する", section());
+    assert.deepEqual(memory.named("saveSettings").map((call) => call.input), [{ expectedVersion: "set1", glossary: [{ source: "NIHO", target: "NIHO" }, { source: "シェアリビング", target: "shared living" }] }]);
+    assert.ok(section().textContent.includes("保存しました。"));
+    assert.deepEqual(fields(), ["NIHO", "NIHO", "シェアリビング", "shared living"], "保存した中身を出し直す");
+    assert.equal(button("保存する", section()).disabled, true);
+
+    // 全部消して保存すると空の用語集になる
+    await click(button("1 行目を消す", section()), "remove");
+    await click(button("1 行目を消す", section()), "remove");
+    await press("保存する", section());
+    assert.deepEqual(memory.named("saveSettings").at(-1).input, { expectedVersion: "set2", glossary: [] });
+    assert.deepEqual(fields(), []);
+  } finally { await app.cleanup(); }
+
+  // ほかの人が先に変えていたら、最新の用語集を出す
+  const stale = createLocalizationMemory({ glossary: "editable" });
+  app = await setup({ adapter: stale.adapter, initialView: "settings" });
+  try {
+    stale.state.settings.version++;
+    await click(button("語を足す"), "add");
+    await typeInto(document.querySelector('[aria-label="語 3"]'), "A");
+    await typeInto(document.querySelector('[aria-label="訳語 3"]'), "B");
+    await press("保存する", document.querySelector('[aria-labelledby="lw-settings-glossary"]'));
+    assert.ok(document.body.textContent.includes("ほかの人が先に変えていました。最新の用語集を出しています。"));
+    assert.deepEqual([...document.querySelectorAll('[aria-labelledby="lw-settings-glossary"] input')].map((node) => node.value), ["NIHO", "NIHO", "光町", "Hikari"]);
+  } finally { await app.cleanup(); }
+
+  // editable でないホスト（表示だけ）・設定を変える権限が無い人は、編集できない
+  const readOnly = createLocalizationMemory({ glossary: true });
+  app = await setup({ adapter: readOnly.adapter, initialView: "settings" });
+  try { assert.equal(document.querySelector('[aria-labelledby="lw-settings-glossary"] input'), null); assert.equal(button("語を足す"), undefined); } finally { await app.cleanup(); }
+  const viewer = createLocalizationMemory({ glossary: "editable" });
+  viewer.state.permissions = viewer.state.permissions.filter((permission) => permission !== "settings");
+  app = await setup({ adapter: viewer.adapter, initialView: "settings" });
+  try {
+    assert.equal(document.querySelector('[aria-labelledby="lw-settings-glossary"] input'), null);
+    assert.ok(document.querySelector('[aria-labelledby="lw-settings-glossary"]').textContent.includes("光町Hikari"));
+  } finally { await app.cleanup(); }
+});

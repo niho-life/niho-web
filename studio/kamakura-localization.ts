@@ -168,7 +168,9 @@ export function createKamakuraLocalizationAdapter(options: KamakuraLocalizationA
       // reviewGlossaryVersion（用語集の確認）は画面から送らない旧操作。型と経路は互換のため残す。
       const body = "autoDraft" in input
         ? { expectedVersion: input.expectedVersion, autoDraft: input.autoDraft }
-        : { expectedVersion: input.expectedVersion, reviewGlossaryVersion: input.reviewGlossaryVersion };
+        : "glossary" in input
+          ? { expectedVersion: input.expectedVersion, glossary: input.glossary.map(({ source, target }) => ({ source, target })) }
+          : { expectedVersion: input.expectedVersion, reviewGlossaryVersion: input.reviewGlossaryVersion };
       return settle(await call("PUT", "settings", body, signal), parseLocalizationSettingsResult);
     },
 

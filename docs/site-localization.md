@@ -52,6 +52,14 @@
 - `review-current`・`review-image`・`reviewGlossaryVersion`・`targetReviewBeforePublish` は画面から出さない旧い操作・設定として残し、ホストは互換のため受けてよい。公開の条件には使わない。
 - 画面の契約は [翻訳の画面](localization-workspace-contract.md)、エディターは [多言語エディター](localization-editor.md)、公開の条件は [言語の公開](localization-release.md)、自動翻訳の上書き規則は [多言語の契約](localization-contract.md)。
 
+## サイトごとの語彙（2026-11-12 の追記）
+
+自動翻訳は誤訳が出る前提で、**サイト（プロジェクト）ごとに頻出の語彙を設定すると、その語彙に合う訳が出やすくなる**ようにする。語彙は「ヒント」で、保証ではない。合わない訳は、人があとで確認して手で直す（確認の工程は置かない）。
+
+- 語彙は、サイトの設定として、そのサイトのホストが保存する。別のサイトを作れば、そのサイトで別の語彙を持つ。コードの定数や、翻訳サービス側の設定は要らない。
+- 翻訳を依頼するときだけ、原文にその語を含む単位の `context` に、語彙を添える（`withGlossaryContext`）。訳の自動修正・語彙との照合・「語彙と違う」の印は付けない。
+- 編集は Studio の「翻訳 → 設定 → 用語集」（`settings.glossary.editable` が true のホスト）。契約は [翻訳の画面](localization-workspace-contract.md)、関数は [多言語の契約](localization-contract.md#語彙用語集のヒント)。
+
 ## 目的と初期範囲
 
 NIHOkamakuraでは日本語原稿から英語版を、NIHO experienceでは英語原稿から日本語版を作る。読者はサイト内のどのページでも「日本語 / English」を切り替えられ、管理者は同じ編集画面で各言語の実際の見た目を確認・編集できる。

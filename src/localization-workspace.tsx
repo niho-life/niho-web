@@ -6,8 +6,9 @@ import {
   isLocalizationItemKey, isSafeNavigationUrl, LOCALIZATION_LIMITS, localizationItemFilter, parseLocalizationCatalogResult, parseLocalizationListResult, parseLocalizationOverviewResult,
   parseLocalizationSettingsResult,
   type LocaleReleaseHistoryEntry, type LocaleReleasePending, type LocalizationFilter, type LocalizationItemSummary, type LocalizationListResult, type LocalizationOverview,
-  type LocalizationSettings, type LocalizationSettingsInput, type LocalizationWorkspaceAdapter,
+  type LocalizationGlossary, type LocalizationSettings, type LocalizationSettingsInput, type LocalizationWorkspaceAdapter,
 } from "./localization-workspace-model.js";
+import { GLOSSARY_LIMITS } from "./localization-glossary.js";
 import { ItemEditor } from "./localization-workspace-item.js";
 import { HistoryDialog, ReleaseDialog, type ReleaseStart } from "./localization-workspace-release.js";
 import { localizationWorkspaceCss } from "./localization-workspace-style.js";
@@ -407,6 +408,70 @@ function ListView({ adapter, overview, list, group, onGroup, timeZone, focusItem
 
 /* ---------- 設定 ---------- */
 
+type GlossaryRow = { readonly id: number; readonly source: string; readonly target: string };
+const filledGlossary = (rows: readonly GlossaryRow[]) => rows.filter((row) => row.source.trim() || row.target.trim()).map((row) => ({ source: row.source.trim(), target: row.target.trim() }));
+/** 保存できない入力の理由（片方だけの行・同じ語の重なり）。無ければ null。大文字小文字は区別しない。 */
+function glossaryProblem(rows: readonly GlossaryRow[]): string | null {
+  const used = new Set<string>();
+  for (const row of rows) {
+    const source = row.source.trim(), target = row.target.trim();
+    if (!source && !target) continue;
+    if (!source || !target) return "語と訳語の両方を入れてください。";
+    if (used.has(source.toLowerCase())) return `「${source}」が重なっています。`;
+    used.add(source.toLowerCase());
+  }
+  return null;
+}
+
+/** サイトごとの語彙。翻訳に渡すヒントで、合わない訳は人が確認して直す前提。ホストが editable のときだけ出る。 */
+function GlossaryEditor({ adapter, settings, glossary, onSaved }: {
+  adapter: LocalizationWorkspaceAdapter; settings: LocalizationSettings; glossary: LocalizationGlossary; onSaved: (settings: LocalizationSettings) => void;
+}) {
+  const requests = useRequests();
+  const nextId = useRef(0);
+  const toRows = (entries: readonly { readonly source: string; readonly target: string }[]): GlossaryRow[] => entries.map((entry) => ({ id: nextId.current++, source: entry.source, target: entry.target }));
+  const [rows, setRows] = useState<readonly GlossaryRow[]>(() => toRows(glossary.entries));
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<{ readonly text: string; readonly error: boolean } | null>(null);
+  const entries = filledGlossary(rows), problem = glossaryProblem(rows);
+  const changed = JSON.stringify(entries) !== JSON.stringify(glossary.entries.map((entry) => ({ source: entry.source, target: entry.target })));
+  const edit = (id: number, field: "source" | "target", value: string) => { setNote(null); setRows((current) => current.map((row) => (row.id === id ? { ...row, [field]: value } : row))); };
+  const save = async () => {
+    if (busy || problem || !changed) return;
+    setBusy(true);
+    setNote(null);
+    try {
+      const input: LocalizationSettingsInput = { expectedVersion: settings.version, glossary: entries };
+      const outcome = await requests.current.run(async (signal) => parseLocalizationSettingsResult(await adapter.saveSettings(input, signal)));
+      if (outcome.kind === "aborted") return;
+      if (outcome.kind === "error") { setNote({ text: "保存できませんでした。もう一度試してください。", error: true }); return; }
+      const result = outcome.value;
+      if (result.status === "saved") { onSaved(result.settings); if (result.settings.glossary) setRows(toRows(result.settings.glossary.entries)); setNote({ text: "保存しました。", error: false }); }
+      else if (result.status === "conflict") { onSaved(result.settings); if (result.settings.glossary) setRows(toRows(result.settings.glossary.entries)); setNote({ text: "ほかの人が先に変えていました。最新の用語集を出しています。", error: true }); }
+      else if (result.status === "invalid") setNote({ text: result.message, error: true });
+      else setNote({ text: "設定を変える権限がありません。", error: true });
+    } finally { setBusy(false); }
+  };
+  return <section className="lw-settings-card" aria-labelledby="lw-settings-glossary">
+    <h3 id="lw-settings-glossary">用語集</h3>
+    <p className="cw-hint">翻訳のヒントとして渡します。合わない訳が出たら、確認して直してください。</p>
+    <div className="lw-glossary-edit">
+      {rows.map((row, index) => <div className="lw-glossary-row" key={row.id}>
+        <input className="cw-input" type="text" aria-label={`語 ${index + 1}`} value={row.source} maxLength={GLOSSARY_LIMITS.text} disabled={busy} onChange={(event) => edit(row.id, "source", event.target.value)} />
+        <span className="lw-glossary-arrow" aria-hidden="true">→</span>
+        <input className="cw-input" type="text" aria-label={`訳語 ${index + 1}`} value={row.target} maxLength={GLOSSARY_LIMITS.text} disabled={busy} onChange={(event) => edit(row.id, "target", event.target.value)} />
+        <button type="button" className="cw-button" aria-label={`${index + 1} 行目を消す`} disabled={busy} onClick={() => { setNote(null); setRows((current) => current.filter((item) => item.id !== row.id)); }}>消す</button>
+      </div>)}
+    </div>
+    <div className="lw-settings-actions">
+      <button type="button" className="cw-button" disabled={busy || rows.length >= GLOSSARY_LIMITS.entries} onClick={() => { setNote(null); setRows((current) => [...current, { id: nextId.current++, source: "", target: "" }]); }}>語を足す</button>
+      <button type="button" className="cw-button cw-primary" disabled={busy || !changed || problem !== null} onClick={() => void save()}>{busy ? "保存しています…" : "保存する"}</button>
+    </div>
+    {changed && problem && <p className="cw-error" role="alert"><Icon name="alert" />{problem}</p>}
+    {note && <p className={note.error ? "cw-error" : "lw-note"} role={note.error ? "alert" : "status"}>{note.error && <Icon name="alert" />}{note.text}</p>}
+  </section>;
+}
+
 function SettingsView({ adapter, overview, timeZone, onBack, onSaved }: {
   adapter: LocalizationWorkspaceAdapter; overview: LocalizationOverview; timeZone: string; onBack: () => void;
   onSaved: (settings: LocalizationSettings) => void;
@@ -454,11 +519,13 @@ function SettingsView({ adapter, overview, timeZone, onBack, onSaved }: {
         {canChange && <div className="lw-settings-actions"><button type="button" className="cw-button cw-primary" disabled={busy || autoDraft === settings.autoDraft} onClick={() => void save()}>{busy ? "保存しています…" : "保存する"}</button></div>}
         {autoNote && <p className={autoNote.error ? "cw-error" : "lw-note"} role={autoNote.error ? "alert" : "status"}>{autoNote.error && <Icon name="alert" />}{autoNote.text}</p>}
       </section>
-      {settings.glossary && <section className="lw-settings-card" aria-labelledby="lw-settings-glossary">
-        <h3 id="lw-settings-glossary">用語集</h3>
-        <p className="cw-hint">版：{settings.glossary.version}</p>
-        <dl className="cw-facts lw-glossary">{settings.glossary.entries.map((entry) => <div key={entry.source}><dt>{entry.source}</dt><dd>{entry.target}</dd></div>)}</dl>
-      </section>}
+      {settings.glossary && (settings.glossary.editable && canChange
+        ? <GlossaryEditor key={settings.glossary.version} adapter={adapter} settings={settings} glossary={settings.glossary} onSaved={onSaved} />
+        : <section className="lw-settings-card" aria-labelledby="lw-settings-glossary">
+          <h3 id="lw-settings-glossary">用語集</h3>
+          <p className="cw-hint">版：{settings.glossary.version}</p>
+          <dl className="cw-facts lw-glossary">{settings.glossary.entries.map((entry) => <div key={entry.source}><dt>{entry.source}</dt><dd>{entry.target}</dd></div>)}</dl>
+        </section>)}
       <section className="lw-settings-card" aria-labelledby="lw-settings-service">
         <h3 id="lw-settings-service">翻訳サービス</h3>
         <dl className="cw-facts">

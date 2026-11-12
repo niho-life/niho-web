@@ -117,7 +117,7 @@ const richPrefix = (value, prefix) => {
  * - upload: (file) => Promise<string>（上げた画像の URL）
  * - by: 操作した人の名前
  * - mediaBase: 画像の置き場（既定は https://media.example.test。デモはローカルの /media）
- * - glossary: true または { version, entries, reviewed }（省略時は用語集なし。reviewed は旧い確認の記録で、公開の条件にしない）
+ * - glossary: true（表示だけ）、"editable"（編集できる）、または { version, entries, reviewed, editable }（省略時は用語集なし。reviewed は旧い確認の記録で、公開の条件にしない）
  * - attention: { label, keys }（原文が更新されたとき目立たせる項目。省略時は出さない）
  * - currentLabel: 公開中の版の名前（既定は「10/1 の公開」）
  */
@@ -134,7 +134,9 @@ export function createLocalizationMemory(options = {}) {
       version: 1, autoDraft: true, connected: true, waiting: 0, failed: 0, nextRetryAt: null,
       glossary: options.glossary === true
         ? { version: "demo-glossary-v1", entries: [{ source: "NIHO", target: "NIHO" }, { source: "光町", target: "Hikari" }], reviewed: false }
-        : options.glossary ? structuredClone(options.glossary) : null,
+        : options.glossary === "editable"
+          ? { version: "demo-glossary-v1", entries: [{ source: "NIHO", target: "NIHO" }, { source: "光町", target: "Hikari" }], reviewed: false, editable: true }
+          : options.glossary ? structuredClone(options.glossary) : null,
     },
     catalog: options.catalogRounds ? { done: 0, total: options.catalogRounds } : null,
     current: options.firstRelease ? null : { releaseId: "en-2026-10-01", version: "r2", label: options.currentLabel ?? "10/1 の公開", publishedAt: "2026-10-01T01:00:00.000Z", pages: 3, sharedResources: 1 },
@@ -338,6 +340,15 @@ export function createLocalizationMemory(options = {}) {
       if (input.expectedVersion !== `set${state.settings.version}`) return { status: "conflict", settings: settings() };
       if (Object.hasOwn(input, "autoDraft")) {
         state.settings.autoDraft = input.autoDraft; state.settings.version++;
+      } else if (Object.hasOwn(input, "glossary")) {
+        if (!state.settings.glossary || !state.settings.glossary.editable) return { status: "invalid", message: "用語集は編集できません。" };
+        const seen = new Set(); const entries = [];
+        for (const entry of input.glossary) {
+          const source = String(entry.source ?? "").trim(), target = String(entry.target ?? "").trim();
+          if (!source || !target || source.length > 120 || target.length > 120 || seen.has(source.toLowerCase()) || entries.length >= 200) return { status: "invalid", message: "用語集の形が正しくありません。" };
+          seen.add(source.toLowerCase()); entries.push({ source, target });
+        }
+        state.settings.glossary.entries = entries; state.settings.glossary.version = `glossary-${entries.length}-${state.settings.version + 1}`; state.settings.version++; state.overviewVersion++;
       } else {
         if (!state.settings.glossary || input.reviewGlossaryVersion !== state.settings.glossary.version) return { status: "conflict", settings: settings() };
         if (state.settings.glossary.reviewed) return { status: "saved", settings: settings() };

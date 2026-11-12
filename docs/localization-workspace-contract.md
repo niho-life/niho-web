@@ -101,7 +101,7 @@ parser は未知の key を拒み、次の形と上限を確かめます。上�
 | `readRelease` | — | `{ status: "ready", current, history, pending }` |
 | `prepareRelease` | `{ operation, releaseId, expectedVersion, expectedCurrentVersion, resumeToken }` | `{ status: "preparing", progress, resumeToken }` / `{ status: "ready", plan }` / `{ status: "blocked", blockers }` / `{ status: "conflict" }` |
 | `applyRelease` | `{ confirmationToken, resumeToken }`（どちらか 1 つだけ文字列） | `{ status: "applying", progress, resumeToken }` / `{ status: "applied", current }` / `{ status: "expired" }` / `{ status: "conflict" }` |
-| `saveSettings` | `{ expectedVersion, autoDraft }`（旧い `{ expectedVersion, reviewGlossaryVersion }` も型に残るが、画面からは送らない） | `{ status: "saved", settings }` / `{ status: "conflict", settings }` / invalid |
+| `saveSettings` | `{ expectedVersion, autoDraft }`、または `{ expectedVersion, glossary }`（語彙を全件置き換える。`settings.glossary.editable` が true のホストだけ）。旧い `{ expectedVersion, reviewGlossaryVersion }` も型に残るが、画面からは送らない | `{ status: "saved", settings }` / `{ status: "conflict", settings }` / invalid |
 | `uploadImage`（任意） | `{ itemKey, unitId, file }` | `{ status: "uploaded", image }` / `{ status: "rejected", reason: "type" \| "size" \| "permission" \| "invalid" }` |
 | `pickAsset`（任意） | `{ itemKey, unitId }` | `{ status: "picked", image }` / `{ status: "cancelled" }`（素材の選び方の画面はホストが出す） |
 | `sourceLink?(itemKey)` | —（同期） | 原文を CMS で開く URL（https、または `/` から始まる同じサイトの path）か `null` |
@@ -139,6 +139,7 @@ type LocalizationSettings = {
     version: string;
     entries: { source: string; target: string }[];
     reviewed: boolean;                     // 旧い確認の記録。parser は検証するが、画面は表示しない（2026-11-12）
+    editable?: boolean;                    // 任意。true のとき、ホストは saveSettings({ glossary }) を受け付け、画面は用語集を編集できる。無ければ表示だけ
   };
 };
 ```
@@ -356,7 +357,7 @@ type LocaleReleaseWorkspacePlan = {
 
 画面で変えられるのは `autoDraft` だけです。`autoDraft` を有効にすると、原文を保存するたびに、変更箇所を自動翻訳します。自動翻訳の訳（`AUTO`）は、過去に確認した記録があっても新しい訳で置き換え、人が直した訳（`MANUAL`）は保持して新しい訳を翻訳案に残します。無効のあいだは、原文が変わった箇所を未翻訳（`review-needed`）にするだけで、翻訳は最初の一括下書きと「翻訳案を作る」（`translate`）を押したときだけ行います。どちらでも、自動・手修正を問わず今の原文に対応する訳があるページを公開でき、人の確認は要りません（2026-11-12。鎌倉は `autoDraft` を無効のまま運用します）。翻訳サービスの接続の有無・待っている件数・失敗と次の再試行は読むだけです。保存は `saveSettings({ expectedVersion: settings.version, autoDraft })` です。
 
-`settings.glossary` があるときだけ、画面は「用語集」として版と `source`・`target` の対照を表示します。`glossary.reviewed` は旧い確認の記録で、parser は検証しますが画面は表示せず、公開の条件にもしません。用語集を確認済みにする操作（`saveSettings({ expectedVersion, reviewGlossaryVersion })`）は 2026-11-12 に画面から外しました。型と BFF の経路は、Studio とホストの配備の順序がずれても壊れないよう残します（ホストは互換のため受けてよい）。`autoDraft` と `reviewGlossaryVersion` を同じ要求へ混ぜない規則も変わりません。一般ホストと古い adapter は `glossary` を返さなくてよく、その場合は用語集の欄を出しません。
+`settings.glossary` があるときだけ、画面は「用語集」として版と `source`・`target` の対照を表示します。`glossary.editable` が true で、設定を変える権限（`settings`）がある人には、表示のかわりに編集の画面を出します（サイトごとの語彙。niho-web#296）。語と訳語の行を足す・消す・直し、「保存する」で全件を `saveSettings({ expectedVersion, glossary })` として送ります。画面でも、片方だけの行と、同じ語の重なり（大文字小文字を区別しない）は保存できず、理由を出します。語彙は**翻訳に渡すヒント**で、合わない訳は人があとで確認して直す前提です（訳の確認の工程は置きません）。`editable` が無い古いホストや、権限のない人には、これまでどおり表示だけです。`glossary.reviewed` は旧い確認の記録で、parser は検証しますが画面は表示せず、公開の条件にもしません。用語集を確認済みにする操作（`saveSettings({ expectedVersion, reviewGlossaryVersion })`）は 2026-11-12 に画面から外しました。型と BFF の経路は、Studio とホストの配備の順序がずれても壊れないよう残します（ホストは互換のため受けてよい）。`autoDraft` と `reviewGlossaryVersion` を同じ要求へ混ぜない規則も変わりません。一般ホストと古い adapter は `glossary` を返さなくてよく、その場合は用語集の欄を出しません。
 
 ### 画像（uploadImage・pickAsset）
 

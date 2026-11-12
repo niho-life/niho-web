@@ -22,7 +22,7 @@ import {
   parseLocalizationOverviewResult, parseLocalizationPreviewResult, parseLocalizationSettingsResult, parseLocalizationTranslationResult,
   type LocaleReleasePrepareInput
 } from "../src/localization-workspace-model.js";
-import { parseLocalizationOverlay, parseLocalizationValue, parseSiteLocalizationConfig } from "../src/localization.js";
+import { parseGlossaryEntries, parseLocalizationOverlay, parseLocalizationValue, parseSiteLocalizationConfig } from "../src/localization.js";
 import { DocumentValidationError } from "../src/validation-utils.js";
 import { parseEnglishPublicationAccepted } from "../src/english-publication.js";
 import { parseBreakpointSettings } from "../src/style-model.js";
@@ -2205,6 +2205,13 @@ function kamakuraLocalizationValues(route: KamakuraLocalizationRoute, body: Reco
         if (typeof body.autoDraft !== "boolean") invalidLocalizationBody("settings");
         return { expectedVersion, autoDraft: body.autoDraft };
       }
+      if (Object.hasOwn(body, "glossary")) {
+        // サイトごとの語彙（用語集）。翻訳に渡すヒントで、検証は件数・文字数・重複だけ（ホストも同じ上限で確かめる）
+        let glossary: ReturnType<typeof parseGlossaryEntries>;
+        try { glossary = parseGlossaryEntries(body.glossary); }
+        catch { invalidLocalizationBody("glossary"); }
+        return { expectedVersion, glossary };
+      }
       return { expectedVersion, reviewGlossaryVersion: version(body.reviewGlossaryVersion) };
     }
     case "upload-intent": {
@@ -2251,11 +2258,9 @@ function kamakuraLocalizationBody(route: KamakuraLocalizationRoute, raw: Uint8Ar
   const action = parsed.action;
   const commandKeys = typeof action === "string" && Object.hasOwn(KAMAKURA_LOCALIZATION_COMMAND_KEYS, action) ? KAMAKURA_LOCALIZATION_COMMAND_KEYS[action] : undefined;
   const editorCommandKeys = typeof action === "string" && Object.hasOwn(KAMAKURA_EDITOR_LOCALIZATION_COMMAND_KEYS, action) ? KAMAKURA_EDITOR_LOCALIZATION_COMMAND_KEYS[action] : undefined;
-  const settingsKeys = route.operation === "settings"
-    ? Object.hasOwn(parsed, "autoDraft") === Object.hasOwn(parsed, "reviewGlossaryVersion")
-      ? undefined
-      : ["expectedVersion", Object.hasOwn(parsed, "autoDraft") ? "autoDraft" : "reviewGlossaryVersion"]
-    : undefined;
+  // 設定の保存は、autoDraft・reviewGlossaryVersion（旧い確認）・glossary（語彙）のうち、ちょうど 1 つだけ受ける
+  const settingsFields = route.operation === "settings" ? ["autoDraft", "reviewGlossaryVersion", "glossary"].filter((field) => Object.hasOwn(parsed, field)) : [];
+  const settingsKeys = route.operation === "settings" && settingsFields.length === 1 ? ["expectedVersion", settingsFields[0]!] : undefined;
   const keys = route.operation === "command"
     ? commandKeys && ["itemKey", "operationId", "action", "unitId", "expectedVersion", "expectedSourceVersion", ...commandKeys]
     : route.operation === "editor-command"

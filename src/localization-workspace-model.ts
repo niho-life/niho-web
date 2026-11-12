@@ -36,6 +36,8 @@ export type LocalizationGlossary = {
   readonly version: string;
   readonly entries: readonly LocalizationGlossaryEntry[];
   readonly reviewed: boolean;
+  /** 任意。true のとき、ホストは `saveSettings({ expectedVersion, glossary })` を受け付け、画面は用語集を編集できる。無ければ表示だけ（古いホスト）。 */
+  readonly editable?: boolean;
 };
 export type LocalizationSettings = {
   readonly version: string;
@@ -157,8 +159,10 @@ export type LocalizationCatalogResult = { readonly status: "updating"; readonly 
 export type LocalizationPreviewResult = { readonly status: "ready"; readonly material: unknown; readonly nextCursor: string | null } | LocalizationNotFound | LocalizationForbidden;
 export type LocalizationSettingsResult = { readonly status: "saved" | "conflict"; readonly settings: LocalizationSettings } | LocalizationInvalid | LocalizationForbidden;
 export type LocalizationSettingsInput =
-  | { readonly expectedVersion: string; readonly autoDraft: boolean; readonly reviewGlossaryVersion?: never }
-  | { readonly expectedVersion: string; readonly reviewGlossaryVersion: string; readonly autoDraft?: never };
+  | { readonly expectedVersion: string; readonly autoDraft: boolean; readonly reviewGlossaryVersion?: never; readonly glossary?: never }
+  | { readonly expectedVersion: string; readonly reviewGlossaryVersion: string; readonly autoDraft?: never; readonly glossary?: never }
+  /** 用語集を、この中身に置き換える（全件）。保存の版は expectedVersion で照合する。 */
+  | { readonly expectedVersion: string; readonly glossary: readonly LocalizationGlossaryEntry[]; readonly autoDraft?: never; readonly reviewGlossaryVersion?: never };
 export type LocalizationImageRejectReason = "type" | "size" | "permission" | "invalid";
 export type LocalizationImageResult =
   | { readonly status: "uploaded" | "picked"; readonly image: LocalizationImage }
@@ -439,14 +443,17 @@ function parseSettings(input: unknown, path: string): LocalizationSettings {
   let glossary: LocalizationGlossary | undefined;
   if (source.glossary !== undefined) {
     const glossaryPath = `${path}.glossary`, glossarySource = record(source.glossary, glossaryPath);
-    keys(glossarySource, ["version", "entries", "reviewed"], glossaryPath);
+    keys(glossarySource, ["version", "entries", "reviewed", "editable"], glossaryPath);
     const entries = array(glossarySource.entries, `${glossaryPath}.entries`, LOCALIZATION_LIMITS.glossaryEntries).map((entry, index) => {
       const entryPath = `${glossaryPath}.entries[${index}]`, value = record(entry, entryPath);
       keys(value, ["source", "target"], entryPath);
       return { source: name(value.source, `${entryPath}.source`, LOCALIZATION_LIMITS.glossaryText), target: name(value.target, `${entryPath}.target`, LOCALIZATION_LIMITS.glossaryText) };
     });
     if (new Set(entries.map((entry) => entry.source)).size !== entries.length) fail(`${glossaryPath}.entries`, "duplicate glossary source");
-    glossary = { version: version(glossarySource.version, `${glossaryPath}.version`), entries, reviewed: bool(glossarySource.reviewed, `${glossaryPath}.reviewed`) };
+    glossary = {
+      version: version(glossarySource.version, `${glossaryPath}.version`), entries, reviewed: bool(glossarySource.reviewed, `${glossaryPath}.reviewed`),
+      ...(glossarySource.editable === undefined ? {} : { editable: bool(glossarySource.editable, `${glossaryPath}.editable`) }),
+    };
   }
   return {
     version: version(source.version, `${path}.version`), autoDraft: bool(source.autoDraft, `${path}.autoDraft`),

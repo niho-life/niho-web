@@ -228,7 +228,7 @@ log は editor と同じく問い合わせ ID・固定の operation（`cms_schem
 | `POST catalog/advance` | `{}` | 30 秒 |
 | `POST preview/items` | `{ itemKey, previewId, cursor }` | 30 秒 |
 | `POST release`・`release/prepare`・`release/apply` | `{}`・`{ operation, releaseId, expectedVersion, expectedCurrentVersion, resumeToken }`・`{ confirmationToken, resumeToken }` | 30 秒 |
-| `PUT settings` | `{ expectedVersion, autoDraft }` または `{ expectedVersion, reviewGlossaryVersion }`（両方・どちらも無しは拒否。後者は 2026-11-12 に画面から外した旧い確認の操作で、互換のため通す） | 12 秒 |
+| `PUT settings` | `{ expectedVersion, autoDraft }`・`{ expectedVersion, glossary }`（サイトごとの語彙を全件置き換える。200 件・各 120 文字・原文の重複なしを BFF が確かめ、前後の空白を除いて渡す）・`{ expectedVersion, reviewGlossaryVersion }` のうち**ちょうど 1 つ**（複数・どれも無しは拒否。最後は 2026-11-12 に画面から外した旧い確認の操作で、互換のため通す） | 12 秒 |
 | `POST uploads/intent` | `{ itemKey, unitId, name, mimeType, bytes }` | 12 秒 |
 
 - `set-image` の `image` は `null`（原文と同じに戻す）か `{ kind: "image-url", src }` だけです（どの URL を使えるかは鎌倉の Worker が確かめる）。

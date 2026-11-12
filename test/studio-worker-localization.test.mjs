@@ -368,6 +368,9 @@ test("翻訳 BFF: 本文を操作ごとの key の集合と W1 の形で確か�
     ["POST", "/release/apply", { confirmationToken: null, resumeToken: "apply-1" }, { confirmationToken: null, resumeToken: "apply-1" }, 200, { status: "expired" }],
     ["PUT", "/settings", { expectedVersion: "set1", autoDraft: false }, { expectedVersion: "set1", autoDraft: false, includeGlossary: true }, 200, data.settings],
     ["PUT", "/settings", { expectedVersion: "set2", reviewGlossaryVersion: "kamakura-glossary-v1" }, { expectedVersion: "set2", reviewGlossaryVersion: "kamakura-glossary-v1", includeGlossary: true }, 200, data.settings],
+    // サイトごとの語彙（用語集）。前後の空白は BFF が除いて、全件を上流へ渡す
+    ["PUT", "/settings", { expectedVersion: "set3", glossary: [{ source: " 鎌倉 ", target: "Kamakura" }, { source: "NIHO", target: "NIHO" }] }, { expectedVersion: "set3", glossary: [{ source: "鎌倉", target: "Kamakura" }, { source: "NIHO", target: "NIHO" }], includeGlossary: true }, 200, data.settings],
+    ["PUT", "/settings", { expectedVersion: "set3", glossary: [] }, { expectedVersion: "set3", glossary: [], includeGlossary: true }, 200, data.settings],
     ["POST", "/uploads/intent", { itemKey: "aG9tZQ", unitId: "cover", name: "海.png", mimeType: "image/png", bytes: 2048 }, { itemKey: "aG9tZQ", unitId: "cover", name: "海.png", mimeType: "image/png", bytes: 2048 }, 201, { uploadUrl, uploadToken: "token.value", uploadId: UUID }]
   ]) {
     h.setRespond(() => Response.json(reply, { status }));
@@ -424,6 +427,17 @@ test("翻訳 BFF: 本文を操作ごとの key の集合と W1 の形で確か�
     ["PUT", "/settings", { expectedVersion: "set1", reviewGlossaryVersion: "bad\nversion" }],
     ["PUT", "/settings", { expectedVersion: "set1", reviewGlossaryVersion: "kamakura-glossary-v1", includeGlossary: true }],
     ["PUT", "/settings", { expectedVersion: "set1", reviewGlossaryVersion: "kamakura-glossary-v1", actor }],
+    // 語彙: 形・重複・上限・余計な項目・ほかの設定との同時指定は、上流へ届かない
+    ["PUT", "/settings", { expectedVersion: "set1", glossary: "鎌倉" }],
+    ["PUT", "/settings", { expectedVersion: "set1", glossary: [{ source: "NIHO", target: "NIHO" }, { source: "niho", target: "Niho" }] }],
+    ["PUT", "/settings", { expectedVersion: "set1", glossary: [{ source: "", target: "x" }] }],
+    ["PUT", "/settings", { expectedVersion: "set1", glossary: [{ source: "a", target: "b", note: "c" }] }],
+    ["PUT", "/settings", { expectedVersion: "set1", glossary: [{ source: "x".repeat(121), target: "y" }] }],
+    ["PUT", "/settings", { expectedVersion: "set1", glossary: Array.from({ length: 201 }, (_, index) => ({ source: `s${index}`, target: "t" })) }],
+    ["PUT", "/settings", { expectedVersion: "set1", glossary: [], autoDraft: true }],
+    ["PUT", "/settings", { expectedVersion: "set1", glossary: [], reviewGlossaryVersion: "kamakura-glossary-v1" }],
+    ["PUT", "/settings", { expectedVersion: "set1", glossary: [], includeGlossary: true }],
+    ["PUT", "/settings", { expectedVersion: "set1", glossary: [], actor }],
     ["POST", "/uploads/intent", { itemKey: "aG9tZQ", unitId: "cover", name: "a.svg", mimeType: "image/svg+xml", bytes: 10 }],
     ["POST", "/uploads/intent", { itemKey: "aG9tZQ", unitId: "cover", name: "a.png", mimeType: "image/png", bytes: 0 }],
     ["POST", "/uploads/intent", { itemKey: "aG9tZQ", unitId: "cover", name: "a.png", mimeType: "image/png", bytes: 50 * 1024 * 1024 + 1 }],

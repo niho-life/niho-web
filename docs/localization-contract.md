@@ -185,11 +185,31 @@ preview.status.complete; // 全required unitがreviewedでissuesがなければt
 
 公開snapshotはこのcore overlayとは別です。hostは公開時点でページ、共通component、route/SEO manifestを同じreleaseへ固定し、過去の公開targetをdraft更新で置換しないでください。
 
+## 語彙（用語集）のヒント
+
+サイト（プロジェクト）ごとの語彙は、自動翻訳に渡す**ヒント**です。語彙を守らせる仕組みではなく、合わない訳は人があとで確認して直します（確認の工程は置きません）。語彙の保存・編集・翻訳サービスへの送信はホストの責務で、ライブラリは検証と、翻訳の材料に添える文字列だけを持ちます。
+
+| 関数 | 役割 |
+| --- | --- |
+| `parseGlossaryEntries(input)` | 語彙 `{ source, target }[]` を検証し、前後の空白を除いた写しを返す。200 件まで、各 120 文字まで、1 行、原文の語の重複（大文字小文字を区別しない）は拒否 |
+| `glossaryVersion(entries)` | 中身（順序に依らない）のハッシュ `glossary-<16桁>`。手で上げなくてよい |
+| `glossaryHintForUnit(entries, sourceValue)` | その単位の原文（文字列・リッチテキストの文字）に含まれる語だけを選び、`Glossary (use these translations): 鎌倉 → Kamakura; …` を返す。無ければ空。部分一致・大文字小文字を区別しない。1 単位に 20 件・400 文字まで（先に並んだ語を優先） |
+| `withGlossaryContext(units, entries)` | 翻訳を依頼するときの**複製**の `context` に、語彙を `\| ` で添える。保存する単位・`sourceFingerprint` は変えない。語彙を含まない単位・翻訳しない単位は同じオブジェクトのまま |
+
+```ts
+const entries = parseGlossaryEntries(settings.glossary);          // ホストが保存した語彙
+const units = withGlossaryContext(record.collection.units, entries); // 依頼用の複製
+await fetch(gateway, { method: "POST", body: JSON.stringify({ /* … */ collection: { ...record.collection, units } }) });
+```
+
+添えるのは依頼のときだけで、翻訳結果の検証・採用（`acceptTranslationResult` など）は今までどおり、保存した単位と `sourceFingerprint` に対して行います。
+
 ## 公開API
 
 - Config/mapping: `parseSiteLocalizationConfig`, `documentLocaleFor`, `localizationLocaleFor`
 - Extraction/fingerprint: `collectLocalizationUnits`
 - Persistence parsing/construction: `parseLocalizationOverlay`, `createLocalizationOverlay`
+- 語彙のヒント: `parseGlossaryEntries`, `glossaryVersion`, `glossaryHintForUnit`, `withGlossaryContext`
 - Candidate/draft/review: `acceptTranslationResult`, `applyAutomaticTranslationResult`, `editLocalizedValue`, `adoptTranslationCandidate`, `reviewLocalizedValue`
 - Output/status: `materializeLocalizedPage`, `localizationStatus`
 

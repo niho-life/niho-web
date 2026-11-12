@@ -149,6 +149,9 @@ const localizationCss = `
 .nw-localization .lw-settings-card h3{margin:0;font-size:14px}
 .nw-localization .lw-glossary>div{padding:6px 0;border-bottom:1px solid var(--nw-border)}
 .nw-localization .lw-glossary>div:last-child{border-bottom:0}
+.nw-localization .lw-glossary-edit{display:grid;gap:8px}
+.nw-localization .lw-glossary-row{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr) auto;gap:8px;align-items:center}
+.nw-localization .lw-glossary-arrow{color:var(--nw-text-sub)}
 .nw-localization .lw-check{display:flex;align-items:flex-start;gap:10px;min-height:40px;cursor:pointer}
 .nw-localization .lw-check input{width:20px;height:20px;margin:2px 0 0;flex:none;accent-color:var(--nw-accent)}
 .nw-localization .lw-settings-actions{display:flex;gap:8px}
