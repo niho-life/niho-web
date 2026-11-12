@@ -66,7 +66,7 @@ async function accessToken(pair, issuer, audience) {
 }
 
 function catalog(pageTitle = "NIHO Kamakura") {
-  const site = { id: "kamakura", name: "鎌倉サイト（新サイト確認用）", domains: ["https://next-kamakura.niho.life"] };
+  const site = { id: "kamakura", name: "鎌倉サイト", domains: ["https://next-kamakura.niho.life"] };
   return {
     project: { id: "kamakura-site", name: "NIHO kamakura", site },
     sites: [site],

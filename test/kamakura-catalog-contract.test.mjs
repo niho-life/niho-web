@@ -20,7 +20,7 @@ const contract = await loadKamakuraCatalogContract();
 const communityDinnerTitle = "Kamakura: Community Dinner with Locals  | NIHO kamakura -- Shared living-room in Kamakura, where tourists and locals can get together";
 
 function catalog(pageTitle = "NIHO Kamakura") {
-  const site = { id: "kamakura", name: "鎌倉サイト（新サイト確認用）", domains: ["https://next-kamakura.niho.life"] };
+  const site = { id: "kamakura", name: "鎌倉サイト", domains: ["https://next-kamakura.niho.life"] };
   return {
     project: { id: "kamakura-site", name: "NIHO kamakura", site },
     sites: [site],
@@ -48,6 +48,19 @@ test("an explicitly configured CLI preview only accepts the bound preview origin
   assert.throws(() => contract.parseKamakuraCatalog(preview), contract.KamakuraCatalogContractError);
   assert.throws(() => contract.parseKamakuraCatalog(preview, "https://other.example"), contract.KamakuraCatalogContractError);
   assert.throws(() => contract.parseKamakuraCatalog(production, origin), contract.KamakuraCatalogContractError);
+});
+
+test("the production site is shown as 鎌倉サイト, and the previous upstream name is still accepted during the rollout", () => {
+  const production = catalog();
+  assert.equal(contract.parseKamakuraCatalog(production).sites[0].name, "鎌倉サイト");
+  const legacySite = { ...production.sites[0], name: "鎌倉サイト（新サイト確認用）" };
+  const legacy = { ...production, project: { ...production.project, site: legacySite }, sites: [legacySite] };
+  const parsed = contract.parseKamakuraCatalog(legacy);
+  assert.equal(parsed.sites[0].name, "鎌倉サイト", "旧名で届いても表示は新しい名前にそろえる");
+  assert.equal(parsed.project.site.name, "鎌倉サイト");
+  const otherSite = { ...production.sites[0], name: "鎌倉サイト（確認用）" };
+  assert.throws(() => contract.parseKamakuraCatalog({ ...production, project: { ...production.project, site: otherSite }, sites: [otherSite] }), contract.KamakuraCatalogContractError);
+  assert.throws(() => contract.parseKamakuraCatalog(legacy, "https://site-preview.example"), contract.KamakuraCatalogContractError, "preview では旧名を受け付けない");
 });
 
 test("shared catalog contract accepts the current 133-character page title", () => {
