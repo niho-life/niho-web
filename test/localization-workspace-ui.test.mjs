@@ -139,6 +139,25 @@ test("list and editor: a legacy draft item is untranslated, while draft and revi
   } finally { await app.cleanup(); }
 });
 
+test("editor: an outdated translation can adopt a candidate even when the wording is the same", async () => {
+  const memory = createLocalizationMemory();
+  const adapter = { ...memory.adapter, loadItem: async (input, signal) => {
+    const result = await memory.adapter.loadItem(input, signal);
+    if (result.status !== "ready") return result;
+    return { ...result, item: { ...result.item, units: result.item.units.map((unit) => unit.unitId === "intro" && unit.state === "review-needed" && unit.value !== null
+      ? { ...unit, candidate: { candidateId: "same-wording", value: unit.value } } : unit) } };
+  } };
+  const app = await setup({ adapter });
+  try {
+    await press("すべて（5 件）", document.querySelector(".cw-filters"));
+    await openRow("私たちについて");
+    assert.equal(card("intro").dataset.state, "review-needed");
+    // 確認の操作は無いので、同じ文の翻訳案でも採用できないと今の原文に結び付けられず未翻訳のまま残る
+    await click(button("翻訳案を使う", card("intro")), "adopt same wording");
+    assert.deepEqual(commands(memory, "adopt-candidate").map((call) => [call.input.unitId, call.input.candidateId]), [["intro", "same-wording"]]);
+  } finally { await app.cleanup(); }
+});
+
 test("list: 対象外は理由ごとにまとまり、理由でも検索できる", async () => {
   const memory = createLocalizationMemory();
   const original = memory.state.items.find((item) => item.excluded);

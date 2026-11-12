@@ -545,7 +545,8 @@ const UnitCard = memo(function UnitCard({ unit, languages, timeZone, canEdit, ca
       {unit.problem && <div className="cw-error" id={problemId} role="alert"><Icon name="alert" /><span>{unit.problem}</span>
         {canEdit && <button type="button" className="cw-link-button" onClick={() => actions.restoreMarks(unitId)}>札を元に戻す</button>}</div>}
       {status === "invalid" && unit.message && <p className="cw-error" role="alert"><Icon name="alert" />{unit.message}</p>}
-      {server.candidate && !same(server.candidate.value, server.value) && <div className="lw-candidate">
+      {/* 原文が変わって古くなった訳（review-needed）は、翻訳案が今の訳と同じ文でも採用して今の原文に結び付けられるようにする（確認の操作は 2026-11-12 に廃止） */}
+      {server.candidate && (server.state === "review-needed" || !same(server.candidate.value, server.value)) && <div className="lw-candidate">
         <span className="lw-col-label">翻訳案</span>
         <MarkedText segments={server.kind === "text" ? textSegments(server.candidate.value as string) : richSegments(server.candidate.value as LocalizedRichText)} describe={describe} />
         {canEdit && <button type="button" className="cw-button" disabled={busy || status === "conflict" || status === "gone"}
