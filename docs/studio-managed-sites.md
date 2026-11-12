@@ -28,7 +28,7 @@ GUI と CLI が実装する操作は次だけである。
 - 公開済みの指定revisionへの復元計画・反映
 - 通常ページの作成、タイトル・path更新、visibility更新
 
-Discovery はこの集合だけを返す。すべての読取・変更は、そのrequest時点の D1 owner/editor membership と Project/Site を照合する。別siteのpage、plan、version、公開pointerは変更できない。
+URL 変更・非公開化の確認画面では、サイト内の他ページの下書きと公開版からリンク元を集計する。Discovery はこの集合だけを返す。すべての読取・変更は、そのrequest時点の D1 owner/editor membership と Project/Site を照合する。別siteのpage、plan、version、公開pointerは変更できない。
 
 ## 共有公開origin
 

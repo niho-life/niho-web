@@ -167,8 +167,17 @@ testWithD1("Studio-native site uses one D1 page store for GUI, CLI, CAS, release
   assert.equal((await h.send(PUBLIC_ORIGIN, "GET", "/s/fixture-site/about", undefined, { auth: false })).status, 404);
 
   // plan後にmembershipを失ったactorは反映できず、失敗したplanは消費しない。再参加後だけ同じplanを安全に適用できる。
-  const visibility = { action: "visibility", target: { siteId, pageId: applied.page.pageId, locale: "ja" }, visibility: "private" };
+  const aboutTarget = { siteId, pageId: applied.page.pageId, locale: "ja" };
+  const move = { action: "update", target: aboutTarget, title: "About", path: "/about-us" };
+  const movePlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/page-changes/prepare`, { change: move }), 200);
+  const links = [{ pageId: "home", locale: "ja", title: "Fixture site", count: 1 }];
+  assert.deepEqual(movePlan.impact.linkedFrom, links);
+  assert.equal(movePlan.impact.after, `${PUBLIC_ORIGIN}/s/fixture-site/about-us`);
+
+  const visibility = { action: "visibility", target: aboutTarget, visibility: "private" };
   const visibilityPlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/page-changes/prepare`, { change: visibility }), 200);
+  assert.deepEqual(visibilityPlan.impact.linkedFrom, links);
+  assert.equal(visibilityPlan.impact.after, undefined);
   h.sqlite.prepare("INSERT INTO project_members (project_id, access_subject, role, display_name, email) VALUES (?, 'backup-owner', 'owner', 'Backup owner', 'backup@example.test')").run(projectId);
   h.sqlite.prepare("DELETE FROM project_members WHERE project_id = ? AND access_subject = ?").run(projectId, OWNER);
   assert.equal((await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/page-changes/apply`, { change: visibility, confirmationToken: visibilityPlan.confirmationToken })).status, 403);

@@ -426,6 +426,37 @@ async function applyRelease(request: Request, db: ManagedD1, actor: ManagedActor
 function changeOperation(change: EditorPageChange): StoredPlan["operation"] {
   return change.action === "create" ? "page.create" : change.action === "update" ? "page.update" : "page.visibility";
 }
+async function linkedPages(db: ManagedD1, actor: ManagedActor, projectId: string, siteId: string, target: EditorPage, targetPath: string, targetUrl: string) {
+  const result = await db.prepare(`
+    WITH links AS (
+      SELECT mp.page_id, mp.locale, mp.title, link.value AS href,
+             CASE WHEN substr(link.path, -6) = '.attrs'
+                  THEN json_extract(version.document_json, substr(link.path, 1, length(link.path) - 6) || '.id')
+             END AS node_id
+        FROM project_members AS member
+        JOIN sites AS s ON s.project_id = member.project_id
+        JOIN managed_pages AS mp ON mp.site_id = s.id
+        JOIN managed_page_versions AS version
+          ON version.site_id = mp.site_id AND version.page_id = mp.page_id AND version.locale = mp.locale
+             AND version.revision IN (mp.current_revision, mp.published_revision)
+        JOIN json_tree(version.document_json, '$.body') AS link
+       WHERE member.access_subject = ?1 AND s.project_id = ?2 AND s.id = ?3 AND mp.page_id <> ?4
+         AND link.key = 'href' AND link.type = 'text'
+    )
+    SELECT page_id, locale, title, count(DISTINCT node_id) AS count
+      FROM links
+     WHERE node_id IS NOT NULL
+       AND (href IN (?5, ?6) OR substr(href, 1, length(?5) + 1) IN (?5 || '?', ?5 || '#')
+                            OR substr(href, 1, length(?6) + 1) IN (?6 || '?', ?6 || '#'))
+     GROUP BY page_id, locale, title
+     ORDER BY title, page_id, locale
+     LIMIT 500
+  `).bind(actor.subject, projectId, siteId, target.pageId, targetPath, targetUrl)
+    .all<{ readonly page_id: string; readonly locale: string; readonly title: string; readonly count: number }>();
+  if (!result.success) throw new Error("managed page links query failed");
+  return (result.results ?? []).map(({ page_id, locale, title, count }) => ({ pageId: page_id, locale, title, count }));
+}
+
 async function preparePageChange(request: Request, db: ManagedD1, actor: ManagedActor, projectId: string, siteId: string, origin: string): Promise<Response> {
   const body = await readJson(request, actor, MAX_MUTATION_BODY), change = normalizePageChange(body?.change);
   const currentPages = await pages(db, actor, projectId, siteId), registration = await managedRegistration(db, projectId, siteId);
@@ -435,12 +466,17 @@ async function preparePageChange(request: Request, db: ManagedD1, actor: Managed
   const target = change.action === "create" ? null : currentPages.find((page) => page.pageId === change.target.pageId && page.locale === change.target.locale);
   const payload = { projectId, siteId, change, expectedVersion: target ? (await pageRow(db, actor, projectId, siteId, target.pageId, target.locale))?.current_version ?? null : null };
   const token = await storePlan(db, actor, siteId, changeOperation(change), payload);
+  const makePrivate = change.action === "visibility" && change.visibility === "private";
+  const moving = change.action === "update" && change.path !== target?.path;
   const before = target?.path ? managedPageUrl(origin, registration.slug, target.path) : undefined;
   const afterPath = change.action === "visibility" ? target?.path : change.path;
-  const after = afterPath ? managedPageUrl(origin, registration.slug, afterPath) : undefined;
+  const after = afterPath && !makePrivate ? managedPageUrl(origin, registration.slug, afterPath) : undefined;
+  const linkedFrom = target?.path && before && (moving || makePrivate)
+    ? await linkedPages(db, actor, projectId, siteId, target, target.path, before) : [];
+  const notes = moving ? ["変更前のURLを指すリンクは、新しいURLへ更新してください。"]
+    : makePrivate ? ["このページは公開URLから表示されなくなります。"] : [];
   return json({ change, confirmationToken: token, domain: origin, impact: {
-    ...(before ? { before } : {}), ...(after ? { after } : {}), linkedFrom: [], navigation: [],
-    notes: [change.action === "visibility" && change.visibility === "private" ? "公開URLから表示されなくなります。" : "変更はこのサイトだけに反映されます。"]
+    ...(before && target?.visibility !== "private" ? { before } : {}), ...(after ? { after } : {}), linkedFrom, navigation: [], notes
   } });
 }
 
