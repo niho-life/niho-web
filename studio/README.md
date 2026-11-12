@@ -299,7 +299,7 @@ log は editor・CMS と同じく問い合わせ ID・固定の operation（`loc
 
 ### 集計
 
-- GA4: 期間の終端はプロパティの時間帯で昨日です。7日・28日はちょうどその日数、3か月・12か月は暦の月（89〜92日・365〜366日）で数え、直前の同じ長さと比べます。sessions・activeUsers・screenPageViews（契約の pageViews）、日別の sessions、`sessionDefaultChannelGroup` 別の sessions（日本語名。自然検索・直接・参照元サイト・ソーシャル・有料検索・メール・不明のほかは「その他」）、`pagePath` 上位20件のページ表示（安全な path だけ・title なし）です。
+- GA4: 期間の終端はプロパティの時間帯で昨日です。7日・28日はちょうどその日数、3か月・12か月は暦の月（89〜92日・365〜366日）で数え、直前の同じ長さと比べます。sessions・activeUsers・screenPageViews（契約の pageViews）、日別の sessions、`sessionDefaultChannelGroup` 別の sessions（日本語名。自然検索・直接・参照元サイト・ソーシャル・有料検索・メール・不明のほかは「その他」）、`pagePath` 上位20件のページ表示（安全な path だけ・title なし）です。そのサイト（`streamId` と `hostName`）で最初に記録がある日を計測開始日とし、それより前の日は未計測として扱います。直前期が計測開始日より前の日を含む場合（12か月表示など）は、比較値を未取得（`null`、画面では「—」）にします。当期の日別も、計測開始日より前は 0 ではなく `null`（折れ線が途切れる）です。
 - Search Console: Pacific Time の今日の3日前までです。合計・日別・page 上位20件で、CTR は 0〜1 です。Search Analytics が返す履歴は16か月までなので、直前期がそれより古い日を含む場合（12か月表示）は直前期を問い合わせず、比較値を未取得（`null`、画面では「—」）にします。
 - 0 は実測値、取れなかった値は `null`、行の無い成功は `empty` です。片方の失敗はもう片方に影響しません。cache は正規化した集計だけを30分保存します。
 - 計測タグ: GA4 の接続と確認のときに、公開 origin の `/` を redirect なし・4 秒・1 MiB までで読み、ストリームの測定IDがあれば `published`、無ければ `not-configured`（測定IDは示さない）、読めなければ `failed` です。Tag Manager 経由の設置は見つけられません。
