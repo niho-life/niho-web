@@ -126,14 +126,14 @@ function fingerprint(value) {
  * Fontsource の可変フォント（wght 100〜900）の woff2 を assets/fonts/<名前>-<版>/ に写し、その @font-face の CSS（assets/fonts/ から見た相対の url）を返す。
  * unicode-range ごとに分かれているので、ブラウザは画面に出る文字の分だけ読む。版や中身ごとに場所が変わるので、Worker は長くキャッシュさせる（worker.ts の VERSIONED_FONT_PATH）。
  */
-const WEB_FONTS = [
-  { packageName: "@fontsource-variable/inter", family: "Inter" },
-  { packageName: "@fontsource-variable/noto-sans-jp", family: "Noto Sans JP" }
-];
-
 async function webFonts() {
+  // 関数の中に置く（build は上の top-level await で走るので、下の const はまだ初期化されていない）
+  const fonts = [
+    { packageName: "@fontsource-variable/inter", family: "Inter" },
+    { packageName: "@fontsource-variable/noto-sans-jp", family: "Noto Sans JP" }
+  ];
   const faces = [];
-  for (const { packageName, family } of WEB_FONTS) {
+  for (const { packageName, family } of fonts) {
     const packageDirectory = join(studioDirectory, "..", "node_modules", ...packageName.split("/"));
     const { version } = JSON.parse(await readFile(join(packageDirectory, "package.json"), "utf8"));
     if (!/^\d+\.\d+\.\d+$/u.test(version)) throw new Error(`${packageName} has an unexpected version: ${version}`);
