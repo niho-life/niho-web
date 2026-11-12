@@ -213,7 +213,10 @@ function runReport(state, body) {
   const inList = field("pagePath")?.inListFilter?.values;
   const dimensions = body.dimensions.map((dimension) => dimension.name), multi = body.dateRanges.length > 1;
   const rows = [];
-  if (data) for (const range of body.dateRanges) {
+  if (data) for (const requested of body.dateRanges) {
+    // 計測開始日（measuredFrom）より前は GA4 に記録が無い。期間全体がそれより前なら行を返さない
+    const range = data.measuredFrom && requested.startDate < data.measuredFrom ? { ...requested, startDate: data.measuredFrom } : requested;
+    if (range.startDate > range.endDate) continue;
     const add = (values, metrics) => rows.push({ dimensionValues: [...values, ...(multi ? [range.name] : [])].map((value) => ({ value })), metricValues: metrics.map((value) => ({ value: String(value) })) });
     if (!dimensions.length) add([], body.metrics.map((metric) => data.totals[range.name][metric.name]));
     else if (dimensions[0] === "date") { add([range.startDate.replaceAll("-", "")], [3]); add([range.endDate.replaceAll("-", "")], [5]); }
@@ -640,4 +643,28 @@ testWithD1("a late successful fetch does not revive a connection that another re
   await body(await h.send("POST", `${api()}/ga4/reporting/retry`, {}), 200);
   assert.equal((await body(await h.send("GET", `${api()}/connection`), 200)).ga4.reportingState, "connected");
   assert.equal((await report(h, "7d")).ga4.state, "available");
+});
+
+
+testWithD1("GA4 leaves days and comparisons before the first measured day unknown instead of zero", async (t) => {
+  const h = await fixture(t);
+  // このサイトの計測は 100 日前から（それより前の GA4 には記録が無い）
+  const measuredFrom = addDays(h.ga4End, -100);
+  h.state.ga4Data["11|www.alpha.example"].measuredFrom = measuredFrom;
+  await connectGa4(h);
+  const yearly = (await report(h, "12m")).ga4;
+  assert.equal(yearly.state, "available");
+  // 直前期（約24〜12か月前）は計測前なので、比較値はすべて未取得
+  for (const name of ["sessions", "activeUsers", "pageViews"]) { assert.equal(yearly.report[name].previous, null, name); assert.notEqual(yearly.report[name].current, null, name); }
+  for (const source of yearly.report.sources) assert.equal(source.sessions.previous, null, source.name);
+  for (const page of yearly.report.topPages) assert.equal(page.pageViews.previous, null, page.page.path);
+  // 当期の日別は、計測開始より前が null（折れ線を途切れさせる）、開始日からは数値
+  for (const row of yearly.report.daily) assert.equal(row.sessions === null, row.date < measuredFrom, row.date);
+  // 直前期の上位ページは問い合わせない
+  const previousStart = yearly.report.previousRange.start;
+  assert.equal(h.calls.runReport.some((call) => call.body.dimensions[0]?.name === "pagePath" && call.body.dateRanges.length === 1 && call.body.dateRanges[0].startDate === previousStart), false);
+  // 28日の直前期（56〜29日前）は計測開始の後なので、これまでどおり比較する
+  const monthly = (await report(h, "28d")).ga4;
+  assert.equal(monthly.report.sessions.previous, 100);
+  assert.ok(monthly.report.daily.every((row) => row.sessions !== null));
 });

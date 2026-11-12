@@ -22,6 +22,8 @@ const MAX_SITE_HTML_BYTES = 1024 * 1024;
 const MAX_SERVICE_ACCOUNT_BYTES = 16 * 1024;
 const SEARCH_CONSOLE_TIME_ZONE = "America/Los_Angeles";
 const TOP_PAGES = 20;
+/** GA4 Data API が受け付ける最も古い日付。計測開始日を探すときの下限に使う。 */
+const GA4_EARLIEST_DATE = "2015-08-14";
 const SEARCH_CONSOLE_PREVIOUS_PAGE_ROWS = 1000;
 /** final データとして扱う遅れ（Pacific Time の今日から何日前まで）。 */
 const SEARCH_CONSOLE_FINAL_DELAY_DAYS = 3;
@@ -403,16 +405,24 @@ export async function loadGa4Report(client: GoogleAnalyticsClient, target: Ga4Ta
     { startDate: window.previousRange.start, endDate: window.previousRange.end, name: "previous" as const }
   ];
   const current = [both[0]!], previous = [both[1]!];
-  const [totals, daily, channels, pages] = await Promise.all([
+  const [measurement, totals, daily, channels, pages] = await Promise.all([
+    // このサイト（stream と host）で最初に記録がある日。これより前は未計測で、0 と断定できない
+    client.ga4RunReport(target.propertyId, { dateRanges: [{ startDate: GA4_EARLIEST_DATE, endDate: window.range.end, name: "current" }], dimensions: [{ name: "date" }], metrics: [{ name: "sessions" }], dimensionFilter: siteFilter(target), orderBys: [{ dimension: { dimensionName: "date" } }], limit: "1", keepEmptyRows: false }),
     client.ga4RunReport(target.propertyId, { dateRanges: both, dimensions: [], metrics: [{ name: "sessions" }, { name: "activeUsers" }, { name: "screenPageViews" }], dimensionFilter: siteFilter(target), limit: "10", keepEmptyRows: false }),
     client.ga4RunReport(target.propertyId, { dateRanges: current, dimensions: [{ name: "date" }], metrics: [{ name: "sessions" }], dimensionFilter: siteFilter(target), orderBys: [{ dimension: { dimensionName: "date" } }], limit: "400", keepEmptyRows: false }),
     client.ga4RunReport(target.propertyId, { dateRanges: both, dimensions: [{ name: "sessionDefaultChannelGroup" }], metrics: [{ name: "sessions" }], dimensionFilter: siteFilter(target), limit: "100", keepEmptyRows: false }),
     client.ga4RunReport(target.propertyId, { dateRanges: current, dimensions: [{ name: "pagePath" }], metrics: [{ name: "screenPageViews" }], dimensionFilter: siteFilter(target), orderBys: [{ metric: { metricName: "screenPageViews" }, desc: true }], limit: "100", keepEmptyRows: false })
   ]);
 
+  const measuredDates = measurement.map((row) => ga4Date(row.dimensions.date)).filter((date): date is string => date !== null).sort();
+  const measuredFrom = measuredDates[0] ?? null;
+  // 直前期が計測開始より前の日を含むとき（12か月表示など）は、一部の日だけの値を比較値に見せず未取得（null）にする
+  const previousMeasured = measuredFrom === null || measuredFrom <= window.previousRange.start;
+  const previousValue = (value: number): number | null => previousMeasured ? value : null;
+
   const total = (range: "current" | "previous", metric: "sessions" | "activeUsers" | "screenPageViews") =>
     totals.filter((row) => rangeOf(row, false) === range).reduce((sum, row) => sum + (row.metrics[metric] ?? 0), 0);
-  const metric = (name: "sessions" | "activeUsers" | "screenPageViews"): Metric => ({ current: total("current", name), previous: total("previous", name) });
+  const metric = (name: "sessions" | "activeUsers" | "screenPageViews"): Metric => ({ current: total("current", name), previous: previousValue(total("previous", name)) });
 
   const sessionsByDate = new Map<string, number>();
   for (const row of daily) {
@@ -431,7 +441,7 @@ export async function loadGa4Report(client: GoogleAnalyticsClient, target: Ga4Ta
     sourceTotals.set(name, entry);
   }
   const sources = [...sourceTotals].sort(([leftName, left], [rightName, right]) => right.current - left.current || right.previous - left.previous || leftName.localeCompare(rightName, "ja"))
-    .slice(0, 30).map(([name, value]) => ({ name, sessions: { current: value.current, previous: value.previous } }));
+    .slice(0, 30).map(([name, value]) => ({ name, sessions: { current: value.current, previous: previousValue(value.previous) } }));
 
   const topPages: { path: string; current: number }[] = [];
   for (const row of pages) {
@@ -441,7 +451,7 @@ export async function loadGa4Report(client: GoogleAnalyticsClient, target: Ga4Ta
     topPages.push({ path, current: row.metrics.screenPageViews ?? 0 });
   }
   const previousViews = new Map<string, number>();
-  if (topPages.length) {
+  if (topPages.length && previousMeasured) {
     const rows = await client.ga4RunReport(target.propertyId, {
       dateRanges: previous, dimensions: [{ name: "pagePath" }], metrics: [{ name: "screenPageViews" }],
       dimensionFilter: siteFilter(target, [{ filter: { fieldName: "pagePath", inListFilter: { values: topPages.map((page) => page.path), caseSensitive: true } } }]),
@@ -460,9 +470,10 @@ export async function loadGa4Report(client: GoogleAnalyticsClient, target: Ga4Ta
     report: {
       ...window,
       sessions: metric("sessions"), activeUsers: metric("activeUsers"), pageViews: metric("screenPageViews"),
-      daily: datesOf(window.range).map((date) => ({ date, sessions: sessionsByDate.get(date) ?? 0 })),
+      // 計測開始より前の日は 0 ではなく未取得（折れ線を途切れさせる）
+      daily: datesOf(window.range).map((date) => ({ date, sessions: measuredFrom !== null && date < measuredFrom ? null : sessionsByDate.get(date) ?? 0 })),
       sources,
-      topPages: topPages.map((page) => ({ page: { path: page.path }, pageViews: { current: page.current, previous: previousViews.get(page.path) ?? 0 } }))
+      topPages: topPages.map((page) => ({ page: { path: page.path }, pageViews: { current: page.current, previous: previousValue(previousViews.get(page.path) ?? 0) } }))
     },
     ...update
   };
