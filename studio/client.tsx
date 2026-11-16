@@ -216,6 +216,13 @@ function Notice({ title, children, retry }: { readonly title: string; readonly c
   return <main className="studio-state"><h1>{title}</h1><p>{children}</p>{retry && <button type="button" onClick={retry}>再試行</button>}</main>;
 }
 
+function StudioLoading() {
+  return <main className="studio-loading"><div className="studio-loading-indicator" role="status">
+    <span className="studio-spinner" aria-hidden="true" />
+    <span className="studio-visually-hidden">Studioを準備しています</span>
+  </div></main>;
+}
+
 function CreateProjectDialog({ close, created, expire }: { readonly close: () => void; readonly created: (projectId: string, siteId: string) => void; readonly expire: () => void }) {
   const [title, setTitle] = useState(""), [slug, setSlug] = useState(""), [locale, setLocale] = useState("ja");
   const [busy, setBusy] = useState(false), [message, setMessage] = useState("");
@@ -564,7 +571,7 @@ function App() {
     setPendingProject(project);
   }, [session]);
 
-  if (session.status === "loading") return <Notice title="Studio を準備しています">認証と参加プロジェクトを確認しています。</Notice>;
+  if (session.status === "loading") return <StudioLoading />;
   if (session.status === "expired") return <Notice title="セッションの確認が必要です" retry={() => window.location.reload()}>Cloudflare Access から再度ログインしてください。</Notice>;
   if (session.status === "error") return <Notice title="Studio を読み込めませんでした" retry={loadSession}>時間をおいて再度お試しください。</Notice>;
 

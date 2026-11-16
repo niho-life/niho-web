@@ -15,6 +15,7 @@ Issue #68 / #69 / #70 の Studio host です。共有 `@niho/web` ライブラ�
 ## この host が所有するもの
 
 - Cloudflare Access の Google ログイン後に使う Studio shell
+- セッション確認中はスピナーだけを表示し、認証エラーや期限切れは別の案内を表示する
 - `1 Project = 1 Site` の registry と `owner` / `editor` membership
 - owner による期限付き one-time 招待、権限変更、参加解除、招待取消
 - `project-kamakura` / `kamakura` と `project-experience` / `experience` の安定した Project / Site ID

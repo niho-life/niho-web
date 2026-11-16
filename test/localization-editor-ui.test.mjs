@@ -605,7 +605,7 @@ test("manual save keeps its buffer through 409 and rejection, reloads current co
 test("localization config and target context fail closed while loading, on errors, on retry, and for an unmapped document locale", async () => {
   let initial = await setup({ delayedSites: true });
   try {
-    assert.match(document.body.textContent, /言語設定と翻訳状態を読み込み中/);
+    assert.doesNotMatch(document.body.textContent, /言語設定と翻訳状態を読み込み中/);
     assert.doesNotMatch(document.body.textContent, /言語設定または翻訳状態を確認できません/);
     assert.equal(button("再試行"), undefined);
     assert.equal(button("公開").disabled, true);
@@ -615,7 +615,7 @@ test("localization config and target context fail closed while loading, on error
 
   let app = await setup({ delayedSite: true });
   try {
-    assert.match(document.body.textContent, /言語設定と翻訳状態を読み込み中/);
+    assert.doesNotMatch(document.body.textContent, /言語設定と翻訳状態を読み込み中/);
     assert.equal(input("ページタイトル").disabled, true);
     assert.equal(button("公開").disabled, true);
     app.resolveDelayedSite(); await flush(6);
@@ -672,7 +672,7 @@ test("a target save stays fail closed while site and page localization state rel
   try {
     await click("English"); await flush(5);
     await click("h1 · heading"); await change(input("テキスト"), "Saved before refresh"); await click("下書き保存"); await flush();
-    assert.match(document.body.textContent, /言語設定と翻訳状態を読み込み中/);
+    assert.doesNotMatch(document.body.textContent, /言語設定と翻訳状態を読み込み中/);
     assert.equal(input("テキスト").disabled, true);
     assert.equal(button("下書き保存").disabled, true);
     assert.equal(button("公開").disabled, true);

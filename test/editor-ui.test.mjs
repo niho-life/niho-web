@@ -168,7 +168,7 @@ test("form completion inspector is unconnected without the capability and ignore
 test("English publication states stay separate from the Japanese draft and retry only when allowed", async () => {
   const states = [
     ["queued", "処理待ち"], ["translating", "翻訳中"], ["review-required", "未翻訳"], ["publishing", "公開中"],
-    ["published", "公開済み"], ["withdrawn", "取り下げ"], ["superseded", "新しい版に置換済み"], ["retryable-failure", "失敗（再試行可能）"]
+    ["published", "公開済み"], ["withdrawn", "取り下げ"], ["retryable-failure", "失敗（再試行可能）"], ["superseded", "新しい版に置換済み"]
   ];
   let refreshIndex = 0;
   const app = await setup({
@@ -195,7 +195,7 @@ test("English publication states stay separate from the Japanese draft and retry
     await click("元に戻す");
     assert.equal(input("ページタイトル").value, fixture.title, "状態更新後も undo 履歴を保持する");
 
-    for (const [, label] of states.slice(1)) {
+    for (const [, label] of states.slice(1, -1)) {
       await click("状態を更新");
       assert.ok(publication().querySelector("strong").textContent.includes(label), label);
     }
@@ -203,6 +203,8 @@ test("English publication states stay separate from the Japanese draft and retry
     await click("英語公開を再試行");
     assert.match(publication().textContent, /処理待ち/u);
     assert.doesNotMatch(publication().textContent, /公開済み/u, "accepted を公開済みと決めつけない");
+    await click("状態を更新");
+    assert.equal(publication(), null, "新しい版に置換済みのバナーは表示しない");
 
     await change(input("ページタイトル"), "保存する日本語タイトル");
     await click("下書き保存");

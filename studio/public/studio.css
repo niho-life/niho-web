@@ -5,6 +5,55 @@
   gap:16px;
 }
 
+.studio-loading {
+  display:grid;
+  min-height:100vh;
+  min-height:100dvh;
+  place-items:center;
+  background:var(--nw-bg);
+}
+
+.studio-loading-indicator {
+  display:grid;
+  width:40px;
+  height:40px;
+  place-items:center;
+}
+
+.studio-spinner {
+  display:block;
+  width:24px;
+  height:24px;
+  border:3px solid var(--nw-border);
+  border-top-color:var(--nw-accent);
+  border-radius:50%;
+  animation:studio-spin .8s linear infinite;
+}
+
+.studio-visually-hidden {
+  position:absolute;
+  width:1px;
+  height:1px;
+  padding:0;
+  margin:-1px;
+  overflow:hidden;
+  clip:rect(0,0,0,0);
+  white-space:nowrap;
+  border:0;
+}
+
+@keyframes studio-spin {
+  to { transform:rotate(360deg); }
+}
+
+@media(prefers-reduced-motion:reduce) {
+  .studio-spinner {
+    animation:none;
+    border-top-color:var(--nw-border);
+    border-right-color:var(--nw-accent);
+  }
+}
+
 .studio-create-project label {
   display:grid;
   gap:6px;

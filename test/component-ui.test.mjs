@@ -39,6 +39,13 @@ const defaultUsage = () => [
 
 const flush = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 const wait = (ms) => act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
+async function waitFor(condition, description, timeoutMs = 20_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${description}`);
+    await wait(50);
+  }
+}
 const button = (text, scope = document) => [...scope.querySelectorAll("button")].find((node) => node.textContent === text || node.getAttribute("aria-label") === text) ?? (() => { const id = / · ([^ ]+)$/.exec(text)?.[1]; return id ? scope.querySelector(`[data-node-id="${id}"] button.e-layer`) : undefined; })();
 const layerButton = (label, scope = document) => [...scope.querySelectorAll("button.e-layer")].find((node) => node.querySelector(".e-layer-label")?.textContent === label);
 const input = (text, scope = document) => [...scope.querySelectorAll("label")].find((node) => node.querySelector("span")?.textContent === text)?.querySelector("input,textarea,select");
@@ -546,15 +553,16 @@ test("autosave saves changed components before the page and pauses without savin
   try {
     await openPanel(); await click(button("名前を変更", card("予備の帯"))); await change(input("コンポーネント名", dialog()), "予備の帯 改"); await click(button("変更する", dialog()));
     await change(input("ページタイトル"), "自動保存するタイトル");
-    await wait(400);
+    await waitFor(() => app.calls.librarySaves.length === 1 && app.calls.saves.length === 1 && status().startsWith("保存済み"), "initial component and page autosave");
     assert.deepEqual(app.calls.order.filter((call) => call.startsWith("save")), ["saveLibrary", "saveDraft"]);
     assert.equal(app.calls.librarySaves[0].trigger, "autosave"); assert.equal(app.calls.saves[0].trigger, "autosave");
     assert.ok(app.calls.librarySaves[0].library.components.some((component) => component.name === "予備の帯 改"));
     assert.ok(status().startsWith("保存済み"));
-    await click(button("複製", card("予備の帯 改"))); await wait(400);
+    await click(button("複製", card("予備の帯 改"))); await waitFor(() => app.calls.librarySaves.length === 2, "component-only autosave");
     assert.equal(app.calls.librarySaves.length, 2, "a component-only change is autosaved"); assert.equal(app.calls.saves.length, 1);
     fail = true;
-    await click(button("複製", card("予備の帯 改"))); await change(input("ページタイトル"), "コンポーネントに失敗した後のタイトル"); await wait(400);
+    await click(button("複製", card("予備の帯 改"))); await change(input("ページタイトル"), "コンポーネントに失敗した後のタイトル");
+    await waitFor(() => app.calls.librarySaves.length === 3 && status() === "コンポーネントが競合しています" && text().includes("コンポーネントの保存が競合しました（409）"), "component library conflict notice");
     assert.equal(app.calls.librarySaves.length, 3); assert.equal(app.calls.saves.length, 1, "the page is not saved after the component library failed");
     assert.equal(status(), "コンポーネントが競合しています"); assert.ok(text().includes("コンポーネントの保存が競合しました（409）"));
     await wait(400); assert.equal(app.calls.librarySaves.length, 3, "autosave pauses after a failure");
