@@ -41,7 +41,7 @@ React 18.3 または 19 と、同じ版の React DOM を利用側で用意して
 
 ### 原文ページに対応する英語版の公開状態
 
-原文の `EditorSnapshot` と原文公開成功時の `snapshot` は、任意で `englishPublication: { state, retryable, updatedAt? }` を返せます。状態は `initial-release-required` / `queued` / `translating` / `review-required` / `publishing` / `published` / `withdrawn` / `retryable-failure` / `superseded` の閉じた値です。`updatedAt` はタイムゾーン付きの有効な ISO timestamp、`retryable` は boolean とし、未知の state・余計な field・不正日時は拒否します。訳文 snapshot に原文の値を補完しません。省略時は何も表示しません。
+原文の `EditorSnapshot` と原文公開成功時の `snapshot` は、任意で `englishPublication: { state, retryable, updatedAt? }` を返せます。状態は `initial-release-required` / `queued` / `translating` / `review-required` / `publishing` / `published` / `withdrawn` / `retryable-failure` / `superseded` の閉じた値です。`updatedAt` はタイムゾーン付きの有効な ISO timestamp、`retryable` は boolean とし、未知の state・余計な field・不正日時は拒否します。訳文 snapshot に原文の値を補完しません。省略時は何も表示せず、`superseded` もバナーに表示しません。
 
 `EditorAdapter.englishPublication` は optional capability です。`refresh(target, signal)` は状態だけを読み、`retry(target, signal)` は `{ status: "accepted", englishPublication }` または `{ status: "conflict" }` を返します。画面は `retryable: true` かつ `initial-release-required` 以外でだけ再試行を出します。明示更新と再試行成功は状態だけを差し替え、未保存文書、undo/redo、文書 version を変えません。別ページへ移った後の遅い応答は破棄し、accepted を published と推測しません。日本語の公開成功案内と英語版の状態は別に扱います。
 
@@ -50,6 +50,10 @@ Kamakura Studio は同一 origin の `POST /api/projects/project-kamakura/sites/
 target は `siteId/pageId/locale` の組です。文書の組と一致しない読込結果は受け入れません。ホストは各呼出しで現在のセッションの認証・サイト/ページ権限を確認し、文書を `@niho/web/core` で検証してください。UI の選択値やロック表示をサーバーの認可の代わりにしません。
 
 翻訳一覧などからページを直接開く場合、`PageEditor` に `initialTarget={{ siteId, pageId, locale }}` を渡します。マウント時だけ使い、サイトとページが一覧にあるときは指定した言語の `readDocument` を呼びます。ページが無ければ通常の先頭ページを開きます。指定の妥当性と権限はホストの `readDocument` でも確認してください。
+
+### 多言語状態の読み込み
+
+訳文側の編集では、サイトの言語設定と対象ページの翻訳状態が確定するまで編集・保存・公開を停止します。この読み込み中は案内バナーを表示せず、取得エラー時だけ再試行ボタン付きのエラーを表示します。ホストが保存 locale を明示した原文ページは、言語設定の取得を待たずに編集できます。
 
 ## 読み取り専用の原文
 

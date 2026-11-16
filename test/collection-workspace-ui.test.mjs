@@ -14,6 +14,13 @@ const { CollectionWorkspace } = await import("@niho/web/collection-workspace");
 
 const wait = (ms) => act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
 const flush = async () => { for (let i = 0; i < 4; i++) await wait(0); };
+async function waitFor(condition, description, timeoutMs = 20_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${description}`);
+    await wait(20);
+  }
+}
 const nameOf = (node) => (node.getAttribute("aria-label") || node.textContent).replace(/\s+/gu, " ").trim();
 const buttons = (scope = document) => [...scope.querySelectorAll("button")];
 const button = (name, scope = document) => buttons(scope).find((node) => nameOf(node) === name);
@@ -460,14 +467,14 @@ test("English publication state and retry stay independent from item values, aut
     await press("日本語", document.querySelector(".cw-language-tabs"));
 
     const title = document.querySelector('[data-field="title"] input');
-    await type(title, "英語の再試行中も残る日本語の変更");
     const versionBefore = fixture.store.posts.get("p1").version;
+    await type(title, "英語の再試行中も残る日本語の変更");
     await press("英語公開を再試行", panel());
     assert.equal(title.value, "英語の再試行中も残る日本語の変更");
     assert.match(panel().textContent, /処理待ち/u);
     assert.match(panel().textContent, /再試行を受け付けました/u);
     assert.equal(fixture.named("loadItem").length, 1, "英語操作は項目を読み直さない");
-    await wait(40); await flush();
+    await waitFor(() => fixture.named("saveDraft").length === 1, "Japanese autosave while the English retry is in flight"); await flush();
     assert.equal(fixture.named("saveDraft").length, 1, "日本語の自動保存タイマーは英語操作で止めない");
     assert.equal(fixture.named("saveDraft")[0].input.version, versionBefore);
 
