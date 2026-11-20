@@ -179,8 +179,6 @@ class BridgeUnavailableError extends Error {
 type KamakuraBridgeOperation =
   | "catalog"
   | "page_read"
-  | "page_change_prepare"
-  | "page_change_apply"
   | "draft_save"
   | "draft_conflict"
   | "draft_resolve"
@@ -1149,7 +1147,7 @@ async function enforceMutationBoundary(request: Request, identity?: SiteActor): 
 }
 
 type KamakuraAssetOperation = "list" | "upload-intent" | "update" | "usages" | "resolve" | "state" | "delete" | "restore";
-type EditorRoute = { readonly upstreamPath: string; readonly bodyLimit: number; readonly assetOperation?: KamakuraAssetOperation; readonly embedOperation?: "import" | "status"; readonly englishPublicationRetry?: true; readonly pageChange?: "prepare" | "apply"; readonly draftRecovery?: { readonly action: "read" | "resolve"; readonly pageId: string } };
+type EditorRoute = { readonly upstreamPath: string; readonly bodyLimit: number; readonly assetOperation?: KamakuraAssetOperation; readonly embedOperation?: "import" | "status"; readonly englishPublicationRetry?: true; readonly draftRecovery?: { readonly action: "read" | "resolve"; readonly pageId: string } };
 
 /** kamakura-site の worker/studio-assets.ts と同じ固定表。kamakura-upload だけが Studio からのアップロード先。 */
 const KAMAKURA_ASSET_PROVIDERS = new Set(["kamakura-upload", "kamakura-admin-upload", "kamakura-studio", "kamakura-cms", "kamakura-approved-remote"]);
@@ -1243,11 +1241,6 @@ function kamakuraEditorRoute(action: string, method: string): EditorRoute | "met
     return method === "POST"
       ? { upstreamPath: `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/_site/cms-migration-preflight`, bodyLimit: MAX_MUTATION_BODY_BYTES }
       : "method_not_allowed";
-  }
-  const pageChange = /^\/editor\/page-changes\/(prepare|apply)$/u.exec(action);
-  if (pageChange) {
-    if (method !== "POST") return "method_not_allowed";
-    return { upstreamPath: `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/_site/page-changes/${pageChange[1]}`, bodyLimit: 16_384, pageChange: pageChange[1] as "prepare" | "apply" };
   }
   const embed = /^\/editor\/embeds\/([a-z][a-z0-9-]{0,59})\/(import|status)$/u.exec(action);
   if (embed) {
@@ -1466,7 +1459,6 @@ async function signedEditorRequest(
 
 function kamakuraBridgeOperation(route: EditorRoute): KamakuraBridgeOperation {
   if (route.draftRecovery) return route.draftRecovery.action === "read" ? "draft_conflict" : "draft_resolve";
-  if (route.pageChange) return route.pageChange === "prepare" ? "page_change_prepare" : "page_change_apply";
   if (route.embedOperation === "import") return "embed_import";
   if (route.embedOperation === "status") return "embed_status";
   if (route.assetOperation === "list") return "asset_list";
@@ -1561,6 +1553,12 @@ type EditingCapability = "pages.read" | "pages.edit" | "pages.publish" | "site.s
 
 function kamakuraEditingCapability(method: string, pathname: string, search: string): EditingCapability | null {
   if (pathname === "/sites/kamakura/capabilities") return method === "GET" && !search ? "pages.read" : null;
+  if (pathname === "/sites/kamakura/operations/pages.catalog") return method === "GET" && !search ? "pages.read" : null;
+  if (/^\/sites\/kamakura\/operations\/pages\.change-(?:prepare|apply)$/u.test(pathname)) {
+    if (search) return null;
+    if (method !== "POST") throw new AuthenticationError("editing API method mismatch");
+    return "pages.publish";
+  }
   const setting = /^\/sites\/kamakura\/operations\/(site\.breakpoints\.(?:read|save))$/u.exec(pathname);
   if (setting) {
     if (search) return null;
@@ -1701,23 +1699,6 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
     if (!isRecord(parsed) || Object.keys(parsed).length !== 0) throw new AuthenticationError("invalid english publication retry request");
     body = new TextEncoder().encode("{}");
   }
-  if (route.pageChange) {
-    let input: unknown;
-    try { input = JSON.parse(new TextDecoder().decode(rawBody)); } catch { throw new AuthenticationError("invalid page change"); }
-    if (!isRecord(input) || Object.keys(input).sort().join(",") !== (route.pageChange === "prepare" ? "change" : "change,confirmationToken") || !isRecord(input.change)) throw new AuthenticationError("invalid page change");
-    const { change } = input, changeKeys = Object.keys(change).sort().join(","), target = change.target;
-    const targetValid = isRecord(target) && Object.keys(target).sort().join(",") === "locale,pageId,siteId"
-      && target.siteId === KAMAKURA_EDITOR_SITE_ID && target.locale === "ja" && typeof target.pageId === "string" && COMMON_PAGE_ID.test(target.pageId);
-    const titleAndPathValid = assetText(change.title, 200) && typeof change.path === "string" && change.path.length <= 160;
-    const changeValid = change.action === "create"
-      ? changeKeys === "action,locale,path,siteId,title" && change.siteId === KAMAKURA_EDITOR_SITE_ID && change.locale === "ja" && titleAndPathValid
-      : change.action === "update"
-        ? changeKeys === "action,path,target,title" && targetValid && titleAndPathValid
-        : change.action === "visibility" && changeKeys === "action,target,visibility" && targetValid && (change.visibility === "public" || change.visibility === "private");
-    const tokenValid = route.pageChange === "prepare" || typeof input.confirmationToken === "string" && /^[a-f0-9-]{72}$/u.test(input.confirmationToken);
-    if (!changeValid || !tokenValid) throw new AuthenticationError("invalid page change");
-    body = new TextEncoder().encode(JSON.stringify(input));
-  }
   const bodyBytes = body.slice().buffer;
   const headers = await kamakuraSignedHeaders(env, identity, request.method, route.upstreamPath, body, supportId, operation);
   const controller = new AbortController();
@@ -1725,7 +1706,7 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
   const abortForRequest = () => controller.abort();
   const abortForTimeout = () => { timedOut = true; controller.abort(); };
   request.signal.addEventListener("abort", abortForRequest, { once: true });
-  const timeout = setTimeout(abortForTimeout, (operation === "release" || operation === "page_batch_stage" || operation === "cms_migration_preflight" || operation === "asset_delete" || route.pageChange) ? KAMAKURA_RELEASE_TIMEOUT_MILLISECONDS : EDITOR_TIMEOUT_MILLISECONDS);
+  const timeout = setTimeout(abortForTimeout, (operation === "release" || operation === "page_batch_stage" || operation === "cms_migration_preflight" || operation === "asset_delete") ? KAMAKURA_RELEASE_TIMEOUT_MILLISECONDS : EDITOR_TIMEOUT_MILLISECONDS);
   try {
     const previewOrigin = kamakuraCliPreviewOrigin(env, identity);
     const upstream = new Request(`${previewOrigin ?? KAMAKURA_EDITOR_UPSTREAM_ORIGIN}${route.upstreamPath}`, {

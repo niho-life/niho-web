@@ -12,6 +12,9 @@ niho-edit --origin <https-origin> --site <site-id> release-plan <page-id> --loca
 niho-edit --origin <https-origin> --site <site-id> release <page-id> --locale <locale> --json <plan-file|-> --operation-id <uuid-v4>
 niho-edit --origin <https-origin> --site <site-id> breakpoints-read
 niho-edit --origin <https-origin> --site <site-id> breakpoints-save --json <settings-snapshot-file|->
+niho-edit --origin <https-origin> --site <site-id> pages-catalog
+niho-edit --origin <https-origin> --site <site-id> page-change-prepare --expected-version <version> --json <change-file|->
+niho-edit --origin <https-origin> --site <site-id> page-change-apply --json <plan-file|->
 
 Set NIHO_EDIT_TOKEN to a short-lived bearer token. read returns { document, version }.
 Edit document while keeping version, then pass the snapshot to save for version-checked persistence.
@@ -106,6 +109,14 @@ async function inputBreakpointSnapshot(path) {
   try { settings = parseBreakpointSettings(source.settings); } catch { throw new CliError("invalid_settings_snapshot"); }
   return { settings, version: source.version };
 }
+async function inputPageManagementJson(path) {
+  if (!path) throw new CliError("missing_json_input");
+  if (path !== "-") {
+    try { if ((await stat(path)).size > 16_384) throw new CliError("input_too_large"); }
+    catch (error) { if (error instanceof CliError) throw error; throw new CliError("invalid_json_input"); }
+  }
+  return readJson(path === "-" ? process.stdin : createReadStream(path));
+}
 async function apiCall(run) {
   try { return await run(); }
   catch (error) {
@@ -150,6 +161,33 @@ async function main() {
     const result = await apiCall(() => client.saveBreakpointSettings(snapshot.version, snapshot.settings, AbortSignal.timeout(30_000)));
     if (result.status === "conflict") { emit({ error: "version_conflict" }, 409, 1, "site.breakpoints.save"); return; }
     emit(result, 200, 0, "site.breakpoints.save"); return;
+  }
+
+  if (command === "pages-catalog") {
+    if (pageId !== undefined || extra.length || values.locale !== undefined || values.json !== undefined || values.action !== undefined
+      || values["expected-version"] !== undefined || values["components-version"] !== undefined || values["presentation-version"] !== undefined
+      || values.revision !== undefined || values["operation-id"] !== undefined) throw new CliError("invalid_arguments");
+    process.stdout.write(`${JSON.stringify(await apiCall(() => client.readPageCatalog(AbortSignal.timeout(30_000))))}\n`); return;
+  }
+
+  if (command === "page-change-prepare") {
+    if (pageId !== undefined || extra.length || values.locale !== undefined || values.action !== undefined || values["components-version"] !== undefined
+      || values["presentation-version"] !== undefined || values.revision !== undefined || values["operation-id"] !== undefined
+      || !isEditingApiVersion(values["expected-version"])) throw new CliError("invalid_arguments");
+    const change = await inputPageManagementJson(values.json);
+    const plan = await apiCall(() => client.preparePageChange(change, values["expected-version"], AbortSignal.timeout(30_000)));
+    process.stdout.write(`${JSON.stringify(plan)}\n`); return;
+  }
+
+  if (command === "page-change-apply") {
+    if (pageId !== undefined || extra.length || values.locale !== undefined || values.action !== undefined || values["expected-version"] !== undefined
+      || values["components-version"] !== undefined || values["presentation-version"] !== undefined || values.revision !== undefined || values["operation-id"] !== undefined) {
+      throw new CliError("invalid_arguments");
+    }
+    const plan = await inputPageManagementJson(values.json);
+    const result = await apiCall(() => client.applyPageChange(plan, AbortSignal.timeout(30_000)));
+    if (result.status === "conflict") { emit({ error: "version_conflict" }, 409, 1, "pages.change-apply"); return; }
+    emit(result, 200, 0, "pages.change-apply"); return;
   }
 
   if (!["read", "save", "release-plan", "release"].includes(command) || extra.length || !IDENTIFIER.test(pageId ?? "") || !LOCALE.test(values.locale ?? "")) throw new CliError("invalid_arguments");

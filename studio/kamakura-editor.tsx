@@ -223,6 +223,7 @@ function parsePlan(value: unknown, request: EditorReleaseRequest, domain: string
 
 export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (status: EditorApiStatus | null) => void, origin = "https://studio.niho.life"): EditorAdapter {
   const editingApi = createPageEditingApiClient({ origin, siteId: KAMAKURA_EDITOR_SITE_ID, basePath: `${BASE}/editing-api/v1` });
+  let pageManagementVersion: string | null = null;
   const releaseOperationIds = new Map<string, string>();
   async function request<T>(signal: AbortSignal, run: () => Promise<T>): Promise<T> {
     try {
@@ -263,27 +264,31 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
     listSites: (signal) => request(signal, async () => catalog.sites),
     listPages: (siteId, signal) => request(signal, async () => {
       if (siteId !== "kamakura") throw new Error("編集対象のサイトがありません。");
-      catalog = parseKamakuraCatalog(await api(`${BASE}/catalog`, "GET", undefined, signal));
-      return catalog.pages;
+      const snapshot = await editingApi.readPageCatalog(signal);
+      pageManagementVersion = snapshot.version;
+      return snapshot.pages;
     }),
     ...(catalog.pageChangeActions ? {
       pageChangeActions: catalog.pageChangeActions,
       pagePathEditable: catalog.pagePathEditable === true,
       preparePageChange: (input: EditorPageChange, signal: AbortSignal) => request(signal, async () => {
         const change = supportedPageChange(input);
-        return validatePageChangePlan(await api(`${BASE}/page-changes/prepare`, "POST", { change }, signal) as EditorPageChangePlan, change, catalog.sites[0]!);
+        if (!pageManagementVersion) pageManagementVersion = (await editingApi.readPageCatalog(signal)).version;
+        return validatePageChangePlan(await editingApi.preparePageChange(change, pageManagementVersion, signal), change, catalog.sites[0]!);
       }),
       applyPageChange: (input: EditorPageChangePlan, signal: AbortSignal) => conflict(() => request(signal, async () => {
         const change = supportedPageChange(input.change);
         const plan = validatePageChangePlan(input, change, catalog.sites[0]!);
-        const result = record(await api(`${BASE}/page-changes/apply`, "POST", { change, confirmationToken: plan.confirmationToken }, signal));
+        const result = await editingApi.applyPageChange(plan, signal);
+        if (result.status !== "applied") throw new EditorApiError(409, "version_conflict");
         const page = parseKamakuraCatalogPage(result.page);
         const matchesChange = change.action === "create"
           ? page.title === change.title && page.path === change.path && page.published === false
           : page.pageId === change.target.pageId && (change.action === "visibility"
             ? page.visibility === change.visibility
             : page.title === change.title && page.path === change.path);
-        if (result.status !== "applied" || page.kind !== "page" || !page.path || !matchesChange) throw new Error("ページ操作の結果が一致しません。");
+        if (page.kind !== "page" || !page.path || !matchesChange) throw new Error("ページ操作の結果が一致しません。");
+        pageManagementVersion = null;
         return { status: "applied" as const, page };
       }))
     } : {}),

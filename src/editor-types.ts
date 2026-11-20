@@ -169,8 +169,8 @@ export type EditorPageImpact = {
   navigation: readonly string[];
   notes: readonly string[];
 };
-export type EditorPageChangePlan = { change: EditorPageChange; confirmationToken: string; domain: string; impact: EditorPageImpact };
-export type EditorPageChangeResult = { status: "applied"; page: EditorPage } | { status: "conflict" };
+export type EditorPageChangePlan = { change: EditorPageChange; confirmationToken: string; domain: string; impact: EditorPageImpact; expectedVersion?: string; operationId?: string };
+export type EditorPageChangeResult = { status: "applied"; page: EditorPage; operationId?: string } | { status: "conflict" };
 export type EditorSiteSettingsSnapshot = { settings: unknown; version: string };
 export type EditorSiteSettingsSaveResult = { status: "saved"; version: string } | { status: "conflict" };
 export type EditorBreakpointName = "Mini" | "Mobile" | "Tablet" | "Small" | "PC";

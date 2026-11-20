@@ -65,6 +65,8 @@ type EditorPageChangePlan = {
 
 ホストは token を対象サイト・ページ・要求内容・現在のページ一覧の版に結び付け、短い有効期限と一回限りの利用を実装してください。`applyPageChange` でも認可・パス重複・予約パスを原子的に再検証し、状態が変わっていれば HTTP 409 を `{ status: 'conflict' }` として返します。UI から渡された `domain` や `impact` を権限の根拠にしません。
 
+共通HTTP契約を使うホストでは、ページ一覧を `pages.catalog`、変更計画を `pages.change-prepare`、適用を `pages.change-apply` として同じ操作カタログに公開できます。prepare/applyは一覧の `version` を `expectedVersion` として渡し、prepareごとにUUID v4の `operationId` を発行します。planにも両方を含めて適用時に照合し、古い一覧の操作は409にします。Studio GUIはこのAPI clientを使い、`niho-edit` はホストoriginへ直接接続します。UI用の `EditorAdapter` は画面表示と確認操作への接続面であり、ホストの認証・保存経路を別に持ちません（[HTTP契約](editing-api-contract.md)）。
+
 ページ操作は、開いている文書に未保存の変更や入力途中の値がない間だけ実行できます。ホストがリンクの書換えやパス変更に合わせて文書を更新することがあるためです。成功後、エディターはページ一覧を取り直し、作成・複製したページ、または変更したページの最新の文書を読み込みます。409 と通信失敗では入力を保持します。通信失敗は「反映されたか不明」として扱い、一覧の再読込を促します。
 
 ### パス変更・非公開化でホストが行うこと

@@ -47,7 +47,35 @@ test("niho-edit reads a page over the host API without Studio or a browser", asy
   });
   assert.equal(result.exitCode, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), { document: fixture, version: "v1" });
-  assert.deepEqual(EDITING_OPERATIONS.map(({ id }) => id), ["pages.read", "pages.save", "pages.release-plan", "pages.release", "site.breakpoints.read", "site.breakpoints.save"]);
+  assert.deepEqual(EDITING_OPERATIONS.map(({ id }) => id), ["pages.read", "pages.save", "pages.release-plan", "pages.release", "pages.catalog", "pages.change-prepare", "pages.change-apply", "site.breakpoints.read", "site.breakpoints.save"]);
+});
+
+test("niho-edit lists pages directly from the host API", async () => {
+  const path = `/api/edit/v1/sites/${siteId}/operations/pages.catalog`;
+  const catalog = { version: "registry-v1", pages: [{ siteId, pageId, locale: "ja", title: "Home", path: "/", kind: "page", visibility: "public", published: true }] };
+  const result = await run(["pages-catalog"], { expectedMethod: "GET", expectedUrl: `${origin}${path}`, result: catalog });
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), catalog);
+});
+
+test("niho-edit applies a reviewed page-management plan directly to the host API", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "niho-edit-page-change-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const operationId = "123e4567-e89b-42d3-a456-426614174000";
+  const change = { action: "create", siteId, locale: "ja", title: "New page", path: "/new-page" };
+  const plan = { expectedVersion: "registry-v1", operationId, change, confirmationToken: "page-change-token", domain: origin,
+    impact: { linkedFrom: [], navigation: [], notes: ["新しいページを作成します"] } };
+  const planPath = join(directory, "plan.json");
+  await writeFile(planPath, JSON.stringify(plan));
+  const apiPath = `/api/edit/v1/sites/${siteId}/operations/pages.change-apply`;
+  const page = { siteId, pageId: "new-page", locale: "ja", title: change.title, path: change.path, kind: "page", visibility: "public", published: false };
+  const result = await run(["page-change-apply", "--json", planPath], {
+    expectedMethod: "POST", expectedUrl: `${origin}${apiPath}`,
+    expectedBody: { expectedVersion: plan.expectedVersion, operationId, confirmationToken: plan.confirmationToken, change },
+    result: { status: "applied", operationId, page }
+  });
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { apiVersion: "v1", httpStatus: 200, operation: "pages.change-apply", result: { status: "applied", page, operationId } });
 });
 
 test("niho-edit reads and CAS-saves site breakpoints over the host API", async (t) => {

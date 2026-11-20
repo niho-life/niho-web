@@ -665,6 +665,9 @@ export function validatePageChangePlan(plan: unknown, change: EditorPageChange, 
   const invalid = (): never => { throw new Error("ページ変更の対象または影響の情報が一致しません。再取得してください。"); };
   if (!plan || typeof plan !== "object") return invalid();
   const source = plan as Record<string, unknown>, domain = source.domain, requested = normalizePageChange(change), returned = normalizePageChange(source.change);
+  const hasManagementMetadata = source.expectedVersion !== undefined || source.operationId !== undefined;
+  if (hasManagementMetadata && (!planText(source.expectedVersion, 200) || typeof source.operationId !== "string"
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(source.operationId))) return invalid();
   if (!isSafeHttpsOrigin(domain) || !site.domains.includes(domain) || !requested || !returned || JSON.stringify(requested) !== JSON.stringify(returned)) return invalid();
   const target = changeTarget(requested);
   if ((target ? target.siteId : requested.action === "create" ? requested.siteId : "") !== site.id) return invalid();
@@ -688,7 +691,8 @@ export function validatePageChangePlan(plan: unknown, change: EditorPageChange, 
     ...(redirect ? { redirect: { from: redirect.from as string, to: redirect.to as string } } : {}),
     linkedFrom, navigation: texts(impact.navigation), notes: texts(impact.notes)
   };
-  return { change: requested, confirmationToken: source.confirmationToken, domain, impact: result };
+  return { change: requested, confirmationToken: source.confirmationToken, domain, impact: result,
+    ...(hasManagementMetadata ? { expectedVersion: source.expectedVersion as string, operationId: source.operationId as string } : {}) };
 }
 export function newElement(tag: ElementNode["tag"], id: string): ElementNode {
   return tag === "img" ? { type: "element", id, tag, attrs: { src: "/placeholder.webp", alt: "画像の説明" }, children: [] }
