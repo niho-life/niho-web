@@ -1,5 +1,6 @@
 import { EDITING_API_ERRORS, EDITING_OPERATIONS, type EditingApiErrorCode, type EditingOperationDefinition, type EditingPageSnapshot, type EditingPageTarget } from "./editing-api.js";
 import type { PageDocument } from "./types.js";
+import type { EditorReleasePlan, EditorReleaseRequest } from "./editor-types.js";
 import { identifier, localeCode } from "./validation-utils.js";
 
 const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
@@ -16,10 +17,14 @@ export type EditingApiClientOptions = {
 };
 export type EditingApiDiscovery = { readonly apiVersion: "v1"; readonly siteId: string; readonly operations: readonly EditingOperationDefinition[] };
 export type EditingPageSaveResult = { readonly status: "saved"; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" };
+export type EditingPagePublishResult = { readonly status: "released"; readonly operationId: string; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" };
+export type EditingPageReleaseInput = Omit<EditorReleaseRequest, "target">;
 export type EditingApiClient = {
   discover(signal?: AbortSignal): Promise<EditingApiDiscovery>;
   read(target: EditingPageTarget, signal?: AbortSignal): Promise<EditingPageSnapshot>;
   save(target: EditingPageTarget, expectedVersion: string, document: unknown, signal?: AbortSignal): Promise<EditingPageSaveResult>;
+  prepareRelease(target: EditingPageTarget, request: EditingPageReleaseInput, signal?: AbortSignal): Promise<EditorReleasePlan>;
+  release(target: EditingPageTarget, plan: EditorReleasePlan, operationId: string, signal?: AbortSignal): Promise<EditingPagePublishResult>;
 };
 
 /** A stable wire error; response bodies and host messages are intentionally not copied into its message. */
@@ -118,11 +123,47 @@ function validDiscoveredOperation(value: unknown): value is EditingOperationDefi
 function assertTarget(document: PageDocument, target: EditingPageTarget): void {
   if (document.siteId !== target.siteId || document.pageId !== target.pageId || document.locale !== target.locale) throw new EditingApiClientError("invalid_response");
 }
+const OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+function releaseRequestBody(value: EditingPageReleaseInput): Record<string, unknown> {
+  const request = value as unknown as Record<string, unknown>;
+  const allowed = ["expectedVersion", "action", "revision", "componentsVersion", "presentationVersion"];
+  if (!plainRecord(request) || Object.keys(request).some((key) => !allowed.includes(key)) || !isEditingApiVersion(request.expectedVersion)
+    || request.action !== "publish" && request.action !== "rollback"
+    || request.action === "publish" && request.revision !== undefined
+    || request.action === "rollback" && (!Number.isSafeInteger(request.revision) || Number(request.revision) < 1)
+    || request.componentsVersion !== undefined && !isEditingApiVersion(request.componentsVersion)
+    || request.presentationVersion !== undefined && !isEditingApiVersion(request.presentationVersion)) throw new TypeError("invalid release request");
+  return { ...request };
+}
+function parseReleasePlan(value: unknown, target: EditingPageTarget, request: EditingPageReleaseInput): EditorReleasePlan {
+  const allowed = ["target", "expectedVersion", "action", "revision", "componentsVersion", "presentationVersion", "confirmationToken", "domain", "changes", "url", "affected"];
+  if (!plainRecord(value) || Object.keys(value).some((key) => !allowed.includes(key)) || !plainRecord(value.target)
+    || !exactKeys(value.target, ["siteId", "pageId", "locale"]) || value.target.siteId !== target.siteId || value.target.pageId !== target.pageId || value.target.locale !== target.locale
+    || value.expectedVersion !== request.expectedVersion || value.action !== request.action || value.revision !== request.revision
+    || value.componentsVersion !== request.componentsVersion || value.presentationVersion !== request.presentationVersion
+    || value.action !== "publish" && value.action !== "rollback"
+    || value.action === "publish" && value.revision !== undefined
+    || value.action === "rollback" && (!Number.isSafeInteger(value.revision) || Number(value.revision) < 1)
+    || value.componentsVersion !== undefined && !isEditingApiVersion(value.componentsVersion)
+    || value.presentationVersion !== undefined && !isEditingApiVersion(value.presentationVersion)
+    || !isEditingApiVersion(value.confirmationToken) || typeof value.domain !== "string" || !Array.isArray(value.changes) || value.changes.length > 100
+    || value.changes.some((change) => !plainRecord(change) || !exactKeys(change, ["path", "before", "after"])
+      || typeof change.path !== "string" || change.path.length > 300 || typeof change.before !== "string" || change.before.length > 1200
+      || typeof change.after !== "string" || change.after.length > 1200)) throw new EditingApiClientError("invalid_response");
+  let domain: URL;
+  try { domain = new URL(value.domain); } catch { throw new EditingApiClientError("invalid_response"); }
+  if (domain.protocol !== "https:" || domain.origin !== value.domain || domain.username || domain.password || domain.pathname !== "/" || domain.search || domain.hash) throw new EditingApiClientError("invalid_response");
+  if (value.url !== undefined && (typeof value.url !== "string" || !value.url.startsWith(`${value.domain}/`) || value.url.length > 2048)) throw new EditingApiClientError("invalid_response");
+  if (value.affected !== undefined && (!Array.isArray(value.affected) || value.affected.length > 100 || value.affected.some((item) => !plainRecord(item)
+    || Object.keys(item).some((key) => !["kind", "name", "detail"].includes(key)) || !["shared", "page", "site"].includes(String(item.kind))
+    || typeof item.name !== "string" || !item.name || item.name.length > 120 || item.detail !== undefined && (typeof item.detail !== "string" || item.detail.length > 300)))) throw new EditingApiClientError("invalid_response");
+  return value as unknown as EditorReleasePlan;
+}
 
 /** Studio GUI and machine clients can call the same host-owned JSON wire API through this React-free client. */
 export function createPageEditingApiClient(options: EditingApiClientOptions): EditingApiClient {
   const origin = apiOrigin(options.origin), siteId = identifier(options.siteId, "$siteId"), basePath = apiBasePath(options.basePath), fetcher = options.fetch ?? fetch;
-  const send = async (path: string, method: "GET" | "PUT", body: unknown, signal?: AbortSignal): Promise<{ response: Response; body: Record<string, unknown> }> => {
+  const send = async (path: string, method: "GET" | "PUT" | "POST", body: unknown, signal?: AbortSignal): Promise<{ response: Response; body: Record<string, unknown> }> => {
     const headers = new Headers(typeof options.headers === "function" ? options.headers() : options.headers);
     headers.set("Accept", "application/json");
     if (body !== undefined) headers.set("Content-Type", "application/json");
@@ -151,10 +192,15 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       const path = targetPath(target, siteId).replace("{operation}", "pages.read");
       const { response, body } = await send(path, "GET", undefined, signal);
       if (!response.ok) throw apiFailure(body, response.status);
-      if (!exactKeys(body, ["document", "version"]) || !isEditingApiVersion(body.version)) throw new EditingApiClientError("invalid_response", response.status);
+      const readKeys = ["document", "version", ...(body.componentsVersion === undefined ? [] : ["componentsVersion"]), ...(body.presentationVersion === undefined ? [] : ["presentationVersion"])];
+      if (!exactKeys(body, readKeys) || !isEditingApiVersion(body.version)
+        || body.componentsVersion !== undefined && !isEditingApiVersion(body.componentsVersion)
+        || body.presentationVersion !== undefined && !isEditingApiVersion(body.presentationVersion)) throw new EditingApiClientError("invalid_response", response.status);
       const document = parseEditingPageDocumentEnvelope(body.document);
       assertTarget(document, target);
-      return { document, version: body.version };
+      return { document, version: body.version,
+        ...(body.componentsVersion === undefined ? {} : { componentsVersion: body.componentsVersion }),
+        ...(body.presentationVersion === undefined ? {} : { presentationVersion: body.presentationVersion }) };
     },
     async save(target, expectedVersion, documentValue, signal) {
       const path = targetPath(target, siteId).replace("{operation}", "pages.save");
@@ -168,6 +214,33 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       const savedDocument = parseEditingPageDocumentEnvelope(body.document);
       assertTarget(savedDocument, target);
       return { status: "saved", version: body.version, document: savedDocument };
+    },
+    async prepareRelease(target, request, signal) {
+      const path = targetPath(target, siteId).replace("{operation}", "pages.release-plan");
+      const input = releaseRequestBody(request);
+      const { response, body } = await send(path, "POST", input, signal);
+      if (response.status === 409 && body.error === "version_conflict") throw new EditingApiClientError("version_conflict", 409);
+      if (!response.ok) throw apiFailure(body, response.status);
+      if (!exactKeys(body, ["plan"])) throw new EditingApiClientError("invalid_response", response.status);
+      return parseReleasePlan(body.plan, target, request);
+    },
+    async release(target, plan, operationId, signal) {
+      const path = targetPath(target, siteId).replace("{operation}", "pages.release");
+      if (!plan || !plainRecord(plan) || !plainRecord(plan.target) || !OPERATION_ID.test(operationId)) throw new TypeError("invalid release plan");
+      const request: EditingPageReleaseInput = {
+        expectedVersion: String(plan.expectedVersion), action: plan.action as "publish" | "rollback",
+        ...(plan.revision === undefined ? {} : { revision: Number(plan.revision) }),
+        ...(plan.componentsVersion === undefined ? {} : { componentsVersion: String(plan.componentsVersion) }),
+        ...(plan.presentationVersion === undefined ? {} : { presentationVersion: String(plan.presentationVersion) })
+      };
+      const safePlan = parseReleasePlan(plan, target, request);
+      const { response, body } = await send(path, "POST", { expectedVersion: safePlan.expectedVersion, confirmationToken: safePlan.confirmationToken, operationId }, signal);
+      if (response.status === 409 && body.error === "version_conflict") return { status: "conflict" };
+      if (!response.ok) throw apiFailure(body, response.status);
+      if (!exactKeys(body, ["status", "operationId", "version", "document"]) || body.status !== "released" || body.operationId !== operationId || !isEditingApiVersion(body.version)) throw new EditingApiClientError("invalid_response", response.status);
+      const document = parseEditingPageDocumentEnvelope(body.document);
+      assertTarget(document, target);
+      return { status: "released", operationId, version: body.version, document };
     }
   };
   return client;

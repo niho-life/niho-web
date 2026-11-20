@@ -10,18 +10,37 @@ const blockDocument = structuredClone(fixture);
 blockDocument.body.push({ type: "component", id: "booking-panel", block: "booking-panel", props: { title: "Book a visit" } });
 const validationContext = { blocks: { "booking-panel": { props: { title: { type: "string", required: true } } } } };
 
-function clientFixture({ token = "owner", initialDocument = blockDocument } = {}) {
+function clientFixture({ token = "owner", initialDocument = blockDocument, publishing = false } = {}) {
   let document = structuredClone(initialDocument), version = "v1";
+  const completed = new Map();
   const api = createPageEditingApi({
     async authenticate(request) { return request.headers.get("Authorization") === "Bearer owner" ? { kind: "machine", subject: "agent", delegatedBy: "owner" } : null; },
-    async authorize(actor, capability, scope) { return actor.subject === "agent" && scope.siteId === target.siteId && ["pages.read", "pages.edit"].includes(capability); },
+    async authorize(actor, capability, scope) { return actor.subject === "agent" && scope.siteId === target.siteId && (["pages.read", "pages.edit"].includes(capability) || publishing && capability === "pages.publish"); },
     async validationContext() { return validationContext; },
-    async readPage(_actor, requested) { return requested.siteId === target.siteId && requested.pageId === target.pageId && requested.locale === target.locale ? { document, version } : null; },
+    async readPage(_actor, requested) { return requested.siteId === target.siteId && requested.pageId === target.pageId && requested.locale === target.locale
+      ? { document, version, ...(publishing ? { componentsVersion: "components-v1", presentationVersion: "presentation-v1" } : {}) } : null; },
     async savePage(_actor, requested, expectedVersion, next) {
       if (requested.siteId !== target.siteId || requested.pageId !== target.pageId || requested.locale !== target.locale || expectedVersion !== version) return { status: "conflict" };
       document = { ...next, revision: next.revision + 1 }; version = `v${Number(version.slice(1)) + 1}`;
       return { status: "saved", version, document };
-    }
+    },
+    ...(publishing ? {
+      async releaseSite() { return { id: target.siteId, name: "Example", domains: ["https://host.example"] }; },
+      async preparePageRelease(_actor, request) {
+        if (request.expectedVersion !== version) return { status: "conflict" };
+        return { status: "prepared", plan: { ...request, confirmationToken: "release-token", domain: "https://host.example", changes: [] } };
+      },
+      async publishPage(_actor, requested, input) {
+        const prior = completed.get(input.operationId);
+        if (prior) return prior.expectedVersion === input.expectedVersion && prior.confirmationToken === input.confirmationToken ? prior.result : { status: "conflict" };
+        if (requested.siteId !== target.siteId || requested.pageId !== target.pageId || requested.locale !== target.locale
+          || input.expectedVersion !== version || input.confirmationToken !== "release-token") return { status: "conflict" };
+        version = `v${Number(version.slice(1)) + 1}`;
+        const result = { status: "released", operationId: input.operationId, version, document };
+        completed.set(input.operationId, { expectedVersion: input.expectedVersion, confirmationToken: input.confirmationToken, result });
+        return result;
+      }
+    } : {})
   });
   const client = createPageEditingApiClient({
     origin: "https://host.example", siteId: target.siteId, headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -58,4 +77,21 @@ test("shared page editing client validates the document envelope but leaves cust
   const saved = await client.save(target, "v1", candidate);
   assert.equal(saved.status, "saved");
   await assert.rejects(client.save(target, "v1", { ...candidate, arbitrary: true }), (error) => error instanceof EditingApiClientError && error.code === "invalid_response");
+});
+
+test("shared page editing client prepares a release and safely retries with the same operation ID", async () => {
+  const client = clientFixture({ publishing: true });
+  const snapshot = await client.read(target);
+  assert.equal(snapshot.componentsVersion, "components-v1");
+  assert.equal(snapshot.presentationVersion, "presentation-v1");
+  const plan = await client.prepareRelease(target, { expectedVersion: snapshot.version, action: "publish", componentsVersion: snapshot.componentsVersion, presentationVersion: snapshot.presentationVersion });
+  assert.equal(plan.confirmationToken, "release-token");
+  assert.equal(plan.target.pageId, target.pageId);
+  const operationId = "123e4567-e89b-42d3-a456-426614174000";
+  const released = await client.release(target, plan, operationId);
+  assert.deepEqual(released, { status: "released", operationId, version: "v2", document: blockDocument });
+  assert.deepEqual(await client.release(target, plan, operationId), released);
+  await assert.rejects(client.prepareRelease(target, { expectedVersion: "v1", action: "publish" }),
+    (error) => error instanceof EditingApiClientError && error.code === "version_conflict" && error.status === 409);
+  await assert.rejects(client.release({ ...target, siteId: "another-site" }, plan, operationId), TypeError);
 });
