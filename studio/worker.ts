@@ -1316,12 +1316,6 @@ async function editorRole(env: Env, identity: AccessIdentity, projectId: string,
   return role === "owner" || role === "editor" ? role : null;
 }
 
-function breakpointVersion(value: unknown): number | null {
-  if (typeof value !== "string" || !/^b\.[1-9][0-9]{0,14}$/u.test(value)) return null;
-  const parsed = Number(value.slice(2));
-  return Number.isSafeInteger(parsed) ? parsed : null;
-}
-
 function storedBreakpointSettings(row: BreakpointSettingsRow): { settings: ReturnType<typeof parseBreakpointSettings>; version: string } {
   if (!Number.isSafeInteger(row.version) || row.version < 1 || typeof row.settings_json !== "string" || row.settings_json.length > MAX_MUTATION_BODY_BYTES) throw new Error("invalid stored breakpoint settings");
   let value: unknown;
@@ -1330,11 +1324,11 @@ function storedBreakpointSettings(row: BreakpointSettingsRow): { settings: Retur
   return { settings: parseBreakpointSettings(value), version: `b.${row.version}` };
 }
 
-/** 鎌倉 Studio 自身が所有する D1 のサイト単位ブレークポイント。 */
+/** 旧Studio D1に残る設定の読み取り専用移行元。 */
 async function breakpointSettingsApi(request: Request, env: Env, identity: SiteActor, url: URL, projectId: string, siteId: string): Promise<Response> {
   if (projectId !== KAMAKURA_EDITOR_PROJECT_ID || siteId !== KAMAKURA_EDITOR_SITE_ID) return json({ error: "not_found" }, 404);
   if (url.href.includes("?")) return json({ error: "invalid_request" }, 400);
-  if (request.method !== "GET" && request.method !== "PUT") return json({ error: "method_not_allowed" }, 405);
+  if (request.method !== "GET") return json({ error: "method_not_allowed" }, 405);
   if (identity.kind === "human" && !await editorMember(env, identity, projectId, siteId)) return json({ error: "forbidden" }, 403);
   const cliOwner = identity.kind === "cli" ? ownerContextStatement(env, identity, projectId, siteId) : undefined;
   if (request.method === "GET") {
@@ -1354,30 +1348,7 @@ async function breakpointSettingsApi(request: Request, env: Env, identity: SiteA
     }
     return row ? json(storedBreakpointSettings(row)) : json({ error: "not_found" }, 404);
   }
-  let body: Record<string, unknown>;
-  try { body = await enforceMutationBoundary(request, identity); exactKeys(body, ["settings", "expectedVersion"]); }
-  catch { return json({ error: "invalid_request" }, 400); }
-  const expected = breakpointVersion(body.expectedVersion);
-  let settings: ReturnType<typeof parseBreakpointSettings>;
-  try { settings = parseBreakpointSettings(body.settings); }
-  catch { return json({ error: "invalid_request" }, 400); }
-  if (expected === null) return json({ error: "invalid_request" }, 400);
-  const write = env.DB.prepare(`
-    UPDATE site_breakpoint_settings
-       SET settings_json = ?1, version = version + 1, updated_at = CURRENT_TIMESTAMP
-     WHERE site_id = ?2 AND version = ?3
-       AND EXISTS (
-         SELECT 1
-           FROM project_members AS m
-           JOIN sites AS s ON s.project_id = m.project_id
-          WHERE m.access_subject = ?4 AND m.project_id = ?5 AND s.id = ?2
-            AND m.role IN (${cliOwner ? "'owner'" : "'owner', 'editor'"})
-       )
-  `).bind(JSON.stringify(settings), siteId, expected, ownerSubject(identity), projectId);
-  const results = await env.DB.batch<unknown>(cliOwner ? [cliOwner, write] : [write]);
-  if (cliOwner && !firstRow<AdminContextRow>(results[0])) return json({ error: "forbidden" }, 403);
-  if (!changed(results.at(-1))) return json({ error: "conflict" }, 409);
-  return json({ status: "saved", version: `b.${expected + 1}` });
+  return json({ error: "method_not_allowed" }, 405);
 }
 
 async function experienceEditorOwner(env: Env, identity: AccessIdentity): Promise<boolean> {
@@ -1586,10 +1557,18 @@ function kamakuraCliPreviewOrigin(env: Env, identity: BridgeActor): string | und
   return origin;
 }
 
-type EditingCapability = "pages.read" | "pages.edit" | "pages.publish";
+type EditingCapability = "pages.read" | "pages.edit" | "pages.publish" | "site.settings.read" | "site.settings.write";
 
 function kamakuraEditingCapability(method: string, pathname: string, search: string): EditingCapability | null {
   if (pathname === "/sites/kamakura/capabilities") return method === "GET" && !search ? "pages.read" : null;
+  const setting = /^\/sites\/kamakura\/operations\/(site\.breakpoints\.(?:read|save))$/u.exec(pathname);
+  if (setting) {
+    if (search) return null;
+    const operation = setting[1]!;
+    const expectedMethod = operation === "site.breakpoints.read" ? "GET" : "PUT";
+    if (method !== expectedMethod) throw new AuthenticationError("editing API method mismatch");
+    return operation === "site.breakpoints.read" ? "site.settings.read" : "site.settings.write";
+  }
   const match = /^\/sites\/kamakura\/operations\/(pages\.(?:read|save|release-plan|release))\/([a-z][a-z0-9-]{0,59})$/u.exec(pathname);
   if (!match) return null;
   const query = new URLSearchParams(search), operation = match[1]!;
@@ -1610,7 +1589,7 @@ async function kamakuraEditingDelegationToken(env: Env, identity: AccessIdentity
   return `${signingInput}.${signature}`;
 }
 
-async function signedKamakuraEditingApiRequest(request: Request, env: Env, identity: AccessIdentity, url: URL, action: string): Promise<Response> {
+async function signedKamakuraEditingApiRequest(request: Request, env: Env, identity: AccessIdentity, url: URL, action: string, allowLegacyBreakpointBootstrap = true): Promise<Response> {
   const supportId = crypto.randomUUID(), operation: KamakuraBridgeOperation = "editing_api";
   const fail = (category: KamakuraBridgeFailureCategory, status?: number) => kamakuraBridgeFailure(supportId, operation, category, status);
   const upstreamSuffix = action.slice(KAMAKURA_EDITING_API_EDITOR_PREFIX.length);
@@ -1623,7 +1602,7 @@ async function signedKamakuraEditingApiRequest(request: Request, env: Env, ident
   if (request.method === "GET" && (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length")))) return json({ error: "invalid_request" }, 400);
   const body = request.method === "GET" ? new Uint8Array() : await readBoundedBody(request, KAMAKURA_EDITING_API_MAX_BODY_BYTES, identity);
   const capabilities: readonly EditingCapability[] = upstreamSuffix === "/sites/kamakura/capabilities"
-    ? ["pages.read", "pages.edit", "pages.publish"]
+    ? ["pages.read", "pages.edit", "pages.publish", "site.settings.read", "site.settings.write"]
     : [capability];
   let bearer: string;
   try { bearer = await kamakuraEditingDelegationToken(env, identity, capabilities); }
@@ -1656,6 +1635,35 @@ async function signedKamakuraEditingApiRequest(request: Request, env: Env, ident
     let value: unknown;
     try { value = await readBoundedResponse(response, 5 * 1024 * 1024); }
     catch { throw fail("upstream_invalid_response", response.status); }
+    if (response.status === 404 && identity.kind === "human" && allowLegacyBreakpointBootstrap
+      && upstreamSuffix === "/sites/kamakura/operations/site.breakpoints.read" && isRecord(value) && value.error === "not_found") {
+      const legacyUrl = new URL(`/api/projects/${KAMAKURA_EDITOR_PROJECT_ID}/sites/${KAMAKURA_EDITOR_SITE_ID}/breakpoints`, url.origin);
+      const legacy = await breakpointSettingsApi(new Request(legacyUrl), env, identity, legacyUrl, KAMAKURA_EDITOR_PROJECT_ID, KAMAKURA_EDITOR_SITE_ID);
+      if (!legacy.ok) return legacy;
+      let snapshot: unknown;
+      try { snapshot = await legacy.json() as unknown; }
+      catch { return json({ error: "invalid_response" }, 502); }
+      if (!isRecord(snapshot) || Object.keys(snapshot).sort().join(",") !== "settings,version" || !/^b\.[1-9][0-9]{0,14}$/u.test(String(snapshot.version))) return json({ error: "invalid_response" }, 502);
+
+      const saveAction = `${KAMAKURA_EDITING_API_EDITOR_PREFIX}/sites/kamakura/operations/site.breakpoints.save`;
+      const saveRequest = new Request(request.url, {
+        method: "PUT",
+        signal: request.signal,
+        headers: { "Content-Type": "application/json", Origin: url.origin, "Sec-Fetch-Site": "same-origin" },
+        body: JSON.stringify({ expectedVersion: snapshot.version, settings: snapshot.settings })
+      });
+      const seeded = await signedKamakuraEditingApiRequest(saveRequest, env, identity, url, saveAction, false);
+      if (seeded.status === 409) return signedKamakuraEditingApiRequest(request, env, identity, url, action, false);
+      if (!seeded.ok) return seeded;
+      let result: unknown;
+      try { result = await seeded.json() as unknown; }
+      catch { return json({ error: "invalid_response" }, 502); }
+      if (!isRecord(result) || Object.keys(result).sort().join(",") !== "status,version" || result.status !== "saved"
+        || typeof result.version !== "string" || result.version.length === 0 || result.version.length > 200 || /[\u0000-\u001f\u007f]/u.test(result.version)) {
+        return json({ error: "invalid_response" }, 502);
+      }
+      return json({ settings: snapshot.settings, version: result.version });
+    }
     return json(value, response.status);
   } catch (error) {
     if (error instanceof KamakuraBridgeFailureError) throw error;

@@ -23,7 +23,6 @@ export const DRAFT_RECOVERY_MAX_OUTPUT_BYTES = 7 * 1024 * 1024;
 
 export const OPERATIONS = Object.freeze([
   operation("site.breakpoints.read", "site.settings.read", "GET", "/breakpoints"),
-  operation("site.breakpoints.save", "site.settings.write", "PUT", "/breakpoints"),
   operation("site.members.read", "site.members.read", "GET", "/membership"),
   operation("site.members.role", "site.members.manage", "POST", "/members/role"),
   operation("site.members.remove", "site.members.manage", "POST", "/members/remove"),

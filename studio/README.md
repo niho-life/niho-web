@@ -74,7 +74,7 @@ Cloudflare Access 側で Studio hostname 全体を Access application として�
 
 Member 管理 mutation は従来どおり `POST` のみです。request URL と完全一致する `Origin`、`Sec-Fetch-Site: same-origin`、`application/json`、16 KiB の streaming 上限、JSON object、endpoint ごとの完全な key set を必須にします。この 16 KiB 境界は editor 追加後も変更しません。Editor mutation も同じ same-origin / JSON 条件を要求し、draft だけ 600 KiB、release-plan / release は 16 KiB の streaming 上限です。token、token hash、JWT、HMAC secret、request body は application log に出力しません。
 
-Kamakura のサイト単位ブレークポイントは `GET/PUT /api/projects/project-kamakura/sites/kamakura/breakpoints` です。`0006_site_breakpoint_settings.sql` が D1 に設定 JSON と整数 version を保存し、従来表示と同じ Mobile preview 480、Tablet 691 / preview 840、Small 991、PC 1280 を初期化します。GET/PUT は Access と現在の owner/editor membership を毎回確認し、別 Project/Site は404、未知methodは405です。PUTは上記の同一origin・JSON境界、固定key、320〜1920px・固定語彙・昇順・段内previewの検証を通し、`b.<integer>` の opaque versionをSQLのWHERE句でCASします。不一致は409で、ページ文書・公開API・上流bridgeは変更しません。
+Kamakura の旧Studio D1ブレークポイントroute (`GET /api/projects/project-kamakura/sites/kamakura/breakpoints`) は、サイトAPIへの初回移行と手動復旧のための読み取り専用です。`0006_site_breakpoint_settings.sql` が初期設定 JSON と整数versionを保持します。Studio GUIが共通APIから404を受けた場合だけ、現在のowner/editor membershipを再確認してD1の設定を読み、旧版 `b.<integer>` を期待版にしてホストの共通APIへ一度だけ引き継ぎます。保存後の正本・CAS・監査記録はkamakura-siteのR2/Workerが所有し、Studio D1のPUTは405になります。
 
 ## CLIの認証・操作契約
 

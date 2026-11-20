@@ -1,8 +1,8 @@
 # ページ・サイト設定編集HTTP契約
 
-`@niho/web/editing-api` は、GUIと機械クライアントが同じページ本文・サイトブレークポイント正本を編集するためのReact非依存HTTP契約です。Studio UIやStudio Workerを必要条件にしません。各サイトのホストがhandlerを組み込み、認証・権限・永続化・監査記録・公開を所有します。鎌倉の日本語ページ本文ではStudio GUIとCUIが、ブレークポイントではCUIがこの共通契約を使います。
+`@niho/web/editing-api` は、GUIと機械クライアントが同じページ本文・サイトブレークポイント正本を編集するためのReact非依存HTTP契約です。Studio UIやStudio Workerを必要条件にしません。各サイトのホストがhandlerを組み込み、認証・権限・永続化・監査記録・公開を所有します。鎌倉では日本語ページ本文とブレークポイントを、Studio GUIとCUIの両方がこの共通契約で編集します。
 
-`@niho/web/editing-client` の `createPageEditingApiClient` は同じwire契約を呼ぶReact非依存clientです。ブラウザーのGUIは既定のsame-origin credentialsまたはhost提供headerを使え、Node CLIはbearer headerと `credentials: "omit"` を使えます。`niho-edit` CLIと鎌倉Studio GUIの日本語ページ本文編集はこのclientを使います。このclientはブレークポイントも読取・版付き保存できます。Studio GUIはAccess sessionをWorker BFFで短期の操作別tokenへ委任し、サイトoriginの共通APIへservice bindingで接続します。ブラウザーのAccess tokenやcookieはサイトへ転送しません。
+`@niho/web/editing-client` の `createPageEditingApiClient` は同じwire契約を呼ぶReact非依存clientです。ブラウザーのGUIは既定のsame-origin credentialsまたはhost提供headerを使え、Node CLIはbearer headerと `credentials: "omit"` を使えます。`niho-edit` CLIと鎌倉Studio GUIは、日本語ページ本文とブレークポイントの読取・版付き保存でこのclientを使います。Studio GUIはAccess sessionをWorker BFFで短期の操作別tokenへ委任し、サイトoriginの共通APIへservice bindingで接続します。ブラウザーのAccess tokenやcookieはサイトへ転送しません。
 
 Studio GUIはページの表示・編集材料の一部（presentation metadata、英語公開状態）を取得するため、引き続きread-onlyの既存snapshot routeも併用します。日本語本文の保存・公開は共通APIのみを使います。英語 overlay、CMS、素材、翻訳、ページ作成・パス変更は別のホスト操作で、まだ共通契約へ移行していません。
 
@@ -83,4 +83,4 @@ Cookie認証を使うホストは、write requestのCSRF境界とCORSも自分�
 
 ## 実装状況
 
-この段階ではページ本文とブレークポイントの読取・版付き保存・公開計画/適用の共通契約、CUI clientを実装しています。鎌倉Studio GUIの日本語ページ本文は共通APIへ接続済みです。鎌倉host adapter、Studio GUIのブレークポイント接続、CUI用machine認証の本番設定は別途完了する必要があります。CMS・素材・翻訳やページ管理は別のhost操作です。
+ページ本文とブレークポイントの共通wire、CUI client、および鎌倉のhost adapterを実装しています。Studio GUIはBFF経由でサイトoriginの共通APIへ接続し、Access cookie/JWTをサイトへ転送しません。旧Studio D1にだけブレークポイント値がある場合は、初回読取でその版をexpectedVersionとしてサイトAPIへ一度だけ移します。以後の読取・保存の正本はサイト側です。CMS・素材・翻訳やページ管理は別のhost操作です。

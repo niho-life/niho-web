@@ -40,9 +40,9 @@ CLIはこの値を `cf-access-token` headerだけに入れ、標準出力へ出�
 
 ## サイト設定とメンバー管理
 
-`site.breakpoints.read` でブレークポイント設定と版を取得し、`site.breakpoints.save` に `settings` と `expectedVersion` を渡す。409のときは現在の設定を取り直す。変更前の `settings` を保存しておけば、取得し直した版を使って元に戻せる。
+旧 `niho-studio` の `site.breakpoints.read` は、サイト側への移行前にStudio D1に残った設定を読み出す互換・移行用操作です。書込操作は提供しません。現在のブレークポイント編集は `niho-edit breakpoints-read` / `breakpoints-save` でサイトAPIを直接呼び、取得した版を `expectedVersion` として渡します。409のときは設定を読み直してから変更を適用します。
 
-`site.members.read` でメンバーと招待を取得する。メンバーの役割変更・削除は `site.members.role` と `site.members.remove`、招待の発行・取消は `site.invitations.create` と `site.invitations.revoke` を使う。招待の受理には招待された本人のAccess認証が必要。サイト設定とメンバー管理は読み取り・変更をそれぞれ委任し、変更の監査には機械クライアント自身を記録する。
+`site.members.read` でメンバーと招待を取得する。メンバーの役割変更・削除は `site.members.role` と `site.members.remove`、招待の発行・取消は `site.invitations.create` と `site.invitations.revoke` を使う。招待の受理には招待された本人のAccess認証が必要。メンバー管理の読取・変更はそれぞれ委任し、変更の監査には機械クライアント自身を記録する。
 
 ## 編集と公開
 
