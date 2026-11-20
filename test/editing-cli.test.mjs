@@ -72,6 +72,11 @@ test("niho-edit saves the edited document with the snapshot version and reports 
   const directory = await mkdtemp(join(tmpdir(), "niho-edit-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const changed = structuredClone(fixture); changed.title = "Edited by CLI";
+  changed.body[0].style.base.backgroundColor = "#e8f0e8";
+  changed.body[0].children.push({ type: "element", id: "contact-form", tag: "form", attrs: { name: "contact" }, children: [
+    { type: "element", id: "contact-name-label", tag: "label", attrs: { htmlFor: "contact-name" }, children: [{ type: "text", text: "Name" }] },
+    { type: "element", id: "contact-name", tag: "input", attrs: { type: "text", name: "name", id: "contact-name", required: true }, children: [] }
+  ] });
   const snapshotPath = join(directory, "snapshot.json");
   await writeFile(snapshotPath, JSON.stringify({ document: changed, version: "v1" }));
   const path = `/api/edit/v1/sites/${siteId}/operations/pages.save/${pageId}?locale=${encodeURIComponent(locale)}`;
