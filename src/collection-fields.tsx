@@ -59,6 +59,11 @@ const idFor = (context: FieldContext, field: CollectionField, part: string) => `
 export const fieldControlId = (baseId: string, key: string) => `${baseId}-${key}-control`;
 const asString = (value: CollectionValue | undefined) => typeof value === "string" ? value : "";
 const asList = (value: CollectionValue | undefined): readonly string[] => Array.isArray(value) ? (value as readonly unknown[]).filter((entry): entry is string => typeof entry === "string") : [];
+const asImage = (value: CollectionValue | undefined): CollectionImageValue | null => {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string") return value;
+  return Array.isArray(value) ? null : value as CollectionImageValue;
+};
 
 export function FieldView({ field, value, error, context, onChange }: {
   field: CollectionField; value: CollectionValue | undefined; error: string | undefined; context: FieldContext; onChange: (value: CollectionValue) => void;
@@ -123,7 +128,7 @@ export function FieldView({ field, value, error, context, onChange }: {
       });
       break;
     case "image":
-      control = <ImageControl field={field} value={typeof value === "string" ? value : null} context={context} controlId={controlId} labelId={labelId} describedBy={describedBy} onChange={onChange} />;
+      control = <ImageControl field={field} value={asImage(value)} context={context} controlId={controlId} labelId={labelId} describedBy={describedBy} onChange={onChange} />;
       break;
     case "select":
       control = <SelectControl field={field} value={asList(value)} controlId={controlId} describedBy={describedBy} onChange={onChange} />;
