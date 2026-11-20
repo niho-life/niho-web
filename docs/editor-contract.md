@@ -46,6 +46,7 @@ React 18.3 または 19 と、同じ版の React DOM を利用側で用意して
 | `saveDraft({ target, document, expectedVersion }, signal)` | 楽観ロック付き下書き保存。成功時は新しい version とサーバー採番の revision、競合時は `status: 'conflict'` |
 | `prepareRelease(request, signal)` | 公開 / rollback の正確な対象ドメイン、公開内容との差分、確認 token を発行 |
 | `release(plan, signal)` | 確認済みの内容を公開 / rollback。成功時は最新 snapshot、競合時は `status: 'conflict'` |
+| `prepareReleaseSet(items, signal)` / `releaseSet(plan, signal)` / `releaseSetStatus(operationId, signal)`（任意） | 同じサイトの複数ページを一つの変更セットとして公開。3メソッドすべてを実装したホストだけ複数選択UIを表示 |
 | `englishPublication`（任意） | 原文と独立した英語版公開状態の明示更新と、ホストが許した失敗だけの再試行 |
 | `preparePageChange` / `applyPageChange`（任意） | ページの作成・複製・名前とURLの変更・公開切替。影響の確認と一回限りの確認 token。[ページ管理の契約](page-contract.md) |
 | `readSiteSettings` / `saveSiteSettings`（任意） | サイト共通の公開情報とカラー・文字スタイル。楽観ロック付き（[サイト共通スタイルの契約](site-styles-contract.md)） |
@@ -53,6 +54,8 @@ React 18.3 または 19 と、同じ版の React DOM を利用側で用意して
 | `listRevisions` / `readRevision` / `createSnapshot`（任意） | 版履歴の一覧・読み取り専用の表示・名前付きスナップショット。[保存・履歴の契約](save-history-contract.md) |
 
 `listPages` の各ページに任意で `path`・`kind`（page / template / shared）・`visibility`・`published` を返すと、左のページパネルにフォルダ（`template` は「テンプレート」の見出しの下）と公開状態の点（緑＝公開中、灰＝未公開、輪郭＝非公開）を表示します。`publication` があれば、その label と description を点のツールチップと読み上げに使います。任意メソッドを実装しないホストでは、ページ操作とサイト設定の保存を表示しません。
+
+3つの公開変更セットメソッドをすべて実装したホストでは、ページ一覧に複数選択を出します。選択した各ページの保存済み公開差分を単一ページの `prepareRelease` で確認し、差分があるページだけを一つの変更セットへ渡します。差分がある対象・差分・件数を確認してから適用し、ページ単位の `released` / `conflict` / `pending` と操作全体の状態を表示します。通信が途切れた場合は同じ計画の再試行または operation ID の状態照会を使います。未保存の編集中ページは保存してから開始し、変更セットAPIを提供しないホストでは複数選択を表示しません。
 
 ### 原文ページに対応する英語版の公開状態
 
@@ -399,6 +402,10 @@ const blocks = {
 plan の target、expectedVersion、action、rollback revision が要求と一致し、domain が listSites の許可済み HTTPS origin に含まれることを確認してからダイアログを開きます。origin は `https://example.com` の形式で、パス・資格情報・末尾 `/` を含めません。対象ドメインと差分を表示し、明示チェック後だけ実行ボタンを有効にします。確認中は背後の編集を無効化します。
 
 ホストは confirmationToken を対象文書・version・ドメイン・action・rollback revision・正確な差分に結び付け、短い有効期限と一回限りの利用を実装してください。release 時も認可と version を原子的に再検証し、UI から渡された domain や changes を権限の根拠にしません。token をログや永続文書に保存しません。
+
+### 複数ページ公開変更セット
+
+`prepareReleaseSet` / `releaseSet` / `releaseSetStatus` は `@niho/web/editing-api` の `pages.release-set-*` と同じ契約を実装してください。各ページの単一公開差分を確かめた結果、差分があるページだけを同じサイトの変更セットへ含めます。計画は対象、全 expected version と依存版、domain、operation ID を固定します。実行結果はページごとに `released` / `conflict` / `pending`、全体を `completed` / `publishing` とし、部分完了を隠しません。同じactor・operation ID・入力で再送したときは完了済みページを再公開せず、処理待ちだけを再開します。全ページ同時切替やページとCMSをまたぐ公開は要求しません。永続化、CAS、認可、actor監査はホストの責務です。詳細は[共通編集API契約](editing-api-contract.md#複数ページ公開変更セット)を参照してください。
 
 公開409は現在の編集内容を保持して確認を閉じます。通信失敗は「成立したか不明」として扱い、ホスト側で公開状態を確認するよう表示します。成功時はホストが返す最新 snapshot を検証して読込むため、文書と version を必ず最新状態で返してください。
 

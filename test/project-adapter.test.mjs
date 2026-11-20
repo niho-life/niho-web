@@ -322,3 +322,24 @@ test("release plans keep a validated public URL and affected list through the pr
   await assert.rejects(() => setup({ prepareRelease: async (input) => ({ ...input, confirmationToken: "token", domain: "https://example.test", changes: [], affected: [{ kind: "layout", name: "x" }] }) }).wrapped.prepareRelease(request, signal()), /一致/);
   await assert.rejects(() => wrapped.release({ ...plan, url: "https://evil.example.test/about" }, signal()), /一致/);
 });
+
+test("project editor scopes multi-page release sets to the configured site and validates targets and results", async () => {
+  const operationId = "550e8400-e29b-41d4-a716-446655440000", items = [
+    { target: { siteId: "demo", pageId: "home", locale: "ja-JP" }, expectedVersion: "v1", presentationVersion: "p1" },
+    { target: { siteId: "demo", pageId: "about", locale: "ja-JP" }, expectedVersion: "v2", presentationVersion: "p2" }
+  ];
+  const result = { status: "completed", operationId, items: items.map((item, index) => ({ target: item.target, status: "released", version: `released-${index}` })) };
+  const { wrapped, calls } = setup({
+    prepareReleaseSet: async (input) => ({ siteId: "demo", operationId, confirmationToken: "set-token", domain: "https://example.test", items: input }),
+    releaseSet: async (plan) => { calls.setPlan = structuredClone(plan); return result; },
+    releaseSetStatus: async (id) => ({ status: "completed", operationId: id, httpStatus: 200, result })
+  });
+  const plan = await wrapped.prepareReleaseSet(items, signal());
+  assert.equal(plan.operationId, operationId);
+  assert.deepEqual(plan.items, items);
+  assert.deepEqual(await wrapped.releaseSet(plan, signal()), result);
+  assert.deepEqual((await wrapped.releaseSetStatus(operationId, signal())).result, result);
+  await assert.rejects(() => wrapped.prepareReleaseSet([{ ...items[0], target: { ...items[0].target, siteId: "other" } }, items[1]], signal()), /プロジェクトのサイト/u);
+  await assert.rejects(() => wrapped.releaseSet({ ...plan, domain: "https://other.example.test" }, signal()), /公開変更セットの確認情報/u);
+  assert.equal(calls.setPlan.operationId, operationId);
+});

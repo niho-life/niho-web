@@ -97,16 +97,20 @@ function PageMenu({ page, open, setOpen, disabled, start, actions, pathEditable 
 }
 
 /** 左レールのページ一覧。検索、パスごとのフォルダ、公開状態の点、行ごとの操作を表示する。行はページ名とパスの 1 行にし、言語ごとの翻訳状態は出さない（翻訳画面で見る）。 */
-export function PagePanel({ pages, current, disabled, operations, actions, pathEditable = true, operationsDisabled, unsaved, select, start, children }: {
+export function PagePanel({ pages, current, disabled, operations, actions, pathEditable = true, operationsDisabled, unsaved, select, start, releaseSet, releaseSetDisabled = false, children }: {
   pages: readonly EditorPage[]; current: EditorTarget | undefined; disabled: boolean;
   /** 見出しの下に置くホスト側の部品（サイトの選択など）。 */
   children?: ReactNode;
   /** ホストがページ操作を実装しているか。 */
   operations: boolean; actions?: readonly EditorPageChange["action"][]; pathEditable?: boolean; operationsDisabled: boolean; unsaved: boolean;
+  /** 複数ページ公開を実装したホストだけ指定する。 */
+  releaseSet?: (pages: readonly EditorPage[]) => void;
+  releaseSetDisabled?: boolean;
   select: (page: EditorPage) => void; start: (start: PageChangeStart) => void;
 }) {
   const [searching, setSearching] = useState(false), [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState<readonly string[]>([]), [menu, setMenu] = useState("");
+  const [releaseSelection, setReleaseSelection] = useState<readonly string[]>([]);
   // shared は互換 adapter 上のサイト全体コンポーネント。URL を持つページの検索・フォルダ・件数には混ぜない。
   const visiblePages = pages.filter((page) => page.kind !== "shared");
   // テンプレート（CMS の詳細ページの型）は、パスの階層ではなく「テンプレート」の見出しの下にまとめる。検索はどちらにも同じ条件で効く。
@@ -115,7 +119,17 @@ export function PagePanel({ pages, current, disabled, operations, actions, pathE
   const tree = buildPageTree(visiblePages.filter((page) => page.kind !== "template"), searching ? query : undefined), multiLocale = new Set(visiblePages.map((page) => page.locale)).size > 1;
   const normal = visiblePages.filter((page) => (page.kind ?? "page") === "page");
   const published = normal.filter((page) => page.visibility !== "private" && page.published !== false).length;
+  const releaseCandidates = visiblePages.filter((page) => page.kind !== "shared");
+  const selectedReleasePages = releaseCandidates.filter((page) => releaseSelection.includes(pageKey(page)));
+  useEffect(() => setReleaseSelection((previous) => previous.filter((key) => releaseCandidates.some((page) => pageKey(page) === key))), [pages]);
   const closeSearch = () => { setSearching(false); setQuery(""); };
+  const startSelectedReleaseSet = () => {
+    if (releaseSet && selectedReleasePages.length >= 2 && !releaseSetDisabled) {
+      const selected = selectedReleasePages;
+      setReleaseSelection([]);
+      releaseSet(selected);
+    }
+  };
   function row(node: PageTreeNode): ReactNode {
     if (node.type === "folder") {
       const open = !collapsed.includes(node.path);
@@ -130,6 +144,8 @@ export function PagePanel({ pages, current, disabled, operations, actions, pathE
     const page: EditorPage = node.page, kind = page.kind ?? "page", key = pageKey(page), status = pageStatus(page);
     const secondary = [page.path, multiLocale ? page.locale : undefined].filter(Boolean).join(" · ");
     return <li key={key}><div className="e-page-row">
+      {releaseSet && kind !== "shared" && <label className="e-page-release-select" title="公開変更セットの対象にする"><input type="checkbox" aria-label={`「${page.title}」を一括公開の対象にする`} checked={releaseSelection.includes(key)} disabled={disabled || releaseSetDisabled || !releaseSelection.includes(key) && releaseSelection.length >= 50}
+        onChange={(event) => setReleaseSelection((previous) => event.target.checked ? [...previous, key] : previous.filter((entry) => entry !== key))} /></label>}
       <button type="button" className="e-page" aria-current={current && sameTarget(page, current) ? "page" : undefined} style={{ paddingLeft: 8 + node.depth * 14 }}
         disabled={disabled} title={[page.title, secondary, status.text].filter(Boolean).join(" · ")} onClick={() => select(page)}>
         <Icon name={kind === "template" ? "template" : page.path === "/" ? "home" : "page"} />
@@ -146,6 +162,12 @@ export function PagePanel({ pages, current, disabled, operations, actions, pathE
         {operations && (!actions || actions.includes("create")) && <button type="button" className="e-icon-button" aria-label="ページを追加" title={unsaved ? "保存してから追加できます" : "ページを追加"} disabled={disabled || operationsDisabled} onClick={() => start({ action: "create" })}><Icon name="plus" /></button>}</div>
     </div>
     {children}
+    {releaseSet && <div className="e-page-release-set">
+      <p>{selectedReleasePages.length ? `${selectedReleasePages.length} ページを選択中（最大50ページ）。差分のないページは公開対象から除外します。` : "公開するページを複数選択すると、差分をまとめて確認できます（最大50ページ）。"}</p>
+      {unsaved && <p role="status">現在の編集内容を保存してから、変更セットを作成してください。</p>}
+      <div><button type="button" className="e-small" disabled={disabled || releaseSetDisabled || selectedReleasePages.length < 2} onClick={startSelectedReleaseSet}>選択したページの変更を確認</button>
+        {selectedReleasePages.length > 0 && <button type="button" className="e-small" disabled={disabled || releaseSetDisabled} onClick={() => setReleaseSelection([])}>選択解除</button>}</div>
+    </div>}
     {searching && <input className="e-page-search" type="search" aria-label="ページを検索" placeholder="ページ名・パスで検索" value={query} autoFocus
       onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); closeSearch(); } }} />}
     {tree.length > 0 && <ul className="e-page-tree">{tree.map(row)}</ul>}

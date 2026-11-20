@@ -1,6 +1,7 @@
 import { parseSiteStyles } from "./site-styles.js";
 import { fingerprint, normalizePageChange, parseEditorReadOnly, validatePageChangePlan, validateReleasePlan } from "./editor-model.js";
 import { parseEditorLocaleReleaseApplyResult, parseEditorLocaleReleasePlan, parseEditorLocaleReleaseState } from "./editor-locale-release.js";
+import type { EditingPageReleaseSetApplyResult, EditingPageReleaseSetItem, EditingPageReleaseSetPlan } from "./editing-api.js";
 import type { EditorAdapter, EditorComponentAdapter, EditorLocaleReleaseApplyRequest, EditorLocaleReleasePrepareRequest, EditorLocalizationAdapter, EditorLocalizationCommand, EditorPage, EditorPageChange, EditorPagePublication, EditorReleasePlan, EditorReleaseRequest, EditorSite, EditorStructuredDataPreset, EditorTarget } from "./editor-types.js";
 import { parseRevisionEntry, parseRevisionPage } from "./history.js";
 import { parseSiteSettings } from "./pages.js";
@@ -158,6 +159,60 @@ function checkedPlan(plan: EditorReleasePlan, request: EditorReleaseRequest, sit
   return copy;
 }
 
+function releaseSetItemsForProject(value: unknown, site: EditorSite): EditingPageReleaseSetItem[] {
+  if (!Array.isArray(value) || value.length < 2 || value.length > 50) throw new Error("公開変更セットの対象件数が正しくありません。");
+  const seen = new Set<string>();
+  return value.map((raw, index) => {
+    const source = record(raw, `items[${index}]`), target = targetForProject(record(source.target, `items[${index}].target`) as EditorTarget, site);
+    const expectedVersion = releaseValue(source.expectedVersion, `items[${index}].expectedVersion`, 512), key = `${target.pageId}\u0000${target.locale}`;
+    if (seen.has(key)) throw new Error("公開変更セットに同じページが重複しています。");
+    seen.add(key);
+    return { target, expectedVersion,
+      ...(source.componentsVersion === undefined ? {} : { componentsVersion: releaseValue(source.componentsVersion, `items[${index}].componentsVersion`, 512) }),
+      ...(source.presentationVersion === undefined ? {} : { presentationVersion: releaseValue(source.presentationVersion, `items[${index}].presentationVersion`, 512) }) };
+  });
+}
+
+function sameReleaseSetItems(left: readonly EditingPageReleaseSetItem[], right: readonly EditingPageReleaseSetItem[]): boolean {
+  return left.length === right.length && left.every((item, index) => {
+    const other = right[index];
+    return !!other && item.target.siteId === other.target.siteId && item.target.pageId === other.target.pageId && item.target.locale === other.target.locale
+      && item.expectedVersion === other.expectedVersion && item.componentsVersion === other.componentsVersion && item.presentationVersion === other.presentationVersion;
+  });
+}
+
+function checkedReleaseSetPlan(value: unknown, expectedItems: readonly EditingPageReleaseSetItem[], site: EditorSite): EditingPageReleaseSetPlan {
+  const source = record(value, "releaseSetPlan"), operationId = releaseValue(source.operationId, "operationId", 80);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(operationId)
+    || source.siteId !== site.id || typeof source.confirmationToken !== "string" || !source.confirmationToken || source.confirmationToken.length > 512
+    || typeof source.domain !== "string" || !site.domains.includes(source.domain)) throw new Error("公開変更セットの確認情報が正しくありません。");
+  let domain: URL;
+  try { domain = new URL(source.domain); } catch { throw new Error("公開変更セットの公開先が正しくありません。"); }
+  if (domain.protocol !== "https:" || domain.origin !== source.domain || domain.username || domain.password || domain.search || domain.hash) throw new Error("公開変更セットの公開先が正しくありません。");
+  const items = releaseSetItemsForProject(source.items, site);
+  if (!sameReleaseSetItems(items, expectedItems)) throw new Error("公開変更セットの対象または版が一致しません。");
+  return { siteId: site.id, operationId, confirmationToken: source.confirmationToken, domain: source.domain, items };
+}
+
+function checkedReleaseSetResult(value: unknown, site: EditorSite, operationId: string, expectedItems?: readonly EditingPageReleaseSetItem[]): EditingPageReleaseSetApplyResult {
+  const source = record(value, "releaseSetResult");
+  if (source.status === "conflict" || source.status === "invalid" || source.status === "not_found" || source.status === "duplicate") return { status: source.status };
+  if ((source.status !== "completed" && source.status !== "publishing") || source.operationId !== operationId || !Array.isArray(source.items)
+    || source.items.length < 2 || source.items.length > 50 || expectedItems && source.items.length !== expectedItems.length) throw new Error("公開変更セットの結果が正しくありません。");
+  const seen = new Set<string>(), items = source.items.map((raw, index) => {
+    const item = record(raw, `items[${index}]`), target = targetForProject(record(item.target, `items[${index}].target`) as EditorTarget, site);
+    const key = `${target.pageId}\u0000${target.locale}`, expected = expectedItems?.[index];
+    if (seen.has(key) || expected && (target.pageId !== expected.target.pageId || target.locale !== expected.target.locale)) throw new Error("公開変更セットの結果対象が一致しません。");
+    seen.add(key);
+    if (item.status === "released") return { target, status: "released" as const, version: releaseValue(item.version, `items[${index}].version`, 512) };
+    if (item.status === "conflict") return { target, status: "conflict" as const };
+    if (item.status === "pending") return { target, status: "pending" as const };
+    throw new Error("公開変更セットの結果状態が正しくありません。");
+  });
+  if (source.status === "completed" && items.some((item) => item.status === "pending") || source.status === "publishing" && !items.some((item) => item.status === "pending")) throw new Error("公開変更セットの全体状態が項目状態と一致しません。");
+  return { status: source.status, operationId, items };
+}
+
 /** 部品ライブラリと使用状況も Project の Site だけに限定する。 */
 function componentsForProject(components: EditorComponentAdapter, site: EditorSite): EditorComponentAdapter {
   return {
@@ -291,6 +346,26 @@ export function createProjectEditorAdapter(adapter: EditorAdapter, projectInput:
       }
       return result;
     },
+    ...(adapter.prepareReleaseSet && adapter.releaseSet && adapter.releaseSetStatus ? {
+      async prepareReleaseSet(items, signal) {
+        const checked = releaseSetItemsForProject(items, site);
+        return checkedReleaseSetPlan(structuredClone(await adapter.prepareReleaseSet!(checked, signal)), checked, site);
+      },
+      async releaseSet(plan, signal) {
+        const items = releaseSetItemsForProject(plan.items, site), checked = checkedReleaseSetPlan(plan, items, site);
+        return checkedReleaseSetResult(structuredClone(await adapter.releaseSet!(checked, signal)), site, checked.operationId, items);
+      },
+      async releaseSetStatus(operationId, signal) {
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(operationId)) throw new Error("公開変更セットの操作IDが正しくありません。");
+        const source = record(structuredClone(await adapter.releaseSetStatus!(operationId, signal)), "releaseSetStatus");
+        if (source.operationId !== operationId || source.status !== "unknown" && source.status !== "received" && source.status !== "completed") throw new Error("公開変更セットの状態が正しくありません。");
+        if (source.status === "unknown" || source.status === "received") return { status: source.status, operationId };
+        if (!Number.isInteger(source.httpStatus) || Number(source.httpStatus) < 100 || Number(source.httpStatus) > 599) throw new Error("公開変更セットの状態が正しくありません。");
+        if (source.httpStatus === 200) return { status: "completed", operationId, httpStatus: 200,
+          result: checkedReleaseSetResult(source.result, site, operationId) };
+        return { status: "completed", operationId, httpStatus: Number(source.httpStatus), result: structuredClone(source.result) };
+      }
+    } satisfies Pick<EditorAdapter, "prepareReleaseSet" | "releaseSet" | "releaseSetStatus"> : {}),
     ...(adapter.components ? { components: componentsForProject(adapter.components, site) } : {}),
     ...(adapter.localization ? { localization: localizationForProject(adapter.localization, site) } : {}),
     ...(adapter.pagePathEditable === undefined ? {} : { pagePathEditable: adapter.pagePathEditable }),

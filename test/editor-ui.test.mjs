@@ -873,6 +873,58 @@ test("host publication notes replace the generic unpublished badge in the page l
   } finally { await app.cleanup(); }
 });
 
+test("multi-page release selects only pages with changes and can resume from the saved operation status", async () => {
+  const pages = [
+    { siteId: "demo", pageId: "home", locale: "ja-JP", title: "ホーム", kind: "page" },
+    { siteId: "demo", pageId: "about", locale: "ja-JP", title: "私たちについて", kind: "page" },
+    { siteId: "demo", pageId: "contact", locale: "ja-JP", title: "お問い合わせ", kind: "page" }
+  ];
+  const absent = await setup();
+  try { assert.equal(document.querySelector(".e-page-release-select"), null, "hosts without the optional methods do not show multi-page controls"); }
+  finally { await absent.cleanup(); }
+
+  let plannedItems, applied = 0, statusReads = 0, operationId;
+  const app = await setup({ adapter: {
+    listPages: async () => pages,
+    readDocument: async (target) => ({ document: { ...structuredClone(fixture), ...target }, version: `v-${target.pageId}`, presentation: { version: `p-${target.pageId}` }, hasSavedDraft: true }),
+    prepareRelease: async (request) => ({ ...request, confirmationToken: `single-${request.target.pageId}`, domain: "https://example.test",
+      changes: request.target.pageId === "about" ? [] : [{ path: "title", before: "旧タイトル", after: request.target.pageId === "home" ? "ホーム更新" : "お問い合わせ更新" }] }),
+    prepareReleaseSet: async (items) => {
+      plannedItems = structuredClone(items); operationId = "550e8400-e29b-41d4-a716-446655440000";
+      return { siteId: "demo", operationId, confirmationToken: "set-token", domain: "https://example.test", items: structuredClone(items) };
+    },
+    releaseSet: async (plan) => {
+      applied++;
+      return { status: "publishing", operationId: plan.operationId, items: plan.items.map((item, index) => index === 0
+        ? { target: item.target, status: "released", version: "released-home" } : { target: item.target, status: "pending" }) };
+    },
+    releaseSetStatus: async (id) => {
+      statusReads++; assert.equal(id, operationId);
+      return { status: "completed", operationId: id, httpStatus: 200, result: { status: "completed", operationId: id,
+        items: plannedItems.map((item, index) => ({ target: item.target, status: "released", version: `released-${index}` })) } };
+    }
+  } });
+  try {
+    for (const title of ["ホーム", "私たちについて", "お問い合わせ"]) {
+      const checkbox = document.querySelector(`[aria-label="「${title}」を一括公開の対象にする"]`); assert.ok(checkbox, title);
+      await press(checkbox);
+    }
+    await click("選択したページの変更を確認");
+    const confirmation = document.querySelector('[role="dialog"]'); assert.ok(confirmation);
+    assert.match(confirmation.textContent, /差分がある 2 ページ/u);
+    assert.ok(confirmation.textContent.includes("ホーム")); assert.ok(confirmation.textContent.includes("お問い合わせ"));
+    assert.ok(!confirmation.textContent.includes("私たちについて"), "unchanged pages are excluded");
+    assert.deepEqual(plannedItems.map((item) => item.target.pageId), ["home", "contact"]);
+    assert.deepEqual(plannedItems.map((item) => item.presentationVersion), ["p-home", "p-contact"]);
+    const consent = confirmation.querySelector(".e-release-set-confirm input"); await press(consent);
+    await click("2 ページを公開");
+    assert.equal(applied, 1); assert.match(document.querySelector('[role="dialog"]').textContent, /ページは処理待ち/u);
+    await click("状態を確認");
+    assert.equal(statusReads, 1); assert.equal(document.querySelector('[role="dialog"]').textContent.includes("公開済み"), true);
+    await click("ページ一覧に戻る"); assert.equal(document.querySelector('[role="dialog"]'), null);
+  } finally { await app.cleanup(); }
+});
+
 test("page status maps visibility, published and the host publication to a dot and its words", async () => {
   const { pageStatus } = await import("../dist/editor-pages.js");
   const base = { siteId: "demo", pageId: "p", locale: "ja-JP", title: "P" };
