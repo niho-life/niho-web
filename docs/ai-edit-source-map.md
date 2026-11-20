@@ -9,7 +9,7 @@
 | 編集対象 | 面と正本 | 人のGUI | AIの経路 | 公開出力から戻る手掛かりと現在の境界 |
 | --- | --- | --- | --- | --- |
 | ページ本文、要素、色・文字・余白・幅別スタイル、フォーム表示 | コンテンツ面。検証済み `PageDocument` | `@niho/web/editor` の `PageEditor` | 共通wire契約の `pages.read` で文書と版を読み、`@niho/web/editor-model` の `editDocumentById` またはJSON編集でローカル検証し、`pages.save` にexpectedVersion付きで保存。公開は `pages.release-plan` の差分・originを確認し、`pages.release` に同じoperation IDを渡す。ホストは `@niho/web/editing-api` をサイトoriginへmountする。既存Studio CLIも同じ正本を更新する互換経路として残る | `data-nw-scope` がsite/page/locale/revision、`data-nw-owner` と `data-nw-node` が所有文書と安定ノードIDを示す。テキストノードにはIDがないので親ノードと相対位置を使う。URLからページIDへの対応はホストの公開ルート一覧が必要 |
-| サイト共通スタイル、ブレークポイント、公開設定 | コンテンツ面。ホストのサイト設定API/DB | `PageEditor` のサイト設定adapter | ブレークポイントは `site.breakpoints.read/save`。他の設定操作はホストが定義するAPI/CLI操作 | CSSのスコープとノードIDから利用箇所は追える。実効値・所有者・版はサイト設定APIが返す。CLIの共通操作がない設定はホスト接続が必要 |
+| サイト共通スタイル、ブレークポイント、公開設定 | コンテンツ面。ホストのサイト設定API/DB | `PageEditor` のサイト設定adapter | ブレークポイントは共通wireの `site.breakpoints.read/save`。他の設定操作はホストが定義するAPI/CLI操作 | CSSのスコープとノードIDから利用箇所は追える。実効値・所有者・版はサイト設定APIが返す。CLIの共通操作がない設定はホスト接続が必要 |
 | 共通部品、登録ブロック、業務ブロックの表示props/領域 | 表示値はコンテンツ面のPageDocument/部品文書。実装とregistryはコード面のGitソース | GUIは登録済みのpropsと宣言済みslotだけを編集 | 文書に保存する値は `pages.save`。ブロック実装・registryはGitのbranch/PR/CI | `data-nw-node`、`data-nw-owner`、`data-nw-block`、必要なら `data-nw-slot` が文書のブロックと表示領域へ戻る。propsの宣言元やコード位置はホストの認証済み逆引き情報が必要 |
 | CMS項目・CMSスキーマ | コンテンツ面。ホストのCMS API/DB | CMS用のStudio/ホスト画面 | `cms.*` の委任操作 | 公開HTMLにCMS項目IDが含まれるとは限らない。項目・テンプレートへの逆引きはホストAPIが提供する。HTMLを編集してCMS値を変更しない |
 | 画像・動画などの素材 | コンテンツ面。ホストの素材API/DBと安定素材ID | 素材ライブラリとPageEditor | `assets.*`、アップロード時は一時アップロード許可 | ノードIDからPageDocument内の素材参照へ戻る。公開URLは配信時に解決されるため、URLだけから素材の正本を推定しない |

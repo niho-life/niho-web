@@ -3,12 +3,15 @@ import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { createPageEditingApiClient, EditingApiClientError, isEditingApiVersion, parseEditingPageDocumentEnvelope } from "../dist/editing-client.js";
+import { parseBreakpointSettings } from "../dist/style-model.js";
 
 const USAGE = `niho-edit --origin <https-origin> --site <site-id> discover
 niho-edit --origin <https-origin> --site <site-id> read <page-id> --locale <locale>
 niho-edit --origin <https-origin> --site <site-id> save <page-id> --locale <locale> --json <snapshot-file|->
 niho-edit --origin <https-origin> --site <site-id> release-plan <page-id> --locale <locale> --action <publish|rollback> (--json <snapshot-file|-> | --expected-version <version>) [--revision <number>]
 niho-edit --origin <https-origin> --site <site-id> release <page-id> --locale <locale> --json <plan-file|-> --operation-id <uuid-v4>
+niho-edit --origin <https-origin> --site <site-id> breakpoints-read
+niho-edit --origin <https-origin> --site <site-id> breakpoints-save --json <settings-snapshot-file|->
 
 Set NIHO_EDIT_TOKEN to a short-lived bearer token. read returns { document, version }.
 Edit document while keeping version, then pass the snapshot to save for version-checked persistence.
@@ -91,6 +94,18 @@ function emit(result, status = null, code = 0, operation = null) {
 function emitSnapshot(document, version, componentsVersion, presentationVersion) {
   process.stdout.write(`${JSON.stringify({ document, version, ...(componentsVersion === undefined ? {} : { componentsVersion }), ...(presentationVersion === undefined ? {} : { presentationVersion }) })}\n`);
 }
+async function inputBreakpointSnapshot(path) {
+  if (!path) throw new CliError("missing_json_input");
+  if (path !== "-") {
+    try { if ((await stat(path)).size > MAX_INPUT_BYTES) throw new CliError("input_too_large"); }
+    catch (error) { if (error instanceof CliError) throw error; throw new CliError("invalid_json_input"); }
+  }
+  const source = await readJson(path === "-" ? process.stdin : createReadStream(path));
+  if (Object.keys(source).sort().join(",") !== "settings,version" || !isEditingApiVersion(source.version)) throw new CliError("invalid_settings_snapshot");
+  let settings;
+  try { settings = parseBreakpointSettings(source.settings); } catch { throw new CliError("invalid_settings_snapshot"); }
+  return { settings, version: source.version };
+}
 async function apiCall(run) {
   try { return await run(); }
   catch (error) {
@@ -116,6 +131,25 @@ async function main() {
       || values.revision !== undefined || values["operation-id"] !== undefined) throw new CliError("invalid_arguments");
     const body = await apiCall(() => client.discover(AbortSignal.timeout(30_000)));
     emit(body, 200, 0, "discover"); return;
+  }
+
+  if (command === "breakpoints-read") {
+    if (pageId !== undefined || extra.length || values.locale !== undefined || values.json !== undefined || values.action !== undefined
+      || values["expected-version"] !== undefined || values["components-version"] !== undefined || values["presentation-version"] !== undefined
+      || values.revision !== undefined || values["operation-id"] !== undefined) throw new CliError("invalid_arguments");
+    const snapshot = await apiCall(() => client.readBreakpointSettings(AbortSignal.timeout(30_000)));
+    process.stdout.write(`${JSON.stringify(snapshot)}\n`); return;
+  }
+
+  if (command === "breakpoints-save") {
+    if (pageId !== undefined || extra.length || values.locale !== undefined || values.action !== undefined || values["expected-version"] !== undefined
+      || values["components-version"] !== undefined || values["presentation-version"] !== undefined || values.revision !== undefined || values["operation-id"] !== undefined) {
+      throw new CliError("invalid_arguments");
+    }
+    const snapshot = await inputBreakpointSnapshot(values.json);
+    const result = await apiCall(() => client.saveBreakpointSettings(snapshot.version, snapshot.settings, AbortSignal.timeout(30_000)));
+    if (result.status === "conflict") { emit({ error: "version_conflict" }, 409, 1, "site.breakpoints.save"); return; }
+    emit(result, 200, 0, "site.breakpoints.save"); return;
   }
 
   if (!["read", "save", "release-plan", "release"].includes(command) || extra.length || !IDENTIFIER.test(pageId ?? "") || !LOCALE.test(values.locale ?? "")) throw new CliError("invalid_arguments");

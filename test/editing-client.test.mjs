@@ -10,12 +10,13 @@ const blockDocument = structuredClone(fixture);
 blockDocument.body.push({ type: "component", id: "booking-panel", block: "booking-panel", props: { title: "Book a visit" } });
 const validationContext = { blocks: { "booking-panel": { props: { title: { type: "string", required: true } } } } };
 
-function clientFixture({ token = "owner", initialDocument = blockDocument, publishing = false } = {}) {
+function clientFixture({ token = "owner", initialDocument = blockDocument, publishing = false, initialBreakpointSettings } = {}) {
   let document = structuredClone(initialDocument), version = "v1";
+  let breakpointSettings = initialBreakpointSettings === undefined ? null : structuredClone(initialBreakpointSettings), breakpointVersion = "b.1";
   const completed = new Map();
   const api = createPageEditingApi({
     async authenticate(request) { return request.headers.get("Authorization") === "Bearer owner" ? { kind: "machine", subject: "agent", delegatedBy: "owner" } : null; },
-    async authorize(actor, capability, scope) { return actor.subject === "agent" && scope.siteId === target.siteId && (["pages.read", "pages.edit"].includes(capability) || publishing && capability === "pages.publish"); },
+    async authorize(actor, capability, scope) { return actor.subject === "agent" && scope.siteId === target.siteId && (["pages.read", "pages.edit"].includes(capability) || publishing && capability === "pages.publish" || breakpointSettings !== null && ["site.settings.read", "site.settings.write"].includes(capability)); },
     async validationContext() { return validationContext; },
     async readPage(_actor, requested) { return requested.siteId === target.siteId && requested.pageId === target.pageId && requested.locale === target.locale
       ? { document, version, ...(publishing ? { componentsVersion: "components-v1", presentationVersion: "presentation-v1" } : {}) } : null; },
@@ -24,6 +25,14 @@ function clientFixture({ token = "owner", initialDocument = blockDocument, publi
       document = { ...next, revision: next.revision + 1 }; version = `v${Number(version.slice(1)) + 1}`;
       return { status: "saved", version, document };
     },
+    ...(breakpointSettings === null ? {} : {
+      async readBreakpointSettings(_actor, siteId) { return siteId === target.siteId ? { settings: breakpointSettings, version: breakpointVersion } : null; },
+      async saveBreakpointSettings(_actor, siteId, expectedVersion, next) {
+        if (siteId !== target.siteId || expectedVersion !== breakpointVersion) return { status: "conflict" };
+        breakpointSettings = structuredClone(next); breakpointVersion = `b.${Number(breakpointVersion.slice(2)) + 1}`;
+        return { status: "saved", version: breakpointVersion };
+      }
+    }),
     ...(publishing ? {
       async releaseSite() { return { id: target.siteId, name: "Example", domains: ["https://host.example"] }; },
       async preparePageRelease(_actor, request) {
@@ -63,6 +72,19 @@ test("shared page editing client discovers, reads custom blocks and saves with C
     assert.equal(saved.document.title, "Saved by shared client");
   }
   assert.deepEqual(await client.save(target, snapshot.version, changed), { status: "conflict" });
+});
+
+test("shared editing client reads and saves site breakpoint settings through the discoverable API", async () => {
+  const initial = { base: { name: "Mobile", previewWidth: 480 }, breakpoints: [{ name: "Tablet", minWidth: 691, previewWidth: 840 }, { name: "PC", minWidth: 1280, previewWidth: 1280 }] };
+  const client = clientFixture({ initialBreakpointSettings: initial });
+  const discovery = await client.discover();
+  assert.deepEqual(discovery.operations.slice(-2).map(({ id }) => id), ["site.breakpoints.read", "site.breakpoints.save"]);
+  const snapshot = await client.readBreakpointSettings();
+  assert.deepEqual(snapshot, { settings: initial, version: "b.1" });
+  const next = structuredClone(initial); next.breakpoints[0].previewWidth = 800;
+  assert.deepEqual(await client.saveBreakpointSettings(snapshot.version, next), { status: "saved", version: "b.2" });
+  assert.deepEqual(await client.saveBreakpointSettings(snapshot.version, initial), { status: "conflict" });
+  await assert.rejects(client.saveBreakpointSettings("b.2", { ...next, unexpected: true }), TypeError);
 });
 
 test("shared page editing client keeps authorization failures stable and rejects cross-site targets", async () => {
