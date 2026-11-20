@@ -567,10 +567,6 @@ export async function managedEditorOperation(
   return request.method === "POST" ? applyRelease(request, db, actor, row) : json({ error: "method_not_allowed" }, 405);
 }
 
-export const MANAGED_CLI_OPERATION_IDS = new Set([
-  "pages.catalog", "pages.read", "pages.save", "pages.release-plan", "pages.release", "pages.change-prepare", "pages.change-apply"
-]);
-
 function prefixedNodes(nodes: readonly PageNode[], prefix: string): PageNode[] {
   return nodes.map((node): PageNode => {
     if (node.type !== "element") return structuredClone(node);

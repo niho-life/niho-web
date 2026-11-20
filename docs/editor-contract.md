@@ -6,6 +6,21 @@
 
 ホスト固有の戻る操作や識別表示（STGなど環境の印）は `toolbarStart` に渡します。環境の注意は帯にせず小さな印にして、帯は保存できない・ロック・不正な入力・接続の失敗のときだけ出してください。サイト名による表示分岐は契約に含めず、すべてのホストが同じworkspaceを使います。旧 `toolbarLayout` propは削除しています。
 
+## React不要の文書編集操作
+
+`@niho/web/editor-model` は React を読み込まず、文書編集と検証の関数を提供します。Studio GUI は内部の `EditorOperation` を使い、CLI/APIなどの外部クライアントは `editDocumentById` と `EditorOperationById` を使います。外部操作は配列位置の `NodePath` で要素を指定せず、PageDocument内で安定した `nodeId` を指定します。テキストノードはIDを持たないため、IDを持つ親要素の `parentId` と、その子配列からの `childPath` で指定します。`parentId: null` はページ本文を基準にします。
+
+```ts
+import { editDocumentById } from '@niho/web/editor-model';
+
+const next = editDocumentById(document, {
+  type: 'style', nodeId: 'hero', breakpoint: 'base',
+  property: 'backgroundColor', value: '#e8f0df'
+});
+```
+
+この関数はGUIと同じロック・部品・サイトスタイル・文書検証を適用します。CLIは文書を読み、操作またはJSONの直接編集をローカルで検証してから、ホストの既存のexpectedVersion付き保存契約へ渡します。認証、保存先、版の競合、公開計画と復元はホスト/APIが引き続き所有します。この入口はReact UIやStudio画面を起動しません。
+
 ## ホストへの接続
 
 ```tsx

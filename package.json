@@ -43,6 +43,10 @@
       "types": "./dist/editor.d.ts",
       "import": "./dist/editor.js"
     },
+    "./editor-model": {
+      "types": "./dist/editor-model.d.ts",
+      "import": "./dist/editor-model.js"
+    },
     "./pages": {
       "types": "./dist/pages.d.ts",
       "import": "./dist/pages.js"
