@@ -1,10 +1,15 @@
-import { EDITING_API_ERRORS, EDITING_OPERATIONS, type EditingApiErrorCode, type EditingOperationDefinition, type EditingPageCatalog, type EditingPageSnapshot, type EditingPageTarget } from "./editing-api.js";
+import { EDITING_API_ERRORS, EDITING_OPERATIONS, type EditingApiErrorCode, type EditingCmsOperationStatus, type EditingCmsPublishPlan, type EditingCmsTarget, type EditingOperationDefinition, type EditingPageCatalog, type EditingPageSnapshot, type EditingPageTarget } from "./editing-api.js";
 import { normalizePageChange, validatePageChangePlan } from "./editor-model.js";
 import type { PageDocument } from "./types.js";
 import type { EditorPage, EditorPageChange, EditorPageChangePlan, EditorPageChangeResult, EditorReleasePlan, EditorReleaseRequest, EditorSite } from "./editor-types.js";
 import type { EditorBreakpointSettings, EditorBreakpointSettingsSaveResult, EditorBreakpointSettingsSnapshot } from "./editor-types.js";
 import { identifier, localeCode } from "./validation-utils.js";
 import { parseBreakpointSettings } from "./style-model.js";
+import {
+  parseCollectionCreateResult, parseCollectionItemResult, parseCollectionListResult, parseCollectionPublishResult,
+  parseCollectionSaveResult, parseCollectionSchemaResult, parseCollectionValues,
+  type CollectionDefinition, type CollectionItem, type CollectionItemSummary, type CollectionValues
+} from "./collection-model.js";
 
 const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 const DOCUMENT_KEYS = ["schemaVersion", "siteId", "pageId", "locale", "revision", "title", "meta", "tokens", "textStyles", "body"] as const;
@@ -22,6 +27,8 @@ export type EditingApiDiscovery = { readonly apiVersion: "v1"; readonly siteId: 
 export type EditingPageSaveResult = { readonly status: "saved"; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" };
 export type EditingPagePublishResult = { readonly status: "released"; readonly operationId: string; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" };
 export type EditingPageReleaseInput = Omit<EditorReleaseRequest, "target">;
+export type EditingCmsSaveResult = { readonly status: "saved"; readonly item: CollectionItem } | { readonly status: "conflict"; readonly current: CollectionItem };
+export type EditingCmsPublishResult = { readonly status: "published" | "publishing"; readonly operationId: string; readonly item: CollectionItem } | { readonly status: "conflict" };
 export type EditingApiClient = {
   discover(signal?: AbortSignal): Promise<EditingApiDiscovery>;
   readPageCatalog(signal?: AbortSignal): Promise<EditingPageCatalog>;
@@ -33,11 +40,19 @@ export type EditingApiClient = {
   release(target: EditingPageTarget, plan: EditorReleasePlan, operationId: string, signal?: AbortSignal): Promise<EditingPagePublishResult>;
   readBreakpointSettings(signal?: AbortSignal): Promise<EditorBreakpointSettingsSnapshot>;
   saveBreakpointSettings(expectedVersion: string, settings: EditorBreakpointSettings, signal?: AbortSignal): Promise<EditorBreakpointSettingsSaveResult>;
+  readCmsSchema(signal?: AbortSignal): Promise<readonly CollectionDefinition[]>;
+  listCmsItems(collectionId: string, signal?: AbortSignal): Promise<readonly CollectionItemSummary[]>;
+  readCmsItem(target: EditingCmsTarget, signal?: AbortSignal): Promise<CollectionItem>;
+  createCmsItem(collectionId: string, operationId: string, signal?: AbortSignal): Promise<CollectionItem>;
+  saveCmsItem(target: EditingCmsTarget, expectedVersion: string, operationId: string, values: unknown, signal?: AbortSignal): Promise<EditingCmsSaveResult>;
+  prepareCmsPublish(target: EditingCmsTarget, expectedVersion: string, operationId: string, signal?: AbortSignal): Promise<EditingCmsPublishPlan>;
+  publishCmsItem(plan: EditingCmsPublishPlan, signal?: AbortSignal): Promise<EditingCmsPublishResult>;
+  cmsOperationStatus(operationId: string, signal?: AbortSignal): Promise<EditingCmsOperationStatus>;
 };
 
 /** A stable wire error; response bodies and host messages are intentionally not copied into its message. */
 export class EditingApiClientError extends Error {
-  constructor(readonly code: EditingApiErrorCode | "request_failed" | "invalid_response" | "response_too_large" | "transport_error", readonly status: number | null = null) {
+  constructor(readonly code: EditingApiErrorCode | "request_failed" | "invalid_response" | "response_too_large" | "transport_error", readonly status: number | null = null, readonly details?: unknown) {
     super(code);
     this.name = "EditingApiClientError";
   }
@@ -125,6 +140,20 @@ function targetPath(target: EditingPageTarget, siteId: string): string {
   const locale = localeCode(target.locale, "$target.locale");
   return `/sites/${encodeURIComponent(safeSite)}/operations/{operation}/${encodeURIComponent(pageId)}?locale=${encodeURIComponent(locale)}`;
 }
+const CMS_COLLECTION_ID = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,79}$/u;
+const CMS_ITEM_ID = /^[A-Za-z0-9_][A-Za-z0-9._~-]{0,127}$/u;
+function cmsCollection(value: unknown): string {
+  if (typeof value !== "string" || !CMS_COLLECTION_ID.test(value) || ["__proto__", "constructor", "prototype"].includes(value)) throw new TypeError("invalid CMS collection ID");
+  return value;
+}
+function cmsItem(value: unknown): string {
+  if (typeof value !== "string" || !CMS_ITEM_ID.test(value) || value === "." || value === ".." || ["__proto__", "constructor", "prototype"].includes(value)) throw new TypeError("invalid CMS item ID");
+  return value;
+}
+function cmsTarget(target: EditingCmsTarget, siteId: string): EditingCmsTarget {
+  if (!plainRecord(target) || target.siteId !== siteId) throw new TypeError("invalid CMS target");
+  return { siteId, collectionId: cmsCollection(target.collectionId), itemId: cmsItem(target.itemId) };
+}
 async function responseJson(response: Response): Promise<Record<string, unknown>> {
   if (response.headers.get("Content-Type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") throw new EditingApiClientError("invalid_response", response.status);
   const declaredLength = response.headers.get("Content-Length");
@@ -148,7 +177,12 @@ async function responseJson(response: Response): Promise<Record<string, unknown>
   } catch { throw new EditingApiClientError("invalid_response", response.status); }
 }
 function apiFailure(body: Record<string, unknown>, status: number): EditingApiClientError {
-  return new EditingApiClientError(EDITING_API_ERRORS.includes(body.error as EditingApiErrorCode) ? body.error as EditingApiErrorCode : "request_failed", status);
+  const code = EDITING_API_ERRORS.includes(body.error as EditingApiErrorCode) ? body.error as EditingApiErrorCode : "request_failed";
+  const details = code === "validation_failed" && Array.isArray(body.fields) && body.fields.length <= 100
+    && body.fields.every((field) => plainRecord(field) && exactKeys(field, ["field", "message"]) && typeof field.field === "string" && field.field.length <= 80
+      && typeof field.message === "string" && field.message.length <= 400)
+    ? body.fields.map((field) => ({ field: (field as Record<string, string>).field, message: (field as Record<string, string>).message })) : undefined;
+  return new EditingApiClientError(code, status, details);
 }
 function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
@@ -220,6 +254,22 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       throw new EditingApiClientError("transport_error");
     }
     return { response, body: await responseJson(response) };
+  };
+  const readCmsDefinition = async (collectionIdValue: unknown, signal?: AbortSignal): Promise<CollectionDefinition> => {
+    const collectionId = cmsCollection(collectionIdValue);
+    const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/cms.schema`, "GET", undefined, signal);
+    if (!response.ok) throw apiFailure(body, response.status);
+    if (!exactKeys(body, ["collections"])) throw new EditingApiClientError("invalid_response", response.status);
+    let collections: readonly CollectionDefinition[];
+    try {
+      const result = parseCollectionSchemaResult({ status: "ready", collections: body.collections });
+      if (result.status !== "ready") throw new Error("forbidden");
+      collections = result.collections;
+    }
+    catch { throw new EditingApiClientError("invalid_response", response.status); }
+    const definition = collections.find((item) => item.id === collectionId);
+    if (!definition) throw new EditingApiClientError("not_found", 404);
+    return definition;
   };
   const client: EditingApiClient = {
     async discover(signal) {
@@ -348,6 +398,135 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       if (!response.ok) throw apiFailure(body, response.status);
       if (!exactKeys(body, ["status", "version"]) || body.status !== "saved" || !isEditingApiVersion(body.version)) throw new EditingApiClientError("invalid_response", response.status);
       return { status: "saved", version: body.version };
+    },
+    async readCmsSchema(signal) {
+      const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/cms.schema`, "GET", undefined, signal);
+      if (!response.ok) throw apiFailure(body, response.status);
+      if (!exactKeys(body, ["collections"])) throw new EditingApiClientError("invalid_response", response.status);
+      try {
+        const result = parseCollectionSchemaResult({ status: "ready", collections: body.collections });
+        if (result.status !== "ready") throw new Error("forbidden");
+        return result.collections;
+      }
+      catch { throw new EditingApiClientError("invalid_response", response.status); }
+    },
+    async listCmsItems(collectionIdValue, signal) {
+      const collectionId = cmsCollection(collectionIdValue);
+      const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/cms.list/${encodeURIComponent(collectionId)}`, "GET", undefined, signal);
+      if (!response.ok) throw apiFailure(body, response.status);
+      try {
+        const result = parseCollectionListResult({ status: "ready", collectionId: body.collectionId, items: body.items }, collectionId);
+        if (!exactKeys(body, ["collectionId", "items"])) throw new Error("shape");
+        if (result.status !== "ready") throw new Error("forbidden");
+        return result.items;
+      } catch { throw new EditingApiClientError("invalid_response", response.status); }
+    },
+    async readCmsItem(targetValue, signal) {
+      const target = cmsTarget(targetValue, siteId), definition = await readCmsDefinition(target.collectionId, signal);
+      const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/cms.read/${encodeURIComponent(target.collectionId)}/${encodeURIComponent(target.itemId)}`, "GET", undefined, signal);
+      if (!response.ok) throw apiFailure(body, response.status);
+      if (!exactKeys(body, ["item"])) throw new EditingApiClientError("invalid_response", response.status);
+      try {
+        const result = parseCollectionItemResult({ status: "ready", item: body.item }, definition, target.itemId);
+        if (result.status !== "ready") throw new Error("not ready");
+        return result.item;
+      }
+      catch { throw new EditingApiClientError("invalid_response", response.status); }
+    },
+    async createCmsItem(collectionIdValue, operationId, signal) {
+      const collectionId = cmsCollection(collectionIdValue);
+      if (!OPERATION_ID.test(operationId)) throw new TypeError("invalid CMS operation ID");
+      const definition = await readCmsDefinition(collectionId, signal);
+      const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/cms.create/${encodeURIComponent(collectionId)}`, "POST", { operationId }, signal);
+      if (!response.ok) throw apiFailure(body, response.status);
+      if (!exactKeys(body, ["item"])) throw new EditingApiClientError("invalid_response", response.status);
+      try {
+        const result = parseCollectionCreateResult({ status: "created", item: body.item }, definition);
+        if (result.status !== "created") throw new Error("not created");
+        return result.item;
+      }
+      catch { throw new EditingApiClientError("invalid_response", response.status); }
+    },
+    async saveCmsItem(targetValue, expectedVersion, operationId, values, signal) {
+      const target = cmsTarget(targetValue, siteId);
+      if (!isEditingApiVersion(expectedVersion) || !OPERATION_ID.test(operationId)) throw new TypeError("invalid CMS save request");
+      const definition = await readCmsDefinition(target.collectionId, signal);
+      let normalizedValues: CollectionValues;
+      try { normalizedValues = parseCollectionValues(values, definition); }
+      catch { throw new TypeError("invalid CMS values"); }
+      const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/cms.save/${encodeURIComponent(target.collectionId)}/${encodeURIComponent(target.itemId)}`, "PUT", { expectedVersion, operationId, values: normalizedValues }, signal);
+      if (response.status === 409 && body.error === "version_conflict") {
+        if (!exactKeys(body, ["error", "current"])) throw new EditingApiClientError("invalid_response", response.status);
+        try {
+          const result = parseCollectionSaveResult({ status: "conflict", item: body.current }, definition, target.itemId);
+          if (result.status !== "conflict") throw new Error("not conflict");
+          return { status: "conflict", current: result.item };
+        }
+        catch { throw new EditingApiClientError("invalid_response", response.status); }
+      }
+      if (!response.ok) throw apiFailure(body, response.status);
+      if (!exactKeys(body, ["status", "item"]) || body.status !== "saved") throw new EditingApiClientError("invalid_response", response.status);
+      try {
+        const result = parseCollectionSaveResult({ status: "saved", item: body.item }, definition, target.itemId);
+        if (result.status !== "saved") throw new Error("not saved");
+        return { status: "saved", item: result.item };
+      }
+      catch { throw new EditingApiClientError("invalid_response", response.status); }
+    },
+    async prepareCmsPublish(targetValue, expectedVersion, operationId, signal) {
+      const target = cmsTarget(targetValue, siteId);
+      if (!isEditingApiVersion(expectedVersion) || !OPERATION_ID.test(operationId)) throw new TypeError("invalid CMS publish request");
+      const definition = await readCmsDefinition(target.collectionId, signal);
+      const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/cms.publish-plan/${encodeURIComponent(target.collectionId)}/${encodeURIComponent(target.itemId)}`, "POST", { expectedVersion, operationId }, signal);
+      if (response.status === 409) throw apiFailure(body, response.status);
+      if (!response.ok) throw apiFailure(body, response.status);
+      if (!exactKeys(body, ["plan"]) || !plainRecord(body.plan) || !exactKeys(body.plan, ["target", "expectedVersion", "operationId", "confirmationToken", "item"])) throw new EditingApiClientError("invalid_response", response.status);
+      const plan = body.plan;
+      if (!plainRecord(plan.target) || !exactKeys(plan.target, ["siteId", "collectionId", "itemId"]) || plan.target.siteId !== siteId
+        || plan.target.collectionId !== target.collectionId || plan.target.itemId !== target.itemId || plan.expectedVersion !== expectedVersion
+        || plan.operationId !== operationId || !isEditingApiVersion(plan.confirmationToken)) throw new EditingApiClientError("invalid_response", response.status);
+      try {
+        const itemResult = parseCollectionItemResult({ status: "ready", item: plan.item }, definition, target.itemId);
+        if (itemResult.status !== "ready") throw new Error("not ready");
+        return { target, expectedVersion, operationId, confirmationToken: plan.confirmationToken, item: itemResult.item };
+      }
+      catch { throw new EditingApiClientError("invalid_response", response.status); }
+    },
+    async publishCmsItem(planValue, signal) {
+      if (!plainRecord(planValue) || !exactKeys(planValue, ["target", "expectedVersion", "operationId", "confirmationToken", "item"])) throw new TypeError("invalid CMS publish plan");
+      const target = cmsTarget(planValue.target as EditingCmsTarget, siteId);
+      if (!isEditingApiVersion(planValue.expectedVersion) || typeof planValue.operationId !== "string" || !OPERATION_ID.test(planValue.operationId)
+        || !isEditingApiVersion(planValue.confirmationToken)) throw new TypeError("invalid CMS publish plan");
+      const definition = await readCmsDefinition(target.collectionId, signal);
+      try {
+        const result = parseCollectionItemResult({ status: "ready", item: planValue.item }, definition, target.itemId);
+        if (result.status !== "ready" || result.item.version !== planValue.expectedVersion) throw new Error("plan item mismatch");
+      } catch { throw new TypeError("invalid CMS publish plan"); }
+      const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/cms.publish/${encodeURIComponent(target.collectionId)}/${encodeURIComponent(target.itemId)}`, "POST",
+        { expectedVersion: planValue.expectedVersion, operationId: planValue.operationId, confirmationToken: planValue.confirmationToken }, signal);
+      if (response.status === 409 && body.error === "version_conflict") return { status: "conflict" };
+      if (!response.ok) throw apiFailure(body, response.status);
+      if (!exactKeys(body, ["status", "operationId", "item"]) || (body.status !== "published" && body.status !== "publishing") || body.operationId !== planValue.operationId) throw new EditingApiClientError("invalid_response", response.status);
+      try {
+        const result = parseCollectionPublishResult({ status: body.status, item: body.item }, definition, target.itemId);
+        if (result.status !== "published" && result.status !== "publishing") throw new Error("not published");
+        return { status: result.status, operationId: body.operationId, item: result.item };
+      }
+      catch { throw new EditingApiClientError("invalid_response", response.status); }
+    },
+    async cmsOperationStatus(operationId, signal) {
+      if (!OPERATION_ID.test(operationId)) throw new TypeError("invalid CMS operation ID");
+      const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/cms.operation-status/${encodeURIComponent(operationId)}`, "GET", undefined, signal);
+      if (!response.ok) throw apiFailure(body, response.status);
+      if (body.operationId !== operationId || !["unknown", "received", "completed"].includes(String(body.status))) throw new EditingApiClientError("invalid_response", response.status);
+      if (body.status !== "completed") {
+        if (!exactKeys(body, ["status", "operationId"])) throw new EditingApiClientError("invalid_response", response.status);
+        return body as EditingCmsOperationStatus;
+      }
+      if (!exactKeys(body, ["status", "operationId", "httpStatus", "result"]) || !Number.isInteger(body.httpStatus) || Number(body.httpStatus) < 100 || Number(body.httpStatus) > 599 || !plainRecord(body.result)) {
+        throw new EditingApiClientError("invalid_response", response.status);
+      }
+      return body as EditingCmsOperationStatus;
     }
   };
   return client;
