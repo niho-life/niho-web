@@ -80,11 +80,8 @@ export type JsonSchema = boolean | {
   readonly maxItems?: number;
   readonly oneOf?: readonly JsonSchema[];
 };
-export type EditingOperationDefinition = {
-  readonly id: "pages.read" | "pages.save" | "pages.release-plan" | "pages.release" | "pages.catalog" | "pages.change-prepare" | "pages.change-apply"
-    | "site.breakpoints.read" | "site.breakpoints.save" | "cms.schema" | "cms.list" | "cms.read" | "cms.create" | "cms.save"
-    | "cms.publish-plan" | "cms.publish" | "cms.operation-status"
-    | "assets.list" | "assets.usages" | "assets.resolve" | "assets.update" | "assets.upload-intent" | "assets.delete" | "assets.restore";
+type EditingOperationDefinitionShape = {
+  readonly id: string;
   readonly capability: "pages.read" | "pages.edit" | "pages.publish" | "site.settings.read" | "site.settings.write" | "cms.read" | "cms.edit" | "cms.publish"
     | "assets.read" | "assets.edit" | "assets.upload" | "assets.delete";
   readonly method: "GET" | "PUT" | "POST";
@@ -184,7 +181,7 @@ const releasePlanSchema: JsonSchema = Object.freeze({ type: "object", required: 
 });
 
 /** Canonical resource operations for hosts to expose to GUI and machine clients. */
-export const EDITING_OPERATIONS: readonly EditingOperationDefinition[] = Object.freeze([
+export const EDITING_OPERATIONS = Object.freeze([
   Object.freeze({
     id: "pages.read", capability: "pages.read", method: "GET", path: "/sites/{siteId}/operations/pages.read/{pageId}?locale={locale}",
     inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId", "pageId", "locale"]), additionalProperties: false,
@@ -330,7 +327,9 @@ export const EDITING_OPERATIONS: readonly EditingOperationDefinition[] = Object.
     resultSchema: Object.freeze({ oneOf: Object.freeze([Object.freeze({ type: "object", required: Object.freeze(["status"]), properties: Object.freeze({ status: Object.freeze({ enum: Object.freeze(["restored", "conflict"]) }) }) }),
       Object.freeze({ type: "object", required: Object.freeze(["status", "reason"]), properties: Object.freeze({ status: Object.freeze({ const: "rejected" }), reason: Object.freeze({ enum: Object.freeze(["permission", "invalid"]) }) }) })]) }),
     errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found"] as const) })
-]);
+] as const satisfies readonly EditingOperationDefinitionShape[]);
+/** Operation metadata and IDs have a single source: the catalog above. */
+export type EditingOperationDefinition = (typeof EDITING_OPERATIONS)[number];
 
 export type PageEditingHostAdapter = {
   /** Host owns login/session/API-key verification. Return null for an unauthenticated request. */

@@ -63,6 +63,10 @@ function hostFixture({ validationContext, initialDocument = fixture, publishing 
 async function json(response) { return { status: response.status, body: await response.json() }; }
 
 test("page editing API discovery exposes machine-readable operations and stable errors", async () => {
+  const operationIds = EDITING_OPERATIONS.map(({ id }) => id);
+  assert.equal(new Set(operationIds).size, operationIds.length, "the catalog is the unique source of public operation IDs");
+  assert.ok(EDITING_OPERATIONS.every(({ inputSchema, resultSchema, errors }) => inputSchema && resultSchema && errors.length > 0));
+  assert.ok(EDITING_OPERATIONS.every(({ errors }) => errors.every((error) => EDITING_API_ERRORS.includes(error))));
   const { send } = hostFixture();
   const result = await json(await send("GET", `/sites/${target.siteId}/capabilities`));
   assert.equal(result.status, 200);
