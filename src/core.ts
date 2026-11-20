@@ -5,7 +5,7 @@ export {
   type BlankEmbedRegistry, type BlankEmbedRegistryEntry, type BlankEmbedSandboxMode
 } from "./embeds.js";
 export { parsePageDocument, parsePageDocument as validateDocument, parsePageMeta, type PageParseOptions } from "./document.js";
-export { generatePageCss, pageScope } from "./css.js";
+export { generatePageCss, pageScope, parsePageScope, type PageScopeIdentity } from "./css.js";
 export { SITE_PRESENTATION_LIMITS, cssForSitePresentation, parseSitePresentation, presentationAssetDocument, presentationLayoutDocument, sitePresentationHostViewKey } from "./presentation.js";
 export { initializeSitePresentation, type SitePresentationOptions } from "./presentation-runtime.js";
 export {

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { createBlankEmbedRegistry, DocumentValidationError, generatePageCss, isSafePublicUrl, normalizeEmbedSource, pageScope, parseBlankEmbedRegistry, parsePageDocument, validateDocument } from "@niho/web";
-import { validateDocument as validateCore } from "@niho/web/core";
+import { createBlankEmbedRegistry, DocumentValidationError, generatePageCss, isSafePublicUrl, normalizeEmbedSource, pageScope, parsePageScope, parseBlankEmbedRegistry, parsePageDocument, validateDocument } from "@niho/web";
+import { parsePageScope as parsePageScopeCore, validateDocument as validateCore } from "@niho/web/core";
 
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 const doc = () => structuredClone(fixture);
@@ -291,6 +291,16 @@ test("CSS uses document scoped selectors and mobile first overrides", () => {
   assert.notEqual(scope, pageScope({ ...input, siteId: "another" }));
   assert.notEqual(scope, pageScope({ ...input, revision: 2 }));
   assert.notEqual(pageScope({ ...input, siteId: "a-b", pageId: "c" }), pageScope({ ...input, siteId: "a", pageId: "b-c" }));
+});
+
+test("page scope reverses to the exact source identity and rejects malformed scopes", () => {
+  const identity = { siteId: "site-a", pageId: "home-page", locale: "ja-JP", revision: 7 };
+  const scope = pageScope(identity);
+  assert.deepEqual(parsePageScope(scope), identity);
+  assert.deepEqual(parsePageScopeCore(scope), identity);
+  for (const invalid of [scope.slice(0, -1), `${scope}-extra`, "nw-999999999999999999999-a-1-b-5-ja-JP-1-1", "nw-1-a-1-b-5-ja-JP-1-0", "nw-1-a-1-b-1-x-1-1"]) {
+    assert.equal(parsePageScope(invalid), undefined);
+  }
 });
 
 test("color, typography, dimensions, spacing, flex/grid and position CSS compile", () => {
