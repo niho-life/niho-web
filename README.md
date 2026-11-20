@@ -41,7 +41,7 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 | --- | --- |
 | `@niho/web` | JSON 型、`validateDocument` / `parsePageDocument`、閉じた組み込みアイコン・フォーム・Map / YouTube / Vimeo / Lottie / Facebook / X / Instagram / host承認済みBlank埋め込み・VideoWithButton・Loop Box、CSS、リストの印と画像の行内縦位置、画像・native動画を含む React SSR の `PageRenderer` |
 | `@niho/web/core` | 検証・文書型・embed URL正規化・CSS・共通部品の検証と展開、form完了ページの安全な純粋resolver、`data-nw-scope` の文書識別情報を戻す `parsePageScope`。React の runtime import を含みません |
-| `@niho/web/editing-api` | ホストが認証・権限・保存先を実装する、React非依存のページ読取・版付き保存・公開計画/適用HTTP handlerと、discover用JSON Schema・安定エラー定義（[契約](docs/editing-api-contract.md)） |
+| `@niho/web/editing-api` | ホストが認証・権限・保存先を実装する、React非依存のページ読取・版付き保存・公開計画/適用HTTP handler。単一host mountと、site IDから登録済みhost adapterへ振り分けるmulti-site registry、discover用JSON Schema・安定エラー定義を提供（[契約](docs/editing-api-contract.md)） |
 | `@niho/web/editing-client` | GUIや機械クライアントがhost-neutral wire契約を呼ぶReact非依存HTTP client。読み書きのCASと、operation IDを使う安全な公開再試行を提供し、ホスト固有文書の完全検証はAPI側へ委ねます |
 | `@niho/web/builder` | 汎用の挿入カタログ、モーション定義、host拡張の型と検証。React非依存 |
 | `@niho/web/react` | `PageRenderer` / `SitePageRenderer` とブロック registry の型。編集キャンバスでは props と一致する host view が無いブロックだけ見本または空の枠へ戻し、他の要素を表示し続ける。外部 frame は [サイト単位の許可リスト](docs/site-presentation.md) の外を読み込まず、許可の中でも実行コードの信頼済みリストに入るものだけ origin を維持し、入らない不変 embed などは権限なしの opaque iframe で描く |
