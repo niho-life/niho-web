@@ -10,7 +10,7 @@ const blockDocument = structuredClone(fixture);
 blockDocument.body.push({ type: "component", id: "booking-panel", block: "booking-panel", props: { title: "Book a visit" } });
 const validationContext = { blocks: { "booking-panel": { props: { title: { type: "string", required: true } } } } };
 
-function clientFixture({ token = "owner", initialDocument = blockDocument, publishing = false, releaseSet = false, staleAfterSetPrepare = false, pageManagement = false, initialBreakpointSettings } = {}) {
+function clientFixture({ token = "owner", initialDocument = blockDocument, publishing = false, releaseSet = false, staleAfterSetPrepare = false, pendingSetOnce = false, pageManagement = false, initialBreakpointSettings } = {}) {
   let document = structuredClone(initialDocument), version = "v1";
   const secondTarget = { siteId: target.siteId, pageId: "about", locale: "ja" };
   let secondVersion = "about-v1";
@@ -62,7 +62,7 @@ function clientFixture({ token = "owner", initialDocument = blockDocument, publi
           if (siteId !== target.siteId || items.some((item) => item.target.pageId === target.pageId ? item.expectedVersion !== version
             : item.target.pageId === secondTarget.pageId ? item.expectedVersion !== secondVersion : true)) return { status: "conflict" };
           const plan = { siteId, operationId, confirmationToken: `set-token-${operationId}`, domain: "https://host.example", items: structuredClone(items) };
-          releaseSetOperations.set(operationId, { plan, input: structuredClone(items), result: null });
+          releaseSetOperations.set(operationId, { plan, input: structuredClone(items), result: null, results: new Map(), pendingSetConsumed: false });
           if (staleAfterSetPrepare) secondVersion = "about-v2";
           return { status: "prepared", plan };
         },
@@ -71,16 +71,50 @@ function clientFixture({ token = "owner", initialDocument = blockDocument, publi
           if (!entry || siteId !== target.siteId || entry.plan.confirmationToken !== input.confirmationToken
             || JSON.stringify(entry.input) !== JSON.stringify(input.items)) return { status: "duplicate" };
           if (entry.result) return entry.result;
-          if (input.items.some((item) => item.target.pageId === target.pageId ? item.expectedVersion !== version
-            : item.target.pageId === secondTarget.pageId ? item.expectedVersion !== secondVersion : true)) return { status: "conflict" };
           const results = input.items.map((item) => {
-            if (item.target.pageId === target.pageId) version = "v2";
-            else secondVersion = "about-v2";
-            return { target: item.target, version: item.target.pageId === target.pageId ? version : secondVersion };
+            const key = `${item.target.pageId}\u0000${item.target.locale}`;
+            const prior = entry.results.get(key);
+            if (prior && prior.status !== "pending") return prior;
+            if (prior?.status === "pending") entry.results.delete(key);
+            if (pendingSetOnce && !entry.pendingSetConsumed && item.target.pageId === secondTarget.pageId) {
+              entry.pendingSetConsumed = true;
+              const pending = { target: item.target, status: "pending" };
+              entry.results.set(key, pending);
+              return pending;
+            }
+            if (item.target.pageId === target.pageId) {
+              if (item.expectedVersion !== version) {
+                const conflict = { target: item.target, status: "conflict" };
+                entry.results.set(key, conflict);
+                return conflict;
+              }
+              version = "v2";
+              const released = { target: item.target, status: "released", version };
+              entry.results.set(key, released);
+              return released;
+            }
+            if (item.target.pageId === secondTarget.pageId) {
+              if (item.expectedVersion !== secondVersion) {
+                const conflict = { target: item.target, status: "conflict" };
+                entry.results.set(key, conflict);
+                return conflict;
+              }
+              secondVersion = "about-v2";
+              const released = { target: item.target, status: "released", version: secondVersion };
+              entry.results.set(key, released);
+              return released;
+            }
+            const conflict = { target: item.target, status: "conflict" };
+            entry.results.set(key, conflict);
+            return conflict;
           });
-          entry.result = { status: "released", operationId: input.operationId, items: results };
-          entry.status = { status: "completed", operationId: input.operationId, httpStatus: 200, result: entry.result };
-          return entry.result;
+          const status = results.some(({ status }) => status === "pending") ? "publishing" : "completed";
+          const result = { status, operationId: input.operationId, items: results };
+          if (status === "completed") {
+            entry.result = result;
+            entry.status = { status: "completed", operationId: input.operationId, httpStatus: 200, result };
+          } else entry.status = { status: "received", operationId: input.operationId };
+          return result;
         },
         async readPageReleaseSetStatus(_actor, siteId, operationId) {
           return siteId === target.siteId ? releaseSetOperations.get(operationId)?.status ?? { status: "unknown", operationId } : null;
@@ -212,25 +246,43 @@ test("shared editing client prepares and applies an idempotent multi-page releas
   assert.equal(plan.operationId, operationId);
   assert.deepEqual(plan.items, items);
   assert.deepEqual(await client.publishPageReleaseSet(plan), {
-    status: "released", operationId, items: [
-      { target, version: "v2" }, { target: { ...target, pageId: "about" }, version: "about-v2" }
+    status: "completed", operationId, items: [
+      { target, status: "released", version: "v2" }, { target: { ...target, pageId: "about" }, status: "released", version: "about-v2" }
     ]
   });
   assert.deepEqual(await client.publishPageReleaseSet(plan), {
-    status: "released", operationId, items: [
-      { target, version: "v2" }, { target: { ...target, pageId: "about" }, version: "about-v2" }
+    status: "completed", operationId, items: [
+      { target, status: "released", version: "v2" }, { target: { ...target, pageId: "about" }, status: "released", version: "about-v2" }
     ]
   });
   assert.deepEqual(await client.pageReleaseSetStatus(operationId), {
     status: "completed", operationId, httpStatus: 200,
-    result: { status: "released", operationId, items: [
-      { target, version: "v2" }, { target: { ...target, pageId: "about" }, version: "about-v2" }
+    result: { status: "completed", operationId, items: [
+      { target, status: "released", version: "v2" }, { target: { ...target, pageId: "about" }, status: "released", version: "about-v2" }
     ] }
   });
   await assert.rejects(client.preparePageReleaseSet([items[0], items[0]], undefined, operationId), TypeError);
 });
 
-test("multi-page release set aborts before any publish when one target turns stale", async () => {
+test("multi-page release set resumes a pending target without republishing completed pages", async () => {
+  const client = clientFixture({ releaseSet: true, pendingSetOnce: true });
+  const operationId = "623e4567-e89b-42d3-a456-426614174000";
+  const items = [
+    { target, expectedVersion: "v1" },
+    { target: { ...target, pageId: "about" }, expectedVersion: "about-v1" }
+  ];
+  const plan = await client.preparePageReleaseSet(items, undefined, operationId);
+  assert.deepEqual(await client.publishPageReleaseSet(plan), { status: "publishing", operationId, items: [
+    { target, status: "released", version: "v2" }, { target: { ...target, pageId: "about" }, status: "pending" }
+  ] });
+  assert.deepEqual(await client.pageReleaseSetStatus(operationId), { status: "received", operationId });
+  assert.deepEqual(await client.publishPageReleaseSet(plan), { status: "completed", operationId, items: [
+    { target, status: "released", version: "v2" }, { target: { ...target, pageId: "about" }, status: "released", version: "about-v2" }
+  ] });
+  assert.equal((await client.read(target)).version, "v2", "the completed page must not be published again while resuming the pending target");
+});
+
+test("multi-page release set reports partial success when one target turns stale", async () => {
   const client = clientFixture({ releaseSet: true, staleAfterSetPrepare: true });
   const operationId = "423e4567-e89b-42d3-a456-426614174000";
   const items = [
@@ -238,6 +290,11 @@ test("multi-page release set aborts before any publish when one target turns sta
     { target: { ...target, pageId: "about" }, expectedVersion: "about-v1" }
   ];
   const plan = await client.preparePageReleaseSet(items, undefined, operationId);
-  assert.deepEqual(await client.publishPageReleaseSet(plan), { status: "conflict" });
-  assert.equal((await client.read(target)).version, "v1", "a stale second target must not partially publish the first target");
+  const result = await client.publishPageReleaseSet(plan);
+  assert.deepEqual(result, { status: "completed", operationId, items: [
+    { target, status: "released", version: "v2" }, { target: { ...target, pageId: "about" }, status: "conflict" }
+  ] });
+  assert.equal((await client.read(target)).version, "v2", "the successful target must publish even if another target is stale");
+  assert.deepEqual(await client.publishPageReleaseSet(plan), result, "retrying the same operation must not publish a completed target twice");
+  assert.equal((await client.read(target)).version, "v2");
 });

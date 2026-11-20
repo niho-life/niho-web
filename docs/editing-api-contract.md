@@ -17,7 +17,7 @@ Studio GUIはページの表示・編集材料の一部（presentation metadata�
 | `pages.release-plan` | POST | `/sites/{siteId}/operations/pages.release-plan/{pageId}?locale={locale}` | `pages.publish` | expected version, publish/rollback action, optional rollback revision and dependency versions | `{ plan }` |
 | `pages.release` | POST | `/sites/{siteId}/operations/pages.release/{pageId}?locale={locale}` | `pages.publish` | expected version, one-use confirmation token, UUID v4 operation ID | `{ status: "released", operationId, version, document }` |
 | `pages.release-set-plan` | POST | `/sites/{siteId}/operations/pages.release-set-plan` | `pages.publish` per target | `{ siteId, operationId, items: [{ target, expectedVersion, componentsVersion?, presentationVersion? }] }` (2–50 pages) | `{ plan }` |
-| `pages.release-set` | POST | `/sites/{siteId}/operations/pages.release-set` | `pages.publish` per target | the exact plan's site, operation ID, confirmation token and items | `{ status, operationId, items: [{ target, version }] }` |
+| `pages.release-set` | POST | `/sites/{siteId}/operations/pages.release-set` | `pages.publish` per target | the exact plan's site, operation ID, confirmation token and items | `{ status: "completed" | "publishing", operationId, items: [{ target, status: "released", version } | { target, status: "conflict" | "pending" }] }` |
 | `pages.release-set-status` | GET | `/sites/{siteId}/operations/pages.release-set-status/{operationId}` | `pages.read` | site / operation ID | `{ status, operationId, ... }` |
 | `pages.catalog` | GET | `/sites/{siteId}/operations/pages.catalog` | `pages.read` | site ID | `{ version, pages }` |
 | `pages.change-prepare` | POST | `/sites/{siteId}/operations/pages.change-prepare` | `pages.publish` | `{ expectedVersion, operationId, change }` | `{ plan }` |
@@ -42,7 +42,9 @@ Studio GUIはページの表示・編集材料の一部（presentation metadata�
 
 `pages.save` は `expectedVersion` を原子的に比較します。競合時はHTTP 409と `version_conflict` を返し、ホストは古い下書きを上書きしません。documentは受信側で `parsePageDocument` を通し、pathのsite/pageとqueryのlocaleに一致しない文書、任意HTML・JavaScript・CSSなど検証に失敗する値はHTTP 400 `invalid_request` で拒否します。登録ブロック・部品インスタンス・サイト共通スタイルを使うホストは、adapterの `validationContext(actor, target)` から信頼済みの `blocks`・`components`・`siteStyles` を渡します。読み取り、入力文書、保存後の正規文書の検証に同じcontextを使います。
 
-`pages.release-set-*` は同じサイト内の複数ページを一つの公開変更セットとして扱います。対象は2〜50件で、重複ページは禁止します。各項目の `expectedVersion` と任意の `componentsVersion` / `presentationVersion`、対象一覧、operation IDを計画へ固定します。APIは全対象の `pages.publish` 権限を個別に確認します。ホストadapterは全版を再検証し、全対象を同時に公開するか一件も公開しない永続化を実装します。確認tokenは対象と全版を含む計画に結び付け、同じactor・operation ID・入力の再送には前回結果を返します。`pages.release-set-status` は、タイムアウト後に同じoperation IDの状態を照会します。ホストはactor、対象版、結果を監査記録へ保存します。部分成功の自動再試行や自動mergeは行いません。
+`pages.release-set-*` は同じサイト内で変更した複数ページを、一つの計画・適用操作で公開します。呼出側は各ページの `pages.release-plan` で差分を確認し、公開差分があるページだけを指定します。対象は2〜50件で、重複ページは禁止します。各項目の `expectedVersion` と任意の `componentsVersion` / `presentationVersion`、対象一覧、operation IDを計画へ固定します。APIは全対象の `pages.publish` 権限を個別に確認します。ホストadapterは対象ごとに版を再検証し、結果として `released`（公開済み）、`conflict`（版が変わった）、`pending`（処理中）を返します。全体の `status` は未完了項目があれば `publishing`、全項目が確定したら `completed` です。ある対象の競合で他ページの成功を隠さず、全ページ同時切替も要求しません。トップレベルの `version_conflict` は操作が始まっておらず、公開済みページがない場合に限ります。
+
+確認tokenは対象と全版を含む計画に結び付けます。同じactor・operation ID・入力の再送では、完了済み対象を二重に公開せず、前回の項目別状態を返します。タイムアウト時は同じ計画を再適用して処理を再開でき、`pages.release-set-status` で最終結果を照会できます。競合したページは再読込して新しい計画を作ります。ホストはactor、対象版、各項目の結果を監査記録へ保存します。自動mergeは行いません。
 
 `site.breakpoints.*` は、hostの設定正本へ保存するsite単位の操作です。各操作は対応するadapter関数が登録されているhostだけがdiscoverに出します。settingsは `parseBreakpointSettings` の閉じた契約で検証し、saveはhostの永続層でexpectedVersionを原子的に比較します。stale versionは409 `version_conflict` です。
 
@@ -70,7 +72,9 @@ niho-edit --origin https://site.example --site site-id release home --locale ja 
 # release-set-items.json: {"items":[{"target":{"siteId":"site-id","pageId":"home","locale":"ja"},"expectedVersion":"..."},{"target":{"siteId":"site-id","pageId":"about","locale":"ja"},"expectedVersion":"..."}]}
 OPERATION_ID=$(node -p 'crypto.randomUUID()')
 niho-edit --origin https://site.example --site site-id page-release-set-plan --json release-set-items.json --operation-id "$OPERATION_ID" > release-set-plan.json
-# 計画の対象・版を確認して適用。同じ計画ファイルで安全に再試行できます。
+# 公開差分がある対象だけを計画し、版を確認して適用します。
+# 結果は対象ごとに released / conflict / pending を返します。
+# 同じ計画ファイルで再試行すると未完了項目を再開し、完了済み項目は二重公開しません。
 niho-edit --origin https://site.example --site site-id page-release-set-apply --json release-set-plan.json
 niho-edit --origin https://site.example --site site-id page-release-set-status --operation-id "$OPERATION_ID"
 

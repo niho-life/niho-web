@@ -308,8 +308,8 @@ test("niho-edit prepares, applies and checks an idempotent multi-page release se
 
   const planPath = join(directory, "plan.json");
   await writeFile(planPath, JSON.stringify(plan));
-  const applyResult = { status: "released", operationId, items: [
-    { target: items[0].target, version: "v3" }, { target: items[1].target, version: "about-v4" }
+  const applyResult = { status: "completed", operationId, items: [
+    { target: items[0].target, status: "released", version: "v3" }, { target: items[1].target, status: "released", version: "about-v4" }
   ] };
   const applyPath = `/api/edit/v1/sites/${siteId}/operations/pages.release-set`;
   const applied = await run(["page-release-set-apply", "--json", planPath], {

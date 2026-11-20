@@ -250,13 +250,13 @@ test("page release sets bind every target version, require each target permissio
       if (!entry || siteId !== target.siteId || entry.plan.confirmationToken !== input.confirmationToken
         || JSON.stringify(entry.plan.items) !== JSON.stringify(input.items)) return { status: "duplicate" };
       if (entry.result) return entry.result;
-      if (input.items.some((item) => current.get(item.target.pageId) !== item.expectedVersion)) return { status: "conflict" };
       const results = input.items.map((item) => {
+        if (current.get(item.target.pageId) !== item.expectedVersion) return { target: item.target, status: "conflict" };
         const version = `${item.expectedVersion}-published`;
         current.set(item.target.pageId, version);
-        return { target: item.target, version };
+        return { target: item.target, status: "released", version };
       });
-      entry.result = { status: "released", operationId: input.operationId, items: results };
+      entry.result = { status: "completed", operationId: input.operationId, items: results };
       entry.status = { status: "completed", operationId: input.operationId, httpStatus: 200, result: entry.result };
       return entry.result;
     },
@@ -270,8 +270,8 @@ test("page release sets bind every target version, require each target permissio
   const plan = await json(await send("POST", `${route}/pages.release-set-plan`, { siteId: target.siteId, operationId, items }));
   assert.equal(plan.status, 200);
   assert.deepEqual(plan.body.plan, { siteId: target.siteId, operationId, confirmationToken: "set-token", domain: "https://host.example", items });
-  const result = { status: "released", operationId, items: [
-    { target, version: "v1-published" }, { target: items[1].target, version: "about-v1-published" }
+  const result = { status: "completed", operationId, items: [
+    { target, status: "released", version: "v1-published" }, { target: items[1].target, status: "released", version: "about-v1-published" }
   ] };
   const applyBody = { siteId: target.siteId, operationId, confirmationToken: "set-token", items };
   assert.deepEqual(await json(await send("POST", `${route}/pages.release-set`, applyBody)), { status: 200, body: result });
@@ -307,6 +307,29 @@ test("page editing API hides unsupported publish operations and rejects an untru
   });
   const response = await badDomainApi(new Request(`https://host.example/api/edit/v1/sites/${target.siteId}/operations/pages.release-plan/${target.pageId}?locale=${target.locale}`, {
     method: "POST", headers: { Authorization: "Bearer owner", "Content-Type": "application/json" }, body: JSON.stringify({ expectedVersion: "v1", action: "publish" })
+  }));
+  assert.deepEqual(await json(response), { status: 502, body: { error: "host_contract_violation" } });
+});
+
+test("page release set rejects an unsafe host-listed origin", async () => {
+  const operationId = "523e4567-e89b-42d3-a456-426614174000";
+  const items = [
+    { target, expectedVersion: "v1" },
+    { target: { ...target, pageId: "about" }, expectedVersion: "about-v1" }
+  ];
+  const api = createPageEditingApi({
+    async authenticate() { return { kind: "machine", subject: "agent" }; },
+    async authorize() { return true; },
+    async readPage() { return null; }, async savePage() { return { status: "conflict" }; },
+    async releaseSite() { return { id: target.siteId, name: "Example", domains: ["http://host.example"] }; },
+    async preparePageReleaseSet(_actor, siteId, requestedOperationId, requestedItems) {
+      return { status: "prepared", plan: { siteId, operationId: requestedOperationId, confirmationToken: "set-token", domain: "http://host.example", items: requestedItems } };
+    },
+    async publishPageReleaseSet() { return { status: "duplicate" }; }
+  });
+  const response = await api(new Request(`https://host.example/api/edit/v1/sites/${target.siteId}/operations/pages.release-set-plan`, {
+    method: "POST", headers: { Authorization: "Bearer owner", "Content-Type": "application/json" },
+    body: JSON.stringify({ siteId: target.siteId, operationId, items })
   }));
   assert.deepEqual(await json(response), { status: 502, body: { error: "host_contract_violation" } });
 });

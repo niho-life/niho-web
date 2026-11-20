@@ -2,7 +2,7 @@ import type { BlockContracts, ComponentLibrary, PageDocument } from "./types.js"
 import { parsePageDocument } from "./document.js";
 import { normalizePageChange, validatePageChangePlan, validateReleasePlan } from "./editor-model.js";
 import type { EditorBreakpointSettings, EditorBreakpointSettingsSaveResult, EditorBreakpointSettingsSnapshot, EditorPage, EditorPageChange, EditorPageChangePlan, EditorReleasePlan, EditorReleaseRequest, EditorSite } from "./editor-types.js";
-import { identifier, localeCode } from "./validation-utils.js";
+import { identifier, isSafeHttpsOrigin, localeCode } from "./validation-utils.js";
 import type { SiteStyles } from "./site-styles.js";
 import { parseBreakpointSettings } from "./style-model.js";
 import { assetId } from "./validation-utils.js";
@@ -77,7 +77,9 @@ export type EditingPageReleaseSetPlan = {
 };
 export type EditingPageReleaseSetPrepareResult = { readonly status: "prepared"; readonly plan: EditingPageReleaseSetPlan }
   | { readonly status: "conflict" } | { readonly status: "invalid" } | { readonly status: "not_found" } | { readonly status: "duplicate" };
-export type EditingPageReleaseSetApplyResult = { readonly status: "released" | "publishing"; readonly operationId: string; readonly items: readonly { readonly target: EditingPageTarget; readonly version: string }[] }
+export type EditingPageReleaseSetItemResult = { readonly target: EditingPageTarget; readonly status: "released"; readonly version: string }
+  | { readonly target: EditingPageTarget; readonly status: "conflict" | "pending" };
+export type EditingPageReleaseSetApplyResult = { readonly status: "completed" | "publishing"; readonly operationId: string; readonly items: readonly EditingPageReleaseSetItemResult[] }
   | { readonly status: "conflict" } | { readonly status: "invalid" } | { readonly status: "not_found" } | { readonly status: "duplicate" };
 export type EditingPageReleaseSetStatus = EditingCmsOperationStatus;
 export type PageEditingValidationContext = { readonly blocks?: BlockContracts; readonly components?: ComponentLibrary; readonly siteStyles?: SiteStyles };
@@ -209,11 +211,16 @@ const pageReleaseSetPlanSchema: JsonSchema = Object.freeze({
   properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), operationId: operationIdSchema, confirmationToken: versionSchema,
     domain: Object.freeze({ type: "string" }), items: pageReleaseSetItemsSchema })
 });
+const pageReleaseSetItemResultSchema: JsonSchema = Object.freeze({ oneOf: Object.freeze([
+  Object.freeze({ type: "object", required: Object.freeze(["target", "status", "version"]), additionalProperties: false,
+    properties: Object.freeze({ target: pageTargetSchema, status: Object.freeze({ const: "released" }), version: versionSchema }) }),
+  ...(["conflict", "pending"] as const).map((status) => Object.freeze({ type: "object", required: Object.freeze(["target", "status"]), additionalProperties: false,
+    properties: Object.freeze({ target: pageTargetSchema, status: Object.freeze({ const: status }) }) }))
+]) });
 const pageReleaseSetResultSchema: JsonSchema = Object.freeze({
   type: "object", required: Object.freeze(["status", "operationId", "items"]), additionalProperties: false,
-  properties: Object.freeze({ status: Object.freeze({ type: "string", enum: Object.freeze(["released", "publishing"]) }), operationId: operationIdSchema,
-    items: Object.freeze({ type: "array", minItems: 2, maxItems: 50, items: Object.freeze({ type: "object", required: Object.freeze(["target", "version"]), additionalProperties: false,
-      properties: Object.freeze({ target: pageTargetSchema, version: versionSchema }) }) }) })
+  properties: Object.freeze({ status: Object.freeze({ type: "string", enum: Object.freeze(["completed", "publishing"]) }), operationId: operationIdSchema,
+    items: Object.freeze({ type: "array", minItems: 2, maxItems: 50, items: pageReleaseSetItemResultSchema }) })
 });
 const pageReleaseSetStatusSchema: JsonSchema = Object.freeze({
   type: "object", required: Object.freeze(["status", "operationId"]), additionalProperties: false,
@@ -408,8 +415,9 @@ export type PageEditingHostAdapter = {
   /** Atomically publish after validating the one-use token; same actor + operationId + input must return the stored result. */
   publishPage?(actor: EditingActor, target: EditingPageTarget, input: { readonly expectedVersion: string; readonly confirmationToken: string; readonly operationId: string }): Promise<EditingPagePublishResult>;
   /**
-   * Optional atomic multi-page publish set. The host must bind every target and version into the one-use token,
-   * atomically validate all versions and publish all items or none, and make retries idempotent per actor + operationId + input.
+   * Optional multi-page publish set. Bind every target and version into the one-use token, report each target's
+   * released/conflict/pending state, and make retries idempotent per actor + operationId + input so completed targets are not published twice.
+   * A top-level conflict must be returned before any target is published; per-target version conflicts belong in the item results.
    */
   preparePageReleaseSet?(actor: EditingActor, siteId: string, operationId: string, items: readonly EditingPageReleaseSetItem[]): Promise<EditingPageReleaseSetPrepareResult>;
   publishPageReleaseSet?(actor: EditingActor, siteId: string, input: { readonly operationId: string; readonly confirmationToken: string; readonly items: readonly EditingPageReleaseSetItem[] }): Promise<EditingPageReleaseSetApplyResult>;
@@ -554,6 +562,38 @@ function samePageReleaseSetItems(left: readonly EditingPageReleaseSetItem[], rig
     return !!other && item.target.siteId === other.target.siteId && item.target.pageId === other.target.pageId && item.target.locale === other.target.locale
       && item.expectedVersion === other.expectedVersion && item.componentsVersion === other.componentsVersion && item.presentationVersion === other.presentationVersion;
   });
+}
+function pageReleaseSetApplyResult(value: unknown, siteId: string, operationId: string, expectedItems?: readonly EditingPageReleaseSetItem[]): EditingPageReleaseSetApplyResult | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const result = value as Record<string, unknown>;
+  if (!exactKeys(result, ["status", "operationId", "items"]) || result.operationId !== operationId
+    || result.status !== "completed" && result.status !== "publishing" || !Array.isArray(result.items)
+    || result.items.length < 2 || result.items.length > 50 || expectedItems && result.items.length !== expectedItems.length) return null;
+  const seen = new Set<string>(), items: EditingPageReleaseSetItemResult[] = [];
+  let hasPending = false;
+  for (const [index, raw] of result.items.entries()) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const item = raw as Record<string, unknown>;
+    if (!item.target || typeof item.target !== "object" || Array.isArray(item.target)) return null;
+    const targetValue = item.target as Record<string, unknown>;
+    if (!exactKeys(targetValue, ["siteId", "pageId", "locale"])) return null;
+    const target = pageTarget(targetValue.siteId, targetValue.pageId, targetValue.locale);
+    const expected = expectedItems?.[index];
+    if (!target || target.siteId !== siteId || expected && (target.pageId !== expected.target.pageId || target.locale !== expected.target.locale)) return null;
+    const key = `${target.pageId}\u0000${target.locale}`;
+    if (seen.has(key)) return null;
+    seen.add(key);
+    if (item.status === "released") {
+      if (!exactKeys(item, ["target", "status", "version"]) || !validVersion(item.version)) return null;
+      items.push({ target, status: "released", version: item.version });
+    } else if (item.status === "conflict" || item.status === "pending") {
+      if (!exactKeys(item, ["target", "status"])) return null;
+      if (item.status === "pending") hasPending = true;
+      items.push({ target, status: item.status });
+    } else return null;
+  }
+  if ((result.status === "publishing") !== hasPending) return null;
+  return { status: result.status, operationId, items };
 }
 function editingAssetReference(providerValue: unknown, assetIdValue: unknown): AssetReference | null {
   try { return parseAssetReference({ provider: providerValue, id: assetIdValue }); } catch { return null; }
@@ -729,6 +769,7 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
         if (status.status === "completed") {
           if (!Number.isInteger(status.httpStatus) || status.httpStatus < 100 || status.httpStatus > 599
             || !status.result || typeof status.result !== "object" || Array.isArray(status.result)) return fail("host_contract_violation", 502);
+          if (status.httpStatus === 200 && !pageReleaseSetApplyResult(status.result, siteId, operationId!)) return fail("host_contract_violation", 502);
           return response({ status: status.status, operationId, httpStatus: status.httpStatus, result: status.result });
         }
         if (!exactKeys(status, ["status", "operationId"])) return fail("host_contract_violation", 502);
@@ -767,7 +808,7 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
         try { site = await adapter.releaseSite!(actor, siteId); }
         catch { return fail("host_failure", 503); }
         if (!exactKeys(source, ["siteId", "operationId", "confirmationToken", "domain", "items"]) || source.siteId !== siteId
-          || source.operationId !== body.operationId || !validVersion(source.confirmationToken) || typeof source.domain !== "string"
+          || source.operationId !== body.operationId || !validVersion(source.confirmationToken) || !isSafeHttpsOrigin(source.domain)
           || !planItems || !samePageReleaseSetItems(items, planItems) || !site || site.id !== siteId || !Array.isArray(site.domains) || !site.domains.includes(source.domain)) {
           return fail("host_contract_violation", 502);
         }
@@ -777,20 +818,14 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       try { applied = await adapter.publishPageReleaseSet!(actor, siteId, { operationId: body.operationId,
         confirmationToken: body.confirmationToken as string, items }); }
       catch { return fail("host_failure", 503); }
-      if (!applied || !["released", "publishing", "conflict", "invalid", "not_found", "duplicate"].includes(applied.status)) return fail("host_contract_violation", 502);
+      if (!applied || !["completed", "publishing", "conflict", "invalid", "not_found", "duplicate"].includes(applied.status)) return fail("host_contract_violation", 502);
       if (applied.status === "conflict") return fail("version_conflict", 409);
       if (applied.status === "invalid") return fail("invalid_request", 400);
       if (applied.status === "not_found") return fail("not_found", 404);
       if (applied.status === "duplicate") return fail("duplicate_operation", 409);
-      if (applied.operationId !== body.operationId || !Array.isArray(applied.items) || applied.items.length !== items.length) return fail("host_contract_violation", 502);
-      const results = applied.items.map((result, index) => {
-        const expected = items[index];
-        if (!result || !expected || !result.target || result.target.siteId !== expected.target.siteId || result.target.pageId !== expected.target.pageId
-          || result.target.locale !== expected.target.locale || !validVersion(result.version)) return null;
-        return { target: expected.target, version: result.version };
-      });
-      if (results.some((result) => result === null)) return fail("host_contract_violation", 502);
-      return response({ status: applied.status, operationId: applied.operationId, items: results });
+      const result = pageReleaseSetApplyResult(applied, siteId, body.operationId, items);
+      if (!result) return fail("host_contract_violation", 502);
+      return response(result);
     }
     const siteSettingsMatch = new RegExp(`^${basePath}/sites/([^/]+)/operations/(site\\.breakpoints\\.(?:read|save))$`, "u").exec(url.pathname);
     if (siteSettingsMatch) {

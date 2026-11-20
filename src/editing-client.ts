@@ -1,4 +1,4 @@
-import { EDITING_API_ERRORS, EDITING_OPERATIONS, type EditingApiErrorCode, type EditingCmsOperationStatus, type EditingCmsPublishPlan, type EditingCmsTarget, type EditingOperationDefinition, type EditingPageCatalog, type EditingPageReleaseSetItem, type EditingPageReleaseSetPlan, type EditingPageReleaseSetStatus, type EditingPageSnapshot, type EditingPageTarget } from "./editing-api.js";
+import { EDITING_API_ERRORS, EDITING_OPERATIONS, type EditingApiErrorCode, type EditingCmsOperationStatus, type EditingCmsPublishPlan, type EditingCmsTarget, type EditingOperationDefinition, type EditingPageCatalog, type EditingPageReleaseSetItem, type EditingPageReleaseSetItemResult, type EditingPageReleaseSetPlan, type EditingPageReleaseSetStatus, type EditingPageSnapshot, type EditingPageTarget } from "./editing-api.js";
 import { normalizePageChange, validatePageChangePlan } from "./editor-model.js";
 import type { PageDocument } from "./types.js";
 import type { EditorPage, EditorPageChange, EditorPageChangePlan, EditorPageChangeResult, EditorReleasePlan, EditorReleaseRequest, EditorSite } from "./editor-types.js";
@@ -34,7 +34,7 @@ export type EditingPagePublishResult = { readonly status: "released"; readonly o
 export type EditingPageReleaseInput = Omit<EditorReleaseRequest, "target">;
 export type EditingCmsSaveResult = { readonly status: "saved"; readonly item: CollectionItem } | { readonly status: "conflict"; readonly current: CollectionItem };
 export type EditingCmsPublishResult = { readonly status: "published" | "publishing"; readonly operationId: string; readonly item: CollectionItem } | { readonly status: "conflict" };
-export type EditingPageReleaseSetResult = { readonly status: "released" | "publishing"; readonly operationId: string; readonly items: readonly { readonly target: EditingPageTarget; readonly version: string }[] } | { readonly status: "conflict" };
+export type EditingPageReleaseSetResult = { readonly status: "completed" | "publishing"; readonly operationId: string; readonly items: readonly EditingPageReleaseSetItemResult[] } | { readonly status: "conflict" };
 export type EditingApiClient = {
   discover(signal?: AbortSignal): Promise<EditingApiDiscovery>;
   readPageCatalog(signal?: AbortSignal): Promise<EditingPageCatalog>;
@@ -251,6 +251,36 @@ function parsePageReleaseSetPlan(value: unknown, siteId: string, operationId: st
     || domain.pathname !== "/" || domain.search || domain.hash) throw new EditingApiClientError("invalid_response");
   return { siteId, operationId, confirmationToken: value.confirmationToken, domain: value.domain, items };
 }
+function parsePageReleaseSetResult(value: unknown, siteId: string, operationId: string, expectedItems?: readonly EditingPageReleaseSetItem[]): Exclude<EditingPageReleaseSetResult, { status: "conflict" }> {
+  if (!plainRecord(value) || !exactKeys(value, ["status", "operationId", "items"]) || value.operationId !== operationId
+    || value.status !== "completed" && value.status !== "publishing" || !Array.isArray(value.items) || value.items.length < 2 || value.items.length > 50
+    || expectedItems && value.items.length !== expectedItems.length) throw new EditingApiClientError("invalid_response");
+  const seen = new Set<string>(), items: EditingPageReleaseSetItemResult[] = [];
+  let hasPending = false;
+  for (const [index, raw] of value.items.entries()) {
+    if (!plainRecord(raw) || !plainRecord(raw.target) || !exactKeys(raw.target, ["siteId", "pageId", "locale"]) || raw.target.siteId !== siteId) {
+      throw new EditingApiClientError("invalid_response");
+    }
+    let target: EditingPageTarget;
+    try { target = { siteId, pageId: identifier(raw.target.pageId, "$target.pageId"), locale: localeCode(raw.target.locale, "$target.locale") }; }
+    catch { throw new EditingApiClientError("invalid_response"); }
+    const expected = expectedItems?.[index];
+    if (expected && (target.pageId !== expected.target.pageId || target.locale !== expected.target.locale)) throw new EditingApiClientError("invalid_response");
+    const key = `${target.pageId}\u0000${target.locale}`;
+    if (seen.has(key)) throw new EditingApiClientError("invalid_response");
+    seen.add(key);
+    if (raw.status === "released") {
+      if (!exactKeys(raw, ["target", "status", "version"]) || !isEditingApiVersion(raw.version)) throw new EditingApiClientError("invalid_response");
+      items.push({ target, status: "released", version: raw.version });
+    } else if (raw.status === "conflict" || raw.status === "pending") {
+      if (!exactKeys(raw, ["target", "status"])) throw new EditingApiClientError("invalid_response");
+      if (raw.status === "pending") hasPending = true;
+      items.push({ target, status: raw.status });
+    } else throw new EditingApiClientError("invalid_response");
+  }
+  if ((value.status === "publishing") !== hasPending) throw new EditingApiClientError("invalid_response");
+  return { status: value.status, operationId, items };
+}
 function releaseRequestBody(value: EditingPageReleaseInput): Record<string, unknown> {
   const request = value as unknown as Record<string, unknown>;
   const allowed = ["expectedVersion", "action", "revision", "componentsVersion", "presentationVersion"];
@@ -451,19 +481,11 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       if (response.status === 409 && body.error === "version_conflict") return { status: "conflict" };
       if (response.status === 409 && body.error === "duplicate_operation") throw new EditingApiClientError("duplicate_operation", 409);
       if (!response.ok) throw apiFailure(body, response.status);
-      if (!exactKeys(body, ["status", "operationId", "items"]) || (body.status !== "released" && body.status !== "publishing")
-        || body.operationId !== plan.operationId || !Array.isArray(body.items) || body.items.length !== plan.items.length) {
-        throw new EditingApiClientError("invalid_response", response.status);
+      try { return parsePageReleaseSetResult(body, siteId, plan.operationId, plan.items); }
+      catch (error) {
+        if (error instanceof EditingApiClientError) throw new EditingApiClientError("invalid_response", response.status);
+        throw error;
       }
-      const items = body.items.map((raw, index) => {
-        const expected = plan.items[index];
-        if (!plainRecord(raw) || !exactKeys(raw, ["target", "version"]) || !plainRecord(raw.target)
-          || !exactKeys(raw.target, ["siteId", "pageId", "locale"]) || !expected
-          || raw.target.siteId !== expected.target.siteId || raw.target.pageId !== expected.target.pageId || raw.target.locale !== expected.target.locale
-          || !isEditingApiVersion(raw.version)) throw new EditingApiClientError("invalid_response", response.status);
-        return { target: expected.target, version: raw.version };
-      });
-      return { status: body.status, operationId: plan.operationId, items };
     },
     async pageReleaseSetStatus(operationId, signal) {
       if (!OPERATION_ID.test(operationId)) throw new TypeError("invalid page release set operation ID");
@@ -476,6 +498,10 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       }
       if (!exactKeys(body, ["status", "operationId", "httpStatus", "result"]) || !Number.isInteger(body.httpStatus)
         || Number(body.httpStatus) < 100 || Number(body.httpStatus) > 599 || !plainRecord(body.result)) throw new EditingApiClientError("invalid_response", response.status);
+      if (body.httpStatus === 200) {
+        try { return { status: "completed", operationId, httpStatus: 200, result: parsePageReleaseSetResult(body.result, siteId, operationId) }; }
+        catch { throw new EditingApiClientError("invalid_response", response.status); }
+      }
       return body as EditingPageReleaseSetStatus;
     },
     async readBreakpointSettings(signal) {

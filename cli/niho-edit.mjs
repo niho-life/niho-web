@@ -41,7 +41,8 @@ Set NIHO_EDIT_TOKEN to a short-lived bearer token. read returns { document, vers
 Edit document while keeping version, then pass the snapshot to save for version-checked persistence.
 Review the release plan before applying it. Keep and reuse the same operation ID when retrying a release.
 For a page release set, items-file is { "items": [{ "target": { "siteId", "pageId", "locale" }, "expectedVersion", "componentsVersion?", "presentationVersion?" }, ...] }.
-The plan is bound to all targets and versions. Apply the saved plan again after a timeout, and query page-release-set-status with its operation ID.`;
+The plan is bound to the changed targets and versions. Results report each page as released, conflict, or pending.
+Apply the same saved plan again after a timeout to resume unfinished pages without republishing completed pages, then query page-release-set-status with its operation ID.`;
 const MAX_INPUT_BYTES = 4 * 1024 * 1024;
 const MAX_PAGE_CHANGE_BYTES = 16 * 1024;
 const MAX_ASSET_UPLOAD_BYTES = 50 * 1024 * 1024;
