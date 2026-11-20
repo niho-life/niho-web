@@ -40,6 +40,11 @@ const snapshotResponse = await call(readPath);
 const snapshot = await snapshotResponse.json();
 const changed = structuredClone(snapshot.document);
 changed.title = "Updated with the host-neutral editing API";
+changed.body[0].style.base.backgroundColor = "#e8f0e8";
+changed.body[0].children.push({ type: "element", id: "contact-form", tag: "form", attrs: { name: "contact" }, children: [
+  { type: "element", id: "contact-name-label", tag: "label", attrs: { htmlFor: "contact-name" }, children: [{ type: "text", text: "Name" }] },
+  { type: "element", id: "contact-name", tag: "input", attrs: { type: "text", name: "name", id: "contact-name", required: true }, children: [] }
+] });
 const savePath = `${route}/operations/pages.save/${target.pageId}?locale=${encodeURIComponent(target.locale)}`;
 const savedResponse = await call(savePath, "PUT", { expectedVersion: snapshot.version, document: changed });
 const saved = await savedResponse.json();
@@ -49,6 +54,7 @@ const conflict = await conflictResponse.json();
 console.log(JSON.stringify({
   operations: (await discover.json()).operations.map(({ id, method }) => ({ id, method })),
   read: { status: snapshotResponse.status, version: snapshot.version, block: snapshot.document.body.at(-1).block },
-  save: { status: savedResponse.status, version: saved.version, title: saved.document.title },
+  save: { status: savedResponse.status, version: saved.version, title: saved.document.title,
+    backgroundColor: saved.document.body[0].style.base.backgroundColor, addedForm: saved.document.body[0].children.at(-1).tag === "form" },
   staleSave: { status: conflictResponse.status, error: conflict.error }
 }, null, 2));

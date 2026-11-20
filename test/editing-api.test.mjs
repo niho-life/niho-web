@@ -52,8 +52,15 @@ test("page editing API reads and saves through the host adapter with CAS conflic
   assert.deepEqual(read.body, { document: fixture, version: "v1" });
 
   const changed = structuredClone(fixture); changed.title = "Updated through the common API";
+  changed.body[0].style.base.backgroundColor = "#e8f0e8";
+  changed.body[0].children.push({ type: "element", id: "contact-form", tag: "form", attrs: { name: "contact" }, children: [
+    { type: "element", id: "contact-name-label", tag: "label", attrs: { htmlFor: "contact-name" }, children: [{ type: "text", text: "Name" }] },
+    { type: "element", id: "contact-name", tag: "input", attrs: { type: "text", name: "name", id: "contact-name", required: true }, children: [] }
+  ] });
   const saved = await json(await send("PUT", `${route}/pages.save/${target.pageId}${query}`, { expectedVersion: "v1", document: changed }));
   assert.deepEqual(saved, { status: 200, body: { status: "saved", version: "v2", document: { ...changed, revision: changed.revision + 1 } } });
+  assert.equal(saved.body.document.body[0].style.base.backgroundColor, "#e8f0e8");
+  assert.equal(saved.body.document.body[0].children.at(-1).tag, "form");
   const stale = await json(await send("PUT", `${route}/pages.save/${target.pageId}${query}`, { expectedVersion: "v1", document: fixture }));
   assert.deepEqual(stale, { status: 409, body: { error: "version_conflict" } });
   const reread = await json(await send("GET", `${route}/pages.read/${target.pageId}${query}`));

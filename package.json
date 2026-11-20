@@ -28,6 +28,10 @@
       "types": "./dist/editing-api.d.ts",
       "import": "./dist/editing-api.js"
     },
+    "./editing-client": {
+      "types": "./dist/editing-client.d.ts",
+      "import": "./dist/editing-client.js"
+    },
     "./builder": {
       "types": "./dist/builder.d.ts",
       "import": "./dist/builder.js"
