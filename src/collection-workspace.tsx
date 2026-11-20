@@ -1047,14 +1047,28 @@ function ItemEditor({ adapter, definition, itemId, created, timeZone, autosaveDe
       if (outcome.kind !== "ok") return { error: rejectMessages.failed };
       if (outcome.value.status === "rejected") return { error: rejectMessages[outcome.value.reason] };
       const { url, width, height } = outcome.value;
+      if (!url) return { error: rejectMessages.failed };
       return { url, ...(width === undefined ? {} : { width }), ...(height === undefined ? {} : { height }) };
+    } finally { s.uploads.delete(task); }
+  };
+  const uploadAsset: FieldContext["uploadAsset"] = async (file) => {
+    const s = live.current;
+    const upload = adapter.uploadAsset ?? adapter.uploadImage;
+    const task = requests.current.run(async (signal) => parseCollectionUploadResult(await upload({ collectionId: definition.id, file }, signal)));
+    s.uploads.add(task);
+    try {
+      const outcome = await task;
+      if (outcome.kind !== "ok") return { error: rejectMessages.failed };
+      if (outcome.value.status === "rejected") return { error: rejectMessages[outcome.value.reason] };
+      const { url, reference, width, height } = outcome.value;
+      return { ...(url === undefined ? {} : { url }), ...(reference === undefined ? {} : { reference }), ...(width === undefined ? {} : { width }), ...(height === undefined ? {} : { height }) };
     } finally { s.uploads.delete(task); }
   };
   const context: FieldContext = {
     baseId, timeZone, pathPrefix: definition.pathPrefix, isTitle: false, publishedSlug, self: { collectionId: definition.id, itemId },
     redirect: capabilities.redirects && publishedSlug !== null && item.path !== null ? { from: item.path, checked: redirect, onChange: setRedirect } : null,
-    imageSrc: (url, width) => displayImage(url, width, adapter.imageUrl ? (value, size) => adapter.imageUrl!(value, size) : undefined),
-    upload, references, retryReferences, renderRichText, sanitize,
+    imageSrc: (image, width) => displayImage(image, width, adapter.imageUrl ? (value, size) => adapter.imageUrl!(value, size) : undefined),
+    upload, uploadAsset, references, retryReferences, renderRichText, sanitize,
   };
   const fieldNode = (field: CollectionDefinition["fields"][number]) => <FieldView key={field.key} field={field} value={values[field.key]} error={errors[field.key]?.message}
     context={field.key === definition.titleField ? { ...context, isTitle: true } : context} onChange={(value) => change(field.key, value)} />;

@@ -1,7 +1,8 @@
 import {
   parseCollectionPublishResult, parseCollectionValues,
-  type CollectionAdapter, type CollectionDefinition, type CollectionItem, type CollectionValue, type CollectionValues
+  type CollectionAdapter, type CollectionDefinition, type CollectionImageValue, type CollectionItem, type CollectionValue, type CollectionValues
 } from "../src/collection-model.js";
+import { assetKey, type AssetLibraryAdapter, type AssetReference } from "../src/assets.js";
 import { EditingApiClientError, type EditingApiClient } from "../src/editing-client.js";
 import {
   KAMAKURA_CMS_BASE, KAMAKURA_CMS_IMAGE_TYPES, KAMAKURA_CMS_LIMITS, KAMAKURA_CMS_SITE_ID, KAMAKURA_MEDIA_ORIGIN,
@@ -22,6 +23,8 @@ export type KamakuraCmsAdapterOptions = {
   readonly siteOrigin: string | null;
   /** サイト API の discovery が CMS 操作を公開している場合に使う。未対応ホストでは既存 CMS BFF に戻る。 */
   readonly commonApi?: EditingApiClient;
+  /** CMS 画像・gallery と素材ライブラリを同じ安定 ID で扱う。 */
+  readonly assetLibrary?: AssetLibraryAdapter;
 };
 
 /** BFF・アップロード先の失敗。message に内部の詳細を入れない。supportId は BFF が返したときだけ。 */
@@ -86,6 +89,7 @@ function collectionPath(collectionId: string, action: "reorder" | "bulk"): strin
 /** 文字列の並びは各要素の一致、gallery の並びは各行の id・image・caption の一致。 */
 function sameValue(left: CollectionValue | undefined, right: CollectionValue | undefined): boolean {
   if (left === right) return true;
+  if (isAssetReference(left) && isAssetReference(right)) return assetKey(left) === assetKey(right);
   if (!Array.isArray(left) || !Array.isArray(right)) return false;
   const a = left as readonly unknown[], b = right as readonly unknown[];
   return a.length === b.length && a.every((entry, index) => {
@@ -93,8 +97,15 @@ function sameValue(left: CollectionValue | undefined, right: CollectionValue | u
     if (entry === other) return true;
     if (typeof entry !== "object" || entry === null || typeof other !== "object" || other === null) return false;
     const x = entry as Record<string, unknown>, y = other as Record<string, unknown>;
-    return x.id === y.id && x.image === y.image && x.caption === y.caption;
+    const sameImage = x.image === y.image || isAssetReference(x.image) && isAssetReference(y.image) && assetKey(x.image) === assetKey(y.image);
+    return x.id === y.id && sameImage && x.caption === y.caption;
   });
+}
+
+function isAssetReference(value: unknown): value is AssetReference {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.provider === "string" && typeof candidate.id === "string";
 }
 
 /** ファイル名を BFF の条件（1〜200 字・制御文字なし）に収める。 */
@@ -118,6 +129,8 @@ function httpsOrigin(value: string | null): string | null {
 export function createKamakuraCmsAdapter(options: KamakuraCmsAdapterOptions): CollectionAdapter {
   const siteOrigin = httpsOrigin(options.siteOrigin);
   const commonApi = options.commonApi;
+  const assetLibrary = options.assetLibrary;
+  const resolvedImageUrls = new Map<string, string>();
   let commonOperations: Promise<ReadonlySet<string>> | null = null;
   const commonCmsReady = async (signal: AbortSignal): Promise<boolean> => {
     if (!commonApi) return false;
@@ -148,6 +161,34 @@ export function createKamakuraCmsAdapter(options: KamakuraCmsAdapterOptions): Co
   const keyOf = (collectionId: string, itemId: string) => `${collectionId}/${itemId}`;
   const remember = (collectionId: string, item: CollectionItem) => { known.set(keyOf(collectionId, item.id), { version: item.version, item }); };
   const forget = (collectionId: string, itemId: string) => { known.delete(keyOf(collectionId, itemId)); };
+  const resolveItemImages = async (collectionId: string, item: CollectionItem, signal: AbortSignal): Promise<void> => {
+    if (!assetLibrary) return;
+    const definition = definitions.get(collectionId);
+    if (!definition) return;
+    const references: AssetReference[] = [];
+    for (const field of definition.fields) {
+      if (field.type === "image") {
+        const value = item.values[field.key];
+        if (isAssetReference(value)) references.push(value);
+      } else if (field.type === "gallery") {
+        const entries = item.values[field.key];
+        if (Array.isArray(entries)) for (const entry of entries) {
+          if (typeof entry === "object" && entry !== null && isAssetReference((entry as Record<string, unknown>).image)) references.push((entry as Record<string, unknown>).image as AssetReference);
+        }
+      }
+    }
+    if (references.length === 0) return;
+    try {
+      const resolved = await assetLibrary.resolveAssets({ siteId: KAMAKURA_CMS_SITE_ID, references }, signal);
+      for (const reference of references) {
+        const image = resolved[assetKey(reference)];
+        if (image) resolvedImageUrls.set(assetKey(reference), image.src);
+      }
+    } catch (error) {
+      if (signal.aborted) throw abortError();
+      // 素材の読み取り権限が無い場合も、テキスト項目の編集は続けられる。
+    }
+  };
 
   const loadSchema = async (signal: AbortSignal) => {
     if (await commonCmsReady(signal)) {
@@ -189,6 +230,7 @@ export function createKamakuraCmsAdapter(options: KamakuraCmsAdapterOptions): Co
     if (await commonCmsReady(signal)) {
       try {
         const item = await commonApi!.readCmsItem(commonCmsTarget(collectionId, itemId), signal);
+        await resolveItemImages(collectionId, item, signal);
         remember(collectionId, item);
         return { status: "ready" as const, item };
       } catch (error) {
@@ -203,6 +245,7 @@ export function createKamakuraCmsAdapter(options: KamakuraCmsAdapterOptions): Co
     if (reply.status === 404) { forget(collectionId, itemId); return notFound; }
     if (reply.status !== 200) failure(reply);
     const result = parseKamakuraCmsItemEnvelope(reply.body, "ready", itemId);
+    await resolveItemImages(collectionId, result.item, signal);
     remember(collectionId, result.item);
     return result;
   };
@@ -486,6 +529,31 @@ export function createKamakuraCmsAdapter(options: KamakuraCmsAdapterOptions): Co
       return versioned("cancel-schedule", input, {}, { code: 200, status: "saved" }, signal);
     },
 
+    async uploadAsset({ collectionId, file }, signal) {
+      if (!assetLibrary || !isKamakuraCmsCollectionId(collectionId)) return { status: "rejected", reason: "permission" };
+      if (!KAMAKURA_CMS_IMAGE_TYPES.has(file.type)) return { status: "rejected", reason: "type" };
+      if (file.size < 1) return { status: "rejected", reason: "invalid" };
+      if (file.size > KAMAKURA_CMS_LIMITS.imageBytes) return { status: "rejected", reason: "size" };
+      try {
+        const result = await assetLibrary.uploadAsset({
+          siteId: KAMAKURA_CMS_SITE_ID, folderId: null, file, name: uploadName(file.name), mimeType: file.type,
+          bytes: file.size, provider: "kamakura-upload"
+        }, signal);
+        if (result.status === "rejected") {
+          const reason = result.reason === "permission" ? "permission" : result.reason === "quota" || result.reason === "size" ? "size" : result.reason === "type" ? "type" : "invalid";
+          return { status: "rejected", reason };
+        }
+        if (result.asset.siteId !== KAMAKURA_CMS_SITE_ID || result.asset.provider !== "kamakura-upload") return { status: "rejected", reason: "invalid" };
+        const reference = { provider: result.asset.provider, id: result.asset.id };
+        if (result.asset.thumbnailUrl) resolvedImageUrls.set(assetKey(reference), result.asset.thumbnailUrl);
+        return { status: "uploaded", reference, ...(result.asset.width === undefined ? {} : { width: result.asset.width }), ...(result.asset.height === undefined ? {} : { height: result.asset.height }) };
+      } catch (error) {
+        if (signal.aborted) throw abortError();
+        if (error instanceof Error && "status" in error && (error as Error & { status?: unknown }).status === 403) return { status: "rejected", reason: "permission" };
+        throw error;
+      }
+    },
+
     async uploadImage({ collectionId, file }, signal) {
       if (!KAMAKURA_CMS_IMAGE_TYPES.has(file.type)) return { status: "rejected", reason: "type" };
       if (file.size < 1) return { status: "rejected", reason: "invalid" };
@@ -518,7 +586,9 @@ export function createKamakuraCmsAdapter(options: KamakuraCmsAdapterOptions): Co
       return { status: "uploaded", url: uploaded.url, width: uploaded.width, height: uploaded.height };
     },
 
-    imageUrl(url, width) {
+    imageUrl(image: CollectionImageValue, width) {
+      const url = typeof image === "string" ? image : resolvedImageUrls.get(assetKey(image));
+      if (!url) return null;
       // 公開画像の置き場の画像だけを Cloudflare の画像変換で縮める。ほかの URL はそのまま。
       if (!Number.isFinite(width) || width <= 0) return url;
       let parsed: URL;

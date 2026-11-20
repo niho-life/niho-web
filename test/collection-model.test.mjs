@@ -98,6 +98,8 @@ test("mutation and upload results keep their closed shapes", () => {
   assert.equal(parseCollectionCreateResult({ status: "created", item }, definition).item.id, "p1");
   assert.deepEqual(parseCollectionUploadResult({ status: "uploaded", url: "https://media.example.test/a.jpg", width: 10 }), { status: "uploaded", url: "https://media.example.test/a.jpg", width: 10 });
   assert.equal(parseCollectionUploadResult({ status: "uploaded", url: "/media/a.png" }).url, "/media/a.png");
+  const reference = { provider: "kamakura-upload", id: "123e4567-e89b-42d3-a456-426614174000" };
+  assert.deepEqual(parseCollectionUploadResult({ status: "uploaded", reference }), { status: "uploaded", reference });
   for (const url of ["javascript:alert(1)", "data:image/png;base64,AAAA", "http://media.example.test/a.jpg", "//evil.example.test/a.jpg", "https://user:pw@example.test/a.jpg"]) {
     assert.throws(() => parseCollectionUploadResult({ status: "uploaded", url }), /https URL/u);
   }
@@ -132,6 +134,10 @@ test("validation checks required, length, slug, url, datetime and options before
   assert.deepEqual(check({ title: "   ", slug: "" }), ["title", "slug"]);
   assert.deepEqual(check({ title: "あ".repeat(41) }), ["title"]);
   assert.deepEqual(check({ title: "😀".repeat(40) }), [], "length counts code points");
+  const coverReference = { provider: "kamakura-upload", id: "123e4567-e89b-42d3-a456-426614174000" };
+  assert.deepEqual(parseCollectionValues({ ...values, cover: coverReference }, definition).cover, coverReference);
+  assert.deepEqual(check({ cover: coverReference }), []);
+  assert.throws(() => parseCollectionValues({ ...values, cover: { provider: "bad:provider", id: "x" } }, definition), /invalid identifier/u);
   for (const slug of ["日本語", "with space", "a/b", "a.b"]) assert.deepEqual(check({ slug }), ["slug"], slug);
   assert.deepEqual(check({ slug: "Ok_slug-1" }), []);
   for (const source of ["javascript:alert(1)", "ftp://example.test", "/relative", "example.test", "https://user:pw@example.test"]) assert.deepEqual(check({ source }), ["source"], source);
@@ -222,6 +228,10 @@ test("gallery fields and values parse strictly and validate count, caption lengt
   }
   const entries = [{ id: "w1", image: "https://media.example.test/a.jpg", caption: "一つ目\n二行目" }, { id: "", image: null, caption: "" }];
   assert.deepEqual(parseCollectionValues({ name: "架空の会社", portfolio: entries }, definition).portfolio, entries);
+  const assetReference = { provider: "kamakura-upload", id: "123e4567-e89b-42d3-a456-426614174000" };
+  const referencedEntries = [{ id: "", image: assetReference, caption: "素材ID" }];
+  assert.deepEqual(parseCollectionValues({ name: "架空の会社", portfolio: referencedEntries }, definition).portfolio, referencedEntries);
+  assert.deepEqual(validateCollectionValues(definition, { name: "架空の会社", portfolio: referencedEntries }), []);
   assert.deepEqual(parseCollectionValues({ name: "x" }, definition).portfolio, []);
   assert.deepEqual(parseCollectionValues({ portfolio: [{ id: "", image: "", caption: "" }] }, definition).portfolio, [{ id: "", image: null, caption: "" }]);
   for (const [value, pattern] of [

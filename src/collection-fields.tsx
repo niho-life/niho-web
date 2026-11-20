@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   collectionDateFromInput, collectionDateInputValue, galleryEntries, isDisplayableImageUrl, isRichTextLinkAllowed,
-  type CollectionField, type CollectionGalleryEntry, type CollectionItemSummary, type CollectionUploadRejectReason, type CollectionValue,
+  type CollectionField, type CollectionGalleryEntry, type CollectionImageValue, type CollectionItemSummary, type CollectionUploadRejectReason, type CollectionValue,
 } from "./collection-model.js";
 import { Icon, zoneLabel } from "./collection-ui.js";
 
@@ -45,8 +45,9 @@ export type FieldContext = {
   readonly redirect: { readonly from: string; readonly checked: boolean; readonly onChange: (checked: boolean) => void } | null;
   /** 開いている項目（参照の候補から自分を外す）。 */
   readonly self: { readonly collectionId: string; readonly itemId: string };
-  readonly imageSrc: (url: string, width: number) => string | null;
+  readonly imageSrc: (image: CollectionImageValue, width: number) => string | null;
   readonly upload: (file: File) => Promise<{ url: string; width?: number; height?: number } | { error: string }>;
+  readonly uploadAsset: (file: File) => Promise<{ url?: string; reference?: { readonly provider: string; readonly id: string }; width?: number; height?: number } | { error: string }>;
   readonly references: (collectionId: string) => ReferenceCandidates;
   readonly retryReferences: (collectionId: string) => void;
   readonly renderRichText: ((props: CollectionRichTextEditorProps) => ReactNode) | undefined;
@@ -58,6 +59,11 @@ const idFor = (context: FieldContext, field: CollectionField, part: string) => `
 export const fieldControlId = (baseId: string, key: string) => `${baseId}-${key}-control`;
 const asString = (value: CollectionValue | undefined) => typeof value === "string" ? value : "";
 const asList = (value: CollectionValue | undefined): readonly string[] => Array.isArray(value) ? (value as readonly unknown[]).filter((entry): entry is string => typeof entry === "string") : [];
+const asImage = (value: CollectionValue | undefined): CollectionImageValue | null => {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string") return value;
+  return Array.isArray(value) ? null : value as CollectionImageValue;
+};
 
 export function FieldView({ field, value, error, context, onChange }: {
   field: CollectionField; value: CollectionValue | undefined; error: string | undefined; context: FieldContext; onChange: (value: CollectionValue) => void;
@@ -122,7 +128,7 @@ export function FieldView({ field, value, error, context, onChange }: {
       });
       break;
     case "image":
-      control = <ImageControl field={field} value={typeof value === "string" ? value : null} context={context} controlId={controlId} labelId={labelId} describedBy={describedBy} onChange={onChange} />;
+      control = <ImageControl field={field} value={asImage(value)} context={context} controlId={controlId} labelId={labelId} describedBy={describedBy} onChange={onChange} />;
       break;
     case "select":
       control = <SelectControl field={field} value={asList(value)} controlId={controlId} describedBy={describedBy} onChange={onChange} />;
@@ -152,7 +158,7 @@ export function FieldView({ field, value, error, context, onChange }: {
 /* ---------- 画像 ---------- */
 
 function ImageControl({ field, value, context, controlId, labelId, describedBy, onChange }: {
-  field: Extract<CollectionField, { type: "image" }>; value: string | null; context: FieldContext; controlId: string; labelId: string; describedBy: string | undefined; onChange: (value: CollectionValue) => void;
+  field: Extract<CollectionField, { type: "image" }>; value: CollectionImageValue | null; context: FieldContext; controlId: string; labelId: string; describedBy: string | undefined; onChange: (value: CollectionValue) => void;
 }) {
   const file = useRef<HTMLInputElement>(null);
   const [state, setState] = useState<{ busy: boolean; error: string | null }>({ busy: false, error: null });
@@ -163,9 +169,11 @@ function ImageControl({ field, value, context, controlId, labelId, describedBy, 
     input.value = "";
     if (!chosen) return;
     setState({ busy: true, error: null });
-    const result = await context.upload(chosen);
-    if ("url" in result) { setState({ busy: false, error: null }); onChange(result.url); }
-    else setState({ busy: false, error: result.error });
+    const result = await context.uploadAsset(chosen);
+    if ("error" in result) { setState({ busy: false, error: result.error }); return; }
+    const image = result.reference ?? result.url;
+    if (image) { setState({ busy: false, error: null }); onChange(image); }
+    else setState({ busy: false, error: rejectMessages.failed });
   };
   return <div className="cw-image" data-shape={field.shape ?? "rect"} aria-busy={state.busy}>
     <span className="cw-image-preview">{src && src !== failed ? <img src={src} alt={`${field.label}の画像`} referrerPolicy="no-referrer" onError={() => setFailed(src)} /> : <span className="cw-image-empty"><Icon name="image" /><span>{value ? "表示できません" : "画像なし"}</span></span>}</span>
@@ -245,10 +253,14 @@ function GalleryControl({ field, value, context, controlId, describedBy, onChang
     if (!chosen) return;
     setBusy((previous) => new Set(previous).add(key));
     setRowErrors((previous) => { const next = { ...previous }; delete next[key]; return next; });
-    const result = await context.upload(chosen);
+    const result = await context.uploadAsset(chosen);
     setBusy((previous) => { const next = new Set(previous); next.delete(key); return next; });
-    if ("url" in result) update(key, { image: result.url });
-    else setRowErrors((previous) => ({ ...previous, [key]: result.error }));
+    if ("error" in result) setRowErrors((previous) => ({ ...previous, [key]: result.error }));
+    else {
+      const image = result.reference ?? result.url;
+      if (image) update(key, { image });
+      else setRowErrors((previous) => ({ ...previous, [key]: rejectMessages.failed }));
+    }
   };
   return <div className="cw-gallery" ref={root}>
     {value.length > 0 && <ol className="cw-gallery-rows">{value.map((entry, index) => {
@@ -482,9 +494,9 @@ export function DefaultRichText({ id, labelId, describedBy, invalid, value, onCh
 }
 
 /** 画像の表示用の URL を決める（ホストの imageUrl を通し、表示してよい URL だけ）。 */
-export function displayImage(url: string | null, width: number, transform: ((url: string, width: number) => string) | undefined): string | null {
-  if (url === null || !isDisplayableImageUrl(url)) return null;
-  let next = url;
-  try { next = transform ? transform(url, width) : url; } catch { return null; }
-  return isDisplayableImageUrl(next) ? next : null;
+export function displayImage(image: CollectionImageValue | null, width: number, transform: ((image: CollectionImageValue, width: number) => string | null) | undefined): string | null {
+  if (image === null || typeof image === "string" && !isDisplayableImageUrl(image)) return null;
+  let next: string | null = typeof image === "string" ? image : null;
+  try { next = transform ? transform(image, width) : next; } catch { return null; }
+  return next !== null && isDisplayableImageUrl(next) ? next : null;
 }

@@ -388,6 +388,47 @@ test("CMS adapter: 画像は intent の URL を確かめてから credentials �
   await assert.rejects(adapter.uploadImage({ collectionId: "posts", file }, signal()), (error) => error.name === "KamakuraCmsRequestError" && error.status === 409);
 });
 
+test("CMS adapter: CMS画像を素材IDで保存し、解決URLは表示だけに使う", async (t) => {
+  const { createKamakuraCmsAdapter } = await loadAdapter();
+  const reference = { provider: "kamakura-upload", id: UUID };
+  const preview = `/api/projects/project-kamakura/sites/kamakura/editor/assets/${UUID}/preview`;
+  const file = new File([new Uint8Array([1, 2, 3])], "cover.png", { type: "image/png" });
+  const calls = fakeBff(t, {
+    "GET /schema": () => jsonResponse(schema()),
+    "GET /collections/posts/items/morning-walk": () => jsonResponse({ status: "ready", item: item({}, { ...rawValues, cover: reference }) })
+  });
+  let resolvedReferences = [];
+  let uploadedRequest = null;
+  const assetLibrary = {
+    async resolveAssets(request) {
+      resolvedReferences = request.references;
+      return { [`${reference.provider}:${reference.id}`]: { src: preview, width: 1200, height: 800 } };
+    },
+    async uploadAsset(request) {
+      uploadedRequest = request;
+      return { status: "uploaded", asset: { ...reference, siteId: "kamakura", thumbnailUrl: preview, width: 1200, height: 800 } };
+    }
+  };
+  const adapter = createKamakuraCmsAdapter({ siteOrigin: SITE, assetLibrary });
+  const definition = parseCollectionSchemaResult(await adapter.loadSchema(signal())).collections[0];
+  const loaded = parseCollectionItemResult(await adapter.loadItem({ collectionId: "posts", itemId: "morning-walk" }, signal()), definition, "morning-walk");
+  assert.deepEqual(loaded.item.values.cover, reference);
+  assert.deepEqual(resolvedReferences, [reference]);
+  assert.equal(adapter.imageUrl(reference, 480), preview);
+
+  // provider/id が同じ参照は同じ値として扱い、認証付き URL を CMS へ送り直さない。
+  const values = { ...loaded.item.values, cover: { ...reference } };
+  const saved = await adapter.saveDraft({ collectionId: "posts", itemId: "morning-walk", version: loaded.item.version, values }, signal());
+  assert.equal(saved.status, "saved");
+  assert.equal(calls.some(({ method }) => method === "PUT"), false);
+
+  const uploaded = parseCollectionUploadResult(await adapter.uploadAsset({ collectionId: "posts", file }, signal()));
+  assert.deepEqual(uploaded, { status: "uploaded", reference, width: 1200, height: 800 });
+  assert.equal(uploadedRequest.siteId, "kamakura");
+  assert.equal(uploadedRequest.provider, "kamakura-upload");
+  assert.equal(uploadedRequest.file, file);
+});
+
 test("CMS adapter: 画像の縮小は公開画像の置き場だけ、プレビューは公開中の項目だけサイトの URL で開く", async () => {
   const { createKamakuraCmsAdapter } = await loadAdapter();
   const adapter = createKamakuraCmsAdapter({ siteOrigin: SITE });

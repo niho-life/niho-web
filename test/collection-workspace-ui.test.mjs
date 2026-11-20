@@ -340,6 +340,34 @@ test("editor: image, reference, tags, select, datetime, url and rich text change
   } finally { await app.cleanup(); }
 });
 
+test("editor: image controls keep stable asset references through load, upload, preview and clear", async () => {
+  const reference = { provider: "kamakura-upload", id: "123e4567-e89b-42d3-a456-426614174000" };
+  const fixture = createAdapter();
+  fixture.store.posts.get("p1").values.cover = reference;
+  fixture.adapter.imageUrl = (image, width) => typeof image === "string" ? `${image}?w=${width}` : `/assets/${image.id}/preview?w=${width}`;
+  const uploads = [];
+  fixture.adapter.uploadAsset = async (input) => { uploads.push(input); return { status: "uploaded", reference }; };
+  const app = await setup({ adapter: fixture.adapter, autosaveDelay: 10, initialCollectionId: "posts", initialItemId: "p1" });
+  const settle = async () => { await wait(40); await flush(); };
+  try {
+    assert.equal(field("cover").querySelector("img").getAttribute("src"), `/assets/${reference.id}/preview?w=480`);
+    assert.ok(button("カバー画像を外す"), "loaded references remain removable");
+
+    const photo = new File(["x"], "new-cover.jpg", { type: "image/jpeg" });
+    await chooseFile(field("cover").querySelector('input[type="file"]'), photo);
+    await settle();
+    assert.equal(uploads.length, 1);
+    assert.equal(uploads[0].collectionId, "posts");
+    assert.equal(uploads[0].file, photo);
+    assert.deepEqual(lastSave(fixture).values.cover, reference);
+    assert.equal(field("cover").querySelector("img").getAttribute("src"), `/assets/${reference.id}/preview?w=480`);
+
+    await press("カバー画像を外す");
+    await settle();
+    assert.equal(lastSave(fixture).values.cover, null);
+  } finally { await app.cleanup(); }
+});
+
 test("remove and unpublish only after confirmation, with focus returned; capabilities hide actions", async () => {
   const fixture = createAdapter();
   const app = await setup({ adapter: fixture.adapter });

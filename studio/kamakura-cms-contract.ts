@@ -2,7 +2,7 @@ import {
   COLLECTION_BULK_LIMIT, isIsoTimestamp, parseCollectionItemSummary, parseCollectionListResult, parseCollectionSchemaResult, parseGalleryEntries,
   type CollectionDefinition, type CollectionFieldError, type CollectionGalleryEntry, type CollectionItem, type CollectionItemSummary, type CollectionValue
 } from "../src/collection-model.js";
-import { DocumentValidationError, fail, record } from "../src/validation-utils.js";
+import { DocumentValidationError, fail, parseAssetReference, record } from "../src/validation-utils.js";
 import { parseEnglishPublicationsResult, type EnglishPublicationsResult } from "../src/english-publication.js";
 
 /**
@@ -146,7 +146,7 @@ function parseValuesAt(input: unknown, path: string): Record<string, CollectionV
       const entries: CollectionGalleryEntry[] = parseGalleryEntries(value, at);
       entries.forEach((entry, index) => {
         if (entry.caption.length > KAMAKURA_CMS_LIMITS.galleryCaptionLength) fail(`${at}[${index}].caption`, "caption too long");
-        if (entry.image !== null && /[\s<>"'\\]/u.test(entry.image)) fail(`${at}[${index}].image`, "invalid image");
+        if (typeof entry.image === "string" && /[\s<>"'\\]/u.test(entry.image)) fail(`${at}[${index}].image`, "invalid image");
       });
       result[key] = entries;
     } else if (Array.isArray(value)) {
@@ -157,14 +157,15 @@ function parseValuesAt(input: unknown, path: string): Record<string, CollectionV
       });
       if (new Set(list).size !== list.length) fail(at, "duplicate entry");
       result[key] = list;
-    } else fail(at, "expected string, null, string[] or gallery entries");
+    } else if (typeof value === "object") result[key] = parseAssetReference(value, at);
+    else fail(at, "expected string, null, string[], asset reference or gallery entries");
   }
   return result;
 }
 
 /**
  * 項目の値（definition を使わない形の確かめ）。key は読みやすい名前（^[a-z][A-Za-z0-9]{0,63}$）で 100 個まで、
- * 値は string（100 万字まで）・null・string[]（200 個まで・各 1〜200 字・重複なし）・gallery の並び
+ * 値は string（100 万字まで）・null・素材参照・string[]（200 個まで・各 1〜200 字・重複なし）・gallery の並び
  * （`{ id, image, caption }` が 200 行まで・id は "" か不透明な id・説明は 2 万字まで）。BFF は下書きの本文にも使う。
  */
 export function parseKamakuraCmsValues(input: unknown, path = "values"): Record<string, CollectionValue> {
