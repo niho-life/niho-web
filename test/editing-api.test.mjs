@@ -6,8 +6,9 @@ import { createPageEditingApi, createRegisteredPageEditingApi, EDITING_API_ERROR
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 const target = { siteId: fixture.siteId, pageId: fixture.pageId, locale: fixture.locale };
 
-function hostFixture({ validationContext, initialDocument = fixture, publishing = false } = {}) {
+function hostFixture({ validationContext, initialDocument = fixture, publishing = false, initialBreakpointSettings } = {}) {
   let document = structuredClone(initialDocument), version = "v1";
+  let breakpointSettings = initialBreakpointSettings === undefined ? null : structuredClone(initialBreakpointSettings), breakpointVersion = "b.1";
   const actor = { kind: "human", subject: "owner" };
   const completedOperations = new Map();
   const site = { id: fixture.siteId, name: "Example", domains: ["https://host.example"] };
@@ -16,7 +17,7 @@ function hostFixture({ validationContext, initialDocument = fixture, publishing 
       const token = request.headers.get("Authorization");
       return token === "Bearer owner" ? actor : token === "Bearer other" ? { kind: "human", subject: "other" } : null;
     },
-    async authorize(input, capability, scope) { return input.subject === "owner" && scope.siteId === fixture.siteId && (capability === "pages.read" || capability === "pages.edit" || publishing && capability === "pages.publish"); },
+    async authorize(input, capability, scope) { return input.subject === "owner" && scope.siteId === fixture.siteId && (capability === "pages.read" || capability === "pages.edit" || publishing && capability === "pages.publish" || breakpointSettings !== null && (capability === "site.settings.read" || capability === "site.settings.write")); },
     ...(validationContext ? { async validationContext() { return validationContext; } } : {}),
     async readPage(_actor, input) { return input.siteId === target.siteId && input.pageId === target.pageId && input.locale === target.locale ? { document, version } : null; },
     async savePage(_actor, input, expectedVersion, next) {
@@ -25,6 +26,14 @@ function hostFixture({ validationContext, initialDocument = fixture, publishing 
       document = { ...next, revision: next.revision + 1 }; version = `v${Number(version.slice(1)) + 1}`;
       return { status: "saved", version, document };
     },
+    ...(breakpointSettings === null ? {} : {
+      async readBreakpointSettings(_actor, siteId) { return siteId === fixture.siteId ? { settings: breakpointSettings, version: breakpointVersion } : null; },
+      async saveBreakpointSettings(_actor, siteId, expectedVersion, next) {
+        if (siteId !== fixture.siteId || expectedVersion !== breakpointVersion) return { status: "conflict" };
+        breakpointSettings = structuredClone(next); breakpointVersion = `b.${Number(breakpointVersion.slice(2)) + 1}`;
+        return { status: "saved", version: breakpointVersion };
+      }
+    }),
     ...(publishing ? {
       async releaseSite() { return site; },
       async preparePageRelease(_actor, request) {
@@ -61,6 +70,25 @@ test("page editing API discovery exposes machine-readable operations and stable 
   assert.deepEqual(result.body.operations, EDITING_OPERATIONS.slice(0, 2));
   assert.ok(EDITING_API_ERRORS.includes("version_conflict"));
   assert.ok(result.body.operations.every((operation) => operation.inputSchema && operation.resultSchema && operation.errors.length > 0));
+});
+
+test("site breakpoint operations use the common catalog, validate settings and enforce version CAS", async () => {
+  const initial = { base: { name: "Mobile", previewWidth: 480 }, breakpoints: [{ name: "Tablet", minWidth: 691, previewWidth: 840 }, { name: "PC", minWidth: 1280, previewWidth: 1280 }] };
+  const { send } = hostFixture({ initialBreakpointSettings: initial });
+  const discovered = await json(await send("GET", `/sites/${target.siteId}/capabilities`));
+  assert.deepEqual(discovered.body.operations.slice(-2).map(({ id }) => id), ["site.breakpoints.read", "site.breakpoints.save"]);
+  assert.ok(discovered.body.operations.slice(-2).every(({ inputSchema, resultSchema, errors }) => inputSchema && resultSchema && errors.length > 0));
+
+  const base = `/sites/${target.siteId}/operations/site.breakpoints`;
+  assert.deepEqual(await json(await send("GET", `${base}.read`)), { status: 200, body: { settings: initial, version: "b.1" } });
+  const next = structuredClone(initial); next.breakpoints[0].previewWidth = 800;
+  assert.deepEqual(await json(await send("PUT", `${base}.save`, { expectedVersion: "b.1", settings: next })), { status: 200, body: { status: "saved", version: "b.2" } });
+  assert.deepEqual(await json(await send("PUT", `${base}.save`, { expectedVersion: "b.1", settings: initial })), { status: 409, body: { error: "version_conflict" } });
+  const invalid = structuredClone(next); invalid.breakpoints[0].previewWidth = 1300;
+  assert.deepEqual(await json(await send("PUT", `${base}.save`, { expectedVersion: "b.2", settings: invalid })), { status: 400, body: { error: "invalid_request" } });
+  assert.deepEqual(await json(await send("PUT", `${base}.read`)), { status: 405, body: { error: "method_not_allowed" } });
+  assert.deepEqual(await json(await send("GET", `${base}.read`, undefined, "Bearer other")), { status: 403, body: { error: "forbidden" } });
+  assert.deepEqual(await json(await send("GET", `/sites/${target.siteId}/operations/site.breakpoints.read?unexpected=1`)), { status: 400, body: { error: "invalid_request" } });
 });
 
 test("registered page editing hosts route each site to its own adapter", async () => {

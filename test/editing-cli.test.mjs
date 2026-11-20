@@ -47,7 +47,36 @@ test("niho-edit reads a page over the host API without Studio or a browser", asy
   });
   assert.equal(result.exitCode, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), { document: fixture, version: "v1" });
-  assert.deepEqual(EDITING_OPERATIONS.map(({ id }) => id), ["pages.read", "pages.save", "pages.release-plan", "pages.release"]);
+  assert.deepEqual(EDITING_OPERATIONS.map(({ id }) => id), ["pages.read", "pages.save", "pages.release-plan", "pages.release", "site.breakpoints.read", "site.breakpoints.save"]);
+});
+
+test("niho-edit reads and CAS-saves site breakpoints over the host API", async (t) => {
+  const settings = { base: { name: "Mobile", previewWidth: 480 }, breakpoints: [{ name: "Tablet", minWidth: 691, previewWidth: 840 }, { name: "PC", minWidth: 1280, previewWidth: 1280 }] };
+  const readPath = `/api/edit/v1/sites/${siteId}/operations/site.breakpoints.read`;
+  const read = await run(["breakpoints-read"], { expectedMethod: "GET", expectedUrl: `${origin}${readPath}`, result: { settings, version: "b.1" } });
+  assert.equal(read.exitCode, 0, read.stderr);
+  assert.deepEqual(JSON.parse(read.stdout), { settings, version: "b.1" });
+
+  const directory = await mkdtemp(join(tmpdir(), "niho-edit-breakpoints-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const snapshotPath = join(directory, "settings.json");
+  await writeFile(snapshotPath, JSON.stringify({ settings, version: "b.1" }));
+  const savePath = `/api/edit/v1/sites/${siteId}/operations/site.breakpoints.save`;
+  const next = structuredClone(settings); next.breakpoints[0].previewWidth = 800;
+  await writeFile(snapshotPath, JSON.stringify({ settings: next, version: "b.1" }));
+  const saved = await run(["breakpoints-save", "--json", snapshotPath], {
+    expectedMethod: "PUT", expectedUrl: `${origin}${savePath}`, expectedBody: { expectedVersion: "b.1", settings: next },
+    result: { status: "saved", version: "b.2" }
+  });
+  assert.equal(saved.exitCode, 0, saved.stderr);
+  assert.deepEqual(JSON.parse(saved.stdout), { apiVersion: "v1", httpStatus: 200, operation: "site.breakpoints.save", result: { status: "saved", version: "b.2" } });
+
+  const conflict = await run(["breakpoints-save", "--json", snapshotPath], {
+    status: 409, expectedMethod: "PUT", expectedUrl: `${origin}${savePath}`, expectedBody: { expectedVersion: "b.1", settings: next },
+    result: { error: "version_conflict" }
+  });
+  assert.equal(conflict.exitCode, 1);
+  assert.deepEqual(JSON.parse(conflict.stdout), { apiVersion: "v1", httpStatus: 409, operation: "site.breakpoints.save", result: { error: "version_conflict" } });
 });
 
 test("niho-edit preserves host-specific component blocks on read and save", async (t) => {

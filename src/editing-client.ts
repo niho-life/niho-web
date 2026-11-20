@@ -1,7 +1,9 @@
 import { EDITING_API_ERRORS, EDITING_OPERATIONS, type EditingApiErrorCode, type EditingOperationDefinition, type EditingPageSnapshot, type EditingPageTarget } from "./editing-api.js";
 import type { PageDocument } from "./types.js";
 import type { EditorReleasePlan, EditorReleaseRequest } from "./editor-types.js";
+import type { EditorBreakpointSettings, EditorBreakpointSettingsSaveResult, EditorBreakpointSettingsSnapshot } from "./editor-types.js";
 import { identifier, localeCode } from "./validation-utils.js";
+import { parseBreakpointSettings } from "./style-model.js";
 
 const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 const DOCUMENT_KEYS = ["schemaVersion", "siteId", "pageId", "locale", "revision", "title", "meta", "tokens", "textStyles", "body"] as const;
@@ -25,6 +27,8 @@ export type EditingApiClient = {
   save(target: EditingPageTarget, expectedVersion: string, document: unknown, signal?: AbortSignal): Promise<EditingPageSaveResult>;
   prepareRelease(target: EditingPageTarget, request: EditingPageReleaseInput, signal?: AbortSignal): Promise<EditorReleasePlan>;
   release(target: EditingPageTarget, plan: EditorReleasePlan, operationId: string, signal?: AbortSignal): Promise<EditingPagePublishResult>;
+  readBreakpointSettings(signal?: AbortSignal): Promise<EditorBreakpointSettingsSnapshot>;
+  saveBreakpointSettings(expectedVersion: string, settings: EditorBreakpointSettings, signal?: AbortSignal): Promise<EditorBreakpointSettingsSaveResult>;
 };
 
 /** A stable wire error; response bodies and host messages are intentionally not copied into its message. */
@@ -241,6 +245,26 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       const document = parseEditingPageDocumentEnvelope(body.document);
       assertTarget(document, target);
       return { status: "released", operationId, version: body.version, document };
+    },
+    async readBreakpointSettings(signal) {
+      const path = `/sites/${encodeURIComponent(siteId)}/operations/site.breakpoints.read`;
+      const { response, body } = await send(path, "GET", undefined, signal);
+      if (!response.ok) throw apiFailure(body, response.status);
+      if (!exactKeys(body, ["settings", "version"]) || !isEditingApiVersion(body.version)) throw new EditingApiClientError("invalid_response", response.status);
+      try { return { settings: parseBreakpointSettings(body.settings), version: body.version }; }
+      catch { throw new EditingApiClientError("invalid_response", response.status); }
+    },
+    async saveBreakpointSettings(expectedVersion, settings, signal) {
+      if (!isEditingApiVersion(expectedVersion)) throw new TypeError("invalid expected version");
+      let checked: EditorBreakpointSettings;
+      try { checked = parseBreakpointSettings(settings); }
+      catch { throw new TypeError("invalid breakpoint settings"); }
+      const path = `/sites/${encodeURIComponent(siteId)}/operations/site.breakpoints.save`;
+      const { response, body } = await send(path, "PUT", { expectedVersion, settings: checked }, signal);
+      if (response.status === 409 && body.error === "version_conflict") return { status: "conflict" };
+      if (!response.ok) throw apiFailure(body, response.status);
+      if (!exactKeys(body, ["status", "version"]) || body.status !== "saved" || !isEditingApiVersion(body.version)) throw new EditingApiClientError("invalid_response", response.status);
+      return { status: "saved", version: body.version };
     }
   };
   return client;

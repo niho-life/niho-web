@@ -1,9 +1,10 @@
 import type { BlockContracts, ComponentLibrary, PageDocument } from "./types.js";
 import { parsePageDocument } from "./document.js";
 import { validateReleasePlan } from "./editor-model.js";
-import type { EditorReleasePlan, EditorReleaseRequest, EditorSite } from "./editor-types.js";
+import type { EditorBreakpointSettings, EditorBreakpointSettingsSaveResult, EditorBreakpointSettingsSnapshot, EditorReleasePlan, EditorReleaseRequest, EditorSite } from "./editor-types.js";
 import { identifier, localeCode } from "./validation-utils.js";
 import type { SiteStyles } from "./site-styles.js";
+import { parseBreakpointSettings } from "./style-model.js";
 
 /** Stable errors returned by the host-neutral page editing wire contract. */
 export const EDITING_API_ERRORS = Object.freeze([
@@ -38,16 +39,19 @@ export type JsonSchema = boolean | {
   readonly type?: string;
   readonly const?: string | number | boolean;
   readonly minimum?: number;
+  readonly maximum?: number;
   readonly items?: JsonSchema;
   readonly enum?: readonly string[];
   readonly required?: readonly string[];
   readonly additionalProperties?: boolean;
   readonly properties?: Readonly<Record<string, JsonSchema>>;
   readonly minLength?: number;
+  readonly maxLength?: number;
+  readonly maxItems?: number;
 };
 export type EditingOperationDefinition = {
-  readonly id: "pages.read" | "pages.save" | "pages.release-plan" | "pages.release";
-  readonly capability: "pages.read" | "pages.edit" | "pages.publish";
+  readonly id: "pages.read" | "pages.save" | "pages.release-plan" | "pages.release" | "site.breakpoints.read" | "site.breakpoints.save";
+  readonly capability: "pages.read" | "pages.edit" | "pages.publish" | "site.settings.read" | "site.settings.write";
   readonly method: "GET" | "PUT" | "POST";
   readonly path: string;
   readonly inputSchema: JsonSchema;
@@ -72,6 +76,15 @@ const documentSchema: JsonSchema = Object.freeze({
   })
 });
 const versionSchema: JsonSchema = Object.freeze({ type: "string", minLength: 1 });
+const breakpointNameSchema: JsonSchema = Object.freeze({ type: "string", enum: Object.freeze(["Mini", "Mobile", "Tablet", "Small", "PC"]) });
+const breakpointSettingsSchema: JsonSchema = Object.freeze({ type: "object", required: Object.freeze(["base", "breakpoints"]), additionalProperties: false,
+  properties: Object.freeze({
+    base: Object.freeze({ type: "object", required: Object.freeze(["name", "previewWidth"]), additionalProperties: false,
+      properties: Object.freeze({ name: breakpointNameSchema, previewWidth: Object.freeze({ type: "integer", minimum: 320, maximum: 1920 }) }) }),
+    breakpoints: Object.freeze({ type: "array", maxItems: 4, items: Object.freeze({ type: "object", required: Object.freeze(["name", "minWidth", "previewWidth"]), additionalProperties: false,
+      properties: Object.freeze({ name: breakpointNameSchema, minWidth: Object.freeze({ type: "integer", minimum: 320, maximum: 1920 }), previewWidth: Object.freeze({ type: "integer", minimum: 320, maximum: 1920 }) }) }) })
+  })
+});
 const releaseRequestProperties = Object.freeze({
   siteId: Object.freeze({ type: "string" }), pageId: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }), expectedVersion: versionSchema,
   action: Object.freeze({ type: "string", enum: Object.freeze(["publish", "rollback"]) }), revision: Object.freeze({ type: "number", minimum: 1 }),
@@ -120,6 +133,21 @@ export const EDITING_OPERATIONS: readonly EditingOperationDefinition[] = Object.
     resultSchema: Object.freeze({ type: "object", required: Object.freeze(["status", "operationId", "version", "document"]), additionalProperties: false,
       properties: Object.freeze({ status: Object.freeze({ const: "released" }), operationId: Object.freeze({ type: "string", minLength: 36, maxLength: 36 }), version: versionSchema, document: documentSchema }) }),
     errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found", "version_conflict"] as const)
+  }),
+  Object.freeze({
+    id: "site.breakpoints.read", capability: "site.settings.read", method: "GET", path: "/sites/{siteId}/operations/site.breakpoints.read",
+    inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId"]), additionalProperties: false, properties: Object.freeze({ siteId: Object.freeze({ type: "string" }) }) }),
+    resultSchema: Object.freeze({ type: "object", required: Object.freeze(["settings", "version"]), additionalProperties: false,
+      properties: Object.freeze({ settings: breakpointSettingsSchema, version: versionSchema }) }),
+    errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found"] as const)
+  }),
+  Object.freeze({
+    id: "site.breakpoints.save", capability: "site.settings.write", method: "PUT", path: "/sites/{siteId}/operations/site.breakpoints.save",
+    inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId", "expectedVersion", "settings"]), additionalProperties: false,
+      properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), expectedVersion: versionSchema, settings: breakpointSettingsSchema }) }),
+    resultSchema: Object.freeze({ type: "object", required: Object.freeze(["status", "version"]), additionalProperties: false,
+      properties: Object.freeze({ status: Object.freeze({ const: "saved" }), version: versionSchema }) }),
+    errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found", "version_conflict"] as const)
   })
 ]);
 
@@ -138,6 +166,9 @@ export type PageEditingHostAdapter = {
   preparePageRelease?(actor: EditingActor, request: EditorReleaseRequest): Promise<EditingPageReleasePrepareResult>;
   /** Atomically publish after validating the one-use token; same actor + operationId + input must return the stored result. */
   publishPage?(actor: EditingActor, target: EditingPageTarget, input: { readonly expectedVersion: string; readonly confirmationToken: string; readonly operationId: string }): Promise<EditingPagePublishResult>;
+  /** Optional site settings share the same discovery, authentication, authorization and wire contract. */
+  readBreakpointSettings?(actor: EditingActor, siteId: string): Promise<EditorBreakpointSettingsSnapshot | null>;
+  saveBreakpointSettings?(actor: EditingActor, siteId: string, expectedVersion: string, settings: EditorBreakpointSettings): Promise<EditorBreakpointSettingsSaveResult>;
 };
 
 function response(value: unknown, status = 200): Response {
@@ -185,9 +216,10 @@ function exactKeys(value: Record<string, unknown>, expected: readonly string[]):
 const OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 function validOperationId(value: unknown): value is string { return typeof value === "string" && OPERATION_ID.test(value); }
 function supportsOperation(adapter: PageEditingHostAdapter, operation: EditingOperationDefinition): boolean {
-  return operation.id === "pages.release-plan" || operation.id === "pages.release"
-    ? typeof adapter.releaseSite === "function" && typeof adapter.preparePageRelease === "function" && typeof adapter.publishPage === "function"
-    : true;
+  if (operation.id === "pages.release-plan" || operation.id === "pages.release") return typeof adapter.releaseSite === "function" && typeof adapter.preparePageRelease === "function" && typeof adapter.publishPage === "function";
+  if (operation.id === "site.breakpoints.read") return typeof adapter.readBreakpointSettings === "function";
+  if (operation.id === "site.breakpoints.save") return typeof adapter.saveBreakpointSettings === "function";
+  return true;
 }
 function releaseRequest(value: Record<string, unknown>, target: EditingPageTarget): EditorReleaseRequest | null {
   const allowed = ["expectedVersion", "action", "revision", "componentsVersion", "presentationVersion"];
@@ -265,6 +297,50 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       }
       if (operations.length === 0) return fail("forbidden", 403);
       return response({ apiVersion: "v1", siteId, operations });
+    }
+    const siteSettingsMatch = new RegExp(`^${basePath}/sites/([^/]+)/operations/(site\\.breakpoints\\.(?:read|save))$`, "u").exec(url.pathname);
+    if (siteSettingsMatch) {
+      let siteId: string;
+      try { siteId = identifier(decodeURIComponent(siteSettingsMatch[1]!), "$siteId"); }
+      catch { return fail("invalid_request", 400); }
+      const operation = EDITING_OPERATIONS.find((item) => item.id === siteSettingsMatch[2]);
+      if (!operation || !supportsOperation(adapter, operation)) return fail("not_found", 404);
+      if (request.method !== operation.method) return fail("method_not_allowed", 405);
+      if (url.search) return fail("invalid_request", 400);
+      let actor: EditingActor | null;
+      try { actor = await adapter.authenticate(request); }
+      catch { return fail("host_failure", 503); }
+      if (!actor) return fail("authentication_required", 401);
+      if (!validActor(actor)) return fail("host_contract_violation", 502);
+      let allowed: boolean;
+      try { allowed = await adapter.authorize(actor, operation.capability, { siteId }) === true; }
+      catch { return fail("host_failure", 503); }
+      if (!allowed) return fail("forbidden", 403);
+      if (operation.id === "site.breakpoints.read") {
+        if (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length"))) return fail("invalid_request", 400);
+        let snapshot: EditorBreakpointSettingsSnapshot | null;
+        try { snapshot = await adapter.readBreakpointSettings!(actor, siteId); }
+        catch { return fail("host_failure", 503); }
+        if (!snapshot) return fail("not_found", 404);
+        if (!validVersion(snapshot.version)) return fail("host_contract_violation", 502);
+        let settings: EditorBreakpointSettings;
+        try { settings = parseBreakpointSettings(snapshot.settings); }
+        catch { return fail("host_contract_violation", 502); }
+        return response({ settings, version: snapshot.version });
+      }
+      let body: Record<string, unknown> | null;
+      try { body = await readBody(request); } catch { return fail("invalid_request", 400); }
+      if (!body || !exactKeys(body, ["expectedVersion", "settings"]) || !validVersion(body.expectedVersion)) return fail("invalid_request", 400);
+      let settings: EditorBreakpointSettings;
+      try { settings = parseBreakpointSettings(body.settings); }
+      catch { return fail("invalid_request", 400); }
+      let result: EditorBreakpointSettingsSaveResult;
+      try { result = await adapter.saveBreakpointSettings!(actor, siteId, body.expectedVersion, settings); }
+      catch { return fail("host_failure", 503); }
+      if (!result || typeof result !== "object" || !["saved", "conflict"].includes(result.status)) return fail("host_contract_violation", 502);
+      if (result.status === "conflict") return fail("version_conflict", 409);
+      if (!validVersion(result.version)) return fail("host_contract_violation", 502);
+      return response({ status: "saved", version: result.version });
     }
     const match = new RegExp(`^${basePath}/sites/([^/]+)/operations/(pages\\.(?:read|save|release-plan|release))/([^/]+)$`, "u").exec(url.pathname);
     if (!match) return fail("not_found", 404);
