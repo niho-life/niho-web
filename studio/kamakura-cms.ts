@@ -2,8 +2,9 @@ import {
   parseCollectionValues,
   type CollectionAdapter, type CollectionDefinition, type CollectionItem, type CollectionValue, type CollectionValues
 } from "../src/collection-model.js";
+import { EditingApiClientError, type EditingApiClient } from "../src/editing-client.js";
 import {
-  KAMAKURA_CMS_BASE, KAMAKURA_CMS_IMAGE_TYPES, KAMAKURA_CMS_LIMITS, KAMAKURA_MEDIA_ORIGIN,
+  KAMAKURA_CMS_BASE, KAMAKURA_CMS_IMAGE_TYPES, KAMAKURA_CMS_LIMITS, KAMAKURA_CMS_SITE_ID, KAMAKURA_MEDIA_ORIGIN,
   isKamakuraCmsCollectionId, isKamakuraCmsItemId,
   kamakuraCmsEnglishPublicationRoutes, parseKamakuraCmsEnglishPublications,
   parseKamakuraCmsConflict, parseKamakuraCmsInvalid, parseKamakuraCmsItemEnvelope, parseKamakuraCmsList, parseKamakuraCmsListChange,
@@ -19,6 +20,8 @@ import {
 export type KamakuraCmsAdapterOptions = {
   /** サイトの公開 URL の origin（D1 のサイト情報＝Project の site.domains[0]）。プレビューの URL に使う。無ければ null。 */
   readonly siteOrigin: string | null;
+  /** サイト API の discovery が CMS 操作を公開している場合に使う。未対応ホストでは既存 CMS BFF に戻る。 */
+  readonly commonApi?: EditingApiClient;
 };
 
 /** BFF・アップロード先の失敗。message に内部の詳細を入れない。supportId は BFF が返したときだけ。 */
@@ -114,14 +117,44 @@ function httpsOrigin(value: string | null): string | null {
 
 export function createKamakuraCmsAdapter(options: KamakuraCmsAdapterOptions): CollectionAdapter {
   const siteOrigin = httpsOrigin(options.siteOrigin);
+  const commonApi = options.commonApi;
+  let commonOperations: Promise<ReadonlySet<string>> | null = null;
+  const commonCmsReady = async (signal: AbortSignal): Promise<boolean> => {
+    if (!commonApi) return false;
+    commonOperations ??= commonApi.discover(signal).then((discovery) => new Set(discovery.operations.map(({ id }) => id)), (error: unknown) => {
+      commonOperations = null;
+      throw error;
+    });
+    const operations = await commonOperations;
+    return ["cms.schema", "cms.list", "cms.read", "cms.create", "cms.save", "cms.publish-plan", "cms.publish"]
+      .every((operation) => operations.has(operation));
+  };
+  const commonCmsError = (error: unknown): "forbidden" | "not_found" | "invalid" | null => {
+    if (!(error instanceof EditingApiClientError)) return null;
+    if (error.code === "forbidden") return "forbidden";
+    if (error.code === "not_found") return "not_found";
+    if (error.code === "validation_failed") return "invalid";
+    return null;
+  };
+  const commonCmsTarget = (collectionId: string, itemId: string) => ({ siteId: KAMAKURA_CMS_SITE_ID, collectionId, itemId });
   const definitions = new Map<string, CollectionDefinition>();
   /** 項目ごとに最後に読んだ version と項目。saveDraft はこの値との差分だけを送る。 */
   const known = new Map<string, Known>();
+  /** 応答が失われたとき、同じ内容の再送に同じ operation ID を使う。 */
+  const writeOperationIds = new Map<string, string>();
+  const publishOperationIds = new Map<string, string>();
+  const createOperationIds = new Map<string, string>();
   const keyOf = (collectionId: string, itemId: string) => `${collectionId}/${itemId}`;
   const remember = (collectionId: string, item: CollectionItem) => { known.set(keyOf(collectionId, item.id), { version: item.version, item }); };
   const forget = (collectionId: string, itemId: string) => { known.delete(keyOf(collectionId, itemId)); };
 
   const loadSchema = async (signal: AbortSignal) => {
+    if (await commonCmsReady(signal)) {
+      const collections = await commonApi!.readCmsSchema(signal);
+      definitions.clear();
+      for (const definition of collections) definitions.set(definition.id, definition);
+      return { status: "ready" as const, collections };
+    }
     const reply = await call("GET", "schema", undefined, signal);
     if (reply.status === 403) return forbidden;
     if (reply.status !== 200) failure(reply);
@@ -152,6 +185,18 @@ export function createKamakuraCmsAdapter(options: KamakuraCmsAdapterOptions): Co
 
   /** 項目を読み直す。ready なら覚えた値を更新する。 */
   const read = async (collectionId: string, itemId: string, signal: AbortSignal) => {
+    if (await commonCmsReady(signal)) {
+      try {
+        const item = await commonApi!.readCmsItem(commonCmsTarget(collectionId, itemId), signal);
+        remember(collectionId, item);
+        return { status: "ready" as const, item };
+      } catch (error) {
+        const mapped = commonCmsError(error);
+        if (mapped === "forbidden") return forbidden;
+        if (mapped === "not_found") { forget(collectionId, itemId); return notFound; }
+        throw error instanceof EditingApiClientError ? new KamakuraCmsRequestError(error.status ?? 503, null) : error;
+      }
+    }
     const reply = await call("GET", itemPath(collectionId, itemId), undefined, signal);
     if (reply.status === 403) return forbidden;
     if (reply.status === 404) { forget(collectionId, itemId); return notFound; }
@@ -208,6 +253,15 @@ export function createKamakuraCmsAdapter(options: KamakuraCmsAdapterOptions): Co
     loadSchema,
 
     async listItems({ collectionId }, signal) {
+      if (await commonCmsReady(signal)) {
+        try { return { status: "ready" as const, collectionId, items: await commonApi!.listCmsItems(collectionId, signal) }; }
+        catch (error) {
+          const mapped = commonCmsError(error);
+          if (mapped === "forbidden") return forbidden;
+          if (mapped === "not_found") return notFound;
+          throw error instanceof EditingApiClientError ? new KamakuraCmsRequestError(error.status ?? 503, null) : error;
+        }
+      }
       const reply = await call("GET", itemPath(collectionId), undefined, signal);
       if (reply.status === 403) return forbidden;
       if (reply.status !== 200) failure(reply);
@@ -237,19 +291,93 @@ export function createKamakuraCmsAdapter(options: KamakuraCmsAdapterOptions): Co
         base = { version, item: latest.item };
       }
       const before: CollectionValues = parseCollectionValues(base.item.values, definition);
+      const normalizedValues: CollectionValues = parseCollectionValues(values, definition);
       const changed: Record<string, CollectionValue> = {};
-      for (const [key, value] of Object.entries(values)) if (!sameValue(before[key], value)) changed[key] = value;
+      for (const [key, value] of Object.entries(normalizedValues)) if (!sameValue(before[key], value)) changed[key] = value;
       if (Object.keys(changed).length === 0) return { status: "saved", item: base.item };
+      if (await commonCmsReady(signal)) {
+        const operationKey = JSON.stringify([collectionId, itemId, version, normalizedValues]);
+        const operationId = writeOperationIds.get(operationKey) ?? crypto.randomUUID();
+        writeOperationIds.set(operationKey, operationId);
+        try {
+          // 共通APIのvaluesは項目全体を置き換えるため、GUIで正規化した全項目を渡す。
+          // 既存Studio BFFは互換性のため変更分だけ送る。
+          const result = await commonApi!.saveCmsItem(commonCmsTarget(collectionId, itemId), version, operationId, normalizedValues, signal);
+          const item = result.status === "saved" ? result.item : result.current;
+          remember(collectionId, item);
+          writeOperationIds.delete(operationKey);
+          return { status: result.status, item };
+        } catch (error) {
+          const mapped = commonCmsError(error);
+          if (mapped === "forbidden") { writeOperationIds.delete(operationKey); return forbidden; }
+          if (mapped === "not_found") { writeOperationIds.delete(operationKey); forget(collectionId, itemId); return notFound; }
+          if (mapped === "invalid") {
+            writeOperationIds.delete(operationKey);
+            const errors = error instanceof EditingApiClientError && Array.isArray(error.details) ? error.details : [];
+            return { status: "invalid" as const, errors };
+          }
+          if (error instanceof EditingApiClientError && error.code === "version_conflict") writeOperationIds.delete(operationKey);
+          throw error instanceof EditingApiClientError ? new KamakuraCmsRequestError(error.status ?? 503, null) : error;
+        }
+      }
       const reply = await call("PUT", itemPath(collectionId, itemId, "draft"), { version, values: changed }, signal);
       return settle(reply, collectionId, itemId, { code: 200, status: "saved" });
     },
 
     async publish({ redirect, ...input }, signal) {
+      if (await commonCmsReady(signal)) {
+        const target = commonCmsTarget(input.collectionId, input.itemId), operationKey = JSON.stringify([input.collectionId, input.itemId, input.version, redirect]);
+        const operationId = publishOperationIds.get(operationKey) ?? crypto.randomUUID();
+        publishOperationIds.set(operationKey, operationId);
+        try {
+          const plan = await commonApi!.prepareCmsPublish(target, input.version, operationId, signal, redirect);
+          const result = await commonApi!.publishCmsItem(plan, signal);
+          if (result.status === "conflict") {
+            publishOperationIds.delete(operationKey);
+            const latest = await read(input.collectionId, input.itemId, signal);
+            return latest.status === "ready" ? { status: "conflict" as const, item: latest.item } : latest;
+          }
+          remember(input.collectionId, result.item);
+          publishOperationIds.delete(operationKey);
+          return { status: result.status, item: result.item };
+        } catch (error) {
+          const mapped = commonCmsError(error);
+          if (mapped === "forbidden") { publishOperationIds.delete(operationKey); return forbidden; }
+          if (mapped === "not_found") { publishOperationIds.delete(operationKey); return notFound; }
+          if (mapped === "invalid") {
+            publishOperationIds.delete(operationKey);
+            const errors = error instanceof EditingApiClientError && Array.isArray(error.details) ? error.details : [];
+            return { status: "invalid" as const, errors };
+          }
+          if (error instanceof EditingApiClientError && error.code === "version_conflict") {
+            publishOperationIds.delete(operationKey);
+            const latest = await read(input.collectionId, input.itemId, signal);
+            return latest.status === "ready" ? { status: "conflict" as const, item: latest.item } : latest;
+          }
+          throw error instanceof EditingApiClientError ? new KamakuraCmsRequestError(error.status ?? 503, null) : error;
+        }
+      }
       // redirect は画面が付けたときだけ送る（無ければ上流の既定＝前のアドレスから移す）
       return versioned("publish", input, redirect === undefined ? {} : { redirect }, { code: 202, status: "publishing" }, signal);
     },
 
     async createItem({ collectionId }, signal) {
+      if (await commonCmsReady(signal)) {
+        const operationId = createOperationIds.get(collectionId) ?? crypto.randomUUID();
+        createOperationIds.set(collectionId, operationId);
+        try {
+          const item = await commonApi!.createCmsItem(collectionId, operationId, signal);
+          remember(collectionId, item);
+          createOperationIds.delete(collectionId);
+          return { status: "created" as const, item };
+        } catch (error) {
+          const mapped = commonCmsError(error);
+          if (mapped === "forbidden") { createOperationIds.delete(collectionId); return forbidden; }
+          if (mapped === "not_found") { createOperationIds.delete(collectionId); return notFound; }
+          if (mapped === "invalid") createOperationIds.delete(collectionId);
+          throw error instanceof EditingApiClientError ? new KamakuraCmsRequestError(error.status ?? 503, null) : error;
+        }
+      }
       const reply = await call("POST", itemPath(collectionId), {}, signal);
       if (reply.status === 403) return forbidden;
       if (reply.status === 404) return notFound;

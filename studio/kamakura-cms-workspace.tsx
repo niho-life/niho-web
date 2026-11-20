@@ -4,8 +4,9 @@
  */
 import { lazy, Suspense, type ReactNode } from "react";
 import { CollectionWorkspace, type CollectionAdapter, type CollectionNavigationState, type CollectionRichTextEditorProps } from "../src/collection-workspace.js";
+import { createPageEditingApiClient } from "../src/editing-client.js";
 import { createKamakuraCmsAdapter } from "./kamakura-cms.js";
-import { KAMAKURA_CMS_PROJECT_ID, KAMAKURA_CMS_SITE_ID } from "./kamakura-cms-contract.js";
+import { KAMAKURA_CMS_PROJECT_ID, KAMAKURA_CMS_SITE_ID, KAMAKURA_EDITING_API_BASE } from "./kamakura-cms-contract.js";
 import { kamakuraCmsLocalizationItemKey } from "./kamakura-localization-contract.js";
 import { projectAliasPath } from "./project-routes.mjs";
 import { createStudioRichText } from "./rich-text-editor.js";
@@ -23,7 +24,10 @@ function sessionFor(siteOrigin: string | null): Session {
   const key = siteOrigin ?? "";
   const existing = sessions.get(key);
   if (existing) return existing;
-  const adapter = createKamakuraCmsAdapter({ siteOrigin });
+  const commonApi = typeof window === "undefined" ? undefined : createPageEditingApiClient({
+    origin: window.location.origin, siteId: KAMAKURA_CMS_SITE_ID, basePath: KAMAKURA_EDITING_API_BASE,
+  });
+  const adapter = createKamakuraCmsAdapter({ siteOrigin, ...(commonApi ? { commonApi } : {}) });
   const imageUrl = adapter.imageUrl;
   const session: Session = { adapter, renderRichText: createStudioRichText(imageUrl ? { imageUrl: (url, width) => imageUrl(url, width) } : {}) };
   sessions.set(key, session);
