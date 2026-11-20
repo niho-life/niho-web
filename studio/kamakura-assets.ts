@@ -3,7 +3,9 @@ import {
   parseResolvedAssets, assetKey,
   type AssetLibraryAdapter, type AssetListQuery, type AssetProvider, type AssetReference, type AssetUploadRequest
 } from "../src/assets.js";
+import { createPageEditingApiClient, EditingApiClientError, type EditingApiClient } from "../src/editing-client.js";
 import { parseKamakuraAssetUploadIntent } from "./kamakura-asset-upload-contract.js";
+import { KAMAKURA_EDITING_API_BASE } from "./kamakura-cms-contract.js";
 
 const SITE_ID = "kamakura";
 const UPLOAD_PROVIDER = "kamakura-upload";
@@ -40,6 +42,9 @@ function previewUrl(assetId: string): string {
 function withAuthenticatedPreview<T extends { readonly provider: string; readonly id: string; readonly thumbnailUrl?: string }>(asset: T): T {
   return asset.provider === UPLOAD_PROVIDER ? { ...asset, thumbnailUrl: previewUrl(asset.id) } : asset;
 }
+function unsupportedCommonOperation(error: unknown): boolean {
+  return error instanceof EditingApiClientError && error.code === "not_found";
+}
 
 async function post(path: string, body: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
   if (signal.aborted) throw new DOMException("Aborted", "AbortError");
@@ -74,15 +79,29 @@ const PROVIDERS: AssetProvider[] = parseAssetProviders([
   { id: "kamakura-approved-remote", kind: "cms", label: "承認済み外部素材", origin: "承認済みの外部画像（読み取り専用）", status: "available", capabilities: READ_ONLY }
 ]);
 
-export const kamakuraAssetLibrary: AssetLibraryAdapter = {
+export function createKamakuraAssetLibrary(origin?: string): AssetLibraryAdapter {
+  const commonApi: EditingApiClient | null = origin ? createPageEditingApiClient({ origin, siteId: SITE_ID, basePath: KAMAKURA_EDITING_API_BASE }) : null;
+  return {
   async listAssets(query: AssetListQuery, signal: AbortSignal) {
     assertSite(query.siteId);
-    const result = parseAssetListResult(await post("list", {
+    let raw: unknown;
+    try { raw = commonApi ? await commonApi.listAssets({ search: query.search, kind: query.kind, folderId: query.folderId, limit: query.limit,
+      ...(query.cursor === undefined ? {} : { cursor: query.cursor }), ...(query.provider === undefined ? {} : { provider: query.provider }),
+      ...(query.recent === undefined ? {} : { recent: query.recent }) }, signal) : await post("list", {
+      siteId: SITE_ID, search: query.search, kind: query.kind, folderId: query.folderId, limit: query.limit,
+      ...(query.cursor === undefined ? {} : { cursor: query.cursor }), ...(query.provider === undefined ? {} : { provider: query.provider }),
+      ...(query.recent === undefined ? {} : { recent: query.recent })
+    }, signal); }
+    catch (error) {
+      if (!commonApi || !unsupportedCommonOperation(error)) throw error;
+      raw = await post("list", {
       siteId: SITE_ID, search: query.search, kind: query.kind, folderId: query.folderId, limit: query.limit,
       ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
       ...(query.provider === undefined ? {} : { provider: query.provider }),
       ...(query.recent === undefined ? {} : { recent: query.recent })
-    }, signal), SITE_ID);
+      }, signal);
+    }
+    const result = parseAssetListResult(raw, SITE_ID);
     if (result.assets.some((asset) => !PROVIDER_IDS.has(asset.provider) || query.provider !== undefined && asset.provider !== query.provider)) throw new Error("素材一覧に対象外の出所が含まれています。");
     return { ...result, assets: result.assets.map(withAuthenticatedPreview), folders: [] };
   },
@@ -92,9 +111,16 @@ export const kamakuraAssetLibrary: AssetLibraryAdapter = {
     const providerId = request.provider ?? UPLOAD_PROVIDER;
     if (providerId !== UPLOAD_PROVIDER || request.folderId !== null || request.file.size !== request.bytes || request.file.type !== request.mimeType || !IMAGE_TYPES.has(request.mimeType)) return { status: "rejected", reason: "invalid" };
 
-    const intent = parseKamakuraAssetUploadIntent(await post("upload-intent", {
-      siteId: SITE_ID, folderId: null, name: request.name, mimeType: request.mimeType, bytes: request.bytes, provider: providerId
-    }, signal));
+    let intent;
+    try { intent = parseKamakuraAssetUploadIntent(commonApi
+      ? await commonApi.createAssetUploadIntent({ folderId: null, name: request.name, mimeType: request.mimeType, bytes: request.bytes, provider: providerId }, signal)
+      : await post("upload-intent", { siteId: SITE_ID, folderId: null, name: request.name, mimeType: request.mimeType, bytes: request.bytes, provider: providerId }, signal)); }
+    catch (error) {
+      if (!commonApi || !unsupportedCommonOperation(error)) throw error;
+      intent = parseKamakuraAssetUploadIntent(await post("upload-intent", {
+        siteId: SITE_ID, folderId: null, name: request.name, mimeType: request.mimeType, bytes: request.bytes, provider: providerId
+      }, signal));
+    }
     const response = await fetch(intent.uploadUrl, {
       method: "PUT", mode: "cors", credentials: "omit", cache: "no-store", redirect: "error", signal,
       headers: { Authorization: `Bearer ${intent.uploadToken}`, "Content-Type": request.mimeType },
@@ -112,9 +138,14 @@ export const kamakuraAssetLibrary: AssetLibraryAdapter = {
   async updateAsset(request, signal) {
     assertSite(request.siteId);
     if (request.reference.provider !== UPLOAD_PROVIDER || Object.hasOwn(request.changes, "folderId")) return { status: "rejected", reason: "permission" };
-    const result = parseAssetUpdateResult(await post("update", {
-      siteId: SITE_ID, reference: request.reference, expectedVersion: request.expectedVersion, changes: request.changes
-    }, signal), SITE_ID);
+    let raw: unknown;
+    try { raw = commonApi ? await commonApi.updateAsset(request.reference, request.expectedVersion, request.changes, signal)
+      : await post("update", { siteId: SITE_ID, reference: request.reference, expectedVersion: request.expectedVersion, changes: request.changes }, signal); }
+    catch (error) {
+      if (!commonApi || !unsupportedCommonOperation(error)) throw error;
+      raw = await post("update", { siteId: SITE_ID, reference: request.reference, expectedVersion: request.expectedVersion, changes: request.changes }, signal);
+    }
+    const result = parseAssetUpdateResult(raw, SITE_ID);
     if (result.status !== "saved") return result;
     if (result.asset.provider !== UPLOAD_PROVIDER || result.asset.id !== request.reference.id) throw new Error("更新結果が対象素材と一致しません。");
     return { ...result, asset: withAuthenticatedPreview(result.asset) };
@@ -123,19 +154,34 @@ export const kamakuraAssetLibrary: AssetLibraryAdapter = {
   async listAssetUsages(request, signal) {
     assertSite(request.siteId);
     if (!provider(request.reference)) throw new Error("素材の出所が一致しません。");
-    return parseAssetUsages(await post("usages", { siteId: SITE_ID, reference: request.reference }, signal));
+    try { return parseAssetUsages(commonApi ? await commonApi.listAssetUsages(request.reference, signal) : await post("usages", { siteId: SITE_ID, reference: request.reference }, signal)); }
+    catch (error) {
+      if (!commonApi || !unsupportedCommonOperation(error)) throw error;
+      return parseAssetUsages(await post("usages", { siteId: SITE_ID, reference: request.reference }, signal));
+    }
   },
 
-  async deleteAsset() {
-    return { status: "rejected", reason: "permission" };
+  async deleteAsset(request, signal) {
+    assertSite(request.siteId);
+    if (!provider(request.reference)) return { status: "rejected", reason: "permission" };
+    if (!commonApi) return { status: "rejected", reason: "permission" };
+    try { return await commonApi.deleteAsset(request.reference, request.expectedVersion, signal); }
+    catch (error) {
+      if (!unsupportedCommonOperation(error)) throw error;
+      return { status: "rejected", reason: "permission" };
+    }
   },
 
   async resolveAssets(request, signal) {
     assertSite(request.siteId);
     const supported = request.references.filter(provider);
-    const resolved = supported.length
-      ? parseResolvedAssets(await post("resolve", { siteId: SITE_ID, references: supported }, signal))
-      : {};
+    let resolved: ReturnType<typeof parseResolvedAssets>;
+    try { resolved = supported.length && commonApi ? await commonApi.resolveAssets(supported, signal)
+      : supported.length ? parseResolvedAssets(await post("resolve", { siteId: SITE_ID, references: supported }, signal)) : {}; }
+    catch (error) {
+      if (!commonApi || !unsupportedCommonOperation(error)) throw error;
+      resolved = supported.length ? parseResolvedAssets(await post("resolve", { siteId: SITE_ID, references: supported }, signal)) : {};
+    }
     const requested = new Set(supported.map(assetKey));
     if (Object.keys(resolved).some((key) => !requested.has(key) || !PROVIDER_IDS.has(key.slice(0, key.indexOf(":"))))) throw new Error("素材解決結果に対象外の参照が含まれています。");
     const result: Record<string, { src: string; width?: number; height?: number }> = {};
@@ -152,4 +198,7 @@ export const kamakuraAssetLibrary: AssetLibraryAdapter = {
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
     return PROVIDERS;
   }
-};
+  };
+}
+
+export const kamakuraAssetLibrary: AssetLibraryAdapter = createKamakuraAssetLibrary();

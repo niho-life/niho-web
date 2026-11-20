@@ -17,7 +17,7 @@
 ブラウザを使わないStudio操作は [CLIの契約と運用](docs/studio-cli.md) を参照してください。
 
 AIが編集する対象ごとの正本・GUI/CLI/Gitの経路・公開HTMLからの逆引きは[対応表](docs/ai-edit-source-map.md)を参照してください。
-サイト側に共通HTTP契約を接続した後は、`niho-edit` CLIでStudio GUIを経由せずにページ文書・CMS項目・ページ管理・ブレークポイントを読み、JSON編集し、版付きで保存できます。対応するStudio GUIもBFF経由で同じCMS操作APIを使います（[API契約](docs/editing-api-contract.md)）。
+サイト側に共通HTTP契約を接続した後は、`niho-edit` CLIでStudio GUIを経由せずにページ文書・CMS項目・ページ管理・ブレークポイント・素材を読み、JSON編集し、版付きで保存できます。対応するStudio GUIもBFF経由で同じCMS・素材操作APIを使います（[API契約](docs/editing-api-contract.md)）。
 
 ソースは公開されていますが、第三者への再利用ライセンスは付与していません（`UNLICENSED`）。
 
@@ -63,7 +63,7 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 | `@niho/web/site-analytics` | GA4 / Search Console の接続状態・所有確認・変更計画の型と境界検証。React不要 |
 | `@niho/web/site-apps` | サイト設定の `SiteApps`。計測タグ・所有権確認・レポート接続を分け、変更確認・再試行・解除を提供。ホストが扱わない操作は `capabilities` で状態表示だけにできる（[接続方法](docs/site-apps.md)、Studio のホスト実装は [Studio host README](studio/README.md#サイト分析ga4--search-console)） |
 | `@niho/web/ui-tokens` | Studio と各画面が共有する配色・角丸・文字のトークン（`uiTokensCss`・`uiColor`）。値は STUDIO 社の実測（本文 `#222`）。各画面の CSS は先頭にこれを持ち、ホストは `--nw-*` を上書きできる。一覧・CMS・翻訳は左の縦の太線とタブの下線を使わず、太さは 400／600。React不要（[見た目と実装の契約](docs/editor-ui-design.md#見た目と実装の契約)） |
-| `@niho/web/assets` | 素材参照の列挙・解決済み素材 map の検証、素材ライブラリ adapter の型と応答検証。React不要 |
+| `@niho/web/assets` | 素材参照の列挙・解決済み素材 map の検証、素材ライブラリ adapter の型と応答検証。共通編集APIと `niho-edit` は同じ素材の検索・利用先・解決・更新・一時アップロード・削除・復元を公開。React不要 |
 | `@niho/web/history` | 文書の差分（`diffDocuments`）、版履歴の項目の検証、端末内の緊急復元ストア（ページ・サイトごとの共通部品）。React不要 |
 | `@niho/web/analytics` | GA4 / Search Console を分けて示す読取専用画面、型付きadapter、応答検証 |
 | `@niho/web/analytics-data` | サーバーで使う分析DTO・adapterの型と応答検証。React不要。画面と同じパーサーを使用 |
@@ -228,7 +228,7 @@ Studioへの新しいサイト接続と、独自挿入・motion・block・共通
 同じ論理ページの日英編集はoptionalな`EditorAdapter.localization`で追加できます。原文言語を明示し、訳文の実キャンバス編集、候補比較・採用、サイト全体の翻訳job状態、サーバー側でも使える共通構造検証を提供します。ホストが保存localeを明示した原文ページは設定取得中も編集でき、訳文ページはサイト設定・ページ状態が確定するまで操作を止めます。読み込み中の案内は出さず、取得失敗時だけ再試行可能なエラーを表示します。[多言語エディターのホスト接続](docs/localization-editor.md)と`npm run demo:localization`を参照してください。
 
 ページ一覧（検索・フォルダ・テンプレートと共通枠の区別）、ページの作成・複製・URL変更・公開切替の影響確認、原稿を保持する表示専用リンク解決、ページ別とサイト共通の公開情報は [ページ管理・公開情報の契約](docs/page-contract.md) を参照してください。公開ページの `<head>` は `@niho/web/pages` の `resolvePageMetadata` で、編集画面と同じ値から作ります。
-画像とnative動画は URL を直接書く代わりに、サイト別の素材ライブラリの素材ID（`{ provider, id }`）で参照できます。`PageEditor` に `assets` adapter を渡すと、素材のアップロード・検索・代替テキスト編集・配置・置き換え・使用中素材の削除防止を使えます。サイトのアップロード素材、NIHO の公開許可済み CMS 画像、ライセンス確認済みストックを出所ごとに分けて、同じパネルから選べます。公開時の URL 解決は `PageRenderer` / `renderPageToHtml` の `assets` で行います。[素材ライブラリ契約](docs/asset-contract.md)を参照してください。
+画像とnative動画は URL を直接書く代わりに、サイト別の素材ライブラリの素材ID（`{ provider, id }`）で参照できます。`PageEditor` に `assets` adapter を渡すと、素材のアップロード・検索・代替テキスト編集・配置・置き換え・使用中素材の削除防止を使えます。Studio GUIとAIの `niho-edit` CLIは共通編集APIから同じ一覧・利用先・解決・更新・アップロード・削除・復元操作を呼び、ホストの認可・保存・監査を共有します。アップロード本体は短命token付きで、API originまたは明示設定したHTTPS upload originに直接送ります。サイトのアップロード素材、NIHO の公開許可済み CMS 画像、ライセンス確認済みストックを出所ごとに分けて、同じパネルから選べます。公開時の URL 解決は `PageRenderer` / `renderPageToHtml` の `assets` で行います。[素材ライブラリ契約](docs/asset-contract.md)と[編集API契約](docs/editing-api-contract.md)を参照してください。
 
 保存状態の表示、任意の自動保存、端末内の緊急復元、409競合の比較、版履歴と復元、公開前レビューは [保存・作業復元・版履歴の契約](docs/save-history-contract.md) を参照してください。
 

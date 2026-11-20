@@ -6,7 +6,7 @@ import type { EditorAdapter, EditorPageChange, EditorPageChangePlan, EditorBreak
 import type { Project } from "../src/projects.js";
 import { studioBuilderDefinition } from "./integration-builder.js";
 import { projectRoutePath } from "./project-routes.mjs";
-import { kamakuraAssetLibrary } from "./kamakura-assets.js";
+import { createKamakuraAssetLibrary } from "./kamakura-assets.js";
 import { createKamakuraEditorBlocks } from "./kamakura-editor-blocks.js";
 import { createBlankEmbedRegistry, parsePageDocument, parseSitePresentation, type BlockContracts } from "../src/core.js";
 import { parseLocalizationOverlay, parseSiteLocalizationConfig } from "../src/localization.js";
@@ -410,6 +410,7 @@ export function KamakuraEditor({ project, environment }: { readonly project: Pro
   }, [reload]);
   const ready = catalog.status === "ready" ? catalog.value : null;
   const adapter = useMemo(() => ready ? createProjectEditorAdapter(createKamakuraAdapter(ready, setStatus, window.location.origin), project) : null, [ready, project]);
+  const assets = useMemo(() => createKamakuraAssetLibrary(window.location.origin), []);
   const blocks = useMemo(() => ready ? createKamakuraEditorBlocks(ready.blockContracts, ready.sites[0]!.domains[0]!) : {}, [ready]);
   const externalFramePolicy = useMemo(() => createExternalFramePolicy({ parentOrigin: window.location.origin, sources: KAMAKURA_ORIGIN_RETAINING_FRAME_SOURCES, siteSources: ready?.sites[0]?.externalFrameSources ?? [] }), [ready]);
   const blankEmbeds = useMemo(() => createBlankEmbedRegistry({
@@ -423,6 +424,6 @@ export function KamakuraEditor({ project, environment }: { readonly project: Pro
     {catalog.status === "error" && <section className="studio-kamakura-state" role="alert"><h1>ページを読み込めませんでした</h1><p>{catalog.errorCode === KAMAKURA_CATALOG_CONTRACT_ERROR_CODE ? "ページ一覧の形式に対応できません。編集内容は変更されていません。管理者へ確認してください。" : catalog.errorCode === VISUAL_EDITOR_FROZEN ? `${FROZEN_MESSAGE}ページ一覧はサイト側の更新後に開けます。` : "編集内容は変更されていません。接続状態を確認して再試行してください。"}</p>{catalog.supportId !== null && <p>問い合わせID: <code>{catalog.supportId}</code></p>}<button type="button" onClick={() => setReload((value) => value + 1)}>再試行</button></section>}
     {ready && (ready.pages.length === 0
       ? <section className="studio-kamakura-state"><h1>編集できるページはありません</h1><p>編集対象のページがありません。ページ一覧を再読み込みしてください。</p><button type="button" onClick={() => setReload((value) => value + 1)}>再読み込み</button></section>
-      : adapter && <PageEditor adapter={adapter} {...(initialTarget ? { initialTarget } : {})} externalFramePolicy={externalFramePolicy} blankEmbeds={blankEmbeds} xPostFrameUrl={X_POST_FRAME_URL} blocks={blocks} assets={kamakuraAssetLibrary} insertableBlocks={["ManagedEmbed"]} builder={studioBuilderDefinition} breakpoints={KAMAKURA_BREAKPOINTS} mobilePreviewWidth={480} toolbarStart={<a href={projectRoutePath(window.location.pathname, project.id, project.site.id, "dashboard")} aria-label="ダッシュボードに戻る" title="ダッシュボードに戻る">←</a>} />)}
+      : adapter && <PageEditor adapter={adapter} {...(initialTarget ? { initialTarget } : {})} externalFramePolicy={externalFramePolicy} blankEmbeds={blankEmbeds} xPostFrameUrl={X_POST_FRAME_URL} blocks={blocks} assets={assets} insertableBlocks={["ManagedEmbed"]} builder={studioBuilderDefinition} breakpoints={KAMAKURA_BREAKPOINTS} mobilePreviewWidth={480} toolbarStart={<a href={projectRoutePath(window.location.pathname, project.id, project.site.id, "dashboard")} aria-label="ダッシュボードに戻る" title="ダッシュボードに戻る">←</a>} />)}
   </main>;
 }

@@ -67,11 +67,14 @@ export type AssetListResult = { assets: readonly LibraryAsset[]; folders: readon
 export type AssetRejectReason = "permission" | "quota" | "type" | "size" | "scan" | "invalid";
 /** provider は listProviders がある場合に必ず送る。 */
 export type AssetUploadRequest = { siteId: string; folderId: string | null; file: Blob; name: string; mimeType: string; bytes: number; provider?: string };
+/** A short-lived, single-asset upload grant. The caller must verify the upload origin before sending its token. */
+export type AssetUploadIntent = { uploadUrl: string; uploadToken: string; assetId: string };
 export type AssetUploadResult = { status: "uploaded"; asset: LibraryAsset } | { status: "rejected"; reason: AssetRejectReason };
 export type AssetUpdateRequest = { siteId: string; reference: AssetReference; expectedVersion: string; changes: { name?: string; alt?: string; folderId?: string | null } };
 export type AssetUpdateResult = { status: "saved"; asset: LibraryAsset } | { status: "conflict" } | { status: "rejected"; reason: "permission" | "invalid" };
 export type AssetUsage = { pageId: string; locale: string; title: string; state: "draft" | "published" };
 export type AssetDeleteResult = { status: "deleted" } | { status: "in-use"; usages: readonly AssetUsage[] } | { status: "conflict" } | { status: "rejected"; reason: "permission" };
+export type AssetRestoreResult = { status: "restored" } | { status: "conflict" } | { status: "rejected"; reason: "permission" | "invalid" };
 /** ready の素材は元と別の出所・ID でもよい（ストックをサイトの素材へ取り込む等）。 */
 export type AssetAcquireResult = { status: "ready"; asset: LibraryAsset } | { status: "rejected"; reason: "permission" | "license" | "unavailable" };
 /** 認証・保存先・ウイルス検査・配信 URL 発行・使用状況の集計は認証済みホストの責務。 */
@@ -296,6 +299,23 @@ export function parseAssetUsages(input: unknown, path = "usages"): AssetUsage[] 
     return { pageId: identifier(value.pageId, `${at}.pageId`), locale, title: text(value.title, `${at}.title`, ASSET_LIMITS.titleLength), state: choice(value.state, ["draft", "published"] as const, `${at}.state`) };
   });
 }
+export function parseAssetReference(input: unknown, path = "reference"): AssetReference {
+  const value = record(input, path);
+  keys(value, ["provider", "id"], path);
+  return { provider: identifier(value.provider, `${path}.provider`), id: assetId(value.id, `${path}.id`) };
+}
+/** Validate the shape only; callers that send the bearer upload token must additionally check the host's trusted upload origin. */
+export function parseAssetUploadIntent(input: unknown): AssetUploadIntent {
+  const value = record(input, "uploadIntent");
+  keys(value, ["uploadUrl", "uploadToken", "assetId"], "uploadIntent");
+  const uploadUrl = string(value.uploadUrl, "uploadIntent.uploadUrl", 2048);
+  let url: URL;
+  try { url = new URL(uploadUrl); } catch { fail("uploadIntent.uploadUrl", "invalid URL"); }
+  if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || url.href !== uploadUrl) fail("uploadIntent.uploadUrl", "unsafe URL");
+  const uploadToken = string(value.uploadToken, "uploadIntent.uploadToken", 4096);
+  if (/[^\x21-\x7e]/u.test(uploadToken)) fail("uploadIntent.uploadToken", "invalid token");
+  return { uploadUrl, uploadToken, assetId: assetId(value.assetId, "uploadIntent.assetId") };
+}
 function status(input: unknown, path: string, statuses: Readonly<Record<string, readonly string[]>>): Record<string, unknown> & { status: string } {
   const value = record(input, path);
   if (typeof value.status !== "string" || !Object.hasOwn(statuses, value.status)) fail(`${path}.status`, "unknown status");
@@ -316,6 +336,11 @@ export function parseAssetDeleteResult(input: unknown): AssetDeleteResult {
   const value = status(input, "delete", { deleted: [], "in-use": ["usages"], conflict: [], rejected: ["reason"] });
   if (value.status === "deleted" || value.status === "conflict") return { status: value.status };
   return value.status === "in-use" ? { status: "in-use", usages: parseAssetUsages(value.usages, "delete.usages") } : { status: "rejected", reason: choice(value.reason, ["permission"] as const, "delete.reason") };
+}
+export function parseAssetRestoreResult(input: unknown): AssetRestoreResult {
+  const value = status(input, "restore", { restored: [], conflict: [], rejected: ["reason"] });
+  if (value.status === "restored" || value.status === "conflict") return { status: value.status };
+  return { status: "rejected", reason: choice(value.reason, ["permission", "invalid"] as const, "restore.reason") };
 }
 export function parseAssetAcquireResult(input: unknown, siteId: string): AssetAcquireResult {
   const value = status(input, "acquire", { ready: ["asset"], rejected: ["reason"] });

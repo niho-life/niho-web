@@ -6,6 +6,11 @@ import type { EditorBreakpointSettings, EditorBreakpointSettingsSaveResult, Edit
 import { identifier, localeCode } from "./validation-utils.js";
 import { parseBreakpointSettings } from "./style-model.js";
 import {
+  parseAssetDeleteResult, parseAssetListResult, parseAssetReference, parseAssetRestoreResult, parseAssetUpdateResult,
+  parseAssetUploadIntent, parseAssetUsages, parseResolvedAssets, type AssetDeleteResult, type AssetListQuery,
+  type AssetReference, type AssetRestoreResult, type AssetUpdateRequest, type AssetUploadIntent, type AssetUsage, type ResolvedAssetMap
+} from "./assets.js";
+import {
   parseCollectionCreateResult, parseCollectionItemResult, parseCollectionListResult, parseCollectionPublishResult,
   parseCollectionSaveResult, parseCollectionSchemaResult, parseCollectionValues,
   type CollectionDefinition, type CollectionItem, type CollectionItemSummary, type CollectionValues
@@ -48,6 +53,13 @@ export type EditingApiClient = {
   prepareCmsPublish(target: EditingCmsTarget, expectedVersion: string, operationId: string, signal?: AbortSignal, redirect?: boolean): Promise<EditingCmsPublishPlan>;
   publishCmsItem(plan: EditingCmsPublishPlan, signal?: AbortSignal): Promise<EditingCmsPublishResult>;
   cmsOperationStatus(operationId: string, signal?: AbortSignal): Promise<EditingCmsOperationStatus>;
+  listAssets(query: Omit<AssetListQuery, "siteId">, signal?: AbortSignal): Promise<ReturnType<typeof parseAssetListResult>>;
+  listAssetUsages(reference: AssetReference, signal?: AbortSignal): Promise<AssetUsage[]>;
+  resolveAssets(references: readonly AssetReference[], signal?: AbortSignal): Promise<ResolvedAssetMap>;
+  updateAsset(reference: AssetReference, expectedVersion: string, changes: AssetUpdateRequest["changes"], signal?: AbortSignal): Promise<ReturnType<typeof parseAssetUpdateResult>>;
+  createAssetUploadIntent(input: { readonly name: string; readonly mimeType: string; readonly bytes: number; readonly folderId: string | null; readonly provider: string }, signal?: AbortSignal): Promise<AssetUploadIntent>;
+  deleteAsset(reference: AssetReference, expectedVersion: string, signal?: AbortSignal): Promise<AssetDeleteResult>;
+  restoreAsset(reference: AssetReference, expectedVersion: string, signal?: AbortSignal): Promise<AssetRestoreResult>;
 };
 
 /** A stable wire error; response bodies and host messages are intentionally not copied into its message. */
@@ -153,6 +165,9 @@ function cmsItem(value: unknown): string {
 function cmsTarget(target: EditingCmsTarget, siteId: string): EditingCmsTarget {
   if (!plainRecord(target) || target.siteId !== siteId) throw new TypeError("invalid CMS target");
   return { siteId, collectionId: cmsCollection(target.collectionId), itemId: cmsItem(target.itemId) };
+}
+function assetReference(value: unknown): AssetReference {
+  try { return parseAssetReference(value); } catch { throw new TypeError("invalid asset reference"); }
 }
 async function responseJson(response: Response): Promise<Record<string, unknown>> {
   if (response.headers.get("Content-Type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") throw new EditingApiClientError("invalid_response", response.status);
@@ -531,6 +546,87 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
         throw new EditingApiClientError("invalid_response", response.status);
       }
       return body as EditingCmsOperationStatus;
+    },
+    async listAssets(query, signal) {
+      const allowed = ["search", "kind", "folderId", "limit", "cursor", "provider", "recent"];
+      if (!plainRecord(query) || Object.keys(query).some((key) => !allowed.includes(key)) || typeof query.search !== "string" || query.search.length > 200
+        || /[\u0000-\u001f\u007f]/u.test(query.search) || !["all", "image", "video", "pdf", "other"].includes(query.kind)
+        || query.folderId !== null && typeof query.folderId !== "string" || !Number.isSafeInteger(query.limit) || query.limit < 1 || query.limit > 200
+        || query.cursor !== undefined && (typeof query.cursor !== "string" || query.cursor.length < 1 || query.cursor.length > 500)
+        || query.provider !== undefined && (typeof query.provider !== "string" || !/^[A-Za-z][A-Za-z0-9_-]{0,79}$/u.test(query.provider))
+        || query.recent !== undefined && typeof query.recent !== "boolean") throw new TypeError("invalid asset list query");
+      const params = new URLSearchParams({ search: query.search, kind: query.kind, limit: String(query.limit) });
+      if (query.folderId !== null) params.set("folderId", assetReference({ provider: "folder", id: query.folderId }).id);
+      if (query.cursor !== undefined) params.set("cursor", query.cursor);
+      if (query.provider !== undefined) params.set("provider", query.provider);
+      if (query.recent !== undefined) params.set("recent", String(query.recent));
+      const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/assets.list?${params}`, "GET", undefined, signal);
+      if (!response.ok) throw apiFailure(body, response.status);
+      try {
+        const result = parseAssetListResult(body, siteId);
+        if (query.provider !== undefined && result.assets.some((asset) => asset.provider !== query.provider)) throw new Error("provider mismatch");
+        return result;
+      } catch { throw new EditingApiClientError("invalid_response", response.status); }
+    },
+    async listAssetUsages(referenceValue, signal) {
+      const reference = assetReference(referenceValue);
+      const path = `/sites/${encodeURIComponent(siteId)}/operations/assets.usages/${encodeURIComponent(reference.provider)}/${encodeURIComponent(reference.id)}`;
+      const { response, body } = await send(path, "GET", undefined, signal);
+      if (!response.ok) throw apiFailure(body, response.status);
+      if (!exactKeys(body, ["usages"])) throw new EditingApiClientError("invalid_response", response.status);
+      try { return parseAssetUsages(body.usages); } catch { throw new EditingApiClientError("invalid_response", response.status); }
+    },
+    async resolveAssets(referenceValues, signal) {
+      if (!Array.isArray(referenceValues) || referenceValues.length > 5000) throw new TypeError("invalid asset references");
+      const references = referenceValues.map(assetReference), requested = new Set(references.map(({ provider, id }) => `${provider}:${id}`));
+      const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/assets.resolve`, "POST", { references }, signal);
+      if (!response.ok) throw apiFailure(body, response.status);
+      if (!exactKeys(body, ["assets"])) throw new EditingApiClientError("invalid_response", response.status);
+      try {
+        const assets = parseResolvedAssets(body.assets);
+        if (Object.keys(assets).some((key) => !requested.has(key))) throw new Error("unrequested asset");
+        return assets;
+      } catch { throw new EditingApiClientError("invalid_response", response.status); }
+    },
+    async updateAsset(referenceValue, expectedVersion, changes, signal) {
+      const reference = assetReference(referenceValue);
+      if (!isEditingApiVersion(expectedVersion) || !plainRecord(changes) || Object.keys(changes).some((key) => !["name", "alt", "folderId"].includes(key))
+        || Object.keys(changes).length === 0 || Object.hasOwn(changes, "name") && (typeof changes.name !== "string" || !changes.name.trim() || changes.name.length > 200 || /[\u0000-\u001f\u007f]/u.test(changes.name))
+        || Object.hasOwn(changes, "alt") && (typeof changes.alt !== "string" || changes.alt.length > 1000 || /[\u0000-\u001f\u007f]/u.test(changes.alt))
+        || Object.hasOwn(changes, "folderId") && changes.folderId !== null && typeof changes.folderId !== "string") throw new TypeError("invalid asset update");
+      const path = `/sites/${encodeURIComponent(siteId)}/operations/assets.update/${encodeURIComponent(reference.provider)}/${encodeURIComponent(reference.id)}`;
+      const { response, body } = await send(path, "PUT", { expectedVersion, changes }, signal);
+      if (!response.ok) throw apiFailure(body, response.status);
+      try {
+        const result = parseAssetUpdateResult(body, siteId);
+        if (result.status === "saved" && (result.asset.provider !== reference.provider || result.asset.id !== reference.id)) throw new Error("asset mismatch");
+        return result;
+      } catch { throw new EditingApiClientError("invalid_response", response.status); }
+    },
+    async createAssetUploadIntent(input, signal) {
+      if (!plainRecord(input) || !exactKeys(input, ["name", "mimeType", "bytes", "folderId", "provider"]) || typeof input.name !== "string" || !input.name.trim() || input.name.length > 200
+        || /[\u0000-\u001f\u007f]/u.test(input.name) || typeof input.mimeType !== "string" || !/^[a-z]+\/[a-z0-9.+-]+$/u.test(input.mimeType)
+        || !Number.isSafeInteger(input.bytes) || input.bytes < 1 || input.folderId !== null && typeof input.folderId !== "string"
+        || typeof input.provider !== "string" || !/^[A-Za-z][A-Za-z0-9_-]{0,79}$/u.test(input.provider)) throw new TypeError("invalid asset upload intent request");
+      const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/assets.upload-intent`, "POST", input, signal);
+      if (!response.ok) throw apiFailure(body, response.status);
+      try { return parseAssetUploadIntent(body); } catch { throw new EditingApiClientError("invalid_response", response.status); }
+    },
+    async deleteAsset(referenceValue, expectedVersion, signal) {
+      const reference = assetReference(referenceValue);
+      if (!isEditingApiVersion(expectedVersion)) throw new TypeError("invalid expected asset version");
+      const path = `/sites/${encodeURIComponent(siteId)}/operations/assets.delete/${encodeURIComponent(reference.provider)}/${encodeURIComponent(reference.id)}`;
+      const { response, body } = await send(path, "POST", { expectedVersion }, signal);
+      if (!response.ok) throw apiFailure(body, response.status);
+      try { return parseAssetDeleteResult(body); } catch { throw new EditingApiClientError("invalid_response", response.status); }
+    },
+    async restoreAsset(referenceValue, expectedVersion, signal) {
+      const reference = assetReference(referenceValue);
+      if (!isEditingApiVersion(expectedVersion)) throw new TypeError("invalid expected asset version");
+      const path = `/sites/${encodeURIComponent(siteId)}/operations/assets.restore/${encodeURIComponent(reference.provider)}/${encodeURIComponent(reference.id)}`;
+      const { response, body } = await send(path, "POST", { expectedVersion }, signal);
+      if (!response.ok) throw apiFailure(body, response.status);
+      try { return parseAssetRestoreResult(body); } catch { throw new EditingApiClientError("invalid_response", response.status); }
     }
   };
   return client;

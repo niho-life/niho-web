@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
+import { basename } from "node:path";
 import { parseArgs } from "node:util";
 import { createPageEditingApiClient, EditingApiClientError, isEditingApiVersion, parseEditingPageDocumentEnvelope } from "../dist/editing-client.js";
+import { parseAssetUploadResult } from "../dist/assets.js";
 import { parseBreakpointSettings } from "../dist/style-model.js";
 
 const USAGE = `niho-edit --origin <https-origin> --site <site-id> discover
@@ -24,12 +26,20 @@ niho-edit cms-diff --base <item-snapshot> --json <edited-item-snapshot>
 niho-edit --origin <https-origin> --site <site-id> cms-publish-plan <collection-id> <item-id> --expected-version <version> --operation-id <uuid-v4> [--redirect <true|false>]
 niho-edit --origin <https-origin> --site <site-id> cms-publish --json <publish-plan|->
 niho-edit --origin <https-origin> --site <site-id> cms-status --operation-id <uuid-v4>
+niho-edit --origin <https-origin> --site <site-id> assets-list [--search <text>] [--kind <kind>] [--provider <provider>] [--limit <number>] [--cursor <cursor>] [--folder-id <id>] [--recent]
+niho-edit --origin <https-origin> --site <site-id> assets-usages <provider> <asset-id>
+niho-edit --origin <https-origin> --site <site-id> assets-resolve --json <references-file|->
+niho-edit --origin <https-origin> --site <site-id> assets-update <provider> <asset-id> --json <update-file|->
+niho-edit --origin <https-origin> --site <site-id> assets-upload <file> --mime-type <mime> --provider <provider> [--name <name>] [--folder-id <id>] [--upload-origin <https-origin>]
+niho-edit --origin <https-origin> --site <site-id> assets-delete <provider> <asset-id> --expected-version <version>
+niho-edit --origin <https-origin> --site <site-id> assets-restore <provider> <asset-id> --expected-version <version>
 
 Set NIHO_EDIT_TOKEN to a short-lived bearer token. read returns { document, version }.
 Edit document while keeping version, then pass the snapshot to save for version-checked persistence.
 Review the release plan before applying it. Keep and reuse the same operation ID when retrying a release.`;
 const MAX_INPUT_BYTES = 4 * 1024 * 1024;
 const MAX_PAGE_CHANGE_BYTES = 16 * 1024;
+const MAX_ASSET_UPLOAD_BYTES = 50 * 1024 * 1024;
 const IDENTIFIER = /^[A-Za-z][A-Za-z0-9_-]{0,79}$/u;
 const LOCALE = /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/u;
 const OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -48,7 +58,9 @@ function argsFromCli() {
     return parseArgs({ allowPositionals: true, options: {
       origin: { type: "string" }, site: { type: "string" }, locale: { type: "string" }, json: { type: "string" }, action: { type: "string" },
       "expected-version": { type: "string" }, "components-version": { type: "string" }, "presentation-version": { type: "string" },
-      revision: { type: "string" }, "operation-id": { type: "string" }, redirect: { type: "string" }, base: { type: "string" }, help: { type: "boolean", short: "h" }
+      revision: { type: "string" }, "operation-id": { type: "string" }, redirect: { type: "string" }, base: { type: "string" }, help: { type: "boolean", short: "h" },
+      name: { type: "string" }, "mime-type": { type: "string" }, provider: { type: "string" }, search: { type: "string" }, kind: { type: "string" }, "upload-origin": { type: "string" },
+      "folder-id": { type: "string" }, cursor: { type: "string" }, limit: { type: "string" }, recent: { type: "boolean" }
     } });
   } catch { throw new CliError("invalid_arguments"); }
 }
@@ -161,6 +173,29 @@ async function inputCmsPublishPlan(path, siteId) {
     || !plan.item || typeof plan.item !== "object" || Array.isArray(plan.item)) throw new CliError("invalid_cms_publish_plan");
   return plan;
 }
+function validAssetProvider(value) { return typeof value === "string" && /^[A-Za-z][A-Za-z0-9_-]{0,79}$/u.test(value); }
+function validAssetId(value) { return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/u.test(value) && value !== "." && value !== ".."; }
+async function inputAssetUpdate(path) {
+  if (!path) throw new CliError("missing_json_input");
+  if (path !== "-") {
+    try { if ((await stat(path)).size > 16 * 1024) throw new CliError("input_too_large"); }
+    catch (error) { if (error instanceof CliError) throw error; throw new CliError("invalid_json_input"); }
+  }
+  const value = await readJson(path === "-" ? process.stdin : createReadStream(path), 16 * 1024);
+  if (Object.keys(value).sort().join(",") !== "changes,version" || !isEditingApiVersion(value.version)
+    || !value.changes || typeof value.changes !== "object" || Array.isArray(value.changes)) throw new CliError("invalid_asset_update");
+  return { version: value.version, changes: value.changes };
+}
+async function inputAssetReferences(path) {
+  if (!path) throw new CliError("missing_json_input");
+  if (path !== "-") {
+    try { if ((await stat(path)).size > 256 * 1024) throw new CliError("input_too_large"); }
+    catch (error) { if (error instanceof CliError) throw error; throw new CliError("invalid_json_input"); }
+  }
+  const value = await readJson(path === "-" ? process.stdin : createReadStream(path), 256 * 1024);
+  if (Object.keys(value).sort().join(",") !== "references" || !Array.isArray(value.references) || value.references.length > 5000) throw new CliError("invalid_asset_references");
+  return value.references;
+}
 function assertCommandOptions(values, allowed) {
   const shared = ["origin", "site", "help"];
   if (Object.keys(values).some((key) => !shared.includes(key) && !allowed.includes(key))) throw new CliError("invalid_arguments");
@@ -199,6 +234,83 @@ async function main() {
   const token = process.env.NIHO_EDIT_TOKEN;
   if (typeof token !== "string" || !token || token.length > 4096 || /[\u0000-\u001f\u007f]/u.test(token)) throw new CliError("missing_token");
   const client = createPageEditingApiClient({ origin: baseOrigin, siteId: values.site, credentials: "omit", headers: { Authorization: `Bearer ${token}` } });
+
+  if (command === "assets-list") {
+    assertCommandOptions(values, ["search", "kind", "provider", "limit", "cursor", "folder-id", "recent"]);
+    if (pageId !== undefined || extra.length) throw new CliError("invalid_arguments");
+    const limit = values.limit === undefined ? 60 : Number(values.limit), kind = values.kind ?? "all";
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200 || !["all", "image", "video", "pdf", "other"].includes(kind)
+      || values.provider !== undefined && !validAssetProvider(values.provider) || values["folder-id"] !== undefined && !validAssetId(values["folder-id"]) || values.recent !== undefined && typeof values.recent !== "boolean") throw new CliError("invalid_arguments");
+    const result = await apiCall(() => client.listAssets({ search: values.search ?? "", kind, folderId: values["folder-id"] ?? null, limit,
+      ...(values.cursor === undefined ? {} : { cursor: values.cursor }), ...(values.provider === undefined ? {} : { provider: values.provider }),
+      ...(values.recent === undefined ? {} : { recent: values.recent }) }, AbortSignal.timeout(30_000)));
+    process.stdout.write(`${JSON.stringify(result)}\n`); return;
+  }
+
+  if (command === "assets-usages") {
+    assertCommandOptions(values, []);
+    if (!validAssetProvider(pageId) || extra.length !== 1 || !validAssetId(extra[0])) throw new CliError("invalid_arguments");
+    const usages = await apiCall(() => client.listAssetUsages({ provider: pageId, id: extra[0] }, AbortSignal.timeout(30_000)));
+    process.stdout.write(`${JSON.stringify(usages)}\n`); return;
+  }
+
+  if (command === "assets-resolve") {
+    assertCommandOptions(values, ["json"]);
+    if (pageId !== undefined || extra.length) throw new CliError("invalid_arguments");
+    const references = await inputAssetReferences(values.json);
+    const assets = await apiCall(() => client.resolveAssets(references, AbortSignal.timeout(30_000)));
+    process.stdout.write(`${JSON.stringify(assets)}\n`); return;
+  }
+
+  if (command === "assets-update") {
+    assertCommandOptions(values, ["json"]);
+    if (!validAssetProvider(pageId) || extra.length !== 1 || !validAssetId(extra[0])) throw new CliError("invalid_arguments");
+    const snapshot = await inputAssetUpdate(values.json);
+    const result = await apiCall(() => client.updateAsset({ provider: pageId, id: extra[0] }, snapshot.version, snapshot.changes, AbortSignal.timeout(30_000)));
+    const conflict = result.status === "conflict" || result.status === "rejected";
+    emit(result, conflict ? 409 : 200, conflict ? 1 : 0, "assets.update"); return;
+  }
+
+  if (command === "assets-upload") {
+    assertCommandOptions(values, ["mime-type", "provider", "name", "folder-id", "upload-origin"]);
+    if (typeof pageId !== "string" || pageId === "-" || extra.length || typeof values["mime-type"] !== "string" || !/^[a-z]+\/[a-z0-9.+-]+$/u.test(values["mime-type"])
+      || !validAssetProvider(values.provider) || values["folder-id"] !== undefined && !validAssetId(values["folder-id"])) throw new CliError("invalid_arguments");
+    const fileStat = await stat(pageId).catch(() => null);
+    if (!fileStat?.isFile() || fileStat.size < 1) throw new CliError("invalid_upload_file");
+    if (fileStat.size > MAX_ASSET_UPLOAD_BYTES) throw new CliError("input_too_large");
+    const bytes = await readFile(pageId);
+    const mimeType = values["mime-type"], name = values.name ?? basename(pageId);
+    if (!name.trim() || name.length > 200 || /[\u0000-\u001f\u007f]/u.test(name)) throw new CliError("invalid_arguments");
+    const intent = await apiCall(() => client.createAssetUploadIntent({ name, mimeType, bytes: bytes.byteLength, folderId: values["folder-id"] ?? null, provider: values.provider }, AbortSignal.timeout(30_000)));
+    const uploadUrl = new URL(intent.uploadUrl);
+    const configuredUploadOrigin = values["upload-origin"] ?? process.env.NIHO_EDIT_UPLOAD_ORIGIN;
+    const trustedUploadOrigin = configuredUploadOrigin === undefined ? baseOrigin : origin(configuredUploadOrigin);
+    if (uploadUrl.origin !== baseOrigin && uploadUrl.origin !== trustedUploadOrigin || uploadUrl.protocol !== "https:" || uploadUrl.username || uploadUrl.password || uploadUrl.search || uploadUrl.hash) throw new CliError("invalid_upload_intent");
+    let uploaded;
+    try {
+      const response = await fetch(intent.uploadUrl, { method: "PUT", credentials: "omit", cache: "no-store", redirect: "error", signal: AbortSignal.timeout(120_000),
+        headers: { Authorization: `Bearer ${intent.uploadToken}`, "Content-Type": mimeType }, body: new Uint8Array(bytes) });
+      if (!response.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")) throw new CliError("upload_rejected", response.status);
+      const body = await response.json();
+      if (!response.ok) throw new CliError("upload_rejected", response.status);
+      if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).sort().join(",") !== "asset") throw new CliError("invalid_upload_response", response.status);
+      uploaded = parseAssetUploadResult({ status: "uploaded", asset: body.asset }, values.site);
+      if (uploaded.status !== "uploaded" || uploaded.asset.id.toLowerCase() !== intent.assetId.toLowerCase() || uploaded.asset.bytes !== bytes.byteLength || uploaded.asset.mimeType !== mimeType || uploaded.asset.provider !== values.provider) throw new CliError("invalid_upload_response", response.status);
+    } catch (error) {
+      if (error instanceof CliError) throw error;
+      throw new CliError("upload_failed");
+    }
+    emit(uploaded, 201, 0, "assets.upload"); return;
+  }
+
+  if (command === "assets-delete" || command === "assets-restore") {
+    assertCommandOptions(values, ["expected-version"]);
+    if (!validAssetProvider(pageId) || extra.length !== 1 || !validAssetId(extra[0]) || !isEditingApiVersion(values["expected-version"])) throw new CliError("invalid_arguments");
+    const run = command === "assets-delete" ? () => client.deleteAsset({ provider: pageId, id: extra[0] }, values["expected-version"], AbortSignal.timeout(30_000))
+      : () => client.restoreAsset({ provider: pageId, id: extra[0] }, values["expected-version"], AbortSignal.timeout(30_000));
+    const result = await apiCall(run), failed = result.status === "conflict" || result.status === "in-use" || result.status === "rejected";
+    emit(result, failed ? 409 : 200, failed ? 1 : 0, command === "assets-delete" ? "assets.delete" : "assets.restore"); return;
+  }
 
   if (command === "cms-schema") {
     assertCommandOptions(values, []);
