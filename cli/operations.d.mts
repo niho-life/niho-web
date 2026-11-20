@@ -18,6 +18,7 @@ export type CliOperation = {
   readonly upload?: "asset" | "cms" | "localization";
   readonly owner?: true;
   readonly releasePending?: true;
+  readonly managed?: true;
 };
 
 export const OPERATIONS: readonly CliOperation[];

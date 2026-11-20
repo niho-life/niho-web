@@ -28,7 +28,7 @@ import { parseEnglishPublicationAccepted } from "../src/english-publication.js";
 import { parseBreakpointSettings } from "../src/style-model.js";
 import { DRAFT_RECOVERY_MAX_INPUT_BYTES, DRAFT_RECOVERY_MAX_OUTPUT_BYTES, API_PREFIX, API_VERSION, OPERATIONS, OPERATION_KEY_HEADER, SERVICE_CLIENT_ID, SCOPE_ID, normalizeOperationKey, resolveOperation, type CliOperation } from "../cli/operations.mjs";
 import {
-  MANAGED_CLI_OPERATION_IDS, createManagedProject, managedDashboardOverview, managedEditorOperation, managedPageUrl,
+  createManagedProject, managedDashboardOverview, managedEditorOperation, managedPageUrl,
   managedProjectRegistrations, managedPublicRequest, managedRegistration, publicSitesOrigin, type ManagedActor
 } from "./managed-sites.js";
 import { dashboardAnalyticsSummary, siteAnalyticsApi, siteAnalyticsRoute } from "./site-analytics-host.js";
@@ -2845,7 +2845,7 @@ async function studioServiceCliApi(request: Request, env: Env, url: URL, identit
       .bind(...grantScope).all<{ readonly capability: string }>();
     if (!grants.success || !grants.results) throw new Error("CLI grant lookup failed");
     const active = new Set(grants.results.map(({ capability }) => capability));
-    const operations = OPERATIONS.filter((operation) => active.has(operation.capability) && (!managed || MANAGED_CLI_OPERATION_IDS.has(operation.id)))
+    const operations = OPERATIONS.filter((operation) => active.has(operation.capability) && (!managed || operation.managed))
       .map(({ id, capability, method, parameters, action, upload }) => ({
         id, capability, method, parameters,
         ...(action === undefined ? {} : { action }),
@@ -2863,7 +2863,7 @@ async function studioServiceCliApi(request: Request, env: Env, url: URL, identit
   const rawRequestKey = request.headers.get(OPERATION_KEY_HEADER);
   const requestKey = normalizeOperationKey(rawRequestKey);
   if (rawRequestKey !== null && requestKey === null) return json({ error: "invalid_request" }, 400);
-  if (managed && !MANAGED_CLI_OPERATION_IDS.has(spec.id)) return json({ error: "not_found" }, 404);
+  if (managed && !spec.managed) return json({ error: "not_found" }, 404);
   const dispatch = managed && managedOrigin
     ? (actor: CliDelegatedActor) => managedEditorOperation(request, env.DB, { subject: actor.delegatedBySubject, email: actor.email, cli: true }, projectId, siteId, bridgePath, managedOrigin)
     : resolveCliDispatch(request, env, url, projectId, siteId, bridgePath, spec);
@@ -2957,13 +2957,13 @@ async function studioManagedCliApi(request: Request, env: Env, url: URL, identit
       if (!audit) return json({ error: "not_found" }, 404);
       return json({ status: audit.http_status === null ? "received" : "completed", operationId: audit.id, operation: audit.operation, startedAt: unixTimestamp(audit.started_at), httpStatus: audit.http_status });
     }
-    const operations = OPERATIONS.filter((operation) => MANAGED_CLI_OPERATION_IDS.has(operation.id)).map(({ id, capability, method, parameters }) => ({ id, capability, method, parameters }));
+    const operations = OPERATIONS.filter((operation) => operation.managed).map(({ id, capability, method, parameters }) => ({ id, capability, method, parameters }));
     const capabilities = [...new Set(operations.map(({ capability }) => capability))].sort();
     return json({ apiVersion: API_VERSION, projectId, siteId, capabilities, operations });
   }
 
   const [id, ...args] = operationPath.split("/"), operation = id ? resolveOperation(id, args) : null;
-  if (!operation || !MANAGED_CLI_OPERATION_IDS.has(operation.spec.id)) return json({ error: "not_found" }, 404);
+  if (!operation || !operation.spec.managed) return json({ error: "not_found" }, 404);
   if (request.method !== operation.spec.method) return json({ error: "method_not_allowed" }, 405);
   const rawKey = request.headers.get(OPERATION_KEY_HEADER), requestKey = normalizeOperationKey(rawKey);
   if (rawKey !== null && requestKey === null) return json({ error: "invalid_request" }, 400);

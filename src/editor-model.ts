@@ -65,6 +65,13 @@ export type EditorOperation =
   /** 版履歴・端末内の退避から内容だけを戻す。対象・schemaVersion・revision は現在の文書のまま。 */
   | { type: "restore"; document: PageDocument }
   | MetaOperation;
+type StableEditorOperation<T> = T extends { type: "text"; path: NodePath }
+  ? Omit<T, "path"> & { parentId: string | null; childPath: NodePath }
+  : T extends { path: NodePath }
+    ? Omit<T, "path"> & { nodeId: string }
+    : T;
+/** 外部クライアント用の安定対象操作。textノードはIDを持たないため、IDを持つ親からの相対パスで指す。 */
+export type EditorOperationById = StableEditorOperation<EditorOperation>;
 /** undefined・空文字・false・空配列はその項目を削除する。 */
 export type MetaOperation = { [K in keyof PageMeta]-?: { type: "meta"; field: K; value: PageMeta[K] | undefined } }[keyof PageMeta];
 export type EditorHistory = { past: PageDocument[]; present: PageDocument; future: PageDocument[] };
@@ -535,6 +542,36 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
   if (operation.type === "token" && !operation.token) { ownership.tokens = { ...ownership.tokens }; delete ownership.tokens[operation.name]; }
   if (operation.type === "textStyle" && !operation.style && ownership.textStyles) { ownership.textStyles = { ...ownership.textStyles }; delete ownership.textStyles[operation.name]; }
   return siteStyles ? parsePageDocument(retainPageStyles(result, ownership, siteStyles), blocks, { ...(components ? { components } : {}), siteStyles }) : result;
+}
+function pathForNodeId(document: PageDocument, nodeId: string): NodePath {
+  if (typeof nodeId !== "string" || !nodeId) throw new Error("対象ノードIDが正しくありません。");
+  const matches = walkNodes(document).filter(({ node }) => node.type !== "text" && node.id === nodeId);
+  if (matches.length !== 1) throw new Error("対象ノードが見つからないか、IDが重複しています。");
+  return matches[0]!.path;
+}
+function pathForTextTarget(document: PageDocument, parentId: string | null, childPath: NodePath): NodePath {
+  if (!Array.isArray(childPath) || childPath.length === 0) throw new Error("テキスト対象の相対パスが正しくありません。");
+  const parentPath = parentId === null ? [] : pathForNodeId(document, parentId);
+  if (parentId !== null && nodeAt(document, parentPath).type !== "element") throw new Error("テキスト対象の親要素が正しくありません。");
+  const path = [...parentPath, ...childPath];
+  if (nodeAt(document, path).type !== "text") throw new Error("対象パスはテキストノードを指していません。");
+  return path;
+}
+/** Stable IDで操作対象を解決し、GUIと同じ検証済み文書操作を適用する。 */
+export function editDocumentById(document: PageDocument, operation: EditorOperationById, blocks: EditorBlockRegistry = {}, locks: readonly EditorLock[] = [], components?: ComponentLibrary, siteStyles?: SiteStyles): PageDocument {
+  if (operation.type === "text") {
+    if (!("parentId" in operation) || !("childPath" in operation)) throw new Error("テキスト対象は親IDと相対パスで指定してください。");
+    const { parentId, childPath, ...change } = operation;
+    const path = pathForTextTarget(document, parentId, childPath);
+    return editDocument(document, { ...change, path } as EditorOperation, blocks, locks, components, siteStyles);
+  }
+  if ("nodeId" in operation) {
+    const { nodeId, ...change } = operation;
+    const path = pathForNodeId(document, nodeId);
+    return editDocument(document, { ...change, path } as EditorOperation, blocks, locks, components, siteStyles);
+  }
+  if ("path" in operation) throw new Error("外部操作では配列位置でなく安定した対象IDを指定してください。");
+  return editDocument(document, operation as EditorOperation, blocks, locks, components, siteStyles);
 }
 export function commitHistory(history: EditorHistory, document: PageDocument): EditorHistory {
   if (fingerprint(document) === fingerprint(history.present)) return history;

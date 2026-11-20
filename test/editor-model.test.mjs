@@ -1,12 +1,26 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { DocumentValidationError, generatePageCss, parsePageDocument } from "@niho/web/core";
 import { acceptSavedRevision, checkPageChange, commitHistory, editDocument, effectiveLocks, fingerprint, lockReason, newElement, nodeAt, travelHistory, validatePageChangePlan, validateReleasePlan, walkNodes } from "../dist/editor-model.js";
+import { editDocumentById } from "@niho/web/editor-model";
 import { createInsertionNode, formInsertionPresets } from "@niho/web/builder";
 
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 const doc = () => structuredClone(fixture);
+test("editor-model package entry loads without React", () => {
+  const loader = `export function resolve(specifier, context, next) {
+    if (/^(?:react|react-dom)(?:\\/|$)/.test(specifier)) throw new Error("React is unavailable in the editor-model fixture");
+    return next(specifier, context);
+  }`;
+  const run = spawnSync(process.execPath, [
+    "--loader", `data:text/javascript,${encodeURIComponent(loader)}`,
+    "--input-type=module", "--eval", "const api = await import('@niho/web/editor-model'); if (typeof api.editDocumentById !== 'function') process.exit(2);"
+  ], { cwd: fileURLToPath(new URL("../", import.meta.url)), encoding: "utf8" });
+  assert.equal(run.status, 0, run.stderr);
+});
 test("editor changes text, link, image and responsive styles through the core validator", () => {
   const original = doc();
   let next = editDocument(original, { type: "text", path: [0, 0, 0], value: "編集した見出し" });
@@ -25,6 +39,17 @@ test("editor changes text, link, image and responsive styles through the core va
     { type: "style", path: [0], breakpoint: "base", property: "color", value: "red;display:none" },
     { type: "add", parentId: "heading", node: newElement("section", "invalid") }
   ]) assert.throws(() => editDocument(next, operation), DocumentValidationError);
+});
+test("React-free editor model applies stable-ID operations and parent-relative text edits", () => {
+  const original = doc();
+  const moved = editDocumentById(original, { type: "move", nodeId: "heading", parentId: "hero", index: 1 });
+  const styled = editDocumentById(moved, { type: "style", nodeId: "heading", breakpoint: "base", property: "color", value: "#ff0000" });
+  const text = editDocumentById(styled, { type: "text", parentId: "heading", childPath: [0], value: "安定IDから編集" });
+  const headingPath = walkNodes(text).find(({ node }) => node.type !== "text" && node.id === "heading").path;
+  assert.equal(nodeAt(text, [...headingPath, 0]).text, "安定IDから編集");
+  assert.equal(nodeAt(text, headingPath).style.base.color, "#ff0000");
+  assert.throws(() => editDocumentById(original, { type: "style", nodeId: "missing", breakpoint: "base", property: "color", value: "#ff0000" }), /対象ノード/);
+  assert.throws(() => editDocumentById(original, { type: "style", path: [0], breakpoint: "base", property: "color", value: "#ff0000" }), /安定した対象ID/);
 });
 test("フォーム操作は名前・必須・型・選択肢を検証済み文書として更新する", () => {
   const preset = formInsertionPresets.find(({ id }) => id === "form-2");

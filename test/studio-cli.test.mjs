@@ -688,6 +688,9 @@ testWithD1("all advertised CLI capabilities fit the migration and have unique op
   const h = await fixture(t);
   const ids = OPERATIONS.map(({ id }) => id);
   assert.equal(new Set(ids).size, ids.length);
+  assert.deepEqual(OPERATIONS.filter(({ managed }) => managed).map(({ id }) => id), [
+    "pages.catalog", "pages.read", "pages.save", "pages.release-plan", "pages.release", "pages.change-prepare", "pages.change-apply"
+  ]);
   for (const capability of new Set(OPERATIONS.map((spec) => spec.capability))) h.grant(capability);
   const discovery = await check(await h.send("GET", `${SCOPE}/capabilities`), 200);
   assert.deepEqual(discovery.operations.map(({ id }) => id), ids);
