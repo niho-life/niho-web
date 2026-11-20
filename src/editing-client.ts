@@ -45,7 +45,7 @@ export type EditingApiClient = {
   readCmsItem(target: EditingCmsTarget, signal?: AbortSignal): Promise<CollectionItem>;
   createCmsItem(collectionId: string, operationId: string, signal?: AbortSignal): Promise<CollectionItem>;
   saveCmsItem(target: EditingCmsTarget, expectedVersion: string, operationId: string, values: unknown, signal?: AbortSignal): Promise<EditingCmsSaveResult>;
-  prepareCmsPublish(target: EditingCmsTarget, expectedVersion: string, operationId: string, signal?: AbortSignal): Promise<EditingCmsPublishPlan>;
+  prepareCmsPublish(target: EditingCmsTarget, expectedVersion: string, operationId: string, signal?: AbortSignal, redirect?: boolean): Promise<EditingCmsPublishPlan>;
   publishCmsItem(plan: EditingCmsPublishPlan, signal?: AbortSignal): Promise<EditingCmsPublishResult>;
   cmsOperationStatus(operationId: string, signal?: AbortSignal): Promise<EditingCmsOperationStatus>;
 };
@@ -473,37 +473,41 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       }
       catch { throw new EditingApiClientError("invalid_response", response.status); }
     },
-    async prepareCmsPublish(targetValue, expectedVersion, operationId, signal) {
+    async prepareCmsPublish(targetValue, expectedVersion, operationId, signal, redirect) {
       const target = cmsTarget(targetValue, siteId);
-      if (!isEditingApiVersion(expectedVersion) || !OPERATION_ID.test(operationId)) throw new TypeError("invalid CMS publish request");
+      if (!isEditingApiVersion(expectedVersion) || !OPERATION_ID.test(operationId) || redirect !== undefined && typeof redirect !== "boolean") throw new TypeError("invalid CMS publish request");
       const definition = await readCmsDefinition(target.collectionId, signal);
-      const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/cms.publish-plan/${encodeURIComponent(target.collectionId)}/${encodeURIComponent(target.itemId)}`, "POST", { expectedVersion, operationId }, signal);
+      const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/cms.publish-plan/${encodeURIComponent(target.collectionId)}/${encodeURIComponent(target.itemId)}`, "POST",
+        { expectedVersion, operationId, ...(redirect === undefined ? {} : { redirect }) }, signal);
       if (response.status === 409) throw apiFailure(body, response.status);
       if (!response.ok) throw apiFailure(body, response.status);
-      if (!exactKeys(body, ["plan"]) || !plainRecord(body.plan) || !exactKeys(body.plan, ["target", "expectedVersion", "operationId", "confirmationToken", "item"])) throw new EditingApiClientError("invalid_response", response.status);
+      if (!exactKeys(body, ["plan"]) || !plainRecord(body.plan)
+        || !exactKeys(body.plan, body.plan.redirect === undefined ? ["target", "expectedVersion", "operationId", "confirmationToken", "item"] : ["target", "expectedVersion", "operationId", "confirmationToken", "item", "redirect"])) throw new EditingApiClientError("invalid_response", response.status);
       const plan = body.plan;
       if (!plainRecord(plan.target) || !exactKeys(plan.target, ["siteId", "collectionId", "itemId"]) || plan.target.siteId !== siteId
         || plan.target.collectionId !== target.collectionId || plan.target.itemId !== target.itemId || plan.expectedVersion !== expectedVersion
-        || plan.operationId !== operationId || !isEditingApiVersion(plan.confirmationToken)) throw new EditingApiClientError("invalid_response", response.status);
+        || plan.operationId !== operationId || !isEditingApiVersion(plan.confirmationToken) || plan.redirect !== redirect) throw new EditingApiClientError("invalid_response", response.status);
       try {
         const itemResult = parseCollectionItemResult({ status: "ready", item: plan.item }, definition, target.itemId);
         if (itemResult.status !== "ready") throw new Error("not ready");
-        return { target, expectedVersion, operationId, confirmationToken: plan.confirmationToken, item: itemResult.item };
+        return { target, expectedVersion, operationId, confirmationToken: plan.confirmationToken, item: itemResult.item,
+          ...(plan.redirect === undefined ? {} : { redirect: plan.redirect as boolean }) };
       }
       catch { throw new EditingApiClientError("invalid_response", response.status); }
     },
     async publishCmsItem(planValue, signal) {
-      if (!plainRecord(planValue) || !exactKeys(planValue, ["target", "expectedVersion", "operationId", "confirmationToken", "item"])) throw new TypeError("invalid CMS publish plan");
+      if (!plainRecord(planValue) || !exactKeys(planValue, planValue.redirect === undefined ? ["target", "expectedVersion", "operationId", "confirmationToken", "item"] : ["target", "expectedVersion", "operationId", "confirmationToken", "item", "redirect"])) throw new TypeError("invalid CMS publish plan");
       const target = cmsTarget(planValue.target as EditingCmsTarget, siteId);
       if (!isEditingApiVersion(planValue.expectedVersion) || typeof planValue.operationId !== "string" || !OPERATION_ID.test(planValue.operationId)
-        || !isEditingApiVersion(planValue.confirmationToken)) throw new TypeError("invalid CMS publish plan");
+        || !isEditingApiVersion(planValue.confirmationToken) || planValue.redirect !== undefined && typeof planValue.redirect !== "boolean") throw new TypeError("invalid CMS publish plan");
       const definition = await readCmsDefinition(target.collectionId, signal);
       try {
         const result = parseCollectionItemResult({ status: "ready", item: planValue.item }, definition, target.itemId);
         if (result.status !== "ready" || result.item.version !== planValue.expectedVersion) throw new Error("plan item mismatch");
       } catch { throw new TypeError("invalid CMS publish plan"); }
       const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/cms.publish/${encodeURIComponent(target.collectionId)}/${encodeURIComponent(target.itemId)}`, "POST",
-        { expectedVersion: planValue.expectedVersion, operationId: planValue.operationId, confirmationToken: planValue.confirmationToken }, signal);
+        { expectedVersion: planValue.expectedVersion, operationId: planValue.operationId, confirmationToken: planValue.confirmationToken,
+          ...(planValue.redirect === undefined ? {} : { redirect: planValue.redirect }) }, signal);
       if (response.status === 409 && body.error === "version_conflict") return { status: "conflict" };
       if (!response.ok) throw apiFailure(body, response.status);
       if (!exactKeys(body, ["status", "operationId", "item"]) || (body.status !== "published" && body.status !== "publishing") || body.operationId !== planValue.operationId) throw new EditingApiClientError("invalid_response", response.status);

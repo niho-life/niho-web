@@ -21,6 +21,8 @@ export type EditingActor = {
   readonly kind: "human" | "machine";
   readonly subject: string;
   readonly delegatedBy?: string;
+  /** hostの認証処理が検証した連絡先。必要な場合だけ監査用に渡す。 */
+  readonly email?: string;
 };
 export type EditingPageTarget = {
   readonly siteId: string;
@@ -46,7 +48,7 @@ export type EditingPageManagementApplyInput = { readonly expectedVersion: string
 export type EditingPageManagementApplyResult = { readonly status: "applied"; readonly operationId: string; readonly page: EditorPage }
   | { readonly status: "conflict" } | { readonly status: "invalid" } | { readonly status: "not_found" } | { readonly status: "duplicate" };
 export type EditingCmsTarget = { readonly siteId: string; readonly collectionId: string; readonly itemId: string };
-export type EditingCmsPublishPlan = { readonly target: EditingCmsTarget; readonly expectedVersion: string; readonly operationId: string; readonly confirmationToken: string; readonly item: CollectionItem };
+export type EditingCmsPublishPlan = { readonly target: EditingCmsTarget; readonly expectedVersion: string; readonly operationId: string; readonly confirmationToken: string; readonly item: CollectionItem; readonly redirect?: boolean };
 export type EditingCmsPublishPrepareResult = { readonly status: "prepared"; readonly plan: EditingCmsPublishPlan }
   | { readonly status: "conflict" } | { readonly status: "invalid" } | { readonly status: "not_found" } | { readonly status: "duplicate" };
 export type EditingCmsPublishApplyResult = { readonly status: "published" | "publishing"; readonly operationId: string; readonly item: CollectionItem }
@@ -156,7 +158,7 @@ const operationIdSchema: JsonSchema = Object.freeze({ type: "string", minLength:
 const cmsPublishPlanSchema: JsonSchema = Object.freeze({ type: "object", required: Object.freeze(["target", "expectedVersion", "operationId", "confirmationToken", "item"]), additionalProperties: false,
   properties: Object.freeze({ target: Object.freeze({ type: "object", required: Object.freeze(["siteId", "collectionId", "itemId"]), additionalProperties: false,
     properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), collectionId: cmsCollectionIdSchema, itemId: cmsItemIdSchema }) }), expectedVersion: versionSchema,
-    operationId: operationIdSchema, confirmationToken: versionSchema, item: cmsItemSchema }) });
+    operationId: operationIdSchema, confirmationToken: versionSchema, item: cmsItemSchema, redirect: Object.freeze({ type: "boolean" }) }) });
 const releaseRequestProperties = Object.freeze({
   siteId: Object.freeze({ type: "string" }), pageId: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }), expectedVersion: versionSchema,
   action: Object.freeze({ type: "string", enum: Object.freeze(["publish", "rollback"]) }), revision: Object.freeze({ type: "number", minimum: 1 }),
@@ -249,12 +251,12 @@ export const EDITING_OPERATIONS: readonly EditingOperationDefinition[] = Object.
     resultSchema: Object.freeze({ type: "object", required: Object.freeze(["status", "item"]), additionalProperties: false, properties: Object.freeze({ status: Object.freeze({ const: "saved" }), item: cmsItemSchema }) }),
     errors: Object.freeze(["authentication_required", "duplicate_operation", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found", "validation_failed", "version_conflict"] as const) }),
   Object.freeze({ id: "cms.publish-plan", capability: "cms.publish", method: "POST", path: "/sites/{siteId}/operations/cms.publish-plan/{collectionId}/{itemId}",
-    inputSchema: Object.freeze({ type: "object", required: Object.freeze(["expectedVersion", "operationId"]), additionalProperties: false, properties: Object.freeze({ expectedVersion: versionSchema, operationId: operationIdSchema }) }),
+    inputSchema: Object.freeze({ type: "object", required: Object.freeze(["expectedVersion", "operationId"]), additionalProperties: false, properties: Object.freeze({ expectedVersion: versionSchema, operationId: operationIdSchema, redirect: Object.freeze({ type: "boolean" }) }) }),
     resultSchema: Object.freeze({ type: "object", required: Object.freeze(["plan"]), additionalProperties: false, properties: Object.freeze({ plan: cmsPublishPlanSchema }) }),
     errors: Object.freeze(["authentication_required", "duplicate_operation", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found", "version_conflict"] as const) }),
   Object.freeze({ id: "cms.publish", capability: "cms.publish", method: "POST", path: "/sites/{siteId}/operations/cms.publish/{collectionId}/{itemId}",
     inputSchema: Object.freeze({ type: "object", required: Object.freeze(["expectedVersion", "operationId", "confirmationToken"]), additionalProperties: false,
-      properties: Object.freeze({ expectedVersion: versionSchema, operationId: operationIdSchema, confirmationToken: versionSchema }) }),
+      properties: Object.freeze({ expectedVersion: versionSchema, operationId: operationIdSchema, confirmationToken: versionSchema, redirect: Object.freeze({ type: "boolean" }) }) }),
     resultSchema: Object.freeze({ type: "object", required: Object.freeze(["status", "operationId", "item"]), additionalProperties: false,
       properties: Object.freeze({ status: Object.freeze({ type: "string", enum: Object.freeze(["published", "publishing"]) }), operationId: operationIdSchema, item: cmsItemSchema }) }),
     errors: Object.freeze(["authentication_required", "duplicate_operation", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found", "version_conflict"] as const) }),
@@ -309,8 +311,8 @@ export type PageEditingHostAdapter = {
   readCmsItem?(actor: EditingActor, target: EditingCmsTarget): Promise<unknown | null>;
   createCmsItem?(actor: EditingActor, siteId: string, collectionId: string, operationId: string): Promise<unknown>;
   saveCmsItem?(actor: EditingActor, target: EditingCmsTarget, expectedVersion: string, operationId: string, values: CollectionValues): Promise<unknown>;
-  prepareCmsPublish?(actor: EditingActor, target: EditingCmsTarget, expectedVersion: string, operationId: string): Promise<EditingCmsPublishPrepareResult>;
-  publishCmsItem?(actor: EditingActor, target: EditingCmsTarget, input: { readonly expectedVersion: string; readonly operationId: string; readonly confirmationToken: string }): Promise<EditingCmsPublishApplyResult>;
+  prepareCmsPublish?(actor: EditingActor, target: EditingCmsTarget, expectedVersion: string, operationId: string, options?: { readonly redirect?: boolean }): Promise<EditingCmsPublishPrepareResult>;
+  publishCmsItem?(actor: EditingActor, target: EditingCmsTarget, input: { readonly expectedVersion: string; readonly operationId: string; readonly confirmationToken: string; readonly redirect?: boolean }): Promise<EditingCmsPublishApplyResult>;
   readCmsOperationStatus?(actor: EditingActor, siteId: string, operationId: string): Promise<EditingCmsOperationStatus | null>;
 };
 
@@ -325,7 +327,9 @@ function validActor(value: unknown): value is EditingActor {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const actor = value as Record<string, unknown>;
   return (actor.kind === "human" || actor.kind === "machine") && validVersion(actor.subject)
-    && (actor.delegatedBy === undefined || validVersion(actor.delegatedBy));
+    && (actor.delegatedBy === undefined || validVersion(actor.delegatedBy))
+    && (actor.email === undefined || typeof actor.email === "string" && actor.email.length <= 254
+      && /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/u.test(actor.email));
 }
 function pageTarget(siteId: unknown, pageId: unknown, locale: unknown): EditingPageTarget | null {
   try { return { siteId: identifier(siteId, "$target.siteId"), pageId: identifier(pageId, "$target.pageId"), locale: localeCode(locale, "$target.locale") }; }
@@ -677,9 +681,10 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       if (operation.id === "cms.publish-plan") {
         let body: Record<string, unknown> | null;
         try { body = await readBody(request); } catch { return fail("invalid_request", 400); }
-        if (!body || !exactKeys(body, ["expectedVersion", "operationId"]) || !validVersion(body.expectedVersion) || !validOperationId(body.operationId)) return fail("invalid_request", 400);
+        if (!body || !exactKeys(body, body.redirect === undefined ? ["expectedVersion", "operationId"] : ["expectedVersion", "operationId", "redirect"])
+          || !validVersion(body.expectedVersion) || !validOperationId(body.operationId) || body.redirect !== undefined && typeof body.redirect !== "boolean") return fail("invalid_request", 400);
         let prepared: EditingCmsPublishPrepareResult;
-        try { prepared = await adapter.prepareCmsPublish!(actor, target, body.expectedVersion, body.operationId); }
+        try { prepared = await adapter.prepareCmsPublish!(actor, target, body.expectedVersion, body.operationId, body.redirect === undefined ? {} : { redirect: body.redirect }); }
         catch { return fail("host_failure", 503); }
         if (!prepared || typeof prepared !== "object" || !["prepared", "conflict", "invalid", "not_found", "duplicate"].includes(prepared.status)) return fail("host_contract_violation", 502);
         if (prepared.status === "conflict") return fail("version_conflict", 409);
@@ -689,7 +694,8 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
         const plan = prepared.plan as unknown;
         if (!plan || typeof plan !== "object" || Array.isArray(plan)) return fail("host_contract_violation", 502);
         const value = plan as Record<string, unknown>;
-        if (!exactKeys(value, ["target", "expectedVersion", "operationId", "confirmationToken", "item"]) || value.expectedVersion !== body.expectedVersion
+        if (!exactKeys(value, value.redirect === undefined ? ["target", "expectedVersion", "operationId", "confirmationToken", "item"] : ["target", "expectedVersion", "operationId", "confirmationToken", "item", "redirect"])
+          || value.redirect !== body.redirect || value.expectedVersion !== body.expectedVersion
           || value.operationId !== body.operationId || !validVersion(value.confirmationToken) || !value.target || typeof value.target !== "object" || Array.isArray(value.target)) return fail("host_contract_violation", 502);
         const planTarget = value.target as Record<string, unknown>;
         if (!exactKeys(planTarget, ["siteId", "collectionId", "itemId"]) || planTarget.siteId !== siteId || planTarget.collectionId !== collectionId || planTarget.itemId !== itemId) return fail("host_contract_violation", 502);
@@ -697,15 +703,18 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
         try { item = parseCollectionItem(value.item, definition, itemId); }
         catch { return fail("host_contract_violation", 502); }
         if (item.version !== body.expectedVersion) return fail("host_contract_violation", 502);
-        return response({ plan: { target, expectedVersion: body.expectedVersion, operationId: body.operationId, confirmationToken: value.confirmationToken, item } });
+        return response({ plan: { target, expectedVersion: body.expectedVersion, operationId: body.operationId, confirmationToken: value.confirmationToken, item,
+          ...(value.redirect === undefined ? {} : { redirect: value.redirect as boolean }) } });
       }
       if (operation.id === "cms.publish") {
         let body: Record<string, unknown> | null;
         try { body = await readBody(request); } catch { return fail("invalid_request", 400); }
-        if (!body || !exactKeys(body, ["expectedVersion", "operationId", "confirmationToken"]) || !validVersion(body.expectedVersion)
-          || !validOperationId(body.operationId) || !validVersion(body.confirmationToken)) return fail("invalid_request", 400);
+        if (!body || !exactKeys(body, body.redirect === undefined ? ["expectedVersion", "operationId", "confirmationToken"] : ["expectedVersion", "operationId", "confirmationToken", "redirect"])
+          || !validVersion(body.expectedVersion) || !validOperationId(body.operationId) || !validVersion(body.confirmationToken)
+          || body.redirect !== undefined && typeof body.redirect !== "boolean") return fail("invalid_request", 400);
         let applied: EditingCmsPublishApplyResult;
-        try { applied = await adapter.publishCmsItem!(actor, target, { expectedVersion: body.expectedVersion, operationId: body.operationId, confirmationToken: body.confirmationToken }); }
+        try { applied = await adapter.publishCmsItem!(actor, target, { expectedVersion: body.expectedVersion, operationId: body.operationId, confirmationToken: body.confirmationToken,
+          ...(body.redirect === undefined ? {} : { redirect: body.redirect as boolean }) }); }
         catch { return fail("host_failure", 503); }
         if (!applied || typeof applied !== "object" || !["published", "publishing", "conflict", "invalid", "not_found", "duplicate"].includes(applied.status)) return fail("host_contract_violation", 502);
         if (applied.status === "conflict") return fail("version_conflict", 409);

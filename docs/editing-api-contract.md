@@ -26,8 +26,8 @@ Studio GUIはページの表示・編集材料の一部（presentation metadata�
 | `cms.read` | GET | `/sites/{siteId}/operations/cms.read/{collectionId}/{itemId}` | `cms.read` | collection / item ID | `{ item }` |
 | `cms.create` | POST | `/sites/{siteId}/operations/cms.create/{collectionId}` | `cms.edit` | `{ operationId }` | `{ item }` |
 | `cms.save` | PUT | `/sites/{siteId}/operations/cms.save/{collectionId}/{itemId}` | `cms.edit` | `{ expectedVersion, operationId, values }` | `{ status: "saved", item }` |
-| `cms.publish-plan` | POST | `/sites/{siteId}/operations/cms.publish-plan/{collectionId}/{itemId}` | `cms.publish` | `{ expectedVersion, operationId }` | `{ plan }` |
-| `cms.publish` | POST | `/sites/{siteId}/operations/cms.publish/{collectionId}/{itemId}` | `cms.publish` | `{ expectedVersion, operationId, confirmationToken }` | `{ status, operationId, item }` |
+| `cms.publish-plan` | POST | `/sites/{siteId}/operations/cms.publish-plan/{collectionId}/{itemId}` | `cms.publish` | `{ expectedVersion, operationId, redirect? }` | `{ plan }` |
+| `cms.publish` | POST | `/sites/{siteId}/operations/cms.publish/{collectionId}/{itemId}` | `cms.publish` | `{ expectedVersion, operationId, confirmationToken, redirect? }` | `{ status, operationId, item }` |
 | `cms.operation-status` | GET | `/sites/{siteId}/operations/cms.operation-status/{operationId}` | `cms.read` | site / operation ID | `{ status, operationId, ... }` |
 
 `pages.save` は `expectedVersion` を原子的に比較します。競合時はHTTP 409と `version_conflict` を返し、ホストは古い下書きを上書きしません。documentは受信側で `parsePageDocument` を通し、pathのsite/pageとqueryのlocaleに一致しない文書、任意HTML・JavaScript・CSSなど検証に失敗する値はHTTP 400 `invalid_request` で拒否します。登録ブロック・部品インスタンス・サイト共通スタイルを使うホストは、adapterの `validationContext(actor, target)` から信頼済みの `blocks`・`components`・`siteStyles` を渡します。読み取り、入力文書、保存後の正規文書の検証に同じcontextを使います。
@@ -36,7 +36,7 @@ Studio GUIはページの表示・編集材料の一部（presentation metadata�
 
 `pages.catalog` は管理可能なページと一覧のopaque versionを返します。`pages.change-prepare` は作成・名前/URL変更・公開状態変更を実行せずに影響と短期確認tokenを返し、`pages.change-apply` は同じ `expectedVersion`・UUID v4 `operationId`・change・tokenを照合して適用します。stale versionは409 `version_conflict`、別prepareでのoperation ID再利用は409 `duplicate_operation` です。同じactorが同じapplyを再送した場合は、ホストが記録した同じ結果を返します。
 
-`cms.schema` はホストの `CollectionDefinition` を返します。`cms.list` / `cms.read` は一覧と項目の読み取り、`cms.create` / `cms.save` は下書きの作成と版付き保存、`cms.publish-plan` / `cms.publish` は確認token付き二段階公開を行います。`cms.create` は対象collectionの `capabilities.create` が有効な場合だけ受け付けます。保存値は定義済みフィールドで検証され、stale versionは409 `version_conflict` と現行項目を返します。フィールド検証エラーは422 `validation_failed` と `fields` を返します。公開計画には対象・expectedVersion・operation ID・confirmation token・確認用項目を含め、ホストはactor・入力・tokenを保存して同じIDの再送を冪等に処理します。`cms.operation-status` は操作結果の照会用です。各CMS操作は対応するadapter関数があるホストだけdiscoverに出します。
+`cms.schema` はホストの `CollectionDefinition` を返します。`cms.list` / `cms.read` は一覧と項目の読み取り、`cms.create` / `cms.save` は下書きの作成と版付き保存、`cms.publish-plan` / `cms.publish` は確認token付き二段階公開を行います。`cms.create` は対象collectionの `capabilities.create` が有効な場合だけ受け付けます。保存値は定義済みフィールドで検証され、stale versionは409 `version_conflict` と現行項目を返します。フィールド検証エラーは422 `validation_failed` と `fields` を返します。公開計画には対象・expectedVersion・operation ID・confirmation token・確認用項目を含め、`redirect` が指定された場合は公開時の転送設定も計画へ結び付けます。ホストはactor・入力・tokenを保存して同じIDの再送を冪等に処理します。`cms.operation-status` は操作結果の照会用です。各CMS操作は対応するadapter関数があるホストだけdiscoverに出します。
 
 ## CUIでの編集
 
@@ -67,7 +67,7 @@ OPERATION_ID=$(node -p 'crypto.randomUUID()')
 niho-edit --origin https://site.example --site site-id cms-save posts item-123 --json edited-item.json --operation-id "$OPERATION_ID" > saved-item.json
 # 公開は別操作としてoperation IDを新しく用意する
 OPERATION_ID=$(node -p 'crypto.randomUUID()')
-niho-edit --origin https://site.example --site site-id cms-publish-plan posts item-123 --expected-version '<version>' --operation-id "$OPERATION_ID" > cms-publish-plan.json
+niho-edit --origin https://site.example --site site-id cms-publish-plan posts item-123 --expected-version '<version>' --operation-id "$OPERATION_ID" --redirect false > cms-publish-plan.json
 # 公開計画を確認し、タイムアウト後は同じ計画ファイルで再送する
 niho-edit --origin https://site.example --site site-id cms-publish --json cms-publish-plan.json
 niho-edit --origin https://site.example --site site-id cms-status --operation-id "$OPERATION_ID"
@@ -91,7 +91,7 @@ host adapterの最小実装は `npm run build` の後に `node examples/editing-
 
 ホストadapterは次を実装します。
 
-- `authenticate(request)` はセッション/API tokenを検証し、`human` または `machine` のactorと、必要なら委任元を返す。
+- `authenticate(request)` はセッション/API tokenを検証し、`human` または `machine` のactorと、必要なら委任元を返す。監査に人の連絡先が必要な操作では、hostが検証済みのemailだけを `actor.email` に渡す。
 - `authorize(actor, capability, scope)` はリクエストごとにサイト/ページの権限を判断する。discover時も同じ判定を使う。
 - `validationContext(actor, target)` は、対象文書の検証に必要なホスト登録block・部品library・サイトstyleを返す。これらの実装定義はクライアントへ公開しない。
 - `readPage` は文書とopaque versionを返す。
@@ -123,4 +123,4 @@ Cookie認証を使うホストは、write requestのCSRF境界とCORSも自分�
 
 ## 実装状況
 
-ページ本文・ページ管理・ブレークポイント・CMS項目の共通wireとCUI clientを実装しています。鎌倉host adapterとStudio GUIのCMS接続はホスト側Issueで実装します。Studio GUIはBFF経由でサイトoriginの共通APIへ接続し、Access cookie/JWTをサイトへ転送しません。旧Studio D1にだけブレークポイント値がある場合は、初回読取でその版をexpectedVersionとしてサイトAPIへ一度だけ移します。以後の読取・保存の正本はサイト側です。素材と翻訳は別のhost操作です。
+ページ本文・ページ管理・ブレークポイント・CMS項目の共通wireとCUI clientを実装しています。対応hostではStudio GUIのCMS主要操作もBFFから同じサイトAPIへ接続します。Studio GUIは短期の操作別tokenだけを委任し、Access cookie/JWTをサイトへ転送しません。旧Studio D1にだけブレークポイント値がある場合は、初回読取でその版をexpectedVersionとしてサイトAPIへ一度だけ移します。以後の読取・保存の正本はサイト側です。素材と翻訳は別のhost操作です。

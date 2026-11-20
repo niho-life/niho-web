@@ -21,7 +21,7 @@ niho-edit --origin <https-origin> --site <site-id> cms-read <collection-id> <ite
 niho-edit --origin <https-origin> --site <site-id> cms-create <collection-id> --operation-id <uuid-v4>
 niho-edit --origin <https-origin> --site <site-id> cms-save <collection-id> <item-id> --json <item-snapshot|-> --operation-id <uuid-v4>
 niho-edit cms-diff --base <item-snapshot> --json <edited-item-snapshot>
-niho-edit --origin <https-origin> --site <site-id> cms-publish-plan <collection-id> <item-id> --expected-version <version> --operation-id <uuid-v4>
+niho-edit --origin <https-origin> --site <site-id> cms-publish-plan <collection-id> <item-id> --expected-version <version> --operation-id <uuid-v4> [--redirect <true|false>]
 niho-edit --origin <https-origin> --site <site-id> cms-publish --json <publish-plan|->
 niho-edit --origin <https-origin> --site <site-id> cms-status --operation-id <uuid-v4>
 
@@ -48,7 +48,7 @@ function argsFromCli() {
     return parseArgs({ allowPositionals: true, options: {
       origin: { type: "string" }, site: { type: "string" }, locale: { type: "string" }, json: { type: "string" }, action: { type: "string" },
       "expected-version": { type: "string" }, "components-version": { type: "string" }, "presentation-version": { type: "string" },
-      revision: { type: "string" }, "operation-id": { type: "string" }, base: { type: "string" }, help: { type: "boolean", short: "h" }
+      revision: { type: "string" }, "operation-id": { type: "string" }, redirect: { type: "string" }, base: { type: "string" }, help: { type: "boolean", short: "h" }
     } });
   } catch { throw new CliError("invalid_arguments"); }
 }
@@ -151,11 +151,13 @@ async function inputCmsPublishPlan(path, siteId) {
     catch (error) { if (error instanceof CliError) throw error; throw new CliError("invalid_json_input"); }
   }
   const plan = await readJson(path === "-" ? process.stdin : createReadStream(path));
-  if (Object.keys(plan).sort().join(",") !== "confirmationToken,expectedVersion,item,operationId,target"
+  const expectedKeys = plan.redirect === undefined ? "confirmationToken,expectedVersion,item,operationId,target" : "confirmationToken,expectedVersion,item,operationId,redirect,target";
+  if (Object.keys(plan).sort().join(",") !== expectedKeys
     || !plan.target || typeof plan.target !== "object" || Array.isArray(plan.target)
     || Object.keys(plan.target).sort().join(",") !== "collectionId,itemId,siteId" || plan.target.siteId !== siteId
     || !validCmsCollectionId(plan.target.collectionId) || !validCmsItemId(plan.target.itemId)
     || !isEditingApiVersion(plan.expectedVersion) || !isEditingApiVersion(plan.confirmationToken) || !OPERATION_ID.test(plan.operationId ?? "")
+    || plan.redirect !== undefined && typeof plan.redirect !== "boolean"
     || !plan.item || typeof plan.item !== "object" || Array.isArray(plan.item)) throw new CliError("invalid_cms_publish_plan");
   return plan;
 }
@@ -235,10 +237,12 @@ async function main() {
   }
 
   if (command === "cms-publish-plan") {
-    assertCommandOptions(values, ["expected-version", "operation-id"]);
+    assertCommandOptions(values, ["expected-version", "operation-id", "redirect"]);
     if (!validCmsCollectionId(pageId) || extra.length !== 1 || !validCmsItemId(extra[0])
-      || !isEditingApiVersion(values["expected-version"]) || !OPERATION_ID.test(values["operation-id"] ?? "")) throw new CliError("invalid_arguments");
-    const plan = await apiCall(() => client.prepareCmsPublish({ siteId: values.site, collectionId: pageId, itemId: extra[0] }, values["expected-version"], values["operation-id"], AbortSignal.timeout(30_000)));
+      || !isEditingApiVersion(values["expected-version"]) || !OPERATION_ID.test(values["operation-id"] ?? "")
+      || values.redirect !== undefined && values.redirect !== "true" && values.redirect !== "false") throw new CliError("invalid_arguments");
+    const plan = await apiCall(() => client.prepareCmsPublish({ siteId: values.site, collectionId: pageId, itemId: extra[0] }, values["expected-version"], values["operation-id"], AbortSignal.timeout(30_000),
+      values.redirect === undefined ? undefined : values.redirect === "true"));
     process.stdout.write(`${JSON.stringify(plan)}\n`); return;
   }
 

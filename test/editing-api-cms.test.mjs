@@ -53,18 +53,20 @@ function cmsFixture() {
       operations.set(operationId, { kind: "save", result: item });
       return { status: "saved", item };
     },
-    async prepareCmsPublish(_actor, target, expectedVersion, operationId) {
+    async prepareCmsPublish(_actor, target, expectedVersion, operationId, options) {
       if (target.siteId !== siteId || target.collectionId !== "posts" || target.itemId !== item.id) return { status: "not_found" };
       if (operations.has(operationId)) return { status: "duplicate" };
       if (expectedVersion !== item.version) return { status: "conflict" };
-      const plan = { target, expectedVersion, operationId, confirmationToken: "publish-token", item };
+      const plan = { target, expectedVersion, operationId, confirmationToken: "publish-token", item,
+        ...(options?.redirect === undefined ? {} : { redirect: options.redirect }) };
       operations.set(operationId, { kind: "publish", plan });
       return { status: "prepared", plan };
     },
     async publishCmsItem(_actor, target, input) {
       const prepared = operations.get(input.operationId);
       if (!prepared || prepared.kind !== "publish" || prepared.plan.confirmationToken !== input.confirmationToken
-        || prepared.plan.expectedVersion !== input.expectedVersion || prepared.plan.target.itemId !== target.itemId) return { status: "duplicate" };
+        || prepared.plan.expectedVersion !== input.expectedVersion || prepared.plan.target.itemId !== target.itemId
+        || prepared.plan.redirect !== input.redirect) return { status: "duplicate" };
       if (input.expectedVersion !== item.version) return { status: "conflict" };
       item = { ...item, status: "published", path: "/posts/article", publishedAt: "2026-10-20T09:00:00Z", version: "v3" };
       const result = { status: "published", operationId: input.operationId, item };
@@ -135,8 +137,9 @@ test("CMS operations expose one authenticated, versioned wire contract for machi
   if (conflict.status === "conflict") assert.equal(conflict.current.version, "v2");
 
   const target = { siteId, collectionId: "posts", itemId: "p1" };
-  const plan = await client.prepareCmsPublish(target, "v2", operationIds.publish);
+  const plan = await client.prepareCmsPublish(target, "v2", operationIds.publish, undefined, false);
   assert.equal(plan.confirmationToken, "publish-token");
+  assert.equal(plan.redirect, false);
   const applied = await client.publishCmsItem(plan);
   assert.equal(applied.status, "published");
   assert.deepEqual(await client.cmsOperationStatus(operationIds.publish), {
@@ -184,4 +187,18 @@ test("niho-edit reads and saves CMS snapshots directly through the common API", 
   ]);
   assert.equal(save.exitCode, 0, save.stderr);
   assert.deepEqual(JSON.parse(save.stdout), { id: item.id, version: "v2", values: nextValues });
+});
+
+test("niho-edit CMS公開計画はリダイレクト選択をホストへ渡し、planへ保持する", async () => {
+  const operationId = "123e4567-e89b-42d3-a456-426614174005";
+  const target = { siteId, collectionId: "posts", itemId: "p1" };
+  const item = post("p1", "記事", { status: "published", path: "/posts/old" }, { slug: "old" });
+  const plan = { target, expectedVersion: item.version, operationId, confirmationToken: "publish-token", item, redirect: false };
+  const prepared = await runCli(["cms-publish-plan", "posts", "p1", "--expected-version", item.version, "--operation-id", operationId, "--redirect", "false"], [
+    { method: "GET", url: "https://host.example/api/edit/v1/sites/cms-example/operations/cms.schema", response: { collections: schema().collections } },
+    { method: "POST", url: "https://host.example/api/edit/v1/sites/cms-example/operations/cms.publish-plan/posts/p1",
+      body: { expectedVersion: item.version, operationId, redirect: false }, response: { plan } },
+  ]);
+  assert.equal(prepared.exitCode, 0, prepared.stderr);
+  assert.deepEqual(JSON.parse(prepared.stdout), plan);
 });
