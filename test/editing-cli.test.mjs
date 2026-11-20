@@ -44,6 +44,30 @@ test("niho-edit reads a page over the host API without Studio or a browser", asy
   assert.deepEqual(EDITING_OPERATIONS.map(({ id }) => id), ["pages.read", "pages.save"]);
 });
 
+test("niho-edit preserves host-specific component blocks on read and save", async (t) => {
+  const custom = structuredClone(fixture);
+  custom.body.push({ type: "component", id: "booking-panel", block: "booking-panel", props: { title: "Book a visit" } });
+  const readPath = `/api/edit/v1/sites/${siteId}/operations/pages.read/${pageId}?locale=${encodeURIComponent(locale)}`;
+  const read = await run(["read", pageId, "--locale", locale], {
+    expectedMethod: "GET", expectedUrl: `${origin}${readPath}`, result: { document: custom, version: "v1" }
+  });
+  assert.equal(read.exitCode, 0, read.stderr);
+  assert.deepEqual(JSON.parse(read.stdout).document, custom);
+
+  const directory = await mkdtemp(join(tmpdir(), "niho-edit-custom-block-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const snapshotPath = join(directory, "snapshot.json");
+  await writeFile(snapshotPath, JSON.stringify({ document: custom, version: "v1" }));
+  const savePath = `/api/edit/v1/sites/${siteId}/operations/pages.save/${pageId}?locale=${encodeURIComponent(locale)}`;
+  const savedDocument = { ...custom, revision: custom.revision + 1 };
+  const saved = await run(["save", pageId, "--locale", locale, "--json", snapshotPath], {
+    expectedMethod: "PUT", expectedUrl: `${origin}${savePath}`, expectedBody: { expectedVersion: "v1", document: custom },
+    result: { status: "saved", version: "v2", document: savedDocument }
+  });
+  assert.equal(saved.exitCode, 0, saved.stderr);
+  assert.deepEqual(JSON.parse(saved.stdout), { document: savedDocument, version: "v2" });
+});
+
 test("niho-edit saves the edited document with the snapshot version and reports conflicts", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "niho-edit-"));
   t.after(() => rm(directory, { recursive: true, force: true }));

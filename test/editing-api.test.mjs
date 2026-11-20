@@ -6,8 +6,8 @@ import { createPageEditingApi, EDITING_API_ERRORS, EDITING_OPERATIONS } from "@n
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 const target = { siteId: fixture.siteId, pageId: fixture.pageId, locale: fixture.locale };
 
-function hostFixture() {
-  let document = structuredClone(fixture), version = "v1";
+function hostFixture({ validationContext, initialDocument = fixture } = {}) {
+  let document = structuredClone(initialDocument), version = "v1";
   const actor = { kind: "human", subject: "owner" };
   const api = createPageEditingApi({
     async authenticate(request) {
@@ -15,6 +15,7 @@ function hostFixture() {
       return token === "Bearer owner" ? actor : token === "Bearer other" ? { kind: "human", subject: "other" } : null;
     },
     async authorize(input, capability, scope) { return input.subject === "owner" && scope.siteId === fixture.siteId && (capability === "pages.read" || capability === "pages.edit"); },
+    ...(validationContext ? { async validationContext() { return validationContext; } } : {}),
     async readPage(_actor, input) { return input.siteId === target.siteId && input.pageId === target.pageId && input.locale === target.locale ? { document, version } : null; },
     async savePage(_actor, input, expectedVersion, next) {
       if (input.siteId !== target.siteId || input.pageId !== target.pageId || input.locale !== target.locale) return { status: "conflict" };
@@ -58,6 +59,39 @@ test("page editing API reads and saves through the host adapter with CAS conflic
   const reread = await json(await send("GET", `${route}/pages.read/${target.pageId}${query}`));
   assert.equal(reread.body.document.title, changed.title);
   assert.equal(reread.body.version, "v2");
+});
+
+test("page editing API validates custom blocks with the target host's trusted context", async () => {
+  const blockDocument = structuredClone(fixture);
+  blockDocument.body.push({ type: "component", id: "booking-panel", block: "booking-panel", props: { title: "Book a visit" } });
+  const context = { blocks: { "booking-panel": { props: { title: { type: "string", required: true } } } } };
+  const route = `/sites/${target.siteId}/operations`, query = `?locale=${encodeURIComponent(target.locale)}`;
+
+  const withoutContext = hostFixture({ initialDocument: blockDocument });
+  assert.deepEqual(await json(await withoutContext.send("GET", `${route}/pages.read/${target.pageId}${query}`)),
+    { status: 502, body: { error: "host_contract_violation" } });
+
+  const { send } = hostFixture({ validationContext: context, initialDocument: blockDocument });
+  const read = await json(await send("GET", `${route}/pages.read/${target.pageId}${query}`));
+  assert.equal(read.status, 200);
+  assert.equal(read.body.document.body.at(-1).block, "booking-panel");
+  const saved = await json(await send("PUT", `${route}/pages.save/${target.pageId}${query}`, { expectedVersion: "v1", document: blockDocument }));
+  assert.equal(saved.status, 200);
+  assert.equal(saved.body.document.body.at(-1).block, "booking-panel");
+});
+
+test("page editing API treats validation context failures as host failures", async () => {
+  const api = createPageEditingApi({
+    async authenticate(request) { return request.headers.get("Authorization") === "Bearer owner" ? { kind: "human", subject: "owner" } : null; },
+    async authorize() { return true; },
+    async validationContext() { throw new Error("host registry unavailable"); },
+    async readPage() { return { document: fixture, version: "v1" }; },
+    async savePage() { return { status: "conflict" }; }
+  });
+  const response = await api(new Request(`https://host.example/api/edit/v1/sites/${target.siteId}/operations/pages.read/${target.pageId}?locale=${target.locale}`, {
+    headers: { Authorization: "Bearer owner" }
+  }));
+  assert.deepEqual(await json(response), { status: 503, body: { error: "host_failure" } });
 });
 
 test("page editing API rejects unauthenticated, denied, malformed and mismatched requests", async () => {

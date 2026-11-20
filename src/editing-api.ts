@@ -1,6 +1,7 @@
-import type { PageDocument } from "./types.js";
+import type { BlockContracts, ComponentLibrary, PageDocument } from "./types.js";
 import { parsePageDocument } from "./document.js";
 import { identifier, localeCode } from "./validation-utils.js";
+import type { SiteStyles } from "./site-styles.js";
 
 /** Stable errors returned by the host-neutral page editing wire contract. */
 export const EDITING_API_ERRORS = Object.freeze([
@@ -24,6 +25,7 @@ export type EditingPageSnapshot = {
   readonly version: string;
 };
 export type EditingPageSaveResult = { readonly status: "saved"; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" };
+export type PageEditingValidationContext = { readonly blocks?: BlockContracts; readonly components?: ComponentLibrary; readonly siteStyles?: SiteStyles };
 
 export type JsonSchema = boolean | {
   readonly $ref?: string;
@@ -84,6 +86,8 @@ export type PageEditingHostAdapter = {
   authenticate(request: Request): Promise<EditingActor | null>;
   /** Resolve permissions from the authenticated principal for each request. */
   authorize(actor: EditingActor, capability: EditingOperationDefinition["capability"], target: EditingAuthorizationScope): Promise<boolean>;
+  /** Trusted host schemas needed for custom blocks, component instances and site-wide style tokens. */
+  validationContext?(actor: EditingActor, target: EditingPageTarget): Promise<PageEditingValidationContext>;
   readPage(actor: EditingActor, target: EditingPageTarget): Promise<EditingPageSnapshot | null>;
   savePage(actor: EditingActor, target: EditingPageTarget, expectedVersion: string, document: PageDocument): Promise<EditingPageSaveResult>;
 };
@@ -129,6 +133,15 @@ async function readBody(request: Request): Promise<Record<string, unknown> | nul
 function exactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
   const actual = Object.keys(value).sort(), wanted = [...expected].sort();
   return actual.length === wanted.length && actual.every((key, index) => key === wanted[index]);
+}
+async function documentContext(adapter: PageEditingHostAdapter, actor: EditingActor, target: EditingPageTarget): Promise<PageEditingValidationContext> {
+  return adapter.validationContext ? adapter.validationContext(actor, target) : {};
+}
+function validatedDocument(value: unknown, context: PageEditingValidationContext): PageDocument {
+  return parsePageDocument(value, context.blocks ?? {}, {
+    ...(context.components ? { components: context.components } : {}),
+    ...(context.siteStyles ? { siteStyles: context.siteStyles } : {})
+  });
 }
 
 /** Framework-neutral HTTP handler for the host page resource API. Authentication and persistence stay in the host. */
@@ -186,8 +199,11 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: {
       try { snapshot = await adapter.readPage(actor, target); }
       catch { return fail("host_failure", 503); }
       if (!snapshot) return fail("not_found", 404);
+      let context: PageEditingValidationContext;
+      try { context = await documentContext(adapter, actor, target); }
+      catch { return fail("host_failure", 503); }
       let document: PageDocument;
-      try { document = parsePageDocument(snapshot.document); }
+      try { document = validatedDocument(snapshot.document, context); }
       catch { return fail("host_contract_violation", 502); }
       if (document.siteId !== target.siteId || document.pageId !== target.pageId || document.locale !== target.locale || !validVersion(snapshot.version)) return fail("host_contract_violation", 502);
       return response({ document, version: snapshot.version });
@@ -195,8 +211,11 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: {
     let body: Record<string, unknown> | null;
     try { body = await readBody(request); } catch { return fail("invalid_request", 400); }
     if (!body || !exactKeys(body, ["expectedVersion", "document"]) || !validVersion(body.expectedVersion)) return fail("invalid_request", 400);
+    let context: PageEditingValidationContext;
+    try { context = await documentContext(adapter, actor, target); }
+    catch { return fail("host_failure", 503); }
     let document: PageDocument;
-    try { document = parsePageDocument(body.document); }
+    try { document = validatedDocument(body.document, context); }
     catch { return fail("invalid_request", 400); }
     if (document.siteId !== target.siteId || document.pageId !== target.pageId || document.locale !== target.locale) return fail("invalid_request", 400);
     let result: EditingPageSaveResult;
@@ -205,7 +224,7 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: {
     if (result.status === "conflict") return fail("version_conflict", 409);
     if (result.status !== "saved" || !validVersion(result.version)) return fail("host_contract_violation", 502);
     let savedDocument: PageDocument;
-    try { savedDocument = parsePageDocument(result.document); }
+    try { savedDocument = validatedDocument(result.document, context); }
     catch { return fail("host_contract_violation", 502); }
     if (savedDocument.siteId !== target.siteId || savedDocument.pageId !== target.pageId || savedDocument.locale !== target.locale) return fail("host_contract_violation", 502);
     return response({ status: "saved", version: result.version, document: savedDocument });

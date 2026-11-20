@@ -2,7 +2,6 @@
 import { createReadStream } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { parseArgs } from "node:util";
-import { parsePageDocument } from "../dist/core.js";
 import { EDITING_API_ERRORS, EDITING_OPERATIONS } from "../dist/editing-api.js";
 
 const USAGE = `niho-edit --origin <https-origin> --site <site-id> discover
@@ -34,6 +33,21 @@ function origin(value) {
   } catch { /* The URL parser message is not part of the CLI contract. */ }
   throw new CliError("invalid_origin");
 }
+function pageDocument(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new CliError("invalid_document");
+  const allowed = new Set(["schemaVersion", "siteId", "pageId", "locale", "revision", "title", "meta", "tokens", "textStyles", "body"]);
+  if (Object.keys(value).some((key) => !allowed.has(key)) || value.schemaVersion !== 1
+    || !IDENTIFIER.test(value.siteId ?? "") || !IDENTIFIER.test(value.pageId ?? "") || !LOCALE.test(value.locale ?? "")
+    || !Number.isSafeInteger(value.revision) || value.revision < 1 || typeof value.title !== "string"
+    || value.meta !== undefined && (!value.meta || typeof value.meta !== "object" || Array.isArray(value.meta))
+    || !value.tokens || typeof value.tokens !== "object" || Array.isArray(value.tokens)
+    || value.textStyles !== undefined && (!value.textStyles || typeof value.textStyles !== "object" || Array.isArray(value.textStyles))
+    || !Array.isArray(value.body)) throw new CliError("invalid_document");
+  return value;
+}
+function pageVersion(value) {
+  return typeof value === "string" && value.length > 0 && value.length <= 200 && !/[\u0000-\u001f\u007f]/u.test(value);
+}
 async function readJson(stream) {
   const chunks = []; let size = 0;
   try {
@@ -54,10 +68,8 @@ async function inputSnapshot(path) {
     catch (error) { if (error instanceof CliError) throw error; throw new CliError("invalid_json_input"); }
   }
   const source = await readJson(path === "-" ? process.stdin : createReadStream(path));
-  if (Object.keys(source).sort().join(",") !== "document,version" || typeof source.version !== "string" || !source.version || source.version.length > 200
-    || /[\u0000-\u001f\u007f]/u.test(source.version)) throw new CliError("invalid_snapshot");
-  let document;
-  try { document = parsePageDocument(source.document); } catch { throw new CliError("invalid_document"); }
+  if (Object.keys(source).sort().join(",") !== "document,version" || !pageVersion(source.version)) throw new CliError("invalid_snapshot");
+  const document = pageDocument(source.document);
   return { document, version: source.version };
 }
 async function responseJson(response) {
@@ -124,8 +136,8 @@ async function main() {
     const body = await responseJson(response);
     if (!response.ok) throw new CliError(EDITING_API_ERRORS.includes(body.error) ? body.error : "request_failed", response.status);
     let document;
-    try { document = parsePageDocument(body.document); } catch { throw new CliError("invalid_response", response.status); }
-    if (document.siteId !== values.site || document.pageId !== pageId || document.locale !== values.locale || typeof body.version !== "string" || !body.version) throw new CliError("invalid_response", response.status);
+    try { document = pageDocument(body.document); } catch { throw new CliError("invalid_response", response.status); }
+    if (document.siteId !== values.site || document.pageId !== pageId || document.locale !== values.locale || !pageVersion(body.version)) throw new CliError("invalid_response", response.status);
     emitSnapshot(document, body.version); return;
   }
 
@@ -135,9 +147,9 @@ async function main() {
     { expectedVersion: snapshot.version, document: snapshot.document });
   const body = await responseJson(response);
   if (!response.ok) throw new CliError(EDITING_API_ERRORS.includes(body.error) ? body.error : "request_failed", response.status);
-  if (body.status !== "saved" || typeof body.version !== "string" || !body.version) throw new CliError("invalid_response", response.status);
+  if (body.status !== "saved" || !pageVersion(body.version)) throw new CliError("invalid_response", response.status);
   let savedDocument;
-  try { savedDocument = parsePageDocument(body.document); } catch { throw new CliError("invalid_response", response.status); }
+  try { savedDocument = pageDocument(body.document); } catch { throw new CliError("invalid_response", response.status); }
   if (savedDocument.siteId !== values.site || savedDocument.pageId !== pageId || savedDocument.locale !== values.locale) throw new CliError("invalid_response", response.status);
   emitSnapshot(savedDocument, body.version);
 }
