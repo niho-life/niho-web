@@ -3,11 +3,44 @@ import type { AppearEffect, BlockContracts, NodeStyle, PageDocument, PageNode, S
 import { parsePageDocument } from "./document.js";
 import { declarationCss, fontFamilyCss, motionProperties, tokenCssValue } from "./style-values.js";
 import { parseResolvedAssets, resolvedAsset, type ResolvedAssetMap } from "./assets.js";
+import { identifier, localeCode } from "./validation-utils.js";
 
 /** 長さを付けて区切るため、異なる ID の組み合わせが同じ scope にならない。 */
 export function pageScope(document: Pick<PageDocument, "siteId" | "pageId" | "locale" | "revision">): string {
   return "nw-" + [document.siteId, document.pageId, document.locale, String(document.revision)]
     .map((value) => `${value.length}-${value}`).join("-");
+}
+export type PageScopeIdentity = Pick<PageDocument, "siteId" | "pageId" | "locale" | "revision">;
+/** 公開DOMの data-nw-scope から、元の文書識別子とrevisionを安全に復元する。 */
+export function parsePageScope(value: unknown): PageScopeIdentity | undefined {
+  if (typeof value !== "string" || value.length > 500 || !value.startsWith("nw-")) return undefined;
+  const parts: string[] = [];
+  let offset = 3;
+  for (let index = 0; index < 4; index++) {
+    const delimiter = value.indexOf("-", offset);
+    if (delimiter < 0) return undefined;
+    const lengthText = value.slice(offset, delimiter);
+    if (!/^(?:0|[1-9][0-9]*)$/u.test(lengthText)) return undefined;
+    const length = Number(lengthText), start = delimiter + 1, end = start + length;
+    if (!Number.isSafeInteger(length) || end > value.length) return undefined;
+    if (index < 3 ? value[end] !== "-" : end !== value.length) return undefined;
+    parts.push(value.slice(start, end));
+    offset = end + 1;
+  }
+  try {
+    if (!/^[1-9][0-9]*$/u.test(parts[3]!)) return undefined;
+    const revision = Number(parts[3]);
+    if (!Number.isSafeInteger(revision)) return undefined;
+    const identity = {
+      siteId: identifier(parts[0], "$scope.siteId"),
+      pageId: identifier(parts[1], "$scope.pageId"),
+      locale: localeCode(parts[2], "$scope.locale"),
+      revision
+    };
+    return pageScope(identity) === value ? identity : undefined;
+  } catch {
+    return undefined;
+  }
 }
 // 遷移は状態スタイルを持つノードの動きの規則だけに出す。
 const motion = new Set<string>(motionProperties);

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { createElement } from "react";
 import { renderToString } from "react-dom/server";
-import { createBlankEmbedRegistry, DocumentValidationError, pageScope, PageRenderer as RootPageRenderer } from "@niho/web";
+import { createBlankEmbedRegistry, DocumentValidationError, pageScope, parsePageScope, PageRenderer as RootPageRenderer } from "@niho/web";
 import { PageRenderer, SitePageRenderer } from "@niho/web/react";
 import { renderPageToHtml, renderSitePageToHtml } from "@niho/web/server";
 import { generatePageCss } from "@niho/web/core";
@@ -16,6 +16,7 @@ test("React server rendering and Astro HTML helper produce the same initial cont
   assert.equal(html, renderToString(createElement(PageRenderer, { document: fixture })));
   assert.match(html, /<h1 data-nw-node="heading"[^>]*>海のそばで過ごす<\/h1>/);
   assert.ok(html.includes(`data-nw-scope="${pageScope(fixture)}" lang="ja-JP"`));
+  assert.deepEqual(parsePageScope(pageScope(fixture)), { siteId: fixture.siteId, pageId: fixture.pageId, locale: fixture.locale, revision: fixture.revision });
   assert.ok(html.includes("<style data-nw-style="));
   assert.ok(html.includes(`data-nw-scope="${pageScope(fixture)}"] [data-nw-owner="${pageScope(fixture)}"][data-nw-node="hero"]`));
   assert.ok(html.includes("padding:var(--nw-space)"));
