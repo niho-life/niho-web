@@ -19,6 +19,30 @@ function presentationVersion(value: unknown): string | undefined {
   if (typeof version !== "string" || !version || version.length > 512) throw new Error("表示設定の版を確認できません。");
   return version;
 }
+function checkedReleaseSetPlan(value: unknown, expectedItems: readonly EditingPageReleaseSetItem[], site: EditorSite): EditingPageReleaseSetPlan {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("公開変更セットの確認情報が正しくありません。");
+  const source = value as Record<string, unknown>;
+  const operationId = source.operationId;
+  if (source.siteId !== site.id || typeof operationId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(operationId)
+    || typeof source.confirmationToken !== "string" || !source.confirmationToken || source.confirmationToken.length > 512
+    || typeof source.domain !== "string" || !site.domains.includes(source.domain)) throw new Error("公開変更セットの確認情報が正しくありません。");
+  let domain: URL;
+  try { domain = new URL(source.domain); } catch { throw new Error("公開変更セットの公開先が正しくありません。"); }
+  if (domain.protocol !== "https:" || domain.origin !== source.domain || domain.username || domain.password || domain.search || domain.hash)
+    throw new Error("公開変更セットの公開先が正しくありません。");
+  if (expectedItems.length < 2 || expectedItems.length > 50 || !Array.isArray(source.items) || source.items.length !== expectedItems.length)
+    throw new Error("公開変更セットの対象件数が一致しません。");
+  for (const [index, raw] of source.items.entries()) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("公開変更セットの対象が正しくありません。");
+    const item = raw as Record<string, unknown>, expected = expectedItems[index], target = item.target;
+    if (!expected || !target || typeof target !== "object" || Array.isArray(target)) throw new Error("公開変更セットの対象が正しくありません。");
+    const checked = target as Record<string, unknown>;
+    if (checked.siteId !== expected.target.siteId || checked.pageId !== expected.target.pageId || checked.locale !== expected.target.locale
+      || item.expectedVersion !== expected.expectedVersion || item.componentsVersion !== expected.componentsVersion || item.presentationVersion !== expected.presentationVersion)
+      throw new Error("公開変更セットの対象または版が、確認した差分と一致しません。");
+  }
+  return { siteId: site.id, operationId, confirmationToken: source.confirmationToken, domain: source.domain, items: structuredClone(expectedItems) };
+}
 function resultFor(value: unknown, plan: EditingPageReleaseSetPlan): Completed | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const source = value as Record<string, unknown>;
@@ -94,9 +118,9 @@ export function PageReleaseSetDialog({ pages, site, adapter, componentsVersion, 
       }
       const items: EditingPageReleaseSetItem[] = changed.map(({ plan: item }) => ({ target: item.target, expectedVersion: item.expectedVersion,
         ...(item.componentsVersion === undefined ? {} : { componentsVersion: item.componentsVersion }), ...(item.presentationVersion === undefined ? {} : { presentationVersion: item.presentationVersion }) }));
-      const prepared = await adapter.prepareReleaseSet!(items, signal);
+      const prepared = checkedReleaseSetPlan(await adapter.prepareReleaseSet!(items, signal), items, site);
       if (signal.aborted) return;
-      setPlan(structuredClone(prepared)); setPhase("review"); setMessage("");
+      setPlan(prepared); setPhase("review"); setMessage("");
     } catch (error) {
       if (signal.aborted) return;
       setPhase("failed"); setMessage(errorStatus(error) === 409 ? "ページの状態が変わりました。ページ一覧を読み直して、公開計画を作り直してください。" : error instanceof Error ? error.message : "公開差分を確認できませんでした。時間をおいて再試行してください。");

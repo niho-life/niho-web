@@ -926,6 +926,35 @@ test("multi-page release selects only pages with changes and can resume from the
   } finally { await app.cleanup(); }
 });
 
+test("multi-page release rejects a host plan outside the confirmed site, destination, targets, or versions", async () => {
+  const invalidPlans = [
+    (plan) => ({ ...plan, siteId: "another-site" }),
+    (plan) => ({ ...plan, domain: "https://untrusted.example" }),
+    (plan) => ({ ...plan, items: plan.items.map((item, index) => index ? item : { ...item, target: { ...item.target, pageId: "unreviewed" } }) }),
+    (plan) => ({ ...plan, items: plan.items.map((item, index) => index ? item : { ...item, expectedVersion: "different-version" }) })
+  ];
+  for (const corrupt of invalidPlans) {
+    let applied = 0;
+    const app = await setup({ adapter: {
+      prepareReleaseSet: async (items) => corrupt({ siteId: "demo", operationId: "550e8400-e29b-41d4-a716-446655440000",
+        confirmationToken: "set-token", domain: "https://example.test", items: structuredClone(items) }),
+      releaseSet: async () => { applied++; return { status: "conflict" }; },
+      releaseSetStatus: async (operationId) => ({ status: "unknown", operationId })
+    } });
+    try {
+      for (const title of ["ホーム", "別ページ"]) {
+        const checkbox = document.querySelector(`[aria-label="「${title}」を一括公開の対象にする"]`); assert.ok(checkbox, title);
+        await press(checkbox);
+      }
+      await click("選択したページの変更を確認");
+      const dialog = document.querySelector('[role="dialog"]'); assert.ok(dialog);
+      assert.ok(dialog.querySelector('[role="alert"]'), dialog.textContent);
+      assert.equal(dialog.querySelector(".e-release-set-confirm"), null, "an unchecked plan must not reach user confirmation");
+      assert.equal(applied, 0);
+    } finally { await app.cleanup(); }
+  }
+});
+
 test("page status maps visibility, published and the host publication to a dot and its words", async () => {
   const { pageStatus } = await import("../dist/editor-pages.js");
   const base = { siteId: "demo", pageId: "p", locale: "ja-JP", title: "P" };
