@@ -5,7 +5,8 @@
   "description": "Versioned public page documents and shared React/server renderers",
   "type": "module",
   "bin": {
-    "niho-studio": "cli/niho-studio.mjs"
+    "niho-studio": "cli/niho-studio.mjs",
+    "niho-edit": "cli/niho-edit.mjs"
   },
   "files": [
     "dist",
@@ -22,6 +23,10 @@
     "./core": {
       "types": "./dist/core.d.ts",
       "import": "./dist/core.js"
+    },
+    "./editing-api": {
+      "types": "./dist/editing-api.d.ts",
+      "import": "./dist/editing-api.js"
     },
     "./builder": {
       "types": "./dist/builder.d.ts",
