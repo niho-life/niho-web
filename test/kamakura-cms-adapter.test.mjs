@@ -126,7 +126,7 @@ test("CMS adapter: 共通 API が見つかると主要な GUI 操作を同じ ve
   const definition = parseCollectionSchemaResult(schema()).collections[0];
   const calls = [];
   const commonApi = {
-    async discover() { calls.push(["discover"]); return { operations: ["cms.schema", "cms.list", "cms.read", "cms.create", "cms.save", "cms.publish-plan", "cms.publish"].map((id) => ({ id })) }; },
+    async discover() { calls.push(["discover"]); return { operations: ["cms.schema", "cms.list", "cms.read", "cms.create", "cms.save", "cms.publish-plan", "cms.publish", "cms.operation-status"].map((id) => ({ id })) }; },
     async readCmsSchema() { calls.push(["schema"]); return [definition]; },
     async listCmsItems(collectionId) { calls.push(["list", collectionId]); return []; },
     async readCmsItem(target) { calls.push(["read", target]); return item(); },
@@ -139,7 +139,8 @@ test("CMS adapter: 共通 API が見つかると主要な GUI 操作を同じ ve
       calls.push(["publish-plan", target, expectedVersion, operationId, redirect]);
       return { target, expectedVersion, operationId, confirmationToken: "token", item: item({ version: expectedVersion }), redirect };
     },
-    async publishCmsItem(plan) { calls.push(["publish", plan]); return { status: "publishing", operationId: plan.operationId, item: item({ status: "publishing", version: "v3" }) }; }
+    async publishCmsItem(plan) { calls.push(["publish", plan]); return { status: "publishing", operationId: plan.operationId, item: item({ status: "publishing", version: "v3" }) }; },
+    async cmsOperationStatus(operationId) { return { status: "unknown", operationId }; }
   };
   const adapter = createKamakuraCmsAdapter({ siteOrigin: SITE, commonApi });
   const schemaResult = parseCollectionSchemaResult(await adapter.loadSchema(signal()));
@@ -166,7 +167,7 @@ test("CMS adapter: 共通 API の作成応答が失われた場合は同じ oper
   const operationIds = [];
   let attempts = 0;
   const commonApi = {
-    async discover() { return { operations: ["cms.schema", "cms.list", "cms.read", "cms.create", "cms.save", "cms.publish-plan", "cms.publish"].map((id) => ({ id })) }; },
+    async discover() { return { operations: ["cms.schema", "cms.list", "cms.read", "cms.create", "cms.save", "cms.publish-plan", "cms.publish", "cms.operation-status"].map((id) => ({ id })) }; },
     async createCmsItem(_collectionId, operationId) {
       operationIds.push(operationId);
       if (attempts++ === 0) throw new Error("network timeout");
@@ -186,9 +187,10 @@ test("CMS adapter: 共通 API の保存・公開応答が失われた場合も�
   const { createKamakuraCmsAdapter } = await loadAdapter();
   const definition = parseCollectionSchemaResult(schema()).collections[0];
   const operationIds = { save: [], publish: [] };
-  let saveAttempts = 0, publishAttempts = 0;
+  let saveAttempts = 0, prepareAttempts = 0, publishAttempts = 0, statusAttempts = 0;
+  const publishStatusIds = [], appliedOperationIds = [];
   const commonApi = {
-    async discover() { return { operations: ["cms.schema", "cms.list", "cms.read", "cms.create", "cms.save", "cms.publish-plan", "cms.publish"].map((id) => ({ id })) }; },
+    async discover() { return { operations: ["cms.schema", "cms.list", "cms.read", "cms.create", "cms.save", "cms.publish-plan", "cms.publish", "cms.operation-status"].map((id) => ({ id })) }; },
     async readCmsSchema() { return [definition]; },
     async readCmsItem() { return item(); },
     async saveCmsItem(_target, _version, operationId) {
@@ -197,12 +199,20 @@ test("CMS adapter: 共通 API の保存・公開応答が失われた場合も�
       return { status: "saved", item: item({ version: "v2", title: "編集済み" }, { ...rawValues, title: "編集済み" }) };
     },
     async prepareCmsPublish(target, expectedVersion, operationId, _signal, redirect) {
+      prepareAttempts++;
       operationIds.publish.push(operationId);
       return { target, expectedVersion, operationId, confirmationToken: "token", item: item({ version: expectedVersion }), redirect };
     },
     async publishCmsItem(plan) {
-      if (publishAttempts++ === 0) throw new Error("network timeout");
+      appliedOperationIds.push(plan.operationId);
+      if (publishAttempts++ < 2) throw new Error("network timeout");
       return { status: "publishing", operationId: plan.operationId, item: item({ status: "publishing", version: "v3" }) };
+    },
+    async cmsOperationStatus(operationId) {
+      publishStatusIds.push(operationId);
+      if (statusAttempts++ === 0) return { status: "received", operationId };
+      return { status: "completed", operationId, httpStatus: 202, result: { status: "publishing", operationId,
+        item: item({ status: "publishing", version: "v3" }) } };
     }
   };
   const adapter = createKamakuraCmsAdapter({ siteOrigin: SITE, commonApi });
@@ -217,10 +227,12 @@ test("CMS adapter: 共通 API の保存・公開応答が失われた場合も�
 
   const publish = { collectionId: "posts", itemId: "morning-walk", version: "v2", redirect: false };
   await assert.rejects(adapter.publish(publish, signal()), /network timeout/u);
+  await assert.rejects(adapter.publish(publish, signal()), /network timeout/u);
   const published = parseCollectionPublishResult(await adapter.publish(publish, signal()), definition, "morning-walk");
   assert.equal(published.item.version, "v3");
-  assert.equal(operationIds.publish.length, 2);
-  assert.equal(operationIds.publish[1], operationIds.publish[0]);
+  assert.equal(prepareAttempts, 1, "再試行で重複する公開計画を取得しない");
+  assert.equal(publishAttempts, 2, "完了済み結果を照会した後に公開を重ねて適用しない");
+  assert.deepEqual([...operationIds.publish, ...publishStatusIds, ...appliedOperationIds].every((id) => id === operationIds.publish[0]), true);
 });
 
 test("CMS adapter: 公開・非公開・複製・削除・予約を契約の形で呼び、画面の parser が読める形で返す", async (t) => {
