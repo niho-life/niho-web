@@ -78,7 +78,7 @@ test("niho-edit reads a page over the host API without Studio or a browser", asy
   });
   assert.equal(result.exitCode, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), { document: fixture, version: "v1" });
-  assert.deepEqual(EDITING_OPERATIONS.map(({ id }) => id), ["pages.read", "pages.save", "pages.release-plan", "pages.release", "pages.catalog", "pages.change-prepare", "pages.change-apply",
+  assert.deepEqual(EDITING_OPERATIONS.map(({ id }) => id), ["pages.read", "pages.save", "pages.release-plan", "pages.release", "pages.release-set-plan", "pages.release-set", "pages.release-set-status", "pages.catalog", "pages.change-prepare", "pages.change-apply",
     "cms.schema", "cms.list", "cms.read", "cms.create", "cms.save", "cms.publish-plan", "cms.publish", "cms.operation-status", "site.breakpoints.read", "site.breakpoints.save",
     "assets.list", "assets.usages", "assets.resolve", "assets.update", "assets.upload-intent", "assets.delete", "assets.restore"]);
 });
@@ -286,4 +286,44 @@ test("niho-edit reviews a release plan and retries publication with the same ope
   const retried = await run(args, { expectedMethod: "POST", expectedUrl: `${origin}${applyPath}`, expectedBody: { expectedVersion: "v2", confirmationToken: plan.confirmationToken, operationId }, result });
   assert.equal(retried.exitCode, 0, retried.stderr);
   assert.deepEqual(JSON.parse(retried.stdout).result, result);
+});
+
+test("niho-edit prepares, applies and checks an idempotent multi-page release set", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "niho-edit-release-set-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const operationId = "123e4567-e89b-42d3-a456-426614174000";
+  const items = [
+    { target: { siteId, pageId, locale }, expectedVersion: "v2", componentsVersion: "components-v1", presentationVersion: "presentation-v1" },
+    { target: { siteId, pageId: "about", locale }, expectedVersion: "about-v3" }
+  ];
+  const itemsPath = join(directory, "items.json");
+  await writeFile(itemsPath, JSON.stringify({ items }));
+  const preparePath = `/api/edit/v1/sites/${siteId}/operations/pages.release-set-plan`;
+  const plan = { siteId, operationId, confirmationToken: "set-token-once", domain: origin, items };
+  const prepared = await run(["page-release-set-plan", "--json", itemsPath, "--operation-id", operationId], {
+    expectedMethod: "POST", expectedUrl: `${origin}${preparePath}`, expectedBody: { siteId, operationId, items }, result: { plan }
+  });
+  assert.equal(prepared.exitCode, 0, prepared.stderr);
+  assert.deepEqual(JSON.parse(prepared.stdout), plan);
+
+  const planPath = join(directory, "plan.json");
+  await writeFile(planPath, JSON.stringify(plan));
+  const applyResult = { status: "completed", operationId, items: [
+    { target: items[0].target, status: "released", version: "v3" }, { target: items[1].target, status: "released", version: "about-v4" }
+  ] };
+  const applyPath = `/api/edit/v1/sites/${siteId}/operations/pages.release-set`;
+  const applied = await run(["page-release-set-apply", "--json", planPath], {
+    expectedMethod: "POST", expectedUrl: `${origin}${applyPath}`,
+    expectedBody: { siteId, operationId, confirmationToken: plan.confirmationToken, items }, result: applyResult
+  });
+  assert.equal(applied.exitCode, 0, applied.stderr);
+  assert.deepEqual(JSON.parse(applied.stdout), { apiVersion: "v1", httpStatus: 200, operation: "pages.release-set", result: applyResult });
+
+  const status = { status: "completed", operationId, httpStatus: 200, result: applyResult };
+  const statusPath = `/api/edit/v1/sites/${siteId}/operations/pages.release-set-status/${operationId}`;
+  const checked = await run(["page-release-set-status", "--operation-id", operationId], {
+    expectedMethod: "GET", expectedUrl: `${origin}${statusPath}`, result: status
+  });
+  assert.equal(checked.exitCode, 0, checked.stderr);
+  assert.deepEqual(JSON.parse(checked.stdout), status);
 });

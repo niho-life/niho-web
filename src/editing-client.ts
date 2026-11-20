@@ -1,4 +1,4 @@
-import { EDITING_API_ERRORS, EDITING_OPERATIONS, type EditingApiErrorCode, type EditingCmsOperationStatus, type EditingCmsPublishPlan, type EditingCmsTarget, type EditingOperationDefinition, type EditingPageCatalog, type EditingPageSnapshot, type EditingPageTarget } from "./editing-api.js";
+import { EDITING_API_ERRORS, EDITING_OPERATIONS, type EditingApiErrorCode, type EditingCmsOperationStatus, type EditingCmsPublishPlan, type EditingCmsTarget, type EditingOperationDefinition, type EditingPageCatalog, type EditingPageReleaseSetItem, type EditingPageReleaseSetItemResult, type EditingPageReleaseSetPlan, type EditingPageReleaseSetStatus, type EditingPageSnapshot, type EditingPageTarget } from "./editing-api.js";
 import { normalizePageChange, validatePageChangePlan } from "./editor-model.js";
 import type { PageDocument } from "./types.js";
 import type { EditorPage, EditorPageChange, EditorPageChangePlan, EditorPageChangeResult, EditorReleasePlan, EditorReleaseRequest, EditorSite } from "./editor-types.js";
@@ -34,6 +34,7 @@ export type EditingPagePublishResult = { readonly status: "released"; readonly o
 export type EditingPageReleaseInput = Omit<EditorReleaseRequest, "target">;
 export type EditingCmsSaveResult = { readonly status: "saved"; readonly item: CollectionItem } | { readonly status: "conflict"; readonly current: CollectionItem };
 export type EditingCmsPublishResult = { readonly status: "published" | "publishing"; readonly operationId: string; readonly item: CollectionItem } | { readonly status: "conflict" };
+export type EditingPageReleaseSetResult = { readonly status: "completed" | "publishing"; readonly operationId: string; readonly items: readonly EditingPageReleaseSetItemResult[] } | { readonly status: "conflict" };
 export type EditingApiClient = {
   discover(signal?: AbortSignal): Promise<EditingApiDiscovery>;
   readPageCatalog(signal?: AbortSignal): Promise<EditingPageCatalog>;
@@ -43,6 +44,9 @@ export type EditingApiClient = {
   save(target: EditingPageTarget, expectedVersion: string, document: unknown, signal?: AbortSignal): Promise<EditingPageSaveResult>;
   prepareRelease(target: EditingPageTarget, request: EditingPageReleaseInput, signal?: AbortSignal): Promise<EditorReleasePlan>;
   release(target: EditingPageTarget, plan: EditorReleasePlan, operationId: string, signal?: AbortSignal): Promise<EditingPagePublishResult>;
+  preparePageReleaseSet(items: readonly EditingPageReleaseSetItem[], signal?: AbortSignal, operationId?: string): Promise<EditingPageReleaseSetPlan>;
+  publishPageReleaseSet(plan: EditingPageReleaseSetPlan, signal?: AbortSignal): Promise<EditingPageReleaseSetResult>;
+  pageReleaseSetStatus(operationId: string, signal?: AbortSignal): Promise<EditingPageReleaseSetStatus>;
   readBreakpointSettings(signal?: AbortSignal): Promise<EditorBreakpointSettingsSnapshot>;
   saveBreakpointSettings(expectedVersion: string, settings: EditorBreakpointSettings, signal?: AbortSignal): Promise<EditorBreakpointSettingsSaveResult>;
   readCmsSchema(signal?: AbortSignal): Promise<readonly CollectionDefinition[]>;
@@ -215,6 +219,68 @@ function assertTarget(document: PageDocument, target: EditingPageTarget): void {
   if (document.siteId !== target.siteId || document.pageId !== target.pageId || document.locale !== target.locale) throw new EditingApiClientError("invalid_response");
 }
 const OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+function normalizePageReleaseSetItems(value: unknown, siteId: string): EditingPageReleaseSetItem[] {
+  if (!Array.isArray(value) || value.length < 2 || value.length > 50) throw new TypeError("page release set must contain 2 to 50 items");
+  const items: EditingPageReleaseSetItem[] = [], seen = new Set<string>();
+  for (const raw of value) {
+    if (!plainRecord(raw) || Object.keys(raw).some((key) => !["target", "expectedVersion", "componentsVersion", "presentationVersion"].includes(key))
+      || !plainRecord(raw.target) || !exactKeys(raw.target, ["siteId", "pageId", "locale"]) || raw.target.siteId !== siteId
+      || !isEditingApiVersion(raw.expectedVersion) || raw.componentsVersion !== undefined && !isEditingApiVersion(raw.componentsVersion)
+      || raw.presentationVersion !== undefined && !isEditingApiVersion(raw.presentationVersion)) throw new TypeError("invalid page release set item");
+    let target: EditingPageTarget;
+    try { target = { siteId, pageId: identifier(raw.target.pageId, "$target.pageId"), locale: localeCode(raw.target.locale, "$target.locale") }; }
+    catch { throw new TypeError("invalid page release set target"); }
+    const key = `${target.pageId}\u0000${target.locale}`;
+    if (seen.has(key)) throw new TypeError("duplicate page release set target");
+    seen.add(key);
+    items.push({ target, expectedVersion: raw.expectedVersion,
+      ...(raw.componentsVersion === undefined ? {} : { componentsVersion: raw.componentsVersion }),
+      ...(raw.presentationVersion === undefined ? {} : { presentationVersion: raw.presentationVersion }) });
+  }
+  return items;
+}
+function parsePageReleaseSetPlan(value: unknown, siteId: string, operationId: string, expectedItems: readonly EditingPageReleaseSetItem[]): EditingPageReleaseSetPlan {
+  if (!plainRecord(value) || !exactKeys(value, ["siteId", "operationId", "confirmationToken", "domain", "items"])
+    || value.siteId !== siteId || value.operationId !== operationId || !isEditingApiVersion(value.confirmationToken) || typeof value.domain !== "string") {
+    throw new EditingApiClientError("invalid_response");
+  }
+  let items: EditingPageReleaseSetItem[], domain: URL;
+  try { items = normalizePageReleaseSetItems(value.items, siteId); domain = new URL(value.domain); }
+  catch { throw new EditingApiClientError("invalid_response"); }
+  if (stableJson(items) !== stableJson(expectedItems) || domain.protocol !== "https:" || domain.origin !== value.domain || domain.username || domain.password
+    || domain.pathname !== "/" || domain.search || domain.hash) throw new EditingApiClientError("invalid_response");
+  return { siteId, operationId, confirmationToken: value.confirmationToken, domain: value.domain, items };
+}
+function parsePageReleaseSetResult(value: unknown, siteId: string, operationId: string, expectedItems?: readonly EditingPageReleaseSetItem[]): Exclude<EditingPageReleaseSetResult, { status: "conflict" }> {
+  if (!plainRecord(value) || !exactKeys(value, ["status", "operationId", "items"]) || value.operationId !== operationId
+    || value.status !== "completed" && value.status !== "publishing" || !Array.isArray(value.items) || value.items.length < 2 || value.items.length > 50
+    || expectedItems && value.items.length !== expectedItems.length) throw new EditingApiClientError("invalid_response");
+  const seen = new Set<string>(), items: EditingPageReleaseSetItemResult[] = [];
+  let hasPending = false;
+  for (const [index, raw] of value.items.entries()) {
+    if (!plainRecord(raw) || !plainRecord(raw.target) || !exactKeys(raw.target, ["siteId", "pageId", "locale"]) || raw.target.siteId !== siteId) {
+      throw new EditingApiClientError("invalid_response");
+    }
+    let target: EditingPageTarget;
+    try { target = { siteId, pageId: identifier(raw.target.pageId, "$target.pageId"), locale: localeCode(raw.target.locale, "$target.locale") }; }
+    catch { throw new EditingApiClientError("invalid_response"); }
+    const expected = expectedItems?.[index];
+    if (expected && (target.pageId !== expected.target.pageId || target.locale !== expected.target.locale)) throw new EditingApiClientError("invalid_response");
+    const key = `${target.pageId}\u0000${target.locale}`;
+    if (seen.has(key)) throw new EditingApiClientError("invalid_response");
+    seen.add(key);
+    if (raw.status === "released") {
+      if (!exactKeys(raw, ["target", "status", "version"]) || !isEditingApiVersion(raw.version)) throw new EditingApiClientError("invalid_response");
+      items.push({ target, status: "released", version: raw.version });
+    } else if (raw.status === "conflict" || raw.status === "pending") {
+      if (!exactKeys(raw, ["target", "status"])) throw new EditingApiClientError("invalid_response");
+      if (raw.status === "pending") hasPending = true;
+      items.push({ target, status: raw.status });
+    } else throw new EditingApiClientError("invalid_response");
+  }
+  if ((value.status === "publishing") !== hasPending) throw new EditingApiClientError("invalid_response");
+  return { status: value.status, operationId, items };
+}
 function releaseRequestBody(value: EditingPageReleaseInput): Record<string, unknown> {
   const request = value as unknown as Record<string, unknown>;
   const allowed = ["expectedVersion", "action", "revision", "componentsVersion", "presentationVersion"];
@@ -393,6 +459,50 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       const document = parseEditingPageDocumentEnvelope(body.document);
       assertTarget(document, target);
       return { status: "released", operationId, version: body.version, document };
+    },
+    async preparePageReleaseSet(itemsValue, signal, requestedOperationId = crypto.randomUUID()) {
+      const items = normalizePageReleaseSetItems(itemsValue, siteId);
+      if (!OPERATION_ID.test(requestedOperationId)) throw new TypeError("invalid page release set operation ID");
+      const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/pages.release-set-plan`, "POST",
+        { siteId, operationId: requestedOperationId, items }, signal);
+      if (response.status === 409 && body.error === "version_conflict") throw new EditingApiClientError("version_conflict", 409);
+      if (response.status === 409 && body.error === "duplicate_operation") throw new EditingApiClientError("duplicate_operation", 409);
+      if (!response.ok) throw apiFailure(body, response.status);
+      if (!exactKeys(body, ["plan"])) throw new EditingApiClientError("invalid_response", response.status);
+      return parsePageReleaseSetPlan(body.plan, siteId, requestedOperationId, items);
+    },
+    async publishPageReleaseSet(planValue, signal) {
+      if (!plainRecord(planValue) || typeof planValue.operationId !== "string" || !OPERATION_ID.test(planValue.operationId)) throw new TypeError("invalid page release set plan");
+      const itemsValue = normalizePageReleaseSetItems(planValue.items, siteId);
+      const plan = parsePageReleaseSetPlan(planValue, siteId, planValue.operationId, itemsValue);
+      const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/pages.release-set`, "POST", {
+        siteId, operationId: plan.operationId, confirmationToken: plan.confirmationToken, items: plan.items
+      }, signal);
+      if (response.status === 409 && body.error === "version_conflict") return { status: "conflict" };
+      if (response.status === 409 && body.error === "duplicate_operation") throw new EditingApiClientError("duplicate_operation", 409);
+      if (!response.ok) throw apiFailure(body, response.status);
+      try { return parsePageReleaseSetResult(body, siteId, plan.operationId, plan.items); }
+      catch (error) {
+        if (error instanceof EditingApiClientError) throw new EditingApiClientError("invalid_response", response.status);
+        throw error;
+      }
+    },
+    async pageReleaseSetStatus(operationId, signal) {
+      if (!OPERATION_ID.test(operationId)) throw new TypeError("invalid page release set operation ID");
+      const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/pages.release-set-status/${encodeURIComponent(operationId)}`, "GET", undefined, signal);
+      if (!response.ok) throw apiFailure(body, response.status);
+      if (body.operationId !== operationId || !["unknown", "received", "completed"].includes(String(body.status))) throw new EditingApiClientError("invalid_response", response.status);
+      if (body.status !== "completed") {
+        if (!exactKeys(body, ["status", "operationId"])) throw new EditingApiClientError("invalid_response", response.status);
+        return body as EditingPageReleaseSetStatus;
+      }
+      if (!exactKeys(body, ["status", "operationId", "httpStatus", "result"]) || !Number.isInteger(body.httpStatus)
+        || Number(body.httpStatus) < 100 || Number(body.httpStatus) > 599 || !plainRecord(body.result)) throw new EditingApiClientError("invalid_response", response.status);
+      if (body.httpStatus === 200) {
+        try { return { status: "completed", operationId, httpStatus: 200, result: parsePageReleaseSetResult(body.result, siteId, operationId) }; }
+        catch { throw new EditingApiClientError("invalid_response", response.status); }
+      }
+      return body as EditingPageReleaseSetStatus;
     },
     async readBreakpointSettings(signal) {
       const path = `/sites/${encodeURIComponent(siteId)}/operations/site.breakpoints.read`;
