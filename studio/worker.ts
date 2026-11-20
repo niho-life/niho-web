@@ -1549,7 +1549,7 @@ function kamakuraCliPreviewOrigin(env: Env, identity: BridgeActor): string | und
   return origin;
 }
 
-type EditingCapability = "pages.read" | "pages.edit" | "pages.publish" | "site.settings.read" | "site.settings.write";
+type EditingCapability = "pages.read" | "pages.edit" | "pages.publish" | "site.settings.read" | "site.settings.write" | "cms.read" | "cms.edit" | "cms.publish";
 
 function kamakuraEditingCapability(method: string, pathname: string, search: string): EditingCapability | null {
   if (pathname === "/sites/kamakura/capabilities") return method === "GET" && !search ? "pages.read" : null;
@@ -1567,6 +1567,21 @@ function kamakuraEditingCapability(method: string, pathname: string, search: str
     if (method !== expectedMethod) throw new AuthenticationError("editing API method mismatch");
     return operation === "site.breakpoints.read" ? "site.settings.read" : "site.settings.write";
   }
+  const cms = /^\/sites\/kamakura\/operations\/(cms\.(?:schema|list|read|create|save|publish-plan|publish|operation-status))(?:\/([A-Za-z0-9_][A-Za-z0-9._~-]{0,127}))?(?:\/([A-Za-z0-9_][A-Za-z0-9._~-]{0,127}))?$/u.exec(pathname);
+  if (cms) {
+    if (search) return null;
+    const operation = cms[1]!;
+    const expectedMethod = operation === "cms.schema" || operation === "cms.list" || operation === "cms.read" || operation === "cms.operation-status"
+      ? "GET" : operation === "cms.save" ? "PUT" : "POST";
+    if (method !== expectedMethod) throw new AuthenticationError("editing API method mismatch");
+    const ids = operation === "cms.schema" ? cms[2] === undefined && cms[3] === undefined
+      : operation === "cms.list" || operation === "cms.create" ? cms[2] !== undefined && cms[3] === undefined
+        : operation === "cms.operation-status" ? cms[2] !== undefined && cms[3] === undefined && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(cms[2])
+          : cms[2] !== undefined && cms[3] !== undefined;
+    if (!ids) return null;
+    return operation === "cms.schema" || operation === "cms.list" || operation === "cms.read" || operation === "cms.operation-status"
+      ? "cms.read" : operation === "cms.publish-plan" || operation === "cms.publish" ? "cms.publish" : "cms.edit";
+  }
   const match = /^\/sites\/kamakura\/operations\/(pages\.(?:read|save|release-plan|release))\/([a-z][a-z0-9-]{0,59})$/u.exec(pathname);
   if (!match) return null;
   const query = new URLSearchParams(search), operation = match[1]!;
@@ -1580,7 +1595,7 @@ async function kamakuraEditingDelegationToken(env: Env, identity: AccessIdentity
   const encode = (value: unknown) => encodeBase64Url(new TextEncoder().encode(JSON.stringify(value)));
   const header = encode({ alg: "HS256", typ: "JWT" });
   const now = Math.floor(Date.now() / 1000);
-  const claims = encode({ iss: "niho-web-studio-edit", aud: "kamakura-site", sub: identity.subject, scope: [...capabilities], iat: now, exp: now + 60, jti: crypto.randomUUID() });
+  const claims = encode({ iss: "niho-web-studio-edit", aud: "kamakura-site", sub: identity.subject, email: identity.email, scope: [...capabilities], iat: now, exp: now + 60, jti: crypto.randomUUID() });
   const signingInput = `${header}.${claims}`;
   const key = await crypto.subtle.importKey("raw", bridgeSecret(env.KAMAKURA_STUDIO_BRIDGE_SECRET).slice().buffer, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const signature = encodeBase64Url(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(signingInput))));
@@ -1598,9 +1613,10 @@ async function signedKamakuraEditingApiRequest(request: Request, env: Env, ident
   if (!capability) return json({ error: "not_found" }, 404);
 
   if (request.method === "GET" && (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length")))) return json({ error: "invalid_request" }, 400);
-  const body = request.method === "GET" ? new Uint8Array() : await readBoundedBody(request, KAMAKURA_EDITING_API_MAX_BODY_BYTES, identity);
+  const bodyMaximum = upstreamSuffix.startsWith("/sites/kamakura/operations/cms.save/") ? 2 * 1024 * 1024 : KAMAKURA_EDITING_API_MAX_BODY_BYTES;
+  const body = request.method === "GET" ? new Uint8Array() : await readBoundedBody(request, bodyMaximum, identity);
   const capabilities: readonly EditingCapability[] = upstreamSuffix === "/sites/kamakura/capabilities"
-    ? ["pages.read", "pages.edit", "pages.publish", "site.settings.read", "site.settings.write"]
+    ? ["pages.read", "pages.edit", "pages.publish", "site.settings.read", "site.settings.write", "cms.read", "cms.edit", "cms.publish"]
     : [capability];
   let bearer: string;
   try { bearer = await kamakuraEditingDelegationToken(env, identity, capabilities); }
@@ -1616,7 +1632,7 @@ async function signedKamakuraEditingApiRequest(request: Request, env: Env, ident
   const controller = new AbortController();
   const abortForRequest = () => controller.abort();
   request.signal.addEventListener("abort", abortForRequest, { once: true });
-  const timeout = setTimeout(() => controller.abort(), capability === "pages.publish" ? KAMAKURA_RELEASE_TIMEOUT_MILLISECONDS : EDITOR_TIMEOUT_MILLISECONDS);
+  const timeout = setTimeout(() => controller.abort(), capability === "pages.publish" || capability === "cms.publish" ? KAMAKURA_RELEASE_TIMEOUT_MILLISECONDS : EDITOR_TIMEOUT_MILLISECONDS);
   try {
     const upstream = new Request(`${KAMAKURA_EDITING_API_ORIGIN}${upstreamPath}${url.search}`, {
       method: request.method,

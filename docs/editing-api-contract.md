@@ -123,4 +123,4 @@ Cookie認証を使うホストは、write requestのCSRF境界とCORSも自分�
 
 ## 実装状況
 
-ページ本文・ページ管理・ブレークポイント・CMS項目の共通wireとCUI clientを実装しています。対応hostではStudio GUIのCMS主要操作もBFFから同じサイトAPIへ接続します。Studio GUIは短期の操作別tokenだけを委任し、Access cookie/JWTをサイトへ転送しません。旧Studio D1にだけブレークポイント値がある場合は、初回読取でその版をexpectedVersionとしてサイトAPIへ一度だけ移します。以後の読取・保存の正本はサイト側です。素材と翻訳は別のhost操作です。
+ページ本文・ページ管理・ブレークポイント・CMS項目の共通wireとCUI clientを実装しています。鎌倉サイトではStudio GUIのCMS schema、一覧、読取、作成、保存、公開をBFFから同じサイトAPIへ接続します。AIの `niho-edit` CLIもサイトoriginを直接呼ぶため、両方の操作がホストの同じ保存・検証・版管理・監査を使います。Studio GUIは短期の操作別tokenだけを委任し、Access cookie/JWTをサイトへ転送しません。旧Studio D1にだけブレークポイント値がある場合は、初回読取でその版をexpectedVersionとしてサイトAPIへ一度だけ移します。以後の読取・保存の正本はサイト側です。素材と翻訳は別のhost操作です。

@@ -121,6 +121,120 @@ test("CMS adapter: 最後に読んだ値との差分だけを保存し、version
   await assert.rejects(adapter.loadItem({ collectionId: "posts", itemId: "../schema" }, signal()), /正しくありません/u);
 });
 
+test("CMS adapter: 共通 API が見つかると主要な GUI 操作を同じ version/operation 契約へ送る", async (t) => {
+  const { createKamakuraCmsAdapter } = await loadAdapter();
+  const definition = parseCollectionSchemaResult(schema()).collections[0];
+  const calls = [];
+  const commonApi = {
+    async discover() { calls.push(["discover"]); return { operations: ["cms.schema", "cms.list", "cms.read", "cms.create", "cms.save", "cms.publish-plan", "cms.publish", "cms.operation-status"].map((id) => ({ id })) }; },
+    async readCmsSchema() { calls.push(["schema"]); return [definition]; },
+    async listCmsItems(collectionId) { calls.push(["list", collectionId]); return []; },
+    async readCmsItem(target) { calls.push(["read", target]); return item(); },
+    async createCmsItem(collectionId, operationId) { calls.push(["create", collectionId, operationId]); return item({ id: "created-post", title: "" }, {}); },
+    async saveCmsItem(target, expectedVersion, operationId, values) {
+      calls.push(["save", target, expectedVersion, operationId, values]);
+      return { status: "saved", item: item({ version: "v2", title: "編集済み" }, { ...rawValues, title: "編集済み" }) };
+    },
+    async prepareCmsPublish(target, expectedVersion, operationId, _signal, redirect) {
+      calls.push(["publish-plan", target, expectedVersion, operationId, redirect]);
+      return { target, expectedVersion, operationId, confirmationToken: "token", item: item({ version: expectedVersion }), redirect };
+    },
+    async publishCmsItem(plan) { calls.push(["publish", plan]); return { status: "publishing", operationId: plan.operationId, item: item({ status: "publishing", version: "v3" }) }; },
+    async cmsOperationStatus(operationId) { return { status: "unknown", operationId }; }
+  };
+  const adapter = createKamakuraCmsAdapter({ siteOrigin: SITE, commonApi });
+  const schemaResult = parseCollectionSchemaResult(await adapter.loadSchema(signal()));
+  assert.equal(schemaResult.collections[0].id, "posts");
+  assert.deepEqual(await adapter.listItems({ collectionId: "posts" }, signal()), { status: "ready", collectionId: "posts", items: [] });
+  assert.equal((await adapter.loadItem({ collectionId: "posts", itemId: "morning-walk" }, signal())).item.version, "v1");
+  const created = parseCollectionCreateResult(await adapter.createItem({ collectionId: "posts" }, signal()), definition);
+  assert.equal(created.item.id, "created-post");
+  const saved = parseCollectionSaveResult(await adapter.saveDraft({ collectionId: "posts", itemId: "morning-walk", version: "v1", values: { ...rawValues, title: "編集済み" } }, signal()), definition, "morning-walk");
+  assert.deepEqual([saved.status, saved.item.version], ["saved", "v2"]);
+  assert.deepEqual(calls.find(([name]) => name === "save")[4], parseCollectionValues({ ...rawValues, title: "編集済み" }, definition),
+    "共通APIは全フィールドを置換するため、正規化した項目全体を送る");
+  const published = parseCollectionPublishResult(await adapter.publish({ collectionId: "posts", itemId: "morning-walk", version: "v2", redirect: false }, signal()), definition, "morning-walk");
+  assert.deepEqual([published.status, published.item.version], ["publishing", "v3"]);
+  assert.equal(calls.find(([name]) => name === "publish-plan")[4], false, "redirect 選択も計画へ渡す");
+  assert.equal(calls.some(([name]) => name === "publish"), true);
+  assert.equal(calls.filter(([name]) => name === "discover").length, 1);
+  assert.equal(calls.some(([name]) => name === "legacy"), false);
+});
+
+test("CMS adapter: 共通 API の作成応答が失われた場合は同じ operation ID で再送する", async () => {
+  const { createKamakuraCmsAdapter } = await loadAdapter();
+  const definition = parseCollectionSchemaResult(schema()).collections[0];
+  const operationIds = [];
+  let attempts = 0;
+  const commonApi = {
+    async discover() { return { operations: ["cms.schema", "cms.list", "cms.read", "cms.create", "cms.save", "cms.publish-plan", "cms.publish", "cms.operation-status"].map((id) => ({ id })) }; },
+    async createCmsItem(_collectionId, operationId) {
+      operationIds.push(operationId);
+      if (attempts++ === 0) throw new Error("network timeout");
+      return item({ id: "created-post", title: "" }, {});
+    }
+  };
+  const adapter = createKamakuraCmsAdapter({ siteOrigin: SITE, commonApi });
+  await assert.rejects(adapter.createItem({ collectionId: definition.id }, signal()), /network timeout/u);
+  const created = parseCollectionCreateResult(await adapter.createItem({ collectionId: definition.id }, signal()), definition);
+  assert.equal(created.item.id, "created-post");
+  assert.equal(operationIds.length, 2);
+  assert.match(operationIds[0], /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu);
+  assert.equal(operationIds[1], operationIds[0]);
+});
+
+test("CMS adapter: 共通 API の保存・公開応答が失われた場合も同じ operation ID で再送する", async () => {
+  const { createKamakuraCmsAdapter } = await loadAdapter();
+  const definition = parseCollectionSchemaResult(schema()).collections[0];
+  const operationIds = { save: [], publish: [] };
+  let saveAttempts = 0, prepareAttempts = 0, publishAttempts = 0, statusAttempts = 0;
+  const publishStatusIds = [], appliedOperationIds = [];
+  const commonApi = {
+    async discover() { return { operations: ["cms.schema", "cms.list", "cms.read", "cms.create", "cms.save", "cms.publish-plan", "cms.publish", "cms.operation-status"].map((id) => ({ id })) }; },
+    async readCmsSchema() { return [definition]; },
+    async readCmsItem() { return item(); },
+    async saveCmsItem(_target, _version, operationId) {
+      operationIds.save.push(operationId);
+      if (saveAttempts++ === 0) throw new Error("network timeout");
+      return { status: "saved", item: item({ version: "v2", title: "編集済み" }, { ...rawValues, title: "編集済み" }) };
+    },
+    async prepareCmsPublish(target, expectedVersion, operationId, _signal, redirect) {
+      prepareAttempts++;
+      operationIds.publish.push(operationId);
+      return { target, expectedVersion, operationId, confirmationToken: "token", item: item({ version: expectedVersion }), redirect };
+    },
+    async publishCmsItem(plan) {
+      appliedOperationIds.push(plan.operationId);
+      if (publishAttempts++ < 2) throw new Error("network timeout");
+      return { status: "publishing", operationId: plan.operationId, item: item({ status: "publishing", version: "v3" }) };
+    },
+    async cmsOperationStatus(operationId) {
+      publishStatusIds.push(operationId);
+      if (statusAttempts++ === 0) return { status: "received", operationId };
+      return { status: "completed", operationId, httpStatus: 202, result: { status: "publishing", operationId,
+        item: item({ status: "publishing", version: "v3" }) } };
+    }
+  };
+  const adapter = createKamakuraCmsAdapter({ siteOrigin: SITE, commonApi });
+  await adapter.loadSchema(signal());
+  await adapter.loadItem({ collectionId: "posts", itemId: "morning-walk" }, signal());
+  const values = { ...parseCollectionValues(rawValues, definition), title: "編集済み" };
+  await assert.rejects(adapter.saveDraft({ collectionId: "posts", itemId: "morning-walk", version: "v1", values }, signal()), /network timeout/u);
+  const saved = parseCollectionSaveResult(await adapter.saveDraft({ collectionId: "posts", itemId: "morning-walk", version: "v1", values }, signal()), definition, "morning-walk");
+  assert.equal(saved.item.version, "v2");
+  assert.equal(operationIds.save.length, 2);
+  assert.equal(operationIds.save[1], operationIds.save[0]);
+
+  const publish = { collectionId: "posts", itemId: "morning-walk", version: "v2", redirect: false };
+  await assert.rejects(adapter.publish(publish, signal()), /network timeout/u);
+  await assert.rejects(adapter.publish(publish, signal()), /network timeout/u);
+  const published = parseCollectionPublishResult(await adapter.publish(publish, signal()), definition, "morning-walk");
+  assert.equal(published.item.version, "v3");
+  assert.equal(prepareAttempts, 1, "再試行で重複する公開計画を取得しない");
+  assert.equal(publishAttempts, 2, "完了済み結果を照会した後に公開を重ねて適用しない");
+  assert.deepEqual([...operationIds.publish, ...publishStatusIds, ...appliedOperationIds].every((id) => id === operationIds.publish[0]), true);
+});
+
 test("CMS adapter: 公開・非公開・複製・削除・予約を契約の形で呼び、画面の parser が読める形で返す", async (t) => {
   const { createKamakuraCmsAdapter } = await loadAdapter();
   const definition = parseCollectionSchemaResult(schema()).collections[0];

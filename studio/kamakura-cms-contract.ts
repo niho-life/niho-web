@@ -15,6 +15,8 @@ export const KAMAKURA_CMS_PROJECT_ID = "project-kamakura" as const;
 export const KAMAKURA_CMS_SITE_ID = "kamakura" as const;
 /** ブラウザが呼ぶ同一 origin の BFF。 */
 export const KAMAKURA_CMS_BASE = "/api/projects/project-kamakura/sites/kamakura/cms";
+/** CMS の主要操作で Studio GUI が使う、サイト origin の共通編集 API に対する BFF。 */
+export const KAMAKURA_EDITING_API_BASE = "/api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1";
 /** BFF が service binding で呼ぶ鎌倉の Worker の prefix。 */
 export const KAMAKURA_CMS_UPSTREAM_PREFIX = "/internal/studio/cms";
 /** 画像本体を直接 PUT する先（鎌倉の Worker）。 */

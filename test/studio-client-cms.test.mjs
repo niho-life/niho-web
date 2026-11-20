@@ -5,12 +5,14 @@ import { after, test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
+import { EDITING_OPERATIONS } from "@niho/web/editing-api";
 import { at, dashboard } from "./project-view-fixtures.mjs";
 
 // Studio の client（studio/client.tsx）を jsdom で動かし、Dashboard の「CMS」が Worker の切替（site-admin の cmsView）で
 // 枠とコレクション画面に分かれることと、コレクション画面の URL の合わせ方を確かめる。値はすべて架空。
 const ORIGIN = "https://studio.example.test";
 const CMS = "/api/projects/project-kamakura/sites/kamakura/cms";
+const EDITING_API = "/api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1";
 const project = { id: "project-kamakura", name: "架空の鎌倉プロジェクト", site: { id: "kamakura", name: "架空のサイト", domains: ["https://site.example.test"] }, members: [{ userId: "member_one", displayName: "参加者（架空）" }] };
 const directory = { status: "ready", entries: [{ project, summary: { projectId: project.id, siteId: project.site.id, publicationStatus: "published", publishedUrl: project.site.domains[0], thumbnail: null, updatedAt: at, lastAccessedAt: null, members: { status: "ready", data: [{ displayName: "一覧オーナー", role: "owner" }, { displayName: "一覧編集者", role: "editor" }] } } }] };
 const schema = {
@@ -74,6 +76,7 @@ function fakeApi(t) {
     if (target === "/api/projects") return json(directory);
     if (target === "/api/projects/project-kamakura/sites/kamakura/dashboard") return json(dashboard(project));
     if (target === "/api/projects/project-kamakura/sites/kamakura/site-admin") return json({ connected: true });
+    if (target === `${ORIGIN}${EDITING_API}/sites/kamakura/capabilities`) return json({ apiVersion: "v1", siteId: "kamakura", operations: [EDITING_OPERATIONS[0]] });
     if (target === "/api/projects/project-kamakura/sites/kamakura/membership") return json({
       status: "ready", projectName: project.name, siteName: project.site.name,
       members: [{ subject: "subject-one", email: "owner@example.test", role: "owner", displayName: "オーナー（架空）", createdAt: at, isCurrent: true }],
@@ -131,7 +134,7 @@ test("Studio の CMS は、コレクション画面で項目を開き、本文�
   assert.ok(document.querySelector(".studio-content-project > .nw-project-dashboard .pv-project-end .studio-account"));
   assert.equal(document.querySelector(".studio-legacy-link"), null);
   // URL の項目を最初に開き、本文は TipTap の部品（ProseMirror）で出す
-  assert.ok(calls.includes(`GET ${CMS}/collections/posts/items/morning-walk`));
+  assert.ok(calls.includes(`GET ${CMS}/collections/posts/items/morning-walk`), JSON.stringify(calls));
   assert.ok(calls.includes(`GET ${CMS}/collections/posts/items/morning-walk/english-publication`));
   assert.equal(document.querySelector('[data-field="title"] input')?.value, "海辺の朝さんぽ");
   assert.match(document.querySelector(".cw-english-publications")?.textContent ?? "", /記事ページ.*失敗（再試行可能）/su);
