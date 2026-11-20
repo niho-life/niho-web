@@ -1,10 +1,10 @@
 # ページ・サイト設定編集HTTP契約
 
-`@niho/web/editing-api` は、GUIと機械クライアントが同じページ本文・CMS項目・ページ管理・サイト設定の正本を編集するためのReact非依存HTTP契約です。Studio UIやStudio Workerを必要条件にしません。各サイトのホストがhandlerを組み込み、認証・権限・永続化・監査記録・公開を所有します。Studio GUIとCUIは同じ操作カタログとwire形式を使い、各クライアントの操作履歴をホストのactorと版に結び付けます。
+`@niho/web/editing-api` は、GUIと機械クライアントが同じページ本文・CMS項目・ページ管理・サイト設定・素材の正本を編集するためのReact非依存HTTP契約です。Studio UIやStudio Workerを必要条件にしません。各サイトのホストがhandlerを組み込み、認証・権限・永続化・監査記録・公開を所有します。Studio GUIとCUIは同じ操作カタログとwire形式を使い、各クライアントの操作履歴をホストのactorと版に結び付けます。
 
-`@niho/web/editing-client` の `createPageEditingApiClient` は同じwire契約を呼ぶReact非依存clientです。ブラウザーのGUIは既定のsame-origin credentialsまたはhost提供headerを使え、Node CLIはbearer headerと `credentials: "omit"` を使えます。GUIと `niho-edit` CLIはページ本文・CMS項目・ページ管理・ブレークポイントの同じ操作を呼べます。Studio GUIはAccess sessionをWorker BFFで短期の操作別tokenへ委任し、サイトoriginの共通APIへservice bindingで接続します。ブラウザーのAccess tokenやcookieはサイトへ転送しません。
+`@niho/web/editing-client` の `createPageEditingApiClient` は同じwire契約を呼ぶReact非依存clientです。ブラウザーのGUIは既定のsame-origin credentialsまたはhost提供headerを使え、Node CLIはbearer headerと `credentials: "omit"` を使えます。GUIと `niho-edit` CLIはページ本文・CMS項目・ページ管理・ブレークポイント・素材の同じ操作を呼べます。Studio GUIはAccess sessionをWorker BFFで短期の操作別tokenへ委任し、サイトoriginの共通APIへservice bindingで接続します。ブラウザーのAccess tokenやcookieはサイトへ転送しません。
 
-Studio GUIはページの表示・編集材料の一部（presentation metadata、英語公開状態）を取得するため、引き続きread-onlyの既存snapshot routeも併用します。日本語本文・CMS項目・ページ管理の書込は共通APIを使います。素材と翻訳は別操作です。
+Studio GUIはページの表示・編集材料の一部（presentation metadata、英語公開状態）を取得するため、引き続きread-onlyの既存snapshot routeも併用します。日本語本文・CMS項目・ページ管理・素材の書込は共通APIを使います。翻訳は別のhost操作です。
 
 ## 操作カタログ
 
@@ -29,6 +29,13 @@ Studio GUIはページの表示・編集材料の一部（presentation metadata�
 | `cms.publish-plan` | POST | `/sites/{siteId}/operations/cms.publish-plan/{collectionId}/{itemId}` | `cms.publish` | `{ expectedVersion, operationId, redirect? }` | `{ plan }` |
 | `cms.publish` | POST | `/sites/{siteId}/operations/cms.publish/{collectionId}/{itemId}` | `cms.publish` | `{ expectedVersion, operationId, confirmationToken, redirect? }` | `{ status, operationId, item }` |
 | `cms.operation-status` | GET | `/sites/{siteId}/operations/cms.operation-status/{operationId}` | `cms.read` | site / operation ID | `{ status, operationId, ... }` |
+| `assets.list` | GET | `/sites/{siteId}/operations/assets.list` | `assets.read` | search, kind, folder, provider, cursor, recent | `{ assets, folders, ... }` |
+| `assets.usages` | GET | `/sites/{siteId}/operations/assets.usages/{provider}/{assetId}` | `assets.read` | stable asset reference | `{ usages }` |
+| `assets.resolve` | POST | `/sites/{siteId}/operations/assets.resolve` | `assets.read` | `{ references }` | `{ assets }` with host delivery URLs |
+| `assets.update` | PUT | `/sites/{siteId}/operations/assets.update/{provider}/{assetId}` | `assets.edit` | `{ expectedVersion, changes }` | saved metadata, conflict, or rejection |
+| `assets.upload-intent` | POST | `/sites/{siteId}/operations/assets.upload-intent` | `assets.upload` | name, MIME, bytes, provider | one-time upload URL/token and asset ID |
+| `assets.delete` | POST | `/sites/{siteId}/operations/assets.delete/{provider}/{assetId}` | `assets.delete` | `{ expectedVersion }` | deleted, in-use, conflict, or rejection |
+| `assets.restore` | POST | `/sites/{siteId}/operations/assets.restore/{provider}/{assetId}` | `assets.delete` | `{ expectedVersion }` | restored, conflict, or rejection |
 
 `pages.save` は `expectedVersion` を原子的に比較します。競合時はHTTP 409と `version_conflict` を返し、ホストは古い下書きを上書きしません。documentは受信側で `parsePageDocument` を通し、pathのsite/pageとqueryのlocaleに一致しない文書、任意HTML・JavaScript・CSSなど検証に失敗する値はHTTP 400 `invalid_request` で拒否します。登録ブロック・部品インスタンス・サイト共通スタイルを使うホストは、adapterの `validationContext(actor, target)` から信頼済みの `blocks`・`components`・`siteStyles` を渡します。読み取り、入力文書、保存後の正規文書の検証に同じcontextを使います。
 
@@ -38,9 +45,11 @@ Studio GUIはページの表示・編集材料の一部（presentation metadata�
 
 `cms.schema` はホストの `CollectionDefinition` を返します。`cms.list` / `cms.read` は一覧と項目の読み取り、`cms.create` / `cms.save` は下書きの作成と版付き保存、`cms.publish-plan` / `cms.publish` は確認token付き二段階公開を行います。`cms.create` は対象collectionの `capabilities.create` が有効な場合だけ受け付けます。保存値は定義済みフィールドで検証され、stale versionは409 `version_conflict` と現行項目を返します。保存・公開計画・公開適用のフィールド検証エラーは422 `validation_failed` と `fields` を返します。公開計画には対象・expectedVersion・operation ID・confirmation token・確認用項目を含め、`redirect` が指定された場合は公開時の転送設定も計画へ結び付けます。ホストはactor・入力・tokenを保存して同じIDの再送を冪等に処理します。`cms.operation-status` は操作結果の照会用です。各CMS操作は対応するadapter関数があるホストだけdiscoverに出します。
 
+`assets.*` は素材の安定IDを操作します。配信URLは `assets.resolve` の応答に限って返し、ページ文書へは保存しません。一覧・使用先・解決は `assets.read`、メタデータ更新は `assets.edit`、一時アップロード許可の発行は `assets.upload`、削除と復元は `assets.delete` を個別に要求します。更新・削除・復元は `expectedVersion` をホストが比較します。`assets.upload-intent` は画像本体を受け取らず、短命の一回限りtokenを返します。クライアントは本体を `PUT` する前に、URLのHTTPS originがAPI originか、明示的に信頼設定したupload originと一致することを確認し、tokenをそのorigin以外へ送ってはいけません。ホストは実データの形式・サイズ・内容を再検査し、操作主体と結果を監査記録へ結び付けます。
+
 ## CUIでの編集
 
-`niho-edit` はホストAPI originへ直接接続し、ブラウザーやStudio画面を開きません。ホストが発行する短期tokenを環境変数 `NIHO_EDIT_TOKEN` から読み、ページ文書、CMS項目、ページ管理、サイト設定をJSONで操作します。書込には期待版を渡し、公開・作成・保存には呼出側が先に決めたoperation IDを付けます。タイムアウト後は同じIDと同じ入力で再試行できます。PageDocumentの完全な検証は信頼済みcontextを持つホストが行います。ブレークポイントもCMS項目も読取結果のversionを維持して保存します。
+`niho-edit` はホストAPI originへ直接接続し、ブラウザーやStudio画面を開きません。ホストが発行する短期tokenを環境変数 `NIHO_EDIT_TOKEN` から読み、ページ文書、CMS項目、ページ管理、サイト設定、素材をJSONで操作します。書込には期待版を渡し、公開・作成・保存には呼出側が先に決めたoperation IDを付けます。タイムアウト後は同じIDと同じ入力で再試行できます。PageDocumentの完全な検証は信頼済みcontextを持つホストが行います。ブレークポイント、CMS項目、素材メタデータは読取結果のversionを維持して保存します。
 
 ```sh
 niho-edit --origin https://site.example --site site-id discover
@@ -77,7 +86,18 @@ niho-edit --origin https://site.example --site site-id pages-catalog > pages.jso
 niho-edit --origin https://site.example --site site-id page-change-prepare --expected-version '<version>' --json change.json > plan.json
 # plan.json の影響を確認してから適用する
 niho-edit --origin https://site.example --site site-id page-change-apply --json plan.json
+
+niho-edit --origin https://site.example --site site-id assets-list --kind image --recent > assets.json
+niho-edit --origin https://site.example --site site-id assets-usages uploads image-123
+niho-edit --origin https://site.example --site site-id assets-resolve --json references.json
+niho-edit --origin https://site.example --site site-id assets-update uploads image-123 --json asset-update.json
+# API originと別のアップロード先を使うhostでは、そのHTTPS originを明示してから短命tokenを送る
+niho-edit --origin https://site.example --site site-id assets-upload ./sea.png --mime-type image/png --provider uploads --upload-origin https://uploads.example
+niho-edit --origin https://site.example --site site-id assets-delete uploads image-123 --expected-version '<version>'
+niho-edit --origin https://site.example --site site-id assets-restore uploads image-123 --expected-version '<version>'
 ```
+
+`--upload-origin` を固定して繰り返し使う場合は同じHTTPS originを `NIHO_EDIT_UPLOAD_ORIGIN` に設定できます。API originは常に許可されます。別originへ一回限りtokenを送るときは、コマンドまたは環境設定で送信先を明示します。
 
 `release-plan` の `--expected-version` は最新の `read` / `save` 結果から指定します。ロールバックは `--action rollback --revision <公開版>` を指定します。applyがタイムアウトした場合は計画ファイルと同じoperation IDを使って再送します。IDを変えると別操作として扱われます。
 
@@ -100,6 +120,7 @@ host adapterの最小実装は `npm run build` の後に `node examples/editing-
 - `publishPage` はexpectedVersionと一回限りconfirmation tokenを検証し、actor + operation ID + 同一入力の再送で最初の結果を返すように原子的に実装する。別入力で同じIDを再利用した場合は競合として拒否する。
 - ブレークポイント操作を公開するhostは `readBreakpointSettings` と `saveBreakpointSettings` を実装し、site単位の認可・expectedVersion CAS・actor監査を行う。
 - CMS操作を公開するhostは `readCmsSchema` / `listCmsItems` / `readCmsItem` / `createCmsItem` / `saveCmsItem` / `prepareCmsPublish` / `publishCmsItem` / `readCmsOperationStatus` を実装し、定義済みCollection値・scope権限・expectedVersion CASを検証する。create/save/publishはactor・operation ID・同一入力の結果を原子的に記録し、別入力の再利用を拒否する。
+- 素材操作を公開するhostは `listAssets` / `listAssetUsages` / `resolveAssets` / `updateAsset` / `createAssetUploadIntent` / `deleteAsset` / `restoreAsset` を実装し、provider・site・actorの権限、実データのMIME/サイズ/内容、expectedVersion、使用中素材を保存層で検証する。一時tokenは一つのassetと一回のPUTに限定し、actor・委任元・asset ID・version・結果を監査する。
 - actor、委任元、操作ID、対象、対象version、結果をホストの監査記録へ原子的に結び付ける。公開・配備はそれぞれ別権限の操作としてホストが実装する。
 
 複数サイトのWorkerでは `createRegisteredPageEditingApi` の登録表を使い、各サイトの認証・権限・保存先を個別adapterへ閉じ込めます。単一サイトだけを配信するホストは `createPageEditingApi` を直接mountできます。どちらも同じ操作カタログ、wire schema、入力検証、安定エラーを使います。
@@ -123,4 +144,4 @@ Cookie認証を使うホストは、write requestのCSRF境界とCORSも自分�
 
 ## 実装状況
 
-ページ本文・ページ管理・ブレークポイント・CMS項目の共通wireとCUI clientを実装しています。鎌倉サイトではStudio GUIのCMS schema、一覧、読取、作成、保存、公開をBFFから同じサイトAPIへ接続します。AIの `niho-edit` CLIもサイトoriginを直接呼ぶため、両方の操作がホストの同じ保存・検証・版管理・監査を使います。Studio GUIは短期の操作別tokenだけを委任し、Access cookie/JWTをサイトへ転送しません。旧Studio D1にだけブレークポイント値がある場合は、初回読取でその版をexpectedVersionとしてサイトAPIへ一度だけ移します。以後の読取・保存の正本はサイト側です。素材と翻訳は別のhost操作です。
+ページ本文・ページ管理・ブレークポイント・CMS項目・素材の共通wireとCUI clientを実装しています。Studio GUIはBFFから、AIの `niho-edit` CLIはサイトoriginへ直接、同じ素材の一覧・参照・更新・アップロード・削除・復元操作を呼びます。どちらもホストの同じ認可・保存・版管理・監査を使います。Studio GUIは短期の操作別tokenだけを委任し、Access cookie/JWTをサイトへ転送しません。旧Studio D1にだけブレークポイント値がある場合は、初回読取でその版をexpectedVersionとしてサイトAPIへ一度だけ移します。以後の読取・保存の正本はサイト側です。翻訳は別のhost操作です。

@@ -40,6 +40,37 @@ function run(args, { status = 200, result, expectedMethod, expectedUrl, expected
   });
 }
 
+function runUpload(args, { uploadUrl, expectedBytes, asset, trustedUploadOrigin = origin }) {
+  const source = `let calls = 0;
+    globalThis.fetch = async (url, init) => {
+      calls++;
+      if (calls === 1) {
+        if (String(url) !== ${JSON.stringify(`${origin}/api/edit/v1/sites/${siteId}/operations/assets.upload-intent`)} || init.method !== "POST") throw new Error("unexpected intent request");
+        if (new Headers(init.headers).get("Authorization") !== "Bearer fixture-token") throw new Error("missing editing token");
+        const body = JSON.parse(init.body);
+        if (JSON.stringify(body) !== ${JSON.stringify(JSON.stringify({ name: "sea.png", mimeType: "image/png", bytes: expectedBytes.length, folderId: null, provider: "kamakura-upload" }))}) throw new Error("invalid upload metadata");
+        return new Response(JSON.stringify({ uploadUrl: ${JSON.stringify(uploadUrl)}, uploadToken: "short-lived", assetId: ${JSON.stringify(asset.id)} }), { status: 201, headers: { "Content-Type": "application/json" } });
+      }
+      if (calls !== 2 || String(url) !== ${JSON.stringify(uploadUrl)} || init.method !== "PUT" || init.credentials !== "omit" || init.redirect !== "error") throw new Error("unexpected upload PUT");
+      if (new Headers(init.headers).get("Authorization") !== "Bearer short-lived" || new Headers(init.headers).get("Content-Type") !== "image/png") throw new Error("unsafe upload headers");
+      if (!Buffer.from(init.body).equals(Buffer.from(${JSON.stringify(Buffer.from(expectedBytes).toString("base64"))}, "base64"))) throw new Error("upload bytes differ");
+      return new Response(JSON.stringify({ asset: ${JSON.stringify(asset)} }), { status: 201, headers: { "Content-Type": "application/json" } });
+    };
+    process.on("beforeExit", () => { if (calls !== ${new URL(uploadUrl).origin === origin || new URL(uploadUrl).origin === trustedUploadOrigin ? 2 : 1}) throw new Error("unexpected upload request count"); });`;
+  const preload = `data:text/javascript,${encodeURIComponent(source)}`;
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--import", preload, command, "--origin", origin, "--site", siteId, ...args], {
+      env: { ...process.env, NIHO_EDIT_TOKEN: "fixture-token", NIHO_EDIT_UPLOAD_ORIGIN: trustedUploadOrigin }, stdio: ["pipe", "pipe", "pipe"]
+    });
+    child.stdin.end("");
+    let stdout = "", stderr = "";
+    child.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk; });
+    child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("close", (exitCode) => resolve({ exitCode, stdout, stderr }));
+  });
+}
+
 test("niho-edit reads a page over the host API without Studio or a browser", async () => {
   const path = `/api/edit/v1/sites/${siteId}/operations/pages.read/${pageId}?locale=${encodeURIComponent(locale)}`;
   const result = await run(["read", pageId, "--locale", locale], {
@@ -48,7 +79,64 @@ test("niho-edit reads a page over the host API without Studio or a browser", asy
   assert.equal(result.exitCode, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), { document: fixture, version: "v1" });
   assert.deepEqual(EDITING_OPERATIONS.map(({ id }) => id), ["pages.read", "pages.save", "pages.release-plan", "pages.release", "pages.catalog", "pages.change-prepare", "pages.change-apply",
-    "cms.schema", "cms.list", "cms.read", "cms.create", "cms.save", "cms.publish-plan", "cms.publish", "cms.operation-status", "site.breakpoints.read", "site.breakpoints.save"]);
+    "cms.schema", "cms.list", "cms.read", "cms.create", "cms.save", "cms.publish-plan", "cms.publish", "cms.operation-status", "site.breakpoints.read", "site.breakpoints.save",
+    "assets.list", "assets.usages", "assets.resolve", "assets.update", "assets.upload-intent", "assets.delete", "assets.restore"]);
+});
+
+test("niho-edit lists and updates stable assets through the shared host API", async (t) => {
+  const listed = await run(["assets-list", "--search", "sea", "--kind", "image", "--provider", "uploads", "--limit", "1", "--recent"], {
+    expectedMethod: "GET", expectedUrl: `${origin}/api/edit/v1/sites/${siteId}/operations/assets.list?search=sea&kind=image&limit=1&provider=uploads&recent=true`, result: { assets: [], folders: [] }
+  });
+  assert.equal(listed.exitCode, 0, listed.stderr);
+  assert.deepEqual(JSON.parse(listed.stdout), { assets: [], folders: [] });
+
+  const directory = await mkdtemp(join(tmpdir(), "niho-edit-assets-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const snapshotPath = join(directory, "asset.json");
+  await writeFile(snapshotPath, JSON.stringify({ version: "etag-v1", changes: { alt: "海辺" } }));
+  const updatePath = `/api/edit/v1/sites/${siteId}/operations/assets.update/uploads/sea`;
+  const asset = { provider: "uploads", id: "sea", siteId, kind: "image", status: "ready", name: "sea.webp", mimeType: "image/webp", bytes: 12, alt: "海辺", version: "etag-v2", updatedAt: "2026-11-20T00:00:00Z" };
+  const updated = await run(["assets-update", "uploads", "sea", "--json", snapshotPath], {
+    expectedMethod: "PUT", expectedUrl: `${origin}${updatePath}`, expectedBody: { expectedVersion: "etag-v1", changes: { alt: "海辺" } }, result: { status: "saved", asset }
+  });
+  assert.equal(updated.exitCode, 0, updated.stderr);
+  assert.deepEqual(JSON.parse(updated.stdout), { apiVersion: "v1", httpStatus: 200, operation: "assets.update", result: { status: "saved", asset } });
+});
+
+test("niho-edit uploads bytes with a same-origin one-time asset token", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "niho-edit-asset-upload-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const file = join(directory, "sea.png"), bytes = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  await writeFile(file, bytes);
+  const asset = { provider: "kamakura-upload", id: "123e4567-e89b-42d3-a456-426614174000", siteId, kind: "image", status: "ready", name: "sea.png", mimeType: "image/png", bytes: bytes.length, width: 1, height: 1, alt: "", version: "etag-v1", updatedAt: "2026-11-20T00:00:00Z" };
+  const uploadUrl = `${origin}/internal/studio/asset-upload/${asset.id}`;
+  const result = await runUpload(["assets-upload", file, "--mime-type", "image/png", "--provider", asset.provider], { uploadUrl, expectedBytes: bytes, asset });
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { apiVersion: "v1", httpStatus: 201, operation: "assets.upload", result: { status: "uploaded", asset } });
+});
+
+test("niho-edit uploads to a configured host upload origin", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "niho-edit-asset-upload-trusted-origin-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const file = join(directory, "sea.png"), bytes = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  await writeFile(file, bytes);
+  const asset = { provider: "kamakura-upload", id: "123e4567-e89b-42d3-a456-426614174000", siteId, kind: "image", status: "ready", name: "sea.png", mimeType: "image/png", bytes: bytes.length, width: 1, height: 1, alt: "", version: "etag-v1", updatedAt: "2026-11-20T00:00:00Z" };
+  const trustedUploadOrigin = "https://next-site.example";
+  const uploadUrl = `${trustedUploadOrigin}/internal/studio/asset-upload/${asset.id}`;
+  const result = await runUpload(["assets-upload", file, "--mime-type", "image/png", "--provider", asset.provider, "--upload-origin", trustedUploadOrigin], { uploadUrl, expectedBytes: bytes, asset, trustedUploadOrigin });
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout).result, { status: "uploaded", asset });
+});
+
+test("niho-edit refuses to send an upload token to an unconfigured different origin", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "niho-edit-asset-upload-origin-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const file = join(directory, "sea.png");
+  await writeFile(file, Buffer.from([1, 2, 3]));
+  const asset = { provider: "kamakura-upload", id: "123e4567-e89b-42d3-a456-426614174000", siteId, kind: "image", status: "ready", name: "sea.png", mimeType: "image/png", bytes: 3, alt: "", version: "etag-v1", updatedAt: "2026-11-20T00:00:00Z" };
+  const result = await runUpload(["assets-upload", file, "--mime-type", "image/png", "--provider", asset.provider], { uploadUrl: "https://evil.example/upload", expectedBytes: Buffer.from([1, 2, 3]), asset });
+  assert.equal(result.exitCode, 1);
+  assert.deepEqual(JSON.parse(result.stdout).result, { error: "invalid_upload_intent" });
 });
 
 test("niho-edit lists pages directly from the host API", async () => {

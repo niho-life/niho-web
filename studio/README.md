@@ -127,7 +127,9 @@ Kamakura の editor route にも Experience と同じ範囲限定 CSP 緩和を�
 
 ### Kamakura の素材ライブラリ（#85）
 
-Kamakura の `PageEditor` には `studio/kamakura-assets.ts` の素材 adapter を渡します。ブラウザが呼ぶのは同一 origin の `POST .../editor/assets/{list,upload-intent,update,usages,resolve}` と `GET .../editor/assets/<uuid>/preview`、そしてアップロード本体の `PUT https://next-kamakura.niho.life/internal/studio/asset-upload/<uuid>` だけです（Kamakura editor route の `connect-src` に固定）。
+Kamakura の `PageEditor` には `studio/kamakura-assets.ts` の素材 adapter を渡します。共通編集APIを実装したサイトでは、一覧・利用先・解決・metadata更新・upload intent を `.../editor/editing-api/v1/sites/kamakura/operations/assets.*` から呼びます。共通操作がまだ無い旧hostに限り、BFFの `POST .../editor/assets/{list,upload-intent,update,usages,resolve}` へfallbackします。非公開アップロードのプレビューは同一originの `GET .../editor/assets/<uuid>/preview` のままです。アップロード本体は `PUT https://next-kamakura.niho.life/internal/studio/asset-upload/<uuid>` へ直接送ります。
+
+共通操作の認証は、Access sessionを操作別capabilityの短期bearer tokenへ委任してサイトoriginにservice binding接続します。`forbidden` やhost障害は旧BFFへ迂回しません。アップロード先は `next-kamakura.niho.life` に固定し、応答のtokenは検査済みのHTTPS origin以外へ送らないでください。CLIは同じサイト共通APIを直接呼び、別のupload originを使う場合は `--upload-origin` または `NIHO_EDIT_UPLOAD_ORIGIN` に明示します。
 
 - BFF は要求ごとに Access `sub` と D1 の `owner` / `editor` membership を照合し、本文を検証して正規化した JSON だけを署名して service binding へ渡します。`siteId` は `kamakura`、出所は `kamakura-upload`（Studio からのアップロード。ID は UUID）・`kamakura-admin-upload`・`kamakura-studio`・`kamakura-cms`・`kamakura-approved-remote` に固定し、`update` と `upload-intent` は `kamakura-upload` だけを受けます。削除の route はありません。
 - 上流の `409 visual_editor_frozen` はそのまま返し、素材の拒否（413・415・507）は status を保って `{ "error": "asset_rejected" }` で返します。画面はこれで「大きすぎる」「形式」「容量」を表示します。それ以外の 4xx・5xx は従来どおり 503 `service_unavailable` と問い合わせ ID です。

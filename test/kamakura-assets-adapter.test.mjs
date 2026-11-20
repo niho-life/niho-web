@@ -150,3 +150,64 @@ test("Kamakura uploads go through the signed intent and a one-time direct PUT to
   handler = (url) => String(url).endsWith("/upload-intent") ? jsonResponse(intent, 201) : jsonResponse({ asset: { ...asset, id: "123e4567-e89b-42d3-a456-426614174001" } }, 201);
   await assert.rejects(kamakuraAssetLibrary.uploadAsset(request, signal()), /アップロード結果が正しくありません/u);
 });
+
+test("Kamakura Studio prefers the shared editing API for asset reads, resolution and metadata updates", async (t) => {
+  const { createKamakuraAssetLibrary } = await loadKamakuraAssetLibrary();
+  const uploaded = row("kamakura-upload", UUID);
+  const common = "https://studio.example/api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/operations";
+  const expected = [
+    [`${common}/assets.list?search=&kind=all&limit=60`, "GET"],
+    [`${common}/assets.usages/kamakura-upload/${UUID}`, "GET"],
+    [`${common}/assets.resolve`, "POST"],
+    [`${common}/assets.update/kamakura-upload/${UUID}`, "PUT"]
+  ];
+  let index = 0;
+  const requests = [];
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    const request = { url: String(url), method: init.method, credentials: init.credentials, authorization: new Headers(init.headers).get("Authorization") };
+    requests.push(request);
+    index++;
+    if (request.url.includes("assets.usages/")) return jsonResponse({ usages: [{ pageId: "home", locale: "ja", title: "Home", state: "published" }] });
+    if (request.url.endsWith("assets.resolve")) return jsonResponse({ assets: { [`kamakura-upload:${UUID}`]: { src: "/private/asset.webp" } } });
+    if (request.url.includes("assets.update/")) return jsonResponse({ status: "saved", asset: { ...uploaded, alt: "shore", version: "v2" } });
+    if (request.url.includes("assets.list")) return jsonResponse({ assets: [uploaded], folders: [] });
+    return jsonResponse({ status: "saved", asset: { ...uploaded, alt: "shore", version: "v2" } });
+  });
+  const adapter = createKamakuraAssetLibrary("https://studio.example");
+  const listing = await adapter.listAssets({ siteId: "kamakura", search: "", kind: "all", folderId: null, limit: 60 }, signal());
+  assert.equal(listing.assets[0].id, UUID);
+  assert.deepEqual(await adapter.listAssetUsages({ siteId: "kamakura", reference: { provider: "kamakura-upload", id: UUID } }, signal()),
+    [{ pageId: "home", locale: "ja", title: "Home", state: "published" }]);
+  assert.deepEqual(await adapter.resolveAssets({ siteId: "kamakura", references: [{ provider: "kamakura-upload", id: UUID }] }, signal()),
+    { [`kamakura-upload:${UUID}`]: { src: `${BASE}/${UUID}/preview` } });
+  assert.deepEqual(await adapter.updateAsset({ siteId: "kamakura", reference: { provider: "kamakura-upload", id: UUID }, expectedVersion: "v1", changes: { alt: "shore" } }, signal()),
+    { status: "saved", asset: { ...uploaded, alt: "shore", version: "v2", thumbnailUrl: `${BASE}/${UUID}/preview` } });
+  assert.equal(index, expected.length);
+  assert.deepEqual(requests.map(({ url, method }) => [url, method]), expected);
+  assert.ok(requests.every((request) => request.credentials === "same-origin" && request.authorization === null));
+});
+
+test("Kamakura Studio gets a shared API upload intent then sends the one-time token only to its fixed origin", async (t) => {
+  const { createKamakuraAssetLibrary } = await loadKamakuraAssetLibrary();
+  const assetId = UUID, intentUrl = `https://next-kamakura.niho.life/internal/studio/asset-upload/${assetId}`;
+  const intentPath = "https://studio.example/api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/operations/assets.upload-intent";
+  const file = new File([new Uint8Array([1, 2, 3])], "sea.png", { type: "image/png" });
+  let calls = 0;
+  const requests = [];
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    calls++;
+    requests.push({ url: String(url), method: init.method, credentials: init.credentials, authorization: new Headers(init.headers).get("Authorization"), body: init.body });
+    if (calls === 1) {
+      return jsonResponse({ uploadUrl: intentUrl, uploadToken: "short-lived", assetId }, 201);
+    }
+    return jsonResponse({ asset: row("kamakura-upload", assetId, { name: "sea.png", mimeType: "image/png", bytes: 3 }) }, 201);
+  });
+  const adapter = createKamakuraAssetLibrary("https://studio.example");
+  const result = await adapter.uploadAsset({ siteId: "kamakura", file, folderId: null, name: "sea.png", mimeType: "image/png", bytes: 3 }, signal());
+  assert.equal(result.status, "uploaded");
+  assert.equal(result.asset.id, assetId);
+  assert.equal(calls, 2);
+  assert.deepEqual(requests.map(({ url, method, credentials }) => [url, method, credentials]), [[intentPath, "POST", "same-origin"], [intentUrl, "PUT", "omit"]]);
+  assert.deepEqual(JSON.parse(requests[0].body), { folderId: null, name: "sea.png", mimeType: "image/png", bytes: 3, provider: "kamakura-upload" });
+  assert.equal(requests[1].authorization, "Bearer short-lived");
+});

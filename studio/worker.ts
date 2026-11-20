@@ -1549,7 +1549,8 @@ function kamakuraCliPreviewOrigin(env: Env, identity: BridgeActor): string | und
   return origin;
 }
 
-type EditingCapability = "pages.read" | "pages.edit" | "pages.publish" | "site.settings.read" | "site.settings.write" | "cms.read" | "cms.edit" | "cms.publish";
+type EditingCapability = "pages.read" | "pages.edit" | "pages.publish" | "site.settings.read" | "site.settings.write" | "cms.read" | "cms.edit" | "cms.publish"
+  | "assets.read" | "assets.edit" | "assets.upload" | "assets.delete";
 
 function kamakuraEditingCapability(method: string, pathname: string, search: string): EditingCapability | null {
   if (pathname === "/sites/kamakura/capabilities") return method === "GET" && !search ? "pages.read" : null;
@@ -1566,6 +1567,22 @@ function kamakuraEditingCapability(method: string, pathname: string, search: str
     const expectedMethod = operation === "site.breakpoints.read" ? "GET" : "PUT";
     if (method !== expectedMethod) throw new AuthenticationError("editing API method mismatch");
     return operation === "site.breakpoints.read" ? "site.settings.read" : "site.settings.write";
+  }
+  const assets = /^\/sites\/kamakura\/operations\/(assets\.(?:list|usages|resolve|update|upload-intent|delete|restore))(?:\/([A-Za-z][A-Za-z0-9_-]{0,79})\/([A-Za-z0-9][A-Za-z0-9._~-]{0,127}))?$/u.exec(pathname);
+  if (assets) {
+    const operation = assets[1]!;
+    const hasReference = assets[2] !== undefined && assets[3] !== undefined;
+    if (operation === "assets.list") {
+      if (hasReference || method !== "GET") throw new AuthenticationError("editing API method or path mismatch");
+      return "assets.read";
+    }
+    if (operation === "assets.usages" || operation === "assets.update" || operation === "assets.delete" || operation === "assets.restore") {
+      if (!hasReference || operation === "assets.usages" && method !== "GET" || operation === "assets.update" && method !== "PUT"
+        || (operation === "assets.delete" || operation === "assets.restore") && method !== "POST") throw new AuthenticationError("editing API method or path mismatch");
+      return operation === "assets.usages" ? "assets.read" : operation === "assets.update" ? "assets.edit" : "assets.delete";
+    }
+    if (hasReference || search || method !== "POST") throw new AuthenticationError("editing API method or path mismatch");
+    return operation === "assets.resolve" ? "assets.read" : "assets.upload";
   }
   const cms = /^\/sites\/kamakura\/operations\/(cms\.(?:schema|list|read|create|save|publish-plan|publish|operation-status))(?:\/([A-Za-z0-9_][A-Za-z0-9._~-]{0,127}))?(?:\/([A-Za-z0-9_][A-Za-z0-9._~-]{0,127}))?$/u.exec(pathname);
   if (cms) {
@@ -1616,7 +1633,7 @@ async function signedKamakuraEditingApiRequest(request: Request, env: Env, ident
   const bodyMaximum = upstreamSuffix.startsWith("/sites/kamakura/operations/cms.save/") ? 2 * 1024 * 1024 : KAMAKURA_EDITING_API_MAX_BODY_BYTES;
   const body = request.method === "GET" ? new Uint8Array() : await readBoundedBody(request, bodyMaximum, identity);
   const capabilities: readonly EditingCapability[] = upstreamSuffix === "/sites/kamakura/capabilities"
-    ? ["pages.read", "pages.edit", "pages.publish", "site.settings.read", "site.settings.write", "cms.read", "cms.edit", "cms.publish"]
+    ? ["pages.read", "pages.edit", "pages.publish", "site.settings.read", "site.settings.write", "cms.read", "cms.edit", "cms.publish", "assets.read", "assets.edit", "assets.upload", "assets.delete"]
     : [capability];
   let bearer: string;
   try { bearer = await kamakuraEditingDelegationToken(env, identity, capabilities); }

@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { DocumentValidationError, parsePageDocument } from "@niho/web/core";
 import {
   ASSET_LIMITS, INSERTABLE_IMAGE_TYPES, INSERTABLE_VIDEO_TYPES, assetErrorReason, assetKey, collectAssetReferences, formatBytes, isInsertableImage, isInsertableVideo, missingAssetReferences,
-  parseAssetAcquireResult, parseAssetDeleteResult, parseAssetListResult, parseAssetProviders, parseAssetUpdateResult, parseAssetUploadResult, parseAssetUsages, parseLibraryAsset,
+  parseAssetAcquireResult, parseAssetDeleteResult, parseAssetListResult, parseAssetProviders, parseAssetReference, parseAssetRestoreResult, parseAssetUpdateResult, parseAssetUploadIntent, parseAssetUploadResult, parseAssetUsages, parseLibraryAsset,
   parseResolvedAssets, uniqueAssetReferences
 } from "@niho/web/assets";
 import { createMemoryAssetLibrary } from "../examples/memory-asset-library.mjs";
@@ -81,9 +81,16 @@ test("library responses reject other sites, unsafe thumbnails, duplicates and un
   assert.deepEqual(parseAssetUploadResult({ status: "rejected", reason: "scan" }, "demo"), { status: "rejected", reason: "scan" });
   assert.deepEqual(parseAssetUpdateResult({ status: "conflict" }, "demo"), { status: "conflict" });
   assert.deepEqual(parseAssetDeleteResult({ status: "in-use", usages: [] }), { status: "in-use", usages: [] });
+  assert.deepEqual(parseAssetReference({ provider: "uploads", id: "sea" }), { provider: "uploads", id: "sea" });
+  assert.deepEqual(parseAssetUploadIntent({ uploadUrl: "https://host.example/internal/upload/asset-1", uploadToken: "short-token", assetId: "asset-1" }), { uploadUrl: "https://host.example/internal/upload/asset-1", uploadToken: "short-token", assetId: "asset-1" });
+  assert.deepEqual(parseAssetRestoreResult({ status: "restored" }), { status: "restored" });
   for (const [parse, value] of [[parseAssetUploadResult, { status: "uploaded", asset: asset({ siteId: "other" }) }], [parseAssetUploadResult, { status: "rejected", reason: "virus" }],
     [parseAssetUpdateResult, { status: "conflict", asset: asset() }], [parseAssetUpdateResult, { status: "rejected", reason: "quota" }], [parseAssetDeleteResult, { status: "gone" }],
-    [parseAssetDeleteResult, { status: "rejected", reason: "invalid" }], [parseAssetDeleteResult, { status: "deleted", usages: [] }]]) assert.throws(() => parse(value, "demo"), DocumentValidationError);
+    [parseAssetDeleteResult, { status: "rejected", reason: "invalid" }], [parseAssetDeleteResult, { status: "deleted", usages: [] }],
+    [parseAssetReference, { provider: "up:loads", id: "sea" }],
+    [parseAssetUploadIntent, { uploadUrl: "http://host.example/upload", uploadToken: "token", assetId: "asset-1" }],
+    [parseAssetUploadIntent, { uploadUrl: "https://host.example/upload?to=evil", uploadToken: "token", assetId: "asset-1" }],
+    [parseAssetRestoreResult, { status: "restored", version: "v1" }], [parseAssetRestoreResult, { status: "rejected", reason: "scan" }]]) assert.throws(() => parse(value, "demo"), DocumentValidationError);
 });
 
 test("only ready allowlisted images are insertable and sizes and errors are classified", () => {

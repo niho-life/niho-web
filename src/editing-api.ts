@@ -5,6 +5,12 @@ import type { EditorBreakpointSettings, EditorBreakpointSettingsSaveResult, Edit
 import { identifier, localeCode } from "./validation-utils.js";
 import type { SiteStyles } from "./site-styles.js";
 import { parseBreakpointSettings } from "./style-model.js";
+import { assetId } from "./validation-utils.js";
+import {
+  parseAssetDeleteResult, parseAssetListResult, parseAssetReference, parseAssetRestoreResult, parseAssetUpdateResult,
+  parseAssetUploadIntent, parseAssetUsages, parseResolvedAssets, ASSET_LIMITS,
+  type AssetListQuery, type AssetReference, type AssetUpdateRequest, type AssetUpdateResult, type ResolvedAssetMap
+} from "./assets.js";
 import {
   parseCollectionCreateResult, parseCollectionItem, parseCollectionItemResult, parseCollectionListResult, parseCollectionPublishResult,
   parseCollectionSaveResult, parseCollectionSchemaResult, parseCollectionValues,
@@ -29,7 +35,7 @@ export type EditingPageTarget = {
   readonly pageId: string;
   readonly locale: string;
 };
-export type EditingAuthorizationScope = { readonly siteId: string; readonly pageId?: string; readonly locale?: string; readonly collectionId?: string; readonly itemId?: string };
+export type EditingAuthorizationScope = { readonly siteId: string; readonly pageId?: string; readonly locale?: string; readonly collectionId?: string; readonly itemId?: string; readonly assetProvider?: string; readonly assetId?: string };
 export type EditingPageSnapshot = {
   readonly document: PageDocument;
   readonly version: string;
@@ -77,8 +83,10 @@ export type JsonSchema = boolean | {
 export type EditingOperationDefinition = {
   readonly id: "pages.read" | "pages.save" | "pages.release-plan" | "pages.release" | "pages.catalog" | "pages.change-prepare" | "pages.change-apply"
     | "site.breakpoints.read" | "site.breakpoints.save" | "cms.schema" | "cms.list" | "cms.read" | "cms.create" | "cms.save"
-    | "cms.publish-plan" | "cms.publish" | "cms.operation-status";
-  readonly capability: "pages.read" | "pages.edit" | "pages.publish" | "site.settings.read" | "site.settings.write" | "cms.read" | "cms.edit" | "cms.publish";
+    | "cms.publish-plan" | "cms.publish" | "cms.operation-status"
+    | "assets.list" | "assets.usages" | "assets.resolve" | "assets.update" | "assets.upload-intent" | "assets.delete" | "assets.restore";
+  readonly capability: "pages.read" | "pages.edit" | "pages.publish" | "site.settings.read" | "site.settings.write" | "cms.read" | "cms.edit" | "cms.publish"
+    | "assets.read" | "assets.edit" | "assets.upload" | "assets.delete";
   readonly method: "GET" | "PUT" | "POST";
   readonly path: string;
   readonly inputSchema: JsonSchema;
@@ -280,7 +288,48 @@ export const EDITING_OPERATIONS: readonly EditingOperationDefinition[] = Object.
     resultSchema: Object.freeze({ type: "object", required: Object.freeze(["status", "version"]), additionalProperties: false,
       properties: Object.freeze({ status: Object.freeze({ const: "saved" }), version: versionSchema }) }),
     errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found", "version_conflict"] as const)
-  })
+  }),
+  Object.freeze({ id: "assets.list", capability: "assets.read", method: "GET", path: "/sites/{siteId}/operations/assets.list?search={search}&kind={kind}&limit={limit}&folderId={folderId}&cursor={cursor}&provider={provider}&recent={recent}",
+    inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId", "search", "kind", "folderId", "limit"]), additionalProperties: false,
+      properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), search: Object.freeze({ type: "string", maxLength: 200 }), kind: Object.freeze({ type: "string", enum: Object.freeze(["all", "image", "video", "pdf", "other"]) }),
+        folderId: Object.freeze({ oneOf: Object.freeze([Object.freeze({ type: "string", maxLength: 128 }), Object.freeze({ const: null })]) }), limit: Object.freeze({ type: "integer", minimum: 1, maximum: ASSET_LIMITS.listAssets }),
+        cursor: Object.freeze({ type: "string", maxLength: ASSET_LIMITS.cursorLength }), provider: Object.freeze({ type: "string", maxLength: 80 }), recent: Object.freeze({ type: "boolean" }) }) }),
+    resultSchema: Object.freeze({ type: "object", required: Object.freeze(["assets", "folders"]), additionalProperties: false,
+      properties: Object.freeze({ assets: Object.freeze({ type: "array", maxItems: ASSET_LIMITS.listAssets, items: Object.freeze({ type: "object" }) }), folders: Object.freeze({ type: "array", maxItems: ASSET_LIMITS.folders, items: Object.freeze({ type: "object" }) }),
+        quota: Object.freeze({ type: "object" }), upload: Object.freeze({ type: "object" }), nextCursor: Object.freeze({ type: "string" }) }) }),
+    errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found"] as const) }),
+  Object.freeze({ id: "assets.usages", capability: "assets.read", method: "GET", path: "/sites/{siteId}/operations/assets.usages/{provider}/{assetId}",
+    inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId", "provider", "assetId"]), additionalProperties: false, properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), provider: Object.freeze({ type: "string" }), assetId: Object.freeze({ type: "string" }) }) }),
+    resultSchema: Object.freeze({ type: "object", required: Object.freeze(["usages"]), additionalProperties: false, properties: Object.freeze({ usages: Object.freeze({ type: "array", maxItems: ASSET_LIMITS.usages, items: Object.freeze({ type: "object" }) }) }) }),
+    errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found"] as const) }),
+  Object.freeze({ id: "assets.resolve", capability: "assets.read", method: "POST", path: "/sites/{siteId}/operations/assets.resolve",
+    inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId", "references"]), additionalProperties: false, properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), references: Object.freeze({ type: "array", maxItems: ASSET_LIMITS.resolvedAssets, items: Object.freeze({ type: "object" }) }) }) }),
+    resultSchema: Object.freeze({ type: "object", required: Object.freeze(["assets"]), additionalProperties: false, properties: Object.freeze({ assets: Object.freeze({ type: "object", additionalProperties: true }) }) }),
+    errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found"] as const) }),
+  Object.freeze({ id: "assets.update", capability: "assets.edit", method: "PUT", path: "/sites/{siteId}/operations/assets.update/{provider}/{assetId}",
+    inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId", "provider", "assetId", "expectedVersion", "changes"]), additionalProperties: false, properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), provider: Object.freeze({ type: "string" }), assetId: Object.freeze({ type: "string" }), expectedVersion: versionSchema, changes: Object.freeze({ type: "object", additionalProperties: false,
+      properties: Object.freeze({ name: Object.freeze({ type: "string", maxLength: 200 }), alt: Object.freeze({ type: "string", maxLength: 1000 }), folderId: Object.freeze({ oneOf: Object.freeze([Object.freeze({ type: "string", maxLength: 128 }), Object.freeze({ const: null })]) }) }) }) }) }),
+    resultSchema: Object.freeze({ oneOf: Object.freeze([Object.freeze({ type: "object", required: Object.freeze(["status", "asset"]), additionalProperties: false, properties: Object.freeze({ status: Object.freeze({ const: "saved" }), asset: Object.freeze({ type: "object" }) }) }),
+      Object.freeze({ type: "object", required: Object.freeze(["status"]), additionalProperties: false, properties: Object.freeze({ status: Object.freeze({ const: "conflict" }) }) }), Object.freeze({ type: "object", required: Object.freeze(["status", "reason"]), additionalProperties: false, properties: Object.freeze({ status: Object.freeze({ const: "rejected" }), reason: Object.freeze({ type: "string", enum: Object.freeze(["permission", "invalid"]) }) }) })]) }),
+    errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found"] as const) }),
+  Object.freeze({ id: "assets.upload-intent", capability: "assets.upload", method: "POST", path: "/sites/{siteId}/operations/assets.upload-intent",
+    inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId", "name", "mimeType", "bytes", "folderId", "provider"]), additionalProperties: false,
+      properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), name: Object.freeze({ type: "string", maxLength: 200 }), mimeType: Object.freeze({ type: "string", maxLength: 100 }), bytes: Object.freeze({ type: "integer", minimum: 1 }),
+        folderId: Object.freeze({ oneOf: Object.freeze([Object.freeze({ type: "string", maxLength: 128 }), Object.freeze({ const: null })]) }), provider: Object.freeze({ type: "string", maxLength: 80 }) }) }),
+    resultSchema: Object.freeze({ type: "object", required: Object.freeze(["uploadUrl", "uploadToken", "assetId"]), additionalProperties: false,
+      properties: Object.freeze({ uploadUrl: Object.freeze({ type: "string" }), uploadToken: Object.freeze({ type: "string" }), assetId: Object.freeze({ type: "string" }) }) }),
+    errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found"] as const) }),
+  Object.freeze({ id: "assets.delete", capability: "assets.delete", method: "POST", path: "/sites/{siteId}/operations/assets.delete/{provider}/{assetId}",
+    inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId", "provider", "assetId", "expectedVersion"]), additionalProperties: false, properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), provider: Object.freeze({ type: "string" }), assetId: Object.freeze({ type: "string" }), expectedVersion: versionSchema }) }),
+    resultSchema: Object.freeze({ oneOf: Object.freeze([Object.freeze({ type: "object", required: Object.freeze(["status"]), properties: Object.freeze({ status: Object.freeze({ enum: Object.freeze(["deleted", "conflict"]) }) }) }),
+      Object.freeze({ type: "object", required: Object.freeze(["status", "usages"]), properties: Object.freeze({ status: Object.freeze({ const: "in-use" }), usages: Object.freeze({ type: "array", items: Object.freeze({ type: "object" }) }) }) }),
+      Object.freeze({ type: "object", required: Object.freeze(["status", "reason"]), properties: Object.freeze({ status: Object.freeze({ const: "rejected" }), reason: Object.freeze({ const: "permission" }) }) })]) }),
+    errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found"] as const) }),
+  Object.freeze({ id: "assets.restore", capability: "assets.delete", method: "POST", path: "/sites/{siteId}/operations/assets.restore/{provider}/{assetId}",
+    inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId", "provider", "assetId", "expectedVersion"]), additionalProperties: false, properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), provider: Object.freeze({ type: "string" }), assetId: Object.freeze({ type: "string" }), expectedVersion: versionSchema }) }),
+    resultSchema: Object.freeze({ oneOf: Object.freeze([Object.freeze({ type: "object", required: Object.freeze(["status"]), properties: Object.freeze({ status: Object.freeze({ enum: Object.freeze(["restored", "conflict"]) }) }) }),
+      Object.freeze({ type: "object", required: Object.freeze(["status", "reason"]), properties: Object.freeze({ status: Object.freeze({ const: "rejected" }), reason: Object.freeze({ enum: Object.freeze(["permission", "invalid"]) }) }) })]) }),
+    errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found"] as const) })
 ]);
 
 export type PageEditingHostAdapter = {
@@ -314,6 +363,14 @@ export type PageEditingHostAdapter = {
   prepareCmsPublish?(actor: EditingActor, target: EditingCmsTarget, expectedVersion: string, operationId: string, options?: { readonly redirect?: boolean }): Promise<EditingCmsPublishPrepareResult>;
   publishCmsItem?(actor: EditingActor, target: EditingCmsTarget, input: { readonly expectedVersion: string; readonly operationId: string; readonly confirmationToken: string; readonly redirect?: boolean }): Promise<EditingCmsPublishApplyResult>;
   readCmsOperationStatus?(actor: EditingActor, siteId: string, operationId: string): Promise<EditingCmsOperationStatus | null>;
+  /** Optional asset operations use host-owned storage and the same actor authorization/audit path. */
+  listAssets?(actor: EditingActor, query: AssetListQuery): Promise<unknown | null>;
+  listAssetUsages?(actor: EditingActor, siteId: string, reference: AssetReference): Promise<unknown>;
+  resolveAssets?(actor: EditingActor, siteId: string, references: readonly AssetReference[]): Promise<unknown>;
+  createAssetUploadIntent?(actor: EditingActor, siteId: string, input: { readonly folderId: string | null; readonly name: string; readonly mimeType: string; readonly bytes: number; readonly provider?: string }): Promise<unknown>;
+  updateAsset?(actor: EditingActor, request: AssetUpdateRequest): Promise<unknown>;
+  deleteAsset?(actor: EditingActor, request: { readonly siteId: string; readonly reference: AssetReference; readonly expectedVersion: string }): Promise<unknown>;
+  restoreAsset?(actor: EditingActor, request: { readonly siteId: string; readonly reference: AssetReference; readonly expectedVersion: string }): Promise<unknown>;
 };
 
 function response(value: unknown, status = 200): Response {
@@ -377,6 +434,13 @@ function supportsOperation(adapter: PageEditingHostAdapter, operation: EditingOp
   if (operation.id === "cms.publish-plan") return typeof adapter.prepareCmsPublish === "function" && typeof adapter.readCmsSchema === "function";
   if (operation.id === "cms.publish") return typeof adapter.publishCmsItem === "function" && typeof adapter.readCmsSchema === "function";
   if (operation.id === "cms.operation-status") return typeof adapter.readCmsOperationStatus === "function";
+  if (operation.id === "assets.list") return typeof adapter.listAssets === "function";
+  if (operation.id === "assets.usages") return typeof adapter.listAssetUsages === "function";
+  if (operation.id === "assets.resolve") return typeof adapter.resolveAssets === "function";
+  if (operation.id === "assets.update") return typeof adapter.updateAsset === "function";
+  if (operation.id === "assets.upload-intent") return typeof adapter.createAssetUploadIntent === "function";
+  if (operation.id === "assets.delete") return typeof adapter.deleteAsset === "function";
+  if (operation.id === "assets.restore") return typeof adapter.restoreAsset === "function";
   return true;
 }
 const CMS_COLLECTION_ID = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,79}$/u;
@@ -390,6 +454,33 @@ function cmsItemId(value: unknown): string | null {
 function cmsTarget(siteId: string, collectionId: unknown, itemId: unknown): EditingCmsTarget | null {
   const collection = cmsCollectionId(collectionId), item = cmsItemId(itemId);
   return collection && item ? { siteId, collectionId: collection, itemId: item } : null;
+}
+function editingAssetReference(providerValue: unknown, assetIdValue: unknown): AssetReference | null {
+  try { return parseAssetReference({ provider: providerValue, id: assetIdValue }); } catch { return null; }
+}
+function assetListQuery(url: URL, siteId: string): AssetListQuery | null {
+  const allowed = new Set(["search", "kind", "folderId", "limit", "cursor", "provider", "recent"]);
+  let invalid = false;
+  url.searchParams.forEach((value, key) => { if (!allowed.has(key) || url.searchParams.getAll(key).length !== 1 || /[\u0000-\u001f\u007f]/u.test(value)) invalid = true; });
+  if (invalid) return null;
+  const search = url.searchParams.get("search") ?? "", kind = url.searchParams.get("kind") ?? "all", folderValue = url.searchParams.get("folderId");
+  const limitValue = url.searchParams.get("limit") ?? "60", cursor = url.searchParams.get("cursor") ?? undefined;
+  const providerValue = url.searchParams.get("provider") ?? undefined, recentValue = url.searchParams.get("recent") ?? undefined;
+  const limit = Number(limitValue);
+  if (search.length > 200 || !["all", "image", "video", "pdf", "other"].includes(kind) || !/^\d{1,3}$/u.test(limitValue) || !Number.isSafeInteger(limit) || limit < 1 || limit > ASSET_LIMITS.listAssets
+    || folderValue !== null && !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/u.test(folderValue) || cursor !== undefined && cursor.length > ASSET_LIMITS.cursorLength
+    || providerValue !== undefined && !/^[A-Za-z][A-Za-z0-9_-]{0,79}$/u.test(providerValue) || recentValue !== undefined && recentValue !== "true" && recentValue !== "false") return null;
+  let folderId: string | null = null;
+  if (folderValue !== null) { try { folderId = assetId(folderValue, "$folderId"); } catch { return null; } }
+  return { siteId, search, kind: kind as AssetListQuery["kind"], folderId, limit,
+    ...(cursor === undefined ? {} : { cursor }), ...(providerValue === undefined ? {} : { provider: providerValue }),
+    ...(recentValue === undefined ? {} : { recent: recentValue === "true" }) };
+}
+function validAssetName(value: unknown): value is string {
+  return typeof value === "string" && value.length <= ASSET_LIMITS.nameLength && value.trim().length > 0 && !/[\u0000-\u001f\u007f]/u.test(value);
+}
+function validMimeType(value: unknown): value is string {
+  return typeof value === "string" && value.length <= ASSET_LIMITS.mimeTypeLength && /^[a-z]+\/[a-z0-9.+-]+$/u.test(value);
 }
 async function cmsDefinition(adapter: PageEditingHostAdapter, actor: EditingActor, siteId: string, collectionId: string): Promise<CollectionDefinition | "forbidden" | null> {
   const raw = await adapter.readCmsSchema!(actor, siteId);
@@ -740,6 +831,126 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
         }
         catch { return fail("host_contract_violation", 502); }
         return response({ status: applied.status, operationId: applied.operationId, item });
+      }
+      return fail("not_found", 404);
+    }
+    const assetMatch = new RegExp(`^${basePath}/sites/([^/]+)/operations/(assets\\.(?:list|usages|resolve|update|upload-intent|delete|restore))(?:/([^/]+)/([^/]+))?$`, "u").exec(url.pathname);
+    if (assetMatch) {
+      let siteId: string;
+      try { siteId = identifier(decodeURIComponent(assetMatch[1]!), "$siteId"); }
+      catch { return fail("invalid_request", 400); }
+      const operation = EDITING_OPERATIONS.find((item) => item.id === assetMatch[2]);
+      if (!operation || !supportsOperation(adapter, operation)) return fail("not_found", 404);
+      if (request.method !== operation.method) return fail("method_not_allowed", 405);
+      let reference: AssetReference | undefined;
+      if (assetMatch[3] !== undefined || assetMatch[4] !== undefined) {
+        let providerValue: string, assetValue: string;
+        try { providerValue = decodeURIComponent(assetMatch[3] ?? ""); assetValue = decodeURIComponent(assetMatch[4] ?? ""); }
+        catch { return fail("invalid_request", 400); }
+        reference = editingAssetReference(providerValue, assetValue) ?? undefined;
+        if (!reference || assetMatch[3] === undefined || assetMatch[4] === undefined) return fail("invalid_request", 400);
+      }
+      if (operation.id === "assets.list") {
+        if (reference || request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length"))) return fail("invalid_request", 400);
+      } else if (operation.id === "assets.usages" || operation.id === "assets.update" || operation.id === "assets.delete" || operation.id === "assets.restore") {
+        if (!reference) return fail("invalid_request", 400);
+      } else if (reference) return fail("invalid_request", 400);
+      const scope: EditingAuthorizationScope = { siteId, ...(reference ? { assetProvider: reference.provider, assetId: reference.id } : {}) };
+      let actor: EditingActor | null;
+      try { actor = await adapter.authenticate(request); }
+      catch { return fail("host_failure", 503); }
+      if (!actor) return fail("authentication_required", 401);
+      if (!validActor(actor)) return fail("host_contract_violation", 502);
+      let allowed: boolean;
+      try { allowed = await adapter.authorize(actor, operation.capability, scope) === true; }
+      catch { return fail("host_failure", 503); }
+      if (!allowed) return fail("forbidden", 403);
+
+      if (operation.id === "assets.list") {
+        const query = assetListQuery(url, siteId);
+        if (!query) return fail("invalid_request", 400);
+        let raw: unknown;
+        try { raw = await adapter.listAssets!(actor, query); }
+        catch { return fail("host_failure", 503); }
+        if (raw === null) return fail("not_found", 404);
+        let result: ReturnType<typeof parseAssetListResult>;
+        try { result = parseAssetListResult(raw, siteId); }
+        catch { return fail("host_contract_violation", 502); }
+        if (result.assets.some((asset) => query.provider !== undefined && asset.provider !== query.provider)) return fail("host_contract_violation", 502);
+        return response(result);
+      }
+      if (operation.id === "assets.usages") {
+        if (url.search || request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length"))) return fail("invalid_request", 400);
+        let raw: unknown;
+        try { raw = await adapter.listAssetUsages!(actor, siteId, reference!); }
+        catch { return fail("host_failure", 503); }
+        try { return response({ usages: parseAssetUsages(raw) }); }
+        catch { return fail("host_contract_violation", 502); }
+      }
+      if (operation.id === "assets.resolve") {
+        if (url.search) return fail("invalid_request", 400);
+        let body: Record<string, unknown> | null;
+        try { body = await readBody(request); } catch { return fail("invalid_request", 400); }
+        if (!body || !exactKeys(body, ["references"]) || !Array.isArray(body.references) || body.references.length > ASSET_LIMITS.resolvedAssets) return fail("invalid_request", 400);
+        let references: AssetReference[];
+        try { references = body.references.map((value) => parseAssetReference(value)); }
+        catch { return fail("invalid_request", 400); }
+        let raw: unknown;
+        try { raw = await adapter.resolveAssets!(actor, siteId, references); }
+        catch { return fail("host_failure", 503); }
+        let result: ResolvedAssetMap;
+        try { result = parseResolvedAssets(raw); }
+        catch { return fail("host_contract_violation", 502); }
+        const requested = new Set(references.map((item) => `${item.provider}:${item.id}`));
+        if (Object.keys(result).some((key) => !requested.has(key))) return fail("host_contract_violation", 502);
+        return response({ assets: result });
+      }
+      if (operation.id === "assets.upload-intent") {
+        if (url.search) return fail("invalid_request", 400);
+        let body: Record<string, unknown> | null;
+        try { body = await readBody(request); } catch { return fail("invalid_request", 400); }
+        if (!body || !exactKeys(body, ["name", "mimeType", "bytes", "folderId", "provider"]) || !validAssetName(body.name) || !validMimeType(body.mimeType)
+          || !Number.isSafeInteger(body.bytes) || Number(body.bytes) < 1 || body.folderId !== null && typeof body.folderId !== "string"
+          || body.folderId !== null && (() => { try { assetId(body.folderId, "$folderId"); return false; } catch { return true; } })()
+          || typeof body.provider !== "string" || !/^[A-Za-z][A-Za-z0-9_-]{0,79}$/u.test(body.provider)) return fail("invalid_request", 400);
+        let raw: unknown;
+        try { raw = await adapter.createAssetUploadIntent!(actor, siteId, { name: body.name, mimeType: body.mimeType, bytes: Number(body.bytes), folderId: body.folderId as string | null, provider: body.provider }); }
+        catch { return fail("host_failure", 503); }
+        try { return response(parseAssetUploadIntent(raw), 201); }
+        catch { return fail("host_contract_violation", 502); }
+      }
+      if (operation.id === "assets.update") {
+        if (url.search) return fail("invalid_request", 400);
+        let body: Record<string, unknown> | null;
+        try { body = await readBody(request); } catch { return fail("invalid_request", 400); }
+        if (!body || !exactKeys(body, ["expectedVersion", "changes"]) || !validVersion(body.expectedVersion) || !body.changes || typeof body.changes !== "object" || Array.isArray(body.changes)) return fail("invalid_request", 400);
+        const changes = body.changes as Record<string, unknown>;
+        const changeKeys = Object.keys(changes);
+        if (!changeKeys.length || changeKeys.some((key) => !["name", "alt", "folderId"].includes(key))
+          || Object.hasOwn(changes, "name") && !validAssetName(changes.name)
+          || Object.hasOwn(changes, "alt") && (typeof changes.alt !== "string" || changes.alt.length > ASSET_LIMITS.altLength || /[\u0000-\u001f\u007f]/u.test(changes.alt))
+          || Object.hasOwn(changes, "folderId") && changes.folderId !== null && (typeof changes.folderId !== "string" || (() => { try { assetId(changes.folderId, "$folderId"); return false; } catch { return true; } })())) return fail("invalid_request", 400);
+        let raw: unknown;
+        try { raw = await adapter.updateAsset!(actor, { siteId, reference: reference!, expectedVersion: body.expectedVersion, changes: changes as AssetUpdateRequest["changes"] }); }
+        catch { return fail("host_failure", 503); }
+        let result: AssetUpdateResult;
+        try { result = parseAssetUpdateResult(raw, siteId); }
+        catch { return fail("host_contract_violation", 502); }
+        if (result.status === "saved" && (result.asset.provider !== reference!.provider || result.asset.id !== reference!.id)) return fail("host_contract_violation", 502);
+        return response(result);
+      }
+      if (operation.id === "assets.delete" || operation.id === "assets.restore") {
+        if (url.search) return fail("invalid_request", 400);
+        let body: Record<string, unknown> | null;
+        try { body = await readBody(request); } catch { return fail("invalid_request", 400); }
+        if (!body || !exactKeys(body, ["expectedVersion"]) || !validVersion(body.expectedVersion)) return fail("invalid_request", 400);
+        let raw: unknown;
+        try {
+          const requestValue = { siteId, reference: reference!, expectedVersion: body.expectedVersion };
+          raw = operation.id === "assets.delete" ? await adapter.deleteAsset!(actor, requestValue) : await adapter.restoreAsset!(actor, requestValue);
+        } catch { return fail("host_failure", 503); }
+        try { return response(operation.id === "assets.delete" ? parseAssetDeleteResult(raw) : parseAssetRestoreResult(raw)); }
+        catch { return fail("host_contract_violation", 502); }
       }
       return fail("not_found", 404);
     }

@@ -354,7 +354,7 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
     return JSON.parse(Buffer.from(claims, "base64url").toString("utf8"));
   };
   let delegated = await assertDelegationSignature(editingApiRequest);
-  assert.deepEqual(delegated.scope, ["pages.read", "pages.edit", "pages.publish", "site.settings.read", "site.settings.write", "cms.read", "cms.edit", "cms.publish"]);
+  assert.deepEqual(delegated.scope, ["pages.read", "pages.edit", "pages.publish", "site.settings.read", "site.settings.write", "cms.read", "cms.edit", "cms.publish", "assets.read", "assets.edit", "assets.upload", "assets.delete"]);
   assert.equal(delegated.iss, "niho-web-studio-edit");
   assert.equal(delegated.aud, "kamakura-site");
   assert.equal(delegated.sub, "catalog-contract-test");

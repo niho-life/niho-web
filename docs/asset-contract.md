@@ -176,6 +176,12 @@ CMS 画像は、ホストが認可した参照（`{ provider, id }`）だけを�
 - ストック素材を取得したとき、ライセンス付きでサイトの素材へ複製すること
 本番の永続化例ではありません。
 
+## 共通編集APIとCUI
+
+GUIと機械クライアントは、ホストの共通編集APIから同じ素材操作を呼び出せます。操作は `assets.list`・`assets.usages`・`assets.resolve`・`assets.update`・`assets.upload-intent`・`assets.delete`・`assets.restore` で、読取・編集・アップロード・削除のcapabilityを分けます。更新・削除・復元には読み取ったversionを渡し、配信URLは解決結果だけで使います。文書へ保存する値は `{ provider, id }` です。
+
+`niho-edit` はサイトoriginへ直接接続するCLIを提供します。素材の検索、利用先確認、参照解決、メタデータ編集、アップロード、削除、復元をStudio画面なしで行えます。アップロード開始APIは一つの素材に対する短命tokenを発行します。CLIはAPI origin以外へ送る前に `--upload-origin` または `NIHO_EDIT_UPLOAD_ORIGIN` のHTTPS originと照合し、不一致ならtokenを送信しません。ホストは受信したファイル本体の形式・サイズ・内容と、素材のsite/provider/actorを再検査します。通信形式、discover schema、CLIの例は[編集API契約](editing-api-contract.md)を参照してください。
+
 ## 鎌倉サイトでの接続
 
 鎌倉サイト（`project-kamakura` / `kamakura`）は、Studio host の BFF と kamakura-site Worker の署名つき契約でこの adapter を実装しています（#85）。公開リポジトリに置くのは契約の形だけで、secret・内部の置き場の詳細は置きません。
