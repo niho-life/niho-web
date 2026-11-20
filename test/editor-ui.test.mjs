@@ -991,6 +991,28 @@ test("page change conflicts keep inputs and reload the list; unknown results are
   } finally { await app.cleanup(); }
 });
 
+test("page management prepare conflicts reload the catalog before another review", async () => {
+  let conflict = true;
+  const host = pageHost({ prepare: (change) => {
+    if (conflict) { const error = new Error("version conflict"); error.status = 409; throw error; }
+    return { change, confirmationToken: "page-token", domain: "https://example.test", impact: { linkedFrom: [], navigation: [], notes: [] } };
+  } });
+  const app = await setup({ adapter: host.adapter });
+  try {
+    await press(document.querySelector('[aria-label="私たちについて の操作"]')); await press(button("名前とURLを変更"));
+    await change(inputIn(dialog(), "URL パス"), "/company");
+    const lists = host.calls.lists;
+    await press(buttonIn(dialog(), "影響を確認")); await flush();
+    assert.match(dialog().textContent, /競合しました（409）/);
+    assert.match(dialog().textContent, /ページ一覧を再読込しました/u);
+    assert.equal(host.calls.lists, lists + 1);
+    assert.ok(buttonIn(dialog(), "影響を確認"), "the user can review again against the refreshed catalog");
+    conflict = false;
+    await press(buttonIn(dialog(), "影響を確認")); await flush();
+    assert.ok(dialog().textContent.includes("変更の影響を確認"));
+  } finally { await app.cleanup(); }
+});
+
 test("invalid plans and private changes use their own confirmation", async () => {
   let domain = "https://evil.example.test";
   const host = pageHost({ prepare: (change) => ({ change, confirmationToken: "t", domain, impact: { before: `${domain}/about`, linkedFrom: [{ pageId: "home", locale: "ja-JP", title: "ホーム", count: 1 }], navigation: [], notes: [] } }),

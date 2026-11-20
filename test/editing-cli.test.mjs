@@ -64,9 +64,11 @@ test("niho-edit applies a reviewed page-management plan directly to the host API
   const operationId = "123e4567-e89b-42d3-a456-426614174000";
   const change = { action: "create", siteId, locale: "ja", title: "New page", path: "/new-page" };
   const plan = { expectedVersion: "registry-v1", operationId, change, confirmationToken: "page-change-token", domain: origin,
-    impact: { linkedFrom: [], navigation: [], notes: ["新しいページを作成します"] } };
+    impact: { linkedFrom: Array.from({ length: 250 }, (_, index) => ({ pageId: `link-${index}`, locale: "ja", title: `参照元ページ ${index} ${"説明文".repeat(12)}`, count: 1 })), navigation: [], notes: ["新しいページを作成します"] } };
   const planPath = join(directory, "plan.json");
-  await writeFile(planPath, JSON.stringify(plan));
+  const serializedPlan = JSON.stringify(plan);
+  assert.ok(Buffer.byteLength(serializedPlan) > 16 * 1024, "valid plans with many linked pages can exceed the change input limit");
+  await writeFile(planPath, serializedPlan);
   const apiPath = `/api/edit/v1/sites/${siteId}/operations/pages.change-apply`;
   const page = { siteId, pageId: "new-page", locale: "ja", title: change.title, path: change.path, kind: "page", visibility: "public", published: false };
   const result = await run(["page-change-apply", "--json", planPath], {

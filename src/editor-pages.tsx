@@ -203,7 +203,11 @@ export function PageChangeDialog({ start, site, pages, locale, prepare, apply, a
       const result = await prepare(requested, current.signal);
       if (current.signal.aborted) return;
       setPlan(validatePageChangePlan(structuredClone(result), requested, site)); setConfirmed(false);
-    } catch { if (!current.signal.aborted) setMessage("影響を確認できませんでした。権限と入力を確認して再試行してください。"); }
+    } catch (error) {
+      if (current.signal.aborted) return;
+      if (isConflict(error)) conflict();
+      else setMessage("影響を確認できませんでした。権限と入力を確認して再試行してください。");
+    }
     finally { if (!current.signal.aborted) setBusy(""); }
   }
   function conflict() {
