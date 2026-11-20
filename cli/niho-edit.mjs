@@ -82,24 +82,23 @@ async function main() {
   const token = process.env.NIHO_EDIT_TOKEN;
   if (typeof token !== "string" || !token || token.length > 4096 || /[\u0000-\u001f\u007f]/u.test(token)) throw new CliError("missing_token");
   const client = createPageEditingApiClient({ origin: baseOrigin, siteId: values.site, credentials: "omit", headers: { Authorization: `Bearer ${token}` } });
-  const signal = AbortSignal.timeout(30_000);
 
   if (command === "discover") {
     if (pageId !== undefined || extra.length || values.locale !== undefined || values.json !== undefined) throw new CliError("invalid_arguments");
-    const body = await apiCall(() => client.discover(signal));
+    const body = await apiCall(() => client.discover(AbortSignal.timeout(30_000)));
     emit(body, 200, 0, "discover"); return;
   }
 
   if (command !== "read" && command !== "save" || extra.length || !IDENTIFIER.test(pageId ?? "") || !LOCALE.test(values.locale ?? "")) throw new CliError("invalid_arguments");
   if (command === "read") {
     if (values.json !== undefined) throw new CliError("invalid_arguments");
-    const snapshot = await apiCall(() => client.read({ siteId: values.site, pageId, locale: values.locale }, signal));
+    const snapshot = await apiCall(() => client.read({ siteId: values.site, pageId, locale: values.locale }, AbortSignal.timeout(30_000)));
     emitSnapshot(snapshot.document, snapshot.version); return;
   }
 
   const snapshot = await inputSnapshot(values.json);
   if (snapshot.document.siteId !== values.site || snapshot.document.pageId !== pageId || snapshot.document.locale !== values.locale) throw new CliError("snapshot_target_mismatch");
-  const result = await apiCall(() => client.save({ siteId: values.site, pageId, locale: values.locale }, snapshot.version, snapshot.document, signal));
+  const result = await apiCall(() => client.save({ siteId: values.site, pageId, locale: values.locale }, snapshot.version, snapshot.document, AbortSignal.timeout(30_000)));
   if (result.status === "conflict") throw new CliError("version_conflict", 409);
   emitSnapshot(result.document, result.version);
 }

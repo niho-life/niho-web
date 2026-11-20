@@ -12,8 +12,13 @@ const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.
 const command = fileURLToPath(new URL("../cli/niho-edit.mjs", import.meta.url));
 const origin = "https://site.example", siteId = fixture.siteId, pageId = fixture.pageId, locale = fixture.locale;
 
-function run(args, { status = 200, result, expectedMethod, expectedUrl, expectedBody } = {}) {
-  const source = `globalThis.fetch = async (url, init) => {
+function run(args, { status = 200, result, expectedMethod, expectedUrl, expectedBody, stdin, assertInputBeforeTimeout = false } = {}) {
+  const timeoutGuard = assertInputBeforeTimeout ? `let stdinEnded = false;
+    process.stdin.once("end", () => { stdinEnded = true; });
+    const originalTimeout = AbortSignal.timeout.bind(AbortSignal);
+    AbortSignal.timeout = (ms) => { if (!stdinEnded) throw new Error("timeout started before stdin completed"); return originalTimeout(ms); };
+  ` : "";
+  const source = `${timeoutGuard}globalThis.fetch = async (url, init) => {
     if (String(url) !== ${JSON.stringify(expectedUrl)}) throw new Error("unexpected URL");
     if (init.method !== ${JSON.stringify(expectedMethod)}) throw new Error("unexpected method");
     if (new Headers(init.headers).get("Authorization") !== "Bearer fixture-token") throw new Error("missing authorization");
@@ -24,8 +29,9 @@ function run(args, { status = 200, result, expectedMethod, expectedUrl, expected
   const preload = `data:text/javascript,${encodeURIComponent(source)}`;
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ["--import", preload, command, "--origin", origin, "--site", siteId, ...args], {
-      env: { ...process.env, NIHO_EDIT_TOKEN: "fixture-token" }
+      env: { ...process.env, NIHO_EDIT_TOKEN: "fixture-token" }, stdio: ["pipe", "pipe", "pipe"]
     });
+    child.stdin.end(stdin ?? "");
     let stdout = "", stderr = "";
     child.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk; });
     child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
@@ -91,4 +97,17 @@ test("niho-edit saves the edited document with the snapshot version and reports 
   assert.equal(conflict.exitCode, 1);
   assert.deepEqual(JSON.parse(conflict.stdout).result, { error: "version_conflict" });
   assert.equal(JSON.parse(conflict.stdout).httpStatus, 409);
+});
+
+test("niho-edit starts the save timeout after reading a stdin snapshot", async () => {
+  const document = structuredClone(fixture);
+  const path = `/api/edit/v1/sites/${siteId}/operations/pages.save/${pageId}?locale=${encodeURIComponent(locale)}`;
+  const savedDocument = { ...document, revision: document.revision + 1 };
+  const result = await run(["save", pageId, "--locale", locale, "--json", "-"], {
+    expectedMethod: "PUT", expectedUrl: `${origin}${path}`, expectedBody: { expectedVersion: "v1", document },
+    result: { status: "saved", version: "v2", document: savedDocument }, stdin: JSON.stringify({ document, version: "v1" }),
+    assertInputBeforeTimeout: true
+  });
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { document: savedDocument, version: "v2" });
 });
