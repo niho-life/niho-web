@@ -153,7 +153,8 @@ export function PageReleaseSetDialog({ pages, site, adapter, componentsVersion, 
       {phase === "planning" && <p role="status">{message}</p>}
       {phase === "failed" && <p role="alert">{message}</p>}
       {phase === "review" && plan && <>
-        <p>差分がある {previews.length} ページを一つの変更セットで公開します。対象と差分を確認してください。</p>
+        <p>差分がある {previews.length} ページを一つの変更セットで公開します。公開先と対象・差分を確認してください。</p>
+        <p>公開先</p><p className="e-domain">{plan.domain}</p>
         <ul className="e-release-set-list">{previews.map(({ page, plan: item }) => <li key={targetKey(page)}><details>
           <summary><strong>{page.title}</strong><span>{item.changes.length} 件の変更</span></summary>
           <ul>{item.changes.map((change, index) => <li key={`${change.path}:${index}`}><code>{change.path}</code><pre><span>{change.before || "（なし）"}</span><span aria-hidden="true"> → </span><span>{change.after || "（なし）"}</span></pre></li>)}</ul>

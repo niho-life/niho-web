@@ -911,6 +911,7 @@ test("multi-page release selects only pages with changes and can resume from the
     }
     await click("選択したページの変更を確認");
     const confirmation = document.querySelector('[role="dialog"]'); assert.ok(confirmation);
+    assert.ok(confirmation.textContent.includes("https://example.test"), "the release destination is visible before confirmation");
     assert.match(confirmation.textContent, /差分がある 2 ページ/u);
     assert.ok(confirmation.textContent.includes("ホーム")); assert.ok(confirmation.textContent.includes("お問い合わせ"));
     assert.ok(!confirmation.textContent.includes("私たちについて"), "unchanged pages are excluded");
