@@ -137,6 +137,10 @@ const EDITOR_TIMEOUT_MILLISECONDS = 12_000;
 // 12 秒では commit が済んでも応答が間に合わず「接続できません」になった（kamakura-site#109 の受入）。
 const KAMAKURA_RELEASE_TIMEOUT_MILLISECONDS = 30_000;
 const KAMAKURA_EDITOR_UPSTREAM_ORIGIN = "https://next-kamakura.niho.life";
+const KAMAKURA_EDITING_API_ORIGIN = "https://kamakura.niho.life";
+const KAMAKURA_EDITING_API_PATH_PREFIX = "/api/edit/v1";
+const KAMAKURA_EDITING_API_EDITOR_PREFIX = "/editor/editing-api/v1";
+const KAMAKURA_EDITING_API_MAX_BODY_BYTES = 600 * 1024;
 const KAMAKURA_EDITOR_UPSTREAM_PREFIX = "/internal/studio/web-content";
 const KAMAKURA_EDITOR_PROJECT_ID = "project-kamakura";
 // Dashboard の公開情報（kamakura-site の worker/studio-overview.ts）。「_」始まりはページ ID と重ならない。
@@ -181,6 +185,7 @@ type KamakuraBridgeOperation =
   | "draft_conflict"
   | "draft_resolve"
   | "release_plan"
+  | "editing_api"
   | "page_schedule"
   | "page_batch_stage"
   | "cms_migration_preflight"
@@ -1581,6 +1586,87 @@ function kamakuraCliPreviewOrigin(env: Env, identity: BridgeActor): string | und
   return origin;
 }
 
+type EditingCapability = "pages.read" | "pages.edit" | "pages.publish";
+
+function kamakuraEditingCapability(method: string, pathname: string, search: string): EditingCapability | null {
+  if (pathname === "/sites/kamakura/capabilities") return method === "GET" && !search ? "pages.read" : null;
+  const match = /^\/sites\/kamakura\/operations\/(pages\.(?:read|save|release-plan|release))\/([a-z][a-z0-9-]{0,59})$/u.exec(pathname);
+  if (!match) return null;
+  const query = new URLSearchParams(search), operation = match[1]!;
+  if (query.size !== 1 || query.getAll("locale").length !== 1 || query.get("locale") !== "ja") return null;
+  const expectedMethod = operation === "pages.read" ? "GET" : operation === "pages.save" ? "PUT" : "POST";
+  if (method !== expectedMethod) throw new AuthenticationError("editing API method mismatch");
+  return operation === "pages.read" ? "pages.read" : operation === "pages.save" ? "pages.edit" : "pages.publish";
+}
+
+async function kamakuraEditingDelegationToken(env: Env, identity: AccessIdentity, capabilities: readonly EditingCapability[]): Promise<string> {
+  const encode = (value: unknown) => encodeBase64Url(new TextEncoder().encode(JSON.stringify(value)));
+  const header = encode({ alg: "HS256", typ: "JWT" });
+  const now = Math.floor(Date.now() / 1000);
+  const claims = encode({ iss: "niho-web-studio-edit", aud: "kamakura-site", sub: identity.subject, scope: [...capabilities], iat: now, exp: now + 60, jti: crypto.randomUUID() });
+  const signingInput = `${header}.${claims}`;
+  const key = await crypto.subtle.importKey("raw", bridgeSecret(env.KAMAKURA_STUDIO_BRIDGE_SECRET).slice().buffer, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signature = encodeBase64Url(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(signingInput))));
+  return `${signingInput}.${signature}`;
+}
+
+async function signedKamakuraEditingApiRequest(request: Request, env: Env, identity: AccessIdentity, url: URL, action: string): Promise<Response> {
+  const supportId = crypto.randomUUID(), operation: KamakuraBridgeOperation = "editing_api";
+  const fail = (category: KamakuraBridgeFailureCategory, status?: number) => kamakuraBridgeFailure(supportId, operation, category, status);
+  const upstreamSuffix = action.slice(KAMAKURA_EDITING_API_EDITOR_PREFIX.length);
+  const upstreamPath = `${KAMAKURA_EDITING_API_PATH_PREFIX}${upstreamSuffix}`;
+  let capability: EditingCapability | null;
+  try { capability = kamakuraEditingCapability(request.method, upstreamSuffix, url.search); }
+  catch { return json({ error: "method_not_allowed" }, 405); }
+  if (!capability) return json({ error: "not_found" }, 404);
+
+  if (request.method === "GET" && (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length")))) return json({ error: "invalid_request" }, 400);
+  const body = request.method === "GET" ? new Uint8Array() : await readBoundedBody(request, KAMAKURA_EDITING_API_MAX_BODY_BYTES, identity);
+  const capabilities: readonly EditingCapability[] = upstreamSuffix === "/sites/kamakura/capabilities"
+    ? ["pages.read", "pages.edit", "pages.publish"]
+    : [capability];
+  let bearer: string;
+  try { bearer = await kamakuraEditingDelegationToken(env, identity, capabilities); }
+  catch { throw fail("bridge_secret_missing_or_invalid"); }
+
+  const headers = new Headers({
+    Accept: "application/json",
+    "Cache-Control": "no-store",
+    Authorization: `Bearer ${bearer}`,
+    Origin: KAMAKURA_EDITING_API_ORIGIN
+  });
+  if (request.method !== "GET") headers.set("Content-Type", "application/json");
+  const controller = new AbortController();
+  const abortForRequest = () => controller.abort();
+  request.signal.addEventListener("abort", abortForRequest, { once: true });
+  const timeout = setTimeout(() => controller.abort(), capability === "pages.publish" ? KAMAKURA_RELEASE_TIMEOUT_MILLISECONDS : EDITOR_TIMEOUT_MILLISECONDS);
+  try {
+    const upstream = new Request(`${KAMAKURA_EDITING_API_ORIGIN}${upstreamPath}${url.search}`, {
+      method: request.method,
+      cache: "no-store",
+      redirect: "manual",
+      signal: controller.signal,
+      headers,
+      ...(request.method === "GET" ? {} : { body: body.slice().buffer })
+    });
+    let response: Response;
+    try { response = await env.KAMAKURA_SITE.fetch(upstream); }
+    catch { throw fail(controller.signal.aborted ? "service_binding_timeout" : "service_binding_failed"); }
+    if (response.status >= 300 && response.status < 400) throw fail("upstream_redirect_rejected", response.status);
+    let value: unknown;
+    try { value = await readBoundedResponse(response, 5 * 1024 * 1024); }
+    catch { throw fail("upstream_invalid_response", response.status); }
+    return json(value, response.status);
+  } catch (error) {
+    if (error instanceof KamakuraBridgeFailureError) throw error;
+    if (error instanceof AuthenticationError) return json({ error: "invalid_request" }, 400);
+    throw fail("bridge_processing_failed");
+  } finally {
+    clearTimeout(timeout);
+    request.signal.removeEventListener("abort", abortForRequest);
+  }
+}
+
 function isKamakuraDraftDocument(value: unknown, pageId: string): boolean {
   return isRecord(value) && value.schemaVersion === 1 && value.siteId === KAMAKURA_EDITOR_SITE_ID
     && value.pageId === pageId && value.locale === "ja" && Number.isSafeInteger(value.revision)
@@ -2591,6 +2677,7 @@ type WorkerEditorAdapter = {
   readonly route: (action: string, method: string, environment: string) => EditorRoute | "method_not_allowed" | null;
   readonly authorize: (env: Env, identity: AccessIdentity, resolved: ResolvedTrustedIntegration) => Promise<boolean>;
   readonly dispatch: (request: Request, env: Env, identity: AccessIdentity, route: EditorRoute, resolved: ResolvedTrustedIntegration) => Promise<Response>;
+  readonly dispatchEditingApi?: (request: Request, env: Env, identity: AccessIdentity, url: URL, action: string) => Promise<Response>;
   readonly assetPreview?: (action: string) => string | null;
   readonly dispatchAssetPreview?: (request: Request, env: Env, identity: AccessIdentity, assetId: string) => Promise<Response>;
   readonly connectOrigins?: readonly string[];
@@ -2605,6 +2692,7 @@ const KAMAKURA_EDITOR_ADAPTER: WorkerEditorAdapter = {
   route: (action, method) => kamakuraEditorRoute(action, method),
   authorize: (env, identity, resolved) => editorMember(env, identity, resolved.registration.projectId, resolved.registration.siteId),
   dispatch: (request, env, identity, route) => signedKamakuraEditorRequest(request, env, identity, route),
+  dispatchEditingApi: signedKamakuraEditingApiRequest,
   assetPreview: (action) => /^\/editor\/assets\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/preview$/iu.exec(action)?.[1] ?? null,
   dispatchAssetPreview: signedKamakuraAssetPreview,
   connectOrigins: [KAMAKURA_EDITOR_UPSTREAM_ORIGIN],
@@ -2639,6 +2727,15 @@ function workerEditorAdapter(resolved: ResolvedTrustedIntegration): WorkerEditor
 if (false) void workerEditorAdapter;
 
 async function liveEditorApi(request: Request, env: Env, identity: AccessIdentity, action: string, resolved: ResolvedTrustedIntegration, adapter: WorkerEditorAdapter): Promise<Response> {
+  if (action === KAMAKURA_EDITING_API_EDITOR_PREFIX || action.startsWith(`${KAMAKURA_EDITING_API_EDITOR_PREFIX}/`)) {
+    if (!adapter.dispatchEditingApi) return json({ error: "not_found" }, 404);
+    if (!await adapter.authorize(env, identity, resolved)) return json({ error: "forbidden" }, 403);
+    try { return await adapter.dispatchEditingApi(request, env, identity, new URL(request.url), action); }
+    catch (error) {
+      if (error instanceof AuthenticationError) return json({ error: "invalid_request" }, 400);
+      throw error;
+    }
+  }
   const assetId = adapter.assetPreview?.(action) ?? null;
   if (assetId && adapter.dispatchAssetPreview) {
     if (request.method !== "GET") return json({ error: "method_not_allowed" }, 405);
@@ -2661,10 +2758,13 @@ async function liveEditorApi(request: Request, env: Env, identity: AccessIdentit
 }
 
 async function editorApi(request: Request, env: Env, identity: AccessIdentity, url: URL, projectId: string, siteId: string, action: string): Promise<Response> {
-  if (url.href.includes("?")) return json({ error: "invalid_request" }, 400);
   const resolved = resolveTrustedEditorApi(projectId, siteId, action);
   if (!resolved) return json({ error: "not_found" }, 404);
   const adapter = liveEditorAdapter(resolved);
+  if (adapter && (action === KAMAKURA_EDITING_API_EDITOR_PREFIX || action.startsWith(`${KAMAKURA_EDITING_API_EDITOR_PREFIX}/`))) {
+    return liveEditorApi(request, env, identity, action, resolved, adapter);
+  }
+  if (url.href.includes("?")) return json({ error: "invalid_request" }, 400);
   if (adapter) return liveEditorApi(request, env, identity, action, resolved, adapter);
   const authorized = resolved.environment === "staging"
     ? resolved.registration.projectId === EDITOR_PROJECT_ID && resolved.registration.siteId === EDITOR_SITE_ID && await experienceEditorOwner(env, identity)

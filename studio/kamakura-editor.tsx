@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { PageEditor } from "../src/editor.js";
 import { createExternalFramePolicy } from "../src/react.js";
 import { createProjectEditorAdapter } from "../src/project-editor-adapter.js";
-import type { EditorAdapter, EditorPageChange, EditorPageChangePlan, EditorBreakpoint, EditorLocalizedPage, EditorLocalizationCommandResult, EditorLocalizationPageSnapshot, EditorLocalizationSiteSnapshot, EditorReleasePlan, EditorReleaseRequest, EditorReleaseResult, EditorSaveResult, EditorSnapshot, EditorTarget } from "../src/editor-types.js";
+import type { EditorAdapter, EditorPageChange, EditorPageChangePlan, EditorBreakpoint, EditorLocalizedPage, EditorLocalizationCommandResult, EditorLocalizationPageSnapshot, EditorLocalizationSiteSnapshot, EditorReleasePlan, EditorReleaseRequest, EditorSaveResult, EditorSnapshot, EditorTarget } from "../src/editor-types.js";
 import type { Project } from "../src/projects.js";
 import { studioBuilderDefinition } from "./integration-builder.js";
 import { projectRoutePath } from "./project-routes.mjs";
@@ -15,6 +15,7 @@ import type { KamakuraCatalog } from "./kamakura-catalog.js";
 import { parseEnglishPublication, parseEnglishPublicationAccepted } from "../src/english-publication.js";
 import { normalizePageChange, validatePageChangePlan } from "../src/editor-model.js";
 import { parseBreakpointSettings } from "../src/style-model.js";
+import { createPageEditingApiClient, EditingApiClientError } from "../src/editing-client.js";
 
 const BASE = "/api/projects/project-kamakura/sites/kamakura/editor";
 const LOCALIZATION_BASE = "/api/projects/project-kamakura/sites/kamakura/localization";
@@ -234,13 +235,9 @@ function parsePlan(value: unknown, request: EditorReleaseRequest, domain: string
   return plan;
 }
 
-function parseReleased(value: unknown, target: EditorTarget, blocks: BlockContracts, required = false): Extract<EditorReleaseResult, { status: "released" }> {
-  const source = record(value);
-  if (source.status !== "released") throw new Error("公開結果が正しくありません。");
-  return { status: "released", snapshot: parseSnapshot(source.snapshot, target, blocks, required) };
-}
-
-export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (status: EditorApiStatus | null) => void): EditorAdapter {
+export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (status: EditorApiStatus | null) => void, origin = "https://studio.niho.life"): EditorAdapter {
+  const editingApi = createPageEditingApiClient({ origin, siteId: KAMAKURA_EDITOR_SITE_ID, basePath: `${BASE}/editing-api/v1` });
+  const releaseOperationIds = new Map<string, string>();
   async function request<T>(signal: AbortSignal, run: () => Promise<T>): Promise<T> {
     try {
       const result = await run();
@@ -248,9 +245,10 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
       onStatus(null);
       return result;
     } catch (error) {
-      if (!signal.aborted && error instanceof EditorApiError && (error.status !== 409 || error.code === VISUAL_EDITOR_FROZEN)) onStatus(statusFromError(error));
-      else if (!signal.aborted && !(error instanceof EditorApiError) && !(error instanceof EditorContentUnavailableError)) onStatus(statusFromError(error));
-      throw error;
+      const normalized = error instanceof EditingApiClientError ? new EditorApiError(error.status ?? 503, error.code) : error;
+      if (!signal.aborted && normalized instanceof EditorApiError && (normalized.status !== 409 || normalized.code === VISUAL_EDITOR_FROZEN)) onStatus(statusFromError(normalized));
+      else if (!signal.aborted && !(normalized instanceof EditorApiError) && !(normalized instanceof EditorContentUnavailableError)) onStatus(statusFromError(normalized));
+      throw normalized;
     }
   }
   async function conflict<T>(run: () => Promise<T>): Promise<T | { status: "conflict" }> {
@@ -264,6 +262,16 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
       if (change.siteId !== KAMAKURA_EDITOR_SITE_ID || change.locale !== "ja") throw new Error("新形式の編集対象ではありません。");
     } else validTarget(change.target);
     return change;
+  }
+  async function readJapaneseDocument(target: EditorTarget, signal: AbortSignal): Promise<EditorSnapshot> {
+    const checked = validTarget(target);
+    const [wire, legacy] = await Promise.all([
+      editingApi.read(checked, signal),
+      api(pagePath(checked), "GET", undefined, signal).then((value) => parseSnapshot(value, checked, catalog.blockContracts, catalog.nativePresentationPages.includes(checked.pageId)))
+    ]);
+    const presentation = record(legacy.presentation);
+    if (wire.version !== legacy.version || wire.presentationVersion !== presentation.version) throw new EditorApiError(409, "version_conflict");
+    return parseSnapshot({ ...legacy, document: wire.document, version: wire.version }, checked, catalog.blockContracts, catalog.nativePresentationPages.includes(checked.pageId));
   }
   return {
     listSites: (signal) => request(signal, async () => catalog.sites),
@@ -312,7 +320,7 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
     },
     readDocument: (target, signal) => request(signal, async () => target.locale === "en"
       ? parseEnglishSnapshot(await api(`${localizationPagePath(target)}/snapshot`, "POST", {}, signal), target, catalog.blockContracts)
-      : parseSnapshot(await api(pagePath(target), "GET", undefined, signal), target, catalog.blockContracts, catalog.nativePresentationPages.includes(target.pageId))),
+      : readJapaneseDocument(target, signal)),
     saveDraft: (input, signal) => conflict(() => request(signal, async () => {
       if (input.target.locale === "en") {
         const target = validEnglishTarget(input.target), localization = input.localization;
@@ -326,17 +334,28 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
       }
       if (!validVersion(input.expectedVersion)) throw new Error("保存対象の版が正しくありません。");
       if (!validVersion(input.presentationVersion)) throw new Error("表示コンテキストの版が正しくありません。");
-      return parseSaved(await api(`${pagePath(input.target)}/draft`, "PUT", { expectedVersion: input.expectedVersion, presentationVersion: input.presentationVersion, document: input.document }, signal));
+      const result = await editingApi.save(validTarget(input.target), input.expectedVersion, input.document, signal);
+      if (result.status === "conflict") return result;
+      return parseSaved({ status: "saved", version: result.version, revision: result.document.revision });
     })),
     prepareRelease: (input, signal) => request(signal, async () => {
       validTarget(input.target);
       if (!validVersion(input.expectedVersion) || !validVersion(input.presentationVersion) || (input.action === "publish" ? input.revision !== undefined : input.action !== "rollback" || !Number.isSafeInteger(input.revision) || input.revision! <= 0)) throw new Error("公開操作と版の指定が一致しません。");
-      const body = { expectedVersion: input.expectedVersion, presentationVersion: input.presentationVersion, action: input.action, ...(input.action === "rollback" ? { revision: input.revision } : {}) };
-      return parsePlan(await api(`${pagePath(input.target)}/release-plan`, "POST", body, signal), input, catalog.sites[0]!.domains[0]!);
+      const plan = await editingApi.prepareRelease(input.target, { expectedVersion: input.expectedVersion, presentationVersion: input.presentationVersion,
+        action: input.action, ...(input.action === "rollback" ? { revision: input.revision } : {}) }, signal);
+      const parsed = parsePlan(plan, input, catalog.sites[0]!.domains[0]!);
+      releaseOperationIds.set(parsed.confirmationToken, crypto.randomUUID());
+      return parsed;
     }),
     release: (plan, signal) => conflict(() => request(signal, async () => {
       if (!releaseMatches(plan, plan, catalog.sites[0]!.domains[0]!)) throw new Error("公開確認が不正です。再度確認してください。");
-      return parseReleased(await api(`${pagePath(plan.target)}/release`, "POST", { expectedVersion: plan.expectedVersion, presentationVersion: plan.presentationVersion, confirmationToken: plan.confirmationToken }, signal), plan.target, catalog.blockContracts, catalog.nativePresentationPages.includes(plan.target.pageId));
+      const operationId = releaseOperationIds.get(plan.confirmationToken) ?? crypto.randomUUID();
+      releaseOperationIds.set(plan.confirmationToken, operationId);
+      const result = await editingApi.release(validTarget(plan.target), plan, operationId, signal);
+      if (result.status === "conflict") return result;
+      const snapshot = await readJapaneseDocument(plan.target, signal);
+      releaseOperationIds.delete(plan.confirmationToken);
+      return { status: "released" as const, snapshot };
     })),
     englishPublication: {
       refresh: (target, signal) => request(signal, async () => parseSnapshot(await api(pagePath(target), "GET", undefined, signal), target, catalog.blockContracts, catalog.nativePresentationPages.includes(target.pageId)).englishPublication),
@@ -400,7 +419,7 @@ export function KamakuraEditor({ project, environment }: { readonly project: Pro
     return () => controller.abort();
   }, [reload]);
   const ready = catalog.status === "ready" ? catalog.value : null;
-  const adapter = useMemo(() => ready ? createProjectEditorAdapter(createKamakuraAdapter(ready, setStatus), project) : null, [ready, project]);
+  const adapter = useMemo(() => ready ? createProjectEditorAdapter(createKamakuraAdapter(ready, setStatus, window.location.origin), project) : null, [ready, project]);
   const blocks = useMemo(() => ready ? createKamakuraEditorBlocks(ready.blockContracts, ready.sites[0]!.domains[0]!) : {}, [ready]);
   const externalFramePolicy = useMemo(() => createExternalFramePolicy({ parentOrigin: window.location.origin, sources: KAMAKURA_ORIGIN_RETAINING_FRAME_SOURCES, siteSources: ready?.sites[0]?.externalFrameSources ?? [] }), [ready]);
   const blankEmbeds = useMemo(() => createBlankEmbedRegistry({
