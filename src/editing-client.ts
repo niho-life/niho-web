@@ -1,6 +1,7 @@
-import { EDITING_API_ERRORS, EDITING_OPERATIONS, type EditingApiErrorCode, type EditingOperationDefinition, type EditingPageSnapshot, type EditingPageTarget } from "./editing-api.js";
+import { EDITING_API_ERRORS, EDITING_OPERATIONS, type EditingApiErrorCode, type EditingOperationDefinition, type EditingPageCatalog, type EditingPageSnapshot, type EditingPageTarget } from "./editing-api.js";
+import { normalizePageChange, validatePageChangePlan } from "./editor-model.js";
 import type { PageDocument } from "./types.js";
-import type { EditorReleasePlan, EditorReleaseRequest } from "./editor-types.js";
+import type { EditorPage, EditorPageChange, EditorPageChangePlan, EditorPageChangeResult, EditorReleasePlan, EditorReleaseRequest, EditorSite } from "./editor-types.js";
 import type { EditorBreakpointSettings, EditorBreakpointSettingsSaveResult, EditorBreakpointSettingsSnapshot } from "./editor-types.js";
 import { identifier, localeCode } from "./validation-utils.js";
 import { parseBreakpointSettings } from "./style-model.js";
@@ -23,6 +24,9 @@ export type EditingPagePublishResult = { readonly status: "released"; readonly o
 export type EditingPageReleaseInput = Omit<EditorReleaseRequest, "target">;
 export type EditingApiClient = {
   discover(signal?: AbortSignal): Promise<EditingApiDiscovery>;
+  readPageCatalog(signal?: AbortSignal): Promise<EditingPageCatalog>;
+  preparePageChange(change: EditorPageChange, expectedVersion: string, signal?: AbortSignal, operationId?: string): Promise<EditorPageChangePlan>;
+  applyPageChange(plan: EditorPageChangePlan, signal?: AbortSignal): Promise<EditorPageChangeResult>;
   read(target: EditingPageTarget, signal?: AbortSignal): Promise<EditingPageSnapshot>;
   save(target: EditingPageTarget, expectedVersion: string, document: unknown, signal?: AbortSignal): Promise<EditingPageSaveResult>;
   prepareRelease(target: EditingPageTarget, request: EditingPageReleaseInput, signal?: AbortSignal): Promise<EditorReleasePlan>;
@@ -66,6 +70,40 @@ export function parseEditingPageDocumentEnvelope(value: unknown): PageDocument {
     } as unknown as PageDocument;
   } catch { throw new EditingApiClientError("invalid_response"); }
 }
+function parseEditingCatalogPage(value: unknown, siteId: string): EditorPage {
+  if (!plainRecord(value) || Object.keys(value).some((key) => !["siteId", "pageId", "locale", "title", "path", "kind", "visibility", "published"].includes(key))
+    || value.siteId !== siteId || typeof value.title !== "string" || !value.title.trim() || value.title.length > 300
+    || value.path !== undefined && (typeof value.path !== "string" || value.path.length > 300 || /[\u0000-\u001f\u007f]/u.test(value.path))
+    || value.kind !== undefined && !["page", "template", "shared"].includes(String(value.kind))
+    || value.visibility !== undefined && !["public", "private"].includes(String(value.visibility))
+    || value.published !== undefined && typeof value.published !== "boolean") throw new EditingApiClientError("invalid_response");
+  try {
+    return { siteId, pageId: identifier(value.pageId, "$page.pageId"), locale: localeCode(value.locale, "$page.locale"), title: value.title,
+      ...(value.path === undefined ? {} : { path: value.path }), ...(value.kind === undefined ? {} : { kind: value.kind as NonNullable<EditorPage["kind"]> }),
+      ...(value.visibility === undefined ? {} : { visibility: value.visibility as NonNullable<EditorPage["visibility"]> }), ...(value.published === undefined ? {} : { published: value.published }) };
+  } catch { throw new EditingApiClientError("invalid_response"); }
+}
+function normalizedManagementChange(value: EditorPageChange, siteId: string): Exclude<EditorPageChange, { action: "duplicate" }> {
+  if (!plainRecord(value)) throw new TypeError("invalid page change");
+  if (value.action === "create" && !exactKeys(value, ["action", "siteId", "locale", "title", "path"])) throw new TypeError("invalid page change");
+  if (value.action === "update" && (!exactKeys(value, ["action", "target", "title", "path"]) || !plainRecord(value.target)
+    || !exactKeys(value.target, ["siteId", "pageId", "locale"]))) throw new TypeError("invalid page change");
+  if (value.action === "visibility" && (!exactKeys(value, ["action", "target", "visibility"]) || !plainRecord(value.target)
+    || !exactKeys(value.target, ["siteId", "pageId", "locale"]))) throw new TypeError("invalid page change");
+  const change = normalizePageChange(value);
+  const targetSiteId = change?.action === "create" ? change.siteId : change && change.action !== "duplicate" ? change.target.siteId : null;
+  if (!change || change.action === "duplicate" || targetSiteId !== siteId) throw new TypeError("invalid page change");
+  return change;
+}
+function managementSite(siteId: string, domain: unknown): EditorSite {
+  if (typeof domain !== "string") throw new EditingApiClientError("invalid_response");
+  try {
+    const url = new URL(domain);
+    if (url.protocol !== "https:" || url.origin !== domain || url.username || url.password || url.pathname !== "/" || url.search || url.hash) throw new Error("origin");
+  } catch { throw new EditingApiClientError("invalid_response"); }
+  return { id: siteId, name: siteId, domains: [domain] };
+}
+const PAGE_CHANGE_OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 function apiOrigin(value: string | URL): string {
   let url: URL;
   try { url = new URL(value); } catch { throw new TypeError("editing API origin must be an absolute URL"); }
@@ -191,6 +229,51 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
         || body.operations.length === 0 || body.operations.some((entry) => !validDiscoveredOperation(entry))
         || new Set(body.operations.map((entry) => (entry as Record<string, unknown>).id)).size !== body.operations.length) throw new EditingApiClientError("invalid_response", response.status);
       return body as unknown as EditingApiDiscovery;
+    },
+    async readPageCatalog(signal) {
+      const path = `/sites/${encodeURIComponent(siteId)}/operations/pages.catalog`;
+      const { response, body } = await send(path, "GET", undefined, signal);
+      if (!response.ok) throw apiFailure(body, response.status);
+      if (!exactKeys(body, ["version", "pages"]) || !isEditingApiVersion(body.version) || !Array.isArray(body.pages) || body.pages.length > 500) {
+        throw new EditingApiClientError("invalid_response", response.status);
+      }
+      const pages = body.pages.map((page) => parseEditingCatalogPage(page, siteId));
+      if (new Set(pages.map((page) => `${page.pageId}\u0000${page.locale}`)).size !== pages.length) throw new EditingApiClientError("invalid_response", response.status);
+      return { version: body.version, pages };
+    },
+    async preparePageChange(changeValue, expectedVersion, signal, requestedOperationId = crypto.randomUUID()) {
+      const change = normalizedManagementChange(changeValue, siteId);
+      if (!isEditingApiVersion(expectedVersion) || !PAGE_CHANGE_OPERATION_ID.test(requestedOperationId)) throw new TypeError("invalid page change request");
+      const path = `/sites/${encodeURIComponent(siteId)}/operations/pages.change-prepare`;
+      const { response, body } = await send(path, "POST", { expectedVersion, operationId: requestedOperationId, change }, signal);
+      if (response.status === 409 && body.error === "version_conflict") throw new EditingApiClientError("version_conflict", 409);
+      if (!response.ok) throw apiFailure(body, response.status);
+      if (!exactKeys(body, ["plan"]) || !plainRecord(body.plan)
+        || !exactKeys(body.plan, ["expectedVersion", "operationId", "change", "confirmationToken", "domain", "impact"])
+        || body.plan.expectedVersion !== expectedVersion || body.plan.operationId !== requestedOperationId) throw new EditingApiClientError("invalid_response", response.status);
+      const plan = validatePageChangePlan(body.plan, change, managementSite(siteId, body.plan.domain));
+      if (plan.expectedVersion !== expectedVersion || plan.operationId !== requestedOperationId) throw new EditingApiClientError("invalid_response", response.status);
+      return plan;
+    },
+    async applyPageChange(planValue, signal) {
+      if (!plainRecord(planValue)) throw new TypeError("invalid page change plan");
+      const source = planValue as unknown as Record<string, unknown>;
+      if (!exactKeys(source, ["expectedVersion", "operationId", "change", "confirmationToken", "domain", "impact"])) throw new TypeError("invalid page change plan");
+      if (!isEditingApiVersion(source.expectedVersion) || typeof source.operationId !== "string" || !PAGE_CHANGE_OPERATION_ID.test(source.operationId)) throw new TypeError("invalid page change plan");
+      const change = normalizedManagementChange(source.change as EditorPageChange, siteId);
+      const checked = validatePageChangePlan(source, change, managementSite(siteId, source.domain));
+      if (!checked.expectedVersion || !checked.operationId) throw new TypeError("invalid page change plan");
+      const path = `/sites/${encodeURIComponent(siteId)}/operations/pages.change-apply`;
+      const { response, body } = await send(path, "POST", {
+        expectedVersion: checked.expectedVersion, operationId: checked.operationId, confirmationToken: checked.confirmationToken, change: checked.change,
+      }, signal);
+      if (response.status === 409 && body.error === "version_conflict") return { status: "conflict" };
+      if (!response.ok) throw apiFailure(body, response.status);
+      if (!exactKeys(body, ["status", "operationId", "page"]) || body.status !== "applied" || body.operationId !== checked.operationId) {
+        throw new EditingApiClientError("invalid_response", response.status);
+      }
+      const page = parseEditingCatalogPage(body.page, siteId);
+      return { status: "applied", page, operationId: checked.operationId };
     },
     async read(target, signal) {
       const path = targetPath(target, siteId).replace("{operation}", "pages.read");

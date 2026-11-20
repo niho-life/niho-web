@@ -72,6 +72,67 @@ test("page editing API discovery exposes machine-readable operations and stable 
   assert.ok(result.body.operations.every((operation) => operation.inputSchema && operation.resultSchema && operation.errors.length > 0));
 });
 
+test("page catalog and two-phase page management share authorization, version checks and operation IDs", async () => {
+  const operationId = "123e4567-e89b-42d3-a456-426614174000", domain = "https://host.example";
+  const change = { action: "create", siteId: target.siteId, locale: "ja", title: "新しいページ", path: "/new-page" };
+  let version = "registry-v1";
+  const pages = [{ siteId: target.siteId, pageId: "home", locale: "ja", title: "Home", path: "/", kind: "page", visibility: "public", published: true }];
+  const plans = new Map(), usedOperationIds = new Set();
+  const site = { id: target.siteId, name: "Example", domains: [domain] };
+  const api = createPageEditingApi({
+    async authenticate(request) { return request.headers.get("Authorization") === "Bearer owner" ? { kind: "human", subject: "owner" } : null; },
+    async authorize(actor, capability, scope) { return actor.subject === "owner" && scope.siteId === target.siteId && (capability === "pages.read" || capability === "pages.publish"); },
+    async readPage() { return null; }, async savePage() { return { status: "conflict" }; },
+    async releaseSite() { return site; },
+    async readPageCatalog() { return { version, pages: structuredClone(pages) }; },
+    async preparePageChange(_actor, siteId, expectedVersion, requestedId, requestedChange) {
+      if (siteId !== target.siteId) return { status: "not_found" };
+      if (usedOperationIds.has(requestedId)) return { status: "duplicate" };
+      if (expectedVersion !== version) return { status: "conflict" };
+      usedOperationIds.add(requestedId);
+      const plan = { expectedVersion, operationId: requestedId, change: requestedChange, confirmationToken: "change-token", domain,
+        impact: { linkedFrom: [], navigation: ["sitemap"], notes: ["未公開の下書きとして作成します"] } };
+      plans.set(requestedId, { plan, applied: null });
+      return { status: "prepared", plan };
+    },
+    async applyPageChange(_actor, siteId, input) {
+      const entry = plans.get(input.operationId);
+      if (!entry || siteId !== target.siteId || JSON.stringify(entry.plan.change) !== JSON.stringify(input.change)
+        || entry.plan.confirmationToken !== input.confirmationToken || entry.plan.expectedVersion !== input.expectedVersion) return { status: "duplicate" };
+      if (entry.applied) return entry.applied;
+      if (version !== input.expectedVersion) return { status: "conflict" };
+      const page = { siteId, pageId: "page-created", locale: "ja", title: input.change.title, path: input.change.path, kind: "page", visibility: "public", published: false };
+      pages.push(page); version = "registry-v2";
+      entry.applied = { status: "applied", operationId: input.operationId, page };
+      return entry.applied;
+    }
+  });
+  const send = (method, path, body, authorization = "Bearer owner") => api(new Request(`https://host.example/api/edit/v1${path}`, {
+    method, headers: { Authorization: authorization, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) })
+  }));
+  const management = `/sites/${target.siteId}/operations`;
+  const discovered = await json(await send("GET", `/sites/${target.siteId}/capabilities`));
+  assert.deepEqual(discovered.body.operations.map(({ id }) => id), ["pages.read", "pages.catalog", "pages.change-prepare", "pages.change-apply"]);
+  const catalog = await json(await send("GET", `${management}/pages.catalog`));
+  assert.equal(catalog.body.version, "registry-v1");
+  assert.equal(catalog.body.pages[0].pageId, "home");
+  assert.deepEqual(await json(await send("POST", `${management}/pages.change-prepare`, { expectedVersion: "stale", operationId, change })), { status: 409, body: { error: "version_conflict" } });
+  const planResult = await json(await send("POST", `${management}/pages.change-prepare`, { expectedVersion: "registry-v1", operationId, change }));
+  assert.equal(planResult.status, 200);
+  assert.equal(planResult.body.plan.expectedVersion, "registry-v1");
+  assert.equal(planResult.body.plan.operationId, operationId);
+  assert.deepEqual(await json(await send("POST", `${management}/pages.change-prepare`, { expectedVersion: "registry-v1", operationId, change })), { status: 409, body: { error: "duplicate_operation" } });
+  const plan = planResult.body.plan;
+  const input = { expectedVersion: plan.expectedVersion, operationId, confirmationToken: plan.confirmationToken, change };
+  const applied = await json(await send("POST", `${management}/pages.change-apply`, input));
+  assert.equal(applied.status, 200);
+  assert.deepEqual(applied.body, { status: "applied", operationId, page: pages[1] });
+  assert.deepEqual(await json(await send("POST", `${management}/pages.change-apply`, input)), applied, "same operation ID and input safely retries after a lost response");
+  assert.deepEqual(await json(await send("POST", `${management}/pages.change-apply`, { ...input, change: { ...change, path: "/different" } })), { status: 409, body: { error: "duplicate_operation" } });
+  assert.deepEqual(await json(await send("GET", `${management}/pages.catalog`, undefined, "Bearer denied")), { status: 401, body: { error: "authentication_required" } });
+});
+
 test("site breakpoint operations use the common catalog, validate settings and enforce version CAS", async () => {
   const initial = { base: { name: "Mobile", previewWidth: 480 }, breakpoints: [{ name: "Tablet", minWidth: 691, previewWidth: 840 }, { name: "PC", minWidth: 1280, previewWidth: 1280 }] };
   const { send } = hostFixture({ initialBreakpointSettings: initial });

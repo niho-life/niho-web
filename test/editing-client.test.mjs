@@ -10,13 +10,16 @@ const blockDocument = structuredClone(fixture);
 blockDocument.body.push({ type: "component", id: "booking-panel", block: "booking-panel", props: { title: "Book a visit" } });
 const validationContext = { blocks: { "booking-panel": { props: { title: { type: "string", required: true } } } } };
 
-function clientFixture({ token = "owner", initialDocument = blockDocument, publishing = false, initialBreakpointSettings } = {}) {
+function clientFixture({ token = "owner", initialDocument = blockDocument, publishing = false, pageManagement = false, initialBreakpointSettings } = {}) {
   let document = structuredClone(initialDocument), version = "v1";
   let breakpointSettings = initialBreakpointSettings === undefined ? null : structuredClone(initialBreakpointSettings), breakpointVersion = "b.1";
   const completed = new Map();
+  let pageManagementVersion = "registry-v1";
+  const pages = [{ siteId: target.siteId, pageId: target.pageId, locale: "ja", title: "Home", path: "/", kind: "page", visibility: "public", published: true }];
+  const pageChangeOperations = new Map();
   const api = createPageEditingApi({
     async authenticate(request) { return request.headers.get("Authorization") === "Bearer owner" ? { kind: "machine", subject: "agent", delegatedBy: "owner" } : null; },
-    async authorize(actor, capability, scope) { return actor.subject === "agent" && scope.siteId === target.siteId && (["pages.read", "pages.edit"].includes(capability) || publishing && capability === "pages.publish" || breakpointSettings !== null && ["site.settings.read", "site.settings.write"].includes(capability)); },
+    async authorize(actor, capability, scope) { return actor.subject === "agent" && scope.siteId === target.siteId && (["pages.read", "pages.edit"].includes(capability) || (publishing || pageManagement) && capability === "pages.publish" || breakpointSettings !== null && ["site.settings.read", "site.settings.write"].includes(capability)); },
     async validationContext() { return validationContext; },
     async readPage(_actor, requested) { return requested.siteId === target.siteId && requested.pageId === target.pageId && requested.locale === target.locale
       ? { document, version, ...(publishing ? { componentsVersion: "components-v1", presentationVersion: "presentation-v1" } : {}) } : null; },
@@ -50,6 +53,28 @@ function clientFixture({ token = "owner", initialDocument = blockDocument, publi
         return result;
       }
     } : {})
+    ,...(pageManagement ? {
+      async releaseSite() { return { id: target.siteId, name: "Example", domains: ["https://host.example"] }; },
+      async readPageCatalog() { return { version: pageManagementVersion, pages: structuredClone(pages) }; },
+      async preparePageChange(_actor, _siteId, expectedVersion, operationId, change) {
+        if (pageChangeOperations.has(operationId)) return { status: "duplicate" };
+        if (expectedVersion !== pageManagementVersion) return { status: "conflict" };
+        const plan = { expectedVersion, operationId, change, confirmationToken: "page-change-token", domain: "https://host.example",
+          impact: { linkedFrom: [], navigation: ["sitemap"], notes: ["新しいページを作成します"] } };
+        pageChangeOperations.set(operationId, { plan, applied: null });
+        return { status: "prepared", plan };
+      },
+      async applyPageChange(_actor, _siteId, input) {
+        const entry = pageChangeOperations.get(input.operationId);
+        if (!entry || entry.plan.confirmationToken !== input.confirmationToken || JSON.stringify(entry.plan.change) !== JSON.stringify(input.change)) return { status: "duplicate" };
+        if (entry.applied) return entry.applied;
+        if (entry.plan.expectedVersion !== input.expectedVersion || input.expectedVersion !== pageManagementVersion) return { status: "conflict" };
+        const page = { siteId: target.siteId, pageId: "new-page", locale: "ja", title: input.change.title, path: input.change.path, kind: "page", visibility: "public", published: false };
+        pages.push(page); pageManagementVersion = "registry-v2";
+        entry.applied = { status: "applied", operationId: input.operationId, page };
+        return entry.applied;
+      }
+    } : {})
   });
   const client = createPageEditingApiClient({
     origin: "https://host.example", siteId: target.siteId, headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -72,6 +97,26 @@ test("shared page editing client discovers, reads custom blocks and saves with C
     assert.equal(saved.document.title, "Saved by shared client");
   }
   assert.deepEqual(await client.save(target, snapshot.version, changed), { status: "conflict" });
+});
+
+test("shared editing client reads the page catalog and prepares/applies a versioned page change", async () => {
+  const client = clientFixture({ pageManagement: true });
+  const discovery = await client.discover();
+  assert.deepEqual(discovery.operations.map(({ id }) => id), ["pages.read", "pages.save", "pages.catalog", "pages.change-prepare", "pages.change-apply"]);
+  const catalog = await client.readPageCatalog();
+  assert.equal(catalog.version, "registry-v1");
+  assert.equal(catalog.pages[0].pageId, target.pageId);
+  const change = { action: "create", siteId: target.siteId, locale: "ja", title: "新しいページ", path: "/new-page" };
+  const operationId = "123e4567-e89b-42d3-a456-426614174000";
+  const plan = await client.preparePageChange(change, catalog.version, undefined, operationId);
+  assert.equal(plan.expectedVersion, catalog.version);
+  assert.equal(plan.operationId, operationId);
+  assert.equal(plan.impact.notes[0], "新しいページを作成します");
+  const applied = await client.applyPageChange(plan);
+  assert.deepEqual(applied, { status: "applied", operationId, page: { siteId: target.siteId, pageId: "new-page", locale: "ja", title: change.title, path: change.path, kind: "page", visibility: "public", published: false } });
+  assert.deepEqual(await client.applyPageChange(plan), applied);
+  await assert.rejects(client.preparePageChange(change, catalog.version, undefined, operationId),
+    (error) => error instanceof EditingApiClientError && error.code === "duplicate_operation" && error.status === 409);
 });
 
 test("shared editing client reads and saves site breakpoint settings through the discoverable API", async () => {

@@ -1,10 +1,10 @@
 # ページ・サイト設定編集HTTP契約
 
-`@niho/web/editing-api` は、GUIと機械クライアントが同じページ本文・サイトブレークポイント正本を編集するためのReact非依存HTTP契約です。Studio UIやStudio Workerを必要条件にしません。各サイトのホストがhandlerを組み込み、認証・権限・永続化・監査記録・公開を所有します。鎌倉では日本語ページ本文とブレークポイントを、Studio GUIとCUIの両方がこの共通契約で編集します。
+`@niho/web/editing-api` は、GUIと機械クライアントが同じページ本文・ページ管理・サイト設定の正本を編集するためのReact非依存HTTP契約です。Studio UIやStudio Workerを必要条件にしません。各サイトのホストがhandlerを組み込み、認証・権限・永続化・監査記録・公開を所有します。鎌倉では日本語ページ本文、ページ一覧・作成・名前/URL・公開状態、ブレークポイントを、Studio GUIとCUIの両方がこの共通契約で編集します。
 
-`@niho/web/editing-client` の `createPageEditingApiClient` は同じwire契約を呼ぶReact非依存clientです。ブラウザーのGUIは既定のsame-origin credentialsまたはhost提供headerを使え、Node CLIはbearer headerと `credentials: "omit"` を使えます。`niho-edit` CLIと鎌倉Studio GUIは、日本語ページ本文とブレークポイントの読取・版付き保存でこのclientを使います。Studio GUIはAccess sessionをWorker BFFで短期の操作別tokenへ委任し、サイトoriginの共通APIへservice bindingで接続します。ブラウザーのAccess tokenやcookieはサイトへ転送しません。
+`@niho/web/editing-client` の `createPageEditingApiClient` は同じwire契約を呼ぶReact非依存clientです。ブラウザーのGUIは既定のsame-origin credentialsまたはhost提供headerを使え、Node CLIはbearer headerと `credentials: "omit"` を使えます。`niho-edit` CLIと鎌倉Studio GUIは、日本語ページ本文・ページ管理・ブレークポイントでこのclientを使います。Studio GUIはAccess sessionをWorker BFFで短期の操作別tokenへ委任し、サイトoriginの共通APIへservice bindingで接続します。ブラウザーのAccess tokenやcookieはサイトへ転送しません。
 
-Studio GUIはページの表示・編集材料の一部（presentation metadata、英語公開状態）を取得するため、引き続きread-onlyの既存snapshot routeも併用します。日本語本文の保存・公開は共通APIのみを使います。英語 overlay、CMS、素材、翻訳、ページ作成・パス変更は別のホスト操作で、まだ共通契約へ移行していません。
+Studio GUIはページの表示・編集材料の一部（presentation metadata、英語公開状態）を取得するため、引き続きread-onlyの既存snapshot routeも併用します。日本語本文の保存・公開とページ管理の書込は共通APIのみを使います。英語 overlay、CMS、素材、翻訳は別のホスト操作です。
 
 ## 操作カタログ
 
@@ -16,12 +16,17 @@ Studio GUIはページの表示・編集材料の一部（presentation metadata�
 | `pages.save` | PUT | `/sites/{siteId}/operations/pages.save/{pageId}?locale={locale}` | `pages.edit` | `{ expectedVersion, document }` | `{ status: "saved", version, document }` |
 | `pages.release-plan` | POST | `/sites/{siteId}/operations/pages.release-plan/{pageId}?locale={locale}` | `pages.publish` | expected version, publish/rollback action, optional rollback revision and dependency versions | `{ plan }` |
 | `pages.release` | POST | `/sites/{siteId}/operations/pages.release/{pageId}?locale={locale}` | `pages.publish` | expected version, one-use confirmation token, UUID v4 operation ID | `{ status: "released", operationId, version, document }` |
+| `pages.catalog` | GET | `/sites/{siteId}/operations/pages.catalog` | `pages.read` | site ID | `{ version, pages }` |
+| `pages.change-prepare` | POST | `/sites/{siteId}/operations/pages.change-prepare` | `pages.publish` | `{ expectedVersion, operationId, change }` | `{ plan }` |
+| `pages.change-apply` | POST | `/sites/{siteId}/operations/pages.change-apply` | `pages.publish` | `{ expectedVersion, operationId, confirmationToken, change }` | `{ status: "applied", operationId, page }` |
 | `site.breakpoints.read` | GET | `/sites/{siteId}/operations/site.breakpoints.read` | `site.settings.read` | site ID | `{ settings, version }` |
 | `site.breakpoints.save` | PUT | `/sites/{siteId}/operations/site.breakpoints.save` | `site.settings.write` | `{ expectedVersion, settings }` | `{ status: "saved", version }` |
 
 `pages.save` は `expectedVersion` を原子的に比較します。競合時はHTTP 409と `version_conflict` を返し、ホストは古い下書きを上書きしません。documentは受信側で `parsePageDocument` を通し、pathのsite/pageとqueryのlocaleに一致しない文書、任意HTML・JavaScript・CSSなど検証に失敗する値はHTTP 400 `invalid_request` で拒否します。登録ブロック・部品インスタンス・サイト共通スタイルを使うホストは、adapterの `validationContext(actor, target)` から信頼済みの `blocks`・`components`・`siteStyles` を渡します。読み取り、入力文書、保存後の正規文書の検証に同じcontextを使います。
 
 `site.breakpoints.*` は、hostの設定正本へ保存するsite単位の操作です。各操作は対応するadapter関数が登録されているhostだけがdiscoverに出します。settingsは `parseBreakpointSettings` の閉じた契約で検証し、saveはhostの永続層でexpectedVersionを原子的に比較します。stale versionは409 `version_conflict` です。
+
+`pages.catalog` は管理可能なページと一覧のopaque versionを返します。`pages.change-prepare` は作成・名前/URL変更・公開状態変更を実行せずに影響と短期確認tokenを返し、`pages.change-apply` は同じ `expectedVersion`・UUID v4 `operationId`・change・tokenを照合して適用します。stale versionは409 `version_conflict`、別prepareでのoperation ID再利用は409 `duplicate_operation` です。同じactorが同じapplyを再送した場合は、ホストが記録した同じ結果を返します。
 
 ## CUIでの編集
 
@@ -40,6 +45,12 @@ niho-edit --origin https://site.example --site site-id release home --locale ja 
 niho-edit --origin https://site.example --site site-id breakpoints-read > breakpoints.json
 # breakpoints.json のsettingsを編集し、versionは保持する
 niho-edit --origin https://site.example --site site-id breakpoints-save --json breakpoints.json
+
+niho-edit --origin https://site.example --site site-id pages-catalog > pages.json
+# pages.json の version を保ち、change.json にページ変更を記述する
+niho-edit --origin https://site.example --site site-id page-change-prepare --expected-version '<version>' --json change.json > plan.json
+# plan.json の影響を確認してから適用する
+niho-edit --origin https://site.example --site site-id page-change-apply --json plan.json
 ```
 
 `release-plan` の `--expected-version` は最新の `read` / `save` 結果から指定します。ロールバックは `--action rollback --revision <公開版>` を指定します。applyがタイムアウトした場合は計画ファイルと同じoperation IDを使って再送します。IDを変えると別操作として扱われます。
@@ -74,6 +85,7 @@ Cookie認証を使うホストは、write requestのCSRF境界とCORSも自分�
 | --- | --- | --- |
 | `authentication_required` | 401 | 認証主体を確定できない |
 | `forbidden` | 403 | 操作権限がない |
+| `duplicate_operation` | 409 | すでに別prepareで使われたoperation IDを再利用した |
 | `host_failure` | 503 | ホストの認証/検証context/保存adapterが一時的に失敗した |
 | `invalid_request` | 400 | path、query、JSON、PageDocumentが契約に合わない |
 | `method_not_allowed` | 405 | 操作に定義されていないmethod |
@@ -83,4 +95,4 @@ Cookie認証を使うホストは、write requestのCSRF境界とCORSも自分�
 
 ## 実装状況
 
-ページ本文とブレークポイントの共通wire、CUI client、および鎌倉のhost adapterを実装しています。Studio GUIはBFF経由でサイトoriginの共通APIへ接続し、Access cookie/JWTをサイトへ転送しません。旧Studio D1にだけブレークポイント値がある場合は、初回読取でその版をexpectedVersionとしてサイトAPIへ一度だけ移します。以後の読取・保存の正本はサイト側です。CMS・素材・翻訳やページ管理は別のhost操作です。
+ページ本文・ページ管理・ブレークポイントの共通wire、CUI client、および鎌倉のhost adapterを実装しています。Studio GUIはBFF経由でサイトoriginの共通APIへ接続し、Access cookie/JWTをサイトへ転送しません。旧Studio D1にだけブレークポイント値がある場合は、初回読取でその版をexpectedVersionとしてサイトAPIへ一度だけ移します。以後の読取・保存の正本はサイト側です。CMS・素材・翻訳は別のhost操作です。

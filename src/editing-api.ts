@@ -1,14 +1,14 @@
 import type { BlockContracts, ComponentLibrary, PageDocument } from "./types.js";
 import { parsePageDocument } from "./document.js";
-import { validateReleasePlan } from "./editor-model.js";
-import type { EditorBreakpointSettings, EditorBreakpointSettingsSaveResult, EditorBreakpointSettingsSnapshot, EditorReleasePlan, EditorReleaseRequest, EditorSite } from "./editor-types.js";
+import { normalizePageChange, validatePageChangePlan, validateReleasePlan } from "./editor-model.js";
+import type { EditorBreakpointSettings, EditorBreakpointSettingsSaveResult, EditorBreakpointSettingsSnapshot, EditorPage, EditorPageChange, EditorPageChangePlan, EditorReleasePlan, EditorReleaseRequest, EditorSite } from "./editor-types.js";
 import { identifier, localeCode } from "./validation-utils.js";
 import type { SiteStyles } from "./site-styles.js";
 import { parseBreakpointSettings } from "./style-model.js";
 
 /** Stable errors returned by the host-neutral page editing wire contract. */
 export const EDITING_API_ERRORS = Object.freeze([
-  "authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found", "version_conflict"
+  "authentication_required", "duplicate_operation", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found", "version_conflict"
 ] as const);
 export type EditingApiErrorCode = typeof EDITING_API_ERRORS[number];
 
@@ -32,6 +32,14 @@ export type EditingPageSnapshot = {
 export type EditingPageSaveResult = { readonly status: "saved"; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" };
 export type EditingPageReleasePrepareResult = { readonly status: "prepared"; readonly plan: EditorReleasePlan } | { readonly status: "conflict" };
 export type EditingPagePublishResult = { readonly status: "released"; readonly operationId: string; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" };
+export type EditingPageCatalog = { readonly version: string; readonly pages: readonly EditorPage[] };
+export type EditingPageChange = Exclude<EditorPageChange, { action: "duplicate" }>;
+export type EditingPageManagementPlan = EditorPageChangePlan & { readonly expectedVersion: string; readonly operationId: string };
+export type EditingPageManagementPrepareResult = { readonly status: "prepared"; readonly plan: EditingPageManagementPlan }
+  | { readonly status: "conflict" } | { readonly status: "invalid" } | { readonly status: "not_found" } | { readonly status: "duplicate" };
+export type EditingPageManagementApplyInput = { readonly expectedVersion: string; readonly operationId: string; readonly confirmationToken: string; readonly change: EditingPageChange };
+export type EditingPageManagementApplyResult = { readonly status: "applied"; readonly operationId: string; readonly page: EditorPage }
+  | { readonly status: "conflict" } | { readonly status: "invalid" } | { readonly status: "not_found" } | { readonly status: "duplicate" };
 export type PageEditingValidationContext = { readonly blocks?: BlockContracts; readonly components?: ComponentLibrary; readonly siteStyles?: SiteStyles };
 
 export type JsonSchema = boolean | {
@@ -48,9 +56,10 @@ export type JsonSchema = boolean | {
   readonly minLength?: number;
   readonly maxLength?: number;
   readonly maxItems?: number;
+  readonly oneOf?: readonly JsonSchema[];
 };
 export type EditingOperationDefinition = {
-  readonly id: "pages.read" | "pages.save" | "pages.release-plan" | "pages.release" | "site.breakpoints.read" | "site.breakpoints.save";
+  readonly id: "pages.read" | "pages.save" | "pages.release-plan" | "pages.release" | "pages.catalog" | "pages.change-prepare" | "pages.change-apply" | "site.breakpoints.read" | "site.breakpoints.save";
   readonly capability: "pages.read" | "pages.edit" | "pages.publish" | "site.settings.read" | "site.settings.write";
   readonly method: "GET" | "PUT" | "POST";
   readonly path: string;
@@ -85,6 +94,31 @@ const breakpointSettingsSchema: JsonSchema = Object.freeze({ type: "object", req
       properties: Object.freeze({ name: breakpointNameSchema, minWidth: Object.freeze({ type: "integer", minimum: 320, maximum: 1920 }), previewWidth: Object.freeze({ type: "integer", minimum: 320, maximum: 1920 }) }) }) })
   })
 });
+const pageTargetSchema: JsonSchema = Object.freeze({ type: "object", required: Object.freeze(["siteId", "pageId", "locale"]), additionalProperties: false,
+  properties: Object.freeze({ siteId: Object.freeze({ type: "string", minLength: 1, maxLength: 80 }), pageId: Object.freeze({ type: "string", minLength: 1, maxLength: 80 }), locale: Object.freeze({ type: "string", minLength: 2, maxLength: 40 }) }) });
+const pageChangeSchema: JsonSchema = Object.freeze({ oneOf: Object.freeze([
+  Object.freeze({ type: "object", required: Object.freeze(["action", "siteId", "locale", "title", "path"]), additionalProperties: false,
+    properties: Object.freeze({ action: Object.freeze({ const: "create" }), siteId: Object.freeze({ type: "string", minLength: 1, maxLength: 80 }), locale: Object.freeze({ type: "string", minLength: 2, maxLength: 40 }), title: Object.freeze({ type: "string", minLength: 1, maxLength: 200 }), path: Object.freeze({ type: "string", minLength: 1, maxLength: 300 }) }) }),
+  Object.freeze({ type: "object", required: Object.freeze(["action", "target", "title", "path"]), additionalProperties: false,
+    properties: Object.freeze({ action: Object.freeze({ const: "update" }), target: pageTargetSchema, title: Object.freeze({ type: "string", minLength: 1, maxLength: 200 }), path: Object.freeze({ type: "string", minLength: 1, maxLength: 300 }) }) }),
+  Object.freeze({ type: "object", required: Object.freeze(["action", "target", "visibility"]), additionalProperties: false,
+    properties: Object.freeze({ action: Object.freeze({ const: "visibility" }), target: pageTargetSchema, visibility: Object.freeze({ type: "string", enum: Object.freeze(["public", "private"]) }) }) })
+]) });
+const pageCatalogItemSchema: JsonSchema = Object.freeze({ type: "object", required: Object.freeze(["siteId", "pageId", "locale", "title"]), additionalProperties: false,
+  properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), pageId: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }), title: Object.freeze({ type: "string" }),
+    path: Object.freeze({ type: "string" }), kind: Object.freeze({ type: "string", enum: Object.freeze(["page", "template", "shared"]) }),
+    visibility: Object.freeze({ type: "string", enum: Object.freeze(["public", "private"]) }), published: Object.freeze({ type: "boolean" }) }) });
+const pageChangeImpactSchema: JsonSchema = Object.freeze({ type: "object", required: Object.freeze(["linkedFrom", "navigation", "notes"]), additionalProperties: false,
+  properties: Object.freeze({ before: Object.freeze({ type: "string" }), after: Object.freeze({ type: "string" }),
+    redirect: Object.freeze({ type: "object", required: Object.freeze(["from", "to"]), additionalProperties: false,
+      properties: Object.freeze({ from: Object.freeze({ type: "string" }), to: Object.freeze({ type: "string" }), status: Object.freeze({ type: "integer", minimum: 300, maximum: 399 }) }) }),
+    linkedFrom: Object.freeze({ type: "array", maxItems: 500, items: Object.freeze({ type: "object", required: Object.freeze(["pageId", "locale", "title", "count"]), additionalProperties: false,
+      properties: Object.freeze({ pageId: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }), title: Object.freeze({ type: "string" }), count: Object.freeze({ type: "integer", minimum: 0 }) }) }) }),
+    navigation: Object.freeze({ type: "array", maxItems: 100, items: Object.freeze({ type: "string" }) }), notes: Object.freeze({ type: "array", maxItems: 100, items: Object.freeze({ type: "string" }) }) }) });
+const pageManagementPlanSchema: JsonSchema = Object.freeze({ type: "object", required: Object.freeze(["expectedVersion", "operationId", "change", "confirmationToken", "domain", "impact"]), additionalProperties: false,
+  properties: Object.freeze({ expectedVersion: versionSchema, operationId: Object.freeze({ type: "string", minLength: 36, maxLength: 36 }), change: pageChangeSchema,
+    confirmationToken: versionSchema, domain: Object.freeze({ type: "string" }), impact: pageChangeImpactSchema }) });
+const pageChangePlanPageSchema: JsonSchema = pageCatalogItemSchema;
 const releaseRequestProperties = Object.freeze({
   siteId: Object.freeze({ type: "string" }), pageId: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }), expectedVersion: versionSchema,
   action: Object.freeze({ type: "string", enum: Object.freeze(["publish", "rollback"]) }), revision: Object.freeze({ type: "number", minimum: 1 }),
@@ -135,6 +169,28 @@ export const EDITING_OPERATIONS: readonly EditingOperationDefinition[] = Object.
     errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found", "version_conflict"] as const)
   }),
   Object.freeze({
+    id: "pages.catalog", capability: "pages.read", method: "GET", path: "/sites/{siteId}/operations/pages.catalog",
+    inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId"]), additionalProperties: false, properties: Object.freeze({ siteId: Object.freeze({ type: "string" }) }) }),
+    resultSchema: Object.freeze({ type: "object", required: Object.freeze(["version", "pages"]), additionalProperties: false,
+      properties: Object.freeze({ version: versionSchema, pages: Object.freeze({ type: "array", maxItems: 500, items: pageCatalogItemSchema }) }) }),
+    errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found"] as const)
+  }),
+  Object.freeze({
+    id: "pages.change-prepare", capability: "pages.publish", method: "POST", path: "/sites/{siteId}/operations/pages.change-prepare",
+    inputSchema: Object.freeze({ type: "object", required: Object.freeze(["expectedVersion", "operationId", "change"]), additionalProperties: false,
+      properties: Object.freeze({ expectedVersion: versionSchema, operationId: Object.freeze({ type: "string", minLength: 36, maxLength: 36 }), change: pageChangeSchema }) }),
+    resultSchema: Object.freeze({ type: "object", required: Object.freeze(["plan"]), additionalProperties: false, properties: Object.freeze({ plan: pageManagementPlanSchema }) }),
+    errors: Object.freeze(["authentication_required", "duplicate_operation", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found", "version_conflict"] as const)
+  }),
+  Object.freeze({
+    id: "pages.change-apply", capability: "pages.publish", method: "POST", path: "/sites/{siteId}/operations/pages.change-apply",
+    inputSchema: Object.freeze({ type: "object", required: Object.freeze(["expectedVersion", "operationId", "confirmationToken", "change"]), additionalProperties: false,
+      properties: Object.freeze({ expectedVersion: versionSchema, operationId: Object.freeze({ type: "string", minLength: 36, maxLength: 36 }), confirmationToken: versionSchema, change: pageChangeSchema }) }),
+    resultSchema: Object.freeze({ type: "object", required: Object.freeze(["status", "operationId", "page"]), additionalProperties: false,
+      properties: Object.freeze({ status: Object.freeze({ const: "applied" }), operationId: Object.freeze({ type: "string", minLength: 36, maxLength: 36 }), page: pageChangePlanPageSchema }) }),
+    errors: Object.freeze(["authentication_required", "duplicate_operation", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found", "version_conflict"] as const)
+  }),
+  Object.freeze({
     id: "site.breakpoints.read", capability: "site.settings.read", method: "GET", path: "/sites/{siteId}/operations/site.breakpoints.read",
     inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId"]), additionalProperties: false, properties: Object.freeze({ siteId: Object.freeze({ type: "string" }) }) }),
     resultSchema: Object.freeze({ type: "object", required: Object.freeze(["settings", "version"]), additionalProperties: false,
@@ -169,6 +225,10 @@ export type PageEditingHostAdapter = {
   /** Optional site settings share the same discovery, authentication, authorization and wire contract. */
   readBreakpointSettings?(actor: EditingActor, siteId: string): Promise<EditorBreakpointSettingsSnapshot | null>;
   saveBreakpointSettings?(actor: EditingActor, siteId: string, expectedVersion: string, settings: EditorBreakpointSettings): Promise<EditorBreakpointSettingsSaveResult>;
+  /** Optional native page catalog and two phase page management operations. */
+  readPageCatalog?(actor: EditingActor, siteId: string): Promise<EditingPageCatalog | null>;
+  preparePageChange?(actor: EditingActor, siteId: string, expectedVersion: string, operationId: string, change: EditingPageChange): Promise<EditingPageManagementPrepareResult>;
+  applyPageChange?(actor: EditingActor, siteId: string, input: EditingPageManagementApplyInput): Promise<EditingPageManagementApplyResult>;
 };
 
 function response(value: unknown, status = 200): Response {
@@ -217,9 +277,43 @@ const OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0
 function validOperationId(value: unknown): value is string { return typeof value === "string" && OPERATION_ID.test(value); }
 function supportsOperation(adapter: PageEditingHostAdapter, operation: EditingOperationDefinition): boolean {
   if (operation.id === "pages.release-plan" || operation.id === "pages.release") return typeof adapter.releaseSite === "function" && typeof adapter.preparePageRelease === "function" && typeof adapter.publishPage === "function";
+  if (operation.id === "pages.catalog") return typeof adapter.readPageCatalog === "function";
+  if (operation.id === "pages.change-prepare") return typeof adapter.releaseSite === "function" && typeof adapter.preparePageChange === "function";
+  if (operation.id === "pages.change-apply") return typeof adapter.releaseSite === "function" && typeof adapter.applyPageChange === "function";
   if (operation.id === "site.breakpoints.read") return typeof adapter.readBreakpointSettings === "function";
   if (operation.id === "site.breakpoints.save") return typeof adapter.saveBreakpointSettings === "function";
   return true;
+}
+function managementChange(value: unknown, siteId: string): EditingPageChange | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const source = value as Record<string, unknown>;
+  if (source.action === "create" && !exactKeys(source, ["action", "siteId", "locale", "title", "path"])) return null;
+  if (source.action === "update" && (!exactKeys(source, ["action", "target", "title", "path"])
+    || !source.target || typeof source.target !== "object" || Array.isArray(source.target)
+    || !exactKeys(source.target as Record<string, unknown>, ["siteId", "pageId", "locale"]))) return null;
+  if (source.action === "visibility" && (!exactKeys(source, ["action", "target", "visibility"])
+    || !source.target || typeof source.target !== "object" || Array.isArray(source.target)
+    || !exactKeys(source.target as Record<string, unknown>, ["siteId", "pageId", "locale"]))) return null;
+  if (!["create", "update", "visibility"].includes(String(source.action))) return null;
+  const change = normalizePageChange(value);
+  if (!change || change.action === "duplicate") return null;
+  const targetSiteId = change.action === "create" ? change.siteId : change.target.siteId;
+  return targetSiteId === siteId ? change : null;
+}
+function catalogPage(value: unknown, siteId: string): EditorPage | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const source = value as Record<string, unknown>;
+  if (Object.keys(source).some((key) => !["siteId", "pageId", "locale", "title", "path", "kind", "visibility", "published"].includes(key))
+    || source.siteId !== siteId || typeof source.title !== "string" || !source.title.trim() || source.title.length > 300
+    || source.path !== undefined && (typeof source.path !== "string" || source.path.length > 300)
+    || source.kind !== undefined && !["page", "template", "shared"].includes(String(source.kind))
+    || source.visibility !== undefined && !["public", "private"].includes(String(source.visibility))
+    || source.published !== undefined && typeof source.published !== "boolean") return null;
+  try {
+    return { siteId, pageId: identifier(source.pageId, "$page.pageId"), locale: localeCode(source.locale, "$page.locale"), title: source.title,
+      ...(source.path === undefined ? {} : { path: source.path as string }), ...(source.kind === undefined ? {} : { kind: source.kind as NonNullable<EditorPage["kind"]> }),
+      ...(source.visibility === undefined ? {} : { visibility: source.visibility as NonNullable<EditorPage["visibility"]> }), ...(source.published === undefined ? {} : { published: source.published }) };
+  } catch { return null; }
 }
 function releaseRequest(value: Record<string, unknown>, target: EditingPageTarget): EditorReleaseRequest | null {
   const allowed = ["expectedVersion", "action", "revision", "componentsVersion", "presentationVersion"];
@@ -341,6 +435,88 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       if (result.status === "conflict") return fail("version_conflict", 409);
       if (!validVersion(result.version)) return fail("host_contract_violation", 502);
       return response({ status: "saved", version: result.version });
+    }
+    const pageManagementMatch = new RegExp(`^${basePath}/sites/([^/]+)/operations/(pages\\.(?:catalog|change-prepare|change-apply))$`, "u").exec(url.pathname);
+    if (pageManagementMatch) {
+      let siteId: string;
+      try { siteId = identifier(decodeURIComponent(pageManagementMatch[1]!), "$siteId"); }
+      catch { return fail("invalid_request", 400); }
+      if (url.search) return fail("invalid_request", 400);
+      const operation = EDITING_OPERATIONS.find((item) => item.id === pageManagementMatch[2]);
+      if (!operation || !supportsOperation(adapter, operation)) return fail("not_found", 404);
+      if (request.method !== operation.method) return fail("method_not_allowed", 405);
+      let actor: EditingActor | null;
+      try { actor = await adapter.authenticate(request); }
+      catch { return fail("host_failure", 503); }
+      if (!actor) return fail("authentication_required", 401);
+      if (!validActor(actor)) return fail("host_contract_violation", 502);
+      let allowed: boolean;
+      try { allowed = await adapter.authorize(actor, operation.capability, { siteId }) === true; }
+      catch { return fail("host_failure", 503); }
+      if (!allowed) return fail("forbidden", 403);
+
+      if (operation.id === "pages.catalog") {
+        if (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length"))) return fail("invalid_request", 400);
+        let catalog: EditingPageCatalog | null;
+        try { catalog = await adapter.readPageCatalog!(actor, siteId); }
+        catch { return fail("host_failure", 503); }
+        if (!catalog) return fail("not_found", 404);
+        if (!validVersion(catalog.version) || !Array.isArray(catalog.pages) || catalog.pages.length > 500) return fail("host_contract_violation", 502);
+        const pages = catalog.pages.map((page) => catalogPage(page, siteId));
+        if (pages.some((page) => page === null) || new Set(pages.map((page) => page && `${page.pageId}\u0000${page.locale}`)).size !== pages.length) return fail("host_contract_violation", 502);
+        return response({ version: catalog.version, pages });
+      }
+
+      let body: Record<string, unknown> | null;
+      try { body = await readBody(request); } catch { return fail("invalid_request", 400); }
+      if (!body || !validVersion(body.expectedVersion) || !validOperationId(body.operationId)) return fail("invalid_request", 400);
+      const change = managementChange(body.change, siteId);
+      if (!change) return fail("invalid_request", 400);
+      if (operation.id === "pages.change-prepare") {
+        if (!exactKeys(body, ["expectedVersion", "operationId", "change"])) return fail("invalid_request", 400);
+        let prepared: EditingPageManagementPrepareResult;
+        try { prepared = await adapter.preparePageChange!(actor, siteId, body.expectedVersion, body.operationId, change); }
+        catch { return fail("host_failure", 503); }
+        if (!prepared || typeof prepared !== "object" || !["prepared", "conflict", "invalid", "not_found", "duplicate"].includes(prepared.status)) return fail("host_contract_violation", 502);
+        if (prepared.status === "conflict") return fail("version_conflict", 409);
+        if (prepared.status === "invalid") return fail("invalid_request", 400);
+        if (prepared.status === "not_found") return fail("not_found", 404);
+        if (prepared.status === "duplicate") return fail("duplicate_operation", 409);
+        const rawPlan = prepared.plan as unknown;
+        if (!rawPlan || typeof rawPlan !== "object" || Array.isArray(rawPlan)) return fail("host_contract_violation", 502);
+        const source = rawPlan as Record<string, unknown>;
+        if (!exactKeys(source, ["expectedVersion", "operationId", "change", "confirmationToken", "domain", "impact"])
+          || source.expectedVersion !== body.expectedVersion || source.operationId !== body.operationId || typeof source.confirmationToken !== "string" || !validVersion(source.confirmationToken)) {
+          return fail("host_contract_violation", 502);
+        }
+        let site: EditorSite | null;
+        try { site = await adapter.releaseSite!(actor, siteId); }
+        catch { return fail("host_failure", 503); }
+        if (!site || site.id !== siteId || !Array.isArray(site.domains) || site.domains.length === 0) return fail("host_contract_violation", 502);
+        let checkedPlan: EditorPageChangePlan;
+        try { checkedPlan = validatePageChangePlan(source, change, site); }
+        catch { return fail("host_contract_violation", 502); }
+        return response({ plan: { ...checkedPlan, expectedVersion: body.expectedVersion, operationId: body.operationId } });
+      }
+
+      if (!exactKeys(body, ["expectedVersion", "operationId", "confirmationToken", "change"]) || !validVersion(body.confirmationToken)) return fail("invalid_request", 400);
+      let applied: EditingPageManagementApplyResult;
+      try { applied = await adapter.applyPageChange!(actor, siteId, {
+        expectedVersion: body.expectedVersion, operationId: body.operationId, confirmationToken: body.confirmationToken, change,
+      }); }
+      catch { return fail("host_failure", 503); }
+      if (!applied || typeof applied !== "object" || !["applied", "conflict", "invalid", "not_found", "duplicate"].includes(applied.status)) return fail("host_contract_violation", 502);
+      if (applied.status === "conflict") return fail("version_conflict", 409);
+      if (applied.status === "invalid") return fail("invalid_request", 400);
+      if (applied.status === "not_found") return fail("not_found", 404);
+      if (applied.status === "duplicate") return fail("duplicate_operation", 409);
+      const page = catalogPage(applied.page, siteId);
+      if (applied.operationId !== body.operationId || !page || page.kind !== "page" || !page.path) return fail("host_contract_violation", 502);
+      const matches = change.action === "create" ? page.title === change.title && page.path === change.path && page.visibility === "public" && page.published === false
+        : change.action === "update" ? page.pageId === change.target.pageId && page.title === change.title && page.path === change.path
+          : page.pageId === change.target.pageId && page.visibility === change.visibility;
+      if (!matches) return fail("host_contract_violation", 502);
+      return response({ status: "applied", operationId: applied.operationId, page });
     }
     const match = new RegExp(`^${basePath}/sites/([^/]+)/operations/(pages\\.(?:read|save|release-plan|release))/([^/]+)$`, "u").exec(url.pathname);
     if (!match) return fail("not_found", 404);
