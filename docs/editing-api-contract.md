@@ -26,6 +26,8 @@ niho-edit --origin https://site.example --site site-id save home --locale ja --j
 
 実在サイトがこのAPIを提供するまでは接続できません。既存Studio CLI `niho-studio` の操作とは互換性を保ちながら、ホストを順次移行します。
 
+host adapterの最小実装は `npm run build` の後に `node examples/editing-api-demo.mjs` で実行できます。この例は認証・権限・BlockContractを持つメモリ内ホストでdiscover、ページ読取、版付き保存、古い版の409を確認します。
+
 ページ文書のJSON Schemaはwire上のトップレベル形を説明します。細部の要素・style・属性は `@niho/web/core` の `parsePageDocument` が閉じた文書契約として検証し、登録ブロック・部品・サイト共通styleはホストが渡したcontextに従います。機械クライアントはdiscoverのschemaを入力UI・引数検査に使い、サーバーの文書validatorを正本として扱います。保存成功時はホストが保存後の正規文書とversionを返すため、CLIはそのまま次の編集へ使えます。
 
 ## ホストの責務
