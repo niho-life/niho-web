@@ -1,8 +1,10 @@
 # ページ編集HTTP契約
 
-`@niho/web/editing-api` は、GUIと機械クライアントが同じページ正本を編集するためのReact非依存HTTP契約です。Studio UIやStudio Workerを必要条件にしません。各サイトのホストがhandlerを組み込み、認証・権限・永続化・監査記録・公開を所有します。現段階では契約と参照handlerを追加し、既存Studio GUI/CLI routeはまだ移行していません。
+`@niho/web/editing-api` は、GUIと機械クライアントが同じページ正本を編集するためのReact非依存HTTP契約です。Studio UIやStudio Workerを必要条件にしません。各サイトのホストがhandlerを組み込み、認証・権限・永続化・監査記録・公開を所有します。鎌倉の日本語ページ本文では、Studio GUIとCUIがこの共通契約を使い、サイト側の同じ正本・版比較・公開処理へ接続します。
 
-`@niho/web/editing-client` の `createPageEditingApiClient` は同じwire契約を呼ぶReact非依存clientです。ブラウザーのGUIは既定のsame-origin credentialsまたはhost提供headerを使え、Node CLIはbearer headerと `credentials: "omit"` を使えます。現在の `niho-edit` はこのclient上に実装しています。既存Studio GUI routeはまだこのclientへ切り替わっていません。
+`@niho/web/editing-client` の `createPageEditingApiClient` は同じwire契約を呼ぶReact非依存clientです。ブラウザーのGUIは既定のsame-origin credentialsまたはhost提供headerを使え、Node CLIはbearer headerと `credentials: "omit"` を使えます。`niho-edit` CLIと鎌倉Studio GUIの日本語ページ本文編集はこのclientを使います。Studio GUIはAccess sessionをWorker BFFで短期の操作別tokenへ委任し、サイトoriginの共通APIへservice bindingで接続します。ブラウザーのAccess tokenやcookieはサイトへ転送しません。
+
+Studio GUIはページの表示・編集材料の一部（presentation metadata、英語公開状態）を取得するため、引き続きread-onlyの既存snapshot routeも併用します。日本語本文の保存・公開は共通APIのみを使います。英語 overlay、CMS、素材、翻訳、ページ作成・パス変更、ブレークポイント設定は別のホスト操作で、まだ共通ページ契約へ移行していません。
 
 ## 操作カタログ
 
@@ -34,7 +36,7 @@ niho-edit --origin https://site.example --site site-id release home --locale ja 
 
 `release-plan` の `--expected-version` は最新の `read` / `save` 結果から指定します。ロールバックは `--action rollback --revision <公開版>` を指定します。applyがタイムアウトした場合は計画ファイルと同じoperation IDを使って再送します。IDを変えると別操作として扱われます。
 
-このAPIはホストのサイトorigin上で直接公開し、Studioの画面やWorkerを経由させません。既存Studio CLIは互換経路として残し、GUIも同じページ正本と版競合を使います。ホストはAPIの認証・認可・監査・永続化・公開を実装し、配備と認証設定を別途完了する必要があります。
+このAPIはCUIからホストのサイトorigin上で直接利用できます。Studio GUIも同じwire契約をWorker BFF経由で利用します。ホストはAPIの認証・認可・監査・永続化・公開を実装し、配備と認証設定を別途完了する必要があります。
 
 host adapterの最小実装は `npm run build` の後に `node examples/editing-api-demo.mjs` で実行できます。この例は認証・権限・BlockContractを持つメモリ内ホストでdiscover、ページ読取、見出し・背景色の変更、フォームの追加、版付き保存、古い版の409を確認します。
 
@@ -72,4 +74,4 @@ Cookie認証を使うホストは、write requestのCSRF境界とCORSも自分�
 
 ## 実装状況
 
-この段階ではページ読取・版付き保存・公開計画/適用の共通契約とCUIクライアントを実装しています。各ホストがこのhandlerをサイトoriginにmountし、認証・監査・CAS・operation IDを組み込んで初めて実サイトで利用できます。Studio CLIのCMS・素材・翻訳や他のGUI adapterは、このページ契約の対象外です。
+この段階ではページ読取・版付き保存・公開計画/適用の共通契約、CUIクライアント、鎌倉Studio GUIの日本語ページ本文編集接続を実装しています。鎌倉サイトはhandlerをサイトoriginにmountし、認証・監査・CAS・operation IDを組み込みます。Studio WorkerのGUI BFF配備と、CUI用machine認証の本番設定を別途完了する必要があります。Studio CLIのCMS・素材・翻訳や他の編集機能はこのページ契約の対象外です。
