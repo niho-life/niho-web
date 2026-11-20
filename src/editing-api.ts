@@ -8,7 +8,7 @@ import { parseBreakpointSettings } from "./style-model.js";
 import {
   parseCollectionCreateResult, parseCollectionItem, parseCollectionItemResult, parseCollectionListResult, parseCollectionPublishResult,
   parseCollectionSaveResult, parseCollectionSchemaResult, parseCollectionValues,
-  type CollectionDefinition, type CollectionItem, type CollectionValues
+  type CollectionDefinition, type CollectionFieldError, type CollectionItem, type CollectionValues
 } from "./collection-model.js";
 
 /** Stable errors returned by the host-neutral page editing wire contract. */
@@ -50,9 +50,9 @@ export type EditingPageManagementApplyResult = { readonly status: "applied"; rea
 export type EditingCmsTarget = { readonly siteId: string; readonly collectionId: string; readonly itemId: string };
 export type EditingCmsPublishPlan = { readonly target: EditingCmsTarget; readonly expectedVersion: string; readonly operationId: string; readonly confirmationToken: string; readonly item: CollectionItem; readonly redirect?: boolean };
 export type EditingCmsPublishPrepareResult = { readonly status: "prepared"; readonly plan: EditingCmsPublishPlan }
-  | { readonly status: "conflict" } | { readonly status: "invalid" } | { readonly status: "not_found" } | { readonly status: "duplicate" };
+  | { readonly status: "conflict" } | { readonly status: "invalid"; readonly errors: readonly CollectionFieldError[] } | { readonly status: "not_found" } | { readonly status: "duplicate" };
 export type EditingCmsPublishApplyResult = { readonly status: "published" | "publishing"; readonly operationId: string; readonly item: CollectionItem }
-  | { readonly status: "conflict" } | { readonly status: "invalid" } | { readonly status: "not_found" } | { readonly status: "duplicate" };
+  | { readonly status: "conflict" } | { readonly status: "invalid"; readonly errors: readonly CollectionFieldError[] } | { readonly status: "not_found" } | { readonly status: "duplicate" };
 export type EditingCmsOperationStatus = { readonly status: "unknown"; readonly operationId: string }
   | { readonly status: "received"; readonly operationId: string }
   | { readonly status: "completed"; readonly operationId: string; readonly httpStatus: number; readonly result: unknown };
@@ -688,7 +688,12 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
         catch { return fail("host_failure", 503); }
         if (!prepared || typeof prepared !== "object" || !["prepared", "conflict", "invalid", "not_found", "duplicate"].includes(prepared.status)) return fail("host_contract_violation", 502);
         if (prepared.status === "conflict") return fail("version_conflict", 409);
-        if (prepared.status === "invalid") return fail("invalid_request", 400);
+        if (prepared.status === "invalid") {
+          try {
+            const invalid = parseCollectionPublishResult({ status: "invalid", errors: prepared.errors }, definition, itemId);
+            return invalid.status === "invalid" ? response({ error: "validation_failed", fields: invalid.errors }, 422) : fail("host_contract_violation", 502);
+          } catch { return fail("host_contract_violation", 502); }
+        }
         if (prepared.status === "not_found") return fail("not_found", 404);
         if (prepared.status === "duplicate") return fail("duplicate_operation", 409);
         const plan = prepared.plan as unknown;
@@ -718,7 +723,12 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
         catch { return fail("host_failure", 503); }
         if (!applied || typeof applied !== "object" || !["published", "publishing", "conflict", "invalid", "not_found", "duplicate"].includes(applied.status)) return fail("host_contract_violation", 502);
         if (applied.status === "conflict") return fail("version_conflict", 409);
-        if (applied.status === "invalid") return fail("invalid_request", 400);
+        if (applied.status === "invalid") {
+          try {
+            const invalid = parseCollectionPublishResult({ status: "invalid", errors: applied.errors }, definition, itemId);
+            return invalid.status === "invalid" ? response({ error: "validation_failed", fields: invalid.errors }, 422) : fail("host_contract_violation", 502);
+          } catch { return fail("host_contract_violation", 502); }
+        }
         if (applied.status === "not_found") return fail("not_found", 404);
         if (applied.status === "duplicate") return fail("duplicate_operation", 409);
         if (applied.operationId !== body.operationId) return fail("host_contract_violation", 502);

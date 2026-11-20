@@ -36,7 +36,7 @@ Studio GUIはページの表示・編集材料の一部（presentation metadata�
 
 `pages.catalog` は管理可能なページと一覧のopaque versionを返します。`pages.change-prepare` は作成・名前/URL変更・公開状態変更を実行せずに影響と短期確認tokenを返し、`pages.change-apply` は同じ `expectedVersion`・UUID v4 `operationId`・change・tokenを照合して適用します。stale versionは409 `version_conflict`、別prepareでのoperation ID再利用は409 `duplicate_operation` です。同じactorが同じapplyを再送した場合は、ホストが記録した同じ結果を返します。
 
-`cms.schema` はホストの `CollectionDefinition` を返します。`cms.list` / `cms.read` は一覧と項目の読み取り、`cms.create` / `cms.save` は下書きの作成と版付き保存、`cms.publish-plan` / `cms.publish` は確認token付き二段階公開を行います。`cms.create` は対象collectionの `capabilities.create` が有効な場合だけ受け付けます。保存値は定義済みフィールドで検証され、stale versionは409 `version_conflict` と現行項目を返します。フィールド検証エラーは422 `validation_failed` と `fields` を返します。公開計画には対象・expectedVersion・operation ID・confirmation token・確認用項目を含め、`redirect` が指定された場合は公開時の転送設定も計画へ結び付けます。ホストはactor・入力・tokenを保存して同じIDの再送を冪等に処理します。`cms.operation-status` は操作結果の照会用です。各CMS操作は対応するadapter関数があるホストだけdiscoverに出します。
+`cms.schema` はホストの `CollectionDefinition` を返します。`cms.list` / `cms.read` は一覧と項目の読み取り、`cms.create` / `cms.save` は下書きの作成と版付き保存、`cms.publish-plan` / `cms.publish` は確認token付き二段階公開を行います。`cms.create` は対象collectionの `capabilities.create` が有効な場合だけ受け付けます。保存値は定義済みフィールドで検証され、stale versionは409 `version_conflict` と現行項目を返します。保存・公開計画・公開適用のフィールド検証エラーは422 `validation_failed` と `fields` を返します。公開計画には対象・expectedVersion・operation ID・confirmation token・確認用項目を含め、`redirect` が指定された場合は公開時の転送設定も計画へ結び付けます。ホストはactor・入力・tokenを保存して同じIDの再送を冪等に処理します。`cms.operation-status` は操作結果の照会用です。各CMS操作は対応するadapter関数があるホストだけdiscoverに出します。
 
 ## CUIでの編集
 

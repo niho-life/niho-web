@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createPageEditingApi, EDITING_OPERATIONS } from "@niho/web/editing-api";
-import { createPageEditingApiClient } from "@niho/web/editing-client";
+import { createPageEditingApiClient, EditingApiClientError } from "@niho/web/editing-client";
 import { post, schema, toSummary } from "./collection-fixtures.mjs";
 
 const siteId = "cms-example";
@@ -17,7 +17,7 @@ const operationIds = {
   publish: "123e4567-e89b-42d3-a456-426614174003",
 };
 
-function cmsFixture() {
+function cmsFixture(overrides = {}) {
   let item = post("p1", "記事", { status: "draft" }, { slug: "article" });
   const operations = new Map();
   const api = createPageEditingApi({
@@ -54,6 +54,7 @@ function cmsFixture() {
       return { status: "saved", item };
     },
     async prepareCmsPublish(_actor, target, expectedVersion, operationId, options) {
+      if (overrides.prepareCmsPublish) return overrides.prepareCmsPublish(_actor, target, expectedVersion, operationId, options);
       if (target.siteId !== siteId || target.collectionId !== "posts" || target.itemId !== item.id) return { status: "not_found" };
       if (operations.has(operationId)) return { status: "duplicate" };
       if (expectedVersion !== item.version) return { status: "conflict" };
@@ -155,6 +156,18 @@ test("CMS operations expose one authenticated, versioned wire contract for machi
   assert.equal(invalidOperationEncoding.status, 400);
   const unsupportedCreate = await send("POST", `/sites/${siteId}/operations/cms.create/tags`, { operationId: "123e4567-e89b-42d3-a456-426614174005" });
   assert.equal(unsupportedCreate.status, 403);
+});
+
+test("CMS公開計画の検証エラーはGUI/CLI共通のfield detailsで返す", async () => {
+  const errors = [{ field: "slug", message: "このアドレスは使えません。" }];
+  const { client } = cmsFixture({ prepareCmsPublish: async () => ({ status: "invalid", errors }) });
+  await assert.rejects(client.prepareCmsPublish({ siteId, collectionId: "posts", itemId: "p1" }, "v1", operationIds.publish), (error) => {
+    assert.ok(error instanceof EditingApiClientError);
+    assert.equal(error.code, "validation_failed");
+    assert.equal(error.status, 422);
+    assert.deepEqual(error.details, errors);
+    return true;
+  });
 });
 
 test("niho-edit reads and saves CMS snapshots directly through the common API", async (t) => {
