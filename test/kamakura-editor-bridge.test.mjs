@@ -101,6 +101,28 @@ test("鎌倉のフォーム完了先は固定の公開済み完了ページだ�
   assert.deepEqual(await adapter.listFormCompletionPages({ siteId: "kamakura", pageId: "business-plan", locale: "en" }, signal), []);
 });
 
+test("Kamakura editor adapter は表示コンテキストが任意のページを読める", async (t) => {
+  const { createKamakuraAdapter } = await loadKamakuraEditor();
+  const pageId = "kamakura-community-dinner";
+  const target = { siteId: "kamakura", pageId, locale: "ja" };
+  const document = { schemaVersion: 1, siteId: "kamakura", pageId, locale: "ja", revision: 1, title: "ページ", tokens: {}, body: [] };
+  const version = "ja-version";
+  const base = "/api/projects/project-kamakura/sites/kamakura/editor";
+  const commonReadPath = `${base}/editing-api/v1/sites/kamakura/operations/pages.read/${pageId}?locale=ja`;
+  t.mock.method(globalThis, "fetch", async (input) => {
+    const url = new URL(String(input), "https://studio.niho.life");
+    if (`${url.pathname}${url.search}` === commonReadPath) return Response.json({ document, version });
+    if (url.pathname === `${base}/${pageId}`) return Response.json({ document, version });
+    throw new Error(`unexpected request: ${url.pathname}${url.search}`);
+  });
+
+  const adapter = createKamakuraAdapter(contract.parseKamakuraCatalog(catalog()), () => {});
+  const snapshot = await adapter.readDocument(target, new AbortController().signal);
+  assert.equal(snapshot.version, version);
+  assert.deepEqual(snapshot.document, document);
+  assert.equal(snapshot.presentation, undefined);
+});
+
 test("Kamakura editor adapter は日本語経路を維持し、英語 snapshot・overlay 保存・翻訳操作を localization BFF に限定する", async (t) => {
   const { createKamakuraAdapter } = await loadKamakuraEditor();
   const parsedCatalog = contract.parseKamakuraCatalog(catalog());

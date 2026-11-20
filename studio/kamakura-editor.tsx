@@ -269,8 +269,8 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
       editingApi.read(checked, signal),
       api(pagePath(checked), "GET", undefined, signal).then((value) => parseSnapshot(value, checked, catalog.blockContracts, catalog.nativePresentationPages.includes(checked.pageId)))
     ]);
-    const presentation = record(legacy.presentation);
-    if (wire.version !== legacy.version || wire.presentationVersion !== presentation.version) throw new EditorApiError(409, "version_conflict");
+    const presentationVersion = legacy.presentation === undefined ? undefined : record(legacy.presentation).version;
+    if (wire.version !== legacy.version || wire.presentationVersion !== presentationVersion) throw new EditorApiError(409, "version_conflict");
     return parseSnapshot({ ...legacy, document: wire.document, version: wire.version }, checked, catalog.blockContracts, catalog.nativePresentationPages.includes(checked.pageId));
   }
   return {
