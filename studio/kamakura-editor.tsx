@@ -14,12 +14,10 @@ import { KAMAKURA_CATALOG_CONTRACT_ERROR_CODE, KAMAKURA_CATALOG_CONTRACT_ERROR_S
 import type { KamakuraCatalog } from "./kamakura-catalog.js";
 import { parseEnglishPublication, parseEnglishPublicationAccepted } from "../src/english-publication.js";
 import { normalizePageChange, validatePageChangePlan } from "../src/editor-model.js";
-import { parseBreakpointSettings } from "../src/style-model.js";
 import { createPageEditingApiClient, EditingApiClientError } from "../src/editing-client.js";
 
 const BASE = "/api/projects/project-kamakura/sites/kamakura/editor";
 const LOCALIZATION_BASE = "/api/projects/project-kamakura/sites/kamakura/localization";
-const BREAKPOINTS_BASE = "/api/projects/project-kamakura/sites/kamakura/breakpoints";
 const X_POST_FRAME_URL = "https://kamakura-media.niho.life/niho-web/embeds/v1/x-post-frame-v1.html";
 // kamakura-site が見た目の編集を凍結している間の保存・公開の 409。競合とは分けて案内する（kamakura-site#84）。
 const VISUAL_EDITOR_FROZEN = "visual_editor_frozen";
@@ -207,18 +205,6 @@ function parseSaved(value: unknown): Extract<EditorSaveResult, { status: "saved"
   return { status: "saved", version: source.version, revision: source.revision as number };
 }
 
-function parseBreakpointSnapshot(value: unknown) {
-  const source = record(value);
-  if (Object.keys(source).sort().join(",") !== "settings,version" || !validVersion(source.version)) throw new Error("ブレークポイント設定の応答が正しくありません。");
-  return { settings: parseBreakpointSettings(source.settings), version: source.version };
-}
-
-function parseBreakpointSaved(value: unknown) {
-  const source = record(value);
-  if (Object.keys(source).sort().join(",") !== "status,version" || source.status !== "saved" || !validVersion(source.version)) throw new Error("ブレークポイント設定の保存結果が正しくありません。");
-  return { status: "saved" as const, version: source.version };
-}
-
 function releaseMatches(plan: EditorReleasePlan, request: EditorReleaseRequest, domain: string): boolean {
   let target: EditorTarget;
   try { target = validTarget(plan.target); validTarget(request.target); }
@@ -310,12 +296,11 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
     breakpointSettings: {
       read: (siteId, signal) => request(signal, async () => {
         if (siteId !== KAMAKURA_EDITOR_SITE_ID) throw new Error("編集対象のサイトがありません。");
-        return parseBreakpointSnapshot(await api(BREAKPOINTS_BASE, "GET", undefined, signal));
+        return editingApi.readBreakpointSettings(signal);
       }),
       save: (input, signal) => conflict(() => request(signal, async () => {
         if (input.siteId !== KAMAKURA_EDITOR_SITE_ID || !validVersion(input.expectedVersion)) throw new Error("保存対象のサイトまたは版が正しくありません。");
-        const settings = parseBreakpointSettings(input.settings);
-        return parseBreakpointSaved(await api(BREAKPOINTS_BASE, "PUT", { settings, expectedVersion: input.expectedVersion }, signal));
+        return editingApi.saveBreakpointSettings(input.expectedVersion, input.settings, signal);
       }))
     },
     readDocument: (target, signal) => request(signal, async () => target.locale === "en"

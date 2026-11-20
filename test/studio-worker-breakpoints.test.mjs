@@ -19,21 +19,15 @@ async function fixture() {
 }
 
 function harness(auth) {
-  let role = null, version = 1, settings = structuredClone(SETTINGS), exists = true;
+  let role = null, settings = structuredClone(SETTINGS), exists = true;
   const env = {
     ACCESS_ISSUER: auth.issuer, ACCESS_AUDIENCE: auth.audience,
     DB: {
       prepare(query) { return { values: [], bind(...values) { this.values = values; return this; }, async first() {
         if (query.includes("FROM project_members AS m")) return role && this.values[1] === "project-kamakura" && this.values[2] === "kamakura" ? { allowed: 1 } : null;
-        if (query.includes("FROM site_breakpoint_settings")) return exists ? { settings_json: JSON.stringify(settings), version } : null;
+        if (query.includes("FROM site_breakpoint_settings")) return exists ? { settings_json: JSON.stringify(settings), version: 1 } : null;
         throw new Error(`unexpected D1 first: ${query}`);
       } }; },
-      async batch(statements) {
-        const statement = statements[0], [json, siteId, expected, subject, projectId] = statement.values;
-        const changed = exists && role && siteId === "kamakura" && expected === version && subject === auth.subject && projectId === "project-kamakura";
-        if (changed) { settings = JSON.parse(json); version += 1; }
-        return [{ success: true, meta: { changes: changed ? 1 : 0 }, results: [] }];
-      }
     },
     ASSETS: { async fetch() { return new Response(""); } }, KAMAKURA_SITE: { async fetch() { throw new Error("not used"); } }
   };
@@ -41,12 +35,12 @@ function harness(auth) {
     method, headers: { "Cf-Access-Jwt-Assertion": auth.jwt, ...(method === "PUT" ? { Origin: STUDIO, "Sec-Fetch-Site": "same-origin", "Content-Type": "application/json" } : {}), ...headers },
     ...(method === "PUT" ? { body: typeof body === "string" ? body : JSON.stringify(body) } : {})
   }), env);
-  return { send, setRole: (value) => { role = value; }, setVersion: (value) => { version = value; }, setExists: (value) => { exists = value; }, current: () => ({ settings, version }) };
+  return { send, setRole: (value) => { role = value; }, setExists: (value) => { exists = value; }, current: () => ({ settings }) };
 }
 
 const json = async (response, status) => { const value = await response.json(); assert.equal(response.status, status, JSON.stringify(value)); assert.equal(response.headers.get("Cache-Control"), "no-store"); return value; };
 
-test("site breakpoints API は鎌倉の owner/editor だけに GET/PUT を許し、D1 の version で CAS する", async (t) => {
+test("旧site breakpoints API はowner/editorの移行用GETだけを許し、D1を書き換えない", async (t) => {
   const auth = await fixture();
   t.mock.method(globalThis, "fetch", async (url) => {
     if (String(url) === `${auth.issuer}/cdn-cgi/access/certs`) return Response.json({ keys: [auth.jwk] });
@@ -56,12 +50,10 @@ test("site breakpoints API は鎌倉の owner/editor だけに GET/PUT を許し
   assert.equal((await json(await h.send("GET"), 403)).error, "forbidden");
   h.setRole("editor");
   assert.deepEqual(await json(await h.send("GET"), 200), { settings: SETTINGS, version: "b.1" });
-  const next = structuredClone(SETTINGS); next.breakpoints[1] = { name: "Small", minWidth: 1000, previewWidth: 1000 };
-  assert.deepEqual(await json(await h.send("PUT", BASE, { settings: next, expectedVersion: "b.1" }), 200), { status: "saved", version: "b.2" });
-  assert.deepEqual(h.current(), { settings: next, version: 2 });
-  assert.equal((await json(await h.send("PUT", BASE, { settings: SETTINGS, expectedVersion: "b.1" }), 409)).error, "conflict");
+  assert.equal((await json(await h.send("PUT", BASE, { settings: SETTINGS, expectedVersion: "b.1" }), 405)).error, "method_not_allowed");
   h.setRole("owner");
-  assert.deepEqual(await json(await h.send("PUT", BASE, { settings: SETTINGS, expectedVersion: "b.2" }), 200), { status: "saved", version: "b.3" });
+  assert.deepEqual(await json(await h.send("GET"), 200), { settings: SETTINGS, version: "b.1" });
+  assert.deepEqual(h.current(), { settings: SETTINGS });
   h.setExists(false);
   assert.equal((await json(await h.send("GET"), 404)).error, "not_found");
 });
@@ -73,9 +65,9 @@ test("site breakpoints API は別サイト・method・query・CSRF・不正な�
   assert.equal((await json(await h.send("GET", "/api/projects/project-experience/sites/experience/breakpoints"), 404)).error, "not_found");
   assert.equal((await json(await h.send("POST"), 405)).error, "method_not_allowed");
   assert.equal((await json(await h.send("GET", `${BASE}?x=1`), 400)).error, "invalid_request");
-  assert.equal((await json(await h.send("PUT", BASE, { settings: SETTINGS, expectedVersion: "b.1" }, { Origin: "https://evil.example" }), 400)).error, "invalid_request");
+  assert.equal((await json(await h.send("PUT", BASE, { settings: SETTINGS, expectedVersion: "b.1" }, { Origin: "https://evil.example" }), 405)).error, "method_not_allowed");
   const invalid = structuredClone(SETTINGS); invalid.breakpoints[0].previewWidth = 1000;
   for (const body of [{ settings: invalid, expectedVersion: "b.1" }, { settings: SETTINGS, expectedVersion: "1" }, { settings: SETTINGS, expectedVersion: "b.1", extra: true }]) {
-    assert.equal((await json(await h.send("PUT", BASE, body), 400)).error, "invalid_request");
+    assert.equal((await json(await h.send("PUT", BASE, body), 405)).error, "method_not_allowed");
   }
 });

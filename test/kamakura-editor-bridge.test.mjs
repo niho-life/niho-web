@@ -146,9 +146,11 @@ test("Kamakura editor adapter は日本語経路を維持し、英語 snapshot�
   let japaneseDocument = document(pageId, "ja");
   let failNextRelease = true;
   const releaseOperationIds = [];
+  const breakpointReadPath = `${base}/editing-api/v1/sites/kamakura/operations/site.breakpoints.read`;
+  const breakpointSavePath = `${base}/editing-api/v1/sites/kamakura/operations/site.breakpoints.save`;
   const replies = new Map([
-    ["GET /api/projects/project-kamakura/sites/kamakura/breakpoints", { settings: breakpointSettings, version: "b.1" }],
-    ["PUT /api/projects/project-kamakura/sites/kamakura/breakpoints", { status: "saved", version: "b.2" }],
+    [`GET ${breakpointReadPath}`, { settings: breakpointSettings, version: "b.1" }],
+    [`PUT ${breakpointSavePath}`, { status: "saved", version: "b.2" }],
     [`GET /api/projects/project-kamakura/sites/kamakura/editor/${pageId}`, () => ({ document: japaneseDocument, version: japaneseVersion, presentation: japanesePresentation, englishPublication })],
     [`GET /api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/operations/pages.read/${pageId}?locale=ja`, () => ({ document: japaneseDocument, version: japaneseVersion, presentationVersion: "presentation-version" })],
     [`PUT /api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/operations/pages.save/${pageId}?locale=ja`, () => {
@@ -192,6 +194,7 @@ test("Kamakura editor adapter は日本語経路を維持し、英語 snapshot�
   assert.equal(calls.some(({ key }) => key.includes("/draft")), false, "日本語の下書き読取・保存で旧draft routeを使わない");
   assert.deepEqual(await adapter.breakpointSettings.read("kamakura", signal), { settings: breakpointSettings, version: "b.1" });
   assert.deepEqual(await adapter.breakpointSettings.save({ siteId: "kamakura", settings: breakpointSettings, expectedVersion: "b.1" }, signal), { status: "saved", version: "b.2" });
+  assert.equal(calls.at(-1).key, `PUT ${breakpointSavePath}`);
   assert.deepEqual(calls.at(-1).body, { settings: breakpointSettings, expectedVersion: "b.1" });
   const english = await adapter.readDocument(en, signal);
   assert.equal(english.document.locale, "en");
@@ -230,10 +233,10 @@ test("Kamakura editor adapter は日本語経路を維持し、英語 snapshot�
   await assert.rejects(adapter.saveDraft({ target: en, document: english.document, expectedVersion: `l.${"f".repeat(64)}`, presentationVersion: presentation.version, localization: versions }, signal), /版が正しくありません/u);
   assert.equal(calls.length, before);
 
-  replies.set("PUT /api/projects/project-kamakura/sites/kamakura/breakpoints", Response.json({ error: "conflict" }, { status: 409 }));
+  replies.set(`PUT ${breakpointSavePath}`, Response.json({ error: "version_conflict" }, { status: 409 }));
   assert.deepEqual(await adapter.breakpointSettings.save({ siteId: "kamakura", settings: breakpointSettings, expectedVersion: "b.1" }, signal), { status: "conflict" });
-  replies.set("GET /api/projects/project-kamakura/sites/kamakura/breakpoints", { settings: breakpointSettings, version: "b.2", extra: true });
-  await assert.rejects(adapter.breakpointSettings.read("kamakura", signal), /応答が正しくありません/u);
+  replies.set(`GET ${breakpointReadPath}`, { settings: breakpointSettings, version: "b.2", extra: true });
+  await assert.rejects(adapter.breakpointSettings.read("kamakura", signal), (error) => error?.code === "invalid_response");
 
   replies.set(`POST /api/projects/project-kamakura/sites/kamakura/localization/editor/pages/${pageId}/snapshot`, { status: "unavailable", message: "このページの英語表示材料はまだありません。" });
   await assert.rejects(adapter.readDocument(en, signal), /英語表示材料/u);
@@ -272,8 +275,11 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
   t.mock.method(console, "error", () => {});
   t.mock.method(console, "warn", (...args) => { bridgeLogs.push(args); });
 
+  const legacyBreakpointSettings = { base: { name: "Mobile", previewWidth: 480 }, breakpoints: [{ name: "Tablet", minWidth: 691, previewWidth: 840 }, { name: "Small", minWidth: 991, previewWidth: 991 }, { name: "PC", minWidth: 1280, previewWidth: 1280 }] };
   const env = {
-    DB: { prepare: () => ({ bind() { return this; }, first: async () => ({ allowed: 1 }) }) },
+    DB: { prepare(sql) { return { sql, bind() { return this; }, async first() { return this.sql.includes("settings_json")
+      ? { settings_json: JSON.stringify(legacyBreakpointSettings), version: 7 }
+      : { allowed: 1 }; } }; } },
     ASSETS: { fetch: async () => new Response("not expected", { status: 500 }) },
     KAMAKURA_SITE: { fetch: async (request) => {
       if (bindingFailure) throw new Error("binding failure detail must not be logged");
@@ -355,7 +361,7 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
     return JSON.parse(Buffer.from(claims, "base64url").toString("utf8"));
   };
   let delegated = await assertDelegationSignature(editingApiRequest);
-  assert.deepEqual(delegated.scope, ["pages.read", "pages.edit", "pages.publish"]);
+  assert.deepEqual(delegated.scope, ["pages.read", "pages.edit", "pages.publish", "site.settings.read", "site.settings.write"]);
   assert.equal(delegated.iss, "niho-web-studio-edit");
   assert.equal(delegated.aud, "kamakura-site");
   assert.equal(delegated.sub, "catalog-contract-test");
@@ -375,6 +381,61 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
   const saveFetchCount = boundRequestIds.length;
   assert.equal((await callEditingApi(savePath, "PUT", saveBody, { Origin: "https://other.example" })).status, 400);
   assert.equal(boundRequestIds.length, saveFetchCount, "CSRF拒否時はサイトAPIへ転送しない");
+
+  const breakpointReadUpstreamPath = "/api/edit/v1/sites/kamakura/operations/site.breakpoints.read";
+  const breakpointSaveUpstreamPath = "/api/edit/v1/sites/kamakura/operations/site.breakpoints.save";
+  let hostBreakpointSettings;
+  let hostBreakpointVersion;
+  const breakpointRequests = [];
+  bindingResponseFactory = async (request) => {
+    const path = new URL(request.url).pathname;
+    const claims = await assertDelegationSignature(request);
+    breakpointRequests.push({ path, method: request.method, claims, body: request.method === "PUT" ? await request.json() : undefined });
+    if (path === breakpointReadUpstreamPath && request.method === "GET") {
+      return hostBreakpointSettings === undefined
+        ? Response.json({ error: "not_found" }, { status: 404 })
+        : Response.json({ settings: hostBreakpointSettings, version: hostBreakpointVersion });
+    }
+    if (path === breakpointSaveUpstreamPath && request.method === "PUT") {
+      const input = breakpointRequests.at(-1).body;
+      if (hostBreakpointSettings === undefined ? input.expectedVersion !== "b.7" : input.expectedVersion !== hostBreakpointVersion) {
+        return Response.json({ error: "version_conflict" }, { status: 409 });
+      }
+      hostBreakpointSettings = input.settings;
+      hostBreakpointVersion = hostBreakpointVersion === undefined ? "host-breakpoints-v1" : "host-breakpoints-v2";
+      return Response.json({ status: "saved", version: hostBreakpointVersion });
+    }
+    throw new Error(`unexpected breakpoint upstream request: ${request.method} ${path}`);
+  };
+  const breakpointRead = await callEditingApi("/sites/kamakura/operations/site.breakpoints.read");
+  assert.equal(breakpointRead.status, 200);
+  assert.deepEqual(await breakpointRead.json(), { settings: legacyBreakpointSettings, version: "host-breakpoints-v1" });
+  assert.deepEqual(breakpointRequests.map(({ path, method }) => [path, method]), [
+    [breakpointReadUpstreamPath, "GET"], [breakpointSaveUpstreamPath, "PUT"]
+  ], "初回404のとき旧D1値をサイトAPIへ一度だけ引き継ぐ");
+  assert.deepEqual(breakpointRequests[0].claims.scope, ["site.settings.read"]);
+  assert.deepEqual(breakpointRequests[1].claims.scope, ["site.settings.write"]);
+  assert.deepEqual(breakpointRequests[1].body, { expectedVersion: "b.7", settings: legacyBreakpointSettings });
+
+  const nextBreakpointSettings = structuredClone(legacyBreakpointSettings);
+  nextBreakpointSettings.breakpoints[0].previewWidth = 800;
+  const breakpointSave = await callEditingApi("/sites/kamakura/operations/site.breakpoints.save", "PUT", {
+    expectedVersion: hostBreakpointVersion, settings: nextBreakpointSettings
+  });
+  assert.equal(breakpointSave.status, 200);
+  assert.deepEqual(await breakpointSave.json(), { status: "saved", version: "host-breakpoints-v2" });
+  assert.deepEqual(breakpointRequests.at(-1).claims.scope, ["site.settings.write"]);
+  assert.deepEqual(hostBreakpointSettings, nextBreakpointSettings);
+  const breakpointReread = await callEditingApi("/sites/kamakura/operations/site.breakpoints.read");
+  assert.deepEqual(await breakpointReread.json(), { settings: nextBreakpointSettings, version: "host-breakpoints-v2" });
+  assert.equal(breakpointRequests.length, 4, "サイトAPIに移行後は旧D1を再読しない");
+
+  const legacyBreakpointUrl = "https://studio.niho.life/api/projects/project-kamakura/sites/kamakura/breakpoints";
+  const legacyWrite = await workerModule.default.fetch(new Request(legacyBreakpointUrl, {
+    method: "PUT", headers: { "Cf-Access-Jwt-Assertion": token, "Content-Type": "application/json", Origin: "https://studio.niho.life", "Sec-Fetch-Site": "same-origin" },
+    body: JSON.stringify({ settings: legacyBreakpointSettings, expectedVersion: "b.7" })
+  }), env);
+  assert.equal(legacyWrite.status, 405, "旧D1 routeは引継ぎ元の読み取り専用");
   bindingResponseFactory = null;
 
   let embedUpstream;

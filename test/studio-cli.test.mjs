@@ -382,37 +382,17 @@ testWithD1("operation key migration preserves existing audit rows without requir
   assert.deepEqual({ ...row }, { id: "legacy-audit", http_status: 200, request_key: null });
 });
 
-testWithD1("CLI breakpoint grants are independent and recheck the delegating owner inside the version CAS", async (t) => {
+testWithD1("legacy CLI breakpoint access only exports the old snapshot; editing uses the host API", async (t) => {
   const h = await fixture(t);
   h.grant("site.settings.read", { expiry: null, owner: "fixture-second-owner" });
-  h.grant("site.settings.write", { expiry: h.now - 1 });
   const read = () => h.request("GET", "site.breakpoints.read");
-  const save = (body) => h.request("PUT", "site.breakpoints.save", body);
   const initial = await check(await read(), 200);
   assert.equal(initial.version, "b.1");
-  const settings = structuredClone(initial.settings);
-  settings.breakpoints[1].minWidth = 1000;
-  settings.breakpoints[1].previewWidth = 1000;
-  await check(await save({ settings, expectedVersion: initial.version }), 403, "forbidden");
-  assert.equal(h.audit().at(-1).delegated_by_subject, "fixture-second-owner");
-
-  const deleteGrant = h.db.prepare("DELETE FROM studio_cli_grants WHERE client_id = ? AND capability = ?");
-  deleteGrant.run(CLIENT, "site.settings.write");
-  h.grant("site.settings.write", { expiry: null });
   const discover = await check(await h.send("GET", `${SCOPE}/capabilities`), 200);
-  assert.deepEqual(discover.capabilities, ["site.settings.read", "site.settings.write"]);
-  await check(await save({ settings, expectedVersion: "b.1", delegatedBySubject: "fixture-second-owner" }), 400, "invalid_request");
-  await check(await save({ settings: {}, expectedVersion: "b.1" }), 400, "invalid_request");
-  assert.deepEqual(await check(await save({ settings, expectedVersion: "b.1" }), 200), { status: "saved", version: "b.2" });
-  await check(await save({ settings, expectedVersion: "b.1" }), 409, "conflict");
-  assert.deepEqual(await check(await read(), 200), { settings, version: "b.2" });
-
-  // Revoke the delegator after the CLI audit reservation and before the settings batch.
-  h.beforeNextBatch(() => h.db.prepare("UPDATE project_members SET role = 'editor' WHERE project_id = ? AND access_subject = ?").run(PROJECT, OWNER));
-  await check(await save({ settings: initial.settings, expectedVersion: "b.2" }), 403, "forbidden");
-  assert.deepEqual(await check(await read(), 200), { settings, version: "b.2" });
-  await check(await save({ settings, expectedVersion: "b.2" }), 403, "forbidden");
-  assert.equal(h.calls.length, 0);
+  assert.deepEqual(discover.capabilities, ["site.settings.read"]);
+  await check(await h.request("PUT", "site.breakpoints.save", { settings: initial.settings, expectedVersion: initial.version }), 404, "not_found");
+  assert.equal(h.audit().length, 1, "設定の移行用読取だけがCLI監査に残る");
+  assert.equal(h.calls.length, 0, "Studio内の旧D1読取は上流へ転送しない");
 });
 
 testWithD1("CLI membership management reuses owner guards and records the machine as the actor", async (t) => {
