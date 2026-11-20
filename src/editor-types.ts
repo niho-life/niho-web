@@ -7,6 +7,7 @@ import type { PageKind, PageVisibility, SiteSettings } from "./pages.js";
 import type { ComponentLibrary, ComponentNode, PageDocument, PublicPropValue, SitePresentation, StyleProperty, StyleValue } from "./types.js";
 import type { EditorRecoveryStore, EditorRevisionEntry, EditorRevisionPage } from "./history.js";
 import type { BlockLocalizationSchema, LocalizationLocale, LocalizationValue } from "./localization.js";
+import type { EditingPageReleaseSetApplyResult, EditingPageReleaseSetItem, EditingPageReleaseSetPlan, EditingPageReleaseSetStatus } from "./editing-api.js";
 import type {
   EditorLocaleReleaseApplyRequest, EditorLocaleReleaseApplyResult, EditorLocaleReleasePlan, EditorLocaleReleasePrepareRequest, EditorLocaleReleaseState
 } from "./locale-release-contract.js";
@@ -226,6 +227,10 @@ export interface EditorAdapter {
   }, signal: AbortSignal): Promise<EditorSaveResult>;
   prepareRelease(request: EditorReleaseRequest, signal: AbortSignal): Promise<EditorReleasePlan>;
   release(request: EditorReleasePlan, signal: AbortSignal): Promise<EditorReleaseResult>;
+  /** Same-site, multi-page publish. Hosts without all three methods keep the single-page UI. */
+  prepareReleaseSet?(items: readonly EditingPageReleaseSetItem[], signal: AbortSignal): Promise<EditingPageReleaseSetPlan>;
+  releaseSet?(plan: EditingPageReleaseSetPlan, signal: AbortSignal): Promise<EditingPageReleaseSetApplyResult>;
+  releaseSetStatus?(operationId: string, signal: AbortSignal): Promise<EditingPageReleaseSetStatus>;
   /** 省略したホストでは英語公開状態の明示更新・安全な再試行を表示しない。本文や version は更新しない。 */
   englishPublication?: {
     refresh(target: EditorTarget, signal: AbortSignal): Promise<EnglishPublication | undefined>;

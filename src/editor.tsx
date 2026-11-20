@@ -18,6 +18,7 @@ import { createInsertionNode, resolveBuilderDefinition, type InsertionCategory }
 import { breakpointSettingsFromLegacy, editorTiers, hiddenAt, normalizeBreakpoints, tierForWidth, tierName } from "./style-model.js";
 import { Dialog } from "./editor-dialog.js";
 import { PageChangeDialog, PageSettings, PagePanel, ReleaseSearchSummary, SiteSettingsPanel, chooseSiteCover, coverReferences, pageChangeNotice, publicInfoMessage, useSiteSettings, type FieldOptions, type PageChangeStart } from "./editor-pages.js";
+import { PageReleaseSetDialog } from "./editor-release-set.js";
 import { AutosaveSwitch, ConflictDialog, HistoryBar, HistoryDialogs, LibraryRecoveryBanner, RecoveryBanner, RecoveryCompareDialog, ReleaseAffected, SaveStatus, VersionPanel, autosaveDelay, classifySaveError, formatDateTime, isOffline, saveProblemNotice, saveStatus, targetKeyOf, useAutosave, useLibraryRecovery, useOnline, useRecovery, useVersionHistory, type LatestSnapshot, type SaveProblem } from "./editor-history.js";
 import { isDirectlyEditable, readEditableChildren } from "./editor-rich-text.js";
 import { isSafePublicLink } from "./validation-utils.js";
@@ -474,7 +475,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const basePreviewWidth = breakpointSettings.editable ? breakpointView.basePreviewWidth : mobilePreviewWidth;
   const baseBreakpointLabel = breakpointSettings.editable ? breakpointView.baseLabel : "モバイル", canvasPreview = hostPreviewComponent(previewComponent);
   const [busy, setBusy] = useState(""), [pendingFields, setPendingFields] = useState<Record<string, "page" | "site">>({});
-  const [navigation, setNavigation] = useState<Navigation | null>(null), [plan, setPlan] = useState<EditorReleasePlan | null>(null), [confirmed, setConfirmed] = useState(false);
+  const [navigation, setNavigation] = useState<Navigation | null>(null), [plan, setPlan] = useState<EditorReleasePlan | null>(null), [confirmed, setConfirmed] = useState(false), [releaseSetPages, setReleaseSetPages] = useState<readonly EditorPage[] | null>(null);
   const [localeRelease, setLocaleRelease] = useState<EditorLocaleReleaseState | null>(null), [localeReleasePlan, setLocaleReleasePlan] = useState<EditorLocaleReleasePlan | null>(null);
   const [localeReleaseConfirmed, setLocaleReleaseConfirmed] = useState(false), [localeReleaseLoading, setLocaleReleaseLoading] = useState(false), [localeReleaseEpoch, setLocaleReleaseEpoch] = useState(0);
   const [localeRollbackId, setLocaleRollbackId] = useState("");
@@ -561,7 +562,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const hasInput = Object.keys(pendingFields).length > 0 || manualInputPending, dirty = !!session && fingerprint(session.history.present) !== session.saved;
   const masterId = editing && libraryPresent?.components.some((component) => component.id === editing) ? editing : null;
   const libraryDirty = !!library && libraryFingerprint(library.history.present) !== library.saved, pendingChanges = dirty || libraryDirty, locale = session?.target.locale ?? "ja";
-  const blocked = !!busy || !!plan || !!localeReleasePlan || !!pageChange;
+  const blocked = !!busy || !!plan || !!localeReleasePlan || !!pageChange || !!releaseSetPages;
   const versions = useVersionHistory({ adapter, blocks, components: libraryPresent, target: session?.target, version: session?.version, epoch: loadEpoch, report: setNotice,
     guard: () => hasInput ? "入力を適用するか取り消してから版を選んでください。" : busy ? "処理が完了してから版を選んでください。" : undefined });
   useEffect(() => { if (panel === "history" && !versions.open) setPanel("pages"); }, [panel, versions.open]);
@@ -579,7 +580,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const autosaveMs = autosaveDelay(autosave), autosaveActive = autosaveMs !== undefined && autosaveOn;
   // オフラインで失敗した後、接続が戻ったら自動保存は1回だけ再試行する。
   const online = useOnline(() => { if (problemRef.current !== "offline") return; if (!autosaveActive) setProblem("failed"); else if (!pendingChanges) setProblem(null); else void save("auto"); });
-  const modal = !!plan || !!localeReleasePlan || !!navigation || !!pageChange || breakpointSettingsOpen || responsiveProposalOpen || conflictView > 0 || recoveryCompare || versions.dialog !== null || !!componentDialog || !!libraryReload;
+  const modal = !!plan || !!localeReleasePlan || !!navigation || !!pageChange || !!releaseSetPages || breakpointSettingsOpen || responsiveProposalOpen || conflictView > 0 || recoveryCompare || versions.dialog !== null || !!componentDialog || !!libraryReload;
   // 自動保存は手動保存と同じく部品 → ページの順に保存する。部品とページのどちらが変わっても待ち直す。
   const autosaveSubject = useMemo(() => [session?.history.present, libraryPresent], [session?.history.present, libraryPresent]);
   // ページが無いサイトでも、部品の変更は部品ライブラリ単位の key で自動保存する（部品の端末への退避は、ストアが対応する場合だけのため）。
@@ -1481,6 +1482,18 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const pageOperations = !!adapter.preparePageChange && !!adapter.applyPageChange, unsaved = dirty || hasInput;
   const pageOperationsDisabled = siteWorkBlocked || unsaved || blocked || !!navigation || !site || historyMode || targetMode || !!session?.readOnly;
   const startPageChange = (start: PageChangeStart) => { if (pageOperations && !pageOperationsDisabled && (!adapter.pageChangeActions || adapter.pageChangeActions.includes(start.action))) setPageChange(start); };
+  const releaseSetAvailable = !!adapter.prepareReleaseSet && !!adapter.releaseSet && !!adapter.releaseSetStatus;
+  const releaseSetDisabled = siteWorkBlocked || unsaved || blocked || !!navigation || !site || historyMode || targetMode || !!masterId || libraryDirty || siteSettings.dirty || siteSettings.busy || !localizationReady || !!session?.readOnly;
+  const startReleaseSet = (selected: readonly EditorPage[]) => {
+    if (releaseSetAvailable && !releaseSetDisabled && selected.length >= 2) setReleaseSetPages(selected.map((page) => structuredClone(page)));
+  };
+  const releaseSetCompleted = (selected: readonly EditorPage[]) => {
+    void (async () => {
+      const current = sessionRef.current?.target, listed = await reloadPages();
+      if (current && selected.some((candidate) => sameTarget(candidate, current))) await load(current, { preserveView: true });
+      if (!listed) setNotice("公開結果は記録されましたが、ページ一覧を再読込できませんでした。");
+    })();
+  };
   const status = saveStatus({ busy, hasInput, problem, dirty: pendingChanges, online, autosave: autosaveActive, savedAt, loaded: !!session });
   const recoveryStale = !!recoveryState.offer && !!session && recoveryState.offer.baseVersion !== session.version;
   const viewed = versions.viewing?.entry, viewedRelease = viewed && (viewed.kind === "publish" || viewed.kind === "rollback") && session?.releases.some((release) => release.revision === viewed.revision) ? viewed.revision : undefined;
@@ -1549,6 +1562,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         </section>
         <section hidden={visiblePanel !== "pages"} aria-label="ページ一覧">
           <PagePanel pages={panelPages} current={session?.target} disabled={blocked} operations={pageOperations} pathEditable={adapter.pagePathEditable ?? true} {...(adapter.pageChangeActions ? { actions: adapter.pageChangeActions } : {})} operationsDisabled={pageOperationsDisabled} unsaved={unsaved}
+            {...(releaseSetAvailable ? { releaseSet: startReleaseSet, releaseSetDisabled: releaseSetDisabled || unsaved } : {})}
             select={(target) => { if (!session || !sameTarget(session.target, target)) requestNavigation({ type: "page", target }); }} start={startPageChange}>
             {sites.length > 1 && <select className="e-site-select" aria-label="編集するサイト" value={siteId} disabled={blocked} onChange={(event) => requestNavigation({ type: "site", id: event.target.value })}>{sites.map((site) => <option key={site.id} value={site.id}>{site.name}</option>)}</select>}
             {localization.site && adapter.localization?.requestSiteTranslation && <button type="button" className="e-small" disabled={blocked || unsaved || libraryDirty || localization.site.job?.state === "queued" || localization.site.job?.state === "running"} onClick={() => void requestSiteTranslation()}>{localization.site.job?.state === "failed" ? "サイト全体の翻訳を再試行" : "サイト全体を翻訳"}</button>}
@@ -1763,6 +1777,9 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       prepare={(change, signal) => adapter.preparePageChange!(change, signal)} apply={(plan, signal) => adapter.applyPageChange!(plan, signal)}
       applied={(page, change) => void pageApplied(page, change)} conflicted={() => void reloadPages()} close={() => setPageChange(null)}
       reload={() => { const current = sessionRef.current?.target; setPageChange(null); void reloadPages().then(() => current && load(current)); }} />}
+    {releaseSetPages && site && releaseSetAvailable && <PageReleaseSetDialog pages={releaseSetPages} site={site} adapter={adapter}
+      {...(libraryRef.current?.version ? { componentsVersion: libraryRef.current.version } : {})}
+      close={() => setReleaseSetPages(null)} completed={() => releaseSetCompleted(releaseSetPages)} />}
     {breakpointSettingsOpen && <BreakpointSettingsDialog state={breakpointSettings} {...(pageDocument ? { document: pageDocument } : {})}
       {...(dirty || libraryDirty || hasInput || siteSettings.dirty || siteSettings.busy || !!busy ? { saveBlockedReason: "ページ、コンポーネント、共通スタイル、サイト設定の未保存変更や処理を完了してから保存してください。" } : {})}
       close={() => setBreakpointSettingsOpen(false)} />}
