@@ -584,7 +584,9 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       }
       if (operation.id === "cms.operation-status") {
         if (collectionId !== undefined || itemId !== undefined || cmsMatch[4] !== undefined || !cmsMatch[3]) return fail("invalid_request", 400);
-        const operationId = decodeURIComponent(cmsMatch[3]);
+        let operationId: string;
+        try { operationId = decodeURIComponent(cmsMatch[3]); }
+        catch { return fail("invalid_request", 400); }
         if (!validOperationId(operationId) || request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length"))) return fail("invalid_request", 400);
         let status: EditingCmsOperationStatus | null;
         try { status = await adapter.readCmsOperationStatus!(actor, siteId, operationId); }

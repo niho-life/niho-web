@@ -148,6 +148,8 @@ test("CMS operations expose one authenticated, versioned wire contract for machi
   assert.equal(denied.status, 401);
   const invalid = await send("GET", `/sites/${siteId}/operations/cms.read/__proto__/p1`);
   assert.equal(invalid.status, 400);
+  const invalidOperationEncoding = await send("GET", `/sites/${siteId}/operations/cms.operation-status/%FF`);
+  assert.equal(invalidOperationEncoding.status, 400);
   const unsupportedCreate = await send("POST", `/sites/${siteId}/operations/cms.create/tags`, { operationId: "123e4567-e89b-42d3-a456-426614174005" });
   assert.equal(unsupportedCreate.status, 403);
 });
