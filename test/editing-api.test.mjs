@@ -222,6 +222,75 @@ test("page editing API prepares an allowlisted release and applies it idempotent
   assert.deepEqual(await json(await send("POST", applyPath, { ...input, confirmationToken: "other-token" })), { status: 409, body: { error: "version_conflict" } });
 });
 
+test("page release sets bind every target version, require each target permission and support status lookup", async () => {
+  const operationId = "123e4567-e89b-42d3-a456-426614174000";
+  const items = [
+    { target, expectedVersion: "v1", componentsVersion: "components-v1", presentationVersion: "presentation-v1" },
+    { target: { ...target, pageId: "about" }, expectedVersion: "about-v1" }
+  ];
+  const prepared = new Map(), current = new Map([[target.pageId, "v1"], ["about", "about-v1"]]);
+  let prepareCalls = 0, applyCalls = 0;
+  const api = createPageEditingApi({
+    async authenticate(request) { return request.headers.get("Authorization") === "Bearer owner" ? { kind: "human", subject: "owner" } : null; },
+    async authorize(actor, capability, scope) {
+      return actor.subject === "owner" && scope.siteId === target.siteId && (capability === "pages.read" || capability === "pages.publish" && scope.pageId !== "denied");
+    },
+    async readPage() { return null; }, async savePage() { return { status: "conflict" }; },
+    async releaseSite() { return { id: target.siteId, name: "Example", domains: ["https://host.example"] }; },
+    async preparePageReleaseSet(_actor, siteId, requestedOperationId, requestedItems) {
+      prepareCalls++;
+      if (siteId !== target.siteId || requestedItems.some((item) => current.get(item.target.pageId) !== item.expectedVersion)) return { status: "conflict" };
+      const plan = { siteId, operationId: requestedOperationId, confirmationToken: "set-token", domain: "https://host.example", items: structuredClone(requestedItems) };
+      prepared.set(requestedOperationId, { plan, result: null });
+      return { status: "prepared", plan };
+    },
+    async publishPageReleaseSet(_actor, siteId, input) {
+      applyCalls++;
+      const entry = prepared.get(input.operationId);
+      if (!entry || siteId !== target.siteId || entry.plan.confirmationToken !== input.confirmationToken
+        || JSON.stringify(entry.plan.items) !== JSON.stringify(input.items)) return { status: "duplicate" };
+      if (entry.result) return entry.result;
+      if (input.items.some((item) => current.get(item.target.pageId) !== item.expectedVersion)) return { status: "conflict" };
+      const results = input.items.map((item) => {
+        const version = `${item.expectedVersion}-published`;
+        current.set(item.target.pageId, version);
+        return { target: item.target, version };
+      });
+      entry.result = { status: "released", operationId: input.operationId, items: results };
+      entry.status = { status: "completed", operationId: input.operationId, httpStatus: 200, result: entry.result };
+      return entry.result;
+    },
+    async readPageReleaseSetStatus(_actor, _siteId, requestedOperationId) { return prepared.get(requestedOperationId)?.status ?? null; }
+  });
+  const send = (method, path, body) => api(new Request(`https://host.example/api/edit/v1${path}`, {
+    method, headers: { Authorization: "Bearer owner", ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) })
+  }));
+  const route = `/sites/${target.siteId}/operations`;
+  const plan = await json(await send("POST", `${route}/pages.release-set-plan`, { siteId: target.siteId, operationId, items }));
+  assert.equal(plan.status, 200);
+  assert.deepEqual(plan.body.plan, { siteId: target.siteId, operationId, confirmationToken: "set-token", domain: "https://host.example", items });
+  const result = { status: "released", operationId, items: [
+    { target, version: "v1-published" }, { target: items[1].target, version: "about-v1-published" }
+  ] };
+  const applyBody = { siteId: target.siteId, operationId, confirmationToken: "set-token", items };
+  assert.deepEqual(await json(await send("POST", `${route}/pages.release-set`, applyBody)), { status: 200, body: result });
+  assert.deepEqual(await json(await send("POST", `${route}/pages.release-set`, applyBody)), { status: 200, body: result });
+  assert.deepEqual(await json(await send("GET", `${route}/pages.release-set-status/${operationId}`)), {
+    status: 200, body: { status: "completed", operationId, httpStatus: 200, result }
+  });
+  assert.equal(applyCalls, 2);
+
+  const denied = await json(await send("POST", `${route}/pages.release-set-plan`, { siteId: target.siteId, operationId: "223e4567-e89b-42d3-a456-426614174000",
+    items: [items[0], { target: { ...target, pageId: "denied" }, expectedVersion: "private-v1" }] }));
+  assert.deepEqual(denied, { status: 403, body: { error: "forbidden" } });
+  assert.equal(prepareCalls, 1, "the host must not prepare a set with a denied target");
+
+  const duplicateTarget = await json(await send("POST", `${route}/pages.release-set-plan`, { siteId: target.siteId, operationId: "323e4567-e89b-42d3-a456-426614174000", items: [items[0], items[0]] }));
+  assert.deepEqual(duplicateTarget, { status: 400, body: { error: "invalid_request" } });
+  assert.equal(prepareCalls, 1, "duplicate targets must be rejected before calling the host");
+});
+
 test("page editing API hides unsupported publish operations and rejects an untrusted release domain", async () => {
   const missingPublisher = hostFixture();
   const discovered = await json(await missingPublisher.send("GET", `/sites/${target.siteId}/capabilities`));

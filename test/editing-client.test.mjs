@@ -10,8 +10,11 @@ const blockDocument = structuredClone(fixture);
 blockDocument.body.push({ type: "component", id: "booking-panel", block: "booking-panel", props: { title: "Book a visit" } });
 const validationContext = { blocks: { "booking-panel": { props: { title: { type: "string", required: true } } } } };
 
-function clientFixture({ token = "owner", initialDocument = blockDocument, publishing = false, pageManagement = false, initialBreakpointSettings } = {}) {
+function clientFixture({ token = "owner", initialDocument = blockDocument, publishing = false, releaseSet = false, staleAfterSetPrepare = false, pageManagement = false, initialBreakpointSettings } = {}) {
   let document = structuredClone(initialDocument), version = "v1";
+  const secondTarget = { siteId: target.siteId, pageId: "about", locale: "ja" };
+  let secondVersion = "about-v1";
+  const releaseSetOperations = new Map();
   let breakpointSettings = initialBreakpointSettings === undefined ? null : structuredClone(initialBreakpointSettings), breakpointVersion = "b.1";
   const completed = new Map();
   let pageManagementVersion = "registry-v1";
@@ -19,7 +22,7 @@ function clientFixture({ token = "owner", initialDocument = blockDocument, publi
   const pageChangeOperations = new Map();
   const api = createPageEditingApi({
     async authenticate(request) { return request.headers.get("Authorization") === "Bearer owner" ? { kind: "machine", subject: "agent", delegatedBy: "owner" } : null; },
-    async authorize(actor, capability, scope) { return actor.subject === "agent" && scope.siteId === target.siteId && (["pages.read", "pages.edit"].includes(capability) || (publishing || pageManagement) && capability === "pages.publish" || breakpointSettings !== null && ["site.settings.read", "site.settings.write"].includes(capability)); },
+    async authorize(actor, capability, scope) { return actor.subject === "agent" && scope.siteId === target.siteId && (["pages.read", "pages.edit"].includes(capability) || (publishing || releaseSet || pageManagement) && capability === "pages.publish" || breakpointSettings !== null && ["site.settings.read", "site.settings.write"].includes(capability)); },
     async validationContext() { return validationContext; },
     async readPage(_actor, requested) { return requested.siteId === target.siteId && requested.pageId === target.pageId && requested.locale === target.locale
       ? { document, version, ...(publishing ? { componentsVersion: "components-v1", presentationVersion: "presentation-v1" } : {}) } : null; },
@@ -36,7 +39,7 @@ function clientFixture({ token = "owner", initialDocument = blockDocument, publi
         return { status: "saved", version: breakpointVersion };
       }
     }),
-    ...(publishing ? {
+    ...(publishing || releaseSet ? {
       async releaseSite() { return { id: target.siteId, name: "Example", domains: ["https://host.example"] }; },
       async preparePageRelease(_actor, request) {
         if (request.expectedVersion !== version) return { status: "conflict" };
@@ -51,7 +54,38 @@ function clientFixture({ token = "owner", initialDocument = blockDocument, publi
         const result = { status: "released", operationId: input.operationId, version, document };
         completed.set(input.operationId, { expectedVersion: input.expectedVersion, confirmationToken: input.confirmationToken, result });
         return result;
-      }
+      },
+      ...(releaseSet ? {
+        async preparePageReleaseSet(_actor, siteId, operationId, items) {
+          const prior = releaseSetOperations.get(operationId);
+          if (prior) return JSON.stringify(prior.plan.items) === JSON.stringify(items) ? { status: "prepared", plan: prior.plan } : { status: "duplicate" };
+          if (siteId !== target.siteId || items.some((item) => item.target.pageId === target.pageId ? item.expectedVersion !== version
+            : item.target.pageId === secondTarget.pageId ? item.expectedVersion !== secondVersion : true)) return { status: "conflict" };
+          const plan = { siteId, operationId, confirmationToken: `set-token-${operationId}`, domain: "https://host.example", items: structuredClone(items) };
+          releaseSetOperations.set(operationId, { plan, input: structuredClone(items), result: null });
+          if (staleAfterSetPrepare) secondVersion = "about-v2";
+          return { status: "prepared", plan };
+        },
+        async publishPageReleaseSet(_actor, siteId, input) {
+          const entry = releaseSetOperations.get(input.operationId);
+          if (!entry || siteId !== target.siteId || entry.plan.confirmationToken !== input.confirmationToken
+            || JSON.stringify(entry.input) !== JSON.stringify(input.items)) return { status: "duplicate" };
+          if (entry.result) return entry.result;
+          if (input.items.some((item) => item.target.pageId === target.pageId ? item.expectedVersion !== version
+            : item.target.pageId === secondTarget.pageId ? item.expectedVersion !== secondVersion : true)) return { status: "conflict" };
+          const results = input.items.map((item) => {
+            if (item.target.pageId === target.pageId) version = "v2";
+            else secondVersion = "about-v2";
+            return { target: item.target, version: item.target.pageId === target.pageId ? version : secondVersion };
+          });
+          entry.result = { status: "released", operationId: input.operationId, items: results };
+          entry.status = { status: "completed", operationId: input.operationId, httpStatus: 200, result: entry.result };
+          return entry.result;
+        },
+        async readPageReleaseSetStatus(_actor, siteId, operationId) {
+          return siteId === target.siteId ? releaseSetOperations.get(operationId)?.status ?? { status: "unknown", operationId } : null;
+        }
+      } : {})
     } : {})
     ,...(pageManagement ? {
       async releaseSite() { return { id: target.siteId, name: "Example", domains: ["https://host.example"] }; },
@@ -161,4 +195,49 @@ test("shared page editing client prepares a release and safely retries with the 
   await assert.rejects(client.prepareRelease(target, { expectedVersion: "v1", action: "publish" }),
     (error) => error instanceof EditingApiClientError && error.code === "version_conflict" && error.status === 409);
   await assert.rejects(client.release({ ...target, siteId: "another-site" }, plan, operationId), TypeError);
+});
+
+test("shared editing client prepares and applies an idempotent multi-page release set with status lookup", async () => {
+  const client = clientFixture({ releaseSet: true });
+  const discovery = await client.discover();
+  assert.ok(discovery.operations.some(({ id }) => id === "pages.release-set-plan"));
+  assert.ok(discovery.operations.some(({ id }) => id === "pages.release-set"));
+  assert.ok(discovery.operations.some(({ id }) => id === "pages.release-set-status"));
+  const operationId = "123e4567-e89b-42d3-a456-426614174000";
+  const items = [
+    { target, expectedVersion: "v1", componentsVersion: "components-v1", presentationVersion: "presentation-v1" },
+    { target: { ...target, pageId: "about" }, expectedVersion: "about-v1" }
+  ];
+  const plan = await client.preparePageReleaseSet(items, undefined, operationId);
+  assert.equal(plan.operationId, operationId);
+  assert.deepEqual(plan.items, items);
+  assert.deepEqual(await client.publishPageReleaseSet(plan), {
+    status: "released", operationId, items: [
+      { target, version: "v2" }, { target: { ...target, pageId: "about" }, version: "about-v2" }
+    ]
+  });
+  assert.deepEqual(await client.publishPageReleaseSet(plan), {
+    status: "released", operationId, items: [
+      { target, version: "v2" }, { target: { ...target, pageId: "about" }, version: "about-v2" }
+    ]
+  });
+  assert.deepEqual(await client.pageReleaseSetStatus(operationId), {
+    status: "completed", operationId, httpStatus: 200,
+    result: { status: "released", operationId, items: [
+      { target, version: "v2" }, { target: { ...target, pageId: "about" }, version: "about-v2" }
+    ] }
+  });
+  await assert.rejects(client.preparePageReleaseSet([items[0], items[0]], undefined, operationId), TypeError);
+});
+
+test("multi-page release set aborts before any publish when one target turns stale", async () => {
+  const client = clientFixture({ releaseSet: true, staleAfterSetPrepare: true });
+  const operationId = "423e4567-e89b-42d3-a456-426614174000";
+  const items = [
+    { target, expectedVersion: "v1" },
+    { target: { ...target, pageId: "about" }, expectedVersion: "about-v1" }
+  ];
+  const plan = await client.preparePageReleaseSet(items, undefined, operationId);
+  assert.deepEqual(await client.publishPageReleaseSet(plan), { status: "conflict" });
+  assert.equal((await client.read(target)).version, "v1", "a stale second target must not partially publish the first target");
 });

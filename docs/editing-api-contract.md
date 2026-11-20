@@ -16,6 +16,9 @@ Studio GUIはページの表示・編集材料の一部（presentation metadata�
 | `pages.save` | PUT | `/sites/{siteId}/operations/pages.save/{pageId}?locale={locale}` | `pages.edit` | `{ expectedVersion, document }` | `{ status: "saved", version, document }` |
 | `pages.release-plan` | POST | `/sites/{siteId}/operations/pages.release-plan/{pageId}?locale={locale}` | `pages.publish` | expected version, publish/rollback action, optional rollback revision and dependency versions | `{ plan }` |
 | `pages.release` | POST | `/sites/{siteId}/operations/pages.release/{pageId}?locale={locale}` | `pages.publish` | expected version, one-use confirmation token, UUID v4 operation ID | `{ status: "released", operationId, version, document }` |
+| `pages.release-set-plan` | POST | `/sites/{siteId}/operations/pages.release-set-plan` | `pages.publish` per target | `{ siteId, operationId, items: [{ target, expectedVersion, componentsVersion?, presentationVersion? }] }` (2–50 pages) | `{ plan }` |
+| `pages.release-set` | POST | `/sites/{siteId}/operations/pages.release-set` | `pages.publish` per target | the exact plan's site, operation ID, confirmation token and items | `{ status, operationId, items: [{ target, version }] }` |
+| `pages.release-set-status` | GET | `/sites/{siteId}/operations/pages.release-set-status/{operationId}` | `pages.read` | site / operation ID | `{ status, operationId, ... }` |
 | `pages.catalog` | GET | `/sites/{siteId}/operations/pages.catalog` | `pages.read` | site ID | `{ version, pages }` |
 | `pages.change-prepare` | POST | `/sites/{siteId}/operations/pages.change-prepare` | `pages.publish` | `{ expectedVersion, operationId, change }` | `{ plan }` |
 | `pages.change-apply` | POST | `/sites/{siteId}/operations/pages.change-apply` | `pages.publish` | `{ expectedVersion, operationId, confirmationToken, change }` | `{ status: "applied", operationId, page }` |
@@ -39,6 +42,8 @@ Studio GUIはページの表示・編集材料の一部（presentation metadata�
 
 `pages.save` は `expectedVersion` を原子的に比較します。競合時はHTTP 409と `version_conflict` を返し、ホストは古い下書きを上書きしません。documentは受信側で `parsePageDocument` を通し、pathのsite/pageとqueryのlocaleに一致しない文書、任意HTML・JavaScript・CSSなど検証に失敗する値はHTTP 400 `invalid_request` で拒否します。登録ブロック・部品インスタンス・サイト共通スタイルを使うホストは、adapterの `validationContext(actor, target)` から信頼済みの `blocks`・`components`・`siteStyles` を渡します。読み取り、入力文書、保存後の正規文書の検証に同じcontextを使います。
 
+`pages.release-set-*` は同じサイト内の複数ページを一つの公開変更セットとして扱います。対象は2〜50件で、重複ページは禁止します。各項目の `expectedVersion` と任意の `componentsVersion` / `presentationVersion`、対象一覧、operation IDを計画へ固定します。APIは全対象の `pages.publish` 権限を個別に確認します。ホストadapterは全版を再検証し、全対象を同時に公開するか一件も公開しない永続化を実装します。確認tokenは対象と全版を含む計画に結び付け、同じactor・operation ID・入力の再送には前回結果を返します。`pages.release-set-status` は、タイムアウト後に同じoperation IDの状態を照会します。ホストはactor、対象版、結果を監査記録へ保存します。部分成功の自動再試行や自動mergeは行いません。
+
 `site.breakpoints.*` は、hostの設定正本へ保存するsite単位の操作です。各操作は対応するadapter関数が登録されているhostだけがdiscoverに出します。settingsは `parseBreakpointSettings` の閉じた契約で検証し、saveはhostの永続層でexpectedVersionを原子的に比較します。stale versionは409 `version_conflict` です。
 
 `pages.catalog` は管理可能なページと一覧のopaque versionを返します。`pages.change-prepare` は作成・名前/URL変更・公開状態変更を実行せずに影響と短期確認tokenを返し、`pages.change-apply` は同じ `expectedVersion`・UUID v4 `operationId`・change・tokenを照合して適用します。stale versionは409 `version_conflict`、別prepareでのoperation ID再利用は409 `duplicate_operation` です。同じactorが同じapplyを再送した場合は、ホストが記録した同じ結果を返します。
@@ -60,6 +65,14 @@ niho-edit --origin https://site.example --site site-id release-plan home --local
 # 公開先と差分を確認し、再試行にも使うoperation IDを先に決めて保存する
 OPERATION_ID=$(node -p 'crypto.randomUUID()')
 niho-edit --origin https://site.example --site site-id release home --locale ja --json release-plan.json --operation-id "$OPERATION_ID"
+
+# 複数ページを一括公開する入力。対象と各版を確認してから計画を作ります。
+# release-set-items.json: {"items":[{"target":{"siteId":"site-id","pageId":"home","locale":"ja"},"expectedVersion":"..."},{"target":{"siteId":"site-id","pageId":"about","locale":"ja"},"expectedVersion":"..."}]}
+OPERATION_ID=$(node -p 'crypto.randomUUID()')
+niho-edit --origin https://site.example --site site-id page-release-set-plan --json release-set-items.json --operation-id "$OPERATION_ID" > release-set-plan.json
+# 計画の対象・版を確認して適用。同じ計画ファイルで安全に再試行できます。
+niho-edit --origin https://site.example --site site-id page-release-set-apply --json release-set-plan.json
+niho-edit --origin https://site.example --site site-id page-release-set-status --operation-id "$OPERATION_ID"
 
 niho-edit --origin https://site.example --site site-id breakpoints-read > breakpoints.json
 # breakpoints.json のsettingsを編集し、versionは保持する

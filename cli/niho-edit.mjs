@@ -12,6 +12,9 @@ niho-edit --origin <https-origin> --site <site-id> read <page-id> --locale <loca
 niho-edit --origin <https-origin> --site <site-id> save <page-id> --locale <locale> --json <snapshot-file|->
 niho-edit --origin <https-origin> --site <site-id> release-plan <page-id> --locale <locale> --action <publish|rollback> (--json <snapshot-file|-> | --expected-version <version>) [--revision <number>]
 niho-edit --origin <https-origin> --site <site-id> release <page-id> --locale <locale> --json <plan-file|-> --operation-id <uuid-v4>
+niho-edit --origin <https-origin> --site <site-id> page-release-set-plan --json <items-file|-> --operation-id <uuid-v4>
+niho-edit --origin <https-origin> --site <site-id> page-release-set-apply --json <plan-file|->
+niho-edit --origin <https-origin> --site <site-id> page-release-set-status --operation-id <uuid-v4>
 niho-edit --origin <https-origin> --site <site-id> breakpoints-read
 niho-edit --origin <https-origin> --site <site-id> breakpoints-save --json <settings-snapshot-file|->
 niho-edit --origin <https-origin> --site <site-id> pages-catalog
@@ -36,7 +39,9 @@ niho-edit --origin <https-origin> --site <site-id> assets-restore <provider> <as
 
 Set NIHO_EDIT_TOKEN to a short-lived bearer token. read returns { document, version }.
 Edit document while keeping version, then pass the snapshot to save for version-checked persistence.
-Review the release plan before applying it. Keep and reuse the same operation ID when retrying a release.`;
+Review the release plan before applying it. Keep and reuse the same operation ID when retrying a release.
+For a page release set, items-file is { "items": [{ "target": { "siteId", "pageId", "locale" }, "expectedVersion", "componentsVersion?", "presentationVersion?" }, ...] }.
+The plan is bound to all targets and versions. Apply the saved plan again after a timeout, and query page-release-set-status with its operation ID.`;
 const MAX_INPUT_BYTES = 4 * 1024 * 1024;
 const MAX_PAGE_CHANGE_BYTES = 16 * 1024;
 const MAX_ASSET_UPLOAD_BYTES = 50 * 1024 * 1024;
@@ -143,6 +148,30 @@ async function inputPageManagementJson(path, maximumBytes) {
     catch (error) { if (error instanceof CliError) throw error; throw new CliError("invalid_json_input"); }
   }
   return readJson(path === "-" ? process.stdin : createReadStream(path), maximumBytes);
+}
+async function inputPageReleaseSet(path, siteId) {
+  const source = await inputPageManagementJson(path, MAX_INPUT_BYTES);
+  if (Object.keys(source).sort().join(",") !== "items" || !Array.isArray(source.items) || source.items.length < 2 || source.items.length > 50) throw new CliError("invalid_page_release_set");
+  const seen = new Set();
+  for (const item of source.items) {
+    if (!item || typeof item !== "object" || Array.isArray(item) || Object.keys(item).some((key) => !["target", "expectedVersion", "componentsVersion", "presentationVersion"].includes(key))
+      || !item.target || typeof item.target !== "object" || Array.isArray(item.target)
+      || Object.keys(item.target).sort().join(",") !== "locale,pageId,siteId" || item.target.siteId !== siteId
+      || !IDENTIFIER.test(item.target.pageId ?? "") || !LOCALE.test(item.target.locale ?? "") || !isEditingApiVersion(item.expectedVersion)
+      || item.componentsVersion !== undefined && !isEditingApiVersion(item.componentsVersion)
+      || item.presentationVersion !== undefined && !isEditingApiVersion(item.presentationVersion)) throw new CliError("invalid_page_release_set");
+    const key = `${item.target.pageId}\u0000${item.target.locale}`;
+    if (seen.has(key)) throw new CliError("invalid_page_release_set");
+    seen.add(key);
+  }
+  return source.items;
+}
+async function inputPageReleaseSetPlan(path, siteId) {
+  const plan = await inputPageManagementJson(path, MAX_INPUT_BYTES);
+  if (Object.keys(plan).sort().join(",") !== "confirmationToken,domain,items,operationId,siteId"
+    || plan.siteId !== siteId || !OPERATION_ID.test(plan.operationId ?? "") || typeof plan.domain !== "string"
+    || !isEditingApiVersion(plan.confirmationToken) || !Array.isArray(plan.items)) throw new CliError("invalid_page_release_set_plan");
+  return plan;
 }
 async function inputCmsSnapshot(path) {
   if (!path) throw new CliError("missing_json_input");
@@ -371,6 +400,29 @@ async function main() {
     assertCommandOptions(values, ["operation-id"]);
     if (pageId !== undefined || extra.length || !OPERATION_ID.test(values["operation-id"] ?? "")) throw new CliError("invalid_arguments");
     process.stdout.write(`${JSON.stringify(await apiCall(() => client.cmsOperationStatus(values["operation-id"], AbortSignal.timeout(30_000))))}\n`); return;
+  }
+
+  if (command === "page-release-set-plan") {
+    assertCommandOptions(values, ["json", "operation-id"]);
+    if (pageId !== undefined || extra.length || !OPERATION_ID.test(values["operation-id"] ?? "")) throw new CliError("invalid_arguments");
+    const items = await inputPageReleaseSet(values.json, values.site);
+    const plan = await apiCall(() => client.preparePageReleaseSet(items, AbortSignal.timeout(30_000), values["operation-id"]));
+    process.stdout.write(`${JSON.stringify(plan)}\n`); return;
+  }
+
+  if (command === "page-release-set-apply") {
+    assertCommandOptions(values, ["json"]);
+    if (pageId !== undefined || extra.length) throw new CliError("invalid_arguments");
+    const plan = await inputPageReleaseSetPlan(values.json, values.site);
+    const result = await apiCall(() => client.publishPageReleaseSet(plan, AbortSignal.timeout(30_000)));
+    if (result.status === "conflict") { emit({ error: "version_conflict" }, 409, 1, "pages.release-set"); return; }
+    emit(result, 200, 0, "pages.release-set"); return;
+  }
+
+  if (command === "page-release-set-status") {
+    assertCommandOptions(values, ["operation-id"]);
+    if (pageId !== undefined || extra.length || !OPERATION_ID.test(values["operation-id"] ?? "")) throw new CliError("invalid_arguments");
+    process.stdout.write(`${JSON.stringify(await apiCall(() => client.pageReleaseSetStatus(values["operation-id"], AbortSignal.timeout(30_000))))}\n`); return;
   }
 
   if (command === "discover") {
