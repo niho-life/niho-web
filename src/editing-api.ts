@@ -54,6 +54,12 @@ export type EditingOperationDefinition = {
   readonly resultSchema: JsonSchema;
   readonly errors: readonly EditingApiErrorCode[];
 };
+export type PageEditingApiOptions = { readonly basePath?: string };
+export type RegisteredPageEditingHost = {
+  /** Exact site IDs served by this host adapter. A site ID may be registered only once. */
+  readonly siteIds: readonly string[];
+  readonly adapter: PageEditingHostAdapter;
+};
 
 const documentSchema: JsonSchema = Object.freeze({
   type: "object", required: Object.freeze(["schemaVersion", "siteId", "pageId", "locale", "revision", "title", "tokens", "body"]),
@@ -228,9 +234,14 @@ function validatedDocument(value: unknown, context: PageEditingValidationContext
 }
 
 /** Framework-neutral HTTP handler for the host page resource API. Authentication and persistence stay in the host. */
-export function createPageEditingApi(adapter: PageEditingHostAdapter, options: { readonly basePath?: string } = {}): (request: Request) => Promise<Response> {
-  const basePath = options.basePath ?? "/api/edit/v1";
+function editingApiBasePath(value: string | undefined): string {
+  const basePath = value ?? "/api/edit/v1";
   if (!/^\/[a-z0-9/_-]+$/u.test(basePath) || basePath.endsWith("/") || basePath.includes("//")) throw new Error("invalid editing API base path");
+  return basePath;
+}
+
+export function createPageEditingApi(adapter: PageEditingHostAdapter, options: PageEditingApiOptions = {}): (request: Request) => Promise<Response> {
+  const basePath = editingApiBasePath(options.basePath);
   return async (request) => {
     const url = new URL(request.url);
     if (url.hash || url.pathname !== url.pathname.normalize("NFC")) return fail("invalid_request", 400);
@@ -350,5 +361,36 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: {
     catch { return fail("host_contract_violation", 502); }
     if (savedDocument.siteId !== target.siteId || savedDocument.pageId !== target.pageId || savedDocument.locale !== target.locale) return fail("host_contract_violation", 502);
     return response({ status: "saved", version: result.version, document: savedDocument });
+  };
+}
+
+/** Route a multi-site host through exact registrations instead of site-name conditionals. */
+export function createRegisteredPageEditingApi(registrations: readonly RegisteredPageEditingHost[], options: PageEditingApiOptions = {}): (request: Request) => Promise<Response> {
+  const basePath = editingApiBasePath(options.basePath);
+  if (!Array.isArray(registrations) || registrations.length === 0) throw new TypeError("at least one page editing host must be registered");
+  const handlers = new Map<string, (request: Request) => Promise<Response>>();
+  for (const registration of registrations) {
+    if (!registration || !Array.isArray(registration.siteIds) || registration.siteIds.length === 0 || !registration.adapter) {
+      throw new TypeError("invalid page editing host registration");
+    }
+    const handler = createPageEditingApi(registration.adapter, { basePath });
+    for (const value of registration.siteIds) {
+      let siteId: string;
+      try { siteId = identifier(value, "$registration.siteId"); }
+      catch { throw new TypeError("invalid registered page editing site ID"); }
+      if (handlers.has(siteId)) throw new TypeError(`page editing site is already registered: ${siteId}`);
+      handlers.set(siteId, handler);
+    }
+  }
+
+  return async (request) => {
+    const pathname = new URL(request.url).pathname;
+    const match = new RegExp(`^${basePath}/sites/([^/]+)(?:/|$)`, "u").exec(pathname);
+    if (!match) return fail("not_found", 404);
+    let siteId: string;
+    try { siteId = identifier(decodeURIComponent(match[1]!), "$siteId"); }
+    catch { return fail("invalid_request", 400); }
+    const handler = handlers.get(siteId);
+    return handler ? handler(request) : fail("not_found", 404);
   };
 }
