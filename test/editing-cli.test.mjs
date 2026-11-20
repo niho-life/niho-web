@@ -47,7 +47,7 @@ test("niho-edit reads a page over the host API without Studio or a browser", asy
   });
   assert.equal(result.exitCode, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), { document: fixture, version: "v1" });
-  assert.deepEqual(EDITING_OPERATIONS.map(({ id }) => id), ["pages.read", "pages.save"]);
+  assert.deepEqual(EDITING_OPERATIONS.map(({ id }) => id), ["pages.read", "pages.save", "pages.release-plan", "pages.release"]);
 });
 
 test("niho-edit preserves host-specific component blocks on read and save", async (t) => {
@@ -110,4 +110,32 @@ test("niho-edit starts the save timeout after reading a stdin snapshot", async (
   });
   assert.equal(result.exitCode, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), { document: savedDocument, version: "v2" });
+});
+
+test("niho-edit reviews a release plan and retries publication with the same operation ID", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "niho-edit-release-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const target = { siteId, pageId, locale };
+  const snapshotPath = join(directory, "snapshot.json");
+  await writeFile(snapshotPath, JSON.stringify({ document: fixture, version: "v2", componentsVersion: "components-v1", presentationVersion: "presentation-v1" }));
+  const plan = { target, expectedVersion: "v2", action: "publish", componentsVersion: "components-v1", presentationVersion: "presentation-v1", confirmationToken: "one-use-token", domain: "https://site.example", changes: [] };
+  const preparePath = `/api/edit/v1/sites/${siteId}/operations/pages.release-plan/${pageId}?locale=${encodeURIComponent(locale)}`;
+  const prepared = await run(["release-plan", pageId, "--locale", locale, "--action", "publish", "--json", snapshotPath], {
+    expectedMethod: "POST", expectedUrl: `${origin}${preparePath}`, expectedBody: { expectedVersion: "v2", action: "publish", componentsVersion: "components-v1", presentationVersion: "presentation-v1" }, result: { plan }
+  });
+  assert.equal(prepared.exitCode, 0, prepared.stderr);
+  assert.deepEqual(JSON.parse(prepared.stdout), plan);
+
+  const planPath = join(directory, "release-plan.json");
+  await writeFile(planPath, JSON.stringify(plan));
+  const operationId = "123e4567-e89b-42d3-a456-426614174000";
+  const applyPath = `/api/edit/v1/sites/${siteId}/operations/pages.release/${pageId}?locale=${encodeURIComponent(locale)}`;
+  const result = { status: "released", operationId, version: "v3", document: fixture };
+  const args = ["release", pageId, "--locale", locale, "--json", planPath, "--operation-id", operationId];
+  const applied = await run(args, { expectedMethod: "POST", expectedUrl: `${origin}${applyPath}`, expectedBody: { expectedVersion: "v2", confirmationToken: plan.confirmationToken, operationId }, result });
+  assert.equal(applied.exitCode, 0, applied.stderr);
+  assert.deepEqual(JSON.parse(applied.stdout).result, result);
+  const retried = await run(args, { expectedMethod: "POST", expectedUrl: `${origin}${applyPath}`, expectedBody: { expectedVersion: "v2", confirmationToken: plan.confirmationToken, operationId }, result });
+  assert.equal(retried.exitCode, 0, retried.stderr);
+  assert.deepEqual(JSON.parse(retried.stdout).result, result);
 });

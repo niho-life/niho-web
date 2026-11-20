@@ -6,15 +6,17 @@ import { createPageEditingApi, EDITING_API_ERRORS, EDITING_OPERATIONS } from "@n
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 const target = { siteId: fixture.siteId, pageId: fixture.pageId, locale: fixture.locale };
 
-function hostFixture({ validationContext, initialDocument = fixture } = {}) {
+function hostFixture({ validationContext, initialDocument = fixture, publishing = false } = {}) {
   let document = structuredClone(initialDocument), version = "v1";
   const actor = { kind: "human", subject: "owner" };
+  const completedOperations = new Map();
+  const site = { id: fixture.siteId, name: "Example", domains: ["https://host.example"] };
   const api = createPageEditingApi({
     async authenticate(request) {
       const token = request.headers.get("Authorization");
       return token === "Bearer owner" ? actor : token === "Bearer other" ? { kind: "human", subject: "other" } : null;
     },
-    async authorize(input, capability, scope) { return input.subject === "owner" && scope.siteId === fixture.siteId && (capability === "pages.read" || capability === "pages.edit"); },
+    async authorize(input, capability, scope) { return input.subject === "owner" && scope.siteId === fixture.siteId && (capability === "pages.read" || capability === "pages.edit" || publishing && capability === "pages.publish"); },
     ...(validationContext ? { async validationContext() { return validationContext; } } : {}),
     async readPage(_actor, input) { return input.siteId === target.siteId && input.pageId === target.pageId && input.locale === target.locale ? { document, version } : null; },
     async savePage(_actor, input, expectedVersion, next) {
@@ -22,7 +24,24 @@ function hostFixture({ validationContext, initialDocument = fixture } = {}) {
       if (expectedVersion !== version) return { status: "conflict" };
       document = { ...next, revision: next.revision + 1 }; version = `v${Number(version.slice(1)) + 1}`;
       return { status: "saved", version, document };
-    }
+    },
+    ...(publishing ? {
+      async releaseSite() { return site; },
+      async preparePageRelease(_actor, request) {
+        if (request.expectedVersion !== version) return { status: "conflict" };
+        return { status: "prepared", plan: { ...request, confirmationToken: "release-token", domain: "https://host.example", changes: [] } };
+      },
+      async publishPage(_actor, input, request) {
+        const completed = completedOperations.get(request.operationId);
+        if (completed) return completed.expectedVersion === request.expectedVersion && completed.confirmationToken === request.confirmationToken ? completed.result : { status: "conflict" };
+        if (input.siteId !== target.siteId || input.pageId !== target.pageId || input.locale !== target.locale
+          || request.expectedVersion !== version || request.confirmationToken !== "release-token") return { status: "conflict" };
+        version = `v${Number(version.slice(1)) + 1}`;
+        const result = { status: "released", operationId: request.operationId, version, document };
+        completedOperations.set(request.operationId, { expectedVersion: request.expectedVersion, confirmationToken: request.confirmationToken, result });
+        return result;
+      }
+    } : {})
   });
   const send = (method, path, body, authorization = "Bearer owner") => api(new Request(`https://host.example/api/edit/v1${path}`, {
     method,
@@ -39,9 +58,47 @@ test("page editing API discovery exposes machine-readable operations and stable 
   const result = await json(await send("GET", `/sites/${target.siteId}/capabilities`));
   assert.equal(result.status, 200);
   assert.equal(result.body.apiVersion, "v1");
-  assert.deepEqual(result.body.operations, EDITING_OPERATIONS);
+  assert.deepEqual(result.body.operations, EDITING_OPERATIONS.slice(0, 2));
   assert.ok(EDITING_API_ERRORS.includes("version_conflict"));
   assert.ok(result.body.operations.every((operation) => operation.inputSchema && operation.resultSchema && operation.errors.length > 0));
+});
+
+test("page editing API prepares an allowlisted release and applies it idempotently", async () => {
+  const { send } = hostFixture({ publishing: true });
+  const path = `/sites/${target.siteId}/operations`, query = `?locale=${encodeURIComponent(target.locale)}`;
+  const prepared = await json(await send("POST", `${path}/pages.release-plan/${target.pageId}${query}`, { expectedVersion: "v1", action: "publish" }));
+  assert.equal(prepared.status, 200);
+  assert.deepEqual(prepared.body.plan, {
+    target, expectedVersion: "v1", action: "publish", confirmationToken: "release-token", domain: "https://host.example", changes: []
+  });
+  const operationId = "123e4567-e89b-42d3-a456-426614174000";
+  const applyPath = `${path}/pages.release/${target.pageId}${query}`;
+  const input = { expectedVersion: "v1", confirmationToken: "release-token", operationId };
+  const released = await json(await send("POST", applyPath, input));
+  assert.equal(released.status, 200);
+  assert.deepEqual(released.body, { status: "released", operationId, version: "v2", document: fixture });
+  assert.deepEqual(await json(await send("POST", applyPath, input)), released);
+  assert.deepEqual(await json(await send("POST", applyPath, { ...input, confirmationToken: "other-token" })), { status: 409, body: { error: "version_conflict" } });
+});
+
+test("page editing API hides unsupported publish operations and rejects an untrusted release domain", async () => {
+  const missingPublisher = hostFixture();
+  const discovered = await json(await missingPublisher.send("GET", `/sites/${target.siteId}/capabilities`));
+  assert.deepEqual(discovered.body.operations.map((operation) => operation.id), ["pages.read", "pages.save"]);
+
+  const badDomainApi = createPageEditingApi({
+    async authenticate() { return { kind: "machine", subject: "agent" }; },
+    async authorize() { return true; },
+    async releaseSite() { return { id: target.siteId, name: "Example", domains: ["https://host.example"] }; },
+    async preparePageRelease(_actor, request) { return { status: "prepared", plan: { ...request, confirmationToken: "token", domain: "https://attacker.example", changes: [] } }; },
+    async publishPage() { return { status: "conflict" }; },
+    async readPage() { return { document: fixture, version: "v1" }; },
+    async savePage() { return { status: "conflict" }; }
+  });
+  const response = await badDomainApi(new Request(`https://host.example/api/edit/v1/sites/${target.siteId}/operations/pages.release-plan/${target.pageId}?locale=${target.locale}`, {
+    method: "POST", headers: { Authorization: "Bearer owner", "Content-Type": "application/json" }, body: JSON.stringify({ expectedVersion: "v1", action: "publish" })
+  }));
+  assert.deepEqual(await json(response), { status: 502, body: { error: "host_contract_violation" } });
 });
 
 test("page editing API reads and saves through the host adapter with CAS conflicts", async () => {
