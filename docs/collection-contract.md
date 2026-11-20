@@ -11,7 +11,7 @@
 - 認証と認可。各呼び出しで、今の利用者がそのサイト・コレクション・項目を読める／書けるかを確かめます。画面から渡る `collectionId`・`itemId`・`version` は認可の証明ではありません。権限が無いときは `{ status: "forbidden" }` を返します。画面は表示していた中身を消し、権限が無いと出します。
 - 保存。下書きの保存は `version` による楽観的な排他（compare-and-swap）で、ほかの人が先に保存していたら `conflict` を返し、上書きしません。
 - 公開と予約。サイトの作り直し・予約の実行・反映の結果（`publishFailed`）はホストが持ちます。
-- 画像の置き場と変換。`uploadImage` はファイルの種類・大きさ・権限を確かめ、表示できる URL を返します。
+- 画像の置き場と変換。リッチテキスト用の `uploadImage` は表示 URL、CMS 項目画像用の任意 `uploadAsset` は安定素材参照を返します。
 - HTML の最終的な無害化。画面も `sanitizeRichTextHtml` を通しますが、ブラウザの値は信用せず、保存・公開の前にホストのサーバーでも無害化してください。
 - 値の確かめ。画面は公開の前に必須・slug・URL などを確かめますが、アドレスの重複など正本でしか分からないことはホストが `invalid` で返します。
 - 定義（`fields`）に無い値の保持。画面は `fields` にある値だけを送ります。古い項目などの値はホストが消さずに持ってください。
@@ -66,7 +66,8 @@ const adapter: CollectionAdapter = {
 | `loadItem` | `{ collectionId, itemId }` | `{ status: "ready", item }` / `not_found` |
 | `saveDraft` | `{ collectionId, itemId, version, values }` | `{ status: "saved", item }` / `{ status: "conflict", item }` / `{ status: "invalid", errors: { field, message }[] }` |
 | `publish` | `{ collectionId, itemId, version, redirect? }` | `{ status: "published" \| "publishing", item }` / conflict / invalid |
-| `uploadImage` | `{ collectionId, file }` | `{ status: "uploaded", url, width?, height? }` / `{ status: "rejected", reason: "type" \| "size" \| "permission" \| "invalid" }` |
+| `uploadImage` | `{ collectionId, file }` | リッチテキスト画像用の `{ status: "uploaded", url, width?, height? }` / rejected |
+| `uploadAsset?` | `{ collectionId, file }` | `image` / `gallery` 項目用。`{ status: "uploaded", reference, url?, width?, height? }` / rejected。無いホストは `uploadImage` を使い、URL を値にします。 |
 | `createItem`（任意） | `{ collectionId }` | `{ status: "created", item }`（下書きとして作る） |
 | `discardDraft`（任意） | `{ collectionId, itemId, version }` | saved（公開中の内容に戻した項目）/ conflict |
 | `unpublish`（任意） | `{ collectionId, itemId, version }` | saved / conflict |
@@ -79,7 +80,7 @@ const adapter: CollectionAdapter = {
 | `retryEnglishPublications`（任意） | `{ collectionId, itemId }` | `{ status: "accepted", englishPublications: { key, label, publication }[] }` / `{ status: "conflict" }` |
 | `reorder`（任意） | `{ collectionId, ids, from, to }` | `{ status: "saved" \| "publishing", items }` / `{ status: "conflict", items }` / invalid |
 | `bulk`（任意） | `{ collectionId, action: "publish" \| "unpublish" \| "remove", items: { id, version }[] }` | `{ status: "saved" \| "publishing", items }` / `{ status: "conflict", items }` / invalid |
-| `imageUrl?(url, width)` | — | 一覧の小さい画像・項目の画像の表示用 URL（同期）。無ければ `url` のまま。 |
+| `imageUrl?(image, width)` | — | URL または素材参照の表示用 URL（同期）。素材参照は先に `resolveAssets` で解決し、未解決なら `null` を返します。 |
 | `previewUrl?(collectionId, item)` | — | 保存済みの下書きを別タブで開く URL（同期）。`null` なら「プレビュー」を出しません。 |
 | `isRichTextImageAllowed?(src)` | — | 本文の画像で、`/` から始まる同じサイトの path を残してよいか。既定は https の画像だけ残します。 |
 
@@ -123,17 +124,17 @@ type CollectionDefinition = {
 | `longText` | `rows`（1〜40）・`maxLength?` | string（改行を含む） |
 | `richText` | — | string（HTML） |
 | `url` | `placeholder?` | string（http・https） |
-| `image` | `shape?: "rect" \| "round"` | string（URL）\| null |
+| `image` | `shape?: "rect" \| "round"` | `{ provider, id }`（素材参照）・移行前の string（URL）・null |
 | `select` | `multiple`・`options: { id, label }[]` | string[]（単一は長さ 0〜1） |
 | `reference` | `multiple`・`collectionId` | string[]（参照先の項目の id。単一は長さ 0〜1） |
 | `tags` | — | string[] |
 | `datetime` | — | タイムゾーン付き ISO の string \| null |
 | `slug` | — | string（`^[A-Za-z0-9_-]+$`） |
-| `gallery` | `captionLabel`・`maxItems?`（1〜500）・`captionMaxLength?` | `{ id, image, caption }[]`（画像と説明の並び。`id` は既存の行の id、新しく足した行は `""`。`image` は `image` の項目と同じ形の URL \| null） |
+| `gallery` | `captionLabel`・`maxItems?`（1〜500）・`captionMaxLength?` | `{ id, image, caption }[]`（画像と説明の並び。`id` は既存の行の id、新しく足した行は `""`。`image` は `{ provider, id }`・移行前の URL・null） |
 
 `parseCollectionSchemaResult` は、key・option・コレクションの重複、知らない type・設定、`titleField` などの指す項目の型、`reference` の参照先が同じ schema にあることを確かめます。`capabilities` は 5 つの key が必須で、`redirects`・`reorder`・`bulk`・`retrySchedule` は任意です（無ければ `false` にそろえます。5 つだけを返す古いホストもそのまま開けます）。ほかの key は拒否します。
 
-項目の値は `parseCollectionValues` で定義の形にそろえます。無い key は空の値（`""`・`null`・`[]`）で補い、`fields` に無い key は捨てます（ホストが保持）。型が違う・単一の選択に 2 つ以上・同じ値の重複は例外です。`gallery` の各行は `id`・`image`・`caption` の 3 つちょうどで、`id` は `""` か `^[A-Za-z0-9._~:-]{1,128}$`（`""` 以外の重複は不可）です。slug の形や URL の scheme などの中身は、下書きでは自由で、公開・予約の前に `validateCollectionValues` で確かめます（`gallery` は行の数・画像の URL・説明の文字数）。
+項目の値は `parseCollectionValues` で定義の形にそろえます。無い key は空の値（`""`・`null`・`[]`）で補い、`fields` に無い key は捨てます（ホストが保持）。型が違う・単一の選択に 2 つ以上・同じ値の重複は例外です。`image` と `gallery.image` は新規保存では素材参照 `{ provider, id }` を使い、古い URL 値も移行期間中は読み取れます。公開 URL や認証付きプレビュー URL は値に保存せず、ホストの `AssetLibraryAdapter.resolveAssets` で表示時に解決してください。`gallery` の各行は `id`・`image`・`caption` の 3 つちょうどで、`id` は `""` か `^[A-Za-z0-9._~:-]{1,128}$`（`""` 以外の重複は不可）です。値の形や URL の scheme は公開・予約の前に `validateCollectionValues` で確かめます（`gallery` は行の数・画像・説明の文字数）。
 
 ## 項目（CollectionItemSummary / CollectionItem）
 
@@ -188,12 +189,12 @@ type CollectionItem = CollectionItemSummary & { version: string; values: Record<
 
 項目の入力:
 
-- 画像: 縮小した表示（`imageUrl(url, 480)`）・「画像を選ぶ／画像を変える」（`uploadImage` の URL を値に）・「外す」。`rejected` は理由（種類・大きさ・権限・読めない）を出します。`shape: "round"` は丸く出します。
+- 画像: 縮小した表示（`imageUrl(image, 480)`）・「画像を選ぶ／画像を変える」（`uploadAsset` があれば素材参照を値にし、無ければ `uploadImage` の URL を値に）・「外す」。リッチテキスト本文の画像は引き続き `uploadImage` の URL を使います。`rejected` は理由（種類・大きさ・権限・読めない）を出します。`shape: "round"` は丸く出します。
 - 参照: 参照先のコレクションの題名から検索して選びます（候補は `listItems` の結果。8 件まで）。選んだものは「外す」ボタン付きのチップ。単一は選び直すと置き換えます。見つからない id は「（見つからない項目）」と出します。
 - タグ: 入力して Enter（日本語の変換中は足さない）か「足す」で足すチップ。前後の空白を詰め、重複は足しません。
 - 選択: 単一はラジオ（必須でなければ「なし」付き）、複数はチェックボックス。選んだものは色に加えて ✓ を出します。
 - 日時: `datetime-local` で `timeZone` の時刻を入力し、ISO（UTC）に直して値にします。「消す」で `null`。
-- 画像と説明の並び（`gallery`）: 行ごとに画像（`imageUrl(url, 320)`。「画像を選ぶ／画像を変える」は `uploadImage` を同じ `collectionId` で呼ぶ）・説明（`captionLabel` の textarea。`captionMaxLength` があれば文字数）・「上へ」「下へ」「外す」。下に「追加」（新しい行は `{ id: "", image: null, caption: "" }`）。`maxItems` に達したら「追加」を出さずに「これ以上は追加できません」と出します。動かした・外した・足した後は、その行（外したときは隣の行）へ focus を移します。
+- 画像と説明の並び（`gallery`）: 行ごとに画像（`imageUrl(image, 320)`。「画像を選ぶ／画像を変える」は `uploadAsset` があれば素材参照を、なければ URL を同じ `collectionId` で保存）・説明（`captionLabel` の textarea。`captionMaxLength` があれば文字数）・「上へ」「下へ」「外す」。下に「追加」（新しい行は `{ id: "", image: null, caption: "" }`）。`maxItems` に達したら「追加」を出さずに「これ以上は追加できません」と出します。動かした・外した・足した後は、その行（外したときは隣の行）へ focus を移します。
 - 既定のリッチテキスト: contenteditable と道具（段落・見出し・小見出し・太字・斜体・箇条書き・番号付き・引用・リンク・画像）。変更のたびに `sanitizeRichTextHtml` を通した HTML を値にします。書式は `document.execCommand` を使い、無い環境（jsdom など）では書式の道具は何もしません。画像は `uploadImage` の後に入れ、execCommand が無いときは本文の最後に段落として足します。リンクは http・https・mailto だけです。貼り付けも無害化してから入れます。
 
 ## 本文の HTML の無害化（sanitizeRichTextHtml）

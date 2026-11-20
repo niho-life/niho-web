@@ -1,5 +1,6 @@
-import { DocumentValidationError, fail, keys, record, string } from "./validation-utils.js";
+import { DocumentValidationError, fail, keys, parseAssetReference, record, string } from "./validation-utils.js";
 import { parseEnglishPublication, type EnglishPublication } from "./english-publication.js";
+import type { AssetReference } from "./types.js";
 
 /* ---------- 型（React 不要） ---------- */
 
@@ -50,6 +51,8 @@ export type CollectionField =
   | CollectionTextField | CollectionLongTextField | CollectionRichTextField | CollectionUrlField | CollectionImageField
   | CollectionSelectField | CollectionReferenceField | CollectionTagsField | CollectionDatetimeField | CollectionSlugField | CollectionGalleryField;
 export type CollectionFieldType = CollectionField["type"];
+/** CMS 項目画像の正本。既存ホストの移行期間中は URL も読み取れる。 */
+export type CollectionImageValue = string | AssetReference;
 
 export type CollectionDefinition = {
   readonly id: string;
@@ -85,10 +88,10 @@ export type CollectionItemSummary = {
   readonly publishFailed: boolean;
   readonly order: number | null;
 };
-/** gallery の 1 行。id は既存の行の id（新しく足した行は ""）、image は image の項目と同じ形の URL。 */
-export type CollectionGalleryEntry = { readonly id: string; readonly image: string | null; readonly caption: string };
-/** text・longText・url・slug・richText は string、image・datetime は string | null、select・reference・tags は string[]、gallery は CollectionGalleryEntry[]。 */
-export type CollectionValue = string | null | readonly string[] | readonly CollectionGalleryEntry[];
+/** gallery の 1 行。id は既存の行の id（新しく足した行は ""）。image は安定素材参照または移行前 URL。 */
+export type CollectionGalleryEntry = { readonly id: string; readonly image: CollectionImageValue | null; readonly caption: string };
+/** text・longText・url・slug・richText は string、image は安定素材参照/移行前 URL/null、datetime は string|null、gallery は CollectionGalleryEntry[]。 */
+export type CollectionValue = string | null | AssetReference | readonly string[] | readonly CollectionGalleryEntry[];
 export type CollectionValues = Readonly<Record<string, CollectionValue>>;
 export type CollectionItem = CollectionItemSummary & { readonly version: string; readonly values: CollectionValues };
 export type CollectionFieldError = { readonly field: string; readonly message: string };
@@ -111,7 +114,8 @@ export type CollectionListChangeResult =
 export type CollectionBulkAction = "publish" | "unpublish" | "remove";
 export type CollectionUploadRejectReason = "type" | "size" | "permission" | "invalid";
 export type CollectionUploadResult =
-  | { readonly status: "uploaded"; readonly url: string; readonly width?: number; readonly height?: number }
+  | { readonly status: "uploaded"; readonly url: string; readonly reference?: AssetReference; readonly width?: number; readonly height?: number }
+  | { readonly status: "uploaded"; readonly reference: AssetReference; readonly url?: string; readonly width?: number; readonly height?: number }
   | { readonly status: "rejected"; readonly reason: CollectionUploadRejectReason };
 /** 画面に出してよい英語ページの名前と状態。key は画面内の安定 key で、ホストの raw page ID ではない。 */
 export type CollectionEnglishPublication = { readonly key: string; readonly label: string; readonly publication: EnglishPublication };
@@ -140,6 +144,8 @@ export interface CollectionAdapter {
   /** redirect は capabilities.redirects で、公開中のアドレスを変えたときだけ付く。 */
   publish(input: CollectionPublishInput, signal: AbortSignal): Promise<unknown>;
   uploadImage(input: { readonly collectionId: string; readonly file: File }, signal: AbortSignal): Promise<unknown>;
+  /** CMS の image/gallery 項目向け。新しいホストは stable reference を返し、古いホストは uploadImage へ戻る。 */
+  uploadAsset?(input: { readonly collectionId: string; readonly file: File }, signal: AbortSignal): Promise<unknown>;
   /** 下書きとして作る（capabilities.create）。 */
   createItem?(input: { readonly collectionId: string }, signal: AbortSignal): Promise<unknown>;
   /** 公開中の内容に戻す（状態が changed のとき）。 */
@@ -167,7 +173,7 @@ export interface CollectionAdapter {
   /** まとめての操作（capabilities.bulk）。items は 1〜100 件で、version は直前に loadItem で読んだもの。応答は CollectionListChangeResult。 */
   bulk?(input: { readonly collectionId: string; readonly action: CollectionBulkAction; readonly items: readonly { readonly id: string; readonly version: string }[] }, signal: AbortSignal): Promise<unknown>;
   /** 一覧の小さい画像・項目の画像の表示用 URL。無ければ url のまま。 */
-  imageUrl?(url: string, width: number): string;
+  imageUrl?(image: CollectionImageValue, width: number): string | null;
   /** プレビューを別タブで開く URL（保存済みの下書き）。null なら出さない。 */
   previewUrl?(collectionId: string, item: CollectionItem): string | null;
   /** 本文（richText）の画像で、https 以外（同じサイトの "/" から始まる path）も残してよいか。既定は https だけ。 */
@@ -208,6 +214,15 @@ function lineText(value: unknown, path: string, max: number): string {
 }
 function nullableLine(value: unknown, path: string, max: number): string | null {
   return value === null ? null : lineText(value, path, max);
+}
+function collectionImageValue(value: unknown, path: string): CollectionImageValue {
+  if (typeof value === "string") return lineText(value, path, 2048);
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) return parseAssetReference(value, path);
+  return fail(path, "invalid text");
+}
+function isAssetReference(value: unknown): value is AssetReference {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  try { parseAssetReference(value, "image"); return true; } catch { return false; }
 }
 function bool(value: unknown, path: string): boolean {
   if (typeof value !== "boolean") fail(path, "expected a boolean");
@@ -431,7 +446,7 @@ export function parseCollectionValues(input: unknown, definition: CollectionDefi
       case "text": case "url": case "slug": result[field.key] = raw === undefined || raw === null ? "" : lineText(raw, at, 20_000); break;
       case "longText": result[field.key] = raw === undefined || raw === null ? "" : string(raw, at, 200_000); break;
       case "richText": result[field.key] = raw === undefined || raw === null ? "" : string(raw, at, 2_000_000); break;
-      case "image": result[field.key] = raw === undefined || raw === null || raw === "" ? null : lineText(raw, at, 2048); break;
+      case "image": result[field.key] = raw === undefined || raw === null || raw === "" ? null : collectionImageValue(raw, at); break;
       case "datetime": result[field.key] = raw === undefined || raw === null || raw === "" ? null : timestamp(raw, at); break;
       case "select": case "reference": case "tags": {
         const list = raw === undefined || raw === null ? [] : array(raw, at, 500).map((entry, index) =>
@@ -457,7 +472,7 @@ export function parseGalleryEntries(input: unknown, path: string): CollectionGal
     if (!Object.hasOwn(entry, "id") || !Object.hasOwn(entry, "image") || !Object.hasOwn(entry, "caption")) fail(at, "gallery entry needs id, image and caption");
     const id = entry.id;
     if (typeof id !== "string" || (id !== "" && (!COLLECTION_GALLERY_ENTRY_ID_PATTERN.test(id) || /^\.+$/u.test(id) || RESERVED_KEYS.has(id)))) fail(`${at}.id`, "invalid gallery entry id");
-    const image = entry.image === null || entry.image === "" ? null : lineText(entry.image, `${at}.image`, 2048);
+    const image = entry.image === null || entry.image === "" ? null : collectionImageValue(entry.image, `${at}.image`);
     return { id, image, caption: string(entry.caption, `${at}.caption`, 200_000) };
   });
   const ids = entries.map((entry) => entry.id).filter(Boolean);
@@ -573,13 +588,15 @@ export function parseCollectionUploadResult(input: unknown): CollectionUploadRes
     if (!["type", "size", "permission", "invalid"].includes(value.reason as string)) fail("upload.reason", "invalid reason");
     return { status: "rejected", reason: value.reason as CollectionUploadRejectReason };
   }
-  keys(value, ["status", "url", "width", "height"], "upload");
+  keys(value, ["status", "url", "reference", "width", "height"], "upload");
   if (value.status !== "uploaded") fail("upload.status", "invalid status");
-  const url = value.url;
-  if (!isDisplayableImageUrl(url) || url.startsWith("http:")) fail("upload.url", "expected an https URL or a site path");
+  const url = value.url === undefined ? undefined : value.url;
+  if (url !== undefined && (!isDisplayableImageUrl(url) || url.startsWith("http:"))) fail("upload.url", "expected an https URL or a site path");
+  const reference = value.reference === undefined ? undefined : parseAssetReference(value.reference, "upload.reference");
+  if (url === undefined && reference === undefined) fail("upload", "expected an image URL or asset reference");
   const width = optional(value, "width", (size) => positiveInt(size, "upload.width", 100_000));
   const height = optional(value, "height", (size) => positiveInt(size, "upload.height", 100_000));
-  return { status: "uploaded", url, ...(width === undefined ? {} : { width }), ...(height === undefined ? {} : { height }) };
+  return { status: "uploaded", ...(url === undefined ? {} : { url }), ...(reference === undefined ? {} : { reference }), ...(width === undefined ? {} : { width }), ...(height === undefined ? {} : { height }) } as CollectionUploadResult;
 }
 
 function parseCollectionEnglishPublications(input: unknown, expectedStatus: "ready" | "accepted", path: string): { readonly status: "ready" | "accepted"; readonly englishPublications: readonly CollectionEnglishPublication[] } {
@@ -619,7 +636,7 @@ export function parseCollectionEnglishPublicationsRetryResult(input: unknown): C
 
 function isEmpty(field: CollectionField, value: CollectionValue | undefined): boolean {
   if (value === null || value === undefined) return true;
-  if (typeof value !== "string") return value.length === 0;
+  if (typeof value !== "string") return Array.isArray(value) && value.length === 0;
   if (field.type !== "richText") return !value.trim();
   // 本文はタグと空白（&nbsp; を含む）だけなら空。画像・区切り線は中身として数える。
   return !/<(?:img|hr)\b/iu.test(value) && !value.replace(/<[^>]*>/gu, "").replace(/&nbsp;|\u00a0/gu, "").trim();
@@ -647,7 +664,7 @@ export function validateCollectionValues(definition: CollectionDefinition, value
         if (!isIsoTimestamp(value)) push("日時を正しく入力してください。");
         break;
       case "image":
-        if (!isDisplayableImageUrl(value)) push("画像を選び直してください。");
+        if (!isAssetReference(value) && !isDisplayableImageUrl(value)) push("画像を選び直してください。");
         break;
       case "select":
         if (Array.isArray(value) && value.some((id) => !field.options.some((option) => option.id === id))) push("選べない値が入っています。選び直してください。");
@@ -655,7 +672,7 @@ export function validateCollectionValues(definition: CollectionDefinition, value
       case "gallery": {
         const entries = galleryEntries(value);
         if (field.maxItems !== undefined && entries.length > field.maxItems) { push(`${field.maxItems} 件までにしてください（いま ${entries.length} 件）。`); break; }
-        const badImage = entries.findIndex((entry) => entry.image !== null && !isDisplayableImageUrl(entry.image));
+        const badImage = entries.findIndex((entry) => entry.image !== null && !isAssetReference(entry.image) && !isDisplayableImageUrl(entry.image));
         if (badImage >= 0) { push(`${badImage + 1} 件目の画像を選び直してください。`); break; }
         const max = field.captionMaxLength;
         const long = max === undefined ? -1 : entries.findIndex((entry) => [...entry.caption].length > max);
