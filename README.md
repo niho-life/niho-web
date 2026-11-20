@@ -17,7 +17,7 @@
 ブラウザを使わないStudio操作は [CLIの契約と運用](docs/studio-cli.md) を参照してください。
 
 AIが編集する対象ごとの正本・GUI/CLI/Gitの経路・公開HTMLからの逆引きは[対応表](docs/ai-edit-source-map.md)を参照してください。
-サイト側に共通HTTP契約を接続した後は、`niho-edit` CLIでStudio GUIを経由せずにページ文書・ページ管理・ブレークポイントを読み、JSON編集し、版付きで保存できます（[API契約](docs/editing-api-contract.md)）。
+サイト側に共通HTTP契約を接続した後は、`niho-edit` CLIでStudio GUIを経由せずにページ文書・CMS項目・ページ管理・ブレークポイントを読み、JSON編集し、版付きで保存できます（[API契約](docs/editing-api-contract.md)）。
 
 ソースは公開されていますが、第三者への再利用ライセンスは付与していません（`UNLICENSED`）。
 
@@ -41,8 +41,8 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 | --- | --- |
 | `@niho/web` | JSON 型、`validateDocument` / `parsePageDocument`、閉じた組み込みアイコン・フォーム・Map / YouTube / Vimeo / Lottie / Facebook / X / Instagram / host承認済みBlank埋め込み・VideoWithButton・Loop Box、CSS、リストの印と画像の行内縦位置、画像・native動画を含む React SSR の `PageRenderer` |
 | `@niho/web/core` | 検証・文書型・embed URL正規化・CSS・共通部品の検証と展開、form完了ページの安全な純粋resolver、`data-nw-scope` の文書識別情報を戻す `parsePageScope`。React の runtime import を含みません |
-| `@niho/web/editing-api` | ホストが認証・権限・保存先を実装する、React非依存のページ本文・ページ管理・ブレークポイント設定HTTP handler。単一host mountとsite IDから登録済みhost adapterへ振り分けるmulti-site registry、discover用JSON Schema・安定エラー定義を提供。鎌倉Studio GUIはBFF経由、`niho-edit` CLIはサイトoriginへ直接接続し、同じwire APIで編集する（[契約](docs/editing-api-contract.md)） |
-| `@niho/web/editing-client` | GUIや機械クライアントがhost-neutral wire契約を呼ぶReact非依存HTTP client。読み書きのCAS、操作ID付きの再試行、ページ一覧・作成・名前/URL・公開状態の二段階確認を提供し、ホスト固有文書の完全検証はAPI側へ委ねます |
+| `@niho/web/editing-api` | ホストが認証・権限・保存先を実装する、React非依存のページ本文・CMS・ページ管理・ブレークポイント設定HTTP handler。単一host mountとsite IDから登録済みhost adapterへ振り分けるmulti-site registry、discover用JSON Schema・安定エラー定義を提供（[契約](docs/editing-api-contract.md)） |
+| `@niho/web/editing-client` | GUIや機械クライアントがhost-neutral wire契約を呼ぶReact非依存HTTP client。CAS、操作ID付き再試行、ページ管理とCMS公開の二段階確認を提供し、ホスト固有の永続化・完全検証はAPI側へ委ねます |
 | `@niho/web/builder` | 汎用の挿入カタログ、モーション定義、host拡張の型と検証。React非依存 |
 | `@niho/web/react` | `PageRenderer` / `SitePageRenderer` とブロック registry の型。編集キャンバスでは props と一致する host view が無いブロックだけ見本または空の枠へ戻し、他の要素を表示し続ける。外部 frame は [サイト単位の許可リスト](docs/site-presentation.md) の外を読み込まず、許可の中でも実行コードの信頼済みリストに入るものだけ origin を維持し、入らない不変 embed などは権限なしの opaque iframe で描く |
 | `@niho/web/presentation-runtime` | SSR後の検証済みDOMへ、native presentation、VideoWithButton、Loop Box、reduced-motion対応Lottie player、明示操作後だけ読み込むFacebook / X / Instagram投稿の標準操作を接続するclient runtime。返されたcleanupを再初期化前に呼ぶ |

@@ -15,6 +15,15 @@ niho-edit --origin <https-origin> --site <site-id> breakpoints-save --json <sett
 niho-edit --origin <https-origin> --site <site-id> pages-catalog
 niho-edit --origin <https-origin> --site <site-id> page-change-prepare --expected-version <version> --json <change-file|->
 niho-edit --origin <https-origin> --site <site-id> page-change-apply --json <plan-file|->
+niho-edit --origin <https-origin> --site <site-id> cms-schema
+niho-edit --origin <https-origin> --site <site-id> cms-list <collection-id>
+niho-edit --origin <https-origin> --site <site-id> cms-read <collection-id> <item-id>
+niho-edit --origin <https-origin> --site <site-id> cms-create <collection-id> --operation-id <uuid-v4>
+niho-edit --origin <https-origin> --site <site-id> cms-save <collection-id> <item-id> --json <item-snapshot|-> --operation-id <uuid-v4>
+niho-edit cms-diff --base <item-snapshot> --json <edited-item-snapshot>
+niho-edit --origin <https-origin> --site <site-id> cms-publish-plan <collection-id> <item-id> --expected-version <version> --operation-id <uuid-v4>
+niho-edit --origin <https-origin> --site <site-id> cms-publish --json <publish-plan|->
+niho-edit --origin <https-origin> --site <site-id> cms-status --operation-id <uuid-v4>
 
 Set NIHO_EDIT_TOKEN to a short-lived bearer token. read returns { document, version }.
 Edit document while keeping version, then pass the snapshot to save for version-checked persistence.
@@ -24,6 +33,11 @@ const MAX_PAGE_CHANGE_BYTES = 16 * 1024;
 const IDENTIFIER = /^[A-Za-z][A-Za-z0-9_-]{0,79}$/u;
 const LOCALE = /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/u;
 const OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const CMS_COLLECTION_ID = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,79}$/u;
+const CMS_ITEM_ID = /^[A-Za-z0-9_][A-Za-z0-9._~-]{0,127}$/u;
+const RESERVED_CMS_IDS = new Set(["__proto__", "constructor", "prototype"]);
+function validCmsCollectionId(value) { return typeof value === "string" && CMS_COLLECTION_ID.test(value) && !RESERVED_CMS_IDS.has(value); }
+function validCmsItemId(value) { return typeof value === "string" && CMS_ITEM_ID.test(value) && value !== "." && value !== ".." && !RESERVED_CMS_IDS.has(value); }
 
 class CliError extends Error {
   constructor(readonlyCode, status = null) { super(readonlyCode); this.code = readonlyCode; this.status = status; }
@@ -34,7 +48,7 @@ function argsFromCli() {
     return parseArgs({ allowPositionals: true, options: {
       origin: { type: "string" }, site: { type: "string" }, locale: { type: "string" }, json: { type: "string" }, action: { type: "string" },
       "expected-version": { type: "string" }, "components-version": { type: "string" }, "presentation-version": { type: "string" },
-      revision: { type: "string" }, "operation-id": { type: "string" }, help: { type: "boolean", short: "h" }
+      revision: { type: "string" }, "operation-id": { type: "string" }, base: { type: "string" }, help: { type: "boolean", short: "h" }
     } });
   } catch { throw new CliError("invalid_arguments"); }
 }
@@ -118,6 +132,42 @@ async function inputPageManagementJson(path, maximumBytes) {
   }
   return readJson(path === "-" ? process.stdin : createReadStream(path), maximumBytes);
 }
+async function inputCmsSnapshot(path) {
+  if (!path) throw new CliError("missing_json_input");
+  if (path !== "-") {
+    try { if ((await stat(path)).size > MAX_INPUT_BYTES) throw new CliError("input_too_large"); }
+    catch (error) { if (error instanceof CliError) throw error; throw new CliError("invalid_json_input"); }
+  }
+  const source = await readJson(path === "-" ? process.stdin : createReadStream(path));
+  if (!["values,version", "id,values,version"].includes(Object.keys(source).sort().join(",")) || !isEditingApiVersion(source.version)
+    || source.id !== undefined && !validCmsItemId(source.id)
+    || !source.values || typeof source.values !== "object" || Array.isArray(source.values)) throw new CliError("invalid_cms_snapshot");
+  return { ...(source.id === undefined ? {} : { id: source.id }), version: source.version, values: source.values };
+}
+async function inputCmsPublishPlan(path, siteId) {
+  if (!path) throw new CliError("missing_json_input");
+  if (path !== "-") {
+    try { if ((await stat(path)).size > MAX_INPUT_BYTES) throw new CliError("input_too_large"); }
+    catch (error) { if (error instanceof CliError) throw error; throw new CliError("invalid_json_input"); }
+  }
+  const plan = await readJson(path === "-" ? process.stdin : createReadStream(path));
+  if (Object.keys(plan).sort().join(",") !== "confirmationToken,expectedVersion,item,operationId,target"
+    || !plan.target || typeof plan.target !== "object" || Array.isArray(plan.target)
+    || Object.keys(plan.target).sort().join(",") !== "collectionId,itemId,siteId" || plan.target.siteId !== siteId
+    || !validCmsCollectionId(plan.target.collectionId) || !validCmsItemId(plan.target.itemId)
+    || !isEditingApiVersion(plan.expectedVersion) || !isEditingApiVersion(plan.confirmationToken) || !OPERATION_ID.test(plan.operationId ?? "")
+    || !plan.item || typeof plan.item !== "object" || Array.isArray(plan.item)) throw new CliError("invalid_cms_publish_plan");
+  return plan;
+}
+function assertCommandOptions(values, allowed) {
+  const shared = ["origin", "site", "help"];
+  if (Object.keys(values).some((key) => !shared.includes(key) && !allowed.includes(key))) throw new CliError("invalid_arguments");
+}
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
+  return JSON.stringify(value);
+}
 async function apiCall(run) {
   try { return await run(); }
   catch (error) {
@@ -131,11 +181,81 @@ async function main() {
   const { values, positionals } = argsFromCli();
   if (values.help) { process.stdout.write(`${USAGE}\n`); return; }
   const [command, pageId, ...extra] = positionals;
+  if (command === "cms-diff") {
+    assertCommandOptions(values, ["base", "json"]);
+    if (pageId !== undefined || extra.length) throw new CliError("invalid_arguments");
+    const [base, edited] = await Promise.all([inputCmsSnapshot(values.base), inputCmsSnapshot(values.json)]);
+    if (base.version !== edited.version || base.id !== undefined && edited.id !== undefined && base.id !== edited.id) throw new CliError("snapshot_target_mismatch");
+    const keys = [...new Set([...Object.keys(base.values), ...Object.keys(edited.values)])].sort();
+    const changes = keys.filter((key) => stableJson(base.values[key]) !== stableJson(edited.values[key]) || Object.hasOwn(base.values, key) !== Object.hasOwn(edited.values, key))
+      .map((field) => ({ field, beforePresent: Object.hasOwn(base.values, field), afterPresent: Object.hasOwn(edited.values, field),
+        ...(Object.hasOwn(base.values, field) ? { before: base.values[field] } : {}), ...(Object.hasOwn(edited.values, field) ? { after: edited.values[field] } : {}) }));
+    process.stdout.write(`${JSON.stringify({ id: edited.id ?? base.id ?? null, version: base.version, changes })}\n`); return;
+  }
   const baseOrigin = origin(values.origin);
   if (!IDENTIFIER.test(values.site ?? "")) throw new CliError("invalid_site");
   const token = process.env.NIHO_EDIT_TOKEN;
   if (typeof token !== "string" || !token || token.length > 4096 || /[\u0000-\u001f\u007f]/u.test(token)) throw new CliError("missing_token");
   const client = createPageEditingApiClient({ origin: baseOrigin, siteId: values.site, credentials: "omit", headers: { Authorization: `Bearer ${token}` } });
+
+  if (command === "cms-schema") {
+    assertCommandOptions(values, []);
+    if (pageId !== undefined || extra.length) throw new CliError("invalid_arguments");
+    process.stdout.write(`${JSON.stringify(await apiCall(() => client.readCmsSchema(AbortSignal.timeout(30_000))))}\n`); return;
+  }
+
+  if (command === "cms-list") {
+    assertCommandOptions(values, []);
+    if (!validCmsCollectionId(pageId) || extra.length) throw new CliError("invalid_arguments");
+    process.stdout.write(`${JSON.stringify(await apiCall(() => client.listCmsItems(pageId, AbortSignal.timeout(30_000))))}\n`); return;
+  }
+
+  if (command === "cms-read") {
+    assertCommandOptions(values, []);
+    if (!validCmsCollectionId(pageId) || extra.length !== 1 || !validCmsItemId(extra[0])) throw new CliError("invalid_arguments");
+    const item = await apiCall(() => client.readCmsItem({ siteId: values.site, collectionId: pageId, itemId: extra[0] }, AbortSignal.timeout(30_000)));
+    process.stdout.write(`${JSON.stringify({ id: item.id, version: item.version, values: item.values })}\n`); return;
+  }
+
+  if (command === "cms-create") {
+    assertCommandOptions(values, ["operation-id"]);
+    if (!validCmsCollectionId(pageId) || extra.length || !OPERATION_ID.test(values["operation-id"] ?? "")) throw new CliError("invalid_arguments");
+    const item = await apiCall(() => client.createCmsItem(pageId, values["operation-id"], AbortSignal.timeout(30_000)));
+    process.stdout.write(`${JSON.stringify({ id: item.id, version: item.version, values: item.values })}\n`); return;
+  }
+
+  if (command === "cms-save") {
+    assertCommandOptions(values, ["json", "operation-id"]);
+    if (!validCmsCollectionId(pageId) || extra.length !== 1 || !validCmsItemId(extra[0]) || !OPERATION_ID.test(values["operation-id"] ?? "")) throw new CliError("invalid_arguments");
+    const snapshot = await inputCmsSnapshot(values.json);
+    if (snapshot.id !== undefined && snapshot.id !== extra[0]) throw new CliError("snapshot_target_mismatch");
+    const result = await apiCall(() => client.saveCmsItem({ siteId: values.site, collectionId: pageId, itemId: extra[0] }, snapshot.version, values["operation-id"], snapshot.values, AbortSignal.timeout(30_000)));
+    if (result.status === "conflict") { process.stderr.write("version_conflict\n"); process.exitCode = 1; return; }
+    process.stdout.write(`${JSON.stringify({ id: result.item.id, version: result.item.version, values: result.item.values })}\n`); return;
+  }
+
+  if (command === "cms-publish-plan") {
+    assertCommandOptions(values, ["expected-version", "operation-id"]);
+    if (!validCmsCollectionId(pageId) || extra.length !== 1 || !validCmsItemId(extra[0])
+      || !isEditingApiVersion(values["expected-version"]) || !OPERATION_ID.test(values["operation-id"] ?? "")) throw new CliError("invalid_arguments");
+    const plan = await apiCall(() => client.prepareCmsPublish({ siteId: values.site, collectionId: pageId, itemId: extra[0] }, values["expected-version"], values["operation-id"], AbortSignal.timeout(30_000)));
+    process.stdout.write(`${JSON.stringify(plan)}\n`); return;
+  }
+
+  if (command === "cms-publish") {
+    assertCommandOptions(values, ["json"]);
+    if (pageId !== undefined || extra.length) throw new CliError("invalid_arguments");
+    const plan = await inputCmsPublishPlan(values.json, values.site);
+    const result = await apiCall(() => client.publishCmsItem(plan, AbortSignal.timeout(30_000)));
+    if (result.status === "conflict") { emit({ error: "version_conflict" }, 409, 1, "cms.publish"); return; }
+    emit(result, 200, 0, "cms.publish"); return;
+  }
+
+  if (command === "cms-status") {
+    assertCommandOptions(values, ["operation-id"]);
+    if (pageId !== undefined || extra.length || !OPERATION_ID.test(values["operation-id"] ?? "")) throw new CliError("invalid_arguments");
+    process.stdout.write(`${JSON.stringify(await apiCall(() => client.cmsOperationStatus(values["operation-id"], AbortSignal.timeout(30_000))))}\n`); return;
+  }
 
   if (command === "discover") {
     if (pageId !== undefined || extra.length || values.locale !== undefined || values.json !== undefined || values.action !== undefined
