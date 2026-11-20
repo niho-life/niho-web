@@ -8,7 +8,7 @@
 
 | 編集対象 | 面と正本 | 人のGUI | AIの経路 | 公開出力から戻る手掛かりと現在の境界 |
 | --- | --- | --- | --- | --- |
-| ページ本文、要素、色・文字・余白・幅別スタイル、フォーム表示 | コンテンツ面。検証済み `PageDocument` | `@niho/web/editor` の `PageEditor` | `pages.read` で文書と版を読み、`@niho/web/editor-model` の `editDocumentById` またはJSON編集でローカル検証し、`pages.save` にexpectedVersion付きで保存 | `data-nw-scope` がsite/page/locale/revision、`data-nw-owner` と `data-nw-node` が所有文書と安定ノードIDを示す。テキストノードにはIDがないので親ノードと相対位置を使う。URLからページIDへの対応はホストの公開ルート一覧が必要 |
+| ページ本文、要素、色・文字・余白・幅別スタイル、フォーム表示 | コンテンツ面。検証済み `PageDocument` | `@niho/web/editor` の `PageEditor` | 共通wire契約の `pages.read` で文書と版を読み、`@niho/web/editor-model` の `editDocumentById` またはJSON編集でローカル検証し、`pages.save` にexpectedVersion付きで保存。ホストは `@niho/web/editing-api` を組み込む。既存Studio CLIも同じ正本を更新するが、現在は互換API v1の別routeを使い、このhandlerへは未移行 | `data-nw-scope` がsite/page/locale/revision、`data-nw-owner` と `data-nw-node` が所有文書と安定ノードIDを示す。テキストノードにはIDがないので親ノードと相対位置を使う。URLからページIDへの対応はホストの公開ルート一覧が必要 |
 | サイト共通スタイル、ブレークポイント、公開設定 | コンテンツ面。ホストのサイト設定API/DB | `PageEditor` のサイト設定adapter | ブレークポイントは `site.breakpoints.read/save`。他の設定操作はホストが定義するAPI/CLI操作 | CSSのスコープとノードIDから利用箇所は追える。実効値・所有者・版はサイト設定APIが返す。CLIの共通操作がない設定はホスト接続が必要 |
 | 共通部品、登録ブロック、業務ブロックの表示props/領域 | 表示値はコンテンツ面のPageDocument/部品文書。実装とregistryはコード面のGitソース | GUIは登録済みのpropsと宣言済みslotだけを編集 | 文書に保存する値は `pages.save`。ブロック実装・registryはGitのbranch/PR/CI | `data-nw-node`、`data-nw-owner`、`data-nw-block`、必要なら `data-nw-slot` が文書のブロックと表示領域へ戻る。propsの宣言元やコード位置はホストの認証済み逆引き情報が必要 |
 | CMS項目・CMSスキーマ | コンテンツ面。ホストのCMS API/DB | CMS用のStudio/ホスト画面 | `cms.*` の委任操作 | 公開HTMLにCMS項目IDが含まれるとは限らない。項目・テンプレートへの逆引きはホストAPIが提供する。HTMLを編集してCMS値を変更しない |
@@ -20,7 +20,7 @@
 | 独自HTML/CSS/JavaScript、テンプレート、ブロック実装、JSON-LD生成規則、ビルド設定 | コード面。ホストGitリポジトリ | GUIでは登録ブロックのprops/slotだけを編集 | 通常のGit branch・PRレビュー・CI・配備 | ソースパスやcommitは公開HTMLに含めない。URLからリポジトリ位置と版を返す認証済み逆引きAPIが必要。現行の共通CLIにファイル編集APIは作らない |
 | フォーム送信、予約、決済、認証、保存などの業務処理 | ホストのAPI/DBまたはコード面 | ホストが提供する業務画面 | ホストの業務API、または通常のGit | フォーム表示と送信処理は別の責務。PageDocumentからaction/scriptを指定しない |
 
-CLIの現在の操作と認証・保存・公開契約は[Studio CLI](studio-cli.md)を参照してください。`cms.*`、`assets.*`、`translations.*`など、ホスト固有の機能があることは全ホスト共通の操作や保存先があることを意味しません。
+ページ編集HTTP契約とホストの責任は[ページ編集HTTP契約](editing-api-contract.md)、既存Studio CLIの操作と認証・保存・公開契約は[Studio CLI](studio-cli.md)を参照してください。`cms.*`、`assets.*`、`translations.*`など、ホスト固有の機能があることは全ホスト共通の操作や保存先があることを意味しません。
 
 ## 公開DOMからの文書逆引き
 
