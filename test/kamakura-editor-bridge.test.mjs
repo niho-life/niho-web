@@ -123,6 +123,47 @@ test("Kamakura editor adapter は表示コンテキストが任意のページ�
   assert.equal(snapshot.presentation, undefined);
 });
 
+test("Kamakura Studio adapter routes multi-page plan, apply, and status through the shared editing API", async (t) => {
+  const { createKamakuraAdapter } = await loadKamakuraEditor();
+  const base = "/api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/operations";
+  const items = [
+    { target: { siteId: "kamakura", pageId: "contact", locale: "ja" }, expectedVersion: "page-version-1", presentationVersion: "presentation-1" },
+    { target: { siteId: "kamakura", pageId: "business-plan", locale: "ja" }, expectedVersion: "page-version-2", presentationVersion: "presentation-2" }
+  ];
+  const calls = [];
+  let operationId;
+  const result = { status: "publishing", operationId: "pending", items: [
+    { target: items[0].target, status: "released", version: "ps2:pv1-result" },
+    { target: items[1].target, status: "pending" }
+  ] };
+  t.mock.method(globalThis, "fetch", async (input, init = {}) => {
+    const url = new URL(String(input), "https://studio.niho.life"), key = `${init.method ?? "GET"} ${url.pathname}`;
+    const body = init.body ? JSON.parse(String(init.body)) : undefined;
+    calls.push({ key, body });
+    if (key === `POST ${base}/pages.release-set-plan`) {
+      operationId = body.operationId;
+      result.operationId = operationId;
+      return Response.json({ plan: { siteId: "kamakura", operationId, confirmationToken: "00000000-0000-4000-8000-00000000000011111111-1111-4111-8111-111111111111",
+        domain: "https://next-kamakura.niho.life", items } });
+    }
+    if (key === `POST ${base}/pages.release-set`) return Response.json(result);
+    if (key === `GET ${base}/pages.release-set-status/${operationId}`) return Response.json({ status: "completed", operationId, httpStatus: 200, result });
+    throw new Error(`unexpected request: ${key}`);
+  });
+  const adapter = createKamakuraAdapter(contract.parseKamakuraCatalog(catalog()), () => {});
+  const signal = new AbortController().signal;
+  const plan = await adapter.prepareReleaseSet(items, signal);
+  assert.equal(plan.operationId, operationId);
+  assert.deepEqual(plan.items, items);
+  assert.deepEqual(await adapter.releaseSet(plan, signal), result);
+  assert.deepEqual(await adapter.releaseSetStatus(operationId, signal), { status: "completed", operationId, httpStatus: 200, result });
+  assert.deepEqual(calls.map(({ key }) => key), [
+    `POST ${base}/pages.release-set-plan`, `POST ${base}/pages.release-set`, `GET ${base}/pages.release-set-status/${operationId}`
+  ]);
+  assert.deepEqual(calls[0].body.items, items);
+  assert.equal(calls[1].body.confirmationToken, plan.confirmationToken);
+});
+
 test("Kamakura editor adapter は日本語経路を維持し、英語 snapshot・overlay 保存・翻訳操作を localization BFF に限定する", async (t) => {
   const { createKamakuraAdapter } = await loadKamakuraEditor();
   const parsedCatalog = contract.parseKamakuraCatalog(catalog());
@@ -384,6 +425,37 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
   assert.deepEqual(await editingApiRequest.clone().json(), managementApplyInput);
   delegated = await assertDelegationSignature(editingApiRequest);
   assert.deepEqual(delegated.scope, ["pages.publish"]);
+
+  const releaseSetItems = [
+    { target: { siteId: "kamakura", pageId: "contact", locale: "ja" }, expectedVersion: "page-v1", presentationVersion: "presentation-v1" },
+    { target: { siteId: "kamakura", pageId: "business-plan", locale: "ja" }, expectedVersion: "page-v2", presentationVersion: "presentation-v2" }
+  ];
+  const releaseSetPlanPath = `${managementBase}/pages.release-set-plan`;
+  const releaseSetApplyPath = `${managementBase}/pages.release-set`;
+  const releaseSetOperationId = "123e4567-e89b-42d3-a456-426614174000";
+  const releaseSetConfirmationToken = "00000000-0000-4000-8000-00000000000011111111-1111-4111-8111-111111111111";
+  const releaseSetPlan = { siteId: "kamakura", operationId: releaseSetOperationId, confirmationToken: releaseSetConfirmationToken, domain: "https://kamakura.niho.life", items: releaseSetItems };
+  const releaseSetResult = { status: "completed", operationId: releaseSetOperationId, items: releaseSetItems.map(({ target }, index) => ({ target, status: "released", version: `released-${index}` })) };
+  bindingResponseFactory = async (request) => {
+    editingApiRequest = request;
+    const path = new URL(request.url).pathname;
+    if (path.endsWith("/pages.release-set-plan")) return Response.json({ plan: releaseSetPlan });
+    if (path.endsWith("/pages.release-set-status/" + releaseSetOperationId)) return Response.json({ status: "completed", operationId: releaseSetOperationId, httpStatus: 200, result: releaseSetResult });
+    return Response.json(releaseSetResult);
+  };
+  const releaseSetPlanResponse = await callEditingApi(releaseSetPlanPath, "POST", { siteId: "kamakura", operationId: releaseSetOperationId, items: releaseSetItems });
+  assert.equal(releaseSetPlanResponse.status, 200);
+  assert.equal(editingApiRequest.url, `https://kamakura.niho.life/api/edit/v1${releaseSetPlanPath}`);
+  delegated = await assertDelegationSignature(editingApiRequest);
+  assert.deepEqual(delegated.scope, ["pages.publish"]);
+  const releaseSetApplyResponse = await callEditingApi(releaseSetApplyPath, "POST", { ...releaseSetPlan, items: releaseSetItems });
+  assert.equal(releaseSetApplyResponse.status, 200);
+  delegated = await assertDelegationSignature(editingApiRequest);
+  assert.deepEqual(delegated.scope, ["pages.publish"]);
+  const releaseSetStatusResponse = await callEditingApi(`${managementBase}/pages.release-set-status/${releaseSetOperationId}`);
+  assert.equal(releaseSetStatusResponse.status, 200);
+  delegated = await assertDelegationSignature(editingApiRequest);
+  assert.deepEqual(delegated.scope, ["pages.read"], "operation status does not inherit publish permission");
 
   const savePath = `/sites/kamakura/operations/pages.save/${"community"}?locale=ja`;
   const saveBody = { expectedVersion: "current-version", document: { schemaVersion: 1, siteId: "kamakura", pageId: "community", locale: "ja", revision: 2, title: "変更前", tokens: {}, body: [] } };
