@@ -1599,6 +1599,17 @@ function kamakuraEditingCapability(method: string, pathname: string, search: str
     return operation === "cms.schema" || operation === "cms.list" || operation === "cms.read" || operation === "cms.operation-status"
       ? "cms.read" : operation === "cms.publish-plan" || operation === "cms.publish" ? "cms.publish" : "cms.edit";
   }
+  const releaseSet = /^\/sites\/kamakura\/operations\/(pages\.release-set-plan|pages\.release-set|pages\.release-set-status)(?:\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}))?$/iu.exec(pathname);
+  if (releaseSet) {
+    if (search) return null;
+    const operation = releaseSet[1]!, operationId = releaseSet[2];
+    if (operation === "pages.release-set-status") {
+      if (!operationId || method !== "GET") throw new AuthenticationError("editing API method or path mismatch");
+      return "pages.read";
+    }
+    if (operationId || method !== "POST") throw new AuthenticationError("editing API method or path mismatch");
+    return "pages.publish";
+  }
   const match = /^\/sites\/kamakura\/operations\/(pages\.(?:read|save|release-plan|release))\/([a-z][a-z0-9-]{0,59})$/u.exec(pathname);
   if (!match) return null;
   const query = new URLSearchParams(search), operation = match[1]!;

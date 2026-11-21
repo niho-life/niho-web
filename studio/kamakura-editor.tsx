@@ -15,6 +15,7 @@ import type { KamakuraCatalog } from "./kamakura-catalog.js";
 import { parseEnglishPublication, parseEnglishPublicationAccepted } from "../src/english-publication.js";
 import { normalizePageChange, validatePageChangePlan } from "../src/editor-model.js";
 import { createPageEditingApiClient, EditingApiClientError } from "../src/editing-client.js";
+import type { EditingPageReleaseSetItem } from "../src/editing-api.js";
 
 const BASE = "/api/projects/project-kamakura/sites/kamakura/editor";
 const LOCALIZATION_BASE = "/api/projects/project-kamakura/sites/kamakura/localization";
@@ -347,6 +348,23 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
       releaseOperationIds.delete(plan.confirmationToken);
       return { status: "released" as const, snapshot };
     })),
+    prepareReleaseSet: (items: readonly EditingPageReleaseSetItem[], signal: AbortSignal) => request(signal, async () => {
+      if (items.length < 2 || items.length > 50) throw new Error("公開対象は2〜50ページにしてください。");
+      const seen = new Set<string>();
+      for (const item of items) {
+        const target = validTarget(item.target), key = `${target.siteId}:${target.pageId}:${target.locale}`;
+        if (seen.has(key) || !validVersion(item.expectedVersion)
+          || item.componentsVersion !== undefined && !validVersion(item.componentsVersion)
+          || item.presentationVersion !== undefined && !validVersion(item.presentationVersion)) throw new Error("公開変更セットの対象または版が正しくありません。");
+        seen.add(key);
+      }
+      return editingApi.preparePageReleaseSet(items, signal);
+    }),
+    releaseSet: (plan, signal) => conflict(() => request(signal, async () => editingApi.publishPageReleaseSet(plan, signal))),
+    releaseSetStatus: (operationId, signal) => request(signal, async () => {
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(operationId)) throw new Error("公開操作IDが正しくありません。");
+      return editingApi.pageReleaseSetStatus(operationId, signal);
+    }),
     englishPublication: {
       refresh: (target, signal) => request(signal, async () => parseSnapshot(await api(pagePath(target), "GET", undefined, signal), target, catalog.blockContracts, catalog.nativePresentationPages.includes(target.pageId)).englishPublication),
       retry: (target, signal) => conflict(() => request(signal, async () => parseEnglishPublicationAccepted(await api(`${pagePath(target)}/english-publication-retry`, "POST", {}, signal))))
