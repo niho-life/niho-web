@@ -630,7 +630,7 @@ test("鎌倉の Dashboard だけ翻訳プレビューの枠と画像 PUT 先を�
   assert.equal(h.calls.length, 0);
 });
 
-test("翻訳の画面は最初の bundle に入らず、翻訳を開いたときだけ読む chunk に入る", async () => {
+test("翻訳UIは最初の bundle に入らず、翻訳を開いたときだけ読む chunk に入る", async () => {
   const result = await build({
     entryPoints: { app: new URL("../studio/client.tsx", import.meta.url).pathname }, outdir: "/virtual-studio-assets", entryNames: "[name]", chunkNames: "chunks/[name]-[hash]",
     splitting: true, bundle: true, format: "esm", platform: "browser", target: "es2022", write: false, metafile: true, define: { "process.env.NODE_ENV": '"production"' }
@@ -644,9 +644,10 @@ test("翻訳の画面は最初の bundle に入らず、翻訳を開いたとき
     eager.add(output);
     for (const entry of outputs[output]?.imports ?? []) if (entry.kind === "import-statement") queue.push(entry.path);
   }
-  const translation = /(?:src\/localization-workspace(?:-[a-z]+)?\.tsx?|studio\/kamakura-localization(?:-workspace|-contract)?\.tsx?)$/u;
+  // 共通APIの応答検証に使う model parser は小さな共有wire契約なので許可し、画面コードだけを遅延読込に保つ。
+  const translationUi = /(?:src\/localization-workspace(?!(?:-model))(-[a-z]+)?\.tsx?|studio\/kamakura-localization(?:-workspace|-contract)?\.tsx?)$/u;
   const eagerInputs = [...eager].flatMap((output) => Object.keys(outputs[output].inputs));
-  assert.deepEqual(eagerInputs.filter((input) => translation.test(input)), []);
+  assert.deepEqual(eagerInputs.filter((input) => translationUi.test(input)), []);
   assert.ok(eagerInputs.some((input) => input.endsWith("studio/site-translations.tsx")), "読み込みの器は最初の bundle");
   const lazy = Object.keys(outputs).filter((output) => !eager.has(output) && output.endsWith(".js"));
   const lazyInputs = lazy.flatMap((output) => Object.keys(outputs[output].inputs));
