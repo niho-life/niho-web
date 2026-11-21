@@ -1,10 +1,10 @@
-# ページ・サイト設定編集HTTP契約
+# サイト編集HTTP契約
 
-`@niho/web/editing-api` は、GUIと機械クライアントが同じページ本文・CMS項目・ページ管理・サイト設定・素材の正本を編集するためのReact非依存HTTP契約です。Studio UIやStudio Workerを必要条件にしません。各サイトのホストがhandlerを組み込み、認証・権限・永続化・監査記録・公開を所有します。Studio GUIとCUIは同じ操作カタログとwire形式を使い、各クライアントの操作履歴をホストのactorと版に結び付けます。
+`@niho/web/editing-api` は、GUIと機械クライアントが同じページ本文・CMS項目・ページ管理・サイト設定・素材・翻訳の正本を編集するためのReact非依存HTTP契約です。Studio UIやStudio Workerを必要条件にしません。各サイトのホストがhandlerを組み込み、認証・権限・永続化・監査記録・公開を所有します。Studio GUIとCUIは同じ操作カタログとwire形式を使い、各クライアントの操作履歴をホストのactorと版に結び付けます。
 
 `@niho/web/editing-client` の `createPageEditingApiClient` は同じwire契約を呼ぶReact非依存clientです。ブラウザーのGUIは既定のsame-origin credentialsまたはhost提供headerを使え、Node CLIはhost bearer headerと `credentials: "omit"` を使えます。ホストorigin自体がCloudflare Accessで保護される場合、`niho-edit` は別途設定されたAccess Service Auth headerも指定originだけに送れます。GUIと `niho-edit` CLIはページ本文・CMS項目・ページ管理・ブレークポイント・素材の同じ操作を呼べます。Studio GUIはAccess sessionをWorker BFFで短期の操作別tokenへ委任し、サイトoriginの共通APIへservice bindingで接続します。ブラウザーのAccess tokenやcookieはサイトへ転送しません。
 
-Studio GUIはページの表示・編集材料の一部（presentation metadata、英語公開状態）を取得するため、引き続きread-onlyの既存snapshot routeも併用します。日本語本文・CMS項目・ページ管理・素材の書込は共通APIを使います。翻訳は別のhost操作です。
+Studio GUIはページの表示・編集材料の一部（presentation metadata、英語公開状態）を取得するため、引き続きread-onlyの既存snapshot routeも併用します。日本語本文・CMS項目・ページ管理・素材の書込は共通APIを使います。翻訳の共通APIは、対応するホストが登録した操作をCUIから直接呼び出せます。Studioの翻訳画面は既存の接続を使います。
 
 ## 操作カタログ
 
@@ -16,7 +16,7 @@ Studio GUIはページの表示・編集材料の一部（presentation metadata�
 | `pages.save` | PUT | `/sites/{siteId}/operations/pages.save/{pageId}?locale={locale}` | `pages.edit` | `{ expectedVersion, document }` | `{ status: "saved", version, document }` |
 | `pages.release-plan` | POST | `/sites/{siteId}/operations/pages.release-plan/{pageId}?locale={locale}` | `pages.publish` | expected version, publish/rollback action, optional rollback revision and dependency versions | `{ plan }` |
 | `pages.release` | POST | `/sites/{siteId}/operations/pages.release/{pageId}?locale={locale}` | `pages.publish` | expected version, one-use confirmation token, UUID v4 operation ID | `{ status: "released", operationId, version, document }` |
-| `pages.release-set-plan` | POST | `/sites/{siteId}/operations/pages.release-set-plan` | `pages.publish` per target | `{ siteId, operationId, items: [{ target, expectedVersion, componentsVersion?, presentationVersion? }] }` (2–50 pages) | `{ plan }` |
+| `pages.release-set-plan` | POST | `/sites/{siteId}/operations/pages.release-set-plan` | `pages.publish` per target | `{ siteId, operationId, items: [{ target, expectedVersion, componentsVersion?, presentationVersion? }] }` (1–50 pages) | `{ plan }` |
 | `pages.release-set` | POST | `/sites/{siteId}/operations/pages.release-set` | `pages.publish` per target | the exact plan's site, operation ID, confirmation token and items | `{ status: "completed" | "publishing", operationId, items: [{ target, status: "released", version } | { target, status: "conflict" | "pending" }] }` |
 | `pages.release-set-status` | GET | `/sites/{siteId}/operations/pages.release-set-status/{operationId}` | `pages.read` | site / operation ID | `{ status, operationId, ... }` |
 | `pages.catalog` | GET | `/sites/{siteId}/operations/pages.catalog` | `pages.read` | site ID | `{ version, pages }` |
@@ -42,7 +42,7 @@ Studio GUIはページの表示・編集材料の一部（presentation metadata�
 
 `pages.save` は `expectedVersion` を原子的に比較します。競合時はHTTP 409と `version_conflict` を返し、ホストは古い下書きを上書きしません。documentは受信側で `parsePageDocument` を通し、pathのsite/pageとqueryのlocaleに一致しない文書、任意HTML・JavaScript・CSSなど検証に失敗する値はHTTP 400 `invalid_request` で拒否します。登録ブロック・部品インスタンス・サイト共通スタイルを使うホストは、adapterの `validationContext(actor, target)` から信頼済みの `blocks`・`components`・`siteStyles` を渡します。読み取り、入力文書、保存後の正規文書の検証に同じcontextを使います。
 
-`pages.release-set-*` は同じサイト内で変更した複数ページを、一つの計画・適用操作で公開します。呼出側は各ページの `pages.release-plan` で差分を確認し、公開差分があるページだけを指定します。対象は2〜50件で、重複ページは禁止します。各項目の `expectedVersion` と任意の `componentsVersion` / `presentationVersion`、対象一覧、operation IDを計画へ固定します。APIは全対象の `pages.publish` 権限を個別に確認します。ホストadapterは対象ごとに版を再検証し、結果として `released`（公開済み）、`conflict`（版が変わった）、`pending`（処理中）を返します。全体の `status` は未完了項目があれば `publishing`、全項目が確定したら `completed` です。ある対象の競合で他ページの成功を隠さず、全ページ同時切替も要求しません。トップレベルの `version_conflict` は操作が始まっておらず、公開済みページがない場合に限ります。
+`pages.release-set-*` は同じサイト内のページを、一つの計画・適用操作で公開します。対象は1〜50件で、重複ページは禁止します。単一ページの非同期公開も同じoperation ID・status契約を使えます。各項目の `expectedVersion` と任意の `componentsVersion` / `presentationVersion`、対象一覧、operation IDを計画へ固定します。APIは全対象の `pages.publish` 権限を個別に確認します。ホストadapterは対象ごとに版を再検証し、結果として `released`（公開済み）、`conflict`（版が変わった）、`pending`（処理中）を返します。全体の `status` は未完了項目があれば `publishing`、全項目が確定したら `completed` です。ある対象の競合で他ページの成功を隠さず、全ページ同時切替も要求しません。トップレベルの `version_conflict` は操作が始まっておらず、公開済みページがない場合に限ります。
 
 確認tokenは対象と全版を含む計画に結び付けます。同じactor・operation ID・入力の再送では、完了済み対象を二重に公開せず、前回の項目別状態を返します。タイムアウト時は同じ計画を再適用して処理を再開でき、`pages.release-set-status` で最終結果を照会できます。競合したページは再読込して新しい計画を作ります。ホストはactor、対象版、各項目の結果を監査記録へ保存します。自動mergeは行いません。
 
@@ -54,9 +54,40 @@ Studio GUIはページの表示・編集材料の一部（presentation metadata�
 
 `assets.*` は素材の安定IDを操作します。配信URLは `assets.resolve` の応答に限って返し、ページ文書へは保存しません。一覧・使用先・解決は `assets.read`、メタデータ更新は `assets.edit`、一時アップロード許可の発行は `assets.upload`、削除と復元は `assets.delete` を個別に要求します。更新・削除・復元は `expectedVersion` をホストが比較します。`assets.upload-intent` は画像本体を受け取らず、短命の一回限りtokenを返します。クライアントは本体を `PUT` する前に、URLのHTTPS originがAPI originか、明示的に信頼設定したupload originと一致することを確認し、tokenをそのorigin以外へ送ってはいけません。ホストは実データの形式・サイズ・内容を再検査し、操作主体と結果を監査記録へ結び付けます。
 
+## 翻訳操作
+
+`PageEditingHostAdapter.localization` に操作IDをキーにして必要な関数を登録します。各関数は `(actor, siteId, input)` を受け取り、翻訳作業画面と共通の [workspace契約](localization-workspace-contract.md) の結果を返します。公開される入力と結果は `EDITING_OPERATIONS` にあり、クライアントは `executeLocalization(operationId, input, signal?)` で同じ契約を呼びます。ホストは共通の認証・認可を使い、翻訳のoverlay・unit・releaseを既存の保存先で扱います。
+
+パスはすべて `/sites/{siteId}/operations/{operationId}` です。GETの追加フィールドはqueryに渡します。初回の `cursor` は省略できます。書込は `Content-Type: application/json` で、一致する `siteId` をJSONのトップレベルに加えます。clientは設定されたsite IDを補い、ホストの関数には検証済みのsite IDを第2引数で渡します。未知のキー、形式不正なID、同名queryの繰り返し、4 MiB超の書込はHTTP 400になります。プレビュー材料は1ページ2 MiBまでです。
+
+| 操作 | Method | 権限 | 追加の入力 | 結果 |
+| --- | --- | --- | --- | --- |
+| `localization.overview` | GET | `localization.read` | — | `{ status: "ready", overview }` |
+| `localization.items.list` | GET | `localization.read` | `cursor?` | `{ status: "ready", items, nextCursor }` |
+| `localization.items.read` | GET | `localization.read` | `itemKey` | `{ status: "ready", item }` |
+| `localization.items.command` | POST | `localization.edit` または `localization.review` | `LocalizationCommandInput` | `{ status: "applied", unit, summary }` |
+| `localization.items.translate` | POST | `localization.translate` | `{ itemKey, expectedVersion, operationId, unitIds }`。全項目は `unitIds: null` | `{ status: "queued", job }` |
+| `localization.jobs.read` | GET | `localization.read` | `jobId` | `{ status: "ready", job }` |
+| `localization.catalog.advance` | POST | `localization.manage` | `{ expectedVersion, operationId }` | `{ status: "updating", progress }` または `{ status: "current" }` |
+| `localization.preview` | GET | `localization.read` | `itemKey, previewId, cursor?` | `{ status: "ready", material, nextCursor }` |
+| `localization.release.read` | GET | `localization.read` | — | `{ status: "ready", current, history, pending }` |
+| `localization.release.prepare` | POST | `localization.publish` または `localization.rollback` | `LocaleReleasePrepareInput`。初回は `operationId` も必要 | `{ status: "ready", plan }`、`{ status: "preparing", progress, resumeToken }` または `{ status: "blocked", blockers }` |
+| `localization.release.apply` | POST | `localization.publish` または `localization.rollback` | `LocaleReleaseApplyInput` に `operation`、`expectedVersion`、任意の `prepared: { releaseId, version }` | `{ status: "applied", current }` または `{ status: "applying", progress, resumeToken, waiting? }` |
+| `localization.settings.save` | PUT | `localization.manage` | `LocalizationSettingsInput` と `operationId` | `{ status: "saved", settings }` |
+
+ホストはトークンのscope検証に `EDITING_CAPABILITIES` を使えます。discoverは、対応するhost関数があり、サイト単位でいずれかの必要権限がある操作を返します。複数の権限を持つ操作は `capabilityByInput` に入力フィールドと値ごとの必要権限を示します。`review-current` と `review-image` は `localization.review`、訳文・候補・画像を変更するcommandは `localization.edit` です。公開と戻しは `operation` に応じて `localization.publish` と `localization.rollback` を個別に要求します。実行時のscopeには、対象に応じて `localizationItemKey`、`localizationUnitId`、`localizationJobId`、`localizationPreviewId` を加えます。
+
+すべての書込で、ホストは監査用のactorとサイトを記録し、版を原子的に照合します。commandは編集開始時のunitの `version` と `sourceVersion`、設定保存は `settings.version`、翻訳開始・原文取り込み・公開準備は `overview.version` を使用します。公開準備は `expectedCurrentVersion` も照合し、公開反映は準備時の `expectedVersion` と同じ値を渡します。ホストは公開に必要な翻訳の確認状態、対象と公開版を検査します。
+
+初回書込の `operationId` は16〜64文字の英数字・アンダースコア・ハイフンです。ホストはactor・サイト・操作ID・入力と結果を結び付け、同一入力の再送には先の結果を返します。別入力で同じIDを使った場合は `{ status: "duplicate" }` を返し、APIは409 `duplicate_operation` に変換します。版競合は409 `version_conflict` です。commandの競合には `current: { unit, summary }`、設定の競合には `current` に現行設定が入ります。clientはそれぞれ `{ status: "conflict", unit, summary }` と `{ status: "conflict", settings }` を返すため、呼出側は入力した値を保持したまま照合できます。
+
+公開準備の初回は `resumeToken: null` を指定し、続きは返された `resumeToken` と元の版を渡します。公開計画を確認したら、反映に `confirmationToken` と `resumeToken: null` を渡します。反映が `applying` の場合は `confirmationToken: null` に切り替え、返された `resumeToken` と同じ操作・版を渡します。進捗には `waiting: "uploading"` または `waiting: "deployment"` が付くことがあります。`release.read` は現在版と途中状態の照会に使えます。
+
+確認・再開tokenはactor・サイト・操作種別・版・計画に束縛します。`prepared` を指定した反映では、ホストはtokenの対象と一致することを反映前に確かめ、APIも応答の公開版を照合します。ホストは期限と一回限りの消費を検証し、同じ入力の再送が同じ処理を二重に実行しないようにします。期限切れや不正なtokenは `{ status: "invalid_token" }` を返すと、400 `invalid_request` になります。取得結果の `pending` は再開権限を持つactorにだけ返し、tokenをURLやログに含めません。
+
 ## CUIでの編集
 
-`niho-edit` はホストAPI originへ直接接続し、ブラウザーやStudio画面を開きません。ホストが発行する短期tokenを環境変数 `NIHO_EDIT_TOKEN` から読み、ページ文書、CMS項目、ページ管理、サイト設定、素材をJSONで操作します。ホストoriginがCloudflare Accessで保護される場合は、環境のSecret Managerなどから `CF_ACCESS_CLIENT_ID` と `CF_ACCESS_CLIENT_SECRET` も渡します。この2つは対になるAccess Service Auth資格情報で、どちらか片方だけの設定はエラーです。Access資格情報は指定したAPI originへの通信だけに使い、`NIHO_EDIT_TOKEN` のhost認証を置き換えません。APIはAccessとhost bearerの両方を検証します。Access redirectは追跡せず、応答に含まれるログインURLも表示しません。素材本体をAPI originと異なるupload originへ送る場合、Access資格情報は転送せず、素材APIが発行した一回限りtokenだけを使います。書込には期待版を渡し、公開・作成・保存には呼出側が先に決めたoperation IDを付けます。タイムアウト後は同じIDと同じ入力で再試行できます。PageDocumentの完全な検証は信頼済みcontextを持つホストが行います。ブレークポイント、CMS項目、素材メタデータは読取結果のversionを維持して保存します。
+`niho-edit` はホストAPI originへ直接接続し、ブラウザーやStudio画面を開きません。ホストが発行する短期tokenを環境変数 `NIHO_EDIT_TOKEN` から読み、ページ文書、CMS項目、ページ管理、サイト設定、素材、翻訳をJSONで操作します。ホストoriginがCloudflare Accessで保護される場合は、環境のSecret Managerなどから `CF_ACCESS_CLIENT_ID` と `CF_ACCESS_CLIENT_SECRET` も渡します。この2つは対になるAccess Service Auth資格情報で、どちらか片方だけの設定はエラーです。Access資格情報は指定したAPI originへの通信だけに使い、`NIHO_EDIT_TOKEN` のhost認証を置き換えません。APIはAccessとhost bearerの両方を検証します。Access redirectは追跡せず、応答に含まれるログインURLも表示しません。素材本体をAPI originと異なるupload originへ送る場合、Access資格情報は転送せず、素材APIが発行した一回限りtokenだけを使います。書込には期待版を渡し、公開・作成・保存には呼出側が先に決めたoperation IDを付けます。タイムアウト後は同じIDと同じ入力で再試行できます。PageDocumentの完全な検証は信頼済みcontextを持つホストが行います。ブレークポイント、CMS項目、素材メタデータは読取結果のversionを維持して保存します。
 
 Accessがログイン画面へredirectした場合、CLIは追跡せず `access_redirect` とHTTP statusをJSON envelopeで返して終了コード1で終了します。redirect先や応答本文は出力しません。資格情報が片方だけ、または形式不正なら、通信前に `invalid_access_credentials` を返します。
 
@@ -126,6 +157,20 @@ host adapterの最小実装は `npm run build` の後に `node examples/editing-
 
 ページ文書のJSON Schemaはwire上のトップレベル形を説明します。細部の要素・style・属性は `@niho/web/core` の `parsePageDocument` が閉じた文書契約として検証し、登録ブロック・部品・サイト共通styleはホストが渡したcontextに従います。機械クライアントはdiscoverのschemaを入力UI・引数検査に使い、サーバーの文書validatorを正本として扱います。保存成功時はホストが保存後の正規文書とversionを返すため、CLIはそのまま次の編集へ使えます。
 
+翻訳コマンド名は操作IDのピリオドをハイフンに置き換えます。例では `aG9tZQ` が項目ID、`job-1` が翻訳開始で返されたジョブIDです。
+
+```sh
+niho-edit --origin https://site.example --site site-id localization-overview
+niho-edit --origin https://site.example --site site-id localization-items-list
+niho-edit --origin https://site.example --site site-id localization-items-read aG9tZQ
+niho-edit --origin https://site.example --site site-id localization-items-command aG9tZQ --json command.json
+niho-edit --origin https://site.example --site site-id localization-items-translate aG9tZQ --json translate.json
+niho-edit --origin https://site.example --site site-id localization-jobs-read job-1
+niho-edit --origin https://site.example --site site-id localization-release-read
+```
+
+書込の `--json` には操作表の追加フィールドを渡します。`siteId` は `--site` から、commandとtranslateの `itemKey` は位置引数から補います。たとえば `command.json` は `{"action":"set-value","unitId":"title","value":"Workshop by the sea","expectedVersion":"v1","expectedSourceVersion":"s1","operationId":"command-operation-1"}` です。確認・再開tokenを含む `localization-release-prepare` および `localization-release-apply` の入力は `--json -` で標準入力から渡せます。呼出側が応答を確認して続く操作を決めます。CLIの409は終了コード1で、現行値がある場合はJSON出力の `result.current` に保持します。
+
 ## ホストの責務
 
 ホストadapterは次を実装します。
@@ -152,15 +197,15 @@ Cookie認証を使うホストは、write requestのCSRF境界とCORSも自分�
 | --- | --- | --- |
 | `authentication_required` | 401 | 認証主体を確定できない |
 | `forbidden` | 403 | 操作権限がない |
-| `duplicate_operation` | 409 | すでに別prepareで使われたoperation IDを再利用した |
+| `duplicate_operation` | 409 | 別の入力または計画に結び付いたoperation IDを再利用した |
 | `host_failure` | 503 | ホストの認証/検証context/保存adapterが一時的に失敗した |
-| `invalid_request` | 400 | path、query、JSON、PageDocumentが契約に合わない |
+| `invalid_request` | 400 | path、query、JSON、PageDocument、確認・再開tokenが契約に合わない |
 | `method_not_allowed` | 405 | 操作に定義されていないmethod |
 | `not_found` | 404 | 対象または操作が存在しない |
-| `validation_failed` | 422 | CMS値が定義済みフィールド検証に失敗した。`fields` に項目別の問題を含む |
+| `validation_failed` | 422 | ホストの値検証に失敗した。CMSでは `fields` に項目別の問題を含む |
 | `version_conflict` | 409 | expectedVersionが現行版と一致しない |
 | `host_contract_violation` | 502 | ホスト保存層の応答がこの契約に合わない |
 
 ## 実装状況
 
-ページ本文・ページ管理・ブレークポイント・CMS項目・素材の共通wireとCUI clientを実装しています。Studio GUIはBFFから、AIの `niho-edit` CLIはサイトoriginへ直接、同じ素材の一覧・参照・更新・アップロード・削除・復元操作を呼びます。どちらもホストの同じ認可・保存・版管理・監査を使います。Studio GUIは短期の操作別tokenだけを委任し、Access cookie/JWTをサイトへ転送しません。旧Studio D1にだけブレークポイント値がある場合は、初回読取でその版をexpectedVersionとしてサイトAPIへ一度だけ移します。以後の読取・保存の正本はサイト側です。翻訳は別のhost操作です。
+ページ本文・ページ管理・ブレークポイント・CMS項目・素材の共通wireとCUI clientを実装しています。Studio GUIはBFFから、AIの `niho-edit` CLIはサイトoriginへ直接、同じ素材の一覧・参照・更新・アップロード・削除・復元操作を呼びます。どちらもホストの同じ認可・保存・版管理・監査を使います。Studio GUIは短期の操作別tokenだけを委任し、Access cookie/JWTをサイトへ転送しません。旧Studio D1にだけブレークポイント値がある場合は、初回読取でその版をexpectedVersionとしてサイトAPIへ一度だけ移します。以後の読取・保存の正本はサイト側です。翻訳の共通APIは、対応するホストが登録した操作をCUIから直接呼び出せます。Studioの翻訳画面は既存の接続を使います。

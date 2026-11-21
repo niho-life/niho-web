@@ -45,8 +45,9 @@ await Promise.all([
     const eagerInputs = [...eager].flatMap((output) => Object.keys(result.metafile.outputs[output]?.inputs ?? {}));
     const eagerLazy = eagerInputs.filter((input) => /(?:@tiptap|prosemirror|studio\/rich-text-editor\.tsx|src\/collection-workspace\.tsx)/u.test(input));
     if (eagerLazy.length) throw new Error(`CMS workspace code entered the initial Studio client bundle: ${eagerLazy.slice(0, 5).join(", ")}`);
-    const eagerTranslations = eagerInputs.filter((input) => /(?:src\/localization-workspace(?:-[a-z]+)?\.tsx?|studio\/kamakura-localization(?:-workspace|-contract)?\.tsx?)$/u.test(input));
-    if (eagerTranslations.length) throw new Error(`Translation workspace code entered the initial Studio client bundle: ${eagerTranslations.slice(0, 5).join(", ")}`);
+    // Shared wire validators are safe in the initial bundle; only the translation UI and its host screen must stay lazy.
+    const eagerTranslations = eagerInputs.filter((input) => /(?:src\/localization-workspace(?!(?:-model))(-[a-z]+)?\.tsx?|studio\/kamakura-localization(?:-workspace|-contract)?\.tsx?)$/u.test(input));
+    if (eagerTranslations.length) throw new Error(`Translation workspace UI code entered the initial Studio client bundle: ${eagerTranslations.slice(0, 5).join(", ")}`);
   })(),
   copyFile(join(studioDirectory, "public", "index.html"), join(publicOutput, "index.html")),
   // 配色・角丸・文字のトークン（src/ui-tokens.ts）は全ページが最初に読む studio.css の先頭に置く（#159）。

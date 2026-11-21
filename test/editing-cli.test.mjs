@@ -96,7 +96,7 @@ test("niho-edit reads a page over the host API without Studio or a browser", asy
   });
   assert.equal(result.exitCode, 0, `${result.stderr}\n${result.stdout}`);
   assert.deepEqual(JSON.parse(result.stdout), { document: fixture, version: "v1" });
-  assert.deepEqual(EDITING_OPERATIONS.map(({ id }) => id), ["pages.read", "pages.save", "pages.release-plan", "pages.release", "pages.release-set-plan", "pages.release-set", "pages.release-set-status", "pages.catalog", "pages.change-prepare", "pages.change-apply",
+  assert.deepEqual(EDITING_OPERATIONS.filter(({ id }) => !id.startsWith("localization.")).map(({ id }) => id), ["pages.read", "pages.save", "pages.release-plan", "pages.release", "pages.release-set-plan", "pages.release-set", "pages.release-set-status", "pages.catalog", "pages.change-prepare", "pages.change-apply",
     "cms.schema", "cms.list", "cms.read", "cms.create", "cms.save", "cms.publish-plan", "cms.publish", "cms.operation-status", "site.breakpoints.read", "site.breakpoints.save",
     "assets.list", "assets.usages", "assets.resolve", "assets.update", "assets.upload-intent", "assets.delete", "assets.restore"]);
 });
@@ -398,4 +398,82 @@ test("niho-edit prepares, applies and checks an idempotent multi-page release se
   });
   assert.equal(checked.exitCode, 0, checked.stderr);
   assert.deepEqual(JSON.parse(checked.stdout), status);
+});
+
+test("niho-edit prepares a queued singleton through the generic release-set API", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "niho-edit-single-release-set-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const operationId = "423e4567-e89b-42d3-a456-426614174000";
+  const items = [{ target: { siteId, pageId, locale }, expectedVersion: "v2" }];
+  const itemsPath = join(directory, "items.json");
+  await writeFile(itemsPath, JSON.stringify({ items }));
+  const preparePath = `/api/edit/v1/sites/${siteId}/operations/pages.release-set-plan`;
+  const plan = { siteId, operationId, confirmationToken: "single-set-token", domain: origin, items };
+  const prepared = await run(["page-release-set-plan", "--json", itemsPath, "--operation-id", operationId], {
+    expectedMethod: "POST", expectedUrl: `${origin}${preparePath}`, expectedBody: { siteId, operationId, items }, result: { plan }
+  });
+  assert.equal(prepared.exitCode, 0, prepared.stderr);
+  assert.deepEqual(JSON.parse(prepared.stdout), plan);
+});
+
+test("niho-edit reads translation items and job state directly from the site", async () => {
+  const operations = `${origin}/api/edit/v1/sites/${siteId}/operations`;
+  const jobs = await run(["localization-jobs-read", "job-1"], {
+    expectedMethod: "GET", expectedUrl: `${operations}/localization.jobs.read?jobId=job-1`,
+    result: { status: "ready", job: { jobId: "job-1", state: "running", message: null } },
+  });
+  assert.equal(jobs.exitCode, 0, jobs.stdout);
+  assert.equal(JSON.parse(jobs.stdout).result.job.state, "running");
+
+  const list = await run(["localization-items-list", "--cursor", "cursor-2"], {
+    expectedMethod: "GET", expectedUrl: `${operations}/localization.items.list?cursor=cursor-2`,
+    result: { status: "ready", items: [], nextCursor: null },
+  });
+  assert.equal(list.exitCode, 0, list.stdout);
+  assert.deepEqual(JSON.parse(list.stdout), { apiVersion: "v1", httpStatus: 200, operation: "localization.items.list",
+    result: { status: "ready", items: [], nextCursor: null } });
+
+  const release = await run(["localization-release-read"], {
+    expectedMethod: "GET", expectedUrl: `${operations}/localization.release.read`,
+    result: { status: "ready", current: null, history: [], pending: null },
+  });
+  assert.equal(release.exitCode, 0, release.stdout);
+  assert.equal(JSON.parse(release.stdout).operation, "localization.release.read");
+});
+
+test("niho-edit preserves localization CAS conflict values and reads release tokens from JSON input", async () => {
+  const operations = `${origin}/api/edit/v1/sites/${siteId}/operations`;
+  const settings = { version: "settings-v2", autoDraft: true, translator: { connected: true },
+    queue: { waiting: 1, failed: 0, nextRetryAt: null } };
+  const change = { expectedVersion: "settings-v1", operationId: "fixture-operation-1", autoDraft: false };
+  const conflict = { error: "version_conflict", current: settings };
+  const save = await run(["localization-settings-save", "--json", "-"], {
+    status: 409, result: conflict, stdin: JSON.stringify(change), expectedMethod: "PUT", assertInputBeforeTimeout: true,
+    expectedUrl: `${operations}/localization.settings.save`, expectedBody: { siteId, ...change },
+  });
+  assert.equal(save.exitCode, 1, save.stdout);
+  assert.deepEqual(JSON.parse(save.stdout), { apiVersion: "v1", httpStatus: 409, operation: "localization.settings.save", result: conflict });
+
+  const translate = { expectedVersion: "overview-v1", operationId: "fixture-operation-2", unitIds: ["title"] };
+  const queued = await run(["localization-items-translate", "aG9tZQ", "--json", "-"], {
+    stdin: JSON.stringify(translate), expectedMethod: "POST",
+    expectedUrl: `${operations}/localization.items.translate`, expectedBody: { siteId, itemKey: "aG9tZQ", ...translate },
+    result: { status: "queued", job: { jobId: "job-1", state: "queued", message: null } },
+  });
+  assert.equal(queued.exitCode, 0, queued.stdout);
+  assert.equal(JSON.parse(queued.stdout).result.job.jobId, "job-1");
+
+  const apply = { operation: "publish", expectedVersion: "overview-v1", confirmationToken: null, resumeToken: "release-resume-token" };
+  const applying = { status: "applying", progress: { done: 1, total: 2 }, resumeToken: "next-resume-token", waiting: "uploading" };
+  const release = await run(["localization-release-apply", "--json", "-"], {
+    result: applying, stdin: JSON.stringify(apply), expectedMethod: "POST",
+    expectedUrl: `${operations}/localization.release.apply`, expectedBody: { siteId, ...apply },
+  });
+  assert.equal(release.exitCode, 0, release.stdout);
+  assert.deepEqual(JSON.parse(release.stdout).result, applying);
+  const invalid = await run(["localization-release-apply", "--json", "-"], {
+    stdin: JSON.stringify({ ...apply, confirmationToken: "unexpected-second-token" }),
+  });
+  assert.equal(invalid.exitCode, 1);
+  assert.equal(JSON.parse(invalid.stdout).result.error, "invalid_json_input");
 });

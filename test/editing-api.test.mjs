@@ -281,14 +281,27 @@ test("page release sets bind every target version, require each target permissio
   });
   assert.equal(applyCalls, 2);
 
+  const singleOperationId = "423e4567-e89b-42d3-a456-426614174000";
+  const singleItems = [{ target, expectedVersion: "v1-published" }];
+  const singlePlan = await json(await send("POST", `${route}/pages.release-set-plan`, { siteId: target.siteId, operationId: singleOperationId, items: singleItems }));
+  assert.equal(singlePlan.status, 200, "a queued single-page publication uses the generic release-set operation");
+  const singleApply = { siteId: target.siteId, operationId: singleOperationId, confirmationToken: "set-token", items: singleItems };
+  const singleResult = { status: "completed", operationId: singleOperationId, items: [
+    { target, status: "released", version: "v1-published-published" }
+  ] };
+  assert.deepEqual(await json(await send("POST", `${route}/pages.release-set`, singleApply)), { status: 200, body: singleResult });
+  assert.deepEqual(await json(await send("GET", `${route}/pages.release-set-status/${singleOperationId}`)), {
+    status: 200, body: { status: "completed", operationId: singleOperationId, httpStatus: 200, result: singleResult }
+  });
+
   const denied = await json(await send("POST", `${route}/pages.release-set-plan`, { siteId: target.siteId, operationId: "223e4567-e89b-42d3-a456-426614174000",
     items: [items[0], { target: { ...target, pageId: "denied" }, expectedVersion: "private-v1" }] }));
   assert.deepEqual(denied, { status: 403, body: { error: "forbidden" } });
-  assert.equal(prepareCalls, 1, "the host must not prepare a set with a denied target");
+  assert.equal(prepareCalls, 2, "the host must not prepare a set with a denied target");
 
   const duplicateTarget = await json(await send("POST", `${route}/pages.release-set-plan`, { siteId: target.siteId, operationId: "323e4567-e89b-42d3-a456-426614174000", items: [items[0], items[0]] }));
   assert.deepEqual(duplicateTarget, { status: 400, body: { error: "invalid_request" } });
-  assert.equal(prepareCalls, 1, "duplicate targets must be rejected before calling the host");
+  assert.equal(prepareCalls, 2, "duplicate targets must be rejected before calling the host");
 });
 
 test("page editing API hides unsupported publish operations and rejects an untrusted release domain", async () => {

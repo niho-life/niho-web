@@ -264,6 +264,26 @@ test("shared editing client prepares and applies an idempotent multi-page releas
   await assert.rejects(client.preparePageReleaseSet([items[0], items[0]], undefined, operationId), TypeError);
 });
 
+test("shared editing client uses a one-item release set for a queued single page", async () => {
+  const client = clientFixture({ releaseSet: true, pendingSetOnce: true });
+  const operationId = "723e4567-e89b-42d3-a456-426614174000";
+  const singleTarget = { siteId: target.siteId, pageId: "about", locale: "ja" };
+  const items = [{ target: singleTarget, expectedVersion: "about-v1" }];
+  const plan = await client.preparePageReleaseSet(items, undefined, operationId);
+  assert.deepEqual(plan.items, items);
+  assert.deepEqual(await client.publishPageReleaseSet(plan), {
+    status: "publishing", operationId, items: [{ target: singleTarget, status: "pending" }]
+  });
+  assert.deepEqual(await client.pageReleaseSetStatus(operationId), { status: "received", operationId });
+  assert.deepEqual(await client.publishPageReleaseSet(plan), {
+    status: "completed", operationId, items: [{ target: singleTarget, status: "released", version: "about-v2" }]
+  });
+  assert.deepEqual(await client.pageReleaseSetStatus(operationId), {
+    status: "completed", operationId, httpStatus: 200,
+    result: { status: "completed", operationId, items: [{ target: singleTarget, status: "released", version: "about-v2" }] }
+  });
+});
+
 test("multi-page release set resumes a pending target without republishing completed pages", async () => {
   const client = clientFixture({ releaseSet: true, pendingSetOnce: true });
   const operationId = "623e4567-e89b-42d3-a456-426614174000";

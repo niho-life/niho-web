@@ -100,7 +100,7 @@ parser は未知の key を拒み、次の形と上限を確かめます。上�
 | `loadPreview` | `{ itemKey, previewId, cursor: string \| null }` | `{ status: "ready", material, nextCursor: string \| null }` / not_found |
 | `readRelease` | — | `{ status: "ready", current, history, pending }` |
 | `prepareRelease` | `{ operation, releaseId, expectedVersion, expectedCurrentVersion, resumeToken }` | `{ status: "preparing", progress, resumeToken }` / `{ status: "ready", plan }` / `{ status: "blocked", blockers }` / `{ status: "conflict" }` |
-| `applyRelease` | `{ confirmationToken, resumeToken }`（どちらか 1 つだけ文字列） | `{ status: "applying", progress, resumeToken }` / `{ status: "applied", current }` / `{ status: "expired" }` / `{ status: "conflict" }` |
+| `applyRelease` | `{ confirmationToken, resumeToken }`（どちらか 1 つだけ文字列） | `{ status: "applying", progress, resumeToken, waiting? }` / `{ status: "applied", current }` / `{ status: "expired" }` / `{ status: "conflict" }` |
 | `saveSettings` | `{ expectedVersion, autoDraft }`（旧い `{ expectedVersion, reviewGlossaryVersion }` も型に残るが、画面からは送らない） | `{ status: "saved", settings }` / `{ status: "conflict", settings }` / invalid |
 | `uploadImage`（任意） | `{ itemKey, unitId, file }` | `{ status: "uploaded", image }` / `{ status: "rejected", reason: "type" \| "size" \| "permission" \| "invalid" }` |
 | `pickAsset`（任意） | `{ itemKey, unitId }` | `{ status: "picked", image }` / `{ status: "cancelled" }`（素材の選び方の画面はホストが出す） |
@@ -347,6 +347,7 @@ type LocaleReleaseWorkspacePlan = {
 4. 反映: `applyRelease({ confirmationToken, resumeToken: null })`。`applying` なら n/m を出し、`resumeToken` を付けて `applyRelease({ confirmationToken: null, resumeToken })` を呼び直します。`applied` で完了、`expired` は 2. からやり直し、`conflict` は読み直し。
 
 - 途中で閉じても、サイトは途中の状態を `overview.release.pending`（と `readRelease` の `pending`）で返してください。画面は帯に「前回の公開が途中です。」と「続ける」を出し、`stage` に合わせて `prepareRelease` か `applyRelease` を `resumeToken` だけで呼び直します（`publish`・`rollback` の権限が要ります）。
+- 反映を進めている間、ホストは `applying` に `waiting: "uploading"` または `waiting: "deployment"` を添えられます。
 - `confirmationToken` は URL・ログ・保存先に出さないでください。画面もタブのメモリにだけ持ちます。準備・反映の `resumeToken` も一回の公開の中でだけ使えるものにしてください。
 - **ページ単位の公開。** サイトは、訳がそろったページだけを公開してよいです（未訳のページは原文の言語のまま。言語の切替と hreflang も出たページだけ）。そのときの `blockers` は、公開そのものを止める理由（取り込み中・公開の途中・共通部分が未翻訳で出せるページが無い、など）だけにし、未訳の項目は並べません。出る・外れるページは `changes` で返します。
 - 戻し: 公開の履歴で `restorable` の版を選び、`prepareRelease({ operation: "rollback", releaseId, … })` から同じ手順です。戻しは前に公開した版をそのまま戻すので、`blockers` で止めません（サイトが止める理由を返したときは出します）。

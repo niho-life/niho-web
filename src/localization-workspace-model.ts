@@ -232,10 +232,12 @@ function pattern(value: unknown, re: RegExp, path: string, reason: string): stri
 }
 export const isLocalizationItemKey = (value: unknown): value is string => typeof value === "string" && ITEM_KEY_RE.test(value) && !RESERVED.has(value);
 export const isLocalizationOperationId = (value: unknown): value is string => typeof value === "string" && OPERATION_ID_RE.test(value);
-const itemKey = (value: unknown, path: string) => pattern(value, ITEM_KEY_RE, path, "invalid item key");
-const unitId = (value: unknown, path: string) => pattern(value, UNIT_ID_RE, path, "invalid unit ID");
+export const parseLocalizationItemKey = (value: unknown, path: string) => pattern(value, ITEM_KEY_RE, path, "invalid item key");
+export const parseLocalizationUnitId = (value: unknown, path: string) => pattern(value, UNIT_ID_RE, path, "invalid unit ID");
+export const parseLocalizationPreviewId = (value: unknown, path: string) => pattern(value, SHORT_ID_RE, path, "invalid preview ID");
+export const parseLocalizationJobId = (value: unknown, path: string) => pattern(value, JOB_ID_RE, path, "invalid job ID");
+export const parseLocalizationCursor = (value: unknown, path: string) => value === null ? null : pattern(value, CURSOR_RE, path, "invalid cursor");
 const shortId = (value: unknown, path: string) => pattern(value, SHORT_ID_RE, path, "invalid ID");
-const cursor = (value: unknown, path: string) => value === null ? null : pattern(value, CURSOR_RE, path, "invalid cursor");
 /** 1 行・空でない・制御文字なし。 */
 function name(value: unknown, path: string, max = 200): string {
   if (typeof value !== "string" || !value.trim() || value.length > max || /[\u0000-\u001f\u007f]/u.test(value)) fail(path, "invalid text");
@@ -510,7 +512,7 @@ export function parseLocalizationOverviewResult(input: unknown): LocalizationOve
     const items = array(entry.items, `${at}.items`, LOCALIZATION_LIMITS.attentionItems).map((item, index) => {
       const itemAt = `${at}.items[${index}]`, value = record(item, itemAt);
       keys(value, ["key", "title"], itemAt);
-      return { key: itemKey(value.key, `${itemAt}.key`), title: name(value.title, `${itemAt}.title`, 1000) };
+      return { key: parseLocalizationItemKey(value.key, `${itemAt}.key`), title: name(value.title, `${itemAt}.title`, 1000) };
     });
     if (new Set(items.map((item) => item.key)).size !== items.length) fail(`${at}.items`, "duplicate item");
     attention = { label: name(entry.label, `${at}.label`, 60), items };
@@ -547,7 +549,7 @@ function parseSummaryFields(source: Record<string, unknown>, path: string): Loca
   const includedParts = source.includedParts === undefined ? undefined : array(source.includedParts, `${path}.includedParts`, 8).map((part, index) => name(part, `${path}.includedParts[${index}]`, 80));
   if (includedParts && new Set(includedParts).size !== includedParts.length) fail(`${path}.includedParts`, "duplicate part");
   return {
-    key: itemKey(source.key, `${path}.key`), groupId: shortId(source.groupId, `${path}.groupId`), title: lineText(source.title, `${path}.title`, 1000),
+    key: parseLocalizationItemKey(source.key, `${path}.key`), groupId: shortId(source.groupId, `${path}.groupId`), title: lineText(source.title, `${path}.title`, 1000),
     path: sitePath(source.path, `${path}.path`), ...(includedParts === undefined ? {} : { includedParts }), state, excludedReason, totalUnits, reviewedUnits,
     imagesUnreviewed: count(source.imagesUnreviewed, `${path}.imagesUnreviewed`, LOCALIZATION_LIMITS.units),
     sourceDraftPending: bool(source.sourceDraftPending, `${path}.sourceDraftPending`),
@@ -568,10 +570,10 @@ export function parseLocalizationListResult(input: unknown): LocalizationListRes
   if (value.status !== "ready") fail("list.status", "invalid status");
   const items = array(value.items, "list.items", LOCALIZATION_LIMITS.listPage).map((entry, index) => parseLocalizationItemSummary(entry, `list.items[${index}]`));
   if (new Set(items.map((item) => item.key)).size !== items.length) fail("list.items", "duplicate item");
-  return { status: "ready", items, nextCursor: cursor(value.nextCursor, "list.nextCursor") };
+  return { status: "ready", items, nextCursor: parseLocalizationCursor(value.nextCursor, "list.nextCursor") };
 }
 
-function textValue(value: unknown, path: string): string {
+export function parseLocalizationTextValue(value: unknown, path: string): string {
   if (typeof value !== "string" || value.length > LOCALIZATION_LIMITS.text || /[\u0000\u000b\u000c]/u.test(value)) fail(path, "invalid text");
   return value;
 }
@@ -607,7 +609,7 @@ export function parseLocalizationUnit(input: unknown, path = "unit"): Localizati
   if (kind !== "image" && editOrigin !== undefined && editOrigin !== null && editOrigin !== "AUTO" && editOrigin !== "MANUAL") fail(`${path}.editOrigin`, "invalid edit origin");
   const required = bool(source.required, `${path}.required`);
   const base = {
-    unitId: unitId(source.unitId, `${path}.unitId`), label: name(source.label, `${path}.label`), section: nullableName(source.section, `${path}.section`),
+    unitId: parseLocalizationUnitId(source.unitId, `${path}.unitId`), label: name(source.label, `${path}.label`), section: nullableName(source.section, `${path}.section`),
     required, version: version(source.version, `${path}.version`), sourceVersion: version(source.sourceVersion, `${path}.sourceVersion`), state,
     updatedAt: timestamp(source.updatedAt, `${path}.updatedAt`), updatedBy: nullableName(source.updatedBy, `${path}.updatedBy`),
     ...(kind !== "image" && editOrigin !== undefined ? { editOrigin: editOrigin as LocalizationEditOrigin | null } : {}),
@@ -638,16 +640,16 @@ export function parseLocalizationUnit(input: unknown, path = "unit"): Localizati
   });
   const known = new Set(marks.map((mark) => mark.id));
   if (known.size !== marks.length) fail(`${path}.marks`, "duplicate mark");
-  const sourceText = textValue(source.source, `${path}.source`);
+  const sourceText = parseLocalizationTextValue(source.source, `${path}.source`);
   const sourceCounts = markCounts(sourceText);
   if (sourceCounts.size !== marks.length || [...sourceCounts].some(([id, total]) => total !== 1 || !known.has(id))) fail(`${path}.source`, "source marks must match marks one to one");
   const maxLength = source.maxLength === null ? null : count(source.maxLength, `${path}.maxLength`, LOCALIZATION_LIMITS.text);
   if (maxLength === 0) fail(`${path}.maxLength`, "expected a positive limit");
   return {
     ...base, kind, source: sourceText,
-    value: hasValue ? knownMarksOnly(textValue(source.value, `${path}.value`), known, `${path}.value`) : null,
-    previousSource: source.previousSource === null ? null : textValue(source.previousSource, `${path}.previousSource`),
-    candidate: candidateSource ? { candidateId, value: knownMarksOnly(textValue(candidateSource.value, `${path}.candidate.value`), known, `${path}.candidate.value`) } : null,
+    value: hasValue ? knownMarksOnly(parseLocalizationTextValue(source.value, `${path}.value`), known, `${path}.value`) : null,
+    previousSource: source.previousSource === null ? null : parseLocalizationTextValue(source.previousSource, `${path}.previousSource`),
+    candidate: candidateSource ? { candidateId, value: knownMarksOnly(parseLocalizationTextValue(candidateSource.value, `${path}.candidate.value`), known, `${path}.candidate.value`) } : null,
     marks, maxLength, singleLine: bool(source.singleLine, `${path}.singleLine`),
   };
 }
@@ -656,7 +658,7 @@ function parseJob(input: unknown, path: string): LocalizationJob {
   const source = record(input, path);
   keys(source, ["jobId", "state", "message"], path);
   if (!["queued", "running", "done", "failed"].includes(source.state as string)) fail(`${path}.state`, "invalid job state");
-  return { jobId: pattern(source.jobId, JOB_ID_RE, `${path}.jobId`, "invalid job ID"), state: source.state as LocalizationJob["state"], message: nullableName(source.message, `${path}.message`, 400) };
+  return { jobId: parseLocalizationJobId(source.jobId, `${path}.jobId`), state: source.state as LocalizationJob["state"], message: nullableName(source.message, `${path}.message`, 400) };
 }
 
 export function parseLocalizationItem(input: unknown, path = "item"): LocalizationItem {
@@ -668,13 +670,13 @@ export function parseLocalizationItem(input: unknown, path = "item"): Localizati
   const previews = array(source.previews, `${path}.previews`, LOCALIZATION_LIMITS.previews).map((entry, index) => {
     const at = `${path}.previews[${index}]`, choice = record(entry, at);
     keys(choice, ["id", "label"], at);
-    return { id: shortId(choice.id, `${at}.id`), label: name(choice.label, `${at}.label`) };
+    return { id: parseLocalizationPreviewId(choice.id, `${at}.id`), label: name(choice.label, `${at}.label`) };
   });
   if (new Set(previews.map((choice) => choice.id)).size !== previews.length) fail(`${path}.previews`, "duplicate preview");
   const relatedItems = source.relatedItems === undefined ? undefined : array(source.relatedItems, `${path}.relatedItems`, 8).map((entry, index) => {
     const at = `${path}.relatedItems[${index}]`, related = record(entry, at);
     keys(related, ["key", "label"], at);
-    return { key: itemKey(related.key, `${at}.key`), label: name(related.label, `${at}.label`, 80) };
+    return { key: parseLocalizationItemKey(related.key, `${at}.key`), label: name(related.label, `${at}.label`, 80) };
   });
   if (relatedItems && (new Set(relatedItems.map((related) => related.key)).size !== relatedItems.length || relatedItems.some((related) => related.key === summary.key))) {
     fail(`${path}.relatedItems`, "duplicate or self-referencing item");
@@ -762,7 +764,7 @@ export function parseLocalizationPreviewResult(input: unknown): LocalizationPrev
   if (value.material === undefined) fail("preview.material", "material is required");
   plainJson(value.material, "preview.material");
   if (jsonBytes(value.material) > LOCALIZATION_LIMITS.previewBytes) fail("preview.material", "material is too large");
-  return { status: "ready", material: value.material, nextCursor: cursor(value.nextCursor, "preview.nextCursor") };
+  return { status: "ready", material: value.material, nextCursor: parseLocalizationCursor(value.nextCursor, "preview.nextCursor") };
 }
 
 export function parseLocalizationSettingsResult(input: unknown): LocalizationSettingsResult {

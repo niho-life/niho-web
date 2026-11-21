@@ -224,7 +224,7 @@ export type LocaleReleasePrepareResult =
   | { readonly status: "conflict" }
   | LocaleReleaseForbidden;
 export type LocaleReleaseApplyResult =
-  | { readonly status: "applying"; readonly progress: LocaleReleaseProgress; readonly resumeToken: string }
+  | { readonly status: "applying"; readonly progress: LocaleReleaseProgress; readonly resumeToken: string; readonly waiting?: "uploading" | "deployment" }
   | { readonly status: "applied"; readonly current: LocaleReleaseSummary }
   | { readonly status: "expired" | "conflict" }
   | LocaleReleaseForbidden;
@@ -423,8 +423,11 @@ export function parseLocaleReleaseApplyResult(input: unknown, expected: { readon
   if (denied) return denied;
   if (source.status === "expired" || source.status === "conflict") { keys(source, ["status"], "apply"); return { status: source.status }; }
   if (source.status === "applying") {
-    keys(source, ["status", "progress", "resumeToken"], "apply");
-    return { status: "applying", progress: parseLocaleReleaseProgress(source.progress, "apply.progress"), resumeToken: parseLocaleReleaseToken(source.resumeToken, "apply.resumeToken") };
+    keys(source, ["status", "progress", "resumeToken", "waiting"], "apply");
+    const waiting = source.waiting;
+    if (waiting !== undefined && waiting !== "uploading" && waiting !== "deployment") fail("apply.waiting", "invalid wait state");
+    return { status: "applying", progress: parseLocaleReleaseProgress(source.progress, "apply.progress"),
+      resumeToken: parseLocaleReleaseToken(source.resumeToken, "apply.resumeToken"), ...(waiting === undefined ? {} : { waiting }) };
   }
   keys(source, ["status", "current"], "apply");
   if (source.status !== "applied") fail("apply.status", "invalid status");

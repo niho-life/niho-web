@@ -1,4 +1,9 @@
 import { EDITING_API_ERRORS, EDITING_OPERATIONS, type EditingApiErrorCode, type EditingCmsOperationStatus, type EditingCmsPublishPlan, type EditingCmsTarget, type EditingOperationDefinition, type EditingPageCatalog, type EditingPageReleaseSetItem, type EditingPageReleaseSetItemResult, type EditingPageReleaseSetPlan, type EditingPageReleaseSetStatus, type EditingPageSnapshot, type EditingPageTarget } from "./editing-api.js";
+import {
+  editingLocalizationOperation, EDITING_LOCALIZATION_RESULT_BYTES, parseEditingLocalizationConflict,
+  parseEditingLocalizationInput, parseEditingLocalizationResult,
+  type EditingLocalizationInput, type EditingLocalizationOperationId, type EditingLocalizationResult,
+} from "./editing-localization.js";
 import { normalizePageChange, validatePageChangePlan } from "./editor-model.js";
 import type { PageDocument } from "./types.js";
 import type { EditorPage, EditorPageChange, EditorPageChangePlan, EditorPageChangeResult, EditorReleasePlan, EditorReleaseRequest, EditorSite } from "./editor-types.js";
@@ -16,7 +21,11 @@ import {
   type CollectionDefinition, type CollectionItem, type CollectionItemSummary, type CollectionValues
 } from "./collection-model.js";
 
-const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
+const MAX_RESPONSE_BYTES = EDITING_LOCALIZATION_RESULT_BYTES;
+const LOCALIZATION_ERROR_STATUS: Record<EditingApiErrorCode, number> = {
+  authentication_required: 401, duplicate_operation: 409, forbidden: 403, host_contract_violation: 502, host_failure: 503,
+  invalid_request: 400, method_not_allowed: 405, not_found: 404, validation_failed: 422, version_conflict: 409,
+};
 const DOCUMENT_KEYS = ["schemaVersion", "siteId", "pageId", "locale", "revision", "title", "meta", "tokens", "textStyles", "body"] as const;
 
 export type EditingApiClientOptions = {
@@ -28,6 +37,7 @@ export type EditingApiClientOptions = {
   readonly credentials?: RequestCredentials;
   readonly fetch?: typeof fetch;
 };
+export type { EditingLocalizationInput, EditingLocalizationOperationId, EditingLocalizationResult } from "./editing-localization.js";
 export type EditingApiDiscovery = { readonly apiVersion: "v1"; readonly siteId: string; readonly operations: readonly EditingOperationDefinition[] };
 export type EditingPageSaveResult = { readonly status: "saved"; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" };
 export type EditingPagePublishResult = { readonly status: "released"; readonly operationId: string; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" };
@@ -37,6 +47,9 @@ export type EditingCmsPublishResult = { readonly status: "published" | "publishi
 export type EditingPageReleaseSetResult = { readonly status: "completed" | "publishing"; readonly operationId: string; readonly items: readonly EditingPageReleaseSetItemResult[] } | { readonly status: "conflict" };
 export type EditingApiClient = {
   discover(signal?: AbortSignal): Promise<EditingApiDiscovery>;
+  executeLocalization<Id extends EditingLocalizationOperationId>(
+    operationId: Id, input: EditingLocalizationInput<Id>, signal?: AbortSignal,
+  ): Promise<EditingLocalizationResult<Id>>;
   readPageCatalog(signal?: AbortSignal): Promise<EditingPageCatalog>;
   preparePageChange(change: EditorPageChange, expectedVersion: string, signal?: AbortSignal, operationId?: string): Promise<EditorPageChangePlan>;
   applyPageChange(plan: EditorPageChangePlan, signal?: AbortSignal): Promise<EditorPageChangeResult>;
@@ -209,18 +222,16 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value) ?? "undefined";
 }
 function validDiscoveredOperation(value: unknown): value is EditingOperationDefinition {
-  if (!plainRecord(value) || !exactKeys(value, ["id", "capability", "method", "path", "inputSchema", "resultSchema", "errors"])) return false;
+  if (!plainRecord(value)) return false;
   const expected = EDITING_OPERATIONS.find((operation) => operation.id === value.id);
-  return !!expected && value.capability === expected.capability && value.method === expected.method && value.path === expected.path
-    && stableJson(value.inputSchema) === stableJson(expected.inputSchema) && stableJson(value.resultSchema) === stableJson(expected.resultSchema)
-    && stableJson(value.errors) === stableJson(expected.errors);
+  return !!expected && exactKeys(value, Object.keys(expected)) && stableJson(value) === stableJson(expected);
 }
 function assertTarget(document: PageDocument, target: EditingPageTarget): void {
   if (document.siteId !== target.siteId || document.pageId !== target.pageId || document.locale !== target.locale) throw new EditingApiClientError("invalid_response");
 }
 const OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 function normalizePageReleaseSetItems(value: unknown, siteId: string): EditingPageReleaseSetItem[] {
-  if (!Array.isArray(value) || value.length < 2 || value.length > 50) throw new TypeError("page release set must contain 2 to 50 items");
+  if (!Array.isArray(value) || value.length < 1 || value.length > 50) throw new TypeError("page release set must contain 1 to 50 items");
   const items: EditingPageReleaseSetItem[] = [], seen = new Set<string>();
   for (const raw of value) {
     if (!plainRecord(raw) || Object.keys(raw).some((key) => !["target", "expectedVersion", "componentsVersion", "presentationVersion"].includes(key))
@@ -253,7 +264,7 @@ function parsePageReleaseSetPlan(value: unknown, siteId: string, operationId: st
 }
 function parsePageReleaseSetResult(value: unknown, siteId: string, operationId: string, expectedItems?: readonly EditingPageReleaseSetItem[]): Exclude<EditingPageReleaseSetResult, { status: "conflict" }> {
   if (!plainRecord(value) || !exactKeys(value, ["status", "operationId", "items"]) || value.operationId !== operationId
-    || value.status !== "completed" && value.status !== "publishing" || !Array.isArray(value.items) || value.items.length < 2 || value.items.length > 50
+    || value.status !== "completed" && value.status !== "publishing" || !Array.isArray(value.items) || value.items.length < 1 || value.items.length > 50
     || expectedItems && value.items.length !== expectedItems.length) throw new EditingApiClientError("invalid_response");
   const seen = new Set<string>(), items: EditingPageReleaseSetItemResult[] = [];
   let hasPending = false;
@@ -357,6 +368,43 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
     return definition;
   };
   const client: EditingApiClient = {
+    async executeLocalization<Id extends EditingLocalizationOperationId>(id: Id, value: EditingLocalizationInput<Id>, signal?: AbortSignal) {
+      const operation = editingLocalizationOperation(id);
+      if (!operation) throw new TypeError("unknown localization operation");
+      let input: EditingLocalizationInput<Id>;
+      try { input = parseEditingLocalizationInput(id, value); }
+      catch { throw new TypeError("invalid localization input"); }
+      let path = operation.path.replace("{siteId}", encodeURIComponent(siteId));
+      let payload: unknown;
+      if (operation.method === "GET") {
+        const query = new URLSearchParams();
+        for (const [name, entry] of Object.entries(input)) {
+          if (typeof entry === "string") query.set(name, entry);
+        }
+        if (query.size) path += `?${query}`;
+      } else {
+        payload = { siteId, ...input };
+      }
+      const { response, body } = await send(path, operation.method, payload, signal);
+      if (response.status === 409 && body.error === "version_conflict" && operation.errors.includes("version_conflict")) {
+        try { return parseEditingLocalizationConflict<Id>(id, body, input) as unknown as EditingLocalizationResult<Id>; }
+        catch { throw new EditingApiClientError("invalid_response", response.status); }
+      }
+      if (!response.ok) {
+        const code = body.error;
+        if (typeof code !== "string" || !exactKeys(body, ["error"]) || !operation.errors.includes(code as EditingApiErrorCode)
+          || response.status !== LOCALIZATION_ERROR_STATUS[code as EditingApiErrorCode]) {
+          throw new EditingApiClientError("invalid_response", response.status);
+        }
+        throw new EditingApiClientError(code as EditingApiErrorCode, response.status);
+      }
+      try {
+        if (response.status !== 200) throw new Error("unexpected success status");
+        const result = parseEditingLocalizationResult(id, body, input);
+        if (["conflict", "forbidden", "not_found", "invalid", "expired"].includes(result.status)) throw new Error("unexpected result status");
+        return result as unknown as EditingLocalizationResult<Id>;
+      } catch { throw new EditingApiClientError("invalid_response", response.status); }
+    },
     async discover(signal) {
       const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/capabilities`, "GET", undefined, signal);
       if (!response.ok) throw apiFailure(body, response.status);

@@ -257,7 +257,13 @@ test("release: progress, resume, blockers and history kinds are strict; editor p
   assert.deepEqual(parseLocaleReleasePrepareResult({ status: "blocked", blockers: [{ id: "b1", message: "訳していない項目があります。", itemKey: "aG9tZQ" }] }, request).blockers[0].itemKey, "aG9tZQ");
   assert.throws(() => parseLocaleReleasePrepareResult({ status: "ready", plan: { ...plan, prepared: summary } }, { ...request, operation: "rollback", releaseId: "en-9" }), /equals the current|rollback target/);
   assert.throws(() => parseLocaleReleaseApplyResult({ status: "applied", current: summary }, { prepared: { releaseId: "en-2", version: "r2" } }), /mismatch/);
-  assert.equal(parseLocaleReleaseApplyResult({ status: "applying", progress: { done: 1, total: 2 }, resumeToken: "apply-2" }, { prepared: null }).resumeToken, "apply-2");
+  const applying = { status: "applying", progress: { done: 1, total: 2 }, resumeToken: "apply-2" };
+  assert.deepEqual(parseLocaleReleaseApplyResult(applying, { prepared: null }), applying);
+  for (const waiting of ["uploading", "deployment"]) {
+    const result = { ...applying, waiting };
+    assert.deepEqual(parseLocaleReleaseApplyResult(result, { prepared: null }), result);
+  }
+  assert.throws(() => parseLocaleReleaseApplyResult({ ...applying, waiting: "other" }, { prepared: null }), /invalid wait state/);
   assert.deepEqual(parseEditorLocaleReleaseState({ siteId: "demo", locale: "en", current: null, history: [] }, "demo", "en"), { siteId: "demo", locale: "en", current: null, history: [] });
 });
 
