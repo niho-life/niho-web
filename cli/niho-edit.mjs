@@ -4,6 +4,8 @@ import { readFile, stat } from "node:fs/promises";
 import { basename } from "node:path";
 import { parseArgs } from "node:util";
 import { createPageEditingApiClient, EditingApiClientError, isEditingApiVersion, parseEditingPageDocumentEnvelope } from "../dist/editing-client.js";
+import { EDITING_OPERATIONS } from "../dist/editing-api.js";
+import { editingLocalizationConflictBody, EDITING_LOCALIZATION_INPUT_BYTES } from "../dist/editing-localization.js";
 import { parseAssetUploadResult } from "../dist/assets.js";
 import { parseBreakpointSettings } from "../dist/style-model.js";
 import { SERVICE_CLIENT_ID } from "./operations.mjs";
@@ -37,6 +39,18 @@ niho-edit --origin <https-origin> --site <site-id> assets-update <provider> <ass
 niho-edit --origin <https-origin> --site <site-id> assets-upload <file> --mime-type <mime> --provider <provider> [--name <name>] [--folder-id <id>] [--upload-origin <https-origin>]
 niho-edit --origin <https-origin> --site <site-id> assets-delete <provider> <asset-id> --expected-version <version>
 niho-edit --origin <https-origin> --site <site-id> assets-restore <provider> <asset-id> --expected-version <version>
+niho-edit --origin <https-origin> --site <site-id> localization-overview
+niho-edit --origin <https-origin> --site <site-id> localization-items-list [--cursor <cursor>]
+niho-edit --origin <https-origin> --site <site-id> localization-items-read <item-key>
+niho-edit --origin <https-origin> --site <site-id> localization-items-command <item-key> --json <input-file|->
+niho-edit --origin <https-origin> --site <site-id> localization-items-translate <item-key> --json <input-file|->
+niho-edit --origin <https-origin> --site <site-id> localization-jobs-read <job-id>
+niho-edit --origin <https-origin> --site <site-id> localization-catalog-advance --json <input-file|->
+niho-edit --origin <https-origin> --site <site-id> localization-preview <item-key> <preview-id> [--cursor <cursor>]
+niho-edit --origin <https-origin> --site <site-id> localization-release-read
+niho-edit --origin <https-origin> --site <site-id> localization-release-prepare --json <input-file|->
+niho-edit --origin <https-origin> --site <site-id> localization-release-apply --json <input-file|->
+niho-edit --origin <https-origin> --site <site-id> localization-settings-save --json <input-file|->
 
 Set NIHO_EDIT_TOKEN to a short-lived bearer token. read returns { document, version }.
 Edit document while keeping version, then pass the snapshot to save for version-checked persistence.
@@ -248,6 +262,38 @@ async function apiCall(run) {
   }
 }
 
+async function runLocalization(client, operation, values, positionals) {
+  const { id, method } = operation;
+  const itemTarget = ["localization.items.read", "localization.items.command", "localization.items.translate", "localization.preview"].includes(id);
+  const hasCursor = id === "localization.items.list" || id === "localization.preview";
+  const argumentCount = id === "localization.preview" ? 2 : Number(itemTarget || id === "localization.jobs.read");
+  assertCommandOptions(values, method === "GET" ? (hasCursor ? ["cursor"] : []) : ["json"]);
+  if (positionals.length !== argumentCount) throw new CliError("invalid_arguments");
+  const [target, previewId] = positionals;
+  let input = itemTarget ? { itemKey: target } : {};
+  if (id === "localization.jobs.read") input.jobId = target;
+  if (id === "localization.preview") input.previewId = previewId;
+  if (hasCursor) input.cursor = values.cursor ?? null;
+  if (method !== "GET") {
+    if (!values.json) throw new CliError("missing_json_input");
+    const data = await readJson(values.json === "-" ? process.stdin : createReadStream(values.json), EDITING_LOCALIZATION_INPUT_BYTES);
+    if (itemTarget && Object.hasOwn(data, "itemKey")) throw new CliError("invalid_json_input");
+    input = { ...data, ...input };
+  }
+
+  let result;
+  try { result = await apiCall(() => client.executeLocalization(id, input, AbortSignal.timeout(30_000))); }
+  catch (error) {
+    if (error instanceof TypeError) throw new CliError(method === "GET" ? "invalid_arguments" : "invalid_json_input");
+    throw error;
+  }
+  if (result.status === "conflict") {
+    emit(editingLocalizationConflictBody(result), 409, 1, id);
+    return;
+  }
+  emit(result, 200, 0, id);
+}
+
 async function main() {
   const { values, positionals } = argsFromCli();
   if (values.help) { process.stdout.write(`${USAGE}\n`); return; }
@@ -281,6 +327,13 @@ async function main() {
     Authorization: `Bearer ${token}`,
     ...accessHeaders
   } });
+
+  if (command?.startsWith("localization-")) {
+    const operation = EDITING_OPERATIONS.find((entry) => entry.id.startsWith("localization.") && entry.id.replaceAll(".", "-") === command);
+    if (!operation) throw new CliError("invalid_arguments");
+    await runLocalization(client, operation, values, positionals.slice(1));
+    return;
+  }
 
   if (command === "assets-list") {
     assertCommandOptions(values, ["search", "kind", "provider", "limit", "cursor", "folder-id", "recent"]);

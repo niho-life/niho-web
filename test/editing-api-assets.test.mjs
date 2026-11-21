@@ -38,7 +38,7 @@ test("asset operations are discoverable with independent permissions and stable 
   assert.equal(discovery.status, 200);
   assert.deepEqual(discovery.body.operations.map(({ id }) => id), ["assets.list", "assets.usages", "assets.resolve", "assets.upload-intent"]);
   assert.ok(discovery.body.operations.every((operation) => operation.inputSchema && operation.resultSchema && operation.errors.length));
-  assert.deepEqual(EDITING_OPERATIONS.slice(-7).map(({ id }) => id), ["assets.list", "assets.usages", "assets.resolve", "assets.update", "assets.upload-intent", "assets.delete", "assets.restore"]);
+  assert.deepEqual(EDITING_OPERATIONS.filter(({ id }) => id.startsWith("assets.")).map(({ id }) => id), ["assets.list", "assets.usages", "assets.resolve", "assets.update", "assets.upload-intent", "assets.delete", "assets.restore"]);
 });
 
 test("asset client uses versioned host operations and validates stable asset references", async () => {

@@ -2,10 +2,9 @@ import type { BlockContracts, ComponentLibrary, PageDocument } from "./types.js"
 import { parsePageDocument } from "./document.js";
 import { normalizePageChange, validatePageChangePlan, validateReleasePlan } from "./editor-model.js";
 import type { EditorBreakpointSettings, EditorBreakpointSettingsSaveResult, EditorBreakpointSettingsSnapshot, EditorPage, EditorPageChange, EditorPageChangePlan, EditorReleasePlan, EditorReleaseRequest, EditorSite } from "./editor-types.js";
-import { identifier, isSafeHttpsOrigin, localeCode } from "./validation-utils.js";
+import { assetId, identifier, isSafeHttpsOrigin, localeCode, record } from "./validation-utils.js";
 import type { SiteStyles } from "./site-styles.js";
 import { parseBreakpointSettings } from "./style-model.js";
-import { assetId } from "./validation-utils.js";
 import {
   parseAssetDeleteResult, parseAssetListResult, parseAssetReference, parseAssetRestoreResult, parseAssetUpdateResult,
   parseAssetUploadIntent, parseAssetUsages, parseResolvedAssets, ASSET_LIMITS,
@@ -16,6 +15,20 @@ import {
   parseCollectionSaveResult, parseCollectionSchemaResult, parseCollectionValues,
   type CollectionDefinition, type CollectionFieldError, type CollectionItem, type CollectionValues
 } from "./collection-model.js";
+import { LOCALIZATION_EDITING_OPERATIONS, type EditingLocalizationCapability } from "./editing-localization-schemas.js";
+import {
+  editingLocalizationCapability, editingLocalizationConflictBody, editingLocalizationOperation, editingLocalizationScope,
+  EDITING_LOCALIZATION_INPUT_BYTES, EDITING_LOCALIZATION_RESULT_BYTES,
+  parseEditingLocalizationInput, parseEditingLocalizationResult,
+  type EditingLocalizationHostAdapter, type EditingLocalizationInput, type EditingLocalizationOperation, type EditingLocalizationOperationId,
+} from "./editing-localization.js";
+import { jsonBytes } from "./localization-workspace-model.js";
+
+export type {
+  EditingLocalizationHostAdapter, EditingLocalizationInput, EditingLocalizationOperationId, EditingLocalizationReleaseApplyInput,
+  EditingLocalizationReleasePrepareInput, EditingLocalizationResult,
+} from "./editing-localization.js";
+export type { EditingLocalizationCapability } from "./editing-localization-schemas.js";
 
 /** Stable errors returned by the host-neutral page editing wire contract. */
 export const EDITING_API_ERRORS = Object.freeze([
@@ -35,7 +48,8 @@ export type EditingPageTarget = {
   readonly pageId: string;
   readonly locale: string;
 };
-export type EditingAuthorizationScope = { readonly siteId: string; readonly pageId?: string; readonly locale?: string; readonly collectionId?: string; readonly itemId?: string; readonly assetProvider?: string; readonly assetId?: string };
+export type EditingAuthorizationScope = { readonly siteId: string; readonly pageId?: string; readonly locale?: string; readonly collectionId?: string; readonly itemId?: string; readonly assetProvider?: string; readonly assetId?: string;
+  readonly localizationItemKey?: string; readonly localizationUnitId?: string; readonly localizationJobId?: string; readonly localizationPreviewId?: string };
 export type EditingPageSnapshot = {
   readonly document: PageDocument;
   readonly version: string;
@@ -86,6 +100,7 @@ export type PageEditingValidationContext = { readonly blocks?: BlockContracts; r
 
 export type JsonSchema = boolean | {
   readonly $ref?: string;
+  readonly $defs?: Readonly<Record<string, JsonSchema>>;
   readonly type?: string;
   readonly const?: string | number | boolean | null;
   readonly minimum?: number;
@@ -95,6 +110,8 @@ export type JsonSchema = boolean | {
   readonly required?: readonly string[];
   readonly additionalProperties?: boolean;
   readonly properties?: Readonly<Record<string, JsonSchema>>;
+  readonly pattern?: string;
+  readonly uniqueItems?: boolean;
   readonly minLength?: number;
   readonly maxLength?: number;
   readonly maxItems?: number;
@@ -104,7 +121,8 @@ export type JsonSchema = boolean | {
 type EditingOperationDefinitionShape = {
   readonly id: string;
   readonly capability: "pages.read" | "pages.edit" | "pages.publish" | "site.settings.read" | "site.settings.write" | "cms.read" | "cms.edit" | "cms.publish"
-    | "assets.read" | "assets.edit" | "assets.upload" | "assets.delete";
+    | "assets.read" | "assets.edit" | "assets.upload" | "assets.delete" | EditingLocalizationCapability;
+  readonly capabilityByInput?: { readonly field: "action" | "operation"; readonly values: Readonly<Record<string, EditingLocalizationCapability>> };
   readonly method: "GET" | "PUT" | "POST";
   readonly path: string;
   readonly inputSchema: JsonSchema;
@@ -394,16 +412,24 @@ export const EDITING_OPERATIONS = Object.freeze([
     inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId", "provider", "assetId", "expectedVersion"]), additionalProperties: false, properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), provider: Object.freeze({ type: "string" }), assetId: Object.freeze({ type: "string" }), expectedVersion: versionSchema }) }),
     resultSchema: Object.freeze({ oneOf: Object.freeze([Object.freeze({ type: "object", required: Object.freeze(["status"]), properties: Object.freeze({ status: Object.freeze({ enum: Object.freeze(["restored", "conflict"]) }) }) }),
       Object.freeze({ type: "object", required: Object.freeze(["status", "reason"]), properties: Object.freeze({ status: Object.freeze({ const: "rejected" }), reason: Object.freeze({ enum: Object.freeze(["permission", "invalid"]) }) }) })]) }),
-    errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found"] as const) })
+    errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found"] as const) }),
+  ...LOCALIZATION_EDITING_OPERATIONS,
 ] as const satisfies readonly EditingOperationDefinitionShape[]);
 /** Operation metadata and IDs have a single source: the catalog above. */
 export type EditingOperationDefinition = (typeof EDITING_OPERATIONS)[number];
+type CapabilityValues<T> = T extends { readonly capabilityByInput: { readonly values: infer Values } } ? Values[keyof Values] : never;
+export type EditingCapability = EditingOperationDefinition["capability"] | CapabilityValues<EditingOperationDefinition>;
+function operationCapabilities(operation: EditingOperationDefinition): readonly EditingCapability[] {
+  if ("capabilityByInput" in operation) return [...new Set(Object.values(operation.capabilityByInput.values))];
+  return [operation.capability];
+}
+export const EDITING_CAPABILITIES: readonly EditingCapability[] = Object.freeze([...new Set(EDITING_OPERATIONS.flatMap(operationCapabilities))]);
 
 export type PageEditingHostAdapter = {
   /** Host owns login/session/API-key verification. Return null for an unauthenticated request. */
   authenticate(request: Request): Promise<EditingActor | null>;
   /** Resolve permissions from the authenticated principal for each request. */
-  authorize(actor: EditingActor, capability: EditingOperationDefinition["capability"], target: EditingAuthorizationScope): Promise<boolean>;
+  authorize(actor: EditingActor, capability: EditingCapability, target: EditingAuthorizationScope): Promise<boolean>;
   /** Trusted host schemas needed for custom blocks, component instances and site-wide style tokens. */
   validationContext?(actor: EditingActor, target: EditingPageTarget): Promise<PageEditingValidationContext>;
   readPage(actor: EditingActor, target: EditingPageTarget): Promise<EditingPageSnapshot | null>;
@@ -438,6 +464,8 @@ export type PageEditingHostAdapter = {
   prepareCmsPublish?(actor: EditingActor, target: EditingCmsTarget, expectedVersion: string, operationId: string, options?: { readonly redirect?: boolean }): Promise<EditingCmsPublishPrepareResult>;
   publishCmsItem?(actor: EditingActor, target: EditingCmsTarget, input: { readonly expectedVersion: string; readonly operationId: string; readonly confirmationToken: string; readonly redirect?: boolean }): Promise<EditingCmsPublishApplyResult>;
   readCmsOperationStatus?(actor: EditingActor, siteId: string, operationId: string): Promise<EditingCmsOperationStatus | null>;
+  /** Optional site-owned translation workspace operations. */
+  localization?: EditingLocalizationHostAdapter;
   /** Optional asset operations use host-owned storage and the same actor authorization/audit path. */
   listAssets?(actor: EditingActor, query: AssetListQuery): Promise<unknown | null>;
   listAssetUsages?(actor: EditingActor, siteId: string, reference: AssetReference): Promise<unknown>;
@@ -467,10 +495,10 @@ function pageTarget(siteId: unknown, pageId: unknown, locale: unknown): EditingP
   try { return { siteId: identifier(siteId, "$target.siteId"), pageId: identifier(pageId, "$target.pageId"), locale: localeCode(locale, "$target.locale") }; }
   catch { return null; }
 }
-async function readBody(request: Request): Promise<Record<string, unknown> | null> {
+async function readBody(request: Request, maxBytes = 4 * 1024 * 1024): Promise<Record<string, unknown> | null> {
   if (request.headers.get("Content-Type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") return null;
   const length = request.headers.get("Content-Length");
-  if (length !== null && (!/^\d+$/u.test(length) || Number(length) > 4 * 1024 * 1024)) return null;
+  if (length !== null && (!/^\d+$/u.test(length) || Number(length) > maxBytes)) return null;
   if (!request.body) return null;
   const reader = request.body.getReader(), chunks: Uint8Array[] = [];
   let size = 0;
@@ -478,7 +506,7 @@ async function readBody(request: Request): Promise<Record<string, unknown> | nul
     const chunk = await reader.read();
     if (chunk.done) break;
     size += chunk.value.byteLength;
-    if (size > 4 * 1024 * 1024) { await reader.cancel(); return null; }
+    if (size > maxBytes) { await reader.cancel(); return null; }
     chunks.push(chunk.value);
   }
   const bytes = new Uint8Array(size); let offset = 0;
@@ -495,6 +523,8 @@ function exactKeys(value: Record<string, unknown>, expected: readonly string[]):
 const OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 function validOperationId(value: unknown): value is string { return typeof value === "string" && OPERATION_ID.test(value); }
 function supportsOperation(adapter: PageEditingHostAdapter, operation: EditingOperationDefinition): boolean {
+  const localization = editingLocalizationOperation(operation.id);
+  if (localization) return typeof adapter.localization?.[localization.id] === "function";
   if (operation.id === "pages.release-plan" || operation.id === "pages.release") return typeof adapter.releaseSite === "function" && typeof adapter.preparePageRelease === "function" && typeof adapter.publishPage === "function";
   if (operation.id === "pages.release-set-plan" || operation.id === "pages.release-set") return typeof adapter.releaseSite === "function" && typeof adapter.preparePageReleaseSet === "function" && typeof adapter.publishPageReleaseSet === "function";
   if (operation.id === "pages.release-set-status") return typeof adapter.readPageReleaseSetStatus === "function";
@@ -710,6 +740,65 @@ function editingApiBasePath(value: string | undefined): string {
   return basePath;
 }
 
+async function handleEditingLocalization<Id extends EditingLocalizationOperationId>(
+  adapter: PageEditingHostAdapter, request: Request, url: URL, siteId: string,
+  operation: EditingLocalizationOperation & { readonly id: Id },
+): Promise<Response> {
+  if (request.method !== operation.method) return fail("method_not_allowed", 405);
+  let actor: EditingActor | null;
+  try { actor = await adapter.authenticate(request); }
+  catch { return fail("host_failure", 503); }
+  if (!actor) return fail("authentication_required", 401);
+  if (!validActor(actor)) return fail("host_contract_violation", 502);
+
+  let input: EditingLocalizationInput<Id>;
+  try {
+    if (operation.method === "GET") {
+      if (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length")) || url.search.length > 4096) return fail("invalid_request", 400);
+      const query: Record<string, string> = Object.create(null);
+      let duplicate = false;
+      url.searchParams.forEach((value, name) => {
+        if (Object.hasOwn(query, name)) duplicate = true;
+        query[name] = value;
+      });
+      if (duplicate) return fail("invalid_request", 400);
+      input = parseEditingLocalizationInput(operation.id, query);
+    } else {
+      if (url.search) return fail("invalid_request", 400);
+      const body = await readBody(request, EDITING_LOCALIZATION_INPUT_BYTES);
+      if (!body || body.siteId !== siteId) return fail("invalid_request", 400);
+      const { siteId: _siteId, ...data } = body;
+      input = parseEditingLocalizationInput(operation.id, data);
+    }
+  } catch { return fail("invalid_request", 400); }
+
+  const capability = editingLocalizationCapability(operation, input);
+  try {
+    if (await adapter.authorize(actor, capability, editingLocalizationScope(siteId, input)) !== true) return fail("forbidden", 403);
+  } catch { return fail("host_failure", 503); }
+
+  let raw: unknown;
+  try { raw = await adapter.localization![operation.id]!(actor, siteId, input); }
+  catch { return fail("host_failure", 503); }
+  try {
+    const source = record(raw, "$result");
+    if (source.status === "duplicate" && "operationId" in input && operation.errors.includes("duplicate_operation")
+      && exactKeys(source, ["status"])) return fail("duplicate_operation", 409);
+    if (source.status === "invalid_token" && (operation.id === "localization.release.apply"
+      || operation.id === "localization.release.prepare" && "resumeToken" in input && input.resumeToken !== null)
+      && exactKeys(source, ["status"])) return fail("invalid_request", 400);
+    const result = parseEditingLocalizationResult(operation.id, source, input);
+    if (result.status === "forbidden") return fail("forbidden", 403);
+    if (result.status === "not_found") return fail("not_found", 404);
+    if (result.status === "invalid") return fail("validation_failed", 422);
+    if (result.status === "expired") return fail("invalid_request", 400);
+    const conflict = result.status === "conflict";
+    const payload = conflict ? editingLocalizationConflictBody(result as typeof result & { status: "conflict" }) : result;
+    if (jsonBytes(payload) > EDITING_LOCALIZATION_RESULT_BYTES) return fail("host_contract_violation", 502);
+    return response(payload, conflict ? 409 : 200);
+  } catch { return fail("host_contract_violation", 502); }
+}
+
 export function createPageEditingApi(adapter: PageEditingHostAdapter, options: PageEditingApiOptions = {}): (request: Request) => Promise<Response> {
   const basePath = editingApiBasePath(options.basePath);
   return async (request) => {
@@ -730,11 +819,27 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       const operations = [];
       for (const operation of EDITING_OPERATIONS) {
         if (!supportsOperation(adapter, operation)) continue;
-        try { if (await adapter.authorize(actor, operation.capability, { siteId }) === true) operations.push(operation); }
+        try {
+          for (const capability of operationCapabilities(operation)) {
+            if (await adapter.authorize(actor, capability, { siteId }) === true) {
+              operations.push(operation);
+              break;
+            }
+          }
+        }
         catch { return fail("host_failure", 503); }
       }
       if (operations.length === 0) return fail("forbidden", 403);
       return response({ apiVersion: "v1", siteId, operations });
+    }
+    const localizationMatch = new RegExp(`^${basePath}/sites/([^/]+)/operations/(localization\\.[a-z.]+)$`, "u").exec(url.pathname);
+    if (localizationMatch) {
+      let siteId: string;
+      try { siteId = identifier(decodeURIComponent(localizationMatch[1]!), "$siteId"); }
+      catch { return fail("invalid_request", 400); }
+      const operation = editingLocalizationOperation(localizationMatch[2]!);
+      if (!operation || typeof adapter.localization?.[operation.id] !== "function") return fail("not_found", 404);
+      return handleEditingLocalization(adapter, request, url, siteId, operation);
     }
     const releaseSetMatch = new RegExp(`^${basePath}/sites/([^/]+)/operations/(pages\\.release-set-plan|pages\\.release-set|pages\\.release-set-status)(?:/([^/]+))?$`, "u").exec(url.pathname);
     if (releaseSetMatch) {
