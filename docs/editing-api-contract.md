@@ -2,7 +2,7 @@
 
 `@niho/web/editing-api` は、GUIと機械クライアントが同じページ本文・CMS項目・ページ管理・サイト設定・素材の正本を編集するためのReact非依存HTTP契約です。Studio UIやStudio Workerを必要条件にしません。各サイトのホストがhandlerを組み込み、認証・権限・永続化・監査記録・公開を所有します。Studio GUIとCUIは同じ操作カタログとwire形式を使い、各クライアントの操作履歴をホストのactorと版に結び付けます。
 
-`@niho/web/editing-client` の `createPageEditingApiClient` は同じwire契約を呼ぶReact非依存clientです。ブラウザーのGUIは既定のsame-origin credentialsまたはhost提供headerを使え、Node CLIはbearer headerと `credentials: "omit"` を使えます。GUIと `niho-edit` CLIはページ本文・CMS項目・ページ管理・ブレークポイント・素材の同じ操作を呼べます。Studio GUIはAccess sessionをWorker BFFで短期の操作別tokenへ委任し、サイトoriginの共通APIへservice bindingで接続します。ブラウザーのAccess tokenやcookieはサイトへ転送しません。
+`@niho/web/editing-client` の `createPageEditingApiClient` は同じwire契約を呼ぶReact非依存clientです。ブラウザーのGUIは既定のsame-origin credentialsまたはhost提供headerを使え、Node CLIはhost bearer headerと `credentials: "omit"` を使えます。ホストorigin自体がCloudflare Accessで保護される場合、`niho-edit` は別途設定されたAccess Service Auth headerも指定originだけに送れます。GUIと `niho-edit` CLIはページ本文・CMS項目・ページ管理・ブレークポイント・素材の同じ操作を呼べます。Studio GUIはAccess sessionをWorker BFFで短期の操作別tokenへ委任し、サイトoriginの共通APIへservice bindingで接続します。ブラウザーのAccess tokenやcookieはサイトへ転送しません。
 
 Studio GUIはページの表示・編集材料の一部（presentation metadata、英語公開状態）を取得するため、引き続きread-onlyの既存snapshot routeも併用します。日本語本文・CMS項目・ページ管理・素材の書込は共通APIを使います。翻訳は別のhost操作です。
 
@@ -56,7 +56,9 @@ Studio GUIはページの表示・編集材料の一部（presentation metadata�
 
 ## CUIでの編集
 
-`niho-edit` はホストAPI originへ直接接続し、ブラウザーやStudio画面を開きません。ホストが発行する短期tokenを環境変数 `NIHO_EDIT_TOKEN` から読み、ページ文書、CMS項目、ページ管理、サイト設定、素材をJSONで操作します。書込には期待版を渡し、公開・作成・保存には呼出側が先に決めたoperation IDを付けます。タイムアウト後は同じIDと同じ入力で再試行できます。PageDocumentの完全な検証は信頼済みcontextを持つホストが行います。ブレークポイント、CMS項目、素材メタデータは読取結果のversionを維持して保存します。
+`niho-edit` はホストAPI originへ直接接続し、ブラウザーやStudio画面を開きません。ホストが発行する短期tokenを環境変数 `NIHO_EDIT_TOKEN` から読み、ページ文書、CMS項目、ページ管理、サイト設定、素材をJSONで操作します。ホストoriginがCloudflare Accessで保護される場合は、環境のSecret Managerなどから `CF_ACCESS_CLIENT_ID` と `CF_ACCESS_CLIENT_SECRET` も渡します。この2つは対になるAccess Service Auth資格情報で、どちらか片方だけの設定はエラーです。Access資格情報は指定したAPI originへの通信だけに使い、`NIHO_EDIT_TOKEN` のhost認証を置き換えません。APIはAccessとhost bearerの両方を検証します。Access redirectは追跡せず、応答に含まれるログインURLも表示しません。素材本体をAPI originと異なるupload originへ送る場合、Access資格情報は転送せず、素材APIが発行した一回限りtokenだけを使います。書込には期待版を渡し、公開・作成・保存には呼出側が先に決めたoperation IDを付けます。タイムアウト後は同じIDと同じ入力で再試行できます。PageDocumentの完全な検証は信頼済みcontextを持つホストが行います。ブレークポイント、CMS項目、素材メタデータは読取結果のversionを維持して保存します。
+
+Accessがログイン画面へredirectした場合、CLIは追跡せず `access_redirect` とHTTP statusをJSON envelopeで返して終了コード1で終了します。redirect先や応答本文は出力しません。資格情報が片方だけ、または形式不正なら、通信前に `invalid_access_credentials` を返します。
 
 ```sh
 niho-edit --origin https://site.example --site site-id discover

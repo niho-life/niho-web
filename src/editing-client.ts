@@ -68,7 +68,7 @@ export type EditingApiClient = {
 
 /** A stable wire error; response bodies and host messages are intentionally not copied into its message. */
 export class EditingApiClientError extends Error {
-  constructor(readonly code: EditingApiErrorCode | "request_failed" | "invalid_response" | "response_too_large" | "transport_error", readonly status: number | null = null, readonly details?: unknown) {
+  constructor(readonly code: EditingApiErrorCode | "request_failed" | "invalid_response" | "response_too_large" | "transport_error" | "redirect_response", readonly status: number | null = null, readonly details?: unknown) {
     super(code);
     this.name = "EditingApiClientError";
   }
@@ -333,6 +333,10 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
     } catch (error) {
       if (signal?.aborted) throw error;
       throw new EditingApiClientError("transport_error");
+    }
+    if (response.status >= 300 && response.status < 400) {
+      await response.body?.cancel().catch(() => {});
+      throw new EditingApiClientError("redirect_response", response.status);
     }
     return { response, body: await responseJson(response) };
   };

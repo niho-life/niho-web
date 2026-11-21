@@ -12,7 +12,8 @@ const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.
 const command = fileURLToPath(new URL("../cli/niho-edit.mjs", import.meta.url));
 const origin = "https://site.example", siteId = fixture.siteId, pageId = fixture.pageId, locale = fixture.locale;
 
-function run(args, { status = 200, result, expectedMethod, expectedUrl, expectedBody, stdin, assertInputBeforeTimeout = false } = {}) {
+function run(args, { status = 200, result, expectedMethod, expectedUrl, expectedBody, stdin, assertInputBeforeTimeout = false,
+  accessClientId = null, accessClientSecret = null, env = {}, token = "fixture-token", location = null } = {}) {
   const timeoutGuard = assertInputBeforeTimeout ? `let stdinEnded = false;
     process.stdin.once("end", () => { stdinEnded = true; });
     const originalTimeout = AbortSignal.timeout.bind(AbortSignal);
@@ -21,15 +22,22 @@ function run(args, { status = 200, result, expectedMethod, expectedUrl, expected
   const source = `${timeoutGuard}globalThis.fetch = async (url, init) => {
     if (String(url) !== ${JSON.stringify(expectedUrl)}) throw new Error("unexpected URL");
     if (init.method !== ${JSON.stringify(expectedMethod)}) throw new Error("unexpected method");
-    if (new Headers(init.headers).get("Authorization") !== "Bearer fixture-token") throw new Error("missing authorization");
+    if (init.redirect !== "manual" || init.credentials !== "omit") throw new Error("unsafe API fetch defaults");
+    const headers = new Headers(init.headers);
+    if (headers.get("Authorization") !== "Bearer fixture-token") throw new Error("missing authorization");
+    if (headers.get("CF-Access-Client-Id") !== ${JSON.stringify(accessClientId)} || headers.get("CF-Access-Client-Secret") !== ${JSON.stringify(accessClientSecret)}) throw new Error("unexpected Access credentials");
     const body = init.body ? JSON.parse(init.body) : null;
     if (JSON.stringify(body) !== ${JSON.stringify(JSON.stringify(expectedBody ?? null))}) throw new Error("unexpected body");
-    return new Response(${JSON.stringify(JSON.stringify(result))}, { status: ${status}, headers: { "Content-Type": "application/json" } });
+    return new Response(${JSON.stringify(JSON.stringify(result ?? {}))}, { status: ${status}, headers: { "Content-Type": "application/json", ...${JSON.stringify(location ? { Location: location } : {})} } });
   };`;
   const preload = `data:text/javascript,${encodeURIComponent(source)}`;
   return new Promise((resolve, reject) => {
+    const childEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !["CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET"].includes(key)));
+    if (token === null) delete childEnv.NIHO_EDIT_TOKEN;
+    else childEnv.NIHO_EDIT_TOKEN = token;
+    Object.assign(childEnv, env);
     const child = spawn(process.execPath, ["--import", preload, command, "--origin", origin, "--site", siteId, ...args], {
-      env: { ...process.env, NIHO_EDIT_TOKEN: "fixture-token" }, stdio: ["pipe", "pipe", "pipe"]
+      env: childEnv, stdio: ["pipe", "pipe", "pipe"]
     });
     child.stdin.end(stdin ?? "");
     let stdout = "", stderr = "";
@@ -40,27 +48,37 @@ function run(args, { status = 200, result, expectedMethod, expectedUrl, expected
   });
 }
 
-function runUpload(args, { uploadUrl, expectedBytes, asset, trustedUploadOrigin = origin }) {
+function runUpload(args, { uploadUrl, expectedBytes, asset, trustedUploadOrigin = origin, accessClientId = null, accessClientSecret = null }) {
   const source = `let calls = 0;
     globalThis.fetch = async (url, init) => {
       calls++;
       if (calls === 1) {
         if (String(url) !== ${JSON.stringify(`${origin}/api/edit/v1/sites/${siteId}/operations/assets.upload-intent`)} || init.method !== "POST") throw new Error("unexpected intent request");
-        if (new Headers(init.headers).get("Authorization") !== "Bearer fixture-token") throw new Error("missing editing token");
+        const headers = new Headers(init.headers);
+        if (headers.get("Authorization") !== "Bearer fixture-token") throw new Error("missing editing token");
+        if (headers.get("CF-Access-Client-Id") !== ${JSON.stringify(accessClientId)} || headers.get("CF-Access-Client-Secret") !== ${JSON.stringify(accessClientSecret)}) throw new Error("missing API Access credentials");
         const body = JSON.parse(init.body);
         if (JSON.stringify(body) !== ${JSON.stringify(JSON.stringify({ name: "sea.png", mimeType: "image/png", bytes: expectedBytes.length, folderId: null, provider: "kamakura-upload" }))}) throw new Error("invalid upload metadata");
         return new Response(JSON.stringify({ uploadUrl: ${JSON.stringify(uploadUrl)}, uploadToken: "short-lived", assetId: ${JSON.stringify(asset.id)} }), { status: 201, headers: { "Content-Type": "application/json" } });
       }
       if (calls !== 2 || String(url) !== ${JSON.stringify(uploadUrl)} || init.method !== "PUT" || init.credentials !== "omit" || init.redirect !== "error") throw new Error("unexpected upload PUT");
-      if (new Headers(init.headers).get("Authorization") !== "Bearer short-lived" || new Headers(init.headers).get("Content-Type") !== "image/png") throw new Error("unsafe upload headers");
+      const headers = new Headers(init.headers);
+      if (headers.get("Authorization") !== "Bearer short-lived" || headers.get("Content-Type") !== "image/png") throw new Error("unsafe upload headers");
+      const sameOriginAccess = new URL(${JSON.stringify(uploadUrl)}).origin === ${JSON.stringify(origin)};
+      if (headers.get("CF-Access-Client-Id") !== (sameOriginAccess ? ${JSON.stringify(accessClientId)} : null)
+        || headers.get("CF-Access-Client-Secret") !== (sameOriginAccess ? ${JSON.stringify(accessClientSecret)} : null)) throw new Error("Access credentials crossed origins");
       if (!Buffer.from(init.body).equals(Buffer.from(${JSON.stringify(Buffer.from(expectedBytes).toString("base64"))}, "base64"))) throw new Error("upload bytes differ");
       return new Response(JSON.stringify({ asset: ${JSON.stringify(asset)} }), { status: 201, headers: { "Content-Type": "application/json" } });
     };
     process.on("beforeExit", () => { if (calls !== ${new URL(uploadUrl).origin === origin || new URL(uploadUrl).origin === trustedUploadOrigin ? 2 : 1}) throw new Error("unexpected upload request count"); });`;
   const preload = `data:text/javascript,${encodeURIComponent(source)}`;
   return new Promise((resolve, reject) => {
+    const childEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !["CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET"].includes(key)));
+    childEnv.NIHO_EDIT_TOKEN = "fixture-token";
+    if (accessClientId !== null) childEnv.CF_ACCESS_CLIENT_ID = accessClientId;
+    if (accessClientSecret !== null) childEnv.CF_ACCESS_CLIENT_SECRET = accessClientSecret;
     const child = spawn(process.execPath, ["--import", preload, command, "--origin", origin, "--site", siteId, ...args], {
-      env: { ...process.env, NIHO_EDIT_TOKEN: "fixture-token", NIHO_EDIT_UPLOAD_ORIGIN: trustedUploadOrigin }, stdio: ["pipe", "pipe", "pipe"]
+      env: { ...childEnv, NIHO_EDIT_UPLOAD_ORIGIN: trustedUploadOrigin }, stdio: ["pipe", "pipe", "pipe"]
     });
     child.stdin.end("");
     let stdout = "", stderr = "";
@@ -76,11 +94,59 @@ test("niho-edit reads a page over the host API without Studio or a browser", asy
   const result = await run(["read", pageId, "--locale", locale], {
     expectedMethod: "GET", expectedUrl: `${origin}${path}`, result: { document: fixture, version: "v1" }
   });
-  assert.equal(result.exitCode, 0, result.stderr);
+  assert.equal(result.exitCode, 0, `${result.stderr}\n${result.stdout}`);
   assert.deepEqual(JSON.parse(result.stdout), { document: fixture, version: "v1" });
   assert.deepEqual(EDITING_OPERATIONS.map(({ id }) => id), ["pages.read", "pages.save", "pages.release-plan", "pages.release", "pages.release-set-plan", "pages.release-set", "pages.release-set-status", "pages.catalog", "pages.change-prepare", "pages.change-apply",
     "cms.schema", "cms.list", "cms.read", "cms.create", "cms.save", "cms.publish-plan", "cms.publish", "cms.operation-status", "site.breakpoints.read", "site.breakpoints.save",
     "assets.list", "assets.usages", "assets.resolve", "assets.update", "assets.upload-intent", "assets.delete", "assets.restore"]);
+});
+
+test("niho-edit sends Cloudflare Access service credentials and keeps host bearer auth", async () => {
+  const accessClientId = `${"a".repeat(32)}.access`, accessClientSecret = "fixture-access-secret";
+  const path = `/api/edit/v1/sites/${siteId}/operations/pages.read/${pageId}?locale=${encodeURIComponent(locale)}`;
+  const result = await run(["read", pageId, "--locale", locale], {
+    expectedMethod: "GET", expectedUrl: `${origin}${path}`, result: { document: fixture, version: "v1" },
+    accessClientId, accessClientSecret, env: { CF_ACCESS_CLIENT_ID: accessClientId, CF_ACCESS_CLIENT_SECRET: accessClientSecret }
+  });
+  assert.equal(result.exitCode, 0, `${result.stderr}\n${result.stdout}`);
+  assert.deepEqual(JSON.parse(result.stdout), { document: fixture, version: "v1" });
+  assert.doesNotMatch(result.stdout + result.stderr, /fixture-access-secret/u);
+});
+
+test("niho-edit rejects partial Access service credentials without making a request", async () => {
+  const accessClientId = `${"b".repeat(32)}.access`;
+  const path = `/api/edit/v1/sites/${siteId}/operations/pages.read/${pageId}?locale=${encodeURIComponent(locale)}`;
+  const result = await run(["read", pageId, "--locale", locale], {
+    expectedMethod: "GET", expectedUrl: `${origin}${path}`,
+    env: { CF_ACCESS_CLIENT_ID: accessClientId }
+  });
+  assert.equal(result.exitCode, 1);
+  assert.deepEqual(JSON.parse(result.stdout), { apiVersion: "v1", httpStatus: null, operation: null, result: { error: "invalid_access_credentials" } });
+  assert.doesNotMatch(result.stdout + result.stderr, new RegExp(accessClientId, "u"));
+});
+
+test("niho-edit reports Access redirects without following or exposing the destination", async () => {
+  const accessClientId = `${"c".repeat(32)}.access`, accessClientSecret = "redirect-fixture-secret";
+  const destination = "https://access-login.example/cdn-cgi/access/login?token=redirect-fixture-secret";
+  const path = `/api/edit/v1/sites/${siteId}/operations/pages.read/${pageId}?locale=${encodeURIComponent(locale)}`;
+  const result = await run(["read", pageId, "--locale", locale], {
+    status: 302, location: destination, expectedMethod: "GET", expectedUrl: `${origin}${path}`,
+    accessClientId, accessClientSecret, env: { CF_ACCESS_CLIENT_ID: accessClientId, CF_ACCESS_CLIENT_SECRET: accessClientSecret }
+  });
+  assert.equal(result.exitCode, 1);
+  assert.deepEqual(JSON.parse(result.stdout), { apiVersion: "v1", httpStatus: 302, operation: null, result: { error: "access_redirect" } });
+  assert.doesNotMatch(result.stdout + result.stderr, /access-login|redirect-fixture-secret|Location/u);
+});
+
+test("Cloudflare Access service credentials do not replace the host editing token", async () => {
+  const accessClientId = `${"d".repeat(32)}.access`, accessClientSecret = "fixture-access-secret";
+  const path = `/api/edit/v1/sites/${siteId}/operations/pages.read/${pageId}?locale=${encodeURIComponent(locale)}`;
+  const result = await run(["read", pageId, "--locale", locale], {
+    expectedMethod: "GET", expectedUrl: `${origin}${path}`, token: null,
+    env: { CF_ACCESS_CLIENT_ID: accessClientId, CF_ACCESS_CLIENT_SECRET: accessClientSecret }
+  });
+  assert.equal(result.exitCode, 1);
+  assert.deepEqual(JSON.parse(result.stdout), { apiVersion: "v1", httpStatus: null, operation: null, result: { error: "missing_token" } });
 });
 
 test("niho-edit lists and updates stable assets through the shared host API", async (t) => {
@@ -110,8 +176,11 @@ test("niho-edit uploads bytes with a same-origin one-time asset token", async (t
   await writeFile(file, bytes);
   const asset = { provider: "kamakura-upload", id: "123e4567-e89b-42d3-a456-426614174000", siteId, kind: "image", status: "ready", name: "sea.png", mimeType: "image/png", bytes: bytes.length, width: 1, height: 1, alt: "", version: "etag-v1", updatedAt: "2026-11-20T00:00:00Z" };
   const uploadUrl = `${origin}/internal/studio/asset-upload/${asset.id}`;
-  const result = await runUpload(["assets-upload", file, "--mime-type", "image/png", "--provider", asset.provider], { uploadUrl, expectedBytes: bytes, asset });
-  assert.equal(result.exitCode, 0, result.stderr);
+  const accessClientId = `${"e".repeat(32)}.access`, accessClientSecret = "fixture-access-secret";
+  const result = await runUpload(["assets-upload", file, "--mime-type", "image/png", "--provider", asset.provider], {
+    uploadUrl, expectedBytes: bytes, asset, accessClientId, accessClientSecret
+  });
+  assert.equal(result.exitCode, 0, `${result.stderr}\n${result.stdout}`);
   assert.deepEqual(JSON.parse(result.stdout), { apiVersion: "v1", httpStatus: 201, operation: "assets.upload", result: { status: "uploaded", asset } });
 });
 
@@ -123,8 +192,11 @@ test("niho-edit uploads to a configured host upload origin", async (t) => {
   const asset = { provider: "kamakura-upload", id: "123e4567-e89b-42d3-a456-426614174000", siteId, kind: "image", status: "ready", name: "sea.png", mimeType: "image/png", bytes: bytes.length, width: 1, height: 1, alt: "", version: "etag-v1", updatedAt: "2026-11-20T00:00:00Z" };
   const trustedUploadOrigin = "https://next-site.example";
   const uploadUrl = `${trustedUploadOrigin}/internal/studio/asset-upload/${asset.id}`;
-  const result = await runUpload(["assets-upload", file, "--mime-type", "image/png", "--provider", asset.provider, "--upload-origin", trustedUploadOrigin], { uploadUrl, expectedBytes: bytes, asset, trustedUploadOrigin });
-  assert.equal(result.exitCode, 0, result.stderr);
+  const accessClientId = `${"f".repeat(32)}.access`, accessClientSecret = "fixture-access-secret";
+  const result = await runUpload(["assets-upload", file, "--mime-type", "image/png", "--provider", asset.provider, "--upload-origin", trustedUploadOrigin], {
+    uploadUrl, expectedBytes: bytes, asset, trustedUploadOrigin, accessClientId, accessClientSecret
+  });
+  assert.equal(result.exitCode, 0, `${result.stderr}\n${result.stdout}`);
   assert.deepEqual(JSON.parse(result.stdout).result, { status: "uploaded", asset });
 });
 

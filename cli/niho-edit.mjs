@@ -6,6 +6,7 @@ import { parseArgs } from "node:util";
 import { createPageEditingApiClient, EditingApiClientError, isEditingApiVersion, parseEditingPageDocumentEnvelope } from "../dist/editing-client.js";
 import { parseAssetUploadResult } from "../dist/assets.js";
 import { parseBreakpointSettings } from "../dist/style-model.js";
+import { SERVICE_CLIENT_ID } from "./operations.mjs";
 
 const USAGE = `niho-edit --origin <https-origin> --site <site-id> discover
 niho-edit --origin <https-origin> --site <site-id> read <page-id> --locale <locale>
@@ -238,7 +239,10 @@ function stableJson(value) {
 async function apiCall(run) {
   try { return await run(); }
   catch (error) {
-    if (error instanceof EditingApiClientError) throw new CliError(error.code, error.status);
+    if (error instanceof EditingApiClientError) {
+      if (error.code === "redirect_response") throw new CliError("access_redirect", error.status);
+      throw new CliError(error.code, error.status);
+    }
     if (error?.name === "AbortError" || error?.name === "TimeoutError") throw new CliError("transport_error");
     throw error;
   }
@@ -263,7 +267,20 @@ async function main() {
   if (!IDENTIFIER.test(values.site ?? "")) throw new CliError("invalid_site");
   const token = process.env.NIHO_EDIT_TOKEN;
   if (typeof token !== "string" || !token || token.length > 4096 || /[\u0000-\u001f\u007f]/u.test(token)) throw new CliError("missing_token");
-  const client = createPageEditingApiClient({ origin: baseOrigin, siteId: values.site, credentials: "omit", headers: { Authorization: `Bearer ${token}` } });
+  const accessClientId = process.env.CF_ACCESS_CLIENT_ID;
+  const accessClientSecret = process.env.CF_ACCESS_CLIENT_SECRET;
+  const hasAccessCredentials = accessClientId !== undefined || accessClientSecret !== undefined;
+  if (hasAccessCredentials && (!SERVICE_CLIENT_ID.test(accessClientId ?? "") || !/^[\x21-\x7e]{1,512}$/u.test(accessClientSecret ?? ""))) {
+    throw new CliError("invalid_access_credentials");
+  }
+  const accessHeaders = hasAccessCredentials ? {
+    "CF-Access-Client-Id": accessClientId,
+    "CF-Access-Client-Secret": accessClientSecret
+  } : {};
+  const client = createPageEditingApiClient({ origin: baseOrigin, siteId: values.site, credentials: "omit", headers: {
+    Authorization: `Bearer ${token}`,
+    ...accessHeaders
+  } });
 
   if (command === "assets-list") {
     assertCommandOptions(values, ["search", "kind", "provider", "limit", "cursor", "folder-id", "recent"]);
@@ -319,7 +336,8 @@ async function main() {
     let uploaded;
     try {
       const response = await fetch(intent.uploadUrl, { method: "PUT", credentials: "omit", cache: "no-store", redirect: "error", signal: AbortSignal.timeout(120_000),
-        headers: { Authorization: `Bearer ${intent.uploadToken}`, "Content-Type": mimeType }, body: new Uint8Array(bytes) });
+        headers: { Authorization: `Bearer ${intent.uploadToken}`, "Content-Type": mimeType,
+          ...(uploadUrl.origin === baseOrigin ? accessHeaders : {}) }, body: new Uint8Array(bytes) });
       if (!response.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")) throw new CliError("upload_rejected", response.status);
       const body = await response.json();
       if (!response.ok) throw new CliError("upload_rejected", response.status);
