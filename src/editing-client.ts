@@ -231,7 +231,7 @@ function assertTarget(document: PageDocument, target: EditingPageTarget): void {
 }
 const OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 function normalizePageReleaseSetItems(value: unknown, siteId: string): EditingPageReleaseSetItem[] {
-  if (!Array.isArray(value) || value.length < 2 || value.length > 50) throw new TypeError("page release set must contain 2 to 50 items");
+  if (!Array.isArray(value) || value.length < 1 || value.length > 50) throw new TypeError("page release set must contain 1 to 50 items");
   const items: EditingPageReleaseSetItem[] = [], seen = new Set<string>();
   for (const raw of value) {
     if (!plainRecord(raw) || Object.keys(raw).some((key) => !["target", "expectedVersion", "componentsVersion", "presentationVersion"].includes(key))
@@ -264,7 +264,7 @@ function parsePageReleaseSetPlan(value: unknown, siteId: string, operationId: st
 }
 function parsePageReleaseSetResult(value: unknown, siteId: string, operationId: string, expectedItems?: readonly EditingPageReleaseSetItem[]): Exclude<EditingPageReleaseSetResult, { status: "conflict" }> {
   if (!plainRecord(value) || !exactKeys(value, ["status", "operationId", "items"]) || value.operationId !== operationId
-    || value.status !== "completed" && value.status !== "publishing" || !Array.isArray(value.items) || value.items.length < 2 || value.items.length > 50
+    || value.status !== "completed" && value.status !== "publishing" || !Array.isArray(value.items) || value.items.length < 1 || value.items.length > 50
     || expectedItems && value.items.length !== expectedItems.length) throw new EditingApiClientError("invalid_response");
   const seen = new Set<string>(), items: EditingPageReleaseSetItemResult[] = [];
   let hasPending = false;

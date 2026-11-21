@@ -55,7 +55,7 @@ niho-edit --origin <https-origin> --site <site-id> localization-settings-save --
 Set NIHO_EDIT_TOKEN to a short-lived bearer token. read returns { document, version }.
 Edit document while keeping version, then pass the snapshot to save for version-checked persistence.
 Review the release plan before applying it. Keep and reuse the same operation ID when retrying a release.
-For a page release set, items-file is { "items": [{ "target": { "siteId", "pageId", "locale" }, "expectedVersion", "componentsVersion?", "presentationVersion?" }, ...] }.
+For a page release set, items-file contains 1 to 50 items: { "items": [{ "target": { "siteId", "pageId", "locale" }, "expectedVersion", "componentsVersion?", "presentationVersion?" }, ...] }.
 The plan is bound to the changed targets and versions. Results report each page as released, conflict, or pending.
 Apply the same saved plan again after a timeout to resume unfinished pages without republishing completed pages, then query page-release-set-status with its operation ID.`;
 const MAX_INPUT_BYTES = 4 * 1024 * 1024;
@@ -167,7 +167,7 @@ async function inputPageManagementJson(path, maximumBytes) {
 }
 async function inputPageReleaseSet(path, siteId) {
   const source = await inputPageManagementJson(path, MAX_INPUT_BYTES);
-  if (Object.keys(source).sort().join(",") !== "items" || !Array.isArray(source.items) || source.items.length < 2 || source.items.length > 50) throw new CliError("invalid_page_release_set");
+  if (Object.keys(source).sort().join(",") !== "items" || !Array.isArray(source.items) || source.items.length < 1 || source.items.length > 50) throw new CliError("invalid_page_release_set");
   const seen = new Set();
   for (const item of source.items) {
     if (!item || typeof item !== "object" || Array.isArray(item) || Object.keys(item).some((key) => !["target", "expectedVersion", "componentsVersion", "presentationVersion"].includes(key))

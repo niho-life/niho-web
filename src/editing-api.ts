@@ -223,7 +223,7 @@ const pageReleaseSetItemSchema: JsonSchema = Object.freeze({
   type: "object", required: Object.freeze(["target", "expectedVersion"]), additionalProperties: false,
   properties: Object.freeze({ target: pageTargetSchema, expectedVersion: versionSchema, componentsVersion: versionSchema, presentationVersion: versionSchema })
 });
-const pageReleaseSetItemsSchema: JsonSchema = Object.freeze({ type: "array", minItems: 2, maxItems: 50, items: pageReleaseSetItemSchema });
+const pageReleaseSetItemsSchema: JsonSchema = Object.freeze({ type: "array", minItems: 1, maxItems: 50, items: pageReleaseSetItemSchema });
 const pageReleaseSetPlanSchema: JsonSchema = Object.freeze({
   type: "object", required: Object.freeze(["siteId", "operationId", "confirmationToken", "domain", "items"]), additionalProperties: false,
   properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), operationId: operationIdSchema, confirmationToken: versionSchema,
@@ -238,7 +238,7 @@ const pageReleaseSetItemResultSchema: JsonSchema = Object.freeze({ oneOf: Object
 const pageReleaseSetResultSchema: JsonSchema = Object.freeze({
   type: "object", required: Object.freeze(["status", "operationId", "items"]), additionalProperties: false,
   properties: Object.freeze({ status: Object.freeze({ type: "string", enum: Object.freeze(["completed", "publishing"]) }), operationId: operationIdSchema,
-    items: Object.freeze({ type: "array", minItems: 2, maxItems: 50, items: pageReleaseSetItemResultSchema }) })
+    items: Object.freeze({ type: "array", minItems: 1, maxItems: 50, items: pageReleaseSetItemResultSchema }) })
 });
 const pageReleaseSetStatusSchema: JsonSchema = Object.freeze({
   type: "object", required: Object.freeze(["status", "operationId"]), additionalProperties: false,
@@ -563,7 +563,7 @@ function cmsTarget(siteId: string, collectionId: unknown, itemId: unknown): Edit
   return collection && item ? { siteId, collectionId: collection, itemId: item } : null;
 }
 function pageReleaseSetItems(value: unknown, siteId: string): EditingPageReleaseSetItem[] | null {
-  if (!Array.isArray(value) || value.length < 2 || value.length > 50) return null;
+  if (!Array.isArray(value) || value.length < 1 || value.length > 50) return null;
   const items: EditingPageReleaseSetItem[] = [];
   const seen = new Set<string>();
   for (const raw of value) {
@@ -598,7 +598,7 @@ function pageReleaseSetApplyResult(value: unknown, siteId: string, operationId: 
   const result = value as Record<string, unknown>;
   if (!exactKeys(result, ["status", "operationId", "items"]) || result.operationId !== operationId
     || result.status !== "completed" && result.status !== "publishing" || !Array.isArray(result.items)
-    || result.items.length < 2 || result.items.length > 50 || expectedItems && result.items.length !== expectedItems.length) return null;
+    || result.items.length < 1 || result.items.length > 50 || expectedItems && result.items.length !== expectedItems.length) return null;
   const seen = new Set<string>(), items: EditingPageReleaseSetItemResult[] = [];
   let hasPending = false;
   for (const [index, raw] of result.items.entries()) {

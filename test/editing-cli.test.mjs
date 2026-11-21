@@ -400,6 +400,22 @@ test("niho-edit prepares, applies and checks an idempotent multi-page release se
   assert.deepEqual(JSON.parse(checked.stdout), status);
 });
 
+test("niho-edit prepares a queued singleton through the generic release-set API", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "niho-edit-single-release-set-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const operationId = "423e4567-e89b-42d3-a456-426614174000";
+  const items = [{ target: { siteId, pageId, locale }, expectedVersion: "v2" }];
+  const itemsPath = join(directory, "items.json");
+  await writeFile(itemsPath, JSON.stringify({ items }));
+  const preparePath = `/api/edit/v1/sites/${siteId}/operations/pages.release-set-plan`;
+  const plan = { siteId, operationId, confirmationToken: "single-set-token", domain: origin, items };
+  const prepared = await run(["page-release-set-plan", "--json", itemsPath, "--operation-id", operationId], {
+    expectedMethod: "POST", expectedUrl: `${origin}${preparePath}`, expectedBody: { siteId, operationId, items }, result: { plan }
+  });
+  assert.equal(prepared.exitCode, 0, prepared.stderr);
+  assert.deepEqual(JSON.parse(prepared.stdout), plan);
+});
+
 test("niho-edit reads translation items and job state directly from the site", async () => {
   const operations = `${origin}/api/edit/v1/sites/${siteId}/operations`;
   const jobs = await run(["localization-jobs-read", "job-1"], {

@@ -16,7 +16,7 @@ Studio GUIはページの表示・編集材料の一部（presentation metadata�
 | `pages.save` | PUT | `/sites/{siteId}/operations/pages.save/{pageId}?locale={locale}` | `pages.edit` | `{ expectedVersion, document }` | `{ status: "saved", version, document }` |
 | `pages.release-plan` | POST | `/sites/{siteId}/operations/pages.release-plan/{pageId}?locale={locale}` | `pages.publish` | expected version, publish/rollback action, optional rollback revision and dependency versions | `{ plan }` |
 | `pages.release` | POST | `/sites/{siteId}/operations/pages.release/{pageId}?locale={locale}` | `pages.publish` | expected version, one-use confirmation token, UUID v4 operation ID | `{ status: "released", operationId, version, document }` |
-| `pages.release-set-plan` | POST | `/sites/{siteId}/operations/pages.release-set-plan` | `pages.publish` per target | `{ siteId, operationId, items: [{ target, expectedVersion, componentsVersion?, presentationVersion? }] }` (2–50 pages) | `{ plan }` |
+| `pages.release-set-plan` | POST | `/sites/{siteId}/operations/pages.release-set-plan` | `pages.publish` per target | `{ siteId, operationId, items: [{ target, expectedVersion, componentsVersion?, presentationVersion? }] }` (1–50 pages) | `{ plan }` |
 | `pages.release-set` | POST | `/sites/{siteId}/operations/pages.release-set` | `pages.publish` per target | the exact plan's site, operation ID, confirmation token and items | `{ status: "completed" | "publishing", operationId, items: [{ target, status: "released", version } | { target, status: "conflict" | "pending" }] }` |
 | `pages.release-set-status` | GET | `/sites/{siteId}/operations/pages.release-set-status/{operationId}` | `pages.read` | site / operation ID | `{ status, operationId, ... }` |
 | `pages.catalog` | GET | `/sites/{siteId}/operations/pages.catalog` | `pages.read` | site ID | `{ version, pages }` |
@@ -42,7 +42,7 @@ Studio GUIはページの表示・編集材料の一部（presentation metadata�
 
 `pages.save` は `expectedVersion` を原子的に比較します。競合時はHTTP 409と `version_conflict` を返し、ホストは古い下書きを上書きしません。documentは受信側で `parsePageDocument` を通し、pathのsite/pageとqueryのlocaleに一致しない文書、任意HTML・JavaScript・CSSなど検証に失敗する値はHTTP 400 `invalid_request` で拒否します。登録ブロック・部品インスタンス・サイト共通スタイルを使うホストは、adapterの `validationContext(actor, target)` から信頼済みの `blocks`・`components`・`siteStyles` を渡します。読み取り、入力文書、保存後の正規文書の検証に同じcontextを使います。
 
-`pages.release-set-*` は同じサイト内で変更した複数ページを、一つの計画・適用操作で公開します。呼出側は各ページの `pages.release-plan` で差分を確認し、公開差分があるページだけを指定します。対象は2〜50件で、重複ページは禁止します。各項目の `expectedVersion` と任意の `componentsVersion` / `presentationVersion`、対象一覧、operation IDを計画へ固定します。APIは全対象の `pages.publish` 権限を個別に確認します。ホストadapterは対象ごとに版を再検証し、結果として `released`（公開済み）、`conflict`（版が変わった）、`pending`（処理中）を返します。全体の `status` は未完了項目があれば `publishing`、全項目が確定したら `completed` です。ある対象の競合で他ページの成功を隠さず、全ページ同時切替も要求しません。トップレベルの `version_conflict` は操作が始まっておらず、公開済みページがない場合に限ります。
+`pages.release-set-*` は同じサイト内のページを、一つの計画・適用操作で公開します。対象は1〜50件で、重複ページは禁止します。単一ページの非同期公開も同じoperation ID・status契約を使えます。各項目の `expectedVersion` と任意の `componentsVersion` / `presentationVersion`、対象一覧、operation IDを計画へ固定します。APIは全対象の `pages.publish` 権限を個別に確認します。ホストadapterは対象ごとに版を再検証し、結果として `released`（公開済み）、`conflict`（版が変わった）、`pending`（処理中）を返します。全体の `status` は未完了項目があれば `publishing`、全項目が確定したら `completed` です。ある対象の競合で他ページの成功を隠さず、全ページ同時切替も要求しません。トップレベルの `version_conflict` は操作が始まっておらず、公開済みページがない場合に限ります。
 
 確認tokenは対象と全版を含む計画に結び付けます。同じactor・operation ID・入力の再送では、完了済み対象を二重に公開せず、前回の項目別状態を返します。タイムアウト時は同じ計画を再適用して処理を再開でき、`pages.release-set-status` で最終結果を照会できます。競合したページは再読込して新しい計画を作ります。ホストはactor、対象版、各項目の結果を監査記録へ保存します。自動mergeは行いません。
 

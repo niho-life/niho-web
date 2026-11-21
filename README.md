@@ -71,7 +71,7 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 | `@niho/web/localization` | 明示的な日英設定、安定IDの翻訳単位、自動訳の更新（確認の記録は問わない）・人の訳の保護、候補・手編集、共通構造からの文書生成。React不要 |
 | `@niho/web/localization-release` | 言語単位の不変snapshot、公開するページ（hostが選ぶ。全ページは要らない）の訳の公開条件（確認の工程は 2026-11-12 に廃止。旧い確認の入力は互換のため残る）、route・内部リンク・SEO、prepare/apply/rollback検証。React不要 |
 | `niho-studio` | Access service grant、またはStudio-native siteのmemberが取得した短時間のAccess user tokenを使い、discoverが返すページ編集・公開操作などを行うCLI。確認用Studioの接続設定も [Studio CLIの契約](docs/studio-cli.md) を参照 |
-| `niho-edit` | サイトの共通編集APIを直接呼ぶCUI。対応ホストでは翻訳の読み取り・編集・翻訳ジョブ・公開とその状態を操作できる。host bearer tokenを必須とし、Access保護されたoriginではAccess service grantを追加で送信する。Access資格情報は指定originに限定し、別originの素材転送には渡さない（[編集API契約](docs/editing-api-contract.md)） |
+| `niho-edit` | サイトの共通編集APIを直接呼ぶCUI。対応ホストでは翻訳の読み取り・編集・翻訳ジョブ・公開とその状態を操作でき、非同期公開は単一ページと複数ページのどちらも同じ `pages.release-set` で追跡する。host bearer tokenを必須とし、Access保護されたoriginではAccess service grantを追加で送信する。Access資格情報は指定originに限定し、別originの素材転送には渡さない（[編集API契約](docs/editing-api-contract.md)） |
 
 React は optional peer dependency です。API サーバーなど React を入れない利用先では `import { parsePageDocument } from '@niho/web/core'` を使います。root と `/react` は React runtime を import します。
 
