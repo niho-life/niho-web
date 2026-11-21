@@ -189,7 +189,7 @@ export function ReleaseDialog({ adapter, start, overview, timeZone, onClose, onO
       break;
     }
     case "expired": body = <>
-      <p className="lw-dialog-lead" role="alert">確認の期限が切れました。もう一度準備してください。</p>
+      <p className="lw-dialog-lead" role="alert">公開の確認期限が切れたか、再開情報が期限切れ・無効になりました。もう一度準備してください。</p>
       <div className="cw-dialog-actions"><button type="button" className="cw-button" onClick={onClose}>閉じる</button>
         <button type="button" className="cw-button cw-primary" onClick={() => void prepare(null)}>準備し直す</button></div>
     </>; break;

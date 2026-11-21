@@ -401,7 +401,7 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       try {
         if (response.status !== 200) throw new Error("unexpected success status");
         const result = parseEditingLocalizationResult(id, body, input);
-        if (["conflict", "forbidden", "not_found", "invalid", "expired"].includes(result.status)) throw new Error("unexpected result status");
+        if (["conflict", "forbidden", "not_found", "invalid"].includes(result.status)) throw new Error("unexpected result status");
         return result as unknown as EditingLocalizationResult<Id>;
       } catch { throw new EditingApiClientError("invalid_response", response.status); }
     },

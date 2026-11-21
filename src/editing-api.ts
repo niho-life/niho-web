@@ -786,12 +786,12 @@ async function handleEditingLocalization<Id extends EditingLocalizationOperation
       && exactKeys(source, ["status"])) return fail("duplicate_operation", 409);
     if (source.status === "invalid_token" && (operation.id === "localization.release.apply"
       || operation.id === "localization.release.prepare" && "resumeToken" in input && input.resumeToken !== null)
-      && exactKeys(source, ["status"])) return fail("invalid_request", 400);
+      && exactKeys(source, ["status"])) return response({ status: "expired" }, 200);
     const result = parseEditingLocalizationResult(operation.id, source, input);
     if (result.status === "forbidden") return fail("forbidden", 403);
     if (result.status === "not_found") return fail("not_found", 404);
     if (result.status === "invalid") return fail("validation_failed", 422);
-    if (result.status === "expired") return fail("invalid_request", 400);
+    if (result.status === "expired") return response(result, 200);
     const conflict = result.status === "conflict";
     const payload = conflict ? editingLocalizationConflictBody(result as typeof result & { status: "conflict" }) : result;
     if (jsonBytes(payload) > EDITING_LOCALIZATION_RESULT_BYTES) return fail("host_contract_violation", 502);

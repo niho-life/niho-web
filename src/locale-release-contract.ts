@@ -221,7 +221,7 @@ export type LocaleReleasePrepareResult =
   | { readonly status: "preparing"; readonly progress: LocaleReleaseProgress; readonly resumeToken: string }
   | { readonly status: "ready"; readonly plan: LocaleReleaseWorkspacePlan }
   | { readonly status: "blocked"; readonly blockers: readonly LocaleReleaseBlocker[] }
-  | { readonly status: "conflict" }
+  | { readonly status: "conflict" | "expired" }
   | LocaleReleaseForbidden;
 export type LocaleReleaseApplyResult =
   | { readonly status: "applying"; readonly progress: LocaleReleaseProgress; readonly resumeToken: string; readonly waiting?: "uploading" | "deployment" }
@@ -339,6 +339,7 @@ export function parseLocaleReleasePrepareResult(input: unknown, request: LocaleR
   const source = record(input, "prepare");
   const denied = forbidden(source, "prepare");
   if (denied) return denied;
+  if (source.status === "expired") { keys(source, ["status"], "prepare"); return { status: "expired" }; }
   if (source.status === "conflict") { keys(source, ["status"], "prepare"); return { status: "conflict" }; }
   if (source.status === "preparing") {
     keys(source, ["status", "progress", "resumeToken"], "prepare");

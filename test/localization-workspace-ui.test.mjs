@@ -496,11 +496,11 @@ test("release: an interrupted publish resumes from the band, and the confirmatio
     assert.match(resumed.resumeToken, /^prep-/);
     assert.ok(dialog().textContent.includes("準備ができました"));
     await wait(1600);
-    assert.ok(dialog().textContent.includes("確認の期限が切れました"));
+    assert.ok(dialog().textContent.includes("公開の確認期限が切れたか"));
     assert.ok(button("準備し直す", dialog()));
     await act(async () => held.release());
     await flush();
-    assert.ok(dialog().textContent.includes("確認の期限が切れました"), "the late response of the closed dialog is ignored");
+    assert.ok(dialog().textContent.includes("公開の確認期限が切れたか"), "the late response of the closed dialog is ignored");
   } finally { await other.cleanup(); }
 });
 

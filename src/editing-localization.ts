@@ -233,7 +233,7 @@ export type EditingLocalizationHostAdapter = {
 };
 export type EditingLocalizationResult<Id extends EditingLocalizationOperationId> =
   Exclude<Results[Id], { status: "forbidden" | "not_found" | "invalid" }> extends infer T
-    ? T extends { status: "expired" | "conflict" } ? VersionConflict : T
+    ? T extends { status: "conflict" } ? VersionConflict : T
     : never;
 
 export function editingLocalizationConflictBody(value: Results[EditingLocalizationOperationId] & { status: "conflict" }) {

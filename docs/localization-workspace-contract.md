@@ -103,7 +103,7 @@ parser は未知の key を拒み、次の形と上限を確かめます。上�
 | `advanceCatalog` | `{}` | `{ status: "updating", progress }` / `{ status: "current" }` |
 | `loadPreview` | `{ itemKey, previewId, cursor: string \| null }` | `{ status: "ready", material, nextCursor: string \| null }` / not_found |
 | `readRelease` | — | `{ status: "ready", current, history, pending }` |
-| `prepareRelease` | `{ operation, releaseId, expectedVersion, expectedCurrentVersion, resumeToken }` | `{ status: "preparing", progress, resumeToken }` / `{ status: "ready", plan }` / `{ status: "blocked", blockers }` / `{ status: "conflict" }` |
+| `prepareRelease` | `{ operation, releaseId, expectedVersion, expectedCurrentVersion, resumeToken }` | `{ status: "preparing", progress, resumeToken }` / `{ status: "ready", plan }` / `{ status: "blocked", blockers }` / `{ status: "expired" }` / `{ status: "conflict" }` |
 | `applyRelease` | `{ confirmationToken, resumeToken }`（どちらか 1 つだけ文字列） | `{ status: "applying", progress, resumeToken, waiting? }` / `{ status: "applied", current }` / `{ status: "expired" }` / `{ status: "conflict" }` |
 | `saveSettings` | `{ expectedVersion, autoDraft }`（旧い `{ expectedVersion, reviewGlossaryVersion }` も型に残るが、画面からは送らない） | `{ status: "saved", settings }` / `{ status: "conflict", settings }` / invalid |
 | `uploadImage`（任意） | `{ itemKey, unitId, file }` | `{ status: "uploaded", image }` / `{ status: "rejected", reason: "type" \| "size" \| "permission" \| "invalid" }` |
@@ -346,7 +346,7 @@ type LocaleReleaseWorkspacePlan = {
 公開の手順（ダイアログ）:
 
 1. 概要を読み直し、`blockers` が 1 つでもあれば一覧を出して先へ進めません（`itemKey` があれば「開く」で 1 件へ移れます）。
-2. 準備: `prepareRelease({ operation: "publish", releaseId: null, expectedVersion: overview.version, expectedCurrentVersion: current?.version ?? null, resumeToken: null })`。`preparing` なら `progress`（n/m）を出し、返った `resumeToken` を付けてすぐ呼び直します。`ready` で確認へ。`blocked` なら 1. の一覧に戻ります。`conflict` は「内容が変わりました。読み込み直して、もう一度試してください」。
+2. 準備: `prepareRelease({ operation: "publish", releaseId: null, expectedVersion: overview.version, expectedCurrentVersion: current?.version ?? null, resumeToken: null })`。`preparing` なら `progress`（n/m）を出し、返った `resumeToken` を付けてすぐ呼び直します。`ready` で確認へ。`blocked` なら 1. の一覧に戻ります。再開tokenが期限切れまたは無効なら `expired` を返し、準備し直します。`conflict` は「内容が変わりました。読み込み直して、もう一度試してください」。
 3. 確認: ページ数・公開する先・今の版 → 新しい版・期限の残り（`expiresAt` まで）を出します。初回公開の `firstRelease` があれば、まとまりごとのページ数と、そのうち自動翻訳のままの訳があるページ数、対象外の件数と理由を出します。`changes` があれば、新しく出るページと外れるページも出します。公開で `pages` が 0 になるとき（すべて外れる）は、そのことをはっきり出します。期限が切れたら「準備し直す」だけを出します。
 4. 反映: `applyRelease({ confirmationToken, resumeToken: null })`。`applying` なら n/m を出し、`resumeToken` を付けて `applyRelease({ confirmationToken: null, resumeToken })` を呼び直します。`applied` で完了、`expired` は 2. からやり直し、`conflict` は読み直し。
 
