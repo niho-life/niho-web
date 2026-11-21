@@ -11,7 +11,7 @@ import { at, dashboard } from "./project-view-fixtures.mjs";
 // Studio の client（studio/client.tsx）を jsdom で動かし、Dashboard の「翻訳」が Worker の切替（site-admin の translationsView）で
 // 枠と翻訳の画面（LocalizationWorkspace）に分かれることと、翻訳の画面の URL・戻る/進むを確かめる。値はすべて架空。
 const ORIGIN = "https://studio.example.test";
-const LOC = "/api/projects/project-kamakura/sites/kamakura/localization";
+const LOC = `${ORIGIN}/api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/operations`;
 const FRAME = "https://next-kamakura.niho.life/_studio/localization-preview";
 /** CMS の項目の 1 件（架空）。デモのメモリの「お知らせ一覧」をこの key で見せる */
 const CMS_KEY = Buffer.from("cms:posts:morning-walk").toString("base64url");
@@ -52,26 +52,26 @@ function fakeApi(t) {
   const calls = [];
   const memory = createLocalizationMemory({ frameUrl: FRAME });
   const local = (text) => text.replaceAll(CMS_KEY, MEMORY_KEY), shown = (value) => JSON.parse(JSON.stringify(value).replaceAll(MEMORY_KEY, CMS_KEY));
-  const reply = (value) => json(shown(value), value.status === "forbidden" ? 403 : value.status === "not_found" ? 404 : 200);
+  const reply = (value) => value.status === "forbidden" ? json({ error: "forbidden" }, 403)
+    : value.status === "not_found" ? json({ error: "not_found" }, 404) : json(shown(value));
   t.mock.method(globalThis, "fetch", async (url, init = {}) => {
     const target = String(url), method = init.method ?? "GET";
     calls.push(`${method} ${target}`);
-    if (target.startsWith(`${LOC}/`)) {
-      const action = local(target.slice(LOC.length)), body = typeof init.body === "string" ? JSON.parse(local(init.body)) : {};
+    if (target.startsWith(`${LOC}/localization.`)) {
+      const url = new URL(local(target));
+      const query = url.searchParams, action = url.pathname.split("/").at(-1);
+      const { siteId: _siteId, ...body } = typeof init.body === "string" ? JSON.parse(local(init.body)) : {};
       const signal = init.signal ?? new AbortController().signal, a = memory.adapter;
-      if (method === "PUT" && action === "/settings") return reply(await a.saveSettings(body, signal));
-      if (method !== "POST") return json({ error: "method_not_allowed" }, 405);
-      if (action === "/overview") return reply(await a.loadOverview(signal));
-      if (action === "/items") return reply(await a.listItems({ cursor: null }, signal));
-      if (action === "/catalog/advance") return reply(await a.advanceCatalog({}, signal));
-      if (action === "/preview/items") return reply(await a.loadPreview(body, signal));
-      if (action === "/release") return reply(await a.readRelease(signal));
-      const after = /^\/items\/after\/([^/]+)$/u.exec(action), item = /^\/items\/([^/]+)(\/command|\/translate)?$/u.exec(action), job = /^\/jobs\/([^/]+)$/u.exec(action);
-      if (after) return reply(await a.listItems({ cursor: after[1] }, signal));
-      if (item && !item[2]) return reply(await a.loadItem({ itemKey: item[1] }, signal));
-      if (item?.[2] === "/command") return reply(await a.command(body, signal));
-      if (item?.[2] === "/translate") return reply(await a.requestTranslation(body, signal));
-      if (job) return reply(await a.readJob({ jobId: job[1] }, signal));
+      if (method === "GET" && action === "localization.overview") return reply(await a.loadOverview(signal));
+      if (method === "GET" && action === "localization.items.list") return reply(await a.listItems({ cursor: query.get("cursor") }, signal));
+      if (method === "GET" && action === "localization.items.read") return reply(await a.loadItem({ itemKey: query.get("itemKey") }, signal));
+      if (method === "GET" && action === "localization.jobs.read") return reply(await a.readJob({ jobId: query.get("jobId") }, signal));
+      if (method === "GET" && action === "localization.preview") return reply(await a.loadPreview({ ...Object.fromEntries(query), cursor: query.get("cursor") }, signal));
+      if (method === "GET" && action === "localization.release.read") return reply(await a.readRelease(signal));
+      if (method === "POST" && action === "localization.catalog.advance") return reply(await a.advanceCatalog({}, signal));
+      if (method === "POST" && action === "localization.items.command") return reply(await a.command(body, signal));
+      if (method === "POST" && action === "localization.items.translate") return reply(await a.requestTranslation(body, signal));
+      if (method === "PUT" && action === "localization.settings.save") return reply(await a.saveSettings(body, signal));
       return json({ error: "not_found" }, 404);
     }
     if (method !== "GET") return json({ error: "method_not_allowed" }, 405);
@@ -109,7 +109,7 @@ test("Studio の翻訳は、翻訳の画面で URL の 1 件を開き、一覧�
   assert.ok(document.querySelector(".studio-content-project > .nw-project-dashboard .pv-project-end .studio-account"));
   assert.equal(document.querySelector(".studio-legacy-link"), null);
   // URL の 1 件を最初に開く。固定ページの原文はコードで管理なので「CMS で開く」を出さない
-  assert.ok(calls.includes(`POST ${LOC}/items/aG9tZQ`));
+  assert.ok(calls.includes(`GET ${LOC}/localization.items.read?itemKey=aG9tZQ`));
   assert.ok(document.querySelector('.lw-unit[data-unit-id="title"]'), "1 件の項目");
   assert.equal(cmsLink(), undefined);
   // プレビューの枠は鎌倉の Worker の枠を sandbox で開く
@@ -136,7 +136,7 @@ test("Studio の翻訳は、翻訳の画面で URL の 1 件を開き、一覧�
   await historyMove("forward");
   assert.equal(window.location.pathname, "/projects/kamakura-site/admin/translations/YWJvdXQ");
   assert.ok(document.querySelector(".lw-item"), "1 件");
-  assert.ok(calls.includes(`POST ${LOC}/items/YWJvdXQ`));
+  assert.ok(calls.includes(`GET ${LOC}/localization.items.read?itemKey=YWJvdXQ`));
 
   // 上のタブで開いている翻訳をもう一度押しても移らない。ホームへ移ると Dashboard の URL
   assert.equal(document.querySelector(".pv-dashboard-nav"), null, "翻訳を開いている間はホームの左のメニューを出さない");

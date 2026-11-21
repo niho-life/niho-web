@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { formatDateTime, Icon, useRequests } from "./collection-ui.js";
 import {
-  parseLocaleReleaseApplyResult, parseLocaleReleasePrepareResult, parseLocaleReleaseStateResult, parseLocalizationOverviewResult,
+  createOperationId, parseLocaleReleaseApplyResult, parseLocaleReleasePrepareResult, parseLocaleReleaseStateResult, parseLocalizationOverviewResult,
   type LocaleReleaseBlocker, type LocaleReleaseHistoryEntry, type LocaleReleasePending, type LocaleReleaseProgress, type LocaleReleaseSummary,
   type LocaleReleaseWorkspacePlan, type LocaleReleaseWorkspaceState, type LocalizationOverview, type LocalizationWorkspaceAdapter,
 } from "./localization-workspace-model.js";
@@ -71,15 +71,18 @@ export function ReleaseDialog({ adapter, start, overview, timeZone, onClose, onO
     : start.pending.stage === "prepare" ? { step: "preparing", progress: start.pending.progress } : { step: "applying", progress: start.pending.progress });
   const [now, setNow] = useState(() => Date.now());
   const versions = useRef({ version: overview.version, current: overview.release.current?.version ?? null });
+  const preparationId = useRef<string | null>(null);
 
   const prepare = async (resumeToken: string | null) => {
     setStep({ step: "preparing", progress: null });
     let token = resumeToken;
     for (let round = 0; round < MAX_ROUNDS; round++) {
       const input = { operation, releaseId: rollbackId, expectedVersion: versions.current.version, expectedCurrentVersion: versions.current.current, resumeToken: token } as const;
-      const outcome = await requests.current.run(async (signal) => parseLocaleReleasePrepareResult(await adapter.prepareRelease(input, signal), input));
+      const operationId = token === null ? (preparationId.current ??= createOperationId()) : undefined;
+      const outcome = await requests.current.run(async (signal) => parseLocaleReleasePrepareResult(await adapter.prepareRelease(input, signal, operationId), input));
       if (outcome.kind === "aborted") return;
       if (outcome.kind === "error") { setStep({ step: "stopped", stage: "prepare", resumeToken: token }); return; }
+      preparationId.current = null;
       const result = outcome.value;
       if (result.status === "preparing") { token = result.resumeToken; setStep({ step: "preparing", progress: result.progress }); continue; }
       if (result.status === "ready") { setNow(Date.now()); setStep({ step: "confirm", plan: result.plan }); return; }
@@ -94,7 +97,9 @@ export function ReleaseDialog({ adapter, start, overview, timeZone, onClose, onO
     let input = first;
     for (let round = 0; round < MAX_ROUNDS; round++) {
       const current = input;
-      const outcome = await requests.current.run(async (signal) => parseLocaleReleaseApplyResult(await adapter.applyRelease(current, signal), { prepared }));
+      const outcome = await requests.current.run(async (signal) => parseLocaleReleaseApplyResult(await adapter.applyRelease(current, signal, {
+        operation, expectedVersion: versions.current.version, prepared
+      }), { prepared }));
       if (outcome.kind === "aborted") return;
       if (outcome.kind === "error") { setStep({ step: "stopped", stage: "apply", resumeToken: current.resumeToken }); return; }
       const result = outcome.value;
@@ -184,7 +189,7 @@ export function ReleaseDialog({ adapter, start, overview, timeZone, onClose, onO
       break;
     }
     case "expired": body = <>
-      <p className="lw-dialog-lead" role="alert">確認の期限が切れました。もう一度準備してください。</p>
+      <p className="lw-dialog-lead" role="alert">公開の確認期限が切れたか、再開情報が期限切れ・無効になりました。もう一度準備してください。</p>
       <div className="cw-dialog-actions"><button type="button" className="cw-button" onClick={onClose}>閉じる</button>
         <button type="button" className="cw-button cw-primary" onClick={() => void prepare(null)}>準備し直す</button></div>
     </>; break;

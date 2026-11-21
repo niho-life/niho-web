@@ -26,6 +26,11 @@ import { parseLocalizationOverlay, parseLocalizationValue, parseSiteLocalization
 import { DocumentValidationError } from "../src/validation-utils.js";
 import { parseEnglishPublicationAccepted } from "../src/english-publication.js";
 import { parseBreakpointSettings } from "../src/style-model.js";
+import type { EditingCapability } from "../src/editing-api.js";
+import {
+  EDITING_LOCALIZATION_INPUT_BYTES, EDITING_LOCALIZATION_RESULT_BYTES, editingLocalizationCapability,
+  editingLocalizationOperation, parseEditingLocalizationInput
+} from "../src/editing-localization.js";
 import { DRAFT_RECOVERY_MAX_INPUT_BYTES, DRAFT_RECOVERY_MAX_OUTPUT_BYTES, API_PREFIX, API_VERSION, OPERATIONS, OPERATION_KEY_HEADER, SERVICE_CLIENT_ID, SCOPE_ID, normalizeOperationKey, resolveOperation, type CliOperation } from "../cli/operations.mjs";
 import {
   createManagedProject, managedDashboardOverview, managedEditorOperation, managedPageUrl,
@@ -1549,11 +1554,21 @@ function kamakuraCliPreviewOrigin(env: Env, identity: BridgeActor): string | und
   return origin;
 }
 
-type EditingCapability = "pages.read" | "pages.edit" | "pages.publish" | "site.settings.read" | "site.settings.write" | "cms.read" | "cms.edit" | "cms.publish"
-  | "assets.read" | "assets.edit" | "assets.upload" | "assets.delete";
+const EDITING_DISCOVERY_SCOPES: readonly EditingCapability[] = [
+  "pages.read", "pages.edit", "pages.publish", "site.settings.read", "site.settings.write", "cms.read", "cms.edit", "cms.publish",
+  "assets.read", "assets.edit", "assets.upload", "assets.delete"
+];
+const LOCALIZATION_EDITOR_SCOPES = ["localization.read", "localization.edit", "localization.review", "localization.translate"] as const;
+const LOCALIZATION_OWNER_SCOPES = [...LOCALIZATION_EDITOR_SCOPES, "localization.manage", "localization.publish", "localization.rollback"] as const;
+const LOCALIZATION_LONG_OPERATIONS = new Set([
+  "localization.overview", "localization.items.translate", "localization.catalog.advance", "localization.preview",
+  "localization.release.read", "localization.release.prepare", "localization.release.apply"
+]);
+const EDITING_DISCOVERY_PATH = "/sites/kamakura/capabilities";
+const EDITING_LOCALIZATION_ROUTE = /^\/sites\/kamakura\/operations\/(localization\.[a-z.]+)$/u;
 
 function kamakuraEditingCapability(method: string, pathname: string, search: string): EditingCapability | null {
-  if (pathname === "/sites/kamakura/capabilities") return method === "GET" && !search ? "pages.read" : null;
+  if (pathname === EDITING_DISCOVERY_PATH) return method === "GET" && !search ? "pages.read" : null;
   if (pathname === "/sites/kamakura/operations/pages.catalog") return method === "GET" && !search ? "pages.read" : null;
   if (/^\/sites\/kamakura\/operations\/pages\.change-(?:prepare|apply)$/u.test(pathname)) {
     if (search) return null;
@@ -1623,29 +1638,60 @@ async function kamakuraEditingDelegationToken(env: Env, identity: AccessIdentity
   const encode = (value: unknown) => encodeBase64Url(new TextEncoder().encode(JSON.stringify(value)));
   const header = encode({ alg: "HS256", typ: "JWT" });
   const now = Math.floor(Date.now() / 1000);
-  const claims = encode({ iss: "niho-web-studio-edit", aud: "kamakura-site", sub: identity.subject, email: identity.email, scope: [...capabilities], iat: now, exp: now + 60, jti: crypto.randomUUID() });
+  const usesEmail = capabilities.some((capability) => !capability.startsWith("localization."));
+  const claims = encode({ iss: "niho-web-studio-edit", aud: "kamakura-site", sub: identity.subject, ...(usesEmail ? { email: identity.email } : {}), scope: [...capabilities], iat: now, exp: now + 60, jti: crypto.randomUUID() });
   const signingInput = `${header}.${claims}`;
   const key = await crypto.subtle.importKey("raw", bridgeSecret(env.KAMAKURA_STUDIO_BRIDGE_SECRET).slice().buffer, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const signature = encodeBase64Url(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(signingInput))));
   return `${signingInput}.${signature}`;
 }
 
-async function signedKamakuraEditingApiRequest(request: Request, env: Env, identity: AccessIdentity, url: URL, action: string, allowLegacyBreakpointBootstrap = true): Promise<Response> {
+async function signedKamakuraEditingApiRequest(request: Request, env: Env, identity: AccessIdentity, url: URL, action: string, role?: Role, allowLegacyBreakpointBootstrap = true): Promise<Response> {
   const supportId = crypto.randomUUID(), operation: KamakuraBridgeOperation = "editing_api";
   const fail = (category: KamakuraBridgeFailureCategory, status?: number) => kamakuraBridgeFailure(supportId, operation, category, status);
   const upstreamSuffix = action.slice(KAMAKURA_EDITING_API_EDITOR_PREFIX.length);
   const upstreamPath = `${KAMAKURA_EDITING_API_PATH_PREFIX}${upstreamSuffix}`;
+  const localizationPath = EDITING_LOCALIZATION_ROUTE.exec(upstreamSuffix);
+  const localization = localizationPath && editingLocalizationOperation(localizationPath[1]!);
   let capability: EditingCapability | null;
-  try { capability = kamakuraEditingCapability(request.method, upstreamSuffix, url.search); }
-  catch { return json({ error: "method_not_allowed" }, 405); }
-  if (!capability) return json({ error: "not_found" }, 404);
+  if (localization) {
+    if (localization.method !== request.method) return json({ error: "method_not_allowed" }, 405);
+    capability = localization.capability;
+  } else {
+    try { capability = kamakuraEditingCapability(request.method, upstreamSuffix, url.search); }
+    catch { return json({ error: "method_not_allowed" }, 405); }
+    if (!capability) return json({ error: "not_found" }, 404);
+  }
 
   if (request.method === "GET" && (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length")))) return json({ error: "invalid_request" }, 400);
-  const bodyMaximum = upstreamSuffix.startsWith("/sites/kamakura/operations/cms.save/") ? 2 * 1024 * 1024 : KAMAKURA_EDITING_API_MAX_BODY_BYTES;
+  const bodyMaximum = localization ? EDITING_LOCALIZATION_INPUT_BYTES
+    : upstreamSuffix.startsWith("/sites/kamakura/operations/cms.save/") ? 2 * 1024 * 1024 : KAMAKURA_EDITING_API_MAX_BODY_BYTES;
   const body = request.method === "GET" ? new Uint8Array() : await readBoundedBody(request, bodyMaximum, identity);
-  const capabilities: readonly EditingCapability[] = upstreamSuffix === "/sites/kamakura/capabilities"
-    ? ["pages.read", "pages.edit", "pages.publish", "site.settings.read", "site.settings.write", "cms.read", "cms.edit", "cms.publish", "assets.read", "assets.edit", "assets.upload", "assets.delete"]
-    : [capability];
+  const localizationScopes: readonly EditingCapability[] = role === "owner" ? LOCALIZATION_OWNER_SCOPES : role === "editor" ? LOCALIZATION_EDITOR_SCOPES : [];
+  if (localization) {
+    try {
+      let data: Record<string, unknown>;
+      if (request.method === "GET") {
+        data = Object.create(null) as Record<string, unknown>;
+        url.searchParams.forEach((value, name) => {
+          if (Object.hasOwn(data, name)) throw new AuthenticationError("duplicate localization input");
+          data[name] = value;
+        });
+      } else {
+        if (url.search) return json({ error: "invalid_request" }, 400);
+        const { siteId, ...input } = JSON.parse(new TextDecoder().decode(body)) as Record<string, unknown>;
+        if (siteId !== KAMAKURA_EDITOR_SITE_ID) return json({ error: "invalid_request" }, 400);
+        data = input;
+      }
+      capability = editingLocalizationCapability(localization, parseEditingLocalizationInput(localization.id, data));
+    } catch { return json({ error: "invalid_request" }, 400); }
+    if (!localizationScopes.includes(capability)) return json({ error: "forbidden" }, 403);
+  }
+  // 概要の表示権限もサイトの scope から計算する。実行時にはその操作の scope だけを渡す。
+  const capabilities = upstreamSuffix === EDITING_DISCOVERY_PATH ? [...EDITING_DISCOVERY_SCOPES, ...localizationScopes]
+    : localization && localization.id === "localization.overview" ? localizationScopes
+      : localization && localization.id === "localization.release.read" && role === "owner"
+        ? [capability, "localization.publish", "localization.rollback"] as const : [capability];
   let bearer: string;
   try { bearer = await kamakuraEditingDelegationToken(env, identity, capabilities); }
   catch { throw fail("bridge_secret_missing_or_invalid"); }
@@ -1660,7 +1706,8 @@ async function signedKamakuraEditingApiRequest(request: Request, env: Env, ident
   const controller = new AbortController();
   const abortForRequest = () => controller.abort();
   request.signal.addEventListener("abort", abortForRequest, { once: true });
-  const timeout = setTimeout(() => controller.abort(), capability === "pages.publish" || capability === "cms.publish" ? KAMAKURA_RELEASE_TIMEOUT_MILLISECONDS : EDITOR_TIMEOUT_MILLISECONDS);
+  const long = localization ? LOCALIZATION_LONG_OPERATIONS.has(localization.id) : capability === "pages.publish" || capability === "cms.publish";
+  const timeout = setTimeout(() => controller.abort(), long ? KAMAKURA_RELEASE_TIMEOUT_MILLISECONDS : EDITOR_TIMEOUT_MILLISECONDS);
   try {
     const upstream = new Request(`${KAMAKURA_EDITING_API_ORIGIN}${upstreamPath}${url.search}`, {
       method: request.method,
@@ -1675,7 +1722,8 @@ async function signedKamakuraEditingApiRequest(request: Request, env: Env, ident
     catch { throw fail(controller.signal.aborted ? "service_binding_timeout" : "service_binding_failed"); }
     if (response.status >= 300 && response.status < 400) throw fail("upstream_redirect_rejected", response.status);
     let value: unknown;
-    try { value = await readBoundedResponse(response, 5 * 1024 * 1024); }
+    try { value = await readBoundedResponse(response, localization && localization.id === "localization.preview"
+      ? KAMAKURA_LOCALIZATION_LIMITS.previewResponseBytes : EDITING_LOCALIZATION_RESULT_BYTES); }
     catch { throw fail("upstream_invalid_response", response.status); }
     if (response.status === 404 && identity.kind === "human" && allowLegacyBreakpointBootstrap
       && upstreamSuffix === "/sites/kamakura/operations/site.breakpoints.read" && isRecord(value) && value.error === "not_found") {
@@ -1694,8 +1742,8 @@ async function signedKamakuraEditingApiRequest(request: Request, env: Env, ident
         headers: { "Content-Type": "application/json", Origin: url.origin, "Sec-Fetch-Site": "same-origin" },
         body: JSON.stringify({ expectedVersion: snapshot.version, settings: snapshot.settings })
       });
-      const seeded = await signedKamakuraEditingApiRequest(saveRequest, env, identity, url, saveAction, false);
-      if (seeded.status === 409) return signedKamakuraEditingApiRequest(request, env, identity, url, action, false);
+      const seeded = await signedKamakuraEditingApiRequest(saveRequest, env, identity, url, saveAction, undefined, false);
+      if (seeded.status === 409) return signedKamakuraEditingApiRequest(request, env, identity, url, action, undefined, false);
       if (!seeded.ok) return seeded;
       let result: unknown;
       try { result = await seeded.json() as unknown; }
@@ -1705,6 +1753,19 @@ async function signedKamakuraEditingApiRequest(request: Request, env: Env, ident
         return json({ error: "invalid_response" }, 502);
       }
       return json({ settings: snapshot.settings, version: result.version });
+    }
+    if (response.ok && localization && localization.id === "localization.overview") {
+      const result = parseLocalizationOverviewResult(value);
+      if (result.status !== "ready" || result.overview.preview && !isKamakuraLocalizationPreviewFrame(result.overview.preview.frameUrl, KAMAKURA_EDITING_API_ORIGIN)) {
+        throw fail("upstream_contract_invalid", response.status);
+      }
+      if (role === "editor") return json({ ...result, overview: { ...result.overview, release: { ...result.overview.release, pending: null } } });
+      return json(result);
+    }
+    if (response.ok && localization && localization.id === "localization.release.read" && role === "editor") {
+      const result = parseLocaleReleaseStateResult(value);
+      if (result.status !== "ready") throw fail("upstream_contract_invalid", response.status);
+      return json({ ...result, pending: null });
     }
     return json(value, response.status);
   } catch (error) {
@@ -2710,7 +2771,7 @@ type WorkerEditorAdapter = {
   readonly route: (action: string, method: string, environment: string) => EditorRoute | "method_not_allowed" | null;
   readonly authorize: (env: Env, identity: AccessIdentity, resolved: ResolvedTrustedIntegration) => Promise<boolean>;
   readonly dispatch: (request: Request, env: Env, identity: AccessIdentity, route: EditorRoute, resolved: ResolvedTrustedIntegration) => Promise<Response>;
-  readonly dispatchEditingApi?: (request: Request, env: Env, identity: AccessIdentity, url: URL, action: string) => Promise<Response>;
+  readonly dispatchEditingApi?: (request: Request, env: Env, identity: AccessIdentity, url: URL, action: string, role?: Role) => Promise<Response>;
   readonly assetPreview?: (action: string) => string | null;
   readonly dispatchAssetPreview?: (request: Request, env: Env, identity: AccessIdentity, assetId: string) => Promise<Response>;
   readonly connectOrigins?: readonly string[];
@@ -2762,8 +2823,11 @@ if (false) void workerEditorAdapter;
 async function liveEditorApi(request: Request, env: Env, identity: AccessIdentity, action: string, resolved: ResolvedTrustedIntegration, adapter: WorkerEditorAdapter): Promise<Response> {
   if (action === KAMAKURA_EDITING_API_EDITOR_PREFIX || action.startsWith(`${KAMAKURA_EDITING_API_EDITOR_PREFIX}/`)) {
     if (!adapter.dispatchEditingApi) return json({ error: "not_found" }, 404);
-    if (!await adapter.authorize(env, identity, resolved)) return json({ error: "forbidden" }, 403);
-    try { return await adapter.dispatchEditingApi(request, env, identity, new URL(request.url), action); }
+    const path = action.slice(KAMAKURA_EDITING_API_EDITOR_PREFIX.length);
+    const needsRole = path === EDITING_DISCOVERY_PATH || EDITING_LOCALIZATION_ROUTE.test(path);
+    const role = needsRole ? await editorRole(env, identity, resolved.registration.projectId, resolved.registration.siteId) : undefined;
+    if (role === null || role === undefined && !await adapter.authorize(env, identity, resolved)) return json({ error: "forbidden" }, 403);
+    try { return await adapter.dispatchEditingApi(request, env, identity, new URL(request.url), action, role); }
     catch (error) {
       if (error instanceof AuthenticationError) return json({ error: "invalid_request" }, 400);
       throw error;
@@ -3197,7 +3261,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
     const kamakuraDashboard = dashboardTarget?.projectId === KAMAKURA_CMS_PROJECT_ID && dashboardTarget.siteId === KAMAKURA_CMS_SITE_ID;
     // 鎌倉の CMS・翻訳は常に Studio の画面。直接 PUT と翻訳プレビューの枠だけを許す。
     const dashboardConnect = admin && kamakuraDashboard ? [...new Set([KAMAKURA_CMS_UPLOAD_ORIGIN, KAMAKURA_LOCALIZATION_UPLOAD_ORIGIN])] : [];
-    const dashboardFrames = admin && kamakuraDashboard ? [KAMAKURA_LOCALIZATION_PREVIEW_ORIGIN] : [];
+    const dashboardFrames = admin && kamakuraDashboard ? [KAMAKURA_LOCALIZATION_PREVIEW_ORIGIN, KAMAKURA_EDITING_API_ORIGIN] : [];
     return withStaticSecurity(await env.ASSETS.fetch(new Request(indexUrl, { method: request.method, headers: request.headers })), pageAdapter !== null || managedEditor !== null, pageAdapter ? pageAdapter.connectOrigins ?? [] : dashboardConnect, pageAdapter?.fontSources ?? [], pageAdapter?.scriptSources ?? [], pageAdapter ? pageAdapter.frameSources ?? [] : dashboardFrames);
   }
   const asset = withStaticSecurity(await env.ASSETS.fetch(request));

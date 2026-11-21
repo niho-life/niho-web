@@ -113,7 +113,7 @@ test("Worker: 参加者だけに接続を返し、Dashboard は翻訳プレビ�
     assert.equal(page.status, 200, path);
     const csp = page.headers.get("Content-Security-Policy");
     assert.match(csp, / connect-src 'self' https:\/\/next-kamakura\.niho\.life;/u, path);
-    assert.match(csp, / frame-src https:\/\/next-kamakura\.niho\.life;/u, path);
+    assert.match(csp, / frame-src https:\/\/next-kamakura\.niho\.life https:\/\/kamakura\.niho\.life;/u, path);
     assert.doesNotMatch(csp, /site-admin-test\.example|admin\.example\.test/u, path);
     assert.match(csp, /frame-ancestors 'none'/u, path);
   }

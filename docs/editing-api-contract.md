@@ -68,11 +68,11 @@ Studio GUIはページの表示・編集材料の一部（presentation metadata�
 | `localization.items.command` | POST | `localization.edit` または `localization.review` | `LocalizationCommandInput` | `{ status: "applied", unit, summary }` |
 | `localization.items.translate` | POST | `localization.translate` | `{ itemKey, expectedVersion, operationId, unitIds }`。全項目は `unitIds: null` | `{ status: "queued", job }` |
 | `localization.jobs.read` | GET | `localization.read` | `jobId` | `{ status: "ready", job }` |
-| `localization.catalog.advance` | POST | `localization.manage` | `{ expectedVersion, operationId }` | `{ status: "updating", progress }` または `{ status: "current" }` |
+| `localization.catalog.advance` | POST | `localization.edit` | `{ expectedVersion, operationId }` | `{ status: "updating", progress }` または `{ status: "current" }` |
 | `localization.preview` | GET | `localization.read` | `itemKey, previewId, cursor?` | `{ status: "ready", material, nextCursor }` |
 | `localization.release.read` | GET | `localization.read` | — | `{ status: "ready", current, history, pending }` |
-| `localization.release.prepare` | POST | `localization.publish` または `localization.rollback` | `LocaleReleasePrepareInput`。初回は `operationId` も必要 | `{ status: "ready", plan }`、`{ status: "preparing", progress, resumeToken }` または `{ status: "blocked", blockers }` |
-| `localization.release.apply` | POST | `localization.publish` または `localization.rollback` | `LocaleReleaseApplyInput` に `operation`、`expectedVersion`、任意の `prepared: { releaseId, version }` | `{ status: "applied", current }` または `{ status: "applying", progress, resumeToken, waiting? }` |
+| `localization.release.prepare` | POST | `localization.publish` または `localization.rollback` | `LocaleReleasePrepareInput`。初回は `operationId` も必要 | `{ status: "ready", plan }`、`{ status: "preparing", progress, resumeToken }`、`{ status: "blocked", blockers }`、または `{ status: "expired" }` |
+| `localization.release.apply` | POST | `localization.publish` または `localization.rollback` | `LocaleReleaseApplyInput` に `operation`、`expectedVersion`、任意の `prepared: { releaseId, version }` | `{ status: "applied", current }`、`{ status: "applying", progress, resumeToken, waiting? }`、または `{ status: "expired" }` |
 | `localization.settings.save` | PUT | `localization.manage` | `LocalizationSettingsInput` と `operationId` | `{ status: "saved", settings }` |
 
 ホストはトークンのscope検証に `EDITING_CAPABILITIES` を使えます。discoverは、対応するhost関数があり、サイト単位でいずれかの必要権限がある操作を返します。複数の権限を持つ操作は `capabilityByInput` に入力フィールドと値ごとの必要権限を示します。`review-current` と `review-image` は `localization.review`、訳文・候補・画像を変更するcommandは `localization.edit` です。公開と戻しは `operation` に応じて `localization.publish` と `localization.rollback` を個別に要求します。実行時のscopeには、対象に応じて `localizationItemKey`、`localizationUnitId`、`localizationJobId`、`localizationPreviewId` を加えます。
@@ -83,7 +83,7 @@ Studio GUIはページの表示・編集材料の一部（presentation metadata�
 
 公開準備の初回は `resumeToken: null` を指定し、続きは返された `resumeToken` と元の版を渡します。公開計画を確認したら、反映に `confirmationToken` と `resumeToken: null` を渡します。反映が `applying` の場合は `confirmationToken: null` に切り替え、返された `resumeToken` と同じ操作・版を渡します。進捗には `waiting: "uploading"` または `waiting: "deployment"` が付くことがあります。`release.read` は現在版と途中状態の照会に使えます。
 
-確認・再開tokenはactor・サイト・操作種別・版・計画に束縛します。`prepared` を指定した反映では、ホストはtokenの対象と一致することを反映前に確かめ、APIも応答の公開版を照合します。ホストは期限と一回限りの消費を検証し、同じ入力の再送が同じ処理を二重に実行しないようにします。期限切れや不正なtokenは `{ status: "invalid_token" }` を返すと、400 `invalid_request` になります。取得結果の `pending` は再開権限を持つactorにだけ返し、tokenをURLやログに含めません。
+確認・再開tokenはactor・サイト・操作種別・版・計画に束縛します。`prepared` を指定した反映では、ホストはtokenの対象と一致することを反映前に確かめ、APIも応答の公開版を照合します。ホストは期限と一回限りの消費を検証し、同じ入力の再送が同じ処理を二重に実行しないようにします。公開の準備・反映で期限切れや不正なtokenを拒否した場合は `{ status: "expired" }` を終端結果として返し、呼出側はtokenを再送せず新しい準備を始めます。取得結果の `pending` は再開権限を持つactorにだけ返し、tokenをURLやログに含めません。
 
 ## CUIでの編集
 

@@ -9,6 +9,8 @@ import {
 import { createLocalizationMemory } from "../examples/localization-workspace-memory.mjs";
 
 // 架空の値だけを使う（実在の原稿・人・内部の key は書かない）。上流の応答の形は W1 のデモ用のメモリの adapter から作る。
+const STUDIO = "https://studio.example.test";
+const OPERATIONS = `${STUDIO}/api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/operations`;
 const BASE = "/api/projects/project-kamakura/sites/kamakura/localization";
 const UUID = "123e4567-e89b-42d3-a456-426614174000";
 const UPLOAD_URL = `https://next-kamakura.niho.life/internal/studio/localization-upload/${UUID}`;
@@ -43,7 +45,9 @@ function fakeBff(t, routes) {
   const calls = [];
   t.mock.method(globalThis, "fetch", async (url, init = {}) => {
     const method = init.method ?? "GET";
-    const path = String(url).startsWith(BASE) ? String(url).slice(BASE.length) : String(url);
+    const target = String(url);
+    const path = target.startsWith(OPERATIONS) ? target.slice(OPERATIONS.length)
+      : target.startsWith(BASE) ? target.slice(BASE.length) : target;
     const body = typeof init.body === "string" ? JSON.parse(init.body) : init.body;
     calls.push({ method, path, body, init });
     const handler = routes[`${method} ${path}`];
@@ -65,93 +69,103 @@ async function fixtures() {
   };
 }
 
-test("翻訳 adapter: 各メソッドは同一 origin の BFF を契約の経路と本文で呼び、応答を W1 の parser に通す", async (t) => {
+test("翻訳 adapter は共通 Editing API の操作に、画面の版と操作 ID を渡す", async (t) => {
   const { createKamakuraLocalizationAdapter } = await loadAdapter();
   const data = await fixtures();
   const command = { itemKey: "aG9tZQ", operationId: OP, action: "set-value", unitId: "title", expectedVersion: "v1", expectedSourceVersion: "s1", value: "Workshop" };
   const prepare = { operation: "publish", releaseId: null, expectedVersion: "o1", expectedCurrentVersion: "r2", resumeToken: null };
-  const replies = {
-    "POST /overview": () => jsonResponse(data.overview),
-    "POST /items": () => jsonResponse(data.list),
-    "POST /items/after/p2": () => jsonResponse({ status: "ready", items: [], nextCursor: null }),
-    "POST /items/aG9tZQ": () => jsonResponse(data.item),
-    "POST /items/aG9tZQ/command": () => jsonResponse(data.applied),
-    "POST /items/aG9tZQ/translate": () => jsonResponse({ status: "queued", job: { jobId: JOB, state: "queued", message: null } }),
-    [`POST /jobs/${JOB}`]: () => jsonResponse({ status: "ready", job: { jobId: JOB, state: "done", message: null } }),
-    "POST /catalog/advance": () => jsonResponse({ status: "current" }),
-    "POST /preview/items": () => jsonResponse({ status: "ready", material: { part: "page", title: "トップ" }, nextCursor: "c1" }),
-    "POST /release": () => jsonResponse(data.release),
-    "POST /release/prepare": () => jsonResponse({ status: "preparing", progress: { done: 1, total: 3 }, resumeToken: "prep-1" }),
-    "POST /release/apply": () => jsonResponse({ status: "applying", progress: { done: 1, total: 2 }, resumeToken: "apply-1" }),
-    "PUT /settings": () => jsonResponse(data.settings)
-  };
-  const calls = fakeBff(t, replies);
-  const adapter = createKamakuraLocalizationAdapter();
+  const apply = { confirmationToken: "c1", resumeToken: null };
+  const context = { operation: "publish", expectedVersion: "o1", prepared: { releaseId: "release1", version: "r3" } };
+  const overview = { ...data.overview, overview: { ...data.overview.overview, catalog: { state: "updating", progress: { done: 1, total: 2 } } } };
+  const calls = fakeBff(t, {
+    "GET /localization.overview": () => jsonResponse(overview),
+    "GET /localization.items.list": () => jsonResponse(data.list),
+    "GET /localization.items.list?cursor=p2": () => jsonResponse({ status: "ready", items: [], nextCursor: null }),
+    "GET /localization.items.read?itemKey=aG9tZQ": () => jsonResponse(data.item),
+    "POST /localization.items.command": () => jsonResponse(data.applied),
+    "POST /localization.items.translate": () => jsonResponse({ status: "queued", job: { jobId: JOB, state: "queued", message: null } }),
+    [`GET /localization.jobs.read?jobId=${JOB}`]: () => jsonResponse({ status: "ready", job: { jobId: JOB, state: "done", message: null } }),
+    "POST /localization.catalog.advance": () => jsonResponse({ status: "current" }),
+    "GET /localization.preview?itemKey=aG9tZQ&previewId=home": () => jsonResponse({ status: "ready", material: { part: "page", title: "トップ" }, nextCursor: "c1" }),
+    "GET /localization.release.read": () => jsonResponse(data.release),
+    "POST /localization.release.prepare": () => jsonResponse({ status: "preparing", progress: { done: 1, total: 3 }, resumeToken: "prep-1" }),
+    "POST /localization.release.apply": () => jsonResponse({ status: "applying", progress: { done: 1, total: 2 }, resumeToken: "apply-1" }),
+    "PUT /localization.settings.save": () => jsonResponse(data.settings)
+  });
+  const adapter = createKamakuraLocalizationAdapter({ studioOrigin: STUDIO });
   const s = signal();
 
-  for (const [run, method, path, body, parse] of [
-    [() => adapter.loadOverview(s), "POST", "/overview", {}, parseLocalizationOverviewResult],
-    [() => adapter.listItems({ cursor: null }, s), "POST", "/items", {}, parseLocalizationListResult],
-    [() => adapter.listItems({ cursor: "p2" }, s), "POST", "/items/after/p2", {}, parseLocalizationListResult],
-    [() => adapter.loadItem({ itemKey: "aG9tZQ" }, s), "POST", "/items/aG9tZQ", {}, (value) => parseLocalizationItemResult(value, "aG9tZQ")],
-    [() => adapter.command(command, s), "POST", "/items/aG9tZQ/command", command, (value) => parseLocalizationCommandResult(value, { itemKey: "aG9tZQ", unitId: "title" })],
-    [() => adapter.requestTranslation({ itemKey: "aG9tZQ", operationId: OP, unitIds: null }, s), "POST", "/items/aG9tZQ/translate", { itemKey: "aG9tZQ", operationId: OP, unitIds: null }, parseLocalizationTranslationResult],
-    [() => adapter.readJob({ jobId: JOB }, s), "POST", `/jobs/${JOB}`, {}, (value) => parseLocalizationJobResult(value, JOB)],
-    [() => adapter.advanceCatalog({}, s), "POST", "/catalog/advance", {}, parseLocalizationCatalogResult],
-    [() => adapter.loadPreview({ itemKey: "aG9tZQ", previewId: "home", cursor: null }, s), "POST", "/preview/items", { itemKey: "aG9tZQ", previewId: "home", cursor: null }, parseLocalizationPreviewResult],
-    [() => adapter.readRelease(s), "POST", "/release", {}, parseLocaleReleaseStateResult],
-    [() => adapter.prepareRelease(prepare, s), "POST", "/release/prepare", prepare, (value) => parseLocaleReleasePrepareResult(value, prepare)],
-    [() => adapter.applyRelease({ confirmationToken: "c1", resumeToken: null }, s), "POST", "/release/apply", { confirmationToken: "c1", resumeToken: null }, (value) => parseLocaleReleaseApplyResult(value, { prepared: null })],
-    [() => adapter.saveSettings({ expectedVersion: "set1", autoDraft: false }, s), "PUT", "/settings", { expectedVersion: "set1", autoDraft: false }, parseLocalizationSettingsResult],
-    [() => adapter.saveSettings({ expectedVersion: "set2", reviewGlossaryVersion: "demo-glossary-v1" }, s), "PUT", "/settings", { expectedVersion: "set2", reviewGlossaryVersion: "demo-glossary-v1" }, parseLocalizationSettingsResult]
+  for (const [run, request, body, parse] of [
+    [() => adapter.loadOverview(s), "GET /localization.overview", undefined, parseLocalizationOverviewResult],
+    [() => adapter.listItems({ cursor: null }, s), "GET /localization.items.list", undefined, parseLocalizationListResult],
+    [() => adapter.listItems({ cursor: "p2" }, s), "GET /localization.items.list?cursor=p2", undefined, parseLocalizationListResult],
+    [() => adapter.loadItem({ itemKey: "aG9tZQ" }, s), "GET /localization.items.read?itemKey=aG9tZQ", undefined, (value) => parseLocalizationItemResult(value, "aG9tZQ")],
+    [() => adapter.command(command, s), "POST /localization.items.command", command, (value) => parseLocalizationCommandResult(value, { itemKey: "aG9tZQ", unitId: "title" })],
+    [() => adapter.requestTranslation({ itemKey: "aG9tZQ", operationId: OP, unitIds: null }, s), "POST /localization.items.translate", { itemKey: "aG9tZQ", operationId: OP, unitIds: null, expectedVersion: data.overview.overview.version }, parseLocalizationTranslationResult],
+    [() => adapter.readJob({ jobId: JOB }, s), `GET /localization.jobs.read?jobId=${JOB}`, undefined, (value) => parseLocalizationJobResult(value, JOB)],
+    [() => adapter.advanceCatalog({}, s), "POST /localization.catalog.advance", { expectedVersion: data.overview.overview.version }, parseLocalizationCatalogResult],
+    [() => adapter.loadPreview({ itemKey: "aG9tZQ", previewId: "home", cursor: null }, s), "GET /localization.preview?itemKey=aG9tZQ&previewId=home", undefined, parseLocalizationPreviewResult],
+    [() => adapter.readRelease(s), "GET /localization.release.read", undefined, parseLocaleReleaseStateResult],
+    [() => adapter.prepareRelease(prepare, s, OP), "POST /localization.release.prepare", { ...prepare, operationId: OP }, (value) => parseLocaleReleasePrepareResult(value, prepare)],
+    [() => adapter.prepareRelease({ ...prepare, resumeToken: "prep-1" }, s, OP), "POST /localization.release.prepare", { ...prepare, resumeToken: "prep-1" }, (value) => parseLocaleReleasePrepareResult(value, prepare)],
+    [() => adapter.applyRelease(apply, s, context), "POST /localization.release.apply", { ...apply, ...context }, (value) => parseLocaleReleaseApplyResult(value, context)],
+    [() => adapter.saveSettings({ expectedVersion: "set1", autoDraft: false }, s), "PUT /localization.settings.save", { expectedVersion: "set1", autoDraft: false }, parseLocalizationSettingsResult]
   ]) {
     const result = await run();
     const call = calls.at(-1);
-    assert.equal(call.method, method, path);
-    assert.equal(call.path, path);
-    assert.deepEqual(call.body, body, path);
+    assert.equal(`${call.method} ${call.path}`, request);
+    if (request.includes("catalog.advance") || request.includes("settings.save")) {
+      assert.match(call.body.operationId, /^[A-Za-z0-9_-]{22}$/u);
+      const { operationId: _id, ...rest } = call.body;
+      assert.deepEqual(rest, { siteId: "kamakura", ...body }, request);
+    } else assert.deepEqual(call.body, body === undefined ? undefined : { siteId: "kamakura", ...body }, request);
     assert.equal(call.init.credentials, "same-origin");
-    assert.equal(call.init.redirect, "error");
+    assert.equal(call.init.redirect, "manual");
     assert.equal(call.init.cache, "no-store");
-    assert.equal(call.init.headers["Content-Type"], "application/json");
-    // 画面の parser がそのまま読める（adapter は確かめた形を返す）
-    assert.deepEqual(parse(result), result, path);
+    assert.equal(call.init.headers.get("Content-Type"), body === undefined ? null : "application/json");
+    assert.deepEqual(parse(result), result, request);
   }
-  // 任意のメソッドは、ホストが渡したときだけ
   assert.equal(adapter.pickAsset, undefined);
   assert.equal(adapter.sourceLink, undefined);
 });
 
-test("翻訳 adapter: 本文の status は parser へ、BFF の 403 は forbidden、ほかの失敗と契約に合わない応答は例外", async (t) => {
-  const { createKamakuraLocalizationAdapter, KamakuraLocalizationRequestError } = await loadAdapter();
+test("翻訳 adapter は権限拒否、該当項目なし、版競合を画面の結果に変換する", async (t) => {
+  const { createKamakuraLocalizationAdapter } = await loadAdapter();
   const data = await fixtures();
-  let overview = () => jsonResponse({ status: "forbidden" }, 403);
-  let item = () => jsonResponse({ status: "not_found" }, 404);
-  fakeBff(t, { "POST /overview": () => overview(), "POST /items/aG9tZQ": () => item() });
-  const adapter = createKamakuraLocalizationAdapter();
+  let overview = () => jsonResponse({ error: "forbidden" }, 403);
+  let item = () => jsonResponse({ error: "not_found" }, 404);
+  fakeBff(t, {
+    "GET /localization.overview": () => overview(),
+    "GET /localization.items.read?itemKey=aG9tZQ": () => item(),
+    "POST /localization.items.command": () => jsonResponse({
+      error: "version_conflict", current: { unit: data.applied.unit, summary: data.applied.summary }
+    }, 409)
+  });
+  const adapter = createKamakuraLocalizationAdapter({ studioOrigin: STUDIO });
 
   assert.deepEqual(await adapter.loadOverview(signal()), { status: "forbidden" });
   assert.deepEqual(await adapter.loadItem({ itemKey: "aG9tZQ" }, signal()), { status: "not_found" });
-  overview = () => jsonResponse({ error: "forbidden" }, 403);
-  assert.deepEqual(await adapter.loadOverview(signal()), { status: "forbidden" }, "所属の無い人の BFF の 403");
-  for (const [reply, status] of [[{ error: "not_found" }, 404], [{ error: "service_unavailable", supportId: "123e4567-e89b-42d3-a456-426614174000" }, 503], [{ error: "session_expired" }, 401]]) {
+  overview = () => jsonResponse({ error: "not_found" }, 404);
+  await assert.rejects(adapter.loadOverview(signal()), { code: "not_found", status: 404 });
+  const command = { itemKey: "aG9tZQ", operationId: OP, action: "set-value", unitId: data.applied.unit.unitId, expectedVersion: "v1", expectedSourceVersion: "s1", value: "Workshop" };
+  assert.deepEqual(await adapter.command(command, signal()), { ...data.applied, status: "conflict" });
+  for (const [reply, status] of [[{ error: "service_unavailable", supportId: UUID }, 503], [{ error: "authentication_required" }, 401]]) {
     item = () => jsonResponse(reply, status);
-    await assert.rejects(adapter.loadItem({ itemKey: "aG9tZQ" }, signal()), (error) => error instanceof KamakuraLocalizationRequestError && error.status === status && error.supportId === (reply.supportId ?? null));
+    await assert.rejects(adapter.loadItem({ itemKey: "aG9tZQ" }, signal()), { name: "EditingApiClientError", status });
   }
   item = () => new Response("<html>", { status: 502, headers: { "Content-Type": "text/html" } });
-  await assert.rejects(adapter.loadItem({ itemKey: "aG9tZQ" }, signal()), (error) => error instanceof KamakuraLocalizationRequestError && error.status === 502);
-  // 契約に合わない応答（別の 1 件・未知の field）は parser が拒む
+  await assert.rejects(adapter.loadItem({ itemKey: "aG9tZQ" }, signal()), { name: "EditingApiClientError", status: 502 });
+  // 別の 1 件・未知の field は parser が拒む
   item = () => jsonResponse({ status: "ready", item: { ...data.item.item, key: "YWJvdXQ" } });
   await assert.rejects(adapter.loadItem({ itemKey: "aG9tZQ" }, signal()));
   overview = () => jsonResponse({ ...data.overview, extra: true });
   await assert.rejects(adapter.loadOverview(signal()));
-  // 形の違う指定は BFF を呼ばない
-  await assert.rejects(adapter.loadItem({ itemKey: "a/b" }, signal()));
-  await assert.rejects(adapter.listItems({ cursor: "a/b" }, signal()));
-  await assert.rejects(adapter.readJob({ jobId: "a/b" }, signal()));
+  await assert.rejects(adapter.loadItem({ itemKey: "a/b" }, signal()), TypeError);
+  await assert.rejects(adapter.listItems({ cursor: "a/b" }, signal()), TypeError);
+  await assert.rejects(adapter.readJob({ jobId: "a/b" }, signal()), TypeError);
   const aborted = new AbortController();
   aborted.abort();
-  await assert.rejects(adapter.loadOverview(aborted.signal), (error) => error.name === "AbortError");
+  await assert.rejects(adapter.loadOverview(aborted.signal), { name: "AbortError" });
 });
 
 test("翻訳 adapter: 画像は intent の URL を確かめてから credentials なしで直接 PUT し、W1 の uploaded を返す。拒否は理由つき", async (t) => {
@@ -160,7 +174,7 @@ test("翻訳 adapter: 画像は intent の URL を確かめてから credentials
   let intentReply = () => jsonResponse({ uploadUrl: UPLOAD_URL, uploadToken: "token.value", uploadId: UUID }, 201);
   let putReply = () => jsonResponse(uploaded, 201);
   const calls = fakeBff(t, { "POST /uploads/intent": () => intentReply(), [`PUT ${UPLOAD_URL}`]: () => putReply() });
-  const adapter = createKamakuraLocalizationAdapter();
+  const adapter = createKamakuraLocalizationAdapter({ studioOrigin: STUDIO });
   const file = new File([new Uint8Array(32)], "海\n.png", { type: "image/png" });
 
   const result = await adapter.uploadImage({ itemKey: "aG9tZQ", unitId: "cover", file }, signal());
@@ -224,6 +238,7 @@ test("翻訳 adapter: 素材から選んだ画像は鎌倉の公開画像だけ 
   const chosen = [];
   let pick = MEDIA;
   const adapter = createKamakuraLocalizationAdapter({
+    studioOrigin: STUDIO,
     chooseImage: async (input) => { chosen.push(input); return pick; },
     cmsItemUrl: (collectionId, itemId) => `/projects/kamakura-site/admin/cms/${collectionId}/${itemId}`,
     cmsTranslationUrl: (collectionId, itemId) => `/projects/kamakura-site/admin/cms/${collectionId}/${itemId}?lang=en`,
@@ -257,12 +272,12 @@ test("翻訳 adapter: サイトの中の画像（\"/\" から始まる）は、�
   const units = data.item.item.units.map((unit) => unit.kind === "image" ? { ...unit, state: "draft", source: local, value: { asset: { kind: "image-url", src: "/images/cover-en.jpg" }, url: "/images/cover-en.jpg" } } : unit);
   const image = units.find((unit) => unit.kind === "image");
   fakeBff(t, {
-    "POST /items/aG9tZQ": () => jsonResponse({ status: "ready", item: { ...data.item.item, units } }),
-    "POST /items/aG9tZQ/command": () => jsonResponse({ ...data.applied, unit: image })
+    "GET /localization.items.read?itemKey=aG9tZQ": () => jsonResponse({ status: "ready", item: { ...data.item.item, units } }),
+    "POST /localization.items.command": () => jsonResponse({ ...data.applied, unit: image })
   });
   const command = { itemKey: "aG9tZQ", operationId: OP, action: "review-image", unitId: image.unitId, expectedVersion: "v1", expectedSourceVersion: "s1" };
 
-  const withSite = createKamakuraLocalizationAdapter({ siteOrigin: "https://site.example.test" });
+  const withSite = createKamakuraLocalizationAdapter({ studioOrigin: STUDIO, siteOrigin: "https://site.example.test" });
   const loaded = parseLocalizationItemResult(await withSite.loadItem({ itemKey: "aG9tZQ" }, signal()), "aG9tZQ");
   const cover = loaded.item.units.find((unit) => unit.kind === "image");
   assert.equal(cover.source.url, "https://site.example.test/images/cover-ja.jpg");
@@ -273,7 +288,7 @@ test("翻訳 adapter: サイトの中の画像（\"/\" から始まる）は、�
   // 文字の項目と https の画像はそのまま。公開 origin が無い・https の origin でなければ変えない
   assert.deepEqual(loaded.item.units.filter((unit) => unit.kind !== "image"), units.filter((unit) => unit.kind !== "image"));
   for (const siteOrigin of [null, "http://site.example.test", "https://site.example.test/path"]) {
-    const plain = parseLocalizationItemResult(await createKamakuraLocalizationAdapter({ siteOrigin }).loadItem({ itemKey: "aG9tZQ" }, signal()), "aG9tZQ");
+    const plain = parseLocalizationItemResult(await createKamakuraLocalizationAdapter({ studioOrigin: STUDIO, siteOrigin }).loadItem({ itemKey: "aG9tZQ" }, signal()), "aG9tZQ");
     assert.equal(plain.item.units.find((unit) => unit.kind === "image").source.url, "/images/cover-ja.jpg", String(siteOrigin));
   }
 });

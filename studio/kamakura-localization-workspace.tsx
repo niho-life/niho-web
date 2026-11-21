@@ -22,6 +22,7 @@ function adapterFor(siteOrigin: string | null): LocalizationWorkspaceAdapter {
   const existing = adapters.get(key);
   if (existing) return existing;
   const adapter = createKamakuraLocalizationAdapter({
+    studioOrigin: window.location.origin,
     siteOrigin,
     pageTranslationUrl: (pageId) => {
       const path = projectAliasPath(KAMAKURA_CMS_PROJECT_ID, KAMAKURA_CMS_SITE_ID, "editor");

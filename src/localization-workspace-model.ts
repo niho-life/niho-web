@@ -197,8 +197,14 @@ export interface LocalizationWorkspaceAdapter {
   advanceCatalog(input: Record<string, never>, signal: AbortSignal): Promise<unknown>;
   loadPreview(input: { readonly itemKey: string; readonly previewId: string; readonly cursor: string | null }, signal: AbortSignal): Promise<unknown>;
   readRelease(signal: AbortSignal): Promise<unknown>;
-  prepareRelease(input: LocaleReleasePrepareInput, signal: AbortSignal): Promise<unknown>;
-  applyRelease(input: LocaleReleaseApplyInput, signal: AbortSignal): Promise<unknown>;
+  /** 同じ初回準備の再送では同じ operationId を使う。再開時は省略する。 */
+  prepareRelease(input: LocaleReleasePrepareInput, signal: AbortSignal, operationId?: string): Promise<unknown>;
+  /** ダイアログが確認した操作と版を、反映を行う adapter へ渡す。 */
+  applyRelease(input: LocaleReleaseApplyInput, signal: AbortSignal, context: {
+    readonly operation: LocaleReleasePrepareInput["operation"];
+    readonly expectedVersion: string;
+    readonly prepared: Pick<LocaleReleaseSummary, "releaseId" | "version"> | null;
+  }): Promise<unknown>;
   saveSettings(input: LocalizationSettingsInput, signal: AbortSignal): Promise<unknown>;
   /** 任意。訳す言語の画像を上げる。 */
   uploadImage?(input: { readonly itemKey: string; readonly unitId: string; readonly file: File }, signal: AbortSignal): Promise<unknown>;

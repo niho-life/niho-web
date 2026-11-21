@@ -20,6 +20,10 @@
 
 ## 使い方
 
+サイトが [共通 Editing API の翻訳操作](editing-api-contract.md#翻訳操作)を実装している場合、GUI と CLI が同じ操作を使えます。鎌倉の Studio adapter は `@niho/web/editing-client` の `executeLocalization` で接続します。画面から渡す公開反映のコンテキストは、選んだ操作、確認した概要の版、準備済みの公開版です。初回の公開準備に使う操作 ID は同じ準備の再送で再利用します。
+
+ホスト独自の API につなぐ場合の例です。
+
 ```tsx
 import { LocalizationWorkspace, type LocalizationWorkspaceAdapter } from '@niho/web/localization-workspace';
 
@@ -86,7 +90,7 @@ parser は未知の key を拒み、次の形と上限を確かめます。上�
 
 ## adapter
 
-すべて `(input, signal: AbortSignal) => Promise<unknown>`（`loadOverview`・`readRelease` は `(signal)`）で、戻り値は runtime parser（`parseLocalization…Result`）で確かめます。どの応答でも `{ status: "forbidden" }` を返せます。1 件・1 項目・依頼を指す応答は `{ status: "not_found" }` も返せます。
+非同期メソッドは `(input, signal: AbortSignal) => Promise<unknown>` が基本です。`loadOverview` と `readRelease` は `(signal)` です。`prepareRelease` の第 3 引数は初回準備の操作 ID で、再開時は省略します。`applyRelease` の第 3 引数は `{ operation, expectedVersion, prepared }` で、再開時など準備済みの版が手元にない場合は `prepared` が `null` です。戻り値は runtime parser（`parseLocalization…Result`）で確かめます。どの応答でも `{ status: "forbidden" }` を返せます。1 件・1 項目・依頼を指す応答は `{ status: "not_found" }` も返せます。
 
 | メソッド | 入力 | 応答 |
 | --- | --- | --- |
@@ -99,7 +103,7 @@ parser は未知の key を拒み、次の形と上限を確かめます。上�
 | `advanceCatalog` | `{}` | `{ status: "updating", progress }` / `{ status: "current" }` |
 | `loadPreview` | `{ itemKey, previewId, cursor: string \| null }` | `{ status: "ready", material, nextCursor: string \| null }` / not_found |
 | `readRelease` | — | `{ status: "ready", current, history, pending }` |
-| `prepareRelease` | `{ operation, releaseId, expectedVersion, expectedCurrentVersion, resumeToken }` | `{ status: "preparing", progress, resumeToken }` / `{ status: "ready", plan }` / `{ status: "blocked", blockers }` / `{ status: "conflict" }` |
+| `prepareRelease` | `{ operation, releaseId, expectedVersion, expectedCurrentVersion, resumeToken }` | `{ status: "preparing", progress, resumeToken }` / `{ status: "ready", plan }` / `{ status: "blocked", blockers }` / `{ status: "expired" }` / `{ status: "conflict" }` |
 | `applyRelease` | `{ confirmationToken, resumeToken }`（どちらか 1 つだけ文字列） | `{ status: "applying", progress, resumeToken, waiting? }` / `{ status: "applied", current }` / `{ status: "expired" }` / `{ status: "conflict" }` |
 | `saveSettings` | `{ expectedVersion, autoDraft }`（旧い `{ expectedVersion, reviewGlossaryVersion }` も型に残るが、画面からは送らない） | `{ status: "saved", settings }` / `{ status: "conflict", settings }` / invalid |
 | `uploadImage`（任意） | `{ itemKey, unitId, file }` | `{ status: "uploaded", image }` / `{ status: "rejected", reason: "type" \| "size" \| "permission" \| "invalid" }` |
@@ -108,7 +112,7 @@ parser は未知の key を拒み、次の形と上限を確かめます。上�
 | `editLink?(itemKey)` | —（同期） | サブの言語を直すホスト画面の URL。ページはエディタ、CMS 項目は項目のサブ言語タブ。安全な URL があれば行はその画面へ移り、無ければ従来の翻訳項目画面を開く。Kamakura の `common:<pageId>` は `?page=<pageId>&lang=en` で English キャンバスへ、CMS は `?lang=en` で同じ項目の English タブへ移る。その他の項目はこの画面で編集する |
 
 - 応答の `summary.key`・`item.key`・`unit.unitId` は要求と一致必須です（違えば例外）。
-- 読み取りも POST で送れるよう、入力はすべて JSON の本文に収まる形です。query string は使いません。
+- 表は画面と adapter の間の契約です。共通 Editing API に接続する場合は、共有クライアントが GET の入力を query、書き込みを JSON の本文に変換します。
 
 ### 概要（overview）
 
@@ -342,7 +346,7 @@ type LocaleReleaseWorkspacePlan = {
 公開の手順（ダイアログ）:
 
 1. 概要を読み直し、`blockers` が 1 つでもあれば一覧を出して先へ進めません（`itemKey` があれば「開く」で 1 件へ移れます）。
-2. 準備: `prepareRelease({ operation: "publish", releaseId: null, expectedVersion: overview.version, expectedCurrentVersion: current?.version ?? null, resumeToken: null })`。`preparing` なら `progress`（n/m）を出し、返った `resumeToken` を付けてすぐ呼び直します。`ready` で確認へ。`blocked` なら 1. の一覧に戻ります。`conflict` は「内容が変わりました。読み込み直して、もう一度試してください」。
+2. 準備: `prepareRelease({ operation: "publish", releaseId: null, expectedVersion: overview.version, expectedCurrentVersion: current?.version ?? null, resumeToken: null })`。`preparing` なら `progress`（n/m）を出し、返った `resumeToken` を付けてすぐ呼び直します。`ready` で確認へ。`blocked` なら 1. の一覧に戻ります。再開tokenが期限切れまたは無効なら `expired` を返し、準備し直します。`conflict` は「内容が変わりました。読み込み直して、もう一度試してください」。
 3. 確認: ページ数・公開する先・今の版 → 新しい版・期限の残り（`expiresAt` まで）を出します。初回公開の `firstRelease` があれば、まとまりごとのページ数と、そのうち自動翻訳のままの訳があるページ数、対象外の件数と理由を出します。`changes` があれば、新しく出るページと外れるページも出します。公開で `pages` が 0 になるとき（すべて外れる）は、そのことをはっきり出します。期限が切れたら「準備し直す」だけを出します。
 4. 反映: `applyRelease({ confirmationToken, resumeToken: null })`。`applying` なら n/m を出し、`resumeToken` を付けて `applyRelease({ confirmationToken: null, resumeToken })` を呼び直します。`applied` で完了、`expired` は 2. からやり直し、`conflict` は読み直し。
 
