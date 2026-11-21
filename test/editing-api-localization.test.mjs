@@ -143,6 +143,7 @@ test("localization reads item pages and preview, then performs CAS writes and tr
 
   const catalogRequest = { expectedVersion: overview.version, operationId: "refresh-catalog-1" };
   assert.deepEqual(await client.executeLocalization("localization.catalog.advance", catalogRequest), { status: "updating", progress: { done: 1, total: 2 } });
+  assert.equal(seen.at(-1).capability, "localization.edit");
   const queued = await client.executeLocalization("localization.items.translate", {
     expectedVersion: overview.version, operationId: "translate-operation-1", itemKey, unitIds: ["body"],
   });

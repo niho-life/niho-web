@@ -20,6 +20,10 @@
 
 ## 使い方
 
+サイトが [共通 Editing API の翻訳操作](editing-api-contract.md#翻訳操作)を実装している場合、GUI と CLI が同じ操作を使えます。鎌倉の Studio adapter は `@niho/web/editing-client` の `executeLocalization` で接続します。画面から渡す公開反映のコンテキストは、選んだ操作、確認した概要の版、準備済みの公開版です。初回の公開準備に使う操作 ID は同じ準備の再送で再利用します。
+
+ホスト独自の API につなぐ場合の例です。
+
 ```tsx
 import { LocalizationWorkspace, type LocalizationWorkspaceAdapter } from '@niho/web/localization-workspace';
 
@@ -86,7 +90,7 @@ parser は未知の key を拒み、次の形と上限を確かめます。上�
 
 ## adapter
 
-すべて `(input, signal: AbortSignal) => Promise<unknown>`（`loadOverview`・`readRelease` は `(signal)`）で、戻り値は runtime parser（`parseLocalization…Result`）で確かめます。どの応答でも `{ status: "forbidden" }` を返せます。1 件・1 項目・依頼を指す応答は `{ status: "not_found" }` も返せます。
+非同期メソッドは `(input, signal: AbortSignal) => Promise<unknown>` が基本です。`loadOverview` と `readRelease` は `(signal)` です。`prepareRelease` の第 3 引数は初回準備の操作 ID で、再開時は省略します。`applyRelease` の第 3 引数は `{ operation, expectedVersion, prepared }` で、再開時など準備済みの版が手元にない場合は `prepared` が `null` です。戻り値は runtime parser（`parseLocalization…Result`）で確かめます。どの応答でも `{ status: "forbidden" }` を返せます。1 件・1 項目・依頼を指す応答は `{ status: "not_found" }` も返せます。
 
 | メソッド | 入力 | 応答 |
 | --- | --- | --- |
@@ -108,7 +112,7 @@ parser は未知の key を拒み、次の形と上限を確かめます。上�
 | `editLink?(itemKey)` | —（同期） | サブの言語を直すホスト画面の URL。ページはエディタ、CMS 項目は項目のサブ言語タブ。安全な URL があれば行はその画面へ移り、無ければ従来の翻訳項目画面を開く。Kamakura の `common:<pageId>` は `?page=<pageId>&lang=en` で English キャンバスへ、CMS は `?lang=en` で同じ項目の English タブへ移る。その他の項目はこの画面で編集する |
 
 - 応答の `summary.key`・`item.key`・`unit.unitId` は要求と一致必須です（違えば例外）。
-- 読み取りも POST で送れるよう、入力はすべて JSON の本文に収まる形です。query string は使いません。
+- 表は画面と adapter の間の契約です。共通 Editing API に接続する場合は、共有クライアントが GET の入力を query、書き込みを JSON の本文に変換します。
 
 ### 概要（overview）
 

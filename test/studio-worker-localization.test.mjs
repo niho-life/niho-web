@@ -8,6 +8,7 @@ import { createLocalizationMemory } from "../examples/localization-workspace-mem
 // 値はすべて架空（実在の原稿・人・内部の key は書かない）。上流の応答の形は W1 のデモ用のメモリの adapter から作る。
 const STUDIO = "https://studio.niho.life";
 const BASE = "/api/projects/project-kamakura/sites/kamakura/localization";
+const COMMON_BASE = "/api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura";
 const UPSTREAM = "/internal/studio/localization";
 const SITE = "https://next-kamakura.niho.life";
 const FRAME = `${SITE}/_studio/localization-preview`;
@@ -69,7 +70,7 @@ function harness(auth, worker) {
       return respond(call);
     } }
   };
-  const send = (method, path, body, { headers = {}, jwt = auth.jwt, raw } = {}) => worker.fetch(new Request(`${STUDIO}${BASE}${path}`, {
+  const send = (method, path, body, { headers = {}, jwt = auth.jwt, raw, base = BASE } = {}) => worker.fetch(new Request(`${STUDIO}${base}${path}`, {
     method,
     headers: {
       ...(jwt ? { "Cf-Access-Jwt-Assertion": jwt } : {}),
@@ -106,6 +107,81 @@ function mockAccess(t, auth) {
     throw new Error(`unexpected network request: ${url}`);
   });
 }
+
+test("共通翻訳 API の BFF は所属と要求を検証し、現在の役割から操作の scope を署名する", async (t) => {
+  const auth = await accessFixture(), worker = await loadWorker(), h = harness(auth, worker);
+  mockAccess(t, auth);
+  const send = (method, operation, body, options) => h.send(method, `/operations/localization.${operation}`, body, { base: COMMON_BASE, ...options });
+  const verify = (scope) => {
+    const call = h.calls.at(-1);
+    const [header, claims, signature] = call.headers.authorization.slice("Bearer ".length).split(".");
+    const expectedSignature = createHmac("sha256", Buffer.from(h.env.KAMAKURA_STUDIO_BRIDGE_SECRET, "base64url")).update(`${header}.${claims}`).digest("base64url");
+    assert.equal(signature, expectedSignature);
+    const actor = JSON.parse(Buffer.from(claims, "base64url").toString("utf8"));
+    assert.deepEqual(actor.scope, scope);
+    assert.equal(actor.sub, auth.subject);
+    if (scope.every((value) => value.startsWith("localization."))) assert.equal(actor.email, undefined);
+    assert.equal(actor.exp - actor.iat, 60);
+    assert.equal(call.headers.cookie, undefined);
+    assert.equal(call.headers["cf-access-jwt-assertion"], undefined);
+    return call;
+  };
+  const command = { siteId: "kamakura", itemKey: "aG9tZQ", unitId: "title", expectedVersion: "v1", expectedSourceVersion: "s1", operationId: OP, action: "set-value", value: "New title" };
+  const apply = { siteId: "kamakura", operation: "rollback", expectedVersion: "v1", confirmationToken: "token1", resumeToken: null };
+  await expectJson(await send("GET", "items.read?itemKey=aG9tZQ", undefined, { jwt: null }), 401);
+  await expectJson(await send("GET", "items.read?itemKey=aG9tZQ"), 403, "forbidden");
+  h.roles.set("project-kamakura/kamakura", "editor");
+  for (const [method, id, body, status, options] of [
+    ["GET", "unknown", undefined, 404], ["POST", "items.read", {}, 405],
+    ["GET", "items.read?itemKey=aG9tZQ&itemKey=bmV3cw", undefined, 400],
+    ["GET", "items.read?itemKey=aG9tZQ&actor=x", undefined, 400],
+    ["POST", "items.command?extra=1", command, 400], ["POST", "items.command", { ...command, siteId: "other" }, 400],
+    ["POST", "items.command", { ...command, actor: { role: "owner" } }, 400],
+    ["POST", "items.command", { ...command, action: "unknown" }, 400],
+    ["POST", "items.command", command, 400, { headers: { Origin: "https://example.test", "Sec-Fetch-Site": "cross-site" } }],
+    ["POST", "release.apply", apply, 403], ["POST", "release.apply", { ...apply, operation: "publish" }, 403],
+    ["PUT", "settings.save", { siteId: "kamakura", expectedVersion: "v1", operationId: OP, autoDraft: true }, 403]
+  ]) await expectJson(await send(method, id, body, options), status);
+  assert.equal(h.calls.length, 0);
+
+  await expectJson(await send("GET", "items.read?itemKey=aG9tZQ"), 200);
+  const read = verify(["localization.read"]);
+  assert.equal(read.path, "/api/edit/v1/sites/kamakura/operations/localization.items.read");
+  assert.equal(read.search, "?itemKey=aG9tZQ");
+  assert.equal(read.body, "");
+  await expectJson(await send("POST", "items.command", command, { headers: { Cookie: "browser-session", Authorization: "Bearer browser-value" } }), 200);
+  assert.deepEqual(JSON.parse(verify(["localization.edit"]).body), command);
+  const { value: _value, ...review } = command;
+  await expectJson(await send("POST", "items.command", { ...review, action: "review-current" }), 200);
+  verify(["localization.review"]);
+  await expectJson(await send("POST", "catalog.advance", { siteId: "kamakura", expectedVersion: "v1", operationId: OP }), 200);
+  verify(["localization.edit"]);
+
+  const data = await fixtures();
+  const pending = { operation: "rollback", stage: "apply", progress: { done: 1, total: 2 }, resumeToken: "resume-1", releaseId: "release1", startedAt: "2026-11-20T00:00:00.000Z", startedBy: null };
+  h.setRespond((call) => call.path.endsWith("localization.release.read") ? Response.json({ ...data.release, pending }) : Response.json({ status: "applying" }));
+  await expectJson(await h.send("GET", "/capabilities", undefined, { base: COMMON_BASE }), 200);
+  const discovery = JSON.parse(Buffer.from(h.calls.at(-1).headers.authorization.split(".")[1], "base64url").toString("utf8")).scope;
+  assert.deepEqual(discovery.filter((scope) => scope.startsWith("localization.")), ["localization.read", "localization.edit", "localization.review", "localization.translate"]);
+  assert.equal((await expectJson(await send("GET", "release.read"), 200)).pending, null);
+  verify(["localization.read"]);
+
+  h.roles.set("project-kamakura/kamakura", "owner");
+  assert.deepEqual((await expectJson(await send("GET", "release.read"), 200)).pending, pending);
+  verify(["localization.read", "localization.publish", "localization.rollback"]);
+  await expectJson(await send("POST", "release.apply", apply), 200);
+  assert.deepEqual(JSON.parse(verify(["localization.rollback"]).body), apply);
+  await expectJson(await send("POST", "release.apply", { ...apply, operation: "publish" }), 200);
+  verify(["localization.publish"]);
+
+  const withOverview = (frameUrl) => ({ ...data.overview, overview: { ...data.overview.overview, preview: { frameUrl } } });
+  h.setRespond(() => Response.json(withOverview("https://kamakura.niho.life/_studio/localization-preview")));
+  await expectJson(await send("GET", "overview"), 200);
+  verify(["localization.read", "localization.edit", "localization.review", "localization.translate", "localization.manage", "localization.publish", "localization.rollback"]);
+  h.setRespond(() => Response.json(withOverview("https://example.test/_studio/localization-preview")));
+  t.mock.method(console, "warn", () => {});
+  await expectJson(await send("GET", "overview"), 502, "upstream_contract_invalid");
+});
 
 test("翻訳 BFF: Access と D1 の owner/editor を要求ごとに確かめ、その役割を actor に入れ、鎌倉以外と知らない経路は閉じる", async (t) => {
   const auth = await accessFixture();
@@ -611,7 +687,7 @@ test("鎌倉の Dashboard だけ翻訳プレビューの枠と画像 PUT 先を�
   for (const path of dashboards) {
     const csp = await page(path);
     assert.match(csp, / connect-src 'self' https:\/\/next-kamakura\.niho\.life;/u, path);
-    assert.match(csp, / frame-src https:\/\/next-kamakura\.niho\.life;/u, path);
+    assert.match(csp, / frame-src https:\/\/next-kamakura\.niho\.life https:\/\/kamakura\.niho\.life;/u, path);
     assert.doesNotMatch(csp, /site-admin-test\.example|admin\.example\.test/u, path);
     assert.match(csp, / img-src 'self' https:;/u, path);
     assert.match(csp, / style-src 'self';/u, path);

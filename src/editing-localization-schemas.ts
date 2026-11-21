@@ -159,7 +159,7 @@ export const LOCALIZATION_EDITING_OPERATIONS = Object.freeze([
     object({ ...site, ...itemTarget, ...write, unitIds: nullable(array(unitId, LOCALIZATION_LIMITS.units, 1, true)) }),
     oneOf(result("queued", { job }), conflictSchema()), writeErrors("duplicate_operation", "validation_failed")),
   operation("localization.jobs.read", "localization.read", "GET", object({ ...site, jobId: id(128) }), result("ready", { job })),
-  operation("localization.catalog.advance", "localization.manage", "POST", object({ ...site, ...write }),
+  operation("localization.catalog.advance", "localization.edit", "POST", object({ ...site, ...write }),
     oneOf(result("current"), result("updating", { progress }), conflictSchema()), writeErrors("duplicate_operation")),
   operation("localization.preview", "localization.read", "GET", object({ ...site, ...itemTarget, previewId: id() }, { cursor }),
     result("ready", { material: true, nextCursor: cursor })),

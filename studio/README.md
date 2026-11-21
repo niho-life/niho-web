@@ -209,57 +209,15 @@ log は editor と同じく問い合わせ ID・固定の operation（`cms_schem
 
 ## Kamakura の翻訳 bridge（LocalizationWorkspace）
 
-鎌倉サイトの英語版を、[翻訳の画面](../docs/localization-workspace-contract.md)（`LocalizationWorkspace`・W1）から直すための BFF と adapter です。Dashboard の「翻訳」から直接使います。上流の経路と応答の正は kamakura-site の `worker/README.md`「Studio の翻訳 API の契約」です。
+Dashboard の「翻訳」と CMS 項目の English タブは、[翻訳の画面](../docs/localization-workspace-contract.md)を使います。Studio は同一 origin の `/api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1` から、鎌倉のサイト Worker の [共通 Editing API](../docs/editing-api-contract.md#翻訳操作) に接続します。CLI も同じサイト API を使います。訳文、原文の同期、公開状態、版の比較はサイト Worker が管理します。
 
-- ブラウザが呼ぶのは同一 origin の `/api/projects/project-kamakura/sites/kamakura/localization/...` と、画像本体の `PUT https://next-kamakura.niho.life/internal/studio/localization-upload/<uuid>` だけです。BFF は service binding `KAMAKURA_SITE` の `/internal/studio/localization/...` へ、editor・CMS と同じ HMAC の header（同じ関数・`KAMAKURA_STUDIO_BRIDGE_SECRET`）で署名して渡します。追加の secret はありません。
-- 鎌倉以外の Project / Site は 404 です。要求ごとに Access の `sub` と D1 の現在の `owner` / `editor` を確かめ（無ければ 403）、その役割を上流へ渡します。query string、知らない route（404）・method（405）は拒否します。読み取りも POST と本文です。
-- 本文は同一 origin（`Origin` 一致・`Sec-Fetch-Site: same-origin`）・`application/json`・JSON object を要求し、操作ごと（`command` は action ごと）の key の集合が完全に一致し、値が W1 の形（itemKey・unitId・operationId・版・cursor・token・訳文の大きさ）のときだけ通します。BFF は確かめた値だけで JSON を作り直し、Access で確かめた email と D1 の役割を `actor: { email, role }` に入れます。`overview` と `settings` では上流にだけ `includeGlossary: true` も加えます。ブラウザが `actor` や `includeGlossary` を送ってきたら 400 です。できる操作（`permissions`）は鎌倉の Worker が役割から決め、書き込みでも確かめます。
+- Studio の BFF は Cloudflare Access と D1 の現在の参加資格を毎回確認し、書き込みでは同一 origin からの JSON のみ受け付けます。共有の操作定義で入力を検証し、操作に必要な scope を持つ 60 秒の署名付きトークンで固定先の service binding へ渡します。編集者は読み取り・原文同期・翻訳案の依頼・訳文の編集ができ、公開・戻し・設定の変更には owner が必要です。概要、公開状態、操作一覧には役割で許可した範囲のトークンを使い、編集者には公開の再開用トークンを返しません。
+- 概要・翻訳案の依頼・原文の同期・プレビュー・公開の操作は 30 秒、それ以外は 12 秒で上流への接続を打ち切ります。翻訳の本文は 4 MiB、応答は 5 MiB（プレビューの材料は 2 MiB + 64 KiB）が上限です。プレビューの枠は鎌倉サイトの `/_studio/localization-preview`（拡張子付きも可）だけを受けます。
+- ブラウザ側の `createKamakuraLocalizationAdapter({ studioOrigin, siteOrigin, ... })` は共通クライアントの `executeLocalization` を使います。該当項目がない場合や権限がない場合は画面用の結果に変換し、版が競合した訳文・設定はサイトから返った現行値を使います。相対パスの画像は表示用 URL だけを `siteOrigin` で補います。翻訳画面は開いたときだけ読み込みます。
+- 訳文に使う画像はサイトで使える公開 URL が必要です。画像のアップロード開始には既存の `POST localization/uploads/intent` を使い、ホストが返す短命のトークンで固定されたアップロード先に画像を直接 PUT します。訳文への適用は共通の `localization.items.command` を通します。下書き用の素材アップロードとは公開時点が異なります。
+- English キャンバスの文書と翻訳情報の読み込み、キャンバスの下書き保存は、既存の `editor/pages/:pageId/snapshot` と `localization/editor/*` を引き続き使います。旧翻訳 workspace 経路は既存クライアントとの互換用です。
 
-| route（`localization/` の後ろ） | ブラウザの本文（`actor` は BFF） | 上流の待ち時間 |
-| --- | --- | --- |
-| `POST overview` | `{}` | 30 秒 |
-| `POST items`・`POST items/after/:cursor` | `{}` | 12 秒 |
-| `POST items/:itemKey` | `{}` | 12 秒 |
-| `POST editor/site` | `{}`。native ページごとの日英状態・英語の公開状態と翻訳設定を読む | 30 秒 |
-| `POST editor/pages/:pageId` | `{}`。固定の native ページ ID のみ | 30 秒 |
-| `POST editor/pages/:pageId/snapshot` | `{}`。English キャンバス用の `document` と同じ版の `presentation` を読む | 30 秒 |
-| `POST editor/pages/:pageId/save` | `{ document, expectedSourceVersion, expectedVersion, expectedOverlayVersion }` | 30 秒 |
-| `POST editor/pages/:pageId/command` | `{ action, expectedSourceVersion, expectedVersion, expectedOverlayVersion }` と操作別の unit / value / fingerprint / entry 版 | 30 秒 |
-| `POST items/:itemKey/command` | `{ itemKey, operationId, action, unitId, expectedVersion, expectedSourceVersion }` と action ごとに `value`／`candidateId`／`image` | 12 秒 |
-| `POST items/:itemKey/translate` | `{ itemKey, operationId, unitIds }` | 30 秒 |
-| `POST jobs/:jobId` | `{}` | 12 秒 |
-| `POST catalog/advance` | `{}` | 30 秒 |
-| `POST preview/items` | `{ itemKey, previewId, cursor }` | 30 秒 |
-| `POST release`・`release/prepare`・`release/apply` | `{}`・`{ operation, releaseId, expectedVersion, expectedCurrentVersion, resumeToken }`・`{ confirmationToken, resumeToken }` | 30 秒 |
-| `PUT settings` | `{ expectedVersion, autoDraft }` または `{ expectedVersion, reviewGlossaryVersion }`（両方・どちらも無しは拒否。後者は 2026-11-12 に画面から外した旧い確認の操作で、互換のため通す） | 12 秒 |
-| `POST uploads/intent` | `{ itemKey, unitId, name, mimeType, bytes }` | 12 秒 |
-
-- `set-image` の `image` は `null`（原文と同じに戻す）か `{ kind: "image-url", src }` だけです（どの URL を使えるかは鎌倉の Worker が確かめる）。
-- 上限: 訳文の保存（`command`・`editor/pages/:pageId/save`・`editor/pages/:pageId/command`）の本文は 1 MiB − 4 KiB（鎌倉の Worker の 1 MiB から actor の分を引く）、ほかの本文 16 KiB、上流の応答 4 MiB（upload intent は 16 KiB）。画像は jpeg / png / webp / avif / gif で 50 MiB まで（実際の上限は鎌倉の Worker の 413）。
-- プレビューの材料（`preview/items` の 200）は、確かめずに 2 MiB + 64 KiB の上限つきでそのまま流します（ブラウザの adapter と画面が W1 の parser で確かめる。上限を超えたら途中で切る）。ほかの応答は W1 の parser（`src/localization-workspace-model.ts`）または editor 専用 parser で確かめ、既知の field だけを返します。`settings.glossary` は任意で、ある場合は版、500件までの重複しない1行の対照（各500文字まで）、旧い確認状態（画面には出さない）を厳密に検証します。旧形の `settings` も受けます。`editor/site` は設定・ページ ID の重複・言語別状態・公開状態・版を検証します。`editor/pages/:pageId` は原文の site・page・locale（移行中の `ja` と正規化済み `ja-JP`）・revision、訳文 overlay の scope、両版を確かめて返します。`snapshot` は English の document と presentation 内の全表示文書について site・page/locale・版を検証し、`conflict` / `unavailable` をそのまま明示します。文書本文のブロック契約はホストの editor adapter で catalog と組み合わせて検証します。`save` は文書の対象と版を絞って上流の構造検証へ渡し、`command` は操作ごとの入力を絞ります。概要の `preview.frameUrl` は鎌倉の Worker の `/_studio/localization-preview`（`.html` 付きも可）だけを受けます。
-
-| 上流 | ブラウザへ |
-| --- | --- |
-| 契約の結果（本文 `{ status, … }`。forbidden は 403・not_found は 404・ほかは 200） | 同じ status で、確かめ直した JSON |
-| upload intent の 201 | 201 `{ uploadUrl, uploadToken, uploadId }`（`uploadUrl` は鎌倉の Worker の `/internal/studio/localization-upload/<uploadId>` だけ） |
-| 経路の 404（本文に status が無い） | 404 `{ error: "not_found" }`（概要の 404 は翻訳の API の未配備として 503） |
-| 409 `{ error }`（保存先の取り合いが続いた） | 409 `{ error: "conflict" }` |
-| upload intent の 413 / 415 | 同じ status で `{ error: "image_rejected" }` |
-| 400（と本文の 413 / 415） | 400 `{ error: "invalid_request" }` |
-| 401 / status の無い 403 / 429 / 5xx / 3xx / JSON でない / 上限超え / timeout / 想定外の 4xx | 503 `{ error: "service_unavailable", supportId }` |
-| 契約に合わない応答（field の過不足・itemKey / unitId / jobId の不一致・status と HTTP の status の食い違い・プレビューの枠の違いなど） | 502 `{ error: "upstream_contract_invalid", supportId }` |
-
-log は editor・CMS と同じく問い合わせ ID・固定の operation（`localization_overview`・`localization_list`・`localization_item`・`localization_editor_site`・`localization_editor_page`・`localization_editor_save`・`localization_editor_command`・`localization_command`・`localization_translate`・`localization_job`・`localization_catalog`・`localization_preview`・`localization_release`・`localization_release_prepare`・`localization_release_apply`・`localization_settings`・`localization_upload_intent`）・固定の分類（editor の分類と `localization_endpoint_missing`）・上流の status だけで、本文・token・email・subject は出しません。
-
-ブラウザ側は `studio/kamakura-localization.ts` の `createKamakuraLocalizationAdapter({ siteOrigin, cmsItemUrl, chooseImage })` が `LocalizationWorkspaceAdapter` を返します（`siteOrigin` は Project の `site.domains[0]`）。
-
-- 各メソッドは BFF を呼び、本文に `status` があれば W1 の parser に通します。BFF が所属を拒んだ 403（`{ error }`）は forbidden、ほかの `{ error }` は例外（画面では「読み込めませんでした」と再試行）です。
-- 1 件と保存の結果の画像の項目は、表示用の `url` が `/` から始まる（サイトの中の画像）ときだけ `siteOrigin` の絶対 URL にします（Studio の origin から読まないため）。`set-image` で送る `asset` は変えません。
-- 画像: BFF の `uploads/intent` を呼び、`uploadUrl` が鎌倉の Worker の `/internal/studio/localization-upload/<uploadId>` であることを確かめてから、`credentials: "omit"`・`Authorization: Bearer <uploadToken>` で直接 PUT します。結果は W1 の `{ status: "uploaded", image }`（`image.asset` は `{ kind: "image-url", src }`）だけを受けます。拒否は type / size / permission / invalid で返します。
-- `pickAsset` は `chooseImage`（選んだ鎌倉の公開画像 `https://kamakura-media.niho.life/...` の URL か null）を渡したときだけ作り、`{ kind: "image-url", src }` で返します。`sourceLink` は `cmsItemUrl` を渡したときだけ作り、CMS の項目の 1 件だけに URL を返します。CMS が Studio の項目画面なら `editLink` は同じ項目の `?lang=en` を返し、一覧から English タブを直接開きます。タブの切替は URL に反映します。
-- Dashboard の中では `studio/site-translations.tsx` が `studio/kamakura-localization-workspace.tsx` を `import()` で読み、adapter を描画の外で CMS の開き方ごとに 1 回だけ作ります。
-
-テストは `test/studio-worker-localization.test.mjs`（BFF・CSP・bundle の分割）、`test/kamakura-localization-adapter.test.mjs`（adapter）、`test/studio-site-admin.test.mjs`（切替・URL）、`test/studio-client-translations.test.mjs`（client の枠と翻訳の画面の切り替え・URL・戻る/進む）です。
+テストは `test/studio-worker-localization.test.mjs`（BFF・CSP・bundle の分割）、`test/kamakura-localization-adapter.test.mjs`（adapter）、`test/studio-client-translations.test.mjs`（画面の接続と URL の遷移）です。
 
 ## サイト分析（GA4 / Search Console）
 
@@ -397,7 +355,7 @@ Project 固有 API はすべて次の prefix 配下です。
 - Kamakura: `POST editor/assets/{list,upload-intent,update,usages,resolve}`、`GET editor/assets/:uuid/preview`（owner/editor）
 - Kamakura CMS: `GET cms/schema`、`GET|POST cms/collections/:col/items`、`GET cms/collections/:col/items/:id`、`GET|POST …/:id/english-publication`、`PUT …/:id/draft`、`POST …/:id/{publish,discard-draft,unpublish,duplicate,remove,schedule,cancel-schedule,retry-schedule}`、`POST cms/uploads/intent`（owner/editor・鎌倉以外は 404）
 - サイト分析: `GET analytics/{report,connection}`（owner/editor）、`POST analytics/{ga4,search-console}/reporting/{prepare,apply,verify,retry,disconnect/prepare,disconnect/apply}`（owner）。詳細は上の「サイト分析」
-- Kamakura 翻訳: `POST localization/{overview,items,catalog/advance,preview/items,release,release/prepare,release/apply,uploads/intent,editor/site}`、`POST localization/editor/pages/:pageId{,/snapshot,/save,/command}`、`POST localization/items/after/:cursor`、`POST localization/items/:itemKey{,/command,/translate}`、`POST localization/jobs/:jobId`、`PUT localization/settings`（owner/editor・役割を上流へ渡す・鎌倉以外は 404）
+- Kamakura 翻訳: `editor/editing-api/v1/sites/kamakura/operations/localization.*`（[共通 Editing API の操作表](../docs/editing-api-contract.md#翻訳操作)）。画像のアップロード開始と English キャンバスは `localization/uploads/intent` と `localization/editor/*`。
 
 unknown Project/Site と権限のない Project/Site は、外部から区別できる詳細を返しません。owner API が返す member 情報は、その owner が管理する同一 Project に限定します。
 

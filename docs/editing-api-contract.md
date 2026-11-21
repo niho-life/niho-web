@@ -68,7 +68,7 @@ Studio GUIはページの表示・編集材料の一部（presentation metadata�
 | `localization.items.command` | POST | `localization.edit` または `localization.review` | `LocalizationCommandInput` | `{ status: "applied", unit, summary }` |
 | `localization.items.translate` | POST | `localization.translate` | `{ itemKey, expectedVersion, operationId, unitIds }`。全項目は `unitIds: null` | `{ status: "queued", job }` |
 | `localization.jobs.read` | GET | `localization.read` | `jobId` | `{ status: "ready", job }` |
-| `localization.catalog.advance` | POST | `localization.manage` | `{ expectedVersion, operationId }` | `{ status: "updating", progress }` または `{ status: "current" }` |
+| `localization.catalog.advance` | POST | `localization.edit` | `{ expectedVersion, operationId }` | `{ status: "updating", progress }` または `{ status: "current" }` |
 | `localization.preview` | GET | `localization.read` | `itemKey, previewId, cursor?` | `{ status: "ready", material, nextCursor }` |
 | `localization.release.read` | GET | `localization.read` | — | `{ status: "ready", current, history, pending }` |
 | `localization.release.prepare` | POST | `localization.publish` または `localization.rollback` | `LocaleReleasePrepareInput`。初回は `operationId` も必要 | `{ status: "ready", plan }`、`{ status: "preparing", progress, resumeToken }` または `{ status: "blocked", blockers }` |
