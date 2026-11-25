@@ -1,6 +1,7 @@
 import { resolvePageStyles, retainPageStyles, type SiteStyles } from "./site-styles.js";
 import { detachInstance } from "./component-model.js";
-import { parsePageDocument } from "./document.js";
+import { parsePageDocument, parsePageMeta, validatePageDocument } from "./document.js";
+import { cloneEditorValue, createCopyOnWrite, finishCopyOnWrite } from "./immutable-draft.js";
 import type { EditorBlockRegistry, EditorLock, EditorPage, EditorPageChange, EditorPageChangePlan, EditorPageImpact, EditorReadOnly, EditorReleasePlan, EditorReleaseRequest, EditorSite, EditorTarget } from "./editor-types.js";
 import { findPathConflict, validatePagePath } from "./pages.js";
 import { copyId, indexNodeDocument, nodeAt, siblingsAt, walkNodes, type NodePath } from "./node-tree.js";
@@ -9,6 +10,7 @@ import { stateNames, textStyleProperties } from "./style-values.js";
 import { assertMotionStylePatch, sameMotionValue, type MotionStylePatch } from "./builder.js";
 import { isSafeHttpsOrigin, isSafePublicUrl, keys, line, record } from "./validation-utils.js";
 import { normalizeEmbedSource } from "./embeds.js";
+import { parseStyle, parseTextStyles, parseTokens } from "./style-values.js";
 
 export { nodeAt, walkNodes, type NodePath };
 export type EditorOperation =
@@ -95,6 +97,73 @@ export function parseEditorReadOnly(value: unknown): EditorReadOnly | undefined 
 export function effectiveLocks(document: PageDocument, locks: readonly EditorLock[], blocks: EditorOperationBlocks): EditorLock[] {
   return [...locks, ...indexNodeDocument(document).entries.flatMap(({ node }) => node.type === "component"
     ? Object.entries(blocks[node.block]?.lockedProps ?? {}).map(([name, reason]) => ({ nodeId: node.id, fields: [`props.${name}`], reason })) : [])];
+}
+const canonicalNodeKeys: Readonly<Record<PageNode["type"], readonly string[]>> = {
+  text: ["type", "text"],
+  element: ["type", "id", "tag", "formCompletionPageId", "asset", "icon", "embed", "interaction", "attrs", "style", "children"],
+  component: ["type", "id", "block", "props", "style", "slots"],
+  instance: ["type", "id", "component", "props", "style"],
+};
+function orderedNode(node: PageNode): PageNode {
+  const keys = canonicalNodeKeys[node.type].filter((key) => Object.hasOwn(node, key));
+  if (Object.keys(node).every((key, index) => key === keys[index])) return node;
+  return Object.fromEntries(keys.map((key) => [key, (node as unknown as Record<string, unknown>)[key]])) as unknown as PageNode;
+}
+/** New operations add properties in UI order; keep the same wire key order as parsePageDocument. */
+function canonicalizeEditedDocument(document: PageDocument, original: PageDocument, blocks: EditorOperationBlocks, components?: ComponentLibrary): PageDocument {
+  const originalIndex = indexNodeDocument(original), originalNodes = new Map<string, PageNode>(), originalText = new WeakSet<object>();
+  for (const { node } of originalIndex.entries) {
+    if (node.type === "text") originalText.add(node);
+    else originalNodes.set(node.id, node);
+  }
+  const tokens = document.tokens;
+  const textStyles = document.textStyles;
+  const instanceTokens = components ? { ...components.tokens, ...tokens } : tokens;
+  const normalizeNodes = (nodes: PageNode[], parentPath: string): PageNode[] => {
+    let result: PageNode[] | undefined;
+    for (let index = 0; index < nodes.length; index++) {
+      const node = nodes[index]!;
+      const changed = node.type === "text" ? !originalText.has(node) : originalNodes.get(node.id) !== node;
+      if (!changed) continue;
+      let normalized = node;
+      if (node.type === "element") {
+        let element = node;
+        const path = `${parentPath}[${index}]`, children = normalizeNodes(node.children, `${path}.children`);
+        if (children !== node.children) element = { ...element, children };
+        if (element.attrs && (element.tag === "input" || element.tag === "button") && element.attrs.type === undefined) {
+          element = { ...element, attrs: { ...element.attrs, type: element.tag === "input" ? "text" : "button" } };
+        }
+        normalized = element;
+      }
+      if (normalized.type !== "text" && normalized.style) {
+        const style = parseStyle(normalized.style, normalized.type === "instance" ? instanceTokens : tokens, `${parentPath}[${index}].style`, textStyles);
+        normalized = { ...normalized, style };
+      }
+      if (normalized.type === "component") {
+        const component = normalized, contract = blocks[component.block];
+        if (contract) {
+          const props: Record<string, PublicPropValue> = {};
+          for (const name of Object.keys(contract.props)) if (Object.hasOwn(component.props, name)) props[name] = component.props[name]!;
+          const slots = Object.fromEntries(Object.entries(component.slots ?? {}).map(([name, style]) => [name, parseStyle(style, tokens, `${parentPath}[${index}].slots.${name}`, {}, false)]));
+          normalized = { ...component, props, ...(Object.keys(slots).length ? { slots } : {}) };
+          if (!Object.keys(slots).length) delete (normalized as ComponentNode).slots;
+        }
+      }
+      normalized = orderedNode(normalized);
+      if (normalized !== node) { result ??= nodes.slice(); result[index] = normalized; }
+    }
+    return result ?? nodes;
+  };
+  const body = normalizeNodes(document.body, "$.body");
+  const normalizedTokens = document.tokens === original.tokens ? document.tokens : parseTokens(document.tokens, "$.tokens");
+  const normalizedStyles = document.textStyles === original.textStyles ? document.textStyles : document.textStyles === undefined ? undefined : parseTextStyles(document.textStyles, normalizedTokens, "$.textStyles");
+  const meta = document.meta === original.meta ? document.meta : document.meta === undefined ? undefined : parsePageMeta(document.meta);
+  return {
+    schemaVersion: document.schemaVersion, siteId: document.siteId, pageId: document.pageId, locale: document.locale,
+    revision: document.revision, title: document.title,
+    ...(meta && Object.keys(meta).length ? { meta } : {}), tokens: normalizedTokens,
+    ...(normalizedStyles ? { textStyles: normalizedStyles } : {}), body,
+  };
 }
 function fieldValue(node: PageNode, field: string): unknown {
   if (field === "*") return node;
@@ -186,7 +255,7 @@ function preserveRange(original: PageDocument, before: ElementNode | ComponentNo
     if (own(property) || Object.hasOwn(values, property) && values[property] === undefined && current?.[property] === undefined) continue;
     const group = boxGroup(property);
     const value = inheritedStyle(original, before, property, until)?.value ?? (group || values[property] === undefined ? undefined : neutral[property]);
-    if (value !== undefined) writes[property] = structuredClone(value);
+    if (value !== undefined) writes[property] = cloneEditorValue(value);
     else if (!boxGroup(property) && values[property] !== undefined) throw refuse();
   }
   for (const group of new Set(properties.flatMap((property) => boxGroup(property) ?? []))) {
@@ -210,15 +279,15 @@ function eachDeclarations(document: PageDocument, visit: (declarations: Declarat
 }
 /** 見た目を変えずに文字スタイルを外す。ノードの値が効く幅（同じ段以下）に無いプロパティだけをコピーする。 */
 function detachTextStyle(node: ElementNode | ComponentNode | InstanceNode, style: TextStyle): void {
-  const own: NodeStyle = node.style ??= {}, original = structuredClone(own);
+  const own: NodeStyle = node.style ??= {}, original = cloneEditorValue(own);
   const has = (property: string, minWidth: number) => Object.hasOwn(original.base ?? {}, property) || (original.responsive ?? []).some((entry) => entry.minWidth <= minWidth && Object.hasOwn(entry.declarations, property));
-  for (const [property, value] of Object.entries(style.base)) if (!Object.hasOwn(original.base ?? {}, property)) ((own.base ??= {}) as Declarations)[property] = structuredClone(value);
+  for (const [property, value] of Object.entries(style.base)) if (!Object.hasOwn(original.base ?? {}, property)) ((own.base ??= {}) as Declarations)[property] = cloneEditorValue(value);
   for (const entry of style.responsive ?? []) for (const [property, value] of Object.entries(entry.declarations)) {
     if (has(property, entry.minWidth)) continue;
     const responsive = own.responsive ??= [];
     let target = responsive.find((item) => item.minWidth === entry.minWidth);
     if (!target) { target = { minWidth: entry.minWidth, declarations: {} }; responsive.push(target); responsive.sort((a, b) => a.minWidth - b.minWidth); }
-    (target.declarations as Declarations)[property] = structuredClone(value);
+    (target.declarations as Declarations)[property] = cloneEditorValue(value);
   }
   delete own.textStyle;
 }
@@ -236,7 +305,7 @@ function formFieldPairIndex(siblings: readonly PageNode[], node: PageNode, index
 }
 /** components はインスタンスを含む文書の検証に使う、同じサイトの検証済みライブラリ。 */
 export function editDocument(document: PageDocument, operation: EditorOperation, blocks: EditorOperationBlocks = {}, locks: readonly EditorLock[] = [], components?: ComponentLibrary, siteStyles?: SiteStyles): PageDocument {
-  const draft = structuredClone(resolvePageStyles(document, siteStyles)), allLocks = effectiveLocks(document, locks, blocks);
+  const draft = createCopyOnWrite(resolvePageStyles(document, siteStyles)), allLocks = effectiveLocks(document, locks, blocks);
   const parentChildren = (path: NodePath): PageNode[] => siblingsAt(draft, path);
   const targetChildren = (id: string | null): PageNode[] => {
     if (id === null) return draft.body;
@@ -258,14 +327,14 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
   else if (operation.type === "restore") {
     const source = operation.document;
     if (!source || typeof source !== "object") throw new Error("復元する内容を確認できません。");
-    draft.title = source.title; draft.tokens = structuredClone(source.tokens); draft.body = structuredClone(source.body);
-    if (source.meta === undefined) delete draft.meta; else draft.meta = structuredClone(source.meta);
-    if (source.textStyles === undefined) delete draft.textStyles; else draft.textStyles = structuredClone(source.textStyles);
+    draft.title = source.title; draft.tokens = cloneEditorValue(source.tokens); draft.body = cloneEditorValue(source.body);
+    if (source.meta === undefined) delete draft.meta; else draft.meta = cloneEditorValue(source.meta);
+    if (source.textStyles === undefined) delete draft.textStyles; else draft.textStyles = cloneEditorValue(source.textStyles);
   }
   else if (operation.type === "meta") {
     const meta: Record<string, unknown> = { ...draft.meta }, value = operation.value;
     if (value === undefined || value === "" || value === false && operation.field !== "targetReviewBeforePublish" || Array.isArray(value) && !value.length) delete meta[operation.field];
-    else meta[operation.field] = structuredClone(value);
+    else meta[operation.field] = cloneEditorValue(value);
     if (Object.keys(meta).length) draft.meta = meta as PageMeta; else delete draft.meta;
   }
   else if (operation.type === "add" || operation.type === "addMany") {
@@ -273,19 +342,19 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
     if (!Number.isInteger(index) || index < 0 || index > destination.length) throw new Error("追加先の位置が不正です。");
     const additions = operation.type === "add" ? [operation.node] : operation.nodes;
     if (!additions.length) throw new Error("追加する要素がありません。");
-    destination.splice(index, 0, ...structuredClone(additions));
+    destination.splice(index, 0, ...cloneEditorValue(additions));
   } else if (operation.type === "replaceAsset") {
     const { from, to } = operation, same = (reference: AssetReference) => reference.provider === from.provider && reference.id === from.id;
     let count = 0;
     for (const { node } of walkNodes(draft)) {
       if (node.type === "text") continue;
-      if (node.type === "element" && node.asset && same(node.asset)) { node.asset = structuredClone(to); count++; }
+      if (node.type === "element" && node.asset && same(node.asset)) { node.asset = cloneEditorValue(to); count++; }
       for (const declarations of [node.style?.base, ...(node.style?.responsive ?? []).map((entry) => entry.declarations)]) {
-        if (declarations?.backgroundImage && declarations.backgroundImage !== "none" && same(declarations.backgroundImage.asset)) { declarations.backgroundImage = { asset: structuredClone(to) }; count++; }
+        if (declarations?.backgroundImage && declarations.backgroundImage !== "none" && same(declarations.backgroundImage.asset)) { declarations.backgroundImage = { asset: cloneEditorValue(to) }; count++; }
       }
     }
     const cover = draft.meta?.ogImage;
-    if (cover && "asset" in cover && same(cover.asset)) { cover.asset = structuredClone(to); count++; }
+    if (cover && "asset" in cover && same(cover.asset)) { cover.asset = cloneEditorValue(to); count++; }
     if (!count) throw new Error("置き換えるアセットがこのページにありません。");
   } else if (operation.type === "token") {
     styleName(operation.name);
@@ -297,7 +366,7 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
         if (node && lock.fields.some((field) => usesToken(fieldValue(node, field)))) throw new Error(`データ連動値は変更できません。${lock.reason}`);
       }
     }
-    if (operation.token) draft.tokens[operation.name] = structuredClone(operation.token);
+    if (operation.token) draft.tokens[operation.name] = cloneEditorValue(operation.token);
     else {
       const token = draft.tokens[operation.name];
       if (!token) throw new Error("共通の値が見つかりません。");
@@ -307,7 +376,7 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
   } else if (operation.type === "textStyle") {
     styleName(operation.name);
     const styles = draft.textStyles ??= {};
-    if (operation.style) styles[operation.name] = structuredClone(operation.style);
+    if (operation.style) styles[operation.name] = cloneEditorValue(operation.style);
     else {
       const style = styles[operation.name];
       if (!style) throw new Error("テキストスタイルが見つかりません。");
@@ -322,7 +391,7 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
       node.text = operation.value;
     } else if (operation.type === "replaceChildren") {
       if (node.type !== "element") throw new Error("文字を編集できる要素を選択してください。");
-      node.children = structuredClone(operation.children);
+      node.children = cloneEditorValue(operation.children);
     } else if (operation.type === "tag") {
       if (node.type !== "element" || !["p", "h1", "h2", "h3", "h4", "h5", "h6"].includes(node.tag)) throw new Error("見出し・段落を選択してください。");
       node.tag = operation.value;
@@ -381,12 +450,12 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
       if (Object.keys(props).length) node.props = props; else delete node.props;
     } else if (operation.type === "detach") {
       if (!components) throw new Error("コンポーネントライブラリを読み込めていません。");
-      draft.body = detachInstance(draft, operation.path, components, blocks).body;
+      draft.body = detachInstance(finishCopyOnWrite(draft), operation.path, components, blocks).body;
     } else if (operation.type === "slotStyle") {
       if (node.type !== "component") throw new Error("ブロックを選択してください。");
       if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(operation.slot)) throw new Error("表示領域が見つかりません。");
       // 空になった指定は残さない。許可されたプロパティかどうかは最後の文書検証で確かめる。
-      const slots = structuredClone(node.slots ?? {}), current = slots[operation.slot] ?? {}, base = { ...current.base };
+      const slots = cloneEditorValue(node.slots ?? {}), current = slots[operation.slot] ?? {}, base = { ...current.base };
       const widths = (current.responsive ?? []).map((entry) => ({ minWidth: entry.minWidth, declarations: { ...entry.declarations } }));
       let declarations = base;
       if (operation.breakpoint !== "base") {
@@ -412,28 +481,28 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
       ], blocks);
       const base = { ...before?.base };
       for (const [property, value] of Object.entries(previous?.base ?? {})) if (sameMotionValue(base[property as StyleProperty], value)) delete base[property as StyleProperty];
-      Object.assign(base, structuredClone(patch?.base ?? {}));
-      const states = structuredClone(before?.states ?? {});
+      Object.assign(base, cloneEditorValue(patch?.base ?? {}));
+      const states = cloneEditorValue(before?.states ?? {});
       for (const [state, declarations] of Object.entries(previous?.states ?? {})) {
         const current = { ...states[state as StateName] };
         for (const [property, value] of Object.entries(declarations ?? {})) if (sameMotionValue(current[property as StateProperty], value)) delete current[property as StateProperty];
         if (Object.keys(current).length) states[state as StateName] = current; else delete states[state as StateName];
       }
-      for (const [state, declarations] of Object.entries(patch?.states ?? {})) states[state as StateName] = { ...states[state as StateName], ...structuredClone(declarations) };
-      let appear = structuredClone(before?.appear);
+      for (const [state, declarations] of Object.entries(patch?.states ?? {})) states[state as StateName] = { ...states[state as StateName], ...cloneEditorValue(declarations) };
+      let appear = cloneEditorValue(before?.appear);
       if (previous?.appear && sameMotionValue(appear, previous.appear)) appear = undefined;
-      if (patch?.appear) appear = structuredClone(patch.appear);
+      if (patch?.appear) appear = cloneEditorValue(patch.appear);
       const style: NodeStyle = {
         ...(before?.textStyle ? { textStyle: before.textStyle } : {}),
         ...(Object.keys(base).length ? { base } : {}),
-        ...(before?.responsive?.length ? { responsive: structuredClone(before.responsive) } : {}),
+        ...(before?.responsive?.length ? { responsive: cloneEditorValue(before.responsive) } : {}),
         ...(Object.keys(states).length ? { states } : {}),
         ...(appear ? { appear } : {}),
-        ...(before?.hidden?.length ? { hidden: structuredClone(before.hidden) } : {})
+        ...(before?.hidden?.length ? { hidden: cloneEditorValue(before.hidden) } : {})
       };
       if (Object.keys(style).length) node.style = style; else delete node.style;
       // trusted host の定義でも値はその場で検証し、関数末尾の所有権復元後にも同じ validator を通す。
-      parsePageDocument(draft, blocks, { ...(components ? { components } : {}), ...(siteStyles ? { siteStyles } : {}) });
+      validatePageDocument(finishCopyOnWrite(draft), blocks, { ...(components ? { components } : {}), ...(siteStyles ? { siteStyles } : {}) });
     } else if (operation.type === "state") {
       if (node.type === "text") throw new Error("親要素の見た目を編集してください。");
       assertStyleProperties(node, ["states"], blocks);
@@ -441,7 +510,7 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
       for (const name of new Set([operation.state, ...(operation.also ?? [])])) {
         if (!stateNames.includes(name)) throw new Error("状態が不正です。");
         const values: Declarations = { ...states[name] };
-        for (const [property, value] of Object.entries(operation.values)) if (value === undefined) delete values[property]; else values[property] = structuredClone(value);
+        for (const [property, value] of Object.entries(operation.values)) if (value === undefined) delete values[property]; else values[property] = cloneEditorValue(value);
         if (Object.keys(values).length) states[name] = values; else delete states[name];
       }
       if (!Object.keys(states).length) delete node.style.states;
@@ -449,8 +518,8 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
       if (node.type === "text") throw new Error("親要素の見た目を編集してください。");
       assertStyleProperties(node, [operation.type], blocks);
       const style = node.style ??= {};
-      if (operation.type === "appear") { if (operation.value) style.appear = structuredClone(operation.value); else delete style.appear; }
-      else if (operation.ranges?.length) style.hidden = structuredClone([...operation.ranges]); else delete style.hidden;
+      if (operation.type === "appear") { if (operation.value) style.appear = cloneEditorValue(operation.value); else delete style.appear; }
+      else if (operation.ranges?.length) style.hidden = cloneEditorValue([...operation.ranges]); else delete style.hidden;
     } else if (operation.type === "nodeTextStyle") {
       if (node.type === "text") throw new Error("親要素の見た目を編集してください。");
       assertStyleProperties(node, ["textStyle"], blocks);
@@ -473,7 +542,7 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
     } else if (operation.type === "image") {
       if (node.type !== "element" || node.tag !== "img") throw new Error("画像を選択してください。");
       node.attrs ??= {};
-      if ("asset" in operation.source) { node.asset = structuredClone(operation.source.asset); delete node.attrs.src; delete node.attrs.srcSet; }
+      if ("asset" in operation.source) { node.asset = cloneEditorValue(operation.source.asset); delete node.attrs.src; delete node.attrs.srcSet; }
       else {
         node.attrs.src = operation.source.src;
         if (operation.source.srcset === undefined) delete node.attrs.srcSet; else node.attrs.srcSet = operation.source.srcset;
@@ -483,7 +552,7 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
     } else if (operation.type === "video") {
       if (node.type !== "element" || node.tag !== "video") throw new Error("動画を選択してください。");
       node.attrs ??= {};
-      if ("asset" in operation.source) { node.asset = structuredClone(operation.source.asset); delete node.attrs.src; }
+      if ("asset" in operation.source) { node.asset = cloneEditorValue(operation.source.asset); delete node.attrs.src; }
       else { if (operation.source.src) node.attrs.src = operation.source.src; else delete node.attrs.src; delete node.asset; }
     } else if (operation.type === "embedSource") {
       if (node.type !== "element" || !node.embed) throw new Error("埋め込みを選択してください。");
@@ -495,7 +564,7 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
     } else if (operation.type === "background") {
       if (node.type === "text") throw new Error("親要素の見た目を編集してください。");
       const declarations = declarationsAt(node, operation.breakpoint);
-      if (operation.asset === undefined) delete declarations.backgroundImage; else declarations.backgroundImage = { asset: structuredClone(operation.asset) };
+      if (operation.asset === undefined) delete declarations.backgroundImage; else declarations.backgroundImage = { asset: cloneEditorValue(operation.asset) };
       pruneResponsive(node);
     } else if (operation.type === "remove") {
       const siblings = parentChildren(operation.path), index = operation.path.at(-1)!;
@@ -508,7 +577,7 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
       const originals = pair < 0 ? [node] : [siblings[Math.min(index, pair)]!, siblings[Math.max(index, pair)]!];
       const subtree = originals.flatMap((entry) => entry.type === "text" ? [] : walkNodes({ ...draft, body: [entry] }));
       if (subtree.some(({ node }) => node.type !== "text" && allLocks.some((lock) => lock.nodeId === node.id))) throw new Error("データ連動値を含む要素は複製できません。");
-      const copies = structuredClone(originals), used = new Set(walkNodes(draft).flatMap(({ node }) => node.type === "text" ? [] : [node.id]));
+      const copies = cloneEditorValue(originals), used = new Set(walkNodes(draft).flatMap(({ node }) => node.type === "text" ? [] : [node.id]));
       const usedHtmlIds = new Set(walkNodes(draft).flatMap(({ node }) => node.type === "element" && typeof node.attrs?.id === "string" ? [node.attrs.id] : []));
       const remap = new Map<string, string>();
       function rename(current: PageNode): void {
@@ -536,13 +605,17 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
       destination.splice(operation.index, 0, node);
     }
   }
-  const result = resolvePageStyles(parsePageDocument(draft, blocks, { ...(components ? { components } : {}), ...(siteStyles ? { siteStyles } : {}) }), siteStyles);
-  assertLocks(resolvePageStyles(document, siteStyles), result, allLocks);
+  let candidate = canonicalizeEditedDocument(finishCopyOnWrite(draft), document, blocks, components);
+  validatePageDocument(candidate, blocks, { ...(components ? { components } : {}), ...(siteStyles ? { siteStyles } : {}) });
+  assertLocks(resolvePageStyles(document, siteStyles), candidate, allLocks);
   const ownership = operation.type === "restore" ? operation.document : operation.type === "token" && operation.token ? { ...document, tokens: { ...document.tokens, [operation.name]: operation.token } }
     : operation.type === "textStyle" && operation.style ? { ...document, textStyles: { ...document.textStyles, [operation.name]: operation.style } } : { ...document };
   if (operation.type === "token" && !operation.token) { ownership.tokens = { ...ownership.tokens }; delete ownership.tokens[operation.name]; }
   if (operation.type === "textStyle" && !operation.style && ownership.textStyles) { ownership.textStyles = { ...ownership.textStyles }; delete ownership.textStyles[operation.name]; }
-  return siteStyles ? parsePageDocument(retainPageStyles(result, ownership, siteStyles), blocks, { ...(components ? { components } : {}), siteStyles }) : result;
+  if (!siteStyles) return candidate;
+  const result = retainPageStyles(candidate, ownership, siteStyles);
+  validatePageDocument(result, blocks, { ...(components ? { components } : {}), siteStyles });
+  return result;
 }
 function pathForNodeId(document: PageDocument, nodeId: string): NodePath {
   if (typeof nodeId !== "string" || !nodeId) throw new Error("対象ノードIDが正しくありません。");
