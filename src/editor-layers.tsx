@@ -79,6 +79,7 @@ export function LayerTreePanel({
   const anchorId = useRef<string | null>(selectedId);
   const pendingFocus = useRef<{ id: string | null } | null>(null);
   const hadRowFocus = useRef(false);
+  const lastRevealRequest = useRef<{ active: boolean; selectedId: string | null; selectionVersion: number | undefined; search: string; viewportHeight: number } | null>(null);
 
   const search = query.trim();
   const matches = useMemo(() => layerSearchMatches(entries, search), [entries, search]);
@@ -168,6 +169,10 @@ export function LayerTreePanel({
   }, [selectedId, selectedIds]);
 
   useLayoutEffect(() => {
+    const previous = lastRevealRequest.current;
+    if (previous && previous.active === active && previous.selectedId === selectedId
+      && previous.selectionVersion === selectionVersion && previous.search === search && previous.viewportHeight === viewportHeight) return;
+    lastRevealRequest.current = { active, selectedId, selectionVersion, search, viewportHeight };
     if (selectedIndex !== undefined) reveal(selectedIndex);
   }, [active, selectedId, selectedIndex, selectionVersion, search, height, viewportHeight]);
 

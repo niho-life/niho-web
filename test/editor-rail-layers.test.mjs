@@ -241,6 +241,26 @@ test("the layer viewport reveals a canvas selection and keeps keyboard order wit
   } finally { await app.cleanup(); }
 });
 
+test("expanding an unrelated layer does not pull the selected row back into view", async () => {
+  const source = { ...document_, body: [
+    element("top", "section", [element("top_child", "p", [text("先頭の項目")])]),
+    element("many", "section", Array.from({ length: 24 }, (_, i) => element(`item_${i}`, "p", [text(`項目 ${i}`)])))
+  ] };
+  const app = await setup({ source });
+  try {
+    await click(tool("レイヤー"));
+    const tree = layerTree();
+    Object.defineProperty(tree, "clientHeight", { value: 100 });
+    await clickCanvas("item_23");
+    await act(async () => { tree.scrollTop = 0; tree.dispatchEvent(new dom.window.Event("scroll")); });
+    assert.equal(tree.scrollTop, 0);
+
+    await click(layerToggle("top"));
+    assert.equal(tree.scrollTop, 0, "expanding an earlier branch keeps the user's scroll position");
+    assert.equal(layer("item_23").getAttribute("aria-selected"), "true");
+  } finally { await app.cleanup(); }
+});
+
 test("search finds the displayed name and full source text, and clear restores collapsed branches", async () => {
   const source = { ...document_, body: [
     element("section", "section", [element("group", "div", [
