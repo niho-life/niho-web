@@ -239,8 +239,8 @@ function formFieldPairIndex(siblings: readonly PageNode[], node: PageNode, index
      typeof labelTarget === "string" && ["input", "textarea", "select"].includes(candidate.tag) && candidate.attrs?.id === labelTarget));
 }
 /** components はインスタンスを含む文書の検証に使う、同じサイトの検証済みライブラリ。 */
-export function editDocument(document: PageDocument, operation: EditorOperation, blocks: EditorOperationBlocks = {}, locks: readonly EditorLock[] = [], components?: ComponentLibrary, siteStyles?: SiteStyles): PageDocument {
-  const draft = structuredClone(resolvePageStyles(document, siteStyles)), allLocks = effectiveLocks(document, locks, blocks);
+export function editDocument(document: PageDocument, operation: EditorOperation, blocks: EditorOperationBlocks = {}, locks: readonly EditorLock[] = [], components?: ComponentLibrary, siteStyles?: SiteStyles, validateDocument = true): PageDocument {
+  const draft = structuredClone(validateDocument ? resolvePageStyles(document, siteStyles) : document), allLocks = effectiveLocks(document, locks, blocks);
   const parentChildren = (path: NodePath): PageNode[] => siblingsAt(draft, path);
   const targetChildren = (id: string | null): PageNode[] => {
     if (id === null) return draft.body;
@@ -437,7 +437,7 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
       };
       if (Object.keys(style).length) node.style = style; else delete node.style;
       // trusted host の定義でも値はその場で検証し、関数末尾の所有権復元後にも同じ validator を通す。
-      parsePageDocument(draft, blocks, { ...(components ? { components } : {}), ...(siteStyles ? { siteStyles } : {}) });
+      if (validateDocument) parsePageDocument(draft, blocks, { ...(components ? { components } : {}), ...(siteStyles ? { siteStyles } : {}) });
     } else if (operation.type === "state") {
       if (node.type === "text") throw new Error("親要素の見た目を編集してください。");
       assertStyleProperties(node, ["states"], blocks);
@@ -539,13 +539,17 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
       destination.splice(index, 0, node);
     }
   }
-  const result = resolvePageStyles(parsePageDocument(draft, blocks, { ...(components ? { components } : {}), ...(siteStyles ? { siteStyles } : {}) }), siteStyles);
-  assertLocks(resolvePageStyles(document, siteStyles), result, allLocks);
+  const result = validateDocument
+    ? resolvePageStyles(parsePageDocument(draft, blocks, { ...(components ? { components } : {}), ...(siteStyles ? { siteStyles } : {}) }), siteStyles)
+    : draft;
+  assertLocks(validateDocument ? resolvePageStyles(document, siteStyles) : document, result, allLocks);
   const ownership = operation.type === "restore" ? operation.document : operation.type === "token" && operation.token ? { ...document, tokens: { ...document.tokens, [operation.name]: operation.token } }
     : operation.type === "textStyle" && operation.style ? { ...document, textStyles: { ...document.textStyles, [operation.name]: operation.style } } : { ...document };
   if (operation.type === "token" && !operation.token) { ownership.tokens = { ...ownership.tokens }; delete ownership.tokens[operation.name]; }
   if (operation.type === "textStyle" && !operation.style && ownership.textStyles) { ownership.textStyles = { ...ownership.textStyles }; delete ownership.textStyles[operation.name]; }
-  return siteStyles ? parsePageDocument(retainPageStyles(result, ownership, siteStyles), blocks, { ...(components ? { components } : {}), siteStyles }) : result;
+  if (!siteStyles) return result;
+  const retained = retainPageStyles(result, ownership, siteStyles);
+  return validateDocument ? parsePageDocument(retained, blocks, { ...(components ? { components } : {}), siteStyles }) : retained;
 }
 function positionIndex(destination: readonly PageNode[], index: number | undefined, anchor: NodePositionAnchor | undefined, optional: boolean): number {
   if (index !== undefined && anchor !== undefined) throw new Error("位置は index または anchor のどちらか一方で指定してください。");
@@ -575,20 +579,20 @@ function pathForTextTarget(document: PageDocument, parentId: string | null, chil
   return path;
 }
 /** Stable IDで操作対象を解決し、GUIと同じ検証済み文書操作を適用する。 */
-export function editDocumentById(document: PageDocument, operation: EditorOperationById, blocks: EditorOperationBlocks = {}, locks: readonly EditorLock[] = [], components?: ComponentLibrary, siteStyles?: SiteStyles): PageDocument {
+export function editDocumentById(document: PageDocument, operation: EditorOperationById, blocks: EditorOperationBlocks = {}, locks: readonly EditorLock[] = [], components?: ComponentLibrary, siteStyles?: SiteStyles, validateDocument = true): PageDocument {
   if (operation.type === "text") {
     if (!("parentId" in operation) || !("childPath" in operation)) throw new Error("テキスト対象は親IDと相対パスで指定してください。");
     const { parentId, childPath, preconditions: _preconditions, ...change } = operation;
     const path = pathForTextTarget(document, parentId, childPath);
-    return editDocument(document, { ...change, path } as EditorOperation, blocks, locks, components, siteStyles);
+    return editDocument(document, { ...change, path } as EditorOperation, blocks, locks, components, siteStyles, validateDocument);
   }
   if ("nodeId" in operation) {
     const { nodeId, preconditions: _preconditions, ...change } = operation as typeof operation & { preconditions?: PageOperationPreconditions };
     const path = pathForNodeId(document, nodeId);
-    return editDocument(document, { ...change, path } as EditorOperation, blocks, locks, components, siteStyles);
+    return editDocument(document, { ...change, path } as EditorOperation, blocks, locks, components, siteStyles, validateDocument);
   }
   if ("path" in operation) throw new Error("外部操作では配列位置でなく安定した対象IDを指定してください。");
-  return editDocument(document, operation as EditorOperation, blocks, locks, components, siteStyles);
+  return editDocument(document, operation as EditorOperation, blocks, locks, components, siteStyles, validateDocument);
 }
 export function commitHistory(history: EditorHistory, document: PageDocument): EditorHistory {
   if (fingerprint(document) === fingerprint(history.present)) return history;
