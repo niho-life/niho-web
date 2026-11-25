@@ -79,7 +79,7 @@ export function LayerTreePanel({
   const anchorId = useRef<string | null>(selectedId);
   const pendingFocus = useRef<{ id: string | null } | null>(null);
   const hadRowFocus = useRef(false);
-  const lastRevealRequest = useRef<{ active: boolean; selectedId: string | null; selectedIndex: number | undefined; selectionVersion: number | undefined; search: string; viewportHeight: number } | null>(null);
+  const lastRevealRequest = useRef<{ active: boolean; selectedId: string | null; selectionVersion: number | undefined; search: string; viewportHeight: number; revealed: boolean } | null>(null);
 
   const search = query.trim();
   const matches = useMemo(() => layerSearchMatches(entries, search), [entries, search]);
@@ -170,9 +170,10 @@ export function LayerTreePanel({
 
   useLayoutEffect(() => {
     const previous = lastRevealRequest.current;
-    if (previous && previous.active === active && previous.selectedId === selectedId && (previous.selectedIndex === undefined) === (selectedIndex === undefined)
-      && previous.selectionVersion === selectionVersion && previous.search === search && previous.viewportHeight === viewportHeight) return;
-    lastRevealRequest.current = { active, selectedId, selectedIndex, selectionVersion, search, viewportHeight };
+    const sameRequest = previous && previous.active === active && previous.selectedId === selectedId
+      && previous.selectionVersion === selectionVersion && previous.search === search && previous.viewportHeight === viewportHeight;
+    if (sameRequest && (previous.revealed || selectedIndex === undefined)) return;
+    lastRevealRequest.current = { active, selectedId, selectionVersion, search, viewportHeight, revealed: selectedIndex !== undefined };
     if (selectedIndex !== undefined) reveal(selectedIndex);
   }, [active, selectedId, selectedIndex, selectionVersion, search, height, viewportHeight]);
 
