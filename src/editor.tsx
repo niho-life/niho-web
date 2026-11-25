@@ -49,7 +49,9 @@ import { editorSessionFrom, readEditorSession, type EditorSession } from "./edit
 import { canvasViewportHeight, elementTypeLabel, fitCanvasScale, layerLabel, pathForNodeId, projectLayers, visibleLayers } from "./layers.js";
 import { LayerTreePanel } from "./editor-layers.js";
 import { CanvasViewportToolbar, EditorWorkspace, InspectorTabs, PanelToggle, ViewportEdgeHandle, WorkspaceIcon, WorkspaceScaleSelect, viewportPresets, workspaceScales, type WorkspaceScale, type WorkspaceTab } from "./editor-workspace.js";
-import { dispatchEditorShortcut, editorShortcuts } from "./editor-shortcuts.js";
+import { dispatchEditorShortcut, editorShortcuts, type ShortcutAction, type ShortcutCommand } from "./editor-shortcuts.js";
+import { CommandPalette } from "./editor-command-palette.js";
+import { CanvasSpacingHandles, canvasSpacingCss, type CanvasSpacingProperty } from "./editor-canvas-spacing.js";
 import { indexedNodesById } from "./node-tree.js";
 import {
   EDITOR_NODE_CLIPBOARD_MAX_LENGTH, EDITOR_NODE_CLIPBOARD_TYPE, createEditorNodeClipboard, normalizeNodeFragment, parseEditorNodeClipboard,
@@ -73,6 +75,7 @@ export type { LayerEntry, LayerKind, LayerLabels } from "./layers.js";
 export type { LayerTreePanelProps } from "./editor-layers.js";
 export { readEditorSession, projectLayers, pathForNodeId, visibleLayers, fitCanvasScale, canvasViewportHeight, LayerTreePanel };
 const emptyBlocks: EditorBlockRegistry = {};
+const paletteShortcut = editorShortcuts.find(({ action }) => action === "palette")!;
 type Session = EditorSession;
 const pageSaveChecks = new WeakMap<Session, { present: PageDocument; saved: string; dirty: boolean }>();
 const needsPageSave = (session: Session) => {
@@ -227,7 +230,8 @@ function hostPreviewComponent(value: unknown): PageEditorProps["previewComponent
 /** キャンバスの直接編集は枠の外のクリック・⌘Enter で確定し、Esc で取り消す。完了のためだけのボタンは置かない（STUDIO と同じ）。 */
 const textEditHint = "枠の外をクリックするか ⌘Enter（Ctrl+Enter）で確定、Esc で取り消します。";
 type SelectionMode = "replace" | "toggle" | "range";
-type DragItem = { kind: "palette"; type: string } | { kind: "node"; id: string; ids?: readonly string[] };
+type DragItem = { kind: "palette"; type: string } | { kind: "node"; id: string; ids?: readonly string[]; copy?: boolean };
+const copyDrag = (item: DragItem, altKey: boolean) => item.kind === "node" && (item.copy || altKey);
 type DropPlace = { parentId: string | null; index: number; marker: { left: number; top: number; width: number; height: number; inside: boolean } };
 const asElement = (target: EventTarget | null): HTMLElement | null => target && typeof target === "object" && "nodeType" in target && (target as Node).nodeType === 1 ? target as HTMLElement : null;
 function pairedFormFieldNodeId(document: PageDocument, path: NodePath): string | undefined {
@@ -245,7 +249,7 @@ function pairedFormFieldNodeId(document: PageDocument, path: NodePath): string |
      typeof labelTarget === "string" && ["input", "textarea", "select"].includes(candidate.tag) && candidate.attrs?.id === labelTarget));
   return pair?.type === "element" ? pair.id : undefined;
 }
-function Canvas({ document, blocks, width, height, breakpoint, selection, selectedNodeId, selectedNodeIds, revealNode, slot, select, canEditNode, dragItem, drop, pending, editText, startTextEdit, onShortcut, resize, reportError, editable, structureEditable, locks, preview, previewComponent: PreviewComponent, mode, baseVersion, historyRevision, assets, motionCss, replay, rendered, presentation, presentationRuntime, externalFramePolicy, blankEmbeds, xPostFrameUrl, origins, openInstance, viewportHeight, siteOrigin, onReady }: {
+function Canvas({ document, blocks, width, height, breakpoint, selection, selectedNodeId, selectedNodeIds, revealNode, slot, select, canEditNode, dragItem, drop, pending, editText, startTextEdit, onShortcut, resize, spacing, reportError, editable, structureEditable, locks, preview, previewComponent: PreviewComponent, mode, baseVersion, historyRevision, assets, motionCss, replay, rendered, presentation, presentationRuntime, externalFramePolicy, blankEmbeds, xPostFrameUrl, origins, openInstance, viewportHeight, siteOrigin, onReady }: {
   document: PageDocument; blocks: EditorBlockRegistry; width: number; height: number; selection: NodePath | null; selectedNodeId?: string; selectedNodeIds?: readonly string[]; select: (path: NodePath | null, nodeId?: string, slot?: string | null, mode?: SelectionMode) => void;
   revealNode: { id: string } | null;
   canEditNode?: (nodeId: string) => boolean;
@@ -255,8 +259,9 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
   dragItem: { current: DragItem | null }; drop: (item: DragItem, place: DropPlace) => void;
   pending: (key: string, value: boolean) => void;
   startTextEdit: { current: ((id: string) => boolean | string) | null };
-  onShortcut: (event: KeyboardEvent) => void;
+  onShortcut: (event: KeyboardEvent, inCanvas: boolean) => void;
   editText: (path: NodePath, nodeId: string, children: PageNode[]) => string | undefined; resize: (path: NodePath, width: number, height: number) => string | undefined;
+  spacing: { allowed: (path: NodePath, property: CanvasSpacingProperty) => boolean; commit: (path: NodePath, property: CanvasSpacingProperty, value: number) => string | undefined };
   reportError: (message: string) => void; editable: boolean; structureEditable: boolean; locks: readonly EditorLock[]; preview: boolean; assets: ResolvedAssetMap;
   /** 状態の強制表示と動きの停止。replay が変わると描画を作り直し、登場をもう一度見せる。 */
   motionCss: string; replay: string;
@@ -278,11 +283,12 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
   useEffect(() => { if (body) body.ownerDocument.documentElement.lang = rendered.locale; }, [body, rendered.locale]);
   useEffect(() => {
     const frameDocument = body?.ownerDocument;
-    frameDocument?.addEventListener("keydown", onShortcut, true);
-    return () => frameDocument?.removeEventListener("keydown", onShortcut, true);
+    const listen = (event: KeyboardEvent) => onShortcut(event, true);
+    frameDocument?.addEventListener("keydown", listen, true);
+    return () => frameDocument?.removeEventListener("keydown", listen, true);
   }, [body, onShortcut]);
   const [editingId, setEditingId] = useState<string | null>(null), [dropPlace, setDropPlace] = useState<DropPlace | null>(null);
-  const [handleRect, setHandleRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const [handleRect, setHandleRect] = useState<{ element: HTMLElement; left: number; top: number; width: number; height: number } | null>(null);
   const resizing = useRef<{ element: HTMLElement; path: NodePath; x: number; y: number; width: number; height: number; inlineWidth: string; inlineHeight: string } | null>(null);
   const [linkOpen, setLinkOpen] = useState(false), [linkHref, setLinkHref] = useState("/"), [linkError, setLinkError] = useState("");
   const originalHtml = useRef(""), savedRange = useRef<Range | null>(null);
@@ -313,10 +319,11 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
   // 表示領域を選んでいる間は、幅と高さを変えられる領域だけ、その最初の要素にサイズ変更の枠を出す。
   const slotSize = slot && selectedId?.type === "component" ? declaredSlot(blocks[selectedId.block], slot)?.style ?? [] : undefined;
   const sizeField = (property: "width" | "height") => `${slot ? `slots.${slot}` : "style"}.${breakpoint === "base" ? `base.${property}` : "responsive"}`;
-  const canResize = structureEditable && !preview && !editingId && (selectedNodeIds?.length ?? 0) <= 1 && selectedId && selectedId.type !== "text" && !!resizePath?.length && (!slotSize || slotSize.includes("width") && slotSize.includes("height")) &&
+  const handleId = structureEditable && !preview && !editingId && (selectedNodeIds?.length ?? 0) <= 1 && selectedId && selectedId.type !== "text" && resizePath?.length ? selectedId.id : undefined;
+  const canResize = !!handleId && resizePath && (!slotSize || slotSize.includes("width") && slotSize.includes("height")) &&
     !lockReason(document, resizePath, sizeField("width"), locks) &&
     !lockReason(document, resizePath, sizeField("height"), locks);
-  const sizeTarget = (id: string) => { const element = body && Array.from(body.querySelectorAll<HTMLElement>("[data-nw-node]")).find((item) => item.dataset.nwNode === id); return slot ? element?.querySelector<HTMLElement>(`[data-nw-slot="${slot}"]`) ?? undefined : element ?? undefined; };
+  const sizeTarget = (id: string) => { const element = body?.querySelector<HTMLElement>(`[data-nw-owner="${scope}"][data-nw-node="${id}"]`); return slot ? element?.querySelector<HTMLElement>(`[data-nw-slot="${slot}"]`) ?? undefined : element ?? undefined; };
 
   const editing = editingId ? nodesById.get(editingId) : undefined;
   // 部品の内側に描いたノードは、文書に置いたインスタンス（ID を引き継いだ外枠）として扱う。
@@ -324,16 +331,16 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
     const origin = element?.dataset.nwNode ? origins.get(element.dataset.nwNode) : undefined;
     return element && origin && origin.instance !== element.dataset.nwNode ? element.closest<HTMLElement>(`[data-nw-owner="${scope}"][data-nw-node="${origin.instance}"]`) : element;
   };
-  useEffect(() => {
-    if (!body || !canResize || !selectedId) { setHandleRect(null); return; }
-    const element = sizeTarget(selectedId.id);
+  useLayoutEffect(() => {
+    if (!body || !handleId) { setHandleRect(null); return; }
+    const element = sizeTarget(handleId);
     if (!element) { setHandleRect(null); return; }
-    const update = () => { const rect = element.getBoundingClientRect(); setHandleRect({ left: rect.left + (body.ownerDocument.defaultView?.scrollX ?? 0), top: rect.top + (body.ownerDocument.defaultView?.scrollY ?? 0), width: rect.width, height: rect.height }); };
+    const update = () => { const rect = element.getBoundingClientRect(); setHandleRect({ element, left: rect.left + (body.ownerDocument.defaultView?.scrollX ?? 0), top: rect.top + (body.ownerDocument.defaultView?.scrollY ?? 0), width: rect.width, height: rect.height }); };
     update();
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update); observer?.observe(element);
     body.ownerDocument.defaultView?.addEventListener("scroll", update);
     return () => { observer?.disconnect(); body.ownerDocument.defaultView?.removeEventListener("scroll", update); };
-  }, [body, canResize, selectedId && "id" in selectedId ? selectedId.id : undefined, width, document, slot]);
+  }, [body, handleId, width, document, rendered, slot]);
   function endResize(commit: boolean) {
     const current = resizing.current; if (!current) return;
     const width = Number.parseFloat(current.element.style.width) || current.width, height = Number.parseFloat(current.element.style.height) || current.height;
@@ -414,7 +421,7 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
     const rect = target.getBoundingClientRect(), scrollX = body?.ownerDocument.defaultView?.scrollX ?? 0, scrollY = body?.ownerDocument.defaultView?.scrollY ?? 0;
     const canContain = entry.node.type === "element" && !entry.node.embed && ["div", "section", "article", "header", "footer", "main", "nav", "aside", "li", "figure", "blockquote", "form"].includes(entry.node.tag);
     const fraction = rect.height ? (event.clientY - rect.top) / rect.height : 0;
-    const inside = canContain && (event.altKey || fraction > .3 && fraction < .7);
+    const inside = canContain && (dragItem.current?.kind !== "node" && event.altKey || fraction > .3 && fraction < .7);
     if (inside && entry.node.type === "element") return { parentId: entry.node.id, index: entry.node.children.length,
       marker: { left: rect.left + scrollX, top: rect.top + scrollY, width: rect.width, height: rect.height, inside: true } };
     const parent = entry.path.length > 1 ? nodeAt(document, entry.path.slice(0, -1)) : null;
@@ -480,7 +487,7 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
         if (presentation && target?.closest("[data-nw-overlay] a[href]")) { event.preventDefault(); return; }
         event.preventDefault(); event.stopPropagation(); return;
       }
-      if (asElement(event.target)?.closest(".nw-resize-handle") || editingId && asElement(event.target)?.closest("[contenteditable=true],.nw-text-toolbar")) return;
+      if (asElement(event.target)?.closest(".nw-resize-handle,.nw-spacing-handle") || editingId && asElement(event.target)?.closest("[contenteditable=true],.nw-text-toolbar")) return;
       event.preventDefault(); event.stopPropagation();
       const target = event.target as HTMLElement;
       const host = typeof target.closest === "function" ? target.closest<HTMLElement>("[data-nw-host-view]") : null;
@@ -502,24 +509,26 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
     }} onBlurCapture={(event) => { const target = asElement(event.target), next = asElement(event.relatedTarget); if (target?.dataset.nwNode === editingId && !linkOpen || linkOpen && target?.closest(".nw-text-toolbar") && !next?.closest(".nw-text-toolbar,[contenteditable=true]")) stopEditing(true); }}
       onKeyDownCapture={(event) => { if (!editingId || event.nativeEvent.isComposing || event.keyCode === 229) return; if (event.key === "Escape") { event.preventDefault(); stopEditing(false); } else if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); stopEditing(true); } else if (event.key === "Enter" && editing?.node.type === "element" && editing.node.tag !== "div") { event.preventDefault(); insertLineBreak(); } }}
       onPasteCapture={(event) => { if (!editingId || !asElement(event.target)?.closest("[contenteditable=true]")) return; event.preventDefault(); pastePlainText(event.clipboardData.getData("text/plain")); }}
-      onDragStartCapture={(event) => { if (!editable || preview || editingId) return; const target = asElement(event.target)?.closest<HTMLElement>("[data-nw-node][draggable=true]"); if (!target?.dataset.nwNode) return; const id = target.dataset.nwNode, ids = selectedNodeIds?.includes(id) ? selectedNodeIds : [id]; dragItem.current = { kind: "node", id, ids }; event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", id); }}
+      onDragStartCapture={(event) => { if (!structureEditable || preview || editingId) return; const target = asElement(event.target)?.closest<HTMLElement>("[data-nw-node][draggable=true]"); if (!target?.dataset.nwNode) return; const id = target.dataset.nwNode, ids = selectedNodeIds?.includes(id) ? selectedNodeIds : [id]; dragItem.current = { kind: "node", id, ids, copy: event.altKey }; event.dataTransfer.effectAllowed = "copyMove"; event.dataTransfer.setData("text/plain", id); }}
       onDragEndCapture={() => { dragItem.current = null; setDropPlace(null); }}
-      onDragOverCapture={(event) => { if (!editable || preview || !dragItem.current) return; event.preventDefault(); event.dataTransfer.dropEffect = dragItem.current.kind === "node" ? "move" : "copy"; setDropPlace(placeAt(event)); }}
+      onDragOverCapture={(event) => { if (!structureEditable || preview || !dragItem.current) return; event.preventDefault(); event.dataTransfer.dropEffect = dragItem.current.kind === "palette" || copyDrag(dragItem.current, event.altKey) ? "copy" : "move"; setDropPlace(placeAt(event)); }}
       onDragLeaveCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDropPlace(null); }}
-      onDropCapture={(event) => { event.preventDefault(); event.stopPropagation(); if (!editable || preview || !dragItem.current) return; const place = placeAt(event); drop(dragItem.current, place); dragItem.current = null; setDropPlace(null); }}
+      onDropCapture={(event) => { event.preventDefault(); event.stopPropagation(); if (!structureEditable || preview || !dragItem.current) return; const item = dragItem.current, place = placeAt(event); drop(item.kind === "node" && copyDrag(item, event.altKey) ? { ...item, copy: true } : item, place); dragItem.current = null; setDropPlace(null); }}
       onSubmitCapture={(event) => { event.preventDefault(); event.stopPropagation(); }}>
       <style>{`body{font-family:sans-serif;position:relative;}[data-nw-node]{cursor:pointer;}[contenteditable=true]{cursor:text!important;outline:2px solid ${uiColor.accent}!important;outline-offset:3px;} ${selectionCss}${selectedId?.type === "component" && slot ? `[data-nw-owner="${scope}"][data-nw-node="${selectedId.id}"] [data-nw-slot="${slot}"]{outline:2px dashed ${uiColor.accent}!important;outline-offset:2px;}` : ""}
         .nw-drop-marker{position:absolute;pointer-events:none;z-index:2147483000;background:${uiColor.accent};box-shadow:0 0 0 2px ${uiColor.bg}}.nw-drop-marker.inside{background:${uiColor.accentTint};outline:2px dashed ${uiColor.accent};box-shadow:none}.nw-resize-handle{position:absolute;z-index:2147483001;width:15px;height:15px;border:2px solid ${uiColor.bg};border-radius:4px;background:${uiColor.accent};box-shadow:0 0 0 1px ${uiColor.accentStrong};cursor:nwse-resize;touch-action:none}
         .nw-text-toolbar{position:fixed;z-index:2147483001;right:12px;top:12px;display:flex;gap:4px;align-items:center;padding:6px;border:1px solid ${uiColor.borderStrong};background:${uiColor.bg};color:${uiColor.text};border-radius:8px;font:12px Inter,"Noto Sans JP",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.nw-text-toolbar button,.nw-text-toolbar input{font:inherit;color:inherit;border:1px solid ${uiColor.borderStrong};border-radius:6px;background:${uiColor.bg};padding:5px 7px}.nw-text-toolbar input{width:170px}.nw-text-toolbar .problem{color:${uiColor.danger}}`}</style>
-      <style>{canvasAssetCss}</style>
+      <style>{canvasAssetCss + canvasSpacingCss}</style>
       {!preview && <style>{"iframe[data-nw-node]{pointer-events:none}"}</style>}
       <PreviewBoundary document={rendered}>{PreviewComponent ? <PreviewComponent document={rendered} baseVersion={baseVersion} {...(historyRevision ? { historyRevision } : {})} width={width} breakpoint={breakpoint} mode={mode} readOnly={!editable || preview} blocks={blocks} assets={assets} {...(presentation ? { presentation } : {})} {...(externalFramePolicy ? { externalFramePolicy } : {})} {...(blankEmbeds ? { blankEmbeds } : {})} {...(xPostFrameUrl ? { xPostFrameUrl } : {})}>{defaultPreview}</PreviewComponent> : defaultPreview}</PreviewBoundary>
       <style>{motionCss}</style>
       {dropPlace && <div aria-hidden className={`nw-drop-marker${dropPlace.marker.inside ? " inside" : ""}`} style={{ left: dropPlace.marker.left, top: dropPlace.marker.top, width: dropPlace.marker.width, height: dropPlace.marker.height }} />}
       {canResize && handleRect && resizePath && <button type="button" className="nw-resize-handle" aria-label="ドラッグして要素のサイズを変更" title={`${Math.round(handleRect.width)} × ${Math.round(handleRect.height)} px`} style={{ left: handleRect.left + handleRect.width - 7, top: handleRect.top + handleRect.height - 7 }}
-        onPointerDown={(event) => { event.preventDefault(); event.stopPropagation(); const element = sizeTarget(selectedId.id); if (!element) return; const bounds = element.getBoundingClientRect(), computed = body.ownerDocument.defaultView?.getComputedStyle(element); resizing.current = { element, path: resizePath, x: event.clientX, y: event.clientY, width: Number.parseFloat(computed?.width ?? "") || bounds.width, height: Number.parseFloat(computed?.height ?? "") || bounds.height, inlineWidth: element.style.width, inlineHeight: element.style.height }; event.currentTarget.setPointerCapture(event.pointerId); }}
+        onPointerDown={(event) => { event.preventDefault(); event.stopPropagation(); const { element } = handleRect; const bounds = element.getBoundingClientRect(), computed = body.ownerDocument.defaultView?.getComputedStyle(element); resizing.current = { element, path: resizePath, x: event.clientX, y: event.clientY, width: Number.parseFloat(computed?.width ?? "") || bounds.width, height: Number.parseFloat(computed?.height ?? "") || bounds.height, inlineWidth: element.style.width, inlineHeight: element.style.height }; event.currentTarget.setPointerCapture(event.pointerId); }}
         onPointerMove={(event) => { const current = resizing.current; if (!current) return; event.preventDefault(); current.element.style.width = `${Math.min(10000, Math.max(1, Math.round(current.width + event.clientX - current.x)))}px`; current.element.style.height = `${Math.min(10000, Math.max(1, Math.round(current.height + event.clientY - current.y)))}px`; }}
         onPointerUp={(event) => { event.preventDefault(); event.stopPropagation(); endResize(true); }} onPointerCancel={() => endResize(false)} />}
+      {handleId && handleRect && resizePath && <CanvasSpacingHandles key={`${handleId}-${slot ?? ""}-${breakpoint}`} element={handleRect.element} rect={handleRect} enabled={handleRect.element.isConnected}
+        allowed={(property) => spacing.allowed(resizePath, property)} commit={(property, value) => { const problem = spacing.commit(resizePath, property, value); if (problem) reportError(problem); }} />}
       {editingId && <div className="nw-text-toolbar" role="toolbar" aria-label="文字の装飾" title={textEditHint} contentEditable={false}>
         {structureEditable ? <><button type="button" aria-label="太字" onMouseDown={(event) => event.preventDefault()} onClick={() => format("bold")}>B</button>
         <button type="button" aria-label="斜体" onMouseDown={(event) => event.preventDefault()} onClick={() => format("italic")}>I</button>
@@ -576,10 +585,11 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const [canvasReveal, setCanvasReveal] = useState<{ target: string; id: string } | null>(null);
   const [inspector, setInspector] = useState<Inspector>("page"), [elementTab, setElementTab] = useState<InspectorTab>("text"), [preview, setPreview] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false), shortcutClose = useRef<HTMLButtonElement>(null);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [groupChange, setGroupChange] = useState<{ operation: BoxGroupOperation; base: string; componentId: string | null } | null>(null);
   const workspace = useRef<HTMLDivElement>(null), startTextEdit = useRef<((id: string) => boolean | string) | null>(null);
-  const shortcutListener = useRef<(event: KeyboardEvent) => void>(() => {});
-  const onShortcut = useCallback((event: KeyboardEvent) => shortcutListener.current(event), []);
+  const shortcutListener = useRef<(event: KeyboardEvent, inCanvas: boolean) => void>(() => {});
+  const onShortcut = useCallback((event: KeyboardEvent, inCanvas = false) => shortcutListener.current(event, inCanvas), []);
   useEffect(() => {
     const editor = workspace.current, owner = editor?.ownerDocument, view = owner?.defaultView;
     if (!editor || !owner || !view) return;
@@ -716,7 +726,8 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const autosaveMs = autosaveDelay(autosave), autosaveActive = autosaveMs !== undefined && autosaveOn;
   // オフラインで失敗した後、接続が戻ったら自動保存は1回だけ再試行する。
   const online = useOnline(() => { if (problemRef.current !== "offline") return; if (!autosaveActive) setProblem("failed"); else if (!pendingChanges) setProblem(null); else void save("auto"); });
-  const modal = !!plan || !!localeReleasePlan || !!navigation || !!pageChange || !!releaseSetPages || breakpointSettingsOpen || responsiveProposalOpen || conflictView > 0 || recoveryCompare || versions.dialog !== null || !!componentDialog || !!libraryReload || shortcutsOpen || !!groupChange;
+  const otherModal = !!plan || !!localeReleasePlan || !!navigation || !!pageChange || !!releaseSetPages || breakpointSettingsOpen || responsiveProposalOpen || conflictView > 0 || recoveryCompare || versions.dialog !== null || !!componentDialog || !!libraryReload || shortcutsOpen || !!groupChange;
+  const modal = otherModal || commandPaletteOpen;
   // 自動保存は手動保存と同じく部品 → ページの順に保存する。部品とページのどちらが変わっても待ち直す。
   const autosaveSubject = useMemo(() => [session?.history.present, libraryPresent], [session?.history.present, libraryPresent]);
   // ページが無いサイトでも、部品の変更は部品ライブラリ単位の key で自動保存する（部品の端末への退避は、ストアが対応する場合だけのため）。
@@ -1707,6 +1718,18 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const tier = tiers.some((entry) => entry.key === breakpoint) ? breakpoint : "base";
   const shownTier = tierForWidth(tiers, width), canvasDocument = document && draft && draft.base === rawDocument ? master ? resolveComponentStyles(draft.document, activeSiteStyles) : resolvePageStyles(draft.document, activeSiteStyles) : document;
   const nextTier = tiers[tiers.findIndex((entry) => entry.key === tier) + 1], until = range === "only" ? nextTier?.start : undefined;
+  const spacingAllowed = (path: NodePath, property: CanvasSpacingProperty) => {
+    if (!document || editBlocked || targetMode || hasInput || modal || preview) return false;
+    const target = nodeAt(document, path);
+    const definition = target.type === "component" ? blocks[target.block] : undefined;
+    const allowed = slotName ? declaredSlot(definition, slotName)?.style ?? [] : definition?.styleProperties;
+    if (target.type === "text" || allowed && !allowed.includes(property)) return false;
+    const prefix = slotName ? `slots.${slotName}` : "style";
+    const group = property.startsWith("padding") ? ["padding", property] : property === "gap" ? ["gap", "rowGap", "columnGap"] : ["gap", property];
+    return !(tier === "base" && group.some((field) => lockReason(document, path, `${prefix}.base.${field}`, locks))) &&
+      !((tier !== "base" || until !== undefined) && ["responsive", ...group.map((field) => `responsive.${field}`)]
+        .some((field) => lockReason(document, path, `${prefix}.${field}`, locks)));
+  };
   // キャンバスは部品を展開した文書を描き、素材・状態の強制表示も展開後の文書から作る（部品の中の画像も表示する）。
   const shown = versions.viewing?.document ?? canvasDocument;
   // 訳文では正本 LibrarySession 自体を変えず、同じ canonical ID を持つ表示専用のlocalized libraryだけを展開に使う。
@@ -1895,8 +1918,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       if (error) setNotice(error); else if (selected?.type === "element") selectId(selected.id); else if (newNode.type !== "text") selectId(newNode.id);
     } catch (error) { setNotice(message(error)); }
   }
-  function planMoveBatch(ids: readonly string[], parentId: string | null, index: number): EditorOperation[] | string {
-    const base = currentDocument();
+  function planMoveBatch(ids: readonly string[], parentId: string | null, index: number, base = currentDocument()): EditorOperation[] | string {
     if (!base) return "ページを読み込んでから移動してください。";
     if (ids.length > PAGE_OPERATION_LIMIT) return `一度に操作できる要素は${PAGE_OPERATION_LIMIT}件までです。選択数を減らしてください。`;
     const selected = new Set(ids), initialChildren = parentId ? walkNodes(base).find(({ node: item }) => item.type === "element" && item.id === parentId)?.node : undefined;
@@ -1936,33 +1958,75 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     if (operations.length > PAGE_OPERATION_LIMIT) return `一度に操作できる要素は${PAGE_OPERATION_LIMIT}件までです。選択数を減らしてください。`;
     return apply(operations);
   }
+  function duplicateAt(ids: readonly string[], { parentId, index }: Pick<DropPlace, "parentId" | "index">): string | undefined {
+    const base = currentDocument();
+    if (!base) return "ページを読み込んでから複製してください。";
+    if (ids.length > PAGE_OPERATION_LIMIT) return `一度に操作できる要素は${PAGE_OPERATION_LIMIT}件までです。選択数を減らしてください。`;
+    const operations: EditorOperation[] = [], copies: string[] = [], handled = new Set<string>();
+    const children = (source: PageDocument, id: string | null) => {
+      if (!id) return source.body;
+      const path = pathForNodeId(source, id), parent = path ? nodeAt(source, path) : undefined;
+      return parent?.type === "element" ? parent.children : [];
+    };
+    const anchor = children(base, parentId).slice(index).find((item) => item.type !== "text");
+    let simulated = base;
+    try {
+      for (const id of ids) {
+        if (handled.has(id)) continue;
+        const path = pathForNodeId(simulated, id);
+        if (!path) continue;
+        const sourceParent = path.length > 1 ? nodeAt(simulated, path.slice(0, -1)) : undefined;
+        const sourceParentId = sourceParent?.type === "element" ? sourceParent.id : null;
+        const problem = lockReason(simulated, path, "children", locks);
+        if (problem) return `データ連動値は変更できません。${problem}`;
+        const pair = pairedFormFieldNodeId(simulated, path);
+        handled.add(id); if (pair) handled.add(pair);
+        const oldIds = new Set(children(simulated, sourceParentId).flatMap((item) => item.type === "text" ? [] : [item.id]));
+        const operation: EditorOperation = { type: "duplicate", path };
+        simulated = editDocument(simulated, operation, blocks, masterId ? [] : session?.locks ?? [], libraryPresent, activeSiteStyles);
+        copies.push(...children(simulated, sourceParentId).flatMap((item) => item.type !== "text" && !oldIds.has(item.id) ? [item.id] : []));
+        operations.push(operation);
+      }
+      const destination = children(simulated, parentId);
+      const destinationIndex = anchor ? destination.findIndex((item) => item.type !== "text" && item.id === anchor.id) : destination.length;
+      const move = planMoveBatch(copies, parentId, destinationIndex, simulated);
+      if (typeof move === "string") return move;
+      if (operations.length + move.length > PAGE_OPERATION_LIMIT) return `一度に操作できる要素は${PAGE_OPERATION_LIMIT}件までです。選択数を減らしてください。`;
+      const error = apply([...operations, ...move]);
+      if (!error && copies[0]) { selectId(copies[0]); setSelectedNodeIds(copies); }
+      return error;
+    } catch (error) { return message(error); }
+  }
   function dropAt(item: DragItem, drop: Pick<DropPlace, "parentId" | "index">) {
-    if (!document || hasInput || editBlocked) return;
+    if (!document || hasInput || editBlocked || targetMode || modal || preview) return;
     // 部品の編集中、外枠の外への配置は外枠の末尾へ置く。
     const root = master?.body[0], place = root?.type === "element" && drop.parentId === null ? { parentId: root.id, index: root.children.length } : drop;
     if (item.kind === "palette") { add(item.type, place); return; }
     const ids = [...new Set(item.ids ?? [item.id])].filter((id) => pathForNodeId(document, id));
     if (!ids.length) return;
-    const error = applyMoveBatch(ids, place.parentId, place.index);
+    const destinationPath = place.parentId && pathForNodeId(document, place.parentId);
+    const destinationLock = item.copy && destinationPath ? lockReason(document, destinationPath, "children", locks) : undefined;
+    const error = destinationLock ? `データ連動値は変更できません。${destinationLock}` : item.copy ? duplicateAt(ids, place) : applyMoveBatch(ids, place.parentId, place.index);
     if (error) setNotice(error);
-    else if (ids.length === 1) selectId(ids[0]!);
+    else if (!item.copy && ids.length === 1) selectId(ids[0]!);
   }
   function layerPlace(event: React.DragEvent<HTMLElement>, targetId: string): { position: "before" | "inside" | "after"; parentId: string | null; index: number } | null {
     if (!document) return null;
     const target = nodesById.get(targetId); if (!target) return null;
     const rect = event.currentTarget.getBoundingClientRect(), fraction = rect.height ? (event.clientY - rect.top) / rect.height : 0;
     const canContain = target.node.type === "element" && !target.node.embed && ["div", "section", "article", "header", "footer", "main", "nav", "aside", "li", "figure", "blockquote", "form"].includes(target.node.tag);
-    if (canContain && (event.altKey || fraction > .3 && fraction < .7) && target.node.type === "element") return { position: "inside", parentId: target.node.id, index: target.node.children.length };
+    if (canContain && (dragItem.current?.kind !== "node" && event.altKey || fraction > .3 && fraction < .7) && target.node.type === "element") return { position: "inside", parentId: target.node.id, index: target.node.children.length };
     const parent = target.path.length > 1 ? nodeAt(document, target.path.slice(0, -1)) : null;
     const after = fraction >= .5;
     return { position: after ? "after" : "before", parentId: parent?.type === "element" ? parent.id : null, index: target.path.at(-1)! + (after ? 1 : 0) };
   }
-  function moveBy(delta: number) {
-    if (!document || !selectedNodeIds.length) return;
+  function moveBy(delta: number): string | boolean {
+    if (structureUnavailable) return structureUnavailable;
+    if (!document || !selectedNodeIds.length) return false;
     const initial = selectedNodeIds.flatMap((id) => { const path = pathForNodeId(document, id); return path ? [{ id, path }] : []; });
     const parentIdOf = (source: PageDocument, path: NodePath) => path.length > 1 ? nodeAt(source, path.slice(0, -1)) : null;
     const parentIds = new Set(initial.map(({ path }) => { const parent = parentIdOf(document, path); return parent?.type === "element" ? parent.id : null; }));
-    if (parentIds.size !== 1) { setNotice("複数の要素を同じ親の中で選んでから並べ替えてください。"); return; }
+    if (parentIds.size !== 1) return "複数の要素を同じ親の中で選んでから並べ替えてください。";
     const parentId = [...parentIds][0] ?? null, selected = new Set(selectedNodeIds);
     const ordered = [...initial].sort((left, right) => {
       const count = Math.min(left.path.length, right.path.length);
@@ -1981,10 +2045,9 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         simulated = editDocument(simulated, operation, blocks, masterId ? [] : session?.locks ?? [], libraryPresent, activeSiteStyles);
         operations.push(operation);
       }
-    } catch (error) { setNotice(message(error)); return; }
-    if (operations.length > PAGE_OPERATION_LIMIT) { setNotice(`一度に操作できる要素は${PAGE_OPERATION_LIMIT}件までです。選択数を減らしてください。`); return; }
-    const problem = operations.length ? apply(operations) : undefined;
-    if (problem) setNotice(problem);
+    } catch (error) { return message(error); }
+    if (operations.length > PAGE_OPERATION_LIMIT) return `一度に操作できる要素は${PAGE_OPERATION_LIMIT}件までです。選択数を減らしてください。`;
+    return operations.length ? apply(operations) ?? true : false;
   }
   function moveToEnd() {
     if (!document || !selection) return;
@@ -2059,7 +2122,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const availableBlocks = Object.entries(blocks).filter(([key]) => !insertableBlocks || insertableBlocks.includes(key));
   const startDrag = (event: React.DragEvent<HTMLElement>, item: DragItem) => {
     if (!document || hasInput || editBlocked || targetMode) { event.preventDefault(); return; }
-    dragItem.current = item; event.dataTransfer.effectAllowed = item.kind === "node" ? "move" : "copy";
+    dragItem.current = item.kind === "node" ? { ...item, copy: event.altKey } : item; event.dataTransfer.effectAllowed = item.kind === "node" ? "copyMove" : "copy";
     event.dataTransfer.setData("text/plain", item.kind === "palette" ? item.type : item.id);
   };
   async function runLocalizationCommand(command: import("./editor-types.js").EditorLocalizationCommand): Promise<EditorLocalizationCommandOutcome> {
@@ -2177,16 +2240,24 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
                 : editBlocked ? "処理が完了してから利用してください。"
                   : breakpoints.length === 0 ? "minWidthを持つ編集モードを設定してから利用してください。" : undefined;
   const blankAddUnavailable = addType === "embed-blank" && !blankEmbedReady;
-  const shortcutUnavailable = modal ? "ダイアログを閉じてから操作してください。"
+  const dialogShortcutReason = "ダイアログを閉じてから操作してください。";
+  const shortcutUnavailable = otherModal ? dialogShortcutReason
     : preview ? "プレビューを閉じてから操作してください。"
       : historyMode ? "版の表示を閉じてから操作してください。"
         : hasInput ? "入力を適用するか取り消してから操作してください。"
           : blocked ? "処理が完了してから操作してください。"
             : !localizationReady ? "言語設定と翻訳状態を読み込んでから操作してください。"
               : documentReadOnly?.reason ?? (!document ? "ページを読み込んでから操作してください。" : undefined);
+  const paletteUnavailable = otherModal || commandPaletteOpen ? dialogShortcutReason
+    : preview || historyMode || blocked || !localizationReady || !document
+      ? shortcutUnavailable ?? "ページを読み込んでから操作してください。" : undefined;
   const styleWorkReason = siteWorkBlocked ? "サイト共通スタイルの編集を完了してから操作してください。" : undefined;
+  const structureLock = document && locks.length ? selectedTargets.map(({ node, path }) => {
+    const subtreeIds = new Set(walkNodes({ ...document, body: [node] }).flatMap(({ node: child }) => child.type === "text" ? [] : [child.id]));
+    return lockReason(document, path, "children", locks) ?? locks.find(({ nodeId }) => subtreeIds.has(nodeId))?.reason;
+  }).find(Boolean) : undefined;
   const structureUnavailable = shortcutUnavailable ?? styleWorkReason ?? (targetMode ? "共通デザインは原文側で編集してください。" : undefined)
-    ?? (!selection ? "要素を選択してから操作してください。" : undefined);
+    ?? (!selection ? "要素を選択してから操作してください。" : undefined) ?? (structureLock ? `データ連動値は変更できません。${structureLock}` : undefined);
   const undoUnavailable = shortcutUnavailable ?? styleWorkReason ?? (!activeHistory?.past.length ? "元に戻せる操作がありません。" : undefined);
   const redoUnavailable = shortcutUnavailable ?? styleWorkReason ?? (!activeHistory?.future.length ? "やり直せる操作がありません。" : undefined);
   function changeScale(value: WorkspaceScale): boolean {
@@ -2199,36 +2270,42 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     const value = direction === "in" ? workspaceScales.find((step) => step > canvasScale) : [...workspaceScales].reverse().find((step) => step < canvasScale);
     return value === undefined ? false : changeScale(value);
   }
-  function chooseByShortcut(path: NodePath | null, event: KeyboardEvent): boolean | string {
+  function chooseByShortcut(path: NodePath | null, event?: KeyboardEvent): boolean | string {
     if (masterId && libraryBlocked) return styleWorkReason ?? "処理が完了してから選択を変えてください。";
     const id = select(path);
-    if (id && asElement(event.target)?.closest(".e-layer-list")) setCanvasReveal({ target: documentKey, id });
+    if (id && asElement(event?.target ?? null)?.closest(".e-layer-list")) setCanvasReveal({ target: documentKey, id });
     setNotice("");
     return true;
   }
-  shortcutListener.current = (event) => dispatchEditorShortcut(event, shortcutUnavailable, {
-    undo: () => undoUnavailable ?? travel("undo"),
-    redo: () => redoUnavailable ?? travel("redo"),
-    remove: () => structureUnavailable ?? bulkStructural("remove"),
-    duplicate: () => structureUnavailable ?? bulkStructural("duplicate"),
-    wrap: () => structureUnavailable ?? chooseGroupChange("wrap"),
-    unwrap: () => structureUnavailable ?? chooseGroupChange("unwrap"),
-    copy: () => copySelection(),
-    cut: () => structureUnavailable ?? cutSelection(),
-    paste: () => structureUnavailable ?? startPaste(false),
-    pasteInside: () => structureUnavailable ?? startPaste(true),
-    parent: () => !!selection && chooseByShortcut(selection.length > 1 ? selection.slice(0, -1) : null, event),
-    child: () => {
+  const moveUpUnavailable = structureUnavailable ?? (!canMoveUp ? "同じ親の中で上に移動できる要素を選択してください。" : undefined);
+  const moveDownUnavailable = structureUnavailable ?? (!canMoveDown ? "同じ親の中で下に移動できる要素を選択してください。" : undefined);
+  const commands: Record<ShortcutAction, ShortcutCommand> = {
+    undo: { unavailable: undoUnavailable, run: () => travel("undo") },
+    redo: { unavailable: redoUnavailable, run: () => travel("redo") },
+    remove: { unavailable: structureUnavailable, run: () => bulkStructural("remove") },
+    duplicate: { unavailable: structureUnavailable, run: () => bulkStructural("duplicate") },
+    moveUp: { unavailable: moveUpUnavailable, run: () => moveBy(-1) },
+    moveDown: { unavailable: moveDownUnavailable, run: () => moveBy(1) },
+    wrap: { unavailable: structureUnavailable, run: () => chooseGroupChange("wrap") },
+    unwrap: { unavailable: structureUnavailable, run: () => chooseGroupChange("unwrap") },
+    copy: { run: () => copySelection() },
+    cut: { unavailable: structureUnavailable, run: () => cutSelection() },
+    paste: { unavailable: structureUnavailable, run: () => startPaste(false) },
+    pasteInside: { unavailable: structureUnavailable, run: () => startPaste(true) },
+    parent: { run: (event) => !!selection && chooseByShortcut(selection.length > 1 ? selection.slice(0, -1) : null, event) },
+    child: { run: (event) => {
       const children = node?.type === "element" ? node.children : node ? [] : document?.body;
       if (node && isDirectlyEditable(node)) return styleWorkReason ?? startTextEdit.current?.(node.id) ?? false;
       const index = children?.findIndex((child) => child.type !== "text") ?? -1;
       return index >= 0 && chooseByShortcut([...(selection ?? []), index], event);
-    },
-    zoomIn: () => stepScale("in"),
-    zoomOut: () => stepScale("out"),
-    zoomReset: () => changeScale(1),
-    help: () => { setShortcutsOpen(true); return true; },
-  }, setNotice);
+    } },
+    zoomIn: { unavailable: shortcutUnavailable, run: () => stepScale("in") },
+    zoomOut: { unavailable: shortcutUnavailable, run: () => stepScale("out") },
+    zoomReset: { unavailable: shortcutUnavailable, run: () => changeScale(1) },
+    palette: { unavailable: paletteUnavailable, run: () => { setCommandPaletteOpen(true); return true; } },
+    help: { run: () => { setShortcutsOpen(true); return true; } },
+  };
+  shortcutListener.current = (event, inCanvas) => dispatchEditorShortcut(event, inCanvas, (action) => action === "palette" ? paletteUnavailable : commandPaletteOpen ? dialogShortcutReason : shortcutUnavailable, commands, setNotice);
   return <EditorWorkspace preview={preview} leftOpen={leftPanelOpen} rightOpen={rightPanelOpen} rootRef={workspace} setBody={(element) => { if (element) element.inert = modal; }} chrome={<><style dangerouslySetInnerHTML={{ __html: workspaceCss + editorCss + pagesCss + styleEditorCss + historyCss + localizationEditorCss + responsiveProposalCss }} />
     {assets && <style dangerouslySetInnerHTML={{ __html: assetEditorCss }} />}
     {notice && <div className="e-notice" role="alert">{notice}</div>}
@@ -2282,11 +2359,11 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
               if (primary) setCanvasReveal({ target: documentKey, id: primary });
             }}
             dragStart={(event, id) => startDrag(event, { kind: "node", id, ids: selectedNodeIds.includes(id) ? selectedNodeIds : [id] })} dragEnd={() => { dragItem.current = null; setLayerDrop(null); }}
-            dragOver={(event, id) => { if (!dragItem.current) return; const place = layerPlace(event, id); if (!place) return; event.preventDefault(); event.dataTransfer.dropEffect = dragItem.current.kind === "node" ? "move" : "copy"; setLayerDrop({ id, position: place.position }); }}
-            drop={(event, id) => { if (!dragItem.current) return; const place = layerPlace(event, id); if (place) { event.preventDefault(); dropAt(dragItem.current, place); } dragItem.current = null; setLayerDrop(null); }} />}
+            dragOver={(event, id) => { const item = dragItem.current; if (!item) return; const place = layerPlace(event, id); if (!place) return; event.preventDefault(); event.dataTransfer.dropEffect = item.kind === "palette" || copyDrag(item, event.altKey) ? "copy" : "move"; setLayerDrop({ id, position: place.position }); }}
+            drop={(event, id) => { const item = dragItem.current; if (!item) return; const place = layerPlace(event, id); if (place) { event.preventDefault(); dropAt(item.kind === "node" && copyDrag(item, event.altKey) ? { ...item, copy: true } : item, place); } dragItem.current = null; setLayerDrop(null); }} />}
           <label className="e-field"><span>移動先</span><select aria-label="移動先" value={parentId} disabled={editBlocked || hasInput || targetMode} onChange={(event) => setParentId(event.target.value)}>{!masterId && <option value="">ページ直下</option>}{entries.filter(({ node }) => node.type === "element" && !node.embed && ["div", "section", "article", "header", "footer", "main", "nav", "aside", "li", "figure", "blockquote", "form"].includes(node.tag)).map(({ node, path }) => node.type === "element" && <option key={node.id} value={node.id}>{destinationLabel(node, path, blocks, names)}</option>)}</select></label>
           <div className="e-actions"><button disabled={!!structureUnavailable} title={structureUnavailable} onClick={() => runBulkStructural("duplicate")}>複製</button><button className="e-danger" disabled={!!structureUnavailable} title={structureUnavailable} onClick={() => runBulkStructural("remove")}>削除</button>
-            <button disabled={targetMode || !canMoveUp || editBlocked || hasInput} onClick={() => moveBy(-1)}>上へ</button><button disabled={targetMode || !canMoveDown || editBlocked || hasInput} onClick={() => moveBy(1)}>下へ</button>
+            <button disabled={!!moveUpUnavailable} title={moveUpUnavailable} onClick={() => { const result = moveBy(-1); if (typeof result === "string") setNotice(result); }}>上へ</button><button disabled={!!moveDownUnavailable} title={moveDownUnavailable} onClick={() => { const result = moveBy(1); if (typeof result === "string") setNotice(result); }}>下へ</button>
             <button disabled={targetMode || !selection || editBlocked || hasInput} onClick={moveToEnd}>指定先の末尾へ</button>
           </div>
         </section>
@@ -2330,9 +2407,14 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         restore={() => { if (recoveryStale) setRecoveryCompare(true); else void restoreRecovered(); }} discard={recoveryState.discard} />}
       <div className="e-stage" ref={stageRef}><HistoryBar history={versions} restore={restoreRevision} {...(session?.readOnly ? { restoreBlocked: session.readOnly.reason } : {})} rollbackHint={session?.readOnly ? session.readOnly.reason : session?.hasSavedDraft === false ? publishHold : dirty || libraryDirty || hasInput ? "未保存の変更を保存してから公開版を戻せます。" : blocked ? "処理が完了してから操作できます。" : undefined}
         rollback={session?.readOnly || session?.hasSavedDraft === false || viewedRelease === undefined ? undefined : () => { versions.exit(); setRollbackRevision(String(viewedRelease)); void prepare("rollback", viewedRelease); }} />
-{document && session && shown && renderedCanvas && localizationReady ? <div className="e-canvas-spacer" data-scale={canvasScale.toFixed(3)} data-viewport-height={canvasHeight} style={{ width: width * canvasScale, height: canvasHeight * canvasScale }}><div className="e-canvas-scaled" style={{ width, transform: `scale(${canvasScale})`, transformOrigin: "0 0" }}><Canvas key={documentKey} document={shown} revealNode={canvasReveal?.target === documentKey ? canvasReveal : null} rendered={renderedCanvas} {...(canvasPresentation ? { presentation: canvasPresentation } : {})} origins={canvasOrigins} openInstance={openInstance} blocks={canvasBlocks} {...(externalFramePolicy ? { externalFramePolicy } : {})} {...(blankEmbeds ? { blankEmbeds } : {})} {...(xPostFrameUrl ? { xPostFrameUrl } : {})} width={width} height={canvasHeight} breakpoint={tier} selection={targetMode ? null : historyMode ? null : selection} {...(!historyMode && canvasSelectedNodeId ? { selectedNodeId: canvasSelectedNodeId } : {})} {...(!historyMode && selectedNodeIds.length > 1 ? { selectedNodeIds } : {})} slot={historyMode ? null : slotName} select={selectCanvas} canEditNode={canEditCanvasNode} dragItem={dragItem} drop={dropAt} pending={pending} editText={editCanvasText} startTextEdit={startTextEdit} onShortcut={onShortcut} resize={(path, width, height) => applyStyle({ type: "resize", path, breakpoint: tier, width, height, ...(until === undefined ? {} : { until }) })} reportError={setNotice} editable={!editBlocked && !hasInput} structureEditable={!editBlocked && !hasInput && !targetMode} locks={locks} preview={preview || historyMode} baseVersion={masterId && library ? library.version : session.version} {...(historyMode && versions.viewing ? { historyRevision: versions.viewing.entry } : {})} mode={historyMode ? "history" : preview ? "preview" : "edit"} {...(canvasPreview ? { previewComponent: canvasPreview } : {})} assets={resolvedAssets.map} replay={`${replay}-${preview}`} viewportHeight={canvasReferenceHeight} siteOrigin={site?.domains[0]} onReady={measurePerformance && !blocked && !siteWorkBlocked ? finishCanvasMeasurement : undefined}
+{document && session && shown && renderedCanvas && localizationReady ? <div className="e-canvas-spacer" data-scale={canvasScale.toFixed(3)} data-viewport-height={canvasHeight} style={{ width: width * canvasScale, height: canvasHeight * canvasScale }}><div className="e-canvas-scaled" style={{ width, transform: `scale(${canvasScale})`, transformOrigin: "0 0" }}><Canvas key={documentKey} document={shown} revealNode={canvasReveal?.target === documentKey ? canvasReveal : null} rendered={renderedCanvas} {...(canvasPresentation ? { presentation: canvasPresentation } : {})} origins={canvasOrigins} openInstance={openInstance} blocks={canvasBlocks} {...(externalFramePolicy ? { externalFramePolicy } : {})} {...(blankEmbeds ? { blankEmbeds } : {})} {...(xPostFrameUrl ? { xPostFrameUrl } : {})} width={width} height={canvasHeight} breakpoint={tier} selection={targetMode ? null : historyMode ? null : selection} {...(!historyMode && canvasSelectedNodeId ? { selectedNodeId: canvasSelectedNodeId } : {})} {...(!historyMode && selectedNodeIds.length > 1 ? { selectedNodeIds } : {})} slot={historyMode ? null : slotName} select={selectCanvas} canEditNode={canEditCanvasNode} dragItem={dragItem} drop={dropAt} pending={pending} editText={editCanvasText} startTextEdit={startTextEdit} onShortcut={onShortcut} resize={(path, width, height) => applyStyle({ type: "resize", path, breakpoint: tier, width, height, ...(until === undefined ? {} : { until }) })}
+        spacing={{ allowed: spacingAllowed, commit: (path, property, value) => applyStyle(until === undefined
+          ? { type: "style", path, breakpoint: tier, property, value }
+          : { type: "styleRange", path, breakpoint: tier, until, values: { [property]: value } }) }}
+        reportError={setNotice} editable={!editBlocked && !hasInput} structureEditable={!editBlocked && !hasInput && !targetMode && !modal} locks={locks} preview={preview || historyMode} baseVersion={masterId && library ? library.version : session.version} {...(historyMode && versions.viewing ? { historyRevision: versions.viewing.entry } : {})} mode={historyMode ? "history" : preview ? "preview" : "edit"} {...(canvasPreview ? { previewComponent: canvasPreview } : {})} assets={resolvedAssets.map} replay={`${replay}-${preview}`} viewportHeight={canvasReferenceHeight} siteOrigin={site?.domains[0]} onReady={measurePerformance && !blocked && !siteWorkBlocked ? finishCanvasMeasurement : undefined}
         presentationRuntime={(preview || motion) && !historyMode} motionCss={canvasCss(renderedCanvas, { forceState: !preview && !historyMode && styleState !== "normal" && node && node.type !== "text" ? { nodeId: node.id, state: styleState } : undefined, motion: (preview || motion) && !historyMode ? "play" : "paused" })} /></div>{(["left", "right"] as const).map((side) => <ViewportEdgeHandle key={side} side={side} width={width} scale={canvasScale} disabled={historyMode} onWidthChange={(value) => { setWidth(value); setWidthField(String(value)); }} />)}</div> : <p className="e-empty">{localization.supported && !localizationReady ? "" : "サイトとページを選ぶと、ここにプレビューを表示します。"}</p>}</div></section>} right={<aside className="e-rail e-right" aria-label="インスペクタ" hidden={!rightPanelOpen || preview}>
       <div className="e-inspector-actions" role="toolbar" aria-label="編集操作"><WorkspaceScaleSelect scale={scaleMode} fitPercent={Math.round(fitScale * 100)} disabled={!!shortcutUnavailable} onScale={changeScale} />
+      <button type="button" className="e-small" aria-label={paletteShortcut.label} aria-keyshortcuts="Meta+k Control+k" title={paletteUnavailable ?? `${paletteShortcut.label}（${paletteShortcut.keyLabel}）`} disabled={!!paletteUnavailable} onClick={() => commands.palette.run()}>⌘K</button>
       {localization.site && selectedLocale && <LanguageSelector config={localization.site.config} locale={selectedLocale} disabled={blocked} select={selectLocale} />}
       <SaveStatus {...status} retry={() => void save()} compare={() => setConflictView((value) => value + 1)} reload={() => void reloadLibrary()} retryDisabled={siteWorkBlocked || blocked || hasInput || historyMode || !localizationReady} compareDisabled={targetMode || !!busy || hasInput || historyMode || !localizationReady}
         reloadDisabled={!library || siteWorkBlocked || blocked || hasInput || historyMode || targetMode || !localizationReady} />
@@ -2466,6 +2548,14 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
           onClear={() => { const error = apply({ type: "background", path: selection, breakpoint: tier, asset: undefined }); if (error) setNotice(error); }} onStyle={(property, value) => { const error = apply({ type: "style", path: selection, breakpoint: tier, property, value }); if (error) setNotice(error); }} />} />}
       </>}</section>}
     </></div></aside>} dialogs={<>
+    {commandPaletteOpen && <CommandPalette commands={commands} close={() => setCommandPaletteOpen(false)} report={setNotice}
+      pages={regularPages.filter((candidate) => masterId || !session || !sameTarget(session.target, candidate)).map(({ siteId, pageId, locale, title, path }) => ({
+        id: JSON.stringify([siteId, pageId, locale]), label: title, detail: path,
+        run: () => requestNavigation({ type: "page", target: { siteId, pageId, locale } })
+      }))}
+      layers={document ? projectLayers(document, layerLabels) : []}
+      selectionUnavailable={hasInput ? "入力を適用するか取り消してから選択を変えてください。" : masterId ? libraryBlocked ? styleWorkReason : undefined : pageOperationalBlocked ? shortcutUnavailable : undefined}
+      selectLayer={({ path }) => { const id = select(path); if (id) setCanvasReveal({ target: documentKey, id }); }} />}
     {shortcutsOpen && <Dialog name="ショートカット一覧" dismiss={() => setShortcutsOpen(false)}><h2>ショートカット一覧</h2>
       <table><thead><tr><th scope="col">操作</th><th scope="col">キー</th></tr></thead><tbody>{editorShortcuts.map(({ action, label, keyLabel }) => <tr key={action}><th scope="row">{label}</th><td><kbd>{keyLabel}</kbd></td></tr>)}</tbody></table>
       <div className="e-actions"><button ref={shortcutClose} type="button" onClick={() => setShortcutsOpen(false)}>閉じる</button></div>

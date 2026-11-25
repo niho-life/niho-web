@@ -26,7 +26,7 @@ test("clipboard validation checks each root node at depth zero", () => {
 
 test("Option-Command-V matches the physical V key when Option transforms the character", () => {
   let action = null;
-  const commands = Object.fromEntries(editorShortcuts.map(({ action: name }) => [name, () => { action = name; return true; }]));
+  const commands = Object.fromEntries(editorShortcuts.map(({ action: name }) => [name, { run: () => { action = name; return true; } }]));
   const event = {
     defaultPrevented: false, isComposing: false, keyCode: 0, key: "√", code: "KeyV",
     metaKey: true, ctrlKey: false, shiftKey: false, altKey: true,
@@ -34,7 +34,7 @@ test("Option-Command-V matches the physical V key when Option transforms the cha
     preventDefault() { this.defaultPrevented = true; }, stopPropagation() {}
   };
 
-  dispatchEditorShortcut(event, undefined, commands, () => {});
+  dispatchEditorShortcut(event, false, () => undefined, commands, () => {});
   assert.equal(action, "pasteInside");
   assert.equal(event.defaultPrevented, true);
 });
