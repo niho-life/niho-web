@@ -570,9 +570,11 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const [layerDrop, setLayerDrop] = useState<{ id: string; position: "before" | "inside" | "after" } | null>(null);
   const dragItem = useRef<DragItem | null>(null);
   const [picker, setPicker] = useState<AssetPicker | null>(null), [localizationAssetUnit, setLocalizationAssetUnit] = useState<string | null>(null), visiblePanel = picker || localizationAssetUnit ? "assets" : panel;
+  const [assetPanelOpened, setAssetPanelOpened] = useState(false);
   const assetPanelKind = visiblePanel === "upload" ? "upload" : visiblePanel === "stock" ? "stock" : visiblePanel === "connect" ? "cms" : undefined;
   const assetPanelLabel = visiblePanel === "upload" ? "アップロード" : visiblePanel === "stock" ? "ストック" : visiblePanel === "connect" ? "接続" : "アセット";
   const assetPanelVisible = visiblePanel === "assets" || visiblePanel === "upload" || visiblePanel === "stock" || visiblePanel === "connect";
+  useEffect(() => { if (assetPanelVisible) setAssetPanelOpened(true); }, [assetPanelVisible]);
   const tools: readonly (readonly [ToolName, string])[] = [
     ["add", "追加"], ["pages", "ページ"], ["layers", "レイヤー"], ["styles", "スタイル"],
     ...(assets ? assets.listProviders ? [["upload", "アップロード"], ["stock", "ストック"], ["connect", "接続"]] as const : [["assets", "アセット"]] as const : []),
@@ -1030,7 +1032,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     if (siteSettings.stylesDirty || siteSettings.busy || !sessionRef.current && !libraryChanged || action.current || blocked || hasInput || historyMode || !!sessionRef.current && !localizationReady || mode === "auto" && isOffline()) return false;
     const finish = measurePerformance?.("save");
     const controller = new AbortController(), auto = mode === "auto", hadProblem = !!problemRef.current; action.current = controller; if (!auto) setNotice("");
-    let current = sessionRef.current, librarySaved = false, pageSaved = false, applyingOperations = false, saveEditRevision: number | undefined;
+    let current = sessionRef.current, librarySaved = false, pageSaved = false, applyingOperations = false;
     const sameSession = () => { const latest = sessionRef.current; return !!latest && !!current && sameTarget(latest.target, current.target); };
     const failed = (next: SaveProblem, thrown: boolean) => {
       if (!sameSession()) return;
@@ -1048,7 +1050,6 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       }
       if (!current) return false;
       if (current.readOnly) { if (!auto) setNotice(current.readOnly.reason); return false; }
-      saveEditRevision = current.history.editRevision ?? 0;
       setBusy("保存中");
       const lib = libraryRef.current?.history.present, document = parsePageDocument(detachRemovedSiteStyles(current.history.present, current.siteStyles ?? {}, siteSettings.settings ?? {}), blocks, { ...(lib ? { components: lib } : {}), ...(siteSettings.settings ? { siteStyles: siteSettings.settings } : {}) });
       const localized = targetMode ? localization.context : null;
@@ -1077,7 +1078,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         if (latest && sameTarget(latest.target, current.target) && latest.version === current.version) {
           const acknowledged = acceptAppliedOperations(latest.operationQueue, { ...result, document: canonical }, latest.history, applyToPage);
           const saved = fingerprint(canonical), matchesSaved = !acknowledged.replayFailed && fingerprint(acknowledged.history.present) === saved;
-          replace({ ...latest, history: acknowledged.history, operationQueue: acknowledged.queue, saved, savedEditRevision: matchesSaved ? saveEditRevision ?? latest.savedEditRevision : latest.savedEditRevision, version: result.version, hasSavedDraft: true });
+          replace({ ...latest, history: acknowledged.history, operationQueue: acknowledged.queue, saved, savedEditRevision: matchesSaved ? acknowledged.history.editRevision ?? latest.savedEditRevision : latest.savedEditRevision, version: result.version, hasSavedDraft: true });
           if (acknowledged.replayFailed) {
             failed("conflict", false);
             return false;
@@ -1095,7 +1096,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         if (latest && sameTarget(latest.target, current.target) && latest.version === current.version) {
           const acknowledged = acceptSavedRevision(latest.history, document, result.revision);
           const matchesSaved = fingerprint(acknowledged.history.present) === acknowledged.saved;
-          replace({ ...latest, ...acknowledged, savedEditRevision: matchesSaved ? saveEditRevision ?? latest.savedEditRevision : latest.savedEditRevision, version: result.version, hasSavedDraft: true,
+          replace({ ...latest, ...acknowledged, savedEditRevision: matchesSaved ? acknowledged.history.editRevision ?? latest.savedEditRevision : latest.savedEditRevision, version: result.version, hasSavedDraft: true,
             operationQueue: adapter.applyOperations && !localized
               ? createOperationQueue({ ...document, revision: result.revision })
               : { ...latest.operationQueue, base: { ...document, revision: result.revision }, pending: [] } });
@@ -1990,7 +1991,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
           {!contentRows.length && <p className="e-help">編集できる文章はありません。</p>}
         </section>
         <section hidden={visiblePanel !== "styles"} aria-label="共通スタイル"><div className="e-panel-head"><h2>スタイル</h2><p>共通カラーとテキストスタイル</p></div>{targetMode ? <p className="e-help">共通デザインは原文側で編集してください。</p> : document ? <SharedStyleLibrary siteDisabled={blocked || historyMode || libraryDirty || !localizationReady} editingComponent={!!masterId} adapter={adapter} pages={pages} blocks={blocks} components={libraryPresent} state={siteSettings} pageDirty={dirty || pageInputPending || manualInputPending} sitePending={sitePending} rawDocument={rawDocument!} migrate={(next, styles) => { const current = sessionRef.current; if (!current || editBlocked) return "ページを編集できません。"; try { const parsed = editDocument(current.history.present, { type: "restore", document: next }, blocks, current.locks, libraryPresent, styles); if (JSON.stringify(styles) === JSON.stringify(parseSiteStyles(siteSettings.settings ?? {}))) { replace({ ...current, operationQueue: fallbackOperations(current.operationQueue), history: commitHistory(current.history, parsed) }); setStyleMigration(null); setNotice("保存済みのサイト共通定義へ移行しました。ページの下書きを保存してください。"); return undefined; } const error = siteSettings.editStyles(styles); if (error) return error; setStyleMigration({ target: current.target, source: fingerprint(current.history.present), document: next, styles }); return undefined; } catch (error) { return message(error); } }} document={document} selection={selection} apply={applyStyle} select={select} disabled={editBlocked} breakpoints={breakpoints} breakpoint={tier} until={until} preview={previewOperation} pending={pending} fieldKey={`${fieldEpoch}-library`} nodeLabel={(node) => label(node, blocks, names)} /> : <p className="e-help">ページを読み込むと、共通カラーとテキストスタイルを編集できます。</p>}</section>
-        <section hidden={!assetPanelVisible} aria-label={assetPanelLabel}>{assetPanelVisible && assets && session ? <AssetLibraryPanel key={session.target.siteId} adapter={assets} siteId={session.target.siteId} providerEpoch={assetProviderEpoch} mode={picker || localizationAssetUnit ? "pick" : "library"} panelLabel={assetPanelLabel} pickKind={picker?.purpose === "video" || picker?.purpose === "replace" && picker.kind === "video" ? "video" : "image"} {...(picker || localizationAssetUnit || !assetPanelKind ? {} : { providerKind: assetPanelKind })} pickTitle={localizationAssetUnit === "page.meta.ogImage.src" ? "ソーシャルカバーを選ぶ" : localizationAssetUnit ? "コンポーネント・訳文の画像を選ぶ" : picker?.purpose === "video" ? "動画を選ぶ" : picker?.purpose === "background" ? "背景画像を選ぶ" : picker?.purpose === "replace" ? `置き換える${picker.kind === "video" ? "動画" : "画像"}を選ぶ` : picker?.purpose === "ogImage" || picker?.purpose === "siteOgImage" ? "ソーシャルカバーを選ぶ" : "画像を選ぶ"} localUsage={localUsage}
+        <section hidden={!assetPanelVisible} aria-label={assetPanelLabel}>{(assetPanelOpened || assetPanelVisible) && assets && session ? <AssetLibraryPanel key={session.target.siteId} adapter={assets} siteId={session.target.siteId} providerEpoch={assetProviderEpoch} mode={picker || localizationAssetUnit ? "pick" : "library"} panelLabel={assetPanelLabel} pickKind={picker?.purpose === "video" || picker?.purpose === "replace" && picker.kind === "video" ? "video" : "image"} {...(picker || localizationAssetUnit || !assetPanelKind ? {} : { providerKind: assetPanelKind })} pickTitle={localizationAssetUnit === "page.meta.ogImage.src" ? "ソーシャルカバーを選ぶ" : localizationAssetUnit ? "コンポーネント・訳文の画像を選ぶ" : picker?.purpose === "video" ? "動画を選ぶ" : picker?.purpose === "background" ? "背景画像を選ぶ" : picker?.purpose === "replace" ? `置き換える${picker.kind === "video" ? "動画" : "画像"}を選ぶ` : picker?.purpose === "ogImage" || picker?.purpose === "siteOgImage" ? "ソーシャルカバーを選ぶ" : "画像を選ぶ"} localUsage={localUsage}
           actions={{ replace: !localizationAssetUnit && node?.type === "element" && node.tag === "img", background: !slotName && !localizationAssetUnit && !targetMode && (node?.type === "component" || node?.type === "instance" || node?.type === "element" && !["img", "source", "video", "br", "hr"].includes(node.tag) && !node.icon && !node.embed), insert: !localizationAssetUnit && !targetMode && !!document }}
           disabledReason={editBlocked ? "処理が完了してから配置してください。" : hasInput ? "入力を確定するか取り消してから配置してください。" : undefined} onApply={(asset, action) => localizationAssetUnit ? applyLocalizationAsset(asset) : applyAsset(asset, action)} onClose={() => { setPicker(null); setLocalizationAssetUnit(null); }} onReplaceUsages={(asset) => setPicker({ purpose: "replace", from: { provider: asset.provider, id: asset.id }, kind: asset.kind === "video" ? "video" : "image" })} />
           : assetPanelVisible ? <><div className="e-panel-head"><h2>アセット</h2><p>画像の選択と差し替え</p></div><p className="e-help">現在は画像を追加し、右側の「画像 URL」で指定できます。</p><button type="button" onClick={() => add("img")} disabled={!document || editBlocked || hasInput}>画像を追加</button></> : null}</section>
