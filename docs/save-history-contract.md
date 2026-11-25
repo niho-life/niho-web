@@ -105,8 +105,19 @@ type EditorRevisionEntry = {
   revision: number;
   kind: 'draft' | 'autosave' | 'snapshot' | 'publish' | 'rollback';
   createdAt: string;          // ISO 8601
-  actor?: string;             // 表示名だけ。メール・ユーザーIDは返さない
+  actor?: string;             // 表示名だけ。subject・メールは返さない
+  actorKind?: 'human' | 'machine';
+  delegatedBy?: string;       // 確認済み委任元の表示名だけ
   label?: string;
+  operations?: Array<{        // 変更前後の値を含めない。最大20件
+    type: EditorOperation['type'];
+    targetId?: string;
+    targetType?: 'element' | 'component' | 'instance' | 'page';
+    targetTag?: string;
+    field?: string;
+  }>;
+  omittedOperations?: number;
+  snapshotAvailable?: boolean; // 一覧の要約は残るが本文snapshotが期限切れの場合 false
 };
 
 listRevisions({ target, cursor? }, signal): Promise<{ entries: EditorRevisionEntry[]; next?: string }>;
@@ -114,9 +125,12 @@ readRevision({ target, id }, signal): Promise<{ document: unknown }>;
 createSnapshot({ target, expectedVersion, label }, signal): Promise<{ status: 'saved'; entry: EditorRevisionEntry } | { status: 'conflict' }>;
 ```
 
-- 一覧は新しい順で、日時・実行者・種類・名前を表示します。「さらに表示」で `next` を使って続きを取得します。
+- 共通HTTP APIは `pages.history`（一覧）と `pages.history-read`（snapshot読取）を公開し、どちらも `pages.history.read` で個別に認可します。`pages.read` の権限だけでは履歴を読めません。revision IDは `pages.history-read` のPOST bodyだけで送ります。
+- ホストの標準保持期間は、AIにも返る値を含まない操作要約を作成から365日、完全な文書・site style・presentation snapshotを90日とします。履歴一覧はsnapshotの期限切れ後も要約を返し、該当項目へ `snapshotAvailable: false` を付けます。GUIは要約を表示しつつ本文を開く操作を無効にします。ホストは期限切れのsnapshotを404にします。より長い法令・契約上の保存要件がある場合は、ホストのプライバシー通知と削除処理を整合させてから期間を変更してください。
+- actorの `kind` と、確認できる委任元がある場合の表示名を返します。表示名は人/AIの画面表示用ラベルだけとし、メール、ユーザーID、subject、token、委任を推測した値は返しません。操作要約は操作種別、要素種別・tag・ID、変更したfield名だけに限定し、変更前後の値や文書本文を含めません。1件の要約は最大20操作で、残数を `omittedOperations` に示します。
+- 一覧は新しい順で、日時・実行者・種類・名前と操作要約を表示します。「さらに表示」で `next` を使って続きを取得します。GUIは各版につき最初の3操作を表示します。
 - 一覧の先頭は「現在の編集内容」です。版を選ぶと履歴モードになり、キャンバスにその版を読み取り専用で表示し、上部に日時・種類と操作を出します。編集・保存・公開・プレビューの切替は履歴モードを閉じるまで止まります。「差分を見る」で現在の作業コピーとの差分を表示し、「この版を復元」でその版の内容（タイトル・公開メタ情報・トークン・文字スタイル・本文）を作業コピーへの通常の編集として適用します。復元は元に戻す／やり直すの対象で、保存するとサーバーが新しい revision を採番します。古い revision を再利用しません。
-- 公開版のうち `releases` に含まれる版は、公開確認つきの rollback も選べます。
+- 公開版のうち `releases` に含まれる版で、ホストがrollback対象として保持しているものは、公開確認つきの `pages.release-plan` を作れます。
 - スナップショットは保存済みの状態にだけ名前を付けて記録します。ホストは `expectedVersion` を検証し、新しい履歴項目として返してください。
 - ホストは保存・自動保存・スナップショット・公開・rollback の実行者と日時を監査記録として保持し、パッケージやブラウザには表示名だけを返します。
 

@@ -24,6 +24,9 @@ import {
 } from "./editing-localization.js";
 import { jsonBytes } from "./localization-workspace-model.js";
 import { inspectPageDocument, PAGE_INSPECT_LIMITS, PageInspectError, parsePageInspectQuery, type PageInspectQuery } from "./page-inspect.js";
+import { parseRevisionPage } from "./history.js";
+import { parseSiteStyles } from "./site-styles.js";
+import { parseSitePresentation } from "./presentation.js";
 
 import {
   PAGE_OPERATION_ID, PAGE_OPERATION_LIMIT, PAGE_OPERATION_VERSIONS, editingOperationProblem, pageApplyInputSchema,
@@ -134,7 +137,7 @@ export type JsonSchema = boolean | {
 };
 type EditingOperationDefinitionShape = {
   readonly id: string;
-  readonly capability: "pages.read" | "pages.edit" | "pages.publish" | "site.settings.read" | "site.settings.write" | "cms.read" | "cms.edit" | "cms.publish"
+  readonly capability: "pages.read" | "pages.history.read" | "pages.edit" | "pages.publish" | "site.settings.read" | "site.settings.write" | "cms.read" | "cms.edit" | "cms.publish"
     | "assets.read" | "assets.edit" | "assets.upload" | "assets.delete" | EditingLocalizationCapability;
   readonly capabilityByInput?: { readonly field: "action" | "operation"; readonly values: Readonly<Record<string, EditingLocalizationCapability>> };
   readonly method: "GET" | "PUT" | "POST";
@@ -161,6 +164,25 @@ const documentSchema: JsonSchema = Object.freeze({
   })
 });
 const versionSchema: JsonSchema = Object.freeze({ type: "string", minLength: 1 });
+const revisionOperationSchema: JsonSchema = Object.freeze({ type: "object", required: Object.freeze(["type"]), additionalProperties: false, properties: Object.freeze({
+  type: Object.freeze({ type: "string", enum: Object.freeze(["text", "attribute", "booleanAttribute", "formChoices", "formCompletionPage", "icon", "tag", "prop", "style", "resize", "styles", "styleRange", "token", "textStyle", "nodeTextStyle", "state", "appear", "motionPreset", "hidden", "title", "add", "addMany", "replaceChildren", "image", "video", "embedSource", "embedTitle", "loopBox", "background", "replaceAsset", "duplicate", "remove", "move", "instanceProp", "detach", "slotStyle", "restore", "meta"]) }),
+  targetId: Object.freeze({ type: "string", minLength: 1, maxLength: 80 }), targetType: Object.freeze({ type: "string", enum: Object.freeze(["element", "component", "instance", "page"]) }),
+  targetTag: Object.freeze({ type: "string", pattern: "^[a-z][a-z0-9-]{0,31}$" }), field: Object.freeze({ type: "string", pattern: "^[A-Za-z][A-Za-z0-9_.-]{0,79}$" })
+}) });
+const revisionEntrySchema: JsonSchema = Object.freeze({ type: "object", required: Object.freeze(["id", "revision", "kind", "createdAt"]), additionalProperties: false, properties: Object.freeze({
+  id: Object.freeze({ type: "string", minLength: 1, maxLength: 200 }), revision: Object.freeze({ type: "integer", minimum: 1 }),
+  kind: Object.freeze({ type: "string", enum: Object.freeze(["draft", "autosave", "snapshot", "publish", "rollback"]) }), createdAt: Object.freeze({ type: "string", minLength: 1, maxLength: 40 }),
+  actor: Object.freeze({ type: "string", maxLength: 120 }), actorKind: Object.freeze({ type: "string", enum: Object.freeze(["human", "machine"]) }),
+  delegatedBy: Object.freeze({ type: "string", maxLength: 120 }), label: Object.freeze({ type: "string", maxLength: 120 }),
+  operations: Object.freeze({ type: "array", maxItems: 20, items: revisionOperationSchema }), omittedOperations: Object.freeze({ type: "integer", minimum: 0, maximum: 500 }),
+  snapshotAvailable: Object.freeze({ type: "boolean" })
+}) });
+const revisionPageSchema: JsonSchema = Object.freeze({ type: "object", required: Object.freeze(["entries"]), additionalProperties: false, properties: Object.freeze({
+  entries: Object.freeze({ type: "array", maxItems: 100, items: revisionEntrySchema }), next: Object.freeze({ type: "string", maxLength: 500 })
+}) });
+const historyReadResultSchema: JsonSchema = Object.freeze({ type: "object", required: Object.freeze(["document"]), additionalProperties: false, properties: Object.freeze({
+  document: documentSchema, siteStyles: Object.freeze({ type: "object", additionalProperties: true }), presentation: Object.freeze({ type: "object", additionalProperties: true })
+}) });
 const inspectInputSchema: JsonSchema = Object.freeze({ oneOf: Object.freeze([
   Object.freeze({ type: "object", required: Object.freeze(["siteId", "pageId", "locale", "view"]), additionalProperties: false, properties: Object.freeze({
     siteId: Object.freeze({ type: "string" }), pageId: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }),
@@ -308,6 +330,20 @@ export const EDITING_OPERATIONS = Object.freeze([
       properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), pageId: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }) }) }),
     resultSchema: Object.freeze({ type: "object", required: Object.freeze(["document", "version"]), additionalProperties: false,
       properties: Object.freeze({ document: documentSchema, version: versionSchema, componentsVersion: versionSchema, presentationVersion: versionSchema, stylesVersion: versionSchema }) }),
+    errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found"] as const)
+  }),
+  Object.freeze({
+    id: "pages.history", capability: "pages.history.read", method: "GET", path: "/sites/{siteId}/operations/pages.history/{pageId}?locale={locale}&cursor={cursor}",
+    inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId", "pageId", "locale"]), additionalProperties: false,
+      properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), pageId: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }), cursor: Object.freeze({ type: "string", minLength: 1, maxLength: 500 }) }) }),
+    resultSchema: revisionPageSchema,
+    errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found"] as const)
+  }),
+  Object.freeze({
+    id: "pages.history-read", capability: "pages.history.read", method: "POST", path: "/sites/{siteId}/operations/pages.history-read/{pageId}?locale={locale}",
+    inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId", "pageId", "locale", "id"]), additionalProperties: false,
+      properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), pageId: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }), id: Object.freeze({ type: "string", minLength: 1, maxLength: 200 }) }) }),
+    resultSchema: historyReadResultSchema,
     errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found"] as const)
   }),
   Object.freeze({
@@ -494,6 +530,10 @@ export type PageEditingHostAdapter = {
   validationContext?(actor: EditingActor, target: EditingPageTarget): Promise<PageEditingValidationContext>;
   readPage(actor: EditingActor, target: EditingPageTarget): Promise<EditingPageSnapshot | null>;
   savePage(actor: EditingActor, target: EditingPageTarget, expectedVersion: string, document: PageDocument): Promise<EditingPageSaveResult>;
+  /** Optional version history. The API independently requires pages.history.read for both methods. */
+  listPageHistory?(actor: EditingActor, target: EditingPageTarget, cursor?: string): Promise<unknown | null>;
+  /** Revision id is opaque and is sent in the POST body, never in the URL. */
+  readPageHistoryRevision?(actor: EditingActor, target: EditingPageTarget, id: string): Promise<unknown | null>;
   /** Optional atomic operation journal and document writer. Its versioned read includes the trusted validation context. */
   pageOperations?: EditingPageOperationStore;
   /** Return the host's trusted site metadata, including the allowed publication origins. */
@@ -588,6 +628,8 @@ function validOperationId(value: unknown): value is string { return typeof value
 function supportsOperation(adapter: PageEditingHostAdapter, operation: EditingOperationDefinition): boolean {
   const localization = editingLocalizationOperation(operation.id);
   if (localization) return typeof adapter.localization?.[localization.id] === "function";
+  if (operation.id === "pages.history") return typeof adapter.listPageHistory === "function";
+  if (operation.id === "pages.history-read") return typeof adapter.readPageHistoryRevision === "function";
   if (operation.id === "pages.apply") return typeof adapter.pageOperations?.transact === "function";
   if (operation.id === "pages.release-plan" || operation.id === "pages.release") return typeof adapter.releaseSite === "function" && typeof adapter.preparePageRelease === "function" && typeof adapter.publishPage === "function";
   if (operation.id === "pages.release-set-plan" || operation.id === "pages.release-set") return typeof adapter.releaseSite === "function" && typeof adapter.preparePageReleaseSet === "function" && typeof adapter.publishPageReleaseSet === "function";
@@ -1500,7 +1542,7 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       if (!matches) return fail("host_contract_violation", 502);
       return response({ status: "applied", operationId: applied.operationId, page });
     }
-    const match = new RegExp(`^${basePath}/sites/([^/]+)/operations/(pages\\.(?:read|inspect|save|apply|release-plan|release))/([^/]+)$`, "u").exec(url.pathname);
+    const match = new RegExp(`^${basePath}/sites/([^/]+)/operations/(pages\\.(?:read|history|history-read|inspect|save|apply|release-plan|release))/([^/]+)$`, "u").exec(url.pathname);
     if (!match) return fail("not_found", 404);
     let siteId: string, pageId: string, locale: string;
     try {
@@ -1511,8 +1553,9 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
     const target = pageTarget(siteId, pageId, locale);
     if (!target) return fail("invalid_request", 400);
     const operation = EDITING_OPERATIONS.find((item) => item.id === match[2]);
-    if (!operation || operation.id === "pages.apply" && !supportsOperation(adapter, operation)) return fail("not_found", 404);
+    if (!operation || ["pages.apply", "pages.history", "pages.history-read"].includes(operation.id) && !supportsOperation(adapter, operation)) return fail("not_found", 404);
     let inspectQuery: PageInspectQuery | null = null;
+    let historyCursor: string | undefined;
     if (operation.id === "pages.inspect") {
       const input: Record<string, unknown> = {};
       let repeated = false;
@@ -1523,6 +1566,14 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       });
       inspectQuery = repeated ? null : parsePageInspectQuery(input);
       if (!inspectQuery) return fail("invalid_request", 400);
+    } else if (operation.id === "pages.history") {
+      let repeated = false;
+      url.searchParams.forEach((value, key) => {
+        if (key === "locale") return;
+        if (key !== "cursor" || historyCursor !== undefined || !value || value.length > 500 || /[\u0000-\u001f\u007f]/u.test(value)) repeated = true;
+        else historyCursor = value;
+      });
+      if (repeated) return fail("invalid_request", 400);
     } else if (url.searchParams.size !== 1) return fail("invalid_request", 400);
     if (request.method !== operation.method) return fail("method_not_allowed", 405);
     let actor: EditingActor | null;
@@ -1534,6 +1585,49 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
     try { allowed = await adapter.authorize(actor, operation.capability, target) === true; }
     catch { return fail("host_failure", 503); }
     if (!allowed) return fail("forbidden", 403);
+    if (operation.id === "pages.history") {
+      if (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length"))) return fail("invalid_request", 400);
+      let raw: unknown;
+      try { raw = await adapter.listPageHistory!(actor, target, historyCursor); }
+      catch { return fail("host_failure", 503); }
+      if (raw === null) return fail("not_found", 404);
+      let page;
+      try { page = parseRevisionPage(raw); }
+      catch { return fail("host_contract_violation", 502); }
+      const serialized = JSON.stringify(page);
+      if (new TextEncoder().encode(serialized).byteLength > 512 * 1024) return fail("host_contract_violation", 502);
+      return response(page);
+    }
+    if (operation.id === "pages.history-read") {
+      let body: Record<string, unknown> | null;
+      try { body = await readBody(request, 8 * 1024); }
+      catch { return fail("invalid_request", 400); }
+      if (!body || !exactKeys(body, ["id"]) || typeof body.id !== "string" || !body.id.length || body.id.length > 200 || /[\u0000-\u001f\u007f]/u.test(body.id)) return fail("invalid_request", 400);
+      let raw: unknown;
+      try { raw = await adapter.readPageHistoryRevision!(actor, target, body.id); }
+      catch { return fail("host_failure", 503); }
+      if (raw === null) return fail("not_found", 404);
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) return fail("host_contract_violation", 502);
+      const history = raw as Record<string, unknown>;
+      if (![Object.prototype, null].includes(Object.getPrototypeOf(history)) || !Object.hasOwn(history, "document")
+        || Object.keys(history).some((key) => !["document", "siteStyles", "presentation"].includes(key))) return fail("host_contract_violation", 502);
+      let context: PageEditingValidationContext;
+      try { context = await documentContext(adapter, actor, target); }
+      catch { return fail("host_failure", 503); }
+      let document: PageDocument;
+      try { document = validatedDocument(history.document, context); }
+      catch { return fail("host_contract_violation", 502); }
+      if (document.siteId !== target.siteId || document.pageId !== target.pageId || document.locale !== target.locale) return fail("host_contract_violation", 502);
+      let siteStyles: SiteStyles | undefined;
+      let presentation: unknown;
+      try {
+        if (history.siteStyles !== undefined) siteStyles = parseSiteStyles(history.siteStyles as SiteStyles);
+        if (history.presentation !== undefined) presentation = parseSitePresentation(history.presentation, document, context.blocks);
+      } catch { return fail("host_contract_violation", 502); }
+      const result = { document, ...(siteStyles === undefined ? {} : { siteStyles }), ...(presentation === undefined ? {} : { presentation }) };
+      if (new TextEncoder().encode(JSON.stringify(result)).byteLength > 4 * 1024 * 1024) return fail("host_contract_violation", 502);
+      return response(result);
+    }
     if (operation.id === "pages.apply") return handlePageApply(adapter.pageOperations!, request, actor, target);
     if (operation.id === "pages.read" || operation.id === "pages.inspect") {
       if (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length"))) return fail("invalid_request", 400);

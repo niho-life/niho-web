@@ -19,7 +19,7 @@ export type { PageKind, PageVisibility, SiteSettings } from "./pages.js";
 export type {
   EditorLocaleReleaseApplyRequest, EditorLocaleReleaseApplyResult, EditorLocaleReleasePlan, EditorLocaleReleasePrepareRequest, EditorLocaleReleaseState, EditorLocaleReleaseSummary
 } from "./locale-release-contract.js";
-export type { DocumentChange, EditorLibraryRecoveryEntry, EditorRecoveryEntry, EditorRecoveryStore, EditorRevisionEntry, EditorRevisionKind, EditorRevisionPage, StoredLibraryRecoveryEntry, StoredRecoveryEntry } from "./history.js";
+export type { DocumentChange, EditorLibraryRecoveryEntry, EditorRecoveryEntry, EditorRecoveryStore, EditorRevisionEntry, EditorRevisionKind, EditorRevisionOperationSummary, EditorRevisionOperationType, EditorRevisionPage, StoredLibraryRecoveryEntry, StoredRecoveryEntry } from "./history.js";
 
 export type EditorTarget = { siteId: string; pageId: string; locale: string };
 /** ホストが許可する構造化データの種類。JSON-LD の中身はホストが生成する。 */
