@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { CmsCollection, CmsDiscovery, CmsItemRevision, CmsReleasePin, CmsReleaseSnapshot, CmsSchema } from "../src/cms-v2.js";
-import { collectionPathForEditor, starterCollection } from "./managed-cms-model.js";
+import { cmsDraftMatchesPublishedValues, collectionPathForEditor, starterCollection } from "./managed-cms-model.js";
 import type { CollectionValues, CollectionValue } from "../src/collection-model.js";
 
 export type ManagedCmsWorkspaceProps = { readonly projectId: string; readonly siteId: string; readonly origin: string | null };
@@ -165,7 +165,7 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
       const pins = await Promise.all(selected.map(async ({ revision, itemId, collectionId, values }) => {
         if (snapshot?.schema.schemaRevision === draft.schemaRevision) return { revision, itemId, collectionId };
         const latest = (await call<{ item: CmsItemRevision }>("cms.items.read", { collectionId, itemId })).item;
-        if (JSON.stringify(latest.values) !== JSON.stringify(values)) {
+        if (!snapshot || !cmsDraftMatchesPublishedValues(snapshot.schema, collectionId, latest.values, values)) {
           throw new RequestFailed(409, "定義の更新前に公開した内容があります。現在の定義で公開する項目を確認してください。");
         }
         return { revision: latest.revision, itemId, collectionId };

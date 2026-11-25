@@ -1,12 +1,12 @@
 import { revalidateCmsRelease, type CmsProblem, type CmsReleaseContext, type CmsReleasePin, type CmsReleaseSnapshot } from "../src/cms-v2.js";
 import { cmsItemKey } from "../src/cms-v2-schema.js";
 import type { ManagedD1 } from "./managed-sites.js";
+import { escapeHtml } from "./managed-cms-model.js";
 import {
   CmsStore, cmsPathReserved, nowSeconds, opaque, type Site, type Job, type JobPayload
 } from "./managed-cms-store.js";
 
-export const escapeHtml = (value: unknown) => String(value ?? "").replace(/[&<>"']/gu, (character) =>
-  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!);
+export { escapeHtml };
 
 export function collectionPath(prefix: string | null): string | null {
   return prefix === null ? null : prefix.slice(0, -1);

@@ -1,6 +1,9 @@
 import type { CmsSchema, CmsCollection } from "../src/cms-v2.js";
 import type { CollectionValues } from "../src/collection-model.js";
 
+export const escapeHtml = (value: unknown) => String(value ?? "").replace(/[&<>"']/gu, (character) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!);
+
 export function starterCollection(id = "posts", label = "お知らせ", path = "/cms/posts/"): CmsSchema["collections"][number] {
   return {
     id, label, addLabel: "項目を追加", ordering: "publishedAt", pathPrefix: path,
@@ -18,4 +21,19 @@ export function collectionPathForEditor(collection: CmsCollection, values: Colle
   if (collection.pathPrefix === null || collection.slugField === null) return null;
   const slug = values[collection.slugField];
   return typeof slug === "string" && slug ? collection.pathPrefix + slug : null;
+}
+
+/** Compare an editable revision with its published snapshot representation. */
+export function cmsDraftMatchesPublishedValues(schema: CmsSchema, collectionId: string,
+  draftValues: CollectionValues, publishedValues: CollectionValues): boolean {
+  const collection = schema.collections.find(({ id }) => id === collectionId);
+  if (!collection) return false;
+
+  const comparable: Record<string, unknown> = { ...draftValues };
+  for (const field of collection.fields) {
+    if (field.type !== "richText") continue;
+    const value = comparable[field.fieldId];
+    if (typeof value === "string" && value !== "") comparable[field.fieldId] = escapeHtml(value);
+  }
+  return JSON.stringify(comparable) === JSON.stringify(publishedValues);
 }
