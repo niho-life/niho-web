@@ -1002,7 +1002,13 @@ test("unsupported structured data stays visible and can be removed", async () =>
 test("renaming a page validates input, reviews impact, applies the exact plan and reloads", async () => {
   const host = pageHost(), app = await setup({ adapter: host.adapter });
   try {
-    await press(document.querySelector('[aria-label="私たちについて の操作"]'));
+    const trigger = document.querySelector('[aria-label="私たちについて の操作"]');
+    await press(trigger);
+    const menuItem = document.querySelector('[role="menuitem"]');
+    assert.equal(await shortcut(menuItem, "Escape"), true);
+    assert.equal(document.querySelector('[role="menu"]'), null);
+    assert.equal(document.activeElement, trigger);
+    await press(trigger);
     assert.ok(document.querySelector('[role="menu"]')); await press(button("名前とURLを変更"));
     assert.equal(inputIn(dialog(), "ページ名").value, "私たちについて"); assert.equal(inputIn(dialog(), "URL パス").value, "/about");
     assert.equal(buttonIn(dialog(), "影響を確認").disabled, true);
@@ -1475,6 +1481,9 @@ test("staff upload an image, set its alt, replace a page image, save the draft a
     await tool("レイヤー"); await clickCanvas("photo"); await editorTab("画像");
     await click("画像を置き換え");
     assert.equal(assetPanel().closest("[hidden]"), null); assert.equal(assetPanel().querySelector("h2").textContent, "画像を選ぶ");
+    assert.equal(await shortcut(assetPanel().querySelector("h2"), "Escape"), true);
+    assert.equal(assetPanel().closest("[hidden]") !== null, true);
+    await click("画像を置き換え");
     assert.equal(assetCard("利用案内.pdf"), undefined);
     await chooseAsset("海辺の朝.png");
     assert.ok(document.body.textContent.includes("画像を置き換えました。代替テキストを確認してください。"));

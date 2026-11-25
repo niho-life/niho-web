@@ -40,6 +40,8 @@ export function dispatchEditorShortcut(event: KeyboardEvent, blockedReason: stri
   if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || event.altKey || event.getModifierState("AltGraph")) return;
   const elements = event.composedPath().flatMap((item) => { const element = eventElement(item); return element ? [element] : []; });
   if (elements.some((element) => element.matches("input, textarea, select, [role='textbox'], [role='dialog'], [role='alertdialog']"))) return;
+  // 開いているローカル操作の Escape を先に処理させる。
+  if (event.key === "Escape" && elements.some((element) => element.matches("[role='menu'], .e-asset"))) return;
   const editable = elements.map((element) => element.getAttribute("contenteditable")?.toLowerCase())
     .find((value) => value === "" || value === "true" || value === "false" || value === "plaintext-only");
   if (editable !== undefined && editable !== "false") return;
