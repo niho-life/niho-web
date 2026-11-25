@@ -53,7 +53,7 @@ function run(args, { status = 200, result, expectedMethod, expectedUrl, expected
   });
 }
 
-function runSequence(args, requests, { env = {}, token = "fixture-token", stdin = "" } = {}) {
+function runSequence(args, requests, { env = {}, token = "fixture-token", stdin = "", studio = false } = {}) {
   const source = [
     "const expected = " + JSON.stringify(requests) + "; let index = 0;",
     "globalThis.fetch = async (url, init) => {",
@@ -61,7 +61,9 @@ function runSequence(args, requests, { env = {}, token = "fixture-token", stdin 
     "  if (!request || String(url) !== request.url || init.method !== request.method) throw new Error('unexpected request');",
     "  if (init.redirect !== 'manual' || init.credentials !== 'omit') throw new Error('unsafe API fetch defaults');",
     "  const headers = new Headers(init.headers);",
-    "  if (headers.get('Authorization') !== 'Bearer fixture-token') throw new Error('missing authorization');",
+    "  if (headers.get('Authorization') !== " + JSON.stringify(studio ? null : "Bearer fixture-token") + ") throw new Error('unexpected authorization');",
+    "  if (headers.get('cf-access-token') !== " + JSON.stringify(studio ? "fixture-token" : null) + ") throw new Error('unexpected Access token');",
+    "  if (headers.get('X-Studio-CMS-Version') !== " + JSON.stringify(studio ? "2" : null) + ") throw new Error('unexpected Studio CMS version');",
     "  if (init.body && JSON.stringify(JSON.parse(init.body)) !== JSON.stringify(request.body ?? null)) throw new Error('unexpected request body');",
     "  return new Response(JSON.stringify(request.result ?? {}), { status: request.status ?? 200, headers: { 'Content-Type': 'application/json' } });",
     "};",
@@ -708,6 +710,44 @@ test("niho-edit selects managed CMS v2 with Access authentication and an explici
   });
   assert.equal(updated.exitCode, 0);
   assert.deepEqual(JSON.parse(updated.stdout).result, { status: "saved" });
+});
+
+test("niho-edit plans Studio CMS schema with current revisions and requires impact confirmation to apply", async () => {
+  const nextSchema = { contractVersion: 2, siteId, schemaRevision: "initial", retiredFields: [], collections: [{
+    id: "posts", label: "Posts", addLabel: "Add", ordering: "publishedAt", pathPrefix: null,
+    titleField: "title", slugField: null, imageField: null, subtitleField: null,
+    capabilities: { create: true, duplicate: false, remove: true, unpublish: true, schedule: true },
+    fields: [{ fieldId: "title", key: "title", label: "Title", type: "text", placement: "main" }]
+  }] };
+  const draft = JSON.stringify({ nextSchema, replacements: [] });
+  const currentSchema = { ...nextSchema, schemaRevision: "revision_current" };
+  const plan = { operation: "cms.schema.apply", operationId: "op_schema_1", siteId,
+    confirmationToken: "token_schema_1", candidate: { changes: [{ collectionId: "posts", fieldId: "title", kind: "remove" }] } };
+  const planned = await runSequence(["--studio", "cms-schema-plan", "--json", "-"], [
+    { url: `${origin}/api/edit/v2/sites/${siteId}/operations/cms.schema.read`, method: "POST", body: { siteId }, result: currentSchema },
+    { url: `${origin}/api/edit/v2/sites/${siteId}/operations/cms.release.current`, method: "POST", body: { siteId }, result: { locale: "ja", routeTableRevision: "routes_current" } },
+    { url: `${origin}/api/edit/v2/sites/${siteId}/operations/cms.schema.plan`, method: "POST",
+      body: { siteId, expectedSchemaRevision: "revision_current", routeTableVersions: [{ locale: "ja", revision: "routes_current" }], nextSchema, replacements: [] },
+      result: { status: "ready", plan } }
+  ], { stdin: draft, studio: true });
+  assert.equal(planned.exitCode, 0);
+  assert.equal(JSON.parse(planned.stdout).result.plan.operationId, "op_schema_1");
+
+  const planFileContents = JSON.stringify({ apiVersion: "v1", httpStatus: 200, operation: "cms.schema.plan", result: { status: "ready", plan } });
+  const blocked = await run(["--studio", "cms-schema-apply", "--json", "-"], {
+    studio: true, expectedMethod: "POST", expectedUrl: `${origin}/api/edit/v2/sites/${siteId}/operations/cms.schema.apply`,
+    expectedBody: { siteId, operationId: "op_schema_1", confirmationToken: "token_schema_1" }, stdin: planFileContents
+  });
+  assert.equal(blocked.exitCode, 1);
+  assert.equal(JSON.parse(blocked.stdout).result.error, "data_loss_confirmation_required");
+
+  const applied = await run(["--studio", "cms-schema-apply", "--json", "-", "--confirm-data-loss"], {
+    studio: true, expectedMethod: "POST", expectedUrl: `${origin}/api/edit/v2/sites/${siteId}/operations/cms.schema.apply`,
+    expectedBody: { siteId, operationId: "op_schema_1", confirmationToken: "token_schema_1" }, stdin: planFileContents,
+    result: { status: "recorded", operationId: "op_schema_1", result: { schemaRevision: "revision_next" } }
+  });
+  assert.equal(applied.exitCode, 0);
+  assert.equal(JSON.parse(applied.stdout).result.result.schemaRevision, "revision_next");
 });
 
 test("niho-edit only sends node names to a write operation advertising pages.name", async () => {
