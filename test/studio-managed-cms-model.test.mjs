@@ -13,7 +13,7 @@ await build({
   entryPoints: [fileURLToPath(new URL("../studio/managed-cms-model.ts", import.meta.url))],
   bundle: true, format: "esm", platform: "node", target: "node22", outfile: bundle, logLevel: "silent"
 });
-const { cmsDraftMatchesPublishedValues } = await import(pathToFileURL(bundle).href);
+const { cmsDraftMatchesPublishedValues, redirectsForCmsRelease } = await import(pathToFileURL(bundle).href);
 
 test("schema revision change compares raw rich text with its escaped published value", () => {
   const schema = { collections: [{ id: "posts", fields: [
@@ -25,4 +25,12 @@ test("schema revision change compares raw rich text with its escaped published v
   assert.equal(cmsDraftMatchesPublishedValues(schema, "posts", draft, published), true);
   assert.equal(cmsDraftMatchesPublishedValues(schema, "posts", { ...draft, title: "変更" }, published), false);
   assert.equal(cmsDraftMatchesPublishedValues(schema, "missing", draft, published), false);
+});
+
+test("slug changes retarget historical redirects while withdrawal removes redirects to the withdrawn item", () => {
+  const redirects = [{ from: "/cms/posts/a", to: "/cms/posts/b" }, { from: "/cms/posts/d", to: "/cms/posts/b" }];
+  assert.deepEqual(redirectsForCmsRelease(redirects, "/cms/posts/b", "/cms/posts/d", false), [
+    { from: "/cms/posts/a", to: "/cms/posts/d" }
+  ]);
+  assert.deepEqual(redirectsForCmsRelease(redirects, "/cms/posts/b", "/cms/posts/b", true), []);
 });
