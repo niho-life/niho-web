@@ -228,6 +228,6 @@
 .studio-native-cms-schema section { border: 1px solid var(--nw-border); border-radius: var(--nw-radius); padding: .9rem; background: var(--nw-surface); }
 .studio-native-cms-schema section h3, .studio-native-cms-schema section h4 { margin: .25rem 0 .6rem; }
 .studio-native-cms-schema button { min-height: 2.5rem; border: 1px solid var(--nw-border); border-radius: var(--nw-radius); background: var(--nw-surface-2); padding: .45rem .75rem; color: var(--nw-text); font: inherit; cursor: pointer; }
-.studio-native-cms-schema button:focus-visible, .studio-native-cms-schema input:focus-visible, .studio-native-cms-schema select:focus-visible, .studio-native-cms-schema textarea:focus-visible { outline: 2px solid var(--nw-focus); outline-offset: 2px; }
+.studio-native-cms-schema button:focus-visible, .studio-native-cms-schema input:focus-visible, .studio-native-cms-schema select:focus-visible, .studio-native-cms-schema textarea:focus-visible { outline:2px solid var(--nw-focus); outline-offset:2px; }
 .studio-native-cms-schema button:disabled { opacity: .55; cursor: not-allowed; }
 @media (max-width: 720px) { .studio-native-cms-columns { grid-template-columns: minmax(0, 1fr); } }
