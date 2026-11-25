@@ -34,11 +34,12 @@ export type LayerTreePanelProps = {
   labels?: LayerLabels;
   rootLabel: string;
   selectedId: string | null;
+  selectedIds?: readonly string[];
   disabled?: boolean;
   draggable?: boolean;
   trailing?: (entry: LayerEntry) => ReactNode;
   className?: (entry: LayerEntry) => string;
-  select: (id: string | null) => void;
+  select: (id: string | null, mode?: "replace" | "toggle" | "range", rangeIds?: readonly string[]) => void;
   dragStart?: (event: DragEvent<HTMLElement>, id: string) => void;
   dragEnd?: () => void;
   dragOver?: (event: DragEvent<HTMLElement>, id: string) => void;
@@ -46,10 +47,11 @@ export type LayerTreePanelProps = {
 };
 
 /** ID を正本にした、折りたたみ・keyboard・DnD 共通レイヤーツリー。 */
-export function LayerTreePanel({ document, labels, rootLabel, selectedId, disabled = false, draggable = false, trailing, className, select, dragStart, dragEnd, dragOver, drop }: LayerTreePanelProps) {
+export function LayerTreePanel({ document, labels, rootLabel, selectedId, selectedIds = selectedId ? [selectedId] : [], disabled = false, draggable = false, trailing, className, select, dragStart, dragEnd, dragOver, drop }: LayerTreePanelProps) {
   const entries = useMemo(() => projectLayers(document, labels), [document, labels]);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(entries.filter((entry) => entry.hasChildren).map((entry) => entry.id)));
   const [focusId, setFocusId] = useState<string | null>(selectedId);
+  const anchorId = useRef<string | null>(selectedId);
   const known = useRef(new Set(entries.map((entry) => entry.id))), refs = useRef(new Map<string, HTMLElement>());
   const followSelection = useRef(false);
   useEffect(() => {
@@ -67,6 +69,10 @@ export function LayerTreePanel({ document, labels, rootLabel, selectedId, disabl
     if (ancestors.length) setExpanded((value) => ancestors.every((id) => value.has(id)) ? value : new Set([...value, ...ancestors]));
     setFocusId(selectedId);
   }, [selectedId, entries]);
+  useEffect(() => {
+    if (!selectedId) { if (!selectedIds.length) anchorId.current = null; return; }
+    if (!selectedIds.includes(anchorId.current ?? "")) anchorId.current = selectedId;
+  }, [selectedId, selectedIds]);
   const visible = visibleLayers(entries, expanded), order = [null, ...visible.map((entry) => entry.id)] as (string | null)[];
   // effect が state を直す前の描画にも、必ず可視行を1つ roving tab stop にする。
   const visibleFocusId = focusId !== null && visible.some((entry) => entry.id === focusId) ? focusId : null;
@@ -109,15 +115,23 @@ export function LayerTreePanel({ document, labels, rootLabel, selectedId, disabl
       if (entry.hasChildren && expanded.has(entry.id)) toggle(entry.id, false); else focus(entry.parentId);
     }
   }
-  return <div className="e-layer-list" role="tree" aria-label="ページのレイヤー">
+  return <div className="e-layer-list" role="tree" aria-label="ページのレイヤー" aria-multiselectable={selectedIds.length > 1}>
     <div data-layer-key="root" className="e-layer-row">
-      <button ref={(node) => { if (node) refs.current.set("__root__", node); else refs.current.delete("__root__"); }} type="button" role="treeitem" aria-level={1} aria-selected={selectedId === null} className="e-layer e-layer-root" aria-pressed={selectedId === null} tabIndex={visibleFocusId === null ? 0 : -1} onClick={() => { setFocusId(null); select(null); }} onKeyDown={(event) => keys(event, null)} disabled={disabled}>{rootLabel}</button>
+      <button ref={(node) => { if (node) refs.current.set("__root__", node); else refs.current.delete("__root__"); }} type="button" role="treeitem" aria-level={1} aria-selected={selectedIds.length === 0} className="e-layer e-layer-root" aria-pressed={selectedIds.length === 0} tabIndex={visibleFocusId === null ? 0 : -1} onClick={() => { setFocusId(null); anchorId.current = null; select(null); }} onKeyDown={(event) => keys(event, null)} disabled={disabled}>{rootLabel}</button>
     </div>
     {visible.map((entry) => <div key={entry.id} data-node-id={entry.id} data-layer-kind={entry.kind} data-layer-glyph={layerGlyphName(entry)}
       className={`e-layer-row${className ? className(entry) : ""}`} style={{ paddingLeft: entry.depth * 14 }} draggable={draggable}
       onDragStart={(event) => dragStart?.(event, entry.id)} onDragEnd={dragEnd} onDragOver={(event) => dragOver?.(event, entry.id)} onDrop={(event) => drop?.(event, entry.id)}>
       {entry.hasChildren ? <button type="button" className="e-layer-toggle" aria-label={`${entry.label}を${expanded.has(entry.id) ? "閉じる" : "開く"}`} tabIndex={-1} onClick={() => toggle(entry.id)} disabled={disabled}><Chevron open={expanded.has(entry.id)} /></button> : <span className="e-layer-toggle-placeholder" aria-hidden="true" />}
-      <button ref={(node) => { if (node) refs.current.set(entry.id, node); else refs.current.delete(entry.id); }} type="button" role="treeitem" aria-level={entry.depth + 2} aria-selected={selectedId === entry.id} {...(entry.hasChildren ? { "aria-expanded": expanded.has(entry.id) } : {})} className="e-layer" aria-pressed={selectedId === entry.id} tabIndex={visibleFocusId === entry.id ? 0 : -1} title={entry.label} onClick={() => { setFocusId(entry.id); select(entry.id); }} onKeyDown={(event) => keys(event, entry)} disabled={disabled}>
+      <button ref={(node) => { if (node) refs.current.set(entry.id, node); else refs.current.delete(entry.id); }} type="button" role="treeitem" aria-level={entry.depth + 2} aria-selected={selectedIds.includes(entry.id)} {...(entry.hasChildren ? { "aria-expanded": expanded.has(entry.id) } : {})} className="e-layer" aria-pressed={selectedIds.includes(entry.id)} tabIndex={visibleFocusId === entry.id ? 0 : -1} title={entry.label} onClick={(event) => {
+        setFocusId(entry.id);
+        if (event.shiftKey) {
+          const anchor = anchorId.current ?? selectedId, from = order.indexOf(anchor), to = order.indexOf(entry.id);
+          const range = from < 0 || to < 0 ? [entry.id] : order.slice(Math.min(from, to), Math.max(from, to) + 1).filter((value): value is string => value !== null);
+          select(entry.id, "range", range);
+        } else if (event.metaKey || event.ctrlKey) { anchorId.current = entry.id; select(entry.id, "toggle"); }
+        else { anchorId.current = entry.id; select(entry.id, "replace"); }
+      }} onKeyDown={(event) => keys(event, entry)} disabled={disabled}>
         <LayerGlyph name={layerGlyphName(entry)} /><span className="e-layer-label">{entry.label}</span>{trailing?.(entry)}
       </button>
     </div>)}
