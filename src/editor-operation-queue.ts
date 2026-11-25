@@ -108,6 +108,7 @@ function inverseOperation(before: PageDocument, after: PageDocument, operation: 
   if (forward.type === "meta") return [{ ...forward, value: before.meta?.[forward.field] } as EditorOperationById];
   if (forward.type === "token") return [{ ...forward, token: before.tokens[forward.name] }];
   if (forward.type === "textStyle") return [{ ...forward, style: before.textStyles?.[forward.name] }];
+  if (forward.type === "wrap") return [{ type: "unwrap", nodeId: forward.wrapperId, allowLayoutChange: true }];
   if (forward.type === "add" || forward.type === "addMany") {
     const nodes = forward.type === "add" ? [forward.node] : forward.nodes;
     return nodes.some((node) => node.type === "text") ? undefined : nodes.flatMap((node) => node.type === "text" ? [] : [{ type: "remove", nodeId: node.id }]);
@@ -116,6 +117,13 @@ function inverseOperation(before: PageDocument, after: PageDocument, operation: 
   const node = nodeAt(before, operation.path);
   if (forward.type === "text") return node.type === "text" ? [{ ...forward, value: node.text }] : undefined;
   if (node.type === "text") return undefined;
+  if (forward.type === "unwrap" && node.type === "element") {
+    if (!node.children.length) return [{ type: "add", node, parentId: parentIdAt(before, operation.path), index: operation.path.at(-1)! }];
+    // 先頭・末尾に後から raw text を追加した囲みは、ID だけでは元の範囲を指定できない。
+    if (node.children[0]?.type === "text" || node.children.at(-1)?.type === "text") return undefined;
+    const nodeIds = node.children.flatMap((child) => child.type === "text" ? [] : [child.id]);
+    return [{ type: "wrap", nodeIds, wrapperId: node.id, allowLayoutChange: true }];
+  }
   if (forward.type === "duplicate") {
     const oldIds = new Set(siblingsAt(before, operation.path).flatMap((sibling) => sibling.type === "text" ? [] : [sibling.id]));
     const copies = siblingsAt(after, operation.path).flatMap((sibling) => sibling.type !== "text" && !oldIds.has(sibling.id) ? [sibling.id] : []);
@@ -295,6 +303,13 @@ function operationAnchor(document: PageDocument, operation: EditorOperationById)
       return node.type === "component" ? [node.type, parentId, node.props[operation.name]] : undefined;
     }
     case "add": case "addMany": return siblings(operation.parentId);
+    case "wrap": case "unwrap": {
+      const id = operation.type === "wrap" ? operation.nodeIds[0] : operation.nodeId;
+      const located = walkNodes(document).find(({ node }) => node.type !== "text" && node.id === id);
+      if (!located) return undefined;
+      const parentId = parentIdAt(document, located.path);
+      return parentId === null ? document.body : find(parentId);
+    }
     case "duplicate": case "remove": case "move": {
       const located = walkNodes(document).find(({ node }) => node.type !== "text" && node.id === operation.nodeId);
       const source = located ? siblingsAt(document, located.path) : undefined;

@@ -1,5 +1,5 @@
 import { elementAttributeNames, isElementTag, metaLimits, parsePageDocument } from "./document.js";
-import { editDocumentById, nodeAt, pageOperationTextPathContext, PAGE_OPERATION_TEXT_PATH_CONTEXT_MAX_CHILDREN, PAGE_OPERATION_TEXT_PATH_CONTEXT_MAX_SIBLING_TEXT_LENGTH, walkNodes, type EditorOperationById, type PageOperationPreconditions } from "./editor-model.js";
+import { BOX_GROUP_ID_PREFIX, BOX_GROUP_NODE_LIMIT, boxGroupId, editDocumentById, nodeAt, pageOperationTextPathContext, PAGE_OPERATION_TEXT_PATH_CONTEXT_MAX_CHILDREN, PAGE_OPERATION_TEXT_PATH_CONTEXT_MAX_SIBLING_TEXT_LENGTH, walkNodes, type EditorOperationById, type PageOperationPreconditions } from "./editor-model.js";
 import { diffDocuments, type DocumentChange } from "./history.js";
 import { iconCatalog, isIconName } from "./icons.js";
 import { MOTION_BASE_PROPERTIES } from "./builder.js";
@@ -54,6 +54,7 @@ export type EditingPageOperationStore = {
 
 const text: JsonSchema = { type: "string" }, bool: JsonSchema = { type: "boolean" }, number: JsonSchema = { type: "number" };
 const id: JsonSchema = { type: "string", maxLength: 80, pattern: "^[A-Za-z][A-Za-z0-9_-]*$" };
+const groupId: JsonSchema = { ...id, pattern: `^${BOX_GROUP_ID_PREFIX}[A-Za-z0-9_-]+$` };
 const indexSchema: JsonSchema = { type: "integer", minimum: 0, maximum: 5000 };
 const widthSchema: JsonSchema = { type: "integer", minimum: 320, maximum: 3840 };
 const hiddenMaxWidthSchema: JsonSchema = { type: "integer", minimum: 1, maximum: 3840 };
@@ -125,6 +126,8 @@ export const pageApplyInputSchema: JsonSchema = {
       nodeOperation("video", { source: either(obj({ asset }), obj({ src: text })) }),
       nodeOperation("embedSource", { source: text }), nodeOperation("embedTitle", { title: text }), nodeOperation("loopBox", { speed: number, pauseOnHover: bool }),
       nodeOperation("background", { breakpoint }, { asset }), nodeOperation("duplicate"), nodeOperation("remove"),
+      operation("wrap", { nodeIds: list(id, 1, BOX_GROUP_NODE_LIMIT), wrapperId: groupId }, { allowLayoutChange: bool }),
+      operation("unwrap", { nodeId: groupId }, { allowLayoutChange: bool }),
       nodeOperation("move", { parentId: nullable(id), index: indexSchema }), nodeOperation("move", { parentId: nullable(id), anchor }), nodeOperation("detach"),
       nodeOperation("slotStyle", { slot: id, breakpoint, property: valuesOf(stylePropertyNames) }, { value: styleValue }),
       ...Object.entries(metaSchemas).map(([field, schema]) => operation("meta", { field: constant(field) }, { value: schema }))
@@ -314,6 +317,8 @@ export function parsePageOperation(value: unknown, path: string): EditorOperatio
     case "background": target({ breakpoint: checkBreakpoint }, { asset: parseAssetReference }); break;
     case "move": target({ parentId: checkParent }, { index, anchor: checkAnchor }); if ((source.index === undefined) === (source.anchor === undefined)) fail(path, "move requires exactly one of index or anchor"); break;
     case "slotStyle": target({ slot: identifier, breakpoint: checkBreakpoint, property: checkStyleProperty }, { value: checkStyleValue }); break;
+    case "wrap": check({ nodeIds: array(identifier, 1, BOX_GROUP_NODE_LIMIT), wrapperId: boxGroupId }, { allowLayoutChange: boolean }); break;
+    case "unwrap": check({ nodeId: boxGroupId }, { allowLayoutChange: boolean }); break;
     case "duplicate": case "remove": case "detach": target(); break;
     default: fail(path, "unsupported operation");
   }

@@ -147,7 +147,7 @@ async function inputSnapshot(path) {
 }
 function operationNodeId(operation) {
   if (!operation || typeof operation !== "object" || Array.isArray(operation)) return undefined;
-  const candidates = [operation.nodeId, operation.node?.id, operation.nodes?.[0]?.id, operation.parentId];
+  const candidates = [operation.nodeId, Array.isArray(operation.nodeIds) ? operation.nodeIds[0] : undefined, operation.node?.id, operation.nodes?.[0]?.id, operation.parentId];
   return candidates.find((value) => typeof value === "string" && IDENTIFIER.test(value));
 }
 async function inputPageOperations(path) {

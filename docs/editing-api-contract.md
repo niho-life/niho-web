@@ -60,6 +60,8 @@ outline/find/subtreeは `limit`（既定1000、最大1000件）と `cursor` で�
 
 `add` / `addMany` / `move` は、`{ before: nodeId }` / `{ after: nodeId }` または `{ edge: "start" | "end" }` の `anchor` で位置を指定できます。アンカーは移動先の同じ親にある要素IDを指します。既存の数値 `index` も受け付けますが、indexとanchorは同時に指定できず、`move` はどちらか一方が必須です。位置を省略した追加は末尾へ挿入します。
 
+`wrap` / `unwrap` は囲みボックスの追加・解除を1操作で適用します。[CLIでの入力例](#ボックスで囲む囲みを解除)を参照してください。
+
 ホストの `pageOperations.transact` は、常に最新の文書/versionと、その読み取りと同じ版に属する信頼済み `blocks`・`locks`・`components`・`siteStyles` を `prepare(snapshot, validationContext)` に渡します。古い `baseVersion` を理由にprepare前に拒否せず、上記の葉操作だけを条件付きで再適用できるか判定します。`pages.apply` は別途 `validationContext(actor, target)` を読みません。`editDocumentById` を順に適用し、最後に全文を `parsePageDocument` で検証します。途中の一操作でも失敗した場合は HTTP 422 `validation_failed` と、失敗 index・理由を返し、何も保存しません。prepareが使ったページ版と依存版をCASで再照合し、文書・操作記録を同時に確定してください。CASに負けた場合は最新snapshotから操作IDの再送判定とprepareをやり直します。依存版の指定は任意ですが、指定値がprepare時点の現在値と異なる場合はHTTP 409です。成功時は保存後の正規文書と新しい版・revision を返します。
 
 ホストの `pageOperations.transact(actor, target, transaction)` は、ページ状態と同じCAS/transactionで操作記録を確定します。操作本文は不変の journal blob として保存し、現在状態にはその参照だけを持ちます。`actor + operationId` は正規化入力のhashと保存結果に結び付き、同じ要求の再送は前回と同じ結果、同じIDで違う要求を送った場合は HTTP 409 `duplicate_operation` になります。文書 pointer、journal pointer、ID/hash/結果は同時に確定してください。安全にrebaseした記録には、元要求の `baseVersion` に加えて実際に適用した版 `rebasedFromVersion` を記録します。actor・委任元・GUI/CLI/APIの種別は認証済み文脈から取得し、要求本文から受け取りません。`dryRun: true` は全操作を検証して `{ status: "valid", diff, touched }` を返しますが、保存もoperation IDの消費も行いません。
@@ -206,6 +208,18 @@ niho-edit --origin https://site.example --site site-id localization-release-read
 ```
 
 書込の `--json` には操作表の追加フィールドを渡します。`siteId` は `--site` から、commandとtranslateの `itemKey` は位置引数から補います。たとえば `command.json` は `{"action":"set-value","unitId":"title","value":"Workshop by the sea","expectedVersion":"v1","expectedSourceVersion":"s1","operationId":"command-operation-1"}` です。確認・再開tokenを含む `localization-release-prepare` および `localization-release-apply` の入力は `--json -` で標準入力から渡せます。呼出側が応答を確認して続く操作を決めます。CLIの409は終了コード1で、現行値がある場合はJSON出力の `result.current` に保持します。
+
+### ボックスで囲む・囲みを解除
+
+`niho-edit apply` に渡す操作列で `wrap` を指定します。`nodeIds` は同じ親にある隣り合う要素のIDを文書順に1〜500件指定し、`wrapperId` は `group_` で始まる未使用の要素IDを指定します。
+
+```json
+[{"type":"wrap","nodeIds":["heading","intro","details"],"wrapperId":"group_intro"}]
+```
+
+`unwrap` は `{"type":"unwrap","nodeId":"group_intro"}` と指定し、囲みの子を元の位置へ展開します。属性やスタイル、表示状態、埋め込みなどを持つボックスは解除できません。
+
+Flex / Grid などで見た目が変わりうる場合は、操作に `"allowLayoutChange":true` を指定したうえで `--dry-run` を実行し、ボックスの追加・削除と対象要素の親や位置の差分を確認してください。確認後、同じ版を `--expected-version` に指定し、`--dry-run` を外して適用します。この指定があっても、HTMLの入れ子やロックに抵触する操作は拒否されます。
 
 ## ホストの責務
 
