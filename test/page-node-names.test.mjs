@@ -6,7 +6,7 @@ import { commitHistory, editDocument, editDocumentById, travelHistory } from "@n
 import { renderPageToHtml, renderSitePageToHtml } from "@niho/web/server";
 import { collectLocalizationUnits, createLocalizationOverlay, editLocalizedValue, materializeLocalizedPage } from "@niho/web/localization";
 import { operationQueue, queuePageEdit, queuePageTravel } from "../dist/editor-operation-queue.js";
-import { pageOperationUsesNodeNames } from "../dist/editing-page-operations.js";
+import { pageOperationChangesNodeNames, pageOperationUsesNodeNames } from "../dist/editing-page-operations.js";
 import { inspectPageDocument, parsePageInspectQuery } from "../dist/page-inspect.js";
 
 const element = (id, tag, children = []) => ({ type: "element", id, tag, children });
@@ -60,6 +60,18 @@ test("unsupported hosts can reject names before add, paste, rich text replacemen
   assert.equal(pageOperationUsesNodeNames({ type: "replaceChildren", path: [0], children: [named] }), true);
   assert.equal(pageOperationUsesNodeNames({ type: "restore", document: page([named]) }), true);
   assert.equal(pageOperationUsesNodeNames({ type: "attribute", path: [0], name: "name", value: "form-field" }), false);
+});
+
+test("localized rich-text replacement may preserve inherited names but cannot add or change them", () => {
+  const original = page([element("lead", "p", [{ ...element("details", "a", [text("details")]), name: "リンク" }])]);
+  const preserved = { type: "replaceChildren", path: [0], children: [text("訳: "), { ...element("details", "a", [text("information")]), name: "リンク" }] };
+  assert.equal(pageOperationChangesNodeNames(original, preserved), false);
+  assert.equal(pageOperationChangesNodeNames(original, { ...preserved, children: [text("訳: "), { ...preserved.children[1], name: "詳細" }] }), true);
+  assert.equal(pageOperationChangesNodeNames(original, { ...preserved, children: [...preserved.children, { ...element("newLink", "a"), name: "新しいリンク" }] }), true);
+  assert.equal(pageOperationChangesNodeNames(original, { type: "name", path: [0, 0], value: "リンク" }), false);
+  assert.equal(pageOperationChangesNodeNames(original, { type: "name", path: [0, 0], value: "詳細" }), true);
+  assert.equal(pageOperationChangesNodeNames(original, { type: "restore", document: original }), false);
+  assert.equal(pageOperationChangesNodeNames(original, { type: "restore", document: page([element("lead", "p", [{ ...element("details", "a"), name: "詳細" }])]) }), true);
 });
 
 test("element, block, and shared names preserve public HTML and CSS bytes", () => {

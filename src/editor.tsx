@@ -43,7 +43,7 @@ import {
 import { LanguageSelector, LocalizationPanel, editorLocalizationLocaleFor, localizationEditorCss, localizedOperationProblem, useEditorLocalization, type EditorLocalizationCommandOutcome, type EditorLocalizationManualBuffer } from "./editor-localization.js";
 import { parseEditorLocaleReleaseApplyResult, parseEditorLocaleReleasePlan, parseEditorLocaleReleaseState } from "./editor-locale-release.js";
 import { documentLocaleFor, validateLocalizedDocumentSave, type LocalizationLocale } from "./localization.js";
-import { PAGE_OPERATION_LIMIT, pageNodesHaveNames, pageOperationUsesNodeNames } from "./editing-page-operations.js";
+import { PAGE_OPERATION_LIMIT, pageNodesHaveNames, pageOperationChangesNodeNames, pageOperationUsesNodeNames } from "./editing-page-operations.js";
 import { acceptAppliedOperations, canSendOperations, fallbackOperations, operationQueue as createOperationQueue, operationApplier, reviewOperationConflict, queuePageEdit, queuePageTravel } from "./editor-operation-queue.js";
 import { editorSessionFrom, readEditorSession, type EditorSession } from "./editor-session.js";
 import { canvasViewportHeight, elementTypeLabel, fitCanvasScale, layerLabel, pathForNodeId, projectLayers, visibleLayers } from "./layers.js";
@@ -890,14 +890,18 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   /** 複数の操作は1回の履歴にまとめる。部品の編集中は部品の root を1つだけ持つ文書を編集し、ライブラリへ書き戻す。 */
   function apply(operation: EditorOperation | readonly EditorOperation[]): string | undefined {
     const operations: readonly EditorOperation[] = "type" in operation ? [operation] : operation;
-    if (!canNameNode && operations.some(pageOperationUsesNodeNames)) return "この保存先では要素の名前を変更できません。";
+    const current = sessionRef.current;
+    const preservesLocalizedNames = !masterId && targetMode && pageNodeNames && !!current;
+    if (!canNameNode && operations.some((next) => preservesLocalizedNames
+      ? pageOperationChangesNodeNames(current.history.present, next)
+      : pageOperationUsesNodeNames(next))) return "この保存先では要素の名前を変更できません。";
     if (masterId) {
       setDraft(null);
       // 部品はページのタイトル・公開情報・文字スタイルを持たない。
       if (operations.some((next) => next.type === "title" || next.type === "meta" || next.type === "textStyle" || next.type === "restore" || next.type === "nodeTextStyle" && next.name !== undefined)) return "コンポーネント本体の編集中は、テキストスタイルとページ設定を変更できません。ページに戻ってから操作してください。";
       return updateLibrary((library) => withComponentDocument(library, masterId, editMaster(componentDocument(library, masterId, locale), operations, library), blocks));
     }
-    const current = sessionRef.current; if (!current || editBlocked) return current?.readOnly?.reason ?? "処理が完了してから編集してください。";
+    if (!current || editBlocked) return current?.readOnly?.reason ?? "処理が完了してから編集してください。";
     try {
       const lib = libraryRef.current?.history.present;
       if (targetMode) {
@@ -1649,6 +1653,9 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     const current = sessionRef.current, lib = libraryRef.current;
     if (!current || !lib || libraryBlocked) return "処理が完了してから編集してください。";
     try {
+      if (components?.nodeNames !== true && pageNodesHaveNames([nodeAt(current.history.present, path)])) {
+        return "コンポーネントの保存先は要素の名前に対応していません。名前を削除してから部品化してください。";
+      }
       // 部品は文書の文字スタイルを参照できないため、選んだ範囲の文字スタイルは同じ見た目の個別指定にしてから登録する。
       const source = textStylePaths(current.history.present, path).reduce((document, at) => editDocument(document, { type: "nodeTextStyle", path: at, name: undefined, detach: true }, blocks, current.locks, lib.history.present, activeSiteStyles), current.history.present);
       // 選んだ要素は同じ ID のインスタンスになるため、選択はそのまま新しいインスタンスを指す。

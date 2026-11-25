@@ -905,7 +905,7 @@ function editingApiBasePath(value: string | undefined): string {
   return basePath;
 }
 
-async function handlePageApply(adapter: PageEditingHostAdapter, request: Request, actor: EditingActor, target: EditingPageTarget): Promise<Response> {
+async function handlePageApply(store: EditingPageOperationStore, pageNodeNames: boolean, request: Request, actor: EditingActor, target: EditingPageTarget): Promise<Response> {
   if (!actor.clientKind) return fail("host_contract_violation", 502);
   let body: Record<string, unknown> | null;
   try { body = await readBody(request); } catch { return fail("invalid_request", 400); }
@@ -922,7 +922,7 @@ async function handlePageApply(adapter: PageEditingHostAdapter, request: Request
       return response({ error: "validation_failed", index, reason }, 422);
     }
   }
-  if (adapter.pageNodeNames !== true && operations.some(pageOperationUsesNodeNames)) return fail("forbidden", 403);
+  if (!pageNodeNames && operations.some(pageOperationUsesNodeNames)) return fail("forbidden", 403);
   const dependencies: PageOperationVersions = Object.fromEntries(PAGE_OPERATION_VERSIONS.flatMap((key) => body[key] === undefined ? [] : [[key, body[key]]]));
   const input = { ...dependencies, baseVersion: body.baseVersion, operationId: body.operationId.toLowerCase(), operations };
   const dryRun = body.dryRun === true;
@@ -930,7 +930,7 @@ async function handlePageApply(adapter: PageEditingHostAdapter, request: Request
   try {
     const inputHash = await pageOperationHash(target, input);
     const journal: PageOperationJournal = { actor, target, input: { ...input, operations: operations.map(pageOperationWire) }, inputHash };
-    result = await adapter.pageOperations!.transact(actor, target, {
+    result = await store.transact(actor, target, {
       operationId: input.operationId, inputHash, dryRun,
       prepare: (snapshot, context) => preparePageOperations(snapshot, context, input, journal, dryRun),
     });
@@ -1691,7 +1691,7 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       if (new TextEncoder().encode(JSON.stringify(result)).byteLength > 4 * 1024 * 1024) return fail("host_contract_violation", 502);
       return response(result);
     }
-    if (operation.id === "pages.apply") return handlePageApply(adapter.pageOperations!, request, actor, target);
+    if (operation.id === "pages.apply") return handlePageApply(adapter.pageOperations!, adapter.pageNodeNames === true, request, actor, target);
     if (operation.id === "pages.preview-intent") {
       let body: Record<string, unknown> | null;
       try { body = await readBody(request, 128); } catch { return fail("invalid_request", 400); }
