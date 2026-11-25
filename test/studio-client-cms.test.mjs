@@ -103,6 +103,7 @@ const byText = (selector, text) => [...document.querySelectorAll(selector)].find
 const click = async (node) => { assert.ok(node, "target not found"); await act(async () => node.click()); await flush(); };
 const input = async (node, value) => { await act(async () => { Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value").set.call(node, value); node.dispatchEvent(new Event("input", { bubbles: true })); }); await flush(); };
 const inputTextarea = async (node, value) => { await act(async () => { Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value").set.call(node, value); node.dispatchEvent(new Event("input", { bubbles: true })); }); await flush(); };
+const selectValue = async (node, value) => { await act(async () => { Object.getOwnPropertyDescriptor(dom.window.HTMLSelectElement.prototype, "value").set.call(node, value); node.dispatchEvent(new Event("change", { bubbles: true })); }); await flush(); };
 
 test("Project一覧はStudio shellの中央検索・選択済み左nav・アカウントと、disabled導線なしで表示する", async (t) => {
   await openStudio(t, "/");
@@ -216,6 +217,7 @@ test("Studio-native の CMS を Dashboard から開き、下書き作成の再�
   let plannedSchema = null;
   let schemaPlanCount = 0;
   let schemaApplyCount = 0;
+  let replacementProblemStage = 0;
   const observed = [];
   let attempts = 0;
   let finishSave;
@@ -240,13 +242,27 @@ test("Studio-native の CMS を Dashboard から開き、下書き作成の再�
     if (path === "cms.schema.read") return json(liveSchema);
     if (path === "cms.release.current") return json({ snapshot: null, locale: "ja", routeTableRevision: "routes_initial", collectionRoot: "/s/native/cms" });
     if (path === "cms.schema.plan") {
-      schemaPlanCount += 1; plannedSchema = input.nextSchema;
+      schemaPlanCount += 1;
+      if (replacementProblemStage === 1 || replacementProblemStage === 2) {
+        const fieldIds = replacementProblemStage === 1 ? ["title", "tags"] : ["tags"];
+        replacementProblemStage += 1;
+        return json({ problems: fieldIds.map((fieldId) => ({ code: "conversion", message: `${fieldId} の変換値が必要`,
+          collectionId: "posts", itemId: item.itemId, locale: "ja", fieldId })) }, 422);
+      }
+      const retiredFields = new Map((liveSchema.retiredFields ?? []).map((entry) => [`${entry.collectionId}/${entry.fieldId}`, entry]));
+      for (const collection of liveSchema.collections) {
+        const candidate = input.nextSchema.collections.find(({ id }) => id === collection.id);
+        for (const field of collection.fields) if (!candidate?.fields.some(({ fieldId }) => fieldId === field.fieldId)) {
+          retiredFields.set(`${collection.id}/${field.fieldId}`, { collectionId: collection.id, fieldId: field.fieldId });
+        }
+      }
+      plannedSchema = { ...input.nextSchema, retiredFields: [...retiredFields.values()] };
       const oldFields = liveSchema.collections[0].fields.map(({ fieldId }) => fieldId);
       const newFields = input.nextSchema.collections[0].fields.map(({ fieldId }) => fieldId);
       const removed = oldFields.find((fieldId) => !newFields.includes(fieldId));
       const added = newFields.find((fieldId) => !oldFields.includes(fieldId));
       return json({ status: "ready", plan: { operation: "cms.schema.apply", operationId: "schema_operation", siteId: project.site.id,
-        confirmationToken: `schema_token_${schemaPlanCount}`, candidate: { schema: input.nextSchema,
+        confirmationToken: `schema_token_${schemaPlanCount}`, candidate: { schema: plannedSchema,
           changes: removed ? [{ collectionId: "posts", fieldId: removed, kind: "remove" }] : added ? [{ collectionId: "posts", fieldId: added, kind: "add" }] : [], items: [], removedItems: [] } } });
     }
     if (path === "cms.schema.apply") {
@@ -295,6 +311,32 @@ test("Studio-native の CMS を Dashboard から開き、下書き作成の再�
   assert.equal(applyButton.disabled, false);
   await click(applyButton);
   assert.equal(schemaApplyCount, 2);
+  await click(byText("button", "フィールドを追加"));
+  await click(byText("button", "計画を作成・更新"));
+  assert.equal(plannedSchema.collections[0].fields.at(-1).fieldId, "field_4", "廃止済み field_3 を再採番しない");
+  assert.deepEqual(plannedSchema.retiredFields, [{ collectionId: "posts", fieldId: "field_3" }]);
+
+  replacementProblemStage = 1;
+  await click(byText("button", "計画を作成・更新"));
+  const replacementInputs = () => [...document.querySelectorAll('[aria-label="定義の計画エラー"] textarea')];
+  assert.equal(replacementInputs().length, 2);
+  await inputTextarea(replacementInputs()[0], "見出しの置換値");
+  await click(byText("button", "計画を作成・更新"));
+  assert.equal(replacementInputs().length, 1, "最初の問題を解決すると二つ目だけ表示する");
+  await inputTextarea(replacementInputs()[0], '["タグの置換値"]');
+  await click(byText("button", "計画を作成・更新"));
+  const finalSchemaPlan = observed.filter(({ path }) => path === "cms.schema.plan").at(-1);
+  assert.deepEqual(finalSchemaPlan.input.replacements, [{ collectionId: "posts", itemId: item.itemId, locale: "ja",
+    values: { title: "見出しの置換値", tags: ["タグの置換値"] } }]);
+  await click(byText("button", "計画を適用"));
+  assert.equal(schemaApplyCount, 3);
+  const ordering = [...document.querySelectorAll(".studio-native-cms-schema label")]
+    .find((label) => label.textContent.includes("一覧の並び順"))?.querySelector("select");
+  await selectValue(ordering, "manual");
+  await click(byText("button", "計画を作成・更新"));
+  assert.equal(plannedSchema.collections[0].ordering, "manual");
+  assert.equal(byText("button", "計画を適用").disabled, false, "一覧の並び順だけの変更も適用できる");
+
   await click(byText("button", "項目を追加"));
   assert.match(document.querySelector('[aria-label="CMS"]').textContent, /操作が完了しませんでした/u);
   await click(byText("button", "項目を追加"));

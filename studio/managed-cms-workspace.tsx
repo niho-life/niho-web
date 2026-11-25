@@ -49,6 +49,7 @@ function cmsDefinitionChanges(before: CmsSchema, after: CmsSchema): string[] {
     if (!old) { changes.push(`コレクション追加: ${collection.label}`); continue; }
     if (old.label !== collection.label) changes.push(`${collection.label}: 表示名変更`);
     if (old.pathPrefix !== collection.pathPrefix) changes.push(`${collection.label}: 公開一覧パス変更`);
+    if (old.ordering !== collection.ordering) changes.push(`${collection.label}: 一覧の並び順変更`);
     if (old.addLabel !== collection.addLabel) changes.push(`${collection.label}: 追加ボタン名変更`);
     const oldFields = new Set(old.fields.map(({ fieldId }) => fieldId));
     const nextFields = new Set(collection.fields.map(({ fieldId }) => fieldId));
@@ -84,6 +85,7 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
   const [schemaPlan, setSchemaPlan] = useState<SchemaPlan | null>(null);
   const [schemaProblems, setSchemaProblems] = useState<CmsProblem[]>([]);
   const [schemaReplacements, setSchemaReplacements] = useState<Record<string, string>>({});
+  const [schemaReplacementProblems, setSchemaReplacementProblems] = useState<Record<string, CmsProblem>>({});
   const [confirmSchemaImpact, setConfirmSchemaImpact] = useState(false);
   const [busy, setBusy] = useState(false);
   const pendingKeys = useRef(new Map<string, string>());
@@ -260,7 +262,7 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
   function startSchemaEditing() {
     if (!settings) return;
     setSchemaDraft(settings.schema); setSchemaCollectionId(collectionId || settings.schema.collections[0]?.id || "");
-    setSchemaPlan(null); setSchemaProblems([]); setSchemaReplacements({}); setConfirmSchemaImpact(false);
+    setSchemaPlan(null); setSchemaProblems([]); setSchemaReplacements({}); setSchemaReplacementProblems({}); setConfirmSchemaImpact(false);
   }
   function prepareNewCollection() {
     if (!settings || !newCollection.label.trim() || !/^[a-z0-9]+(-[a-z0-9]+)*$/u.test(newCollection.slug)) return;
@@ -271,10 +273,10 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
   }
   function schemaReplacementInput(schema: CmsSchema) {
     const groups = new Map<string, { collectionId: string; itemId: string; locale: string; values: Record<string, unknown> }>();
-    for (const problem of schemaProblems) {
+    for (const [replacementKey, problem] of Object.entries(schemaReplacementProblems)) {
       if ((problem.code !== "conversion" && problem.code !== "value") || !problem.collectionId || !problem.itemId || !problem.locale || !problem.fieldId) continue;
       const key = `${problem.locale}/${problem.collectionId}/${problem.itemId}`;
-      const raw = schemaReplacements[`${key}/${problem.fieldId}`];
+      const raw = schemaReplacements[replacementKey];
       if (raw === undefined) continue;
       const field = schema.collections.find(({ id }) => id === problem.collectionId)?.fields.find(({ fieldId }) => fieldId === problem.fieldId);
       if (!field) continue;
@@ -300,7 +302,18 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
       });
       setSchemaPlan(result.plan); setSchemaProblems([]);
     } catch (error) {
-      if (error instanceof RequestFailed && error.problems.length) { setSchemaProblems(error.problems); return; }
+      if (error instanceof RequestFailed && error.problems.length) {
+        setSchemaProblems(error.problems);
+        setSchemaReplacementProblems((previous) => {
+          const next = { ...previous };
+          for (const problem of error.problems) {
+            if (!problem.collectionId || !problem.itemId || !problem.locale || !problem.fieldId) continue;
+            next[`${problem.locale}/${problem.collectionId}/${problem.itemId}/${problem.fieldId}`] = problem;
+          }
+          return next;
+        });
+        return;
+      }
       throw error;
     }
   }
@@ -312,7 +325,7 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
     const next = await loadSettings();
     const selected = next.schema.collections.some(({ id }) => id === schemaCollectionId) ? schemaCollectionId : next.schema.collections[0]?.id ?? "";
     showItem(null); setCollectionId(selected); await loadList(selected, false);
-    setSchemaDraft(next.schema); setSchemaPlan(null); setSchemaProblems([]); setSchemaReplacements({}); setConfirmSchemaImpact(false);
+    setSchemaDraft(next.schema); setSchemaPlan(null); setSchemaProblems([]); setSchemaReplacements({}); setSchemaReplacementProblems({}); setConfirmSchemaImpact(false);
     setFeedback("定義を適用しました。");
   }
   function updateField(collectionIdValue: string, fieldId: string, update: (field: CmsCollection["fields"][number]) => CmsCollection["fields"][number]) {
@@ -341,7 +354,10 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
     }) }));
   }
   function addField(collection: CmsCollection) {
-    const existing = new Set(collection.fields.map(({ fieldId }) => fieldId));
+    const existing = new Set([
+      ...collection.fields.map(({ fieldId }) => fieldId),
+      ...(settings?.schema.retiredFields ?? []).filter(({ collectionId }) => collectionId === collection.id).map(({ fieldId }) => fieldId)
+    ]);
     let index = collection.fields.length + 1, fieldId = `field_${index}`;
     while (existing.has(fieldId)) fieldId = `field_${++index}`;
     const field: CmsCollection["fields"][number] = { fieldId, key: fieldId, label: "新しい項目", type: "text", placement: "main" };
@@ -473,7 +489,7 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
             <button type="button" disabled={busy} onClick={() => run(planSchema)}>計画を作成・更新</button>
             <button type="button" disabled={busy || !schemaPlan || !schemaPlanHasChanges || dirty || schemaPlan.candidate.changes.some(({ kind }) => kind === "remove" || kind === "convert") && !confirmSchemaImpact}
               onClick={() => run(applySchema)}>計画を適用</button>
-            <button type="button" disabled={busy} onClick={() => { setSchemaDraft(settings.schema); setSchemaPlan(null); setSchemaProblems([]); setSchemaReplacements({}); setConfirmSchemaImpact(false); }}>変更を取り消す</button>
+            <button type="button" disabled={busy} onClick={() => { setSchemaDraft(settings.schema); setSchemaPlan(null); setSchemaProblems([]); setSchemaReplacements({}); setSchemaReplacementProblems({}); setConfirmSchemaImpact(false); }}>変更を取り消す</button>
           </div>
           {schemaProblems.length > 0 && <section aria-label="定義の計画エラー">
             <h3>計画を修正してください</h3>
