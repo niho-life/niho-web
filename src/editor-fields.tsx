@@ -193,10 +193,10 @@ export function UnitField({ caption, value, units, numberUnit = "px", numberLabe
   }
   const unitOptions = [...units, ...(parts && "number" in parts && units.length && !units.includes(parts.unit) ? [parts.unit] : [])];
   const showSelect = unitOptions.length > 1 || keywords.length > 0 || tokens.length > 0;
-  const keywordLabel = keyword && keywords.find(([name]) => name === keyword)?.[1];
+  const valuePlaceholder = keyword || (parts && "token" in parts) ? undefined : placeholder;
   return <Row caption={caption} htmlFor={id} hintId={hintId} status={status} extra={extra}>
     <Frame states={[state]} className="e-unit">
-      <input {...inputProps(state, id, disabled, keywordLabel || (parts && "token" in parts ? tokens.find(([name]) => name === parts.token)?.[1] ?? parts.token : placeholder), hasHint(status) ? hintId : undefined)} />
+      <input {...inputProps(state, id, disabled, valuePlaceholder, hasHint(status) ? hintId : undefined)} />
       {showSelect && <select aria-label={`${caption}の単位`} value={selected} disabled={disabled} onChange={(event) => choose(event.target.value)}>
         {selected === "raw" && <option value="raw">—</option>}
         {unitOptions.map((name) => <option key={name} value={`u:${name}`}>{name || numberLabel}</option>)}

@@ -6,7 +6,7 @@ import { createPageEditingApi, createRegisteredPageEditingApi, EDITING_API_ERROR
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 const target = { siteId: fixture.siteId, pageId: fixture.pageId, locale: fixture.locale };
 
-function hostFixture({ validationContext, initialDocument = fixture, publishing = false, initialBreakpointSettings, editorSnapshot = {} } = {}) {
+function hostFixture({ validationContext, initialDocument = fixture, publishing = false, initialBreakpointSettings, editorSnapshot = {}, versionedInspection = false } = {}) {
   let document = structuredClone(initialDocument), version = "v1";
   let breakpointSettings = initialBreakpointSettings === undefined ? null : structuredClone(initialBreakpointSettings), breakpointVersion = "b.1";
   const actor = { kind: "human", subject: "owner" };
@@ -19,7 +19,8 @@ function hostFixture({ validationContext, initialDocument = fixture, publishing 
     },
     async authorize(input, capability, scope) { return input.subject === "owner" && scope.siteId === fixture.siteId && (capability === "pages.read" || capability === "pages.edit" || publishing && capability === "pages.publish" || breakpointSettings !== null && (capability === "site.settings.read" || capability === "site.settings.write")); },
     ...(validationContext ? { async validationContext() { return validationContext; } } : {}),
-    async readPage(_actor, input) { return input.siteId === target.siteId && input.pageId === target.pageId && input.locale === target.locale ? { document, version, ...editorSnapshot } : null; },
+    async readPage(_actor, input) { return input.siteId === target.siteId && input.pageId === target.pageId && input.locale === target.locale ? { document, version, ...editorSnapshot,
+      ...(versionedInspection ? { componentsVersion: "components-v1", presentationVersion: "presentation-v1", stylesVersion: "styles-v1" } : {}) } : null; },
     async savePage(_actor, input, expectedVersion, next) {
       if (input.siteId !== target.siteId || input.pageId !== target.pageId || input.locale !== target.locale) return { status: "conflict" };
       if (expectedVersion !== version) return { status: "conflict" };
@@ -71,9 +72,31 @@ test("page editing API discovery exposes machine-readable operations and stable 
   const result = await json(await send("GET", `/sites/${target.siteId}/capabilities`));
   assert.equal(result.status, 200);
   assert.equal(result.body.apiVersion, "v1");
-  assert.deepEqual(result.body.operations, EDITING_OPERATIONS.slice(0, 2));
+  assert.deepEqual(result.body.operations, EDITING_OPERATIONS.slice(0, 3));
   assert.ok(EDITING_API_ERRORS.includes("version_conflict"));
   assert.ok(result.body.operations.every((operation) => operation.inputSchema && operation.resultSchema && operation.errors.length > 0));
+});
+
+test("pages.inspect uses page-read authorization, returns versioned projections and rejects invalid cursors", async () => {
+  const { send } = hostFixture({ versionedInspection: true });
+  const path = `/sites/${target.siteId}/operations/pages.inspect/${target.pageId}?locale=${encodeURIComponent(target.locale)}&view=find&node=heading`;
+  const result = await json(await send("GET", path));
+  assert.equal(result.status, 200);
+  assert.equal(result.body.view, "find");
+  assert.equal(result.body.version, "v1");
+  assert.equal(result.body.componentsVersion, "components-v1");
+  assert.equal(result.body.presentationVersion, "presentation-v1");
+  assert.equal(result.body.stylesVersion, "styles-v1");
+  assert.deepEqual(result.body.items.map(({ id }) => id), ["heading"]);
+  const read = await json(await send("GET", `/sites/${target.siteId}/operations/pages.read/${target.pageId}?locale=${encodeURIComponent(target.locale)}`));
+  assert.deepEqual(read.body, { document: fixture, version: "v1", componentsVersion: "components-v1", presentationVersion: "presentation-v1", stylesVersion: "styles-v1" });
+  const inspect = EDITING_OPERATIONS.find(({ id }) => id === "pages.inspect");
+  assert.equal(inspect.capability, "pages.read");
+  assert.ok(inspect.inputSchema && inspect.resultSchema && inspect.errors.includes("invalid_cursor"));
+  assert.deepEqual(await json(await send("GET", path, undefined, "Bearer other")), { status: 403, body: { error: "forbidden" } });
+  assert.deepEqual(await json(await send("GET", `${path}&view=outline`)), { status: 400, body: { error: "invalid_request" } });
+  const invalidCursor = path.replace("view=find&node=heading", "view=outline&cursor=eA");
+  assert.deepEqual(await json(await send("GET", invalidCursor)), { status: 400, body: { error: "invalid_cursor" } });
 });
 
 test("page catalog and two-phase page management share authorization, version checks and operation IDs", async () => {
@@ -117,7 +140,7 @@ test("page catalog and two-phase page management share authorization, version ch
   }));
   const management = `/sites/${target.siteId}/operations`;
   const discovered = await json(await send("GET", `/sites/${target.siteId}/capabilities`));
-  assert.deepEqual(discovered.body.operations.map(({ id }) => id), ["pages.read", "pages.catalog", "pages.change-prepare", "pages.change-apply"]);
+  assert.deepEqual(discovered.body.operations.map(({ id }) => id), ["pages.inspect", "pages.read", "pages.catalog", "pages.change-prepare", "pages.change-apply"]);
   const catalog = await json(await send("GET", `${management}/pages.catalog`));
   assert.equal(catalog.body.version, "registry-v1");
   assert.equal(catalog.body.pages[0].pageId, "home");
@@ -307,7 +330,7 @@ test("page release sets bind every target version, require each target permissio
 test("page editing API hides unsupported publish operations and rejects an untrusted release domain", async () => {
   const missingPublisher = hostFixture();
   const discovered = await json(await missingPublisher.send("GET", `/sites/${target.siteId}/capabilities`));
-  assert.deepEqual(discovered.body.operations.map((operation) => operation.id), ["pages.read", "pages.save"]);
+  assert.deepEqual(discovered.body.operations.map((operation) => operation.id), ["pages.inspect", "pages.read", "pages.save"]);
 
   const badDomainApi = createPageEditingApi({
     async authenticate() { return { kind: "machine", subject: "agent" }; },

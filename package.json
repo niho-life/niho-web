@@ -96,6 +96,10 @@
       "types": "./dist/collection-workspace.d.ts",
       "import": "./dist/collection-workspace.js"
     },
+    "./cms-v2": {
+      "types": "./dist/cms-v2.d.ts",
+      "import": "./dist/cms-v2.js"
+    },
     "./collection-model": {
       "types": "./dist/collection-model.d.ts",
       "import": "./dist/collection-model.js"
