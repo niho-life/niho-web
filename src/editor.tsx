@@ -870,13 +870,14 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       const result = await adapter.listPages(current, controller.signal);
       if (controller.signal.aborted) return false;
       if (result.some((page) => page.siteId !== current)) throw new Error("site mismatch");
-      setPages(result); return true;
+      setPages(result);
+      if (adapter.localization) localization.reloadSite();
+      return true;
     } catch { if (!controller.signal.aborted) setNotice("ページ一覧を読み込めませんでした。"); return false; }
   }
   async function pageApplied(page: EditorPage, change: EditorPageChange) {
     setBusy("読込中"); setPageChange(null); const done = pageChangeNotice(change, adapter.pagePathEditable);
     const listed = await reloadPages(), loaded = await load({ siteId: page.siteId, pageId: page.pageId, locale: page.locale }, { metric: "page-switch" });
-    if (listed && adapter.localization) localization.reloadSite();
     setNotice(listed && loaded ? done : `${done}${loaded ? "ページ一覧" : "変更後の文書"}を読み込めませんでした。再読込してください。`);
     // ページの追加・複製・公開範囲の変更で使用状況が変わるため取り直す。
     if (libraryRef.current) refreshUsage(libraryRef.current.siteId);

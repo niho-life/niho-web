@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { PageEditor } from "../src/editor.js";
 import { createExternalFramePolicy } from "../src/react.js";
 import { createProjectEditorAdapter } from "../src/project-editor-adapter.js";
-import type { EditorAdapter, EditorPageChange, EditorPageChangePlan, EditorBreakpoint, EditorBreakpointSettingsSnapshot, EditorLocalizedPage, EditorLocalizationCommandResult, EditorLocalizationPageSnapshot, EditorLocalizationSiteSnapshot, EditorReleasePlan, EditorReleaseRequest, EditorSaveResult, EditorSnapshot, EditorTarget } from "../src/editor-types.js";
+import type { EditorAdapter, EditorPage, EditorPageChange, EditorPageChangePlan, EditorBreakpoint, EditorBreakpointSettingsSnapshot, EditorLocalizedPage, EditorLocalizationCommandResult, EditorLocalizationPageSnapshot, EditorLocalizationSiteSnapshot, EditorReleasePlan, EditorReleaseRequest, EditorSaveResult, EditorSnapshot, EditorTarget } from "../src/editor-types.js";
 import type { Project } from "../src/projects.js";
 import { studioBuilderDefinition } from "./integration-builder.js";
 import { projectRoutePath } from "./project-routes.mjs";
@@ -246,6 +246,18 @@ function parsePlan(value: unknown, request: EditorReleaseRequest, domain: string
   return plan;
 }
 
+function samePageManagementEntries(listed: readonly EditorPage[], current: readonly EditorPage[]): boolean {
+  if (listed.length !== current.length) return false;
+  const key = (page: EditorPage) => `${page.siteId}\u0000${page.pageId}\u0000${page.locale}`;
+  const byTarget = new Map(current.map((page) => [key(page), page]));
+  return listed.every((page) => {
+    const entry = byTarget.get(key(page));
+    if (!entry) return false;
+    return entry.kind === page.kind && entry.title === page.title && entry.path === page.path
+      && entry.visibility === page.visibility && entry.published === page.published;
+  });
+}
+
 export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (status: EditorApiStatus | null) => void, origin = "https://studio.niho.life", initialReads?: KamakuraSiteReads): EditorAdapter {
   const editingApi = createPageEditingApiClient({ origin, siteId: KAMAKURA_EDITOR_SITE_ID, basePath: `${BASE}/editing-api/v1`, editorSnapshot: { blocks: catalog.blockContracts } });
   let currentCatalog = catalog, initialPages = true;
@@ -315,12 +327,7 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
       preparePageChange: (input: EditorPageChange, signal: AbortSignal) => request(signal, async () => {
         const change = supportedPageChange(input);
         const { pages, version } = await editingApi.readPageCatalog(signal);
-        if (change.action !== "create") {
-          const displayed = currentCatalog.pages.find((page) => page.pageId === change.target.pageId && page.locale === change.target.locale);
-          const current = pages.find((page) => page.pageId === change.target.pageId && page.locale === change.target.locale);
-          if (!displayed || !current || displayed.title !== current.title || displayed.path !== current.path
-            || displayed.kind !== current.kind || displayed.visibility !== current.visibility) throw new EditorApiError(409, "version_conflict");
-        }
+        if (!samePageManagementEntries(currentCatalog.pages, pages)) throw new EditorApiError(409, "version_conflict");
         return validatePageChangePlan(await editingApi.preparePageChange(change, version, signal), change, catalog.sites[0]!);
       }),
       applyPageChange: (input: EditorPageChangePlan, signal: AbortSignal) => conflict(() => request(signal, async () => {

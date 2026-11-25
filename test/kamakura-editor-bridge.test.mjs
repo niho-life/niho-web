@@ -911,6 +911,7 @@ test("鎌倉のページ名操作はホストcapabilityがある時だけ接続�
   assert.equal(createKamakuraAdapter(contract.parseKamakuraCatalog(source), () => {}).preparePageChange, undefined);
   source.pageChangeActions = ["update"]; source.pagePathEditable = false;
   source.pages[0] = { ...source.pages[0], path: "/dinner", kind: "page" };
+  source.pages.push({ siteId: "kamakura", pageId: "parenting", locale: "ja", title: "子育て", path: "/parenting", kind: "page" });
   const change = { action: "update", target: { siteId: "kamakura", pageId: source.pages[0].pageId, locale: "ja" }, title: "地域の夕食会", path: "/dinner" };
   const plan = { expectedVersion: "registry-v1", operationId: "123e4567-e89b-42d3-a456-426614174000", change,
     confirmationToken: "00000000-0000-4000-8000-00000000000011111111-1111-4111-8111-111111111111", domain: "https://next-kamakura.niho.life",
@@ -933,6 +934,9 @@ test("鎌倉のページ名操作はホストcapabilityがある時だけ接続�
   assert.equal(createKamakuraAdapter(contract.parseKamakuraCatalog({ ...source, pagePathEditable: true }), () => {}).pagePathEditable, true);
   assert.deepEqual(await adapter.listPages("kamakura", signal), source.pages);
   assert.equal(calls.length, 0);
+  latestPages = source.pages.map((page) => page.pageId === "parenting" ? { ...page, title: "最新の子育て" } : page);
+  await assert.rejects(adapter.preparePageChange(change, signal), (error) => error.code === "version_conflict");
+  latestPages = source.pages;
   const prepared = await adapter.preparePageChange(change, signal);
   assert.ok(String(calls[0].path).endsWith("/pages.catalog"));
   assert.deepEqual({ ...prepared, operationId: plan.operationId }, plan);
