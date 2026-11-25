@@ -33,6 +33,7 @@ function runCli(command, args, stdin, { origin, siteId }) {
     let outputBytes = 0;
     let timedOut = false;
     let outputLimitExceeded = false;
+    let stdinFailed = false;
     const timeout = setTimeout(() => {
       timedOut = true;
       child.kill("SIGTERM");
@@ -52,6 +53,11 @@ function runCli(command, args, stdin, { origin, siteId }) {
     child.stderr.setEncoding("utf8").on("data", (chunk) => {
       if (stderr.length < 4096) stderr += chunk.slice(0, 4096 - stderr.length);
     });
+    child.stdin.once("error", (error) => {
+      if (error.code === "EPIPE") return;
+      stdinFailed = true;
+      child.kill("SIGTERM");
+    });
     child.once("error", () => {
       clearTimeout(timeout);
       resolve({ exitCode: 1, stdout: "{\"error\":\"cli_unavailable\"}\n" });
@@ -62,6 +68,8 @@ function runCli(command, args, stdin, { origin, siteId }) {
         resolve({ exitCode: 1, stdout: "{\"error\":\"cli_timeout\"}\n" });
       } else if (outputLimitExceeded) {
         resolve({ exitCode: 1, stdout: "{\"error\":\"output_too_large\"}\n" });
+      } else if (stdinFailed) {
+        resolve({ exitCode: 1, stdout: "{\"error\":\"cli_stdin_failed\"}\n" });
       } else {
         resolve({ exitCode: exitCode ?? 1, stdout: stdout || (exitCode === 0 ? "" : `${stderr.trim() || "niho-edit command failed"}\n`) });
       }

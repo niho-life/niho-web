@@ -173,4 +173,13 @@ test("niho-edit MCP mirrors the CLI command list and output, and fixes the confi
   assert.equal(redirected.error, undefined, JSON.stringify(redirected.error));
   assert.equal(redirected.result.isError, true);
   assert.equal(redirected.result.content[0].text, "{\"error\":\"invalid_arguments\"}\n");
+
+  const earlyExit = await mcp.request("tools/call", {
+    name: "read", arguments: { args: ["invalid page id", "--locale", locale], stdin: "x".repeat(1024 * 1024) }
+  });
+  assert.equal(earlyExit.error, undefined, JSON.stringify(earlyExit.error));
+  assert.equal(earlyExit.result.isError, true);
+  const afterEarlyExit = await mcp.request("tools/list", {});
+  assert.equal(afterEarlyExit.error, undefined, JSON.stringify(afterEarlyExit.error));
+  assert.deepEqual(afterEarlyExit.result.tools.map(({ name }) => name).sort(), [...NIHO_EDIT_COMMANDS].sort());
 });
