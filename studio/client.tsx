@@ -1,20 +1,16 @@
-import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, type FormEvent, useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { SiteAnalytics, type SiteAnalyticsAdapter } from "../src/analytics.js";
-import { ProjectDashboard, type ProjectSiteView } from "../src/project-dashboard.js";
-import { ProjectDirectory } from "../src/project-directory.js";
-import type { SiteAnalyticsConnectionAdapter } from "../src/site-analytics.js";
-import { SiteApps } from "../src/site-apps.js";
-import { SiteLanguageSettings } from "../src/site-language-settings.js";
+import type { ProjectSiteView } from "../src/project-dashboard.js";
 import { parseProjectDirectoryResult, type ProjectDirectoryResult } from "../src/project-read-model.js";
 import type { Project } from "../src/projects.js";
+import { ApiError, api, record, role, SessionExpiredError, text, timestamp } from "./api-client.js";
 import { integrationIdentity, resolveTrustedEditorPage, resolveTrustedIntegration, trustedEditorPath } from "./integration-registry.mjs";
-import { KamakuraEditor, loadKamakuraEditor, loadKamakuraEditorCatalog, type KamakuraEditorLoad } from "./kamakura-editor.js";
-import { ManagedEditor } from "./managed-editor.js";
+import type { KamakuraEditorLoad } from "./kamakura-editor.js";
 import { parseProjectAliasPath, projectRoutePath, type ProjectCmsRoute, type ProjectSiteViewId, type ProjectTranslationsRoute } from "./project-routes.mjs";
 import { ManagedSiteCmsWorkspace, SiteCmsWorkspace } from "./site-cms.js";
 import { SiteTranslationsWorkspace } from "./site-translations.js";
 import { EDITOR_PERFORMANCE_EVENT, readEditorPerformance, type EditorPerformanceName } from "../src/editor-performance.js";
+import { LazyScreenBoundary } from "./lazy-screen-boundary.js";
 
 type Role = "owner" | "editor";
 type Screen =
@@ -32,39 +28,12 @@ type SessionState =
   | { readonly status: "ready"; readonly directory: ProjectDirectoryResult; readonly identity: { readonly subject: string; readonly email: string }; readonly config: StudioConfig;
     readonly initialKamakuraLoad?: () => KamakuraEditorLoad | undefined };
 type StudioConfig = { readonly managedProjectsEnabled: boolean; readonly publicSitesOrigin: string | null };
-type Member = {
-  readonly subject: string;
-  readonly email: string | null;
-  readonly role: Role;
-  readonly displayName: string;
-  readonly createdAt: string;
-  readonly isCurrent: boolean;
-};
-type Invitation = {
-  readonly id: string;
-  readonly email: string;
-  readonly role: Role;
-  readonly createdAt: string;
-  readonly expiresAt: string;
-  readonly status: "pending" | "expired" | "accepted" | "revoked";
-};
-type Administration = {
-  readonly projectName: string;
-  readonly siteName: string;
-  readonly members: readonly Member[];
-  readonly invitations: readonly Invitation[];
-};
 type InvitationPreview = {
   readonly projectName: string;
   readonly siteName: string;
   readonly role: Role;
   readonly expiresAt: string;
 };
-type AdministrationState =
-  | { readonly status: "loading" }
-  | { readonly status: "hidden" }
-  | { readonly status: "error" }
-  | { readonly status: "ready"; readonly value: Administration };
 type InvitationState =
   | { readonly status: "loading" }
   | { readonly status: "unavailable" }
@@ -72,10 +41,12 @@ type InvitationState =
   | { readonly status: "error" }
   | { readonly status: "ready"; readonly value: InvitationPreview };
 
-class SessionExpiredError extends Error {}
-class ApiError extends Error {
-  constructor(readonly status: number, readonly code: string) { super(code); }
-}
+const KamakuraEditor = lazy(() => import("./kamakura-editor.js").then(({ KamakuraEditor: Component }) => ({ default: Component })));
+const ManagedEditor = lazy(() => import("./managed-editor.js").then(({ ManagedEditor: Component }) => ({ default: Component })));
+const ProjectDashboard = lazy(() => import("../src/project-dashboard.js").then(({ ProjectDashboard: Component }) => ({ default: Component })));
+const ProjectDirectory = lazy(() => import("../src/project-directory.js").then(({ ProjectDirectory: Component }) => ({ default: Component })));
+const StudioSiteAnalytics = lazy(() => import("./analytics-panel.js").then(({ StudioSiteAnalytics: Component }) => ({ default: Component })));
+const StudioProjectSettings = lazy(() => import("./settings-panel.js").then(({ StudioProjectSettings: Component }) => ({ default: Component })));
 
 function screenFromLocation(): Screen {
   const projectAlias = parseProjectAliasPath(window.location.pathname);
@@ -98,76 +69,6 @@ function screenFromLocation(): Screen {
   if (managedEditor) return { kind: "editor", projectId: managedEditor[1]!, siteId: managedEditor[2]!, environment: "managed" };
   const dashboard = /^\/projects\/([A-Za-z][A-Za-z0-9_-]{0,79})\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})(\/cms)?\/?$/u.exec(window.location.pathname);
   return dashboard ? { kind: "dashboard", projectId: dashboard[1]!, siteId: dashboard[2]!, view: dashboard[3] ? "cms" : null } : { kind: "directory" };
-}
-
-function record(value: unknown): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("invalid API response");
-  return value as Record<string, unknown>;
-}
-
-async function api(path: string, options: { readonly method?: "GET" | "POST"; readonly body?: Record<string, unknown>; readonly signal?: AbortSignal } = {}): Promise<unknown> {
-  const method = options.method ?? "GET";
-  const response = await fetch(path, {
-    method,
-    cache: "no-store",
-    credentials: "same-origin",
-    headers: method === "POST" ? { Accept: "application/json", "Content-Type": "application/json" } : { Accept: "application/json" },
-    ...(options.body ? { body: JSON.stringify(options.body) } : {}),
-    ...(options.signal ? { signal: options.signal } : {})
-  });
-  if (response.status === 401) throw new SessionExpiredError("Access session expired");
-  if (!response.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")) throw new Error("Studio API request failed");
-  const value = await response.json() as unknown;
-  if (!response.ok) {
-    const error = record(value).error;
-    throw new ApiError(response.status, typeof error === "string" ? error : "request_failed");
-  }
-  return value;
-}
-
-function text(value: unknown, maximum = 254): string {
-  if (typeof value !== "string" || !value || value.length > maximum || /[\u0000-\u001f\u007f]/u.test(value)) throw new Error("invalid API response");
-  return value;
-}
-
-function role(value: unknown): Role {
-  if (value !== "owner" && value !== "editor") throw new Error("invalid API response");
-  return value;
-}
-
-function timestamp(value: unknown): string {
-  const parsed = text(value, 40);
-  if (!Number.isFinite(Date.parse(parsed))) throw new Error("invalid API response");
-  return parsed;
-}
-
-function parseAdministration(value: unknown): Administration {
-  const source = record(value);
-  if (source.status !== "ready" || !Array.isArray(source.members) || !Array.isArray(source.invitations) || source.members.length > 500 || source.invitations.length > 100) throw new Error("invalid API response");
-  const members = source.members.map((entry): Member => {
-    const member = record(entry);
-    return {
-      subject: text(member.subject, 128),
-      email: member.email === null ? null : text(member.email),
-      role: role(member.role),
-      displayName: text(member.displayName, 120),
-      createdAt: text(member.createdAt, 40),
-      isCurrent: member.isCurrent === true
-    };
-  });
-  const invitations = source.invitations.map((entry): Invitation => {
-    const invitation = record(entry);
-    if (!(["pending", "expired", "accepted", "revoked"] as const).includes(invitation.status as Invitation["status"])) throw new Error("invalid API response");
-    return {
-      id: text(invitation.id, 64),
-      email: text(invitation.email),
-      role: role(invitation.role),
-      createdAt: timestamp(invitation.createdAt),
-      expiresAt: timestamp(invitation.expiresAt),
-      status: invitation.status as Invitation["status"]
-    };
-  });
-  return { projectName: text(source.projectName, 120), siteName: text(source.siteName, 120), members, invitations };
 }
 
 function parseInvitationPreview(value: unknown): InvitationPreview {
@@ -212,6 +113,12 @@ function isStudioThumbnailUrlAllowed(value: string): boolean {
   let url: URL;
   try { url = new URL(value); } catch { return false; }
   return url.protocol === "https:" && !url.username && !url.password && !url.hash && STUDIO_THUMBNAIL_ORIGINS.has(url.origin);
+}
+
+function loadScreenStylesheet(name: "collection" | "localization"): void {
+  const link = document.querySelector<HTMLLinkElement>(`link[data-studio-css="${name}"]`);
+  const href = link?.dataset.href;
+  if (link && href && !link.hasAttribute("href")) link.href = href;
 }
 
 function Notice({ title, children, retry }: { readonly title: string; readonly children: string; readonly retry?: () => void }) {
@@ -270,154 +177,6 @@ function AssetsHub({ onOpenEditor, onOpenCms }: { readonly onOpenEditor: () => v
   </section>;
 }
 
-function MemberAdministration({ project, expire }: { readonly project: Project; readonly expire: () => void }) {
-  const [state, setState] = useState<AdministrationState>({ status: "loading" });
-  const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState("");
-  const [showInvite, setShowInvite] = useState(false);
-  const [email, setEmail] = useState("");
-  const [inviteRole, setInviteRole] = useState<Role>("editor");
-  const [expiry, setExpiry] = useState(7);
-  const [invitationUrl, setInvitationUrl] = useState("");
-  const base = `/api/projects/${encodeURIComponent(project.id)}/sites/${encodeURIComponent(project.site.id)}`;
-
-  const load = useCallback((signal?: AbortSignal) => {
-    setState({ status: "loading" });
-    void api(`${base}/membership`, signal ? { signal } : {})
-      .then(parseAdministration)
-      .then((value) => setState({ status: "ready", value }))
-      .catch((error: unknown) => {
-        if (signal?.aborted) return;
-        if (error instanceof SessionExpiredError) { expire(); return; }
-        if (error instanceof ApiError && error.status === 403) { setState({ status: "hidden" }); return; }
-        setState({ status: "error" });
-      });
-  }, [base, expire]);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    load(controller.signal);
-    return () => controller.abort();
-  }, [load]);
-
-  const mutate = useCallback(async (path: string, body: Record<string, unknown>, successMessage: string) => {
-    setBusy(true);
-    setMessage("");
-    try {
-      await api(`${base}${path}`, { method: "POST", body });
-      setMessage(successMessage);
-      load();
-    } catch (error) {
-      if (error instanceof SessionExpiredError) expire();
-      else if (error instanceof ApiError && error.code === "final_owner_required") setMessage("最後のオーナーは降格・削除できません。");
-      else if (error instanceof ApiError && error.status === 403) { setState({ status: "hidden" }); setMessage(""); }
-      else setMessage("操作を完了できませんでした。最新の状態を確認して再度お試しください。");
-    } finally { setBusy(false); }
-  }, [base, expire, load]);
-
-  const create = async (event: FormEvent) => {
-    event.preventDefault();
-    setBusy(true);
-    setMessage("");
-    setInvitationUrl("");
-    try {
-      const response = record(await api(`${base}/invitations`, { method: "POST", body: { email, role: inviteRole, expiresInDays: expiry } }));
-      const url = text(response.invitationUrl, 2048);
-      setInvitationUrl(url);
-      setEmail("");
-      setMessage("招待を作成しました。この画面で一度だけ表示される URL を安全に共有してください。");
-      load();
-    } catch (error) {
-      if (error instanceof SessionExpiredError) expire();
-      else if (error instanceof ApiError && error.status === 403) { setState({ status: "hidden" }); setMessage(""); }
-      else setMessage("招待を作成できませんでした。入力と最新の権限を確認してください。");
-    } finally { setBusy(false); }
-  };
-
-  // オーナーでない参加者（API が 403）には、変更できる人を案内する（空の画面にしない）
-  if (state.status === "hidden") return <section className="studio-members" aria-label="プロジェクト設定"><div className="studio-section-heading"><div><h2>メンバー管理</h2></div></div><p className="studio-help">メンバーの招待・権限の変更・参加解除はプロジェクトのオーナーだけが行えます。変更が必要なときはオーナーに依頼してください。参加しているメンバーは左の「メンバー」で確認できます。</p></section>;
-  if (state.status === "loading") return <section className="studio-members studio-members-loading" aria-live="polite">メンバー管理を確認しています。</section>;
-  if (state.status === "error") return <section className="studio-members"><div className="studio-section-heading"><div><h2>メンバー管理</h2></div><button type="button" onClick={() => load()}>再読込</button></div><p role="alert">メンバー情報を取得できませんでした。</p></section>;
-  const value = state.value;
-  return <section className="studio-members" aria-label="メンバー管理">
-    <div className="studio-section-heading"><div><h2>メンバー管理</h2><p>{value.projectName} / {value.siteName}</p></div><div className="studio-section-actions"><button type="button" className="studio-secondary" onClick={() => load()} disabled={busy}>再読込</button><button type="button" aria-expanded={showInvite} aria-controls="studio-invite-fields" onClick={() => setShowInvite((visible) => !visible)}>{showInvite ? "閉じる" : "招待"}</button></div></div>
-    {message && <p className="studio-message" role="status">{message}</p>}
-    {showInvite && <div id="studio-invite-fields" className="studio-invite-fields"><form className="studio-invite-form" onSubmit={(event) => { void create(event); }}>
-      <label><span>招待するメールアドレス</span><input type="email" required maxLength={254} autoComplete="off" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@example.com" /></label>
-      <label><span>権限</span><select value={inviteRole} onChange={(event) => setInviteRole(event.target.value as Role)}><option value="editor">編集者</option><option value="owner">オーナー</option></select></label>
-      <label><span>有効期間</span><select value={expiry} onChange={(event) => setExpiry(Number(event.target.value))}><option value={1}>1日</option><option value={3}>3日</option><option value={7}>7日</option></select></label>
-      <button type="submit" disabled={busy}>招待 URL を作成</button>
-    </form>
-    <p className="studio-help">メールは送信されません。本人が Cloudflare Access で同じメールアドレスにログインし、URL から明示的に承諾すると参加します。</p>
-    {invitationUrl && <div className="studio-copy"><label><span>一度だけ表示される招待 URL</span><input readOnly value={invitationUrl} onFocus={(event) => event.currentTarget.select()} /></label><button type="button" onClick={() => { void navigator.clipboard.writeText(invitationUrl).then(() => setMessage("招待 URL をコピーしました。")).catch(() => setMessage("URL 欄を選択してコピーしてください。")); }}>コピー</button></div>}</div>}
-    <div className="studio-admin-grid">
-      <section><h3>参加メンバー</h3><div className="studio-table-wrap"><table className="studio-admin-table"><thead><tr><th scope="col">メンバー</th><th scope="col">権限</th><th scope="col">操作</th></tr></thead><tbody>{value.members.map((member) => <tr key={member.subject}>
-        <th scope="row"><strong>{member.displayName}</strong>{member.isCurrent && <span className="studio-you">自分</span>}<small>{member.email ?? "メール未登録（bootstrap）"}</small></th>
-        <td data-label="権限"><span className="studio-role">{roleLabel(member.role)}</span></td><td data-label="操作"><div className="studio-row-actions"><button type="button" className="studio-secondary" disabled={busy} onClick={() => { const next = member.role === "owner" ? "editor" : "owner"; if (window.confirm(`${member.displayName} を${roleLabel(next)}に変更しますか？`)) void mutate("/members/role", { subject: member.subject, role: next }, "権限を変更しました。"); }}>{member.role === "owner" ? "編集者に変更" : "オーナーに変更"}</button><button type="button" className="studio-danger" disabled={busy} onClick={() => { if (window.confirm(`${member.displayName} をプロジェクトから削除しますか？`)) void mutate("/members/remove", { subject: member.subject }, "メンバーを削除しました。"); }}>削除</button></div></td>
-      </tr>)}</tbody></table></div></section>
-      <section><h3>招待履歴</h3>{value.invitations.length === 0 ? <p className="studio-help">招待はまだありません。</p> : <div className="studio-table-wrap"><table className="studio-admin-table"><thead><tr><th scope="col">招待先</th><th scope="col">状態</th><th scope="col">操作</th></tr></thead><tbody>{value.invitations.map((invitation) => <tr key={invitation.id}>
-        <th scope="row"><strong>{invitation.email}</strong><small>{roleLabel(invitation.role)} ・ 期限 {dateLabel(invitation.expiresAt)}</small></th>
-        <td data-label="状態"><span className="studio-status">{{ pending: "承諾待ち", expired: "期限切れ", accepted: "承諾済み", revoked: "取消済み" }[invitation.status]}</span></td><td data-label="操作">{invitation.status === "pending" && <button type="button" className="studio-danger" disabled={busy} onClick={() => { if (window.confirm(`${invitation.email} への招待を取り消しますか？`)) void mutate("/invitations/revoke", { invitationId: invitation.id }, "招待を取り消しました。"); }}>取消</button>}</td>
-      </tr>)}</tbody></table></div>}</section>
-    </div>
-  </section>;
-}
-
-/**
- * アナリティクスのタブ: 上に GA4 / Search Console の集計、owner には下に接続欄（計測タグと所有権確認は Studio では扱わない）。
- * owner かどうかは owner だけが読める membership API で確かめる。editor には接続欄を出さない。
- */
-function StudioSiteAnalytics({ project, connectable, expire }: { readonly project: Project; readonly connectable: boolean; readonly expire: () => void }) {
-  const site = `/api/projects/${encodeURIComponent(project.id)}/sites/${encodeURIComponent(project.site.id)}`, base = `${site}/analytics`;
-  const siteOrigin = project.site.domains[0] ?? null;
-  const [owner, setOwner] = useState(false);
-  const call = useCallback(async (path: string, options: { readonly method?: "GET" | "POST"; readonly body?: Record<string, unknown>; readonly signal?: AbortSignal } = {}) => {
-    try { return await api(path, options); }
-    catch (error) { if (error instanceof SessionExpiredError) expire(); throw error; }
-  }, [expire]);
-  useEffect(() => {
-    setOwner(false);
-    if (!connectable || siteOrigin === null) return;
-    const controller = new AbortController();
-    void call(`${site}/membership`, { signal: controller.signal }).then(() => { if (!controller.signal.aborted) setOwner(true); }).catch(() => undefined);
-    return () => controller.abort();
-  }, [call, connectable, site, siteOrigin]);
-  const reportAdapter = useMemo<SiteAnalyticsAdapter>(() => ({
-    loadAnalytics: (scope, signal) => call(`${base}/report?period=${encodeURIComponent(scope.period)}`, { signal })
-  }), [base, call]);
-  const connectionAdapter = useMemo<SiteAnalyticsConnectionAdapter>(() => {
-    const post = (path: string, body: Record<string, unknown>, signal: AbortSignal) => call(`${base}${path}`, { method: "POST", body, signal });
-    return {
-      readConnection: (_target, signal) => call(`${base}/connection`, { signal }),
-      readReport: ({ period }, signal) => call(`${base}/report?period=${encodeURIComponent(period)}`, { signal }),
-      prepareGa4TrackingTag: ({ measurementId }, signal) => post("/ga4/tag/prepare", { measurementId }, signal),
-      applyGa4TrackingTag: ({ confirmationToken }, signal) => post("/ga4/tag/apply", { confirmationToken }, signal),
-      prepareGa4TrackingTagRemoval: (_target, signal) => post("/ga4/tag/remove/prepare", {}, signal),
-      removeGa4TrackingTag: ({ confirmationToken }, signal) => post("/ga4/tag/remove/apply", { confirmationToken }, signal),
-      prepareGa4ReportingConnection: ({ propertyId }, signal) => post("/ga4/reporting/prepare", { propertyId }, signal),
-      applyGa4ReportingConnection: ({ confirmationToken }, signal) => post("/ga4/reporting/apply", { confirmationToken }, signal),
-      verifyGa4Reporting: (_target, signal) => post("/ga4/reporting/verify", {}, signal),
-      retryGa4Sync: (_target, signal) => post("/ga4/reporting/retry", {}, signal),
-      prepareGa4ReportingDisconnection: (_target, signal) => post("/ga4/reporting/disconnect/prepare", {}, signal),
-      disconnectGa4Reporting: ({ confirmationToken }, signal) => post("/ga4/reporting/disconnect/apply", { confirmationToken }, signal),
-      prepareSearchConsoleVerification: ({ property, method }, signal) => post("/search-console/ownership/prepare", { property, method }, signal),
-      applySearchConsoleVerification: ({ confirmationToken }, signal) => post("/search-console/ownership/apply", { confirmationToken }, signal),
-      verifySearchConsoleOwnership: (_target, signal) => post("/search-console/ownership/verify", {}, signal),
-      prepareSearchConsoleReportingConnection: ({ property }, signal) => post("/search-console/reporting/prepare", { property }, signal),
-      applySearchConsoleReportingConnection: ({ confirmationToken }, signal) => post("/search-console/reporting/apply", { confirmationToken }, signal),
-      verifySearchConsoleReporting: (_target, signal) => post("/search-console/reporting/verify", {}, signal),
-      retrySearchConsoleSync: (_target, signal) => post("/search-console/reporting/retry", {}, signal),
-      prepareSearchConsoleReportingDisconnection: (_target, signal) => post("/search-console/reporting/disconnect/prepare", {}, signal),
-      disconnectSearchConsoleReporting: ({ confirmationToken }, signal) => post("/search-console/reporting/disconnect/apply", { confirmationToken }, signal)
-    };
-  }, [base, call]);
-  return <div className="studio-analytics">
-    <SiteAnalytics projectId={project.id} siteId={project.site.id} adapter={reportAdapter} />
-    {owner && connectable && siteOrigin !== null && <SiteApps target={{ projectId: project.id, siteId: project.site.id, siteOrigin }} adapter={connectionAdapter}
-      projectName={project.name} siteName={project.site.name} capabilities={{ trackingTag: false, ownershipVerification: false }} />}
-  </div>;
-}
-
 function InvitationAcceptance({ screen, expire, accepted }: { readonly screen: Extract<Screen, { kind: "invite" }>; readonly expire: () => void; readonly accepted: () => void }) {
   const [state, setState] = useState<InvitationState>({ status: "loading" });
   const base = `/api/projects/${encodeURIComponent(screen.projectId)}/sites/${encodeURIComponent(screen.siteId)}/invitations`;
@@ -473,7 +232,8 @@ function App() {
     const kamakura = initialScreen.kind === "editor" && initialScreen.environment === "production"
       && integrationIdentity(initialScreen.projectId, initialScreen.siteId) === integrationIdentity("project-kamakura", "kamakura");
     setSession({ status: "loading" });
-    const catalog = kamakura ? loadKamakuraEditorCatalog(controller.signal) : undefined;
+    const kamakuraModule = kamakura ? import("./kamakura-editor.js") : undefined;
+    const catalog = kamakuraModule?.then(({ loadKamakuraEditorCatalog }) => loadKamakuraEditorCatalog(controller.signal));
     // Keep the original outcome for the editor's route-specific error UI.
     void catalog?.catch(() => {});
     void Promise.all([
@@ -481,13 +241,15 @@ function App() {
       api("/api/projects", { signal: controller.signal }),
       api("/api/config", { signal: controller.signal }).catch(() => ({ managedProjectsEnabled: false, publicSitesOrigin: null }))
     ])
-      .then(([identity, directory, config]) => {
+      .then(async ([identity, directory, config]) => {
         if (controller.signal.aborted) return;
         const parsedIdentity = parseIdentity(identity), parsedConfig = parseConfig(config);
         const parsed = parseProjectDirectoryResult(directory, isStudioThumbnailUrlAllowed);
-        let editorLoad = catalog && kamakura && parsed.status === "ready" && window.location.pathname === initialPathname
+        const editorModule = await kamakuraModule?.catch(() => undefined);
+        if (controller.signal.aborted) return;
+        let editorLoad = editorModule && catalog && kamakura && parsed.status === "ready" && window.location.pathname === initialPathname
           && parsed.entries.some(({ project }) => project.id === initialScreen.projectId && project.site.id === initialScreen.siteId)
-          ? loadKamakuraEditor(controller, window.location.origin, catalog) : undefined;
+          ? editorModule.loadKamakuraEditor(controller, window.location.origin, catalog) : undefined;
         if (catalog && !editorLoad) controller.abort();
         setSession({ status: "ready", identity: parsedIdentity, directory: parsed, config: parsedConfig,
           ...(editorLoad ? { initialKamakuraLoad: () => {
@@ -515,6 +277,15 @@ function App() {
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
+
+  useLayoutEffect(() => {
+    if (screen.kind !== "dashboard") return;
+    if (screen.view === "cms") loadScreenStylesheet("collection");
+    if (screen.view === "translations") {
+      loadScreenStylesheet("collection");
+      loadScreenStylesheet("localization");
+    }
+  }, [screen]);
 
   const navigate = useCallback((next: Exclude<Screen, { kind: "invite" }>) => {
     const path = next.kind === "directory"
@@ -595,6 +366,15 @@ function App() {
     setPendingProject(project);
   }, [session]);
 
+  const preloadEditor = useCallback((project: Project) => {
+    if (session.status !== "ready") return;
+    if (managedProject(project, session.config)) { void import("./managed-editor.js"); return; }
+    const integration = resolveTrustedIntegration(project.id, project.site.id);
+    if (integration?.environment === "production" && integrationIdentity(integration.registration.projectId, integration.registration.siteId) === integrationIdentity("project-kamakura", "kamakura")) {
+      void import("./kamakura-editor.js");
+    }
+  }, [session]);
+
   if (session.status === "loading") return <StudioLoading />;
   if (session.status === "expired") return <Notice title="セッションの確認が必要です" retry={() => window.location.reload()}>Cloudflare Access から再度ログインしてください。</Notice>;
   if (session.status === "error") return <Notice title="Studio を読み込めませんでした" retry={loadSession}>時間をおいて再度お試しください。</Notice>;
@@ -646,31 +426,31 @@ function App() {
       {(screen.kind === "dashboard" || screen.kind === "editor") && !selected
         ? <Notice title="プロジェクトを表示できません">プロジェクトが存在しないか、現在のアカウントには参加資格がありません。</Notice>
         : selected && screen.kind === "editor"
-          ? managedEditor
-            ? <ManagedEditor project={selected} />
-            : kamakuraEditor && resolvedEditor
-            ? <KamakuraEditor project={selected} environment={resolvedEditor.environment}
-                {...(session.initialKamakuraLoad ? { initialLoad: session.initialKamakuraLoad } : {})} />
-            : resolvedEditor
-            ? <Notice title="サイトデザイン編集は休止中です">ヘッダー、余白、レイアウトなどの変更は各サイトの開発で対応します。以前の編集内容は保管しています。記事や体験の原稿は、それぞれの管理画面で引き続き編集できます。</Notice>
-            : <Notice title="エディターを表示できません">このサイトまたは環境のエディターは接続されていません。</Notice>
+          ? <LazyScreenBoundary><Suspense fallback={<StudioLoading />}>
+              {managedEditor
+                ? <ManagedEditor project={selected} />
+                : kamakuraEditor && resolvedEditor
+                ? <KamakuraEditor project={selected} environment={resolvedEditor.environment}
+                    {...(session.initialKamakuraLoad ? { initialLoad: session.initialKamakuraLoad } : {})} />
+                : resolvedEditor
+                ? <Notice title="サイトデザイン編集は休止中です">ヘッダー、余白、レイアウトなどの変更は各サイトの開発で対応します。以前の編集内容は保管しています。記事や体験の原稿は、それぞれの管理画面で引き続き編集できます。</Notice>
+                : <Notice title="エディターを表示できません">このサイトまたは環境のエディターは接続されていません。</Notice>}
+            </Suspense></LazyScreenBoundary>
         : selected && screen.kind === "dashboard"
-          ? <ProjectDashboard
+          ? <LazyScreenBoundary><Suspense fallback={<StudioLoading />}><ProjectDashboard
               project={selected}
               adapter={dashboardAdapter}
               onBackToProjects={() => navigate({ kind: "directory" })}
               headerEnd={account}
               onOpenEditor={openEditor}
+              onPreloadEditor={preloadEditor}
               onOpenSettings={() => undefined}
               editorAction={editorEnabled(selected, session.config) ? "enabled" : "pending"}
               // プロジェクト設定は settingsContent、解析の表示と接続はアナリティクスのタブ（analyticsContent）で開く
-              analyticsContent={<StudioSiteAnalytics key={`${selected.id}:${selected.site.id}`} project={selected} expire={expire}
+              analyticsContent={<Suspense fallback={<StudioLoading />}><StudioSiteAnalytics key={`${selected.id}:${selected.site.id}`} project={selected} expire={expire}
                 // 共有 origin + path で配信する Studio-native site は分析の接続に未対応（集計は未接続のまま表示する）
-                connectable={!managedProject(selected, session.config)} />}
-              settingsContent={<div className="studio-project-settings">
-                {selectedSourceLocale && <SiteLanguageSettings value={{ sourceLocale: selectedSourceLocale, targetLocale: selectedSourceLocale === "ja" ? "en" : "ja" }} locked={false} />}
-                <MemberAdministration key={`${selected.id}:${selected.site.id}`} project={selected} expire={expire} />
-              </div>}
+                connectable={!managedProject(selected, session.config)} /></Suspense>}
+              settingsContent={<Suspense fallback={<StudioLoading />}><StudioProjectSettings project={selected} {...(selectedSourceLocale ? { sourceLocale: selectedSourceLocale } : {})} expire={expire} /></Suspense>}
               siteViews={siteViews(selected)}
               activeSiteView={screen.view ?? null}
               onSiteViewChange={(view) => {
@@ -678,19 +458,20 @@ function App() {
                 if (view === (screen.view ?? null)) return;
                 navigate({ kind: "dashboard", projectId: selected.id, siteId: selected.site.id, view: view as ProjectSiteViewId | null });
               }}
-            />
-          : <div className="studio-directory-main"><ProjectDirectory
+            /></Suspense></LazyScreenBoundary>
+          : <div className="studio-directory-main"><LazyScreenBoundary><Suspense fallback={<StudioLoading />}><ProjectDirectory
               adapter={directoryAdapter}
               onCreateProject={() => setCreatingProject(true)}
               onOpenDashboard={(project) => navigate({ kind: "dashboard", projectId: project.id, siteId: project.site.id })}
               onOpenEditor={openEditor}
+              onPreloadEditor={preloadEditor}
               createAction={session.config.managedProjectsEnabled ? "enabled" : "disabled"}
               editorAction={(project) => editorEnabled(project, session.config) ? "enabled" : "hidden"}
               memberDetails="summary"
               searchValue={directoryQuery}
               onSearchValueChange={setDirectoryQuery}
               searchControl="external"
-            /></div>}
+            /></Suspense></LazyScreenBoundary></div>}
     </div>
     {editorPerformanceEnabled && <EditorPerformancePanel />}
     {pendingProject && <div className="studio-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setPendingProject(null); }}>
