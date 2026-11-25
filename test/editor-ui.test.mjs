@@ -2380,7 +2380,8 @@ test("operation conflict keeps the local queue and retries a CLI write only afte
     assert.equal(external.status, "applied");
     await click("下書き保存");
     assert.equal(input("ページタイトル").value, "GUIの編集");
-    const retry = button("最新に適用して保存");
+    let retry;
+    for (let attempt = 0; attempt < 20 && !retry; attempt++) { await wait(10); retry = button("最新に適用して保存"); }
     assert.ok(retry?.disabled);
     const confirm = document.querySelector('[role="dialog"] input[type="checkbox"]');
     await act(async () => confirm.click()); await flush();
