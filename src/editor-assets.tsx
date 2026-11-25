@@ -211,7 +211,7 @@ export function AssetLibraryPanel(props: AssetLibraryPanelProps) {
   const [recent, setRecent] = useState(false), [acquiring, setAcquiring] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null), heading = useRef<HTMLHeadingElement>(null), cards = useRef(new Map<string, HTMLButtonElement>());
   const more = useRef<AbortController | null>(null), uploadId = useRef(0), latest = useRef(props), busy = useRef(false), work = useControllers();
-  const providersEpoch = useRef<{ adapter: AssetLibraryAdapter; siteId: string; epoch: number } | null>(null);
+  const providersEpoch = useRef<{ adapter: AssetLibraryAdapter; siteId: string; epoch: number; reload: number } | null>(null);
   latest.current = props;
   const listKind = mode === "pick" ? pickKind : kind;
   const sources = sourceState.adapter === adapter && sourceState.siteId === siteId ? sourceState : { status: "loading" as const, items: [] as readonly AssetProvider[] };
@@ -232,8 +232,8 @@ export function AssetLibraryPanel(props: AssetLibraryPanelProps) {
     if (!active || !adapter.listProviders) return;
     // パネルを閉じて再度開いても、同じサイトの出所一覧は再取得しない。
     const loaded = providersEpoch.current;
-    const sameEpoch = loaded?.adapter === adapter && loaded.siteId === siteId && loaded.epoch === epoch;
-    const cached = sourceReload === 0 && sameEpoch ? cachedProviders(adapter, siteId) : undefined;
+    const sameRequest = loaded?.adapter === adapter && loaded.siteId === siteId && loaded.epoch === epoch && loaded.reload === sourceReload;
+    const cached = sameRequest ? cachedProviders(adapter, siteId) : undefined;
     if (cached) { setSourceState({ adapter, siteId, status: "ready", items: cached }); return; }
     // 明示的な再読込では既存の出所を表示したまま取り直す。
     const controller = new AbortController();
@@ -242,11 +242,11 @@ export function AssetLibraryPanel(props: AssetLibraryPanelProps) {
       try {
         const items = parseAssetProviders(await adapter.listProviders!({ siteId }, controller.signal));
         if (controller.signal.aborted) return;
-        storeProviders(adapter, siteId, items); providersEpoch.current = { adapter, siteId, epoch }; setSourceState({ adapter, siteId, status: "ready", items });
+        storeProviders(adapter, siteId, items); providersEpoch.current = { adapter, siteId, epoch, reload: sourceReload }; setSourceState({ adapter, siteId, status: "ready", items });
       } catch { if (!controller.signal.aborted) setSourceState({ adapter, siteId, status: "error", items: [] }); }
     })();
     return () => controller.abort();
-  }, [active, adapter, siteId, sourceReload, epoch]);
+  }, [active, adapter, siteId, sourceReload, epoch, providerKind]);
   useEffect(() => {
     setFolderId(null); setFolderDraft(null); setFolderError("");
   }, [mode, pickKind, providerKind]);

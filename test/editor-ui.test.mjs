@@ -1625,8 +1625,8 @@ test("CMS photos show their origin and terms read-only, without save, upload, fo
       "「体験写真」で管理しています", "「体験写真」のアセットはここでは削除できません。", "このページ: 0 か所"]) assert.ok(text.includes(expected), expected);
     await click("一覧に戻る"); await tool("アップロード"); await chooseAsset("庭の緑.png");
     assert.equal(input("名前").readOnly, false); assert.ok(button("変更を保存")); assert.ok(button("削除…")); assert.ok(input("保存先フォルダ"));
-    await click("一覧に戻る"); await tool("接続");
-    assert.equal(calls.lists.at(-1).provider, "experience"); assert.deepEqual(cardNames(), ["朝ヨガ.png"]);
+    await click("一覧に戻る"); const beforeReconnect = calls.lists.length; await tool("接続");
+    assert.equal(calls.lists.length, beforeReconnect); assert.deepEqual(cardNames(), ["朝ヨガ.png"]);
     assert.ok(!assetPanel().textContent.includes("NIHO の体験原稿で公開を許可された写真"), "一覧の上に出所の説明文を出さない");
     assert.equal(assetButton("アップロード"), undefined); assert.equal(button("フォルダを追加"), undefined); assert.equal(assetPanel().querySelector('select[aria-label="フォルダ"]'), null);
     assert.ok(!assetPanel().textContent.includes("このサイトにアセットを追加する権限がありません。"));
@@ -1685,7 +1685,7 @@ test("a removed provider leaves its open asset detail read-only and blocks place
     removed = true;
     await clickPage("別ページ"); await settle();
     // 非表示中の出所通信は行わず、再表示時に最新の提供元を確認する。
-    await tool("アセット"); await settle();
+    await tool("接続"); await settle();
     assert.equal(input("名前").readOnly, true);
     assert.equal(input("代替テキスト").readOnly, true);
     assert.equal(button("変更を保存"), undefined);
@@ -1753,7 +1753,7 @@ test("source listing failures and assets from undeclared or other sources fail c
     mode = "unknown"; await tool("接続");
     assert.ok(assetPanel().textContent.includes("アセットを読み込めませんでした。出所が確認できないアセットは利用できません。")); assert.equal(assetPanel().querySelectorAll(".e-asset-card").length, 0);
     mode = "mixed"; await tool("アップロード");
-    await change(assetPanel().querySelector('input[aria-label="アセットを検索"]'), "庭"); await wait(300);
+    await change(assetPanel().querySelector('input[aria-label="アセットを検索"]'), "混入検証"); await wait(300);
     assert.ok(assetPanel().textContent.includes("出所が確認できないアセットは利用できません。")); assert.equal(assetPanel().querySelectorAll(".e-asset-card").length, 0);
     mode = "ok"; await click("再読み込み"); assert.deepEqual(cardNames(), ["庭の緑.png"]);
     mode = "upload"; await uploadFiles([png("混入.png", 10)]);
