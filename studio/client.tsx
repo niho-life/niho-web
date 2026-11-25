@@ -8,6 +8,7 @@ import { integrationIdentity, resolveTrustedEditorPage, resolveTrustedIntegratio
 import { parseProjectAliasPath, projectRoutePath, type ProjectCmsRoute, type ProjectSiteViewId, type ProjectTranslationsRoute } from "./project-routes.mjs";
 import { SiteCmsWorkspace } from "./site-cms.js";
 import { SiteTranslationsWorkspace } from "./site-translations.js";
+import { LazyScreenBoundary } from "./lazy-screen-boundary.js";
 
 type Role = "owner" | "editor";
 type Screen =
@@ -392,7 +393,7 @@ function App() {
       {(screen.kind === "dashboard" || screen.kind === "editor") && !selected
         ? <Notice title="プロジェクトを表示できません">プロジェクトが存在しないか、現在のアカウントには参加資格がありません。</Notice>
         : selected && screen.kind === "editor"
-          ? <Suspense fallback={<StudioLoading />}>
+          ? <LazyScreenBoundary><Suspense fallback={<StudioLoading />}>
               {managedEditor
                 ? <ManagedEditor project={selected} />
                 : kamakuraEditor && resolvedEditor
@@ -400,9 +401,9 @@ function App() {
                 : resolvedEditor
                 ? <Notice title="サイトデザイン編集は休止中です">ヘッダー、余白、レイアウトなどの変更は各サイトの開発で対応します。以前の編集内容は保管しています。記事や体験の原稿は、それぞれの管理画面で引き続き編集できます。</Notice>
                 : <Notice title="エディターを表示できません">このサイトまたは環境のエディターは接続されていません。</Notice>}
-            </Suspense>
+            </Suspense></LazyScreenBoundary>
         : selected && screen.kind === "dashboard"
-          ? <Suspense fallback={<StudioLoading />}><ProjectDashboard
+          ? <LazyScreenBoundary><Suspense fallback={<StudioLoading />}><ProjectDashboard
               project={selected}
               adapter={dashboardAdapter}
               onBackToProjects={() => navigate({ kind: "directory" })}
@@ -423,8 +424,8 @@ function App() {
                 if (view === (screen.view ?? null)) return;
                 navigate({ kind: "dashboard", projectId: selected.id, siteId: selected.site.id, view: view as ProjectSiteViewId | null });
               }}
-            /></Suspense>
-          : <div className="studio-directory-main"><Suspense fallback={<StudioLoading />}><ProjectDirectory
+            /></Suspense></LazyScreenBoundary>
+          : <div className="studio-directory-main"><LazyScreenBoundary><Suspense fallback={<StudioLoading />}><ProjectDirectory
               adapter={directoryAdapter}
               onCreateProject={() => setCreatingProject(true)}
               onOpenDashboard={(project) => navigate({ kind: "dashboard", projectId: project.id, siteId: project.site.id })}
@@ -436,7 +437,7 @@ function App() {
               searchValue={directoryQuery}
               onSearchValueChange={setDirectoryQuery}
               searchControl="external"
-            /></Suspense></div>}
+            /></Suspense></LazyScreenBoundary></div>}
     </div>
     {pendingProject && <div className="studio-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setPendingProject(null); }}>
       <section className="studio-dialog" role="dialog" aria-modal="true" aria-labelledby="editor-pending-title">
