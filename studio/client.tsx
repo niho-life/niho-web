@@ -5,7 +5,7 @@ import { parseProjectDirectoryResult, type ProjectDirectoryResult } from "../src
 import type { Project } from "../src/projects.js";
 import { ApiError, api, record, role, SessionExpiredError, text, timestamp } from "./api-client.js";
 import { integrationIdentity, resolveTrustedEditorPage, resolveTrustedIntegration, trustedEditorPath } from "./integration-registry.mjs";
-import { loadKamakuraEditor, loadKamakuraEditorCatalog, type KamakuraEditorLoad } from "./kamakura-editor.js";
+import type { KamakuraEditorLoad } from "./kamakura-editor.js";
 import { parseProjectAliasPath, projectRoutePath, type ProjectCmsRoute, type ProjectSiteViewId, type ProjectTranslationsRoute } from "./project-routes.mjs";
 import { SiteCmsWorkspace } from "./site-cms.js";
 import { SiteTranslationsWorkspace } from "./site-translations.js";
@@ -231,7 +231,8 @@ function App() {
     const kamakura = initialScreen.kind === "editor" && initialScreen.environment === "production"
       && integrationIdentity(initialScreen.projectId, initialScreen.siteId) === integrationIdentity("project-kamakura", "kamakura");
     setSession({ status: "loading" });
-    const catalog = kamakura ? loadKamakuraEditorCatalog(controller.signal) : undefined;
+    const kamakuraModule = kamakura ? import("./kamakura-editor.js") : undefined;
+    const catalog = kamakuraModule?.then(({ loadKamakuraEditorCatalog }) => loadKamakuraEditorCatalog(controller.signal));
     // Keep the original outcome for the editor's route-specific error UI.
     void catalog?.catch(() => {});
     void Promise.all([
@@ -239,13 +240,15 @@ function App() {
       api("/api/projects", { signal: controller.signal }),
       api("/api/config", { signal: controller.signal }).catch(() => ({ managedProjectsEnabled: false, publicSitesOrigin: null }))
     ])
-      .then(([identity, directory, config]) => {
+      .then(async ([identity, directory, config]) => {
         if (controller.signal.aborted) return;
         const parsedIdentity = parseIdentity(identity), parsedConfig = parseConfig(config);
         const parsed = parseProjectDirectoryResult(directory, isStudioThumbnailUrlAllowed);
-        let editorLoad = catalog && kamakura && parsed.status === "ready" && window.location.pathname === initialPathname
+        const editorModule = await kamakuraModule?.catch(() => undefined);
+        if (controller.signal.aborted) return;
+        let editorLoad = editorModule && catalog && kamakura && parsed.status === "ready" && window.location.pathname === initialPathname
           && parsed.entries.some(({ project }) => project.id === initialScreen.projectId && project.site.id === initialScreen.siteId)
-          ? loadKamakuraEditor(controller, window.location.origin, catalog) : undefined;
+          ? editorModule.loadKamakuraEditor(controller, window.location.origin, catalog) : undefined;
         if (catalog && !editorLoad) controller.abort();
         setSession({ status: "ready", identity: parsedIdentity, directory: parsed, config: parsedConfig,
           ...(editorLoad ? { initialKamakuraLoad: () => {
