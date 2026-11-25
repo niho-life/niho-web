@@ -151,10 +151,20 @@ function clientFixture({ token = "owner", initialDocument = blockDocument, publi
   return client;
 }
 
+test("shared client reads partial page projections with dependency versions", async () => {
+  const client = clientFixture({ publishing: true });
+  const result = await client.inspectPage(target, { view: "outline", depth: 1 });
+  assert.equal(result.view, "outline");
+  assert.equal(result.version, "v1");
+  assert.equal(result.componentsVersion, "components-v1");
+  assert.equal(result.presentationVersion, "presentation-v1");
+  assert.ok(result.items.length > 0);
+});
+
 test("shared page editing client discovers, reads custom blocks and saves with CAS", async () => {
   const client = clientFixture();
   const discovery = await client.discover();
-  assert.deepEqual(discovery.operations.map(({ id }) => id), ["pages.read", "pages.save"]);
+  assert.deepEqual(discovery.operations.map(({ id }) => id), ["pages.inspect", "pages.read", "pages.save"]);
   const snapshot = await client.read(target);
   assert.equal(snapshot.document.body.at(-1).block, "booking-panel");
   const changed = structuredClone(snapshot.document); changed.title = "Saved by shared client";
@@ -170,7 +180,7 @@ test("shared page editing client discovers, reads custom blocks and saves with C
 test("shared editing client reads the page catalog and prepares/applies a versioned page change", async () => {
   const client = clientFixture({ pageManagement: true });
   const discovery = await client.discover();
-  assert.deepEqual(discovery.operations.map(({ id }) => id), ["pages.read", "pages.save", "pages.catalog", "pages.change-prepare", "pages.change-apply"]);
+  assert.deepEqual(discovery.operations.map(({ id }) => id), ["pages.inspect", "pages.read", "pages.save", "pages.catalog", "pages.change-prepare", "pages.change-apply"]);
   const catalog = await client.readPageCatalog();
   assert.equal(catalog.version, "registry-v1");
   assert.equal(catalog.pages[0].pageId, target.pageId);

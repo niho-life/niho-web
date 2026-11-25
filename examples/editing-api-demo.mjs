@@ -38,6 +38,9 @@ const discover = await call(`${route}/capabilities`);
 const readPath = `${route}/operations/pages.read/${target.pageId}?locale=${encodeURIComponent(target.locale)}`;
 const snapshotResponse = await call(readPath);
 const snapshot = await snapshotResponse.json();
+const inspectPath = `${route}/operations/pages.inspect/${target.pageId}?locale=${encodeURIComponent(target.locale)}&view=outline&depth=1`;
+const inspectResponse = await call(inspectPath);
+const inspection = await inspectResponse.json();
 const changed = structuredClone(snapshot.document);
 changed.title = "Updated with the host-neutral editing API";
 changed.body[0].style.base.backgroundColor = "#e8f0e8";
@@ -54,6 +57,7 @@ const conflict = await conflictResponse.json();
 console.log(JSON.stringify({
   operations: (await discover.json()).operations.map(({ id, method }) => ({ id, method })),
   read: { status: snapshotResponse.status, version: snapshot.version, block: snapshot.document.body.at(-1).block },
+  inspect: { status: inspectResponse.status, version: inspection.version, items: inspection.items.map(({ id, type, tag }) => ({ id, type, ...(tag ? { tag } : {}) })) },
   save: { status: savedResponse.status, version: saved.version, title: saved.document.title,
     backgroundColor: saved.document.body[0].style.base.backgroundColor, addedForm: saved.document.body[0].children.at(-1).tag === "form" },
   staleSave: { status: conflictResponse.status, error: conflict.error }

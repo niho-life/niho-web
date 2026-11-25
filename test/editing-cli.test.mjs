@@ -48,6 +48,38 @@ function run(args, { status = 200, result, expectedMethod, expectedUrl, expected
   });
 }
 
+function runSequence(args, requests, { env = {}, token = "fixture-token" } = {}) {
+  const source = [
+    "const expected = " + JSON.stringify(requests) + "; let index = 0;",
+    "globalThis.fetch = async (url, init) => {",
+    "  const request = expected[index++];",
+    "  if (!request || String(url) !== request.url || init.method !== request.method) throw new Error('unexpected request');",
+    "  if (init.redirect !== 'manual' || init.credentials !== 'omit') throw new Error('unsafe API fetch defaults');",
+    "  const headers = new Headers(init.headers);",
+    "  if (headers.get('Authorization') !== 'Bearer fixture-token') throw new Error('missing authorization');",
+    "  if (init.body && JSON.stringify(JSON.parse(init.body)) !== JSON.stringify(request.body ?? null)) throw new Error('unexpected request body');",
+    "  return new Response(JSON.stringify(request.result ?? {}), { status: request.status ?? 200, headers: { 'Content-Type': 'application/json' } });",
+    "};",
+    "process.on('beforeExit', () => { if (index !== expected.length) throw new Error('not all expected requests were made'); });"
+  ].join("\n");
+  const preload = "data:text/javascript," + encodeURIComponent(source);
+  return new Promise((resolve, reject) => {
+    const childEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !["CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET"].includes(key)));
+    if (token === null) delete childEnv.NIHO_EDIT_TOKEN;
+    else childEnv.NIHO_EDIT_TOKEN = token;
+    Object.assign(childEnv, env);
+    const child = spawn(process.execPath, ["--import", preload, command, "--origin", origin, "--site", siteId, ...args], {
+      env: childEnv, stdio: ["pipe", "pipe", "pipe"]
+    });
+    child.stdin.end("");
+    let stdout = "", stderr = "";
+    child.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk; });
+    child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("close", (exitCode) => resolve({ exitCode, stdout, stderr }));
+  });
+}
+
 function runUpload(args, { uploadUrl, expectedBytes, asset, trustedUploadOrigin = origin, accessClientId = null, accessClientSecret = null }) {
   const source = `let calls = 0;
     globalThis.fetch = async (url, init) => {
@@ -96,9 +128,37 @@ test("niho-edit reads a page over the host API without Studio or a browser", asy
   });
   assert.equal(result.exitCode, 0, `${result.stderr}\n${result.stdout}`);
   assert.deepEqual(JSON.parse(result.stdout), { document: fixture, version: "v1" });
-  assert.deepEqual(EDITING_OPERATIONS.filter(({ id }) => !id.startsWith("localization.")).map(({ id }) => id), ["pages.read", "pages.save", "pages.release-plan", "pages.release", "pages.release-set-plan", "pages.release-set", "pages.release-set-status", "pages.catalog", "pages.change-prepare", "pages.change-apply",
+  assert.deepEqual(EDITING_OPERATIONS.filter(({ id }) => !id.startsWith("localization.")).map(({ id }) => id), ["pages.inspect", "pages.read", "pages.save", "pages.release-plan", "pages.release", "pages.release-set-plan", "pages.release-set", "pages.release-set-status", "pages.catalog", "pages.change-prepare", "pages.change-apply",
     "cms.schema", "cms.list", "cms.read", "cms.create", "cms.save", "cms.publish-plan", "cms.publish", "cms.operation-status", "site.breakpoints.read", "site.breakpoints.save",
     "assets.list", "assets.usages", "assets.resolve", "assets.update", "assets.upload-intent", "assets.delete", "assets.restore"]);
+});
+
+test("niho-edit outline uses pages.inspect when the host exposes it", async () => {
+  const discoverUrl = origin + "/api/edit/v1/sites/" + siteId + "/capabilities";
+  const inspectUrl = origin + "/api/edit/v1/sites/" + siteId + "/operations/pages.inspect/" + pageId + "?locale=" + encodeURIComponent(locale) + "&view=outline&limit=1000&depth=1";
+  const operation = EDITING_OPERATIONS.find(({ id }) => id === "pages.inspect");
+  const result = await runSequence(["outline", pageId, "--locale", locale, "--depth", "1"], [
+    { method: "GET", url: discoverUrl, result: { apiVersion: "v1", siteId, operations: [operation] } },
+    { method: "GET", url: inspectUrl, result: { view: "outline", version: "v1", definitions: {}, items: [{ id: "hero" }] } }
+  ]);
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { view: "outline", version: "v1", definitions: {}, items: [{ id: "hero" }] });
+});
+
+test("niho-edit falls back to pages.read and resolves public URLs through pages.catalog", async () => {
+  const catalogUrl = origin + "/api/edit/v1/sites/" + siteId + "/operations/pages.catalog";
+  const discoverUrl = origin + "/api/edit/v1/sites/" + siteId + "/capabilities";
+  const readUrl = origin + "/api/edit/v1/sites/" + siteId + "/operations/pages.read/" + pageId + "?locale=" + encodeURIComponent(locale);
+  const result = await runSequence(["find", "--url", "https://public.example/", "--locale", locale, "--node", "heading"], [
+    { method: "GET", url: catalogUrl, result: { version: "catalog-v1", pages: [{ siteId, pageId, locale, title: "Home", path: "/" }] } },
+    { method: "GET", url: discoverUrl, result: { apiVersion: "v1", siteId, operations: [EDITING_OPERATIONS.find(({ id }) => id === "pages.read")] } },
+    { method: "GET", url: readUrl, result: { document: fixture, version: "v1" } }
+  ]);
+  assert.equal(result.exitCode, 0, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.view, "find");
+  assert.equal(output.version, "v1");
+  assert.deepEqual(output.items.map(({ id }) => id), ["heading"]);
 });
 
 test("niho-edit sends Cloudflare Access service credentials and keeps host bearer auth", async () => {
