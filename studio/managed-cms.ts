@@ -2,8 +2,9 @@ import {
   CMS_V2_OPERATIONS, checkCmsReleaseApply, checkCmsScheduleCreate, checkCmsSchemaApply, checkCmsWriteVersion,
   cmsLegacyCollections, cmsRoleCapabilities, cmsWorkspaceItem, discoverCmsContract, parseCmsApplyInput,
   parseCmsDraftWrite, parseCmsReleaseInput, parseCmsScheduleRequest, parseCmsSchemaPlanInput,
-  planCmsMigration, planCmsRelease, planCmsSchedule, type CmsConfirmedPlan, type CmsItemRevision,
-  type CmsMigrationDraft, type CmsProblem, type CmsReleaseInput, type CmsReleaseProposal, type CmsSchedule, type CmsV2Operation
+  planCmsMigrationWithRouteTables, planCmsRelease, planCmsSchedule, type CmsConfirmedPlan, type CmsItemRevision,
+  type CmsMigrationDraft, type CmsProblem, type CmsReleaseInput, type CmsReleaseProposal, type CmsRouteBoundMigration,
+  type CmsSchedule, type CmsV2Operation
 } from "../src/cms-v2.js";
 import { cmsCollection, cmsId, cmsItemKey, parseCmsValues } from "../src/cms-v2-schema.js";
 import { parseCollectionValues, type CollectionItem, type CollectionValues } from "../src/collection-model.js";
@@ -12,7 +13,7 @@ import { validatePagePath } from "../src/pages.js";
 import { OPERATION_KEY_HEADER, UUID_V4 } from "../cli/operations.mjs";
 import {
   CmsStore, MAX_BODY, MAX_ITEMS, MAX_RETAINED_BYTES, MAX_SNAPSHOT, blobSize, cmsPathReserved, dateNow, digest,
-  iso, itemBlobKey, nowSeconds, opaque, snapshotKey, type CmsCapability, type CmsScope, type ItemMeta, type JobPayload, type Site
+  iso, itemBlobKey, nowSeconds, opaque, routeTableKey, snapshotKey, type CmsCapability, type CmsScope, type ItemMeta, type JobPayload, type Site
 } from "./managed-cms-store.js";
 import { collectionPath, deliverCmsJob, previewContent, releaseContext } from "./managed-cms-release.js";
 
@@ -177,9 +178,10 @@ async function readPlan<T>(store: CmsStore, site: Site, capability: CmsCapabilit
 
 async function queueRelease(store: CmsStore, mutation: Mutation, proposal: CmsReleaseProposal, token: string, result: object, schedule?: CmsSchedule) {
   const site = mutation.site, { snapshot, expectedReleaseId } = proposal;
-  const size = blobSize(snapshot);
-  const state = { ...site.state, retainedBytes: site.state.retainedBytes + size };
+  const size = blobSize(snapshot), routeTableSize = blobSize(snapshot.routeTable);
+  const state = { ...site.state, retainedBytes: site.state.retainedBytes + size + routeTableSize };
   if (size > MAX_SNAPSHOT || state.retainedBytes > MAX_RETAINED_BYTES) return error("quota_exceeded", 409);
+  await store.put(routeTableKey(site.siteId, snapshot.locale, snapshot.routeTable.revision), snapshot.routeTable);
   await store.put(snapshotKey(site.siteId, snapshot.releaseId), snapshot);
   return mutate(store, mutation, { state, result, tokenHash: await digest(token), requireFreeSlot: true, job: {
     kind: schedule ? "schedule" : "release", id: schedule?.id ?? snapshot.releaseId, at: schedule ? Math.ceil(Date.parse(schedule.at) / 1000) : nowSeconds(),
@@ -188,13 +190,15 @@ async function queueRelease(store: CmsStore, mutation: Mutation, proposal: CmsRe
 }
 
 async function migrationContext(store: CmsStore, site: Site, capability: CmsCapability) {
-  const [drafts, fixed] = await Promise.all([
+  const [drafts, routeTable] = await Promise.all([
     Promise.all(Object.values(site.state.items).map(async (meta): Promise<CmsMigrationDraft> => ({
       item: await store.item(site.siteId, site.state.locale, meta), tombstoned: meta.removedAt !== null
     }))),
-    store.fixedRoutes(site, capability)
+    store.routeTable(site, capability)
   ]);
-  return { drafts, impact: (_before: Site["state"]["schema"], after: Site["state"]["schema"]): CmsProblem[] => {
+  const fixed = new Set(routeTable.reservations.flatMap((entry) =>
+    entry.kind === "fixed-page" || entry.kind === "reserved" ? [entry.path] : []));
+  return { drafts, routeTables: [routeTable], impact: (_before: Site["state"]["schema"], after: Site["state"]["schema"]): CmsProblem[] => {
     const paths = after.collections.flatMap(({ pathPrefix }) => {
       const path = collectionPath(pathPrefix);
       return path === null ? [] : [path];
@@ -209,21 +213,23 @@ async function schemaOperation(store: CmsStore, site: Site, capability: CmsCapab
   if (operation === "cms.schema.plan") {
     const input = parseCmsSchemaPlanInput(body, site.siteId);
     if (input.expectedSchemaRevision !== site.state.schema.schemaRevision) return conflict();
-    const { drafts, impact } = await migrationContext(store, site, capability);
+    const { drafts, routeTables, impact } = await migrationContext(store, site, capability);
     const proposed = { ...input.nextSchema, schemaRevision: opaque("schema") };
-    const migration = planCmsMigration(site.state.schema, proposed, drafts, input.replacements, impact);
+    const migration = planCmsMigrationWithRouteTables({ before: site.state.schema, next: proposed, items: drafts,
+      replacements: input.replacements, routeTables, expectedRouteTableVersions: input.routeTableVersions, impact });
+    if (!migration) return conflict();
     if (migration.problems.length) return json({ status: "invalid", problems: migration.problems }, 422);
     const plan = await storePlan(store, site, capability, "cms.schema.apply", opaque("op"), { migration, replacements: input.replacements });
     if (!plan) return error("plan_unavailable", 409);
     return json({ status: "ready", plan: { ...plan, candidate: migration } });
   }
   const input = parseCmsApplyInput(body, site.siteId);
-  const plan = await readPlan<{ migration: ReturnType<typeof planCmsMigration>; replacements: ReturnType<typeof parseCmsSchemaPlanInput>["replacements"] }>(
+  const plan = await readPlan<{ migration: CmsRouteBoundMigration; replacements: ReturnType<typeof parseCmsSchemaPlanInput>["replacements"] }>(
     store, site, capability, operation, input.operationId, input.confirmationToken);
   if (!plan) return notFound();
-  const { drafts, impact } = await migrationContext(store, site, capability);
+  const { drafts, routeTables, impact } = await migrationContext(store, site, capability);
   const check = checkCmsSchemaApply(siteScope(site), input, { ...plan, operation, candidate: plan.candidate.migration }, dateNow(),
-    site.state.schema, drafts, plan.candidate.replacements, impact);
+    site.state.schema, drafts, routeTables, plan.candidate.replacements, impact);
   if (check.status !== "allowed") return json(check, 409);
   const items: Site["state"]["items"] = {}, revisions = await Promise.all(check.candidate.items.map(async (draft): Promise<CmsItemRevision> => {
     const { collectionId, itemId, values, locale } = draft;
@@ -423,7 +429,8 @@ async function executeV2(request: Request, store: CmsStore, scope: CmsScope, rou
     }
     case "cms.release.current":
       exact(body, ["siteId"]);
-      return json({ snapshot: await currentSnapshot(store, site), locale: site.state.locale, collectionRoot: `/s/${site.slug}/cms` });
+      return json({ snapshot: await currentSnapshot(store, site), locale: site.state.locale,
+        routeTableRevision: (await store.routeTable(site, cap)).revision, collectionRoot: `/s/${site.slug}/cms` });
     case "cms.release.snapshot": {
       exact(body, ["siteId", "releaseId"]);
       const snapshot = await store.historicalSnapshot(site, cmsId(body.releaseId, "releaseId"));
@@ -475,6 +482,7 @@ async function legacyPublish(store: CmsStore, site: Site, operation: "cms.publis
     const items = [...(context.current?.items ?? []).filter((entry) => cmsItemKey(entry) !== key), draft]
       .map(({ collectionId, itemId, revision }) => ({ collectionId, itemId, revision }));
     const ready = planCmsRelease({ siteId: site.siteId, locale: site.state.locale, schemaRevision: site.state.schema.schemaRevision,
+      routeTableRevision: (await store.routeTable(site, "cms.publish")).revision,
       expectedReleaseId: context.current?.releaseId ?? null, items, redirects }, opaque("release"), await releaseContext(store, site, items));
     if (ready.status === "conflict") return error("version_conflict", 409);
     if (ready.status === "invalid") return json({ error: "validation_failed", fields: legacyFields(site, ready.problems) }, 422);

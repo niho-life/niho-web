@@ -234,7 +234,7 @@ test("Studio-native の CMS を Dashboard から開き、下書き作成の再�
     assert.equal(input.siteId, project.site.id);
     observed.push({ path, key: new Headers(init.headers).get("X-Studio-Operation-Key"), input });
     if (path === "cms.schema.read") return json(schema);
-    if (path === "cms.release.current") return json({ snapshot: null, locale: "ja", collectionRoot: "/s/native/cms" });
+    if (path === "cms.release.current") return json({ snapshot: null, locale: "ja", routeTableRevision: "routes_initial", collectionRoot: "/s/native/cms" });
     if (path === "cms.items.list") return json({ items: attempts < 2 ? [] : [
       { id: item.itemId, title: item.values.title, revision: item.revision, removedAt: null, scheduleId: null, status: "draft", scheduledAt: null },
       { id: liveOtherItem.itemId, title: liveOtherItem.values.title, revision: liveOtherItem.revision, removedAt: null, scheduleId: null, status: "draft", scheduledAt: null },
@@ -285,9 +285,19 @@ test("Studio-native の CMS を Dashboard から開き、下書き作成の再�
 
   const otherRow = byText('ul[aria-label="項目一覧"] button', "別の記事 下書き");
   assert.ok(otherRow);
-  await input(document.querySelector(".studio-native-cms-item input"), "保存していない変更");
+  const tagsBeforeInvalidEdit = document.querySelector(".studio-native-cms-item textarea");
+  await inputTextarea(tagsBeforeInvalidEdit, '["初期","追記"');
+  assert.equal(tagsBeforeInvalidEdit.value, '["初期","追記"');
+  assert.equal(byText("button", "公開する").disabled, true, "無効なJSONの間は公開を止める");
+  assert.equal(byText("button", "下書きを保存").disabled, true, "無効なJSONの間は保存を止める");
   await click(otherRow);
   assert.equal(observed.filter(({ path }) => path === "confirm").length, 1);
+  assert.equal(observed.filter(({ path, input }) => path === "cms.items.read" && input.itemId === otherItem.itemId).length, 0);
+  assert.equal(document.querySelector(".studio-native-cms-item textarea").value, '["初期","追記"');
+
+  await input(document.querySelector(".studio-native-cms-item input"), "保存していない変更");
+  await click(otherRow);
+  assert.equal(observed.filter(({ path }) => path === "confirm").length, 2);
   assert.equal(observed.filter(({ path, input }) => path === "cms.items.read" && input.itemId === otherItem.itemId).length, 0);
   assert.equal(document.querySelector(".studio-native-cms-item input").value, "保存していない変更");
 

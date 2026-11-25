@@ -29,7 +29,7 @@ v1 の意味は既存の通りです。v2 を使う Site の v1 の書込み入�
 
 `cms.release.plan` の `routeTableRevision` は必須です。計画時に現在版と違えば conflict を返します。`planCmsRouteTable` は locale の CMS 項目と CMS 所有転送を新しい snapshot に置き換え、固定ページ・テンプレート・予約 path・ホスト所有転送を保持します。固定 path、テンプレートに一致する path、別の CMS 項目、転送元との衝突を見つけた場合は計画を invalid にします。項目の公開 path が前の release から変わった場合は、旧 path から新 path への一段の転送を自動生成します。更新後の予約表はホスト所有の保持分を含め100,000件以下とし、超える計画は `invalid` を返します。snapshot には更新後の完全な route table と転送が入り、release の適用では公開 pointer と route table を同じ CAS で切り替えます。予約実行時にも現在の route table で release 全体を再検証します。
 
-定義移行の入力 `routeTableVersions` は Site の全 locale の現在版を含みます。`planCmsMigrationWithRouteTables` は locale ごとの全 migration item の新 path を予約表と照合し、固定 path、template、予約 path、他の公開 CMS 項目との衝突を計画へ追加します。確認 token は route table の全 locale 版に結び付けられ、適用直前に一致しなければ conflict です。Studio-native では Studio がこの表を管理し、サイトの公開 manifest に含めます。
+定義移行の入力 `routeTableVersions` は Site の全 locale の現在版を含みます。`planCmsMigrationWithRouteTables` は locale ごとの全 migration item の新 path を予約表と照合し、固定 path、template、予約 path、他の公開 CMS 項目との衝突を計画へ追加します。確認 token は route table の全 locale 版に結び付けられ、適用直前に一致しなければ conflict です。Studio-native は不変 route table を非公開 R2 に保存し、最後に公開した snapshot の revision を D1 の CMS state に保持します。計画時にはStudioで管理する固定・予約 pathを照合し、snapshot に更新後の完全な route table を含めます。
 
 ## 定義の移行
 

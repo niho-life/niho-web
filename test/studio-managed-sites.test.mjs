@@ -248,10 +248,29 @@ async function saveDraft(site, draft, title, slug) {
   return (await site.read("cms.items.save", { ...versioned(draft), values: values(title, slug) }, { headers: headers() })).item;
 }
 async function releasePlan(site, schemaRevision, previous, items, at) {
-  const { plan } = await site.read("cms.release.plan", { schemaRevision, locale: "ja", expectedReleaseId: previous,
+  const current = await site.read("cms.release.current");
+  const { plan } = await site.read("cms.release.plan", { schemaRevision, locale: "ja", routeTableRevision: current.routeTableRevision,
+    expectedReleaseId: previous,
     items: items.map(pin), redirects: [], ...(at ? { at } : {}) });
   return { operationId: plan.operationId, confirmationToken: plan.confirmationToken };
 }
+
+testWithD1("Studio CMS release snapshots include live unpublished page reservations", async (t) => {
+  const h = await fixture(t, { cms: true });
+  const site = await cmsSite(h, "reserved-cms-path");
+  const schema = await site.read("cms.schema.read"), initial = await site.read("cms.release.current");
+  const draft0 = await createDraft(site, schema.schemaRevision), draft = await saveDraft(site, draft0, "Reserved path", "notice");
+  assert.equal(h.sqlite.prepare("UPDATE managed_pages SET path = '/about' WHERE site_id = ? AND page_id = 'home'").run(site.siteId).changes, 1);
+  const current = await site.read("cms.release.current");
+  assert.notEqual(current.routeTableRevision, initial.routeTableRevision, "live fixed-page changes advance the route-table revision");
+  const { plan } = await site.read("cms.release.plan", { schemaRevision: schema.schemaRevision, locale: "ja",
+    routeTableRevision: current.routeTableRevision, expectedReleaseId: null, items: [pin(draft)], redirects: [] });
+  await site.read("cms.release.apply", { operationId: plan.operationId, confirmationToken: plan.confirmationToken });
+  await h.cron();
+  const released = await site.read("cms.release.current");
+  assert.equal(released.routeTableRevision, released.snapshot.routeTable.revision);
+  assert.ok(released.snapshot.routeTable.reservations.some(({ kind, path }) => kind === "reserved" && path === "/about"));
+});
 
 testWithD1("Studio CMS uses immutable revisions, site/actor boundaries, confirmation and recoverable release jobs", async (t) => {
   const h = await fixture(t, { cms: true });
@@ -261,8 +280,10 @@ testWithD1("Studio CMS uses immutable revisions, site/actor boundaries, confirma
   assert.ok(discovery.operations.includes("cms.schema.apply"));
   h.sqlite.prepare("INSERT INTO project_members (project_id, access_subject, role, display_name) VALUES (?, ?, 'editor', 'Editor')").run(first.projectId, OTHER);
   const schema = await first.read("cms.schema.read");
+  const current = await first.read("cms.release.current");
   const newCollection = { ...schema.collections[0], id: "news", label: "Fixture news", pathPrefix: "/cms/news/" };
   const planned = await first.read("cms.schema.plan", { expectedSchemaRevision: schema.schemaRevision,
+    routeTableVersions: [{ locale: "ja", revision: current.routeTableRevision }],
     nextSchema: { ...schema, collections: [...schema.collections, newCollection] }, replacements: [] });
   const applySchema = { operationId: planned.plan.operationId, confirmationToken: planned.plan.confirmationToken };
   assert.equal((await first.post("cms.schema.apply", applySchema, { token: h.otherToken })).status, 403);

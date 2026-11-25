@@ -7,7 +7,7 @@ export type ManagedCmsWorkspaceProps = { readonly projectId: string; readonly si
 type ItemSummary = { id: string; title: string; revision: string; removedAt: string | null; scheduleId: string | null; status: string; scheduledAt: string | null };
 type List = { items: ItemSummary[]; nextCursor: string | null };
 type ItemRead = { item: CmsItemRevision; summary: ItemSummary };
-type Current = { snapshot: CmsReleaseSnapshot | null; locale: string; collectionRoot: string };
+type Current = { snapshot: CmsReleaseSnapshot | null; locale: string; routeTableRevision: string; collectionRoot: string };
 type Confirmation = { operationId: string; confirmationToken: string };
 type Preview = { title: string; fields: { label: string; text: string }[] };
 type Settings = { schema: CmsSchema; current: Current; owner: boolean };
@@ -38,6 +38,8 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
   const [item, setItem] = useState<CmsItemRevision | null>(null);
   const [itemStatus, setItemStatus] = useState<ItemSummary | null>(null);
   const [values, setValues] = useState<CollectionValues>({});
+  const [jsonInvalidFields, setJsonInvalidFields] = useState<Record<string, boolean>>({});
+  const [jsonEditorEpoch, setJsonEditorEpoch] = useState(0);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [at, setAt] = useState("");
   const [newCollection, setNewCollection] = useState({ label: "", slug: "" });
@@ -46,7 +48,8 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
   const pendingPlans = useRef(new Map<string, Confirmation>());
   const [feedback, setFeedback] = useState("");
   const currentCollection = settings?.schema.collections.find(({ id }) => id === collectionId);
-  const dirty = item !== null && JSON.stringify(item.values) !== JSON.stringify(values);
+  const jsonInvalid = Object.values(jsonInvalidFields).some(Boolean);
+  const dirty = item !== null && (JSON.stringify(item.values) !== JSON.stringify(values) || jsonInvalid);
 
   async function call<T>(operation: string, input?: Record<string, unknown>, keyed = false, signal?: AbortSignal): Promise<T> {
     const signature = JSON.stringify([operation, input]);
@@ -119,12 +122,14 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
     void action().catch((error) => setFeedback(failureMessage(error))).finally(() => setBusy(false));
   }
   function showItem(next: CmsItemRevision | null, summary: ItemSummary | null = null) {
-    setItem(next); setItemStatus(summary); setValues(next?.values ?? {}); setPreview(null); setAt("");
+    setItem(next); setItemStatus(summary); setValues(next?.values ?? {}); setJsonInvalidFields({});
+    setJsonEditorEpoch((epoch) => epoch + 1); setPreview(null); setAt("");
   }
   function confirmDiscardChanges(): boolean {
     if (!dirty) return true;
     if (!window.confirm("保存していない変更を破棄して切り替えますか？")) return false;
     setValues(item!.values);
+    setJsonInvalidFields({}); setJsonEditorEpoch((epoch) => epoch + 1);
     return true;
   }
   async function readItem(id: string) {
@@ -174,7 +179,8 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
       const oldPath = snapshot?.items.find((pin) => sameItem(pin, draft))?.path;
       const path = collectionPathForEditor(currentCollection!, draft.values);
       const redirects = (snapshot?.redirects ?? []).filter((value) => value.to !== oldPath || !withdraw && oldPath === path);
-      const input = { locale: now.locale, schemaRevision: draft.schemaRevision, expectedReleaseId: snapshot?.releaseId ?? null, items: pins, redirects,
+      const input = { locale: now.locale, schemaRevision: draft.schemaRevision, routeTableRevision: now.routeTableRevision,
+        expectedReleaseId: snapshot?.releaseId ?? null, items: pins, redirects,
         ...(scheduled ? { at: new Date(at).toISOString() } : {}) };
       return (await call<{ plan: Confirmation }>("cms.release.plan", input)).plan;
     });
@@ -200,11 +206,12 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
   }
   async function addCollection() {
     if (!confirmDiscardChanges()) return;
-    const { schema } = settings!;
+    const { schema, current } = settings!;
     const definition = starterCollection(newCollection.slug, newCollection.label, `/cms/${newCollection.slug}/`);
     await applyPlan(JSON.stringify(["cms.schema.apply", schema.schemaRevision, newCollection]), "cms.schema.apply",
       async () => (await call<{ plan: Confirmation }>("cms.schema.plan", {
-        expectedSchemaRevision: schema.schemaRevision, nextSchema: { ...schema, collections: [...schema.collections, definition] }, replacements: []
+        expectedSchemaRevision: schema.schemaRevision, routeTableVersions: [{ locale: current.locale, revision: current.routeTableRevision }],
+        nextSchema: { ...schema, collections: [...schema.collections, definition] }, replacements: []
       })).plan);
     await loadSettings();
     setNewCollection({ label: "", slug: "" });
@@ -265,9 +272,15 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
         </div>
         {item && <div className="studio-native-cms-item">
           <form onSubmit={(event) => { event.preventDefault(); run(save); }}>
-            {currentCollection.fields.map((field) => <CmsFieldEditor key={`${collectionId}/${item.itemId}/${item.revision}/${field.fieldId}`} field={field} value={values[field.fieldId] ?? null}
+            {currentCollection.fields.map((field) => <CmsFieldEditor key={`${collectionId}/${item.itemId}/${item.revision}/${field.fieldId}/${jsonEditorEpoch}`} field={field} value={values[field.fieldId] ?? null}
+              invalidChange={(invalid) => setJsonInvalidFields((previous) => {
+                if (previous[field.fieldId] === invalid) return previous;
+                const next = { ...previous };
+                if (invalid) next[field.fieldId] = true; else delete next[field.fieldId];
+                return next;
+              })}
               disabled={busy} update={(value) => setValues({ ...values, [field.fieldId]: value })} />)}
-            <button disabled={busy || !dirty}>下書きを保存</button>
+            <button disabled={busy || !dirty || jsonInvalid}>下書きを保存</button>
           </form>
           <div className="studio-site-hub-actions">
             <button disabled={busy || dirty} onClick={() => run(async () => {
@@ -304,8 +317,9 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
   </section>;
 }
 
-function CmsFieldEditor({ field, value, disabled, update }: {
-  field: CmsCollection["fields"][number]; value: CollectionValue; disabled: boolean; update: (value: CollectionValue) => void
+function CmsFieldEditor({ field, value, disabled, update, invalidChange }: {
+  field: CmsCollection["fields"][number]; value: CollectionValue; disabled: boolean; update: (value: CollectionValue) => void;
+  invalidChange: (invalid: boolean) => void;
 }) {
   const text = typeof value === "string" ? value : "";
   if (field.type === "longText" || field.type === "richText") return <label>{field.label}
@@ -314,11 +328,11 @@ function CmsFieldEditor({ field, value, disabled, update }: {
   if (["text", "slug", "url", "datetime"].includes(field.type)) return <label>{field.label}
     <input disabled={disabled} value={text} onChange={(event) => update(field.type === "datetime" && !event.target.value ? null : event.target.value)} />
   </label>;
-  return <JsonFieldEditor label={field.label} value={value} disabled={disabled} update={update} />;
+  return <JsonFieldEditor label={field.label} value={value} disabled={disabled} update={update} invalidChange={invalidChange} />;
 }
 
-function JsonFieldEditor({ label, value, disabled, update }: {
-  label: string; value: CollectionValue; disabled: boolean; update: (value: CollectionValue) => void
+function JsonFieldEditor({ label, value, disabled, update, invalidChange }: {
+  label: string; value: CollectionValue; disabled: boolean; update: (value: CollectionValue) => void; invalidChange: (invalid: boolean) => void;
 }) {
   const [text, setText] = useState(JSON.stringify(value));
   return <label>{label} <textarea disabled={disabled} value={text} onChange={(event) => {
@@ -326,8 +340,10 @@ function JsonFieldEditor({ label, value, disabled, update }: {
     setText(next);
     try {
       update(JSON.parse(next) as CollectionValue);
+      invalidChange(false);
       event.target.setCustomValidity("");
     } catch {
+      invalidChange(true);
       event.target.setCustomValidity("有効な JSON を入力してください。");
     }
   }} /></label>;

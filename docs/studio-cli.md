@@ -99,4 +99,4 @@ niho-edit --studio --origin https://studio.example --site demo-site \
   cms-v2 cms.schedule.status --json schedule-status.json
 ```
 
-`cms-v2` の入力ファイルには対象の `siteId` を含めます。予約は `cms.release.plan` にUTCのISO 8601日時 `at` を渡して作った計画を `cms.schedule.create` へ適用します。取消、下書き保存、削除・復元の操作IDは `--operation-id` で渡し、通信障害後は同じ入力とIDを再送します。既存 `cms-publish` の反映結果は `cms-status` で確認できます。同じ入力とIDの再送が受領記録を返す CMS の操作には、汎用 Studio CLI の重複拒否規則に代わって CMS の規則が適用されます。[CMS v2 契約](cms-v2-contract.md)
+`cms-v2` の入力ファイルには対象の `siteId` を含めます。`cms.release.plan` は事前に `cms.release.current` から得た `routeTableRevision` を含めます。定義計画の `cms.schema.plan` には、同じ応答の locale と `routeTableRevision` を `routeTableVersions` に含めます。予約は `cms.release.plan` にUTCのISO 8601日時 `at` を渡して作った計画を `cms.schedule.create` へ適用します。取消、下書き保存、削除・復元の操作IDは `--operation-id` で渡し、通信障害後は同じ入力とIDを再送します。既存 `cms-publish` の反映結果は `cms-status` で確認できます。同じ入力とIDの再送が受領記録を返す CMS の操作には、汎用 Studio CLI の重複拒否規則に代わって CMS の規則が適用されます。[CMS v2 契約](cms-v2-contract.md)

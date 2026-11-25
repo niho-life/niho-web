@@ -34,11 +34,16 @@ export function releaseImpacts(snapshot: CmsReleaseSnapshot, fixedRoutes: Set<st
 }
 
 export async function releaseContext(store: CmsStore, site: Site, pins: readonly CmsReleasePin[]): Promise<CmsReleaseContext> {
-  const approved = await store.approvedPins(site, pins), fixedRoutes = await store.fixedRoutes(site, "cms.publish");
+  const [approved, routeTable] = await Promise.all([
+    store.approvedPins(site, pins), store.routeTable(site, "cms.publish")
+  ]);
+  const fixedRoutes = new Set(routeTable.reservations.flatMap((entry) =>
+    entry.kind === "fixed-page" || entry.kind === "reserved" ? [entry.path] : []));
   const revisions = new Map(await Promise.all(approved.map(async (pin) =>
     [pin.revision, await store.item(site.siteId, site.state.locale, pin)] as const)));
   return {
     schema: site.state.schema, locale: site.state.locale, currentReleaseId: site.state.current?.id ?? null,
+    routeTable,
     readRevision: (pin) => revisions.get(pin.revision),
     isRemoved: (pin) => !site.state.items[cmsItemKey(pin)] || site.state.items[cmsItemKey(pin)]!.removedAt !== null,
     impact: (snapshot) => releaseImpacts(snapshot, fixedRoutes),
