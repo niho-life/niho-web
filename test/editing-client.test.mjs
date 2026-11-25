@@ -226,6 +226,36 @@ test("shared page editing client validates the document envelope but leaves cust
   await assert.rejects(client.save(target, "v1", { ...candidate, arbitrary: true }), (error) => error instanceof EditingApiClientError && error.code === "invalid_response");
 });
 
+test("the editor snapshot client uses its block contracts and rejects an incomplete or mismatched version pair", async () => {
+  const shared = (pageId, body) => ({ schemaVersion: 1, siteId: target.siteId, pageId, locale: target.locale, revision: 1, title: pageId, tokens: {}, body });
+  const presentation = { schemaVersion: 1, siteId: target.siteId, locale: target.locale, version: "p.1", reset: "neutral-v1", tokens: {}, fonts: [],
+    shared: { header: shared("header", [blockDocument.body.at(-1)]), footer: shared("footer", []) } };
+  const base = { document: blockDocument, version: "v1", presentationVersion: "p.1" };
+  const full = { ...base, presentation, editorState: { readOnly: { reason: "Read only" }, englishPublication: { state: "published", retryable: false } } };
+  let reply = full;
+  const client = createPageEditingApiClient({
+    origin: "https://host.example", siteId: target.siteId, editorSnapshot: validationContext,
+    fetch: async (_input, init) => {
+      assert.equal(init.headers.get("Accept"), "application/json; profile=niho-editor-snapshot-v1");
+      return Response.json(reply);
+    }
+  });
+  assert.deepEqual(await client.read(target), full);
+  reply = { ...base, presentation };
+  assert.deepEqual(await client.read(target), reply, "移行中ホストの表示コンテキストだけを受け取る");
+  reply = base;
+  assert.deepEqual(await client.read(target), base, "older hosts return the unextended snapshot");
+  for (const invalid of [
+    { ...full, presentationVersion: "stale" },
+    { ...full, presentation: undefined },
+    { ...base, presentation, presentationVersion: undefined },
+    { ...full, editorState: { englishPublication: { state: "unknown", retryable: true } } }
+  ]) {
+    reply = invalid;
+    await assert.rejects(client.read(target), (error) => error instanceof EditingApiClientError && error.code === "invalid_response");
+  }
+});
+
 test("shared page editing client prepares a release and safely retries with the same operation ID", async () => {
   const client = clientFixture({ publishing: true });
   const snapshot = await client.read(target);

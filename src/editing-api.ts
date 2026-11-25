@@ -1,4 +1,4 @@
-import type { ComponentLibrary, PageDocument } from "./types.js";
+import type { ComponentLibrary, PageDocument, SitePresentation } from "./types.js";
 import { parsePageDocument } from "./document.js";
 import { normalizePageChange, validatePageChangePlan, validateReleasePlan } from "./editor-model.js";
 import type { EditorBreakpointSettings, EditorBreakpointSettingsSaveResult, EditorBreakpointSettingsSnapshot, EditorPage, EditorPageChange, EditorPageChangePlan, EditorReleasePlan, EditorReleaseRequest, EditorSite } from "./editor-types.js";
@@ -23,6 +23,8 @@ import {
   type EditingLocalizationHostAdapter, type EditingLocalizationInput, type EditingLocalizationOperation, type EditingLocalizationOperationId,
 } from "./editing-localization.js";
 import { jsonBytes } from "./localization-workspace-model.js";
+import { EDITING_EDITOR_SNAPSHOT_ACCEPT, parseEditingPageEditorState, parseEditingPagePresentation, type EditingPageEditorState } from "./editing-page-snapshot.js";
+import { ENGLISH_PUBLICATION_STATES } from "./english-publication.js";
 import { inspectPageDocument, PAGE_INSPECT_LIMITS, PageInspectError, parsePageInspectQuery, type PageInspectQuery } from "./page-inspect.js";
 import { PAGE_PREVIEW_INTENT_HEADERS, parsePagePreviewIntent, type EditingPagePreviewIntent } from "./editing-page-preview.js";
 
@@ -44,6 +46,7 @@ export type {
   EditingLocalizationReleasePrepareInput, EditingLocalizationResult,
 } from "./editing-localization.js";
 export type { EditingLocalizationCapability } from "./editing-localization-schemas.js";
+export { EDITING_EDITOR_SNAPSHOT_ACCEPT, type EditingPageEditorState } from "./editing-page-snapshot.js";
 
 /** Stable errors returned by the host-neutral page editing wire contract. */
 export const EDITING_API_ERRORS = Object.freeze([
@@ -70,6 +73,10 @@ export type EditingAuthorizationScope = { readonly siteId: string; readonly page
 export type EditingPageSnapshot = PageOperationVersions & {
   readonly document: PageDocument;
   readonly version: string;
+  /** Must belong to the same host snapshot as document and version. */
+  readonly presentation?: SitePresentation;
+  /** Presence declares that the snapshot includes the editor state supported by the host. */
+  readonly editorState?: EditingPageEditorState;
 };
 export type EditingPageSaveResult = { readonly status: "saved"; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" };
 export type EditingPageReleasePrepareResult = { readonly status: "prepared"; readonly plan: EditorReleasePlan } | { readonly status: "conflict" };
@@ -163,6 +170,28 @@ const documentSchema: JsonSchema = Object.freeze({
   })
 });
 const versionSchema: JsonSchema = Object.freeze({ type: "string", minLength: 1 });
+const presentationSchema: JsonSchema = Object.freeze({
+  type: "object", required: Object.freeze(["schemaVersion", "siteId", "locale", "version", "reset", "tokens", "fonts", "shared"]), additionalProperties: false,
+  properties: Object.freeze({
+    schemaVersion: Object.freeze({ const: 1 }), siteId: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }),
+    version: versionSchema, reset: Object.freeze({ const: "neutral-v1" }), tokens: Object.freeze({ type: "object" }), layout: Object.freeze({ type: "object" }),
+    fonts: Object.freeze({ type: "array", items: Object.freeze({ type: "object" }) }),
+    shared: Object.freeze({ type: "object", required: Object.freeze(["header", "footer"]), additionalProperties: false, properties: Object.freeze({ header: documentSchema, footer: documentSchema }) }),
+    overlays: Object.freeze({ type: "array", items: Object.freeze({ type: "object" }) }), hostViews: Object.freeze({ type: "array", items: Object.freeze({ type: "object" }) }),
+    links: Object.freeze({ type: "object" })
+  })
+});
+const editorStateSchema: JsonSchema = Object.freeze({
+  type: "object", additionalProperties: false, properties: Object.freeze({
+    readOnly: Object.freeze({ type: "object", required: Object.freeze(["reason"]), additionalProperties: false,
+      properties: Object.freeze({ reason: Object.freeze({ type: "string" }), editUrl: Object.freeze({ type: "string" }), editLabel: Object.freeze({ type: "string" }) }) }),
+    englishPublication: Object.freeze({ type: "object", required: Object.freeze(["state", "retryable"]), additionalProperties: false,
+      properties: Object.freeze({ state: Object.freeze({ enum: ENGLISH_PUBLICATION_STATES }), retryable: Object.freeze({ type: "boolean" }), updatedAt: Object.freeze({ type: "string" }) }) }),
+    releases: Object.freeze({ type: "array", items: Object.freeze({ type: "object", required: Object.freeze(["revision", "label"]), additionalProperties: false,
+      properties: Object.freeze({ revision: Object.freeze({ type: "integer", minimum: 1 }), label: Object.freeze({ type: "string" }) }) }) })
+  })
+});
+
 const inspectInputSchema: JsonSchema = Object.freeze({ oneOf: Object.freeze([
   Object.freeze({ type: "object", required: Object.freeze(["siteId", "pageId", "locale", "view"]), additionalProperties: false, properties: Object.freeze({
     siteId: Object.freeze({ type: "string" }), pageId: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }),
@@ -309,7 +338,8 @@ export const EDITING_OPERATIONS = Object.freeze([
     inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId", "pageId", "locale"]), additionalProperties: false,
       properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), pageId: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }) }) }),
     resultSchema: Object.freeze({ type: "object", required: Object.freeze(["document", "version"]), additionalProperties: false,
-      properties: Object.freeze({ document: documentSchema, version: versionSchema, componentsVersion: versionSchema, presentationVersion: versionSchema, stylesVersion: versionSchema }) }),
+      properties: Object.freeze({ document: documentSchema, version: versionSchema, componentsVersion: versionSchema, presentationVersion: versionSchema,
+        stylesVersion: versionSchema, presentation: presentationSchema, editorState: editorStateSchema }) }),
     errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found"] as const)
   }),
   Object.freeze({
@@ -1597,7 +1627,15 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
         if (new TextEncoder().encode(JSON.stringify(result)).byteLength > PAGE_INSPECT_LIMITS.maxResultBytes + 1024) return fail("result_too_large", 413);
         return response(result);
       }
-      return response({ document, version: snapshot.version, ...dependencies });
+      let editorSnapshot: Pick<EditingPageSnapshot, "editorState" | "presentation"> = {};
+      if (operation.id === "pages.read" && request.headers.get("Accept") === EDITING_EDITOR_SNAPSHOT_ACCEPT && (snapshot.editorState !== undefined || snapshot.presentation !== undefined)) {
+        try {
+          const editorState = snapshot.editorState === undefined ? undefined : parseEditingPageEditorState(snapshot.editorState);
+          const presentation = parseEditingPagePresentation(snapshot.presentation, snapshot.presentationVersion, document, context.blocks);
+          editorSnapshot = { ...(editorState ? { editorState } : {}), ...(presentation ? { presentation } : {}) };
+        } catch { return fail("host_contract_violation", 502); }
+      }
+      return response({ document, version: snapshot.version, ...dependencies, ...editorSnapshot });
     }
     if (operation.id === "pages.release-plan") {
       let body: Record<string, unknown> | null;

@@ -2368,14 +2368,11 @@ test("operation conflict keeps the local queue and retries a CLI write only afte
     fetch: (url, options) => api(new Request(url, options))
   });
   const cli = clientFor("cli"), gui = clientFor("gui"), operations = [];
-  let retryResult;
   const app = await setup({ adapter: {
     readDocument: (target, signal) => gui.read(target, signal),
     applyOperations: ({ target, ...request }, signal) => {
       operations.push(request);
-      const result = gui.applyOperations(target, request, signal);
-      if (operations.length === 2) retryResult = result;
-      return result;
+      return gui.applyOperations(target, request, signal);
     },
   } });
   try {
@@ -2385,18 +2382,19 @@ test("operation conflict keeps the local queue and retries a CLI write only afte
     });
     assert.equal(external.status, "applied");
     await click("下書き保存");
-    assert.equal(input("ページタイトル").value, "GUIの編集");
     let retry;
     for (let attempt = 0; attempt < 20 && !retry; attempt++) { await wait(10); retry = button("最新に適用して保存"); }
     assert.ok(retry?.disabled);
+    assert.equal(input("ページタイトル").value, "GUIの編集");
     const confirm = document.querySelector('[role="dialog"] input[type="checkbox"]');
     await act(async () => confirm.click()); await flush();
     await click("最新に適用して保存");
     assert.equal(operations.length, 2);
     assert.equal(operations[1].baseVersion, external.version);
     assert.notEqual(operations[1].operationId, operations[0].operationId);
-    assert.ok(retryResult);
-    assert.equal((await retryResult).status, "applied");
+    // 再適用は画面イベントから非同期で始まるので、hostのjournalへ反映された後で検証する。
+    for (let attempt = 0; attempt < 100 && storage.readJournal().length < 2; attempt++) await wait(10);
+    assert.equal(storage.readJournal().length, 2);
     const { document: saved } = await cli.read(homeTarget);
     assert.equal(saved.title, "GUIの編集");
     assert.equal(saved.meta.description, "CLIの編集");

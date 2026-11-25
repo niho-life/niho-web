@@ -1,4 +1,5 @@
 import { parseKamakuraAssetUploadIntent } from "./kamakura-asset-upload-contract.js";
+import { EDITING_EDITOR_SNAPSHOT_ACCEPT } from "../src/editing-page-snapshot.js";
 import { parseProjectAliasPath, projectShortcutTarget } from "./project-routes.mjs";
 declare const __STUDIO_INDEX_PATH__: string;
 import { siteAdmin } from "./site-admin.mjs";
@@ -1696,8 +1697,9 @@ async function signedKamakuraEditingApiRequest(request: Request, env: Env, ident
   try { bearer = await kamakuraEditingDelegationToken(env, identity, capabilities); }
   catch { throw fail("bridge_secret_missing_or_invalid"); }
 
+  const editorSnapshot = upstreamSuffix.startsWith("/sites/kamakura/operations/pages.read/") && request.headers.get("Accept") === EDITING_EDITOR_SNAPSHOT_ACCEPT;
   const headers = new Headers({
-    Accept: "application/json",
+    Accept: editorSnapshot ? EDITING_EDITOR_SNAPSHOT_ACCEPT : "application/json",
     "Cache-Control": "no-store",
     Authorization: `Bearer ${bearer}`,
     Origin: KAMAKURA_EDITING_API_ORIGIN
@@ -2875,6 +2877,8 @@ async function editorApi(request: Request, env: Env, identity: AccessIdentity, u
  * 同じ URL の中身は変わらないので、ほかの静的応答（no-store）と違ってブラウザに 1 年持たせる。Access の内側の応答なので共有の cache には置かせない（private）。
  */
 const VERSIONED_FONT_PATH = /^\/assets\/fonts\/(?:[a-z0-9-]+-\d+\.\d+\.\d+\/[a-z0-9-]+\.woff2|fonts-[0-9a-f]{12}\.css)$/u;
+/** build が内容 hash を付ける entry の JS/CSS と esbuild の遅延 chunk。hash なしの名前は長期 cache しない。 */
+const VERSIONED_CODE_ASSET_PATH = /^\/assets\/(?:app-[0-9a-f]{12}\.js|(?:studio|project-view|collection|localization)-[0-9a-f]{12}\.css|chunks\/[A-Za-z0-9_-]+-[A-Za-z0-9_-]{8}\.js)$/u;
 const VERSIONED_FONT_CACHE = "private, max-age=31536000, immutable";
 
 function withStaticSecurity(response: Response, editor = false, connectOrigins: readonly string[] = [], fontSources: readonly string[] = [], scriptSources: readonly string[] = [], frameSources: readonly string[] = []): Response {
@@ -3265,7 +3269,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
     return withStaticSecurity(await env.ASSETS.fetch(new Request(indexUrl, { method: request.method, headers: request.headers })), pageAdapter !== null || managedEditor !== null, pageAdapter ? pageAdapter.connectOrigins ?? [] : dashboardConnect, pageAdapter?.fontSources ?? [], pageAdapter?.scriptSources ?? [], pageAdapter ? pageAdapter.frameSources ?? [] : dashboardFrames);
   }
   const asset = withStaticSecurity(await env.ASSETS.fetch(request));
-  if (asset.status === 200 && VERSIONED_FONT_PATH.test(url.pathname)) asset.headers.set("Cache-Control", VERSIONED_FONT_CACHE);
+  if (asset.status === 200 && (VERSIONED_FONT_PATH.test(url.pathname) || VERSIONED_CODE_ASSET_PATH.test(url.pathname))) asset.headers.set("Cache-Control", VERSIONED_FONT_CACHE);
   return asset;
 }
 

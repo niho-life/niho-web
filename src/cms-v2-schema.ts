@@ -4,6 +4,7 @@ import {
 } from "./collection-model.js";
 import { validatePagePath } from "./pages.js";
 import { DocumentValidationError, fail, keys, localeCode, record, string } from "./validation-utils.js";
+import { cmsMigrationRouteProblems, parseCmsRouteTable, type CmsRouteCandidate, type CmsRouteTable, type CmsRouteTableVersion } from "./cms-v2-routes.js";
 
 export type CmsField = CollectionField & { readonly fieldId: string };
 /** Field references use fieldId. key is the name exposed to clients that address fields by name. */
@@ -161,6 +162,7 @@ export type CmsMigration = {
   readonly changes: readonly CmsMigrationChange[];
   readonly problems: readonly CmsProblem[];
 };
+export type CmsRouteBoundMigration = CmsMigration & { readonly routeTableVersions: readonly CmsRouteTableVersion[] };
 const textualTypes = new Set(["text", "longText", "slug", "url"]);
 function convertValue(value: CollectionValue, before: CmsField, after: CmsField): CollectionValue | undefined {
   if (value === null || value === "" || (Array.isArray(value) && value.length === 0)) return undefined;
@@ -240,6 +242,42 @@ export function planCmsMigration(beforeInput: unknown, nextInput: unknown, itemI
   if (replacementByItem.size > 0) fail("replacements", "replacement item is outside the migration");
   return { fromRevision: before.schemaRevision, schema, items, removedItems, changes,
     problems: [...problems, ...cmsReferenceProblems(schema, items.filter(({ tombstoned }) => !tombstoned)), ...(impact?.(before, schema, changes, items) ?? [])] };
+}
+
+/** Bind a schema migration plan to every locale route table and reject stale or missing route versions. */
+export function planCmsMigrationWithRouteTables(input: {
+  readonly before: unknown;
+  readonly next: unknown;
+  readonly items: readonly CmsMigrationDraft[];
+  readonly replacements?: readonly CmsMigrationReplacement[];
+  readonly routeTables: readonly CmsRouteTable[];
+  readonly expectedRouteTableVersions: readonly CmsRouteTableVersion[];
+  readonly impact?: CmsMigrationImpact;
+}): CmsRouteBoundMigration | null {
+  const before = parseCmsSchema(input.before), next = parseCmsSchema(input.next);
+  const tables = input.routeTables.map((table) => parseCmsRouteTable(table, before.siteId));
+  const versions = tables.map(({ locale, revision }) => ({ locale, revision })).sort((a, b) => a.locale < b.locale ? -1 : a.locale > b.locale ? 1 : 0);
+  const expected = [...input.expectedRouteTableVersions].sort((a, b) => a.locale < b.locale ? -1 : a.locale > b.locale ? 1 : 0);
+  if (!tables.length || new Set(versions.map(({ locale }) => locale)).size !== versions.length
+    || JSON.stringify(versions) !== JSON.stringify(expected)) return null;
+  const itemLocales = new Set(input.items.map(({ item }) => parseCmsItemRevision(item, before).locale));
+  if ([...itemLocales].some((locale) => !versions.some((version) => version.locale === locale))) return null;
+
+  const routedImpact: CmsMigrationImpact = (oldSchema, nextSchema, changes, items) => {
+    const routesFor = (locale: string): CmsRouteCandidate[] => items.filter((item) => item.locale === locale && !item.tombstoned).flatMap((item) => {
+      const collection = nextSchema.collections.find(({ id }) => id === item.collectionId);
+      if (!collection?.pathPrefix || !collection.slugField) return [];
+      const slug = item.values[collection.slugField];
+      if (typeof slug !== "string" || !slug) return [];
+      return [{ collectionId: item.collectionId, itemId: item.itemId, path: `${collection.pathPrefix}${slug}` }];
+    });
+    return [
+      ...tables.flatMap((table) => cmsMigrationRouteProblems({ table, schema: nextSchema, routes: routesFor(table.locale) })),
+      ...(input.impact?.(oldSchema, nextSchema, changes, items) ?? []),
+    ];
+  };
+  const migration = planCmsMigration(before, next, input.items, input.replacements ?? [], routedImpact);
+  return { ...migration, routeTableVersions: versions };
 }
 
 /** The supplied items form a complete editable or published view. References resolve inside their locale. */

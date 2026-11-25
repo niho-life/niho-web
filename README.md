@@ -42,7 +42,7 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 | --- | --- |
 | `@niho/web` | JSON 型、`validateDocument` / `parsePageDocument`、閉じた組み込みアイコン・フォーム・Map / YouTube / Vimeo / Lottie / Facebook / X / Instagram / host承認済みBlank埋め込み・VideoWithButton・Loop Box、CSS、リストの印と画像の行内縦位置、画像・native動画を含む React SSR の `PageRenderer` |
 | `@niho/web/core` | 検証・文書型・embed URL正規化・CSS・共通部品の検証と展開、form完了ページの安全な純粋resolver、`data-nw-scope` の文書識別情報を戻す `parsePageScope`。React の runtime import を含みません |
-| `@niho/web/editing-api` | ホストが認証・権限・保存先を実装する、React非依存のページ本文・CMS・ページ管理・ブレークポイント設定・素材・翻訳のHTTP handler。操作IDの型も導出する単一操作catalog、Studio GUIと機械クライアント共通のhost mount、複数ページ公開変更セット、再開tokenの期限切れを通信失敗と区別する状態、discover用JSON Schema・安定エラーを提供（[契約](docs/editing-api-contract.md)） |
+| `@niho/web/editing-api` | ホストが認証・権限・保存先を実装する、React非依存のページ本文・CMS・ページ管理・ブレークポイント設定・素材・翻訳のHTTP handler。操作IDの型も導出する単一操作catalog、Studio GUIと機械クライアント共通のhost mount、ページ本文と型付きの表示コンテキスト・編集状態を一度に読むプロファイル、複数ページ公開変更セット、再開tokenの期限切れを通信失敗と区別する状態、discover用JSON Schema・安定エラーを提供（[契約](docs/editing-api-contract.md)） |
 | `@niho/web/editing-client` | GUIや機械クライアントがhost-neutral wire契約を呼ぶReact非依存HTTP client。CAS、操作ID付き再試行、ページ管理・CMS公開・複数ページ変更セットの二段階確認と状態照会、翻訳の型付き `executeLocalization` を提供し、ホスト固有の永続化・完全検証は API 側へ委ねます。鎌倉の Studio 翻訳画面と `niho-edit` が共通の翻訳操作を使います |
 | `@niho/web/builder` | 汎用の挿入カタログ、モーション定義、host拡張の型と検証。React非依存 |
 | `@niho/web/react` | `PageRenderer` / `SitePageRenderer` とブロック registry の型。編集キャンバスでは props と一致する host view が無いブロックだけ見本または空の枠へ戻し、他の要素を表示し続ける。外部 frame は [サイト単位の許可リスト](docs/site-presentation.md) の外を読み込まず、許可の中でも実行コードの信頼済みリストに入るものだけ origin を維持し、入らない不変 embed などは権限なしの opaque iframe で描く |
@@ -60,7 +60,7 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 | `@niho/web/project-read-model` | summary / dashboardの型・読み取りadapter・runtime parser。React不要 |
 | `@niho/web/collection-workspace` | コレクション（CMS）の一覧と項目の編集の `CollectionWorkspace`。鎌倉ではStudio GUIと `niho-edit` CLIが同じサイトAPIを使い、CMS画像・galleryは安定素材IDで保存して表示時にURL解決します。本文と独立した任意の英語公開状態の更新／安全な再試行、同じ画面で切り替える任意の原文／翻訳タブと訳文タブへの直接リンク（[接続方法](docs/collection-contract.md)、[プラットフォームCMS ADR](docs/adr/0001-platform-cms-source-and-publication.md)） |
 | `@niho/web/localization-workspace` | 未翻訳から始まる翻訳一覧（状態は未翻訳・翻訳済み・対象外。人が確認する工程は 2026-11-12 に廃止）・対象外の理由別表示・自動翻訳の設定（保存ごとの自動翻訳は任意。鎌倉は無効で運用し、訳のあるページを公開する）・価格・条件・法務のページなど原文が更新されたら一覧の上で目立たせる任意の呼びかけ・任意の版付き用語集の表示・初回公開の内訳確認を含む `LocalizationWorkspace` と、CMS 項目に埋め込む `LocalizationItemWorkspace`。一覧の含む内容と関連する訳文への導線、ホストの編集先（Kamakura の共通ページは English キャンバス、CMS は同じ項目の English タブ）、CMS 詳細ページの英語テンプレートへのリンク、保存済みの未公開原文、訳文の自動保存・翻訳案・プレビューを共通化する（[接続方法](docs/localization-workspace-contract.md)）。型と parser は `@niho/web/localization-workspace-model` |
-| `@niho/web/cms-v2` | CMS v2 の定義、項目状態、移行・公開・予約の計画と検証。React 不要（[契約](docs/cms-v2-contract.md)） |
+| `@niho/web/cms-v2` | CMS v2 の定義、項目状態、版付きルート表と競合照合、移行・公開・予約の計画と検証、予約表100,000件・公開転送25,000件の上限。React 不要（[契約](docs/cms-v2-contract.md)） |
 | `@niho/web/collection-model` | コレクションの定義・項目の型（素材参照を含む）、adapter の応答の runtime parser、公開前の値の検証、本文の HTML の無害化。React不要 |
 | `@niho/web/project-editor` | 既存 `EditorAdapter` をProjectの唯一のSiteへ限定するwrapper。サイト単位ブレークポイントの read / save も site ID と応答を再検証する |
 | `@niho/web/pages` | ページのパス検証・ツリー・内部リンク影響、公開メタ情報（title / description / OG画像 / robots / canonical）の解決と `<head>` 出力。React不要。ページ操作の部分接続と、作成直後の下書きを `published: false` で示す鎌倉 Studio の契約は [ページ管理契約](docs/page-contract.md#鎌倉studioの接続範囲) |
