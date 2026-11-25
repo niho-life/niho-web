@@ -152,6 +152,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "bench:editor": "node scripts/bench-editor.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "studio:build": "node studio/build.mjs",
     "studio:typecheck": "tsc -p studio/tsconfig.json --noEmit",

@@ -121,6 +121,30 @@ test("initialTarget opens the requested page and falls back when the page is abs
   finally { await absent.cleanup(); }
 });
 
+test("performance measurements finish after the canvas is ready and a draft is acknowledged", async () => {
+  const events = [];
+  const saved = Promise.withResolvers();
+  const app = await setup({
+    props: { measurePerformance: (operation) => {
+      events.push(["begin", operation]);
+      return () => events.push(["finish", operation]);
+    } },
+    save: () => saved.promise
+  });
+  try {
+    assert.deepEqual(events, [["begin", "initial-load"], ["finish", "initial-load"]]);
+    await clickPage("別ページ");
+    const frame = document.querySelector("iframe");
+    await act(async () => frame.dispatchEvent(new dom.window.Event("load")));
+    assert.deepEqual(events.slice(2), [["begin", "page-switch"], ["finish", "page-switch"]]);
+    await change(input("ページタイトル"), "保存の計測");
+    await click("下書き保存");
+    assert.deepEqual(events.at(-1), ["begin", "save"]);
+    await act(async () => saved.resolve({ status: "saved", version: "v2", revision: fixture.revision + 1 }));
+    assert.deepEqual(events.slice(4), [["begin", "save"], ["finish", "save"]]);
+  } finally { await app.cleanup(); }
+});
+
 test("form completion inspector filters candidates, shows loading and unresolved IDs, and saves only an eligible page ID", async () => {
   let resolvePages;
   const page = structuredClone(fixture); page.body.push({ type: "element", id: "contact_form", tag: "form", formCompletionPageId: "removed", attrs: { name: "contact" }, children: [
