@@ -212,6 +212,10 @@ test("Studio-native の CMS を Dashboard から開き、下書き作成の再�
     revision: "rev_fixture", values: { title: "架空の下書き", tags: ["初期"] } };
   const otherItem = { ...item, itemId: "item_other", revision: "rev_other", values: { title: "別の記事", tags: ["別"] } };
   let liveOtherItem = otherItem;
+  let liveSchema = schema;
+  let plannedSchema = null;
+  let schemaPlanCount = 0;
+  let schemaApplyCount = 0;
   const observed = [];
   let attempts = 0;
   let finishSave;
@@ -233,8 +237,22 @@ test("Studio-native の CMS を Dashboard から開き、下書き作成の再�
     const path = String(url).slice(endpoint.length + 1), input = JSON.parse(init.body);
     assert.equal(input.siteId, project.site.id);
     observed.push({ path, key: new Headers(init.headers).get("X-Studio-Operation-Key"), input });
-    if (path === "cms.schema.read") return json(schema);
+    if (path === "cms.schema.read") return json(liveSchema);
     if (path === "cms.release.current") return json({ snapshot: null, locale: "ja", routeTableRevision: "routes_initial", collectionRoot: "/s/native/cms" });
+    if (path === "cms.schema.plan") {
+      schemaPlanCount += 1; plannedSchema = input.nextSchema;
+      const oldFields = liveSchema.collections[0].fields.map(({ fieldId }) => fieldId);
+      const newFields = input.nextSchema.collections[0].fields.map(({ fieldId }) => fieldId);
+      const removed = oldFields.find((fieldId) => !newFields.includes(fieldId));
+      const added = newFields.find((fieldId) => !oldFields.includes(fieldId));
+      return json({ status: "ready", plan: { operation: "cms.schema.apply", operationId: "schema_operation", siteId: project.site.id,
+        confirmationToken: `schema_token_${schemaPlanCount}`, candidate: { schema: input.nextSchema,
+          changes: removed ? [{ collectionId: "posts", fieldId: removed, kind: "remove" }] : added ? [{ collectionId: "posts", fieldId: added, kind: "add" }] : [], items: [], removedItems: [] } } });
+    }
+    if (path === "cms.schema.apply") {
+      schemaApplyCount += 1; liveSchema = { ...plannedSchema, schemaRevision: `schema_next_${schemaApplyCount}` };
+      return json({ status: "recorded", operationId: input.operationId, result: { schemaRevision: liveSchema.schemaRevision } });
+    }
     if (path === "cms.items.list") return json({ items: attempts < 2 ? [] : [
       { id: item.itemId, title: item.values.title, revision: item.revision, removedAt: null, scheduleId: null, status: "draft", scheduledAt: null },
       { id: liveOtherItem.itemId, title: liveOtherItem.values.title, revision: liveOtherItem.revision, removedAt: null, scheduleId: null, status: "draft", scheduledAt: null },
@@ -258,6 +276,25 @@ test("Studio-native の CMS を Dashboard から開き、下書き作成の再�
   if (!byText("button", "項目を追加")) await wait(350);
   assert.equal(window.location.pathname, `${root}/cms`);
   assert.ok(document.querySelector('[aria-label="CMS"]'));
+  await click(byText("summary", "コレクションとフィールドの定義"));
+  await click(byText("button", "フィールドを追加"));
+  await click(byText("button", "計画を作成・更新"));
+  assert.equal(schemaPlanCount, 1);
+  assert.equal(schemaApplyCount, 0, "計画の確認前には適用しない");
+  assert.equal(plannedSchema.collections[0].fields.length, 3);
+  await click(byText("button", "計画を適用"));
+  assert.equal(schemaApplyCount, 1);
+  assert.equal(observed.find(({ path }) => path === "cms.schema.apply")?.input.confirmationToken, "schema_token_1");
+  const addedField = [...document.querySelectorAll('[aria-label="フィールド定義"] fieldset')].find((fieldset) => fieldset.querySelector("legend")?.textContent === "新しい項目");
+  await click([...addedField.querySelectorAll("button")].find((button) => button.textContent === "削除"));
+  await click(byText("button", "計画を作成・更新"));
+  assert.equal(schemaPlanCount, 2);
+  const applyButton = byText("button", "計画を適用");
+  assert.equal(applyButton.disabled, true, "削除を含む計画は確認前に適用できない");
+  await click(document.querySelector('[aria-label="定義の移行計画"] input[type="checkbox"]'));
+  assert.equal(applyButton.disabled, false);
+  await click(applyButton);
+  assert.equal(schemaApplyCount, 2);
   await click(byText("button", "項目を追加"));
   assert.match(document.querySelector('[aria-label="CMS"]').textContent, /操作が完了しませんでした/u);
   await click(byText("button", "項目を追加"));

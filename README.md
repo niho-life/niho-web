@@ -75,6 +75,7 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 | `@niho/web/localization-release` | 言語単位の不変snapshot、公開するページ（hostが選ぶ。全ページは要らない）の訳の公開条件（確認の工程は 2026-11-12 に廃止。旧い確認の入力は互換のため残る）、route・内部リンク・SEO、prepare/apply/rollback検証。React不要 |
 | `niho-studio` | Access service grant、またはStudio-native siteのmemberが取得した短時間のAccess user tokenを使い、discoverが返すページ編集・公開操作などを行うCLI。確認用Studioの接続設定も [Studio CLIの契約](docs/studio-cli.md) を参照 |
 | `niho-edit` | サイトの共通編集APIを直接呼ぶCUI。`outline` / `find` / `get` でページの必要な範囲だけを読み、`apply --ops <file|-> --dry-run` で操作列と差分を確認して適用する。対応hostでは `preview --widths 375,768,1280 [--compare published]` で同じrendererの下書きを撮影し、ブラウザーが無ければURLだけを返す。`pages.apply` 非対応ホストでは `pages.read` → ローカル操作 → `pages.save` にフォールバックし、信頼済みホスト検証が保存時に行われることを出力する。対応ホストでは翻訳の読み取り・編集・翻訳ジョブ・公開とその状態を操作でき、非同期公開は単一ページと複数ページのどちらも同じ `pages.release-set` で追跡する。鎌倉Studio GUIも同じ共通操作IDを使います（[GUI書込み対応表](docs/ai-edit-source-map.md#鎌倉studioのgui書込み経路)）。host bearer tokenを必須とし、Access保護されたoriginではAccess service grantを追加で送信する。Studio-native CMS には `--studio` とAccess認証を使う。Access資格情報は指定originに限定し、別originの素材転送には渡さない（[編集API契約](docs/editing-api-contract.md)、[Studio-native CMS の CLI](docs/studio-cli.md#studio-native-cms)） |
+| `niho-edit cms-schema-plan` / `cms-schema-apply` | Studio-native CMS のコレクション・フィールド定義を同じ plan/apply API で編集し、変換・削除を確認して適用する（[Studio CLI](docs/studio-cli.md#studio-native-cms)） |
 
 React は optional peer dependency です。API サーバーなど React を入れない利用先では `import { parsePageDocument } from '@niho/web/core'` を使います。root と `/react` は React runtime を import します。
 
