@@ -136,7 +136,10 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
     const id = next.schema.collections.some(({ id }) => id === collectionId) ? collectionId : next.schema.collections[0]?.id ?? "";
     if (id !== collectionId) { showItem(null); setCollectionId(id); }
     await loadList(id, deleted);
-    if (item && id === collectionId) setItemStatus((await readItem(item.itemId)).summary);
+    if (item && id === collectionId) {
+      const selected = await readItem(item.itemId);
+      showItem(selected.item, selected.summary);
+    }
   }
   async function create() {
     if (!confirmDiscardChanges()) return;
