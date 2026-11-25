@@ -214,6 +214,21 @@ type SelectionMode = "replace" | "toggle" | "range";
 type DragItem = { kind: "palette"; type: string } | { kind: "node"; id: string; ids?: readonly string[] };
 type DropPlace = { parentId: string | null; index: number; marker: { left: number; top: number; width: number; height: number; inside: boolean } };
 const asElement = (target: EventTarget | null): HTMLElement | null => target && typeof target === "object" && "nodeType" in target && (target as Node).nodeType === 1 ? target as HTMLElement : null;
+function pairedFormFieldNodeId(document: PageDocument, path: NodePath): string | undefined {
+  const node = nodeAt(document, path);
+  if (node.type !== "element") return undefined;
+  const siblings = path.length === 1 ? document.body : (() => {
+    const parent = nodeAt(document, path.slice(0, -1));
+    return parent.type === "element" ? parent.children : [];
+  })();
+  const index = path.at(-1)!;
+  const controlId = ["input", "textarea", "select"].includes(node.tag) ? node.attrs?.id : undefined;
+  const labelTarget = node.tag === "label" ? node.attrs?.htmlFor : undefined;
+  const pair = siblings.find((candidate, at) => at !== index && candidate.type === "element" &&
+    (typeof controlId === "string" && candidate.tag === "label" && candidate.attrs?.htmlFor === controlId ||
+     typeof labelTarget === "string" && ["input", "textarea", "select"].includes(candidate.tag) && candidate.attrs?.id === labelTarget));
+  return pair?.type === "element" ? pair.id : undefined;
+}
 function Canvas({ document, blocks, width, height, breakpoint, selection, selectedNodeId, selectedNodeIds, slot, select, canEditNode, dragItem, drop, pending, editText, startTextEdit, onShortcut, resize, reportError, editable, structureEditable, locks, preview, previewComponent: PreviewComponent, mode, baseVersion, historyRevision, assets, motionCss, replay, rendered, presentation, presentationRuntime, externalFramePolicy, blankEmbeds, xPostFrameUrl, origins, openInstance, viewportHeight, siteOrigin }: {
   document: PageDocument; blocks: EditorBlockRegistry; width: number; height: number; selection: NodePath | null; selectedNodeId?: string; selectedNodeIds?: readonly string[]; select: (path: NodePath | null, nodeId?: string, slot?: string | null, mode?: SelectionMode) => void;
   canEditNode?: (nodeId: string) => boolean;
@@ -874,13 +889,22 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   function bulkStructural(type: "duplicate" | "remove"): string | boolean {
     if (!document || !selectedNodeIds.length) return false;
     if (selectedNodeIds.length > PAGE_OPERATION_LIMIT) return `一度に操作できる要素は${PAGE_OPERATION_LIMIT}件までです。選択数を減らしてください。`;
-    const paths = selectedNodeIds.flatMap((id) => { const path = pathForNodeId(document, id); return path ? [{ id, path }] : []; })
-      .sort((left, right) => {
-        const count = Math.min(left.path.length, right.path.length);
-        for (let at = 0; at < count; at++) if (left.path[at] !== right.path[at]) return right.path[at]! - left.path[at]!;
-        return right.path.length - left.path.length;
-      });
-    const operations = paths.map(({ path }) => ({ type, path }) as EditorOperation);
+    const selected = new Set(selectedNodeIds), handled = new Set<string>(), operations: EditorOperation[] = [];
+    const orderedIds = walkNodes(document).flatMap(({ node: item }) => item.type !== "text" && selected.has(item.id) ? [item.id] : []);
+    let simulated = document;
+    try {
+      for (const id of orderedIds) {
+        if (handled.has(id)) continue;
+        const path = pathForNodeId(simulated, id);
+        if (!path) { handled.add(id); continue; }
+        const pairId = pairedFormFieldNodeId(simulated, path);
+        handled.add(id); if (pairId) handled.add(pairId);
+        const operation: EditorOperation = { type, path };
+        simulated = editDocument(simulated, operation, blocks, masterId ? [] : sessionRef.current?.locks ?? [], libraryRef.current?.history.present, activeSiteStyles);
+        operations.push(operation);
+      }
+    } catch (error) { return message(error); }
+    if (!operations.length) return false;
     const error = apply(operations);
     if (error) return error;
     if (type === "remove") { setSelection(null); setInspector("page"); }
