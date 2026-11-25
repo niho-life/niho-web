@@ -442,8 +442,15 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
   }, true, ["sign", "verify"]);
   const jwk = { ...await crypto.subtle.exportKey("jwk", pair.publicKey), kid: "catalog-contract-test", alg: "RS256", use: "sig" };
   const token = await accessToken(pair, issuer, audience);
+  const importKey = crypto.subtle.importKey.bind(crypto.subtle);
+  let importedAccessKeys = 0, importedHmacKeys = 0;
+  t.mock.method(crypto.subtle, "importKey", async (...args) => {
+    if (args[0] === "jwk") importedAccessKeys += 1;
+    if (args[0] === "raw" && args[4]?.includes("sign")) importedHmacKeys += 1;
+    return importKey(...args);
+  });
   const workerModule = await loadStudioWorker();
-  let upstreamResponse = new Response(JSON.stringify(catalog(communityDinnerTitle)), { headers: { "Content-Type": "application/json" } });
+  let upstreamResponse = new Response(JSON.stringify(catalog(communityDinnerTitle)), { headers: { "Content-Type": "application/json", ETag: '"catalog-v1"' } });
   let jwksReads = 0;
   let bindingFailure = false;
   let bindingResponseFactory = null;
@@ -474,8 +481,8 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
     KAMAKURA_STUDIO_BRIDGE_SECRET: Buffer.alloc(32, 9).toString("base64url")
   };
 
-  const callCatalog = () => workerModule.default.fetch(new Request("https://studio.niho.life/api/projects/project-kamakura/sites/kamakura/editor/catalog", {
-    headers: { "Cf-Access-Jwt-Assertion": token }
+  const callCatalog = (headers = {}) => workerModule.default.fetch(new Request("https://studio.niho.life/api/projects/project-kamakura/sites/kamakura/editor/catalog", {
+    headers: { "Cf-Access-Jwt-Assertion": token, ...headers }
   }), env);
   const callPage = () => workerModule.default.fetch(new Request("https://studio.niho.life/api/projects/project-kamakura/sites/kamakura/editor/kamakura-community-dinner", {
     headers: { "Cf-Access-Jwt-Assertion": token }
@@ -488,10 +495,25 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
 
   const accepted = await callCatalog();
   assert.equal(accepted.status, 200);
+  assert.equal(accepted.headers.get("ETag"), '"catalog-v1"');
+  assert.equal(accepted.headers.get("Cache-Control"), "private, no-cache");
+  assert.match(accepted.headers.get("Vary"), /Accept/u);
   const acceptedCatalog = await accepted.json();
   assert.equal(acceptedCatalog.pages[0].title, communityDinnerTitle);
   assert.deepEqual(acceptedCatalog.blockContracts, catalog().blockContracts);
   assert.match(boundRequestIds[0], /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu);
+
+  bindingResponseFactory = async (request) => {
+    assert.equal(request.headers.get("If-None-Match"), '"catalog-v1"');
+    return new Response(null, { status: 304, headers: { ETag: '"catalog-v1"' } });
+  };
+  const unchangedCatalog = await callCatalog({ "If-None-Match": '"catalog-v1"' });
+  assert.equal(unchangedCatalog.status, 304);
+  assert.equal(await unchangedCatalog.text(), "");
+  assert.equal(unchangedCatalog.headers.get("Cache-Control"), "private, no-cache");
+  assert.equal(importedAccessKeys, 1, "Access JWK imports are reused for repeated requests");
+  assert.equal(importedHmacKeys, 1, "the bridge HMAC CryptoKey is reused for repeated requests");
+  bindingResponseFactory = null;
 
   const legacyBindingCalls = boundRequestIds.length;
   const legacyPageChange = await workerModule.default.fetch(new Request("https://studio.niho.life/api/projects/project-kamakura/sites/kamakura/editor/page-changes/prepare", {
@@ -504,12 +526,28 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
   let editingApiRequest;
   const commonSnapshot = { document: { schemaVersion: 1, siteId: "kamakura", pageId: "community", locale: "ja", revision: 1, title: "地域のコミュニティ", tokens: {}, body: [] },
     version: "page-v1", editorState: {} };
+  const largeSnapshotBytes = new TextEncoder().encode(JSON.stringify({ ...commonSnapshot,
+    document: { ...commonSnapshot.document, body: [{ type: "element", id: "large", tag: "p", children: [{ type: "text", text: "x".repeat(1024 * 1024) }] }] } }));
+  const largeChunkSize = 16 * 1024;
+  let largeReadMode = false, largeReadPulls = 0;
   bindingResponseFactory = async (request) => {
     editingApiRequest = request;
     const claims = JSON.parse(Buffer.from(request.headers.get("Authorization").slice("Bearer ".length).split(".")[1], "base64url").toString("utf8"));
     const path = new URL(request.url).pathname;
     if (path.endsWith("/capabilities")) return Response.json({ apiVersion: "v1", siteId: "kamakura", operations: [] });
-    if (path.includes("/pages.read/")) return Response.json(commonSnapshot);
+    if (path.includes("/pages.read/")) {
+      if (request.headers.get("If-None-Match") === '"page-v1"') return new Response(null, { status: 304, headers: { ETag: '"page-v1"' } });
+      if (largeReadMode) {
+        let offset = 0;
+        return new Response(new ReadableStream({ pull(controller) {
+          largeReadPulls += 1;
+          if (offset >= largeSnapshotBytes.length) { controller.close(); return; }
+          const end = Math.min(offset + largeChunkSize, largeSnapshotBytes.length);
+          controller.enqueue(largeSnapshotBytes.slice(offset, end)); offset = end;
+        } }), { headers: { "Content-Type": "application/json", ETag: '"page-v1"' } });
+      }
+      return new Response(JSON.stringify(commonSnapshot), { headers: { "Content-Type": "application/json", ETag: '"page-v1"' } });
+    }
     if (path.endsWith("/pages.catalog")) return Response.json({ version: "registry-v1", pages: [{ siteId: "kamakura", pageId: "community", locale: "ja", title: "地域のコミュニティ", path: "/community", kind: "page", visibility: "public", published: true }] });
     if (path.endsWith("/pages.change-prepare")) {
       const input = await request.clone().json();
@@ -552,8 +590,20 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
   const commonPage = await callEditingApi(`${managementBase}/pages.read/community?locale=ja`, "GET", undefined, { Accept: snapshotAccept });
   assert.equal(commonPage.status, 200);
   assert.equal(editingApiRequest.headers.get("Accept"), snapshotAccept);
+  assert.equal(commonPage.headers.get("ETag"), '"page-v1"');
+  assert.equal(commonPage.headers.get("Cache-Control"), "private, no-cache");
   assert.deepEqual(await commonPage.json(), commonSnapshot);
   assert.deepEqual((await assertDelegationSignature(editingApiRequest)).scope, ["pages.read"]);
+  const unchangedPage = await callEditingApi(`${managementBase}/pages.read/community?locale=ja`, "GET", undefined,
+    { Accept: snapshotAccept, "If-None-Match": '"page-v1"' });
+  assert.equal(unchangedPage.status, 304);
+  assert.equal(editingApiRequest.headers.get("If-None-Match"), '"page-v1"');
+  assert.equal(await unchangedPage.text(), "");
+  largeReadMode = true;
+  const largePage = await callEditingApi(`${managementBase}/pages.read/community?locale=ja`);
+  assert.equal(largePage.status, 200);
+  assert.ok(largeReadPulls < Math.ceil(largeSnapshotBytes.length / largeChunkSize), "the BFF returns before buffering the 1 MiB upstream document");
+  assert.deepEqual(new TextEncoder().encode(await largePage.text()), largeSnapshotBytes);
   const managementChange = { action: "update", target: { siteId: "kamakura", pageId: "community", locale: "ja" }, title: "地域の交流", path: "/community" };
   const managedCatalog = await callEditingApi(`${managementBase}/pages.catalog`, "GET", undefined, { Accept: snapshotAccept });
   assert.equal(managedCatalog.status, 200);
@@ -778,15 +828,17 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
 
   upstreamResponse = new Response(JSON.stringify(catalog("invalid\u0000title")), { headers: { "Content-Type": "application/json" } });
   const incompatible = await callCatalog();
-  const incompatibleId = await assertFailure(incompatible, { status: 502, code: contract.KAMAKURA_CATALOG_CONTRACT_ERROR_CODE, category: "upstream_contract_invalid", upstreamStatus: 200 });
+  assert.equal(incompatible.status, 200, "catalog contract validation is performed once by the browser client");
+  assert.equal((await incompatible.json()).pages[0].title, "invalid\u0000title");
 
   upstreamResponse = new Response("not-json", { headers: { "Content-Type": "text/plain" } });
   const malformed = await callCatalog();
-  await assertFailure(malformed, { status: 502, code: contract.KAMAKURA_CATALOG_CONTRACT_ERROR_CODE, category: "upstream_contract_invalid", upstreamStatus: 200 });
+  const malformedId = await assertFailure(malformed, { status: 502, code: contract.KAMAKURA_CATALOG_CONTRACT_ERROR_CODE, category: "upstream_contract_invalid", upstreamStatus: 200 });
 
   upstreamResponse = new Response("{invalid json", { headers: { "Content-Type": "application/json" } });
   const invalidJson = await callCatalog();
-  await assertFailure(invalidJson, { status: 502, code: contract.KAMAKURA_CATALOG_CONTRACT_ERROR_CODE, category: "upstream_contract_invalid", upstreamStatus: 200 });
+  assert.equal(invalidJson.status, 200, "the catalog body is passed through without Worker-side JSON parsing");
+  assert.equal(await invalidJson.text(), "{invalid json");
 
   upstreamResponse = new Response(JSON.stringify({ error: "conflict" }), { status: 409, headers: { "Content-Type": "application/json" } });
   const unexpectedConflict = await callCatalog();
@@ -826,7 +878,7 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
   bindingResponseFactory = (request) => new Response(new ReadableStream({
     start(controller) { request.signal.addEventListener("abort", () => controller.error(new Error("response body aborted")), { once: true }); }
   }), { headers: { "Content-Type": "application/json" } });
-  await assertFailure(await callCatalog(), { status: 503, code: "service_unavailable", category: "service_binding_timeout" });
+  await assertFailure(await callAssetList(), { status: 503, code: "service_unavailable", category: "service_binding_timeout", operation: "asset_list" });
   assert.equal(timeouts.at(-1), 12_000);
   // 公開は commit と読み直しを含むので、ほかの操作より長く待つ（kamakura-site#109）。
   const release = await workerModule.default.fetch(new Request("https://studio.niho.life/api/projects/project-kamakura/sites/kamakura/editor/business-plan/release", {
@@ -849,7 +901,7 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
   assert.equal(serializedLogs.includes("SENSITIVE_UPSTREAM_BODY"), false);
   assert.equal(serializedLogs.includes("binding failure detail must not be logged"), false);
   assert.equal(serializedLogs.includes("response body aborted"), false);
-  assert.equal(boundRequestIds.includes(incompatibleId), true, "the same support ID must cross the service binding");
+  assert.equal(boundRequestIds.includes(malformedId), true, "the same support ID must cross the service binding");
   assert.equal(jwksReads, 1);
 });
 

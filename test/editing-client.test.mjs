@@ -152,6 +152,22 @@ function clientFixture({ token = "owner", initialDocument = blockDocument, publi
   return client;
 }
 
+test("page and catalog reads allow private ETag revalidation", async () => {
+  const requests = [];
+  const client = createPageEditingApiClient({
+    origin: "https://host.example", siteId: target.siteId,
+    fetch: async (input, init) => {
+      requests.push({ url: String(input), cache: init.cache });
+      return String(input).endsWith("/pages.catalog")
+        ? Response.json({ version: "registry-v1", pages: [{ siteId: target.siteId, pageId: target.pageId, locale: target.locale, title: "Home" }] })
+        : Response.json({ document: fixture, version: "v1" });
+    }
+  });
+  await client.read(target);
+  await client.readPageCatalog();
+  assert.deepEqual(requests.map(({ cache }) => cache), ["no-cache", "no-cache"]);
+});
+
 test("shared client reads partial page projections with dependency versions", async () => {
   const client = clientFixture({ versionedInspection: true });
   const result = await client.inspectPage(target, { view: "outline", depth: 1 });

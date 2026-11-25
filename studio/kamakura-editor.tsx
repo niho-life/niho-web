@@ -85,12 +85,14 @@ function localizationPagePath(target: EditorTarget): string {
 
 async function api(path: string, method: RequestMethod, body: Record<string, unknown> | undefined, signal: AbortSignal): Promise<unknown> {
   if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+  const pagePath = path.startsWith(`${BASE}/`) ? path.slice(BASE.length + 1) : "";
+  const revalidateRead = method === "GET" && (pagePath === "catalog" || /^[a-z][a-z0-9-]{0,59}$/u.test(pagePath));
   let response: Response;
   try {
     response = await fetch(path, {
       method,
       signal,
-      cache: "no-store",
+      cache: revalidateRead ? "no-cache" : "no-store",
       credentials: "same-origin",
       headers: { Accept: "application/json", ...(body ? { "Content-Type": "application/json" } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {})
