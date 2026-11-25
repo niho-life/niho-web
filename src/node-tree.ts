@@ -1,6 +1,12 @@
 import type { PageDocument, PageNode } from "./types.js";
 
 export type NodePath = readonly number[];
+export type NodeDocumentIndex = {
+  readonly entries: readonly { node: PageNode; path: number[] }[];
+  readonly paths: ReadonlyMap<string, NodePath>;
+  readonly duplicates: ReadonlySet<string>;
+};
+const documentIndexes = new WeakMap<PageDocument, NodeDocumentIndex>();
 export function nodeAt(document: PageDocument, path: NodePath): PageNode {
   if (!path.length) throw new Error("要素を選択してください。");
   let children = document.body, result: PageNode | undefined;
@@ -24,6 +30,20 @@ export function walkNodes(document: PageDocument): { node: PageNode; path: numbe
     });
   }
   visit(document.body, []); return result;
+}
+/** Immutable editor snapshots reuse one node traversal for selection paths, locks and render projections. */
+export function indexNodeDocument(document: PageDocument): NodeDocumentIndex {
+  const cached = documentIndexes.get(document);
+  if (cached) return cached;
+  const entries = walkNodes(document), paths = new Map<string, NodePath>(), duplicates = new Set<string>();
+  for (const { node, path } of entries) {
+    if (node.type === "text") continue;
+    if (paths.has(node.id)) duplicates.add(node.id);
+    else paths.set(node.id, Object.freeze([...path]));
+  }
+  const index = { entries, paths, duplicates };
+  documentIndexes.set(document, index);
+  return index;
 }
 /** path のノードを含む配列。 */
 export function siblingsAt(document: PageDocument, path: NodePath): PageNode[] {

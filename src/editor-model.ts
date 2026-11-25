@@ -3,7 +3,7 @@ import { detachInstance } from "./component-model.js";
 import { parsePageDocument } from "./document.js";
 import type { EditorBlockRegistry, EditorLock, EditorPage, EditorPageChange, EditorPageChangePlan, EditorPageImpact, EditorReadOnly, EditorReleasePlan, EditorReleaseRequest, EditorSite, EditorTarget } from "./editor-types.js";
 import { findPathConflict, validatePagePath } from "./pages.js";
-import { copyId, nodeAt, siblingsAt, walkNodes, type NodePath } from "./node-tree.js";
+import { copyId, indexNodeDocument, nodeAt, siblingsAt, walkNodes, type NodePath } from "./node-tree.js";
 import type { Appear, AssetReference, BlockContract, ComponentLibrary, ComponentNode, DesignToken, ElementNode, HiddenRange, IconName, InstanceNode, NodeStyle, PageDocument, PageMeta, PageNode, PublicPropValue, StateName, StateProperty, StyleDeclarations, StyleProperty, StyleValue, TextStyle } from "./types.js";
 import { stateNames, textStyleProperties } from "./style-values.js";
 import { assertMotionStylePatch, sameMotionValue, type MotionStylePatch } from "./builder.js";
@@ -75,7 +75,7 @@ export type EditorOperationById = StableEditorOperation<EditorOperation>;
 /** undefined・空文字・false・空配列はその項目を削除する。 */
 export type MetaOperation = { [K in keyof PageMeta]-?: { type: "meta"; field: K; value: PageMeta[K] | undefined } }[keyof PageMeta];
 export type EditorOperationBlocks = Readonly<Record<string, BlockContract & Pick<EditorBlockRegistry[string], "lockedProps" | "styleProperties">>>;
-export type EditorHistory = { past: PageDocument[]; present: PageDocument; future: PageDocument[] };
+export type EditorHistory = { past: PageDocument[]; present: PageDocument; future: PageDocument[]; editRevision?: number };
 export const fingerprint = (document: PageDocument): string => JSON.stringify(document);
 /** Snapshot の任意 read-only 表示契約を、UI と Project adapter で共有して検証する。 */
 export function parseEditorReadOnly(value: unknown): EditorReadOnly | undefined {
@@ -93,7 +93,7 @@ export function parseEditorReadOnly(value: unknown): EditorReadOnly | undefined 
   return { reason, ...(editUrl ? { editUrl } : {}), ...(editLabel ? { editLabel } : {}) };
 }
 export function effectiveLocks(document: PageDocument, locks: readonly EditorLock[], blocks: EditorOperationBlocks): EditorLock[] {
-  return [...locks, ...walkNodes(document).flatMap(({ node }) => node.type === "component"
+  return [...locks, ...indexNodeDocument(document).entries.flatMap(({ node }) => node.type === "component"
     ? Object.entries(blocks[node.block]?.lockedProps ?? {}).map(([name, reason]) => ({ nodeId: node.id, fields: [`props.${name}`], reason })) : [])];
 }
 function fieldValue(node: PageNode, field: string): unknown {
@@ -107,7 +107,7 @@ function fieldValue(node: PageNode, field: string): unknown {
 }
 const mediaSourceFields = ["asset", "attrs.src", "attrs.srcSet"];
 function assertLocks(before: PageDocument, after: PageDocument, locks: readonly EditorLock[]): void {
-  const index = (document: PageDocument) => new Map(walkNodes(document).flatMap(({ node }) => node.type === "text" ? [] : [[node.id, node] as const]));
+  const index = (document: PageDocument) => new Map(indexNodeDocument(document).entries.flatMap(({ node }) => node.type === "text" ? [] : [[node.id, node] as const]));
   const previous = index(before), next = index(after);
   const resolved = (document: PageDocument, value: unknown): unknown => {
     if (Array.isArray(value)) return value.map((entry) => resolved(document, entry));
@@ -546,9 +546,9 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
 }
 function pathForNodeId(document: PageDocument, nodeId: string): NodePath {
   if (typeof nodeId !== "string" || !nodeId) throw new Error("対象ノードIDが正しくありません。");
-  const matches = walkNodes(document).filter(({ node }) => node.type !== "text" && node.id === nodeId);
-  if (matches.length !== 1) throw new Error("対象ノードが見つからないか、IDが重複しています。");
-  return matches[0]!.path;
+  const index = indexNodeDocument(document), path = index.paths.get(nodeId);
+  if (!path || index.duplicates.has(nodeId)) throw new Error("対象ノードが見つからないか、IDが重複しています。");
+  return path;
 }
 function pathForTextTarget(document: PageDocument, parentId: string | null, childPath: NodePath): NodePath {
   if (!Array.isArray(childPath) || childPath.length === 0) throw new Error("テキスト対象の相対パスが正しくありません。");
@@ -575,15 +575,15 @@ export function editDocumentById(document: PageDocument, operation: EditorOperat
   return editDocument(document, operation as EditorOperation, blocks, locks, components, siteStyles);
 }
 export function commitHistory(history: EditorHistory, document: PageDocument): EditorHistory {
-  if (fingerprint(document) === fingerprint(history.present)) return history;
-  return { past: [...history.past.slice(-49), history.present], present: document, future: [] };
+  if (document === history.present) return history;
+  return { ...history, past: [...history.past.slice(-49), history.present], present: document, future: [], editRevision: (history.editRevision ?? 0) + 1 };
 }
 /** 内容と履歴の順序を保ち、保存先が採番した revision を編集の新しい基準にする。 */
 export function acceptSavedRevision(history: EditorHistory, submitted: PageDocument, revision: number): { history: EditorHistory; saved: string } {
   if (!Number.isSafeInteger(revision) || revision <= submitted.revision || history.present.revision !== submitted.revision) throw new Error("保存後の revision が一致しません。編集内容は保持されています。");
   const rebase = (document: PageDocument): PageDocument => ({ ...document, revision });
   return {
-    history: { past: history.past.map(rebase), present: rebase(history.present), future: history.future.map(rebase) },
+    history: { ...history, past: history.past.map(rebase), present: rebase(history.present), future: history.future.map(rebase) },
     saved: fingerprint(rebase(submitted))
   };
 }
@@ -592,8 +592,8 @@ export function travelHistory(history: EditorHistory, direction: "undo" | "redo"
   if (!target) return history;
   parsePageDocument(target, blocks, { ...(components ? { components } : {}), ...(siteStyles ? { siteStyles } : {}) });
   assertLocks(resolvePageStyles(history.present, siteStyles), resolvePageStyles(target, siteStyles), effectiveLocks(history.present, locks, blocks));
-  return direction === "undo" ? { past: history.past.slice(0, -1), present: target, future: [history.present, ...history.future] }
-    : { past: [...history.past, history.present], present: target, future: history.future.slice(1) };
+  return direction === "undo" ? { ...history, past: history.past.slice(0, -1), present: target, future: [history.present, ...history.future], editRevision: (history.editRevision ?? 0) + 1 }
+    : { ...history, past: [...history.past, history.present], present: target, future: history.future.slice(1), editRevision: (history.editRevision ?? 0) + 1 };
 }
 export function sameTarget(left: EditorTarget, right: EditorTarget): boolean {
   return left.siteId === right.siteId && left.pageId === right.pageId && left.locale === right.locale;

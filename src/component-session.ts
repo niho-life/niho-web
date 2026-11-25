@@ -128,7 +128,7 @@ export function trimReloadedHistory(history: EditorHistory, input: { local: Comp
   const unsafe = (document: PageDocument) => walkNodes(document).some(({ node }) => node.type === "instance" && stale(node.component));
   let cut = -1; history.past.forEach((document, index) => { if (unsafe(document)) cut = index; });
   const end = history.future.findIndex(unsafe);
-  return cut < 0 && end < 0 ? history : { past: history.past.slice(cut + 1), present: history.present, future: end < 0 ? history.future : history.future.slice(0, end) };
+  return cut < 0 && end < 0 ? history : { ...history, past: history.past.slice(cut + 1), present: history.present, future: end < 0 ? history.future : history.future.slice(0, end) };
 }
 
 export type RecoveredLibrary = { siteId: string; baseVersion: string; changed: Readonly<Record<string, number | null>>; baseTokens?: Readonly<Record<string, DesignToken>>; library: ComponentLibrary; updatedAt: string };

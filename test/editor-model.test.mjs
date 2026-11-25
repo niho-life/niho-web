@@ -111,9 +111,11 @@ test("data-linked values are locked across field, ancestor removal, duplication 
 test("undo/redo tracks dirty content, clears redo on new edits, and bounds history", () => {
   const original = doc(); let history = { past: [], present: original, future: [] };
   const next = editDocument(original, { type: "title", value: "更新" }); history = commitHistory(history, next);
+  assert.equal(history.editRevision, 1);
+  assert.strictEqual(commitHistory(history, history.present), history);
   assert.notEqual(fingerprint(history.present), fingerprint(original));
-  history = travelHistory(history, "undo", {}, []); assert.equal(fingerprint(history.present), fingerprint(original));
-  history = travelHistory(history, "redo", {}, []); assert.equal(history.present.title, "更新");
+  history = travelHistory(history, "undo", {}, []); assert.equal(fingerprint(history.present), fingerprint(original)); assert.equal(history.editRevision, 2);
+  history = travelHistory(history, "redo", {}, []); assert.equal(history.present.title, "更新"); assert.equal(history.editRevision, 3);
   history = travelHistory(history, "undo", {}, []);
   history = commitHistory(history, editDocument(history.present, { type: "title", value: "別の更新" })); assert.equal(history.future.length, 0);
   for (let index = 0; index < 60; index++) history = commitHistory(history, { ...history.present, title: `更新${index}` });
@@ -123,8 +125,9 @@ test("saved revision rebases all history and the captured checkpoint while prese
   const original = doc(), submitted = editDocument(original, { type: "title", value: "保存開始時" });
   const later = editDocument(submitted, { type: "title", value: "保存中の追加編集" });
   const future = editDocument(later, { type: "title", value: "やり直し先" });
-  const before = { past: [original, submitted], present: later, future: [future] };
+  const before = { past: [original, submitted], present: later, future: [future], editRevision: 3 };
   const accepted = acceptSavedRevision(before, submitted, 7);
+  assert.equal(accepted.history.editRevision, 3);
   assert.ok([...accepted.history.past, accepted.history.present, ...accepted.history.future].every((document) => document.revision === 7));
   assert.equal(accepted.history.present.title, "保存中の追加編集");
   assert.equal(accepted.saved, fingerprint({ ...submitted, revision: 7 }));

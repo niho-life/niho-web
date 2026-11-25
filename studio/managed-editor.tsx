@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { StudioPageEditor } from "./editor-performance.js";
-import { parsePageDocument } from "../src/core.js";
+import { parseEditingPageDocumentEnvelope } from "../src/editing-client.js";
 import { createProjectEditorAdapter } from "../src/project-editor-adapter.js";
 import type {
   EditorAdapter, EditorPage, EditorPageChange, EditorPageChangePlan, EditorReleasePlan,
@@ -51,7 +51,7 @@ function catalog(value: unknown): Catalog {
   return { sites: [{ id: siteSource.id, name: siteSource.name, domains: [domains[0]] }], pages: source.pages.map(page) };
 }
 function snapshot(value: unknown, checkedTarget: EditorTarget): EditorSnapshot {
-  const source = record(value), document = parsePageDocument(source.document);
+  const source = record(value), document = parseEditingPageDocumentEnvelope(source.document);
   if (document.siteId !== checkedTarget.siteId || document.pageId !== checkedTarget.pageId || document.locale !== checkedTarget.locale || typeof source.version !== "string" || !VERSION.test(source.version)) throw new Error("ページ文書が正しくありません。");
   if (!Array.isArray(source.releases) || source.releases.length > 50 || source.releases.some((entry) => {
     const item = record(entry); return !Number.isSafeInteger(item.revision) || Number(item.revision) < 1 || typeof item.label !== "string";

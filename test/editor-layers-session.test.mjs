@@ -3,13 +3,17 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { editDocument } from "../dist/editor-model.js";
 import { canvasViewportHeight, fitCanvasScale, pathForNodeId, projectLayers, visibleLayers } from "../dist/layers.js";
-import { EditorSessionLoadError, readEditorSession } from "../dist/editor-session.js";
+import { indexNodeDocument } from "../dist/node-tree.js";
+import { EditorSessionLoadError, hasUnsavedPageChanges, readEditorSession } from "../dist/editor-session.js";
 
 const source = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 const target = { siteId: source.siteId, pageId: source.pageId, locale: source.locale };
 const snapshot = (document = source) => ({ document: structuredClone(document), version: "v1" });
 
 test("layer projection uses stable IDs, omits raw text rows and resolves current paths after structure edits", () => {
+  const index = indexNodeDocument(source);
+  assert.strictEqual(indexNodeDocument(source), index, "同じ不変文書の索引は再利用する");
+  assert.deepEqual(index.paths.get("heading"), [0, 0]);
   const initial = projectLayers(source);
   assert.deepEqual(initial.map(({ id }) => id), ["hero", "heading", "lead", "link"]);
   assert.equal(initial.find(({ id }) => id === "heading").label, "海のそばで過ごす");
@@ -40,6 +44,13 @@ test("layer moves still pass through core cycle and lock validation", () => {
 test("editor session opens a self-contained document when optional site settings fail", async () => {
   const result = await readEditorSession({ readDocument: async () => snapshot(), readSiteSettings: async () => { throw new Error("offline"); } }, target, new AbortController().signal);
   assert.equal(result.session.history.present.title, source.title);
+  assert.equal(result.session.history.editRevision, 0);
+  assert.equal(result.session.savedEditRevision, 0);
+  assert.equal(hasUnsavedPageChanges(result.session), false);
+  const edited = { ...result.session, history: { ...result.session.history, editRevision: 1 } };
+  assert.equal(hasUnsavedPageChanges(edited), true);
+  assert.equal(hasUnsavedPageChanges({ ...edited, savedEditRevision: 1 }), false);
+  assert.equal(hasUnsavedPageChanges({ ...result.session, operationQueue: { inFlight: {} } }), true);
   assert.equal(result.session.selfContained, true);
   assert.match(result.warning, /文書単体/);
 });

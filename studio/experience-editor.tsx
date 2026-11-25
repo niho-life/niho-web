@@ -6,6 +6,7 @@ import type { Project } from "../src/projects.js";
 import type { PublicPropValue } from "../src/types.js";
 import { studioBuilderDefinition } from "./integration-builder.js";
 import { projectRoutePath } from "./project-routes.mjs";
+import { parseEditingPageDocumentEnvelope } from "../src/editing-client.js";
 
 const BASE = "/api/projects/project-experience/sites/experience/editor";
 const STAGING_BASE = "/api/projects/project-experience/sites/experience/editor-staging";
@@ -98,10 +99,10 @@ function parsePages(value: unknown): readonly EditorPage[] {
 }
 
 function parseSnapshot(value: unknown, target: EditorTarget): EditorSnapshot {
-  const source = record(value), document = record(source.document);
+  const source = record(value), document = parseEditingPageDocumentEnvelope(source.document);
   const checked = validTarget(target);
   if (document.siteId !== checked.siteId || document.pageId !== checked.pageId || document.locale !== checked.locale || !validVersion(source.version)) throw new Error("文書の対象または版が一致しません。");
-  return structuredClone(value) as EditorSnapshot;
+  return { ...source, document } as unknown as EditorSnapshot;
 }
 
 function parseSaved(value: unknown): Extract<EditorSaveResult, { status: "saved" }> {

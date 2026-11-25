@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { performance } from "node:perf_hooks";
 import { parsePageDocument } from "../dist/document.js";
-import { editDocument } from "../dist/editor-model.js";
-import { editorSessionFrom } from "../dist/editor-session.js";
+import { commitHistory, editDocument } from "../dist/editor-model.js";
+import { editorSessionFrom, hasUnsavedPageChanges } from "../dist/editor-session.js";
+import { indexNodeDocument } from "../dist/node-tree.js";
 import { inspectPageDocument } from "../dist/page-inspect.js";
 
 const document = {
@@ -28,15 +29,24 @@ const target = { siteId: document.siteId, pageId: document.pageId, locale: docum
 const snapshot = { document, version: "initial" };
 const change = { type: "style", path: [49, 18], breakpoint: "base", property: "color", value: "#123456" };
 const outline = { view: "outline" };
+const history = { past: [], present: parsed, future: [], editRevision: 0 };
+const dirtySession = { history: { ...history, editRevision: 1 }, savedEditRevision: 0, operationQueue: {} };
 assert.equal(inspectPageDocument(parsed, outline).items.length, 1_000);
 assert.equal(editDocument(parsed, change).body[49].children[18].style.base.color, "#123456");
+assert.strictEqual(commitHistory(history, parsed), history);
+assert.equal(indexNodeDocument(parsed).paths.get("item-49-18")?.join("."), "49.18");
+assert.equal(hasUnsavedPageChanges(dirtySession), true);
 
 const reference = () => JSON.parse(json);
 const benchmarks = [
   { name: "parsePageDocument", run: () => parsePageDocument(document), limit: 1.25 },
   { name: "editorSessionFrom", run: () => editorSessionFrom(snapshot, target, {}), limit: 3 },
   { name: "editDocument", run: () => editDocument(parsed, change), limit: 3.5 },
-  { name: "pages.inspect outline", run: () => inspectPageDocument(parsed, outline), limit: 4 }
+  { name: "pages.inspect outline", run: () => inspectPageDocument(parsed, outline), limit: 4 },
+  { name: "commitHistory unchanged", run: () => commitHistory(history, parsed), limit: 0.02 },
+  { name: "node ID index build", run: () => indexNodeDocument({ ...parsed }), limit: 0.25 },
+  { name: "node ID index reuse", run: () => indexNodeDocument(parsed).paths.get("item-49-18"), limit: 0.02 },
+  { name: "page dirty check", run: () => hasUnsavedPageChanges(dirtySession), limit: 0.02 }
 ];
 // 実行機間の速度差を抑えるため、同じ入力の JSON デコードを各サンプルと交互に計測する。
 // ウォームアップ後の複数バッチの中央値で、単発の GC やスケジューリングの影響を抑える。

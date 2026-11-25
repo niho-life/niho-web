@@ -22,6 +22,7 @@ import { PageReleaseSetDialog } from "./editor-release-set.js";
 import { AutosaveSwitch, ConflictDialog, HistoryBar, HistoryDialogs, LibraryRecoveryBanner, RecoveryBanner, RecoveryCompareDialog, ReleaseAffected, SaveStatus, VersionPanel, autosaveDelay, classifySaveError, formatDateTime, isOffline, saveProblemNotice, saveStatus, targetKeyOf, useAutosave, useLibraryRecovery, useOnline, useRecovery, useVersionHistory, type LatestSnapshot, type SaveProblem } from "./editor-history.js";
 import { isDirectlyEditable, readEditableChildren } from "./editor-rich-text.js";
 import { isSafePublicLink } from "./validation-utils.js";
+import { indexNodeDocument } from "./node-tree.js";
 import type { ComponentUsageEntry, EditorBlockRegistry, EditorCanvasPreviewProps, EditorLocaleReleasePlan, EditorLocaleReleaseState, EditorLock, EditorPage, EditorPageChange, EditorReleasePlan, EditorReleaseRequest, EditorSite, EditorTarget, EnglishPublication, PageEditorProps } from "./editor-types.js";
 import type { ComponentKind, ComponentLibrary, IconName, PageDocument, PageNode, SitePresentation } from "./types.js";
 import { AssetLibraryPanel, BackgroundImageField, ImageSourceField, VideoSourceField, assetPlacement, socialImageProblem, useLocalAssetUsage, useResolvedAssets, type AssetAction, type AssetPicker } from "./editor-assets.js";
@@ -44,7 +45,7 @@ import { LanguageSelector, LocalizationPanel, editorLocalizationLocaleFor, local
 import { parseEditorLocaleReleaseApplyResult, parseEditorLocaleReleasePlan, parseEditorLocaleReleaseState } from "./editor-locale-release.js";
 import { documentLocaleFor, validateLocalizedDocumentSave, type LocalizationLocale } from "./localization.js";
 import { acceptAppliedOperations, canSendOperations, fallbackOperations, operationQueue as createOperationQueue, operationApplier, reviewOperationConflict, queuePageEdit, queuePageTravel } from "./editor-operation-queue.js";
-import { editorSessionFrom, readEditorSession, type EditorSession } from "./editor-session.js";
+import { editorSessionFrom, hasUnsavedPageChanges, readEditorSession, type EditorSession } from "./editor-session.js";
 import { canvasViewportHeight, elementTypeLabel, fitCanvasScale, layerLabel, pathForNodeId, projectLayers, visibleLayers } from "./layers.js";
 import { LayerTreePanel } from "./editor-layers.js";
 import { CanvasViewportToolbar, EditorWorkspace, InspectorTabs, PanelToggle, ViewportEdgeHandle, WorkspaceIcon, WorkspaceScaleSelect, viewportPresets, workspaceScales, type WorkspaceScale, type WorkspaceTab } from "./editor-workspace.js";
@@ -65,7 +66,6 @@ export type { LayerTreePanelProps } from "./editor-layers.js";
 export { readEditorSession, projectLayers, pathForNodeId, visibleLayers, fitCanvasScale, canvasViewportHeight, LayerTreePanel };
 const emptyBlocks: EditorBlockRegistry = {};
 type Session = EditorSession;
-const needsPageSave = (session: Session) => !!session.operationQueue.inFlight || fingerprint(session.history.present) !== session.saved;
 /** 部品を読み直す確認中の状態。library・page は確認を始めた時点の作業コピーの fingerprint（変わっていれば適用しない）。 */
 type LibraryReload = { fresh: LibrarySession; plan: LibraryReloadPlan; library: string; page: string | undefined };
 type Inspector = "element" | "page" | "site" | "localization";
@@ -607,7 +607,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const pending = useMemo(() => pendingFor("page"), []), sitePending = useMemo(() => pendingFor("site"), []);
   const pageInputPending = Object.values(pendingFields).includes("page");
   const manualInputPending = !!localizationManual?.pending && !!session && sameTarget(localizationManual.target, session.target);
-  const hasInput = Object.keys(pendingFields).length > 0 || manualInputPending, dirty = !!session && needsPageSave(session);
+  const hasInput = Object.keys(pendingFields).length > 0 || manualInputPending, dirty = !!session && hasUnsavedPageChanges(session);
   const masterId = editing && libraryPresent?.components.some((component) => component.id === editing) ? editing : null;
   const libraryDirty = !!library && libraryFingerprint(library.history.present) !== library.saved, pendingChanges = dirty || libraryDirty, locale = session?.target.locale ?? "ja";
   const blocked = !!busy || !!plan || !!localeReleasePlan || !!pageChange || !!releaseSetPages;
@@ -692,7 +692,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         replace({ ...current, operationQueue: fallbackOperations(current.operationQueue), siteStyles: styleMigration.styles, history: commitHistory(current.history, document) });
         setStyleMigration(null); setNotice("サイト共通スタイルを保存しました。移行したページの下書きを保存してください。");
       } catch { setNotice("サイト共通スタイルを保存しましたが、ページの移行を適用できませんでした。ページの編集内容は保持しています。"); }
-    } else if (current && !needsPageSave(current)) void load(current.target, { preserveView: true });
+    } else if (current && !hasUnsavedPageChanges(current)) void load(current.target, { preserveView: true });
   }, [siteSettings.styleSaveEpoch, load, blocks, replace, styleMigration, siteSettings.settings]);
   useEffect(() => {
     if (styleMigration && !siteSettings.stylesDirty && JSON.stringify(siteSettings.styles) !== JSON.stringify(styleMigration.styles)) setStyleMigration(null);
@@ -874,7 +874,8 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       const lib = libraryRef.current?.history.present, history = travelHistory(current.history, direction, blocks, current.locks, lib, activeSiteStyles);
       if (lib && !fitsLibrary(history.present, lib, blocks, activeSiteStyles)) { setNotice(mismatch); return false; }
       const operationQueue = adapter.applyOperations && !targetMode ? queuePageTravel(current.operationQueue, current.history.present, history.present, direction, operationApplier(blocks, current.locks, lib, activeSiteStyles)) : current.operationQueue;
-      replace({ ...current, history, operationQueue }); setNotice(""); return true;
+      const savedEditRevision = history !== current.history && fingerprint(history.present) === current.saved ? history.editRevision ?? 0 : current.savedEditRevision;
+      replace({ ...current, history, operationQueue, savedEditRevision }); setNotice(""); return true;
     } catch (error) { setNotice(message(error)); return false; }
   }
   /**
@@ -912,7 +913,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     if (siteSettings.stylesDirty || siteSettings.busy || !sessionRef.current && !libraryChanged || action.current || blocked || hasInput || historyMode || !!sessionRef.current && !localizationReady || mode === "auto" && isOffline()) return false;
     const finish = measurePerformance?.("save");
     const controller = new AbortController(), auto = mode === "auto", hadProblem = !!problemRef.current; action.current = controller; if (!auto) setNotice("");
-    let current = sessionRef.current, librarySaved = false, pageSaved = false, applyingOperations = false;
+    let current = sessionRef.current, librarySaved = false, pageSaved = false, applyingOperations = false, saveEditRevision: number | undefined;
     const sameSession = () => { const latest = sessionRef.current; return !!latest && !!current && sameTarget(latest.target, current.target); };
     const failed = (next: SaveProblem, thrown: boolean) => {
       if (!sameSession()) return;
@@ -924,12 +925,13 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     };
     try {
       if (changed && libraryChanged) { if (!await saveComponents(changed, controller.signal, auto)) return false; librarySaved = true; current = sessionRef.current; }
-      if (librarySaved && (!current || !needsPageSave(current))) {
+      if (librarySaved && (!current || !hasUnsavedPageChanges(current))) {
         setProblem(null); setSavedAt(new Date()); if (!auto) setNotice("コンポーネントを保存しました。"); else if (hadProblem) setNotice("");
         return true;
       }
       if (!current) return false;
       if (current.readOnly) { if (!auto) setNotice(current.readOnly.reason); return false; }
+      saveEditRevision = current.history.editRevision ?? 0;
       setBusy("保存中");
       const lib = libraryRef.current?.history.present, document = parsePageDocument(detachRemovedSiteStyles(current.history.present, current.siteStyles ?? {}, siteSettings.settings ?? {}), blocks, { ...(lib ? { components: lib } : {}), ...(siteSettings.settings ? { siteStyles: siteSettings.settings } : {}) });
       const localized = targetMode ? localization.context : null;
@@ -957,7 +959,8 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         const latest = sessionRef.current;
         if (latest && sameTarget(latest.target, current.target) && latest.version === current.version) {
           const acknowledged = acceptAppliedOperations(latest.operationQueue, { ...result, document: canonical }, latest.history, applyToPage);
-          replace({ ...latest, history: acknowledged.history, operationQueue: acknowledged.queue, saved: fingerprint(canonical), version: result.version, hasSavedDraft: true });
+          const saved = fingerprint(canonical), matchesSaved = !acknowledged.replayFailed && fingerprint(acknowledged.history.present) === saved;
+          replace({ ...latest, history: acknowledged.history, operationQueue: acknowledged.queue, saved, savedEditRevision: matchesSaved ? saveEditRevision ?? latest.savedEditRevision : latest.savedEditRevision, version: result.version, hasSavedDraft: true });
           if (acknowledged.replayFailed) {
             failed("conflict", false);
             return false;
@@ -974,7 +977,8 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         const latest = sessionRef.current;
         if (latest && sameTarget(latest.target, current.target) && latest.version === current.version) {
           const acknowledged = acceptSavedRevision(latest.history, document, result.revision);
-          replace({ ...latest, ...acknowledged, version: result.version, hasSavedDraft: true,
+          const matchesSaved = fingerprint(acknowledged.history.present) === acknowledged.saved;
+          replace({ ...latest, ...acknowledged, savedEditRevision: matchesSaved ? saveEditRevision ?? latest.savedEditRevision : latest.savedEditRevision, version: result.version, hasSavedDraft: true,
             operationQueue: adapter.applyOperations && !localized
               ? createOperationQueue({ ...document, revision: result.revision })
               : { ...latest.operationQueue, base: { ...document, revision: result.revision }, pending: [] } });
@@ -1176,10 +1180,11 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     try { fresh = editorSessionFrom(snapshot, current.target, blocks, libraryRef.current?.history.present, siteSettingsRef.current.settings, !siteSettingsRef.current.settings); }
     catch { setNotice("最新の表示コンテキストを検証できませんでした。編集内容は保持しています。"); return; }
     const rebase = (document: PageDocument): PageDocument => ({ ...document, revision: latest.revision });
-    const history = { past: current.history.past.map(rebase), present: rebase(current.history.present), future: current.history.future.map(rebase) };
-    replace({ ...fresh, history, operationQueue: fallbackOperations(fresh.operationQueue), saved: fingerprint(latest) });
+    const history = { ...current.history, past: current.history.past.map(rebase), present: rebase(current.history.present), future: current.history.future.map(rebase) };
+    const matchesSaved = fingerprint(history.present) === fingerprint(latest);
+    replace({ ...fresh, history, savedEditRevision: matchesSaved ? history.editRevision ?? 0 : fresh.savedEditRevision, operationQueue: fallbackOperations(fresh.operationQueue), saved: fingerprint(latest) });
     setConflictView(0); setProblem(null);
-    if (fingerprint(history.present) === fingerprint(latest)) { setNotice("最新の保存内容と同じ内容です。"); return; }
+    if (matchesSaved) { setNotice("最新の保存内容と同じ内容です。"); return; }
     void save("manual");
   }
   function operationConflictReview({ snapshot }: LatestSnapshot) {
@@ -1190,7 +1195,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       const fresh = editorSessionFrom(snapshot, current.target, blocks, library?.history.present, settings, !settings);
       if (fresh.readOnly || (fresh.dependencyVersions.componentsVersion !== undefined && fresh.dependencyVersions.componentsVersion !== library?.version && fresh.dependencyVersions.componentsVersion !== current.dependencyVersions.componentsVersion)
         || fresh.dependencyVersions.stylesVersion !== current.dependencyVersions.stylesVersion) return undefined;
-      const reviewed = reviewOperationConflict(current.operationQueue, fresh.history.present, current.history.present, operationApplier(blocks, fresh.locks, library?.history.present, settings));
+      const reviewed = reviewOperationConflict(current.operationQueue, fresh.history.present, current.history.present, operationApplier(blocks, fresh.locks, library?.history.present, settings), current.history.editRevision ?? 0);
       return reviewed ? { fresh, reviewed } : undefined;
     } catch { return undefined; }
   }
@@ -1199,9 +1204,10 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     const next = operationConflictReview(latest);
     if (!next) { setNotice("最新の内容に編集を適用できません。手元の変更は保持しています。"); return; }
     const { fresh, reviewed } = next;
-    replace({ ...fresh, history: reviewed.history, operationQueue: reviewed.queue });
+    const matchesSaved = fingerprint(reviewed.history.present) === fresh.saved;
+    replace({ ...fresh, history: reviewed.history, savedEditRevision: matchesSaved ? reviewed.history.editRevision ?? 0 : fresh.savedEditRevision, operationQueue: reviewed.queue });
     setConflictView(0); setProblem(null);
-    if (fingerprint(reviewed.history.present) === fresh.saved) { setNotice("最新の保存内容と同じ内容です。"); return; }
+    if (matchesSaved) { setNotice("最新の保存内容と同じ内容です。"); return; }
     void save("manual");
   }
   /**
@@ -1248,7 +1254,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     setNavigation(null);
     if (!await save("manual")) return;
     const current = sessionRef.current;
-    if (current && needsPageSave(current)) { setNotice("保存中に変更がありました。もう一度保存してから移動してください。"); return; }
+    if (current && hasUnsavedPageChanges(current)) { setNotice("保存中に変更がありました。もう一度保存してから移動してください。"); return; }
     navigate(next);
   }
 
@@ -1258,14 +1264,17 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const rawDocument = master ?? session?.history.present;
   const siteStylesReady = !adapter.readSiteSettings || siteSettings.status === "ready" && !!siteSettings.settings || session?.siteStyles !== undefined || !!session?.selfContained;
   const document = useMemo(() => rawDocument && siteStylesReady ? (master ? resolveComponentStyles(rawDocument, activeSiteStyles) : resolvePageStyles(detachRemovedSiteStyles(rawDocument, session?.siteStyles ?? {}, activeSiteStyles), activeSiteStyles)) : undefined, [rawDocument, master, activeSiteStyles, siteStylesReady, session?.siteStyles]);
-  const selection = document ? pathForNodeId(document, selectedId) : null;
-  const entries = document ? walkNodes(document) : [];
-  const contentRows = entries.flatMap(({ node, path }) => {
+  const nodeIndex = useMemo(() => document ? indexNodeDocument(document) : undefined, [document]);
+  const entries = nodeIndex?.entries ?? [];
+  const pathIndex = nodeIndex?.paths ?? new Map<string, NodePath>();
+  const selection = selectedId ? pathIndex.get(selectedId) ?? null : null;
+  const contentRows = useMemo(() => entries.flatMap(({ node, path }) => {
     if (node.type !== "element" || node.embed || node.icon) return [];
     const value = node.children.flatMap((child) => child.type === "text" ? [child.text] : []).join(" ").replace(/\s+/gu, " ").trim();
     return value ? [{ id: node.id, path, tag: node.tag, value }] : [];
-  });
-  const visibleContentRows = contentRows.filter(({ value }) => value.toLocaleLowerCase().includes(contentSearch.trim().toLocaleLowerCase()));
+  }), [entries]);
+  const contentQuery = contentSearch.trim().toLocaleLowerCase();
+  const visibleContentRows = useMemo(() => contentRows.filter(({ value }) => value.toLocaleLowerCase().includes(contentQuery)), [contentRows, contentQuery]);
   // インスペクタの候補に出す定義の場所。ページでは rawDocument に無い名前がサイト共通、部品の編集ではサイト共通に同名の定義がある名前がサイト共通。
   const styleOrigins = useMemo(() => {
     if (!rawDocument || !document) return undefined;
@@ -1287,7 +1296,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const formCompletionCandidates = useMemo(() => formCompletionTarget && formCompletionPages.status === "ready" && formCompletionPages.target === formCompletionTargetKey
     ? eligibleFormCompletionPages(formCompletionPages.pages, formCompletionTarget) as readonly EditorPage[] : [], [formCompletionPages, formCompletionTargetKey]);
   const staleProps = node?.type === "instance" && document && libraryPresent ? componentIssues(document, libraryPresent).find((issue) => issue.nodeId === node.id)?.staleProps ?? [] : [];
-  const locks = document ? effectiveLocks(document, masterId ? [] : session?.locks ?? [], blocks) : [];
+  const locks = useMemo(() => document ? effectiveLocks(document, masterId ? [] : session?.locks ?? [], blocks) : [], [document, masterId, session?.locks, blocks]);
   const reason = (field: string) => document && selection ? lockReason(document, selection, field, locks) : undefined;
   const pathKey = `${fieldEpoch}-${selection?.join(".") ?? "page"}`;
   const slotName = !targetMode && slotChoice?.name && slotChoice.of === selectedId && node?.type === "component" && declaredSlot(blocks[node.block], slotChoice.name) ? slotChoice.name : null;
@@ -1757,7 +1766,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
             disabled={masterId ? libraryBlocked : pageOperationalBlocked} draggable={!editBlocked && !hasInput && !targetMode}
             className={(entry) => `${layerDrop?.id === entry.id ? ` drop-${layerDrop.position}` : ""}${hiddenAt(entry.node, width) ? " is-hidden-here" : ""}`}
             trailing={(entry) => hiddenAt(entry.node, width) ? <small className="e-layer-hidden">この幅で非表示</small> : null}
-            select={(id) => select(id ? pathForNodeId(document, id) : null)}
+            select={(id) => select(id ? pathIndex.get(id) ?? null : null)}
             dragStart={(event, id) => startDrag(event, { kind: "node", id })} dragEnd={() => { dragItem.current = null; setLayerDrop(null); }}
             dragOver={(event, id) => { if (!dragItem.current) return; const place = layerPlace(event, id); if (!place) return; event.preventDefault(); event.dataTransfer.dropEffect = dragItem.current.kind === "node" ? "move" : "copy"; setLayerDrop({ id, position: place.position }); }}
             drop={(event, id) => { if (!dragItem.current) return; const place = layerPlace(event, id); if (place) { event.preventDefault(); dropAt(dragItem.current, place); } dragItem.current = null; setLayerDrop(null); }} />}

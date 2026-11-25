@@ -202,7 +202,7 @@ export function canSendOperations(queue: EditorOperationQueue, document: PageDoc
   catch { return false; }
 }
 
-function followCanonicalHistory(queue: EditorOperationQueue, present: PageDocument, apply: Apply) {
+function followCanonicalHistory(queue: EditorOperationQueue, present: PageDocument, apply: Apply, editRevision = 0) {
   const past: PageDocument[] = [], future: PageDocument[] = [];
   const unwind = (changes: readonly Change[], direction: "inverse" | "forward", documents: PageDocument[]) => {
     let current = present;
@@ -216,7 +216,7 @@ function followCanonicalHistory(queue: EditorOperationQueue, present: PageDocume
   unwind(queue.future, "forward", future);
   return {
     queue: { ...queue, past: queue.past.slice(queue.past.length - past.length), future: queue.future.slice(0, future.length) },
-    history: { past: past.reverse(), present, future },
+    history: { past: past.reverse(), present, future, editRevision },
   };
 }
 
@@ -227,11 +227,11 @@ export function acceptAppliedOperations(queue: EditorOperationQueue, result: Edi
   delete next.inFlight;
   if (!pending.length) delete next.since;
   const revise = (document: PageDocument) => ({ ...document, revision: result.revision });
-  const revised = { past: history.past.map(revise), present: revise(history.present), future: history.future.map(revise) };
+  const revised = { ...history, past: history.past.map(revise), present: revise(history.present), future: history.future.map(revise) };
   try {
     const canonical = replayChecked(queue.inFlight.submitted, result.document, history.present, pending, apply);
     if (!canonical) throw new Error("保留中の編集を再適用できません。");
-    if (!queue.fallback && !equivalent(revise(queue.inFlight.submitted), result.document)) return { ...followCanonicalHistory(next, canonical, apply), replayFailed: false };
+    if (!queue.fallback && !equivalent(revise(queue.inFlight.submitted), result.document)) return { ...followCanonicalHistory(next, canonical, apply, history.editRevision), replayFailed: false };
     return { queue: next, history: { ...revised, present: canonical }, replayFailed: false };
   } catch { return { queue: fallbackOperations(next), history: revised, replayFailed: true }; }
 }
@@ -267,14 +267,14 @@ function replayChecked(before: PageDocument, present: PageDocument, local: PageD
   return equivalent(before, local) ? present : undefined;
 }
 
-export function reviewOperationConflict(queue: EditorOperationQueue, latest: PageDocument, local: PageDocument, apply: Apply): { queue: EditorOperationQueue; history: EditorHistory } | undefined {
+export function reviewOperationConflict(queue: EditorOperationQueue, latest: PageDocument, local: PageDocument, apply: Apply, editRevision = 0): { queue: EditorOperationQueue; history: EditorHistory } | undefined {
   if (queue.fallback || !queue.pending.length) return undefined;
   try {
     const present = replayChecked(queue.base, latest, local, queue.pending, apply);
     if (!present) return undefined;
     const refreshed = operationQueue(latest);
     // Treat the confirmed group as a single edit based on the concurrent author's document.
-    return { queue: { ...refreshed, pending: queue.pending, since: Date.now() }, history: { past: [latest], present, future: [] } };
+    return { queue: { ...refreshed, pending: queue.pending, since: Date.now() }, history: { past: [latest], present, future: [], editRevision: editRevision + 1 } };
   } catch { return undefined; }
 }
 
