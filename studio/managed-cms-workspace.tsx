@@ -121,10 +121,17 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
   function showItem(next: CmsItemRevision | null, summary: ItemSummary | null = null) {
     setItem(next); setItemStatus(summary); setValues(next?.values ?? {}); setPreview(null); setAt("");
   }
+  function confirmDiscardChanges(): boolean {
+    if (!dirty) return true;
+    if (!window.confirm("保存していない変更を破棄して切り替えますか？")) return false;
+    setValues(item!.values);
+    return true;
+  }
   async function readItem(id: string) {
     return call<ItemRead>("cms.items.read", { collectionId, itemId: id });
   }
   async function refresh() {
+    if (!confirmDiscardChanges()) return;
     const next = await loadSettings();
     const id = next.schema.collections.some(({ id }) => id === collectionId) ? collectionId : next.schema.collections[0]?.id ?? "";
     if (id !== collectionId) { showItem(null); setCollectionId(id); }
@@ -132,6 +139,7 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
     if (item && id === collectionId) setItemStatus((await readItem(item.itemId)).summary);
   }
   async function create() {
+    if (!confirmDiscardChanges()) return;
     const next = await call<{ item: CmsItemRevision }>("cms.items.create",
       { collectionId, contractVersion: 2, expectedSchemaRevision: settings!.schema.schemaRevision }, true);
     showItem(next.item, { id: next.item.itemId, title: "", revision: next.item.revision, removedAt: null, scheduleId: null, status: "draft", scheduledAt: null });
@@ -178,6 +186,7 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
       : status.delivery.state === "dead" ? "公開に失敗しました。公開中の内容は維持されています。" : "公開の反映を待っています。");
   }
   async function remove(summary: ItemSummary, restore: boolean) {
+    if (!confirmDiscardChanges()) return;
     const { schema, current } = settings!;
     await call(restore ? "cms.items.restore" : "cms.items.remove",
       { collectionId, itemId: summary.id, expectedRevision: summary.revision, locale: current.locale,
@@ -187,6 +196,7 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
     setFeedback(restore ? "下書きへ復元しました。" : "ごみ箱へ移しました。");
   }
   async function addCollection() {
+    if (!confirmDiscardChanges()) return;
     const { schema } = settings!;
     const definition = starterCollection(newCollection.slug, newCollection.label, `/cms/${newCollection.slug}/`);
     await applyPlan(JSON.stringify(["cms.schema.apply", schema.schemaRevision, newCollection]), "cms.schema.apply",
@@ -195,10 +205,11 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
       })).plan);
     await loadSettings();
     setNewCollection({ label: "", slug: "" });
-    await selectCollection(definition.id);
+    await selectCollection(definition.id, true);
     setFeedback("コレクションを追加しました。");
   }
-  async function selectCollection(id: string) {
+  async function selectCollection(id: string, discardConfirmed = false) {
+    if (!discardConfirmed && !confirmDiscardChanges()) return;
     showItem(null); setCollectionId(id); setDeleted(false);
     await loadList(id, false);
   }
@@ -228,6 +239,7 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
         <div>
           <div className="studio-site-hub-actions">
             <button disabled={busy} aria-pressed={deleted} onClick={() => run(async () => {
+              if (!confirmDiscardChanges()) return;
               showItem(null); setDeleted(!deleted); await loadList(collectionId, !deleted);
             })}>{deleted ? "項目一覧に戻る" : "ごみ箱"}</button>
             {!deleted && currentCollection.capabilities.create && <button disabled={busy} onClick={() => run(create)}>項目を追加</button>}
@@ -238,6 +250,7 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
               {deleted ? <><span>{summary.title || "無題"}</span> <button disabled={busy} onClick={() => run(() => remove(summary, true))}>復元</button></>
                 : <button disabled={busy} aria-current={item?.itemId === summary.id ? "true" : undefined}
                   onClick={() => run(async () => {
+                    if (!confirmDiscardChanges()) return;
                     const selected = await readItem(summary.id);
                     showItem(selected.item, selected.summary);
                   })}>
@@ -261,7 +274,7 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
             })}>下書きをプレビュー</button>
             <button disabled={busy || dirty} onClick={() => run(() => release(false))}>公開する</button>
             {settings.current.snapshot?.items.some((pin) => sameItem(pin, item)) &&
-              <button disabled={busy} onClick={() => run(() => release(true))}>公開を取り下げる</button>}
+              <button disabled={busy || dirty} onClick={() => run(() => release(true))}>公開を取り下げる</button>}
           </div>
           {preview && <section aria-label="下書きプレビュー">
             <h2>{preview.title || "無題"}</h2>
@@ -274,6 +287,7 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
           </form>}
           {itemStatus && <div className="studio-site-hub-actions">
             {itemStatus.scheduleId && <button disabled={busy} onClick={() => run(async () => {
+              if (!confirmDiscardChanges()) return;
               await call("cms.schedule.cancel", { scheduleId: itemStatus.scheduleId }, true);
               await refresh();
               setFeedback("予約を取り消しました。");

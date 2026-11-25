@@ -206,10 +206,16 @@ test("Studio-native の CMS を Dashboard から開き、下書き作成の再�
       fields: [{ key: "title", fieldId: "title", label: "タイトル", type: "text", placement: "main" }] }] };
   const item = { siteId: project.site.id, schemaRevision: "initial", locale: "ja", itemId: "item_fixture", collectionId: "posts",
     revision: "rev_fixture", values: { title: "架空の下書き" } };
+  const otherItem = { ...item, itemId: "item_other", revision: "rev_other", values: { title: "別の記事" } };
   const observed = [];
   let attempts = 0;
   let finishSave;
+  let discardEdits = false;
   installDom(root);
+  t.mock.method(window, "confirm", (message) => {
+    observed.push({ path: "confirm", input: message });
+    return discardEdits;
+  });
   t.mock.method(globalThis, "fetch", async (url, init = {}) => {
     if (url === "/api/session") return json({ status: "authenticated", subject: "example-owner", email: "owner@example.test" });
     if (url === "/api/config") return json({ managedProjectsEnabled: true, publicSitesOrigin: project.site.domains[0] });
@@ -224,7 +230,14 @@ test("Studio-native の CMS を Dashboard から開き、下書き作成の再�
     observed.push({ path, key: new Headers(init.headers).get("X-Studio-Operation-Key"), input });
     if (path === "cms.schema.read") return json(schema);
     if (path === "cms.release.current") return json({ snapshot: null, locale: "ja", collectionRoot: "/s/native/cms" });
-    if (path === "cms.items.list") return json({ items: [], nextCursor: null });
+    if (path === "cms.items.list") return json({ items: attempts < 2 ? [] : [
+      { id: item.itemId, title: item.values.title, revision: item.revision, removedAt: null, scheduleId: null, status: "draft", scheduledAt: null },
+      { id: otherItem.itemId, title: otherItem.values.title, revision: otherItem.revision, removedAt: null, scheduleId: null, status: "draft", scheduledAt: null },
+    ], nextCursor: null });
+    if (path === "cms.items.read") return json({ item: input.itemId === otherItem.itemId ? otherItem : item,
+      summary: { id: input.itemId, title: input.itemId === otherItem.itemId ? otherItem.values.title : item.values.title,
+        revision: input.itemId === otherItem.itemId ? otherItem.revision : item.revision,
+        removedAt: null, scheduleId: null, status: "draft", scheduledAt: null } });
     if (path === "cms.items.create") return ++attempts === 1 ? json({ error: "service_unavailable" }, 503) : json({ item });
     if (path === "cms.items.save") return new Promise((resolve) => { finishSave = () => resolve(json({ item: {
       ...item, revision: "rev_saved", values: input.values
@@ -258,4 +271,17 @@ test("Studio-native の CMS を Dashboard から開き、下書き作成の再�
   assert.equal(document.querySelector('[aria-label="下書きプレビュー"] h2')?.textContent, "編集済みの下書き");
   assert.equal(observed.find(({ path }) => path === "cms.preview.read")?.input.previewId, "fixture-preview");
   assert.doesNotMatch(window.location.href, /fixture-preview/u);
+
+  const otherRow = byText('ul[aria-label="項目一覧"] button', "別の記事 下書き");
+  assert.ok(otherRow);
+  await input(document.querySelector(".studio-native-cms-item input"), "保存していない変更");
+  await click(otherRow);
+  assert.equal(observed.filter(({ path }) => path === "confirm").length, 1);
+  assert.equal(observed.filter(({ path, input }) => path === "cms.items.read" && input.itemId === otherItem.itemId).length, 0);
+  assert.equal(document.querySelector(".studio-native-cms-item input").value, "保存していない変更");
+
+  discardEdits = true;
+  await click(otherRow);
+  assert.equal(observed.filter(({ path, input }) => path === "cms.items.read" && input.itemId === otherItem.itemId).length, 1);
+  assert.equal(document.querySelector(".studio-native-cms-item input").value, "別の記事");
 });
