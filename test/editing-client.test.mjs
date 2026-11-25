@@ -168,6 +168,37 @@ test("page and catalog reads allow private ETag revalidation", async () => {
   assert.deepEqual(requests.map(({ cache }) => cache), ["no-cache", "no-cache"]);
 });
 
+test("page read cache returns isolated snapshots after a 304", async () => {
+  const requests = [];
+  const nextDocument = { ...structuredClone(fixture), title: "server version two" };
+  const responses = [
+    Response.json({ document: fixture, version: "v1" }, { headers: { ETag: '"page-v1"' } }),
+    new Response(null, { status: 304, headers: { ETag: '"page-v1"' } }),
+    new Response(null, { status: 304, headers: { ETag: '"page-v2"' } }),
+    Response.json({ document: nextDocument, version: "v2" }, { headers: { ETag: '"page-v2"' } }),
+    new Response(null, { status: 304, headers: { ETag: '"page-v2"' } })
+  ];
+  const client = createPageEditingApiClient({
+    origin: "https://host.example", siteId: target.siteId,
+    fetch: async (_input, init) => {
+      requests.push(new Headers(init.headers).get("If-None-Match"));
+      return responses.shift();
+    }
+  });
+
+  const first = await client.read(target);
+  first.document.title = "caller mutation";
+  const second = await client.read(target);
+  assert.equal(second.document.title, fixture.title);
+  second.document.title = "second caller mutation";
+  const third = await client.read(target);
+  assert.equal(third.document.title, nextDocument.title);
+  third.document.title = "third caller mutation";
+  const fourth = await client.read(target);
+  assert.equal(fourth.document.title, nextDocument.title);
+  assert.deepEqual(requests, [null, '"page-v1"', '"page-v1"', null, '"page-v2"']);
+});
+
 test("shared client reads partial page projections with dependency versions", async () => {
   const client = clientFixture({ versionedInspection: true });
   const result = await client.inspectPage(target, { view: "outline", depth: 1 });

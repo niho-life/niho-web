@@ -103,6 +103,24 @@ test("pages.inspect uses page-read authorization, returns versioned projections 
   assert.deepEqual(await json(await send("GET", invalidCursor)), { status: 400, body: { error: "invalid_cursor" } });
 });
 
+test("pages.read emits private ETags and still authenticates conditional requests", async () => {
+  const { api } = hostFixture({ versionedInspection: true });
+  const path = `/sites/${target.siteId}/operations/pages.read/${target.pageId}?locale=${encodeURIComponent(target.locale)}`;
+  const request = (headers = {}) => api(new Request(`https://host.example/api/edit/v1${path}`, { headers }));
+  const first = await request({ Authorization: "Bearer owner" });
+  assert.equal(first.status, 200);
+  const etag = first.headers.get("ETag");
+  assert.ok(etag);
+  assert.equal(first.headers.get("Cache-Control"), "private, no-cache");
+  assert.equal(first.headers.get("Vary"), "Authorization, Cookie, Accept");
+
+  const unchanged = await request({ Authorization: "Bearer owner", "If-None-Match": `W/${etag}` });
+  assert.equal(unchanged.status, 304);
+  assert.equal(await unchanged.text(), "");
+  assert.equal(unchanged.headers.get("ETag"), etag);
+  assert.equal((await request({ "If-None-Match": etag })).status, 401);
+});
+
 test("pages.preview-intent is page-read authorized, validates the host URL and returns privacy headers", async () => {
   const previewIntent = { url: "/_private-preview/opaque-id", expiresAt: new Date(Date.now() + 5 * 60_000).toISOString() };
   let received;
@@ -171,16 +189,23 @@ test("page catalog and two-phase page management share authorization, version ch
       return entry.applied;
     }
   });
-  const send = (method, path, body, authorization = "Bearer owner") => api(new Request(`https://host.example/api/edit/v1${path}`, {
-    method, headers: { Authorization: authorization, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+  const send = (method, path, body, authorization = "Bearer owner", extraHeaders = {}) => api(new Request(`https://host.example/api/edit/v1${path}`, {
+    method, headers: { Authorization: authorization, ...extraHeaders, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) })
   }));
   const management = `/sites/${target.siteId}/operations`;
   const discovered = await json(await send("GET", `/sites/${target.siteId}/capabilities`));
   assert.deepEqual(discovered.body.operations.map(({ id }) => id), ["pages.inspect", "pages.read", "pages.catalog", "pages.change-prepare", "pages.change-apply"]);
-  const catalog = await json(await send("GET", `${management}/pages.catalog`));
+  const catalogResponse = await send("GET", `${management}/pages.catalog`);
+  const catalog = await json(catalogResponse);
   assert.equal(catalog.body.version, "registry-v1");
   assert.equal(catalog.body.pages[0].pageId, "home");
+  const catalogTag = catalogResponse.headers.get("ETag");
+  assert.ok(catalogTag);
+  assert.equal(catalogResponse.headers.get("Cache-Control"), "private, no-cache");
+  const unchangedCatalog = await send("GET", `${management}/pages.catalog`, undefined, "Bearer owner", { "If-None-Match": catalogTag });
+  assert.equal(unchangedCatalog.status, 304);
+  assert.equal(await unchangedCatalog.text(), "");
   assert.deepEqual(await json(await send("POST", `${management}/pages.change-prepare`, { expectedVersion: "stale", operationId, change })), { status: 409, body: { error: "version_conflict" } });
   const planResult = await json(await send("POST", `${management}/pages.change-prepare`, { expectedVersion: "registry-v1", operationId, change }));
   assert.equal(planResult.status, 200);

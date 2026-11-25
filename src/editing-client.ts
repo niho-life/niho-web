@@ -250,6 +250,13 @@ function stableJson(value: unknown): string {
   if (plainRecord(value)) return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
   return JSON.stringify(value) ?? "undefined";
 }
+function responseEtag(response: Response): string | null {
+  const etag = response.headers.get("ETag");
+  return etag && etag.length <= 512 && !/[\r\n]/u.test(etag) ? etag : null;
+}
+function confirmsNotModified(response: Response, etag: string): boolean {
+  return response.status === 304 && responseEtag(response) === etag;
+}
 function validDiscoveredOperation(value: unknown): value is EditingDiscoveredOperation {
   if (!plainRecord(value)) return false;
   const expected = EDITING_OPERATIONS.find((operation) => operation.id === value.id);
@@ -363,10 +370,11 @@ function parseReleasePlan(value: unknown, target: EditingPageTarget, request: Ed
 /** Studio GUI and machine clients can call the same host-owned JSON wire API through this React-free client. */
 export function createPageEditingApiClient(options: EditingApiClientOptions): EditingApiClient {
   const origin = apiOrigin(options.origin), siteId = identifier(options.siteId, "$siteId"), basePath = apiBasePath(options.basePath), fetcher = options.fetch ?? fetch;
-  const send = async (path: string, method: "GET" | "PUT" | "POST", body: unknown, signal?: AbortSignal, accept = "application/json"): Promise<{ response: Response; body: Record<string, unknown> }> => {
+  const send = async (path: string, method: "GET" | "PUT" | "POST", body: unknown, signal?: AbortSignal, accept = "application/json", ifNoneMatch?: string): Promise<{ response: Response; body: Record<string, unknown> }> => {
     const headers = new Headers(typeof options.headers === "function" ? options.headers() : options.headers);
     headers.set("Accept", accept);
     if (body !== undefined) headers.set("Content-Type", "application/json");
+    if (ifNoneMatch) headers.set("If-None-Match", ifNoneMatch);
     const revalidateRead = method === "GET" && (/\/operations\/pages\.read\/[a-z][a-z0-9-]{0,59}(?:\?.*)?$/u.test(path)
       || /\/operations\/pages\.catalog(?:\?.*)?$/u.test(path));
     let response: Response;
@@ -379,6 +387,7 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       if (signal?.aborted) throw error;
       throw new EditingApiClientError("transport_error");
     }
+    if (response.status === 304) return { response, body: Object.create(null) as Record<string, unknown> };
     if (response.status >= 300 && response.status < 400) {
       await response.body?.cancel().catch(() => {});
       throw new EditingApiClientError("redirect_response", response.status);
@@ -402,6 +411,13 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
     return definition;
   };
   let discovered: EditingApiDiscovery | undefined;
+  const pageReadCache = new Map<string, { etag: string; value: EditingPageSnapshot }>();
+  let pageCatalogCache: { etag: string; value: EditingPageCatalog } | null = null;
+  function rememberPageRead(key: string, entry: { etag: string; value: EditingPageSnapshot }): void {
+    pageReadCache.delete(key);
+    pageReadCache.set(key, entry);
+    if (pageReadCache.size > 128) pageReadCache.delete(pageReadCache.keys().next().value!);
+  }
   async function requirePageNodeNames(operationId: "pages.apply" | "pages.save", signal?: AbortSignal): Promise<void> {
     if (!supportsPageNodeNames(discovered ?? await client.discover(signal), operationId)) throw new EditingApiClientError("forbidden", 403);
   }
@@ -454,14 +470,21 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
     },
     async readPageCatalog(signal) {
       const path = `/sites/${encodeURIComponent(siteId)}/operations/pages.catalog`;
-      const { response, body } = await send(path, "GET", undefined, signal);
+      let result = await send(path, "GET", undefined, signal, "application/json", pageCatalogCache?.etag);
+      if (pageCatalogCache && confirmsNotModified(result.response, pageCatalogCache.etag)) return structuredClone(pageCatalogCache.value);
+      if (result.response.status === 304) result = await send(path, "GET", undefined, signal);
+      const { response, body } = result;
+      if (response.status === 304) throw new EditingApiClientError("invalid_response", response.status);
       if (!response.ok) throw apiFailure(body, response.status);
       if (!exactKeys(body, ["version", "pages"]) || !isEditingApiVersion(body.version) || !Array.isArray(body.pages) || body.pages.length > 500) {
         throw new EditingApiClientError("invalid_response", response.status);
       }
       const pages = body.pages.map((page) => parseEditingCatalogPage(page, siteId));
       if (new Set(pages.map((page) => `${page.pageId}\u0000${page.locale}`)).size !== pages.length) throw new EditingApiClientError("invalid_response", response.status);
-      return { version: body.version, pages };
+      const value = { version: body.version, pages };
+      const etag = responseEtag(response);
+      pageCatalogCache = etag ? { etag, value: structuredClone(value) } : null;
+      return structuredClone(value);
     },
     async preparePageChange(changeValue, expectedVersion, signal, requestedOperationId = crypto.randomUUID()) {
       const change = normalizedManagementChange(changeValue, siteId);
@@ -558,7 +581,14 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
     },
     async read(target, signal) {
       const path = targetPath(target, siteId).replace("{operation}", "pages.read");
-      const { response, body } = await send(path, "GET", undefined, signal, options.editorSnapshot ? EDITING_EDITOR_SNAPSHOT_ACCEPT : undefined);
+      const key = `${target.pageId}\u0000${target.locale}`;
+      const cached = pageReadCache.get(key);
+      const accept = options.editorSnapshot ? EDITING_EDITOR_SNAPSHOT_ACCEPT : "application/json";
+      let result = await send(path, "GET", undefined, signal, accept, cached?.etag);
+      if (cached && confirmsNotModified(result.response, cached.etag)) return structuredClone(cached.value);
+      if (result.response.status === 304) result = await send(path, "GET", undefined, signal, accept);
+      const { response, body } = result;
+      if (response.status === 304) throw new EditingApiClientError("invalid_response", response.status);
       if (!response.ok) throw apiFailure(body, response.status);
       const dependencies = Object.fromEntries(PAGE_OPERATION_VERSIONS.flatMap((key) => body[key] === undefined ? [] : [[key, body[key]]]));
       const snapshotKeys = [
@@ -577,8 +607,11 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
           editorSnapshot = { ...(editorState ? { editorState } : {}), ...(presentation ? { presentation } : {}) };
         } catch { throw new EditingApiClientError("invalid_response", response.status); }
       }
-      return { document, version: body.version,
-        ...dependencies, ...editorSnapshot };
+      const value = { document, version: body.version, ...dependencies, ...editorSnapshot };
+      const etag = responseEtag(response);
+      if (etag) rememberPageRead(key, { etag, value: structuredClone(value) });
+      else pageReadCache.delete(key);
+      return structuredClone(value);
     },
     async applyOperations(target, input, signal) {
       const path = targetPath(target, siteId).replace("{operation}", "pages.apply");
