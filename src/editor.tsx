@@ -43,6 +43,7 @@ import {
 import { LanguageSelector, LocalizationPanel, editorLocalizationLocaleFor, localizationEditorCss, localizedOperationProblem, useEditorLocalization, type EditorLocalizationCommandOutcome, type EditorLocalizationManualBuffer } from "./editor-localization.js";
 import { parseEditorLocaleReleaseApplyResult, parseEditorLocaleReleasePlan, parseEditorLocaleReleaseState } from "./editor-locale-release.js";
 import { documentLocaleFor, validateLocalizedDocumentSave, type LocalizationLocale } from "./localization.js";
+import { PAGE_OPERATION_LIMIT } from "./editing-page-operations.js";
 import { acceptAppliedOperations, canSendOperations, fallbackOperations, operationQueue as createOperationQueue, operationApplier, reviewOperationConflict, queuePageEdit, queuePageTravel } from "./editor-operation-queue.js";
 import { editorSessionFrom, readEditorSession, type EditorSession } from "./editor-session.js";
 import { canvasViewportHeight, elementTypeLabel, fitCanvasScale, layerLabel, pathForNodeId, projectLayers, visibleLayers } from "./layers.js";
@@ -209,11 +210,27 @@ function hostPreviewComponent(value: unknown): PageEditorProps["previewComponent
 }
 /** キャンバスの直接編集は枠の外のクリック・⌘Enter で確定し、Esc で取り消す。完了のためだけのボタンは置かない（STUDIO と同じ）。 */
 const textEditHint = "枠の外をクリックするか ⌘Enter（Ctrl+Enter）で確定、Esc で取り消します。";
-type DragItem = { kind: "palette"; type: string } | { kind: "node"; id: string };
+type SelectionMode = "replace" | "toggle" | "range";
+type DragItem = { kind: "palette"; type: string } | { kind: "node"; id: string; ids?: readonly string[] };
 type DropPlace = { parentId: string | null; index: number; marker: { left: number; top: number; width: number; height: number; inside: boolean } };
 const asElement = (target: EventTarget | null): HTMLElement | null => target && typeof target === "object" && "nodeType" in target && (target as Node).nodeType === 1 ? target as HTMLElement : null;
-function Canvas({ document, blocks, width, height, breakpoint, selection, selectedNodeId, slot, select, canEditNode, dragItem, drop, pending, editText, startTextEdit, onShortcut, resize, reportError, editable, structureEditable, locks, preview, previewComponent: PreviewComponent, mode, baseVersion, historyRevision, assets, motionCss, replay, rendered, presentation, presentationRuntime, externalFramePolicy, blankEmbeds, xPostFrameUrl, origins, openInstance, viewportHeight, siteOrigin }: {
-  document: PageDocument; blocks: EditorBlockRegistry; width: number; height: number; selection: NodePath | null; selectedNodeId?: string; select: (path: NodePath | null, nodeId?: string, slot?: string | null) => void;
+function pairedFormFieldNodeId(document: PageDocument, path: NodePath): string | undefined {
+  const node = nodeAt(document, path);
+  if (node.type !== "element") return undefined;
+  const siblings = path.length === 1 ? document.body : (() => {
+    const parent = nodeAt(document, path.slice(0, -1));
+    return parent.type === "element" ? parent.children : [];
+  })();
+  const index = path.at(-1)!;
+  const controlId = ["input", "textarea", "select"].includes(node.tag) ? node.attrs?.id : undefined;
+  const labelTarget = node.tag === "label" ? node.attrs?.htmlFor : undefined;
+  const pair = siblings.find((candidate, at) => at !== index && candidate.type === "element" &&
+    (typeof controlId === "string" && candidate.tag === "label" && candidate.attrs?.htmlFor === controlId ||
+     typeof labelTarget === "string" && ["input", "textarea", "select"].includes(candidate.tag) && candidate.attrs?.id === labelTarget));
+  return pair?.type === "element" ? pair.id : undefined;
+}
+function Canvas({ document, blocks, width, height, breakpoint, selection, selectedNodeId, selectedNodeIds, slot, select, canEditNode, dragItem, drop, pending, editText, startTextEdit, onShortcut, resize, reportError, editable, structureEditable, locks, preview, previewComponent: PreviewComponent, mode, baseVersion, historyRevision, assets, motionCss, replay, rendered, presentation, presentationRuntime, externalFramePolicy, blankEmbeds, xPostFrameUrl, origins, openInstance, viewportHeight, siteOrigin }: {
+  document: PageDocument; blocks: EditorBlockRegistry; width: number; height: number; selection: NodePath | null; selectedNodeId?: string; selectedNodeIds?: readonly string[]; select: (path: NodePath | null, nodeId?: string, slot?: string | null, mode?: SelectionMode) => void;
   canEditNode?: (nodeId: string) => boolean;
   slot: string | null;
 
@@ -254,11 +271,20 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
   const scope = pageScope(rendered), entries = walkNodes(document), renderedEntries = rendered === document ? entries : walkNodes(rendered);
   const selected = selectedNodeId ? renderedEntries.find(({ node }) => node.type !== "text" && node.id === selectedNodeId)?.node : selection ? nodeAt(document, selection) : undefined;
   const selectedId = selected?.type === "text" && selection && selection.length > 1 ? nodeAt(document, selection.slice(0, -1)) : selected;
+  const primarySelectedNodeId = selectedNodeId ?? (selectedId && selectedId.type !== "text" ? selectedId.id : undefined);
+  const selectionCss = (selectedNodeIds?.length ? selectedNodeIds : primarySelectedNodeId ? [primarySelectedNodeId] : []).map((id) => {
+    const entry = renderedEntries.find(({ node: item }) => item.type !== "text" && item.id === id);
+    if (!entry || entry.node.type === "text") return "";
+    const primary = id === primarySelectedNodeId;
+    const color = primary && entry.node.type === "instance" ? uiColor.component : uiColor.accent;
+    const outline = primary && entry.node.type === "instance" ? "dashed" : primary ? "solid" : "dashed";
+    return `[data-nw-owner="${scope}"][data-nw-node="${id}"]{outline:2px ${outline} ${color}!important;outline-offset:2px;}`;
+  }).join("");
   const resizePath = selected?.type === "text" ? selection?.slice(0, -1) : selection;
   // 表示領域を選んでいる間は、幅と高さを変えられる領域だけ、その最初の要素にサイズ変更の枠を出す。
   const slotSize = slot && selectedId?.type === "component" ? declaredSlot(blocks[selectedId.block], slot)?.style ?? [] : undefined;
   const sizeField = (property: "width" | "height") => `${slot ? `slots.${slot}` : "style"}.${breakpoint === "base" ? `base.${property}` : "responsive"}`;
-  const canResize = structureEditable && !preview && !editingId && selectedId && selectedId.type !== "text" && !!resizePath?.length && (!slotSize || slotSize.includes("width") && slotSize.includes("height")) &&
+  const canResize = structureEditable && !preview && !editingId && (selectedNodeIds?.length ?? 0) <= 1 && selectedId && selectedId.type !== "text" && !!resizePath?.length && (!slotSize || slotSize.includes("width") && slotSize.includes("height")) &&
     !lockReason(document, resizePath, sizeField("width"), locks) &&
     !lockReason(document, resizePath, sizeField("height"), locks);
   const sizeTarget = (id: string) => { const element = body && Array.from(body.querySelectorAll<HTMLElement>("[data-nw-node]")).find((item) => item.dataset.nwNode === id); return slot ? element?.querySelector<HTMLElement>(`[data-nw-slot="${slot}"]`) ?? undefined : element ?? undefined; };
@@ -428,7 +454,8 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
       const host = typeof target.closest === "function" ? target.closest<HTMLElement>("[data-nw-host-view]") : null;
       const element = host?.dataset.nwOwner === scope ? host : typeof target.closest === "function" ? target.closest<HTMLElement>(`[data-nw-owner="${scope}"][data-nw-node]`) : null;
       const id = element?.dataset.nwNode, entry = entries.find(({ node }) => node.type !== "text" && node.id === id);
-      select(entry?.path ?? null, id, structureEditable && element && entry?.node.type === "component" ? slotFromTarget(target, element, blocks[entry.node.block]?.slots) : null);
+      const mode: SelectionMode = event.shiftKey ? "toggle" : "replace";
+      select(entry?.path ?? null, id, structureEditable && element && entry?.node.type === "component" ? slotFromTarget(target, element, blocks[entry.node.block]?.slots) : null, mode);
 
     }} onDoubleClickCapture={(event) => {
       if (!editable || preview || editingId) return;
@@ -443,13 +470,13 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
     }} onBlurCapture={(event) => { const target = asElement(event.target), next = asElement(event.relatedTarget); if (target?.dataset.nwNode === editingId && !linkOpen || linkOpen && target?.closest(".nw-text-toolbar") && !next?.closest(".nw-text-toolbar,[contenteditable=true]")) stopEditing(true); }}
       onKeyDownCapture={(event) => { if (!editingId || event.nativeEvent.isComposing || event.keyCode === 229) return; if (event.key === "Escape") { event.preventDefault(); stopEditing(false); } else if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); stopEditing(true); } else if (event.key === "Enter" && editing?.node.type === "element" && editing.node.tag !== "div") { event.preventDefault(); insertLineBreak(); } }}
       onPasteCapture={(event) => { if (!editingId || !asElement(event.target)?.closest("[contenteditable=true]")) return; event.preventDefault(); pastePlainText(event.clipboardData.getData("text/plain")); }}
-      onDragStartCapture={(event) => { if (!editable || preview || editingId) return; const target = asElement(event.target)?.closest<HTMLElement>("[data-nw-node][draggable=true]"); if (!target?.dataset.nwNode) return; dragItem.current = { kind: "node", id: target.dataset.nwNode }; event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", target.dataset.nwNode); }}
+      onDragStartCapture={(event) => { if (!editable || preview || editingId) return; const target = asElement(event.target)?.closest<HTMLElement>("[data-nw-node][draggable=true]"); if (!target?.dataset.nwNode) return; const id = target.dataset.nwNode, ids = selectedNodeIds?.includes(id) ? selectedNodeIds : [id]; dragItem.current = { kind: "node", id, ids }; event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", id); }}
       onDragEndCapture={() => { dragItem.current = null; setDropPlace(null); }}
       onDragOverCapture={(event) => { if (!editable || preview || !dragItem.current) return; event.preventDefault(); event.dataTransfer.dropEffect = dragItem.current.kind === "node" ? "move" : "copy"; setDropPlace(placeAt(event)); }}
       onDragLeaveCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDropPlace(null); }}
       onDropCapture={(event) => { event.preventDefault(); event.stopPropagation(); if (!editable || preview || !dragItem.current) return; const place = placeAt(event); drop(dragItem.current, place); dragItem.current = null; setDropPlace(null); }}
       onSubmitCapture={(event) => { event.preventDefault(); event.stopPropagation(); }}>
-      <style>{`body{font-family:sans-serif;position:relative;}[data-nw-node]{cursor:pointer;}[contenteditable=true]{cursor:text!important;outline:2px solid ${uiColor.accent}!important;outline-offset:3px;} ${selectedId && selectedId.type !== "text" ? `[data-nw-owner="${scope}"][data-nw-node="${selectedId.id}"]{outline:2px ${selectedId.type === "instance" ? `dashed ${uiColor.component}` : `solid ${uiColor.accent}`}!important;outline-offset:2px;}` : ""}${selectedId?.type === "component" && slot ? `[data-nw-owner="${scope}"][data-nw-node="${selectedId.id}"] [data-nw-slot="${slot}"]{outline:2px dashed ${uiColor.accent}!important;outline-offset:2px;}` : ""}
+      <style>{`body{font-family:sans-serif;position:relative;}[data-nw-node]{cursor:pointer;}[contenteditable=true]{cursor:text!important;outline:2px solid ${uiColor.accent}!important;outline-offset:3px;} ${selectionCss}${selectedId?.type === "component" && slot ? `[data-nw-owner="${scope}"][data-nw-node="${selectedId.id}"] [data-nw-slot="${slot}"]{outline:2px dashed ${uiColor.accent}!important;outline-offset:2px;}` : ""}
         .nw-drop-marker{position:absolute;pointer-events:none;z-index:2147483000;background:${uiColor.accent};box-shadow:0 0 0 2px ${uiColor.bg}}.nw-drop-marker.inside{background:${uiColor.accentTint};outline:2px dashed ${uiColor.accent};box-shadow:none}.nw-resize-handle{position:absolute;z-index:2147483001;width:15px;height:15px;border:2px solid ${uiColor.bg};border-radius:4px;background:${uiColor.accent};box-shadow:0 0 0 1px ${uiColor.accentStrong};cursor:nwse-resize;touch-action:none}
         .nw-text-toolbar{position:fixed;z-index:2147483001;right:12px;top:12px;display:flex;gap:4px;align-items:center;padding:6px;border:1px solid ${uiColor.borderStrong};background:${uiColor.bg};color:${uiColor.text};border-radius:8px;font:12px Inter,"Noto Sans JP",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.nw-text-toolbar button,.nw-text-toolbar input{font:inherit;color:inherit;border:1px solid ${uiColor.borderStrong};border-radius:6px;background:${uiColor.bg};padding:5px 7px}.nw-text-toolbar input{width:170px}.nw-text-toolbar .problem{color:${uiColor.danger}}`}</style>
       <style>{canvasAssetCss}</style>
@@ -483,7 +510,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const [pages, setPages] = useState<readonly EditorPage[]>([]), [session, setSession] = useState<Session | null>(null);
   const [formCompletionPages, setFormCompletionPages] = useState<{ target: string; status: "idle" | "loading" | "ready" | "error"; pages: readonly EditorPage[] }>({ target: "", status: "idle", pages: [] });
   const sessionRef = useRef(session); sessionRef.current = session;
-  const [selectedId, setSelectedId] = useState<string | null>(null), [selectedLocalizationUnit, setSelectedLocalizationUnit] = useState<string | null>(null), [selectedCanvasNode, setSelectedCanvasNode] = useState<string | null>(null), [width, setWidth] = useState(1280), [widthField, setWidthField] = useState("1280");
+  const [selectedId, setSelectedId] = useState<string | null>(null), [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]), [selectedLocalizationUnit, setSelectedLocalizationUnit] = useState<string | null>(null), [selectedCanvasNode, setSelectedCanvasNode] = useState<string | null>(null), [width, setWidth] = useState(1280), [widthField, setWidthField] = useState("1280");
   useEffect(() => { setWidthField(String(width)); }, [width]);
   // 選んだ業務ブロックの表示領域。of は安定 ID で、兄弟の挿入・移動でも同じブロックへ留まる。
   const [slotChoice, setSlotChoice] = useState<{ of: string; name: string | null; back?: string } | null>(null);
@@ -666,7 +693,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       const loaded = await readEditorSession(adapter, editorTarget, controller.signal, blocks, libraryRef.current?.history.present);
       if (controller.signal.aborted) return false;
       replace(loaded.session);
-      if (!options?.preserveView) { setSelectedId(null); setInspector("page"); setSelectedLocalizationUnit(null); setSelectedCanvasNode(null); setLocalizationManual(null); }
+      if (!options?.preserveView) { setSelectedId(null); setSelectedNodeIds([]); setInspector("page"); setSelectedLocalizationUnit(null); setSelectedCanvasNode(null); setLocalizationManual(null); }
       setFieldEpoch((value) => value + 1); setAssetResolveEpoch((value) => value + 1); setAssetProviderEpoch((value) => value + 1); setPendingFields({}); setPlan(null); setRollbackRevision(""); setParentId("");
       setProblem(null); setSavedAt(null); setConflictView(0); setRecoveryCompare(false); setLoadEpoch((value) => value + 1); setEditing(null);
       if (loaded.warning) setNotice(loaded.warning);
@@ -741,12 +768,28 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   }
 
   /** raw text は親要素の内容として選び、状態には ID のあるノードだけを保持する。 */
-  function setSelection(path: NodePath | null, source: PageDocument | undefined = currentDocument()) {
-    if (!path || !source) { setSelectedId(null); return; }
-    const selected = nodeAt(source, path);
-    if (selected.type !== "text") { setSelectedId(selected.id); return; }
-    const parent = path.length > 1 ? nodeAt(source, path.slice(0, -1)) : undefined;
-    setSelectedId(parent && parent.type !== "text" ? parent.id : null);
+  function setSelection(path: NodePath | null, source: PageDocument | undefined = currentDocument(), mode: SelectionMode = "replace", rangeIds?: readonly string[]): string | null {
+    const selected = path && source ? nodeAt(source, path) : undefined;
+    const parent = selected?.type === "text" && path && path.length > 1 ? nodeAt(source!, path.slice(0, -1)) : undefined;
+    const id = selected && selected.type !== "text" ? selected.id : parent && parent.type !== "text" ? parent.id : null;
+    if (!source || !id) { setSelectedId(null); setSelectedNodeIds([]); return null; }
+    const current = new Set(selectedNodeIds);
+    const next = mode === "replace" ? [id]
+      : mode === "range" ? [...selectedNodeIds.filter((candidate) => !(rangeIds ?? []).includes(candidate)), ...(rangeIds ?? [id])]
+        : current.has(id) ? selectedNodeIds.filter((candidate) => candidate !== id) : [...selectedNodeIds, id];
+    const nodes = walkNodes(source).filter((entry): entry is { node: Exclude<PageNode, { type: "text" }>; path: number[] } => entry.node.type !== "text");
+    const byId = new Map(nodes.map(({ node: item, path: itemPath }) => [item.id, itemPath] as const));
+    const candidates = new Set(next.filter((candidate) => byId.has(candidate)));
+    const kept = nodes.filter(({ node: item, path: itemPath }) => candidates.has(item.id) && !nodes.some(({ node: possibleAncestor, path: ancestorPath }) =>
+      candidates.has(possibleAncestor.id) && ancestorPath.length < itemPath.length && ancestorPath.every((part, at) => part === itemPath[at])))
+      .map(({ node: item }) => item.id);
+    const preferredPath = byId.get(id);
+    const preferredAncestor = preferredPath && [...kept].reverse().find((candidate) => {
+      const candidatePath = byId.get(candidate)!;
+      return candidatePath.length <= preferredPath.length && candidatePath.every((part, at) => part === preferredPath[at]);
+    });
+    const primary = kept.includes(id) ? id : preferredAncestor ?? kept.at(-1) ?? null;
+    setSelectedNodeIds(kept); setSelectedId(primary); return primary;
   }
 
   function navigate(next: Navigation) {
@@ -782,7 +825,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     const textProperties = ["color", "fontFamily", "fontSize", "fontWeight", "lineHeight", "letterSpacing", "textAlign", "fontStyle", "textDecorationLine"];
     return declared.text || declared.style?.some((property) => textProperties.includes(property)) ? "text" : declared.style?.length ? "box" : "settings";
   }
-  function select(path: NodePath | null, slot: string | null = null) { if (manualInputPending && path) { setNavigation({ type: "node", path }); return; } if (hasInput) { setNotice("入力を適用するか取り消してから選択を変えてください。"); return; } if (!(masterId ? libraryBlocked : pageOperationalBlocked)) { const source = currentDocument(); setSelection(path, source); const id = path && source ? (() => { const item = nodeAt(source, path); return item.type === "text" && path.length > 1 ? nodeAt(source, path.slice(0, -1)) : item; })() : null; if (path) setElementTab(slot && !targetMode ? defaultSlotTab(path, slot) : defaultElementTab(path)); setSlotChoice(id && id.type !== "text" && slot && !targetMode ? { of: id.id, name: slot } : null); setSelectedLocalizationUnit(null); setSelectedCanvasNode(null); setInspector(path ? "element" : "page"); setDraft(null); setStyleState("normal"); } }
+  function select(path: NodePath | null, slot: string | null = null, mode: SelectionMode = "replace", rangeIds?: readonly string[]) { if (manualInputPending && path) { setNavigation({ type: "node", path }); return; } if (hasInput) { setNotice("入力を適用するか取り消してから選択を変えてください。"); return; } if (!(masterId ? libraryBlocked : pageOperationalBlocked)) { const source = currentDocument(); const primary = setSelection(path, source, mode, rangeIds); const id = path && source ? (() => { const item = nodeAt(source, path); return item.type === "text" && path.length > 1 ? nodeAt(source, path.slice(0, -1)) : item; })() : null; if (path && mode === "replace") setElementTab(slot && !targetMode ? defaultSlotTab(path, slot) : defaultElementTab(path)); else if (mode !== "replace") setElementTab("box"); setSlotChoice(mode === "replace" && id && id.type !== "text" && slot && !targetMode ? { of: id.id, name: slot } : null); setSelectedLocalizationUnit(null); setSelectedCanvasNode(null); setInspector(primary ? "element" : "page"); setDraft(null); setStyleState("normal"); } }
   /** 選択中の業務ブロックの表示領域を選ぶ。null は「ブロック全体に戻る」。 */
   function chooseSlot(name: string | null) { if (hasInput) { setNotice("入力を適用するか取り消してから選択を変えてください。"); return; } if (!targetMode && !editBlocked && selection && selectedId) { setElementTab(name ? defaultSlotTab(selection, name) : defaultElementTab(selection)); setSlotChoice({ of: selectedId, name, ...(!name && slotName ? { back: slotName } : {}) }); setDraft(null); setStyleState("normal"); } }
 
@@ -843,11 +886,33 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       replaceLibrary({ ...current, history: commitLibrary(current.history, next) }); setNotice(""); return undefined;
     } catch (error) { return componentProblem(error) ?? message(error); }
   }
-  function structural(operation: EditorOperation): boolean {
-    const error = apply(operation);
-    if (error) { setNotice(error); return false; }
-    if (operation.type === "remove") select(null);
+  function bulkStructural(type: "duplicate" | "remove"): string | boolean {
+    if (!document || !selectedNodeIds.length) return false;
+    if (selectedNodeIds.length > PAGE_OPERATION_LIMIT) return `一度に操作できる要素は${PAGE_OPERATION_LIMIT}件までです。選択数を減らしてください。`;
+    const selected = new Set(selectedNodeIds), handled = new Set<string>(), operations: EditorOperation[] = [];
+    const orderedIds = walkNodes(document).flatMap(({ node: item }) => item.type !== "text" && selected.has(item.id) ? [item.id] : []);
+    let simulated = document;
+    try {
+      for (const id of orderedIds) {
+        if (handled.has(id)) continue;
+        const path = pathForNodeId(simulated, id);
+        if (!path) { handled.add(id); continue; }
+        const pairId = pairedFormFieldNodeId(simulated, path);
+        handled.add(id); if (pairId) handled.add(pairId);
+        const operation: EditorOperation = { type, path };
+        simulated = editDocument(simulated, operation, blocks, masterId ? [] : sessionRef.current?.locks ?? [], libraryRef.current?.history.present, activeSiteStyles);
+        operations.push(operation);
+      }
+    } catch (error) { return message(error); }
+    if (!operations.length) return false;
+    const error = apply(operations);
+    if (error) return error;
+    if (type === "remove") { setSelection(null); setInspector("page"); }
     return true;
+  }
+  function runBulkStructural(type: "duplicate" | "remove") {
+    const result = bulkStructural(type);
+    if (typeof result === "string") setNotice(result);
   }
   function travel(direction: "undo" | "redo"): boolean {
     // 部品とページの履歴は別に持つため、もう一方と合わなくなる移動は止める。
@@ -1274,13 +1339,18 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     [usage, session?.target, pageDocument, pageTitle, libraryPresent, pages]);
   const masterComponent = masterId ? libraryPresent?.components.find((component) => component.id === masterId) : undefined;
   const node = document && selection ? nodeAt(document, selection) : undefined;
+  const selectedTargets = document ? selectedNodeIds.flatMap((id) => {
+    const path = pathForNodeId(document, id); if (!path) return [];
+    const target = nodeAt(document, path); return target.type === "text" ? [] : [{ node: target, path }];
+  }) : [];
+  const multiSelection = selectedTargets.length > 1;
   const formCompletionTarget = session?.target, formCompletionTargetKey = formCompletionTarget ? targetKeyOf(formCompletionTarget) : "";
   const formCompletionCandidates = useMemo(() => formCompletionTarget && formCompletionPages.status === "ready" && formCompletionPages.target === formCompletionTargetKey
     ? eligibleFormCompletionPages(formCompletionPages.pages, formCompletionTarget) as readonly EditorPage[] : [], [formCompletionPages, formCompletionTargetKey]);
   const staleProps = node?.type === "instance" && document && libraryPresent ? componentIssues(document, libraryPresent).find((issue) => issue.nodeId === node.id)?.staleProps ?? [] : [];
   const locks = document ? effectiveLocks(document, masterId ? [] : session?.locks ?? [], blocks) : [];
-  const reason = (field: string) => document && selection ? lockReason(document, selection, field, locks) : undefined;
-  const pathKey = `${fieldEpoch}-${selection?.join(".") ?? "page"}`;
+  const reason = (field: string) => document ? (multiSelection ? selectedTargets.map(({ path }) => lockReason(document, path, field, locks)).find(Boolean) : selection ? lockReason(document, selection, field, locks) : undefined) : undefined;
+  const pathKey = `${fieldEpoch}-${multiSelection ? selectedTargets.map(({ node: item }) => item.id).join(",") : selection?.join(".") ?? "page"}`;
   const slotName = !targetMode && slotChoice?.name && slotChoice.of === selectedId && node?.type === "component" && declaredSlot(blocks[node.block], slotChoice.name) ? slotChoice.name : null;
   const slotBack = slotChoice && slotChoice.of === selectedId && !slotChoice.name ? slotChoice.back : undefined, canvasBlocks = previewRegistry(blocks);
   // 表示領域を選んでいる間は、選択中のブロックへの見た目の操作（キャンバスのサイズ変更・スタイルパネルの適用）をその領域へ写す。
@@ -1305,9 +1375,16 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const savedMaster = useMemo(() => library && masterId && library.savedLibrary.components.some((component) => component.id === masterId) ? fingerprint(componentDocument(library.savedLibrary, masterId, locale)) : undefined,
     [library?.savedLibrary, masterId, locale]);
   useEffect(() => {
-    if (!document || !selectedId || selection) return;
-    setSelectedId(null); setSlotChoice(null); setSelectedCanvasNode(null); setInspector("page");
-  }, [document, selectedId, selection]);
+    if (!document) return;
+    const valid = new Set(walkNodes(document).flatMap(({ node: item }) => item.type === "text" ? [] : [item.id]));
+    const remaining = selectedNodeIds.filter((id) => valid.has(id));
+    if (selectedId && valid.has(selectedId) && selection) {
+      if (remaining.length !== selectedNodeIds.length) setSelectedNodeIds(remaining);
+      return;
+    }
+    if (remaining.length) { const primary = remaining.includes(selectedId ?? "") ? selectedId! : remaining.at(-1)!; setSelectedId(primary); setSelectedNodeIds(remaining); return; }
+    if (selectedId || selectedNodeIds.length) { setSelectedId(null); setSelectedNodeIds([]); setSlotChoice(null); setSelectedCanvasNode(null); setInspector("page"); }
+  }, [document, selectedId, selectedNodeIds, selection]);
   useEffect(() => {
     const stage = stageRef.current; if (!stage) return;
     const update = () => {
@@ -1383,7 +1460,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     if (!origin || !context) return undefined;
     return context.collection.units.find((unit) => unit.scope === "shared-component" && unit.ownerId === origin.component && unit.field.startsWith(`node.${origin.node}.`));
   }
-  function selectCanvas(_path: NodePath | null, id?: string, slot: string | null = null) {
+  function selectCanvas(_path: NodePath | null, id?: string, slot: string | null = null, mode: SelectionMode = "replace") {
     if (!id) { select(null); return; }
     const unit = sharedUnitForCanvasNode(id);
     if (unit) {
@@ -1392,7 +1469,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       setSelection(null); setSelectedCanvasNode(id); setSelectedLocalizationUnit(unit.unitId); setInspector("localization"); setDraft(null); return;
     }
     const raw = document && walkNodes(document).find(({ node }) => node.type !== "text" && node.id === id)?.path;
-    if (raw) { if (manualInputPending) setNavigation({ type: "node", path: raw, canvasId: id }); else { select(raw, slot); setSelectedCanvasNode(id); } return; }
+    if (raw) { if (manualInputPending) setNavigation({ type: "node", path: raw, canvasId: id }); else { select(raw, slot, mode); if (mode === "replace") setSelectedCanvasNode(id); } return; }
     const origin = canvasOrigins.get(id), instance = origin && document && walkNodes(document).find(({ node }) => node.type === "instance" && node.id === origin.instance)?.path;
     if (instance) { select(instance); if (targetMode) setSelectedCanvasNode(id); }
   }
@@ -1449,18 +1526,57 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       if (error) setNotice(error); else if (selected?.type === "element") selectId(selected.id); else if (newNode.type !== "text") selectId(newNode.id);
     } catch (error) { setNotice(message(error)); }
   }
+  function planMoveBatch(ids: readonly string[], parentId: string | null, index: number): EditorOperation[] | string {
+    const base = currentDocument();
+    if (!base) return "ページを読み込んでから移動してください。";
+    if (ids.length > PAGE_OPERATION_LIMIT) return `一度に操作できる要素は${PAGE_OPERATION_LIMIT}件までです。選択数を減らしてください。`;
+    const selected = new Set(ids), initialChildren = parentId ? walkNodes(base).find(({ node: item }) => item.type === "element" && item.id === parentId)?.node : undefined;
+    if (parentId && initialChildren?.type !== "element") return "移動先が見つかりません。";
+    const targetChildren = parentId && initialChildren?.type === "element" ? initialChildren.children : base.body;
+    const anchor = targetChildren.slice(Math.max(0, index)).find((item) => item.type !== "text" && !selected.has(item.id));
+    const anchorId = anchor && anchor.type !== "text" ? anchor.id : null;
+    let simulated = base;
+    const operations: EditorOperation[] = [];
+    try {
+      for (const id of ids) {
+        const path = pathForNodeId(simulated, id);
+        if (!path) continue;
+        const sourceParent = path.length > 1 ? nodeAt(simulated, path.slice(0, -1)) : null;
+        const sourceParentId = sourceParent?.type === "element" ? sourceParent.id : null;
+        const anchorPath = anchorId ? pathForNodeId(simulated, anchorId) : null;
+        const destinationPath = anchorPath && (!parentId && anchorPath.length === 1 || parentId && anchorPath.length > 1 && nodeAt(simulated, anchorPath.slice(0, -1)).type === "element") ? anchorPath : null;
+        let destinationIndex: number;
+        if (destinationPath && anchorPath) destinationIndex = anchorPath.at(-1)!;
+        else if (parentId) {
+          const currentParent = walkNodes(simulated).find(({ node: item }) => item.type === "element" && item.id === parentId)?.node;
+          if (currentParent?.type !== "element") return "移動先が見つかりません。";
+          destinationIndex = currentParent.children.length;
+        } else destinationIndex = simulated.body.length;
+        if (sourceParentId === parentId && path.at(-1)! < destinationIndex) destinationIndex--;
+        const operation: EditorOperation = { type: "move", path, parentId, index: destinationIndex };
+        simulated = editDocument(simulated, operation, blocks, masterId ? [] : sessionRef.current?.locks ?? [], libraryRef.current?.history.present, activeSiteStyles);
+        operations.push(operation);
+      }
+      return operations;
+    } catch (error) { return message(error); }
+  }
+  function applyMoveBatch(ids: readonly string[], parentId: string | null, index: number): string | undefined {
+    const operations = planMoveBatch(ids, parentId, index);
+    if (typeof operations === "string") return operations;
+    if (!operations.length) return undefined;
+    if (operations.length > PAGE_OPERATION_LIMIT) return `一度に操作できる要素は${PAGE_OPERATION_LIMIT}件までです。選択数を減らしてください。`;
+    return apply(operations);
+  }
   function dropAt(item: DragItem, drop: Pick<DropPlace, "parentId" | "index">) {
     if (!document || hasInput || editBlocked) return;
     // 部品の編集中、外枠の外への配置は外枠の末尾へ置く。
     const root = master?.body[0], place = root?.type === "element" && drop.parentId === null ? { parentId: root.id, index: root.children.length } : drop;
     if (item.kind === "palette") { add(item.type, place); return; }
-    const source = entries.find(({ node }) => node.type !== "text" && node.id === item.id);
-    if (!source) return;
-    const oldParent = source.path.length > 1 ? nodeAt(document, source.path.slice(0, -1)) : null;
-    const oldParentId = oldParent?.type === "element" ? oldParent.id : null;
-    const index = oldParentId === place.parentId && source.path.at(-1)! < place.index ? place.index - 1 : place.index;
-    const error = apply({ type: "move", path: source.path, parentId: place.parentId, index });
-    if (error) setNotice(error); else selectId(item.id);
+    const ids = [...new Set(item.ids ?? [item.id])].filter((id) => pathForNodeId(document, id));
+    if (!ids.length) return;
+    const error = applyMoveBatch(ids, place.parentId, place.index);
+    if (error) setNotice(error);
+    else if (ids.length === 1) selectId(ids[0]!);
   }
   function layerPlace(event: React.DragEvent<HTMLElement>, targetId: string): { position: "before" | "inside" | "after"; parentId: string | null; index: number } | null {
     if (!document) return null;
@@ -1473,11 +1589,33 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     return { position: after ? "after" : "before", parentId: parent?.type === "element" ? parent.id : null, index: target.path.at(-1)! + (after ? 1 : 0) };
   }
   function moveBy(delta: number) {
-    if (!document || !selection) return;
-    const parent = selection.length > 1 ? nodeAt(document, selection.slice(0, -1)) : null;
-    const current = nodeAt(document, selection), target = [...selection.slice(0, -1), selection.at(-1)! + delta];
-    const problem = apply({ type: "move", path: selection, parentId: parent?.type === "element" ? parent.id : null, index: target.at(-1)! });
-    if (problem) setNotice(problem); else if (current.type === "text") select(target); else selectId(current.id);
+    if (!document || !selectedNodeIds.length) return;
+    const initial = selectedNodeIds.flatMap((id) => { const path = pathForNodeId(document, id); return path ? [{ id, path }] : []; });
+    const parentIdOf = (source: PageDocument, path: NodePath) => path.length > 1 ? nodeAt(source, path.slice(0, -1)) : null;
+    const parentIds = new Set(initial.map(({ path }) => { const parent = parentIdOf(document, path); return parent?.type === "element" ? parent.id : null; }));
+    if (parentIds.size !== 1) { setNotice("複数の要素を同じ親の中で選んでから並べ替えてください。"); return; }
+    const parentId = [...parentIds][0] ?? null, selected = new Set(selectedNodeIds);
+    const ordered = [...initial].sort((left, right) => {
+      const count = Math.min(left.path.length, right.path.length);
+      for (let at = 0; at < count; at++) if (left.path[at] !== right.path[at]) return delta < 0 ? left.path[at]! - right.path[at]! : right.path[at]! - left.path[at]!;
+      return 0;
+    });
+    let simulated = document;
+    const operations: EditorOperation[] = [];
+    try {
+      for (const { id } of ordered) {
+        const path = pathForNodeId(simulated, id); if (!path) continue;
+        const siblings = path.length === 1 ? simulated.body : (nodeAt(simulated, path.slice(0, -1)) as Extract<PageNode, { type: "element" }>).children;
+        const index = path.at(-1)! + delta, neighbor = siblings[index];
+        if (!neighbor || neighbor.type !== "text" && selected.has(neighbor.id)) continue;
+        const operation: EditorOperation = { type: "move", path, parentId, index };
+        simulated = editDocument(simulated, operation, blocks, masterId ? [] : session?.locks ?? [], libraryPresent, activeSiteStyles);
+        operations.push(operation);
+      }
+    } catch (error) { setNotice(message(error)); return; }
+    if (operations.length > PAGE_OPERATION_LIMIT) { setNotice(`一度に操作できる要素は${PAGE_OPERATION_LIMIT}件までです。選択数を減らしてください。`); return; }
+    const problem = operations.length ? apply(operations) : undefined;
+    if (problem) setNotice(problem);
   }
   function moveToEnd() {
     if (!document || !selection) return;
@@ -1486,6 +1624,11 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     const count = destination?.node.type === "element" ? destination.node.children.length : document.body.length;
     const oldParent = selection.length > 1 ? nodeAt(document, selection.slice(0, -1)) : null;
     const sameParent = parentId === (oldParent?.type === "element" ? oldParent.id : "");
+    if (selectedNodeIds.length > 1) {
+      const problem = applyMoveBatch(selectedNodeIds, parentId || null, count);
+      if (problem) setNotice(problem);
+      return;
+    }
     const index = count - (sameParent ? 1 : 0);
     const problem = apply({ type: "move", path: selection, parentId: parentId || null, index });
     if (problem) { setNotice(problem); return; }
@@ -1520,7 +1663,14 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       sourceFingerprint: unit.sourceFingerprint, expectedEntryVersion: entry?.version ?? 0, expectedSourceVersion: context.sourceVersion, expectedVersion: context.version, expectedOverlayVersion: context.overlay.version });
     setLocalizationAssetUnit(null); return undefined;
   }
-  const siblingCount = document && selection ? selection.length === 1 ? document.body.length : (nodeAt(document, selection.slice(0, -1)) as { children: PageNode[] }).children.length : 0;
+  const selectedMovePaths = document ? selectedNodeIds.flatMap((id) => { const path = pathForNodeId(document, id); return path ? [path] : []; }) : [];
+  const selectedMoveParents = document ? new Set(selectedMovePaths.map((path) => { const parent = path.length > 1 ? nodeAt(document, path.slice(0, -1)) : null; return parent?.type === "element" ? parent.id : null; })) : new Set<string | null>();
+  const selectedMoveIndices = new Set(selectedMoveParents.size === 1 ? selectedMovePaths.map((path) => path.at(-1)!) : []);
+  const selectedMoveParent = selectedMoveParents.size === 1 ? [...selectedMoveParents][0] : null;
+  const selectedMoveSiblings = document ? selectedMoveParent ? walkNodes(document).find(({ node: item }) => item.type === "element" && item.id === selectedMoveParent)?.node : undefined : undefined;
+  const selectedMoveCount = selectedMoveSiblings?.type === "element" ? selectedMoveSiblings.children.length : document?.body.length ?? 0;
+  const canMoveUp = selectedMoveParents.size === 1 && [...selectedMoveIndices].some((index) => index > 0 && !selectedMoveIndices.has(index - 1));
+  const canMoveDown = selectedMoveParents.size === 1 && [...selectedMoveIndices].some((index) => index < selectedMoveCount - 1 && !selectedMoveIndices.has(index + 1));
   const palette = builderDefinition.insertions;
   const categoryPalette = palette.filter((item) => (item.category ?? "basic") === addCategory);
   const paletteGroups = [...new Set(categoryPalette.map((item) => item.group))];
@@ -1621,7 +1771,11 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const rawSelected = document && selection ? nodeAt(document, selection) : undefined;
   const rawSelectedOwner = document && rawSelected?.type === "text" && selection && selection.length > 1 ? nodeAt(document, selection.slice(0, -1)) : rawSelected;
   const canvasSelectedNodeId = selectedCanvasNode ?? (rawSelectedOwner && rawSelectedOwner.type !== "text" ? rawSelectedOwner.id : undefined);
-  const activeInspectorTabs = inspectorTabsFor(node);
+  const textTagsForSelection = new Set(["h1", "h2", "h3", "h4", "h5", "h6", "p", "span", "a", "li", "strong", "em", "small", "blockquote", "figcaption", "time"]);
+  const textCapable = (item: PageNode) => item.type === "component" || item.type === "instance" || item.type === "element" && (textTagsForSelection.has(item.tag) || item.children.some((child) => child.type === "text" && !!child.text.trim()));
+  const activeInspectorTabs = multiSelection
+    ? [...(selectedTargets.every(({ node: item }) => textCapable(item)) ? [{ value: "text" as const, label: "テキスト" }] : []), { value: "box" as const, label: "ボックス" }]
+    : inspectorTabsFor(node);
   const selectedHtmlId = node?.type === "element" && typeof node.attrs?.id === "string" ? node.attrs.id : undefined;
   const associatedLabel = document && selectedHtmlId ? walkNodes(document).find(({ node: candidate }) => candidate.type === "element" && candidate.tag === "label" && candidate.attrs?.htmlFor === selectedHtmlId && candidate.children[0]?.type === "text") : undefined;
   const formItems = document && node?.type === "element" && node.tag === "form" ? walkNodes({ ...document, body: [node] }).flatMap(({ node: item }) =>
@@ -1684,8 +1838,8 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   shortcutListener.current = (event) => dispatchEditorShortcut(event, shortcutUnavailable, {
     undo: () => undoUnavailable ?? travel("undo"),
     redo: () => redoUnavailable ?? travel("redo"),
-    remove: () => structureUnavailable ?? structural({ type: "remove", path: selection! }),
-    duplicate: () => structureUnavailable ?? structural({ type: "duplicate", path: selection! }),
+    remove: () => structureUnavailable ?? bulkStructural("remove"),
+    duplicate: () => structureUnavailable ?? bulkStructural("duplicate"),
     parent: () => !!selection && chooseByShortcut(selection.length > 1 ? selection.slice(0, -1) : null),
     child: () => {
       const children = node?.type === "element" ? node.children : node ? [] : document?.body;
@@ -1736,17 +1890,17 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
           </PagePanel>
         </section>
         <section hidden={visiblePanel !== "layers"} aria-label="レイヤー一覧"><div className="e-panel-head"><h2>レイヤー</h2><p>ドラッグで並べ替え、中央にも配置できます</p></div>
-          {document && <LayerTreePanel document={document} labels={layerLabels} rootLabel={masterId ? "コンポーネント本体" : isSiteComponent ? "コンポーネント" : "ページ全体"} selectedId={selectedId}
+          {document && <LayerTreePanel document={document} labels={layerLabels} rootLabel={masterId ? "コンポーネント本体" : isSiteComponent ? "コンポーネント" : "ページ全体"} selectedId={selectedId} selectedIds={selectedNodeIds}
             disabled={masterId ? libraryBlocked : pageOperationalBlocked} draggable={!editBlocked && !hasInput && !targetMode}
             className={(entry) => `${layerDrop?.id === entry.id ? ` drop-${layerDrop.position}` : ""}${hiddenAt(entry.node, width) ? " is-hidden-here" : ""}`}
             trailing={(entry) => hiddenAt(entry.node, width) ? <small className="e-layer-hidden">この幅で非表示</small> : null}
-            select={(id) => select(id ? pathForNodeId(document, id) : null)}
-            dragStart={(event, id) => startDrag(event, { kind: "node", id })} dragEnd={() => { dragItem.current = null; setLayerDrop(null); }}
+            select={(id, mode = "replace", rangeIds) => select(id ? pathForNodeId(document, id) : null, null, mode, rangeIds)}
+            dragStart={(event, id) => startDrag(event, { kind: "node", id, ids: selectedNodeIds.includes(id) ? selectedNodeIds : [id] })} dragEnd={() => { dragItem.current = null; setLayerDrop(null); }}
             dragOver={(event, id) => { if (!dragItem.current) return; const place = layerPlace(event, id); if (!place) return; event.preventDefault(); event.dataTransfer.dropEffect = dragItem.current.kind === "node" ? "move" : "copy"; setLayerDrop({ id, position: place.position }); }}
             drop={(event, id) => { if (!dragItem.current) return; const place = layerPlace(event, id); if (place) { event.preventDefault(); dropAt(dragItem.current, place); } dragItem.current = null; setLayerDrop(null); }} />}
           <label className="e-field"><span>移動先</span><select aria-label="移動先" value={parentId} disabled={editBlocked || hasInput || targetMode} onChange={(event) => setParentId(event.target.value)}>{!masterId && <option value="">ページ直下</option>}{entries.filter(({ node }) => node.type === "element" && !node.embed && ["div", "section", "article", "header", "footer", "main", "nav", "aside", "li", "figure", "blockquote", "form"].includes(node.tag)).map(({ node, path }) => node.type === "element" && <option key={node.id} value={node.id}>{destinationLabel(node, path, blocks, names)}</option>)}</select></label>
-          <div className="e-actions"><button disabled={!!structureUnavailable} title={structureUnavailable} onClick={() => selection && structural({ type: "duplicate", path: selection })}>複製</button><button className="e-danger" disabled={!!structureUnavailable} title={structureUnavailable} onClick={() => selection && structural({ type: "remove", path: selection })}>削除</button>
-            <button disabled={targetMode || !selection || selection.at(-1) === 0 || editBlocked || hasInput} onClick={() => moveBy(-1)}>上へ</button><button disabled={targetMode || !selection || selection.at(-1)! >= siblingCount - 1 || editBlocked || hasInput} onClick={() => moveBy(1)}>下へ</button>
+          <div className="e-actions"><button disabled={!!structureUnavailable} title={structureUnavailable} onClick={() => runBulkStructural("duplicate")}>複製</button><button className="e-danger" disabled={!!structureUnavailable} title={structureUnavailable} onClick={() => runBulkStructural("remove")}>削除</button>
+            <button disabled={targetMode || !canMoveUp || editBlocked || hasInput} onClick={() => moveBy(-1)}>上へ</button><button disabled={targetMode || !canMoveDown || editBlocked || hasInput} onClick={() => moveBy(1)}>下へ</button>
             <button disabled={targetMode || !selection || editBlocked || hasInput} onClick={moveToEnd}>指定先の末尾へ</button>
           </div>
         </section>
@@ -1790,7 +1944,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         restore={() => { if (recoveryStale) setRecoveryCompare(true); else void restoreRecovered(); }} discard={recoveryState.discard} />}
       <div className="e-stage" ref={stageRef}><HistoryBar history={versions} restore={restoreRevision} {...(session?.readOnly ? { restoreBlocked: session.readOnly.reason } : {})} rollbackHint={session?.readOnly ? session.readOnly.reason : session?.hasSavedDraft === false ? publishHold : dirty || libraryDirty || hasInput ? "未保存の変更を保存してから公開版を戻せます。" : blocked ? "処理が完了してから操作できます。" : undefined}
         rollback={session?.readOnly || session?.hasSavedDraft === false || viewedRelease === undefined ? undefined : () => { versions.exit(); setRollbackRevision(String(viewedRelease)); void prepare("rollback", viewedRelease); }} />
-{document && session && shown && renderedCanvas && localizationReady ? <div className="e-canvas-spacer" data-scale={canvasScale.toFixed(3)} data-viewport-height={canvasHeight} style={{ width: width * canvasScale, height: canvasHeight * canvasScale }}><div className="e-canvas-scaled" style={{ width, transform: `scale(${canvasScale})`, transformOrigin: "0 0" }}><Canvas key={`${document.siteId}/${document.pageId}/${document.locale}/${masterId ?? ""}`} document={shown} rendered={renderedCanvas} {...(canvasPresentation ? { presentation: canvasPresentation } : {})} origins={canvasOrigins} openInstance={openInstance} blocks={canvasBlocks} {...(externalFramePolicy ? { externalFramePolicy } : {})} {...(blankEmbeds ? { blankEmbeds } : {})} {...(xPostFrameUrl ? { xPostFrameUrl } : {})} width={width} height={canvasHeight} breakpoint={tier} selection={targetMode ? null : historyMode ? null : selection} {...(!historyMode && canvasSelectedNodeId ? { selectedNodeId: canvasSelectedNodeId } : {})} slot={historyMode ? null : slotName} select={selectCanvas} canEditNode={canEditCanvasNode} dragItem={dragItem} drop={dropAt} pending={pending} editText={editCanvasText} startTextEdit={startTextEdit} onShortcut={onShortcut} resize={(path, width, height) => applyStyle({ type: "resize", path, breakpoint: tier, width, height, ...(until === undefined ? {} : { until }) })} reportError={setNotice} editable={!editBlocked && !hasInput} structureEditable={!editBlocked && !hasInput && !targetMode} locks={locks} preview={preview || historyMode} baseVersion={masterId && library ? library.version : session.version} {...(historyMode && versions.viewing ? { historyRevision: versions.viewing.entry } : {})} mode={historyMode ? "history" : preview ? "preview" : "edit"} {...(canvasPreview ? { previewComponent: canvasPreview } : {})} assets={resolvedAssets.map} replay={`${replay}-${preview}`} viewportHeight={canvasReferenceHeight} siteOrigin={site?.domains[0]}
+{document && session && shown && renderedCanvas && localizationReady ? <div className="e-canvas-spacer" data-scale={canvasScale.toFixed(3)} data-viewport-height={canvasHeight} style={{ width: width * canvasScale, height: canvasHeight * canvasScale }}><div className="e-canvas-scaled" style={{ width, transform: `scale(${canvasScale})`, transformOrigin: "0 0" }}><Canvas key={`${document.siteId}/${document.pageId}/${document.locale}/${masterId ?? ""}`} document={shown} rendered={renderedCanvas} {...(canvasPresentation ? { presentation: canvasPresentation } : {})} origins={canvasOrigins} openInstance={openInstance} blocks={canvasBlocks} {...(externalFramePolicy ? { externalFramePolicy } : {})} {...(blankEmbeds ? { blankEmbeds } : {})} {...(xPostFrameUrl ? { xPostFrameUrl } : {})} width={width} height={canvasHeight} breakpoint={tier} selection={targetMode ? null : historyMode ? null : selection} {...(!historyMode && canvasSelectedNodeId ? { selectedNodeId: canvasSelectedNodeId } : {})} {...(!historyMode && selectedNodeIds.length > 1 ? { selectedNodeIds } : {})} slot={historyMode ? null : slotName} select={selectCanvas} canEditNode={canEditCanvasNode} dragItem={dragItem} drop={dropAt} pending={pending} editText={editCanvasText} startTextEdit={startTextEdit} onShortcut={onShortcut} resize={(path, width, height) => applyStyle({ type: "resize", path, breakpoint: tier, width, height, ...(until === undefined ? {} : { until }) })} reportError={setNotice} editable={!editBlocked && !hasInput} structureEditable={!editBlocked && !hasInput && !targetMode} locks={locks} preview={preview || historyMode} baseVersion={masterId && library ? library.version : session.version} {...(historyMode && versions.viewing ? { historyRevision: versions.viewing.entry } : {})} mode={historyMode ? "history" : preview ? "preview" : "edit"} {...(canvasPreview ? { previewComponent: canvasPreview } : {})} assets={resolvedAssets.map} replay={`${replay}-${preview}`} viewportHeight={canvasReferenceHeight} siteOrigin={site?.domains[0]}
         presentationRuntime={(preview || motion) && !historyMode} motionCss={canvasCss(renderedCanvas, { forceState: !preview && !historyMode && styleState !== "normal" && node && node.type !== "text" ? { nodeId: node.id, state: styleState } : undefined, motion: (preview || motion) && !historyMode ? "play" : "paused" })} /></div>{(["left", "right"] as const).map((side) => <ViewportEdgeHandle key={side} side={side} width={width} scale={canvasScale} disabled={historyMode} onWidthChange={(value) => { setWidth(value); setWidthField(String(value)); }} />)}</div> : <p className="e-empty">{localization.supported && !localizationReady ? "" : "サイトとページを選ぶと、ここにプレビューを表示します。"}</p>}</div></section>} right={<aside className="e-rail e-right" aria-label="インスペクタ" hidden={!rightPanelOpen || preview}>
       <div className="e-inspector-actions" role="toolbar" aria-label="編集操作"><WorkspaceScaleSelect scale={scaleMode} fitPercent={Math.round(fitScale * 100)} disabled={!!shortcutUnavailable} onScale={changeScale} />
       {localization.site && selectedLocale && <LanguageSelector config={localization.site.config} locale={selectedLocale} disabled={blocked} select={selectLocale} />}
@@ -1809,13 +1963,19 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         : <button className="e-primary e-publish-button" aria-label="公開" title={session?.readOnly?.reason ?? publishHold ?? "公開前に対象と差分を確認"} onClick={() => void prepare("publish")} disabled={siteSettings.dirty || siteSettings.busy || !session || !!session.readOnly || session.hasSavedDraft === false || dirty || libraryDirty || !!masterId || blocked || hasInput || historyMode || !localizationReady}>公開</button>}
       {publishHold && !targetMode && <small className="e-hold">{publishHold}</small>}{targetMode && !localePublication && <small className="e-hold">このサイトでは訳文の公開を利用できません。管理者に確認してください。</small>}</div>
       <div className="e-inspector-scroll"><>
-      <div className="e-inspector-context"><strong>{inspector === "element" ? node ? label(node, blocks, names) : "要素を選択" : inspector === "site" ? site?.name ?? "サイト" : inspector === "localization" ? "翻訳" : masterComponent?.name ?? page?.title ?? (masterId || isSiteComponent ? "コンポーネント" : "ページ")}</strong>
-        {inspector === "element" && node && node.type !== "text" && <label><span className="e-vh">条件スタイル</span><select className="e-condition-select" aria-label="条件スタイル" title={`${styleState === "normal" ? "通常" : styleState === "hover" ? "ホバー中" : styleState === "focus" ? "フォーカス中" : "押下中"}の見た目を編集`} value={styleState} onChange={(event) => { setStyleState(event.target.value as StyleState); if (event.target.value !== "normal") setElementTab("transform"); }}><option value="normal">通常</option><option value="hover">ホバー</option><option value="focus">フォーカス</option><option value="active">押下中</option></select></label>}
+      <div className="e-inspector-context"><strong>{inspector === "element" ? multiSelection ? `${selectedNodeIds.length} 個を選択` : node ? label(node, blocks, names) : "要素を選択" : inspector === "site" ? site?.name ?? "サイト" : inspector === "localization" ? "翻訳" : masterComponent?.name ?? page?.title ?? (masterId || isSiteComponent ? "コンポーネント" : "ページ")}</strong>
+        {inspector === "element" && !multiSelection && node && node.type !== "text" && <label><span className="e-vh">条件スタイル</span><select className="e-condition-select" aria-label="条件スタイル" title={`${styleState === "normal" ? "通常" : styleState === "hover" ? "ホバー中" : styleState === "focus" ? "フォーカス中" : "押下中"}の見た目を編集`} value={styleState} onChange={(event) => { setStyleState(event.target.value as StyleState); if (event.target.value !== "normal") setElementTab("transform"); }}><option value="normal">通常</option><option value="hover">ホバー</option><option value="focus">フォーカス</option><option value="active">押下中</option></select></label>}
         <label><span className="e-vh">編集する対象</span><select aria-label="編集する対象" value={inspector} onChange={(event) => requestInspector(event.target.value as Inspector)}>
           <option value="element" disabled={!node}>要素</option><option value="page">{masterId || isSiteComponent ? "コンポーネント" : "ページ"}</option><option value="site">サイト</option>{targetMode && <option value="localization">翻訳</option>}
         </select></label><PanelToggle side="right" open onClick={() => setRightPanelOpen(false)} />
       </div>
       {inspector === "element" && <InspectorTabs tabs={activeInspectorTabs} active={elementTab} disabled={!node} onChange={(value) => { setElementTab(value); if (value !== "transform") setStyleState("normal"); }} />}
+      {inspector === "element" && multiSelection && node && node.type !== "text" && document && selection && <section className="e-inspector-content" id="e-inspector-panel" role="tabpanel" aria-labelledby={`e-inspector-tab-${elementTab}`} aria-label={`${activeInspectorTabs.find(({ value }) => value === elementTab)?.label ?? "共通"}設定`}>
+        <StyleInspector key={`${pathKey}-multi`} document={document} node={node} path={selection} targets={selectedTargets} commonOnly saved={masterId ? savedMaster : session?.saved} blocks={blocks} tiers={tiers} tier={tier} setTier={setBreakpoint} range={range} setRange={setRange} tab={elementTab} origins={styleOrigins}
+          width={width} setWidth={setWidth} apply={(operation) => Array.isArray(operation) && operation.length > PAGE_OPERATION_LIMIT ? `一度に変更できる要素は${PAGE_OPERATION_LIMIT}件までです。選択数を減らしてください。` : apply(operation)}
+          preview={(operation) => { if (Array.isArray(operation) && operation.length > PAGE_OPERATION_LIMIT) { setNotice(`一度に変更できる要素は${PAGE_OPERATION_LIMIT}件までです。選択数を減らしてください。`); return; } previewOperation(operation); }}
+          pending={pending} fieldKey={pathKey} disabled={editBlocked || targetMode} tierLocked={hasInput} reason={reason} notify={setNotice} styleState={styleState} setStyleState={setStyleState} stateControl="external" />
+      </section>}
       {inspector === "site" && <section className="e-inspector-content">{targetMode ? <p className="e-help">サイト設定は原文で編集します。</p> : <SiteSettingsPanel site={site} state={siteSettings} cover={assets ? { assets: resolvedAssets.map, failed: resolvedAssets.failed, pick: () => setPicker({ purpose: "siteOgImage" }) } : undefined} />}</section>}
       {inspector === "localization" && localization.context && document && <section className="e-inspector-content"><LocalizationPanel context={localization.context} document={document} disabled={blocked || !!session?.readOnly || dirty || libraryDirty || pageInputPending || !localizationReady} selectedUnit={selectedLocalizationUnit} run={runLocalizationCommand} refresh={localization.reloadAll} requestTranslation={adapter.localization?.requestPageTranslation !== false} manualBuffer={localizationManual} setManualBuffer={setLocalizationManual} pickAsset={(unit) => { setPicker(null); setLocalizationAssetUnit(unit.unitId); }} /></section>}
       {inspector === "page" && !masterComponent && !isSiteComponent && <section className="e-inspector-content">{document && <PageSettings document={document} page={page} site={site} settings={siteSettings} field={field} apply={apply} report={setNotice} disabled={editBlocked} targetMode={targetMode}
@@ -1826,7 +1986,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       {inspector === "page" && masterComponent && <ComponentSettings component={masterComponent} usage={usageSummary?.get(masterComponent.id)} usageLoading={usage === undefined} field={input} disabled={libraryBlocked || hasInput}
         rename={(name) => updateLibrary((library) => renameComponent(library, masterComponent.id, name, blocks))} setKind={(kind) => reportProblem(updateLibrary((library) => setComponentKind(library, masterComponent.id, kind, blocks)))}
         unpublish={(name) => reportProblem(updateLibrary((library) => setComponentProp(library, masterComponent.id, name, undefined, blocks)))} back={leaveComponent} />}
-      {inspector === "element" && <section className="e-inspector-content" id="e-inspector-panel" role="tabpanel" aria-labelledby={`e-inspector-tab-${elementTab}`} aria-label={`${activeInspectorTabs.find(({ value }) => value === elementTab)?.label ?? "要素"}設定`}>{slotName && node?.type === "component" && selection && document ? <BlockSlotInspector key={`${pathKey}-slot-${slotName}`} document={document} node={node} path={selection} slot={slotName} blocks={blocks}
+      {inspector === "element" && !multiSelection && <section className="e-inspector-content" id="e-inspector-panel" role="tabpanel" aria-labelledby={`e-inspector-tab-${elementTab}`} aria-label={`${activeInspectorTabs.find(({ value }) => value === elementTab)?.label ?? "要素"}設定`}>{slotName && node?.type === "component" && selection && document ? <BlockSlotInspector key={`${pathKey}-slot-${slotName}`} document={document} node={node} path={selection} slot={slotName} blocks={blocks}
         saved={masterId ? savedMaster : session?.saved} back={() => chooseSlot(null)} apply={apply} preview={previewOperation} reason={reason} notify={setNotice} input={input}
         style={{ tiers, tier, setTier: setBreakpoint, range, setRange, width, setWidth, pending, fieldKey: `${pathKey}-slot-${slotName}`, disabled: editBlocked, tierLocked: hasInput, tab: elementTab }} /> : <>
       {!node && <p className="e-help">要素を選択してください。</p>}
