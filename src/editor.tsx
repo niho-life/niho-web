@@ -863,6 +863,10 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         const problem = operations.map((next) => localizedOperationProblem(current.history.present, next, localization.context!.collection)).find(Boolean);
         if (problem) return problem;
       }
+      if (operations.length === 1 && operations[0]!.type === "replaceChildren") {
+        const operation = operations[0]!, target = nodeAt(current.history.present, operation.path);
+        if (target.type === "element" && JSON.stringify(target.children) === JSON.stringify(operation.children)) { setDraft(null); return undefined; }
+      }
       const edit = (page: PageDocument, operation: EditorOperation) => editDocument(page, operation, blocks, current.locks, lib, activeSiteStyles);
       const next = adapter.applyOperations && !targetMode
         ? queuePageEdit(current.operationQueue, current.history.present, operations, edit, operationApplier(blocks, current.locks, lib, activeSiteStyles))
@@ -978,7 +982,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     if (siteSettings.stylesDirty || siteSettings.busy || !sessionRef.current && !libraryChanged || action.current || blocked || hasInput || historyMode || !!sessionRef.current && !localizationReady || mode === "auto" && isOffline()) return false;
     const finish = measurePerformance?.("save");
     const controller = new AbortController(), auto = mode === "auto", hadProblem = !!problemRef.current; action.current = controller; if (!auto) setNotice("");
-    let current = sessionRef.current, librarySaved = false, pageSaved = false, applyingOperations = false, saveEditRevision: number | undefined;
+    let current = sessionRef.current, librarySaved = false, pageSaved = false, applyingOperations = false;
     const sameSession = () => { const latest = sessionRef.current; return !!latest && !!current && sameTarget(latest.target, current.target); };
     const failed = (next: SaveProblem, thrown: boolean) => {
       if (!sameSession()) return;
@@ -996,7 +1000,6 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       }
       if (!current) return false;
       if (current.readOnly) { if (!auto) setNotice(current.readOnly.reason); return false; }
-      saveEditRevision = current.history.editRevision ?? 0;
       setBusy("保存中");
       const lib = libraryRef.current?.history.present, document = parsePageDocument(detachRemovedSiteStyles(current.history.present, current.siteStyles ?? {}, siteSettings.settings ?? {}), blocks, { ...(lib ? { components: lib } : {}), ...(siteSettings.settings ? { siteStyles: siteSettings.settings } : {}) });
       const localized = targetMode ? localization.context : null;
@@ -1025,7 +1028,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         if (latest && sameTarget(latest.target, current.target) && latest.version === current.version) {
           const acknowledged = acceptAppliedOperations(latest.operationQueue, { ...result, document: canonical }, latest.history, applyToPage);
           const saved = fingerprint(canonical), matchesSaved = !acknowledged.replayFailed && fingerprint(acknowledged.history.present) === saved;
-          replace({ ...latest, history: acknowledged.history, operationQueue: acknowledged.queue, saved, savedEditRevision: matchesSaved ? saveEditRevision ?? latest.savedEditRevision : latest.savedEditRevision, version: result.version, hasSavedDraft: true });
+          replace({ ...latest, history: acknowledged.history, operationQueue: acknowledged.queue, saved, savedEditRevision: matchesSaved ? acknowledged.history.editRevision ?? latest.savedEditRevision : latest.savedEditRevision, version: result.version, hasSavedDraft: true });
           if (acknowledged.replayFailed) {
             failed("conflict", false);
             return false;
@@ -1043,7 +1046,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         if (latest && sameTarget(latest.target, current.target) && latest.version === current.version) {
           const acknowledged = acceptSavedRevision(latest.history, document, result.revision);
           const matchesSaved = fingerprint(acknowledged.history.present) === acknowledged.saved;
-          replace({ ...latest, ...acknowledged, savedEditRevision: matchesSaved ? saveEditRevision ?? latest.savedEditRevision : latest.savedEditRevision, version: result.version, hasSavedDraft: true,
+          replace({ ...latest, ...acknowledged, savedEditRevision: matchesSaved ? acknowledged.history.editRevision ?? latest.savedEditRevision : latest.savedEditRevision, version: result.version, hasSavedDraft: true,
             operationQueue: adapter.applyOperations && !localized
               ? createOperationQueue({ ...document, revision: result.revision })
               : { ...latest.operationQueue, base: { ...document, revision: result.revision }, pending: [] } });
