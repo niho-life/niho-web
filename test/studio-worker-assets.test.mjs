@@ -201,7 +201,7 @@ test("Kamakura asset BFF re-checks membership, validates every body, signs upstr
   assert.match(csp, /connect-src 'self' https:\/\/next-kamakura\.niho\.life;/u);
 });
 
-test("Studio's own web fonts are cached for a year, every other static response stays no-store", async (t) => {
+test("Studio's content-versioned assets are cached for a year, other static responses stay no-store", async (t) => {
   const auth = await accessFixture("web-font-key");
   const worker = await loadWorker();
   t.mock.method(globalThis, "fetch", async (url) => {
@@ -218,15 +218,23 @@ test("Studio's own web fonts are cached for a year, every other static response 
     } }
   };
   const get = (path, jwt = auth.jwt) => worker.fetch(new Request(`${STUDIO}${path}`, { headers: jwt ? { "Cf-Access-Jwt-Assertion": jwt } : {} }), env);
-  for (const path of ["/assets/fonts/noto-sans-jp-5.3.1/noto-sans-jp-0-wght-normal.woff2", "/assets/fonts/inter-5.3.0/inter-latin-wght-normal.woff2", "/assets/fonts/fonts-0123456789ab.css"]) {
+  for (const path of [
+    "/assets/fonts/noto-sans-jp-5.3.1/noto-sans-jp-0-wght-normal.woff2",
+    "/assets/fonts/inter-5.3.0/inter-latin-wght-normal.woff2",
+    "/assets/fonts/fonts-0123456789ab.css",
+    "/assets/studio-0123456789ab.css",
+    "/assets/project-view-abcdef012345.css",
+    "/assets/app-0123456789ab.js",
+    "/assets/chunks/chunk-3YUNDUAB.js"
+  ]) {
     const response = await get(path);
     assert.equal(response.status, 200, path);
     assert.equal(response.headers.get("Cache-Control"), "private, max-age=31536000, immutable", path);
     assert.match(response.headers.get("Content-Security-Policy"), /default-src 'none'/u, path);
     assert.equal(response.headers.get("X-Content-Type-Options"), "nosniff", path);
   }
-  // 版や hash の無い場所・別の拡張子・見つからない応答は今までどおり no-store
-  for (const path of ["/assets/studio.css", "/assets/studio-0123456789ab.css", "/assets/fonts/fonts.css", "/assets/fonts/inter/inter-latin-wght-normal.woff2", "/assets/fonts/inter-5.3.0/OFL.txt", "/assets/fonts/inter-5.3.0/missing.woff2"]) {
+  // 版や hash の無い場所・不正な hash・別の拡張子・見つからない応答は今までどおり no-store
+  for (const path of ["/assets/studio.css", "/assets/studio-123.css", "/assets/app.js", "/assets/chunks/chunk-no-hash.js", "/assets/chunks/chunk-3YUNDUAB.css", "/assets/fonts/fonts.css", "/assets/fonts/inter/inter-latin-wght-normal.woff2", "/assets/fonts/inter-5.3.0/OFL.txt", "/assets/fonts/inter-5.3.0/missing.woff2"]) {
     assert.equal((await get(path)).headers.get("Cache-Control"), "no-store", path);
   }
   // Access の確認は今までどおり先に通す

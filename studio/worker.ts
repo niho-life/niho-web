@@ -2875,7 +2875,10 @@ async function editorApi(request: Request, env: Env, identity: AccessIdentity, u
  * 同じ URL の中身は変わらないので、ほかの静的応答（no-store）と違ってブラウザに 1 年持たせる。Access の内側の応答なので共有の cache には置かせない（private）。
  */
 const VERSIONED_FONT_PATH = /^\/assets\/fonts\/(?:[a-z0-9-]+-\d+\.\d+\.\d+\/[a-z0-9-]+\.woff2|fonts-[0-9a-f]{12}\.css)$/u;
-const VERSIONED_FONT_CACHE = "private, max-age=31536000, immutable";
+// studio/build.mjs emits root entry/CSS files with a 12-hex content hash and
+// esbuild chunks under chunks/ with its content-derived 8-character [hash].
+const VERSIONED_STUDIO_ASSET_PATH = /^\/assets\/(?:[a-z0-9-]+-[0-9a-f]{12}\.(?:css|js)|chunks\/[A-Za-z0-9_-]+-[A-Za-z0-9_-]{8}\.js)$/u;
+const VERSIONED_ASSET_CACHE = "private, max-age=31536000, immutable";
 
 function withStaticSecurity(response: Response, editor = false, connectOrigins: readonly string[] = [], fontSources: readonly string[] = [], scriptSources: readonly string[] = [], frameSources: readonly string[] = []): Response {
   const headers = new Headers(response.headers);
@@ -3265,7 +3268,9 @@ async function handle(request: Request, env: Env): Promise<Response> {
     return withStaticSecurity(await env.ASSETS.fetch(new Request(indexUrl, { method: request.method, headers: request.headers })), pageAdapter !== null || managedEditor !== null, pageAdapter ? pageAdapter.connectOrigins ?? [] : dashboardConnect, pageAdapter?.fontSources ?? [], pageAdapter?.scriptSources ?? [], pageAdapter ? pageAdapter.frameSources ?? [] : dashboardFrames);
   }
   const asset = withStaticSecurity(await env.ASSETS.fetch(request));
-  if (asset.status === 200 && VERSIONED_FONT_PATH.test(url.pathname)) asset.headers.set("Cache-Control", VERSIONED_FONT_CACHE);
+  if (asset.status === 200 && (VERSIONED_FONT_PATH.test(url.pathname) || VERSIONED_STUDIO_ASSET_PATH.test(url.pathname))) {
+    asset.headers.set("Cache-Control", VERSIONED_ASSET_CACHE);
+  }
   return asset;
 }
 
