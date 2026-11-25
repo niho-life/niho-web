@@ -1,5 +1,5 @@
 import { elementAttributeNames, isElementTag, metaLimits, parsePageDocument } from "./document.js";
-import { editDocumentById, walkNodes, type EditorOperationById } from "./editor-model.js";
+import { editDocumentById, nodeAt, walkNodes, type EditorOperationById, type PageOperationPreconditions } from "./editor-model.js";
 import { diffDocuments, type DocumentChange } from "./history.js";
 import { iconCatalog, isIconName } from "./icons.js";
 import { MOTION_BASE_PROPERTIES } from "./builder.js";
@@ -20,13 +20,17 @@ export type EditingPageApplyInput = PageOperationVersions & {
 };
 export type EditingPageApplied = { readonly status: "applied"; readonly version: string; readonly revision: number; readonly document: PageDocument };
 export type EditingPageApplyResult = EditingPageApplied | { readonly status: "valid"; readonly diff: readonly DocumentChange[]; readonly touched: readonly string[] };
-type ApplyRejection = { readonly status: "conflict" | "not_found" | "duplicate_operation" | "host_contract_violation" }
+export type PageOperationUnmetPrecondition = { readonly index: number; readonly condition: "rebase_supported" | "preconditions" | "node_exists" | "parent_id" | "old_value" };
+export type EditingPageApplyConflict = { readonly status: "conflict"; readonly unmetPreconditions?: readonly PageOperationUnmetPrecondition[] };
+type ApplyRejection = EditingPageApplyConflict | { readonly status: "not_found" | "duplicate_operation" | "host_contract_violation" }
   | { readonly status: "validation_failed"; readonly index: number; readonly reason: string };
 export type PageOperationJournal = {
   readonly actor: EditingActor;
   readonly target: EditingPageTarget;
   readonly input: Omit<EditingPageApplyInput, "dryRun" | "operations"> & { readonly operations: readonly PageOperationWire[] };
   readonly inputHash: string;
+  /** Present when a stale base was safely applied against the current page version. */
+  readonly rebasedFromVersion?: string;
 };
 export type PageOperationTransaction = {
   readonly operationId: string;
@@ -38,10 +42,11 @@ export type PageOperationTransaction = {
     | { readonly status: "ready"; readonly document: PageDocument; readonly journal: PageOperationJournal };
 };
 /**
- * Look up actor + operationId before checking versions. On 'ready', atomically CAS the page and
- * dependency versions, install the new page and journal pointers, and store hash and immutable
- * response. Retry a lost CAS through the lookup before reporting conflict. Dry runs never look
- * up or consume an operationId. No change is visible on any other decision.
+ * Look up actor + operationId before checking versions. Prepare against the latest page snapshot
+ * and its validation context even when baseVersion is stale; prepare decides whether the request
+ * is safely rebaseable. On 'ready', atomically CAS the exact page/dependency versions used by
+ * prepare, install the new page and journal pointers, and store hash and immutable response. Retry
+ * a lost CAS from a fresh snapshot through the operation lookup. Dry runs never consume an ID.
  */
 export type EditingPageOperationStore = {
   transact(actor: EditingActor, target: EditingPageTarget, transaction: PageOperationTransaction): Promise<EditingPageApplyResult | ApplyRejection>;
@@ -73,6 +78,8 @@ const booleanAttributes = ["controls", "loop", "muted", "playsInline", "required
 const headingTags = ["p", "h1", "h2", "h3", "h4", "h5", "h6"] as const;
 const tokenKinds = ["color", "length", "fontFamily", "number"] as const;
 const primitive = either(text, number, bool);
+const anchor = either(obj({ before: id }), obj({ after: id }), obj({ edge: valuesOf(["start", "end"]) }));
+const preconditions = obj({ parentId: nullable(id), oldValue: nullable(either({ type: "string", maxLength: 100000 }, number, bool, obj({ token: id }))) });
 const node = { $ref: "#/$defs/pageNode" };
 const documentStyle = { $ref: "#/$defs/nodeStyle" };
 const operation = (type: string, required: Record<string, JsonSchema> = {}, optional: Record<string, JsonSchema> = {}) => obj({ type: constant(type), ...required }, optional);
@@ -91,12 +98,12 @@ export const pageApplyInputSchema: JsonSchema = {
   }, { dryRun: bool, componentsVersion: version, presentationVersion: version, stylesVersion: version }),
   $defs: {
     editorOperationById: either(
-      operation("text", { parentId: nullable(id), childPath: list(indexSchema, 1, 49), value: text }),
-      nodeOperation("attribute", { name: valuesOf(elementAttributeNames), value: text }), nodeOperation("booleanAttribute", { name: valuesOf(booleanAttributes), value: bool }),
+      operation("text", { parentId: nullable(id), childPath: list(indexSchema, 1, 49), value: text }, { preconditions }),
+      nodeOperation("attribute", { name: valuesOf(elementAttributeNames), value: text }, { preconditions }), nodeOperation("booleanAttribute", { name: valuesOf(booleanAttributes), value: bool }),
       nodeOperation("formChoices", { values: list(text, 1, 20) }), nodeOperation("formCompletionPage", {}, { pageId: id }),
       nodeOperation("icon", { name: valuesOf(iconCatalog.map(({ name }) => name)) }), nodeOperation("tag", { value: valuesOf(headingTags) }),
-      nodeOperation("prop", { name: text }, { value: primitive }), nodeOperation("instanceProp", { name: text }, { value: text }),
-      nodeOperation("style", { breakpoint, property: valuesOf(stylePropertyNames) }, { value: styleValue }),
+      nodeOperation("prop", { name: text }, { value: primitive, preconditions }), nodeOperation("instanceProp", { name: text }, { value: text }),
+      nodeOperation("style", { breakpoint, property: valuesOf(stylePropertyNames) }, { value: styleValue, preconditions }),
       nodeOperation("styles", { breakpoint, values: styleChanges }), nodeOperation("styleRange", { breakpoint, until: widthSchema, values: styleChanges }),
       nodeOperation("resize", { breakpoint, width: number, height: number }, { until: widthSchema }),
       operation("token", { name: id, token: obj({ type: valuesOf(tokenKinds), value: either(text, number) }, { label: text }) }),
@@ -105,13 +112,13 @@ export const pageApplyInputSchema: JsonSchema = {
       nodeOperation("state", { state: valuesOf(stateNames), values: styleMap(stateProperties, nullable(styleValue)) }, { also: list(valuesOf(stateNames), 0, 3) }),
       nodeOperation("appear", {}, { value: appear }), nodeOperation("motionPreset", {}, { style: motion, previous: motion }),
       nodeOperation("hidden", {}, { ranges: hidden }), operation("title", { value: text }),
-      operation("add", { parentId: nullable(id), node }, { index: indexSchema }),
-      operation("addMany", { parentId: nullable(id), nodes: list(node, 1, 5000) }, { index: indexSchema }),
+      operation("add", { parentId: nullable(id), node }), operation("add", { parentId: nullable(id), node, index: indexSchema }), operation("add", { parentId: nullable(id), node, anchor }),
+      operation("addMany", { parentId: nullable(id), nodes: list(node, 1, 5000) }), operation("addMany", { parentId: nullable(id), nodes: list(node, 1, 5000), index: indexSchema }), operation("addMany", { parentId: nullable(id), nodes: list(node, 1, 5000), anchor }),
       nodeOperation("image", { source: either(obj({ asset }), obj({ src: text }, { srcset: text })) }, { alt: text }),
       nodeOperation("video", { source: either(obj({ asset }), obj({ src: text })) }),
       nodeOperation("embedSource", { source: text }), nodeOperation("embedTitle", { title: text }), nodeOperation("loopBox", { speed: number, pauseOnHover: bool }),
       nodeOperation("background", { breakpoint }, { asset }), nodeOperation("duplicate"), nodeOperation("remove"),
-      nodeOperation("move", { parentId: nullable(id), index: indexSchema }), nodeOperation("detach"),
+      nodeOperation("move", { parentId: nullable(id), index: indexSchema }), nodeOperation("move", { parentId: nullable(id), anchor }), nodeOperation("detach"),
       nodeOperation("slotStyle", { slot: id, breakpoint, property: valuesOf(stylePropertyNames) }, { value: styleValue }),
       ...Object.entries(metaSchemas).map(([field, schema]) => operation("meta", { field: constant(field) }, { value: schema }))
     ),
@@ -156,6 +163,19 @@ const checkStyleValue: Check = (value, path) => {
 const checkLiteral: Check = (value, path) => {
   if (typeof value === "string") string(value, path, 100000);
   else if (typeof value !== "boolean") finite(value, path);
+};
+const checkOldValue: Check = (value, path) => {
+  if (value === null || typeof value === "boolean") return;
+  if (typeof value === "string") string(value, path, 100000);
+  else if (typeof value === "number") finite(value, path);
+  else shape(value, path, { token: identifier });
+};
+const checkPreconditions: Check = (value, path) => shape(value, path, { parentId: checkParent, oldValue: checkOldValue });
+const checkAnchor: Check = (value, path) => {
+  const source = record(value, path);
+  if (Object.hasOwn(source, "before")) shape(source, path, { before: identifier });
+  else if (Object.hasOwn(source, "after")) shape(source, path, { after: identifier });
+  else shape(source, path, { edge: oneOf(["start", "end"]) });
 };
 const array = (check: Check, min: number, max: number): Check => (value, path) => {
   if (!Array.isArray(value) || value.length < min || value.length > max) fail(path, "array length out of range");
@@ -243,21 +263,21 @@ export function parsePageOperation(value: unknown, path: string): EditorOperatio
   const check = (required: Record<string, Check> = {}, optional: Record<string, Check> = {}) => shape(source, path, { type: string, ...required }, optional);
   const target = (required: Record<string, Check> = {}, optional: Record<string, Check> = {}) => check({ nodeId: identifier, ...required }, optional);
   switch (source.type) {
-    case "text": check({ parentId: checkParent, childPath: array(index, 1, 49), value: (value, at) => string(value, at, 100000) }); break;
+    case "text": check({ parentId: checkParent, childPath: array(index, 1, 49), value: (value, at) => string(value, at, 100000) }, { preconditions: checkPreconditions }); break;
     case "title": check({ value: string }); break;
     case "meta": {
       if (typeof source.field !== "string" || !Object.hasOwn(checkMeta, source.field)) fail(path, "unknown metadata field");
       check({ field: string }, { value: checkMeta[source.field]! }); break;
     }
-    case "attribute": target({ name: oneOf(elementAttributeNames), value: string }); break;
+    case "attribute": target({ name: oneOf(elementAttributeNames), value: string }, { preconditions: checkPreconditions }); break;
     case "booleanAttribute": target({ name: oneOf(booleanAttributes), value: boolean }); break;
     case "formChoices": target({ values: array(string, 1, 20) }); break;
     case "formCompletionPage": target({}, { pageId: identifier }); break;
     case "icon": target({ name: (value, at) => { if (!isIconName(value)) fail(at, "unknown icon"); } }); break;
     case "tag": target({ value: oneOf(headingTags) }); break;
-    case "prop": target({ name: string }, { value: checkLiteral }); break;
+    case "prop": target({ name: string }, { value: checkLiteral, preconditions: checkPreconditions }); break;
     case "instanceProp": target({ name: string }, { value: string }); break;
-    case "style": target({ breakpoint: checkBreakpoint, property: checkStyleProperty }, { value: checkStyleValue }); break;
+    case "style": target({ breakpoint: checkBreakpoint, property: checkStyleProperty }, { value: checkStyleValue, preconditions: checkPreconditions }); break;
     case "styles": target({ breakpoint: checkBreakpoint, values: declarations(checkStyleProperty, true) }); break;
     case "styleRange": target({ breakpoint: checkBreakpoint, until: width, values: declarations(checkStyleProperty, true) }); break;
     case "resize": target({ breakpoint: checkBreakpoint, width: finite, height: finite }, { until: width }); break;
@@ -268,15 +288,15 @@ export function parsePageOperation(value: unknown, path: string): EditorOperatio
     case "appear": target({}, { value: checkAppear }); break;
     case "hidden": target({}, { ranges: checkHidden }); break;
     case "motionPreset": target({}, { style: checkMotion, previous: checkMotion }); break;
-    case "add": check({ parentId: checkParent, node: checkNode }, { index }); break;
-    case "addMany": check({ parentId: checkParent, nodes: array(checkNode, 1, 5000) }, { index }); break;
+    case "add": check({ parentId: checkParent, node: checkNode }, { index, anchor: checkAnchor }); if (source.index !== undefined && source.anchor !== undefined) fail(path, "index and anchor are mutually exclusive"); break;
+    case "addMany": check({ parentId: checkParent, nodes: array(checkNode, 1, 5000) }, { index, anchor: checkAnchor }); if (source.index !== undefined && source.anchor !== undefined) fail(path, "index and anchor are mutually exclusive"); break;
     case "image": target({ source: checkSource(true) }, { alt: string }); break;
     case "video": target({ source: checkSource(false) }); break;
     case "embedSource": target({ source: (value, at) => string(value, at, 16384) }); break;
     case "embedTitle": target({ title: string }); break;
     case "loopBox": target({ speed: finite, pauseOnHover: boolean }); break;
     case "background": target({ breakpoint: checkBreakpoint }, { asset: parseAssetReference }); break;
-    case "move": target({ parentId: checkParent, index }); break;
+    case "move": target({ parentId: checkParent }, { index, anchor: checkAnchor }); if ((source.index === undefined) === (source.anchor === undefined)) fail(path, "move requires exactly one of index or anchor"); break;
     case "slotStyle": target({ slot: identifier, breakpoint: checkBreakpoint, property: checkStyleProperty }, { value: checkStyleValue }); break;
     case "duplicate": case "remove": case "detach": target(); break;
     default: fail(path, "unsupported operation");
@@ -323,21 +343,81 @@ function changedNodeIds(before: PageDocument, after: PageDocument): string[] {
   const old = entries(before), next = entries(after);
   return [...new Set([...old.keys(), ...next.keys()])].filter((id) => old.get(id) !== next.get(id));
 }
+type RebaseOperation = Extract<EditorOperationById, { type: "text" | "style" | "attribute" | "prop" }>;
+function sameValue(left: unknown, right: unknown): boolean { return JSON.stringify(canonical(left ?? null)) === JSON.stringify(canonical(right ?? null)); }
+function locatedNode(document: PageDocument, nodeId: string) {
+  const matches = walkNodes(document).filter(({ node }) => node.type !== "text" && node.id === nodeId);
+  return matches.length === 1 ? matches[0] : undefined;
+}
+function parentIdAt(document: PageDocument, path: readonly number[]): string | null | undefined {
+  if (path.length === 1) return null;
+  try {
+    const parent = nodeAt(document, path.slice(0, -1));
+    return parent.type === "element" ? parent.id : undefined;
+  } catch { return undefined; }
+}
+function rebaseTarget(document: PageDocument, operation: RebaseOperation): { parentId: string | null; oldValue: unknown } | undefined {
+  if (operation.type === "text") {
+    const parentPath = operation.parentId === null ? [] : locatedNode(document, operation.parentId)?.path;
+    if (!parentPath) return undefined;
+    try {
+      const path = [...parentPath, ...operation.childPath], node = nodeAt(document, path);
+      if (node.type !== "text") return undefined;
+      const parentId = parentIdAt(document, path);
+      return parentId === undefined ? undefined : { parentId, oldValue: node.text };
+    } catch { return undefined; }
+  }
+  const located = locatedNode(document, operation.nodeId);
+  if (!located) return undefined;
+  const parentId = parentIdAt(document, located.path);
+  if (parentId === undefined) return undefined;
+  const node = located.node;
+  if (operation.type === "style") {
+    if (node.type === "text") return undefined;
+    const declarations = operation.breakpoint === "base" ? node.style?.base : node.style?.responsive?.find(({ minWidth }) => minWidth === operation.breakpoint)?.declarations;
+    return { parentId, oldValue: declarations?.[operation.property] };
+  }
+  if (operation.type === "attribute") return node.type === "element" ? { parentId, oldValue: node.attrs?.[operation.name] } : undefined;
+  return node.type === "component" ? { parentId, oldValue: node.props[operation.name] } : undefined;
+}
+function unmetRebasePreconditions(document: PageDocument, operation: EditorOperationById, index: number): PageOperationUnmetPrecondition[] {
+  if (!["text", "style", "attribute", "prop"].includes(operation.type)) return [{ index, condition: "rebase_supported" }];
+  const change = operation as RebaseOperation, preconditions = change.preconditions as PageOperationPreconditions | undefined;
+  if (!preconditions) return [{ index, condition: "preconditions" }];
+  const target = rebaseTarget(document, change);
+  if (!target) return [{ index, condition: "node_exists" }];
+  if (change.type === "attribute") {
+    const node = locatedNode(document, change.nodeId)?.node;
+    if (node?.type !== "element") return [{ index, condition: "node_exists" }];
+    const pairedFormField = ["input", "select", "textarea", "button", "option", "fieldset", "label"].includes(node.tag)
+      && ["id", "name", "htmlFor", "for", "type"].includes(change.name);
+    if (change.name === "id" || change.name === "htmlFor" || pairedFormField) return [{ index, condition: "rebase_supported" }];
+  }
+  return [
+    ...(target.parentId === preconditions.parentId ? [] : [{ index, condition: "parent_id" as const }]),
+    ...(sameValue(target.oldValue, preconditions.oldValue) ? [] : [{ index, condition: "old_value" as const }]),
+  ];
+}
 export function preparePageOperations(snapshot: EditingPageSnapshot, context: PageEditingValidationContext, input: EditingPageApplyInput, journal: PageOperationJournal, dryRun: boolean): ReturnType<PageOperationTransaction["prepare"]> {
-  if (snapshot.version !== input.baseVersion || PAGE_OPERATION_VERSIONS.some((name) => input[name] !== undefined && snapshot[name] !== input[name])) return { status: "conflict" };
+  if (PAGE_OPERATION_VERSIONS.some((name) => input[name] !== undefined && snapshot[name] !== input[name])) return { status: "conflict" };
   const options = { ...(context.components ? { components: context.components } : {}), ...(context.siteStyles ? { siteStyles: context.siteStyles } : {}) };
   let before: PageDocument;
   try { before = parsePageDocument(snapshot.document, context.blocks, options); }
   catch { return { status: "host_contract_violation" }; }
   if (before.siteId !== journal.target.siteId || before.pageId !== journal.target.pageId || before.locale !== journal.target.locale) return { status: "host_contract_violation" };
+  const stale = snapshot.version !== input.baseVersion;
   let document = before, index = 0;
   try {
     for (const operation of input.operations) {
+      if (stale) {
+        const unmetPreconditions = unmetRebasePreconditions(document, operation, index);
+        if (unmetPreconditions.length) return { status: "conflict", unmetPreconditions };
+      }
       document = editDocumentById(document, operation, context.blocks, context.locks, context.components, context.siteStyles);
       index++;
     }
     document = parsePageDocument(document, context.blocks, options);
   } catch (error) { return editingOperationProblem(error, Math.min(index, input.operations.length - 1)); }
   if (dryRun) return { status: "valid", diff: diffDocuments(before, document), touched: changedNodeIds(before, document) };
-  return { status: "ready", document, journal };
+      return { status: "ready", document, journal: stale ? { ...journal, rebasedFromVersion: snapshot.version } : journal };
 }

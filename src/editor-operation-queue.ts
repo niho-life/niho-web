@@ -47,6 +47,40 @@ function stableOperation(document: PageDocument, operation: EditorOperation): Ed
   return { ...change, nodeId: node.id };
 }
 
+function parentIdAt(document: PageDocument, path: readonly number[]): string | null {
+  if (path.length === 1) return null;
+  const parent = nodeAt(document, path.slice(0, -1));
+  if (parent.type !== "element") throw new Error("invalid operation parent");
+  return parent.id;
+}
+function preconditioned(document: PageDocument, operation: EditorOperationById): EditorOperationById {
+  if (operation.type === "text") {
+    const parentPath = operation.parentId === null ? [] : walkNodes(document).find(({ node }) => node.type !== "text" && node.id === operation.parentId)?.path;
+    if (!parentPath) throw new Error("text parent not found");
+    const path = [...parentPath, ...operation.childPath], node = nodeAt(document, path);
+    if (node.type !== "text") throw new Error("text target not found");
+    return { ...operation, preconditions: { parentId: parentIdAt(document, path), oldValue: node.text } };
+  }
+  if (operation.type !== "style" && operation.type !== "attribute" && operation.type !== "prop") return operation;
+  const located = walkNodes(document).find(({ node }) => node.type !== "text" && node.id === operation.nodeId);
+  if (!located || located.node.type === "text") throw new Error("operation target not found");
+  const node = located.node;
+  let oldValue: unknown;
+  if (operation.type === "style") {
+    const declarations = operation.breakpoint === "base" ? node.style?.base : node.style?.responsive?.find(({ minWidth }) => minWidth === operation.breakpoint)?.declarations;
+    oldValue = declarations?.[operation.property];
+  } else if (operation.type === "attribute") oldValue = node.type === "element" ? node.attrs?.[operation.name] : undefined;
+  else oldValue = node.type === "component" ? node.props[operation.name] : undefined;
+  return { ...operation, preconditions: { parentId: parentIdAt(document, located.path), oldValue: oldValue ?? null } } as EditorOperationById;
+}
+function preconditionSequence(document: PageDocument, operations: readonly EditorOperationById[], apply: Apply): EditorOperationById[] {
+  return operations.map((operation) => {
+    const prepared = preconditioned(document, operation);
+    document = apply(document, prepared);
+    return prepared;
+  });
+}
+
 function textEdits(before: readonly PageNode[], after: readonly PageNode[], parentId: string): Change | undefined {
   if (before.length !== after.length) return undefined;
   const forward: EditorOperationById[] = [], inverse: EditorOperationById[] = [];
@@ -158,6 +192,7 @@ function reversibleChange(before: PageDocument, after: PageDocument, operation: 
     if (inverse) change = { forward: [forward], inverse };
   }
   if (!change) return undefined;
+  change = { forward: preconditionSequence(before, change.forward, apply), inverse: preconditionSequence(after, change.inverse, apply) };
   const canonical = (entry: EditorOperationById) => parsePageOperation(JSON.parse(JSON.stringify(pageOperationWire(entry))), "$operation");
   const forward = change.forward.map(canonical), inverse = change.inverse.map(canonical);
   if (equivalent(replayOperations(before, forward, apply), after) && equivalent(replayOperations(after, inverse, apply), before)) return { forward, inverse };
