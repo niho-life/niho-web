@@ -27,7 +27,7 @@ import type { ComponentKind, ComponentLibrary, IconName, PageDocument, PageNode,
 import { AssetLibraryPanel, BackgroundImageField, ImageSourceField, VideoSourceField, assetPlacement, socialImageProblem, useLocalAssetUsage, useResolvedAssets, type AssetAction, type AssetPicker } from "./editor-assets.js";
 import { assetEditorCss, canvasAssetCss } from "./editor-assets-style.js";
 import { uiColor } from "./ui-tokens.js";
-import type { LibraryAsset, ResolvedAssetMap } from "./assets.js";
+import { assetKey, type LibraryAsset, type ResolvedAssetMap } from "./assets.js";
 import { presentationAssetDocument } from "./presentation.js";
 import { initializeSitePresentation } from "./presentation-runtime.js";
 import { componentIssues, componentUsage, parseComponentLibrary, type ResolvedOrigin } from "./components.js";
@@ -50,12 +50,18 @@ import { canvasViewportHeight, elementTypeLabel, fitCanvasScale, layerLabel, pat
 import { LayerTreePanel } from "./editor-layers.js";
 import { CanvasViewportToolbar, EditorWorkspace, InspectorTabs, PanelToggle, ViewportEdgeHandle, WorkspaceIcon, WorkspaceScaleSelect, viewportPresets, workspaceScales, type WorkspaceScale, type WorkspaceTab } from "./editor-workspace.js";
 import { dispatchEditorShortcut, editorShortcuts } from "./editor-shortcuts.js";
+import {
+  EDITOR_NODE_CLIPBOARD_MAX_LENGTH, EDITOR_NODE_CLIPBOARD_TYPE, createEditorNodeClipboard, normalizeNodeFragment, parseEditorNodeClipboard,
+  readRememberedEditorNodeClipboard, rememberEditorNodeClipboard, type EditorNodeClipboard
+} from "./editor-fragment.js";
 import { workspaceCss } from "./editor-workspace-style.js";
 import { iconCatalog } from "./icons.js";
 import { parseEnglishPublication } from "./english-publication.js";
 import { BreakpointSettingsDialog, breakpointPreview, useBreakpointSettings } from "./editor-breakpoints.js";
 import { ResponsiveProposalControl, responsiveProposalCss } from "./editor-responsive-proposal.js";
 import { beginEditorPerformance, finishEditorPerformance, type EditorPerformanceMeasurement, type EditorPerformanceOutcome } from "./editor-performance.js";
+
+const browserClipboardNodeType = `web ${EDITOR_NODE_CLIPBOARD_TYPE}`;
 
 export type * from "./editor-types.js";
 export { prepareResponsiveProposal, requestResponsiveProposal, responsiveProposalProperties, ResponsiveProposalTimeoutError } from "./editor-responsive-proposal.js";
@@ -512,6 +518,8 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const [formCompletionPages, setFormCompletionPages] = useState<{ target: string; status: "idle" | "loading" | "ready" | "error"; pages: readonly EditorPage[] }>({ target: "", status: "idle", pages: [] });
   const sessionRef = useRef(session); sessionRef.current = session;
   const [selectedId, setSelectedId] = useState<string | null>(null), [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]), [selectedLocalizationUnit, setSelectedLocalizationUnit] = useState<string | null>(null), [selectedCanvasNode, setSelectedCanvasNode] = useState<string | null>(null), [width, setWidth] = useState(1280), [widthField, setWidthField] = useState("1280");
+  const selectedIdRef = useRef(selectedId); selectedIdRef.current = selectedId;
+  const selectedNodeIdsRef = useRef(selectedNodeIds); selectedNodeIdsRef.current = selectedNodeIds;
   useEffect(() => { setWidthField(String(width)); }, [width]);
   // 選んだ業務ブロックの表示領域。of は安定 ID で、兄弟の挿入・移動でも同じブロックへ留まる。
   const [slotChoice, setSlotChoice] = useState<{ of: string; name: string | null; back?: string } | null>(null);
@@ -940,6 +948,163 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   function runBulkStructural(type: "duplicate" | "remove") {
     const result = bulkStructural(type);
     if (typeof result === "string") setNotice(result);
+  }
+  function selectedClipboardFragment(): { clipboard: EditorNodeClipboard } | string {
+    const source = currentDocument();
+    if (!source) return "ページを読み込んでからコピーしてください。";
+    const selected = new Set(selectedNodeIds.length ? selectedNodeIds : selectedId ? [selectedId] : []);
+    if (!selected.size) return "コピーする要素を選択してください。";
+    const entries = walkNodes(source).filter(({ node: item }) => item.type !== "text" && selected.has(item.id));
+    if (entries.length !== selected.size) return "選択した要素を確認できません。ページを再読み込みしてください。";
+    for (const { path } of entries) {
+      const pair = pairedFormFieldNodeId(source, path);
+      if (pair) selected.add(pair);
+    }
+    const all = walkNodes(source).filter((entry): entry is { node: Exclude<PageNode, { type: "text" }>; path: number[] } => entry.node.type !== "text");
+    const roots = all.filter(({ node: item, path }) => selected.has(item.id) && !all.some(({ node: ancestor, path: ancestorPath }) =>
+      selected.has(ancestor.id) && ancestorPath.length < path.length && ancestorPath.every((part, index) => part === path[index])));
+    const lockedIds = new Set(effectiveLocks(source, masterId ? [] : sessionRef.current?.locks ?? [], blocks).map(({ nodeId: id }) => id));
+    if (roots.some(({ node: root }) => walkNodes({ ...source, body: [root] }).some(({ node: child }) => child.type !== "text" && lockedIds.has(child.id)))) {
+      return "データ連動値を含む要素はコピーできません。";
+    }
+    const nodes = roots.map(({ node: root }) => root);
+    return { clipboard: createEditorNodeClipboard(source.siteId, nodes) };
+  }
+  async function writeSystemClipboard(clipboard: EditorNodeClipboard): Promise<boolean> {
+    const systemClipboard = workspace.current?.ownerDocument.defaultView?.navigator.clipboard;
+    if (!systemClipboard?.write || typeof ClipboardItem === "undefined") return false;
+    try {
+      const serialized = JSON.stringify(clipboard);
+      if (serialized.length > EDITOR_NODE_CLIPBOARD_MAX_LENGTH) return false;
+      const item = new ClipboardItem({ [browserClipboardNodeType]: new Blob([serialized], { type: EDITOR_NODE_CLIPBOARD_TYPE }) });
+      await systemClipboard.write([item]);
+      return true;
+    } catch { return false; }
+  }
+  function storeClipboard(clipboard: EditorNodeClipboard, showFallbackNotice: boolean): void {
+    rememberEditorNodeClipboard(clipboard);
+    void writeSystemClipboard(clipboard).then((written) => {
+      if (!written && showFallbackNotice) setNotice("コピーしました。この編集画面内のコピー内容から貼り付けできます。");
+    });
+  }
+  function copySelection(): boolean | string {
+    const result = selectedClipboardFragment();
+    if (typeof result === "string") return result;
+    storeClipboard(result.clipboard, true);
+    setNotice("");
+    return true;
+  }
+  function cutSelection(): boolean | string {
+    const result = selectedClipboardFragment();
+    if (typeof result === "string") return result;
+    const removed = bulkStructural("remove");
+    if (typeof removed === "string") return removed;
+    if (removed) { storeClipboard(result.clipboard, false); setNotice("選択した要素をカットしました。"); }
+    return removed;
+  }
+  async function readSystemClipboard(): Promise<EditorNodeClipboard | null> {
+    const systemClipboard = workspace.current?.ownerDocument.defaultView?.navigator.clipboard;
+    if (!systemClipboard?.read) return readRememberedEditorNodeClipboard();
+    let items: ClipboardItems;
+    try { items = await systemClipboard.read(); }
+    catch { return readRememberedEditorNodeClipboard(); }
+    for (const item of items) if (item.types.includes(browserClipboardNodeType)) {
+      const blob = await item.getType(browserClipboardNodeType);
+      let data: unknown;
+      try {
+        const serialized = await blob.text();
+        if (serialized.length > EDITOR_NODE_CLIPBOARD_MAX_LENGTH) throw new Error("oversized clipboard");
+        data = JSON.parse(serialized);
+      }
+      catch { throw new Error("NIHO Web のコピー形式を読み取れません。"); }
+      return parseEditorNodeClipboard(data);
+    }
+    return readRememberedEditorNodeClipboard();
+  }
+  async function pasteSelection(inside: boolean): Promise<void> {
+    try {
+      const clipboard = await readSystemClipboard();
+      if (!clipboard) { setNotice("貼り付けできる NIHO Web の要素がクリップボードにありません。"); return; }
+      const pageBefore = sessionRef.current, libraryBefore = libraryRef.current;
+      const source = currentDocument(), rendered = document;
+      if (!source || !rendered) { setNotice("ページを読み込んでから貼り付けてください。"); return; }
+      if (clipboard.siteId !== source.siteId || clipboard.siteId !== pageBefore?.target.siteId) {
+        setNotice("別のサイトからコピーした要素は貼り付けできません。"); return;
+      }
+      const library = libraryBefore?.history.present;
+      if (library && library.siteId !== source.siteId) { setNotice("コンポーネントの参照先サイトが一致しないため、貼り付けできません。"); return; }
+      for (const name of clipboard.textStyleNames) if (!Object.hasOwn(rendered.textStyles ?? {}, name)) {
+        setNotice(`文字スタイル「${name}」を貼り付け先で解決できないため、貼り付けできません。`); return;
+      }
+      const fragmentDocument = { ...source, body: [...clipboard.nodes] };
+      const findMissingToken = (value: unknown, available: Readonly<Record<string, unknown>>): string | undefined => {
+        if (Array.isArray(value)) { for (const entry of value) { const missing = findMissingToken(entry, available); if (missing) return missing; } return undefined; }
+        if (!value || typeof value !== "object") return undefined;
+        if ("token" in value && typeof value.token === "string" && !Object.hasOwn(available, value.token)) return value.token;
+        for (const entry of Object.values(value)) { const missing = findMissingToken(entry, available); if (missing) return missing; }
+        return undefined;
+      };
+      for (const { node: item } of walkNodes(fragmentDocument)) {
+        const availableTokens = item.type === "instance" ? { ...rendered.tokens, ...library?.tokens } : rendered.tokens;
+        const missingToken = findMissingToken(item.type === "text" ? undefined : item.style, availableTokens) ??
+          (item.type === "component" ? findMissingToken(item.slots, rendered.tokens) : undefined);
+        if (missingToken) { setNotice(`共通値「${missingToken}」を貼り付け先で解決できないため、貼り付けできません。`); return; }
+        if (item.type === "component") {
+          if (!Object.hasOwn(blocks, item.block)) { setNotice(`業務ブロック「${item.block}」を解決できないため、貼り付けできません。`); return; }
+          if (insertableBlocks && !insertableBlocks.includes(item.block)) { setNotice(`業務ブロック「${item.block}」はこの場所に追加できないため、貼り付けできません。`); return; }
+        }
+        if (item.type === "instance") {
+          if (!library?.components.some((component) => component.id === item.component)) { setNotice(`コンポーネント「${item.component}」を解決できないため、貼り付けできません。`); return; }
+          const problem = placementProblem(library, item.component, insertableBlocks, masterId);
+          if (problem) { setNotice(`コンポーネント「${item.component}」を貼り付けできません。${problem}。`); return; }
+        }
+        if (item.type === "element" && item.formCompletionPageId) {
+          if (formCompletionPages.status !== "ready" || formCompletionPages.target !== formCompletionTargetKey || !formCompletionCandidates.some((candidate) => candidate.pageId === item.formCompletionPageId)) {
+            setNotice(`送信完了先「${item.formCompletionPageId}」を貼り付け先のサイト・言語で解決できません。`); return;
+          }
+        }
+      }
+      if (clipboard.assets.length) {
+        if (!assets) { setNotice("素材の参照を確認できないため、貼り付けできません。"); return; }
+        let resolved: ResolvedAssetMap;
+        try { resolved = await assets.resolveAssets({ siteId: source.siteId, references: clipboard.assets }, new AbortController().signal); }
+        catch { setNotice("貼り付け先のサイトで素材を確認できません。ページを再読み込みしてから再度お試しください。"); return; }
+        const missing = clipboard.assets.find((reference) => !Object.hasOwn(resolved, assetKey(reference)));
+        if (missing) { setNotice(`素材「${missing.provider}:${missing.id}」を貼り付け先のサイトで解決できません。`); return; }
+      }
+      if (sessionRef.current !== pageBefore || libraryRef.current !== libraryBefore ||
+          JSON.stringify([selectedIdRef.current, selectedNodeIdsRef.current]) !== JSON.stringify([selectedId, selectedNodeIds])) {
+        setNotice("ページまたは選択が変わったため貼り付けを中止しました。もう一度実行してください。"); return;
+      }
+      const targets = selectedNodeIds.length ? selectedNodeIds : selectedId ? [selectedId] : [];
+      const selectedEntries = walkNodes(source).filter(({ node: item }) => item.type !== "text" && targets.includes(item.id));
+      if (!selectedEntries.length) { setNotice("貼り付け位置となる要素を選択してください。"); return; }
+      let parentId: string | null, index: number;
+      if (inside) {
+        if (selectedEntries.length !== 1 || selectedEntries[0]!.node.type !== "element") { setNotice("内側へ貼り付けるには、子を持てる要素を1つ選択してください。"); return; }
+        const target = selectedEntries[0]!.node;
+        parentId = target.id; index = target.children.length;
+      } else {
+        const parentPaths = selectedEntries.map(({ path }) => path.slice(0, -1).join("."));
+        if (parentPaths.some((path) => path !== parentPaths[0])) { setNotice("選択した要素と同じ階層に貼り付けるには、同じ親の中で選択してください。"); return; }
+        const parentPath = selectedEntries[0]!.path.slice(0, -1);
+        const parent = parentPath.length ? nodeAt(source, parentPath) : undefined;
+        if (parent && parent.type !== "element") { setNotice("貼り付け位置の親要素を確認できません。"); return; }
+        parentId = parent?.id ?? null;
+        index = Math.max(...selectedEntries.map(({ path }) => path.at(-1)!)) + 1;
+      }
+      const nodes = normalizeNodeFragment(clipboard.nodes, source);
+      const problem = apply({ type: "addMany", parentId, nodes, index });
+      if (problem) { setNotice(`貼り付けできませんでした。${problem}`); return; }
+      const ids = nodes.flatMap((item) => item.type === "text" ? [] : [item.id]);
+      const primary = ids.at(-1);
+      if (primary) { selectId(primary); if (ids.length > 1) setSelectedNodeIds(ids); }
+      setNotice("");
+    } catch (error) { setNotice(message(error)); }
+  }
+  function startPaste(inside: boolean): boolean {
+    void pasteSelection(inside);
+    return true;
   }
   function travel(direction: "undo" | "redo"): boolean {
     // 部品とページの履歴は別に持つため、もう一方と合わなくなる移動は止める。
@@ -1869,6 +2034,10 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     redo: () => redoUnavailable ?? travel("redo"),
     remove: () => structureUnavailable ?? bulkStructural("remove"),
     duplicate: () => structureUnavailable ?? bulkStructural("duplicate"),
+    copy: () => copySelection(),
+    cut: () => structureUnavailable ?? cutSelection(),
+    paste: () => structureUnavailable ?? startPaste(false),
+    pasteInside: () => structureUnavailable ?? startPaste(true),
     parent: () => !!selection && chooseByShortcut(selection.length > 1 ? selection.slice(0, -1) : null),
     child: () => {
       const children = node?.type === "element" ? node.children : node ? [] : document?.body;
