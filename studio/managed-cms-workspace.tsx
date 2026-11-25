@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { CmsCollection, CmsDiscovery, CmsItemRevision, CmsReleasePin, CmsReleaseSnapshot, CmsSchema } from "../src/cms-v2.js";
-import { cmsDraftMatchesPublishedValues, collectionPathForEditor, starterCollection } from "./managed-cms-model.js";
+import { cmsDraftMatchesPublishedValues, collectionPathForEditor, redirectsForCmsItemRelease, starterCollection } from "./managed-cms-model.js";
 import type { CollectionValues, CollectionValue } from "../src/collection-model.js";
 
 export type ManagedCmsWorkspaceProps = { readonly projectId: string; readonly siteId: string; readonly origin: string | null };
@@ -178,7 +178,7 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
       if (!withdraw) pins.push({ itemId: draft.itemId, collectionId, revision: draft.revision });
       const oldPath = snapshot?.items.find((pin) => sameItem(pin, draft))?.path;
       const path = collectionPathForEditor(currentCollection!, draft.values);
-      const redirects = (snapshot?.redirects ?? []).filter((value) => value.to !== oldPath || !withdraw && oldPath === path);
+      const redirects = redirectsForCmsItemRelease(snapshot?.redirects ?? [], oldPath, path, withdraw);
       const input = { locale: now.locale, schemaRevision: draft.schemaRevision, routeTableRevision: now.routeTableRevision,
         expectedReleaseId: snapshot?.releaseId ?? null, items: pins, redirects,
         ...(scheduled ? { at: new Date(at).toISOString() } : {}) };

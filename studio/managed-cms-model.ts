@@ -1,4 +1,4 @@
-import type { CmsSchema, CmsCollection } from "../src/cms-v2.js";
+import type { CmsSchema, CmsCollection, CmsReleaseSnapshot } from "../src/cms-v2.js";
 import type { CollectionValues } from "../src/collection-model.js";
 
 export const escapeHtml = (value: unknown) => String(value ?? "").replace(/[&<>"']/gu, (character) =>
@@ -21,6 +21,16 @@ export function collectionPathForEditor(collection: CmsCollection, values: Colle
   if (collection.pathPrefix === null || collection.slugField === null) return null;
   const slug = values[collection.slugField];
   return typeof slug === "string" && slug ? collection.pathPrefix + slug : null;
+}
+
+/** Keep historical links pointed at the current path while an item stays published. */
+export function redirectsForCmsItemRelease(redirects: CmsReleaseSnapshot["redirects"], oldPath: string | null | undefined,
+  nextPath: string | null, withdraw: boolean): CmsReleaseSnapshot["redirects"] {
+  if (!oldPath) return [...redirects];
+  return redirects.flatMap((redirect) => {
+    if (redirect.to !== oldPath) return [redirect];
+    return withdraw || nextPath === null ? [] : [{ ...redirect, to: nextPath }];
+  });
 }
 
 /** Compare an editable revision with its published snapshot representation. */
