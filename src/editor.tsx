@@ -436,10 +436,10 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
     return initializeSitePresentation(body, { interactive: presentationRuntime, ...(mode === "preview" && xPostFrameUrl ? { xPostFrameUrl } : {}) });
   }, [body, mode, presentation, presentationRuntime, rendered, replay, xPostFrameUrl]);
   const presentationDocuments = useMemo(() => presentation ? [presentation.shared.header, presentation.shared.footer, ...(presentation.overlays ?? []).map((overlay) => overlay.document), ...(presentation.hostViews ?? []).map((view) => view.document)] : [], [presentation]);
+  const presentationHasEmbed = useMemo(() => presentationDocuments.some((source) => walkNodes(source).some(({ node }) => node.type === "element" && !!node.embed?.source)), [presentationDocuments]);
   const canvasHasTrustedFrames = useMemo(() => {
-    const hasEmbed = (source: PageDocument) => walkNodes(source).some(({ node }) => node.type === "element" && !!node.embed?.source);
-    return hasEmbed(rendered) || presentationDocuments.some(hasEmbed) || !!presentation?.hostViews?.some((view) => (view.externalFrames?.length ?? 0) > 0);
-  }, [rendered, presentationDocuments, presentation?.hostViews]);
+    return renderedEntries.some(({ node }) => node.type === "element" && !!node.embed?.source) || presentationHasEmbed || !!presentation?.hostViews?.some((view) => (view.externalFrames?.length ?? 0) > 0);
+  }, [renderedEntries, presentationHasEmbed, presentation?.hostViews]);
   return <><iframe key={canvasHasTrustedFrames ? "trusted-frames" : "static"} ref={frame} title="ページのライブキャンバス" sandbox={canvasHasTrustedFrames ? "allow-same-origin allow-scripts" : "allow-same-origin"} style={{ width, height, border: 0 }}
     srcDoc={'<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head><body style="margin:0"></body></html>'}
     onLoad={() => setBody(frame.current?.contentDocument?.body ?? null)} />
