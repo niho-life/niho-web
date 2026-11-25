@@ -1,3 +1,4 @@
+import { cmsPathReserved } from "./managed-cms-store.js";
 import { parsePageDocument, type PageDocument, type PageNode } from "../src/core.js";
 import { normalizePageChange, pageChangeProblems } from "../src/editor-model.js";
 import type { EditorPage, EditorPageChange, EditorReleaseRequest, EditorTarget } from "../src/editor-types.js";
@@ -464,6 +465,8 @@ async function preparePageChange(request: Request, db: ManagedD1, actor: Managed
   const problems = pageChangeProblems(change, currentPages, { id: siteId, name: "Managed site", domains: [origin] });
   if (problems.length) return json({ error: "invalid_page_change", field: problems[0]!.field, message: problems[0]!.message }, 400);
   const target = change.action === "create" ? null : currentPages.find((page) => page.pageId === change.target.pageId && page.locale === change.target.locale);
+  if ((change.action === "create" || change.action === "update" && change.path !== target?.path) && cmsPathReserved(change.path))
+    return json({ error: "invalid_page_change", field: "path", message: "/cms は CMS の公開 URL に使います。" }, 400);
   const payload = { projectId, siteId, change, expectedVersion: target ? (await pageRow(db, actor, projectId, siteId, target.pageId, target.locale))?.current_version ?? null : null };
   const token = await storePlan(db, actor, siteId, changeOperation(change), payload);
   const makePrivate = change.action === "visibility" && change.visibility === "private";
@@ -488,6 +491,9 @@ async function applyPageChange(request: Request, db: ManagedD1, actor: ManagedAc
     || JSON.stringify(payload.change) !== JSON.stringify(change)) return json({ status: "conflict" }, 409);
   const currentPages = await pages(db, actor, projectId, siteId);
   if (!currentPages || pageChangeProblems(change, currentPages, { id: siteId, name: "Managed site", domains: ["https://managed.invalid"] }).length) return json({ status: "conflict" }, 409);
+  if ((change.action === "create" || change.action === "update"
+    && change.path !== currentPages.find((page) => page.pageId === change.target.pageId && page.locale === change.target.locale)?.path)
+    && cmsPathReserved(change.path)) return json({ status: "conflict" }, 409);
   const token = await tokenHash(String(body.confirmationToken)), auditId = crypto.randomUUID();
   let results: readonly D1Result<unknown>[], resultPage: EditorPage;
   if (change.action === "create") {

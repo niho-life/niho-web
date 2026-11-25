@@ -13,9 +13,9 @@ import { PAGE_OPERATION_LIMIT, changedPageNodeIds, editingOperationProblem, pars
 import { diffDocuments } from "../dist/history.js";
 import { parseBreakpointSettings } from "../dist/style-model.js";
 import { inspectPageDocument, PageInspectError, parsePageInspectQuery } from "../dist/page-inspect.js";
+import { OPERATIONS, OPERATION_KEY_HEADER, SERVICE_CLIENT_ID } from "./operations.mjs";
 import { isSafePublicUrl } from "../dist/validation-utils.js";
 import { capturePagePreview } from "./page-preview.mjs";
-import { SERVICE_CLIENT_ID } from "./operations.mjs";
 
 const USAGE = `niho-edit --origin <https-origin> --site <site-id> discover
 niho-edit --origin <https-origin> --site <site-id> read <page-id> --locale <locale>
@@ -45,6 +45,9 @@ niho-edit cms-diff --base <item-snapshot> --json <edited-item-snapshot>
 niho-edit --origin <https-origin> --site <site-id> cms-publish-plan <collection-id> <item-id> --expected-version <version> --operation-id <uuid-v4> [--redirect <true|false>]
 niho-edit --origin <https-origin> --site <site-id> cms-publish --json <publish-plan|->
 niho-edit --origin <https-origin> --site <site-id> cms-status --operation-id <uuid-v4>
+niho-edit --studio --origin <studio-origin> --site <site-id> cms-discover
+niho-edit --studio --origin <studio-origin> --site <site-id> cms-v2 <cms.operation> --json <input-file|-> [--operation-id <uuid-v4>]
+Use --studio with existing cms-* commands for a Studio-native site.
 niho-edit --origin <https-origin> --site <site-id> assets-list [--search <text>] [--kind <kind>] [--provider <provider>] [--limit <number>] [--cursor <cursor>] [--folder-id <id>] [--recent]
 niho-edit --origin <https-origin> --site <site-id> assets-usages <provider> <asset-id>
 niho-edit --origin <https-origin> --site <site-id> assets-resolve --json <references-file|->
@@ -90,7 +93,7 @@ class CliError extends Error {
 function argsFromCli() {
   try {
     return parseArgs({ allowPositionals: true, options: {
-      origin: { type: "string" }, site: { type: "string" }, locale: { type: "string" }, json: { type: "string" }, action: { type: "string" },
+      studio: { type: "boolean" }, origin: { type: "string" }, site: { type: "string" }, locale: { type: "string" }, json: { type: "string" }, action: { type: "string" },
       "expected-version": { type: "string" }, "components-version": { type: "string" }, "presentation-version": { type: "string" },
       revision: { type: "string" }, "operation-id": { type: "string" }, redirect: { type: "string" }, base: { type: "string" }, help: { type: "boolean", short: "h" },
       name: { type: "string" }, "mime-type": { type: "string" }, provider: { type: "string" }, search: { type: "string" }, kind: { type: "string" }, "upload-origin": { type: "string" },
@@ -363,7 +366,7 @@ async function inputAssetReferences(path) {
   return value.references;
 }
 function assertCommandOptions(values, allowed) {
-  const shared = ["origin", "site", "help"];
+  const shared = ["origin", "site", "help", "studio"];
   if (Object.keys(values).some((key) => !shared.includes(key) && !allowed.includes(key))) throw new CliError("invalid_arguments");
 }
 function stableJson(value) {
@@ -534,9 +537,10 @@ async function main() {
     process.stdout.write(`${JSON.stringify({ id: edited.id ?? base.id ?? null, version: base.version, changes })}\n`); return;
   }
   const baseOrigin = origin(values.origin);
+  if (values.studio && command !== "discover" && !command?.startsWith("cms-")) throw new CliError("invalid_arguments");
   if (!IDENTIFIER.test(values.site ?? "")) throw new CliError("invalid_site");
   const token = process.env.NIHO_EDIT_TOKEN;
-  if (typeof token !== "string" || !token || token.length > 4096 || /[\u0000-\u001f\u007f]/u.test(token)) throw new CliError("missing_token");
+
   const accessClientId = process.env.CF_ACCESS_CLIENT_ID;
   const accessClientSecret = process.env.CF_ACCESS_CLIENT_SECRET;
   const hasAccessCredentials = accessClientId !== undefined || accessClientSecret !== undefined;
@@ -547,8 +551,35 @@ async function main() {
     "CF-Access-Client-Id": accessClientId,
     "CF-Access-Client-Secret": accessClientSecret
   } : {};
+  if (!(values.studio && hasAccessCredentials) && (typeof token !== "string" || !token || token.length > 4096 || /[\u0000-\u001f\u007f]/u.test(token))) {
+    throw new CliError("missing_token");
+  }
   const authorizationHeaders = { Authorization: `Bearer ${token}`, ...accessHeaders };
-  const client = createPageEditingApiClient({ origin: baseOrigin, siteId: values.site, credentials: "omit", headers: authorizationHeaders });
+  const headers = values.studio ? {
+    "X-Studio-CMS-Version": "2", ...(hasAccessCredentials ? accessHeaders : { "cf-access-token": token })
+  } : { Authorization: `Bearer ${token}`, ...accessHeaders };
+  const client = createPageEditingApiClient({ origin: baseOrigin, siteId: values.site, credentials: "omit", headers });
+
+  if (command === "cms-discover" || command === "cms-v2") {
+    const discovery = command === "cms-discover";
+    assertCommandOptions(values, discovery ? [] : ["json", "operation-id"]);
+    const operation = discovery ? null : OPERATIONS.find((entry) => entry.cmsVersion === 2 && entry.id === pageId);
+    if (!values.studio || extra.length || (discovery ? pageId !== undefined : !operation)) throw new CliError("invalid_arguments");
+    const key = values["operation-id"];
+    if (key !== undefined && !OPERATION_ID.test(key)) throw new CliError("invalid_arguments");
+    const input = discovery ? undefined : await inputPageManagementJson(values.json, 64 * 1024);
+    const url = `${baseOrigin}/api/edit/v2/sites/${encodeURIComponent(values.site)}/${operation ? `operations/${operation.id}` : "capabilities"}`;
+    let result;
+    try {
+      result = await fetch(url, { method: operation ? "POST" : "GET", credentials: "omit", cache: "no-store", redirect: "manual", signal: AbortSignal.timeout(30_000),
+        headers: { ...headers, ...(operation ? { "Content-Type": "application/json" } : {}), ...(key ? { [OPERATION_KEY_HEADER]: key } : {}) },
+        ...(input === undefined ? {} : { body: JSON.stringify(input) }) });
+    } catch { throw new CliError("transport_error"); }
+    if (result.status >= 300 && result.status < 400) throw new CliError("redirect_response", result.status);
+    const payload = await readJson(result.body, 2 * 1024 * 1024);
+    emit(payload, result.status, result.ok ? 0 : 1, operation?.id ?? command);
+    return;
+  }
   if (command === "preview") { await runPagePreview(client, pageId, extra, values, baseOrigin, authorizationHeaders); return; }
 
   if (command?.startsWith("localization-")) {

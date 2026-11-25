@@ -14,7 +14,7 @@ const origin = "https://site.example", siteId = fixture.siteId, pageId = fixture
 const playwrightAvailable = (() => { try { import.meta.resolve("playwright"); return true; } catch { return false; } })();
 
 function run(args, { status = 200, result, expectedMethod, expectedUrl, expectedBody, stdin, assertInputBeforeTimeout = false,
-  accessClientId = null, accessClientSecret = null, env = {}, token = "fixture-token", location = null } = {}) {
+  accessClientId = null, accessClientSecret = null, env = {}, token = "fixture-token", location = null, studio = false, operationKey = null } = {}) {
   const timeoutGuard = assertInputBeforeTimeout ? `let stdinEnded = false;
     process.stdin.once("end", () => { stdinEnded = true; });
     const originalTimeout = AbortSignal.timeout.bind(AbortSignal);
@@ -25,7 +25,10 @@ function run(args, { status = 200, result, expectedMethod, expectedUrl, expected
     if (init.method !== ${JSON.stringify(expectedMethod)}) throw new Error("unexpected method");
     if (init.redirect !== "manual" || init.credentials !== "omit") throw new Error("unsafe API fetch defaults");
     const headers = new Headers(init.headers);
-    if (headers.get("Authorization") !== "Bearer fixture-token") throw new Error("missing authorization");
+    if (headers.get("Authorization") !== ${JSON.stringify(studio ? null : "Bearer fixture-token")}) throw new Error("missing authorization");
+    if (headers.get("cf-access-token") !== ${JSON.stringify(studio && !accessClientId ? token : null)}) throw new Error("unexpected Access token");
+    if (headers.get("X-Studio-CMS-Version") !== ${JSON.stringify(studio ? "2" : null)}) throw new Error("unexpected CMS version");
+    if (headers.get("X-Studio-Operation-Key") !== ${JSON.stringify(operationKey)}) throw new Error("unexpected operation key");
     if (headers.get("CF-Access-Client-Id") !== ${JSON.stringify(accessClientId)} || headers.get("CF-Access-Client-Secret") !== ${JSON.stringify(accessClientSecret)}) throw new Error("unexpected Access credentials");
     const body = init.body ? JSON.parse(init.body) : null;
     if (JSON.stringify(body) !== ${JSON.stringify(JSON.stringify(expectedBody ?? null))}) throw new Error("unexpected body");
@@ -684,4 +687,24 @@ test("niho-edit preserves localization CAS conflict values and reads release tok
   });
   assert.equal(invalid.exitCode, 1);
   assert.equal(JSON.parse(invalid.stdout).result.error, "invalid_json_input");
+});
+
+test("niho-edit selects managed CMS v2 with Access authentication and an explicit retry key", async () => {
+  const discovery = { contractVersion: 2, siteId, schemaRevision: "initial", operations: ["cms.items.save"] };
+  const capabilities = await run(["--studio", "cms-discover"], {
+    studio: true, expectedMethod: "GET", expectedUrl: `${origin}/api/edit/v2/sites/${siteId}/capabilities`, result: discovery
+  });
+  assert.equal(capabilities.exitCode, 0);
+  assert.deepEqual(JSON.parse(capabilities.stdout).result, discovery);
+  const payload = { siteId, collectionId: "posts", itemId: "item_example", locale: "ja", contractVersion: 2,
+    expectedSchemaRevision: "initial", expectedRevision: "rev_example", values: { title: "Fixture" } };
+  const operationKey = crypto.randomUUID(), accessClientId = `${"e".repeat(32)}.access`, accessClientSecret = "fixture-service";
+  const updated = await run(["--studio", "cms-v2", "cms.items.save", "--json", "-", "--operation-id", operationKey], {
+    studio: true, operationKey, token: null, accessClientId, accessClientSecret,
+    env: { CF_ACCESS_CLIENT_ID: accessClientId, CF_ACCESS_CLIENT_SECRET: accessClientSecret },
+    expectedMethod: "POST", expectedUrl: `${origin}/api/edit/v2/sites/${siteId}/operations/cms.items.save`,
+    expectedBody: payload, stdin: JSON.stringify(payload), result: { status: "saved" }
+  });
+  assert.equal(updated.exitCode, 0);
+  assert.deepEqual(JSON.parse(updated.stdout).result, { status: "saved" });
 });
