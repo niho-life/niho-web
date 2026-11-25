@@ -365,6 +365,18 @@ test("retained host redirects are revalidated and long release IDs still produce
   assert.ok(plan.proposal.snapshot.routeTable.revision.length <= 128);
 });
 
+test("route planning indexes fixed paths for large CMS collections", () => {
+  const routes = Array.from({ length: 25_000 }, (_, index) => ({
+    collectionId: "posts", itemId: `post-${index}`, path: `/posts/post-${index}`
+  }));
+  const started = Date.now();
+  const plan = planCmsRouteTable({ current: { siteId, locale, revision: "routes-ja-1", reservations: [] },
+    siteId, locale, expectedRevision: "routes-ja-1", nextRevision: "routes-ja-2", routes, redirects: [] });
+  assert.equal(plan.problems.length, 0);
+  assert.equal(plan.table.reservations.length, routes.length);
+  assert.ok(Date.now() - started < 5_000, "25,000 fixed path candidates should be planned without quadratic scans");
+});
+
 test("scheduling pins content, detects new collisions and lets the host retry with a fresh plan", () => {
   const host = new MemoryHost();
   const first = planCmsSchedule("s1", later, now, host.planRelease().proposal);

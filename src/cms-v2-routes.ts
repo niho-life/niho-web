@@ -124,25 +124,28 @@ export function planCmsRouteTable(input: {
   const current = parseCmsRouteTable(input.current, input.siteId, input.locale);
   if (current.revision !== input.expectedRevision || current.revision === input.nextRevision) return { status: "conflict" };
   const host = current.reservations.filter((entry) => entry.kind !== "cms-item" && !(entry.kind === "redirect" && entry.owner === "cms"));
+  const hostByPath = new Map(host.filter((entry) => entry.kind !== "template").map((entry) => [entry.path, entry]));
+  const hostTemplates = host.filter((entry) => entry.kind === "template");
   const candidates: CmsRouteReservation[] = [];
   const problems: CmsRouteProblem[] = [];
-  const paths = new Map<string, CmsRouteReservation>();
+  const candidatePaths = new Map<string, CmsRouteReservation>();
 
   for (const route of input.routes) {
     let path: string;
     try { path = routePath(route.path, "route.path", false); }
     catch { problems.push(routeProblem(route.path, "公開 URL を予約できません。", route)); continue; }
     const reservation = tablePathReservation(path, "cms-item", route);
-    const conflict = [...host, ...candidates].find((entry) => routesOverlap(entry, reservation));
+    const conflict = hostByPath.get(path) ?? candidatePaths.get(path) ?? hostTemplates.find((entry) => matchesTemplatePath(entry.path, path));
     if (conflict) problems.push(routeProblem(path, "固定ページ・テンプレート・予約済み path または別項目と衝突します。", route));
-    const previous = paths.get(path);
+    const previous = candidatePaths.get(path);
     if (previous) problems.push(routeProblem(path, "同じ公開 path の項目があります。", route));
-    paths.set(path, reservation);
+    candidatePaths.set(path, reservation);
     candidates.push(reservation);
   }
 
   const redirectSources = new Set<string>();
   const redirectEntries: CmsRouteReservation[] = [];
+  const redirectEntryPaths = new Set<string>();
   for (const redirect of input.redirects) {
     let from: string, to: string;
     try {
@@ -159,30 +162,37 @@ export function planCmsRouteTable(input: {
     }
     redirectSources.add(from);
     const reservation = tablePathReservation(from, "redirect", undefined, to);
-    if ([...host, ...candidates, ...redirectEntries].some((entry) => routesOverlap(entry, reservation))) {
+    if (hostByPath.has(from) || hostTemplates.some((entry) => matchesTemplatePath(entry.path, from))
+      || candidatePaths.has(from) || redirectEntryPaths.has(from)) {
       problems.push(routeProblem(from, "転送元 path が公開 route または予約と衝突します。"));
       continue;
     }
     redirectEntries.push(reservation);
+    redirectEntryPaths.add(from);
   }
 
   const liveTargets = [...host.filter((entry) => entry.kind === "fixed-page" || entry.kind === "template"), ...candidates];
   const hostRedirects = host.filter((entry) => entry.kind === "redirect");
+  const hostRedirectPaths = new Set(hostRedirects.map((entry) => entry.path));
+  const cmsRedirectPaths = new Set(redirectEntries.map((entry) => entry.path));
+  const allRedirectPaths = new Set([...hostRedirectPaths, ...cmsRedirectPaths]);
+  const liveTargetPaths = new Set(liveTargets.filter((entry) => entry.kind !== "template").map((entry) => entry.path));
+  const liveTargetTemplates = liveTargets.filter((entry) => entry.kind === "template");
   for (const redirect of hostRedirects) {
     const targetPath = redirect.targetPath;
-    if (!liveTargets.some((entry) => entry.kind === "template" ? matchesTemplatePath(entry.path, targetPath) : entry.path === targetPath)) {
+    if (!liveTargetPaths.has(targetPath) && !liveTargetTemplates.some((entry) => matchesTemplatePath(entry.path, targetPath))) {
       problems.push(routeProblem(redirect.path, "ホスト転送先は公開中の固定ページまたは項目にしてください。"));
     }
-    if ([...hostRedirects, ...redirectEntries].some((entry) => entry.path === targetPath)) {
+    if (allRedirectPaths.has(targetPath)) {
       problems.push(routeProblem(redirect.path, "転送を連結できません。"));
     }
   }
   for (const redirect of redirectEntries) {
     const targetPath = redirect.kind === "redirect" ? redirect.targetPath : "";
-    if (!liveTargets.some((entry) => entry.kind === "template" ? matchesTemplatePath(entry.path, targetPath) : entry.path === targetPath)) {
+    if (!liveTargetPaths.has(targetPath) && !liveTargetTemplates.some((entry) => matchesTemplatePath(entry.path, targetPath))) {
       problems.push(routeProblem(redirect.path, "転送先は公開中の固定ページまたは項目にしてください。"));
     }
-    if (redirectEntries.some((entry) => entry.path === targetPath)) problems.push(routeProblem(redirect.path, "転送を連結できません。"));
+    if (allRedirectPaths.has(targetPath)) problems.push(routeProblem(redirect.path, "転送を連結できません。"));
   }
 
   const table = parseCmsRouteTable({ siteId: current.siteId, locale: current.locale, revision: input.nextRevision,
