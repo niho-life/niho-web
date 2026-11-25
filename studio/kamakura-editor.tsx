@@ -8,7 +8,7 @@ import { studioBuilderDefinition } from "./integration-builder.js";
 import { projectRoutePath } from "./project-routes.mjs";
 import { createKamakuraAssetLibrary } from "./kamakura-assets.js";
 import { createKamakuraEditorBlocks } from "./kamakura-editor-blocks.js";
-import { createBlankEmbedRegistry, parsePageDocument, parseSitePresentation, type BlockContracts } from "../src/core.js";
+import { createBlankEmbedRegistry, parsePageDocument, type BlockContracts } from "../src/core.js";
 import { parseLocalizationOverlay, parseSiteLocalizationConfig } from "../src/localization.js";
 import { KAMAKURA_CATALOG_CONTRACT_ERROR_CODE, KAMAKURA_CATALOG_CONTRACT_ERROR_STATUS, KAMAKURA_COMMON_PAGE_ID as COMMON_PAGE_ID, KAMAKURA_EDITOR_SITE_ID, KAMAKURA_ORIGIN_RETAINING_FRAME_SOURCES, KamakuraCatalogContractError, parseKamakuraCatalog, parseKamakuraCatalogPage } from "./kamakura-catalog.js";
 import type { KamakuraCatalog } from "./kamakura-catalog.js";
@@ -131,13 +131,11 @@ function statusFromError(error: unknown): EditorApiStatus {
   return { status: 503, errorCode: null, supportId: null };
 }
 
-function parseLegacySnapshot(value: unknown, target: EditorTarget, blocks: BlockContracts, required: boolean): EditorSnapshot {
+function parseLegacySnapshot(value: unknown, target: EditorTarget, required: boolean): EditorSnapshot {
   const source = record(value), document = record(source.document), checked = validTarget(target);
   if (document.siteId !== checked.siteId || document.pageId !== checked.pageId || document.locale !== checked.locale || !validVersion(source.version)) throw new Error("文書の対象または版が一致しません。");
-  const parsed = parsePageDocument(source.document, blocks);
   if (required && source.presentation === undefined) throw new Error("このサイトに必要な表示コンテキストがありません。");
-  if (source.presentation !== undefined) parseSitePresentation(source.presentation, parsed, blocks);
-  const snapshot = structuredClone(value) as EditorSnapshot;
+  const snapshot = { ...source } as unknown as EditorSnapshot;
   if (source.englishPublication !== undefined) snapshot.englishPublication = parseEnglishPublication(source.englishPublication);
   return snapshot;
 }
@@ -150,7 +148,7 @@ function localizationVersion(value: unknown, prefix: "l" | "p" | "s"): value is 
   return typeof value === "string" && new RegExp(`^${prefix}\\.[0-9a-f]{64}$`, "u").test(value);
 }
 
-function parseEnglishSnapshot(value: unknown, target: EditorTarget, blocks: BlockContracts): EditorSnapshot {
+function parseEnglishSnapshot(value: unknown, target: EditorTarget): EditorSnapshot {
   const source = record(value), checked = validEnglishTarget(target);
   if (source.status === "conflict" && Object.keys(source).length === 1) throw new EditorApiError(409, "conflict", null, "英語の編集状態が更新されました。最新の状態を読み直してください。");
   if (source.status === "unavailable" && Object.keys(source).sort().join(",") === "message,status" && safeLine(source.message, 1000)) {
@@ -159,11 +157,11 @@ function parseEnglishSnapshot(value: unknown, target: EditorTarget, blocks: Bloc
   if (source.status !== "ready" || Object.keys(source).sort().join(",") !== "document,presentation,status,version" || !localizationVersion(source.version, "l")) {
     throw new Error("英語文書の応答が正しくありません。");
   }
-  const document = parsePageDocument(source.document, blocks);
+  const document = record(source.document);
   if (document.siteId !== checked.siteId || document.pageId !== checked.pageId || document.locale !== checked.locale) throw new Error("英語文書の対象が一致しません。");
-  const presentation = parseSitePresentation(source.presentation, document, blocks);
+  const presentation = record(source.presentation);
   if (!validVersion(presentation.version)) throw new Error("英語表示コンテキストの版が正しくありません。");
-  return { document, version: source.version, presentation };
+  return { document: source.document, version: source.version, presentation: source.presentation };
 }
 
 function parseLocalizationSite(value: unknown, catalog: KamakuraCatalog): EditorLocalizationSiteSnapshot {
@@ -281,13 +279,13 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
     const checked = validTarget(target);
     const required = currentCatalog.nativePresentationPages.includes(checked.pageId);
     const wire = await editingApi.read(checked, signal);
-    const document = parsePageDocument(wire.document, catalog.blockContracts);
+    const document = wire.document;
     if (wire.editorState !== undefined) {
       if (required && wire.presentation === undefined) throw new Error("このサイトに必要な表示コンテキストがありません。");
       return { ...wire.editorState, document, version: wire.version, ...(wire.presentation === undefined ? {} : { presentation: wire.presentation }) };
     }
     // Older hosts still expose editor state and presentation in the legacy snapshot.
-    const legacy = parseLegacySnapshot(await api(pagePath(checked), "GET", undefined, signal), checked, catalog.blockContracts, required);
+    const legacy = parseLegacySnapshot(await api(pagePath(checked), "GET", undefined, signal), checked, required);
     const presentationVersion = legacy.presentation === undefined ? undefined : record(legacy.presentation).version;
     if (wire.version !== legacy.version || wire.presentationVersion !== presentationVersion) throw new EditorApiError(409, "version_conflict");
     return { ...legacy, document, ...(wire.presentation === undefined ? {} : { presentation: wire.presentation }) };
@@ -357,7 +355,7 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
       return supportsPageNodeNames(await editingApi.discover(signal), "pages.save");
     },
     readDocument: (target, signal) => request(signal, async () => target.locale === "en"
-      ? parseEnglishSnapshot(await api(`${localizationPagePath(target)}/snapshot`, "POST", {}, signal), target, catalog.blockContracts)
+      ? parseEnglishSnapshot(await api(`${localizationPagePath(target)}/snapshot`, "POST", {}, signal), target)
       : readJapaneseDocument(target, signal)),
     saveDraft: (input, signal) => conflict(() => request(signal, async () => {
       if (input.target.locale === "en") {
