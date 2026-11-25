@@ -99,15 +99,24 @@ export function parsePageInspectQuery(value: unknown): PageInspectQuery | null {
 }
 
 type Entry = { readonly id: string; readonly path: readonly number[]; readonly node: Exclude<PageNode, { type: "text" }>; readonly parentNames: readonly string[] };
-type WalkContext = { document: PageDocument; rawDocument: PageDocument; origins: Map<string, { instance: string; component: string; node: string; chain: readonly string[] }>; library?: ComponentLibrary; siteStyles?: SiteStyles };
-function displayName(node: PageNode, library?: ComponentLibrary): string | undefined {
+type ComponentOrigin = { instance: string; component: string; node: string; chain: readonly string[] };
+type WalkContext = { document: PageDocument; rawDocument: PageDocument; origins: Map<string, ComponentOrigin>; library?: ComponentLibrary; siteStyles?: SiteStyles };
+function componentRoot(node: PageNode, library?: ComponentLibrary, origins?: ReadonlyMap<string, ComponentOrigin>): ComponentLibrary["components"][number] | undefined {
+  if (node.type === "text") return undefined;
+  const origin = origins?.get(node.id);
+  const definition = origin && library?.components.find((component) => component.id === origin.component);
+  return definition && origin.node === definition.root.id ? definition : undefined;
+}
+function displayName(node: PageNode, library?: ComponentLibrary, origins?: ReadonlyMap<string, ComponentOrigin>): string | undefined {
   const named = (node as PageNode & { name?: unknown }).name;
   if (typeof named === "string" && named.trim()) return named.trim();
+  const expandedComponent = componentRoot(node, library, origins);
+  if (expandedComponent) return expandedComponent.name;
   if (node.type === "instance") return library?.components.find((component) => component.id === node.component)?.name;
   return undefined;
 }
-function nodeLabel(node: PageNode, library?: ComponentLibrary): string {
-  return displayName(node, library) ?? (node.type === "element" ? node.tag : node.type === "component" ? node.block : node.type === "instance" ? node.component : node.type);
+function nodeLabel(node: PageNode, library?: ComponentLibrary, origins?: ReadonlyMap<string, ComponentOrigin>): string {
+  return displayName(node, library, origins) ?? (node.type === "element" ? node.tag : node.type === "component" ? node.block : node.type === "instance" ? node.component : node.type);
 }
 function prepare(document: PageDocument, context: PageInspectContext): WalkContext {
   if (!context.components) return { document: resolvePageStyles(document, context.siteStyles), rawDocument: document, origins: new Map(),
@@ -126,11 +135,11 @@ function walkNodes(document: PageDocument, visit: (node: PageNode, path: number[
   };
   walk(document.body, [], []);
 }
-function nodeEntries(document: PageDocument, library?: ComponentLibrary): Entry[] {
+function nodeEntries(document: PageDocument, library?: ComponentLibrary, origins?: ReadonlyMap<string, ComponentOrigin>): Entry[] {
   const entries: Entry[] = [];
   walkNodes(document, (node, path, parents) => {
     if (node.type === "text") return;
-    entries.push({ id: node.id, path, node, parentNames: parents.map((parent) => nodeLabel(parent, library)) });
+    entries.push({ id: node.id, path, node, parentNames: parents.map((parent) => nodeLabel(parent, library, origins)) });
   });
   return entries;
 }
@@ -162,7 +171,7 @@ function textStyleFor(node: Exclude<PageNode, { type: "text" }>, document: PageD
   const name = node.style?.textStyle;
   return name ? document.textStyles?.[name] : undefined;
 }
-function outlineRow(entry: Entry, document: PageDocument, library?: ComponentLibrary): Record<string, unknown> {
+function outlineRow(entry: Entry, document: PageDocument, library?: ComponentLibrary, origins?: ReadonlyMap<string, ComponentOrigin>): Record<string, unknown> {
   const { node } = entry;
   const text = excerpt(textOf(node));
   const style = node.style;
@@ -171,10 +180,11 @@ function outlineRow(entry: Entry, document: PageDocument, library?: ComponentLib
   for (const name of tokenReferences(textStyleFor(node, document))) tokens.add(name);
   const responsive = style?.responsive?.length ?? 0;
   const states = style?.states ? Object.values(style.states).reduce((sum, state) => sum + Object.keys(state ?? {}).length, 0) : 0;
-  const name = displayName(node, library);
+  const name = displayName(node, library, origins), expandedComponent = componentRoot(node, library, origins);
   return {
     id: node.id, type: node.type, ...(name ? { name } : {}),
-    ...(node.type === "element" ? { tag: node.tag } : node.type === "component" ? { block: node.block } : node.type === "instance" ? { component: node.component } : {}),
+    ...(node.type === "element" ? { tag: node.tag, ...(expandedComponent ? { component: expandedComponent.id } : {}) }
+      : node.type === "component" ? { block: node.block } : node.type === "instance" ? { component: node.component } : {}),
     ...(text ? { text } : {}), ...(layout && Object.keys(layout).length ? { layout } : {}),
     ...(tokens.size ? { tokens: [...tokens].sort() } : {}), overrides: responsive + states
   };
@@ -199,13 +209,14 @@ function findStyleMatch(entry: Entry, document: PageDocument, property: string, 
     return String(value) === expected;
   });
 }
-function queryMatches(entry: Entry, query: PageInspectQuery, document: PageDocument, library?: ComponentLibrary): boolean {
+function queryMatches(entry: Entry, query: PageInspectQuery, document: PageDocument, library?: ComponentLibrary, origins?: ReadonlyMap<string, ComponentOrigin>): boolean {
   const node = entry.node;
   if (query.node !== undefined && node.id !== query.node) return false;
   if (query.tag !== undefined && (node.type !== "element" || node.tag !== query.tag)) return false;
-  if (query.name !== undefined && displayName(node, library) !== query.name) return false;
+  if (query.name !== undefined && displayName(node, library, origins) !== query.name) return false;
   if (query.text !== undefined && !textOf(node).toLocaleLowerCase().includes(query.text.toLocaleLowerCase())) return false;
-  if (query.block !== undefined && !((node.type === "component" && node.block === query.block) || (node.type === "instance" && node.component === query.block))) return false;
+  if (query.block !== undefined && !((node.type === "component" && node.block === query.block) || (node.type === "instance" && node.component === query.block)
+    || componentRoot(node, library, origins)?.id === query.block)) return false;
   if (query.usesToken !== undefined) {
     const refs = new Set([...tokenReferences(node.style), ...tokenReferences(textStyleFor(node, document))]);
     if (!refs.has(query.usesToken)) return false;
@@ -313,9 +324,6 @@ function sourceForStyle(
       return "component";
     }
   }
-  const textStyleName = entry.node.style?.textStyle;
-  if (textStyleName && !Object.hasOwn(context.rawDocument.textStyles ?? {}, textStyleName)
-    && Object.hasOwn(context.siteStyles?.textStyles ?? {}, textStyleName)) return "siteShared";
   return "page";
 }
 function resolvedStyleValue(value: unknown, context: WalkContext): Record<string, unknown> {
@@ -390,14 +398,14 @@ function effectiveStyle(context: WalkContext, entry: Entry, entries: readonly En
     }
     if (Object.keys(values).length) variants.push({ breakpoint: width === 0 ? "base" : width, ...(state ? { state } : {}), values });
   }
-  return { nodeId: entry.id, ...(displayName(entry.node, context.library) ? { name: displayName(entry.node, context.library) } : {}), variants };
+  return { nodeId: entry.id, ...(displayName(entry.node, context.library, context.origins) ? { name: displayName(entry.node, context.library, context.origins) } : {}), variants };
 }
 
 /** 文書を変えずに、AI向けの小さな投影を生成する。 */
 export function inspectPageDocument(document: PageDocument, queryValue: PageInspectQuery, options: PageInspectContext = {}): Record<string, unknown> {
   const query = parsePageInspectQuery(queryValue);
   if (!query) throw new PageInspectError("invalid_request");
-  const context = prepare(document, options), entries = nodeEntries(context.document, context.library);
+  const context = prepare(document, options), entries = nodeEntries(context.document, context.library, context.origins);
   const documentFingerprint = stableHash(JSON.stringify(context.document));
   if (query.view === "effectiveStyle") {
     const entry = selectedEntry(entries, query.node!);
@@ -418,10 +426,10 @@ export function inspectPageDocument(document: PageDocument, queryValue: PageInsp
     ? entries.filter((entry) => (rootPath === undefined || entry.path.length >= rootPath.length
       && rootPath.every((part, index) => part === entry.path[index]))
       && (query.depth === undefined || entry.path.length - 1 - rootDepth <= query.depth))
-    : entries.filter((entry) => queryMatches(entry, query, context.document, context.library));
+    : entries.filter((entry) => queryMatches(entry, query, context.document, context.library, context.origins));
   const rows = selectedEntries.map((entry) => query.view === "outline"
-    ? outlineRow(entry, context.document, context.library)
-    : { id: entry.id, ...(displayName(entry.node, context.library) ? { name: displayName(entry.node, context.library) } : {}),
+    ? outlineRow(entry, context.document, context.library, context.origins)
+    : { id: entry.id, ...(displayName(entry.node, context.library, context.origins) ? { name: displayName(entry.node, context.library, context.origins) } : {}),
       ancestors: entry.parentNames, text: excerpt(textOf(entry.node)) });
   const prefix: Record<string, unknown> = { view: query.view };
   if (query.view === "outline") {

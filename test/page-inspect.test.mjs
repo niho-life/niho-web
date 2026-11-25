@@ -26,6 +26,23 @@ test("outline depth, find filters and public node IDs return focused results", (
   assert.ok(byText.items.length > 0);
 });
 
+test("expanded component instances retain their component name and ID for outline and find", () => {
+  const document = structuredClone(fixture);
+  document.body.push({ type: "instance", id: "card-instance", component: "card" });
+  const components = { schemaVersion: 1, siteId: document.siteId, revision: 1, tokens: {}, components: [{
+    id: "card", name: "Card", kind: "section", version: 1,
+    root: { type: "element", id: "card-root", tag: "article", children: [{ type: "element", id: "card-title", tag: "h2", children: [{ type: "text", text: "A card" }] }] }
+  }] };
+  const outline = inspectPageDocument(document, { view: "outline", node: "card-instance", depth: 0 }, { components });
+  assert.deepEqual(outline.items.map(({ id, name, component }) => ({ id, name, component })), [
+    { id: "card-instance", name: "Card", component: "card" }
+  ]);
+  const byName = inspectPageDocument(document, { view: "find", name: "Card" }, { components });
+  const byBlock = inspectPageDocument(document, { view: "find", block: "card" }, { components });
+  assert.deepEqual(byName.items.map(({ id }) => id), ["card-instance"]);
+  assert.deepEqual(byBlock.items.map(({ id }) => id), ["card-instance"]);
+});
+
 test("effective style reports resolved tokens and inherited values with their source", () => {
   const document = structuredClone(fixture);
   document.body[0].style.base.color = { token: "shared-accent" };
@@ -34,6 +51,18 @@ test("effective style reports resolved tokens and inherited values with their so
   });
   const base = result.style.variants.find((variant) => variant.breakpoint === "base" && variant.state === undefined);
   assert.deepEqual(base.values.color, { value: "#123456", token: "shared-accent", tokenSource: "siteShared", source: "inherited" });
+});
+
+test("effective style keeps node declarations page-owned beside a site-shared text style", () => {
+  const document = structuredClone(fixture);
+  const heading = document.body[0].children.find((node) => node.id === "heading");
+  heading.style = { textStyle: "shared-title", base: { color: "#ff0000" } };
+  const result = inspectPageDocument(document, { view: "effectiveStyle", node: "heading" }, {
+    siteStyles: { textStyles: { "shared-title": { base: { fontSize: 18 } } } }
+  });
+  const base = result.style.variants.find((variant) => variant.breakpoint === "base" && variant.state === undefined);
+  assert.deepEqual(base.values.color, { value: "#ff0000", source: "page" });
+  assert.deepEqual(base.values.fontSize, { value: 18, source: "siteShared" });
 });
 
 test("inspection cursors continue a bounded projection and reject stale documents", () => {

@@ -80,7 +80,7 @@ function runSequence(args, requests, { env = {}, token = "fixture-token" } = {})
   });
 }
 
-function runUpload(args, { uploadUrl, expectedBytes, asset, trustedUploadOrigin = origin, accessClientId = null, accessClientSecret = null }) {
+function runUpload(args, { uploadUrl, expectedBytes, asset, name = "sea.png", trustedUploadOrigin = origin, accessClientId = null, accessClientSecret = null }) {
   const source = `let calls = 0;
     globalThis.fetch = async (url, init) => {
       calls++;
@@ -90,7 +90,7 @@ function runUpload(args, { uploadUrl, expectedBytes, asset, trustedUploadOrigin 
         if (headers.get("Authorization") !== "Bearer fixture-token") throw new Error("missing editing token");
         if (headers.get("CF-Access-Client-Id") !== ${JSON.stringify(accessClientId)} || headers.get("CF-Access-Client-Secret") !== ${JSON.stringify(accessClientSecret)}) throw new Error("missing API Access credentials");
         const body = JSON.parse(init.body);
-        if (JSON.stringify(body) !== ${JSON.stringify(JSON.stringify({ name: "sea.png", mimeType: "image/png", bytes: expectedBytes.length, folderId: null, provider: "kamakura-upload" }))}) throw new Error("invalid upload metadata");
+        if (JSON.stringify(body) !== ${JSON.stringify(JSON.stringify({ name, mimeType: "image/png", bytes: expectedBytes.length, folderId: null, provider: "kamakura-upload" }))}) throw new Error("invalid upload metadata");
         return new Response(JSON.stringify({ uploadUrl: ${JSON.stringify(uploadUrl)}, uploadToken: "short-lived", assetId: ${JSON.stringify(asset.id)} }), { status: 201, headers: { "Content-Type": "application/json" } });
       }
       if (calls !== 2 || String(url) !== ${JSON.stringify(uploadUrl)} || init.method !== "PUT" || init.credentials !== "omit" || init.redirect !== "error") throw new Error("unexpected upload PUT");
@@ -234,11 +234,11 @@ test("niho-edit uploads bytes with a same-origin one-time asset token", async (t
   t.after(() => rm(directory, { recursive: true, force: true }));
   const file = join(directory, "sea.png"), bytes = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
   await writeFile(file, bytes);
-  const asset = { provider: "kamakura-upload", id: "123e4567-e89b-42d3-a456-426614174000", siteId, kind: "image", status: "ready", name: "sea.png", mimeType: "image/png", bytes: bytes.length, width: 1, height: 1, alt: "", version: "etag-v1", updatedAt: "2026-11-20T00:00:00Z" };
+  const asset = { provider: "kamakura-upload", id: "123e4567-e89b-42d3-a456-426614174000", siteId, kind: "image", status: "ready", name: "custom.png", mimeType: "image/png", bytes: bytes.length, width: 1, height: 1, alt: "", version: "etag-v1", updatedAt: "2026-11-20T00:00:00Z" };
   const uploadUrl = `${origin}/internal/studio/asset-upload/${asset.id}`;
   const accessClientId = `${"e".repeat(32)}.access`, accessClientSecret = "fixture-access-secret";
-  const result = await runUpload(["assets-upload", file, "--mime-type", "image/png", "--provider", asset.provider], {
-    uploadUrl, expectedBytes: bytes, asset, accessClientId, accessClientSecret
+  const result = await runUpload(["assets-upload", file, "--mime-type", "image/png", "--provider", asset.provider, "--name", "custom.png"], {
+    uploadUrl, expectedBytes: bytes, asset, name: "custom.png", accessClientId, accessClientSecret
   });
   assert.equal(result.exitCode, 0, `${result.stderr}\n${result.stdout}`);
   assert.deepEqual(JSON.parse(result.stdout), { apiVersion: "v1", httpStatus: 201, operation: "assets.upload", result: { status: "uploaded", asset } });
