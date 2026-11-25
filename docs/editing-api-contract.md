@@ -14,6 +14,8 @@ Studio GUIは対応ホストでは editor snapshot profile から日本語本文
 | --- | --- | --- | --- | --- | --- |
 | `pages.inspect` | GET | `/sites/{siteId}/operations/pages.inspect/{pageId}?locale={locale}&view={view}` | `pages.read` | outline/find/subtree/effectiveStyleの投影条件 | 部分読取結果と文書・component・presentation・site styleの各版 |
 | `pages.read` | GET | `/sites/{siteId}/operations/pages.read/{pageId}?locale={locale}` | `pages.read` | site/page/locale、任意の editor snapshot profile | `{ document, version, componentsVersion?, presentationVersion?, presentation?, editorState? }` |
+| `pages.history` | GET | `/sites/{siteId}/operations/pages.history/{pageId}?locale={locale}&cursor={cursor}` | `pages.history.read` | site/page/locale and optional cursor | `{ entries, next? }` (operation summaries only) |
+| `pages.history-read` | POST | `/sites/{siteId}/operations/pages.history-read/{pageId}?locale={locale}` | `pages.history.read` | `{ id }` in the JSON body | `{ document, siteStyles?, presentation? }` for one retained revision |
 | `pages.save` | PUT | `/sites/{siteId}/operations/pages.save/{pageId}?locale={locale}` | `pages.edit` | `{ expectedVersion, document }` | `{ status: "saved", version, document }` |
 | `pages.apply` | POST | `/sites/{siteId}/operations/pages.apply/{pageId}?locale={locale}` | `pages.edit` | `{ baseVersion, operationId, operations, componentsVersion?, presentationVersion?, stylesVersion?, dryRun? }` | `{ status: "applied", version, revision, document }` / dry-run `{ status: "valid", diff, touched }` |
 | `pages.preview-intent` | POST | `/sites/{siteId}/operations/pages.preview-intent/{pageId}?locale={locale}` | `pages.read` | `{}` | `{ url, expiresAt }` |
@@ -61,6 +63,8 @@ outline/find/subtreeは `limit`（既定1000、最大1000件）と `cursor` で�
 `{ "type": "name", "nodeId": "hero", "value": "ヒーロー" }` で要素の名前を設定・変更し、`value` を省略すると解除します。ホストは保存・読取・公開側で `name` を扱えるようにした後、`PageEditingHostAdapter.pageNodeNames: true` を指定します。通常の `pages.edit` 認可を満たす `pages.apply` / `pages.save` の discover 定義に `capabilities: ["pages.name"]` が付き、`pages.apply` の入力 schema は `name` 操作と名前付きの追加ノードを含みます。未対応ホストの定義もクライアントは読み取れます。GUI と CLI は、書込先の操作がこの機能を公開した場合だけ `name` 操作や名前を含むノードを送ります。`schemaVersion` は 1 のままです。CLI の `apply` で未対応の名前を含む入力を受けた場合は、書き込む前に `name_not_supported` を返します。
 
 `add` / `addMany` / `move` は、`{ before: nodeId }` / `{ after: nodeId }` または `{ edge: "start" | "end" }` の `anchor` で位置を指定できます。アンカーは移動先の同じ親にある要素IDを指します。既存の数値 `index` も受け付けますが、indexとanchorは同時に指定できず、`move` はどちらか一方が必須です。位置を省略した追加は末尾へ挿入します。
+
+`wrap` / `unwrap` は囲みボックスの追加・解除を1操作で適用します。[CLIでの入力例](#ボックスで囲む囲みを解除)を参照してください。
 
 ホストの `pageOperations.transact` は、常に最新の文書/versionと、その読み取りと同じ版に属する信頼済み `blocks`・`locks`・`components`・`siteStyles` を `prepare(snapshot, validationContext)` に渡します。古い `baseVersion` を理由にprepare前に拒否せず、上記の葉操作だけを条件付きで再適用できるか判定します。`pages.apply` は別途 `validationContext(actor, target)` を読みません。`editDocumentById` を順に適用し、最後に全文を `parsePageDocument` で検証します。途中の一操作でも失敗した場合は HTTP 422 `validation_failed` と、失敗 index・理由を返し、何も保存しません。prepareが使ったページ版と依存版をCASで再照合し、文書・操作記録を同時に確定してください。CASに負けた場合は最新snapshotから操作IDの再送判定とprepareをやり直します。依存版の指定は任意ですが、指定値がprepare時点の現在値と異なる場合はHTTP 409です。成功時は保存後の正規文書と新しい版・revision を返します。
 
@@ -209,6 +213,18 @@ niho-edit --origin https://site.example --site site-id localization-release-read
 
 書込の `--json` には操作表の追加フィールドを渡します。`siteId` は `--site` から、commandとtranslateの `itemKey` は位置引数から補います。たとえば `command.json` は `{"action":"set-value","unitId":"title","value":"Workshop by the sea","expectedVersion":"v1","expectedSourceVersion":"s1","operationId":"command-operation-1"}` です。確認・再開tokenを含む `localization-release-prepare` および `localization-release-apply` の入力は `--json -` で標準入力から渡せます。呼出側が応答を確認して続く操作を決めます。CLIの409は終了コード1で、現行値がある場合はJSON出力の `result.current` に保持します。
 
+### ボックスで囲む・囲みを解除
+
+`niho-edit apply` に渡す操作列で `wrap` を指定します。`nodeIds` は同じ親にある隣り合う要素のIDを文書順に1〜500件指定し、`wrapperId` は `group_` で始まる未使用の要素IDを指定します。
+
+```json
+[{"type":"wrap","nodeIds":["heading","intro","details"],"wrapperId":"group_intro"}]
+```
+
+`unwrap` は `{"type":"unwrap","nodeId":"group_intro"}` と指定し、囲みの子を元の位置へ展開します。属性やスタイル、表示状態、埋め込みなどを持つボックスは解除できません。
+
+Flex / Grid などで見た目が変わりうる場合は、操作に `"allowLayoutChange":true` を指定したうえで `--dry-run` を実行し、ボックスの追加・削除と対象要素の親や位置の差分を確認してください。確認後、同じ版を `--expected-version` に指定し、`--dry-run` を外して適用します。この指定があっても、HTMLの入れ子やロックに抵触する操作は拒否されます。
+
 ## ホストの責務
 
 ホストadapterは次を実装します。
@@ -218,6 +234,7 @@ niho-edit --origin https://site.example --site site-id localization-release-read
 - `createPagePreviewIntent(actor, target)` を提供するhostは、認証済みactor・site/page/locale・現行の文書版とstyles/components/presentation/翻訳の依存版・期限・利用回数に結び付く不透明な許可記録をサーバー側で発行する。HTMLを返すpreview routeでも同じactorと全版を再検証し、要件外のrequestを拒否する。
 - `validationContext(actor, target)` は、`pages.read` / `pages.save` で対象文書の検証に必要なホスト登録block・部品library・サイトstyleを返す。`pages.apply` は後述のtransactionが、同じ版に対応するblock・lock・部品library・サイトstyleを `prepare` に渡す。これらの実装定義はクライアントへ公開しない。
 - `readPage` は文書とopaque versionを返す。
+- 版履歴を公開するホストは `listPageHistory(actor, target, cursor?)` と `readPageHistoryRevision(actor, target, id)` を実装します。両操作は独立した `pages.history.read` 権限で再認可し、`pages.read` から推測・継承しません。履歴一覧は表示名・actor種別・確認済み委任元の表示名・操作種別と対象IDだけを返します。変更前後の値、メール、ユーザーID、subjectは要約へ含めません。revision IDはopaqueとして `pages.history-read` のPOST bodyで受け取り、URL・query・ログへ出しません。snapshotは通常の文書検証とsite/page/locale照合を通し、対象違い・不正な履歴はhost contract violationにします。
 - `savePage` はexpectedVersionを永続層で原子的に比較して保存する。並行更新は `conflict` を返し、成功時は正規化済みの保存後PageDocumentと新versionを返す。
 - `pageOperations.transact` を提供するホストは、actorとoperation IDの既存記録を版照合より先に確認し、同じ版から取得した文書・依存版・信頼済みcontextに対する全操作を検証してから、文書・revision・journal blob参照・operation ID/hash/結果を一つのCAS/transactionで確定する。同一要求の再送は同じ結果を返し、同一IDの異なる入力は `duplicate_operation` として拒否する。dry-runでは保存記録を作らない。
 - 公開操作を提供する場合は `releaseSite` から信頼済みの許可originを返し、`preparePageRelease` が現行版・依存版・公開先に束縛された計画を作る。handlerは計画の対象・action・版・domainを検証する。

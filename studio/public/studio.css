@@ -176,6 +176,11 @@
 .studio-editor-shell>.studio-editor-content{display:flex;width:100%;max-width:none;height:100%;min-height:0;flex:1;margin:0;padding:0;overflow:hidden}
 .studio-editor-content>.studio-editor{display:flex;width:100%;height:100%;min-height:0;flex:1;flex-direction:column;overflow:hidden}
 .studio-editor-content>.studio-editor>.nw-editor{max-width:none;height:100%;min-height:0;flex:1;margin:0;border-radius:0}
+.studio-editor-performance{flex:none;padding:6px 12px;border-top:1px solid var(--nw-border);background:var(--nw-surface);font-size:12px}
+.studio-editor-performance summary{cursor:pointer}
+.studio-editor-performance dl{display:flex;flex-wrap:wrap;gap:4px 16px;margin:4px 0 0}
+.studio-editor-performance dl div{display:flex;gap:8px}
+.studio-editor-performance dd{margin:0;font-variant-numeric:tabular-nums}
 .studio-kamakura-state{display:grid;align-content:center;justify-items:center;gap:10px;width:min(560px,calc(100% - 32px));margin:auto;padding:32px;background:var(--nw-bg);border:1px solid var(--nw-border);border-radius:var(--nw-radius-lg);color:var(--nw-text);text-align:center}
 .studio-kamakura-state h1,.studio-kamakura-state p{margin:0}
 .studio-kamakura-state h1{font-size:20px}
@@ -205,6 +210,7 @@
 @media(max-width:1439px){.pv-project-end .studio-account-email{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}}
 @media(max-width:900px){.studio-content-project>.nw-project-dashboard .pv-project-bar{position:relative}.studio-site-cms{--niho-sticky-top:0px}}
 
+.studio-editor-performance{position:fixed;right:12px;bottom:12px;z-index:1000;max-width:min(360px,calc(100vw - 24px));color:var(--nw-text);font-size:12px}.studio-editor-performance details{border:1px solid var(--nw-border-strong);border-radius:var(--nw-radius);background:var(--nw-bg)}.studio-editor-performance summary{padding:7px 10px;cursor:pointer;font-weight:600}.studio-editor-performance dl{display:grid;gap:4px;margin:0;padding:0 10px 9px}.studio-editor-performance dl>div{display:flex;justify-content:space-between;gap:20px}.studio-editor-performance dt{color:var(--nw-text-sub)}.studio-editor-performance dd{margin:0;font-variant-numeric:tabular-nums}
 .studio-native-cms { display: grid; gap: 1rem; padding: 1rem; }
 .studio-native-cms-columns { display: grid; grid-template-columns: minmax(12rem, 1fr) minmax(0, 2fr); gap: 1.25rem; }
 .studio-native-cms form, .studio-native-cms-item { display: grid; gap: .75rem; align-content: start; }

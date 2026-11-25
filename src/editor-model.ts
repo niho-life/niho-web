@@ -3,14 +3,16 @@ import { detachInstance } from "./component-model.js";
 import { parsePageDocument, parsePageNodeName } from "./document.js";
 import type { EditorBlockRegistry, EditorLock, EditorPage, EditorPageChange, EditorPageChangePlan, EditorPageImpact, EditorReadOnly, EditorReleasePlan, EditorReleaseRequest, EditorSite, EditorTarget } from "./editor-types.js";
 import { findPathConflict, validatePagePath } from "./pages.js";
-import { copyId, nodeAt, siblingsAt, walkNodes, type NodePath } from "./node-tree.js";
+import { indexedNodes, indexedNodesById, nodeAt, siblingsAt, walkNodes, type NodePath } from "./node-tree.js";
+import { normalizeNodeFragment } from "./editor-fragment.js";
 import type { Appear, AssetReference, BlockContract, ComponentLibrary, ComponentNode, DesignToken, ElementNode, HiddenRange, IconName, InstanceNode, NodeStyle, PageDocument, PageMeta, PageNode, PublicPropValue, StateName, StateProperty, StyleDeclarations, StyleProperty, StyleValue, TextStyle } from "./types.js";
 import { stateNames, textStyleProperties } from "./style-values.js";
 import { assertMotionStylePatch, sameMotionValue, type MotionStylePatch } from "./builder.js";
-import { isSafeHttpsOrigin, isSafePublicUrl, keys, line, record } from "./validation-utils.js";
+import { identifier, isSafeHttpsOrigin, isSafePublicUrl, keys, line, record } from "./validation-utils.js";
 import { normalizeEmbedSource } from "./embeds.js";
 
 export { nodeAt, walkNodes, type NodePath };
+export { normalizeNodeFragment } from "./editor-fragment.js";
 export type NodePositionAnchor = { readonly before: string } | { readonly after: string } | { readonly edge: "start" | "end" };
 export type PageOperationTextPathContextEntry =
   | { readonly type: "target" }
@@ -90,6 +92,8 @@ export type EditorOperation =
   | { type: "background"; path: NodePath; breakpoint: number | "base"; asset: AssetReference | undefined }
   | { type: "replaceAsset"; from: AssetReference; to: AssetReference }
   | { type: "duplicate" | "remove"; path: NodePath }
+  | { type: "wrap"; nodeIds: readonly string[]; wrapperId: string; allowLayoutChange?: boolean }
+  | { type: "unwrap"; path: NodePath; allowLayoutChange?: boolean }
   | { type: "move"; path: NodePath; parentId: string | null; index?: number; anchor?: NodePositionAnchor }
   /** インスタンスのページごとの値。undefined で解除する。 */
   | { type: "instanceProp"; path: NodePath; name: string; value: string | undefined }
@@ -113,7 +117,15 @@ export type EditorOperationById = StableEditorOperation<EditorOperation>;
 export type MetaOperation = { [K in keyof PageMeta]-?: { type: "meta"; field: K; value: PageMeta[K] | undefined } }[keyof PageMeta];
 export type EditorOperationBlocks = Readonly<Record<string, BlockContract & Pick<EditorBlockRegistry[string], "lockedProps" | "styleProperties">>>;
 export type EditorHistory = { past: PageDocument[]; present: PageDocument; future: PageDocument[] };
-export const fingerprint = (document: PageDocument): string => JSON.stringify(document);
+const documentFingerprints = new WeakMap<PageDocument, string>();
+/** Editor documents are immutable snapshots; cache their serialized identity across renders and history checks. */
+export function fingerprint(document: PageDocument): string {
+  const cached = documentFingerprints.get(document);
+  if (cached !== undefined) return cached;
+  const value = JSON.stringify(document);
+  documentFingerprints.set(document, value);
+  return value;
+}
 /** Snapshot の任意 read-only 表示契約を、UI と Project adapter で共有して検証する。 */
 export function parseEditorReadOnly(value: unknown): EditorReadOnly | undefined {
   if (value === undefined) return undefined;
@@ -129,9 +141,18 @@ export function parseEditorReadOnly(value: unknown): EditorReadOnly | undefined 
   const editLabel = source.editLabel === undefined ? undefined : line(source.editLabel, "$snapshot.readOnly.editLabel", 80);
   return { reason, ...(editUrl ? { editUrl } : {}), ...(editLabel ? { editLabel } : {}) };
 }
+const implicitLocksByDocument = new WeakMap<PageDocument, WeakMap<EditorOperationBlocks, readonly EditorLock[]>>();
 export function effectiveLocks(document: PageDocument, locks: readonly EditorLock[], blocks: EditorOperationBlocks): EditorLock[] {
-  return [...locks, ...walkNodes(document).flatMap(({ node }) => node.type === "component"
-    ? Object.entries(blocks[node.block]?.lockedProps ?? {}).map(([name, reason]) => ({ nodeId: node.id, fields: [`props.${name}`], reason })) : [])];
+  if (!Object.values(blocks).some(({ lockedProps }) => Object.keys(lockedProps ?? {}).length > 0)) return [...locks];
+  let byBlocks = implicitLocksByDocument.get(document);
+  if (!byBlocks) { byBlocks = new WeakMap(); implicitLocksByDocument.set(document, byBlocks); }
+  let implicit = byBlocks.get(blocks);
+  if (!implicit) {
+    implicit = indexedNodes(document).flatMap(({ node }) => node.type === "component"
+      ? Object.entries(blocks[node.block]?.lockedProps ?? {}).map(([name, reason]) => ({ nodeId: node.id, fields: [`props.${name}`], reason })) : []);
+    byBlocks.set(blocks, implicit);
+  }
+  return [...locks, ...implicit];
 }
 function fieldValue(node: PageNode, field: string): unknown {
   if (field === "*") return node;
@@ -144,7 +165,8 @@ function fieldValue(node: PageNode, field: string): unknown {
 }
 const mediaSourceFields = ["asset", "attrs.src", "attrs.srcSet"];
 function assertLocks(before: PageDocument, after: PageDocument, locks: readonly EditorLock[]): void {
-  const index = (document: PageDocument) => new Map(walkNodes(document).flatMap(({ node }) => node.type === "text" ? [] : [[node.id, node] as const]));
+  if (!locks.length) return;
+  const index = (document: PageDocument) => new Map(indexedNodes(document).flatMap(({ node }) => node.type === "text" ? [] : [[node.id, node] as const]));
   const previous = index(before), next = index(after);
   const resolved = (document: PageDocument, value: unknown): unknown => {
     if (Array.isArray(value)) return value.map((entry) => resolved(document, entry));
@@ -271,6 +293,79 @@ function formFieldPairIndex(siblings: readonly PageNode[], node: PageNode, index
     (typeof controlId === "string" && candidate.tag === "label" && candidate.attrs?.htmlFor === controlId ||
      typeof labelTarget === "string" && ["input", "textarea", "select"].includes(candidate.tag) && candidate.attrs?.id === labelTarget));
 }
+
+export type BoxGroupOperation = Extract<EditorOperation, { type: "wrap" | "unwrap" }>;
+export const BOX_GROUP_NODE_LIMIT = 500;
+export const BOX_GROUP_ID_PREFIX = "group_";
+export class BoxGroupLayoutChange extends Error {
+  constructor() { super("構造が変わり、要素の並び方や余白が変わる場合があります。"); }
+}
+export function boxGroupId(value: unknown, path: string): string {
+  const id = identifier(value, path);
+  if (!id.startsWith(BOX_GROUP_ID_PREFIX) || id.length === BOX_GROUP_ID_PREFIX.length) throw new Error("囲みボックスのIDは group_ で始め、後ろに文字を付けてください。");
+  return id;
+}
+const boxGroupParents = new Set("div section article header footer main nav aside blockquote figure figcaption li dd dt details form".split(" "));
+const boxGroupContextualTags = new Set("li dd dt source option legend summary figcaption".split(" "));
+const blockFlowTags = new Set("div section article header footer main nav aside h1 h2 h3 h4 h5 h6 p ul ol dl blockquote figure form".split(" "));
+const plainBoxKeys = new Set(["type", "id", "tag", "children"]);
+
+function hasPlainBlockFlow(node: PageNode): boolean {
+  if (node.type !== "element" || !blockFlowTags.has(node.tag) || node.interaction || node.embed) return false;
+  const { style } = node;
+  if (style?.appear || style?.hidden?.length || Object.keys(style?.states ?? {}).length) return false;
+  const declarations = [style?.base ?? {}, ...(style?.responsive ?? []).map((rule) => rule.declarations)];
+  return declarations.every((rule) => Object.entries(rule).every(([name, value]) =>
+    (name === "display" && value === "block") || (textStyleProperties as readonly string[]).includes(name)));
+}
+
+function groupTargetPaths(document: PageDocument, operation: Extract<BoxGroupOperation, { type: "wrap" }>): NodePath[] {
+  const wrapperId = boxGroupId(operation.wrapperId, "$.wrapperId");
+  if (!Array.isArray(operation.nodeIds) || !operation.nodeIds.length || operation.nodeIds.length > BOX_GROUP_NODE_LIMIT) throw new Error(`囲む要素は1〜${BOX_GROUP_NODE_LIMIT}件指定してください。`);
+  if (new Set(operation.nodeIds).size !== operation.nodeIds.length) throw new Error("囲む要素の指定が重複しています。");
+  const paths = new Map<string, NodePath | null>();
+  for (const { node, path } of walkNodes(document)) {
+    if (node.type === "text") continue;
+    if (node.id === wrapperId) throw new Error("囲みボックスのIDはこのページですでに使われています。");
+    paths.set(node.id, paths.has(node.id) ? null : path);
+  }
+  return operation.nodeIds.map((id) => {
+    const path = paths.get(id);
+    if (!path) throw new Error("囲む要素が見つからないか、IDが重複しています。");
+    return path;
+  });
+}
+
+function editBoxGroup(document: PageDocument, operation: BoxGroupOperation, locks: readonly EditorLock[], components?: ComponentLibrary): boolean {
+  const targets = operation.type === "wrap" ? groupTargetPaths(document, operation) : [operation.path];
+  const first = targets[0]!, parentPath = first.slice(0, -1), parent = parentPath.length ? nodeAt(document, parentPath) : undefined;
+  const siblings = siblingsAt(document, first), start = first.at(-1)!;
+  let end = start, children: PageNode[], replacement: PageNode[];
+  if (operation.type === "wrap") {
+    if (targets.some((path) => path.length !== first.length || parentPath.some((index, depth) => path[depth] !== index))) throw new Error("同じ親の要素を選択してください。");
+    if (targets.some((path, index) => index > 0 && path.at(-1)! < targets[index - 1]!.at(-1)!)) throw new Error("囲む要素を文書順に指定してください。");
+    end = targets.at(-1)!.at(-1)!;
+    children = siblings.slice(start, end + 1);
+    if (children.filter((node) => node.type !== "text").length !== targets.length) throw new Error("間の要素も含めて、隣り合う要素を選択してください。");
+    replacement = [{ type: "element", id: operation.wrapperId, tag: "div", children }];
+  } else {
+    const box = nodeAt(document, first);
+    if (box.type !== "element" || box.tag !== "div" || !box.id.startsWith(BOX_GROUP_ID_PREFIX) || box.id.length === BOX_GROUP_ID_PREFIX.length ||
+        Object.keys(box).some((key) => !plainBoxKeys.has(key))) throw new Error("囲み解除できるのは、属性や見た目の設定がない囲みボックスだけです。");
+    children = box.children;
+    replacement = children;
+  }
+  if ((parent && (parent.type !== "element" || !boxGroupParents.has(parent.tag))) || children.some((node) => {
+    const tag = node.type === "element" ? node.tag : node.type === "instance" ? components?.components.find(({ id }) => id === node.component)?.root.tag : undefined;
+    return tag !== undefined && boxGroupContextualTags.has(tag);
+  })) throw new Error("この位置ではHTMLの入れ子が不正になるため、変更できません。");
+  const ancestorLock = lockReason(document, first, "children", locks);
+  const affected = siblings.slice(start, end + 1), ids = new Set(walkNodes({ ...document, body: affected }).flatMap(({ node }) => node.type === "text" ? [] : [node.id]));
+  const lock = ancestorLock ?? locks.find(({ nodeId, fields }) => fields.length && ids.has(nodeId))?.reason;
+  if (lock) throw new Error(`データ連動値を含む要素は移動できません。${lock}`);
+  siblings.splice(start, end - start + 1, ...replacement);
+  return (!!parent && !hasPlainBlockFlow(parent)) || !children.length || children.some((node) => !hasPlainBlockFlow(node));
+}
 /** components はインスタンスを含む文書の検証に使う、同じサイトの検証済みライブラリ。 */
 export function editDocument(document: PageDocument, operation: EditorOperation, blocks: EditorOperationBlocks = {}, locks: readonly EditorLock[] = [], components?: ComponentLibrary, siteStyles?: SiteStyles, validateDocument = true): PageDocument {
   const draft = structuredClone(validateDocument ? resolvePageStyles(document, siteStyles) : document), allLocks = effectiveLocks(document, locks, blocks);
@@ -291,7 +386,9 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
     return entry.declarations;
   };
   const pruneResponsive = (node: ElementNode | ComponentNode | InstanceNode) => { if (node.style?.responsive) node.style.responsive = node.style.responsive.filter((entry) => Object.keys(entry.declarations).length); };
-  if (operation.type === "title") draft.title = operation.value;
+  let groupMayChangeLayout = false;
+  if (operation.type === "wrap" || operation.type === "unwrap") groupMayChangeLayout = editBoxGroup(draft, operation, allLocks, components);
+  else if (operation.type === "title") draft.title = operation.value;
   else if (operation.type === "restore") {
     const source = operation.document;
     if (!source || typeof source !== "object") throw new Error("復元する内容を確認できません。");
@@ -549,26 +646,8 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
       const originals = pair < 0 ? [node] : [siblings[Math.min(index, pair)]!, siblings[Math.max(index, pair)]!];
       const subtree = originals.flatMap((entry) => entry.type === "text" ? [] : walkNodes({ ...draft, body: [entry] }));
       if (subtree.some(({ node }) => node.type !== "text" && allLocks.some((lock) => lock.nodeId === node.id))) throw new Error("データ連動値を含む要素は複製できません。");
-      const copies = structuredClone(originals), used = new Set(walkNodes(draft).flatMap(({ node }) => node.type === "text" ? [] : [node.id]));
-      const usedHtmlIds = new Set(walkNodes(draft).flatMap(({ node }) => node.type === "element" && typeof node.attrs?.id === "string" ? [node.attrs.id] : []));
-      const remap = new Map<string, string>();
-      function rename(current: PageNode): void {
-        if (current.type === "text") return;
-        current.id = copyId(current.id, used);
-        if (current.type === "element") {
-          if (typeof current.attrs?.id === "string") { const previous = current.attrs.id; current.attrs.id = copyId(previous, usedHtmlIds); remap.set(previous, current.attrs.id); }
-          current.children.forEach(rename);
-        }
-      }
-      copies.forEach(rename);
-      function links(current: PageNode): void {
-        if (current.type !== "element") return;
-        if (typeof current.attrs?.href === "string" && current.attrs.href.startsWith("#") && remap.has(current.attrs.href.slice(1))) current.attrs.href = `#${remap.get(current.attrs.href.slice(1))}`;
-        if (typeof current.attrs?.htmlFor === "string" && remap.has(current.attrs.htmlFor)) current.attrs.htmlFor = remap.get(current.attrs.htmlFor)!;
-        for (const key of ["aria-labelledby", "aria-describedby"]) if (typeof current.attrs?.[key] === "string") current.attrs[key] = current.attrs[key].split(" ").map((id) => remap.get(id) ?? id).join(" ");
-        current.children.forEach(links);
-      }
-      copies.forEach(links); siblings.splice(Math.max(index, pair) + 1, 0, ...copies);
+      const copies = normalizeNodeFragment(originals, draft);
+      siblings.splice(Math.max(index, pair) + 1, 0, ...copies);
     } else if (operation.type === "move") {
       if (operation.parentId && walkNodes({ ...draft, body: [node] }).some(({ node }) => node.type !== "text" && node.id === operation.parentId)) throw new Error("要素を自分の内側へ移動できません。");
       parentChildren(operation.path).splice(operation.path.at(-1)!, 1);
@@ -580,6 +659,7 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
     ? resolvePageStyles(parsePageDocument(draft, blocks, { ...(components ? { components } : {}), ...(siteStyles ? { siteStyles } : {}) }), siteStyles)
     : draft;
   assertLocks(validateDocument ? resolvePageStyles(document, siteStyles) : document, result, allLocks);
+  if (groupMayChangeLayout && (operation.type === "wrap" || operation.type === "unwrap") && operation.allowLayoutChange !== true) throw new BoxGroupLayoutChange();
   const ownership = operation.type === "restore" ? operation.document : operation.type === "token" && operation.token ? { ...document, tokens: { ...document.tokens, [operation.name]: operation.token } }
     : operation.type === "textStyle" && operation.style ? { ...document, textStyles: { ...document.textStyles, [operation.name]: operation.style } } : { ...document };
   if (operation.type === "token" && !operation.token) { ownership.tokens = { ...ownership.tokens }; delete ownership.tokens[operation.name]; }
@@ -603,7 +683,7 @@ function positionIndex(destination: readonly PageNode[], index: number | undefin
 }
 function pathForNodeId(document: PageDocument, nodeId: string): NodePath {
   if (typeof nodeId !== "string" || !nodeId) throw new Error("対象ノードIDが正しくありません。");
-  const matches = walkNodes(document).filter(({ node }) => node.type !== "text" && node.id === nodeId);
+  const matches = indexedNodesById(document, nodeId);
   if (matches.length !== 1) throw new Error("対象ノードが見つからないか、IDが重複しています。");
   return matches[0]!.path;
 }
@@ -632,7 +712,7 @@ export function editDocumentById(document: PageDocument, operation: EditorOperat
   return editDocument(document, operation as EditorOperation, blocks, locks, components, siteStyles, validateDocument);
 }
 export function commitHistory(history: EditorHistory, document: PageDocument): EditorHistory {
-  if (fingerprint(document) === fingerprint(history.present)) return history;
+  if (document === history.present || fingerprint(document) === fingerprint(history.present)) return history;
   return { past: [...history.past.slice(-49), history.present], present: document, future: [] };
 }
 /** 内容と履歴の順序を保ち、保存先が採番した revision を編集の新しい基準にする。 */

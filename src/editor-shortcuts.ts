@@ -5,11 +5,13 @@ type Shortcut = {
   action: string;
   label: string;
   keys: readonly string[];
+  code?: string;
   keyLabel: string;
   command?: true;
   shift?: boolean | "either";
   palette?: true;
   canvasArrows?: true;
+  alt?: boolean;
 };
 
 export const editorShortcuts = [
@@ -19,6 +21,12 @@ export const editorShortcuts = [
   { action: "duplicate", label: "複製", keys: ["d"], keyLabel: "⌘D / Ctrl+D", command: true, palette: true },
   { action: "moveUp", label: "選択要素を上へ", keys: ["arrowup"], keyLabel: "↑（キャンバス）", palette: true, canvasArrows: true },
   { action: "moveDown", label: "選択要素を下へ", keys: ["arrowdown"], keyLabel: "↓（キャンバス）", palette: true, canvasArrows: true },
+  { action: "wrap", label: "ボックスで囲む", keys: ["g"], keyLabel: "⌘G / Ctrl+G", command: true, palette: true },
+  { action: "unwrap", label: "囲みを解除", keys: ["g"], keyLabel: "⇧⌘G / Ctrl+Shift+G", command: true, shift: true, palette: true },
+  { action: "copy", label: "コピー", keys: ["c"], keyLabel: "⌘C / Ctrl+C", command: true, palette: true },
+  { action: "cut", label: "カット", keys: ["x"], keyLabel: "⌘X / Ctrl+X", command: true, palette: true },
+  { action: "paste", label: "貼り付け", keys: ["v"], keyLabel: "⌘V / Ctrl+V", command: true, palette: true },
+  { action: "pasteInside", label: "内側に貼り付け", keys: [], code: "KeyV", keyLabel: "⌥⌘V", command: true, alt: true, palette: true },
   { action: "parent", label: "親を選択", keys: ["escape"], keyLabel: "Esc" },
   { action: "child", label: "最初の子を選択・文字を編集", keys: ["enter"], keyLabel: "Enter" },
   { action: "zoomIn", label: "表示倍率を上げる", keys: ["+", "="], keyLabel: "⌘+ / Ctrl++", command: true, shift: "either", palette: true },
@@ -37,12 +45,13 @@ function eventElement(target: EventTarget | undefined): Element | undefined {
 
 function matchesShortcut(shortcut: Shortcut, event: KeyboardEvent): boolean {
   return !!shortcut.command === (event.metaKey || event.ctrlKey) &&
-    (shortcut.shift === "either" || !!shortcut.shift === event.shiftKey) && shortcut.keys.includes(event.key.toLowerCase());
+    (shortcut.shift === "either" || !!shortcut.shift === event.shiftKey) && !!shortcut.alt === event.altKey &&
+    (shortcut.code ? event.code === shortcut.code : shortcut.keys.includes(event.key.toLowerCase()));
 }
 
 export function dispatchEditorShortcut(event: KeyboardEvent, inCanvas: boolean, blockedReason: (action: ShortcutAction) => string | undefined,
   commands: Record<ShortcutAction, ShortcutCommand>, report: (reason: string) => void): void {
-  if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || event.altKey || event.getModifierState("AltGraph")) return;
+  if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || event.getModifierState("AltGraph")) return;
   const elements = event.composedPath().flatMap((item) => { const element = eventElement(item); return element ? [element] : []; });
   if (elements.some((element) => element.matches("input, textarea, select, [role='textbox'], [role='dialog'], [role='alertdialog']"))) return;
   // 開いているローカル操作の Escape を先に処理させる。
@@ -58,9 +67,15 @@ export function dispatchEditorShortcut(event: KeyboardEvent, inCanvas: boolean, 
   // ボタン等の Enter は通常の操作に使う。選択済みのレイヤー行だけは子を選択する。
   if (definition.action === "child" && elements.some((element) => element.matches("button, a[href], summary, [role='tab'], [role='button']") && !element.matches("[role='treeitem'][aria-selected='true']"))) return;
   const command = commands[definition.action];
-  const result = blockedReason(definition.action) ?? command.unavailable ?? command.run(event);
-  if (typeof result === "string") report(result);
-  else if (result) {
+  const blocked = blockedReason(definition.action);
+  const result = blocked ?? command.unavailable ?? command.run(event);
+  if (typeof result === "string") {
+    report(result);
+    if (!blocked && ["copy", "cut", "paste", "pasteInside"].includes(definition.action)) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  } else if (result) {
     event.preventDefault();
     event.stopPropagation();
   }
