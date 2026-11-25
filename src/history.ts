@@ -69,6 +69,8 @@ function compareNodes(changes: DocumentChange[], before: Owned, after: Owned): v
     compareFields(changes, `${label} の `, before.attrs ?? {}, after.attrs ?? {});
     if (!same(before.asset, after.asset)) changes.push({ path: `${label} のアセット`, before: show(before.asset), after: show(after.asset) });
     if (!same(before.icon, after.icon)) changes.push({ path: `${label} のアイコン`, before: show(before.icon), after: show(after.icon) });
+    if (!same(before.formCompletionPageId, after.formCompletionPageId)) changes.push({ path: `${label} の送信完了ページ`, before: show(before.formCompletionPageId), after: show(after.formCompletionPageId) });
+    if (!same(before.interaction, after.interaction)) changes.push({ path: `${label} の動作設定`, before: show(before.interaction), after: show(after.interaction) });
     if (!same(before.embed?.source, after.embed?.source)) changes.push({ path: `${label} の埋め込み${before.embed?.provider === "blank" || after.embed?.provider === "blank" ? " key" : " URL"}`, before: show(before.embed?.source), after: show(after.embed?.source) });
     if (!same(before.embed?.title, after.embed?.title)) changes.push({ path: `${label} の埋め込みタイトル`, before: show(before.embed?.title), after: show(after.embed?.title) });
   } else if (before.type === "component" && after.type === "component") {
@@ -82,6 +84,9 @@ function compareNodes(changes: DocumentChange[], before: Owned, after: Owned): v
 }
 function compareStyle(changes: DocumentChange[], label: string, before: NodeStyle | undefined, after: NodeStyle | undefined): void {
   if (!same(before?.textStyle, after?.textStyle)) changes.push({ path: `${label} のテキストスタイル`, before: show(before?.textStyle), after: show(after?.textStyle) });
+  for (const [field, name] of [["states", "状態別の見た目"], ["appear", "登場の演出"], ["hidden", "幅別の非表示"]] as const) {
+    if (!same(before?.[field], after?.[field])) changes.push({ path: `${label} の${name}`, before: show(before?.[field] === undefined ? undefined : JSON.stringify(before[field])), after: show(after?.[field] === undefined ? undefined : JSON.stringify(after[field])) });
+  }
   const oldStyle = flatStyle(before), newStyle = flatStyle(after);
   const keys = unionKeys(newStyle.keys(), oldStyle.keys()).sort((left, right) => {
     const scope = (key: string) => { const head = key.split("\u0000")[0]!; return head === "共通" ? -1 : Number(head); };
@@ -108,10 +113,14 @@ export function diffDocuments(before: PageDocument, after: PageDocument, options
   });
   push("ファビコン", oldMeta.favicon, newMeta.favicon);
   push("検索エンジンに表示しない", !!oldMeta.noindex, !!newMeta.noindex, (value) => value ? "表示しない" : "表示する");
+  push("翻訳公開時の旧確認設定", oldMeta.targetReviewBeforePublish, newMeta.targetReviewBeforePublish);
   push("構造化データ", oldMeta.structuredData ?? [], newMeta.structuredData ?? []);
   for (const name of unionKeys(Object.keys(after.tokens), Object.keys(before.tokens))) {
     const oldToken = before.tokens[name], newToken = after.tokens[name], typed = oldToken && newToken && oldToken.type !== newToken.type;
     push(`トークン @${name}`, oldToken, newToken, (value) => value && typeof value === "object" ? show(typed ? `${String((value as { value: unknown }).value)}（${(value as { type: string }).type}）` : (value as { value: unknown }).value) : none);
+  }
+  for (const name of unionKeys(Object.keys(after.tokens), Object.keys(before.tokens))) {
+    if (before.tokens[name] && after.tokens[name]) push(`トークン @${name} の表示名`, before.tokens[name]?.label, after.tokens[name]?.label);
   }
   const oldStyles = before.textStyles ?? {}, newStyles = after.textStyles ?? {};
   for (const name of unionKeys(Object.keys(newStyles), Object.keys(oldStyles))) push(`テキストスタイル ${newStyles[name]?.label ?? oldStyles[name]?.label ?? name}`, oldStyles[name], newStyles[name], (value) => value && typeof value === "object" ? show(JSON.stringify(value)) : none);

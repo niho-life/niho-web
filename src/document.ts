@@ -25,6 +25,7 @@ const tagAttributes: Partial<Record<ElementTag, string[]>> = {
   select: ["name", "required", "disabled", "autocomplete"], option: ["value", "disabled"],
   button: ["type", "name", "value", "disabled"], fieldset: ["name", "disabled"]
 };
+export const elementAttributeNames = Object.freeze([...new Set([...globalAttributes, ...Object.values(tagAttributes).flat()])]);
 function attributes(value: unknown, tag: ElementTag, path: string, asset = false): ElementAttributes {
   const source = record(value, path), result: ElementAttributes = {};
   keys(source, [...globalAttributes, ...(tagAttributes[tag] ?? [])], path);

@@ -167,6 +167,7 @@ export const stateNames: readonly StateName[] = ["hover", "focus", "active"];
 export const appearEffects: readonly AppearEffect[] = ["fade", "fade-up", "fade-down", "fade-left", "fade-right", "zoom"];
 /** 遷移の指定。通常の規則には出さず、状態スタイルを持つノードの動きの規則だけに出す。 */
 export const motionProperties: readonly StyleProperty[] = ["transitionDuration", "transitionDelay", "transitionTimingFunction"];
+export const stylePropertyNames = Object.freeze(Object.keys(specs));
 export const isStyleProperty = (value: unknown): value is StyleProperty => typeof value === "string" && Object.hasOwn(specs, value);
 export const textStyleProperties: readonly TextStyleProperty[] = ["fontFamily", "fontSize", "fontWeight", "lineHeight", "letterSpacing", "wordSpacing", "fontVariantEastAsian", "fontStyle", "textDecorationLine"];
 /** token を参照できるプロパティの型。参照できなければ undefined。 */

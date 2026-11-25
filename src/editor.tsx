@@ -43,6 +43,7 @@ import {
 import { LanguageSelector, LocalizationPanel, editorLocalizationLocaleFor, localizationEditorCss, localizedOperationProblem, useEditorLocalization, type EditorLocalizationCommandOutcome, type EditorLocalizationManualBuffer } from "./editor-localization.js";
 import { parseEditorLocaleReleaseApplyResult, parseEditorLocaleReleasePlan, parseEditorLocaleReleaseState } from "./editor-locale-release.js";
 import { documentLocaleFor, validateLocalizedDocumentSave, type LocalizationLocale } from "./localization.js";
+import { acceptAppliedOperations, canSendOperations, fallbackOperations, operationQueue as createOperationQueue, operationApplier, reviewOperationConflict, queuePageEdit, queuePageTravel } from "./editor-operation-queue.js";
 import { editorSessionFrom, readEditorSession, type EditorSession } from "./editor-session.js";
 import { canvasViewportHeight, elementTypeLabel, fitCanvasScale, layerLabel, pathForNodeId, projectLayers, visibleLayers } from "./layers.js";
 import { LayerTreePanel } from "./editor-layers.js";
@@ -64,6 +65,7 @@ export type { LayerTreePanelProps } from "./editor-layers.js";
 export { readEditorSession, projectLayers, pathForNodeId, visibleLayers, fitCanvasScale, canvasViewportHeight, LayerTreePanel };
 const emptyBlocks: EditorBlockRegistry = {};
 type Session = EditorSession;
+const needsPageSave = (session: Session) => !!session.operationQueue.inFlight || fingerprint(session.history.present) !== session.saved;
 /** 部品を読み直す確認中の状態。library・page は確認を始めた時点の作業コピーの fingerprint（変わっていれば適用しない）。 */
 type LibraryReload = { fresh: LibrarySession; plan: LibraryReloadPlan; library: string; page: string | undefined };
 type Inspector = "element" | "page" | "site" | "localization";
@@ -601,7 +603,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const pending = useMemo(() => pendingFor("page"), []), sitePending = useMemo(() => pendingFor("site"), []);
   const pageInputPending = Object.values(pendingFields).includes("page");
   const manualInputPending = !!localizationManual?.pending && !!session && sameTarget(localizationManual.target, session.target);
-  const hasInput = Object.keys(pendingFields).length > 0 || manualInputPending, dirty = !!session && fingerprint(session.history.present) !== session.saved;
+  const hasInput = Object.keys(pendingFields).length > 0 || manualInputPending, dirty = !!session && needsPageSave(session);
   const masterId = editing && libraryPresent?.components.some((component) => component.id === editing) ? editing : null;
   const libraryDirty = !!library && libraryFingerprint(library.history.present) !== library.saved, pendingChanges = dirty || libraryDirty, locale = session?.target.locale ?? "ja";
   const blocked = !!busy || !!plan || !!localeReleasePlan || !!pageChange || !!releaseSetPages;
@@ -680,10 +682,10 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     if (styleMigration && current && sameTarget(current.target, styleMigration.target) && fingerprint(current.history.present) === styleMigration.source) {
       try {
         const document = editDocument(current.history.present, { type: "restore", document: styleMigration.document }, blocks, current.locks, libraryRef.current?.history.present, siteSettings.settings);
-        replace({ ...current, siteStyles: styleMigration.styles, history: commitHistory(current.history, document) });
+        replace({ ...current, operationQueue: fallbackOperations(current.operationQueue), siteStyles: styleMigration.styles, history: commitHistory(current.history, document) });
         setStyleMigration(null); setNotice("サイト共通スタイルを保存しました。移行したページの下書きを保存してください。");
       } catch { setNotice("サイト共通スタイルを保存しましたが、ページの移行を適用できませんでした。ページの編集内容は保持しています。"); }
-    } else if (current && fingerprint(current.history.present) === current.saved) void load(current.target, { preserveView: true });
+    } else if (current && !needsPageSave(current)) void load(current.target, { preserveView: true });
   }, [siteSettings.styleSaveEpoch, load, blocks, replace, styleMigration, siteSettings.settings]);
   useEffect(() => {
     if (styleMigration && !siteSettings.stylesDirty && JSON.stringify(siteSettings.styles) !== JSON.stringify(styleMigration.styles)) setStyleMigration(null);
@@ -811,8 +813,12 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         const problem = operations.map((next) => localizedOperationProblem(current.history.present, next, localization.context!.collection)).find(Boolean);
         if (problem) return problem;
       }
-      const document = operations.reduce((page, next) => editDocument(page, next, blocks, current.locks, lib, activeSiteStyles), current.history.present);
-      replace({ ...current, history: commitHistory(current.history, document) }); setDraft(null); setNotice(""); return undefined;
+      const edit = (page: PageDocument, operation: EditorOperation) => editDocument(page, operation, blocks, current.locks, lib, activeSiteStyles);
+      const next = adapter.applyOperations && !targetMode
+        ? queuePageEdit(current.operationQueue, current.history.present, operations, edit, operationApplier(blocks, current.locks, lib, activeSiteStyles))
+        : { document: operations.reduce(edit, current.history.present), queue: current.operationQueue };
+      const history = commitHistory(current.history, next.document);
+      replace({ ...current, history, operationQueue: history === current.history ? current.operationQueue : next.queue }); setDraft(null); setNotice(""); return undefined;
     } catch (error) { setDraft(null); return message(error); }
   }
   function previewOperation(operation: EditorOperation | readonly EditorOperation[] | null) {
@@ -855,12 +861,13 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       if (!history.present.components.some((component) => component.id === masterId)) resetMode();
       return true;
     }
-    if (!session) return false;
+    const current = sessionRef.current;
+    if (!current) return false;
     try {
-      const lib = libraryRef.current?.history.present, history = travelHistory(session.history, direction, blocks, session.locks, lib, activeSiteStyles);
+      const lib = libraryRef.current?.history.present, history = travelHistory(current.history, direction, blocks, current.locks, lib, activeSiteStyles);
       if (lib && !fitsLibrary(history.present, lib, blocks, activeSiteStyles)) { setNotice(mismatch); return false; }
-      replace({ ...session, history }); setNotice("");
-      return true;
+      const operationQueue = adapter.applyOperations && !targetMode ? queuePageTravel(current.operationQueue, current.history.present, history.present, direction, operationApplier(blocks, current.locks, lib, activeSiteStyles)) : current.operationQueue;
+      replace({ ...current, history, operationQueue }); setNotice(""); return true;
     } catch (error) { setNotice(message(error)); return false; }
   }
   /**
@@ -897,12 +904,19 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     const changed = libraryRef.current, libraryChanged = !!changed && libraryFingerprint(changed.history.present) !== changed.saved;
     if (siteSettings.stylesDirty || siteSettings.busy || !sessionRef.current && !libraryChanged || action.current || blocked || hasInput || historyMode || !!sessionRef.current && !localizationReady || mode === "auto" && isOffline()) return false;
     const controller = new AbortController(), auto = mode === "auto", hadProblem = !!problemRef.current; action.current = controller; if (!auto) setNotice("");
-    let current = sessionRef.current, librarySaved = false, pageSaved = false;
+    let current = sessionRef.current, librarySaved = false, pageSaved = false, applyingOperations = false;
     const sameSession = () => { const latest = sessionRef.current; return !!latest && !!current && sameTarget(latest.target, current.target); };
-    const failed = (next: SaveProblem, thrown: boolean) => { if (!sameSession()) return; setProblem(next); setNotice(saveProblemNotice(next, auto, thrown)); if (next === "conflict" && !auto) setConflictView((value) => value + 1); };
+    const failed = (next: SaveProblem, thrown: boolean) => {
+      if (!sameSession()) return;
+      setProblem(next); setNotice(saveProblemNotice(next, auto, thrown));
+      if (next === "conflict" && (!auto || applyingOperations)) {
+        if (applyingOperations) recoveryState.flush();
+        setConflictView((value) => value + 1);
+      }
+    };
     try {
       if (changed && libraryChanged) { if (!await saveComponents(changed, controller.signal, auto)) return false; librarySaved = true; current = sessionRef.current; }
-      if (librarySaved && (!current || fingerprint(current.history.present) === current.saved)) {
+      if (librarySaved && (!current || !needsPageSave(current))) {
         setProblem(null); setSavedAt(new Date()); if (!auto) setNotice("コンポーネントを保存しました。"); else if (hadProblem) setNotice("");
         return true;
       }
@@ -913,16 +927,50 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       const localized = targetMode ? localization.context : null;
       if (targetMode && (!localized || !sameTarget(localized.target, current.target))) throw new Error("訳文の状態を読み込んでから保存してください。");
       if (localized) await validateLocalizedDocumentSave(localized.config, localized.sourceDocument, document, localized.options);
-      const result = await adapter.saveDraft({ target: current.target, document: structuredClone(document), expectedVersion: current.version,
-        ...(current.presentation ? { presentationVersion: current.presentation.version } : {}), ...(auto ? { trigger: "autosave" as const } : {}),
-        ...(localized ? { localization: { expectedSourceVersion: localized.sourceVersion, expectedVersion: localized.version, expectedOverlayVersion: localized.overlay.version } } : {}) }, controller.signal);
-      if (controller.signal.aborted) return false;
-      if (result.status === "conflict") { failed("conflict", false); return false; }
-      if (typeof result.version !== "string" || !result.version || result.version === current.version) throw new Error("version must advance");
-      const latest = sessionRef.current;
-      if (latest && sameTarget(latest.target, current.target) && latest.version === current.version) {
-        const acknowledged = acceptSavedRevision(latest.history, document, result.revision);
-        replace({ ...latest, ...acknowledged, version: result.version, hasSavedDraft: true });
+      const applyToPage = operationApplier(blocks, current.locks, lib, activeSiteStyles);
+      const queued = current.operationQueue;
+      if (adapter.applyOperations && !localized && (queued.inFlight || typeof globalThis.crypto?.randomUUID === "function" && canSendOperations(queued, document, applyToPage))) {
+        applyingOperations = true;
+        const dependencyVersions = { ...current.dependencyVersions };
+        if (current.presentation) dependencyVersions.presentationVersion ??= current.presentation.version;
+        if (libraryRef.current) dependencyVersions.componentsVersion = libraryRef.current.version;
+        const inFlight = queued.inFlight ?? {
+          request: { ...dependencyVersions, target: current.target, baseVersion: current.version, operationId: globalThis.crypto.randomUUID(), operations: queued.pending },
+          count: queued.pending.length, submitted: document,
+        };
+        if (!queued.inFlight) replace({ ...current, operationQueue: { ...queued, inFlight } });
+        const result = await adapter.applyOperations(structuredClone(inFlight.request), controller.signal);
+        if (controller.signal.aborted) return false;
+        if (result.status === "conflict") { failed("conflict", false); return false; }
+        if (result.status !== "applied" || typeof result.version !== "string" || !result.version || result.version === current.version
+          || !Number.isSafeInteger(result.revision) || result.revision <= inFlight.submitted.revision) throw new Error("保存後の revision が正しくありません。");
+        const canonical = parsePageDocument(result.document, blocks, { ...(lib ? { components: lib } : {}), ...(activeSiteStyles ? { siteStyles: activeSiteStyles } : {}) });
+        if (!sameTarget(canonical, current.target) || canonical.revision !== result.revision) throw new Error("保存対象が一致しません。");
+        const latest = sessionRef.current;
+        if (latest && sameTarget(latest.target, current.target) && latest.version === current.version) {
+          const acknowledged = acceptAppliedOperations(latest.operationQueue, { ...result, document: canonical }, latest.history, applyToPage);
+          replace({ ...latest, history: acknowledged.history, operationQueue: acknowledged.queue, saved: fingerprint(canonical), version: result.version, hasSavedDraft: true });
+          if (acknowledged.replayFailed) {
+            failed("conflict", false);
+            return false;
+          }
+        }
+      } else {
+        if (adapter.applyOperations && !localized && !queued.fallback) replace({ ...current, operationQueue: fallbackOperations(queued) });
+        const result = await adapter.saveDraft({ target: current.target, document: structuredClone(document), expectedVersion: current.version,
+          ...(current.presentation ? { presentationVersion: current.presentation.version } : {}), ...(auto ? { trigger: "autosave" as const } : {}),
+          ...(localized ? { localization: { expectedSourceVersion: localized.sourceVersion, expectedVersion: localized.version, expectedOverlayVersion: localized.overlay.version } } : {}) }, controller.signal);
+        if (controller.signal.aborted) return false;
+        if (result.status === "conflict") { failed("conflict", false); return false; }
+        if (typeof result.version !== "string" || !result.version || result.version === current.version) throw new Error("version must advance");
+        const latest = sessionRef.current;
+        if (latest && sameTarget(latest.target, current.target) && latest.version === current.version) {
+          const acknowledged = acceptSavedRevision(latest.history, document, result.revision);
+          replace({ ...latest, ...acknowledged, version: result.version, hasSavedDraft: true,
+            operationQueue: adapter.applyOperations && !localized
+              ? createOperationQueue({ ...document, revision: result.revision })
+              : { ...latest.operationQueue, base: { ...document, revision: result.revision }, pending: [] } });
+        }
       }
       if (sameSession()) { setProblem(null); setSavedAt(new Date()); setConflictView(0); }
       if (localized) localization.reloadPage();
@@ -1069,7 +1117,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       const latest = sessionRef.current;
       if (!latest || !sameTarget(latest.target, current.target) || latest.version !== current.version || fingerprint(latest.history.present) !== fingerprint(current.history.present)) return "復元の確認中に編集内容が変わりました。もう一度確認してください。";
       // 部品のインスタンスは現在の正本ライブラリで検証し、展開できない内容は復元しない。
-      replace({ ...latest, history: commitHistory(latest.history, editDocument(latest.history.present, { type: "restore", document: source }, blocks, latest.locks, libraryRef.current?.history.present, activeSiteStyles)) });
+      replace({ ...latest, operationQueue: fallbackOperations(latest.operationQueue), history: commitHistory(latest.history, editDocument(latest.history.present, { type: "restore", document: source }, blocks, latest.locks, libraryRef.current?.history.present, activeSiteStyles)) });
       setSelection(null); setInspector("page"); return undefined;
     } catch (error) { return message(error); }
   }
@@ -1118,9 +1166,31 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     catch { setNotice("最新の表示コンテキストを検証できませんでした。編集内容は保持しています。"); return; }
     const rebase = (document: PageDocument): PageDocument => ({ ...document, revision: latest.revision });
     const history = { past: current.history.past.map(rebase), present: rebase(current.history.present), future: current.history.future.map(rebase) };
-    replace({ ...fresh, history, saved: fingerprint(latest) });
+    replace({ ...fresh, history, operationQueue: fallbackOperations(fresh.operationQueue), saved: fingerprint(latest) });
     setConflictView(0); setProblem(null);
     if (fingerprint(history.present) === fingerprint(latest)) { setNotice("最新の保存内容と同じ内容です。"); return; }
+    void save("manual");
+  }
+  function operationConflictReview({ snapshot }: LatestSnapshot) {
+    const current = sessionRef.current, library = libraryRef.current;
+    if (!current || !adapter.applyOperations || targetMode || !current.operationQueue.inFlight || current.readOnly) return undefined;
+    try {
+      const settings = siteSettingsRef.current.settings;
+      const fresh = editorSessionFrom(snapshot, current.target, blocks, library?.history.present, settings, !settings);
+      if (fresh.readOnly || (fresh.dependencyVersions.componentsVersion !== undefined && fresh.dependencyVersions.componentsVersion !== library?.version && fresh.dependencyVersions.componentsVersion !== current.dependencyVersions.componentsVersion)
+        || fresh.dependencyVersions.stylesVersion !== current.dependencyVersions.stylesVersion) return undefined;
+      const reviewed = reviewOperationConflict(current.operationQueue, fresh.history.present, current.history.present, operationApplier(blocks, fresh.locks, library?.history.present, settings));
+      return reviewed ? { fresh, reviewed } : undefined;
+    } catch { return undefined; }
+  }
+  function retryOperationConflict(latest: LatestSnapshot) {
+    if (action.current || hasInput) return;
+    const next = operationConflictReview(latest);
+    if (!next) { setNotice("最新の内容に編集を適用できません。手元の変更は保持しています。"); return; }
+    const { fresh, reviewed } = next;
+    replace({ ...fresh, history: reviewed.history, operationQueue: reviewed.queue });
+    setConflictView(0); setProblem(null);
+    if (fingerprint(reviewed.history.present) === fresh.saved) { setNotice("最新の保存内容と同じ内容です。"); return; }
     void save("manual");
   }
   /**
@@ -1167,7 +1237,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     setNavigation(null);
     if (!await save("manual")) return;
     const current = sessionRef.current;
-    if (current && fingerprint(current.history.present) !== current.saved) { setNotice("保存中に変更がありました。もう一度保存してから移動してください。"); return; }
+    if (current && needsPageSave(current)) { setNotice("保存中に変更がありました。もう一度保存してから移動してください。"); return; }
     navigate(next);
   }
 
@@ -1286,7 +1356,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       const source = textStylePaths(current.history.present, path).reduce((document, at) => editDocument(document, { type: "nodeTextStyle", path: at, name: undefined, detach: true }, blocks, current.locks, lib.history.present, activeSiteStyles), current.history.present);
       // 選んだ要素は同じ ID のインスタンスになるため、選択はそのまま新しいインスタンスを指す。
       const created = createComponentFromNode(source, path, lib.history.present, { name, kind }, blocks, current.locks, activeSiteStyles);
-      replaceLibrary({ ...lib, history: commitLibrary(lib.history, created.library) }); replace({ ...current, history: commitHistory(current.history, created.document) });
+      replaceLibrary({ ...lib, history: commitLibrary(lib.history, created.library) }); replace({ ...current, operationQueue: fallbackOperations(current.operationQueue), history: commitHistory(current.history, created.document) });
       setNotice(""); setFieldEpoch((value) => value + 1); return undefined;
     } catch (error) { return componentProblem(error) ?? message(error); }
   }
@@ -1684,7 +1754,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
           <ul className="e-content-list">{visibleContentRows.map(({ id, path, tag, value }) => <li key={id}><button type="button" aria-current={selectedId === id ? "true" : undefined} disabled={masterId ? libraryBlocked || hasInput : pageOperationalBlocked || hasInput} onClick={() => select(path)}><small>{elementTypeLabel[tag] ?? tag}</small><span>{value.length > 120 ? value.slice(0, 120) + "…" : value}</span></button></li>)}</ul>
           {!contentRows.length && <p className="e-help">編集できる文章はありません。</p>}
         </section>
-        <section hidden={visiblePanel !== "styles"} aria-label="共通スタイル"><div className="e-panel-head"><h2>スタイル</h2><p>共通カラーとテキストスタイル</p></div>{targetMode ? <p className="e-help">共通デザインは原文側で編集してください。</p> : document ? <SharedStyleLibrary siteDisabled={blocked || historyMode || libraryDirty || !localizationReady} editingComponent={!!masterId} adapter={adapter} pages={pages} blocks={blocks} components={libraryPresent} state={siteSettings} pageDirty={dirty || pageInputPending || manualInputPending} sitePending={sitePending} rawDocument={rawDocument!} migrate={(next, styles) => { const current = sessionRef.current; if (!current || editBlocked) return "ページを編集できません。"; try { const parsed = editDocument(current.history.present, { type: "restore", document: next }, blocks, current.locks, libraryPresent, styles); if (JSON.stringify(styles) === JSON.stringify(parseSiteStyles(siteSettings.settings ?? {}))) { replace({ ...current, history: commitHistory(current.history, parsed) }); setStyleMigration(null); setNotice("保存済みのサイト共通定義へ移行しました。ページの下書きを保存してください。"); return undefined; } const error = siteSettings.editStyles(styles); if (error) return error; setStyleMigration({ target: current.target, source: fingerprint(current.history.present), document: next, styles }); return undefined; } catch (error) { return message(error); } }} document={document} selection={selection} apply={applyStyle} select={select} disabled={editBlocked} breakpoints={breakpoints} breakpoint={tier} until={until} preview={previewOperation} pending={pending} fieldKey={`${fieldEpoch}-library`} nodeLabel={(node) => label(node, blocks, names)} /> : <p className="e-help">ページを読み込むと、共通カラーとテキストスタイルを編集できます。</p>}</section>
+        <section hidden={visiblePanel !== "styles"} aria-label="共通スタイル"><div className="e-panel-head"><h2>スタイル</h2><p>共通カラーとテキストスタイル</p></div>{targetMode ? <p className="e-help">共通デザインは原文側で編集してください。</p> : document ? <SharedStyleLibrary siteDisabled={blocked || historyMode || libraryDirty || !localizationReady} editingComponent={!!masterId} adapter={adapter} pages={pages} blocks={blocks} components={libraryPresent} state={siteSettings} pageDirty={dirty || pageInputPending || manualInputPending} sitePending={sitePending} rawDocument={rawDocument!} migrate={(next, styles) => { const current = sessionRef.current; if (!current || editBlocked) return "ページを編集できません。"; try { const parsed = editDocument(current.history.present, { type: "restore", document: next }, blocks, current.locks, libraryPresent, styles); if (JSON.stringify(styles) === JSON.stringify(parseSiteStyles(siteSettings.settings ?? {}))) { replace({ ...current, operationQueue: fallbackOperations(current.operationQueue), history: commitHistory(current.history, parsed) }); setStyleMigration(null); setNotice("保存済みのサイト共通定義へ移行しました。ページの下書きを保存してください。"); return undefined; } const error = siteSettings.editStyles(styles); if (error) return error; setStyleMigration({ target: current.target, source: fingerprint(current.history.present), document: next, styles }); return undefined; } catch (error) { return message(error); } }} document={document} selection={selection} apply={applyStyle} select={select} disabled={editBlocked} breakpoints={breakpoints} breakpoint={tier} until={until} preview={previewOperation} pending={pending} fieldKey={`${fieldEpoch}-library`} nodeLabel={(node) => label(node, blocks, names)} /> : <p className="e-help">ページを読み込むと、共通カラーとテキストスタイルを編集できます。</p>}</section>
         <section hidden={!assetPanelVisible} aria-label={assetPanelLabel}>{assets && session ? <AssetLibraryPanel key={session.target.siteId} adapter={assets} siteId={session.target.siteId} epoch={fieldEpoch} mode={picker || localizationAssetUnit ? "pick" : "library"} panelLabel={assetPanelLabel} pickKind={picker?.purpose === "video" || picker?.purpose === "replace" && picker.kind === "video" ? "video" : "image"} {...(picker || localizationAssetUnit || !assetPanelKind ? {} : { providerKind: assetPanelKind })} pickTitle={localizationAssetUnit === "page.meta.ogImage.src" ? "ソーシャルカバーを選ぶ" : localizationAssetUnit ? "コンポーネント・訳文の画像を選ぶ" : picker?.purpose === "video" ? "動画を選ぶ" : picker?.purpose === "background" ? "背景画像を選ぶ" : picker?.purpose === "replace" ? `置き換える${picker.kind === "video" ? "動画" : "画像"}を選ぶ` : picker?.purpose === "ogImage" || picker?.purpose === "siteOgImage" ? "ソーシャルカバーを選ぶ" : "画像を選ぶ"} localUsage={localUsage}
           actions={{ replace: !localizationAssetUnit && node?.type === "element" && node.tag === "img", background: !slotName && !localizationAssetUnit && !targetMode && (node?.type === "component" || node?.type === "instance" || node?.type === "element" && !["img", "source", "video", "br", "hr"].includes(node.tag) && !node.icon && !node.embed), insert: !localizationAssetUnit && !targetMode && !!document }}
           disabledReason={editBlocked ? "処理が完了してから配置してください。" : hasInput ? "入力を確定するか取り消してから配置してください。" : undefined} onApply={(asset, action) => localizationAssetUnit ? applyLocalizationAsset(asset) : applyAsset(asset, action)} onClose={() => { setPicker(null); setLocalizationAssetUnit(null); }} onReplaceUsages={(asset) => setPicker({ purpose: "replace", from: { provider: asset.provider, id: asset.id }, kind: asset.kind === "video" ? "video" : "image" })} />
@@ -1879,7 +1949,8 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     {breakpointSettingsOpen && <BreakpointSettingsDialog state={breakpointSettings} {...(pageDocument ? { document: pageDocument } : {})}
       {...(dirty || libraryDirty || hasInput || siteSettings.dirty || siteSettings.busy || !!busy ? { saveBlockedReason: "ページ、コンポーネント、共通スタイル、サイト設定の未保存変更や処理を完了してから保存してください。" } : {})}
       close={() => setBreakpointSettingsOpen(false)} />}
-    {conflictView > 0 && session && pageDocument && <ConflictDialog key={conflictView} adapter={adapter} target={session.target} present={pageDocument} blocks={blocks} components={libraryPresent} siteStyles={siteSettings.settings} close={() => setConflictView(0)} discard={loadLatest} overwrite={overwriteWith} />}
+    {conflictView > 0 && session && pageDocument && <ConflictDialog key={conflictView} adapter={adapter} target={session.target} present={pageDocument} blocks={blocks} components={libraryPresent} siteStyles={siteSettings.settings} close={() => setConflictView(0)} discard={loadLatest} overwrite={overwriteWith}
+      {...(adapter.applyOperations ? { reapply: (latest: LatestSnapshot) => operationConflictReview(latest)?.reviewed.history.present, retryOperations: retryOperationConflict } : {})} />}
     {libraryReload && <Dialog name="コンポーネントを読み直す" dismiss={() => setLibraryReload(null)}><LibraryReloadDialogBody plan={libraryReload.plan} close={() => setLibraryReload(null)} apply={() => applyLibraryReload(libraryReload)} /></Dialog>}
     {recoveryCompare && recoveryState.offer && pageDocument && <RecoveryCompareDialog base={pageDocument} baseLabel={dirty ? "現在の編集内容" : "保存済みの内容"} recovered={recoveryState.offer} stale={recoveryStale} close={() => setRecoveryCompare(false)} apply={restoreRecovered} />}
     <HistoryDialogs history={versions} present={pageDocument} />
