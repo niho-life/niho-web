@@ -1,4 +1,5 @@
 import { parseKamakuraAssetUploadIntent } from "./kamakura-asset-upload-contract.js";
+import { EDITING_EDITOR_SNAPSHOT_ACCEPT } from "../src/editing-page-snapshot.js";
 import { parseProjectAliasPath, projectShortcutTarget } from "./project-routes.mjs";
 declare const __STUDIO_INDEX_PATH__: string;
 import { siteAdmin } from "./site-admin.mjs";
@@ -1696,8 +1697,9 @@ async function signedKamakuraEditingApiRequest(request: Request, env: Env, ident
   try { bearer = await kamakuraEditingDelegationToken(env, identity, capabilities); }
   catch { throw fail("bridge_secret_missing_or_invalid"); }
 
+  const editorSnapshot = upstreamSuffix.startsWith("/sites/kamakura/operations/pages.read/") && request.headers.get("Accept") === EDITING_EDITOR_SNAPSHOT_ACCEPT;
   const headers = new Headers({
-    Accept: "application/json",
+    Accept: editorSnapshot ? EDITING_EDITOR_SNAPSHOT_ACCEPT : "application/json",
     "Cache-Control": "no-store",
     Authorization: `Bearer ${bearer}`,
     Origin: KAMAKURA_EDITING_API_ORIGIN

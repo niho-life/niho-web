@@ -1,4 +1,4 @@
-import type { ComponentLibrary, PageDocument } from "./types.js";
+import type { ComponentLibrary, PageDocument, SitePresentation } from "./types.js";
 import { parsePageDocument } from "./document.js";
 import { normalizePageChange, validatePageChangePlan, validateReleasePlan } from "./editor-model.js";
 import type { EditorBreakpointSettings, EditorBreakpointSettingsSaveResult, EditorBreakpointSettingsSnapshot, EditorPage, EditorPageChange, EditorPageChangePlan, EditorReleasePlan, EditorReleaseRequest, EditorSite } from "./editor-types.js";
@@ -23,6 +23,8 @@ import {
   type EditingLocalizationHostAdapter, type EditingLocalizationInput, type EditingLocalizationOperation, type EditingLocalizationOperationId,
 } from "./editing-localization.js";
 import { jsonBytes } from "./localization-workspace-model.js";
+import { EDITING_EDITOR_SNAPSHOT_ACCEPT, parseEditingPageEditorState, parseEditingPagePresentation, type EditingPageEditorState } from "./editing-page-snapshot.js";
+import { ENGLISH_PUBLICATION_STATES } from "./english-publication.js";
 
 import {
   PAGE_OPERATION_ID, PAGE_OPERATION_LIMIT, PAGE_OPERATION_VERSIONS, editingOperationProblem, pageApplyInputSchema,
@@ -41,6 +43,7 @@ export type {
   EditingLocalizationReleasePrepareInput, EditingLocalizationResult,
 } from "./editing-localization.js";
 export type { EditingLocalizationCapability } from "./editing-localization-schemas.js";
+export { EDITING_EDITOR_SNAPSHOT_ACCEPT, type EditingPageEditorState } from "./editing-page-snapshot.js";
 
 /** Stable errors returned by the host-neutral page editing wire contract. */
 export const EDITING_API_ERRORS = Object.freeze([
@@ -67,6 +70,10 @@ export type EditingAuthorizationScope = { readonly siteId: string; readonly page
 export type EditingPageSnapshot = PageOperationVersions & {
   readonly document: PageDocument;
   readonly version: string;
+  /** Must belong to the same host snapshot as document and version. */
+  readonly presentation?: SitePresentation;
+  /** Presence declares that the snapshot includes the editor state supported by the host. */
+  readonly editorState?: EditingPageEditorState;
 };
 export type EditingPageSaveResult = { readonly status: "saved"; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" };
 export type EditingPageReleasePrepareResult = { readonly status: "prepared"; readonly plan: EditorReleasePlan } | { readonly status: "conflict" };
@@ -160,6 +167,27 @@ const documentSchema: JsonSchema = Object.freeze({
   })
 });
 const versionSchema: JsonSchema = Object.freeze({ type: "string", minLength: 1 });
+const presentationSchema: JsonSchema = Object.freeze({
+  type: "object", required: Object.freeze(["schemaVersion", "siteId", "locale", "version", "reset", "tokens", "fonts", "shared"]), additionalProperties: false,
+  properties: Object.freeze({
+    schemaVersion: Object.freeze({ const: 1 }), siteId: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }),
+    version: versionSchema, reset: Object.freeze({ const: "neutral-v1" }), tokens: Object.freeze({ type: "object" }), layout: Object.freeze({ type: "object" }),
+    fonts: Object.freeze({ type: "array", items: Object.freeze({ type: "object" }) }),
+    shared: Object.freeze({ type: "object", required: Object.freeze(["header", "footer"]), additionalProperties: false, properties: Object.freeze({ header: documentSchema, footer: documentSchema }) }),
+    overlays: Object.freeze({ type: "array", items: Object.freeze({ type: "object" }) }), hostViews: Object.freeze({ type: "array", items: Object.freeze({ type: "object" }) }),
+    links: Object.freeze({ type: "object" })
+  })
+});
+const editorStateSchema: JsonSchema = Object.freeze({
+  type: "object", additionalProperties: false, properties: Object.freeze({
+    readOnly: Object.freeze({ type: "object", required: Object.freeze(["reason"]), additionalProperties: false,
+      properties: Object.freeze({ reason: Object.freeze({ type: "string" }), editUrl: Object.freeze({ type: "string" }), editLabel: Object.freeze({ type: "string" }) }) }),
+    englishPublication: Object.freeze({ type: "object", required: Object.freeze(["state", "retryable"]), additionalProperties: false,
+      properties: Object.freeze({ state: Object.freeze({ enum: ENGLISH_PUBLICATION_STATES }), retryable: Object.freeze({ type: "boolean" }), updatedAt: Object.freeze({ type: "string" }) }) }),
+    releases: Object.freeze({ type: "array", items: Object.freeze({ type: "object", required: Object.freeze(["revision", "label"]), additionalProperties: false,
+      properties: Object.freeze({ revision: Object.freeze({ type: "integer", minimum: 1 }), label: Object.freeze({ type: "string" }) }) }) })
+  })
+});
 const breakpointNameSchema: JsonSchema = Object.freeze({ type: "string", enum: Object.freeze(["Mini", "Mobile", "Tablet", "Small", "PC"]) });
 const breakpointSettingsSchema: JsonSchema = Object.freeze({ type: "object", required: Object.freeze(["base", "breakpoints"]), additionalProperties: false,
   properties: Object.freeze({
@@ -266,7 +294,8 @@ export const EDITING_OPERATIONS = Object.freeze([
     inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId", "pageId", "locale"]), additionalProperties: false,
       properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), pageId: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }) }) }),
     resultSchema: Object.freeze({ type: "object", required: Object.freeze(["document", "version"]), additionalProperties: false,
-      properties: Object.freeze({ document: documentSchema, version: versionSchema, componentsVersion: versionSchema, presentationVersion: versionSchema, stylesVersion: versionSchema }) }),
+      properties: Object.freeze({ document: documentSchema, version: versionSchema, componentsVersion: versionSchema, presentationVersion: versionSchema,
+        stylesVersion: versionSchema, presentation: presentationSchema, editorState: editorStateSchema }) }),
     errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found"] as const)
   }),
   Object.freeze({
@@ -1484,7 +1513,15 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       if (document.siteId !== target.siteId || document.pageId !== target.pageId || document.locale !== target.locale || !validVersion(snapshot.version)) return fail("host_contract_violation", 502);
       const dependencies = Object.fromEntries(PAGE_OPERATION_VERSIONS.flatMap((key) => snapshot[key] === undefined ? [] : [[key, snapshot[key]]]));
       if (Object.values(dependencies).some((value) => !validVersion(value))) return fail("host_contract_violation", 502);
-      return response({ document, version: snapshot.version, ...dependencies });
+      let editorSnapshot: Pick<EditingPageSnapshot, "editorState" | "presentation"> = {};
+      if (request.headers.get("Accept") === EDITING_EDITOR_SNAPSHOT_ACCEPT && (snapshot.editorState !== undefined || snapshot.presentation !== undefined)) {
+        try {
+          const editorState = snapshot.editorState === undefined ? undefined : parseEditingPageEditorState(snapshot.editorState);
+          const presentation = parseEditingPagePresentation(snapshot.presentation, snapshot.presentationVersion, document, context.blocks);
+          editorSnapshot = { ...(editorState ? { editorState } : {}), ...(presentation ? { presentation } : {}) };
+        } catch { return fail("host_contract_violation", 502); }
+      }
+      return response({ document, version: snapshot.version, ...dependencies, ...editorSnapshot });
     }
     if (operation.id === "pages.release-plan") {
       let body: Record<string, unknown> | null;
