@@ -862,6 +862,35 @@ test("target content undo/redo works and emergency recovery accepts content but 
   } finally { await app.cleanup(); }
 });
 
+test("shortcuts deny target structure changes and still undo and redo translated text", async () => {
+  const app = await setup();
+  try {
+    await click("English"); await flush(6);
+    await clickTool("レイヤー"); await click("h1 · heading");
+    const layer = document.querySelector('[data-node-id="heading"] .e-layer');
+    const frame = document.querySelector("iframe");
+    await act(async () => frame.dispatchEvent(new dom.window.Event("load"))); await flush();
+    const key = async (target, key, options = {}) => {
+      const event = new target.ownerDocument.defaultView.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...options });
+      await act(async () => target.dispatchEvent(event)); await flush();
+      return event.defaultPrevented;
+    };
+    for (const target of [document.body, frame.contentDocument.body, layer]) {
+      assert.equal(await key(target, "Delete"), false);
+      assert.equal(await key(target, "d", { metaKey: true }), false);
+      assert.match(document.querySelector(".e-notice").textContent, /共通デザインは原文側で編集/);
+    }
+    assert.ok(frame.contentDocument.querySelector('[data-nw-node="heading"]'));
+    assert.equal(frame.contentDocument.querySelector('[data-nw-node="heading_copy1"]'), null);
+    const before = input("テキスト").value;
+    await change(input("テキスト"), "Shortcut edit");
+    assert.ok(await key(frame.contentDocument.body, "z", { ctrlKey: true }));
+    assert.equal(input("テキスト").value, before);
+    assert.ok(await key(document.body, "Z", { ctrlKey: true, shiftKey: true }));
+    assert.equal(input("テキスト").value, "Shortcut edit");
+  } finally { await app.cleanup(); }
+});
+
 
 test("host preview follows the displayed locale and unsaved target without replacing the source", async () => {
   const Preview = ({ document: shown, children }) => createElement("section", { "data-host-locale": shown.locale, "data-host-title": shown.title }, children);

@@ -1,12 +1,13 @@
 "use client";
 
-import { useRef, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
+import { useRef, type KeyboardEvent, type PointerEvent, type ReactNode, type Ref } from "react";
 import type { EditorBreakpoint } from "./editor-types.js";
 
-export type WorkspaceScale = "fit" | 0.25 | 0.5 | 0.75 | 1 | 1.5 | 2;
+export const workspaceScales = [0.25, 0.5, 0.75, 1, 1.5, 2] as const;
+export type WorkspaceScale = "fit" | typeof workspaceScales[number];
 
 /** The shared three-column presentation shell. Hosts supply content through named slots. */
-export function EditorWorkspace({ preview, leftOpen, rightOpen, chrome, left, canvas, right, dialogs, setBody }: {
+export function EditorWorkspace({ preview, leftOpen, rightOpen, chrome, left, canvas, right, dialogs, setBody, rootRef }: {
   preview: boolean;
   leftOpen: boolean;
   rightOpen: boolean;
@@ -16,8 +17,9 @@ export function EditorWorkspace({ preview, leftOpen, rightOpen, chrome, left, ca
   right: ReactNode;
   dialogs?: ReactNode;
   setBody?: (element: HTMLDivElement | null) => void;
+  rootRef?: Ref<HTMLDivElement>;
 }) {
-  return <div className={`nw-editor${preview ? " is-preview" : ""}`}>
+  return <div className={`nw-editor${preview ? " is-preview" : ""}`} ref={rootRef}>
     {chrome}
     <div className={`e-body${leftOpen ? "" : " is-left-closed"}${rightOpen ? "" : " is-right-closed"}`} ref={setBody}>
       {left}{canvas}{right}
@@ -77,11 +79,11 @@ export function InspectorTabs<T extends string>({ tabs, active, disabled, onChan
     onClick={() => onChange(value)} onKeyDown={(event) => chooseByKey(event, index)}>{label}</button>)}</div>;
 }
 
-export function WorkspaceScaleSelect({ scale, fitPercent, onScale }: { scale: WorkspaceScale; fitPercent: number; onScale: (value: WorkspaceScale) => void }) {
+export function WorkspaceScaleSelect({ scale, fitPercent, onScale, disabled }: { scale: WorkspaceScale; fitPercent: number; onScale: (value: WorkspaceScale) => void; disabled?: boolean }) {
   // 閉じた状態は STUDIO と同じ「50%」だけを出す。全体表示は「全体表示」のグループに入れ、一覧の中で固定の 50% と見分ける。
-  return <label className="e-zoom-field"><span className="e-vh">表示倍率</span><select aria-label="表示倍率" title={scale === "fit" ? `全体表示（作業領域に収まる倍率: ${fitPercent}%）` : "表示倍率"} value={String(scale)} onChange={(event) => onScale(event.target.value === "fit" ? "fit" : Number(event.target.value) as WorkspaceScale)}>
+  return <label className="e-zoom-field"><span className="e-vh">表示倍率</span><select aria-label="表示倍率" title={scale === "fit" ? `全体表示（作業領域に収まる倍率: ${fitPercent}%）` : "表示倍率"} value={String(scale)} disabled={disabled} onChange={(event) => onScale(event.target.value === "fit" ? "fit" : Number(event.target.value) as WorkspaceScale)}>
     <optgroup label="全体表示"><option value="fit">{fitPercent}%</option></optgroup>
-    <optgroup label="倍率"><option value="0.25">25%</option><option value="0.5">50%</option><option value="0.75">75%</option><option value="1">100%</option><option value="1.5">150%</option><option value="2">200%</option></optgroup>
+    <optgroup label="倍率">{workspaceScales.map((value) => <option key={value} value={value}>{value * 100}%</option>)}</optgroup>
   </select></label>;
 }
 
