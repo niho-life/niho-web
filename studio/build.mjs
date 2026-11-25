@@ -45,6 +45,10 @@ await Promise.all([
     const eagerInputs = [...eager].flatMap((output) => Object.keys(result.metafile.outputs[output]?.inputs ?? {}));
     const eagerLazy = eagerInputs.filter((input) => /(?:@tiptap|prosemirror|studio\/rich-text-editor\.tsx|src\/collection-workspace\.tsx)/u.test(input));
     if (eagerLazy.length) throw new Error(`CMS workspace code entered the initial Studio client bundle: ${eagerLazy.slice(0, 5).join(", ")}`);
+    const eagerScreens = eagerInputs.filter((input) => /(?:src\/(?:project-dashboard|project-directory|analytics|site-apps|site-language-settings)\.tsx|studio\/(?:kamakura-editor|managed-editor|analytics-panel|settings-panel)\.tsx|src\/editor(?!-performance)(?:-[a-z-]+)?\.tsx?|src\/project-editor-adapter\.ts)$/u.test(input));
+    if (eagerScreens.length) throw new Error(`A deferred Studio screen entered the initial client bundle: ${eagerScreens.slice(0, 5).join(", ")}`);
+    const initialJsBytes = [...eager].reduce((total, output) => total + (result.metafile.outputs[output]?.bytes ?? 0), 0);
+    if (initialJsBytes > 535_000) throw new Error(`Studio initial JavaScript exceeds the half-size performance budget (535 KB): ${initialJsBytes} bytes`);
     // Shared wire validators are safe in the initial bundle; only the translation UI and its host screen must stay lazy.
     const eagerTranslations = eagerInputs.filter((input) => /(?:src\/localization-workspace(?!(?:-model))(-[a-z]+)?\.tsx?|studio\/kamakura-localization(?:-workspace|-contract)?\.tsx?)$/u.test(input));
     if (eagerTranslations.length) throw new Error(`Translation workspace UI code entered the initial Studio client bundle: ${eagerTranslations.slice(0, 5).join(", ")}`);
@@ -99,10 +103,12 @@ indexHtml = indexHtml.replace("/assets/fonts.css", `/assets/fonts/${fontsStylesh
 for (const name of ["studio.css", "project-view.css", "collection.css", "localization.css", "app.js"]) {
   const source = join(publicOutput, "assets", name);
   const versioned = name.replace(/\.(css|js)$/u, `-${fingerprint(await readFile(source))}.$1`);
-  const reference = `/assets/${name}`;
+  const deferred = name === "collection.css" || name === "localization.css";
+  const attribute = name.endsWith(".js") ? null : deferred ? "data-href" : "href";
+  const reference = attribute ? `${attribute}="/assets/${name}"` : `/assets/${name}`;
   if (!indexHtml.includes(reference)) throw new Error(`Studio HTML is missing ${reference}`);
   await copyFile(source, join(publicOutput, "assets", versioned));
-  indexHtml = indexHtml.replace(reference, `/assets/${versioned}`);
+  indexHtml = indexHtml.replace(reference, attribute ? `${attribute}="/assets/${versioned}"` : `/assets/${versioned}`);
 }
 const indexName = `index-${fingerprint(indexHtml)}.html`;
 await Promise.all([

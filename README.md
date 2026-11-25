@@ -57,8 +57,8 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 | `EditorAdapter` の任意公開変更セット | `prepareReleaseSet` / `releaseSet` / `releaseSetStatus` の3メソッドを接続したホストは、`PageEditor` に複数ページ選択・差分確認・変更があるページだけの一括公開・ページ別結果・状態照会と再試行を表示できます。未接続ホストの単一ページ公開は変わりません（[編集・公開契約](docs/editor-contract.md)） |
 | `@niho/web/projects` | 1 Project = 1 Site の検証、純粋操作、atomic CAS契約。React不要 |
 | `@niho/web/project-manager` | 認証済みホストadapterへ接続する `ProjectManager`。React / React DOM が必要 |
-| `@niho/web/project-directory` | 管理フォームと独立した日常の `ProjectDirectory`。内部またはhost shellの名前・ドメイン検索、OG画像／頭文字カード、更新順の一覧表、Dashboard / Editorメニュー |
-| `@niho/web/project-dashboard` | 選択した1 Project・1 Siteに固定した共通Studio shellの `ProjectDashboard`。上部のタブ（ホーム・サイト機能・アナリティクス）で画面全体を切り替え、公開状況・変更履歴表・メンバー表・アクセス解析（GA4 の指標名のまま。ホストの分析画面を `analyticsContent` で出せる）・設定を表示 |
+| `@niho/web/project-directory` | 管理フォームと独立した日常の `ProjectDirectory`。内部またはhost shellの名前・ドメイン検索、OG画像／頭文字カード、更新順の一覧表、Dashboard / Editorメニュー。任意の `onPreloadEditor` で遷移前のコード先読みを接続できる |
+| `@niho/web/project-dashboard` | 選択した1 Project・1 Siteに固定した共通Studio shellの `ProjectDashboard`。上部のタブ（ホーム・サイト機能・アナリティクス）で画面全体を切り替え、公開状況・変更履歴表・メンバー表・アクセス解析（GA4 の指標名のまま。ホストの分析画面を `analyticsContent` で出せる）・設定を表示。任意の `onPreloadEditor` で遷移前のコード先読みを接続できる |
 | `@niho/web/site-language-settings` | サイト設定に置く日英2言語のシンプルな選択画面 `SiteLanguageSettings`。原文言語からサブを明示し、初回サブ公開後は固定表示にする。Studio は既存サイトの明示した原文言語を設定画面に表示し、CSP 対応の CSS を自身の束に含める。保存・認可・版の競合確認はホストが行う（[デモ](examples/site-language-settings-demo.mjs)） |
 | `@niho/web/project-read-model` | summary / dashboardの型・読み取りadapter・runtime parser。React不要 |
 | `@niho/web/collection-workspace` | コレクション（CMS）の一覧と項目の編集の `CollectionWorkspace`。鎌倉ではStudio GUIと `niho-edit` CLIが同じサイトAPIを使い、CMS画像・galleryは安定素材IDで保存して表示時にURL解決します。本文と独立した任意の英語公開状態の更新／安全な再試行、同じ画面で切り替える任意の原文／翻訳タブと訳文タブへの直接リンク（[接続方法](docs/collection-contract.md)、[プラットフォームCMS ADR](docs/adr/0001-platform-cms-source-and-publication.md)） |
