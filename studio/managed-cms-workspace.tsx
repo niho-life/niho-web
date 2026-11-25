@@ -265,7 +265,7 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
         </div>
         {item && <div className="studio-native-cms-item">
           <form onSubmit={(event) => { event.preventDefault(); run(save); }}>
-            {currentCollection.fields.map((field) => <CmsFieldEditor key={field.fieldId} field={field} value={values[field.fieldId] ?? null}
+            {currentCollection.fields.map((field) => <CmsFieldEditor key={`${collectionId}/${item.itemId}/${item.revision}/${field.fieldId}`} field={field} value={values[field.fieldId] ?? null}
               disabled={busy} update={(value) => setValues({ ...values, [field.fieldId]: value })} />)}
             <button disabled={busy || !dirty}>下書きを保存</button>
           </form>
@@ -314,7 +314,7 @@ function CmsFieldEditor({ field, value, disabled, update }: {
   if (["text", "slug", "url", "datetime"].includes(field.type)) return <label>{field.label}
     <input disabled={disabled} value={text} onChange={(event) => update(field.type === "datetime" && !event.target.value ? null : event.target.value)} />
   </label>;
-  return <JsonFieldEditor key={JSON.stringify(value)} label={field.label} value={value} disabled={disabled} update={update} />;
+  return <JsonFieldEditor label={field.label} value={value} disabled={disabled} update={update} />;
 }
 
 function JsonFieldEditor({ label, value, disabled, update }: {

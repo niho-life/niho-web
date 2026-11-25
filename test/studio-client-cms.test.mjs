@@ -102,6 +102,7 @@ async function openStudio(t, pathname) {
 const byText = (selector, text) => [...document.querySelectorAll(selector)].find((node) => node.textContent.replace(/\s+/gu, " ").trim() === text);
 const click = async (node) => { assert.ok(node, "target not found"); await act(async () => node.click()); await flush(); };
 const input = async (node, value) => { await act(async () => { Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value").set.call(node, value); node.dispatchEvent(new Event("input", { bubbles: true })); }); await flush(); };
+const inputTextarea = async (node, value) => { await act(async () => { Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value").set.call(node, value); node.dispatchEvent(new Event("input", { bubbles: true })); }); await flush(); };
 
 test("Project一覧はStudio shellの中央検索・選択済み左nav・アカウントと、disabled導線なしで表示する", async (t) => {
   await openStudio(t, "/");
@@ -203,10 +204,13 @@ test("Studio-native の CMS を Dashboard から開き、下書き作成の再�
   const schema = { contractVersion: 2, siteId: project.site.id, schemaRevision: "initial", retiredFields: [],
     collections: [{ id: "posts", label: "お知らせ", addLabel: "項目を追加", pathPrefix: "/cms/posts/", titleField: "title",
       slugField: "slug", imageField: null, subtitleField: null, capabilities: { create: true, remove: true, schedule: true },
-      fields: [{ key: "title", fieldId: "title", label: "タイトル", type: "text", placement: "main" }] }] };
+      fields: [
+        { key: "title", fieldId: "title", label: "タイトル", type: "text", placement: "main" },
+        { key: "tags", fieldId: "tags", label: "タグ", type: "tags", placement: "side" },
+      ] }] };
   const item = { siteId: project.site.id, schemaRevision: "initial", locale: "ja", itemId: "item_fixture", collectionId: "posts",
-    revision: "rev_fixture", values: { title: "架空の下書き" } };
-  const otherItem = { ...item, itemId: "item_other", revision: "rev_other", values: { title: "別の記事" } };
+    revision: "rev_fixture", values: { title: "架空の下書き", tags: ["初期"] } };
+  const otherItem = { ...item, itemId: "item_other", revision: "rev_other", values: { title: "別の記事", tags: ["別"] } };
   let liveOtherItem = otherItem;
   const observed = [];
   let attempts = 0;
@@ -261,6 +265,12 @@ test("Studio-native の CMS を Dashboard から開き、下書き作成の再�
   assert.equal(creates.length, 2);
   assert.ok(creates[0].key);
   assert.equal(creates[0].key, creates[1].key);
+  const tags = document.querySelector(".studio-native-cms-item textarea");
+  tags.focus();
+  await inputTextarea(tags, '["初期","追記"]');
+  assert.strictEqual(document.querySelector(".studio-native-cms-item textarea"), tags, "JSON の値が変わっても textarea を再マウントしない");
+  assert.strictEqual(document.activeElement, tags, "JSON の編集中はフォーカスを保つ");
+  assert.equal(tags.value, '["初期","追記"]');
   const title = document.querySelector(".studio-native-cms-item input");
   await input(title, "編集済みの下書き");
   await click(byText("button", "下書きを保存"));
@@ -285,10 +295,12 @@ test("Studio-native の CMS を Dashboard から開き、下書き作成の再�
   await click(otherRow);
   assert.equal(observed.filter(({ path, input }) => path === "cms.items.read" && input.itemId === otherItem.itemId).length, 1);
   assert.equal(document.querySelector(".studio-native-cms-item input").value, "別の記事");
+  assert.equal(document.querySelector(".studio-native-cms-item textarea").value, '["別"]', "別項目の読込時にはJSON入力を同期する");
 
-  liveOtherItem = { ...liveOtherItem, revision: "rev_external", values: { title: "別の編集者が保存した内容" } };
+  liveOtherItem = { ...liveOtherItem, revision: "rev_external", values: { title: "別の編集者が保存した内容", tags: ["外部更新"] } };
   await click(byText("button", "一覧を更新"));
   assert.equal(document.querySelector(".studio-native-cms-item input").value, "別の編集者が保存した内容");
+  assert.equal(document.querySelector(".studio-native-cms-item textarea").value, '["外部更新"]', "新しい revision の読込時にはJSON入力も同期する");
   await input(document.querySelector(".studio-native-cms-item input"), "更新後に保存する内容");
   await click(byText("button", "下書きを保存"));
   const latestSave = observed.filter(({ path }) => path === "cms.items.save").at(-1);
