@@ -345,10 +345,12 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
     const headers = new Headers(typeof options.headers === "function" ? options.headers() : options.headers);
     headers.set("Accept", accept);
     if (body !== undefined) headers.set("Content-Type", "application/json");
+    const revalidateRead = method === "GET" && (/\/operations\/pages\.read\/[a-z][a-z0-9-]{0,59}(?:\?.*)?$/u.test(path)
+      || /\/operations\/pages\.catalog(?:\?.*)?$/u.test(path));
     let response: Response;
     try {
       response = await fetcher(`${origin}${basePath}${path}`, {
-        method, headers, credentials: options.credentials ?? "same-origin", cache: "no-store", redirect: "manual", ...(signal ? { signal } : {}),
+        method, headers, credentials: options.credentials ?? "same-origin", cache: revalidateRead ? "no-cache" : "no-store", redirect: "manual", ...(signal ? { signal } : {}),
         ...(body === undefined ? {} : { body: JSON.stringify(body) })
       });
     } catch (error) {

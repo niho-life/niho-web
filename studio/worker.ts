@@ -294,6 +294,19 @@ function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), { status, headers: securityHeaders("application/json; charset=utf-8") });
 }
 
+function safeIfNoneMatch(value: string | null): string | undefined {
+  return value && value.length <= 2_048 && !/[\u0000-\u0008\u000a-\u001f\u007f]/u.test(value) ? value : undefined;
+}
+
+function conditionalJsonHeaders(response: Response): Headers {
+  const headers = securityHeaders("application/json; charset=utf-8"), etag = response.headers.get("ETag");
+  const safeEtag = etag && etag.length <= 512 && !/[\u0000-\u001f\u007f]/u.test(etag) ? etag : undefined;
+  headers.set("Cache-Control", safeEtag ? "private, no-cache" : "no-store");
+  headers.set("Vary", "Accept, Cookie, Authorization");
+  if (safeEtag) headers.set("ETag", safeEtag);
+  return headers;
+}
+
 function htmlError(message: string, status: number): Response {
   const body = `<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>NIHO Studio</title><body><main><h1>NIHO Studio</h1><p>${message}</p></main></body></html>`;
   const headers = securityHeaders("text/html; charset=utf-8");
@@ -336,6 +349,19 @@ function bridgeSecret(encoded: string | undefined): Uint8Array {
 function hexadecimal(value: ArrayBuffer | Uint8Array): string {
   const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
   return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+const importedHmacKeys = new Map<string, Promise<CryptoKey>>();
+async function importHmacSigningKey(secret: Uint8Array): Promise<CryptoKey> {
+  const fingerprint = hexadecimal(await crypto.subtle.digest("SHA-256", secret.slice().buffer));
+  let imported = importedHmacKeys.get(fingerprint);
+  if (!imported) {
+    imported = crypto.subtle.importKey("raw", secret.slice().buffer, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    importedHmacKeys.set(fingerprint, imported);
+    while (importedHmacKeys.size > 8) importedHmacKeys.delete(importedHmacKeys.keys().next().value!);
+    void imported.catch(() => { if (importedHmacKeys.get(fingerprint) === imported) importedHmacKeys.delete(fingerprint); });
+  }
+  return imported;
 }
 
 function decodeJwtObject<T>(segment: string, maximumLength: number): T {
@@ -383,9 +409,20 @@ function selectSigningKey(keys: readonly SigningJwk[], kid: string): SigningJwk 
   return keys.find((key) => key.kid === kid && key.kty === "RSA" && (key.alg === undefined || key.alg === "RS256") && (key.use === undefined || key.use === "sig") && (key.key_ops === undefined || Array.isArray(key.key_ops) && key.key_ops.includes("verify")));
 }
 
+const importedAccessKeys = new WeakMap<SigningJwk, Promise<CryptoKey>>();
+function importAccessSigningKey(key: SigningJwk): Promise<CryptoKey> {
+  let imported = importedAccessKeys.get(key);
+  if (!imported) {
+    imported = crypto.subtle.importKey("jwk", key, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]);
+    importedAccessKeys.set(key, imported);
+    void imported.catch(() => importedAccessKeys.delete(key));
+  }
+  return imported;
+}
+
 async function verifySignature(signingInput: string, signature: Uint8Array, key: SigningJwk): Promise<boolean> {
   try {
-    const cryptoKey = await crypto.subtle.importKey("jwk", key, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]);
+    const cryptoKey = await importAccessSigningKey(key);
     return await crypto.subtle.verify("RSASSA-PKCS1-v1_5", cryptoKey, signature.slice().buffer, new TextEncoder().encode(signingInput));
   } catch { return false; }
 }
@@ -1430,7 +1467,7 @@ async function signedEditorRequest(
   const bodyBytes = body.slice().buffer;
   const bodyHash = hexadecimal(await crypto.subtle.digest("SHA-256", bodyBytes));
   const message = `v1\n${timestamp}\n${request.method}\n${route.upstreamPath}\n${bodyHash}\n${EDITOR_PROJECT_ID}\n${identity.subject}`;
-  const key = await crypto.subtle.importKey("raw", bridgeSecret(bridge.secret).slice().buffer, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const key = await importHmacSigningKey(bridgeSecret(bridge.secret));
   const signature = hexadecimal(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message)));
   const controller = new AbortController();
   const abort = () => controller.abort();
@@ -1531,7 +1568,7 @@ async function kamakuraSignedHeaders(
   catch { throw kamakuraBridgeFailure(supportId, operation, "bridge_secret_missing_or_invalid"); }
   let signature: string;
   try {
-    const key = await crypto.subtle.importKey("raw", secret.slice().buffer, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const key = await importHmacSigningKey(secret);
     signature = hexadecimal(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message)));
   } catch { throw kamakuraBridgeFailure(supportId, operation, "bridge_signing_failed"); }
   return {
@@ -1642,7 +1679,7 @@ async function kamakuraEditingDelegationToken(env: Env, identity: AccessIdentity
   const usesEmail = capabilities.some((capability) => !capability.startsWith("localization."));
   const claims = encode({ iss: "niho-web-studio-edit", aud: "kamakura-site", sub: identity.subject, ...(usesEmail ? { email: identity.email } : {}), scope: [...capabilities], iat: now, exp: now + 60, jti: crypto.randomUUID() });
   const signingInput = `${header}.${claims}`;
-  const key = await crypto.subtle.importKey("raw", bridgeSecret(env.KAMAKURA_STUDIO_BRIDGE_SECRET).slice().buffer, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const key = await importHmacSigningKey(bridgeSecret(env.KAMAKURA_STUDIO_BRIDGE_SECRET));
   const signature = encodeBase64Url(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(signingInput))));
   return `${signingInput}.${signature}`;
 }
@@ -1651,6 +1688,9 @@ async function signedKamakuraEditingApiRequest(request: Request, env: Env, ident
   const supportId = crypto.randomUUID(), operation: KamakuraBridgeOperation = "editing_api";
   const fail = (category: KamakuraBridgeFailureCategory, status?: number) => kamakuraBridgeFailure(supportId, operation, category, status);
   const upstreamSuffix = action.slice(KAMAKURA_EDITING_API_EDITOR_PREFIX.length);
+  const cacheableRead = request.method === "GET" && (/^\/sites\/kamakura\/operations\/pages\.read\/[a-z][a-z0-9-]{0,59}$/u.test(upstreamSuffix)
+    || upstreamSuffix === "/sites/kamakura/operations/pages.catalog");
+  const ifNoneMatch = cacheableRead ? safeIfNoneMatch(request.headers.get("If-None-Match")) : undefined;
   const upstreamPath = `${KAMAKURA_EDITING_API_PATH_PREFIX}${upstreamSuffix}`;
   const localizationPath = EDITING_LOCALIZATION_ROUTE.exec(upstreamSuffix);
   const localization = localizationPath && editingLocalizationOperation(localizationPath[1]!);
@@ -1704,12 +1744,15 @@ async function signedKamakuraEditingApiRequest(request: Request, env: Env, ident
     Authorization: `Bearer ${bearer}`,
     Origin: KAMAKURA_EDITING_API_ORIGIN
   });
+  if (ifNoneMatch) headers.set("If-None-Match", ifNoneMatch);
   if (request.method !== "GET") headers.set("Content-Type", "application/json");
   const controller = new AbortController();
   const abortForRequest = () => controller.abort();
   request.signal.addEventListener("abort", abortForRequest, { once: true });
   const long = localization ? LOCALIZATION_LONG_OPERATIONS.has(localization.id) : capability === "pages.publish" || capability === "cms.publish";
   const timeout = setTimeout(() => controller.abort(), long ? KAMAKURA_RELEASE_TIMEOUT_MILLISECONDS : EDITOR_TIMEOUT_MILLISECONDS);
+  const cleanup = () => { clearTimeout(timeout); request.signal.removeEventListener("abort", abortForRequest); };
+  let streaming = false;
   try {
     const upstream = new Request(`${KAMAKURA_EDITING_API_ORIGIN}${upstreamPath}${url.search}`, {
       method: request.method,
@@ -1722,7 +1765,18 @@ async function signedKamakuraEditingApiRequest(request: Request, env: Env, ident
     let response: Response;
     try { response = await env.KAMAKURA_SITE.fetch(upstream); }
     catch { throw fail(controller.signal.aborted ? "service_binding_timeout" : "service_binding_failed"); }
+    if (response.status === 304) {
+      await response.body?.cancel().catch(() => undefined);
+      if (!cacheableRead || !ifNoneMatch || !response.headers.has("ETag")) throw fail("upstream_invalid_response", response.status);
+      return new Response(null, { status: 304, headers: conditionalJsonHeaders(response) });
+    }
     if (response.status >= 300 && response.status < 400) throw fail("upstream_redirect_rejected", response.status);
+    if (cacheableRead && response.status === 200) {
+      const streamed = boundedBridgeJsonStream(response, EDITING_LOCALIZATION_RESULT_BYTES,
+        (category, status) => fail(category, status), cleanup, controller);
+      streaming = true;
+      return streamed;
+    }
     let value: unknown;
     try { value = await readBoundedResponse(response, localization && localization.id === "localization.preview"
       ? KAMAKURA_LOCALIZATION_LIMITS.previewResponseBytes : EDITING_LOCALIZATION_RESULT_BYTES); }
@@ -1775,8 +1829,7 @@ async function signedKamakuraEditingApiRequest(request: Request, env: Env, ident
     if (error instanceof AuthenticationError) return json({ error: "invalid_request" }, 400);
     throw fail("bridge_processing_failed");
   } finally {
-    clearTimeout(timeout);
-    request.signal.removeEventListener("abort", abortForRequest);
+    if (!streaming) cleanup();
   }
 }
 
@@ -1806,14 +1859,21 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
     if (!isRecord(parsed) || Object.keys(parsed).length !== 0) throw new AuthenticationError("invalid english publication retry request");
     body = new TextEncoder().encode("{}");
   }
+  const isCatalog = route.upstreamPath === `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/catalog`;
+  const isLegacyPageRead = /^\/internal\/studio\/web-content\/[a-z][a-z0-9-]{0,59}$/u.test(route.upstreamPath);
+  const cacheableRead = request.method === "GET" && (isCatalog || isLegacyPageRead);
+  const ifNoneMatch = cacheableRead ? safeIfNoneMatch(request.headers.get("If-None-Match")) : undefined;
   const bodyBytes = body.slice().buffer;
   const headers = await kamakuraSignedHeaders(env, identity, request.method, route.upstreamPath, body, supportId, operation);
+  if (ifNoneMatch) headers["If-None-Match"] = ifNoneMatch;
   const controller = new AbortController();
   let timedOut = false;
   const abortForRequest = () => controller.abort();
   const abortForTimeout = () => { timedOut = true; controller.abort(); };
   request.signal.addEventListener("abort", abortForRequest, { once: true });
   const timeout = setTimeout(abortForTimeout, (operation === "release" || operation === "page_batch_stage" || operation === "cms_migration_preflight" || operation === "asset_delete") ? KAMAKURA_RELEASE_TIMEOUT_MILLISECONDS : EDITOR_TIMEOUT_MILLISECONDS);
+  const cleanup = () => { clearTimeout(timeout); request.signal.removeEventListener("abort", abortForRequest); };
+  let streaming = false;
   try {
     const previewOrigin = kamakuraCliPreviewOrigin(env, identity);
     const upstream = new Request(`${previewOrigin ?? KAMAKURA_EDITOR_UPSTREAM_ORIGIN}${route.upstreamPath}`, {
@@ -1824,10 +1884,14 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
       headers,
       ...(request.method === "GET" ? {} : { body: bodyBytes })
     });
-    const isCatalog = route.upstreamPath === `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/catalog`;
     let response: Response;
     try { response = await env.KAMAKURA_SITE.fetch(upstream); }
     catch { throw kamakuraBridgeFailure(supportId, operation, timedOut ? "service_binding_timeout" : "service_binding_failed"); }
+    if (response.status === 304) {
+      await response.body?.cancel().catch(() => undefined);
+      if (!cacheableRead || !ifNoneMatch || !response.headers.has("ETag")) throw kamakuraBridgeFailure(supportId, operation, "upstream_invalid_response", response.status);
+      return new Response(null, { status: 304, headers: conditionalJsonHeaders(response) });
+    }
     if (response.status >= 300 && response.status < 400) throw kamakuraBridgeFailure(supportId, operation, "upstream_redirect_rejected", response.status);
     if (operation === "cms_migration_preflight" && (response.status === 400 || response.status === 409)) {
       const value = await readBoundedResponse(response).catch(() => null);
@@ -1861,6 +1925,12 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
     if (!isCatalog && !response.ok) {
       if (response.status === 400 || response.status === 413 || response.status === 422) return json({ error: "invalid_request" }, 400);
       throw kamakuraBridgeFailure(supportId, operation, "upstream_unexpected_4xx", response.status);
+    }
+    if (cacheableRead && response.status === 200 && (!isCatalog || previewOrigin === undefined)) {
+      const streamed = boundedBridgeJsonStream(response, MAX_EDITOR_RESPONSE_BYTES,
+        (category, status) => kamakuraBridgeFailure(supportId, operation, isCatalog ? "upstream_contract_invalid" : category, status), cleanup, controller);
+      streaming = true;
+      return streamed;
     }
     let value: unknown;
     try { value = await readBoundedResponse(response, route.draftRecovery?.action === "read" || operation === "page_batch_stage" ? DRAFT_RECOVERY_MAX_OUTPUT_BYTES : undefined); }
@@ -1900,7 +1970,7 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
     if (error instanceof KamakuraCatalogContractError) throw kamakuraBridgeFailure(supportId, operation, "upstream_contract_invalid");
     throw kamakuraBridgeFailure(supportId, operation, "bridge_processing_failed");
   }
-  finally { clearTimeout(timeout); request.signal.removeEventListener("abort", abortForRequest); }
+  finally { if (!streaming) cleanup(); }
 }
 
 async function signedKamakuraAssetPreview(request: Request, env: Env, identity: AccessIdentity, assetId: string): Promise<Response> {
@@ -1913,7 +1983,7 @@ async function signedKamakuraAssetPreview(request: Request, env: Env, identity: 
   const timestamp = Math.floor(Date.now() / 1000).toString();
   const bodyHash = hexadecimal(await crypto.subtle.digest("SHA-256", body.slice().buffer));
   const message = `v1\n${timestamp}\n${method}\n${path}\n${bodyHash}\n${KAMAKURA_EDITOR_PROJECT_ID}\n${identity.subject}`;
-  const key = await crypto.subtle.importKey("raw", bridgeSecret(env.KAMAKURA_STUDIO_BRIDGE_SECRET).slice().buffer, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const key = await importHmacSigningKey(bridgeSecret(env.KAMAKURA_STUDIO_BRIDGE_SECRET));
   const signature = hexadecimal(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message)));
   const controller = new AbortController();
   const abort = () => controller.abort();
@@ -2673,6 +2743,52 @@ function boundedJsonStream(response: Response, maximumBytes: number, failure: (c
     async cancel(reason) { try { await reader.cancel(reason); } finally { controller.abort(); onEnd(); } }
   });
   return new Response(stream, { status: 200, headers: securityHeaders("application/json; charset=utf-8") });
+}
+
+/** ETagged reads stay authenticated at the host and pass through as bounded JSON bytes. */
+function boundedBridgeJsonStream(
+  response: Response,
+  maximumBytes: number,
+  failure: (category: KamakuraBridgeFailureCategory, status?: number) => KamakuraBridgeFailureError,
+  onEnd: () => void,
+  controller: AbortController
+): Response {
+  const declared = response.headers.get("Content-Length");
+  if (response.status !== 200 || !isJsonResponse(response) || !response.body
+    || (declared !== null && (!/^\d+$/u.test(declared) || Number(declared) > maximumBytes))) {
+    void response.body?.cancel().catch(() => undefined);
+    throw failure("upstream_invalid_response", response.status);
+  }
+  const reader = response.body.getReader();
+  let total = 0, ended = false;
+  const finish = () => { if (ended) return; ended = true; onEnd(); };
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(streamController) {
+      try {
+        const chunk = await reader.read();
+        if (chunk.done) { streamController.close(); finish(); return; }
+        total += chunk.value.byteLength;
+        if (total > maximumBytes) {
+          logKamakuraBridgeFailure(failure("upstream_invalid_response", response.status));
+          await reader.cancel("response too large").catch(() => undefined);
+          controller.abort();
+          streamController.error(new Error("response too large"));
+          finish();
+          return;
+        }
+        streamController.enqueue(chunk.value);
+      } catch (error) {
+        controller.abort();
+        streamController.error(error);
+        finish();
+      }
+    },
+    async cancel(reason) {
+      try { await reader.cancel(reason); }
+      finally { controller.abort(); finish(); }
+    }
+  });
+  return new Response(stream, { status: response.status, headers: conditionalJsonHeaders(response) });
 }
 
 async function signedKamakuraLocalizationRequest(request: Request, env: Env, identity: BridgeActor, role: Role, route: KamakuraLocalizationRoute, cliOperation?: CliOperation): Promise<Response> {
