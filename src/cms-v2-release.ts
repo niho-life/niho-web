@@ -32,6 +32,17 @@ export type CmsReleaseSnapshot = {
   readonly items: readonly CmsReleaseEntry[];
   readonly redirects: readonly CmsRedirect[];
 };
+
+function cmsRouteRevision(releaseId: string): string {
+  const prefixed = `route_${releaseId}`;
+  if (prefixed.length <= 128) return prefixed;
+  let hash = 0xcbf29ce484222325n;
+  for (const character of releaseId) {
+    hash ^= BigInt(character.charCodeAt(0));
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+  }
+  return `route_${hash.toString(36)}`;
+}
 export type CmsReleaseImpact = (snapshot: CmsReleaseSnapshot) => readonly CmsProblem[];
 export type CmsReleaseContext = {
   readonly schema: CmsSchema;
@@ -139,7 +150,7 @@ export function planCmsRelease(input: unknown, releaseIdInput: string, context: 
     return [{ from: reservation.path, to: next.path }];
   }).filter((generated) => !selection.redirects.some((redirect) => redirect.from === generated.from && redirect.to === generated.to));
   const routePlan = planCmsRouteTable({ current: currentRoutes, siteId: schema.siteId, locale: selection.locale,
-    expectedRevision: selection.routeTableRevision, nextRevision: `route_${releaseId}`,
+    expectedRevision: selection.routeTableRevision, nextRevision: cmsRouteRevision(releaseId),
     routes, redirects: [...generatedRedirects, ...selection.redirects] });
   if ("status" in routePlan) return { status: "conflict" };
   const redirects = routePlan.table.reservations.flatMap((reservation) => reservation.kind === "redirect" && reservation.owner === "cms"

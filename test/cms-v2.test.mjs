@@ -328,6 +328,41 @@ test("fixed-page redirect targets are accepted and conflicting sources remain in
   assert.ok(routePlan.problems.some(({ path }) => path === "/old"));
   assert.equal(routePlan.table.reservations.filter(({ kind, path }) => kind === "redirect" && path === "/posts/coast").length, 0);
   assert.equal(routePlan.table.reservations.filter(({ kind, path }) => kind === "redirect" && path === "/old").length, 1);
+
+  const hostRedirect = planCmsRouteTable({
+    current: { siteId, locale, revision: "routes-ja-1", reservations: [
+      { kind: "fixed-page", path: "/about", reservationId: "about-page" },
+      { kind: "redirect", path: "/old", targetPath: "/about", owner: "host" },
+    ] },
+    siteId, locale, expectedRevision: "routes-ja-1", nextRevision: "routes-ja-2", routes: [],
+    redirects: [{ from: "/old", to: "/about" }],
+  });
+  assert.ok(hostRedirect.problems.some(({ path }) => path === "/old"));
+  assert.equal(hostRedirect.table.reservations.filter(({ kind, path }) => kind === "redirect" && path === "/old").length, 1);
+
+  const itemSource = new MemoryHost();
+  publish(itemSource);
+  const updated = itemSource.add(post, { "field-title": "新しい海辺の案内", "field-slug": "new-coast", "field-category": [tag.itemId], "field-summary": "案内" });
+  const generatedConflict = itemSource.planRelease([pin(updated), pin(itemSource.drafts.get(cmsItemKey(tag)))], [{ from: "/posts/coast", to: "/posts/other" }]);
+  assert.equal(generatedConflict.status, "invalid");
+  assert.ok(generatedConflict.problems.some(({ code, path }) => code === "route" && path === "/posts/coast"));
+});
+
+test("retained host redirects are revalidated and long release IDs still produce bounded route revisions", () => {
+  const staleTarget = new MemoryHost();
+  staleTarget.routeTables[0] = { siteId, locale, revision: "routes-ja-2", reservations: [
+    { kind: "cms-item", path: "/posts/coast", collectionId: "posts", itemId: "coast" },
+    { kind: "redirect", path: "/legacy", targetPath: "/posts/coast", owner: "host" },
+  ] };
+  const invalid = staleTarget.planRelease([], []);
+  assert.equal(invalid.status, "invalid");
+  assert.ok(invalid.problems.some(({ code, path }) => code === "route" && path === "/legacy"));
+
+  const host = new MemoryHost(), releaseId = "r".repeat(128), routeTable = host.routeTables.find((table) => table.locale === locale);
+  const plan = planCmsRelease({ siteId, locale, schemaRevision: host.schema.schemaRevision, routeTableRevision: routeTable.revision,
+    expectedReleaseId: null, items: [], redirects: [] }, releaseId, host.context());
+  assert.equal(plan.status, "ready");
+  assert.ok(plan.proposal.snapshot.routeTable.revision.length <= 128);
 });
 
 test("scheduling pins content, detects new collisions and lets the host retry with a fresh plan", () => {

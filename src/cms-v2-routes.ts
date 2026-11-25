@@ -167,6 +167,16 @@ export function planCmsRouteTable(input: {
   }
 
   const liveTargets = [...host.filter((entry) => entry.kind === "fixed-page" || entry.kind === "template"), ...candidates];
+  const hostRedirects = host.filter((entry) => entry.kind === "redirect");
+  for (const redirect of hostRedirects) {
+    const targetPath = redirect.targetPath;
+    if (!liveTargets.some((entry) => entry.kind === "template" ? matchesTemplatePath(entry.path, targetPath) : entry.path === targetPath)) {
+      problems.push(routeProblem(redirect.path, "ホスト転送先は公開中の固定ページまたは項目にしてください。"));
+    }
+    if ([...hostRedirects, ...redirectEntries].some((entry) => entry.path === targetPath)) {
+      problems.push(routeProblem(redirect.path, "転送を連結できません。"));
+    }
+  }
   for (const redirect of redirectEntries) {
     const targetPath = redirect.kind === "redirect" ? redirect.targetPath : "";
     if (!liveTargets.some((entry) => entry.kind === "template" ? matchesTemplatePath(entry.path, targetPath) : entry.path === targetPath)) {
