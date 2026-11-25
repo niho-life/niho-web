@@ -1,5 +1,5 @@
 import { elementAttributeNames, isElementTag, metaLimits, parsePageDocument } from "./document.js";
-import { editDocumentById, nodeAt, walkNodes, type EditorOperationById, type PageOperationPreconditions } from "./editor-model.js";
+import { editDocumentById, nodeAt, pageOperationTextPathContext, PAGE_OPERATION_TEXT_PATH_CONTEXT_MAX_CHILDREN, PAGE_OPERATION_TEXT_PATH_CONTEXT_MAX_SIBLING_TEXT_LENGTH, walkNodes, type EditorOperationById, type PageOperationPreconditions } from "./editor-model.js";
 import { diffDocuments, type DocumentChange } from "./history.js";
 import { iconCatalog, isIconName } from "./icons.js";
 import { MOTION_BASE_PROPERTIES } from "./builder.js";
@@ -20,7 +20,7 @@ export type EditingPageApplyInput = PageOperationVersions & {
 };
 export type EditingPageApplied = { readonly status: "applied"; readonly version: string; readonly revision: number; readonly document: PageDocument };
 export type EditingPageApplyResult = EditingPageApplied | { readonly status: "valid"; readonly diff: readonly DocumentChange[]; readonly touched: readonly string[] };
-export type PageOperationUnmetPrecondition = { readonly index: number; readonly condition: "rebase_supported" | "preconditions" | "node_exists" | "parent_id" | "old_value" };
+export type PageOperationUnmetPrecondition = { readonly index: number; readonly condition: "rebase_supported" | "preconditions" | "node_exists" | "parent_id" | "old_value" | "child_path" };
 export type EditingPageApplyConflict = { readonly status: "conflict"; readonly unmetPreconditions?: readonly PageOperationUnmetPrecondition[] };
 type ApplyRejection = EditingPageApplyConflict | { readonly status: "not_found" | "duplicate_operation" | "host_contract_violation" }
   | { readonly status: "validation_failed"; readonly index: number; readonly reason: string };
@@ -79,7 +79,14 @@ const headingTags = ["p", "h1", "h2", "h3", "h4", "h5", "h6"] as const;
 const tokenKinds = ["color", "length", "fontFamily", "number"] as const;
 const primitive = either(text, number, bool);
 const anchor = either(obj({ before: id }), obj({ after: id }), obj({ edge: valuesOf(["start", "end"]) }));
-const preconditions = obj({ parentId: nullable(id), oldValue: nullable(either({ type: "string", maxLength: 100000 }, number, bool, obj({ token: id }))) });
+const textPathContextEntry = either(
+  obj({ type: constant("target") }),
+  obj({ type: constant("text"), value: { type: "string", maxLength: PAGE_OPERATION_TEXT_PATH_CONTEXT_MAX_SIBLING_TEXT_LENGTH } }),
+  obj({ type: valuesOf(["element", "component", "instance"]), nodeId: id })
+);
+const preconditions = obj({ parentId: nullable(id), oldValue: nullable(either({ type: "string", maxLength: 100000 }, number, bool, obj({ token: id }))) }, {
+  textPathContext: list(textPathContextEntry, 1, PAGE_OPERATION_TEXT_PATH_CONTEXT_MAX_CHILDREN)
+});
 const node = { $ref: "#/$defs/pageNode" };
 const documentStyle = { $ref: "#/$defs/nodeStyle" };
 const operation = (type: string, required: Record<string, JsonSchema> = {}, optional: Record<string, JsonSchema> = {}) => obj({ type: constant(type), ...required }, optional);
@@ -170,7 +177,16 @@ const checkOldValue: Check = (value, path) => {
   else if (typeof value === "number") finite(value, path);
   else shape(value, path, { token: identifier });
 };
-const checkPreconditions: Check = (value, path) => shape(value, path, { parentId: checkParent, oldValue: checkOldValue });
+const checkTextPathContextEntry: Check = (value, path) => {
+  const source = record(value, path);
+  if (source.type === "target") shape(value, path, { type: oneOf(["target"]) });
+  else if (source.type === "text") shape(value, path, { type: oneOf(["text"]), value: (entry, at) => string(entry, at, PAGE_OPERATION_TEXT_PATH_CONTEXT_MAX_SIBLING_TEXT_LENGTH) });
+  else if (source.type === "element" || source.type === "component" || source.type === "instance") shape(value, path, { type: oneOf(["element", "component", "instance"]), nodeId: identifier });
+  else fail(path, "unexpected text path context entry");
+};
+const checkPreconditions: Check = (value, path) => shape(value, path, { parentId: checkParent, oldValue: checkOldValue }, {
+  textPathContext: array(checkTextPathContextEntry, 1, PAGE_OPERATION_TEXT_PATH_CONTEXT_MAX_CHILDREN)
+});
 const checkAnchor: Check = (value, path) => {
   const source = record(value, path);
   if (Object.hasOwn(source, "before")) shape(source, path, { before: identifier });
@@ -301,6 +317,9 @@ export function parsePageOperation(value: unknown, path: string): EditorOperatio
     case "duplicate": case "remove": case "detach": target(); break;
     default: fail(path, "unsupported operation");
   }
+  if (source.type !== "text" && source.preconditions !== undefined && Object.hasOwn(record(source.preconditions, `${path}.preconditions`), "textPathContext")) {
+    fail(`${path}.preconditions.textPathContext`, "text path context is only valid for text operations");
+  }
   if (source.type === "styles" || source.type === "styleRange" || source.type === "state") {
     const values = Object.fromEntries(Object.entries(record(source.values, path)).map(([key, entry]) => [key, entry === null ? undefined : entry]));
     return { ...source, values } as EditorOperationById;
@@ -384,6 +403,13 @@ function unmetRebasePreconditions(document: PageDocument, operation: EditorOpera
   if (!["text", "style", "attribute", "prop"].includes(operation.type)) return [{ index, condition: "rebase_supported" }];
   const change = operation as RebaseOperation, preconditions = change.preconditions as PageOperationPreconditions | undefined;
   if (!preconditions) return [{ index, condition: "preconditions" }];
+  if (change.type === "text") {
+    if (change.childPath.length !== 1) return [{ index, condition: "rebase_supported" }];
+    if (!preconditions.textPathContext) return [{ index, condition: "preconditions" }];
+    const textPathContext = pageOperationTextPathContext(document, change.parentId, change.childPath);
+    if (!textPathContext) return [{ index, condition: "rebase_supported" }];
+    if (!sameValue(textPathContext, preconditions.textPathContext)) return [{ index, condition: "child_path" }];
+  }
   const target = rebaseTarget(document, change);
   if (!target) return [{ index, condition: "node_exists" }];
   if (change.type === "attribute") {

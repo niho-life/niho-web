@@ -881,7 +881,7 @@ async function handlePageApply(store: EditingPageOperationStore, request: Reques
     case "host_contract_violation": return fail("host_contract_violation", 502);
     case "conflict": {
       if (result.unmetPreconditions === undefined) return fail("version_conflict", 409);
-      const allowed = ["rebase_supported", "preconditions", "node_exists", "parent_id", "old_value"];
+      const allowed = ["rebase_supported", "preconditions", "node_exists", "parent_id", "old_value", "child_path"];
       if (!Array.isArray(result.unmetPreconditions) || !result.unmetPreconditions.length || result.unmetPreconditions.length > operations.length * 2) return fail("host_contract_violation", 502);
       const seen = new Set<string>();
       for (const item of result.unmetPreconditions) {

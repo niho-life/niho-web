@@ -12,6 +12,7 @@ const path = `/api/edit/v1/sites/${siteId}/operations/pages.apply/${pageId}?loca
 const dependencies = { stylesVersion: "styles-1", componentsVersion: "components-1", presentationVersion: "site-1" };
 const actor = { kind: "machine", subject: "principal", delegatedBy: "owner", clientKind: "cli" };
 const oneLetter = { type: "text", parentId: "heading", childPath: [0], value: "海のそばで暮ごす" };
+const oneLetterPreconditions = { parentId: "heading", oldValue: "海のそばで過ごす", textPathContext: [{ type: "target" }] };
 const operation = (operations = [oneLetter], extra = {}) => ({ baseVersion: "v1", operationId: crypto.randomUUID(), operations, ...dependencies, ...extra });
 
 function host(context, authenticatedActor = actor) {
@@ -78,6 +79,7 @@ test("pages.apply rejects stale dependency CAS, bad batches and unauthorized act
   const malformed = [
     oneLetter,
     { ...oneLetter, childPath: ["0"] },
+    { ...oneLetter, preconditions: { ...oneLetterPreconditions, textPathContext: [{ type: "target", extra: true }] } },
     { ...oneLetter, unknown: true },
     { type: "restore", document },
     { type: "token", name: "ink" },
@@ -133,6 +135,22 @@ test("pages.apply safely rebases independent leaf edits and records the rebased 
   assert.equal(storage.readJournal()[1].rebasedFromVersion, first.version);
 });
 
+test("pages.apply rebases a text edit while its exact child path context survives", async () => {
+  const { storage, call, client } = host();
+  const concurrent = structuredClone(document);
+  concurrent.title = "Concurrent title";
+  const concurrentSave = await storage.savePage(actor, target, "v1", concurrent);
+  assert.equal(concurrentSave.status, "saved");
+
+  const response = await call(operation([{ ...oneLetter, preconditions: oneLetterPreconditions }]));
+  assert.equal(response.status, 200);
+  const saved = await response.json();
+  assert.equal(saved.document.title, "Concurrent title");
+  assert.equal(saved.document.body[0].children[0].children[0].text, oneLetter.value);
+  assert.equal(storage.readJournal()[0].rebasedFromVersion, concurrentSave.version);
+  assert.equal((await client.read(target)).document.title, "Concurrent title");
+});
+
 test("pages.apply returns unmet preconditions for conflicting or unsupported stale operations", async () => {
   const sameField = host();
   await sameField.client.applyOperations(target, operation([{
@@ -153,6 +171,15 @@ test("pages.apply returns unmet preconditions for conflicting or unsupported sta
   assert.deepEqual(rejected, { status: "conflict", unmetPreconditions: [{ index: 0, condition: "rebase_supported" }] });
   assert.equal(unsupported.storage.readJournal().length, 1);
   assert.equal((await unsupported.client.read(target)).document.title, "Concurrent");
+
+  const structuralText = host(), concurrent = structuredClone(document), heading = concurrent.body[0].children[0];
+  heading.children.unshift(structuredClone(heading.children[0]));
+  assert.equal((await structuralText.storage.savePage(actor, target, "v1", concurrent)).status, "saved");
+  const response = await structuralText.call(operation([{ ...oneLetter, preconditions: oneLetterPreconditions }]));
+  assert.equal(response.status, 409);
+  assert.deepEqual((await response.json()).unmetPreconditions, [{ index: 0, condition: "child_path" }]);
+  const latest = await structuralText.client.read(target);
+  assert.deepEqual(latest.document.body[0].children[0].children.map(({ text }) => text), ["海のそばで過ごす", "海のそばで過ごす"]);
 });
 
 test("pages.apply reports multiple failed conditions for one operation and never partially commits a batch", async () => {
