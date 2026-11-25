@@ -1,0 +1,338 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { test } from "node:test";
+import { JSDOM } from "jsdom";
+import {
+  cancelCmsSchedule, checkCmsReleaseApply, checkCmsReplay, checkCmsScheduleCreate, checkCmsSchemaApply, checkCmsWriteVersion,
+  cmsItemKey, cmsLegacyCollections, cmsOperationStatus, cmsRoleCapabilities, cmsWorkspaceItem,
+  discoverCmsContract, dueCmsSchedule, parseCmsDiscovery, parseCmsDraftWrite, parseCmsItemRevision, parseCmsSchema,
+  parseCmsSchemaPlanInput, planCmsMigration, planCmsRelease, planCmsSchedule, removeCmsItem, restoreCmsItem, revalidateCmsRelease
+} from "@niho/web/cms-v2";
+import { parseCollectionSchemaResult } from "@niho/web/collection-model";
+import { postsDefinition, tagsDefinition } from "./collection-fixtures.mjs";
+
+const siteId = "demo-site", locale = "ja", now = "2026-11-26T10:00:00Z", later = "2026-11-26T12:00:00Z";
+const owner = { siteId, actorId: "owner-fake" }, editor = { siteId, actorId: "editor-fake" };
+const fieldId = (key) => key === null ? null : `field-${key}`;
+const definition = (source) => ({ ...source, titleField: fieldId(source.titleField), slugField: fieldId(source.slugField),
+  imageField: fieldId(source.imageField), subtitleField: fieldId(source.subtitleField),
+  fields: source.fields.filter(({ key }) => key !== "related").map((field) => ({ ...field, fieldId: fieldId(field.key) })) });
+const schema = () => parseCmsSchema({ contractVersion: 2, siteId, schemaRevision: "schema-1", retiredFields: [], collections: [definition(postsDefinition()), definition(tagsDefinition())] });
+const post = { collectionId: "posts", itemId: "post-1", locale }, tag = { collectionId: "tags", itemId: "tag-1", locale };
+const presentation = { subtitle: null, imageUrl: null, path: null, updatedAt: now, updatedBy: null, order: null };
+const digest = (input) => createHash("sha256").update(JSON.stringify(input)).digest("hex");
+const pin = ({ collectionId, itemId, revision }) => ({ collectionId, itemId, revision });
+
+class MemoryHost {
+  schema = schema();
+  drafts = new Map();
+  state = new Map();
+  revisions = new Map();
+  receipts = new Map();
+  snapshots = new Map();
+  schedules = new Map();
+  current = null;
+  routeBlocked = false;
+  sequence = 0;
+  newId() { return `v-${++this.sequence}`; }
+  constructor() {
+    this.add(post, { "field-title": "海辺の案内", "field-slug": "coast", "field-category": [tag.itemId], "field-summary": "案内の下書き" });
+    this.add(tag, { "field-title": "散歩" });
+  }
+  add(target, values) {
+    const key = cmsItemKey(target);
+    const item = parseCmsItemRevision({ ...target, siteId, revision: this.newId(), schemaRevision: this.schema.schemaRevision, values }, this.schema);
+    this.drafts.set(key, item);
+    this.revisions.set(item.revision, item);
+    this.state.set(key, { publishedRevision: null, publishedAt: null,
+      schedule: null, tombstone: null, deliveryState: { state: "idle" }, ...this.state.get(key), draftRevision: item.revision });
+    return item;
+  }
+  target(item) {
+    return { ...item, siteId, contractVersion: 2, expectedSchemaRevision: this.schema.schemaRevision, expectedRevision: this.drafts.get(cmsItemKey(item)).revision };
+  }
+  save(input) {
+    const gate = checkCmsWriteVersion(this.schema, input.contractVersion, input.expectedSchemaRevision);
+    if (gate.status !== "allowed") return gate;
+    const request = parseCmsDraftWrite(input, this.schema, "save"), key = cmsItemKey(request);
+    const old = this.drafts.get(key);
+    if (!old || this.state.get(key).tombstone || old.revision !== request.expectedRevision) return { status: "conflict" };
+    return { status: "saved", item: this.add({ collectionId: request.collectionId, itemId: request.itemId, locale: request.locale }, request.values) };
+  }
+  remove(target) { this.state.set(cmsItemKey(target), removeCmsItem(this.state.get(cmsItemKey(target)), now)); }
+  restore(target) { this.state.set(cmsItemKey(target), restoreCmsItem(this.state.get(cmsItemKey(target)))); }
+  getItem(target) { return cmsWorkspaceItem(this.schema, this.drafts.get(cmsItemKey(target)), this.state.get(cmsItemKey(target)), presentation); }
+  confirm(scope, operation, candidate) {
+    return { ...scope, operation, candidate, operationId: this.newId(), expiresAt: "2026-11-26T11:00:00Z", confirmationToken: this.newId() };
+  }
+  input(plan) { return { siteId: plan.siteId, operationId: plan.operationId, confirmationToken: plan.confirmationToken }; }
+  migrationDrafts() { return [...this.drafts.values()].map((item) => ({ item, tombstoned: this.state.get(cmsItemKey(item)).tombstone !== null })); }
+  draftList() { return [...this.drafts.values()].filter((item) => !this.state.get(cmsItemKey(item)).tombstone); }
+  planSchema(next, replacements = [], impact) {
+    const request = parseCmsSchemaPlanInput({ siteId, expectedSchemaRevision: this.schema.schemaRevision, nextSchema: next, replacements }, siteId);
+    const migration = planCmsMigration(this.schema, request.nextSchema, this.migrationDrafts(), request.replacements, impact);
+    return { migration, confirmation: this.confirm(editor, "cms.schema.apply", migration) };
+  }
+  applySchema(scope, confirmation, replacements = [], impact) {
+    if (!cmsRoleCapabilities(scope.actorId === owner.actorId ? "owner" : "editor").includes("cms.schema.apply")) return { status: "forbidden" };
+    const checked = checkCmsSchemaApply(scope, this.input(confirmation), confirmation, now, this.schema, this.migrationDrafts(), replacements, impact);
+    if (checked.status !== "allowed") return checked;
+    // Draft and schema switches are committed together. Previous revisions remain addressable.
+    this.schema = checked.candidate.schema;
+    for (const { previousRevision: _old, tombstoned: _tombstoned, values, ...target } of checked.candidate.items) this.add(target, values);
+    for (const removed of checked.candidate.removedItems) {
+      this.drafts.delete(cmsItemKey(removed));
+      this.state.delete(cmsItemKey(removed));
+    }
+    return { status: "applied" };
+  }
+  context() {
+    return { schema: this.schema, locale, currentReleaseId: this.current,
+      isRemoved: (item) => this.state.get(cmsItemKey(item))?.tombstone !== null,
+      readRevision: ({ revision }) => this.revisions.get(revision),
+      impact: () => this.routeBlocked ? [{ code: "route", path: "/posts/coast", message: "固定ページとの重複" }] : [] };
+  }
+  planRelease(items = this.draftList().map(pin), redirects = [], options = {}) {
+    return planCmsRelease({ siteId, locale, schemaRevision: this.schema.schemaRevision, expectedReleaseId: this.current, items, redirects, ...options }, this.newId(), this.context());
+  }
+  publish(scope, confirmation, input = this.input(confirmation)) {
+    const receiptKey = `${scope.siteId}/${scope.actorId}/${input.operationId}`;
+    const requestDigest = digest(input), prior = checkCmsReplay(scope, "cms.release.apply", input.operationId, requestDigest, this.receipts.get(receiptKey));
+    if (prior.status !== "not_found") return prior;
+    const checked = checkCmsReleaseApply(scope, input, confirmation, now, this.context());
+    if (checked.status !== "allowed") return checked;
+    const snapshot = checked.candidate.snapshot;
+    const result = { releaseId: snapshot.releaseId, locale: snapshot.locale };
+    this.commit(snapshot);
+    this.receipts.set(receiptKey, { ...scope, operation: "cms.release.apply", operationId: input.operationId, requestDigest, result });
+    return cmsOperationStatus(scope, "cms.release.apply", input.operationId, this.receipts.get(receiptKey));
+  }
+  commit(snapshot) {
+    const selected = new Map(snapshot.items.map((item) => [cmsItemKey(item), item.revision]));
+    this.current = snapshot.releaseId;
+    this.snapshots.set(snapshot.releaseId, snapshot);
+    for (const [key, value] of this.state) {
+      this.state.set(key, { ...value, publishedRevision: selected.get(key) ?? null, publishedAt: selected.has(key) ? now : null });
+    }
+  }
+  schedule(confirmation) {
+    const checked = checkCmsScheduleCreate(editor, this.input(confirmation), confirmation, now, this.context());
+    if (checked.status !== "allowed") return checked;
+    const schedule = checked.candidate;
+    this.schedules.set(schedule.id, schedule);
+    for (const item of schedule.proposal.snapshot.items) this.state.get(cmsItemKey(item)).schedule = schedule;
+    return checked;
+  }
+  runSchedule(scheduleId, time) {
+    const schedule = this.schedules.get(scheduleId);
+    if (!schedule || !dueCmsSchedule(schedule, time)) return "not_due";
+    const checked = revalidateCmsRelease(schedule.proposal, this.context());
+    if (checked.status !== "allowed") {
+      schedule.state = "failed";
+      return "failed";
+    }
+    this.commit(checked.candidate.snapshot);
+    this.schedules.delete(scheduleId);
+    for (const item of schedule.proposal.snapshot.items) this.state.get(cmsItemKey(item)).schedule = null;
+    return "published";
+  }
+}
+
+function revisedSchema(before) {
+  const next = structuredClone(before);
+  next.schemaRevision = "schema-2";
+  const fields = next.collections[0].fields;
+  const title = fields.find(({ fieldId }) => fieldId === "field-title");
+  title.key = "headline";
+  title.label = "見出し";
+  const summary = fields.find(({ fieldId }) => fieldId === "field-summary");
+  Object.assign(summary, { type: "tags" });
+  delete summary.rows;
+  delete summary.maxLength;
+  const removed = fields.findIndex(({ fieldId }) => fieldId === "field-keywords");
+  fields.splice(removed, 1);
+  fields.push({ fieldId: "field-added", key: "added", label: "追加", type: "text", placement: "main" });
+  return next;
+}
+
+function publish(host, plan = host.planRelease()) {
+  assert.equal(plan.status, "ready");
+  return host.publish(editor, host.confirm(editor, "cms.release.apply", plan.proposal));
+}
+
+test("discovery is authorized and v1 cannot write through either a stale or guessed version", () => {
+  const host = new MemoryHost();
+  assert.deepEqual(discoverCmsContract({ contractVersion: 1, siteId }), { siteId, schemaRevision: null, contractVersion: 1 });
+  const discovery = discoverCmsContract(host.schema, cmsRoleCapabilities("editor"));
+  assert.equal(discovery.contractVersion, 2);
+  assert.deepEqual(parseCmsDiscovery(discovery, siteId), discovery);
+  assert.throws(() => parseCmsDiscovery({ ...discovery, contractVersion: 3 }, siteId), /unsupported CMS contract version/u);
+  assert.ok(discovery.operations.includes("cms.schema.plan"));
+  assert.ok(!discovery.operations.includes("cms.schema.apply"));
+  assert.equal(checkCmsWriteVersion({ contractVersion: 1, siteId }, undefined).status, "allowed");
+  assert.equal(checkCmsWriteVersion(host.schema, 1).status, "unsupported_version");
+  assert.equal(host.save({ siteId }).status, "unsupported_version");
+  assert.equal(host.save({ ...host.target(post), expectedSchemaRevision: "old" }).status, "conflict");
+  assert.equal(host.getItem(post).title, "海辺の案内");
+  assert.throws(() => parseCollectionSchemaResult({ status: "ready", collections: host.schema.collections }), /unknown field/u);
+  assert.throws(() => host.save({ ...host.target(post), values: { title: "old key" } }), /unknown field/u);
+});
+
+test("schema plan reports conversion and binding impacts and apply checks scope, role and stale drafts", () => {
+  const host = new MemoryHost(), next = revisedSchema(host.schema);
+  const { migration, confirmation } = host.planSchema(next, [], () => [{ code: "binding", fieldId: "field-keywords", message: "一覧がフィールドを使用" }]);
+  assert.deepEqual(migration.problems.map(({ code }) => code), ["conversion", "binding"]);
+  assert.ok(migration.changes.some(({ kind, fieldId }) => kind === "rename" && fieldId === "field-title"));
+  assert.ok(migration.changes.some(({ kind, fieldId }) => kind === "add" && fieldId === "field-added"));
+  assert.equal(host.applySchema(editor, confirmation).status, "forbidden");
+  assert.equal(host.applySchema(owner, confirmation).status, "invalid_confirmation");
+  const replacements = [{ ...post, values: { "field-summary": ["案内"] } }];
+  const plan = host.planSchema(next, replacements);
+  const approved = host.confirm(owner, "cms.schema.apply", plan.migration);
+  assert.equal(plan.migration.problems.length, 0);
+  assert.equal(host.applySchema(owner, approved, replacements).status, "applied");
+  assert.deepEqual(host.getItem(post).values.summary, ["案内"]);
+  assert.equal(host.getItem(post).values.headline, "海辺の案内");
+  assert.deepEqual(host.schema.retiredFields, [{ collectionId: "posts", fieldId: "field-keywords" }]);
+  const reuse = structuredClone(host.schema);
+  reuse.schemaRevision = "schema-3";
+  reuse.retiredFields = [];
+  reuse.collections[0].fields.push({ fieldId: "field-keywords", key: "reused", label: "再利用", type: "tags", placement: "main" });
+  assert.throws(() => host.planSchema(reuse), /retired field ID/u);
+  const same = { ...structuredClone(host.schema), schemaRevision: "schema-4" };
+  const stale = host.confirm(owner, "cms.schema.apply", host.planSchema(same).migration);
+  host.add(post, { "field-title": "新しい案内", "field-slug": "coast" });
+  assert.equal(host.applySchema(owner, stale).status, "conflict");
+});
+
+test("removing a collection keeps its source revisions in the apply conflict check", () => {
+  const host = new MemoryHost(), next = structuredClone(host.schema);
+  next.schemaRevision = "schema-2";
+  next.collections = next.collections.filter(({ id }) => id !== "tags");
+  next.collections[0].fields = next.collections[0].fields.filter(({ fieldId }) => fieldId !== "field-category");
+  const migration = host.planSchema(next).migration;
+  assert.deepEqual(migration.removedItems, [{ collectionId: "tags", itemId: tag.itemId, locale, tombstoned: false, previousRevision: "v-2" }]);
+  const confirmation = host.confirm(owner, "cms.schema.apply", migration);
+  host.add(tag, { "field-title": "更新されたカテゴリ" });
+  assert.equal(host.applySchema(owner, confirmation).status, "conflict");
+});
+
+test("release snapshot is immutable, rejects missing published references and keeps exact receipt scope", () => {
+  const host = new MemoryHost();
+  const bad = host.planRelease([pin(host.drafts.get(cmsItemKey(post)))]);
+  assert.equal(bad.problems[0].code, "reference");
+  const plan = host.planRelease(undefined, [{ from: "/posts/old-coast", to: "/posts/coast" }]);
+  const confirmation = host.confirm(editor, "cms.release.apply", plan.proposal);
+  assert.throws(() => checkCmsReleaseApply(editor, { ...host.input(confirmation), siteId: "another-site" }, confirmation, now, host.context()), /CMS site mismatch/u);
+  const applied = host.publish(editor, confirmation);
+  assert.equal(applied.status, "recorded");
+  assert.deepEqual(host.publish(editor, confirmation), applied);
+  assert.equal(host.publish(editor, confirmation, { ...host.input(confirmation), confirmationToken: "other" }).status, "conflict");
+  assert.equal(host.publish(owner, confirmation).status, "invalid_confirmation");
+  assert.equal(cmsOperationStatus({ ...editor, siteId: "second-site" }, "cms.release.apply", confirmation.operationId, [...host.receipts.values()][0]).status, "not_found");
+  const previous = host.snapshots.get(applied.result.releaseId);
+  assert.throws(() => { previous.items[0].values["field-title"] = "書き換え"; }, TypeError);
+  host.add(post, { "field-title": "後から編集", "field-slug": "coast" });
+  assert.equal(previous.items[0].values["field-title"], "海辺の案内");
+  assert.equal(host.getItem(post).status, "changed");
+  const invalidRedirect = host.planRelease(undefined, [{ from: "/posts/coast", to: "/posts/missing" }]);
+  assert.ok(invalidRedirect.problems.some(({ code }) => code === "route"));
+  const duplicate = { ...post, itemId: "post-2" };
+  host.add(duplicate, { "field-title": "パスが同じ", "field-slug": "coast" });
+  assert.equal(host.planRelease().problems[0].code, "route");
+  assert.throws(() => host.planRelease(undefined, [], { locale: "en" }), /site or locale mismatch/u);
+});
+
+test("scheduling pins content, detects new collisions and lets the host retry with a fresh plan", () => {
+  const host = new MemoryHost();
+  const first = planCmsSchedule("s1", later, now, host.planRelease().proposal);
+  assert.equal(host.schedule(host.confirm(editor, "cms.schedule.create", first)).status, "allowed");
+  host.add(post, { "field-title": "予約の後で編集した下書き", "field-slug": "new-coast" });
+  assert.equal(host.runSchedule(first.id, now), "not_due");
+  assert.equal(host.runSchedule(first.id, later), "published");
+  assert.equal(host.snapshots.get(host.current).items[0].path, "/posts/coast");
+  assert.equal(host.getItem(post).status, "changed");
+  const replacement = planCmsSchedule("s2", later, now, host.planRelease().proposal);
+  assert.equal(host.schedule(host.confirm(editor, "cms.schedule.create", replacement)).status, "allowed");
+  host.routeBlocked = true;
+  assert.equal(host.runSchedule(replacement.id, later), "failed");
+  assert.equal(host.snapshots.get(host.current).items[0].path, "/posts/coast");
+  assert.equal(host.getItem(post).publishFailed, true);
+  assert.equal(host.runSchedule(replacement.id, later), "not_due");
+  assert.equal(dueCmsSchedule(cancelCmsSchedule(replacement), later), false);
+});
+
+test("withdraw and delete hide an item, restoring recovers the draft and leaves prior snapshots intact", () => {
+  const host = new MemoryHost();
+  const published = publish(host);
+  assert.throws(() => host.remove(tag), /withdraw/u);
+  const withdrawn = publish(host, host.planRelease([]));
+  assert.equal(withdrawn.status, "recorded");
+  host.remove(tag);
+  assert.equal(host.getItem(tag), null);
+  const next = { ...structuredClone(host.schema), schemaRevision: "schema-2" };
+  // Clear the post’s draft reference before migrating while its target is in the trash.
+  host.add(post, { "field-title": "海辺の案内", "field-slug": "coast" });
+  const migration = host.planSchema(next).migration;
+  assert.equal(migration.items.find(({ collectionId }) => collectionId === "tags").tombstoned, true);
+  assert.equal(host.applySchema(owner, host.confirm(owner, "cms.schema.apply", migration)).status, "applied");
+  host.restore(tag);
+  assert.equal(host.getItem(tag).status, "draft");
+  assert.equal(host.getItem(tag).title, "散歩");
+  assert.equal(host.snapshots.get(published.result.releaseId).items.length, 2);
+});
+
+test("deletion waits for pending delivery and schedule cancellation only accepts a pending schedule", () => {
+  const host = new MemoryHost();
+  const state = host.state.get(cmsItemKey(post));
+  state.deliveryState = { state: "pending", releaseId: "release-in-flight" };
+  assert.throws(() => removeCmsItem(state, now), /pending delivery/u);
+  state.deliveryState = { state: "idle" };
+  const scheduled = planCmsSchedule("s-pending", later, now, host.planRelease().proposal);
+  assert.equal(cancelCmsSchedule(scheduled).state, "cancelled");
+  assert.throws(() => cancelCmsSchedule({ ...scheduled, state: "failed" }), /pending schedule/u);
+});
+
+test("CollectionWorkspace displays v2-derived status and failure without changing its adapter contract", async (t) => {
+  const dom = new JSDOM("<!doctype html><main></main>", { url: "https://example.test/studio" });
+  for (const key of ["window", "document", "navigator", "HTMLElement", "Element", "Node", "Event", "MouseEvent"]) {
+    const previous = Object.getOwnPropertyDescriptor(globalThis, key);
+    Object.defineProperty(globalThis, key, { value: dom.window[key], configurable: true });
+    t.after(() => previous ? Object.defineProperty(globalThis, key, previous) : Reflect.deleteProperty(globalThis, key));
+  }
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  t.after(() => Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT"));
+  t.after(() => dom.window.close());
+  const { createElement, act } = await import("react");
+  const { createRoot } = await import("react-dom/client");
+  const { CollectionWorkspace } = await import("@niho/web/collection-workspace");
+  const host = new MemoryHost();
+  publish(host);
+  host.add(post, { "field-title": "新しい海辺の案内", "field-slug": "coast" });
+  host.state.get(cmsItemKey(post)).schedule = { id: "s-failed", at: later, state: "failed" };
+  const root = createRoot(document.querySelector("main"));
+  const adapter = {
+    async loadSchema() { return { status: "ready", collections: cmsLegacyCollections(host.schema) }; },
+    async listItems({ collectionId }) {
+      const { values: _values, version: _version, ...item } = host.getItem(post);
+      return { status: "ready", collectionId, items: [item] };
+    },
+  };
+  try {
+    await act(async () => root.render(createElement(CollectionWorkspace, { adapter, initialCollectionId: "posts" })));
+    await act(async () => {});
+    assert.match(document.querySelector('[data-status="changed"]').textContent, /変更あり/u);
+    assert.match(document.querySelector('[data-status="failed"]').textContent, /前回の公開に失敗/u);
+    assert.match(document.body.textContent, /新しい海辺の案内/u);
+    host.state.get(cmsItemKey(post)).deliveryState = { state: "pending", releaseId: host.current };
+    await act(async () => root.render(createElement(CollectionWorkspace, { key: "pending", adapter, initialCollectionId: "posts" })));
+    await act(async () => {});
+    assert.match(document.querySelector('[data-status="publishing"]').textContent, /反映中/u);
+    Object.assign(host.state.get(cmsItemKey(post)), { publishedRevision: null, publishedAt: null, deliveryState: { state: "idle" }, schedule: { id: "s-next", at: later, state: "scheduled" } });
+    await act(async () => root.render(createElement(CollectionWorkspace, { key: "scheduled", adapter, initialCollectionId: "posts" })));
+    await act(async () => {});
+    assert.match(document.querySelector('[data-status="scheduled"]').textContent, /予約/u);
+  } finally {
+    await act(async () => root.unmount());
+  }
+});
