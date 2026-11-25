@@ -42,3 +42,13 @@ test("publishing a new item path retargets historical redirects and withdrawal r
     { from: "/legacy", to: "/about", owner: "host" }
   ]);
 });
+
+test("a historical path reused by the item is removed as a redirect source", () => {
+  const redirects = [
+    { from: "/cms/posts/a", to: "/cms/posts/b", owner: "cms" },
+    { from: "/cms/posts/old", to: "/cms/posts/b", owner: "cms" }
+  ];
+  assert.deepEqual(redirectsForCmsItemRelease(redirects, "/cms/posts/b", "/cms/posts/a", false), [
+    { from: "/cms/posts/old", to: "/cms/posts/a", owner: "cms" }
+  ]);
+});

@@ -29,7 +29,7 @@ export function redirectsForCmsItemRelease(redirects: CmsReleaseSnapshot["redire
   if (!oldPath) return [...redirects];
   return redirects.flatMap((redirect) => {
     if (redirect.to !== oldPath) return [redirect];
-    return withdraw || nextPath === null ? [] : [{ ...redirect, to: nextPath }];
+    return withdraw || nextPath === null || redirect.from === nextPath ? [] : [{ ...redirect, to: nextPath }];
   });
 }
 
