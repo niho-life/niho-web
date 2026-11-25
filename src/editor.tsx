@@ -6,7 +6,7 @@ import { PageRenderer, SitePageRenderer } from "./react.js";
 import { parsePageDocument } from "./document.js";
 import { canvasCss, pageScope } from "./css.js";
 import { DocumentValidationError } from "./validation-utils.js";
-import { acceptSavedRevision, commitHistory, editDocument, effectiveLocks, fingerprint, lockReason, nodeAt, parseEditorReadOnly, sameTarget, travelHistory, validateReleasePlan, walkNodes, type EditorOperation, type NodePath } from "./editor-model.js";
+import { acceptSavedRevision, BOX_GROUP_ID_PREFIX, BoxGroupLayoutChange, commitHistory, editDocument, effectiveLocks, fingerprint, lockReason, nodeAt, parseEditorReadOnly, sameTarget, travelHistory, validateReleasePlan, walkNodes, type BoxGroupOperation, type EditorOperation, type NodePath } from "./editor-model.js";
 import { editorCss, historyCss, pagesCss } from "./editor-style.js";
 import { styleEditorCss } from "./editor-style-css.js";
 import { Field } from "./editor-fields.js";
@@ -572,6 +572,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const [canvasReveal, setCanvasReveal] = useState<{ target: string; id: string } | null>(null);
   const [inspector, setInspector] = useState<Inspector>("page"), [elementTab, setElementTab] = useState<InspectorTab>("text"), [preview, setPreview] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false), shortcutClose = useRef<HTMLButtonElement>(null);
+  const [groupChange, setGroupChange] = useState<{ operation: BoxGroupOperation; base: string; componentId: string | null } | null>(null);
   const workspace = useRef<HTMLDivElement>(null), startTextEdit = useRef<((id: string) => boolean | string) | null>(null);
   const shortcutListener = useRef<(event: KeyboardEvent) => void>(() => {});
   const onShortcut = useCallback((event: KeyboardEvent) => shortcutListener.current(event), []);
@@ -711,7 +712,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const autosaveMs = autosaveDelay(autosave), autosaveActive = autosaveMs !== undefined && autosaveOn;
   // オフラインで失敗した後、接続が戻ったら自動保存は1回だけ再試行する。
   const online = useOnline(() => { if (problemRef.current !== "offline") return; if (!autosaveActive) setProblem("failed"); else if (!pendingChanges) setProblem(null); else void save("auto"); });
-  const modal = !!plan || !!localeReleasePlan || !!navigation || !!pageChange || !!releaseSetPages || breakpointSettingsOpen || responsiveProposalOpen || conflictView > 0 || recoveryCompare || versions.dialog !== null || !!componentDialog || !!libraryReload || shortcutsOpen;
+  const modal = !!plan || !!localeReleasePlan || !!navigation || !!pageChange || !!releaseSetPages || breakpointSettingsOpen || responsiveProposalOpen || conflictView > 0 || recoveryCompare || versions.dialog !== null || !!componentDialog || !!libraryReload || shortcutsOpen || !!groupChange;
   // 自動保存は手動保存と同じく部品 → ページの順に保存する。部品とページのどちらが変わっても待ち直す。
   const autosaveSubject = useMemo(() => [session?.history.present, libraryPresent], [session?.history.present, libraryPresent]);
   // ページが無いサイトでも、部品の変更は部品ライブラリ単位の key で自動保存する（部品の端末への退避は、ストアが対応する場合だけのため）。
@@ -1014,6 +1015,57 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   }
   function runBulkStructural(type: "duplicate" | "remove") {
     const result = bulkStructural(type);
+    if (typeof result === "string") setNotice(result);
+  }
+  function applyGroupChange(operation: BoxGroupOperation): boolean | string {
+    const source = currentDocument();
+    if (!source) return "ページを読み込んでから操作してください。";
+    const box = operation.type === "unwrap" ? nodeAt(source, operation.path) : undefined;
+    const problem = apply(operation);
+    if (problem) return problem;
+    if (operation.type === "wrap") {
+      selectId(operation.wrapperId);
+    } else if (box?.type === "element") {
+      const children = box.children.flatMap((child) => child.type === "text" ? [] : [child.id]);
+      const next = currentDocument(), first = children[0];
+      const path = first && next ? pathForNodeId(next, first) : undefined;
+      if (path) select(path, null, children.length > 1 ? "range" : "replace", children);
+      else select(operation.path.length > 1 ? operation.path.slice(0, -1) : null);
+    }
+    return true;
+  }
+  function chooseGroupChange(type: BoxGroupOperation["type"]): boolean | string {
+    const source = currentDocument();
+    if (!source || !selectedId || !selection) return "要素を選択してから操作してください。";
+    if (masterId && selection.length === 1) return "コンポーネント本体の外枠は囲んだり外したりできません。";
+    if (type === "unwrap" && selectedNodeIds.length !== 1) return "囲み解除するボックスを1つ選択してください。";
+    let operation: BoxGroupOperation;
+    if (type === "wrap") {
+      const ids = new Set(walkNodes(source).flatMap(({ node }) => node.type === "text" ? [] : [node.id]));
+      let suffix = 1;
+      while (ids.has(`${BOX_GROUP_ID_PREFIX}${suffix}`)) suffix++;
+      operation = { type, nodeIds: selectedNodeIds, wrapperId: `${BOX_GROUP_ID_PREFIX}${suffix}` };
+    } else operation = { type, path: selection };
+    try {
+      const lib = libraryRef.current?.history.present;
+      if (masterId) editMaster(source, [operation], lib);
+      else editDocument(source, operation, blocks, sessionRef.current?.locks ?? [], lib, activeSiteStyles);
+    } catch (error) {
+      if (!(error instanceof BoxGroupLayoutChange)) return message(error);
+      setNotice("");
+      setGroupChange({ operation, base: fingerprint(source), componentId: masterId });
+      return true;
+    }
+    return applyGroupChange(operation);
+  }
+  function confirmGroupChange(change: NonNullable<typeof groupChange>) {
+    setGroupChange(null);
+    const source = currentDocument();
+    if (!source || preview || editBlocked || hasInput || targetMode || change.componentId !== masterId || change.base !== fingerprint(source)) {
+      setNotice("編集中の内容が変わりました。対象を選び直してください。");
+      return;
+    }
+    const result = applyGroupChange({ ...change.operation, allowLayoutChange: true });
     if (typeof result === "string") setNotice(result);
   }
   function selectedClipboardFragment(): { clipboard: EditorNodeClipboard } | string {
@@ -2142,6 +2194,8 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     redo: () => redoUnavailable ?? travel("redo"),
     remove: () => structureUnavailable ?? bulkStructural("remove"),
     duplicate: () => structureUnavailable ?? bulkStructural("duplicate"),
+    wrap: () => structureUnavailable ?? chooseGroupChange("wrap"),
+    unwrap: () => structureUnavailable ?? chooseGroupChange("unwrap"),
     copy: () => copySelection(),
     cut: () => structureUnavailable ?? cutSelection(),
     paste: () => structureUnavailable ?? startPaste(false),
@@ -2398,6 +2452,11 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     {shortcutsOpen && <Dialog name="ショートカット一覧" dismiss={() => setShortcutsOpen(false)}><h2>ショートカット一覧</h2>
       <table><thead><tr><th scope="col">操作</th><th scope="col">キー</th></tr></thead><tbody>{editorShortcuts.map(({ action, label, keyLabel }) => <tr key={action}><th scope="row">{label}</th><td><kbd>{keyLabel}</kbd></td></tr>)}</tbody></table>
       <div className="e-actions"><button ref={shortcutClose} type="button" onClick={() => setShortcutsOpen(false)}>閉じる</button></div>
+    </Dialog>}
+    {groupChange && <Dialog name="レイアウト変更の確認" dismiss={() => setGroupChange(null)}>
+      <h2>{groupChange.operation.type === "wrap" ? "ボックスで囲む" : "囲みを解除"}</h2>
+      <p>構造が変わり、要素の並び方や余白が変わる場合があります。適用後にキャンバスで確認できます。</p>
+      <div className="e-actions"><button autoFocus type="button" onClick={() => setGroupChange(null)}>キャンセル</button><button type="button" className="e-primary" onClick={() => confirmGroupChange(groupChange)}>適用する</button></div>
     </Dialog>}
     {navigation && <Dialog name="未保存の変更" dismiss={() => setNavigation(null)}><h2>未保存の変更があります</h2><p>移動すると、保存前の変更と入力途中の値を破棄します。</p><div className="e-actions"><button autoFocus onClick={() => setNavigation(null)}>編集を続ける</button><button className="e-danger" onClick={() => { if (session && ["site", "page", "reload"].includes(navigation.type)) recoveryState.drop(session.target); if (navigation.type === "site" && libraryDirty && library) libraryRecovery.drop(library.siteId); navigate(navigation); }}>変更を破棄して移動</button>
       {(dirty || navigation.type === "site" && libraryDirty) && !hasInput && !historyMode && (navigation.type === "site" || navigation.type === "page") && !(navigation.type === "site" && siteSettings.dirty) && <button className="e-primary" onClick={() => void saveAndNavigate(navigation)}>保存して移動</button>}</div></Dialog>}
