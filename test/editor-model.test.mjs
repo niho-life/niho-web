@@ -7,6 +7,7 @@ import { DocumentValidationError, generatePageCss, parsePageDocument } from "@ni
 import { acceptSavedRevision, checkPageChange, commitHistory, editDocument, effectiveLocks, fingerprint, lockReason, newElement, nodeAt, travelHistory, validatePageChangePlan, validateReleasePlan, walkNodes } from "../dist/editor-model.js";
 import { editDocumentById } from "@niho/web/editor-model";
 import { createInsertionNode, formInsertionPresets } from "@niho/web/builder";
+import { validatePageDocument } from "../dist/document.js";
 
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 const doc = () => structuredClone(fixture);
@@ -39,6 +40,37 @@ test("editor changes text, link, image and responsive styles through the core va
     { type: "style", path: [0], breakpoint: "base", property: "color", value: "red;display:none" },
     { type: "add", parentId: "heading", node: newElement("section", "invalid") }
   ]) assert.throws(() => editDocument(next, operation), DocumentValidationError);
+});
+test("editor operations share untouched branches and keep parse output byte-for-byte canonical", () => {
+  const original = parsePageDocument(fixture), before = structuredClone(original);
+  const textEdit = editDocument(original, { type: "text", path: [0, 0, 0], value: "構造共有" });
+  assert.notStrictEqual(textEdit.body, original.body);
+  assert.notStrictEqual(textEdit.body[0], original.body[0]);
+  assert.notStrictEqual(textEdit.body[0].children, original.body[0].children);
+  assert.notStrictEqual(textEdit.body[0].children[0], original.body[0].children[0]);
+  assert.strictEqual(textEdit.body[0].children[1], original.body[0].children[1]);
+  assert.equal(nodeAt(original, [0, 0, 0]).text, "海のそばで過ごす");
+
+  const operations = [
+    { type: "text", path: [0, 0, 0], value: "差分確認" },
+    { type: "attribute", path: [0, 2], name: "href", value: "/news" },
+    { type: "style", path: [0], breakpoint: "base", property: "color", value: "#123456" },
+    { type: "meta", field: "description", value: "差分確認" },
+    { type: "duplicate", path: [0, 0] },
+    { type: "add", parentId: "hero", node: newElement("img", "photo") },
+  ];
+  for (const operation of operations) {
+    const result = editDocument(original, operation);
+    assert.equal(JSON.stringify(result), JSON.stringify(parsePageDocument(result)), operation.type);
+    const snapshot = JSON.stringify(result);
+    assert.equal(validatePageDocument(result), undefined);
+    assert.equal(JSON.stringify(result), snapshot, `${operation.type} の検証は入力を書き換えない`);
+  }
+  assert.deepEqual(original, before);
+
+  const invalid = { ...textEdit, title: "" }, invalidBefore = JSON.stringify(invalid);
+  assert.throws(() => validatePageDocument(invalid), DocumentValidationError);
+  assert.equal(JSON.stringify(invalid), invalidBefore);
 });
 test("React-free editor model applies stable-ID operations and parent-relative text edits", () => {
   const original = doc();

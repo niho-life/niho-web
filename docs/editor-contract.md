@@ -10,6 +10,8 @@
 
 `@niho/web/editor-model` は React を読み込まず、文書編集と検証の関数を提供します。Studio GUI は内部の `EditorOperation` を使い、CLI/APIなどの外部クライアントは `editDocumentById` と `EditorOperationById` を使います。外部操作は配列位置の `NodePath` で要素を指定せず、PageDocument内で安定した `nodeId` を指定します。テキストノードはIDを持たないため、IDを持つ親要素の `parentId` と、その子配列からの `childPath` で指定します。`parentId: null` はページ本文を基準にします。
 
+`editDocument` は変更したノードとその祖先だけをコピーし、それ以外のノード・配列を前の文書と共有します。編集前後の `PageDocument` と共有部分は不変値として扱い、呼び出し側で直接変更しないでください。編集操作の結果はコピーを作らない `validatePageDocument` で検証します。外部入力の読み込み・正規化には、独立した正規化済み文書を返す `parsePageDocument` を使います。保存・公開時のホスト側の全文検証も引き続き必要です。
+
 ```ts
 import { editDocumentById } from '@niho/web/editor-model';
 
@@ -161,7 +163,7 @@ Basicの「埋め込み」群はBlankを先頭に置き、続けてMap / YouTube
 フォームのインスペクタはフォーム名、完了ページ、項目一覧を表示します。`EditorAdapter.listFormCompletionPages(target, signal)` を省略したホストでは未接続の説明だけを表示し、完了先を選べません。実装したホストでは対象ごとに候補を読み、前の対象の要求を abort して遅い応答を破棄します。同じ site/locale、通常ページ、`visibility: "public"`、`published: true`、安全な root-relative 非template path、現在ページ以外の候補だけを select に出します。「指定しない」と適格なページIDだけを選べ、URLの手入力欄はありません。保存済みIDが削除済み・不適格なら「未解決」として見せますが選択先にはせず、移動も起こしません。変更は専用の `formCompletionPage` operation（IDまたは`undefined`）としてロック検査、履歴、`parsePageDocument` を通ります。
 鎌倉 Studio は検証済み catalog の固定通常ページのうち、公開中の完了ページだけを日本語編集の候補として返します。英語版の完了ページは接続していません。
 
-input / textarea / select は項目名・必須・入力タイプ・placeholder、select と radio fieldset は1行1件（1〜20件）の選択肢、checkbox は対応するlabel、fileは`accept`、submit buttonは表示文言を編集します。項目一覧から入力欄を選べ、フォーム選択中のパーツ追加はそのフォーム内に配置します。ラベルと入力欄は削除・複製時に対として扱います。各変更は通常の `EditorOperation` とロック検査を経て、操作のたびに `parsePageDocument` を通ります。password / file の利用者入力値は作業コピーにも保存しません。
+input / textarea / select は項目名・必須・入力タイプ・placeholder、select と radio fieldset は1行1件（1〜20件）の選択肢、checkbox は対応するlabel、fileは`accept`、submit buttonは表示文言を編集します。項目一覧から入力欄を選べ、フォーム選択中のパーツ追加はそのフォーム内に配置します。ラベルと入力欄は削除・複製時に対として扱います。各変更は通常の `EditorOperation` とロック検査を経て、コピーを作らない `validatePageDocument` で検証します。外部から受け取った文書は `parsePageDocument` で正規化し、password / file の利用者入力値は作業コピーにも保存しません。
 
 編集キャンバスは編集時・preview時とも submit を捕捉して止めます。公開rendererも常に送信先を持たず、dialog外では送信を中止するtrustedな`method="dialog"`を付けます。`PageEditor` のadapter、下書き保存、公開処理はフォーム回答を扱いません。回答送信、ファイル保存、完了画面、検証、CSRF、スパム対策、認証・認可はホストが別のtrusted binding/APIとして所有し、ページJSONへaction URL・method・イベントコードを保存しないでください。公開ホストは送信成功後にcoreの純粋関数`resolveFormCompletionPath`へ検証済み文書、form node ID、現在のtrusted候補一覧を渡し、`null`でない場合だけ移動できます。resolverは呼出しごとに公開状態とpathを再検証し、通信・送信・navigationは実行しません。文書とSSRの詳細は[文書・描画契約の「フォーム」](document-contract.md#フォーム)を正とします。
 
