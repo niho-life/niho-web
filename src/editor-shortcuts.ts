@@ -59,8 +59,10 @@ export function dispatchEditorShortcut(event: KeyboardEvent, blockedReason: stri
   const result = blockedReason ?? commands[definition.action]();
   if (typeof result === "string") {
     report(result);
-    event.preventDefault();
-    event.stopPropagation();
+    if (!blockedReason && ["copy", "cut", "paste", "pasteInside"].includes(definition.action)) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
   } else if (result) {
     event.preventDefault();
     event.stopPropagation();
