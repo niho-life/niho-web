@@ -201,6 +201,11 @@ test("English publication states stay separate from the Japanese draft and retry
 
     for (const [, label] of states.slice(1, -1)) {
       await click("状態を更新");
+      if (label === "公開済み") {
+        assert.equal(publication(), null, "正常な公開済み状態では画面上部の帯を表示しない");
+        await clickPage("別ページ"); await clickPage("ホーム");
+        continue;
+      }
       assert.ok(publication().querySelector("strong").textContent.includes(label), label);
     }
     assert.ok(button("英語公開を再試行"));
@@ -2136,7 +2141,10 @@ const historyButton = () => document.querySelector('.e-tools [aria-label="履歴
 test("the version panel lists revisions, loads more, shows a revision read-only, compares it and restores it as an edit", async () => {
   const host = historyHost(), app = await setup({ adapter: host.adapter });
   try {
+    const rollbackPanel = document.querySelector(".e-left .e-history");
+    assert.equal(rollbackPanel.hidden, true, "版の復元操作は履歴パネルに集約する");
     await press(historyButton()); assert.equal(historyButton().getAttribute("aria-pressed"), "true");
+    assert.equal(rollbackPanel.hidden, false);
     assert.ok(document.querySelector('.e-left [aria-label="バージョン管理"]')); assert.ok(document.querySelector(".e-inspector-context"));
     assert.deepEqual(host.calls.lists[0], { target: homeTarget });
     assert.deepEqual(versionRows().map((row) => row.querySelector(".e-version-time").textContent), ["現在の編集内容", localTime(host.entries[0].createdAt), localTime(host.entries[1].createdAt)]);
@@ -2158,6 +2166,16 @@ test("the version panel lists revisions, loads more, shows a revision read-only,
     assert.ok(document.querySelector(".e-notice").textContent.includes(`${localTime(host.entries[0].createdAt)} の版を作業コピーに復元しました。`));
     await press(historyButton()); assert.equal(input("ページタイトル").value, "以前のタイトル");
     await click("元に戻す"); assert.equal(input("ページタイトル").value, fixture.title);
+  } finally { await app.cleanup(); }
+});
+
+test("published rollback stays on the page panel when version history is not connected", async () => {
+  const app = await setup();
+  try {
+    const rollbackPanel = document.querySelector(".e-left .e-history");
+    assert.equal(rollbackPanel.hidden, false);
+    await tool("スタイル");
+    assert.equal(rollbackPanel.hidden, true);
   } finally { await app.cleanup(); }
 });
 
@@ -2188,6 +2206,29 @@ test("published revisions can start the rollback confirmation, snapshots require
     await click("下書き保存"); assert.equal(document.querySelector('[aria-label="スナップショットを作成"]').disabled, false);
     await click("ページ"); assert.equal(historyButton().getAttribute("aria-pressed"), "false");
     await clickPage("別ページ"); assert.equal(document.querySelector(".e-versions"), null);
+  } finally { await app.cleanup(); }
+});
+
+test("height auto is shown once in the size control", async () => {
+  const doc = structuredClone(fixture); doc.body[0].style.base.height = "auto";
+  const app = await setup({ document: doc });
+  try {
+    await tool("レイヤー"); await clickLayer("hero"); await editorTab("ボックス");
+    assert.equal(input("高さ").placeholder, "");
+    assert.equal(document.querySelector('select[aria-label="高さの単位"]').selectedOptions[0].textContent, "自動");
+  } finally { await app.cleanup(); }
+});
+
+test("tier summary keeps its editing tier and displayed width readable", async () => {
+  const app = await setup();
+  try {
+    await tool("レイヤー"); await clickLayer("hero");
+    const summary = document.querySelector(".e-tier-details > summary");
+    assert.match(summary.textContent, /編集\s*基本/u);
+    assert.match(summary.textContent, /表示\s*1280px/u);
+    assert.doesNotMatch(summary.textContent, /PC 1280px〜/u);
+    assert.ok(summary.textContent.includes("段・範囲"));
+    assert.match(summary.querySelector(".e-tier-summary > span:nth-child(2)").title, /PC 1280px〜/u);
   } finally { await app.cleanup(); }
 });
 
@@ -2342,7 +2383,8 @@ test("operation conflict keeps the local queue and retries a CLI write only afte
     assert.equal(external.status, "applied");
     await click("下書き保存");
     assert.equal(input("ページタイトル").value, "GUIの編集");
-    const retry = button("最新に適用して保存");
+    let retry;
+    for (let attempt = 0; attempt < 20 && !retry; attempt++) { await wait(10); retry = button("最新に適用して保存"); }
     assert.ok(retry?.disabled);
     const confirm = document.querySelector('[role="dialog"] input[type="checkbox"]');
     await act(async () => confirm.click()); await flush();

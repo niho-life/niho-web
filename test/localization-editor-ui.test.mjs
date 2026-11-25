@@ -78,7 +78,7 @@ async function localizedSite(siteId, sourceLocale, labels) {
   const targetDocument = (await materializeLocalizedPage(cfg, sourceDocument, collection, overlay)).document;
   return { cfg, sourceDocument, targetDocument, collection, overlay, labels, documentVersion: 1, localizationVersion: 1, siteVersion: 1, job: { state: "failed", message: "合成した失敗" } };
 }
-async function setup({ conflictOnce = false, conflictSourceChange = false, rejectCommandOnce = false, delayedRead = false, delayedSites = false, delayedSite = false, delayedSiteAfterFirst = false, rejectSiteOnce = false, rejectPageOnce = false, unsupportedLocale = false, extraPublicPage = false, recovery, localeRelease, readOnlySource = false, readOnlyTarget = false, previewComponent, initialTarget, pageTranslationUnavailable = false, hostSourceLocale = false, declaredSourceLocale = false, legacyTargetReview } = {}) {
+async function setup({ conflictOnce = false, conflictSourceChange = false, rejectCommandOnce = false, delayedRead = false, delayedSites = false, delayedSite = false, delayedSiteAfterFirst = false, rejectSiteOnce = false, rejectPageOnce = false, unsupportedLocale = false, extraPublicPage = false, recovery, localeRelease, versionHistory = false, readOnlySource = false, readOnlyTarget = false, previewComponent, initialTarget, pageTranslationUnavailable = false, hostSourceLocale = false, declaredSourceLocale = false, legacyTargetReview } = {}) {
   const kamakura = await localizedSite("kamakura", "ja", { source: "鎌倉ホーム", manual: "Manual Kamakura", candidate: "Candidate Kamakura" });
   if (hostSourceLocale) kamakura.sourceDocument.locale = "ja";
   if (legacyTargetReview !== undefined) kamakura.sourceDocument.meta = { ...kamakura.sourceDocument.meta, targetReviewBeforePublish: legacyTargetReview };
@@ -114,6 +114,7 @@ async function setup({ conflictOnce = false, conflictSourceChange = false, rejec
     },
     prepareRelease: async (request) => ({ ...request, confirmationToken: "demo", domain: "https://example.test", changes: [] }),
     release: async () => ({ status: "conflict" }),
+    ...(versionHistory ? { listRevisions: async () => ({ entries: [] }) } : {}),
     localization: {
       ...(declaredSourceLocale ? { sourceDocumentLocale: (siteId) => siteId === "kamakura" ? "ja" : undefined } : {}),
       ...(pageTranslationUnavailable ? { requestPageTranslation: false } : {}),
@@ -804,6 +805,28 @@ test("translated rollback preserves an older catalogue while newly published sou
     assert.doesNotMatch(document.querySelector('[role="dialog"]').textContent, /New source page/);
     const confirm = document.querySelector('[role="dialog"] input[type="checkbox"]'); await act(async () => confirm.click()); await flush(); await click("この言語全体版を復元"); await flush(7);
     assert.equal(calls.prepares[0].action, "rollback"); assert.equal(calls.prepares[0].rollbackReleaseId, "en-1"); assert.equal(calls.rollbacks[0].preparedReleaseId, "en-rollback-3"); assert.match(document.body.textContent, /言語全体版を新しい公開版として復元/);
+  } finally { await app.cleanup(); }
+});
+
+test("translated release rollback stays on the pages panel when version history is connected", async () => {
+  const current = { releaseId: "en-2", version: "release-v2", label: "English v2", publishedAt: "2026-10-20T00:00:00.000Z", pages: 1, sharedResources: 1 };
+  const prior = { ...current, releaseId: "en-1", version: "release-v1", label: "English v1" };
+  const app = await setup({ versionHistory: true, localeRelease: {
+    readRelease: async ({ siteId, locale }) => ({ siteId, locale, current, history: [prior] }),
+    prepareRelease: async (request) => ({ ...request, confirmationToken: "rollback-token", domain: "https://kamakura.example", expiresAt: "2030-01-01T00:00:00.000Z", optimisticVersion: "rollback-cas", previous: current, prepared: prior,
+      pages: [], sharedResources: [], incompleteReasons: [], complete: true }),
+    applyRelease: async () => ({ status: "conflict" }), rollbackRelease: async () => ({ status: "conflict" })
+  } });
+  try {
+    await click("English");
+    await waitForUi(() => input("戻す言語全体版")?.options.length === 2, "translated release history loads");
+    assert.equal(tool("履歴").disabled, true, "revision history is unavailable while editing a translation");
+    await clickTool("ページ");
+    const rollbackPanel = () => [...document.querySelectorAll(".e-left .e-history")].find((panel) => panel.querySelector("summary")?.textContent === "以前の言語全体版へ戻す");
+    assert.equal(rollbackPanel().hidden, false, "the language rollback remains available in the pages panel");
+    assert.equal(input("戻す言語全体版").options[1].value, "en-1");
+    await clickTool("レイヤー");
+    assert.equal(rollbackPanel().hidden, true, "the rollback follows the page panel when another panel opens");
   } finally { await app.cleanup(); }
 });
 
