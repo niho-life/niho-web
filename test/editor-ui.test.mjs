@@ -1002,7 +1002,13 @@ test("unsupported structured data stays visible and can be removed", async () =>
 test("renaming a page validates input, reviews impact, applies the exact plan and reloads", async () => {
   const host = pageHost(), app = await setup({ adapter: host.adapter });
   try {
-    await press(document.querySelector('[aria-label="私たちについて の操作"]'));
+    const trigger = document.querySelector('[aria-label="私たちについて の操作"]');
+    await press(trigger);
+    const menuItem = document.querySelector('[role="menuitem"]');
+    assert.equal(await shortcut(menuItem, "Escape"), true);
+    assert.equal(document.querySelector('[role="menu"]'), null);
+    assert.equal(document.activeElement, trigger);
+    await press(trigger);
     assert.ok(document.querySelector('[role="menu"]')); await press(button("名前とURLを変更"));
     assert.equal(inputIn(dialog(), "ページ名").value, "私たちについて"); assert.equal(inputIn(dialog(), "URL パス").value, "/about");
     assert.equal(buttonIn(dialog(), "影響を確認").disabled, true);
@@ -1222,6 +1228,137 @@ async function clickCanvas(nodeId) {
   await act(async () => frame.contentDocument.querySelector(`[data-nw-node="${nodeId}"]`).dispatchEvent(new frame.contentWindow.MouseEvent("click", { bubbles: true, cancelable: true }))); await settle();
 }
 const canvasNode = (nodeId) => document.querySelector("iframe").contentDocument.querySelector(`[data-nw-node="${nodeId}"]`);
+const canvasBody = () => document.querySelector("iframe").contentDocument.body;
+const layerButton = (id) => document.querySelector(`[data-node-id="${id}"] button.e-layer`);
+async function shortcut(target, key, modifiers = {}, focus = true) {
+  assert.ok(target, key);
+  const event = new target.ownerDocument.defaultView.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, composed: true, ...modifiers });
+  await act(async () => { if (focus) target.focus(); target.dispatchEvent(event); }); await settle();
+  return event.defaultPrevented;
+}
+
+test("shortcut matrix shares structure and history across parent, iframe and layer focus", async () => {
+  const app = await setup();
+  try {
+    await tool("レイヤー");
+    const positions = [
+      { name: "parent", target: () => document.body, command: { metaKey: true }, remove: "Delete" },
+      { name: "iframe", target: canvasBody, command: { ctrlKey: true }, remove: "Backspace" },
+      { name: "layer", target: () => layerButton("heading"), command: { metaKey: true }, remove: "Delete" },
+    ];
+    for (const { name, target, command, remove } of positions) {
+      await clickLayer("heading");
+      assert.ok(await shortcut(target(), "d", command), name);
+      assert.ok(canvasNode("heading_copy1"), name);
+      assert.ok(await shortcut(target(), "z", command), name);
+      assert.equal(canvasNode("heading_copy1"), null, name);
+      assert.equal(button("元に戻す").disabled, true, name);
+      assert.ok(await shortcut(target(), "Z", { ...command, shiftKey: true }), name);
+      assert.ok(canvasNode("heading_copy1"), name);
+      assert.ok(await shortcut(target(), "z", command), name);
+      assert.ok(await shortcut(target(), remove), name);
+      assert.equal(canvasNode("heading"), null, name);
+      assert.ok(await shortcut(document.body, "z", command), name);
+      assert.ok(canvasNode("heading"), name);
+      assert.equal(button("元に戻す").disabled, true, name);
+    }
+    assert.equal(await shortcut(canvasBody(), "d", { metaKey: true }), false, "no selected layer");
+    assert.match(document.querySelector(".e-notice").textContent, /要素を選択/);
+  } finally { await app.cleanup(); }
+});
+
+test("shortcut matrix preserves focused fields, direct editing, IME and dialog controls", async () => {
+  const app = await setup();
+  try {
+    await tool("レイヤー"); await clickLayer("heading");
+    for (const target of [document.body, canvasBody(), layerButton("heading")]) {
+      assert.equal(await shortcut(target, "Delete", { isComposing: true }), false);
+      assert.equal(await shortcut(target, "d", { ctrlKey: true, keyCode: 229 }), false);
+    }
+    const editable = document.createElement("div"); editable.setAttribute("contenteditable", "true");
+    const richChild = document.createElement("span"); editable.append(richChild); canvasBody().append(editable);
+    for (const target of [input("表示幅"), input("テキスト"), document.querySelector('select[aria-label="表示倍率"]'), richChild]) {
+      assert.equal(await shortcut(target, "d", { ctrlKey: true }), false);
+      assert.equal(await shortcut(target, "Delete"), false);
+      assert.equal(await shortcut(target, "?", { shiftKey: true }), false);
+    }
+    editable.remove();
+    assert.ok(canvasNode("heading")); assert.equal(canvasNode("heading_copy1"), null);
+    assert.ok(await shortcut(layerButton("heading"), "Escape"));
+    assert.equal(layerButton("hero").getAttribute("aria-selected"), "true");
+    assert.equal(document.activeElement, layerButton("hero"));
+    assert.ok(await shortcut(document.activeElement, "Enter"));
+    assert.equal(layerButton("heading").getAttribute("aria-selected"), "true");
+    assert.equal(document.activeElement, layerButton("heading"));
+    assert.ok(await shortcut(document.activeElement, "Enter"));
+    const heading = canvasNode("heading");
+    assert.equal(heading.contentEditable, "true");
+    const original = heading.textContent; heading.textContent = "入力中";
+    for (const target of [document.body, canvasBody(), layerButton("heading")]) {
+      assert.equal(await shortcut(target, "Delete", {}, false), false);
+      assert.match(document.querySelector(".e-notice").textContent, /入力を適用するか取り消して/);
+    }
+    assert.equal(await shortcut(heading, "Escape", { isComposing: true }), false);
+    assert.equal(heading.textContent, "入力中");
+    assert.ok(await shortcut(heading, "Escape"));
+    assert.equal(heading.textContent, original); assert.equal(canvasBody().querySelector(".nw-text-toolbar"), null);
+    assert.equal(layerButton("heading").getAttribute("aria-selected"), "true", "Esc cancels text before navigating");
+    assert.ok(await shortcut(canvasBody(), "?", { shiftKey: true }));
+    const help = document.querySelector('[role="dialog"][aria-label="ショートカット一覧"]'), close = help.querySelector("button");
+    assert.equal(help.querySelectorAll("tbody tr").length, 10);
+    assert.equal(document.activeElement, close);
+    assert.equal(await shortcut(close, "Delete"), false);
+    assert.equal(await shortcut(canvasBody(), "Delete", {}, false), false);
+    assert.match(document.querySelector(".e-notice").textContent, /ダイアログを閉じて/);
+    assert.ok(await shortcut(close, "Escape"));
+    assert.equal(document.querySelector('[role="dialog"]'), null);
+    assert.ok(canvasNode("heading"));
+  } finally { await app.cleanup(); }
+});
+
+test("shortcut matrix denies mutations with reasons in read-only, locked, history and preview modes", async () => {
+  const host = historyHost();
+  const cases = [
+    { options: { readOnly: { reason: "原文は業務画面で編集します。" } }, expected: /原文は業務画面/ },
+    { options: { locks: [{ nodeId: "heading", fields: ["children"], reason: "ホストが管理する見出し" }] }, expected: /ホストが管理する見出し/ },
+    { options: { adapter: host.adapter }, enter: async () => { await press(historyButton()); await press(versionRows()[1]); }, expected: /版の表示を閉じて/ },
+    { options: {}, enter: () => click("プレビュー"), expected: /プレビューを閉じて/ },
+  ];
+  for (const { options, enter, expected } of cases) {
+    const app = await setup(options);
+    try {
+      await tool("レイヤー"); await clickLayer("heading"); await enter?.();
+      for (const target of [document.body, canvasBody(), layerButton("heading")]) {
+        assert.equal(await shortcut(target, "Delete", {}, false), false, String(expected));
+        assert.match(document.querySelector(".e-notice").textContent, expected);
+        assert.ok(canvasNode("heading"));
+      }
+      assert.equal(await shortcut(canvasBody(), "d", { metaKey: true }, false), false);
+      assert.equal(canvasNode("heading_copy1"), null);
+    } finally { await app.cleanup(); }
+  }
+});
+
+test("shortcut zoom only changes the canvas and releases listeners from replaced iframe documents", async () => {
+  const app = await setup();
+  try {
+    const scale = () => document.querySelector('select[aria-label="表示倍率"]').value;
+    const oldBody = canvasBody(), OldKeyboardEvent = oldBody.ownerDocument.defaultView.KeyboardEvent;
+    assert.ok(await shortcut(oldBody, "0", { ctrlKey: true })); assert.equal(scale(), "1");
+    assert.ok(await shortcut(document.body, "+", { metaKey: true, shiftKey: true })); assert.equal(scale(), "1.5");
+    assert.ok(await shortcut(oldBody, "-", { metaKey: true })); assert.equal(scale(), "1");
+    assert.equal(button("元に戻す").disabled, true);
+    await clickPage("別ページ");
+    const frame = document.querySelector("iframe");
+    await act(async () => frame.dispatchEvent(new dom.window.Event("load")));
+    assert.notEqual(canvasBody(), oldBody);
+    const oldEvent = new OldKeyboardEvent("keydown", { key: "-", ctrlKey: true, bubbles: true, cancelable: true });
+    await act(async () => oldBody.dispatchEvent(oldEvent));
+    assert.equal(oldEvent.defaultPrevented, false); assert.equal(scale(), "1");
+    assert.ok(await shortcut(canvasBody(), "-", { ctrlKey: true })); assert.equal(scale(), "0.75");
+  } finally { await app.cleanup(); }
+});
+
 const png = (name, size) => new File([new Uint8Array(size)], name, { type: "image/png" });
 const imageTypes = ["image/jpeg", "image/png", "image/webp", "image/avif", "image/gif"];
 const garden = { id: "garden", name: "庭の緑.png", mimeType: "image/png", bytes: 2048, width: 600, height: 400, alt: "庭の緑", src: "/media/garden.png", thumbnailUrl: "/media/garden.png" };
@@ -1344,6 +1481,9 @@ test("staff upload an image, set its alt, replace a page image, save the draft a
     await tool("レイヤー"); await clickCanvas("photo"); await editorTab("画像");
     await click("画像を置き換え");
     assert.equal(assetPanel().closest("[hidden]"), null); assert.equal(assetPanel().querySelector("h2").textContent, "画像を選ぶ");
+    assert.equal(await shortcut(assetPanel().querySelector("h2"), "Escape"), true);
+    assert.equal(assetPanel().closest("[hidden]") !== null, true);
+    await click("画像を置き換え");
     assert.equal(assetCard("利用案内.pdf"), undefined);
     await chooseAsset("海辺の朝.png");
     assert.ok(document.body.textContent.includes("画像を置き換えました。代替テキストを確認してください。"));
