@@ -911,6 +911,13 @@ test("shortcuts deny target structure changes and still undo and redo translated
     }
     assert.ok(frame.contentDocument.querySelector('[data-nw-node="heading"]'));
     assert.equal(frame.contentDocument.querySelector('[data-nw-node="heading_copy1"]'), null);
+    assert.equal(await key(frame.contentDocument.body, "ArrowDown"), false);
+    assert.equal(frame.contentDocument.querySelector(".nw-spacing-handle"), null);
+    assert.ok(await key(frame.contentDocument.body, "k", { metaKey: true }));
+    const palette = document.querySelector('[role="dialog"][aria-label="コマンドパレット"]');
+    const paletteActions = [...palette.querySelectorAll('section[aria-label="操作"] button')];
+    for (const name of ["複製", "削除", "選択要素を下へ"]) assert.equal(paletteActions.find((button) => button.textContent.startsWith(name)).disabled, true);
+    assert.ok(await key(palette.querySelector("input"), "Escape"));
     const before = input("テキスト").value;
     await change(input("テキスト"), "Shortcut edit");
     assert.ok(await key(frame.contentDocument.body, "z", { ctrlKey: true }));

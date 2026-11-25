@@ -8,6 +8,7 @@ import { createPageEditingApi } from "@niho/web/editing-api";
 import { createPageEditingApiClient } from "@niho/web/editing-client";
 import { editDocumentById } from "@niho/web/editor-model";
 import { createBlankEmbedRegistry, pageScope, parsePageDocument } from "@niho/web/core";
+import { editorShortcuts } from "../dist/editor-shortcuts.js";
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: "https://editor.example.test" });
 for (const key of ["window", "document", "HTMLElement", "HTMLInputElement", "Element", "Event", "MouseEvent"]) globalThis[key] = dom.window[key];
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -1249,6 +1250,159 @@ async function shortcut(target, key, modifiers = {}, focus = true) {
   await act(async () => { if (focus) target.focus(); target.dispatchEvent(event); }); await settle();
   return event.defaultPrevented;
 }
+const commandDialog = () => document.querySelector('[role="dialog"][aria-label="コマンドパレット"]');
+const canvasOrder = (id) => [...canvasNode(id).children].map((node) => node.dataset.nwNode);
+async function dragEvent(target, type, dataTransfer, options = {}) {
+  const event = new target.ownerDocument.defaultView.MouseEvent(type, { bubbles: true, cancelable: true, ...options });
+  Object.defineProperty(event, "dataTransfer", { value: dataTransfer });
+  await act(async () => target.dispatchEvent(event));
+  await settle();
+}
+async function pointer(target, type, clientY) {
+  const event = new target.ownerDocument.defaultView.MouseEvent(type, { bubbles: true, cancelable: true, clientY });
+  Object.defineProperty(event, "pointerId", { value: 1 });
+  await act(async () => target.dispatchEvent(event));
+  await settle();
+}
+
+test("canvas arrows reorder siblings in one history step while layer arrows move focus", async () => {
+  const app = await setup();
+  try {
+    await tool("レイヤー"); await clickLayer("lead");
+    assert.ok(await shortcut(layerButton("lead"), "ArrowUp"));
+    assert.equal(document.activeElement, layerButton("heading"));
+    assert.deepEqual(canvasOrder("hero"), ["heading", "lead", "link"]);
+    assert.ok(await shortcut(canvasBody(), "ArrowUp"));
+    assert.deepEqual(canvasOrder("hero"), ["lead", "heading", "link"]);
+    assert.ok(await shortcut(canvasBody(), "z", { metaKey: true }));
+    assert.deepEqual(canvasOrder("hero"), ["heading", "lead", "link"]);
+    assert.equal(button("元に戻す").disabled, true);
+    assert.ok(await shortcut(canvasBody(), "ArrowDown"));
+    assert.deepEqual(canvasOrder("hero"), ["heading", "link", "lead"]);
+    assert.ok(await shortcut(canvasBody(), "z", { metaKey: true }));
+    assert.deepEqual(canvasOrder("hero"), ["heading", "lead", "link"]);
+  } finally { await app.cleanup(); }
+});
+
+test("Alt-drag duplicates and moves to another parent in one undo step", async () => {
+  const page = structuredClone(fixture);
+  page.body.push({ id: "destination", type: "element", tag: "section", children: [] });
+  const app = await setup({ document: page });
+  try {
+    await clickCanvas("heading");
+    const transfer = { setData() {} }, destination = canvasNode("destination");
+    destination.getBoundingClientRect = () => ({ left: 0, top: 0, bottom: 100, width: 100, height: 100 });
+    await dragEvent(canvasNode("heading"), "dragstart", transfer, { altKey: true });
+    await dragEvent(destination, "dragover", transfer, { clientY: 50 });
+    assert.equal(transfer.dropEffect, "copy");
+    assert.equal(canvasNode("heading_copy1"), null);
+    await dragEvent(destination, "drop", transfer, { clientY: 50 });
+    assert.deepEqual(canvasOrder("hero"), ["heading", "lead", "link"]);
+    assert.deepEqual(canvasOrder("destination"), ["heading_copy1"]);
+    await click("元に戻す");
+    assert.deepEqual(canvasOrder("destination"), []);
+    assert.deepEqual(canvasOrder("hero"), ["heading", "lead", "link"]);
+    assert.equal(button("元に戻す").disabled, true);
+    await click("やり直す");
+    assert.deepEqual(canvasOrder("destination"), ["heading_copy1"]);
+  } finally { await app.cleanup(); }
+});
+
+test("spacing handles preview without history and commit only to the selected breakpoint", async () => {
+  const app = await setup();
+  try {
+    await clickCanvas("hero"); await editorTab("ボックス"); await click("タブレット 768px〜");
+    const canvas = canvasBody(), handle = (property) => canvas.querySelector(`[data-spacing="${property}"]`);
+    const hero = canvasNode("hero"), originalStyle = hero.getAttribute("style");
+    assert.ok(handle("paddingTop")); assert.ok(handle("gap"));
+    await pointer(handle("paddingTop"), "pointerdown", 20);
+    await pointer(handle("paddingTop"), "pointermove", 42);
+    const preview = Number.parseFloat(hero.style.paddingTop);
+    assert.ok(preview > 0);
+    assert.equal(button("元に戻す").disabled, true);
+    await pointer(handle("paddingTop"), "pointercancel", 42);
+    assert.equal(hero.getAttribute("style"), originalStyle);
+    await pointer(handle("paddingTop"), "pointerdown", 20);
+    await pointer(handle("paddingTop"), "pointermove", 42);
+    await pointer(handle("paddingTop"), "pointerup", 42);
+    await click("下書き保存");
+    const lastStyle = () => app.calls.saves.at(-1).document.body[0].style;
+    assert.equal(lastStyle().base.paddingTop, undefined);
+    assert.equal(lastStyle().responsive.find((entry) => entry.minWidth === 768).declarations.paddingTop, preview);
+    await click("元に戻す");
+    assert.equal(button("元に戻す").disabled, true);
+    await pointer(handle("gap"), "pointerdown", 20);
+    await pointer(handle("gap"), "pointermove", 30);
+    await pointer(handle("gap"), "pointerup", 30);
+    await click("下書き保存");
+    assert.equal(lastStyle().base.gap, 16);
+    const tablet = lastStyle().responsive.find((entry) => entry.minWidth === 768).declarations;
+    assert.equal(tablet.gap, 26);
+    assert.equal(tablet.paddingTop, undefined);
+    await click("元に戻す");
+    assert.equal(button("元に戻す").disabled, true);
+  } finally { await app.cleanup(); }
+});
+
+test("spacing handles hide breakpoint properties protected by a specific style lock", async () => {
+  const app = await setup({ locks: [{ nodeId: "hero", fields: ["style.responsive.paddingTop"], reason: "Tablet padding is host-managed" }] });
+  try {
+    await clickCanvas("hero"); await editorTab("ボックス"); await click("タブレット 768px〜");
+    const canvas = canvasBody();
+    assert.equal(canvas.querySelector('[data-spacing="paddingTop"]'), null);
+    assert.ok(canvas.querySelector('[data-spacing="paddingRight"]'));
+  } finally { await app.cleanup(); }
+});
+
+test("command palette searches layer names, full text and commands and guards unsaved navigation", async () => {
+  const page = structuredClone(fixture);
+  page.body[0].children[0].name = "メインタイトル";
+  const app = await setup({ document: page });
+  try {
+    const search = () => commandDialog().querySelector('input[type="search"]');
+    assert.ok(await shortcut(canvasBody(), "k", { metaKey: true }));
+    assert.equal(document.activeElement, search());
+    await change(search(), "メインタイトル");
+    assert.ok(await shortcut(search(), "Enter"));
+    assert.equal(commandDialog(), null);
+    await click("コマンドパレット");
+    await change(search(), "海のそばで過ごす");
+    assert.match(commandDialog().querySelector('[aria-label="要素"]').textContent, /メインタイトル/u);
+    assert.ok(await shortcut(search(), "Enter"));
+    await click("コマンドパレット"); await change(search(), "複製");
+    assert.match(commandDialog().querySelector("kbd").textContent, /⌘D/u);
+    assert.ok(await shortcut(search(), "Enter"));
+    assert.ok(canvasNode("heading_copy1"));
+    await click("コマンドパレット"); await change(search(), "別ページ");
+    assert.ok(await shortcut(search(), "Enter"));
+    assert.ok(document.querySelector('[role="dialog"][aria-label="未保存の変更"]'));
+    assert.equal(app.calls.reads.length, 1);
+    await click("変更を破棄して移動");
+    assert.equal(app.calls.reads.at(-1).pageId, "other");
+  } finally { await app.cleanup(); }
+});
+
+test("locked and read-only values reject direct manipulation and palette edits", async () => {
+  const cases = [{ locks: [{ nodeId: "hero", fields: ["*"], reason: "ホスト管理" }] }, { readOnly: { reason: "読み取り専用ページ" } }];
+  for (const options of cases) {
+    const app = await setup(options);
+    try {
+      await clickCanvas("lead");
+      assert.equal(await shortcut(canvasBody(), "ArrowUp"), false);
+      assert.deepEqual(canvasOrder("hero"), ["heading", "lead", "link"]);
+      assert.equal(canvasBody().querySelector(".nw-spacing-handle"), null);
+      const transfer = { setData() {} };
+      await dragEvent(canvasNode("lead"), "dragstart", transfer, { altKey: true });
+      await dragEvent(canvasNode("link"), "drop", transfer, { altKey: true });
+      assert.equal(canvasNode("lead_copy1"), null);
+      await click("コマンドパレット");
+      const remove = [...commandDialog().querySelectorAll('section[aria-label="操作"] button')].find((item) => item.textContent.startsWith("削除"));
+      assert.equal(remove.disabled, true);
+      assert.ok(commandDialog().querySelector('section[aria-label="ページ"] button'));
+      assert.equal(button("元に戻す").disabled, true);
+    } finally { await app.cleanup(); }
+  }
+});
 
 test("shortcut matrix shares structure and history across parent, iframe and layer focus", async () => {
   const app = await setup();
@@ -1294,6 +1448,8 @@ test("shortcut matrix preserves focused fields, direct editing, IME and dialog c
       assert.equal(await shortcut(target, "d", { ctrlKey: true }), false);
       assert.equal(await shortcut(target, "Delete"), false);
       assert.equal(await shortcut(target, "?", { shiftKey: true }), false);
+      assert.equal(await shortcut(target, "ArrowDown"), false);
+      assert.equal(await shortcut(target, "k", { metaKey: true }), false);
     }
     editable.remove();
     assert.ok(canvasNode("heading")); assert.equal(canvasNode("heading_copy1"), null);
@@ -1318,7 +1474,7 @@ test("shortcut matrix preserves focused fields, direct editing, IME and dialog c
     assert.equal(layerButton("heading").getAttribute("aria-selected"), "true", "Esc cancels text before navigating");
     assert.ok(await shortcut(canvasBody(), "?", { shiftKey: true }));
     const help = document.querySelector('[role="dialog"][aria-label="ショートカット一覧"]'), close = help.querySelector("button");
-    assert.equal(help.querySelectorAll("tbody tr").length, 10);
+    assert.deepEqual([...help.querySelectorAll("tbody kbd")].map((element) => element.textContent), editorShortcuts.map(({ keyLabel }) => keyLabel));
     assert.equal(document.activeElement, close);
     assert.equal(await shortcut(close, "Delete"), false);
     assert.equal(await shortcut(canvasBody(), "Delete", {}, false), false);
