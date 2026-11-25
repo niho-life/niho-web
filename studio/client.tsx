@@ -368,10 +368,10 @@ function App() {
 
   const preloadEditor = useCallback((project: Project) => {
     if (session.status !== "ready") return;
-    if (managedProject(project, session.config)) { void import("./managed-editor.js"); return; }
+    if (managedProject(project, session.config)) { void import("./managed-editor.js").catch(() => undefined); return; }
     const integration = resolveTrustedIntegration(project.id, project.site.id);
     if (integration?.environment === "production" && integrationIdentity(integration.registration.projectId, integration.registration.siteId) === integrationIdentity("project-kamakura", "kamakura")) {
-      void import("./kamakura-editor.js");
+      void import("./kamakura-editor.js").catch(() => undefined);
     }
   }, [session]);
 
