@@ -41,6 +41,16 @@ test("editor changes text, link, image and responsive styles through the core va
     { type: "add", parentId: "heading", node: newElement("section", "invalid") }
   ]) assert.throws(() => editDocument(next, operation), DocumentValidationError);
 });
+test("編集に渡したノードの未知フィールドは正規化で捨てずに拒否する", () => {
+  const invalidNode = { ...newElement("section", "future"), futureContent: true };
+  const invalidDocument = doc();
+  invalidDocument.body[0] = { ...invalidDocument.body[0], futureContent: true };
+  for (const operation of [
+    { type: "add", parentId: null, node: invalidNode },
+    { type: "addMany", parentId: null, nodes: [invalidNode] },
+    { type: "restore", document: invalidDocument },
+  ]) assert.throws(() => editDocument(doc(), operation), DocumentValidationError);
+});
 test("editor operations share untouched branches and keep parse output byte-for-byte canonical", () => {
   const original = parsePageDocument(fixture), before = structuredClone(original);
   const textEdit = editDocument(original, { type: "text", path: [0, 0, 0], value: "構造共有" });

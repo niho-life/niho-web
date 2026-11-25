@@ -9,7 +9,7 @@ import { normalizeNodeFragment } from "./editor-fragment.js";
 import type { Appear, AssetReference, BlockContract, ComponentLibrary, ComponentNode, DesignToken, ElementNode, HiddenRange, IconName, InstanceNode, NodeStyle, PageDocument, PageMeta, PageNode, PublicPropValue, StateName, StateProperty, StyleDeclarations, StyleProperty, StyleValue, TextStyle } from "./types.js";
 import { parseStyle, parseTextStyles, parseTokens, stateNames, textStyleProperties } from "./style-values.js";
 import { assertMotionStylePatch, sameMotionValue, type MotionStylePatch } from "./builder.js";
-import { identifier, isSafeHttpsOrigin, isSafePublicUrl, keys, line, record } from "./validation-utils.js";
+import { fail, identifier, isSafeHttpsOrigin, isSafePublicUrl, keys, line, record } from "./validation-utils.js";
 import { normalizeEmbedSource } from "./embeds.js";
 
 export { nodeAt, walkNodes, type NodePath };
@@ -161,8 +161,10 @@ const canonicalNodeKeys: Readonly<Record<PageNode["type"], readonly string[]>> =
   component: ["type", "id", "name", "block", "props", "style", "slots"],
   instance: ["type", "id", "name", "component", "props", "style"],
 };
-function orderedNode(node: PageNode): PageNode {
-  const keys = canonicalNodeKeys[node.type].filter((key) => Object.hasOwn(node, key));
+function orderedNode(node: PageNode, path: string): PageNode {
+  const allowed = canonicalNodeKeys[node.type];
+  if (Object.keys(node).some((key) => !allowed.includes(key))) fail(path, "unknown field");
+  const keys = allowed.filter((key) => Object.hasOwn(node, key));
   if (Object.keys(node).every((key, index) => key === keys[index])) return node;
   return Object.fromEntries(keys.map((key) => [key, (node as unknown as Record<string, unknown>)[key]])) as unknown as PageNode;
 }
@@ -180,12 +182,13 @@ function canonicalizeEditedDocument(document: PageDocument, original: PageDocume
     let result: PageNode[] | undefined;
     for (let index = 0; index < nodes.length; index++) {
       const node = nodes[index]!;
+      const path = `${parentPath}[${index}]`;
       const changed = node.type === "text" ? !originalText.has(node) : originalNodes.get(node.id) !== node;
       if (!changed) continue;
       let normalized = node;
       if (node.type === "element") {
         let element = node;
-        const path = `${parentPath}[${index}]`, children = normalizeNodes(node.children, `${path}.children`);
+        const children = normalizeNodes(node.children, `${path}.children`);
         if (children !== node.children) element = { ...element, children };
         if (element.attrs && (element.tag === "input" || element.tag === "button") && element.attrs.type === undefined) {
           element = { ...element, attrs: { ...element.attrs, type: element.tag === "input" ? "text" : "button" } };
@@ -207,7 +210,7 @@ function canonicalizeEditedDocument(document: PageDocument, original: PageDocume
           if (!Object.keys(slots).length) delete (normalized as ComponentNode).slots;
         }
       }
-      normalized = orderedNode(normalized);
+      normalized = orderedNode(normalized, path);
       if (normalized !== node) { result ??= nodes.slice(); result[index] = normalized; }
     }
     return result ?? nodes;
