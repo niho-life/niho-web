@@ -177,7 +177,7 @@ function applyPageOperationsLocally(document, operations) {
   const before = document;
   let after = structuredClone(document);
   for (let index = 0; index < operations.length; index++) {
-    try { after = editDocumentById(after, operations[index]); }
+    try { after = editDocumentById(after, operations[index], {}, [], undefined, undefined, false); }
     catch (error) {
       const problem = editingOperationProblem(error, index);
       throw new CliError("validation_failed", 422, { index, reason: problem.reason.slice(0, 400), ...(operationNodeId(operations[index]) ? { nodeId: operationNodeId(operations[index]) } : {}) });
@@ -202,6 +202,7 @@ async function runPageApply(client, pageId, extra, values) {
   const discovery = await apiCall(() => client.discover(AbortSignal.timeout(30_000)));
   const supportsApply = discovery.operations.some((operation) => operation.id === "pages.apply");
   if (!supportsApply && values["operation-id"] !== undefined) throw new CliError("operation_id_requires_pages_apply");
+  if (supportsApply && values["operation-id"] !== undefined && values["expected-version"] === undefined) throw new CliError("operation_id_requires_expected_version", 400);
   const snapshot = await apiCall(() => client.read(target, AbortSignal.timeout(30_000)));
   const baseVersion = values["expected-version"] ?? snapshot.version;
   if (!isEditingApiVersion(baseVersion)) throw new CliError("invalid_arguments");
