@@ -1328,7 +1328,7 @@ test("staff upload an image, set its alt, replace a page image, save the draft a
   });
   app = await setup({ document: withImage(), assets: library });
   try {
-    assert.equal(assetPanel().closest("[hidden]") !== null, true);
+    assert.equal(assetPanel(), null, "the asset panel stays unmounted until it is first opened");
     await tool("アセット"); assert.equal(assetPanel().closest("[hidden]"), null);
     assert.ok(assetCard("庭の緑.png").getAttribute("aria-label").startsWith("庭の緑.png（画像・600×400・2 KB"));
     assert.ok(assetCard("利用案内.pdf").getAttribute("aria-label").startsWith("利用案内.pdf（PDF・4 KB"));
@@ -1626,7 +1626,7 @@ test("CMS photos show their origin and terms read-only, without save, upload, fo
     await click("一覧に戻る"); await tool("アップロード"); await chooseAsset("庭の緑.png");
     assert.equal(input("名前").readOnly, false); assert.ok(button("変更を保存")); assert.ok(button("削除…")); assert.ok(input("保存先フォルダ"));
     await click("一覧に戻る"); const beforeReconnect = calls.lists.length; await tool("接続");
-    assert.equal(calls.lists.length, beforeReconnect); assert.deepEqual(cardNames(), ["朝ヨガ.png"]);
+    assert.equal(calls.lists.length, beforeReconnect, "reopening the connection tab reuses its cached listing"); assert.deepEqual(cardNames(), ["朝ヨガ.png"]);
     assert.ok(!assetPanel().textContent.includes("NIHO の体験原稿で公開を許可された写真"), "一覧の上に出所の説明文を出さない");
     assert.equal(assetButton("アップロード"), undefined); assert.equal(button("フォルダを追加"), undefined); assert.equal(assetPanel().querySelector('select[aria-label="フォルダ"]'), null);
     assert.ok(!assetPanel().textContent.includes("このサイトにアセットを追加する権限がありません。"));
@@ -1737,7 +1737,7 @@ test("source listing failures and assets from undeclared or other sources fail c
     listAssets: async (query, signal) => {
       lists.push(query); const result = await library.listAssets(query, signal);
       if (mode === "unknown") return { ...result, assets: [...result.assets, { ...result.assets[0], provider: "other", id: "x" }] };
-      if (mode === "mixed" && query.provider === "uploads") return { ...result, assets: [...result.assets, ...(await library.listAssets({ ...query, provider: "experience" }, signal)).assets] };
+      if (mode === "mixed" && query.provider === "uploads") return { ...result, assets: [...result.assets, ...(await library.listAssets({ ...query, search: "", provider: "experience" }, signal)).assets] };
       return result;
     },
     uploadAsset: async (request, signal) => {
@@ -1755,7 +1755,7 @@ test("source listing failures and assets from undeclared or other sources fail c
     mode = "mixed"; await tool("アップロード");
     await change(assetPanel().querySelector('input[aria-label="アセットを検索"]'), "png"); await wait(300);
     assert.ok(assetPanel().textContent.includes("出所が確認できないアセットは利用できません。")); assert.equal(assetPanel().querySelectorAll(".e-asset-card").length, 0);
-    mode = "ok"; await click("再読み込み"); assert.deepEqual(cardNames(), ["庭の緑.png"]);
+    mode = "ok"; await change(assetPanel().querySelector('input[aria-label="アセットを検索"]'), ""); await wait(300); assert.deepEqual(cardNames(), ["庭の緑.png"]);
     mode = "upload"; await uploadFiles([png("混入.png", 10)]);
     assert.deepEqual(uploads, ["uploads"]);
     assert.ok(assetPanel().querySelector(".e-asset-uploads").textContent.includes("混入.png: 出所が確認できないアセットは利用できません。")); assert.deepEqual(cardNames(), ["庭の緑.png"]);
@@ -1775,6 +1775,45 @@ test("recently used assets are requested with recent, also while picking, and le
   } finally { await app.cleanup(); }
   const legacy = await setup({ assets: createMemoryAssetLibrary({ siteId: "demo", seed: [garden] }) });
   try { await tool("アセット"); assert.equal(button("最近使った"), undefined); assert.equal(document.querySelector('[aria-label="アセットの出所"]'), null); } finally { await legacy.cleanup(); }
+});
+
+test("processing asset listings are requested again after the editor reloads", async () => {
+  let processing = true, calls = 0;
+  const library = createMemoryAssetLibrary({ siteId: "demo", seed: [garden] });
+  const assets = { ...library, listAssets: async (query, signal) => {
+    calls++;
+    const result = await library.listAssets(query, signal);
+    return { ...result, assets: result.assets.map((asset) => ({ ...asset, status: processing ? "processing" : "ready" })) };
+  } };
+  const app = await setup({ assets });
+  try {
+    await tool("アセット"); await settle();
+    assert.equal(calls, 1);
+    assert.match(assetCard("庭の緑.png").getAttribute("aria-label"), /処理中/u);
+    processing = false;
+    await reloadEditor(); await tool("アセット"); await settle();
+    assert.equal(calls, 2, "a processing result was not stored in the cross-mount cache");
+    assert.doesNotMatch(assetCard("庭の緑.png").getAttribute("aria-label"), /処理中/u);
+  } finally { await app.cleanup(); }
+});
+
+test("upload continues when the already opened asset panel is hidden", async () => {
+  const library = createMemoryAssetLibrary({ siteId: "demo", seed: [garden], upload: { accept: imageTypes, maxBytes: 1024 * 1024 } });
+  let uploadSignal, finishUpload;
+  const assets = { ...library, uploadAsset: (request, signal) => new Promise((resolve, reject) => {
+    uploadSignal = signal;
+    finishUpload = async () => { try { resolve(await library.uploadAsset(request, signal)); } catch (error) { reject(error); } };
+    signal.addEventListener("abort", () => reject(new dom.window.DOMException("aborted", "AbortError")), { once: true });
+  }) };
+  const app = await setup({ assets });
+  try {
+    await tool("アセット"); await uploadFiles([png("継続中.png", 10)]);
+    assert.ok(uploadSignal); assert.equal(uploadSignal.aborted, false);
+    await tool("ページ");
+    assert.equal(uploadSignal.aborted, false, "switching tools does not abort the upload");
+    await act(async () => { await finishUpload(); }); await settle();
+    assert.ok(assetPanel().textContent.includes("継続中.png: 追加しました。"));
+  } finally { await app.cleanup(); }
 });
 // 保存状態・自動保存・端末内の復元・競合の比較・版履歴（docs/save-history-contract.md）
 const { createBrowserRecoveryStore, RecoveryTooLargeError } = await import("@niho/web/history");

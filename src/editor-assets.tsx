@@ -23,7 +23,9 @@ export function socialImageProblem(asset: Pick<LibraryAsset, "mimeType">): strin
 export const coverAlt = (asset: Pick<LibraryAsset, "alt">, current: string): string => asset.alt && asset.alt.length <= metaLimits.altLength ? asset.alt : current;
 export type AssetAction = "replace" | "background" | "insert" | "pick";
 export type AssetLibraryPanelProps = {
-  adapter: AssetLibraryAdapter; siteId: string; mode: "library" | "pick"; pickTitle?: string | undefined; epoch?: number | undefined;
+  adapter: AssetLibraryAdapter; siteId: string; mode: "library" | "pick"; pickTitle?: string | undefined;
+  /** 文書読込のたびに出所情報を再検証する。 */
+  epoch?: number | undefined;
   /** 非表示の間は通信を止め、選択・詳細の画面状態は保持する。 */
   active?: boolean | undefined;
   /** pick mode で一覧と配置可否を絞る。既定は画像。 */
@@ -169,10 +171,12 @@ function listCacheKey(query: AssetListQuery): string {
 }
 function cachedAssetList(adapter: AssetLibraryAdapter, siteId: string, key: string): AssetListResult | undefined {
   const lists = assetListCache.get(adapter)?.get(siteId), result = lists?.get(key);
+  if (result?.assets.some((asset) => asset.status === "processing")) { lists?.delete(key); return undefined; }
   if (result && lists) { lists.delete(key); lists.set(key, result); }
   return result;
 }
 function storeAssetList(adapter: AssetLibraryAdapter, siteId: string, key: string, result: AssetListResult): void {
+  if (result.assets.some((asset) => asset.status === "processing")) { invalidateAssetList(adapter, siteId, key); return; }
   let sites = assetListCache.get(adapter); if (!sites) { sites = new Map(); assetListCache.set(adapter, sites); }
   let lists = sites.get(siteId); if (!lists) { lists = new Map(); sites.set(siteId, lists); }
   lists.delete(key); lists.set(key, result);
@@ -215,7 +219,9 @@ export function AssetLibraryPanel(props: AssetLibraryPanelProps) {
   latest.current = props;
   const listKind = mode === "pick" ? pickKind : kind;
   const sources = sourceState.adapter === adapter && sourceState.siteId === siteId ? sourceState : { status: "loading" as const, items: [] as readonly AssetProvider[] };
-  const legacy = !adapter.listProviders, providers = !legacy && sources.status === "ready" ? sources.items : undefined;
+  const currentProviders = providersEpoch.current;
+  const providersCurrent = currentProviders?.adapter === adapter && currentProviders.siteId === siteId && currentProviders.epoch === epoch && currentProviders.reload === sourceReload;
+  const legacy = !adapter.listProviders, providers = !legacy && sources.status === "ready" && providersCurrent ? sources.items : undefined;
   const scopedProviders = useMemo(() => providers?.filter((item) => !providerKind || item.kind === providerKind), [providers, providerKind]);
   const providerOf = (asset: LibraryAsset) => providers?.find((item) => item.id === asset.provider);
   const current = scopedProviders && source !== null ? scopedProviders.find((item) => item.id === source) : undefined, offline = current?.status === "unavailable";
