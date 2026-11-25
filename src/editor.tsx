@@ -865,10 +865,6 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         const problem = operations.map((next) => localizedOperationProblem(current.history.present, next, localization.context!.collection)).find(Boolean);
         if (problem) return problem;
       }
-      if (operations.length === 1 && operations[0]!.type === "replaceChildren") {
-        const operation = operations[0]!, target = nodeAt(current.history.present, operation.path);
-        if (target.type === "element" && JSON.stringify(target.children) === JSON.stringify(operation.children)) { setDraft(null); return undefined; }
-      }
       const edit = (page: PageDocument, operation: EditorOperation) => editDocument(page, operation, blocks, current.locks, lib, activeSiteStyles);
       const next = adapter.applyOperations && !targetMode
         ? queuePageEdit(current.operationQueue, current.history.present, operations, edit, operationApplier(blocks, current.locks, lib, activeSiteStyles))
