@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { build } from "esbuild";
+import { JSDOM } from "jsdom";
 
 async function loadKamakuraCatalogContract() {
   const result = await build({
@@ -85,6 +86,105 @@ function catalog(pageTitle = "NIHO Kamakura") {
   };
 }
 
+test("Studio の編集画面は初回一覧と文書を各1回だけ読み、Access・参加資格のエラー表示を保つ", async (t) => {
+  const client = await build({
+    entryPoints: [new URL("../studio/client.tsx", import.meta.url).pathname],
+    bundle: true, format: "iife", platform: "browser", target: "es2022", write: false,
+    define: { "process.env.NODE_ENV": '"production"' }
+  });
+  const base = "/api/projects/project-kamakura/sites/kamakura";
+  const canonical = "/projects/project-kamakura/sites/kamakura/editor";
+  const source = catalog(), [page] = source.pages, site = source.sites[0];
+  const project = { id: "project-kamakura", name: "鎌倉プロジェクト", site, members: [] };
+  const directory = { status: "ready", entries: [{ project, summary: { projectId: project.id, siteId: site.id, publicationStatus: "published",
+    publishedUrl: site.domains[0], thumbnail: null, updatedAt: "2026-11-26T00:00:00Z", lastAccessedAt: null, members: { status: "ready", data: [] } } }] };
+  const config = { schemaVersion: 1, siteId: site.id, sourceLocale: "ja", defaultLocale: "ja", enabledLocales: ["ja", "en"], documentLocales: { ja: "ja-JP", en: "en" }, glossaryVersion: "g1", contextVersion: "c1" };
+  const localization = { status: "ready", config, pages: [{ siteId: site.id, pageId: page.pageId, title: page.title, locales: { ja: { state: "source" }, en: { state: "missing" } } }], version: `s.${"a".repeat(64)}` };
+  const breakpointsPath = `${base}/editor/editing-api/v1/sites/kamakura/operations/site.breakpoints.read`;
+  const documentPath = `${base}/editor/editing-api/v1/sites/kamakura/operations/pages.read/${page.pageId}?locale=ja`;
+  const until = async (condition) => {
+    for (let attempt = 0; attempt < 400; attempt += 1) {
+      if (condition()) return;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.ok(condition(), "Studio did not reach the expected state");
+  };
+  function open(path, options = {}) {
+    const dom = new JSDOM('<div id="root"></div>', { url: `https://studio.example.test${path}`, runScripts: "outside-only", pretendToBeVisual: true });
+    t.after(() => dom.window.close());
+    const { window } = dom, calls = [];
+    const session = Promise.withResolvers(), editorCatalog = Promise.withResolvers();
+    window.TextEncoder = TextEncoder;
+    window.TextDecoder = TextDecoder;
+    window.structuredClone = (value) => value === undefined ? undefined : window.JSON.parse(JSON.stringify(value));
+    const json = (value, status = 200) => {
+      const response = Response.json(value, { status });
+      response.json = async () => window.JSON.parse(JSON.stringify(value));
+      return response;
+    };
+    window.fetch = async (input, init) => {
+      const url = new URL(String(input), window.location.origin), path = `${url.pathname}${url.search}`;
+      calls.push({ path, signal: init.signal });
+      if (path === "/api/session") {
+        await session.promise;
+        return options.expired ? json({ error: "authentication_required" }, 401) : json({ status: "authenticated", subject: "person", email: "editor@example.test" });
+      }
+      if (path === "/api/projects") return json(options.directory ?? directory);
+      if (path === "/api/config") return json({ managedProjectsEnabled: false, publicSitesOrigin: null });
+      if (path === `${base}/editor/catalog`) {
+        await editorCatalog.promise;
+        return options.catalogError ? json({ error: "upstream_contract_invalid" }, 502) : json(source);
+      }
+      if (path === `${base}/localization/editor/site`) return json(localization);
+      if (path === breakpointsPath) return json({ settings: { base: { name: "Mobile", previewWidth: 480 }, breakpoints: [] }, version: "b.v1" });
+      if (path === documentPath) return json({ document: { schemaVersion: 1, siteId: page.siteId, pageId: page.pageId, locale: page.locale, revision: 1, title: page.title, tokens: {}, body: [] },
+        version: "v1", editorState: { readOnly: { reason: "初期スナップショットから編集制限を表示" } } });
+      return json({ error: "not_found" }, 404);
+    };
+    window.eval(client.outputFiles[0].text);
+    return { window, calls, session, editorCatalog };
+  }
+
+  const editor = open(canonical);
+  await until(() => editor.calls.length === 4);
+  assert.deepEqual(new Set(editor.calls.map(({ path }) => path)), new Set(["/api/session", "/api/projects", "/api/config", `${base}/editor/catalog`]));
+  editor.session.resolve();
+  await until(() => editor.calls.some(({ path }) => path === breakpointsPath));
+  assert.ok(editor.calls.some(({ path }) => path === `${base}/localization/editor/site`));
+  assert.ok(!editor.calls.some(({ path }) => path === documentPath));
+  editor.editorCatalog.resolve();
+  await until(() => editor.window.document.body.textContent.includes("初期スナップショットから編集制限を表示"));
+  assert.equal(editor.calls.filter(({ path }) => path === documentPath).length, 1);
+  assert.equal(editor.calls.filter(({ path }) => path === `${base}/editor/catalog`).length, 1);
+  assert.equal(editor.calls.filter(({ path }) => path === breakpointsPath).length, 1);
+  assert.equal(editor.calls.filter(({ path }) => path === `${base}/localization/editor/site`).length, 1);
+  assert.ok(!editor.calls.some(({ path }) => path.endsWith("/pages.catalog") || path === `${base}/editor/${page.pageId}`));
+
+  for (const [options, message] of [
+    [{ expired: true }, "セッションの確認が必要です"],
+    [{ directory: { status: "forbidden" } }, "アクセス権がありません"],
+    [{ directory: { status: "ready", entries: [] } }, "プロジェクトを表示できません"]
+  ]) {
+    const denied = open(canonical, options);
+    await until(() => denied.calls.length === 4);
+    denied.session.resolve();
+    await until(() => denied.window.document.body.textContent.includes(message));
+    assert.ok(denied.calls.find(({ path }) => path === `${base}/editor/catalog`).signal.aborted);
+    assert.equal(denied.calls.length, 4);
+    denied.editorCatalog.resolve();
+  }
+  const failedCatalog = open("/projects/kamakura-site/admin/editor", { catalogError: true });
+  failedCatalog.session.resolve();
+  failedCatalog.editorCatalog.resolve();
+  await until(() => failedCatalog.window.document.body.textContent.includes("ページ一覧の形式に対応できません"));
+  assert.ok(!failedCatalog.calls.some(({ path }) => path === documentPath));
+
+  const nonEditor = open("/");
+  nonEditor.session.resolve();
+  await until(() => nonEditor.window.document.body.textContent.includes(project.name));
+  assert.ok(!nonEditor.calls.some(({ path }) => path.startsWith(base)));
+});
+
 test("鎌倉のフォーム完了先は固定の公開済み完了ページだけを候補にする", async () => {
   const source = catalog();
   source.pages.push(
@@ -101,7 +201,7 @@ test("鎌倉のフォーム完了先は固定の公開済み完了ページだ�
   assert.deepEqual(await adapter.listFormCompletionPages({ siteId: "kamakura", pageId: "business-plan", locale: "en" }, signal), []);
 });
 
-test("Kamakura editor adapter は表示コンテキストが任意のページを読める", async (t) => {
+test("Kamakura editor adapter は新版を1回で読み、旧版は文書と表示コンテキストの版を照合する", async (t) => {
   const { createKamakuraAdapter } = await loadKamakuraEditor();
   const pageId = "kamakura-community-dinner";
   const target = { siteId: "kamakura", pageId, locale: "ja" };
@@ -109,18 +209,59 @@ test("Kamakura editor adapter は表示コンテキストが任意のページ�
   const version = "ja-version";
   const base = "/api/projects/project-kamakura/sites/kamakura/editor";
   const commonReadPath = `${base}/editing-api/v1/sites/kamakura/operations/pages.read/${pageId}?locale=ja`;
-  t.mock.method(globalThis, "fetch", async (input) => {
+  const legacyPath = `${base}/${pageId}`;
+  const presentation = { schemaVersion: 1, siteId: target.siteId, locale: target.locale, version: "p.v1", reset: "neutral-v1", tokens: {},
+    layout: { base: { backgroundColor: "#edf5ed" } }, fonts: [],
+    shared: { header: { ...document, pageId: "site-header" }, footer: { ...document, pageId: "site-footer" } } };
+  const editorState = { readOnly: { reason: "読み取り専用" }, englishPublication: { state: "published", retryable: false }, releases: [{ revision: 1, label: "公開中" }] };
+  let wire = { document, version, presentation, presentationVersion: presentation.version, editorState };
+  let legacy = { document, version, presentation, ...editorState };
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (input, init) => {
     const url = new URL(String(input), "https://studio.niho.life");
-    if (`${url.pathname}${url.search}` === commonReadPath) return Response.json({ document, version });
-    if (url.pathname === `${base}/${pageId}`) return Response.json({ document, version });
-    throw new Error(`unexpected request: ${url.pathname}${url.search}`);
+    const path = `${url.pathname}${url.search}`;
+    calls.push(path);
+    if (path === commonReadPath) {
+      assert.equal(init.headers.get("Accept"), "application/json; profile=niho-editor-snapshot-v1");
+      return wire instanceof Response ? wire : Response.json(wire);
+    }
+    if (path === legacyPath) return Response.json(legacy);
+    throw new Error(`unexpected request: ${path}`);
   });
 
-  const adapter = createKamakuraAdapter(contract.parseKamakuraCatalog(catalog()), () => {});
-  const snapshot = await adapter.readDocument(target, new AbortController().signal);
-  assert.equal(snapshot.version, version);
-  assert.deepEqual(snapshot.document, document);
-  assert.equal(snapshot.presentation, undefined);
+  const parsed = contract.parseKamakuraCatalog(catalog()), signal = new AbortController().signal;
+  const adapter = createKamakuraAdapter(parsed, () => {});
+  assert.deepEqual(await adapter.listPages(target.siteId, signal), parsed.pages);
+  assert.deepEqual(calls, []);
+  assert.deepEqual(await adapter.readDocument(target, signal), legacy);
+  assert.deepEqual(calls.splice(0), [commonReadPath]);
+
+  wire = { document, version, presentation, presentationVersion: presentation.version };
+  assert.deepEqual(await adapter.readDocument(target, signal), legacy, "表示データだけの移行中ホストは旧編集状態を補う");
+  assert.deepEqual(calls.splice(0), [commonReadPath, legacyPath]);
+
+  wire = { document, version, presentationVersion: presentation.version };
+  assert.deepEqual(await adapter.readDocument(target, signal), legacy);
+  assert.deepEqual(calls.splice(0), [commonReadPath, legacyPath]);
+  for (const alternate of [{ ...legacy, version: "stale" }, { ...legacy, presentation: { ...presentation, version: "stale" } }]) {
+    legacy = alternate;
+    await assert.rejects(adapter.readDocument(target, signal), (error) => error.status === 409 && error.code === "version_conflict");
+    assert.deepEqual(calls.splice(0), [commonReadPath, legacyPath]);
+  }
+  wire = { document, version, editorState: {} };
+  assert.deepEqual(await adapter.readDocument(target, signal), { document, version });
+  assert.deepEqual(calls.splice(0), [commonReadPath]);
+  const native = contract.parseKamakuraCatalog({ ...catalog(), nativePresentationPages: [pageId] });
+  await assert.rejects(createKamakuraAdapter(native, () => {}).readDocument(target, signal), /必要な表示コンテキスト/u);
+  assert.deepEqual(calls.splice(0), [commonReadPath]);
+  for (const [status, code] of [[401, "authentication_required"], [403, "forbidden"]]) {
+    wire = Response.json({ error: code }, { status });
+    await assert.rejects(adapter.readDocument(target, signal), (error) => error.status === status && error.code === code);
+    assert.deepEqual(calls.splice(0), [commonReadPath]);
+  }
+  wire = { document, version, presentation, presentationVersion: "stale", editorState };
+  await assert.rejects(adapter.readDocument(target, signal), (error) => error.code === "invalid_response");
+  assert.deepEqual(calls.splice(0), [commonReadPath]);
 });
 
 test("Kamakura Studio adapter routes multi-page plan, apply, and status through the shared editing API", async (t) => {
@@ -361,11 +502,14 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
   assert.equal(boundRequestIds.length, legacyBindingCalls, "legacy writes do not reach a separate host route");
 
   let editingApiRequest;
+  const commonSnapshot = { document: { schemaVersion: 1, siteId: "kamakura", pageId: "community", locale: "ja", revision: 1, title: "地域のコミュニティ", tokens: {}, body: [] },
+    version: "page-v1", editorState: {} };
   bindingResponseFactory = async (request) => {
     editingApiRequest = request;
     const claims = JSON.parse(Buffer.from(request.headers.get("Authorization").slice("Bearer ".length).split(".")[1], "base64url").toString("utf8"));
     const path = new URL(request.url).pathname;
     if (path.endsWith("/capabilities")) return Response.json({ apiVersion: "v1", siteId: "kamakura", operations: [] });
+    if (path.includes("/pages.read/")) return Response.json(commonSnapshot);
     if (path.endsWith("/pages.catalog")) return Response.json({ version: "registry-v1", pages: [{ siteId: "kamakura", pageId: "community", locale: "ja", title: "地域のコミュニティ", path: "/community", kind: "page", visibility: "public", published: true }] });
     if (path.endsWith("/pages.change-prepare")) {
       const input = await request.clone().json();
@@ -404,10 +548,17 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
   assert.match(delegated.jti, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu);
 
   const managementBase = "/sites/kamakura/operations";
+  const snapshotAccept = "application/json; profile=niho-editor-snapshot-v1";
+  const commonPage = await callEditingApi(`${managementBase}/pages.read/community?locale=ja`, "GET", undefined, { Accept: snapshotAccept });
+  assert.equal(commonPage.status, 200);
+  assert.equal(editingApiRequest.headers.get("Accept"), snapshotAccept);
+  assert.deepEqual(await commonPage.json(), commonSnapshot);
+  assert.deepEqual((await assertDelegationSignature(editingApiRequest)).scope, ["pages.read"]);
   const managementChange = { action: "update", target: { siteId: "kamakura", pageId: "community", locale: "ja" }, title: "地域の交流", path: "/community" };
-  const managedCatalog = await callEditingApi(`${managementBase}/pages.catalog`);
+  const managedCatalog = await callEditingApi(`${managementBase}/pages.catalog`, "GET", undefined, { Accept: snapshotAccept });
   assert.equal(managedCatalog.status, 200);
   assert.equal(editingApiRequest.url, `https://kamakura.niho.life/api/edit/v1${managementBase}/pages.catalog`);
+  assert.equal(editingApiRequest.headers.get("Accept"), "application/json");
   delegated = await assertDelegationSignature(editingApiRequest);
   assert.deepEqual(delegated.scope, ["pages.read"]);
   const managementPreparePath = `${managementBase}/pages.change-prepare`;
@@ -714,24 +865,41 @@ test("鎌倉のページ名操作はホストcapabilityがある時だけ接続�
     impact: { before: "https://next-kamakura.niho.life/dinner", after: "https://next-kamakura.niho.life/dinner", linkedFrom: [], navigation: [], notes: [] } };
   const calls = [];
   let returnedPlan = plan, returnedPage = { ...change.target, title: change.title, path: change.path, kind: "page" };
+  let latestPages = source.pages, latestVersion = "registry-v1", conflictOnApply = false;
   t.mock.method(globalThis, "fetch", async (path, init) => {
     const body = init.body ? JSON.parse(init.body) : undefined; calls.push({ path, body });
     if (String(path).endsWith("/pages.change-prepare")) return Response.json({ plan: { ...returnedPlan, expectedVersion: body.expectedVersion, operationId: body.operationId, change: body.change } });
-    if (String(path).endsWith("/pages.change-apply")) return Response.json({ status: "applied", operationId: body.operationId, page: returnedPage });
-    assert.ok(String(path).endsWith("/pages.catalog")); return Response.json({ version: "registry-v1", pages: [{ ...source.pages[0], title: change.title }] });
+    if (String(path).endsWith("/pages.change-apply")) {
+      if (conflictOnApply) return Response.json({ error: "version_conflict" }, { status: 409 });
+      return Response.json({ status: "applied", operationId: body.operationId, page: returnedPage });
+    }
+    if (String(path).endsWith("/editor/catalog")) return Response.json({ ...source, pages: latestPages });
+    assert.ok(String(path).endsWith("/pages.catalog")); return Response.json({ version: latestVersion, pages: latestPages });
   });
   const adapter = createKamakuraAdapter(contract.parseKamakuraCatalog(source), () => {});
   assert.deepEqual(adapter.pageChangeActions, ["update"]); assert.equal(adapter.pagePathEditable, false);
   assert.equal(createKamakuraAdapter(contract.parseKamakuraCatalog({ ...source, pagePathEditable: true }), () => {}).pagePathEditable, true);
+  assert.deepEqual(await adapter.listPages("kamakura", signal), source.pages);
+  assert.equal(calls.length, 0);
   const prepared = await adapter.preparePageChange(change, signal);
+  assert.ok(String(calls[0].path).endsWith("/pages.catalog"));
   assert.deepEqual({ ...prepared, operationId: plan.operationId }, plan);
   assert.match(prepared.operationId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu);
   assert.equal((await adapter.applyPageChange(prepared, signal)).status, "applied");
   assert.deepEqual(calls.at(-1).body, { expectedVersion: prepared.expectedVersion, operationId: prepared.operationId, confirmationToken: prepared.confirmationToken, change });
+  latestPages = [returnedPage];
+  latestVersion = "registry-v2";
+  await assert.rejects(adapter.preparePageChange(change, signal), (error) => error.code === "version_conflict");
+  assert.ok(String(calls.at(-1).path).endsWith("/pages.catalog"), "変更前と現在のメタデータが異なる場合は確認に進まない");
   assert.equal((await adapter.listPages("kamakura", signal))[0].title, change.title);
+  const updatedPlan = await adapter.preparePageChange(change, signal);
+  assert.equal(updatedPlan.expectedVersion, "registry-v2");
+  conflictOnApply = true;
+  assert.deepEqual(await adapter.applyPageChange(updatedPlan, signal), { status: "conflict" });
+  conflictOnApply = false;
   await assert.rejects(adapter.preparePageChange({ action: "visibility", target: change.target, visibility: "private" }, signal), /利用できません/u);
   await assert.rejects(adapter.preparePageChange({ ...change, target: { ...change.target, locale: "en" } }, signal), /編集対象/u);
-  const lifecycle = createKamakuraAdapter(contract.parseKamakuraCatalog({ ...source, pageChangeActions: ["update", "create", "visibility"] }), () => {});
+  const lifecycle = createKamakuraAdapter(contract.parseKamakuraCatalog({ ...source, pages: latestPages, pageChangeActions: ["update", "create", "visibility"] }), () => {});
   const create = { action: "create", siteId: "kamakura", locale: "ja", title: "新しいページ", path: "/new-page" };
   returnedPlan = { ...plan, change: create, impact: { linkedFrom: [], navigation: [], notes: [] } };
   returnedPage = { siteId: "kamakura", pageId: "new-page", locale: "ja", title: create.title, path: create.path, kind: "page", published: false };
