@@ -24,10 +24,10 @@ export function collectionPathForEditor(collection: CmsCollection, values: Colle
 }
 
 /** Preserve historical CMS redirects when an item's public path changes or is withdrawn. */
-export function redirectsForCmsRelease(redirects: readonly CmsRedirect[], oldPath: string | null, newPath: string | null, withdraw: boolean): CmsRedirect[] {
-  const moved = !withdraw && oldPath !== null && newPath !== null && oldPath !== newPath;
+export function redirectsForCmsRelease(redirects: readonly CmsRedirect[], oldPath: string | null | undefined, newPath: string | null, withdraw: boolean): CmsRedirect[] {
+  const moved = !withdraw && oldPath != null && newPath !== null && oldPath !== newPath;
   return redirects.flatMap((redirect) => {
-    if (withdraw && oldPath !== null && redirect.to === oldPath) return [];
+    if (withdraw && oldPath != null && redirect.to === oldPath) return [];
     if (moved && redirect.from === newPath) return [];
     return [{ ...redirect, ...(moved && redirect.to === oldPath ? { to: newPath! } : {}) }];
   });

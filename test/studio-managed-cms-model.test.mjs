@@ -27,10 +27,17 @@ test("schema revision change compares raw rich text with its escaped published v
   assert.equal(cmsDraftMatchesPublishedValues(schema, "missing", draft, published), false);
 });
 
-test("slug changes retarget historical redirects while withdrawal removes redirects to the withdrawn item", () => {
-  const redirects = [{ from: "/cms/posts/a", to: "/cms/posts/b" }, { from: "/cms/posts/d", to: "/cms/posts/b" }];
-  assert.deepEqual(redirectsForCmsRelease(redirects, "/cms/posts/b", "/cms/posts/d", false), [
-    { from: "/cms/posts/a", to: "/cms/posts/d" }
+test("publishing a new item path retargets historical redirects and withdrawal removes them", () => {
+  const redirects = [
+    { from: "/cms/posts/old", to: "/cms/posts/current" },
+    { from: "/cms/posts/next", to: "/cms/posts/current" },
+    { from: "/legacy", to: "/about", owner: "host" }
+  ];
+  assert.deepEqual(redirectsForCmsRelease(redirects, "/cms/posts/current", "/cms/posts/next", false), [
+    { from: "/cms/posts/old", to: "/cms/posts/next" },
+    { from: "/legacy", to: "/about", owner: "host" }
   ]);
-  assert.deepEqual(redirectsForCmsRelease(redirects, "/cms/posts/b", "/cms/posts/b", true), []);
+  assert.deepEqual(redirectsForCmsRelease(redirects, "/cms/posts/current", "/cms/posts/next", true), [
+    { from: "/legacy", to: "/about", owner: "host" }
+  ]);
 });
