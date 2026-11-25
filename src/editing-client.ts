@@ -1,6 +1,7 @@
 import { PAGE_OPERATION_VERSIONS, pageOperationWire, type EditingPageApplyConflict, type EditingPageApplyInput, type EditingPageApplyResult } from "./editing-page-operations.js";
 import { EDITING_API_ERRORS, EDITING_OPERATIONS, type EditingApiErrorCode, type EditingCmsOperationStatus, type EditingCmsPublishPlan, type EditingCmsTarget, type EditingOperationDefinition, type EditingPageCatalog, type EditingPageReleaseSetItem, type EditingPageReleaseSetItemResult, type EditingPageReleaseSetPlan, type EditingPageReleaseSetStatus, type EditingPageSnapshot, type EditingPageTarget } from "./editing-api.js";
 import { parsePageInspectQuery, type PageInspectQuery, type PageInspectView } from "./page-inspect.js";
+import { parsePagePreviewIntent, type EditingPagePreviewIntent } from "./editing-page-preview.js";
 import {
   editingLocalizationOperation, EDITING_LOCALIZATION_RESULT_BYTES, parseEditingLocalizationConflict,
   parseEditingLocalizationInput, parseEditingLocalizationResult,
@@ -45,6 +46,7 @@ export type EditingApiClientOptions = {
   readonly editorSnapshot?: { readonly blocks?: BlockContracts };
 };
 export type { EditingLocalizationInput, EditingLocalizationOperationId, EditingLocalizationResult } from "./editing-localization.js";
+export type { EditingPagePreviewIntent } from "./editing-page-preview.js";
 export type EditingApiDiscovery = { readonly apiVersion: "v1"; readonly siteId: string; readonly operations: readonly EditingOperationDefinition[] };
 export type EditingPageSaveResult = { readonly status: "saved"; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" };
 export type EditingPageInspectionSnapshot = Readonly<Record<string, unknown>> & { readonly view: PageInspectView; readonly version: string; readonly stylesVersion?: string; readonly componentsVersion?: string; readonly presentationVersion?: string };
@@ -64,6 +66,7 @@ export type EditingApiClient = {
   inspectPage(target: EditingPageTarget, query: PageInspectQuery, signal?: AbortSignal): Promise<EditingPageInspectionSnapshot>;
   listPageHistory(target: EditingPageTarget, cursor?: string, signal?: AbortSignal): Promise<EditorRevisionPage>;
   readPageHistoryRevision(target: EditingPageTarget, id: string, signal?: AbortSignal): Promise<{ readonly document: PageDocument; readonly siteStyles?: SiteStyles; readonly presentation?: unknown }>;
+  createPagePreviewIntent(target: EditingPageTarget, signal?: AbortSignal): Promise<EditingPagePreviewIntent>;
   read(target: EditingPageTarget, signal?: AbortSignal): Promise<EditingPageSnapshot>;
   applyOperations(target: EditingPageTarget, input: EditingPageApplyInput, signal?: AbortSignal): Promise<EditingPageApplyResult | EditingPageApplyConflict>;
   save(target: EditingPageTarget, expectedVersion: string, document: unknown, signal?: AbortSignal): Promise<EditingPageSaveResult>;
@@ -530,6 +533,14 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
         const siteStyles = body.siteStyles === undefined ? undefined : parseSiteStyles(body.siteStyles as SiteStyles);
         return { document, ...(siteStyles === undefined ? {} : { siteStyles }), ...(body.presentation === undefined ? {} : { presentation: body.presentation }) };
       } catch { throw new EditingApiClientError("invalid_response", response.status); }
+    },
+    async createPagePreviewIntent(target, signal) {
+      const path = targetPath(target, siteId).replace("{operation}", "pages.preview-intent");
+      const { response, body } = await send(path, "POST", {}, signal);
+      if (!response.ok) throw apiFailure(body, response.status);
+      const intent = parsePagePreviewIntent(body, origin);
+      if (!intent || response.status !== 200) throw new EditingApiClientError("invalid_response", response.status);
+      return intent;
     },
     async read(target, signal) {
       const path = targetPath(target, siteId).replace("{operation}", "pages.read");
