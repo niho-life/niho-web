@@ -25,6 +25,7 @@ const adapter: ProjectDirectoryAdapter = {
   onCreateProject={openExistingProjectManager}
   onOpenDashboard={openProjectDashboard}
   onOpenEditor={openProjectEditor}
+  onPreloadEditor={preloadEditorChunk}
   initialFocusProjectId={returningProjectId}
 />;
 ```
@@ -32,6 +33,8 @@ const adapter: ProjectDirectoryAdapter = {
 host shellに検索欄を置く場合は、`searchValue` / `onSearchValueChange` をcontrolledで渡し、`searchControl="external"` にします。ライブラリ内の検索欄だけが隠れ、名前・サイト名・ドメインのfilter、検索0件、検索解除は同じ契約で動きます。shellのロゴ、global nav、アカウント表示はhostの責務です。
 
 `loadDirectory` は `unknown` を返し、runtime parserで検証します。
+
+`onPreloadEditor` は任意の先読み通知です。Editor項目にポインターが入るかフォーカスしたときに呼ばれます。ホストは必要なコードを先読みできます。この通知や画面へ渡すProjectは認可の証明にならず、遷移先で通常どおり認可してください。
 
 ```ts
 {
@@ -80,11 +83,14 @@ const adapter: ProjectDashboardAdapter = {
   adapter={adapter}
   onBackToProjects={openProjectDirectory}
   onOpenEditor={openProjectEditor}
+  onPreloadEditor={preloadEditorChunk}
   onOpenSettings={(project, section) => openHostSettings(project, section)}
 />;
 ```
 
 `onOpenSettings` の `section` は `site` または `analytics` です。設定ボタンと解析未接続のCTAは、ホストが実装した設定画面へ接続してください。概要とアクセス解析は実際の表示切替で、未実装のCMS・フォーム・課金タブは出しません。公開サイト確認は別タブで開き、元のDashboardを残します。
+
+`onPreloadEditor` は任意です。Editorボタンへのポインター移動またはフォーカス時に呼び、ホストは遷移前にEditorのコードを先読みできます。認可は遷移先で別途確認してください。
 
 - `settingsContent` を渡すと「プロジェクト設定」はDashboardの中でその中身を開き、`onOpenSettings(project, "site")` は呼びません。渡さなければ従来どおり `onOpenSettings` を呼びます。
 - `settingsAction: "disabled"` は設定画面の無いホストの表示です。`settingsContent` を渡していないホストでは「プロジェクト設定（準備中）」として無効にし、どのホストでも解析の接続操作を「解析接続（準備中）」として無効にします（接続設定の画面を持たないホストが、押しても何も起きないボタンを出さないため）。

@@ -15,6 +15,8 @@ export type ProjectDashboardProps = {
   adapter: ProjectDashboardAdapter;
   onBackToProjects: () => void;
   onOpenEditor: (project: Project) => void;
+  /** Studio ホストが editor chunk を画面遷移前に先読みするための optional hook。 */
+  onPreloadEditor?: (project: Project) => void;
   /** 設定の実装はホストが持つ。analyticsは実際の接続設定を開く。 */
   onOpenSettings: (project: Project, section: "site" | "analytics") => void;
   /** editor bridge未接続時は、ホストの説明surfaceを開ける正直なラベルにする。 */
@@ -104,7 +106,7 @@ export function ProjectDashboard(props: ProjectDashboardProps) {
   }
   return <DashboardSession key={source.generation} {...props} />;
 }
-function DashboardSession({ project: inputProject, adapter, onBackToProjects, onOpenEditor, onOpenSettings, editorAction = "enabled", settingsAction = "enabled", settingsContent, siteViews = [], activeSiteView = null, onSiteViewChange, headerEnd, analyticsContent }: ProjectDashboardProps) {
+function DashboardSession({ project: inputProject, adapter, onBackToProjects, onOpenEditor, onPreloadEditor, onOpenSettings, editorAction = "enabled", settingsAction = "enabled", settingsContent, siteViews = [], activeSiteView = null, onSiteViewChange, headerEnd, analyticsContent }: ProjectDashboardProps) {
   const project = useMemo(() => { try { return parseProject(inputProject); } catch { return null; } }, [inputProject]);
   const reader = useCallback(async (signal: AbortSignal) => {
     if (!project) throw new Error("invalid selected project");
@@ -139,7 +141,7 @@ function DashboardSession({ project: inputProject, adapter, onBackToProjects, on
       </nav>}
       <div className="pv-project-end">
         {siteView?.actions}
-        {result && project && <button type="button" className="pv-editor-link" onClick={() => onOpenEditor(project)}>{editorAction === "pending" ? "エディター接続待ち" : "デザインエディタ"}</button>}
+        {result && project && <button type="button" className="pv-editor-link" onPointerEnter={() => { if (editorAction === "enabled") onPreloadEditor?.(project); }} onFocus={() => { if (editorAction === "enabled") onPreloadEditor?.(project); }} onClick={() => onOpenEditor(project)}>{editorAction === "pending" ? "エディター接続待ち" : "デザインエディタ"}</button>}
         {headerEnd}
       </div>
     </header>
