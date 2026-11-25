@@ -30,10 +30,12 @@ export function CanvasSpacingHandles({ element, rect, enabled, allowed, commit }
   const gapValue = gapAxis === "x" ? computed?.columnGap : computed?.rowGap;
   const hasAxisGap = Number.isFinite(Number.parseFloat(gapValue ?? ""));
   const bothGaps = computed?.gap?.trim().split(/\s+/u) ?? [];
+  const gapStart = hasAxisGap ? gapValue : bothGaps[gapAxis === "x" ? 1 : 0] ?? bothGaps[0];
+  const gapUsesPercent = gapStart?.includes("%") ?? false;
   const draggedGap = dragged?.property && !dragged.property.startsWith("padding") ? dragged.property : undefined;
   const gapProperty = draggedGap ?? (bothGaps.length > 1 || hasAxisGap && gapValue !== computed?.gap ? (gapAxis === "x" ? "columnGap" : "rowGap") : "gap");
   const gap = { property: gapProperty, label: "子要素の間隔", x: gapAxis === "x" ? .25 : 1, y: gapAxis === "x" ? 1 : .25, axis: gapAxis, direction: 1 } as const;
-  const handles = [...padding, ...(computed && /flex|grid/u.test(computed.display) ? [gap] : [])].filter(({ property }) => allowed(property));
+  const handles = [...padding, ...(computed && /flex|grid/u.test(computed.display) && !gapUsesPercent ? [gap] : [])].filter(({ property }) => allowed(property));
 
   useLayoutEffect(() => () => {
     active.current?.restore();
@@ -72,7 +74,6 @@ export function CanvasSpacingHandles({ element, rect, enabled, allowed, commit }
         event.preventDefault(); event.stopPropagation();
         const cssProperty = property.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
         const previous = element.getAttribute("style");
-        const gapStart = hasAxisGap ? gapValue : bothGaps[gapAxis === "x" ? 1 : 0] ?? bothGaps[0];
         const initial = Number.parseFloat((isGap ? gapStart : computed?.[property]) ?? "") || 0;
         active.current = { property, pointer: event.pointerId, position: position(event), initial, value: initial,
           restore: () => {

@@ -1344,6 +1344,18 @@ test("spacing handles preview without history and commit only to the selected br
   } finally { await app.cleanup(); }
 });
 
+test("spacing handles hide percent-based gaps instead of treating percentages as pixels", async () => {
+  const page = structuredClone(fixture);
+  page.body[0].style = { ...page.body[0].style, base: { ...page.body[0].style.base, display: "flex", gap: "10%" } };
+  const app = await setup({ document: page });
+  try {
+    await clickCanvas("hero"); await editorTab("ボックス");
+    const hero = canvasNode("hero"), computed = hero.ownerDocument.defaultView.getComputedStyle(hero);
+    assert.equal(computed.gap, "10%");
+    assert.equal(canvasBody().querySelector('[data-spacing="gap"]'), null);
+  } finally { await app.cleanup(); }
+});
+
 test("spacing handles hide breakpoint properties protected by a specific style lock", async () => {
   const app = await setup({ locks: [{ nodeId: "hero", fields: ["style.responsive.paddingTop"], reason: "Tablet padding is host-managed" }] });
   try {

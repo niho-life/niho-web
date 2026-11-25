@@ -58,6 +58,9 @@ function declarations(values: StyleDeclarations, assets: ResolvedAssetMap, mode:
     const index = properties.indexOf(common), firstSide = properties.findIndex((property) => sideBorderProperties.has(property));
     if (index > firstSide && firstSide >= 0) properties.splice(firstSide, 0, properties.splice(index, 1)[0]!);
   }
+  // gap shorthand は後にあると、同じ rule の columnGap / rowGap を上書きする。
+  const gapIndex = properties.indexOf("gap"), firstAxisGap = properties.findIndex((property) => property === "columnGap" || property === "rowGap");
+  if (gapIndex > firstAxisGap && firstAxisGap >= 0) properties.splice(firstAxisGap, 0, properties.splice(gapIndex, 1)[0]!);
   return properties.map((property) => {
     if (property === "backgroundFilter") return `filter:${declarationCss(property, values[property]!).slice("background-filter:".length)}`;
     if (property !== "backgroundImage") return declarationCss(property, values[property]!);
