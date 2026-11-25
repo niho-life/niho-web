@@ -14,6 +14,17 @@ const htmlHeaders = {
   "X-Robots-Tag": "noindex, nofollow"
 };
 
+async function dispatch(record, url, { method = "GET", accept = "text/html" } = {}) {
+  const result = { fulfilled: null, continued: false, aborted: null };
+  await record.route.handler({
+    request: () => ({ url: () => url, method: () => method, headers: () => ({ accept }) }),
+    async fulfill(payload) { result.fulfilled = payload; },
+    async continue() { result.continued = true; },
+    async abort(reason) { result.aborted = reason; }
+  });
+  return result;
+}
+
 test("preview URL is returned without fetching when no headless browser is available", async () => {
   let fetchCount = 0;
   const result = await capturePagePreview({ url: previewUrl, widths: [375, 768, 1280], authorizationHeaders }, {
@@ -41,10 +52,9 @@ test("preview HTML is fetched once with host auth and reused for each viewport w
           record.url = url;
           if (record.route) {
             assert.equal(record.route.matcher({ href: url }), true);
-            assert.equal(record.route.matcher({ href: "https://site.example/other" }), false);
-            let fulfilled = 0;
-            await record.route.handler({ async fulfill(payload) { fulfilled++; record.html = payload; } });
-            assert.equal(fulfilled, 1);
+            const response = await dispatch(record, url);
+            record.html = response.fulfilled;
+            assert.ok(record.html);
           }
           return { ok: () => true };
         },
@@ -58,6 +68,7 @@ test("preview HTML is fetched once with host auth and reused for each viewport w
     async close() { browser.closed = true; }
   };
   let fetchCount = 0;
+  let resourceRequest;
   const screenshots = await capturePagePreview({
     url: previewUrl,
     publishedUrl: "https://site.example/published/home",
@@ -68,26 +79,37 @@ test("preview HTML is fetched once with host auth and reused for each viewport w
     async launch() { return browser; },
     async fetcher(url, options) {
       fetchCount++;
-      assert.equal(url, previewUrl);
       const requestHeaders = new Headers(options.headers);
-      for (const [name, value] of Object.entries(authorizationHeaders)) assert.equal(requestHeaders.get(name), value);
-      assert.equal(requestHeaders.get("accept"), "text/html");
       assert.equal(options.credentials, "omit");
       assert.equal(options.redirect, "error");
       assert.equal(options.cache, "no-store");
       assert.equal(options.referrerPolicy, "no-referrer");
-      return new Response("<!doctype html><title>Draft</title>", { status: 200, headers: htmlHeaders });
+      if (url === previewUrl) {
+        for (const [name, value] of Object.entries(authorizationHeaders)) assert.equal(requestHeaders.get(name), value);
+        assert.equal(requestHeaders.get("accept"), "text/html");
+        return new Response("<!doctype html><title>Draft</title>", { status: 200, headers: htmlHeaders });
+      }
+      assert.equal(requestHeaders.get("authorization"), null, "the editor bearer token is never sent to published content or assets");
+      assert.equal(requestHeaders.get("cf-access-client-id"), "access-id");
+      assert.equal(requestHeaders.get("cf-access-client-secret"), "access-secret");
+      if (url === "https://site.example/published/home") {
+        assert.equal(requestHeaders.get("accept"), "text/html");
+        return new Response("<!doctype html><title>Published</title>", { status: 200, headers: { "Content-Type": "text/html; charset=utf-8" } });
+      }
+      resourceRequest = { url, options, headers: requestHeaders };
+      return new Response("body{}", { status: 200, headers: { "Content-Type": "text/css" } });
     }
   });
 
-  assert.equal(fetchCount, 1);
+  assert.equal(fetchCount, 2);
   assert.equal(browser.closed, true);
   assert.equal(pageRecords.length, 5);
-  assert.equal(pageRecords[0].route.routeOptions.times, 1);
+  assert.equal(typeof pageRecords[0].route.matcher, "function");
   assert.equal(pageRecords[0].html.status, 200);
   assert.equal(pageRecords[0].html.body.toString(), "<!doctype html><title>Draft</title>");
   assert.equal(pageRecords[0].html.headers["referrer-policy"], "no-referrer");
-  assert.equal(pageRecords[1].route, null);
+  assert.equal(pageRecords[1].html.body.toString(), "<!doctype html><title>Published</title>");
+  assert.equal(pageRecords[1].route !== null, true);
   assert.deepEqual(pageRecords.slice(2).map(({ initialWidth }) => initialWidth), [750, 1536, 2560]);
   assert.ok(pageRecords.slice(2).every(({ comparisonHtml }) => (comparisonHtml.match(/data:image\/png;base64,/gu) ?? []).length === 2));
   assert.equal(screenshots.length, 3);
@@ -96,6 +118,18 @@ test("preview HTML is fetched once with host auth and reused for each viewport w
   assert.deepEqual(pageRecords[1].screenshotPaths.map(({ width }) => width), [375, 768, 1280]);
   assert.ok(screenshots.every(({ preview, published, comparison }) => basename(preview).startsWith("draft-")
     && basename(published).startsWith("published-") && basename(comparison).startsWith("compare-")));
+
+  const asset = await dispatch(pageRecords[0], "https://site.example/assets/site.css", { accept: "text/css" });
+  assert.equal(asset.fulfilled.status, 200);
+  assert.equal(fetchCount, 3);
+  assert.equal(resourceRequest.url, "https://site.example/assets/site.css");
+  assert.equal(new Headers(resourceRequest.options.headers).get("authorization"), null);
+  const external = await dispatch(pageRecords[0], "https://cdn.example/font.woff2", { accept: "font/woff2" });
+  assert.equal(external.continued, true);
+  assert.equal(fetchCount, 3);
+  const mutation = await dispatch(pageRecords[0], "https://site.example/api/submit", { method: "POST" });
+  assert.equal(mutation.aborted, "blockedbyclient");
+  assert.equal(fetchCount, 3);
 });
 
 test("preview capture rejects HTML responses without no-store, no-referrer and noindex", async () => {
@@ -104,6 +138,38 @@ test("preview capture rejects HTML responses without no-store, no-referrer and n
   await assert.rejects(capturePagePreview({ url: previewUrl, widths: [375], authorizationHeaders }, {
     async launch() { return browser; },
     async fetcher() { return new Response("<title>unsafe</title>", { headers: { "Content-Type": "text/html" } }); }
-  }), /invalid preview HTML response/u);
+  }), /preview HTML privacy headers missing/u);
   assert.equal(closed, true);
+});
+
+test("published-page Access redirects and 200 login pages are refused instead of captured", async () => {
+  const loginResponse = new Response("<title>Sign in</title>", { status: 200, headers: { "Content-Type": "text/html" } });
+  Object.defineProperty(loginResponse, "url", { value: "https://site.example/cdn-cgi/access/login" });
+  for (const blockedResponse of [
+    new Response("", { status: 302, headers: { Location: "https://site.example/cdn-cgi/access/login" } }),
+    loginResponse
+  ]) {
+    let closed = false, calls = 0;
+    const browser = { async close() { closed = true; }, async newPage() {
+      let currentUrl;
+      return { async route() {}, async goto(url) { currentUrl = url; return { ok: () => true }; }, url() { return currentUrl; } };
+    } };
+    await assert.rejects(capturePagePreview({
+      url: previewUrl,
+      publishedUrl: "https://site.example/published/home",
+      widths: [375],
+      authorizationHeaders
+    }, {
+      async launch() { return browser; },
+      async fetcher(url, options) {
+        calls++;
+        assert.equal(options.redirect, "error");
+        if (url === previewUrl) return new Response("<title>Draft</title>", { headers: htmlHeaders });
+        assert.equal(new Headers(options.headers).get("authorization"), null);
+        return blockedResponse;
+      }
+    }), /invalid HTML response/u);
+    assert.equal(calls, 2);
+    assert.equal(closed, true);
+  }
 });

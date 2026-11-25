@@ -112,6 +112,8 @@ Accessがログイン画面へredirectした場合、CLIは追跡せず `access_
 
 `niho-edit preview <page> --locale <locale> --widths 375,768,1280` は `pages.preview-intent` 対応hostに下書きHTMLを要求します。任意依存のPlaywrightとローカルChromiumが使える場合は各幅のPNGを `--out` の下の `niho-preview-*` ディレクトリへ保存し、`--compare published` では下書き・公開版の個別PNGと横並び比較PNGを同じ幅ごとに保存します。どちらも利用できなければ、スクリーンショット取得を行わず、下書きURLと期限（比較指定時は公開URL）をJSONで返します。HTMLはhost bearerと必要なら同じorigin向けAccess headerで一度取得し、ブラウザーへ認証headerを渡さずに各幅を撮影します。HTML応答の `no-store` / `no-referrer` / `noindex` が不足する場合は撮影を拒否します。
 
+`--compare published` の公開HTMLはAPI originに対するAccess Service Auth headerだけをNode fetchへ付け、host bearerは送らず、redirectは拒否してからブラウザーへ渡します。Access保護された同一origin上の画像・CSS等もAccess headerだけで読み、Access資格情報を他originへ渡しません。ブラウザーからのPOST等の変更要求は遮断します。
+
 ```sh
 niho-edit --origin https://site.example --site site-id discover
 niho-edit --origin https://site.example --site site-id read home --locale ja > page.json
