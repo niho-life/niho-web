@@ -1,4 +1,4 @@
-import { PAGE_OPERATION_VERSIONS, pageOperationWire, type EditingPageApplyInput, type EditingPageApplyResult } from "./editing-page-operations.js";
+import { PAGE_OPERATION_VERSIONS, pageOperationWire, type EditingPageApplyConflict, type EditingPageApplyInput, type EditingPageApplyResult } from "./editing-page-operations.js";
 import { EDITING_API_ERRORS, EDITING_OPERATIONS, type EditingApiErrorCode, type EditingCmsOperationStatus, type EditingCmsPublishPlan, type EditingCmsTarget, type EditingOperationDefinition, type EditingPageCatalog, type EditingPageReleaseSetItem, type EditingPageReleaseSetItemResult, type EditingPageReleaseSetPlan, type EditingPageReleaseSetStatus, type EditingPageSnapshot, type EditingPageTarget } from "./editing-api.js";
 import { parsePageInspectQuery, type PageInspectQuery, type PageInspectView } from "./page-inspect.js";
 import {
@@ -45,7 +45,7 @@ export type EditingApiClientOptions = {
 export type { EditingLocalizationInput, EditingLocalizationOperationId, EditingLocalizationResult } from "./editing-localization.js";
 export type EditingApiDiscovery = { readonly apiVersion: "v1"; readonly siteId: string; readonly operations: readonly EditingOperationDefinition[] };
 export type EditingPageSaveResult = { readonly status: "saved"; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" };
-export type EditingPageInspectionSnapshot = Readonly<Record<string, unknown>> & { readonly view: PageInspectView; readonly version: string; readonly componentsVersion?: string; readonly presentationVersion?: string; readonly stylesVersion?: string };
+export type EditingPageInspectionSnapshot = Readonly<Record<string, unknown>> & { readonly view: PageInspectView; readonly version: string; readonly stylesVersion?: string; readonly componentsVersion?: string; readonly presentationVersion?: string };
 export type EditingPagePublishResult = { readonly status: "released"; readonly operationId: string; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" };
 export type EditingPageReleaseInput = Omit<EditorReleaseRequest, "target">;
 export type EditingCmsSaveResult = { readonly status: "saved"; readonly item: CollectionItem } | { readonly status: "conflict"; readonly current: CollectionItem };
@@ -61,7 +61,7 @@ export type EditingApiClient = {
   applyPageChange(plan: EditorPageChangePlan, signal?: AbortSignal): Promise<EditorPageChangeResult>;
   inspectPage(target: EditingPageTarget, query: PageInspectQuery, signal?: AbortSignal): Promise<EditingPageInspectionSnapshot>;
   read(target: EditingPageTarget, signal?: AbortSignal): Promise<EditingPageSnapshot>;
-  applyOperations(target: EditingPageTarget, input: EditingPageApplyInput, signal?: AbortSignal): Promise<EditingPageApplyResult | { readonly status: "conflict" }>;
+  applyOperations(target: EditingPageTarget, input: EditingPageApplyInput, signal?: AbortSignal): Promise<EditingPageApplyResult | EditingPageApplyConflict>;
   save(target: EditingPageTarget, expectedVersion: string, document: unknown, signal?: AbortSignal): Promise<EditingPageSaveResult>;
   prepareRelease(target: EditingPageTarget, request: EditingPageReleaseInput, signal?: AbortSignal): Promise<EditorReleasePlan>;
   release(target: EditingPageTarget, plan: EditorReleasePlan, operationId: string, signal?: AbortSignal): Promise<EditingPagePublishResult>;
@@ -523,7 +523,25 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
     async applyOperations(target, input, signal) {
       const path = targetPath(target, siteId).replace("{operation}", "pages.apply");
       const { response, body } = await send(path, "POST", { ...input, operations: input.operations.map(pageOperationWire) }, signal);
-      if (response.status === 409 && body.error === "version_conflict") return { status: "conflict" };
+      if (response.status === 409 && body.error === "version_conflict") {
+        if (exactKeys(body, ["error"])) return { status: "conflict" };
+        const conditions = ["rebase_supported", "preconditions", "node_exists", "parent_id", "old_value", "child_path"];
+        const seen = new Set<string>();
+        if (!exactKeys(body, ["error", "unmetPreconditions"]) || !Array.isArray(body.unmetPreconditions) || !body.unmetPreconditions.length || body.unmetPreconditions.length > input.operations.length * 2
+          || body.unmetPreconditions.some((item) => {
+            if (!plainRecord(item) || !exactKeys(item, ["index", "condition"])) return true;
+            const index = item.index, condition = item.condition;
+            if (typeof index !== "number" || !Number.isSafeInteger(index) || index < 0 || index >= input.operations.length
+              || typeof condition !== "string" || !conditions.includes(condition)) return true;
+            const key = `${index}:${condition}`;
+            if (seen.has(key)) return true;
+            seen.add(key);
+            return false;
+          })) {
+          throw new EditingApiClientError("invalid_response", response.status);
+        }
+        return { status: "conflict", unmetPreconditions: body.unmetPreconditions };
+      }
       if (!response.ok) throw apiFailure(body, response.status);
       if (input.dryRun && body.status === "valid" && exactKeys(body, ["status", "diff", "touched"])
         && Array.isArray(body.diff) && body.diff.length <= 301 && Array.isArray(body.touched) && body.touched.length <= 10000
@@ -859,4 +877,3 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
   };
   return client;
 }
-
