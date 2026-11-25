@@ -7,7 +7,7 @@ import type { PageKind, PageVisibility, SiteSettings } from "./pages.js";
 import type { ComponentLibrary, ComponentNode, PageDocument, PublicPropValue, SitePresentation, StyleProperty, StyleValue } from "./types.js";
 import type { EditorRecoveryStore, EditorRevisionEntry, EditorRevisionPage } from "./history.js";
 import type { BlockLocalizationSchema, LocalizationLocale, LocalizationValue } from "./localization.js";
-import type { EditingPageApplied, EditingPageApplyInput, PageOperationVersions, EditingPageReleaseSetApplyResult, EditingPageReleaseSetItem, EditingPageReleaseSetPlan, EditingPageReleaseSetStatus } from "./editing-api.js";
+import type { EditingPageApplied, EditingPageApplyConflict, EditingPageApplyInput, PageOperationVersions, EditingPageReleaseSetApplyResult, EditingPageReleaseSetItem, EditingPageReleaseSetPlan, EditingPageReleaseSetStatus } from "./editing-api.js";
 import type {
   EditorLocaleReleaseApplyRequest, EditorLocaleReleaseApplyResult, EditorLocaleReleasePlan, EditorLocaleReleasePrepareRequest, EditorLocaleReleaseState
 } from "./locale-release-contract.js";
@@ -214,7 +214,7 @@ export interface EditorResponsiveProposalAdapter {
   propose(request: EditorResponsiveProposalRequest, signal: AbortSignal): Promise<unknown>;
 }
 export type EditorApplyOperationsRequest = Omit<EditingPageApplyInput, "dryRun"> & { readonly target: EditorTarget };
-export type EditorApplyOperationsResult = EditingPageApplied | { readonly status: "conflict" };
+export type EditorApplyOperationsResult = EditingPageApplied | EditingPageApplyConflict;
 
 /** 認証・認可・通信・公開処理は、認証済みホストの責務。 */
 export interface EditorAdapter {
