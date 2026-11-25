@@ -76,7 +76,7 @@ test("page editing API discovery exposes machine-readable operations and stable 
   const result = await json(await send("GET", `/sites/${target.siteId}/capabilities`));
   assert.equal(result.status, 200);
   assert.equal(result.body.apiVersion, "v1");
-  assert.deepEqual(result.body.operations, EDITING_OPERATIONS.slice(0, 3));
+  assert.deepEqual(result.body.operations.map(({ id }) => id), ["pages.inspect", "pages.read", "pages.save"]);
   assert.ok(EDITING_API_ERRORS.includes("version_conflict"));
   assert.ok(result.body.operations.every((operation) => operation.inputSchema && operation.resultSchema && operation.errors.length > 0));
 });

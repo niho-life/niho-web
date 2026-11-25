@@ -52,7 +52,9 @@ React 18.3 または 19 と、同じ版の React DOM を利用側で用意して
 | `preparePageChange` / `applyPageChange`（任意） | ページの作成・複製・名前とURLの変更・公開切替。影響の確認と一回限りの確認 token。[ページ管理の契約](page-contract.md) |
 | `readSiteSettings` / `saveSiteSettings`（任意） | サイト共通の公開情報とカラー・文字スタイル。楽観ロック付き（[サイト共通スタイルの契約](site-styles-contract.md)） |
 | `responsiveProposal.propose(request, signal)`（任意） | 現在文書のレスポンシブstyle提案。AI/provider/auth/storage/利用量はホスト所有。省略時は操作を表示しない |
-| `listRevisions` / `readRevision` / `createSnapshot`（任意） | 版履歴の一覧・読み取り専用の表示・名前付きスナップショット。[保存・履歴の契約](save-history-contract.md) |
+| `listRevisions` / `readRevision` / `createSnapshot`（任意） | 版履歴の一覧・読み取り専用の表示・名前付きスナップショット。履歴項目は人/AIと確認済み委任元の表示名、操作種別、要素IDと変更fieldを表示し、変更前後の値は出しません。[保存・履歴の契約](save-history-contract.md) |
+
+共通HTTP APIを使うホストは `createEditingApiHistoryAdapter(client)` の返す `listRevisions` / `readRevision` を既存の `PageEditor` adapterへ追加できます。ページ履歴のAPI権限 `pages.history.read` は、通常文書の `pages.read` と別にホストで認可してください。
 
 `listPages` の各ページに任意で `path`・`kind`（page / template / shared）・`visibility`・`published` を返すと、左のページパネルにフォルダ（`template` は「テンプレート」の見出しの下）と公開状態の点（緑＝公開中、灰＝未公開、輪郭＝非公開）を表示します。`publication` があれば、その label と description を点のツールチップと読み上げに使います。任意メソッドを実装しないホストでは、ページ操作とサイト設定の保存を表示しません。
 
