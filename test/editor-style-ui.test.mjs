@@ -280,7 +280,9 @@ test("the compact tier disclosure and explicit alignment controls keep viewport,
     const tierDetails = right().querySelector(".e-tier-details");
     assert.equal(tierDetails.open, false, "tier controls start collapsed");
     assert.match(tierDetails.querySelector("summary").textContent, /編集\s*基本/);
-    assert.match(tierDetails.querySelector("summary").textContent, /表示\s*1280px · PC 1280px〜/);
+    const tierSummary = tierDetails.querySelector("summary");
+    assert.match(tierSummary.textContent, /表示\s*1280px/);
+    assert.equal(tierSummary.querySelector(".e-tier-summary > span:nth-child(2)")?.getAttribute("title"), "表示 1280px · PC 1280px〜");
     assert.ok(tierDetails.querySelector('[aria-label="編集する幅"]'), "all tier controls remain in the disclosure");
     await click(tierDetails.querySelector("summary")); assert.equal(tierDetails.open, true);
     await click(button("タブレット 768px〜", tierDetails));

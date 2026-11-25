@@ -223,7 +223,7 @@ export function StyleInspector(props: StyleInspectorProps) {
   return <div className="e-inspector" data-tone={tone}>
     {normal && <div className="e-tierbar">
       <details className="e-tier-details">
-        <summary><span className="e-tier-summary"><span>編集 <strong>{tierName(current)}</strong></span><span>表示 <strong>{props.width}px · {tierName(shown)}</strong></span></span><span className="e-tier-open">段・範囲</span></summary>
+        <summary><span className="e-tier-summary"><span title={`編集 ${tierName(current)}`}>編集 <strong>{current.label}</strong></span><span title={`表示 ${props.width}px · ${tierName(shown)}`}>表示 <strong>{props.width}px</strong></span></span><span className="e-tier-open">段・範囲</span></summary>
         <div className="e-tier-controls">
           <Segmented label="編集する幅" value={String(tier)} options={tiers.map((entry) => ({ value: String(entry.key), text: tierName(entry) }))} disabled={disabled || props.tierLocked}
             onChange={(value) => chooseTier(value === "base" ? "base" : Number(value))} />
