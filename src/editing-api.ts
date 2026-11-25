@@ -1611,17 +1611,19 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       const history = raw as Record<string, unknown>;
       if (![Object.prototype, null].includes(Object.getPrototypeOf(history)) || !Object.hasOwn(history, "document")
         || Object.keys(history).some((key) => !["document", "siteStyles", "presentation"].includes(key))) return fail("host_contract_violation", 502);
-      let context: PageEditingValidationContext;
-      try { context = await documentContext(adapter, actor, target); }
-      catch { return fail("host_failure", 503); }
-      let document: PageDocument;
-      try { document = validatedDocument(history.document, context); }
-      catch { return fail("host_contract_violation", 502); }
-      if (document.siteId !== target.siteId || document.pageId !== target.pageId || document.locale !== target.locale) return fail("host_contract_violation", 502);
       let siteStyles: SiteStyles | undefined;
       let presentation: unknown;
       try {
         if (history.siteStyles !== undefined) siteStyles = parseSiteStyles(history.siteStyles as SiteStyles);
+      } catch { return fail("host_contract_violation", 502); }
+      let context: PageEditingValidationContext;
+      try { context = await documentContext(adapter, actor, target); }
+      catch { return fail("host_failure", 503); }
+      let document: PageDocument;
+      try { document = validatedDocument(history.document, siteStyles === undefined ? context : { ...context, siteStyles }); }
+      catch { return fail("host_contract_violation", 502); }
+      if (document.siteId !== target.siteId || document.pageId !== target.pageId || document.locale !== target.locale) return fail("host_contract_violation", 502);
+      try {
         if (history.presentation !== undefined) presentation = parseSitePresentation(history.presentation, document, context.blocks);
       } catch { return fail("host_contract_violation", 502); }
       const result = { document, ...(siteStyles === undefined ? {} : { siteStyles }), ...(presentation === undefined ? {} : { presentation }) };

@@ -31,7 +31,8 @@ function setup(overrides = {}) {
     async readPageHistoryRevision(actor, requested, id) {
       calls.read.push({ subject: actor.subject, target: requested, id });
       return overrides.read ?? { document, siteStyles: { tokens: {} } };
-    }
+    },
+    ...(overrides.validationContext ? { validationContext: overrides.validationContext } : {})
   });
   const send = (method, path, body, authorization = "Bearer history") => api(new Request(`https://host.example/api/edit/v1${path}`, {
     method, headers: { Authorization: authorization, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
@@ -74,6 +75,20 @@ test("revision snapshots are read by POST body ID, target checked, and strict ab
   assert.deepEqual(await json(await mismatched.send("POST", historyRead, { id: revisionId })), { status: 502, body: { error: "host_contract_violation" } });
   const leaked = setup({ list: { entries: [{ ...entry, operations: [{ ...entry.operations[0], before: "private text" }] }] } });
   assert.deepEqual(await json(await leaked.send("GET", historyList)), { status: 502, body: { error: "host_contract_violation" } });
+});
+
+test("revision documents are validated against their saved site styles", async () => {
+  const historicalDocument = structuredClone(document);
+  historicalDocument.body[0].style.base.color = { token: "oldBrand" };
+  const historicalSiteStyles = { tokens: { oldBrand: { type: "color", value: "#123456" } } };
+  const { send } = setup({
+    read: { document: historicalDocument, siteStyles: historicalSiteStyles },
+    validationContext: async () => ({ siteStyles: { tokens: { currentBrand: { type: "color", value: "#abcdef" } } } })
+  });
+
+  const result = await json(await send("POST", historyRead, { id: revisionId }));
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body, { document: historicalDocument, siteStyles: historicalSiteStyles });
 });
 
 test("history operations are absent until the host implements the corresponding storage method", async () => {
