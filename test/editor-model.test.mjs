@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { DocumentValidationError, generatePageCss, parsePageDocument } from "@niho/web/core";
-import { acceptSavedRevision, checkPageChange, commitHistory, editDocument, effectiveLocks, fingerprint, lockReason, newElement, nodeAt, travelHistory, validatePageChangePlan, validateReleasePlan, walkNodes } from "../dist/editor-model.js";
+import { acceptSavedRevision, BoxGroupLayoutChange, checkPageChange, commitHistory, editDocument, effectiveLocks, fingerprint, lockReason, newElement, nodeAt, travelHistory, validatePageChangePlan, validateReleasePlan, walkNodes } from "../dist/editor-model.js";
 import { editDocumentById } from "@niho/web/editor-model";
 import { createInsertionNode, formInsertionPresets } from "@niho/web/builder";
 
@@ -50,6 +50,25 @@ test("React-free editor model applies stable-ID operations and parent-relative t
   assert.equal(nodeAt(text, headingPath).style.base.color, "#ff0000");
   assert.throws(() => editDocumentById(original, { type: "style", nodeId: "missing", breakpoint: "base", property: "color", value: "#ff0000" }), /対象ノード/);
   assert.throws(() => editDocumentById(original, { type: "style", path: [0], breakpoint: "base", property: "color", value: "#ff0000" }), /安定した対象ID/);
+});
+test("box grouping preserves adjacent siblings and rejects gaps or non-group IDs", () => {
+  const original = doc(), before = original.body[0].children;
+  const wrapped = editDocument(original, { type: "wrap", nodeIds: ["heading", "lead"], wrapperId: "group_intro", allowLayoutChange: true });
+  const children = wrapped.body[0].children;
+  assert.equal(children[0].id, "group_intro");
+  assert.deepEqual(children[0].children.map(({ id }) => id), ["heading", "lead"]);
+  assert.deepEqual(children.slice(1), before.slice(2));
+  const unwrapped = editDocument(wrapped, { type: "unwrap", path: [0, 0], allowLayoutChange: true });
+  assert.deepEqual(unwrapped.body[0].children, before);
+  assert.throws(() => editDocument(original, { type: "wrap", nodeIds: ["heading", "link"], wrapperId: "group_gap", allowLayoutChange: true }), /間の要素/u);
+  assert.throws(() => editDocument(original, { type: "wrap", nodeIds: ["heading"], wrapperId: "custom", allowLayoutChange: true }), /group_/u);
+});
+test("box grouping requires explicit approval when it can change layout", () => {
+  const original = doc();
+  original.body[0].style = { base: { display: "flex" } };
+  const operation = { type: "wrap", nodeIds: ["heading"], wrapperId: "group_heading" };
+  assert.throws(() => editDocument(original, operation), BoxGroupLayoutChange);
+  assert.equal(editDocument(original, { ...operation, allowLayoutChange: true }).body[0].children[0].id, "group_heading");
 });
 test("フォーム操作は名前・必須・型・選択肢を検証済み文書として更新する", () => {
   const preset = formInsertionPresets.find(({ id }) => id === "form-2");

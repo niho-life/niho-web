@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { editDocument, editDocumentById } from "@niho/web/editor-model";
-import { acceptAppliedOperations, operationQueue, queuePageEdit } from "../dist/editor-operation-queue.js";
+import { acceptAppliedOperations, operationQueue, queuePageEdit, queuePageTravel } from "../dist/editor-operation-queue.js";
 
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 const apply = (document, operation) => editDocumentById(document, operation);
@@ -40,4 +40,22 @@ test("canonical rebase preserves an unrelated concurrent property and an edit ma
   assert.equal(declarations.padding, "2rem");
   assert.equal(declarations.gap, 24);
   assert.equal(accepted.queue.base.body[0].style.base.padding, "2rem");
+});
+
+test("box grouping is reversible through the operation queue", () => {
+  const base = structuredClone(fixture);
+  const change = { type: "wrap", nodeIds: ["heading", "lead"], wrapperId: "group_intro", allowLayoutChange: true };
+  const wrapped = queuePageEdit(operationQueue(base), base, [change], edit, apply);
+  assert.equal(wrapped.queue.fallback, false);
+  assert.equal(wrapped.queue.pending[0].type, "wrap");
+
+  const undoneDocument = apply(wrapped.document, wrapped.queue.past[0].inverse[0]);
+  const undone = queuePageTravel(wrapped.queue, wrapped.document, undoneDocument, "undo", apply);
+  assert.equal(undone.fallback, false);
+  assert.deepEqual(undoneDocument.body, base.body);
+
+  const redoneDocument = apply(undoneDocument, undone.future[0].forward[0]);
+  const redone = queuePageTravel(undone, undoneDocument, redoneDocument, "redo", apply);
+  assert.equal(redone.fallback, false);
+  assert.deepEqual(redoneDocument.body, wrapped.document.body);
 });

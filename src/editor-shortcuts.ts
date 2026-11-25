@@ -17,6 +17,8 @@ export const editorShortcuts = [
   { action: "redo", label: "やり直す", keys: ["z"], keyLabel: "⇧⌘Z / Ctrl+Shift+Z", command: true, shift: true },
   { action: "remove", label: "削除", keys: ["delete", "backspace"], keyLabel: "Delete / Backspace" },
   { action: "duplicate", label: "複製", keys: ["d"], keyLabel: "⌘D / Ctrl+D", command: true },
+  { action: "wrap", label: "ボックスで囲む", keys: ["g"], keyLabel: "⌘G / Ctrl+G", command: true },
+  { action: "unwrap", label: "囲みを解除", keys: ["g"], keyLabel: "⇧⌘G / Ctrl+Shift+G", command: true, shift: true },
   { action: "copy", label: "コピー", keys: ["c"], keyLabel: "⌘C / Ctrl+C", command: true },
   { action: "cut", label: "カット", keys: ["x"], keyLabel: "⌘X / Ctrl+X", command: true },
   { action: "paste", label: "貼り付け", keys: ["v"], keyLabel: "⌘V / Ctrl+V", command: true },
