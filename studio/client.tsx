@@ -12,7 +12,7 @@ import { integrationIdentity, resolveTrustedEditorPage, resolveTrustedIntegratio
 import { KamakuraEditor } from "./kamakura-editor.js";
 import { ManagedEditor } from "./managed-editor.js";
 import { parseProjectAliasPath, projectRoutePath, type ProjectCmsRoute, type ProjectSiteViewId, type ProjectTranslationsRoute } from "./project-routes.mjs";
-import { SiteCmsWorkspace } from "./site-cms.js";
+import { ManagedSiteCmsWorkspace, SiteCmsWorkspace } from "./site-cms.js";
 import { SiteTranslationsWorkspace } from "./site-translations.js";
 
 type Role = "owner" | "editor";
@@ -94,8 +94,8 @@ function screenFromLocation(): Screen {
   if (editor) return { kind: "editor", projectId: editor.registration.projectId, siteId: editor.registration.siteId, environment: editor.environment };
   const managedEditor = /^\/projects\/([A-Za-z][A-Za-z0-9_-]{0,79})\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/editor\/?$/u.exec(window.location.pathname);
   if (managedEditor) return { kind: "editor", projectId: managedEditor[1]!, siteId: managedEditor[2]!, environment: "managed" };
-  const dashboard = /^\/projects\/([A-Za-z][A-Za-z0-9_-]{0,79})\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/?$/u.exec(window.location.pathname);
-  return dashboard ? { kind: "dashboard", projectId: dashboard[1]!, siteId: dashboard[2]! } : { kind: "directory" };
+  const dashboard = /^\/projects\/([A-Za-z][A-Za-z0-9_-]{0,79})\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})(\/cms)?\/?$/u.exec(window.location.pathname);
+  return dashboard ? { kind: "dashboard", projectId: dashboard[1]!, siteId: dashboard[2]!, view: dashboard[3] ? "cms" : null } : { kind: "directory" };
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -584,6 +584,10 @@ function App() {
   const admin = screen.kind === "dashboard" && siteAdmin?.key === dashboardKey ? siteAdmin.value : null;
   /** Dashboard の左のメニュー「サイト機能」に足すもの（ページは右上のデザインエディタ、プロジェクト設定はメンバーと招待） */
   const siteViews = (project: Project): ProjectSiteView[] => {
+    if (managedProject(project, session.config)) return [
+      { id: "cms", label: "CMS", content: <ManagedSiteCmsWorkspace key={`${project.id}:${project.site.id}`}
+        projectId={project.id} siteId={project.site.id} origin={session.config.publicSitesOrigin} /> }
+    ];
     if (!admin) return [];
     const open = (view: ProjectSiteViewId) => navigate({ kind: "dashboard", projectId: project.id, siteId: project.site.id, view });
     return [

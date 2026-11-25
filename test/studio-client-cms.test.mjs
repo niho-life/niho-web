@@ -195,3 +195,56 @@ test("Studio のオーナー向けメンバー管理は表を使い、上部の�
   assert.ok(calls.includes("POST /api/projects/project-kamakura/sites/kamakura/invitations"));
   assert.equal(document.querySelector(".studio-copy input")?.value, `${ORIGIN}/invite/example`);
 });
+
+test("Studio-native の CMS を Dashboard から開き、下書き作成の再送とプレビューを同じサイトで行う", async (t) => {
+  const project = { id: "project-native", name: "架空の Studio サイト",
+    site: { id: "site-native", name: "架空のサイト", domains: ["https://public.example.test"] }, members: [] };
+  const root = `/projects/${project.id}/sites/${project.site.id}`, apiRoot = `/api${root}`, endpoint = `${apiRoot}/cms/v2`;
+  const schema = { contractVersion: 2, siteId: project.site.id, schemaRevision: "initial", retiredFields: [],
+    collections: [{ id: "posts", label: "お知らせ", addLabel: "項目を追加", pathPrefix: "/cms/posts/", titleField: "title",
+      slugField: "slug", imageField: null, subtitleField: null, capabilities: { create: true, remove: true, schedule: true },
+      fields: [{ key: "title", fieldId: "title", label: "タイトル", type: "text", placement: "main" }] }] };
+  const item = { siteId: project.site.id, schemaRevision: "initial", locale: "ja", itemId: "item_fixture", collectionId: "posts",
+    revision: "rev_fixture", values: { title: "架空の下書き" } };
+  const observed = [];
+  let attempts = 0;
+  installDom(root);
+  t.mock.method(globalThis, "fetch", async (url, init = {}) => {
+    if (url === "/api/session") return json({ status: "authenticated", subject: "example-owner", email: "owner@example.test" });
+    if (url === "/api/config") return json({ managedProjectsEnabled: true, publicSitesOrigin: project.site.domains[0] });
+    if (url === "/api/projects") return json({ status: "ready", entries: [{ project, summary: {
+      ...directory.entries[0].summary, projectId: project.id, siteId: project.site.id, publishedUrl: project.site.domains[0]
+    } }] });
+    if (url === `${apiRoot}/dashboard`) return json(dashboard(project));
+    if (url === `${endpoint}/discover`) return json({ siteId: project.site.id, contractVersion: 2, schemaRevision: "initial", operations: ["cms.schema.apply"] });
+    if (!String(url).startsWith(endpoint)) return json({ error: "not_found" }, 404);
+    const path = String(url).slice(endpoint.length + 1), input = JSON.parse(init.body);
+    assert.equal(input.siteId, project.site.id);
+    observed.push({ path, key: new Headers(init.headers).get("X-Studio-Operation-Key"), input });
+    if (path === "cms.schema.read") return json(schema);
+    if (path === "cms.release.current") return json({ snapshot: null, locale: "ja", collectionRoot: "/s/native/cms" });
+    if (path === "cms.items.list") return json({ items: [], nextCursor: null });
+    if (path === "cms.items.create") return ++attempts === 1 ? json({ error: "service_unavailable" }, 503) : json({ item });
+    if (path === "cms.preview.prepare") return json({ previewId: "fixture-preview", expiresAt: at });
+    if (path === "cms.preview.read") return json({ preview: { title: item.values.title, fields: [] }, expiresAt: at });
+    return json({ error: "not_found" }, 404);
+  });
+  await act(async () => { await import(`${pathToFileURL(bundle).href}?instance=${++instance}`); });
+  await flush();
+  assert.ok(byText("button", "CMS"), document.body.textContent);
+  await click(byText("button", "CMS"));
+  if (!byText("button", "項目を追加")) await wait(350);
+  assert.equal(window.location.pathname, `${root}/cms`);
+  assert.ok(document.querySelector('[aria-label="CMS"]'));
+  await click(byText("button", "項目を追加"));
+  assert.match(document.querySelector('[aria-label="CMS"]').textContent, /操作が完了しませんでした/u);
+  await click(byText("button", "項目を追加"));
+  const creates = observed.filter(({ path }) => path === "cms.items.create");
+  assert.equal(creates.length, 2);
+  assert.ok(creates[0].key);
+  assert.equal(creates[0].key, creates[1].key);
+  await click(byText("button", "下書きをプレビュー"));
+  assert.equal(document.querySelector('[aria-label="下書きプレビュー"] h2')?.textContent, item.values.title);
+  assert.equal(observed.find(({ path }) => path === "cms.preview.read")?.input.previewId, "fixture-preview");
+  assert.doesNotMatch(window.location.href, /fixture-preview/u);
+});
