@@ -12,6 +12,7 @@ const path = `/api/edit/v1/sites/${siteId}/operations/pages.apply/${pageId}?loca
 const dependencies = { stylesVersion: "styles-1", componentsVersion: "components-1", presentationVersion: "site-1" };
 const actor = { kind: "machine", subject: "principal", delegatedBy: "owner", clientKind: "cli" };
 const oneLetter = { type: "text", parentId: "heading", childPath: [0], value: "海のそばで暮ごす" };
+const oneLetterPreconditions = { parentId: "heading", oldValue: "海のそばで過ごす", textPathContext: [{ type: "target" }] };
 const operation = (operations = [oneLetter], extra = {}) => ({ baseVersion: "v1", operationId: crypto.randomUUID(), operations, ...dependencies, ...extra });
 
 function host(context, authenticatedActor = actor) {
@@ -78,6 +79,7 @@ test("pages.apply rejects stale dependency CAS, bad batches and unauthorized act
   const malformed = [
     oneLetter,
     { ...oneLetter, childPath: ["0"] },
+    { ...oneLetter, preconditions: { ...oneLetterPreconditions, textPathContext: [{ type: "target", extra: true }] } },
     { ...oneLetter, unknown: true },
     { type: "restore", document },
     { type: "token", name: "ink" },
@@ -111,6 +113,124 @@ test("pages.apply rejects stale dependency CAS, bad batches and unauthorized act
   assert.equal(saved.status, "applied");
   assert.equal(saved.document.body[0].style.base.padding, undefined);
   assert.deepEqual(storage.readJournal()[0].input.operations[0].values, { padding: null });
+});
+
+test("pages.apply safely rebases independent leaf edits and records the rebased version", async () => {
+  const { client, storage } = host();
+  const first = await client.applyOperations(target, operation([{
+    type: "style", nodeId: "hero", breakpoint: "base", property: "color", value: "#334455",
+    preconditions: { parentId: null, oldValue: { token: "ink" } },
+  }]));
+  assert.equal(first.status, "applied");
+
+  const second = await client.applyOperations(target, operation([{
+    type: "style", nodeId: "heading", breakpoint: "base", property: "color", value: "#556677",
+    preconditions: { parentId: "hero", oldValue: null },
+  }]));
+  assert.equal(second.status, "applied");
+  assert.equal(second.document.body[0].style.base.color, "#334455");
+  assert.equal(second.document.body[0].children[0].style.base.color, "#556677");
+  assert.equal(second.revision, 3);
+  assert.equal(storage.readJournal()[1].input.baseVersion, "v1");
+  assert.equal(storage.readJournal()[1].rebasedFromVersion, first.version);
+});
+
+test("pages.apply rebases a text edit while its exact child path context survives", async () => {
+  const { storage, call, client } = host();
+  const concurrent = structuredClone(document);
+  concurrent.title = "Concurrent title";
+  const concurrentSave = await storage.savePage(actor, target, "v1", concurrent);
+  assert.equal(concurrentSave.status, "saved");
+
+  const response = await call(operation([{ ...oneLetter, preconditions: oneLetterPreconditions }]));
+  assert.equal(response.status, 200);
+  const saved = await response.json();
+  assert.equal(saved.document.title, "Concurrent title");
+  assert.equal(saved.document.body[0].children[0].children[0].text, oneLetter.value);
+  assert.equal(storage.readJournal()[0].rebasedFromVersion, concurrentSave.version);
+  assert.equal((await client.read(target)).document.title, "Concurrent title");
+});
+
+test("pages.apply returns unmet preconditions for conflicting or unsupported stale operations", async () => {
+  const sameField = host();
+  await sameField.client.applyOperations(target, operation([{
+    type: "style", nodeId: "hero", breakpoint: "base", property: "color", value: "#334455",
+    preconditions: { parentId: null, oldValue: { token: "ink" } },
+  }]));
+  const conflict = await sameField.client.applyOperations(target, operation([{
+    type: "style", nodeId: "hero", breakpoint: "base", property: "color", value: "#556677",
+    preconditions: { parentId: null, oldValue: { token: "ink" } },
+  }]));
+  assert.deepEqual(conflict, { status: "conflict", unmetPreconditions: [{ index: 0, condition: "old_value" }] });
+  assert.equal(sameField.storage.readJournal().length, 1);
+  assert.equal((await sameField.client.read(target)).document.body[0].style.base.color, "#334455");
+
+  const unsupported = host();
+  await unsupported.client.applyOperations(target, operation([{ type: "title", value: "Concurrent" }]));
+  const rejected = await unsupported.client.applyOperations(target, operation([{ type: "title", value: "Stale title" }]));
+  assert.deepEqual(rejected, { status: "conflict", unmetPreconditions: [{ index: 0, condition: "rebase_supported" }] });
+  assert.equal(unsupported.storage.readJournal().length, 1);
+  assert.equal((await unsupported.client.read(target)).document.title, "Concurrent");
+
+  const structuralText = host(), concurrent = structuredClone(document), heading = concurrent.body[0].children[0];
+  heading.children.unshift(structuredClone(heading.children[0]));
+  assert.equal((await structuralText.storage.savePage(actor, target, "v1", concurrent)).status, "saved");
+  const response = await structuralText.call(operation([{ ...oneLetter, preconditions: oneLetterPreconditions }]));
+  assert.equal(response.status, 409);
+  assert.deepEqual((await response.json()).unmetPreconditions, [{ index: 0, condition: "child_path" }]);
+  const latest = await structuralText.client.read(target);
+  assert.deepEqual(latest.document.body[0].children[0].children.map(({ text }) => text), ["海のそばで過ごす", "海のそばで過ごす"]);
+});
+
+test("pages.apply reports multiple failed conditions for one operation and never partially commits a batch", async () => {
+  const { client, storage } = host();
+  await client.applyOperations(target, operation([{
+    type: "style", nodeId: "heading", breakpoint: "base", property: "color", value: "#334455",
+    preconditions: { parentId: "hero", oldValue: null },
+  }]));
+  const conflict = await client.applyOperations(target, operation([{
+    type: "style", nodeId: "hero", breakpoint: "base", property: "gap", value: 24,
+    preconditions: { parentId: null, oldValue: 16 },
+  }, {
+    type: "style", nodeId: "heading", breakpoint: "base", property: "color", value: "#556677",
+    preconditions: { parentId: "hero", oldValue: null },
+  }]));
+  assert.deepEqual(conflict, { status: "conflict", unmetPreconditions: [{ index: 1, condition: "old_value" }] });
+  assert.equal(storage.readJournal().length, 1);
+  const saved = (await client.read(target)).document;
+  assert.equal(saved.body[0].style.base.gap, 16);
+  assert.equal(saved.body[0].children[0].style.base.color, "#334455");
+
+  const both = await client.applyOperations(target, operation([{
+    type: "style", nodeId: "hero", breakpoint: "base", property: "gap", value: 24,
+    preconditions: { parentId: "wrong-parent", oldValue: 8 },
+  }]));
+  assert.deepEqual(both, { status: "conflict", unmetPreconditions: [
+    { index: 0, condition: "parent_id" }, { index: 0, condition: "old_value" },
+  ] });
+  assert.equal(storage.readJournal().length, 1);
+});
+
+test("pages.apply uses node anchors for insert and move while retaining numeric indices", async () => {
+  const { client, call } = host();
+  const added = (id) => ({ type: "element", id, tag: "p", children: [{ type: "text", text: id }] });
+  let saved = await client.applyOperations(target, operation([{ type: "add", parentId: null, node: added("start"), anchor: { edge: "start" } }]));
+  saved = await client.applyOperations(target, operation([{ type: "add", parentId: null, node: added("after"), anchor: { after: "hero" } }], { baseVersion: saved.version }));
+  saved = await client.applyOperations(target, operation([{ type: "add", parentId: null, node: added("end"), anchor: { edge: "end" } }], { baseVersion: saved.version }));
+  saved = await client.applyOperations(target, operation([{ type: "move", nodeId: "after", parentId: null, anchor: { before: "hero" } }], { baseVersion: saved.version }));
+  assert.deepEqual(saved.document.body.map((node) => node.id), ["start", "after", "hero", "end"]);
+
+  const indexed = await client.applyOperations(target, operation([{ type: "add", parentId: null, node: added("indexed"), index: 1 }], { baseVersion: saved.version }));
+  assert.deepEqual(indexed.document.body.map((node) => node.id), ["start", "indexed", "after", "hero", "end"]);
+  for (const invalid of [
+    { type: "move", nodeId: "after", parentId: null },
+    { type: "move", nodeId: "after", parentId: null, index: 0, anchor: { edge: "start" } },
+    { type: "add", parentId: null, node: added("bad"), index: 0, anchor: { edge: "start" } },
+    { type: "add", parentId: null, node: added("bad"), anchor: { before: "missing" } },
+  ]) {
+    const response = await call(operation([invalid], { baseVersion: indexed.version }));
+    assert.equal(response.status, 422);
+  }
 });
 
 test("pages.apply serializes competing requests and deduplicates concurrent retries", async () => {
