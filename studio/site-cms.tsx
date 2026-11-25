@@ -1,4 +1,10 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
+import type { ManagedCmsWorkspaceProps } from "./managed-cms-workspace.js";
+
+const ManagedWorkspace = lazy(() => import("./managed-cms-workspace.js").then((module) => ({ default: module.ManagedCmsWorkspace })));
+export function ManagedSiteCmsWorkspace(props: ManagedCmsWorkspaceProps) {
+  return <Suspense fallback={<p role="status">CMS を読み込んでいます…</p>}><ManagedWorkspace {...props} /></Suspense>;
+}
 import type { KamakuraCmsWorkspaceProps } from "./kamakura-cms-workspace.js";
 
 /**
