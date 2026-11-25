@@ -27,7 +27,7 @@ v1 の意味は既存の通りです。v2 を使う Site の v1 の書込み入�
 
 ホストは Site と locale ごとに `CmsRouteTable` を発行し、`revision` を更新します。予約には公開 CMS 項目、CMS またはホスト所有の転送、固定ページ、動的テンプレート、その他の予約 path を含めます。path は query・fragment・末尾 slash のない正規化済み URL path です。CMS はホストの予約を編集しません。
 
-`cms.release.plan` の `routeTableRevision` は必須です。計画時に現在版と違えば conflict を返します。`planCmsRouteTable` は locale の CMS 項目と CMS 所有転送を新しい snapshot に置き換え、固定ページ・テンプレート・予約 path・ホスト所有転送を保持します。固定 path、テンプレートに一致する path、別の CMS 項目、転送元との衝突を見つけた場合は計画を invalid にします。項目の公開 path が前の release から変わった場合は、旧 path から新 path への一段の転送を自動生成します。snapshot には更新後の完全な route table と転送が入り、release の適用では公開 pointer と route table を同じ CAS で切り替えます。予約実行時にも現在の route table で release 全体を再検証します。
+`cms.release.plan` の `routeTableRevision` は必須です。計画時に現在版と違えば conflict を返します。`planCmsRouteTable` は locale の CMS 項目と CMS 所有転送を新しい snapshot に置き換え、固定ページ・テンプレート・予約 path・ホスト所有転送を保持します。固定 path、テンプレートに一致する path、別の CMS 項目、転送元との衝突を見つけた場合は計画を invalid にします。項目の公開 path が前の release から変わった場合は、旧 path から新 path への一段の転送を自動生成します。更新後の予約表はホスト所有の保持分を含め100,000件以下とし、超える計画は `invalid` を返します。snapshot には更新後の完全な route table と転送が入り、release の適用では公開 pointer と route table を同じ CAS で切り替えます。予約実行時にも現在の route table で release 全体を再検証します。
 
 定義移行の入力 `routeTableVersions` は Site の全 locale の現在版を含みます。`planCmsMigrationWithRouteTables` は locale ごとの全 migration item の新 path を予約表と照合し、固定 path、template、予約 path、他の公開 CMS 項目との衝突を計画へ追加します。確認 token は route table の全 locale 版に結び付けられ、適用直前に一致しなければ conflict です。Studio-native では Studio がこの表を管理し、サイトの公開 manifest に含めます。
 
@@ -44,7 +44,7 @@ v1 の意味は既存の通りです。v2 を使う Site の v1 の書込み入�
 
 `cms.release.plan` は1つの Site と locale の現在の release ID、定義の版、ルート表の版、公開後に含めたい全項目の `collectionId` / `itemId` / `revision`、明示する転送表を固定します。日時 `at` を指定した入力は予約用の確認計画です。対象に残す既存項目の版も選択に含めます。snapshot の順序は項目選択の順序で、ホストは適用時も同じ順序を使います。
 
-`planCmsRelease` は同じ Site、locale、版の項目を読んで公開用に変換します。必須値、同じ snapshot 内の参照先、削除済みの項目、スラッグ、重複 path、版付き route table の衝突を検証します。転送先は公開項目または固定 route です。転送は1回で解決し、転送元は現在の route を占有できません。固定ページ、テンプレート、予約 path、ホスト所有転送との照合は route table を通して行います。公開される本文にはホストの無害化と公開素材の検査が必要です。画像とギャラリーは安定素材参照を使い、プレビュー URL を含む旧 URL 値を公開 release に持ち込みません。素材の公開 manifest と配信は #379 / #380 で扱います。
+`planCmsRelease` は同じ Site、locale、版の項目を読んで公開用に変換します。必須値、同じ snapshot 内の参照先、削除済みの項目、スラッグ、重複 path、版付き route table の衝突を検証します。転送先は公開項目または固定 route です。転送は1回で解決し、転送元は現在の route を占有できません。固定ページ、テンプレート、予約 path、ホスト所有転送との照合は route table を通して行います。slug 変更で自動生成する転送と明示転送の合計は25,000件以下です。上限を超える計画は `invalid` を返します。公開される本文にはホストの無害化と公開素材の検査が必要です。画像とギャラリーは安定素材参照を使い、プレビュー URL を含む旧 URL 値を公開 release に持ち込みません。素材の公開 manifest と配信は #379 / #380 で扱います。
 
 `cms.release.apply` はサーバーで保持した確認内容を `checkCmsReleaseApply` で再構成し、元の計画と一致する場合に確定します。公開 pointer と操作受領記録は同じ transaction で切り替えます。`cms.release.status` は現在の権限を再確認し、同じ Site、actor、操作の受領記録を返します。完全に同じ request の再送だけ既存結果を返します。同じ ID で異なる操作や入力を送ると conflict です。成功済みの再送は確認期限の判定より先に受領記録を確認します。
 
