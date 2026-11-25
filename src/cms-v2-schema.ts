@@ -178,7 +178,7 @@ export function planCmsMigration(beforeInput: unknown, nextInput: unknown, itemI
   if (before.siteId !== candidate.siteId || before.schemaRevision === candidate.schemaRevision) fail("schema", "invalid migration target");
   const retired = new Map(before.retiredFields.map((entry) => [`${entry.collectionId}/${entry.fieldId}`, entry]));
   const changes: CmsMigrationChange[] = [];
-  const fieldConfig = ({ fieldId: _id, key: _key, label: _label, hint: _hint, placement: _placement, ...field }: CmsField) => JSON.stringify(field);
+  const fieldConfig = ({ fieldId: _id, key: _key, label: _label, ...field }: CmsField) => JSON.stringify(field);
   for (const collection of before.collections) {
     const next = candidate.collections.find(({ id }) => id === collection.id);
     for (const field of collection.fields) {

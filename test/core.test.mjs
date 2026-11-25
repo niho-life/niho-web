@@ -293,6 +293,14 @@ test("CSS uses document scoped selectors and mobile first overrides", () => {
   assert.notEqual(pageScope({ ...input, siteId: "a-b", pageId: "c" }), pageScope({ ...input, siteId: "a", pageId: "b-c" }));
 });
 
+test("CSS emits gap shorthand before axis-specific gap overrides", () => {
+  const input = doc();
+  input.body[0].style.base = { display: "flex", gap: 16, columnGap: 26, rowGap: 32 };
+  const declarations = generatePageCss(input).match(/\[data-nw-node="hero"\]\{([^}]*)\}/u)?.[1] ?? "";
+  assert.ok(declarations.indexOf("gap:16px;") < declarations.indexOf("column-gap:26px;"));
+  assert.ok(declarations.indexOf("gap:16px;") < declarations.indexOf("row-gap:32px;"));
+});
+
 test("page scope reverses to the exact source identity and rejects malformed scopes", () => {
   const identity = { siteId: "site-a", pageId: "home-page", locale: "ja-JP", revision: 7 };
   const scope = pageScope(identity);
