@@ -6,7 +6,7 @@ import { createPageEditingApi, createRegisteredPageEditingApi, EDITING_API_ERROR
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 const target = { siteId: fixture.siteId, pageId: fixture.pageId, locale: fixture.locale };
 
-function hostFixture({ validationContext, initialDocument = fixture, publishing = false, initialBreakpointSettings, versionedInspection = false, pagePreviewIntent } = {}) {
+function hostFixture({ validationContext, initialDocument = fixture, publishing = false, initialBreakpointSettings, versionedInspection = false, pagePreviewIntent, stylesVersion } = {}) {
   let document = structuredClone(initialDocument), version = "v1";
   let breakpointSettings = initialBreakpointSettings === undefined ? null : structuredClone(initialBreakpointSettings), breakpointVersion = "b.1";
   const actor = { kind: "human", subject: "owner" };
@@ -23,7 +23,8 @@ function hostFixture({ validationContext, initialDocument = fixture, publishing 
       return typeof pagePreviewIntent === "function" ? pagePreviewIntent(input, requestTarget) : pagePreviewIntent;
     } }),
     async readPage(_actor, input) { return input.siteId === target.siteId && input.pageId === target.pageId && input.locale === target.locale ? { document, version,
-      ...(versionedInspection ? { componentsVersion: "components-v1", presentationVersion: "presentation-v1", stylesVersion: "styles-v1" } : {}) } : null; },
+      ...(versionedInspection ? { componentsVersion: "components-v1", presentationVersion: "presentation-v1", stylesVersion: "styles-v1" }
+        : stylesVersion === undefined ? {} : { stylesVersion }) } : null; },
     async savePage(_actor, input, expectedVersion, next) {
       if (input.siteId !== target.siteId || input.pageId !== target.pageId || input.locale !== target.locale) return { status: "conflict" };
       if (expectedVersion !== version) return { status: "conflict" };
