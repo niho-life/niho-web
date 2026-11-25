@@ -13,7 +13,7 @@
 | `cms.release.plan` / `cms.release.apply` / `cms.schedule.create` / `cms.schedule.cancel` | `cms.publish` |
 | `cms.schema.apply` | `cms.schema.apply`（owner のみ） |
 
-v1 の意味は既存の通りです。v2 を使う Site の v1 の書込み入口は、`checkCmsWriteVersion` により本文を処理する前に閉じます。旧クライアントから版番号が届かない場合は v1 と判断します。v2 の項目変更は、読取り時の `expectedSchemaRevision` と `expectedRevision` の両方が必要です。定義・release 操作は v2 の経路だけに公開します。未対応版と競合は区別し、v2 の変更要求を v1 へフォールバックしません。
+v1 の意味は既存の通りです。v2 を使う Site の v1 の書込み入口は、`checkCmsWriteVersion` により本文を処理する前に閉じます。旧クライアントから版番号が届かない場合は v1 と判断します。v2 の項目変更は、読取り時の `expectedSchemaRevision` と `expectedRevision` の両方が必要です。確認付きの適用要求にも `siteId` を含め、scope と照合します。定義・release 操作は v2 の経路だけに公開します。未対応版と競合は区別し、v2 の変更要求を v1 へフォールバックしません。
 
 ## 定義と項目
 
@@ -26,7 +26,7 @@ v1 の意味は既存の通りです。v2 を使う Site の v1 の書込み入�
 ## 定義の移行
 
 1. `cms.schema.plan` に期待する定義の版、完全な次の定義、必要なら項目ごとの変換値を渡します。ホストは Site の全 locale の編集可能な下書きと、ごみ箱から復元できる下書きを読みます。
-2. `planCmsMigration` は `fieldId` で対応づけ、追加・名前変更・変換・削除を示します。互換のある型の値は引き継ぎます。変換できない値は対象項目と field を返し、明示的な置換値と再計画が必要です。削除した field の過去値は不変の旧版に残します。ごみ箱の下書きも新しい定義へ移せますが、生きている項目の参照先にはできません。
+2. `planCmsMigration` は `fieldId` で対応づけ、追加・名前変更・変換・削除を示します。互換のある型の値は引き継ぎます。変換できない値は対象項目と field を返し、明示的な置換値と再計画が必要です。削除した field の過去値は不変の旧版に残します。削除するコレクションの項目は `removedItems` に元 revision を含め、適用時の再確認まで追跡します。ごみ箱の下書きも新しい定義へ移せますが、生きている項目の参照先にはできません。
 3. ホストは `CmsMigrationImpact` で CMS リスト、テンプレート等への結び付けの影響と、公開予定パスの衝突を追加します。確認できる計画だけに期限付きの確認 token を発行します。計画を要求した人が owner に変わっても、別 actor はその token を使えません。owner 本人が plan と apply を行います。
 4. `cms.schema.apply` は `checkCmsSchemaApply` で token、Site、actor、期限、現在の定義と下書き、影響の変化を再確認します。ホストは同じ CAS 内で新しい定義の版と移行した下書き、操作受領記録を確定します。まだ書き込まれていない版と保存済み履歴が重複しないよう、版の採番もホストが管理します。
 

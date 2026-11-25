@@ -149,12 +149,15 @@ export type CmsMigrationChange = { readonly collectionId: string; readonly field
 export type CmsMigrationImpact = (before: CmsSchema, after: CmsSchema, changes: readonly CmsMigrationChange[], items: readonly CmsMigratedItem[]) => readonly CmsProblem[];
 export type CmsMigrationDraft = { readonly item: unknown; readonly tombstoned: boolean };
 export type CmsMigratedItem = CmsItemKey & { readonly locale: string; readonly tombstoned: boolean; readonly previousRevision: string; readonly values: CollectionValues };
+export type CmsRemovedItem = CmsItemKey & { readonly locale: string; readonly tombstoned: boolean; readonly previousRevision: string };
 export type CmsMigrationReplacement = CmsItemKey & { readonly locale: string; readonly values: CollectionValues };
 const localizedKey = (item: CmsItemKey & { readonly locale: string }) => `${item.locale}/${cmsItemKey(item)}`;
 export type CmsMigration = {
   readonly fromRevision: string;
   readonly schema: CmsSchema;
   readonly items: readonly CmsMigratedItem[];
+  /** Items from removed collections remain in the plan so apply can CAS-check their source revisions. */
+  readonly removedItems: readonly CmsRemovedItem[];
   readonly changes: readonly CmsMigrationChange[];
   readonly problems: readonly CmsProblem[];
 };
@@ -198,7 +201,7 @@ export function planCmsMigration(beforeInput: unknown, nextInput: unknown, itemI
   const schema = parseCmsSchema({ ...candidate, retiredFields: [...retired.values()] });
   const replacementByItem = new Map(replacements.map((entry) => [localizedKey(entry), entry.values]));
   if (replacementByItem.size !== replacements.length) fail("replacements", "duplicate replacement item");
-  const items: CmsMigratedItem[] = [], problems: CmsProblem[] = [];
+  const items: CmsMigratedItem[] = [], removedItems: CmsRemovedItem[] = [], problems: CmsProblem[] = [];
   const drafts = itemInputs.map(({ item, tombstoned }) => ({ ...parseCmsItemRevision(item, before), tombstoned }));
   uniqueCmsKeys(drafts.map(localizedKey), "items");
   drafts.sort((left, right) => localizedKey(left) < localizedKey(right) ? -1 : 1);
@@ -206,7 +209,11 @@ export function planCmsMigration(beforeInput: unknown, nextInput: unknown, itemI
     const target = { collectionId: item.collectionId, itemId: item.itemId, locale: item.locale };
     const previous = cmsCollection(before, item.collectionId);
     const next = schema.collections.find(({ id }) => id === item.collectionId);
-    if (!next) continue;
+    if (!next) {
+      removedItems.push({ collectionId: item.collectionId, itemId: item.itemId, locale: item.locale,
+        tombstoned: item.tombstoned, previousRevision: item.revision });
+      continue;
+    }
     const key = localizedKey(item);
     const replacement = record(replacementByItem.get(key) ?? {}, "replacement.values");
     keys(replacement, next.fields.map(({ fieldId }) => fieldId), "replacement.values");
@@ -231,7 +238,8 @@ export function planCmsMigration(beforeInput: unknown, nextInput: unknown, itemI
     items.push({ ...target, tombstoned: item.tombstoned, previousRevision: item.revision, values });
   }
   if (replacementByItem.size > 0) fail("replacements", "replacement item is outside the migration");
-  return { fromRevision: before.schemaRevision, schema, items, changes, problems: [...problems, ...cmsReferenceProblems(schema, items.filter(({ tombstoned }) => !tombstoned)), ...(impact?.(before, schema, changes, items) ?? [])] };
+  return { fromRevision: before.schemaRevision, schema, items, removedItems, changes,
+    problems: [...problems, ...cmsReferenceProblems(schema, items.filter(({ tombstoned }) => !tombstoned)), ...(impact?.(before, schema, changes, items) ?? [])] };
 }
 
 /** The supplied items form a complete editable or published view. References resolve inside their locale. */

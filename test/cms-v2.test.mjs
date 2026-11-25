@@ -65,7 +65,7 @@ class MemoryHost {
   confirm(scope, operation, candidate) {
     return { ...scope, operation, candidate, operationId: this.newId(), expiresAt: "2026-11-26T11:00:00Z", confirmationToken: this.newId() };
   }
-  input(plan) { return { operationId: plan.operationId, confirmationToken: plan.confirmationToken }; }
+  input(plan) { return { siteId: plan.siteId, operationId: plan.operationId, confirmationToken: plan.confirmationToken }; }
   migrationDrafts() { return [...this.drafts.values()].map((item) => ({ item, tombstoned: this.state.get(cmsItemKey(item)).tombstone !== null })); }
   draftList() { return [...this.drafts.values()].filter((item) => !this.state.get(cmsItemKey(item)).tombstone); }
   planSchema(next, replacements = [], impact) {
@@ -80,6 +80,10 @@ class MemoryHost {
     // Draft and schema switches are committed together. Previous revisions remain addressable.
     this.schema = checked.candidate.schema;
     for (const { previousRevision: _old, tombstoned: _tombstoned, values, ...target } of checked.candidate.items) this.add(target, values);
+    for (const removed of checked.candidate.removedItems) {
+      this.drafts.delete(cmsItemKey(removed));
+      this.state.delete(cmsItemKey(removed));
+    }
     return { status: "applied" };
   }
   context() {
@@ -201,12 +205,25 @@ test("schema plan reports conversion and binding impacts and apply checks scope,
   assert.equal(host.applySchema(owner, stale).status, "conflict");
 });
 
+test("removing a collection keeps its source revisions in the apply conflict check", () => {
+  const host = new MemoryHost(), next = structuredClone(host.schema);
+  next.schemaRevision = "schema-2";
+  next.collections = next.collections.filter(({ id }) => id !== "tags");
+  next.collections[0].fields = next.collections[0].fields.filter(({ fieldId }) => fieldId !== "field-category");
+  const migration = host.planSchema(next).migration;
+  assert.deepEqual(migration.removedItems, [{ collectionId: "tags", itemId: tag.itemId, locale, tombstoned: false, previousRevision: "v-2" }]);
+  const confirmation = host.confirm(owner, "cms.schema.apply", migration);
+  host.add(tag, { "field-title": "更新されたカテゴリ" });
+  assert.equal(host.applySchema(owner, confirmation).status, "conflict");
+});
+
 test("release snapshot is immutable, rejects missing published references and keeps exact receipt scope", () => {
   const host = new MemoryHost();
   const bad = host.planRelease([pin(host.drafts.get(cmsItemKey(post)))]);
   assert.equal(bad.problems[0].code, "reference");
   const plan = host.planRelease(undefined, [{ from: "/posts/old-coast", to: "/posts/coast" }]);
   const confirmation = host.confirm(editor, "cms.release.apply", plan.proposal);
+  assert.throws(() => checkCmsReleaseApply(editor, { ...host.input(confirmation), siteId: "another-site" }, confirmation, now, host.context()), /CMS site mismatch/u);
   const applied = host.publish(editor, confirmation);
   assert.equal(applied.status, "recorded");
   assert.deepEqual(host.publish(editor, confirmation), applied);

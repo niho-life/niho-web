@@ -10,7 +10,7 @@ import {
 
 export type {
   CmsCollection, CmsField, CmsItemKey, CmsItemRevision, CmsMigratedItem, CmsMigration, CmsMigrationChange, CmsMigrationDraft, CmsMigrationImpact,
-  CmsMigrationReplacement, CmsProblem, CmsSchema
+  CmsMigrationReplacement, CmsProblem, CmsRemovedItem, CmsSchema
 } from "./cms-v2-schema.js";
 export { cmsItemKey, cmsLegacyCollections, cmsReferenceProblems, parseCmsItemRevision, parseCmsSchema, parseCmsValues, planCmsMigration } from "./cms-v2-schema.js";
 export type {
@@ -83,7 +83,7 @@ export function cmsRoleCapabilities(role: "owner" | "editor"): readonly CmsV2Cap
   return [];
 }
 
-export type CmsApplyInput = { readonly operationId: string; readonly confirmationToken: string };
+export type CmsApplyInput = { readonly siteId: string; readonly operationId: string; readonly confirmationToken: string };
 export type CmsPlanScope = { readonly siteId: string; readonly actorId: string };
 export type CmsConfirmedPlan<T> = CmsPlanScope & {
   readonly operation: "cms.schema.apply" | "cms.release.apply" | "cms.schedule.create";
@@ -124,12 +124,14 @@ export type CmsSchemaPlan = CmsConfirmedPlan<CmsMigration>;
 export type CmsReleaseConfirmation = CmsConfirmedPlan<CmsReleaseProposal>;
 export type CmsScheduleConfirmation = CmsConfirmedPlan<CmsSchedule>;
 
-export function parseCmsApplyInput(input: unknown): CmsApplyInput {
+export function parseCmsApplyInput(input: unknown, expectedSiteId: string): CmsApplyInput {
   const value = record(input, "apply");
-  keys(value, ["operationId", "confirmationToken"], "apply");
+  keys(value, ["siteId", "operationId", "confirmationToken"], "apply");
+  const siteId = cmsId(value.siteId, "apply.siteId");
+  if (siteId !== cmsId(expectedSiteId, "scope.siteId")) fail("apply.siteId", "CMS site mismatch");
   const token = string(value.confirmationToken, "apply.confirmationToken", 512);
   if (!/^[A-Za-z0-9._~-]+$/u.test(token)) fail("apply.confirmationToken", "invalid confirmation token");
-  return { operationId: cmsId(value.operationId, "apply.operationId"), confirmationToken: token };
+  return { siteId, operationId: cmsId(value.operationId, "apply.operationId"), confirmationToken: token };
 }
 function matchingScope(a: CmsPlanScope, b: CmsPlanScope): boolean {
   return a.siteId === b.siteId && a.actorId === b.actorId;
@@ -153,7 +155,8 @@ function canonicalJson(value: unknown): string {
 }
 function verifyCmsConfirmation<T>(scope: CmsPlanScope, input: unknown, operation: CmsConfirmedPlan<T>["operation"],
   plan: CmsConfirmedPlan<T>, now: string): CmsApplyCheck<T> {
-  const { operationId, confirmationToken } = parseCmsApplyInput(input);
+  const { siteId, operationId, confirmationToken } = parseCmsApplyInput(input, scope.siteId);
+  if (siteId !== plan.siteId) return { status: "invalid_confirmation" };
   if (!matchingScope(scope, plan) || plan.operation !== operation || plan.operationId !== operationId || plan.confirmationToken !== confirmationToken) {
     return { status: "invalid_confirmation" };
   }
@@ -199,14 +202,14 @@ export function checkCmsScheduleCreate(scope: CmsPlanScope, input: unknown, plan
 export type CmsV2Input = {
   "cms.schema.read": { readonly siteId: string };
   "cms.schema.plan": CmsSchemaPlanInput;
-  "cms.schema.apply": CmsApplyInput & { readonly siteId: string };
+  "cms.schema.apply": CmsApplyInput;
   "cms.items.save": CmsDraftSaveInput;
   "cms.items.remove": CmsDraftWriteInput;
   "cms.items.restore": CmsDraftWriteInput;
   "cms.release.plan": CmsReleaseInput | CmsScheduleRequest;
-  "cms.release.apply": CmsApplyInput & { readonly siteId: string };
+  "cms.release.apply": CmsApplyInput;
   "cms.release.status": { readonly siteId: string; readonly operationId: string };
-  "cms.schedule.create": CmsApplyInput & { readonly siteId: string };
+  "cms.schedule.create": CmsApplyInput;
   "cms.schedule.cancel": { readonly siteId: string; readonly scheduleId: string };
   "cms.schedule.status": { readonly siteId: string; readonly scheduleId: string };
 };
