@@ -48,7 +48,7 @@ function run(args, { status = 200, result, expectedMethod, expectedUrl, expected
   });
 }
 
-function runSequence(args, requests, { env = {}, token = "fixture-token" } = {}) {
+function runSequence(args, requests, { env = {}, token = "fixture-token", stdin = "" } = {}) {
   const source = [
     "const expected = " + JSON.stringify(requests) + "; let index = 0;",
     "globalThis.fetch = async (url, init) => {",
@@ -71,7 +71,7 @@ function runSequence(args, requests, { env = {}, token = "fixture-token" } = {})
     const child = spawn(process.execPath, ["--import", preload, command, "--origin", origin, "--site", siteId, ...args], {
       env: childEnv, stdio: ["pipe", "pipe", "pipe"]
     });
-    child.stdin.end("");
+    child.stdin.end(stdin);
     let stdout = "", stderr = "";
     child.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk; });
     child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
@@ -143,6 +143,121 @@ test("niho-edit outline uses pages.inspect when the host exposes it", async () =
   ]);
   assert.equal(result.exitCode, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), { view: "outline", version: "v1", definitions: {}, items: [{ id: "hero" }] });
+});
+
+test("niho-edit apply accepts text, token style, add and move operations", async () => {
+  const operations = [
+    { type: "text", parentId: "heading", childPath: [0], value: "A clearer heading" },
+    { type: "style", nodeId: "heading", breakpoint: "base", property: "color", value: { token: "brand" } },
+    { type: "add", parentId: "hero", index: 2, node: { type: "element", id: "new-block", tag: "p", children: [{ type: "text", text: "Added" }] } },
+    { type: "move", nodeId: "link", parentId: "hero", index: 0 }
+  ];
+  const operationId = "123e4567-e89b-42d3-a456-426614174000", query = `?locale=${encodeURIComponent(locale)}`;
+  const discoveryUrl = origin + "/api/edit/v1/sites/" + siteId + "/capabilities";
+  const readUrl = origin + "/api/edit/v1/sites/" + siteId + "/operations/pages.read/" + pageId + query;
+  const applyUrl = origin + "/api/edit/v1/sites/" + siteId + "/operations/pages.apply/" + pageId + query;
+  const catalog = ["pages.read", "pages.apply"].map((id) => EDITING_OPERATIONS.find((operation) => operation.id === id));
+  const result = await runSequence(["apply", pageId, "--locale", locale, "--ops", "-", "--operation-id", operationId, "--dry-run"], [
+    { method: "GET", url: discoveryUrl, result: { apiVersion: "v1", siteId, operations: catalog } },
+    { method: "GET", url: readUrl, result: { document: fixture, version: "v1" } },
+    { method: "POST", url: applyUrl, body: { baseVersion: "v1", operationId, operations, dryRun: true }, result: {
+      status: "valid", diff: [
+        { path: "h1#heading のテキスト", before: "旧見出し", after: "A clearer heading" },
+        { path: "h1#heading の見た目（共通）: color", before: "#000", after: "@brand" },
+        { path: "p#new-block を追加", before: "（なし）", after: "Added" },
+        { path: "a#link の位置", before: "section#hero の 3 番目", after: "section#hero の 1 番目" }
+      ], touched: ["heading", "new-block", "link"]
+    } }
+  ], { stdin: JSON.stringify(operations) });
+  assert.equal(result.exitCode, 0, result.stderr);
+  const output = JSON.parse(result.stdout).result;
+  assert.equal(output.status, "valid");
+  assert.equal(output.diff.length, 4);
+  assert.deepEqual(output.touched, ["heading", "new-block", "link"]);
+});
+
+test("niho-edit apply uses pages.apply and its dry-run diff matches the saved document", async () => {
+  const operations = [{ type: "title", value: "Updated by CLI" }], operationId = "123e4567-e89b-42d3-a456-426614174000";
+  const operationsJson = JSON.stringify(operations), query = `?locale=${encodeURIComponent(locale)}`;
+  const discoveryUrl = origin + "/api/edit/v1/sites/" + siteId + "/capabilities";
+  const readUrl = origin + "/api/edit/v1/sites/" + siteId + "/operations/pages.read/" + pageId + query;
+  const applyUrl = origin + "/api/edit/v1/sites/" + siteId + "/operations/pages.apply/" + pageId + query;
+  const catalog = ["pages.read", "pages.save", "pages.apply"].map((id) => EDITING_OPERATIONS.find((operation) => operation.id === id));
+  const changed = { ...fixture, title: "Updated by CLI", revision: fixture.revision + 1 };
+  const diff = [{ path: "ページタイトル", before: fixture.title, after: changed.title }];
+  const prefix = ["apply", pageId, "--locale", locale, "--ops", "-", "--operation-id", operationId];
+  const dryRun = await runSequence([...prefix, "--dry-run"], [
+    { method: "GET", url: discoveryUrl, result: { apiVersion: "v1", siteId, operations: catalog } },
+    { method: "GET", url: readUrl, result: { document: fixture, version: "v1" } },
+    { method: "POST", url: applyUrl, body: { baseVersion: "v1", operationId, operations, dryRun: true }, result: { status: "valid", diff, touched: [] } }
+  ], { stdin: operationsJson });
+  assert.equal(dryRun.exitCode, 0, dryRun.stderr);
+  const dryResult = JSON.parse(dryRun.stdout).result;
+  assert.equal(dryResult.status, "valid");
+  assert.equal(dryResult.validation, "host");
+  assert.deepEqual(dryResult.diff, diff);
+
+  const applied = await runSequence(prefix, [
+    { method: "GET", url: discoveryUrl, result: { apiVersion: "v1", siteId, operations: catalog } },
+    { method: "GET", url: readUrl, result: { document: fixture, version: "v1" } },
+    { method: "POST", url: applyUrl, body: { baseVersion: "v1", operationId, operations }, result: { status: "applied", version: "v2", revision: changed.revision, document: changed } }
+  ], { stdin: operationsJson });
+  assert.equal(applied.exitCode, 0, applied.stderr);
+  const appliedResult = JSON.parse(applied.stdout).result;
+  assert.equal(appliedResult.status, "applied");
+  assert.equal(appliedResult.operationId, operationId);
+  assert.deepEqual(appliedResult.diff, dryResult.diff);
+});
+
+test("niho-edit apply uses pages.read and pages.save when pages.apply is unavailable", async () => {
+  const operations = [{ type: "title", value: "Saved by fallback" }], operationsJson = JSON.stringify(operations);
+  const query = `?locale=${encodeURIComponent(locale)}`;
+  const discoveryUrl = origin + "/api/edit/v1/sites/" + siteId + "/capabilities";
+  const readUrl = origin + "/api/edit/v1/sites/" + siteId + "/operations/pages.read/" + pageId + query;
+  const saveUrl = origin + "/api/edit/v1/sites/" + siteId + "/operations/pages.save/" + pageId + query;
+  const catalog = ["pages.read", "pages.save"].map((id) => EDITING_OPERATIONS.find((operation) => operation.id === id));
+  const changed = { ...fixture, title: "Saved by fallback", revision: fixture.revision + 1 };
+  const result = await runSequence(["apply", pageId, "--locale", locale, "--ops", "-"], [
+    { method: "GET", url: discoveryUrl, result: { apiVersion: "v1", siteId, operations: catalog } },
+    { method: "GET", url: readUrl, result: { document: fixture, version: "v1" } },
+    { method: "PUT", url: saveUrl, body: { expectedVersion: "v1", document: { ...changed, revision: fixture.revision } },
+      result: { status: "saved", version: "v2", document: changed } }
+  ], { stdin: operationsJson });
+  assert.equal(result.exitCode, 0, result.stderr);
+  const output = JSON.parse(result.stdout).result;
+  assert.equal(output.status, "saved");
+  assert.equal(output.validation, "host-on-save");
+  assert.match(output.warning, /trusted context/u);
+  assert.deepEqual(output.diff, [{ path: "ページタイトル", before: fixture.title, after: changed.title }]);
+
+  const dryRun = await runSequence(["apply", pageId, "--locale", locale, "--ops", "-", "--dry-run"], [
+    { method: "GET", url: discoveryUrl, result: { apiVersion: "v1", siteId, operations: catalog } },
+    { method: "GET", url: readUrl, result: { document: fixture, version: "v1" } }
+  ], { stdin: operationsJson });
+  assert.equal(dryRun.exitCode, 0, dryRun.stderr);
+  const dryOutput = JSON.parse(dryRun.stdout).result;
+  assert.equal(dryOutput.status, "valid");
+  assert.equal(dryOutput.validation, "local-untrusted");
+  assert.match(dryOutput.warning, /最終検証はホスト/u);
+  assert.deepEqual(dryOutput.diff, output.diff);
+});
+
+test("niho-edit apply reports the failed operation index, reason and target node", async () => {
+  const operations = [{ type: "text", parentId: "heading", childPath: [0], value: "Changed" }], operationId = "123e4567-e89b-42d3-a456-426614174000";
+  const query = `?locale=${encodeURIComponent(locale)}`;
+  const discoveryUrl = origin + "/api/edit/v1/sites/" + siteId + "/capabilities";
+  const readUrl = origin + "/api/edit/v1/sites/" + siteId + "/operations/pages.read/" + pageId + query;
+  const applyUrl = origin + "/api/edit/v1/sites/" + siteId + "/operations/pages.apply/" + pageId + query;
+  const catalog = ["pages.read", "pages.apply"].map((id) => EDITING_OPERATIONS.find((operation) => operation.id === id));
+  const result = await runSequence(["apply", pageId, "--locale", locale, "--ops", "-", "--operation-id", operationId], [
+    { method: "GET", url: discoveryUrl, result: { apiVersion: "v1", siteId, operations: catalog } },
+    { method: "GET", url: readUrl, result: { document: fixture, version: "v1" } },
+    { method: "POST", url: applyUrl, body: { baseVersion: "v1", operationId, operations }, status: 422,
+      result: { error: "validation_failed", index: 0, reason: "text path not found" } }
+  ], { stdin: JSON.stringify(operations) });
+  assert.equal(result.exitCode, 1);
+  assert.deepEqual(JSON.parse(result.stdout), { apiVersion: "v1", httpStatus: 422, operation: null,
+    result: { error: "validation_failed", index: 0, reason: "text path not found", nodeId: "heading", operationId, baseVersion: "v1" } });
 });
 
 test("niho-edit falls back to pages.read and resolves public URLs through pages.catalog", async () => {

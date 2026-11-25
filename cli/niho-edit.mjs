@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { basename } from "node:path";
@@ -7,6 +8,9 @@ import { createPageEditingApiClient, EditingApiClientError, isEditingApiVersion,
 import { EDITING_OPERATIONS } from "../dist/editing-api.js";
 import { editingLocalizationConflictBody, EDITING_LOCALIZATION_INPUT_BYTES } from "../dist/editing-localization.js";
 import { parseAssetUploadResult } from "../dist/assets.js";
+import { editDocumentById } from "../dist/editor-model.js";
+import { PAGE_OPERATION_LIMIT, changedPageNodeIds, editingOperationProblem, parsePageOperation } from "../dist/editing-page-operations.js";
+import { diffDocuments } from "../dist/history.js";
 import { parseBreakpointSettings } from "../dist/style-model.js";
 import { inspectPageDocument, PageInspectError, parsePageInspectQuery } from "../dist/page-inspect.js";
 import { SERVICE_CLIENT_ID } from "./operations.mjs";
@@ -17,6 +21,7 @@ niho-edit --origin <https-origin> --site <site-id> outline <page-id> --locale <l
 niho-edit --origin <https-origin> --site <site-id> find <page-id> --locale <locale> (--text <text> | --name <name> | --tag <tag> | --style <property=value> | --uses-token <name> | --block <id> | --node <id>)
 niho-edit --origin <https-origin> --site <site-id> find --url <public-url> --locale <locale> --node <data-nw-node>
 niho-edit --origin <https-origin> --site <site-id> get <page-id> <node-id> --locale <locale> [--effective-style]
+niho-edit --origin <https-origin> --site <site-id> apply <page-id> --locale <locale> --ops <file|-> [--dry-run] [--expected-version <version>] [--operation-id <uuid-v4>]
 niho-edit --origin <https-origin> --site <site-id> save <page-id> --locale <locale> --json <snapshot-file|->
 niho-edit --origin <https-origin> --site <site-id> release-plan <page-id> --locale <locale> --action <publish|rollback> (--json <snapshot-file|-> | --expected-version <version>) [--revision <number>]
 niho-edit --origin <https-origin> --site <site-id> release <page-id> --locale <locale> --json <plan-file|-> --operation-id <uuid-v4>
@@ -76,7 +81,7 @@ function validCmsCollectionId(value) { return typeof value === "string" && CMS_C
 function validCmsItemId(value) { return typeof value === "string" && CMS_ITEM_ID.test(value) && value !== "." && value !== ".." && !RESERVED_CMS_IDS.has(value); }
 
 class CliError extends Error {
-  constructor(readonlyCode, status = null) { super(readonlyCode); this.code = readonlyCode; this.status = status; }
+  constructor(readonlyCode, status = null, details = undefined) { super(readonlyCode); this.code = readonlyCode; this.status = status; this.details = details; }
 }
 
 function argsFromCli() {
@@ -87,6 +92,7 @@ function argsFromCli() {
       revision: { type: "string" }, "operation-id": { type: "string" }, redirect: { type: "string" }, base: { type: "string" }, help: { type: "boolean", short: "h" },
       name: { type: "string" }, "mime-type": { type: "string" }, provider: { type: "string" }, search: { type: "string" }, kind: { type: "string" }, "upload-origin": { type: "string" },
       "folder-id": { type: "string" }, cursor: { type: "string" }, limit: { type: "string" }, recent: { type: "boolean" },
+      ops: { type: "string" }, "dry-run": { type: "boolean" },
       "node": { type: "string" }, "depth": { type: "string" }, "text": { type: "string" },
       "tag": { type: "string" }, "style": { type: "string" }, "uses-token": { type: "string" }, "block": { type: "string" },
       "url": { type: "string" }, "effective-style": { type: "boolean" }
@@ -100,7 +106,7 @@ function origin(value) {
   } catch { /* The URL parser message is not part of the CLI contract. */ }
   throw new CliError("invalid_origin");
 }
-async function readJson(stream, maximumBytes = MAX_INPUT_BYTES) {
+async function readJsonValue(stream, maximumBytes = MAX_INPUT_BYTES) {
   const chunks = []; let size = 0;
   try {
     for await (const chunk of stream) {
@@ -108,10 +114,13 @@ async function readJson(stream, maximumBytes = MAX_INPUT_BYTES) {
       if (size > maximumBytes) throw new CliError("input_too_large");
       chunks.push(chunk);
     }
-    const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
-    if (!value || typeof value !== "object" || Array.isArray(value)) throw new CliError("invalid_json_input");
-    return value;
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
   } catch (error) { if (error instanceof CliError) throw error; throw new CliError("invalid_json_input"); }
+}
+async function readJson(stream, maximumBytes = MAX_INPUT_BYTES) {
+  const value = await readJsonValue(stream, maximumBytes);
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new CliError("invalid_json_input");
+  return value;
 }
 async function inputSnapshot(path) {
   if (!path) throw new CliError("missing_json_input");
@@ -132,6 +141,103 @@ async function inputSnapshot(path) {
     ...(source.presentationVersion === undefined ? {} : { presentationVersion: source.presentationVersion }),
     ...(source.stylesVersion === undefined ? {} : { stylesVersion: source.stylesVersion }) };
 }
+function operationNodeId(operation) {
+  if (!operation || typeof operation !== "object" || Array.isArray(operation)) return undefined;
+  const candidates = [operation.nodeId, operation.node?.id, operation.nodes?.[0]?.id, operation.parentId];
+  return candidates.find((value) => typeof value === "string" && IDENTIFIER.test(value));
+}
+async function inputPageOperations(path) {
+  if (!path) throw new CliError("missing_json_input");
+  if (path !== "-") {
+    try { if ((await stat(path)).size > MAX_INPUT_BYTES) throw new CliError("input_too_large"); }
+    catch (error) { if (error instanceof CliError) throw error; throw new CliError("invalid_json_input"); }
+  }
+  const source = await readJsonValue(path === "-" ? process.stdin : createReadStream(path));
+  if (!Array.isArray(source) || source.length < 1 || source.length > PAGE_OPERATION_LIMIT) throw new CliError("invalid_operations", 400);
+  const operations = [];
+  for (let index = 0; index < source.length; index++) {
+    try { operations.push(parsePageOperation(source[index], `$operations[${index}]`)); }
+    catch (error) {
+      const problem = editingOperationProblem(error, index);
+      throw new CliError("invalid_operation", 400, { index, reason: problem.reason.slice(0, 400), ...(operationNodeId(source[index]) ? { nodeId: operationNodeId(source[index]) } : {}) });
+    }
+  }
+  return operations;
+}
+function operationFailureDetails(details, operations) {
+  if (!details || typeof details !== "object" || Array.isArray(details)) return {};
+  const index = Number.isSafeInteger(details.index) && details.index >= 0 && details.index < operations.length ? details.index : undefined;
+  return {
+    ...(index === undefined ? {} : { index }),
+    ...(typeof details.reason === "string" ? { reason: details.reason.slice(0, 400) } : {}),
+    ...(index === undefined || !operationNodeId(operations[index]) ? {} : { nodeId: operationNodeId(operations[index]) })
+  };
+}
+function applyPageOperationsLocally(document, operations) {
+  const before = document;
+  let after = structuredClone(document);
+  for (let index = 0; index < operations.length; index++) {
+    try { after = editDocumentById(after, operations[index]); }
+    catch (error) {
+      const problem = editingOperationProblem(error, index);
+      throw new CliError("validation_failed", 422, { index, reason: problem.reason.slice(0, 400), ...(operationNodeId(operations[index]) ? { nodeId: operationNodeId(operations[index]) } : {}) });
+    }
+  }
+  try { after = parseEditingPageDocumentEnvelope(after); }
+  catch (error) {
+    const index = operations.length - 1, problem = editingOperationProblem(error, index);
+    throw new CliError("validation_failed", 422, { index, reason: problem.reason.slice(0, 400), ...(operationNodeId(operations[index]) ? { nodeId: operationNodeId(operations[index]) } : {}) });
+  }
+  return { document: after, diff: diffDocuments(before, after), touched: changedPageNodeIds(before, after) };
+}
+const FALLBACK_VALIDATION_NOTICE = "事前検証はローカル文書だけで行いました。ホストのtrusted contextを含まないため、保存時の最終検証はホストが行います。";
+async function runPageApply(client, pageId, extra, values) {
+  assertCommandOptions(values, ["locale", "ops", "dry-run", "expected-version", "operation-id"]);
+  if (!IDENTIFIER.test(pageId ?? "") || extra.length || !LOCALE.test(values.locale ?? "")
+    || values["dry-run"] !== undefined && typeof values["dry-run"] !== "boolean"
+    || values["expected-version"] !== undefined && !isEditingApiVersion(values["expected-version"])
+    || values["operation-id"] !== undefined && !OPERATION_ID.test(values["operation-id"])) throw new CliError("invalid_arguments");
+  const operations = await inputPageOperations(values.ops);
+  const target = { siteId: values.site, pageId, locale: values.locale };
+  const discovery = await apiCall(() => client.discover(AbortSignal.timeout(30_000)));
+  const supportsApply = discovery.operations.some((operation) => operation.id === "pages.apply");
+  if (!supportsApply && values["operation-id"] !== undefined) throw new CliError("operation_id_requires_pages_apply");
+  const snapshot = await apiCall(() => client.read(target, AbortSignal.timeout(30_000)));
+  const baseVersion = values["expected-version"] ?? snapshot.version;
+  if (!isEditingApiVersion(baseVersion)) throw new CliError("invalid_arguments");
+  const dryRun = values["dry-run"] === true;
+  if (supportsApply) {
+    const operationId = values["operation-id"] ?? randomUUID();
+    const input = { baseVersion, operationId, operations, ...(dryRun ? { dryRun: true } : {}) };
+    let result;
+    try { result = await apiCall(() => client.applyOperations(target, input, AbortSignal.timeout(30_000))); }
+    catch (error) {
+      if (error instanceof CliError) throw new CliError(error.code, error.status, { ...operationFailureDetails(error.details, operations), operationId, baseVersion });
+      throw error;
+    }
+    if (result.status === "conflict") {
+      emit({ error: "version_conflict", baseVersion, operationId }, 409, 1, "pages.apply"); return;
+    }
+    if (result.status === "valid") {
+      emit({ status: "valid", baseVersion, operationId, diff: result.diff, touched: result.touched, validation: "host" }, 200, 0, "pages.apply"); return;
+    }
+    const diff = diffDocuments(snapshot.document, result.document);
+    emit({ status: "applied", baseVersion, operationId, version: result.version, revision: result.revision,
+      diff, touched: changedPageNodeIds(snapshot.document, result.document), validation: "host" }, 200, 0, "pages.apply"); return;
+  }
+  if (values["expected-version"] !== undefined && baseVersion !== snapshot.version) {
+    emit({ error: "version_conflict", baseVersion, currentVersion: snapshot.version }, 409, 1, "pages.save"); return;
+  }
+  const local = applyPageOperationsLocally(snapshot.document, operations);
+  if (dryRun) {
+    emit({ status: "valid", baseVersion, diff: local.diff, touched: local.touched, validation: "local-untrusted", warning: FALLBACK_VALIDATION_NOTICE }, 200, 0, "pages.read"); return;
+  }
+  const saved = await apiCall(() => client.save(target, baseVersion, local.document, AbortSignal.timeout(30_000)));
+  if (saved.status === "conflict") { emit({ error: "version_conflict", baseVersion }, 409, 1, "pages.save"); return; }
+  emit({ status: "saved", baseVersion, version: saved.version, diff: diffDocuments(snapshot.document, saved.document),
+    touched: changedPageNodeIds(snapshot.document, saved.document), validation: "host-on-save", warning: FALLBACK_VALIDATION_NOTICE }, 200, 0, "pages.save");
+}
+
 async function inputPlan(path, target) {
   if (!path) throw new CliError("missing_json_input");
   if (path !== "-") {
@@ -264,8 +370,8 @@ async function apiCall(run) {
   try { return await run(); }
   catch (error) {
     if (error instanceof EditingApiClientError) {
-      if (error.code === "redirect_response") throw new CliError("access_redirect", error.status);
-      throw new CliError(error.code, error.status);
+      if (error.code === "redirect_response") throw new CliError("access_redirect", error.status, error.details);
+      throw new CliError(error.code, error.status, error.details);
     }
     if (error?.name === "AbortError" || error?.name === "TimeoutError") throw new CliError("transport_error");
     throw error;
@@ -381,6 +487,7 @@ async function main() {
   const { values, positionals } = argsFromCli();
   if (values.help) { process.stdout.write(`${USAGE}\n`); return; }
   const [command, pageId, ...extra] = positionals;
+  if (command !== "apply" && (values.ops !== undefined || values["dry-run"] !== undefined)) throw new CliError("invalid_arguments");
   if (!["outline", "find", "get"].includes(command) && ["node", "depth", "text", "tag", "style", "uses-token", "block", "url", "effective-style"].some((key) => values[key] !== undefined)) throw new CliError("invalid_arguments");
   if (command === "cms-diff") {
     assertCommandOptions(values, ["base", "json"]);
@@ -639,6 +746,7 @@ async function main() {
     await runPageInspection(client, command, pageId, extra, values);
     return;
   }
+  if (command === "apply") { await runPageApply(client, pageId, extra, values); return; }
   if (!["read", "save", "release-plan", "release"].includes(command) || extra.length || !IDENTIFIER.test(pageId ?? "") || !LOCALE.test(values.locale ?? "")) throw new CliError("invalid_arguments");
   const target = { siteId: values.site, pageId, locale: values.locale };
   if (command === "read") {
@@ -687,5 +795,12 @@ async function main() {
 }
 
 main().catch((error) => {
-  emit({ error: error instanceof CliError ? error.code : "unexpected_error" }, error instanceof CliError ? error.status : null, 1);
+  const details = error instanceof CliError ? error.details : undefined;
+  const result = { error: error instanceof CliError ? error.code : "unexpected_error",
+    ...(details && Number.isSafeInteger(details.index) && details.index >= 0 ? { index: details.index } : {}),
+    ...(details && typeof details.reason === "string" ? { reason: details.reason.slice(0, 400) } : {}),
+    ...(details && typeof details.nodeId === "string" && IDENTIFIER.test(details.nodeId) ? { nodeId: details.nodeId } : {}),
+    ...(details && typeof details.operationId === "string" && OPERATION_ID.test(details.operationId) ? { operationId: details.operationId } : {}),
+    ...(details && typeof details.baseVersion === "string" && isEditingApiVersion(details.baseVersion) ? { baseVersion: details.baseVersion } : {}) };
+  emit(result, error instanceof CliError ? error.status : null, 1);
 });
