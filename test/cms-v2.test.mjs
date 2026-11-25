@@ -306,6 +306,30 @@ test("release routes reject fixed, template, and redirect-source conflicts and p
   assert.equal(host.routeTables.find((entry) => entry.locale === "ja").revision, table.revision);
 });
 
+test("fixed-page redirect targets are accepted and conflicting sources remain invalid without duplicate reservations", () => {
+  const fixedTarget = new MemoryHost();
+  fixedTarget.routeTables[0].reservations.push({ kind: "fixed-page", path: "/about", reservationId: "about-page" });
+  const release = fixedTarget.planRelease([], [{ from: "/old", to: "/about" }]);
+  assert.equal(release.status, "ready");
+
+  const routePlan = planCmsRouteTable({
+    current: { siteId, locale, revision: "routes-ja-1", reservations: [
+      { kind: "fixed-page", path: "/about", reservationId: "about-page" },
+    ] },
+    siteId, locale, expectedRevision: "routes-ja-1", nextRevision: "routes-ja-2",
+    routes: [{ collectionId: "posts", itemId: "post-1", path: "/posts/coast" }],
+    redirects: [
+      { from: "/posts/coast", to: "/about" },
+      { from: "/old", to: "/about" },
+      { from: "/old", to: "/about" },
+    ],
+  });
+  assert.ok(routePlan.problems.some(({ path }) => path === "/posts/coast"));
+  assert.ok(routePlan.problems.some(({ path }) => path === "/old"));
+  assert.equal(routePlan.table.reservations.filter(({ kind, path }) => kind === "redirect" && path === "/posts/coast").length, 0);
+  assert.equal(routePlan.table.reservations.filter(({ kind, path }) => kind === "redirect" && path === "/old").length, 1);
+});
+
 test("scheduling pins content, detects new collisions and lets the host retry with a fresh plan", () => {
   const host = new MemoryHost();
   const first = planCmsSchedule("s1", later, now, host.planRelease().proposal);

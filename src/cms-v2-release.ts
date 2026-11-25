@@ -80,19 +80,6 @@ export function parseCmsReleaseInput(input: unknown): CmsReleaseInput {
     items, redirects
   };
 }
-function cmsRouteProblems(entries: readonly CmsReleaseEntry[], redirects: readonly CmsRedirect[]): CmsProblem[] {
-  const paths = new Set<string>(), problems: CmsProblem[] = [];
-  for (const { collectionId, itemId, path } of entries) {
-    if (path === null) continue;
-    if (paths.has(path)) problems.push({ code: "route", message: "同じ公開パスの項目があります。", collectionId, itemId, path });
-    paths.add(path);
-  }
-  for (const { from, to } of redirects) {
-    // Redirects are one hop. Requiring a live target rules out chains and loops.
-    if (paths.has(from) || !paths.has(to)) problems.push({ code: "route", message: "転送元を空け、転送先に公開項目を指定してください。", path: from });
-  }
-  return problems;
-}
 function freezeJson<T>(input: T): T {
   if (input && typeof input === "object" && !Object.isFrozen(input)) {
     for (const value of Object.values(input)) freezeJson(value);
@@ -160,7 +147,7 @@ export function planCmsRelease(input: unknown, releaseIdInput: string, context: 
   const snapshot = freezeJson<CmsReleaseSnapshot>({ contractVersion: 2, releaseId, siteId: schema.siteId,
     locale: selection.locale, routeTableRevision: selection.routeTableRevision, routeTable: routePlan.table,
     schema, items, redirects });
-  problems.push(...cmsReferenceProblems(schema, items), ...cmsRouteProblems(items, redirects), ...routePlan.problems, ...(context.impact?.(snapshot) ?? []));
+  problems.push(...cmsReferenceProblems(schema, items), ...routePlan.problems, ...(context.impact?.(snapshot) ?? []));
   return problems.length ? { status: "invalid", problems } : { status: "ready", proposal: freezeJson({ expectedReleaseId: selection.expectedReleaseId, snapshot }) };
 }
 

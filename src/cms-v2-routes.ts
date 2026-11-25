@@ -149,11 +149,19 @@ export function planCmsRouteTable(input: {
       from = routePath(redirect.from, "redirect.from", false);
       to = routePath(redirect.to, "redirect.to", false);
     } catch { problems.push(routeProblem(redirect.from, "転送 path が正規化されていません。")); continue; }
-    if (from === to || redirectSources.has(from)) problems.push(routeProblem(from, "転送元 path が重複するか、転送先と同じです。"));
+    if (from === to) {
+      problems.push(routeProblem(from, "転送元 path が重複するか、転送先と同じです。"));
+      continue;
+    }
+    if (redirectSources.has(from)) {
+      problems.push(routeProblem(from, "転送元 path が重複するか、転送先と同じです。"));
+      continue;
+    }
     redirectSources.add(from);
     const reservation = tablePathReservation(from, "redirect", undefined, to);
     if ([...host, ...candidates, ...redirectEntries].some((entry) => routesOverlap(entry, reservation))) {
       problems.push(routeProblem(from, "転送元 path が公開 route または予約と衝突します。"));
+      continue;
     }
     redirectEntries.push(reservation);
   }
