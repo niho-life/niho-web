@@ -201,5 +201,9 @@
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.4.0",
+    "zod": "4.6.7"
   }
 }

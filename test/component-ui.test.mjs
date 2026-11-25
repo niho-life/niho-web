@@ -349,6 +349,20 @@ test("コンポーネントにする registers the selection and saves the libra
   } finally { await app.cleanup(); }
 });
 
+test("名前に非対応の部品保存先は名前付きページ要素の登録前に拒否する", async () => {
+  const documentWithNamedHero = structuredClone(fixture);
+  documentWithNamedHero.body.find((node) => node.type === "element" && node.id === "hero").name = "名前付きヒーロー";
+  const app = await setup({ document: documentWithNamedHero });
+  try {
+    await click("section · hero"); await click("コンポーネントにする");
+    await change(input("コンポーネント名", dialog()), "名前付き部品"); await click(button("登録する", dialog()));
+    assert.ok(dialog().textContent.includes("コンポーネントの保存先は要素の名前に対応していません"));
+    assert.equal(app.calls.librarySaves.length, 0); assert.equal(app.calls.saves.length, 0);
+    assert.equal(button("下書き保存").disabled, true); assert.equal(button("元に戻す").disabled, true);
+    assert.ok(document.querySelector('[data-node-id="hero"] button.e-layer'));
+  } finally { await app.cleanup(); }
+});
+
 test("master edits reach the page instance, history and banner, and bump the saved version", async () => {
   const app = await setup();
   try {

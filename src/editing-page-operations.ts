@@ -6,7 +6,7 @@ import { MOTION_BASE_PROPERTIES } from "./builder.js";
 import { appearEffects, easings, isStyleProperty, parseTokens, stateNames, stateProperties, stylePropertyNames, textStyleProperties } from "./style-values.js";
 import { DocumentValidationError, fail, identifier, keys, parseAssetReference, record, string } from "./validation-utils.js";
 import type { EditingActor, EditingPageSnapshot, EditingPageTarget, JsonSchema, PageEditingValidationContext } from "./editing-api.js";
-import type { PageDocument } from "./types.js";
+import type { PageDocument, PageNode } from "./types.js";
 
 export const PAGE_OPERATION_LIMIT = 500;
 export const PAGE_OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -356,6 +356,42 @@ export function pageOperationUsesNodeNames(operation: EditorOperation | EditorOp
     || operation.type === "addMany" && pageNodesHaveNames(operation.nodes)
     || operation.type === "replaceChildren" && pageNodesHaveNames(operation.children)
     || operation.type === "restore" && pageNodesHaveNames(operation.document.body);
+}
+
+function nodeNamesById(nodes: readonly PageNode[]): Map<string, string | undefined> {
+  const names = new Map<string, string | undefined>(), pending = [...nodes];
+  while (pending.length) {
+    const node = pending.pop()!;
+    if (node.type === "text") continue;
+    names.set(node.id, node.name);
+    if (node.type === "element") pending.push(...node.children);
+  }
+  return names;
+}
+function nodeNamesChanged(beforeNodes: readonly PageNode[], afterNodes: readonly PageNode[]): boolean {
+  const before = nodeNamesById(beforeNodes), after = nodeNamesById(afterNodes);
+  for (const [id, name] of after) if ((before.has(id) && before.get(id) !== name) || (name !== undefined && !before.has(id))) return true;
+  for (const [id, name] of before) if (after.has(id) && after.get(id) !== name) return true;
+  return false;
+}
+
+/** Whether an edit changes a name, allowing localized rich-text edits to preserve inherited names. */
+export function pageOperationChangesNodeNames(document: PageDocument, operation: EditorOperation): boolean {
+  if (operation.type === "name") {
+    try {
+      const node = nodeAt(document, operation.path);
+      return node.type !== "text" && node.name !== operation.value;
+    } catch { return pageOperationUsesNodeNames(operation); }
+  }
+  if (operation.type === "replaceChildren") {
+    let parent: PageNode;
+    try { parent = nodeAt(document, operation.path); }
+    catch { return pageOperationUsesNodeNames(operation); }
+    if (parent.type !== "element") return pageOperationUsesNodeNames(operation);
+    return nodeNamesChanged(parent.children, operation.children);
+  }
+  if (operation.type === "restore") return nodeNamesChanged(document.body, operation.document.body);
+  return pageOperationUsesNodeNames(operation);
 }
 
 type MapOperation = Extract<EditorOperationById, { type: "styles" | "styleRange" | "state" }>;

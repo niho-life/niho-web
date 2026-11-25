@@ -151,12 +151,29 @@ export function diffDocuments(before: PageDocument, after: PageDocument, options
 }
 
 export type EditorRevisionKind = "draft" | "autosave" | "snapshot" | "publish" | "rollback";
-/** 版履歴の1件。id は opaque、actor は表示名だけ。 */
-export type EditorRevisionEntry = { id: string; revision: number; kind: EditorRevisionKind; createdAt: string; actor?: string; label?: string };
+export type EditorRevisionOperationType = "text" | "attribute" | "booleanAttribute" | "formChoices" | "formCompletionPage" | "icon" | "tag" | "prop"
+  | "style" | "resize" | "styles" | "styleRange" | "token" | "textStyle" | "nodeTextStyle" | "state" | "appear" | "motionPreset"
+  | "hidden" | "title" | "add" | "addMany" | "replaceChildren" | "image" | "video" | "embedSource" | "embedTitle" | "loopBox"
+  | "background" | "replaceAsset" | "duplicate" | "remove" | "move" | "instanceProp" | "detach" | "slotStyle" | "restore" | "meta";
+/** 値を含めず、操作種別と対象だけを表示する版履歴の要約。 */
+export type EditorRevisionOperationSummary = {
+  type: EditorRevisionOperationType;
+  targetId?: string;
+  targetType?: "element" | "component" | "instance" | "page";
+  targetTag?: string;
+  field?: string;
+};
+/** 版履歴の1件。actor / delegatedBy は表示名だけで、subject・メール等は含めない。 */
+export type EditorRevisionEntry = {
+  id: string; revision: number; kind: EditorRevisionKind; createdAt: string; actor?: string; actorKind?: "human" | "machine";
+  delegatedBy?: string; label?: string; operations?: readonly EditorRevisionOperationSummary[]; omittedOperations?: number; snapshotAvailable?: boolean;
+};
 export type EditorRevisionPage = { entries: readonly EditorRevisionEntry[]; next?: string };
 const revisionKinds: readonly string[] = ["draft", "autosave", "snapshot", "publish", "rollback"];
+const revisionOperationTypes: readonly string[] = ["text", "attribute", "booleanAttribute", "formChoices", "formCompletionPage", "icon", "tag", "prop", "style", "resize", "styles", "styleRange", "token", "textStyle", "nodeTextStyle", "state", "appear", "motionPreset", "hidden", "title", "add", "addMany", "replaceChildren", "image", "video", "embedSource", "embedTitle", "loopBox", "background", "replaceAsset", "duplicate", "remove", "move", "instanceProp", "detach", "slotStyle", "restore", "meta"];
 const control = /[\u0000-\u001f\u007f]/u;
 const plain = (value: unknown, max: number, min = 0): value is string => typeof value === "string" && value.length >= min && value.length <= max && !control.test(value);
+const displayName = (value: unknown): value is string => plain(value, 120) && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(value);
 function closed(input: unknown, allowed: readonly string[], what: string): Record<string, unknown> {
   if (!input || typeof input !== "object" || Array.isArray(input) || ![Object.prototype, null].includes(Object.getPrototypeOf(input)) ||
     Object.keys(input).some((key) => !allowed.includes(key))) throw new Error(`${what}の形式が正しくありません。`);
@@ -164,14 +181,36 @@ function closed(input: unknown, allowed: readonly string[], what: string): Recor
 }
 /** ホストが返した履歴項目を検証し、既知の項目だけの複製を返す。 */
 export function parseRevisionEntry(input: unknown): EditorRevisionEntry {
-  const { id, revision, kind, createdAt, actor, label } = closed(input, ["id", "revision", "kind", "createdAt", "actor", "label"], "版履歴の項目");
+  const { id, revision, kind, createdAt, actor, actorKind, delegatedBy, label, operations, omittedOperations, snapshotAvailable } = closed(input,
+    ["id", "revision", "kind", "createdAt", "actor", "actorKind", "delegatedBy", "label", "operations", "omittedOperations", "snapshotAvailable"], "版履歴の項目");
   if (!plain(id, 200, 1) || typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 1 || typeof kind !== "string" || !revisionKinds.includes(kind) ||
-    !plain(createdAt, 40, 1) || !Number.isFinite(Date.parse(createdAt)) || (actor !== undefined && !plain(actor, 120)) || (label !== undefined && !plain(label, 120))) throw new Error("版履歴の項目が正しくありません。");
-  return { id, revision, kind: kind as EditorRevisionKind, createdAt, ...(actor === undefined ? {} : { actor }), ...(label === undefined ? {} : { label }) };
+    !plain(createdAt, 40, 1) || !Number.isFinite(Date.parse(createdAt)) || (actor !== undefined && !displayName(actor))
+    || actorKind !== undefined && actorKind !== "human" && actorKind !== "machine"
+    || delegatedBy !== undefined && (!displayName(delegatedBy) || actorKind !== "machine")
+    || (label !== undefined && !plain(label, 120)) || omittedOperations !== undefined && (!Number.isSafeInteger(omittedOperations) || Number(omittedOperations) < 0 || Number(omittedOperations) > 500)
+    || snapshotAvailable !== undefined && typeof snapshotAvailable !== "boolean"
+    || operations !== undefined && (!Array.isArray(operations) || operations.length > 20)) throw new Error("版履歴の項目が正しくありません。");
+  const parsedOperations = operations?.map((operation) => {
+    const summary = closed(operation, ["type", "targetId", "targetType", "targetTag", "field"], "操作要約");
+    if (typeof summary.type !== "string" || !revisionOperationTypes.includes(summary.type)
+      || summary.targetId !== undefined && !plain(summary.targetId, 80, 1)
+      || summary.targetType !== undefined && !["element", "component", "instance", "page"].includes(String(summary.targetType))
+      || summary.targetTag !== undefined && (typeof summary.targetTag !== "string" || !/^[a-z][a-z0-9-]{0,31}$/u.test(summary.targetTag))
+      || summary.field !== undefined && (typeof summary.field !== "string" || !/^[A-Za-z][A-Za-z0-9_.-]{0,79}$/u.test(summary.field))) throw new Error("操作要約の形式が正しくありません。");
+    return { type: summary.type as EditorRevisionOperationType,
+      ...(summary.targetId === undefined ? {} : { targetId: summary.targetId as string }),
+      ...(summary.targetType === undefined ? {} : { targetType: summary.targetType as NonNullable<EditorRevisionOperationSummary["targetType"]> }),
+      ...(summary.targetTag === undefined ? {} : { targetTag: summary.targetTag as string }),
+      ...(summary.field === undefined ? {} : { field: summary.field as string }) };
+  });
+  return { id, revision, kind: kind as EditorRevisionKind, createdAt,
+    ...(actor === undefined ? {} : { actor }), ...(actorKind === undefined ? {} : { actorKind }), ...(delegatedBy === undefined ? {} : { delegatedBy }),
+    ...(label === undefined ? {} : { label }), ...(parsedOperations === undefined ? {} : { operations: parsedOperations }),
+    ...(omittedOperations === undefined ? {} : { omittedOperations: omittedOperations as number }), ...(snapshotAvailable === undefined ? {} : { snapshotAvailable }) };
 }
 export function parseRevisionPage(input: unknown): EditorRevisionPage {
   const { entries, next } = closed(input, ["entries", "next"], "版履歴");
-  if (!Array.isArray(entries) || entries.length > 100 || (next !== undefined && !plain(next, 500))) throw new Error("版履歴が正しくありません。");
+  if (!Array.isArray(entries) || entries.length > 100 || (next !== undefined && !plain(next, 500, 1))) throw new Error("版履歴が正しくありません。");
   return { entries: entries.map(parseRevisionEntry), ...(next === undefined ? {} : { next }) };
 }
 
