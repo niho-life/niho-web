@@ -69,6 +69,22 @@ async function setup(options = {}) {
   return { calls, adapter, root, stored: () => stored, cleanup: async () => { await act(async () => root.unmount()); container.remove(); } };
 }
 
+test("page rows prefetch on focus and the matching snapshot serves the page switch", async () => {
+  const prefetches = [];
+  const app = await setup({ adapter: { prefetchDocument: async (target) => {
+    prefetches.push(structuredClone(target));
+    return { document: { ...structuredClone(fixture), ...target }, version: `prefetched-${target.pageId}` };
+  } } });
+  try {
+    const other = pageRow("別ページ"); assert.ok(other);
+    await act(async () => other.focus()); await flush();
+    assert.deepEqual(prefetches, [{ siteId: "demo", pageId: "other", locale: "ja-JP" }]);
+    await clickPage("別ページ");
+    assert.equal(app.calls.reads.filter(({ pageId }) => pageId === "other").length, 0, "ページ切替は先読みしたsnapshotを使う");
+    assert.equal(document.querySelector(".e-page[aria-current='page'] .e-page-name")?.textContent, "別ページ");
+  } finally { await app.cleanup(); }
+});
+
 test("responsive proposal control is absent without the optional host adapter", async () => {
   const absent = await setup();
   try { assert.equal(button("レスポンシブ提案"), undefined); }

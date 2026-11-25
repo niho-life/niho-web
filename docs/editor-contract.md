@@ -45,6 +45,7 @@ React 18.3 または 19 と、同じ版の React DOM を利用側で用意して
 | `listSites(signal)` | 編集権限のあるサイトと、許可済みの HTTPS 公開 origin 一覧 |
 | `listPages(siteId, signal)` | 指定サイトで編集権限のあるページ・locale の一覧 |
 | `readDocument(target, signal)` | 文書、opaque な `version`、データ連動値のロック、戻せる公開版 |
+| `prefetchDocument(target, signal)`（任意） | ページ行の hover / focus で現在版を先読み。`readDocument` と同じ認可・版検証を行い、画面状態は変更しない |
 | `saveDraft({ target, document, expectedVersion }, signal)` | 楽観ロック付き下書き保存。成功時は新しい version とサーバー採番の revision、競合時は `status: 'conflict'` |
 | `applyOperations({ target, baseVersion, operationId, operations, ...dependencyVersions }, signal)`（任意） | GUIの未送信 `EditorOperationById` を `pages.apply` へ送信。未接続hostは従来の `saveDraft` を使う（[操作単位の保存契約](editing-api-contract.md#操作カタログ)） |
 | `prepareRelease(request, signal)` | 公開 / rollback の正確な対象ドメイン、公開内容との差分、確認 token を発行 |

@@ -22,7 +22,7 @@ import { PageReleaseSetDialog } from "./editor-release-set.js";
 import { AutosaveSwitch, ConflictDialog, HistoryBar, HistoryDialogs, LibraryRecoveryBanner, RecoveryBanner, RecoveryCompareDialog, ReleaseAffected, SaveStatus, VersionPanel, autosaveDelay, classifySaveError, formatDateTime, isOffline, saveProblemNotice, saveStatus, targetKeyOf, useAutosave, useLibraryRecovery, useOnline, useRecovery, useVersionHistory, type LatestSnapshot, type SaveProblem } from "./editor-history.js";
 import { isDirectlyEditable, readEditableChildren } from "./editor-rich-text.js";
 import { isSafePublicLink } from "./validation-utils.js";
-import type { ComponentUsageEntry, EditorBlockRegistry, EditorCanvasPreviewProps, EditorLocaleReleasePlan, EditorLocaleReleaseState, EditorLock, EditorPage, EditorPageChange, EditorReleasePlan, EditorReleaseRequest, EditorSite, EditorTarget, EnglishPublication, PageEditorProps } from "./editor-types.js";
+import type { ComponentUsageEntry, EditorBlockRegistry, EditorCanvasPreviewProps, EditorLocaleReleasePlan, EditorLocaleReleaseState, EditorLock, EditorPage, EditorPageChange, EditorReleasePlan, EditorReleaseRequest, EditorSite, EditorSnapshot, EditorTarget, EnglishPublication, PageEditorProps } from "./editor-types.js";
 import type { ComponentKind, ComponentLibrary, IconName, PageDocument, PageNode, SitePresentation } from "./types.js";
 import { AssetLibraryPanel, BackgroundImageField, ImageSourceField, VideoSourceField, assetPlacement, socialImageProblem, useLocalAssetUsage, useResolvedAssets, type AssetAction, type AssetPicker } from "./editor-assets.js";
 import { assetEditorCss, canvasAssetCss } from "./editor-assets-style.js";
@@ -45,7 +45,7 @@ import { parseEditorLocaleReleaseApplyResult, parseEditorLocaleReleasePlan, pars
 import { documentLocaleFor, validateLocalizedDocumentSave, type LocalizationLocale } from "./localization.js";
 import { PAGE_OPERATION_LIMIT, pageNodesHaveNames, pageOperationChangesNodeNames, pageOperationUsesNodeNames } from "./editing-page-operations.js";
 import { acceptAppliedOperations, canSendOperations, fallbackOperations, operationQueue as createOperationQueue, operationApplier, reviewOperationConflict, queuePageEdit, queuePageTravel } from "./editor-operation-queue.js";
-import { editorSessionFrom, readEditorSession, type EditorSession } from "./editor-session.js";
+import { editorSessionFrom, EditorSessionCache, readEditorSession, type EditorSession, type EditorSessionLoad } from "./editor-session.js";
 import { canvasViewportHeight, elementTypeLabel, fitCanvasScale, layerLabel, pathForNodeId, projectLayers, visibleLayers } from "./layers.js";
 import { LayerTreePanel } from "./editor-layers.js";
 import { CanvasViewportToolbar, EditorWorkspace, InspectorTabs, PanelToggle, ViewportEdgeHandle, WorkspaceIcon, WorkspaceScaleSelect, viewportPresets, workspaceScales, type WorkspaceScale, type WorkspaceTab } from "./editor-workspace.js";
@@ -83,6 +83,9 @@ const needsPageSave = (session: Session) => {
   pageSaveChecks.set(session, { present, saved: session.saved, dirty });
   return dirty;
 };
+type PagePrefetch = { controller: AbortController; promise: Promise<EditorSnapshot>; components?: ComponentLibrary; completedAt?: number };
+const PAGE_PREFETCH_MAX_AGE_MS = 1000;
+const PAGE_PREFETCH_LIMIT = 3;
 /** 部品を読み直す確認中の状態。library・page は確認を始めた時点の作業コピーの fingerprint（変わっていれば適用しない）。 */
 type LibraryReload = { fresh: LibrarySession; plan: LibraryReloadPlan; library: string; page: string | undefined };
 type Inspector = "element" | "page" | "site" | "localization";
@@ -531,6 +534,8 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const [pages, setPages] = useState<readonly EditorPage[]>([]), [session, setSession] = useState<Session | null>(null);
   const [formCompletionPages, setFormCompletionPages] = useState<{ target: string; status: "idle" | "loading" | "ready" | "error"; pages: readonly EditorPage[] }>({ target: "", status: "idle", pages: [] });
   const sessionRef = useRef(session); sessionRef.current = session;
+  const pageSessionCache = useRef(new EditorSessionCache(4));
+  const pagePrefetches = useRef(new Map<string, PagePrefetch>());
   const [selectedId, setSelectedId] = useState<string | null>(null), [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]), [selectedLocalizationUnit, setSelectedLocalizationUnit] = useState<string | null>(null), [selectedCanvasNode, setSelectedCanvasNode] = useState<string | null>(null), [width, setWidth] = useState(1280), [widthField, setWidthField] = useState("1280");
   const selectedIdRef = useRef(selectedId); selectedIdRef.current = selectedId;
   const selectedNodeIdsRef = useRef(selectedNodeIds); selectedNodeIdsRef.current = selectedNodeIds;
@@ -734,6 +739,27 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       replaceLibrary(librarySessionFrom(snapshot, siteId, blocks)); setLibraryEpoch((value) => value + 1); refreshUsage(siteId);
     } catch { if (!signal.aborted) setLibraryFailed(true); }
   }, [components, blocks, replaceLibrary, refreshUsage]);
+  const preloadPage = useCallback((target: EditorTarget) => {
+    const editorTarget: EditorTarget = { siteId: target.siteId, pageId: target.pageId, locale: target.locale };
+    const currentTarget = sessionRef.current?.target;
+    if (!adapter.prefetchDocument || currentTarget && sameTarget(currentTarget, editorTarget)) return;
+    const key = targetKeyOf(editorTarget), currentComponents = libraryRef.current?.history.present;
+    const existing = pagePrefetches.current.get(key);
+    if (existing && existing.components === currentComponents && (existing.completedAt === undefined || Date.now() - existing.completedAt <= PAGE_PREFETCH_MAX_AGE_MS)) return;
+    existing?.controller.abort();
+    const controller = new AbortController();
+    const entry: PagePrefetch = { controller, ...(currentComponents ? { components: currentComponents } : {}), promise: Promise.resolve().then(() => adapter.prefetchDocument!(editorTarget, controller.signal)) };
+    pagePrefetches.current.set(key, entry);
+    void entry.promise.then(() => { entry.completedAt = Date.now(); }, () => {
+      if (pagePrefetches.current.get(key) === entry) pagePrefetches.current.delete(key);
+    });
+    while (pagePrefetches.current.size > PAGE_PREFETCH_LIMIT) {
+      const oldest = pagePrefetches.current.entries().next().value as [string, PagePrefetch] | undefined;
+      if (!oldest || oldest[0] === key) break;
+      oldest[1].controller.abort();
+      pagePrefetches.current.delete(oldest[0]);
+    }
+  }, [adapter]);
   const load = useCallback(async (target: EditorTarget, options?: { preserveView?: boolean; metric?: "load" | "page-switch" }): Promise<boolean> => {
     const metric = options?.metric ?? "load";
     const measurement = metric === "load" && initialLoadPerformance.current
@@ -745,7 +771,26 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     request.current?.abort(); const controller = new AbortController(); request.current = controller;
     setBusy("読込中"); setNotice("");
     try {
-      const loaded = await readEditorSession(adapter, editorTarget, controller.signal, blocks, libraryRef.current?.history.present);
+      const key = targetKeyOf(editorTarget), currentComponents = libraryRef.current?.history.present;
+      const prefetched = pagePrefetches.current.get(key);
+      let snapshot: EditorSnapshot | undefined;
+      if (prefetched && prefetched.components === currentComponents && (prefetched.completedAt === undefined || Date.now() - prefetched.completedAt <= PAGE_PREFETCH_MAX_AGE_MS)) {
+        try { snapshot = await prefetched.promise; }
+        catch { if (controller.signal.aborted) return false; }
+        finally { if (pagePrefetches.current.get(key) === prefetched) pagePrefetches.current.delete(key); }
+      } else if (prefetched) {
+        prefetched.controller.abort();
+        pagePrefetches.current.delete(key);
+      }
+      if (controller.signal.aborted) return false;
+      let loaded: EditorSessionLoad;
+      try {
+        loaded = await readEditorSession(adapter, editorTarget, controller.signal, blocks, currentComponents,
+          { cache: pageSessionCache.current, ...(snapshot ? { snapshot } : {}) });
+      } catch (error) {
+        if (!snapshot || controller.signal.aborted) throw error;
+        loaded = await readEditorSession(adapter, editorTarget, controller.signal, blocks, currentComponents, { cache: pageSessionCache.current });
+      }
       if (controller.signal.aborted) return false;
       pendingLoadPerformance.current = { measurement, target: editorTarget };
       replace(loaded.session);
@@ -803,6 +848,14 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     return () => { controller.abort(); request.current?.abort(); pageList.current?.abort(); };
   }, [adapter, siteId, load, replace, components, openLibrary, replaceLibrary, finishInitialLoadPerformance]);
   useEffect(() => () => { request.current?.abort(); action.current?.abort(); pageList.current?.abort(); releaseRead.current?.abort(); }, []);
+  useEffect(() => {
+    pageSessionCache.current.clear();
+    return () => {
+      for (const entry of pagePrefetches.current.values()) entry.controller.abort();
+      pagePrefetches.current.clear();
+      pageSessionCache.current.clear();
+    };
+  }, [adapter, blocks]);
   useEffect(() => () => usageRequest.current?.abort(), []);
   useEffect(() => {
     function prevent(event: BeforeUnloadEvent) { event.preventDefault(); }
@@ -2148,6 +2201,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         </section>
         <section hidden={visiblePanel !== "pages"} aria-label="ページ一覧">
           <PagePanel pages={panelPages} current={session?.target} disabled={blocked} operations={pageOperations} pathEditable={adapter.pagePathEditable ?? true} {...(adapter.pageChangeActions ? { actions: adapter.pageChangeActions } : {})} operationsDisabled={pageOperationsDisabled} unsaved={unsaved}
+            preload={preloadPage}
             {...(releaseSetAvailable ? { releaseSet: startReleaseSet, releaseSetDisabled: releaseSetDisabled || unsaved } : {})}
             select={(target) => { if (!session || !sameTarget(session.target, target)) requestNavigation({ type: "page", target }); }} start={startPageChange}>
             {sites.length > 1 && <select className="e-site-select" aria-label="編集するサイト" value={siteId} disabled={blocked} onChange={(event) => requestNavigation({ type: "site", id: event.target.value })}>{sites.map((site) => <option key={site.id} value={site.id}>{site.name}</option>)}</select>}
