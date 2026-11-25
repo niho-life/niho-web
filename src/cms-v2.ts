@@ -8,7 +8,7 @@ import {
   type CmsItemKey, type CmsItemRevision, type CmsMigrationDraft, type CmsMigrationImpact,
   type CmsMigrationReplacement, type CmsProblem, type CmsRouteBoundMigration, type CmsSchema
 } from "./cms-v2-schema.js";
-import { parseCmsRouteTable, type CmsRouteTable, type CmsRouteTableVersion } from "./cms-v2-routes.js";
+import { parseCmsRouteRevision, parseCmsRouteTable, type CmsRouteTable, type CmsRouteTableVersion } from "./cms-v2-routes.js";
 
 export type {
   CmsCollection, CmsField, CmsItemKey, CmsItemRevision, CmsMigratedItem, CmsMigration, CmsMigrationChange, CmsMigrationDraft, CmsMigrationImpact,
@@ -254,7 +254,7 @@ export function parseCmsSchemaPlanInput(input: unknown, siteId: string): CmsSche
   const routeTableVersions = cmsArray(value.routeTableVersions, "schemaPlan.routeTableVersions", 100).map((entry, index) => {
     const at = `schemaPlan.routeTableVersions[${index}]`, version = record(entry, at);
     keys(version, ["locale", "revision"], at);
-    return { locale: localeCode(version.locale, `${at}.locale`), revision: cmsId(version.revision, `${at}.revision`) };
+    return { locale: localeCode(version.locale, `${at}.locale`), revision: parseCmsRouteRevision(version.revision, `${at}.revision`) };
   });
   if (!routeTableVersions.length) fail("schemaPlan.routeTableVersions", "route table versions are required");
   uniqueCmsKeys(routeTableVersions.map(({ locale }) => locale), "schemaPlan.routeTableVersions");

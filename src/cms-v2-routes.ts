@@ -51,6 +51,7 @@ function identifier(input: unknown, path: string): string {
   if (!SAFE_ID.test(value)) fail(path, "invalid route reservation ID");
   return value;
 }
+export function parseCmsRouteRevision(input: unknown, path: string): string { return identifier(input, path); }
 function parseReservation(input: unknown, path: string): CmsRouteReservation {
   const value = record(input, path);
   if (value.kind === "cms-item") {
@@ -82,7 +83,7 @@ export function parseCmsRouteTable(input: unknown, expectedSiteId?: string, expe
   if ((expectedSiteId !== undefined && siteId !== expectedSiteId) || (expectedLocale !== undefined && locale !== expectedLocale)) {
     fail("routeTable", "CMS route table site or locale mismatch");
   }
-  const revision = identifier(value.revision, "routeTable.revision");
+  const revision = parseCmsRouteRevision(value.revision, "routeTable.revision");
   if (!Array.isArray(value.reservations) || value.reservations.length > CMS_ROUTE_RESERVATION_LIMIT) fail("routeTable.reservations", "invalid route reservation list");
   const reservations = value.reservations.map((entry, index) => parseReservation(entry, `routeTable.reservations[${index}]`));
   const sourceKeys = reservations.map((entry) => entry.kind === "cms-item" ? `${entry.kind}:${itemKey(entry)}` : `${entry.kind}:${entry.path}`);

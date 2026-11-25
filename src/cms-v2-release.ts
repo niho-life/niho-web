@@ -1,7 +1,7 @@
 import { isIsoTimestamp, parseCollectionItem, type CollectionItem, type CollectionItemStatus, type CollectionValue } from "./collection-model.js";
 import { validatePagePath } from "./pages.js";
 import { fail, keys, localeCode, record } from "./validation-utils.js";
-import { CMS_ROUTE_RESERVATION_LIMIT, parseCmsRouteTable, planCmsRouteTable, type CmsRouteTable } from "./cms-v2-routes.js";
+import { CMS_ROUTE_RESERVATION_LIMIT, parseCmsRouteRevision, parseCmsRouteTable, planCmsRouteTable, type CmsRouteTable } from "./cms-v2-routes.js";
 import {
   cmsArray, cmsCollection, cmsId, cmsItemKey, cmsLegacyCollections, cmsLegacyValues, cmsPath, cmsReferenceProblems, cmsValueProblems,
   parseCmsItemRevision, parseCmsSchema, uniqueCmsKeys, type CmsItemKey, type CmsItemRevision, type CmsProblem, type CmsSchema
@@ -86,7 +86,7 @@ export function parseCmsReleaseInput(input: unknown): CmsReleaseInput {
   uniqueCmsKeys(redirects.map(({ from }) => from), "release.redirects");
   return {
     siteId: cmsId(value.siteId, "release.siteId"), schemaRevision: cmsId(value.schemaRevision, "release.schemaRevision"),
-    routeTableRevision: cmsId(value.routeTableRevision, "release.routeTableRevision"),
+    routeTableRevision: parseCmsRouteRevision(value.routeTableRevision, "release.routeTableRevision"),
     locale: localeCode(value.locale, "release.locale"), expectedReleaseId: value.expectedReleaseId === null ? null : cmsId(value.expectedReleaseId, "release.expectedReleaseId"),
     items, redirects
   };

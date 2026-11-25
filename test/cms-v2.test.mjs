@@ -384,6 +384,15 @@ test("retained host redirects are revalidated and long release IDs still produce
   assert.ok(plan.proposal.snapshot.routeTable.revision.length <= 128);
 });
 
+test("release and schema plans accept the route table revision identifier format", () => {
+  const host = new MemoryHost();
+  host.routeTables[0] = { ...host.routeTables[0], revision: "routes:1" };
+  assert.equal(host.planRelease().status, "ready");
+  const nextSchema = { ...structuredClone(host.schema), schemaRevision: "schema-route-revision" };
+  const { migration } = host.planSchema(nextSchema);
+  assert.equal(migration.routeTableVersions.find(({ locale: value }) => value === locale)?.revision, "routes:1");
+});
+
 test("route planning indexes fixed paths for large CMS collections", () => {
   const routes = Array.from({ length: 25_000 }, (_, index) => ({
     collectionId: "posts", itemId: `post-${index}`, path: `/posts/post-${index}`
