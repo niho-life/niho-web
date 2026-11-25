@@ -327,8 +327,8 @@ test("release routes reject fixed, template, and redirect-source conflicts and p
 
 test("fixed-page redirect targets are accepted and conflicting sources remain invalid without duplicate reservations", () => {
   const fixedTarget = new MemoryHost();
-  fixedTarget.routeTables[0].reservations.push({ kind: "fixed-page", path: "/about", reservationId: "about-page" });
-  const release = fixedTarget.planRelease([], [{ from: "/old", to: "/about" }]);
+  fixedTarget.routeTables[0].reservations.push({ kind: "fixed-page", path: "/About", reservationId: "about-page" });
+  const release = fixedTarget.planRelease([], [{ from: "/old", to: "/About" }]);
   assert.equal(release.status, "ready");
 
   const routePlan = planCmsRouteTable({

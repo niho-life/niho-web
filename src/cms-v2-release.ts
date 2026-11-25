@@ -1,9 +1,9 @@
 import { isIsoTimestamp, parseCollectionItem, type CollectionItem, type CollectionItemStatus, type CollectionValue } from "./collection-model.js";
 import { validatePagePath } from "./pages.js";
 import { fail, keys, localeCode, record } from "./validation-utils.js";
-import { CMS_ROUTE_RESERVATION_LIMIT, parseCmsRouteRevision, parseCmsRouteTable, planCmsRouteTable, type CmsRouteTable } from "./cms-v2-routes.js";
+import { CMS_ROUTE_RESERVATION_LIMIT, parseCmsRoutePath, parseCmsRouteRevision, parseCmsRouteTable, planCmsRouteTable, type CmsRouteTable } from "./cms-v2-routes.js";
 import {
-  cmsArray, cmsCollection, cmsId, cmsItemKey, cmsLegacyCollections, cmsLegacyValues, cmsPath, cmsReferenceProblems, cmsValueProblems,
+  cmsArray, cmsCollection, cmsId, cmsItemKey, cmsLegacyCollections, cmsLegacyValues, cmsReferenceProblems, cmsValueProblems,
   parseCmsItemRevision, parseCmsSchema, uniqueCmsKeys, type CmsItemKey, type CmsItemRevision, type CmsProblem, type CmsSchema
 } from "./cms-v2-schema.js";
 
@@ -81,7 +81,7 @@ export function parseCmsReleaseInput(input: unknown): CmsReleaseInput {
   const redirects = cmsArray(value.redirects, "release.redirects", 25_000).map((entry, i) => {
     const at = `release.redirects[${i}]`, redirect = record(entry, at);
     keys(redirect, ["from", "to"], at);
-    return { from: cmsPath(redirect.from, `${at}.from`), to: cmsPath(redirect.to, `${at}.to`) };
+    return { from: parseCmsRoutePath(redirect.from, `${at}.from`), to: parseCmsRoutePath(redirect.to, `${at}.to`) };
   });
   uniqueCmsKeys(redirects.map(({ from }) => from), "release.redirects");
   return {

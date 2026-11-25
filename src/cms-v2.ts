@@ -21,7 +21,7 @@ export type {
 } from "./cms-v2-release.js";
 export { cancelCmsSchedule, cmsWorkspaceItem, cmsWorkspaceStatus, dueCmsSchedule, parseCmsReleaseInput, planCmsRelease, planCmsSchedule, removeCmsItem, restoreCmsItem } from "./cms-v2-release.js";
 export type { CmsRouteCandidate, CmsRouteProblem, CmsRouteReservation, CmsRouteTable, CmsRouteTablePlan, CmsRouteTableVersion } from "./cms-v2-routes.js";
-export { parseCmsRouteTable, planCmsRouteTable } from "./cms-v2-routes.js";
+export { parseCmsRoutePath, parseCmsRouteTable, planCmsRouteTable } from "./cms-v2-routes.js";
 
 export const CMS_V2_OPERATIONS = Object.freeze({
   "cms.schema.read": "cms.read",

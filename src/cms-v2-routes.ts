@@ -46,6 +46,7 @@ function routePath(input: unknown, path: string, template: boolean): string {
   if (template && !isTemplatePath(input)) fail(path, "invalid route template");
   return input;
 }
+export function parseCmsRoutePath(input: unknown, path: string): string { return routePath(input, path, false); }
 function identifier(input: unknown, path: string): string {
   const value = string(input, path, 128);
   if (!SAFE_ID.test(value)) fail(path, "invalid route reservation ID");
