@@ -25,6 +25,12 @@ test("Studio serves an index and entry assets whose paths change with their cont
     const versionedName = `${stem}-${match[1]}.${extension}`;
     assert.equal(match[1], fingerprint(readFileSync(join(publicDir, "assets", versionedName))));
   }
+  for (const name of ["collection.css", "localization.css"]) {
+    const stem = name.slice(0, name.lastIndexOf("."));
+    const lazyLink = html.match(new RegExp(`data-studio-css="${stem}" data-href="(/assets/${stem}-[0-9a-f]{12}\\.css)"`, "u"));
+    assert.ok(lazyLink, `${name} keeps its versioned URL without an eager href`);
+    assert.doesNotMatch(html, new RegExp(`rel="stylesheet" href="/assets/${stem}-[0-9a-f]{12}\\.css"`, "u"));
+  }
   const chunks = readdirSync(join(publicDir, "assets", "chunks"));
   assert.ok(chunks.length > 0, "lazy Studio screens produce chunks");
   for (const chunk of chunks) assert.match(chunk, /^[A-Za-z0-9_-]+-[A-Za-z0-9_-]{8}\.js$/u, chunk);

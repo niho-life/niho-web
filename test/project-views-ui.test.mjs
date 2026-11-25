@@ -17,8 +17,8 @@ const directoryAdapter = (loadDirectory = async () => directory()) => ({ loadDir
 const dashboardAdapter = (loadDashboard = async () => dashboard()) => ({ loadDashboard });
 async function setup(Component, inputProps) {
   const container = document.createElement("div"); document.body.append(container);
-  const root = createRoot(container), calls = { creates: 0, dashboards: [], editors: [], settings: [], backs: 0 };
-  const callbacks = { onCreateProject: () => calls.creates++, onOpenDashboard: (value) => calls.dashboards.push(value), onOpenEditor: (value) => calls.editors.push(value), onOpenSettings: (value, section) => calls.settings.push([value, section]), onBackToProjects: () => calls.backs++ };
+  const root = createRoot(container), calls = { creates: 0, dashboards: [], editors: [], preloads: [], settings: [], backs: 0 };
+  const callbacks = { onCreateProject: () => calls.creates++, onOpenDashboard: (value) => calls.dashboards.push(value), onOpenEditor: (value) => calls.editors.push(value), onPreloadEditor: (value) => calls.preloads.push(value), onOpenSettings: (value, section) => calls.settings.push([value, section]), onBackToProjects: () => calls.backs++ };
   let props = { ...callbacks, ...inputProps };
   const rerender = async (next) => { props = { ...props, ...next }; await act(async () => root.render(createElement(Component, props))); await flush(); };
   await rerender({});
@@ -47,7 +47,9 @@ test("directory is independent from management and supports two Projects, search
     assert.equal(document.querySelectorAll("textarea").length, 0);
     await click("新規プロジェクト"); assert.equal(app.calls.creates, 1);
     await click(`${project("two").name}（${project("two").site.name}）のダッシュボード`); assert.deepEqual(app.calls.dashboards[0], project("two"));
-    await act(async () => rows()[0].querySelectorAll(".pv-project-menu button")[1].click()); assert.equal(app.calls.editors[0].site.id, "site_two");
+    const editorButton = rows()[0].querySelectorAll(".pv-project-menu button")[1];
+    await act(async () => editorButton.focus()); assert.equal(app.calls.preloads[0].site.id, "site_two");
+    await act(async () => editorButton.click()); assert.equal(app.calls.editors[0].site.id, "site_two");
     await app.rerender({ editorAction: "pending" });
     assert.equal(rows()[0].querySelectorAll(".pv-project-menu button")[1].textContent, "エディター接続待ち");
     await app.rerender({ editorAction: "hidden", memberDetails: "hidden", createAction: "disabled" });
@@ -168,6 +170,8 @@ test("dashboard shows only selected Site facts, zero versus unknown, analytic da
     assert.equal(document.querySelector(".pv-global-nav, .pv-home-nav, .pv-nav-heading"), null);
     assert.equal(button("ホーム").getAttribute("aria-current"), "true");
     assert.equal(button("ダッシュボード").getAttribute("aria-current"), "page");
+    const editorButton = button("デザインエディタ");
+    await act(async () => editorButton.focus()); assert.deepEqual(app.calls.preloads[0], selected);
     await click("デザインエディタ"); assert.deepEqual(app.calls.editors[0], selected);
     await click("プロジェクト設定"); assert.deepEqual(app.calls.settings[0], [selected, "site"]);
     await click("アナリティクス"); assert.equal(button("アナリティクス").getAttribute("aria-current"), "page");

@@ -13,6 +13,8 @@ export type ProjectDirectoryProps = {
   onCreateProject: () => void;
   onOpenDashboard: (project: Project) => void;
   onOpenEditor: (project: Project) => void;
+  /** Studio ホストが editor chunk を画面遷移前に先読みするための optional hook。 */
+  onPreloadEditor?: (project: Project) => void;
   /** ホストに作成機能がない場合はボタンを表示しない。既定値は従来どおりenabled。 */
   createAction?: "enabled" | "disabled";
   /** editor bridge未接続の説明を出すか、導線自体を隠すかをProjectごとに選べる。 */
@@ -56,7 +58,7 @@ export function ProjectDirectory(props: ProjectDirectoryProps) {
   if (source.adapter !== props.adapter) { setSource({ adapter: props.adapter, generation: source.generation + 1 }); return null; }
   return <DirectorySession key={source.generation} {...props} />;
 }
-function DirectorySession({ adapter, onCreateProject, onOpenDashboard, onOpenEditor, createAction = "enabled", editorAction = "enabled", memberDetails = "visible", searchValue, onSearchValueChange, searchControl = "visible", initialFocusProjectId }: ProjectDirectoryProps) {
+function DirectorySession({ adapter, onCreateProject, onOpenDashboard, onOpenEditor, onPreloadEditor, createAction = "enabled", editorAction = "enabled", memberDetails = "visible", searchValue, onSearchValueChange, searchControl = "visible", initialFocusProjectId }: ProjectDirectoryProps) {
   const editorActionFor = (project: Project) => typeof editorAction === "function" ? editorAction(project) : editorAction;
   const reader = useCallback(async (signal: AbortSignal) => parseProjectDirectoryResult(await adapter.loadDirectory(signal), (url) => adapter.isThumbnailUrlAllowed(url)), [adapter]);
   const { state, reload } = useProjectRead(reader);
@@ -100,7 +102,7 @@ function DirectorySession({ adapter, onCreateProject, onOpenDashboard, onOpenEdi
           <th scope="row" data-label="名前"><button type="button" className="pv-list-open" data-project-id={project.id} onClick={() => onOpenDashboard(project)} aria-label={`${project.name}（${project.site.name}）の一覧行を開く`}>{project.name}</button>{project.site.domains.map((domain) => <span className="pv-domain pv-muted" key={domain}>{domain}</span>)}</th>
           {memberDetails !== "hidden" && <td data-label="メンバー">{members !== null && <MemberAvatars members={members} />}</td>}
           <td data-label="最終更新">{summary.updatedAt !== null && <Timestamp value={summary.updatedAt} />}</td>
-          <td data-label="メニュー"><details className="pv-project-menu"><summary aria-label={`${project.name}のメニュー`}>•••</summary><div><button type="button" onClick={() => onOpenDashboard(project)}>ダッシュボード</button>{editorActionFor(project) !== "hidden" && <button type="button" onClick={() => onOpenEditor(project)}>{editorActionFor(project) === "pending" ? "エディター接続待ち" : "エディター"}</button>}</div></details></td>
+          <td data-label="メニュー"><details className="pv-project-menu"><summary aria-label={`${project.name}のメニュー`}>•••</summary><div><button type="button" onClick={() => onOpenDashboard(project)}>ダッシュボード</button>{editorActionFor(project) !== "hidden" && <button type="button" onPointerEnter={() => { if (editorActionFor(project) === "enabled") onPreloadEditor?.(project); }} onFocus={() => { if (editorActionFor(project) === "enabled") onPreloadEditor?.(project); }} onClick={() => onOpenEditor(project)}>{editorActionFor(project) === "pending" ? "エディター接続待ち" : "エディター"}</button>}</div></details></td>
         </tr>})}</tbody></table></div></>}
       </>}
   </section>;
