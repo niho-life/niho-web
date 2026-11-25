@@ -1336,7 +1336,7 @@ test("shortcut matrix preserves focused fields, direct editing, IME and dialog c
     assert.equal(layerButton("heading").getAttribute("aria-selected"), "true", "Esc cancels text before navigating");
     assert.ok(await shortcut(canvasBody(), "?", { shiftKey: true }));
     const help = document.querySelector('[role="dialog"][aria-label="ショートカット一覧"]'), close = help.querySelector("button");
-    assert.equal(help.querySelectorAll("tbody tr").length, 12);
+    assert.equal(help.querySelectorAll("tbody tr").length, 16);
     assert.equal(document.activeElement, close);
     assert.equal(await shortcut(close, "Delete"), false);
     assert.equal(await shortcut(canvasBody(), "Delete", {}, false), false);
@@ -2431,7 +2431,12 @@ test("operation conflict keeps the local queue and retries a CLI write only afte
     // 再適用は画面イベントから非同期で始まるので、hostのjournalへ反映された後で検証する。
     for (let attempt = 0; attempt < 100 && storage.readJournal().length < 2; attempt++) await wait(10);
     assert.equal(storage.readJournal().length, 2);
-    const { document: saved } = await cli.read(homeTarget);
+    let saved;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      if (attempt) await wait(10);
+      ({ document: saved } = await cli.read(homeTarget));
+      if (saved.title === "GUIの編集") break;
+    }
     assert.equal(saved.title, "GUIの編集");
     assert.equal(saved.meta.description, "CLIの編集");
     assert.deepEqual(storage.readJournal().map(({ actor }) => actor.clientKind), ["cli", "gui"]);
