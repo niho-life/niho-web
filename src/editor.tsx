@@ -1,6 +1,6 @@
 "use client";
 
-import { Component, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Component, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { PageRenderer, SitePageRenderer } from "./react.js";
 import { parsePageDocument } from "./document.js";
@@ -245,8 +245,9 @@ function pairedFormFieldNodeId(document: PageDocument, path: NodePath): string |
      typeof labelTarget === "string" && ["input", "textarea", "select"].includes(candidate.tag) && candidate.attrs?.id === labelTarget));
   return pair?.type === "element" ? pair.id : undefined;
 }
-function Canvas({ document, blocks, width, height, breakpoint, selection, selectedNodeId, selectedNodeIds, slot, select, canEditNode, dragItem, drop, pending, editText, startTextEdit, onShortcut, resize, reportError, editable, structureEditable, locks, preview, previewComponent: PreviewComponent, mode, baseVersion, historyRevision, assets, motionCss, replay, rendered, presentation, presentationRuntime, externalFramePolicy, blankEmbeds, xPostFrameUrl, origins, openInstance, viewportHeight, siteOrigin, onReady }: {
+function Canvas({ document, blocks, width, height, breakpoint, selection, selectedNodeId, selectedNodeIds, revealNode, slot, select, canEditNode, dragItem, drop, pending, editText, startTextEdit, onShortcut, resize, reportError, editable, structureEditable, locks, preview, previewComponent: PreviewComponent, mode, baseVersion, historyRevision, assets, motionCss, replay, rendered, presentation, presentationRuntime, externalFramePolicy, blankEmbeds, xPostFrameUrl, origins, openInstance, viewportHeight, siteOrigin, onReady }: {
   document: PageDocument; blocks: EditorBlockRegistry; width: number; height: number; selection: NodePath | null; selectedNodeId?: string; selectedNodeIds?: readonly string[]; select: (path: NodePath | null, nodeId?: string, slot?: string | null, mode?: SelectionMode) => void;
+  revealNode: { id: string } | null;
   canEditNode?: (nodeId: string) => boolean;
   slot: string | null;
 
@@ -289,6 +290,14 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
   const renderedEntries = useMemo(() => rendered === document ? entries : walkNodes(rendered), [rendered, document, entries]);
   const nodesById = useMemo(() => new Map(entries.flatMap((entry) => entry.node.type === "text" ? [] : [[entry.node.id, entry] as const])), [entries]);
   const renderedNodesById = useMemo(() => new Map(renderedEntries.flatMap((entry) => entry.node.type === "text" ? [] : [[entry.node.id, entry] as const])), [renderedEntries]);
+  const lastRevealedNode = useRef<typeof revealNode>(null);
+  useLayoutEffect(() => {
+    if (!body || !revealNode || revealNode.id !== selectedNodeId || lastRevealedNode.current === revealNode || preview) return;
+    const element = body.querySelector<HTMLElement>('[data-nw-owner="' + scope + '"][data-nw-node="' + revealNode.id + '"]');
+    if (!element) return;
+    element.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+    lastRevealedNode.current = revealNode;
+  }, [body, preview, rendered, revealNode, scope, selectedNodeId]);
   const selected = selectedNodeId ? renderedNodesById.get(selectedNodeId)?.node : selection ? nodeAt(document, selection) : undefined;
   const selectedId = selected?.type === "text" && selection && selection.length > 1 ? nodeAt(document, selection.slice(0, -1)) : selected;
   const primarySelectedNodeId = selectedNodeId ?? (selectedId && selectedId.type !== "text" ? selectedId.id : undefined);
@@ -563,6 +572,8 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const [addType, setAddType] = useState("p"), [addCategory, setAddCategory] = useState<InsertionCategory>("basic"), [parentId, setParentId] = useState(""), [rollbackRevision, setRollbackRevision] = useState("");
   const [panel, setPanel] = useState<"add" | "pages" | "layers" | "styles" | "assets" | "upload" | "stock" | "connect" | "components" | "history" | "content">("pages");
   const [contentSearch, setContentSearch] = useState("");
+  const [layerSelectionVersion, setLayerSelectionVersion] = useState(0);
+  const [canvasReveal, setCanvasReveal] = useState<{ target: string; id: string } | null>(null);
   const [inspector, setInspector] = useState<Inspector>("page"), [elementTab, setElementTab] = useState<InspectorTab>("text"), [preview, setPreview] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false), shortcutClose = useRef<HTMLButtonElement>(null);
   const [groupChange, setGroupChange] = useState<{ operation: BoxGroupOperation; base: string; componentId: string | null } | null>(null);
@@ -904,7 +915,22 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     const textProperties = ["color", "fontFamily", "fontSize", "fontWeight", "lineHeight", "letterSpacing", "textAlign", "fontStyle", "textDecorationLine"];
     return declared.text || declared.style?.some((property) => textProperties.includes(property)) ? "text" : declared.style?.length ? "box" : "settings";
   }
-  function select(path: NodePath | null, slot: string | null = null, mode: SelectionMode = "replace", rangeIds?: readonly string[]) { if (manualInputPending && path) { setNavigation({ type: "node", path }); return; } if (hasInput) { setNotice("入力を適用するか取り消してから選択を変えてください。"); return; } if (!(masterId ? libraryBlocked : pageOperationalBlocked)) { const source = currentDocument(); const primary = setSelection(path, source, mode, rangeIds); const id = path && source ? (() => { const item = nodeAt(source, path); return item.type === "text" && path.length > 1 ? nodeAt(source, path.slice(0, -1)) : item; })() : null; if (path && mode === "replace") setElementTab(slot && !targetMode ? defaultSlotTab(path, slot) : defaultElementTab(path)); else if (mode !== "replace") setElementTab("box"); setSlotChoice(mode === "replace" && id && id.type !== "text" && slot && !targetMode ? { of: id.id, name: slot } : null); setSelectedLocalizationUnit(null); setSelectedCanvasNode(null); setInspector(primary ? "element" : "page"); setDraft(null); setStyleState("normal"); } }
+  function select(path: NodePath | null, slot: string | null = null, mode: SelectionMode = "replace", rangeIds?: readonly string[]) {
+    if (manualInputPending && path) { setNavigation({ type: "node", path }); return; }
+    if (hasInput) { setNotice("入力を適用するか取り消してから選択を変えてください。"); return; }
+    if (masterId ? libraryBlocked : pageOperationalBlocked) return;
+    const source = currentDocument(), primary = setSelection(path, source, mode, rangeIds);
+    if (path && mode === "replace") setElementTab(slot && !targetMode ? defaultSlotTab(path, slot) : defaultElementTab(path));
+    else if (mode !== "replace") setElementTab("box");
+    setSlotChoice(mode === "replace" && primary && slot && !targetMode ? { of: primary, name: slot } : null);
+    setSelectedLocalizationUnit(null);
+    setSelectedCanvasNode(null);
+    setCanvasReveal(null);
+    setInspector(primary ? "element" : "page");
+    setDraft(null);
+    setStyleState("normal");
+    return primary;
+  }
   /** 選択中の業務ブロックの表示領域を選ぶ。null は「ブロック全体に戻る」。 */
   function chooseSlot(name: string | null) { if (hasInput) { setNotice("入力を適用するか取り消してから選択を変えてください。"); return; } if (!targetMode && !editBlocked && selection && selectedId) { setElementTab(name ? defaultSlotTab(selection, name) : defaultElementTab(selection)); setSlotChoice({ of: selectedId, name, ...(!name && slotName ? { back: slotName } : {}) }); setDraft(null); setStyleState("normal"); } }
 
@@ -1622,6 +1648,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const rawDocument = master ?? session?.history.present;
   const siteStylesReady = !adapter.readSiteSettings || siteSettings.status === "ready" && !!siteSettings.settings || session?.siteStyles !== undefined || !!session?.selfContained;
   const document = useMemo(() => rawDocument && siteStylesReady ? (master ? resolveComponentStyles(rawDocument, activeSiteStyles) : resolvePageStyles(detachRemovedSiteStyles(rawDocument, session?.siteStyles ?? {}, activeSiteStyles), activeSiteStyles)) : undefined, [rawDocument, master, activeSiteStyles, siteStylesReady, session?.siteStyles]);
+  const documentKey = document ? JSON.stringify([document.siteId, document.pageId, document.locale, masterId]) : "";
   const selection = document ? pathForNodeId(document, selectedId) : null;
   const entries = useMemo(() => document ? walkNodes(document) : [], [document]);
   const nodesById = useMemo(() => new Map(entries.flatMap((entry) => entry.node.type === "text" ? [] : [[entry.node.id, entry] as const])), [entries]);
@@ -1801,9 +1828,19 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       setSelection(null); setSelectedCanvasNode(id); setSelectedLocalizationUnit(unit.unitId); setInspector("localization"); setDraft(null); return;
     }
     const raw = document ? pathForNodeId(document, id) : null;
-    if (raw) { if (manualInputPending) setNavigation({ type: "node", path: raw, canvasId: id }); else { select(raw, slot, mode); if (mode === "replace") setSelectedCanvasNode(id); } return; }
+    if (raw) {
+      if (manualInputPending) setNavigation({ type: "node", path: raw, canvasId: id });
+      else if (select(raw, slot, mode) !== undefined) {
+        setLayerSelectionVersion((value) => value + 1);
+        if (mode === "replace") setSelectedCanvasNode(id);
+      }
+      return;
+    }
     const origin = canvasOrigins.get(id), instance = origin && document ? pathForNodeId(document, origin.instance) : null;
-    if (instance) { select(instance); if (targetMode) setSelectedCanvasNode(id); }
+    if (instance && select(instance) !== undefined) {
+      setLayerSelectionVersion((value) => value + 1);
+      if (targetMode) setSelectedCanvasNode(id);
+    }
   }
   const canEditCanvasNode = (id: string) => !canvasOrigins.has(id) && validNodeIds.has(id);
   const editCanvasText = (_path: NodePath, id: string, children: PageNode[]) => {
@@ -2162,9 +2199,10 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     const value = direction === "in" ? workspaceScales.find((step) => step > canvasScale) : [...workspaceScales].reverse().find((step) => step < canvasScale);
     return value === undefined ? false : changeScale(value);
   }
-  function chooseByShortcut(path: NodePath | null): boolean | string {
+  function chooseByShortcut(path: NodePath | null, event: KeyboardEvent): boolean | string {
     if (masterId && libraryBlocked) return styleWorkReason ?? "処理が完了してから選択を変えてください。";
-    select(path);
+    const id = select(path);
+    if (id && asElement(event.target)?.closest(".e-layer-list")) setCanvasReveal({ target: documentKey, id });
     setNotice("");
     return true;
   }
@@ -2179,12 +2217,12 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     cut: () => structureUnavailable ?? cutSelection(),
     paste: () => structureUnavailable ?? startPaste(false),
     pasteInside: () => structureUnavailable ?? startPaste(true),
-    parent: () => !!selection && chooseByShortcut(selection.length > 1 ? selection.slice(0, -1) : null),
+    parent: () => !!selection && chooseByShortcut(selection.length > 1 ? selection.slice(0, -1) : null, event),
     child: () => {
       const children = node?.type === "element" ? node.children : node ? [] : document?.body;
       if (node && isDirectlyEditable(node)) return styleWorkReason ?? startTextEdit.current?.(node.id) ?? false;
       const index = children?.findIndex((child) => child.type !== "text") ?? -1;
-      return index >= 0 && chooseByShortcut([...(selection ?? []), index]);
+      return index >= 0 && chooseByShortcut([...(selection ?? []), index], event);
     },
     zoomIn: () => stepScale("in"),
     zoomOut: () => stepScale("out"),
@@ -2228,12 +2266,21 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
             {localization.supported && !localization.site && !localization.siteBusy && <button type="button" className="e-small" onClick={localization.reloadAll}>言語設定を再読込</button>}
           </PagePanel>
         </section>
-        <section hidden={visiblePanel !== "layers"} aria-label="レイヤー一覧"><div className="e-panel-head"><h2>レイヤー</h2><p>ドラッグで並べ替え、中央にも配置できます</p></div>
-          {document && <LayerTreePanel document={document} labels={layerLabels} rootLabel={masterId ? "コンポーネント本体" : isSiteComponent ? "コンポーネント" : "ページ全体"} selectedId={selectedId} selectedIds={selectedNodeIds}
+        <section className="e-layer-panel" hidden={visiblePanel !== "layers"} aria-label="レイヤー一覧"><div className="e-panel-head"><h2>レイヤー</h2><p>ドラッグで並べ替え、中央にも配置できます</p></div>
+          {document && <LayerTreePanel key={documentKey} document={document} labels={layerLabels} rootLabel={masterId ? "コンポーネント本体" : isSiteComponent ? "コンポーネント" : "ページ全体"} selectedId={selectedId} selectedIds={selectedNodeIds}
+            selectionVersion={layerSelectionVersion} active={visiblePanel === "layers" && leftPanelOpen && !preview}
+            canRename={(entry) => !!canNameNode && !editBlocked && !hasInput && !lockReason(document, entry.path, "name", locks)}
+            rename={(id, value) => {
+              const source = currentDocument(), path = source ? pathForNodeId(source, id) : null;
+              return path ? apply({ type: "name", path, value }) : "名前を変更する要素が見つかりません。";
+            }}
             disabled={masterId ? libraryBlocked : pageOperationalBlocked} draggable={!editBlocked && !hasInput && !targetMode}
             className={(entry) => `${layerDrop?.id === entry.id ? ` drop-${layerDrop.position}` : ""}${hiddenAt(entry.node, width) ? " is-hidden-here" : ""}`}
             trailing={(entry) => hiddenAt(entry.node, width) ? <small className="e-layer-hidden">この幅で非表示</small> : null}
-            select={(id, mode = "replace", rangeIds) => select(id ? pathForNodeId(document, id) : null, null, mode, rangeIds)}
+            select={(id, mode = "replace", rangeIds) => {
+              const primary = select(id ? pathForNodeId(document, id) : null, null, mode, rangeIds);
+              if (primary) setCanvasReveal({ target: documentKey, id: primary });
+            }}
             dragStart={(event, id) => startDrag(event, { kind: "node", id, ids: selectedNodeIds.includes(id) ? selectedNodeIds : [id] })} dragEnd={() => { dragItem.current = null; setLayerDrop(null); }}
             dragOver={(event, id) => { if (!dragItem.current) return; const place = layerPlace(event, id); if (!place) return; event.preventDefault(); event.dataTransfer.dropEffect = dragItem.current.kind === "node" ? "move" : "copy"; setLayerDrop({ id, position: place.position }); }}
             drop={(event, id) => { if (!dragItem.current) return; const place = layerPlace(event, id); if (place) { event.preventDefault(); dropAt(dragItem.current, place); } dragItem.current = null; setLayerDrop(null); }} />}
@@ -2283,7 +2330,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         restore={() => { if (recoveryStale) setRecoveryCompare(true); else void restoreRecovered(); }} discard={recoveryState.discard} />}
       <div className="e-stage" ref={stageRef}><HistoryBar history={versions} restore={restoreRevision} {...(session?.readOnly ? { restoreBlocked: session.readOnly.reason } : {})} rollbackHint={session?.readOnly ? session.readOnly.reason : session?.hasSavedDraft === false ? publishHold : dirty || libraryDirty || hasInput ? "未保存の変更を保存してから公開版を戻せます。" : blocked ? "処理が完了してから操作できます。" : undefined}
         rollback={session?.readOnly || session?.hasSavedDraft === false || viewedRelease === undefined ? undefined : () => { versions.exit(); setRollbackRevision(String(viewedRelease)); void prepare("rollback", viewedRelease); }} />
-{document && session && shown && renderedCanvas && localizationReady ? <div className="e-canvas-spacer" data-scale={canvasScale.toFixed(3)} data-viewport-height={canvasHeight} style={{ width: width * canvasScale, height: canvasHeight * canvasScale }}><div className="e-canvas-scaled" style={{ width, transform: `scale(${canvasScale})`, transformOrigin: "0 0" }}><Canvas key={`${document.siteId}/${document.pageId}/${document.locale}/${masterId ?? ""}`} document={shown} rendered={renderedCanvas} {...(canvasPresentation ? { presentation: canvasPresentation } : {})} origins={canvasOrigins} openInstance={openInstance} blocks={canvasBlocks} {...(externalFramePolicy ? { externalFramePolicy } : {})} {...(blankEmbeds ? { blankEmbeds } : {})} {...(xPostFrameUrl ? { xPostFrameUrl } : {})} width={width} height={canvasHeight} breakpoint={tier} selection={targetMode ? null : historyMode ? null : selection} {...(!historyMode && canvasSelectedNodeId ? { selectedNodeId: canvasSelectedNodeId } : {})} {...(!historyMode && selectedNodeIds.length > 1 ? { selectedNodeIds } : {})} slot={historyMode ? null : slotName} select={selectCanvas} canEditNode={canEditCanvasNode} dragItem={dragItem} drop={dropAt} pending={pending} editText={editCanvasText} startTextEdit={startTextEdit} onShortcut={onShortcut} resize={(path, width, height) => applyStyle({ type: "resize", path, breakpoint: tier, width, height, ...(until === undefined ? {} : { until }) })} reportError={setNotice} editable={!editBlocked && !hasInput} structureEditable={!editBlocked && !hasInput && !targetMode} locks={locks} preview={preview || historyMode} baseVersion={masterId && library ? library.version : session.version} {...(historyMode && versions.viewing ? { historyRevision: versions.viewing.entry } : {})} mode={historyMode ? "history" : preview ? "preview" : "edit"} {...(canvasPreview ? { previewComponent: canvasPreview } : {})} assets={resolvedAssets.map} replay={`${replay}-${preview}`} viewportHeight={canvasReferenceHeight} siteOrigin={site?.domains[0]} onReady={measurePerformance && !blocked && !siteWorkBlocked ? finishCanvasMeasurement : undefined}
+{document && session && shown && renderedCanvas && localizationReady ? <div className="e-canvas-spacer" data-scale={canvasScale.toFixed(3)} data-viewport-height={canvasHeight} style={{ width: width * canvasScale, height: canvasHeight * canvasScale }}><div className="e-canvas-scaled" style={{ width, transform: `scale(${canvasScale})`, transformOrigin: "0 0" }}><Canvas key={documentKey} document={shown} revealNode={canvasReveal?.target === documentKey ? canvasReveal : null} rendered={renderedCanvas} {...(canvasPresentation ? { presentation: canvasPresentation } : {})} origins={canvasOrigins} openInstance={openInstance} blocks={canvasBlocks} {...(externalFramePolicy ? { externalFramePolicy } : {})} {...(blankEmbeds ? { blankEmbeds } : {})} {...(xPostFrameUrl ? { xPostFrameUrl } : {})} width={width} height={canvasHeight} breakpoint={tier} selection={targetMode ? null : historyMode ? null : selection} {...(!historyMode && canvasSelectedNodeId ? { selectedNodeId: canvasSelectedNodeId } : {})} {...(!historyMode && selectedNodeIds.length > 1 ? { selectedNodeIds } : {})} slot={historyMode ? null : slotName} select={selectCanvas} canEditNode={canEditCanvasNode} dragItem={dragItem} drop={dropAt} pending={pending} editText={editCanvasText} startTextEdit={startTextEdit} onShortcut={onShortcut} resize={(path, width, height) => applyStyle({ type: "resize", path, breakpoint: tier, width, height, ...(until === undefined ? {} : { until }) })} reportError={setNotice} editable={!editBlocked && !hasInput} structureEditable={!editBlocked && !hasInput && !targetMode} locks={locks} preview={preview || historyMode} baseVersion={masterId && library ? library.version : session.version} {...(historyMode && versions.viewing ? { historyRevision: versions.viewing.entry } : {})} mode={historyMode ? "history" : preview ? "preview" : "edit"} {...(canvasPreview ? { previewComponent: canvasPreview } : {})} assets={resolvedAssets.map} replay={`${replay}-${preview}`} viewportHeight={canvasReferenceHeight} siteOrigin={site?.domains[0]} onReady={measurePerformance && !blocked && !siteWorkBlocked ? finishCanvasMeasurement : undefined}
         presentationRuntime={(preview || motion) && !historyMode} motionCss={canvasCss(renderedCanvas, { forceState: !preview && !historyMode && styleState !== "normal" && node && node.type !== "text" ? { nodeId: node.id, state: styleState } : undefined, motion: (preview || motion) && !historyMode ? "play" : "paused" })} /></div>{(["left", "right"] as const).map((side) => <ViewportEdgeHandle key={side} side={side} width={width} scale={canvasScale} disabled={historyMode} onWidthChange={(value) => { setWidth(value); setWidthField(String(value)); }} />)}</div> : <p className="e-empty">{localization.supported && !localizationReady ? "" : "サイトとページを選ぶと、ここにプレビューを表示します。"}</p>}</div></section>} right={<aside className="e-rail e-right" aria-label="インスペクタ" hidden={!rightPanelOpen || preview}>
       <div className="e-inspector-actions" role="toolbar" aria-label="編集操作"><WorkspaceScaleSelect scale={scaleMode} fitPercent={Math.round(fitScale * 100)} disabled={!!shortcutUnavailable} onScale={changeScale} />
       {localization.site && selectedLocale && <LanguageSelector config={localization.site.config} locale={selectedLocale} disabled={blocked} select={selectLocale} />}

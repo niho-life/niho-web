@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { findLayer } from "./editor-layer-fixtures.mjs";
 import { JSDOM } from "jsdom";
 import {
   acceptTranslationResult, adoptTranslationCandidate, collectLocalizationUnits, createLocalizationOverlay, editLocalizedValue,
@@ -19,7 +20,12 @@ async function waitForUi(condition, message) {
   assert.ok(condition(), message);
 }
 const button = (text) => [...document.querySelectorAll("button")].find((node) => node.textContent === text) ?? (() => { const id = / · ([^ ]+)$/.exec(text)?.[1]; return id ? document.querySelector(`[data-node-id="${id}"] button.e-layer`) : undefined; })();
-async function click(text) { const target = button(text); assert.ok(target, text); await act(async () => target.click()); await flush(); }
+async function click(text) {
+  const press = async (target) => { await act(async () => target.click()); await flush(); };
+  const target = text.includes(" · ") ? await findLayer(() => button(text), press) : button(text);
+  assert.ok(target, text);
+  await press(target);
+}
 async function showInspector(value) {
   const target = document.querySelector('select[aria-label="編集する対象"]'); assert.ok(target, "inspector selector");
   await act(async () => {
