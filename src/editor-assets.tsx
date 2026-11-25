@@ -23,7 +23,9 @@ export function socialImageProblem(asset: Pick<LibraryAsset, "mimeType">): strin
 export const coverAlt = (asset: Pick<LibraryAsset, "alt">, current: string): string => asset.alt && asset.alt.length <= metaLimits.altLength ? asset.alt : current;
 export type AssetAction = "replace" | "background" | "insert" | "pick";
 export type AssetLibraryPanelProps = {
-  adapter: AssetLibraryAdapter; siteId: string; mode: "library" | "pick"; pickTitle?: string | undefined;
+  adapter: AssetLibraryAdapter; siteId: string; mode: "library" | "pick"; pickTitle?: string | undefined; epoch?: number | undefined;
+  /** 非表示の間は通信を止め、選択・詳細の画面状態は保持する。 */
+  active?: boolean | undefined;
   /** pick mode で一覧と配置可否を絞る。既定は画像。 */
   pickKind?: "image" | "video" | undefined;
   /** Library rail can scope results to a declared provider class. Media pickers keep the full list. */
@@ -188,7 +190,7 @@ class SourceMismatch extends Error {}
 
 /** サイト別の素材ライブラリ。library は管理と配置、pick は画像の選択だけを行う。listProviders があれば出所ごとに分ける。 */
 export function AssetLibraryPanel(props: AssetLibraryPanelProps) {
-  const { adapter, siteId, mode, pickTitle, pickKind = "image", providerKind, panelLabel = "アセット", localUsage, actions, disabledReason, onClose, onReplaceUsages } = props;
+  const { adapter, siteId, mode, pickTitle, pickKind = "image", providerKind, panelLabel = "アセット", localUsage, actions, disabledReason, onClose, onReplaceUsages, active = true, epoch = 0 } = props;
   const sourceScopeKey = `${mode}:${pickKind}:${providerKind ?? "all"}`;
   const [folderId, setFolderId] = useState<string | null>(null), [kind, setKind] = useState<AssetKind | "all">("all");
   const [searchInput, setSearchInput] = useState(""), [search, setSearch] = useState(""), [reload, setReload] = useState(0);
@@ -209,6 +211,7 @@ export function AssetLibraryPanel(props: AssetLibraryPanelProps) {
   const [recent, setRecent] = useState(false), [acquiring, setAcquiring] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null), heading = useRef<HTMLHeadingElement>(null), cards = useRef(new Map<string, HTMLButtonElement>());
   const more = useRef<AbortController | null>(null), uploadId = useRef(0), latest = useRef(props), busy = useRef(false), work = useControllers();
+  const providersEpoch = useRef<{ adapter: AssetLibraryAdapter; siteId: string; epoch: number } | null>(null);
   latest.current = props;
   const listKind = mode === "pick" ? pickKind : kind;
   const sources = sourceState.adapter === adapter && sourceState.siteId === siteId ? sourceState : { status: "loading" as const, items: [] as readonly AssetProvider[] };
@@ -226,9 +229,11 @@ export function AssetLibraryPanel(props: AssetLibraryPanelProps) {
   const verify = (assets: readonly LibraryAsset[]) => { if (providers && assets.some((asset) => !providerOf(asset) || (source !== null && asset.provider !== source))) throw new SourceMismatch(); };
   useEffect(() => { const timer = setTimeout(() => setSearch(searchInput.trim()), 250); return () => clearTimeout(timer); }, [searchInput]);
   useEffect(() => {
-    if (!adapter.listProviders) return;
+    if (!active || !adapter.listProviders) return;
     // パネルを閉じて再度開いても、同じサイトの出所一覧は再取得しない。
-    const cached = sourceReload === 0 ? cachedProviders(adapter, siteId) : undefined;
+    const loaded = providersEpoch.current;
+    const sameEpoch = loaded?.adapter === adapter && loaded.siteId === siteId && loaded.epoch === epoch;
+    const cached = sourceReload === 0 && sameEpoch ? cachedProviders(adapter, siteId) : undefined;
     if (cached) { setSourceState({ adapter, siteId, status: "ready", items: cached }); return; }
     // 明示的な再読込では既存の出所を表示したまま取り直す。
     const controller = new AbortController();
@@ -237,11 +242,11 @@ export function AssetLibraryPanel(props: AssetLibraryPanelProps) {
       try {
         const items = parseAssetProviders(await adapter.listProviders!({ siteId }, controller.signal));
         if (controller.signal.aborted) return;
-        storeProviders(adapter, siteId, items); setSourceState({ adapter, siteId, status: "ready", items });
+        storeProviders(adapter, siteId, items); providersEpoch.current = { adapter, siteId, epoch }; setSourceState({ adapter, siteId, status: "ready", items });
       } catch { if (!controller.signal.aborted) setSourceState({ adapter, siteId, status: "error", items: [] }); }
     })();
     return () => controller.abort();
-  }, [adapter, siteId, sourceReload]);
+  }, [active, adapter, siteId, sourceReload, epoch]);
   useEffect(() => {
     setFolderId(null); setFolderDraft(null); setFolderError("");
   }, [mode, pickKind, providerKind]);
@@ -254,6 +259,7 @@ export function AssetLibraryPanel(props: AssetLibraryPanelProps) {
   }, [mode, providerKind, providers]);
   useEffect(() => { setDetail(null); }, [mode, pickKind, providerKind]);
   useEffect(() => {
+    if (!active) { more.current?.abort(); more.current = null; return; }
     if (!legacy && !providers) return;
     const request = query(), cacheKey = listCacheKey(request);
     more.current?.abort(); more.current = null;
@@ -273,7 +279,7 @@ export function AssetLibraryPanel(props: AssetLibraryPanelProps) {
       } catch (error) { if (!controller.signal.aborted) setList((previous) => ({ ...previous, status: "error", assets: [], nextCursor: undefined, problem: error instanceof SourceMismatch ? unknownSource : undefined, scopeKey: listScopeKey, cacheAdapter: adapter, cacheSiteId: siteId, cacheKey })); }
     })();
     return () => controller.abort();
-  }, [adapter, siteId, search, listKind, folderId, reload, legacy, providers, source, offline, recent, providerKind, mode, scopedProviders, listScopeKey]);
+  }, [active, adapter, siteId, search, listKind, folderId, reload, legacy, providers, source, offline, recent, providerKind, mode, scopedProviders, listScopeKey]);
   useEffect(() => {
     if (list.status !== "ready" || list.cacheAdapter !== adapter || list.cacheSiteId !== siteId || !list.cacheKey) return;
     storeAssetList(adapter, siteId, list.cacheKey, { assets: list.assets, folders: list.folders, ...(list.quota ? { quota: list.quota } : {}), ...(list.upload ? { upload: list.upload } : {}), ...(list.nextCursor ? { nextCursor: list.nextCursor } : {}) });

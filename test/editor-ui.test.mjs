@@ -1684,6 +1684,8 @@ test("a removed provider leaves its open asset detail read-only and blocks place
     await tool("接続"); await chooseAsset("朝ヨガ.png");
     removed = true;
     await clickPage("別ページ"); await settle();
+    // 非表示中の出所通信は行わず、再表示時に最新の提供元を確認する。
+    await tool("アセット"); await settle();
     assert.equal(input("名前").readOnly, true);
     assert.equal(input("代替テキスト").readOnly, true);
     assert.equal(button("変更を保存"), undefined);
