@@ -1,4 +1,5 @@
 import type { ElementTag, EmbedProvider, PageDocument, PageNode } from "./types.js";
+import { indexedNodesById } from "./node-tree.js";
 
 export type LayerKind = "box" | "image" | "text" | "component" | "instance";
 export type LayerEntry = {
@@ -71,8 +72,8 @@ export function projectLayers(document: PageDocument, labels: LayerLabels = {}):
 /** 配列位置は保持せず、現在の文書から安定 ID の path を引き直す。 */
 export function pathForNodeId(document: PageDocument, id: string | null | undefined): number[] | null {
   if (!id) return null;
-  const entry = projectLayers(document).find((item) => item.id === id);
-  return entry ? entry.path : null;
+  const entry = indexedNodesById(document, id)[0];
+  return entry ? [...entry.path] : null;
 }
 
 export function visibleLayers(entries: readonly LayerEntry[], expanded: ReadonlySet<string>): LayerEntry[] {

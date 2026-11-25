@@ -3,7 +3,7 @@ import { detachInstance } from "./component-model.js";
 import { parsePageDocument } from "./document.js";
 import type { EditorBlockRegistry, EditorLock, EditorPage, EditorPageChange, EditorPageChangePlan, EditorPageImpact, EditorReadOnly, EditorReleasePlan, EditorReleaseRequest, EditorSite, EditorTarget } from "./editor-types.js";
 import { findPathConflict, validatePagePath } from "./pages.js";
-import { nodeAt, siblingsAt, walkNodes, type NodePath } from "./node-tree.js";
+import { indexedNodes, indexedNodesById, nodeAt, siblingsAt, walkNodes, type NodePath } from "./node-tree.js";
 import { normalizeNodeFragment } from "./editor-fragment.js";
 import type { Appear, AssetReference, BlockContract, ComponentLibrary, ComponentNode, DesignToken, ElementNode, HiddenRange, IconName, InstanceNode, NodeStyle, PageDocument, PageMeta, PageNode, PublicPropValue, StateName, StateProperty, StyleDeclarations, StyleProperty, StyleValue, TextStyle } from "./types.js";
 import { stateNames, textStyleProperties } from "./style-values.js";
@@ -116,7 +116,15 @@ export type EditorOperationById = StableEditorOperation<EditorOperation>;
 export type MetaOperation = { [K in keyof PageMeta]-?: { type: "meta"; field: K; value: PageMeta[K] | undefined } }[keyof PageMeta];
 export type EditorOperationBlocks = Readonly<Record<string, BlockContract & Pick<EditorBlockRegistry[string], "lockedProps" | "styleProperties">>>;
 export type EditorHistory = { past: PageDocument[]; present: PageDocument; future: PageDocument[] };
-export const fingerprint = (document: PageDocument): string => JSON.stringify(document);
+const documentFingerprints = new WeakMap<PageDocument, string>();
+/** Editor documents are immutable snapshots; cache their serialized identity across renders and history checks. */
+export function fingerprint(document: PageDocument): string {
+  const cached = documentFingerprints.get(document);
+  if (cached !== undefined) return cached;
+  const value = JSON.stringify(document);
+  documentFingerprints.set(document, value);
+  return value;
+}
 /** Snapshot の任意 read-only 表示契約を、UI と Project adapter で共有して検証する。 */
 export function parseEditorReadOnly(value: unknown): EditorReadOnly | undefined {
   if (value === undefined) return undefined;
@@ -132,9 +140,18 @@ export function parseEditorReadOnly(value: unknown): EditorReadOnly | undefined 
   const editLabel = source.editLabel === undefined ? undefined : line(source.editLabel, "$snapshot.readOnly.editLabel", 80);
   return { reason, ...(editUrl ? { editUrl } : {}), ...(editLabel ? { editLabel } : {}) };
 }
+const implicitLocksByDocument = new WeakMap<PageDocument, WeakMap<EditorOperationBlocks, readonly EditorLock[]>>();
 export function effectiveLocks(document: PageDocument, locks: readonly EditorLock[], blocks: EditorOperationBlocks): EditorLock[] {
-  return [...locks, ...walkNodes(document).flatMap(({ node }) => node.type === "component"
-    ? Object.entries(blocks[node.block]?.lockedProps ?? {}).map(([name, reason]) => ({ nodeId: node.id, fields: [`props.${name}`], reason })) : [])];
+  if (!Object.values(blocks).some(({ lockedProps }) => Object.keys(lockedProps ?? {}).length > 0)) return [...locks];
+  let byBlocks = implicitLocksByDocument.get(document);
+  if (!byBlocks) { byBlocks = new WeakMap(); implicitLocksByDocument.set(document, byBlocks); }
+  let implicit = byBlocks.get(blocks);
+  if (!implicit) {
+    implicit = indexedNodes(document).flatMap(({ node }) => node.type === "component"
+      ? Object.entries(blocks[node.block]?.lockedProps ?? {}).map(([name, reason]) => ({ nodeId: node.id, fields: [`props.${name}`], reason })) : []);
+    byBlocks.set(blocks, implicit);
+  }
+  return [...locks, ...implicit];
 }
 function fieldValue(node: PageNode, field: string): unknown {
   if (field === "*") return node;
@@ -147,7 +164,8 @@ function fieldValue(node: PageNode, field: string): unknown {
 }
 const mediaSourceFields = ["asset", "attrs.src", "attrs.srcSet"];
 function assertLocks(before: PageDocument, after: PageDocument, locks: readonly EditorLock[]): void {
-  const index = (document: PageDocument) => new Map(walkNodes(document).flatMap(({ node }) => node.type === "text" ? [] : [[node.id, node] as const]));
+  if (!locks.length) return;
+  const index = (document: PageDocument) => new Map(indexedNodes(document).flatMap(({ node }) => node.type === "text" ? [] : [[node.id, node] as const]));
   const previous = index(before), next = index(after);
   const resolved = (document: PageDocument, value: unknown): unknown => {
     if (Array.isArray(value)) return value.map((entry) => resolved(document, entry));
@@ -660,7 +678,7 @@ function positionIndex(destination: readonly PageNode[], index: number | undefin
 }
 function pathForNodeId(document: PageDocument, nodeId: string): NodePath {
   if (typeof nodeId !== "string" || !nodeId) throw new Error("対象ノードIDが正しくありません。");
-  const matches = walkNodes(document).filter(({ node }) => node.type !== "text" && node.id === nodeId);
+  const matches = indexedNodesById(document, nodeId);
   if (matches.length !== 1) throw new Error("対象ノードが見つからないか、IDが重複しています。");
   return matches[0]!.path;
 }
@@ -689,7 +707,7 @@ export function editDocumentById(document: PageDocument, operation: EditorOperat
   return editDocument(document, operation as EditorOperation, blocks, locks, components, siteStyles, validateDocument);
 }
 export function commitHistory(history: EditorHistory, document: PageDocument): EditorHistory {
-  if (fingerprint(document) === fingerprint(history.present)) return history;
+  if (document === history.present || fingerprint(document) === fingerprint(history.present)) return history;
   return { past: [...history.past.slice(-49), history.present], present: document, future: [] };
 }
 /** 内容と履歴の順序を保ち、保存先が採番した revision を編集の新しい基準にする。 */
