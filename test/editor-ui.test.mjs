@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { JSDOM } from "jsdom";
+import { createMemoryPageOperationHost } from "../examples/memory-page-operation-host.mjs";
+import { createPageEditingApi } from "@niho/web/editing-api";
+import { createPageEditingApiClient } from "@niho/web/editing-client";
+import { editDocumentById } from "@niho/web/editor-model";
 import { createBlankEmbedRegistry, pageScope, parsePageDocument } from "@niho/web/core";
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: "https://editor.example.test" });
 for (const key of ["window", "document", "HTMLElement", "HTMLInputElement", "Element", "Event", "MouseEvent"]) globalThis[key] = dom.window[key];
@@ -2230,4 +2234,185 @@ test("URL変更対応ホストでもホームのURLは固定し、ページ名�
     await panel("ページ");
     assert.ok(button("ページ名を変更"));
   } finally { await app.cleanup(); }
+});
+
+function pageOperationsAdapter(normalize = (document) => document) {
+  let canonical = parsePageDocument(fixture), version = "v1";
+  const operations = [];
+  return {
+    operations, saved: () => canonical,
+    external(document) { canonical = { ...document, revision: canonical.revision + 1 }; version = `v${canonical.revision}`; },
+    adapter: {
+      async readDocument() { return { version, document: structuredClone(canonical) }; },
+      async applyOperations(request) {
+        operations.push(request);
+        if (request.baseVersion !== version) return { status: "conflict" };
+        let next = canonical;
+        for (const operation of request.operations) next = editDocumentById(next, operation);
+        canonical = { ...normalize(next), revision: canonical.revision + 1 };
+        version = `v${canonical.revision}`;
+        return { status: "applied", version, revision: canonical.revision, document: structuredClone(canonical) };
+      }
+    },
+  };
+}
+
+test("operation-connected editor saves text and inverse/forward edits, then reloads the canonical draft", async () => {
+  const host = pageOperationsAdapter();
+  const app = await setup({ adapter: host.adapter });
+  try {
+    await clickLayer("heading"); await change(input("テキスト"), "海のそばで暮らす");
+    await click("下書き保存");
+    assert.equal(app.calls.saves.length, 0);
+    assert.deepEqual(host.operations[0].operations, [{ type: "text", parentId: "heading", childPath: [0], value: "海のそばで暮らす" }]);
+    assert.ok(JSON.stringify(host.operations[0]).length < 1024);
+    await click("元に戻す"); await click("下書き保存");
+    assert.equal(host.operations[1].operations[0].value, fixture.body[0].children[0].children[0].text);
+    await click("やり直す"); await click("下書き保存");
+    assert.equal(host.operations[2].operations[0].value, "海のそばで暮らす");
+    await reloadEditor(); await clickLayer("heading");
+    assert.equal(input("テキスト").value, "海のそばで暮らす");
+  } finally { await app.cleanup(); }
+});
+
+test("operation-connected editor retains the retry ID and reapplies edits made during canonical acknowledgment", async () => {
+  const host = pageOperationsAdapter((document) => ({ ...document, meta: { description: "Canonical host field" } }));
+  const send = host.adapter.applyOperations;
+  let complete, firstResponse;
+  const attempts = [];
+  host.adapter.applyOperations = async (request) => {
+    attempts.push(request);
+    if (attempts.length === 1) {
+      firstResponse = await send(request);
+      throw new Error("response lost");
+    }
+    if (attempts.length !== 2) return send(request);
+    await new Promise((resolve) => { complete = resolve; });
+    return firstResponse;
+  };
+  const app = await setup({ adapter: host.adapter });
+  try {
+    await change(input("ページタイトル"), "一度目の編集"); await click("下書き保存");
+    await click("下書き保存");
+    await change(input("ページタイトル"), "応答中にも編集");
+    await act(async () => complete()); await flush();
+    assert.equal(attempts[0].operationId, attempts[1].operationId);
+    assert.equal(input("ページタイトル").value, "応答中にも編集");
+    await click("下書き保存");
+    assert.equal(attempts[2].baseVersion, "v2");
+    assert.notEqual(attempts[2].operationId, attempts[1].operationId);
+    assert.deepEqual(attempts[2].operations, [{ type: "title", value: "応答中にも編集" }]);
+    await click("元に戻す"); await click("下書き保存");
+    assert.deepEqual(attempts[3].operations, [{ type: "title", value: "一度目の編集" }]);
+    assert.equal(host.saved().meta.description, "Canonical host field");
+    assert.equal(app.calls.saves.length, 0);
+  } finally { await app.cleanup(); }
+});
+
+test("operation conflict keeps the local queue and retries a CLI write only after review", async () => {
+  const storage = createMemoryPageOperationHost([{ document: fixture, version: "v1" }]);
+  const api = createPageEditingApi({
+    ...storage,
+    async authenticate(request) {
+      const clientKind = request.headers.get("Authorization") === "Bearer gui" ? "gui" : "cli";
+      return { kind: clientKind === "gui" ? "human" : "machine", subject: "editor", clientKind };
+    },
+    async authorize() { return true; },
+  });
+  const clientFor = (clientKind) => createPageEditingApiClient({
+    origin: "https://edit.example", siteId: homeTarget.siteId, headers: { Authorization: `Bearer ${clientKind}` },
+    fetch: (url, options) => api(new Request(url, options))
+  });
+  const cli = clientFor("cli"), gui = clientFor("gui"), operations = [];
+  const app = await setup({ adapter: {
+    readDocument: (target, signal) => gui.read(target, signal),
+    applyOperations: ({ target, ...request }, signal) => {
+      operations.push(request);
+      return gui.applyOperations(target, request, signal);
+    },
+  } });
+  try {
+    await change(input("ページタイトル"), "GUIの編集");
+    const external = await cli.applyOperations(homeTarget, {
+      baseVersion: "v1", operationId: crypto.randomUUID(), operations: [{ type: "meta", field: "description", value: "CLIの編集" }]
+    });
+    assert.equal(external.status, "applied");
+    await click("下書き保存");
+    assert.equal(input("ページタイトル").value, "GUIの編集");
+    const retry = button("最新に適用して保存");
+    assert.ok(retry?.disabled);
+    const confirm = document.querySelector('[role="dialog"] input[type="checkbox"]');
+    await act(async () => confirm.click()); await flush();
+    await click("最新に適用して保存");
+    assert.equal(operations.length, 2);
+    assert.equal(operations[1].baseVersion, external.version);
+    assert.notEqual(operations[1].operationId, operations[0].operationId);
+    const { document: saved } = await cli.read(homeTarget);
+    assert.equal(saved.title, "GUIの編集");
+    assert.equal(saved.meta.description, "CLIの編集");
+    assert.deepEqual(storage.readJournal().map(({ actor }) => actor.clientKind), ["cli", "gui"]);
+    assert.equal(app.calls.saves.length, 0);
+  } finally { await app.cleanup(); }
+});
+
+test("an overlapping operation conflict retains the draft in the configured recovery store", async () => {
+  const host = pageOperationsAdapter(), recovered = [];
+  const store = { read: () => null, write: (entry) => recovered.push(entry), remove() {} };
+  const app = await setup({ adapter: host.adapter, props: { recovery: store } });
+  try {
+    await change(input("ページタイトル"), "復元できる GUI の編集");
+    host.external({ ...host.saved(), title: "同じ項目を CLI で編集" });
+    await click("下書き保存");
+    assert.equal(button("最新に適用して保存"), undefined);
+    assert.ok(button("あなたの編集で上書き保存")?.disabled);
+    assert.equal(recovered.at(-1).document.title, "復元できる GUI の編集");
+    assert.equal(input("ページタイトル").value, "復元できる GUI の編集");
+  } finally { await app.cleanup(); }
+});
+
+
+test("an operation-connected editor saves duplication and its inverse", async () => {
+  const host = pageOperationsAdapter();
+  const app = await setup({ adapter: host.adapter });
+  try {
+    await clickLayer("heading"); await click("複製"); await click("下書き保存");
+    const copy = host.saved().body[0].children[1];
+    assert.notEqual(copy.id, "heading");
+    assert.deepEqual(host.operations[0].operations, [{ type: "duplicate", nodeId: "heading" }]);
+    await click("元に戻す"); await click("下書き保存");
+    assert.deepEqual(host.operations[1].operations, [{ type: "remove", nodeId: copy.id }]);
+    assert.equal(app.calls.saves.length, 0);
+  } finally { await app.cleanup(); }
+});
+
+test("operation-connected autosave sends the queue and falls back for a restored document", async () => {
+  const host = pageOperationsAdapter(), recovery = {
+    read() { return { target: homeTarget, document: { ...fixture, title: "端末に退避した編集" }, baseRevision: fixture.revision, baseVersion: "v1", updatedAt: new Date().toISOString() }; },
+    write() {}, remove() {}
+  };
+  const app = await setup({ adapter: host.adapter, props: { recovery, autosave: { delayMs: 100 } } });
+  try {
+    await click("破棄");
+    await change(input("ページタイトル"), "自動保存する編集");
+    await wait(250);
+    assert.equal(host.operations.length, 1);
+    assert.deepEqual(host.operations[0].operations, [{ type: "title", value: "自動保存する編集" }]);
+    assert.equal(app.calls.saves.length, 0);
+  } finally { await app.cleanup(); }
+  const restored = await setup({ adapter: host.adapter, props: { recovery }, save: async (request) => {
+    host.external(request.document);
+    return { status: "saved", version: `v${host.saved().revision}`, revision: host.saved().revision };
+  } });
+  try {
+    await click("復元する");
+    await click("復元した内容で編集を続ける");
+    await click("下書き保存");
+    assert.equal(restored.calls.saves.length, 1);
+    assert.equal(restored.calls.saves[0].document.title, "端末に退避した編集");
+    assert.equal(host.operations.length, 1);
+    await change(input("ページタイトル"), "次の編集は操作で保存");
+    await click("下書き保存");
+    assert.equal(restored.calls.saves.length, 1);
+    assert.deepEqual(host.operations[1].operations, [{ type: "title", value: "次の編集は操作で保存" }]);
+  } finally { await restored.cleanup(); }
 });

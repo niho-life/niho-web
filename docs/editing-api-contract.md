@@ -14,6 +14,7 @@ Studio GUIはページの表示・編集材料の一部（presentation metadata�
 | --- | --- | --- | --- | --- | --- |
 | `pages.read` | GET | `/sites/{siteId}/operations/pages.read/{pageId}?locale={locale}` | `pages.read` | site/page/locale | `{ document, version }` |
 | `pages.save` | PUT | `/sites/{siteId}/operations/pages.save/{pageId}?locale={locale}` | `pages.edit` | `{ expectedVersion, document }` | `{ status: "saved", version, document }` |
+| `pages.apply` | POST | `/sites/{siteId}/operations/pages.apply/{pageId}?locale={locale}` | `pages.edit` | `{ baseVersion, operationId, operations, componentsVersion?, presentationVersion?, stylesVersion?, dryRun? }` | `{ status: "applied", version, revision, document }` / dry-run `{ status: "valid", diff, touched }` |
 | `pages.release-plan` | POST | `/sites/{siteId}/operations/pages.release-plan/{pageId}?locale={locale}` | `pages.publish` | expected version, publish/rollback action, optional rollback revision and dependency versions | `{ plan }` |
 | `pages.release` | POST | `/sites/{siteId}/operations/pages.release/{pageId}?locale={locale}` | `pages.publish` | expected version, one-use confirmation token, UUID v4 operation ID | `{ status: "released", operationId, version, document }` |
 | `pages.release-set-plan` | POST | `/sites/{siteId}/operations/pages.release-set-plan` | `pages.publish` per target | `{ siteId, operationId, items: [{ target, expectedVersion, componentsVersion?, presentationVersion? }] }` (1–50 pages) | `{ plan }` |
@@ -41,6 +42,12 @@ Studio GUIはページの表示・編集材料の一部（presentation metadata�
 | `assets.restore` | POST | `/sites/{siteId}/operations/assets.restore/{provider}/{assetId}` | `assets.delete` | `{ expectedVersion }` | restored, conflict, or rejection |
 
 `pages.save` は `expectedVersion` を原子的に比較します。競合時はHTTP 409と `version_conflict` を返し、ホストは古い下書きを上書きしません。documentは受信側で `parsePageDocument` を通し、pathのsite/pageとqueryのlocaleに一致しない文書、任意HTML・JavaScript・CSSなど検証に失敗する値はHTTP 400 `invalid_request` で拒否します。登録ブロック・部品インスタンス・サイト共通スタイルを使うホストは、adapterの `validationContext(actor, target)` から信頼済みの `blocks`・`components`・`siteStyles` を渡します。読み取り、入力文書、保存後の正規文書の検証に同じcontextを使います。
+
+`pages.apply` は GUI と機械クライアントが同じ `EditorOperationById` 操作列を送る版付き書込です。操作列は1〜500件で、UUID v4 の `operationId` を付けます。discoverは全操作の入力 JSON Schema を返しますが、受信側は schema と独立した閉じた wire parser で各操作を検査します。初版では `restore`、token / textStyle の削除、`replaceChildren`、`replaceAsset` を拒否します。これらの全置換・移行操作には `pages.save` を使います。
+
+ホストの `pageOperations.transact` は、現在の文書/versionと、同じ版から読み取った信頼済み `blocks`・`locks`・`components`・`siteStyles` を `prepare(snapshot, validationContext)` に渡します。`pages.apply` は別途 `validationContext(actor, target)` を読みません。`editDocumentById` を順に適用し、最後に全文を `parsePageDocument` で検証します。途中の一操作でも失敗した場合は HTTP 422 `validation_failed` と、失敗 index・理由を返し、何も保存しません。`baseVersion` または指定された依存版が現在値と異なる場合は HTTP 409 `version_conflict` です。依存版は入力で省略できます。成功時は保存後の正規文書と新しい版・revision を返します。
+
+ホストの `pageOperations.transact(actor, target, transaction)` は、ページ状態と同じCAS/transactionで操作記録を確定します。操作本文は不変の journal blob として保存し、現在状態にはその参照だけを持ちます。`actor + operationId` は正規化入力のhashと保存結果に結び付き、同じ要求の再送は前回と同じ結果、同じIDで違う要求を送った場合は HTTP 409 `duplicate_operation` になります。文書 pointer、journal pointer、ID/hash/結果は同時に確定してください。actor・委任元・GUI/CLI/APIの種別は認証済み文脈から取得し、要求本文から受け取りません。`dryRun: true` は全操作を検証して `{ status: "valid", diff, touched }` を返しますが、保存もoperation IDの消費も行いません。
 
 `pages.release-set-*` は同じサイト内のページを、一つの計画・適用操作で公開します。対象は1〜50件で、重複ページは禁止します。単一ページの非同期公開も同じoperation ID・status契約を使えます。各項目の `expectedVersion` と任意の `componentsVersion` / `presentationVersion`、対象一覧、operation IDを計画へ固定します。APIは全対象の `pages.publish` 権限を個別に確認します。ホストadapterは対象ごとに版を再検証し、結果として `released`（公開済み）、`conflict`（版が変わった）、`pending`（処理中）を返します。全体の `status` は未完了項目があれば `publishing`、全項目が確定したら `completed` です。ある対象の競合で他ページの成功を隠さず、全ページ同時切替も要求しません。トップレベルの `version_conflict` は操作が始まっておらず、公開済みページがない場合に限ります。
 
@@ -175,11 +182,12 @@ niho-edit --origin https://site.example --site site-id localization-release-read
 
 ホストadapterは次を実装します。
 
-- `authenticate(request)` はセッション/API tokenを検証し、`human` または `machine` のactorと、必要なら委任元を返す。監査に人の連絡先が必要な操作では、hostが検証済みのemailだけを `actor.email` に渡す。
+- `authenticate(request)` はセッション/API tokenを検証し、`human` または `machine` のactorと、必要なら委任元を返す。`pages.apply` 対応hostは `gui` / `cli` / `api` の `clientKind` も認証文脈から返す。監査に人の連絡先が必要な操作では、hostが検証済みのemailだけを `actor.email` に渡す。
 - `authorize(actor, capability, scope)` はリクエストごとにサイト/ページの権限を判断する。discover時も同じ判定を使う。
-- `validationContext(actor, target)` は、対象文書の検証に必要なホスト登録block・部品library・サイトstyleを返す。これらの実装定義はクライアントへ公開しない。
+- `validationContext(actor, target)` は、`pages.read` / `pages.save` で対象文書の検証に必要なホスト登録block・部品library・サイトstyleを返す。`pages.apply` は後述のtransactionが、同じ版に対応するblock・lock・部品library・サイトstyleを `prepare` に渡す。これらの実装定義はクライアントへ公開しない。
 - `readPage` は文書とopaque versionを返す。
 - `savePage` はexpectedVersionを永続層で原子的に比較して保存する。並行更新は `conflict` を返し、成功時は正規化済みの保存後PageDocumentと新versionを返す。
+- `pageOperations.transact` を提供するホストは、actorとoperation IDの既存記録を版照合より先に確認し、同じ版から取得した文書・依存版・信頼済みcontextに対する全操作を検証してから、文書・revision・journal blob参照・operation ID/hash/結果を一つのCAS/transactionで確定する。同一要求の再送は同じ結果を返し、同一IDの異なる入力は `duplicate_operation` として拒否する。dry-runでは保存記録を作らない。
 - 公開操作を提供する場合は `releaseSite` から信頼済みの許可originを返し、`preparePageRelease` が現行版・依存版・公開先に束縛された計画を作る。handlerは計画の対象・action・版・domainを検証する。
 - `publishPage` はexpectedVersionと一回限りconfirmation tokenを検証し、actor + operation ID + 同一入力の再送で最初の結果を返すように原子的に実装する。別入力で同じIDを再利用した場合は競合として拒否する。
 - ブレークポイント操作を公開するhostは `readBreakpointSettings` と `saveBreakpointSettings` を実装し、site単位の認可・expectedVersion CAS・actor監査を行う。

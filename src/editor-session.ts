@@ -1,3 +1,5 @@
+import { operationQueue, type EditorOperationQueue } from "./editor-operation-queue.js";
+import { PAGE_OPERATION_VERSIONS, type PageOperationVersions } from "./editing-page-operations.js";
 import { parsePageDocument } from "./document.js";
 import { parseSiteSettings } from "./pages.js";
 import { fingerprint, parseEditorReadOnly, sameTarget, type EditorHistory } from "./editor-model.js";
@@ -8,7 +10,7 @@ import { parseSitePresentation } from "./presentation.js";
 import type { SitePresentation } from "./types.js";
 import { parseEnglishPublication } from "./english-publication.js";
 
-export type EditorSession = { target: EditorTarget; history: EditorHistory; version: string; saved: string; hasSavedDraft?: boolean | undefined; locks: readonly EditorLock[]; releases: NonNullable<EditorSnapshot["releases"]>; readOnly?: EditorReadOnly; siteStyles?: SiteStyles; presentation?: SitePresentation; englishPublication?: EditorSnapshot["englishPublication"]; selfContained: boolean };
+export type EditorSession = { target: EditorTarget; history: EditorHistory; version: string; saved: string; hasSavedDraft?: boolean | undefined; locks: readonly EditorLock[]; releases: NonNullable<EditorSnapshot["releases"]>; readOnly?: EditorReadOnly; siteStyles?: SiteStyles; presentation?: SitePresentation; operationQueue: EditorOperationQueue; dependencyVersions: PageOperationVersions; englishPublication?: EditorSnapshot["englishPublication"]; selfContained: boolean };
 export type EditorSessionLoad = { session: EditorSession; warning?: string };
 
 export class EditorSessionLoadError extends Error {
@@ -19,10 +21,16 @@ export function editorSessionFrom(snapshot: EditorSnapshot, target: EditorTarget
   const document = parsePageDocument(snapshot.document, blocks, { ...(components ? { components } : {}), ...(siteStyles ? { siteStyles } : {}) });
   if (!sameTarget(document, target) || typeof snapshot.version !== "string" || !snapshot.version) throw new Error("読込対象が一致しません。");
   if (snapshot.hasSavedDraft !== undefined && typeof snapshot.hasSavedDraft !== "boolean") throw new Error("公開状態が正しくありません。");
+  const dependencyVersions: PageOperationVersions = Object.fromEntries(PAGE_OPERATION_VERSIONS.flatMap((key) => {
+    const value = snapshot[key];
+    if (value === undefined) return [];
+    if (typeof value !== "string" || !value || value.length > 200) throw new Error("依存先の版が正しくありません。");
+    return [[key, value]];
+  }));
   const readOnly = parseEditorReadOnly(snapshot.readOnly);
   const presentation = snapshot.presentation === undefined ? undefined : parseSitePresentation(snapshot.presentation, document, blocks);
   const englishPublication = snapshot.englishPublication === undefined ? undefined : parseEnglishPublication(snapshot.englishPublication);
-  return { ...(siteStyles ? { siteStyles } : {}), ...(presentation ? { presentation } : {}), ...(englishPublication ? { englishPublication } : {}), target, history: { past: [], present: document, future: [] }, version: snapshot.version, saved: fingerprint(document), locks: snapshot.locks ?? [], releases: snapshot.releases ?? [], selfContained,
+  return { ...(siteStyles ? { siteStyles } : {}), ...(presentation ? { presentation } : {}), ...(englishPublication ? { englishPublication } : {}), target, history: { past: [], present: document, future: [] }, version: snapshot.version, dependencyVersions, operationQueue: operationQueue(document), saved: fingerprint(document), locks: snapshot.locks ?? [], releases: snapshot.releases ?? [], selfContained,
     ...(snapshot.hasSavedDraft === undefined ? {} : { hasSavedDraft: snapshot.hasSavedDraft }), ...(readOnly ? { readOnly } : {}) };
 }
 

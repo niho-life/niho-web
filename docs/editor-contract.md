@@ -44,6 +44,7 @@ React 18.3 または 19 と、同じ版の React DOM を利用側で用意して
 | `listPages(siteId, signal)` | 指定サイトで編集権限のあるページ・locale の一覧 |
 | `readDocument(target, signal)` | 文書、opaque な `version`、データ連動値のロック、戻せる公開版 |
 | `saveDraft({ target, document, expectedVersion }, signal)` | 楽観ロック付き下書き保存。成功時は新しい version とサーバー採番の revision、競合時は `status: 'conflict'` |
+| `applyOperations({ target, baseVersion, operationId, operations, ...dependencyVersions }, signal)`（任意） | GUIの未送信 `EditorOperationById` を `pages.apply` へ送信。未接続hostは従来の `saveDraft` を使う（[操作単位の保存契約](editing-api-contract.md#操作カタログ)） |
 | `prepareRelease(request, signal)` | 公開 / rollback の正確な対象ドメイン、公開内容との差分、確認 token を発行 |
 | `release(plan, signal)` | 確認済みの内容を公開 / rollback。成功時は最新 snapshot、競合時は `status: 'conflict'` |
 | `prepareReleaseSet(items, signal)` / `releaseSet(plan, signal)` / `releaseSetStatus(operationId, signal)`（任意） | 同じサイトの複数ページを一つの変更セットとして公開。3メソッドすべてを実装したホストだけ複数選択UIを表示 |
@@ -130,6 +131,16 @@ HTTP 409 は adapter で `{ status: 'conflict' }` へ変換します。`status: 
 保存中も編集を続けられます。成功時は現行の作業コピー・undo/redo履歴・保存開始時の文書から作る保存済み基準を、返された revision に揃えます。内容と履歴の順序を保つため、保存中の追加編集は未保存のまま残り、undo/redoで保存時点に戻すと正しく保存済みになります。次の保存では新しい version と revision を送信し、サーバーがさらに新しい revision を採番します。保存処理中のページ切替や公開操作はできません。
 
 作業コピーと履歴の revision は最新の保存先を表す基準です。編集中の内容をその revision の公開済み文書として扱わず、永続化・公開する際は保存で採番した不変の文書を使います。rollback で過去の内容を復元するときも、異なる内容へ古い revision を再利用せず、新しい revision の文書を返してください。
+
+## 操作単位の保存
+
+ホストが任意の `EditorAdapter.applyOperations` を実装すると、通常編集の自動保存・手動保存は全文の `saveDraft` ではなく、未送信の操作を `pages.apply` へ送ります。要求は `{ target, baseVersion, operationId, operations, componentsVersion?, presentationVersion?, stylesVersion? }` です。依存版は任意です。操作は配列位置ではなく `nodeId`、テキストでは `parentId` と `childPath` で対象を指定します。`operationId` と同一入力の組を、応答が不明なときの再送にも保管してください。認証済みhostは `gui` / `cli` / `api` の `clientKind` を認証文脈に含めてください。
+
+エディターは最後に確定した正本 document/version と未送信操作の queue を分けて保持します。送信成功時にはホストの正規文書を次の正本にし、送信中に確定した操作をその文書へ適用し直します。保存中の編集を消したり、古い送信結果で新しい作業コピーを置き換えたりしません。
+
+409 `version_conflict` では queue を保持して最新版を読み直し、各操作を手元で再適用します。再適用できる場合は内容を確認してから新しい基準版へ送り直します。対象ノード消失や前提不一致などで再適用できない場合は、recovery store が設定されていれば手元の文書を端末内へ保管し、既存の比較画面へ誘導します。未設定なら現セッションの作業コピーを保持して比較画面へ誘導します。サーバー側で自動 rebase は行いません。
+
+undo/redo は、対応する逆操作/順操作を queue へ追加して通常の `pages.apply` として送ります。逆操作を安全に生成できない操作、500件を超えるqueue、または未送信操作が5分を超えた場合は、その保存を従来の全文 `saveDraft` へ切り替えます。`applyOperations` を持たない既存hostの動作は変わりません。
 
 編集履歴はメモリ内で最大50操作です。undo/redo・保存済み表示は文書内容と保存済みの基準を比較します。サイト/ページ移動・再読込は未保存の文書と入力途中の値を破棄する前に確認します。タブを閉じる際もブラウザへ離脱確認を要求します。自動保存、ブラウザや端末を閉じた後の復元、版履歴は、ホストが明示的に有効にした場合だけ動作します。[保存・作業復元・版履歴の契約](save-history-contract.md) を参照してください。
 
