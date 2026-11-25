@@ -1753,7 +1753,7 @@ test("source listing failures and assets from undeclared or other sources fail c
     mode = "unknown"; await tool("接続");
     assert.ok(assetPanel().textContent.includes("アセットを読み込めませんでした。出所が確認できないアセットは利用できません。")); assert.equal(assetPanel().querySelectorAll(".e-asset-card").length, 0);
     mode = "mixed"; await tool("アップロード");
-    await change(assetPanel().querySelector('input[aria-label="アセットを検索"]'), "混入検証"); await wait(300);
+    await change(assetPanel().querySelector('input[aria-label="アセットを検索"]'), "png"); await wait(300);
     assert.ok(assetPanel().textContent.includes("出所が確認できないアセットは利用できません。")); assert.equal(assetPanel().querySelectorAll(".e-asset-card").length, 0);
     mode = "ok"; await click("再読み込み"); assert.deepEqual(cardNames(), ["庭の緑.png"]);
     mode = "upload"; await uploadFiles([png("混入.png", 10)]);
