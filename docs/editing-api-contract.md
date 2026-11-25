@@ -1,4 +1,56 @@
-`baseVersion` が古い場合も、依存版が指定されていれば先に照合します。自動 rebase するのは `style` / `attribute` / `prop` の葉の更新だけです。各操作に `{ parentId, oldValue }` の `preconditions` が必要で、現在の対象ノードが一意に存在し、親IDと対象フィールドの旧値が一致するときだけ現在文書へ再適用します。text操作の `childPath` は安定IDではないため、兄弟の追加・移動後に別ノードを指す可能性があります。text操作を含む stale 要求は、旧値が一致していても HTTP 409 `version_conflict` で再確認を促します。前提条件のない要求、構造・ページ全体・token・textStyle操作、フォームのlabel/controlの関連に影響する属性変更も HTTP 409 `version_conflict` です。同じ要素・同じフィールドが先に変更されていた場合も適用しません。前提不一致を検出した409は `{ error: "version_conflict", unmetPreconditions: [{ index, condition }] }` を返し、`condition` は `rebase_supported` / `preconditions` / `node_exists` / `parent_id` / `old_value` のいずれかです。指定依存版の競合は従来どおり `{ error: "version_conflict" }` です。
+# サイト編集HTTP契約
+
+`@niho/web/editing-api` は、GUIと機械クライアントが同じページ本文・CMS項目・ページ管理・サイト設定・素材・翻訳の正本を編集するためのReact非依存HTTP契約です。Studio UIやStudio Workerを必要条件にしません。各サイトのホストがhandlerを組み込み、認証・権限・永続化・監査記録・公開を所有します。Studio GUIとCUIは同じ操作カタログとwire形式を使い、各クライアントの操作履歴をホストのactorと版に結び付けます。
+
+`@niho/web/editing-client` の `createPageEditingApiClient` は同じwire契約を呼ぶReact非依存clientです。ブラウザーのGUIは既定のsame-origin credentialsまたはhost提供headerを使え、Node CLIはhost bearer headerと `credentials: "omit"` を使えます。ホストorigin自体がCloudflare Accessで保護される場合、`niho-edit` は別途設定されたAccess Service Auth headerも指定originだけに送れます。GUIと `niho-edit` CLIはページ本文・CMS項目・ページ管理・ブレークポイント・素材の同じ操作を呼べます。Studio GUIはAccess sessionをWorker BFFで短期の操作別tokenへ委任し、サイトoriginの共通APIへservice bindingで接続します。ブラウザーのAccess tokenやcookieはサイトへ転送しません。
+
+Studio GUIはページの表示・編集材料の一部（presentation metadata、英語公開状態）を取得するため、引き続きread-onlyの既存snapshot routeも併用します。日本語本文・CMS項目・ページ管理・素材の書込は共通APIを使います。翻訳の共通APIは、対応するホストが登録した操作をCUIから直接呼び出せます。Studioの翻訳画面は既存の接続を使います。
+
+## 操作カタログ
+
+ホストは `createPageEditingApi(adapter)` の返すRequest handlerを、自分が選んだoriginとpathへ接続します。既定pathは `/api/edit/v1` です。操作ID・権限・method・path・input/result schema・安定エラーの正本は `EDITING_OPERATIONS` です。公開する操作IDの型もこのcatalogから導出し、discoveryとクライアント型が別々の一覧にならないようにします。1つのWorkerで複数サイトを扱う場合は `createRegisteredPageEditingApi([{ siteIds, adapter }, ...])` を使い、完全一致するsite IDを登録済みadapterへ振り分けます。登録重複は起動時に拒否し、未登録site IDは404になります。ホストごとの処理でsite名を条件分岐する必要はありません。`GET /sites/{siteId}/capabilities` は、その認証主体が使える操作ID・権限・HTTP method・path・JSON Schema・安定エラー一覧を返します。
+
+| ID | Method | Path | 権限 | 入力 | 結果 |
+| --- | --- | --- | --- | --- | --- |
+| `pages.inspect` | GET | `/sites/{siteId}/operations/pages.inspect/{pageId}?locale={locale}&view={view}` | `pages.read` | outline/find/subtree/effectiveStyleの投影条件 | 部分読取結果と文書・component・presentation・site styleの各版 |
+| `pages.read` | GET | `/sites/{siteId}/operations/pages.read/{pageId}?locale={locale}` | `pages.read` | site/page/locale | `{ document, version }` |
+| `pages.save` | PUT | `/sites/{siteId}/operations/pages.save/{pageId}?locale={locale}` | `pages.edit` | `{ expectedVersion, document }` | `{ status: "saved", version, document }` |
+| `pages.apply` | POST | `/sites/{siteId}/operations/pages.apply/{pageId}?locale={locale}` | `pages.edit` | `{ baseVersion, operationId, operations, componentsVersion?, presentationVersion?, stylesVersion?, dryRun? }` | `{ status: "applied", version, revision, document }` / dry-run `{ status: "valid", diff, touched }` |
+| `pages.release-plan` | POST | `/sites/{siteId}/operations/pages.release-plan/{pageId}?locale={locale}` | `pages.publish` | expected version, publish/rollback action, optional rollback revision and dependency versions | `{ plan }` |
+| `pages.release` | POST | `/sites/{siteId}/operations/pages.release/{pageId}?locale={locale}` | `pages.publish` | expected version, one-use confirmation token, UUID v4 operation ID | `{ status: "released", operationId, version, document }` |
+| `pages.release-set-plan` | POST | `/sites/{siteId}/operations/pages.release-set-plan` | `pages.publish` per target | `{ siteId, operationId, items: [{ target, expectedVersion, componentsVersion?, presentationVersion? }] }` (1–50 pages) | `{ plan }` |
+| `pages.release-set` | POST | `/sites/{siteId}/operations/pages.release-set` | `pages.publish` per target | the exact plan's site, operation ID, confirmation token and items | `{ status: "completed" | "publishing", operationId, items: [{ target, status: "released", version } | { target, status: "conflict" | "pending" }] }` |
+| `pages.release-set-status` | GET | `/sites/{siteId}/operations/pages.release-set-status/{operationId}` | `pages.read` | site / operation ID | `{ status, operationId, ... }` |
+| `pages.catalog` | GET | `/sites/{siteId}/operations/pages.catalog` | `pages.read` | site ID | `{ version, pages }` |
+| `pages.change-prepare` | POST | `/sites/{siteId}/operations/pages.change-prepare` | `pages.publish` | `{ expectedVersion, operationId, change }` | `{ plan }` |
+| `pages.change-apply` | POST | `/sites/{siteId}/operations/pages.change-apply` | `pages.publish` | `{ expectedVersion, operationId, confirmationToken, change }` | `{ status: "applied", operationId, page }` |
+| `site.breakpoints.read` | GET | `/sites/{siteId}/operations/site.breakpoints.read` | `site.settings.read` | site ID | `{ settings, version }` |
+| `site.breakpoints.save` | PUT | `/sites/{siteId}/operations/site.breakpoints.save` | `site.settings.write` | `{ expectedVersion, settings }` | `{ status: "saved", version }` |
+| `cms.schema` | GET | `/sites/{siteId}/operations/cms.schema` | `cms.read` | site ID | `{ collections }` |
+| `cms.list` | GET | `/sites/{siteId}/operations/cms.list/{collectionId}` | `cms.read` | site / collection ID | `{ collectionId, items }` |
+| `cms.read` | GET | `/sites/{siteId}/operations/cms.read/{collectionId}/{itemId}` | `cms.read` | collection / item ID | `{ item }` |
+| `cms.create` | POST | `/sites/{siteId}/operations/cms.create/{collectionId}` | `cms.edit` | `{ operationId }` | `{ item }` |
+| `cms.save` | PUT | `/sites/{siteId}/operations/cms.save/{collectionId}/{itemId}` | `cms.edit` | `{ expectedVersion, operationId, values }` | `{ status: "saved", item }` |
+| `cms.publish-plan` | POST | `/sites/{siteId}/operations/cms.publish-plan/{collectionId}/{itemId}` | `cms.publish` | `{ expectedVersion, operationId, redirect? }` | `{ plan }` |
+| `cms.publish` | POST | `/sites/{siteId}/operations/cms.publish/{collectionId}/{itemId}` | `cms.publish` | `{ expectedVersion, operationId, confirmationToken, redirect? }` | `{ status, operationId, item }` |
+| `cms.operation-status` | GET | `/sites/{siteId}/operations/cms.operation-status/{operationId}` | `cms.read` | site / operation ID | `{ status, operationId, ... }` |
+| `assets.list` | GET | `/sites/{siteId}/operations/assets.list` | `assets.read` | search, kind, folder, provider, cursor, recent | `{ assets, folders, ... }` |
+| `assets.usages` | GET | `/sites/{siteId}/operations/assets.usages/{provider}/{assetId}` | `assets.read` | stable asset reference | `{ usages }` |
+| `assets.resolve` | POST | `/sites/{siteId}/operations/assets.resolve` | `assets.read` | `{ references }` | `{ assets }` with host delivery URLs |
+| `assets.update` | PUT | `/sites/{siteId}/operations/assets.update/{provider}/{assetId}` | `assets.edit` | `{ expectedVersion, changes }` | saved metadata, conflict, or rejection |
+| `assets.upload-intent` | POST | `/sites/{siteId}/operations/assets.upload-intent` | `assets.upload` | name, MIME, bytes, provider | one-time upload URL/token and asset ID |
+| `assets.delete` | POST | `/sites/{siteId}/operations/assets.delete/{provider}/{assetId}` | `assets.delete` | `{ expectedVersion }` | deleted, in-use, conflict, or rejection |
+| `assets.restore` | POST | `/sites/{siteId}/operations/assets.restore/{provider}/{assetId}` | `assets.delete` | `{ expectedVersion }` | restored, conflict, or rejection |
+
+`pages.save` は `expectedVersion` を原子的に比較します。競合時はHTTP 409と `version_conflict` を返し、ホストは古い下書きを上書きしません。documentは受信側で `parsePageDocument` を通し、pathのsite/pageとqueryのlocaleに一致しない文書、任意HTML・JavaScript・CSSなど検証に失敗する値はHTTP 400 `invalid_request` で拒否します。登録ブロック・部品インスタンス・サイト共通スタイルを使うホストは、adapterの `validationContext(actor, target)` から信頼済みの `blocks`・`components`・`siteStyles` を渡します。読み取り、入力文書、保存後の正規文書の検証に同じcontextを使います。
+
+`pages.inspect` はページ文書を変更せず、`pages.read` と同じ認可でAI向けの小さな投影を返します。`view=outline` は要素のID・型・名前・tag/block・40文字までの本文抜粋・レイアウト要約・token参照・responsive/state override数と、先頭のtoken/text style/breakpoint定義を返します。`depth` と `node` で範囲を絞れます。`view=find` は `text`・`name`・`tag`・`style=property=value`・`usesToken`・`block`・`node` のいずれかで検索し、ID・祖先名・抜粋を返します。`view=subtree` は指定nodeのJSONを返し、結果が大きい場合は `{ path, node }` 項目へ分けて返します。`view=effectiveStyle` は指定nodeのbase・各breakpoint・hover/focus/activeの値と、その値がページ・site shared・component・継承のどこから来たかを返します。
+
+outline/find/subtreeは `limit`（既定1000、最大1000件）と `cursor` で継続できます。1応答は最大240 KiBです。cursorは同じ文書版・同じ検索条件にだけ使えます。ホストは文書版に加えて、取得できる場合は `componentsVersion`、`presentationVersion`、`stylesVersion` も返します。安定エラーは `invalid_request`、`invalid_cursor`、`node_not_found`、`result_too_large` です。ホストが `pages.inspect` に対応しない場合、CLIは `pages.read` の結果から同じ投影をローカル生成します。
+
+`pages.apply` は GUI と機械クライアントが同じ `EditorOperationById` 操作列を送る版付き書込です。操作列は1〜500件で、UUID v4 の `operationId` を付けます。discoverは全操作の入力 JSON Schema を返しますが、受信側は schema と独立した閉じた wire parser で各操作を検査します。初版では `restore`、token / textStyle の削除、`replaceChildren`、`replaceAsset` を拒否します。これらの全置換・移行操作には `pages.save` を使います。
+
+`baseVersion` が古い場合も、依存版が指定されていれば先に照合します。自動 rebase するのは `style` / `text` / `attribute` / `prop` の葉の更新だけです。各操作に `{ parentId, oldValue }` の `preconditions` が必要で、現在の対象ノードが一意に存在し、親IDと対象フィールドの旧値が一致するときだけ現在文書へ再適用します。text操作は安定IDを持たない `childPath` で対象を指すため、GUIは親直下の子の順序を表す `textPathContext` も送ります。このcontextは最大8件の子を記録し、対象以外のtext nodeは128文字まで記録します。contextが省略された場合や現在の子の順序と一致しない場合、対象が親直下の子でない場合は HTTP 409 `version_conflict` です。前提条件のない要求、構造・ページ全体・token・textStyle操作、フォームのlabel/controlの関連に影響する属性変更も HTTP 409 `version_conflict` です。同じ要素・同じフィールドが先に変更されていた場合も適用しません。前提不一致を検出した409は `{ error: "version_conflict", unmetPreconditions: [{ index, condition }] }` を返し、`condition` は `rebase_supported` / `preconditions` / `node_exists` / `parent_id` / `old_value` / `child_path` のいずれかです。指定依存版の競合は従来どおり `{ error: "version_conflict" }` です。
 `niho-edit apply <page> --locale <locale> --ops <file|-> [--dry-run]` はJSONの `EditorOperationById[]` を受け取ります。ホストが `pages.apply` を公開していれば、CLIは `pages.read` で版を取り、操作列を同じ操作として送信します。`--dry-run` はホスト側で検証し、差分と対象IDを返します。再試行に使う `--operation-id` は `--expected-version` と併せて指定します。両方を固定すると、同じ版・操作列による再送が前回の結果を返します。API非対応ホストでは `pages.read` → ローカル `editDocumentById` → `pages.save` にフォールバックします。この経路ではhost-neutralな操作適用だけを行い、ホストの信頼済みblock・component・style contextを使う全文検証は保存時まで延期します。dry-run出力にその制限を明記します。差分は要素ID・種類・変更箇所・変更前後の値を含む `diffDocuments` の一覧です。
 
 `add` / `addMany` / `move` は、`{ before: nodeId }` / `{ after: nodeId }` または `{ edge: "start" | "end" }` の `anchor` で位置を指定できます。アンカーは移動先の同じ親にある要素IDを指します。既存の数値 `index` も受け付けますが、indexとanchorは同時に指定できず、`move` はどちらか一方が必須です。位置を省略した追加は末尾へ挿入します。

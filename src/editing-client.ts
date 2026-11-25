@@ -507,7 +507,7 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       const { response, body } = await send(path, "POST", { ...input, operations: input.operations.map(pageOperationWire) }, signal);
       if (response.status === 409 && body.error === "version_conflict") {
         if (exactKeys(body, ["error"])) return { status: "conflict" };
-        const conditions = ["rebase_supported", "preconditions", "node_exists", "parent_id", "old_value"];
+        const conditions = ["rebase_supported", "preconditions", "node_exists", "parent_id", "old_value", "child_path"];
         const seen = new Set<string>();
         if (!exactKeys(body, ["error", "unmetPreconditions"]) || !Array.isArray(body.unmetPreconditions) || !body.unmetPreconditions.length || body.unmetPreconditions.length > input.operations.length * 2
           || body.unmetPreconditions.some((item) => {

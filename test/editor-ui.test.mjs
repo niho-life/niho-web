@@ -2306,13 +2306,13 @@ test("operation-connected editor saves text and inverse/forward edits, then relo
     await click("下書き保存");
     assert.equal(app.calls.saves.length, 0);
     assert.deepEqual(host.operations[0].operations, [{ type: "text", parentId: "heading", childPath: [0], value: "海のそばで暮らす",
-      preconditions: { parentId: "heading", oldValue: fixture.body[0].children[0].children[0].text } }]);
+      preconditions: { parentId: "heading", oldValue: fixture.body[0].children[0].children[0].text, textPathContext: [{ type: "target" }] } }]);
     assert.ok(JSON.stringify(host.operations[0]).length < 1024);
     await click("元に戻す"); await click("下書き保存");
-    assert.deepEqual(host.operations[1].operations[0].preconditions, { parentId: "heading", oldValue: "海のそばで暮らす" });
+    assert.deepEqual(host.operations[1].operations[0].preconditions, { parentId: "heading", oldValue: "海のそばで暮らす", textPathContext: [{ type: "target" }] });
     assert.equal(host.operations[1].operations[0].value, fixture.body[0].children[0].children[0].text);
     await click("やり直す"); await click("下書き保存");
-    assert.deepEqual(host.operations[2].operations[0].preconditions, { parentId: "heading", oldValue: fixture.body[0].children[0].children[0].text });
+    assert.deepEqual(host.operations[2].operations[0].preconditions, { parentId: "heading", oldValue: fixture.body[0].children[0].children[0].text, textPathContext: [{ type: "target" }] });
     assert.equal(host.operations[2].operations[0].value, "海のそばで暮らす");
     await reloadEditor(); await clickLayer("heading");
     assert.equal(input("テキスト").value, "海のそばで暮らす");

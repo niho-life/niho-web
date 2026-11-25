@@ -12,7 +12,39 @@ import { normalizeEmbedSource } from "./embeds.js";
 
 export { nodeAt, walkNodes, type NodePath };
 export type NodePositionAnchor = { readonly before: string } | { readonly after: string } | { readonly edge: "start" | "end" };
-export type PageOperationPreconditions = { readonly parentId: string | null; readonly oldValue: StyleValue | PublicPropValue | string | null };
+export type PageOperationTextPathContextEntry =
+  | { readonly type: "target" }
+  | { readonly type: "text"; readonly value: string }
+  | { readonly type: "element" | "component" | "instance"; readonly nodeId: string };
+export type PageOperationPreconditions = {
+  readonly parentId: string | null;
+  readonly oldValue: StyleValue | PublicPropValue | string | null;
+  readonly textPathContext?: readonly PageOperationTextPathContextEntry[];
+};
+export const PAGE_OPERATION_TEXT_PATH_CONTEXT_MAX_CHILDREN = 8;
+export const PAGE_OPERATION_TEXT_PATH_CONTEXT_MAX_SIBLING_TEXT_LENGTH = 128;
+/** Describes the exact sibling order around a direct text child so stale childPath edits cannot target another text node. */
+export function pageOperationTextPathContext(document: PageDocument, parentId: string | null, childPath: readonly number[]): PageOperationTextPathContextEntry[] | undefined {
+  if (childPath.length !== 1) return undefined;
+  let children: readonly PageNode[];
+  if (parentId === null) children = document.body;
+  else {
+    const matches = walkNodes(document).filter(({ node }) => node.type !== "text" && node.id === parentId);
+    if (matches.length !== 1 || matches[0]!.node.type !== "element") return undefined;
+    children = matches[0]!.node.children;
+  }
+  const targetIndex = childPath[0]!;
+  if (children.length > PAGE_OPERATION_TEXT_PATH_CONTEXT_MAX_CHILDREN || targetIndex >= children.length) return undefined;
+  const context: PageOperationTextPathContextEntry[] = [];
+  for (const [index, child] of children.entries()) {
+    if (index === targetIndex && child.type === "text") context.push({ type: "target" });
+    else if (child.type === "text") {
+      if (child.text.length > PAGE_OPERATION_TEXT_PATH_CONTEXT_MAX_SIBLING_TEXT_LENGTH) return undefined;
+      context.push({ type: "text", value: child.text });
+    } else context.push({ type: child.type, nodeId: child.id });
+  }
+  return context;
+}
 export type EditorOperation =
   | { type: "text"; path: NodePath; value: string }
   | { type: "attribute"; path: NodePath; name: string; value: string }

@@ -1,11 +1,24 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { editDocumentById } from "@niho/web/editor-model";
-import { acceptAppliedOperations, operationQueue } from "../dist/editor-operation-queue.js";
+import { editDocument, editDocumentById } from "@niho/web/editor-model";
+import { acceptAppliedOperations, operationQueue, queuePageEdit } from "../dist/editor-operation-queue.js";
 
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 const apply = (document, operation) => editDocumentById(document, operation);
+const edit = (document, operation) => editDocument(document, operation);
+
+test("text operations capture an exact bounded child path context", () => {
+  const base = structuredClone(fixture);
+  const text = { type: "text", path: [0, 0, 0], value: "edited heading" };
+  const queued = queuePageEdit(operationQueue(base), base, [text], edit, apply);
+  assert.equal(queued.queue.fallback, false);
+  assert.deepEqual(queued.queue.pending[0].preconditions, {
+    parentId: "heading",
+    oldValue: "海のそばで過ごす",
+    textPathContext: [{ type: "target" }],
+  });
+});
 
 test("canonical rebase preserves an unrelated concurrent property and an edit made in flight", () => {
   const base = structuredClone(fixture);

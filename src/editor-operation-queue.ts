@@ -1,5 +1,5 @@
 import { PAGE_OPERATION_LIMIT, pageOperationWire, parsePageOperation, type EditingPageApplied } from "./editing-page-operations.js";
-import { editDocumentById, fingerprint, nodeAt, walkNodes, type EditorHistory, type EditorOperation, type EditorOperationById } from "./editor-model.js";
+import { editDocumentById, fingerprint, nodeAt, pageOperationTextPathContext, walkNodes, type EditorHistory, type EditorOperation, type EditorOperationById } from "./editor-model.js";
 import type { EditorApplyOperationsRequest } from "./editor-types.js";
 import { siblingsAt } from "./node-tree.js";
 import type { PageDocument, PageNode, StateName, StyleProperty } from "./types.js";
@@ -59,7 +59,8 @@ function preconditioned(document: PageDocument, operation: EditorOperationById):
     if (!parentPath) throw new Error("text parent not found");
     const path = [...parentPath, ...operation.childPath], node = nodeAt(document, path);
     if (node.type !== "text") throw new Error("text target not found");
-    return { ...operation, preconditions: { parentId: parentIdAt(document, path), oldValue: node.text } };
+    const textPathContext = pageOperationTextPathContext(document, operation.parentId, operation.childPath);
+    return { ...operation, preconditions: { parentId: parentIdAt(document, path), oldValue: node.text, ...(textPathContext ? { textPathContext } : {}) } };
   }
   if (operation.type !== "style" && operation.type !== "attribute" && operation.type !== "prop") return operation;
   const located = walkNodes(document).find(({ node }) => node.type !== "text" && node.id === operation.nodeId);
