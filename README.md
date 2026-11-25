@@ -43,8 +43,8 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 | --- | --- |
 | `@niho/web` | JSON 型、`validateDocument` / `parsePageDocument`、閉じた組み込みアイコン・フォーム・Map / YouTube / Vimeo / Lottie / Facebook / X / Instagram / host承認済みBlank埋め込み・VideoWithButton・Loop Box、CSS、リストの印と画像の行内縦位置、画像・native動画を含む React SSR の `PageRenderer` |
 | `@niho/web/core` | 検証・文書型・embed URL正規化・CSS・共通部品の検証と展開、form完了ページの安全な純粋resolver、`data-nw-scope` の文書識別情報を戻す `parsePageScope`。React の runtime import を含みません |
-| `@niho/web/editing-api` | ホストが認証・権限・保存先を実装する、React非依存のページ本文・CMS・ページ管理・ブレークポイント設定・素材・翻訳のHTTP handler。操作IDの型も導出する単一操作catalog、Studio GUIと機械クライアント共通のhost mount、ページ本文と型付きの表示コンテキスト・編集状態を一度に読むプロファイル、複数ページ公開変更セット、再開tokenの期限切れを通信失敗と区別する状態、discover用JSON Schema・安定エラーを提供（[契約](docs/editing-api-contract.md)） |
-| `@niho/web/editing-client` | GUIや機械クライアントがhost-neutral wire契約を呼ぶReact非依存HTTP client。CAS、操作ID付き再試行、ページ管理・CMS公開・複数ページ変更セットの二段階確認と状態照会、翻訳の型付き `executeLocalization` を提供し、ホスト固有の永続化・完全検証は API 側へ委ねます。鎌倉の Studio 翻訳画面と `niho-edit` が共通の翻訳操作を使います |
+| `@niho/web/editing-api` | ホストが認証・権限・保存先を実装する、React非依存のページ本文・版履歴・CMS・ページ管理・ブレークポイント設定・素材・翻訳のHTTP handler。操作IDの型も導出する単一操作catalog、独立した `pages.history.read` 権限、Studio GUIと機械クライアント共通のhost mount、ページ本文と型付きの表示コンテキスト・編集状態を一度に読むプロファイル、複数ページ公開変更セット、再開tokenの期限切れを通信失敗と区別する状態、discover用JSON Schema・安定エラーを提供（[契約](docs/editing-api-contract.md)） |
+| `@niho/web/editing-client` | GUIや機械クライアントがhost-neutral wire契約を呼ぶReact非依存HTTP client。CAS、操作ID付き再試行、ページ履歴の要約・snapshot読取と `PageEditor` 用 `createEditingApiHistoryAdapter`、表示コンテキスト・編集状態をまとめるeditor snapshot profile、ページ管理・CMS公開・複数ページ変更セットの二段階確認と状態照会、翻訳の型付き `executeLocalization` を提供し、ホスト固有の永続化・完全検証は API 側へ委ねます。鎌倉の Studio 翻訳画面と `niho-edit` が共通の翻訳操作を使います |
 | `@niho/web/builder` | 汎用の挿入カタログ、モーション定義、host拡張の型と検証。React非依存 |
 | `@niho/web/react` | `PageRenderer` / `SitePageRenderer` とブロック registry の型。編集キャンバスでは props と一致する host view が無いブロックだけ見本または空の枠へ戻し、他の要素を表示し続ける。外部 frame は [サイト単位の許可リスト](docs/site-presentation.md) の外を読み込まず、許可の中でも実行コードの信頼済みリストに入るものだけ origin を維持し、入らない不変 embed などは権限なしの opaque iframe で描く |
 | `@niho/web/presentation-runtime` | SSR後の検証済みDOMへ、native presentation、VideoWithButton、Loop Box、reduced-motion対応Lottie player、明示操作後だけ読み込むFacebook / X / Instagram投稿の標準操作を接続するclient runtime。返されたcleanupを再初期化前に呼ぶ |
@@ -69,7 +69,7 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 | `@niho/web/site-apps` | サイト設定の `SiteApps`。計測タグ・所有権確認・レポート接続を分け、変更確認・再試行・解除を提供。ホストが扱わない操作は `capabilities` で状態表示だけにできる（[接続方法](docs/site-apps.md)、Studio のホスト実装は [Studio host README](studio/README.md#サイト分析ga4--search-console)） |
 | `@niho/web/ui-tokens` | Studio と各画面が共有する配色・角丸・文字のトークン（`uiTokensCss`・`uiColor`）。値は STUDIO 社の実測（本文 `#222`）。各画面の CSS は先頭にこれを持ち、ホストは `--nw-*` を上書きできる。一覧・CMS・翻訳は左の縦の太線とタブの下線を使わず、太さは 400／600。React不要（[見た目と実装の契約](docs/editor-ui-design.md#見た目と実装の契約)） |
 | `@niho/web/assets` | 素材参照の列挙・解決済み素材 map の検証、素材ライブラリ adapter の型と応答検証。共通編集APIと `niho-edit` は同じ素材の検索・利用先・解決・更新・一時アップロード・削除・復元を公開。React不要 |
-| `@niho/web/history` | 文書の差分（`diffDocuments`）、版履歴の項目の検証、端末内の緊急復元ストア（ページ・サイトごとの共通部品）。React不要 |
+| `@niho/web/history` | 文書の差分（`diffDocuments`）、actor種別・委任元・値を含まない操作要約を持つ版履歴項目の検証、端末内の緊急復元ストア（ページ・サイトごとの共通部品）。React不要 |
 | `@niho/web/analytics` | GA4 / Search Console を分けて示す読取専用画面、型付きadapter、応答検証 |
 | `@niho/web/analytics-data` | サーバーで使う分析DTO・adapterの型と応答検証。React不要。画面と同じパーサーを使用 |
 | `@niho/web/localization` | 明示的な日英設定、安定IDの翻訳単位、自動訳の更新（確認の記録は問わない）・人の訳の保護、候補・手編集、共通構造からの文書生成。React不要 |
