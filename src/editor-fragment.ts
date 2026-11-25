@@ -99,7 +99,7 @@ export function parseEditorNodeClipboard(value: unknown): EditorNodeClipboard {
       node.children.forEach((child) => assertNode(child, depth + 1));
     }
   };
-  value.nodes.forEach(assertNode);
+  value.nodes.forEach((node) => assertNode(node, 0));
   const validStyleName = (entry: unknown): entry is string => typeof entry === "string" && /^([a-z][A-Za-z0-9-]{0,79})$/u.test(entry);
   if (!value.tokenNames.every(validStyleName) || !value.textStyleNames.every(validStyleName)) throw new Error("コピー内容の参照名が正しくありません。");
   const parsed = createEditorNodeClipboard(value.siteId, value.nodes as PageNode[]);

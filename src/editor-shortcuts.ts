@@ -5,6 +5,7 @@ type Shortcut = {
   action: string;
   label: string;
   keys: readonly string[];
+  code?: string;
   keyLabel: string;
   command?: true;
   shift?: boolean | "either";
@@ -19,7 +20,7 @@ export const editorShortcuts = [
   { action: "copy", label: "コピー", keys: ["c"], keyLabel: "⌘C / Ctrl+C", command: true },
   { action: "cut", label: "カット", keys: ["x"], keyLabel: "⌘X / Ctrl+X", command: true },
   { action: "paste", label: "貼り付け", keys: ["v"], keyLabel: "⌘V / Ctrl+V", command: true },
-  { action: "pasteInside", label: "内側に貼り付け", keys: ["v"], keyLabel: "⌥⌘V", command: true, alt: true },
+  { action: "pasteInside", label: "内側に貼り付け", keys: [], code: "KeyV", keyLabel: "⌥⌘V", command: true, alt: true },
   { action: "parent", label: "親を選択", keys: ["escape"], keyLabel: "Esc" },
   { action: "child", label: "最初の子を選択・文字を編集", keys: ["enter"], keyLabel: "Enter" },
   { action: "zoomIn", label: "表示倍率を上げる", keys: ["+", "="], keyLabel: "⌘+ / Ctrl++", command: true, shift: "either" },
@@ -37,7 +38,8 @@ function eventElement(target: EventTarget | undefined): Element | undefined {
 
 function matchesShortcut(shortcut: Shortcut, event: KeyboardEvent): boolean {
   return !!shortcut.command === (event.metaKey || event.ctrlKey) &&
-    (shortcut.shift === "either" || !!shortcut.shift === event.shiftKey) && !!shortcut.alt === event.altKey && shortcut.keys.includes(event.key.toLowerCase());
+    (shortcut.shift === "either" || !!shortcut.shift === event.shiftKey) && !!shortcut.alt === event.altKey &&
+    (shortcut.code ? event.code === shortcut.code : shortcut.keys.includes(event.key.toLowerCase()));
 }
 
 export function dispatchEditorShortcut(event: KeyboardEvent, blockedReason: string | undefined,
