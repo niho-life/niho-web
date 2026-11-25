@@ -21,6 +21,7 @@ const readMethods = [
   "EditorAdapter.localization.readPage",
   "EditorAdapter.localization.readSite",
   "EditorAdapter.localization.sourceDocumentLocale",
+  "EditorAdapter.prefetchDocument",
   "EditorAdapter.readDocument",
   "EditorAdapter.releaseSetStatus",
   "PageEditorProps.assets.listAssetUsages",

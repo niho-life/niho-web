@@ -227,6 +227,8 @@ export interface EditorAdapter {
   readDocument(target: EditorTarget, signal: AbortSignal): Promise<EditorSnapshot>;
   /** 保存に使う API の discover が pages.name を公開する場合だけ true を返す。 */
   discoverPageNodeNames?(target: EditorTarget, signal: AbortSignal): Promise<boolean>;
+  /** ページ行の pointer / focus で呼ぶ先読み。通常読込と同じ認可・版検証を行い、画面状態は変更しない。 */
+  prefetchDocument?(target: EditorTarget, signal: AbortSignal): Promise<EditorSnapshot>;
   /** trigger は自動保存のときだけ "autosave"。ホストは履歴の種類の区別に使える。 */
   saveDraft(request: { target: EditorTarget; document: PageDocument; expectedVersion: string; presentationVersion?: string; trigger?: "autosave";
     /** Present for translated drafts; the host must CAS these values and persist only validated localized overlays. */

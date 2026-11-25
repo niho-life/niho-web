@@ -251,17 +251,17 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
   let currentCatalog = catalog, initialPages = true;
   let localizationRead = initialReads?.localization, breakpointRead = initialReads?.breakpoints;
   const releaseOperationIds = new Map<string, string>();
-  async function request<T>(signal: AbortSignal, run: () => Promise<T>): Promise<T> {
+  async function request<T>(signal: AbortSignal, run: () => Promise<T>, reportStatus = true): Promise<T> {
     try {
       signal.throwIfAborted();
       const result = await run();
       if (signal.aborted) throw new DOMException("Aborted", "AbortError");
-      onStatus(null);
+      if (reportStatus) onStatus(null);
       return result;
     } catch (error) {
       const normalized = error instanceof EditingApiClientError ? new EditorApiError(error.status ?? 503, error.code) : error;
-      if (!signal.aborted && normalized instanceof EditorApiError && (normalized.status !== 409 || normalized.code === VISUAL_EDITOR_FROZEN)) onStatus(statusFromError(normalized));
-      else if (!signal.aborted && !(normalized instanceof EditorApiError) && !(normalized instanceof EditorContentUnavailableError)) onStatus(statusFromError(normalized));
+      if (reportStatus && !signal.aborted && normalized instanceof EditorApiError && (normalized.status !== 409 || normalized.code === VISUAL_EDITOR_FROZEN)) onStatus(statusFromError(normalized));
+      else if (reportStatus && !signal.aborted && !(normalized instanceof EditorApiError) && !(normalized instanceof EditorContentUnavailableError)) onStatus(statusFromError(normalized));
       throw normalized;
     }
   }
@@ -291,6 +291,11 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
     const presentationVersion = legacy.presentation === undefined ? undefined : record(legacy.presentation).version;
     if (wire.version !== legacy.version || wire.presentationVersion !== presentationVersion) throw new EditorApiError(409, "version_conflict");
     return { ...legacy, document, ...(wire.presentation === undefined ? {} : { presentation: wire.presentation }) };
+  }
+  async function readPageDocument(target: EditorTarget, signal: AbortSignal): Promise<EditorSnapshot> {
+    return target.locale === "en"
+      ? parseEnglishSnapshot(await api(`${localizationPagePath(target)}/snapshot`, "POST", {}, signal), target)
+      : readJapaneseDocument(target, signal);
   }
   return {
     listSites: (signal) => request(signal, async () => catalog.sites),
@@ -356,9 +361,8 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
       else validTarget(target);
       return supportsPageNodeNames(await editingApi.discover(signal), "pages.save");
     },
-    readDocument: (target, signal) => request(signal, async () => target.locale === "en"
-      ? parseEnglishSnapshot(await api(`${localizationPagePath(target)}/snapshot`, "POST", {}, signal), target)
-      : readJapaneseDocument(target, signal)),
+    readDocument: (target, signal) => request(signal, () => readPageDocument(target, signal)),
+    prefetchDocument: (target, signal) => request(signal, () => readPageDocument(target, signal), false),
     saveDraft: (input, signal) => conflict(() => request(signal, async () => {
       if (input.target.locale === "en") {
         const target = validEnglishTarget(input.target), localization = input.localization;
