@@ -334,7 +334,7 @@ export function editingOperationProblem(error: unknown, index: number): Extract<
   return { status: "validation_failed", index, reason: error instanceof DocumentValidationError ? error.reason : error instanceof Error ? error.message : "invalid operation" };
 }
 
-function changedNodeIds(before: PageDocument, after: PageDocument): string[] {
+export function changedPageNodeIds(before: PageDocument, after: PageDocument): string[] {
   const entries = (document: PageDocument) => new Map(walkNodes(document).flatMap(({ node, path }) => {
     if (node.type === "text") return [];
     const { children, ...rest } = node.type === "element" ? node : { ...node, children: undefined };
@@ -420,6 +420,6 @@ export function preparePageOperations(snapshot: EditingPageSnapshot, context: Pa
     }
     document = parsePageDocument(document, context.blocks, options);
   } catch (error) { return editingOperationProblem(error, Math.min(index, input.operations.length - 1)); }
-  if (dryRun) return { status: "valid", diff: diffDocuments(before, document), touched: changedNodeIds(before, document) };
-      return { status: "ready", document, journal: stale ? { ...journal, rebasedFromVersion: snapshot.version } : journal };
+  if (dryRun) return { status: "valid", diff: diffDocuments(before, document), touched: changedPageNodeIds(before, document) };
+  return { status: "ready", document, journal: stale ? { ...journal, rebasedFromVersion: snapshot.version } : journal };
 }
