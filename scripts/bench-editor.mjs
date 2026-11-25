@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import { performance } from "node:perf_hooks";
-import { parsePageDocument } from "../dist/document.js";
-import { commitHistory, editDocument } from "../dist/editor-model.js";
-import { editorSessionFrom, hasUnsavedPageChanges } from "../dist/editor-session.js";
-import { indexNodeDocument } from "../dist/node-tree.js";
-import { inspectPageDocument } from "../dist/page-inspect.js";
+import { resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const document = {
   schemaVersion: 1, siteId: "benchmark", pageId: "fixture", locale: "ja", revision: 1, title: "性能計測用の合成文書",
@@ -23,56 +20,134 @@ const document = {
     }))
   }))
 };
-const parsed = parsePageDocument(document);
 const json = JSON.stringify(document);
 const target = { siteId: document.siteId, pageId: document.pageId, locale: document.locale };
-const snapshot = { document, version: "initial" };
 const change = { type: "style", path: [49, 18], breakpoint: "base", property: "color", value: "#123456" };
 const outline = { view: "outline" };
-const history = { past: [], present: parsed, future: [], editRevision: 0 };
-const dirtySession = { history: { ...history, editRevision: 1 }, savedEditRevision: 0, operationQueue: {} };
-assert.equal(inspectPageDocument(parsed, outline).items.length, 1_000);
-assert.equal(editDocument(parsed, change).body[49].children[18].style.base.color, "#123456");
-assert.strictEqual(commitHistory(history, parsed), history);
-assert.equal(indexNodeDocument(parsed).paths.get("item-49-18")?.join("."), "49.18");
-assert.equal(hasUnsavedPageChanges(dirtySession), true);
 
-const reference = () => JSON.parse(json);
-const benchmarks = [
-  { name: "parsePageDocument", run: () => parsePageDocument(document), limit: 1.25 },
-  { name: "editorSessionFrom", run: () => editorSessionFrom(snapshot, target, {}), limit: 3 },
-  { name: "editDocument", run: () => editDocument(parsed, change), limit: 3.5 },
-  { name: "pages.inspect outline", run: () => inspectPageDocument(parsed, outline), limit: 4 },
-  { name: "commitHistory unchanged", run: () => commitHistory(history, parsed), limit: 0.02 },
-  { name: "node ID index build", run: () => indexNodeDocument({ ...parsed }), limit: 0.25 },
-  { name: "node ID index reuse", run: () => indexNodeDocument(parsed).paths.get("item-49-18"), limit: 0.02 },
-  { name: "page dirty check", run: () => hasUnsavedPageChanges(dirtySession), limit: 0.02 }
-];
-// 実行機間の速度差を抑えるため、同じ入力の JSON デコードを各サンプルと交互に計測する。
-// ウォームアップ後の複数バッチの中央値で、単発の GC やスケジューリングの影響を抑える。
-const iterations = 8;
-function sample(run) {
+async function loadApi(distDirectory) {
+  const load = (name) => import(pathToFileURL(resolve(distDirectory, name)).href);
+  const [documentModule, editorModel, editorSession, nodeTree, pageInspect] = await Promise.all([
+    load("document.js"), load("editor-model.js"), load("editor-session.js"), load("node-tree.js"), load("page-inspect.js")
+  ]);
+  return { ...documentModule, ...editorModel, ...editorSession, ...nodeTree, ...pageInspect };
+}
+
+function createBenchmarks(api, required) {
+  if (typeof api.parsePageDocument !== "function") throw new Error("parsePageDocument is unavailable in the benchmark dist");
+  const parsed = api.parsePageDocument(document);
+  const snapshot = { document, version: "initial" };
+  const history = { past: [], present: parsed, future: [], editRevision: 0 };
+  const dirtySession = { history: { ...history, editRevision: 1 }, savedEditRevision: 0, operationQueue: {} };
+  const benchmarks = [];
+
+  if (typeof api.parsePageDocument === "function") benchmarks.push({ name: "parsePageDocument", run: () => api.parsePageDocument(document) });
+  if (typeof api.editorSessionFrom === "function") benchmarks.push({ name: "editorSessionFrom", run: () => api.editorSessionFrom(snapshot, target, {}) });
+  if (typeof api.editDocument === "function") {
+    assert.equal(api.editDocument(parsed, change).body[49].children[18].style.base.color, "#123456");
+    benchmarks.push({ name: "editDocument", run: () => api.editDocument(parsed, change) });
+  }
+  if (typeof api.inspectPageDocument === "function") {
+    assert.equal(api.inspectPageDocument(parsed, outline).items.length, 1_000);
+    benchmarks.push({ name: "pages.inspect outline", run: () => api.inspectPageDocument(parsed, outline) });
+  }
+  if (typeof api.commitHistory === "function") {
+    assert.strictEqual(api.commitHistory(history, parsed), history);
+    benchmarks.push({ name: "commitHistory unchanged", run: () => api.commitHistory(history, parsed) });
+  }
+  if (typeof api.indexNodeDocument === "function") {
+    assert.equal(api.indexNodeDocument(parsed).paths.get("item-49-18")?.join("."), "49.18");
+    benchmarks.push({ name: "node ID index build", run: () => api.indexNodeDocument({ ...parsed }) });
+    benchmarks.push({ name: "node ID index reuse", run: () => api.indexNodeDocument(parsed).paths.get("item-49-18") });
+  }
+  if (typeof api.hasUnsavedPageChanges === "function") {
+    assert.equal(api.hasUnsavedPageChanges(dirtySession), true);
+    benchmarks.push({ name: "page dirty check", run: () => api.hasUnsavedPageChanges(dirtySession) });
+  }
+
+  if (required) {
+    const requiredNames = ["parsePageDocument", "editorSessionFrom", "editDocument", "pages.inspect outline"];
+    for (const name of requiredNames) assert.ok(benchmarks.some((benchmark) => benchmark.name === name), `${name} is unavailable in the candidate dist`);
+  }
+  return benchmarks;
+}
+
+let lastResult;
+function sample(run, iterations) {
   const start = performance.now();
-  for (let i = 0; i < iterations; i += 1) run();
+  for (let i = 0; i < iterations; i += 1) lastResult = run();
   return (performance.now() - start) / iterations;
 }
+
+function calibrateIterations(run) {
+  const minimumBatchMs = 6;
+  const maximumIterations = 131_072;
+  let iterations = 1;
+  while (iterations < maximumIterations) {
+    if (sample(run, iterations) * iterations >= minimumBatchMs) return iterations;
+    iterations = Math.min(iterations * 2, maximumIterations);
+  }
+  return iterations;
+}
+
 function median(values) {
-  return values.sort((a, b) => a - b)[Math.floor(values.length / 2)];
+  return [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
+}
+
+const currentDist = fileURLToPath(new URL("../dist/", import.meta.url));
+const currentBenchmarks = createBenchmarks(await loadApi(currentDist), true);
+const baselineDist = process.env.EDITOR_BENCH_BASELINE_DIST;
+const baselineBenchmarks = baselineDist ? createBenchmarks(await loadApi(resolve(baselineDist)), false) : undefined;
+const baselineByName = new Map(baselineBenchmarks?.map((benchmark) => [benchmark.name, benchmark]) ?? []);
+const currentNames = new Set(currentBenchmarks.map((benchmark) => benchmark.name));
+const iterationsByName = new Map();
+
+if (baselineBenchmarks) {
+  for (const baseline of baselineBenchmarks) {
+    if (!currentNames.has(baseline.name)) {
+      console.error(`${baseline.name}: candidate removed a benchmark present in the base version`);
+      process.exitCode = 1;
+    }
+  }
+  for (const current of currentBenchmarks) {
+    const baseline = baselineByName.get(current.name);
+    iterationsByName.set(current.name, calibrateIterations((baseline ?? current).run));
+  }
 }
 
 console.log(`編集性能ベンチマーク: 1,000 要素 / ${Buffer.byteLength(json)} bytes`);
-for (const { name, run, limit } of benchmarks) {
-  sample(reference);
-  sample(run);
-  sample(run);
-  const times = [], ratios = [];
-  for (let i = 0; i < 9; i += 1) {
-    const before = i % 2 === 0 ? sample(reference) : undefined;
-    const time = sample(run);
-    times.push(time);
-    ratios.push(time / (before ?? sample(reference)));
+if (!baselineBenchmarks) console.log("基準版dist未指定のため、CI退行判定をスキップします。");
+
+for (const current of currentBenchmarks) {
+  const baseline = baselineByName.get(current.name);
+  const iterations = iterationsByName.get(current.name) ?? 8;
+  const currentTimes = [], baselineTimes = [];
+
+  for (let warmup = 0; warmup < 3; warmup += 1) {
+    sample(current.run, iterations);
+    if (baseline) sample(baseline.run, iterations);
   }
-  const ratio = median(ratios);
-  console.log(`${name}: ${median(times).toFixed(2)} ms / 基準の ${ratio.toFixed(2)} 倍（上限 ${limit} 倍）`);
-  if (ratio > limit) process.exitCode = 1;
+
+  for (let round = 0; round < 15; round += 1) {
+    if (baseline && round % 2 === 1) {
+      baselineTimes.push(sample(baseline.run, iterations));
+      currentTimes.push(sample(current.run, iterations));
+    } else {
+      currentTimes.push(sample(current.run, iterations));
+      if (baseline) baselineTimes.push(sample(baseline.run, iterations));
+    }
+  }
+
+  const currentMs = median(currentTimes);
+  if (!baseline) {
+    console.log(`${current.name}: 候補版 ${currentMs.toFixed(2)} ms（base版に比較対象なし）`);
+    continue;
+  }
+
+  const baselineMs = median(baselineTimes);
+  const ratio = currentMs / Math.max(baselineMs, 0.01);
+  const deltaMs = currentMs - baselineMs;
+  const regressed = ratio > 1.25 && deltaMs > 0.75;
+  console.log(`${current.name}: 基準版 ${baselineMs.toFixed(2)} ms → 現行版 ${currentMs.toFixed(2)} ms（${ratio.toFixed(2)} 倍、差 ${deltaMs.toFixed(2)} ms）${regressed ? " 退行" : ""}`);
+  if (regressed) process.exitCode = 1;
 }

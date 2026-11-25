@@ -25,7 +25,21 @@ jobs:
       - if: matrix.react == '18'
         run: npm install --ignore-scripts --no-save --package-lock=false react@18.3.1 react-dom@18.3.1 @types/react@18.3.27 @types/react-dom@18.3.7
       - run: npm run build
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: matrix.react == '19'
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.event.before }}
+          path: .benchmark-base
+          persist-credentials: false
       - if: matrix.react == '19'
+        working-directory: .benchmark-base
+        run: npm ci --ignore-scripts
+      - if: matrix.react == '19'
+        working-directory: .benchmark-base
+        run: npm run build
+      - if: matrix.react == '19'
+        env:
+          EDITOR_BENCH_BASELINE_DIST: .benchmark-base/dist
         run: npm run bench:editor
       - run: npm run typecheck
       - run: npm run studio:typecheck
