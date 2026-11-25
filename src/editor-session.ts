@@ -38,25 +38,99 @@ export function editorSessionFrom(snapshot: EditorSnapshot, target: EditorTarget
     ...(snapshot.hasSavedDraft === undefined ? {} : { hasSavedDraft: snapshot.hasSavedDraft }), ...(readOnly ? { readOnly } : {}) };
 }
 
+function snapshotTargetsPage(snapshot: EditorSnapshot, target: EditorTarget): boolean {
+  if (!snapshot.document || typeof snapshot.document !== "object" || Array.isArray(snapshot.document)) return false;
+  const document = snapshot.document as Record<string, unknown>;
+  return document.siteId === target.siteId && document.pageId === target.pageId && document.locale === target.locale;
+}
+
+function sessionCacheKey(target: EditorTarget, snapshot: EditorSnapshot, settingsVersion: string | null | undefined): string | undefined {
+  const presentationVersion = snapshot.presentation && typeof snapshot.presentation === "object"
+    ? (snapshot.presentation as { readonly version?: unknown }).version : undefined;
+  try {
+    return JSON.stringify([
+      target.siteId, target.pageId, target.locale, snapshot.version,
+      snapshot.componentsVersion ?? null, snapshot.presentationVersion ?? null, snapshot.stylesVersion ?? null,
+      settingsVersion === undefined ? "unavailable" : settingsVersion === null ? "failed" : settingsVersion,
+      snapshot.hasSavedDraft ?? null, snapshot.locks ?? null, snapshot.releases ?? null,
+      snapshot.readOnly ?? null, snapshot.englishPublication ?? null, presentationVersion ?? null
+    ]);
+  } catch { return undefined; }
+}
+
+function cleanSessionCopy(session: EditorSession): EditorSession {
+  const document = session.history.present;
+  return {
+    ...session,
+    history: { past: [], present: document, future: [], editRevision: 0 },
+    savedEditRevision: 0,
+    saved: fingerprint(document),
+    operationQueue: operationQueue(document)
+  };
+}
+
+/** A small per-editor LRU keyed by target and the server's current page/dependency versions. */
+export class EditorSessionCache {
+  private readonly entries = new Map<string, EditorSessionLoad>();
+
+  constructor(private readonly capacity = 4) {
+    if (!Number.isSafeInteger(capacity) || capacity < 1) throw new RangeError("Editor session cache capacity must be positive");
+  }
+
+  get(target: EditorTarget, snapshot: EditorSnapshot, settingsVersion: string | null | undefined, components?: ComponentLibrary): EditorSessionLoad | undefined {
+    if (components) return undefined;
+    if (!snapshotTargetsPage(snapshot, target)) return undefined;
+    const key = sessionCacheKey(target, snapshot, settingsVersion);
+    if (!key) return undefined;
+    const cached = this.entries.get(key);
+    if (!cached) return undefined;
+    this.entries.delete(key);
+    this.entries.set(key, cached);
+    return { session: cleanSessionCopy(cached.session), ...(cached.warning ? { warning: cached.warning } : {}) };
+  }
+
+  set(target: EditorTarget, snapshot: EditorSnapshot, settingsVersion: string | null | undefined, value: EditorSessionLoad, components?: ComponentLibrary): void {
+    if (components) return;
+    const key = sessionCacheKey(target, snapshot, settingsVersion);
+    if (!key) return;
+    this.entries.delete(key);
+    this.entries.set(key, { session: cleanSessionCopy(value.session), ...(value.warning ? { warning: value.warning } : {}) });
+    while (this.entries.size > this.capacity) this.entries.delete(this.entries.keys().next().value!);
+  }
+
+  clear(): void { this.entries.clear(); }
+}
+
+export type EditorSessionReadOptions = { readonly cache?: EditorSessionCache; readonly snapshot?: EditorSnapshot };
+
 /** 文書と任意のサイト設定を独立取得し、設定が無くても単体検証できる文書だけ編集開始する。 */
-export async function readEditorSession(adapter: Pick<EditorAdapter, "readDocument" | "readSiteSettings">, target: EditorTarget, signal: AbortSignal, blocks: EditorBlockRegistry = {}, components?: ComponentLibrary): Promise<EditorSessionLoad> {
-  const documentRead = adapter.readDocument(target, signal);
+export async function readEditorSession(adapter: Pick<EditorAdapter, "readDocument" | "readSiteSettings">, target: EditorTarget, signal: AbortSignal, blocks: EditorBlockRegistry = {}, components?: ComponentLibrary, options: EditorSessionReadOptions = {}): Promise<EditorSessionLoad> {
+  const documentRead = options.snapshot ? Promise.resolve(options.snapshot) : adapter.readDocument(target, signal);
   const settingsRead = adapter.readSiteSettings ? adapter.readSiteSettings(target.siteId, signal).then((snapshot) => {
     if (!snapshot || typeof snapshot.version !== "string" || !snapshot.version) throw new Error("site settings version is required");
-    return parseSiteSettings(snapshot.settings);
+    return { settings: parseSiteSettings(snapshot.settings), version: snapshot.version };
   }) : Promise.resolve(undefined);
   const [documentResult, settingsResult] = await Promise.allSettled([documentRead, settingsRead]);
   if (signal.aborted) throw new DOMException("Aborted", "AbortError");
   if (documentResult.status === "rejected") throw new EditorSessionLoadError("document", "文書を読み込めませんでした。現在の編集内容は保持されています。", { cause: documentResult.reason });
   if (settingsResult.status === "fulfilled") {
+    const settings = settingsResult.value;
+    const cached = options.cache?.get(target, documentResult.value, settings?.version, components);
+    if (cached) return cached;
     try {
-      return { session: editorSessionFrom(documentResult.value, target, blocks, components, settingsResult.value, !settingsResult.value) };
+      const loaded = { session: editorSessionFrom(documentResult.value, target, blocks, components, settings?.settings, !settings) };
+      options.cache?.set(target, documentResult.value, settings?.version, loaded, components);
+      return loaded;
     } catch (error) {
       throw new EditorSessionLoadError("document", "文書を読み込めませんでした。現在の編集内容は保持されています。", { cause: error });
     }
   }
+  const cached = options.cache?.get(target, documentResult.value, null, components);
+  if (cached) return cached;
   try {
-    return { session: editorSessionFrom(documentResult.value, target, blocks, components, undefined, true), warning: "サイト設定を読み込めませんでした。文書単体で編集を開始しました。" };
+    const loaded = { session: editorSessionFrom(documentResult.value, target, blocks, components, undefined, true), warning: "サイト設定を読み込めませんでした。文書単体で編集を開始しました。" };
+    options.cache?.set(target, documentResult.value, null, loaded, components);
+    return loaded;
   } catch (error) {
     throw new EditorSessionLoadError("site-settings-required", "この文書に必要なサイト共通スタイルを読み込めませんでした。現在の編集内容は保持されています。", { cause: error });
   }
