@@ -34,7 +34,7 @@ import type { EditorOperationBlocks } from "./editor-model.js";
 import type { EditorLock } from "./editor-types.js";
 
 export type { EditingPageApplied, EditingPageApplyInput, EditingPageApplyResult, EditingPageOperationStore, PageOperationJournal,
-  PageOperationTransaction, PageOperationVersions } from "./editing-page-operations.js";
+  EditingPageApplyConflict, PageOperationTransaction, PageOperationUnmetPrecondition, PageOperationVersions } from "./editing-page-operations.js";
 export { pageOperationWire } from "./editing-page-operations.js";
 
 export type {
@@ -837,7 +837,20 @@ async function handlePageApply(store: EditingPageOperationStore, request: Reques
   switch (result.status) {
     case "not_found": return fail("not_found", 404);
     case "host_contract_violation": return fail("host_contract_violation", 502);
-    case "conflict": return fail("version_conflict", 409);
+    case "conflict": {
+      if (result.unmetPreconditions === undefined) return fail("version_conflict", 409);
+      const allowed = ["rebase_supported", "preconditions", "node_exists", "parent_id", "old_value", "child_path"];
+      if (!Array.isArray(result.unmetPreconditions) || !result.unmetPreconditions.length || result.unmetPreconditions.length > operations.length * 2) return fail("host_contract_violation", 502);
+      const seen = new Set<string>();
+      for (const item of result.unmetPreconditions) {
+        if (!item || typeof item !== "object" || Array.isArray(item) || !exactKeys(item as Record<string, unknown>, ["index", "condition"])
+          || !Number.isSafeInteger(item.index) || item.index < 0 || item.index >= operations.length || !allowed.includes(item.condition)) return fail("host_contract_violation", 502);
+        const key = `${item.index}:${item.condition}`;
+        if (seen.has(key)) return fail("host_contract_violation", 502);
+        seen.add(key);
+      }
+      return response({ error: "version_conflict", unmetPreconditions: result.unmetPreconditions }, 409);
+    }
     case "duplicate_operation": return fail("duplicate_operation", 409);
     case "validation_failed":
       if (!Number.isSafeInteger(result.index) || result.index < 0 || result.index >= operations.length || typeof result.reason !== "string") return fail("host_contract_violation", 502);
