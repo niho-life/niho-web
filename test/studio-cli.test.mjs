@@ -668,12 +668,16 @@ testWithD1("all advertised CLI capabilities fit the migration and have unique op
   const h = await fixture(t);
   const ids = OPERATIONS.map(({ id }) => id);
   assert.equal(new Set(ids).size, ids.length);
-  assert.deepEqual(OPERATIONS.filter(({ managed }) => managed).map(({ id }) => id), [
+  assert.deepEqual(OPERATIONS.filter(({ id, managed }) => managed && id.startsWith("pages.")).map(({ id }) => id), [
     "pages.catalog", "pages.read", "pages.save", "pages.release-plan", "pages.release", "pages.change-prepare", "pages.change-apply"
   ]);
-  for (const capability of new Set(OPERATIONS.map((spec) => spec.capability))) h.grant(capability);
+  const ownerApply = OPERATIONS.find(({ id }) => id === "cms.schema.apply");
+  assert.equal(ownerApply?.owner, true);
+  assert.equal(ownerApply?.managedOnly, true);
+  const external = OPERATIONS.filter(({ managedOnly }) => !managedOnly);
+  for (const capability of new Set(external.map((spec) => spec.capability))) h.grant(capability);
   const discovery = await check(await h.send("GET", `${SCOPE}/capabilities`), 200);
-  assert.deepEqual(discovery.operations.map(({ id }) => id), ids);
+  assert.deepEqual(discovery.operations.map(({ id }) => id), external.map(({ id }) => id));
   assert.deepEqual(discovery.operations.filter(({ upload }) => upload).map(({ id, upload }) => [id, upload]), [
     ["cms.upload-intent", "cms"], ["assets.upload-intent", "asset"], ["translations.upload-intent", "localization"]
   ]);

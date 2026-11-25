@@ -3,21 +3,25 @@ import { fail, keys, localeCode, record, string } from "./validation-utils.js";
 import { cmsTimestamp, parseCmsReleaseInput, planCmsRelease,
   type CmsReleaseContext, type CmsReleaseInput, type CmsReleaseProposal, type CmsSchedule } from "./cms-v2-release.js";
 import {
-  cmsArray, cmsCollection, cmsId, parseCmsSchema, parseCmsValues, planCmsMigration,
-  type CmsItemKey, type CmsItemRevision, type CmsMigration, type CmsMigrationDraft, type CmsMigrationImpact,
-  type CmsMigrationReplacement, type CmsProblem, type CmsSchema
+  cmsArray, cmsCollection, cmsId, parseCmsSchema, parseCmsValues, uniqueCmsKeys,
+  planCmsMigrationWithRouteTables,
+  type CmsItemKey, type CmsItemRevision, type CmsMigrationDraft, type CmsMigrationImpact,
+  type CmsMigrationReplacement, type CmsProblem, type CmsRouteBoundMigration, type CmsSchema
 } from "./cms-v2-schema.js";
+import { parseCmsRouteRevision, parseCmsRouteTable, type CmsRouteTable, type CmsRouteTableVersion } from "./cms-v2-routes.js";
 
 export type {
   CmsCollection, CmsField, CmsItemKey, CmsItemRevision, CmsMigratedItem, CmsMigration, CmsMigrationChange, CmsMigrationDraft, CmsMigrationImpact,
-  CmsMigrationReplacement, CmsProblem, CmsRemovedItem, CmsSchema
+  CmsMigrationReplacement, CmsProblem, CmsRemovedItem, CmsRouteBoundMigration, CmsSchema
 } from "./cms-v2-schema.js";
-export { cmsItemKey, cmsLegacyCollections, cmsReferenceProblems, parseCmsItemRevision, parseCmsSchema, parseCmsValues, planCmsMigration } from "./cms-v2-schema.js";
+export { cmsItemKey, cmsLegacyCollections, cmsReferenceProblems, parseCmsItemRevision, parseCmsSchema, parseCmsValues, planCmsMigration, planCmsMigrationWithRouteTables } from "./cms-v2-schema.js";
 export type {
   CmsDeliveryState, CmsItemState, CmsRedirect, CmsReleaseContext, CmsReleaseEntry, CmsReleaseImpact, CmsReleaseInput, CmsReleasePin,
   CmsReleasePlan, CmsReleaseProposal, CmsReleaseSnapshot, CmsSchedule, CmsWorkspacePresentation
 } from "./cms-v2-release.js";
 export { cancelCmsSchedule, cmsWorkspaceItem, cmsWorkspaceStatus, dueCmsSchedule, parseCmsReleaseInput, planCmsRelease, planCmsSchedule, removeCmsItem, restoreCmsItem } from "./cms-v2-release.js";
+export type { CmsRouteCandidate, CmsRouteProblem, CmsRouteReservation, CmsRouteTable, CmsRouteTablePlan, CmsRouteTableVersion } from "./cms-v2-routes.js";
+export { parseCmsRoutePath, parseCmsRouteTable, planCmsRouteTable } from "./cms-v2-routes.js";
 
 export const CMS_V2_OPERATIONS = Object.freeze({
   "cms.schema.read": "cms.read",
@@ -95,6 +99,7 @@ export type CmsConfirmedPlan<T> = CmsPlanScope & {
 export type CmsSchemaPlanInput = {
   readonly siteId: string;
   readonly expectedSchemaRevision: string;
+  readonly routeTableVersions: readonly CmsRouteTableVersion[];
   readonly nextSchema: CmsSchema;
   readonly replacements: readonly CmsMigrationReplacement[];
 };
@@ -120,7 +125,7 @@ export type CmsDraftSaveInput = CmsDraftWriteInput & { readonly values: Collecti
 export type CmsMutationResult<T> = CmsOperationStatus<T> | { readonly status: "conflict" | "expired" | "invalid_confirmation" };
 export type CmsReleaseResult = { readonly releaseId: string; readonly locale: string };
 export type CmsScheduleRequest = CmsReleaseInput & { readonly at: string };
-export type CmsSchemaPlan = CmsConfirmedPlan<CmsMigration>;
+export type CmsSchemaPlan = CmsConfirmedPlan<CmsRouteBoundMigration>;
 export type CmsReleaseConfirmation = CmsConfirmedPlan<CmsReleaseProposal>;
 export type CmsScheduleConfirmation = CmsConfirmedPlan<CmsSchedule>;
 
@@ -165,11 +170,18 @@ function verifyCmsConfirmation<T>(scope: CmsPlanScope, input: unknown, operation
 }
 /** Rebuild from authoritative drafts and impacts immediately before the host's CAS transaction. */
 export function checkCmsSchemaApply(scope: CmsPlanScope, input: unknown, plan: CmsSchemaPlan, now: string,
-  before: CmsSchema, drafts: readonly CmsMigrationDraft[], replacements: readonly CmsMigrationReplacement[] = [], impact?: CmsMigrationImpact): CmsApplyCheck<CmsMigration> {
+  before: CmsSchema, drafts: readonly CmsMigrationDraft[], routeTables: readonly CmsRouteTable[], replacements: readonly CmsMigrationReplacement[] = [], impact?: CmsMigrationImpact): CmsApplyCheck<CmsRouteBoundMigration> {
   const checked = verifyCmsConfirmation(scope, input, "cms.schema.apply", plan, now);
   if (checked.status !== "allowed") return checked;
   if (checked.candidate.schema.siteId !== scope.siteId || before.siteId !== scope.siteId || before.schemaRevision !== checked.candidate.fromRevision) return { status: "conflict" };
-  const live = planCmsMigration(before, checked.candidate.schema, drafts, replacements, impact);
+  const currentVersions = routeTables.map((table) => {
+    const parsed = parseCmsRouteTable(table, scope.siteId);
+    return { locale: parsed.locale, revision: parsed.revision };
+  }).sort((a, b) => a.locale < b.locale ? -1 : a.locale > b.locale ? 1 : 0);
+  if (JSON.stringify(currentVersions) !== JSON.stringify(checked.candidate.routeTableVersions)) return { status: "conflict" };
+  const live = planCmsMigrationWithRouteTables({ before, next: checked.candidate.schema, items: drafts, replacements,
+    routeTables, expectedRouteTableVersions: checked.candidate.routeTableVersions, ...(impact ? { impact } : {}) });
+  if (!live) return { status: "conflict" };
   return live.problems.length || canonicalJson(live) !== canonicalJson(checked.candidate)
     ? { status: "conflict" } : { status: "allowed", candidate: live };
 }
@@ -177,7 +189,7 @@ export function checkCmsSchemaApply(scope: CmsPlanScope, input: unknown, plan: C
 export function revalidateCmsRelease(proposal: CmsReleaseProposal, context: CmsReleaseContext): CmsApplyCheck<CmsReleaseProposal> {
   const { snapshot, expectedReleaseId } = proposal;
   if (snapshot.siteId !== context.schema.siteId || snapshot.locale !== context.locale) return { status: "conflict" };
-  const planned = planCmsRelease({ siteId: snapshot.siteId, locale: snapshot.locale, schemaRevision: snapshot.schema.schemaRevision, expectedReleaseId,
+  const planned = planCmsRelease({ siteId: snapshot.siteId, locale: snapshot.locale, schemaRevision: snapshot.schema.schemaRevision, routeTableRevision: snapshot.routeTableRevision, expectedReleaseId,
     items: snapshot.items.map(({ collectionId, itemId, revision }) => ({ collectionId, itemId, revision })), redirects: snapshot.redirects }, snapshot.releaseId, context);
   return planned.status === "ready" && canonicalJson(planned.proposal) === canonicalJson(proposal)
     ? { status: "allowed", candidate: planned.proposal } : { status: "conflict" };
@@ -235,10 +247,17 @@ export type CmsV2Host = { readonly [Operation in CmsV2Operation]: (scope: CmsPla
 /** Schema plan requests describe the complete desired definition and optional explicit conversion values. */
 export function parseCmsSchemaPlanInput(input: unknown, siteId: string): CmsSchemaPlanInput {
   const value = record(input, "schemaPlan");
-  keys(value, ["siteId", "expectedSchemaRevision", "nextSchema", "replacements"], "schemaPlan");
+  keys(value, ["siteId", "expectedSchemaRevision", "routeTableVersions", "nextSchema", "replacements"], "schemaPlan");
   if (value.siteId !== siteId) fail("schemaPlan.siteId", "CMS site mismatch");
   const nextSchema = parseCmsSchema(value.nextSchema);
   if (nextSchema.siteId !== siteId) fail("schemaPlan.nextSchema.siteId", "CMS site mismatch");
+  const routeTableVersions = cmsArray(value.routeTableVersions, "schemaPlan.routeTableVersions", 100).map((entry, index) => {
+    const at = `schemaPlan.routeTableVersions[${index}]`, version = record(entry, at);
+    keys(version, ["locale", "revision"], at);
+    return { locale: localeCode(version.locale, `${at}.locale`), revision: parseCmsRouteRevision(version.revision, `${at}.revision`) };
+  });
+  if (!routeTableVersions.length) fail("schemaPlan.routeTableVersions", "route table versions are required");
+  uniqueCmsKeys(routeTableVersions.map(({ locale }) => locale), "schemaPlan.routeTableVersions");
   const replacements = cmsArray(value.replacements, "schemaPlan.replacements", 25_000).map((entry, index) => {
     const at = `schemaPlan.replacements[${index}]`, replacement = record(entry, at);
     keys(replacement, ["collectionId", "itemId", "locale", "values"], at);
@@ -248,7 +267,8 @@ export function parseCmsSchemaPlanInput(input: unknown, siteId: string): CmsSche
     return { collectionId, itemId: cmsId(replacement.itemId, `${at}.itemId`), locale: localeCode(replacement.locale, `${at}.locale`),
       values: Object.fromEntries(Object.keys(rawValues).map((key) => [key, values[key]!])) };
   });
-  return { siteId, expectedSchemaRevision: cmsId(value.expectedSchemaRevision, "schemaPlan.expectedSchemaRevision"), nextSchema, replacements };
+  return { siteId, expectedSchemaRevision: cmsId(value.expectedSchemaRevision, "schemaPlan.expectedSchemaRevision"),
+    routeTableVersions: routeTableVersions.sort((a, b) => a.locale < b.locale ? -1 : a.locale > b.locale ? 1 : 0), nextSchema, replacements };
 }
 export function parseCmsDraftWrite(input: unknown, schema: CmsSchema, operation: "save"): CmsDraftSaveInput;
 export function parseCmsDraftWrite(input: unknown, schema: CmsSchema, operation: "remove" | "restore"): CmsDraftWriteInput;

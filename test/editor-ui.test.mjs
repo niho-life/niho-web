@@ -1314,7 +1314,7 @@ test("shortcut matrix preserves focused fields, direct editing, IME and dialog c
     assert.equal(layerButton("heading").getAttribute("aria-selected"), "true", "Esc cancels text before navigating");
     assert.ok(await shortcut(canvasBody(), "?", { shiftKey: true }));
     const help = document.querySelector('[role="dialog"][aria-label="ショートカット一覧"]'), close = help.querySelector("button");
-    assert.equal(help.querySelectorAll("tbody tr").length, 10);
+    assert.equal(help.querySelectorAll("tbody tr").length, 14);
     assert.equal(document.activeElement, close);
     assert.equal(await shortcut(close, "Delete"), false);
     assert.equal(await shortcut(canvasBody(), "Delete", {}, false), false);
@@ -2121,9 +2121,10 @@ function historyHost(overrides = {}) {
   const calls = { lists: [], reads: [], snapshots: [] };
   const old = structuredClone(fixture); old.title = "以前のタイトル"; old.body[0].children[0].children[0].text = "以前の見出し";
   const entries = [
-    { id: "rev_3", revision: 3, kind: "autosave", createdAt: "2026-10-21T03:00:00.000Z", actor: "編集者A" },
+    { id: "rev_3", revision: 3, kind: "autosave", createdAt: "2026-10-21T03:00:00.000Z", actor: "編集AI", actorKind: "machine", delegatedBy: "編集者A",
+      operations: [{ type: "style", targetId: "hero", targetType: "element", targetTag: "section", field: "color" }] },
     { id: "rev_2", revision: 2, kind: "snapshot", createdAt: "2026-10-20T02:00:00.000Z", actor: "編集者B", label: "公開前の確認" },
-    { id: "rev_1", revision: 1, kind: "publish", createdAt: "2026-10-19T01:00:00.000Z", actor: "編集者A" }
+    { id: "rev_1", revision: 1, kind: "publish", createdAt: "2026-10-19T01:00:00.000Z", actor: "編集者A", ...(overrides.expiredSnapshot ? { snapshotAvailable: false } : {}) }
   ];
   const adapter = {
     listRevisions: async (request) => {
@@ -2148,10 +2149,11 @@ test("the version panel lists revisions, loads more, shows a revision read-only,
     assert.ok(document.querySelector('.e-left [aria-label="バージョン管理"]')); assert.ok(document.querySelector(".e-inspector-context"));
     assert.deepEqual(host.calls.lists[0], { target: homeTarget });
     assert.deepEqual(versionRows().map((row) => row.querySelector(".e-version-time").textContent), ["現在の編集内容", localTime(host.entries[0].createdAt), localTime(host.entries[1].createdAt)]);
-    assert.ok(versionRows()[1].textContent.includes("自動保存") && versionRows()[1].textContent.includes("編集者A"));
+    assert.ok(versionRows()[1].textContent.includes("自動保存") && versionRows()[1].textContent.includes("AI · 編集AI") && versionRows()[1].textContent.includes("委任元: 編集者A"));
+    assert.ok(versionRows()[1].textContent.includes("section#hero · 見た目: color"), "履歴は変更値を含めず、操作対象と種別を表示する");
     assert.ok(versionRows()[2].textContent.includes("スナップショット") && versionRows()[2].textContent.includes("公開前の確認"));
     await click("さらに表示"); assert.deepEqual(host.calls.lists[1], { target: homeTarget, cursor: "2" });
-    assert.equal(versionRows().length, 4); assert.ok(versionRows()[3].textContent.includes("公開")); assert.equal(button("さらに表示"), undefined);
+    assert.equal(versionRows().length, 4); assert.ok(versionRows()[3].textContent.includes("公開")); assert.equal(versionRows()[3].disabled, false); assert.equal(button("さらに表示"), undefined);
     await press(versionRows()[1]);
     assert.deepEqual(host.calls.reads[0], { target: homeTarget, id: "rev_3" });
     const bar = document.querySelector(".e-history-bar");
@@ -2166,6 +2168,18 @@ test("the version panel lists revisions, loads more, shows a revision read-only,
     assert.ok(document.querySelector(".e-notice").textContent.includes(`${localTime(host.entries[0].createdAt)} の版を作業コピーに復元しました。`));
     await press(historyButton()); assert.equal(input("ページタイトル").value, "以前のタイトル");
     await click("元に戻す"); assert.equal(input("ページタイトル").value, fixture.title);
+  } finally { await app.cleanup(); }
+});
+
+test("expired history snapshots keep their summaries visible and cannot be opened", async () => {
+  const host = historyHost({ expiredSnapshot: true }), app = await setup({ adapter: host.adapter });
+  try {
+    await press(historyButton()); await click("さらに表示");
+    const expired = versionRows()[3];
+    assert.ok(expired.textContent.includes("公開"));
+    assert.ok(expired.textContent.includes("保存期間を過ぎています"));
+    assert.equal(expired.disabled, true);
+    assert.equal(host.calls.reads.length, 0);
   } finally { await app.cleanup(); }
 });
 
@@ -2305,11 +2319,14 @@ test("operation-connected editor saves text and inverse/forward edits, then relo
     await clickLayer("heading"); await change(input("テキスト"), "海のそばで暮らす");
     await click("下書き保存");
     assert.equal(app.calls.saves.length, 0);
-    assert.deepEqual(host.operations[0].operations, [{ type: "text", parentId: "heading", childPath: [0], value: "海のそばで暮らす" }]);
+    assert.deepEqual(host.operations[0].operations, [{ type: "text", parentId: "heading", childPath: [0], value: "海のそばで暮らす",
+      preconditions: { parentId: "heading", oldValue: fixture.body[0].children[0].children[0].text, textPathContext: [{ type: "target" }] } }]);
     assert.ok(JSON.stringify(host.operations[0]).length < 1024);
     await click("元に戻す"); await click("下書き保存");
+    assert.deepEqual(host.operations[1].operations[0].preconditions, { parentId: "heading", oldValue: "海のそばで暮らす", textPathContext: [{ type: "target" }] });
     assert.equal(host.operations[1].operations[0].value, fixture.body[0].children[0].children[0].text);
     await click("やり直す"); await click("下書き保存");
+    assert.deepEqual(host.operations[2].operations[0].preconditions, { parentId: "heading", oldValue: fixture.body[0].children[0].children[0].text, textPathContext: [{ type: "target" }] });
     assert.equal(host.operations[2].operations[0].value, "海のそばで暮らす");
     await reloadEditor(); await clickLayer("heading");
     assert.equal(input("テキスト").value, "海のそばで暮らす");
@@ -2379,16 +2396,19 @@ test("operation conflict keeps the local queue and retries a CLI write only afte
     });
     assert.equal(external.status, "applied");
     await click("下書き保存");
-    assert.equal(input("ページタイトル").value, "GUIの編集");
     let retry;
     for (let attempt = 0; attempt < 20 && !retry; attempt++) { await wait(10); retry = button("最新に適用して保存"); }
     assert.ok(retry?.disabled);
+    assert.equal(input("ページタイトル").value, "GUIの編集");
     const confirm = document.querySelector('[role="dialog"] input[type="checkbox"]');
     await act(async () => confirm.click()); await flush();
     await click("最新に適用して保存");
     assert.equal(operations.length, 2);
     assert.equal(operations[1].baseVersion, external.version);
     assert.notEqual(operations[1].operationId, operations[0].operationId);
+    // 再適用は画面イベントから非同期で始まるので、hostのjournalへ反映された後で検証する。
+    for (let attempt = 0; attempt < 100 && storage.readJournal().length < 2; attempt++) await wait(10);
+    assert.equal(storage.readJournal().length, 2);
     let saved;
     for (let attempt = 0; attempt < 20; attempt++) {
       if (attempt) await wait(10);

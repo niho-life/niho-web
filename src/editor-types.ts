@@ -7,7 +7,7 @@ import type { PageKind, PageVisibility, SiteSettings } from "./pages.js";
 import type { ComponentLibrary, ComponentNode, PageDocument, PublicPropValue, SitePresentation, StyleProperty, StyleValue } from "./types.js";
 import type { EditorRecoveryStore, EditorRevisionEntry, EditorRevisionPage } from "./history.js";
 import type { BlockLocalizationSchema, LocalizationLocale, LocalizationValue } from "./localization.js";
-import type { EditingPageApplied, EditingPageApplyInput, PageOperationVersions, EditingPageReleaseSetApplyResult, EditingPageReleaseSetItem, EditingPageReleaseSetPlan, EditingPageReleaseSetStatus } from "./editing-api.js";
+import type { EditingPageApplied, EditingPageApplyConflict, EditingPageApplyInput, PageOperationVersions, EditingPageReleaseSetApplyResult, EditingPageReleaseSetItem, EditingPageReleaseSetPlan, EditingPageReleaseSetStatus } from "./editing-api.js";
 import type {
   EditorLocaleReleaseApplyRequest, EditorLocaleReleaseApplyResult, EditorLocaleReleasePlan, EditorLocaleReleasePrepareRequest, EditorLocaleReleaseState
 } from "./locale-release-contract.js";
@@ -19,7 +19,7 @@ export type { PageKind, PageVisibility, SiteSettings } from "./pages.js";
 export type {
   EditorLocaleReleaseApplyRequest, EditorLocaleReleaseApplyResult, EditorLocaleReleasePlan, EditorLocaleReleasePrepareRequest, EditorLocaleReleaseState, EditorLocaleReleaseSummary
 } from "./locale-release-contract.js";
-export type { DocumentChange, EditorLibraryRecoveryEntry, EditorRecoveryEntry, EditorRecoveryStore, EditorRevisionEntry, EditorRevisionKind, EditorRevisionPage, StoredLibraryRecoveryEntry, StoredRecoveryEntry } from "./history.js";
+export type { DocumentChange, EditorLibraryRecoveryEntry, EditorRecoveryEntry, EditorRecoveryStore, EditorRevisionEntry, EditorRevisionKind, EditorRevisionOperationSummary, EditorRevisionOperationType, EditorRevisionPage, StoredLibraryRecoveryEntry, StoredRecoveryEntry } from "./history.js";
 
 export type EditorTarget = { siteId: string; pageId: string; locale: string };
 /** ホストが許可する構造化データの種類。JSON-LD の中身はホストが生成する。 */
@@ -214,7 +214,7 @@ export interface EditorResponsiveProposalAdapter {
   propose(request: EditorResponsiveProposalRequest, signal: AbortSignal): Promise<unknown>;
 }
 export type EditorApplyOperationsRequest = Omit<EditingPageApplyInput, "dryRun"> & { readonly target: EditorTarget };
-export type EditorApplyOperationsResult = EditingPageApplied | { readonly status: "conflict" };
+export type EditorApplyOperationsResult = EditingPageApplied | EditingPageApplyConflict;
 
 /** 認証・認可・通信・公開処理は、認証済みホストの責務。 */
 export interface EditorAdapter {

@@ -3,7 +3,8 @@ import { detachInstance } from "./component-model.js";
 import { parsePageDocument } from "./document.js";
 import type { EditorBlockRegistry, EditorLock, EditorPage, EditorPageChange, EditorPageChangePlan, EditorPageImpact, EditorReadOnly, EditorReleasePlan, EditorReleaseRequest, EditorSite, EditorTarget } from "./editor-types.js";
 import { findPathConflict, validatePagePath } from "./pages.js";
-import { copyId, indexedNodes, indexedNodesById, nodeAt, siblingsAt, walkNodes, type NodePath } from "./node-tree.js";
+import { indexedNodes, indexedNodesById, nodeAt, siblingsAt, walkNodes, type NodePath } from "./node-tree.js";
+import { normalizeNodeFragment } from "./editor-fragment.js";
 import type { Appear, AssetReference, BlockContract, ComponentLibrary, ComponentNode, DesignToken, ElementNode, HiddenRange, IconName, InstanceNode, NodeStyle, PageDocument, PageMeta, PageNode, PublicPropValue, StateName, StateProperty, StyleDeclarations, StyleProperty, StyleValue, TextStyle } from "./types.js";
 import { stateNames, textStyleProperties } from "./style-values.js";
 import { assertMotionStylePatch, sameMotionValue, type MotionStylePatch } from "./builder.js";
@@ -11,6 +12,41 @@ import { isSafeHttpsOrigin, isSafePublicUrl, keys, line, record } from "./valida
 import { normalizeEmbedSource } from "./embeds.js";
 
 export { nodeAt, walkNodes, type NodePath };
+export { normalizeNodeFragment } from "./editor-fragment.js";
+export type NodePositionAnchor = { readonly before: string } | { readonly after: string } | { readonly edge: "start" | "end" };
+export type PageOperationTextPathContextEntry =
+  | { readonly type: "target" }
+  | { readonly type: "text"; readonly value: string }
+  | { readonly type: "element" | "component" | "instance"; readonly nodeId: string };
+export type PageOperationPreconditions = {
+  readonly parentId: string | null;
+  readonly oldValue: StyleValue | PublicPropValue | string | null;
+  readonly textPathContext?: readonly PageOperationTextPathContextEntry[];
+};
+export const PAGE_OPERATION_TEXT_PATH_CONTEXT_MAX_CHILDREN = 8;
+export const PAGE_OPERATION_TEXT_PATH_CONTEXT_MAX_SIBLING_TEXT_LENGTH = 128;
+/** Describes the exact sibling order around a direct text child so stale childPath edits cannot target another text node. */
+export function pageOperationTextPathContext(document: PageDocument, parentId: string | null, childPath: readonly number[]): PageOperationTextPathContextEntry[] | undefined {
+  if (childPath.length !== 1) return undefined;
+  let children: readonly PageNode[];
+  if (parentId === null) children = document.body;
+  else {
+    const matches = walkNodes(document).filter(({ node }) => node.type !== "text" && node.id === parentId);
+    if (matches.length !== 1 || matches[0]!.node.type !== "element") return undefined;
+    children = matches[0]!.node.children;
+  }
+  const targetIndex = childPath[0]!;
+  if (children.length > PAGE_OPERATION_TEXT_PATH_CONTEXT_MAX_CHILDREN || targetIndex >= children.length) return undefined;
+  const context: PageOperationTextPathContextEntry[] = [];
+  for (const [index, child] of children.entries()) {
+    if (index === targetIndex && child.type === "text") context.push({ type: "target" });
+    else if (child.type === "text") {
+      if (child.text.length > PAGE_OPERATION_TEXT_PATH_CONTEXT_MAX_SIBLING_TEXT_LENGTH) return undefined;
+      context.push({ type: "text", value: child.text });
+    } else context.push({ type: child.type, nodeId: child.id });
+  }
+  return context;
+}
 export type EditorOperation =
   | { type: "text"; path: NodePath; value: string }
   | { type: "attribute"; path: NodePath; name: string; value: string }
@@ -42,8 +78,8 @@ export type EditorOperation =
   /** 幅別の非表示。undefined・空配列で解除。 */
   | { type: "hidden"; path: NodePath; ranges: readonly HiddenRange[] | undefined }
   | { type: "title"; value: string }
-  | { type: "add"; parentId: string | null; node: PageNode; index?: number }
-  | { type: "addMany"; parentId: string | null; nodes: readonly PageNode[]; index?: number }
+  | { type: "add"; parentId: string | null; node: PageNode; index?: number; anchor?: NodePositionAnchor }
+  | { type: "addMany"; parentId: string | null; nodes: readonly PageNode[]; index?: number; anchor?: NodePositionAnchor }
   | { type: "replaceChildren"; path: NodePath; children: PageNode[] }
   | { type: "image"; path: NodePath; source: { asset: AssetReference } | { src: string; srcset?: string }; alt?: string }
   | { type: "video"; path: NodePath; source: { asset: AssetReference } | { src: string } }
@@ -55,7 +91,7 @@ export type EditorOperation =
   | { type: "background"; path: NodePath; breakpoint: number | "base"; asset: AssetReference | undefined }
   | { type: "replaceAsset"; from: AssetReference; to: AssetReference }
   | { type: "duplicate" | "remove"; path: NodePath }
-  | { type: "move"; path: NodePath; parentId: string | null; index: number }
+  | { type: "move"; path: NodePath; parentId: string | null; index?: number; anchor?: NodePositionAnchor }
   /** インスタンスのページごとの値。undefined で解除する。 */
   | { type: "instanceProp"; path: NodePath; name: string; value: string | undefined }
   /** インスタンスを展開した element に置き換え、以後は部品の更新を受けない。 */
@@ -66,9 +102,11 @@ export type EditorOperation =
   | { type: "restore"; document: PageDocument }
   | MetaOperation;
 type StableEditorOperation<T> = T extends { type: "text"; path: NodePath }
-  ? Omit<T, "path"> & { parentId: string | null; childPath: NodePath }
-  : T extends { path: NodePath }
-    ? Omit<T, "path"> & { nodeId: string }
+  ? Omit<T, "path"> & { parentId: string | null; childPath: NodePath; preconditions?: PageOperationPreconditions }
+  : T extends { type: "style" | "attribute" | "prop"; path: NodePath }
+    ? Omit<T, "path"> & { nodeId: string; preconditions?: PageOperationPreconditions }
+    : T extends { path: NodePath }
+      ? Omit<T, "path"> & { nodeId: string }
     : T;
 /** 外部クライアント用の安定対象操作。textノードはIDを持たないため、IDを持つ親からの相対パスで指す。 */
 export type EditorOperationById = StableEditorOperation<EditorOperation>;
@@ -102,6 +140,7 @@ export function parseEditorReadOnly(value: unknown): EditorReadOnly | undefined 
 }
 const implicitLocksByDocument = new WeakMap<PageDocument, WeakMap<EditorOperationBlocks, readonly EditorLock[]>>();
 export function effectiveLocks(document: PageDocument, locks: readonly EditorLock[], blocks: EditorOperationBlocks): EditorLock[] {
+  if (!Object.values(blocks).some(({ lockedProps }) => Object.keys(lockedProps ?? {}).length > 0)) return [...locks];
   let byBlocks = implicitLocksByDocument.get(document);
   if (!byBlocks) { byBlocks = new WeakMap(); implicitLocksByDocument.set(document, byBlocks); }
   let implicit = byBlocks.get(blocks);
@@ -123,6 +162,7 @@ function fieldValue(node: PageNode, field: string): unknown {
 }
 const mediaSourceFields = ["asset", "attrs.src", "attrs.srcSet"];
 function assertLocks(before: PageDocument, after: PageDocument, locks: readonly EditorLock[]): void {
+  if (!locks.length) return;
   const index = (document: PageDocument) => new Map(indexedNodes(document).flatMap(({ node }) => node.type === "text" ? [] : [[node.id, node] as const]));
   const previous = index(before), next = index(after);
   const resolved = (document: PageDocument, value: unknown): unknown => {
@@ -285,7 +325,7 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
     if (Object.keys(meta).length) draft.meta = meta as PageMeta; else delete draft.meta;
   }
   else if (operation.type === "add" || operation.type === "addMany") {
-    const destination = targetChildren(operation.parentId), index = operation.index ?? destination.length;
+    const destination = targetChildren(operation.parentId), index = positionIndex(destination, operation.index, operation.anchor, true);
     if (!Number.isInteger(index) || index < 0 || index > destination.length) throw new Error("追加先の位置が不正です。");
     const additions = operation.type === "add" ? [operation.node] : operation.nodes;
     if (!additions.length) throw new Error("追加する要素がありません。");
@@ -524,32 +564,13 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
       const originals = pair < 0 ? [node] : [siblings[Math.min(index, pair)]!, siblings[Math.max(index, pair)]!];
       const subtree = originals.flatMap((entry) => entry.type === "text" ? [] : walkNodes({ ...draft, body: [entry] }));
       if (subtree.some(({ node }) => node.type !== "text" && allLocks.some((lock) => lock.nodeId === node.id))) throw new Error("データ連動値を含む要素は複製できません。");
-      const copies = structuredClone(originals), used = new Set(walkNodes(draft).flatMap(({ node }) => node.type === "text" ? [] : [node.id]));
-      const usedHtmlIds = new Set(walkNodes(draft).flatMap(({ node }) => node.type === "element" && typeof node.attrs?.id === "string" ? [node.attrs.id] : []));
-      const remap = new Map<string, string>();
-      function rename(current: PageNode): void {
-        if (current.type === "text") return;
-        current.id = copyId(current.id, used);
-        if (current.type === "element") {
-          if (typeof current.attrs?.id === "string") { const previous = current.attrs.id; current.attrs.id = copyId(previous, usedHtmlIds); remap.set(previous, current.attrs.id); }
-          current.children.forEach(rename);
-        }
-      }
-      copies.forEach(rename);
-      function links(current: PageNode): void {
-        if (current.type !== "element") return;
-        if (typeof current.attrs?.href === "string" && current.attrs.href.startsWith("#") && remap.has(current.attrs.href.slice(1))) current.attrs.href = `#${remap.get(current.attrs.href.slice(1))}`;
-        if (typeof current.attrs?.htmlFor === "string" && remap.has(current.attrs.htmlFor)) current.attrs.htmlFor = remap.get(current.attrs.htmlFor)!;
-        for (const key of ["aria-labelledby", "aria-describedby"]) if (typeof current.attrs?.[key] === "string") current.attrs[key] = current.attrs[key].split(" ").map((id) => remap.get(id) ?? id).join(" ");
-        current.children.forEach(links);
-      }
-      copies.forEach(links); siblings.splice(Math.max(index, pair) + 1, 0, ...copies);
+      const copies = normalizeNodeFragment(originals, draft);
+      siblings.splice(Math.max(index, pair) + 1, 0, ...copies);
     } else if (operation.type === "move") {
       if (operation.parentId && walkNodes({ ...draft, body: [node] }).some(({ node }) => node.type !== "text" && node.id === operation.parentId)) throw new Error("要素を自分の内側へ移動できません。");
       parentChildren(operation.path).splice(operation.path.at(-1)!, 1);
-      const destination = targetChildren(operation.parentId);
-      if (!Number.isInteger(operation.index) || operation.index < 0 || operation.index > destination.length) throw new Error("移動先の位置が不正です。");
-      destination.splice(operation.index, 0, node);
+      const destination = targetChildren(operation.parentId), index = positionIndex(destination, operation.index, operation.anchor, false);
+      destination.splice(index, 0, node);
     }
   }
   const result = validateDocument
@@ -563,6 +584,19 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
   if (!siteStyles) return result;
   const retained = retainPageStyles(result, ownership, siteStyles);
   return validateDocument ? parsePageDocument(retained, blocks, { ...(components ? { components } : {}), siteStyles }) : retained;
+}
+function positionIndex(destination: readonly PageNode[], index: number | undefined, anchor: NodePositionAnchor | undefined, optional: boolean): number {
+  if (index !== undefined && anchor !== undefined) throw new Error("位置は index または anchor のどちらか一方で指定してください。");
+  if (anchor !== undefined) {
+    if ("edge" in anchor) return anchor.edge === "start" ? 0 : destination.length;
+    const nodeId = "before" in anchor ? anchor.before : anchor.after;
+    const at = destination.findIndex((node) => node.type !== "text" && node.id === nodeId);
+    if (at < 0) throw new Error("位置アンカーが見つかりません。");
+    return "before" in anchor ? at : at + 1;
+  }
+  if (index === undefined && optional) return destination.length;
+  if (!Number.isInteger(index) || index! < 0 || index! > destination.length) throw new Error(optional ? "追加先の位置が不正です。" : "移動先の位置が不正です。");
+  return index!;
 }
 function pathForNodeId(document: PageDocument, nodeId: string): NodePath {
   if (typeof nodeId !== "string" || !nodeId) throw new Error("対象ノードIDが正しくありません。");
@@ -582,12 +616,12 @@ function pathForTextTarget(document: PageDocument, parentId: string | null, chil
 export function editDocumentById(document: PageDocument, operation: EditorOperationById, blocks: EditorOperationBlocks = {}, locks: readonly EditorLock[] = [], components?: ComponentLibrary, siteStyles?: SiteStyles, validateDocument = true): PageDocument {
   if (operation.type === "text") {
     if (!("parentId" in operation) || !("childPath" in operation)) throw new Error("テキスト対象は親IDと相対パスで指定してください。");
-    const { parentId, childPath, ...change } = operation;
+    const { parentId, childPath, preconditions: _preconditions, ...change } = operation;
     const path = pathForTextTarget(document, parentId, childPath);
     return editDocument(document, { ...change, path } as EditorOperation, blocks, locks, components, siteStyles, validateDocument);
   }
   if ("nodeId" in operation) {
-    const { nodeId, ...change } = operation;
+    const { nodeId, preconditions: _preconditions, ...change } = operation as typeof operation & { preconditions?: PageOperationPreconditions };
     const path = pathForNodeId(document, nodeId);
     return editDocument(document, { ...change, path } as EditorOperation, blocks, locks, components, siteStyles, validateDocument);
   }

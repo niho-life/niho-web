@@ -4,7 +4,7 @@
 
 `@niho/web/editing-client` の `createPageEditingApiClient` は同じwire契約を呼ぶReact非依存clientです。ブラウザーのGUIは既定のsame-origin credentialsまたはhost提供headerを使え、Node CLIはhost bearer headerと `credentials: "omit"` を使えます。ホストorigin自体がCloudflare Accessで保護される場合、`niho-edit` は別途設定されたAccess Service Auth headerも指定originだけに送れます。GUIと `niho-edit` CLIはページ本文・CMS項目・ページ管理・ブレークポイント・素材の同じ操作を呼べます。Studio GUIはAccess sessionをWorker BFFで短期の操作別tokenへ委任し、サイトoriginの共通APIへservice bindingで接続します。ブラウザーのAccess tokenやcookieはサイトへ転送しません。
 
-Studio GUIはページの表示・編集材料の一部（presentation metadata、英語公開状態）を取得するため、引き続きread-onlyの既存snapshot routeも併用します。日本語本文・CMS項目・ページ管理・素材の書込は共通APIを使います。翻訳の共通APIは、対応するホストが登録した操作をCUIから直接呼び出せます。Studioの翻訳画面は既存の接続を使います。
+Studio GUIは対応ホストでは editor snapshot profile から日本語本文・表示材料・編集状態をまとめて読みます。未対応ホストへの移行中は旧read-only snapshot routeを版照合付きで併用します。CMS項目・ページ管理・素材の書込は共通APIを使います。翻訳の共通APIは、対応するホストが登録した操作をCUIから直接呼び出せます。Studioの翻訳画面は既存の接続を使います。
 
 ## 操作カタログ
 
@@ -13,9 +13,12 @@ Studio GUIはページの表示・編集材料の一部（presentation metadata�
 | ID | Method | Path | 権限 | 入力 | 結果 |
 | --- | --- | --- | --- | --- | --- |
 | `pages.inspect` | GET | `/sites/{siteId}/operations/pages.inspect/{pageId}?locale={locale}&view={view}` | `pages.read` | outline/find/subtree/effectiveStyleの投影条件 | 部分読取結果と文書・component・presentation・site styleの各版 |
-| `pages.read` | GET | `/sites/{siteId}/operations/pages.read/{pageId}?locale={locale}` | `pages.read` | site/page/locale | `{ document, version }` |
+| `pages.read` | GET | `/sites/{siteId}/operations/pages.read/{pageId}?locale={locale}` | `pages.read` | site/page/locale、任意の editor snapshot profile | `{ document, version, componentsVersion?, presentationVersion?, presentation?, editorState? }` |
+| `pages.history` | GET | `/sites/{siteId}/operations/pages.history/{pageId}?locale={locale}&cursor={cursor}` | `pages.history.read` | site/page/locale and optional cursor | `{ entries, next? }` (operation summaries only) |
+| `pages.history-read` | POST | `/sites/{siteId}/operations/pages.history-read/{pageId}?locale={locale}` | `pages.history.read` | `{ id }` in the JSON body | `{ document, siteStyles?, presentation? }` for one retained revision |
 | `pages.save` | PUT | `/sites/{siteId}/operations/pages.save/{pageId}?locale={locale}` | `pages.edit` | `{ expectedVersion, document }` | `{ status: "saved", version, document }` |
 | `pages.apply` | POST | `/sites/{siteId}/operations/pages.apply/{pageId}?locale={locale}` | `pages.edit` | `{ baseVersion, operationId, operations, componentsVersion?, presentationVersion?, stylesVersion?, dryRun? }` | `{ status: "applied", version, revision, document }` / dry-run `{ status: "valid", diff, touched }` |
+| `pages.preview-intent` | POST | `/sites/{siteId}/operations/pages.preview-intent/{pageId}?locale={locale}` | `pages.read` | `{}` | `{ url, expiresAt }` |
 | `pages.release-plan` | POST | `/sites/{siteId}/operations/pages.release-plan/{pageId}?locale={locale}` | `pages.publish` | expected version, publish/rollback action, optional rollback revision and dependency versions | `{ plan }` |
 | `pages.release` | POST | `/sites/{siteId}/operations/pages.release/{pageId}?locale={locale}` | `pages.publish` | expected version, one-use confirmation token, UUID v4 operation ID | `{ status: "released", operationId, version, document }` |
 | `pages.release-set-plan` | POST | `/sites/{siteId}/operations/pages.release-set-plan` | `pages.publish` per target | `{ siteId, operationId, items: [{ target, expectedVersion, componentsVersion?, presentationVersion? }] }` (1–50 pages) | `{ plan }` |
@@ -42,6 +45,10 @@ Studio GUIはページの表示・編集材料の一部（presentation metadata�
 | `assets.delete` | POST | `/sites/{siteId}/operations/assets.delete/{provider}/{assetId}` | `assets.delete` | `{ expectedVersion }` | deleted, in-use, conflict, or rejection |
 | `assets.restore` | POST | `/sites/{siteId}/operations/assets.restore/{provider}/{assetId}` | `assets.delete` | `{ expectedVersion }` | restored, conflict, or rejection |
 
+`pages.preview-intent` は、ページ読取権限を持つactorに対してホストが発行する短期プレビューURLです。`PageEditingHostAdapter.createPagePreviewIntent(actor, target)` を実装したhostだけがdiscoveryに公開できます。ホストはURLにbearer token、Access資格情報、cookieなどを含めず、サーバー側の不透明な許可記録をactor・site/page/locale・発行時の文書版・styles/components/presentation/翻訳の依存版・期限・利用回数上限に結び付けます。プレビューHTMLのGET時に認証主体と全ての版・期限・利用回数を再検証し、一致しない場合は拒否します。CLIは認証header付きでHTMLを一度だけ取得し、幅ごとの撮影には同じメモリ内HTMLを使います。
+
+プレビューHTMLのhost responseには `Cache-Control: no-store`、`Referrer-Policy: no-referrer`、`X-Robots-Tag: noindex` を付け、公開ページ用cache経路を通しません。共通APIが返すintent JSONにも `PAGE_PREVIEW_INTENT_HEADERS` を付けますが、プレビューHTML自体の安全な配信はhostの責務です。HTMLは公開時と同じrenderer・登録block・presentation・host viewで描画します。clientは期限を15分以内に制限し、HTTPSかつAPIと同じoriginのURLだけを受け入れます。
+
 `pages.save` は `expectedVersion` を原子的に比較します。競合時はHTTP 409と `version_conflict` を返し、ホストは古い下書きを上書きしません。documentは受信側で `parsePageDocument` を通し、pathのsite/pageとqueryのlocaleに一致しない文書、任意HTML・JavaScript・CSSなど検証に失敗する値はHTTP 400 `invalid_request` で拒否します。登録ブロック・部品インスタンス・サイト共通スタイルを使うホストは、adapterの `validationContext(actor, target)` から信頼済みの `blocks`・`components`・`siteStyles` を渡します。読み取り、入力文書、保存後の正規文書の検証に同じcontextを使います。
 
 `pages.inspect` はページ文書を変更せず、`pages.read` と同じ認可でAI向けの小さな投影を返します。`view=outline` は要素のID・型・名前・tag/block・40文字までの本文抜粋・レイアウト要約・token参照・responsive/state override数と、先頭のtoken/text style/breakpoint定義を返します。`depth` と `node` で範囲を絞れます。`view=find` は `text`・`name`・`tag`・`style=property=value`・`usesToken`・`block`・`node` のいずれかで検索し、ID・祖先名・抜粋を返します。`view=subtree` は指定nodeのJSONを返し、結果が大きい場合は `{ path, node }` 項目へ分けて返します。`view=effectiveStyle` は指定nodeのbase・各breakpoint・hover/focus/activeの値と、その値がページ・site shared・component・継承のどこから来たかを返します。
@@ -50,11 +57,18 @@ outline/find/subtreeは `limit`（既定1000、最大1000件）と `cursor` で�
 
 `pages.apply` は GUI と機械クライアントが同じ `EditorOperationById` 操作列を送る版付き書込です。操作列は1〜500件で、UUID v4 の `operationId` を付けます。discoverは全操作の入力 JSON Schema を返しますが、受信側は schema と独立した閉じた wire parser で各操作を検査します。初版では `restore`、token / textStyle の削除、`replaceChildren`、`replaceAsset` を拒否します。これらの全置換・移行操作には `pages.save` を使います。
 
+`baseVersion` が古い場合も、依存版が指定されていれば先に照合します。自動 rebase するのは `style` / `text` / `attribute` / `prop` の葉の更新だけです。各操作に `{ parentId, oldValue }` の `preconditions` が必要で、現在の対象ノードが一意に存在し、親IDと対象フィールドの旧値が一致するときだけ現在文書へ再適用します。text操作は安定IDを持たない `childPath` で対象を指すため、GUIは親直下の子の順序を表す `textPathContext` も送ります。このcontextは最大8件の子を記録し、対象以外のtext nodeは128文字まで記録します。contextが省略された場合や現在の子の順序と一致しない場合、対象が親直下の子でない場合は HTTP 409 `version_conflict` です。前提条件のない要求、構造・ページ全体・token・textStyle操作、フォームのlabel/controlの関連に影響する属性変更も HTTP 409 `version_conflict` です。同じ要素・同じフィールドが先に変更されていた場合も適用しません。前提不一致を検出した409は `{ error: "version_conflict", unmetPreconditions: [{ index, condition }] }` を返し、`condition` は `rebase_supported` / `preconditions` / `node_exists` / `parent_id` / `old_value` / `child_path` のいずれかです。指定依存版の競合は従来どおり `{ error: "version_conflict" }` です。
 `niho-edit apply <page> --locale <locale> --ops <file|-> [--dry-run]` はJSONの `EditorOperationById[]` を受け取ります。ホストが `pages.apply` を公開していれば、CLIは `pages.read` で版を取り、操作列を同じ操作として送信します。`--dry-run` はホスト側で検証し、差分と対象IDを返します。再試行に使う `--operation-id` は `--expected-version` と併せて指定します。両方を固定すると、同じ版・操作列による再送が前回の結果を返します。API非対応ホストでは `pages.read` → ローカル `editDocumentById` → `pages.save` にフォールバックします。この経路ではhost-neutralな操作適用だけを行い、ホストの信頼済みblock・component・style contextを使う全文検証は保存時まで延期します。dry-run出力にその制限を明記します。差分は要素ID・種類・変更箇所・変更前後の値を含む `diffDocuments` の一覧です。
 
-ホストの `pageOperations.transact` は、現在の文書/versionと、同じ版から読み取った信頼済み `blocks`・`locks`・`components`・`siteStyles` を `prepare(snapshot, validationContext)` に渡します。`pages.apply` は別途 `validationContext(actor, target)` を読みません。`editDocumentById` を順に適用し、最後に全文を `parsePageDocument` で検証します。途中の一操作でも失敗した場合は HTTP 422 `validation_failed` と、失敗 index・理由を返し、何も保存しません。`baseVersion` または指定された依存版が現在値と異なる場合は HTTP 409 `version_conflict` です。依存版は入力で省略できます。成功時は保存後の正規文書と新しい版・revision を返します。
+`add` / `addMany` / `move` は、`{ before: nodeId }` / `{ after: nodeId }` または `{ edge: "start" | "end" }` の `anchor` で位置を指定できます。アンカーは移動先の同じ親にある要素IDを指します。既存の数値 `index` も受け付けますが、indexとanchorは同時に指定できず、`move` はどちらか一方が必須です。位置を省略した追加は末尾へ挿入します。
 
-ホストの `pageOperations.transact(actor, target, transaction)` は、ページ状態と同じCAS/transactionで操作記録を確定します。操作本文は不変の journal blob として保存し、現在状態にはその参照だけを持ちます。`actor + operationId` は正規化入力のhashと保存結果に結び付き、同じ要求の再送は前回と同じ結果、同じIDで違う要求を送った場合は HTTP 409 `duplicate_operation` になります。文書 pointer、journal pointer、ID/hash/結果は同時に確定してください。actor・委任元・GUI/CLI/APIの種別は認証済み文脈から取得し、要求本文から受け取りません。`dryRun: true` は全操作を検証して `{ status: "valid", diff, touched }` を返しますが、保存もoperation IDの消費も行いません。
+ホストの `pageOperations.transact` は、常に最新の文書/versionと、その読み取りと同じ版に属する信頼済み `blocks`・`locks`・`components`・`siteStyles` を `prepare(snapshot, validationContext)` に渡します。古い `baseVersion` を理由にprepare前に拒否せず、上記の葉操作だけを条件付きで再適用できるか判定します。`pages.apply` は別途 `validationContext(actor, target)` を読みません。`editDocumentById` を順に適用し、最後に全文を `parsePageDocument` で検証します。途中の一操作でも失敗した場合は HTTP 422 `validation_failed` と、失敗 index・理由を返し、何も保存しません。prepareが使ったページ版と依存版をCASで再照合し、文書・操作記録を同時に確定してください。CASに負けた場合は最新snapshotから操作IDの再送判定とprepareをやり直します。依存版の指定は任意ですが、指定値がprepare時点の現在値と異なる場合はHTTP 409です。成功時は保存後の正規文書と新しい版・revision を返します。
+
+ホストの `pageOperations.transact(actor, target, transaction)` は、ページ状態と同じCAS/transactionで操作記録を確定します。操作本文は不変の journal blob として保存し、現在状態にはその参照だけを持ちます。`actor + operationId` は正規化入力のhashと保存結果に結び付き、同じ要求の再送は前回と同じ結果、同じIDで違う要求を送った場合は HTTP 409 `duplicate_operation` になります。文書 pointer、journal pointer、ID/hash/結果は同時に確定してください。安全にrebaseした記録には、元要求の `baseVersion` に加えて実際に適用した版 `rebasedFromVersion` を記録します。actor・委任元・GUI/CLI/APIの種別は認証済み文脈から取得し、要求本文から受け取りません。`dryRun: true` は全操作を検証して `{ status: "valid", diff, touched }` を返しますが、保存もoperation IDの消費も行いません。
+
+編集用の完全なスナップショットを読むクライアントは `Accept: application/json; profile=niho-editor-snapshot-v1` を指定します。共通クライアントでは `editorSnapshot: { blocks }` で有効にします。完全対応ホストの `readPage` は、同じ読取結果から `document` と `version`、`editorState`、表示コンテキストがある場合は `presentation` と `presentationVersion` を組にして返します。移行中は `presentation` だけを先に返しても構いませんが、その場合 Studio は不足する編集状態を旧read-only snapshot routeから補います。`editorState` も返すと旧routeの文書読取を省けます。通常の `Accept: application/json` では従来の本文と版の応答を返します。
+
+`presentation` は core の `SitePresentation` です。APIとクライアントは `parseSitePresentation` で対象・登録ブロック・共通レイアウトや共有文書を検証します。完全なスナップショットでは、`presentationVersion` は `presentation.version` と一致する場合に限り受け付け、どちらもない場合は表示コンテキストを省略できます。`editorState` は `readOnly`、`englishPublication`、公開版一覧の `releases` を必要に応じて保持します。対応ホストは、該当する状態が一つもない場合も空の `editorState` を返します。壊れた完全スナップショットは拒否します。旧ホストの応答には `editorState` がなく、Studioは旧スナップショットを取得して文書版と表示コンテキスト版の両方を共通 API と照合します。
 
 `pages.release-set-*` は同じサイト内のページを、一つの計画・適用操作で公開します。対象は1〜50件で、重複ページは禁止します。単一ページの非同期公開も同じoperation ID・status契約を使えます。各項目の `expectedVersion` と任意の `componentsVersion` / `presentationVersion`、対象一覧、operation IDを計画へ固定します。APIは全対象の `pages.publish` 権限を個別に確認します。ホストadapterは対象ごとに版を再検証し、結果として `released`（公開済み）、`conflict`（版が変わった）、`pending`（処理中）を返します。全体の `status` は未完了項目があれば `publishing`、全項目が確定したら `completed` です。ある対象の競合で他ページの成功を隠さず、全ページ同時切替も要求しません。トップレベルの `version_conflict` は操作が始まっておらず、公開済みページがない場合に限ります。
 
@@ -64,7 +78,9 @@ outline/find/subtreeは `limit`（既定1000、最大1000件）と `cursor` で�
 
 `pages.catalog` は管理可能なページと一覧のopaque versionを返します。`pages.change-prepare` は作成・名前/URL変更・公開状態変更を実行せずに影響と短期確認tokenを返し、`pages.change-apply` は同じ `expectedVersion`・UUID v4 `operationId`・change・tokenを照合して適用します。stale versionは409 `version_conflict`、別prepareでのoperation ID再利用は409 `duplicate_operation` です。同じactorが同じapplyを再送した場合は、ホストが記録した同じ結果を返します。
 
-`cms.schema` はホストの `CollectionDefinition` を返します。`cms.list` / `cms.read` は一覧と項目の読み取り、`cms.create` / `cms.save` は下書きの作成と版付き保存、`cms.publish-plan` / `cms.publish` は確認token付き二段階公開を行います。`cms.create` は対象collectionの `capabilities.create` が有効な場合だけ受け付けます。保存値は定義済みフィールドで検証され、stale versionは409 `version_conflict` と現行項目を返します。保存・公開計画・公開適用のフィールド検証エラーは422 `validation_failed` と `fields` を返します。公開計画には対象・expectedVersion・operation ID・confirmation token・確認用項目を含め、`redirect` が指定された場合は公開時の転送設定も計画へ結び付けます。ホストはactor・入力・tokenを保存して同じIDの再送を冪等に処理します。`cms.operation-status` は操作結果の照会用です。各CMS操作は対応するadapter関数があるホストだけdiscoverに出します。これらは CMS v1 の操作です。定義の移行と不変 release の計画は [CMS v2 契約](cms-v2-contract.md) に定めます。
+Studio の鎌倉エディタは初期表示に editor catalog の一覧を使い、管理操作を確認する時点で `pages.catalog` の版を取得します。既存ページを変更する場合は表示中の対象と現在の管理用一覧を照合し、他の変更で表示が古くなっていれば再読み込みを促します。計画から適用までの変更は同じ `expectedVersion` で検出します。
+
+`cms.schema` はホストの `CollectionDefinition` を返します。`cms.list` / `cms.read` は一覧と項目の読み取り、`cms.create` / `cms.save` は下書きの作成と版付き保存、`cms.publish-plan` / `cms.publish` は確認token付き二段階公開を行います。`cms.create` は対象collectionの `capabilities.create` が有効な場合だけ受け付けます。保存値は定義済みフィールドで検証され、stale versionは409 `version_conflict` と現行項目を返します。保存・公開計画・公開適用のフィールド検証エラーは422 `validation_failed` と `fields` を返します。公開計画には対象・expectedVersion・operation ID・confirmation token・確認用項目を含め、`redirect` が指定された場合は公開時の転送設定も計画へ結び付けます。ホストはactor・入力・tokenを保存して同じIDの再送を冪等に処理します。`cms.operation-status` は操作結果の照会用です。各CMS操作は対応するadapter関数があるホストだけdiscoverに出します。
 
 `assets.*` は素材の安定IDを操作します。配信URLは `assets.resolve` の応答に限って返し、ページ文書へは保存しません。一覧・使用先・解決は `assets.read`、メタデータ更新は `assets.edit`、一時アップロード許可の発行は `assets.upload`、削除と復元は `assets.delete` を個別に要求します。更新・削除・復元は `expectedVersion` をホストが比較します。`assets.upload-intent` は画像本体を受け取らず、短命の一回限りtokenを返します。クライアントは本体を `PUT` する前に、URLのHTTPS originがAPI originか、明示的に信頼設定したupload originと一致することを確認し、tokenをそのorigin以外へ送ってはいけません。ホストは実データの形式・サイズ・内容を再検査し、操作主体と結果を監査記録へ結び付けます。
 
@@ -105,11 +121,16 @@ outline/find/subtreeは `limit`（既定1000、最大1000件）と `cursor` で�
 
 Accessがログイン画面へredirectした場合、CLIは追跡せず `access_redirect` とHTTP statusをJSON envelopeで返して終了コード1で終了します。redirect先や応答本文は出力しません。資格情報が片方だけ、または形式不正なら、通信前に `invalid_access_credentials` を返します。
 
+`niho-edit preview <page> --locale <locale> --widths 375,768,1280` は `pages.preview-intent` 対応hostに下書きHTMLを要求します。任意依存のPlaywrightとローカルChromiumが使える場合は各幅のPNGを `--out` の下の `niho-preview-*` ディレクトリへ保存し、`--compare published` では下書き・公開版の個別PNGと横並び比較PNGを同じ幅ごとに保存します。どちらも利用できなければ、スクリーンショット取得を行わず、下書きURLと期限（比較指定時は公開URL）をJSONで返します。HTMLはhost bearerと必要なら同じorigin向けAccess headerで一度取得し、ブラウザーへ認証headerを渡さずに各幅を撮影します。HTML応答の `no-store` / `no-referrer` / `noindex` が不足する場合は撮影を拒否します。
+
+`--compare published` の公開HTMLはAPI originに対するAccess Service Auth headerだけをNode fetchへ付け、host bearerは送らず、redirectは拒否してからブラウザーへ渡します。Access保護された同一origin上の画像・CSS等もAccess headerだけで読み、Access資格情報を他originへ渡しません。ブラウザーからのPOST等の変更要求は遮断します。
+
 ```sh
 niho-edit --origin https://site.example --site site-id discover
 niho-edit --origin https://site.example --site site-id read home --locale ja > page.json
 niho-edit --origin https://site.example --site site-id outline home --locale ja --depth 1
 niho-edit --origin https://site.example --site site-id find home --locale ja --text "鎌倉"
+niho-edit --origin https://site.example --site site-id preview home --locale ja --widths 375,768,1280 --compare published --out ./previews
 niho-edit --origin https://site.example --site site-id get home heading --locale ja --effective-style
 # page.json の document を編集し、version は保持する
 niho-edit --origin https://site.example --site site-id save home --locale ja --json page.json > saved.json
@@ -170,7 +191,7 @@ niho-edit --origin https://site.example --site site-id assets-restore uploads im
 
 このAPIはCUIからホストのサイトorigin上で直接利用できます。Studio GUIも同じwire契約をWorker BFF経由で利用します。ホストはAPIの認証・認可・監査・永続化・公開を実装し、配備と認証設定を別途完了する必要があります。
 
-host adapterの最小実装は `npm run build` の後に `node examples/editing-api-demo.mjs` で実行できます。この例は認証・権限・BlockContractを持つメモリ内ホストでdiscover、ページ読取、outline部分読取、見出し・背景色の変更、フォームの追加、版付き保存、古い版の409を確認します。
+host adapterの最小実装は `npm run build` の後に `node examples/editing-api-demo.mjs` で実行できます。この例は認証・権限・BlockContractを持つメモリ内ホストでdiscover、ページ読取、outline部分読取、見出し・背景色の変更、フォームの追加、版付き保存、古い版の409、別要素への安全なrebaseを確認します。
 
 ページ文書のJSON Schemaはwire上のトップレベル形を説明します。細部の要素・style・属性は `@niho/web/core` の `parsePageDocument` が閉じた文書契約として検証し、登録ブロック・部品・サイト共通styleはホストが渡したcontextに従います。機械クライアントはdiscoverのschemaを入力UI・引数検査に使い、サーバーの文書validatorを正本として扱います。保存成功時はホストが保存後の正規文書とversionを返すため、CLIはそのまま次の編集へ使えます。
 
@@ -194,8 +215,10 @@ niho-edit --origin https://site.example --site site-id localization-release-read
 
 - `authenticate(request)` はセッション/API tokenを検証し、`human` または `machine` のactorと、必要なら委任元を返す。`pages.apply` 対応hostは `gui` / `cli` / `api` の `clientKind` も認証文脈から返す。監査に人の連絡先が必要な操作では、hostが検証済みのemailだけを `actor.email` に渡す。
 - `authorize(actor, capability, scope)` はリクエストごとにサイト/ページの権限を判断する。discover時も同じ判定を使う。
+- `createPagePreviewIntent(actor, target)` を提供するhostは、認証済みactor・site/page/locale・現行の文書版とstyles/components/presentation/翻訳の依存版・期限・利用回数に結び付く不透明な許可記録をサーバー側で発行する。HTMLを返すpreview routeでも同じactorと全版を再検証し、要件外のrequestを拒否する。
 - `validationContext(actor, target)` は、`pages.read` / `pages.save` で対象文書の検証に必要なホスト登録block・部品library・サイトstyleを返す。`pages.apply` は後述のtransactionが、同じ版に対応するblock・lock・部品library・サイトstyleを `prepare` に渡す。これらの実装定義はクライアントへ公開しない。
 - `readPage` は文書とopaque versionを返す。
+- 版履歴を公開するホストは `listPageHistory(actor, target, cursor?)` と `readPageHistoryRevision(actor, target, id)` を実装します。両操作は独立した `pages.history.read` 権限で再認可し、`pages.read` から推測・継承しません。履歴一覧は表示名・actor種別・確認済み委任元の表示名・操作種別と対象IDだけを返します。変更前後の値、メール、ユーザーID、subjectは要約へ含めません。revision IDはopaqueとして `pages.history-read` のPOST bodyで受け取り、URL・query・ログへ出しません。snapshotは通常の文書検証とsite/page/locale照合を通し、対象違い・不正な履歴はhost contract violationにします。
 - `savePage` はexpectedVersionを永続層で原子的に比較して保存する。並行更新は `conflict` を返し、成功時は正規化済みの保存後PageDocumentと新versionを返す。
 - `pageOperations.transact` を提供するホストは、actorとoperation IDの既存記録を版照合より先に確認し、同じ版から取得した文書・依存版・信頼済みcontextに対する全操作を検証してから、文書・revision・journal blob参照・operation ID/hash/結果を一つのCAS/transactionで確定する。同一要求の再送は同じ結果を返し、同一IDの異なる入力は `duplicate_operation` として拒否する。dry-runでは保存記録を作らない。
 - 公開操作を提供する場合は `releaseSite` から信頼済みの許可originを返し、`preparePageRelease` が現行版・依存版・公開先に束縛された計画を作る。handlerは計画の対象・action・版・domainを検証する。
