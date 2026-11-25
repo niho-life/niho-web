@@ -477,14 +477,24 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
           </div>
           {schemaProblems.length > 0 && <section aria-label="定義の計画エラー">
             <h3>計画を修正してください</h3>
-            <ul>{schemaProblems.map((problem, index) => <li key={`${problem.code}/${problem.collectionId}/${problem.itemId}/${problem.fieldId}/${index}`}>
-              <strong>{CMS_PROBLEM_LABELS[problem.code]}:</strong> {problem.message}{problem.locale && ` (${problem.locale})`}
-              {(problem.code === "conversion" || problem.code === "value") && problem.collectionId && problem.itemId && problem.locale && problem.fieldId && <label>
-                設定する値 <textarea value={schemaReplacements[`${problem.locale}/${problem.collectionId}/${problem.itemId}/${problem.fieldId}`] ?? ""}
-                  placeholder={editableSchema.collections.find(({ id }) => id === problem.collectionId)?.fields.find(({ fieldId }) => fieldId === problem.fieldId)?.type && ["image", "gallery", "select", "reference", "tags"].includes(editableSchema.collections.find(({ id }) => id === problem.collectionId)?.fields.find(({ fieldId }) => fieldId === problem.fieldId)?.type ?? "") ? "JSON 値を入力" : "値を入力"}
-                  onChange={(event) => setSchemaReplacements((previous) => ({ ...previous, [`${problem.locale}/${problem.collectionId}/${problem.itemId}/${problem.fieldId}`]: event.target.value }))} />
-              </label>}
-            </li>)}</ul>
+            <ul>{schemaProblems.map((problem, index) => {
+              const field = problem.collectionId && problem.fieldId
+                ? editableSchema.collections.find(({ id }) => id === problem.collectionId)?.fields.find(({ fieldId }) => fieldId === problem.fieldId) : undefined;
+              const replacementKey = `${problem.locale}/${problem.collectionId}/${problem.itemId}/${problem.fieldId}`;
+              const jsonReplacement = field && ["image", "gallery", "select", "reference", "tags"].includes(field.type);
+              return <li key={`${problem.code}/${problem.collectionId}/${problem.itemId}/${problem.fieldId}/${index}`}>
+                <strong>{CMS_PROBLEM_LABELS[problem.code]}:</strong> {problem.message}
+                {(problem.collectionId || problem.itemId || field || problem.locale) && <small>
+                  {[problem.collectionId && `コレクション ${problem.collectionId}`, problem.itemId && `項目 ${problem.itemId}`,
+                    field && `フィールド ${field.label}`, problem.locale && `locale ${problem.locale}`, problem.path && `path ${problem.path}`].filter(Boolean).join(" / ")}
+                </small>}
+                {(problem.code === "conversion" || problem.code === "value") && problem.collectionId && problem.itemId && problem.locale && problem.fieldId && <label>
+                  設定する値 <textarea value={schemaReplacements[replacementKey] ?? ""}
+                    placeholder={jsonReplacement ? "JSON 値を入力" : "値を入力"}
+                    onChange={(event) => setSchemaReplacements((previous) => ({ ...previous, [replacementKey]: event.target.value }))} />
+                </label>}
+              </li>;
+            })}</ul>
             <p>変換値を入力したら、もう一度「計画を作成・更新」を押してください。</p>
           </section>}
           {schemaPlan && <section aria-label="定義の移行計画">
