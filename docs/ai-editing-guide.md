@@ -4,7 +4,7 @@
 
 ## 接続
 
-Node.js 22以上と、対象サイトの短期 `NIHO_EDIT_TOKEN` が必要です。ホストoriginとsite IDはホストの担当者から受け取ります。originは `https://` で始まるAPIのoriginを指定します。Accessで保護されたoriginでは、対になる `CF_ACCESS_CLIENT_ID` と `CF_ACCESS_CLIENT_SECRET` もプロセス環境へ渡してください。tokenとAccess資格情報をCLI引数、MCPのtool引数、編集ファイルへ入れないでください。
+Node.js 22以上と、対象サイトの短期 `NIHO_EDIT_TOKEN` が必要です。ホストoriginとsite IDはホストの担当者から受け取ります。originは `https://` で始まるAPIのoriginを指定します。Accessで保護されたoriginでは、対になる `CF_ACCESS_CLIENT_ID` と `CF_ACCESS_CLIENT_SECRET` もプロセス環境へ渡してください。Studio-native CMSを使うときはStudio originを設定し、toolの `args` に `--studio` を加えます。Studioでは短期Access user tokenを `NIHO_EDIT_TOKEN` に渡すか、Service Authの対になる資格情報を渡してください（[Studio-native CMSのCLI契約](studio-cli.md#studio-native-cms)）。tokenとAccess資格情報をCLI引数、MCPのtool引数、編集ファイルへ入れないでください。
 
 CLIは各コマンドの前に `--origin` と `--site` を指定します。
 
@@ -41,6 +41,8 @@ command = "niho-edit"
 args = ["--origin", "https://site.example", "--site", "site-id", "mcp"]
 env_vars = ["NIHO_EDIT_TOKEN", "CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET"]
 ```
+
+Studio-native CMSでは、MCP設定のoriginをStudio originにし、`cms-discover` / `cms-v2` などのtoolを呼ぶとき `args` に `--studio` を加えます。CLIと同じくCMS系以外のサイト編集コマンドはこのモードでは実行できません。
 
 ## 読む・探す
 

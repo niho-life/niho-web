@@ -17,9 +17,9 @@
 ブラウザを使わないStudio操作は [CLIの契約と運用](docs/studio-cli.md) を参照してください。
 
 AIが編集する対象ごとの正本・GUI/CLI/Gitの経路・公開HTMLからの逆引きと、鎌倉StudioのGUI書込み操作ID・適合テストは[対応表](docs/ai-edit-source-map.md#鎌倉studioのgui書込み経路)を参照してください。
+AIによる読取・検索・dry-run・preview・公開と、Claude Code / Codexから使うstdio MCPの設定は[AI編集手順](docs/ai-editing-guide.md)を参照してください。
 サイト側に共通HTTP契約を接続した後は、`niho-edit` CLIでStudio GUIを経由せずにページ文書・CMS項目・ページ管理・ブレークポイント・素材・翻訳を読み、JSON編集し、版付きで保存できます。複数ページの公開も対象と各版を固定した変更セットで行い、同じ操作IDで再試行・状態照会できます。対応するStudio GUIもBFF経由で同じ編集APIを使います（[API契約](docs/editing-api-contract.md)）。
 対応するホストでは `niho-edit preview` が公開と同じrendererの下書きを幅別に撮影し、任意ブラウザーが無い環境では短期URLと期限を返します。
-AIによるページの読取・検索・操作のdry-run・preview・公開と、Claude Code / Codexから同じCLIを呼ぶstdio MCPの設定は[AI編集手順](docs/ai-editing-guide.md)を参照してください。
 
 ソースは公開されていますが、第三者への再利用ライセンスは付与していません（`UNLICENSED`）。
 
@@ -61,7 +61,7 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 | `@niho/web/project-read-model` | summary / dashboardの型・読み取りadapter・runtime parser。React不要 |
 | `@niho/web/collection-workspace` | コレクション（CMS）の一覧と項目の編集の `CollectionWorkspace`。鎌倉ではStudio GUIと `niho-edit` CLIが同じサイトAPIを使い、CMS画像・galleryは安定素材IDで保存して表示時にURL解決します。本文と独立した任意の英語公開状態の更新／安全な再試行、同じ画面で切り替える任意の原文／翻訳タブと訳文タブへの直接リンク（[接続方法](docs/collection-contract.md)、[プラットフォームCMS ADR](docs/adr/0001-platform-cms-source-and-publication.md)） |
 | `@niho/web/localization-workspace` | 未翻訳から始まる翻訳一覧（状態は未翻訳・翻訳済み・対象外。人が確認する工程は 2026-11-12 に廃止）・対象外の理由別表示・自動翻訳の設定（保存ごとの自動翻訳は任意。鎌倉は無効で運用し、訳のあるページを公開する）・価格・条件・法務のページなど原文が更新されたら一覧の上で目立たせる任意の呼びかけ・任意の版付き用語集の表示・初回公開の内訳確認を含む `LocalizationWorkspace` と、CMS 項目に埋め込む `LocalizationItemWorkspace`。一覧の含む内容と関連する訳文への導線、ホストの編集先（Kamakura の共通ページは English キャンバス、CMS は同じ項目の English タブ）、CMS 詳細ページの英語テンプレートへのリンク、保存済みの未公開原文、訳文の自動保存・翻訳案・プレビューを共通化する（[接続方法](docs/localization-workspace-contract.md)）。型と parser は `@niho/web/localization-workspace-model` |
-| `@niho/web/cms-v2` | CMS v2 の定義、項目状態、版付きルート表と競合照合、移行・公開・予約の計画と検証、予約表100,000件・公開転送25,000件の上限。React 不要（[契約](docs/cms-v2-contract.md)） |
+| `@niho/web/cms-v2` | CMS v2 の定義、項目状態、版付きルート表と競合照合、移行・公開・予約の計画と検証、予約表100,000件・公開転送25,000件の上限。React 不要。Studio-native の GUI と CLI で利用できます（[契約](docs/cms-v2-contract.md)） |
 | `@niho/web/collection-model` | コレクションの定義・項目の型（素材参照を含む）、adapter の応答の runtime parser、公開前の値の検証、本文の HTML の無害化。React不要 |
 | `@niho/web/project-editor` | 既存 `EditorAdapter` をProjectの唯一のSiteへ限定するwrapper。サイト単位ブレークポイントの read / save も site ID と応答を再検証する |
 | `@niho/web/pages` | ページのパス検証・ツリー・内部リンク影響、公開メタ情報（title / description / OG画像 / robots / canonical）の解決と `<head>` 出力。React不要。ページ操作の部分接続と、作成直後の下書きを `published: false` で示す鎌倉 Studio の契約は [ページ管理契約](docs/page-contract.md#鎌倉studioの接続範囲) |
@@ -75,7 +75,7 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 | `@niho/web/localization` | 明示的な日英設定、安定IDの翻訳単位、自動訳の更新（確認の記録は問わない）・人の訳の保護、候補・手編集、共通構造からの文書生成。React不要 |
 | `@niho/web/localization-release` | 言語単位の不変snapshot、公開するページ（hostが選ぶ。全ページは要らない）の訳の公開条件（確認の工程は 2026-11-12 に廃止。旧い確認の入力は互換のため残る）、route・内部リンク・SEO、prepare/apply/rollback検証。React不要 |
 | `niho-studio` | Access service grant、またはStudio-native siteのmemberが取得した短時間のAccess user tokenを使い、discoverが返すページ編集・公開操作などを行うCLI。確認用Studioの接続設定も [Studio CLIの契約](docs/studio-cli.md) を参照 |
-| `niho-edit` | サイトの共通編集APIを直接呼ぶCUI。`outline` / `find` / `get` でページの必要な範囲だけを読み、`apply --ops <file|-> --dry-run` で操作列と差分を確認して適用する。stdio MCPはCLIコマンドと同名のtoolを公開し、同じ実行・認証・検証経路を使う。対応hostでは `preview --widths 375,768,1280 [--compare published]` で同じrendererの下書きを撮影し、ブラウザーが無ければURLだけを返す。`pages.apply` 非対応ホストでは `pages.read` → ローカル操作 → `pages.save` にフォールバックし、信頼済みホスト検証が保存時に行われることを出力する。対応ホストでは翻訳の読み取り・編集・翻訳ジョブ・公開とその状態を操作でき、非同期公開は単一ページと複数ページのどちらも同じ `pages.release-set` で追跡する。鎌倉Studio GUIも同じ共通操作IDを使います（[GUI書込み対応表](docs/ai-edit-source-map.md#鎌倉studioのgui書込み経路)）。host bearer tokenを必須とし、Access保護されたoriginではAccess service grantを追加で送信する。Access資格情報は指定originに限定し、別originの素材転送には渡さない（[編集API契約](docs/editing-api-contract.md)、[AI編集手順](docs/ai-editing-guide.md)） |
+| `niho-edit` | サイトの共通編集APIを直接呼ぶCUI。stdio MCPはCLIコマンドと同名のtoolを提供し、同じ実行・認証・検証経路を使います。`outline` / `find` / `get` でページの必要な範囲だけを読み、`apply --ops <file|-> --dry-run` で操作列と差分を確認して適用する。対応hostでは `preview --widths 375,768,1280 [--compare published]` で同じrendererの下書きを撮影し、ブラウザーが無ければURLだけを返す。`pages.apply` 非対応ホストでは `pages.read` → ローカル操作 → `pages.save` にフォールバックし、信頼済みホスト検証が保存時に行われることを出力する。対応ホストでは翻訳の読み取り・編集・翻訳ジョブ・公開とその状態を操作でき、非同期公開は単一ページと複数ページのどちらも同じ `pages.release-set` で追跡する。鎌倉Studio GUIも同じ共通操作IDを使います（[GUI書込み対応表](docs/ai-edit-source-map.md#鎌倉studioのgui書込み経路)）。host bearer tokenを必須とし、Access保護されたoriginではAccess service grantを追加で送信する。Studio-native CMS には `--studio` とAccess認証を使う。Access資格情報は指定originに限定し、別originの素材転送には渡さない（[編集API契約](docs/editing-api-contract.md)、[AI編集手順](docs/ai-editing-guide.md)、[Studio-native CMS の CLI](docs/studio-cli.md#studio-native-cms)） |
 
 React は optional peer dependency です。API サーバーなど React を入れない利用先では `import { parsePageDocument } from '@niho/web/core'` を使います。root と `/react` は React runtime を import します。
 

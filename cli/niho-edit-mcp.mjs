@@ -15,7 +15,8 @@ const TOOL_INPUT_SCHEMA = z.object({
 });
 
 function runCli(command, args, stdin, { origin, siteId }) {
-  if (args.some((arg) => arg === "--origin" || arg === "--site" || arg.startsWith("--origin=") || arg.startsWith("--site=") || arg.includes("\u0000"))) {
+  if (args.some((arg) => arg === "--origin" || arg === "--site"
+    || arg.startsWith("--origin=") || arg.startsWith("--site=") || arg.includes("\u0000"))) {
     return Promise.resolve({ exitCode: 1, stdout: "{\"error\":\"invalid_arguments\"}\n" });
   }
   if (stdin !== undefined && Buffer.byteLength(stdin, "utf8") > MAX_INPUT_BYTES) {
@@ -75,7 +76,7 @@ export function startMcpServer(config) {
     for (const [command, usage] of Object.entries(NIHO_EDIT_COMMAND_USAGE)) {
       server.registerTool(command, {
         title: `niho-edit ${command}`,
-        description: `CLI command: ${usage}\nPass tokens after the command in args. For file arguments written as -, pass the input text in stdin. The configured origin and site are fixed.`,
+        description: `CLI command: ${usage}\nPass tokens after the command in args. For file arguments written as -, pass the input text in stdin. The configured origin and site are fixed. Studio-native CMS commands require --studio in args and a Studio origin.`,
         inputSchema: TOOL_INPUT_SCHEMA
       }, async ({ args = [], stdin }) => {
         const result = await runCli(command, args, stdin, config);

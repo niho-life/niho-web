@@ -27,6 +27,9 @@ niho-edit cms-diff --base <item-snapshot> --json <edited-item-snapshot>
 niho-edit --origin <https-origin> --site <site-id> cms-publish-plan <collection-id> <item-id> --expected-version <version> --operation-id <uuid-v4> [--redirect <true|false>]
 niho-edit --origin <https-origin> --site <site-id> cms-publish --json <publish-plan|->
 niho-edit --origin <https-origin> --site <site-id> cms-status --operation-id <uuid-v4>
+niho-edit --studio --origin <studio-origin> --site <site-id> cms-discover
+niho-edit --studio --origin <studio-origin> --site <site-id> cms-v2 <cms.operation> --json <input-file|-> [--operation-id <uuid-v4>]
+Use --studio with existing cms-* commands for a Studio-native site.
 niho-edit --origin <https-origin> --site <site-id> assets-list [--search <text>] [--kind <kind>] [--provider <provider>] [--limit <number>] [--cursor <cursor>] [--folder-id <id>] [--recent]
 niho-edit --origin <https-origin> --site <site-id> assets-usages <provider> <asset-id>
 niho-edit --origin <https-origin> --site <site-id> assets-resolve --json <references-file|->
@@ -57,7 +60,7 @@ Apply the same saved plan again after a timeout to resume unfinished pages witho
 const commandUsageLines = NIHO_EDIT_USAGE.split("\n")
   .filter((line) => line.startsWith("niho-edit "))
   .map((line) => {
-    const command = line.replace(/^niho-edit(?: --origin <https-origin> --site <site-id>)?\s+/u, "").split(/\s/u)[0];
+    const command = line.replace(/^niho-edit\s+(?:--studio\s+)?--origin <[^>]+> --site <[^>]+>\s+/u, "").replace(/^niho-edit\s+/u, "").split(/\s/u)[0];
     return [command, line];
   })
   .filter(([command]) => command && command !== "mcp");

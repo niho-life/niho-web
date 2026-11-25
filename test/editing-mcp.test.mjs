@@ -95,6 +95,7 @@ test("niho-edit MCP mirrors the CLI command list and output, and fixes the confi
   const expectedUrl = `${origin}/api/edit/v1/sites/${siteId}/operations/pages.read/${pageId}?locale=${encodeURIComponent(locale)}`;
   const discoveryUrl = `${origin}/api/edit/v1/sites/${siteId}/capabilities`;
   const applyUrl = `${origin}/api/edit/v1/sites/${siteId}/operations/pages.apply/${pageId}?locale=${encodeURIComponent(locale)}`;
+  const studioDiscoveryUrl = `${origin}/api/edit/v2/sites/${siteId}/capabilities`;
   const operationId = "123e4567-e89b-42d3-a456-426614174000";
   const operations = [
     { type: "text", parentId: "heading", childPath: [0], value: "Updated through MCP" },
@@ -102,6 +103,7 @@ test("niho-edit MCP mirrors the CLI command list and output, and fixes the confi
   ];
   const catalog = ["pages.read", "pages.apply"].map((id) => EDITING_OPERATIONS.find((operation) => operation.id === id));
   const apiResponse = { document: fixture, version: "v1" };
+  const studioResponse = { contractVersion: 2, siteId, schemaRevision: "initial", operations: ["cms.items.save"] };
   const validApply = { status: "valid", diff: [
     { path: "h1#heading のテキスト", before: "旧見出し", after: "Updated through MCP" },
     { path: "h1#heading の見た目（共通）: color", before: "#000", after: "@brand" }
@@ -113,6 +115,11 @@ test("niho-edit MCP mirrors the CLI command list and output, and fixes the confi
     }
     if (target === ${JSON.stringify(discoveryUrl)} && init.method === "GET") {
       return new Response(${JSON.stringify(JSON.stringify({ apiVersion: "v1", siteId, operations: catalog }))}, { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    if (target === ${JSON.stringify(studioDiscoveryUrl)} && init.method === "GET") {
+      const headers = new Headers(init.headers);
+      if (headers.get("Authorization") !== null || headers.get("cf-access-token") !== "fixture-token" || headers.get("X-Studio-CMS-Version") !== "2") throw new Error("unexpected Studio authentication");
+      return new Response(${JSON.stringify(JSON.stringify(studioResponse))}, { status: 200, headers: { "Content-Type": "application/json" } });
     }
     if (target === ${JSON.stringify(applyUrl)} && init.method === "POST") {
       const body = JSON.parse(init.body);
@@ -152,6 +159,13 @@ test("niho-edit MCP mirrors the CLI command list and output, and fixes the confi
   assert.equal(directApply.exitCode, 0, directApply.stderr);
   assert.equal(applyToolResult.result.content[0].text, directApply.stdout);
   assert.deepEqual(JSON.parse(applyToolResult.result.content[0].text).result.diff, validApply.diff);
+
+  const cmsToolResult = await mcp.request("tools/call", { name: "cms-discover", arguments: { args: ["--studio"] } });
+  assert.equal(cmsToolResult.error, undefined, JSON.stringify(cmsToolResult.error));
+  assert.equal(cmsToolResult.result.isError, undefined);
+  const directCmsResult = await runCli(["--origin", origin, "--site", siteId, "cms-discover", "--studio"], env);
+  assert.equal(directCmsResult.exitCode, 0, directCmsResult.stderr);
+  assert.equal(cmsToolResult.result.content[0].text, directCmsResult.stdout);
 
   const redirected = await mcp.request("tools/call", {
     name: "read", arguments: { args: [pageId, "--locale", locale, "--origin", "https://other.example"] }
