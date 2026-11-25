@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { PageEditor } from "../src/editor.js";
+import { StudioPageEditor } from "./editor-performance.js";
 import { parsePageDocument } from "../src/core.js";
 import { createProjectEditorAdapter } from "../src/project-editor-adapter.js";
 import type {
@@ -100,6 +100,6 @@ export function createManagedEditorAdapter(initial: Catalog, project: Project): 
 export function ManagedEditor({ project }: { readonly project: Project }) {
   const adapter = useMemo(() => createProjectEditorAdapter(createManagedEditorAdapter({ sites: [{ id: project.site.id, name: project.site.name, domains: project.site.domains }], pages: [] }, project), project), [project]);
   return <main className="studio-editor studio-managed-editor">
-    <PageEditor adapter={adapter} autosave toolbarStart={<a href={`/projects/${encodeURIComponent(project.id)}/sites/${encodeURIComponent(project.site.id)}`} aria-label="ダッシュボードに戻る" title="ダッシュボードに戻る">←</a>} />
+    <StudioPageEditor adapter={adapter} autosave toolbarStart={<a href={`/projects/${encodeURIComponent(project.id)}/sites/${encodeURIComponent(project.site.id)}`} aria-label="ダッシュボードに戻る" title="ダッシュボードに戻る">←</a>} />
   </main>;
 }
