@@ -8,10 +8,15 @@ import { EDITING_OPERATIONS } from "../dist/editing-api.js";
 import { editingLocalizationConflictBody, EDITING_LOCALIZATION_INPUT_BYTES } from "../dist/editing-localization.js";
 import { parseAssetUploadResult } from "../dist/assets.js";
 import { parseBreakpointSettings } from "../dist/style-model.js";
+import { inspectPageDocument, PageInspectError, parsePageInspectQuery } from "../dist/page-inspect.js";
 import { SERVICE_CLIENT_ID } from "./operations.mjs";
 
 const USAGE = `niho-edit --origin <https-origin> --site <site-id> discover
 niho-edit --origin <https-origin> --site <site-id> read <page-id> --locale <locale>
+niho-edit --origin <https-origin> --site <site-id> outline <page-id> --locale <locale> [--node <id>] [--depth <n>]
+niho-edit --origin <https-origin> --site <site-id> find <page-id> --locale <locale> (--text <text> | --name <name> | --tag <tag> | --style <property=value> | --uses-token <name> | --block <id> | --node <id>)
+niho-edit --origin <https-origin> --site <site-id> find --url <public-url> --locale <locale> --node <data-nw-node>
+niho-edit --origin <https-origin> --site <site-id> get <page-id> <node-id> --locale <locale> [--effective-style]
 niho-edit --origin <https-origin> --site <site-id> save <page-id> --locale <locale> --json <snapshot-file|->
 niho-edit --origin <https-origin> --site <site-id> release-plan <page-id> --locale <locale> --action <publish|rollback> (--json <snapshot-file|-> | --expected-version <version>) [--revision <number>]
 niho-edit --origin <https-origin> --site <site-id> release <page-id> --locale <locale> --json <plan-file|-> --operation-id <uuid-v4>
@@ -81,7 +86,10 @@ function argsFromCli() {
       "expected-version": { type: "string" }, "components-version": { type: "string" }, "presentation-version": { type: "string" },
       revision: { type: "string" }, "operation-id": { type: "string" }, redirect: { type: "string" }, base: { type: "string" }, help: { type: "boolean", short: "h" },
       name: { type: "string" }, "mime-type": { type: "string" }, provider: { type: "string" }, search: { type: "string" }, kind: { type: "string" }, "upload-origin": { type: "string" },
-      "folder-id": { type: "string" }, cursor: { type: "string" }, limit: { type: "string" }, recent: { type: "boolean" }
+      "folder-id": { type: "string" }, cursor: { type: "string" }, limit: { type: "string" }, recent: { type: "boolean" },
+      "node": { type: "string" }, "depth": { type: "string" }, "text": { type: "string" },
+      "tag": { type: "string" }, "style": { type: "string" }, "uses-token": { type: "string" }, "block": { type: "string" },
+      "url": { type: "string" }, "effective-style": { type: "boolean" }
     } });
   } catch { throw new CliError("invalid_arguments"); }
 }
@@ -113,14 +121,16 @@ async function inputSnapshot(path) {
   }
   const source = await readJson(path === "-" ? process.stdin : createReadStream(path));
   const snapshotKeys = Object.keys(source);
-  if (!snapshotKeys.includes("document") || !snapshotKeys.includes("version") || snapshotKeys.some((key) => !["document", "version", "componentsVersion", "presentationVersion"].includes(key))
+  if (!snapshotKeys.includes("document") || !snapshotKeys.includes("version") || snapshotKeys.some((key) => !["document", "version", "componentsVersion", "presentationVersion", "stylesVersion"].includes(key))
     || !isEditingApiVersion(source.version) || source.componentsVersion !== undefined && !isEditingApiVersion(source.componentsVersion)
-    || source.presentationVersion !== undefined && !isEditingApiVersion(source.presentationVersion)) throw new CliError("invalid_snapshot");
+    || source.presentationVersion !== undefined && !isEditingApiVersion(source.presentationVersion)
+    || source.stylesVersion !== undefined && !isEditingApiVersion(source.stylesVersion)) throw new CliError("invalid_snapshot");
   let document;
   try { document = parseEditingPageDocumentEnvelope(source.document); } catch { throw new CliError("invalid_document"); }
   return { document, version: source.version,
     ...(source.componentsVersion === undefined ? {} : { componentsVersion: source.componentsVersion }),
-    ...(source.presentationVersion === undefined ? {} : { presentationVersion: source.presentationVersion }) };
+    ...(source.presentationVersion === undefined ? {} : { presentationVersion: source.presentationVersion }),
+    ...(source.stylesVersion === undefined ? {} : { stylesVersion: source.stylesVersion }) };
 }
 async function inputPlan(path, target) {
   if (!path) throw new CliError("missing_json_input");
@@ -142,8 +152,8 @@ function emit(result, status = null, code = 0, operation = null) {
   process.exitCode = code;
   process.stdout.write(`${JSON.stringify({ apiVersion: "v1", httpStatus: status, operation, result })}\n`);
 }
-function emitSnapshot(document, version, componentsVersion, presentationVersion) {
-  process.stdout.write(`${JSON.stringify({ document, version, ...(componentsVersion === undefined ? {} : { componentsVersion }), ...(presentationVersion === undefined ? {} : { presentationVersion }) })}\n`);
+function emitSnapshot(document, version, componentsVersion, presentationVersion, stylesVersion) {
+  process.stdout.write(`${JSON.stringify({ document, version, ...(componentsVersion === undefined ? {} : { componentsVersion }), ...(presentationVersion === undefined ? {} : { presentationVersion }), ...(stylesVersion === undefined ? {} : { stylesVersion }) })}\n`);
 }
 async function inputBreakpointSnapshot(path) {
   if (!path) throw new CliError("missing_json_input");
@@ -294,10 +304,84 @@ async function runLocalization(client, operation, values, positionals) {
   emit(result, 200, 0, id);
 }
 
+function normalizedPublicPath(value) {
+  return value.length > 1 ? value.replace(/\/+$/u, "") : value;
+}
+async function pageIdFromPublicUrl(client, value, locale) {
+  let publicUrl;
+  try {
+    publicUrl = new URL(value);
+    if (publicUrl.protocol !== "https:" || publicUrl.username || publicUrl.password || publicUrl.search || publicUrl.hash) throw new Error("invalid public URL");
+  } catch { throw new CliError("invalid_public_url"); }
+  const catalog = await apiCall(() => client.readPageCatalog(AbortSignal.timeout(30_000)));
+  let route;
+  try { route = normalizedPublicPath(decodeURIComponent(publicUrl.pathname)); }
+  catch { throw new CliError("invalid_public_url"); }
+  const candidates = catalog.pages.filter((page) => page.locale === locale && typeof page.path === "string"
+    && normalizedPublicPath(page.path.startsWith("/") ? page.path : "/" + page.path) === route);
+  if (candidates.length !== 1) throw new CliError("page_not_found", 404);
+  return candidates[0].pageId;
+}
+async function runPageInspection(client, command, pageId, extra, values) {
+  const allowed = ["locale", "node", "depth", "text", "name", "tag", "style", "uses-token", "block", "url", "limit", "cursor", "effective-style"];
+  assertCommandOptions(values, allowed);
+  if (!LOCALE.test(values.locale ?? "")) throw new CliError("invalid_arguments");
+  let targetPageId = pageId;
+  let query;
+  if (command === "outline") {
+    if (!IDENTIFIER.test(pageId ?? "") || extra.length || values.url !== undefined || values.text !== undefined || values.name !== undefined
+      || values.tag !== undefined || values.style !== undefined || values["uses-token"] !== undefined || values.block !== undefined || values["effective-style"] !== undefined) {
+      throw new CliError("invalid_arguments");
+    }
+    query = { view: "outline", ...(values.node === undefined ? {} : { node: values.node }),
+      ...(values.depth === undefined ? {} : { depth: values.depth }), ...(values.limit === undefined ? {} : { limit: Number(values.limit) }),
+      ...(values.cursor === undefined ? {} : { cursor: values.cursor }) };
+  } else if (command === "find") {
+    if (extra.length || values.depth !== undefined || values["effective-style"] !== undefined) throw new CliError("invalid_arguments");
+    if (values.url !== undefined) {
+      if (pageId !== undefined || values.node === undefined) throw new CliError("invalid_arguments");
+      targetPageId = await pageIdFromPublicUrl(client, values.url, values.locale);
+    } else if (!IDENTIFIER.test(pageId ?? "")) throw new CliError("invalid_arguments");
+    query = { view: "find", ...(values.text === undefined ? {} : { text: values.text }), ...(values.name === undefined ? {} : { name: values.name }),
+      ...(values.tag === undefined ? {} : { tag: values.tag }), ...(values.style === undefined ? {} : { style: values.style }),
+      ...(values["uses-token"] === undefined ? {} : { usesToken: values["uses-token"] }), ...(values.block === undefined ? {} : { block: values.block }),
+      ...(values.node === undefined ? {} : { node: values.node }), ...(values.limit === undefined ? {} : { limit: Number(values.limit) }),
+      ...(values.cursor === undefined ? {} : { cursor: values.cursor }) };
+  } else {
+    if (!IDENTIFIER.test(pageId ?? "") || extra.length !== 1 || !IDENTIFIER.test(extra[0]) || values.node !== undefined || values.depth !== undefined
+      || values.text !== undefined || values.name !== undefined || values.tag !== undefined || values.style !== undefined || values["uses-token"] !== undefined
+      || values.block !== undefined || values.url !== undefined) throw new CliError("invalid_arguments");
+    const effective = values["effective-style"] === true;
+    if (values["effective-style"] !== undefined && typeof values["effective-style"] !== "boolean" || effective && (values.limit !== undefined || values.cursor !== undefined)) throw new CliError("invalid_arguments");
+    query = effective ? { view: "effectiveStyle", node: extra[0] } : { view: "subtree", node: extra[0],
+      ...(values.limit === undefined ? {} : { limit: Number(values.limit) }), ...(values.cursor === undefined ? {} : { cursor: values.cursor }) };
+  }
+  const parsed = parsePageInspectQuery(query);
+  if (!parsed) throw new CliError("invalid_arguments");
+  const target = { siteId: values.site, pageId: targetPageId, locale: values.locale };
+  const discovery = await apiCall(() => client.discover(AbortSignal.timeout(30_000)));
+  if (discovery.operations.some((operation) => operation.id === "pages.inspect")) {
+    const result = await apiCall(() => client.inspectPage(target, parsed, AbortSignal.timeout(30_000)));
+    process.stdout.write(JSON.stringify(result) + "\n"); return;
+  }
+  const snapshot = await apiCall(() => client.read(target, AbortSignal.timeout(30_000)));
+  let projected;
+  try { projected = inspectPageDocument(snapshot.document, parsed); }
+  catch (error) {
+    if (error instanceof PageInspectError) throw new CliError(error.code, error.code === "node_not_found" ? 404 : error.code === "result_too_large" ? 413 : 400);
+    throw error;
+  }
+  process.stdout.write(JSON.stringify({ ...projected, version: snapshot.version,
+    ...(snapshot.componentsVersion === undefined ? {} : { componentsVersion: snapshot.componentsVersion }),
+    ...(snapshot.presentationVersion === undefined ? {} : { presentationVersion: snapshot.presentationVersion }),
+    ...(snapshot.stylesVersion === undefined ? {} : { stylesVersion: snapshot.stylesVersion }) }) + "\n");
+}
+
 async function main() {
   const { values, positionals } = argsFromCli();
   if (values.help) { process.stdout.write(`${USAGE}\n`); return; }
   const [command, pageId, ...extra] = positionals;
+  if (!["outline", "find", "get"].includes(command) && ["node", "depth", "text", "tag", "style", "uses-token", "block", "url", "effective-style"].some((key) => values[key] !== undefined)) throw new CliError("invalid_arguments");
   if (command === "cms-diff") {
     assertCommandOptions(values, ["base", "json"]);
     if (pageId !== undefined || extra.length) throw new CliError("invalid_arguments");
@@ -551,13 +635,17 @@ async function main() {
     emit(result, 200, 0, "pages.change-apply"); return;
   }
 
+  if (["outline", "find", "get"].includes(command)) {
+    await runPageInspection(client, command, pageId, extra, values);
+    return;
+  }
   if (!["read", "save", "release-plan", "release"].includes(command) || extra.length || !IDENTIFIER.test(pageId ?? "") || !LOCALE.test(values.locale ?? "")) throw new CliError("invalid_arguments");
   const target = { siteId: values.site, pageId, locale: values.locale };
   if (command === "read") {
     if (values.json !== undefined || values.action !== undefined || values["expected-version"] !== undefined || values["components-version"] !== undefined || values["presentation-version"] !== undefined
       || values.revision !== undefined || values["operation-id"] !== undefined) throw new CliError("invalid_arguments");
     const snapshot = await apiCall(() => client.read(target, AbortSignal.timeout(30_000)));
-    emitSnapshot(snapshot.document, snapshot.version, snapshot.componentsVersion, snapshot.presentationVersion); return;
+    emitSnapshot(snapshot.document, snapshot.version, snapshot.componentsVersion, snapshot.presentationVersion, snapshot.stylesVersion); return;
   }
   if (command === "save") {
     if (values.action !== undefined || values["expected-version"] !== undefined || values["components-version"] !== undefined || values["presentation-version"] !== undefined
@@ -566,7 +654,7 @@ async function main() {
     if (snapshot.document.siteId !== values.site || snapshot.document.pageId !== pageId || snapshot.document.locale !== values.locale) throw new CliError("snapshot_target_mismatch");
     const result = await apiCall(() => client.save(target, snapshot.version, snapshot.document, AbortSignal.timeout(30_000)));
     if (result.status === "conflict") throw new CliError("version_conflict", 409);
-    emitSnapshot(result.document, result.version, snapshot.componentsVersion, snapshot.presentationVersion); return;
+    emitSnapshot(result.document, result.version, snapshot.componentsVersion, snapshot.presentationVersion, snapshot.stylesVersion); return;
   }
   if (command === "release-plan") {
     if (values["operation-id"] !== undefined || !["publish", "rollback"].includes(values.action ?? "")) throw new CliError("invalid_arguments");
