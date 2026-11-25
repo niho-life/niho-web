@@ -180,6 +180,7 @@ function canonicalizeEditedDocument(document: PageDocument, original: PageDocume
         if (contract) {
           const props: Record<string, PublicPropValue> = {};
           for (const name of Object.keys(contract.props)) if (Object.hasOwn(component.props, name)) props[name] = component.props[name]!;
+          for (const name of Object.keys(component.props)) if (!Object.hasOwn(contract.props, name)) props[name] = component.props[name]!;
           const slots = Object.fromEntries(Object.entries(component.slots ?? {}).map(([name, style]) => [name, parseStyle(style, tokens, `${parentPath}[${index}].slots.${name}`, {}, false)]));
           normalized = { ...component, props, ...(Object.keys(slots).length ? { slots } : {}) };
           if (!Object.keys(slots).length) delete (normalized as ComponentNode).slots;
@@ -341,7 +342,12 @@ function formFieldPairIndex(siblings: readonly PageNode[], node: PageNode, index
 }
 /** components はインスタンスを含む文書の検証に使う、同じサイトの検証済みライブラリ。 */
 export function editDocument(document: PageDocument, operation: EditorOperation, blocks: EditorOperationBlocks = {}, locks: readonly EditorLock[] = [], components?: ComponentLibrary, siteStyles?: SiteStyles, validateDocument = true): PageDocument {
-  const draft = createCopyOnWrite(validateDocument ? resolvePageStyles(document, siteStyles) : document), allLocks = effectiveLocks(document, locks, blocks);
+  if (operation.type === "replaceChildren") {
+    const target = nodeAt(document, operation.path);
+    if (target.type === "element" && JSON.stringify(target.children) === JSON.stringify(operation.children)) return document;
+  }
+  const base = validateDocument ? resolvePageStyles(document, siteStyles) : document;
+  const draft = createCopyOnWrite(base), allLocks = effectiveLocks(document, locks, blocks);
   const parentChildren = (path: NodePath): PageNode[] => siblingsAt(draft, path);
   const targetChildren = (id: string | null): PageNode[] => {
     if (id === null) return draft.body;
@@ -641,6 +647,7 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
     }
   }
   let candidate = finishCopyOnWrite(draft);
+  if (candidate === base) return document;
   if (validateDocument) {
     candidate = canonicalizeEditedDocument(candidate, document, blocks, components);
     validatePageDocument(candidate, blocks, { ...(components ? { components } : {}), ...(siteStyles ? { siteStyles } : {}) });
