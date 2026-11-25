@@ -134,6 +134,10 @@ HTTP 409 は adapter で `{ status: 'conflict' }` へ変換します。`status: 
 
 作業コピーと履歴の revision は最新の保存先を表す基準です。編集中の内容をその revision の公開済み文書として扱わず、永続化・公開する際は保存で採番した不変の文書を使います。rollback で過去の内容を復元するときも、異なる内容へ古い revision を再利用せず、新しい revision の文書を返してください。
 
+## 要素の名前
+
+`EditorAdapter.discoverPageNodeNames(target, signal)` が、保存に使う操作の discover で `pages.name` を確認して `true` を返した場合、要素を選ぶとインスペクタの設定タブに「要素の名前」が出ます。名前を確定するとレイヤーに反映され、空欄で確定すると名前が外れます。各操作は undo 1 回で戻ります。共通部品の本体は、ライブラリの保存先が `EditorComponentAdapter.nodeNames: true` を宣言した場合に編集できます。派生言語は原文の名前を引き継ぎます。[文書契約](document-contract.md#ノード) と [discover の契約](editing-api-contract.md#操作カタログ) を参照してください。
+
 ## 操作単位の保存
 
 ホストが任意の `EditorAdapter.applyOperations` を実装すると、通常編集の自動保存・手動保存は全文の `saveDraft` ではなく、未送信の操作を `pages.apply` へ送ります。要求は `{ target, baseVersion, operationId, operations, componentsVersion?, presentationVersion?, stylesVersion? }` です。依存版は任意です。操作は配列位置ではなく `nodeId`、テキストでは `parentId` と `childPath` で対象を指定します。`operationId` と同一入力の組を、応答が不明なときの再送にも保管してください。認証済みhostは `gui` / `cli` / `api` の `clientKind` を認証文脈に含めてください。

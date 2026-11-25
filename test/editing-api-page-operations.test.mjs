@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { createPageEditingApi } from "@niho/web/editing-api";
-import { createPageEditingApiClient } from "@niho/web/editing-client";
+import { EDITING_OPERATIONS, createPageEditingApi } from "@niho/web/editing-api";
+import { createPageEditingApiClient, supportsPageNodeNames } from "@niho/web/editing-client";
 import { createMemoryPageOperationHost } from "../examples/memory-page-operation-host.mjs";
 
 const document = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
@@ -15,10 +15,11 @@ const oneLetter = { type: "text", parentId: "heading", childPath: [0], value: "�
 const oneLetterPreconditions = { parentId: "heading", oldValue: "海のそばで過ごす", textPathContext: [{ type: "target" }] };
 const operation = (operations = [oneLetter], extra = {}) => ({ baseVersion: "v1", operationId: crypto.randomUUID(), operations, ...dependencies, ...extra });
 
-function host(context, authenticatedActor = actor) {
+function host(context, authenticatedActor = actor, pageNodeNames = false) {
   const storage = createMemoryPageOperationHost([{ document, version: "v1", ...dependencies }], context);
   const api = createPageEditingApi({
     ...storage,
+    pageNodeNames,
     async authenticate(request) {
       const auth = request.headers.get("Authorization");
       if (auth === "Bearer writer") return authenticatedActor;
@@ -31,7 +32,7 @@ function host(context, authenticatedActor = actor) {
   });
   const call = (body, auth = "writer") => api(new Request(origin + path, { method: "POST", headers: { ...(auth ? { Authorization: `Bearer ${auth}` } : {}), "Content-Type": "application/json" }, body: JSON.stringify(body) }));
   const client = createPageEditingApiClient({ origin, siteId, headers: { Authorization: "Bearer writer" }, fetch: (url, options) => api(new Request(url, options)) });
-  return { storage, client, call };
+  return { storage, client, call, api };
 }
 
 test("pages.apply discovers the stable operation schema and retries the exact applied result", async () => {
@@ -252,4 +253,52 @@ test("pages.apply accepts omitted optional dependency versions and requires an a
 
   const missingClientKind = host(undefined, { kind: "human", subject: "staff" });
   assert.equal((await missingClientKind.call(operation([title]))).status, 502);
+});
+
+test("name support is explicitly advertised for writable operations while old catalog definitions remain readable", async () => {
+  const legacy = host();
+  const original = await legacy.client.discover();
+  const applyDefinition = original.operations.find(({ id }) => id === "pages.apply");
+  assert.deepEqual(applyDefinition, EDITING_OPERATIONS.find(({ id }) => id === "pages.apply"));
+  assert.equal(applyDefinition.inputSchema.$defs.editorOperationById.oneOf.some((schema) => schema.properties.type.const === "name"), false);
+  assert.equal(supportsPageNodeNames(original, "pages.apply"), false);
+  assert.equal(supportsPageNodeNames(original, "pages.save"), false);
+  const rename = { type: "name", nodeId: "hero", value: "ヒーロー" };
+  const named = structuredClone(document);
+  named.body[0].name = rename.value;
+  const legacyRequests = [];
+  const guarded = createPageEditingApiClient({
+    origin, siteId, headers: { Authorization: "Bearer writer" },
+    fetch: (url, options) => { legacyRequests.push(options.method); return legacy.api(new Request(url, options)); }
+  });
+  await assert.rejects(guarded.applyOperations(target, operation([rename])), { code: "forbidden" });
+  await assert.rejects(guarded.save(target, "v1", named), { code: "forbidden" });
+  const pasted = { type: "addMany", parentId: null, nodes: [{ type: "element", id: "copy", tag: "div", children: [
+    { type: "element", id: "copied", name: "コピー", tag: "div", children: [] }
+  ] }] };
+  await assert.rejects(guarded.applyOperations(target, operation([pasted])), { code: "forbidden" });
+  assert.deepEqual(legacyRequests, ["GET"]);
+  assert.equal((await legacy.call(operation([rename]))).status, 403);
+  assert.equal((await legacy.call(operation([pasted]))).status, 403);
+  assert.deepEqual(legacy.storage.readJournal(), []);
+
+  const current = host({}, actor, true);
+  const supported = await current.client.discover();
+  assert.equal(supportsPageNodeNames(supported, "pages.apply"), true);
+  assert.equal(supportsPageNodeNames(supported, "pages.save"), true);
+  assert.equal(supported.operations.find(({ id }) => id === "pages.apply").inputSchema.$defs.editorOperationById.oneOf.some((schema) => schema.properties.type.const === "name"), true);
+  const reader = createPageEditingApiClient({ origin, siteId, headers: { Authorization: "Bearer reader" }, fetch: (url, options) => current.api(new Request(url, options)) });
+  assert.equal(supportsPageNodeNames(await reader.discover(), "pages.apply"), false);
+  assert.equal((await current.call(operation([rename]), "reader")).status, 403);
+
+  const dryRun = await current.client.applyOperations(target, operation([rename], { dryRun: true }));
+  assert.deepEqual(dryRun, { status: "valid", diff: [{ path: "section#hero の名前", before: "（なし）", after: rename.value }], touched: ["hero"] });
+  const applied = await current.client.applyOperations(target, operation([rename, pasted]));
+  assert.equal((await current.client.read(target)).document.body[0].name, rename.value);
+  assert.equal(applied.document.body.at(-1).children[0].name, "コピー");
+  const removed = await current.client.applyOperations(target, operation([{ type: "name", nodeId: "hero", value: undefined }], { baseVersion: applied.version }));
+  assert.equal(Object.hasOwn(removed.document.body[0], "name"), false);
+  const saved = await current.client.save(target, removed.version, { ...named, revision: removed.document.revision });
+  assert.equal(saved.status, "saved");
+  assert.equal((await current.client.read(target)).document.body[0].name, rename.value);
 });

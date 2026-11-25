@@ -139,6 +139,7 @@ function inverseOperation(before: PageDocument, after: PageDocument, operation: 
     const nodeIds = node.children.flatMap((child) => child.type === "text" ? [] : [child.id]);
     return [{ type: "wrap", nodeIds, wrapperId: node.id, allowLayoutChange: true }];
   }
+  if (forward.type === "name") return [{ ...forward, value: node.name }];
   if (forward.type === "duplicate") {
     const oldIds = new Set(siblingsAt(before, operation.path).flatMap((sibling) => sibling.type === "text" ? [] : [sibling.id]));
     const copies = siblingsAt(after, operation.path).flatMap((sibling) => sibling.type !== "text" && !oldIds.has(sibling.id) ? [sibling.id] : []);

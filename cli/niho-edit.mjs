@@ -4,12 +4,12 @@ import { createReadStream } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { basename } from "node:path";
 import { parseArgs } from "node:util";
-import { createPageEditingApiClient, EditingApiClientError, isEditingApiVersion, parseEditingPageDocumentEnvelope } from "../dist/editing-client.js";
+import { createPageEditingApiClient, EditingApiClientError, isEditingApiVersion, parseEditingPageDocumentEnvelope, supportsPageNodeNames } from "../dist/editing-client.js";
 import { EDITING_OPERATIONS } from "../dist/editing-api.js";
 import { editingLocalizationConflictBody, EDITING_LOCALIZATION_INPUT_BYTES } from "../dist/editing-localization.js";
 import { parseAssetUploadResult } from "../dist/assets.js";
 import { editDocumentById } from "../dist/editor-model.js";
-import { PAGE_OPERATION_LIMIT, changedPageNodeIds, editingOperationProblem, parsePageOperation } from "../dist/editing-page-operations.js";
+import { PAGE_OPERATION_LIMIT, changedPageNodeIds, editingOperationProblem, pageOperationUsesNodeNames, parsePageOperation } from "../dist/editing-page-operations.js";
 import { diffDocuments } from "../dist/history.js";
 import { parseBreakpointSettings } from "../dist/style-model.js";
 import { inspectPageDocument, PageInspectError, parsePageInspectQuery } from "../dist/page-inspect.js";
@@ -152,6 +152,9 @@ async function runPageApply(client, pageId, extra, values) {
   const target = { siteId: values.site, pageId, locale: values.locale };
   const discovery = await apiCall(() => client.discover(AbortSignal.timeout(30_000)));
   const supportsApply = discovery.operations.some((operation) => operation.id === "pages.apply");
+  if (operations.some(pageOperationUsesNodeNames) && !supportsPageNodeNames(discovery, supportsApply ? "pages.apply" : "pages.save")) {
+    throw new CliError("name_not_supported", 403);
+  }
   if (!supportsApply && values["operation-id"] !== undefined) throw new CliError("operation_id_requires_pages_apply");
   if (supportsApply && values["operation-id"] !== undefined && values["expected-version"] === undefined) throw new CliError("operation_id_requires_expected_version", 400);
   const snapshot = await apiCall(() => client.read(target, AbortSignal.timeout(30_000)));

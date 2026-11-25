@@ -112,3 +112,50 @@ test("the four tabs reach the existing settings and the transform tab orders tra
     await editorTab("テキスト"); assert.ok(input("文字サイズ", right())); assert.ok(input("テキストスタイル", right()));
   } finally { await app.cleanup(); }
 });
+
+test("a name is editable and saved only after discovery enables the setting", async () => {
+  const legacy = await setup({ adapter: { discoverPageNodeNames: async () => false } });
+  try {
+    await canvasEvent("h1", "click");
+    await editorTab("設定");
+    assert.equal(input("要素の名前", right()), undefined);
+  } finally { await legacy.cleanup(); }
+
+  const writes = [];
+  const enabled = await setup({ adapter: {
+    discoverPageNodeNames: async () => true,
+    saveDraft: async ({ document }) => {
+      writes.push(document);
+      return { status: "saved", version: `v${writes.length + 1}`, revision: document.revision + 1 };
+    }
+  } });
+  async function changeName(value) {
+    const target = input("要素の名前", right());
+    assert.ok(target);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value").set.call(target, value);
+      target.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+    });
+    await act(async () => target.dispatchEvent(new dom.window.FocusEvent("focusout", { bubbles: true })));
+    await flush();
+  }
+  try {
+    await canvasEvent("h1", "click");
+    await editorTab("設定");
+    await changeName("ヒーロー見出し");
+    await click(button("レイヤー"));
+    assert.match(document.querySelector('[data-node-id="heading"]').textContent, /ヒーロー見出し/);
+    await click(button("下書き保存"));
+    assert.equal(writes[0].body[0].children[0].name, "ヒーロー見出し");
+    await changeName("新しい名前");
+    await changeName("");
+    await click(button("元に戻す"));
+    assert.equal(input("要素の名前", right()).value, "新しい名前");
+    await click(button("元に戻す"));
+    assert.equal(input("要素の名前", right()).value, "ヒーロー見出し");
+    await click(button("元に戻す"));
+    assert.equal(input("要素の名前", right()).value, "");
+    await click(button("下書き保存"));
+    assert.equal(Object.hasOwn(writes[1].body[0].children[0], "name"), false);
+  } finally { await enabled.cleanup(); }
+});
