@@ -1,6 +1,6 @@
 "use client";
 
-import { Component, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { Component, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { PageRenderer, SitePageRenderer } from "./react.js";
 import { parsePageDocument } from "./document.js";
@@ -218,7 +218,7 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
   breakpoint: number | "base";
   dragItem: { current: DragItem | null }; drop: (item: DragItem, place: DropPlace) => void;
   pending: (key: string, value: boolean) => void;
-  startTextEdit: RefObject<((id: string) => boolean | string) | null>;
+  startTextEdit: { current: ((id: string) => boolean | string) | null };
   onShortcut: (event: KeyboardEvent) => void;
   editText: (path: NodePath, nodeId: string, children: PageNode[]) => string | undefined; resize: (path: NodePath, width: number, height: number) => string | undefined;
   reportError: (message: string) => void; editable: boolean; structureEditable: boolean; locks: readonly EditorLock[]; preview: boolean; assets: ResolvedAssetMap;
