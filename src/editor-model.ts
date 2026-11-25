@@ -9,7 +9,7 @@ import { normalizeNodeFragment } from "./editor-fragment.js";
 import type { Appear, AssetReference, BlockContract, ComponentLibrary, ComponentNode, DesignToken, ElementNode, HiddenRange, IconName, InstanceNode, NodeStyle, PageDocument, PageMeta, PageNode, PublicPropValue, StateName, StateProperty, StyleDeclarations, StyleProperty, StyleValue, TextStyle } from "./types.js";
 import { parseStyle, parseTextStyles, parseTokens, stateNames, textStyleProperties } from "./style-values.js";
 import { assertMotionStylePatch, sameMotionValue, type MotionStylePatch } from "./builder.js";
-import { fail, isSafeHttpsOrigin, isSafePublicUrl, keys, line, record } from "./validation-utils.js";
+import { fail, identifier, isSafeHttpsOrigin, isSafePublicUrl, keys, line, record } from "./validation-utils.js";
 import { normalizeEmbedSource } from "./embeds.js";
 
 export { nodeAt, walkNodes, type NodePath };
@@ -93,6 +93,8 @@ export type EditorOperation =
   | { type: "background"; path: NodePath; breakpoint: number | "base"; asset: AssetReference | undefined }
   | { type: "replaceAsset"; from: AssetReference; to: AssetReference }
   | { type: "duplicate" | "remove"; path: NodePath }
+  | { type: "wrap"; nodeIds: readonly string[]; wrapperId: string; allowLayoutChange?: boolean }
+  | { type: "unwrap"; path: NodePath; allowLayoutChange?: boolean }
   | { type: "move"; path: NodePath; parentId: string | null; index?: number; anchor?: NodePositionAnchor }
   /** インスタンスのページごとの値。undefined で解除する。 */
   | { type: "instanceProp"; path: NodePath; name: string; value: string | undefined }
@@ -363,6 +365,79 @@ function formFieldPairIndex(siblings: readonly PageNode[], node: PageNode, index
     (typeof controlId === "string" && candidate.tag === "label" && candidate.attrs?.htmlFor === controlId ||
      typeof labelTarget === "string" && ["input", "textarea", "select"].includes(candidate.tag) && candidate.attrs?.id === labelTarget));
 }
+
+export type BoxGroupOperation = Extract<EditorOperation, { type: "wrap" | "unwrap" }>;
+export const BOX_GROUP_NODE_LIMIT = 500;
+export const BOX_GROUP_ID_PREFIX = "group_";
+export class BoxGroupLayoutChange extends Error {
+  constructor() { super("構造が変わり、要素の並び方や余白が変わる場合があります。"); }
+}
+export function boxGroupId(value: unknown, path: string): string {
+  const id = identifier(value, path);
+  if (!id.startsWith(BOX_GROUP_ID_PREFIX) || id.length === BOX_GROUP_ID_PREFIX.length) throw new Error("囲みボックスのIDは group_ で始め、後ろに文字を付けてください。");
+  return id;
+}
+const boxGroupParents = new Set("div section article header footer main nav aside blockquote figure figcaption li dd dt details form".split(" "));
+const boxGroupContextualTags = new Set("li dd dt source option legend summary figcaption".split(" "));
+const blockFlowTags = new Set("div section article header footer main nav aside h1 h2 h3 h4 h5 h6 p ul ol dl blockquote figure form".split(" "));
+const plainBoxKeys = new Set(["type", "id", "tag", "children"]);
+
+function hasPlainBlockFlow(node: PageNode): boolean {
+  if (node.type !== "element" || !blockFlowTags.has(node.tag) || node.interaction || node.embed) return false;
+  const { style } = node;
+  if (style?.appear || style?.hidden?.length || Object.keys(style?.states ?? {}).length) return false;
+  const declarations = [style?.base ?? {}, ...(style?.responsive ?? []).map((rule) => rule.declarations)];
+  return declarations.every((rule) => Object.entries(rule).every(([name, value]) =>
+    (name === "display" && value === "block") || (textStyleProperties as readonly string[]).includes(name)));
+}
+
+function groupTargetPaths(document: PageDocument, operation: Extract<BoxGroupOperation, { type: "wrap" }>): NodePath[] {
+  const wrapperId = boxGroupId(operation.wrapperId, "$.wrapperId");
+  if (!Array.isArray(operation.nodeIds) || !operation.nodeIds.length || operation.nodeIds.length > BOX_GROUP_NODE_LIMIT) throw new Error(`囲む要素は1〜${BOX_GROUP_NODE_LIMIT}件指定してください。`);
+  if (new Set(operation.nodeIds).size !== operation.nodeIds.length) throw new Error("囲む要素の指定が重複しています。");
+  const paths = new Map<string, NodePath | null>();
+  for (const { node, path } of walkNodes(document)) {
+    if (node.type === "text") continue;
+    if (node.id === wrapperId) throw new Error("囲みボックスのIDはこのページですでに使われています。");
+    paths.set(node.id, paths.has(node.id) ? null : path);
+  }
+  return operation.nodeIds.map((id) => {
+    const path = paths.get(id);
+    if (!path) throw new Error("囲む要素が見つからないか、IDが重複しています。");
+    return path;
+  });
+}
+
+function editBoxGroup(document: PageDocument, operation: BoxGroupOperation, locks: readonly EditorLock[], components?: ComponentLibrary): boolean {
+  const targets = operation.type === "wrap" ? groupTargetPaths(document, operation) : [operation.path];
+  const first = targets[0]!, parentPath = first.slice(0, -1), parent = parentPath.length ? nodeAt(document, parentPath) : undefined;
+  const siblings = siblingsAt(document, first), start = first.at(-1)!;
+  let end = start, children: PageNode[], replacement: PageNode[];
+  if (operation.type === "wrap") {
+    if (targets.some((path) => path.length !== first.length || parentPath.some((index, depth) => path[depth] !== index))) throw new Error("同じ親の要素を選択してください。");
+    if (targets.some((path, index) => index > 0 && path.at(-1)! < targets[index - 1]!.at(-1)!)) throw new Error("囲む要素を文書順に指定してください。");
+    end = targets.at(-1)!.at(-1)!;
+    children = siblings.slice(start, end + 1);
+    if (children.filter((node) => node.type !== "text").length !== targets.length) throw new Error("間の要素も含めて、隣り合う要素を選択してください。");
+    replacement = [{ type: "element", id: operation.wrapperId, tag: "div", children }];
+  } else {
+    const box = nodeAt(document, first);
+    if (box.type !== "element" || box.tag !== "div" || !box.id.startsWith(BOX_GROUP_ID_PREFIX) || box.id.length === BOX_GROUP_ID_PREFIX.length ||
+        Object.keys(box).some((key) => !plainBoxKeys.has(key))) throw new Error("囲み解除できるのは、属性や見た目の設定がない囲みボックスだけです。");
+    children = box.children;
+    replacement = children;
+  }
+  if ((parent && (parent.type !== "element" || !boxGroupParents.has(parent.tag))) || children.some((node) => {
+    const tag = node.type === "element" ? node.tag : node.type === "instance" ? components?.components.find(({ id }) => id === node.component)?.root.tag : undefined;
+    return tag !== undefined && boxGroupContextualTags.has(tag);
+  })) throw new Error("この位置ではHTMLの入れ子が不正になるため、変更できません。");
+  const ancestorLock = lockReason(document, first, "children", locks);
+  const affected = siblings.slice(start, end + 1), ids = new Set(walkNodes({ ...document, body: affected }).flatMap(({ node }) => node.type === "text" ? [] : [node.id]));
+  const lock = ancestorLock ?? locks.find(({ nodeId, fields }) => fields.length && ids.has(nodeId))?.reason;
+  if (lock) throw new Error(`データ連動値を含む要素は移動できません。${lock}`);
+  siblings.splice(start, end - start + 1, ...replacement);
+  return (!!parent && !hasPlainBlockFlow(parent)) || !children.length || children.some((node) => !hasPlainBlockFlow(node));
+}
 /** components はインスタンスを含む文書の検証に使う、同じサイトの検証済みライブラリ。 */
 export function editDocument(document: PageDocument, operation: EditorOperation, blocks: EditorOperationBlocks = {}, locks: readonly EditorLock[] = [], components?: ComponentLibrary, siteStyles?: SiteStyles, validateDocument = true): PageDocument {
   if (operation.type === "replaceChildren") {
@@ -388,7 +463,9 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
     return entry.declarations;
   };
   const pruneResponsive = (node: ElementNode | ComponentNode | InstanceNode) => { if (node.style?.responsive) node.style.responsive = node.style.responsive.filter((entry) => Object.keys(entry.declarations).length); };
-  if (operation.type === "title") draft.title = operation.value;
+  let groupMayChangeLayout = false;
+  if (operation.type === "wrap" || operation.type === "unwrap") groupMayChangeLayout = editBoxGroup(draft, operation, allLocks, components);
+  else if (operation.type === "title") draft.title = operation.value;
   else if (operation.type === "restore") {
     const source = operation.document;
     if (!source || typeof source !== "object") throw new Error("復元する内容を確認できません。");
@@ -662,6 +739,7 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
     validatePageDocument(candidate, blocks, { ...(components ? { components } : {}), ...(siteStyles ? { siteStyles } : {}) });
   }
   assertLocks(validateDocument ? resolvePageStyles(document, siteStyles) : document, candidate, allLocks);
+  if (groupMayChangeLayout && (operation.type === "wrap" || operation.type === "unwrap") && operation.allowLayoutChange !== true) throw new BoxGroupLayoutChange();
   const ownership = operation.type === "restore" ? operation.document : operation.type === "token" && operation.token ? { ...document, tokens: { ...document.tokens, [operation.name]: operation.token } }
     : operation.type === "textStyle" && operation.style ? { ...document, textStyles: { ...document.textStyles, [operation.name]: operation.style } } : { ...document };
   if (operation.type === "token" && !operation.token) { ownership.tokens = { ...ownership.tokens }; delete ownership.tokens[operation.name]; }

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { findLayer } from "./editor-layer-fixtures.mjs";
 import { JSDOM } from "jsdom";
 import { parseComponentLibrary, parsePageDocument } from "@niho/web/core";
 import { collectLocalizationUnits, createLocalizationOverlay } from "@niho/web/localization";
@@ -56,7 +57,10 @@ async function openLayers() {
 async function click(target, scope) {
   if (typeof target === "string" && !scope && (target.includes("·") || target.startsWith("◇ "))) await openLayers();
   if (typeof target === "string" && !scope && target === "コンポーネントにする") await editorTab("設定");
-  const element = typeof target === "string" ? target.startsWith("◇ ") ? layerButton(target.slice(2), scope) : button(target, scope) : target; assert.ok(element, String(target)); await act(async () => element.click()); await flush();
+  const lookup = () => typeof target === "string" ? target.startsWith("◇ ") ? layerButton(target.slice(2), scope) : button(target, scope) : target;
+  const isLayer = typeof target === "string" && (target.includes(" · ") || target.startsWith("◇ "));
+  const element = isLayer ? await findLayer(lookup, click, scope) : lookup();
+  assert.ok(element, String(target)); await act(async () => element.click()); await flush();
 }
 async function editorTab(name) {
   const target = [...document.querySelectorAll('.e-inspector-tabs [role="tab"]')].find((node) => node.textContent === name);

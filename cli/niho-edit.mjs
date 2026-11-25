@@ -43,6 +43,7 @@ function argsFromCli() {
       name: { type: "string" }, "mime-type": { type: "string" }, provider: { type: "string" }, search: { type: "string" }, kind: { type: "string" }, "upload-origin": { type: "string" },
       "folder-id": { type: "string" }, cursor: { type: "string" }, limit: { type: "string" }, recent: { type: "boolean" },
       ops: { type: "string" }, "dry-run": { type: "boolean" },
+      "confirm-data-loss": { type: "boolean" },
       widths: { type: "string" }, compare: { type: "string" }, out: { type: "string" },
       "node": { type: "string" }, "depth": { type: "string" }, "text": { type: "string" },
       "tag": { type: "string" }, "style": { type: "string" }, "uses-token": { type: "string" }, "block": { type: "string" },
@@ -94,7 +95,7 @@ async function inputSnapshot(path) {
 }
 function operationNodeId(operation) {
   if (!operation || typeof operation !== "object" || Array.isArray(operation)) return undefined;
-  const candidates = [operation.nodeId, operation.node?.id, operation.nodes?.[0]?.id, operation.parentId];
+  const candidates = [operation.nodeId, Array.isArray(operation.nodeIds) ? operation.nodeIds[0] : undefined, operation.node?.id, operation.nodes?.[0]?.id, operation.parentId];
   return candidates.find((value) => typeof value === "string" && IDENTIFIER.test(value));
 }
 async function inputPageOperations(path) {
@@ -528,6 +529,60 @@ async function main() {
     "X-Studio-CMS-Version": "2", ...(hasAccessCredentials ? accessHeaders : { "cf-access-token": token })
   } : { Authorization: `Bearer ${token}`, ...accessHeaders };
   const client = createPageEditingApiClient({ origin: baseOrigin, siteId: values.site, credentials: "omit", headers });
+
+  if (command === "cms-schema-plan" || command === "cms-schema-apply") {
+    const planning = command === "cms-schema-plan";
+    assertCommandOptions(values, planning ? ["json"] : ["json", "confirm-data-loss"]);
+    if (!values.studio || pageId !== undefined || extra.length || planning && values["confirm-data-loss"] || !planning && values["confirm-data-loss"] !== undefined && values["confirm-data-loss"] !== true) {
+      throw new CliError("invalid_arguments");
+    }
+    const source = await inputPageManagementJson(values.json, MAX_INPUT_BYTES);
+    const post = async (operation, input) => {
+      let response;
+      try {
+        response = await fetch(`${baseOrigin}/api/edit/v2/sites/${encodeURIComponent(values.site)}/operations/${operation}`, {
+          method: "POST", credentials: "omit", cache: "no-store", redirect: "manual", signal: AbortSignal.timeout(30_000),
+          headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify({ siteId: values.site, ...input })
+        });
+      } catch { throw new CliError("transport_error"); }
+      if (response.status >= 300 && response.status < 400) throw new CliError("redirect_response", response.status);
+      const payload = await readJson(response.body, MAX_INPUT_BYTES);
+      return { payload, status: response.status };
+    };
+    if (planning) {
+      if (Object.keys(source).some((key) => !["nextSchema", "replacements"].includes(key))
+        || !source.nextSchema || typeof source.nextSchema !== "object" || Array.isArray(source.nextSchema)
+        || source.nextSchema.siteId !== values.site || source.nextSchema.contractVersion !== 2
+        || source.replacements !== undefined && !Array.isArray(source.replacements)) throw new CliError("invalid_cms_schema_draft");
+      const [schemaResponse, currentResponse] = await Promise.all([
+        post("cms.schema.read", {}), post("cms.release.current", {})
+      ]);
+      if (schemaResponse.status >= 300 || currentResponse.status >= 300) {
+        const failed = schemaResponse.status >= 300 ? schemaResponse : currentResponse;
+        emit(failed.payload, failed.status, 1, failed === schemaResponse ? "cms.schema.read" : "cms.release.current"); return;
+      }
+      const currentSchema = schemaResponse.payload, current = currentResponse.payload;
+      if (!currentSchema || currentSchema.siteId !== values.site || typeof currentSchema.schemaRevision !== "string"
+        || !current || typeof current.locale !== "string" || typeof current.routeTableRevision !== "string") throw new CliError("invalid_cms_schema_state");
+      const planned = await post("cms.schema.plan", {
+        expectedSchemaRevision: currentSchema.schemaRevision,
+        routeTableVersions: [{ locale: current.locale, revision: current.routeTableRevision }],
+        nextSchema: source.nextSchema,
+        replacements: source.replacements ?? []
+      });
+      emit(planned.payload, planned.status, planned.status >= 300 ? 1 : 0, "cms.schema.plan"); return;
+    }
+    const plan = source.result?.plan ?? source.plan ?? source;
+    const operationId = plan?.operationId, confirmationToken = plan?.confirmationToken;
+    if (source.result?.status !== undefined && source.result.status !== "ready"
+      || plan?.operation !== "cms.schema.apply" || plan?.siteId !== values.site
+      || !validCmsItemId(operationId) || typeof confirmationToken !== "string" || !/^[A-Za-z0-9._~-]{1,512}$/u.test(confirmationToken)
+      || !Array.isArray(plan.candidate?.changes)) throw new CliError("invalid_cms_schema_plan");
+    const requiresConfirmation = plan.candidate.changes.some(({ kind }) => kind === "remove" || kind === "convert");
+    if (requiresConfirmation && !values["confirm-data-loss"]) throw new CliError("data_loss_confirmation_required");
+    const applied = await post("cms.schema.apply", { operationId, confirmationToken });
+    emit(applied.payload, applied.status, applied.status >= 300 ? 1 : 0, "cms.schema.apply"); return;
+  }
 
   if (command === "cms-discover" || command === "cms-v2") {
     const discovery = command === "cms-discover";
