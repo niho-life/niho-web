@@ -1,7 +1,7 @@
 import { PAGE_OPERATION_LIMIT, pageOperationWire, parsePageOperation, type EditingPageApplied } from "./editing-page-operations.js";
 import { editDocumentById, fingerprint, nodeAt, walkNodes, type EditorHistory, type EditorOperation, type EditorOperationById } from "./editor-model.js";
-import type { EditorApplyOperationsRequest } from "./editor-types.js";
 import { siblingsAt } from "./node-tree.js";
+import type { EditorApplyOperationsRequest } from "./editor-types.js";
 import type { PageDocument, PageNode, StateName, StyleProperty } from "./types.js";
 
 export const PAGE_OPERATION_MAX_AGE_MS = 5 * 60 * 1000;
@@ -75,7 +75,22 @@ function inverseOperation(before: PageDocument, after: PageDocument, operation: 
   if (forward.type === "textStyle") return [{ ...forward, style: before.textStyles?.[forward.name] }];
   if (forward.type === "add" || forward.type === "addMany") {
     const nodes = forward.type === "add" ? [forward.node] : forward.nodes;
-    return nodes.some((node) => node.type === "text") ? undefined : nodes.flatMap((node) => node.type === "text" ? [] : [{ type: "remove", nodeId: node.id }]);
+    if (nodes.some((node) => node.type === "text")) return undefined;
+    const candidates = nodes.flatMap((node) => node.type === "text" ? [] : [node.id]), included = new Set(candidates), paired = new Set<string>();
+    const locations = new Map(walkNodes(after).flatMap((entry) => entry.node.type === "text" ? [] : [[entry.node.id, entry] as const]));
+    // remove はフォームの label/control ペアをまとめて削除するため、inverse も1回だけ削除する。
+    for (const id of candidates) {
+      const entry = locations.get(id);
+      if (!entry) return undefined;
+      const siblings = siblingsAt(after, entry.path), node = entry.node, index = entry.path.at(-1)!;
+      const controlId = node.type === "element" && ["input", "textarea", "select"].includes(node.tag) ? node.attrs?.id : undefined;
+      const labelTarget = node.type === "element" && node.tag === "label" ? node.attrs?.htmlFor : undefined;
+      const pair = siblings.find((candidate, at) => at !== index && included.has(candidate.type === "text" ? "" : candidate.id) && candidate.type === "element" &&
+        (typeof controlId === "string" && candidate.tag === "label" && candidate.attrs?.htmlFor === controlId ||
+         typeof labelTarget === "string" && ["input", "textarea", "select"].includes(candidate.tag) && candidate.attrs?.id === labelTarget));
+      if (pair && pair.type !== "text" && index < siblings.indexOf(pair)) paired.add(pair.id);
+    }
+    return candidates.filter((id) => !paired.has(id)).map((nodeId) => ({ type: "remove", nodeId }));
   }
   if (!("path" in operation)) return undefined;
   const node = nodeAt(before, operation.path);

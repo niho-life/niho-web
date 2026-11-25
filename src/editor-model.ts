@@ -3,7 +3,8 @@ import { detachInstance } from "./component-model.js";
 import { parsePageDocument } from "./document.js";
 import type { EditorBlockRegistry, EditorLock, EditorPage, EditorPageChange, EditorPageChangePlan, EditorPageImpact, EditorReadOnly, EditorReleasePlan, EditorReleaseRequest, EditorSite, EditorTarget } from "./editor-types.js";
 import { findPathConflict, validatePagePath } from "./pages.js";
-import { copyId, nodeAt, siblingsAt, walkNodes, type NodePath } from "./node-tree.js";
+import { nodeAt, siblingsAt, walkNodes, type NodePath } from "./node-tree.js";
+import { normalizeNodeFragment } from "./editor-fragment.js";
 import type { Appear, AssetReference, BlockContract, ComponentLibrary, ComponentNode, DesignToken, ElementNode, HiddenRange, IconName, InstanceNode, NodeStyle, PageDocument, PageMeta, PageNode, PublicPropValue, StateName, StateProperty, StyleDeclarations, StyleProperty, StyleValue, TextStyle } from "./types.js";
 import { stateNames, textStyleProperties } from "./style-values.js";
 import { assertMotionStylePatch, sameMotionValue, type MotionStylePatch } from "./builder.js";
@@ -11,6 +12,7 @@ import { isSafeHttpsOrigin, isSafePublicUrl, keys, line, record } from "./valida
 import { normalizeEmbedSource } from "./embeds.js";
 
 export { nodeAt, walkNodes, type NodePath };
+export { normalizeNodeFragment } from "./editor-fragment.js";
 export type EditorOperation =
   | { type: "text"; path: NodePath; value: string }
   | { type: "attribute"; path: NodePath; name: string; value: string }
@@ -508,26 +510,8 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
       const originals = pair < 0 ? [node] : [siblings[Math.min(index, pair)]!, siblings[Math.max(index, pair)]!];
       const subtree = originals.flatMap((entry) => entry.type === "text" ? [] : walkNodes({ ...draft, body: [entry] }));
       if (subtree.some(({ node }) => node.type !== "text" && allLocks.some((lock) => lock.nodeId === node.id))) throw new Error("データ連動値を含む要素は複製できません。");
-      const copies = structuredClone(originals), used = new Set(walkNodes(draft).flatMap(({ node }) => node.type === "text" ? [] : [node.id]));
-      const usedHtmlIds = new Set(walkNodes(draft).flatMap(({ node }) => node.type === "element" && typeof node.attrs?.id === "string" ? [node.attrs.id] : []));
-      const remap = new Map<string, string>();
-      function rename(current: PageNode): void {
-        if (current.type === "text") return;
-        current.id = copyId(current.id, used);
-        if (current.type === "element") {
-          if (typeof current.attrs?.id === "string") { const previous = current.attrs.id; current.attrs.id = copyId(previous, usedHtmlIds); remap.set(previous, current.attrs.id); }
-          current.children.forEach(rename);
-        }
-      }
-      copies.forEach(rename);
-      function links(current: PageNode): void {
-        if (current.type !== "element") return;
-        if (typeof current.attrs?.href === "string" && current.attrs.href.startsWith("#") && remap.has(current.attrs.href.slice(1))) current.attrs.href = `#${remap.get(current.attrs.href.slice(1))}`;
-        if (typeof current.attrs?.htmlFor === "string" && remap.has(current.attrs.htmlFor)) current.attrs.htmlFor = remap.get(current.attrs.htmlFor)!;
-        for (const key of ["aria-labelledby", "aria-describedby"]) if (typeof current.attrs?.[key] === "string") current.attrs[key] = current.attrs[key].split(" ").map((id) => remap.get(id) ?? id).join(" ");
-        current.children.forEach(links);
-      }
-      copies.forEach(links); siblings.splice(Math.max(index, pair) + 1, 0, ...copies);
+      const copies = normalizeNodeFragment(originals, draft);
+      siblings.splice(Math.max(index, pair) + 1, 0, ...copies);
     } else if (operation.type === "move") {
       if (operation.parentId && walkNodes({ ...draft, body: [node] }).some(({ node }) => node.type !== "text" && node.id === operation.parentId)) throw new Error("要素を自分の内側へ移動できません。");
       parentChildren(operation.path).splice(operation.path.at(-1)!, 1);
