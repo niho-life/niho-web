@@ -250,7 +250,7 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
         {item && <div className="studio-native-cms-item">
           <form onSubmit={(event) => { event.preventDefault(); run(save); }}>
             {currentCollection.fields.map((field) => <CmsFieldEditor key={field.fieldId} field={field} value={values[field.fieldId] ?? null}
-              update={(value) => setValues({ ...values, [field.fieldId]: value })} />)}
+              disabled={busy} update={(value) => setValues({ ...values, [field.fieldId]: value })} />)}
             <button disabled={busy || !dirty}>下書きを保存</button>
           </form>
           <div className="studio-site-hub-actions">
@@ -287,20 +287,24 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
   </section>;
 }
 
-function CmsFieldEditor({ field, value, update }: { field: CmsCollection["fields"][number]; value: CollectionValue; update: (value: CollectionValue) => void }) {
+function CmsFieldEditor({ field, value, disabled, update }: {
+  field: CmsCollection["fields"][number]; value: CollectionValue; disabled: boolean; update: (value: CollectionValue) => void
+}) {
   const text = typeof value === "string" ? value : "";
   if (field.type === "longText" || field.type === "richText") return <label>{field.label}
-    <textarea value={text} rows={field.type === "longText" ? field.rows : 6} onChange={(event) => update(event.target.value)} />
+    <textarea disabled={disabled} value={text} rows={field.type === "longText" ? field.rows : 6} onChange={(event) => update(event.target.value)} />
   </label>;
   if (["text", "slug", "url", "datetime"].includes(field.type)) return <label>{field.label}
-    <input value={text} onChange={(event) => update(field.type === "datetime" && !event.target.value ? null : event.target.value)} />
+    <input disabled={disabled} value={text} onChange={(event) => update(field.type === "datetime" && !event.target.value ? null : event.target.value)} />
   </label>;
-  return <JsonFieldEditor key={JSON.stringify(value)} label={field.label} value={value} update={update} />;
+  return <JsonFieldEditor key={JSON.stringify(value)} label={field.label} value={value} disabled={disabled} update={update} />;
 }
 
-function JsonFieldEditor({ label, value, update }: { label: string; value: CollectionValue; update: (value: CollectionValue) => void }) {
+function JsonFieldEditor({ label, value, disabled, update }: {
+  label: string; value: CollectionValue; disabled: boolean; update: (value: CollectionValue) => void
+}) {
   const [text, setText] = useState(JSON.stringify(value));
-  return <label>{label} <textarea value={text} onChange={(event) => {
+  return <label>{label} <textarea disabled={disabled} value={text} onChange={(event) => {
     const next = event.target.value;
     setText(next);
     try {

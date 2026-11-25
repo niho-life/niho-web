@@ -208,6 +208,7 @@ test("Studio-native の CMS を Dashboard から開き、下書き作成の再�
     revision: "rev_fixture", values: { title: "架空の下書き" } };
   const observed = [];
   let attempts = 0;
+  let finishSave;
   installDom(root);
   t.mock.method(globalThis, "fetch", async (url, init = {}) => {
     if (url === "/api/session") return json({ status: "authenticated", subject: "example-owner", email: "owner@example.test" });
@@ -225,8 +226,11 @@ test("Studio-native の CMS を Dashboard から開き、下書き作成の再�
     if (path === "cms.release.current") return json({ snapshot: null, locale: "ja", collectionRoot: "/s/native/cms" });
     if (path === "cms.items.list") return json({ items: [], nextCursor: null });
     if (path === "cms.items.create") return ++attempts === 1 ? json({ error: "service_unavailable" }, 503) : json({ item });
+    if (path === "cms.items.save") return new Promise((resolve) => { finishSave = () => resolve(json({ item: {
+      ...item, revision: "rev_saved", values: input.values
+    } })); });
     if (path === "cms.preview.prepare") return json({ previewId: "fixture-preview", expiresAt: at });
-    if (path === "cms.preview.read") return json({ preview: { title: item.values.title, fields: [] }, expiresAt: at });
+    if (path === "cms.preview.read") return json({ preview: { title: input.previewId === "fixture-preview" ? "編集済みの下書き" : item.values.title, fields: [] }, expiresAt: at });
     return json({ error: "not_found" }, 404);
   });
   await act(async () => { await import(`${pathToFileURL(bundle).href}?instance=${++instance}`); });
@@ -243,8 +247,15 @@ test("Studio-native の CMS を Dashboard から開き、下書き作成の再�
   assert.equal(creates.length, 2);
   assert.ok(creates[0].key);
   assert.equal(creates[0].key, creates[1].key);
+  const title = document.querySelector(".studio-native-cms-item input");
+  await input(title, "編集済みの下書き");
+  await click(byText("button", "下書きを保存"));
+  assert.equal(title.disabled, true, "保存応答を待つ間の編集を止める");
+  finishSave();
+  await flush();
+  assert.equal(document.querySelector(".studio-native-cms-item input").disabled, false);
   await click(byText("button", "下書きをプレビュー"));
-  assert.equal(document.querySelector('[aria-label="下書きプレビュー"] h2')?.textContent, item.values.title);
+  assert.equal(document.querySelector('[aria-label="下書きプレビュー"] h2')?.textContent, "編集済みの下書き");
   assert.equal(observed.find(({ path }) => path === "cms.preview.read")?.input.previewId, "fixture-preview");
   assert.doesNotMatch(window.location.href, /fixture-preview/u);
 });
