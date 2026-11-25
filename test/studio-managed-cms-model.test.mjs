@@ -27,6 +27,17 @@ test("schema revision change compares raw rich text with its escaped published v
   assert.equal(cmsDraftMatchesPublishedValues(schema, "missing", draft, published), false);
 });
 
+test("schema field order changes do not alter published value comparison", () => {
+  const schema = { collections: [{ id: "posts", fields: [
+    { fieldId: "body", type: "richText" }, { fieldId: "title", type: "text" }, { fieldId: "meta", type: "json" }
+  ] }] };
+  const draft = { body: "<p>本文</p>", title: "記事", meta: { tags: ["海", "朝"], image: { alt: "浜" } } };
+  const published = { meta: { image: { alt: "浜" }, tags: ["海", "朝"] }, title: "記事", body: "&lt;p&gt;本文&lt;/p&gt;" };
+
+  assert.equal(cmsDraftMatchesPublishedValues(schema, "posts", draft, published), true);
+  assert.equal(cmsDraftMatchesPublishedValues(schema, "posts", { ...draft, meta: { ...draft.meta, tags: ["朝", "海"] } }, published), false);
+});
+
 test("publishing a new item path retargets historical redirects and withdrawal removes them", () => {
   const redirects = [
     { from: "/cms/posts/old", to: "/cms/posts/current" },

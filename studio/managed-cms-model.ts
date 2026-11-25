@@ -33,6 +33,20 @@ export function redirectsForCmsRelease(redirects: readonly CmsRedirect[], oldPat
   });
 }
 
+function cmsJsonValuesEqual(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right) && left.length === right.length
+      && left.every((value, index) => cmsJsonValuesEqual(value, right[index]));
+  }
+  if (left === null || right === null || typeof left !== "object" || typeof right !== "object") return false;
+  const leftKeys = Object.keys(left), rightKeys = Object.keys(right);
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every((key) => Object.hasOwn(right, key) && cmsJsonValuesEqual(
+      (left as Record<string, unknown>)[key], (right as Record<string, unknown>)[key]
+    ));
+}
+
 /** Compare an editable revision with its published snapshot representation. */
 export function cmsDraftMatchesPublishedValues(schema: CmsSchema, collectionId: string,
   draftValues: CollectionValues, publishedValues: CollectionValues): boolean {
@@ -45,5 +59,5 @@ export function cmsDraftMatchesPublishedValues(schema: CmsSchema, collectionId: 
     const value = comparable[field.fieldId];
     if (typeof value === "string" && value !== "") comparable[field.fieldId] = escapeHtml(value);
   }
-  return JSON.stringify(comparable) === JSON.stringify(publishedValues);
+  return cmsJsonValuesEqual(comparable, publishedValues);
 }
