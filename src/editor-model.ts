@@ -11,6 +11,40 @@ import { isSafeHttpsOrigin, isSafePublicUrl, keys, line, record } from "./valida
 import { normalizeEmbedSource } from "./embeds.js";
 
 export { nodeAt, walkNodes, type NodePath };
+export type NodePositionAnchor = { readonly before: string } | { readonly after: string } | { readonly edge: "start" | "end" };
+export type PageOperationTextPathContextEntry =
+  | { readonly type: "target" }
+  | { readonly type: "text"; readonly value: string }
+  | { readonly type: "element" | "component" | "instance"; readonly nodeId: string };
+export type PageOperationPreconditions = {
+  readonly parentId: string | null;
+  readonly oldValue: StyleValue | PublicPropValue | string | null;
+  readonly textPathContext?: readonly PageOperationTextPathContextEntry[];
+};
+export const PAGE_OPERATION_TEXT_PATH_CONTEXT_MAX_CHILDREN = 8;
+export const PAGE_OPERATION_TEXT_PATH_CONTEXT_MAX_SIBLING_TEXT_LENGTH = 128;
+/** Describes the exact sibling order around a direct text child so stale childPath edits cannot target another text node. */
+export function pageOperationTextPathContext(document: PageDocument, parentId: string | null, childPath: readonly number[]): PageOperationTextPathContextEntry[] | undefined {
+  if (childPath.length !== 1) return undefined;
+  let children: readonly PageNode[];
+  if (parentId === null) children = document.body;
+  else {
+    const matches = walkNodes(document).filter(({ node }) => node.type !== "text" && node.id === parentId);
+    if (matches.length !== 1 || matches[0]!.node.type !== "element") return undefined;
+    children = matches[0]!.node.children;
+  }
+  const targetIndex = childPath[0]!;
+  if (children.length > PAGE_OPERATION_TEXT_PATH_CONTEXT_MAX_CHILDREN || targetIndex >= children.length) return undefined;
+  const context: PageOperationTextPathContextEntry[] = [];
+  for (const [index, child] of children.entries()) {
+    if (index === targetIndex && child.type === "text") context.push({ type: "target" });
+    else if (child.type === "text") {
+      if (child.text.length > PAGE_OPERATION_TEXT_PATH_CONTEXT_MAX_SIBLING_TEXT_LENGTH) return undefined;
+      context.push({ type: "text", value: child.text });
+    } else context.push({ type: child.type, nodeId: child.id });
+  }
+  return context;
+}
 export type EditorOperation =
   | { type: "text"; path: NodePath; value: string }
   | { type: "attribute"; path: NodePath; name: string; value: string }
@@ -42,8 +76,8 @@ export type EditorOperation =
   /** 幅別の非表示。undefined・空配列で解除。 */
   | { type: "hidden"; path: NodePath; ranges: readonly HiddenRange[] | undefined }
   | { type: "title"; value: string }
-  | { type: "add"; parentId: string | null; node: PageNode; index?: number }
-  | { type: "addMany"; parentId: string | null; nodes: readonly PageNode[]; index?: number }
+  | { type: "add"; parentId: string | null; node: PageNode; index?: number; anchor?: NodePositionAnchor }
+  | { type: "addMany"; parentId: string | null; nodes: readonly PageNode[]; index?: number; anchor?: NodePositionAnchor }
   | { type: "replaceChildren"; path: NodePath; children: PageNode[] }
   | { type: "image"; path: NodePath; source: { asset: AssetReference } | { src: string; srcset?: string }; alt?: string }
   | { type: "video"; path: NodePath; source: { asset: AssetReference } | { src: string } }
@@ -55,7 +89,7 @@ export type EditorOperation =
   | { type: "background"; path: NodePath; breakpoint: number | "base"; asset: AssetReference | undefined }
   | { type: "replaceAsset"; from: AssetReference; to: AssetReference }
   | { type: "duplicate" | "remove"; path: NodePath }
-  | { type: "move"; path: NodePath; parentId: string | null; index: number }
+  | { type: "move"; path: NodePath; parentId: string | null; index?: number; anchor?: NodePositionAnchor }
   /** インスタンスのページごとの値。undefined で解除する。 */
   | { type: "instanceProp"; path: NodePath; name: string; value: string | undefined }
   /** インスタンスを展開した element に置き換え、以後は部品の更新を受けない。 */
@@ -66,9 +100,11 @@ export type EditorOperation =
   | { type: "restore"; document: PageDocument }
   | MetaOperation;
 type StableEditorOperation<T> = T extends { type: "text"; path: NodePath }
-  ? Omit<T, "path"> & { parentId: string | null; childPath: NodePath }
-  : T extends { path: NodePath }
-    ? Omit<T, "path"> & { nodeId: string }
+  ? Omit<T, "path"> & { parentId: string | null; childPath: NodePath; preconditions?: PageOperationPreconditions }
+  : T extends { type: "style" | "attribute" | "prop"; path: NodePath }
+    ? Omit<T, "path"> & { nodeId: string; preconditions?: PageOperationPreconditions }
+    : T extends { path: NodePath }
+      ? Omit<T, "path"> & { nodeId: string }
     : T;
 /** 外部クライアント用の安定対象操作。textノードはIDを持たないため、IDを持つ親からの相対パスで指す。 */
 export type EditorOperationById = StableEditorOperation<EditorOperation>;
@@ -235,8 +271,8 @@ function formFieldPairIndex(siblings: readonly PageNode[], node: PageNode, index
      typeof labelTarget === "string" && ["input", "textarea", "select"].includes(candidate.tag) && candidate.attrs?.id === labelTarget));
 }
 /** components はインスタンスを含む文書の検証に使う、同じサイトの検証済みライブラリ。 */
-export function editDocument(document: PageDocument, operation: EditorOperation, blocks: EditorOperationBlocks = {}, locks: readonly EditorLock[] = [], components?: ComponentLibrary, siteStyles?: SiteStyles): PageDocument {
-  const draft = structuredClone(resolvePageStyles(document, siteStyles)), allLocks = effectiveLocks(document, locks, blocks);
+export function editDocument(document: PageDocument, operation: EditorOperation, blocks: EditorOperationBlocks = {}, locks: readonly EditorLock[] = [], components?: ComponentLibrary, siteStyles?: SiteStyles, validateDocument = true): PageDocument {
+  const draft = structuredClone(validateDocument ? resolvePageStyles(document, siteStyles) : document), allLocks = effectiveLocks(document, locks, blocks);
   const parentChildren = (path: NodePath): PageNode[] => siblingsAt(draft, path);
   const targetChildren = (id: string | null): PageNode[] => {
     if (id === null) return draft.body;
@@ -269,7 +305,7 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
     if (Object.keys(meta).length) draft.meta = meta as PageMeta; else delete draft.meta;
   }
   else if (operation.type === "add" || operation.type === "addMany") {
-    const destination = targetChildren(operation.parentId), index = operation.index ?? destination.length;
+    const destination = targetChildren(operation.parentId), index = positionIndex(destination, operation.index, operation.anchor, true);
     if (!Number.isInteger(index) || index < 0 || index > destination.length) throw new Error("追加先の位置が不正です。");
     const additions = operation.type === "add" ? [operation.node] : operation.nodes;
     if (!additions.length) throw new Error("追加する要素がありません。");
@@ -433,7 +469,7 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
       };
       if (Object.keys(style).length) node.style = style; else delete node.style;
       // trusted host の定義でも値はその場で検証し、関数末尾の所有権復元後にも同じ validator を通す。
-      parsePageDocument(draft, blocks, { ...(components ? { components } : {}), ...(siteStyles ? { siteStyles } : {}) });
+      if (validateDocument) parsePageDocument(draft, blocks, { ...(components ? { components } : {}), ...(siteStyles ? { siteStyles } : {}) });
     } else if (operation.type === "state") {
       if (node.type === "text") throw new Error("親要素の見た目を編集してください。");
       assertStyleProperties(node, ["states"], blocks);
@@ -531,18 +567,34 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
     } else if (operation.type === "move") {
       if (operation.parentId && walkNodes({ ...draft, body: [node] }).some(({ node }) => node.type !== "text" && node.id === operation.parentId)) throw new Error("要素を自分の内側へ移動できません。");
       parentChildren(operation.path).splice(operation.path.at(-1)!, 1);
-      const destination = targetChildren(operation.parentId);
-      if (!Number.isInteger(operation.index) || operation.index < 0 || operation.index > destination.length) throw new Error("移動先の位置が不正です。");
-      destination.splice(operation.index, 0, node);
+      const destination = targetChildren(operation.parentId), index = positionIndex(destination, operation.index, operation.anchor, false);
+      destination.splice(index, 0, node);
     }
   }
-  const result = resolvePageStyles(parsePageDocument(draft, blocks, { ...(components ? { components } : {}), ...(siteStyles ? { siteStyles } : {}) }), siteStyles);
-  assertLocks(resolvePageStyles(document, siteStyles), result, allLocks);
+  const result = validateDocument
+    ? resolvePageStyles(parsePageDocument(draft, blocks, { ...(components ? { components } : {}), ...(siteStyles ? { siteStyles } : {}) }), siteStyles)
+    : draft;
+  assertLocks(validateDocument ? resolvePageStyles(document, siteStyles) : document, result, allLocks);
   const ownership = operation.type === "restore" ? operation.document : operation.type === "token" && operation.token ? { ...document, tokens: { ...document.tokens, [operation.name]: operation.token } }
     : operation.type === "textStyle" && operation.style ? { ...document, textStyles: { ...document.textStyles, [operation.name]: operation.style } } : { ...document };
   if (operation.type === "token" && !operation.token) { ownership.tokens = { ...ownership.tokens }; delete ownership.tokens[operation.name]; }
   if (operation.type === "textStyle" && !operation.style && ownership.textStyles) { ownership.textStyles = { ...ownership.textStyles }; delete ownership.textStyles[operation.name]; }
-  return siteStyles ? parsePageDocument(retainPageStyles(result, ownership, siteStyles), blocks, { ...(components ? { components } : {}), siteStyles }) : result;
+  if (!siteStyles) return result;
+  const retained = retainPageStyles(result, ownership, siteStyles);
+  return validateDocument ? parsePageDocument(retained, blocks, { ...(components ? { components } : {}), siteStyles }) : retained;
+}
+function positionIndex(destination: readonly PageNode[], index: number | undefined, anchor: NodePositionAnchor | undefined, optional: boolean): number {
+  if (index !== undefined && anchor !== undefined) throw new Error("位置は index または anchor のどちらか一方で指定してください。");
+  if (anchor !== undefined) {
+    if ("edge" in anchor) return anchor.edge === "start" ? 0 : destination.length;
+    const nodeId = "before" in anchor ? anchor.before : anchor.after;
+    const at = destination.findIndex((node) => node.type !== "text" && node.id === nodeId);
+    if (at < 0) throw new Error("位置アンカーが見つかりません。");
+    return "before" in anchor ? at : at + 1;
+  }
+  if (index === undefined && optional) return destination.length;
+  if (!Number.isInteger(index) || index! < 0 || index! > destination.length) throw new Error(optional ? "追加先の位置が不正です。" : "移動先の位置が不正です。");
+  return index!;
 }
 function pathForNodeId(document: PageDocument, nodeId: string): NodePath {
   if (typeof nodeId !== "string" || !nodeId) throw new Error("対象ノードIDが正しくありません。");
@@ -559,20 +611,20 @@ function pathForTextTarget(document: PageDocument, parentId: string | null, chil
   return path;
 }
 /** Stable IDで操作対象を解決し、GUIと同じ検証済み文書操作を適用する。 */
-export function editDocumentById(document: PageDocument, operation: EditorOperationById, blocks: EditorOperationBlocks = {}, locks: readonly EditorLock[] = [], components?: ComponentLibrary, siteStyles?: SiteStyles): PageDocument {
+export function editDocumentById(document: PageDocument, operation: EditorOperationById, blocks: EditorOperationBlocks = {}, locks: readonly EditorLock[] = [], components?: ComponentLibrary, siteStyles?: SiteStyles, validateDocument = true): PageDocument {
   if (operation.type === "text") {
     if (!("parentId" in operation) || !("childPath" in operation)) throw new Error("テキスト対象は親IDと相対パスで指定してください。");
-    const { parentId, childPath, ...change } = operation;
+    const { parentId, childPath, preconditions: _preconditions, ...change } = operation;
     const path = pathForTextTarget(document, parentId, childPath);
-    return editDocument(document, { ...change, path } as EditorOperation, blocks, locks, components, siteStyles);
+    return editDocument(document, { ...change, path } as EditorOperation, blocks, locks, components, siteStyles, validateDocument);
   }
   if ("nodeId" in operation) {
-    const { nodeId, ...change } = operation;
+    const { nodeId, preconditions: _preconditions, ...change } = operation as typeof operation & { preconditions?: PageOperationPreconditions };
     const path = pathForNodeId(document, nodeId);
-    return editDocument(document, { ...change, path } as EditorOperation, blocks, locks, components, siteStyles);
+    return editDocument(document, { ...change, path } as EditorOperation, blocks, locks, components, siteStyles, validateDocument);
   }
   if ("path" in operation) throw new Error("外部操作では配列位置でなく安定した対象IDを指定してください。");
-  return editDocument(document, operation as EditorOperation, blocks, locks, components, siteStyles);
+  return editDocument(document, operation as EditorOperation, blocks, locks, components, siteStyles, validateDocument);
 }
 export function commitHistory(history: EditorHistory, document: PageDocument): EditorHistory {
   if (document === history.present) return history;
