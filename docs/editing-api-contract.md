@@ -16,6 +16,7 @@ Studio GUIは対応ホストでは editor snapshot profile から日本語本文
 | `pages.read` | GET | `/sites/{siteId}/operations/pages.read/{pageId}?locale={locale}` | `pages.read` | site/page/locale、任意の editor snapshot profile | `{ document, version, componentsVersion?, presentationVersion?, presentation?, editorState? }` |
 | `pages.save` | PUT | `/sites/{siteId}/operations/pages.save/{pageId}?locale={locale}` | `pages.edit` | `{ expectedVersion, document }` | `{ status: "saved", version, document }` |
 | `pages.apply` | POST | `/sites/{siteId}/operations/pages.apply/{pageId}?locale={locale}` | `pages.edit` | `{ baseVersion, operationId, operations, componentsVersion?, presentationVersion?, stylesVersion?, dryRun? }` | `{ status: "applied", version, revision, document }` / dry-run `{ status: "valid", diff, touched }` |
+| `pages.preview-intent` | POST | `/sites/{siteId}/operations/pages.preview-intent/{pageId}?locale={locale}` | `pages.read` | `{}` | `{ url, expiresAt }` |
 | `pages.release-plan` | POST | `/sites/{siteId}/operations/pages.release-plan/{pageId}?locale={locale}` | `pages.publish` | expected version, publish/rollback action, optional rollback revision and dependency versions | `{ plan }` |
 | `pages.release` | POST | `/sites/{siteId}/operations/pages.release/{pageId}?locale={locale}` | `pages.publish` | expected version, one-use confirmation token, UUID v4 operation ID | `{ status: "released", operationId, version, document }` |
 | `pages.release-set-plan` | POST | `/sites/{siteId}/operations/pages.release-set-plan` | `pages.publish` per target | `{ siteId, operationId, items: [{ target, expectedVersion, componentsVersion?, presentationVersion? }] }` (1–50 pages) | `{ plan }` |
@@ -41,6 +42,10 @@ Studio GUIは対応ホストでは editor snapshot profile から日本語本文
 | `assets.upload-intent` | POST | `/sites/{siteId}/operations/assets.upload-intent` | `assets.upload` | name, MIME, bytes, provider | one-time upload URL/token and asset ID |
 | `assets.delete` | POST | `/sites/{siteId}/operations/assets.delete/{provider}/{assetId}` | `assets.delete` | `{ expectedVersion }` | deleted, in-use, conflict, or rejection |
 | `assets.restore` | POST | `/sites/{siteId}/operations/assets.restore/{provider}/{assetId}` | `assets.delete` | `{ expectedVersion }` | restored, conflict, or rejection |
+
+`pages.preview-intent` は、ページ読取権限を持つactorに対してホストが発行する短期プレビューURLです。`PageEditingHostAdapter.createPagePreviewIntent(actor, target)` を実装したhostだけがdiscoveryに公開できます。ホストはURLにbearer token、Access資格情報、cookieなどを含めず、サーバー側の不透明な許可記録をactor・site/page/locale・発行時の文書版・styles/components/presentation/翻訳の依存版・期限・利用回数上限に結び付けます。プレビューHTMLのGET時に認証主体と全ての版・期限・利用回数を再検証し、一致しない場合は拒否します。CLIは認証header付きでHTMLを一度だけ取得し、幅ごとの撮影には同じメモリ内HTMLを使います。
+
+プレビューHTMLのhost responseには `Cache-Control: no-store`、`Referrer-Policy: no-referrer`、`X-Robots-Tag: noindex` を付け、公開ページ用cache経路を通しません。共通APIが返すintent JSONにも `PAGE_PREVIEW_INTENT_HEADERS` を付けますが、プレビューHTML自体の安全な配信はhostの責務です。HTMLは公開時と同じrenderer・登録block・presentation・host viewで描画します。clientは期限を15分以内に制限し、HTTPSかつAPIと同じoriginのURLだけを受け入れます。
 
 `pages.save` は `expectedVersion` を原子的に比較します。競合時はHTTP 409と `version_conflict` を返し、ホストは古い下書きを上書きしません。documentは受信側で `parsePageDocument` を通し、pathのsite/pageとqueryのlocaleに一致しない文書、任意HTML・JavaScript・CSSなど検証に失敗する値はHTTP 400 `invalid_request` で拒否します。登録ブロック・部品インスタンス・サイト共通スタイルを使うホストは、adapterの `validationContext(actor, target)` から信頼済みの `blocks`・`components`・`siteStyles` を渡します。読み取り、入力文書、保存後の正規文書の検証に同じcontextを使います。
 
@@ -114,11 +119,16 @@ Studio の鎌倉エディタは初期表示に editor catalog の一覧を使い
 
 Accessがログイン画面へredirectした場合、CLIは追跡せず `access_redirect` とHTTP statusをJSON envelopeで返して終了コード1で終了します。redirect先や応答本文は出力しません。資格情報が片方だけ、または形式不正なら、通信前に `invalid_access_credentials` を返します。
 
+`niho-edit preview <page> --locale <locale> --widths 375,768,1280` は `pages.preview-intent` 対応hostに下書きHTMLを要求します。任意依存のPlaywrightとローカルChromiumが使える場合は各幅のPNGを `--out` の下の `niho-preview-*` ディレクトリへ保存し、`--compare published` では下書き・公開版の個別PNGと横並び比較PNGを同じ幅ごとに保存します。どちらも利用できなければ、スクリーンショット取得を行わず、下書きURLと期限（比較指定時は公開URL）をJSONで返します。HTMLはhost bearerと必要なら同じorigin向けAccess headerで一度取得し、ブラウザーへ認証headerを渡さずに各幅を撮影します。HTML応答の `no-store` / `no-referrer` / `noindex` が不足する場合は撮影を拒否します。
+
+`--compare published` の公開HTMLはAPI originに対するAccess Service Auth headerだけをNode fetchへ付け、host bearerは送らず、redirectは拒否してからブラウザーへ渡します。Access保護された同一origin上の画像・CSS等もAccess headerだけで読み、Access資格情報を他originへ渡しません。ブラウザーからのPOST等の変更要求は遮断します。
+
 ```sh
 niho-edit --origin https://site.example --site site-id discover
 niho-edit --origin https://site.example --site site-id read home --locale ja > page.json
 niho-edit --origin https://site.example --site site-id outline home --locale ja --depth 1
 niho-edit --origin https://site.example --site site-id find home --locale ja --text "鎌倉"
+niho-edit --origin https://site.example --site site-id preview home --locale ja --widths 375,768,1280 --compare published --out ./previews
 niho-edit --origin https://site.example --site site-id get home heading --locale ja --effective-style
 # page.json の document を編集し、version は保持する
 niho-edit --origin https://site.example --site site-id save home --locale ja --json page.json > saved.json
@@ -203,6 +213,7 @@ niho-edit --origin https://site.example --site site-id localization-release-read
 
 - `authenticate(request)` はセッション/API tokenを検証し、`human` または `machine` のactorと、必要なら委任元を返す。`pages.apply` 対応hostは `gui` / `cli` / `api` の `clientKind` も認証文脈から返す。監査に人の連絡先が必要な操作では、hostが検証済みのemailだけを `actor.email` に渡す。
 - `authorize(actor, capability, scope)` はリクエストごとにサイト/ページの権限を判断する。discover時も同じ判定を使う。
+- `createPagePreviewIntent(actor, target)` を提供するhostは、認証済みactor・site/page/locale・現行の文書版とstyles/components/presentation/翻訳の依存版・期限・利用回数に結び付く不透明な許可記録をサーバー側で発行する。HTMLを返すpreview routeでも同じactorと全版を再検証し、要件外のrequestを拒否する。
 - `validationContext(actor, target)` は、`pages.read` / `pages.save` で対象文書の検証に必要なホスト登録block・部品library・サイトstyleを返す。`pages.apply` は後述のtransactionが、同じ版に対応するblock・lock・部品library・サイトstyleを `prepare` に渡す。これらの実装定義はクライアントへ公開しない。
 - `readPage` は文書とopaque versionを返す。
 - `savePage` はexpectedVersionを永続層で原子的に比較して保存する。並行更新は `conflict` を返し、成功時は正規化済みの保存後PageDocumentと新versionを返す。

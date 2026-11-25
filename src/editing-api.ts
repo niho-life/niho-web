@@ -26,6 +26,7 @@ import { jsonBytes } from "./localization-workspace-model.js";
 import { EDITING_EDITOR_SNAPSHOT_ACCEPT, parseEditingPageEditorState, parseEditingPagePresentation, type EditingPageEditorState } from "./editing-page-snapshot.js";
 import { ENGLISH_PUBLICATION_STATES } from "./english-publication.js";
 import { inspectPageDocument, PAGE_INSPECT_LIMITS, PageInspectError, parsePageInspectQuery, type PageInspectQuery } from "./page-inspect.js";
+import { PAGE_PREVIEW_INTENT_HEADERS, parsePagePreviewIntent, type EditingPagePreviewIntent } from "./editing-page-preview.js";
 
 import {
   PAGE_OPERATION_ID, PAGE_OPERATION_LIMIT, PAGE_OPERATION_VERSIONS, editingOperationProblem, pageApplyInputSchema,
@@ -38,6 +39,7 @@ import type { EditorLock } from "./editor-types.js";
 export type { EditingPageApplied, EditingPageApplyInput, EditingPageApplyResult, EditingPageOperationStore, PageOperationJournal,
   EditingPageApplyConflict, PageOperationTransaction, PageOperationUnmetPrecondition, PageOperationVersions } from "./editing-page-operations.js";
 export { pageOperationWire } from "./editing-page-operations.js";
+export { PAGE_PREVIEW_INTENT_HEADERS, type EditingPagePreviewIntent } from "./editing-page-preview.js";
 
 export type {
   EditingLocalizationHostAdapter, EditingLocalizationInput, EditingLocalizationOperationId, EditingLocalizationReleaseApplyInput,
@@ -355,6 +357,14 @@ export const EDITING_OPERATIONS = Object.freeze([
       "invalid_request", "method_not_allowed", "not_found", "validation_failed", "version_conflict"] as const)
   }),
   Object.freeze({
+    id: "pages.preview-intent", capability: "pages.read", method: "POST", path: "/sites/{siteId}/operations/pages.preview-intent/{pageId}?locale={locale}",
+    inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId", "pageId", "locale"]), additionalProperties: false,
+      properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), pageId: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }) }) }),
+    resultSchema: Object.freeze({ type: "object", required: Object.freeze(["url", "expiresAt"]), additionalProperties: false,
+      properties: Object.freeze({ url: Object.freeze({ type: "string", maxLength: 2048 }), expiresAt: Object.freeze({ type: "string", minLength: 24, maxLength: 24 }) }) }),
+    errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found"] as const)
+  }),
+  Object.freeze({
     id: "pages.release-plan", capability: "pages.publish", method: "POST", path: "/sites/{siteId}/operations/pages.release-plan/{pageId}?locale={locale}",
     inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId", "pageId", "locale", "expectedVersion", "action"]), additionalProperties: false, properties: releaseRequestProperties }),
     resultSchema: Object.freeze({ type: "object", required: Object.freeze(["plan"]), additionalProperties: false, properties: Object.freeze({ plan: releasePlanSchema }) }),
@@ -523,6 +533,11 @@ export type PageEditingHostAdapter = {
   /** Trusted host schemas needed for custom blocks, component instances and site-wide style tokens. */
   validationContext?(actor: EditingActor, target: EditingPageTarget): Promise<PageEditingValidationContext>;
   readPage(actor: EditingActor, target: EditingPageTarget): Promise<EditingPageSnapshot | null>;
+  /**
+   * ホストは不透明な許可をサーバーに保持し、認証主体、対象、文書版、styles/components/presentation/翻訳の版、期限、利用回数に結び付ける。
+   * URLには認証情報を置かず、プレビュー本体の取得時も許可を検証する。HTMLには PAGE_PREVIEW_INTENT_HEADERS を付ける。
+   */
+  createPagePreviewIntent?(actor: EditingActor, target: EditingPageTarget): Promise<EditingPagePreviewIntent | null>;
   savePage(actor: EditingActor, target: EditingPageTarget, expectedVersion: string, document: PageDocument): Promise<EditingPageSaveResult>;
   /** Optional atomic operation journal and document writer. Its versioned read includes the trusted validation context. */
   pageOperations?: EditingPageOperationStore;
@@ -568,9 +583,9 @@ export type PageEditingHostAdapter = {
   restoreAsset?(actor: EditingActor, request: { readonly siteId: string; readonly reference: AssetReference; readonly expectedVersion: string }): Promise<unknown>;
 };
 
-function response(value: unknown, status = 200): Response {
+function response(value: unknown, status = 200, headers?: Readonly<Record<string, string>>): Response {
   return new Response(JSON.stringify(value), { status, headers: {
-    "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8", "X-Content-Type-Options": "nosniff"
+    "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8", "X-Content-Type-Options": "nosniff", ...headers
   } });
 }
 function fail(error: EditingApiErrorCode, status: number): Response { return response({ error }, status); }
@@ -619,6 +634,7 @@ function supportsOperation(adapter: PageEditingHostAdapter, operation: EditingOp
   const localization = editingLocalizationOperation(operation.id);
   if (localization) return typeof adapter.localization?.[localization.id] === "function";
   if (operation.id === "pages.apply") return typeof adapter.pageOperations?.transact === "function";
+  if (operation.id === "pages.preview-intent") return typeof adapter.createPagePreviewIntent === "function";
   if (operation.id === "pages.release-plan" || operation.id === "pages.release") return typeof adapter.releaseSite === "function" && typeof adapter.preparePageRelease === "function" && typeof adapter.publishPage === "function";
   if (operation.id === "pages.release-set-plan" || operation.id === "pages.release-set") return typeof adapter.releaseSite === "function" && typeof adapter.preparePageReleaseSet === "function" && typeof adapter.publishPageReleaseSet === "function";
   if (operation.id === "pages.release-set-status") return typeof adapter.readPageReleaseSetStatus === "function";
@@ -1530,7 +1546,7 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       if (!matches) return fail("host_contract_violation", 502);
       return response({ status: "applied", operationId: applied.operationId, page });
     }
-    const match = new RegExp(`^${basePath}/sites/([^/]+)/operations/(pages\\.(?:read|inspect|save|apply|release-plan|release))/([^/]+)$`, "u").exec(url.pathname);
+    const match = new RegExp(`^${basePath}/sites/([^/]+)/operations/(pages\\.(?:read|inspect|save|apply|preview-intent|release-plan|release))/([^/]+)$`, "u").exec(url.pathname);
     if (!match) return fail("not_found", 404);
     let siteId: string, pageId: string, locale: string;
     try {
@@ -1541,7 +1557,7 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
     const target = pageTarget(siteId, pageId, locale);
     if (!target) return fail("invalid_request", 400);
     const operation = EDITING_OPERATIONS.find((item) => item.id === match[2]);
-    if (!operation || operation.id === "pages.apply" && !supportsOperation(adapter, operation)) return fail("not_found", 404);
+    if (!operation || (operation.id === "pages.apply" || operation.id === "pages.preview-intent") && !supportsOperation(adapter, operation)) return fail("not_found", 404);
     let inspectQuery: PageInspectQuery | null = null;
     if (operation.id === "pages.inspect") {
       const input: Record<string, unknown> = {};
@@ -1565,6 +1581,18 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
     catch { return fail("host_failure", 503); }
     if (!allowed) return fail("forbidden", 403);
     if (operation.id === "pages.apply") return handlePageApply(adapter.pageOperations!, request, actor, target);
+    if (operation.id === "pages.preview-intent") {
+      let body: Record<string, unknown> | null;
+      try { body = await readBody(request, 128); } catch { return fail("invalid_request", 400); }
+      if (!body || Object.keys(body).length !== 0) return fail("invalid_request", 400);
+      let raw: EditingPagePreviewIntent | null;
+      try { raw = await adapter.createPagePreviewIntent!(actor, target); }
+      catch { return fail("host_failure", 503); }
+      if (raw === null) return fail("not_found", 404);
+      const intent = parsePagePreviewIntent(raw, url.origin);
+      if (!intent) return fail("host_contract_violation", 502);
+      return response(intent, 200, PAGE_PREVIEW_INTENT_HEADERS);
+    }
     if (operation.id === "pages.read" || operation.id === "pages.inspect") {
       if (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length"))) return fail("invalid_request", 400);
       let snapshot: EditingPageSnapshot | null;

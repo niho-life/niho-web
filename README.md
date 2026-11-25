@@ -18,6 +18,7 @@
 
 AIが編集する対象ごとの正本・GUI/CLI/Gitの経路・公開HTMLからの逆引きは[対応表](docs/ai-edit-source-map.md)を参照してください。
 サイト側に共通HTTP契約を接続した後は、`niho-edit` CLIでStudio GUIを経由せずにページ文書・CMS項目・ページ管理・ブレークポイント・素材・翻訳を読み、JSON編集し、版付きで保存できます。複数ページの公開も対象と各版を固定した変更セットで行い、同じ操作IDで再試行・状態照会できます。対応するStudio GUIもBFF経由で同じ編集APIを使います（[API契約](docs/editing-api-contract.md)）。
+対応するホストでは `niho-edit preview` が公開と同じrendererの下書きを幅別に撮影し、任意ブラウザーが無い環境では短期URLと期限を返します。
 
 ソースは公開されていますが、第三者への再利用ライセンスは付与していません（`UNLICENSED`）。
 
@@ -73,7 +74,7 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 | `@niho/web/localization` | 明示的な日英設定、安定IDの翻訳単位、自動訳の更新（確認の記録は問わない）・人の訳の保護、候補・手編集、共通構造からの文書生成。React不要 |
 | `@niho/web/localization-release` | 言語単位の不変snapshot、公開するページ（hostが選ぶ。全ページは要らない）の訳の公開条件（確認の工程は 2026-11-12 に廃止。旧い確認の入力は互換のため残る）、route・内部リンク・SEO、prepare/apply/rollback検証。React不要 |
 | `niho-studio` | Access service grant、またはStudio-native siteのmemberが取得した短時間のAccess user tokenを使い、discoverが返すページ編集・公開操作などを行うCLI。確認用Studioの接続設定も [Studio CLIの契約](docs/studio-cli.md) を参照 |
-| `niho-edit` | サイトの共通編集APIを直接呼ぶCUI。`outline` / `find` / `get` でページの必要な範囲だけを読み、`apply --ops <file|-> --dry-run` で操作列と差分を確認して適用する。`pages.apply` 非対応ホストでは `pages.read` → ローカル操作 → `pages.save` にフォールバックし、信頼済みホスト検証が保存時に行われることを出力する。対応ホストでは翻訳の読み取り・編集・翻訳ジョブ・公開とその状態を操作でき、非同期公開は単一ページと複数ページのどちらも同じ `pages.release-set` で追跡する。host bearer tokenを必須とし、Access保護されたoriginではAccess service grantを追加で送信する。Access資格情報は指定originに限定し、別originの素材転送には渡さない（[編集API契約](docs/editing-api-contract.md)） |
+| `niho-edit` | サイトの共通編集APIを直接呼ぶCUI。`outline` / `find` / `get` でページの必要な範囲だけを読み、`apply --ops <file|-> --dry-run` で操作列と差分を確認して適用する。対応hostでは `preview --widths 375,768,1280 [--compare published]` で同じrendererの下書きを撮影し、ブラウザーが無ければURLだけを返す。`pages.apply` 非対応ホストでは `pages.read` → ローカル操作 → `pages.save` にフォールバックし、信頼済みホスト検証が保存時に行われることを出力する。対応ホストでは翻訳の読み取り・編集・翻訳ジョブ・公開とその状態を操作でき、非同期公開は単一ページと複数ページのどちらも同じ `pages.release-set` で追跡する。host bearer tokenを必須とし、Access保護されたoriginではAccess service grantを追加で送信する。Access資格情報は指定originに限定し、別originの素材転送には渡さない（[編集API契約](docs/editing-api-contract.md)） |
 
 React は optional peer dependency です。API サーバーなど React を入れない利用先では `import { parsePageDocument } from '@niho/web/core'` を使います。root と `/react` は React runtime を import します。
 
