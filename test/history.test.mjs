@@ -87,6 +87,23 @@ test("revision entries and pages are validated and copied with known fields only
     { entries: [], next: "a".repeat(501) }, { entries: [], next: "a\nb" }, { entries: [], extra: true }, { entries: [{ ...entry, kind: "unknown" }] }]) assert.throws(() => parseRevisionPage(bad), Error);
 });
 
+test("revision summaries show actor kind and targets without accepting values or identity fields", () => {
+  const input = { id: "rev_ai", revision: 3, kind: "draft", createdAt: "2026-10-21T01:02:03Z", actor: "編集AI", actorKind: "machine", delegatedBy: "編集者",
+    operations: [{ type: "style", targetId: "hero", targetType: "element", targetTag: "section", field: "color" }], omittedOperations: 1 };
+  const parsed = parseRevisionEntry(input);
+  assert.deepEqual(parsed, input);
+  assert.notEqual(parsed.operations, input.operations);
+  for (const bad of [
+    { ...input, operations: [{ ...input.operations[0], before: "secret" }] },
+    { ...input, operations: [{ ...input.operations[0], after: "secret" }] },
+    { ...input, subject: "account-id" },
+    { ...input, delegatedBy: "owner@example.test" },
+    { ...input, actorKind: "machine", delegatedBy: "delegate", operations: Array.from({ length: 21 }, () => input.operations[0]) },
+    { ...input, operations: [{ type: "unknown", targetId: "hero" }] },
+    { ...input, operations: [{ type: "style", targetId: "hero", field: "color", rawValue: "secret" }] }
+  ]) assert.throws(() => parseRevisionEntry(bad), Error);
+});
+
 function memoryStorage() {
   const data = new Map();
   return {

@@ -12,8 +12,9 @@ import { integrationIdentity, resolveTrustedEditorPage, resolveTrustedIntegratio
 import { KamakuraEditor, loadKamakuraEditor, loadKamakuraEditorCatalog, type KamakuraEditorLoad } from "./kamakura-editor.js";
 import { ManagedEditor } from "./managed-editor.js";
 import { parseProjectAliasPath, projectRoutePath, type ProjectCmsRoute, type ProjectSiteViewId, type ProjectTranslationsRoute } from "./project-routes.mjs";
-import { SiteCmsWorkspace } from "./site-cms.js";
+import { ManagedSiteCmsWorkspace, SiteCmsWorkspace } from "./site-cms.js";
 import { SiteTranslationsWorkspace } from "./site-translations.js";
+import { EDITOR_PERFORMANCE_EVENT, readEditorPerformance, type EditorPerformanceName } from "../src/editor-performance.js";
 
 type Role = "owner" | "editor";
 type Screen =
@@ -95,8 +96,8 @@ function screenFromLocation(): Screen {
   if (editor) return { kind: "editor", projectId: editor.registration.projectId, siteId: editor.registration.siteId, environment: editor.environment };
   const managedEditor = /^\/projects\/([A-Za-z][A-Za-z0-9_-]{0,79})\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/editor\/?$/u.exec(window.location.pathname);
   if (managedEditor) return { kind: "editor", projectId: managedEditor[1]!, siteId: managedEditor[2]!, environment: "managed" };
-  const dashboard = /^\/projects\/([A-Za-z][A-Za-z0-9_-]{0,79})\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/?$/u.exec(window.location.pathname);
-  return dashboard ? { kind: "dashboard", projectId: dashboard[1]!, siteId: dashboard[2]! } : { kind: "directory" };
+  const dashboard = /^\/projects\/([A-Za-z][A-Za-z0-9_-]{0,79})\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})(\/cms)?\/?$/u.exec(window.location.pathname);
+  return dashboard ? { kind: "dashboard", projectId: dashboard[1]!, siteId: dashboard[2]!, view: dashboard[3] ? "cms" : null } : { kind: "directory" };
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -607,6 +608,10 @@ function App() {
   const admin = screen.kind === "dashboard" && siteAdmin?.key === dashboardKey ? siteAdmin.value : null;
   /** Dashboard の左のメニュー「サイト機能」に足すもの（ページは右上のデザインエディタ、プロジェクト設定はメンバーと招待） */
   const siteViews = (project: Project): ProjectSiteView[] => {
+    if (managedProject(project, session.config)) return [
+      { id: "cms", label: "CMS", content: <ManagedSiteCmsWorkspace key={`${project.id}:${project.site.id}`}
+        projectId={project.id} siteId={project.site.id} origin={session.config.publicSitesOrigin} /> }
+    ];
     if (!admin) return [];
     const open = (view: ProjectSiteViewId) => navigate({ kind: "dashboard", projectId: project.id, siteId: project.site.id, view });
     return [
@@ -631,6 +636,7 @@ function App() {
 
   // プロジェクトの中では Dashboard の帯が 1 段のヘッダーになる（Studio のヘッダーを重ねない）。アカウントはその帯の右端に置く
   const projectShell = screen.kind === "dashboard" && selected !== undefined;
+  const editorPerformanceEnabled = screen.kind === "editor" && new URLSearchParams(window.location.search).get("editorPerf") === "1";
   const account = <details className="studio-account"><summary><span className="studio-account-avatar" aria-hidden="true">{Array.from(session.identity.email)[0]?.toUpperCase() ?? "?"}</span><span className="studio-account-email">{session.identity.email}</span></summary><div><small>Google / Cloudflare Access</small><label>Access ID <code>{session.identity.subject}</code></label></div></details>;
 
   return <div className={`studio-app${kamakuraEditor || managedEditor ? " studio-editor-shell" : ""}`}>
@@ -686,6 +692,7 @@ function App() {
               searchControl="external"
             /></div>}
     </div>
+    {editorPerformanceEnabled && <EditorPerformancePanel />}
     {pendingProject && <div className="studio-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setPendingProject(null); }}>
       <section className="studio-dialog" role="dialog" aria-modal="true" aria-labelledby="editor-pending-title">
         <p className="studio-dialog-site">{pendingProject.site.name}</p><h2 id="editor-pending-title">エディター接続待ち</h2>
@@ -699,6 +706,26 @@ function App() {
       window.location.assign(`/projects/${encodeURIComponent(projectId)}/sites/${encodeURIComponent(siteId)}/editor`);
     }} />}
   </div>;
+}
+
+function EditorPerformancePanel() {
+  const [samples, setSamples] = useState(() => readEditorPerformance());
+  useEffect(() => {
+    const refresh = () => setSamples(readEditorPerformance());
+    window.addEventListener(EDITOR_PERFORMANCE_EVENT, refresh);
+    refresh();
+    return () => window.removeEventListener(EDITOR_PERFORMANCE_EVENT, refresh);
+  }, []);
+  const labels: Readonly<Record<EditorPerformanceName, string>> = { load: "読込", "page-switch": "ページ切替", save: "保存" };
+  return <aside className="studio-editor-performance" aria-label="編集画面の性能計測">
+    <details>
+      <summary>編集性能（開発者向け）</summary>
+      <dl>{(Object.keys(labels) as EditorPerformanceName[]).map((name) => {
+        const sample = samples.get(name);
+        return <div key={name}><dt>{labels[name]}</dt><dd>{sample ? <>{sample.durationMs.toFixed(1)} ms · {sample.outcome === "success" ? "完了" : "失敗"}</> : "未計測"}</dd></div>;
+      })}</dl>
+    </details>
+  </aside>;
 }
 
 const container = document.getElementById("root");

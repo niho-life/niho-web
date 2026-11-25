@@ -120,7 +120,7 @@ test("Studio の編集画面は初回一覧と文書を各1回だけ読み、Acc
         mark: (name, { startTime = window.performance.now() } = {}) => marks.set(name, startTime),
         measure: (name, start, end) => {
           const entry = { name, startTime: marks.get(start), duration: marks.get(end) - marks.get(start) };
-          measures.push(entry);
+          if (name.startsWith("niho-studio:editor:")) measures.push(entry);
           return entry;
         },
         clearMarks: (name) => marks.delete(name),

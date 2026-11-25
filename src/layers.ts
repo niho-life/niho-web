@@ -1,4 +1,5 @@
 import type { ElementTag, EmbedProvider, PageDocument, PageNode } from "./types.js";
+import { indexedNodesById } from "./node-tree.js";
 
 export type LayerKind = "box" | "image" | "text" | "component" | "instance";
 export type LayerEntry = {
@@ -32,6 +33,7 @@ export const elementTypeLabel: Record<ElementTag, string> = {
 };
 /** レイヤー名は文書へ複製せず、現在のノードから人向けに投影する。raw text は親要素の内容なので行を作らない。文字を持たない要素はセクション・箇条書きなど種類の名前にする。 */
 export function layerLabel(node: Exclude<PageNode, { type: "text" }>, labels: LayerLabels = {}): string {
+  if (node.name !== undefined) return node.name;
   if (node.type === "component") return labels.blocks?.[node.block] ?? "コンポーネント";
   if (node.type === "instance") return labels.components?.get(node.component) ?? "コンポーネント";
   if (node.icon) return "アイコン";
@@ -71,8 +73,8 @@ export function projectLayers(document: PageDocument, labels: LayerLabels = {}):
 /** 配列位置は保持せず、現在の文書から安定 ID の path を引き直す。 */
 export function pathForNodeId(document: PageDocument, id: string | null | undefined): number[] | null {
   if (!id) return null;
-  const entry = projectLayers(document).find((item) => item.id === id);
-  return entry ? entry.path : null;
+  const entry = indexedNodesById(document, id)[0];
+  return entry ? [...entry.path] : null;
 }
 
 export function visibleLayers(entries: readonly LayerEntry[], expanded: ReadonlySet<string>): LayerEntry[] {

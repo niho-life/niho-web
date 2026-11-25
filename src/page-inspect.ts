@@ -81,7 +81,7 @@ export function parsePageInspectQuery(value: unknown): PageInspectQuery | null {
   if (view === "find") {
     if (["text", "name", "tag", "style", "usesToken", "block", "node"].some((key) => value[key] !== undefined && typeof value[key] !== "string")) return null;
     if (value.text !== undefined && !safeText(value.text, 200)
-      || value.name !== undefined && !safeText(value.name, 120)
+      || value.name !== undefined && (!safeText(value.name, 240) || [...value.name].length > 120)
       || value.tag !== undefined && (typeof value.tag !== "string" || !TAGS.has(value.tag))
       || value.usesToken !== undefined && (typeof value.usesToken !== "string" || !ID.test(value.usesToken))
       || value.block !== undefined && (typeof value.block !== "string" || !ID.test(value.block))
@@ -108,8 +108,7 @@ function componentRoot(node: PageNode, library?: ComponentLibrary, origins?: Rea
   return definition && origin.node === definition.root.id ? definition : undefined;
 }
 function displayName(node: PageNode, library?: ComponentLibrary, origins?: ReadonlyMap<string, ComponentOrigin>): string | undefined {
-  const named = (node as PageNode & { name?: unknown }).name;
-  if (typeof named === "string" && named.trim()) return named.trim();
+  if (node.type !== "text" && node.name !== undefined) return node.name;
   const expandedComponent = componentRoot(node, library, origins);
   if (expandedComponent) return expandedComponent.name;
   if (node.type === "instance") return library?.components.find((component) => component.id === node.component)?.name;
