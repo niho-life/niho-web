@@ -14,7 +14,7 @@ import { KAMAKURA_CATALOG_CONTRACT_ERROR_CODE, KAMAKURA_CATALOG_CONTRACT_ERROR_S
 import type { KamakuraCatalog } from "./kamakura-catalog.js";
 import { parseEnglishPublication, parseEnglishPublicationAccepted } from "../src/english-publication.js";
 import { normalizePageChange, validatePageChangePlan } from "../src/editor-model.js";
-import { createPageEditingApiClient, EditingApiClientError } from "../src/editing-client.js";
+import { createPageEditingApiClient, EditingApiClientError, supportsPageNodeNames } from "../src/editing-client.js";
 import type { EditingPageReleaseSetItem } from "../src/editing-api.js";
 
 const BASE = "/api/projects/project-kamakura/sites/kamakura/editor";
@@ -350,6 +350,11 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
         if (input.siteId !== KAMAKURA_EDITOR_SITE_ID || !validVersion(input.expectedVersion)) throw new Error("保存対象のサイトまたは版が正しくありません。");
         return editingApi.saveBreakpointSettings(input.expectedVersion, input.settings, signal);
       }))
+    },
+    async discoverPageNodeNames(target, signal) {
+      if (target.locale === "en") validEnglishTarget(target);
+      else validTarget(target);
+      return supportsPageNodeNames(await editingApi.discover(signal), "pages.save");
     },
     readDocument: (target, signal) => request(signal, async () => target.locale === "en"
       ? parseEnglishSnapshot(await api(`${localizationPagePath(target)}/snapshot`, "POST", {}, signal), target, catalog.blockContracts)

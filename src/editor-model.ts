@@ -1,6 +1,6 @@
 import { resolvePageStyles, retainPageStyles, type SiteStyles } from "./site-styles.js";
 import { detachInstance } from "./component-model.js";
-import { parsePageDocument } from "./document.js";
+import { parsePageDocument, parsePageNodeName } from "./document.js";
 import type { EditorBlockRegistry, EditorLock, EditorPage, EditorPageChange, EditorPageChangePlan, EditorPageImpact, EditorReadOnly, EditorReleasePlan, EditorReleaseRequest, EditorSite, EditorTarget } from "./editor-types.js";
 import { findPathConflict, validatePagePath } from "./pages.js";
 import { copyId, nodeAt, siblingsAt, walkNodes, type NodePath } from "./node-tree.js";
@@ -76,6 +76,7 @@ export type EditorOperation =
   /** 幅別の非表示。undefined・空配列で解除。 */
   | { type: "hidden"; path: NodePath; ranges: readonly HiddenRange[] | undefined }
   | { type: "title"; value: string }
+  | { type: "name"; path: NodePath; value: string | undefined }
   | { type: "add"; parentId: string | null; node: PageNode; index?: number; anchor?: NodePositionAnchor }
   | { type: "addMany"; parentId: string | null; nodes: readonly PageNode[]; index?: number; anchor?: NodePositionAnchor }
   | { type: "replaceChildren"; path: NodePath; children: PageNode[] }
@@ -356,6 +357,10 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
     if (operation.type === "text") {
       if (node.type !== "text") throw new Error("テキストを選択してください。");
       node.text = operation.value;
+    } else if (operation.type === "name") {
+      if (node.type === "text") throw new Error("要素を選択してください。");
+      if (operation.value === undefined) delete node.name;
+      else node.name = parsePageNodeName(operation.value, "$operation.value");
     } else if (operation.type === "replaceChildren") {
       if (node.type !== "element") throw new Error("文字を編集できる要素を選択してください。");
       node.children = structuredClone(operation.children);

@@ -211,6 +211,7 @@ for (const [page, document] of seeds) {
     revisions: [{ entry: { id: `rev-${nextRevision++}`, revision: published.revision, kind: "publish", createdAt: "2026-10-01T09:00:00+09:00", actor, label: "最初の公開" }, document: structuredClone(published), siteStyles: parseSiteStyles(siteSettings) }] });
 }
 const components: EditorComponentAdapter = {
+  nodeNames: true,
   readLibrary: async () => ({ library: structuredClone(library), version: componentsVersion() }),
   saveLibrary: async (request) => {
     if (request.siteId !== "demo" || request.expectedVersion !== componentsVersion()) return { status: "conflict" };
@@ -228,6 +229,7 @@ const adapter: EditorAdapter = {
     { id: "organization", label: "組織", description: "運営者の名前とロゴ" }, { id: "localBusiness", label: "店舗・施設", description: "住所と営業時間" }] }],
   listPages: async () => [...entries.values()].map(listed),
   readDocument: async (target) => snapshot(entry(target.pageId)),
+  discoverPageNodeNames: async () => true,
   englishPublication: {
     refresh: async (target) => englishPublications.get(target.pageId),
     retry: async (target) => {

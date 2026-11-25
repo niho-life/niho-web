@@ -62,6 +62,7 @@ function compareFields(changes: DocumentChange[], prefix: string, before: Record
 }
 function compareNodes(changes: DocumentChange[], before: Owned, after: Owned): void {
   const label = nodeLabel(after);
+  if (before.name !== after.name) changes.push({ path: `${label} の名前`, before: show(before.name), after: show(after.name) });
   if (before.type === "element" && after.type === "element") {
     if (before.tag !== after.tag) changes.push({ path: `${label} の種類`, before: before.tag, after: after.tag });
     const oldText = directText(before.children), newText = directText(after.children);

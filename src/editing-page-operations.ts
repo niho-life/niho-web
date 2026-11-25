@@ -1,5 +1,5 @@
-import { elementAttributeNames, isElementTag, metaLimits, parsePageDocument } from "./document.js";
-import { editDocumentById, nodeAt, pageOperationTextPathContext, PAGE_OPERATION_TEXT_PATH_CONTEXT_MAX_CHILDREN, PAGE_OPERATION_TEXT_PATH_CONTEXT_MAX_SIBLING_TEXT_LENGTH, walkNodes, type EditorOperationById, type PageOperationPreconditions } from "./editor-model.js";
+import { elementAttributeNames, isElementTag, metaLimits, PAGE_NODE_NAME_CONTROL_PATTERN, PAGE_NODE_NAME_MAX_LENGTH, parsePageDocument, parsePageNodeName } from "./document.js";
+import { editDocumentById, nodeAt, pageOperationTextPathContext, PAGE_OPERATION_TEXT_PATH_CONTEXT_MAX_CHILDREN, PAGE_OPERATION_TEXT_PATH_CONTEXT_MAX_SIBLING_TEXT_LENGTH, walkNodes, type EditorOperation, type EditorOperationById, type PageOperationPreconditions } from "./editor-model.js";
 import { diffDocuments, type DocumentChange } from "./history.js";
 import { iconCatalog, isIconName } from "./icons.js";
 import { MOTION_BASE_PROPERTIES } from "./builder.js";
@@ -97,7 +97,11 @@ const metaSchemas = {
 };
 const nodeBaseStyle: JsonSchema = { type: "object", additionalProperties: either(styleValue, obj({ asset })), propertyNames: valuesOf([...stylePropertyNames, "backgroundImage"]) };
 const responsive = (declarations: JsonSchema) => list(obj({ minWidth: widthSchema, declarations }), 0, 12);
-export const pageApplyInputSchema: JsonSchema = {
+const pageNodeNameSchema: JsonSchema = {
+  type: "string", minLength: 1, maxLength: PAGE_NODE_NAME_MAX_LENGTH,
+  pattern: `^(?![\\s\\S]*${PAGE_NODE_NAME_CONTROL_PATTERN})`
+};
+const applyInputSchema = (nameField: { name?: JsonSchema }): JsonSchema => ({
   ...obj({
     baseVersion: version,
     operationId: { type: "string", pattern: PAGE_OPERATION_ID.source.replaceAll("a-f", "a-fA-F").replace("[89ab]", "[89abAB]") },
@@ -119,6 +123,7 @@ export const pageApplyInputSchema: JsonSchema = {
       nodeOperation("state", { state: valuesOf(stateNames), values: styleMap(stateProperties, nullable(styleValue)) }, { also: list(valuesOf(stateNames), 0, 3) }),
       nodeOperation("appear", {}, { value: appear }), nodeOperation("motionPreset", {}, { style: motion, previous: motion }),
       nodeOperation("hidden", {}, { ranges: hidden }), operation("title", { value: text }),
+      ...(nameField.name ? [nodeOperation("name", {}, { value: nameField.name })] : []),
       operation("add", { parentId: nullable(id), node }), operation("add", { parentId: nullable(id), node, index: indexSchema }), operation("add", { parentId: nullable(id), node, anchor }),
       operation("addMany", { parentId: nullable(id), nodes: list(node, 1, 5000) }), operation("addMany", { parentId: nullable(id), nodes: list(node, 1, 5000), index: indexSchema }), operation("addMany", { parentId: nullable(id), nodes: list(node, 1, 5000), anchor }),
       nodeOperation("image", { source: either(obj({ asset }), obj({ src: text }, { srcset: text })) }, { alt: text }),
@@ -133,15 +138,17 @@ export const pageApplyInputSchema: JsonSchema = {
     pageNode: either(
       obj({ type: constant("text"), text }),
       obj({ type: constant("element"), id, tag: text, children: list(node, 0, 5000) }, {
-        style: documentStyle, attrs: { type: "object", additionalProperties: primitive, propertyNames: valuesOf(elementAttributeNames) }, asset, icon: valuesOf(iconCatalog.map(({ name }) => name)),
+        ...nameField, style: documentStyle, attrs: { type: "object", additionalProperties: primitive, propertyNames: valuesOf(elementAttributeNames) }, asset, icon: valuesOf(iconCatalog.map(({ name }) => name)),
         formCompletionPageId: id, embed: obj({ provider: text, title: text }, { source: text }),
         interaction: either(obj({ type: constant("video-toggle") }), obj({ type: constant("loop-box"), speed: number, pauseOnHover: bool }))
       }),
-      obj({ type: constant("component"), id, block: id, props: { type: "object", additionalProperties: primitive } }, { style: documentStyle, slots: { type: "object", additionalProperties: documentStyle } }),
-      obj({ type: constant("instance"), id, component: id }, { style: documentStyle, props: { type: "object", additionalProperties: text } })
+      obj({ type: constant("component"), id, block: id, props: { type: "object", additionalProperties: primitive } }, { ...nameField, style: documentStyle, slots: { type: "object", additionalProperties: documentStyle } }),
+      obj({ type: constant("instance"), id, component: id }, { ...nameField, style: documentStyle, props: { type: "object", additionalProperties: text } })
     )
   }
-};
+});
+export const legacyPageApplyInputSchema = applyInputSchema({});
+export const pageApplyInputSchema = applyInputSchema({ name: pageNodeNameSchema });
 export function pageApplyResultSchema(document: JsonSchema): JsonSchema {
   return either(
     obj({ status: constant("applied"), version, revision: { type: "integer", minimum: 1 }, document }),
@@ -259,13 +266,13 @@ function checkNode(value: unknown, path: string, depth = 0): void {
     case "element": shape(value, path, {
       type, id: identifier, tag: (tag, at) => { if (!isElementTag(tag)) fail(at, "unsupported element"); }, children: array((child, at) => checkNode(child, at, depth + 1), 0, 5000)
     }, {
-      style: checkNodeStyle, attrs: dictionary(checkLiteral, oneOf(elementAttributeNames)), asset: parseAssetReference,
+      name: parsePageNodeName, style: checkNodeStyle, attrs: dictionary(checkLiteral, oneOf(elementAttributeNames)), asset: parseAssetReference,
       formCompletionPageId: identifier, icon: oneOf(iconCatalog.map(({ name }) => name)),
       embed: (entry, at) => shape(entry, at, { provider: string, title: string }, { source: (value, path) => string(value, path, 16384) }),
       interaction: checkInteraction
     }); break;
-    case "component": shape(value, path, { type, id: identifier, block: identifier, props: dictionary(checkLiteral) }, { style: checkNodeStyle, slots: dictionary(checkNodeStyle) }); break;
-    case "instance": shape(value, path, { type, id: identifier, component: identifier }, { style: checkNodeStyle, props: dictionary(string) }); break;
+    case "component": shape(value, path, { type, id: identifier, block: identifier, props: dictionary(checkLiteral) }, { name: parsePageNodeName, style: checkNodeStyle, slots: dictionary(checkNodeStyle) }); break;
+    case "instance": shape(value, path, { type, id: identifier, component: identifier }, { name: parsePageNodeName, style: checkNodeStyle, props: dictionary(string) }); break;
     default: fail(path, "unknown node type");
   }
 }
@@ -281,6 +288,7 @@ export function parsePageOperation(value: unknown, path: string): EditorOperatio
   switch (source.type) {
     case "text": check({ parentId: checkParent, childPath: array(index, 1, 49), value: (value, at) => string(value, at, 100000) }, { preconditions: checkPreconditions }); break;
     case "title": check({ value: string }); break;
+    case "name": target({}, { value: parsePageNodeName }); break;
     case "meta": {
       if (typeof source.field !== "string" || !Object.hasOwn(checkMeta, source.field)) fail(path, "unknown metadata field");
       check({ field: string }, { value: checkMeta[source.field]! }); break;
@@ -325,6 +333,29 @@ export function parsePageOperation(value: unknown, path: string): EditorOperatio
     return { ...source, values } as EditorOperationById;
   }
   return source as EditorOperationById;
+}
+
+/** Only inspect named nodes, including inside pasted subtrees, without matching attrs.name or props.name. */
+export function pageNodesHaveNames(nodes: readonly unknown[]): boolean {
+  const pending = [...nodes], seen = new WeakSet<object>();
+  while (pending.length) {
+    const node = pending.pop();
+    if (!node || typeof node !== "object" || !("type" in node)) continue;
+    if (node.type !== "element" && node.type !== "component" && node.type !== "instance") continue;
+    if ("name" in node && node.name !== undefined) return true;
+    if (node.type === "element" && "children" in node && Array.isArray(node.children) && !seen.has(node)) {
+      seen.add(node);
+      for (const child of node.children) pending.push(child);
+    }
+  }
+  return false;
+}
+export function pageOperationUsesNodeNames(operation: EditorOperation | EditorOperationById): boolean {
+  return operation.type === "name"
+    || operation.type === "add" && pageNodesHaveNames([operation.node])
+    || operation.type === "addMany" && pageNodesHaveNames(operation.nodes)
+    || operation.type === "replaceChildren" && pageNodesHaveNames(operation.children)
+    || operation.type === "restore" && pageNodesHaveNames(operation.document.body);
 }
 
 type MapOperation = Extract<EditorOperationById, { type: "styles" | "styleRange" | "state" }>;

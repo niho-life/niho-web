@@ -47,7 +47,7 @@ export function readEditableChildren(root: HTMLElement, original: ElementNode, l
       const originalHref = previous?.attrs?.href;
       attrs.href = typeof originalHref === "string" && links && href === resolvePageLink(originalHref, links) ? originalHref : href;
     }
-    return { type: "element", id: previous?.id ?? id(), tag: preservedTag, ...(Object.keys(attrs).length ? { attrs } : {}),
+    return { type: "element", id: previous?.id ?? id(), ...(previous?.name === undefined ? {} : { name: previous.name }), tag: preservedTag, ...(Object.keys(attrs).length ? { attrs } : {}),
       ...(previous?.style ? { style: previous.style } : {}), children };
   };
   const inline = (container: Node): PageNode[] => {
