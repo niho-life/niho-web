@@ -1,7 +1,7 @@
 import { isIsoTimestamp, parseCollectionItem, type CollectionItem, type CollectionItemStatus, type CollectionValue } from "./collection-model.js";
 import { validatePagePath } from "./pages.js";
 import { fail, keys, localeCode, record } from "./validation-utils.js";
-import { parseCmsRouteTable, planCmsRouteTable, type CmsRouteTable } from "./cms-v2-routes.js";
+import { CMS_ROUTE_RESERVATION_LIMIT, parseCmsRouteTable, planCmsRouteTable, type CmsRouteTable } from "./cms-v2-routes.js";
 import {
   cmsArray, cmsCollection, cmsId, cmsItemKey, cmsLegacyCollections, cmsLegacyValues, cmsPath, cmsReferenceProblems, cmsValueProblems,
   parseCmsItemRevision, parseCmsSchema, uniqueCmsKeys, type CmsItemKey, type CmsItemRevision, type CmsProblem, type CmsSchema
@@ -153,6 +153,11 @@ export function planCmsRelease(input: unknown, releaseIdInput: string, context: 
   }).filter((generated) => explicitRedirectTargets.get(generated.from) !== generated.to);
   if (generatedRedirects.length + selection.redirects.length > 25_000) {
     return { status: "invalid", problems: [{ code: "route", message: "公開転送の件数が上限を超えています。" }] };
+  }
+  const retainedReservations = currentRoutes.reservations.filter((reservation) => reservation.kind !== "cms-item"
+    && !(reservation.kind === "redirect" && reservation.owner === "cms"));
+  if (retainedReservations.length + routes.length + generatedRedirects.length + selection.redirects.length > CMS_ROUTE_RESERVATION_LIMIT) {
+    return { status: "invalid", problems: [{ code: "route", message: "CMS ルート表の予約件数が上限を超えています。" }] };
   }
   const routePlan = planCmsRouteTable({ current: currentRoutes, siteId: schema.siteId, locale: selection.locale,
     expectedRevision: selection.routeTableRevision, nextRevision: cmsRouteRevision(releaseId),

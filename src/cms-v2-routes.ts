@@ -25,6 +25,7 @@ export type CmsRouteProblem = {
   readonly path?: string;
 };
 export type CmsRouteTablePlan = { readonly table: CmsRouteTable; readonly problems: readonly CmsRouteProblem[] };
+export const CMS_ROUTE_RESERVATION_LIMIT = 100_000;
 
 const STATIC_SEGMENT = /^[A-Za-z0-9_-]+$/u;
 const DYNAMIC_SEGMENT = /^\[[a-z][a-zA-Z0-9_]*\]$/u;
@@ -82,7 +83,7 @@ export function parseCmsRouteTable(input: unknown, expectedSiteId?: string, expe
     fail("routeTable", "CMS route table site or locale mismatch");
   }
   const revision = identifier(value.revision, "routeTable.revision");
-  if (!Array.isArray(value.reservations) || value.reservations.length > 100_000) fail("routeTable.reservations", "invalid route reservation list");
+  if (!Array.isArray(value.reservations) || value.reservations.length > CMS_ROUTE_RESERVATION_LIMIT) fail("routeTable.reservations", "invalid route reservation list");
   const reservations = value.reservations.map((entry, index) => parseReservation(entry, `routeTable.reservations[${index}]`));
   const sourceKeys = reservations.map((entry) => entry.kind === "cms-item" ? `${entry.kind}:${itemKey(entry)}` : `${entry.kind}:${entry.path}`);
   if (new Set(sourceKeys).size !== sourceKeys.length) fail("routeTable.reservations", "duplicate route reservation");
@@ -90,18 +91,6 @@ export function parseCmsRouteTable(input: unknown, expectedSiteId?: string, expe
     a.path < b.path ? -1 : a.path > b.path ? 1 : a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0) };
 }
 
-function isTemplate(reservation: CmsRouteReservation): boolean { return reservation.kind === "template"; }
-function templatePatternsOverlap(left: string, right: string): boolean {
-  const a = segmentsOf(left), b = segmentsOf(right);
-  return a.length === b.length && a.every((segment, index) => DYNAMIC_SEGMENT.test(segment) || DYNAMIC_SEGMENT.test(b[index]!) || segment === b[index]);
-}
-function routesOverlap(left: CmsRouteReservation, right: CmsRouteReservation): boolean {
-  if (left.path === right.path) return true;
-  if (isTemplate(left) && isTemplate(right)) return templatePatternsOverlap(left.path, right.path);
-  if (isTemplate(left)) return matchesTemplatePath(left.path, right.path);
-  if (isTemplate(right)) return matchesTemplatePath(right.path, left.path);
-  return false;
-}
 function routeProblem(path: string, message: string, item?: CmsRouteCandidate): CmsRouteProblem {
   return { code: "route", message, path, ...(item ? { collectionId: item.collectionId, itemId: item.itemId } : {}) };
 }
@@ -204,17 +193,28 @@ export function planCmsRouteTable(input: {
 export function cmsMigrationRouteProblems(input: { readonly table: unknown; readonly schema: { readonly siteId: string }; readonly routes: readonly CmsRouteCandidate[] }): CmsRouteProblem[] {
   const table = parseCmsRouteTable(input.table, input.schema.siteId);
   const host = table.reservations.filter((entry) => entry.kind !== "cms-item" && !(entry.kind === "redirect" && entry.owner === "cms"));
+  const hostByPath = new Map(host.filter((entry) => entry.kind !== "template").map((entry) => [entry.path, entry]));
+  const hostTemplates = host.filter((entry) => entry.kind === "template");
+  const cmsKeysByPath = new Map<string, Set<string>>();
+  for (const entry of table.reservations) {
+    if (entry.kind !== "cms-item") continue;
+    let keys = cmsKeysByPath.get(entry.path);
+    if (!keys) cmsKeysByPath.set(entry.path, keys = new Set());
+    keys.add(itemKey(entry));
+  }
   const problems: CmsRouteProblem[] = [];
   const seen = new Set<string>();
   for (const route of input.routes) {
     let path: string;
     try { path = routePath(route.path, "route.path", false); }
     catch { problems.push(routeProblem(route.path, "公開 URL を予約できません。", route)); continue; }
-    const candidate = tablePathReservation(path, "cms-item", route);
-    if (host.some((entry) => routesOverlap(entry, candidate))) problems.push(routeProblem(path, "固定ページ・テンプレート・予約済み path と衝突します。", route));
+    if (hostByPath.has(path) || hostTemplates.some((entry) => matchesTemplatePath(entry.path, path))) {
+      problems.push(routeProblem(path, "固定ページ・テンプレート・予約済み path と衝突します。", route));
+    }
     if (seen.has(path)) problems.push(routeProblem(path, "同じ公開 path の項目があります。", route));
     seen.add(path);
-    if (table.reservations.some((entry) => entry.kind === "cms-item" && itemKey(entry) !== itemKey(route) && routesOverlap(entry, candidate))) {
+    const currentItems = cmsKeysByPath.get(path), currentItemKey = itemKey(route);
+    if (currentItems && currentItems.size > (currentItems.has(currentItemKey) ? 1 : 0)) {
       problems.push(routeProblem(path, "別の公開 CMS 項目と衝突します。", route));
     }
   }

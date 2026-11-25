@@ -396,6 +396,33 @@ test("route planning indexes fixed paths for large CMS collections", () => {
   assert.ok(Date.now() - started < 5_000, "25,000 fixed path candidates should be planned without quadratic scans");
 });
 
+test("schema migration indexes existing CMS routes and release planning rejects an oversized route table", () => {
+  const host = new MemoryHost(), sample = host.drafts.get(cmsItemKey(post)), count = 25_000;
+  const items = [], reservations = [];
+  for (let index = 0; index < count; index++) {
+    const itemId = `migration-post-${index}`, revision = `migration-revision-${index}`, slug = `migration-${index}`;
+    const item = { ...sample, itemId, revision, values: { ...sample.values, "field-slug": slug, "field-category": [] } };
+    items.push({ item, tombstoned: false });
+    reservations.push({ kind: "cms-item", path: `/posts/${slug}`, collectionId: "posts", itemId });
+  }
+  const routeTable = { siteId, locale, revision: "routes-ja-migration", reservations };
+  const nextSchema = { ...structuredClone(host.schema), schemaRevision: "schema-migration" };
+  const started = Date.now();
+  const migration = planCmsMigrationWithRouteTables({ before: host.schema, next: nextSchema, items, routeTables: [routeTable],
+    expectedRouteTableVersions: [{ locale, revision: routeTable.revision }] });
+  assert.ok(migration);
+  assert.deepEqual(migration.problems, []);
+  assert.ok(Date.now() - started < 5_000, "25,000 existing CMS routes should be checked without quadratic scans");
+
+  host.routeTables[0] = { siteId, locale, revision: "routes-ja-full", reservations: Array.from({ length: 100_000 }, (_, index) => ({
+    kind: "fixed-page", path: `/fixed/page-${index}`, reservationId: `fixed-${index}`,
+  })) };
+  const overflow = planCmsRelease({ siteId, locale, schemaRevision: host.schema.schemaRevision, routeTableRevision: "routes-ja-full",
+    expectedReleaseId: null, items: [], redirects: [{ from: "/legacy", to: "/fixed/page-0" }] }, "release-full", host.context());
+  assert.equal(overflow.status, "invalid");
+  assert.ok(overflow.problems.some(({ code, message }) => code === "route" && message.includes("上限")));
+});
+
 test("release planning indexes prior item routes and rejects generated redirects over the limit", () => {
   const large = largeReleaseFixture(25_000), started = Date.now();
   const unchanged = planCmsRelease(large.input, "large-release", large.context);
