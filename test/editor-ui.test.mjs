@@ -1267,7 +1267,8 @@ test("release confirmation shows the public URL and the search result informatio
   } finally { await app.cleanup(); }
 });
 
-const assetPanel = () => document.querySelector('[aria-label="アセットライブラリ"]');
+const mountedAssetPanel = () => document.querySelector('[aria-label="アセットライブラリ"]');
+const assetPanel = () => { const panel = mountedAssetPanel(); return panel && !panel.closest("[hidden]") ? panel : null; };
 async function tool(name) { const label = name === "アセット" && !document.querySelector('.e-tools button[title="アセット"]') ? "アップロード" : name; const target = document.querySelector(`.e-tools button[title="${label}"]`); assert.ok(target, label); await act(async () => target.click()); await flush(); }
 const assetCard = (name) => [...(assetPanel()?.querySelectorAll(".e-asset-card") ?? [])].find((node) => node.getAttribute("aria-label").startsWith(`${name}（`));
 const settle = async () => { await flush(); await flush(); };
@@ -2013,11 +2014,49 @@ test("asset panel reads only while open and reuses cached provider and list scop
     assert.equal(providerReads, 1, "非表示化して再表示しても出所一覧は一度だけ取得する");
 
     await tool("レイヤー");
-    assert.equal(assetPanel(), null, "別パネルを表示している間は素材パネルをアンマウントする");
+    assert.equal(assetPanel(), null, "別パネルを表示している間は素材パネルを隠す");
+    assert.ok(mountedAssetPanel(), "初回表示後はアップロード状態を保つため素材パネルをマウントしたままにする");
     await tool("アップロード"); await settle();
     assert.equal(calls.lists.length, afterUpload + 1, "素材パネルを再度開いてもキャッシュ済み範囲を使う");
     assert.equal(providerReads, 1);
     assert.deepEqual(cardNames(), ["庭の緑.png"]);
+  } finally { await app.cleanup(); }
+});
+
+test("processing assets are fetched again when the asset panel is reopened", async () => {
+  const library = sourceLibrary(); let reads = 0;
+  const { adapter } = spy({ ...library, listAssets: async (query, signal) => {
+    reads++;
+    const result = await library.listAssets(query, signal);
+    return reads === 1 ? { ...result, assets: result.assets.map((asset) => ({ ...asset, status: "processing" })) } : result;
+  } });
+  const app = await setup({ document: withImage(), assets: adapter });
+  try {
+    await tool("アップロード"); await settle();
+    assert.equal(reads, 1);
+    await tool("レイヤー"); await tool("アップロード"); await settle();
+    assert.equal(reads, 2, "処理中の一覧はキャッシュせず再取得する");
+    assert.deepEqual(cardNames(), ["庭の緑.png"]);
+  } finally { await app.cleanup(); }
+});
+
+test("upload keeps running while the asset panel is hidden", async () => {
+  const library = sourceLibrary(); let resolveUpload; let uploadSignal;
+  const adapter = { ...library, uploadAsset: (request, signal) => new Promise((resolve) => {
+    uploadSignal = signal;
+    resolveUpload = async () => resolve(await library.uploadAsset(request, signal));
+  }) };
+  const app = await setup({ document: withImage(), assets: adapter });
+  try {
+    await tool("アップロード"); await settle();
+    await uploadFiles([png("継続.png", 10)]);
+    assert.ok(resolveUpload);
+    await tool("レイヤー");
+    assert.equal(uploadSignal.aborted, false, "パネル切り替えで進行中のアップロードを中断しない");
+    await act(async () => resolveUpload()); await settle();
+    assert.equal(uploadSignal.aborted, false);
+    await tool("アップロード"); await settle();
+    assert.ok(assetCard("継続.png"));
   } finally { await app.cleanup(); }
 });
 

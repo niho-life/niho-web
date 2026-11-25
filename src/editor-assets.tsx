@@ -28,6 +28,8 @@ export type AssetLibraryPanelProps = {
   pickKind?: "image" | "video" | undefined;
   /** Library rail can scope results to a declared provider class. Media pickers keep the full list. */
   providerKind?: AssetProviderKind | undefined; panelLabel?: string | undefined; providerEpoch?: number | undefined;
+  /** 非表示中は一覧の通信を止め、進行中のアップロードは継続する。 */
+  active?: boolean | undefined;
   /** assetKey → 現在の文書内の使用数。 */
   localUsage: ReadonlyMap<string, number>;
   actions: { replace: boolean; background: boolean; insert: boolean };
@@ -180,9 +182,11 @@ function cachedAssetList(adapter: AssetLibraryAdapter, siteId: string, query: As
   return entry.value;
 }
 function cacheAssetList(adapter: AssetLibraryAdapter, siteId: string, query: AssetListQuery, value: CachedAssetList): void {
+  const key = assetListCacheKey(query);
+  if (value.assets.some((asset) => asset.status === "processing")) { listCache.get(adapter)?.get(siteId)?.delete(key); return; }
   let sites = listCache.get(adapter); if (!sites) { sites = new Map(); listCache.set(adapter, sites); }
   let entries = sites.get(siteId); if (!entries) { entries = new Map(); sites.set(siteId, entries); }
-  entries.set(assetListCacheKey(query), { value, expiresAt: Date.now() + ASSET_LIST_CACHE_MS });
+  entries.set(key, { value, expiresAt: Date.now() + ASSET_LIST_CACHE_MS });
 }
 function invalidateAssetLists(adapter: AssetLibraryAdapter, siteId: string): void { listCache.get(adapter)?.delete(siteId); }
 type UploadRow = { id: number; name: string; state: "sending" | "done" | "failed"; message: string };
@@ -197,7 +201,7 @@ class SourceMismatch extends Error {}
 
 /** サイト別の素材ライブラリ。library は管理と配置、pick は画像の選択だけを行う。listProviders があれば出所ごとに分ける。 */
 export function AssetLibraryPanel(props: AssetLibraryPanelProps) {
-  const { adapter, siteId, mode, pickTitle, pickKind = "image", providerKind, panelLabel = "アセット", providerEpoch = 0, localUsage, actions, disabledReason, onClose, onReplaceUsages } = props;
+  const { adapter, siteId, mode, pickTitle, pickKind = "image", providerKind, panelLabel = "アセット", providerEpoch = 0, active = true, localUsage, actions, disabledReason, onClose, onReplaceUsages } = props;
   const sourceScopeKey = `${mode}:${pickKind}:${providerKind ?? "all"}`;
   const savedPreferences = cachedPanelPreferences(adapter, siteId);
   const [folderId, setFolderId] = useState<string | null>(() => savedPreferences?.folderId ?? null), [kind, setKind] = useState<AssetKind | "all">(() => savedPreferences?.kind ?? "all");
@@ -238,7 +242,7 @@ export function AssetLibraryPanel(props: AssetLibraryPanelProps) {
   const verify = (assets: readonly LibraryAsset[]) => { if (providers && assets.some((asset) => !providerOf(asset) || (source !== null && asset.provider !== source))) throw new SourceMismatch(); };
   useEffect(() => { const timer = setTimeout(() => setSearch(searchInput.trim()), 250); return () => clearTimeout(timer); }, [searchInput]);
   useEffect(() => {
-    if (!adapter.listProviders) return;
+    if (!active || !adapter.listProviders) return;
     const cached = cachedProviders(adapter, siteId, providerEpoch);
     if (cached) { setSources((previous) => previous.adapter === adapter && previous.epoch === providerEpoch && previous.status === "ready" && previous.items === cached ? previous : { adapter, epoch: providerEpoch, status: "ready", items: cached }); return; }
     // 再読込では取得済みの出所を表示したまま取り直す。
@@ -255,7 +259,7 @@ export function AssetLibraryPanel(props: AssetLibraryPanelProps) {
       } catch { if (!controller.signal.aborted) setSources({ adapter, epoch: providerEpoch, status: "error", items: [] }); }
     })();
     return () => controller.abort();
-  }, [adapter, siteId, sourceReload, providerEpoch]);
+  }, [active, adapter, siteId, sourceReload, providerEpoch]);
   useEffect(() => {
     setFolderId(null); setFolderDraft(null); setFolderError("");
   }, [mode, pickKind, providerKind]);
@@ -268,6 +272,7 @@ export function AssetLibraryPanel(props: AssetLibraryPanelProps) {
   }, [mode, providerKind, providers]);
   useEffect(() => { setDetail(null); }, [mode, pickKind, providerKind]);
   useEffect(() => {
+    if (!active) { more.current?.abort(); more.current = null; return; }
     if (!legacy && !providers) return;
     more.current?.abort(); more.current = null;
     if (providerKind && providers && scopedProviders?.length === 0) { setList({ status: "ready", assets: [], folders: [], more: "idle", scopeKey: listScopeKey }); return; }
@@ -290,7 +295,7 @@ export function AssetLibraryPanel(props: AssetLibraryPanelProps) {
       } catch (error) { if (!controller.signal.aborted) setList((previous) => ({ ...previous, status: "error", assets: [], nextCursor: undefined, problem: error instanceof SourceMismatch ? unknownSource : undefined, scopeKey: listScopeKey })); }
     })();
     return () => controller.abort();
-  }, [adapter, siteId, search, listKind, folderId, reload, legacy, providers, source, offline, recent, providerKind, mode, scopedProviders, listScopeKey]);
+  }, [active, adapter, siteId, search, listKind, folderId, reload, legacy, providers, source, offline, recent, providerKind, mode, scopedProviders, listScopeKey]);
   useEffect(() => () => more.current?.abort(), []);
   useEffect(() => {
     if (mode !== "pick") return;
