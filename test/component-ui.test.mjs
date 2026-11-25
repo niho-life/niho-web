@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { findLayer } from "./editor-layer-fixtures.mjs";
 import { JSDOM } from "jsdom";
 import { parseComponentLibrary, parsePageDocument } from "@niho/web/core";
 import { collectLocalizationUnits, createLocalizationOverlay } from "@niho/web/localization";
@@ -56,7 +57,10 @@ async function openLayers() {
 async function click(target, scope) {
   if (typeof target === "string" && !scope && (target.includes("·") || target.startsWith("◇ "))) await openLayers();
   if (typeof target === "string" && !scope && target === "コンポーネントにする") await editorTab("設定");
-  const element = typeof target === "string" ? target.startsWith("◇ ") ? layerButton(target.slice(2), scope) : button(target, scope) : target; assert.ok(element, String(target)); await act(async () => element.click()); await flush();
+  const lookup = () => typeof target === "string" ? target.startsWith("◇ ") ? layerButton(target.slice(2), scope) : button(target, scope) : target;
+  const isLayer = typeof target === "string" && (target.includes(" · ") || target.startsWith("◇ "));
+  const element = isLayer ? await findLayer(lookup, click, scope) : lookup();
+  assert.ok(element, String(target)); await act(async () => element.click()); await flush();
 }
 async function editorTab(name) {
   const target = [...document.querySelectorAll('.e-inspector-tabs [role="tab"]')].find((node) => node.textContent === name);
@@ -342,6 +346,20 @@ test("コンポーネントにする registers the selection and saves the libra
     await click("元に戻す"); assert.ok(button("section · hero"));
     await click(button("コンポーネントを編集", card("紹介セクション"))); await loadCanvas();
     await click("元に戻す"); assert.equal(card("紹介セクション"), null); assert.equal(document.querySelector(".e-part-banner"), null, "the removed master leaves component mode");
+  } finally { await app.cleanup(); }
+});
+
+test("名前に非対応の部品保存先は名前付きページ要素の登録前に拒否する", async () => {
+  const documentWithNamedHero = structuredClone(fixture);
+  documentWithNamedHero.body.find((node) => node.type === "element" && node.id === "hero").name = "名前付きヒーロー";
+  const app = await setup({ document: documentWithNamedHero });
+  try {
+    await click("section · hero"); await click("コンポーネントにする");
+    await change(input("コンポーネント名", dialog()), "名前付き部品"); await click(button("登録する", dialog()));
+    assert.ok(dialog().textContent.includes("コンポーネントの保存先は要素の名前に対応していません"));
+    assert.equal(app.calls.librarySaves.length, 0); assert.equal(app.calls.saves.length, 0);
+    assert.equal(button("下書き保存").disabled, true); assert.equal(button("元に戻す").disabled, true);
+    assert.ok(document.querySelector('[data-node-id="hero"] button.e-layer'));
   } finally { await app.cleanup(); }
 });
 

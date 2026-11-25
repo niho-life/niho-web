@@ -1,4 +1,5 @@
 import type { ElementTag, EmbedProvider, PageDocument, PageNode } from "./types.js";
+import { indexedNodesById } from "./node-tree.js";
 
 export type LayerKind = "box" | "image" | "text" | "component" | "instance";
 export type LayerEntry = {
@@ -18,6 +19,12 @@ export type LayerLabels = {
 
 const textTags = new Set(["p", "h1", "h2", "h3", "h4", "h5", "h6", "span", "label", "button", "a"]);
 const plain = (node: PageNode): string => node.type === "text" ? node.text : node.type === "element" ? node.children.map(plain).join(" ") : "";
+const searchableText = (node: PageNode): string => {
+  if (node.type === "text") return node.text;
+  if (node.type === "element") return node.children.map(searchableText).join(" ");
+  const props = node.props ?? {};
+  return Object.values(props).filter((value): value is string => typeof value === "string").join(" ");
+};
 const excerpt = (value: string) => value.replace(/\s+/g, " ").trim().slice(0, 32);
 const embedLabels: Record<EmbedProvider, string> = { map: "Map", youtube: "YouTube", vimeo: "Vimeo", lottie: "Lottie", facebook: "Facebook", x: "X", instagram: "Instagram", blank: "Blank" };
 
@@ -32,6 +39,7 @@ export const elementTypeLabel: Record<ElementTag, string> = {
 };
 /** レイヤー名は文書へ複製せず、現在のノードから人向けに投影する。raw text は親要素の内容なので行を作らない。文字を持たない要素はセクション・箇条書きなど種類の名前にする。 */
 export function layerLabel(node: Exclude<PageNode, { type: "text" }>, labels: LayerLabels = {}): string {
+  if (node.name !== undefined) return node.name;
   if (node.type === "component") return labels.blocks?.[node.block] ?? "コンポーネント";
   if (node.type === "instance") return labels.components?.get(node.component) ?? "コンポーネント";
   if (node.icon) return "アイコン";
@@ -71,8 +79,8 @@ export function projectLayers(document: PageDocument, labels: LayerLabels = {}):
 /** 配列位置は保持せず、現在の文書から安定 ID の path を引き直す。 */
 export function pathForNodeId(document: PageDocument, id: string | null | undefined): number[] | null {
   if (!id) return null;
-  const entry = projectLayers(document).find((item) => item.id === id);
-  return entry ? entry.path : null;
+  const entry = indexedNodesById(document, id)[0];
+  return entry ? [...entry.path] : null;
 }
 
 export function visibleLayers(entries: readonly LayerEntry[], expanded: ReadonlySet<string>): LayerEntry[] {
@@ -84,6 +92,18 @@ export function visibleLayers(entries: readonly LayerEntry[], expanded: Readonly
     if (entry.hasChildren && !expanded.has(entry.id)) hidden.add(entry.id);
   }
   return result;
+}
+
+export function layerSearchMatches(entries: readonly LayerEntry[], query: string): Set<string> {
+  const matches = new Set<string>();
+  const normalize = (value: string) => value.normalize("NFKC").replace(/\s+/gu, " ").toLowerCase();
+  const needle = normalize(query).trim();
+  if (!needle) return matches;
+  // 子の文字も検索し、名前を付けて表示ラベルが置き換わった後も本文から見つける。
+  for (const entry of entries) {
+    if (normalize(entry.label).includes(needle) || normalize(searchableText(entry.node)).includes(needle)) matches.add(entry.id);
+  }
+  return matches;
 }
 
 /** 表示倍率はページ幅と独立し、作業領域へ収める場合も 100% を越えて拡大しない。 */

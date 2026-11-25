@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
@@ -23,7 +25,7 @@ const worker = (await import(`data:text/javascript;base64,${Buffer.from(bundle.o
 const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const jwk = { ...publicKey.export({ format: "jwk" }), kid: "managed-test", alg: "RS256", use: "sig" };
 
-async function fixture(t) {
+async function fixture(t, { cms = false, restore, restoredObjects = [] } = {}) {
   const issuer = `https://access-${crypto.randomUUID()}.example`, audience = "managed-test";
   const now = Math.floor(Date.now() / 1000), encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
   const jwt = (claims) => {
@@ -36,13 +38,29 @@ async function fixture(t) {
     assert.equal(String(url), `${issuer}/cdn-cgi/access/certs`);
     return Response.json({ keys: [jwk] });
   });
-  const sqlite = new DatabaseSync(":memory:");
+  const sqlite = new DatabaseSync(restore ?? ":memory:");
+  const objects = new Map(restoredObjects), faults = {};
+  const CMS_OBJECTS = {
+    async put(key, value, options) {
+      assert.equal(options.onlyIf.get("If-None-Match"), "*");
+      if (objects.has(key)) return null;
+      if (faults.put === "before") { delete faults.put; throw new Error("fixture put failure"); }
+      objects.set(key, value);
+      if (faults.put === "after") { delete faults.put; throw new Error("fixture ambiguous put"); }
+      return {};
+    },
+    async get(key) {
+      if (faults.release && key.includes("/releases/")) { delete faults.release; throw new Error("fixture release object unavailable"); }
+      return objects.has(key) ? { json: async () => JSON.parse(objects.get(key)) } : null;
+    }
+  };
   t.after(() => sqlite.close());
-  for (const migration of migrations) sqlite.exec(migration);
+  if (!restore) for (const migration of migrations) sqlite.exec(migration);
   const wrap = (query) => {
     const statement = sqlite.prepare(query);
     let params = [];
     return {
+      query,
       bind(...values) { params = values; return this; },
       async first() { return statement.get(...params) ?? null; },
       execute() {
@@ -53,10 +71,20 @@ async function fixture(t) {
     };
   };
   const env = {
-    ACCESS_ISSUER: issuer, ACCESS_AUDIENCE: audience, PUBLIC_SITES_ORIGIN: PUBLIC_ORIGIN,
+    ACCESS_ISSUER: issuer, ACCESS_AUDIENCE: audience, PUBLIC_SITES_ORIGIN: PUBLIC_ORIGIN, ...(cms ? { CMS_OBJECTS } : {}),
     DB: { prepare: wrap, async batch(statements) {
       sqlite.exec("BEGIN");
-      try { const result = statements.map((statement) => statement.execute()); sqlite.exec("COMMIT"); return result; }
+      try {
+        const result = statements.map((statement, index) => {
+          if (index === 1 && faults.batch && statements[0].query.includes("INSERT INTO managed_cms_receipts")) {
+            delete faults.batch;
+            throw new Error("fixture aborted transaction");
+          }
+          return statement.execute();
+        });
+        sqlite.exec("COMMIT");
+        return result;
+      }
       catch (error) { sqlite.exec("ROLLBACK"); throw error; }
     } },
     ASSETS: { async fetch() { return new Response('<div id="root"></div>', { headers: { "Content-Type": "text/html" } }); } },
@@ -71,7 +99,7 @@ async function fixture(t) {
     }
     return worker.fetch(new Request(`${origin}${path}`, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), env);
   };
-  return { sqlite, env, ownerToken, otherToken, serviceToken, send };
+  return { sqlite, env, ownerToken, otherToken, serviceToken, send, objects, faults, cron: () => worker.scheduled({}, env) };
 }
 
 async function body(response, status) {
@@ -192,4 +220,270 @@ testWithD1("Studio-native site uses one D1 page store for GUI, CLI, CAS, release
   const audit = h.sqlite.prepare("SELECT operation, actor_subject FROM studio_cli_audit ORDER BY started_at, rowid").all();
   assert.ok(audit.some((entry) => entry.operation === "pages.save" && entry.actor_subject === OWNER));
   assert.ok(audit.some((entry) => entry.operation === "pages.change-apply" && entry.actor_subject === OWNER));
+});
+
+const CMS_OP_KEY = "X-Studio-Operation-Key";
+const headers = (key = crypto.randomUUID()) => ({ [CMS_OP_KEY]: key });
+async function cmsSite(h, slug) {
+  const { projectId, siteId } = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "CMS Fixture", slug, locale: "ja" }), 201);
+  const endpoint = `/api/projects/${projectId}/sites/${siteId}/cms/v2`;
+  const post = (operation, values = {}, options = {}) => h.send(MANAGEMENT_ORIGIN, "POST", `${endpoint}/${operation}`, { siteId, ...values }, options);
+  const read = (operation, values = {}, options = {}) => post(operation, values, options).then((result) => body(result, 200));
+  const pub = (path) => h.send(PUBLIC_ORIGIN, "GET", `/s/${slug}/cms${path}`, undefined, { auth: false });
+  const cli = (method, operation, values, options = {}) => h.send(MANAGEMENT_ORIGIN, method, `/api/edit/v1/sites/${siteId}/operations/${operation}`,
+    values, { cli: true, ...options, headers: { "X-Studio-CMS-Version": "2", ...options.headers } });
+  return { projectId, siteId, endpoint, post, read, pub, cli };
+}
+const versioned = (draft) => ({
+  collectionId: draft.collectionId, itemId: draft.itemId, locale: draft.locale,
+  expectedRevision: draft.revision, contractVersion: 2, expectedSchemaRevision: draft.schemaRevision
+});
+const pin = ({ collectionId, itemId, revision }) => ({ collectionId, itemId, revision });
+const values = (title, slug = "notice") => ({ title, slug, body: "<script>Fixture only</script>" });
+async function createDraft(site, schemaRevision, options = {}) {
+  return (await site.read("cms.items.create", { collectionId: "posts", contractVersion: 2, expectedSchemaRevision: schemaRevision },
+    { headers: headers(), ...options })).item;
+}
+async function saveDraft(site, draft, title, slug) {
+  return (await site.read("cms.items.save", { ...versioned(draft), values: values(title, slug) }, { headers: headers() })).item;
+}
+async function releasePlan(site, schemaRevision, previous, items, at) {
+  const current = await site.read("cms.release.current");
+  const { plan } = await site.read("cms.release.plan", { schemaRevision, locale: "ja", routeTableRevision: current.routeTableRevision,
+    expectedReleaseId: previous,
+    items: items.map(pin), redirects: [], ...(at ? { at } : {}) });
+  return { operationId: plan.operationId, confirmationToken: plan.confirmationToken };
+}
+
+testWithD1("Studio CMS release snapshots include live unpublished page reservations", async (t) => {
+  const h = await fixture(t, { cms: true });
+  const site = await cmsSite(h, "reserved-cms-path");
+  const schema = await site.read("cms.schema.read"), initial = await site.read("cms.release.current");
+  const draft0 = await createDraft(site, schema.schemaRevision), draft = await saveDraft(site, draft0, "Reserved path", "notice");
+  assert.equal(h.sqlite.prepare("UPDATE managed_pages SET path = '/about' WHERE site_id = ? AND page_id = 'home'").run(site.siteId).changes, 1);
+  const current = await site.read("cms.release.current");
+  assert.notEqual(current.routeTableRevision, initial.routeTableRevision, "live fixed-page changes advance the route-table revision");
+  const { plan } = await site.read("cms.release.plan", { schemaRevision: schema.schemaRevision, locale: "ja",
+    routeTableRevision: current.routeTableRevision, expectedReleaseId: null, items: [pin(draft)], redirects: [] });
+  await site.read("cms.release.apply", { operationId: plan.operationId, confirmationToken: plan.confirmationToken });
+  await h.cron();
+  const released = await site.read("cms.release.current");
+  assert.equal(released.routeTableRevision, released.snapshot.routeTable.revision);
+  assert.ok(released.snapshot.routeTable.reservations.some(({ kind, path }) => kind === "reserved" && path === "/about"));
+});
+
+testWithD1("Studio CMS uses immutable revisions, site/actor boundaries, confirmation and recoverable release jobs", async (t) => {
+  const h = await fixture(t, { cms: true });
+  const first = await cmsSite(h, "first-cms"), other = await cmsSite(h, "other-cms");
+  const discovery = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${first.endpoint}/discover`), 200);
+  assert.equal(discovery.contractVersion, 2);
+  assert.ok(discovery.operations.includes("cms.schema.apply"));
+  h.sqlite.prepare("INSERT INTO project_members (project_id, access_subject, role, display_name) VALUES (?, ?, 'editor', 'Editor')").run(first.projectId, OTHER);
+  const schema = await first.read("cms.schema.read");
+  const current = await first.read("cms.release.current");
+  const newCollection = { ...schema.collections[0], id: "news", label: "Fixture news", pathPrefix: "/cms/news/" };
+  const planned = await first.read("cms.schema.plan", { expectedSchemaRevision: schema.schemaRevision,
+    routeTableVersions: [{ locale: "ja", revision: current.routeTableRevision }],
+    nextSchema: { ...schema, collections: [...schema.collections, newCollection] }, replacements: [] });
+  const applySchema = { operationId: planned.plan.operationId, confirmationToken: planned.plan.confirmationToken };
+  assert.equal((await first.post("cms.schema.apply", applySchema, { token: h.otherToken })).status, 403);
+  const { result: { schemaRevision } } = await first.read("cms.schema.apply", applySchema);
+  assert.equal((await first.read("cms.schema.read")).collections[1].id, "news");
+
+  const createInput = { collectionId: "posts", contractVersion: 2, expectedSchemaRevision: schemaRevision };
+  const operationKey = headers();
+  const fail = t.mock.method(console, "error", () => {});
+  h.faults.put = "before";
+  assert.equal((await first.post("cms.items.create", createInput, { headers: operationKey })).status, 503);
+  h.faults.put = "after";
+  assert.equal((await first.post("cms.items.create", createInput, { headers: operationKey })).status, 503);
+  assert.equal((await first.read("cms.items.list", { collectionId: "posts", deleted: false })).items.length, 0);
+  h.faults.batch = true;
+  assert.equal((await first.post("cms.items.create", createInput, { headers: operationKey })).status, 503);
+  assert.equal(h.sqlite.prepare("SELECT count(*) AS count FROM managed_cms_receipts WHERE operation = 'cms.items.create'").get().count, 0);
+  assert.equal(h.sqlite.prepare("SELECT count(*) AS count FROM managed_cms_revisions").get().count, 0);
+  assert.equal(fail.mock.callCount(), 3);
+  const [created, retriedCreate] = await Promise.all([
+    first.post("cms.items.create", createInput, { headers: operationKey }).then((res) => body(res, 200)),
+    first.post("cms.items.create", createInput, { headers: operationKey }).then((res) => body(res, 200))
+  ]);
+  const draft0 = created.item;
+  assert.deepEqual(retriedCreate, created);
+  assert.equal([...h.objects.keys()].filter((key) => key.startsWith(`sites/${first.siteId}/items/`)).length, 1,
+    "an exact retry reuses its immutable object after a failed D1 commit");
+  assert.equal((await first.post("cms.items.create", { ...createInput, collectionId: "news" }, { headers: operationKey })).status, 409);
+  assert.equal(h.sqlite.prepare("SELECT count(*) AS count FROM managed_cms_audit WHERE operation = 'cms.items.create'").get().count, 1);
+  const firstDraft = await saveDraft(first, draft0, "Published first");
+  assert.equal((await first.pub("/posts/notice")).status, 404);
+  const seen = await body(await first.cli("GET", `cms.read/posts/${firstDraft.itemId}`), 200);
+  assert.equal(seen.item.version, firstDraft.revision);
+  assert.equal(seen.item.values.title, "Published first");
+  assert.equal((await first.cli("POST", "cms.create/posts", { operationId: crypto.randomUUID() }, { headers: { "X-Studio-CMS-Version": "1" } })).status, 409);
+  assert.equal((await other.post("cms.items.read", { collectionId: "posts", itemId: firstDraft.itemId })).status, 404);
+  assert.equal((await other.post("cms.items.save", { ...versioned(firstDraft), values: values("Other") }, { headers: headers() })).status, 404);
+  const preview = await first.read("cms.preview.prepare", { ...pin(firstDraft) });
+  assert.equal(h.sqlite.prepare("SELECT count(*) AS count FROM managed_cms_tokens WHERE token_hash = ?").get(preview.previewId).count, 0);
+  assert.equal((await other.post("cms.preview.read", { previewId: preview.previewId })).status, 404);
+  assert.equal((await first.post("cms.preview.read", { previewId: preview.previewId }, { token: h.otherToken })).status, 404);
+  const previewResponse = await first.post("cms.preview.read", { previewId: preview.previewId });
+  assert.equal(previewResponse.headers.get("Cache-Control"), "no-store");
+  assert.equal(previewResponse.headers.get("X-Robots-Tag"), "noindex");
+  assert.equal((await body(previewResponse, 200)).preview.title, "Published first");
+  assert.equal((await first.post("cms.preview.read", { previewId: preview.previewId })).status, 404);
+
+  const expired = await first.read("cms.preview.prepare", pin(firstDraft));
+  h.sqlite.prepare("UPDATE managed_cms_tokens SET expires_at = 0 WHERE purpose = 'preview'").run();
+  assert.equal((await first.post("cms.preview.read", { previewId: expired.previewId })).status, 404);
+
+  const publish = await releasePlan(first, schemaRevision, null, [firstDraft]);
+  h.faults.batch = true;
+  assert.equal((await first.post("cms.release.apply", publish)).status, 503);
+  assert.equal((await first.pub("/posts/notice")).status, 404);
+  const receipt = await first.read("cms.release.apply", publish, { token: h.ownerToken });
+  assert.deepEqual(await first.read("cms.release.apply", publish), receipt);
+  const deliveredStatus = await first.read("cms.release.status", { operationId: publish.operationId });
+  assert.deepEqual(deliveredStatus.result, receipt.result);
+  assert.equal(deliveredStatus.delivery.state, "delivered");
+  assert.equal(deliveredStatus.delivery.failure, null);
+  const releaseId = receipt.result.releaseId;
+  assert.equal((await other.post("cms.release.snapshot", { releaseId })).status, 404);
+  assert.equal((await first.read("cms.release.snapshot", { releaseId })).snapshot.items[0].revision, firstDraft.revision);
+  const html = await (await first.pub("/posts/notice")).text();
+  assert.match(html, /Published first/u);
+  assert.match(html, /&lt;script&gt;Fixture only&lt;\/script&gt;/u);
+  assert.doesNotMatch(html, /<script>/u);
+  assert.match(await (await first.pub("/posts")).text(), /href="\/s\/first-cms\/cms\/posts\/notice"/u);
+
+  const previewBeforeEdit = await first.read("cms.preview.prepare", pin(firstDraft));
+  const secondDraft = await saveDraft(first, firstDraft, "Published second");
+  assert.equal((await first.post("cms.preview.read", { previewId: previewBeforeEdit.previewId })).status, 404);
+  assert.match(await (await first.pub("/posts/notice")).text(), /Published first/u);
+  const secondPlan = await releasePlan(first, schemaRevision, releaseId, [secondDraft]);
+  h.faults.release = true;
+  const releaseReceipt = await first.read("cms.release.apply", secondPlan);
+  assert.match(await (await first.pub("/posts/notice")).text(), /Published first/u);
+  assert.deepEqual(await first.read("cms.release.apply", secondPlan), releaseReceipt);
+  const pendingStatus = await first.read("cms.release.status", { operationId: secondPlan.operationId });
+  assert.equal(pendingStatus.delivery.state, "pending");
+  assert.equal(pendingStatus.delivery.failure, "unavailable");
+  const pending = h.sqlite.prepare("SELECT state, attempts, failure FROM managed_cms_outbox WHERE id = ?").get(releaseReceipt.result.releaseId);
+  assert.deepEqual({ ...pending }, { state: "pending", attempts: 1, failure: "unavailable" });
+  h.sqlite.prepare("UPDATE managed_cms_outbox SET available_at = 0, lease_id = 'interrupted', lease_until = unixepoch() + 60 WHERE id = ?").run(releaseReceipt.result.releaseId);
+  await h.cron();
+  assert.match(await (await first.pub("/posts/notice")).text(), /Published first/u);
+  h.sqlite.prepare("UPDATE managed_cms_outbox SET lease_until = 0 WHERE id = ?").run(releaseReceipt.result.releaseId);
+  await h.cron();
+  assert.match(await (await first.pub("/posts/notice")).text(), /Published second/u);
+  assert.equal((await first.read("cms.release.status", { operationId: secondPlan.operationId })).delivery.state, "delivered");
+  assert.match((await first.read("cms.release.snapshot", { releaseId })).snapshot.items[0].values.title, /Published first/u);
+
+  const thirdDraft = await saveDraft(first, secondDraft, "Dead-letter candidate");
+  const thirdPlan = await releasePlan(first, schemaRevision, releaseReceipt.result.releaseId, [thirdDraft]);
+  h.faults.release = true;
+  const failedReceipt = await first.read("cms.release.apply", thirdPlan);
+  for (let attempt = 2; attempt <= 5; attempt++) {
+    h.sqlite.prepare("UPDATE managed_cms_outbox SET available_at = 0 WHERE id = ?").run(failedReceipt.result.releaseId);
+    h.faults.release = true;
+    await h.cron();
+  }
+  const deadLetter = h.sqlite.prepare("SELECT state, attempts, failure FROM managed_cms_outbox WHERE id = ?").get(failedReceipt.result.releaseId);
+  assert.deepEqual({ ...deadLetter }, { state: "dead", attempts: 5, failure: "unavailable" });
+  assert.match(await (await first.pub("/posts/notice")).text(), /Published second/u);
+  assert.equal((await first.post("cms.release.snapshot", { releaseId: failedReceipt.result.releaseId })).status, 404);
+  const recoveredPlan = await releasePlan(first, schemaRevision, releaseReceipt.result.releaseId, [thirdDraft]);
+  await first.read("cms.release.apply", recoveredPlan);
+  assert.match(await (await first.pub("/posts/notice")).text(), /Dead-letter candidate/u);
+
+  for (let i = 0; i < 10; i++) await createDraft(first, schemaRevision);
+  const page = await first.read("cms.items.list", { collectionId: "posts", deleted: false });
+  assert.equal(page.items.length, 10);
+  assert.ok(page.nextCursor);
+  assert.equal((await other.post("cms.items.list", { collectionId: "posts", deleted: false, cursor: page.nextCursor })).status, 404);
+  assert.equal((await first.post("cms.items.list", { collectionId: "posts", deleted: false, cursor: page.nextCursor }, { token: h.otherToken })).status, 404);
+  assert.equal((await first.read("cms.items.list", { collectionId: "posts", deleted: false, cursor: page.nextCursor })).items.length, 1);
+});
+
+testWithD1("Studio CMS CLI actor, scheduled release, cancellation, deletion and database/R2 restore", async (t) => {
+  const h = await fixture(t, { cms: true });
+  const site = await cmsSite(h, "restore-cms");
+  const schema = await site.read("cms.schema.read");
+  const addGrant = h.sqlite.prepare(`INSERT INTO studio_cli_grants
+    (client_id, project_id, site_id, capability, delegated_by_subject, expires_at) VALUES (?, ?, ?, ?, ?, unixepoch() + 600)`);
+  for (const capability of ["cms.read", "cms.edit", "cms.publish"]) addGrant.run(SERVICE_CLIENT, site.projectId, site.siteId, capability, OWNER);
+  const service = { service: true, token: h.serviceToken };
+  const create = { operationId: crypto.randomUUID() };
+  const legacyDraft = (await body(await site.cli("POST", "cms.create/posts", create, service), 200)).item;
+  assert.deepEqual((await body(await site.cli("POST", "cms.create/posts", create, service), 200)).item, legacyDraft);
+  const legacySave = await body(await site.cli("PUT", `cms.save/posts/${legacyDraft.id}`, {
+    operationId: crypto.randomUUID(), expectedVersion: legacyDraft.version, values: values("Initial public")
+  }, service), 200);
+  const { plan } = await body(await site.cli("POST", `cms.publish-plan/posts/${legacyDraft.id}`, {
+    operationId: crypto.randomUUID(), expectedVersion: legacySave.item.version
+  }, service), 200);
+  const { operationId, confirmationToken, expectedVersion } = plan;
+  const applied = await body(await site.cli("POST", `cms.publish/posts/${legacyDraft.id}`, { operationId, confirmationToken, expectedVersion }, service), 200);
+  assert.equal(applied.status, "publishing");
+  const status = await body(await site.cli("GET", `cms.operation-status/${operationId}`, undefined, service), 200);
+  assert.equal(status.result.status, "published");
+  assert.equal(status.result.item.version, applied.item.version);
+  h.sqlite.prepare("DELETE FROM studio_cli_grants WHERE client_id = ? AND capability = 'cms.read'").run(SERVICE_CLIENT);
+  assert.equal((await site.cli("GET", `cms.read/posts/${legacyDraft.id}`, undefined, service)).status, 403);
+  const cliRoot = `/api/cli/v1/projects/${site.projectId}/sites/${site.siteId}`;
+  assert.equal((await h.send(MANAGEMENT_ORIGIN, "POST", `${cliRoot}/operations/cms.items.read`,
+    { siteId: site.siteId, collectionId: "posts", itemId: legacyDraft.id }, { cli: true, ...service })).status, 403);
+  assert.equal((await h.send(MANAGEMENT_ORIGIN, "POST", `${cliRoot}/operations/cms.items.read`,
+    { siteId: site.siteId, collectionId: "posts", itemId: legacyDraft.id }, { cli: true })).status, 200);
+
+  const initial = (await site.read("cms.items.read", { collectionId: "posts", itemId: legacyDraft.id })).item;
+  const pinned = await saveDraft(site, initial, "Reservation version");
+  const future = new Date(Date.now() + 120_000).toISOString();
+  const { snapshot: current } = await site.read("cms.release.current");
+  assert.equal(current.items[0].revision, initial.revision);
+  const cancelPlan = await releasePlan(site, schema.schemaRevision, current.releaseId, [pinned], future);
+  const { result: cancelled } = await site.read("cms.schedule.create", cancelPlan);
+  await site.read("cms.schedule.cancel", { scheduleId: cancelled.scheduleId }, { headers: headers() });
+  assert.equal((await site.read("cms.schedule.status", { scheduleId: cancelled.scheduleId })).status, "cancelled");
+  const schedulePlan = await releasePlan(site, schema.schemaRevision, current.releaseId, [pinned], future);
+  const { result: schedule } = await site.read("cms.schedule.create", schedulePlan);
+  const latest = await saveDraft(site, pinned, "Draft after scheduling");
+  assert.match(await (await site.pub("/posts/notice")).text(), /Initial public/u);
+  const clock = t.mock.method(Date, "now", () => Date.parse(future) + 50_000);
+  // Advance the clock past the fixed reservation and drain prior verification events.
+  for (let i = 0; i < 3; i++) await h.cron();
+  clock.mock.restore();
+  assert.equal((await site.read("cms.schedule.status", { scheduleId: schedule.scheduleId })).status, "released");
+  const publiclyServed = await (await site.pub("/posts/notice")).text();
+  assert.match(publiclyServed, /Reservation version/u);
+  assert.doesNotMatch(publiclyServed, /Draft after scheduling/u);
+
+  const backupDir = await mkdtemp(join(tmpdir(), "niho-cms-restore-"));
+  t.after(() => rm(backupDir, { recursive: true, force: true }));
+  const backupFile = join(backupDir, "registry.db"), r2Export = join(backupDir, "objects.json");
+  h.sqlite.prepare("VACUUM INTO ?").run(backupFile);
+  await writeFile(r2Export, JSON.stringify([...h.objects]));
+
+  assert.equal((await site.post("cms.items.remove", versioned(latest), { headers: headers() })).status, 409);
+  const withdraw = await releasePlan(site, schema.schemaRevision, schedule.releaseId, []);
+  await site.read("cms.release.apply", withdraw);
+  assert.equal((await site.pub("/posts/notice")).status, 404);
+  await site.read("cms.items.remove", versioned(latest), { headers: headers() });
+  assert.equal((await site.post("cms.items.read", { collectionId: "posts", itemId: latest.itemId })).status, 404);
+  assert.equal((await site.read("cms.items.list", { collectionId: "posts", deleted: true })).items[0].id, latest.itemId);
+  await site.read("cms.items.restore", versioned(latest), { headers: headers() });
+  assert.equal((await site.read("cms.items.read", { collectionId: "posts", itemId: latest.itemId })).item.revision, latest.revision);
+  assert.equal((await site.pub("/posts/notice")).status, 404);
+
+  const restored = await fixture(t, { cms: true, restore: backupFile, restoredObjects: JSON.parse(await readFile(r2Export, "utf8")) });
+  assert.equal(await (await restored.send(PUBLIC_ORIGIN, "GET", "/s/restore-cms/cms/posts/notice", undefined, { auth: false })).text(), publiclyServed);
+  const restoredSnapshot = await body(await restored.send(MANAGEMENT_ORIGIN, "POST", `${site.endpoint}/cms.release.snapshot`,
+    { siteId: site.siteId, releaseId: schedule.releaseId }), 200);
+  assert.equal(restoredSnapshot.snapshot.items[0].revision, pinned.revision);
+  const restoredDraft = await body(await restored.send(MANAGEMENT_ORIGIN, "POST", `${site.endpoint}/cms.items.read`,
+    { siteId: site.siteId, collectionId: "posts", itemId: latest.itemId }), 200);
+  assert.equal(restoredDraft.item.revision, latest.revision);
+  assert.equal((await restored.send(MANAGEMENT_ORIGIN, "POST", `${site.endpoint}/cms.release.snapshot`,
+    { siteId: site.siteId, releaseId: schedule.releaseId }, { token: restored.otherToken })).status, 403);
+  const restoredReceipt = await body(await restored.send(MANAGEMENT_ORIGIN, "POST", `${site.endpoint}/cms.schedule.create`,
+    { siteId: site.siteId, ...schedulePlan }), 200);
+  assert.equal(restoredReceipt.result.releaseId, schedule.releaseId);
 });

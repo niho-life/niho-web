@@ -8,7 +8,7 @@ import { parsePageDocument } from "./document.js";
 import { Dialog } from "./editor-dialog.js";
 import { fingerprint, sameTarget } from "./editor-model.js";
 import { Icon } from "./editor-pages.js";
-import { diffDocuments, parseRevisionEntry, parseRevisionPage, RecoveryTooLargeError, type DocumentChange, type EditorRecoveryStore, type EditorRevisionEntry, type EditorRevisionKind } from "./history.js";
+import { diffDocuments, parseRevisionEntry, parseRevisionPage, RecoveryTooLargeError, type DocumentChange, type EditorRecoveryStore, type EditorRevisionEntry, type EditorRevisionKind, type EditorRevisionOperationSummary, type EditorRevisionOperationType } from "./history.js";
 import type { EditorAdapter, EditorBlockRegistry, EditorReleaseAffected, EditorSnapshot, EditorTarget } from "./editor-types.js";
 import type { ComponentLibrary, PageDocument } from "./types.js";
 import { parseSitePresentation } from "./presentation.js";
@@ -22,6 +22,22 @@ export function formatDateTime(value: string | number | Date): string {
 }
 const formatTime = (date: Date) => `${pad(date.getHours())}:${pad(date.getMinutes())}`;
 export const revisionKindLabels: Readonly<Record<EditorRevisionKind, string>> = { draft: "下書き保存", autosave: "自動保存", snapshot: "スナップショット", publish: "公開", rollback: "公開版に戻す" };
+const revisionOperationLabels: Readonly<Record<EditorRevisionOperationType, string>> = {
+  text: "テキスト", attribute: "属性", booleanAttribute: "フォーム属性", formChoices: "選択肢", formCompletionPage: "完了ページ", icon: "アイコン", tag: "タグ", prop: "ブロック設定",
+  style: "見た目", resize: "サイズ", styles: "見た目", styleRange: "見た目", token: "デザイントークン", textStyle: "文字スタイル", nodeTextStyle: "文字スタイルの割当",
+  state: "状態別の見た目", appear: "登場演出", motionPreset: "動き", hidden: "表示幅", title: "ページタイトル", add: "要素追加", addMany: "要素追加", replaceChildren: "子要素の置換",
+  image: "画像", video: "動画", embedSource: "埋め込み元", embedTitle: "埋め込み名", loopBox: "Loop Box", background: "背景画像", replaceAsset: "素材の置換", duplicate: "複製", remove: "削除", move: "移動",
+  instanceProp: "部品設定", detach: "部品を解除", slotStyle: "表示領域の見た目", restore: "版の復元", meta: "公開情報"
+};
+function revisionActorLabel(entry: EditorRevisionEntry): string | undefined {
+  const kind = entry.actorKind === "machine" ? "AI" : entry.actorKind === "human" ? "人" : undefined;
+  const actor = entry.actor ? `${kind ? `${kind} · ` : ""}${entry.actor}` : kind;
+  return [actor, entry.delegatedBy ? `委任元: ${entry.delegatedBy}` : undefined].filter(Boolean).join(" · ") || undefined;
+}
+function revisionOperationLabel(operation: EditorRevisionOperationSummary): string {
+  const target = operation.targetId === undefined ? "ページ" : `${operation.targetTag ?? (operation.targetType === "component" ? "部品" : operation.targetType === "instance" ? "部品の配置" : operation.targetType === "page" ? "ページ" : "要素")}#${operation.targetId}`;
+  return `${target} · ${revisionOperationLabels[operation.type]}${operation.field ? `: ${operation.field}` : ""}`;
+}
 export const targetKeyOf = (target: EditorTarget | undefined) => target ? JSON.stringify([target.siteId, target.pageId, target.locale]) : "";
 const copyTarget = (target: EditorTarget): EditorTarget => ({ siteId: target.siteId, pageId: target.pageId, locale: target.locale });
 const control = /[\u0000-\u001f\u007f]/u;
@@ -185,7 +201,7 @@ export function useRecovery({ store, session, dirty, blocks, components, siteSty
     silent(() => store.remove(target));
   };
   const accepted = () => { setOffer(null); setPhase((previous) => ({ ...previous, state: "idle" })); };
-  return { offer, drop, discard, accepted };
+  return { offer, drop, discard, accepted, flush: () => pendingWrite.current?.() };
 }
 export function RecoveryBanner({ offer, stale, disabled, compare, restore, discard }: { offer: RecoveryOffer; stale: boolean; disabled: boolean; compare: () => void; restore: () => void; discard: () => void }) {
   return <div className="e-recovery" role="status">
@@ -297,9 +313,10 @@ export function LibraryRecoveryBanner({ offer, merge, disabled, restore, discard
 
 export type LatestSnapshot = { snapshot: EditorSnapshot; document: PageDocument };
 /** 409 のあと最新の保存内容を読み、差分を見てから残す内容を選ぶ。読込だけでは作業コピーを変えない。 */
-export function ConflictDialog({ adapter, target, present, blocks, components, siteStyles, close, discard, overwrite }: {
+export function ConflictDialog({ adapter, target, present, blocks, components, siteStyles, close, discard, overwrite, reapply, retryOperations }: {
   adapter: EditorAdapter; target: EditorTarget; present: PageDocument; blocks: EditorBlockRegistry; components?: ComponentLibrary | undefined; siteStyles?: SiteStyles | undefined;
   close: () => void; discard: (latest: LatestSnapshot) => void; overwrite: (latest: LatestSnapshot) => void;
+  reapply?: (latest: LatestSnapshot) => PageDocument | undefined; retryOperations?: (latest: LatestSnapshot) => void;
 }) {
   const [latest, setLatest] = useState<LatestSnapshot | null>(null), [failed, setFailed] = useState(false), [attempt, setAttempt] = useState(0), [confirmed, setConfirmed] = useState(false);
   const { siteId, pageId, locale } = target;
@@ -314,15 +331,16 @@ export function ConflictDialog({ adapter, target, present, blocks, components, s
     }).catch(() => { if (!controller.signal.aborted) setFailed(true); });
     return () => controller.abort();
   }, [adapter, blocks, components, siteStyles, siteId, pageId, locale, attempt]);
+  const rebased = latest && reapply?.(latest);
   return <Dialog name="最新の保存内容との比較" dismiss={close}><h2>保存内容が競合しています</h2>
     <p>ほかの保存で内容が更新されています。最新の保存内容とあなたの編集を見比べて、残す内容を選んでください。</p>
     {failed ? <><p className="e-help e-problem" role="alert">最新の内容を取得できませんでした。編集内容は保持しています。</p><button type="button" className="e-small" onClick={() => setAttempt((value) => value + 1)}>再試行</button></>
       : !latest ? <p className="e-help">最新の内容を読み込み中…</p>
-      : <><DiffTable changes={diffDocuments(latest.document, present)} columns={["変更箇所", "最新の保存内容", "あなたの編集"]} />
-        <label className="e-check"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />最新の保存内容を上書きすることを確認しました</label></>}
+      : <><DiffTable changes={diffDocuments(latest.document, rebased ?? present)} columns={["変更箇所", "最新の保存内容", rebased ? "最新に適用した内容" : "あなたの編集"]} />
+        <label className="e-check"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />{rebased ? "最新の内容に編集を適用して保存することを確認しました" : "最新の保存内容を上書きすることを確認しました"}</label></>}
     <div className="e-actions"><button type="button" autoFocus onClick={close}>閉じて編集を続ける</button>
       {latest && <><button type="button" className="e-danger" onClick={() => discard(latest)}>最新の内容を読み込む（あなたの編集を破棄）</button>
-        <button type="button" className="e-primary" disabled={!confirmed} onClick={() => overwrite(latest)}>あなたの編集で上書き保存</button></>}</div>
+        <button type="button" className="e-primary" disabled={!confirmed} onClick={() => rebased ? retryOperations?.(latest) : overwrite(latest)}>{rebased ? "最新に適用して保存" : "あなたの編集で上書き保存"}</button></>}</div>
   </Dialog>;
 }
 
@@ -428,10 +446,15 @@ export function VersionPanel({ history, status, snapshotBlock }: { history: Vers
     {history.canSnapshot && snapshotBlock && <p className="e-help">{snapshotBlock}</p>}
     <ol className="e-timeline">
       <li><button type="button" className="e-version is-current" aria-pressed={!history.viewing} onClick={() => history.select(null)}><span className="e-version-time">現在の編集内容</span><small className="e-version-actor">{status}</small></button></li>
-      {list.entries.map((entry) => <li key={entry.id}><button type="button" className="e-version" aria-pressed={history.viewing?.entry.id === entry.id} aria-busy={history.reading === entry.id} disabled={!history.canRead} onClick={() => history.select(entry)}>
+      {list.entries.map((entry) => <li key={entry.id}><button type="button" className="e-version" aria-pressed={history.viewing?.entry.id === entry.id} aria-busy={history.reading === entry.id} disabled={!history.canRead || entry.snapshotAvailable === false} onClick={() => history.select(entry)}>
         <span className="e-version-time">{formatDateTime(entry.createdAt)}</span>
-        <span className="e-version-meta"><span className={`e-version-kind is-${entry.kind}`}>{revisionKindLabels[entry.kind]}</span>{entry.actor && <small className="e-version-actor">{entry.actor}</small>}</span>
+        <span className="e-version-meta"><span className={`e-version-kind is-${entry.kind}`}>{revisionKindLabels[entry.kind]}</span>{revisionActorLabel(entry) && <small className="e-version-actor">{revisionActorLabel(entry)}</small>}</span>
         {entry.label && <span className="e-version-label">{entry.label}</span>}
+        {entry.snapshotAvailable === false && <small className="e-version-unavailable">版の内容は保存期間を過ぎています</small>}
+        {entry.operations?.length ? <small className="e-version-operations" aria-label="操作の要約">
+          {entry.operations.slice(0, 3).map((operation, index) => <span key={`${operation.type}-${operation.targetId ?? "page"}-${index}`}>{revisionOperationLabel(operation)}</span>)}
+          {((entry.omittedOperations ?? 0) + Math.max(0, entry.operations.length - 3)) > 0 && <span>ほか {((entry.omittedOperations ?? 0) + Math.max(0, entry.operations.length - 3))} 件</span>}
+        </small> : entry.omittedOperations ? <small className="e-version-operations">ほか {entry.omittedOperations} 件</small> : null}
       </button></li>)}
     </ol>
     {list.status === "loading" && <p className="e-help">履歴を読み込み中…</p>}

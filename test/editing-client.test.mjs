@@ -10,7 +10,7 @@ const blockDocument = structuredClone(fixture);
 blockDocument.body.push({ type: "component", id: "booking-panel", block: "booking-panel", props: { title: "Book a visit" } });
 const validationContext = { blocks: { "booking-panel": { props: { title: { type: "string", required: true } } } } };
 
-function clientFixture({ token = "owner", initialDocument = blockDocument, publishing = false, releaseSet = false, staleAfterSetPrepare = false, pendingSetOnce = false, pageManagement = false, initialBreakpointSettings } = {}) {
+function clientFixture({ token = "owner", initialDocument = blockDocument, publishing = false, versionedInspection = false, stylesVersion, releaseSet = false, staleAfterSetPrepare = false, pendingSetOnce = false, pageManagement = false, initialBreakpointSettings } = {}) {
   let document = structuredClone(initialDocument), version = "v1";
   const secondTarget = { siteId: target.siteId, pageId: "about", locale: "ja" };
   let secondVersion = "about-v1";
@@ -25,7 +25,8 @@ function clientFixture({ token = "owner", initialDocument = blockDocument, publi
     async authorize(actor, capability, scope) { return actor.subject === "agent" && scope.siteId === target.siteId && (["pages.read", "pages.edit"].includes(capability) || (publishing || releaseSet || pageManagement) && capability === "pages.publish" || breakpointSettings !== null && ["site.settings.read", "site.settings.write"].includes(capability)); },
     async validationContext() { return validationContext; },
     async readPage(_actor, requested) { return requested.siteId === target.siteId && requested.pageId === target.pageId && requested.locale === target.locale
-      ? { document, version, ...(publishing ? { componentsVersion: "components-v1", presentationVersion: "presentation-v1" } : {}) } : null; },
+      ? { document, version, ...(versionedInspection ? { componentsVersion: "components-v1", presentationVersion: "presentation-v1", stylesVersion: "styles-v1" }
+        : stylesVersion === undefined ? {} : { stylesVersion }), ...(publishing ? { componentsVersion: "components-v1", presentationVersion: "presentation-v1" } : {}) } : null; },
     async savePage(_actor, requested, expectedVersion, next) {
       if (requested.siteId !== target.siteId || requested.pageId !== target.pageId || requested.locale !== target.locale || expectedVersion !== version) return { status: "conflict" };
       document = { ...next, revision: next.revision + 1 }; version = `v${Number(version.slice(1)) + 1}`;
@@ -151,10 +152,68 @@ function clientFixture({ token = "owner", initialDocument = blockDocument, publi
   return client;
 }
 
+test("page and catalog reads allow private ETag revalidation", async () => {
+  const requests = [];
+  const client = createPageEditingApiClient({
+    origin: "https://host.example", siteId: target.siteId,
+    fetch: async (input, init) => {
+      requests.push({ url: String(input), cache: init.cache });
+      return String(input).endsWith("/pages.catalog")
+        ? Response.json({ version: "registry-v1", pages: [{ siteId: target.siteId, pageId: target.pageId, locale: target.locale, title: "Home" }] })
+        : Response.json({ document: fixture, version: "v1" });
+    }
+  });
+  await client.read(target);
+  await client.readPageCatalog();
+  assert.deepEqual(requests.map(({ cache }) => cache), ["no-cache", "no-cache"]);
+});
+
+test("page read cache returns isolated snapshots after a 304", async () => {
+  const requests = [];
+  const nextDocument = { ...structuredClone(fixture), title: "server version two" };
+  const responses = [
+    Response.json({ document: fixture, version: "v1" }, { headers: { ETag: '"page-v1"' } }),
+    new Response(null, { status: 304, headers: { ETag: '"page-v1"' } }),
+    new Response(null, { status: 304, headers: { ETag: '"page-v2"' } }),
+    Response.json({ document: nextDocument, version: "v2" }, { headers: { ETag: '"page-v2"' } }),
+    new Response(null, { status: 304, headers: { ETag: '"page-v2"' } })
+  ];
+  const client = createPageEditingApiClient({
+    origin: "https://host.example", siteId: target.siteId,
+    fetch: async (_input, init) => {
+      requests.push(new Headers(init.headers).get("If-None-Match"));
+      return responses.shift();
+    }
+  });
+
+  const first = await client.read(target);
+  first.document.title = "caller mutation";
+  const second = await client.read(target);
+  assert.equal(second.document.title, fixture.title);
+  second.document.title = "second caller mutation";
+  const third = await client.read(target);
+  assert.equal(third.document.title, nextDocument.title);
+  third.document.title = "third caller mutation";
+  const fourth = await client.read(target);
+  assert.equal(fourth.document.title, nextDocument.title);
+  assert.deepEqual(requests, [null, '"page-v1"', '"page-v1"', null, '"page-v2"']);
+});
+
+test("shared client reads partial page projections with dependency versions", async () => {
+  const client = clientFixture({ versionedInspection: true });
+  const result = await client.inspectPage(target, { view: "outline", depth: 1 });
+  assert.equal(result.view, "outline");
+  assert.equal(result.version, "v1");
+  assert.equal(result.stylesVersion, "styles-v1");
+  assert.equal(result.componentsVersion, "components-v1");
+  assert.equal(result.presentationVersion, "presentation-v1");
+  assert.ok(result.items.length > 0);
+});
+
 test("shared page editing client discovers, reads custom blocks and saves with CAS", async () => {
   const client = clientFixture();
   const discovery = await client.discover();
-  assert.deepEqual(discovery.operations.map(({ id }) => id), ["pages.read", "pages.save"]);
+  assert.deepEqual(discovery.operations.map(({ id }) => id), ["pages.inspect", "pages.read", "pages.save"]);
   const snapshot = await client.read(target);
   assert.equal(snapshot.document.body.at(-1).block, "booking-panel");
   const changed = structuredClone(snapshot.document); changed.title = "Saved by shared client";
@@ -170,7 +229,7 @@ test("shared page editing client discovers, reads custom blocks and saves with C
 test("shared editing client reads the page catalog and prepares/applies a versioned page change", async () => {
   const client = clientFixture({ pageManagement: true });
   const discovery = await client.discover();
-  assert.deepEqual(discovery.operations.map(({ id }) => id), ["pages.read", "pages.save", "pages.catalog", "pages.change-prepare", "pages.change-apply"]);
+  assert.deepEqual(discovery.operations.map(({ id }) => id), ["pages.inspect", "pages.read", "pages.save", "pages.catalog", "pages.change-prepare", "pages.change-apply"]);
   const catalog = await client.readPageCatalog();
   assert.equal(catalog.version, "registry-v1");
   assert.equal(catalog.pages[0].pageId, target.pageId);
@@ -212,6 +271,36 @@ test("shared page editing client validates the document envelope but leaves cust
   const saved = await client.save(target, "v1", candidate);
   assert.equal(saved.status, "saved");
   await assert.rejects(client.save(target, "v1", { ...candidate, arbitrary: true }), (error) => error instanceof EditingApiClientError && error.code === "invalid_response");
+});
+
+test("the editor snapshot client uses its block contracts and rejects an incomplete or mismatched version pair", async () => {
+  const shared = (pageId, body) => ({ schemaVersion: 1, siteId: target.siteId, pageId, locale: target.locale, revision: 1, title: pageId, tokens: {}, body });
+  const presentation = { schemaVersion: 1, siteId: target.siteId, locale: target.locale, version: "p.1", reset: "neutral-v1", tokens: {}, fonts: [],
+    shared: { header: shared("header", [blockDocument.body.at(-1)]), footer: shared("footer", []) } };
+  const base = { document: blockDocument, version: "v1", presentationVersion: "p.1" };
+  const full = { ...base, presentation, editorState: { readOnly: { reason: "Read only" }, englishPublication: { state: "published", retryable: false } } };
+  let reply = full;
+  const client = createPageEditingApiClient({
+    origin: "https://host.example", siteId: target.siteId, editorSnapshot: validationContext,
+    fetch: async (_input, init) => {
+      assert.equal(init.headers.get("Accept"), "application/json; profile=niho-editor-snapshot-v1");
+      return Response.json(reply);
+    }
+  });
+  assert.deepEqual(await client.read(target), full);
+  reply = { ...base, presentation };
+  assert.deepEqual(await client.read(target), reply, "移行中ホストの表示コンテキストだけを受け取る");
+  reply = base;
+  assert.deepEqual(await client.read(target), base, "older hosts return the unextended snapshot");
+  for (const invalid of [
+    { ...full, presentationVersion: "stale" },
+    { ...full, presentation: undefined },
+    { ...base, presentation, presentationVersion: undefined },
+    { ...full, editorState: { englishPublication: { state: "unknown", retryable: true } } }
+  ]) {
+    reply = invalid;
+    await assert.rejects(client.read(target), (error) => error instanceof EditingApiClientError && error.code === "invalid_response");
+  }
 });
 
 test("shared page editing client prepares a release and safely retries with the same operation ID", async () => {

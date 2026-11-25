@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { findLayer } from "./editor-layer-fixtures.mjs";
 import { JSDOM } from "jsdom";
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: "https://editor.example.test" });
 for (const key of ["window", "document", "HTMLElement", "HTMLInputElement", "Element", "Event", "MouseEvent"]) globalThis[key] = dom.window[key];
@@ -21,6 +22,7 @@ const input = (text, root = document) => field(text, root)?.querySelector("input
 const frame = () => document.querySelector("iframe");
 const canvasCss = () => frame().contentDocument.querySelector("style[data-nw-style]").textContent;
 async function click(target) { assert.ok(target); await act(async () => target.click()); await flush(); }
+async function clickLayer(label, scope = document) { const target = await findLayer(() => button(label, scope), click, scope); assert.ok(target, label); await click(target); }
 async function key(target, value) { assert.ok(target); await act(async () => target.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: value, bubbles: true }))); await flush(); }
 async function editorTab(name) { const target = [...document.querySelectorAll('.e-inspector-tabs [role="tab"]')].find((node) => node.textContent === name); assert.ok(target, name); if (target.getAttribute("aria-selected") !== "true") await click(target); }
 async function canvasClick(selector) { const view = frame().contentWindow, target = view.document.querySelector(selector); assert.ok(target, selector); await act(async () => target.dispatchEvent(new view.MouseEvent("click", { bubbles: true, cancelable: true }))); await flush(); }
@@ -232,7 +234,7 @@ test("a menu span with a line break edits only its own document, preserves its l
 test("a tablet override is shown in the tier color, can be reset, and matches the published CSS after reload", async () => {
   const app = await setup();
   try {
-    await click(button("section · hero")); await editorTab("ボックス"); await change(input("幅", right()), "80%");
+    await clickLayer("section · hero"); await editorTab("ボックス"); await change(input("幅", right()), "80%");
     const pressedTier = () => document.querySelector('[aria-label="編集する幅"] [aria-pressed="true"]').textContent;
     await change(document.querySelector('[aria-label="表示幅"]'), "375");
     assert.equal(pressedTier(), "基本", "表示幅を変えても編集する段は変わらない");
@@ -260,7 +262,7 @@ test("a tablet override is shown in the tier color, can be reset, and matches th
     assert.ok(!canvasCss().includes("flex-direction:row;")); assert.ok(!direction().closest(".e-row").classList.contains("e-own"));
     await click(direction().querySelector('[aria-label="横"]'));
     // 選択を変えても段は維持する。
-    await click(button("h1 · heading")); assert.equal(document.querySelector('[aria-label="編集する幅"] [aria-pressed="true"]').textContent, "タブレット 768px〜");
+    await clickLayer("h1 · heading"); assert.equal(document.querySelector('[aria-label="編集する幅"] [aria-pressed="true"]').textContent, "タブレット 768px〜");
     await click(button("下書き保存"));
     assert.deepEqual(app.calls.saves[0].document.body[0].style.responsive, [{ minWidth: 768, declarations: { maxWidth: "64rem", margin: "0 auto", flexDirection: "row" } }]);
     assert.equal(app.calls.saves[0].document.body[0].style.base.width, "80%");
@@ -276,11 +278,13 @@ test("the compact tier disclosure and explicit alignment controls keep viewport,
   Object.assign(source.body[0].style.base, { flexDirection: "row-reverse", justifyContent: "flex-start", alignItems: "flex-end", position: "static", zIndex: 2, overflow: "hidden" });
   const app = await setup({ document: source });
   try {
-    await click(button("section · hero")); await editorTab("ボックス");
+    await clickLayer("section · hero"); await editorTab("ボックス");
     const tierDetails = right().querySelector(".e-tier-details");
     assert.equal(tierDetails.open, false, "tier controls start collapsed");
     assert.match(tierDetails.querySelector("summary").textContent, /編集\s*基本/);
-    assert.match(tierDetails.querySelector("summary").textContent, /表示\s*1280px · PC 1280px〜/);
+    const tierSummary = tierDetails.querySelector("summary");
+    assert.match(tierSummary.textContent, /表示\s*1280px/);
+    assert.equal(tierSummary.querySelector(".e-tier-summary > span:nth-child(2)")?.getAttribute("title"), "表示 1280px · PC 1280px〜");
     assert.ok(tierDetails.querySelector('[aria-label="編集する幅"]'), "all tier controls remain in the disclosure");
     await click(tierDetails.querySelector("summary")); assert.equal(tierDetails.open, true);
     await click(button("タブレット 768px〜", tierDetails));
@@ -328,7 +332,7 @@ test("flex width and dvh height round-trip through the inspector, undo, and publ
   source.body[0].children[0].style = { base: { width: 240 } };
   const app = await setup({ document: source });
   try {
-    await click(button("h1 · heading")); await editorTab("ボックス");
+    await clickLayer("h1 · heading"); await editorTab("ボックス");
     const widthUnit = () => field("幅", right()).querySelector("select");
     await change(widthUnit(), "u:flex");
     assert.equal(input("幅", right()).value, "1", "fixed width becomes a 1 flex ratio");
@@ -348,7 +352,7 @@ test("flex width and dvh height round-trip through the inspector, undo, and publ
     assert.deepEqual({ width: saved.width, flexGrow: saved.flexGrow, flexBasis: saved.flexBasis, height: saved.height },
       { width: "auto", flexGrow: 2, flexBasis: "0px", height: "100dvh" });
     await reloadEditor();
-    await click(button("h1 · heading")); await editorTab("ボックス");
+    await clickLayer("h1 · heading"); await editorTab("ボックス");
     assert.equal(widthUnit().value, "u:flex");
     assert.equal(field("高さ", right()).querySelector("select").value, "u:dvh");
     const published = renderPageToHtml(app.stored());
@@ -362,7 +366,7 @@ test("a wider breakpoint can switch an inherited flex ratio to a fixed width and
   source.body[0].children[0].style = { base: { width: "auto", flexGrow: 2, flexBasis: "0px" } };
   const app = await setup({ document: source });
   try {
-    await click(button("h1 · heading")); await editorTab("ボックス");
+    await clickLayer("h1 · heading"); await editorTab("ボックス");
     await click(button("タブレット 768px〜", right()));
     assert.equal(field("幅", right()).querySelector("select").value, "u:flex");
     await change(field("幅", right()).querySelector("select"), "u:px");
@@ -380,7 +384,7 @@ test("height flex divides a vertical parent's remaining space and switches back 
   source.body[0].children[0].style = { base: { height: 80 } };
   const app = await setup({ document: source });
   try {
-    await click(button("h1 · heading")); await editorTab("ボックス");
+    await clickLayer("h1 · heading"); await editorTab("ボックス");
     const heightUnit = () => field("高さ", right()).querySelector("select");
     assert.ok([...heightUnit().options].some((option) => option.value === "u:flex"));
     assert.ok(![...field("幅", right()).querySelector("select").options].some((option) => option.value === "u:flex"), "the cross axis does not claim the same grow ratio");
@@ -393,7 +397,7 @@ test("height flex divides a vertical parent's remaining space and switches back 
     await click(button("下書き保存"));
     const saved = app.calls.saves[0].document.body[0].children[0].style.base;
     assert.deepEqual({ height: saved.height, flexGrow: saved.flexGrow, flexBasis: saved.flexBasis }, { height: "auto", flexGrow: 2, flexBasis: "0px" });
-    await reloadEditor(); await click(button("h1 · heading")); await editorTab("ボックス");
+    await reloadEditor(); await clickLayer("h1 · heading"); await editorTab("ボックス");
     assert.equal(heightUnit().value, "u:flex");
     await change(heightUnit(), "u:px");
     await click(button("下書き保存"));
@@ -408,7 +412,7 @@ test("a wider breakpoint overrides inherited height flex without leaving the inh
   source.body[0].children[0].style = { base: { height: "auto", flexGrow: 2, flexBasis: "0px" } };
   const app = await setup({ document: source });
   try {
-    await click(button("h1 · heading")); await editorTab("ボックス");
+    await clickLayer("h1 · heading"); await editorTab("ボックス");
     await click(button("タブレット 768px〜", right()));
     const heightUnit = () => field("高さ", right()).querySelector("select");
     assert.equal(heightUnit().value, "u:flex");
@@ -423,7 +427,7 @@ test("a wider breakpoint overrides inherited height flex without leaving the inh
 test("invalid width and color values are rejected and the previous values are saved", async () => {
   const app = await setup();
   try {
-    await click(button("section · hero")); await editorTab("ボックス"); await change(input("幅", right()), "50%");
+    await clickLayer("section · hero"); await editorTab("ボックス"); await change(input("幅", right()), "50%");
     await change(input("幅", right()), "abc");
     assert.equal(input("幅", right()).value, "abc"); assert.ok(field("幅", right()).querySelector('[role="alert"]'));
     assert.equal(button("下書き保存").disabled, true);
@@ -441,7 +445,7 @@ test("invalid width and color values are rejected and the previous values are sa
 test("switching margins between one value and four sides is undone in one step", async () => {
   const app = await setup();
   try {
-    await click(button("section · hero")); await editorTab("ボックス"); await click(button("タブレット 768px〜", right()));
+    await clickLayer("section · hero"); await editorTab("ボックス"); await click(button("タブレット 768px〜", right()));
     assert.equal(input("マージン", right()).value, "0 auto");
     await click(button("マージンを上下左右で個別に指定", right()));
     assert.equal(input("マージン", right()), undefined);
@@ -449,13 +453,13 @@ test("switching margins between one value and four sides is undone in one step",
     assert.equal(input("右のマージン", right()).value, ""); assert.equal(field("右のマージン", right()).querySelector("select").value, "k:auto");
     await click(button("元に戻す"));
     assert.equal(button("下書き保存").disabled, true);
-    await click(button("section · hero")); await editorTab("ボックス");
+    await clickLayer("section · hero"); await editorTab("ボックス");
     assert.equal(input("マージン", right()).value, "0 auto");
     await click(button("マージンを上下左右で個別に指定", right()));
     await change(input("左のマージン", right()), "24");
     await click(button("マージンを上下左右で個別に指定", right()));
     assert.equal(input("マージン", right()).value, "0");
-    await click(button("元に戻す")); await click(button("section · hero")); await editorTab("ボックス");
+    await click(button("元に戻す")); await clickLayer("section · hero"); await editorTab("ボックス");
     assert.equal(input("左のマージン", right()).value, "24");
     await click(button("下書き保存"));
     assert.deepEqual(app.calls.saves[0].document.body[0].style.responsive[0].declarations, { maxWidth: "64rem", marginTop: "0", marginRight: "auto", marginBottom: "0", marginLeft: 24 });
@@ -470,7 +474,7 @@ test("business blocks show only the appearance fields they allow", async () => {
   };
   const app = await setup({ document: doc, props: { blocks } });
   try {
-    await click(button("お知らせ · notice")); await editorTab("ボックス");
+    await clickLayer("お知らせ · notice"); await editorTab("ボックス");
     assert.ok(right().textContent.includes("このブロックで変更できる見た目だけを表示しています。"));
     for (const caption of ["文字色", "幅", "マージン", "右のマージン", "パディング", "配置の基準", "角丸", "テキストスタイル", "不透明度"]) assert.equal(field(caption, right()), undefined, caption);
     assert.ok(input("背景色", right())); assert.ok(input("上のマージン", right()));
@@ -478,7 +482,7 @@ test("business blocks show only the appearance fields they allow", async () => {
     await click(button("下書き保存"));
     const saved = app.calls.saves[0].document.body.at(-2);
     assert.deepEqual(saved.style.base, { backgroundColor: "#fff8e6", marginTop: 32 }); assert.deepEqual(saved.props, { heading: "表示名" });
-    await click(button("自由 · free")); await editorTab("テキスト"); assert.ok(input("文字色", right()));
+    await clickLayer("自由 · free"); await editorTab("テキスト"); assert.ok(input("文字色", right()));
     await editorTab("ボックス"); assert.ok(input("幅", right()));
   } finally { await app.cleanup(); }
 });
@@ -513,7 +517,7 @@ test("text styles are applied from the style panel, shown as inherited values an
 test("editing only below the next tier keeps wider widths, is undone in one step and reaches the published CSS", async () => {
   const app = await setup();
   try {
-    await click(button("section · hero")); await editorTab("ボックス");
+    await clickLayer("section · hero"); await editorTab("ボックス");
     const direction = () => right().querySelector('[role="group"][aria-label="方向"]');
     await click(direction().querySelector('[aria-label="横"]'));
     await click(button("〜767px だけ", right()));
@@ -522,11 +526,11 @@ test("editing only below the next tier keeps wider widths, is undone in one step
     assert.ok(button("375px で表示", right()));
     await click(direction().querySelector('[aria-label="縦"]'));
     assert.match(canvasCss(), /@media \(min-width:768px\)\{[^}]*hero"\]\{[^}]*flex-direction:row;/);
-    await click(button("元に戻す")); await click(button("section · hero"));
+    await click(button("元に戻す")); await clickLayer("section · hero");
     assert.equal(right().querySelector('[aria-label="反映する範囲"] [aria-pressed="true"]').textContent, "〜767px だけ", "範囲は選択を変えても保つ");
     assert.doesNotMatch(canvasCss(), /@media \(min-width:768px\)\{[^}]*hero"\]\{[^}]*flex-direction/);
     await click(right().querySelector('[role="group"][aria-label="方向"] [aria-label="縦"]'));
-    await click(button("p · lead")); await editorTab("テキスト"); await change(input("文字色", right()), "#ff0000");
+    await clickLayer("p · lead"); await editorTab("テキスト"); await change(input("文字色", right()), "#ff0000");
     assert.ok(field("文字色", right()).querySelector('[role="alert"]').textContent.includes("先に「768px 以上」で値を入れてください。"));
     await click(button("入力を取り消す", field("文字色", right())));
     await click(button("下書き保存"));
@@ -578,7 +582,7 @@ test("unsaved page changes and page inputs keep site-wide styles locked and say 
   const host = siteStyleHost(), app = await setup({ document: host.page, adapter: host.adapter });
   try {
     // ページの欄に入力途中の値が残る間は止める。
-    await click(button("section · hero")); await change(input("幅", right()), "abc");
+    await clickLayer("section · hero"); await change(input("幅", right()), "abc");
     await openSiteColor("ブランド");
     assert.equal(input("色", left()).disabled, true); assert.equal(input("名前", left()).disabled, true);
     assert.ok(left().textContent.includes(sitePageHold));

@@ -216,6 +216,7 @@ function checkedReleaseSetResult(value: unknown, site: EditorSite, operationId: 
 /** 部品ライブラリと使用状況も Project の Site だけに限定する。 */
 function componentsForProject(components: EditorComponentAdapter, site: EditorSite): EditorComponentAdapter {
   return {
+    ...(components.nodeNames === true ? { nodeNames: true as const } : {}),
     async readLibrary(siteId, signal) {
       if (siteId !== site.id) throw new Error("プロジェクト外のサイトは参照できません。");
       const snapshot = structuredClone(await components.readLibrary(site.id, signal));
@@ -320,6 +321,9 @@ export function createProjectEditorAdapter(adapter: EditorAdapter, projectInput:
       const { readOnly: rawReadOnly, ...rest } = snapshot, readOnly = parseEditorReadOnly(rawReadOnly);
       return { ...rest, ...(readOnly ? { readOnly } : {}) };
     },
+    ...(adapter.discoverPageNodeNames ? {
+      discoverPageNodeNames: (target, signal) => adapter.discoverPageNodeNames!(targetForProject(target, site), signal)
+    } satisfies Pick<EditorAdapter, "discoverPageNodeNames"> : {}),
     async saveDraft(request, signal) {
       const target = targetForProject(request.target, site);
       const document = structuredClone(request.document);
@@ -328,6 +332,14 @@ export function createProjectEditorAdapter(adapter: EditorAdapter, projectInput:
         ...(request.localization ? { localization: { expectedSourceVersion: request.localization.expectedSourceVersion, expectedVersion: request.localization.expectedVersion,
           expectedOverlayVersion: request.localization.expectedOverlayVersion } } : {}) }, signal);
     },
+    ...(adapter.applyOperations ? {
+      async applyOperations(request, signal) {
+        const target = targetForProject(request.target, site);
+        const result = await adapter.applyOperations!({ ...structuredClone(request), target }, signal);
+        if (result.status === "applied") assertDocumentTarget(result.document, target);
+        return structuredClone(result);
+      }
+    } satisfies Pick<EditorAdapter, "applyOperations"> : {}),
     async prepareRelease(request, signal) {
       const checked = releaseRequest(request, targetForProject(request.target, site));
       const plan = await adapter.prepareRelease(checked, signal);

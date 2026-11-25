@@ -6,14 +6,16 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
-import { EDITING_OPERATIONS } from "@niho/web/editing-api";
+import { editDocumentById } from "@niho/web/editor-model";
+import { EDITING_OPERATIONS, withPageNodeNameCapability } from "@niho/web/editing-api";
 
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 const command = fileURLToPath(new URL("../cli/niho-edit.mjs", import.meta.url));
 const origin = "https://site.example", siteId = fixture.siteId, pageId = fixture.pageId, locale = fixture.locale;
+const playwrightAvailable = (() => { try { import.meta.resolve("playwright"); return true; } catch { return false; } })();
 
 function run(args, { status = 200, result, expectedMethod, expectedUrl, expectedBody, stdin, assertInputBeforeTimeout = false,
-  accessClientId = null, accessClientSecret = null, env = {}, token = "fixture-token", location = null } = {}) {
+  accessClientId = null, accessClientSecret = null, env = {}, token = "fixture-token", location = null, studio = false, operationKey = null } = {}) {
   const timeoutGuard = assertInputBeforeTimeout ? `let stdinEnded = false;
     process.stdin.once("end", () => { stdinEnded = true; });
     const originalTimeout = AbortSignal.timeout.bind(AbortSignal);
@@ -24,7 +26,10 @@ function run(args, { status = 200, result, expectedMethod, expectedUrl, expected
     if (init.method !== ${JSON.stringify(expectedMethod)}) throw new Error("unexpected method");
     if (init.redirect !== "manual" || init.credentials !== "omit") throw new Error("unsafe API fetch defaults");
     const headers = new Headers(init.headers);
-    if (headers.get("Authorization") !== "Bearer fixture-token") throw new Error("missing authorization");
+    if (headers.get("Authorization") !== ${JSON.stringify(studio ? null : "Bearer fixture-token")}) throw new Error("missing authorization");
+    if (headers.get("cf-access-token") !== ${JSON.stringify(studio && !accessClientId ? token : null)}) throw new Error("unexpected Access token");
+    if (headers.get("X-Studio-CMS-Version") !== ${JSON.stringify(studio ? "2" : null)}) throw new Error("unexpected CMS version");
+    if (headers.get("X-Studio-Operation-Key") !== ${JSON.stringify(operationKey)}) throw new Error("unexpected operation key");
     if (headers.get("CF-Access-Client-Id") !== ${JSON.stringify(accessClientId)} || headers.get("CF-Access-Client-Secret") !== ${JSON.stringify(accessClientSecret)}) throw new Error("unexpected Access credentials");
     const body = init.body ? JSON.parse(init.body) : null;
     if (JSON.stringify(body) !== ${JSON.stringify(JSON.stringify(expectedBody ?? null))}) throw new Error("unexpected body");
@@ -48,7 +53,41 @@ function run(args, { status = 200, result, expectedMethod, expectedUrl, expected
   });
 }
 
-function runUpload(args, { uploadUrl, expectedBytes, asset, trustedUploadOrigin = origin, accessClientId = null, accessClientSecret = null }) {
+function runSequence(args, requests, { env = {}, token = "fixture-token", stdin = "", studio = false } = {}) {
+  const source = [
+    "const expected = " + JSON.stringify(requests) + "; let index = 0;",
+    "globalThis.fetch = async (url, init) => {",
+    "  const request = expected[index++];",
+    "  if (!request || String(url) !== request.url || init.method !== request.method) throw new Error('unexpected request');",
+    "  if (init.redirect !== 'manual' || init.credentials !== 'omit') throw new Error('unsafe API fetch defaults');",
+    "  const headers = new Headers(init.headers);",
+    "  if (headers.get('Authorization') !== " + JSON.stringify(studio ? null : "Bearer fixture-token") + ") throw new Error('unexpected authorization');",
+    "  if (headers.get('cf-access-token') !== " + JSON.stringify(studio ? "fixture-token" : null) + ") throw new Error('unexpected Access token');",
+    "  if (headers.get('X-Studio-CMS-Version') !== " + JSON.stringify(studio ? "2" : null) + ") throw new Error('unexpected Studio CMS version');",
+    "  if (init.body && JSON.stringify(JSON.parse(init.body)) !== JSON.stringify(request.body ?? null)) throw new Error('unexpected request body');",
+    "  return new Response(JSON.stringify(request.result ?? {}), { status: request.status ?? 200, headers: { 'Content-Type': 'application/json' } });",
+    "};",
+    "process.on('beforeExit', () => { if (index !== expected.length) throw new Error('not all expected requests were made'); });"
+  ].join("\n");
+  const preload = "data:text/javascript," + encodeURIComponent(source);
+  return new Promise((resolve, reject) => {
+    const childEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !["CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET"].includes(key)));
+    if (token === null) delete childEnv.NIHO_EDIT_TOKEN;
+    else childEnv.NIHO_EDIT_TOKEN = token;
+    Object.assign(childEnv, env);
+    const child = spawn(process.execPath, ["--import", preload, command, "--origin", origin, "--site", siteId, ...args], {
+      env: childEnv, stdio: ["pipe", "pipe", "pipe"]
+    });
+    child.stdin.end(stdin);
+    let stdout = "", stderr = "";
+    child.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk; });
+    child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("close", (exitCode) => resolve({ exitCode, stdout, stderr }));
+  });
+}
+
+function runUpload(args, { uploadUrl, expectedBytes, asset, name = "sea.png", trustedUploadOrigin = origin, accessClientId = null, accessClientSecret = null }) {
   const source = `let calls = 0;
     globalThis.fetch = async (url, init) => {
       calls++;
@@ -58,7 +97,7 @@ function runUpload(args, { uploadUrl, expectedBytes, asset, trustedUploadOrigin 
         if (headers.get("Authorization") !== "Bearer fixture-token") throw new Error("missing editing token");
         if (headers.get("CF-Access-Client-Id") !== ${JSON.stringify(accessClientId)} || headers.get("CF-Access-Client-Secret") !== ${JSON.stringify(accessClientSecret)}) throw new Error("missing API Access credentials");
         const body = JSON.parse(init.body);
-        if (JSON.stringify(body) !== ${JSON.stringify(JSON.stringify({ name: "sea.png", mimeType: "image/png", bytes: expectedBytes.length, folderId: null, provider: "kamakura-upload" }))}) throw new Error("invalid upload metadata");
+        if (JSON.stringify(body) !== ${JSON.stringify(JSON.stringify({ name, mimeType: "image/png", bytes: expectedBytes.length, folderId: null, provider: "kamakura-upload" }))}) throw new Error("invalid upload metadata");
         return new Response(JSON.stringify({ uploadUrl: ${JSON.stringify(uploadUrl)}, uploadToken: "short-lived", assetId: ${JSON.stringify(asset.id)} }), { status: 201, headers: { "Content-Type": "application/json" } });
       }
       if (calls !== 2 || String(url) !== ${JSON.stringify(uploadUrl)} || init.method !== "PUT" || init.credentials !== "omit" || init.redirect !== "error") throw new Error("unexpected upload PUT");
@@ -96,9 +135,184 @@ test("niho-edit reads a page over the host API without Studio or a browser", asy
   });
   assert.equal(result.exitCode, 0, `${result.stderr}\n${result.stdout}`);
   assert.deepEqual(JSON.parse(result.stdout), { document: fixture, version: "v1" });
-  assert.deepEqual(EDITING_OPERATIONS.filter(({ id }) => !id.startsWith("localization.")).map(({ id }) => id), ["pages.read", "pages.save", "pages.release-plan", "pages.release", "pages.release-set-plan", "pages.release-set", "pages.release-set-status", "pages.catalog", "pages.change-prepare", "pages.change-apply",
+  assert.deepEqual(EDITING_OPERATIONS.filter(({ id }) => !id.startsWith("localization.")).map(({ id }) => id), ["pages.inspect", "pages.read", "pages.history", "pages.history-read", "pages.save", "pages.apply", "pages.preview-intent", "pages.release-plan", "pages.release", "pages.release-set-plan", "pages.release-set", "pages.release-set-status", "pages.catalog", "pages.change-prepare", "pages.change-apply",
     "cms.schema", "cms.list", "cms.read", "cms.create", "cms.save", "cms.publish-plan", "cms.publish", "cms.operation-status", "site.breakpoints.read", "site.breakpoints.save",
     "assets.list", "assets.usages", "assets.resolve", "assets.update", "assets.upload-intent", "assets.delete", "assets.restore"]);
+});
+
+test("niho-edit preview returns private URLs when the optional browser is unavailable", { skip: playwrightAvailable }, async () => {
+  const previewUrl = "https://site.example/_private-preview/opaque-id";
+  const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
+  const discoverUrl = `${origin}/api/edit/v1/sites/${siteId}/capabilities`;
+  const catalogUrl = `${origin}/api/edit/v1/sites/${siteId}/operations/pages.catalog`;
+  const intentUrl = `${origin}/api/edit/v1/sites/${siteId}/operations/pages.preview-intent/${pageId}?locale=${encodeURIComponent(locale)}`;
+  const previewOperation = EDITING_OPERATIONS.find(({ id }) => id === "pages.preview-intent");
+  const catalogOperation = EDITING_OPERATIONS.find(({ id }) => id === "pages.catalog");
+  const result = await runSequence(["preview", pageId, "--locale", locale, "--widths", "375,768,1280", "--compare", "published"], [
+    { method: "GET", url: discoverUrl, result: { apiVersion: "v1", siteId, operations: [previewOperation, catalogOperation] } },
+    { method: "GET", url: catalogUrl, result: { version: "catalog-v1", pages: [{ siteId, pageId, locale, title: "Home", path: "/home", kind: "page", visibility: "public", published: true }] } },
+    { method: "POST", url: intentUrl, body: {}, result: { url: previewUrl, expiresAt } }
+  ]);
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { url: previewUrl, expiresAt, publishedUrl: `${origin}/home` });
+});
+
+test("niho-edit outline uses pages.inspect when the host exposes it", async () => {
+  const discoverUrl = origin + "/api/edit/v1/sites/" + siteId + "/capabilities";
+  const inspectUrl = origin + "/api/edit/v1/sites/" + siteId + "/operations/pages.inspect/" + pageId + "?locale=" + encodeURIComponent(locale) + "&view=outline&limit=1000&depth=1";
+  const operation = EDITING_OPERATIONS.find(({ id }) => id === "pages.inspect");
+  const result = await runSequence(["outline", pageId, "--locale", locale, "--depth", "1"], [
+    { method: "GET", url: discoverUrl, result: { apiVersion: "v1", siteId, operations: [operation] } },
+    { method: "GET", url: inspectUrl, result: { view: "outline", version: "v1", definitions: {}, items: [{ id: "hero" }] } }
+  ]);
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { view: "outline", version: "v1", definitions: {}, items: [{ id: "hero" }] });
+});
+
+test("niho-edit apply accepts text, token style, add and move operations", async () => {
+  const operations = [
+    { type: "text", parentId: "heading", childPath: [0], value: "A clearer heading" },
+    { type: "style", nodeId: "heading", breakpoint: "base", property: "color", value: { token: "brand" } },
+    { type: "add", parentId: "hero", index: 2, node: { type: "element", id: "new-block", tag: "p", children: [{ type: "text", text: "Added" }] } },
+    { type: "move", nodeId: "link", parentId: "hero", index: 0 }
+  ];
+  const operationId = "123e4567-e89b-42d3-a456-426614174000", query = `?locale=${encodeURIComponent(locale)}`;
+  const discoveryUrl = origin + "/api/edit/v1/sites/" + siteId + "/capabilities";
+  const readUrl = origin + "/api/edit/v1/sites/" + siteId + "/operations/pages.read/" + pageId + query;
+  const applyUrl = origin + "/api/edit/v1/sites/" + siteId + "/operations/pages.apply/" + pageId + query;
+  const catalog = ["pages.read", "pages.apply"].map((id) => EDITING_OPERATIONS.find((operation) => operation.id === id));
+  const result = await runSequence(["apply", pageId, "--locale", locale, "--ops", "-", "--operation-id", operationId, "--expected-version", "v1", "--dry-run"], [
+    { method: "GET", url: discoveryUrl, result: { apiVersion: "v1", siteId, operations: catalog } },
+    { method: "GET", url: readUrl, result: { document: fixture, version: "v1" } },
+    { method: "POST", url: applyUrl, body: { baseVersion: "v1", operationId, operations, dryRun: true }, result: {
+      status: "valid", diff: [
+        { path: "h1#heading のテキスト", before: "旧見出し", after: "A clearer heading" },
+        { path: "h1#heading の見た目（共通）: color", before: "#000", after: "@brand" },
+        { path: "p#new-block を追加", before: "（なし）", after: "Added" },
+        { path: "a#link の位置", before: "section#hero の 3 番目", after: "section#hero の 1 番目" }
+      ], touched: ["heading", "new-block", "link"]
+    } }
+  ], { stdin: JSON.stringify(operations) });
+  assert.equal(result.exitCode, 0, result.stderr);
+  const output = JSON.parse(result.stdout).result;
+  assert.equal(output.status, "valid");
+  assert.equal(output.diff.length, 4);
+  assert.deepEqual(output.touched, ["heading", "new-block", "link"]);
+});
+
+test("niho-edit apply uses pages.apply and its dry-run diff matches the saved document", async () => {
+  const operations = [{ type: "title", value: "Updated by CLI" }], operationId = "123e4567-e89b-42d3-a456-426614174000";
+  const operationsJson = JSON.stringify(operations), query = `?locale=${encodeURIComponent(locale)}`;
+  const discoveryUrl = origin + "/api/edit/v1/sites/" + siteId + "/capabilities";
+  const readUrl = origin + "/api/edit/v1/sites/" + siteId + "/operations/pages.read/" + pageId + query;
+  const applyUrl = origin + "/api/edit/v1/sites/" + siteId + "/operations/pages.apply/" + pageId + query;
+  const catalog = ["pages.read", "pages.save", "pages.apply"].map((id) => EDITING_OPERATIONS.find((operation) => operation.id === id));
+  const changed = { ...fixture, title: "Updated by CLI", revision: fixture.revision + 1 };
+  const diff = [{ path: "ページタイトル", before: fixture.title, after: changed.title }];
+  const prefix = ["apply", pageId, "--locale", locale, "--ops", "-", "--operation-id", operationId, "--expected-version", "v1"];
+  const dryRun = await runSequence([...prefix, "--dry-run"], [
+    { method: "GET", url: discoveryUrl, result: { apiVersion: "v1", siteId, operations: catalog } },
+    { method: "GET", url: readUrl, result: { document: fixture, version: "v1" } },
+    { method: "POST", url: applyUrl, body: { baseVersion: "v1", operationId, operations, dryRun: true }, result: { status: "valid", diff, touched: [] } }
+  ], { stdin: operationsJson });
+  assert.equal(dryRun.exitCode, 0, dryRun.stderr);
+  const dryResult = JSON.parse(dryRun.stdout).result;
+  assert.equal(dryResult.status, "valid");
+  assert.equal(dryResult.validation, "host");
+  assert.deepEqual(dryResult.diff, diff);
+
+  const applied = await runSequence(prefix, [
+    { method: "GET", url: discoveryUrl, result: { apiVersion: "v1", siteId, operations: catalog } },
+    { method: "GET", url: readUrl, result: { document: fixture, version: "v1" } },
+    { method: "POST", url: applyUrl, body: { baseVersion: "v1", operationId, operations }, result: { status: "applied", version: "v2", revision: changed.revision, document: changed } }
+  ], { stdin: operationsJson });
+  assert.equal(applied.exitCode, 0, applied.stderr);
+  const appliedResult = JSON.parse(applied.stdout).result;
+  assert.equal(appliedResult.status, "applied");
+  assert.equal(appliedResult.operationId, operationId);
+  assert.deepEqual(appliedResult.diff, dryResult.diff);
+});
+
+test("niho-edit apply requires an explicit base version when the operation ID is fixed", async () => {
+  const operationId = "123e4567-e89b-42d3-a456-426614174000";
+  const discoveryUrl = origin + "/api/edit/v1/sites/" + siteId + "/capabilities";
+  const catalog = ["pages.read", "pages.apply"].map((id) => EDITING_OPERATIONS.find((operation) => operation.id === id));
+  const result = await runSequence(["apply", pageId, "--locale", locale, "--ops", "-", "--operation-id", operationId], [
+    { method: "GET", url: discoveryUrl, result: { apiVersion: "v1", siteId, operations: catalog } }
+  ], { stdin: JSON.stringify([{ type: "title", value: "Stable retry" }]) });
+  assert.equal(result.exitCode, 1);
+  assert.deepEqual(JSON.parse(result.stdout), { apiVersion: "v1", httpStatus: 400, operation: null,
+    result: { error: "operation_id_requires_expected_version" } });
+});
+
+test("niho-edit apply uses pages.read and pages.save when pages.apply is unavailable", async () => {
+  const operations = [{ type: "title", value: "Saved by fallback" }], operationsJson = JSON.stringify(operations);
+  const query = `?locale=${encodeURIComponent(locale)}`;
+  const discoveryUrl = origin + "/api/edit/v1/sites/" + siteId + "/capabilities";
+  const readUrl = origin + "/api/edit/v1/sites/" + siteId + "/operations/pages.read/" + pageId + query;
+  const saveUrl = origin + "/api/edit/v1/sites/" + siteId + "/operations/pages.save/" + pageId + query;
+  const catalog = ["pages.read", "pages.save"].map((id) => EDITING_OPERATIONS.find((operation) => operation.id === id));
+  const withComponentInstance = { ...fixture, body: [...fixture.body, { type: "instance", id: "shared-header", component: "shared-header" }] };
+  const changed = { ...withComponentInstance, title: "Saved by fallback", revision: fixture.revision + 1 };
+  const result = await runSequence(["apply", pageId, "--locale", locale, "--ops", "-"], [
+    { method: "GET", url: discoveryUrl, result: { apiVersion: "v1", siteId, operations: catalog } },
+    { method: "GET", url: readUrl, result: { document: withComponentInstance, version: "v1" } },
+    { method: "PUT", url: saveUrl, body: { expectedVersion: "v1", document: { ...changed, revision: fixture.revision } },
+      result: { status: "saved", version: "v2", document: changed } }
+  ], { stdin: operationsJson });
+  assert.equal(result.exitCode, 0, result.stderr);
+  const output = JSON.parse(result.stdout).result;
+  assert.equal(output.status, "saved");
+  assert.equal(output.validation, "host-on-save");
+  assert.match(output.warning, /trusted context/u);
+  assert.deepEqual(output.diff, [{ path: "ページタイトル", before: withComponentInstance.title, after: changed.title }]);
+
+  const dryRun = await runSequence(["apply", pageId, "--locale", locale, "--ops", "-", "--dry-run"], [
+    { method: "GET", url: discoveryUrl, result: { apiVersion: "v1", siteId, operations: catalog } },
+    { method: "GET", url: readUrl, result: { document: withComponentInstance, version: "v1" } }
+  ], { stdin: operationsJson });
+  assert.equal(dryRun.exitCode, 0, dryRun.stderr);
+  const dryOutput = JSON.parse(dryRun.stdout).result;
+  assert.equal(dryOutput.status, "valid");
+  assert.equal(dryOutput.validation, "local-untrusted");
+  assert.match(dryOutput.warning, /最終検証はホスト/u);
+  assert.deepEqual(dryOutput.diff, output.diff);
+  assert.deepEqual(dryOutput.touched, output.touched);
+});
+
+test("niho-edit apply reports the failed operation index, reason and target node", async () => {
+  const operations = [{ type: "text", parentId: "heading", childPath: [0], value: "Changed" }], operationId = "123e4567-e89b-42d3-a456-426614174000";
+  const query = `?locale=${encodeURIComponent(locale)}`;
+  const discoveryUrl = origin + "/api/edit/v1/sites/" + siteId + "/capabilities";
+  const readUrl = origin + "/api/edit/v1/sites/" + siteId + "/operations/pages.read/" + pageId + query;
+  const applyUrl = origin + "/api/edit/v1/sites/" + siteId + "/operations/pages.apply/" + pageId + query;
+  const catalog = ["pages.read", "pages.apply"].map((id) => EDITING_OPERATIONS.find((operation) => operation.id === id));
+  const result = await runSequence(["apply", pageId, "--locale", locale, "--ops", "-", "--operation-id", operationId, "--expected-version", "v1"], [
+    { method: "GET", url: discoveryUrl, result: { apiVersion: "v1", siteId, operations: catalog } },
+    { method: "GET", url: readUrl, result: { document: fixture, version: "v1" } },
+    { method: "POST", url: applyUrl, body: { baseVersion: "v1", operationId, operations }, status: 422,
+      result: { error: "validation_failed", index: 0, reason: "text path not found" } }
+  ], { stdin: JSON.stringify(operations) });
+  assert.equal(result.exitCode, 1);
+  assert.deepEqual(JSON.parse(result.stdout), { apiVersion: "v1", httpStatus: 422, operation: null,
+    result: { error: "validation_failed", index: 0, reason: "text path not found", nodeId: "heading", operationId, baseVersion: "v1" } });
+});
+
+test("niho-edit falls back to pages.read and resolves public URLs through pages.catalog", async () => {
+  const catalogUrl = origin + "/api/edit/v1/sites/" + siteId + "/operations/pages.catalog";
+  const discoverUrl = origin + "/api/edit/v1/sites/" + siteId + "/capabilities";
+  const readUrl = origin + "/api/edit/v1/sites/" + siteId + "/operations/pages.read/" + pageId + "?locale=" + encodeURIComponent(locale);
+  const result = await runSequence(["find", "--url", "https://public.example/", "--locale", locale, "--node", "heading"], [
+    { method: "GET", url: catalogUrl, result: { version: "catalog-v1", pages: [{ siteId, pageId, locale, title: "Home", path: "/" }] } },
+    { method: "GET", url: discoverUrl, result: { apiVersion: "v1", siteId, operations: [EDITING_OPERATIONS.find(({ id }) => id === "pages.read")] } },
+    { method: "GET", url: readUrl, result: { document: fixture, version: "v1", stylesVersion: "styles-v1" } }
+  ]);
+  assert.equal(result.exitCode, 0, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.view, "find");
+  assert.equal(output.version, "v1");
+  assert.equal(output.stylesVersion, "styles-v1");
+  assert.deepEqual(output.items.map(({ id }) => id), ["heading"]);
 });
 
 test("niho-edit sends Cloudflare Access service credentials and keeps host bearer auth", async () => {
@@ -174,11 +388,11 @@ test("niho-edit uploads bytes with a same-origin one-time asset token", async (t
   t.after(() => rm(directory, { recursive: true, force: true }));
   const file = join(directory, "sea.png"), bytes = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
   await writeFile(file, bytes);
-  const asset = { provider: "kamakura-upload", id: "123e4567-e89b-42d3-a456-426614174000", siteId, kind: "image", status: "ready", name: "sea.png", mimeType: "image/png", bytes: bytes.length, width: 1, height: 1, alt: "", version: "etag-v1", updatedAt: "2026-11-20T00:00:00Z" };
+  const asset = { provider: "kamakura-upload", id: "123e4567-e89b-42d3-a456-426614174000", siteId, kind: "image", status: "ready", name: "custom.png", mimeType: "image/png", bytes: bytes.length, width: 1, height: 1, alt: "", version: "etag-v1", updatedAt: "2026-11-20T00:00:00Z" };
   const uploadUrl = `${origin}/internal/studio/asset-upload/${asset.id}`;
   const accessClientId = `${"e".repeat(32)}.access`, accessClientSecret = "fixture-access-secret";
-  const result = await runUpload(["assets-upload", file, "--mime-type", "image/png", "--provider", asset.provider], {
-    uploadUrl, expectedBytes: bytes, asset, accessClientId, accessClientSecret
+  const result = await runUpload(["assets-upload", file, "--mime-type", "image/png", "--provider", asset.provider, "--name", "custom.png"], {
+    uploadUrl, expectedBytes: bytes, asset, name: "custom.png", accessClientId, accessClientSecret
   });
   assert.equal(result.exitCode, 0, `${result.stderr}\n${result.stdout}`);
   assert.deepEqual(JSON.parse(result.stdout), { apiVersion: "v1", httpStatus: 201, operation: "assets.upload", result: { status: "uploaded", asset } });
@@ -476,4 +690,93 @@ test("niho-edit preserves localization CAS conflict values and reads release tok
   });
   assert.equal(invalid.exitCode, 1);
   assert.equal(JSON.parse(invalid.stdout).result.error, "invalid_json_input");
+});
+
+test("niho-edit selects managed CMS v2 with Access authentication and an explicit retry key", async () => {
+  const discovery = { contractVersion: 2, siteId, schemaRevision: "initial", operations: ["cms.items.save"] };
+  const capabilities = await run(["--studio", "cms-discover"], {
+    studio: true, expectedMethod: "GET", expectedUrl: `${origin}/api/edit/v2/sites/${siteId}/capabilities`, result: discovery
+  });
+  assert.equal(capabilities.exitCode, 0);
+  assert.deepEqual(JSON.parse(capabilities.stdout).result, discovery);
+  const payload = { siteId, collectionId: "posts", itemId: "item_example", locale: "ja", contractVersion: 2,
+    expectedSchemaRevision: "initial", expectedRevision: "rev_example", values: { title: "Fixture" } };
+  const operationKey = crypto.randomUUID(), accessClientId = `${"e".repeat(32)}.access`, accessClientSecret = "fixture-service";
+  const updated = await run(["--studio", "cms-v2", "cms.items.save", "--json", "-", "--operation-id", operationKey], {
+    studio: true, operationKey, token: null, accessClientId, accessClientSecret,
+    env: { CF_ACCESS_CLIENT_ID: accessClientId, CF_ACCESS_CLIENT_SECRET: accessClientSecret },
+    expectedMethod: "POST", expectedUrl: `${origin}/api/edit/v2/sites/${siteId}/operations/cms.items.save`,
+    expectedBody: payload, stdin: JSON.stringify(payload), result: { status: "saved" }
+  });
+  assert.equal(updated.exitCode, 0);
+  assert.deepEqual(JSON.parse(updated.stdout).result, { status: "saved" });
+});
+
+test("niho-edit plans Studio CMS schema with current revisions and requires impact confirmation to apply", async () => {
+  const nextSchema = { contractVersion: 2, siteId, schemaRevision: "initial", retiredFields: [], collections: [{
+    id: "posts", label: "Posts", addLabel: "Add", ordering: "publishedAt", pathPrefix: null,
+    titleField: "title", slugField: null, imageField: null, subtitleField: null,
+    capabilities: { create: true, duplicate: false, remove: true, unpublish: true, schedule: true },
+    fields: [{ fieldId: "title", key: "title", label: "Title", type: "text", placement: "main" }]
+  }] };
+  const draft = JSON.stringify({ nextSchema, replacements: [] });
+  const currentSchema = { ...nextSchema, schemaRevision: "revision_current" };
+  const plan = { operation: "cms.schema.apply", operationId: "op_schema_1", siteId,
+    confirmationToken: "token_schema_1", candidate: { changes: [{ collectionId: "posts", fieldId: "title", kind: "remove" }] } };
+  const planned = await runSequence(["--studio", "cms-schema-plan", "--json", "-"], [
+    { url: `${origin}/api/edit/v2/sites/${siteId}/operations/cms.schema.read`, method: "POST", body: { siteId }, result: currentSchema },
+    { url: `${origin}/api/edit/v2/sites/${siteId}/operations/cms.release.current`, method: "POST", body: { siteId }, result: { locale: "ja", routeTableRevision: "routes_current" } },
+    { url: `${origin}/api/edit/v2/sites/${siteId}/operations/cms.schema.plan`, method: "POST",
+      body: { siteId, expectedSchemaRevision: "revision_current", routeTableVersions: [{ locale: "ja", revision: "routes_current" }], nextSchema, replacements: [] },
+      result: { status: "ready", plan } }
+  ], { stdin: draft, studio: true });
+  assert.equal(planned.exitCode, 0);
+  assert.equal(JSON.parse(planned.stdout).result.plan.operationId, "op_schema_1");
+
+  const planFileContents = JSON.stringify({ apiVersion: "v1", httpStatus: 200, operation: "cms.schema.plan", result: { status: "ready", plan } });
+  const blocked = await run(["--studio", "cms-schema-apply", "--json", "-"], {
+    studio: true, expectedMethod: "POST", expectedUrl: `${origin}/api/edit/v2/sites/${siteId}/operations/cms.schema.apply`,
+    expectedBody: { siteId, operationId: "op_schema_1", confirmationToken: "token_schema_1" }, stdin: planFileContents
+  });
+  assert.equal(blocked.exitCode, 1);
+  assert.equal(JSON.parse(blocked.stdout).result.error, "data_loss_confirmation_required");
+
+  const applied = await run(["--studio", "cms-schema-apply", "--json", "-", "--confirm-data-loss"], {
+    studio: true, expectedMethod: "POST", expectedUrl: `${origin}/api/edit/v2/sites/${siteId}/operations/cms.schema.apply`,
+    expectedBody: { siteId, operationId: "op_schema_1", confirmationToken: "token_schema_1" }, stdin: planFileContents,
+    result: { status: "recorded", operationId: "op_schema_1", result: { schemaRevision: "revision_next" } }
+  });
+  assert.equal(applied.exitCode, 0);
+  assert.equal(JSON.parse(applied.stdout).result.result.schemaRevision, "revision_next");
+});
+
+test("niho-edit only sends node names to a write operation advertising pages.name", async () => {
+  const name = "ヒーロー", operations = [{ type: "name", nodeId: "hero", value: name }];
+  const prefix = `${origin}/api/edit/v1/sites/${siteId}`, query = `?locale=${encodeURIComponent(locale)}`;
+  const [read, save, apply] = ["pages.read", "pages.save", "pages.apply"].map((id) => EDITING_OPERATIONS.find((operation) => operation.id === id));
+  const args = ["apply", pageId, "--locale", locale, "--ops", "-"], stdin = JSON.stringify(operations);
+  const discover = (operations) => ({ method: "GET", url: `${prefix}/capabilities`, result: { apiVersion: "v1", siteId, operations } });
+  for (const operation of [apply, save]) {
+    const result = await runSequence(args, [discover([read, operation])], { stdin });
+    assert.equal(result.exitCode, 1, result.stderr);
+    assert.equal(JSON.parse(result.stdout).result.error, "name_not_supported");
+  }
+  const named = editDocumentById(fixture, operations[0]);
+  const getPage = { method: "GET", url: `${prefix}/operations/pages.read/${pageId}${query}`, result: { document: fixture, version: "v1" } };
+  const operationId = "123e4567-e89b-42d3-a456-426614174000";
+  const applied = await runSequence([...args, "--operation-id", operationId, "--expected-version", "v1"], [
+    discover([read, withPageNodeNameCapability(apply)]), getPage,
+    { method: "POST", url: `${prefix}/operations/pages.apply/${pageId}${query}`, body: { baseVersion: "v1", operationId, operations },
+      result: { status: "applied", version: "v2", revision: fixture.revision + 1, document: { ...named, revision: fixture.revision + 1 } } }
+  ], { stdin });
+  assert.equal(applied.exitCode, 0, applied.stderr);
+  assert.equal(JSON.parse(applied.stdout).result.diff[0].after, name);
+  const document = editDocumentById(fixture, operations[0], {}, [], undefined, undefined, false);
+  const saved = await runSequence(args, [
+    discover([read, withPageNodeNameCapability(save)]), getPage,
+    { method: "PUT", url: `${prefix}/operations/pages.save/${pageId}${query}`, body: { expectedVersion: "v1", document },
+      result: { status: "saved", version: "v2", document: { ...document, revision: fixture.revision + 1 } } }
+  ], { stdin });
+  assert.equal(saved.exitCode, 0, saved.stderr);
+  assert.equal(JSON.parse(saved.stdout).result.diff[0].after, name);
 });
