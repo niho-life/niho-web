@@ -11,6 +11,7 @@ import { EDITING_OPERATIONS } from "@niho/web/editing-api";
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 const command = fileURLToPath(new URL("../cli/niho-edit.mjs", import.meta.url));
 const origin = "https://site.example", siteId = fixture.siteId, pageId = fixture.pageId, locale = fixture.locale;
+const playwrightAvailable = (() => { try { import.meta.resolve("playwright"); return true; } catch { return false; } })();
 
 function run(args, { status = 200, result, expectedMethod, expectedUrl, expectedBody, stdin, assertInputBeforeTimeout = false,
   accessClientId = null, accessClientSecret = null, env = {}, token = "fixture-token", location = null } = {}) {
@@ -128,9 +129,26 @@ test("niho-edit reads a page over the host API without Studio or a browser", asy
   });
   assert.equal(result.exitCode, 0, `${result.stderr}\n${result.stdout}`);
   assert.deepEqual(JSON.parse(result.stdout), { document: fixture, version: "v1" });
-  assert.deepEqual(EDITING_OPERATIONS.filter(({ id }) => !id.startsWith("localization.")).map(({ id }) => id), ["pages.inspect", "pages.read", "pages.save", "pages.apply", "pages.release-plan", "pages.release", "pages.release-set-plan", "pages.release-set", "pages.release-set-status", "pages.catalog", "pages.change-prepare", "pages.change-apply",
+  assert.deepEqual(EDITING_OPERATIONS.filter(({ id }) => !id.startsWith("localization.")).map(({ id }) => id), ["pages.inspect", "pages.read", "pages.save", "pages.apply", "pages.preview-intent", "pages.release-plan", "pages.release", "pages.release-set-plan", "pages.release-set", "pages.release-set-status", "pages.catalog", "pages.change-prepare", "pages.change-apply",
     "cms.schema", "cms.list", "cms.read", "cms.create", "cms.save", "cms.publish-plan", "cms.publish", "cms.operation-status", "site.breakpoints.read", "site.breakpoints.save",
     "assets.list", "assets.usages", "assets.resolve", "assets.update", "assets.upload-intent", "assets.delete", "assets.restore"]);
+});
+
+test("niho-edit preview returns private URLs when the optional browser is unavailable", { skip: playwrightAvailable }, async () => {
+  const previewUrl = "https://site.example/_private-preview/opaque-id";
+  const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
+  const discoverUrl = `${origin}/api/edit/v1/sites/${siteId}/capabilities`;
+  const catalogUrl = `${origin}/api/edit/v1/sites/${siteId}/operations/pages.catalog`;
+  const intentUrl = `${origin}/api/edit/v1/sites/${siteId}/operations/pages.preview-intent/${pageId}?locale=${encodeURIComponent(locale)}`;
+  const previewOperation = EDITING_OPERATIONS.find(({ id }) => id === "pages.preview-intent");
+  const catalogOperation = EDITING_OPERATIONS.find(({ id }) => id === "pages.catalog");
+  const result = await runSequence(["preview", pageId, "--locale", locale, "--widths", "375,768,1280", "--compare", "published"], [
+    { method: "GET", url: discoverUrl, result: { apiVersion: "v1", siteId, operations: [previewOperation, catalogOperation] } },
+    { method: "GET", url: catalogUrl, result: { version: "catalog-v1", pages: [{ siteId, pageId, locale, title: "Home", path: "/home", kind: "page", visibility: "public", published: true }] } },
+    { method: "POST", url: intentUrl, body: {}, result: { url: previewUrl, expiresAt } }
+  ]);
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { url: previewUrl, expiresAt, publishedUrl: `${origin}/home` });
 });
 
 test("niho-edit outline uses pages.inspect when the host exposes it", async () => {
