@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { PageEditor } from "../src/editor.js";
 import { createExternalFramePolicy } from "../src/react.js";
 import { createProjectEditorAdapter } from "../src/project-editor-adapter.js";
@@ -73,7 +73,9 @@ function localizationPagePath(target: EditorTarget): string {
   return `${LOCALIZATION_BASE}/editor/pages/${validEnglishTarget(target).pageId}`;
 }
 
-async function api(path: string, method: RequestMethod, body: Record<string, unknown> | undefined, signal: AbortSignal): Promise<unknown> {
+type ApiResult = { readonly value: unknown; readonly etag: string | null; readonly notModified: boolean };
+
+async function apiResult(path: string, method: RequestMethod, body: Record<string, unknown> | undefined, signal: AbortSignal, ifNoneMatch?: string): Promise<ApiResult> {
   if (signal.aborted) throw new DOMException("Aborted", "AbortError");
   let response: Response;
   try {
@@ -82,13 +84,14 @@ async function api(path: string, method: RequestMethod, body: Record<string, unk
       signal,
       cache: "no-store",
       credentials: "same-origin",
-      headers: { Accept: "application/json", ...(body ? { "Content-Type": "application/json" } : {}) },
+      headers: { Accept: "application/json", ...(body ? { "Content-Type": "application/json" } : {}), ...(ifNoneMatch ? { "If-None-Match": ifNoneMatch } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {})
     });
   } catch (error) {
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
     throw error;
   }
+  if (response.status === 304) return { value: null, etag: response.headers.get("ETag"), notModified: true };
   if (!response.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")) throw new EditorApiError(503);
   const value = await response.json() as unknown;
   if (!response.ok) {
@@ -98,7 +101,13 @@ async function api(path: string, method: RequestMethod, body: Record<string, unk
       : null;
     throw new EditorApiError(response.status, errorCode, readSupportId(errorObject?.supportId));
   }
-  return value;
+  return { value, etag: response.headers.get("ETag"), notModified: false };
+}
+
+async function api(path: string, method: RequestMethod, body: Record<string, unknown> | undefined, signal: AbortSignal): Promise<unknown> {
+  const result = await apiResult(path, method, body, signal);
+  if (result.notModified) throw new EditorApiError(503);
+  return result.value;
 }
 
 function statusFromError(error: unknown): EditorApiStatus {
@@ -225,6 +234,7 @@ function parsePlan(value: unknown, request: EditorReleaseRequest, domain: string
 export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (status: EditorApiStatus | null) => void, origin = "https://studio.niho.life"): EditorAdapter {
   const editingApi = createPageEditingApiClient({ origin, siteId: KAMAKURA_EDITOR_SITE_ID, basePath: `${BASE}/editing-api/v1` });
   let pageManagementVersion: string | null = null;
+  let legacySnapshotCache: { readonly key: string; readonly etag: string; readonly snapshot: Omit<EditorSnapshot, "document"> } | null = null;
   const releaseOperationIds = new Map<string, string>();
   async function request<T>(signal: AbortSignal, run: () => Promise<T>): Promise<T> {
     try {
@@ -251,11 +261,26 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
     } else validTarget(change.target);
     return change;
   }
+  async function readLegacySnapshot(target: EditorTarget, signal: AbortSignal): Promise<Omit<EditorSnapshot, "document">> {
+    const checked = validTarget(target), path = pagePath(checked), key = `${checked.siteId}\u0000${checked.pageId}\u0000${checked.locale}`;
+    const cached = legacySnapshotCache?.key === key ? legacySnapshotCache : null;
+    let result = await apiResult(path, "GET", undefined, signal, cached?.etag);
+    if (result.notModified) {
+      if (cached) return cached.snapshot;
+      result = await apiResult(path, "GET", undefined, signal);
+      if (result.notModified) throw new EditorApiError(503);
+    }
+    const { document: _document, ...snapshot } = parseSnapshot(result.value, checked, catalog.blockContracts, catalog.nativePresentationPages.includes(checked.pageId));
+    const etag = result.etag;
+    legacySnapshotCache = etag !== null && etag.length > 0 && etag.length <= 1024 && !/[\u0000-\u001f\u007f]/u.test(etag)
+      ? { key, etag, snapshot } : null;
+    return snapshot;
+  }
   async function readJapaneseDocument(target: EditorTarget, signal: AbortSignal): Promise<EditorSnapshot> {
     const checked = validTarget(target);
     const [wire, legacy] = await Promise.all([
       editingApi.read(checked, signal),
-      api(pagePath(checked), "GET", undefined, signal).then((value) => parseSnapshot(value, checked, catalog.blockContracts, catalog.nativePresentationPages.includes(checked.pageId)))
+      readLegacySnapshot(checked, signal)
     ]);
     const presentationVersion = legacy.presentation === undefined ? undefined : record(legacy.presentation).version;
     if (wire.version !== legacy.version || wire.presentationVersion !== presentationVersion) throw new EditorApiError(409, "version_conflict");
@@ -416,12 +441,23 @@ export function KamakuraEditor({ project, environment }: { readonly project: Pro
   const [catalog, setCatalog] = useState<CatalogState>({ status: "loading" });
   const [status, setStatus] = useState<EditorApiStatus | null>(null);
   const [reload, setReload] = useState(0);
+  const catalogCache = useRef<{ readonly etag: string; readonly value: KamakuraCatalog } | null>(null);
   useEffect(() => {
     const controller = new AbortController();
     setCatalog({ status: "loading" });
     setStatus(null);
-    void api(`${BASE}/catalog`, "GET", undefined, controller.signal)
-      .then(parseKamakuraCatalog)
+    void (async () => {
+      let result = await apiResult(`${BASE}/catalog`, "GET", undefined, controller.signal, catalogCache.current?.etag);
+      if (result.notModified) {
+        if (catalogCache.current) return catalogCache.current.value;
+        result = await apiResult(`${BASE}/catalog`, "GET", undefined, controller.signal);
+        if (result.notModified) throw new EditorApiError(503);
+      }
+      const value = parseKamakuraCatalog(result.value);
+      const etag = result.etag;
+      catalogCache.current = etag !== null && etag.length > 0 && etag.length <= 1024 && !/[\u0000-\u001f\u007f]/u.test(etag) ? { etag, value } : null;
+      return value;
+    })()
       .then((value) => { if (!controller.signal.aborted) { setCatalog({ status: "ready", value }); setStatus(null); } })
       .catch((error: unknown) => { if (!controller.signal.aborted) { const failure = statusFromError(error); setCatalog({ status: "error", code: failure.status, errorCode: failure.errorCode, supportId: failure.supportId }); } });
     return () => controller.abort();

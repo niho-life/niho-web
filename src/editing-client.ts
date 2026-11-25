@@ -331,10 +331,17 @@ function parseReleasePlan(value: unknown, target: EditingPageTarget, request: Ed
 /** Studio GUI and machine clients can call the same host-owned JSON wire API through this React-free client. */
 export function createPageEditingApiClient(options: EditingApiClientOptions): EditingApiClient {
   const origin = apiOrigin(options.origin), siteId = identifier(options.siteId, "$siteId"), basePath = apiBasePath(options.basePath), fetcher = options.fetch ?? fetch;
-  const send = async (path: string, method: "GET" | "PUT" | "POST", body: unknown, signal?: AbortSignal): Promise<{ response: Response; body: Record<string, unknown> }> => {
+  let pageCatalogCache: { readonly etag: string; readonly value: EditingPageCatalog } | null = null;
+  let pageReadCache: { readonly key: string; readonly etag: string; readonly value: EditingPageSnapshot } | null = null;
+  const responseEtag = (response: Response): string | null => {
+    const value = response.headers.get("ETag");
+    return value !== null && value.length > 0 && value.length <= 1024 && !/[\u0000-\u001f\u007f]/u.test(value) ? value : null;
+  };
+  const send = async (path: string, method: "GET" | "PUT" | "POST", body: unknown, signal?: AbortSignal, ifNoneMatch?: string): Promise<{ response: Response; body: Record<string, unknown> }> => {
     const headers = new Headers(typeof options.headers === "function" ? options.headers() : options.headers);
     headers.set("Accept", "application/json");
     if (body !== undefined) headers.set("Content-Type", "application/json");
+    if (ifNoneMatch) headers.set("If-None-Match", ifNoneMatch);
     let response: Response;
     try {
       response = await fetcher(`${origin}${basePath}${path}`, {
@@ -345,6 +352,7 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       if (signal?.aborted) throw error;
       throw new EditingApiClientError("transport_error");
     }
+    if (response.status === 304) return { response, body: Object.create(null) as Record<string, unknown> };
     if (response.status >= 300 && response.status < 400) {
       await response.body?.cancel().catch(() => {});
       throw new EditingApiClientError("redirect_response", response.status);
@@ -415,14 +423,23 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
     },
     async readPageCatalog(signal) {
       const path = `/sites/${encodeURIComponent(siteId)}/operations/pages.catalog`;
-      const { response, body } = await send(path, "GET", undefined, signal);
+      let result = await send(path, "GET", undefined, signal, pageCatalogCache?.etag);
+      if (result.response.status === 304) {
+        if (pageCatalogCache) return pageCatalogCache.value;
+        result = await send(path, "GET", undefined, signal);
+        if (result.response.status === 304) throw new EditingApiClientError("invalid_response", 304);
+      }
+      const { response, body } = result;
       if (!response.ok) throw apiFailure(body, response.status);
       if (!exactKeys(body, ["version", "pages"]) || !isEditingApiVersion(body.version) || !Array.isArray(body.pages) || body.pages.length > 500) {
         throw new EditingApiClientError("invalid_response", response.status);
       }
       const pages = body.pages.map((page) => parseEditingCatalogPage(page, siteId));
       if (new Set(pages.map((page) => `${page.pageId}\u0000${page.locale}`)).size !== pages.length) throw new EditingApiClientError("invalid_response", response.status);
-      return { version: body.version, pages };
+      const value = { version: body.version, pages };
+      const etag = responseEtag(response);
+      pageCatalogCache = etag ? { etag, value } : null;
+      return value;
     },
     async preparePageChange(changeValue, expectedVersion, signal, requestedOperationId = crypto.randomUUID()) {
       const change = normalizedManagementChange(changeValue, siteId);
@@ -460,7 +477,15 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
     },
     async read(target, signal) {
       const path = targetPath(target, siteId).replace("{operation}", "pages.read");
-      const { response, body } = await send(path, "GET", undefined, signal);
+      const cacheKey = `${target.siteId}\u0000${target.pageId}\u0000${target.locale}`;
+      const cached = pageReadCache?.key === cacheKey ? pageReadCache : null;
+      let result = await send(path, "GET", undefined, signal, cached?.etag);
+      if (result.response.status === 304) {
+        if (cached) return cached.value;
+        result = await send(path, "GET", undefined, signal);
+        if (result.response.status === 304) throw new EditingApiClientError("invalid_response", 304);
+      }
+      const { response, body } = result;
       if (!response.ok) throw apiFailure(body, response.status);
       const readKeys = ["document", "version", ...(body.componentsVersion === undefined ? [] : ["componentsVersion"]), ...(body.presentationVersion === undefined ? [] : ["presentationVersion"])];
       if (!exactKeys(body, readKeys) || !isEditingApiVersion(body.version)
@@ -468,9 +493,12 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
         || body.presentationVersion !== undefined && !isEditingApiVersion(body.presentationVersion)) throw new EditingApiClientError("invalid_response", response.status);
       const document = parseEditingPageDocumentEnvelope(body.document);
       assertTarget(document, target);
-      return { document, version: body.version,
+      const value = { document, version: body.version,
         ...(body.componentsVersion === undefined ? {} : { componentsVersion: body.componentsVersion }),
         ...(body.presentationVersion === undefined ? {} : { presentationVersion: body.presentationVersion }) };
+      const etag = responseEtag(response);
+      pageReadCache = etag ? { key: cacheKey, etag, value } : null;
+      return value;
     },
     async save(target, expectedVersion, documentValue, signal) {
       const path = targetPath(target, siteId).replace("{operation}", "pages.save");

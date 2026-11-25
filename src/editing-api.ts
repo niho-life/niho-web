@@ -481,6 +481,30 @@ function response(value: unknown, status = 200): Response {
     "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8", "X-Content-Type-Options": "nosniff"
   } });
 }
+function versionEtag(version: string): string {
+  const bytes = new TextEncoder().encode(version);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return '"niho-' + btoa(binary).replace(/\+/gu, "-").replace(/\//gu, "_").replace(/=+$/u, "") + '"';
+}
+function matchesIfNoneMatch(header: string | null, etag: string): boolean {
+  if (!header || header.length > 4096) return false;
+  return header.trim() === "*" || header.split(",").some((candidate) => {
+    const tag = candidate.trim();
+    return tag === etag || tag === 'W/' + etag;
+  });
+}
+function versionedResponse(value: unknown, etag: string): Response {
+  return new Response(JSON.stringify(value), { status: 200, headers: {
+    "Cache-Control": "private, no-cache", "Content-Type": "application/json; charset=utf-8", ETag: etag,
+    Vary: "Authorization, Cookie", "X-Content-Type-Options": "nosniff"
+  } });
+}
+function notModified(etag: string): Response {
+  return new Response(null, { status: 304, headers: {
+    "Cache-Control": "private, no-cache", ETag: etag, Vary: "Authorization, Cookie", "X-Content-Type-Options": "nosniff"
+  } });
+}
 function fail(error: EditingApiErrorCode, status: number): Response { return response({ error }, status); }
 function validVersion(value: unknown): value is string { return typeof value === "string" && value.length > 0 && value.length <= 200 && !/[\u0000-\u001f\u007f]/u.test(value); }
 function validActor(value: unknown): value is EditingActor {
@@ -1316,9 +1340,11 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
         catch { return fail("host_failure", 503); }
         if (!catalog) return fail("not_found", 404);
         if (!validVersion(catalog.version) || !Array.isArray(catalog.pages) || catalog.pages.length > 500) return fail("host_contract_violation", 502);
+        const etag = versionEtag(catalog.version);
+        if (matchesIfNoneMatch(request.headers.get("If-None-Match"), etag)) return notModified(etag);
         const pages = catalog.pages.map((page) => catalogPage(page, siteId));
         if (pages.some((page) => page === null) || new Set(pages.map((page) => page && `${page.pageId}\u0000${page.locale}`)).size !== pages.length) return fail("host_contract_violation", 502);
-        return response({ version: catalog.version, pages });
+        return versionedResponse({ version: catalog.version, pages }, etag);
       }
 
       let body: Record<string, unknown> | null;
@@ -1400,18 +1426,21 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       try { snapshot = await adapter.readPage(actor, target); }
       catch { return fail("host_failure", 503); }
       if (!snapshot) return fail("not_found", 404);
+      if (!validVersion(snapshot.version)
+        || snapshot.componentsVersion !== undefined && !validVersion(snapshot.componentsVersion)
+        || snapshot.presentationVersion !== undefined && !validVersion(snapshot.presentationVersion)) return fail("host_contract_violation", 502);
+      const etag = versionEtag(JSON.stringify([snapshot.version, snapshot.componentsVersion ?? null, snapshot.presentationVersion ?? null]));
+      if (matchesIfNoneMatch(request.headers.get("If-None-Match"), etag)) return notModified(etag);
       let context: PageEditingValidationContext;
       try { context = await documentContext(adapter, actor, target); }
       catch { return fail("host_failure", 503); }
       let document: PageDocument;
       try { document = validatedDocument(snapshot.document, context); }
       catch { return fail("host_contract_violation", 502); }
-      if (document.siteId !== target.siteId || document.pageId !== target.pageId || document.locale !== target.locale || !validVersion(snapshot.version)) return fail("host_contract_violation", 502);
-      if (snapshot.componentsVersion !== undefined && !validVersion(snapshot.componentsVersion)
-        || snapshot.presentationVersion !== undefined && !validVersion(snapshot.presentationVersion)) return fail("host_contract_violation", 502);
-      return response({ document, version: snapshot.version,
+      if (document.siteId !== target.siteId || document.pageId !== target.pageId || document.locale !== target.locale) return fail("host_contract_violation", 502);
+      return versionedResponse({ document, version: snapshot.version,
         ...(snapshot.componentsVersion === undefined ? {} : { componentsVersion: snapshot.componentsVersion }),
-        ...(snapshot.presentationVersion === undefined ? {} : { presentationVersion: snapshot.presentationVersion }) });
+        ...(snapshot.presentationVersion === undefined ? {} : { presentationVersion: snapshot.presentationVersion }) }, etag);
     }
     if (operation.id === "pages.release-plan") {
       let body: Record<string, unknown> | null;
