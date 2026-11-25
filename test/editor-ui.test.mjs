@@ -1276,6 +1276,28 @@ test("shortcut matrix shares structure and history across parent, iframe and lay
   } finally { await app.cleanup(); }
 });
 
+test("box grouping confirms layout changes and stays undoable and redoable", async () => {
+  const app = await setup();
+  try {
+    await tool("レイヤー"); await clickLayer("link");
+    assert.ok(await shortcut(layerButton("link"), "g", { metaKey: true }));
+    assert.match(document.querySelector('[role="dialog"]').textContent, /並び方や余白が変わる/u);
+    await click("適用する");
+    assert.ok(canvasNode("group_1"));
+    assert.equal(canvasNode("link").parentElement.closest('[data-nw-node="group_1"]')?.getAttribute("data-nw-node"), "group_1");
+    await click("元に戻す"); assert.equal(!!canvasNode("group_1"), false); assert.ok(canvasNode("link"));
+    await click("やり直す"); assert.ok(canvasNode("group_1"));
+
+    await clickLayer("group_1");
+    assert.ok(await shortcut(layerButton("group_1"), "g", { metaKey: true, shiftKey: true }));
+    assert.match(document.querySelector('[role="dialog"]').textContent, /並び方や余白が変わる/u);
+    await click("適用する");
+    assert.equal(!!canvasNode("group_1"), false); assert.ok(canvasNode("link"));
+    await click("元に戻す"); assert.ok(canvasNode("group_1"));
+    await click("やり直す"); assert.equal(!!canvasNode("group_1"), false);
+  } finally { await app.cleanup(); }
+});
+
 test("shortcut matrix preserves focused fields, direct editing, IME and dialog controls", async () => {
   const app = await setup();
   try {
@@ -1314,7 +1336,7 @@ test("shortcut matrix preserves focused fields, direct editing, IME and dialog c
     assert.equal(layerButton("heading").getAttribute("aria-selected"), "true", "Esc cancels text before navigating");
     assert.ok(await shortcut(canvasBody(), "?", { shiftKey: true }));
     const help = document.querySelector('[role="dialog"][aria-label="ショートカット一覧"]'), close = help.querySelector("button");
-    assert.equal(help.querySelectorAll("tbody tr").length, 14);
+    assert.equal(help.querySelectorAll("tbody tr").length, 16);
     assert.equal(document.activeElement, close);
     assert.equal(await shortcut(close, "Delete"), false);
     assert.equal(await shortcut(canvasBody(), "Delete", {}, false), false);
