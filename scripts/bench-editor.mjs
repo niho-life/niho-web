@@ -33,10 +33,10 @@ assert.equal(editDocument(parsed, change).body[49].children[18].style.base.color
 
 const reference = () => JSON.parse(json);
 const benchmarks = [
-  { name: "parsePageDocument", run: () => parsePageDocument(document), limit: 24 },
-  { name: "editorSessionFrom", run: () => editorSessionFrom(snapshot, target, {}), limit: 28 },
-  { name: "editDocument", run: () => editDocument(parsed, change), limit: 36 },
-  { name: "pages.inspect outline", run: () => inspectPageDocument(parsed, outline), limit: 32 }
+  { name: "parsePageDocument", run: () => parsePageDocument(document), limit: 1.25 },
+  { name: "editorSessionFrom", run: () => editorSessionFrom(snapshot, target, {}), limit: 3 },
+  { name: "editDocument", run: () => editDocument(parsed, change), limit: 3.5 },
+  { name: "pages.inspect outline", run: () => inspectPageDocument(parsed, outline), limit: 4 }
 ];
 // 実行機間の速度差を抑えるため、同じ入力の JSON デコードを各サンプルと交互に計測する。
 // ウォームアップ後の複数バッチの中央値で、単発の GC やスケジューリングの影響を抑える。
