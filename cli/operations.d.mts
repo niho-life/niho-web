@@ -19,6 +19,8 @@ export type CliOperation = {
   readonly owner?: true;
   readonly releasePending?: true;
   readonly managed?: true;
+  readonly managedOnly?: true;
+  readonly cmsVersion?: 2;
 };
 
 export const OPERATIONS: readonly CliOperation[];

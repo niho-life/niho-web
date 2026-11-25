@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { findLayer } from "./editor-layer-fixtures.mjs";
 import { JSDOM } from "jsdom";
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: "https://editor.example.test" });
 for (const key of ["window", "document", "HTMLElement", "HTMLInputElement", "Element", "Event", "MouseEvent"]) globalThis[key] = dom.window[key];
@@ -23,6 +24,7 @@ const pageCss = () => frame().contentDocument.querySelector("style[data-nw-style
 const canvasExtra = () => [...frame().contentDocument.querySelectorAll("style")].at(-1).textContent;
 const publishedCss = (document) => renderPageToHtml(document).match(/<style data-nw-style="[^"]+">([^]*?)<\/style>/)[1];
 async function click(target) { assert.ok(target); await act(async () => target.click()); await flush(); }
+async function clickLayer(label, scope = document) { const target = await findLayer(() => button(label, scope), click, scope); assert.ok(target, label); await click(target); }
 async function toggle(target) { assert.ok(target); await act(async () => target.click()); await flush(); }
 async function editorTab(name) { const target = [...document.querySelectorAll('.e-inspector-tabs [role="tab"]')].find((node) => node.textContent === name); assert.ok(target, name); if (target.getAttribute("aria-selected") !== "true") await click(target); }
 async function change(target, value) {
@@ -60,7 +62,7 @@ const stateSelect = () => right().querySelector('select[aria-label="条件スタ
 test("a link's hover and focus look is created with the keyboard, forced on the canvas, saved and reproduced in published CSS", async () => {
   const app = await setup({ props: { builder: { motions: [{ id: "quiet-pulse", label: "静かな強調", description: "説明的プリセット", style: { states: { focus: { scale: 1.04 } } } }] } } });
   try {
-    await click(button("a · link")); await editorTab("変形");
+    await clickLayer("a · link"); await editorTab("変形");
     const transformText = right().textContent;
     assert.equal(input("動きのプリセット", right()), undefined);
     assert.ok(!transformText.includes("説明的プリセット"));
@@ -98,7 +100,7 @@ test("a link's hover and focus look is created with the keyboard, forced on the 
 test("transform inspector edits both scale and skew axes and renders safe skew CSS", async () => {
   const app = await setup();
   try {
-    await click(button("section · hero")); await editorTab("変形");
+    await clickLayer("section · hero"); await editorTab("変形");
     await change(input("X", group("拡大・縮小")), "125");
     await change(input("Y", group("拡大・縮小")), "150");
     await change(input("X", group("傾き")), "12");
@@ -113,7 +115,7 @@ test("transform inspector edits both scale and skew axes and renders safe skew C
 test("a section hidden only on tablets is marked in layers, cannot hide everywhere and reaches the published CSS", async () => {
   const app = await setup();
   try {
-    await click(button("section · hero")); await editorTab("設定");
+    await clickLayer("section · hero"); await editorTab("設定");
     await toggle(check("タブレット 768px〜"));
     await change(document.querySelector('[aria-label="表示幅"]'), "768");
     const layer = document.querySelector('[data-node-id="hero"]');
@@ -131,7 +133,7 @@ test("a section hidden only on tablets is marked in layers, cannot hide everywhe
 test("appear settings stay free of explanations and are saved", async () => {
   const app = await setup();
   try {
-    await click(button("section · hero")); await editorTab("変形");
+    await clickLayer("section · hero"); await editorTab("変形");
     assert.ok(!right().textContent.includes("動きを減らす設定の利用者には動きなしで表示します。"));
     await change(input("登場の効果", right()), "fade-up");
     await change(input("登場の時間", right()), "0.8");
@@ -157,7 +159,7 @@ test("motion is stopped while editing, replays on demand and in preview, where s
     assert.ok(!canvasExtra().includes("animation:none"));
     assert.notEqual(frame().contentDocument.querySelector("[data-nw-scope]"), before, "the page is drawn again so the appear effect plays");
     await click(button("アニメーションを再生"));
-    await click(button("a · link")); await editorTab("変形"); await change(stateSelect(), "hover");
+    await clickLayer("a · link"); await editorTab("変形"); await change(stateSelect(), "hover");
     assert.ok(canvasExtra().includes('[data-nw-node="link"]{color:#c0392b;}'));
     await click(button("プレビュー"));
     assert.equal(button("アニメーションを再生").getAttribute("aria-pressed"), "true"); assert.equal(button("アニメーションを再生").disabled, true);
@@ -243,7 +245,7 @@ test("business blocks show motion controls only for permitted keys", async () =>
   const blocks = { Notice: { label: "お知らせ", props: {}, styleProperties: ["backgroundColor", "states"], component: () => createElement("p", null, "お知らせ") } };
   const app = await setup({ document: doc, props: { blocks } });
   try {
-    await click(button("お知らせ · notice")); await editorTab("変形");
+    await clickLayer("お知らせ · notice"); await editorTab("変形");
     assert.ok(stateSelect());
     assert.equal(input("登場の効果", right()), undefined); assert.equal(check("基本"), undefined); assert.equal(input("回転", right()), undefined);
     await change(stateSelect(), "hover"); await change(input("背景色", right()), "#eef3ef");

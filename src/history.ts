@@ -62,6 +62,7 @@ function compareFields(changes: DocumentChange[], prefix: string, before: Record
 }
 function compareNodes(changes: DocumentChange[], before: Owned, after: Owned): void {
   const label = nodeLabel(after);
+  if (before.name !== after.name) changes.push({ path: `${label} の名前`, before: show(before.name), after: show(after.name) });
   if (before.type === "element" && after.type === "element") {
     if (before.tag !== after.tag) changes.push({ path: `${label} の種類`, before: before.tag, after: after.tag });
     const oldText = directText(before.children), newText = directText(after.children);
@@ -69,6 +70,8 @@ function compareNodes(changes: DocumentChange[], before: Owned, after: Owned): v
     compareFields(changes, `${label} の `, before.attrs ?? {}, after.attrs ?? {});
     if (!same(before.asset, after.asset)) changes.push({ path: `${label} のアセット`, before: show(before.asset), after: show(after.asset) });
     if (!same(before.icon, after.icon)) changes.push({ path: `${label} のアイコン`, before: show(before.icon), after: show(after.icon) });
+    if (!same(before.formCompletionPageId, after.formCompletionPageId)) changes.push({ path: `${label} の送信完了ページ`, before: show(before.formCompletionPageId), after: show(after.formCompletionPageId) });
+    if (!same(before.interaction, after.interaction)) changes.push({ path: `${label} の動作設定`, before: show(before.interaction), after: show(after.interaction) });
     if (!same(before.embed?.source, after.embed?.source)) changes.push({ path: `${label} の埋め込み${before.embed?.provider === "blank" || after.embed?.provider === "blank" ? " key" : " URL"}`, before: show(before.embed?.source), after: show(after.embed?.source) });
     if (!same(before.embed?.title, after.embed?.title)) changes.push({ path: `${label} の埋め込みタイトル`, before: show(before.embed?.title), after: show(after.embed?.title) });
   } else if (before.type === "component" && after.type === "component") {
@@ -82,6 +85,9 @@ function compareNodes(changes: DocumentChange[], before: Owned, after: Owned): v
 }
 function compareStyle(changes: DocumentChange[], label: string, before: NodeStyle | undefined, after: NodeStyle | undefined): void {
   if (!same(before?.textStyle, after?.textStyle)) changes.push({ path: `${label} のテキストスタイル`, before: show(before?.textStyle), after: show(after?.textStyle) });
+  for (const [field, name] of [["states", "状態別の見た目"], ["appear", "登場の演出"], ["hidden", "幅別の非表示"]] as const) {
+    if (!same(before?.[field], after?.[field])) changes.push({ path: `${label} の${name}`, before: show(before?.[field] === undefined ? undefined : JSON.stringify(before[field])), after: show(after?.[field] === undefined ? undefined : JSON.stringify(after[field])) });
+  }
   const oldStyle = flatStyle(before), newStyle = flatStyle(after);
   const keys = unionKeys(newStyle.keys(), oldStyle.keys()).sort((left, right) => {
     const scope = (key: string) => { const head = key.split("\u0000")[0]!; return head === "共通" ? -1 : Number(head); };
@@ -108,10 +114,14 @@ export function diffDocuments(before: PageDocument, after: PageDocument, options
   });
   push("ファビコン", oldMeta.favicon, newMeta.favicon);
   push("検索エンジンに表示しない", !!oldMeta.noindex, !!newMeta.noindex, (value) => value ? "表示しない" : "表示する");
+  push("翻訳公開時の旧確認設定", oldMeta.targetReviewBeforePublish, newMeta.targetReviewBeforePublish);
   push("構造化データ", oldMeta.structuredData ?? [], newMeta.structuredData ?? []);
   for (const name of unionKeys(Object.keys(after.tokens), Object.keys(before.tokens))) {
     const oldToken = before.tokens[name], newToken = after.tokens[name], typed = oldToken && newToken && oldToken.type !== newToken.type;
     push(`トークン @${name}`, oldToken, newToken, (value) => value && typeof value === "object" ? show(typed ? `${String((value as { value: unknown }).value)}（${(value as { type: string }).type}）` : (value as { value: unknown }).value) : none);
+  }
+  for (const name of unionKeys(Object.keys(after.tokens), Object.keys(before.tokens))) {
+    if (before.tokens[name] && after.tokens[name]) push(`トークン @${name} の表示名`, before.tokens[name]?.label, after.tokens[name]?.label);
   }
   const oldStyles = before.textStyles ?? {}, newStyles = after.textStyles ?? {};
   for (const name of unionKeys(Object.keys(newStyles), Object.keys(oldStyles))) push(`テキストスタイル ${newStyles[name]?.label ?? oldStyles[name]?.label ?? name}`, oldStyles[name], newStyles[name], (value) => value && typeof value === "object" ? show(JSON.stringify(value)) : none);
@@ -141,12 +151,29 @@ export function diffDocuments(before: PageDocument, after: PageDocument, options
 }
 
 export type EditorRevisionKind = "draft" | "autosave" | "snapshot" | "publish" | "rollback";
-/** 版履歴の1件。id は opaque、actor は表示名だけ。 */
-export type EditorRevisionEntry = { id: string; revision: number; kind: EditorRevisionKind; createdAt: string; actor?: string; label?: string };
+export type EditorRevisionOperationType = "text" | "attribute" | "booleanAttribute" | "formChoices" | "formCompletionPage" | "icon" | "tag" | "prop"
+  | "style" | "resize" | "styles" | "styleRange" | "token" | "textStyle" | "nodeTextStyle" | "state" | "appear" | "motionPreset"
+  | "hidden" | "title" | "add" | "addMany" | "replaceChildren" | "image" | "video" | "embedSource" | "embedTitle" | "loopBox"
+  | "background" | "replaceAsset" | "duplicate" | "remove" | "move" | "instanceProp" | "detach" | "slotStyle" | "restore" | "meta";
+/** 値を含めず、操作種別と対象だけを表示する版履歴の要約。 */
+export type EditorRevisionOperationSummary = {
+  type: EditorRevisionOperationType;
+  targetId?: string;
+  targetType?: "element" | "component" | "instance" | "page";
+  targetTag?: string;
+  field?: string;
+};
+/** 版履歴の1件。actor / delegatedBy は表示名だけで、subject・メール等は含めない。 */
+export type EditorRevisionEntry = {
+  id: string; revision: number; kind: EditorRevisionKind; createdAt: string; actor?: string; actorKind?: "human" | "machine";
+  delegatedBy?: string; label?: string; operations?: readonly EditorRevisionOperationSummary[]; omittedOperations?: number; snapshotAvailable?: boolean;
+};
 export type EditorRevisionPage = { entries: readonly EditorRevisionEntry[]; next?: string };
 const revisionKinds: readonly string[] = ["draft", "autosave", "snapshot", "publish", "rollback"];
+const revisionOperationTypes: readonly string[] = ["text", "attribute", "booleanAttribute", "formChoices", "formCompletionPage", "icon", "tag", "prop", "style", "resize", "styles", "styleRange", "token", "textStyle", "nodeTextStyle", "state", "appear", "motionPreset", "hidden", "title", "add", "addMany", "replaceChildren", "image", "video", "embedSource", "embedTitle", "loopBox", "background", "replaceAsset", "duplicate", "remove", "move", "instanceProp", "detach", "slotStyle", "restore", "meta"];
 const control = /[\u0000-\u001f\u007f]/u;
 const plain = (value: unknown, max: number, min = 0): value is string => typeof value === "string" && value.length >= min && value.length <= max && !control.test(value);
+const displayName = (value: unknown): value is string => plain(value, 120) && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(value);
 function closed(input: unknown, allowed: readonly string[], what: string): Record<string, unknown> {
   if (!input || typeof input !== "object" || Array.isArray(input) || ![Object.prototype, null].includes(Object.getPrototypeOf(input)) ||
     Object.keys(input).some((key) => !allowed.includes(key))) throw new Error(`${what}の形式が正しくありません。`);
@@ -154,14 +181,36 @@ function closed(input: unknown, allowed: readonly string[], what: string): Recor
 }
 /** ホストが返した履歴項目を検証し、既知の項目だけの複製を返す。 */
 export function parseRevisionEntry(input: unknown): EditorRevisionEntry {
-  const { id, revision, kind, createdAt, actor, label } = closed(input, ["id", "revision", "kind", "createdAt", "actor", "label"], "版履歴の項目");
+  const { id, revision, kind, createdAt, actor, actorKind, delegatedBy, label, operations, omittedOperations, snapshotAvailable } = closed(input,
+    ["id", "revision", "kind", "createdAt", "actor", "actorKind", "delegatedBy", "label", "operations", "omittedOperations", "snapshotAvailable"], "版履歴の項目");
   if (!plain(id, 200, 1) || typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 1 || typeof kind !== "string" || !revisionKinds.includes(kind) ||
-    !plain(createdAt, 40, 1) || !Number.isFinite(Date.parse(createdAt)) || (actor !== undefined && !plain(actor, 120)) || (label !== undefined && !plain(label, 120))) throw new Error("版履歴の項目が正しくありません。");
-  return { id, revision, kind: kind as EditorRevisionKind, createdAt, ...(actor === undefined ? {} : { actor }), ...(label === undefined ? {} : { label }) };
+    !plain(createdAt, 40, 1) || !Number.isFinite(Date.parse(createdAt)) || (actor !== undefined && !displayName(actor))
+    || actorKind !== undefined && actorKind !== "human" && actorKind !== "machine"
+    || delegatedBy !== undefined && (!displayName(delegatedBy) || actorKind !== "machine")
+    || (label !== undefined && !plain(label, 120)) || omittedOperations !== undefined && (!Number.isSafeInteger(omittedOperations) || Number(omittedOperations) < 0 || Number(omittedOperations) > 500)
+    || snapshotAvailable !== undefined && typeof snapshotAvailable !== "boolean"
+    || operations !== undefined && (!Array.isArray(operations) || operations.length > 20)) throw new Error("版履歴の項目が正しくありません。");
+  const parsedOperations = operations?.map((operation) => {
+    const summary = closed(operation, ["type", "targetId", "targetType", "targetTag", "field"], "操作要約");
+    if (typeof summary.type !== "string" || !revisionOperationTypes.includes(summary.type)
+      || summary.targetId !== undefined && !plain(summary.targetId, 80, 1)
+      || summary.targetType !== undefined && !["element", "component", "instance", "page"].includes(String(summary.targetType))
+      || summary.targetTag !== undefined && (typeof summary.targetTag !== "string" || !/^[a-z][a-z0-9-]{0,31}$/u.test(summary.targetTag))
+      || summary.field !== undefined && (typeof summary.field !== "string" || !/^[A-Za-z][A-Za-z0-9_.-]{0,79}$/u.test(summary.field))) throw new Error("操作要約の形式が正しくありません。");
+    return { type: summary.type as EditorRevisionOperationType,
+      ...(summary.targetId === undefined ? {} : { targetId: summary.targetId as string }),
+      ...(summary.targetType === undefined ? {} : { targetType: summary.targetType as NonNullable<EditorRevisionOperationSummary["targetType"]> }),
+      ...(summary.targetTag === undefined ? {} : { targetTag: summary.targetTag as string }),
+      ...(summary.field === undefined ? {} : { field: summary.field as string }) };
+  });
+  return { id, revision, kind: kind as EditorRevisionKind, createdAt,
+    ...(actor === undefined ? {} : { actor }), ...(actorKind === undefined ? {} : { actorKind }), ...(delegatedBy === undefined ? {} : { delegatedBy }),
+    ...(label === undefined ? {} : { label }), ...(parsedOperations === undefined ? {} : { operations: parsedOperations }),
+    ...(omittedOperations === undefined ? {} : { omittedOperations: omittedOperations as number }), ...(snapshotAvailable === undefined ? {} : { snapshotAvailable }) };
 }
 export function parseRevisionPage(input: unknown): EditorRevisionPage {
   const { entries, next } = closed(input, ["entries", "next"], "版履歴");
-  if (!Array.isArray(entries) || entries.length > 100 || (next !== undefined && !plain(next, 500))) throw new Error("版履歴が正しくありません。");
+  if (!Array.isArray(entries) || entries.length > 100 || (next !== undefined && !plain(next, 500, 1))) throw new Error("版履歴が正しくありません。");
   return { entries: entries.map(parseRevisionEntry), ...(next === undefined ? {} : { next }) };
 }
 

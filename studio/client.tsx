@@ -5,9 +5,12 @@ import { parseProjectDirectoryResult, type ProjectDirectoryResult } from "../src
 import type { Project } from "../src/projects.js";
 import { ApiError, api, record, role, SessionExpiredError, text, timestamp } from "./api-client.js";
 import { integrationIdentity, resolveTrustedEditorPage, resolveTrustedIntegration, trustedEditorPath } from "./integration-registry.mjs";
+import type { KamakuraEditorLoad } from "./kamakura-editor.js";
 import { parseProjectAliasPath, projectRoutePath, type ProjectCmsRoute, type ProjectSiteViewId, type ProjectTranslationsRoute } from "./project-routes.mjs";
-import { SiteCmsWorkspace } from "./site-cms.js";
+import { ManagedSiteCmsWorkspace, SiteCmsWorkspace } from "./site-cms.js";
 import { SiteTranslationsWorkspace } from "./site-translations.js";
+import { EDITOR_PERFORMANCE_EVENT, readEditorPerformance, type EditorPerformanceName } from "../src/editor-performance.js";
+import { LazyScreenBoundary } from "./lazy-screen-boundary.js";
 
 type Role = "owner" | "editor";
 type Screen =
@@ -22,7 +25,8 @@ type SessionState =
   | { readonly status: "loading" }
   | { readonly status: "expired" }
   | { readonly status: "error" }
-  | { readonly status: "ready"; readonly directory: ProjectDirectoryResult; readonly identity: { readonly subject: string; readonly email: string }; readonly config: StudioConfig };
+  | { readonly status: "ready"; readonly directory: ProjectDirectoryResult; readonly identity: { readonly subject: string; readonly email: string }; readonly config: StudioConfig;
+    readonly initialKamakuraLoad?: () => KamakuraEditorLoad | undefined };
 type StudioConfig = { readonly managedProjectsEnabled: boolean; readonly publicSitesOrigin: string | null };
 type InvitationPreview = {
   readonly projectName: string;
@@ -63,8 +67,8 @@ function screenFromLocation(): Screen {
   if (editor) return { kind: "editor", projectId: editor.registration.projectId, siteId: editor.registration.siteId, environment: editor.environment };
   const managedEditor = /^\/projects\/([A-Za-z][A-Za-z0-9_-]{0,79})\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/editor\/?$/u.exec(window.location.pathname);
   if (managedEditor) return { kind: "editor", projectId: managedEditor[1]!, siteId: managedEditor[2]!, environment: "managed" };
-  const dashboard = /^\/projects\/([A-Za-z][A-Za-z0-9_-]{0,79})\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/?$/u.exec(window.location.pathname);
-  return dashboard ? { kind: "dashboard", projectId: dashboard[1]!, siteId: dashboard[2]! } : { kind: "directory" };
+  const dashboard = /^\/projects\/([A-Za-z][A-Za-z0-9_-]{0,79})\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})(\/cms)?\/?$/u.exec(window.location.pathname);
+  return dashboard ? { kind: "dashboard", projectId: dashboard[1]!, siteId: dashboard[2]!, view: dashboard[3] ? "cms" : null } : { kind: "directory" };
 }
 
 function parseInvitationPreview(value: unknown): InvitationPreview {
@@ -223,15 +227,40 @@ function App() {
 
   const loadSession = useCallback(() => {
     const controller = new AbortController();
+    const initialPathname = window.location.pathname;
+    const initialScreen = screenFromLocation();
+    const kamakura = initialScreen.kind === "editor" && initialScreen.environment === "production"
+      && integrationIdentity(initialScreen.projectId, initialScreen.siteId) === integrationIdentity("project-kamakura", "kamakura");
     setSession({ status: "loading" });
+    const kamakuraModule = kamakura ? import("./kamakura-editor.js") : undefined;
+    const catalog = kamakuraModule?.then(({ loadKamakuraEditorCatalog }) => loadKamakuraEditorCatalog(controller.signal));
+    // Keep the original outcome for the editor's route-specific error UI.
+    void catalog?.catch(() => {});
     void Promise.all([
       api("/api/session", { signal: controller.signal }),
       api("/api/projects", { signal: controller.signal }),
       api("/api/config", { signal: controller.signal }).catch(() => ({ managedProjectsEnabled: false, publicSitesOrigin: null }))
     ])
-      .then(([identity, directory, config]) => setSession({ status: "ready", identity: parseIdentity(identity), directory: parseProjectDirectoryResult(directory, isStudioThumbnailUrlAllowed), config: parseConfig(config) }))
+      .then(async ([identity, directory, config]) => {
+        if (controller.signal.aborted) return;
+        const parsedIdentity = parseIdentity(identity), parsedConfig = parseConfig(config);
+        const parsed = parseProjectDirectoryResult(directory, isStudioThumbnailUrlAllowed);
+        const editorModule = await kamakuraModule?.catch(() => undefined);
+        if (controller.signal.aborted) return;
+        let editorLoad = editorModule && catalog && kamakura && parsed.status === "ready" && window.location.pathname === initialPathname
+          && parsed.entries.some(({ project }) => project.id === initialScreen.projectId && project.site.id === initialScreen.siteId)
+          ? editorModule.loadKamakuraEditor(controller, window.location.origin, catalog) : undefined;
+        if (catalog && !editorLoad) controller.abort();
+        setSession({ status: "ready", identity: parsedIdentity, directory: parsed, config: parsedConfig,
+          ...(editorLoad ? { initialKamakuraLoad: () => {
+            const pending = editorLoad;
+            editorLoad = undefined;
+            return pending;
+          } } : {}) });
+      })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
+        controller.abort();
         setSession({ status: error instanceof SessionExpiredError ? "expired" : "error" });
       });
     return () => controller.abort();
@@ -339,10 +368,10 @@ function App() {
 
   const preloadEditor = useCallback((project: Project) => {
     if (session.status !== "ready") return;
-    if (managedProject(project, session.config)) { void import("./managed-editor.js"); return; }
+    if (managedProject(project, session.config)) { void import("./managed-editor.js").catch(() => undefined); return; }
     const integration = resolveTrustedIntegration(project.id, project.site.id);
     if (integration?.environment === "production" && integrationIdentity(integration.registration.projectId, integration.registration.siteId) === integrationIdentity("project-kamakura", "kamakura")) {
-      void import("./kamakura-editor.js");
+      void import("./kamakura-editor.js").catch(() => undefined);
     }
   }, [session]);
 
@@ -359,6 +388,10 @@ function App() {
   const admin = screen.kind === "dashboard" && siteAdmin?.key === dashboardKey ? siteAdmin.value : null;
   /** Dashboard の左のメニュー「サイト機能」に足すもの（ページは右上のデザインエディタ、プロジェクト設定はメンバーと招待） */
   const siteViews = (project: Project): ProjectSiteView[] => {
+    if (managedProject(project, session.config)) return [
+      { id: "cms", label: "CMS", content: <ManagedSiteCmsWorkspace key={`${project.id}:${project.site.id}`}
+        projectId={project.id} siteId={project.site.id} origin={session.config.publicSitesOrigin} /> }
+    ];
     if (!admin) return [];
     const open = (view: ProjectSiteViewId) => navigate({ kind: "dashboard", projectId: project.id, siteId: project.site.id, view });
     return [
@@ -383,6 +416,7 @@ function App() {
 
   // プロジェクトの中では Dashboard の帯が 1 段のヘッダーになる（Studio のヘッダーを重ねない）。アカウントはその帯の右端に置く
   const projectShell = screen.kind === "dashboard" && selected !== undefined;
+  const editorPerformanceEnabled = screen.kind === "editor" && new URLSearchParams(window.location.search).get("editorPerf") === "1";
   const account = <details className="studio-account"><summary><span className="studio-account-avatar" aria-hidden="true">{Array.from(session.identity.email)[0]?.toUpperCase() ?? "?"}</span><span className="studio-account-email">{session.identity.email}</span></summary><div><small>Google / Cloudflare Access</small><label>Access ID <code>{session.identity.subject}</code></label></div></details>;
 
   return <div className={`studio-app${kamakuraEditor || managedEditor ? " studio-editor-shell" : ""}`}>
@@ -392,17 +426,18 @@ function App() {
       {(screen.kind === "dashboard" || screen.kind === "editor") && !selected
         ? <Notice title="プロジェクトを表示できません">プロジェクトが存在しないか、現在のアカウントには参加資格がありません。</Notice>
         : selected && screen.kind === "editor"
-          ? <Suspense fallback={<StudioLoading />}>
+          ? <LazyScreenBoundary><Suspense fallback={<StudioLoading />}>
               {managedEditor
                 ? <ManagedEditor project={selected} />
                 : kamakuraEditor && resolvedEditor
-                ? <KamakuraEditor project={selected} environment={resolvedEditor.environment} />
+                ? <KamakuraEditor project={selected} environment={resolvedEditor.environment}
+                    {...(session.initialKamakuraLoad ? { initialLoad: session.initialKamakuraLoad } : {})} />
                 : resolvedEditor
                 ? <Notice title="サイトデザイン編集は休止中です">ヘッダー、余白、レイアウトなどの変更は各サイトの開発で対応します。以前の編集内容は保管しています。記事や体験の原稿は、それぞれの管理画面で引き続き編集できます。</Notice>
                 : <Notice title="エディターを表示できません">このサイトまたは環境のエディターは接続されていません。</Notice>}
-            </Suspense>
+            </Suspense></LazyScreenBoundary>
         : selected && screen.kind === "dashboard"
-          ? <Suspense fallback={<StudioLoading />}><ProjectDashboard
+          ? <LazyScreenBoundary><Suspense fallback={<StudioLoading />}><ProjectDashboard
               project={selected}
               adapter={dashboardAdapter}
               onBackToProjects={() => navigate({ kind: "directory" })}
@@ -423,8 +458,8 @@ function App() {
                 if (view === (screen.view ?? null)) return;
                 navigate({ kind: "dashboard", projectId: selected.id, siteId: selected.site.id, view: view as ProjectSiteViewId | null });
               }}
-            /></Suspense>
-          : <div className="studio-directory-main"><Suspense fallback={<StudioLoading />}><ProjectDirectory
+            /></Suspense></LazyScreenBoundary>
+          : <div className="studio-directory-main"><LazyScreenBoundary><Suspense fallback={<StudioLoading />}><ProjectDirectory
               adapter={directoryAdapter}
               onCreateProject={() => setCreatingProject(true)}
               onOpenDashboard={(project) => navigate({ kind: "dashboard", projectId: project.id, siteId: project.site.id })}
@@ -436,8 +471,9 @@ function App() {
               searchValue={directoryQuery}
               onSearchValueChange={setDirectoryQuery}
               searchControl="external"
-            /></Suspense></div>}
+            /></Suspense></LazyScreenBoundary></div>}
     </div>
+    {editorPerformanceEnabled && <EditorPerformancePanel />}
     {pendingProject && <div className="studio-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setPendingProject(null); }}>
       <section className="studio-dialog" role="dialog" aria-modal="true" aria-labelledby="editor-pending-title">
         <p className="studio-dialog-site">{pendingProject.site.name}</p><h2 id="editor-pending-title">エディター接続待ち</h2>
@@ -451,6 +487,26 @@ function App() {
       window.location.assign(`/projects/${encodeURIComponent(projectId)}/sites/${encodeURIComponent(siteId)}/editor`);
     }} />}
   </div>;
+}
+
+function EditorPerformancePanel() {
+  const [samples, setSamples] = useState(() => readEditorPerformance());
+  useEffect(() => {
+    const refresh = () => setSamples(readEditorPerformance());
+    window.addEventListener(EDITOR_PERFORMANCE_EVENT, refresh);
+    refresh();
+    return () => window.removeEventListener(EDITOR_PERFORMANCE_EVENT, refresh);
+  }, []);
+  const labels: Readonly<Record<EditorPerformanceName, string>> = { load: "読込", "page-switch": "ページ切替", save: "保存" };
+  return <aside className="studio-editor-performance" aria-label="編集画面の性能計測">
+    <details>
+      <summary>編集性能（開発者向け）</summary>
+      <dl>{(Object.keys(labels) as EditorPerformanceName[]).map((name) => {
+        const sample = samples.get(name);
+        return <div key={name}><dt>{labels[name]}</dt><dd>{sample ? <>{sample.durationMs.toFixed(1)} ms · {sample.outcome === "success" ? "完了" : "失敗"}</> : "未計測"}</dd></div>;
+      })}</dl>
+    </details>
+  </aside>;
 }
 
 const container = document.getElementById("root");

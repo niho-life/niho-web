@@ -79,10 +79,10 @@ export function projectAliasPath(projectId, siteId, page, sub = null) {
 
 export function projectRoutePath(currentPathname, projectId, siteId, page, sub = null) {
   const currentAlias = parseProjectAliasPath(currentPathname);
-  // サイト機能の画面は alias の URL だけが持つ（ID の URL には下の階層が無い）
+  // 外部ホストは alias の URL、Studio-native CMS は ID の URL を使う。
   const aliasPath = currentAlias?.projectId === projectId && currentAlias.siteId === siteId || PROJECT_SITE_VIEWS.includes(page)
     ? projectAliasPath(projectId, siteId, page, sub)
     : null;
   if (aliasPath) return aliasPath;
-  return `/projects/${encodeURIComponent(projectId)}/sites/${encodeURIComponent(siteId)}${page === "editor" ? "/editor" : ""}`;
+  return `/projects/${encodeURIComponent(projectId)}/sites/${encodeURIComponent(siteId)}${page === "editor" || page === "cms" ? `/${page}` : ""}`;
 }

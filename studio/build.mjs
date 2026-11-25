@@ -45,10 +45,10 @@ await Promise.all([
     const eagerInputs = [...eager].flatMap((output) => Object.keys(result.metafile.outputs[output]?.inputs ?? {}));
     const eagerLazy = eagerInputs.filter((input) => /(?:@tiptap|prosemirror|studio\/rich-text-editor\.tsx|src\/collection-workspace\.tsx)/u.test(input));
     if (eagerLazy.length) throw new Error(`CMS workspace code entered the initial Studio client bundle: ${eagerLazy.slice(0, 5).join(", ")}`);
-    const eagerScreens = eagerInputs.filter((input) => /(?:src\/(?:project-dashboard|project-directory|analytics|site-apps|site-language-settings)\.tsx|studio\/(?:kamakura-editor|managed-editor|analytics-panel|settings-panel)\.tsx|src\/editor(?:-[a-z-]+)?\.tsx?|src\/project-editor-adapter\.ts)$/u.test(input));
+    const eagerScreens = eagerInputs.filter((input) => /(?:src\/(?:project-dashboard|project-directory|analytics|site-apps|site-language-settings)\.tsx|studio\/(?:kamakura-editor|managed-editor|analytics-panel|settings-panel)\.tsx|src\/editor(?!-performance)(?:-[a-z-]+)?\.tsx?|src\/project-editor-adapter\.ts)$/u.test(input));
     if (eagerScreens.length) throw new Error(`A deferred Studio screen entered the initial client bundle: ${eagerScreens.slice(0, 5).join(", ")}`);
     const initialJsBytes = [...eager].reduce((total, output) => total + (result.metafile.outputs[output]?.bytes ?? 0), 0);
-    if (initialJsBytes > 694_000) throw new Error(`Studio initial JavaScript exceeds the 694 KB performance budget: ${initialJsBytes} bytes`);
+    if (initialJsBytes > 535_000) throw new Error(`Studio initial JavaScript exceeds the half-size performance budget (535 KB): ${initialJsBytes} bytes`);
     // Shared wire validators are safe in the initial bundle; only the translation UI and its host screen must stay lazy.
     const eagerTranslations = eagerInputs.filter((input) => /(?:src\/localization-workspace(?!(?:-model))(-[a-z]+)?\.tsx?|studio\/kamakura-localization(?:-workspace|-contract)?\.tsx?)$/u.test(input));
     if (eagerTranslations.length) throw new Error(`Translation workspace UI code entered the initial Studio client bundle: ${eagerTranslations.slice(0, 5).join(", ")}`);

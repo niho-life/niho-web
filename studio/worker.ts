@@ -1,4 +1,5 @@
 import { parseKamakuraAssetUploadIntent } from "./kamakura-asset-upload-contract.js";
+import { EDITING_EDITOR_SNAPSHOT_ACCEPT } from "../src/editing-page-snapshot.js";
 import { parseProjectAliasPath, projectShortcutTarget } from "./project-routes.mjs";
 declare const __STUDIO_INDEX_PATH__: string;
 import { siteAdmin } from "./site-admin.mjs";
@@ -26,7 +27,7 @@ import { parseLocalizationOverlay, parseLocalizationValue, parseSiteLocalization
 import { DocumentValidationError } from "../src/validation-utils.js";
 import { parseEnglishPublicationAccepted } from "../src/english-publication.js";
 import { parseBreakpointSettings } from "../src/style-model.js";
-import type { EditingCapability } from "../src/editing-api.js";
+import { EDITING_OPERATIONS, type EditingCapability } from "../src/editing-api.js";
 import {
   EDITING_LOCALIZATION_INPUT_BYTES, EDITING_LOCALIZATION_RESULT_BYTES, editingLocalizationCapability,
   editingLocalizationOperation, parseEditingLocalizationInput
@@ -36,6 +37,9 @@ import {
   createManagedProject, managedDashboardOverview, managedEditorOperation, managedPageUrl,
   managedProjectRegistrations, managedPublicRequest, managedRegistration, publicSitesOrigin, type ManagedActor
 } from "./managed-sites.js";
+import { CmsStore, type CmsActor, type CmsBucket, type CmsCapability } from "./managed-cms-store.js";
+import { managedCmsApi, managedCmsLegacySpec } from "./managed-cms.js";
+import { managedCmsPublic, runCmsCron } from "./managed-cms-release.js";
 import { dashboardAnalyticsSummary, siteAnalyticsApi, siteAnalyticsRoute } from "./site-analytics-host.js";
 
 type D1Meta = { readonly changes?: number };
@@ -53,6 +57,7 @@ type AssetBinding = { fetch(request: Request): Promise<Response> };
 
 export interface Env {
   readonly DB: D1Database;
+  readonly CMS_OBJECTS?: CmsBucket;
   readonly ASSETS: AssetBinding;
   /** 同一 Cloudflare account の kamakura-site Worker。 */
   readonly KAMAKURA_SITE: AssetBinding;
@@ -293,6 +298,19 @@ function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), { status, headers: securityHeaders("application/json; charset=utf-8") });
 }
 
+function safeIfNoneMatch(value: string | null): string | undefined {
+  return value && value.length <= 2_048 && !/[\u0000-\u0008\u000a-\u001f\u007f]/u.test(value) ? value : undefined;
+}
+
+function conditionalJsonHeaders(response: Response): Headers {
+  const headers = securityHeaders("application/json; charset=utf-8"), etag = response.headers.get("ETag");
+  const safeEtag = etag && etag.length <= 512 && !/[\u0000-\u001f\u007f]/u.test(etag) ? etag : undefined;
+  headers.set("Cache-Control", safeEtag ? "private, no-cache" : "no-store");
+  headers.set("Vary", "Accept, Cookie, Authorization");
+  if (safeEtag) headers.set("ETag", safeEtag);
+  return headers;
+}
+
 function htmlError(message: string, status: number): Response {
   const body = `<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>NIHO Studio</title><body><main><h1>NIHO Studio</h1><p>${message}</p></main></body></html>`;
   const headers = securityHeaders("text/html; charset=utf-8");
@@ -335,6 +353,19 @@ function bridgeSecret(encoded: string | undefined): Uint8Array {
 function hexadecimal(value: ArrayBuffer | Uint8Array): string {
   const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
   return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+const importedHmacKeys = new Map<string, Promise<CryptoKey>>();
+async function importHmacSigningKey(secret: Uint8Array): Promise<CryptoKey> {
+  const fingerprint = hexadecimal(await crypto.subtle.digest("SHA-256", secret.slice().buffer));
+  let imported = importedHmacKeys.get(fingerprint);
+  if (!imported) {
+    imported = crypto.subtle.importKey("raw", secret.slice().buffer, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    importedHmacKeys.set(fingerprint, imported);
+    while (importedHmacKeys.size > 8) importedHmacKeys.delete(importedHmacKeys.keys().next().value!);
+    void imported.catch(() => { if (importedHmacKeys.get(fingerprint) === imported) importedHmacKeys.delete(fingerprint); });
+  }
+  return imported;
 }
 
 function decodeJwtObject<T>(segment: string, maximumLength: number): T {
@@ -382,9 +413,20 @@ function selectSigningKey(keys: readonly SigningJwk[], kid: string): SigningJwk 
   return keys.find((key) => key.kid === kid && key.kty === "RSA" && (key.alg === undefined || key.alg === "RS256") && (key.use === undefined || key.use === "sig") && (key.key_ops === undefined || Array.isArray(key.key_ops) && key.key_ops.includes("verify")));
 }
 
+const importedAccessKeys = new WeakMap<SigningJwk, Promise<CryptoKey>>();
+function importAccessSigningKey(key: SigningJwk): Promise<CryptoKey> {
+  let imported = importedAccessKeys.get(key);
+  if (!imported) {
+    imported = crypto.subtle.importKey("jwk", key, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]);
+    importedAccessKeys.set(key, imported);
+    void imported.catch(() => importedAccessKeys.delete(key));
+  }
+  return imported;
+}
+
 async function verifySignature(signingInput: string, signature: Uint8Array, key: SigningJwk): Promise<boolean> {
   try {
-    const cryptoKey = await crypto.subtle.importKey("jwk", key, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]);
+    const cryptoKey = await importAccessSigningKey(key);
     return await crypto.subtle.verify("RSASSA-PKCS1-v1_5", cryptoKey, signature.slice().buffer, new TextEncoder().encode(signingInput));
   } catch { return false; }
 }
@@ -1429,7 +1471,7 @@ async function signedEditorRequest(
   const bodyBytes = body.slice().buffer;
   const bodyHash = hexadecimal(await crypto.subtle.digest("SHA-256", bodyBytes));
   const message = `v1\n${timestamp}\n${request.method}\n${route.upstreamPath}\n${bodyHash}\n${EDITOR_PROJECT_ID}\n${identity.subject}`;
-  const key = await crypto.subtle.importKey("raw", bridgeSecret(bridge.secret).slice().buffer, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const key = await importHmacSigningKey(bridgeSecret(bridge.secret));
   const signature = hexadecimal(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message)));
   const controller = new AbortController();
   const abort = () => controller.abort();
@@ -1530,7 +1572,7 @@ async function kamakuraSignedHeaders(
   catch { throw kamakuraBridgeFailure(supportId, operation, "bridge_secret_missing_or_invalid"); }
   let signature: string;
   try {
-    const key = await crypto.subtle.importKey("raw", secret.slice().buffer, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    const key = await importHmacSigningKey(secret);
     signature = hexadecimal(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message)));
   } catch { throw kamakuraBridgeFailure(supportId, operation, "bridge_signing_failed"); }
   return {
@@ -1641,7 +1683,7 @@ async function kamakuraEditingDelegationToken(env: Env, identity: AccessIdentity
   const usesEmail = capabilities.some((capability) => !capability.startsWith("localization."));
   const claims = encode({ iss: "niho-web-studio-edit", aud: "kamakura-site", sub: identity.subject, ...(usesEmail ? { email: identity.email } : {}), scope: [...capabilities], iat: now, exp: now + 60, jti: crypto.randomUUID() });
   const signingInput = `${header}.${claims}`;
-  const key = await crypto.subtle.importKey("raw", bridgeSecret(env.KAMAKURA_STUDIO_BRIDGE_SECRET).slice().buffer, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const key = await importHmacSigningKey(bridgeSecret(env.KAMAKURA_STUDIO_BRIDGE_SECRET));
   const signature = encodeBase64Url(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(signingInput))));
   return `${signingInput}.${signature}`;
 }
@@ -1650,6 +1692,9 @@ async function signedKamakuraEditingApiRequest(request: Request, env: Env, ident
   const supportId = crypto.randomUUID(), operation: KamakuraBridgeOperation = "editing_api";
   const fail = (category: KamakuraBridgeFailureCategory, status?: number) => kamakuraBridgeFailure(supportId, operation, category, status);
   const upstreamSuffix = action.slice(KAMAKURA_EDITING_API_EDITOR_PREFIX.length);
+  const cacheableRead = request.method === "GET" && (/^\/sites\/kamakura\/operations\/pages\.read\/[a-z][a-z0-9-]{0,59}$/u.test(upstreamSuffix)
+    || upstreamSuffix === "/sites/kamakura/operations/pages.catalog");
+  const ifNoneMatch = cacheableRead ? safeIfNoneMatch(request.headers.get("If-None-Match")) : undefined;
   const upstreamPath = `${KAMAKURA_EDITING_API_PATH_PREFIX}${upstreamSuffix}`;
   const localizationPath = EDITING_LOCALIZATION_ROUTE.exec(upstreamSuffix);
   const localization = localizationPath && editingLocalizationOperation(localizationPath[1]!);
@@ -1696,18 +1741,22 @@ async function signedKamakuraEditingApiRequest(request: Request, env: Env, ident
   try { bearer = await kamakuraEditingDelegationToken(env, identity, capabilities); }
   catch { throw fail("bridge_secret_missing_or_invalid"); }
 
+  const editorSnapshot = upstreamSuffix.startsWith("/sites/kamakura/operations/pages.read/") && request.headers.get("Accept") === EDITING_EDITOR_SNAPSHOT_ACCEPT;
   const headers = new Headers({
-    Accept: "application/json",
+    Accept: editorSnapshot ? EDITING_EDITOR_SNAPSHOT_ACCEPT : "application/json",
     "Cache-Control": "no-store",
     Authorization: `Bearer ${bearer}`,
     Origin: KAMAKURA_EDITING_API_ORIGIN
   });
+  if (ifNoneMatch) headers.set("If-None-Match", ifNoneMatch);
   if (request.method !== "GET") headers.set("Content-Type", "application/json");
   const controller = new AbortController();
   const abortForRequest = () => controller.abort();
   request.signal.addEventListener("abort", abortForRequest, { once: true });
   const long = localization ? LOCALIZATION_LONG_OPERATIONS.has(localization.id) : capability === "pages.publish" || capability === "cms.publish";
   const timeout = setTimeout(() => controller.abort(), long ? KAMAKURA_RELEASE_TIMEOUT_MILLISECONDS : EDITOR_TIMEOUT_MILLISECONDS);
+  const cleanup = () => { clearTimeout(timeout); request.signal.removeEventListener("abort", abortForRequest); };
+  let streaming = false;
   try {
     const upstream = new Request(`${KAMAKURA_EDITING_API_ORIGIN}${upstreamPath}${url.search}`, {
       method: request.method,
@@ -1720,7 +1769,18 @@ async function signedKamakuraEditingApiRequest(request: Request, env: Env, ident
     let response: Response;
     try { response = await env.KAMAKURA_SITE.fetch(upstream); }
     catch { throw fail(controller.signal.aborted ? "service_binding_timeout" : "service_binding_failed"); }
+    if (response.status === 304) {
+      await response.body?.cancel().catch(() => undefined);
+      if (!cacheableRead || !ifNoneMatch || !response.headers.has("ETag")) throw fail("upstream_invalid_response", response.status);
+      return new Response(null, { status: 304, headers: conditionalJsonHeaders(response) });
+    }
     if (response.status >= 300 && response.status < 400) throw fail("upstream_redirect_rejected", response.status);
+    if (cacheableRead && response.status === 200) {
+      const streamed = boundedBridgeJsonStream(response, EDITING_LOCALIZATION_RESULT_BYTES,
+        (category, status) => fail(category, status), cleanup, controller);
+      streaming = true;
+      return streamed;
+    }
     let value: unknown;
     try { value = await readBoundedResponse(response, localization && localization.id === "localization.preview"
       ? KAMAKURA_LOCALIZATION_LIMITS.previewResponseBytes : EDITING_LOCALIZATION_RESULT_BYTES); }
@@ -1773,8 +1833,7 @@ async function signedKamakuraEditingApiRequest(request: Request, env: Env, ident
     if (error instanceof AuthenticationError) return json({ error: "invalid_request" }, 400);
     throw fail("bridge_processing_failed");
   } finally {
-    clearTimeout(timeout);
-    request.signal.removeEventListener("abort", abortForRequest);
+    if (!streaming) cleanup();
   }
 }
 
@@ -1804,14 +1863,21 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
     if (!isRecord(parsed) || Object.keys(parsed).length !== 0) throw new AuthenticationError("invalid english publication retry request");
     body = new TextEncoder().encode("{}");
   }
+  const isCatalog = route.upstreamPath === `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/catalog`;
+  const isLegacyPageRead = /^\/internal\/studio\/web-content\/[a-z][a-z0-9-]{0,59}$/u.test(route.upstreamPath);
+  const cacheableRead = request.method === "GET" && (isCatalog || isLegacyPageRead);
+  const ifNoneMatch = cacheableRead ? safeIfNoneMatch(request.headers.get("If-None-Match")) : undefined;
   const bodyBytes = body.slice().buffer;
   const headers = await kamakuraSignedHeaders(env, identity, request.method, route.upstreamPath, body, supportId, operation);
+  if (ifNoneMatch) headers["If-None-Match"] = ifNoneMatch;
   const controller = new AbortController();
   let timedOut = false;
   const abortForRequest = () => controller.abort();
   const abortForTimeout = () => { timedOut = true; controller.abort(); };
   request.signal.addEventListener("abort", abortForRequest, { once: true });
   const timeout = setTimeout(abortForTimeout, (operation === "release" || operation === "page_batch_stage" || operation === "cms_migration_preflight" || operation === "asset_delete") ? KAMAKURA_RELEASE_TIMEOUT_MILLISECONDS : EDITOR_TIMEOUT_MILLISECONDS);
+  const cleanup = () => { clearTimeout(timeout); request.signal.removeEventListener("abort", abortForRequest); };
+  let streaming = false;
   try {
     const previewOrigin = kamakuraCliPreviewOrigin(env, identity);
     const upstream = new Request(`${previewOrigin ?? KAMAKURA_EDITOR_UPSTREAM_ORIGIN}${route.upstreamPath}`, {
@@ -1822,10 +1888,14 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
       headers,
       ...(request.method === "GET" ? {} : { body: bodyBytes })
     });
-    const isCatalog = route.upstreamPath === `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/catalog`;
     let response: Response;
     try { response = await env.KAMAKURA_SITE.fetch(upstream); }
     catch { throw kamakuraBridgeFailure(supportId, operation, timedOut ? "service_binding_timeout" : "service_binding_failed"); }
+    if (response.status === 304) {
+      await response.body?.cancel().catch(() => undefined);
+      if (!cacheableRead || !ifNoneMatch || !response.headers.has("ETag")) throw kamakuraBridgeFailure(supportId, operation, "upstream_invalid_response", response.status);
+      return new Response(null, { status: 304, headers: conditionalJsonHeaders(response) });
+    }
     if (response.status >= 300 && response.status < 400) throw kamakuraBridgeFailure(supportId, operation, "upstream_redirect_rejected", response.status);
     if (operation === "cms_migration_preflight" && (response.status === 400 || response.status === 409)) {
       const value = await readBoundedResponse(response).catch(() => null);
@@ -1859,6 +1929,12 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
     if (!isCatalog && !response.ok) {
       if (response.status === 400 || response.status === 413 || response.status === 422) return json({ error: "invalid_request" }, 400);
       throw kamakuraBridgeFailure(supportId, operation, "upstream_unexpected_4xx", response.status);
+    }
+    if (cacheableRead && response.status === 200 && (!isCatalog || previewOrigin === undefined)) {
+      const streamed = boundedBridgeJsonStream(response, MAX_EDITOR_RESPONSE_BYTES,
+        (category, status) => kamakuraBridgeFailure(supportId, operation, isCatalog ? "upstream_contract_invalid" : category, status), cleanup, controller);
+      streaming = true;
+      return streamed;
     }
     let value: unknown;
     try { value = await readBoundedResponse(response, route.draftRecovery?.action === "read" || operation === "page_batch_stage" ? DRAFT_RECOVERY_MAX_OUTPUT_BYTES : undefined); }
@@ -1898,7 +1974,7 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
     if (error instanceof KamakuraCatalogContractError) throw kamakuraBridgeFailure(supportId, operation, "upstream_contract_invalid");
     throw kamakuraBridgeFailure(supportId, operation, "bridge_processing_failed");
   }
-  finally { clearTimeout(timeout); request.signal.removeEventListener("abort", abortForRequest); }
+  finally { if (!streaming) cleanup(); }
 }
 
 async function signedKamakuraAssetPreview(request: Request, env: Env, identity: AccessIdentity, assetId: string): Promise<Response> {
@@ -1911,7 +1987,7 @@ async function signedKamakuraAssetPreview(request: Request, env: Env, identity: 
   const timestamp = Math.floor(Date.now() / 1000).toString();
   const bodyHash = hexadecimal(await crypto.subtle.digest("SHA-256", body.slice().buffer));
   const message = `v1\n${timestamp}\n${method}\n${path}\n${bodyHash}\n${KAMAKURA_EDITOR_PROJECT_ID}\n${identity.subject}`;
-  const key = await crypto.subtle.importKey("raw", bridgeSecret(env.KAMAKURA_STUDIO_BRIDGE_SECRET).slice().buffer, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const key = await importHmacSigningKey(bridgeSecret(env.KAMAKURA_STUDIO_BRIDGE_SECRET));
   const signature = hexadecimal(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message)));
   const controller = new AbortController();
   const abort = () => controller.abort();
@@ -2673,6 +2749,52 @@ function boundedJsonStream(response: Response, maximumBytes: number, failure: (c
   return new Response(stream, { status: 200, headers: securityHeaders("application/json; charset=utf-8") });
 }
 
+/** ETagged reads stay authenticated at the host and pass through as bounded JSON bytes. */
+function boundedBridgeJsonStream(
+  response: Response,
+  maximumBytes: number,
+  failure: (category: KamakuraBridgeFailureCategory, status?: number) => KamakuraBridgeFailureError,
+  onEnd: () => void,
+  controller: AbortController
+): Response {
+  const declared = response.headers.get("Content-Length");
+  if (response.status !== 200 || !isJsonResponse(response) || !response.body
+    || (declared !== null && (!/^\d+$/u.test(declared) || Number(declared) > maximumBytes))) {
+    void response.body?.cancel().catch(() => undefined);
+    throw failure("upstream_invalid_response", response.status);
+  }
+  const reader = response.body.getReader();
+  let total = 0, ended = false;
+  const finish = () => { if (ended) return; ended = true; onEnd(); };
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(streamController) {
+      try {
+        const chunk = await reader.read();
+        if (chunk.done) { streamController.close(); finish(); return; }
+        total += chunk.value.byteLength;
+        if (total > maximumBytes) {
+          logKamakuraBridgeFailure(failure("upstream_invalid_response", response.status));
+          await reader.cancel("response too large").catch(() => undefined);
+          controller.abort();
+          streamController.error(new Error("response too large"));
+          finish();
+          return;
+        }
+        streamController.enqueue(chunk.value);
+      } catch (error) {
+        controller.abort();
+        streamController.error(error);
+        finish();
+      }
+    },
+    async cancel(reason) {
+      try { await reader.cancel(reason); }
+      finally { controller.abort(); finish(); }
+    }
+  });
+  return new Response(stream, { status: response.status, headers: conditionalJsonHeaders(response) });
+}
+
 async function signedKamakuraLocalizationRequest(request: Request, env: Env, identity: BridgeActor, role: Role, route: KamakuraLocalizationRoute, cliOperation?: CliOperation): Promise<Response> {
   const supportId = identity.kind === "cli" ? identity.requestId : crypto.randomUUID();
   const spec = KAMAKURA_LOCALIZATION_OPERATIONS[route.operation];
@@ -2875,10 +2997,9 @@ async function editorApi(request: Request, env: Env, identity: AccessIdentity, u
  * 同じ URL の中身は変わらないので、ほかの静的応答（no-store）と違ってブラウザに 1 年持たせる。Access の内側の応答なので共有の cache には置かせない（private）。
  */
 const VERSIONED_FONT_PATH = /^\/assets\/fonts\/(?:[a-z0-9-]+-\d+\.\d+\.\d+\/[a-z0-9-]+\.woff2|fonts-[0-9a-f]{12}\.css)$/u;
-// studio/build.mjs emits root entry/CSS files with a 12-hex content hash and
-// esbuild chunks under chunks/ with its content-derived 8-character [hash].
-const VERSIONED_STUDIO_ASSET_PATH = /^\/assets\/(?:[a-z0-9-]+-[0-9a-f]{12}\.(?:css|js)|chunks\/[A-Za-z0-9_-]+-[A-Za-z0-9_-]{8}\.js)$/u;
-const VERSIONED_ASSET_CACHE = "private, max-age=31536000, immutable";
+/** build が内容 hash を付ける entry の JS/CSS と esbuild の遅延 chunk。hash なしの名前は長期 cache しない。 */
+const VERSIONED_CODE_ASSET_PATH = /^\/assets\/(?:app-[0-9a-f]{12}\.js|(?:studio|project-view|collection|localization)-[0-9a-f]{12}\.css|chunks\/[A-Za-z0-9_-]+-[A-Za-z0-9_-]{8}\.js)$/u;
+const VERSIONED_FONT_CACHE = "private, max-age=31536000, immutable";
 
 function withStaticSecurity(response: Response, editor = false, connectOrigins: readonly string[] = [], fontSources: readonly string[] = [], scriptSources: readonly string[] = [], frameSources: readonly string[] = []): Response {
   const headers = new Headers(response.headers);
@@ -2934,6 +3055,11 @@ async function scopedApi(request: Request, env: Env, identity: AccessIdentity, u
         return managedEditorOperation(request, env.DB, { subject: identity.subject, email: identity.email, cli: false }, projectId, siteId, action, origin);
       }
     }
+  }
+  if (action.startsWith("/cms/v2/")) {
+    if (!env.CMS_OBJECTS) return json({ error: "not_found" }, 404);
+    return managedCmsApi(request, new CmsStore(env.DB, env.CMS_OBJECTS),
+      { projectId, siteId, actor: { id: identity.subject, cli: false } }, action.slice("/cms/v2/".length), 2);
   }
   if (action === "/cms" || action.startsWith("/cms/")) return kamakuraCmsApi(request, env, identity, url, projectId, siteId, action.slice("/cms".length));
   if (action === "/localization" || action.startsWith("/localization/")) return kamakuraLocalizationApi(request, env, identity, url, projectId, siteId, action.slice("/localization".length));
@@ -3020,10 +3146,14 @@ async function studioServiceCliApi(request: Request, env: Env, url: URL, identit
   const [, projectId, siteId, operationPath, statusKey] = match;
   if (!projectId || !siteId || !SCOPE_ID.test(projectId) || !SCOPE_ID.test(siteId)) return json({ error: "not_found" }, 404);
   const managedOrigin = publicSitesOrigin(env.PUBLIC_SITES_ORIGIN);
-  const managed = managedOrigin && managedOrigin !== url.origin ? await managedRegistration(env.DB, projectId, siteId) : null;
-  if (!managed && (projectId !== KAMAKURA_EDITOR_PROJECT_ID || siteId !== KAMAKURA_EDITOR_SITE_ID)) return json({ error: "not_found" }, 404);
-  const grantScope: CliGrantScope = [identity.clientId, projectId, siteId];
+  const external = projectId === KAMAKURA_EDITOR_PROJECT_ID && siteId === KAMAKURA_EDITOR_SITE_ID;
   const subject = `${CLI_SUBJECT_PREFIX}${identity.clientId}`;
+  if (!external && managedOrigin && managedOrigin !== url.origin && operationPath?.startsWith("cms.")) {
+    return managedCmsCliOperation(request, env, { projectId, siteId, actor: { id: subject, clientId: identity.clientId, cli: true } }, operationPath);
+  }
+  const managed = managedOrigin && managedOrigin !== url.origin ? await managedRegistration(env.DB, projectId, siteId) : null;
+  if (!managed && !external) return json({ error: "not_found" }, 404);
+  const grantScope: CliGrantScope = [identity.clientId, projectId, siteId];
 
   if (operationPath === undefined) {
     if (request.method !== "GET") return json({ error: "method_not_allowed" }, 405);
@@ -3045,7 +3175,7 @@ async function studioServiceCliApi(request: Request, env: Env, url: URL, identit
       .bind(...grantScope).all<{ readonly capability: string }>();
     if (!grants.success || !grants.results) throw new Error("CLI grant lookup failed");
     const active = new Set(grants.results.map(({ capability }) => capability));
-    const operations = OPERATIONS.filter((operation) => active.has(operation.capability) && (!managed || operation.managed))
+    const operations = OPERATIONS.filter((operation) => active.has(operation.capability) && (managed ? operation.managed && (!operation.id.startsWith("cms.") || env.CMS_OBJECTS !== undefined) : !operation.managedOnly))
       .map(({ id, capability, method, parameters, action, upload }) => ({
         id, capability, method, parameters,
         ...(action === undefined ? {} : { action }),
@@ -3063,7 +3193,7 @@ async function studioServiceCliApi(request: Request, env: Env, url: URL, identit
   const rawRequestKey = request.headers.get(OPERATION_KEY_HEADER);
   const requestKey = normalizeOperationKey(rawRequestKey);
   if (rawRequestKey !== null && requestKey === null) return json({ error: "invalid_request" }, 400);
-  if (managed && !spec.managed) return json({ error: "not_found" }, 404);
+  if (managed ? !spec.managed : spec.managedOnly) return json({ error: "not_found" }, 404);
   const dispatch = managed && managedOrigin
     ? (actor: CliDelegatedActor) => managedEditorOperation(request, env.DB, { subject: actor.delegatedBySubject, email: actor.email, cli: true }, projectId, siteId, bridgePath, managedOrigin)
     : resolveCliDispatch(request, env, url, projectId, siteId, bridgePath, spec);
@@ -3138,7 +3268,11 @@ async function studioManagedCliApi(request: Request, env: Env, url: URL, identit
   const [, projectId, siteId, operationPath, statusKey] = match;
   if (!projectId || !siteId || !SCOPE_ID.test(projectId) || !SCOPE_ID.test(siteId)) return json({ error: "not_found" }, 404);
   const origin = publicSitesOrigin(env.PUBLIC_SITES_ORIGIN);
-  if (!origin || origin === url.origin || !await managedRegistration(env.DB, projectId, siteId)) return json({ error: "not_found" }, 404);
+  if (!origin || origin === url.origin) return json({ error: "not_found" }, 404);
+  if (operationPath?.startsWith("cms.")) {
+    return managedCmsCliOperation(request, env, { projectId, siteId, actor: { id: identity.subject, cli: true } }, operationPath);
+  }
+  if (!await managedRegistration(env.DB, projectId, siteId)) return json({ error: "not_found" }, 404);
   const actor: ManagedActor = { subject: identity.subject, email: identity.email, cli: true };
   const membership = await env.DB.prepare(`
     SELECT member.role
@@ -3146,7 +3280,6 @@ async function studioManagedCliApi(request: Request, env: Env, url: URL, identit
      WHERE member.access_subject = ?1 AND member.project_id = ?2 AND s.id = ?3 LIMIT 1
   `).bind(identity.subject, projectId, siteId).first<{ readonly role: Role }>();
   if (!membership || !validRole(membership.role)) return json({ error: "forbidden" }, 403);
-
   if (operationPath === undefined) {
     if (request.method !== "GET") return json({ error: "method_not_allowed" }, 405);
     if (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length"))) return json({ error: "invalid_request" }, 400);
@@ -3157,7 +3290,9 @@ async function studioManagedCliApi(request: Request, env: Env, url: URL, identit
       if (!audit) return json({ error: "not_found" }, 404);
       return json({ status: audit.http_status === null ? "received" : "completed", operationId: audit.id, operation: audit.operation, startedAt: unixTimestamp(audit.started_at), httpStatus: audit.http_status });
     }
-    const operations = OPERATIONS.filter((operation) => operation.managed).map(({ id, capability, method, parameters }) => ({ id, capability, method, parameters }));
+    const operations = OPERATIONS.filter((operation) => operation.managed
+      && (!operation.id.startsWith("cms.") || env.CMS_OBJECTS !== undefined)
+      && (!operation.owner || membership.role === "owner")).map(({ id, capability, method, parameters }) => ({ id, capability, method, parameters }));
     const capabilities = [...new Set(operations.map(({ capability }) => capability))].sort();
     return json({ apiVersion: API_VERSION, projectId, siteId, capabilities, operations });
   }
@@ -3203,10 +3338,56 @@ async function studioCliApi(request: Request, env: Env, url: URL, identity: Acce
   return identity.kind === "service" ? studioServiceCliApi(request, env, url, identity) : studioManagedCliApi(request, env, url, identity);
 }
 
+function managedCmsCliOperation(request: Request, env: Env,
+  scope: { projectId: string; siteId: string; actor: CmsActor }, operationPath: string) {
+  const [id, ...parameters] = operationPath.split("/");
+  const resolved = id ? resolveOperation(id, parameters) : null;
+  if (!env.CMS_OBJECTS || !resolved?.spec.managed) return json({ error: "not_found" }, 404);
+  const version = resolved.spec.cmsVersion ?? 1;
+  return managedCmsApi(request, new CmsStore(env.DB, env.CMS_OBJECTS), scope, operationPath, version);
+}
+
+async function studioEditingCms(request: Request, env: Env, url: URL): Promise<Response> {
+  const match = /^\/api\/edit\/(v1|v2)\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/(capabilities|operations\/(cms\.[^?]+))$/u.exec(url.pathname);
+  if (!env.CMS_OBJECTS || !match) return json({ error: "not_found" }, 404);
+  let identity: AccessIdentity | ServiceIdentity;
+  const accessToken = request.headers.get("cf-access-token");
+  try {
+    identity = await authenticate(request, env, accessToken ?? undefined);
+    if (accessToken !== null && identity.kind !== "human") throw new AuthenticationError("wrong Access identity for route");
+  } catch (error) {
+    if (error instanceof AuthenticationError) return json({ error: "authentication_required" }, 401);
+    throw error;
+  }
+  const [, version, siteId, path, operation] = match;
+  const registration = await env.DB.prepare(`SELECT s.project_id FROM sites AS s JOIN managed_sites AS ms ON ms.site_id = s.id WHERE s.id = ?1`)
+    .bind(siteId).first<{ project_id: string }>();
+  if (!registration) return json({ error: "forbidden" }, 403);
+  const actor: CmsActor = identity.kind === "service" ? { id: `${CLI_SUBJECT_PREFIX}${identity.clientId}`, clientId: identity.clientId, cli: true }
+    : { id: identity.subject, cli: accessToken !== null };
+  const scope = { actor, siteId: siteId!, projectId: registration.project_id };
+  const store = new CmsStore(env.DB, env.CMS_OBJECTS);
+  if (path !== "capabilities" || version === "v2") return managedCmsApi(request, store, scope, operation ?? "discover", version === "v2" ? 2 : 1);
+  if (request.method !== "GET" || request.body !== null || url.search) return json({ error: "invalid_request" }, 400);
+  const capabilities = new Set<CmsCapability>();
+  for (const capability of ["cms.read", "cms.edit", "cms.publish"] as const) {
+    if (await store.site(scope, capability)) capabilities.add(capability);
+  }
+  const operations = EDITING_OPERATIONS.filter((entry) => {
+    const spec = managedCmsLegacySpec(entry.id);
+    return spec !== null && capabilities.has(spec[1]);
+  });
+  return operations.length ? json({ apiVersion: "v1", siteId, operations }) : json({ error: "forbidden" }, 403);
+}
+
 async function handle(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const configuredPublicOrigin = publicSitesOrigin(env.PUBLIC_SITES_ORIGIN);
-  if (configuredPublicOrigin !== null && url.origin === configuredPublicOrigin) return managedPublicRequest(request, env.DB, configuredPublicOrigin);
+  if (configuredPublicOrigin !== null && url.origin === configuredPublicOrigin) {
+    const cms = env.CMS_OBJECTS && await managedCmsPublic(request, new CmsStore(env.DB, env.CMS_OBJECTS), configuredPublicOrigin);
+    return cms || managedPublicRequest(request, env.DB, configuredPublicOrigin);
+  }
+  if (url.pathname.startsWith("/api/edit/")) return studioEditingCms(request, env, url);
   const isApi = url.pathname === "/api" || url.pathname.startsWith("/api/");
   const isCli = url.pathname === API_PREFIX || url.pathname.startsWith(`${API_PREFIX}/`);
   let identity: AccessIdentity | ServiceIdentity;
@@ -3254,7 +3435,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
   if (managedEditorMatch && managedEditor && !await editorMember(env, identity, managedEditorMatch[1]!, managedEditorMatch[2]!)) return htmlError("このページを表示できません。", 403);
   const isEditor = editorPage !== null || managedEditor !== null;
   const pageAdapter = editorPage ? liveEditorAdapter(editorPage) : null;
-  const dashboardPage = /^\/projects\/([A-Za-z][A-Za-z0-9_-]{0,79})\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/?$/u.exec(url.pathname);
+  const dashboardPage = /^\/projects\/([A-Za-z][A-Za-z0-9_-]{0,79})\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})(\/cms)?\/?$/u.exec(url.pathname);
   if (url.pathname === "/" || dashboardPage || /^\/projects\/[A-Za-z][A-Za-z0-9_-]{0,79}\/sites\/[A-Za-z][A-Za-z0-9_-]{0,79}\/invite\/?$/u.test(url.pathname) || isEditor || projectAlias !== null) {
     if (editorPage?.environment === "staging" && !await experienceEditorOwner(env, identity)) return htmlError("このページを表示できません。", 403);
     const indexUrl = new URL(typeof __STUDIO_INDEX_PATH__ === "string" ? __STUDIO_INDEX_PATH__ : "/index.html", url);
@@ -3268,13 +3449,14 @@ async function handle(request: Request, env: Env): Promise<Response> {
     return withStaticSecurity(await env.ASSETS.fetch(new Request(indexUrl, { method: request.method, headers: request.headers })), pageAdapter !== null || managedEditor !== null, pageAdapter ? pageAdapter.connectOrigins ?? [] : dashboardConnect, pageAdapter?.fontSources ?? [], pageAdapter?.scriptSources ?? [], pageAdapter ? pageAdapter.frameSources ?? [] : dashboardFrames);
   }
   const asset = withStaticSecurity(await env.ASSETS.fetch(request));
-  if (asset.status === 200 && (VERSIONED_FONT_PATH.test(url.pathname) || VERSIONED_STUDIO_ASSET_PATH.test(url.pathname))) {
-    asset.headers.set("Cache-Control", VERSIONED_ASSET_CACHE);
-  }
+  if (asset.status === 200 && (VERSIONED_FONT_PATH.test(url.pathname) || VERSIONED_CODE_ASSET_PATH.test(url.pathname))) asset.headers.set("Cache-Control", VERSIONED_FONT_CACHE);
   return asset;
 }
 
 export default {
+  async scheduled(_controller: unknown, env: Env): Promise<void> {
+    if (env.CMS_OBJECTS) await runCmsCron(new CmsStore(env.DB, env.CMS_OBJECTS));
+  },
   async fetch(request: Request, env: Env): Promise<Response> {
     try { return await handle(request, env); }
     catch (error) {

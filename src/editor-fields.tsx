@@ -65,16 +65,16 @@ export function Field({ name, value, apply, pending, fieldKey, disabled = false,
 /** 段の状態（この段で指定・継承・上の段で上書き・保存前）。ヒントは 1 行の短文、詳しい文は title と読み上げ用。 */
 export type RowStatus = {
   own?: boolean; reset?: (() => void) | undefined; unsaved?: boolean; lock?: string | undefined;
-  inherited?: string | undefined; inheritedTitle?: string | undefined; overridden?: string | undefined; overriddenTitle?: string | undefined;
+  inherited?: string | undefined; inheritedTitle?: string | undefined; overridden?: string | undefined; overriddenTitle?: string | undefined; mixed?: boolean;
 };
-export const hasHint = (status: RowStatus | undefined) => !!status && (!!status.inherited || !!status.overridden);
+export const hasHint = (status: RowStatus | undefined) => !!status && (!!status.inherited || !!status.overridden || !!status.mixed);
 /** 最初の span が項目名。主入力は htmlFor で指し、ヒントは hintId を aria-describedby で参照する。 */
 export function Row({ caption, htmlFor, hintId, status, group = false, extra, children }: {
   caption: string; htmlFor?: string | undefined; hintId?: string | undefined; status?: RowStatus | undefined; group?: boolean; extra?: ReactNode; children: ReactNode;
 }) {
   const captionId = useId(), ownHint = useId(), hint = hintId ?? ownHint;
-  const short = [status?.inherited, status?.overridden].filter(Boolean).join(" · ");
-  const long = [status?.inheritedTitle ?? status?.inherited, status?.overriddenTitle ?? status?.overridden].filter(Boolean).join("。");
+  const short = [status?.mixed ? "混在" : undefined, status?.inherited, status?.overridden].filter(Boolean).join(" · ");
+  const long = [status?.mixed ? "選択した要素で値が異なります。変更するとすべての選択要素へ適用します" : undefined, status?.inheritedTitle ?? status?.inherited, status?.overriddenTitle ?? status?.overridden].filter(Boolean).join("。");
   const body = <>
     <span className="e-cap" id={captionId} title={caption}>{caption}</span>
     {status?.unsaved && <><i className="e-dot" title="保存前の変更" aria-hidden="true" /><em className="e-vh">保存前</em></>}
@@ -193,10 +193,10 @@ export function UnitField({ caption, value, units, numberUnit = "px", numberLabe
   }
   const unitOptions = [...units, ...(parts && "number" in parts && units.length && !units.includes(parts.unit) ? [parts.unit] : [])];
   const showSelect = unitOptions.length > 1 || keywords.length > 0 || tokens.length > 0;
-  const keywordLabel = keyword && keywords.find(([name]) => name === keyword)?.[1];
+  const valuePlaceholder = keyword || (parts && "token" in parts) ? undefined : placeholder;
   return <Row caption={caption} htmlFor={id} hintId={hintId} status={status} extra={extra}>
     <Frame states={[state]} className="e-unit">
-      <input {...inputProps(state, id, disabled, keywordLabel || (parts && "token" in parts ? tokens.find(([name]) => name === parts.token)?.[1] ?? parts.token : placeholder), hasHint(status) ? hintId : undefined)} />
+      <input {...inputProps(state, id, disabled, valuePlaceholder, hasHint(status) ? hintId : undefined)} />
       {showSelect && <select aria-label={`${caption}の単位`} value={selected} disabled={disabled} onChange={(event) => choose(event.target.value)}>
         {selected === "raw" && <option value="raw">—</option>}
         {unitOptions.map((name) => <option key={name} value={`u:${name}`}>{name || numberLabel}</option>)}
