@@ -123,6 +123,10 @@ catalog がこの契約に合わない場合は `502 { "error": "upstream_contra
 
 Kamakura の `PageEditor` が編集するのは `src/site/niho-web` の native 化済みページです。日本語ページの下書き保存とページ単位公開は、サイト側が返す版と表示コンテキストを照合して行います。未変換のページは `readOnly.reason` で停止します。CMS の操作はサイト側の管理機能で扱います。
 
+編集画面を直接開くと、Access のセッション・プロジェクト一覧・設定と同時に editor catalog の取得を始めます。参加資格を確認した後、翻訳状態とブレークポイントを取得しながら、catalog の一覧から最初のページを開きます。ページ管理用の `pages.catalog` は変更の確認時に版を取得するために使います。
+
+日本語ページは共通 API の editor snapshot profile を使います。`editorState` まで返すホストでは文書・表示コンテキスト・編集状態をまとめて読み、移行中のホストでは不足する編集状態を旧ページ取得から補って文書版・表示コンテキスト版を照合します。権限エラーや不正なスナップショットは既存のエラー表示へ渡します。[編集 API 契約](../docs/editing-api-contract.md)
+
 Kamakura の editor route にも Experience と同じ範囲限定 CSP 緩和を適用します。native presentation のフォントだけは `https://kamakura-media.niho.life/niho-web/fonts/v1/` を font-src に追加します。manifest・共有枠・保存CASの契約は [site-presentation.md](../docs/site-presentation.md) に従います。Directory / Dashboard / invite route の CSP は変えません。
 
 ### Kamakura の素材ライブラリ（#85）
