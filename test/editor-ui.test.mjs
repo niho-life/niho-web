@@ -2368,11 +2368,14 @@ test("operation conflict keeps the local queue and retries a CLI write only afte
     fetch: (url, options) => api(new Request(url, options))
   });
   const cli = clientFor("cli"), gui = clientFor("gui"), operations = [];
+  let retryResult;
   const app = await setup({ adapter: {
     readDocument: (target, signal) => gui.read(target, signal),
     applyOperations: ({ target, ...request }, signal) => {
       operations.push(request);
-      return gui.applyOperations(target, request, signal);
+      const result = gui.applyOperations(target, request, signal);
+      if (operations.length === 2) retryResult = result;
+      return result;
     },
   } });
   try {
@@ -2392,6 +2395,8 @@ test("operation conflict keeps the local queue and retries a CLI write only afte
     assert.equal(operations.length, 2);
     assert.equal(operations[1].baseVersion, external.version);
     assert.notEqual(operations[1].operationId, operations[0].operationId);
+    assert.ok(retryResult);
+    assert.equal((await retryResult).status, "applied");
     const { document: saved } = await cli.read(homeTarget);
     assert.equal(saved.title, "GUIの編集");
     assert.equal(saved.meta.description, "CLIの編集");
