@@ -143,12 +143,17 @@ export function planCmsRelease(input: unknown, releaseIdInput: string, context: 
     items.push({ ...item, values, path });
   }
   const routes = items.filter((item) => item.path !== null).map(({ collectionId, itemId, path }) => ({ collectionId, itemId, path: path! }));
+  const routeByItemKey = new Map(routes.map((route) => [cmsItemKey(route), route]));
+  const explicitRedirectTargets = new Map(selection.redirects.map(({ from, to }) => [from, to]));
   const generatedRedirects = currentRoutes.reservations.flatMap((reservation) => {
     if (reservation.kind !== "cms-item") return [];
-    const next = routes.find((route) => route.collectionId === reservation.collectionId && route.itemId === reservation.itemId);
+    const next = routeByItemKey.get(cmsItemKey(reservation));
     if (!next || reservation.path === next.path) return [];
     return [{ from: reservation.path, to: next.path }];
-  }).filter((generated) => !selection.redirects.some((redirect) => redirect.from === generated.from && redirect.to === generated.to));
+  }).filter((generated) => explicitRedirectTargets.get(generated.from) !== generated.to);
+  if (generatedRedirects.length + selection.redirects.length > 25_000) {
+    return { status: "invalid", problems: [{ code: "route", message: "公開転送の件数が上限を超えています。" }] };
+  }
   const routePlan = planCmsRouteTable({ current: currentRoutes, siteId: schema.siteId, locale: selection.locale,
     expectedRevision: selection.routeTableRevision, nextRevision: cmsRouteRevision(releaseId),
     routes, redirects: [...generatedRedirects, ...selection.redirects] });

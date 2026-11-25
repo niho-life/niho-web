@@ -171,6 +171,25 @@ function publish(host, plan = host.planRelease()) {
   return host.publish(editor, host.confirm(editor, "cms.release.apply", plan.proposal));
 }
 
+function largeReleaseFixture(count, changeSlugs = false) {
+  const host = new MemoryHost(), sample = host.drafts.get(cmsItemKey(post));
+  const revisions = new Map(), items = [], reservations = [];
+  for (let index = 0; index < count; index++) {
+    const itemId = `post-${index}`, revision = `large-revision-${index}`, oldSlug = `old-${index}`;
+    const slug = changeSlugs ? `new-${index}` : oldSlug;
+    const item = { ...sample, itemId, revision, values: { ...sample.values, "field-slug": slug, "field-category": [] } };
+    revisions.set(revision, item);
+    items.push({ collectionId: "posts", itemId, revision });
+    reservations.push({ kind: "cms-item", path: `/posts/${oldSlug}`, collectionId: "posts", itemId });
+  }
+  const routeTable = { siteId, locale, revision: "routes-ja-large", reservations };
+  return {
+    context: { ...host.context(), routeTable, readRevision: ({ revision }) => revisions.get(revision), isRemoved: () => false },
+    input: { siteId, locale, schemaRevision: host.schema.schemaRevision, routeTableRevision: routeTable.revision,
+      expectedReleaseId: null, items, redirects: [] },
+  };
+}
+
 test("discovery is authorized and v1 cannot write through either a stale or guessed version", () => {
   const host = new MemoryHost();
   assert.deepEqual(discoverCmsContract({ contractVersion: 1, siteId }), { siteId, schemaRevision: null, contractVersion: 1 });
@@ -375,6 +394,21 @@ test("route planning indexes fixed paths for large CMS collections", () => {
   assert.equal(plan.problems.length, 0);
   assert.equal(plan.table.reservations.length, routes.length);
   assert.ok(Date.now() - started < 5_000, "25,000 fixed path candidates should be planned without quadratic scans");
+});
+
+test("release planning indexes prior item routes and rejects generated redirects over the limit", () => {
+  const large = largeReleaseFixture(25_000), started = Date.now();
+  const unchanged = planCmsRelease(large.input, "large-release", large.context);
+  assert.equal(unchanged.status, "ready");
+  assert.ok(Date.now() - started < 5_000, "25,000 existing CMS routes should be matched without quadratic scans");
+
+  const changing = largeReleaseFixture(12_501, true);
+  const explicitRedirects = Array.from({ length: 12_500 }, (_, index) => ({
+    from: `/legacy-${index}`, to: `/posts/new-${index}`,
+  }));
+  const overflow = planCmsRelease({ ...changing.input, redirects: explicitRedirects }, "large-release", changing.context);
+  assert.equal(overflow.status, "invalid");
+  assert.ok(overflow.problems.some(({ code, message }) => code === "route" && message.includes("上限")));
 });
 
 test("scheduling pins content, detects new collisions and lets the host retry with a fresh plan", () => {
