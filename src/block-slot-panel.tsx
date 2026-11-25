@@ -127,11 +127,17 @@ export function BlockSlotInspector({ document, node, path, slot, blocks, saved, 
     } catch { return undefined; }
   }, [saved, node.id, slot]);
   if (!definition || !declared) return null;
-  const run = (operation: EditorOperation) => applyToSlot(document, path, slot, blocks, operation, apply);
-  const draft = (operation: EditorOperation | null) => {
+  const run = (operation: EditorOperation | readonly EditorOperation[]) => {
+    const operations = Array.isArray(operation) ? operation : [operation];
+    const converted = operations.map((next) => slotOperations(document, path, slot, blocks, next));
+    const problem = converted.find((next): next is string => typeof next === "string");
+    return problem ?? apply(converted.flatMap((next) => typeof next === "string" ? [] : next));
+  };
+  const draft = (operation: EditorOperation | readonly EditorOperation[] | null) => {
     if (!operation) { preview(null); return; }
-    const operations = slotOperations(document, path, slot, blocks, operation);
-    if (typeof operations !== "string") preview(operations);
+    const source = Array.isArray(operation) ? operation : [operation];
+    const converted = source.map((next) => slotOperations(document, path, slot, blocks, next));
+    if (!converted.some((next) => typeof next === "string")) preview(converted.flatMap((next) => typeof next === "string" ? [] : next));
   };
   const text = declared.text, rule = text === undefined ? undefined : definition.props[text];
   const max = Math.min(rule?.type === "string" ? rule.maxLength ?? 4096 : 4096, 4096);
