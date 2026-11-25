@@ -50,7 +50,18 @@ const input = { baseVersion: saved.version, operationId: crypto.randomUUID(),
 const appliedResponse = await call(applyPath, "POST", input);
 const applied = await appliedResponse.json();
 const retry = await (await call(applyPath, "POST", input)).json();
-if (appliedResponse.status !== 200 || applied.version !== retry.version || storage.readJournal().length !== 1) throw new Error("operation retry did not return the committed draft");
+const rebasedInput = { baseVersion: saved.version, operationId: crypto.randomUUID(), operations: [{
+  type: "style", nodeId: "lead", breakpoint: "base", property: "color", value: "#334455",
+  preconditions: { parentId: "hero", oldValue: null }
+}] };
+const rebasedResponse = await call(applyPath, "POST", rebasedInput);
+const rebased = await rebasedResponse.json();
+const journal = storage.readJournal();
+if (appliedResponse.status !== 200 || applied.version !== retry.version || rebasedResponse.status !== 200
+  || journal.length !== 2 || journal.at(-1).rebasedFromVersion !== applied.version
+  || rebased.document.body[0].children.find(({ id }) => id === "lead").style.base.color !== "#334455") {
+  throw new Error("operation retry or safe rebase did not return the committed draft");
+}
 
 console.log(JSON.stringify({
   operations: (await discover.json()).operations.map(({ id, method }) => ({ id, method })),
@@ -59,5 +70,6 @@ console.log(JSON.stringify({
   save: { status: savedResponse.status, version: saved.version, title: saved.document.title,
     backgroundColor: saved.document.body[0].style.base.backgroundColor, addedForm: saved.document.body[0].children.at(-1).tag === "form" },
   apply: { status: appliedResponse.status, revision: applied.revision, bytes: Buffer.byteLength(JSON.stringify(input)), sameVersionOnRetry: applied.version === retry.version },
+  rebase: { status: rebasedResponse.status, fromVersion: saved.version, appliedAgainstVersion: journal.at(-1).rebasedFromVersion, revision: rebased.revision },
   staleSave: { status: conflictResponse.status, error: conflict.error }
 }, null, 2));
