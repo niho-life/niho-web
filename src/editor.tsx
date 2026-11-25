@@ -27,7 +27,7 @@ import type { ComponentKind, ComponentLibrary, IconName, PageDocument, PageNode,
 import { AssetLibraryPanel, BackgroundImageField, ImageSourceField, VideoSourceField, assetPlacement, socialImageProblem, useLocalAssetUsage, useResolvedAssets, type AssetAction, type AssetPicker } from "./editor-assets.js";
 import { assetEditorCss, canvasAssetCss } from "./editor-assets-style.js";
 import { uiColor } from "./ui-tokens.js";
-import type { LibraryAsset, ResolvedAssetMap } from "./assets.js";
+import { assetKey, type LibraryAsset, type ResolvedAssetMap } from "./assets.js";
 import { presentationAssetDocument } from "./presentation.js";
 import { initializeSitePresentation } from "./presentation-runtime.js";
 import { componentIssues, componentUsage, parseComponentLibrary, type ResolvedOrigin } from "./components.js";
@@ -43,19 +43,26 @@ import {
 import { LanguageSelector, LocalizationPanel, editorLocalizationLocaleFor, localizationEditorCss, localizedOperationProblem, useEditorLocalization, type EditorLocalizationCommandOutcome, type EditorLocalizationManualBuffer } from "./editor-localization.js";
 import { parseEditorLocaleReleaseApplyResult, parseEditorLocaleReleasePlan, parseEditorLocaleReleaseState } from "./editor-locale-release.js";
 import { documentLocaleFor, validateLocalizedDocumentSave, type LocalizationLocale } from "./localization.js";
-import { PAGE_OPERATION_LIMIT } from "./editing-page-operations.js";
+import { PAGE_OPERATION_LIMIT, pageNodesHaveNames, pageOperationChangesNodeNames, pageOperationUsesNodeNames } from "./editing-page-operations.js";
 import { acceptAppliedOperations, canSendOperations, fallbackOperations, operationQueue as createOperationQueue, operationApplier, reviewOperationConflict, queuePageEdit, queuePageTravel } from "./editor-operation-queue.js";
 import { editorSessionFrom, readEditorSession, type EditorSession } from "./editor-session.js";
 import { canvasViewportHeight, elementTypeLabel, fitCanvasScale, layerLabel, pathForNodeId, projectLayers, visibleLayers } from "./layers.js";
 import { LayerTreePanel } from "./editor-layers.js";
 import { CanvasViewportToolbar, EditorWorkspace, InspectorTabs, PanelToggle, ViewportEdgeHandle, WorkspaceIcon, WorkspaceScaleSelect, viewportPresets, workspaceScales, type WorkspaceScale, type WorkspaceTab } from "./editor-workspace.js";
 import { dispatchEditorShortcut, editorShortcuts } from "./editor-shortcuts.js";
+import { indexedNodesById } from "./node-tree.js";
+import {
+  EDITOR_NODE_CLIPBOARD_MAX_LENGTH, EDITOR_NODE_CLIPBOARD_TYPE, createEditorNodeClipboard, normalizeNodeFragment, parseEditorNodeClipboard,
+  readRememberedEditorNodeClipboard, rememberEditorNodeClipboard, type EditorNodeClipboard
+} from "./editor-fragment.js";
 import { workspaceCss } from "./editor-workspace-style.js";
 import { iconCatalog } from "./icons.js";
 import { parseEnglishPublication } from "./english-publication.js";
 import { BreakpointSettingsDialog, breakpointPreview, useBreakpointSettings } from "./editor-breakpoints.js";
 import { ResponsiveProposalControl, responsiveProposalCss } from "./editor-responsive-proposal.js";
 import { beginEditorPerformance, finishEditorPerformance, type EditorPerformanceMeasurement, type EditorPerformanceOutcome } from "./editor-performance.js";
+
+const browserClipboardNodeType = `web ${EDITOR_NODE_CLIPBOARD_TYPE}`;
 
 export type * from "./editor-types.js";
 export { prepareResponsiveProposal, requestResponsiveProposal, responsiveProposalProperties, ResponsiveProposalTimeoutError } from "./editor-responsive-proposal.js";
@@ -67,7 +74,15 @@ export type { LayerTreePanelProps } from "./editor-layers.js";
 export { readEditorSession, projectLayers, pathForNodeId, visibleLayers, fitCanvasScale, canvasViewportHeight, LayerTreePanel };
 const emptyBlocks: EditorBlockRegistry = {};
 type Session = EditorSession;
-const needsPageSave = (session: Session) => !!session.operationQueue.inFlight || fingerprint(session.history.present) !== session.saved;
+const pageSaveChecks = new WeakMap<Session, { present: PageDocument; saved: string; dirty: boolean }>();
+const needsPageSave = (session: Session) => {
+  if (session.operationQueue.inFlight) return true;
+  const present = session.history.present, cached = pageSaveChecks.get(session);
+  if (cached?.present === present && cached.saved === session.saved) return cached.dirty;
+  const dirty = fingerprint(present) !== session.saved;
+  pageSaveChecks.set(session, { present, saved: session.saved, dirty });
+  return dirty;
+};
 /** 部品を読み直す確認中の状態。library・page は確認を始めた時点の作業コピーの fingerprint（変わっていれば適用しない）。 */
 type LibraryReload = { fresh: LibrarySession; plan: LibraryReloadPlan; library: string; page: string | undefined };
 type Inspector = "element" | "page" | "site" | "localization";
@@ -269,12 +284,15 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
   const resizing = useRef<{ element: HTMLElement; path: NodePath; x: number; y: number; width: number; height: number; inlineWidth: string; inlineHeight: string } | null>(null);
   const [linkOpen, setLinkOpen] = useState(false), [linkHref, setLinkHref] = useState("/"), [linkError, setLinkError] = useState("");
   const originalHtml = useRef(""), savedRange = useRef<Range | null>(null);
-  const scope = pageScope(rendered), entries = walkNodes(document), renderedEntries = rendered === document ? entries : walkNodes(rendered);
-  const selected = selectedNodeId ? renderedEntries.find(({ node }) => node.type !== "text" && node.id === selectedNodeId)?.node : selection ? nodeAt(document, selection) : undefined;
+  const scope = pageScope(rendered), entries = useMemo(() => walkNodes(document), [document]);
+  const renderedEntries = useMemo(() => rendered === document ? entries : walkNodes(rendered), [rendered, document, entries]);
+  const nodesById = useMemo(() => new Map(entries.flatMap((entry) => entry.node.type === "text" ? [] : [[entry.node.id, entry] as const])), [entries]);
+  const renderedNodesById = useMemo(() => new Map(renderedEntries.flatMap((entry) => entry.node.type === "text" ? [] : [[entry.node.id, entry] as const])), [renderedEntries]);
+  const selected = selectedNodeId ? renderedNodesById.get(selectedNodeId)?.node : selection ? nodeAt(document, selection) : undefined;
   const selectedId = selected?.type === "text" && selection && selection.length > 1 ? nodeAt(document, selection.slice(0, -1)) : selected;
   const primarySelectedNodeId = selectedNodeId ?? (selectedId && selectedId.type !== "text" ? selectedId.id : undefined);
   const selectionCss = (selectedNodeIds?.length ? selectedNodeIds : primarySelectedNodeId ? [primarySelectedNodeId] : []).map((id) => {
-    const entry = renderedEntries.find(({ node: item }) => item.type !== "text" && item.id === id);
+    const entry = renderedNodesById.get(id);
     if (!entry || entry.node.type === "text") return "";
     const primary = id === primarySelectedNodeId;
     const color = primary && entry.node.type === "instance" ? uiColor.component : uiColor.accent;
@@ -290,7 +308,7 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
     !lockReason(document, resizePath, sizeField("height"), locks);
   const sizeTarget = (id: string) => { const element = body && Array.from(body.querySelectorAll<HTMLElement>("[data-nw-node]")).find((item) => item.dataset.nwNode === id); return slot ? element?.querySelector<HTMLElement>(`[data-nw-slot="${slot}"]`) ?? undefined : element ?? undefined; };
 
-  const editing = editingId ? entries.find(({ node }) => node.type !== "text" && node.id === editingId) : undefined;
+  const editing = editingId ? nodesById.get(editingId) : undefined;
   // 部品の内側に描いたノードは、文書に置いたインスタンス（ID を引き継いだ外枠）として扱う。
   const ownerElement = (element: HTMLElement | null): HTMLElement | null => {
     const origin = element?.dataset.nwNode ? origins.get(element.dataset.nwNode) : undefined;
@@ -345,7 +363,7 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
   }
   function beginTextEdit(element: HTMLElement, choose: boolean): boolean | string {
     if (!editable || preview || editingId) return false;
-    const id = element.dataset.nwNode ?? "", entry = entries.find(({ node }) => node.type !== "text" && node.id === id);
+    const id = element.dataset.nwNode ?? "", entry = nodesById.get(id);
     if (!entry || !isDirectlyEditable(entry.node)) return false;
     const lock = lockReason(document, entry.path, "children", locks);
     if (lock) return `データ連動値は変更できません。${lock}`;
@@ -381,7 +399,7 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
   }
   function placeAt(event: React.DragEvent<HTMLElement>): DropPlace {
     const target = ownerElement(asElement(event.target)?.closest<HTMLElement>(`[data-nw-owner="${scope}"][data-nw-node]`) ?? null);
-    const entry = target ? entries.find(({ node }) => node.type !== "text" && node.id === target.dataset.nwNode) : undefined;
+    const entry = target ? nodesById.get(target.dataset.nwNode ?? "") : undefined;
     if (!entry || !target) return { parentId: null, index: document.body.length, marker: { left: 8, top: body?.scrollHeight ?? 0, width: Math.max(120, width - 16), height: 2, inside: false } };
     const rect = target.getBoundingClientRect(), scrollX = body?.ownerDocument.defaultView?.scrollX ?? 0, scrollY = body?.ownerDocument.defaultView?.scrollY ?? 0;
     const canContain = entry.node.type === "element" && !entry.node.embed && ["div", "section", "article", "header", "footer", "main", "nav", "aside", "li", "figure", "blockquote", "form"].includes(entry.node.tag);
@@ -423,9 +441,11 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
     if (!body) return;
     return initializeSitePresentation(body, { interactive: presentationRuntime, ...(mode === "preview" && xPostFrameUrl ? { xPostFrameUrl } : {}) });
   }, [body, mode, presentation, presentationRuntime, rendered, replay, xPostFrameUrl]);
-  const hasEmbed = (source: PageDocument) => walkNodes(source).some(({ node }) => node.type === "element" && !!node.embed?.source);
-  const presentationDocuments = presentation ? [presentation.shared.header, presentation.shared.footer, ...(presentation.overlays ?? []).map((overlay) => overlay.document), ...(presentation.hostViews ?? []).map((view) => view.document)] : [];
-  const canvasHasTrustedFrames = hasEmbed(rendered) || presentationDocuments.some(hasEmbed) || !!presentation?.hostViews?.some((view) => (view.externalFrames?.length ?? 0) > 0);
+  const presentationDocuments = useMemo(() => presentation ? [presentation.shared.header, presentation.shared.footer, ...(presentation.overlays ?? []).map((overlay) => overlay.document), ...(presentation.hostViews ?? []).map((view) => view.document)] : [], [presentation]);
+  const presentationHasEmbed = useMemo(() => presentationDocuments.some((source) => walkNodes(source).some(({ node }) => node.type === "element" && !!node.embed?.source)), [presentationDocuments]);
+  const canvasHasTrustedFrames = useMemo(() => {
+    return renderedEntries.some(({ node }) => node.type === "element" && !!node.embed?.source) || presentationHasEmbed || !!presentation?.hostViews?.some((view) => (view.externalFrames?.length ?? 0) > 0);
+  }, [renderedEntries, presentationHasEmbed, presentation?.hostViews]);
   return <><iframe key={canvasHasTrustedFrames ? "trusted-frames" : "static"} ref={frame} title="ページのライブキャンバス" sandbox={canvasHasTrustedFrames ? "allow-same-origin allow-scripts" : "allow-same-origin"} style={{ width, height, border: 0 }}
     srcDoc={'<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head><body style="margin:0"></body></html>'}
     onLoad={() => setBody(frame.current?.contentDocument?.body ?? null)} />
@@ -454,7 +474,7 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
       const target = event.target as HTMLElement;
       const host = typeof target.closest === "function" ? target.closest<HTMLElement>("[data-nw-host-view]") : null;
       const element = host?.dataset.nwOwner === scope ? host : typeof target.closest === "function" ? target.closest<HTMLElement>(`[data-nw-owner="${scope}"][data-nw-node]`) : null;
-      const id = element?.dataset.nwNode, entry = entries.find(({ node }) => node.type !== "text" && node.id === id);
+      const id = element?.dataset.nwNode, entry = id ? nodesById.get(id) : undefined;
       const mode: SelectionMode = event.shiftKey ? "toggle" : "replace";
       select(entry?.path ?? null, id, structureEditable && element && entry?.node.type === "component" ? slotFromTarget(target, element, blocks[entry.node.block]?.slots) : null, mode);
 
@@ -512,6 +532,8 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const [formCompletionPages, setFormCompletionPages] = useState<{ target: string; status: "idle" | "loading" | "ready" | "error"; pages: readonly EditorPage[] }>({ target: "", status: "idle", pages: [] });
   const sessionRef = useRef(session); sessionRef.current = session;
   const [selectedId, setSelectedId] = useState<string | null>(null), [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]), [selectedLocalizationUnit, setSelectedLocalizationUnit] = useState<string | null>(null), [selectedCanvasNode, setSelectedCanvasNode] = useState<string | null>(null), [width, setWidth] = useState(1280), [widthField, setWidthField] = useState("1280");
+  const selectedIdRef = useRef(selectedId); selectedIdRef.current = selectedId;
+  const selectedNodeIdsRef = useRef(selectedNodeIds); selectedNodeIdsRef.current = selectedNodeIds;
   useEffect(() => { setWidthField(String(width)); }, [width]);
   // 選んだ業務ブロックの表示領域。of は安定 ID で、兄弟の挿入・移動でも同じブロックへ留まる。
   const [slotChoice, setSlotChoice] = useState<{ of: string; name: string | null; back?: string } | null>(null);
@@ -630,6 +652,18 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   let selectedLocale: LocalizationLocale | undefined;
   try { if (sessionLocalizationSite && session) selectedLocale = editorLocalizationLocaleFor(sessionLocalizationSite.config, session.target.locale); } catch { /* read hook reports the invalid mapping */ }
   const targetMode = !!sessionLocalizationSite && !!selectedLocale && selectedLocale !== sessionLocalizationSite.config.sourceLocale;
+  const nameTarget = session?.target, nameTargetKey = targetKeyOf(nameTarget);
+  const [nameCapability, setNameCapability] = useState<{ target: string; adapter: PageEditorProps["adapter"]; epoch: number; supported: boolean }>();
+  useEffect(() => {
+    if (!nameTarget || !adapter.discoverPageNodeNames) return;
+    const controller = new AbortController();
+    const update = (supported: boolean) => {
+      if (!controller.signal.aborted) setNameCapability({ target: nameTargetKey, adapter, epoch: loadEpoch, supported });
+    };
+    void adapter.discoverPageNodeNames(nameTarget, controller.signal).then((value) => update(value === true), () => update(false));
+    return () => controller.abort();
+  }, [adapter, nameTargetKey, loadEpoch]);
+  const pageNodeNames = nameCapability?.target === nameTargetKey && nameCapability.adapter === adapter && nameCapability.epoch === loadEpoch && nameCapability.supported;
   const hostSourceReady = !!session && adapter.localization?.sourceDocumentLocale?.(session.target.siteId) === session.target.locale
     && (!sessionLocalizationSite || selectedLocale === sessionLocalizationSite.config.sourceLocale);
   const localePublication = !!adapter.localization?.readRelease && !!adapter.localization.prepareRelease && !!adapter.localization.applyRelease && !!adapter.localization.rollbackRelease;
@@ -646,6 +680,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const manualInputPending = !!localizationManual?.pending && !!session && sameTarget(localizationManual.target, session.target);
   const hasInput = Object.keys(pendingFields).length > 0 || manualInputPending, dirty = !!session && needsPageSave(session);
   const masterId = editing && libraryPresent?.components.some((component) => component.id === editing) ? editing : null;
+  const canNameNode = !targetMode && (masterId ? components?.nodeNames === true : pageNodeNames);
   const libraryDirty = !!library && libraryFingerprint(library.history.present) !== library.saved, pendingChanges = dirty || libraryDirty, locale = session?.target.locale ?? "ja";
   const blocked = !!busy || !!plan || !!localeReleasePlan || !!pageChange || !!releaseSetPages;
   const versions = useVersionHistory({ adapter, blocks, components: libraryPresent, target: session?.target, version: session?.version, epoch: loadEpoch, report: setNotice,
@@ -804,12 +839,21 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     const next = mode === "replace" ? [id]
       : mode === "range" ? [...selectedNodeIds.filter((candidate) => !(rangeIds ?? []).includes(candidate)), ...(rangeIds ?? [id])]
         : current.has(id) ? selectedNodeIds.filter((candidate) => candidate !== id) : [...selectedNodeIds, id];
-    const nodes = walkNodes(source).filter((entry): entry is { node: Exclude<PageNode, { type: "text" }>; path: number[] } => entry.node.type !== "text");
+    const nodes = [...new Set(next)].flatMap((candidate) => indexedNodesById(source, candidate)).filter((entry): entry is { node: Exclude<PageNode, { type: "text" }>; path: NodePath } => entry.node.type !== "text").sort((left, right) => {
+      const count = Math.min(left.path.length, right.path.length);
+      for (let at = 0; at < count; at++) if (left.path[at] !== right.path[at]) return left.path[at]! - right.path[at]!;
+      return left.path.length - right.path.length;
+    });
     const byId = new Map(nodes.map(({ node: item, path: itemPath }) => [item.id, itemPath] as const));
     const candidates = new Set(next.filter((candidate) => byId.has(candidate)));
-    const kept = nodes.filter(({ node: item, path: itemPath }) => candidates.has(item.id) && !nodes.some(({ node: possibleAncestor, path: ancestorPath }) =>
-      candidates.has(possibleAncestor.id) && ancestorPath.length < itemPath.length && ancestorPath.every((part, at) => part === itemPath[at])))
-      .map(({ node: item }) => item.id);
+    const kept: string[] = [], selectedAncestors: typeof nodes = [];
+    const isAncestor = (ancestor: NodePath, path: NodePath) => ancestor.length < path.length && ancestor.every((part, at) => part === path[at]);
+    for (const entry of nodes) {
+      if (!candidates.has(entry.node.id)) continue;
+      while (selectedAncestors.length && !isAncestor(selectedAncestors.at(-1)!.path, entry.path)) selectedAncestors.pop();
+      if (selectedAncestors.length) continue;
+      kept.push(entry.node.id); selectedAncestors.push(entry);
+    }
     const preferredPath = byId.get(id);
     const preferredAncestor = preferredPath && [...kept].reverse().find((candidate) => {
       const candidatePath = byId.get(candidate)!;
@@ -869,13 +913,18 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   /** 複数の操作は1回の履歴にまとめる。部品の編集中は部品の root を1つだけ持つ文書を編集し、ライブラリへ書き戻す。 */
   function apply(operation: EditorOperation | readonly EditorOperation[]): string | undefined {
     const operations: readonly EditorOperation[] = "type" in operation ? [operation] : operation;
+    const current = sessionRef.current;
+    const preservesLocalizedNames = !masterId && targetMode && pageNodeNames && !!current;
+    if (!canNameNode && operations.some((next) => preservesLocalizedNames
+      ? pageOperationChangesNodeNames(current.history.present, next)
+      : pageOperationUsesNodeNames(next))) return "この保存先では要素の名前を変更できません。";
     if (masterId) {
       setDraft(null);
       // 部品はページのタイトル・公開情報・文字スタイルを持たない。
       if (operations.some((next) => next.type === "title" || next.type === "meta" || next.type === "textStyle" || next.type === "restore" || next.type === "nodeTextStyle" && next.name !== undefined)) return "コンポーネント本体の編集中は、テキストスタイルとページ設定を変更できません。ページに戻ってから操作してください。";
       return updateLibrary((library) => withComponentDocument(library, masterId, editMaster(componentDocument(library, masterId, locale), operations, library), blocks));
     }
-    const current = sessionRef.current; if (!current || editBlocked) return current?.readOnly?.reason ?? "処理が完了してから編集してください。";
+    if (!current || editBlocked) return current?.readOnly?.reason ?? "処理が完了してから編集してください。";
     try {
       const lib = libraryRef.current?.history.present;
       if (targetMode) {
@@ -917,7 +966,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     if (!document || !selectedNodeIds.length) return false;
     if (selectedNodeIds.length > PAGE_OPERATION_LIMIT) return `一度に操作できる要素は${PAGE_OPERATION_LIMIT}件までです。選択数を減らしてください。`;
     const selected = new Set(selectedNodeIds), handled = new Set<string>(), operations: EditorOperation[] = [];
-    const orderedIds = walkNodes(document).flatMap(({ node: item }) => item.type !== "text" && selected.has(item.id) ? [item.id] : []);
+    const orderedIds = entries.flatMap(({ node: item }) => item.type !== "text" && selected.has(item.id) ? [item.id] : []);
     let simulated = document;
     try {
       for (const id of orderedIds) {
@@ -940,6 +989,163 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   function runBulkStructural(type: "duplicate" | "remove") {
     const result = bulkStructural(type);
     if (typeof result === "string") setNotice(result);
+  }
+  function selectedClipboardFragment(): { clipboard: EditorNodeClipboard } | string {
+    const source = currentDocument();
+    if (!source) return "ページを読み込んでからコピーしてください。";
+    const selected = new Set(selectedNodeIds.length ? selectedNodeIds : selectedId ? [selectedId] : []);
+    if (!selected.size) return "コピーする要素を選択してください。";
+    const entries = walkNodes(source).filter(({ node: item }) => item.type !== "text" && selected.has(item.id));
+    if (entries.length !== selected.size) return "選択した要素を確認できません。ページを再読み込みしてください。";
+    for (const { path } of entries) {
+      const pair = pairedFormFieldNodeId(source, path);
+      if (pair) selected.add(pair);
+    }
+    const all = walkNodes(source).filter((entry): entry is { node: Exclude<PageNode, { type: "text" }>; path: number[] } => entry.node.type !== "text");
+    const roots = all.filter(({ node: item, path }) => selected.has(item.id) && !all.some(({ node: ancestor, path: ancestorPath }) =>
+      selected.has(ancestor.id) && ancestorPath.length < path.length && ancestorPath.every((part, index) => part === path[index])));
+    const lockedIds = new Set(effectiveLocks(source, masterId ? [] : sessionRef.current?.locks ?? [], blocks).map(({ nodeId: id }) => id));
+    if (roots.some(({ node: root }) => walkNodes({ ...source, body: [root] }).some(({ node: child }) => child.type !== "text" && lockedIds.has(child.id)))) {
+      return "データ連動値を含む要素はコピーできません。";
+    }
+    const nodes = roots.map(({ node: root }) => root);
+    return { clipboard: createEditorNodeClipboard(source.siteId, nodes) };
+  }
+  async function writeSystemClipboard(clipboard: EditorNodeClipboard): Promise<boolean> {
+    const systemClipboard = workspace.current?.ownerDocument.defaultView?.navigator.clipboard;
+    if (!systemClipboard?.write || typeof ClipboardItem === "undefined") return false;
+    try {
+      const serialized = JSON.stringify(clipboard);
+      if (serialized.length > EDITOR_NODE_CLIPBOARD_MAX_LENGTH) return false;
+      const item = new ClipboardItem({ [browserClipboardNodeType]: new Blob([serialized], { type: EDITOR_NODE_CLIPBOARD_TYPE }) });
+      await systemClipboard.write([item]);
+      return true;
+    } catch { return false; }
+  }
+  function storeClipboard(clipboard: EditorNodeClipboard, showFallbackNotice: boolean): void {
+    rememberEditorNodeClipboard(clipboard);
+    void writeSystemClipboard(clipboard).then((written) => {
+      if (!written && showFallbackNotice) setNotice("コピーしました。この編集画面内のコピー内容から貼り付けできます。");
+    });
+  }
+  function copySelection(): boolean | string {
+    const result = selectedClipboardFragment();
+    if (typeof result === "string") return result;
+    storeClipboard(result.clipboard, true);
+    setNotice("");
+    return true;
+  }
+  function cutSelection(): boolean | string {
+    const result = selectedClipboardFragment();
+    if (typeof result === "string") return result;
+    const removed = bulkStructural("remove");
+    if (typeof removed === "string") return removed;
+    if (removed) { storeClipboard(result.clipboard, false); setNotice("選択した要素をカットしました。"); }
+    return removed;
+  }
+  async function readSystemClipboard(): Promise<EditorNodeClipboard | null> {
+    const systemClipboard = workspace.current?.ownerDocument.defaultView?.navigator.clipboard;
+    if (!systemClipboard?.read) return readRememberedEditorNodeClipboard();
+    let items: ClipboardItems;
+    try { items = await systemClipboard.read(); }
+    catch { return readRememberedEditorNodeClipboard(); }
+    for (const item of items) if (item.types.includes(browserClipboardNodeType)) {
+      const blob = await item.getType(browserClipboardNodeType);
+      let data: unknown;
+      try {
+        const serialized = await blob.text();
+        if (serialized.length > EDITOR_NODE_CLIPBOARD_MAX_LENGTH) throw new Error("oversized clipboard");
+        data = JSON.parse(serialized);
+      }
+      catch { throw new Error("NIHO Web のコピー形式を読み取れません。"); }
+      return parseEditorNodeClipboard(data);
+    }
+    return readRememberedEditorNodeClipboard();
+  }
+  async function pasteSelection(inside: boolean): Promise<void> {
+    try {
+      const clipboard = await readSystemClipboard();
+      if (!clipboard) { setNotice("貼り付けできる NIHO Web の要素がクリップボードにありません。"); return; }
+      const pageBefore = sessionRef.current, libraryBefore = libraryRef.current;
+      const source = currentDocument(), rendered = document;
+      if (!source || !rendered) { setNotice("ページを読み込んでから貼り付けてください。"); return; }
+      if (clipboard.siteId !== source.siteId || clipboard.siteId !== pageBefore?.target.siteId) {
+        setNotice("別のサイトからコピーした要素は貼り付けできません。"); return;
+      }
+      const library = libraryBefore?.history.present;
+      if (library && library.siteId !== source.siteId) { setNotice("コンポーネントの参照先サイトが一致しないため、貼り付けできません。"); return; }
+      for (const name of clipboard.textStyleNames) if (!Object.hasOwn(rendered.textStyles ?? {}, name)) {
+        setNotice(`文字スタイル「${name}」を貼り付け先で解決できないため、貼り付けできません。`); return;
+      }
+      const fragmentDocument = { ...source, body: [...clipboard.nodes] };
+      const findMissingToken = (value: unknown, available: Readonly<Record<string, unknown>>): string | undefined => {
+        if (Array.isArray(value)) { for (const entry of value) { const missing = findMissingToken(entry, available); if (missing) return missing; } return undefined; }
+        if (!value || typeof value !== "object") return undefined;
+        if ("token" in value && typeof value.token === "string" && !Object.hasOwn(available, value.token)) return value.token;
+        for (const entry of Object.values(value)) { const missing = findMissingToken(entry, available); if (missing) return missing; }
+        return undefined;
+      };
+      for (const { node: item } of walkNodes(fragmentDocument)) {
+        const availableTokens = item.type === "instance" ? { ...rendered.tokens, ...library?.tokens } : rendered.tokens;
+        const missingToken = findMissingToken(item.type === "text" ? undefined : item.style, availableTokens) ??
+          (item.type === "component" ? findMissingToken(item.slots, rendered.tokens) : undefined);
+        if (missingToken) { setNotice(`共通値「${missingToken}」を貼り付け先で解決できないため、貼り付けできません。`); return; }
+        if (item.type === "component") {
+          if (!Object.hasOwn(blocks, item.block)) { setNotice(`業務ブロック「${item.block}」を解決できないため、貼り付けできません。`); return; }
+          if (insertableBlocks && !insertableBlocks.includes(item.block)) { setNotice(`業務ブロック「${item.block}」はこの場所に追加できないため、貼り付けできません。`); return; }
+        }
+        if (item.type === "instance") {
+          if (!library?.components.some((component) => component.id === item.component)) { setNotice(`コンポーネント「${item.component}」を解決できないため、貼り付けできません。`); return; }
+          const problem = placementProblem(library, item.component, insertableBlocks, masterId);
+          if (problem) { setNotice(`コンポーネント「${item.component}」を貼り付けできません。${problem}。`); return; }
+        }
+        if (item.type === "element" && item.formCompletionPageId) {
+          if (formCompletionPages.status !== "ready" || formCompletionPages.target !== formCompletionTargetKey || !formCompletionCandidates.some((candidate) => candidate.pageId === item.formCompletionPageId)) {
+            setNotice(`送信完了先「${item.formCompletionPageId}」を貼り付け先のサイト・言語で解決できません。`); return;
+          }
+        }
+      }
+      if (clipboard.assets.length) {
+        if (!assets) { setNotice("素材の参照を確認できないため、貼り付けできません。"); return; }
+        let resolved: ResolvedAssetMap;
+        try { resolved = await assets.resolveAssets({ siteId: source.siteId, references: clipboard.assets }, new AbortController().signal); }
+        catch { setNotice("貼り付け先のサイトで素材を確認できません。ページを再読み込みしてから再度お試しください。"); return; }
+        const missing = clipboard.assets.find((reference) => !Object.hasOwn(resolved, assetKey(reference)));
+        if (missing) { setNotice(`素材「${missing.provider}:${missing.id}」を貼り付け先のサイトで解決できません。`); return; }
+      }
+      if (sessionRef.current !== pageBefore || libraryRef.current !== libraryBefore ||
+          JSON.stringify([selectedIdRef.current, selectedNodeIdsRef.current]) !== JSON.stringify([selectedId, selectedNodeIds])) {
+        setNotice("ページまたは選択が変わったため貼り付けを中止しました。もう一度実行してください。"); return;
+      }
+      const targets = selectedNodeIds.length ? selectedNodeIds : selectedId ? [selectedId] : [];
+      const selectedEntries = walkNodes(source).filter(({ node: item }) => item.type !== "text" && targets.includes(item.id));
+      if (!selectedEntries.length) { setNotice("貼り付け位置となる要素を選択してください。"); return; }
+      let parentId: string | null, index: number;
+      if (inside) {
+        if (selectedEntries.length !== 1 || selectedEntries[0]!.node.type !== "element") { setNotice("内側へ貼り付けるには、子を持てる要素を1つ選択してください。"); return; }
+        const target = selectedEntries[0]!.node;
+        parentId = target.id; index = target.children.length;
+      } else {
+        const parentPaths = selectedEntries.map(({ path }) => path.slice(0, -1).join("."));
+        if (parentPaths.some((path) => path !== parentPaths[0])) { setNotice("選択した要素と同じ階層に貼り付けるには、同じ親の中で選択してください。"); return; }
+        const parentPath = selectedEntries[0]!.path.slice(0, -1);
+        const parent = parentPath.length ? nodeAt(source, parentPath) : undefined;
+        if (parent && parent.type !== "element") { setNotice("貼り付け位置の親要素を確認できません。"); return; }
+        parentId = parent?.id ?? null;
+        index = Math.max(...selectedEntries.map(({ path }) => path.at(-1)!)) + 1;
+      }
+      const nodes = normalizeNodeFragment(clipboard.nodes, source);
+      const problem = apply({ type: "addMany", parentId, nodes, index });
+      if (problem) { setNotice(`貼り付けできませんでした。${problem}`); return; }
+      const ids = nodes.flatMap((item) => item.type === "text" ? [] : [item.id]);
+      const primary = ids.at(-1);
+      if (primary) { selectId(primary); if (ids.length > 1) setSelectedNodeIds(ids); }
+      setNotice("");
+    } catch (error) { setNotice(message(error)); }
+  }
+  function startPaste(inside: boolean): boolean {
+    void pasteSelection(inside);
+    return true;
   }
   function travel(direction: "undo" | "redo"): boolean {
     // 部品とページの履歴は別に持つため、もう一方と合わなくなる移動は止める。
@@ -974,6 +1180,10 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     setBusy("コンポーネントを保存中");
     try {
       const library = parseComponentLibrary(bumpChangedComponentVersions(current.history.present, current.savedLibrary), blocks);
+      if (components.nodeNames !== true && pageNodesHaveNames(library.components.map(({ root }) => root))) {
+        failed("failed", "この保存先ではコンポーネント内の要素の名前を保存できません。");
+        return false;
+      }
       const result = await components.saveLibrary({ siteId: current.siteId, library: structuredClone(library), expectedVersion: current.version, ...(auto ? { trigger: "autosave" as const } : {}) }, signal);
       if (signal.aborted) return false;
       if (result.status === "conflict") { failed("library-conflict", conflicted); return false; }
@@ -1032,6 +1242,9 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
           request: { ...dependencyVersions, target: current.target, baseVersion: current.version, operationId: globalThis.crypto.randomUUID(), operations: queued.pending },
           count: queued.pending.length, submitted: document,
         };
+        if (!pageNodeNames && inFlight.request.operations.some(pageOperationUsesNodeNames)) {
+          setProblem("failed"); setNotice("この保存先では要素の名前を保存できません。"); return false;
+        }
         if (!queued.inFlight) replace({ ...current, operationQueue: { ...queued, inFlight } });
         const result = await adapter.applyOperations(structuredClone(inFlight.request), controller.signal);
         if (controller.signal.aborted) return false;
@@ -1051,6 +1264,9 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
           }
         }
       } else {
+        if (!pageNodeNames && pageNodesHaveNames(document.body)) {
+          setProblem("failed"); setNotice("この保存先では要素の名前を保存できません。"); return false;
+        }
         if (adapter.applyOperations && !localized && !queued.fallback) replace({ ...current, operationQueue: fallbackOperations(queued) });
         const result = await adapter.saveDraft({ target: current.target, document: structuredClone(document), expectedVersion: current.version,
           ...(current.presentation ? { presentationVersion: current.presentation.version } : {}), ...(auto ? { trigger: "autosave" as const } : {}),
@@ -1344,13 +1560,24 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const siteStylesReady = !adapter.readSiteSettings || siteSettings.status === "ready" && !!siteSettings.settings || session?.siteStyles !== undefined || !!session?.selfContained;
   const document = useMemo(() => rawDocument && siteStylesReady ? (master ? resolveComponentStyles(rawDocument, activeSiteStyles) : resolvePageStyles(detachRemovedSiteStyles(rawDocument, session?.siteStyles ?? {}, activeSiteStyles), activeSiteStyles)) : undefined, [rawDocument, master, activeSiteStyles, siteStylesReady, session?.siteStyles]);
   const selection = document ? pathForNodeId(document, selectedId) : null;
-  const entries = document ? walkNodes(document) : [];
-  const contentRows = entries.flatMap(({ node, path }) => {
+  const entries = useMemo(() => document ? walkNodes(document) : [], [document]);
+  const nodesById = useMemo(() => new Map(entries.flatMap((entry) => entry.node.type === "text" ? [] : [[entry.node.id, entry] as const])), [entries]);
+  const validNodeIds = useMemo(() => new Set(entries.flatMap(({ node: item }) => item.type === "text" ? [] : [item.id])), [entries]);
+  const labelsByHtmlFor = useMemo(() => {
+    const labels = new Map<string, (typeof entries)[number]>();
+    for (const entry of entries) {
+      const { node: candidate } = entry;
+      const htmlFor = candidate.type === "element" && candidate.tag === "label" && candidate.children[0]?.type === "text" ? candidate.attrs?.htmlFor : undefined;
+      if (typeof htmlFor === "string" && !labels.has(htmlFor)) labels.set(htmlFor, entry);
+    }
+    return labels;
+  }, [entries]);
+  const contentRows = useMemo(() => entries.flatMap(({ node, path }) => {
     if (node.type !== "element" || node.embed || node.icon) return [];
     const value = node.children.flatMap((child) => child.type === "text" ? [child.text] : []).join(" ").replace(/\s+/gu, " ").trim();
     return value ? [{ id: node.id, path, tag: node.tag, value }] : [];
-  });
-  const visibleContentRows = contentRows.filter(({ value }) => value.toLocaleLowerCase().includes(contentSearch.trim().toLocaleLowerCase()));
+  }), [entries]);
+  const visibleContentRows = useMemo(() => contentRows.filter(({ value }) => value.toLocaleLowerCase().includes(contentSearch.trim().toLocaleLowerCase())), [contentRows, contentSearch]);
   // インスペクタの候補に出す定義の場所。ページでは rawDocument に無い名前がサイト共通、部品の編集ではサイト共通に同名の定義がある名前がサイト共通。
   const styleOrigins = useMemo(() => {
     if (!rawDocument || !document) return undefined;
@@ -1376,15 +1603,18 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const formCompletionTarget = session?.target, formCompletionTargetKey = formCompletionTarget ? targetKeyOf(formCompletionTarget) : "";
   const formCompletionCandidates = useMemo(() => formCompletionTarget && formCompletionPages.status === "ready" && formCompletionPages.target === formCompletionTargetKey
     ? eligibleFormCompletionPages(formCompletionPages.pages, formCompletionTarget) as readonly EditorPage[] : [], [formCompletionPages, formCompletionTargetKey]);
-  const staleProps = node?.type === "instance" && document && libraryPresent ? componentIssues(document, libraryPresent).find((issue) => issue.nodeId === node.id)?.staleProps ?? [] : [];
-  const locks = document ? effectiveLocks(document, masterId ? [] : session?.locks ?? [], blocks) : [];
+  const componentIssuesForDocument = useMemo(() => document && libraryPresent ? componentIssues(document, libraryPresent) : [], [document, libraryPresent]);
+  const componentIssuesByNodeId = useMemo(() => new Map(componentIssuesForDocument.map((issue) => [issue.nodeId, issue] as const)), [componentIssuesForDocument]);
+  const staleProps = node?.type === "instance" ? componentIssuesByNodeId.get(node.id)?.staleProps ?? [] : [];
+  const locks = useMemo(() => document ? effectiveLocks(document, masterId ? [] : session?.locks ?? [], blocks) : [], [document, masterId, session?.locks, blocks]);
   const reason = (field: string) => document ? (multiSelection ? selectedTargets.map(({ path }) => lockReason(document, path, field, locks)).find(Boolean) : selection ? lockReason(document, selection, field, locks) : undefined) : undefined;
   const pathKey = `${fieldEpoch}-${multiSelection ? selectedTargets.map(({ node: item }) => item.id).join(",") : selection?.join(".") ?? "page"}`;
   const slotName = !targetMode && slotChoice?.name && slotChoice.of === selectedId && node?.type === "component" && declaredSlot(blocks[node.block], slotChoice.name) ? slotChoice.name : null;
   const slotBack = slotChoice && slotChoice.of === selectedId && !slotChoice.name ? slotChoice.back : undefined, canvasBlocks = previewRegistry(blocks);
   // 表示領域を選んでいる間は、選択中のブロックへの見た目の操作（キャンバスのサイズ変更・スタイルパネルの適用）をその領域へ写す。
   const applyStyle = (operation: EditorOperation) => slotName && document && selection && "path" in operation && operation.path.join(".") === selection.join(".") ? applyToSlot(document, selection, slotName, blocks, operation, apply) : apply(operation);
-  const tiers = document ? editorTiers(document, breakpoints) : [], tier = tiers.some((entry) => entry.key === breakpoint) ? breakpoint : "base";
+  const tiers = useMemo(() => document ? editorTiers(document, breakpoints) : [], [document, breakpoints]);
+  const tier = tiers.some((entry) => entry.key === breakpoint) ? breakpoint : "base";
   const shownTier = tierForWidth(tiers, width), canvasDocument = document && draft && draft.base === rawDocument ? master ? resolveComponentStyles(draft.document, activeSiteStyles) : resolvePageStyles(draft.document, activeSiteStyles) : document;
   const nextTier = tiers[tiers.findIndex((entry) => entry.key === tier) + 1], until = range === "only" ? nextTier?.start : undefined;
   // キャンバスは部品を展開した文書を描き、素材・状態の強制表示も展開後の文書から作る（部品の中の画像も表示する）。
@@ -1405,15 +1635,14 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     [library?.savedLibrary, masterId, locale]);
   useEffect(() => {
     if (!document) return;
-    const valid = new Set(walkNodes(document).flatMap(({ node: item }) => item.type === "text" ? [] : [item.id]));
-    const remaining = selectedNodeIds.filter((id) => valid.has(id));
-    if (selectedId && valid.has(selectedId) && selection) {
+    const remaining = selectedNodeIds.filter((id) => validNodeIds.has(id));
+    if (selectedId && validNodeIds.has(selectedId) && selection) {
       if (remaining.length !== selectedNodeIds.length) setSelectedNodeIds(remaining);
       return;
     }
     if (remaining.length) { const primary = remaining.includes(selectedId ?? "") ? selectedId! : remaining.at(-1)!; setSelectedId(primary); setSelectedNodeIds(remaining); return; }
     if (selectedId || selectedNodeIds.length) { setSelectedId(null); setSelectedNodeIds([]); setSlotChoice(null); setSelectedCanvasNode(null); setInspector("page"); }
-  }, [document, selectedId, selectedNodeIds, selection]);
+  }, [document, validNodeIds, selectedId, selectedNodeIds, selection]);
   useEffect(() => {
     const stage = stageRef.current; if (!stage) return;
     const update = () => {
@@ -1445,7 +1674,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     if (hasInput) { setNotice("入力を適用するか取り消してから選択を変えてください。"); return; }
     const lib = libraryRef.current?.history.present;
     if (pageOperationalBlocked || !lib?.components.some((component) => component.id === componentId)) return;
-    const next = componentDocument(lib, componentId, locale), path = nodeId ? walkNodes(next).find(({ node }) => node.type !== "text" && node.id === nodeId)?.path : undefined;
+    const next = componentDocument(lib, componentId, locale), path = nodeId ? pathForNodeId(next, nodeId) ?? undefined : undefined;
     // 部品の外枠の外（ページ直下）には置けないため、追加・移動先の既定を外枠にする。版履歴はページのものなので閉じる。
     if (versions.open) versions.close();
     setEditing(componentId); setParentId(next.body[0]?.type === "element" ? next.body[0].id : ""); setSelection(path ?? null, next); if (path) setElementTab(defaultElementTab(path, next)); setInspector(path ? "element" : "page"); setDraft(null); setPicker(null); setStyleState("normal"); setFieldEpoch((value) => value + 1);
@@ -1453,13 +1682,16 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   function resetMode() { setEditing(null); setSelection(null); setInspector("page"); setDraft(null); setPicker(null); setStyleState("normal"); setParentId(""); setFieldEpoch((value) => value + 1); }
   function leaveComponent() { if (hasInput) setNotice("入力を適用するか取り消してから選択を変えてください。"); else resetMode(); }
   function openInstance(instanceId: string, nodeId: string) {
-    const instance = entries.find(({ node }) => node.type === "instance" && node.id === instanceId)?.node;
+    const path = document ? pathForNodeId(document, instanceId) : null, instance = path && document ? nodeAt(document, path) : undefined;
     if (instance?.type === "instance") openComponent(instance.component, nodeId);
   }
   function createComponent(path: NodePath, name: string, kind: ComponentKind): string | undefined {
     const current = sessionRef.current, lib = libraryRef.current;
     if (!current || !lib || libraryBlocked) return "処理が完了してから編集してください。";
     try {
+      if (components?.nodeNames !== true && pageNodesHaveNames([nodeAt(current.history.present, path)])) {
+        return "コンポーネントの保存先は要素の名前に対応していません。名前を削除してから部品化してください。";
+      }
       // 部品は文書の文字スタイルを参照できないため、選んだ範囲の文字スタイルは同じ見た目の個別指定にしてから登録する。
       const source = textStylePaths(current.history.present, path).reduce((document, at) => editDocument(document, { type: "nodeTextStyle", path: at, name: undefined, detach: true }, blocks, current.locks, lib.history.present, activeSiteStyles), current.history.present);
       // 選んだ要素は同じ ID のインスタンスになるため、選択はそのまま新しいインスタンスを指す。
@@ -1481,7 +1713,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const componentDialogNotice = componentDialog?.type === "create" && session && textStylePaths(session.history.present, componentDialog.path).length ? "テキストスタイルを使っている文字は、コンポーネントの中では同じ見た目の個別指定になります。" : undefined;
   function selectId(id: string) {
     const next = currentDocument();
-    const path = next && walkNodes(next).find(({ node }) => node.type !== "text" && node.id === id)?.path;
+    const path = next ? pathForNodeId(next, id) : null;
     if (path) select(path);
   }
   function sharedUnitForCanvasNode(id: string) {
@@ -1497,14 +1729,14 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       if (hasInput && localizationManual?.unitId !== unit.unitId) { setNotice("入力を適用するか取り消してから選択を変えてください。"); return; }
       setSelection(null); setSelectedCanvasNode(id); setSelectedLocalizationUnit(unit.unitId); setInspector("localization"); setDraft(null); return;
     }
-    const raw = document && walkNodes(document).find(({ node }) => node.type !== "text" && node.id === id)?.path;
+    const raw = document ? pathForNodeId(document, id) : null;
     if (raw) { if (manualInputPending) setNavigation({ type: "node", path: raw, canvasId: id }); else { select(raw, slot, mode); if (mode === "replace") setSelectedCanvasNode(id); } return; }
-    const origin = canvasOrigins.get(id), instance = origin && document && walkNodes(document).find(({ node }) => node.type === "instance" && node.id === origin.instance)?.path;
+    const origin = canvasOrigins.get(id), instance = origin && document ? pathForNodeId(document, origin.instance) : null;
     if (instance) { select(instance); if (targetMode) setSelectedCanvasNode(id); }
   }
-  const canEditCanvasNode = (id: string) => !canvasOrigins.has(id) && !!document && walkNodes(document).some(({ node }) => node.type !== "text" && node.id === id);
+  const canEditCanvasNode = (id: string) => !canvasOrigins.has(id) && validNodeIds.has(id);
   const editCanvasText = (_path: NodePath, id: string, children: PageNode[]) => {
-    const raw = document && walkNodes(document).find(({ node }) => node.type !== "text" && node.id === id)?.path;
+    const raw = document ? pathForNodeId(document, id) : null;
     if (!raw) return "コンポーネントの訳文は翻訳パネルで編集してください。";
     const problem = apply({ type: "replaceChildren", path: raw, children }); if (problem) setNotice(problem); return problem;
   };
@@ -1609,7 +1841,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   }
   function layerPlace(event: React.DragEvent<HTMLElement>, targetId: string): { position: "before" | "inside" | "after"; parentId: string | null; index: number } | null {
     if (!document) return null;
-    const target = entries.find(({ node }) => node.type !== "text" && node.id === targetId); if (!target) return null;
+    const target = nodesById.get(targetId); if (!target) return null;
     const rect = event.currentTarget.getBoundingClientRect(), fraction = rect.height ? (event.clientY - rect.top) / rect.height : 0;
     const canContain = target.node.type === "element" && !target.node.embed && ["div", "section", "article", "header", "footer", "main", "nav", "aside", "li", "figure", "blockquote", "form"].includes(target.node.tag);
     if (canContain && (event.altKey || fraction > .3 && fraction < .7) && target.node.type === "element") return { position: "inside", parentId: target.node.id, index: target.node.children.length };
@@ -1649,7 +1881,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   function moveToEnd() {
     if (!document || !selection) return;
     const current = nodeAt(document, selection);
-    const destination = parentId ? entries.find(({ node }) => node.type !== "text" && node.id === parentId) : undefined;
+    const destination = parentId ? nodesById.get(parentId) : undefined;
     const count = destination?.node.type === "element" ? destination.node.children.length : document.body.length;
     const oldParent = selection.length > 1 ? nodeAt(document, selection.slice(0, -1)) : null;
     const sameParent = parentId === (oldParent?.type === "element" ? oldParent.id : "");
@@ -1662,7 +1894,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     const problem = apply({ type: "move", path: selection, parentId: parentId || null, index });
     if (problem) { setNotice(problem); return; }
     if (current.type !== "text") selectId(current.id);
-    else { const next = currentDocument(); const parent = parentId && next ? walkNodes(next).find(({ node }) => node.type !== "text" && node.id === parentId) : undefined; select([...(parent?.path ?? []), index]); }
+    else { const next = currentDocument(), parentPath = parentId && next ? pathForNodeId(next, parentId) : null; select([...(parentPath ?? []), index]); }
   }
   function applyAsset(asset: LibraryAsset, action: AssetAction): string | undefined {
     if (action === "pick" && picker?.purpose === "siteOgImage") { const problem = chooseSiteCover(siteSettings, asset); if (!problem) setPicker(null); return problem; }
@@ -1696,7 +1928,8 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const selectedMoveParents = document ? new Set(selectedMovePaths.map((path) => { const parent = path.length > 1 ? nodeAt(document, path.slice(0, -1)) : null; return parent?.type === "element" ? parent.id : null; })) : new Set<string | null>();
   const selectedMoveIndices = new Set(selectedMoveParents.size === 1 ? selectedMovePaths.map((path) => path.at(-1)!) : []);
   const selectedMoveParent = selectedMoveParents.size === 1 ? [...selectedMoveParents][0] : null;
-  const selectedMoveSiblings = document ? selectedMoveParent ? walkNodes(document).find(({ node: item }) => item.type === "element" && item.id === selectedMoveParent)?.node : undefined : undefined;
+  const selectedMoveParentPath = document && selectedMoveParent ? pathForNodeId(document, selectedMoveParent) : null;
+  const selectedMoveSiblings = document && selectedMoveParentPath ? nodeAt(document, selectedMoveParentPath) : undefined;
   const selectedMoveCount = selectedMoveSiblings?.type === "element" ? selectedMoveSiblings.children.length : document?.body.length ?? 0;
   const canMoveUp = selectedMoveParents.size === 1 && [...selectedMoveIndices].some((index) => index > 0 && !selectedMoveIndices.has(index - 1));
   const canMoveDown = selectedMoveParents.size === 1 && [...selectedMoveIndices].some((index) => index < selectedMoveCount - 1 && !selectedMoveIndices.has(index + 1));
@@ -1806,10 +2039,10 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     ? [...(selectedTargets.every(({ node: item }) => textCapable(item)) ? [{ value: "text" as const, label: "テキスト" }] : []), { value: "box" as const, label: "ボックス" }]
     : inspectorTabsFor(node);
   const selectedHtmlId = node?.type === "element" && typeof node.attrs?.id === "string" ? node.attrs.id : undefined;
-  const associatedLabel = document && selectedHtmlId ? walkNodes(document).find(({ node: candidate }) => candidate.type === "element" && candidate.tag === "label" && candidate.attrs?.htmlFor === selectedHtmlId && candidate.children[0]?.type === "text") : undefined;
-  const formItems = document && node?.type === "element" && node.tag === "form" ? walkNodes({ ...document, body: [node] }).flatMap(({ node: item }) =>
+  const associatedLabel = selectedHtmlId ? labelsByHtmlFor.get(selectedHtmlId) : undefined;
+  const formItems = useMemo(() => document && node?.type === "element" && node.tag === "form" ? walkNodes({ ...document, body: [node] }).flatMap(({ node: item }) =>
     item.type === "element" && ["input", "textarea", "select", "fieldset"].includes(item.tag) && item.attrs?.type !== "submit"
-      ? [{ id: item.id, label: String(item.attrs?.name ?? elementTypeLabel[item.tag]) }] : []) : [];
+      ? [{ id: item.id, label: String(item.attrs?.name ?? elementTypeLabel[item.tag]) }] : []) : [], [document, node]);
   const choiceText = node?.type === "element" && node.tag === "select" ? node.children.flatMap((child) => child.type === "element" && child.tag === "option" && child.children[0]?.type === "text" ? [child.children[0].text] : []).join("\n")
     : node?.type === "element" && node.tag === "fieldset" ? node.children.flatMap((child) => child.type === "element" && child.tag === "label" && child.children[0]?.type === "text" ? [child.children[0].text] : []).join("\n") : "";
   const loopInteraction = node?.type === "element" && node.interaction?.type === "loop-box" ? node.interaction : undefined;
@@ -1869,6 +2102,10 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     redo: () => redoUnavailable ?? travel("redo"),
     remove: () => structureUnavailable ?? bulkStructural("remove"),
     duplicate: () => structureUnavailable ?? bulkStructural("duplicate"),
+    copy: () => copySelection(),
+    cut: () => structureUnavailable ?? cutSelection(),
+    paste: () => structureUnavailable ?? startPaste(false),
+    pasteInside: () => structureUnavailable ?? startPaste(true),
     parent: () => !!selection && chooseByShortcut(selection.length > 1 ? selection.slice(0, -1) : null),
     child: () => {
       const children = node?.type === "element" ? node.children : node ? [] : document?.body;
@@ -2019,6 +2256,8 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         saved={masterId ? savedMaster : session?.saved} back={() => chooseSlot(null)} apply={apply} preview={previewOperation} reason={reason} notify={setNotice} input={input}
         style={{ tiers, tier, setTier: setBreakpoint, range, setRange, width, setWidth, pending, fieldKey: `${pathKey}-slot-${slotName}`, disabled: editBlocked, tierLocked: hasInput, tab: elementTab }} /> : <>
       {!node && <p className="e-help">要素を選択してください。</p>}
+      {canNameNode && elementTab === "settings" && node && node.type !== "text" && selection &&
+        field("要素の名前", node.name ?? "", (value) => ({ type: "name", path: selection, value: value === "" ? undefined : value }), "name", { reason: reason("name") })}
       {elementTab === "text" && node?.type === "text" && selection && field("テキスト", node.text, (value) => ({ type: "text", path: selection, value }), "text", { multiline: true, reason: document ? lockReason(document, selection, "text", locks) : undefined })}
       {node?.type === "element" && selection && <>
         {elementTab === "settings" && node.tag === "form" && <>

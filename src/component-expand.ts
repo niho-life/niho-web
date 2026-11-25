@@ -52,6 +52,7 @@ export function instantiate(instance: InstanceNode, definition: ComponentDefinit
     if (prop.field === "text") target.children = value === "" ? [] : [{ type: "text", text: value }];
     else target.attrs = { ...target.attrs, [prop.field]: value };
   }
+  if (instance.name !== undefined) root.name = instance.name;
   if (instance.style) {
     const style = mergeStyle(root.style, instance.style);
     if (style) root.style = style; else delete root.style;

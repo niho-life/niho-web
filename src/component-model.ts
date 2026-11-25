@@ -73,7 +73,7 @@ export function createComponentFromNode(document: PageDocument, path: NodePath, 
     if (current.type === "element") current.children.forEach(renumber);
   };
   renumber(root);
-  siblingsAt(draft, path)[path.at(-1)!] = { type: "instance", id: node.id, component: componentId };
+  siblingsAt(draft, path)[path.at(-1)!] = { type: "instance", id: node.id, component: componentId, ...(node.name === undefined ? {} : { name: node.name }) };
   const next = parseComponentLibrary({ ...library, tokens, components: [...library.components, { id: componentId, name, kind: input.kind, version: 1, root }] }, blocks);
   return { document: parsePageDocument(draft, blocks, { components: next, ...(siteStyles ? { siteStyles } : {}) }), library: next, componentId };
 }

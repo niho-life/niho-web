@@ -96,6 +96,8 @@ export type TextNode = { type: "text"; text: string };
 export type ElementNode = {
   type: "element";
   id: string;
+  /** 編集用の名前。公開時のマークアップと見た目には使わない。 */
+  name?: string;
   tag: ElementTag;
   /** form だけが持てる、送信成功後の候補ページ ID。URL や送信処理はホストが所有する。 */
   formCompletionPageId?: string;
@@ -115,6 +117,8 @@ export type PublicPropValue = string | number | boolean;
 export type ComponentNode = {
   type: "component";
   id: string;
+  /** 編集用の名前。公開時のマークアップと見た目には使わない。 */
+  name?: string;
   block: string;
   props: Record<string, PublicPropValue>;
   style?: NodeStyle;
@@ -125,6 +129,8 @@ export type ComponentNode = {
 export type InstanceNode = {
   type: "instance";
   id: string;
+  /** 編集用の名前。公開時のマークアップと見た目には使わない。 */
+  name?: string;
   component: string;
   /** 部品が公開した props の値。公開をやめた名前の値も保持する。 */
   props?: Record<string, string>;

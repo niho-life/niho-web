@@ -32,7 +32,7 @@ import { parseSitePresentation } from "./presentation.js";
 import { PAGE_PREVIEW_INTENT_HEADERS, parsePagePreviewIntent, type EditingPagePreviewIntent } from "./editing-page-preview.js";
 
 import {
-  PAGE_OPERATION_ID, PAGE_OPERATION_LIMIT, PAGE_OPERATION_VERSIONS, editingOperationProblem, pageApplyInputSchema,
+  PAGE_OPERATION_ID, PAGE_OPERATION_LIMIT, PAGE_OPERATION_VERSIONS, editingOperationProblem, legacyPageApplyInputSchema, pageApplyInputSchema, pageNodesHaveNames, pageOperationUsesNodeNames,
   pageApplyResultSchema, pageOperationHash, parsePageOperation, preparePageOperations, type EditingPageApplyInput, type EditingPageOperationStore,
   pageOperationWire, type PageOperationJournal, type PageOperationVersions,
 } from "./editing-page-operations.js";
@@ -387,7 +387,7 @@ export const EDITING_OPERATIONS = Object.freeze([
   }),
   Object.freeze({
     id: "pages.apply", capability: "pages.edit", method: "POST", path: "/sites/{siteId}/operations/pages.apply/{pageId}?locale={locale}",
-    inputSchema: pageApplyInputSchema, resultSchema: pageApplyResultSchema(documentSchema),
+    inputSchema: legacyPageApplyInputSchema, resultSchema: pageApplyResultSchema(documentSchema),
     errors: Object.freeze(["authentication_required", "duplicate_operation", "forbidden", "host_contract_violation", "host_failure",
       "invalid_request", "method_not_allowed", "not_found", "validation_failed", "version_conflict"] as const)
   }),
@@ -553,6 +553,18 @@ export const EDITING_OPERATIONS = Object.freeze([
 /** Operation metadata and IDs have a single source: the catalog above. */
 export type EditingOperationDefinition = (typeof EDITING_OPERATIONS)[number];
 type CapabilityValues<T> = T extends { readonly capabilityByInput: { readonly values: infer Values } } ? Values[keyof Values] : never;
+export const PAGE_NODE_NAME_CAPABILITY = "pages.name";
+type PageWriteOperation = Extract<EditingOperationDefinition, { id: "pages.apply" | "pages.save" }>;
+export type EditingDiscoveredOperation = EditingOperationDefinition | (PageWriteOperation & {
+  readonly capabilities: readonly [typeof PAGE_NODE_NAME_CAPABILITY];
+});
+/** Keep the original catalog as the wire contract for hosts that have not added name support. */
+export function withPageNodeNameCapability(operation: PageWriteOperation): EditingDiscoveredOperation {
+  const capabilities = [PAGE_NODE_NAME_CAPABILITY] as const;
+  return operation.id === "pages.apply"
+    ? { ...operation, capabilities, inputSchema: pageApplyInputSchema }
+    : { ...operation, capabilities };
+}
 export type EditingCapability = EditingOperationDefinition["capability"] | CapabilityValues<EditingOperationDefinition>;
 function operationCapabilities(operation: EditingOperationDefinition): readonly EditingCapability[] {
   if ("capabilityByInput" in operation) return [...new Set(Object.values(operation.capabilityByInput.values))];
@@ -565,6 +577,8 @@ export type PageEditingHostAdapter = {
   authenticate(request: Request): Promise<EditingActor | null>;
   /** Resolve permissions from the authenticated principal for each request. */
   authorize(actor: EditingActor, capability: EditingCapability, target: EditingAuthorizationScope): Promise<boolean>;
+  /** Enable only after this host can persist node names. Discovery still requires authorization for pages.edit. */
+  pageNodeNames?: boolean;
   /** Trusted host schemas needed for custom blocks, component instances and site-wide style tokens. */
   validationContext?(actor: EditingActor, target: EditingPageTarget): Promise<PageEditingValidationContext>;
   readPage(actor: EditingActor, target: EditingPageTarget): Promise<EditingPageSnapshot | null>;
@@ -891,7 +905,7 @@ function editingApiBasePath(value: string | undefined): string {
   return basePath;
 }
 
-async function handlePageApply(store: EditingPageOperationStore, request: Request, actor: EditingActor, target: EditingPageTarget): Promise<Response> {
+async function handlePageApply(store: EditingPageOperationStore, pageNodeNames: boolean, request: Request, actor: EditingActor, target: EditingPageTarget): Promise<Response> {
   if (!actor.clientKind) return fail("host_contract_violation", 502);
   let body: Record<string, unknown> | null;
   try { body = await readBody(request); } catch { return fail("invalid_request", 400); }
@@ -908,6 +922,7 @@ async function handlePageApply(store: EditingPageOperationStore, request: Reques
       return response({ error: "validation_failed", index, reason }, 422);
     }
   }
+  if (!pageNodeNames && operations.some(pageOperationUsesNodeNames)) return fail("forbidden", 403);
   const dependencies: PageOperationVersions = Object.fromEntries(PAGE_OPERATION_VERSIONS.flatMap((key) => body[key] === undefined ? [] : [[key, body[key]]]));
   const input = { ...dependencies, baseVersion: body.baseVersion, operationId: body.operationId.toLowerCase(), operations };
   const dryRun = body.dryRun === true;
@@ -1031,13 +1046,14 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       catch { return fail("host_failure", 503); }
       if (!actor) return fail("authentication_required", 401);
       if (!validActor(actor)) return fail("host_contract_violation", 502);
-      const operations = [];
+      const operations: EditingDiscoveredOperation[] = [];
       for (const operation of EDITING_OPERATIONS) {
         if (!supportsOperation(adapter, operation)) continue;
         try {
           for (const capability of operationCapabilities(operation)) {
             if (await adapter.authorize(actor, capability, { siteId }) === true) {
-              operations.push(operation);
+              operations.push(adapter.pageNodeNames === true && (operation.id === "pages.apply" || operation.id === "pages.save")
+                ? withPageNodeNameCapability(operation) : operation);
               break;
             }
           }
@@ -1675,7 +1691,7 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       if (new TextEncoder().encode(JSON.stringify(result)).byteLength > 4 * 1024 * 1024) return fail("host_contract_violation", 502);
       return response(result);
     }
-    if (operation.id === "pages.apply") return handlePageApply(adapter.pageOperations!, request, actor, target);
+    if (operation.id === "pages.apply") return handlePageApply(adapter.pageOperations!, adapter.pageNodeNames === true, request, actor, target);
     if (operation.id === "pages.preview-intent") {
       let body: Record<string, unknown> | null;
       try { body = await readBody(request, 128); } catch { return fail("invalid_request", 400); }
@@ -1776,6 +1792,7 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
     try { document = validatedDocument(body.document, context); }
     catch { return fail("invalid_request", 400); }
     if (document.siteId !== target.siteId || document.pageId !== target.pageId || document.locale !== target.locale) return fail("invalid_request", 400);
+    if (adapter.pageNodeNames !== true && pageNodesHaveNames(document.body)) return fail("forbidden", 403);
     let result: EditingPageSaveResult;
     try { result = await adapter.savePage(actor, target, body.expectedVersion, document); }
     catch { return fail("host_failure", 503); }

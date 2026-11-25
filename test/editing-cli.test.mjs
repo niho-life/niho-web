@@ -6,7 +6,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
-import { EDITING_OPERATIONS } from "@niho/web/editing-api";
+import { editDocumentById } from "@niho/web/editor-model";
+import { EDITING_OPERATIONS, withPageNodeNameCapability } from "@niho/web/editing-api";
 
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 const command = fileURLToPath(new URL("../cli/niho-edit.mjs", import.meta.url));
@@ -747,4 +748,35 @@ test("niho-edit plans Studio CMS schema with current revisions and requires impa
   });
   assert.equal(applied.exitCode, 0);
   assert.equal(JSON.parse(applied.stdout).result.result.schemaRevision, "revision_next");
+});
+
+test("niho-edit only sends node names to a write operation advertising pages.name", async () => {
+  const name = "ヒーロー", operations = [{ type: "name", nodeId: "hero", value: name }];
+  const prefix = `${origin}/api/edit/v1/sites/${siteId}`, query = `?locale=${encodeURIComponent(locale)}`;
+  const [read, save, apply] = ["pages.read", "pages.save", "pages.apply"].map((id) => EDITING_OPERATIONS.find((operation) => operation.id === id));
+  const args = ["apply", pageId, "--locale", locale, "--ops", "-"], stdin = JSON.stringify(operations);
+  const discover = (operations) => ({ method: "GET", url: `${prefix}/capabilities`, result: { apiVersion: "v1", siteId, operations } });
+  for (const operation of [apply, save]) {
+    const result = await runSequence(args, [discover([read, operation])], { stdin });
+    assert.equal(result.exitCode, 1, result.stderr);
+    assert.equal(JSON.parse(result.stdout).result.error, "name_not_supported");
+  }
+  const named = editDocumentById(fixture, operations[0]);
+  const getPage = { method: "GET", url: `${prefix}/operations/pages.read/${pageId}${query}`, result: { document: fixture, version: "v1" } };
+  const operationId = "123e4567-e89b-42d3-a456-426614174000";
+  const applied = await runSequence([...args, "--operation-id", operationId, "--expected-version", "v1"], [
+    discover([read, withPageNodeNameCapability(apply)]), getPage,
+    { method: "POST", url: `${prefix}/operations/pages.apply/${pageId}${query}`, body: { baseVersion: "v1", operationId, operations },
+      result: { status: "applied", version: "v2", revision: fixture.revision + 1, document: { ...named, revision: fixture.revision + 1 } } }
+  ], { stdin });
+  assert.equal(applied.exitCode, 0, applied.stderr);
+  assert.equal(JSON.parse(applied.stdout).result.diff[0].after, name);
+  const document = editDocumentById(fixture, operations[0], {}, [], undefined, undefined, false);
+  const saved = await runSequence(args, [
+    discover([read, withPageNodeNameCapability(save)]), getPage,
+    { method: "PUT", url: `${prefix}/operations/pages.save/${pageId}${query}`, body: { expectedVersion: "v1", document },
+      result: { status: "saved", version: "v2", document: { ...document, revision: fixture.revision + 1 } } }
+  ], { stdin });
+  assert.equal(saved.exitCode, 0, saved.stderr);
+  assert.equal(JSON.parse(saved.stdout).result.diff[0].after, name);
 });

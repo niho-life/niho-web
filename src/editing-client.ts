@@ -1,5 +1,5 @@
-import { PAGE_OPERATION_VERSIONS, pageOperationWire, type EditingPageApplyConflict, type EditingPageApplyInput, type EditingPageApplyResult } from "./editing-page-operations.js";
-import { EDITING_API_ERRORS, EDITING_OPERATIONS, type EditingApiErrorCode, type EditingCmsOperationStatus, type EditingCmsPublishPlan, type EditingCmsTarget, type EditingOperationDefinition, type EditingPageCatalog, type EditingPageReleaseSetItem, type EditingPageReleaseSetItemResult, type EditingPageReleaseSetPlan, type EditingPageReleaseSetStatus, type EditingPageSnapshot, type EditingPageTarget } from "./editing-api.js";
+import { PAGE_OPERATION_VERSIONS, pageNodesHaveNames, pageOperationUsesNodeNames, pageOperationWire, type EditingPageApplyConflict, type EditingPageApplyInput, type EditingPageApplyResult } from "./editing-page-operations.js";
+import { EDITING_API_ERRORS, EDITING_OPERATIONS, PAGE_NODE_NAME_CAPABILITY, withPageNodeNameCapability, type EditingApiErrorCode, type EditingCmsOperationStatus, type EditingCmsPublishPlan, type EditingCmsTarget, type EditingDiscoveredOperation, type EditingPageCatalog, type EditingPageReleaseSetItem, type EditingPageReleaseSetItemResult, type EditingPageReleaseSetPlan, type EditingPageReleaseSetStatus, type EditingPageSnapshot, type EditingPageTarget } from "./editing-api.js";
 import { parsePageInspectQuery, type PageInspectQuery, type PageInspectView } from "./page-inspect.js";
 import { parsePagePreviewIntent, type EditingPagePreviewIntent } from "./editing-page-preview.js";
 import {
@@ -47,7 +47,11 @@ export type EditingApiClientOptions = {
 };
 export type { EditingLocalizationInput, EditingLocalizationOperationId, EditingLocalizationResult } from "./editing-localization.js";
 export type { EditingPagePreviewIntent } from "./editing-page-preview.js";
-export type EditingApiDiscovery = { readonly apiVersion: "v1"; readonly siteId: string; readonly operations: readonly EditingOperationDefinition[] };
+export type EditingApiDiscovery = { readonly apiVersion: "v1"; readonly siteId: string; readonly operations: readonly EditingDiscoveredOperation[] };
+export function supportsPageNodeNames(discovery: EditingApiDiscovery, operationId: "pages.apply" | "pages.save"): boolean {
+  return discovery.operations.some((operation) => operation.id === operationId
+    && "capabilities" in operation && operation.capabilities.includes(PAGE_NODE_NAME_CAPABILITY));
+}
 export type EditingPageSaveResult = { readonly status: "saved"; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" };
 export type EditingPageInspectionSnapshot = Readonly<Record<string, unknown>> & { readonly view: PageInspectView; readonly version: string; readonly stylesVersion?: string; readonly componentsVersion?: string; readonly presentationVersion?: string };
 export type EditingPagePublishResult = { readonly status: "released"; readonly operationId: string; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" };
@@ -246,10 +250,13 @@ function stableJson(value: unknown): string {
   if (plainRecord(value)) return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
   return JSON.stringify(value) ?? "undefined";
 }
-function validDiscoveredOperation(value: unknown): value is EditingOperationDefinition {
+function validDiscoveredOperation(value: unknown): value is EditingDiscoveredOperation {
   if (!plainRecord(value)) return false;
   const expected = EDITING_OPERATIONS.find((operation) => operation.id === value.id);
-  return !!expected && exactKeys(value, Object.keys(expected)) && stableJson(value) === stableJson(expected);
+  if (!expected) return false;
+  const definition = "capabilities" in value && (expected.id === "pages.apply" || expected.id === "pages.save")
+    ? withPageNodeNameCapability(expected) : expected;
+  return exactKeys(value, Object.keys(definition)) && stableJson(value) === stableJson(definition);
 }
 function assertTarget(document: PageDocument, target: EditingPageTarget): void {
   if (document.siteId !== target.siteId || document.pageId !== target.pageId || document.locale !== target.locale) throw new EditingApiClientError("invalid_response");
@@ -392,6 +399,10 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
     if (!definition) throw new EditingApiClientError("not_found", 404);
     return definition;
   };
+  let discovered: EditingApiDiscovery | undefined;
+  async function requirePageNodeNames(operationId: "pages.apply" | "pages.save", signal?: AbortSignal): Promise<void> {
+    if (!supportsPageNodeNames(discovered ?? await client.discover(signal), operationId)) throw new EditingApiClientError("forbidden", 403);
+  }
   const client: EditingApiClient = {
     async executeLocalization<Id extends EditingLocalizationOperationId>(id: Id, value: EditingLocalizationInput<Id>, signal?: AbortSignal) {
       const operation = editingLocalizationOperation(id);
@@ -436,7 +447,8 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       if (!exactKeys(body, ["apiVersion", "siteId", "operations"]) || body.apiVersion !== "v1" || body.siteId !== siteId || !Array.isArray(body.operations)
         || body.operations.length === 0 || body.operations.some((entry) => !validDiscoveredOperation(entry))
         || new Set(body.operations.map((entry) => (entry as Record<string, unknown>).id)).size !== body.operations.length) throw new EditingApiClientError("invalid_response", response.status);
-      return body as unknown as EditingApiDiscovery;
+      discovered = body as unknown as EditingApiDiscovery;
+      return discovered;
     },
     async readPageCatalog(signal) {
       const path = `/sites/${encodeURIComponent(siteId)}/operations/pages.catalog`;
@@ -568,6 +580,7 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
     },
     async applyOperations(target, input, signal) {
       const path = targetPath(target, siteId).replace("{operation}", "pages.apply");
+      if (input.operations.some(pageOperationUsesNodeNames)) await requirePageNodeNames("pages.apply", signal);
       const { response, body } = await send(path, "POST", { ...input, operations: input.operations.map(pageOperationWire) }, signal);
       if (response.status === 409 && body.error === "version_conflict") {
         if (exactKeys(body, ["error"])) return { status: "conflict" };
@@ -607,6 +620,7 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       const document = parseEditingPageDocumentEnvelope(documentValue);
       assertTarget(document, target);
       if (!isEditingApiVersion(expectedVersion)) throw new TypeError("invalid editing API version");
+      if (pageNodesHaveNames(document.body)) await requirePageNodeNames("pages.save", signal);
       const { response, body } = await send(path, "PUT", { expectedVersion, document }, signal);
       if (response.status === 409 && body.error === "version_conflict") return { status: "conflict" };
       if (!response.ok) throw apiFailure(body, response.status);
