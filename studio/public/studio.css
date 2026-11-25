@@ -176,6 +176,11 @@
 .studio-editor-shell>.studio-editor-content{display:flex;width:100%;max-width:none;height:100%;min-height:0;flex:1;margin:0;padding:0;overflow:hidden}
 .studio-editor-content>.studio-editor{display:flex;width:100%;height:100%;min-height:0;flex:1;flex-direction:column;overflow:hidden}
 .studio-editor-content>.studio-editor>.nw-editor{max-width:none;height:100%;min-height:0;flex:1;margin:0;border-radius:0}
+.studio-editor-performance{flex:none;padding:6px 12px;border-top:1px solid var(--nw-border);background:var(--nw-surface);font-size:12px}
+.studio-editor-performance summary{cursor:pointer}
+.studio-editor-performance dl{display:flex;flex-wrap:wrap;gap:4px 16px;margin:4px 0 0}
+.studio-editor-performance dl div{display:flex;gap:8px}
+.studio-editor-performance dd{margin:0;font-variant-numeric:tabular-nums}
 .studio-kamakura-state{display:grid;align-content:center;justify-items:center;gap:10px;width:min(560px,calc(100% - 32px));margin:auto;padding:32px;background:var(--nw-bg);border:1px solid var(--nw-border);border-radius:var(--nw-radius-lg);color:var(--nw-text);text-align:center}
 .studio-kamakura-state h1,.studio-kamakura-state p{margin:0}
 .studio-kamakura-state h1{font-size:20px}
