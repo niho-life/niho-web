@@ -70,6 +70,39 @@ export function siblingsAt(document: PageDocument, path: NodePath): PageNode[] {
   if (parent.type !== "element") throw new Error("移動先が要素ではありません。");
   return parent.children;
 }
+
+/** 編集中の文書で、書き込むノードと子配列を経路ごとに複製する。 */
+export function editableTree(document: PageDocument): { editNode(path: NodePath): PageNode; editChildren(parent: NodePath): PageNode[] } {
+  const ownedNodes = new WeakSet<PageNode>(), ownedArrays = new WeakSet<PageNode[]>();
+  function editChildren(parent: NodePath): PageNode[] {
+    if (!parent.length) {
+      if (!ownedArrays.has(document.body)) {
+        document.body = [...document.body];
+        ownedArrays.add(document.body);
+      }
+      return document.body;
+    }
+    const node = editNode(parent);
+    if (node.type !== "element") throw new Error("移動先が要素ではありません。");
+    if (!ownedArrays.has(node.children)) {
+      node.children = [...node.children];
+      ownedArrays.add(node.children);
+    }
+    return node.children;
+  }
+  function editNode(path: NodePath): PageNode {
+    const children = editChildren(path.slice(0, -1)), index = path.at(-1)!;
+    let node = children[index]!;
+    if (!ownedNodes.has(node)) {
+      node = { ...node };
+      ownedNodes.add(node);
+      children[index] = node;
+    }
+    return node;
+  }
+  // 呼び出し側が nodeAt で対象を検証してから書き込み用の経路を取得する。
+  return { editNode, editChildren };
+}
 /** 使用済みの ID と重ならない `<ID>_copy<n>` を返し、使用済みへ加える。 */
 export function copyId(original: string, used: Set<string>): string {
   let index = 1, id = original;

@@ -2,7 +2,7 @@ import { COMPONENT_LIMITS, instancesOf, instantiate, ownElements } from "./compo
 import { fitsPropField, parseComponentLibrary } from "./components.js";
 import { parsePageDocument } from "./document.js";
 import type { EditorLock } from "./editor-types.js";
-import { copyId, nodeAt, siblingsAt, walkNodes, type NodePath } from "./node-tree.js";
+import { copyId, editableTree, nodeAt, siblingsAt, walkNodes, type NodePath } from "./node-tree.js";
 import { resolvePageStyles, type SiteStyles } from "./site-styles.js";
 import type {
   BlockContracts, ComponentDefinition, ComponentKind, ComponentLibrary, ComponentNode, ComponentPropDefinition, ElementNode, NodeStyle, PageDocument, PageNode, StyleDeclarations, StyleProperty
@@ -145,14 +145,22 @@ export function bumpChangedComponentVersions(library: ComponentLibrary, saved: C
  * 以後のライブラリの token の変更を受けなくなるため。
  */
 export function detachInstance(document: PageDocument, path: NodePath, library: ComponentLibrary, blocks: BlockContracts = {}): PageDocument {
-  const draft = structuredClone(document), node = nodeAt(draft, path);
+  const draft = { ...document };
+  const root = detachedInstanceRoot(draft, path, library);
+  editableTree(draft).editChildren(path.slice(0, -1))[path.at(-1)!] = root;
+  return parsePageDocument(draft, blocks, { components: library });
+}
+
+/** @internal 解除後の部分木を作る。呼び出し側で置換後の文書を検証する。 */
+export function detachedInstanceRoot(document: PageDocument, path: NodePath, library: ComponentLibrary): ElementNode {
+  const node = nodeAt(document, path);
   if (node.type !== "instance") throw new Error("配置したコンポーネントを選択してください。");
   const definition = library.components.find((component) => component.id === node.component);
   if (!definition) throw new Error("コンポーネントが見つかりません。");
-  const root = instantiate(node, definition), used = new Set(walkNodes(draft).flatMap(({ node }) => node.type === "text" ? [] : [node.id]));
+  const root = instantiate(node, definition), used = new Set(walkNodes(document).flatMap(({ node }) => node.type === "text" ? [] : [node.id]));
   const inline = (current: ElementNode | ComponentNode): void => {
     for (const declarations of nodeDeclarations(current)) for (const [property, value] of Object.entries(declarations)) {
-      if (typeof value === "object" && "token" in value && !Object.hasOwn(draft.tokens, value.token) && Object.hasOwn(library.tokens, value.token)) declarations[property as StyleProperty] = library.tokens[value.token]!.value;
+      if (typeof value === "object" && "token" in value && !Object.hasOwn(document.tokens, value.token) && Object.hasOwn(library.tokens, value.token)) declarations[property as StyleProperty] = library.tokens[value.token]!.value;
     }
   };
   const rename = (current: PageNode): void => {
@@ -165,6 +173,5 @@ export function detachInstance(document: PageDocument, path: NodePath, library: 
   inline(root);
   root.children.forEach(rename);
   root.id = node.id;
-  siblingsAt(draft, path)[path.at(-1)!] = root;
-  return parsePageDocument(draft, blocks, { components: library });
+  return root;
 }
