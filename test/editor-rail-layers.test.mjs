@@ -26,17 +26,51 @@ const blocks = { Notice: { label: "お知らせ", props: { heading: { type: "str
 const tool = (name) => [...document.querySelectorAll(".e-tools button")].find((node) => node.getAttribute("aria-label") === name);
 const row = (id) => document.querySelector(`[data-node-id="${id}"]`);
 async function click(target) { assert.ok(target); await act(async () => target.click()); await flush(); }
+async function press(target, key, extra = {}) {
+  const event = new dom.window.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...extra });
+  await act(async () => target.dispatchEvent(event)); await flush();
+  return event.defaultPrevented;
+}
+async function changeInput(target, value) {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value").set.call(target, value);
+    target.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  });
+  await flush();
+}
+const layer = (id) => row(id)?.querySelector("button.e-layer");
+const layerToggle = (id) => row(id)?.querySelector(".e-layer-toggle");
+const layerTree = () => document.querySelector(".e-layer-list");
+const canvasNode = (id) => document.querySelector("iframe").contentDocument.querySelector(`[data-nw-node="${id}"]`);
+async function clickCanvas(id) {
+  const node = canvasNode(id);
+  await act(async () => node.dispatchEvent(new node.ownerDocument.defaultView.MouseEvent("click", { bubbles: true, cancelable: true })));
+  await flush();
+}
 async function setup(options = {}) {
   const container = document.createElement("div"); document.body.append(container); const root = createRoot(container);
+  const { source = document_, nameSupport = false, readOnly, locks, ...props } = options;
+  let stored = structuredClone(source);
+  const writes = [];
   const adapter = {
     listSites: async () => [{ id: "demo", name: "デモサイト", domains: ["https://example.test"] }],
     listPages: async () => [{ siteId: "demo", pageId: "home", locale: "ja-JP", title: "ホーム" }],
-    readDocument: async () => ({ document: structuredClone(document_), version: "v1" }),
-    saveDraft: async () => { throw new Error("not used"); }, prepareRelease: async () => { throw new Error("not used"); }, release: async () => { throw new Error("not used"); }
+    readDocument: async () => ({ document: structuredClone(stored), version: `v${stored.revision}`, ...(readOnly ? { readOnly } : {}), ...(locks ? { locks } : {}) }),
+    ...(nameSupport ? { discoverPageNodeNames: async () => true } : {}),
+    saveDraft: async ({ document }) => {
+      writes.push(structuredClone(document));
+      stored = { ...structuredClone(document), revision: stored.revision + 1 };
+      return { status: "saved", version: `v${stored.revision}`, revision: stored.revision };
+    },
+    prepareRelease: async () => { throw new Error("not used"); }, release: async () => { throw new Error("not used"); }
   };
-  await act(async () => root.render(createElement(PageEditor, { adapter, blocks, ...options }))); await flush();
-  const frame = document.querySelector("iframe"); if (frame) await act(async () => frame.dispatchEvent(new dom.window.Event("load")));
-  return { cleanup: async () => { await act(async () => root.unmount()); container.remove(); } };
+  let mount = 0;
+  const reload = async () => {
+    await act(async () => root.render(createElement(PageEditor, { adapter, blocks, ...props, key: ++mount }))); await flush();
+    const frame = document.querySelector("iframe"); if (frame) await act(async () => frame.dispatchEvent(new dom.window.Event("load")));
+  };
+  await reload();
+  return { writes, reload, cleanup: async () => { await act(async () => root.unmount()); container.remove(); } };
 }
 
 test("the tool rail shows one line icon per STUDIO tool, names it for assistive technology and marks the open panel", async () => {
@@ -120,6 +154,9 @@ test("layer rows carry a glyph per element kind, and the expand chevron keeps it
   const app = await setup();
   try {
     await click(tool("レイヤー"));
+    assert.equal(row("heading"), null, "branches start closed");
+    await click(layerToggle("hero"));
+    await click(layerToggle("list"));
     const glyph = (id) => row(id).dataset.layerGlyph;
     assert.deepEqual([glyph("hero"), glyph("heading"), glyph("lead"), glyph("list"), glyph("photo"), glyph("link"), glyph("box"), glyph("notice")], ["section", "text", "text", "list", "image", "text", "box", "block"]);
     assert.equal(row("item").dataset.layerGlyph, "box", "list items keep the plain box until they carry text styling of their own");
@@ -144,4 +181,142 @@ test("layer rows carry a glyph per element kind, and the expand chevron keeps it
     assert.ok(css.includes(".nw-editor .e-layer-row[data-layer-glyph=part] .e-layer-icon,.nw-editor .e-layer-row[data-layer-glyph=block] .e-layer-icon{color:var(--e-part)}"), "component glyphs use the component purple");
     assert.ok(css.includes(".nw-editor .e-layer-chevron.is-open{transform:rotate(90deg)}"));
   } finally { await app.cleanup(); }
+});
+
+test("the layer viewport reveals a canvas selection and keeps keyboard order with 1,000 nodes", async () => {
+  const source = { ...document_, body: [
+    element("many", "section", Array.from({ length: 998 }, (_, i) => element(`item_${i}`, "p", [text(`項目 ${i}`)]))),
+    element("last", "p", [text("末尾")])
+  ] };
+  const app = await setup({ source });
+  try {
+    await click(tool("レイヤー"));
+    const tree = layerTree();
+    Object.defineProperty(tree, "clientHeight", { value: 170 });
+    assert.deepEqual([...tree.querySelectorAll("[data-node-id]")].map(({ dataset }) => dataset.nodeId), ["many", "last"]);
+    await clickCanvas("item_997");
+    assert.equal(layer("many"), undefined, "the first rows are outside the render window");
+    const lastChild = layer("item_997");
+    assert.ok(lastChild);
+    assert.equal(lastChild.getAttribute("aria-selected"), "true");
+    assert.equal(lastChild.getAttribute("aria-level"), "3");
+    assert.equal(lastChild.getAttribute("aria-posinset"), "998");
+    assert.equal(lastChild.getAttribute("aria-setsize"), "998", "sibling metadata describes the whole visible tree");
+    const top = Number.parseInt(row("item_997").style.top, 10), rowHeight = Number.parseInt(row("item_997").style.height, 10);
+    assert.ok(tree.scrollTop <= top && tree.scrollTop + tree.clientHeight >= top + rowHeight);
+    assert.ok(tree.querySelectorAll("[data-node-id]").length < 30);
+
+    await act(async () => { tree.scrollTop = 0; tree.dispatchEvent(new dom.window.Event("scroll")); });
+    await clickCanvas("item_997");
+    assert.ok(tree.scrollTop > 0, "selecting the same canvas element reveals it again");
+    const scrolls = [];
+    canvasNode("item_997").scrollIntoView = (options) => scrolls.push(options);
+    await click(layer("item_997"));
+    assert.deepEqual(scrolls, [{ block: "nearest", inline: "nearest" }]);
+
+    await act(async () => layer("item_997").focus());
+    await press(document.activeElement, "Home");
+    assert.equal(document.activeElement, tree.querySelector(".e-layer-root"));
+    assert.equal(tree.scrollTop, 0);
+    await press(document.activeElement, "End");
+    assert.equal(document.activeElement, layer("last"));
+    await press(document.activeElement, "ArrowUp");
+    assert.equal(document.activeElement, layer("item_997"));
+    await press(document.activeElement, "ArrowLeft");
+    assert.equal(document.activeElement, layer("many"));
+    assert.equal(document.activeElement.getAttribute("aria-expanded"), "true");
+    await press(document.activeElement, "ArrowRight");
+    assert.equal(document.activeElement, layer("item_0"));
+    assert.deepEqual([...tree.querySelectorAll('[role="treeitem"]')].filter((item) => item.tabIndex === 0), [document.activeElement]);
+
+    await act(async () => { tree.scrollTop = top; tree.dispatchEvent(new dom.window.Event("scroll")); });
+    const dragged = row("item_997");
+    const dragStart = new dom.window.MouseEvent("dragstart", { bubbles: true });
+    Object.defineProperty(dragStart, "dataTransfer", { value: { setData() {} } });
+    await act(async () => dragged.dispatchEvent(dragStart));
+    await act(async () => { tree.scrollTop = 0; tree.dispatchEvent(new dom.window.Event("scroll")); });
+    assert.equal(row("item_997"), dragged, "scrolling does not remove the active drag source");
+    await act(async () => dragged.dispatchEvent(new dom.window.MouseEvent("dragend", { bubbles: true })));
+    assert.equal(row("item_997"), null);
+  } finally { await app.cleanup(); }
+});
+
+test("search finds the displayed name and full source text, and clear restores collapsed branches", async () => {
+  const source = { ...document_, body: [
+    element("section", "section", [element("group", "div", [
+      element("paragraph", "p", [text("表示ラベルの抜粋よりだいぶ後ろにある本文。".repeat(3) + "内覧予約はこちら")], { name: "ご案内" }),
+      element("unrelated", "p", [text("別のお知らせ")])
+    ])]),
+    element("outside", "section", [element("another", "p", [text("別の段落")])]),
+    { type: "component", id: "componentText", block: "Notice", props: { heading: "公開前の予約相談" } }
+  ] };
+  const app = await setup({ source });
+  try {
+    await click(tool("レイヤー"));
+    const search = document.querySelector(".e-layer-search input");
+    await changeInput(search, "予約相談");
+    assert.equal(layer("componentText").textContent, "お知らせ");
+    await changeInput(search, "内覧予約");
+    assert.equal(row("componentText"), null);
+    assert.equal(layer("paragraph").textContent, "ご案内");
+    assert.equal(layer("section").getAttribute("aria-expanded"), "true");
+    assert.equal(layer("group").getAttribute("aria-expanded"), "true");
+    assert.equal(row("unrelated"), null);
+    assert.equal(row("outside"), null);
+    await changeInput(search, "ご案内");
+    assert.ok(layer("paragraph"));
+    await changeInput(search, "");
+    assert.equal(row("paragraph"), null);
+    assert.equal(layer("section").getAttribute("aria-expanded"), "false");
+  } finally { await app.cleanup(); }
+});
+
+test("layer rename supports F2, double-click, undo, clearing, and save", async () => {
+  const app = await setup({ nameSupport: true });
+  try {
+    await click(tool("レイヤー"));
+    await clickCanvas("heading");
+    await act(async () => layer("heading").focus());
+    assert.equal(await press(layer("heading"), "F2"), true);
+    const field = () => row("heading").querySelector('input[aria-label="要素の名前"]');
+    assert.equal(document.activeElement, field());
+    await changeInput(field(), "ヒーロー見出し");
+    assert.equal(await press(field(), "Enter", { isComposing: true }), false);
+    await press(field(), "Enter");
+    assert.equal(layer("heading").textContent, "ヒーロー見出し");
+    assert.equal(document.activeElement, layer("heading"));
+    const button = (label) => [...document.querySelectorAll("button")].find((node) => node.textContent === label || node.getAttribute("aria-label") === label);
+    await click(button("元に戻す"));
+    assert.equal(layer("heading").textContent, "見出し");
+    await click(button("やり直す"));
+    await click(button("下書き保存"));
+    assert.equal(app.writes.at(-1).body[0].children[0].name, "ヒーロー見出し");
+    await app.reload();
+    await click(tool("レイヤー"));
+    await clickCanvas("heading");
+    assert.equal(layer("heading").textContent, "ヒーロー見出し");
+    await act(async () => layer("heading").dispatchEvent(new dom.window.MouseEvent("dblclick", { bubbles: true })));
+    await changeInput(field(), "");
+    await press(field(), "Escape");
+    assert.equal(layer("heading").textContent, "ヒーロー見出し");
+    await press(layer("heading"), "F2");
+    await changeInput(field(), "");
+    await press(field(), "Enter");
+    assert.equal(layer("heading").textContent, "見出し");
+    await click(button("下書き保存"));
+    assert.equal(Object.hasOwn(app.writes.at(-1).body[0].children[0], "name"), false);
+  } finally { await app.cleanup(); }
+});
+
+test("layer rename is unavailable for unsupported, read-only and locked nodes", async () => {
+  for (const options of [{}, { nameSupport: true, readOnly: { reason: "読み取り専用です。" } },
+    { nameSupport: true, locks: [{ nodeId: "hero", fields: ["children"], reason: "連動しています。" }] }]) {
+    const app = await setup(options);
+    try {
+      await click(tool("レイヤー"));
+      await click(layerToggle("hero"));
+      assert.equal(await press(layer("heading"), "F2"), false);
+      assert.equal(row("heading").querySelector("input"), null);
+    } finally { await app.cleanup(); }
+  }
 });

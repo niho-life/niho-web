@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { findLayer } from "./editor-layer-fixtures.mjs";
 import { JSDOM } from "jsdom";
 import { createMemoryPageOperationHost } from "../examples/memory-page-operation-host.mjs";
 import { createPageEditingApi } from "@niho/web/editing-api";
@@ -28,7 +29,10 @@ const flush = () => act(async () => { await new Promise((resolve) => setTimeout(
 const button = (text) => [...document.querySelectorAll("button")].find((node) => node.textContent === text || node.getAttribute("aria-label") === text);
 const input = (text) => [...document.querySelectorAll("label")].find((node) => node.querySelector("span")?.textContent === text)?.querySelector("input,textarea,select");
 async function click(text) { const target = button(text); assert.ok(target, text); await act(async () => target.click()); await flush(); }
-async function clickLayer(nodeId) { const target = document.querySelector(`[data-node-id="${nodeId}"] button.e-layer`); assert.ok(target, nodeId); await act(async () => target.click()); await flush(); }
+async function layerById(nodeId) {
+  return findLayer(() => document.querySelector(`[data-node-id="${nodeId}"] button.e-layer`), async (toggle) => { await act(async () => toggle.click()); await flush(); });
+}
+async function clickLayer(nodeId) { const target = await layerById(nodeId); assert.ok(target, nodeId); await act(async () => target.click()); await flush(); }
 async function editorTab(name) { const target = [...document.querySelectorAll('.e-inspector-tabs [role="tab"]')].find((node) => node.textContent === name); assert.ok(target, name); if (target.getAttribute("aria-selected") !== "true") await act(async () => target.click()); await flush(); }
 /** ブラウザの再読込と同じく、エディタを開き直して保存済みの文書を読み直す。 */
 let reloadEditor = async () => {};
@@ -639,7 +643,7 @@ test("read-only documents stay selectable and navigable but block every document
     const canonical = [...document.querySelectorAll("a")].find((node) => node.textContent === "業務原稿を編集"); assert.equal(canonical?.getAttribute("href"), readOnly.editUrl);
     assert.equal(input("ページタイトル").disabled, true); assert.equal(button("下書き保存").disabled, true); assert.equal(button("公開").disabled, true);
     const openTool = async (name) => { const target = [...document.querySelectorAll(".e-tools button")].find((node) => node.querySelector("small")?.textContent === name); assert.ok(target); await act(async () => target.click()); await flush(); };
-    await openTool("レイヤー"); const heading = document.querySelector('[data-node-id="heading"] button.e-layer'); assert.equal(heading.disabled, false); await act(async () => heading.click()); await flush(); assert.equal(input("テキスト").disabled, true);
+    await openTool("レイヤー"); const heading = await layerById("heading"); assert.equal(heading.disabled, false); await act(async () => heading.click()); await flush(); assert.equal(input("テキスト").disabled, true);
     await openTool("ページ"); assert.equal(document.querySelector('button[aria-label="ページを追加"]').disabled, true); assert.equal(document.querySelector('button[aria-label="ホーム の操作"]').disabled, true);
     await click("履歴"); await act(async () => [...document.querySelectorAll("button")].find((node) => node.textContent.includes("2026/10/21"))?.click()); await flush();
     assert.equal(button("この版を復元").disabled, true); assert.ok(document.body.textContent.includes(readOnly.reason));
