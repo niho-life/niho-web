@@ -23,6 +23,7 @@ import {
   type EditingLocalizationHostAdapter, type EditingLocalizationInput, type EditingLocalizationOperation, type EditingLocalizationOperationId,
 } from "./editing-localization.js";
 import { jsonBytes } from "./localization-workspace-model.js";
+import { inspectPageDocument, PAGE_INSPECT_LIMITS, PageInspectError, parsePageInspectQuery, type PageInspectQuery } from "./page-inspect.js";
 
 import {
   PAGE_OPERATION_ID, PAGE_OPERATION_LIMIT, PAGE_OPERATION_VERSIONS, editingOperationProblem, pageApplyInputSchema,
@@ -44,7 +45,7 @@ export type { EditingLocalizationCapability } from "./editing-localization-schem
 
 /** Stable errors returned by the host-neutral page editing wire contract. */
 export const EDITING_API_ERRORS = Object.freeze([
-  "authentication_required", "duplicate_operation", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found", "validation_failed", "version_conflict"
+  "authentication_required", "duplicate_operation", "forbidden", "host_contract_violation", "host_failure", "invalid_cursor", "invalid_request", "method_not_allowed", "node_not_found", "not_found", "result_too_large", "validation_failed", "version_conflict"
 ] as const);
 export type EditingApiErrorCode = typeof EDITING_API_ERRORS[number];
 
@@ -160,6 +161,41 @@ const documentSchema: JsonSchema = Object.freeze({
   })
 });
 const versionSchema: JsonSchema = Object.freeze({ type: "string", minLength: 1 });
+const inspectInputSchema: JsonSchema = Object.freeze({ oneOf: Object.freeze([
+  Object.freeze({ type: "object", required: Object.freeze(["siteId", "pageId", "locale", "view"]), additionalProperties: false, properties: Object.freeze({
+    siteId: Object.freeze({ type: "string" }), pageId: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }),
+    view: Object.freeze({ const: "outline" }), node: Object.freeze({ type: "string", maxLength: 80 }), depth: Object.freeze({ type: "integer", minimum: 0, maximum: 10 }),
+    limit: Object.freeze({ type: "integer", minimum: 1, maximum: PAGE_INSPECT_LIMITS.maxItems }), cursor: Object.freeze({ type: "string", maxLength: PAGE_INSPECT_LIMITS.maxCursorLength })
+  }) }),
+  Object.freeze({ type: "object", required: Object.freeze(["siteId", "pageId", "locale", "view"]), additionalProperties: false, properties: Object.freeze({
+    siteId: Object.freeze({ type: "string" }), pageId: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }),
+    view: Object.freeze({ const: "find" }), text: Object.freeze({ type: "string", minLength: 1, maxLength: 200 }), name: Object.freeze({ type: "string", minLength: 1, maxLength: 120 }),
+    tag: Object.freeze({ type: "string", enum: Object.freeze(["div", "section", "article", "header", "footer", "main", "nav", "aside", "h1", "h2", "h3", "h4", "h5", "h6", "p", "span", "a", "img", "picture", "source", "video", "ul", "ol", "li", "dl", "dt", "dd", "strong", "em", "b", "i", "small", "blockquote", "figure", "figcaption", "br", "hr", "time", "details", "summary", "form", "label", "input", "textarea", "select", "option", "button", "fieldset", "legend"]) }),
+    style: Object.freeze({ type: "string", pattern: "^[A-Za-z][A-Za-z0-9]*=.{1,200}$", maxLength: 240 }), usesToken: Object.freeze({ type: "string", maxLength: 80 }),
+    block: Object.freeze({ type: "string", maxLength: 80 }), node: Object.freeze({ type: "string", maxLength: 80 }),
+    limit: Object.freeze({ type: "integer", minimum: 1, maximum: PAGE_INSPECT_LIMITS.maxItems }), cursor: Object.freeze({ type: "string", maxLength: PAGE_INSPECT_LIMITS.maxCursorLength })
+  }) }),
+  ...(["subtree", "effectiveStyle"] as const).map((view) => Object.freeze({ type: "object", required: Object.freeze(["siteId", "pageId", "locale", "view", "node"]), additionalProperties: false,
+    properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), pageId: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }),
+      view: Object.freeze({ const: view }), node: Object.freeze({ type: "string", minLength: 1, maxLength: 80 }),
+      ...(view === "subtree" ? { limit: Object.freeze({ type: "integer", minimum: 1, maximum: PAGE_INSPECT_LIMITS.maxItems }), cursor: Object.freeze({ type: "string", maxLength: PAGE_INSPECT_LIMITS.maxCursorLength }) } : {}) }) }))
+]) });
+const inspectNodeSchema: JsonSchema = Object.freeze({ type: "object", required: Object.freeze(["id"]), additionalProperties: true, properties: Object.freeze({
+  id: Object.freeze({ type: "string" }), type: Object.freeze({ type: "string" }), name: Object.freeze({ type: "string" }), tag: Object.freeze({ type: "string" }),
+  text: Object.freeze({ type: "string", maxLength: PAGE_INSPECT_LIMITS.excerptLength }), ancestors: Object.freeze({ type: "array", items: Object.freeze({ type: "string" }) }),
+  overrides: Object.freeze({ type: "integer", minimum: 0 }), tokens: Object.freeze({ type: "array", items: Object.freeze({ type: "string" }) })
+}) });
+const inspectPathNodeSchema: JsonSchema = Object.freeze({ type: "object", required: Object.freeze(["path", "node"]), additionalProperties: false, properties: Object.freeze({
+  path: Object.freeze({ type: "array", items: Object.freeze({ type: "integer", minimum: 0 }) }),
+  node: Object.freeze({ type: "object", additionalProperties: true })
+}) });
+const inspectResultSchema: JsonSchema = Object.freeze({ type: "object", required: Object.freeze(["view"]), additionalProperties: false, properties: Object.freeze({
+  view: Object.freeze({ type: "string", enum: Object.freeze(["outline", "find", "subtree", "effectiveStyle"]) }), version: versionSchema,
+  componentsVersion: versionSchema, presentationVersion: versionSchema, stylesVersion: versionSchema, complete: Object.freeze({ type: "boolean" }), format: Object.freeze({ type: "string", const: "path-nodes" }),
+  nodeId: Object.freeze({ type: "string" }), subtree: Object.freeze({ type: "object" }), style: Object.freeze({ type: "object" }),
+  definitions: Object.freeze({ type: "object", additionalProperties: true }), items: Object.freeze({ type: "array", maxItems: PAGE_INSPECT_LIMITS.maxItems, items: Object.freeze({ oneOf: Object.freeze([inspectNodeSchema, inspectPathNodeSchema]) }) }),
+  nextCursor: Object.freeze({ type: "string", maxLength: PAGE_INSPECT_LIMITS.maxCursorLength })
+}) });
 const breakpointNameSchema: JsonSchema = Object.freeze({ type: "string", enum: Object.freeze(["Mini", "Mobile", "Tablet", "Small", "PC"]) });
 const breakpointSettingsSchema: JsonSchema = Object.freeze({ type: "object", required: Object.freeze(["base", "breakpoints"]), additionalProperties: false,
   properties: Object.freeze({
@@ -261,6 +297,11 @@ const pageReleaseSetStatusSchema: JsonSchema = Object.freeze({
 
 /** Canonical resource operations for hosts to expose to GUI and machine clients. */
 export const EDITING_OPERATIONS = Object.freeze([
+  Object.freeze({
+    id: "pages.inspect", capability: "pages.read", method: "GET", path: "/sites/{siteId}/operations/pages.inspect/{pageId}?locale={locale}&view={view}&node={node}&depth={depth}&text={text}&name={name}&tag={tag}&style={style}&usesToken={usesToken}&block={block}&limit={limit}&cursor={cursor}",
+    inputSchema: inspectInputSchema, resultSchema: inspectResultSchema,
+    errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_cursor", "invalid_request", "method_not_allowed", "node_not_found", "not_found", "result_too_large"] as const)
+  }),
   Object.freeze({
     id: "pages.read", capability: "pages.read", method: "GET", path: "/sites/{siteId}/operations/pages.read/{pageId}?locale={locale}",
     inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId", "pageId", "locale"]), additionalProperties: false,
@@ -1446,18 +1487,30 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       if (!matches) return fail("host_contract_violation", 502);
       return response({ status: "applied", operationId: applied.operationId, page });
     }
-    const match = new RegExp(`^${basePath}/sites/([^/]+)/operations/(pages\\.(?:read|save|apply|release-plan|release))/([^/]+)$`, "u").exec(url.pathname);
+    const match = new RegExp(`^${basePath}/sites/([^/]+)/operations/(pages\\.(?:read|inspect|save|apply|release-plan|release))/([^/]+)$`, "u").exec(url.pathname);
     if (!match) return fail("not_found", 404);
     let siteId: string, pageId: string, locale: string;
     try {
       siteId = decodeURIComponent(match[1]!); pageId = decodeURIComponent(match[3]!);
-      if (url.searchParams.size !== 1 || !url.searchParams.has("locale")) return fail("invalid_request", 400);
+      if (!url.searchParams.has("locale") || url.searchParams.getAll("locale").length !== 1) return fail("invalid_request", 400);
       locale = url.searchParams.get("locale") ?? "";
     } catch { return fail("invalid_request", 400); }
     const target = pageTarget(siteId, pageId, locale);
     if (!target) return fail("invalid_request", 400);
     const operation = EDITING_OPERATIONS.find((item) => item.id === match[2]);
     if (!operation || operation.id === "pages.apply" && !supportsOperation(adapter, operation)) return fail("not_found", 404);
+    let inspectQuery: PageInspectQuery | null = null;
+    if (operation.id === "pages.inspect") {
+      const input: Record<string, unknown> = {};
+      let repeated = false;
+      url.searchParams.forEach((value, key) => {
+        if (key === "locale") return;
+        if (Object.hasOwn(input, key)) repeated = true;
+        input[key] = value;
+      });
+      inspectQuery = repeated ? null : parsePageInspectQuery(input);
+      if (!inspectQuery) return fail("invalid_request", 400);
+    } else if (url.searchParams.size !== 1) return fail("invalid_request", 400);
     if (request.method !== operation.method) return fail("method_not_allowed", 405);
     let actor: EditingActor | null;
     try { actor = await adapter.authenticate(request); }
@@ -1469,7 +1522,7 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
     catch { return fail("host_failure", 503); }
     if (!allowed) return fail("forbidden", 403);
     if (operation.id === "pages.apply") return handlePageApply(adapter.pageOperations!, request, actor, target);
-    if (operation.id === "pages.read") {
+    if (operation.id === "pages.read" || operation.id === "pages.inspect") {
       if (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length"))) return fail("invalid_request", 400);
       let snapshot: EditingPageSnapshot | null;
       try { snapshot = await adapter.readPage(actor, target); }
@@ -1484,6 +1537,25 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       if (document.siteId !== target.siteId || document.pageId !== target.pageId || document.locale !== target.locale || !validVersion(snapshot.version)) return fail("host_contract_violation", 502);
       const dependencies = Object.fromEntries(PAGE_OPERATION_VERSIONS.flatMap((key) => snapshot[key] === undefined ? [] : [[key, snapshot[key]]]));
       if (Object.values(dependencies).some((value) => !validVersion(value))) return fail("host_contract_violation", 502);
+      if (operation.id === "pages.inspect") {
+        let inspected: Record<string, unknown>;
+        try {
+          inspected = inspectPageDocument(document, inspectQuery!, {
+            ...(context.components ? { components: context.components } : {}),
+            ...(context.siteStyles ? { siteStyles: context.siteStyles } : {})
+          });
+        } catch (error) {
+          if (error instanceof PageInspectError) {
+            const status = error.code === "invalid_cursor" || error.code === "invalid_request" ? 400
+              : error.code === "node_not_found" ? 404 : 413;
+            return fail(error.code, status);
+          }
+          return fail("host_contract_violation", 502);
+        }
+        const result = { ...inspected, version: snapshot.version, ...dependencies };
+        if (new TextEncoder().encode(JSON.stringify(result)).byteLength > PAGE_INSPECT_LIMITS.maxResultBytes + 1024) return fail("result_too_large", 413);
+        return response(result);
+      }
       return response({ document, version: snapshot.version, ...dependencies });
     }
     if (operation.id === "pages.release-plan") {
