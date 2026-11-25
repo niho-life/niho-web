@@ -13,6 +13,7 @@ const adapterSources = [
 
 const readMethods = [
   "EditorAdapter.breakpointSettings.read",
+  "EditorAdapter.discoverPageNodeNames",
   "EditorAdapter.englishPublication.refresh",
   "EditorAdapter.listFormCompletionPages",
   "EditorAdapter.listPages",
