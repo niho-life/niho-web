@@ -9,7 +9,7 @@ import { SiteLanguageSettings } from "../src/site-language-settings.js";
 import { parseProjectDirectoryResult, type ProjectDirectoryResult } from "../src/project-read-model.js";
 import type { Project } from "../src/projects.js";
 import { integrationIdentity, resolveTrustedEditorPage, resolveTrustedIntegration, trustedEditorPath } from "./integration-registry.mjs";
-import { KamakuraEditor } from "./kamakura-editor.js";
+import { KamakuraEditor, loadKamakuraEditor, loadKamakuraEditorCatalog, type KamakuraEditorLoad } from "./kamakura-editor.js";
 import { ManagedEditor } from "./managed-editor.js";
 import { parseProjectAliasPath, projectRoutePath, type ProjectCmsRoute, type ProjectSiteViewId, type ProjectTranslationsRoute } from "./project-routes.mjs";
 import { SiteCmsWorkspace } from "./site-cms.js";
@@ -28,7 +28,8 @@ type SessionState =
   | { readonly status: "loading" }
   | { readonly status: "expired" }
   | { readonly status: "error" }
-  | { readonly status: "ready"; readonly directory: ProjectDirectoryResult; readonly identity: { readonly subject: string; readonly email: string }; readonly config: StudioConfig };
+  | { readonly status: "ready"; readonly directory: ProjectDirectoryResult; readonly identity: { readonly subject: string; readonly email: string }; readonly config: StudioConfig;
+    readonly initialKamakuraLoad?: () => KamakuraEditorLoad | undefined };
 type StudioConfig = { readonly managedProjectsEnabled: boolean; readonly publicSitesOrigin: string | null };
 type Member = {
   readonly subject: string;
@@ -466,15 +467,37 @@ function App() {
 
   const loadSession = useCallback(() => {
     const controller = new AbortController();
+    const initialPathname = window.location.pathname;
+    const initialScreen = screenFromLocation();
+    const kamakura = initialScreen.kind === "editor" && initialScreen.environment === "production"
+      && integrationIdentity(initialScreen.projectId, initialScreen.siteId) === integrationIdentity("project-kamakura", "kamakura");
     setSession({ status: "loading" });
+    const catalog = kamakura ? loadKamakuraEditorCatalog(controller.signal) : undefined;
+    // Keep the original outcome for the editor's route-specific error UI.
+    void catalog?.catch(() => {});
     void Promise.all([
       api("/api/session", { signal: controller.signal }),
       api("/api/projects", { signal: controller.signal }),
       api("/api/config", { signal: controller.signal }).catch(() => ({ managedProjectsEnabled: false, publicSitesOrigin: null }))
     ])
-      .then(([identity, directory, config]) => setSession({ status: "ready", identity: parseIdentity(identity), directory: parseProjectDirectoryResult(directory, isStudioThumbnailUrlAllowed), config: parseConfig(config) }))
+      .then(([identity, directory, config]) => {
+        if (controller.signal.aborted) return;
+        const parsedIdentity = parseIdentity(identity), parsedConfig = parseConfig(config);
+        const parsed = parseProjectDirectoryResult(directory, isStudioThumbnailUrlAllowed);
+        let editorLoad = catalog && kamakura && parsed.status === "ready" && window.location.pathname === initialPathname
+          && parsed.entries.some(({ project }) => project.id === initialScreen.projectId && project.site.id === initialScreen.siteId)
+          ? loadKamakuraEditor(controller, window.location.origin, catalog) : undefined;
+        if (catalog && !editorLoad) controller.abort();
+        setSession({ status: "ready", identity: parsedIdentity, directory: parsed, config: parsedConfig,
+          ...(editorLoad ? { initialKamakuraLoad: () => {
+            const pending = editorLoad;
+            editorLoad = undefined;
+            return pending;
+          } } : {}) });
+      })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
+        controller.abort();
         setSession({ status: error instanceof SessionExpiredError ? "expired" : "error" });
       });
     return () => controller.abort();
@@ -620,7 +643,8 @@ function App() {
           ? managedEditor
             ? <ManagedEditor project={selected} />
             : kamakuraEditor && resolvedEditor
-            ? <KamakuraEditor project={selected} environment={resolvedEditor.environment} />
+            ? <KamakuraEditor project={selected} environment={resolvedEditor.environment}
+                {...(session.initialKamakuraLoad ? { initialLoad: session.initialKamakuraLoad } : {})} />
             : resolvedEditor
             ? <Notice title="サイトデザイン編集は休止中です">ヘッダー、余白、レイアウトなどの変更は各サイトの開発で対応します。以前の編集内容は保管しています。記事や体験の原稿は、それぞれの管理画面で引き続き編集できます。</Notice>
             : <Notice title="エディターを表示できません">このサイトまたは環境のエディターは接続されていません。</Notice>

@@ -25,6 +25,10 @@ test("Studio serves an index and entry assets whose paths change with their cont
     const versionedName = `${stem}-${match[1]}.${extension}`;
     assert.equal(match[1], fingerprint(readFileSync(join(publicDir, "assets", versionedName))));
   }
+  const chunksDirectory = join(publicDir, "assets", "chunks");
+  const chunks = readdirSync(chunksDirectory);
+  assert.ok(chunks.length > 0, "lazy Studio screens emit split chunks");
+  for (const name of chunks) assert.match(name, /^[A-Za-z0-9_-]+-[A-Za-z0-9_-]{8}\.js$/u, name);
   assert.match(readFileSync(join(root, "studio", "dist", "worker.js"), "utf8"), new RegExp(indexName, "u"));
   assert.match(readFileSync(join(publicDir, "assets", "studio.css"), "utf8"), /\.nw-language-options\{display:grid/u);
 
