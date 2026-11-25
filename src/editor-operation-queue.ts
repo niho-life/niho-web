@@ -1,7 +1,7 @@
 import { PAGE_OPERATION_LIMIT, pageOperationWire, parsePageOperation, type EditingPageApplied } from "./editing-page-operations.js";
-import { editDocumentById, fingerprint, nodeAt, walkNodes, type EditorHistory, type EditorOperation, type EditorOperationById } from "./editor-model.js";
-import { siblingsAt } from "./node-tree.js";
+import { editDocumentById, fingerprint, nodeAt, pageOperationTextPathContext, walkNodes, type EditorHistory, type EditorOperation, type EditorOperationById } from "./editor-model.js";
 import type { EditorApplyOperationsRequest } from "./editor-types.js";
+import { siblingsAt } from "./node-tree.js";
 import type { PageDocument, PageNode, StateName, StyleProperty } from "./types.js";
 
 export const PAGE_OPERATION_MAX_AGE_MS = 5 * 60 * 1000;
@@ -45,6 +45,41 @@ function stableOperation(document: PageDocument, operation: EditorOperation): Ed
   const node = nodeAt(document, path);
   if (node.type === "text") throw new Error("operation requires a node ID");
   return { ...change, nodeId: node.id };
+}
+
+function parentIdAt(document: PageDocument, path: readonly number[]): string | null {
+  if (path.length === 1) return null;
+  const parent = nodeAt(document, path.slice(0, -1));
+  if (parent.type !== "element") throw new Error("invalid operation parent");
+  return parent.id;
+}
+function preconditioned(document: PageDocument, operation: EditorOperationById): EditorOperationById {
+  if (operation.type === "text") {
+    const parentPath = operation.parentId === null ? [] : walkNodes(document).find(({ node }) => node.type !== "text" && node.id === operation.parentId)?.path;
+    if (!parentPath) throw new Error("text parent not found");
+    const path = [...parentPath, ...operation.childPath], node = nodeAt(document, path);
+    if (node.type !== "text") throw new Error("text target not found");
+    const textPathContext = pageOperationTextPathContext(document, operation.parentId, operation.childPath);
+    return { ...operation, preconditions: { parentId: parentIdAt(document, path), oldValue: node.text, ...(textPathContext ? { textPathContext } : {}) } };
+  }
+  if (operation.type !== "style" && operation.type !== "attribute" && operation.type !== "prop") return operation;
+  const located = walkNodes(document).find(({ node }) => node.type !== "text" && node.id === operation.nodeId);
+  if (!located || located.node.type === "text") throw new Error("operation target not found");
+  const node = located.node;
+  let oldValue: unknown;
+  if (operation.type === "style") {
+    const declarations = operation.breakpoint === "base" ? node.style?.base : node.style?.responsive?.find(({ minWidth }) => minWidth === operation.breakpoint)?.declarations;
+    oldValue = declarations?.[operation.property];
+  } else if (operation.type === "attribute") oldValue = node.type === "element" ? node.attrs?.[operation.name] : undefined;
+  else oldValue = node.type === "component" ? node.props[operation.name] : undefined;
+  return { ...operation, preconditions: { parentId: parentIdAt(document, located.path), oldValue: oldValue ?? null } } as EditorOperationById;
+}
+function preconditionSequence(document: PageDocument, operations: readonly EditorOperationById[], apply: Apply): EditorOperationById[] {
+  return operations.map((operation) => {
+    const prepared = preconditioned(document, operation);
+    document = apply(document, prepared);
+    return prepared;
+  });
 }
 
 function textEdits(before: readonly PageNode[], after: readonly PageNode[], parentId: string): Change | undefined {
@@ -173,6 +208,7 @@ function reversibleChange(before: PageDocument, after: PageDocument, operation: 
     if (inverse) change = { forward: [forward], inverse };
   }
   if (!change) return undefined;
+  change = { forward: preconditionSequence(before, change.forward, apply), inverse: preconditionSequence(after, change.inverse, apply) };
   const canonical = (entry: EditorOperationById) => parsePageOperation(JSON.parse(JSON.stringify(pageOperationWire(entry))), "$operation");
   const forward = change.forward.map(canonical), inverse = change.inverse.map(canonical);
   if (equivalent(replayOperations(before, forward, apply), after) && equivalent(replayOperations(after, inverse, apply), before)) return { forward, inverse };
@@ -260,6 +296,19 @@ function operationAnchor(document: PageDocument, operation: EditorOperationById)
   };
   switch (operation.type) {
     case "text": return siblings(operation.parentId);
+    case "style": case "attribute": case "prop": {
+      const matches = walkNodes(document).filter(({ node }) => node.type !== "text" && node.id === operation.nodeId);
+      if (matches.length !== 1) return undefined;
+      const located = matches[0]!;
+      const parentId = parentIdAt(document, located.path), node = located.node;
+      if (node.type === "text") return undefined;
+      if (operation.type === "style") {
+        const declarations = operation.breakpoint === "base" ? node.style?.base : node.style?.responsive?.find(({ minWidth }) => minWidth === operation.breakpoint)?.declarations;
+        return [node.type, parentId, declarations?.[operation.property]];
+      }
+      if (operation.type === "attribute") return node.type === "element" ? [node.type, parentId, node.attrs?.[operation.name]] : undefined;
+      return node.type === "component" ? [node.type, parentId, node.props[operation.name]] : undefined;
+    }
     case "add": case "addMany": return siblings(operation.parentId);
     case "duplicate": case "remove": case "move": {
       const located = walkNodes(document).find(({ node }) => node.type !== "text" && node.id === operation.nodeId);
