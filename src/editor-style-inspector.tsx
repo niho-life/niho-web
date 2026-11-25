@@ -21,6 +21,9 @@ export type StyleInspectorProps = {
   saved?: string | undefined;
   node: ElementNode | ComponentNode | InstanceNode;
   path: NodePath;
+  /** 複数選択時の対象。スタイル変更を全対象へ同じ履歴操作として適用する。 */
+  targets?: readonly { node: ElementNode | ComponentNode | InstanceNode; path: NodePath }[];
+  commonOnly?: boolean;
   blocks: EditorBlockRegistry;
   tiers: readonly EditorTier[];
   tier: TierKey;
@@ -29,8 +32,8 @@ export type StyleInspectorProps = {
   setRange: (range: StyleRange) => void;
   width: number;
   setWidth: (width: number) => void;
-  apply: (operation: EditorOperation) => string | undefined;
-  preview: (operation: EditorOperation | null) => void;
+  apply: (operation: EditorOperation | readonly EditorOperation[]) => string | undefined;
+  preview: (operation: EditorOperation | readonly EditorOperation[] | null) => void;
   pending: Pending;
   fieldKey: string;
   disabled: boolean;
@@ -91,8 +94,11 @@ type Ui = {
 export function StyleInspector(props: StyleInspectorProps) {
   const { document, node, path, blocks, tiers, tier, apply, preview, pending, fieldKey, disabled, reason, notify } = props;
   const uid = useId();
+  const targets = props.targets?.length ? props.targets : [{ node, path }];
   const allowed = node.type === "component" ? blocks[node.block]?.styleProperties : undefined, slot = props.scope === "slot";
-  const can = (property: StyleProperty | "textStyle" | "states" | "appear" | "hidden") => !(slot && ["textStyle", "states", "appear", "hidden"].includes(property)) && (!allowed || allowed.includes(property));
+  const can = (property: StyleProperty | "textStyle" | "states" | "appear" | "hidden") => !(slot && ["textStyle", "states", "appear", "hidden"].includes(property))
+    && !(props.commonOnly && ["states", "appear", "hidden"].includes(property))
+    && targets.every((target) => { const properties = target.node.type === "component" ? blocks[target.node.block]?.styleProperties : undefined; return !properties || properties.includes(property); });
   const styleState = props.styleState ?? "normal", normal = styleState === "normal";
   const index = Math.max(0, tiers.findIndex((entry) => entry.key === tier)), current = tiers[index] ?? { key: "base" as const, start: 0, end: null, label: "基本" };
   const tone = index === 0 ? 0 : (index - 1) % 2 + 1, higher = tiers.slice(index + 1), next = higher[0];
@@ -106,27 +112,40 @@ export function StyleInspector(props: StyleInspectorProps) {
   // 「〜だけ」は次の段の responsive にも書くため、responsive のロックも確認する。
   const lock = (property: StyleProperty) => reason(tier === "base" ? `style.base.${property}` : "style.responsive") ?? (only ? reason("style.responsive") : undefined);
   const key = (property: string) => `${fieldKey}-${tier}-${property}`;
-  const operation = (values: Values): EditorOperation => only ? { type: "styleRange", path, breakpoint: tier, until: next!.start, values } : { type: "styles", path, breakpoint: tier, values };
+  const operation = (values: Values): EditorOperation | readonly EditorOperation[] => {
+    const operations = targets.map((target): EditorOperation => only ? { type: "styleRange", path: target.path, breakpoint: tier, until: next!.start, values } : { type: "styles", path: target.path, breakpoint: tier, values });
+    return operations.length === 1 ? operations[0]! : operations;
+  };
   const set = (values: Values) => apply(operation(values));
   const report = (error: string | undefined) => { if (error) notify(error); };
   const draft = (property: StyleProperty) => (value: StyleValue | undefined | null) => preview(value === null ? null : operation({ [property]: value }));
-  const state = (property: StyleProperty) => fieldState(document, node, property, tier);
-  const effective = (property: StyleProperty) => { const value = state(property); return resolveValue(document, value.own ?? value.inherited?.value); };
+  const statesFor = (property: StyleProperty) => targets.map((target) => fieldState(document, target.node, property, tier));
+  const mixed = (property: StyleProperty) => {
+    const values = statesFor(property).map((value) => JSON.stringify(resolveValue(document, value.own ?? value.inherited?.value)));
+    return values.length > 1 && values.some((value) => value !== values[0]);
+  };
+  const state = (property: StyleProperty) => {
+    const value = fieldState(document, node, property, tier);
+    if (!mixed(property)) return value;
+    return { overriddenAt: value.overriddenAt };
+  };
+  const effective = (property: StyleProperty) => { if (mixed(property)) return undefined; const value = fieldState(document, node, property, tier); return resolveValue(document, value.own ?? value.inherited?.value); };
   const text = (value: StyleValue | undefined) => value === undefined ? undefined : typeof value === "object" ? document.tokens[value.token]?.label ?? value.token : String(value);
   function status(properties: StyleProperty[], valueLabel?: string): RowStatus {
-    const states = properties.map(state), from = states[0]!.inherited;
+    const states = properties.map((property) => fieldState(document, node, property, tier)), from = states[0]!.inherited;
+    const isMixed = properties.some(mixed);
     const source = from && (from.via === "textStyle" ? styleLabel(from.textStyle) : tierOf(from.from)?.label ?? `${from.from}px〜`);
     const sourceLong = from && (from.via === "textStyle" ? `テキストスタイル『${styleLabel(from.textStyle)}』から継承` : `${tierOf(from.from) ? tierName(tierOf(from.from)!) : `${from.from}px〜`}から継承`);
     const over = [...new Set(states.flatMap((entry) => entry.overriddenAt))].sort((a, b) => a - b).map((width) => tierOf(width));
     const inheritedOnly = states.every((entry) => entry.own === undefined) && !!from;
     return {
-      own: states.some((entry) => entry.own !== undefined), lock: properties.map(lock).find(Boolean),
+      own: properties.some((property) => statesFor(property).some((entry) => entry.own !== undefined)), lock: properties.map(lock).find(Boolean), mixed: isMixed,
       reset: () => report(set(Object.fromEntries(properties.map((property) => [property, undefined])))),
-      inherited: inheritedOnly ? `継承: ${source}${valueLabel ? ` · ${valueLabel}` : ""}` : undefined,
-      inheritedTitle: inheritedOnly ? `${sourceLong}${valueLabel ? `（${valueLabel}）` : ""}` : undefined,
-      overridden: over.length ? `別の値: ${over.map((entry) => entry?.label).join("・")}` : undefined,
-      overriddenTitle: over.length ? `${over.map((entry) => entry ? tierName(entry) : "").join("・")} では別の値` : undefined,
-      unsaved: properties.some((property, at) => JSON.stringify(declarationsAt(saved?.style, tier)?.[property]) !== JSON.stringify(states[at]!.own))
+      inherited: !isMixed && inheritedOnly ? `継承: ${source}${valueLabel ? ` · ${valueLabel}` : ""}` : undefined,
+      inheritedTitle: !isMixed && inheritedOnly ? `${sourceLong}${valueLabel ? `（${valueLabel}）` : ""}` : undefined,
+      overridden: !isMixed && over.length ? `別の値: ${over.map((entry) => entry?.label).join("・")}` : undefined,
+      overriddenTitle: !isMixed && over.length ? `${over.map((entry) => entry ? tierName(entry) : "").join("・")} では別の値` : undefined,
+      unsaved: targets.length === 1 && properties.some((property, at) => JSON.stringify(declarationsAt(saved?.style, tier)?.[property]) !== JSON.stringify(states[at]!.own))
     };
   }
   const tokenChoices = (property: StyleProperty): Choice[] => Object.entries(document.tokens).filter(([, token]) => token.type === styleTokenKind(property)).map(([name, token]) => [name, token.label ?? name]);
@@ -208,6 +227,12 @@ export function StyleInspector(props: StyleInspectorProps) {
   const display = String(effective("display") ?? ""), flex = display === "flex" || display === "inline-flex", grid = display === "grid" || display === "inline-grid";
   const position = String(effective("position") ?? "static");
   const textStyles = Object.entries(document.textStyles ?? {});
+  const textStyleValues = targets.map((target) => target.node.style?.textStyle ?? "");
+  const mixedTextStyle = textStyleValues.length > 1 && textStyleValues.some((value) => value !== textStyleValues[0]);
+  const applyTextStyle = (name: string | undefined, detach = false) => {
+    const operations = targets.map((target): EditorOperation => ({ type: "nodeTextStyle", path: target.path, name, ...(detach ? { detach: true } : {}) }));
+    return apply(operations.length === 1 ? operations[0]! : operations);
+  };
   // テキストスタイルの候補は定義した場所（サイト共通・このページ）で分ける。場所が 1 つだけなら見出しを付けない。
   const styleGroups = new Map<string, typeof textStyles>();
   for (const entry of textStyles) { const origin = props.origins?.[`textStyle:${entry[0]}`] ?? ""; styleGroups.set(origin, [...(styleGroups.get(origin) ?? []), entry]); }
@@ -238,12 +263,12 @@ export function StyleInspector(props: StyleInspectorProps) {
     </div>}
     {normal && allowed && <p className="e-help">{slot ? "この領域で変更できる見た目だけを表示しています。" : "このブロックで変更できる見た目だけを表示しています。"}</p>}
     {show("text") && normal && textual && (can("textStyle") || textStyleProperties.some(can) || can("color") || can("textAlign")) && <section className="e-sec"><h3>テキスト</h3>
-      {can("textStyle") && <Row caption="テキストスタイル" htmlFor={`${uid}-ts`} status={{ unsaved: (saved?.style?.textStyle ?? "") !== (node.style?.textStyle ?? ""), lock: reason("style.textStyle") }}>
-        <span className="e-inline"><select id={`${uid}-ts`} aria-label="テキストスタイル" value={node.style?.textStyle ?? ""} disabled={disabled || !!reason("style.textStyle")}
-          onChange={(event) => report(apply({ type: "nodeTextStyle", path, name: event.target.value || undefined }))}>
-          <option value="">なし</option>{styleGroups.size > 1 ? [...styleGroups].map(([origin, entries]) => <optgroup key={origin} label={origin || "この文書"}>{styleOptions(entries)}</optgroup>) : styleOptions(textStyles)}
+      {can("textStyle") && <Row caption="テキストスタイル" htmlFor={`${uid}-ts`} status={{ unsaved: targets.length === 1 && (saved?.style?.textStyle ?? "") !== (node.style?.textStyle ?? ""), lock: reason("style.textStyle"), mixed: mixedTextStyle }}>
+        <span className="e-inline"><select id={`${uid}-ts`} aria-label="テキストスタイル" value={mixedTextStyle ? "__mixed__" : node.style?.textStyle ?? ""} disabled={disabled || !!reason("style.textStyle")}
+          onChange={(event) => report(applyTextStyle(event.target.value && event.target.value !== "__mixed__" ? event.target.value : undefined))}>
+          {mixedTextStyle && <option value="__mixed__" disabled>混在</option>}<option value="">なし</option>{styleGroups.size > 1 ? [...styleGroups].map(([origin, entries]) => <optgroup key={origin} label={origin || "この文書"}>{styleOptions(entries)}</optgroup>) : styleOptions(textStyles)}
         </select>
-        {node.style?.textStyle && <button type="button" className="e-small" title="今の見た目のまま、この要素だけの指定に変えます" disabled={disabled || !!reason("style.textStyle")} onClick={() => report(apply({ type: "nodeTextStyle", path, name: undefined, detach: true }))}>切り離す</button>}</span>
+        {targets.some((target) => !!target.node.style?.textStyle) && <button type="button" className="e-small" title="今の見た目のまま、この要素だけの指定に変えます" disabled={disabled || !!reason("style.textStyle")} onClick={() => report(applyTextStyle(undefined, true))}>切り離す</button>}</span>
       </Row>}
       {color("color", "文字色")}
       {can("fontFamily") && <FontField key={key("fontFamily")} caption="フォント" value={state("fontFamily").own} fonts={fontChoices} tokens={tokenChoices("fontFamily")} apply={(value) => set({ fontFamily: value })}
@@ -303,10 +328,10 @@ export function StyleInspector(props: StyleInspectorProps) {
       {ui.select("alignSelf", "自身の揃え", selfAligns)}
       {ui.select("overflowWrap", "長い文字の折り返し", wrapChoices)}
       {ui.select("wordBreak", "単語の改行", wordBreakChoices)}
-      {(element?.tag === "ul" || element?.tag === "ol" || element?.tag === "li") && <div className="e-grid2">{ui.select("listStyleType", "リストの印", listStyleChoices)}{ui.select("listStylePosition", "印の位置", [["outside", "外側"], ["inside", "内側"]])}</div>}
-      {(element?.tag === "img" || element?.tag === "video") && ui.unit("verticalAlign", "行内の縦位置", { units: ["px", "rem", "em", "%"], keywords: [["baseline", "基準線"], ["top", "上"], ["middle", "中央"], ["bottom", "下"], ["text-top", "文字の上端"], ["text-bottom", "文字の下端"], ["sub", "下付き"], ["super", "上付き"]] })}
+      {!props.commonOnly && (element?.tag === "ul" || element?.tag === "ol" || element?.tag === "li") && <div className="e-grid2">{ui.select("listStyleType", "リストの印", listStyleChoices)}{ui.select("listStylePosition", "印の位置", [["outside", "外側"], ["inside", "内側"]])}</div>}
+      {!props.commonOnly && (element?.tag === "img" || element?.tag === "video") && ui.unit("verticalAlign", "行内の縦位置", { units: ["px", "rem", "em", "%"], keywords: [["baseline", "基準線"], ["top", "上"], ["middle", "中央"], ["bottom", "下"], ["text-top", "文字の上端"], ["text-bottom", "文字の下端"], ["sub", "下付き"], ["super", "上付き"]] })}
       {ui.select("writingMode", "文字の向き", [["horizontal-tb", "横書き"], ["vertical-rl", "縦書き（右から）"], ["vertical-lr", "縦書き（左から）"]])}
-      {(element?.tag === "img" || element?.tag === "video" || slot) && ui.select("objectFit", element?.tag === "video" ? "動画の収まり" : "画像の収まり", fits)}
+      {!props.commonOnly && (element?.tag === "img" || element?.tag === "video" || slot) && ui.select("objectFit", element?.tag === "video" ? "動画の収まり" : "画像の収まり", fits)}
     </Collapse>}
   </div>;
 }
