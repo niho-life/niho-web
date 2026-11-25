@@ -718,7 +718,9 @@ test("鎌倉のページ名操作はホストcapabilityがある時だけ接続�
     const body = init.body ? JSON.parse(init.body) : undefined; calls.push({ path, body });
     if (String(path).endsWith("/pages.change-prepare")) return Response.json({ plan: { ...returnedPlan, expectedVersion: body.expectedVersion, operationId: body.operationId, change: body.change } });
     if (String(path).endsWith("/pages.change-apply")) return Response.json({ status: "applied", operationId: body.operationId, page: returnedPage });
-    assert.ok(String(path).endsWith("/pages.catalog")); return Response.json({ version: "registry-v1", pages: [{ ...source.pages[0], title: change.title }] });
+    if (String(path).endsWith("/pages.catalog")) return Response.json({ version: "registry-v1", pages: [{ ...source.pages[0], title: change.title }] });
+    assert.ok(String(path).endsWith("/catalog"));
+    return Response.json({ ...source, pages: source.pages.map((page) => page.pageId === returnedPage.pageId ? returnedPage : page) });
   });
   const adapter = createKamakuraAdapter(contract.parseKamakuraCatalog(source), () => {});
   assert.deepEqual(adapter.pageChangeActions, ["update"]); assert.equal(adapter.pagePathEditable, false);

@@ -9,7 +9,7 @@ import { SiteLanguageSettings } from "../src/site-language-settings.js";
 import { parseProjectDirectoryResult, type ProjectDirectoryResult } from "../src/project-read-model.js";
 import type { Project } from "../src/projects.js";
 import { integrationIdentity, resolveTrustedEditorPage, resolveTrustedIntegration, trustedEditorPath } from "./integration-registry.mjs";
-import { KamakuraEditor } from "./kamakura-editor.js";
+import { KamakuraEditor, useKamakuraCatalog } from "./kamakura-editor.js";
 import { ManagedEditor } from "./managed-editor.js";
 import { parseProjectAliasPath, projectRoutePath, type ProjectCmsRoute, type ProjectSiteViewId, type ProjectTranslationsRoute } from "./project-routes.mjs";
 import { SiteCmsWorkspace } from "./site-cms.js";
@@ -572,6 +572,15 @@ function App() {
     setPendingProject(project);
   }, [session]);
 
+  const selected = session.status === "ready" && session.directory.status === "ready" && (screen.kind === "dashboard" || screen.kind === "editor")
+    ? session.directory.entries.find(({ project }) => project.id === screen.projectId && project.site.id === screen.siteId)?.project
+    : undefined;
+  const resolvedEditor = screen.kind === "editor" ? resolveTrustedIntegration(screen.projectId, screen.siteId, screen.environment) : null;
+  // Kamakura は凍結中も表示の確認だけできる（kamakura-site#84）。Experience は休止のまま。
+  const kamakuraRoute = resolvedEditor?.environment === "production" && integrationIdentity(resolvedEditor.registration.projectId, resolvedEditor.registration.siteId) === integrationIdentity("project-kamakura", "kamakura");
+  const kamakuraCatalog = useKamakuraCatalog(kamakuraRoute && (session.status === "loading" || selected) ? resolvedEditor.config.apiPrefix : null);
+  const kamakuraEditor = kamakuraRoute && selected !== undefined;
+
   if (session.status === "loading") return <StudioLoading />;
   if (session.status === "expired") return <Notice title="セッションの確認が必要です" retry={() => window.location.reload()}>Cloudflare Access から再度ログインしてください。</Notice>;
   if (session.status === "error") return <Notice title="Studio を読み込めませんでした" retry={loadSession}>時間をおいて再度お試しください。</Notice>;
@@ -596,16 +605,8 @@ function App() {
           onNavigate={(state) => navigateTranslations(project.id, project.site.id, { itemKey: state.view === "item" ? state.itemKey : null })} /> }
     ];
   };
-  const selected = screen.kind === "dashboard" || screen.kind === "editor"
-    ? session.directory.entries.find(({ project }) => project.id === screen.projectId && project.site.id === screen.siteId)?.project
-    : undefined;
   const selectedSourceLocale = selected ? resolveTrustedIntegration(selected.id, selected.site.id)?.registration.sourceLocale : undefined;
-  const resolvedEditor = screen.kind === "editor" && selected
-    ? resolveTrustedIntegration(selected.id, selected.site.id, screen.environment)
-    : null;
   const managedEditor = screen.kind === "editor" && selected ? managedProject(selected, session.config) : false;
-  // Kamakura は凍結中も表示の確認だけできる（kamakura-site#84）。Experience は休止のまま。
-  const kamakuraEditor = resolvedEditor?.environment === "production" && integrationIdentity(resolvedEditor.registration.projectId, resolvedEditor.registration.siteId) === integrationIdentity("project-kamakura", "kamakura");
 
   // プロジェクトの中では Dashboard の帯が 1 段のヘッダーになる（Studio のヘッダーを重ねない）。アカウントはその帯の右端に置く
   const projectShell = screen.kind === "dashboard" && selected !== undefined;
@@ -622,7 +623,7 @@ function App() {
           ? managedEditor
             ? <ManagedEditor project={selected} />
             : kamakuraEditor && resolvedEditor
-            ? <KamakuraEditor project={selected} environment={resolvedEditor.environment} />
+            ? <KamakuraEditor project={selected} environment={resolvedEditor.environment} catalogLoad={kamakuraCatalog} />
             : resolvedEditor
             ? <Notice title="サイトデザイン編集は休止中です">ヘッダー、余白、レイアウトなどの変更は各サイトの開発で対応します。以前の編集内容は保管しています。記事や体験の原稿は、それぞれの管理画面で引き続き編集できます。</Notice>
             : <Notice title="エディターを表示できません">このサイトまたは環境のエディターは接続されていません。</Notice>
