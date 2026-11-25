@@ -2389,6 +2389,9 @@ test("operation conflict keeps the local queue and retries a CLI write only afte
     assert.equal(operations.length, 2);
     assert.equal(operations[1].baseVersion, external.version);
     assert.notEqual(operations[1].operationId, operations[0].operationId);
+    // 再適用は画面イベントから非同期で始まるので、hostのjournalへ反映された後で検証する。
+    for (let attempt = 0; attempt < 100 && storage.readJournal().length < 2; attempt++) await wait(10);
+    assert.equal(storage.readJournal().length, 2);
     const { document: saved } = await cli.read(homeTarget);
     assert.equal(saved.title, "GUIの編集");
     assert.equal(saved.meta.description, "CLIの編集");
