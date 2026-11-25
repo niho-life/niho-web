@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { findLayer } from "./editor-layer-fixtures.mjs";
 import { JSDOM } from "jsdom";
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: "https://editor.example.test" });
 for (const key of ["window", "document", "HTMLElement", "HTMLInputElement", "Element", "Event", "MouseEvent"]) globalThis[key] = dom.window[key];
@@ -62,6 +63,7 @@ const editorCss = () => [...canvas().querySelectorAll("style")].map((node) => no
 const card = (name) => document.querySelector(`article.e-part-card[aria-label="${name}"]`);
 const openPanel = () => click(document.querySelector('nav[aria-label="編集ツール"] button[title="コンポーネント"]'));
 async function click(target) { assert.ok(target); await act(async () => target.click()); await flush(); }
+async function clickLayer(label, scope = document) { const target = await findLayer(() => button(label, scope), click, scope); assert.ok(target, label); await click(target); }
 async function canvasClick(selector) { const view = frame().contentWindow, target = view.document.querySelector(selector); assert.ok(target, selector); await act(async () => target.dispatchEvent(new view.MouseEvent("click", { bubbles: true, cancelable: true }))); await flush(); }
 async function change(target, value) {
   assert.ok(target);
@@ -175,7 +177,7 @@ test("regions never offer text styles, states, motion or background images", asy
   const doc = { ...page({ type: "component", id: "feature", block: "Feature", props: {} }), textStyles: { lead: { label: "リード", base: { fontSize: 18 } } } };
   const app = await setup({ document: doc, blocks: { Feature: feature }, props: { assets: createMemoryAssetLibrary({ siteId: "demo" }) } });
   try {
-    await click(button("特集 · feature", left()));
+    await clickLayer("特集 · feature", left());
     // ブロック全体では設定項目を Studio のタブごとに確認する。
     await selectTab("テキスト"); assert.ok(input("テキストスタイル", right()));
     await selectTab("ボックス"); assert.ok(button("背景画像を選ぶ", right()));
@@ -195,8 +197,8 @@ test("the region resets when another node or the block body is selected, and the
   const app = await setup();
   try {
     await canvasClick('[data-nw-node="cards"] [data-nw-slot="title"]'); assert.equal(heading(), "体験カード一覧 · カードの見出し");
-    await click(button("海のそばで過ごす · heading", left())); assert.equal(heading(), "海のそばで過ごす");
-    await click(button("体験カード一覧 · cards", left()));
+    await clickLayer("海のそばで過ごす · heading", left()); assert.equal(heading(), "海のそばで過ごす");
+    await clickLayer("体験カード一覧 · cards", left());
     assert.equal(heading(), "体験カード一覧", "reselecting the block does not restore the region");
     assert.ok(slotRow("カードの見出し")); assert.equal(editorCss().includes('[data-nw-slot="title"]{outline'), false);
     // 領域ではない部分（ブロックの見出し）を押すとブロックだけを選ぶ。
@@ -207,7 +209,7 @@ test("the region resets when another node or the block body is selected, and the
     assert.deepEqual(captions(), ["高さ", "角丸", "画像の収まり"]);
     await click(button("ブロック全体に戻る", right())); assert.ok(document.activeElement === slotRow("カード画像"), "focus returns to the row of the region");
     await click(slotRow("カード画像")); await click(button("ページ全体", left()));
-    await click(button("体験カード一覧 · cards", left())); assert.equal(heading(), "体験カード一覧");
+    await clickLayer("体験カード一覧 · cards", left()); assert.equal(heading(), "体験カード一覧");
   } finally { await app.cleanup(); }
 });
 
