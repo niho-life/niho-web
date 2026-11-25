@@ -112,7 +112,21 @@ test("Studio の編集画面は初回一覧と文書を各1回だけ読み、Acc
   function open(path, options = {}) {
     const dom = new JSDOM('<div id="root"></div>', { url: `https://studio.example.test${path}`, runScripts: "outside-only", pretendToBeVisual: true });
     t.after(() => dom.window.close());
-    const { window } = dom, calls = [];
+    const { window } = dom, calls = [], measures = [];
+    if (options.measure) {
+      const marks = new Map();
+      Object.assign(window.performance, {
+        getEntriesByType: (type) => type === "navigation" ? [{ startTime: 0 }] : [],
+        mark: (name, { startTime = window.performance.now() } = {}) => marks.set(name, startTime),
+        measure: (name, start, end) => {
+          const entry = { name, startTime: marks.get(start), duration: marks.get(end) - marks.get(start) };
+          if (name.startsWith("niho-studio:editor:")) measures.push(entry);
+          return entry;
+        },
+        clearMarks: (name) => marks.delete(name),
+        clearMeasures: () => {}
+      });
+    }
     const session = Promise.withResolvers(), editorCatalog = Promise.withResolvers();
     window.TextEncoder = TextEncoder;
     window.TextDecoder = TextDecoder;
@@ -142,7 +156,7 @@ test("Studio の編集画面は初回一覧と文書を各1回だけ読み、Acc
       return json({ error: "not_found" }, 404);
     };
     window.eval(client.outputFiles[0].text);
-    return { window, calls, session, editorCatalog };
+    return { window, calls, session, editorCatalog, measures };
   }
 
   const editor = open(canonical);
@@ -159,6 +173,18 @@ test("Studio の編集画面は初回一覧と文書を各1回だけ読み、Acc
   assert.equal(editor.calls.filter(({ path }) => path === breakpointsPath).length, 1);
   assert.equal(editor.calls.filter(({ path }) => path === `${base}/localization/editor/site`).length, 1);
   assert.ok(!editor.calls.some(({ path }) => path.endsWith("/pages.catalog") || path === `${base}/editor/${page.pageId}`));
+  assert.equal(editor.window.document.querySelector(".studio-editor-performance"), null);
+
+  const measured = open(`${canonical}?editorPerf=1`, { measure: true });
+  measured.session.resolve();
+  measured.editorCatalog.resolve();
+  await until(() => measured.window.document.querySelector("iframe"));
+  measured.window.document.querySelector("iframe").dispatchEvent(new measured.window.Event("load"));
+  await until(() => measured.measures.length === 1);
+  assert.equal(measured.measures[0].name, "niho-studio:editor:initial-load");
+  assert.equal(measured.measures[0].startTime, 0);
+  assert.ok(measured.measures[0].duration > 0);
+  await until(() => measured.window.document.querySelector(".studio-editor-performance dd")?.textContent?.endsWith(" ms"));
 
   for (const [options, message] of [
     [{ expired: true }, "セッションの確認が必要です"],

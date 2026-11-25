@@ -19,6 +19,8 @@ niho-edit --origin <https-origin> --site <site-id> pages-catalog
 niho-edit --origin <https-origin> --site <site-id> page-change-prepare --expected-version <version> --json <change-file|->
 niho-edit --origin <https-origin> --site <site-id> page-change-apply --json <plan-file|->
 niho-edit --origin <https-origin> --site <site-id> cms-schema
+niho-edit --studio --origin <studio-origin> --site <site-id> cms-schema-plan --json <schema-draft-file|->
+niho-edit --studio --origin <studio-origin> --site <site-id> cms-schema-apply --json <schema-plan-file|-> [--confirm-data-loss]
 niho-edit --origin <https-origin> --site <site-id> cms-list <collection-id>
 niho-edit --origin <https-origin> --site <site-id> cms-read <collection-id> <item-id>
 niho-edit --origin <https-origin> --site <site-id> cms-create <collection-id> --operation-id <uuid-v4>
