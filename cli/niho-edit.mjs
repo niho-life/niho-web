@@ -13,7 +13,9 @@ import { PAGE_OPERATION_LIMIT, changedPageNodeIds, editingOperationProblem, pars
 import { diffDocuments } from "../dist/history.js";
 import { parseBreakpointSettings } from "../dist/style-model.js";
 import { inspectPageDocument, PageInspectError, parsePageInspectQuery } from "../dist/page-inspect.js";
-import { SERVICE_CLIENT_ID } from "./operations.mjs";
+import { OPERATIONS, OPERATION_KEY_HEADER, SERVICE_CLIENT_ID } from "./operations.mjs";
+import { isSafePublicUrl } from "../dist/validation-utils.js";
+import { capturePagePreview } from "./page-preview.mjs";
 
 const USAGE = `niho-edit --origin <https-origin> --site <site-id> discover
 niho-edit --origin <https-origin> --site <site-id> read <page-id> --locale <locale>
@@ -22,6 +24,7 @@ niho-edit --origin <https-origin> --site <site-id> find <page-id> --locale <loca
 niho-edit --origin <https-origin> --site <site-id> find --url <public-url> --locale <locale> --node <data-nw-node>
 niho-edit --origin <https-origin> --site <site-id> get <page-id> <node-id> --locale <locale> [--effective-style]
 niho-edit --origin <https-origin> --site <site-id> apply <page-id> --locale <locale> --ops <file|-> [--dry-run] [--expected-version <version>] [--operation-id <uuid-v4>]
+niho-edit --origin <https-origin> --site <site-id> preview <page-id> --locale <locale> --widths 375,768,1280 [--compare published] [--out <dir>]
 niho-edit --origin <https-origin> --site <site-id> save <page-id> --locale <locale> --json <snapshot-file|->
 niho-edit --origin <https-origin> --site <site-id> release-plan <page-id> --locale <locale> --action <publish|rollback> (--json <snapshot-file|-> | --expected-version <version>) [--revision <number>]
 niho-edit --origin <https-origin> --site <site-id> release <page-id> --locale <locale> --json <plan-file|-> --operation-id <uuid-v4>
@@ -42,6 +45,9 @@ niho-edit cms-diff --base <item-snapshot> --json <edited-item-snapshot>
 niho-edit --origin <https-origin> --site <site-id> cms-publish-plan <collection-id> <item-id> --expected-version <version> --operation-id <uuid-v4> [--redirect <true|false>]
 niho-edit --origin <https-origin> --site <site-id> cms-publish --json <publish-plan|->
 niho-edit --origin <https-origin> --site <site-id> cms-status --operation-id <uuid-v4>
+niho-edit --studio --origin <studio-origin> --site <site-id> cms-discover
+niho-edit --studio --origin <studio-origin> --site <site-id> cms-v2 <cms.operation> --json <input-file|-> [--operation-id <uuid-v4>]
+Use --studio with existing cms-* commands for a Studio-native site.
 niho-edit --origin <https-origin> --site <site-id> assets-list [--search <text>] [--kind <kind>] [--provider <provider>] [--limit <number>] [--cursor <cursor>] [--folder-id <id>] [--recent]
 niho-edit --origin <https-origin> --site <site-id> assets-usages <provider> <asset-id>
 niho-edit --origin <https-origin> --site <site-id> assets-resolve --json <references-file|->
@@ -87,12 +93,13 @@ class CliError extends Error {
 function argsFromCli() {
   try {
     return parseArgs({ allowPositionals: true, options: {
-      origin: { type: "string" }, site: { type: "string" }, locale: { type: "string" }, json: { type: "string" }, action: { type: "string" },
+      studio: { type: "boolean" }, origin: { type: "string" }, site: { type: "string" }, locale: { type: "string" }, json: { type: "string" }, action: { type: "string" },
       "expected-version": { type: "string" }, "components-version": { type: "string" }, "presentation-version": { type: "string" },
       revision: { type: "string" }, "operation-id": { type: "string" }, redirect: { type: "string" }, base: { type: "string" }, help: { type: "boolean", short: "h" },
       name: { type: "string" }, "mime-type": { type: "string" }, provider: { type: "string" }, search: { type: "string" }, kind: { type: "string" }, "upload-origin": { type: "string" },
       "folder-id": { type: "string" }, cursor: { type: "string" }, limit: { type: "string" }, recent: { type: "boolean" },
       ops: { type: "string" }, "dry-run": { type: "boolean" },
+      widths: { type: "string" }, compare: { type: "string" }, out: { type: "string" },
       "node": { type: "string" }, "depth": { type: "string" }, "text": { type: "string" },
       "tag": { type: "string" }, "style": { type: "string" }, "uses-token": { type: "string" }, "block": { type: "string" },
       "url": { type: "string" }, "effective-style": { type: "boolean" }
@@ -359,7 +366,7 @@ async function inputAssetReferences(path) {
   return value.references;
 }
 function assertCommandOptions(values, allowed) {
-  const shared = ["origin", "site", "help"];
+  const shared = ["origin", "site", "help", "studio"];
   if (Object.keys(values).some((key) => !shared.includes(key) && !allowed.includes(key))) throw new CliError("invalid_arguments");
 }
 function stableJson(value) {
@@ -484,10 +491,38 @@ async function runPageInspection(client, command, pageId, extra, values) {
     ...(snapshot.stylesVersion === undefined ? {} : { stylesVersion: snapshot.stylesVersion }) }) + "\n");
 }
 
+async function runPagePreview(client, pageId, extra, values, baseOrigin, authorizationHeaders) {
+  assertCommandOptions(values, ["locale", "widths", "compare", "out"]);
+  if (!IDENTIFIER.test(pageId ?? "") || extra.length || !LOCALE.test(values.locale ?? "")
+    || !/^[1-9]\d{0,3}(?:,[1-9]\d{0,3}){0,7}$/u.test(values.widths ?? "")
+    || values.compare !== undefined && values.compare !== "published" || values.out !== undefined && (!values.out.trim() || values.out.includes("\u0000"))) {
+    throw new CliError("invalid_arguments");
+  }
+  const widths = values.widths.split(",").map(Number);
+  if (widths.some((width) => width > 4096) || new Set(widths).size !== widths.length) throw new CliError("invalid_arguments");
+  const target = { siteId: values.site, pageId, locale: values.locale };
+  const discovery = await apiCall(() => client.discover(AbortSignal.timeout(30_000)));
+  if (!discovery.operations.some(({ id }) => id === "pages.preview-intent")) throw new CliError("preview_not_supported", 404);
+
+  let publishedUrl;
+  if (values.compare === "published") {
+    const catalog = await apiCall(() => client.readPageCatalog(AbortSignal.timeout(30_000)));
+    const page = catalog.pages.find((entry) => entry.pageId === pageId && entry.locale === values.locale && entry.published === true && entry.visibility === "public" && entry.kind === "page");
+    if (!page?.path || !page.path.startsWith("/") || !isSafePublicUrl(page.path) || /[?#]/u.test(page.path)) throw new CliError("published_page_not_found", 404);
+    publishedUrl = new URL(page.path, baseOrigin).href;
+  }
+  const intent = await apiCall(() => client.createPagePreviewIntent(target, AbortSignal.timeout(30_000)));
+  let screenshots;
+  try { screenshots = await capturePagePreview({ ...intent, publishedUrl, widths, out: values.out, authorizationHeaders }); }
+  catch { throw new CliError("preview_capture_failed"); }
+  process.stdout.write(`${JSON.stringify({ ...intent, publishedUrl, screenshots })}\n`);
+}
+
 async function main() {
   const { values, positionals } = argsFromCli();
   if (values.help) { process.stdout.write(`${USAGE}\n`); return; }
   const [command, pageId, ...extra] = positionals;
+  if (command !== "preview" && [values.widths, values.compare, values.out].some((value) => value !== undefined)) throw new CliError("invalid_arguments");
   if (command !== "apply" && (values.ops !== undefined || values["dry-run"] !== undefined)) throw new CliError("invalid_arguments");
   if (!["outline", "find", "get"].includes(command) && ["node", "depth", "text", "tag", "style", "uses-token", "block", "url", "effective-style"].some((key) => values[key] !== undefined)) throw new CliError("invalid_arguments");
   if (command === "cms-diff") {
@@ -502,9 +537,10 @@ async function main() {
     process.stdout.write(`${JSON.stringify({ id: edited.id ?? base.id ?? null, version: base.version, changes })}\n`); return;
   }
   const baseOrigin = origin(values.origin);
+  if (values.studio && command !== "discover" && !command?.startsWith("cms-")) throw new CliError("invalid_arguments");
   if (!IDENTIFIER.test(values.site ?? "")) throw new CliError("invalid_site");
   const token = process.env.NIHO_EDIT_TOKEN;
-  if (typeof token !== "string" || !token || token.length > 4096 || /[\u0000-\u001f\u007f]/u.test(token)) throw new CliError("missing_token");
+
   const accessClientId = process.env.CF_ACCESS_CLIENT_ID;
   const accessClientSecret = process.env.CF_ACCESS_CLIENT_SECRET;
   const hasAccessCredentials = accessClientId !== undefined || accessClientSecret !== undefined;
@@ -515,10 +551,36 @@ async function main() {
     "CF-Access-Client-Id": accessClientId,
     "CF-Access-Client-Secret": accessClientSecret
   } : {};
-  const client = createPageEditingApiClient({ origin: baseOrigin, siteId: values.site, credentials: "omit", headers: {
-    Authorization: `Bearer ${token}`,
-    ...accessHeaders
-  } });
+  if (!(values.studio && hasAccessCredentials) && (typeof token !== "string" || !token || token.length > 4096 || /[\u0000-\u001f\u007f]/u.test(token))) {
+    throw new CliError("missing_token");
+  }
+  const authorizationHeaders = { Authorization: `Bearer ${token}`, ...accessHeaders };
+  const headers = values.studio ? {
+    "X-Studio-CMS-Version": "2", ...(hasAccessCredentials ? accessHeaders : { "cf-access-token": token })
+  } : { Authorization: `Bearer ${token}`, ...accessHeaders };
+  const client = createPageEditingApiClient({ origin: baseOrigin, siteId: values.site, credentials: "omit", headers });
+
+  if (command === "cms-discover" || command === "cms-v2") {
+    const discovery = command === "cms-discover";
+    assertCommandOptions(values, discovery ? [] : ["json", "operation-id"]);
+    const operation = discovery ? null : OPERATIONS.find((entry) => entry.cmsVersion === 2 && entry.id === pageId);
+    if (!values.studio || extra.length || (discovery ? pageId !== undefined : !operation)) throw new CliError("invalid_arguments");
+    const key = values["operation-id"];
+    if (key !== undefined && !OPERATION_ID.test(key)) throw new CliError("invalid_arguments");
+    const input = discovery ? undefined : await inputPageManagementJson(values.json, 64 * 1024);
+    const url = `${baseOrigin}/api/edit/v2/sites/${encodeURIComponent(values.site)}/${operation ? `operations/${operation.id}` : "capabilities"}`;
+    let result;
+    try {
+      result = await fetch(url, { method: operation ? "POST" : "GET", credentials: "omit", cache: "no-store", redirect: "manual", signal: AbortSignal.timeout(30_000),
+        headers: { ...headers, ...(operation ? { "Content-Type": "application/json" } : {}), ...(key ? { [OPERATION_KEY_HEADER]: key } : {}) },
+        ...(input === undefined ? {} : { body: JSON.stringify(input) }) });
+    } catch { throw new CliError("transport_error"); }
+    if (result.status >= 300 && result.status < 400) throw new CliError("redirect_response", result.status);
+    const payload = await readJson(result.body, 2 * 1024 * 1024);
+    emit(payload, result.status, result.ok ? 0 : 1, operation?.id ?? command);
+    return;
+  }
+  if (command === "preview") { await runPagePreview(client, pageId, extra, values, baseOrigin, authorizationHeaders); return; }
 
   if (command?.startsWith("localization-")) {
     const operation = EDITING_OPERATIONS.find((entry) => entry.id.startsWith("localization.") && entry.id.replaceAll(".", "-") === command);

@@ -6,7 +6,7 @@ import { createPageEditingApi, createRegisteredPageEditingApi, EDITING_API_ERROR
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 const target = { siteId: fixture.siteId, pageId: fixture.pageId, locale: fixture.locale };
 
-function hostFixture({ validationContext, initialDocument = fixture, publishing = false, initialBreakpointSettings, versionedInspection = false, stylesVersion } = {}) {
+function hostFixture({ validationContext, initialDocument = fixture, publishing = false, initialBreakpointSettings, editorSnapshot = {}, versionedInspection = false, pagePreviewIntent, stylesVersion } = {}) {
   let document = structuredClone(initialDocument), version = "v1";
   let breakpointSettings = initialBreakpointSettings === undefined ? null : structuredClone(initialBreakpointSettings), breakpointVersion = "b.1";
   const actor = { kind: "human", subject: "owner" };
@@ -19,7 +19,10 @@ function hostFixture({ validationContext, initialDocument = fixture, publishing 
     },
     async authorize(input, capability, scope) { return input.subject === "owner" && scope.siteId === fixture.siteId && (capability === "pages.read" || capability === "pages.edit" || publishing && capability === "pages.publish" || breakpointSettings !== null && (capability === "site.settings.read" || capability === "site.settings.write")); },
     ...(validationContext ? { async validationContext() { return validationContext; } } : {}),
-    async readPage(_actor, input) { return input.siteId === target.siteId && input.pageId === target.pageId && input.locale === target.locale ? { document, version,
+    ...(pagePreviewIntent === undefined ? {} : { async createPagePreviewIntent(input, requestTarget) {
+      return typeof pagePreviewIntent === "function" ? pagePreviewIntent(input, requestTarget) : pagePreviewIntent;
+    } }),
+    async readPage(_actor, input) { return input.siteId === target.siteId && input.pageId === target.pageId && input.locale === target.locale ? { document, version, ...editorSnapshot,
       ...(versionedInspection ? { componentsVersion: "components-v1", presentationVersion: "presentation-v1", stylesVersion: "styles-v1" }
         : stylesVersion === undefined ? {} : { stylesVersion }) } : null; },
     async savePage(_actor, input, expectedVersion, next) {
@@ -98,6 +101,39 @@ test("pages.inspect uses page-read authorization, returns versioned projections 
   assert.deepEqual(await json(await send("GET", `${path}&view=outline`)), { status: 400, body: { error: "invalid_request" } });
   const invalidCursor = path.replace("view=find&node=heading", "view=outline&cursor=eA");
   assert.deepEqual(await json(await send("GET", invalidCursor)), { status: 400, body: { error: "invalid_cursor" } });
+});
+
+test("pages.preview-intent is page-read authorized, validates the host URL and returns privacy headers", async () => {
+  const previewIntent = { url: "/_private-preview/opaque-id", expiresAt: new Date(Date.now() + 5 * 60_000).toISOString() };
+  let received;
+  const { send } = hostFixture({ pagePreviewIntent(actor, requestTarget) {
+    received = { actor, target: requestTarget };
+    return previewIntent;
+  } });
+  const path = `/sites/${target.siteId}/operations/pages.preview-intent/${target.pageId}?locale=${encodeURIComponent(target.locale)}`;
+  const result = await send("POST", path, {});
+  assert.equal(result.status, 200);
+  assert.deepEqual(await result.json(), { ...previewIntent, url: "https://host.example/_private-preview/opaque-id" });
+  assert.equal(result.headers.get("cache-control"), "private, no-store");
+  assert.equal(result.headers.get("referrer-policy"), "no-referrer");
+  assert.equal(result.headers.get("x-robots-tag"), "noindex, nofollow");
+  assert.deepEqual(received.target, target);
+  assert.equal(received.actor.subject, "owner");
+
+  const denied = await send("POST", path, {}, "Bearer other");
+  assert.equal(denied.status, 403);
+});
+
+test("pages.preview-intent is hidden when the host does not implement it and rejects unsafe host results", async () => {
+  const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
+  const unsupported = hostFixture();
+  const path = `/sites/${target.siteId}/operations/pages.preview-intent/${target.pageId}?locale=${encodeURIComponent(target.locale)}`;
+  assert.equal((await unsupported.send("POST", path, {})).status, 404);
+  const discovered = await json(await unsupported.send("GET", `/sites/${target.siteId}/capabilities`));
+  assert.ok(!discovered.body.operations.some(({ id }) => id === "pages.preview-intent"));
+
+  const unsafe = hostFixture({ pagePreviewIntent: { url: "https://attacker.example/preview", expiresAt } });
+  assert.deepEqual(await json(await unsafe.send("POST", path, {})), { status: 502, body: { error: "host_contract_violation" } });
 });
 
 test("page catalog and two-phase page management share authorization, version checks and operation IDs", async () => {
@@ -412,6 +448,37 @@ test("page editing API validates custom blocks with the target host's trusted co
   const saved = await json(await send("PUT", `${route}/pages.save/${target.pageId}${query}`, { expectedVersion: "v1", document: blockDocument }));
   assert.equal(saved.status, 200);
   assert.equal(saved.body.document.body.at(-1).block, "booking-panel");
+});
+
+test("page editing API negotiates a validated version-bound editor snapshot", async () => {
+  const version = "presentation-v1";
+  const shared = (pageId) => ({ schemaVersion: 1, siteId: target.siteId, pageId, locale: target.locale, revision: 1, title: pageId, tokens: {}, body: [] });
+  const presentation = { schemaVersion: 1, siteId: target.siteId, locale: target.locale, version, reset: "neutral-v1", tokens: {}, layout: { base: { backgroundColor: "#edf5ed" } }, fonts: [],
+    shared: { header: shared("header"), footer: shared("footer") } };
+  const editorState = { readOnly: { reason: "Read only" }, englishPublication: { state: "published", retryable: false }, releases: [{ revision: 1, label: "Published" }] };
+  const extension = { presentation, presentationVersion: version, editorState };
+  const path = `/sites/${target.siteId}/operations/pages.read/${target.pageId}?locale=${target.locale}`;
+  const sendSnapshot = (fields) => hostFixture({ editorSnapshot: fields }).api(new Request(`https://host.example/api/edit/v1${path}`, {
+    headers: { Authorization: "Bearer owner", Accept: "application/json; profile=niho-editor-snapshot-v1" }
+  })).then(json);
+  assert.deepEqual(await sendSnapshot(extension), { status: 200, body: { document: fixture, version: "v1", ...extension } });
+  assert.deepEqual(await sendSnapshot({ presentation, presentationVersion: version }), {
+    status: 200, body: { document: fixture, version: "v1", presentationVersion: version, presentation }
+  });
+  assert.deepEqual(await sendSnapshot({ editorState: {} }), { status: 200, body: { document: fixture, version: "v1", editorState: {} } });
+  assert.deepEqual(await json(await hostFixture({ editorSnapshot: extension }).send("GET", path)), {
+    status: 200, body: { document: fixture, version: "v1", presentationVersion: version }
+  });
+  for (const fields of [
+    { ...extension, presentationVersion: "stale" },
+    { ...extension, presentationVersion: undefined },
+    { ...extension, presentation: undefined },
+    { ...extension, presentation: { ...presentation, siteId: "another-site" } },
+    { presentation },
+    { ...extension, editorState: { readOnly: { reason: "Read only", editUrl: "javascript:alert(1)" } } }
+  ]) {
+    assert.deepEqual(await sendSnapshot(fields), { status: 502, body: { error: "host_contract_violation" } });
+  }
 });
 
 test("page editing API treats validation context failures as host failures", async () => {

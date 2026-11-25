@@ -201,14 +201,14 @@ test("Kamakura asset BFF re-checks membership, validates every body, signs upstr
   assert.match(csp, /connect-src 'self' https:\/\/next-kamakura\.niho\.life;/u);
 });
 
-test("Studio's own web fonts are cached for a year, every other static response stays no-store", async (t) => {
+test("Studio caches content-hashed JS/CSS and fonts for a year, while other static responses stay no-store", async (t) => {
   const auth = await accessFixture("web-font-key");
   const worker = await loadWorker();
   t.mock.method(globalThis, "fetch", async (url) => {
     if (String(url) === `${auth.issuer}/cdn-cgi/access/certs`) return Response.json({ keys: [auth.jwk] });
     throw new Error(`unexpected network request: ${url}`);
   });
-  const missing = new Set(["/assets/fonts/inter-5.3.0/missing.woff2"]);
+  const missing = new Set(["/assets/fonts/inter-5.3.0/missing.woff2", "/assets/app-ffffffffffff.js"]);
   const env = {
     ACCESS_ISSUER: auth.issuer,
     ACCESS_AUDIENCE: auth.audience,
@@ -218,17 +218,28 @@ test("Studio's own web fonts are cached for a year, every other static response 
     } }
   };
   const get = (path, jwt = auth.jwt) => worker.fetch(new Request(`${STUDIO}${path}`, { headers: jwt ? { "Cf-Access-Jwt-Assertion": jwt } : {} }), env);
-  for (const path of ["/assets/fonts/noto-sans-jp-5.3.1/noto-sans-jp-0-wght-normal.woff2", "/assets/fonts/inter-5.3.0/inter-latin-wght-normal.woff2", "/assets/fonts/fonts-0123456789ab.css"]) {
+  for (const path of [
+    "/assets/fonts/noto-sans-jp-5.3.1/noto-sans-jp-0-wght-normal.woff2",
+    "/assets/fonts/inter-5.3.0/inter-latin-wght-normal.woff2",
+    "/assets/fonts/fonts-0123456789ab.css",
+    "/assets/app-0123456789ab.js",
+    "/assets/studio-0123456789ab.css",
+    "/assets/chunks/kamakura-localization-workspace-Aa0_-B1c.js",
+  ]) {
     const response = await get(path);
     assert.equal(response.status, 200, path);
     assert.equal(response.headers.get("Cache-Control"), "private, max-age=31536000, immutable", path);
     assert.match(response.headers.get("Content-Security-Policy"), /default-src 'none'/u, path);
     assert.equal(response.headers.get("X-Content-Type-Options"), "nosniff", path);
   }
-  // 版や hash の無い場所・別の拡張子・見つからない応答は今までどおり no-store
-  for (const path of ["/assets/studio.css", "/assets/studio-0123456789ab.css", "/assets/fonts/fonts.css", "/assets/fonts/inter/inter-latin-wght-normal.woff2", "/assets/fonts/inter-5.3.0/OFL.txt", "/assets/fonts/inter-5.3.0/missing.woff2"]) {
+  // HTML は no-store のまま。内容 hash の長さ・文字・出力先が異なるものも長期 cache しない。
+  assert.equal((await get("/")).headers.get("Cache-Control"), "no-store");
+  for (const path of ["/assets/app.js", "/assets/app-0123456789a.js", "/assets/app-0123456789gA.js", "/assets/app-0123456789ab.css", "/assets/app-0123456789ab.json", "/assets/other-0123456789ab.js", "/assets/studio.css", "/assets/studio-0123456789ab.js", "/assets/fonts/fonts.css", "/assets/fonts/inter/inter-latin-wght-normal.woff2", "/assets/fonts/inter-5.3.0/OFL.txt", "/assets/fonts/inter-5.3.0/missing.woff2", "/assets/chunks/lazy-Aa0_-B1.js", "/assets/chunks/lazy-0123456789ab.js", "/chunks/lazy-Aa0_-B1c.js"]) {
     assert.equal((await get(path)).headers.get("Cache-Control"), "no-store", path);
   }
+  const missingHashed = await get("/assets/app-ffffffffffff.js");
+  assert.equal(missingHashed.status, 404);
+  assert.equal(missingHashed.headers.get("Cache-Control"), "no-store");
   // Access の確認は今までどおり先に通す
-  assert.equal((await get("/assets/fonts/inter-5.3.0/inter-latin-wght-normal.woff2", "")).status, 401);
+  assert.equal((await get("/assets/app-0123456789ab.js", "")).status, 401);
 });

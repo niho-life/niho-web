@@ -1,13 +1,15 @@
 import { PAGE_OPERATION_VERSIONS, pageOperationWire, type EditingPageApplyConflict, type EditingPageApplyInput, type EditingPageApplyResult } from "./editing-page-operations.js";
 import { EDITING_API_ERRORS, EDITING_OPERATIONS, type EditingApiErrorCode, type EditingCmsOperationStatus, type EditingCmsPublishPlan, type EditingCmsTarget, type EditingOperationDefinition, type EditingPageCatalog, type EditingPageReleaseSetItem, type EditingPageReleaseSetItemResult, type EditingPageReleaseSetPlan, type EditingPageReleaseSetStatus, type EditingPageSnapshot, type EditingPageTarget } from "./editing-api.js";
 import { parsePageInspectQuery, type PageInspectQuery, type PageInspectView } from "./page-inspect.js";
+import { parsePagePreviewIntent, type EditingPagePreviewIntent } from "./editing-page-preview.js";
 import {
   editingLocalizationOperation, EDITING_LOCALIZATION_RESULT_BYTES, parseEditingLocalizationConflict,
   parseEditingLocalizationInput, parseEditingLocalizationResult,
   type EditingLocalizationInput, type EditingLocalizationOperationId, type EditingLocalizationResult,
 } from "./editing-localization.js";
 import { normalizePageChange, validatePageChangePlan } from "./editor-model.js";
-import type { PageDocument } from "./types.js";
+import { EDITING_EDITOR_SNAPSHOT_ACCEPT, parseEditingPageEditorState, parseEditingPagePresentation } from "./editing-page-snapshot.js";
+import type { BlockContracts, PageDocument } from "./types.js";
 import type { EditorPage, EditorPageChange, EditorPageChangePlan, EditorPageChangeResult, EditorReleasePlan, EditorReleaseRequest, EditorSite } from "./editor-types.js";
 import type { EditorBreakpointSettings, EditorBreakpointSettingsSaveResult, EditorBreakpointSettingsSnapshot } from "./editor-types.js";
 import { identifier, localeCode } from "./validation-utils.js";
@@ -38,8 +40,11 @@ export type EditingApiClientOptions = {
   readonly headers?: HeadersInit | (() => HeadersInit);
   readonly credentials?: RequestCredentials;
   readonly fetch?: typeof fetch;
+  /** Request a full editor snapshot and validate its presentation with the site's block contracts. */
+  readonly editorSnapshot?: { readonly blocks?: BlockContracts };
 };
 export type { EditingLocalizationInput, EditingLocalizationOperationId, EditingLocalizationResult } from "./editing-localization.js";
+export type { EditingPagePreviewIntent } from "./editing-page-preview.js";
 export type EditingApiDiscovery = { readonly apiVersion: "v1"; readonly siteId: string; readonly operations: readonly EditingOperationDefinition[] };
 export type EditingPageSaveResult = { readonly status: "saved"; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" };
 export type EditingPageInspectionSnapshot = Readonly<Record<string, unknown>> & { readonly view: PageInspectView; readonly version: string; readonly stylesVersion?: string; readonly componentsVersion?: string; readonly presentationVersion?: string };
@@ -57,6 +62,7 @@ export type EditingApiClient = {
   preparePageChange(change: EditorPageChange, expectedVersion: string, signal?: AbortSignal, operationId?: string): Promise<EditorPageChangePlan>;
   applyPageChange(plan: EditorPageChangePlan, signal?: AbortSignal): Promise<EditorPageChangeResult>;
   inspectPage(target: EditingPageTarget, query: PageInspectQuery, signal?: AbortSignal): Promise<EditingPageInspectionSnapshot>;
+  createPagePreviewIntent(target: EditingPageTarget, signal?: AbortSignal): Promise<EditingPagePreviewIntent>;
   read(target: EditingPageTarget, signal?: AbortSignal): Promise<EditingPageSnapshot>;
   applyOperations(target: EditingPageTarget, input: EditingPageApplyInput, signal?: AbortSignal): Promise<EditingPageApplyResult | EditingPageApplyConflict>;
   save(target: EditingPageTarget, expectedVersion: string, document: unknown, signal?: AbortSignal): Promise<EditingPageSaveResult>;
@@ -338,9 +344,9 @@ function parseReleasePlan(value: unknown, target: EditingPageTarget, request: Ed
 /** Studio GUI and machine clients can call the same host-owned JSON wire API through this React-free client. */
 export function createPageEditingApiClient(options: EditingApiClientOptions): EditingApiClient {
   const origin = apiOrigin(options.origin), siteId = identifier(options.siteId, "$siteId"), basePath = apiBasePath(options.basePath), fetcher = options.fetch ?? fetch;
-  const send = async (path: string, method: "GET" | "PUT" | "POST", body: unknown, signal?: AbortSignal): Promise<{ response: Response; body: Record<string, unknown> }> => {
+  const send = async (path: string, method: "GET" | "PUT" | "POST", body: unknown, signal?: AbortSignal, accept = "application/json"): Promise<{ response: Response; body: Record<string, unknown> }> => {
     const headers = new Headers(typeof options.headers === "function" ? options.headers() : options.headers);
-    headers.set("Accept", "application/json");
+    headers.set("Accept", accept);
     if (body !== undefined) headers.set("Content-Type", "application/json");
     let response: Response;
     try {
@@ -491,16 +497,37 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       if (query.view === "effectiveStyle" && (body.nodeId !== query.node || !plainRecord(body.style))) throw new EditingApiClientError("invalid_response", response.status);
       return body as EditingPageInspectionSnapshot;
     },
+    async createPagePreviewIntent(target, signal) {
+      const path = targetPath(target, siteId).replace("{operation}", "pages.preview-intent");
+      const { response, body } = await send(path, "POST", {}, signal);
+      if (!response.ok) throw apiFailure(body, response.status);
+      const intent = parsePagePreviewIntent(body, origin);
+      if (!intent || response.status !== 200) throw new EditingApiClientError("invalid_response", response.status);
+      return intent;
+    },
     async read(target, signal) {
       const path = targetPath(target, siteId).replace("{operation}", "pages.read");
-      const { response, body } = await send(path, "GET", undefined, signal);
+      const { response, body } = await send(path, "GET", undefined, signal, options.editorSnapshot ? EDITING_EDITOR_SNAPSHOT_ACCEPT : undefined);
       if (!response.ok) throw apiFailure(body, response.status);
       const dependencies = Object.fromEntries(PAGE_OPERATION_VERSIONS.flatMap((key) => body[key] === undefined ? [] : [[key, body[key]]]));
-      if (!exactKeys(body, ["document", "version", ...Object.keys(dependencies)]) || !isEditingApiVersion(body.version)
+      const snapshotKeys = [
+        ...(options.editorSnapshot && body.editorState !== undefined ? ["editorState"] : []),
+        ...(options.editorSnapshot && body.presentation !== undefined ? ["presentation"] : [])
+      ];
+      if (!exactKeys(body, ["document", "version", ...Object.keys(dependencies), ...snapshotKeys]) || !isEditingApiVersion(body.version)
         || Object.values(dependencies).some((value) => !isEditingApiVersion(value))) throw new EditingApiClientError("invalid_response", response.status);
       const document = parseEditingPageDocumentEnvelope(body.document);
       assertTarget(document, target);
-      return { document, version: body.version, ...dependencies };
+      let editorSnapshot: Pick<EditingPageSnapshot, "editorState" | "presentation"> = {};
+      if (body.editorState !== undefined || body.presentation !== undefined) {
+        try {
+          const editorState = body.editorState === undefined ? undefined : parseEditingPageEditorState(body.editorState);
+          const presentation = parseEditingPagePresentation(body.presentation, body.presentationVersion, document, options.editorSnapshot?.blocks);
+          editorSnapshot = { ...(editorState ? { editorState } : {}), ...(presentation ? { presentation } : {}) };
+        } catch { throw new EditingApiClientError("invalid_response", response.status); }
+      }
+      return { document, version: body.version,
+        ...dependencies, ...editorSnapshot };
     },
     async applyOperations(target, input, signal) {
       const path = targetPath(target, siteId).replace("{operation}", "pages.apply");
