@@ -547,7 +547,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   // 選んだ業務ブロックの表示領域。of は安定 ID で、兄弟の挿入・移動でも同じブロックへ留まる。
   const [slotChoice, setSlotChoice] = useState<{ of: string; name: string | null; back?: string } | null>(null);
 
-  const [fieldEpoch, setFieldEpoch] = useState(0);
+  const [fieldEpoch, setFieldEpoch] = useState(0), [assetResolveEpoch, setAssetResolveEpoch] = useState(0), [assetProviderEpoch, setAssetProviderEpoch] = useState(0);
   const [breakpoint, setBreakpoint] = useState<number | "base">("base"), [notice, setNotice] = useState("");
   // 入力中のライブプレビュー。基準の文書が変わった（確定・undo/redo・保存・移動）時点で無効になる。
   const [draft, setDraft] = useState<{ base: PageDocument; document: PageDocument } | null>(null), [range, setRange] = useState<StyleRange>("wide");
@@ -761,7 +761,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       pendingLoadPerformance.current = { measurement, target: editorTarget };
       replace(loaded.session);
       if (!options?.preserveView) { setSelectedId(null); setSelectedNodeIds([]); setInspector("page"); setSelectedLocalizationUnit(null); setSelectedCanvasNode(null); setLocalizationManual(null); }
-      setFieldEpoch((value) => value + 1); setPendingFields({}); setPlan(null); setRollbackRevision(""); setParentId("");
+      setFieldEpoch((value) => value + 1); setAssetResolveEpoch((value) => value + 1); setAssetProviderEpoch((value) => value + 1); setPendingFields({}); setPlan(null); setRollbackRevision(""); setParentId("");
       setProblem(null); setSavedAt(null); setConflictView(0); setRecoveryCompare(false); setLoadEpoch((value) => value + 1); setEditing(null);
       if (loaded.warning) setNotice(loaded.warning);
       return true;
@@ -1330,6 +1330,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     if (siteSettings.dirty || siteSettings.busy) { setNotice("サイト設定を保存してから公開内容を確認してください。"); return; }
     const current = sessionRef.current, site = sites.find((site) => site.id === current?.target.siteId);
     if (!current || current.readOnly || !site || action.current || blocked || siteSettings.dirty || siteSettings.busy || dirty || libraryDirty || masterId || hasInput || targetMode || !localizationReady || current.hasSavedDraft === false || (actionType === "rollback" && !current.releases.some((release) => release.revision === revision))) return;
+    setAssetResolveEpoch((value) => value + 1);
     const controller = new AbortController(); action.current = controller; setBusy("公開差分を取得中"); setNotice("");
     // 確認 token を、表示している部品ライブラリの version にも結び付ける。
     const input: EditorReleaseRequest = { target: current.target, expectedVersion: current.version, action: actionType,
@@ -1391,6 +1392,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   async function prepareLocaleRelease(actionType: "publish" | "rollback") {
     const current = sessionRef.current, siteState = localization.site, selected = selectedLocale, rollback = localeRelease?.history.find((entry) => entry.releaseId === localeRollbackId);
     if (!current || current.readOnly || !siteState || !selected || !targetMode || !localePublication || !localeRelease || localeReleaseLoading || action.current || blocked || siteSettings.dirty || siteSettings.busy || dirty || libraryDirty || masterId || hasInput || historyMode || !localizationReady || actionType === "rollback" && !rollback) return;
+    setAssetResolveEpoch((value) => value + 1);
     const controller = new AbortController(), startedAdapter = adapter, startedTarget = current.target; action.current = controller; setBusy(actionType === "rollback" ? "言語全体の復元内容を取得中" : "言語全体の公開内容を取得中"); setNotice("");
     const input = { siteId: siteState.config.siteId, locale: selected, action: actionType, expectedSiteVersion: siteState.version, expectedCurrentVersion: localeRelease.current?.version ?? null,
       ...(actionType === "rollback" ? { rollbackReleaseId: rollback!.releaseId } : {}) } as const;
@@ -1488,7 +1490,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     const current = sessionRef.current; if (!current) return;
     try {
       const next = editorSessionFrom(snapshot, current.target, blocks, libraryRef.current?.history.present, siteSettingsRef.current.settings, !siteSettingsRef.current.settings);
-      recoveryState.drop(current.target); replace(next); setSelection(null); setInspector("page"); setFieldEpoch((value) => value + 1); setPendingFields({}); setRollbackRevision(""); setParentId(""); setEditing(null);
+      recoveryState.drop(current.target); replace(next); setSelection(null); setInspector("page"); setFieldEpoch((value) => value + 1); setAssetResolveEpoch((value) => value + 1); setAssetProviderEpoch((value) => value + 1); setPendingFields({}); setRollbackRevision(""); setParentId(""); setEditing(null);
       setProblem(null); setSavedAt(null); setConflictView(0); setNotice("最新の保存内容を読み込みました。");
     } catch { setNotice("最新の内容を読み込めませんでした。編集内容は保持しています。"); }
   }
@@ -1657,7 +1659,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     const current = canvas?.document ?? versions.viewing?.document ?? document;
     return current ? presentationAssetDocument(current, canvasPresentation) : undefined;
   }, [canvas?.document, versions.viewing?.document, document, canvasPresentation]);
-  const resolvedAssets = useResolvedAssets(assets, session?.target.siteId, assetDocument, fieldEpoch, coverReferences(document, siteSettings)), localUsage = useLocalAssetUsage(document);
+  const resolvedAssets = useResolvedAssets(assets, session?.target.siteId, assetDocument, assetResolveEpoch, coverReferences(document, siteSettings)), localUsage = useLocalAssetUsage(document);
   const savedMaster = useMemo(() => library && masterId && library.savedLibrary.components.some((component) => component.id === masterId) ? fingerprint(componentDocument(library.savedLibrary, masterId, locale)) : undefined,
     [library?.savedLibrary, masterId, locale]);
   useEffect(() => {
@@ -2224,10 +2226,10 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
           {!contentRows.length && <p className="e-help">編集できる文章はありません。</p>}
         </section>
         <section hidden={visiblePanel !== "styles"} aria-label="共通スタイル"><div className="e-panel-head"><h2>スタイル</h2><p>共通カラーとテキストスタイル</p></div>{targetMode ? <p className="e-help">共通デザインは原文側で編集してください。</p> : document ? <SharedStyleLibrary siteDisabled={blocked || historyMode || libraryDirty || !localizationReady} editingComponent={!!masterId} adapter={adapter} pages={pages} blocks={blocks} components={libraryPresent} state={siteSettings} pageDirty={dirty || pageInputPending || manualInputPending} sitePending={sitePending} rawDocument={rawDocument!} migrate={(next, styles) => { const current = sessionRef.current; if (!current || editBlocked) return "ページを編集できません。"; try { const parsed = editDocument(current.history.present, { type: "restore", document: next }, blocks, current.locks, libraryPresent, styles); if (JSON.stringify(styles) === JSON.stringify(parseSiteStyles(siteSettings.settings ?? {}))) { replace({ ...current, operationQueue: fallbackOperations(current.operationQueue), history: commitHistory(current.history, parsed) }); setStyleMigration(null); setNotice("保存済みのサイト共通定義へ移行しました。ページの下書きを保存してください。"); return undefined; } const error = siteSettings.editStyles(styles); if (error) return error; setStyleMigration({ target: current.target, source: fingerprint(current.history.present), document: next, styles }); return undefined; } catch (error) { return message(error); } }} document={document} selection={selection} apply={applyStyle} select={select} disabled={editBlocked} breakpoints={breakpoints} breakpoint={tier} until={until} preview={previewOperation} pending={pending} fieldKey={`${fieldEpoch}-library`} nodeLabel={(node) => label(node, blocks, names)} /> : <p className="e-help">ページを読み込むと、共通カラーとテキストスタイルを編集できます。</p>}</section>
-        <section hidden={!assetPanelVisible} aria-label={assetPanelLabel}>{assets && session ? <AssetLibraryPanel key={session.target.siteId} adapter={assets} siteId={session.target.siteId} epoch={fieldEpoch} mode={picker || localizationAssetUnit ? "pick" : "library"} panelLabel={assetPanelLabel} pickKind={picker?.purpose === "video" || picker?.purpose === "replace" && picker.kind === "video" ? "video" : "image"} {...(picker || localizationAssetUnit || !assetPanelKind ? {} : { providerKind: assetPanelKind })} pickTitle={localizationAssetUnit === "page.meta.ogImage.src" ? "ソーシャルカバーを選ぶ" : localizationAssetUnit ? "コンポーネント・訳文の画像を選ぶ" : picker?.purpose === "video" ? "動画を選ぶ" : picker?.purpose === "background" ? "背景画像を選ぶ" : picker?.purpose === "replace" ? `置き換える${picker.kind === "video" ? "動画" : "画像"}を選ぶ` : picker?.purpose === "ogImage" || picker?.purpose === "siteOgImage" ? "ソーシャルカバーを選ぶ" : "画像を選ぶ"} localUsage={localUsage}
+        <section hidden={!assetPanelVisible} aria-label={assetPanelLabel}>{assetPanelVisible && assets && session ? <AssetLibraryPanel key={session.target.siteId} adapter={assets} siteId={session.target.siteId} providerEpoch={assetProviderEpoch} mode={picker || localizationAssetUnit ? "pick" : "library"} panelLabel={assetPanelLabel} pickKind={picker?.purpose === "video" || picker?.purpose === "replace" && picker.kind === "video" ? "video" : "image"} {...(picker || localizationAssetUnit || !assetPanelKind ? {} : { providerKind: assetPanelKind })} pickTitle={localizationAssetUnit === "page.meta.ogImage.src" ? "ソーシャルカバーを選ぶ" : localizationAssetUnit ? "コンポーネント・訳文の画像を選ぶ" : picker?.purpose === "video" ? "動画を選ぶ" : picker?.purpose === "background" ? "背景画像を選ぶ" : picker?.purpose === "replace" ? `置き換える${picker.kind === "video" ? "動画" : "画像"}を選ぶ` : picker?.purpose === "ogImage" || picker?.purpose === "siteOgImage" ? "ソーシャルカバーを選ぶ" : "画像を選ぶ"} localUsage={localUsage}
           actions={{ replace: !localizationAssetUnit && node?.type === "element" && node.tag === "img", background: !slotName && !localizationAssetUnit && !targetMode && (node?.type === "component" || node?.type === "instance" || node?.type === "element" && !["img", "source", "video", "br", "hr"].includes(node.tag) && !node.icon && !node.embed), insert: !localizationAssetUnit && !targetMode && !!document }}
           disabledReason={editBlocked ? "処理が完了してから配置してください。" : hasInput ? "入力を確定するか取り消してから配置してください。" : undefined} onApply={(asset, action) => localizationAssetUnit ? applyLocalizationAsset(asset) : applyAsset(asset, action)} onClose={() => { setPicker(null); setLocalizationAssetUnit(null); }} onReplaceUsages={(asset) => setPicker({ purpose: "replace", from: { provider: asset.provider, id: asset.id }, kind: asset.kind === "video" ? "video" : "image" })} />
-          : <><div className="e-panel-head"><h2>アセット</h2><p>画像の選択と差し替え</p></div><p className="e-help">現在は画像を追加し、右側の「画像 URL」で指定できます。</p><button type="button" onClick={() => add("img")} disabled={!document || editBlocked || hasInput}>画像を追加</button></>}</section>
+          : assetPanelVisible ? <><div className="e-panel-head"><h2>アセット</h2><p>画像の選択と差し替え</p></div><p className="e-help">現在は画像を追加し、右側の「画像 URL」で指定できます。</p><button type="button" onClick={() => add("img")} disabled={!document || editBlocked || hasInput}>画像を追加</button></> : null}</section>
         <section hidden={visiblePanel !== "components"} aria-label="コンポーネント"><div className="e-panel-head"><h2>コンポーネント</h2><p>サイト全体と再利用</p></div>
           <ComponentPanel library={targetMode ? undefined : libraryPresent} librarySupported={!targetMode && !!components} failed={libraryFailed} visible={visiblePanel === "components" && !preview} siteStyles={siteStylesReady ? activeSiteStyles : undefined} blocks={canvasBlocks} editing={masterId} usage={usageSummary} usageLoading={usage === undefined}
             siteComponents={siteComponents} current={masterId ? undefined : session?.target} navigationDisabled={blocked} editSiteComponent={(selected) => { if (page?.kind !== "shared" && session) setSiteComponentReturn(session.target); if (masterId && session && sameTarget(session.target, selected)) leaveComponent(); else if (!session || !sameTarget(session.target, selected)) requestNavigation({ type: "page", target: selected }); }}
