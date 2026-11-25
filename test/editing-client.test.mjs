@@ -10,7 +10,7 @@ const blockDocument = structuredClone(fixture);
 blockDocument.body.push({ type: "component", id: "booking-panel", block: "booking-panel", props: { title: "Book a visit" } });
 const validationContext = { blocks: { "booking-panel": { props: { title: { type: "string", required: true } } } } };
 
-function clientFixture({ token = "owner", initialDocument = blockDocument, publishing = false, versionedInspection = false, releaseSet = false, staleAfterSetPrepare = false, pendingSetOnce = false, pageManagement = false, initialBreakpointSettings } = {}) {
+function clientFixture({ token = "owner", initialDocument = blockDocument, publishing = false, versionedInspection = false, stylesVersion, releaseSet = false, staleAfterSetPrepare = false, pendingSetOnce = false, pageManagement = false, initialBreakpointSettings } = {}) {
   let document = structuredClone(initialDocument), version = "v1";
   const secondTarget = { siteId: target.siteId, pageId: "about", locale: "ja" };
   let secondVersion = "about-v1";
@@ -25,8 +25,8 @@ function clientFixture({ token = "owner", initialDocument = blockDocument, publi
     async authorize(actor, capability, scope) { return actor.subject === "agent" && scope.siteId === target.siteId && (["pages.read", "pages.edit"].includes(capability) || (publishing || releaseSet || pageManagement) && capability === "pages.publish" || breakpointSettings !== null && ["site.settings.read", "site.settings.write"].includes(capability)); },
     async validationContext() { return validationContext; },
     async readPage(_actor, requested) { return requested.siteId === target.siteId && requested.pageId === target.pageId && requested.locale === target.locale
-      ? { document, version, ...(publishing ? { componentsVersion: "components-v1", presentationVersion: "presentation-v1" }
-        : versionedInspection ? { componentsVersion: "components-v1", presentationVersion: "presentation-v1", stylesVersion: "styles-v1" } : {}) } : null; },
+      ? { document, version, ...(versionedInspection ? { componentsVersion: "components-v1", presentationVersion: "presentation-v1", stylesVersion: "styles-v1" }
+        : stylesVersion === undefined ? {} : { stylesVersion }), ...(publishing ? { componentsVersion: "components-v1", presentationVersion: "presentation-v1" } : {}) } : null; },
     async savePage(_actor, requested, expectedVersion, next) {
       if (requested.siteId !== target.siteId || requested.pageId !== target.pageId || requested.locale !== target.locale || expectedVersion !== version) return { status: "conflict" };
       document = { ...next, revision: next.revision + 1 }; version = `v${Number(version.slice(1)) + 1}`;
@@ -157,9 +157,9 @@ test("shared client reads partial page projections with dependency versions", as
   const result = await client.inspectPage(target, { view: "outline", depth: 1 });
   assert.equal(result.view, "outline");
   assert.equal(result.version, "v1");
+  assert.equal(result.stylesVersion, "styles-v1");
   assert.equal(result.componentsVersion, "components-v1");
   assert.equal(result.presentationVersion, "presentation-v1");
-  assert.equal(result.stylesVersion, "styles-v1");
   assert.ok(result.items.length > 0);
 });
 
@@ -224,6 +224,36 @@ test("shared page editing client validates the document envelope but leaves cust
   const saved = await client.save(target, "v1", candidate);
   assert.equal(saved.status, "saved");
   await assert.rejects(client.save(target, "v1", { ...candidate, arbitrary: true }), (error) => error instanceof EditingApiClientError && error.code === "invalid_response");
+});
+
+test("the editor snapshot client uses its block contracts and rejects an incomplete or mismatched version pair", async () => {
+  const shared = (pageId, body) => ({ schemaVersion: 1, siteId: target.siteId, pageId, locale: target.locale, revision: 1, title: pageId, tokens: {}, body });
+  const presentation = { schemaVersion: 1, siteId: target.siteId, locale: target.locale, version: "p.1", reset: "neutral-v1", tokens: {}, fonts: [],
+    shared: { header: shared("header", [blockDocument.body.at(-1)]), footer: shared("footer", []) } };
+  const base = { document: blockDocument, version: "v1", presentationVersion: "p.1" };
+  const full = { ...base, presentation, editorState: { readOnly: { reason: "Read only" }, englishPublication: { state: "published", retryable: false } } };
+  let reply = full;
+  const client = createPageEditingApiClient({
+    origin: "https://host.example", siteId: target.siteId, editorSnapshot: validationContext,
+    fetch: async (_input, init) => {
+      assert.equal(init.headers.get("Accept"), "application/json; profile=niho-editor-snapshot-v1");
+      return Response.json(reply);
+    }
+  });
+  assert.deepEqual(await client.read(target), full);
+  reply = { ...base, presentation };
+  assert.deepEqual(await client.read(target), reply, "移行中ホストの表示コンテキストだけを受け取る");
+  reply = base;
+  assert.deepEqual(await client.read(target), base, "older hosts return the unextended snapshot");
+  for (const invalid of [
+    { ...full, presentationVersion: "stale" },
+    { ...full, presentation: undefined },
+    { ...base, presentation, presentationVersion: undefined },
+    { ...full, editorState: { englishPublication: { state: "unknown", retryable: true } } }
+  ]) {
+    reply = invalid;
+    await assert.rejects(client.read(target), (error) => error instanceof EditingApiClientError && error.code === "invalid_response");
+  }
 });
 
 test("shared page editing client prepares a release and safely retries with the same operation ID", async () => {

@@ -1,0 +1,594 @@
+import {
+  CMS_V2_OPERATIONS, checkCmsReleaseApply, checkCmsScheduleCreate, checkCmsSchemaApply, checkCmsWriteVersion,
+  cmsLegacyCollections, cmsRoleCapabilities, cmsWorkspaceItem, discoverCmsContract, parseCmsApplyInput,
+  parseCmsDraftWrite, parseCmsReleaseInput, parseCmsScheduleRequest, parseCmsSchemaPlanInput,
+  planCmsMigrationWithRouteTables, planCmsRelease, planCmsSchedule, type CmsConfirmedPlan, type CmsItemRevision,
+  type CmsMigrationDraft, type CmsProblem, type CmsReleaseInput, type CmsReleaseProposal, type CmsRouteBoundMigration,
+  type CmsSchedule, type CmsV2Operation
+} from "../src/cms-v2.js";
+import { cmsCollection, cmsId, cmsItemKey, parseCmsValues } from "../src/cms-v2-schema.js";
+import { parseCollectionValues, type CollectionItem, type CollectionValues } from "../src/collection-model.js";
+import { DocumentValidationError, keys, record } from "../src/validation-utils.js";
+import { validatePagePath } from "../src/pages.js";
+import { OPERATION_KEY_HEADER, UUID_V4 } from "../cli/operations.mjs";
+import {
+  CmsStore, MAX_BODY, MAX_ITEMS, MAX_RETAINED_BYTES, MAX_SNAPSHOT, blobSize, cmsPathReserved, dateNow, digest,
+  iso, itemBlobKey, nowSeconds, opaque, routeTableKey, snapshotKey, type CmsCapability, type CmsScope, type ItemMeta, type JobPayload, type Site
+} from "./managed-cms-store.js";
+import { collectionPath, deliverCmsJob, previewContent, releaseContext } from "./managed-cms-release.js";
+
+const PLAN_TTL = 10 * 60;
+const PREVIEW_TTL = 5 * 60;
+const LIST_SIZE = 10;
+const VERSION_HEADER = "X-Studio-CMS-Version";
+const LEGACY = {
+  "cms.schema": ["GET", "cms.read", 0],
+  "cms.list": ["GET", "cms.read", 1],
+  "cms.read": ["GET", "cms.read", 2],
+  "cms.create": ["POST", "cms.edit", 1],
+  "cms.save": ["PUT", "cms.edit", 2],
+  "cms.publish-plan": ["POST", "cms.publish", 2],
+  "cms.publish": ["POST", "cms.publish", 2],
+  "cms.operation-status": ["GET", "cms.read", 1]
+} as const;
+type LegacyOp = keyof typeof LEGACY;
+const EXTRA = {
+  "cms.items.create": "cms.edit", "cms.items.list": "cms.read", "cms.items.read": "cms.read",
+  "cms.preview.prepare": "cms.read", "cms.preview.read": "cms.read",
+  "cms.release.current": "cms.read", "cms.release.snapshot": "cms.read"
+} as const;
+type Operation = CmsV2Operation | keyof typeof EXTRA;
+const MUTATIONS = new Set<Operation>([
+  "cms.items.create", "cms.items.save", "cms.items.remove", "cms.items.restore", "cms.schema.apply",
+  "cms.release.apply", "cms.schedule.create", "cms.schedule.cancel"
+]);
+const json = (value: unknown, status = 200) => Response.json(value, { status, headers: {
+  "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff",
+  "Cross-Origin-Resource-Policy": "same-origin", "X-Robots-Tag": "noindex"
+} });
+const error = (code: string, status: number) => json({ error: code }, status);
+const conflict = () => json({ status: "conflict" }, 409);
+const notFound = () => error("not_found", 404);
+const forbidden = () => error("forbidden", 403);
+const invalid = () => error("invalid_request", 400);
+const tokenId = (value: unknown) => typeof value === "string" && /^token_[a-f0-9]{32}$/u.test(value);
+const parseOperationId = (value: unknown) => cmsId(value, "operationId");
+
+function exact(value: Record<string, unknown>, names: readonly string[]) {
+  keys(value, names, "request");
+  if (Object.keys(value).length !== names.length) throw new DocumentValidationError("request", "missing key");
+}
+
+async function readBody(request: Request, scope: CmsScope) {
+  if (!scope.actor.cli && (request.headers.get("Origin") !== new URL(request.url).origin || request.headers.get("Sec-Fetch-Site") !== "same-origin")) return null;
+  if (request.headers.get("Content-Type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") return null;
+  const declared = request.headers.get("Content-Length");
+  if (declared !== null && (!/^\d+$/u.test(declared) || Number(declared) > MAX_BODY)) return null;
+  const reader = request.body?.getReader(), bytes = new Uint8Array(MAX_BODY);
+  if (!reader) return null;
+  let size = 0;
+  while (true) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    if (size + chunk.value.length > MAX_BODY) { await reader.cancel(); return null; }
+    bytes.set(chunk.value, size);
+    size += chunk.value.length;
+  }
+  try { return record(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, size))), "request"); }
+  catch { return null; }
+}
+
+type Mutation = { readonly site: Site; readonly capability: CmsCapability; readonly operation: string; readonly operationId: string; readonly inputDigest: string };
+async function mutationObjectId(prefix: string, mutation: Mutation, target: { collectionId?: string; itemId?: string } = {}) {
+  const { site, operationId, inputDigest } = mutation;
+  const stable = await digest({ siteId: site.siteId, actorId: site.actor.id, operationId, inputDigest, ...target });
+  return `${prefix}_${stable.slice(0, 32)}`;
+}
+async function replay(store: CmsStore, mutation: Mutation) {
+  const { site, capability, operationId, operation, inputDigest } = mutation;
+  const receipt = await store.receipt(site, capability, operationId);
+  return receipt === null ? null : receipt.operation === operation && receipt.input_digest === inputDigest
+    ? json(JSON.parse(receipt.result_json) as unknown) : error("duplicate_operation", 409);
+}
+
+async function mutate(store: CmsStore, mutation: Mutation, change: Omit<Parameters<CmsStore["commit"]>[2], "operation" | "operationId" | "inputDigest">) {
+  const { site, capability, ...scope } = mutation;
+  if (change.state.retainedBytes > MAX_RETAINED_BYTES || blobSize(change.state) > 256 * 1024) return error("quota_exceeded", 409);
+  const committed = await store.commit(site, capability, { ...scope, ...change });
+  if (!committed) {
+    const same = await replay(store, mutation);
+    if (same) return same;
+    return await store.site(site, capability) ? conflict() : forbidden();
+  }
+  if (change.job?.kind === "release") await deliverCmsJob(store, change.job.id).catch(() => {});
+  return json(change.result);
+}
+
+async function currentSnapshot(store: CmsStore, site: Site) {
+  return site.state.current ? store.snapshot(site.siteId, site.state.current.id) : null;
+}
+
+function storedItem(site: Site, collectionId: string, itemId: string) {
+  return site.state.items[cmsItemKey({ collectionId, itemId })] ?? null;
+}
+
+async function editorContext(store: CmsStore, site: Site, capability: CmsCapability) {
+  const [current, jobs] = await Promise.all([currentSnapshot(store, site), store.jobs(site, capability)]);
+  return {
+    current,
+    jobs: jobs.map((job) => ({ id: job.id, kind: job.kind, at: iso(job.scheduled_at),
+      payload: JSON.parse(job.payload_json) as Extract<JobPayload, { releaseId: string }> }))
+  };
+}
+
+type EditorContext = Awaited<ReturnType<typeof editorContext>>;
+function workspaceItem(site: Site, item: CmsItemRevision, meta: ItemMeta, context: EditorContext): CollectionItem {
+  const collection = cmsCollection(site.state.schema, item.collectionId);
+  const selected = context.current?.items.find((pin) => cmsItemKey(pin) === cmsItemKey(item));
+  const schedule = context.jobs.find((job) => job.kind === "schedule" && job.payload.pins.includes(cmsItemKey(item)));
+  const pending = context.jobs.find((job) => job.kind === "release"
+    && (job.payload.pins.includes(cmsItemKey(item)) || selected !== undefined));
+  const slug = collection.slugField === null ? null : item.values[collection.slugField];
+  const candidatePath = slug && collection.pathPrefix ? `${collection.pathPrefix}${String(slug)}` : null;
+  const subtitle = collection.subtitleField === null ? null : item.values[collection.subtitleField];
+  return cmsWorkspaceItem(site.state.schema, item, {
+    draftRevision: item.revision, publishedRevision: selected?.revision ?? null, publishedAt: selected ? site.state.current?.at ?? null : null,
+    deliveryState: pending ? { state: "pending", releaseId: pending.payload.releaseId } : { state: "idle" },
+    schedule: schedule ? { id: schedule.id, at: schedule.at, state: "scheduled" } : null, tombstone: null
+  }, { subtitle: typeof subtitle === "string" && subtitle ? subtitle : null, imageUrl: null,
+    path: candidatePath && validatePagePath(candidatePath) === null ? candidatePath : null,
+    updatedAt: meta.updatedAt, updatedBy: null, order: null })!;
+}
+
+async function saveDraft(store: CmsStore, mutation: Mutation, input: {
+  collectionId: string; itemId: string; values: CollectionValues; create: boolean; legacy: boolean;
+}) {
+  const { site, capability } = mutation;
+  const itemId = input.create ? await mutationObjectId("item", mutation) : input.itemId;
+  const item: CmsItemRevision = {
+    siteId: site.siteId, schemaRevision: site.state.schema.schemaRevision, collectionId: input.collectionId, itemId,
+    locale: site.state.locale, revision: await mutationObjectId("rev", mutation, { collectionId: input.collectionId, itemId }), values: input.values
+  };
+  const meta: ItemMeta = { collectionId: item.collectionId, itemId: item.itemId, revision: item.revision, updatedAt: dateNow(), removedAt: null };
+  const state = { ...site.state, items: { ...site.state.items, [cmsItemKey(meta)]: meta }, retainedBytes: site.state.retainedBytes + blobSize(item) };
+  if (Object.keys(state.items).length > MAX_ITEMS || state.retainedBytes > MAX_RETAINED_BYTES) return error("quota_exceeded", 409);
+  const result = input.legacy ? {
+    ...(input.create ? {} : { status: "saved" }), item: workspaceItem(site, item, meta, await editorContext(store, site, capability))
+  } : { status: input.create ? "created" : "saved", item };
+  await store.put(itemBlobKey(site.siteId, item.locale, item), item);
+  return mutate(store, mutation, { state, revisions: [item], result });
+}
+
+async function storePlan<T>(store: CmsStore, site: Site, capability: CmsCapability, operation: CmsConfirmedPlan<T>["operation"] | "cms.publish",
+  operationId: string, candidate: T) {
+  const expires = nowSeconds() + PLAN_TTL, payload = { operation, operationId, candidate };
+  if (blobSize(payload) > MAX_SNAPSHOT - MAX_BODY) return null;
+  const confirmationToken = await store.makeToken(site, capability, operation, payload, expires);
+  return confirmationToken ? { ...payload, siteId: site.siteId, actorId: site.actor.id, expiresAt: iso(expires), confirmationToken } : null;
+}
+
+async function readPlan<T>(store: CmsStore, site: Site, capability: CmsCapability, operation: CmsConfirmedPlan<T>["operation"] | "cms.publish",
+  operationId: string, token: unknown) {
+  if (!tokenId(token)) return null;
+  const row = await store.readToken<{ operationId: string; candidate: T }>(site, capability, operation, token as string);
+  if (!row || row.payload.operationId !== operationId) return null;
+  return { siteId: site.siteId, actorId: site.actor.id, operationId, operation, candidate: row.payload.candidate,
+    expiresAt: iso(row.expires), confirmationToken: token as string };
+}
+
+async function queueRelease(store: CmsStore, mutation: Mutation, proposal: CmsReleaseProposal, token: string, result: object, schedule?: CmsSchedule) {
+  const site = mutation.site, { snapshot, expectedReleaseId } = proposal;
+  const size = blobSize(snapshot), routeTableSize = blobSize(snapshot.routeTable);
+  const state = { ...site.state, retainedBytes: site.state.retainedBytes + size + routeTableSize };
+  if (size > MAX_SNAPSHOT || state.retainedBytes > MAX_RETAINED_BYTES) return error("quota_exceeded", 409);
+  await store.put(routeTableKey(site.siteId, snapshot.locale, snapshot.routeTable.revision), snapshot.routeTable);
+  await store.put(snapshotKey(site.siteId, snapshot.releaseId), snapshot);
+  return mutate(store, mutation, { state, result, tokenHash: await digest(token), requireFreeSlot: true, job: {
+    kind: schedule ? "schedule" : "release", id: schedule?.id ?? snapshot.releaseId, at: schedule ? Math.ceil(Date.parse(schedule.at) / 1000) : nowSeconds(),
+    payload: { releaseId: snapshot.releaseId, expectedReleaseId, pins: snapshot.items.map(cmsItemKey) }
+  } });
+}
+
+async function migrationContext(store: CmsStore, site: Site, capability: CmsCapability) {
+  const [drafts, routeTable] = await Promise.all([
+    Promise.all(Object.values(site.state.items).map(async (meta): Promise<CmsMigrationDraft> => ({
+      item: await store.item(site.siteId, site.state.locale, meta), tombstoned: meta.removedAt !== null
+    }))),
+    store.routeTable(site, capability)
+  ]);
+  const fixed = new Set(routeTable.reservations.flatMap((entry) =>
+    entry.kind === "fixed-page" || entry.kind === "reserved" ? [entry.path] : []));
+  return { drafts, routeTables: [routeTable], impact: (_before: Site["state"]["schema"], after: Site["state"]["schema"]): CmsProblem[] => {
+    const paths = after.collections.flatMap(({ pathPrefix }) => {
+      const path = collectionPath(pathPrefix);
+      return path === null ? [] : [path];
+    });
+    return paths.filter((path, i) => !cmsPathReserved(path) || path === "/cms" || fixed.has(path) || paths.indexOf(path) !== i)
+      .map((path) => ({ code: "route", path, message: "一覧 URL を /cms 配下の空いているパスに指定してください。" }));
+  } };
+}
+
+async function schemaOperation(store: CmsStore, site: Site, capability: CmsCapability, operation: "cms.schema.plan" | "cms.schema.apply",
+  body: Record<string, unknown>, mutation: Mutation | null) {
+  if (operation === "cms.schema.plan") {
+    const input = parseCmsSchemaPlanInput(body, site.siteId);
+    if (input.expectedSchemaRevision !== site.state.schema.schemaRevision) return conflict();
+    const { drafts, routeTables, impact } = await migrationContext(store, site, capability);
+    const proposed = { ...input.nextSchema, schemaRevision: opaque("schema") };
+    const migration = planCmsMigrationWithRouteTables({ before: site.state.schema, next: proposed, items: drafts,
+      replacements: input.replacements, routeTables, expectedRouteTableVersions: input.routeTableVersions, impact });
+    if (!migration) return conflict();
+    if (migration.problems.length) return json({ status: "invalid", problems: migration.problems }, 422);
+    const plan = await storePlan(store, site, capability, "cms.schema.apply", opaque("op"), { migration, replacements: input.replacements });
+    if (!plan) return error("plan_unavailable", 409);
+    return json({ status: "ready", plan: { ...plan, candidate: migration } });
+  }
+  const input = parseCmsApplyInput(body, site.siteId);
+  const plan = await readPlan<{ migration: CmsRouteBoundMigration; replacements: ReturnType<typeof parseCmsSchemaPlanInput>["replacements"] }>(
+    store, site, capability, operation, input.operationId, input.confirmationToken);
+  if (!plan) return notFound();
+  const { drafts, routeTables, impact } = await migrationContext(store, site, capability);
+  const check = checkCmsSchemaApply(siteScope(site), input, { ...plan, operation, candidate: plan.candidate.migration }, dateNow(),
+    site.state.schema, drafts, routeTables, plan.candidate.replacements, impact);
+  if (check.status !== "allowed") return json(check, 409);
+  const items: Site["state"]["items"] = {}, revisions = await Promise.all(check.candidate.items.map(async (draft): Promise<CmsItemRevision> => {
+    const { collectionId, itemId, values, locale } = draft;
+    const prior = site.state.items[cmsItemKey(draft)]!;
+    const revision = await mutationObjectId("rev", mutation!, { collectionId, itemId });
+    items[cmsItemKey(draft)] = { ...prior, revision, updatedAt: dateNow() };
+    return { siteId: site.siteId, schemaRevision: check.candidate.schema.schemaRevision, collectionId, itemId, revision, locale, values };
+  }));
+  const state = { ...site.state, schema: check.candidate.schema, items,
+    retainedBytes: site.state.retainedBytes + revisions.reduce((total, revision) => total + blobSize(revision), 0) };
+  if (state.retainedBytes > MAX_RETAINED_BYTES || blobSize(state) > 256 * 1024) return error("quota_exceeded", 409);
+  await Promise.all(revisions.map((item) => store.put(itemBlobKey(site.siteId, item.locale, item), item)));
+  return mutate(store, mutation!, { state, revisions, tokenHash: await digest(input.confirmationToken),
+    result: { status: "recorded", operationId: input.operationId, result: { schemaRevision: state.schema.schemaRevision } } });
+}
+
+const siteScope = (site: Site) => ({ siteId: site.siteId, actorId: site.actor.id });
+
+async function releaseOperation(store: CmsStore, site: Site, capability: CmsCapability,
+  operation: "cms.release.plan" | "cms.release.apply" | "cms.schedule.create", body: Record<string, unknown>, mutation: Mutation | null) {
+  if (operation === "cms.release.plan") {
+    const scheduled = Object.hasOwn(body, "at"), input = scheduled ? parseCmsScheduleRequest(body) : parseCmsReleaseInput(body);
+    if (input.locale !== site.state.locale || input.items.length > MAX_ITEMS || input.redirects.length > MAX_ITEMS) return invalid();
+    const { ...selection } = input as CmsReleaseInput & { at?: string };
+    delete selection.at;
+    const ready = planCmsRelease(selection, opaque("release"), await releaseContext(store, site, input.items));
+    if (ready.status !== "ready") return json(ready, ready.status === "invalid" ? 422 : 409);
+    const candidate = scheduled ? planCmsSchedule(opaque("schedule"), (input as ReturnType<typeof parseCmsScheduleRequest>).at, dateNow(), ready.proposal) : ready.proposal;
+    const plan = await storePlan(store, site, capability, scheduled ? "cms.schedule.create" : "cms.release.apply", opaque("op"), candidate);
+    return plan ? json({ status: "ready", plan }) : error("plan_unavailable", 409);
+  }
+  const input = parseCmsApplyInput(body, site.siteId);
+  if (operation === "cms.release.apply") {
+    const plan = await readPlan<CmsReleaseProposal>(store, site, capability, operation, input.operationId, input.confirmationToken);
+    if (!plan) return notFound();
+    const checked = checkCmsReleaseApply(siteScope(site), input, { ...plan, operation }, dateNow(),
+      await releaseContext(store, site, plan.candidate.snapshot.items));
+    if (checked.status !== "allowed") return json(checked, 409);
+    const { releaseId, locale } = checked.candidate.snapshot;
+    return queueRelease(store, mutation!, checked.candidate, input.confirmationToken,
+      { status: "recorded", operationId: input.operationId, result: { releaseId, locale } });
+  }
+  const plan = await readPlan<CmsSchedule>(store, site, capability, operation, input.operationId, input.confirmationToken);
+  if (!plan) return notFound();
+  const checked = checkCmsScheduleCreate(siteScope(site), input, { ...plan, operation }, dateNow(),
+    await releaseContext(store, site, plan.candidate.proposal.snapshot.items));
+  if (checked.status !== "allowed") return json(checked, 409);
+  const { proposal, id, at } = checked.candidate;
+  return queueRelease(store, mutation!, proposal, input.confirmationToken,
+    { status: "recorded", operationId: input.operationId, result: { scheduleId: id, at, releaseId: proposal.snapshot.releaseId } }, checked.candidate);
+}
+
+function itemSummary(site: Site, draft: CmsItemRevision, meta: ItemMeta, context: EditorContext) {
+  const { values: _values, version: _version, ...summary } = workspaceItem(site, draft, meta, context);
+  const schedule = context.jobs.find((job) => job.kind === "schedule" && job.payload.pins.includes(cmsItemKey(meta)));
+  return { ...summary, revision: draft.revision, removedAt: meta.removedAt, scheduleId: schedule?.id ?? null };
+}
+
+async function readItems(store: CmsStore, site: Site, body: Record<string, unknown>) {
+  const { collectionId, deleted, cursor } = body;
+  exact(body, cursor === undefined ? ["siteId", "collectionId", "deleted"] : ["siteId", "collectionId", "deleted", "cursor"]);
+  if (typeof deleted !== "boolean" || (cursor !== undefined && !tokenId(cursor))) return invalid();
+  const id = cmsId(collectionId, "collectionId"), collection = site.state.schema.collections.find(({ id: entry }) => entry === id);
+  if (!collection) return notFound();
+  const items = Object.values(site.state.items).filter((item) => item.collectionId === collection.id && (item.removedAt !== null) === deleted)
+    .sort((a, b) => a.itemId < b.itemId ? -1 : 1);
+  let last = "";
+  if (typeof cursor === "string") {
+    const entry = await store.readToken<{ collectionId: string; deleted: boolean; generation: string | null; last: string }>(site, "cms.read", "cursor", cursor);
+    if (!entry || entry.expires <= nowSeconds() || entry.payload.collectionId !== collection.id || entry.payload.deleted !== deleted) return notFound();
+    if (entry.payload.generation !== site.generation) return conflict();
+    last = entry.payload.last;
+  }
+  const page = items.filter((item) => item.itemId > last).slice(0, LIST_SIZE + 1);
+  const context = await editorContext(store, site, "cms.read");
+  const result = await Promise.all(page.slice(0, LIST_SIZE).map(async (item) =>
+    itemSummary(site, await store.item(site.siteId, site.state.locale, item), item, context)));
+  const nextCursor = page.length > LIST_SIZE
+    ? await store.makeToken(site, "cms.read", "cursor", { collectionId, deleted, generation: site.generation, last: page[LIST_SIZE - 1]!.itemId }, nowSeconds() + PREVIEW_TTL)
+    : null;
+  return json({ collectionId, items: result, nextCursor });
+}
+
+async function itemOperation(store: CmsStore, site: Site, operation: Operation, body: Record<string, unknown>, mutation: Mutation | null) {
+  if (operation === "cms.items.list") return readItems(store, site, body);
+  const id = cmsId(body.collectionId, "collectionId"), collection = site.state.schema.collections.find(({ id: entry }) => entry === id);
+  if (!collection) return notFound();
+  if (operation === "cms.items.create") {
+    exact(body, ["siteId", "collectionId", "contractVersion", "expectedSchemaRevision"]);
+    if (body.contractVersion !== 2) return error("unsupported_version", 409);
+    if (body.expectedSchemaRevision !== site.state.schema.schemaRevision) return conflict();
+    if (!collection.capabilities.create) return forbidden();
+    return saveDraft(store, mutation!, { collectionId: collection.id, itemId: opaque("item"), values: parseCmsValues({}, collection), create: true, legacy: false });
+  }
+  const itemId = cmsId(body.itemId, "itemId");
+  const item = storedItem(site, collection.id, itemId);
+  if (operation === "cms.items.read") {
+    exact(body, ["siteId", "collectionId", "itemId"]);
+    if (!item || item.removedAt !== null) return notFound();
+    const [draft, context] = await Promise.all([store.item(site.siteId, site.state.locale, item), editorContext(store, site, "cms.read")]);
+    return json({ item: draft, summary: itemSummary(site, draft, item, context) });
+  }
+  if (!item || (operation === "cms.items.restore" ? item.removedAt === null : item.removedAt !== null)) return notFound();
+  if (body.contractVersion !== 2) return error("unsupported_version", 409);
+  if (body.expectedSchemaRevision !== site.state.schema.schemaRevision || body.expectedRevision !== item.revision) return conflict();
+  const action = operation === "cms.items.save" ? "save" : operation === "cms.items.remove" ? "remove" : "restore";
+  exact(body, ["siteId", "contractVersion", "expectedSchemaRevision", "expectedRevision", "locale", "collectionId", "itemId", ...(action === "save" ? ["values"] : [])]);
+  if (body.locale !== site.state.locale) return notFound();
+  if (action === "save") {
+    const input = parseCmsDraftWrite(body, site.state.schema, action);
+    return saveDraft(store, mutation!, { collectionId: collection.id, itemId, values: input.values, create: false, legacy: false });
+  }
+  parseCmsDraftWrite(body, site.state.schema, action);
+  if (action === "remove") {
+    if (!collection.capabilities.remove) return forbidden();
+    const { current, jobs } = await editorContext(store, site, "cms.edit"), key = cmsItemKey(item);
+    if (current?.items.some((pin) => cmsItemKey(pin) === key) || jobs.some((job) => job.payload.pins.includes(key))) return conflict();
+  }
+  const next = { ...item, removedAt: action === "remove" ? dateNow() : null, updatedAt: dateNow() };
+  return mutate(store, mutation!, { state: { ...site.state, items: { ...site.state.items, [cmsItemKey(item)]: next } },
+    result: { status: action === "remove" ? "removed" : "restored" } });
+}
+
+async function previewOperation(store: CmsStore, site: Site, operation: "cms.preview.prepare" | "cms.preview.read", body: Record<string, unknown>) {
+  if (operation === "cms.preview.prepare") {
+    exact(body, ["siteId", "collectionId", "itemId", "revision"]);
+    const item = storedItem(site, cmsId(body.collectionId, "collectionId"), cmsId(body.itemId, "itemId"));
+    if (!item || item.removedAt !== null || item.revision !== body.revision) return notFound();
+    const expires = nowSeconds() + PREVIEW_TTL;
+    const token = await store.makeToken(site, "cms.read", "preview", { ...item, schemaRevision: site.state.schema.schemaRevision }, expires);
+    return token ? json({ previewId: token, expiresAt: iso(expires) }) : forbidden();
+  }
+  exact(body, ["siteId", "previewId"]);
+  if (!tokenId(body.previewId)) return invalid();
+  const entry = await store.readToken<ItemMeta & { schemaRevision: string }>(site, "cms.read", "preview", body.previewId as string);
+  if (!entry || entry.expires <= nowSeconds() || entry.payload.schemaRevision !== site.state.schema.schemaRevision) return notFound();
+  const current = storedItem(site, entry.payload.collectionId, entry.payload.itemId);
+  if (!current || current.removedAt !== null || current.revision !== entry.payload.revision) return notFound();
+  const item = await store.item(site.siteId, site.state.locale, entry.payload);
+  if (!await store.consumePreview(site, body.previewId as string)) return notFound();
+  return json({ preview: previewContent(site.state.schema, { ...item, path: null }), expiresAt: iso(entry.expires) });
+}
+
+async function executeV2(request: Request, store: CmsStore, scope: CmsScope, route: string) {
+  const operation = route as Operation;
+  const capability = Object.hasOwn(CMS_V2_OPERATIONS, operation) ? CMS_V2_OPERATIONS[operation as CmsV2Operation]
+    : Object.hasOwn(EXTRA, operation) ? EXTRA[operation as keyof typeof EXTRA] : null;
+  if (!capability && route !== "discover") return notFound();
+  if (route === "discover") {
+    if (request.method !== "GET") return error("method_not_allowed", 405);
+    if (request.body !== null) return invalid();
+    if (scope.actor.clientId !== undefined) {
+      const capabilities = ["cms.read", "cms.edit", "cms.publish"] as const;
+      const granted = await Promise.all(capabilities.map((cap) => store.site(scope, cap)));
+      const site = granted.find((entry) => entry !== null);
+      return site ? json(discoverCmsContract(site.state.schema, capabilities.filter((_, index) => granted[index] !== null))) : forbidden();
+    }
+    const site = await store.site(scope, "cms.read");
+    return site ? json(discoverCmsContract(site.state.schema, cmsRoleCapabilities(site.role))) : forbidden();
+  }
+  const site = await store.site(scope, capability!);
+  if (!site) return forbidden();
+  if (request.method !== "POST") return error("method_not_allowed", 405);
+  const body = await readBody(request, scope);
+  if (!body || body.siteId !== site.siteId) return invalid();
+  const cap = capability!;
+  let mutation: Mutation | null = null;
+  if (MUTATIONS.has(operation)) {
+    const header = request.headers.get(OPERATION_KEY_HEADER);
+    const operationId = operation === "cms.schema.apply" || operation === "cms.release.apply" || operation === "cms.schedule.create"
+      ? parseCmsApplyInput(body, scope.siteId).operationId : parseOperationId(header);
+    if (header !== null && header !== operationId) return invalid();
+    mutation = { site, capability: cap, operation, operationId, inputDigest: await digest(body) };
+    const same = await replay(store, mutation);
+    if (same) return same;
+  }
+  switch (operation) {
+    case "cms.schema.read":
+      exact(body, ["siteId"]);
+      return json(site.state.schema);
+    case "cms.schema.plan":
+    case "cms.schema.apply":
+      return schemaOperation(store, site, cap, operation, body, mutation);
+    case "cms.release.plan":
+    case "cms.release.apply":
+    case "cms.schedule.create":
+      return releaseOperation(store, site, cap, operation, body, mutation);
+    case "cms.release.status": {
+      exact(body, ["siteId", "operationId"]);
+      const receipt = await store.receipt(site, cap, parseOperationId(body.operationId));
+      if (receipt?.operation !== "cms.release.apply") return json({ status: "not_found" }, 404);
+      const delivery = await store.deliveryForReceipt(site, receipt.transaction_id);
+      if (!delivery) return json({ status: "not_found" }, 404);
+      return json({ ...record(JSON.parse(receipt.result_json), "receipt"), delivery: {
+        state: delivery.state, failure: delivery.failure, deliveredAt: delivery.released_at === null ? null : iso(delivery.released_at)
+      } });
+    }
+    case "cms.release.current":
+      exact(body, ["siteId"]);
+      return json({ snapshot: await currentSnapshot(store, site), locale: site.state.locale,
+        routeTableRevision: (await store.routeTable(site, cap)).revision, collectionRoot: `/s/${site.slug}/cms` });
+    case "cms.release.snapshot": {
+      exact(body, ["siteId", "releaseId"]);
+      const snapshot = await store.historicalSnapshot(site, cmsId(body.releaseId, "releaseId"));
+      return snapshot ? json({ snapshot }) : notFound();
+    }
+    case "cms.preview.prepare":
+    case "cms.preview.read":
+      return previewOperation(store, site, operation, body);
+    case "cms.schedule.status":
+    case "cms.schedule.cancel": {
+      exact(body, ["siteId", "scheduleId"]);
+      const id = cmsId(body.scheduleId, "scheduleId");
+      const [job] = await store.jobs(site, cap, id);
+      if (!job || job.kind !== "schedule") return notFound();
+      if (operation === "cms.schedule.cancel") {
+        if (job.state !== "pending") return conflict();
+        return mutate(store, mutation!, { state: site.state, result: { status: "cancelled" }, cancel: id });
+      }
+      const { releaseId } = JSON.parse(job.payload_json) as Extract<JobPayload, { releaseId: string }>;
+      const status = { pending: "scheduled", delivered: "released", dead: "failed", cancelled: "cancelled" }[job.state];
+      return json({ status, schedule: { scheduleId: id, at: iso(job.scheduled_at), releaseId } });
+    }
+    default:
+      return itemOperation(store, site, operation, body, mutation);
+  }
+}
+
+function legacyFields(site: Site, problems: readonly CmsProblem[]) {
+  return problems.map((problem) => ({ field: site.state.schema.collections.find(({ id }) => id === problem.collectionId)?.fields
+    .find(({ fieldId }) => fieldId === problem.fieldId)?.key ?? "_base", message: problem.message }));
+}
+
+type LegacyPlan = { expectedVersion: string; collectionId: string; itemId: string; redirect?: boolean; proposal: CmsReleaseProposal };
+async function legacyPublish(store: CmsStore, site: Site, operation: "cms.publish-plan" | "cms.publish",
+  draft: CmsItemRevision, item: CollectionItem, body: Record<string, unknown>, mutation: Mutation, context: EditorContext) {
+  exact(body, ["expectedVersion", "operationId", ...(operation === "cms.publish" ? ["confirmationToken"] : []), ...(Object.hasOwn(body, "redirect") ? ["redirect"] : [])]);
+  if (body.redirect !== undefined && typeof body.redirect !== "boolean") return invalid();
+  if (body.expectedVersion !== draft.revision) return error("version_conflict", 409);
+  const { collectionId, itemId } = draft, key = cmsItemKey(draft);
+  if (operation === "cms.publish-plan") {
+    const before = context.current?.items.find((entry) => cmsItemKey(entry) === key)?.path;
+    const after = item.path;
+    const currentRedirects = (context.current?.redirects ?? []).flatMap((redirect) => {
+      if (redirect.from === after) return [];
+      if (redirect.to === before && before !== after) return body.redirect && after ? [{ from: redirect.from, to: after }] : [];
+      return [redirect];
+    });
+    const redirects = body.redirect && before && after && before !== after ? [...currentRedirects, { from: before, to: after }] : currentRedirects;
+    const items = [...(context.current?.items ?? []).filter((entry) => cmsItemKey(entry) !== key), draft]
+      .map(({ collectionId, itemId, revision }) => ({ collectionId, itemId, revision }));
+    const ready = planCmsRelease({ siteId: site.siteId, locale: site.state.locale, schemaRevision: site.state.schema.schemaRevision,
+      routeTableRevision: (await store.routeTable(site, "cms.publish")).revision,
+      expectedReleaseId: context.current?.releaseId ?? null, items, redirects }, opaque("release"), await releaseContext(store, site, items));
+    if (ready.status === "conflict") return error("version_conflict", 409);
+    if (ready.status === "invalid") return json({ error: "validation_failed", fields: legacyFields(site, ready.problems) }, 422);
+    const redirect = body.redirect === undefined ? {} : { redirect: body.redirect };
+    const plan = await storePlan<LegacyPlan>(store, site, "cms.publish", "cms.publish", mutation.operationId,
+      { expectedVersion: draft.revision, collectionId, itemId, ...redirect, proposal: ready.proposal });
+    return plan ? json({ plan: { target: { siteId: site.siteId, collectionId, itemId }, expectedVersion: draft.revision,
+      operationId: mutation.operationId, confirmationToken: plan.confirmationToken, item, ...redirect } }) : error("plan_unavailable", 409);
+  }
+  const plan = await readPlan<LegacyPlan>(store, site, "cms.publish", "cms.publish", mutation.operationId, body.confirmationToken);
+  if (!plan) return notFound();
+  const { candidate } = plan;
+  if (candidate.expectedVersion !== draft.revision || candidate.collectionId !== collectionId || candidate.itemId !== itemId || candidate.redirect !== body.redirect)
+    return error("version_conflict", 409);
+  const input = { siteId: site.siteId, operationId: mutation.operationId, confirmationToken: plan.confirmationToken };
+  const checked = checkCmsReleaseApply(siteScope(site), input, { ...plan, operation: "cms.release.apply", candidate: candidate.proposal }, dateNow(),
+    await releaseContext(store, site, candidate.proposal.snapshot.items));
+  if (checked.status !== "allowed") return error("version_conflict", 409);
+  return queueRelease(store, mutation, checked.candidate, input.confirmationToken,
+    { status: "publishing", operationId: mutation.operationId, item: { ...item, status: "publishing" } });
+}
+
+export function managedCmsLegacySpec(operation: string) {
+  return Object.hasOwn(LEGACY, operation) ? LEGACY[operation as LegacyOp] : null;
+}
+
+async function executeLegacy(request: Request, store: CmsStore, scope: CmsScope, route: string) {
+  const [name, ...args] = route.split("/"), operation = name as LegacyOp, spec = managedCmsLegacySpec(operation);
+  if (!spec || args.length !== spec[2]) return notFound();
+  const [method, capability] = spec;
+  if (request.method !== method) return error("method_not_allowed", 405);
+  const site = await store.site(scope, capability);
+  if (!site) return forbidden();
+  if (method === "GET" && request.body !== null) return invalid();
+  if (operation === "cms.schema") return json({ collections: cmsLegacyCollections(site.state.schema) });
+  if (operation === "cms.operation-status") {
+    const id = args[0]!;
+    if (!UUID_V4.test(id.toLowerCase())) return invalid();
+    const receipt = await store.receipt(site, capability, id);
+    if (!receipt) return json({ status: "unknown", operationId: id });
+    const result = JSON.parse(receipt.result_json) as { item?: CollectionItem };
+    if (receipt.operation === "cms.publish") {
+      const delivery = await store.deliveryForReceipt(site, receipt.transaction_id);
+      if (!delivery || delivery.state === "pending") return json({ status: "received", operationId: id });
+      if (delivery.state !== "delivered") {
+        const changed = delivery.failure === "conflict";
+        return json({ status: "completed", operationId: id, httpStatus: changed ? 409 : 503,
+          result: { error: changed ? "version_conflict" : "host_failure" } });
+      }
+      return json({ status: "completed", operationId: id, httpStatus: 200,
+        result: { status: "published", operationId: id, item: { ...result.item, status: "published", publishedAt: iso(delivery.released_at!) } } });
+    }
+    return json({ status: "completed", operationId: id, httpStatus: 200, result });
+  }
+  let body: Record<string, unknown> | null = null, mutation: Mutation | null = null;
+  if (method !== "GET") {
+    const requestedVersion = request.headers.get(VERSION_HEADER) === "2" ? 2 : undefined;
+    if (checkCmsWriteVersion(site.state.schema, requestedVersion, site.state.schema.schemaRevision).status !== "allowed")
+      return error("unsupported_version", 409);
+    body = await readBody(request, scope);
+    if (!body || typeof body.operationId !== "string" || !UUID_V4.test(body.operationId.toLowerCase())) return invalid();
+    const header = request.headers.get(OPERATION_KEY_HEADER);
+    if (header !== null && header !== body.operationId) return invalid();
+    mutation = { site, capability, operation, operationId: body.operationId, inputDigest: await digest({ args, body }) };
+    const same = await replay(store, mutation);
+    if (same) return same;
+  }
+  const collectionId = cmsId(args[0], "collectionId"), collection = site.state.schema.collections.find(({ id }) => id === collectionId);
+  if (!collection) return notFound();
+  if (operation === "cms.create") {
+    exact(body!, ["operationId"]);
+    if (!collection.capabilities.create) return forbidden();
+    return saveDraft(store, mutation!, { collectionId, itemId: opaque("item"), values: parseCmsValues({}, collection), create: true, legacy: true });
+  }
+  const context = await editorContext(store, site, capability);
+  if (operation === "cms.list") {
+    const items = await Promise.all(Object.values(site.state.items).filter((item) => item.collectionId === collectionId && item.removedAt === null)
+      .map(async (meta) => {
+        const { version: _version, values: _values, ...summary } = workspaceItem(site, await store.item(site.siteId, site.state.locale, meta), meta, context);
+        return summary;
+      }));
+    return json({ collectionId, items });
+  }
+  const itemId = cmsId(args[1], "itemId"), meta = storedItem(site, collectionId, itemId);
+  if (!meta || meta.removedAt !== null) return notFound();
+  const draft = await store.item(site.siteId, site.state.locale, meta), item = workspaceItem(site, draft, meta, context);
+  if (operation === "cms.read") return json({ item });
+  if (operation === "cms.save") {
+    exact(body!, ["expectedVersion", "operationId", "values"]);
+    if (body!.expectedVersion !== draft.revision) return json({ error: "version_conflict", current: item }, 409);
+    const definition = cmsLegacyCollections(site.state.schema).find(({ id }) => id === collectionId)!;
+    const rawValues = record(body!.values, "values");
+    keys(rawValues, definition.fields.map(({ key }) => key), "values");
+    const normalized = parseCollectionValues(rawValues, definition);
+    const values = parseCmsValues(Object.fromEntries(collection.fields.map(({ fieldId, key }) => [fieldId, normalized[key]])), collection);
+    return saveDraft(store, mutation!, { collectionId, itemId, values, create: false, legacy: true });
+  }
+  return legacyPublish(store, site, operation, draft, item, body!, mutation!, context);
+}
+
+export async function managedCmsApi(request: Request, store: CmsStore, scope: CmsScope, operation: string, version: 1 | 2) {
+  if (new URL(request.url).search) return invalid();
+  try {
+    return version === 2 ? await executeV2(request, store, scope, operation) : await executeLegacy(request, store, scope, operation);
+  } catch (failure) {
+    if (failure instanceof DocumentValidationError) return invalid();
+    throw failure;
+  }
+}

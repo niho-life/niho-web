@@ -32,3 +32,10 @@ binding = "DB"
 database_name = "niho-web-studio"
 database_id = "b2af4e2e-34c2-496f-b735-6d285fcf7365"
 migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "CMS_OBJECTS"
+bucket_name = "niho-web-studio-cms"
+
+[triggers]
+crons = ["* * * * *"]

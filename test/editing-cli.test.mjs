@@ -11,9 +11,10 @@ import { EDITING_OPERATIONS } from "@niho/web/editing-api";
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 const command = fileURLToPath(new URL("../cli/niho-edit.mjs", import.meta.url));
 const origin = "https://site.example", siteId = fixture.siteId, pageId = fixture.pageId, locale = fixture.locale;
+const playwrightAvailable = (() => { try { import.meta.resolve("playwright"); return true; } catch { return false; } })();
 
 function run(args, { status = 200, result, expectedMethod, expectedUrl, expectedBody, stdin, assertInputBeforeTimeout = false,
-  accessClientId = null, accessClientSecret = null, env = {}, token = "fixture-token", location = null } = {}) {
+  accessClientId = null, accessClientSecret = null, env = {}, token = "fixture-token", location = null, studio = false, operationKey = null } = {}) {
   const timeoutGuard = assertInputBeforeTimeout ? `let stdinEnded = false;
     process.stdin.once("end", () => { stdinEnded = true; });
     const originalTimeout = AbortSignal.timeout.bind(AbortSignal);
@@ -24,7 +25,10 @@ function run(args, { status = 200, result, expectedMethod, expectedUrl, expected
     if (init.method !== ${JSON.stringify(expectedMethod)}) throw new Error("unexpected method");
     if (init.redirect !== "manual" || init.credentials !== "omit") throw new Error("unsafe API fetch defaults");
     const headers = new Headers(init.headers);
-    if (headers.get("Authorization") !== "Bearer fixture-token") throw new Error("missing authorization");
+    if (headers.get("Authorization") !== ${JSON.stringify(studio ? null : "Bearer fixture-token")}) throw new Error("missing authorization");
+    if (headers.get("cf-access-token") !== ${JSON.stringify(studio && !accessClientId ? token : null)}) throw new Error("unexpected Access token");
+    if (headers.get("X-Studio-CMS-Version") !== ${JSON.stringify(studio ? "2" : null)}) throw new Error("unexpected CMS version");
+    if (headers.get("X-Studio-Operation-Key") !== ${JSON.stringify(operationKey)}) throw new Error("unexpected operation key");
     if (headers.get("CF-Access-Client-Id") !== ${JSON.stringify(accessClientId)} || headers.get("CF-Access-Client-Secret") !== ${JSON.stringify(accessClientSecret)}) throw new Error("unexpected Access credentials");
     const body = init.body ? JSON.parse(init.body) : null;
     if (JSON.stringify(body) !== ${JSON.stringify(JSON.stringify(expectedBody ?? null))}) throw new Error("unexpected body");
@@ -128,9 +132,26 @@ test("niho-edit reads a page over the host API without Studio or a browser", asy
   });
   assert.equal(result.exitCode, 0, `${result.stderr}\n${result.stdout}`);
   assert.deepEqual(JSON.parse(result.stdout), { document: fixture, version: "v1" });
-  assert.deepEqual(EDITING_OPERATIONS.filter(({ id }) => !id.startsWith("localization.")).map(({ id }) => id), ["pages.inspect", "pages.read", "pages.save", "pages.apply", "pages.release-plan", "pages.release", "pages.release-set-plan", "pages.release-set", "pages.release-set-status", "pages.catalog", "pages.change-prepare", "pages.change-apply",
+  assert.deepEqual(EDITING_OPERATIONS.filter(({ id }) => !id.startsWith("localization.")).map(({ id }) => id), ["pages.inspect", "pages.read", "pages.save", "pages.apply", "pages.preview-intent", "pages.release-plan", "pages.release", "pages.release-set-plan", "pages.release-set", "pages.release-set-status", "pages.catalog", "pages.change-prepare", "pages.change-apply",
     "cms.schema", "cms.list", "cms.read", "cms.create", "cms.save", "cms.publish-plan", "cms.publish", "cms.operation-status", "site.breakpoints.read", "site.breakpoints.save",
     "assets.list", "assets.usages", "assets.resolve", "assets.update", "assets.upload-intent", "assets.delete", "assets.restore"]);
+});
+
+test("niho-edit preview returns private URLs when the optional browser is unavailable", { skip: playwrightAvailable }, async () => {
+  const previewUrl = "https://site.example/_private-preview/opaque-id";
+  const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
+  const discoverUrl = `${origin}/api/edit/v1/sites/${siteId}/capabilities`;
+  const catalogUrl = `${origin}/api/edit/v1/sites/${siteId}/operations/pages.catalog`;
+  const intentUrl = `${origin}/api/edit/v1/sites/${siteId}/operations/pages.preview-intent/${pageId}?locale=${encodeURIComponent(locale)}`;
+  const previewOperation = EDITING_OPERATIONS.find(({ id }) => id === "pages.preview-intent");
+  const catalogOperation = EDITING_OPERATIONS.find(({ id }) => id === "pages.catalog");
+  const result = await runSequence(["preview", pageId, "--locale", locale, "--widths", "375,768,1280", "--compare", "published"], [
+    { method: "GET", url: discoverUrl, result: { apiVersion: "v1", siteId, operations: [previewOperation, catalogOperation] } },
+    { method: "GET", url: catalogUrl, result: { version: "catalog-v1", pages: [{ siteId, pageId, locale, title: "Home", path: "/home", kind: "page", visibility: "public", published: true }] } },
+    { method: "POST", url: intentUrl, body: {}, result: { url: previewUrl, expiresAt } }
+  ]);
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { url: previewUrl, expiresAt, publishedUrl: `${origin}/home` });
 });
 
 test("niho-edit outline uses pages.inspect when the host exposes it", async () => {
@@ -666,4 +687,24 @@ test("niho-edit preserves localization CAS conflict values and reads release tok
   });
   assert.equal(invalid.exitCode, 1);
   assert.equal(JSON.parse(invalid.stdout).result.error, "invalid_json_input");
+});
+
+test("niho-edit selects managed CMS v2 with Access authentication and an explicit retry key", async () => {
+  const discovery = { contractVersion: 2, siteId, schemaRevision: "initial", operations: ["cms.items.save"] };
+  const capabilities = await run(["--studio", "cms-discover"], {
+    studio: true, expectedMethod: "GET", expectedUrl: `${origin}/api/edit/v2/sites/${siteId}/capabilities`, result: discovery
+  });
+  assert.equal(capabilities.exitCode, 0);
+  assert.deepEqual(JSON.parse(capabilities.stdout).result, discovery);
+  const payload = { siteId, collectionId: "posts", itemId: "item_example", locale: "ja", contractVersion: 2,
+    expectedSchemaRevision: "initial", expectedRevision: "rev_example", values: { title: "Fixture" } };
+  const operationKey = crypto.randomUUID(), accessClientId = `${"e".repeat(32)}.access`, accessClientSecret = "fixture-service";
+  const updated = await run(["--studio", "cms-v2", "cms.items.save", "--json", "-", "--operation-id", operationKey], {
+    studio: true, operationKey, token: null, accessClientId, accessClientSecret,
+    env: { CF_ACCESS_CLIENT_ID: accessClientId, CF_ACCESS_CLIENT_SECRET: accessClientSecret },
+    expectedMethod: "POST", expectedUrl: `${origin}/api/edit/v2/sites/${siteId}/operations/cms.items.save`,
+    expectedBody: payload, stdin: JSON.stringify(payload), result: { status: "saved" }
+  });
+  assert.equal(updated.exitCode, 0);
+  assert.deepEqual(JSON.parse(updated.stdout).result, { status: "saved" });
 });

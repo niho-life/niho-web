@@ -1,8 +1,9 @@
 import { isIsoTimestamp, parseCollectionItem, type CollectionItem, type CollectionItemStatus, type CollectionValue } from "./collection-model.js";
 import { validatePagePath } from "./pages.js";
 import { fail, keys, localeCode, record } from "./validation-utils.js";
+import { CMS_ROUTE_RESERVATION_LIMIT, parseCmsRoutePath, parseCmsRouteRevision, parseCmsRouteTable, planCmsRouteTable, type CmsRouteTable } from "./cms-v2-routes.js";
 import {
-  cmsArray, cmsCollection, cmsId, cmsItemKey, cmsLegacyCollections, cmsLegacyValues, cmsPath, cmsReferenceProblems, cmsValueProblems,
+  cmsArray, cmsCollection, cmsId, cmsItemKey, cmsLegacyCollections, cmsLegacyValues, cmsReferenceProblems, cmsValueProblems,
   parseCmsItemRevision, parseCmsSchema, uniqueCmsKeys, type CmsItemKey, type CmsItemRevision, type CmsProblem, type CmsSchema
 } from "./cms-v2-schema.js";
 
@@ -12,6 +13,7 @@ export type CmsReleaseInput = {
   readonly siteId: string;
   readonly locale: string;
   readonly schemaRevision: string;
+  readonly routeTableRevision: string;
   readonly expectedReleaseId: string | null;
   readonly items: readonly CmsReleasePin[];
   readonly redirects: readonly CmsRedirect[];
@@ -22,15 +24,31 @@ export type CmsReleaseSnapshot = {
   readonly releaseId: string;
   readonly siteId: string;
   readonly locale: string;
+  /** Route registry used to validate this release. */
+  readonly routeTableRevision: string;
+  /** Complete route registry that will be published with this release. */
+  readonly routeTable: CmsRouteTable;
   readonly schema: CmsSchema;
   readonly items: readonly CmsReleaseEntry[];
   readonly redirects: readonly CmsRedirect[];
 };
+
+function cmsRouteRevision(releaseId: string): string {
+  const prefixed = `route_${releaseId}`;
+  if (prefixed.length <= 128) return prefixed;
+  let hash = 0xcbf29ce484222325n;
+  for (const character of releaseId) {
+    hash ^= BigInt(character.charCodeAt(0));
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+  }
+  return `route_${hash.toString(36)}`;
+}
 export type CmsReleaseImpact = (snapshot: CmsReleaseSnapshot) => readonly CmsProblem[];
 export type CmsReleaseContext = {
   readonly schema: CmsSchema;
   readonly locale: string;
   readonly currentReleaseId: string | null;
+  readonly routeTable: CmsRouteTable;
   readonly readRevision: (item: CmsReleasePin) => unknown;
   readonly isRemoved: (item: CmsItemKey) => boolean;
   /** Host checks fixed routes, templates, external resources, and the designated public representation of rich text. */
@@ -57,33 +75,21 @@ function parsePin(input: unknown, path: string): CmsReleasePin {
 }
 export function parseCmsReleaseInput(input: unknown): CmsReleaseInput {
   const value = record(input, "release");
-  keys(value, ["siteId", "locale", "schemaRevision", "expectedReleaseId", "items", "redirects"], "release");
+  keys(value, ["siteId", "locale", "schemaRevision", "routeTableRevision", "expectedReleaseId", "items", "redirects"], "release");
   const items = cmsArray(value.items, "release.items", 25_000).map((entry, i) => parsePin(entry, `release.items[${i}]`));
   uniqueCmsKeys(items.map(cmsItemKey), "release.items");
   const redirects = cmsArray(value.redirects, "release.redirects", 25_000).map((entry, i) => {
     const at = `release.redirects[${i}]`, redirect = record(entry, at);
     keys(redirect, ["from", "to"], at);
-    return { from: cmsPath(redirect.from, `${at}.from`), to: cmsPath(redirect.to, `${at}.to`) };
+    return { from: parseCmsRoutePath(redirect.from, `${at}.from`), to: parseCmsRoutePath(redirect.to, `${at}.to`) };
   });
   uniqueCmsKeys(redirects.map(({ from }) => from), "release.redirects");
   return {
     siteId: cmsId(value.siteId, "release.siteId"), schemaRevision: cmsId(value.schemaRevision, "release.schemaRevision"),
+    routeTableRevision: parseCmsRouteRevision(value.routeTableRevision, "release.routeTableRevision"),
     locale: localeCode(value.locale, "release.locale"), expectedReleaseId: value.expectedReleaseId === null ? null : cmsId(value.expectedReleaseId, "release.expectedReleaseId"),
     items, redirects
   };
-}
-function cmsRouteProblems(entries: readonly CmsReleaseEntry[], redirects: readonly CmsRedirect[]): CmsProblem[] {
-  const paths = new Set<string>(), problems: CmsProblem[] = [];
-  for (const { collectionId, itemId, path } of entries) {
-    if (path === null) continue;
-    if (paths.has(path)) problems.push({ code: "route", message: "同じ公開パスの項目があります。", collectionId, itemId, path });
-    paths.add(path);
-  }
-  for (const { from, to } of redirects) {
-    // Redirects are one hop. Requiring a live target rules out chains and loops.
-    if (paths.has(from) || !paths.has(to)) problems.push({ code: "route", message: "転送元を空け、転送先に公開項目を指定してください。", path: from });
-  }
-  return problems;
 }
 function freezeJson<T>(input: T): T {
   if (input && typeof input === "object" && !Object.isFrozen(input)) {
@@ -98,7 +104,9 @@ export function planCmsRelease(input: unknown, releaseIdInput: string, context: 
   const selection = parseCmsReleaseInput(input), schema = parseCmsSchema(context.schema);
   const releaseId = cmsId(releaseIdInput, "release.releaseId");
   if (selection.siteId !== schema.siteId || selection.locale !== context.locale) fail("release", "CMS site or locale mismatch");
+  const currentRoutes = parseCmsRouteTable(context.routeTable, schema.siteId, selection.locale);
   if (selection.schemaRevision !== schema.schemaRevision || selection.expectedReleaseId !== context.currentReleaseId) return { status: "conflict" };
+  if (selection.routeTableRevision !== currentRoutes.revision) return { status: "conflict" };
   if (releaseId === selection.expectedReleaseId) fail("release.releaseId", "release ID cannot be reused");
   const problems: CmsProblem[] = [], items: CmsReleaseEntry[] = [];
   for (const pin of selection.items) {
@@ -134,9 +142,33 @@ export function planCmsRelease(input: unknown, releaseIdInput: string, context: 
     problems.push(...cmsValueProblems(collection, values).map((problem) => ({ ...problem, ...target })));
     items.push({ ...item, values, path });
   }
+  const routes = items.filter((item) => item.path !== null).map(({ collectionId, itemId, path }) => ({ collectionId, itemId, path: path! }));
+  const routeByItemKey = new Map(routes.map((route) => [cmsItemKey(route), route]));
+  const explicitRedirectTargets = new Map(selection.redirects.map(({ from, to }) => [from, to]));
+  const generatedRedirects = currentRoutes.reservations.flatMap((reservation) => {
+    if (reservation.kind !== "cms-item") return [];
+    const next = routeByItemKey.get(cmsItemKey(reservation));
+    if (!next || reservation.path === next.path) return [];
+    return [{ from: reservation.path, to: next.path }];
+  }).filter((generated) => explicitRedirectTargets.get(generated.from) !== generated.to);
+  if (generatedRedirects.length + selection.redirects.length > 25_000) {
+    return { status: "invalid", problems: [{ code: "route", message: "公開転送の件数が上限を超えています。" }] };
+  }
+  const retainedReservations = currentRoutes.reservations.filter((reservation) => reservation.kind !== "cms-item"
+    && !(reservation.kind === "redirect" && reservation.owner === "cms"));
+  if (retainedReservations.length + routes.length + generatedRedirects.length + selection.redirects.length > CMS_ROUTE_RESERVATION_LIMIT) {
+    return { status: "invalid", problems: [{ code: "route", message: "CMS ルート表の予約件数が上限を超えています。" }] };
+  }
+  const routePlan = planCmsRouteTable({ current: currentRoutes, siteId: schema.siteId, locale: selection.locale,
+    expectedRevision: selection.routeTableRevision, nextRevision: cmsRouteRevision(releaseId),
+    routes, redirects: [...generatedRedirects, ...selection.redirects] });
+  if ("status" in routePlan) return { status: "conflict" };
+  const redirects = routePlan.table.reservations.flatMap((reservation) => reservation.kind === "redirect" && reservation.owner === "cms"
+    ? [{ from: reservation.path, to: reservation.targetPath }] : []);
   const snapshot = freezeJson<CmsReleaseSnapshot>({ contractVersion: 2, releaseId, siteId: schema.siteId,
-    locale: selection.locale, schema, items, redirects: selection.redirects });
-  problems.push(...cmsReferenceProblems(schema, items), ...cmsRouteProblems(items, selection.redirects), ...(context.impact?.(snapshot) ?? []));
+    locale: selection.locale, routeTableRevision: selection.routeTableRevision, routeTable: routePlan.table,
+    schema, items, redirects });
+  problems.push(...cmsReferenceProblems(schema, items), ...routePlan.problems, ...(context.impact?.(snapshot) ?? []));
   return problems.length ? { status: "invalid", problems } : { status: "ready", proposal: freezeJson({ expectedReleaseId: selection.expectedReleaseId, snapshot }) };
 }
 

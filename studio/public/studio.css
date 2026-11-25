@@ -206,3 +206,13 @@
 @media(max-width:900px){.studio-content-project>.nw-project-dashboard .pv-project-bar{position:relative}.studio-site-cms{--niho-sticky-top:0px}}
 
 .studio-editor-performance{position:fixed;right:12px;bottom:12px;z-index:1000;max-width:min(360px,calc(100vw - 24px));color:var(--nw-text);font-size:12px}.studio-editor-performance details{border:1px solid var(--nw-border-strong);border-radius:var(--nw-radius);background:var(--nw-bg)}.studio-editor-performance summary{padding:7px 10px;cursor:pointer;font-weight:600}.studio-editor-performance dl{display:grid;gap:4px;margin:0;padding:0 10px 9px}.studio-editor-performance dl>div{display:flex;justify-content:space-between;gap:20px}.studio-editor-performance dt{color:var(--nw-text-sub)}.studio-editor-performance dd{margin:0;font-variant-numeric:tabular-nums}
+.studio-native-cms { display: grid; gap: 1rem; padding: 1rem; }
+.studio-native-cms-columns { display: grid; grid-template-columns: minmax(12rem, 1fr) minmax(0, 2fr); gap: 1.25rem; }
+.studio-native-cms form, .studio-native-cms-item { display: grid; gap: .75rem; align-content: start; }
+.studio-native-cms form button { justify-self: start; }
+.studio-native-cms form label { display: grid; gap: .25rem; }
+.studio-native-cms details form { max-width: 25rem; margin-block: .75rem; }
+.studio-native-cms ul { display: grid; gap: .5rem; padding-inline-start: 1.25rem; }
+.studio-native-cms textarea { resize: vertical; }
+.studio-native-cms-item p { white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 720px) { .studio-native-cms-columns { grid-template-columns: minmax(0, 1fr); } }

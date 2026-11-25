@@ -1,4 +1,4 @@
-import type { ComponentLibrary, PageDocument } from "./types.js";
+import type { ComponentLibrary, PageDocument, SitePresentation } from "./types.js";
 import { parsePageDocument } from "./document.js";
 import { normalizePageChange, validatePageChangePlan, validateReleasePlan } from "./editor-model.js";
 import type { EditorBreakpointSettings, EditorBreakpointSettingsSaveResult, EditorBreakpointSettingsSnapshot, EditorPage, EditorPageChange, EditorPageChangePlan, EditorReleasePlan, EditorReleaseRequest, EditorSite } from "./editor-types.js";
@@ -23,7 +23,10 @@ import {
   type EditingLocalizationHostAdapter, type EditingLocalizationInput, type EditingLocalizationOperation, type EditingLocalizationOperationId,
 } from "./editing-localization.js";
 import { jsonBytes } from "./localization-workspace-model.js";
+import { EDITING_EDITOR_SNAPSHOT_ACCEPT, parseEditingPageEditorState, parseEditingPagePresentation, type EditingPageEditorState } from "./editing-page-snapshot.js";
+import { ENGLISH_PUBLICATION_STATES } from "./english-publication.js";
 import { inspectPageDocument, PAGE_INSPECT_LIMITS, PageInspectError, parsePageInspectQuery, type PageInspectQuery } from "./page-inspect.js";
+import { PAGE_PREVIEW_INTENT_HEADERS, parsePagePreviewIntent, type EditingPagePreviewIntent } from "./editing-page-preview.js";
 
 import {
   PAGE_OPERATION_ID, PAGE_OPERATION_LIMIT, PAGE_OPERATION_VERSIONS, editingOperationProblem, pageApplyInputSchema,
@@ -34,14 +37,16 @@ import type { EditorOperationBlocks } from "./editor-model.js";
 import type { EditorLock } from "./editor-types.js";
 
 export type { EditingPageApplied, EditingPageApplyInput, EditingPageApplyResult, EditingPageOperationStore, PageOperationJournal,
-  PageOperationTransaction, PageOperationVersions } from "./editing-page-operations.js";
+  EditingPageApplyConflict, PageOperationTransaction, PageOperationUnmetPrecondition, PageOperationVersions } from "./editing-page-operations.js";
 export { pageOperationWire } from "./editing-page-operations.js";
+export { PAGE_PREVIEW_INTENT_HEADERS, type EditingPagePreviewIntent } from "./editing-page-preview.js";
 
 export type {
   EditingLocalizationHostAdapter, EditingLocalizationInput, EditingLocalizationOperationId, EditingLocalizationReleaseApplyInput,
   EditingLocalizationReleasePrepareInput, EditingLocalizationResult,
 } from "./editing-localization.js";
 export type { EditingLocalizationCapability } from "./editing-localization-schemas.js";
+export { EDITING_EDITOR_SNAPSHOT_ACCEPT, type EditingPageEditorState } from "./editing-page-snapshot.js";
 
 /** Stable errors returned by the host-neutral page editing wire contract. */
 export const EDITING_API_ERRORS = Object.freeze([
@@ -68,6 +73,10 @@ export type EditingAuthorizationScope = { readonly siteId: string; readonly page
 export type EditingPageSnapshot = PageOperationVersions & {
   readonly document: PageDocument;
   readonly version: string;
+  /** Must belong to the same host snapshot as document and version. */
+  readonly presentation?: SitePresentation;
+  /** Presence declares that the snapshot includes the editor state supported by the host. */
+  readonly editorState?: EditingPageEditorState;
 };
 export type EditingPageSaveResult = { readonly status: "saved"; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" };
 export type EditingPageReleasePrepareResult = { readonly status: "prepared"; readonly plan: EditorReleasePlan } | { readonly status: "conflict" };
@@ -161,6 +170,28 @@ const documentSchema: JsonSchema = Object.freeze({
   })
 });
 const versionSchema: JsonSchema = Object.freeze({ type: "string", minLength: 1 });
+const presentationSchema: JsonSchema = Object.freeze({
+  type: "object", required: Object.freeze(["schemaVersion", "siteId", "locale", "version", "reset", "tokens", "fonts", "shared"]), additionalProperties: false,
+  properties: Object.freeze({
+    schemaVersion: Object.freeze({ const: 1 }), siteId: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }),
+    version: versionSchema, reset: Object.freeze({ const: "neutral-v1" }), tokens: Object.freeze({ type: "object" }), layout: Object.freeze({ type: "object" }),
+    fonts: Object.freeze({ type: "array", items: Object.freeze({ type: "object" }) }),
+    shared: Object.freeze({ type: "object", required: Object.freeze(["header", "footer"]), additionalProperties: false, properties: Object.freeze({ header: documentSchema, footer: documentSchema }) }),
+    overlays: Object.freeze({ type: "array", items: Object.freeze({ type: "object" }) }), hostViews: Object.freeze({ type: "array", items: Object.freeze({ type: "object" }) }),
+    links: Object.freeze({ type: "object" })
+  })
+});
+const editorStateSchema: JsonSchema = Object.freeze({
+  type: "object", additionalProperties: false, properties: Object.freeze({
+    readOnly: Object.freeze({ type: "object", required: Object.freeze(["reason"]), additionalProperties: false,
+      properties: Object.freeze({ reason: Object.freeze({ type: "string" }), editUrl: Object.freeze({ type: "string" }), editLabel: Object.freeze({ type: "string" }) }) }),
+    englishPublication: Object.freeze({ type: "object", required: Object.freeze(["state", "retryable"]), additionalProperties: false,
+      properties: Object.freeze({ state: Object.freeze({ enum: ENGLISH_PUBLICATION_STATES }), retryable: Object.freeze({ type: "boolean" }), updatedAt: Object.freeze({ type: "string" }) }) }),
+    releases: Object.freeze({ type: "array", items: Object.freeze({ type: "object", required: Object.freeze(["revision", "label"]), additionalProperties: false,
+      properties: Object.freeze({ revision: Object.freeze({ type: "integer", minimum: 1 }), label: Object.freeze({ type: "string" }) }) }) })
+  })
+});
+
 const inspectInputSchema: JsonSchema = Object.freeze({ oneOf: Object.freeze([
   Object.freeze({ type: "object", required: Object.freeze(["siteId", "pageId", "locale", "view"]), additionalProperties: false, properties: Object.freeze({
     siteId: Object.freeze({ type: "string" }), pageId: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }),
@@ -307,7 +338,8 @@ export const EDITING_OPERATIONS = Object.freeze([
     inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId", "pageId", "locale"]), additionalProperties: false,
       properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), pageId: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }) }) }),
     resultSchema: Object.freeze({ type: "object", required: Object.freeze(["document", "version"]), additionalProperties: false,
-      properties: Object.freeze({ document: documentSchema, version: versionSchema, componentsVersion: versionSchema, presentationVersion: versionSchema, stylesVersion: versionSchema }) }),
+      properties: Object.freeze({ document: documentSchema, version: versionSchema, componentsVersion: versionSchema, presentationVersion: versionSchema,
+        stylesVersion: versionSchema, presentation: presentationSchema, editorState: editorStateSchema }) }),
     errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found"] as const)
   }),
   Object.freeze({
@@ -323,6 +355,14 @@ export const EDITING_OPERATIONS = Object.freeze([
     inputSchema: pageApplyInputSchema, resultSchema: pageApplyResultSchema(documentSchema),
     errors: Object.freeze(["authentication_required", "duplicate_operation", "forbidden", "host_contract_violation", "host_failure",
       "invalid_request", "method_not_allowed", "not_found", "validation_failed", "version_conflict"] as const)
+  }),
+  Object.freeze({
+    id: "pages.preview-intent", capability: "pages.read", method: "POST", path: "/sites/{siteId}/operations/pages.preview-intent/{pageId}?locale={locale}",
+    inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId", "pageId", "locale"]), additionalProperties: false,
+      properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), pageId: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }) }) }),
+    resultSchema: Object.freeze({ type: "object", required: Object.freeze(["url", "expiresAt"]), additionalProperties: false,
+      properties: Object.freeze({ url: Object.freeze({ type: "string", maxLength: 2048 }), expiresAt: Object.freeze({ type: "string", minLength: 24, maxLength: 24 }) }) }),
+    errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found"] as const)
   }),
   Object.freeze({
     id: "pages.release-plan", capability: "pages.publish", method: "POST", path: "/sites/{siteId}/operations/pages.release-plan/{pageId}?locale={locale}",
@@ -493,6 +533,11 @@ export type PageEditingHostAdapter = {
   /** Trusted host schemas needed for custom blocks, component instances and site-wide style tokens. */
   validationContext?(actor: EditingActor, target: EditingPageTarget): Promise<PageEditingValidationContext>;
   readPage(actor: EditingActor, target: EditingPageTarget): Promise<EditingPageSnapshot | null>;
+  /**
+   * ホストは不透明な許可をサーバーに保持し、認証主体、対象、文書版、styles/components/presentation/翻訳の版、期限、利用回数に結び付ける。
+   * URLには認証情報を置かず、プレビュー本体の取得時も許可を検証する。HTMLには PAGE_PREVIEW_INTENT_HEADERS を付ける。
+   */
+  createPagePreviewIntent?(actor: EditingActor, target: EditingPageTarget): Promise<EditingPagePreviewIntent | null>;
   savePage(actor: EditingActor, target: EditingPageTarget, expectedVersion: string, document: PageDocument): Promise<EditingPageSaveResult>;
   /** Optional atomic operation journal and document writer. Its versioned read includes the trusted validation context. */
   pageOperations?: EditingPageOperationStore;
@@ -538,9 +583,9 @@ export type PageEditingHostAdapter = {
   restoreAsset?(actor: EditingActor, request: { readonly siteId: string; readonly reference: AssetReference; readonly expectedVersion: string }): Promise<unknown>;
 };
 
-function response(value: unknown, status = 200): Response {
+function response(value: unknown, status = 200, headers?: Readonly<Record<string, string>>): Response {
   return new Response(JSON.stringify(value), { status, headers: {
-    "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8", "X-Content-Type-Options": "nosniff"
+    "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8", "X-Content-Type-Options": "nosniff", ...headers
   } });
 }
 function fail(error: EditingApiErrorCode, status: number): Response { return response({ error }, status); }
@@ -589,6 +634,7 @@ function supportsOperation(adapter: PageEditingHostAdapter, operation: EditingOp
   const localization = editingLocalizationOperation(operation.id);
   if (localization) return typeof adapter.localization?.[localization.id] === "function";
   if (operation.id === "pages.apply") return typeof adapter.pageOperations?.transact === "function";
+  if (operation.id === "pages.preview-intent") return typeof adapter.createPagePreviewIntent === "function";
   if (operation.id === "pages.release-plan" || operation.id === "pages.release") return typeof adapter.releaseSite === "function" && typeof adapter.preparePageRelease === "function" && typeof adapter.publishPage === "function";
   if (operation.id === "pages.release-set-plan" || operation.id === "pages.release-set") return typeof adapter.releaseSite === "function" && typeof adapter.preparePageReleaseSet === "function" && typeof adapter.publishPageReleaseSet === "function";
   if (operation.id === "pages.release-set-status") return typeof adapter.readPageReleaseSetStatus === "function";
@@ -837,7 +883,20 @@ async function handlePageApply(store: EditingPageOperationStore, request: Reques
   switch (result.status) {
     case "not_found": return fail("not_found", 404);
     case "host_contract_violation": return fail("host_contract_violation", 502);
-    case "conflict": return fail("version_conflict", 409);
+    case "conflict": {
+      if (result.unmetPreconditions === undefined) return fail("version_conflict", 409);
+      const allowed = ["rebase_supported", "preconditions", "node_exists", "parent_id", "old_value", "child_path"];
+      if (!Array.isArray(result.unmetPreconditions) || !result.unmetPreconditions.length || result.unmetPreconditions.length > operations.length * 2) return fail("host_contract_violation", 502);
+      const seen = new Set<string>();
+      for (const item of result.unmetPreconditions) {
+        if (!item || typeof item !== "object" || Array.isArray(item) || !exactKeys(item as Record<string, unknown>, ["index", "condition"])
+          || !Number.isSafeInteger(item.index) || item.index < 0 || item.index >= operations.length || !allowed.includes(item.condition)) return fail("host_contract_violation", 502);
+        const key = `${item.index}:${item.condition}`;
+        if (seen.has(key)) return fail("host_contract_violation", 502);
+        seen.add(key);
+      }
+      return response({ error: "version_conflict", unmetPreconditions: result.unmetPreconditions }, 409);
+    }
     case "duplicate_operation": return fail("duplicate_operation", 409);
     case "validation_failed":
       if (!Number.isSafeInteger(result.index) || result.index < 0 || result.index >= operations.length || typeof result.reason !== "string") return fail("host_contract_violation", 502);
@@ -1487,7 +1546,7 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       if (!matches) return fail("host_contract_violation", 502);
       return response({ status: "applied", operationId: applied.operationId, page });
     }
-    const match = new RegExp(`^${basePath}/sites/([^/]+)/operations/(pages\\.(?:read|inspect|save|apply|release-plan|release))/([^/]+)$`, "u").exec(url.pathname);
+    const match = new RegExp(`^${basePath}/sites/([^/]+)/operations/(pages\\.(?:read|inspect|save|apply|preview-intent|release-plan|release))/([^/]+)$`, "u").exec(url.pathname);
     if (!match) return fail("not_found", 404);
     let siteId: string, pageId: string, locale: string;
     try {
@@ -1498,7 +1557,7 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
     const target = pageTarget(siteId, pageId, locale);
     if (!target) return fail("invalid_request", 400);
     const operation = EDITING_OPERATIONS.find((item) => item.id === match[2]);
-    if (!operation || operation.id === "pages.apply" && !supportsOperation(adapter, operation)) return fail("not_found", 404);
+    if (!operation || (operation.id === "pages.apply" || operation.id === "pages.preview-intent") && !supportsOperation(adapter, operation)) return fail("not_found", 404);
     let inspectQuery: PageInspectQuery | null = null;
     if (operation.id === "pages.inspect") {
       const input: Record<string, unknown> = {};
@@ -1522,6 +1581,18 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
     catch { return fail("host_failure", 503); }
     if (!allowed) return fail("forbidden", 403);
     if (operation.id === "pages.apply") return handlePageApply(adapter.pageOperations!, request, actor, target);
+    if (operation.id === "pages.preview-intent") {
+      let body: Record<string, unknown> | null;
+      try { body = await readBody(request, 128); } catch { return fail("invalid_request", 400); }
+      if (!body || Object.keys(body).length !== 0) return fail("invalid_request", 400);
+      let raw: EditingPagePreviewIntent | null;
+      try { raw = await adapter.createPagePreviewIntent!(actor, target); }
+      catch { return fail("host_failure", 503); }
+      if (raw === null) return fail("not_found", 404);
+      const intent = parsePagePreviewIntent(raw, url.origin);
+      if (!intent) return fail("host_contract_violation", 502);
+      return response(intent, 200, PAGE_PREVIEW_INTENT_HEADERS);
+    }
     if (operation.id === "pages.read" || operation.id === "pages.inspect") {
       if (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length"))) return fail("invalid_request", 400);
       let snapshot: EditingPageSnapshot | null;
@@ -1556,7 +1627,15 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
         if (new TextEncoder().encode(JSON.stringify(result)).byteLength > PAGE_INSPECT_LIMITS.maxResultBytes + 1024) return fail("result_too_large", 413);
         return response(result);
       }
-      return response({ document, version: snapshot.version, ...dependencies });
+      let editorSnapshot: Pick<EditingPageSnapshot, "editorState" | "presentation"> = {};
+      if (operation.id === "pages.read" && request.headers.get("Accept") === EDITING_EDITOR_SNAPSHOT_ACCEPT && (snapshot.editorState !== undefined || snapshot.presentation !== undefined)) {
+        try {
+          const editorState = snapshot.editorState === undefined ? undefined : parseEditingPageEditorState(snapshot.editorState);
+          const presentation = parseEditingPagePresentation(snapshot.presentation, snapshot.presentationVersion, document, context.blocks);
+          editorSnapshot = { ...(editorState ? { editorState } : {}), ...(presentation ? { presentation } : {}) };
+        } catch { return fail("host_contract_violation", 502); }
+      }
+      return response({ document, version: snapshot.version, ...dependencies, ...editorSnapshot });
     }
     if (operation.id === "pages.release-plan") {
       let body: Record<string, unknown> | null;
