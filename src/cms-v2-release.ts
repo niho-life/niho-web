@@ -1,6 +1,7 @@
 import { isIsoTimestamp, parseCollectionItem, type CollectionItem, type CollectionItemStatus, type CollectionValue } from "./collection-model.js";
 import { validatePagePath } from "./pages.js";
 import { fail, keys, localeCode, record } from "./validation-utils.js";
+import { parseCmsRouteTable, planCmsRouteTable, type CmsRouteTable } from "./cms-v2-routes.js";
 import {
   cmsArray, cmsCollection, cmsId, cmsItemKey, cmsLegacyCollections, cmsLegacyValues, cmsPath, cmsReferenceProblems, cmsValueProblems,
   parseCmsItemRevision, parseCmsSchema, uniqueCmsKeys, type CmsItemKey, type CmsItemRevision, type CmsProblem, type CmsSchema
@@ -12,6 +13,7 @@ export type CmsReleaseInput = {
   readonly siteId: string;
   readonly locale: string;
   readonly schemaRevision: string;
+  readonly routeTableRevision: string;
   readonly expectedReleaseId: string | null;
   readonly items: readonly CmsReleasePin[];
   readonly redirects: readonly CmsRedirect[];
@@ -22,6 +24,10 @@ export type CmsReleaseSnapshot = {
   readonly releaseId: string;
   readonly siteId: string;
   readonly locale: string;
+  /** Route registry used to validate this release. */
+  readonly routeTableRevision: string;
+  /** Complete route registry that will be published with this release. */
+  readonly routeTable: CmsRouteTable;
   readonly schema: CmsSchema;
   readonly items: readonly CmsReleaseEntry[];
   readonly redirects: readonly CmsRedirect[];
@@ -31,6 +37,7 @@ export type CmsReleaseContext = {
   readonly schema: CmsSchema;
   readonly locale: string;
   readonly currentReleaseId: string | null;
+  readonly routeTable: CmsRouteTable;
   readonly readRevision: (item: CmsReleasePin) => unknown;
   readonly isRemoved: (item: CmsItemKey) => boolean;
   /** Host checks fixed routes, templates, external resources, and the designated public representation of rich text. */
@@ -57,7 +64,7 @@ function parsePin(input: unknown, path: string): CmsReleasePin {
 }
 export function parseCmsReleaseInput(input: unknown): CmsReleaseInput {
   const value = record(input, "release");
-  keys(value, ["siteId", "locale", "schemaRevision", "expectedReleaseId", "items", "redirects"], "release");
+  keys(value, ["siteId", "locale", "schemaRevision", "routeTableRevision", "expectedReleaseId", "items", "redirects"], "release");
   const items = cmsArray(value.items, "release.items", 25_000).map((entry, i) => parsePin(entry, `release.items[${i}]`));
   uniqueCmsKeys(items.map(cmsItemKey), "release.items");
   const redirects = cmsArray(value.redirects, "release.redirects", 25_000).map((entry, i) => {
@@ -68,6 +75,7 @@ export function parseCmsReleaseInput(input: unknown): CmsReleaseInput {
   uniqueCmsKeys(redirects.map(({ from }) => from), "release.redirects");
   return {
     siteId: cmsId(value.siteId, "release.siteId"), schemaRevision: cmsId(value.schemaRevision, "release.schemaRevision"),
+    routeTableRevision: cmsId(value.routeTableRevision, "release.routeTableRevision"),
     locale: localeCode(value.locale, "release.locale"), expectedReleaseId: value.expectedReleaseId === null ? null : cmsId(value.expectedReleaseId, "release.expectedReleaseId"),
     items, redirects
   };
@@ -98,7 +106,9 @@ export function planCmsRelease(input: unknown, releaseIdInput: string, context: 
   const selection = parseCmsReleaseInput(input), schema = parseCmsSchema(context.schema);
   const releaseId = cmsId(releaseIdInput, "release.releaseId");
   if (selection.siteId !== schema.siteId || selection.locale !== context.locale) fail("release", "CMS site or locale mismatch");
+  const currentRoutes = parseCmsRouteTable(context.routeTable, schema.siteId, selection.locale);
   if (selection.schemaRevision !== schema.schemaRevision || selection.expectedReleaseId !== context.currentReleaseId) return { status: "conflict" };
+  if (selection.routeTableRevision !== currentRoutes.revision) return { status: "conflict" };
   if (releaseId === selection.expectedReleaseId) fail("release.releaseId", "release ID cannot be reused");
   const problems: CmsProblem[] = [], items: CmsReleaseEntry[] = [];
   for (const pin of selection.items) {
@@ -134,9 +144,23 @@ export function planCmsRelease(input: unknown, releaseIdInput: string, context: 
     problems.push(...cmsValueProblems(collection, values).map((problem) => ({ ...problem, ...target })));
     items.push({ ...item, values, path });
   }
+  const routes = items.filter((item) => item.path !== null).map(({ collectionId, itemId, path }) => ({ collectionId, itemId, path: path! }));
+  const generatedRedirects = currentRoutes.reservations.flatMap((reservation) => {
+    if (reservation.kind !== "cms-item") return [];
+    const next = routes.find((route) => route.collectionId === reservation.collectionId && route.itemId === reservation.itemId);
+    if (!next || reservation.path === next.path) return [];
+    return [{ from: reservation.path, to: next.path }];
+  }).filter((generated) => !selection.redirects.some((redirect) => redirect.from === generated.from && redirect.to === generated.to));
+  const routePlan = planCmsRouteTable({ current: currentRoutes, siteId: schema.siteId, locale: selection.locale,
+    expectedRevision: selection.routeTableRevision, nextRevision: `route_${releaseId}`,
+    routes, redirects: [...generatedRedirects, ...selection.redirects] });
+  if ("status" in routePlan) return { status: "conflict" };
+  const redirects = routePlan.table.reservations.flatMap((reservation) => reservation.kind === "redirect" && reservation.owner === "cms"
+    ? [{ from: reservation.path, to: reservation.targetPath }] : []);
   const snapshot = freezeJson<CmsReleaseSnapshot>({ contractVersion: 2, releaseId, siteId: schema.siteId,
-    locale: selection.locale, schema, items, redirects: selection.redirects });
-  problems.push(...cmsReferenceProblems(schema, items), ...cmsRouteProblems(items, selection.redirects), ...(context.impact?.(snapshot) ?? []));
+    locale: selection.locale, routeTableRevision: selection.routeTableRevision, routeTable: routePlan.table,
+    schema, items, redirects });
+  problems.push(...cmsReferenceProblems(schema, items), ...cmsRouteProblems(items, redirects), ...routePlan.problems, ...(context.impact?.(snapshot) ?? []));
   return problems.length ? { status: "invalid", problems } : { status: "ready", proposal: freezeJson({ expectedReleaseId: selection.expectedReleaseId, snapshot }) };
 }
 

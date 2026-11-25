@@ -6,7 +6,8 @@ import {
   cancelCmsSchedule, checkCmsReleaseApply, checkCmsReplay, checkCmsScheduleCreate, checkCmsSchemaApply, checkCmsWriteVersion,
   cmsItemKey, cmsLegacyCollections, cmsOperationStatus, cmsRoleCapabilities, cmsWorkspaceItem,
   discoverCmsContract, dueCmsSchedule, parseCmsDiscovery, parseCmsDraftWrite, parseCmsItemRevision, parseCmsSchema,
-  parseCmsSchemaPlanInput, planCmsMigration, planCmsRelease, planCmsSchedule, removeCmsItem, restoreCmsItem, revalidateCmsRelease
+  parseCmsRouteTable, parseCmsSchemaPlanInput, planCmsMigrationWithRouteTables, planCmsRelease, planCmsRouteTable,
+  planCmsSchedule, removeCmsItem, restoreCmsItem, revalidateCmsRelease
 } from "@niho/web/cms-v2";
 import { parseCollectionSchemaResult } from "@niho/web/collection-model";
 import { postsDefinition, tagsDefinition } from "./collection-fixtures.mjs";
@@ -31,6 +32,10 @@ class MemoryHost {
   receipts = new Map();
   snapshots = new Map();
   schedules = new Map();
+  routeTables = [
+    { siteId, locale, revision: "routes-ja-1", reservations: [] },
+    { siteId, locale: "en", revision: "routes-en-1", reservations: [] },
+  ];
   current = null;
   routeBlocked = false;
   sequence = 0;
@@ -69,13 +74,16 @@ class MemoryHost {
   migrationDrafts() { return [...this.drafts.values()].map((item) => ({ item, tombstoned: this.state.get(cmsItemKey(item)).tombstone !== null })); }
   draftList() { return [...this.drafts.values()].filter((item) => !this.state.get(cmsItemKey(item)).tombstone); }
   planSchema(next, replacements = [], impact) {
-    const request = parseCmsSchemaPlanInput({ siteId, expectedSchemaRevision: this.schema.schemaRevision, nextSchema: next, replacements }, siteId);
-    const migration = planCmsMigration(this.schema, request.nextSchema, this.migrationDrafts(), request.replacements, impact);
+    const routeTableVersions = this.routeTables.map(({ locale, revision }) => ({ locale, revision }));
+    const request = parseCmsSchemaPlanInput({ siteId, expectedSchemaRevision: this.schema.schemaRevision, routeTableVersions, nextSchema: next, replacements }, siteId);
+    const migration = planCmsMigrationWithRouteTables({ before: this.schema, next: request.nextSchema, items: this.migrationDrafts(),
+      replacements: request.replacements, routeTables: this.routeTables, expectedRouteTableVersions: request.routeTableVersions, impact });
+    assert.ok(migration);
     return { migration, confirmation: this.confirm(editor, "cms.schema.apply", migration) };
   }
   applySchema(scope, confirmation, replacements = [], impact) {
     if (!cmsRoleCapabilities(scope.actorId === owner.actorId ? "owner" : "editor").includes("cms.schema.apply")) return { status: "forbidden" };
-    const checked = checkCmsSchemaApply(scope, this.input(confirmation), confirmation, now, this.schema, this.migrationDrafts(), replacements, impact);
+    const checked = checkCmsSchemaApply(scope, this.input(confirmation), confirmation, now, this.schema, this.migrationDrafts(), this.routeTables, replacements, impact);
     if (checked.status !== "allowed") return checked;
     // Draft and schema switches are committed together. Previous revisions remain addressable.
     this.schema = checked.candidate.schema;
@@ -87,13 +95,15 @@ class MemoryHost {
     return { status: "applied" };
   }
   context() {
-    return { schema: this.schema, locale, currentReleaseId: this.current,
+    return { schema: this.schema, locale, currentReleaseId: this.current, routeTable: this.routeTables.find((table) => table.locale === locale),
       isRemoved: (item) => this.state.get(cmsItemKey(item))?.tombstone !== null,
       readRevision: ({ revision }) => this.revisions.get(revision),
       impact: () => this.routeBlocked ? [{ code: "route", path: "/posts/coast", message: "固定ページとの重複" }] : [] };
   }
   planRelease(items = this.draftList().map(pin), redirects = [], options = {}) {
-    return planCmsRelease({ siteId, locale, schemaRevision: this.schema.schemaRevision, expectedReleaseId: this.current, items, redirects, ...options }, this.newId(), this.context());
+    const context = this.context();
+    return planCmsRelease({ siteId, locale, schemaRevision: this.schema.schemaRevision, routeTableRevision: context.routeTable.revision,
+      expectedReleaseId: this.current, items, redirects, ...options }, this.newId(), context);
   }
   publish(scope, confirmation, input = this.input(confirmation)) {
     const receiptKey = `${scope.siteId}/${scope.actorId}/${input.operationId}`;
@@ -110,6 +120,7 @@ class MemoryHost {
   commit(snapshot) {
     const selected = new Map(snapshot.items.map((item) => [cmsItemKey(item), item.revision]));
     this.current = snapshot.releaseId;
+    this.routeTables = this.routeTables.map((table) => table.locale === snapshot.locale ? snapshot.routeTable : table);
     this.snapshots.set(snapshot.releaseId, snapshot);
     for (const [key, value] of this.state) {
       this.state.set(key, { ...value, publishedRevision: selected.get(key) ?? null, publishedAt: selected.has(key) ? now : null });
@@ -217,6 +228,24 @@ test("removing a collection keeps its source revisions in the apply conflict che
   assert.equal(host.applySchema(owner, confirmation).status, "conflict");
 });
 
+test("schema migrations pin all locale route-table versions and stop when a route is reserved", () => {
+  const host = new MemoryHost(), next = { ...structuredClone(host.schema), schemaRevision: "schema-2" };
+  const { migration } = host.planSchema(next);
+  const confirmation = host.confirm(owner, "cms.schema.apply", migration);
+  assert.deepEqual(migration.routeTableVersions, [
+    { locale: "en", revision: "routes-en-1" }, { locale: "ja", revision: "routes-ja-1" },
+  ]);
+  host.routeTables[0] = { ...host.routeTables[0], revision: "routes-ja-2" };
+  assert.equal(host.applySchema(owner, confirmation).status, "conflict");
+
+  const blocked = new MemoryHost();
+  blocked.routeTables[0].reservations.push({ kind: "fixed-page", path: "/posts/coast", reservationId: "fixed-coast" });
+  const blockedPlan = blocked.planSchema({ ...structuredClone(blocked.schema), schemaRevision: "schema-2" });
+  assert.ok(blockedPlan.migration.problems.some(({ code, path }) => code === "route" && path === "/posts/coast"));
+  assert.throws(() => parseCmsSchemaPlanInput({ siteId, expectedSchemaRevision: blocked.schema.schemaRevision,
+    nextSchema: blocked.schema, replacements: [] }, siteId), /routeTableVersions/u);
+});
+
 test("release snapshot is immutable, rejects missing published references and keeps exact receipt scope", () => {
   const host = new MemoryHost();
   const bad = host.planRelease([pin(host.drafts.get(cmsItemKey(post)))]);
@@ -241,6 +270,40 @@ test("release snapshot is immutable, rejects missing published references and ke
   host.add(duplicate, { "field-title": "パスが同じ", "field-slug": "coast" });
   assert.equal(host.planRelease().problems[0].code, "route");
   assert.throws(() => host.planRelease(undefined, [], { locale: "en" }), /site or locale mismatch/u);
+});
+
+test("release routes reject fixed, template, and redirect-source conflicts and pin a slug-change redirect", () => {
+  const fixed = new MemoryHost();
+  fixed.routeTables[0].reservations.push({ kind: "fixed-page", path: "/posts/coast", reservationId: "fixed-coast" });
+  assert.ok(fixed.planRelease().problems.some(({ code, path }) => code === "route" && path === "/posts/coast"));
+
+  const template = new MemoryHost();
+  template.routeTables[0].reservations.push({ kind: "template", path: "/posts/[slug]", reservationId: "post-template" });
+  assert.ok(template.planRelease().problems.some(({ code }) => code === "route"));
+
+  const redirectSource = new MemoryHost();
+  redirectSource.routeTables[0].reservations.push({ kind: "fixed-page", path: "/posts/old-coast", reservationId: "old-coast-page" });
+  assert.ok(redirectSource.planRelease(undefined, [{ from: "/posts/old-coast", to: "/posts/coast" }]).problems.some(({ code }) => code === "route"));
+
+  const itemSource = new MemoryHost();
+  publish(itemSource);
+  assert.ok(itemSource.planRelease(undefined, [{ from: "/posts/coast", to: "/posts/new-coast" }]).problems.some(({ code, path }) => code === "route" && path === "/posts/coast"));
+
+  const host = new MemoryHost();
+  publish(host);
+  const updated = host.add(post, { "field-title": "新しい海辺の案内", "field-slug": "new-coast", "field-category": [tag.itemId], "field-summary": "案内" });
+  const plan = host.planRelease([pin(updated), pin(host.drafts.get(cmsItemKey(tag)))]);
+  assert.equal(plan.status, "ready");
+  const table = plan.proposal.snapshot.routeTable;
+  assert.equal(plan.proposal.snapshot.routeTableRevision, "route_v-3");
+  assert.equal(table.revision, "route_v-7");
+  assert.ok(table.reservations.some((entry) => entry.kind === "cms-item" && entry.path === "/posts/new-coast"));
+  assert.ok(table.reservations.some((entry) => entry.kind === "redirect" && entry.owner === "cms"
+    && entry.path === "/posts/coast" && entry.targetPath === "/posts/new-coast"));
+  assert.deepEqual(plan.proposal.snapshot.redirects, [{ from: "/posts/coast", to: "/posts/new-coast" }]);
+  const confirmation = host.confirm(editor, "cms.release.apply", plan.proposal);
+  assert.equal(host.publish(editor, confirmation).status, "recorded");
+  assert.equal(host.routeTables.find((entry) => entry.locale === "ja").revision, table.revision);
 });
 
 test("scheduling pins content, detects new collisions and lets the host retry with a fresh plan", () => {
