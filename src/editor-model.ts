@@ -4,7 +4,7 @@ import { parsePageDocument } from "./document.js";
 import type { EditorBlockRegistry, EditorLock, EditorPage, EditorPageChange, EditorPageChangePlan, EditorPageImpact, EditorReadOnly, EditorReleasePlan, EditorReleaseRequest, EditorSite, EditorTarget } from "./editor-types.js";
 import { findPathConflict, validatePagePath } from "./pages.js";
 import { copyId, nodeAt, siblingsAt, walkNodes, type NodePath } from "./node-tree.js";
-import type { Appear, AssetReference, ComponentLibrary, ComponentNode, DesignToken, ElementNode, HiddenRange, IconName, InstanceNode, NodeStyle, PageDocument, PageMeta, PageNode, PublicPropValue, StateName, StateProperty, StyleDeclarations, StyleProperty, StyleValue, TextStyle } from "./types.js";
+import type { Appear, AssetReference, BlockContract, ComponentLibrary, ComponentNode, DesignToken, ElementNode, HiddenRange, IconName, InstanceNode, NodeStyle, PageDocument, PageMeta, PageNode, PublicPropValue, StateName, StateProperty, StyleDeclarations, StyleProperty, StyleValue, TextStyle } from "./types.js";
 import { stateNames, textStyleProperties } from "./style-values.js";
 import { assertMotionStylePatch, sameMotionValue, type MotionStylePatch } from "./builder.js";
 import { isSafeHttpsOrigin, isSafePublicUrl, keys, line, record } from "./validation-utils.js";
@@ -74,6 +74,7 @@ type StableEditorOperation<T> = T extends { type: "text"; path: NodePath }
 export type EditorOperationById = StableEditorOperation<EditorOperation>;
 /** undefined・空文字・false・空配列はその項目を削除する。 */
 export type MetaOperation = { [K in keyof PageMeta]-?: { type: "meta"; field: K; value: PageMeta[K] | undefined } }[keyof PageMeta];
+export type EditorOperationBlocks = Readonly<Record<string, BlockContract & Pick<EditorBlockRegistry[string], "lockedProps" | "styleProperties">>>;
 export type EditorHistory = { past: PageDocument[]; present: PageDocument; future: PageDocument[] };
 export const fingerprint = (document: PageDocument): string => JSON.stringify(document);
 /** Snapshot の任意 read-only 表示契約を、UI と Project adapter で共有して検証する。 */
@@ -91,7 +92,7 @@ export function parseEditorReadOnly(value: unknown): EditorReadOnly | undefined 
   const editLabel = source.editLabel === undefined ? undefined : line(source.editLabel, "$snapshot.readOnly.editLabel", 80);
   return { reason, ...(editUrl ? { editUrl } : {}), ...(editLabel ? { editLabel } : {}) };
 }
-export function effectiveLocks(document: PageDocument, locks: readonly EditorLock[], blocks: EditorBlockRegistry): EditorLock[] {
+export function effectiveLocks(document: PageDocument, locks: readonly EditorLock[], blocks: EditorOperationBlocks): EditorLock[] {
   return [...locks, ...walkNodes(document).flatMap(({ node }) => node.type === "component"
     ? Object.entries(blocks[node.block]?.lockedProps ?? {}).map(([name, reason]) => ({ nodeId: node.id, fields: [`props.${name}`], reason })) : [])];
 }
@@ -222,7 +223,7 @@ function detachTextStyle(node: ElementNode | ComponentNode | InstanceNode, style
   delete own.textStyle;
 }
 /** 業務ブロックの styleProperties。"textStyle" "states" "appear" "hidden" はそれぞれの操作の許可。 */
-function assertStyleProperties(node: ElementNode | ComponentNode | InstanceNode, properties: readonly string[], blocks: EditorBlockRegistry): void {
+function assertStyleProperties(node: ElementNode | ComponentNode | InstanceNode, properties: readonly string[], blocks: EditorOperationBlocks): void {
   const allowed = node.type === "component" ? blocks[node.block]?.styleProperties : undefined;
   if (allowed && properties.some((property) => !(allowed as readonly string[]).includes(property))) throw new Error("このブロックでは変更できない見た目です。");
 }
@@ -234,7 +235,7 @@ function formFieldPairIndex(siblings: readonly PageNode[], node: PageNode, index
      typeof labelTarget === "string" && ["input", "textarea", "select"].includes(candidate.tag) && candidate.attrs?.id === labelTarget));
 }
 /** components はインスタンスを含む文書の検証に使う、同じサイトの検証済みライブラリ。 */
-export function editDocument(document: PageDocument, operation: EditorOperation, blocks: EditorBlockRegistry = {}, locks: readonly EditorLock[] = [], components?: ComponentLibrary, siteStyles?: SiteStyles): PageDocument {
+export function editDocument(document: PageDocument, operation: EditorOperation, blocks: EditorOperationBlocks = {}, locks: readonly EditorLock[] = [], components?: ComponentLibrary, siteStyles?: SiteStyles): PageDocument {
   const draft = structuredClone(resolvePageStyles(document, siteStyles)), allLocks = effectiveLocks(document, locks, blocks);
   const parentChildren = (path: NodePath): PageNode[] => siblingsAt(draft, path);
   const targetChildren = (id: string | null): PageNode[] => {
@@ -558,7 +559,7 @@ function pathForTextTarget(document: PageDocument, parentId: string | null, chil
   return path;
 }
 /** Stable IDで操作対象を解決し、GUIと同じ検証済み文書操作を適用する。 */
-export function editDocumentById(document: PageDocument, operation: EditorOperationById, blocks: EditorBlockRegistry = {}, locks: readonly EditorLock[] = [], components?: ComponentLibrary, siteStyles?: SiteStyles): PageDocument {
+export function editDocumentById(document: PageDocument, operation: EditorOperationById, blocks: EditorOperationBlocks = {}, locks: readonly EditorLock[] = [], components?: ComponentLibrary, siteStyles?: SiteStyles): PageDocument {
   if (operation.type === "text") {
     if (!("parentId" in operation) || !("childPath" in operation)) throw new Error("テキスト対象は親IDと相対パスで指定してください。");
     const { parentId, childPath, ...change } = operation;
@@ -586,7 +587,7 @@ export function acceptSavedRevision(history: EditorHistory, submitted: PageDocum
     saved: fingerprint(rebase(submitted))
   };
 }
-export function travelHistory(history: EditorHistory, direction: "undo" | "redo", blocks: EditorBlockRegistry, locks: readonly EditorLock[], components?: ComponentLibrary, siteStyles?: SiteStyles): EditorHistory {
+export function travelHistory(history: EditorHistory, direction: "undo" | "redo", blocks: EditorOperationBlocks, locks: readonly EditorLock[], components?: ComponentLibrary, siteStyles?: SiteStyles): EditorHistory {
   const target = direction === "undo" ? history.past.at(-1) : history.future[0];
   if (!target) return history;
   parsePageDocument(target, blocks, { ...(components ? { components } : {}), ...(siteStyles ? { siteStyles } : {}) });

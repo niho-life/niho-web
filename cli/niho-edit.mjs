@@ -121,14 +121,16 @@ async function inputSnapshot(path) {
   }
   const source = await readJson(path === "-" ? process.stdin : createReadStream(path));
   const snapshotKeys = Object.keys(source);
-  if (!snapshotKeys.includes("document") || !snapshotKeys.includes("version") || snapshotKeys.some((key) => !["document", "version", "componentsVersion", "presentationVersion"].includes(key))
+  if (!snapshotKeys.includes("document") || !snapshotKeys.includes("version") || snapshotKeys.some((key) => !["document", "version", "componentsVersion", "presentationVersion", "stylesVersion"].includes(key))
     || !isEditingApiVersion(source.version) || source.componentsVersion !== undefined && !isEditingApiVersion(source.componentsVersion)
-    || source.presentationVersion !== undefined && !isEditingApiVersion(source.presentationVersion)) throw new CliError("invalid_snapshot");
+    || source.presentationVersion !== undefined && !isEditingApiVersion(source.presentationVersion)
+    || source.stylesVersion !== undefined && !isEditingApiVersion(source.stylesVersion)) throw new CliError("invalid_snapshot");
   let document;
   try { document = parseEditingPageDocumentEnvelope(source.document); } catch { throw new CliError("invalid_document"); }
   return { document, version: source.version,
     ...(source.componentsVersion === undefined ? {} : { componentsVersion: source.componentsVersion }),
-    ...(source.presentationVersion === undefined ? {} : { presentationVersion: source.presentationVersion }) };
+    ...(source.presentationVersion === undefined ? {} : { presentationVersion: source.presentationVersion }),
+    ...(source.stylesVersion === undefined ? {} : { stylesVersion: source.stylesVersion }) };
 }
 async function inputPlan(path, target) {
   if (!path) throw new CliError("missing_json_input");
@@ -150,8 +152,8 @@ function emit(result, status = null, code = 0, operation = null) {
   process.exitCode = code;
   process.stdout.write(`${JSON.stringify({ apiVersion: "v1", httpStatus: status, operation, result })}\n`);
 }
-function emitSnapshot(document, version, componentsVersion, presentationVersion) {
-  process.stdout.write(`${JSON.stringify({ document, version, ...(componentsVersion === undefined ? {} : { componentsVersion }), ...(presentationVersion === undefined ? {} : { presentationVersion }) })}\n`);
+function emitSnapshot(document, version, componentsVersion, presentationVersion, stylesVersion) {
+  process.stdout.write(`${JSON.stringify({ document, version, ...(componentsVersion === undefined ? {} : { componentsVersion }), ...(presentationVersion === undefined ? {} : { presentationVersion }), ...(stylesVersion === undefined ? {} : { stylesVersion }) })}\n`);
 }
 async function inputBreakpointSnapshot(path) {
   if (!path) throw new CliError("missing_json_input");
@@ -371,7 +373,8 @@ async function runPageInspection(client, command, pageId, extra, values) {
   }
   process.stdout.write(JSON.stringify({ ...projected, version: snapshot.version,
     ...(snapshot.componentsVersion === undefined ? {} : { componentsVersion: snapshot.componentsVersion }),
-    ...(snapshot.presentationVersion === undefined ? {} : { presentationVersion: snapshot.presentationVersion }) }) + "\n");
+    ...(snapshot.presentationVersion === undefined ? {} : { presentationVersion: snapshot.presentationVersion }),
+    ...(snapshot.stylesVersion === undefined ? {} : { stylesVersion: snapshot.stylesVersion }) }) + "\n");
 }
 
 async function main() {
@@ -642,7 +645,7 @@ async function main() {
     if (values.json !== undefined || values.action !== undefined || values["expected-version"] !== undefined || values["components-version"] !== undefined || values["presentation-version"] !== undefined
       || values.revision !== undefined || values["operation-id"] !== undefined) throw new CliError("invalid_arguments");
     const snapshot = await apiCall(() => client.read(target, AbortSignal.timeout(30_000)));
-    emitSnapshot(snapshot.document, snapshot.version, snapshot.componentsVersion, snapshot.presentationVersion); return;
+    emitSnapshot(snapshot.document, snapshot.version, snapshot.componentsVersion, snapshot.presentationVersion, snapshot.stylesVersion); return;
   }
   if (command === "save") {
     if (values.action !== undefined || values["expected-version"] !== undefined || values["components-version"] !== undefined || values["presentation-version"] !== undefined
@@ -651,7 +654,7 @@ async function main() {
     if (snapshot.document.siteId !== values.site || snapshot.document.pageId !== pageId || snapshot.document.locale !== values.locale) throw new CliError("snapshot_target_mismatch");
     const result = await apiCall(() => client.save(target, snapshot.version, snapshot.document, AbortSignal.timeout(30_000)));
     if (result.status === "conflict") throw new CliError("version_conflict", 409);
-    emitSnapshot(result.document, result.version, snapshot.componentsVersion, snapshot.presentationVersion); return;
+    emitSnapshot(result.document, result.version, snapshot.componentsVersion, snapshot.presentationVersion, snapshot.stylesVersion); return;
   }
   if (command === "release-plan") {
     if (values["operation-id"] !== undefined || !["publish", "rollback"].includes(values.action ?? "")) throw new CliError("invalid_arguments");

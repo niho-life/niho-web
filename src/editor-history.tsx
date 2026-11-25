@@ -185,7 +185,7 @@ export function useRecovery({ store, session, dirty, blocks, components, siteSty
     silent(() => store.remove(target));
   };
   const accepted = () => { setOffer(null); setPhase((previous) => ({ ...previous, state: "idle" })); };
-  return { offer, drop, discard, accepted };
+  return { offer, drop, discard, accepted, flush: () => pendingWrite.current?.() };
 }
 export function RecoveryBanner({ offer, stale, disabled, compare, restore, discard }: { offer: RecoveryOffer; stale: boolean; disabled: boolean; compare: () => void; restore: () => void; discard: () => void }) {
   return <div className="e-recovery" role="status">
@@ -297,9 +297,10 @@ export function LibraryRecoveryBanner({ offer, merge, disabled, restore, discard
 
 export type LatestSnapshot = { snapshot: EditorSnapshot; document: PageDocument };
 /** 409 のあと最新の保存内容を読み、差分を見てから残す内容を選ぶ。読込だけでは作業コピーを変えない。 */
-export function ConflictDialog({ adapter, target, present, blocks, components, siteStyles, close, discard, overwrite }: {
+export function ConflictDialog({ adapter, target, present, blocks, components, siteStyles, close, discard, overwrite, reapply, retryOperations }: {
   adapter: EditorAdapter; target: EditorTarget; present: PageDocument; blocks: EditorBlockRegistry; components?: ComponentLibrary | undefined; siteStyles?: SiteStyles | undefined;
   close: () => void; discard: (latest: LatestSnapshot) => void; overwrite: (latest: LatestSnapshot) => void;
+  reapply?: (latest: LatestSnapshot) => PageDocument | undefined; retryOperations?: (latest: LatestSnapshot) => void;
 }) {
   const [latest, setLatest] = useState<LatestSnapshot | null>(null), [failed, setFailed] = useState(false), [attempt, setAttempt] = useState(0), [confirmed, setConfirmed] = useState(false);
   const { siteId, pageId, locale } = target;
@@ -314,15 +315,16 @@ export function ConflictDialog({ adapter, target, present, blocks, components, s
     }).catch(() => { if (!controller.signal.aborted) setFailed(true); });
     return () => controller.abort();
   }, [adapter, blocks, components, siteStyles, siteId, pageId, locale, attempt]);
+  const rebased = latest && reapply?.(latest);
   return <Dialog name="最新の保存内容との比較" dismiss={close}><h2>保存内容が競合しています</h2>
     <p>ほかの保存で内容が更新されています。最新の保存内容とあなたの編集を見比べて、残す内容を選んでください。</p>
     {failed ? <><p className="e-help e-problem" role="alert">最新の内容を取得できませんでした。編集内容は保持しています。</p><button type="button" className="e-small" onClick={() => setAttempt((value) => value + 1)}>再試行</button></>
       : !latest ? <p className="e-help">最新の内容を読み込み中…</p>
-      : <><DiffTable changes={diffDocuments(latest.document, present)} columns={["変更箇所", "最新の保存内容", "あなたの編集"]} />
-        <label className="e-check"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />最新の保存内容を上書きすることを確認しました</label></>}
+      : <><DiffTable changes={diffDocuments(latest.document, rebased ?? present)} columns={["変更箇所", "最新の保存内容", rebased ? "最新に適用した内容" : "あなたの編集"]} />
+        <label className="e-check"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />{rebased ? "最新の内容に編集を適用して保存することを確認しました" : "最新の保存内容を上書きすることを確認しました"}</label></>}
     <div className="e-actions"><button type="button" autoFocus onClick={close}>閉じて編集を続ける</button>
       {latest && <><button type="button" className="e-danger" onClick={() => discard(latest)}>最新の内容を読み込む（あなたの編集を破棄）</button>
-        <button type="button" className="e-primary" disabled={!confirmed} onClick={() => overwrite(latest)}>あなたの編集で上書き保存</button></>}</div>
+        <button type="button" className="e-primary" disabled={!confirmed} onClick={() => rebased ? retryOperations?.(latest) : overwrite(latest)}>{rebased ? "最新に適用して保存" : "あなたの編集で上書き保存"}</button></>}</div>
   </Dialog>;
 }
 

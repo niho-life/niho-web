@@ -1,4 +1,4 @@
-import type { BlockContracts, ComponentLibrary, PageDocument } from "./types.js";
+import type { ComponentLibrary, PageDocument } from "./types.js";
 import { parsePageDocument } from "./document.js";
 import { normalizePageChange, validatePageChangePlan, validateReleasePlan } from "./editor-model.js";
 import type { EditorBreakpointSettings, EditorBreakpointSettingsSaveResult, EditorBreakpointSettingsSnapshot, EditorPage, EditorPageChange, EditorPageChangePlan, EditorReleasePlan, EditorReleaseRequest, EditorSite } from "./editor-types.js";
@@ -25,6 +25,18 @@ import {
 import { jsonBytes } from "./localization-workspace-model.js";
 import { inspectPageDocument, PAGE_INSPECT_LIMITS, PageInspectError, parsePageInspectQuery, type PageInspectQuery } from "./page-inspect.js";
 
+import {
+  PAGE_OPERATION_ID, PAGE_OPERATION_LIMIT, PAGE_OPERATION_VERSIONS, editingOperationProblem, pageApplyInputSchema,
+  pageApplyResultSchema, pageOperationHash, parsePageOperation, preparePageOperations, type EditingPageApplyInput, type EditingPageOperationStore,
+  pageOperationWire, type PageOperationJournal, type PageOperationVersions,
+} from "./editing-page-operations.js";
+import type { EditorOperationBlocks } from "./editor-model.js";
+import type { EditorLock } from "./editor-types.js";
+
+export type { EditingPageApplied, EditingPageApplyInput, EditingPageApplyResult, EditingPageOperationStore, PageOperationJournal,
+  PageOperationTransaction, PageOperationVersions } from "./editing-page-operations.js";
+export { pageOperationWire } from "./editing-page-operations.js";
+
 export type {
   EditingLocalizationHostAdapter, EditingLocalizationInput, EditingLocalizationOperationId, EditingLocalizationReleaseApplyInput,
   EditingLocalizationReleasePrepareInput, EditingLocalizationResult,
@@ -43,6 +55,8 @@ export type EditingActor = {
   readonly delegatedBy?: string;
   /** hostの認証処理が検証した連絡先。必要な場合だけ監査用に渡す。 */
   readonly email?: string;
+  /** Authentication supplies this value for operation audits. */
+  readonly clientKind?: "gui" | "cli" | "api";
 };
 export type EditingPageTarget = {
   readonly siteId: string;
@@ -51,11 +65,9 @@ export type EditingPageTarget = {
 };
 export type EditingAuthorizationScope = { readonly siteId: string; readonly pageId?: string; readonly locale?: string; readonly collectionId?: string; readonly itemId?: string; readonly assetProvider?: string; readonly assetId?: string;
   readonly localizationItemKey?: string; readonly localizationUnitId?: string; readonly localizationJobId?: string; readonly localizationPreviewId?: string };
-export type EditingPageSnapshot = {
+export type EditingPageSnapshot = PageOperationVersions & {
   readonly document: PageDocument;
   readonly version: string;
-  readonly componentsVersion?: string;
-  readonly presentationVersion?: string;
 };
 export type EditingPageSaveResult = { readonly status: "saved"; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" };
 export type EditingPageReleasePrepareResult = { readonly status: "prepared"; readonly plan: EditorReleasePlan } | { readonly status: "conflict" };
@@ -97,7 +109,7 @@ export type EditingPageReleaseSetItemResult = { readonly target: EditingPageTarg
 export type EditingPageReleaseSetApplyResult = { readonly status: "completed" | "publishing"; readonly operationId: string; readonly items: readonly EditingPageReleaseSetItemResult[] }
   | { readonly status: "conflict" } | { readonly status: "invalid" } | { readonly status: "not_found" } | { readonly status: "duplicate" };
 export type EditingPageReleaseSetStatus = EditingCmsOperationStatus;
-export type PageEditingValidationContext = { readonly blocks?: BlockContracts; readonly components?: ComponentLibrary; readonly siteStyles?: SiteStyles };
+export type PageEditingValidationContext = { readonly blocks?: EditorOperationBlocks; readonly components?: ComponentLibrary; readonly siteStyles?: SiteStyles; readonly locks?: readonly EditorLock[] };
 
 export type JsonSchema = boolean | {
   readonly $ref?: string;
@@ -109,7 +121,8 @@ export type JsonSchema = boolean | {
   readonly items?: JsonSchema;
   readonly enum?: readonly string[];
   readonly required?: readonly string[];
-  readonly additionalProperties?: boolean;
+  readonly additionalProperties?: JsonSchema;
+  readonly propertyNames?: JsonSchema;
   readonly properties?: Readonly<Record<string, JsonSchema>>;
   readonly pattern?: string;
   readonly uniqueItems?: boolean;
@@ -178,7 +191,7 @@ const inspectPathNodeSchema: JsonSchema = Object.freeze({ type: "object", requir
 }) });
 const inspectResultSchema: JsonSchema = Object.freeze({ type: "object", required: Object.freeze(["view"]), additionalProperties: false, properties: Object.freeze({
   view: Object.freeze({ type: "string", enum: Object.freeze(["outline", "find", "subtree", "effectiveStyle"]) }), version: versionSchema,
-  componentsVersion: versionSchema, presentationVersion: versionSchema, complete: Object.freeze({ type: "boolean" }), format: Object.freeze({ type: "string", const: "path-nodes" }),
+  componentsVersion: versionSchema, presentationVersion: versionSchema, stylesVersion: versionSchema, complete: Object.freeze({ type: "boolean" }), format: Object.freeze({ type: "string", const: "path-nodes" }),
   nodeId: Object.freeze({ type: "string" }), subtree: Object.freeze({ type: "object" }), style: Object.freeze({ type: "object" }),
   definitions: Object.freeze({ type: "object", additionalProperties: true }), items: Object.freeze({ type: "array", maxItems: PAGE_INSPECT_LIMITS.maxItems, items: Object.freeze({ oneOf: Object.freeze([inspectNodeSchema, inspectPathNodeSchema]) }) }),
   nextCursor: Object.freeze({ type: "string", maxLength: PAGE_INSPECT_LIMITS.maxCursorLength })
@@ -294,7 +307,7 @@ export const EDITING_OPERATIONS = Object.freeze([
     inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId", "pageId", "locale"]), additionalProperties: false,
       properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), pageId: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }) }) }),
     resultSchema: Object.freeze({ type: "object", required: Object.freeze(["document", "version"]), additionalProperties: false,
-      properties: Object.freeze({ document: documentSchema, version: versionSchema, componentsVersion: versionSchema, presentationVersion: versionSchema }) }),
+      properties: Object.freeze({ document: documentSchema, version: versionSchema, componentsVersion: versionSchema, presentationVersion: versionSchema, stylesVersion: versionSchema }) }),
     errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found"] as const)
   }),
   Object.freeze({
@@ -304,6 +317,12 @@ export const EDITING_OPERATIONS = Object.freeze([
     resultSchema: Object.freeze({ type: "object", required: Object.freeze(["status", "version", "document"]), additionalProperties: false,
       properties: Object.freeze({ status: Object.freeze({ const: "saved" }), version: versionSchema, document: documentSchema }) }),
     errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found", "version_conflict"] as const)
+  }),
+  Object.freeze({
+    id: "pages.apply", capability: "pages.edit", method: "POST", path: "/sites/{siteId}/operations/pages.apply/{pageId}?locale={locale}",
+    inputSchema: pageApplyInputSchema, resultSchema: pageApplyResultSchema(documentSchema),
+    errors: Object.freeze(["authentication_required", "duplicate_operation", "forbidden", "host_contract_violation", "host_failure",
+      "invalid_request", "method_not_allowed", "not_found", "validation_failed", "version_conflict"] as const)
   }),
   Object.freeze({
     id: "pages.release-plan", capability: "pages.publish", method: "POST", path: "/sites/{siteId}/operations/pages.release-plan/{pageId}?locale={locale}",
@@ -475,6 +494,8 @@ export type PageEditingHostAdapter = {
   validationContext?(actor: EditingActor, target: EditingPageTarget): Promise<PageEditingValidationContext>;
   readPage(actor: EditingActor, target: EditingPageTarget): Promise<EditingPageSnapshot | null>;
   savePage(actor: EditingActor, target: EditingPageTarget, expectedVersion: string, document: PageDocument): Promise<EditingPageSaveResult>;
+  /** Optional atomic operation journal and document writer. Its versioned read includes the trusted validation context. */
+  pageOperations?: EditingPageOperationStore;
   /** Return the host's trusted site metadata, including the allowed publication origins. */
   releaseSite?(actor: EditingActor, siteId: string): Promise<EditorSite | null>;
   /** Return a host-bound preview plan; host must verify current version and domain allowlist. */
@@ -529,6 +550,7 @@ function validActor(value: unknown): value is EditingActor {
   const actor = value as Record<string, unknown>;
   return (actor.kind === "human" || actor.kind === "machine") && validVersion(actor.subject)
     && (actor.delegatedBy === undefined || validVersion(actor.delegatedBy))
+    && (actor.clientKind === undefined || ["gui", "cli", "api"].includes(actor.clientKind as string))
     && (actor.email === undefined || typeof actor.email === "string" && actor.email.length <= 254
       && /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/u.test(actor.email));
 }
@@ -561,11 +583,12 @@ function exactKeys(value: Record<string, unknown>, expected: readonly string[]):
   const actual = Object.keys(value).sort(), wanted = [...expected].sort();
   return actual.length === wanted.length && actual.every((key, index) => key === wanted[index]);
 }
-const OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const OPERATION_ID = PAGE_OPERATION_ID;
 function validOperationId(value: unknown): value is string { return typeof value === "string" && OPERATION_ID.test(value); }
 function supportsOperation(adapter: PageEditingHostAdapter, operation: EditingOperationDefinition): boolean {
   const localization = editingLocalizationOperation(operation.id);
   if (localization) return typeof adapter.localization?.[localization.id] === "function";
+  if (operation.id === "pages.apply") return typeof adapter.pageOperations?.transact === "function";
   if (operation.id === "pages.release-plan" || operation.id === "pages.release") return typeof adapter.releaseSite === "function" && typeof adapter.preparePageRelease === "function" && typeof adapter.publishPage === "function";
   if (operation.id === "pages.release-set-plan" || operation.id === "pages.release-set") return typeof adapter.releaseSite === "function" && typeof adapter.preparePageReleaseSet === "function" && typeof adapter.publishPageReleaseSet === "function";
   if (operation.id === "pages.release-set-status") return typeof adapter.readPageReleaseSetStatus === "function";
@@ -779,6 +802,57 @@ function editingApiBasePath(value: string | undefined): string {
   const basePath = value ?? "/api/edit/v1";
   if (!/^\/[a-z0-9/_-]+$/u.test(basePath) || basePath.endsWith("/") || basePath.includes("//")) throw new Error("invalid editing API base path");
   return basePath;
+}
+
+async function handlePageApply(store: EditingPageOperationStore, request: Request, actor: EditingActor, target: EditingPageTarget): Promise<Response> {
+  if (!actor.clientKind) return fail("host_contract_violation", 502);
+  let body: Record<string, unknown> | null;
+  try { body = await readBody(request); } catch { return fail("invalid_request", 400); }
+  if (!body || Object.keys(body).some((key) => !["baseVersion", "operationId", "operations", "dryRun", ...PAGE_OPERATION_VERSIONS].includes(key))
+    || !validVersion(body.baseVersion) || !validOperationId(body.operationId)
+    || body.dryRun !== undefined && typeof body.dryRun !== "boolean"
+    || !Array.isArray(body.operations) || !body.operations.length || body.operations.length > PAGE_OPERATION_LIMIT
+    || PAGE_OPERATION_VERSIONS.some((key) => body[key] !== undefined && !validVersion(body[key]))) return fail("invalid_request", 400);
+  const operations: EditingPageApplyInput["operations"][number][] = [];
+  for (const [index, raw] of body.operations.entries()) {
+    try { operations.push(parsePageOperation(raw, `$.operations[${index}]`)); }
+    catch (error) {
+      const { reason } = editingOperationProblem(error, index);
+      return response({ error: "validation_failed", index, reason }, 422);
+    }
+  }
+  const dependencies: PageOperationVersions = Object.fromEntries(PAGE_OPERATION_VERSIONS.flatMap((key) => body[key] === undefined ? [] : [[key, body[key]]]));
+  const input = { ...dependencies, baseVersion: body.baseVersion, operationId: body.operationId.toLowerCase(), operations };
+  const dryRun = body.dryRun === true;
+  let result: Awaited<ReturnType<EditingPageOperationStore["transact"]>>;
+  try {
+    const inputHash = await pageOperationHash(target, input);
+    const journal: PageOperationJournal = { actor, target, input: { ...input, operations: operations.map(pageOperationWire) }, inputHash };
+    result = await store.transact(actor, target, {
+      operationId: input.operationId, inputHash, dryRun,
+      prepare: (snapshot, context) => preparePageOperations(snapshot, context, input, journal, dryRun),
+    });
+  } catch { return fail("host_failure", 503); }
+  if (!result || typeof result !== "object") return fail("host_contract_violation", 502);
+  switch (result.status) {
+    case "not_found": return fail("not_found", 404);
+    case "host_contract_violation": return fail("host_contract_violation", 502);
+    case "conflict": return fail("version_conflict", 409);
+    case "duplicate_operation": return fail("duplicate_operation", 409);
+    case "validation_failed":
+      if (!Number.isSafeInteger(result.index) || result.index < 0 || result.index >= operations.length || typeof result.reason !== "string") return fail("host_contract_violation", 502);
+      return response({ error: "validation_failed", index: result.index, reason: result.reason }, 422);
+    case "valid":
+      if (dryRun) return response({ status: "valid", diff: result.diff, touched: result.touched });
+      break;
+    case "applied":
+      if (!dryRun && validVersion(result.version) && result.version !== input.baseVersion && Number.isSafeInteger(result.revision) && result.revision > 0
+        && result.document?.revision === result.revision && result.document.siteId === target.siteId && result.document.pageId === target.pageId && result.document.locale === target.locale) {
+        return response({ status: "applied", version: result.version, revision: result.revision, document: result.document });
+      }
+      break;
+  }
+  return fail("host_contract_violation", 502);
 }
 
 async function handleEditingLocalization<Id extends EditingLocalizationOperationId>(
@@ -1413,7 +1487,7 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       if (!matches) return fail("host_contract_violation", 502);
       return response({ status: "applied", operationId: applied.operationId, page });
     }
-    const match = new RegExp(`^${basePath}/sites/([^/]+)/operations/(pages\\.(?:read|inspect|save|release-plan|release))/([^/]+)$`, "u").exec(url.pathname);
+    const match = new RegExp(`^${basePath}/sites/([^/]+)/operations/(pages\\.(?:read|inspect|save|apply|release-plan|release))/([^/]+)$`, "u").exec(url.pathname);
     if (!match) return fail("not_found", 404);
     let siteId: string, pageId: string, locale: string;
     try {
@@ -1424,7 +1498,7 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
     const target = pageTarget(siteId, pageId, locale);
     if (!target) return fail("invalid_request", 400);
     const operation = EDITING_OPERATIONS.find((item) => item.id === match[2]);
-    if (!operation) return fail("not_found", 404);
+    if (!operation || operation.id === "pages.apply" && !supportsOperation(adapter, operation)) return fail("not_found", 404);
     let inspectQuery: PageInspectQuery | null = null;
     if (operation.id === "pages.inspect") {
       const input: Record<string, unknown> = {};
@@ -1447,6 +1521,7 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
     try { allowed = await adapter.authorize(actor, operation.capability, target) === true; }
     catch { return fail("host_failure", 503); }
     if (!allowed) return fail("forbidden", 403);
+    if (operation.id === "pages.apply") return handlePageApply(adapter.pageOperations!, request, actor, target);
     if (operation.id === "pages.read" || operation.id === "pages.inspect") {
       if (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length"))) return fail("invalid_request", 400);
       let snapshot: EditingPageSnapshot | null;
@@ -1460,8 +1535,8 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       try { document = validatedDocument(snapshot.document, context); }
       catch { return fail("host_contract_violation", 502); }
       if (document.siteId !== target.siteId || document.pageId !== target.pageId || document.locale !== target.locale || !validVersion(snapshot.version)) return fail("host_contract_violation", 502);
-      if (snapshot.componentsVersion !== undefined && !validVersion(snapshot.componentsVersion)
-        || snapshot.presentationVersion !== undefined && !validVersion(snapshot.presentationVersion)) return fail("host_contract_violation", 502);
+      const dependencies = Object.fromEntries(PAGE_OPERATION_VERSIONS.flatMap((key) => snapshot[key] === undefined ? [] : [[key, snapshot[key]]]));
+      if (Object.values(dependencies).some((value) => !validVersion(value))) return fail("host_contract_violation", 502);
       if (operation.id === "pages.inspect") {
         let inspected: Record<string, unknown>;
         try {
@@ -1477,15 +1552,11 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
           }
           return fail("host_contract_violation", 502);
         }
-        const result = { ...inspected, version: snapshot.version,
-          ...(snapshot.componentsVersion === undefined ? {} : { componentsVersion: snapshot.componentsVersion }),
-          ...(snapshot.presentationVersion === undefined ? {} : { presentationVersion: snapshot.presentationVersion }) };
+        const result = { ...inspected, version: snapshot.version, ...dependencies };
         if (new TextEncoder().encode(JSON.stringify(result)).byteLength > PAGE_INSPECT_LIMITS.maxResultBytes + 1024) return fail("result_too_large", 413);
         return response(result);
       }
-      return response({ document, version: snapshot.version,
-        ...(snapshot.componentsVersion === undefined ? {} : { componentsVersion: snapshot.componentsVersion }),
-        ...(snapshot.presentationVersion === undefined ? {} : { presentationVersion: snapshot.presentationVersion }) });
+      return response({ document, version: snapshot.version, ...dependencies });
     }
     if (operation.id === "pages.release-plan") {
       let body: Record<string, unknown> | null;

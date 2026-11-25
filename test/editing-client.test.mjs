@@ -10,7 +10,7 @@ const blockDocument = structuredClone(fixture);
 blockDocument.body.push({ type: "component", id: "booking-panel", block: "booking-panel", props: { title: "Book a visit" } });
 const validationContext = { blocks: { "booking-panel": { props: { title: { type: "string", required: true } } } } };
 
-function clientFixture({ token = "owner", initialDocument = blockDocument, publishing = false, releaseSet = false, staleAfterSetPrepare = false, pendingSetOnce = false, pageManagement = false, initialBreakpointSettings } = {}) {
+function clientFixture({ token = "owner", initialDocument = blockDocument, publishing = false, versionedInspection = false, releaseSet = false, staleAfterSetPrepare = false, pendingSetOnce = false, pageManagement = false, initialBreakpointSettings } = {}) {
   let document = structuredClone(initialDocument), version = "v1";
   const secondTarget = { siteId: target.siteId, pageId: "about", locale: "ja" };
   let secondVersion = "about-v1";
@@ -25,7 +25,8 @@ function clientFixture({ token = "owner", initialDocument = blockDocument, publi
     async authorize(actor, capability, scope) { return actor.subject === "agent" && scope.siteId === target.siteId && (["pages.read", "pages.edit"].includes(capability) || (publishing || releaseSet || pageManagement) && capability === "pages.publish" || breakpointSettings !== null && ["site.settings.read", "site.settings.write"].includes(capability)); },
     async validationContext() { return validationContext; },
     async readPage(_actor, requested) { return requested.siteId === target.siteId && requested.pageId === target.pageId && requested.locale === target.locale
-      ? { document, version, ...(publishing ? { componentsVersion: "components-v1", presentationVersion: "presentation-v1" } : {}) } : null; },
+      ? { document, version, ...(publishing ? { componentsVersion: "components-v1", presentationVersion: "presentation-v1" }
+        : versionedInspection ? { componentsVersion: "components-v1", presentationVersion: "presentation-v1", stylesVersion: "styles-v1" } : {}) } : null; },
     async savePage(_actor, requested, expectedVersion, next) {
       if (requested.siteId !== target.siteId || requested.pageId !== target.pageId || requested.locale !== target.locale || expectedVersion !== version) return { status: "conflict" };
       document = { ...next, revision: next.revision + 1 }; version = `v${Number(version.slice(1)) + 1}`;
@@ -152,12 +153,13 @@ function clientFixture({ token = "owner", initialDocument = blockDocument, publi
 }
 
 test("shared client reads partial page projections with dependency versions", async () => {
-  const client = clientFixture({ publishing: true });
+  const client = clientFixture({ versionedInspection: true });
   const result = await client.inspectPage(target, { view: "outline", depth: 1 });
   assert.equal(result.view, "outline");
   assert.equal(result.version, "v1");
   assert.equal(result.componentsVersion, "components-v1");
   assert.equal(result.presentationVersion, "presentation-v1");
+  assert.equal(result.stylesVersion, "styles-v1");
   assert.ok(result.items.length > 0);
 });
 

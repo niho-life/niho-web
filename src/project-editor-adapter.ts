@@ -328,6 +328,14 @@ export function createProjectEditorAdapter(adapter: EditorAdapter, projectInput:
         ...(request.localization ? { localization: { expectedSourceVersion: request.localization.expectedSourceVersion, expectedVersion: request.localization.expectedVersion,
           expectedOverlayVersion: request.localization.expectedOverlayVersion } } : {}) }, signal);
     },
+    ...(adapter.applyOperations ? {
+      async applyOperations(request, signal) {
+        const target = targetForProject(request.target, site);
+        const result = await adapter.applyOperations!({ ...structuredClone(request), target }, signal);
+        if (result.status === "applied") assertDocumentTarget(result.document, target);
+        return structuredClone(result);
+      }
+    } satisfies Pick<EditorAdapter, "applyOperations"> : {}),
     async prepareRelease(request, signal) {
       const checked = releaseRequest(request, targetForProject(request.target, site));
       const plan = await adapter.prepareRelease(checked, signal);

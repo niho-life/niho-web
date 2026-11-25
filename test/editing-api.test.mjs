@@ -6,7 +6,7 @@ import { createPageEditingApi, createRegisteredPageEditingApi, EDITING_API_ERROR
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 const target = { siteId: fixture.siteId, pageId: fixture.pageId, locale: fixture.locale };
 
-function hostFixture({ validationContext, initialDocument = fixture, publishing = false, initialBreakpointSettings } = {}) {
+function hostFixture({ validationContext, initialDocument = fixture, publishing = false, initialBreakpointSettings, versionedInspection = false } = {}) {
   let document = structuredClone(initialDocument), version = "v1";
   let breakpointSettings = initialBreakpointSettings === undefined ? null : structuredClone(initialBreakpointSettings), breakpointVersion = "b.1";
   const actor = { kind: "human", subject: "owner" };
@@ -19,7 +19,8 @@ function hostFixture({ validationContext, initialDocument = fixture, publishing 
     },
     async authorize(input, capability, scope) { return input.subject === "owner" && scope.siteId === fixture.siteId && (capability === "pages.read" || capability === "pages.edit" || publishing && capability === "pages.publish" || breakpointSettings !== null && (capability === "site.settings.read" || capability === "site.settings.write")); },
     ...(validationContext ? { async validationContext() { return validationContext; } } : {}),
-    async readPage(_actor, input) { return input.siteId === target.siteId && input.pageId === target.pageId && input.locale === target.locale ? { document, version } : null; },
+    async readPage(_actor, input) { return input.siteId === target.siteId && input.pageId === target.pageId && input.locale === target.locale ? { document, version,
+      ...(versionedInspection ? { componentsVersion: "components-v1", presentationVersion: "presentation-v1", stylesVersion: "styles-v1" } : {}) } : null; },
     async savePage(_actor, input, expectedVersion, next) {
       if (input.siteId !== target.siteId || input.pageId !== target.pageId || input.locale !== target.locale) return { status: "conflict" };
       if (expectedVersion !== version) return { status: "conflict" };
@@ -77,13 +78,18 @@ test("page editing API discovery exposes machine-readable operations and stable 
 });
 
 test("pages.inspect uses page-read authorization, returns versioned projections and rejects invalid cursors", async () => {
-  const { send } = hostFixture();
+  const { send } = hostFixture({ versionedInspection: true });
   const path = `/sites/${target.siteId}/operations/pages.inspect/${target.pageId}?locale=${encodeURIComponent(target.locale)}&view=find&node=heading`;
   const result = await json(await send("GET", path));
   assert.equal(result.status, 200);
   assert.equal(result.body.view, "find");
   assert.equal(result.body.version, "v1");
+  assert.equal(result.body.componentsVersion, "components-v1");
+  assert.equal(result.body.presentationVersion, "presentation-v1");
+  assert.equal(result.body.stylesVersion, "styles-v1");
   assert.deepEqual(result.body.items.map(({ id }) => id), ["heading"]);
+  const read = await json(await send("GET", `/sites/${target.siteId}/operations/pages.read/${target.pageId}?locale=${encodeURIComponent(target.locale)}`));
+  assert.deepEqual(read.body, { document: fixture, version: "v1", componentsVersion: "components-v1", presentationVersion: "presentation-v1", stylesVersion: "styles-v1" });
   const inspect = EDITING_OPERATIONS.find(({ id }) => id === "pages.inspect");
   assert.equal(inspect.capability, "pages.read");
   assert.ok(inspect.inputSchema && inspect.resultSchema && inspect.errors.includes("invalid_cursor"));
