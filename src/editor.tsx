@@ -59,6 +59,7 @@ import { iconCatalog } from "./icons.js";
 import { parseEnglishPublication } from "./english-publication.js";
 import { BreakpointSettingsDialog, breakpointPreview, useBreakpointSettings } from "./editor-breakpoints.js";
 import { ResponsiveProposalControl, responsiveProposalCss } from "./editor-responsive-proposal.js";
+import { beginEditorPerformance, finishEditorPerformance, type EditorPerformanceMeasurement, type EditorPerformanceOutcome } from "./editor-performance.js";
 
 const browserClipboardNodeType = `web ${EDITOR_NODE_CLIPBOARD_TYPE}`;
 
@@ -587,6 +588,19 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const [editing, setEditing] = useState<string | null>(null), [componentDialog, setComponentDialog] = useState<ComponentDialogState | null>(null), usageRequest = useRef<AbortController | null>(null);
   useEffect(() => { setContentSearch(""); }, [session?.target.siteId, session?.target.pageId, session?.target.locale, editing]);
   const request = useRef<AbortController | null>(null), action = useRef<AbortController | null>(null), pageList = useRef<AbortController | null>(null), releaseRead = useRef<AbortController | null>(null);
+  const initialLoadPerformance = useRef<EditorPerformanceMeasurement | null>(null), initialLoadPerformanceStarted = useRef(false);
+  const pendingLoadPerformance = useRef<{ measurement: EditorPerformanceMeasurement | null; target: EditorTarget } | null>(null);
+  useEffect(() => {
+    if (initialLoadPerformanceStarted.current) return;
+    initialLoadPerformanceStarted.current = true;
+    initialLoadPerformance.current = beginEditorPerformance("load");
+  }, []);
+  const finishInitialLoadPerformance = useCallback((outcome: EditorPerformanceOutcome = "success") => {
+    const measurement = initialLoadPerformance.current;
+    if (!measurement) return;
+    initialLoadPerformance.current = null;
+    finishEditorPerformance(measurement, outcome);
+  }, []);
   const englishPublicationRequest = useRef<AbortController | null>(null);
   const [englishPublicationBusy, setEnglishPublicationBusy] = useState<"refresh" | "retry" | null>(null);
   useEffect(() => () => action.current?.abort(), [adapter]);
@@ -693,22 +707,35 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       replaceLibrary(librarySessionFrom(snapshot, siteId, blocks)); setLibraryEpoch((value) => value + 1); refreshUsage(siteId);
     } catch { if (!signal.aborted) setLibraryFailed(true); }
   }, [components, blocks, replaceLibrary, refreshUsage]);
-  const load = useCallback(async (target: EditorTarget, options?: { preserveView?: boolean }): Promise<boolean> => {
+  const load = useCallback(async (target: EditorTarget, options?: { preserveView?: boolean; metric?: "load" | "page-switch" }): Promise<boolean> => {
+    const metric = options?.metric ?? "load";
+    const measurement = metric === "load" && initialLoadPerformance.current
+      ? initialLoadPerformance.current
+      : beginEditorPerformance(metric);
+    if (measurement === initialLoadPerformance.current) initialLoadPerformance.current = null;
+    let performanceOutcome: EditorPerformanceOutcome = "success";
     const editorTarget: EditorTarget = { siteId: target.siteId, pageId: target.pageId, locale: target.locale };
     request.current?.abort(); const controller = new AbortController(); request.current = controller;
     setBusy("読込中"); setNotice("");
     try {
       const loaded = await readEditorSession(adapter, editorTarget, controller.signal, blocks, libraryRef.current?.history.present);
       if (controller.signal.aborted) return false;
+      pendingLoadPerformance.current = { measurement, target: editorTarget };
       replace(loaded.session);
       if (!options?.preserveView) { setSelectedId(null); setSelectedNodeIds([]); setInspector("page"); setSelectedLocalizationUnit(null); setSelectedCanvasNode(null); setLocalizationManual(null); }
       setFieldEpoch((value) => value + 1); setPendingFields({}); setPlan(null); setRollbackRevision(""); setParentId("");
       setProblem(null); setSavedAt(null); setConflictView(0); setRecoveryCompare(false); setLoadEpoch((value) => value + 1); setEditing(null);
       if (loaded.warning) setNotice(loaded.warning);
       return true;
-    } catch (error) { if (!controller.signal.aborted) setNotice(error instanceof Error && error.message ? error.message : "文書を読み込めませんでした。現在の編集内容は保持されています。"); return false; }
-    finally { if (!controller.signal.aborted) setBusy(""); }
+    } catch (error) { performanceOutcome = "failed"; if (!controller.signal.aborted) setNotice(error instanceof Error && error.message ? error.message : "文書を読み込めませんでした。現在の編集内容は保持されています。"); return false; }
+    finally { if (!controller.signal.aborted) { if (performanceOutcome === "failed") finishEditorPerformance(measurement, performanceOutcome); setBusy(""); } }
   }, [adapter, blocks, replace]);
+  useEffect(() => {
+    const pending = pendingLoadPerformance.current;
+    if (!pending || !session || !sameTarget(pending.target, session.target)) return;
+    pendingLoadPerformance.current = null;
+    finishEditorPerformance(pending.measurement);
+  }, [loadEpoch, session?.target.siteId, session?.target.pageId, session?.target.locale]);
   const lastStyleSave = useRef(siteSettings.styleSaveEpoch);
   useEffect(() => {
     if (lastStyleSave.current === siteSettings.styleSaveEpoch) return;
@@ -727,10 +754,10 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   }, [styleMigration, siteSettings.styles, siteSettings.stylesDirty]);
   useEffect(() => {
     const controller = new AbortController();
-    adapter.listSites(controller.signal).then((result) => { if (!controller.signal.aborted) { setSites(result); setSiteId(result.find((site) => site.id === initialTargetRef.current?.siteId)?.id ?? result[0]?.id ?? ""); } })
-      .catch(() => { if (!controller.signal.aborted) setNotice("サイト一覧を読み込めませんでした。"); });
+    adapter.listSites(controller.signal).then((result) => { if (!controller.signal.aborted) { setSites(result); setSiteId(result.find((site) => site.id === initialTargetRef.current?.siteId)?.id ?? result[0]?.id ?? ""); if (!result.length) finishInitialLoadPerformance("failed"); } })
+      .catch(() => { if (!controller.signal.aborted) { setNotice("サイト一覧を読み込めませんでした。"); finishInitialLoadPerformance("failed"); } });
     return () => controller.abort();
-  }, [adapter]);
+  }, [adapter, finishInitialLoadPerformance]);
   useEffect(() => {
     if (!siteId) return;
     const controller = new AbortController(); setPages([]); setBusy("読込中");
@@ -744,10 +771,10 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       initialTargetRef.current = null;
       const first = result.find((page) => page.kind !== "shared") ?? result[0];
       const target = requested?.siteId === siteId && result.some((page) => page.pageId === requested.pageId) ? requested : first;
-      if (target) void load(target); else { replace(null); setBusy(""); }
-    }).catch(() => { if (!controller.signal.aborted) { setNotice("ページ一覧を読み込めませんでした。"); setBusy(""); } });
+      if (target) void load(target); else { replace(null); setBusy(""); finishInitialLoadPerformance("failed"); }
+    }).catch(() => { if (!controller.signal.aborted) { setNotice("ページ一覧を読み込めませんでした。"); setBusy(""); finishInitialLoadPerformance("failed"); } });
     return () => { controller.abort(); request.current?.abort(); pageList.current?.abort(); };
-  }, [adapter, siteId, load, replace, components, openLibrary, replaceLibrary]);
+  }, [adapter, siteId, load, replace, components, openLibrary, replaceLibrary, finishInitialLoadPerformance]);
   useEffect(() => () => { request.current?.abort(); action.current?.abort(); pageList.current?.abort(); releaseRead.current?.abort(); }, []);
   useEffect(() => () => usageRequest.current?.abort(), []);
   useEffect(() => {
@@ -768,7 +795,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   }
   async function pageApplied(page: EditorPage, change: EditorPageChange) {
     setBusy("読込中"); setPageChange(null); const done = pageChangeNotice(change, adapter.pagePathEditable);
-    const listed = await reloadPages(), loaded = await load({ siteId: page.siteId, pageId: page.pageId, locale: page.locale });
+    const listed = await reloadPages(), loaded = await load({ siteId: page.siteId, pageId: page.pageId, locale: page.locale }, { metric: "page-switch" });
     if (listed && adapter.localization) localization.reloadSite();
     setNotice(listed && loaded ? done : `${done}${loaded ? "ページ一覧" : "変更後の文書"}を読み込めませんでした。再読込してください。`);
     // ページの追加・複製・公開範囲の変更で使用状況が変わるため取り直す。
@@ -809,7 +836,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     setPicker(null);
     if (editing) { setEditing(null); setParentId(""); }
     if (next.type === "site") { replace(null); replaceLibrary(null); setSiteId(next.id); setProblem(null); setSavedAt(null); }
-    else void load(next.target);
+    else void load(next.target, { metric: "page-switch" });
   }
   // ページの移動では部品の変更を保持するため、部品の未保存はサイトの移動だけで確認する。
   function requestNavigation(next: Navigation) { if (siteSettings.stylesDirty && next.type === "page") { setNotice("サイト共通スタイルを保存するか取り消してからページを移動してください。"); return; } if (blocked || next.type === "site" && siteSettings.busy) return; if (dirty || hasInput || next.type === "site" && (siteSettings.dirty || libraryDirty)) setNavigation(next); else navigate(next); }
@@ -1133,6 +1160,8 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   async function save(mode: "manual" | "auto" = "manual"): Promise<boolean> {
     const changed = libraryRef.current, libraryChanged = !!changed && libraryFingerprint(changed.history.present) !== changed.saved;
     if (siteSettings.stylesDirty || siteSettings.busy || !sessionRef.current && !libraryChanged || action.current || blocked || hasInput || historyMode || !!sessionRef.current && !localizationReady || mode === "auto" && isOffline()) return false;
+    const measurement = beginEditorPerformance("save");
+    let performanceOutcome: EditorPerformanceOutcome = "success";
     const controller = new AbortController(), auto = mode === "auto", hadProblem = !!problemRef.current; action.current = controller; if (!auto) setNotice("");
     let current = sessionRef.current, librarySaved = false, pageSaved = false, applyingOperations = false;
     const sameSession = () => { const latest = sessionRef.current; return !!latest && !!current && sameTarget(latest.target, current.target); };
@@ -1145,13 +1174,13 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       }
     };
     try {
-      if (changed && libraryChanged) { if (!await saveComponents(changed, controller.signal, auto)) return false; librarySaved = true; current = sessionRef.current; }
+      if (changed && libraryChanged) { if (!await saveComponents(changed, controller.signal, auto)) { performanceOutcome = "failed"; return false; } librarySaved = true; current = sessionRef.current; }
       if (librarySaved && (!current || !needsPageSave(current))) {
         setProblem(null); setSavedAt(new Date()); if (!auto) setNotice("コンポーネントを保存しました。"); else if (hadProblem) setNotice("");
         return true;
       }
-      if (!current) return false;
-      if (current.readOnly) { if (!auto) setNotice(current.readOnly.reason); return false; }
+      if (!current) { performanceOutcome = "failed"; return false; }
+      if (current.readOnly) { performanceOutcome = "failed"; if (!auto) setNotice(current.readOnly.reason); return false; }
       setBusy("保存中");
       const lib = libraryRef.current?.history.present, document = parsePageDocument(detachRemovedSiteStyles(current.history.present, current.siteStyles ?? {}, siteSettings.settings ?? {}), blocks, { ...(lib ? { components: lib } : {}), ...(siteSettings.settings ? { siteStyles: siteSettings.settings } : {}) });
       const localized = targetMode ? localization.context : null;
@@ -1171,7 +1200,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         if (!queued.inFlight) replace({ ...current, operationQueue: { ...queued, inFlight } });
         const result = await adapter.applyOperations(structuredClone(inFlight.request), controller.signal);
         if (controller.signal.aborted) return false;
-        if (result.status === "conflict") { failed("conflict", false); return false; }
+        if (result.status === "conflict") { performanceOutcome = "failed"; failed("conflict", false); return false; }
         if (result.status !== "applied" || typeof result.version !== "string" || !result.version || result.version === current.version
           || !Number.isSafeInteger(result.revision) || result.revision <= inFlight.submitted.revision) throw new Error("保存後の revision が正しくありません。");
         const canonical = parsePageDocument(result.document, blocks, { ...(lib ? { components: lib } : {}), ...(activeSiteStyles ? { siteStyles: activeSiteStyles } : {}) });
@@ -1181,6 +1210,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
           const acknowledged = acceptAppliedOperations(latest.operationQueue, { ...result, document: canonical }, latest.history, applyToPage);
           replace({ ...latest, history: acknowledged.history, operationQueue: acknowledged.queue, saved: fingerprint(canonical), version: result.version, hasSavedDraft: true });
           if (acknowledged.replayFailed) {
+            performanceOutcome = "failed";
             failed("conflict", false);
             return false;
           }
@@ -1191,7 +1221,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
           ...(current.presentation ? { presentationVersion: current.presentation.version } : {}), ...(auto ? { trigger: "autosave" as const } : {}),
           ...(localized ? { localization: { expectedSourceVersion: localized.sourceVersion, expectedVersion: localized.version, expectedOverlayVersion: localized.overlay.version } } : {}) }, controller.signal);
         if (controller.signal.aborted) return false;
-        if (result.status === "conflict") { failed("conflict", false); return false; }
+        if (result.status === "conflict") { performanceOutcome = "failed"; failed("conflict", false); return false; }
         if (typeof result.version !== "string" || !result.version || result.version === current.version) throw new Error("version must advance");
         const latest = sessionRef.current;
         if (latest && sameTarget(latest.target, current.target) && latest.version === current.version) {
@@ -1206,9 +1236,10 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       if (localized) localization.reloadPage();
       if (!auto) setNotice(librarySaved ? "コンポーネントと下書きを保存しました。" : "下書きを保存しました。"); else if (hadProblem) setNotice("");
       pageSaved = true; return true;
-    } catch (error) { if (!controller.signal.aborted) failed(classifySaveError(error), true); return false; }
+    } catch (error) { performanceOutcome = "failed"; if (!controller.signal.aborted) failed(classifySaveError(error), true); return false; }
     finally {
       if (!controller.signal.aborted) {
+        finishEditorPerformance(measurement, performanceOutcome);
         setBusy("");
         if (librarySaved || pageSaved) {
           if (libraryRef.current) refreshUsage(libraryRef.current.siteId);
