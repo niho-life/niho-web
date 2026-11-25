@@ -238,6 +238,14 @@ export function parseNodes(input: unknown, path: string, context: NodeContext, d
   if (depth > 48 || input.length > 5000) fail(path, "document exceeds limits");
   return input.map((raw, index) => parseNode(raw, `${path}[${index}]`, context, depth, parent, insideLink, inline, insideForm, ancestorInteraction));
 }
+export const PAGE_NODE_NAME_MAX_LENGTH = 80;
+export const PAGE_NODE_NAME_CONTROL_PATTERN = "[\\u0000-\\u001F\\u007F-\\u009F]";
+const pageNodeNameControl = new RegExp(PAGE_NODE_NAME_CONTROL_PATTERN, "u");
+export function parsePageNodeName(value: unknown, at: string): string {
+  if (typeof value !== "string" || !value.length || value.length > 2 * PAGE_NODE_NAME_MAX_LENGTH || [...value].length > PAGE_NODE_NAME_MAX_LENGTH || pageNodeNameControl.test(value)) fail(at, "invalid node name");
+  return value;
+}
+
 /** @internal depth はノードを含む配列の深さ。 */
 export function parseNode(raw: unknown, at: string, context: NodeContext, depth = 0, parent?: string, insideLink = false, inline = false, insideForm = false, ancestorInteraction?: ElementInteraction["type"]): PageNode {
   const node = record(raw, at), { blocks, tokens, ids, htmlIds, usage } = context;
@@ -252,7 +260,8 @@ export function parseNode(raw: unknown, at: string, context: NodeContext, depth 
   }
   if (node.type === "instance" && !context.components) fail(at, "component instance requires a component library");
   if (node.type !== "element" && node.type !== "component" && node.type !== "instance") fail(`${at}.type`, "unknown node type");
-  keys(node, node.type === "element" ? ["type", "id", "tag", "formCompletionPageId", "asset", "icon", "embed", "interaction", "attrs", "style", "children"] : node.type === "component" ? ["type", "id", "block", "props", "style", "slots"] : ["type", "id", "component", "props", "style"], at);
+  keys(node, node.type === "element" ? ["type", "id", "name", "tag", "formCompletionPageId", "asset", "icon", "embed", "interaction", "attrs", "style", "children"] : node.type === "component" ? ["type", "id", "name", "block", "props", "style", "slots"] : ["type", "id", "name", "component", "props", "style"], at);
+  const name = node.name === undefined ? {} : { name: parsePageNodeName(node.name, `${at}.name`) };
   const id = identifier(node.id, `${at}.id`);
   if (ids.has(id)) fail(`${at}.id`, "duplicate node ID");
   ids.add(id);
@@ -263,7 +272,7 @@ export function parseNode(raw: unknown, at: string, context: NodeContext, depth 
     if (!shape) fail(`${at}.component`, "unknown component");
     // 展開後の root と同じ入れ子規則。内側の規則は展開後の文書で検証する。
     if (inline && !phrasing.has(shape.tag) || constrainedParent && !constrainedParent.includes(shape.tag) || insideLink && interactive.has(shape.tag) || shape.tag === "summary" && parent !== "details") fail(at, "invalid HTML content nesting");
-    return { type: "instance", id, component, ...instanceProps(node.props, shape, `${at}.props`), ...style };
+    return { type: "instance", id, ...name, component, ...instanceProps(node.props, shape, `${at}.props`), ...style };
   }
   if (node.type === "component") {
     if (inline || constrainedParent) fail(at, "component requires a flow content parent");
@@ -278,7 +287,7 @@ export function parseNode(raw: unknown, at: string, context: NodeContext, depth 
         if (rule.required) fail(`${at}.props.${name}`, "required prop missing");
       } else props[name] = prop(sourceProps[name], rule, `${at}.props.${name}`);
     }
-    return { type: "component", id, block, props, ...style, ...slotStyles(node.slots, contract, tokens, at) };
+    return { type: "component", id, ...name, block, props, ...style, ...slotStyles(node.slots, contract, tokens, at) };
   }
   if (!isElementTag(node.tag)) fail(`${at}.tag`, "unsupported element");
   const tag = node.tag;
@@ -354,7 +363,7 @@ export function parseNode(raw: unknown, at: string, context: NodeContext, depth 
         video.attrs?.controls === false || button.attrs?.type !== "button" || button.children.length !== 1 || button.children[0]?.type !== "text") fail(`${at}.children`, "video-toggle requires one controlled video followed by one text button");
   }
   if (interaction.interaction?.type === "loop-box" && !children.length) fail(`${at}.children`, "loop-box requires content");
-  return { type: "element", id, tag, ...formCompletion, ...asset, ...icon, ...embed, ...interaction, ...attrs, ...style, children };
+  return { type: "element", id, ...name, tag, ...formCompletion, ...asset, ...icon, ...embed, ...interaction, ...attrs, ...style, children };
 }
 
 export type PageParseOptions = {

@@ -43,7 +43,7 @@ import {
 import { LanguageSelector, LocalizationPanel, editorLocalizationLocaleFor, localizationEditorCss, localizedOperationProblem, useEditorLocalization, type EditorLocalizationCommandOutcome, type EditorLocalizationManualBuffer } from "./editor-localization.js";
 import { parseEditorLocaleReleaseApplyResult, parseEditorLocaleReleasePlan, parseEditorLocaleReleaseState } from "./editor-locale-release.js";
 import { documentLocaleFor, validateLocalizedDocumentSave, type LocalizationLocale } from "./localization.js";
-import { PAGE_OPERATION_LIMIT } from "./editing-page-operations.js";
+import { PAGE_OPERATION_LIMIT, pageNodesHaveNames, pageOperationChangesNodeNames, pageOperationUsesNodeNames } from "./editing-page-operations.js";
 import { acceptAppliedOperations, canSendOperations, fallbackOperations, operationQueue as createOperationQueue, operationApplier, reviewOperationConflict, queuePageEdit, queuePageTravel } from "./editor-operation-queue.js";
 import { editorSessionFrom, readEditorSession, type EditorSession } from "./editor-session.js";
 import { canvasViewportHeight, elementTypeLabel, fitCanvasScale, layerLabel, pathForNodeId, projectLayers, visibleLayers } from "./layers.js";
@@ -652,6 +652,18 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   let selectedLocale: LocalizationLocale | undefined;
   try { if (sessionLocalizationSite && session) selectedLocale = editorLocalizationLocaleFor(sessionLocalizationSite.config, session.target.locale); } catch { /* read hook reports the invalid mapping */ }
   const targetMode = !!sessionLocalizationSite && !!selectedLocale && selectedLocale !== sessionLocalizationSite.config.sourceLocale;
+  const nameTarget = session?.target, nameTargetKey = targetKeyOf(nameTarget);
+  const [nameCapability, setNameCapability] = useState<{ target: string; adapter: PageEditorProps["adapter"]; epoch: number; supported: boolean }>();
+  useEffect(() => {
+    if (!nameTarget || !adapter.discoverPageNodeNames) return;
+    const controller = new AbortController();
+    const update = (supported: boolean) => {
+      if (!controller.signal.aborted) setNameCapability({ target: nameTargetKey, adapter, epoch: loadEpoch, supported });
+    };
+    void adapter.discoverPageNodeNames(nameTarget, controller.signal).then((value) => update(value === true), () => update(false));
+    return () => controller.abort();
+  }, [adapter, nameTargetKey, loadEpoch]);
+  const pageNodeNames = nameCapability?.target === nameTargetKey && nameCapability.adapter === adapter && nameCapability.epoch === loadEpoch && nameCapability.supported;
   const hostSourceReady = !!session && adapter.localization?.sourceDocumentLocale?.(session.target.siteId) === session.target.locale
     && (!sessionLocalizationSite || selectedLocale === sessionLocalizationSite.config.sourceLocale);
   const localePublication = !!adapter.localization?.readRelease && !!adapter.localization.prepareRelease && !!adapter.localization.applyRelease && !!adapter.localization.rollbackRelease;
@@ -668,6 +680,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const manualInputPending = !!localizationManual?.pending && !!session && sameTarget(localizationManual.target, session.target);
   const hasInput = Object.keys(pendingFields).length > 0 || manualInputPending, dirty = !!session && needsPageSave(session);
   const masterId = editing && libraryPresent?.components.some((component) => component.id === editing) ? editing : null;
+  const canNameNode = !targetMode && (masterId ? components?.nodeNames === true : pageNodeNames);
   const libraryDirty = !!library && libraryFingerprint(library.history.present) !== library.saved, pendingChanges = dirty || libraryDirty, locale = session?.target.locale ?? "ja";
   const blocked = !!busy || !!plan || !!localeReleasePlan || !!pageChange || !!releaseSetPages;
   const versions = useVersionHistory({ adapter, blocks, components: libraryPresent, target: session?.target, version: session?.version, epoch: loadEpoch, report: setNotice,
@@ -900,13 +913,18 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   /** 複数の操作は1回の履歴にまとめる。部品の編集中は部品の root を1つだけ持つ文書を編集し、ライブラリへ書き戻す。 */
   function apply(operation: EditorOperation | readonly EditorOperation[]): string | undefined {
     const operations: readonly EditorOperation[] = "type" in operation ? [operation] : operation;
+    const current = sessionRef.current;
+    const preservesLocalizedNames = !masterId && targetMode && pageNodeNames && !!current;
+    if (!canNameNode && operations.some((next) => preservesLocalizedNames
+      ? pageOperationChangesNodeNames(current.history.present, next)
+      : pageOperationUsesNodeNames(next))) return "この保存先では要素の名前を変更できません。";
     if (masterId) {
       setDraft(null);
       // 部品はページのタイトル・公開情報・文字スタイルを持たない。
       if (operations.some((next) => next.type === "title" || next.type === "meta" || next.type === "textStyle" || next.type === "restore" || next.type === "nodeTextStyle" && next.name !== undefined)) return "コンポーネント本体の編集中は、テキストスタイルとページ設定を変更できません。ページに戻ってから操作してください。";
       return updateLibrary((library) => withComponentDocument(library, masterId, editMaster(componentDocument(library, masterId, locale), operations, library), blocks));
     }
-    const current = sessionRef.current; if (!current || editBlocked) return current?.readOnly?.reason ?? "処理が完了してから編集してください。";
+    if (!current || editBlocked) return current?.readOnly?.reason ?? "処理が完了してから編集してください。";
     try {
       const lib = libraryRef.current?.history.present;
       if (targetMode) {
@@ -1162,6 +1180,10 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     setBusy("コンポーネントを保存中");
     try {
       const library = parseComponentLibrary(bumpChangedComponentVersions(current.history.present, current.savedLibrary), blocks);
+      if (components.nodeNames !== true && pageNodesHaveNames(library.components.map(({ root }) => root))) {
+        failed("failed", "この保存先ではコンポーネント内の要素の名前を保存できません。");
+        return false;
+      }
       const result = await components.saveLibrary({ siteId: current.siteId, library: structuredClone(library), expectedVersion: current.version, ...(auto ? { trigger: "autosave" as const } : {}) }, signal);
       if (signal.aborted) return false;
       if (result.status === "conflict") { failed("library-conflict", conflicted); return false; }
@@ -1220,6 +1242,9 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
           request: { ...dependencyVersions, target: current.target, baseVersion: current.version, operationId: globalThis.crypto.randomUUID(), operations: queued.pending },
           count: queued.pending.length, submitted: document,
         };
+        if (!pageNodeNames && inFlight.request.operations.some(pageOperationUsesNodeNames)) {
+          setProblem("failed"); setNotice("この保存先では要素の名前を保存できません。"); return false;
+        }
         if (!queued.inFlight) replace({ ...current, operationQueue: { ...queued, inFlight } });
         const result = await adapter.applyOperations(structuredClone(inFlight.request), controller.signal);
         if (controller.signal.aborted) return false;
@@ -1239,6 +1264,9 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
           }
         }
       } else {
+        if (!pageNodeNames && pageNodesHaveNames(document.body)) {
+          setProblem("failed"); setNotice("この保存先では要素の名前を保存できません。"); return false;
+        }
         if (adapter.applyOperations && !localized && !queued.fallback) replace({ ...current, operationQueue: fallbackOperations(queued) });
         const result = await adapter.saveDraft({ target: current.target, document: structuredClone(document), expectedVersion: current.version,
           ...(current.presentation ? { presentationVersion: current.presentation.version } : {}), ...(auto ? { trigger: "autosave" as const } : {}),
@@ -1663,6 +1691,9 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     const current = sessionRef.current, lib = libraryRef.current;
     if (!current || !lib || libraryBlocked) return "処理が完了してから編集してください。";
     try {
+      if (components?.nodeNames !== true && pageNodesHaveNames([nodeAt(current.history.present, path)])) {
+        return "コンポーネントの保存先は要素の名前に対応していません。名前を削除してから部品化してください。";
+      }
       // 部品は文書の文字スタイルを参照できないため、選んだ範囲の文字スタイルは同じ見た目の個別指定にしてから登録する。
       const source = textStylePaths(current.history.present, path).reduce((document, at) => editDocument(document, { type: "nodeTextStyle", path: at, name: undefined, detach: true }, blocks, current.locks, lib.history.present, activeSiteStyles), current.history.present);
       // 選んだ要素は同じ ID のインスタンスになるため、選択はそのまま新しいインスタンスを指す。
@@ -2227,6 +2258,8 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         saved={masterId ? savedMaster : session?.saved} back={() => chooseSlot(null)} apply={apply} preview={previewOperation} reason={reason} notify={setNotice} input={input}
         style={{ tiers, tier, setTier: setBreakpoint, range, setRange, width, setWidth, pending, fieldKey: `${pathKey}-slot-${slotName}`, disabled: editBlocked, tierLocked: hasInput, tab: elementTab }} /> : <>
       {!node && <p className="e-help">要素を選択してください。</p>}
+      {canNameNode && elementTab === "settings" && node && node.type !== "text" && selection &&
+        field("要素の名前", node.name ?? "", (value) => ({ type: "name", path: selection, value: value === "" ? undefined : value }), "name", { reason: reason("name") })}
       {elementTab === "text" && node?.type === "text" && selection && field("テキスト", node.text, (value) => ({ type: "text", path: selection, value }), "text", { multiline: true, reason: document ? lockReason(document, selection, "text", locks) : undefined })}
       {node?.type === "element" && selection && <>
         {elementTab === "settings" && node.tag === "form" && <>
