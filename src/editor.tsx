@@ -67,7 +67,15 @@ export type { LayerTreePanelProps } from "./editor-layers.js";
 export { readEditorSession, projectLayers, pathForNodeId, visibleLayers, fitCanvasScale, canvasViewportHeight, LayerTreePanel };
 const emptyBlocks: EditorBlockRegistry = {};
 type Session = EditorSession;
-const needsPageSave = (session: Session) => !!session.operationQueue.inFlight || fingerprint(session.history.present) !== session.saved;
+const pageSaveChecks = new WeakMap<Session, { present: PageDocument; saved: string; dirty: boolean }>();
+const needsPageSave = (session: Session) => {
+  if (session.operationQueue.inFlight) return true;
+  const present = session.history.present, cached = pageSaveChecks.get(session);
+  if (cached?.present === present && cached.saved === session.saved) return cached.dirty;
+  const dirty = fingerprint(present) !== session.saved;
+  pageSaveChecks.set(session, { present, saved: session.saved, dirty });
+  return dirty;
+};
 /** 部品を読み直す確認中の状態。library・page は確認を始めた時点の作業コピーの fingerprint（変わっていれば適用しない）。 */
 type LibraryReload = { fresh: LibrarySession; plan: LibraryReloadPlan; library: string; page: string | undefined };
 type Inspector = "element" | "page" | "site" | "localization";
@@ -269,7 +277,8 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
   const resizing = useRef<{ element: HTMLElement; path: NodePath; x: number; y: number; width: number; height: number; inlineWidth: string; inlineHeight: string } | null>(null);
   const [linkOpen, setLinkOpen] = useState(false), [linkHref, setLinkHref] = useState("/"), [linkError, setLinkError] = useState("");
   const originalHtml = useRef(""), savedRange = useRef<Range | null>(null);
-  const scope = pageScope(rendered), entries = walkNodes(document), renderedEntries = rendered === document ? entries : walkNodes(rendered);
+  const scope = pageScope(rendered), entries = useMemo(() => walkNodes(document), [document]);
+  const renderedEntries = useMemo(() => rendered === document ? entries : walkNodes(rendered), [rendered, document, entries]);
   const selected = selectedNodeId ? renderedEntries.find(({ node }) => node.type !== "text" && node.id === selectedNodeId)?.node : selection ? nodeAt(document, selection) : undefined;
   const selectedId = selected?.type === "text" && selection && selection.length > 1 ? nodeAt(document, selection.slice(0, -1)) : selected;
   const primarySelectedNodeId = selectedNodeId ?? (selectedId && selectedId.type !== "text" ? selectedId.id : undefined);
@@ -1344,13 +1353,13 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const siteStylesReady = !adapter.readSiteSettings || siteSettings.status === "ready" && !!siteSettings.settings || session?.siteStyles !== undefined || !!session?.selfContained;
   const document = useMemo(() => rawDocument && siteStylesReady ? (master ? resolveComponentStyles(rawDocument, activeSiteStyles) : resolvePageStyles(detachRemovedSiteStyles(rawDocument, session?.siteStyles ?? {}, activeSiteStyles), activeSiteStyles)) : undefined, [rawDocument, master, activeSiteStyles, siteStylesReady, session?.siteStyles]);
   const selection = document ? pathForNodeId(document, selectedId) : null;
-  const entries = document ? walkNodes(document) : [];
-  const contentRows = entries.flatMap(({ node, path }) => {
+  const entries = useMemo(() => document ? walkNodes(document) : [], [document]);
+  const contentRows = useMemo(() => entries.flatMap(({ node, path }) => {
     if (node.type !== "element" || node.embed || node.icon) return [];
     const value = node.children.flatMap((child) => child.type === "text" ? [child.text] : []).join(" ").replace(/\s+/gu, " ").trim();
     return value ? [{ id: node.id, path, tag: node.tag, value }] : [];
-  });
-  const visibleContentRows = contentRows.filter(({ value }) => value.toLocaleLowerCase().includes(contentSearch.trim().toLocaleLowerCase()));
+  }), [entries]);
+  const visibleContentRows = useMemo(() => contentRows.filter(({ value }) => value.toLocaleLowerCase().includes(contentSearch.trim().toLocaleLowerCase())), [contentRows, contentSearch]);
   // インスペクタの候補に出す定義の場所。ページでは rawDocument に無い名前がサイト共通、部品の編集ではサイト共通に同名の定義がある名前がサイト共通。
   const styleOrigins = useMemo(() => {
     if (!rawDocument || !document) return undefined;
@@ -1377,7 +1386,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const formCompletionCandidates = useMemo(() => formCompletionTarget && formCompletionPages.status === "ready" && formCompletionPages.target === formCompletionTargetKey
     ? eligibleFormCompletionPages(formCompletionPages.pages, formCompletionTarget) as readonly EditorPage[] : [], [formCompletionPages, formCompletionTargetKey]);
   const staleProps = node?.type === "instance" && document && libraryPresent ? componentIssues(document, libraryPresent).find((issue) => issue.nodeId === node.id)?.staleProps ?? [] : [];
-  const locks = document ? effectiveLocks(document, masterId ? [] : session?.locks ?? [], blocks) : [];
+  const locks = useMemo(() => document ? effectiveLocks(document, masterId ? [] : session?.locks ?? [], blocks) : [], [document, masterId, session?.locks, blocks]);
   const reason = (field: string) => document ? (multiSelection ? selectedTargets.map(({ path }) => lockReason(document, path, field, locks)).find(Boolean) : selection ? lockReason(document, selection, field, locks) : undefined) : undefined;
   const pathKey = `${fieldEpoch}-${multiSelection ? selectedTargets.map(({ node: item }) => item.id).join(",") : selection?.join(".") ?? "page"}`;
   const slotName = !targetMode && slotChoice?.name && slotChoice.of === selectedId && node?.type === "component" && declaredSlot(blocks[node.block], slotChoice.name) ? slotChoice.name : null;
