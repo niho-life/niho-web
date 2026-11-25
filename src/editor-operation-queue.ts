@@ -280,6 +280,19 @@ function operationAnchor(document: PageDocument, operation: EditorOperationById)
   };
   switch (operation.type) {
     case "text": return siblings(operation.parentId);
+    case "style": case "attribute": case "prop": {
+      const matches = walkNodes(document).filter(({ node }) => node.type !== "text" && node.id === operation.nodeId);
+      if (matches.length !== 1) return undefined;
+      const located = matches[0]!;
+      const parentId = parentIdAt(document, located.path), node = located.node;
+      if (node.type === "text") return undefined;
+      if (operation.type === "style") {
+        const declarations = operation.breakpoint === "base" ? node.style?.base : node.style?.responsive?.find(({ minWidth }) => minWidth === operation.breakpoint)?.declarations;
+        return [node.type, parentId, declarations?.[operation.property]];
+      }
+      if (operation.type === "attribute") return node.type === "element" ? [node.type, parentId, node.attrs?.[operation.name]] : undefined;
+      return node.type === "component" ? [node.type, parentId, node.props[operation.name]] : undefined;
+    }
     case "add": case "addMany": return siblings(operation.parentId);
     case "duplicate": case "remove": case "move": {
       const located = walkNodes(document).find(({ node }) => node.type !== "text" && node.id === operation.nodeId);

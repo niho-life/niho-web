@@ -381,6 +381,8 @@ function rebaseTarget(document: PageDocument, operation: RebaseOperation): { par
   return node.type === "component" ? { parentId, oldValue: node.props[operation.name] } : undefined;
 }
 function unmetRebasePreconditions(document: PageDocument, operation: EditorOperationById, index: number): PageOperationUnmetPrecondition[] {
+  // childPath は text node に安定IDがなく、兄弟の追加・移動後に別ノードを指す可能性がある。
+  if (operation.type === "text") return [{ index, condition: "rebase_supported" }];
   if (!["text", "style", "attribute", "prop"].includes(operation.type)) return [{ index, condition: "rebase_supported" }];
   const change = operation as RebaseOperation, preconditions = change.preconditions as PageOperationPreconditions | undefined;
   if (!preconditions) return [{ index, condition: "preconditions" }];

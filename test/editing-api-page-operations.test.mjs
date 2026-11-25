@@ -153,6 +153,15 @@ test("pages.apply returns unmet preconditions for conflicting or unsupported sta
   assert.deepEqual(rejected, { status: "conflict", unmetPreconditions: [{ index: 0, condition: "rebase_supported" }] });
   assert.equal(unsupported.storage.readJournal().length, 1);
   assert.equal((await unsupported.client.read(target)).document.title, "Concurrent");
+
+  const structuralText = host(), concurrent = structuredClone(document), heading = concurrent.body[0].children[0];
+  heading.children.unshift(structuredClone(heading.children[0]));
+  assert.equal((await structuralText.storage.savePage(actor, target, "v1", concurrent)).status, "saved");
+  const response = await structuralText.call(operation([oneLetter]));
+  assert.equal(response.status, 409);
+  assert.deepEqual((await response.json()).unmetPreconditions, [{ index: 0, condition: "rebase_supported" }]);
+  const latest = await structuralText.client.read(target);
+  assert.deepEqual(latest.document.body[0].children[0].children.map(({ text }) => text), ["海のそばで過ごす", "海のそばで過ごす"]);
 });
 
 test("pages.apply reports multiple failed conditions for one operation and never partially commits a batch", async () => {
