@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { findLayer } from "./editor-layer-fixtures.mjs";
 import { JSDOM } from "jsdom";
 import {
   acceptTranslationResult, adoptTranslationCandidate, collectLocalizationUnits, createLocalizationOverlay, editLocalizedValue,
@@ -19,7 +20,12 @@ async function waitForUi(condition, message) {
   assert.ok(condition(), message);
 }
 const button = (text) => [...document.querySelectorAll("button")].find((node) => node.textContent === text) ?? (() => { const id = / · ([^ ]+)$/.exec(text)?.[1]; return id ? document.querySelector(`[data-node-id="${id}"] button.e-layer`) : undefined; })();
-async function click(text) { const target = button(text); assert.ok(target, text); await act(async () => target.click()); await flush(); }
+async function click(text) {
+  const press = async (target) => { await act(async () => target.click()); await flush(); };
+  const target = text.includes(" · ") ? await findLayer(() => button(text), press) : button(text);
+  assert.ok(target, text);
+  await press(target);
+}
 async function showInspector(value) {
   const target = document.querySelector('select[aria-label="編集する対象"]'); assert.ok(target, "inspector selector");
   await act(async () => {
@@ -938,6 +944,13 @@ test("shortcuts deny target structure changes and still undo and redo translated
     }
     assert.ok(frame.contentDocument.querySelector('[data-nw-node="heading"]'));
     assert.equal(frame.contentDocument.querySelector('[data-nw-node="heading_copy1"]'), null);
+    assert.equal(await key(frame.contentDocument.body, "ArrowDown"), false);
+    assert.equal(frame.contentDocument.querySelector(".nw-spacing-handle"), null);
+    assert.ok(await key(frame.contentDocument.body, "k", { metaKey: true }));
+    const palette = document.querySelector('[role="dialog"][aria-label="コマンドパレット"]');
+    const paletteActions = [...palette.querySelectorAll('section[aria-label="操作"] button')];
+    for (const name of ["複製", "削除", "選択要素を下へ"]) assert.equal(paletteActions.find((button) => button.textContent.startsWith(name)).disabled, true);
+    assert.ok(await key(palette.querySelector("input"), "Escape"));
     const before = input("テキスト").value;
     await change(input("テキスト"), "Shortcut edit");
     assert.ok(await key(frame.contentDocument.body, "z", { ctrlKey: true }));

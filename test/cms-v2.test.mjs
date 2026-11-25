@@ -235,6 +235,20 @@ test("schema plan reports conversion and binding impacts and apply checks scope,
   assert.equal(host.applySchema(owner, stale).status, "conflict");
 });
 
+test("schema plan reports field hint and placement changes and preserves reordered fields", () => {
+  const host = new MemoryHost(), next = structuredClone(host.schema);
+  next.schemaRevision = "schema-2";
+  const fields = next.collections[0].fields;
+  fields[0].hint = "記事の見出しを入力";
+  fields[1].placement = fields[1].placement === "side" ? "main" : "side";
+  [fields[0], fields[1]] = [fields[1], fields[0]];
+
+  const { migration } = host.planSchema(next);
+  assert.ok(migration.changes.some(({ kind, fieldId }) => kind === "convert" && fieldId === fields[0].fieldId));
+  assert.ok(migration.changes.some(({ kind, fieldId }) => kind === "convert" && fieldId === fields[1].fieldId));
+  assert.deepEqual(migration.schema.collections[0].fields.map(({ fieldId }) => fieldId), fields.map(({ fieldId }) => fieldId));
+});
+
 test("removing a collection keeps its source revisions in the apply conflict check", () => {
   const host = new MemoryHost(), next = structuredClone(host.schema);
   next.schemaRevision = "schema-2";
