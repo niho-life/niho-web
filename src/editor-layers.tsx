@@ -51,12 +51,15 @@ export function LayerTreePanel({ document, labels, rootLabel, selectedId, disabl
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(entries.filter((entry) => entry.hasChildren).map((entry) => entry.id)));
   const [focusId, setFocusId] = useState<string | null>(selectedId);
   const known = useRef(new Set(entries.map((entry) => entry.id))), refs = useRef(new Map<string, HTMLElement>());
+  const followSelection = useRef(false);
   useEffect(() => {
     const previous = known.current, addedParents = entries.filter((entry) => entry.hasChildren && !previous.has(entry.id)).map((entry) => entry.id);
     known.current = new Set(entries.map((entry) => entry.id));
     if (addedParents.length) setExpanded((current) => new Set([...current, ...addedParents]));
   }, [entries]);
   useEffect(() => {
+    const tree = refs.current.get("__root__")?.closest('[role="tree"]');
+    followSelection.current = tree?.contains(tree.ownerDocument.activeElement) ?? false;
     if (!selectedId) { setFocusId(null); return; }
     const byId = new Map(entries.map((entry) => [entry.id, entry] as const)), ancestors: string[] = [];
     let current = byId.get(selectedId)?.parentId ?? null;
@@ -67,6 +70,12 @@ export function LayerTreePanel({ document, labels, rootLabel, selectedId, disabl
   const visible = visibleLayers(entries, expanded), order = [null, ...visible.map((entry) => entry.id)] as (string | null)[];
   // effect が state を直す前の描画にも、必ず可視行を1つ roving tab stop にする。
   const visibleFocusId = focusId !== null && visible.some((entry) => entry.id === focusId) ? focusId : null;
+  useEffect(() => {
+    if (!followSelection.current || visibleFocusId !== selectedId) return;
+    // ツリーにフォーカスがある場合だけ、親子選択の後も現在の行でキーを続けられるようにする。
+    followSelection.current = false;
+    refs.current.get(selectedId ?? "__root__")?.focus();
+  }, [selectedId, visibleFocusId]);
   useEffect(() => {
     if (focusId === null || visible.some((entry) => entry.id === focusId)) return;
     const byId = new Map(entries.map((entry) => [entry.id, entry] as const)), shown = new Set(visible.map((entry) => entry.id));
