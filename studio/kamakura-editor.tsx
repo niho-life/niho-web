@@ -13,7 +13,7 @@ import { parseLocalizationOverlay, parseSiteLocalizationConfig } from "../src/lo
 import { KAMAKURA_CATALOG_CONTRACT_ERROR_CODE, KAMAKURA_CATALOG_CONTRACT_ERROR_STATUS, KAMAKURA_COMMON_PAGE_ID as COMMON_PAGE_ID, KAMAKURA_EDITOR_SITE_ID, KAMAKURA_ORIGIN_RETAINING_FRAME_SOURCES, KamakuraCatalogContractError, parseKamakuraCatalog, parseKamakuraCatalogPage } from "./kamakura-catalog.js";
 import type { KamakuraCatalog } from "./kamakura-catalog.js";
 import { parseEnglishPublication, parseEnglishPublicationAccepted } from "../src/english-publication.js";
-import { normalizePageChange, validatePageChangePlan } from "../src/editor-model.js";
+import { normalizePageChange, parseEditorReadOnly, validatePageChangePlan } from "../src/editor-model.js";
 import { createPageEditingApiClient, EditingApiClientError, supportsPageNodeNames } from "../src/editing-client.js";
 import type { EditingPageReleaseSetItem } from "../src/editing-api.js";
 
@@ -162,6 +162,7 @@ type PagePresentationRead = {
   presentationVersion: string;
   presentation: unknown;
   releases: NonNullable<EditorSnapshot["releases"]>;
+  readOnly?: NonNullable<EditorSnapshot["readOnly"]>;
   englishPublication?: NonNullable<EditorSnapshot["englishPublication"]>;
 };
 
@@ -174,9 +175,11 @@ function parsePagePresentationRead(value: unknown): PagePresentationRead {
         const release = entry as Record<string, unknown>;
         return !Number.isSafeInteger(release.revision) || Number(release.revision) < 1 || typeof release.label !== "string";
       })) throw new Error("表示情報の対象または版が一致しません。");
+  const readOnly = parseEditorReadOnly(source.readOnly);
   const result: PagePresentationRead = {
     documentVersion: source.documentVersion, presentationVersion: source.presentationVersion,
     presentation: source.presentation, releases: source.releases as NonNullable<EditorSnapshot["releases"]>,
+    ...(readOnly ? { readOnly } : {}),
   };
   if (source.englishPublication !== undefined) result.englishPublication = parseEnglishPublication(source.englishPublication);
   return result;
@@ -380,6 +383,7 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
           || required && !hasPresentationVersion) throw new EditorApiError(409, "version_conflict");
       return {
         document, version: wire.version, releases: metadata.releases,
+        ...(metadata.readOnly ? { readOnly: metadata.readOnly } : {}),
         ...(hasPresentationVersion ? { presentation: metadata.presentation } : {}),
         ...(metadata.englishPublication ? { englishPublication: metadata.englishPublication } : {}),
       };

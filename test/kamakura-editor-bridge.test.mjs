@@ -241,9 +241,9 @@ test("Kamakura editor adapter はeditorStateを優先し、移行中は別read�
     shared: { header: { ...document, pageId: "site-header" }, footer: { ...document, pageId: "site-footer" } } };
   const editorState = { readOnly: { reason: "読み取り専用" }, englishPublication: { state: "published", retryable: false }, releases: [{ revision: 1, label: "公開中" }] };
   const fastSnapshot = { document, version, presentation, ...editorState };
-  const fallbackSnapshot = { document, version, presentation, releases: editorState.releases, englishPublication: editorState.englishPublication };
+  const fallbackSnapshot = { document, version, presentation, releases: editorState.releases, readOnly: editorState.readOnly, englishPublication: editorState.englishPublication };
   let wire = { document, version, presentation, presentationVersion: presentation.version, editorState };
-  let presentationRead = { documentVersion: version, presentationVersion: presentation.version, presentation, releases: editorState.releases, englishPublication: editorState.englishPublication };
+  let presentationRead = { documentVersion: version, presentationVersion: presentation.version, presentation, releases: editorState.releases, readOnly: editorState.readOnly, englishPublication: editorState.englishPublication };
   const calls = [];
   t.mock.method(globalThis, "fetch", async (input, init) => {
     const url = new URL(String(input), "https://studio.niho.life");
@@ -280,6 +280,14 @@ test("Kamakura editor adapter はeditorStateを優先し、移行中は別read�
     assert.deepEqual(calls.splice(0).sort(), [commonReadPath, presentationPath].sort());
   }
   presentationRead = { ...presentationRead, documentVersion: version, presentationVersion: presentation.version, presentation };
+  presentationRead = { ...presentationRead, readOnly: { reason: "read-only metadata must be validated" } };
+  wire = { document, version, presentationVersion: presentation.version };
+  assert.deepEqual(await adapter.readDocument(target, signal), { ...fallbackSnapshot, readOnly: { reason: "read-only metadata must be validated" } });
+  assert.deepEqual(calls.splice(0).sort(), [commonReadPath, presentationPath].sort());
+  presentationRead = { ...presentationRead, readOnly: { reason: "bad", editLabel: "missing URL" } };
+  await assert.rejects(adapter.readDocument(target, signal), /読み取り専用の編集先/u);
+  assert.deepEqual(calls.splice(0).sort(), [commonReadPath, presentationPath].sort());
+  presentationRead = { ...presentationRead, readOnly: editorState.readOnly };
   wire = { document, version, editorState: {} };
   assert.deepEqual(await adapter.readDocument(target, signal), { document, version });
   assert.deepEqual(calls.splice(0).sort(), [commonReadPath, presentationPath].sort());
