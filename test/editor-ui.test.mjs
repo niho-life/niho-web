@@ -325,8 +325,6 @@ test("performance measurements finish after the canvas is ready and a draft is a
   try {
     assert.deepEqual(events, [["begin", "initial-load"], ["finish", "initial-load"]]);
     await clickPage("別ページ");
-    const frame = document.querySelector("iframe");
-    await act(async () => frame.dispatchEvent(new dom.window.Event("load")));
     assert.deepEqual(events.slice(2), [["begin", "page-switch"], ["finish", "page-switch"]]);
     const editRenderPhases = () => events.filter(([, operation]) => operation === "edit-render").map(([phase]) => phase);
     const assertEditRenderFinished = () => {
@@ -1859,23 +1857,41 @@ test("shortcut matrix denies mutations with reasons in read-only, locked, histor
   }
 });
 
-test("shortcut zoom only changes the canvas and releases listeners from replaced iframe documents", async () => {
+test("page switches reuse the canvas iframe and keep its current keyboard listener", async () => {
   const app = await setup();
   try {
     const scale = () => document.querySelector('select[aria-label="表示倍率"]').value;
-    const oldBody = canvasBody(), OldKeyboardEvent = oldBody.ownerDocument.defaultView.KeyboardEvent;
+    const oldFrame = document.querySelector("iframe"), oldBody = canvasBody(), OldKeyboardEvent = oldBody.ownerDocument.defaultView.KeyboardEvent;
     assert.ok(await shortcut(oldBody, "0", { ctrlKey: true })); assert.equal(scale(), "1");
     assert.ok(await shortcut(document.body, "+", { metaKey: true, shiftKey: true })); assert.equal(scale(), "1.5");
     assert.ok(await shortcut(oldBody, "-", { metaKey: true })); assert.equal(scale(), "1");
     assert.equal(button("元に戻す").disabled, true);
     await clickPage("別ページ");
-    const frame = document.querySelector("iframe");
-    await act(async () => frame.dispatchEvent(new dom.window.Event("load")));
-    assert.notEqual(canvasBody(), oldBody);
+    assert.equal(document.querySelector("iframe"), oldFrame, "page changes keep the same iframe");
+    assert.equal(canvasBody(), oldBody, "the current page is rendered into the existing iframe document");
     const oldEvent = new OldKeyboardEvent("keydown", { key: "-", ctrlKey: true, bubbles: true, cancelable: true });
     await act(async () => oldBody.dispatchEvent(oldEvent));
-    assert.equal(oldEvent.defaultPrevented, false); assert.equal(scale(), "1");
-    assert.ok(await shortcut(canvasBody(), "-", { ctrlKey: true })); assert.equal(scale(), "0.75");
+    assert.equal(oldEvent.defaultPrevented, true); assert.equal(scale(), "0.75");
+    assert.ok(await shortcut(canvasBody(), "0", { ctrlKey: true })); assert.equal(scale(), "1");
+  } finally { await app.cleanup(); }
+});
+
+test("page switches reset uncontrolled canvas DOM state without replacing the iframe", async () => {
+  const page = (pageId) => ({ ...structuredClone(fixture), pageId, body: [{ type: "element", id: "shared-details", tag: "details", children: [
+    { type: "element", id: "shared-summary", tag: "summary", children: [{ type: "text", text: "ページ内容" }] },
+    { type: "element", id: "shared-content", tag: "p", children: [{ type: "text", text: "同じIDの内容" }] }
+  ] }] });
+  const app = await setup({ adapter: { readDocument: async (target) => ({ document: page(target.pageId), version: `v-${target.pageId}` }) } });
+  try {
+    const frame = document.querySelector("iframe"), body = canvasBody(), originalDetails = body.querySelector("details");
+    assert.ok(originalDetails);
+    originalDetails.open = true;
+    await clickPage("別ページ");
+    const currentDetails = canvasBody().querySelector("details");
+    assert.equal(document.querySelector("iframe"), frame, "page changes keep the same iframe");
+    assert.equal(canvasBody(), body, "the iframe document remains mounted");
+    assert.notEqual(currentDetails, originalDetails, "the page renderer resets uncontrolled elements");
+    assert.equal(currentDetails.open, false, "the next page starts from its document state");
   } finally { await app.cleanup(); }
 });
 
