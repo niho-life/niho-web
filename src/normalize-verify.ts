@@ -1,11 +1,11 @@
 import { resolvePageDocument } from "./components.js";
 import { instancesOf } from "./component-expand.js";
-import { styleDeclarationOrder } from "./css.js";
+import { stateTransitionProperties, styleDeclarationOrder } from "./css.js";
 import { parsePageDocument } from "./document.js";
 import type { NormalizationInput, NormalizationVerification } from "./normalize.js";
 import { parseSitePresentation, presentationLayoutDocument } from "./presentation.js";
-import { declarationCss, stateNames } from "./style-values.js";
-import type { NodeStyle, PageDocument, PageNode, StateName, StyleDeclarations, TextStyle } from "./types.js";
+import { declarationCss, stateNames, tokenCssValue } from "./style-values.js";
+import type { NodeStyle, PageDocument, PageNode, StateName, StyleDeclarations, StyleValue, TextStyle } from "./types.js";
 
 type Property = keyof StyleDeclarations;
 const shorthandGroups: readonly (readonly Property[])[] = [
@@ -64,15 +64,24 @@ function comparisonWidths(styles: readonly (NodeStyle | TextStyle | undefined)[]
  * separately compare their definitions in the document; this also preserves future
  * cascade behavior of the same token inside responsive rules.
  */
-function inputs(style: NodeStyle | undefined, textStyle: TextStyle | undefined, width: number, mask: number): string {
+function inputs(style: NodeStyle | undefined, textStyle: TextStyle | undefined, width: number, mask: number, tokens: PageDocument["tokens"]): string {
   const declarationsByProperty = new Map<Property, string[]>();
   const shorthandInputs: string[][] = shorthandGroups.map(() => []);
   const apply = (declarations: StyleDeclarations | undefined): void => {
     if (!declarations) return;
     for (const property of styleDeclarationOrder(declarations)) {
-      const css = property === "backgroundImage"
-        ? `background-image:${normalizationKey(declarations.backgroundImage)}`
-        : declarationCss(property, declarations[property]!);
+      let css: string;
+      if (property === "backgroundImage") css = `background-image:${normalizationKey(declarations.backgroundImage)}`;
+      else {
+        const value = declarations[property]!;
+        let effectiveValue: StyleValue = value;
+        if (typeof value === "object" && "token" in value) {
+          const token = tokens[value.token];
+          if (!token) throw new TypeError("unresolved style token");
+          effectiveValue = tokenCssValue(token);
+        }
+        css = declarationCss(property, effectiveValue);
+      }
       const previous = declarationsByProperty.get(property);
       // Keep fallbacks and shorthand collisions. Only consecutive repetitions of
       // an identical declaration are redundant for these inputs.
@@ -97,15 +106,20 @@ const backgroundIsolation = (style: NodeStyle | undefined) => style?.base?.backg
 type Difference = { readonly nodeId?: string; readonly slot?: string; readonly width?: number; readonly states?: readonly StateName[]; readonly reason: string };
 
 function styleDifference(
-  left: NodeStyle | undefined, right: NodeStyle | undefined, leftText: TextStyle | undefined, rightText: TextStyle | undefined
+  left: NodeStyle | undefined, right: NodeStyle | undefined, leftText: TextStyle | undefined, rightText: TextStyle | undefined,
+  leftTokens: PageDocument["tokens"], rightTokens: PageDocument["tokens"]
 ): Difference | undefined {
   if (normalizationKey(left) === normalizationKey(right) && normalizationKey(leftText) === normalizationKey(rightText)) return undefined;
-  if (backgroundIsolation(left) !== backgroundIsolation(right) || normalizationKey(left?.appear) !== normalizationKey(right?.appear)
-    || normalizationKey(left?.states) !== normalizationKey(right?.states)) return { reason: "background_motion_or_state_inputs" };
+  if (normalizationKey(stateTransitionProperties(left)) !== normalizationKey(stateTransitionProperties(right))) {
+    return { reason: "background_motion_or_state_inputs" };
+  }
+  if (backgroundIsolation(left) !== backgroundIsolation(right) || normalizationKey(left?.appear) !== normalizationKey(right?.appear)) {
+    return { reason: "background_motion_or_state_inputs" };
+  }
   for (const width of comparisonWidths([left, right, leftText, rightText])) {
     // CSS pseudo classes can be active simultaneously, so include their combinations.
     for (let mask = 0; mask < 1 << stateNames.length; mask++) {
-      if (inputs(left, leftText, width, mask) !== inputs(right, rightText, width, mask)) {
+      if (inputs(left, leftText, width, mask, leftTokens) !== inputs(right, rightText, width, mask, rightTokens)) {
         return { reason: "style_inputs", width, states: stateNames.filter((_, index) => mask & (1 << index)) };
       }
     }
@@ -139,12 +153,12 @@ function documentDifference(left: PageDocument, right: PageDocument): Difference
       if (normalizationKey(shape(node)) !== normalizationKey(shape(other))) return { nodeId: node.id, reason: "node_inputs" };
       const leftText = node.style?.textStyle ? left.textStyles?.[node.style.textStyle] : undefined;
       const rightText = other.style?.textStyle ? right.textStyles?.[other.style.textStyle] : undefined;
-      const result = styleDifference(node.style, other.style, leftText, rightText);
+      const result = styleDifference(node.style, other.style, leftText, rightText, left.tokens, right.tokens);
       if (result) return { nodeId: node.id, ...result };
       if (node.type === "component" && other.type === "component") {
         const slots = new Set([...Object.keys(node.slots ?? {}), ...Object.keys(other.slots ?? {})]);
         for (const slot of slots) {
-          const difference = styleDifference(node.slots?.[slot], other.slots?.[slot], undefined, undefined);
+          const difference = styleDifference(node.slots?.[slot], other.slots?.[slot], undefined, undefined, left.tokens, right.tokens);
           if (difference) return { nodeId: node.id, slot, ...difference };
         }
       }
