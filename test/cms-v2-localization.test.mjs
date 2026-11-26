@@ -54,6 +54,15 @@ test("CMS 翻訳は fieldId identity、MANUAL 保護、明示 fallback で targe
   assert.ok(updatedStatus.reviewNeeded > 0);
   assert.equal(materializeCmsLocalizedItem(overlay2, updatedCollection, { revision: "rev-en-stale", fallback: "omit" }).status, "omitted");
 
+  const emptyOptionalField = { ...source, revision: "rev-ja-3", values: { ...source.values, "field-summary": "" } };
+  const emptyFieldCollection = await collectCmsLocalizationUnits(model, emptyOptionalField, "en-US");
+  const obsoleteStatus = cmsLocalizationStatus(overlay2, emptyFieldCollection);
+  assert.equal(obsoleteStatus.obsolete, 1);
+  assert.doesNotThrow(() => parseCmsLocalizationOverlay(overlay2, emptyFieldCollection));
+  const withObsoleteEntry = materializeCmsLocalizedItem(overlay2, emptyFieldCollection, { revision: "rev-en-4", fallback: "source" });
+  assert.equal(withObsoleteEntry.status, "ready");
+  assert.equal(withObsoleteEntry.item.values["field-summary"], "");
+
   const omitted = materializeCmsLocalizedItem(overlay0, collection, { revision: "rev-en-1", fallback: "omit" });
   assert.equal(omitted.status, "omitted");
   const materialized = materializeCmsLocalizedItem(overlay2, collection, { revision: "rev-en-2", fallback: "omit" });
@@ -68,6 +77,30 @@ test("CMS 翻訳は fieldId identity、MANUAL 保護、明示 fallback で targe
   assert.equal(fallback.item.values["field-title"], "海辺の案内");
 });
 
+test("CMS 翻訳単位は記号を含むfieldIdを符号化し、不正なslugをreadyにしない", async () => {
+  const base = schema(), posts = base.collections.find(({ id }) => id === "posts");
+  const optionalText = posts.fields.find(({ fieldId }) => fieldId === "field-summary");
+  const model = parseCmsSchema({ ...base, collections: base.collections.map((collection) => collection.id === "posts"
+    ? { ...collection, fields: [...collection.fields, { ...optionalText, fieldId: "title~1", key: "host-note", label: "補足" }] }
+    : collection) });
+  const source = item("", "海辺の案内", "rev-ja-symbol", model);
+  const sourceWithSymbol = parseCmsItemRevision({ ...source, values: { ...source.values, "title~1": "原文" } }, model);
+  const collection = await collectCmsLocalizationUnits(model, sourceWithSymbol, "en-US");
+  const symbolField = collection.fields.find(({ identity }) => identity.fieldId === "title~1");
+  assert.ok(symbolField);
+  assert.match(symbolField.unitId, /^cms\.field\.[A-Za-z0-9_-]+$/u);
+  assert.ok(!symbolField.unitId.includes("~"));
+  assert.doesNotThrow(() => editCmsLocalizedValue(createCmsLocalizationOverlay(collection), collection,
+    { fieldId: "title~1", expectedVersion: 1, value: "Translated" }));
+
+  const standard = await collectCmsLocalizationUnits(schema(), item(), "en-US");
+  const badSlug = editCmsLocalizedValue(createCmsLocalizationOverlay(standard), standard,
+    { fieldId: "field-slug", expectedVersion: 1, value: "Bad Slug!" });
+  const plan = materializeCmsLocalizedItem(badSlug, standard, { revision: "rev-en-bad-slug", fallback: "source" });
+  assert.equal(plan.status, "invalid");
+  assert.ok(plan.problems.some(({ fieldId }) => fieldId === "field-slug"));
+});
+
 test("CMS rich text は安全な host adapter が無ければ未対応として返し、target 生成は原文属性を保持する", async () => {
   const model = schema(), source = item('<a href="/about" title="Read">海辺</a>');
   const withoutAdapter = await collectCmsLocalizationUnits(model, source, "en-US");
@@ -76,7 +109,8 @@ test("CMS rich text は安全な host adapter が無ければ未対応として�
   assert.equal(unsupportedStatus.complete, false);
   assert.equal(unsupportedStatus.missing, 5);
   assert.equal(unsupportedStatus.issues, 1);
-  assert.ok(unsupportedStatus.details.some(({ unitId, state }) => unitId === "cms.field.field-body" && state === "missing"));
+  const bodyUnitId = `cms.field.${Buffer.from("field-body").toString("base64url")}`;
+  assert.ok(unsupportedStatus.details.some(({ unitId, state }) => unitId === bodyUnitId && state === "missing"));
   const omitted = materializeCmsLocalizedItem(createCmsLocalizationOverlay(withoutAdapter), withoutAdapter,
     { revision: "rev-en-0", fallback: "omit" });
   assert.equal(omitted.status, "omitted");

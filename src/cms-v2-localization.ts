@@ -3,7 +3,7 @@ import {
   type LocalizationCollection, type LocalizationDraftEntry, type LocalizationOverlay, type LocalizationStatus, type LocalizationValue
 } from "./localization.js";
 import type { CmsField, CmsItemRevision, CmsSchema } from "./cms-v2-schema.js";
-import { cmsCollection, cmsId, parseCmsItemRevision, parseCmsSchema, parseCmsValues } from "./cms-v2-schema.js";
+import { cmsCollection, cmsId, cmsValueProblems, parseCmsItemRevision, parseCmsSchema, parseCmsValues, type CmsProblem } from "./cms-v2-schema.js";
 import type { LocalizationLocale, LocalizedRichText } from "./localization-types.js";
 import { fail, identifier, keys, localeCode, record, string } from "./validation-utils.js";
 
@@ -62,6 +62,7 @@ export type CmsLocalizationResult = {
 };
 export type CmsLocalizedItemPlan =
   | { readonly status: "ready"; readonly item: CmsItemRevision; readonly missingFieldIds: readonly string[] }
+  | { readonly status: "invalid"; readonly problems: readonly CmsProblem[]; readonly missingFieldIds: readonly string[] }
   | { readonly status: "omitted"; readonly missingFieldIds: readonly string[] };
 
 const LOCALE_FAMILY: Readonly<Record<string, LocalizationLocale>> = { ja: "ja", en: "en" };
@@ -161,7 +162,7 @@ function genericLocale(value: string): LocalizationLocale {
 }
 
 function unitId(fieldId: string): string {
-  const id = `${CMS_UNIT_PREFIX}${fieldId}`;
+  const id = `${CMS_UNIT_PREFIX}${base64UrlEncode(fieldId)}`;
   if (id.length > 300) fail("fieldId", "CMS field ID is too long");
   return id;
 }
@@ -235,8 +236,7 @@ function genericOverlay(input: unknown, collection: CmsLocalizationCollection): 
   if (!sameItemIdentity(identity, collection.identity)) fail("$cmsOverlay.identity", "CMS localization identity mismatch");
   const overlay = parseLocalizationOverlay({ schemaVersion: 1, siteId: INTERNAL_LOCALIZATION_SITE_ID, pageId: collection.scopeId,
     sourceLocale: genericLocale(identity.sourceLocale), targetLocale: genericLocale(identity.targetLocale), version: source.version, entries: source.entries });
-  const unitIds = new Set(collection.fields.map(({ unitId: id }) => id));
-  if (overlay.entries.some((entry) => !unitIds.has(entry.unitId))) fail("$cmsOverlay.entries", "unknown CMS field ID");
+  if (overlay.entries.some((entry) => !entry.unitId.startsWith(CMS_UNIT_PREFIX))) fail("$cmsOverlay.entries", "invalid CMS field unit ID");
   return overlay;
 }
 
@@ -334,6 +334,8 @@ export function materializeCmsLocalizedItem(input: unknown, collection: CmsLocal
   }
   const definition = cmsCollection(collection.schema, collection.identity.collectionId);
   const checkedValues = parseCmsValues(values, definition);
+  const problems = cmsValueProblems(definition, checkedValues);
+  if (problems.length) return { status: "invalid", problems, missingFieldIds: missing };
   const item = parseCmsItemRevision({ ...collection.sourceItem, locale: collection.identity.targetLocale, revision, values: checkedValues }, collection.schema);
   return { status: "ready", item, missingFieldIds: missing };
 }

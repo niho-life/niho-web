@@ -4,7 +4,7 @@
 
 ## Identity と単位
 
-項目の identity は `siteId`、`collectionId`、`itemId`、`sourceLocale`、`targetLocale` です。各翻訳単位はこの identity に不変の `fieldId` を加えます。表示名や変更可能な `key` は identity に使いません。`cmsLocalizationItemKey(collectionId, itemId)` は workspace と `niho-edit` で共有する item key を作り、`cms.field.<fieldId>` を操作単位IDに使います。locale は identity に明示し、`ja-JP` / `en-US` などの表記を保持します。現在の共通 translation core が扱う言語 family は日本語と英語です。generic localization core 内の page/site scope は派生IDで分離し、CMS の正本 identity は overlay に保持します。
+項目の identity は `siteId`、`collectionId`、`itemId`、`sourceLocale`、`targetLocale` です。各翻訳単位はこの identity に不変の `fieldId` を加えます。表示名や変更可能な `key` は identity に使いません。`cmsLocalizationItemKey(collectionId, itemId)` は workspace と `niho-edit` で共有する item key を作り、field IDをbase64urlで符号化した `cms.field.<encodedFieldId>` を操作単位IDに使います。CMSが許可するfield ID全体を共通coreの単位ID制約内で衝突なく扱えます。locale は identity に明示し、`ja-JP` / `en-US` などの表記を保持します。現在の共通 translation core が扱う言語 family は日本語と英語です。generic localization core 内の page/site scope は派生IDで分離し、CMS の正本 identity は overlay に保持します。
 
 `collectCmsLocalizationUnits(schema, sourceItem, targetLocale)` は現在の schema と source revision を検証し、`text`、`longText`、`url`、`slug` の値を翻訳単位にします。空値と非テキスト値はそのまま残ります。`richText` は安全な parser をホストから受け取ったときだけ単位にします。parser は翻訳用の構造と無害化済み原文 HTML を返します。fingerprint は構造化した文章、原文 HTML、無害化済みHTMLを含みます。serializer は無害化済み原文 HTML を受け取るため、リンク先など翻訳対象外の属性を保ちながら再度 sanitizer を通せます。parser/serializer は許可タグと属性をホストで担保します。画像、参照、選択肢、日時、gallery等は自動翻訳へ渡しません。
 
