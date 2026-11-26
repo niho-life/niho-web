@@ -9,6 +9,8 @@ import { fail, identifier, isSafePublicUrl, keys, line, localeCode, record } fro
 export const SITE_PRESENTATION_LIMITS = Object.freeze({ fonts: 512, sourcesPerFont: 4, versionLength: 256, unicodeRangeLength: 4096, overlays: 8, bindingsPerOverlay: 16, overlayLabelLength: 160,
   hostViews: 64, hostViewBytes: 5_000_000, hostViewNodes: 20_000, framesPerView: 8, carouselSlides: 64, carouselControls: 16 });
 const unicodeRange = /^(?:U\+[0-9A-F?]{1,6}(?:-[0-9A-F]{1,6})?)(?:\s*,\s*U\+[0-9A-F?]{1,6}(?:-[0-9A-F]{1,6})?)*$/iu;
+const emptyCompactSharedSnapshot = (document: PageDocument): boolean => document.body.length === 0
+  && Object.keys(document.tokens).length === 0 && document.meta === undefined && document.textStyles === undefined;
 
 function fontFace(input: unknown, path: string): SiteFontFace {
   const source = record(input, path);
@@ -136,7 +138,7 @@ function carousel(input: unknown, nodes: ReadonlyMap<string, ElementNode>, path:
 /** 外部 snapshot の presentation を対象ページへ固定して検証する。 */
 export function parseSitePresentation(input: unknown, target: Pick<PageDocument, "siteId" | "locale"> & Partial<Pick<PageDocument, "pageId">>, blocks: BlockContracts = {}): SitePresentation {
   const source = record(input, "presentation");
-  keys(source, ["schemaVersion", "siteId", "locale", "version", "reset", "tokens", "layout", "fonts", "shared", "overlays", "hostViews", "links"], "presentation");
+  keys(source, ["schemaVersion", "siteId", "locale", "version", "reset", "tokens", "layout", "fonts", "shared", "compactSharedReferences", "overlays", "hostViews", "links"], "presentation");
   if (source.schemaVersion !== 1) fail("presentation.schemaVersion", "unsupported schema version");
   const siteId = identifier(source.siteId, "presentation.siteId"), locale = localeCode(source.locale, "presentation.locale");
   if (siteId !== target.siteId || locale !== target.locale) fail("presentation", "target mismatch");
@@ -149,6 +151,17 @@ export function parseSitePresentation(input: unknown, target: Pick<PageDocument,
   const shared = record(source.shared, "presentation.shared");
   keys(shared, ["header", "footer"], "presentation.shared");
   const header = parsePageDocument(shared.header, blocks), footer = parsePageDocument(shared.footer, blocks);
+  let compactSharedReferences: ("header" | "footer")[] | undefined;
+  if (source.compactSharedReferences !== undefined) {
+    const references = source.compactSharedReferences;
+    if (!Array.isArray(references) || references.length > 2 || references.some((value) => value !== "header" && value !== "footer")
+      || new Set(references).size !== references.length) fail("presentation.compactSharedReferences", "invalid compact shared references");
+    compactSharedReferences = references as ("header" | "footer")[];
+    if (compactSharedReferences.includes("header") && !emptyCompactSharedSnapshot(header)
+      || compactSharedReferences.includes("footer") && !emptyCompactSharedSnapshot(footer)) {
+      fail("presentation.compactSharedReferences", "compact shared reference must contain identity only");
+    }
+  }
   for (const [name, document] of [["header", header], ["footer", footer]] as const) {
     if (document.siteId !== siteId || document.locale !== locale) fail(`presentation.shared.${name}`, "target mismatch");
   }
@@ -202,7 +215,9 @@ export function parseSitePresentation(input: unknown, target: Pick<PageDocument,
     const frames = externalFrames(view.externalFrames, nodes, `${path}.externalFrames`), binding = carousel(view.carousel, nodes, `${path}.carousel`);
     return { id, block, props, document, ...(Object.keys(slots).length ? { slotBindings: slots } : {}), ...(frames.length ? { externalFrames: frames } : {}), ...(binding ? { carousel: binding } : {}) };
   });
-  return { schemaVersion: 1, siteId, locale, version, reset: "neutral-v1", tokens, ...(layout ? { layout } : {}), fonts, shared: { header, footer }, ...(overlays.length ? { overlays } : {}), ...(hostViews.length ? { hostViews } : {}), ...(source.links === undefined ? {} : { links: parsePresentationLinks(source.links) }) };
+  return { schemaVersion: 1, siteId, locale, version, reset: "neutral-v1", tokens, ...(layout ? { layout } : {}), fonts, shared: { header, footer },
+    ...(compactSharedReferences?.length ? { compactSharedReferences } : {}), ...(overlays.length ? { overlays } : {}), ...(hostViews.length ? { hostViews } : {}),
+    ...(source.links === undefined ? {} : { links: parsePresentationLinks(source.links) }) };
 }
 
 /** renderer用の安定した完全一致key。parseSitePresentationでprops検証後だけ使う。 */

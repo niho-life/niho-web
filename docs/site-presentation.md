@@ -4,7 +4,7 @@
 
 - `siteId`・`locale` は編集対象、header、footer の全てで一致させる。`version` はフォント manifest・layout・共有文書依存を固定する opaque な版とする。
 - `reset` は現在 `neutral-v1` のみ。`layout` は `NodeStyle`、`tokens` は既存 design token、`fonts` は HTTPS/root-relative の安全な woff/woff2 URLと有限 descriptorだけを受け付ける。CSS文字列・実行コード・任意HTMLは受け付けない。
-- `shared.header` / `shared.footer` は canonical な別 `PageDocument`。本文へ複製して保存しない。共有文書自身を編集するときは対応slotの文書だけを置換し、本文slotには重複表示しない。
+- `shared.header` / `shared.footer` は canonical な別 `PageDocument`。本文へ複製して保存しない。共有文書自身を編集するときは対応slotの文書だけを置換し、本文slotには重複表示しない。転送量を抑えるcompact snapshotは、`compactSharedReferences: ["header"]` のようにslotを明示し、該当文書は空本文・空token・meta/textStylesなしにする。compact参照の実体は版付き表示入力で解決し、通常の完全 `PageDocument`（空本文を含む）は marker なしで従来どおり使う。
 - `SitePageRenderer` と `renderSitePageToHtml` は、同じ reset・`@font-face`・layout・header/body/footer composition を使う。各文書は別 `data-nw-owner` scope のため、本文キャンバスの選択・ドラッグは共有枠へ越境しない。
 - `presentationAssetDocument` は素材解決用の一時的なbody結合だけに使う。保存対象にしてはならない。
 - presentation がある snapshot の保存・公開確認・公開実行は `presentationVersion` をCASする。履歴snapshotに presentation がない旧版へ、現在の共有枠を暗黙に混ぜない。

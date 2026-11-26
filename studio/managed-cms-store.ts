@@ -1,6 +1,8 @@
 import { CMS_DELIVERY_RENDERER_VERSION, serializeCmsDeliverySnapshot } from "../src/cms-delivery-contract.js";
 import { starterCollection } from "./managed-cms-model.js";
+import { assetKey } from "../src/assets.js";
 import { collectCmsReleaseAssetReferences, parseCmsReleaseAssetManifest, parseCmsRouteTable, type CmsItemRevision, type CmsPublicAsset, type CmsReleasePin, type CmsReleaseSnapshot, type CmsRouteTable, type CmsSchema } from "../src/cms-v2.js";
+import { parseCmsPublicAssets } from "../src/cms-v2-assets.js";
 import type { AssetReference } from "../src/types.js";
 import type { ManagedD1 } from "./managed-sites.js";
 
@@ -44,6 +46,8 @@ export const MAX_BODY = 64 * 1024;
 export const MAX_RELEASE_BODY = 4 * 1024 * 1024;
 export const MAX_RETAINED_BYTES = 100 * 1024 * 1024;
 export const MAX_SNAPSHOT = 2 * 1024 * 1024;
+const MIGRATED_URL_ASSET_PROVIDER = "kamakura-source";
+const migratedAssetManifestKey = (siteId: string) => `sites/${siteId}/migration/legacy-assets.json`;
 export const opaque = (prefix: string) => `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
 export const nowSeconds = () => Math.floor(Date.now() / 1000);
 export const iso = (seconds: number) => new Date(seconds * 1000).toISOString();
@@ -92,9 +96,27 @@ export class CmsStore {
   constructor(readonly db: ManagedD1, readonly bucket: CmsBucket, readonly resolvePublicAssets?: CmsPublicAssetResolver) {}
 
   async publicAssets(schema: CmsSchema, items: readonly CmsItemRevision[]) {
-    if (!this.resolvePublicAssets) return [];
     const references = collectCmsReleaseAssetReferences(schema, items);
-    return references.length ? this.resolvePublicAssets({ siteId: schema.siteId, references }) : [];
+    if (!references.length) return [];
+    const external = references.filter(({ provider }) => provider === MIGRATED_URL_ASSET_PROVIDER);
+    const ordinary = references.filter(({ provider }) => provider !== MIGRATED_URL_ASSET_PROVIDER);
+    const resolved = ordinary.length && this.resolvePublicAssets
+      ? await this.resolvePublicAssets({ siteId: schema.siteId, references: ordinary }) : [];
+    if (!external.length) return resolved;
+
+    // Migration manifests live in the same private bucket as immutable CMS revisions.
+    // Only stable references in the explicitly migrated provider can select these URLs.
+    const object = await this.bucket.get(migratedAssetManifestKey(schema.siteId));
+    if (!object) return resolved;
+    const manifest = await object.json<unknown>();
+    if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)
+      || (manifest as any).formatVersion !== 1 || (manifest as any).siteId !== schema.siteId
+      || !Array.isArray((manifest as any).assets)) return resolved;
+    const assets = parseCmsPublicAssets((manifest as any).assets);
+    return [...resolved, ...external.flatMap((reference) => {
+      const asset = assets.get(assetKey(reference));
+      return asset ? [asset] : [];
+    })];
   }
 
   private async deliveryEvent(transaction: string, snapshot: CmsReleaseSnapshot, guard: string) {

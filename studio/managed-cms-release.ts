@@ -51,12 +51,13 @@ export async function releaseContext(store: CmsStore, site: Site, pins: readonly
 
 const MAX_ATTEMPTS = 5;
 const LEASE_SECONDS = 60;
+const RELEASE_JOB_OVERHEAD = 10;
 const REQUEST_JOB_BUDGET = 45;
-const MAX_JOB_BUDGET = 10 + MAX_ITEMS;
+const MAX_JOB_BUDGET = RELEASE_JOB_OVERHEAD + MAX_ITEMS;
 
 // Keep request-time delivery small; Cron can verify the full maximum item set in one bounded pass.
 const JOB_COST = `CASE kind WHEN 'verify' THEN 3 + json_array_length(payload_json, '$.keys')
-                     ELSE 10 + json_array_length(payload_json, '$.pins') END`;
+                     ELSE ${RELEASE_JOB_OVERHEAD} + json_array_length(payload_json, '$.pins') END`;
 async function claim(db: ManagedD1, id: string | null, at: number, budget: number) {
   const lease = opaque("lease");
   return db.prepare(`UPDATE managed_cms_outbox SET lease_id = ?1, lease_until = ?2, attempts = attempts + 1
@@ -126,7 +127,7 @@ export async function runCmsCron(store: CmsStore) {
   await store.db.prepare("DELETE FROM managed_cms_tokens WHERE expires_at <= ?1").bind(at).all();
   // Only one leased job is worked at a time. The lease also recovers an interrupted invocation.
   let budget = MAX_JOB_BUDGET;
-  for (let index = 0; index < 4 && budget >= 3; index++) {
+  while (budget >= 3) {
     const cost = await deliverCmsJob(store, null, at, budget);
     if (cost === 0) break;
     budget -= cost;

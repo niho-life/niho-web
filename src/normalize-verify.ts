@@ -32,6 +32,15 @@ export function normalizationKey(value: unknown): string {
 }
 
 const targetKey = (document: PageDocument) => JSON.stringify([document.siteId, document.pageId, document.locale]);
+const isCompactSharedSnapshot = (document: PageDocument) => document.body.length === 0 && Object.keys(document.tokens).length === 0
+  && document.meta === undefined && document.textStyles === undefined;
+
+function sameCompactReferenceIdentity(reference: PageDocument, document: PageDocument): boolean {
+  return normalizationKey({ schemaVersion: reference.schemaVersion, siteId: reference.siteId, pageId: reference.pageId,
+    locale: reference.locale, revision: reference.revision, title: reference.title })
+    === normalizationKey({ schemaVersion: document.schemaVersion, siteId: document.siteId, pageId: document.pageId,
+      locale: document.locale, revision: document.revision, title: document.title });
+}
 
 function comparisonWidths(styles: readonly (NodeStyle | TextStyle | undefined)[]): number[] {
   const widths = new Set([0]);
@@ -190,22 +199,31 @@ export function verifyNormalization(input: NormalizationInput, afterDocuments: r
       checked++;
       const composed = [presentation.shared.header, presentation.shared.footer, ...(presentation.overlays ?? []).map(({ document }) => document),
         ...(presentation.hostViews ?? []).map(({ document }) => document)];
+      const compactSharedTargets = new Set((presentation.compactSharedReferences ?? []).map((slot) => targetKey(presentation.shared[slot])));
       for (const before of composed) {
         // The selected page occupies the matching shared slot when it is being
         // edited directly. Its resolved inputs were already compared above.
         if (targetKey(before) === targetKey(source.document)) continue;
         const candidateIndex = indexByTarget.get(targetKey(before));
+        const explicitlyCompact = compactSharedTargets.has(targetKey(before));
+        const compactReference = explicitlyCompact || candidateIndex !== undefined && isCompactSharedSnapshot(before);
+        if (candidateIndex === undefined && explicitlyCompact) return { status: "unsupported", target, reason: "ambiguous_presentation_document" };
         let candidate = before;
+        let comparisonBefore = before;
         if (candidateIndex !== undefined) {
           const original = documents[candidateIndex]!.document;
           if (original.revision !== before.revision) return { status: "unsupported", target, reason: "ambiguous_presentation_document" };
           const expected = parsePageDocument(original, input.blocks);
-          if (normalizationKey(expected) !== normalizationKey(before)) return { status: "unsupported", target, reason: "ambiguous_presentation_document" };
+          const sameDocument = normalizationKey(expected) === normalizationKey(before);
+          const matchingCompactReference = compactReference
+            && sameCompactReferenceIdentity(before, expected);
+          if (!sameDocument && !matchingCompactReference) return { status: "unsupported", target, reason: "ambiguous_presentation_document" };
+          comparisonBefore = expected;
           candidate = afterDocuments[candidateIndex]!;
         }
         // The renderer builds each embedded snapshot with its own tokens/styles.
         const candidateDocument = parsePageDocument(candidate, input.blocks);
-        const embeddedDifference = documentDifference(before, candidateDocument);
+        const embeddedDifference = documentDifference(comparisonBefore, candidateDocument);
         if (embeddedDifference) change ??= { status: "changed", target, ...embeddedDifference };
         checked++;
       }

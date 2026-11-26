@@ -69,7 +69,11 @@ async function fixture(t, { cms = false, restore, restoredObjects = [] } = {}) {
     let params = [];
     return {
       query,
-      bind(...values) { params = values; return this; },
+      bind(...values) {
+        assert.ok(values.length <= 100, "D1 allows at most 100 bound parameters per query");
+        params = values;
+        return this;
+      },
       async first() { return statement.get(...params) ?? null; },
       execute() {
         if (/^\s*(?:UPDATE|INSERT|DELETE)\b/u.test(query)) return { success: true, meta: statement.run(...params) };
@@ -277,36 +281,134 @@ async function releasePlan(site, schemaRevision, previous, items, at) {
   return { operationId: plan.operationId, confirmationToken: plan.confirmationToken };
 }
 
-testWithD1("Studio CMS publishes a large snapshot with a request body above 64 KiB", async (t) => {
+testWithD1("Studio CMS stores, publishes and schedules 500 items while tombstones count toward capacity", async (t) => {
   const h = await fixture(t, { cms: true }), site = await cmsSite(h, "cms-capacity");
   const { schemaRevision } = await site.read("cms.schema.read");
   const drafts = [];
-  for (let index = 0; index < 120; index++) {
-    const created = await createDraft(site, schemaRevision);
-    drafts.push(await saveDraft(site, created, `Capacity fixture ${index}`, `capacity-${index}`));
+  for (let number = 1; number <= 500; number++) {
+    const draft = await createDraft(site, schemaRevision);
+    drafts.push(await saveDraft(site, draft, `Item ${number}`, `item-${number}`));
   }
+  const createInput = { collectionId: "posts", contractVersion: 2, expectedSchemaRevision: schemaRevision };
+  const createBeyondCapacity = () => site.post("cms.items.create", createInput, { headers: headers() });
+  assert.deepEqual(await body(await createBeyondCapacity(), 409), { error: "quota_exceeded" });
+  await site.read("cms.items.remove", versioned(drafts[0]), { headers: headers() });
+  assert.deepEqual(await body(await createBeyondCapacity(), 409), { error: "quota_exceeded" });
+  await site.read("cms.items.restore", versioned(drafts[0]), { headers: headers() });
 
-  const firstPlan = await releasePlan(site, schemaRevision, null, [drafts[0]]);
-  await site.read("cms.release.apply", firstPlan);
+  const { routeTableRevision } = await site.read("cms.release.current");
+  const input = { schemaRevision, locale: "ja", routeTableRevision, expectedReleaseId: null, items: drafts.map(pin), redirects: [] };
+  const extra = { collectionId: "posts", itemId: "extra-item", revision: "extra-revision" };
+  assert.deepEqual(await body(await site.post("cms.release.plan", { ...input, items: [...input.items, extra] }), 400),
+    { error: "invalid_request" });
+  const redirects = Array.from({ length: 25_001 }, (_, index) => ({ from: `/cms/old-item-${index}`, to: "/cms/posts/item-1" }));
+  assert.deepEqual(await body(await site.post("cms.release.plan", { ...input, redirects }), 400), { error: "invalid_request" });
+
+  const publish = await releasePlan(site, schemaRevision, null, drafts);
+  const { result: { releaseId } } = await site.read("cms.release.apply", publish);
+  assert.equal((await site.read("cms.release.status", { operationId: publish.operationId })).delivery.state, "pending");
+  // Clear older revision-verification jobs within the per-invocation subrequest budget before the large release.
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const status = await site.read("cms.release.status", { operationId: publish.operationId });
+    if (status.delivery.state === "delivered") break;
+    await h.cron();
+  }
+  const delivered = await site.read("cms.release.status", { operationId: publish.operationId });
+  assert.equal(delivered.delivery.state, "delivered", JSON.stringify(delivered));
+  assert.deepEqual((await site.read("cms.release.current")).snapshot.items.map(pin), drafts.map(pin));
+  assert.match(await (await site.pub("/posts/item-500")).text(), /Item 500/u);
+
+  const future = new Date(Date.now() + 120_000).toISOString();
+  const reservation = await releasePlan(site, schemaRevision, releaseId, drafts, future);
+  const { result: { scheduleId } } = await site.read("cms.schedule.create", reservation);
+  assert.equal((await site.read("cms.schedule.status", { scheduleId })).status, "scheduled");
+  const clock = t.mock.method(Date, "now", () => Date.parse(future) + 1_000);
+  // Let this due reservation run before the draft verification jobs from fixture setup.
+  h.sqlite.prepare("UPDATE managed_cms_outbox SET available_at = 0 WHERE id = ?").run(scheduleId);
   await h.cron();
-  const previous = (await site.read("cms.release.current")).snapshot;
-  const redirects = Array.from({ length: 2_500 }, (_, index) => ({ from: `/cms/old-${index}`, to: "/cms/posts/capacity-0" }));
+  clock.mock.restore();
+  assert.equal((await site.read("cms.schedule.status", { scheduleId })).status, "released");
+  assert.deepEqual((await site.read("cms.release.current")).snapshot.items.map(pin), drafts.map(pin));
+});
+
+testWithD1("Studio CMS accepts large redirect plans and caps redirects at 25,000", async (t) => {
+  const h = await fixture(t, { cms: true }), site = await cmsSite(h, "cms-redirect-capacity");
+  const { schemaRevision } = await site.read("cms.schema.read");
+  const draft = await createDraft(site, schemaRevision);
+  const item = await saveDraft(site, draft, "Redirect fixture", "redirect-fixture");
+  const initialPlan = await releasePlan(site, schemaRevision, null, [item]);
+  await site.read("cms.release.apply", initialPlan);
+  await h.cron();
+
   const current = await site.read("cms.release.current");
-  const planInput = { schemaRevision, locale: "ja", routeTableRevision: current.routeTableRevision,
-    expectedReleaseId: previous.releaseId, items: drafts.map(pin), redirects };
-  assert.ok(new TextEncoder().encode(JSON.stringify({ siteId: site.siteId, ...planInput })).byteLength > 64 * 1024);
-  const { plan } = await site.read("cms.release.plan", planInput);
-  assert.equal(plan.candidate.snapshot.items.length, 120);
-  assert.equal(plan.candidate.snapshot.assetManifest.length, 0);
+  const redirects = Array.from({ length: 2_500 }, (_, index) => ({ from: `/cms/old-${index}`, to: "/cms/posts/redirect-fixture" }));
+  const input = { schemaRevision, locale: "ja", routeTableRevision: current.routeTableRevision,
+    expectedReleaseId: current.snapshot.releaseId, items: [pin(item)], redirects };
+  assert.ok(new TextEncoder().encode(JSON.stringify({ siteId: site.siteId, ...input })).byteLength > 64 * 1024);
+  const { plan } = await site.read("cms.release.plan", input);
   assert.equal(plan.candidate.snapshot.redirects.length, redirects.length);
   await site.read("cms.release.apply", { operationId: plan.operationId, confirmationToken: plan.confirmationToken });
-  assert.equal((await site.read("cms.release.status", { operationId: plan.operationId })).delivery.state, "pending",
-    "request-time delivery keeps its small budget for a large item set");
-  await h.cron();
   assert.equal((await site.read("cms.release.status", { operationId: plan.operationId })).delivery.state, "delivered");
-  const published = (await site.read("cms.release.current")).snapshot;
-  assert.equal(published.items.length, 120);
-  assert.equal(published.redirects.length, redirects.length);
+  assert.equal((await site.read("cms.release.current")).snapshot.redirects.length, redirects.length);
+
+  const tooMany = Array.from({ length: 25_001 }, (_, index) => ({ from: `/cms/overflow-${index}`, to: "/cms/posts/redirect-fixture" }));
+  assert.deepEqual(await body(await site.post("cms.release.plan", { ...input, redirects: tooMany }, { headers: headers() }), 400),
+    { error: "invalid_request" });
+});
+
+testWithD1("Studio CMS accepts migration-sized draft saves and enforces operation-specific byte limits", async (t) => {
+  const h = await fixture(t, { cms: true }), site = await cmsSite(h, "cms-save-size");
+  const { schemaRevision } = await site.read("cms.schema.read");
+  const draft = await createDraft(site, schemaRevision);
+  const scope = { siteId: site.siteId };
+  const postJson = (operation, json) => h.fetch(`${MANAGEMENT_ORIGIN}${site.endpoint}/${operation}`, {
+    method: "POST", body: json, headers: {
+      "Content-Type": "application/json", Origin: MANAGEMENT_ORIGIN, "Sec-Fetch-Site": "same-origin",
+      "Cf-Access-Jwt-Assertion": h.ownerToken, ...headers()
+    }
+  });
+  const saveInput = (item, itemValues) => ({ ...scope, ...versioned(item), values: itemValues });
+  const migrationValues = { ...values("Larger article"), body: "" };
+  const bodyBytes = 65_532 - Buffer.byteLength(JSON.stringify(migrationValues));
+  migrationValues.body = "あ".repeat(Math.floor(bodyBytes / 3)) + "a".repeat(bodyBytes % 3);
+  assert.equal(Buffer.byteLength(JSON.stringify(migrationValues)), 65_532);
+  const migrationInput = saveInput(draft, migrationValues);
+  assert.ok(Buffer.byteLength(JSON.stringify(migrationInput)) > 64 * 1024);
+  const cliPath = `/api/edit/v2/sites/${site.siteId}/operations/cms.items.save`;
+  const { item: saved } = await body(await h.send(MANAGEMENT_ORIGIN, "POST", cliPath, migrationInput, { cli: true, headers: headers() }), 200);
+  assert.deepEqual(saved.values, migrationValues);
+
+  const smallSave = JSON.stringify(saveInput(saved, values("Within limit")));
+  const paddedSave = smallSave.padEnd(128 * 1024, " ");
+  assert.deepEqual(await body(await postJson("cms.items.save", `${paddedSave} `), 400), { error: "invalid_request" });
+  const { item: boundary } = await body(await postJson("cms.items.save", paddedSave), 200);
+  assert.equal(boundary.values.title, "Within limit");
+
+  const schemaRead = JSON.stringify(scope).padEnd(64 * 1024, " ");
+  assert.deepEqual(await body(await postJson("cms.schema.read", `${schemaRead} `), 400), { error: "invalid_request" });
+  assert.equal((await body(await postJson("cms.schema.read", schemaRead), 200)).schemaRevision, schemaRevision);
+});
+
+testWithD1("Studio CMS resolves migration URL assets only from the site's private manifest", async (t) => {
+  const h = await fixture(t, { cms: true }), site = await cmsSite(h, "cms-migration-assets");
+  const schema = await site.read("cms.schema.read"), collection = schema.collections[0];
+  const field = { fieldId: "migration.cover", key: "cover", label: "表紙", type: "image", placement: "main" };
+  const migratedSchema = { ...schema, collections: [{ ...collection, fields: [...collection.fields, field] }] };
+  const reference = { provider: "kamakura-source", id: `src_${"a".repeat(64)}` };
+  const manifestKey = `sites/${site.siteId}/migration/legacy-assets.json`;
+  h.objects.set(manifestKey, JSON.stringify({ formatVersion: 1, siteId: site.siteId, assets: [
+    { reference, url: "https://images.example.test/cms/cover.webp", width: null, height: null, altText: "" }
+  ] }));
+  const store = new CmsStore(h.env.DB, h.env.CMS_OBJECTS);
+  const item = { siteId: site.siteId, schemaRevision: schema.schemaRevision, collectionId: collection.id,
+    itemId: "migration-item", locale: "ja", revision: "migration-revision", values: { "migration.cover": reference } };
+  assert.deepEqual(await store.publicAssets(migratedSchema, [item]), [
+    { reference, url: "https://images.example.test/cms/cover.webp", width: null, height: null, altText: "" }
+  ]);
+
+  const otherSite = { ...migratedSchema, siteId: `${site.siteId}-other` };
+  const otherItem = { ...item, siteId: otherSite.siteId };
+  assert.deepEqual(await store.publicAssets(otherSite, [otherItem]), []);
 });
 
 testWithD1("Studio CMS localization exposes the shared workspace contract and preserves reviewed manual values after source changes", async (t) => {

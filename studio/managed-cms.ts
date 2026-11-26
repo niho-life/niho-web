@@ -27,6 +27,7 @@ import { cmsLocalizationItem, cmsLocalizationOverview, cmsLocalizationSummary, c
 const PLAN_TTL = 10 * 60;
 const PREVIEW_TTL = 5 * 60;
 const LIST_SIZE = 10;
+const MAX_ITEM_SAVE_BODY = 128 * 1024;
 const VERSION_HEADER = "X-Studio-CMS-Version";
 const LEGACY = {
   "cms.schema": ["GET", "cms.read", 0],
@@ -684,7 +685,8 @@ async function executeV2(request: Request, store: CmsStore, scope: CmsScope, rou
   const site = await store.site(scope, capability!);
   if (!site) return forbidden();
   if (request.method !== "POST") return error("method_not_allowed", 405);
-  const maxBody = operation === "cms.release.plan" || operation === "cms.schedule.create" ? MAX_RELEASE_BODY : MAX_BODY;
+  const maxBody = operation === "cms.release.plan" || operation === "cms.schedule.create"
+    ? MAX_RELEASE_BODY : operation === "cms.items.save" ? MAX_ITEM_SAVE_BODY : MAX_BODY;
   const body = await readBody(request, scope, maxBody);
   if (!body || body.siteId !== site.siteId) return invalid();
   const cap = capability!;
