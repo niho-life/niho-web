@@ -55,7 +55,6 @@ React 18.3 または 19 と、同じ版の React DOM を利用側で用意して
 | `englishPublication`（任意） | 原文と独立した英語版公開状態の明示更新と、ホストが許した失敗だけの再試行 |
 | `preparePageChange` / `applyPageChange`（任意） | ページの作成・複製・名前とURLの変更・公開切替。影響の確認と一回限りの確認 token。[ページ管理の契約](page-contract.md) |
 | `site.styles.read/save/release-*`（任意） | 共通スタイルのdraft/public版、楽観ロック、影響確認と全公開ページへの一括反映（[サイト共通スタイルの契約](site-styles-contract.md)）。`readSiteSettings` / `saveSiteSettings` は公開情報用 |
-| `responsiveProposal.propose(request, signal)`（任意） | 現在文書のレスポンシブstyle提案。AI/provider/auth/storage/利用量はホスト所有。省略時は操作を表示しない |
 | `listRevisions` / `readRevision` / `createSnapshot`（任意） | 版履歴の一覧・読み取り専用の表示・名前付きスナップショット。履歴項目は人/AIと確認済み委任元の表示名、操作種別、要素IDと変更fieldを表示し、変更前後の値は出しません。[保存・履歴の契約](save-history-contract.md) |
 
 共通HTTP APIを使うホストは `createEditingApiHistoryAdapter(client)` の返す `listRevisions` / `readRevision` を既存の `PageEditor` adapterへ追加できます。ページ履歴のAPI権限 `pages.history.read` は、通常文書の `pages.read` と別にホストで認可してください。
@@ -105,28 +104,6 @@ target は `siteId/pageId/locale` の組です。文書の組と一致しない�
 これはdocument-levelの表示ポリシーで、認可機構ではありません。ホストは`saveDraft`、公開、page操作等の各書込APIで現在の正本ポリシーを再読込し、read-only targetへの直接要求も403等で拒否してください。原文snapshotのポリシーを派生言語へコピーせず、その派生snapshotに`readOnly`が無ければ編集できます。別の共通部品master編集、site設定、素材libraryの権限もこの値から推測しません。
 
 `AbortSignal` は読込の切替と unmount 時に abort します。公開処理は signal が abort されてもサーバーで成立する可能性があるため、ホスト側で結果の照会と重複実行の防止を実装します。例外の生メッセージ・token・秘密を UI に表示しません。
-
-### ホスト所有のレスポンシブ提案
-
-`EditorAdapter.responsiveProposal` は任意です。省略時はボタン、無効なAI表示、接続案内を含めて入口を出しません。実装時もniho-webはAI/providerへ直接接続せず、認証・認可・provider選択・prompt・利用量・ログ・保存はホストが所有します。文書schema、`saveDraft`、公開APIは変わりません。
-
-`propose` には次を渡します。
-
-```ts
-{
-  target: { siteId, pageId, locale },
-  document,                         // 現在の検証済みPageDocument
-  fingerprint,                      // JSON直列化した現在文書との一致確認用
-  scope: { type: 'page' } | { type: 'node', nodeId },
-  breakpoints: [768, 1024]          // 利用者が選んだ、設定済みminWidthだけ
-}
-```
-
-応答は `{ fingerprint, changes }` だけです。`changes` は最大40件で、各項目は `{ nodeId, breakpoint, property, value }` だけを持ちます。`value: null` はその幅の直接指定を外します。許すpropertyは既存style操作で扱うレイアウト・余白・サイズ（寸法、margin/padding、Flex/Grid、位置、overflow、objectFit、文字サイズ・行高・字間）だけです。色、内容、構造、meta、素材、リンク、状態style、演出は提案から変更できません。
-
-エディターはhost応答を信頼しません。fingerprint、40件上限、要求した幅、選択subtree、node ID、`(nodeId, breakpoint, property)`重複、閉じたproperty、値を確認し、全変更を既存`editDocument`へ順に通します。1件でも不正なら文書へ何も適用しません。レビュー時と適用時にnode IDから現在pathを解決し直し、適用時にも文書fingerprintを再確認します。レビューには幅と各値の変更前・変更後を表示し、明示的な適用またはキャンセルだけを受けます。適用は既存履歴の1操作なので、undo 1回で全件を戻せます。
-
-提案中は30秒でtimeoutし、キャンセル・ページ移動・対象/文書変更・unmountで`AbortSignal`をabortします。遅い応答、別文書の応答、staleなレビューは適用しません。レビュー中はlive文書を変更しません。版履歴、翻訳側、読み取り専用、ロックを含む文書、未確定のfield入力、コンポーネント本体編集中、処理中には開始できず、理由を画面に表示します。ホストも要求を受けた時点でtarget権限と文書を再検証し、UIの制限を認可の代わりにしないでください。
 
 ## 楽観ロックと編集の保持
 
@@ -187,12 +164,12 @@ XのカードはURLの保存と投稿リンクを常に使えます。別origin 
 
 Blankのkey・title変更は通常のeditor model、lock、undo/redo、保存・再読込を通ります。編集canvasは外部通信せず、previewだけ公開rendererと同じregistryを使います。ホストは公開CSPの`frame-src`を別途許可し、`blankEmbeds`を`PageRenderer` / SSRにも同じ版で渡します。鎌倉のStudioと公開ホストは同じ`public-map` keyとOpenStreetMapの固定埋め込み先を登録し、双方のCSPをその接続先に限定します。ManagedEmbedの独自保存・解決フローは流用しません。詳細は[文書・描画契約の標準埋め込み](document-contract.md#標準埋め込み)を正とします。
 
-`PageEditor` の任意prop `builder` で、信頼済みホストが通常の `PageNode` 部分木を追加パレットへ登録できます。公開型と標準定義は `@niho/web/builder` から読み込みます。`InsertionPreset.category` は任意の `basic | parts | sections` で、未知の値は `defineBuilder` が拒否します。省略した既存・host独自プリセットは後方互換のため Basic に表示します。同じ定義IDを指定すると標準項目を置換し、新しいIDは標準項目の後へ追加します。
+`PageEditor` の任意prop `builder` で、信頼済みホストが通常の `PageNode` 部分木を追加パレットへ登録できます。公開型と標準定義は `@niho/web/core` から読み込みます。`InsertionPreset.category` は任意の `basic | parts | sections` で、未知の値は `defineBuilder` が拒否します。省略した既存・host独自プリセットは後方互換のため Basic に表示します。同じ定義IDを指定すると標準項目を置換し、新しいIDは標準項目の後へ追加します。
 
 標準 Parts / Sections はすべて許可済み要素・属性・styleだけで作る通常の編集可能な `PageNode` 部分木です。固有の保存形式、外部画像、script、raw HTML は追加しません。生成時は全ノードを `context.id()` で採番し、既存の文書validatorと `createInsertionNode` を通した後、従来と同じ editor add 操作で配置します。`layoutInsertionPresets` の横並び・グリッド・素朴なリストは、組み立て用の opt-in 項目として引き続きhostが明示した場合だけ追加されます。
 
 ```tsx
-import type { BuilderDefinition } from '@niho/web/builder';
+import type { BuilderDefinition } from '@niho/web/core';
 
 const builder = {
   insertions: [{

@@ -1,16 +1,10 @@
 # NIHO Web Studio host
 
-> 2026-10-22: Experience / Kamakura のvisual editorは凍結した。canonical・alias・stagingの既知editor URLはAccess認証後に凍結案内を表示し、editor APIはmembership確認後に `409 visual_editor_frozen` を返して上流を呼ばない。`integration-entry`、各site editor、`PageEditor` は実client bundleへ含めない。source/coreと保存データは将来用に保持するが、サイト変更のpreview一致・schema同期・版同期を受入条件にしない。Dashboard、membership、招待は継続する。以下のBFF説明は再接続時の履歴資料である。
->
-> 2026-10-25（niho-life/kamakura-site#84）: Kamakura だけ読み取りを再接続した。`GET catalog`・`GET :pageId`・素材の参照は service binding で kamakura-site へ通し、Kamakura の editor route だけ editor 用 CSP を付ける。保存・公開を止めるのは kamakura-site 側で、ページ文書の `readOnly` を `PageEditor` が読み取り専用の帯として出し、上流の `409 visual_editor_frozen` は競合（`conflict`）と分けて `409 { "error": "visual_editor_frozen" }` で返す。凍結の切り替えは kamakura-site の `worker/visual-freeze.ts` 1 か所。Experience は従来どおり凍結し、上流を呼ばない。
->
-> 2026-10-28: Kamakura の native 化済みページはサイト側の段階解除で Studio から日本語の保存・公開が可能。原文ページの保存 locale `ja` と翻訳設定の原文 mapping `ja-JP` は PageEditor 内で区別し、日英切替後もページ一覧の保存 locale に戻る。Experience は凍結中。
->
 > 鎌倉の Blank 埋め込みは、公開ホストと同じ `public-map` key / OpenStreetMap の固定URLを Studio に登録する。Studioの編集カードは接続済みとなり、previewだけ iframe を作る。Studio Workerの `frame-src` は鎌倉 editor route に限って当該pathを許可する。
 >
 > フォームの完了ページ候補は鎌倉の検証済み catalog の固定通常ページから、公開済みの完了ページだけを返す。英語側は対応する完了ページがないため候補を返さない。本文にはページIDだけを保存し、実送信と成功判定・移動は鎌倉ホスト側の接続が必要。
 
-Issue #68 / #69 / #70 の Studio host です。共有 `@niho/web` ライブラリとは別に Cloudflare Workers へ配置し、静的 React UI、Worker API、Studio 専用 D1 registry、Experience / Kamakura editor BFF を1つの境界として運用します。
+Issue #68 / #69 / #70 の Studio host です。共有 `@niho/web` ライブラリとは別に Cloudflare Workers へ配置し、静的 React UI、Worker API、Studio 専用 D1 registry、Kamakura editor BFF を1つの境界として運用します。
 
 ## この host が所有するもの
 
@@ -22,19 +16,18 @@ Issue #68 / #69 / #70 の Studio host です。共有 `@niho/web` ライブラ�
 - 参加 Project の一覧と、Project・Site ID を含む安定 URL の Dashboard、人向けの固定別名 URL
 - Studioで作成したProject/Siteと、そのページ下書き・公開版・公開履歴のD1正本
 - Studio-native siteを共有HTTPS originの `/s/<slug>/...` で配信するscriptなしの公開renderer
-- `project-experience` / `experience` に限定した、下書き・プレビュー・公開・公開版への復元用 editor BFF
 - `project-kamakura` / `kamakura` に限定し、Cloudflare service binding で `kamakura-site` の新形式共通ページだけへ接続する editor BFF
 
 D1 が Project / Site / Member / Role / Invitation / Audit の正本です。NIHO account、niho-app の User / Project DB、NIHO cookie、Cloudflare dashboard membership は権限根拠にしません。Kamakura の content CMS はそのサイト側、Experience の contributor content は niho-app 側に残ります。
 
 ## Project URL
 
-既存の Project / Site ID 付き URL は引き続き有効です。読みやすい入口として、各 Project に固定 alias を用意しています。`/admin` は Dashboard、`/admin/editor` はサイト編集画面です。
+既存の Project / Site ID 付き URL は引き続き有効です。読みやすい入口として、各 Project に固定 alias を用意しています。`/admin` は Dashboard、Kamakura の `/admin/editor` はサイト編集画面です。
 
 | Project | Dashboard | Editor |
 | --- | --- | --- |
 | Kamakura (`project-kamakura` / `kamakura`) | `/projects/kamakura-site/admin` | `/projects/kamakura-site/admin/editor` |
-| NIHO Experience (`project-experience` / `experience`) | `/projects/niho-experience/admin` | `/projects/niho-experience/admin/editor` |
+| NIHO Experience (`project-experience` / `experience`) | `/projects/niho-experience/admin` | 未接続 |
 
 覚えやすい入口として `/project/<別名>`（例: `/project/kamakura-site`）も使えます。Worker が認証の後に `/projects/<別名>/admin` へ 301 で移します。
 
@@ -73,57 +66,32 @@ Cloudflare Access 側で Studio hostname 全体を Access application として�
 - 最後の owner の削除・降格は DB trigger が transaction 内で拒否するため、同時 request でも迂回できない
 - 非参加者には Project の存在・名称を返さない。ただし、検証済み email に明示的に宛てられた有効な招待 token を提示した場合だけ、受諾に必要な Project / Site 名と role を返す
 - membership revoke は次の API request から有効になる
-- Experience / Kamakura editor の list/read/save/release 各 request と Kamakura CMS の各 request でも、Access `sub`、固定 Project/Site、D1 の現在の `owner` / `editor` membership を再照合する
+- Kamakura editor の list/read/save/release 各 request と Kamakura CMS の各 request でも、Access `sub`、固定 Project/Site、D1 の現在の `owner` / `editor` membership を再照合する
 - API・HTML・版のない静的応答は `no-store`。CSP、frame 拒否、MIME sniff 拒否等を付与する。長期 cache の対象は、build が内容 hash 付き URL で出力する JS/CSS（`assets/<名前>-<hash>.js|css` と `assets/chunks/<名前>-<hash>.js`）と Studio の書体（`assets/fonts/<名前>-<版>/*.woff2` と `assets/fonts/fonts-<hash>.css`）で、`private, max-age=31536000, immutable` を付ける。
 
-Member 管理 mutation は従来どおり `POST` のみです。request URL と完全一致する `Origin`、`Sec-Fetch-Site: same-origin`、`application/json`、16 KiB の streaming 上限、JSON object、endpoint ごとの完全な key set を必須にします。この 16 KiB 境界は editor 追加後も変更しません。Editor mutation も同じ same-origin / JSON 条件を要求し、draft だけ 600 KiB、release-plan / release は 16 KiB の streaming 上限です。token、token hash、JWT、HMAC secret、request body は application log に出力しません。
-
-Kamakura の旧Studio D1ブレークポイントroute (`GET /api/projects/project-kamakura/sites/kamakura/breakpoints`) は、サイトAPIへの初回移行と手動復旧のための読み取り専用です。`0006_site_breakpoint_settings.sql` が初期設定 JSON と整数versionを保持します。Studio GUIが共通APIから404を受けた場合だけ、現在のowner/editor membershipを再確認してD1の設定を読み、旧版 `b.<integer>` を期待版にしてホストの共通APIへ一度だけ引き継ぎます。保存後の正本・CAS・監査記録はkamakura-siteのR2/Workerが所有し、Studio D1のPUTは405になります。
+Member 管理 mutation は従来どおり `POST` のみです。request URL と完全一致する `Origin`、`Sec-Fetch-Site: same-origin`、`application/json`、16 KiB の streaming 上限、JSON object、endpoint ごとの完全な key set を必須にします。この 16 KiB 境界は editor 追加後も変更しません。Editor mutation も同じ same-origin / JSON 条件を要求し、共通ページ編集 API の本文上限は 600 KiB です。token、token hash、JWT、HMAC secret、request body は application log に出力しません。
 
 ## CLIの認証・操作契約
 
 機械クライアントの認証と操作手順は [Studio CLI](../docs/studio-cli.md) を参照してください。
 
-## Experience editor bridge
-
-通常編集は同一 origin の `/api/projects/project-experience/sites/experience/editor`、STG検証は `/api/projects/project-experience/sites/experience/editor-staging` だけを呼びます。ブラウザは NIHO API、NIHO cookie、bridge secret へ直接アクセスしません。BFF は query string、別 Project/Site、allowlist 外 page ID、未知の route/method を拒否します。対象 page ID は `home`、`experiences`、`experience-detail`、`booking`、`host`、`chrome`、locale は `en`、公開先は `https://experience.niho.life` に固定します。components / localization / assets API は backend にないため接続しません。
-
-上流は固定 origin `https://api.niho.life`、prefix `/api/internal/studio/experience` です。各 request は browser cookie や Access JWT を転送せず、次の header だけで Studio identity を渡します。
-
-```text
-X-NIHO-Studio-Project: project-experience
-X-NIHO-Studio-Subject: <verified Access sub>
-X-NIHO-Studio-Timestamp: <unix seconds>
-X-NIHO-Studio-Signature: v1=<lowercase hex HMAC-SHA256>
-```
-
-署名 message は次の改行区切りです。`rawBody` は転送する body の同一 byte 列で、GET は空 byte 列の SHA-256 です。
-
-```text
-v1\n${timestamp}\n${method}\n${pathname}\n${sha256hex(rawBody)}\n${project}\n${subject}
-```
-
-`NIHO_STUDIO_BRIDGE_SECRET` は padding なし canonical base64url で、decode 後 32 byte 以上を必須にします。欠落・不正なら fail-closed 503 です。上流 fetch は redirect を追跡せず、timeout、`no-store`、JSON media type、2 MiB response 上限を適用します。3xx、非 JSON、上限超過、上流 401/403/404/429/5xx は Studio の Access session error と混同せず 503 にします。409 だけ editor conflict として保持します。
-
-STG検証は同じ allowlist と署名契約を使いますが、上流は固定 `https://api-stg.niho.life`、鍵は `NIHO_STUDIO_BRIDGE_SECRET_STG` です。STG UI は環境を明示します。通常の Experience editor ルートや本番用 key/origin は切り替えません。STG API が未配備、secret が無効、または owner 以外なら閉じます。公開・復元の受入操作は STG API 上でのみ行い、本番 API へは送信しません。
+## Kamakura editor bridge
 
 Editor HTML route だけ `PageEditor` の inline style と `iframe srcDoc` に必要な `style-src 'unsafe-inline'` / `frame-src 'self'` を追加します。鎌倉の editor route は「外部URL」のプレビュー用に `frame-src` へ `https:` を追加します。Instagramの固定公式script URLを許可し、Directory / Dashboardなど他routeには同じ緩和を適用しません。
 
 鎌倉の「外部URL」は編集キャンバスで静的に表示し、プレビューで公開HTTPS URLを隔離iframeに読み込みます。NIHO Travelの予約URLは、Studioと別originの場合に限り予約ウィジェットの表示に必要なoriginとフォーム権限を付け、`preview=1` で予約操作を無効にします。既存のホスト部品が出力するframeには `studio/kamakura-catalog.ts` の `KAMAKURA_EXTERNAL_FRAME_SOURCES` と `KAMAKURA_ORIGIN_RETAINING_FRAME_SOURCES` を引き続き適用します。
 
-## Kamakura editor bridge
-
 公開ドメインは catalog の `project.site` と `sites[0]` で一致する単一値を使い、`https://next-kamakura.niho.life` または `https://kamakura.niho.life` に限定します。公開確認と ManagedEmbed の親 origin 検証もその値に揃えます。切替前に両ホスト対応版を配備し、切替時にホストの公開先と D1 の `sites.public_origin` を揃え、Studio を再読込してください。切戻しは両方を元へ戻して再読込します。署名済み service binding と素材直接 PUT の確認用ホストは維持します。
 
 ブラウザは同一originのStudio editor BFF配下だけを呼びます。画面固有routeに加えて共通editing APIの `pages.read`・`pages.apply`・`pages.save` を使い、日本語の通常編集は未送信操作を `pages.apply` へ送り、全置換・fallbackは `pages.save` を使います。日本語ページは `pages.read` のeditor snapshot profileから本文・presentation・`editorState`を1回で読みます。編集状態が欠けた応答はfail-closedし、旧全snapshot・分離presentationのreadにはfallbackしません。`pageId` は `^(?!(?:catalog|create|index)$)[a-z][a-z0-9-]{0,59}$` に固定し、query string、未知の route / method、600 KiB を超える draft を拒否します。
 
-上流は Cloudflare service binding `KAMAKURA_SITE`（service `kamakura-site`）だけです。署名用 URL は `https://next-kamakura.niho.life/internal/studio/web-content/...` に固定し、任意 origin のネットワーク fetch や generic proxy にはしません。browser cookie、Cloudflare Access JWT、NIHO account 情報は転送しません。各 request は Experience と同じ HMAC message 形式で、Project header だけ `project-kamakura` を使います。secret は別の `KAMAKURA_STUDIO_BRIDGE_SECRET` とし、canonical base64url、decode 後 32 byte 以上を必須にします。
+上流は Cloudflare service binding `KAMAKURA_SITE`（service `kamakura-site`）だけです。署名用 URL は `https://next-kamakura.niho.life/internal/studio/web-content/...` に固定し、任意 origin のネットワーク fetch や generic proxy にはしません。browser cookie、Cloudflare Access JWT、NIHO account 情報は転送しません。catalog・埋め込み・英語公開の再試行と素材の専用経路は、`v1`、timestamp、method、pathname、本文の SHA-256（16進）、Project ID、Access subject を改行でつないで HMAC-SHA256 署名します。Project header は `project-kamakura` です。署名鍵 `KAMAKURA_STUDIO_BRIDGE_SECRET` は canonical base64url、decode 後 32 byte 以上を必須にします。共通編集 API は同じ鍵で操作 scope を指定した短期 token を発行します。
 
 上流応答は redirect 拒否、timeout、JSON media type、2 MiB 上限を適用します。409 は editor conflict として保持し、上流の 401 / 403 / 429 / 5xx と catalog endpoint の 404 は Studio の Access session expiry と混同せず 503 として扱います。既存ページの 404 はそのまま保持します。catalog の契約検証・正規化は `studio/kamakura-catalog.ts` に集約し、BFF と browser が同じ parser を使います。Project / Site metadata、`ja` の新形式 page ID、旧形式 page path、件数、重複、制御文字を検証し、既知 field だけを browser へ返します。ページタイトルはコンテンツ文字列として扱い、2 MiB の応答上限で保護します。表示用の文字数制約を API 契約へ持ち込みません。
 
 catalog がこの契約に合わない場合は `502 { "error": "upstream_contract_invalid", "supportId": "<UUID>" }` を返し、通信・Binding・secret の利用不能を示す `503 { "error": "service_unavailable", "supportId": "<UUID>" }` と分けます。Kamakura bridge のログには同じ問い合わせID、固定 operation、固定 failure category、存在する場合だけ上流HTTP statusを記録し、同じIDを service binding request header に渡します。secret、署名、Access subject、本文、上流応答本文、任意の例外メッセージは記録しません。
 
-失敗カテゴリは `bridge_secret_missing_or_invalid`、`bridge_signing_failed`、`service_binding_failed` / `service_binding_timeout`、`upstream_auth_rejected`、`upstream_unexpected_4xx`、`catalog_endpoint_missing`、`upstream_rate_limited`、`upstream_server_error`、`upstream_redirect_rejected`、`upstream_invalid_response`、`upstream_contract_invalid`、`bridge_processing_failed` です。operation は `catalog`、`page_read`、`draft_save`、`release_plan`、`release`、`embed_import`、`embed_status`、`asset_list`、`asset_upload_intent`、`asset_update`、`asset_usages`、`asset_resolve` の固定値です。画面で問い合わせIDを受け取ったら、Studio Worker のログから同一IDの行を検索してください。HTTP status が無い `service_binding_*` はStudio側のbinding・到達性を、`upstream_auth_rejected` は両Workerのsecret設定と署名検証を、`catalog_endpoint_missing` は kamakura-site のendpoint配備を確認します。
+失敗カテゴリは `bridge_secret_missing_or_invalid`、`bridge_signing_failed`、`service_binding_failed` / `service_binding_timeout`、`upstream_auth_rejected`、`upstream_unexpected_4xx`、`catalog_endpoint_missing`、`upstream_rate_limited`、`upstream_server_error`、`upstream_redirect_rejected`、`upstream_invalid_response`、`upstream_contract_invalid`、`bridge_processing_failed` です。operation は `catalog`、`editing_api`、`english_publication_retry`、`embed_import`、`embed_status`、`asset_list`、`asset_upload_intent`、`asset_update`、`asset_usages`、`asset_resolve` の固定値です。画面で問い合わせIDを受け取ったら、Studio Worker のログから同一IDの行を検索してください。HTTP status が無い `service_binding_*` はStudio側のbinding・到達性を、`upstream_auth_rejected` は両Workerのsecret設定と署名検証を、`catalog_endpoint_missing` は kamakura-site のendpoint配備を確認します。
 
 Kamakura の `PageEditor` が編集するのは `src/site/niho-web` の native 化済みページです。日本語ページの下書き保存とページ単位公開は、サイト側が返す版と表示コンテキストを照合して行います。未変換のページは `readOnly.reason` で停止します。CMS の操作はサイト側の管理機能で扱います。
 
@@ -131,7 +99,7 @@ Kamakura の `PageEditor` が編集するのは `src/site/niho-web` の native �
 
 日本語ページは共通 API の editor snapshot profile を必須とし、本文・presentation・公開履歴・英語公開状態・readOnly情報を同じ `pages.read` 応答から採用します。`editorState` が欠けた場合は編集を開始せず、旧全snapshotや分離presentationへfallbackしません。これによりページ読込の本文転送は1回です。権限エラーや不正なスナップショットは既存のエラー表示へ渡します。[編集 API 契約](../docs/editing-api-contract.md)
 
-Kamakura の editor route にも Experience と同じ範囲限定 CSP 緩和を適用します。native presentation のフォントだけは `https://kamakura-media.niho.life/niho-web/fonts/v1/` を font-src に追加します。manifest・共有枠・保存CASの契約は [site-presentation.md](../docs/site-presentation.md) に従います。Directory / Dashboard / invite route の CSP は変えません。
+Kamakura の editor route では、native presentation のフォントだけは `https://kamakura-media.niho.life/niho-web/fonts/v1/` を font-src に追加します。manifest・共有枠・保存CASの契約は [site-presentation.md](../docs/site-presentation.md) に従います。Directory / Dashboard / invite route の CSP は変えません。
 
 ### Kamakura の素材ライブラリ（#85）
 
@@ -159,20 +127,14 @@ Kamakura の `PageEditor` には `studio/kamakura-assets.ts` の素材 adapter �
 
 鎌倉サイトの記事・サークル・会社を、[コレクションの画面](../docs/collection-contract.md)（`CollectionWorkspace`）から編集するための BFF と adapter です。Dashboard の「CMS」から直接使います。
 
-- ブラウザが呼ぶのは同一 origin の `/api/projects/project-kamakura/sites/kamakura/cms/...` と、画像本体の `PUT https://next-kamakura.niho.life/internal/studio/cms-upload/<uuid>` だけです。BFF は service binding `KAMAKURA_SITE` の `/internal/studio/cms/...` へ、editor と同じ HMAC の header（同じ関数）で署名して渡します。追加の secret はありません。
+- スキーマ、一覧、項目の読取・作成・保存・公開は共通編集 API の `cms.*` を使います。下表の専用操作は同一 origin の `/api/projects/project-kamakura/sites/kamakura/cms/...` を呼びます。専用の画像アップロード本体は `PUT https://next-kamakura.niho.life/internal/studio/cms-upload/<uuid>` へ送ります。専用操作の BFF は service binding `KAMAKURA_SITE` の `/internal/studio/cms/...` へ、editor と同じ HMAC の header（同じ関数）で署名して渡します。追加の secret はありません。
 - 鎌倉以外の Project / Site は 404 です。要求ごとに Access の `sub` と D1 の現在の `owner` / `editor` を確かめます（無ければ 403）。query string、知らない route（404）・method（405）、GET の本文は拒否します。
 - 書き込みの本文は、同一 origin（`Origin` 一致・`Sec-Fetch-Site: same-origin`）・`application/json`・JSON object を要求し、操作ごとの key の集合が完全に一致するときだけ通します。BFF は確かめた値だけで JSON を作り直し、Access で確かめた email を `actor: { email }` に入れます。ブラウザが `actor` を送ってきたら 400 です。
 
 | route（`cms/` の後ろ） | ブラウザの本文 | 上流の成功 |
 | --- | --- | --- |
-| `GET schema` | – | 200 `{ status: "ready", collections }` |
-| `GET collections/:col/items` | – | 200 `{ status: "ready", collectionId, items }` |
-| `GET collections/:col/items/:id` | – | 200 `{ status: "ready", item }` |
 | `GET …/:id/english-publication` | – | 200 `{ status: "ready", englishPublications }` |
 | `POST …/:id/english-publication` | `{}` | 200 `{ status: "accepted", englishPublications }`（BFF が `actor` を追加） |
-| `POST collections/:col/items` | `{}` | 201 `{ status: "created", item }` |
-| `PUT …/:id/draft` | `{ version, values }`（直した key だけ） | 200 `{ status: "saved", item }` |
-| `POST …/:id/publish` | `{ version, redirect? }`（`redirect` は boolean） | 202 `{ status: "publishing", item }` |
 | `POST …/:id/unpublish` | `{ version }` | 202 `{ status: "publishing", item }` |
 | `POST …/:id/discard-draft`・`cancel-schedule`・`retry-schedule` | `{ version }` | 200 saved |
 | `POST …/:id/schedule` | `{ version, at, redirect? }`（BFF が `at` を UTC の ISO にそろえる） | 200 saved |
@@ -182,10 +144,10 @@ Kamakura の `PageEditor` には `studio/kamakura-assets.ts` の素材 adapter �
 | `POST collections/:col/bulk` | `{ action: "publish" \| "unpublish" \| "remove", items: { id, version }[] }`（1〜100 件・id の重複なし） | 202 `{ status: "publishing", items }`・200 `{ status: "saved", items }` |
 | `POST uploads/intent` | `{ collectionId, name, mimeType, bytes }` | 201 `{ uploadUrl, uploadToken, uploadId }` |
 
-- 任意の key（`publish`・`schedule` の `redirect`、`remove` の `redirectTo`）は、無ければ上流へも送りません（上流の既定: 転送する・一覧へ移す）。`redirectTo` が同じコレクションの公開中の項目か一覧のパスかは上流が確かめ、違えば 422 です。
-- 上限: 下書きの本文 2 MiB（`values` の key は `^[a-z][A-Za-z0-9]{0,63}$` で 100 個まで、値は string〔100 万字まで〕・null・string[]〔200 個まで・各 1〜200 字・重複なし〕・作品のような `{ id, image, caption }` の並び〔200 行まで・`id` は `""` か不透明な id・説明は 2 万字まで〕）、並べ替え・まとめての操作の本文 128 KiB、ほかの本文 16 KiB、上流の応答 3 MiB（upload intent は 16 KiB）。`collectionId` は `^[a-z][a-z0-9-]{0,39}$`、画像は jpeg / png / webp / avif / gif で 50 MiB まで（実際の上限は鎌倉の Worker の 413）。
+- 任意の key（専用の `schedule` の `redirect`、`remove` の `redirectTo`）は、無ければ上流へも送りません（上流の既定: 転送する・一覧へ移す）。`redirectTo` が同じコレクションの公開中の項目か一覧のパスかは上流が確かめ、違えば 422 です。
+- 上限: 並べ替え・まとめての操作の本文 128 KiB、ほかの本文 16 KiB、上流の応答 3 MiB（upload intent は 16 KiB）。`collectionId` は `^[a-z][a-z0-9-]{0,39}$`、画像は jpeg / png / webp / avif / gif で 50 MiB まで（実際の上限は鎌倉の Worker の 413）。
 - 上流の待ち時間は、読み取り 12 秒、書き込み 30 秒（公開・非公開・削除は鎌倉側で commit まで行う）。
-- 応答は `studio/kamakura-cms-contract.ts` の parser（BFF とブラウザで共有、`src/collection-model.ts` の parser を使う）で確かめ、既知の field だけを返します。schema の項目の key も `values` と同じ形に限ります。
+- 応答は `studio/kamakura-cms-contract.ts` の parser（BFF とブラウザで共有、`src/collection-model.ts` の parser を使う）で確かめ、既知の field だけを返します。
 
 | 上流 | ブラウザへ |
 | --- | --- |
@@ -194,20 +156,19 @@ Kamakura の `PageEditor` には `studio/kamakura-assets.ts` の素材 adapter �
 | 409（並べ替え・まとめての操作） | 409 `{ error: "conflict", items }`（items は今の一覧） |
 | 422 | 422 `{ error: "invalid", errors }`（先頭の 50 件） |
 | upload intent の 413 / 415 | 同じ status で `{ error: "image_rejected" }` |
-| 404 | 404 `{ error: "not_found" }`（schema の 404 は endpoint の未配備として 503） |
+| 404 | 404 `{ error: "not_found" }` |
 | 400（と本文の 413） | 400 `{ error: "invalid_request" }` |
 | 401 / 403 / 429 / 5xx / 3xx / JSON でない / 上限超え / timeout / 想定外の 4xx | 503 `{ error: "service_unavailable", supportId }` |
 | 契約に合わない応答（field の過不足・id の不一致・成功の status 違いなど） | 502 `{ error: "upstream_contract_invalid", supportId }` |
 
-log は editor と同じく問い合わせ ID・固定の operation（`cms_schema`・`cms_list`・`cms_read`・`cms_english_publication_read`・`cms_english_publication_retry`・`cms_create`・`cms_draft_save`・`cms_publish`・`cms_discard_draft`・`cms_unpublish`・`cms_duplicate`・`cms_remove`・`cms_schedule`・`cms_cancel_schedule`・`cms_retry_schedule`・`cms_reorder`・`cms_bulk`・`cms_upload_intent`）・固定の分類（editor の分類と `cms_endpoint_missing`）・上流の status だけで、本文・email・subject は出しません。
+ログは editor と同じく問い合わせ ID・固定の操作と分類・上流の HTTP status を記録します。
 
-ブラウザ側は `studio/kamakura-cms.ts` の `createKamakuraCmsAdapter({ siteOrigin })` が `CollectionAdapter` を返します（`siteOrigin` は Project の `site.domains[0]`）。
+ブラウザ側は `studio/kamakura-cms.ts` の `createKamakuraCmsAdapter({ siteOrigin, commonApi })` が `CollectionAdapter` を返します（`siteOrigin` は Project の `site.domains[0]`）。
 
-- 項目ごとに最後に読んだ version と値を覚え、`saveDraft` は**その値との差分だけ**を送ります（触っていない本文などを、画面側の正規化で書き換えないため）。覚えていない version なら読み直し、違えば保存せずに conflict を返します。
+- 項目ごとに最後に読んだ version と値を覚えます。変更がある場合、共通 API の保存へ正規化済みの全項目を渡します。版が手元に無ければ読み直し、異なる版への上書きは競合を返します。
 - 403 → forbidden、404 → not_found、409 → conflict、422 → invalid。非公開（上流は 202 publishing）は画面の契約に合わせて saved で返します。複製は覚えている version で呼び、競合なら最新の version でもう一度だけ試します。
 - `publish`・`schedule` の `redirect`、`remove` の `redirectTo` は、画面が付けたときだけ送ります。`reorder`・`bulk` は成功（並べ替えは 202、まとめての操作は 202 / 200）と 409 の一覧をそのまま画面へ返し、触った項目の覚えた version を捨てます（次に開いたときに読み直す）。`retrySchedule` は `retry-schedule` を呼びます。
 - 英語公開状態は項目本文と別の署名済み endpoint で読み、再試行します。`englishPublications` の page ID は posts / circles の1件、companies / creators の2件に完全一致させ、状態の余分な field も拒否します。adapter は raw page ID を落として「記事ページ」「サークルページ」「会社ページ」「クリエイターページ」に直し、本文の既知 version・値を変更しません。
-- 上流の schema が 5 つの capabilities だけでも、新しい 4 つ（`redirects`・`reorder`・`bulk`・`retrySchedule`）と項目の型 `gallery` を返しても読めます（新しい key は無ければ false）。Studio を先に配備し、鎌倉の Worker の新しい key・型は後から出します。
 - 画像: BFF の `uploads/intent` を呼び、`uploadUrl` が鎌倉の Worker の `/internal/studio/cms-upload/<uploadId>` であることを確かめてから、`credentials: "omit"`・`Authorization: Bearer <uploadToken>` で直接 PUT します。結果の URL は `https://kamakura-media.niho.life/uploads/...` だけを受けます。拒否は type / size / permission / invalid で返します。
 - `imageUrl` は `kamakura-media.niho.life` の画像だけ `/cdn-cgi/image/width=<w>,format=auto/` の URL にします。`previewUrl` は公開中（変更ありを含む）の項目だけ、サイトの公開 URL と `item.path` から作ります（下書きのプレビューはありません）。
 - Dashboard の HTML の `connect-src` には、切替が on のときだけ画像の PUT 先（`https://next-kamakura.niho.life`）を足します（editor の画面は従来どおり）。
@@ -287,28 +248,19 @@ Dashboard の「翻訳」と CMS 項目の English タブは、[翻訳の画面]
 1. NIHO アカウントに作成済みの `niho-web-studio` D1 と `studio/wrangler.toml` の binding・account ID を照合する。token、credential、実メールアドレスはリポジトリへ書かない。Studio-native siteを有効にする環境では、管理originとは別の共有HTTPS originを `PUBLIC_SITES_ORIGIN` に設定する。ローカル例は `https://sites.example.com` とし、値にpathを含めない。DNSやcustom domainの作成はこのWorkerの配備手順に含めない。
 2. 作成済みの専用 Cloudflare Access application `NIHO Web Studio` が `studio.niho.life` 全体を保護し、専用ポリシー `Allow NIHO Web Studio staff`（Google ログインと `@niho.life`）のみを使うことを照合する。Cloudflare dashboard membership を Studio role として使わない。Access session は 12 時間、Cookie は HttpOnly。
 3. 作成済み Access application の AUD tag と `ACCESS_AUDIENCE`、issuer `https://niho-coliving.cloudflareaccess.com` を照合する。
-4. まず NIHO API STG と Studio Worker に、STG 専用 `NIHO_STUDIO_BRIDGE_SECRET_STG` を同じ値で設定する。STG用と本番用の secret は別にする。Kamakura の secret もExperienceとは共用しない。本番 Experience secret は本番受入時まで設定しない。値を shell 引数、リポジトリ、ログへ残さず、対話入力または承認済みの secret handling で設定する。
+4. Studio と Kamakura の両 Worker に共有の `KAMAKURA_STUDIO_BRIDGE_SECRET` を設定する。値は対話入力で渡す。
+5. `KAMAKURA_SITE` の service binding を確認し、サイト側の共通編集 API と catalog が利用可能な状態で Studio を配備する。owner / editor で catalog・読取・保存・公開・復元を確認する。
 
 ```sh
-wrangler secret put NIHO_STUDIO_BRIDGE_SECRET --config studio/wrangler.toml
-wrangler secret put NIHO_STUDIO_BRIDGE_SECRET_STG --config studio/wrangler.toml
 wrangler secret put KAMAKURA_STUDIO_BRIDGE_SECRET --config studio/wrangler.toml
-```
 
-`NIHO_STUDIO_BRIDGE_SECRET_STG` には NIHO API STG が参照する Secret Manager の値だけを設定します。本番値との共用は禁止です。Secret Manager から Cloudflare へ移すときも対話型またはログに出ない承認済みの secret handling を使い、shell 引数・ファイル・ログ・Issue に値を残しません。
-
-5. `studio/wrangler.toml` の `KAMAKURA_SITE` が同じ Cloudflare account の service `kamakura-site` を指すことを確認する。
-6. Experience STG は、(1) niho-app PR #19268 の API を STG に反映、(2) Cloud Run STG が Secret Manager の STG key を参照していることを確認、(3) Studio Worker の STG key を設定、(4) この Worker を配備、(5) owner で STG画面を開き list / read / save / release-plan / release / rollback を受入確認、の順に進める。本番用 API key や本番コンテンツはこの確認に使わない。
-7. Kamakura は、(1) 両 Worker に Kamakura secret を設定、(2) `kamakura-site` の署名済み `/internal/studio/web-content/*` を先に配備し service binding 経由の catalog smoke を確認、(3) Studio D1 migration `0004` を適用、(4) Studio Worker を配備、(5) owner/editor で catalog / read / save / release-plan / release / rollback を受入確認、とする。Studio を先に配備して backend 未反映を編集可能とは案内しない。各deploy後に新しい Worker version が有効になったことを確認して次段へ進む。
-
-```sh
 npm ci
 npm run studio:typecheck
 npm run studio:build
 wrangler d1 migrations apply niho-web-studio --remote --config studio/wrangler.toml
 ```
 
-`0001_studio_registry.sql` は2つの Project/Site を seed し、membership を暗黙追加しません。`0002_membership_administration.sql` は既存 membership を保持したまま nullable email、招待、audit を追加します。`0003_experience_site_metadata.sql` は Experience site を API と同じ metadata に更新します。`0004_kamakura_site_metadata.sql` は Kamakura site のmetadataを更新し、`0010_kamakura_site_name.sql` はcatalogとsite名を揃えます。`0011_managed_sites.sql` はStudio-native site、ページ、immutable version/publication、短命plan、auditを追加し、既存 `sites.public_origin UNIQUE` を変更しません。`0012_site_analytics.sql` はサイト分析の接続・一回用plan・集計cacheを追加するだけで既存tableを変えません。`0013_managed_cms.sql` は Studio-native CMS の版付き定義・項目・release・予約を追加します。`0014_cms_page_bindings.sql` はページ revision に保存する CMS bindings、公開 page publication の CMS release pin、bindings 更新の operation receipt を追加します。Worker より先に適用します。Migration は既存 membership と owner bootstrap を壊しません。
+`0001_studio_registry.sql` は2つの Project/Site を seed し、membership を暗黙追加しません。`0002_membership_administration.sql` は既存 membership を保持したまま nullable email、招待、audit を追加します。`0003_experience_site_metadata.sql` は Experience Dashboard 用のサイト情報を更新します。`0004_kamakura_site_metadata.sql` は Kamakura site のmetadataを更新し、`0010_kamakura_site_name.sql` はcatalogとsite名を揃えます。`0011_managed_sites.sql` はStudio-native site、ページ、immutable version/publication、短命plan、auditを追加し、既存 `sites.public_origin UNIQUE` を変更しません。`0012_site_analytics.sql` はサイト分析の接続・一回用plan・集計cacheを追加するだけで既存tableを変えません。`0013_managed_cms.sql` は Studio-native CMS の版付き定義・項目・release・予約を追加します。`0014_cms_page_bindings.sql` はページ revision に保存する CMS bindings、公開 page publication の CMS release pin、bindings 更新の operation receipt を追加します。Worker より先に適用します。Migration は既存 membership と owner bootstrap を壊しません。
 
 ## owner の out-of-band bootstrap
 
@@ -355,19 +307,14 @@ Project 固有 API はすべて次の prefix 配下です。
 - `POST members/remove`: owner の member 削除
 - `POST invitations/preview`: 招待 token hash、scope、verified email が一致する本人だけ
 - `POST invitations/accept`: 本人の明示承諾。membership と token consume を atomic に実行
-- Experience: `GET editor/sites`、`GET editor/sites/experience/pages`、`GET editor/sites/experience/pages/:pageId/en`（通常編集は owner/editor）
-- Experience: `PUT .../draft`、`POST .../release-plan`、`POST .../release`
-- Experience STG: 同じ route を `/editor-staging` 配下で提供し、owner のみ許可
-- Kamakura: `GET editor/catalog`、`GET editor/:pageId`
-- Kamakura: `PUT editor/:pageId/draft`、`POST editor/:pageId/release-plan`、`POST editor/:pageId/release`
+- Kamakura: `GET editor/catalog`、`POST editor/:pageId/english-publication-retry`、`editor/editing-api/v1/sites/kamakura/operations/pages.*`
 - Kamakura: `POST editor/assets/{list,upload-intent,update,usages,resolve}`、`GET editor/assets/:uuid/preview`（owner/editor）
-- Kamakura CMS: `GET cms/schema`、`GET|POST cms/collections/:col/items`、`GET cms/collections/:col/items/:id`、`GET|POST …/:id/english-publication`、`PUT …/:id/draft`、`POST …/:id/{publish,discard-draft,unpublish,duplicate,remove,schedule,cancel-schedule,retry-schedule}`、`POST cms/uploads/intent`（owner/editor・鎌倉以外は 404）
+- Kamakura CMS: 共通編集 API の `cms.*` と上表の GUI 専用操作（owner/editor・鎌倉以外は 404）
 - サイト分析: `GET analytics/{report,connection}`（owner/editor）、`POST analytics/{ga4,search-console}/reporting/{prepare,apply,verify,retry,disconnect/prepare,disconnect/apply}`（owner）。詳細は上の「サイト分析」
 - Kamakura 翻訳: `editor/editing-api/v1/sites/kamakura/operations/localization.*`（[共通 Editing API の操作表](../docs/editing-api-contract.md#翻訳操作)）。画像のアップロード開始と English キャンバスは `localization/uploads/intent` と `localization/editor/*`。
 
 unknown Project/Site と権限のない Project/Site は、外部から区別できる詳細を返しません。owner API が返す member 情報は、その owner が管理する同一 Project に限定します。
 
-編集対象の追加手順、trusted registry、client component map、worker adapter mapの境界は [ビルダー接続ガイド](../docs/builder-integration-guide.md) を正とします。登録されていないProject/Site/environmentはHTMLとAPIの両方で閉じます。
 
 ## local 確認と配置
 
@@ -384,9 +331,7 @@ wrangler dev --config studio/wrangler.toml
 
 ## 制約と follow-up
 
-- Experience editor の本番UIは Backend Draft PR #19268 の本番配備と、Studio Worker／NIHO API の本番 secret 設定が揃った場合だけ有効にします。secret が欠落・不正なら API 接続は 503 で fail-closed します。STG用 secret は本番で再利用しません。
 - Kamakura editor は native 化済みの共通ページだけを扱います。ブロック契約は kamakura-site の `GET catalog` が保存時検証と同じ正本から返し、Studio はそれを検証して安全なローカルプレビューを組み立てます。外部表示・予約・送信・CMS取得のコードは実行しません。未変換ページは読み取り専用です。素材は「Kamakura の素材ライブラリ」のとおり接続済みで、サイト側の段階解除が適用されたページ用にアップロードと更新を受け付けます。作成、旧形式ページ編集、CMS 操作はこの bridge の対象外です。
-- Experience editor は production API が提供するページ文書・下書き・公開・復元だけを扱います。自由追加できない NIHO 業務ブロックは `insertableBlocks=[]` とし、components / localization / assets は未実装です。
 - 招待メールの配信、再送、token の再表示はありません。URL の安全な共有は owner の運用責任です。
 - Access email の変更や IdP account の統合は自動追従しません。membership の主体は安定 `sub` で、保存 email は招待照合と owner 表示用です。
 - out-of-band bootstrap SQL 自体は application audit に自動記録されません。operator 側の変更記録を残してください。
@@ -394,4 +339,4 @@ wrangler dev --config studio/wrangler.toml
 
 ### 鎌倉のページ操作
 
-固定ページの一覧名・URLの変更、作成、公開範囲の切り替えは、ホストが `pageChangeActions` で公開した操作を使います。`editor/page-changes/prepare` と `editor/page-changes/apply` は Access・プロジェクトの権限・same-origin を検証してから、要求と確認トークンを署名付きでホスト API に送ります。公式 CLI も同じ API を使います。詳細は [ページ管理契約](../docs/page-contract.md#鎌倉studioの接続範囲)。
+固定ページの一覧名・URLの変更、作成、公開範囲の切り替えは、ホストが `pageChangeActions` で公開した操作を使います。共通編集 API の `pages.change-prepare` と `pages.change-apply` は Access・プロジェクトの権限・same-origin を検証してから、要求と確認トークンを署名付きでホスト API に送ります。詳細は [ページ管理契約](../docs/page-contract.md#鎌倉studioの接続範囲)。

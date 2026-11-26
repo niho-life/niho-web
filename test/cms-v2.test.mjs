@@ -626,7 +626,7 @@ test("CollectionWorkspace displays v2-derived status and failure without changin
   t.after(() => dom.window.close());
   const { createElement, act } = await import("react");
   const { createRoot } = await import("react-dom/client");
-  const { CollectionWorkspace } = await import("@niho/web/collection-workspace");
+  const { CollectionWorkspace } = await import("../dist/collection-workspace.js");
   const host = new MemoryHost();
   publish(host);
   host.add(post, { "field-title": "新しい海辺の案内", "field-slug": "coast" });

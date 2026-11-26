@@ -190,15 +190,6 @@ test("both adjacent pages start prefetching before the first document finishes l
   }
 });
 
-test("responsive proposal control is absent without the optional host adapter", async () => {
-  const absent = await setup();
-  try { assert.equal(button("レスポンシブ提案"), undefined); }
-  finally { await absent.cleanup(); }
-  const present = await setup({ adapter: { responsiveProposal: { propose: async (request) => ({ fingerprint: request.fingerprint, changes: [] }) } } });
-  try { assert.ok(button("レスポンシブ提案")); }
-  finally { await present.cleanup(); }
-});
-
 test("breakpoint settings dialog analyzes every page and reports unused and nearby widths", async () => {
   const reads = [];
   const page = (pageId, width) => ({ schemaVersion: 1, siteId: "demo", pageId, locale: "ja-JP", revision: 1, title: pageId,
@@ -270,36 +261,6 @@ test("breakpoint analysis keeps the error state when another read resolves after
     await flush();
     assert.match(analysis.textContent, /問い合わせページの読込に失敗しました/u);
     assert.doesNotMatch(analysis.textContent, /確認中/u);
-  } finally { await app.cleanup(); }
-});
-
-test("responsive proposal reviews exact changes, applies once and undo restores them", async () => {
-  let requested;
-  const app = await setup({ adapter: { responsiveProposal: { propose: async (request) => {
-    requested = structuredClone(request);
-    return { fingerprint: request.fingerprint, changes: [
-      { nodeId: "hero", breakpoint: 768, property: "padding", value: "2rem" },
-      { nodeId: "heading", breakpoint: 1280, property: "fontSize", value: 48 }
-    ] };
-  } } } });
-  try {
-    await click("レスポンシブ提案");
-    assert.match(document.querySelector('[role="dialog"]').textContent, /ページ全体/u);
-    await click("提案を依頼");
-    assert.deepEqual(requested.target, { siteId: "demo", pageId: "home", locale: "ja-JP" });
-    assert.deepEqual(requested.scope, { type: "page" });
-    assert.deepEqual(requested.breakpoints, [768, 1280]);
-    const review = document.querySelector(".e-responsive-proposal-review");
-    assert.match(review.textContent, /768px以上.*内側余白.*指定なし.*2rem/us);
-    assert.match(review.textContent, /1280px以上.*文字サイズ.*指定なし.*48/us);
-    await click("この変更を適用");
-    await click("下書き保存");
-    assert.equal(app.calls.saves.at(-1).document.body[0].style.responsive.find((entry) => entry.minWidth === 768).declarations.padding, "2rem");
-    assert.equal(app.calls.saves.at(-1).document.body[0].children[0].style.responsive.find((entry) => entry.minWidth === 1280).declarations.fontSize, 48);
-    await click("元に戻す");
-    await click("下書き保存");
-    assert.equal(app.calls.saves.at(-1).document.body[0].style.responsive.find((entry) => entry.minWidth === 768).declarations.padding, undefined);
-    assert.equal(app.calls.saves.at(-1).document.body[0].children[0].style, undefined);
   } finally { await app.cleanup(); }
 });
 
@@ -2545,7 +2506,7 @@ test("recently used assets are requested with recent, also while picking, and le
   try { await tool("アセット"); assert.equal(button("最近使った"), undefined); assert.equal(document.querySelector('[aria-label="アセットの出所"]'), null); } finally { await legacy.cleanup(); }
 });
 // 保存状態・自動保存・端末内の復元・競合の比較・版履歴（docs/save-history-contract.md）
-const { createBrowserRecoveryStore, RecoveryTooLargeError } = await import("@niho/web/history");
+const { createBrowserRecoveryStore, RecoveryTooLargeError } = await import("../dist/history.js");
 const wait = (ms) => act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
 const status = () => document.querySelector('[role="status"]').textContent;
 const toolbarButton = (text) => [...document.querySelectorAll(".e-inspector-actions button,.e-preview-exit")].find((node) => node.textContent === text || node.getAttribute("aria-label") === text);

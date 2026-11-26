@@ -3,7 +3,7 @@
 // 旧文書の出力が変わらないこと、サイトの定義を消すときの切り離しを標準出力で確かめる。保存先・認証・実サイトには接続しない。
 import { readFileSync } from "node:fs";
 import { detachRemovedSiteStyles, generatePageCss, parsePageDocument, resolvePageStyles } from "@niho/web/core";
-import { parseSiteSettings } from "@niho/web/pages";
+import { parseSiteSettings } from "../dist/pages.js";
 import { renderPageToHtml } from "@niho/web/server";
 
 const read = (name) => JSON.parse(readFileSync(new URL(`./${name}`, import.meta.url), "utf8"));

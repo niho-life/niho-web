@@ -62,14 +62,11 @@ import { workspaceCss } from "./editor-workspace-style.js";
 import { iconCatalog } from "./icons.js";
 import { parseEnglishPublication } from "./english-publication.js";
 import { BreakpointSettingsDialog, breakpointPreview, useBreakpointSettings } from "./editor-breakpoints.js";
-import { ResponsiveProposalControl, responsiveProposalCss } from "./editor-responsive-proposal.js";
 import { beginEditorPerformance, finishEditorPerformance, type EditorPerformanceMeasurement, type EditorPerformanceOutcome } from "./editor-performance.js";
 
 const browserClipboardNodeType = `web ${EDITOR_NODE_CLIPBOARD_TYPE}`;
 
 export type * from "./editor-types.js";
-export { prepareResponsiveProposal, requestResponsiveProposal, responsiveProposalProperties, ResponsiveProposalTimeoutError } from "./editor-responsive-proposal.js";
-export type { ResponsiveProposalReview, ResponsiveProposalReviewChange } from "./editor-responsive-proposal.js";
 export { EditorSessionLoadError } from "./editor-session.js";
 export type { EditorSession, EditorSessionLoad } from "./editor-session.js";
 export type { LayerEntry, LayerKind, LayerLabels } from "./layers.js";
@@ -642,7 +639,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   // Dialog が元のフォーカスを記録した後に閉じるボタンへ移す。
   useEffect(() => { if (shortcutsOpen) shortcutClose.current?.focus(); }, [shortcutsOpen]);
   const [leftPanelOpen, setLeftPanelOpen] = useState(true), [rightPanelOpen, setRightPanelOpen] = useState(true);
-  const [breakpointSettingsOpen, setBreakpointSettingsOpen] = useState(false), [responsiveProposalOpen, setResponsiveProposalOpen] = useState(false);
+  const [breakpointSettingsOpen, setBreakpointSettingsOpen] = useState(false);
   const [localizationManual, setLocalizationManual] = useState<EditorLocalizationManualBuffer | null>(null);
   const [siteComponentReturn, setSiteComponentReturn] = useState<EditorTarget | null>(null);
   const [layerDrop, setLayerDrop] = useState<{ id: string; position: "before" | "inside" | "after" } | null>(null);
@@ -773,7 +770,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const autosaveMs = autosaveDelay(autosave), autosaveActive = autosaveMs !== undefined && autosaveOn;
   // オフラインで失敗した後、接続が戻ったら自動保存は1回だけ再試行する。
   const online = useOnline(() => { if (problemRef.current !== "offline") return; if (!autosaveActive) setProblem("failed"); else if (!pendingChanges) setProblem(null); else void save("auto"); });
-  const otherModal = !!plan || !!localeReleasePlan || !!navigation || !!pageChange || !!releaseSetPages || breakpointSettingsOpen || responsiveProposalOpen || conflictView > 0 || recoveryCompare || versions.dialog !== null || !!componentDialog || !!libraryReload || shortcutsOpen || !!groupChange;
+  const otherModal = !!plan || !!localeReleasePlan || !!navigation || !!pageChange || !!releaseSetPages || breakpointSettingsOpen || conflictView > 0 || recoveryCompare || versions.dialog !== null || !!componentDialog || !!libraryReload || shortcutsOpen || !!groupChange;
   const modal = otherModal || commandPaletteOpen;
   // 自動保存は手動保存と同じく部品 → ページの順に保存する。部品とページのどちらが変わっても待ち直す。
   const autosaveSubject = useMemo(() => [session?.history.present, session?.cmsBindings, libraryPresent], [session?.history.present, session?.cmsBindings, libraryPresent]);
@@ -2496,15 +2493,6 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const contextDetail = masterComponent ? "コンポーネント本体" : isSiteComponent ? "サイト全体のコンポーネント" : page?.path ?? (page?.kind === "template" ? "テンプレート" : "");
   const localizationError = localization.supported && !localizationReady && (localization.siteState === "error" || localization.pageState === "error")
     ? "言語設定または翻訳状態を確認できません。編集内容を保持したまま停止しています。再試行してください。" : "";
-  const responsiveProposalReason = !session ? "ページを読み込んでから利用できます。"
-    : masterId ? "コンポーネント本体の編集中は利用できません。"
-      : targetMode ? "翻訳された文書では利用できません。"
-        : historyMode ? "版の表示を閉じてから利用できます。"
-          : session.readOnly ? session.readOnly.reason
-            : locks.length ? "ロックされた値を含む文書では利用できません。"
-              : hasInput ? "入力を確定するか取り消してから利用してください。"
-                : editBlocked ? "処理が完了してから利用してください。"
-                  : breakpoints.length === 0 ? "minWidthを持つ編集モードを設定してから利用してください。" : undefined;
   const blankAddUnavailable = addType === "embed-blank" && !blankEmbedReady;
   const dialogShortcutReason = "ダイアログを閉じてから操作してください。";
   const shortcutUnavailable = otherModal ? dialogShortcutReason
@@ -2572,7 +2560,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     help: { run: () => { setShortcutsOpen(true); return true; } },
   };
   shortcutListener.current = (event, inCanvas) => dispatchEditorShortcut(event, inCanvas, (action) => action === "palette" ? paletteUnavailable : commandPaletteOpen ? dialogShortcutReason : shortcutUnavailable, commands, setNotice);
-  return <EditorWorkspace preview={preview} leftOpen={leftPanelOpen} rightOpen={rightPanelOpen} rootRef={workspace} setBody={(element) => { if (element) element.inert = modal; }} chrome={<><style dangerouslySetInnerHTML={{ __html: workspaceCss + editorCss + pagesCss + styleEditorCss + historyCss + localizationEditorCss + responsiveProposalCss }} />
+  return <EditorWorkspace preview={preview} leftOpen={leftPanelOpen} rightOpen={rightPanelOpen} rootRef={workspace} setBody={(element) => { if (element) element.inert = modal; }} chrome={<><style dangerouslySetInnerHTML={{ __html: workspaceCss + editorCss + pagesCss + styleEditorCss + historyCss + localizationEditorCss }} />
     {assets && <style dangerouslySetInnerHTML={{ __html: assetEditorCss }} />}
     {notice && <div className="e-notice" role="alert">{notice}</div>}
     {session?.readOnly && <div className="e-readonly" role="status"><div><strong>{isSiteComponent ? "コンポーネント（読み取り専用）" : targetMode ? "この言語（読み取り専用）" : "原文（読み取り専用）"}</strong><span>{session.readOnly.reason}</span></div>{session.readOnly.editUrl && <a className="e-small" href={session.readOnly.editUrl} {...(/^https:\/\//iu.test(session.readOnly.editUrl) ? { target: "_blank", rel: "noopener noreferrer" } : {})}>{session.readOnly.editLabel ?? (targetMode ? "原文の編集画面を開く" : "編集画面を開く")}</a>}</div>}
@@ -2686,8 +2674,6 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       <SaveStatus {...status} retry={() => void save()} compare={() => setConflictView((value) => value + 1)} reload={() => void reloadLibrary()} retryDisabled={siteWorkBlocked || blocked || hasInput || historyMode || !localizationReady} compareDisabled={targetMode || !!busy || hasInput || historyMode || !localizationReady}
         reloadDisabled={!library || siteWorkBlocked || blocked || hasInput || historyMode || targetMode || !localizationReady} />
       {autosaveMs !== undefined && <AutosaveSwitch on={autosaveOn} set={setAutosaveOn} />}
-      {adapter.responsiveProposal && session && <ResponsiveProposalControl adapter={adapter.responsiveProposal} target={session.target} document={session.history.present} breakpoints={breakpoints} selectedNodeId={selectedId}
-        {...(responsiveProposalReason ? { disabledReason: responsiveProposalReason } : {})} blocks={blocks} locks={session.locks} {...(libraryPresent ? { components: libraryPresent } : {})} siteStyles={activeSiteStyles} onOpenChange={setResponsiveProposalOpen} apply={apply} />}
       <button className="e-action-button" aria-label="元に戻す" title={undoUnavailable ?? "元に戻す"} onClick={() => travel("undo")} disabled={!!undoUnavailable}><WorkspaceIcon name="undo" /><span className="e-vh">元に戻す</span></button>
       <button className="e-action-button" aria-label="やり直す" title={redoUnavailable ?? "やり直す"} onClick={() => travel("redo")} disabled={!!redoUnavailable}><WorkspaceIcon name="redo" /><span className="e-vh">やり直す</span></button>
       <button className="e-action-button" aria-label="プレビュー" title="プレビュー" aria-pressed={false} onClick={() => setPreview(true)} disabled={!document || blocked || historyMode}><WorkspaceIcon name="preview" /><span className="e-vh">プレビュー</span></button>

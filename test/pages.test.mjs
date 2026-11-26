@@ -5,7 +5,7 @@ import { DocumentValidationError, parsePageDocument } from "@niho/web/core";
 import {
   PAGE_LIMITS, PREVIEW_RESPONSE_HEADERS, buildPageTree, findInternalLinks, findPathConflict, isTemplatePath, matchesTemplatePath, pageUrl,
   parseSiteSettings, renderPageHead, resolvePageMetadata, rewriteInternalLinks, shouldIncludeInSitemap, validatePagePath
-} from "@niho/web/pages";
+} from "../dist/pages.js";
 
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 const page = (pageId, path, extra = {}) => ({ siteId: "demo", pageId, locale: "ja-JP", title: pageId, ...(path === undefined ? {} : { path }), ...extra });

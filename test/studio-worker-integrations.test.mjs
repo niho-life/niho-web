@@ -12,7 +12,7 @@ async function accessFixture() {
   return { issuer, audience, subject, jwt: `${input}.${Buffer.from(signature).toString("base64url")}`, jwk: { ...await crypto.subtle.exportKey("jwk", pair.publicKey), kid, alg: "RS256", use: "sig" } };
 }
 
-test("Experience editor stays frozen while Kamakura reads pass and site freezes stay explicit", async (t) => {
+test("Experience editor routes close while Kamakura reads and site freeze reporting remain available", async (t) => {
   const auth = await accessFixture();
   const bundled = await build({ entryPoints: [new URL("../studio/worker.ts", import.meta.url).pathname], bundle: true, format: "esm", platform: "node", target: "node22", write: false });
   const workerSource = bundled.outputFiles[0].text;
@@ -27,13 +27,13 @@ test("Experience editor stays frozen while Kamakura reads pass and site freezes 
   const site = { id: "kamakura", name: "鎌倉サイト", domains: ["https://next-kamakura.niho.life"] };
   const catalog = { project: { id: "kamakura-site", name: "NIHO kamakura", site }, sites: [site], pages: [{ siteId: "kamakura", pageId: "home", locale: "ja", title: "NIHO kamakura", path: "/", kind: "page" }], legacy: [], nativePresentationPages: ["home"], blockContracts: { KamakuraLegacyForm: { props: { formId: { type: "enum", values: ["community-dinner"] } } } } };
   const readOnly = { reason: "サイトの見た目の編集は凍結中です。" };
-  let writeResponse = () => Response.json({ error: "visual_editor_frozen", message: "凍結中" }, { status: 409 });
+  const writeResponse = () => Response.json({ error: "visual_editor_frozen", message: "凍結中" }, { status: 409 });
   const env = {
     ACCESS_ISSUER: auth.issuer,
     ACCESS_AUDIENCE: auth.audience,
     KAMAKURA_STUDIO_BRIDGE_SECRET: Buffer.alloc(32, 23).toString("base64url"),
     DB: { prepare(query) { return { bind(...values) { this.values = values; return this; }, async first() { const role = roles.get(`${this.values[1]}/${this.values[2]}`); return role && (!/m\.role = 'owner'/u.test(query) || role === "owner") ? { allowed: 1 } : null; } }; } },
-    ASSETS: { async fetch(request) { assets.push(request.url); return new Response('<div id="root"></div>', { headers: { "Content-Type": "text/html" } }); } },
+    ASSETS: { async fetch(request) { assets.push(request.url); if (new URL(request.url).pathname !== "/index.html") return new Response(null, { status: 404 }); return new Response('<div id="root"></div>', { headers: { "Content-Type": "text/html" } }); } },
     KAMAKURA_SITE: { async fetch(request) {
       const requestUrl = new URL(request.url), path = requestUrl.pathname;
       kamakuraCalls.push(`${request.method} ${path}`);
@@ -62,7 +62,7 @@ test("Experience editor stays frozen while Kamakura reads pass and site freezes 
   const kamakura = "/api/projects/project-kamakura/sites/kamakura";
 
   assert.equal((await worker.fetch(new Request(`https://studio.niho.life${experience}/editor/sites`), env)).status, 401);
-  assert.equal((await call(`${experience}/editor/sites`)).status, 403);
+  assert.equal((await call(`${experience}/editor/sites`)).status, 404);
   assert.equal((await call(`${kamakura}/editor/catalog`)).status, 403);
   assert.equal((await write(`${kamakura}/editor/home/english-publication-retry`, "POST")).status, 403);
   assert.equal(kamakuraCalls.length, 0);
@@ -70,12 +70,12 @@ test("Experience editor stays frozen while Kamakura reads pass and site freezes 
   roles.set("project-kamakura/kamakura", "editor");
   for (const path of [`${experience}/editor/sites`, `${experience}/editor/sites/experience/pages/home/en`]) {
     const response = await call(path);
-    assert.equal(response.status, 409, path);
-    assert.equal((await response.json()).error, "visual_editor_frozen");
+    assert.equal(response.status, 404, path);
+    assert.equal((await response.json()).error, "not_found");
   }
-  assert.equal((await call(`${experience}/editor-staging/sites`)).status, 403);
+  assert.equal((await call(`${experience}/editor-staging/sites`)).status, 404);
   roles.set("project-experience/experience", "owner");
-  assert.equal((await call(`${experience}/editor-staging/sites`)).status, 409);
+  assert.equal((await call(`${experience}/editor-staging/sites`)).status, 404);
 
   const catalogResponse = await call(`${kamakura}/editor/catalog`);
   assert.equal(catalogResponse.status, 200);
@@ -98,15 +98,10 @@ test("Experience editor stays frozen while Kamakura reads pass and site freezes 
   const applied = await write(`${kamakura}/editor/editing-api/v1/sites/kamakura/operations/pages.apply/home?locale=ja`, "POST");
   assert.equal(applied.status, 409);
   assert.deepEqual(await applied.json(), { error: "visual_editor_frozen", message: "凍結中" });
-  for (const [path, method] of [[`${kamakura}/editor/home/draft`, "PUT"], [`${kamakura}/editor/home/release-plan`, "POST"], [`${kamakura}/editor/home/release`, "POST"]]) {
-    const response = await write(path, method);
-    assert.equal(response.status, 409, path);
-    assert.deepEqual(await response.json(), { error: "visual_editor_frozen" }, path);
+  for (const [path, method] of [["draft", "PUT"], ["release-plan", "POST"], ["release", "POST"]]) {
+    const response = await write(`${kamakura}/editor/home/${path}`, method);
+    assert.equal(response.status, 404, path);
   }
-  writeResponse = () => Response.json({ error: "ほかの変更が入りました。" }, { status: 409 });
-  const conflict = await write(`${kamakura}/editor/home/draft`);
-  assert.equal(conflict.status, 409);
-  assert.deepEqual(await conflict.json(), { error: "conflict" });
   assert.equal((await call(`${kamakura}/editor/home?upstream=https://untrusted.example`)).status, 400);
   assert.equal((await call(`${kamakura}/editor-staging/catalog`)).status, 404);
   assert.deepEqual(kamakuraCalls, [
@@ -114,10 +109,6 @@ test("Experience editor stays frozen while Kamakura reads pass and site freezes 
     "GET /api/edit/v1/sites/kamakura/operations/pages.read/home",
     "GET /api/edit/v1/sites/kamakura/operations/pages.read/home",
     "POST /api/edit/v1/sites/kamakura/operations/pages.apply/home",
-    "PUT /internal/studio/web-content/home/draft",
-    "POST /internal/studio/web-content/home/release-plan",
-    "POST /internal/studio/web-content/home/release",
-    "PUT /internal/studio/web-content/home/draft",
   ]);
 
   for (const path of [
@@ -127,7 +118,7 @@ test("Experience editor stays frozen while Kamakura reads pass and site freezes 
     "/projects/niho-experience/admin/editor/staging",
   ]) {
     const response = await call(path);
-    assert.equal(response.status, 200, path);
+    assert.equal(response.status, 404, path);
     assert.doesNotMatch(response.headers.get("Content-Security-Policy"), /frame-src|'unsafe-inline'|next-kamakura/u, path);
   }
   for (const path of ["/projects/project-kamakura/sites/kamakura/editor", "/projects/kamakura-site/admin/editor"]) {
@@ -143,15 +134,4 @@ test("Experience editor stays frozen while Kamakura reads pass and site freezes 
   assert.equal((await call("/api/session")).status, 200);
   assert.equal(upstream.length, 0);
   assert.ok(assets.length >= 6);
-});
-
-test("Studio client bundle includes the Kamakura editor but not the frozen Experience editor", async () => {
-  const result = await build({ entryPoints: [new URL("../studio/client.tsx", import.meta.url).pathname], bundle: true, format: "esm", platform: "browser", target: "es2022", write: false, metafile: true, define: { "process.env.NODE_ENV": '"production"' } });
-  const inputs = Object.keys(result.metafile.inputs);
-  for (const pattern of [/studio\/integration-entry\.tsx$/u, /studio\/experience-editor\.tsx$/u]) {
-    assert.equal(inputs.some((input) => pattern.test(input)), false, pattern.source);
-  }
-  for (const pattern of [/studio\/kamakura-editor\.tsx$/u, /src\/editor\.tsx$/u]) {
-    assert.equal(inputs.some((input) => pattern.test(input)), true, pattern.source);
-  }
 });

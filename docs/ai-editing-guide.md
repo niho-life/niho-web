@@ -42,7 +42,7 @@ args = ["--origin", "https://site.example", "--site", "site-id", "mcp"]
 env_vars = ["NIHO_EDIT_TOKEN", "CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET"]
 ```
 
-Studio-native CMSでは、MCP設定のoriginをStudio originにし、`cms-discover` / `cms-v2` などのtoolを呼ぶとき `args` に `--studio` を加えます。CLIと同じくCMS系以外のサイト編集コマンドはこのモードでは実行できません。
+Studio-native CMSでは、MCP設定のoriginをStudio originにし、`cms-discover` / `cms-v2` などのtoolを呼ぶとき `args` に `--studio` を加えます。CLIと同じく公開するコマンドは接続先の capabilities に従います。
 
 ## 読む・探す
 

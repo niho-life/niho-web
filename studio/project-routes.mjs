@@ -1,8 +1,23 @@
-import { TRUSTED_INTEGRATIONS } from "./integration-registry.mjs";
+const KAMAKURA = Object.freeze({ slug: "kamakura-site", projectId: "project-kamakura", siteId: "kamakura" });
+const EXPERIENCE = Object.freeze({ slug: "niho-experience", projectId: "project-experience", siteId: "experience" });
+const PROJECT_ALIASES = [KAMAKURA, EXPERIENCE];
 
-const PROJECT_ALIASES = Object.freeze(TRUSTED_INTEGRATIONS.flatMap((registration) => registration.aliases.map((slug) => Object.freeze({
-  slug, projectId: registration.projectId, siteId: registration.siteId
-}))));
+export function isKamakuraProject(projectId, siteId) {
+  return projectId === KAMAKURA.projectId && siteId === KAMAKURA.siteId;
+}
+
+export function projectSourceLocale(projectId, siteId) {
+  if (isKamakuraProject(projectId, siteId)) return "ja";
+  if (projectId === EXPERIENCE.projectId && siteId === EXPERIENCE.siteId) return "en";
+  return undefined;
+}
+
+export function parseProjectEditorPath(pathname) {
+  const alias = parseProjectAliasPath(pathname);
+  if (alias?.page === "editor") return { projectId: alias.projectId, siteId: alias.siteId };
+  const match = /^\/projects\/([A-Za-z][A-Za-z0-9_-]{0,79})\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/editor\/?$/u.exec(pathname);
+  return match ? { projectId: match[1], siteId: match[2] } : null;
+}
 
 /** Dashboard の中で開くサイト機能（ホストが接続したものだけ表示する）。URL の末尾と同じ名前 */
 export const PROJECT_SITE_VIEWS = Object.freeze(["cms", "assets", "translations"]);
@@ -56,6 +71,7 @@ export function parseProjectAliasPath(pathname) {
   const project = PROJECT_ALIASES.find(({ slug }) => slug === match[1]);
   if (!project) return null;
   const page = match[2] ?? "dashboard";
+  if (project === EXPERIENCE && page !== "dashboard") return null;
   const sub = subRoute(page, match[3]);
   if (sub === null) return null;
   return { ...project, page, ...sub };
@@ -64,7 +80,9 @@ export function parseProjectAliasPath(pathname) {
 /** 覚えやすい入口 `/project/<別名>`（kamakura-site#108）。正の alias URL `/projects/<別名>/admin…` へ移す先。対象外は null */
 export function projectShortcutTarget(pathname) {
   const match = new RegExp(`^/project/([a-z][a-z0-9-]*)(?:/${PAGE_PATTERN}${SUB_PATTERN})?/?$`, "u").exec(pathname);
-  if (!match || !PROJECT_ALIASES.some(({ slug }) => slug === match[1])) return null;
+  if (!match) return null;
+  const project = PROJECT_ALIASES.find(({ slug }) => slug === match[1]);
+  if (!project || project === EXPERIENCE && match[2] !== undefined) return null;
   const sub = subRoute(match[2], match[3]);
   if (sub === null) return null;
   return `/projects/${match[1]}/admin${match[2] ? `/${match[2]}` : ""}${pageSuffix(match[2], sub.cms ?? sub.translations ?? null)}`;
@@ -73,7 +91,7 @@ export function projectShortcutTarget(pathname) {
 /** sub は CMS なら { collectionId, itemId }、翻訳なら { itemKey }。ほかの画面では使わない */
 export function projectAliasPath(projectId, siteId, page, sub = null) {
   const project = PROJECT_ALIASES.find((candidate) => candidate.projectId === projectId && candidate.siteId === siteId);
-  if (!project) return null;
+  if (!project || project === EXPERIENCE && page !== "dashboard") return null;
   return `/projects/${project.slug}/admin${page === "dashboard" ? "" : `/${page}`}${pageSuffix(page, sub)}`;
 }
 

@@ -1,6 +1,6 @@
 # 共通プロジェクト契約
 
-`@niho/web/projects` は、1プロジェクトに1サイトを結び付け、複数メンバーを参加させる公開可能なモデル・検証・純粋操作を提供します。`@niho/web/project-manager` は認証済みホストへ接続する管理用 React 画面です。
+Studio の `src/projects.ts` は、1プロジェクトに1サイトを結び付け、複数メンバーを参加させるモデル・検証・純粋操作を提供します。
 
 このパッケージは認証、権限、招待、ID採番、アカウント台帳、管理API、非公開データ、本番永続化を所有しません。Project に role / owner / invitation / email を保存しません。ホストは各adapter呼出しでセッションと対象サイトへの権限を検証してください。
 
@@ -43,20 +43,10 @@ if (change.status === "changed") {
 
 アカウント照合とID採番はホストが担当します。ライブラリはNIHO APIを直接呼びません。本番ホストはDB transaction、ETag、compare-and-swap等でこの契約を実装する必要があります。デモのin-memory実装は永続化例ではありません。
 
-## ProjectManager
-
-`ProjectAdapter.resolveMember` は、利用者が入力したメールアドレス等をホストの既存アカウントへ照合します。返すのは `{ userId, displayName }` だけです。入力識別子は `addMember` やCatalogへ渡しません。未登録者への招待やロール選択は行いません。
-
-create / add / remove はすべて `expectedVersion` を受け取り、`saved` / `conflict` / `unchanged` を返します。成功応答でも既存Projectの消失やSite差替えは採用しません。競合・通信失敗時、画面はCatalogの旧versionとフォーム入力を保持します。非同期操作中は再読込、二重送信、Project切替を止め、adapter差替えとunmount時は進行中の `AbortSignal` をabortします。
-
-`adapter` または `initialSnapshot` のオブジェクト参照が変わると、一覧・選択・フォーム・確認ダイアログをすべてリセットします。新しい `initialSnapshot` があれば採用し、なければ新しいadapterから取得します。取得に失敗しても前の接続先の一覧は表示しません。ホストは通常の再描画でこれらの参照を維持し、アカウントや接続先を切り替えるときに差し替えてください。
-
-`onOpenProject` は管理画面から編集画面等を開くためのcallbackです。`ProjectManager` 自身は既存 `PageEditor` をunmountしません。ホストが画面を切り替える場合、編集中の未保存内容を確認してから切り替えてください。
-
 ## 1サイト限定エディター
 
 ```tsx
-import { createProjectEditorAdapter } from '@niho/web/project-editor';
+import { createProjectEditorAdapter } from '../src/project-editor-adapter.js';
 import { PageEditor } from '@niho/web/editor';
 
 const scoped = createProjectEditorAdapter(authenticatedEditorAdapter, project);
@@ -73,4 +63,4 @@ wrapperは `listSites` をProjectの唯一のSiteへ絞り、`listPages`、read�
 npm run demo:projects
 ```
 
-`http://127.0.0.1:4174` で、2 Project、複数member、同一の架空userIdが複数Projectへ参加する例、ProjectManager操作、選択Projectの1サイトへ限定したPageEditor接続を確認できます。`kamakura-site` / `niho-experience-site` は対応関係を示す名称だけで、実サイト・実アカウント・本番APIには接続しません。変更はプロセス内メモリだけにあり、再起動で失われます。
+`http://127.0.0.1:4174` で、2 Project、複数member、同一の架空userIdが複数Projectへ参加する例、選択Projectの1サイトへ限定したPageEditor接続を確認できます。`kamakura-site` / `niho-experience-site` は対応関係を示す名称だけで、実サイト・実アカウント・本番APIには接続しません。変更はプロセス内メモリだけにあり、再起動で失われます。

@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { generateKeyPairSync, sign } from "node:crypto";
+import { createHmac, generateKeyPairSync, sign } from "node:crypto";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
-import { parseLocalizationItemResult, parseLocalizationListResult, parseLocalizationOverviewResult } from "@niho/web/localization-workspace-model";
+import { parseLocalizationItemResult, parseLocalizationListResult, parseLocalizationOverviewResult } from "../dist/localization-workspace-model.js";
 import { cmsLocalizationItemKey } from "@niho/web/cms-v2";
 import { CMS_DELIVERY_RENDERER_VERSION, cmsDeliveryRoutes, createCmsDeliveryClient } from "@niho/web/cms-delivery";
 import { cmsDeliveryHash, parseCmsDeliverySnapshot, serializeCmsDeliverySnapshot, signCmsDeliveryRequest } from "../dist/cms-delivery-contract.js";
@@ -126,10 +126,10 @@ async function body(response, status) {
   return value;
 }
 
-testWithD1("Studio-native site uses one D1 page store for GUI, CLI, CAS, release history and public rendering", async (t) => {
+testWithD1("Studio-native site uses one D1 page store for GUI, CAS, release history and public rendering", async (t) => {
   const h = await fixture(t);
   const created = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Fixture site", slug: "fixture-site", locale: "ja" }), 201);
-  const { projectId, siteId } = created, api = `/api/projects/${projectId}/sites/${siteId}/editor`, cli = `/api/cli/v1/projects/${projectId}/sites/${siteId}`;
+  const { projectId, siteId } = created, api = `/api/projects/${projectId}/sites/${siteId}/editor`;
   assert.equal(created.editorPath, `/projects/${projectId}/sites/${siteId}/editor`);
   assert.equal(h.sqlite.prepare("SELECT public_origin FROM sites WHERE id = ?").get(siteId).public_origin, null);
   assert.equal(h.sqlite.prepare("SELECT slug FROM managed_sites WHERE site_id = ?").get(siteId).slug, "fixture-site");
@@ -146,21 +146,9 @@ testWithD1("Studio-native site uses one D1 page store for GUI, CLI, CAS, release
   const first = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/home`), 200);
   assert.equal(first.document.revision, 1);
 
-  // operatorが既に付与したservice grantもmanaged操作へ接続し、grant外の操作はadvertiseしない。
-  const addGrant = h.sqlite.prepare(`INSERT INTO studio_cli_grants
-    (client_id, project_id, site_id, capability, delegated_by_subject, expires_at) VALUES (?, ?, ?, ?, ?, unixepoch() + 600)`);
-  for (const capability of ["pages.read", "pages.edit", "pages.publish"]) addGrant.run(SERVICE_CLIENT, projectId, siteId, capability, OWNER);
-  const serviceDiscovery = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${cli}/capabilities`, undefined, { cli: true, service: true, token: h.serviceToken }), 200);
-  assert.deepEqual(serviceDiscovery.operations.map(({ id }) => id), ["pages.catalog", "pages.read", "pages.save", "pages.release-plan", "pages.release", "pages.change-prepare", "pages.change-apply"]);
-  assert.equal((await h.send(MANAGEMENT_ORIGIN, "GET", `${cli}/operations/pages.read/home`, undefined, { cli: true, service: true, token: h.serviceToken })).status, 200);
-
-  // GUI保存と同じoperationをCLI user tokenでも使う。cookie由来のhuman assertionだけではCLIを許可しない。
-  const discovery = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${cli}/capabilities`, undefined, { cli: true }), 200);
-  assert.deepEqual(discovery.operations.map(({ id }) => id), ["pages.catalog", "pages.read", "pages.save", "pages.release-plan", "pages.release", "pages.change-prepare", "pages.change-apply"]);
-  assert.equal((await h.send(MANAGEMENT_ORIGIN, "GET", `${cli}/capabilities`, undefined, { headers: { "Cf-Access-Jwt-Assertion": h.ownerToken }, auth: false })).status, 401);
   const edited = structuredClone(first.document);
   edited.body[0].children.push({ type: "element", id: "link", tag: "a", attrs: { href: "/about" }, children: [{ type: "text", text: "About" }] });
-  const saved = await body(await h.send(MANAGEMENT_ORIGIN, "PUT", `${cli}/operations/pages.save/home`, { expectedVersion: first.version, document: edited }, { cli: true }), 200);
+  const saved = await body(await h.send(MANAGEMENT_ORIGIN, "PUT", `${api}/home/draft`, { expectedVersion: first.version, document: edited }), 200);
   assert.equal(saved.revision, 2);
   assert.equal(h.sqlite.prepare("SELECT count(*) AS count FROM managed_page_versions WHERE site_id = ? AND page_id = 'home'").get(siteId).count, 1);
   assert.equal((await h.send(MANAGEMENT_ORIGIN, "PUT", `${api}/home/draft`, { expectedVersion: first.version, document: edited })).status, 409);
@@ -198,7 +186,7 @@ testWithD1("Studio-native site uses one D1 page store for GUI, CLI, CAS, release
   assert.match(thirdHtml, /name="robots" content="noindex, nofollow"/u);
   assert.doesNotMatch(thirdHtml, /rel="canonical"/u);
   const rollback = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/release-plan`, { target, expectedVersion: released3.snapshot.version, action: "rollback", revision: 2 }), 200);
-  const restored = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${cli}/operations/pages.release/home`, { expectedVersion: released3.snapshot.version, confirmationToken: rollback.confirmationToken }, { cli: true }), 200);
+  const restored = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/release`, { expectedVersion: released3.snapshot.version, confirmationToken: rollback.confirmationToken }), 200);
   assert.deepEqual(restored.snapshot.document, { ...released2.snapshot.document, revision: 4 });
   const editorRestored = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/home`), 200);
   assert.deepEqual(editorRestored.document, restored.snapshot.document);
@@ -207,8 +195,8 @@ testWithD1("Studio-native site uses one D1 page store for GUI, CLI, CAS, release
 
   // 同じpage-change operationで別ページを作る。公開前はpublic GETに出ない。
   const createChange = { action: "create", siteId, locale: "ja", title: "About", path: "/about" };
-  const changePlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${cli}/operations/pages.change-prepare`, { change: createChange }, { cli: true }), 200);
-  const applied = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${cli}/operations/pages.change-apply`, { change: createChange, confirmationToken: changePlan.confirmationToken }, { cli: true }), 200);
+  const changePlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/page-changes/prepare`, { change: createChange }), 200);
+  const applied = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/page-changes/apply`, { change: createChange, confirmationToken: changePlan.confirmationToken }), 200);
   assert.equal(applied.page.path, "/about");
   assert.equal((await h.send(PUBLIC_ORIGIN, "GET", "/s/fixture-site/about", undefined, { auth: false })).status, 404);
 
@@ -232,12 +220,93 @@ testWithD1("Studio-native site uses one D1 page store for GUI, CLI, CAS, release
   await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/page-changes/apply`, { change: visibility, confirmationToken: visibilityPlan.confirmationToken }), 200);
   assert.equal(h.sqlite.prepare("SELECT count(*) AS count FROM managed_editor_plans WHERE site_id = ? AND operation = 'page.visibility'").get(siteId).count, 0);
 
-  // 現在のmembershipがないhuman tokenはGUI/CLIどちらからも同じsiteを操作できない。
+  // 現在の membership がない利用者は同じサイトを操作できない。
   assert.equal((await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/catalog`, undefined, { token: h.otherToken })).status, 403);
-  assert.equal((await h.send(MANAGEMENT_ORIGIN, "GET", `${cli}/capabilities`, undefined, { token: h.otherToken, cli: true })).status, 403);
-  const audit = h.sqlite.prepare("SELECT operation, actor_subject FROM studio_cli_audit ORDER BY started_at, rowid").all();
-  assert.ok(audit.some((entry) => entry.operation === "pages.save" && entry.actor_subject === OWNER));
-  assert.ok(audit.some((entry) => entry.operation === "pages.change-apply" && entry.actor_subject === OWNER));
+});
+
+testWithD1("Kamakura machine editing enforces current site grants for discovery, read, save and publish", async (t) => {
+  const h = await fixture(t);
+  const projectId = "project-kamakura", siteId = "kamakura";
+  const endpoint = `/api/edit/v1/sites/${siteId}`;
+  const service = { cli: true, service: true, token: h.serviceToken };
+  const send = (method, path, input, options = service) => h.send(MANAGEMENT_ORIGIN, method, endpoint + path, input, options);
+  const read = "/operations/pages.read/home?locale=ja";
+  const save = "/operations/pages.save/home?locale=ja";
+  const plan = "/operations/pages.release-plan/home?locale=ja";
+  const release = "/operations/pages.release/home?locale=ja";
+  const secret = Buffer.alloc(32, 41);
+  h.env.KAMAKURA_STUDIO_BRIDGE_SECRET = secret.toString("base64url");
+  const calls = [];
+  h.env.KAMAKURA_SITE.fetch = async (request) => {
+    const url = new URL(request.url);
+    const [header, payload, signature] = request.headers.get("Authorization").slice("Bearer ".length).split(".");
+    assert.equal(signature, createHmac("sha256", secret).update(`${header}.${payload}`).digest("base64url"));
+    const claims = JSON.parse(Buffer.from(payload, "base64url"));
+    assert.equal(claims.iss, "niho-web-studio-edit");
+    assert.equal(claims.sub, `studio-cli:${SERVICE_CLIENT}`);
+    assert.equal(claims.exp - claims.iat, 60);
+    assert.equal(request.headers.has("Cf-Access-Jwt-Assertion"), false);
+    assert.equal(request.headers.has("CF-Access-Client-Secret"), false);
+    const input = request.method === "GET" ? null : await request.json();
+    calls.push({ path: url.pathname + url.search, method: request.method, scope: claims.scope, input });
+    if (url.pathname.endsWith("/capabilities")) {
+      return Response.json({ apiVersion: "v1", siteId, operations: ["pages.read", "pages.save", "pages.release-plan", "pages.release", "assets.list"].map((id) => ({ id })) });
+    }
+    if (url.pathname.endsWith("pages.release/home")) {
+      return input.expectedVersion === "draft-v2"
+        ? Response.json({ status: "released", operationId: input.operationId, version: "published-v2" })
+        : Response.json({ error: "version_conflict" }, { status: 409 });
+    }
+    return Response.json({ forwarded: true });
+  };
+
+  await body(await send("GET", read, undefined, { auth: false }), 401);
+  await body(await send("GET", "/capabilities"), 403);
+  await body(await send("GET", read), 403);
+  assert.equal(calls.length, 0);
+
+  const addMember = h.sqlite.prepare("INSERT INTO project_members (project_id, access_subject, role, display_name, email) VALUES (?, ?, 'owner', ?, ?)");
+  addMember.run(projectId, OWNER, "Fixture owner", "owner@example.test");
+  addMember.run(projectId, OTHER, "Other owner", "other@example.test");
+  const addGrant = h.sqlite.prepare(`INSERT INTO studio_cli_grants
+    (client_id, project_id, site_id, capability, delegated_by_subject, created_at, expires_at)
+    VALUES (?, ?, ?, ?, ?, unixepoch() - 600, unixepoch() + ?)`);
+  addGrant.run(SERVICE_CLIENT, projectId, siteId, "pages.read", OWNER, 600);
+  addGrant.run(SERVICE_CLIENT, projectId, siteId, "pages.edit", OWNER, -1);
+  const discovery = await body(await send("GET", "/capabilities"), 200);
+  assert.deepEqual(discovery.operations.map(({ id }) => id), ["pages.read"]);
+  assert.deepEqual(calls[0].scope, ["pages.read"]);
+  assert.deepEqual(await body(await send("GET", read), 200), { forwarded: true });
+  await body(await send("POST", read), 405);
+  await body(await send("GET", "/operations/assets.list"), 404);
+  await body(await send("GET", "/operations/pages.read/home?locale=ja&upstream=other"), 404);
+  await body(await send("PUT", save, { expectedVersion: "draft-v1" }), 403);
+  await body(await send("POST", plan, { expectedVersion: "draft-v1" }), 403);
+  assert.equal(calls.length, 2);
+
+  h.sqlite.prepare("DELETE FROM studio_cli_grants WHERE capability = 'pages.edit'").run();
+  addGrant.run(SERVICE_CLIENT, projectId, siteId, "pages.edit", OWNER, 600);
+  addGrant.run(SERVICE_CLIENT, projectId, siteId, "pages.publish", OWNER, 600);
+  const saveInput = { expectedVersion: "draft-v1", document: { fixture: true } };
+  const planInput = { expectedVersion: "draft-v2", action: "publish" };
+  const releaseInput = { ...planInput, confirmationToken: "fixture-confirmation", operationId: crypto.randomUUID() };
+  await body(await send("PUT", save, saveInput), 200);
+  await body(await send("POST", plan, planInput), 200);
+  assert.deepEqual(await body(await send("POST", release, releaseInput), 200), {
+    status: "released", operationId: releaseInput.operationId, version: "published-v2"
+  });
+  assert.deepEqual(calls.slice(2), [
+    { path: endpoint + save, method: "PUT", scope: ["pages.edit"], input: saveInput },
+    { path: endpoint + plan, method: "POST", scope: ["pages.publish"], input: planInput },
+    { path: endpoint + release, method: "POST", scope: ["pages.publish"], input: releaseInput },
+  ]);
+  const stale = { ...releaseInput, expectedVersion: "draft-v1" };
+  assert.deepEqual(await body(await send("POST", release, stale), 409), { error: "version_conflict" });
+
+  h.sqlite.prepare("UPDATE project_members SET role = 'editor' WHERE project_id = ? AND access_subject = ?").run(projectId, OWNER);
+  await body(await send("GET", read), 403);
+  await body(await send("POST", release, releaseInput), 403);
+  assert.equal(calls.length, 6);
 });
 
 const CMS_OP_KEY = "X-Studio-Operation-Key";
@@ -1031,11 +1100,10 @@ testWithD1("Studio CMS CLI actor, scheduled release, cancellation, deletion and 
   assert.equal(status.result.item.version, applied.item.version);
   h.sqlite.prepare("DELETE FROM studio_cli_grants WHERE client_id = ? AND capability = 'cms.read'").run(SERVICE_CLIENT);
   assert.equal((await site.cli("GET", `cms.read/posts/${legacyDraft.id}`, undefined, service)).status, 403);
-  const cliRoot = `/api/cli/v1/projects/${site.projectId}/sites/${site.siteId}`;
-  assert.equal((await h.send(MANAGEMENT_ORIGIN, "POST", `${cliRoot}/operations/cms.items.read`,
-    { siteId: site.siteId, collectionId: "posts", itemId: legacyDraft.id }, { cli: true, ...service })).status, 403);
-  assert.equal((await h.send(MANAGEMENT_ORIGIN, "POST", `${cliRoot}/operations/cms.items.read`,
-    { siteId: site.siteId, collectionId: "posts", itemId: legacyDraft.id }, { cli: true })).status, 200);
+  const editRoot = `/api/edit/v2/sites/${site.siteId}`;
+  const readInput = { siteId: site.siteId, collectionId: "posts", itemId: legacyDraft.id };
+  assert.equal((await h.send(MANAGEMENT_ORIGIN, "POST", `${editRoot}/operations/cms.items.read`, readInput, { cli: true, ...service })).status, 403);
+  assert.equal((await h.send(MANAGEMENT_ORIGIN, "POST", `${editRoot}/operations/cms.items.read`, readInput, { cli: true })).status, 200);
 
   const initial = (await site.read("cms.items.read", { collectionId: "posts", itemId: legacyDraft.id })).item;
   const pinned = await saveDraft(site, initial, "Reservation version");

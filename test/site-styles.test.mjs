@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { DocumentValidationError, detachRemovedSiteStyles, generatePageCss, mergeSiteStyles, parsePageDocument, parseSiteStyles, resolvePageDocument, resolvePageStyles } from "@niho/web/core";
-import { parseSiteSettings } from "@niho/web/pages";
+import { parseSiteSettings } from "../dist/pages.js";
 import { renderPageToHtml } from "@niho/web/server";
 import { collectLocalizationUnits, createLocalizationOverlay, materializeLocalizedPage, validateLocalizedDocumentSave } from "@niho/web/localization";
 import { createPublishedSiteLocaleSnapshot, parsePublishedSiteLocaleSnapshot, verifyPublishedSiteLocaleSnapshot } from "@niho/web/localization-release";

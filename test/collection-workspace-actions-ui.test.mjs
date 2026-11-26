@@ -11,7 +11,7 @@ for (const key of ["window", "document", "navigator", "HTMLElement", "HTMLInputE
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
-const { CollectionWorkspace } = await import("@niho/web/collection-workspace");
+const { CollectionWorkspace } = await import("../dist/collection-workspace.js");
 
 const wait = (ms) => act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
 const flush = async () => { for (let i = 0; i < 4; i++) await wait(0); };

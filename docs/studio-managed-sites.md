@@ -1,6 +1,6 @@
 # Studio-native site 契約
 
-Studio で作成した Project、Site、メンバー、ページの下書きと公開履歴は Studio の D1 に保存する。Studio GUI と公式 CLI は同じページ API を使う。外部ホストとして登録されたサイトは、各ホストの編集 API と権限を使う。
+Studio で作成した Project、Site、メンバー、ページの下書きと公開履歴は Studio の D1 に保存する。固定ページの管理・公開・復元は Studio GUI で行う。共通 HTTP API は固定ページの読み取りと編集を扱い、対応コマンドは `niho-edit --studio` で呼び出せる。外部ホストとして登録されたサイトは、各ホストの編集 API と権限を使う。
 
 ## 作成と識別子
 
@@ -20,7 +20,7 @@ Project と Site の ID、ページの版はサーバーが発行する。共有
 
 `managed_pages` は編集中の版、公開中の版、公開範囲を保持する。`managed_page_versions` に現在の下書きと公開済みの版を保存し、下書きを保存するたびに公開されなかった前の下書きを削除する。復元では選んだ公開版の内容を新しい版として保存し、編集中の版と公開中の版に設定する。保存・公開・ページ情報の更新は `current_version` を SQL の更新条件に含める。競合時は HTTP 409 を返す。確認の有効期限は10分で、確認時の対象版と操作を実行時に照合する。
 
-GUI と CLI が実装する操作は次だけである。
+GUI のページ操作は次のとおり。
 
 - page catalog と PageDocument snapshot の読取
 - opaque version CASによる下書き保存
@@ -28,7 +28,7 @@ GUI と CLI が実装する操作は次だけである。
 - 公開済みの指定revisionへの復元計画・反映
 - 通常ページの作成、タイトル・path更新、visibility更新
 
-URL 変更・非公開化の確認画面では、サイト内の他ページの下書きと公開版からリンク元を集計する。Discovery はこの集合だけを返す。すべての読取・変更は、そのrequest時点の D1 owner/editor membership と Project/Site を照合する。別siteのpage、plan、version、公開pointerは変更できない。
+URL 変更・非公開化の確認画面では、サイト内の他ページの下書きと公開版からリンク元を集計する。CLI の discovery は共通 API が公開する操作のうち呼び出し元に許可された操作を返す。すべての読取・変更は、そのrequest時点の D1 owner/editor membership と Project/Site を照合する。別siteのpage、plan、version、公開pointerは変更できない。
 
 ## 共有公開origin
 
@@ -38,9 +38,9 @@ URL 変更・非公開化の確認画面では、サイト内の他ページの�
 
 ## CLI認証
 
-既存外部ホストと、operatorが明示的にgrantを設定済みのStudio-native siteは、従来のAccess service tokenと期限付きD1 grantを使える。新規Projectにservice grantがない場合は、Cloudflare Accessでmember本人が取得した短時間のapplication tokenを `cf-access-token` headerで受ける。Workerはブラウザと同じAccess JWT署名・issuer・audience・期限・subject・email検証を再利用し、さらに現在のD1 membershipへ固定する。CLI routeでcookie由来の `Cf-Access-Jwt-Assertion` だけを提示しても人のCLIとして認可しない。
+既存外部ホストと、operatorが明示的にgrantを設定済みのStudio-native siteは、従来のAccess service tokenと期限付きD1 grantを使える。新規Projectにservice grantがない場合は、Cloudflare Accessでmember本人が取得した短時間のapplication tokenを `cf-access-token` headerで受ける。Workerはブラウザと同じAccess JWT署名・issuer・audience・期限・subject・email検証を再利用し、さらに現在のD1 membershipへ固定する。人の CLI はこの短期 token を `NIHO_EDIT_TOKEN` で渡す。
 
-CLIはtoken、service credential、Access subjectを標準出力へ含めない。操作の結果には既存の監査IDを付け、operation keyがある変更は同じactor・Project・Site内で重複受付を拒否する。取得手順は [Studio CLI](studio-cli.md) と [CloudflareのCLI向けAccess手順](https://developers.cloudflare.com/cloudflare-one/tutorials/cli/) を参照する。
+CLIはtoken、service credential、Access subjectを標準出力へ含めない。操作IDを使う共通 API は、同じ actor・対象サイトの再送と異なる内容での操作ID再利用を区別する。取得手順は [Studio CLI](studio-cli.md) と [CloudflareのCLI向けAccess手順](https://developers.cloudflare.com/cloudflare-one/tutorials/cli/) を参照する。
 
 ## CMS
 

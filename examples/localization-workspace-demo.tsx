@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
-import { LocalizationItemWorkspace, LocalizationWorkspace, type LocalizationNavigationState } from "@niho/web/localization-workspace";
+import { LocalizationItemWorkspace, LocalizationWorkspace, type LocalizationNavigationState } from "../dist/localization-workspace.js";
 import { ALL_PERMISSIONS, createLocalizationMemory } from "./localization-workspace-memory.mjs";
 
 // 公開できる架空のデータだけを使う。認証・本番 API・実在の人やサイトには接続しない。変更はこのタブのメモリだけ。

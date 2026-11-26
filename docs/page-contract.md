@@ -1,6 +1,6 @@
 # ページ管理・公開情報の契約
 
-`@niho/web/pages` は、ページのURLパス、ページ一覧のツリー、内部リンクの影響、公開メタ情報（title / description / OG画像 / favicon / robots / canonical）を扱う React 不要の入口です。`@niho/web/editor` の `PageEditor` は同じ関数を使い、左のページパネルと右の「ページ／サイト」設定を表示します。
+`src/pages.ts` は、ページのURLパス、ページ一覧のツリー、内部リンクの影響、公開メタ情報（title / description / OG画像 / favicon / robots / canonical）を扱う Studio 内部モジュールです。`@niho/web/editor` の `PageEditor` は同じ関数を使い、左のページパネルと右の「ページ／サイト」設定を表示します。
 
 ページの作成・URL変更・公開状態の切替、redirect、sitemap、robots.txt、配信キャッシュの更新は各サイトのホストが所有します。パッケージは操作の要求・影響の表示・確認 token の受け渡しを型で固定し、サイト固有の公開方式を持ち込みません。
 
@@ -133,7 +133,7 @@ saveSiteSettings({ siteId, settings, expectedVersion }, signal): Promise<{ statu
 ### 描画側での使い方
 
 ```ts
-import { resolvePageMetadata, renderPageHead, PREVIEW_RESPONSE_HEADERS } from '@niho/web/pages';
+import { resolvePageMetadata, renderPageHead, PREVIEW_RESPONSE_HEADERS } from '../src/pages.js';
 
 const metadata = resolvePageMetadata({
   document,                      // 検証済みの公開文書

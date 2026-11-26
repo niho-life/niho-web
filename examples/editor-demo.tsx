@@ -1,8 +1,8 @@
 import { createContext, useContext } from "react";
 import { createRoot } from "react-dom/client";
 import { PageEditor, type EditorAdapter, type EditorBlockRegistry, type EditorComponentAdapter, type EditorPage, type EditorPageChange, type EditorPageImpact, type EditorRevisionEntry, type EnglishPublication } from "@niho/web/editor";
-import { createBrowserRecoveryStore, diffDocuments } from "@niho/web/history";
-import { findInternalLinks, findPathConflict, pageUrl, parseSiteSettings, rewriteInternalLinks, validatePagePath, type SiteSettings } from "@niho/web/pages";
+import { createBrowserRecoveryStore, diffDocuments } from "../dist/history.js";
+import { findInternalLinks, findPathConflict, pageUrl, parseSiteSettings, rewriteInternalLinks, validatePagePath, type SiteSettings } from "../dist/pages.js";
 import fixture from "./page.json";
 import { componentUsage, createBlankEmbedRegistry, detachRemovedSiteStyles, parseComponentLibrary, parsePageDocument, parseSiteStyles, resolvePageDocument, type ComponentLibrary, type ElementNode, type PageDocument, type PageNode, type PublicPropValue, type SiteStyles } from "@niho/web/core";
 import { createMemoryAssetLibrary } from "./memory-asset-library.mjs";

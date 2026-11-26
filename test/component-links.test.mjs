@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { rewriteInternalLinks } from "@niho/web/pages";
+import { rewriteInternalLinks } from "../dist/pages.js";
 import {
   DocumentValidationError, componentAssetReferences, findComponentLinks, findInstanceLinks, parseComponentLibrary, parsePageDocument, rewriteComponentLinks, rewriteInstanceLinks
 } from "@niho/web/core";

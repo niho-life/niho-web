@@ -3,7 +3,7 @@ import { test } from "node:test";
 import {
   PROJECT_LIMITS, addProject, addProjectMember, commitProjectCatalog, createProjectCatalog,
   parseProjectCatalog, parseProjectCatalogSnapshot, readProjectCatalog, removeProjectMember
-} from "@niho/web/projects";
+} from "../dist/projects.js";
 
 const memberA = { userId: "user_alpha", displayName: "青木さん" };
 const memberB = { userId: "user_beta", displayName: "森さん" };

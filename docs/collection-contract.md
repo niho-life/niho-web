@@ -1,6 +1,6 @@
 # コレクション（CMS）の画面と adapter の契約
 
-`CollectionWorkspace` は、記事・サークル・会社のような「同じ形の項目が並ぶもの（コレクション）」の一覧と項目の編集の画面です。`@niho/web/collection-workspace` から使います。React 不要の型・runtime parser・値の検証・本文の HTML の無害化は `@niho/web/collection-model` にあります。
+`CollectionWorkspace` は、記事・サークル・会社のような「同じ形の項目が並ぶもの（コレクション）」の一覧と項目の編集の画面です。`src/collection-workspace.tsx` から使います。React 不要の型・runtime parser・値の検証・本文の HTML の無害化は `@niho/web/collection-model` にあります。
 
 この段（U2-c）は画面とホストが実装する adapter の契約だけです。サイト側の API・Studio の BFF への接続（U2-a/b）と、Studio の Dashboard への組み込みはまだ含みません。
 
@@ -23,7 +23,7 @@
 ## 使い方
 
 ```tsx
-import { CollectionWorkspace, type CollectionAdapter } from '@niho/web/collection-workspace';
+import { CollectionWorkspace, type CollectionAdapter } from '../src/collection-workspace.js';
 
 const adapter: CollectionAdapter = {
   loadSchema: (signal) => host.get('/collections', signal),
@@ -55,7 +55,7 @@ const adapter: CollectionAdapter = {
 | `timeZone` | 日時の表示と入力のタイムゾーン。既定は `Asia/Tokyo`（「日本時間」と出します）。 |
 | `autosaveDelay` | 直してから下書きを自動で保存するまでの待ち時間（ms）。既定は 1000。 |
 
-部品は `<style>` で `collectionCss` を入れます。Studio のように inline の `<style>` を CSP で拒むホストは、`collectionCss`（`@niho/web/collection-workspace` から export）をファイルにして読み込んでください。React の `style` 属性は使いません。色・角丸・文字は `@niho/web/ui-tokens` のトークン（`--nw-*`）だけを使い、`collectionCss` の先頭にその定義を持ちます（[見た目と実装の契約](editor-ui-design.md#見た目と実装の契約)）。定義の詳細度は 0 なので、ホストは `:root` や `.nw-collection` で同じ名前を上書きできます。一覧の見出しの「＋ 新しい○○」だけを黒、公開・保存などは青で描きます。クラスの接頭辞は `cw-`、根は `.nw-collection` です。項目の編集の上のバーは画面の上に貼り付くので、ホストに固定のヘッダーがあるときは `--niho-sticky-top` にその高さを入れてください。
+部品は `<style>` で `collectionCss` を入れます。Studio のように inline の `<style>` を CSP で拒むホストは、`collectionCss`（`src/collection-workspace.tsx` から export）をファイルにして読み込んでください。React の `style` 属性は使いません。色・角丸・文字は `src/ui-tokens.ts` のトークン（`--nw-*`）だけを使い、`collectionCss` の先頭にその定義を持ちます（[見た目と実装の契約](editor-ui-design.md#見た目と実装の契約)）。定義の詳細度は 0 なので、ホストは `:root` や `.nw-collection` で同じ名前を上書きできます。一覧の見出しの「＋ 新しい○○」だけを黒、公開・保存などは青で描きます。クラスの接頭辞は `cw-`、根は `.nw-collection` です。項目の編集の上のバーは画面の上に貼り付くので、ホストに固定のヘッダーがあるときは `--niho-sticky-top` にその高さを入れてください。
 
 ## adapter
 

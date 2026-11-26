@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { build } from "esbuild";
-import { parseProjectDirectoryResult } from "@niho/web/project-read-model";
+import { parseProjectDirectoryResult } from "../dist/project-read-model.js";
 
 async function accessFixture() {
   const issuer = "https://directory-test.example", audience = "directory-test", subject = "directory-subject-7", kid = "directory-key";

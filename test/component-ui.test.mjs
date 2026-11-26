@@ -847,7 +847,7 @@ test("site-wide styles cannot be saved while the pages that place components can
 });
 
 test("unsaved component changes are kept on the device per site and offered again after reopening", async () => {
-  const { createBrowserRecoveryStore } = await import("@niho/web/history");
+  const { createBrowserRecoveryStore } = await import("../dist/history.js");
   const storage = memoryStorage(), key = "niho-web:recovery:v1:staff-a:library/demo", store = () => createBrowserRecoveryStore({ scope: "staff-a", storage });
   const first = await setup({ props: { recovery: store() } });
   try {
@@ -905,7 +905,7 @@ test("recovered component changes skip components saved again later, and 破棄 
 });
 
 test("two editors add components to the same library under different IDs, so the later one is restored instead of rebuilt", async () => {
-  const { createBrowserRecoveryStore } = await import("@niho/web/history");
+  const { createBrowserRecoveryStore } = await import("../dist/history.js");
   // 2つの編集画面が同じ保存先を使う。読み込んだ version が最新でなければ保存は競合する。
   let latest = library(), saves = 1;
   const shared = {
@@ -942,7 +942,7 @@ test("two editors add components to the same library under different IDs, so the
 });
 
 test("device copies of component changes are never offered on another site", async () => {
-  const { createBrowserRecoveryStore } = await import("@niho/web/history");
+  const { createBrowserRecoveryStore } = await import("../dist/history.js");
   const storage = memoryStorage(), store = createBrowserRecoveryStore({ scope: "staff-a", storage });
   const entry = { siteId: "demo", baseVersion: "lib-1", changed: { spare: 1 }, library: withComponent("spare", (component) => ({ ...component, name: "デモの帯" }))(library()), updatedAt: new Date().toISOString() };
   store.writeLibrary(entry);
@@ -966,7 +966,7 @@ test("device copies of component changes are never offered on another site", asy
 });
 
 test("discarding unsaved component changes also removes their device copy", async () => {
-  const { createBrowserRecoveryStore } = await import("@niho/web/history");
+  const { createBrowserRecoveryStore } = await import("../dist/history.js");
   const storage = memoryStorage(), key = "niho-web:recovery:v1:staff-a:library/demo";
   const app = await setup({ adapter: twoSites, readLibrary: otherSiteLibrary, saveLibrary: async () => ({ status: "conflict" }), props: { recovery: createBrowserRecoveryStore({ scope: "staff-a", storage }) } });
   try {
@@ -1002,7 +1002,7 @@ test("component device copies need a component adapter and a store with the libr
 });
 
 test("the project adapter forwards the autosave trigger of component library saves", async () => {
-  const { createProjectEditorAdapter } = await import("@niho/web/project-editor");
+  const { createProjectEditorAdapter } = await import("../dist/project-editor-adapter.js");
   const project = { id: "project_demo", name: "デモ計画", site: { id: "demo", name: "デモサイト", domains: ["https://example.test"] }, members: [] }, sent = [];
   const base = { listSites: async () => [project.site], listPages: async () => [], readDocument: async () => ({ document: fixture, version: "v1" }), saveDraft: async () => ({ status: "conflict" }),
     prepareRelease: async () => { throw new Error("not used"); }, release: async () => ({ status: "conflict" }),
