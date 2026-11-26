@@ -24,6 +24,7 @@ export type {
   CmsReleasePlan, CmsReleaseProposal, CmsReleaseSnapshot, CmsSchedule, CmsWorkspacePresentation
 } from "./cms-v2-release.js";
 export { cancelCmsSchedule, cmsWorkspaceItem, cmsWorkspaceStatus, dueCmsSchedule, parseCmsReleaseInput, planCmsRelease, planCmsSchedule, removeCmsItem, restoreCmsItem } from "./cms-v2-release.js";
+export { collectCmsReleaseAssetReferences, parseCmsReleaseAssetManifest, type CmsPublicAsset } from "./cms-v2-assets.js";
 export type { CmsRouteCandidate, CmsRouteProblem, CmsRouteReservation, CmsRouteTable, CmsRouteTablePlan, CmsRouteTableVersion } from "./cms-v2-routes.js";
 export { parseCmsRoutePath, parseCmsRouteTable, planCmsRouteTable } from "./cms-v2-routes.js";
 export {
@@ -212,7 +213,8 @@ export function revalidateCmsRelease(proposal: CmsReleaseProposal, context: CmsR
   if (snapshot.siteId !== context.schema.siteId || snapshot.locale !== context.locale) return { status: "conflict" };
   const planned = planCmsRelease({ siteId: snapshot.siteId, locale: snapshot.locale, schemaRevision: snapshot.schema.schemaRevision, routeTableRevision: snapshot.routeTableRevision, expectedReleaseId,
     items: snapshot.items.map(({ collectionId, itemId, revision }) => ({ collectionId, itemId, revision })), redirects: snapshot.redirects }, snapshot.releaseId, context);
-  return planned.status === "ready" && canonicalJson(planned.proposal) === canonicalJson(proposal)
+  const previous = snapshot.assetManifest === undefined ? { ...proposal, snapshot: { ...snapshot, assetManifest: [] } } : proposal;
+  return planned.status === "ready" && canonicalJson(planned.proposal) === canonicalJson(previous)
     ? { status: "allowed", candidate: planned.proposal } : { status: "conflict" };
 }
 export function checkCmsReleaseApply(scope: CmsPlanScope, input: unknown, plan: CmsReleaseConfirmation,
