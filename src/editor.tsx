@@ -336,7 +336,8 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
     const origin = element?.dataset.nwNode ? origins.get(element.dataset.nwNode) : undefined;
     return element && origin && origin.instance !== element.dataset.nwNode ? element.closest<HTMLElement>(`[data-nw-owner="${scope}"][data-nw-node="${origin.instance}"]`) : element;
   };
-  useLayoutEffect(() => {
+  // 編集フレーム内の DOM 計測で React の commit を止めないよう、選択枠の位置は描画後に読む。
+  useEffect(() => {
     if (!body || !handleId) { setHandleRect(null); return; }
     const element = sizeTarget(handleId);
     if (!element) { setHandleRect(null); return; }
