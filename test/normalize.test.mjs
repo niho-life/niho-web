@@ -215,6 +215,13 @@ test("verification refuses shorthand, hidden and state changes and missing share
   const active = structuredClone(document);
   active.body[0].style.states.active.opacity = 0.7;
   assert.equal(verifyNormalization({ documents: [document] }, [active]).status, "changed");
+  const animated = page("state-transition", [element("child", { base: { color: "currentColor", transitionDuration: 1000 },
+    states: { hover: { color: "currentColor" } } })]);
+  const withoutStateTransition = structuredClone(animated);
+  delete withoutStateTransition.body[0].style.states;
+  const transitionDifference = verifyNormalization({ documents: [animated] }, [withoutStateTransition]);
+  assert.equal(transitionDifference.status, "changed");
+  assert.equal(transitionDifference.reason, "background_motion_or_state_inputs");
   const shared = page("shared", [element("style", { base: { color: { token: "brand" } } })]);
   assert.equal(verifyNormalization({ documents: [shared] }, [shared]).status, "unsupported");
   const fallback = page("fallback", [element("wide", { base: { width: "320px" },

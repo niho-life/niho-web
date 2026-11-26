@@ -1,6 +1,6 @@
 import { resolvePageDocument } from "./components.js";
 import { instancesOf } from "./component-expand.js";
-import { styleDeclarationOrder } from "./css.js";
+import { stateTransitionProperties, styleDeclarationOrder } from "./css.js";
 import { parsePageDocument } from "./document.js";
 import type { NormalizationInput, NormalizationVerification } from "./normalize.js";
 import { parseSitePresentation, presentationLayoutDocument } from "./presentation.js";
@@ -110,6 +110,9 @@ function styleDifference(
   leftTokens: PageDocument["tokens"], rightTokens: PageDocument["tokens"]
 ): Difference | undefined {
   if (normalizationKey(left) === normalizationKey(right) && normalizationKey(leftText) === normalizationKey(rightText)) return undefined;
+  if (normalizationKey(stateTransitionProperties(left)) !== normalizationKey(stateTransitionProperties(right))) {
+    return { reason: "background_motion_or_state_inputs" };
+  }
   if (backgroundIsolation(left) !== backgroundIsolation(right) || normalizationKey(left?.appear) !== normalizationKey(right?.appear)) {
     return { reason: "background_motion_or_state_inputs" };
   }
