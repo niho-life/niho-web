@@ -60,7 +60,7 @@ export function detachRemovedSiteStyles(document: PageDocument, before: SiteStyl
   const removedSiteTokens = new Set(Object.keys(old.tokens ?? {}).filter((name) => !Object.hasOwn(next.tokens ?? {}, name)));
   const removedTokens = new Set([...removedSiteTokens].filter((name) => !Object.hasOwn(document.tokens, name)));
   const removedStyles = Object.keys(old.textStyles ?? {}).filter((name) => !Object.hasOwn(next.textStyles ?? {}, name) && !Object.hasOwn(document.textStyles ?? {}, name));
-  if (!removedTokens.size && !removedStyles.length) return document;
+  if (!removedSiteTokens.size && !removedStyles.length) return document;
   const copy = structuredClone(document);
   const usedStyles = new Set<string>();
   const visit = (nodes: readonly PageNode[]): void => { for (const node of nodes) { if (node.type === "text") continue; if (node.style?.textStyle) usedStyles.add(node.style.textStyle); if (node.type === "element") visit(node.children); } };
