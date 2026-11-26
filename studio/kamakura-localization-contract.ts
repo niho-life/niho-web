@@ -2,6 +2,7 @@ import { KAMAKURA_CMS_IMAGE_TYPES, KAMAKURA_CMS_UPLOAD_ORIGIN, KAMAKURA_MEDIA_OR
 import { LOCALIZATION_LIMITS } from "../src/localization-workspace-model.js";
 import { fail, keys, record } from "../src/validation-utils.js";
 import { KAMAKURA_COMMON_PAGE_ID } from "./kamakura-catalog.js";
+import { cmsLocalizationItemKey, parseCmsLocalizationItemKey } from "../src/cms-v2-localization.js";
 
 /**
  * 鎌倉サイトの翻訳を Studio の翻訳の画面（LocalizationWorkspace）から直す契約（kamakura-site#108 U3）。
@@ -94,12 +95,11 @@ function localizationResourceId(itemKey: string): string | null {
 }
 
 export function kamakuraLocalizationCmsSource(itemKey: string): { readonly collectionId: string; readonly itemId: string } | null {
-  const text = localizationResourceId(itemKey);
-  if (text === null) return null;
-  const match = /^cms:([^:]+):([^:]+)$/u.exec(text);
-  const collectionId = match?.[1], itemId = match?.[2];
-  if (!isKamakuraCmsCollectionId(collectionId) || !isKamakuraCmsItemId(itemId)) return null;
-  return { collectionId, itemId };
+  try {
+    const identity = parseCmsLocalizationItemKey(itemKey);
+    if (!isKamakuraCmsCollectionId(identity.collectionId) || !isKamakuraCmsItemId(identity.itemId)) return null;
+    return identity;
+  } catch { return null; }
 }
 
 /** 正本の共通ページだけを English エディタへ送る。未知の resource は翻訳の項目画面に残す。 */
@@ -113,6 +113,8 @@ export function kamakuraLocalizationPage(itemKey: string): string | null {
 export function kamakuraCmsLocalizationItemKey(collectionId: string, itemId: string): string | null {
   if (!isKamakuraCmsCollectionId(collectionId) || !isKamakuraCmsItemId(itemId)) return null;
   const canonical = `cms:${collectionId}:${itemId}`;
-  if (canonical.length > 150) return null; // 鎌倉 Worker の itemIndex と同じ上限
-  return btoa(canonical).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
+  if (canonical.length > 150) return null; // Worker の canonical item ID 上限を維持する
+  try {
+    return cmsLocalizationItemKey(collectionId, itemId);
+  } catch { return null; }
 }
