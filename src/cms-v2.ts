@@ -25,6 +25,16 @@ export type {
 export { cancelCmsSchedule, cmsWorkspaceItem, cmsWorkspaceStatus, dueCmsSchedule, parseCmsReleaseInput, planCmsRelease, planCmsSchedule, removeCmsItem, restoreCmsItem } from "./cms-v2-release.js";
 export type { CmsRouteCandidate, CmsRouteProblem, CmsRouteReservation, CmsRouteTable, CmsRouteTablePlan, CmsRouteTableVersion } from "./cms-v2-routes.js";
 export { parseCmsRoutePath, parseCmsRouteTable, planCmsRouteTable } from "./cms-v2-routes.js";
+export {
+  applyAutomaticCmsTranslationResult, cmsLocalizationItemKey, cmsLocalizationStatus, collectCmsLocalizationUnits,
+  createCmsLocalizationOverlay, editCmsLocalizedValue, materializeCmsLocalizedItem, parseCmsLocalizationIdentity,
+  parseCmsLocalizationItemKey, parseCmsLocalizationOverlay
+} from "./cms-v2-localization.js";
+export type {
+  CmsLocalizationCollection, CmsLocalizationField, CmsLocalizationFieldKind, CmsLocalizationIdentity,
+  CmsLocalizationIssue, CmsLocalizationItemIdentity, CmsLocalizationOverlay, CmsLocalizationResult,
+  CmsLocalizationRichTextAdapter, CmsLocalizedItemPlan
+} from "./cms-v2-localization.js";
 
 export const CMS_V2_OPERATIONS = Object.freeze({
   "cms.schema.read": "cms.read",

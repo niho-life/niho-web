@@ -80,3 +80,7 @@ GUI、Access 人トークン、Access サービスの現在の権限を操作ご
 Studio-native は page version row に sidecar を一緒に保存し、公開計画が page publication に CMS `releaseId`、`schemaRevision`、現在の `routeTableRevision` を固定します。公開適用時に route table を読み直し、予約状態が変わっていれば `409 conflict` にして計画を適用しません。公開 HTML はその不変 CMS release の項目から描画し、後の CMS schema / 下書き変更を反映しません。CMS release と固定ページの公開は別々の CAS / snapshot であり、両方をまたぐ原子的な切替はありません。公開計画では list / detail の field 型と node を検証し、detail slug の生成 URL と現在の固定・予約・CMS route を照合します。schema migration は現在のページ sidecar をすべて検査し、影響する bindings を計画へ含めます。過去の公開 page と CMS release は migration で変更しません。
 
 bindings の image mapping は配信 URL を保存せず、安定 asset reference を使います。CMS 画像の公開時検査と manifest 解決は [素材契約](asset-contract.md) の公開素材対応が必要です。
+
+## CMS 項目の翻訳
+
+CMS v2 の翻訳 identity、下書き overlay、翻訳状態、target locale revision の生成は [CMS翻訳契約](cms-localization-contract.md) を使います。英語の公開 snapshot と素材配信は別の境界で、[素材契約](asset-contract.md) と #380 の delivery 契約に従います。
