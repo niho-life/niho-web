@@ -19,10 +19,6 @@ export type ResolvedOrigin = { instance: string; component: string; node: string
 export function instancesOf(nodes: readonly PageNode[]): InstanceNode[] {
   return nodes.flatMap((node) => node.type === "instance" ? [node] : node.type === "element" ? instancesOf(node.children) : []);
 }
-/** @internal 展開の要否だけを調べる。 */
-export function hasInstances(nodes: readonly PageNode[]): boolean {
-  return nodes.some((node) => node.type === "instance" || node.type === "element" && hasInstances(node.children));
-}
 /** @internal root と子孫の element。入れ子にした部品の内部は含まない。 */
 export function ownElements(root: ElementNode): Map<string, ElementNode> {
   const result = new Map<string, ElementNode>();
@@ -56,6 +52,7 @@ export function instantiate(instance: InstanceNode, definition: ComponentDefinit
     if (prop.field === "text") target.children = value === "" ? [] : [{ type: "text", text: value }];
     else target.attrs = { ...target.attrs, [prop.field]: value };
   }
+  if (instance.name !== undefined) root.name = instance.name;
   if (instance.style) {
     const style = mergeStyle(root.style, instance.style);
     if (style) root.style = style; else delete root.style;
@@ -91,35 +88,17 @@ function expandInstance(instance: InstanceNode, id: string, chain: readonly stri
  * インスタンスがある場合だけ tokens をライブラリ → 文書の順に重ねる。結果は呼び出し側が文書として検証する。
  */
 export function expandDocument(document: PageDocument, library: ComponentLibrary): { document: PageDocument; origins: Map<string, ResolvedOrigin> } {
-  return expandSharedDocument(structuredClone(document), library, false);
-}
-
-/** @internal 編集時の検証用。部品を展開した経路だけを作り、元の文書を変更しない。 */
-export function expandDocumentForValidation(document: PageDocument, library: ComponentLibrary): PageDocument {
-  return expandSharedDocument(document, library, true).document;
-}
-
-function expandSharedDocument(document: PageDocument, library: ComponentLibrary, share: boolean): { document: PageDocument; origins: Map<string, ResolvedOrigin> } {
   const state: Expansion = { components: new Map(library.components.map((component) => [component.id, component])), origins: new Map(), nodes: 0, text: 0 };
-  if (!hasInstances(document.body)) return { document, origins: state.origins };
-  const visit = (nodes: PageNode[], path: string): PageNode[] => {
-    let result: PageNode[] | undefined;
-    nodes.forEach((node, index) => {
-      const at = `${path}[${index}]`;
-      let next: PageNode;
-      if (node.type === "instance") next = expandInstance(node, node.id, [], at, state);
-      else {
-        spend(state, node, at);
-        next = node;
-        if (node.type === "element") {
-          const children = visit(node.children, `${at}.children`);
-          if (children !== node.children) next = { ...node, children };
-        }
-      }
-      if (next !== node) (result ??= nodes.slice())[index] = next;
-    });
-    return result ?? nodes;
-  };
-  const libraryTokens = share ? library.tokens : structuredClone(library.tokens);
-  return { document: { ...document, tokens: { ...libraryTokens, ...document.tokens }, body: visit(document.body, "$.body") }, origins: state.origins };
+  const result = structuredClone(document);
+  if (!instancesOf(result.body).length) return { document: result, origins: state.origins };
+  const visit = (nodes: PageNode[], path: string): PageNode[] => nodes.map((node, index) => {
+    const at = `${path}[${index}]`;
+    if (node.type === "instance") return expandInstance(node, node.id, [], at, state);
+    spend(state, node, at);
+    if (node.type === "element") node.children = visit(node.children, `${at}.children`);
+    return node;
+  });
+  result.tokens = { ...structuredClone(library.tokens), ...result.tokens };
+  result.body = visit(result.body, "$.body");
+  return { document: result, origins: state.origins };
 }

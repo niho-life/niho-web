@@ -4,117 +4,13 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { DocumentValidationError, generatePageCss, parsePageDocument } from "@niho/web/core";
-import { acceptSavedRevision, checkPageChange, commitHistory, editDocument, effectiveLocks, fingerprint, lockReason, newElement, nodeAt, travelHistory, validatePageChangePlan, validateReleasePlan, walkNodes } from "../dist/editor-model.js";
+import { acceptSavedRevision, BoxGroupLayoutChange, checkPageChange, commitHistory, editDocument, effectiveLocks, fingerprint, lockReason, newElement, nodeAt, travelHistory, validatePageChangePlan, validateReleasePlan, walkNodes } from "../dist/editor-model.js";
 import { editDocumentById } from "@niho/web/editor-model";
 import { createInsertionNode, formInsertionPresets } from "@niho/web/builder";
-import { resolvePageStyles, retainPageStyles } from "../dist/site-styles.js";
+import { validatePageDocument } from "../dist/document.js";
 
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 const doc = () => structuredClone(fixture);
-function immutable(value) {
-  if (!value || typeof value !== "object") return value;
-  Object.values(value).forEach(immutable);
-  return Object.freeze(value);
-}
-// 既存の「実効値を作る → 全体を複製して編集 → 全体を正規化」の手順を比較対象にする。
-function legacyEdit(source, mutate, siteStyles, ownership = source) {
-  const draft = structuredClone(resolvePageStyles(source, siteStyles));
-  mutate(draft);
-  const options = siteStyles ? { siteStyles } : {};
-  const parsed = resolvePageStyles(parsePageDocument(draft, {}, options), siteStyles);
-  return siteStyles ? parsePageDocument(retainPageStyles(parsed, ownership, siteStyles), {}, options) : parsed;
-}
-
-test("editor structural sharing matches clone-and-parse edits and retains undo branches", () => {
-  const input = doc();
-  input.body.push({ type: "element", id: "appendix", tag: "section", children: [{ type: "element", id: "note", tag: "p", children: [] }] });
-  const source = immutable(parsePageDocument(input));
-  const heading = source.body[0].children[0], lead = source.body[0].children[1], appendix = source.body[1];
-  const edited = editDocument(source, { type: "style", path: [0, 0], breakpoint: "base", property: "color", value: { token: "ink" } });
-  const expected = legacyEdit(source, (draft) => { draft.body[0].children[0].style = { base: { color: { token: "ink" } } }; });
-  assert.equal(fingerprint(edited), fingerprint(expected));
-  assert.notEqual(edited.body[0].children[0], heading);
-  assert.equal(edited.body[0].children[0].children, heading.children);
-  assert.equal(edited.body[0].style, source.body[0].style);
-  assert.equal(edited.body[0].children[1], lead);
-  assert.equal(edited.body[1], appendix);
-  assert.equal(edited.tokens, source.tokens);
-
-  const moved = editDocument(immutable(edited), { type: "move", path: [0, 1], parentId: "appendix", index: 0 });
-  const expectedMove = legacyEdit(edited, (draft) => {
-    const [moving] = draft.body[0].children.splice(1, 1);
-    draft.body[1].children.unshift(moving);
-  });
-  assert.equal(fingerprint(moved), fingerprint(expectedMove));
-  assert.equal(moved.body[1].children[0], lead);
-  assert.equal(moved.body[1].children[1], appendix.children[0]);
-  assert.equal(moved.body[0].children[0], edited.body[0].children[0]);
-
-  let history = commitHistory({ past: [], present: source, future: [] }, edited);
-  history = commitHistory(history, moved);
-  history = travelHistory(history, "undo", {}, []);
-  assert.equal(history.present, edited);
-  assert.equal(history.future[0], moved);
-  assert.equal(history.past[0].body[0].style, history.present.body[0].style);
-  assert.equal(travelHistory(history, "redo", {}, []).present, moved);
-});
-
-test("editor structural sharing preserves site ownership and parser normalization", () => {
-  const siteStyles = { tokens: { brand: { type: "color", value: "#0055aa" } } };
-  const input = doc();
-  input.body[0].style.base.color = { token: "brand" };
-  const source = immutable(parsePageDocument(input, {}, { siteStyles }));
-  const heading = source.body[0].children[0];
-  const note = { type: "element", id: "signup", tag: "form", attrs: { name: "signup" }, children: [
-    { type: "element", id: "next", tag: "button", attrs: {}, children: [{ type: "text", text: "次へ" }] }
-  ] };
-  const added = editDocument(source, { type: "add", parentId: null, node: note }, {}, [], undefined, siteStyles);
-  const expectedAdd = legacyEdit(source, (draft) => { draft.body.push(note); }, siteStyles);
-  assert.equal(fingerprint(added), fingerprint(expectedAdd));
-  assert.equal(added.body[0], source.body[0]);
-  assert.equal(added.body[1].children[0].attrs.type, "button");
-  assert.equal(note.children[0].attrs.type, undefined);
-  assert.equal(added.tokens.brand, undefined);
-
-  const dropped = editDocument(immutable(added), { type: "token", name: "brand", token: undefined }, {}, [], undefined, siteStyles);
-  const expectedDrop = legacyEdit(added, (draft) => {
-    draft.body[0].style.base.color = draft.tokens.brand.value;
-    delete draft.tokens.brand;
-  }, siteStyles);
-  assert.equal(fingerprint(dropped), fingerprint(expectedDrop));
-  assert.equal(dropped.body[0].children[0], heading);
-  assert.equal(dropped.body[1], added.body[1]);
-  assert.equal(dropped.tokens.brand, undefined);
-});
-
-test("detaching a text style copies nested token references into the new snapshot", () => {
-  const input = doc();
-  input.textStyles = { body: { base: { fontFamily: { token: "bodyFont" } } } };
-  input.body[0].children[1].style = { textStyle: "body" };
-  const source = immutable(parsePageDocument(input));
-  const sourceValue = source.textStyles.body.base.fontFamily;
-  const detached = editDocument(source, { type: "nodeTextStyle", path: [0, 1], detach: true });
-  const detachedValue = detached.body[0].children[1].style.base.fontFamily;
-  assert.deepEqual(detachedValue, sourceValue);
-  assert.notEqual(detachedValue, sourceValue);
-  assert.equal(source.body[0].children[1].style.textStyle, "body");
-});
-
-test("editor structural sharing rejects the same invalid changes as the full parser", () => {
-  const source = immutable(parsePageDocument(doc()));
-  const cases = [
-    [{ type: "attribute", path: [0, 2], name: "href", value: "javascript:alert(1)" }, (draft) => { draft.body[0].children[2].attrs.href = "javascript:alert(1)"; }],
-    [{ type: "add", parentId: null, node: source.body[0] }, (draft) => { draft.body.push(source.body[0]); }],
-    [{ type: "add", parentId: "heading", node: newElement("section", "invalid") }, (draft) => { draft.body[0].children[0].children.push(newElement("section", "invalid")); }]
-  ];
-  for (const [operation, mutate] of cases) {
-    let expected;
-    assert.throws(() => legacyEdit(source, mutate), (error) => { expected = error; return error instanceof DocumentValidationError; });
-    assert.throws(() => editDocument(source, operation), (error) =>
-      error instanceof DocumentValidationError && error.path === expected.path && error.reason === expected.reason);
-  }
-});
-
 test("editor-model package entry loads without React", () => {
   const loader = `export function resolve(specifier, context, next) {
     if (/^(?:react|react-dom)(?:\\/|$)/.test(specifier)) throw new Error("React is unavailable in the editor-model fixture");
@@ -145,6 +41,47 @@ test("editor changes text, link, image and responsive styles through the core va
     { type: "add", parentId: "heading", node: newElement("section", "invalid") }
   ]) assert.throws(() => editDocument(next, operation), DocumentValidationError);
 });
+test("編集に渡したノードの未知フィールドは正規化で捨てずに拒否する", () => {
+  const invalidNode = { ...newElement("section", "future"), futureContent: true };
+  const invalidDocument = doc();
+  invalidDocument.body[0] = { ...invalidDocument.body[0], futureContent: true };
+  for (const operation of [
+    { type: "add", parentId: null, node: invalidNode },
+    { type: "addMany", parentId: null, nodes: [invalidNode] },
+    { type: "restore", document: invalidDocument },
+  ]) assert.throws(() => editDocument(doc(), operation), DocumentValidationError);
+});
+test("editor operations share untouched branches and keep parse output byte-for-byte canonical", () => {
+  const original = parsePageDocument(fixture), before = structuredClone(original);
+  const textEdit = editDocument(original, { type: "text", path: [0, 0, 0], value: "構造共有" });
+  assert.notStrictEqual(textEdit.body, original.body);
+  assert.notStrictEqual(textEdit.body[0], original.body[0]);
+  assert.notStrictEqual(textEdit.body[0].children, original.body[0].children);
+  assert.notStrictEqual(textEdit.body[0].children[0], original.body[0].children[0]);
+  assert.strictEqual(textEdit.body[0].children[1], original.body[0].children[1]);
+  assert.equal(nodeAt(original, [0, 0, 0]).text, "海のそばで過ごす");
+
+  const operations = [
+    { type: "text", path: [0, 0, 0], value: "差分確認" },
+    { type: "attribute", path: [0, 2], name: "href", value: "/news" },
+    { type: "style", path: [0], breakpoint: "base", property: "color", value: "#123456" },
+    { type: "meta", field: "description", value: "差分確認" },
+    { type: "duplicate", path: [0, 0] },
+    { type: "add", parentId: "hero", node: newElement("img", "photo") },
+  ];
+  for (const operation of operations) {
+    const result = editDocument(original, operation);
+    assert.equal(JSON.stringify(result), JSON.stringify(parsePageDocument(result)), operation.type);
+    const snapshot = JSON.stringify(result);
+    assert.equal(validatePageDocument(result), undefined);
+    assert.equal(JSON.stringify(result), snapshot, `${operation.type} の検証は入力を書き換えない`);
+  }
+  assert.deepEqual(original, before);
+
+  const invalid = { ...textEdit, title: "" }, invalidBefore = JSON.stringify(invalid);
+  assert.throws(() => validatePageDocument(invalid), DocumentValidationError);
+  assert.equal(JSON.stringify(invalid), invalidBefore);
+});
 test("React-free editor model applies stable-ID operations and parent-relative text edits", () => {
   const original = doc();
   const moved = editDocumentById(original, { type: "move", nodeId: "heading", parentId: "hero", index: 1 });
@@ -155,6 +92,25 @@ test("React-free editor model applies stable-ID operations and parent-relative t
   assert.equal(nodeAt(text, headingPath).style.base.color, "#ff0000");
   assert.throws(() => editDocumentById(original, { type: "style", nodeId: "missing", breakpoint: "base", property: "color", value: "#ff0000" }), /対象ノード/);
   assert.throws(() => editDocumentById(original, { type: "style", path: [0], breakpoint: "base", property: "color", value: "#ff0000" }), /安定した対象ID/);
+});
+test("box grouping preserves adjacent siblings and rejects gaps or non-group IDs", () => {
+  const original = doc(), before = original.body[0].children;
+  const wrapped = editDocument(original, { type: "wrap", nodeIds: ["heading", "lead"], wrapperId: "group_intro", allowLayoutChange: true });
+  const children = wrapped.body[0].children;
+  assert.equal(children[0].id, "group_intro");
+  assert.deepEqual(children[0].children.map(({ id }) => id), ["heading", "lead"]);
+  assert.deepEqual(children.slice(1), before.slice(2));
+  const unwrapped = editDocument(wrapped, { type: "unwrap", path: [0, 0], allowLayoutChange: true });
+  assert.deepEqual(unwrapped.body[0].children, before);
+  assert.throws(() => editDocument(original, { type: "wrap", nodeIds: ["heading", "link"], wrapperId: "group_gap", allowLayoutChange: true }), /間の要素/u);
+  assert.throws(() => editDocument(original, { type: "wrap", nodeIds: ["heading"], wrapperId: "custom", allowLayoutChange: true }), /group_/u);
+});
+test("box grouping requires explicit approval when it can change layout", () => {
+  const original = doc();
+  original.body[0].style = { base: { display: "flex" } };
+  const operation = { type: "wrap", nodeIds: ["heading"], wrapperId: "group_heading" };
+  assert.throws(() => editDocument(original, operation), BoxGroupLayoutChange);
+  assert.equal(editDocument(original, { ...operation, allowLayoutChange: true }).body[0].children[0].id, "group_heading");
 });
 test("フォーム操作は名前・必須・型・選択肢を検証済み文書として更新する", () => {
   const preset = formInsertionPresets.find(({ id }) => id === "form-2");

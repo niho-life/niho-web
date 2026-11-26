@@ -46,6 +46,8 @@ D1 が Project / Site / Member / Role / Invitation / Audit の正本です。NIH
 
 D1 schema、CAS、確認plan、GUI/CLI共通操作、公開rendererの詳細は [Studio-native site契約](../docs/studio-managed-sites.md) を参照してください。
 
+Studio-native CMS は Dashboard の「CMS」または `/projects/<Project>/sites/<Site>/cms` にあります。R2 binding `CMS_OBJECTS` に非公開 bucket を割り当て、D1 の `0013_managed_cms.sql` を適用してから Worker を接続します。Cronは毎分、予約を含む outbox を処理します。ローカルの復元演習、公開ルート、保持期間・容量は運用契約を参照してください。[Studio-native site契約](../docs/studio-managed-sites.md#cms-の公開と復旧)
+
 ### サイト機能（鎌倉）
 
 鎌倉の Dashboard は「ホーム・CMS・素材・翻訳・アナリティクス」を表示します。CMS は Studio のコレクション画面、翻訳は Studio の翻訳画面、ページと共通コンポーネントはデザインエディタで扱います。素材の入口はエディタと CMS の画像欄です。旧サイト管理画面の埋め込みと切替設定は撤廃しました。
@@ -70,7 +72,7 @@ Cloudflare Access 側で Studio hostname 全体を Access application として�
 - 非参加者には Project の存在・名称を返さない。ただし、検証済み email に明示的に宛てられた有効な招待 token を提示した場合だけ、受諾に必要な Project / Site 名と role を返す
 - membership revoke は次の API request から有効になる
 - Experience / Kamakura editor の list/read/save/release 各 request と Kamakura CMS の各 request でも、Access `sub`、固定 Project/Site、D1 の現在の `owner` / `editor` membership を再照合する
-- API と静的応答は `no-store`。CSP、frame 拒否、MIME sniff 拒否等を付与する。例外は build が版付きの場所に置く Studio の書体（`assets/fonts/<名前>-<版>/*.woff2` と `assets/fonts/fonts-<hash>.css`）で、`private, max-age=31536000, immutable`
+- API・HTML・版のない静的応答は `no-store`。CSP、frame 拒否、MIME sniff 拒否等を付与する。長期 cache の対象は、build が内容 hash 付き URL で出力する JS/CSS（`assets/<名前>-<hash>.js|css` と `assets/chunks/<名前>-<hash>.js`）と Studio の書体（`assets/fonts/<名前>-<版>/*.woff2` と `assets/fonts/fonts-<hash>.css`）で、`private, max-age=31536000, immutable` を付ける。
 
 Member 管理 mutation は従来どおり `POST` のみです。request URL と完全一致する `Origin`、`Sec-Fetch-Site: same-origin`、`application/json`、16 KiB の streaming 上限、JSON object、endpoint ごとの完全な key set を必須にします。この 16 KiB 境界は editor 追加後も変更しません。Editor mutation も同じ same-origin / JSON 条件を要求し、draft だけ 600 KiB、release-plan / release は 16 KiB の streaming 上限です。token、token hash、JWT、HMAC secret、request body は application log に出力しません。
 
@@ -122,6 +124,10 @@ catalog がこの契約に合わない場合は `502 { "error": "upstream_contra
 失敗カテゴリは `bridge_secret_missing_or_invalid`、`bridge_signing_failed`、`service_binding_failed` / `service_binding_timeout`、`upstream_auth_rejected`、`upstream_unexpected_4xx`、`catalog_endpoint_missing`、`upstream_rate_limited`、`upstream_server_error`、`upstream_redirect_rejected`、`upstream_invalid_response`、`upstream_contract_invalid`、`bridge_processing_failed` です。operation は `catalog`、`page_read`、`draft_save`、`release_plan`、`release`、`embed_import`、`embed_status`、`asset_list`、`asset_upload_intent`、`asset_update`、`asset_usages`、`asset_resolve` の固定値です。画面で問い合わせIDを受け取ったら、Studio Worker のログから同一IDの行を検索してください。HTTP status が無い `service_binding_*` はStudio側のbinding・到達性を、`upstream_auth_rejected` は両Workerのsecret設定と署名検証を、`catalog_endpoint_missing` は kamakura-site のendpoint配備を確認します。
 
 Kamakura の `PageEditor` が編集するのは `src/site/niho-web` の native 化済みページです。日本語ページの下書き保存とページ単位公開は、サイト側が返す版と表示コンテキストを照合して行います。未変換のページは `readOnly.reason` で停止します。CMS の操作はサイト側の管理機能で扱います。
+
+編集画面を直接開くと、Access のセッション・プロジェクト一覧・設定と同時に editor catalog の取得を始めます。参加資格を確認した後、翻訳状態とブレークポイントを取得しながら、catalog の一覧から最初のページを開きます。ページ管理用の `pages.catalog` は変更の確認時に版を取得するために使います。
+
+日本語ページは共通 API の editor snapshot profile を使います。`editorState` まで返すホストでは文書・表示コンテキスト・編集状態をまとめて読み、移行中のホストでは不足する編集状態を旧ページ取得から補って文書版・表示コンテキスト版を照合します。権限エラーや不正なスナップショットは既存のエラー表示へ渡します。[編集 API 契約](../docs/editing-api-contract.md)
 
 Kamakura の editor route にも Experience と同じ範囲限定 CSP 緩和を適用します。native presentation のフォントだけは `https://kamakura-media.niho.life/niho-web/fonts/v1/` を font-src に追加します。manifest・共有枠・保存CASの契約は [site-presentation.md](../docs/site-presentation.md) に従います。Directory / Dashboard / invite route の CSP は変えません。
 

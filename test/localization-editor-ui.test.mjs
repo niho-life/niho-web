@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { findLayer } from "./editor-layer-fixtures.mjs";
 import { JSDOM } from "jsdom";
 import {
   acceptTranslationResult, adoptTranslationCandidate, collectLocalizationUnits, createLocalizationOverlay, editLocalizedValue,
@@ -19,7 +20,12 @@ async function waitForUi(condition, message) {
   assert.ok(condition(), message);
 }
 const button = (text) => [...document.querySelectorAll("button")].find((node) => node.textContent === text) ?? (() => { const id = / · ([^ ]+)$/.exec(text)?.[1]; return id ? document.querySelector(`[data-node-id="${id}"] button.e-layer`) : undefined; })();
-async function click(text) { const target = button(text); assert.ok(target, text); await act(async () => target.click()); await flush(); }
+async function click(text) {
+  const press = async (target) => { await act(async () => target.click()); await flush(); };
+  const target = text.includes(" · ") ? await findLayer(() => button(text), press) : button(text);
+  assert.ok(target, text);
+  await press(target);
+}
 async function showInspector(value) {
   const target = document.querySelector('select[aria-label="編集する対象"]'); assert.ok(target, "inspector selector");
   await act(async () => {
@@ -61,6 +67,16 @@ const sourcePage = (siteId, pageId, locale, title) => ({ schemaVersion: 1, siteI
     { type: "element", id: "urlPhoto", tag: "img", attrs: { src: `/${siteId}-source.webp`, srcSet: `/${siteId}-source-2x.webp`, alt: locale.startsWith("ja") ? "URLの海" : "URL sea", width: 640, height: 360 }, children: [] }
   ] }
 ] });
+function assignNodeName(document, id, name) {
+  const pending = [...document.body];
+  while (pending.length) {
+    const node = pending.pop();
+    if (node.type === "text") continue;
+    if (node.id === id) { node.name = name; return; }
+    if (node.type === "element") pending.push(...node.children);
+  }
+  throw new Error(`Missing node ${id}`);
+}
 const translateRich = (value) => ({ ...value, children: value.children.map(function map(node) { return node.type === "text" ? { ...node, text: node.text ? `訳:${node.text}` : node.text } : { ...node, children: node.children.map(map) }; }) });
 async function localizedSite(siteId, sourceLocale, labels) {
   const cfg = config(siteId, sourceLocale), sourceDocument = sourcePage(siteId, "home", cfg.documentLocales[sourceLocale], labels.source);
@@ -78,8 +94,9 @@ async function localizedSite(siteId, sourceLocale, labels) {
   const targetDocument = (await materializeLocalizedPage(cfg, sourceDocument, collection, overlay)).document;
   return { cfg, sourceDocument, targetDocument, collection, overlay, labels, documentVersion: 1, localizationVersion: 1, siteVersion: 1, job: { state: "failed", message: "合成した失敗" } };
 }
-async function setup({ conflictOnce = false, conflictSourceChange = false, rejectCommandOnce = false, delayedRead = false, delayedSites = false, delayedSite = false, delayedSiteAfterFirst = false, rejectSiteOnce = false, rejectPageOnce = false, unsupportedLocale = false, extraPublicPage = false, recovery, localeRelease, versionHistory = false, readOnlySource = false, readOnlyTarget = false, previewComponent, initialTarget, pageTranslationUnavailable = false, hostSourceLocale = false, declaredSourceLocale = false, legacyTargetReview } = {}) {
+async function setup({ conflictOnce = false, conflictSourceChange = false, rejectCommandOnce = false, delayedRead = false, delayedSites = false, delayedSite = false, delayedSiteAfterFirst = false, rejectSiteOnce = false, rejectPageOnce = false, unsupportedLocale = false, extraPublicPage = false, recovery, localeRelease, versionHistory = false, readOnlySource = false, readOnlyTarget = false, previewComponent, initialTarget, pageTranslationUnavailable = false, hostSourceLocale = false, declaredSourceLocale = false, legacyTargetReview, namedNodes = false } = {}) {
   const kamakura = await localizedSite("kamakura", "ja", { source: "鎌倉ホーム", manual: "Manual Kamakura", candidate: "Candidate Kamakura" });
+  if (namedNodes) for (const state of [kamakura]) for (const page of [state.sourceDocument, state.targetDocument]) assignNodeName(page, "details", "翻訳対象リンク");
   if (hostSourceLocale) kamakura.sourceDocument.locale = "ja";
   if (legacyTargetReview !== undefined) kamakura.sourceDocument.meta = { ...kamakura.sourceDocument.meta, targetReviewBeforePublish: legacyTargetReview };
   const experience = await localizedSite("experience", "en", { source: "Experience home", manual: "体験（手修正）", candidate: "体験（翻訳案）" });
@@ -114,6 +131,7 @@ async function setup({ conflictOnce = false, conflictSourceChange = false, rejec
     },
     prepareRelease: async (request) => ({ ...request, confirmationToken: "demo", domain: "https://example.test", changes: [] }),
     release: async () => ({ status: "conflict" }),
+    ...(namedNodes ? { discoverPageNodeNames: async () => true } : {}),
     ...(versionHistory ? { listRevisions: async () => ({ entries: [] }) } : {}),
     localization: {
       ...(declaredSourceLocale ? { sourceDocumentLocale: (siteId) => siteId === "kamakura" ? "ja" : undefined } : {}),
@@ -201,6 +219,27 @@ test("page translation capability can be explicitly unavailable without pretendi
     assert.match(document.querySelector(".e-localization-panel").textContent, /自動翻訳は翻訳画面から依頼します/u);
     assert.equal(button("翻訳を再試行"), undefined);
     assert.equal(app.calls.commands.length, 0);
+  } finally { await app.cleanup(); }
+});
+
+test("localized rich-text edits preserve inherited node names", async () => {
+  const app = await setup({ namedNodes: true, initialTarget: { siteId: "kamakura", pageId: "home", locale: "en-US" } });
+  try {
+    await waitForUi(() => document.querySelector('.e-language-selector [aria-pressed="true"]')?.textContent === "English", "English translation is selected");
+    const frame = document.querySelector('iframe[title="ページのライブキャンバス"]'), lead = frame?.contentDocument.querySelector('[data-nw-node="lead"]');
+    assert.ok(frame && lead);
+    await act(async () => lead.dispatchEvent(new frame.contentWindow.MouseEvent("dblclick", { bubbles: true, cancelable: true })));
+    await flush(); assert.equal(lead.contentEditable, "true");
+    lead.firstChild.textContent = "Translated ";
+    await act(async () => lead.dispatchEvent(new frame.contentWindow.KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true, cancelable: true })));
+    await flush();
+    const translatedLead = app.sites.kamakura.targetDocument.body[0].children.find((node) => node.id === "lead");
+    assert.equal(translatedLead.children.find((node) => node.id === "details").name, "翻訳対象リンク");
+    assert.equal(button("下書き保存").disabled, false);
+    await click("下書き保存");
+    const savedLead = app.calls.saves.at(-1).document.body[0].children.find((node) => node.id === "lead");
+    assert.equal(savedLead.children.find((node) => node.id === "details").name, "翻訳対象リンク");
+    assert.equal(savedLead.children[0].text, "Translated ");
   } finally { await app.cleanup(); }
 });
 
@@ -905,6 +944,13 @@ test("shortcuts deny target structure changes and still undo and redo translated
     }
     assert.ok(frame.contentDocument.querySelector('[data-nw-node="heading"]'));
     assert.equal(frame.contentDocument.querySelector('[data-nw-node="heading_copy1"]'), null);
+    assert.equal(await key(frame.contentDocument.body, "ArrowDown"), false);
+    assert.equal(frame.contentDocument.querySelector(".nw-spacing-handle"), null);
+    assert.ok(await key(frame.contentDocument.body, "k", { metaKey: true }));
+    const palette = document.querySelector('[role="dialog"][aria-label="コマンドパレット"]');
+    const paletteActions = [...palette.querySelectorAll('section[aria-label="操作"] button')];
+    for (const name of ["複製", "削除", "選択要素を下へ"]) assert.equal(paletteActions.find((button) => button.textContent.startsWith(name)).disabled, true);
+    assert.ok(await key(palette.querySelector("input"), "Escape"));
     const before = input("テキスト").value;
     await change(input("テキスト"), "Shortcut edit");
     assert.ok(await key(frame.contentDocument.body, "z", { ctrlKey: true }));

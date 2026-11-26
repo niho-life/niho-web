@@ -2,7 +2,7 @@ import { mergeSiteStyles, parseSiteStyles, resolvePageStyles, type SiteStyles } 
 import type {
   BlockContract, BlockContracts, BlockSlot, ComponentLibrary, ComponentPropField, DesignToken, ElementAttributes, ElementInteraction, ElementNode, ElementTag, NodeStyle, PageDocument, PageImage, PageMeta, PageNode, PropRule, PublicPropValue, TextStyle
 } from "./types.js";
-import { COMPONENT_LIMITS, expandDocument, expandDocumentForValidation, hasInstances } from "./component-expand.js";
+import { COMPONENT_LIMITS, expandDocument, instancesOf } from "./component-expand.js";
 import { isStyleProperty, parseStyle, parseTextStyles, parseTokens } from "./style-values.js";
 import { DocumentValidationError, fail, identifier, isSafePublicLink, isSafePublicUrl, keys, line, localeCode, parseAssetReference, publicImageSrcSet, publicImageUrl, record, string } from "./validation-utils.js";
 import { isIconName } from "./icons.js";
@@ -156,6 +156,8 @@ export type ComponentShape = { readonly tag: ElementTag; readonly props: Readonl
 /** @internal 文書の body と部品の root で共有する検証状態。ノード数と文字数は usage へ合算する。 */
 export type NodeContext = {
   readonly blocks: BlockContracts;
+  /** parsePageDocument は正規化コピーを返す。編集直後の検証では入力を再利用する。 */
+  readonly copy?: boolean;
   readonly tokens: Record<string, DesignToken>;
   /** インスタンスの style は部品ライブラリと文書の tokens を重ねて検証する。 */
   readonly instanceTokens: Record<string, DesignToken>;
@@ -167,8 +169,6 @@ export type NodeContext = {
   readonly formLabels: Map<string, string>;
   readonly formControls: { id?: string; accessibleName?: string; path: string }[];
   readonly usage: { nodes: number; text: number };
-  /** 編集中の JSON スナップショットは検証後も同じ内容の参照を共有する。 */
-  readonly share?: boolean;
 };
 /** @internal form control と label の文書全体参照を検査する。 */
 export function validateFormReferences(context: NodeContext): void {
@@ -238,65 +238,36 @@ function slotStyles(value: unknown, contract: BlockContract, tokens: Record<stri
 export function parseNodes(input: unknown, path: string, context: NodeContext, depth = 0, parent?: string, insideLink = false, inline = false, insideForm = false, ancestorInteraction?: ElementInteraction["type"]): PageNode[] {
   if (!Array.isArray(input)) fail(path, "expected node array");
   if (depth > 48 || input.length > 5000) fail(path, "document exceeds limits");
-  const read = (raw: unknown, index: number) => parseNode(raw, `${path}[${index}]`, context, depth, parent, insideLink, inline, insideForm, ancestorInteraction);
-  if (!context.share) return input.map(read);
-  let output: PageNode[] | undefined;
-  for (let index = 0; index < input.length; index++) {
-    if (!(index in input)) continue;
-    const node = read(input[index], index);
-    if (output) output[index] = node;
-    else if (node !== input[index]) {
-      output = input.slice();
-      output[index] = node;
-    }
+  if (context.copy === false) {
+    input.forEach((raw, index) => { parseNode(raw, `${path}[${index}]`, context, depth, parent, insideLink, inline, insideForm, ancestorInteraction); });
+    return input as PageNode[];
   }
-  return output ?? input;
+  return input.map((raw, index) => parseNode(raw, `${path}[${index}]`, context, depth, parent, insideLink, inline, insideForm, ancestorInteraction));
+}
+export const PAGE_NODE_NAME_MAX_LENGTH = 80;
+export const PAGE_NODE_NAME_CONTROL_PATTERN = "[\\u0000-\\u001F\\u007F-\\u009F]";
+const pageNodeNameControl = new RegExp(PAGE_NODE_NAME_CONTROL_PATTERN, "u");
+export function parsePageNodeName(value: unknown, at: string): string {
+  if (typeof value !== "string" || !value.length || value.length > 2 * PAGE_NODE_NAME_MAX_LENGTH || [...value].length > PAGE_NODE_NAME_MAX_LENGTH || pageNodeNameControl.test(value)) fail(at, "invalid node name");
+  return value;
 }
 
-/** 検証結果の JSON とキー順が同じ値は入力の参照に戻す。 */
-export function shareParsedValue<T>(input: unknown, parsed: T): T {
-  if (Object.is(input, parsed)) return parsed;
-  if (!input || typeof input !== "object" || !parsed || typeof parsed !== "object" || Object.getPrototypeOf(input) !== Object.getPrototypeOf(parsed)) return parsed;
-  const previous = input as Record<string, unknown>, next = parsed as Record<string, unknown>;
-  const previousKeys = Object.keys(previous), nextKeys = Object.keys(next);
-  let share = previousKeys.length === nextKeys.length && (!Array.isArray(parsed) || (input as unknown[]).length === parsed.length);
-  let replacements: [string, unknown][] | undefined;
-  for (const [index, key] of nextKeys.entries()) {
-    if (!Object.hasOwn(previous, key)) { share = false; continue; }
-    const value = shareParsedValue(previous[key], next[key]);
-    if (!Object.is(value, next[key])) (replacements ??= []).push([key, value]);
-    if (key !== previousKeys[index] || !Object.is(value, previous[key])) share = false;
-  }
-  if (share) return input as T;
-  if (!replacements) return parsed;
-  const copy = (Array.isArray(parsed) ? parsed.slice() : { ...next }) as Record<string, unknown>;
-  for (const [key, value] of replacements) copy[key] = value;
-  return copy as T;
-}
-
-const textNodeKeys = ["type", "text"];
-const elementNodeKeys = ["type", "id", "tag", "formCompletionPageId", "asset", "icon", "embed", "interaction", "attrs", "style", "children"];
-const componentNodeKeys = ["type", "id", "block", "props", "style", "slots"];
-const instanceNodeKeys = ["type", "id", "component", "props", "style"];
 /** @internal depth はノードを含む配列の深さ。 */
 export function parseNode(raw: unknown, at: string, context: NodeContext, depth = 0, parent?: string, insideLink = false, inline = false, insideForm = false, ancestorInteraction?: ElementInteraction["type"]): PageNode {
   const node = record(raw, at), { blocks, tokens, ids, htmlIds, usage } = context;
   if (++usage.nodes > 5000) fail(at, "too many nodes");
   if (node.type === "text") {
-    keys(node, textNodeKeys, at);
+    keys(node, ["type", "text"], at);
     const text = string(node.text, `${at}.text`, 100000);
     usage.text += text.length;
     if (usage.text > 1000000) fail(at, "too much text");
     if (["ul", "ol", "dl", "picture", "select"].includes(parent ?? "") && text.trim()) fail(at, "text not allowed in this parent");
-    if (context.share && Object.getPrototypeOf(node) === Object.prototype) {
-      const names = Object.keys(node);
-      if (names.length === 2 && names[0] === "type" && names[1] === "text") return raw as PageNode;
-    }
-    return { type: "text", text };
+    return context.copy === false ? node as unknown as PageNode : { type: "text", text };
   }
   if (node.type === "instance" && !context.components) fail(at, "component instance requires a component library");
   if (node.type !== "element" && node.type !== "component" && node.type !== "instance") fail(`${at}.type`, "unknown node type");
-  keys(node, node.type === "element" ? elementNodeKeys : node.type === "component" ? componentNodeKeys : instanceNodeKeys, at);
+  keys(node, node.type === "element" ? ["type", "id", "name", "tag", "formCompletionPageId", "asset", "icon", "embed", "interaction", "attrs", "style", "children"] : node.type === "component" ? ["type", "id", "name", "block", "props", "style", "slots"] : ["type", "id", "name", "component", "props", "style"], at);
+  const name = node.name === undefined ? {} : { name: parsePageNodeName(node.name, `${at}.name`) };
   const id = identifier(node.id, `${at}.id`);
   if (ids.has(id)) fail(`${at}.id`, "duplicate node ID");
   ids.add(id);
@@ -307,8 +278,8 @@ export function parseNode(raw: unknown, at: string, context: NodeContext, depth 
     if (!shape) fail(`${at}.component`, "unknown component");
     // 展開後の root と同じ入れ子規則。内側の規則は展開後の文書で検証する。
     if (inline && !phrasing.has(shape.tag) || constrainedParent && !constrainedParent.includes(shape.tag) || insideLink && interactive.has(shape.tag) || shape.tag === "summary" && parent !== "details") fail(at, "invalid HTML content nesting");
-    const parsed: PageNode = { type: "instance", id, component, ...instanceProps(node.props, shape, `${at}.props`), ...style };
-    return context.share ? shareParsedValue(raw, parsed) : parsed;
+    const props = instanceProps(node.props, shape, `${at}.props`);
+    return context.copy === false ? node as unknown as PageNode : { type: "instance", id, ...name, component, ...props, ...style };
   }
   if (node.type === "component") {
     if (inline || constrainedParent) fail(at, "component requires a flow content parent");
@@ -323,8 +294,8 @@ export function parseNode(raw: unknown, at: string, context: NodeContext, depth 
         if (rule.required) fail(`${at}.props.${name}`, "required prop missing");
       } else props[name] = prop(sourceProps[name], rule, `${at}.props.${name}`);
     }
-    const parsed: PageNode = { type: "component", id, block, props, ...style, ...slotStyles(node.slots, contract, tokens, at) };
-    return context.share ? shareParsedValue(raw, parsed) : parsed;
+    const slots = slotStyles(node.slots, contract, tokens, at);
+    return context.copy === false ? node as unknown as PageNode : { type: "component", id, ...name, block, props, ...style, ...slots };
   }
   if (!isElementTag(node.tag)) fail(`${at}.tag`, "unsupported element");
   const tag = node.tag;
@@ -400,12 +371,7 @@ export function parseNode(raw: unknown, at: string, context: NodeContext, depth 
         video.attrs?.controls === false || button.attrs?.type !== "button" || button.children.length !== 1 || button.children[0]?.type !== "text") fail(`${at}.children`, "video-toggle requires one controlled video followed by one text button");
   }
   if (interaction.interaction?.type === "loop-box" && !children.length) fail(`${at}.children`, "loop-box requires content");
-  if (context.share && children === node.children && Object.getPrototypeOf(node) === Object.prototype) {
-    const names = Object.keys(node);
-    if (names.length === 4 && names[0] === "type" && names[1] === "id" && names[2] === "tag" && names[3] === "children") return raw as PageNode;
-  }
-  const parsed: PageNode = { type: "element", id, tag, ...formCompletion, ...asset, ...icon, ...embed, ...interaction, ...attrs, ...style, children };
-  return context.share ? shareParsedValue(raw, parsed) : parsed;
+  return context.copy === false ? node as unknown as PageNode : { type: "element", id, ...name, tag, ...formCompletion, ...asset, ...icon, ...embed, ...interaction, ...attrs, ...style, children };
 }
 
 export type PageParseOptions = {
@@ -418,16 +384,7 @@ export type PageParseOptions = {
  * 外部 JSON を検証し、未知フィールドを捨てずに拒否して新しい文書を返す。
  * インスタンスは展開せずに返すが、展開後の文書も検証し、その失敗は $.resolved 以下の位置で返す。
  */
-export function parsePageDocument(input: unknown, blocks: BlockContracts = {}, options: PageParseOptions = {}): PageDocument {
-  return readPageDocument(input, blocks, options, false);
-}
-
-/** @internal 編集後のスナップショットに全検証を適用し、正規化の必要な枝だけを作り直す。 */
-export function validateEditedPageDocument(document: PageDocument, blocks: BlockContracts, options: PageParseOptions): PageDocument {
-  return readPageDocument(document, blocks, options, true);
-}
-
-function readPageDocument(input: unknown, blocks: BlockContracts, options: PageParseOptions, share: boolean): PageDocument {
+function parsePageDocumentInternal(input: unknown, blocks: BlockContracts, options: PageParseOptions, copy: boolean): PageDocument {
   const source = record(input, "$"), library = options.components;
   keys(source, ["schemaVersion", "siteId", "pageId", "locale", "revision", "title", "meta", "tokens", "textStyles", "body"], "$");
   if (source.schemaVersion !== 1) fail("$.schemaVersion", "unsupported schema version");
@@ -443,20 +400,33 @@ function readPageDocument(input: unknown, blocks: BlockContracts, options: PageP
   const textStyles = source.textStyles === undefined ? undefined : parseTextStyles(source.textStyles, effectiveTokens, "$.textStyles");
   const effective = mergeSiteStyles({ tokens, ...(textStyles ? { textStyles } : {}) }, options.siteStyles);
   const context: NodeContext = {
-    blocks, ...effective, instanceTokens: library ? { ...library.tokens, ...effective.tokens } : effective.tokens, components: library && componentShapes(library),
-    ids: new Set(), htmlIds: new Set(), formLabels: new Map(), formControls: [], usage: { nodes: 0, text: 0 }, share
+    blocks, copy, ...effective, instanceTokens: library ? { ...library.tokens, ...effective.tokens } : effective.tokens, components: library && componentShapes(library),
+    ids: new Set(), htmlIds: new Set(), formLabels: new Map(), formControls: [], usage: { nodes: 0, text: 0 }
   };
-  const document: PageDocument = { schemaVersion: 1, siteId, pageId, locale, revision: source.revision, title, ...(Object.keys(meta).length ? { meta } : {}), tokens, ...(textStyles ? { textStyles } : {}), body: parseNodes(source.body, "$.body", context) };
+  const parsedBody = parseNodes(source.body, "$.body", context);
+  const document: PageDocument = copy
+    ? { schemaVersion: 1, siteId, pageId, locale, revision: source.revision, title, ...(Object.keys(meta).length ? { meta } : {}), tokens, ...(textStyles ? { textStyles } : {}), body: parsedBody }
+    : { ...source, meta, tokens, ...(textStyles ? { textStyles } : {}), body: parsedBody } as PageDocument;
   validateFormReferences(context);
-  if (library && hasInstances(document.body)) {
+  if (library && instancesOf(document.body).length) {
     try {
-      const resolved = resolvePageStyles(document, options.siteStyles);
-      const expanded = share ? expandDocumentForValidation(resolved, library) : expandDocument(resolved, library).document;
-      readPageDocument(expanded, blocks, options.siteStyles ? { siteStyles: options.siteStyles } : {}, share);
+      const expanded = expandDocument(resolvePageStyles(document, options.siteStyles), library).document;
+      if (copy) parsePageDocument(expanded, blocks, options.siteStyles ? { siteStyles: options.siteStyles } : {});
+      else validatePageDocument(expanded, blocks, options.siteStyles ? { siteStyles: options.siteStyles } : {});
     } catch (error) {
       if (error instanceof DocumentValidationError) throw new DocumentValidationError(`$.resolved${error.path.slice(1)}`, error.reason);
       throw error;
     }
   }
-  return share ? shareParsedValue(input, document) : document;
+  return document;
+}
+
+/** Validate a trusted, already parsed editor document without building a normalized copy. */
+export function validatePageDocument(input: unknown, blocks: BlockContracts = {}, options: PageParseOptions = {}): void {
+  parsePageDocumentInternal(input, blocks, options, false);
+}
+
+/** Parse external JSON, rejecting unknown fields and returning a normalized, independent document. */
+export function parsePageDocument(input: unknown, blocks: BlockContracts = {}, options: PageParseOptions = {}): PageDocument {
+  return parsePageDocumentInternal(input, blocks, options, true);
 }

@@ -7,7 +7,7 @@ import type { PageKind, PageVisibility, SiteSettings } from "./pages.js";
 import type { ComponentLibrary, ComponentNode, PageDocument, PublicPropValue, SitePresentation, StyleProperty, StyleValue } from "./types.js";
 import type { EditorRecoveryStore, EditorRevisionEntry, EditorRevisionPage } from "./history.js";
 import type { BlockLocalizationSchema, LocalizationLocale, LocalizationValue } from "./localization.js";
-import type { EditingPageApplied, EditingPageApplyInput, PageOperationVersions, EditingPageReleaseSetApplyResult, EditingPageReleaseSetItem, EditingPageReleaseSetPlan, EditingPageReleaseSetStatus } from "./editing-api.js";
+import type { EditingPageApplied, EditingPageApplyConflict, EditingPageApplyInput, PageOperationVersions, EditingPageReleaseSetApplyResult, EditingPageReleaseSetItem, EditingPageReleaseSetPlan, EditingPageReleaseSetStatus } from "./editing-api.js";
 import type {
   EditorLocaleReleaseApplyRequest, EditorLocaleReleaseApplyResult, EditorLocaleReleasePlan, EditorLocaleReleasePrepareRequest, EditorLocaleReleaseState
 } from "./locale-release-contract.js";
@@ -19,7 +19,7 @@ export type { PageKind, PageVisibility, SiteSettings } from "./pages.js";
 export type {
   EditorLocaleReleaseApplyRequest, EditorLocaleReleaseApplyResult, EditorLocaleReleasePlan, EditorLocaleReleasePrepareRequest, EditorLocaleReleaseState, EditorLocaleReleaseSummary
 } from "./locale-release-contract.js";
-export type { DocumentChange, EditorLibraryRecoveryEntry, EditorRecoveryEntry, EditorRecoveryStore, EditorRevisionEntry, EditorRevisionKind, EditorRevisionPage, StoredLibraryRecoveryEntry, StoredRecoveryEntry } from "./history.js";
+export type { DocumentChange, EditorLibraryRecoveryEntry, EditorRecoveryEntry, EditorRecoveryStore, EditorRevisionEntry, EditorRevisionKind, EditorRevisionOperationSummary, EditorRevisionOperationType, EditorRevisionPage, StoredLibraryRecoveryEntry, StoredRecoveryEntry } from "./history.js";
 
 export type EditorTarget = { siteId: string; pageId: string; locale: string };
 /** ホストが許可する構造化データの種類。JSON-LD の中身はホストが生成する。 */
@@ -150,6 +150,8 @@ export type ComponentUsageEntry = {
 };
 /** 保存はページの下書きと同じく、expectedVersion の比較・revision の採番・競合の変換をホストが原子的に行う。 */
 export interface EditorComponentAdapter {
+  /** 部品ライブラリの保存先がノードの名前を保持できる場合だけ true。 */
+  nodeNames?: true;
   readLibrary(siteId: string, signal: AbortSignal): Promise<ComponentLibrarySnapshot>;
   /** trigger は自動保存のときだけ "autosave"（saveDraft と同じ）。 */
   saveLibrary(request: { siteId: string; library: ComponentLibrary; expectedVersion: string; trigger?: "autosave" }, signal: AbortSignal): Promise<EditorSaveResult>;
@@ -214,7 +216,7 @@ export interface EditorResponsiveProposalAdapter {
   propose(request: EditorResponsiveProposalRequest, signal: AbortSignal): Promise<unknown>;
 }
 export type EditorApplyOperationsRequest = Omit<EditingPageApplyInput, "dryRun"> & { readonly target: EditorTarget };
-export type EditorApplyOperationsResult = EditingPageApplied | { readonly status: "conflict" };
+export type EditorApplyOperationsResult = EditingPageApplied | EditingPageApplyConflict;
 
 /** 認証・認可・通信・公開処理は、認証済みホストの責務。 */
 export interface EditorAdapter {
@@ -223,6 +225,10 @@ export interface EditorAdapter {
   /** form の送信成功後に選べるページ候補。省略時は完了先設定を接続しない。 */
   listFormCompletionPages?(target: EditorTarget, signal: AbortSignal): Promise<readonly EditorPage[]>;
   readDocument(target: EditorTarget, signal: AbortSignal): Promise<EditorSnapshot>;
+  /** 保存に使う API の discover が pages.name を公開する場合だけ true を返す。 */
+  discoverPageNodeNames?(target: EditorTarget, signal: AbortSignal): Promise<boolean>;
+  /** ページ行の pointer / focus で呼ぶ先読み。通常読込と同じ認可・版検証を行い、画面状態は変更しない。 */
+  prefetchDocument?(target: EditorTarget, signal: AbortSignal): Promise<EditorSnapshot>;
   /** trigger は自動保存のときだけ "autosave"。ホストは履歴の種類の区別に使える。 */
   saveDraft(request: { target: EditorTarget; document: PageDocument; expectedVersion: string; presentationVersion?: string; trigger?: "autosave";
     /** Present for translated drafts; the host must CAS these values and persist only validated localized overlays. */
@@ -332,8 +338,12 @@ export type EditorCanvasPreviewProps = {
   /** 従来の文書描画。編集文書を置き換えない場合はそのまま返せる。 */
   children: ReactNode;
 };
+export type EditorPerformanceOperation = "initial-load" | "page-switch" | "save";
+
 export type PageEditorProps = {
   adapter: EditorAdapter;
+  /** 開発者向け計測。操作の開始時に呼ばれ、成功時に返された完了関数を呼ぶ。 */
+  measurePerformance?: ((operation: EditorPerformanceOperation) => () => void) | undefined;
   /** 一覧から開く最初のページと言語。対象が一覧に無ければ通常の先頭ページを開く。 */
   initialTarget?: EditorTarget;
   /** ホストが用意する戻るなどの操作をツールバーの先頭へ表示する。 */

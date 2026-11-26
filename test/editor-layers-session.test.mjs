@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { editDocument } from "../dist/editor-model.js";
 import { canvasViewportHeight, fitCanvasScale, pathForNodeId, projectLayers, visibleLayers } from "../dist/layers.js";
-import { EditorSessionLoadError, readEditorSession } from "../dist/editor-session.js";
+import { EditorSessionCache, EditorSessionLoadError, readEditorSession } from "../dist/editor-session.js";
 
 const source = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 const target = { siteId: source.siteId, pageId: source.pageId, locale: source.locale };
@@ -42,6 +42,27 @@ test("editor session opens a self-contained document when optional site settings
   assert.equal(result.session.history.present.title, source.title);
   assert.equal(result.session.selfContained, true);
   assert.match(result.warning, /文書単体/);
+});
+
+test("editor page cache reuses only the saved session for the same document version", async () => {
+  const cache = new EditorSessionCache(2), controller = new AbortController();
+  let document = structuredClone(source), version = "v1", reads = 0;
+  const adapter = { readDocument: async () => { reads++; return { ...snapshot(document), version }; } };
+  const first = await readEditorSession(adapter, target, controller.signal, {}, undefined, { cache });
+  const savedDocument = first.session.history.present;
+  first.session.history = { ...first.session.history, present: editDocument(savedDocument, { type: "title", value: "未保存の編集" }) };
+
+  const sameVersion = await readEditorSession(adapter, target, controller.signal, {}, undefined, { cache });
+  assert.equal(reads, 2, "版を確かめる文書取得は続け、解析済みsessionだけを再利用する");
+  assert.strictEqual(sameVersion.session.history.present, savedDocument);
+  assert.equal(sameVersion.session.history.present.title, source.title, "未保存編集はcacheへ入れない");
+  assert.deepEqual(sameVersion.session.history.past, []);
+
+  document = { ...source, title: "サーバー側の新しい版" };
+  version = "v2";
+  const changedVersion = await readEditorSession(adapter, target, controller.signal, {}, undefined, { cache });
+  assert.notStrictEqual(changedVersion.session.history.present, savedDocument);
+  assert.equal(changedVersion.session.history.present.title, "サーバー側の新しい版");
 });
 
 test("editor session requires unavailable site settings when the document references their tokens", async () => {

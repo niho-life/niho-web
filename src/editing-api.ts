@@ -1,4 +1,4 @@
-import type { ComponentLibrary, PageDocument } from "./types.js";
+import type { ComponentLibrary, PageDocument, SitePresentation } from "./types.js";
 import { parsePageDocument } from "./document.js";
 import { normalizePageChange, validatePageChangePlan, validateReleasePlan } from "./editor-model.js";
 import type { EditorBreakpointSettings, EditorBreakpointSettingsSaveResult, EditorBreakpointSettingsSnapshot, EditorPage, EditorPageChange, EditorPageChangePlan, EditorReleasePlan, EditorReleaseRequest, EditorSite } from "./editor-types.js";
@@ -23,10 +23,16 @@ import {
   type EditingLocalizationHostAdapter, type EditingLocalizationInput, type EditingLocalizationOperation, type EditingLocalizationOperationId,
 } from "./editing-localization.js";
 import { jsonBytes } from "./localization-workspace-model.js";
+import { EDITING_EDITOR_SNAPSHOT_ACCEPT, parseEditingPageEditorState, parseEditingPagePresentation, type EditingPageEditorState } from "./editing-page-snapshot.js";
+import { ENGLISH_PUBLICATION_STATES } from "./english-publication.js";
 import { inspectPageDocument, PAGE_INSPECT_LIMITS, PageInspectError, parsePageInspectQuery, type PageInspectQuery } from "./page-inspect.js";
+import { parseRevisionPage } from "./history.js";
+import { parseSiteStyles } from "./site-styles.js";
+import { parseSitePresentation } from "./presentation.js";
+import { PAGE_PREVIEW_INTENT_HEADERS, parsePagePreviewIntent, type EditingPagePreviewIntent } from "./editing-page-preview.js";
 
 import {
-  PAGE_OPERATION_ID, PAGE_OPERATION_LIMIT, PAGE_OPERATION_VERSIONS, editingOperationProblem, pageApplyInputSchema,
+  PAGE_OPERATION_ID, PAGE_OPERATION_LIMIT, PAGE_OPERATION_VERSIONS, editingOperationProblem, legacyPageApplyInputSchema, pageApplyInputSchema, pageNodesHaveNames, pageOperationUsesNodeNames,
   pageApplyResultSchema, pageOperationHash, parsePageOperation, preparePageOperations, type EditingPageApplyInput, type EditingPageOperationStore,
   pageOperationWire, type PageOperationJournal, type PageOperationVersions,
 } from "./editing-page-operations.js";
@@ -34,14 +40,16 @@ import type { EditorOperationBlocks } from "./editor-model.js";
 import type { EditorLock } from "./editor-types.js";
 
 export type { EditingPageApplied, EditingPageApplyInput, EditingPageApplyResult, EditingPageOperationStore, PageOperationJournal,
-  PageOperationTransaction, PageOperationVersions } from "./editing-page-operations.js";
+  EditingPageApplyConflict, PageOperationTransaction, PageOperationUnmetPrecondition, PageOperationVersions } from "./editing-page-operations.js";
 export { pageOperationWire } from "./editing-page-operations.js";
+export { PAGE_PREVIEW_INTENT_HEADERS, type EditingPagePreviewIntent } from "./editing-page-preview.js";
 
 export type {
   EditingLocalizationHostAdapter, EditingLocalizationInput, EditingLocalizationOperationId, EditingLocalizationReleaseApplyInput,
   EditingLocalizationReleasePrepareInput, EditingLocalizationResult,
 } from "./editing-localization.js";
 export type { EditingLocalizationCapability } from "./editing-localization-schemas.js";
+export { EDITING_EDITOR_SNAPSHOT_ACCEPT, type EditingPageEditorState } from "./editing-page-snapshot.js";
 
 /** Stable errors returned by the host-neutral page editing wire contract. */
 export const EDITING_API_ERRORS = Object.freeze([
@@ -68,6 +76,10 @@ export type EditingAuthorizationScope = { readonly siteId: string; readonly page
 export type EditingPageSnapshot = PageOperationVersions & {
   readonly document: PageDocument;
   readonly version: string;
+  /** Must belong to the same host snapshot as document and version. */
+  readonly presentation?: SitePresentation;
+  /** Presence declares that the snapshot includes the editor state supported by the host. */
+  readonly editorState?: EditingPageEditorState;
 };
 export type EditingPageSaveResult = { readonly status: "saved"; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" };
 export type EditingPageReleasePrepareResult = { readonly status: "prepared"; readonly plan: EditorReleasePlan } | { readonly status: "conflict" };
@@ -134,7 +146,7 @@ export type JsonSchema = boolean | {
 };
 type EditingOperationDefinitionShape = {
   readonly id: string;
-  readonly capability: "pages.read" | "pages.edit" | "pages.publish" | "site.settings.read" | "site.settings.write" | "cms.read" | "cms.edit" | "cms.publish"
+  readonly capability: "pages.read" | "pages.history.read" | "pages.edit" | "pages.publish" | "site.settings.read" | "site.settings.write" | "cms.read" | "cms.edit" | "cms.publish"
     | "assets.read" | "assets.edit" | "assets.upload" | "assets.delete" | EditingLocalizationCapability;
   readonly capabilityByInput?: { readonly field: "action" | "operation"; readonly values: Readonly<Record<string, EditingLocalizationCapability>> };
   readonly method: "GET" | "PUT" | "POST";
@@ -161,6 +173,46 @@ const documentSchema: JsonSchema = Object.freeze({
   })
 });
 const versionSchema: JsonSchema = Object.freeze({ type: "string", minLength: 1 });
+const revisionOperationSchema: JsonSchema = Object.freeze({ type: "object", required: Object.freeze(["type"]), additionalProperties: false, properties: Object.freeze({
+  type: Object.freeze({ type: "string", enum: Object.freeze(["text", "attribute", "booleanAttribute", "formChoices", "formCompletionPage", "icon", "tag", "prop", "style", "resize", "styles", "styleRange", "token", "textStyle", "nodeTextStyle", "state", "appear", "motionPreset", "hidden", "title", "add", "addMany", "replaceChildren", "image", "video", "embedSource", "embedTitle", "loopBox", "background", "replaceAsset", "duplicate", "remove", "move", "instanceProp", "detach", "slotStyle", "restore", "meta"]) }),
+  targetId: Object.freeze({ type: "string", minLength: 1, maxLength: 80 }), targetType: Object.freeze({ type: "string", enum: Object.freeze(["element", "component", "instance", "page"]) }),
+  targetTag: Object.freeze({ type: "string", pattern: "^[a-z][a-z0-9-]{0,31}$" }), field: Object.freeze({ type: "string", pattern: "^[A-Za-z][A-Za-z0-9_.-]{0,79}$" })
+}) });
+const revisionEntrySchema: JsonSchema = Object.freeze({ type: "object", required: Object.freeze(["id", "revision", "kind", "createdAt"]), additionalProperties: false, properties: Object.freeze({
+  id: Object.freeze({ type: "string", minLength: 1, maxLength: 200 }), revision: Object.freeze({ type: "integer", minimum: 1 }),
+  kind: Object.freeze({ type: "string", enum: Object.freeze(["draft", "autosave", "snapshot", "publish", "rollback"]) }), createdAt: Object.freeze({ type: "string", minLength: 1, maxLength: 40 }),
+  actor: Object.freeze({ type: "string", maxLength: 120 }), actorKind: Object.freeze({ type: "string", enum: Object.freeze(["human", "machine"]) }),
+  delegatedBy: Object.freeze({ type: "string", maxLength: 120 }), label: Object.freeze({ type: "string", maxLength: 120 }),
+  operations: Object.freeze({ type: "array", maxItems: 20, items: revisionOperationSchema }), omittedOperations: Object.freeze({ type: "integer", minimum: 0, maximum: 500 }),
+  snapshotAvailable: Object.freeze({ type: "boolean" })
+}) });
+const revisionPageSchema: JsonSchema = Object.freeze({ type: "object", required: Object.freeze(["entries"]), additionalProperties: false, properties: Object.freeze({
+  entries: Object.freeze({ type: "array", maxItems: 100, items: revisionEntrySchema }), next: Object.freeze({ type: "string", maxLength: 500 })
+}) });
+const historyReadResultSchema: JsonSchema = Object.freeze({ type: "object", required: Object.freeze(["document"]), additionalProperties: false, properties: Object.freeze({
+  document: documentSchema, siteStyles: Object.freeze({ type: "object", additionalProperties: true }), presentation: Object.freeze({ type: "object", additionalProperties: true })
+}) });
+const presentationSchema: JsonSchema = Object.freeze({
+  type: "object", required: Object.freeze(["schemaVersion", "siteId", "locale", "version", "reset", "tokens", "fonts", "shared"]), additionalProperties: false,
+  properties: Object.freeze({
+    schemaVersion: Object.freeze({ const: 1 }), siteId: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }),
+    version: versionSchema, reset: Object.freeze({ const: "neutral-v1" }), tokens: Object.freeze({ type: "object" }), layout: Object.freeze({ type: "object" }),
+    fonts: Object.freeze({ type: "array", items: Object.freeze({ type: "object" }) }),
+    shared: Object.freeze({ type: "object", required: Object.freeze(["header", "footer"]), additionalProperties: false, properties: Object.freeze({ header: documentSchema, footer: documentSchema }) }),
+    overlays: Object.freeze({ type: "array", items: Object.freeze({ type: "object" }) }), hostViews: Object.freeze({ type: "array", items: Object.freeze({ type: "object" }) }),
+    links: Object.freeze({ type: "object" })
+  })
+});
+const editorStateSchema: JsonSchema = Object.freeze({
+  type: "object", additionalProperties: false, properties: Object.freeze({
+    readOnly: Object.freeze({ type: "object", required: Object.freeze(["reason"]), additionalProperties: false,
+      properties: Object.freeze({ reason: Object.freeze({ type: "string" }), editUrl: Object.freeze({ type: "string" }), editLabel: Object.freeze({ type: "string" }) }) }),
+    englishPublication: Object.freeze({ type: "object", required: Object.freeze(["state", "retryable"]), additionalProperties: false,
+      properties: Object.freeze({ state: Object.freeze({ enum: ENGLISH_PUBLICATION_STATES }), retryable: Object.freeze({ type: "boolean" }), updatedAt: Object.freeze({ type: "string" }) }) }),
+    releases: Object.freeze({ type: "array", items: Object.freeze({ type: "object", required: Object.freeze(["revision", "label"]), additionalProperties: false,
+      properties: Object.freeze({ revision: Object.freeze({ type: "integer", minimum: 1 }), label: Object.freeze({ type: "string" }) }) }) })
+  })
+});
 const inspectInputSchema: JsonSchema = Object.freeze({ oneOf: Object.freeze([
   Object.freeze({ type: "object", required: Object.freeze(["siteId", "pageId", "locale", "view"]), additionalProperties: false, properties: Object.freeze({
     siteId: Object.freeze({ type: "string" }), pageId: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }),
@@ -307,7 +359,22 @@ export const EDITING_OPERATIONS = Object.freeze([
     inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId", "pageId", "locale"]), additionalProperties: false,
       properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), pageId: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }) }) }),
     resultSchema: Object.freeze({ type: "object", required: Object.freeze(["document", "version"]), additionalProperties: false,
-      properties: Object.freeze({ document: documentSchema, version: versionSchema, componentsVersion: versionSchema, presentationVersion: versionSchema, stylesVersion: versionSchema }) }),
+      properties: Object.freeze({ document: documentSchema, version: versionSchema, componentsVersion: versionSchema, presentationVersion: versionSchema,
+        stylesVersion: versionSchema, presentation: presentationSchema, editorState: editorStateSchema }) }),
+    errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found"] as const)
+  }),
+  Object.freeze({
+    id: "pages.history", capability: "pages.history.read", method: "GET", path: "/sites/{siteId}/operations/pages.history/{pageId}?locale={locale}&cursor={cursor}",
+    inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId", "pageId", "locale"]), additionalProperties: false,
+      properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), pageId: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }), cursor: Object.freeze({ type: "string", minLength: 1, maxLength: 500 }) }) }),
+    resultSchema: revisionPageSchema,
+    errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found"] as const)
+  }),
+  Object.freeze({
+    id: "pages.history-read", capability: "pages.history.read", method: "POST", path: "/sites/{siteId}/operations/pages.history-read/{pageId}?locale={locale}",
+    inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId", "pageId", "locale", "id"]), additionalProperties: false,
+      properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), pageId: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }), id: Object.freeze({ type: "string", minLength: 1, maxLength: 200 }) }) }),
+    resultSchema: historyReadResultSchema,
     errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found"] as const)
   }),
   Object.freeze({
@@ -320,9 +387,17 @@ export const EDITING_OPERATIONS = Object.freeze([
   }),
   Object.freeze({
     id: "pages.apply", capability: "pages.edit", method: "POST", path: "/sites/{siteId}/operations/pages.apply/{pageId}?locale={locale}",
-    inputSchema: pageApplyInputSchema, resultSchema: pageApplyResultSchema(documentSchema),
+    inputSchema: legacyPageApplyInputSchema, resultSchema: pageApplyResultSchema(documentSchema),
     errors: Object.freeze(["authentication_required", "duplicate_operation", "forbidden", "host_contract_violation", "host_failure",
       "invalid_request", "method_not_allowed", "not_found", "validation_failed", "version_conflict"] as const)
+  }),
+  Object.freeze({
+    id: "pages.preview-intent", capability: "pages.read", method: "POST", path: "/sites/{siteId}/operations/pages.preview-intent/{pageId}?locale={locale}",
+    inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId", "pageId", "locale"]), additionalProperties: false,
+      properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), pageId: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }) }) }),
+    resultSchema: Object.freeze({ type: "object", required: Object.freeze(["url", "expiresAt"]), additionalProperties: false,
+      properties: Object.freeze({ url: Object.freeze({ type: "string", maxLength: 2048 }), expiresAt: Object.freeze({ type: "string", minLength: 24, maxLength: 24 }) }) }),
+    errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found"] as const)
   }),
   Object.freeze({
     id: "pages.release-plan", capability: "pages.publish", method: "POST", path: "/sites/{siteId}/operations/pages.release-plan/{pageId}?locale={locale}",
@@ -478,6 +553,18 @@ export const EDITING_OPERATIONS = Object.freeze([
 /** Operation metadata and IDs have a single source: the catalog above. */
 export type EditingOperationDefinition = (typeof EDITING_OPERATIONS)[number];
 type CapabilityValues<T> = T extends { readonly capabilityByInput: { readonly values: infer Values } } ? Values[keyof Values] : never;
+export const PAGE_NODE_NAME_CAPABILITY = "pages.name";
+type PageWriteOperation = Extract<EditingOperationDefinition, { id: "pages.apply" | "pages.save" }>;
+export type EditingDiscoveredOperation = EditingOperationDefinition | (PageWriteOperation & {
+  readonly capabilities: readonly [typeof PAGE_NODE_NAME_CAPABILITY];
+});
+/** Keep the original catalog as the wire contract for hosts that have not added name support. */
+export function withPageNodeNameCapability(operation: PageWriteOperation): EditingDiscoveredOperation {
+  const capabilities = [PAGE_NODE_NAME_CAPABILITY] as const;
+  return operation.id === "pages.apply"
+    ? { ...operation, capabilities, inputSchema: pageApplyInputSchema }
+    : { ...operation, capabilities };
+}
 export type EditingCapability = EditingOperationDefinition["capability"] | CapabilityValues<EditingOperationDefinition>;
 function operationCapabilities(operation: EditingOperationDefinition): readonly EditingCapability[] {
   if ("capabilityByInput" in operation) return [...new Set(Object.values(operation.capabilityByInput.values))];
@@ -490,10 +577,21 @@ export type PageEditingHostAdapter = {
   authenticate(request: Request): Promise<EditingActor | null>;
   /** Resolve permissions from the authenticated principal for each request. */
   authorize(actor: EditingActor, capability: EditingCapability, target: EditingAuthorizationScope): Promise<boolean>;
+  /** Enable only after this host can persist node names. Discovery still requires authorization for pages.edit. */
+  pageNodeNames?: boolean;
   /** Trusted host schemas needed for custom blocks, component instances and site-wide style tokens. */
   validationContext?(actor: EditingActor, target: EditingPageTarget): Promise<PageEditingValidationContext>;
   readPage(actor: EditingActor, target: EditingPageTarget): Promise<EditingPageSnapshot | null>;
+  /**
+   * ホストは不透明な許可をサーバーに保持し、認証主体、対象、文書版、styles/components/presentation/翻訳の版、期限、利用回数に結び付ける。
+   * URLには認証情報を置かず、プレビュー本体の取得時も許可を検証する。HTMLには PAGE_PREVIEW_INTENT_HEADERS を付ける。
+   */
+  createPagePreviewIntent?(actor: EditingActor, target: EditingPageTarget): Promise<EditingPagePreviewIntent | null>;
   savePage(actor: EditingActor, target: EditingPageTarget, expectedVersion: string, document: PageDocument): Promise<EditingPageSaveResult>;
+  /** Optional version history. The API independently requires pages.history.read for both methods. */
+  listPageHistory?(actor: EditingActor, target: EditingPageTarget, cursor?: string): Promise<unknown | null>;
+  /** Revision id is opaque and is sent in the POST body, never in the URL. */
+  readPageHistoryRevision?(actor: EditingActor, target: EditingPageTarget, id: string): Promise<unknown | null>;
   /** Optional atomic operation journal and document writer. Its versioned read includes the trusted validation context. */
   pageOperations?: EditingPageOperationStore;
   /** Return the host's trusted site metadata, including the allowed publication origins. */
@@ -538,9 +636,30 @@ export type PageEditingHostAdapter = {
   restoreAsset?(actor: EditingActor, request: { readonly siteId: string; readonly reference: AssetReference; readonly expectedVersion: string }): Promise<unknown>;
 };
 
-function response(value: unknown, status = 200): Response {
+function response(value: unknown, status = 200, headers?: Readonly<Record<string, string>>): Response {
   return new Response(JSON.stringify(value), { status, headers: {
-    "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8", "X-Content-Type-Options": "nosniff"
+    "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8", "X-Content-Type-Options": "nosniff", ...headers
+  } });
+}
+function versionEtag(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return `"niho-${btoa(binary).replace(/\+/gu, "-").replace(/\//gu, "_").replace(/=+$/u, "")}"`;
+}
+function matchesIfNoneMatch(header: string | null, etag: string): boolean {
+  if (!header || header.length > 4096) return false;
+  return header.trim() === "*" || header.split(",").some((candidate) => {
+    const tag = candidate.trim();
+    return tag === etag || tag === `W/${etag}`;
+  });
+}
+function versionedResponse(value: unknown, etag: string, vary = "Authorization, Cookie"): Response {
+  return response(value, 200, { "Cache-Control": "private, no-cache", ETag: etag, Vary: vary });
+}
+function notModified(etag: string, vary = "Authorization, Cookie"): Response {
+  return new Response(null, { status: 304, headers: {
+    "Cache-Control": "private, no-cache", ETag: etag, Vary: vary, "X-Content-Type-Options": "nosniff"
   } });
 }
 function fail(error: EditingApiErrorCode, status: number): Response { return response({ error }, status); }
@@ -588,7 +707,10 @@ function validOperationId(value: unknown): value is string { return typeof value
 function supportsOperation(adapter: PageEditingHostAdapter, operation: EditingOperationDefinition): boolean {
   const localization = editingLocalizationOperation(operation.id);
   if (localization) return typeof adapter.localization?.[localization.id] === "function";
+  if (operation.id === "pages.history") return typeof adapter.listPageHistory === "function";
+  if (operation.id === "pages.history-read") return typeof adapter.readPageHistoryRevision === "function";
   if (operation.id === "pages.apply") return typeof adapter.pageOperations?.transact === "function";
+  if (operation.id === "pages.preview-intent") return typeof adapter.createPagePreviewIntent === "function";
   if (operation.id === "pages.release-plan" || operation.id === "pages.release") return typeof adapter.releaseSite === "function" && typeof adapter.preparePageRelease === "function" && typeof adapter.publishPage === "function";
   if (operation.id === "pages.release-set-plan" || operation.id === "pages.release-set") return typeof adapter.releaseSite === "function" && typeof adapter.preparePageReleaseSet === "function" && typeof adapter.publishPageReleaseSet === "function";
   if (operation.id === "pages.release-set-status") return typeof adapter.readPageReleaseSetStatus === "function";
@@ -804,7 +926,7 @@ function editingApiBasePath(value: string | undefined): string {
   return basePath;
 }
 
-async function handlePageApply(store: EditingPageOperationStore, request: Request, actor: EditingActor, target: EditingPageTarget): Promise<Response> {
+async function handlePageApply(store: EditingPageOperationStore, pageNodeNames: boolean, request: Request, actor: EditingActor, target: EditingPageTarget): Promise<Response> {
   if (!actor.clientKind) return fail("host_contract_violation", 502);
   let body: Record<string, unknown> | null;
   try { body = await readBody(request); } catch { return fail("invalid_request", 400); }
@@ -821,6 +943,7 @@ async function handlePageApply(store: EditingPageOperationStore, request: Reques
       return response({ error: "validation_failed", index, reason }, 422);
     }
   }
+  if (!pageNodeNames && operations.some(pageOperationUsesNodeNames)) return fail("forbidden", 403);
   const dependencies: PageOperationVersions = Object.fromEntries(PAGE_OPERATION_VERSIONS.flatMap((key) => body[key] === undefined ? [] : [[key, body[key]]]));
   const input = { ...dependencies, baseVersion: body.baseVersion, operationId: body.operationId.toLowerCase(), operations };
   const dryRun = body.dryRun === true;
@@ -837,7 +960,20 @@ async function handlePageApply(store: EditingPageOperationStore, request: Reques
   switch (result.status) {
     case "not_found": return fail("not_found", 404);
     case "host_contract_violation": return fail("host_contract_violation", 502);
-    case "conflict": return fail("version_conflict", 409);
+    case "conflict": {
+      if (result.unmetPreconditions === undefined) return fail("version_conflict", 409);
+      const allowed = ["rebase_supported", "preconditions", "node_exists", "parent_id", "old_value", "child_path"];
+      if (!Array.isArray(result.unmetPreconditions) || !result.unmetPreconditions.length || result.unmetPreconditions.length > operations.length * 2) return fail("host_contract_violation", 502);
+      const seen = new Set<string>();
+      for (const item of result.unmetPreconditions) {
+        if (!item || typeof item !== "object" || Array.isArray(item) || !exactKeys(item as Record<string, unknown>, ["index", "condition"])
+          || !Number.isSafeInteger(item.index) || item.index < 0 || item.index >= operations.length || !allowed.includes(item.condition)) return fail("host_contract_violation", 502);
+        const key = `${item.index}:${item.condition}`;
+        if (seen.has(key)) return fail("host_contract_violation", 502);
+        seen.add(key);
+      }
+      return response({ error: "version_conflict", unmetPreconditions: result.unmetPreconditions }, 409);
+    }
     case "duplicate_operation": return fail("duplicate_operation", 409);
     case "validation_failed":
       if (!Number.isSafeInteger(result.index) || result.index < 0 || result.index >= operations.length || typeof result.reason !== "string") return fail("host_contract_violation", 502);
@@ -931,13 +1067,14 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       catch { return fail("host_failure", 503); }
       if (!actor) return fail("authentication_required", 401);
       if (!validActor(actor)) return fail("host_contract_violation", 502);
-      const operations = [];
+      const operations: EditingDiscoveredOperation[] = [];
       for (const operation of EDITING_OPERATIONS) {
         if (!supportsOperation(adapter, operation)) continue;
         try {
           for (const capability of operationCapabilities(operation)) {
             if (await adapter.authorize(actor, capability, { siteId }) === true) {
-              operations.push(operation);
+              operations.push(adapter.pageNodeNames === true && (operation.id === "pages.apply" || operation.id === "pages.save")
+                ? withPageNodeNameCapability(operation) : operation);
               break;
             }
           }
@@ -1433,7 +1570,9 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
         if (!validVersion(catalog.version) || !Array.isArray(catalog.pages) || catalog.pages.length > 500) return fail("host_contract_violation", 502);
         const pages = catalog.pages.map((page) => catalogPage(page, siteId));
         if (pages.some((page) => page === null) || new Set(pages.map((page) => page && `${page.pageId}\u0000${page.locale}`)).size !== pages.length) return fail("host_contract_violation", 502);
-        return response({ version: catalog.version, pages });
+        const etag = versionEtag(catalog.version);
+        if (matchesIfNoneMatch(request.headers.get("If-None-Match"), etag)) return notModified(etag);
+        return versionedResponse({ version: catalog.version, pages }, etag);
       }
 
       let body: Record<string, unknown> | null;
@@ -1487,7 +1626,7 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       if (!matches) return fail("host_contract_violation", 502);
       return response({ status: "applied", operationId: applied.operationId, page });
     }
-    const match = new RegExp(`^${basePath}/sites/([^/]+)/operations/(pages\\.(?:read|inspect|save|apply|release-plan|release))/([^/]+)$`, "u").exec(url.pathname);
+    const match = new RegExp(`^${basePath}/sites/([^/]+)/operations/(pages\\.(?:read|history|history-read|inspect|save|apply|preview-intent|release-plan|release))/([^/]+)$`, "u").exec(url.pathname);
     if (!match) return fail("not_found", 404);
     let siteId: string, pageId: string, locale: string;
     try {
@@ -1498,8 +1637,9 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
     const target = pageTarget(siteId, pageId, locale);
     if (!target) return fail("invalid_request", 400);
     const operation = EDITING_OPERATIONS.find((item) => item.id === match[2]);
-    if (!operation || operation.id === "pages.apply" && !supportsOperation(adapter, operation)) return fail("not_found", 404);
+    if (!operation || ["pages.apply", "pages.history", "pages.history-read", "pages.preview-intent"].includes(operation.id) && !supportsOperation(adapter, operation)) return fail("not_found", 404);
     let inspectQuery: PageInspectQuery | null = null;
+    let historyCursor: string | undefined;
     if (operation.id === "pages.inspect") {
       const input: Record<string, unknown> = {};
       let repeated = false;
@@ -1510,6 +1650,14 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       });
       inspectQuery = repeated ? null : parsePageInspectQuery(input);
       if (!inspectQuery) return fail("invalid_request", 400);
+    } else if (operation.id === "pages.history") {
+      let repeated = false;
+      url.searchParams.forEach((value, key) => {
+        if (key === "locale") return;
+        if (key !== "cursor" || historyCursor !== undefined || !value || value.length > 500 || /[\u0000-\u001f\u007f]/u.test(value)) repeated = true;
+        else historyCursor = value;
+      });
+      if (repeated) return fail("invalid_request", 400);
     } else if (url.searchParams.size !== 1) return fail("invalid_request", 400);
     if (request.method !== operation.method) return fail("method_not_allowed", 405);
     let actor: EditingActor | null;
@@ -1521,22 +1669,86 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
     try { allowed = await adapter.authorize(actor, operation.capability, target) === true; }
     catch { return fail("host_failure", 503); }
     if (!allowed) return fail("forbidden", 403);
-    if (operation.id === "pages.apply") return handlePageApply(adapter.pageOperations!, request, actor, target);
+    if (operation.id === "pages.history") {
+      if (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length"))) return fail("invalid_request", 400);
+      let raw: unknown;
+      try { raw = await adapter.listPageHistory!(actor, target, historyCursor); }
+      catch { return fail("host_failure", 503); }
+      if (raw === null) return fail("not_found", 404);
+      let page;
+      try { page = parseRevisionPage(raw); }
+      catch { return fail("host_contract_violation", 502); }
+      const serialized = JSON.stringify(page);
+      if (new TextEncoder().encode(serialized).byteLength > 512 * 1024) return fail("host_contract_violation", 502);
+      return response(page);
+    }
+    if (operation.id === "pages.history-read") {
+      let body: Record<string, unknown> | null;
+      try { body = await readBody(request, 8 * 1024); }
+      catch { return fail("invalid_request", 400); }
+      if (!body || !exactKeys(body, ["id"]) || typeof body.id !== "string" || !body.id.length || body.id.length > 200 || /[\u0000-\u001f\u007f]/u.test(body.id)) return fail("invalid_request", 400);
+      let raw: unknown;
+      try { raw = await adapter.readPageHistoryRevision!(actor, target, body.id); }
+      catch { return fail("host_failure", 503); }
+      if (raw === null) return fail("not_found", 404);
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) return fail("host_contract_violation", 502);
+      const history = raw as Record<string, unknown>;
+      if (![Object.prototype, null].includes(Object.getPrototypeOf(history)) || !Object.hasOwn(history, "document")
+        || Object.keys(history).some((key) => !["document", "siteStyles", "presentation"].includes(key))) return fail("host_contract_violation", 502);
+      let siteStyles: SiteStyles | undefined;
+      let presentation: unknown;
+      try {
+        if (history.siteStyles !== undefined) siteStyles = parseSiteStyles(history.siteStyles as SiteStyles);
+      } catch { return fail("host_contract_violation", 502); }
+      let context: PageEditingValidationContext;
+      try { context = await documentContext(adapter, actor, target); }
+      catch { return fail("host_failure", 503); }
+      let document: PageDocument;
+      try { document = validatedDocument(history.document, siteStyles === undefined ? context : { ...context, siteStyles }); }
+      catch { return fail("host_contract_violation", 502); }
+      if (document.siteId !== target.siteId || document.pageId !== target.pageId || document.locale !== target.locale) return fail("host_contract_violation", 502);
+      try {
+        if (history.presentation !== undefined) presentation = parseSitePresentation(history.presentation, document, context.blocks);
+      } catch { return fail("host_contract_violation", 502); }
+      const result = { document, ...(siteStyles === undefined ? {} : { siteStyles }), ...(presentation === undefined ? {} : { presentation }) };
+      if (new TextEncoder().encode(JSON.stringify(result)).byteLength > 4 * 1024 * 1024) return fail("host_contract_violation", 502);
+      return response(result);
+    }
+    if (operation.id === "pages.apply") return handlePageApply(adapter.pageOperations!, adapter.pageNodeNames === true, request, actor, target);
+    if (operation.id === "pages.preview-intent") {
+      let body: Record<string, unknown> | null;
+      try { body = await readBody(request, 128); } catch { return fail("invalid_request", 400); }
+      if (!body || Object.keys(body).length !== 0) return fail("invalid_request", 400);
+      let raw: EditingPagePreviewIntent | null;
+      try { raw = await adapter.createPagePreviewIntent!(actor, target); }
+      catch { return fail("host_failure", 503); }
+      if (raw === null) return fail("not_found", 404);
+      const intent = parsePagePreviewIntent(raw, url.origin);
+      if (!intent) return fail("host_contract_violation", 502);
+      return response(intent, 200, PAGE_PREVIEW_INTENT_HEADERS);
+    }
     if (operation.id === "pages.read" || operation.id === "pages.inspect") {
       if (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length"))) return fail("invalid_request", 400);
       let snapshot: EditingPageSnapshot | null;
       try { snapshot = await adapter.readPage(actor, target); }
       catch { return fail("host_failure", 503); }
       if (!snapshot) return fail("not_found", 404);
+      if (!validVersion(snapshot.version)) return fail("host_contract_violation", 502);
+      const dependencies = Object.fromEntries(PAGE_OPERATION_VERSIONS.flatMap((key) => snapshot[key] === undefined ? [] : [[key, snapshot[key]]]));
+      if (Object.values(dependencies).some((value) => !validVersion(value))) return fail("host_contract_violation", 502);
+      const editorSnapshotRequest = operation.id === "pages.read" && request.headers.get("Accept") === EDITING_EDITOR_SNAPSHOT_ACCEPT;
+      const readEtag = operation.id === "pages.read"
+        ? versionEtag(JSON.stringify([target.siteId, target.pageId, target.locale, snapshot.version, PAGE_OPERATION_VERSIONS.map((key) => snapshot[key] ?? null), editorSnapshotRequest]))
+        : null;
+      const readVary = "Authorization, Cookie, Accept";
+      if (readEtag && matchesIfNoneMatch(request.headers.get("If-None-Match"), readEtag)) return notModified(readEtag, readVary);
       let context: PageEditingValidationContext;
       try { context = await documentContext(adapter, actor, target); }
       catch { return fail("host_failure", 503); }
       let document: PageDocument;
       try { document = validatedDocument(snapshot.document, context); }
       catch { return fail("host_contract_violation", 502); }
-      if (document.siteId !== target.siteId || document.pageId !== target.pageId || document.locale !== target.locale || !validVersion(snapshot.version)) return fail("host_contract_violation", 502);
-      const dependencies = Object.fromEntries(PAGE_OPERATION_VERSIONS.flatMap((key) => snapshot[key] === undefined ? [] : [[key, snapshot[key]]]));
-      if (Object.values(dependencies).some((value) => !validVersion(value))) return fail("host_contract_violation", 502);
+      if (document.siteId !== target.siteId || document.pageId !== target.pageId || document.locale !== target.locale) return fail("host_contract_violation", 502);
       if (operation.id === "pages.inspect") {
         let inspected: Record<string, unknown>;
         try {
@@ -1556,7 +1768,16 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
         if (new TextEncoder().encode(JSON.stringify(result)).byteLength > PAGE_INSPECT_LIMITS.maxResultBytes + 1024) return fail("result_too_large", 413);
         return response(result);
       }
-      return response({ document, version: snapshot.version, ...dependencies });
+      let editorSnapshot: Pick<EditingPageSnapshot, "editorState" | "presentation"> = {};
+      if (editorSnapshotRequest && (snapshot.editorState !== undefined || snapshot.presentation !== undefined)) {
+        try {
+          const editorState = snapshot.editorState === undefined ? undefined : parseEditingPageEditorState(snapshot.editorState);
+          const presentation = parseEditingPagePresentation(snapshot.presentation, snapshot.presentationVersion, document, context.blocks);
+          editorSnapshot = { ...(editorState ? { editorState } : {}), ...(presentation ? { presentation } : {}) };
+        } catch { return fail("host_contract_violation", 502); }
+      }
+      const result = { document, version: snapshot.version, ...dependencies, ...editorSnapshot };
+      return readEtag ? versionedResponse(result, readEtag, readVary) : response(result);
     }
     if (operation.id === "pages.release-plan") {
       let body: Record<string, unknown> | null;
@@ -1602,6 +1823,7 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
     try { document = validatedDocument(body.document, context); }
     catch { return fail("invalid_request", 400); }
     if (document.siteId !== target.siteId || document.pageId !== target.pageId || document.locale !== target.locale) return fail("invalid_request", 400);
+    if (adapter.pageNodeNames !== true && pageNodesHaveNames(document.body)) return fail("forbidden", 403);
     let result: EditingPageSaveResult;
     try { result = await adapter.savePage(actor, target, body.expectedVersion, document); }
     catch { return fail("host_failure", 503); }

@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { findLayer } from "./editor-layer-fixtures.mjs";
 import { JSDOM } from "jsdom";
 import { createMemoryPageOperationHost } from "../examples/memory-page-operation-host.mjs";
 import { createPageEditingApi } from "@niho/web/editing-api";
 import { createPageEditingApiClient } from "@niho/web/editing-client";
 import { editDocumentById } from "@niho/web/editor-model";
 import { createBlankEmbedRegistry, pageScope, parsePageDocument } from "@niho/web/core";
+import { editorShortcuts } from "../dist/editor-shortcuts.js";
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: "https://editor.example.test" });
 for (const key of ["window", "document", "HTMLElement", "HTMLInputElement", "Element", "Event", "MouseEvent"]) globalThis[key] = dom.window[key];
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -28,7 +30,10 @@ const flush = () => act(async () => { await new Promise((resolve) => setTimeout(
 const button = (text) => [...document.querySelectorAll("button")].find((node) => node.textContent === text || node.getAttribute("aria-label") === text);
 const input = (text) => [...document.querySelectorAll("label")].find((node) => node.querySelector("span")?.textContent === text)?.querySelector("input,textarea,select");
 async function click(text) { const target = button(text); assert.ok(target, text); await act(async () => target.click()); await flush(); }
-async function clickLayer(nodeId) { const target = document.querySelector(`[data-node-id="${nodeId}"] button.e-layer`); assert.ok(target, nodeId); await act(async () => target.click()); await flush(); }
+async function layerById(nodeId) {
+  return findLayer(() => document.querySelector(`[data-node-id="${nodeId}"] button.e-layer`), async (toggle) => { await act(async () => toggle.click()); await flush(); });
+}
+async function clickLayer(nodeId) { const target = await layerById(nodeId); assert.ok(target, nodeId); await act(async () => target.click()); await flush(); }
 async function editorTab(name) { const target = [...document.querySelectorAll('.e-inspector-tabs [role="tab"]')].find((node) => node.textContent === name); assert.ok(target, name); if (target.getAttribute("aria-selected") !== "true") await act(async () => target.click()); await flush(); }
 /** ブラウザの再読込と同じく、エディタを開き直して保存済みの文書を読み直す。 */
 let reloadEditor = async () => {};
@@ -68,6 +73,22 @@ async function setup(options = {}) {
   await render(); reloadEditor = render;
   return { calls, adapter, root, stored: () => stored, cleanup: async () => { await act(async () => root.unmount()); container.remove(); } };
 }
+
+test("page rows prefetch on focus and the matching snapshot serves the page switch", async () => {
+  const prefetches = [];
+  const app = await setup({ adapter: { prefetchDocument: async (target) => {
+    prefetches.push(structuredClone(target));
+    return { document: { ...structuredClone(fixture), ...target }, version: `prefetched-${target.pageId}` };
+  } } });
+  try {
+    const other = pageRow("別ページ"); assert.ok(other);
+    await act(async () => other.focus()); await flush();
+    assert.deepEqual(prefetches, [{ siteId: "demo", pageId: "other", locale: "ja-JP" }]);
+    await clickPage("別ページ");
+    assert.equal(app.calls.reads.filter(({ pageId }) => pageId === "other").length, 0, "ページ切替は先読みしたsnapshotを使う");
+    assert.equal(document.querySelector(".e-page[aria-current='page'] .e-page-name")?.textContent, "別ページ");
+  } finally { await app.cleanup(); }
+});
 
 test("responsive proposal control is absent without the optional host adapter", async () => {
   const absent = await setup();
@@ -115,6 +136,30 @@ test("initialTarget opens the requested page and falls back when the page is abs
   const absent = await setup({ props: { initialTarget: { siteId: "demo", pageId: "missing", locale: "ja-JP" } } });
   try { assert.deepEqual(absent.calls.reads, [{ siteId: "demo", pageId: "home", locale: "ja-JP" }]); }
   finally { await absent.cleanup(); }
+});
+
+test("performance measurements finish after the canvas is ready and a draft is acknowledged", async () => {
+  const events = [];
+  const saved = Promise.withResolvers();
+  const app = await setup({
+    props: { measurePerformance: (operation) => {
+      events.push(["begin", operation]);
+      return () => events.push(["finish", operation]);
+    } },
+    save: () => saved.promise
+  });
+  try {
+    assert.deepEqual(events, [["begin", "initial-load"], ["finish", "initial-load"]]);
+    await clickPage("別ページ");
+    const frame = document.querySelector("iframe");
+    await act(async () => frame.dispatchEvent(new dom.window.Event("load")));
+    assert.deepEqual(events.slice(2), [["begin", "page-switch"], ["finish", "page-switch"]]);
+    await change(input("ページタイトル"), "保存の計測");
+    await click("下書き保存");
+    assert.deepEqual(events.at(-1), ["begin", "save"]);
+    await act(async () => saved.resolve({ status: "saved", version: "v2", revision: fixture.revision + 1 }));
+    assert.deepEqual(events.slice(4), [["begin", "save"], ["finish", "save"]]);
+  } finally { await app.cleanup(); }
 });
 
 test("form completion inspector filters candidates, shows loading and unresolved IDs, and saves only an eligible page ID", async () => {
@@ -639,7 +684,7 @@ test("read-only documents stay selectable and navigable but block every document
     const canonical = [...document.querySelectorAll("a")].find((node) => node.textContent === "業務原稿を編集"); assert.equal(canonical?.getAttribute("href"), readOnly.editUrl);
     assert.equal(input("ページタイトル").disabled, true); assert.equal(button("下書き保存").disabled, true); assert.equal(button("公開").disabled, true);
     const openTool = async (name) => { const target = [...document.querySelectorAll(".e-tools button")].find((node) => node.querySelector("small")?.textContent === name); assert.ok(target); await act(async () => target.click()); await flush(); };
-    await openTool("レイヤー"); const heading = document.querySelector('[data-node-id="heading"] button.e-layer'); assert.equal(heading.disabled, false); await act(async () => heading.click()); await flush(); assert.equal(input("テキスト").disabled, true);
+    await openTool("レイヤー"); const heading = await layerById("heading"); assert.equal(heading.disabled, false); await act(async () => heading.click()); await flush(); assert.equal(input("テキスト").disabled, true);
     await openTool("ページ"); assert.equal(document.querySelector('button[aria-label="ページを追加"]').disabled, true); assert.equal(document.querySelector('button[aria-label="ホーム の操作"]').disabled, true);
     await click("履歴"); await act(async () => [...document.querySelectorAll("button")].find((node) => node.textContent.includes("2026/10/21"))?.click()); await flush();
     assert.equal(button("この版を復元").disabled, true); assert.ok(document.body.textContent.includes(readOnly.reason));
@@ -1222,7 +1267,8 @@ test("release confirmation shows the public URL and the search result informatio
   } finally { await app.cleanup(); }
 });
 
-const assetPanel = () => document.querySelector('[aria-label="アセットライブラリ"]');
+const mountedAssetPanel = () => document.querySelector('[aria-label="アセットライブラリ"]');
+const assetPanel = () => { const panel = mountedAssetPanel(); return panel && !panel.closest("[hidden]") ? panel : null; };
 async function tool(name) { const label = name === "アセット" && !document.querySelector('.e-tools button[title="アセット"]') ? "アップロード" : name; const target = document.querySelector(`.e-tools button[title="${label}"]`); assert.ok(target, label); await act(async () => target.click()); await flush(); }
 const assetCard = (name) => [...(assetPanel()?.querySelectorAll(".e-asset-card") ?? [])].find((node) => node.getAttribute("aria-label").startsWith(`${name}（`));
 const settle = async () => { await flush(); await flush(); };
@@ -1245,6 +1291,171 @@ async function shortcut(target, key, modifiers = {}, focus = true) {
   await act(async () => { if (focus) target.focus(); target.dispatchEvent(event); }); await settle();
   return event.defaultPrevented;
 }
+const commandDialog = () => document.querySelector('[role="dialog"][aria-label="コマンドパレット"]');
+const canvasOrder = (id) => [...canvasNode(id).children].map((node) => node.dataset.nwNode);
+async function dragEvent(target, type, dataTransfer, options = {}) {
+  const event = new target.ownerDocument.defaultView.MouseEvent(type, { bubbles: true, cancelable: true, ...options });
+  Object.defineProperty(event, "dataTransfer", { value: dataTransfer });
+  await act(async () => target.dispatchEvent(event));
+  await settle();
+}
+async function pointer(target, type, clientY) {
+  const event = new target.ownerDocument.defaultView.MouseEvent(type, { bubbles: true, cancelable: true, clientY });
+  Object.defineProperty(event, "pointerId", { value: 1 });
+  await act(async () => target.dispatchEvent(event));
+  await settle();
+}
+
+test("canvas arrows reorder siblings in one history step while layer arrows move focus", async () => {
+  const app = await setup();
+  try {
+    await tool("レイヤー"); await clickLayer("lead");
+    assert.ok(await shortcut(layerButton("lead"), "ArrowUp"));
+    assert.equal(document.activeElement, layerButton("heading"));
+    assert.deepEqual(canvasOrder("hero"), ["heading", "lead", "link"]);
+    assert.ok(await shortcut(canvasBody(), "ArrowUp"));
+    assert.deepEqual(canvasOrder("hero"), ["lead", "heading", "link"]);
+    assert.ok(await shortcut(canvasBody(), "z", { metaKey: true }));
+    assert.deepEqual(canvasOrder("hero"), ["heading", "lead", "link"]);
+    assert.equal(button("元に戻す").disabled, true);
+    assert.ok(await shortcut(canvasBody(), "ArrowDown"));
+    assert.deepEqual(canvasOrder("hero"), ["heading", "link", "lead"]);
+    assert.ok(await shortcut(canvasBody(), "z", { metaKey: true }));
+    assert.deepEqual(canvasOrder("hero"), ["heading", "lead", "link"]);
+  } finally { await app.cleanup(); }
+});
+
+test("Alt-drag duplicates and moves to another parent in one undo step", async () => {
+  const page = structuredClone(fixture);
+  page.body.push({ id: "destination", type: "element", tag: "section", children: [] });
+  const app = await setup({ document: page });
+  try {
+    await clickCanvas("heading");
+    const transfer = { setData() {} }, destination = canvasNode("destination");
+    destination.getBoundingClientRect = () => ({ left: 0, top: 0, bottom: 100, width: 100, height: 100 });
+    await dragEvent(canvasNode("heading"), "dragstart", transfer, { altKey: true });
+    await dragEvent(destination, "dragover", transfer, { clientY: 50 });
+    assert.equal(transfer.dropEffect, "copy");
+    assert.equal(canvasNode("heading_copy1"), null);
+    await dragEvent(destination, "drop", transfer, { clientY: 50 });
+    assert.deepEqual(canvasOrder("hero"), ["heading", "lead", "link"]);
+    assert.deepEqual(canvasOrder("destination"), ["heading_copy1"]);
+    await click("元に戻す");
+    assert.deepEqual(canvasOrder("destination"), []);
+    assert.deepEqual(canvasOrder("hero"), ["heading", "lead", "link"]);
+    assert.equal(button("元に戻す").disabled, true);
+    await click("やり直す");
+    assert.deepEqual(canvasOrder("destination"), ["heading_copy1"]);
+  } finally { await app.cleanup(); }
+});
+
+test("spacing handles preview without history and commit only to the selected breakpoint", async () => {
+  const app = await setup();
+  try {
+    await clickCanvas("hero"); await editorTab("ボックス"); await click("タブレット 768px〜");
+    const canvas = canvasBody(), handle = (property) => canvas.querySelector(`[data-spacing="${property}"]`);
+    const hero = canvasNode("hero"), originalStyle = hero.getAttribute("style");
+    assert.ok(handle("paddingTop")); assert.ok(handle("gap"));
+    await pointer(handle("paddingTop"), "pointerdown", 20);
+    await pointer(handle("paddingTop"), "pointermove", 42);
+    const preview = Number.parseFloat(hero.style.paddingTop);
+    assert.ok(preview > 0);
+    assert.equal(button("元に戻す").disabled, true);
+    await pointer(handle("paddingTop"), "pointercancel", 42);
+    assert.equal(hero.getAttribute("style"), originalStyle);
+    await pointer(handle("paddingTop"), "pointerdown", 20);
+    await pointer(handle("paddingTop"), "pointermove", 42);
+    await pointer(handle("paddingTop"), "pointerup", 42);
+    await click("下書き保存");
+    const lastStyle = () => app.calls.saves.at(-1).document.body[0].style;
+    assert.equal(lastStyle().base.paddingTop, undefined);
+    assert.equal(lastStyle().responsive.find((entry) => entry.minWidth === 768).declarations.paddingTop, preview);
+    await click("元に戻す");
+    assert.equal(button("元に戻す").disabled, true);
+    await pointer(handle("gap"), "pointerdown", 20);
+    await pointer(handle("gap"), "pointermove", 30);
+    await pointer(handle("gap"), "pointerup", 30);
+    await click("下書き保存");
+    assert.equal(lastStyle().base.gap, 16);
+    const tablet = lastStyle().responsive.find((entry) => entry.minWidth === 768).declarations;
+    assert.equal(tablet.gap, 26);
+    assert.equal(tablet.paddingTop, undefined);
+    await click("元に戻す");
+    assert.equal(button("元に戻す").disabled, true);
+  } finally { await app.cleanup(); }
+});
+
+test("spacing handles hide percent-based gaps instead of treating percentages as pixels", async () => {
+  const page = structuredClone(fixture);
+  page.body[0].style = { ...page.body[0].style, base: { ...page.body[0].style.base, display: "flex", gap: "10%" } };
+  const app = await setup({ document: page });
+  try {
+    await clickCanvas("hero"); await editorTab("ボックス");
+    const hero = canvasNode("hero"), computed = hero.ownerDocument.defaultView.getComputedStyle(hero);
+    assert.equal(computed.gap, "10%");
+    assert.equal(canvasBody().querySelector('[data-spacing="gap"]'), null);
+  } finally { await app.cleanup(); }
+});
+
+test("spacing handles hide breakpoint properties protected by a specific style lock", async () => {
+  const app = await setup({ locks: [{ nodeId: "hero", fields: ["style.responsive.paddingTop"], reason: "Tablet padding is host-managed" }] });
+  try {
+    await clickCanvas("hero"); await editorTab("ボックス"); await click("タブレット 768px〜");
+    const canvas = canvasBody();
+    assert.equal(canvas.querySelector('[data-spacing="paddingTop"]'), null);
+    assert.ok(canvas.querySelector('[data-spacing="paddingRight"]'));
+  } finally { await app.cleanup(); }
+});
+
+test("command palette searches layer names, full text and commands and guards unsaved navigation", async () => {
+  const page = structuredClone(fixture);
+  page.body[0].children[0].name = "メインタイトル";
+  const app = await setup({ document: page });
+  try {
+    const search = () => commandDialog().querySelector('input[type="search"]');
+    assert.ok(await shortcut(canvasBody(), "k", { metaKey: true }));
+    assert.equal(document.activeElement, search());
+    await change(search(), "メインタイトル");
+    assert.ok(await shortcut(search(), "Enter"));
+    assert.equal(commandDialog(), null);
+    await click("コマンドパレット");
+    await change(search(), "海のそばで過ごす");
+    assert.match(commandDialog().querySelector('[aria-label="要素"]').textContent, /メインタイトル/u);
+    assert.ok(await shortcut(search(), "Enter"));
+    await click("コマンドパレット"); await change(search(), "複製");
+    assert.match(commandDialog().querySelector("kbd").textContent, /⌘D/u);
+    assert.ok(await shortcut(search(), "Enter"));
+    assert.ok(canvasNode("heading_copy1"));
+    await click("コマンドパレット"); await change(search(), "別ページ");
+    assert.ok(await shortcut(search(), "Enter"));
+    assert.ok(document.querySelector('[role="dialog"][aria-label="未保存の変更"]'));
+    assert.equal(app.calls.reads.length, 1);
+    await click("変更を破棄して移動");
+    assert.equal(app.calls.reads.at(-1).pageId, "other");
+  } finally { await app.cleanup(); }
+});
+
+test("locked and read-only values reject direct manipulation and palette edits", async () => {
+  const cases = [{ locks: [{ nodeId: "hero", fields: ["*"], reason: "ホスト管理" }] }, { readOnly: { reason: "読み取り専用ページ" } }];
+  for (const options of cases) {
+    const app = await setup(options);
+    try {
+      await clickCanvas("lead");
+      assert.equal(await shortcut(canvasBody(), "ArrowUp"), false);
+      assert.deepEqual(canvasOrder("hero"), ["heading", "lead", "link"]);
+      assert.equal(canvasBody().querySelector(".nw-spacing-handle"), null);
+      const transfer = { setData() {} };
+      await dragEvent(canvasNode("lead"), "dragstart", transfer, { altKey: true });
+      await dragEvent(canvasNode("link"), "drop", transfer, { altKey: true });
+      assert.equal(canvasNode("lead_copy1"), null);
+      await click("コマンドパレット");
+      const remove = [...commandDialog().querySelectorAll('section[aria-label="操作"] button')].find((item) => item.textContent.startsWith("削除"));
+      assert.equal(remove.disabled, true);
+      assert.ok(commandDialog().querySelector('section[aria-label="ページ"] button'));
+      assert.equal(button("元に戻す").disabled, true);
+    } finally { await app.cleanup(); }
+  }
+});
 
 test("shortcut matrix shares structure and history across parent, iframe and layer focus", async () => {
   const app = await setup();
@@ -1276,6 +1487,28 @@ test("shortcut matrix shares structure and history across parent, iframe and lay
   } finally { await app.cleanup(); }
 });
 
+test("box grouping confirms layout changes and stays undoable and redoable", async () => {
+  const app = await setup();
+  try {
+    await tool("レイヤー"); await clickLayer("link");
+    assert.ok(await shortcut(layerButton("link"), "g", { metaKey: true }));
+    assert.match(document.querySelector('[role="dialog"]').textContent, /並び方や余白が変わる/u);
+    await click("適用する");
+    assert.ok(canvasNode("group_1"));
+    assert.equal(canvasNode("link").parentElement.closest('[data-nw-node="group_1"]')?.getAttribute("data-nw-node"), "group_1");
+    await click("元に戻す"); assert.equal(!!canvasNode("group_1"), false); assert.ok(canvasNode("link"));
+    await click("やり直す"); assert.ok(canvasNode("group_1"));
+
+    await clickLayer("group_1");
+    assert.ok(await shortcut(layerButton("group_1"), "g", { metaKey: true, shiftKey: true }));
+    assert.match(document.querySelector('[role="dialog"]').textContent, /並び方や余白が変わる/u);
+    await click("適用する");
+    assert.equal(!!canvasNode("group_1"), false); assert.ok(canvasNode("link"));
+    await click("元に戻す"); assert.ok(canvasNode("group_1"));
+    await click("やり直す"); assert.equal(!!canvasNode("group_1"), false);
+  } finally { await app.cleanup(); }
+});
+
 test("shortcut matrix preserves focused fields, direct editing, IME and dialog controls", async () => {
   const app = await setup();
   try {
@@ -1290,6 +1523,8 @@ test("shortcut matrix preserves focused fields, direct editing, IME and dialog c
       assert.equal(await shortcut(target, "d", { ctrlKey: true }), false);
       assert.equal(await shortcut(target, "Delete"), false);
       assert.equal(await shortcut(target, "?", { shiftKey: true }), false);
+      assert.equal(await shortcut(target, "ArrowDown"), false);
+      assert.equal(await shortcut(target, "k", { metaKey: true }), false);
     }
     editable.remove();
     assert.ok(canvasNode("heading")); assert.equal(canvasNode("heading_copy1"), null);
@@ -1314,7 +1549,8 @@ test("shortcut matrix preserves focused fields, direct editing, IME and dialog c
     assert.equal(layerButton("heading").getAttribute("aria-selected"), "true", "Esc cancels text before navigating");
     assert.ok(await shortcut(canvasBody(), "?", { shiftKey: true }));
     const help = document.querySelector('[role="dialog"][aria-label="ショートカット一覧"]'), close = help.querySelector("button");
-    assert.equal(help.querySelectorAll("tbody tr").length, 10);
+    assert.equal(help.querySelectorAll("tbody tr").length, editorShortcuts.length);
+    assert.deepEqual([...help.querySelectorAll("tbody kbd")].map((element) => element.textContent), editorShortcuts.map(({ keyLabel }) => keyLabel));
     assert.equal(document.activeElement, close);
     assert.equal(await shortcut(close, "Delete"), false);
     assert.equal(await shortcut(canvasBody(), "Delete", {}, false), false);
@@ -1451,6 +1687,26 @@ test("failed asset preview resolution can be retried", async () => {
   } finally { await app.cleanup(); }
 });
 
+test("asset resolution revalidates on new references and before release, not when opening the library", async () => {
+  const extra = { ...garden, id: "extra", name: "別の庭.png", src: "/media/extra.png", thumbnailUrl: "/media/extra.png" };
+  const library = createMemoryAssetLibrary({ siteId: "demo", seed: [garden, extra] });
+  const resolutions = [];
+  const assets = { ...library, resolveAssets: async (request, signal) => { resolutions.push(request.references); return library.resolveAssets(request, signal); } };
+  const app = await setup({ document: withImage({ asset: { provider: "uploads", id: "garden" }, attrs: { alt: "庭" } }), assets });
+  try {
+    await settle(); assert.equal(resolutions.length, 1);
+    await tool("アセット"); await settle(); assert.equal(resolutions.length, 1);
+    await chooseAsset("別の庭.png"); await click("ページに追加"); await settle();
+    assert.equal(resolutions.length, 2);
+    assert.deepEqual(resolutions.at(-1), [{ provider: "uploads", id: "extra" }]);
+    await click("下書き保存"); await settle();
+    await click("公開"); await settle();
+    assert.equal(resolutions.length, 3, "公開内容の確認前に参照済み素材を再検証する");
+    assert.deepEqual(resolutions.at(-1).map(({ id }) => id).sort(), ["extra", "garden"]);
+    await click("編集に戻る");
+  } finally { await app.cleanup(); }
+});
+
 test("changing the asset adapter does not retain the previous session's resolved image", async () => {
   const first = createMemoryAssetLibrary({ siteId: "demo", seed: [garden] });
   const second = createMemoryAssetLibrary({ siteId: "demo", seed: [{ ...garden, src: "/media/new-garden.png" }] });
@@ -1474,8 +1730,8 @@ test("staff upload an image, set its alt, replace a page image, save the draft a
   });
   app = await setup({ document: withImage(), assets: library });
   try {
-    assert.equal(assetPanel().closest("[hidden]") !== null, true);
-    await tool("アセット"); assert.equal(assetPanel().closest("[hidden]"), null);
+    assert.equal(assetPanel(), null, "閉じている間は AssetLibraryPanel をマウントしない");
+    await tool("アセット"); assert.ok(assetPanel()); assert.equal(assetPanel().closest("[hidden]"), null);
     assert.ok(assetCard("庭の緑.png").getAttribute("aria-label").startsWith("庭の緑.png（画像・600×400・2 KB"));
     assert.ok(assetCard("利用案内.pdf").getAttribute("aria-label").startsWith("利用案内.pdf（PDF・4 KB"));
     assert.ok(assetPanel().textContent.includes("ストレージ使用量 6 KB / 10 MB"));
@@ -1491,13 +1747,13 @@ test("staff upload an image, set its alt, replace a page image, save the draft a
     await click("画像を置き換え");
     assert.equal(assetPanel().closest("[hidden]"), null); assert.equal(assetPanel().querySelector("h2").textContent, "画像を選ぶ");
     assert.equal(await shortcut(assetPanel().querySelector("h2"), "Escape"), true);
-    assert.equal(assetPanel().closest("[hidden]") !== null, true);
+    assert.equal(assetPanel(), null);
     await click("画像を置き換え");
     assert.equal(assetCard("利用案内.pdf"), undefined);
     await chooseAsset("海辺の朝.png");
     assert.ok(document.body.textContent.includes("画像を置き換えました。代替テキストを確認してください。"));
     assert.equal(canvasNode("photo").getAttribute("src"), "/media/asset-1.png"); assert.equal(canvasNode("photo").getAttribute("alt"), "朝の海辺");
-    assert.equal(assetPanel().closest("[hidden]") !== null, true);
+    assert.equal(assetPanel(), null);
     await editorTab("画像"); assert.equal(input("画像の説明").value, "朝の海辺");
     await click("下書き保存");
     const saved = app.calls.saves[0].document.body[0].children.at(-1);
@@ -1526,7 +1782,7 @@ test("staff choose the page social cover from the library, save it as an asset r
     assert.equal(app.stored().meta, undefined); assert.equal(button("下書き保存").disabled, true);
     await chooseAsset("庭の緑.png");
     assert.ok(document.body.textContent.includes("ソーシャルカバーを設定しました。"));
-    assert.equal(assetPanel().closest("[hidden]") !== null, true);
+    assert.equal(assetPanel(), null);
     page = await panel("ページ");
     assert.equal(coverFrame(page).querySelector("img").getAttribute("src"), "/media/garden.png");
     assert.equal(coverFrame(page).getAttribute("aria-label"), "画像を変更"); assert.ok(coverRemove(page));
@@ -1557,7 +1813,7 @@ test("the site social cover is chosen from the library, saved with site settings
     await press(coverFrame(site));
     assert.equal(assetPanel().querySelector("h2").textContent, "ソーシャルカバーを選ぶ");
     await chooseAsset("庭の緑.png");
-    assert.equal(assetPanel().closest("[hidden]") !== null, true); assert.equal(button("下書き保存").disabled, true);
+    assert.equal(assetPanel(), null); assert.equal(button("下書き保存").disabled, true);
     assert.equal(coverFrame(site).querySelector("img").getAttribute("src"), "/media/garden.png");
     await press(buttonIn(site, "サイト設定を保存"));
     assert.deepEqual(host.calls.settingsSaves[0].settings, { title: "デモサイト", description: "サイトの説明", ogImage: { asset: { provider: "uploads", id: "garden" }, alt: "庭の緑" }, locale: "ja" });
@@ -1735,6 +1991,75 @@ test("upload, stock and connect tools scope their libraries while the image pick
   } finally { await app.cleanup(); }
 });
 
+test("asset panel reads only while open and reuses cached provider and list scopes", async () => {
+  const library = sourceLibrary({ stock: true });
+  let providerReads = 0;
+  const { calls, adapter } = spy({ ...library, listProviders: async (...args) => { providerReads++; return library.listProviders(...args); } });
+  const app = await setup({ document: withImage(), assets: adapter });
+  try {
+    assert.equal(assetPanel(), null);
+    assert.equal(providerReads, 0);
+    assert.equal(calls.lists.length, 0);
+
+    await tool("アップロード"); await settle();
+    assert.equal(providerReads, 1);
+    assert.equal(calls.lists.length, 1);
+    const afterUpload = calls.lists.length;
+
+    await tool("ストック"); await settle();
+    assert.equal(calls.lists.length, afterUpload + 1);
+    await tool("アップロード"); await settle();
+    assert.equal(calls.lists.length, afterUpload + 1, "同じ範囲へ戻ったときは一覧を再取得しない");
+    assert.deepEqual(cardNames(), ["庭の緑.png"]);
+    assert.equal(providerReads, 1, "非表示化して再表示しても出所一覧は一度だけ取得する");
+
+    await tool("レイヤー");
+    assert.equal(assetPanel(), null, "別パネルを表示している間は素材パネルを隠す");
+    assert.ok(mountedAssetPanel(), "初回表示後はアップロード状態を保つため素材パネルをマウントしたままにする");
+    await tool("アップロード"); await settle();
+    assert.equal(calls.lists.length, afterUpload + 1, "素材パネルを再度開いてもキャッシュ済み範囲を使う");
+    assert.equal(providerReads, 1);
+    assert.deepEqual(cardNames(), ["庭の緑.png"]);
+  } finally { await app.cleanup(); }
+});
+
+test("processing assets are fetched again when the asset panel is reopened", async () => {
+  const library = sourceLibrary(); let reads = 0;
+  const { adapter } = spy({ ...library, listAssets: async (query, signal) => {
+    reads++;
+    const result = await library.listAssets(query, signal);
+    return reads === 1 ? { ...result, assets: result.assets.map((asset) => ({ ...asset, status: "processing" })) } : result;
+  } });
+  const app = await setup({ document: withImage(), assets: adapter });
+  try {
+    await tool("アップロード"); await settle();
+    assert.equal(reads, 1);
+    await tool("レイヤー"); await tool("アップロード"); await settle();
+    assert.equal(reads, 2, "処理中の一覧はキャッシュせず再取得する");
+    assert.deepEqual(cardNames(), ["庭の緑.png"]);
+  } finally { await app.cleanup(); }
+});
+
+test("upload keeps running while the asset panel is hidden", async () => {
+  const library = sourceLibrary(); let resolveUpload; let uploadSignal;
+  const adapter = { ...library, uploadAsset: (request, signal) => new Promise((resolve) => {
+    uploadSignal = signal;
+    resolveUpload = async () => resolve(await library.uploadAsset(request, signal));
+  }) };
+  const app = await setup({ document: withImage(), assets: adapter });
+  try {
+    await tool("アップロード"); await settle();
+    await uploadFiles([png("継続.png", 10)]);
+    assert.ok(resolveUpload);
+    await tool("レイヤー");
+    assert.equal(uploadSignal.aborted, false, "パネル切り替えで進行中のアップロードを中断しない");
+    await act(async () => resolveUpload()); await settle();
+    assert.equal(uploadSignal.aborted, false);
+    await tool("アップロード"); await settle();
+    assert.ok(assetCard("継続.png"));
+  } finally { await app.cleanup(); }
+});
+
 test("provider scopes clear hidden folder filters and wait for the matching source", async () => {
   const { calls, adapter } = spy(sourceLibrary({ stock: true }));
   const app = await setup({ document: withImage(), assets: adapter });
@@ -1774,8 +2099,8 @@ test("CMS photos show their origin and terms read-only, without save, upload, fo
       "「体験写真」で管理しています", "「体験写真」のアセットはここでは削除できません。", "このページ: 0 か所"]) assert.ok(text.includes(expected), expected);
     await click("一覧に戻る"); await tool("アップロード"); await chooseAsset("庭の緑.png");
     assert.equal(input("名前").readOnly, false); assert.ok(button("変更を保存")); assert.ok(button("削除…")); assert.ok(input("保存先フォルダ"));
-    await click("一覧に戻る"); await tool("接続");
-    assert.equal(calls.lists.at(-1).provider, "experience"); assert.deepEqual(cardNames(), ["朝ヨガ.png"]);
+    await click("一覧に戻る"); const beforeConnect = calls.lists.length; await tool("接続");
+    assert.equal(calls.lists.length, beforeConnect, "接続タブへ戻ると取得済みの一覧を使う"); assert.deepEqual(cardNames(), ["朝ヨガ.png"]);
     assert.ok(!assetPanel().textContent.includes("NIHO の体験原稿で公開を許可された写真"), "一覧の上に出所の説明文を出さない");
     assert.equal(assetButton("アップロード"), undefined); assert.equal(button("フォルダを追加"), undefined); assert.equal(assetPanel().querySelector('select[aria-label="フォルダ"]'), null);
     assert.ok(!assetPanel().textContent.includes("このサイトにアセットを追加する権限がありません。"));
@@ -1899,7 +2224,10 @@ test("source listing failures and assets from undeclared or other sources fail c
     failing = false; await click("再読み込み"); assert.deepEqual(sourceTabs().map((node) => node.textContent), ["サイト"]); assert.deepEqual(cardNames(), ["庭の緑.png"]);
     mode = "unknown"; await tool("接続");
     assert.ok(assetPanel().textContent.includes("アセットを読み込めませんでした。出所が確認できないアセットは利用できません。")); assert.equal(assetPanel().querySelectorAll(".e-asset-card").length, 0);
-    mode = "mixed"; await tool("アップロード");
+    mode = "mixed";
+    const mixedAdapter = { ...adapter };
+    await act(async () => app.root.render(createElement(PageEditor, { adapter: app.adapter, assets: mixedAdapter }))); await flush();
+    await tool("アップロード");
     assert.ok(assetPanel().textContent.includes("出所が確認できないアセットは利用できません。")); assert.equal(assetPanel().querySelectorAll(".e-asset-card").length, 0);
     mode = "ok"; await click("再読み込み"); assert.deepEqual(cardNames(), ["庭の緑.png"]);
     mode = "upload"; await uploadFiles([png("混入.png", 10)]);
@@ -2121,9 +2449,10 @@ function historyHost(overrides = {}) {
   const calls = { lists: [], reads: [], snapshots: [] };
   const old = structuredClone(fixture); old.title = "以前のタイトル"; old.body[0].children[0].children[0].text = "以前の見出し";
   const entries = [
-    { id: "rev_3", revision: 3, kind: "autosave", createdAt: "2026-10-21T03:00:00.000Z", actor: "編集者A" },
+    { id: "rev_3", revision: 3, kind: "autosave", createdAt: "2026-10-21T03:00:00.000Z", actor: "編集AI", actorKind: "machine", delegatedBy: "編集者A",
+      operations: [{ type: "style", targetId: "hero", targetType: "element", targetTag: "section", field: "color" }] },
     { id: "rev_2", revision: 2, kind: "snapshot", createdAt: "2026-10-20T02:00:00.000Z", actor: "編集者B", label: "公開前の確認" },
-    { id: "rev_1", revision: 1, kind: "publish", createdAt: "2026-10-19T01:00:00.000Z", actor: "編集者A" }
+    { id: "rev_1", revision: 1, kind: "publish", createdAt: "2026-10-19T01:00:00.000Z", actor: "編集者A", ...(overrides.expiredSnapshot ? { snapshotAvailable: false } : {}) }
   ];
   const adapter = {
     listRevisions: async (request) => {
@@ -2148,10 +2477,11 @@ test("the version panel lists revisions, loads more, shows a revision read-only,
     assert.ok(document.querySelector('.e-left [aria-label="バージョン管理"]')); assert.ok(document.querySelector(".e-inspector-context"));
     assert.deepEqual(host.calls.lists[0], { target: homeTarget });
     assert.deepEqual(versionRows().map((row) => row.querySelector(".e-version-time").textContent), ["現在の編集内容", localTime(host.entries[0].createdAt), localTime(host.entries[1].createdAt)]);
-    assert.ok(versionRows()[1].textContent.includes("自動保存") && versionRows()[1].textContent.includes("編集者A"));
+    assert.ok(versionRows()[1].textContent.includes("自動保存") && versionRows()[1].textContent.includes("AI · 編集AI") && versionRows()[1].textContent.includes("委任元: 編集者A"));
+    assert.ok(versionRows()[1].textContent.includes("section#hero · 見た目: color"), "履歴は変更値を含めず、操作対象と種別を表示する");
     assert.ok(versionRows()[2].textContent.includes("スナップショット") && versionRows()[2].textContent.includes("公開前の確認"));
     await click("さらに表示"); assert.deepEqual(host.calls.lists[1], { target: homeTarget, cursor: "2" });
-    assert.equal(versionRows().length, 4); assert.ok(versionRows()[3].textContent.includes("公開")); assert.equal(button("さらに表示"), undefined);
+    assert.equal(versionRows().length, 4); assert.ok(versionRows()[3].textContent.includes("公開")); assert.equal(versionRows()[3].disabled, false); assert.equal(button("さらに表示"), undefined);
     await press(versionRows()[1]);
     assert.deepEqual(host.calls.reads[0], { target: homeTarget, id: "rev_3" });
     const bar = document.querySelector(".e-history-bar");
@@ -2166,6 +2496,18 @@ test("the version panel lists revisions, loads more, shows a revision read-only,
     assert.ok(document.querySelector(".e-notice").textContent.includes(`${localTime(host.entries[0].createdAt)} の版を作業コピーに復元しました。`));
     await press(historyButton()); assert.equal(input("ページタイトル").value, "以前のタイトル");
     await click("元に戻す"); assert.equal(input("ページタイトル").value, fixture.title);
+  } finally { await app.cleanup(); }
+});
+
+test("expired history snapshots keep their summaries visible and cannot be opened", async () => {
+  const host = historyHost({ expiredSnapshot: true }), app = await setup({ adapter: host.adapter });
+  try {
+    await press(historyButton()); await click("さらに表示");
+    const expired = versionRows()[3];
+    assert.ok(expired.textContent.includes("公開"));
+    assert.ok(expired.textContent.includes("保存期間を過ぎています"));
+    assert.equal(expired.disabled, true);
+    assert.equal(host.calls.reads.length, 0);
   } finally { await app.cleanup(); }
 });
 
@@ -2305,11 +2647,14 @@ test("operation-connected editor saves text and inverse/forward edits, then relo
     await clickLayer("heading"); await change(input("テキスト"), "海のそばで暮らす");
     await click("下書き保存");
     assert.equal(app.calls.saves.length, 0);
-    assert.deepEqual(host.operations[0].operations, [{ type: "text", parentId: "heading", childPath: [0], value: "海のそばで暮らす" }]);
+    assert.deepEqual(host.operations[0].operations, [{ type: "text", parentId: "heading", childPath: [0], value: "海のそばで暮らす",
+      preconditions: { parentId: "heading", oldValue: fixture.body[0].children[0].children[0].text, textPathContext: [{ type: "target" }] } }]);
     assert.ok(JSON.stringify(host.operations[0]).length < 1024);
     await click("元に戻す"); await click("下書き保存");
+    assert.deepEqual(host.operations[1].operations[0].preconditions, { parentId: "heading", oldValue: "海のそばで暮らす", textPathContext: [{ type: "target" }] });
     assert.equal(host.operations[1].operations[0].value, fixture.body[0].children[0].children[0].text);
     await click("やり直す"); await click("下書き保存");
+    assert.deepEqual(host.operations[2].operations[0].preconditions, { parentId: "heading", oldValue: fixture.body[0].children[0].children[0].text, textPathContext: [{ type: "target" }] });
     assert.equal(host.operations[2].operations[0].value, "海のそばで暮らす");
     await reloadEditor(); await clickLayer("heading");
     assert.equal(input("テキスト").value, "海のそばで暮らす");
@@ -2379,16 +2724,19 @@ test("operation conflict keeps the local queue and retries a CLI write only afte
     });
     assert.equal(external.status, "applied");
     await click("下書き保存");
-    assert.equal(input("ページタイトル").value, "GUIの編集");
     let retry;
     for (let attempt = 0; attempt < 20 && !retry; attempt++) { await wait(10); retry = button("最新に適用して保存"); }
     assert.ok(retry?.disabled);
+    assert.equal(input("ページタイトル").value, "GUIの編集");
     const confirm = document.querySelector('[role="dialog"] input[type="checkbox"]');
     await act(async () => confirm.click()); await flush();
     await click("最新に適用して保存");
     assert.equal(operations.length, 2);
     assert.equal(operations[1].baseVersion, external.version);
     assert.notEqual(operations[1].operationId, operations[0].operationId);
+    // 再適用は画面イベントから非同期で始まるので、hostのjournalへ反映された後で検証する。
+    for (let attempt = 0; attempt < 100 && storage.readJournal().length < 2; attempt++) await wait(10);
+    assert.equal(storage.readJournal().length, 2);
     let saved;
     for (let attempt = 0; attempt < 20; attempt++) {
       if (attempt) await wait(10);

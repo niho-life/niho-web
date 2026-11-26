@@ -102,6 +102,8 @@ async function openStudio(t, pathname) {
 const byText = (selector, text) => [...document.querySelectorAll(selector)].find((node) => node.textContent.replace(/\s+/gu, " ").trim() === text);
 const click = async (node) => { assert.ok(node, "target not found"); await act(async () => node.click()); await flush(); };
 const input = async (node, value) => { await act(async () => { Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value").set.call(node, value); node.dispatchEvent(new Event("input", { bubbles: true })); }); await flush(); };
+const inputTextarea = async (node, value) => { await act(async () => { Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value").set.call(node, value); node.dispatchEvent(new Event("input", { bubbles: true })); }); await flush(); };
+const selectValue = async (node, value) => { await act(async () => { Object.getOwnPropertyDescriptor(dom.window.HTMLSelectElement.prototype, "value").set.call(node, value); node.dispatchEvent(new Event("change", { bubbles: true })); }); await flush(); };
 
 test("Project一覧はStudio shellの中央検索・選択済み左nav・アカウントと、disabled導線なしで表示する", async (t) => {
   await openStudio(t, "/");
@@ -194,4 +196,204 @@ test("Studio のオーナー向けメンバー管理は表を使い、上部の�
   await click(byText(".studio-invite-form button", "招待 URL を作成"));
   assert.ok(calls.includes("POST /api/projects/project-kamakura/sites/kamakura/invitations"));
   assert.equal(document.querySelector(".studio-copy input")?.value, `${ORIGIN}/invite/example`);
+});
+
+test("Studio-native の CMS を Dashboard から開き、下書き作成の再送とプレビューを同じサイトで行う", async (t) => {
+  const project = { id: "project-native", name: "架空の Studio サイト",
+    site: { id: "site-native", name: "架空のサイト", domains: ["https://public.example.test"] }, members: [] };
+  const root = `/projects/${project.id}/sites/${project.site.id}`, apiRoot = `/api${root}`, endpoint = `${apiRoot}/cms/v2`;
+  const schema = { contractVersion: 2, siteId: project.site.id, schemaRevision: "initial", retiredFields: [],
+    collections: [{ id: "posts", label: "お知らせ", addLabel: "項目を追加", pathPrefix: "/cms/posts/", titleField: "title",
+      slugField: "slug", imageField: null, subtitleField: null, capabilities: { create: true, remove: true, schedule: true },
+      fields: [
+        { key: "title", fieldId: "title", label: "タイトル", type: "text", placement: "main" },
+        { key: "tags", fieldId: "tags", label: "タグ", type: "tags", placement: "side" },
+      ] }] };
+  const item = { siteId: project.site.id, schemaRevision: "initial", locale: "ja", itemId: "item_fixture", collectionId: "posts",
+    revision: "rev_fixture", values: { title: "架空の下書き", tags: ["初期"] } };
+  const otherItem = { ...item, itemId: "item_other", revision: "rev_other", values: { title: "別の記事", tags: ["別"] } };
+  let liveOtherItem = otherItem;
+  let liveSchema = schema;
+  let plannedSchema = null;
+  let schemaPlanCount = 0;
+  let schemaApplyCount = 0;
+  let replacementProblemStage = 0;
+  const observed = [];
+  let attempts = 0;
+  let finishSave;
+  let discardEdits = false;
+  installDom(root);
+  t.mock.method(window, "confirm", (message) => {
+    observed.push({ path: "confirm", input: message });
+    return discardEdits;
+  });
+  t.mock.method(globalThis, "fetch", async (url, init = {}) => {
+    if (url === "/api/session") return json({ status: "authenticated", subject: "example-owner", email: "owner@example.test" });
+    if (url === "/api/config") return json({ managedProjectsEnabled: true, publicSitesOrigin: project.site.domains[0] });
+    if (url === "/api/projects") return json({ status: "ready", entries: [{ project, summary: {
+      ...directory.entries[0].summary, projectId: project.id, siteId: project.site.id, publishedUrl: project.site.domains[0]
+    } }] });
+    if (url === `${apiRoot}/dashboard`) return json(dashboard(project));
+    if (url === `${endpoint}/discover`) return json({ siteId: project.site.id, contractVersion: 2, schemaRevision: "initial", operations: ["cms.schema.apply"] });
+    if (!String(url).startsWith(endpoint)) return json({ error: "not_found" }, 404);
+    const path = String(url).slice(endpoint.length + 1), input = JSON.parse(init.body);
+    assert.equal(input.siteId, project.site.id);
+    observed.push({ path, key: new Headers(init.headers).get("X-Studio-Operation-Key"), input });
+    if (path === "cms.schema.read") return json(liveSchema);
+    if (path === "cms.release.current") return json({ snapshot: null, locale: "ja", routeTableRevision: "routes_initial", collectionRoot: "/s/native/cms" });
+    if (path === "cms.schema.plan") {
+      schemaPlanCount += 1;
+      if (replacementProblemStage === 1 || replacementProblemStage === 2) {
+        const fieldIds = replacementProblemStage === 1 ? ["title", "tags"] : ["tags"];
+        replacementProblemStage += 1;
+        return json({ problems: fieldIds.map((fieldId) => ({ code: "conversion", message: `${fieldId} の変換値が必要`,
+          collectionId: "posts", itemId: item.itemId, locale: "ja", fieldId })) }, 422);
+      }
+      const retiredFields = new Map((liveSchema.retiredFields ?? []).map((entry) => [`${entry.collectionId}/${entry.fieldId}`, entry]));
+      for (const collection of liveSchema.collections) {
+        const candidate = input.nextSchema.collections.find(({ id }) => id === collection.id);
+        for (const field of collection.fields) if (!candidate?.fields.some(({ fieldId }) => fieldId === field.fieldId)) {
+          retiredFields.set(`${collection.id}/${field.fieldId}`, { collectionId: collection.id, fieldId: field.fieldId });
+        }
+      }
+      plannedSchema = { ...input.nextSchema, retiredFields: [...retiredFields.values()] };
+      const oldFields = liveSchema.collections[0].fields.map(({ fieldId }) => fieldId);
+      const newFields = input.nextSchema.collections[0].fields.map(({ fieldId }) => fieldId);
+      const removed = oldFields.find((fieldId) => !newFields.includes(fieldId));
+      const added = newFields.find((fieldId) => !oldFields.includes(fieldId));
+      return json({ status: "ready", plan: { operation: "cms.schema.apply", operationId: "schema_operation", siteId: project.site.id,
+        confirmationToken: `schema_token_${schemaPlanCount}`, candidate: { schema: plannedSchema,
+          changes: removed ? [{ collectionId: "posts", fieldId: removed, kind: "remove" }] : added ? [{ collectionId: "posts", fieldId: added, kind: "add" }] : [], items: [], removedItems: [] } } });
+    }
+    if (path === "cms.schema.apply") {
+      schemaApplyCount += 1; liveSchema = { ...plannedSchema, schemaRevision: `schema_next_${schemaApplyCount}` };
+      return json({ status: "recorded", operationId: input.operationId, result: { schemaRevision: liveSchema.schemaRevision } });
+    }
+    if (path === "cms.items.list") return json({ items: attempts < 2 ? [] : [
+      { id: item.itemId, title: item.values.title, revision: item.revision, removedAt: null, scheduleId: null, status: "draft", scheduledAt: null },
+      { id: liveOtherItem.itemId, title: liveOtherItem.values.title, revision: liveOtherItem.revision, removedAt: null, scheduleId: null, status: "draft", scheduledAt: null },
+    ], nextCursor: null });
+    if (path === "cms.items.read") return json({ item: input.itemId === otherItem.itemId ? liveOtherItem : item,
+      summary: { id: input.itemId, title: input.itemId === otherItem.itemId ? liveOtherItem.values.title : item.values.title,
+        revision: input.itemId === otherItem.itemId ? liveOtherItem.revision : item.revision,
+        removedAt: null, scheduleId: null, status: "draft", scheduledAt: null } });
+    if (path === "cms.items.create") return ++attempts === 1 ? json({ error: "service_unavailable" }, 503) : json({ item });
+    if (path === "cms.items.save") return new Promise((resolve) => { finishSave = () => resolve(json({ item: {
+      ...(input.itemId === otherItem.itemId ? liveOtherItem : item), revision: "rev_saved", values: input.values
+    } })); });
+    if (path === "cms.preview.prepare") return json({ previewId: "fixture-preview", expiresAt: at });
+    if (path === "cms.preview.read") return json({ preview: { title: input.previewId === "fixture-preview" ? "編集済みの下書き" : item.values.title, fields: [] }, expiresAt: at });
+    return json({ error: "not_found" }, 404);
+  });
+  await act(async () => { await import(`${pathToFileURL(bundle).href}?instance=${++instance}`); });
+  await flush();
+  assert.ok(byText("button", "CMS"), document.body.textContent);
+  await click(byText("button", "CMS"));
+  if (!byText("button", "項目を追加")) await wait(350);
+  assert.equal(window.location.pathname, `${root}/cms`);
+  assert.ok(document.querySelector('[aria-label="CMS"]'));
+  await click(byText("summary", "コレクションとフィールドの定義"));
+  await click(byText("button", "フィールドを追加"));
+  await click(byText("button", "計画を作成・更新"));
+  assert.equal(schemaPlanCount, 1);
+  assert.equal(schemaApplyCount, 0, "計画の確認前には適用しない");
+  assert.equal(plannedSchema.collections[0].fields.length, 3);
+  await click(byText("button", "計画を適用"));
+  assert.equal(schemaApplyCount, 1);
+  assert.equal(observed.find(({ path }) => path === "cms.schema.apply")?.input.confirmationToken, "schema_token_1");
+  const addedField = [...document.querySelectorAll('[aria-label="フィールド定義"] fieldset')].find((fieldset) => fieldset.querySelector("legend")?.textContent === "新しい項目");
+  await click([...addedField.querySelectorAll("button")].find((button) => button.textContent === "削除"));
+  await click(byText("button", "計画を作成・更新"));
+  assert.equal(schemaPlanCount, 2);
+  const applyButton = byText("button", "計画を適用");
+  assert.equal(applyButton.disabled, true, "削除を含む計画は確認前に適用できない");
+  await click(document.querySelector('[aria-label="定義の移行計画"] input[type="checkbox"]'));
+  assert.equal(applyButton.disabled, false);
+  await click(applyButton);
+  assert.equal(schemaApplyCount, 2);
+  await click(byText("button", "フィールドを追加"));
+  await click(byText("button", "計画を作成・更新"));
+  assert.equal(plannedSchema.collections[0].fields.at(-1).fieldId, "field_4", "廃止済み field_3 を再採番しない");
+  assert.deepEqual(plannedSchema.retiredFields, [{ collectionId: "posts", fieldId: "field_3" }]);
+
+  replacementProblemStage = 1;
+  await click(byText("button", "計画を作成・更新"));
+  const replacementInputs = () => [...document.querySelectorAll('[aria-label="定義の計画エラー"] textarea')];
+  assert.equal(replacementInputs().length, 2);
+  await inputTextarea(replacementInputs()[0], "見出しの置換値");
+  await click(byText("button", "計画を作成・更新"));
+  assert.equal(replacementInputs().length, 1, "最初の問題を解決すると二つ目だけ表示する");
+  await inputTextarea(replacementInputs()[0], '["タグの置換値"]');
+  await click(byText("button", "計画を作成・更新"));
+  const finalSchemaPlan = observed.filter(({ path }) => path === "cms.schema.plan").at(-1);
+  assert.deepEqual(finalSchemaPlan.input.replacements, [{ collectionId: "posts", itemId: item.itemId, locale: "ja",
+    values: { title: "見出しの置換値", tags: ["タグの置換値"] } }]);
+  await click(byText("button", "計画を適用"));
+  assert.equal(schemaApplyCount, 3);
+  const ordering = [...document.querySelectorAll(".studio-native-cms-schema label")]
+    .find((label) => label.textContent.includes("一覧の並び順"))?.querySelector("select");
+  await selectValue(ordering, "manual");
+  await click(byText("button", "計画を作成・更新"));
+  assert.equal(plannedSchema.collections[0].ordering, "manual");
+  assert.equal(byText("button", "計画を適用").disabled, false, "一覧の並び順だけの変更も適用できる");
+
+  await click(byText("button", "項目を追加"));
+  assert.match(document.querySelector('[aria-label="CMS"]').textContent, /操作が完了しませんでした/u);
+  await click(byText("button", "項目を追加"));
+  const creates = observed.filter(({ path }) => path === "cms.items.create");
+  assert.equal(creates.length, 2);
+  assert.ok(creates[0].key);
+  assert.equal(creates[0].key, creates[1].key);
+  const tags = document.querySelector(".studio-native-cms-item textarea");
+  tags.focus();
+  await inputTextarea(tags, '["初期","追記"]');
+  assert.strictEqual(document.querySelector(".studio-native-cms-item textarea"), tags, "JSON の値が変わっても textarea を再マウントしない");
+  assert.strictEqual(document.activeElement, tags, "JSON の編集中はフォーカスを保つ");
+  assert.equal(tags.value, '["初期","追記"]');
+  const title = document.querySelector(".studio-native-cms-item input");
+  await input(title, "編集済みの下書き");
+  await click(byText("button", "下書きを保存"));
+  assert.equal(title.disabled, true, "保存応答を待つ間の編集を止める");
+  finishSave();
+  await flush();
+  assert.equal(document.querySelector(".studio-native-cms-item input").disabled, false);
+  await click(byText("button", "下書きをプレビュー"));
+  assert.equal(document.querySelector('[aria-label="下書きプレビュー"] h2')?.textContent, "編集済みの下書き");
+  assert.equal(observed.find(({ path }) => path === "cms.preview.read")?.input.previewId, "fixture-preview");
+  assert.doesNotMatch(window.location.href, /fixture-preview/u);
+
+  const otherRow = byText('ul[aria-label="項目一覧"] button', "別の記事 下書き");
+  assert.ok(otherRow);
+  const tagsBeforeInvalidEdit = document.querySelector(".studio-native-cms-item textarea");
+  await inputTextarea(tagsBeforeInvalidEdit, '["初期","追記"');
+  assert.equal(tagsBeforeInvalidEdit.value, '["初期","追記"');
+  assert.equal(byText("button", "公開する").disabled, true, "無効なJSONの間は公開を止める");
+  assert.equal(byText("button", "下書きを保存").disabled, true, "無効なJSONの間は保存を止める");
+  await click(otherRow);
+  assert.equal(observed.filter(({ path }) => path === "confirm").length, 1);
+  assert.equal(observed.filter(({ path, input }) => path === "cms.items.read" && input.itemId === otherItem.itemId).length, 0);
+  assert.equal(document.querySelector(".studio-native-cms-item textarea").value, '["初期","追記"');
+
+  await input(document.querySelector(".studio-native-cms-item input"), "保存していない変更");
+  await click(otherRow);
+  assert.equal(observed.filter(({ path }) => path === "confirm").length, 2);
+  assert.equal(observed.filter(({ path, input }) => path === "cms.items.read" && input.itemId === otherItem.itemId).length, 0);
+  assert.equal(document.querySelector(".studio-native-cms-item input").value, "保存していない変更");
+
+  discardEdits = true;
+  await click(otherRow);
+  assert.equal(observed.filter(({ path, input }) => path === "cms.items.read" && input.itemId === otherItem.itemId).length, 1);
+  assert.equal(document.querySelector(".studio-native-cms-item input").value, "別の記事");
+  assert.equal(document.querySelector(".studio-native-cms-item textarea").value, '["別"]', "別項目の読込時にはJSON入力を同期する");
+
+  liveOtherItem = { ...liveOtherItem, revision: "rev_external", values: { title: "別の編集者が保存した内容", tags: ["外部更新"] } };
+  await click(byText("button", "一覧を更新"));
+  assert.equal(document.querySelector(".studio-native-cms-item input").value, "別の編集者が保存した内容");
+  assert.equal(document.querySelector(".studio-native-cms-item textarea").value, '["外部更新"]', "新しい revision の読込時にはJSON入力も同期する");
+  await input(document.querySelector(".studio-native-cms-item input"), "更新後に保存する内容");
+  await click(byText("button", "下書きを保存"));
+  const latestSave = observed.filter(({ path }) => path === "cms.items.save").at(-1);
+  assert.equal(latestSave.input.expectedRevision, "rev_external");
+  finishSave();
+  await flush();
 });
