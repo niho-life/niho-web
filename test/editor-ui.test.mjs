@@ -99,6 +99,49 @@ test("responsive proposal control is absent without the optional host adapter", 
   finally { await present.cleanup(); }
 });
 
+test("breakpoint settings dialog analyzes every page and reports unused and nearby widths", async () => {
+  const reads = [];
+  const page = (pageId, width) => ({ schemaVersion: 1, siteId: "demo", pageId, locale: "ja-JP", revision: 1, title: pageId,
+    tokens: {}, body: [{ type: "element", id: `${pageId}-root`, tag: "main",
+      ...(width ? { style: { responsive: [{ minWidth: width, declarations: { fontSize: 24 } }] } } : {}), children: [{ type: "text", text: pageId }] }] });
+  const docs = { home: page("home"), other: page("other", 1264) };
+  const settings = { base: { name: "Mobile", previewWidth: 375 }, breakpoints: [
+    { name: "Tablet", minWidth: 768, previewWidth: 900 }, { name: "PC", minWidth: 1280, previewWidth: 1440 }
+  ] };
+  const app = await setup({ adapter: {
+    listPages: async () => [{ siteId: "demo", pageId: "home", locale: "ja-JP", title: "ホーム" }, { siteId: "demo", pageId: "other", locale: "ja-JP", title: "別ページ" }],
+    readDocument: async (target) => { reads.push(target.pageId); return { document: docs[target.pageId], version: `v-${target.pageId}` }; },
+    breakpointSettings: { read: async () => ({ settings, version: "bp-v1" }), save: async () => ({ status: "saved", version: "bp-v2" }) }
+  } });
+  try {
+    await click("編集モード");
+    for (let attempt = 0; attempt < 5 && !document.querySelector(".e-breakpoint-analysis")?.textContent.includes("保存済み設定で全 2 文書"); attempt++) await flush();
+    const analysis = document.querySelector(".e-breakpoint-analysis");
+    assert.ok(analysis);
+    assert.deepEqual(reads.sort(), ["home", "other"], "the current page is already loaded and the other page is fetched for analysis");
+    assert.match(analysis.textContent, /どの文書からも使われていない段[\s\S]*タブレット 768px/u);
+    assert.match(analysis.textContent, /近接した段（48px以内）[\s\S]*PC 1280px と 文書の段 1264px/u);
+    assert.match(analysis.textContent, /正規化の plan/u);
+  } finally { await app.cleanup(); }
+});
+
+test("breakpoint analysis fails closed when any page cannot be read", async () => {
+  const settings = { base: { name: "Mobile", previewWidth: 375 }, breakpoints: [{ name: "PC", minWidth: 1280, previewWidth: 1440 }] };
+  const app = await setup({ adapter: {
+    readDocument: async (target) => target.pageId === "home"
+      ? { document: { ...structuredClone(fixture), pageId: "home", locale: "ja-JP" }, version: "v-home" }
+      : Promise.reject(new Error("別ページの読込に失敗しました。")),
+    breakpointSettings: { read: async () => ({ settings, version: "bp-v1" }), save: async () => ({ status: "saved", version: "bp-v2" }) }
+  } });
+  try {
+    await click("編集モード");
+    for (let attempt = 0; attempt < 5 && !document.querySelector(".e-breakpoint-analysis")?.textContent.includes("別ページの読込に失敗しました"); attempt++) await flush();
+    const analysis = document.querySelector(".e-breakpoint-analysis");
+    assert.match(analysis.textContent, /別ページの読込に失敗しました/u);
+    assert.doesNotMatch(analysis.textContent, /使われていない設定段はありません/u);
+  } finally { await app.cleanup(); }
+});
+
 test("responsive proposal reviews exact changes, applies once and undo restores them", async () => {
   let requested;
   const app = await setup({ adapter: { responsiveProposal: { propose: async (request) => {
