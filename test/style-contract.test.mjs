@@ -178,6 +178,17 @@ test("text style rules come before node rules, group their users and skip unused
   assert.match(html, /<h1 data-nw-node="heading" data-nw-owner="[^"]+">/);
 });
 
+test("CSS groups selectors for a shared text style across 1,000 elements", () => {
+  const input = {
+    schemaVersion: 1, siteId: "synthetic", pageId: "css-users", locale: "ja", revision: 1, title: "CSS users", tokens: {},
+    textStyles: { body: { base: { fontSize: 16 } } },
+    body: Array.from({ length: 1000 }, (_, index) => ({ type: "element", id: `node-${index}`, tag: "p", style: { textStyle: "body" }, children: [] }))
+  };
+  const css = generatePageCss(input);
+  assert.equal((css.match(/\[data-nw-node="node-\d+"\]/g) ?? []).length, 1000);
+  assert.ok(css.includes("font-size:16px;"));
+});
+
 test("isolated filtered backgrounds anchor static nodes at base and responsive widths", () => {
   const document = { schemaVersion: 1, siteId: "synthetic", pageId: "background", locale: "en", revision: 1, title: "Background", tokens: {}, body: [{ type: "element", id: "filtered", tag: "div", children: [], style: { base: { position: "static", backgroundFilter: "sepia(0.2)" }, responsive: [{ minWidth: 768, declarations: { position: "static" } }] } }] };
   const css = generatePageCss(document);

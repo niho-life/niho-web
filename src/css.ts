@@ -118,7 +118,11 @@ export function cssForDocument(document: PageDocument, assets: ResolvedAssetMap 
   (function collect(nodes: PageNode[]): void {
     for (const node of nodes) {
       if (node.type === "text") continue;
-      if (node.style?.textStyle) users.set(node.style.textStyle, [...users.get(node.style.textStyle) ?? [], `${scope} ${owner}[data-nw-node="${node.id}"]`]);
+      if (node.style?.textStyle) {
+        let selectors = users.get(node.style.textStyle);
+        if (!selectors) { selectors = []; users.set(node.style.textStyle, selectors); }
+        selectors.push(`${scope} ${owner}[data-nw-node="${node.id}"]`);
+      }
       if (node.type === "element") collect(node.children);
     }
   })(document.body);
