@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { parseComponentLibrary, parsePageDocument } from "@niho/web/core";
-import { addBreakpointSetting, affectedBySiteStyles, breakpointSettingsBreakpoints, breakpointUsageCount, colorParts, editorTiers, expandBox, fieldState, formatColor, nextName, normalizeBreakpoints, parseBreakpointSettings, removeBreakpointSetting, splitLength, textStyleUsage, tierForWidth, tokenUsage, withAlpha } from "../dist/style-model.js";
+import { addBreakpointSetting, affectedBySiteStyles, breakpointSettingsBreakpoints, breakpointUsageCount, colorParts, editorTiers, expandBox, fieldState, formatColor, nextName, normalizeBreakpoints, parseBreakpointSettings, removeBreakpointSetting, splitLength, textStyleUsage, tierForWidth, tierName, tokenUsage, withAlpha } from "../dist/style-model.js";
 
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 const styled = () => {
@@ -19,6 +19,8 @@ test("tiers combine host breakpoints with widths used by the document", () => {
   ]);
   const tiers = editorTiers(styled(), [{ minWidth: 600, label: "小" }]);
   assert.deepEqual(tiers.map(({ key, label, end }) => [key, label, end]), [["base", "基本", 599], [600, "小", 767], [768, "768px〜", 1023], [1024, "1024px〜", 1279], [1280, "1280px〜", null]]);
+  assert.equal(tierName(tiers[1]), "小 600px〜");
+  assert.equal(tierName(tiers[2]), "768px〜");
   assert.equal(tierForWidth(tiers, 375).key, "base");
   assert.equal(tierForWidth(tiers, 768).key, 768);
   assert.equal(tierForWidth(tiers, 1100).key, 1024);
