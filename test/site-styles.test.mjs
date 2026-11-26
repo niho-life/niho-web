@@ -107,7 +107,7 @@ test("removing site definitions detaches references into page-owned values that 
   // ページが同名の定義を持つ参照は触らない。
   const owned = parsePageDocument({ ...about, tokens: { ...about.tokens, brand: color("#000000") } }, {}, { siteStyles: site });
   assert.deepEqual(detachRemovedSiteStyles(owned, site, next).body[0].children[0].style.base.color, { token: "brand" });
-  assert.deepEqual(detachRemovedSiteStyles(page, site, site), page, "no removal, no change");
+  assert.strictEqual(detachRemovedSiteStyles(page, site, site), page, "no removal, no document copy");
 });
 
 test("parseSiteSettings validates styles with the public information and rejects invalid shapes", () => {
