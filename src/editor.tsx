@@ -87,6 +87,10 @@ const needsPageSave = (session: Session) => {
   pageSaveChecks.set(session, { present, saved: session.saved, dirty });
   return dirty;
 };
+function editorSessionFreshness(session: Session): string {
+  return JSON.stringify([session.version, session.saved, session.dependencyVersions, session.hasSavedDraft ?? null, session.locks, session.releases,
+    session.readOnly ?? null, session.presentation?.version ?? null, session.englishPublication ?? null, session.cmsBindings ?? null]);
+}
 type PagePrefetch = { controller: AbortController; promise: Promise<EditorSessionLoad>; blocks: EditorBlockRegistry; components?: ComponentLibrary; completedAt?: number };
 const PAGE_PREFETCH_MAX_AGE_MS = 10_000;
 const PAGE_PREFETCH_LIMIT = 3;
@@ -735,6 +739,8 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const pageInputPending = Object.values(pendingFields).includes("page");
   const manualInputPending = !!localizationManual?.pending && !!session && sameTarget(localizationManual.target, session.target);
   const hasInput = Object.keys(pendingFields).length > 0 || manualInputPending, dirty = !!session && needsPageSave(session);
+  const interactionStateRef = useRef({ hasInput, hasDraft: !!draft, editing: !!editing });
+  interactionStateRef.current = { hasInput, hasDraft: !!draft, editing: !!editing };
   const masterId = editing && libraryPresent?.components.some((component) => component.id === editing) ? editing : null;
   const canNameNode = !targetMode && (masterId ? components?.nodeNames === true : pageNodeNames);
   const libraryDirty = !!library && libraryFingerprint(library.history.present) !== library.saved, pendingChanges = dirty || libraryDirty, locale = session?.target.locale ?? "ja";
@@ -885,24 +891,66 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       const cachedSiteSettings = currentSiteSettings.status === "ready" && currentSiteSettings.settings && currentSiteSettings.version
         ? { settings: currentSiteSettings.settings, version: currentSiteSettings.version } : undefined;
       const prefetched = pagePrefetches.current.get(key);
-      let loaded: EditorSessionLoad | undefined;
-      if (prefetched && prefetched.blocks === blocks && prefetched.components === currentComponents && (prefetched.completedAt === undefined || Date.now() - prefetched.completedAt <= PAGE_PREFETCH_MAX_AGE_MS)) {
-        const abortPrefetch = () => prefetched.controller.abort();
+      const reusablePrefetch = prefetched && prefetched.blocks === blocks && prefetched.components === currentComponents &&
+        (prefetched.completedAt === undefined || Date.now() - prefetched.completedAt <= PAGE_PREFETCH_MAX_AGE_MS) ? prefetched : undefined;
+      let loaded: EditorSessionLoad | undefined, revalidation: Promise<EditorSessionLoad> | undefined;
+      if (prefetched && !reusablePrefetch) {
+        prefetched.controller.abort();
+        pagePrefetches.current.delete(key);
+      }
+      if (reusablePrefetch?.completedAt !== undefined) {
+        const prepared = reusablePrefetch;
+        const abortPrefetch = () => prepared.controller.abort();
         controller.signal.addEventListener("abort", abortPrefetch, { once: true });
         try {
-          const prepared = await prefetched.promise;
-          if (!cachedSiteSettings || prepared.siteSettings?.version === cachedSiteSettings.version) loaded = prepared;
+          const result = await prepared.promise;
+          if (!cachedSiteSettings || result.siteSettings?.version === cachedSiteSettings.version) loaded = result;
         }
         catch { if (controller.signal.aborted) return false; }
         finally {
           controller.signal.removeEventListener("abort", abortPrefetch);
-          if (pagePrefetches.current.get(key) === prefetched) pagePrefetches.current.delete(key);
+          if (pagePrefetches.current.get(key) === prepared) pagePrefetches.current.delete(key);
         }
-      } else if (prefetched) {
-        prefetched.controller.abort();
-        pagePrefetches.current.delete(key);
       }
       if (controller.signal.aborted) return false;
+      if (!loaded) {
+        const cached = pageSessionCache.current.getLatest(editorTarget, currentComponents);
+        if (cached) {
+          // 描画待ちをネットワーク応答から切り離す。保存済みコピーだけを即時表示し、版の再確認は裏で続ける。
+          loaded = { session: cached.session, ...(cached.warning ? { warning: cached.warning } : {}) };
+          if (reusablePrefetch && reusablePrefetch.completedAt === undefined) {
+            const abortPrefetch = () => reusablePrefetch.controller.abort();
+            controller.signal.addEventListener("abort", abortPrefetch, { once: true });
+            revalidation = (async () => {
+              try {
+                const prepared = await reusablePrefetch.promise;
+                if (cachedSiteSettings && prepared.siteSettings?.version !== cachedSiteSettings.version) {
+                  return await readEditorSession(adapter, editorTarget, controller.signal, blocks, currentComponents,
+                    { cache: pageSessionCache.current, ...(cachedSiteSettings ? { siteSettings: cachedSiteSettings } : {}) });
+                }
+                return prepared;
+              } finally {
+                controller.signal.removeEventListener("abort", abortPrefetch);
+                if (pagePrefetches.current.get(key) === reusablePrefetch) pagePrefetches.current.delete(key);
+              }
+            })();
+          } else {
+            revalidation = readEditorSession(adapter, editorTarget, controller.signal, blocks, currentComponents,
+              { cache: pageSessionCache.current, ...(cachedSiteSettings ? { siteSettings: cachedSiteSettings } : {}) });
+          }
+        } else if (reusablePrefetch) {
+          const abortPrefetch = () => reusablePrefetch.controller.abort();
+          controller.signal.addEventListener("abort", abortPrefetch, { once: true });
+          try {
+            const prepared = await reusablePrefetch.promise;
+            if (!cachedSiteSettings || prepared.siteSettings?.version === cachedSiteSettings.version) loaded = prepared;
+          } catch { if (controller.signal.aborted) return false; }
+          finally {
+            controller.signal.removeEventListener("abort", abortPrefetch);
+            if (pagePrefetches.current.get(key) === reusablePrefetch) pagePrefetches.current.delete(key);
+          }
+        }
+      }
       if (!loaded) loaded = await readEditorSession(adapter, editorTarget, controller.signal, blocks, currentComponents,
         { cache: pageSessionCache.current, ...(cachedSiteSettings ? { siteSettings: cachedSiteSettings } : {}) });
       if (controller.signal.aborted) return false;
@@ -914,6 +962,30 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       setFieldEpoch((value) => value + 1); setAssetResolveEpoch((value) => value + 1); setAssetProviderEpoch((value) => value + 1); setPendingFields({}); setPlan(null); setRollbackRevision(""); setParentId("");
       setProblem(null); setSavedAt(null); setConflictView(0); setRecoveryCompare(false); setLoadEpoch((value) => value + 1); setEditing(null);
       if (loaded.warning) setNotice(loaded.warning);
+      if (revalidation) {
+        const displayed = loaded.session;
+        void revalidation.then((fresh) => {
+          if (controller.signal.aborted || request.current !== controller) return;
+          const current = sessionRef.current;
+          if (!current || current !== displayed || !sameTarget(current.target, editorTarget)) return;
+          const localInteraction = interactionStateRef.current;
+          const settingsChanged = !!fresh.siteSettings && fresh.siteSettings.version !== siteSettingsRef.current.version;
+          const sessionChanged = editorSessionFreshness(current) !== editorSessionFreshness(fresh.session);
+          if (needsPageSave(current) || localInteraction.hasInput || localInteraction.hasDraft || localInteraction.editing) {
+            if (settingsChanged || sessionChanged) setNotice("ページの保存内容が更新されています。手元の編集は保持しました。保存時に最新の版との競合を確認します。");
+            return;
+          }
+          if (fresh.siteSettings && settingsChanged) siteSettingsRef.current.acceptSnapshot(fresh.siteSettings);
+          if (settingsChanged || sessionChanged) {
+            replace(fresh.session, { measureEdit: false });
+            setSelectedId(null); setSelectedNodeIds([]); setSelectedCanvasNode(null); setDraft(null); setEditing(null);
+            setFieldEpoch((value) => value + 1); setAssetResolveEpoch((value) => value + 1); setAssetProviderEpoch((value) => value + 1); setLoadEpoch((value) => value + 1);
+            if (fresh.warning) setNotice(fresh.warning);
+          }
+        }).catch(() => {
+          // 読み直しに失敗しても最後に検証できた保存済みセッションは表示し続ける。
+        });
+      }
       return true;
     } catch (error) { performanceOutcome = "failed"; if (!controller.signal.aborted) setNotice(error instanceof Error && error.message ? error.message : "文書を読み込めませんでした。現在の編集内容は保持されています。"); return false; }
     finally { if (!controller.signal.aborted) { if (performanceOutcome === "failed") finishEditorPerformance(measurement, performanceOutcome); setBusy(""); } }
@@ -1467,7 +1539,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     let performanceOutcome: EditorPerformanceOutcome = "success";
     const finish = measurePerformance?.("save");
     const controller = new AbortController(), auto = mode === "auto", hadProblem = !!problemRef.current; action.current = controller; if (!auto) setNotice("");
-    let current = sessionRef.current, librarySaved = false, pageSaved = false, applyingOperations = false;
+    let current = sessionRef.current, librarySaved = false, pageSaved = false, applyingOperations = false, acknowledgedPageVersion: string | undefined;
     const sameSession = () => { const latest = sessionRef.current; return !!latest && !!current && sameTarget(latest.target, current.target); };
     const failed = (next: SaveProblem, thrown: boolean) => {
       if (!sameSession()) return;
@@ -1510,6 +1582,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         if (result.status === "conflict") { performanceOutcome = "failed"; failed("conflict", false); return false; }
         if (result.status !== "applied" || typeof result.version !== "string" || !result.version || result.version === current.version
           || !Number.isSafeInteger(result.revision) || result.revision <= inFlight.submitted.revision) throw new Error("保存後の revision が正しくありません。");
+        acknowledgedPageVersion = result.version;
         const canonical = parsePageDocument(result.document, blocks, { ...(lib ? { components: lib } : {}), ...(activeSiteStyles ? { siteStyles: activeSiteStyles } : {}) });
         if (!sameTarget(canonical, current.target) || canonical.revision !== result.revision) throw new Error("保存対象が一致しません。");
         const latest = sessionRef.current;
@@ -1534,6 +1607,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         if (controller.signal.aborted) return false;
         if (result.status === "conflict") { performanceOutcome = "failed"; failed("conflict", false); return false; }
         if (typeof result.version !== "string" || !result.version || result.version === current.version) throw new Error("version must advance");
+        acknowledgedPageVersion = result.version;
         const latest = sessionRef.current;
         if (latest && sameTarget(latest.target, current.target) && latest.version === current.version) {
           const acknowledged = acceptSavedRevision(latest.history, document, result.revision);
@@ -1547,6 +1621,13 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       if (sameSession()) { setProblem(null); setSavedAt(new Date()); setConflictView(0); }
       if (localized) localization.reloadPage();
       if (!auto) setNotice(librarySaved ? "コンポーネントと下書きを保存しました。" : "下書きを保存しました。"); else if (hadProblem) setNotice("");
+      const savedSession = sessionRef.current, currentSettings = siteSettingsRef.current;
+      if (acknowledgedPageVersion && current && savedSession && sameTarget(savedSession.target, current.target)
+        && savedSession.version === acknowledgedPageVersion && !needsPageSave(savedSession)) {
+        pageSessionCache.current.rememberLatest(savedSession.target, { session: savedSession,
+          ...(currentSettings.status === "ready" && currentSettings.settings && currentSettings.version
+            ? { siteSettings: { settings: currentSettings.settings, version: currentSettings.version } } : {}) }, libraryRef.current?.history.present);
+      }
       pageSaved = true; return true;
     } catch (error) { performanceOutcome = "failed"; if (!controller.signal.aborted) failed(classifySaveError(error), true); return false; }
     finally {
@@ -2309,7 +2390,10 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       if (result.status !== "applied") throw new Error("invalid localization command result");
       if (!result.version || result.version === context.version) throw new Error("version must advance");
       localization.reloadPage(); localization.reloadSite();
-      if (command.action === "adopt-candidate" || command.action === "set-value") await load(current.target, { preserveView: true });
+      if (command.action === "adopt-candidate" || command.action === "set-value") {
+        pageSessionCache.current.invalidateLatest(current.target);
+        await load(current.target, { preserveView: true });
+      }
       setNotice(command.action === "request-translation" ? "翻訳を依頼しました。" : command.action === "adopt-candidate" ? "翻訳案を採用しました。" : command.action === "set-value" ? "訳文を直しました。" : "翻訳状態を更新しました。");
       return "applied";
     } catch { if (!controller.signal.aborted) setNotice("翻訳状態を更新できませんでした。入力は保持されています。再試行してください。"); return "failed"; }
