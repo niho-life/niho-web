@@ -107,7 +107,7 @@ export function SharedStyleLibrary({ adapter, pages, blocks, components, siteDis
     {supported && <div className="e-seg" role="group" aria-label="スタイルの保存先"><button type="button" aria-pressed={scope === "page"} onClick={() => { setScope("page"); setProblem(""); }}>このページ</button><button type="button" aria-pressed={scope === "site"} onClick={() => { setScope("site"); setProblem(""); }}>サイト共通</button></div>}
     
     {supported && scope === "site" && pageDirty && <p className="e-help">{pageHold}</p>}
-    {supported && scope === "site" ? <StyleLibrary {...props} document={siteDocument} selection={null} apply={applySite} preview={undefined} pending={sitePending} disabled={siteDisabled || state.busy || pageDirty} scopeLabel="サイト共通" fieldKey={`${props.fieldKey}-site`} />
+    {supported && scope === "site" ? <StyleLibrary {...props} document={siteDocument} selection={null} apply={applySite} preview={undefined} pending={sitePending} disabled={siteDisabled || state.busy || pageDirty} scopeLabel="サイト共通" usageScope="site" fieldKey={`${props.fieldKey}-site`} />
       : <StyleLibrary {...props} origins={supported ? origins : undefined} onPromote={supported && !state.stylesDirty ? promote : undefined} canPromote={(kind, name) => Object.hasOwn(kind === "token" ? rawDocument.tokens : rawDocument.textStyles ?? {}, name)} />}
     {problem && <p className="e-help e-problem" role="alert">{problem}</p>}
     {supported && state.stylesDirty && <section className="e-section" aria-label="サイト共通スタイルの変更確認"><h3>サイト共通スタイルの変更</h3>
