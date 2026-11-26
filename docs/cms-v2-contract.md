@@ -53,6 +53,8 @@ v1 の意味は既存の通りです。v2 を使う Site の v1 の書込み入�
 
 `cms.schedule.create` は release で固定した内容と時刻を保存します。実行時は `dueCmsSchedule` と `revalidateCmsRelease` を使い、時刻、公開 pointer、定義、選んだ版の存在、削除、現在のルート制約を確認します。あとから保存した新しい下書きは予約へ混ぜません。前提が変われば失敗を保存し、現在の公開を維持します。取消は未確定の予約だけに適用し、scheduler の実行と競合させないよう CAS を使います。再試行では現在の前提にもとづく新しい計画を確認します。
 
+Studio-native site はごみ箱を含めて Site ごとに最大500 CMS item IDを保持します。公開snapshotは2 MiB、保持するCMS revisionは合計100 MiBまでです。公開計画は最大500 itemと25,000転送を受け付け、別途route tableとの衝突を検査します。上限を超える保存・公開は現在の下書きと公開pointerを変更せず拒否します。PageEditorのCMS list blockにある表示件数25件は、このCMS保存上限とは別の制約です。
+
 メモリ内参照ホストと Studio-native の適合テストで認可、永続化、公開、復元を確認できます。Studio の保存順序、容量、バックアップと復元は、運用契約を参照してください。[Studio-native site 契約](studio-managed-sites.md#cms-の公開と復旧)
 
 ## CMS 項目の翻訳と locale snapshot

@@ -277,6 +277,25 @@ async function releasePlan(site, schemaRevision, previous, items, at) {
   return { operationId: plan.operationId, confirmationToken: plan.confirmationToken };
 }
 
+testWithD1("Studio CMS imports 90 items and plans them as one atomic snapshot", async (t) => {
+  const h = await fixture(t, { cms: true }), site = await cmsSite(h, "cms-capacity");
+  const { schemaRevision } = await site.read("cms.schema.read");
+  const drafts = [];
+  for (let index = 0; index < 90; index++) {
+    const created = await createDraft(site, schemaRevision);
+    drafts.push(await saveDraft(site, created, `Capacity fixture ${index}`, `capacity-${index}`));
+  }
+
+  const current = await site.read("cms.release.current");
+  const { plan } = await site.read("cms.release.plan", { schemaRevision, locale: "ja", routeTableRevision: current.routeTableRevision,
+    expectedReleaseId: null, items: drafts.map(pin), redirects: drafts.slice(0, 30).map((draft, index) => ({
+      from: `/cms/posts/old-${index}`, to: `/cms/posts/capacity-${index}`
+    })) });
+  assert.equal(plan.candidate.snapshot.items.length, 90);
+  assert.equal(plan.candidate.snapshot.assetManifest.length, 0);
+  assert.equal(plan.candidate.snapshot.redirects.length, 30);
+});
+
 testWithD1("Studio CMS localization exposes the shared workspace contract and preserves reviewed manual values after source changes", async (t) => {
   const h = await fixture(t, { cms: true }), site = await cmsSite(h, "cms-localization");
   const original = await site.read("cms.schema.read"), route = await site.read("cms.release.current");

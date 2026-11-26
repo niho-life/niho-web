@@ -18,7 +18,7 @@ import { DocumentValidationError, keys, record } from "../src/validation-utils.j
 import { validatePagePath } from "../src/pages.js";
 import { OPERATION_KEY_HEADER, UUID_V4 } from "../cli/operations.mjs";
 import {
-  CmsStore, MAX_BODY, MAX_ITEMS, MAX_RETAINED_BYTES, MAX_SNAPSHOT, blobSize, cmsPathReserved, dateNow, digest,
+  CmsStore, MAX_BODY, MAX_ITEMS, MAX_REDIRECTS, MAX_RETAINED_BYTES, MAX_SNAPSHOT, blobSize, cmsPathReserved, dateNow, digest,
   iso, itemBlobKey, localizationBlobKey, nowSeconds, opaque, routeTableKey, snapshotKey, type CmsCapability, type CmsScope, type ItemMeta, type JobPayload, type Site
 } from "./managed-cms-store.js";
 import { collectionPath, deliverCmsJob, escapeHtml, previewContent, releaseContext, releaseImpacts } from "./managed-cms-release.js";
@@ -307,7 +307,7 @@ async function releaseOperation(store: CmsStore, site: Site, capability: CmsCapa
   operation: "cms.release.plan" | "cms.release.apply" | "cms.schedule.create", body: Record<string, unknown>, mutation: Mutation | null) {
   if (operation === "cms.release.plan") {
     const scheduled = Object.hasOwn(body, "at"), input = scheduled ? parseCmsScheduleRequest(body) : parseCmsReleaseInput(body);
-    if (input.locale !== site.state.locale || input.items.length > MAX_ITEMS || input.redirects.length > MAX_ITEMS) return invalid();
+    if (input.locale !== site.state.locale || input.items.length > MAX_ITEMS || input.redirects.length > MAX_REDIRECTS) return invalid();
     const { ...selection } = input as CmsReleaseInput & { at?: string };
     delete selection.at;
     const ready = planCmsRelease(selection, opaque("release"), await releaseContext(store, site, input.items));

@@ -37,7 +37,9 @@ export type Job = {
 
 type Receipt = { operation: string; input_digest: string; result_json: string; transaction_id: string };
 
-export const MAX_ITEMS = 25;
+/** Per-site metadata stays within the D1 state-row budget; snapshots and retained bytes have separate limits. */
+export const MAX_ITEMS = 500;
+export const MAX_REDIRECTS = 25_000;
 export const MAX_BODY = 64 * 1024;
 export const MAX_RETAINED_BYTES = 100 * 1024 * 1024;
 export const MAX_SNAPSHOT = 2 * 1024 * 1024;
