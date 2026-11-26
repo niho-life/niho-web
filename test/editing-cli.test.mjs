@@ -463,6 +463,50 @@ test("niho-edit lists pages directly from the host API", async () => {
   assert.deepEqual(JSON.parse(result.stdout), catalog);
 });
 
+test("niho-edit lint returns zero for a clean page", async () => {
+  const operations = EDITING_OPERATIONS.filter(({ id }) => id === "site.styles.read");
+  const snapshot = { sitePublicationEpoch: "epoch-1", draft: { version: "styles-1", styles: {} },
+    published: { stylesVersion: "published-1", styles: {} } };
+  const breakpoints = { version: "breakpoints-1", settings: { base: { name: "PC", previewWidth: 1360 }, breakpoints: [] } };
+  const document = { schemaVersion: 1, siteId, pageId: "lint-home", locale, revision: 1, title: "Home", tokens: {},
+    body: [{ type: "element", id: "copy", tag: "p", children: [{ type: "text", text: "Hello" }] }] };
+  const result = await runSequence(["lint", "lint-home", "--locale", locale], [
+    { method: "GET", url: `${origin}/api/edit/v1/sites/${siteId}/capabilities?features=site.styles`, result: { apiVersion: "v1", siteId, operations } },
+    { method: "GET", url: `${origin}/api/edit/v1/sites/${siteId}/operations/site.styles.read`, result: snapshot },
+    { method: "GET", url: `${origin}/api/edit/v1/sites/${siteId}/operations/site.breakpoints.read`, result: breakpoints },
+    { method: "GET", url: `${origin}/api/edit/v1/sites/${siteId}/operations/pages.read/lint-home?locale=${encodeURIComponent(locale)}&features=site.styles`,
+      result: { document, version: "page-1", draftStylesVersion: "styles-1" } }
+  ]);
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { status: "clean", pagesChecked: 1, findings: [] });
+});
+
+test("niho-edit lint all reports findings and exits nonzero", async () => {
+  const operations = EDITING_OPERATIONS.filter(({ id }) => id === "site.styles.read");
+  const styles = { tokens: { brand: { type: "color", value: "#abc" } } };
+  const snapshot = { sitePublicationEpoch: "epoch-1", draft: { version: "styles-1", styles },
+    published: { stylesVersion: "published-1", styles: {} } };
+  const breakpoints = { version: "breakpoints-1", settings: { base: { name: "PC", previewWidth: 1360 }, breakpoints: [] } };
+  const document = { schemaVersion: 1, siteId, pageId: "lint-home", locale, revision: 1, title: "Home",
+    tokens: { unused: { type: "color", value: "#ffffff" } },
+    body: [{ type: "element", id: "copy", tag: "p", style: { base: { color: "#aabbcc" } }, children: [] }] };
+  const result = await runSequence(["lint", "all"], [
+    { method: "GET", url: `${origin}/api/edit/v1/sites/${siteId}/capabilities?features=site.styles`, result: { apiVersion: "v1", siteId, operations } },
+    { method: "GET", url: `${origin}/api/edit/v1/sites/${siteId}/operations/site.styles.read`, result: snapshot },
+    { method: "GET", url: `${origin}/api/edit/v1/sites/${siteId}/operations/site.breakpoints.read`, result: breakpoints },
+    { method: "GET", url: `${origin}/api/edit/v1/sites/${siteId}/operations/pages.catalog`, result: { version: "catalog-1",
+      pages: [{ siteId, pageId: "lint-home", locale, title: "Home" }] } },
+    { method: "GET", url: `${origin}/api/edit/v1/sites/${siteId}/operations/pages.read/lint-home?locale=${encodeURIComponent(locale)}&features=site.styles`,
+      result: { document, version: "page-1", draftStylesVersion: "styles-1" } }
+  ]);
+  assert.equal(result.exitCode, 1, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.status, "issues");
+  assert.equal(output.pagesChecked, 1);
+  assert.ok(output.findings.some(({ code }) => code === "literal-matches-token"));
+  assert.ok(output.findings.some(({ code }) => code === "unused-token"));
+});
+
 test("niho-edit applies a reviewed page-management plan directly to the host API", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "niho-edit-page-change-"));
   t.after(() => rm(directory, { recursive: true, force: true }));

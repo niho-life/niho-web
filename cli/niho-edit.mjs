@@ -583,6 +583,10 @@ async function main() {
       return;
     }
   }
+  if (command === "lint") {
+    assertCommandOptions(values, ["locale"]);
+    if (extra.length || !pageId || (pageId === "all" ? values.locale !== undefined : !LOCALE.test(values.locale ?? ""))) throw new CliError("invalid_arguments");
+  }
   if (command === "cms-diff") {
     assertCommandOptions(values, ["base", "json"]);
     if (pageId !== undefined || extra.length) throw new CliError("invalid_arguments");
@@ -595,7 +599,7 @@ async function main() {
     process.stdout.write(`${JSON.stringify({ id: edited.id ?? base.id ?? null, version: base.version, changes })}\n`); return;
   }
   const baseOrigin = origin(values.origin);
-  if (values.studio && !["discover", "read", "outline", "find", "get", "apply", "normalize"].includes(command)
+  if (values.studio && !["discover", "read", "outline", "find", "get", "apply", "normalize", "lint"].includes(command)
     && !command?.startsWith("cms-") && !command?.startsWith("localization-")) throw new CliError("invalid_arguments");
   if (!IDENTIFIER.test(values.site ?? "")) throw new CliError("invalid_site");
   const token = process.env.NIHO_EDIT_TOKEN;
@@ -621,6 +625,14 @@ async function main() {
 
   if (command === "normalize") {
     await runNormalization(pageId, values, client, { origin: baseOrigin, siteId: values.site, studio: values.studio === true });
+    return;
+  }
+
+  if (command === "lint") {
+    const { runLintCli } = await import("./lint.mjs");
+    const result = await runLintCli(pageId, values.locale, { client, siteId: values.site, apiCall });
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    if (result.findings.length) process.exitCode = 1;
     return;
   }
 
