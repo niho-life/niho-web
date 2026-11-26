@@ -402,6 +402,21 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
     },
     readDocument: (target, signal) => request(signal, () => readPageDocument(target, signal)),
     prefetchDocument: (target, signal) => request(signal, () => readPageDocument(target, signal), false),
+    applyOperations: (input, signal) => conflict(() => request(signal, async () => {
+      const target = validTarget(input.target);
+      const result = await editingApi.applyOperations(target, {
+        baseVersion: input.baseVersion,
+        operationId: input.operationId,
+        operations: input.operations,
+        ...(input.componentsVersion === undefined ? {} : { componentsVersion: input.componentsVersion }),
+        ...(input.presentationVersion === undefined ? {} : { presentationVersion: input.presentationVersion }),
+        ...(input.stylesVersion === undefined ? {} : { stylesVersion: input.stylesVersion }),
+        ...(input.draftStylesVersion === undefined ? {} : { draftStylesVersion: input.draftStylesVersion }),
+        ...(input.cmsBindings === undefined ? {} : { cmsBindings: input.cmsBindings })
+      }, signal);
+      if (result.status === "valid") throw new Error("dry-run result cannot be used to save a page.");
+      return result;
+    })),
     saveDraft: (input, signal) => conflict(() => request(signal, async () => {
       if (input.target.locale === "en") {
         const target = validEnglishTarget(input.target), localization = input.localization;

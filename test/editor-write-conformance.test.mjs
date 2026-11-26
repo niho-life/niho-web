@@ -32,6 +32,7 @@ const readMethods = [
 
 const writeOperations = new Map([
   ["EditorAdapter.applyPageChange", ["pages.change-apply"]],
+  ["EditorAdapter.applyOperations", ["pages.apply"]],
   ["EditorAdapter.breakpointSettings.save", ["site.breakpoints.save"]],
   ["EditorAdapter.englishPublication.retry", ["pages.english-publication-retry"]],
   ["EditorAdapter.localization.command", [

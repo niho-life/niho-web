@@ -75,6 +75,9 @@ test("Experience editor stays frozen while Kamakura reads pass and site freezes 
   });
   assert.equal(page.status, 200);
   assert.deepEqual((await page.json()).editorState.readOnly, readOnly);
+  const applied = await write(`${kamakura}/editor/editing-api/v1/sites/kamakura/operations/pages.apply/home?locale=ja`, "POST");
+  assert.equal(applied.status, 409);
+  assert.deepEqual(await applied.json(), { error: "visual_editor_frozen", message: "凍結中" });
   for (const [path, method] of [[`${kamakura}/editor/home/draft`, "PUT"], [`${kamakura}/editor/home/release-plan`, "POST"], [`${kamakura}/editor/home/release`, "POST"]]) {
     const response = await write(path, method);
     assert.equal(response.status, 409, path);
@@ -89,6 +92,7 @@ test("Experience editor stays frozen while Kamakura reads pass and site freezes 
   assert.deepEqual(kamakuraCalls, [
     "GET /internal/studio/web-content/catalog",
     "GET /api/edit/v1/sites/kamakura/operations/pages.read/home",
+    "POST /api/edit/v1/sites/kamakura/operations/pages.apply/home",
     "PUT /internal/studio/web-content/home/draft",
     "POST /internal/studio/web-content/home/release-plan",
     "POST /internal/studio/web-content/home/release",

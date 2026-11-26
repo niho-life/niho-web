@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
-import { EDITING_OPERATIONS } from "@niho/web/editing-api";
+import { EDITING_OPERATIONS, withSiteStylesFeature } from "@niho/web/editing-api";
 import { createProjectEditorAdapter } from "@niho/web/project-editor";
 
 async function loadKamakuraCatalogContract() {
@@ -332,6 +332,50 @@ test("Kamakura adapter preserves the draft-style dependency version from feature
   const snapshot = await adapter.readDocument(target, signal);
   assert.equal(snapshot.draftStylesVersion, "draft-styles-v1");
   assert.equal(snapshot.document.pageId, pageId);
+});
+
+test("Kamakura GUI sends ordinary Japanese page edits through compact pages.apply", async (t) => {
+  const { createKamakuraAdapter } = await loadKamakuraEditor();
+  const pageId = "kamakura-community-dinner", target = { siteId: "kamakura", pageId, locale: "ja" };
+  const document = { schemaVersion: 1, siteId: target.siteId, pageId, locale: target.locale, revision: 1, title: "ページ", tokens: {}, body: [] };
+  const presentation = { schemaVersion: 1, siteId: target.siteId, locale: target.locale, version: "p.v1", reset: "neutral-v1", tokens: {},
+    layout: { base: { backgroundColor: "#edf5ed" } }, fonts: [],
+    shared: { header: { ...document, pageId: "site-header" }, footer: { ...document, pageId: "site-footer" } } };
+  const editorState = { readOnly: { reason: "読み取り専用" }, englishPublication: { state: "published", retryable: false }, releases: [] };
+  const base = "/api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/operations";
+  const requests = [];
+  t.mock.method(globalThis, "fetch", async (input, init = {}) => {
+    const url = new URL(String(input), "https://studio.niho.life"), method = init.method ?? "GET";
+    const path = `${url.pathname}${url.search}`, body = init.body === undefined ? undefined : JSON.parse(String(init.body));
+    requests.push({ method, path, body });
+    if (path.endsWith("/capabilities?features=site.styles")) return Response.json({ apiVersion: "v1", siteId: "kamakura",
+      operations: EDITING_OPERATIONS.filter(({ id }) => ["pages.read", "pages.apply"].includes(id) || id.startsWith("site.styles."))
+        .map((operation) => ["pages.read", "pages.apply"].includes(operation.id) ? withSiteStylesFeature(operation) : operation) });
+    if (path.endsWith("/site.styles.read")) return Response.json({ sitePublicationEpoch: "epoch-1",
+      draft: { version: "draft-styles-v1", styles: {} }, published: { stylesVersion: "published-styles-v1", styles: {} } });
+    if (path === `${base}/pages.read/${pageId}?locale=ja&features=site.styles`) return Response.json({ document, version: "page-v1",
+      draftStylesVersion: "draft-styles-v1", presentationVersion: presentation.version, presentation, editorState });
+    if (path === `${base}/pages.apply/${pageId}?locale=ja&features=site.styles`) return Response.json({ status: "applied", version: "page-v2", revision: 2,
+      document: { ...document, title: "変更後", revision: 2 } });
+    throw new Error(`unexpected request: ${method} ${path}`);
+  });
+  const adapter = createKamakuraAdapter(contract.parseKamakuraCatalog(catalog()), () => {}), signal = new AbortController().signal;
+  await adapter.readSiteSettings(target.siteId, signal);
+  const snapshot = await adapter.readDocument(target, signal);
+  const result = await adapter.applyOperations({ target, baseVersion: snapshot.version, operationId: crypto.randomUUID(),
+    operations: [{ type: "title", value: "変更後" }], presentationVersion: snapshot.presentationVersion, draftStylesVersion: snapshot.draftStylesVersion }, signal);
+
+  assert.equal(result.status, "applied");
+  assert.equal(result.document.title, "変更後");
+  const apply = requests.find(({ path }) => path.includes("/pages.apply/"));
+  assert.equal(apply.method, "POST");
+  assert.equal(apply.body.baseVersion, "page-v1");
+  assert.equal(apply.body.draftStylesVersion, "draft-styles-v1");
+  assert.equal(apply.body.stylesVersion, undefined);
+  assert.equal(apply.body.draftStylesVersion, "draft-styles-v1");
+  assert.equal(apply.body.document, undefined);
+  assert.deepEqual(apply.body.operations, [{ type: "title", value: "変更後" }]);
+  assert.ok(Buffer.byteLength(JSON.stringify(apply.body)) < 1024);
 });
 
 test("Kamakura Studio adapter routes multi-page plan, apply, and status through the shared editing API", async (t) => {
