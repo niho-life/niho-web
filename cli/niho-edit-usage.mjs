@@ -7,6 +7,12 @@ niho-edit --origin <https-origin> --site <site-id> find --url <public-url> --loc
 niho-edit --origin <https-origin> --site <site-id> get <page-id> <node-id> --locale <locale> [--effective-style]
 niho-edit --origin <https-origin> --site <site-id> apply <page-id> --locale <locale> [--ops <file|->] [--cms-bindings <file|->] [--dry-run] [--expected-version <version>] [--operation-id <uuid-v4>]
 niho-edit --studio --origin <https-origin> --site <site-id> apply <page-id> --locale <locale> [--ops <file|->] [--cms-bindings <file|->] [--dry-run] [--expected-version <version>] [--operation-id <uuid-v4>]
+niho-edit normalize analyze --json <入力ファイル|->
+niho-edit normalize plan --json <入力ファイル|->
+niho-edit [--studio] --origin <https-origin> --site <site-id> normalize apply --json <計画ファイル> --checkpoint <記録ファイル> [--approve <提案ID> ...]
+niho-edit [--studio] --origin <https-origin> --site <site-id> normalize resume --json <記録ファイル>
+niho-edit [--studio] --origin <https-origin> --site <site-id> normalize undo --json <記録ファイル>
+niho-edit [--studio] --origin <https-origin> --site <site-id> normalize verify --json <記録ファイル>
 niho-edit --origin <https-origin> --site <site-id> preview <page-id> --locale <locale> --widths 375,768,1280 [--compare published] [--out <dir>]
 niho-edit --origin <https-origin> --site <site-id> save <page-id> --locale <locale> --json <snapshot-file|->
 niho-edit --origin <https-origin> --site <site-id> release-plan <page-id> --locale <locale> --action <publish|rollback> (--json <snapshot-file|-> | --expected-version <version>) [--revision <number>] [--styles-version <published-version> --site-publication-epoch <epoch>]
@@ -66,15 +72,16 @@ styles-read returns { sitePublicationEpoch, draft: { version, styles }, publishe
 styles-release-plan input uses { expectedVersion: draft.version, expectedStylesVersion: published.stylesVersion, sitePublicationEpoch, operationId } from the latest styles-read snapshot.
 For a page release set, items-file contains 1 to 50 items: { "items": [{ "target": { "siteId", "pageId", "locale" }, "expectedVersion", "componentsVersion?", "presentationVersion?" }, ...] }.
 The plan is bound to the changed targets and versions. Results report each page as released, conflict, or pending.
-Apply the same saved plan again after a timeout to resume unfinished pages without republishing completed pages, then query page-release-set-status with its operation ID.`;
+Apply the same saved plan again after a timeout to resume unfinished pages without republishing completed pages, then query page-release-set-status with its operation ID.
+normalize analyze と plan はローカルで実行します。apply は版照合付きで適用し、状態を記録します。色の置換と表示幅の変更には --approve が必要です。resume は未確定のページ操作を再試行し、undo は適用済みの変更を戻します。verify は現在の文書を読み直して描画入力を比較します。`;
 
 const commandUsageLines = NIHO_EDIT_USAGE.split("\n")
   .filter((line) => line.startsWith("niho-edit "))
   .map((line) => {
-    const command = line.replace(/^niho-edit\s+(?:--studio\s+)?--origin <[^>]+> --site <[^>]+>\s+/u, "").replace(/^niho-edit\s+/u, "").split(/\s/u)[0];
+    const command = line.replace(/^niho-edit\s+(?:(?:--studio|\[--studio\])\s+)?--origin <[^>]+> --site <[^>]+>\s+/u, "").replace(/^niho-edit\s+/u, "").split(/\s/u)[0];
     return [command, line];
   })
-  .filter(([command]) => command && command !== "mcp");
+  .filter(([command]) => command && !["mcp", "normalize"].includes(command));
 
 export const NIHO_EDIT_COMMANDS = Object.freeze([...new Set(commandUsageLines.map(([command]) => command))]);
 export const NIHO_EDIT_COMMAND_USAGE = Object.freeze(Object.fromEntries(

@@ -50,9 +50,9 @@ const sideBorderProperties = new Set<string>([
   "borderTopColor", "borderRightColor", "borderBottomColor", "borderLeftColor"
 ]);
 const isolatedBackgroundProperties = new Set<string>(["backgroundImage", "backgroundSize", "backgroundPosition", "backgroundRepeat", "backgroundFilter"]);
-function declarations(values: StyleDeclarations, assets: ResolvedAssetMap, mode: "all" | "withoutIsolatedBackground" | "isolatedBackground" = "all"): string {
-  const properties = (Object.keys(values) as (StyleProperty | "backgroundImage")[])
-    .filter((property) => !motion.has(property) && (mode === "all" || (mode === "isolatedBackground" ? isolatedBackgroundProperties.has(property) : !isolatedBackgroundProperties.has(property)))).sort();
+/** @internal Keep normalization verification in the same shorthand order as the renderer. */
+export function styleDeclarationOrder(values: StyleDeclarations): (StyleProperty | "backgroundImage")[] {
+  const properties = (Object.keys(values) as (StyleProperty | "backgroundImage")[]).sort();
   // CSS shorthand は後にあると side-specific longhand を上書きするため、同じ rule 内で先に出す。
   for (const common of ["borderWidth", "borderStyle", "borderColor"] as const) {
     const index = properties.indexOf(common), firstSide = properties.findIndex((property) => sideBorderProperties.has(property));
@@ -61,14 +61,19 @@ function declarations(values: StyleDeclarations, assets: ResolvedAssetMap, mode:
   // gap shorthand は後にあると、同じ rule の columnGap / rowGap を上書きする。
   const gapIndex = properties.indexOf("gap"), firstAxisGap = properties.findIndex((property) => property === "columnGap" || property === "rowGap");
   if (gapIndex > firstAxisGap && firstAxisGap >= 0) properties.splice(firstAxisGap, 0, properties.splice(gapIndex, 1)[0]!);
-  return properties.map((property) => {
-    if (property === "backgroundFilter") return `filter:${declarationCss(property, values[property]!).slice("background-filter:".length)}`;
-    if (property !== "backgroundImage") return declarationCss(property, values[property]!);
-    // src は parseResolvedAssets で引用符・空白・<> を拒否済み。解決できない宣言だけ省く。
-    if (values.backgroundImage === "none") return "background-image:none;";
-    const resolved = resolvedAsset(assets, values.backgroundImage!.asset);
-    return resolved ? `background-image:url("${resolved.src}");` : "";
-  }).join("");
+  return properties;
+}
+function declarations(values: StyleDeclarations, assets: ResolvedAssetMap, mode: "all" | "withoutIsolatedBackground" | "isolatedBackground" = "all"): string {
+  return styleDeclarationOrder(values).filter((property) => !motion.has(property)
+    && (mode === "all" || (mode === "isolatedBackground" ? isolatedBackgroundProperties.has(property) : !isolatedBackgroundProperties.has(property))))
+    .map((property) => {
+      if (property === "backgroundFilter") return `filter:${declarationCss(property, values[property]!).slice("background-filter:".length)}`;
+      if (property !== "backgroundImage") return declarationCss(property, values[property]!);
+      // src は parseResolvedAssets で引用符・空白・<> を拒否済み。解決できない宣言だけ省く。
+      if (values.backgroundImage === "none") return "background-image:none;";
+      const resolved = resolvedAsset(assets, values.backgroundImage!.asset);
+      return resolved ? `background-image:url("${resolved.src}");` : "";
+    }).join("");
 }
 const reduced = "@media (prefers-reduced-motion:no-preference)";
 const transitionNames: readonly [StateProperty, string][] = [["color", "color"], ["backgroundColor", "background-color"], ["borderColor", "border-color"], ["opacity", "opacity"],

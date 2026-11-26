@@ -51,6 +51,7 @@ function argsFromCli() {
       "folder-id": { type: "string" }, cursor: { type: "string" }, limit: { type: "string" }, recent: { type: "boolean" },
       ops: { type: "string" }, "dry-run": { type: "boolean" },
       "confirm-data-loss": { type: "boolean" },
+      checkpoint: { type: "string" }, approve: { type: "string", multiple: true },
       widths: { type: "string" }, compare: { type: "string" }, out: { type: "string" },
       "node": { type: "string" }, "depth": { type: "string" }, "text": { type: "string" },
       "tag": { type: "string" }, "style": { type: "string" }, "uses-token": { type: "string" }, "block": { type: "string" },
@@ -357,6 +358,15 @@ async function apiCall(run) {
   }
 }
 
+async function runNormalization(action, values, client, scope) {
+  const { runNormalizationCli } = await import("./normalize.mjs");
+  const fail = (code, status) => { throw new CliError(code, status); };
+  const result = await runNormalizationCli(action, values, {
+    client, scope, inputJson: inputPageManagementJson, maximumBytes: MAX_INPUT_BYTES, stableJson, fail, apiCall
+  });
+  process.stdout.write(`${JSON.stringify(result)}\n`);
+}
+
 async function runLocalization(client, operation, values, positionals) {
   const { id, method } = operation;
   const itemTarget = ["localization.items.read", "localization.items.command", "localization.items.translate", "localization.preview"].includes(id);
@@ -557,7 +567,18 @@ async function main() {
   }
   if (command !== "preview" && [values.widths, values.compare, values.out].some((value) => value !== undefined)) throw new CliError("invalid_arguments");
   if (command !== "apply" && (values.ops !== undefined || values["cms-bindings"] !== undefined || values["dry-run"] !== undefined)) throw new CliError("invalid_arguments");
+  if (command !== "normalize" && (values.checkpoint !== undefined || values.approve !== undefined)) throw new CliError("invalid_arguments");
   if (!["outline", "find", "get"].includes(command) && ["node", "depth", "text", "tag", "style", "uses-token", "block", "url", "effective-style"].some((key) => values[key] !== undefined)) throw new CliError("invalid_arguments");
+  if (command === "normalize") {
+    const offline = ["analyze", "plan"].includes(pageId);
+    assertCommandOptions(values, pageId === "apply" ? ["json", "checkpoint", "approve"] : ["json"]);
+    if (extra.length || !values.json || !["analyze", "plan", "apply", "resume", "undo", "verify"].includes(pageId)
+      || !offline && values.json === "-" || pageId === "apply" && (!values.checkpoint || values.checkpoint === "-")) throw new CliError("invalid_arguments");
+    if (offline) {
+      await runNormalization(pageId, values);
+      return;
+    }
+  }
   if (command === "cms-diff") {
     assertCommandOptions(values, ["base", "json"]);
     if (pageId !== undefined || extra.length) throw new CliError("invalid_arguments");
@@ -570,7 +591,7 @@ async function main() {
     process.stdout.write(`${JSON.stringify({ id: edited.id ?? base.id ?? null, version: base.version, changes })}\n`); return;
   }
   const baseOrigin = origin(values.origin);
-  if (values.studio && !["discover", "read", "outline", "find", "get", "apply"].includes(command)
+  if (values.studio && !["discover", "read", "outline", "find", "get", "apply", "normalize"].includes(command)
     && !command?.startsWith("cms-") && !command?.startsWith("localization-")) throw new CliError("invalid_arguments");
   if (!IDENTIFIER.test(values.site ?? "")) throw new CliError("invalid_site");
   const token = process.env.NIHO_EDIT_TOKEN;
@@ -593,6 +614,11 @@ async function main() {
     "X-Studio-CMS-Version": "2", ...(hasAccessCredentials ? accessHeaders : { "cf-access-token": token })
   } : { Authorization: `Bearer ${token}`, ...accessHeaders };
   const client = createPageEditingApiClient({ origin: baseOrigin, siteId: values.site, credentials: "omit", headers, preferLegacyDiscovery: true });
+
+  if (command === "normalize") {
+    await runNormalization(pageId, values, client, { origin: baseOrigin, siteId: values.site, studio: values.studio === true });
+    return;
+  }
 
   if (command === "cms-schema-plan" || command === "cms-schema-apply") {
     const planning = command === "cms-schema-plan";
