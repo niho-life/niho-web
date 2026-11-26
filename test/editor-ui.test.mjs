@@ -1465,6 +1465,32 @@ async function pointer(target, type, clientY) {
   await settle();
 }
 
+test("canvas resize handle geometry waits for ResizeObserver after an edit render", async () => {
+  const previous = globalThis.ResizeObserver, observers = [];
+  class TestResizeObserver {
+    constructor(callback) { this.callback = callback; this.target = null; observers.push(this); }
+    observe(target) { this.target = target; }
+    disconnect() {}
+    deliver() { this.callback([{ target: this.target }], this); }
+  }
+  let app;
+  globalThis.ResizeObserver = TestResizeObserver;
+  try {
+    app = await setup();
+    await clickCanvas("hero");
+    const frame = document.querySelector("iframe"), observer = observers.find((entry) => entry.target === canvasNode("hero"));
+    assert.ok(observer, "the selected node is observed");
+    assert.equal(frame.contentDocument.querySelector(".nw-resize-handle"), null, "selection does not synchronously read canvas geometry");
+    await act(async () => observer.deliver());
+    await settle();
+    assert.ok(frame.contentDocument.querySelector(".nw-resize-handle"), "the resize handle appears after layout observation");
+  } finally {
+    if (app) await app.cleanup();
+    if (previous === undefined) delete globalThis.ResizeObserver;
+    else globalThis.ResizeObserver = previous;
+  }
+});
+
 test("canvas arrows reorder siblings in one history step while layer arrows move focus", async () => {
   const app = await setup();
   try {
