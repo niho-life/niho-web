@@ -476,8 +476,8 @@ function Canvas({ document, pageKey, blocks, width, height, breakpoint, selectio
   }
   const canvasRendering = useMemo(() => ({ viewportHeight, siteOrigin, interactive: mode === "preview" }), [viewportHeight, siteOrigin, mode]);
   const defaultPreview = presentation
-    ? <EditorSitePageRenderer key={replay} document={rendered} presentation={presentation} blocks={blocks} {...(externalFramePolicy ? { externalFramePolicy } : {})} {...(blankEmbeds ? { blankEmbeds } : {})} assets={assets} missingAssets="placeholder" canvas={canvasRendering} />
-    : <StablePageRenderer key={replay} document={rendered} blocks={blocks} {...(blankEmbeds ? { blankEmbeds } : {})} assets={assets} missingAssets="placeholder" canvas={canvasRendering} />;
+    ? <EditorSitePageRenderer key={`${pageKey}-${replay}`} document={rendered} presentation={presentation} blocks={blocks} {...(externalFramePolicy ? { externalFramePolicy } : {})} {...(blankEmbeds ? { blankEmbeds } : {})} assets={assets} missingAssets="placeholder" canvas={canvasRendering} />
+    : <StablePageRenderer key={`${pageKey}-${replay}`} document={rendered} blocks={blocks} {...(blankEmbeds ? { blankEmbeds } : {})} assets={assets} missingAssets="placeholder" canvas={canvasRendering} />;
   const runtimeDocument = useRef(rendered);
   if (!samePresentationRuntimeDocument(runtimeDocument.current, rendered)) runtimeDocument.current = rendered;
   useEffect(() => {

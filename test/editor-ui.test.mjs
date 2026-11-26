@@ -1823,6 +1823,25 @@ test("page switches reuse the canvas iframe and keep its current keyboard listen
   } finally { await app.cleanup(); }
 });
 
+test("page switches reset uncontrolled canvas DOM state without replacing the iframe", async () => {
+  const page = (pageId) => ({ ...structuredClone(fixture), pageId, body: [{ type: "element", id: "shared-details", tag: "details", children: [
+    { type: "element", id: "shared-summary", tag: "summary", children: [{ type: "text", text: "ページ内容" }] },
+    { type: "element", id: "shared-content", tag: "p", children: [{ type: "text", text: "同じIDの内容" }] }
+  ] }] });
+  const app = await setup({ adapter: { readDocument: async (target) => ({ document: page(target.pageId), version: `v-${target.pageId}` }) } });
+  try {
+    const frame = document.querySelector("iframe"), body = canvasBody(), originalDetails = body.querySelector("details");
+    assert.ok(originalDetails);
+    originalDetails.open = true;
+    await clickPage("別ページ");
+    const currentDetails = canvasBody().querySelector("details");
+    assert.equal(document.querySelector("iframe"), frame, "page changes keep the same iframe");
+    assert.equal(canvasBody(), body, "the iframe document remains mounted");
+    assert.notEqual(currentDetails, originalDetails, "the page renderer resets uncontrolled elements");
+    assert.equal(currentDetails.open, false, "the next page starts from its document state");
+  } finally { await app.cleanup(); }
+});
+
 const png = (name, size) => new File([new Uint8Array(size)], name, { type: "image/png" });
 const imageTypes = ["image/jpeg", "image/png", "image/webp", "image/avif", "image/gif"];
 const garden = { id: "garden", name: "庭の緑.png", mimeType: "image/png", bytes: 2048, width: 600, height: 400, alt: "庭の緑", src: "/media/garden.png", thumbnailUrl: "/media/garden.png" };
