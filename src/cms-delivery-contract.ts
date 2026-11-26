@@ -138,7 +138,15 @@ export function parseCmsDeliverySnapshot(input: unknown, siteId: string, locale:
 }
 
 export async function serializeCmsDeliverySnapshot(snapshot: CmsReleaseSnapshot) {
-  const body = JSON.stringify(projectCmsDeliverySnapshot(snapshot));
+  const legacy = snapshot as unknown as { readonly routeTable?: CmsReleaseSnapshot["routeTable"]; readonly routeTableRevision?: string };
+  const revision = legacy.routeTableRevision ?? legacy.routeTable?.revision ?? `legacy_${snapshot.releaseId.slice(0, 72)}`;
+  const reservations = [
+    ...snapshot.items.flatMap((item) => item.path ? [{ kind: "cms-item" as const, path: item.path,
+      collectionId: item.collectionId, itemId: item.itemId }] : []),
+    ...snapshot.redirects.map(({ from, to }) => ({ kind: "redirect" as const, path: from, targetPath: to, owner: "cms" as const }))
+  ];
+  const routeTable = legacy.routeTable ?? parseCmsRouteTable({ siteId: snapshot.siteId, locale: snapshot.locale, revision, reservations }, snapshot.siteId, snapshot.locale);
+  const body = JSON.stringify(projectCmsDeliverySnapshot({ ...snapshot, routeTableRevision: revision, routeTable }));
   return { body, snapshotDigest: await cmsDeliveryHash(body) };
 }
 

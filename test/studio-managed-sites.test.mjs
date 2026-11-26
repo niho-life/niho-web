@@ -9,7 +9,7 @@ import { build } from "esbuild";
 import { parseLocalizationItemResult, parseLocalizationListResult, parseLocalizationOverviewResult } from "@niho/web/localization-workspace-model";
 import { cmsLocalizationItemKey } from "@niho/web/cms-v2";
 import { CMS_DELIVERY_RENDERER_VERSION, cmsDeliveryRoutes, createCmsDeliveryClient } from "@niho/web/cms-delivery";
-import { cmsDeliveryHash, signCmsDeliveryRequest } from "../dist/cms-delivery-contract.js";
+import { cmsDeliveryHash, parseCmsDeliverySnapshot, serializeCmsDeliverySnapshot, signCmsDeliveryRequest } from "../dist/cms-delivery-contract.js";
 
 const { DatabaseSync } = await import("node:sqlite").catch(() => ({}));
 const testWithD1 = DatabaseSync ? test : test.skip;
@@ -963,6 +963,14 @@ testWithD1("External CMS delivery links committed events, immutable snapshots an
   assert.equal(artifact.details[0].item.values.title, "Published value");
   assert.deepEqual(await client.snapshot("ja"), built);
   assert.deepEqual(fetches.at(-1), { status: 304, etag: built.etag });
+
+  const legacySnapshot = structuredClone(built.snapshot);
+  delete legacySnapshot.routeTable;
+  delete legacySnapshot.routeTableRevision;
+  const legacyDelivery = await serializeCmsDeliverySnapshot(legacySnapshot);
+  const restoredLegacy = parseCmsDeliverySnapshot(JSON.parse(legacyDelivery.body), site.siteId, "ja");
+  assert.equal(restoredLegacy.routeTable.reservations.some(({ path }) => path === artifact.details[0].path), true,
+    "pre-route-table releases are reconstructed for delivery without changing their stored snapshot");
 
   const status = () => h.send(MANAGEMENT_ORIGIN, "GET", `${admin}/ja/status`).then((response) => body(response, 200));
   const ack = { state: "deployed", releaseId: firstId, snapshotDigest: built.snapshotDigest,
