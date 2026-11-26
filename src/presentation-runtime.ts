@@ -1,4 +1,5 @@
 import { normalizeEmbedSource } from "./embeds.js";
+import type { PageDocument, PageNode } from "./types.js";
 
 type OverlayElement = HTMLElement & { hidden: boolean };
 type ScriptSocialProvider = "x" | "instagram";
@@ -41,6 +42,35 @@ function focusableElements(overlay: HTMLElement): HTMLElement[] {
     }
     return true;
   });
+}
+
+/** Editor-only guard: style and text edits do not change the DOM features this runtime binds. */
+export function samePresentationRuntimeDocument(previous: PageDocument, next: PageDocument): boolean {
+  if (previous === next) return true;
+  if (previous.siteId !== next.siteId || previous.pageId !== next.pageId || previous.locale !== next.locale || previous.revision !== next.revision) return false;
+  const sameNodes = (left: readonly PageNode[], right: readonly PageNode[]): boolean => {
+    if (left === right) return true;
+    if (left.length !== right.length) return false;
+    for (let index = 0; index < left.length; index += 1) {
+      const before = left[index]!, after = right[index]!;
+      if (before === after) continue;
+      if (before.type !== after.type || before.type === "text" || after.type === "text" || before.id !== after.id) {
+        if (before.type === "text" && after.type === "text") continue;
+        return false;
+      }
+      if (before.type === "element" && after.type === "element") {
+        if (before.tag !== after.tag || before.formCompletionPageId !== after.formCompletionPageId || before.asset !== after.asset ||
+          before.icon !== after.icon || before.embed !== after.embed || before.interaction !== after.interaction || before.attrs !== after.attrs ||
+          !sameNodes(before.children, after.children)) return false;
+      } else if (before.type === "component" && after.type === "component") {
+        if (before.block !== after.block || before.props !== after.props || before.slots !== after.slots) return false;
+      } else if (before.type === "instance" && after.type === "instance") {
+        if (before.component !== after.component || before.props !== after.props) return false;
+      } else return false;
+    }
+    return true;
+  };
+  return sameNodes(previous.body, next.body);
 }
 
 /** 検証済みdata属性だけを解釈する、公開SSRとeditor preview共通の標準操作runtime。 */
