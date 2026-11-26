@@ -807,7 +807,7 @@ test("niho-edit selects managed CMS v2 with Access authentication and an explici
   assert.equal(capabilities.exitCode, 0);
   assert.deepEqual(JSON.parse(capabilities.stdout).result, discovery);
   const payload = { siteId, collectionId: "posts", itemId: "item_example", locale: "ja", contractVersion: 2,
-    expectedSchemaRevision: "initial", expectedRevision: "rev_example", values: { title: "Fixture" } };
+    expectedSchemaRevision: "initial", expectedRevision: "rev_example", values: { title: "Fixture", body: "x".repeat(70 * 1024) } };
   const operationKey = crypto.randomUUID(), accessClientId = `${"e".repeat(32)}.access`, accessClientSecret = "fixture-service";
   const updated = await run(["--studio", "cms-v2", "cms.items.save", "--json", "-", "--operation-id", operationKey], {
     studio: true, operationKey, token: null, accessClientId, accessClientSecret,

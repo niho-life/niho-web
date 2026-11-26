@@ -27,6 +27,8 @@ import { cmsLocalizationItem, cmsLocalizationOverview, cmsLocalizationSummary, c
 const PLAN_TTL = 10 * 60;
 const PREVIEW_TTL = 5 * 60;
 const LIST_SIZE = 10;
+const MAX_RELEASE_REDIRECTS = 25;
+const MAX_ITEM_SAVE_BODY = 128 * 1024;
 const VERSION_HEADER = "X-Studio-CMS-Version";
 const LEGACY = {
   "cms.schema": ["GET", "cms.read", 0],
@@ -66,18 +68,18 @@ function exact(value: Record<string, unknown>, names: readonly string[]) {
   if (Object.keys(value).length !== names.length) throw new DocumentValidationError("request", "missing key");
 }
 
-async function readBody(request: Request, scope: CmsScope) {
+async function readBody(request: Request, scope: CmsScope, maxBytes = MAX_BODY) {
   if (!scope.actor.cli && (request.headers.get("Origin") !== new URL(request.url).origin || request.headers.get("Sec-Fetch-Site") !== "same-origin")) return null;
   if (request.headers.get("Content-Type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") return null;
   const declared = request.headers.get("Content-Length");
-  if (declared !== null && (!/^\d+$/u.test(declared) || Number(declared) > MAX_BODY)) return null;
-  const reader = request.body?.getReader(), bytes = new Uint8Array(MAX_BODY);
+  if (declared !== null && (!/^\d+$/u.test(declared) || Number(declared) > maxBytes)) return null;
+  const reader = request.body?.getReader(), bytes = new Uint8Array(maxBytes);
   if (!reader) return null;
   let size = 0;
   while (true) {
     const chunk = await reader.read();
     if (chunk.done) break;
-    if (size + chunk.value.length > MAX_BODY) { await reader.cancel(); return null; }
+    if (size + chunk.value.length > maxBytes) { await reader.cancel(); return null; }
     bytes.set(chunk.value, size);
     size += chunk.value.length;
   }
@@ -307,7 +309,7 @@ async function releaseOperation(store: CmsStore, site: Site, capability: CmsCapa
   operation: "cms.release.plan" | "cms.release.apply" | "cms.schedule.create", body: Record<string, unknown>, mutation: Mutation | null) {
   if (operation === "cms.release.plan") {
     const scheduled = Object.hasOwn(body, "at"), input = scheduled ? parseCmsScheduleRequest(body) : parseCmsReleaseInput(body);
-    if (input.locale !== site.state.locale || input.items.length > MAX_ITEMS || input.redirects.length > MAX_ITEMS) return invalid();
+    if (input.locale !== site.state.locale || input.items.length > MAX_ITEMS || input.redirects.length > MAX_RELEASE_REDIRECTS) return invalid();
     const { ...selection } = input as CmsReleaseInput & { at?: string };
     delete selection.at;
     const ready = planCmsRelease(selection, opaque("release"), await releaseContext(store, site, input.items));
@@ -684,7 +686,7 @@ async function executeV2(request: Request, store: CmsStore, scope: CmsScope, rou
   const site = await store.site(scope, capability!);
   if (!site) return forbidden();
   if (request.method !== "POST") return error("method_not_allowed", 405);
-  const body = await readBody(request, scope);
+  const body = await readBody(request, scope, operation === "cms.items.save" ? MAX_ITEM_SAVE_BODY : MAX_BODY);
   if (!body || body.siteId !== site.siteId) return invalid();
   const cap = capability!;
   let mutation: Mutation | null = null;

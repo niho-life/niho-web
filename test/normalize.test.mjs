@@ -147,7 +147,7 @@ test("lossless verification expands components and checks presentation, shared p
     block
   ]);
   const header = page("header", [element("header-title", { base: { color: "#111" }, responsive: [{ minWidth: 800, declarations: { color: "#111" } }] })]);
-  const footer = page("footer", [element("footer-title", undefined)]);
+  const footer = page("footer", []);
   const presentation = { schemaVersion: 1, siteId: "sample", locale: "ja", version: "presentation-1", reset: "neutral-v1",
     tokens: {}, fonts: [], shared: { header, footer }, layout: { responsive: [{ minWidth: 900, declarations: { width: "100%" } }] } };
   const input = { documents: [{ document: main, componentsVersion: "c-1", presentation }, header], components, componentsVersion: "c-1", blocks };
@@ -165,6 +165,36 @@ test("lossless verification expands components and checks presentation, shared p
   const changedSlot = structuredClone(main);
   changedSlot.body[1].slots.item.responsive[0].declarations.opacity = 0.6;
   assert.equal(verifyNormalization(input, [changedSlot, header]).slot, "item");
+});
+
+test("verification resolves compact shared references to their versioned documents", () => {
+  const main = page("main", [element("main-title", { base: { opacity: 0.8 } })]);
+  const header = page("header", [element("header-title", { base: { color: "#111" },
+    responsive: [{ minWidth: 800, declarations: { color: "#111" } }] })], { brand: color("#111") });
+  const footer = page("footer", [element("footer-title", undefined)]);
+  const compactHeader = { schemaVersion: 1, siteId: header.siteId, pageId: header.pageId, locale: header.locale,
+    revision: header.revision, title: header.title, tokens: {}, body: [] };
+  const presentation = { schemaVersion: 1, siteId: "sample", locale: "ja", version: "presentation-compact-1",
+    reset: "neutral-v1", tokens: {}, fonts: [], shared: { header: compactHeader, footer }, compactSharedReferences: ["header"] };
+  const input = { documents: [{ document: main, presentation }, header, footer] };
+  assert.deepEqual(verifyNormalization(input, [main, header, footer]), { status: "equivalent", documentsChecked: 6 });
+
+  const plan = planNormalization(input);
+  const proposal = plan.proposals.find(({ kind, target }) => kind === "redundant-overrides" && target?.pageId === "header");
+  assert.ok(proposal, "compact shared references must not suppress lossless proposals");
+  const batch = selectNormalizationOperations(plan).find(({ target }) => target.pageId === "header");
+  assert.ok(batch);
+  const normalizedHeader = apply(batch, header, input);
+  assert.deepEqual(verifyNormalization(input, [main, normalizedHeader, footer]), { status: "equivalent", documentsChecked: 6 });
+
+  assert.equal(verifyNormalization({ documents: [{ document: main, presentation }, footer] }, [main, footer]).reason,
+    "ambiguous_presentation_document");
+  assert.equal(verifyNormalization({ documents: [{ document: main, presentation }, { ...header, revision: 2 }, footer] },
+    [main, { ...header, revision: 2 }, footer]).reason, "ambiguous_presentation_document");
+  const differentReference = { ...compactHeader, title: "別の文書" };
+  const mismatchedPresentation = { ...presentation, shared: { header: differentReference, footer } };
+  assert.equal(verifyNormalization({ documents: [{ document: main, presentation: mismatchedPresentation }, header, footer] },
+    [main, header, footer]).reason, "ambiguous_presentation_document");
 });
 
 test("verification refuses shorthand, hidden and state changes and missing shared tokens", () => {

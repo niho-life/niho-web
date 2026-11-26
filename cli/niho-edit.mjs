@@ -697,7 +697,8 @@ async function main() {
     if (!values.studio || extra.length || (discovery ? pageId !== undefined : !operation)) throw new CliError("invalid_arguments");
     const key = values["operation-id"];
     if (key !== undefined && !OPERATION_ID.test(key)) throw new CliError("invalid_arguments");
-    const input = discovery ? undefined : await inputPageManagementJson(values.json, 64 * 1024);
+    const input = discovery ? undefined : await inputPageManagementJson(values.json,
+      operation.id === "cms.items.save" ? 128 * 1024 : 64 * 1024);
     const url = `${baseOrigin}/api/edit/v2/sites/${encodeURIComponent(values.site)}/${operation ? `operations/${operation.id}` : "capabilities"}`;
     let result;
     try {
