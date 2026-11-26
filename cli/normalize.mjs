@@ -242,7 +242,12 @@ export async function runNormalizationCli(action, options, { client, scope, inpu
   const step = checkpoint.breakpoints;
   const { settings, batches } = selected;
   if (action === "resume" && checkpoint.direction !== "apply") fail("normalization_checkpoint_undo_started", 409);
-  const currentStyles = styleRevision ? await apiCall(() => client.readSiteStyles(timeout())) : undefined;
+  let currentStyles;
+  try { currentStyles = await apiCall(() => client.readSiteStyles(timeout())); }
+  catch (error) {
+    if (error?.code !== "not_found") throw error;
+  }
+  if (Boolean(styleRevision) !== Boolean(currentStyles)) fail("normalization_draft_styles_required", 409);
 
   async function sendPage(page, batch) {
     page.state = "sent";

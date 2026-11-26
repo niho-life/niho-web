@@ -69,7 +69,7 @@ async function sandbox(t, documents, settings = {}) {
       const persist = () => writeFileSync(location, JSON.stringify(state));
       state.log.push({ method, operation, ...(body ? { body } : {}) });
       persist();
-      const featured = target.searchParams.get("features") === SITE_STYLES_FEATURE;
+      const featured = state.styles !== undefined && target.searchParams.get("features") === SITE_STYLES_FEATURE;
       if (operation === "capabilities") {
         const operations = EDITING_OPERATIONS.filter(({ id }) => featured ? ["pages.apply", "site.styles.read"].includes(id) : id === "pages.apply");
         return answer({ apiVersion: "v1", siteId: ${JSON.stringify(siteId)}, operations: featured ? operations.map(withSiteStylesFeature) : operations });
@@ -156,7 +156,7 @@ test("normalize refuses an initial CAS conflict before sending any page batch", 
   await planFor(server.bundle, { documents: [original] });
   const result = await run(["apply", "--json", server.bundle, "--checkpoint", server.checkpoint], server);
   assert.equal(result.output.result.error, "version_conflict");
-  assert.deepEqual((await server.load()).log.map(({ operation }) => operation), ["pages.read"]);
+  assert.deepEqual((await server.load()).log.map(({ operation }) => operation), ["capabilities", "pages.read"]);
   assert.equal(JSON.parse(await readFile(server.checkpoint, "utf8")).pages[0].state, "pending");
 });
 
@@ -166,7 +166,7 @@ test("normalize requires the draft style version on hosts that expose site.style
   await planFor(server.bundle, { documents: [original] });
   const result = await run(["apply", "--json", server.bundle, "--checkpoint", server.checkpoint], server);
   assert.equal(result.output.result.error, "normalization_draft_styles_required");
-  assert.deepEqual((await server.load()).log.map(({ operation }) => operation), ["pages.read"]);
+  assert.deepEqual((await server.load()).log.map(({ operation }) => operation), ["capabilities", "site.styles.read"]);
 });
 
 test("normalize resumes the fixed operation ID after a lost response and verifies saved revisions", async (t) => {
