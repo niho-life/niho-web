@@ -1138,8 +1138,8 @@ async function handlePageApply(store: EditingPageOperationStore, pageNodeNames: 
   let cmsBindings: CmsPageBindingsDocument | null | undefined;
   try { cmsBindings = body.cmsBindings == null ? body.cmsBindings : parseCmsPageBindings(body.cmsBindings, target); }
   catch { return fail("invalid_request", 400); }
-  const dependencies = Object.fromEntries(versionFields.flatMap((key) => body[key] === undefined ? [] : [[key, body[key]]]))
-    as PageOperationVersions & Pick<EditingPageApplyInput, "draftStylesVersion">;
+  const dependencies = Object.fromEntries(versionFields.flatMap((key) => body[key] === undefined ? [] : [[key, body[key]]])) as
+    PageOperationVersions & Pick<EditingPageApplyInput, "draftStylesVersion">;
   const input = { ...dependencies, baseVersion: body.baseVersion, operationId: body.operationId.toLowerCase(), operations,
     ...(cmsBindings === undefined ? {} : { cmsBindings }) };
   const dryRun = body.dryRun === true;
