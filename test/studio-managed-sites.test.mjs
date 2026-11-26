@@ -18,10 +18,14 @@ const SERVICE_CLIENT = `${"c".repeat(32)}.access`;
 const migrationDirectory = new URL("../studio/migrations/", import.meta.url);
 const migrations = await Promise.all((await readdir(migrationDirectory)).filter((name) => name.endsWith(".sql")).sort().map((name) => readFile(new URL(name, migrationDirectory), "utf8")));
 const bundle = await build({
-  entryPoints: [fileURLToPath(new URL("../studio/worker.ts", import.meta.url))], bundle: true, format: "esm", platform: "node", target: "node22", write: false,
+  stdin: {
+    contents: 'export { default } from "./studio/worker.ts"; export { managedCmsApi } from "./studio/managed-cms.ts"; export { CmsStore } from "./studio/managed-cms-store.ts";',
+    resolveDir: fileURLToPath(new URL("..", import.meta.url))
+  },
+  bundle: true, format: "esm", platform: "node", target: "node22", write: false,
   banner: { js: 'import { createRequire as __createRequire } from "node:module"; const require = __createRequire(`${process.cwd()}/studio-worker-test.mjs`);' }
 });
-const worker = (await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString("base64")}`)).default;
+const { default: worker, managedCmsApi, CmsStore } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString("base64")}`);
 const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const jwk = { ...publicKey.export({ format: "jwk" }), kid: "managed-test", alg: "RS256", use: "sig" };
 
@@ -419,6 +423,89 @@ testWithD1("Studio CMS release snapshots include live unpublished page reservati
   const released = await site.read("cms.release.current");
   assert.equal(released.routeTableRevision, released.snapshot.routeTable.revision);
   assert.ok(released.snapshot.routeTable.reservations.some(({ kind, path }) => kind === "reserved" && path === "/about"));
+});
+
+testWithD1("Studio CMS renders only assets approved for the published revision", async (t) => {
+  const h = await fixture(t, { cms: true });
+  const site = await cmsSite(h, "cms-assets");
+  const schema = await site.read("cms.schema.read"), current = await site.read("cms.release.current");
+  const collection = schema.collections[0];
+  const image = { fieldId: "cover", key: "cover", label: "表紙", type: "image", placement: "main" };
+  const gallery = { fieldId: "gallery", key: "gallery", label: "ギャラリー", type: "gallery", captionLabel: "説明", placement: "main" };
+  const migration = await site.read("cms.schema.plan", { expectedSchemaRevision: schema.schemaRevision,
+    routeTableVersions: [{ locale: "ja", revision: current.routeTableRevision }], replacements: [],
+    nextSchema: { ...schema, collections: [{ ...collection, fields: [...collection.fields, image, gallery] }] } });
+  const { result: { schemaRevision } } = await site.read("cms.schema.apply", {
+    operationId: migration.plan.operationId, confirmationToken: migration.plan.confirmationToken
+  });
+  const cover = { provider: "fixture", id: "public-cover" }, slide = { provider: "fixture", id: "public-slide" };
+  const privateCover = { provider: "fixture", id: "private-draft" };
+  const coverAsset = { reference: cover, url: "/media/cover.webp", width: 800, height: 600, altText: 'Cover & "sea"' };
+  const slideAsset = { reference: slide, url: "https://media.example.test/slide.webp", width: null, height: null, altText: "" };
+  const extra = { ...slideAsset, reference: privateCover, url: "https://media.example.test/draft-only.webp" };
+  const initial = await createDraft(site, schemaRevision);
+  const save = async (draft, title, reference) => (await site.read("cms.items.save", {
+    ...versioned(draft), values: { ...values(title), cover: reference, gallery: [{ id: "one", image: slide, caption: "<Caption>" }] }
+  }, { headers: headers() })).item;
+  const selected = await save(initial, "Selected content", cover);
+  const draft = await save(selected, "Draft content", privateCover);
+  const { previewId } = await site.read("cms.preview.prepare", pin(draft));
+  const preview = await site.read("cms.preview.read", { previewId });
+  assert.equal(preview.preview.title, "Draft content");
+  assert.doesNotMatch(JSON.stringify(preview), /private-draft|draft-only\.webp|public-slide/u);
+  assert.equal((await site.pub("/posts/notice")).status, 404);
+
+  let available = [coverAsset, slideAsset], revokeOnRequest = Infinity;
+  const requests = [];
+  const store = new CmsStore(h.env.DB, h.env.CMS_OBJECTS, async ({ siteId, references }) => {
+    assert.equal(siteId, site.siteId);
+    requests.push(references);
+    if (requests.length === revokeOnRequest) available = [slideAsset];
+    return [...available.filter((asset) => references.some(({ id }) => id === asset.reference.id)),
+      // A resolver returning a superset must not add unrelated assets to the snapshot.
+      ...(!references.some(({ id }) => id === privateCover.id) ? [extra] : [])];
+  });
+  const post = (operation, input) => managedCmsApi(new Request(`${MANAGEMENT_ORIGIN}${site.endpoint}/${operation}`, {
+    method: "POST", headers: { "Content-Type": "application/json", Origin: MANAGEMENT_ORIGIN, "Sec-Fetch-Site": "same-origin" },
+    body: JSON.stringify({ siteId: site.siteId, ...input })
+  }), store, { siteId: site.siteId, projectId: site.projectId, actor: { id: OWNER, cli: false } }, operation, 2);
+  const planInput = { schemaRevision, locale: "ja", routeTableRevision: (await site.read("cms.release.current")).routeTableRevision,
+    expectedReleaseId: null, items: [pin(selected)], redirects: [] };
+  assert.equal((await site.post("cms.release.plan", planInput)).status, 422, "no resolver is configured for the default Worker");
+  const { plan } = await body(await post("cms.release.plan", planInput), 200);
+  assert.deepEqual(plan.candidate.snapshot.assetManifest, [coverAsset, slideAsset]);
+  const applyInput = { operationId: plan.operationId, confirmationToken: plan.confirmationToken };
+  available = [slideAsset];
+  assert.equal((await post("cms.release.apply", applyInput)).status, 409, "removing an approved asset invalidates the confirmed plan");
+  available = [coverAsset, slideAsset];
+  const { result: { releaseId } } = await body(await post("cms.release.apply", applyInput), 200);
+  assert.deepEqual(requests, [[cover, slide], [cover, slide], [cover, slide], [cover, slide]]);
+  const released = await site.read("cms.release.current");
+  assert.equal(released.snapshot.releaseId, releaseId);
+  assert.deepEqual(released.snapshot.assetManifest, [coverAsset, slideAsset]);
+  const response = await site.pub("/posts/notice");
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("Content-Security-Policy"), /img-src 'self' https:/u);
+  const html = await response.text();
+  assert.match(html, /<img src="\/media\/cover\.webp" alt="Cover &amp; &quot;sea&quot;" width="800" height="600">/u);
+  assert.match(html, /<figure><img src="https:\/\/media\.example\.test\/slide\.webp" alt=""><figcaption>&lt;Caption&gt;<\/figcaption><\/figure>/u);
+  assert.doesNotMatch(html, /Draft content|draft-only\.webp|private-draft|public-cover|public-slide/u);
+  const rejected = await body(await post("cms.release.plan", { ...planInput,
+    expectedReleaseId: releaseId, routeTableRevision: released.routeTableRevision, items: [pin(draft)] }), 422);
+  assert.ok(rejected.problems.some(({ fieldId }) => fieldId === "cover"));
+  assert.equal(await (await site.pub("/posts/notice")).text(), html);
+
+  const retry = (await body(await post("cms.release.plan", { ...planInput, expectedReleaseId: releaseId, routeTableRevision: released.routeTableRevision }), 200)).plan;
+  revokeOnRequest = requests.length + 2; // The asset becomes unavailable between apply and the outbox recheck.
+  await body(await post("cms.release.apply", { operationId: retry.operationId, confirmationToken: retry.confirmationToken }), 200);
+  const status = await site.read("cms.release.status", { operationId: retry.operationId });
+  assert.equal(status.delivery.state, "dead");
+  assert.equal(status.delivery.failure, "conflict");
+  assert.equal((await site.read("cms.release.current")).snapshot.releaseId, releaseId);
+
+  const key = `sites/${site.siteId}/releases/${releaseId}.json`;
+  h.objects.set(key, JSON.stringify({ ...released.snapshot, assetManifest: [slideAsset] }));
+  await assert.rejects(store.snapshot(site.siteId, releaseId), /unresolved public asset/u);
 });
 
 testWithD1("Studio CMS uses immutable revisions, site/actor boundaries, confirmation and recoverable release jobs", async (t) => {

@@ -1,6 +1,8 @@
+import { assetKey } from "./assets.js";
 import { isIsoTimestamp, parseCollectionItem, type CollectionItem, type CollectionItemStatus, type CollectionValue } from "./collection-model.js";
 import { validatePagePath } from "./pages.js";
-import { fail, keys, localeCode, record } from "./validation-utils.js";
+import { DocumentValidationError, fail, keys, localeCode, record } from "./validation-utils.js";
+import { cmsReleaseAssetUses, parseCmsPublicAssets, type CmsPublicAsset } from "./cms-v2-assets.js";
 import { CMS_ROUTE_RESERVATION_LIMIT, parseCmsRoutePath, parseCmsRouteRevision, parseCmsRouteTable, planCmsRouteTable, type CmsRouteTable } from "./cms-v2-routes.js";
 import {
   cmsArray, cmsCollection, cmsId, cmsItemKey, cmsLegacyCollections, cmsLegacyValues, cmsReferenceProblems, cmsValueProblems,
@@ -31,6 +33,7 @@ export type CmsReleaseSnapshot = {
   readonly schema: CmsSchema;
   readonly items: readonly CmsReleaseEntry[];
   readonly redirects: readonly CmsRedirect[];
+  readonly assetManifest: readonly CmsPublicAsset[];
 };
 
 function cmsRouteRevision(releaseId: string): string {
@@ -51,6 +54,8 @@ export type CmsReleaseContext = {
   readonly routeTable: CmsRouteTable;
   readonly readRevision: (item: CmsReleasePin) => unknown;
   readonly isRemoved: (item: CmsItemKey) => boolean;
+  /** The host verifies that these assets exist and can be published for this site. */
+  readonly publicAssets?: readonly CmsPublicAsset[];
   /** Host checks fixed routes, templates, external resources, and the designated public representation of rich text. */
   readonly impact?: CmsReleaseImpact;
   /** Hosts must sanitize and approve public references before returning HTML here. */
@@ -121,10 +126,6 @@ export function planCmsRelease(input: unknown, releaseIdInput: string, context: 
     const collection = cmsCollection(schema, item.collectionId), values: Record<string, CollectionValue> = { ...item.values };
     for (const field of collection.fields) {
       const value = values[field.fieldId];
-      // The public asset manifest resolves these stable references in later hosts.
-      if ((field.type === "image" && typeof value === "string") || (field.type === "gallery" && Array.isArray(value) && value.some((entry) => typeof entry === "object" && typeof entry.image === "string"))) {
-        problems.push({ ...target, fieldId: field.fieldId, code: "value", message: "公開素材を選び直してください。" });
-      }
       if (field.type === "richText" && typeof value === "string" && value !== "") {
         if (!context.publicRichText) {
           problems.push({ ...target, fieldId: field.fieldId, code: "value", message: "本文の公開変換が必要です。" });
@@ -141,6 +142,26 @@ export function planCmsRelease(input: unknown, releaseIdInput: string, context: 
     if (candidate !== null && path === null) problems.push({ ...target, code: "route", message: "公開 URL に使えるスラッグを入力してください。" });
     problems.push(...cmsValueProblems(collection, values).map((problem) => ({ ...problem, ...target })));
     items.push({ ...item, values, path });
+  }
+  const assetManifest = new Map<string, CmsPublicAsset>();
+  try {
+    const available = parseCmsPublicAssets(context.publicAssets);
+    const missingFields = new Set<string>();
+    for (const { reference, ...field } of cmsReleaseAssetUses(schema, items)) {
+      const key = reference === null ? null : assetKey(reference);
+      const asset = key === null ? undefined : available.get(key);
+      if (key !== null && asset !== undefined) {
+        assetManifest.set(key, asset);
+        continue;
+      }
+      const fieldKey = `${cmsItemKey(field)}/${field.fieldId}`;
+      if (missingFields.has(fieldKey)) continue;
+      missingFields.add(fieldKey);
+      problems.push({ ...field, code: "value", message: "公開できる素材を選び直してください。" });
+    }
+  } catch (error) {
+    if (!(error instanceof DocumentValidationError)) throw error;
+    return { status: "invalid", problems: [{ code: "value", message: "公開素材の配信情報を確認できません。" }] };
   }
   const routes = items.filter((item) => item.path !== null).map(({ collectionId, itemId, path }) => ({ collectionId, itemId, path: path! }));
   const routeByItemKey = new Map(routes.map((route) => [cmsItemKey(route), route]));
@@ -167,7 +188,7 @@ export function planCmsRelease(input: unknown, releaseIdInput: string, context: 
     ? [{ from: reservation.path, to: reservation.targetPath }] : []);
   const snapshot = freezeJson<CmsReleaseSnapshot>({ contractVersion: 2, releaseId, siteId: schema.siteId,
     locale: selection.locale, routeTableRevision: selection.routeTableRevision, routeTable: routePlan.table,
-    schema, items, redirects });
+    schema, items, redirects, assetManifest: [...assetManifest.values()] });
   problems.push(...cmsReferenceProblems(schema, items), ...routePlan.problems, ...(context.impact?.(snapshot) ?? []));
   return problems.length ? { status: "invalid", problems } : { status: "ready", proposal: freezeJson({ expectedReleaseId: selection.expectedReleaseId, snapshot }) };
 }

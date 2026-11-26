@@ -1,11 +1,17 @@
 import { starterCollection } from "./managed-cms-model.js";
-import { parseCmsRouteTable, type CmsItemRevision, type CmsReleasePin, type CmsReleaseSnapshot, type CmsRouteTable, type CmsSchema } from "../src/cms-v2.js";
+import { parseCmsReleaseAssetManifest, parseCmsRouteTable, type CmsItemRevision, type CmsPublicAsset, type CmsReleasePin, type CmsReleaseSnapshot, type CmsRouteTable, type CmsSchema } from "../src/cms-v2.js";
+import type { AssetReference } from "../src/types.js";
 import type { ManagedD1 } from "./managed-sites.js";
 
 export type CmsBucket = {
   get(key: string): Promise<{ json<T>(): Promise<T> } | null>;
   put(key: string, value: string, options: { onlyIf: Headers }): Promise<unknown>;
 };
+/** Resolve only existing, non-deleted images that the host permits this site to publish. */
+export type CmsPublicAssetResolver = (input: {
+  readonly siteId: string;
+  readonly references: readonly Readonly<AssetReference>[];
+}) => Promise<readonly CmsPublicAsset[]>;
 export type CmsActor = { readonly id: string; readonly clientId?: string; readonly cli: boolean };
 export type CmsCapability = "cms.read" | "cms.edit" | "cms.publish" | "cms.schema.apply";
 export type CmsScope = { readonly projectId: string; readonly siteId: string; readonly actor: CmsActor };
@@ -75,7 +81,7 @@ function scopeValues(scope: CmsScope, capability: CmsCapability) {
 }
 
 export class CmsStore {
-  constructor(readonly db: ManagedD1, readonly bucket: CmsBucket) {}
+  constructor(readonly db: ManagedD1, readonly bucket: CmsBucket, readonly resolvePublicAssets?: CmsPublicAssetResolver) {}
 
   async site(scope: CmsScope, capability: CmsCapability): Promise<Site | null> {
     const row = await this.db.prepare(`SELECT ms.slug, m.role,
@@ -110,7 +116,7 @@ export class CmsStore {
     const snapshot = await object.json<CmsReleaseSnapshot>();
     if (snapshot.contractVersion !== 2 || snapshot.siteId !== siteId || snapshot.releaseId !== releaseId || snapshot.schema.siteId !== siteId)
       throw new Error("CMS snapshot scope mismatch");
-    return snapshot;
+    return { ...snapshot, assetManifest: parseCmsReleaseAssetManifest(snapshot.schema, snapshot.items, snapshot.assetManifest) };
   }
 
   async approvedPins(site: Site, pins: readonly CmsReleasePin[]) {
