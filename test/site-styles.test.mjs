@@ -137,14 +137,15 @@ const localizationConfig = { schemaVersion: 1, siteId: "demo", sourceLocale: "ja
 test("localization validates and materializes pages that reference site styles with the same settings", async () => {
   const site = settings();
   await rejects(collectLocalizationUnits(localizationConfig, about, "en", {}));
-  const collection = await collectLocalizationUnits(localizationConfig, about, "en", { siteStyles: site });
+  const draft = { siteStyles: site, siteStylesRevision: { stage: "draft", version: "styles-draft-1" } };
+  const collection = await collectLocalizationUnits(localizationConfig, about, "en", draft);
   assert.deepEqual(collection.issues, []);
   assert.deepEqual(collection.units.map((unit) => unit.unitId).sort(), ["page.node.about_heading.text", "page.node.about_lead.text", "page.title"], "tokens and text styles are not translation units");
-  const materialized = await materializeLocalizedPage(localizationConfig, about, collection, createLocalizationOverlay(collection), { siteStyles: site });
+  const materialized = await materializeLocalizedPage(localizationConfig, about, collection, createLocalizationOverlay(collection), draft);
   assert.equal(materialized.document.locale, "en");
   assert.deepEqual(materialized.document.tokens, about.tokens, "the translated page keeps page-owned definitions only");
   assert.equal(materialized.document.textStyles, undefined);
-  const saved = await validateLocalizedDocumentSave(localizationConfig, about, materialized.document, { siteStyles: site });
+  const saved = await validateLocalizedDocumentSave(localizationConfig, about, materialized.document, draft);
   assert.equal(saved.document.locale, "en");
   await rejects(validateLocalizedDocumentSave(localizationConfig, about, materialized.document, {}));
   assert.equal(generatePageCss(materialized.document, {}, undefined, site).includes("--nw-brand:#195640;"), true);
@@ -159,13 +160,13 @@ const releaseInput = (page) => ({ config: localizationConfig, locale: "ja", rele
 test("a locale release fixes the effective site styles into self-contained pages", async () => {
   const site = settings();
   await rejects(createPublishedSiteLocaleSnapshot(releaseInput(about)));
-  const snapshot = await createPublishedSiteLocaleSnapshot(releaseInput(about), { siteStyles: site });
+  const snapshot = await createPublishedSiteLocaleSnapshot(releaseInput(about), { siteStyles: site, siteStylesRevision: { stage: "published", version: "styles-public-1" } });
   const published = snapshot.pages[0].document;
   assert.deepEqual(Object.keys(published.tokens).sort(), ["accent", "brand", "headingSize", "ink"]);
   assert.deepEqual(published.textStyles, site.textStyles);
   assert.equal(generatePageCss(published), generatePageCss(about, {}, undefined, site), "the stored page renders without the settings");
   parsePublishedSiteLocaleSnapshot(snapshot); await verifyPublishedSiteLocaleSnapshot(snapshot);
-  const changed = await createPublishedSiteLocaleSnapshot(releaseInput(about), { siteStyles: { ...site, tokens: { ...site.tokens, brand: color("#0055aa", "メイン") } } });
+  const changed = await createPublishedSiteLocaleSnapshot(releaseInput(about), { siteStyles: { ...site, tokens: { ...site.tokens, brand: color("#0055aa", "メイン") } }, siteStylesRevision: { stage: "published", version: "styles-public-2" } });
   assert.notEqual(changed.contentDigest, snapshot.contentDigest, "a site-wide change shows up in the next release");
   assert.equal(changed.pages[0].document.tokens.brand.value, "#0055aa");
   const legacyRelease = await createPublishedSiteLocaleSnapshot(releaseInput({ ...legacy, pageId: "about" }));
