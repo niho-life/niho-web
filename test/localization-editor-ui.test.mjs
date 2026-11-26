@@ -94,7 +94,7 @@ async function localizedSite(siteId, sourceLocale, labels) {
   const targetDocument = (await materializeLocalizedPage(cfg, sourceDocument, collection, overlay)).document;
   return { cfg, sourceDocument, targetDocument, collection, overlay, labels, documentVersion: 1, localizationVersion: 1, siteVersion: 1, job: { state: "failed", message: "合成した失敗" } };
 }
-async function setup({ conflictOnce = false, conflictSourceChange = false, rejectCommandOnce = false, delayedRead = false, delayedSites = false, delayedSite = false, delayedSiteAfterFirst = false, rejectSiteOnce = false, rejectPageOnce = false, unsupportedLocale = false, extraPublicPage = false, recovery, localeRelease, versionHistory = false, readOnlySource = false, readOnlyTarget = false, previewComponent, initialTarget, pageTranslationUnavailable = false, hostSourceLocale = false, declaredSourceLocale = false, legacyTargetReview, namedNodes = false } = {}) {
+async function setup({ conflictOnce = false, conflictSourceChange = false, rejectCommandOnce = false, delayedRead = false, delayedSites = false, delayedSite = false, delayedSiteAfterFirst = false, rejectSiteOnce = false, rejectPageOnce = false, unsupportedLocale = false, extraPublicPage = false, recovery, localeRelease, versionHistory = false, readOnlySource = false, readOnlyTarget = false, previewComponent, initialTarget, pageTranslationUnavailable = false, hostSourceLocale = false, declaredSourceLocale = false, legacyTargetReview, namedNodes = false, siteStyles = false } = {}) {
   const kamakura = await localizedSite("kamakura", "ja", { source: "鎌倉ホーム", manual: "Manual Kamakura", candidate: "Candidate Kamakura" });
   if (namedNodes) for (const state of [kamakura]) for (const page of [state.sourceDocument, state.targetDocument]) assignNodeName(page, "details", "翻訳対象リンク");
   if (hostSourceLocale) kamakura.sourceDocument.locale = "ja";
@@ -115,6 +115,7 @@ async function setup({ conflictOnce = false, conflictSourceChange = false, rejec
     listPages: async (siteId) => [{ siteId, pageId: "home", locale: unsupportedLocale && siteId === "kamakura" ? "fr-FR" : sites[siteId].sourceDocument.locale, title: sites[siteId].labels.source }],
     readDocument: async (target) => { const state = stateFor(target), source = isSource(state, target), value = structuredClone(source ? state.sourceDocument : state.targetDocument); if (unsupportedLocale && target.locale === "fr-FR") value.locale = target.locale; return { document: value, version: `doc-${state.documentVersion}`,
       ...((readOnlySource && source || readOnlyTarget && !source) ? { readOnly: { reason: source ? "業務公開テキストの原文は既存の業務編集画面が正本です。" : "この派生原稿はホスト側で固定されています。", editUrl: "/staff/business/public-text", editLabel: "業務原稿を編集" } } : {}) }; },
+    ...(siteStyles ? { readSiteSettings: async () => ({ settings: { tokens: { ink: { type: "color", value: "#17382d" } } }, version: "styles-draft-1" }) } : {}),
     saveDraft: async (request) => {
       calls.saves.push(structuredClone(request)); const state = stateFor(request.target);
       if (isSource(state, request.target)) state.sourceDocument = { ...structuredClone(request.document), revision: state.sourceDocument.revision + 1 };
@@ -188,6 +189,16 @@ test("initialTarget opens the translated language on the canvas", async () => {
   try {
     await waitForUi(() => document.querySelector('.e-language-selector [aria-pressed="true"]')?.textContent?.includes("English"), "English is selected from the initial target");
     assert.equal(document.querySelector('.e-language-selector [aria-pressed="true"]')?.textContent, "English");
+  } finally { await app.cleanup(); }
+});
+
+test("translated page localization reads once with a stable saved style revision", async () => {
+  const app = await setup({ siteStyles: true, initialTarget: { siteId: "kamakura", pageId: "home", locale: "en-US" } });
+  try {
+    await waitForUi(() => document.querySelector('.e-language-selector [aria-pressed="true"]')?.textContent?.includes("English") && app.calls.pageReads > 0,
+      "translated page and saved styles finish loading");
+    await flush(5);
+    assert.equal(app.calls.pageReads, 1, "a stable saved style revision must not restart the localization load effect");
   } finally { await app.cleanup(); }
 });
 

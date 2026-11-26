@@ -10,7 +10,7 @@ const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { PageEditor } = await import("@niho/web/editor");
 const { renderPageToHtml } = await import("@niho/web/server");
-const { detachRemovedSiteStyles, parsePageDocument } = await import("@niho/web/core");
+const { parsePageDocument } = await import("@niho/web/core");
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 
 const flush = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
@@ -647,8 +647,8 @@ test("a 409 on the site-wide save keeps the edited value and shows the latest se
   } finally { await app.cleanup(); }
 });
 
-test("deleting a site-wide color needs the host's atomic detachment and detaches page references with it", async () => {
-  const refusal = "このホストは全ページの参照を同時に切り離せないため、サイト共通スタイルを削除できません。";
+test("deleting a site-wide color is reserved for site.styles migration", async () => {
+  const refusal = "削除・名前変更には site.styles の migration plan/apply が必要です。通常保存では削除できません。";
   const host = siteStyleHost(), app = await setup({ document: host.page, adapter: host.adapter });
   try {
     await openSiteColor("ブランド");
@@ -657,27 +657,12 @@ test("deleting a site-wide color needs the host's atomic detachment and detaches
     assert.ok(libraryRow("ブランド"), "the definition stays");
   } finally { await app.cleanup(); }
   const atomic = siteStyleHost();
-  // 宣言したホストは、設定と一緒に全ページの参照を今の見た目のまま切り離す（ここでは 1 ページ）。
-  const save = atomic.adapter.saveSiteSettings;
-  atomic.adapter.saveSiteSettings = async (request) => {
-    const result = await save(request);
-    atomic.page = detachRemovedSiteStyles(parsePageDocument(atomic.page, {}, { siteStyles: request.previousStyles }), request.previousStyles, request.settings);
-    parsePageDocument(atomic.page, {}, { siteStyles: request.settings });
-    return result;
-  };
-  const app2 = await setup({ document: atomic.page, adapter: { ...atomic.adapter, siteStyleCapabilities: { atomicReferenceDetachment: true }, readDocument: async () => ({ document: structuredClone(atomic.page), version: "v1" }) } });
+  const app2 = await setup({ document: atomic.page, adapter: { ...atomic.adapter, siteStyleCapabilities: { atomicReferenceDetachment: true } } });
   try {
     await openSiteColor("ブランド");
     await click(button("このカラーを削除", left())); await click(button("削除する", left()));
-    assert.ok(!left().textContent.includes(refusal));
-    await until(() => review()?.textContent.includes("1 ページの参照または見た目に反映されます。"));
-    assert.ok(review().textContent.includes("削除（参照の見た目を保持）"));
-    await click(button("サイト共通スタイルを保存"));
-    assert.equal(atomic.saves.length, 1);
-    assert.deepEqual(atomic.saves[0].settings.tokens, {}); assert.deepEqual(atomic.saves[0].previousStyles.tokens.brand, { type: "color", value: "#336655", label: "ブランド" });
-    assert.equal(atomic.page.body[0].children[0].style.base.color, "#336655", "the page keeps its appearance as a literal value");
-    await until(() => canvasCss().includes("color:#336655;") && !canvasCss().includes("--nw-brand"), "the reloaded page renders the detached value");
-    assert.equal(app2.calls.saves.length, 0);
+    assert.ok(left().textContent.includes(refusal), "the removed legacy capability cannot bypass migration planning");
+    assert.equal(review(), null); assert.equal(atomic.saves.length, 0); assert.ok(libraryRow("ブランド"));
   } finally { await app2.cleanup(); }
 });
 

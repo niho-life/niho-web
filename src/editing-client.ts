@@ -1,5 +1,11 @@
 import { PAGE_OPERATION_VERSIONS, pageNodesHaveNames, pageOperationUsesNodeNames, pageOperationWire, type EditingPageApplyConflict, type EditingPageApplyInput, type EditingPageApplyResult } from "./editing-page-operations.js";
-import { EDITING_API_ERRORS, EDITING_OPERATIONS, PAGE_CMS_BINDINGS_CAPABILITY, PAGE_NODE_NAME_CAPABILITY, withPageCmsBindingsCapability, withPageNodeNameCapability, type EditingApiErrorCode, type EditingCmsOperationStatus, type EditingCmsPublishPlan, type EditingCmsTarget, type EditingDiscoveredOperation, type EditingPageCatalog, type EditingPageReleaseSetItem, type EditingPageReleaseSetItemResult, type EditingPageReleaseSetPlan, type EditingPageReleaseSetStatus, type EditingPageSnapshot, type EditingPageTarget } from "./editing-api.js";
+import { EDITING_API_ERRORS, EDITING_OPERATIONS, PAGE_CMS_BINDINGS_CAPABILITY, PAGE_NODE_NAME_CAPABILITY, withPageCmsBindingsCapability, withPageNodeNameCapability, withSiteStylesFeature, type EditingApiErrorCode, type EditingCmsOperationStatus, type EditingCmsPublishPlan, type EditingCmsTarget, type EditingDiscoveredOperation, type EditingPageCatalog, type EditingPageReleaseSetItem, type EditingPageReleaseSetItemResult, type EditingPageReleaseSetPlan, type EditingPageReleaseSetStatus, type EditingPageSnapshot, type EditingPageTarget } from "./editing-api.js";
+import {
+  SITE_STYLES_FEATURE, parseEditingSiteStylesMigrationPlan, parseEditingSiteStylesMigrationRequest,
+  parseEditingSiteStylesReleasePlan, parseEditingSiteStylesReleaseRequest, parseEditingSiteStylesSnapshot,
+  type EditingSiteStylesMigrationApply, type EditingSiteStylesMigrationPlan, type EditingSiteStylesMigrationRequest, type EditingSiteStylesMigrationResult,
+  type EditingSiteStylesReleaseApply, type EditingSiteStylesReleasePlan, type EditingSiteStylesReleaseRequest, type EditingSiteStylesReleaseResult,
+} from "./editing-site-styles.js";
 import { parseCmsPageBindings } from "./cms-page-bindings.js";
 import { parsePageInspectQuery, type PageInspectQuery, type PageInspectView } from "./page-inspect.js";
 import { parsePagePreviewIntent, type EditingPagePreviewIntent } from "./editing-page-preview.js";
@@ -17,6 +23,7 @@ import { identifier, localeCode } from "./validation-utils.js";
 import { parseBreakpointSettings } from "./style-model.js";
 import { parseRevisionPage, type EditorRevisionPage } from "./history.js";
 import { parseSiteStyles, type SiteStyles } from "./site-styles.js";
+import { parseSiteSettings, type SiteSettings } from "./pages.js";
 import {
   parseAssetDeleteResult, parseAssetListResult, parseAssetReference, parseAssetRestoreResult, parseAssetUpdateResult,
   parseAssetUploadIntent, parseAssetUsages, parseResolvedAssets, type AssetDeleteResult, type AssetListQuery,
@@ -31,7 +38,8 @@ import {
 const MAX_RESPONSE_BYTES = EDITING_LOCALIZATION_RESULT_BYTES;
 const LOCALIZATION_ERROR_STATUS: Record<EditingApiErrorCode, number> = {
   authentication_required: 401, duplicate_operation: 409, forbidden: 403, host_contract_violation: 502, host_failure: 503,
-  invalid_cursor: 400, invalid_request: 400, method_not_allowed: 405, node_not_found: 404, not_found: 404, result_too_large: 413, validation_failed: 422, version_conflict: 409,
+  invalid_cursor: 400, invalid_request: 400, method_not_allowed: 405, node_not_found: 404, not_found: 404, result_too_large: 413,
+  site_publication_in_progress: 409, site_style_migration_in_progress: 409, style_migration_required: 422, validation_failed: 422, version_conflict: 409,
 };
 const DOCUMENT_KEYS = ["schemaVersion", "siteId", "pageId", "locale", "revision", "title", "meta", "tokens", "textStyles", "body"] as const;
 
@@ -43,11 +51,17 @@ export type EditingApiClientOptions = {
   readonly headers?: HeadersInit | (() => HeadersInit);
   readonly credentials?: RequestCredentials;
   readonly fetch?: typeof fetch;
+  /** Keep page/CLI discovery on the legacy wire shape; site.styles methods still negotiate explicitly. */
+  readonly preferLegacyDiscovery?: boolean;
   /** Request a full editor snapshot and validate its presentation with the site's block contracts. */
   readonly editorSnapshot?: { readonly blocks?: BlockContracts };
 };
 export type { EditingLocalizationInput, EditingLocalizationOperationId, EditingLocalizationResult } from "./editing-localization.js";
 export type { EditingPagePreviewIntent } from "./editing-page-preview.js";
+export type {
+  EditingSiteStylesMigrationChange, EditingSiteStylesMigrationPlan, EditingSiteStylesMigrationRequest, EditingSiteStylesMigrationResult,
+  EditingSiteStylesReleasePlan, EditingSiteStylesReleaseRequest, EditingSiteStylesReleaseResult, SitePublicationEpoch,
+} from "./editing-site-styles.js";
 export type EditingApiDiscovery = { readonly apiVersion: "v1"; readonly siteId: string; readonly operations: readonly EditingDiscoveredOperation[] };
 export function supportsPageNodeNames(discovery: EditingApiDiscovery, operationId: "pages.apply" | "pages.save"): boolean {
   return discovery.operations.some((operation) => operation.id === operationId
@@ -58,7 +72,7 @@ export function supportsPageCmsBindings(discovery: EditingApiDiscovery): boolean
     && "capabilities" in operation && operation.capabilities.some((capability) => capability === PAGE_CMS_BINDINGS_CAPABILITY));
 }
 export type EditingPageSaveResult = { readonly status: "saved"; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" };
-export type EditingPageInspectionSnapshot = Readonly<Record<string, unknown>> & { readonly view: PageInspectView; readonly version: string; readonly stylesVersion?: string; readonly componentsVersion?: string; readonly presentationVersion?: string };
+export type EditingPageInspectionSnapshot = Readonly<Record<string, unknown>> & { readonly view: PageInspectView; readonly version: string; readonly stylesVersion?: string; readonly draftStylesVersion?: string; readonly componentsVersion?: string; readonly presentationVersion?: string };
 export type EditingPagePublishResult = { readonly status: "released"; readonly operationId: string; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" };
 export type EditingPageReleaseInput = Omit<EditorReleaseRequest, "target">;
 export type EditingCmsSaveResult = { readonly status: "saved"; readonly item: CollectionItem } | { readonly status: "conflict"; readonly current: CollectionItem };
@@ -78,14 +92,20 @@ export type EditingApiClient = {
   createPagePreviewIntent(target: EditingPageTarget, signal?: AbortSignal): Promise<EditingPagePreviewIntent>;
   read(target: EditingPageTarget, signal?: AbortSignal): Promise<EditingPageSnapshot>;
   applyOperations(target: EditingPageTarget, input: EditingPageApplyInput, signal?: AbortSignal): Promise<EditingPageApplyResult | EditingPageApplyConflict>;
-  save(target: EditingPageTarget, expectedVersion: string, document: unknown, signal?: AbortSignal): Promise<EditingPageSaveResult>;
+  save(target: EditingPageTarget, expectedVersion: string, document: unknown, signal?: AbortSignal, draftStylesVersion?: string): Promise<EditingPageSaveResult>;
   prepareRelease(target: EditingPageTarget, request: EditingPageReleaseInput, signal?: AbortSignal): Promise<EditorReleasePlan>;
   release(target: EditingPageTarget, plan: EditorReleasePlan, operationId: string, signal?: AbortSignal): Promise<EditingPagePublishResult>;
-  preparePageReleaseSet(items: readonly EditingPageReleaseSetItem[], signal?: AbortSignal, operationId?: string): Promise<EditingPageReleaseSetPlan>;
+  preparePageReleaseSet(items: readonly EditingPageReleaseSetItem[], signal?: AbortSignal, operationId?: string, sitePublicationEpoch?: string): Promise<EditingPageReleaseSetPlan>;
   publishPageReleaseSet(plan: EditingPageReleaseSetPlan, signal?: AbortSignal): Promise<EditingPageReleaseSetResult>;
   pageReleaseSetStatus(operationId: string, signal?: AbortSignal): Promise<EditingPageReleaseSetStatus>;
   readBreakpointSettings(signal?: AbortSignal): Promise<EditorBreakpointSettingsSnapshot>;
   saveBreakpointSettings(expectedVersion: string, settings: EditorBreakpointSettings, signal?: AbortSignal): Promise<EditorBreakpointSettingsSaveResult>;
+  readSiteStyles(signal?: AbortSignal): Promise<ReturnType<typeof parseEditingSiteStylesSnapshot>>;
+  saveSiteStyles(expectedVersion: string, styles: SiteStyles, signal?: AbortSignal): Promise<{ readonly status: "saved"; readonly version: string } | { readonly status: "conflict" }>;
+  prepareSiteStylesRelease(input: EditingSiteStylesReleaseRequest, signal?: AbortSignal): Promise<EditingSiteStylesReleasePlan>;
+  releaseSiteStyles(plan: EditingSiteStylesReleasePlan, signal?: AbortSignal): Promise<EditingSiteStylesReleaseResult | { readonly status: "conflict" }>;
+  prepareSiteStylesMigration(input: EditingSiteStylesMigrationRequest, signal?: AbortSignal): Promise<EditingSiteStylesMigrationPlan>;
+  applySiteStylesMigration(plan: EditingSiteStylesMigrationPlan, signal?: AbortSignal): Promise<EditingSiteStylesMigrationResult | { readonly status: "conflict" }>;
   readCmsSchema(signal?: AbortSignal): Promise<readonly CollectionDefinition[]>;
   listCmsItems(collectionId: string, signal?: AbortSignal): Promise<readonly CollectionItemSummary[]>;
   readCmsItem(target: EditingCmsTarget, signal?: AbortSignal): Promise<CollectionItem>;
@@ -108,6 +128,36 @@ export function createEditingApiHistoryAdapter(client: Pick<EditingApiClient, "l
   return {
     listRevisions: ({ target, cursor }, signal) => client.listPageHistory(target, cursor, signal),
     readRevision: ({ target, id }, signal) => client.readPageHistoryRevision(target, id, signal)
+  };
+}
+
+/**
+ * Compatibility facade for the editor's historical site-settings slot. Metadata remains host-owned;
+ * every style read/write is delegated to the common site.styles API and uses its draft CAS version.
+ */
+export function createEditingApiSiteSettingsFacade(
+  client: Pick<EditingApiClient, "readSiteStyles" | "saveSiteStyles">,
+  siteId: string,
+  metadata: Omit<SiteSettings, "tokens" | "textStyles">,
+): Pick<EditorAdapter, "readSiteSettings" | "saveSiteSettings"> {
+  const stableMetadata = parseSiteSettings(metadata);
+  const withoutStyles = (settings: SiteSettings): SiteSettings => {
+    const copy = { ...settings }; delete copy.tokens; delete copy.textStyles; return copy;
+  };
+  return {
+    async readSiteSettings(requestSiteId, signal) {
+      if (requestSiteId !== siteId) throw new TypeError("site mismatch");
+      const snapshot = await client.readSiteStyles(signal);
+      return { version: snapshot.draft.version, settings: parseSiteSettings({ ...stableMetadata, ...snapshot.draft.styles }) };
+    },
+    async saveSiteSettings(request, signal) {
+      if (request.siteId !== siteId) throw new TypeError("site mismatch");
+      const settings = parseSiteSettings(request.settings);
+      if (JSON.stringify(withoutStyles(settings)) !== JSON.stringify(withoutStyles(stableMetadata))) {
+        throw new TypeError("site metadata is not writable through site.styles");
+      }
+      return client.saveSiteStyles(request.expectedVersion, parseSiteStyles(settings), signal);
+    }
   };
 }
 
@@ -262,29 +312,31 @@ function responseEtag(response: Response): string | null {
 function confirmsNotModified(response: Response, etag: string): boolean {
   return response.status === 304 && responseEtag(response) === etag;
 }
-function validDiscoveredOperation(value: unknown): value is EditingDiscoveredOperation {
+function validDiscoveredOperation(value: unknown, siteStylesFeature = false): value is EditingDiscoveredOperation {
   if (!plainRecord(value)) return false;
   const expected = EDITING_OPERATIONS.find((operation) => operation.id === value.id);
   if (!expected) return false;
   const capabilities = Array.isArray(value.capabilities) ? value.capabilities : [];
-  const definition = capabilities.includes(PAGE_CMS_BINDINGS_CAPABILITY) && (expected.id === "pages.apply" || expected.id === "pages.read" || expected.id === "pages.inspect")
+  let definition: EditingDiscoveredOperation = capabilities.includes(PAGE_CMS_BINDINGS_CAPABILITY) && (expected.id === "pages.apply" || expected.id === "pages.read" || expected.id === "pages.inspect")
     ? withPageCmsBindingsCapability(expected, capabilities.includes(PAGE_NODE_NAME_CAPABILITY))
-    : "capabilities" in value && (expected.id === "pages.apply" || expected.id === "pages.save")
+    : capabilities.includes(PAGE_NODE_NAME_CAPABILITY) && (expected.id === "pages.apply" || expected.id === "pages.save")
     ? withPageNodeNameCapability(expected) : expected;
+  if (siteStylesFeature) definition = withSiteStylesFeature(definition as typeof expected);
   return exactKeys(value, Object.keys(definition)) && stableJson(value) === stableJson(definition);
 }
 function assertTarget(document: PageDocument, target: EditingPageTarget): void {
   if (document.siteId !== target.siteId || document.pageId !== target.pageId || document.locale !== target.locale) throw new EditingApiClientError("invalid_response");
 }
 const OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
-function normalizePageReleaseSetItems(value: unknown, siteId: string): EditingPageReleaseSetItem[] {
+function normalizePageReleaseSetItems(value: unknown, siteId: string, siteStylesFeature = false): EditingPageReleaseSetItem[] {
   if (!Array.isArray(value) || value.length < 1 || value.length > 50) throw new TypeError("page release set must contain 1 to 50 items");
   const items: EditingPageReleaseSetItem[] = [], seen = new Set<string>();
   for (const raw of value) {
-    if (!plainRecord(raw) || Object.keys(raw).some((key) => !["target", "expectedVersion", "componentsVersion", "presentationVersion"].includes(key))
+    if (!plainRecord(raw) || Object.keys(raw).some((key) => !["target", "expectedVersion", "componentsVersion", "presentationVersion", ...(siteStylesFeature ? ["stylesVersion"] : [])].includes(key))
       || !plainRecord(raw.target) || !exactKeys(raw.target, ["siteId", "pageId", "locale"]) || raw.target.siteId !== siteId
       || !isEditingApiVersion(raw.expectedVersion) || raw.componentsVersion !== undefined && !isEditingApiVersion(raw.componentsVersion)
-      || raw.presentationVersion !== undefined && !isEditingApiVersion(raw.presentationVersion)) throw new TypeError("invalid page release set item");
+      || raw.presentationVersion !== undefined && !isEditingApiVersion(raw.presentationVersion)
+      || siteStylesFeature && !isEditingApiVersion(raw.stylesVersion)) throw new TypeError("invalid page release set item");
     let target: EditingPageTarget;
     try { target = { siteId, pageId: identifier(raw.target.pageId, "$target.pageId"), locale: localeCode(raw.target.locale, "$target.locale") }; }
     catch { throw new TypeError("invalid page release set target"); }
@@ -293,21 +345,24 @@ function normalizePageReleaseSetItems(value: unknown, siteId: string): EditingPa
     seen.add(key);
     items.push({ target, expectedVersion: raw.expectedVersion,
       ...(raw.componentsVersion === undefined ? {} : { componentsVersion: raw.componentsVersion }),
-      ...(raw.presentationVersion === undefined ? {} : { presentationVersion: raw.presentationVersion }) });
+      ...(raw.presentationVersion === undefined ? {} : { presentationVersion: raw.presentationVersion }),
+      ...(raw.stylesVersion === undefined ? {} : { stylesVersion: raw.stylesVersion as string }) });
   }
   return items;
 }
-function parsePageReleaseSetPlan(value: unknown, siteId: string, operationId: string, expectedItems: readonly EditingPageReleaseSetItem[]): EditingPageReleaseSetPlan {
-  if (!plainRecord(value) || !exactKeys(value, ["siteId", "operationId", "confirmationToken", "domain", "items"])
+function parsePageReleaseSetPlan(value: unknown, siteId: string, operationId: string, expectedItems: readonly EditingPageReleaseSetItem[], siteStylesFeature = false): EditingPageReleaseSetPlan {
+  if (!plainRecord(value) || !exactKeys(value, ["siteId", "operationId", "confirmationToken", "domain", "items", ...(siteStylesFeature ? ["sitePublicationEpoch"] : [])])
     || value.siteId !== siteId || value.operationId !== operationId || !isEditingApiVersion(value.confirmationToken) || typeof value.domain !== "string") {
     throw new EditingApiClientError("invalid_response");
   }
   let items: EditingPageReleaseSetItem[], domain: URL;
-  try { items = normalizePageReleaseSetItems(value.items, siteId); domain = new URL(value.domain); }
+  try { items = normalizePageReleaseSetItems(value.items, siteId, siteStylesFeature); domain = new URL(value.domain); }
   catch { throw new EditingApiClientError("invalid_response"); }
   if (stableJson(items) !== stableJson(expectedItems) || domain.protocol !== "https:" || domain.origin !== value.domain || domain.username || domain.password
     || domain.pathname !== "/" || domain.search || domain.hash) throw new EditingApiClientError("invalid_response");
-  return { siteId, operationId, confirmationToken: value.confirmationToken, domain: value.domain, items };
+  if (siteStylesFeature && !isEditingApiVersion(value.sitePublicationEpoch)) throw new EditingApiClientError("invalid_response");
+  return { siteId, operationId, confirmationToken: value.confirmationToken, domain: value.domain, items,
+    ...(siteStylesFeature ? { sitePublicationEpoch: value.sitePublicationEpoch as string } : {}) };
 }
 function parsePageReleaseSetResult(value: unknown, siteId: string, operationId: string, expectedItems?: readonly EditingPageReleaseSetItem[]): Exclude<EditingPageReleaseSetResult, { status: "conflict" }> {
   if (!plainRecord(value) || !exactKeys(value, ["status", "operationId", "items"]) || value.operationId !== operationId
@@ -341,21 +396,27 @@ function parsePageReleaseSetResult(value: unknown, siteId: string, operationId: 
 }
 function releaseRequestBody(value: EditingPageReleaseInput): Record<string, unknown> {
   const request = value as unknown as Record<string, unknown>;
-  const allowed = ["expectedVersion", "action", "revision", "componentsVersion", "presentationVersion"];
+  const allowed = ["expectedVersion", "action", "revision", "componentsVersion", "presentationVersion", "siteStylesRevision", "sitePublicationEpoch"];
   if (!plainRecord(request) || Object.keys(request).some((key) => !allowed.includes(key)) || !isEditingApiVersion(request.expectedVersion)
     || request.action !== "publish" && request.action !== "rollback"
     || request.action === "publish" && request.revision !== undefined
     || request.action === "rollback" && (!Number.isSafeInteger(request.revision) || Number(request.revision) < 1)
     || request.componentsVersion !== undefined && !isEditingApiVersion(request.componentsVersion)
-    || request.presentationVersion !== undefined && !isEditingApiVersion(request.presentationVersion)) throw new TypeError("invalid release request");
-  return { ...request };
+    || request.presentationVersion !== undefined && !isEditingApiVersion(request.presentationVersion)
+    || request.siteStylesRevision !== undefined && (!plainRecord(request.siteStylesRevision) || !exactKeys(request.siteStylesRevision, ["stage", "version"])
+      || request.siteStylesRevision.stage !== "published" || !isEditingApiVersion(request.siteStylesRevision.version))
+    || (request.siteStylesRevision === undefined) !== (request.sitePublicationEpoch === undefined)
+    || request.sitePublicationEpoch !== undefined && !isEditingApiVersion(request.sitePublicationEpoch)) throw new TypeError("invalid release request");
+  const { siteStylesRevision, ...rest } = request;
+  return { ...rest, ...(siteStylesRevision === undefined ? {} : { stylesVersion: (siteStylesRevision as { version: string }).version }) };
 }
 function parseReleasePlan(value: unknown, target: EditingPageTarget, request: EditingPageReleaseInput): EditorReleasePlan {
-  const allowed = ["target", "expectedVersion", "action", "revision", "componentsVersion", "presentationVersion", "confirmationToken", "domain", "changes", "url", "affected"];
+  const allowed = ["target", "expectedVersion", "action", "revision", "componentsVersion", "presentationVersion", "stylesVersion", "sitePublicationEpoch", "confirmationToken", "domain", "changes", "url", "affected"];
   if (!plainRecord(value) || Object.keys(value).some((key) => !allowed.includes(key)) || !plainRecord(value.target)
     || !exactKeys(value.target, ["siteId", "pageId", "locale"]) || value.target.siteId !== target.siteId || value.target.pageId !== target.pageId || value.target.locale !== target.locale
     || value.expectedVersion !== request.expectedVersion || value.action !== request.action || value.revision !== request.revision
     || value.componentsVersion !== request.componentsVersion || value.presentationVersion !== request.presentationVersion
+    || value.stylesVersion !== request.siteStylesRevision?.version || value.sitePublicationEpoch !== request.sitePublicationEpoch
     || value.action !== "publish" && value.action !== "rollback"
     || value.action === "publish" && value.revision !== undefined
     || value.action === "rollback" && (!Number.isSafeInteger(value.revision) || Number(value.revision) < 1)
@@ -372,7 +433,8 @@ function parseReleasePlan(value: unknown, target: EditingPageTarget, request: Ed
   if (value.affected !== undefined && (!Array.isArray(value.affected) || value.affected.length > 100 || value.affected.some((item) => !plainRecord(item)
     || Object.keys(item).some((key) => !["kind", "name", "detail"].includes(key)) || !["shared", "page", "site"].includes(String(item.kind))
     || typeof item.name !== "string" || !item.name || item.name.length > 120 || item.detail !== undefined && (typeof item.detail !== "string" || item.detail.length > 300)))) throw new EditingApiClientError("invalid_response");
-  return value as unknown as EditorReleasePlan;
+  const { stylesVersion: _stylesVersion, ...rest } = value;
+  return { ...rest, ...(request.siteStylesRevision === undefined ? {} : { siteStylesRevision: request.siteStylesRevision }) } as unknown as EditorReleasePlan;
 }
 
 /** Studio GUI and machine clients can call the same host-owned JSON wire API through this React-free client. */
@@ -419,6 +481,7 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
     return definition;
   };
   let discovered: EditingApiDiscovery | undefined;
+  let siteStylesFeature = false;
   const pageReadCache = new Map<string, { etag: string; value: EditingPageSnapshot }>();
   let pageCatalogCache: { etag: string; value: EditingPageCatalog } | null = null;
   function rememberPageRead(key: string, entry: { etag: string; value: EditingPageSnapshot }): void {
@@ -428,6 +491,35 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
   }
   async function requirePageNodeNames(operationId: "pages.apply" | "pages.save", signal?: AbortSignal): Promise<void> {
     if (!supportsPageNodeNames(discovered ?? await client.discover(signal), operationId)) throw new EditingApiClientError("forbidden", 403);
+  }
+  async function featurePath(path: string, signal?: AbortSignal): Promise<string> {
+    void signal;
+    // Page methods keep the legacy wire shape until the caller has explicitly negotiated
+    // discovery. Site-style methods always negotiate through requireSiteStylesOperation().
+    // This also preserves direct page clients that talk to pre-discovery hosts.
+    if (!discovered) return path;
+    if (!siteStylesFeature) return path;
+    return `${path}${path.includes("?") ? "&" : "?"}features=${SITE_STYLES_FEATURE}`;
+  }
+  async function requireSiteStylesOperation(id: string, signal?: AbortSignal): Promise<void> {
+    const discovery = siteStylesFeature && discovered ? discovered : await performDiscovery(true, signal);
+    if (!siteStylesFeature || !discovery.operations.some((operation) => operation.id === id)) throw new EditingApiClientError("not_found", 404);
+  }
+  async function performDiscovery(requestSiteStyles: boolean, signal?: AbortSignal): Promise<EditingApiDiscovery> {
+    let result = await send(`/sites/${encodeURIComponent(siteId)}/capabilities${requestSiteStyles ? `?features=${SITE_STYLES_FEATURE}` : ""}`, "GET", undefined, signal);
+    let negotiated = requestSiteStyles;
+    if (requestSiteStyles && !result.response.ok && [400, 404, 405].includes(result.response.status)) {
+      result = await send(`/sites/${encodeURIComponent(siteId)}/capabilities`, "GET", undefined, signal);
+      negotiated = false;
+    }
+    const { response, body } = result;
+    if (!response.ok) throw apiFailure(body, response.status);
+    if (!exactKeys(body, ["apiVersion", "siteId", "operations"]) || body.apiVersion !== "v1" || body.siteId !== siteId || !Array.isArray(body.operations)
+      || body.operations.length === 0 || body.operations.some((entry) => !validDiscoveredOperation(entry, negotiated))
+      || new Set(body.operations.map((entry) => (entry as Record<string, unknown>).id)).size !== body.operations.length) throw new EditingApiClientError("invalid_response", response.status);
+    siteStylesFeature = negotiated;
+    discovered = body as unknown as EditingApiDiscovery;
+    return discovered;
   }
   const client: EditingApiClient = {
     async executeLocalization<Id extends EditingLocalizationOperationId>(id: Id, value: EditingLocalizationInput<Id>, signal?: AbortSignal) {
@@ -454,7 +546,8 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       }
       if (!response.ok) {
         const code = body.error;
-        if (typeof code !== "string" || !exactKeys(body, ["error"]) || !operation.errors.includes(code as EditingApiErrorCode)
+        const errors = siteStylesFeature ? withSiteStylesFeature(operation).errors : operation.errors;
+        if (typeof code !== "string" || !exactKeys(body, ["error"]) || !errors.includes(code as EditingApiErrorCode)
           || response.status !== LOCALIZATION_ERROR_STATUS[code as EditingApiErrorCode]) {
           throw new EditingApiClientError("invalid_response", response.status);
         }
@@ -468,13 +561,7 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       } catch { throw new EditingApiClientError("invalid_response", response.status); }
     },
     async discover(signal) {
-      const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/capabilities`, "GET", undefined, signal);
-      if (!response.ok) throw apiFailure(body, response.status);
-      if (!exactKeys(body, ["apiVersion", "siteId", "operations"]) || body.apiVersion !== "v1" || body.siteId !== siteId || !Array.isArray(body.operations)
-        || body.operations.length === 0 || body.operations.some((entry) => !validDiscoveredOperation(entry))
-        || new Set(body.operations.map((entry) => (entry as Record<string, unknown>).id)).size !== body.operations.length) throw new EditingApiClientError("invalid_response", response.status);
-      discovered = body as unknown as EditingApiDiscovery;
-      return discovered;
+      return performDiscovery(options.preferLegacyDiscovery !== true, signal);
     },
     async readPageCatalog(signal) {
       const path = `/sites/${encodeURIComponent(siteId)}/operations/pages.catalog`;
@@ -536,13 +623,14 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       const queryAt = targetUrl.indexOf("?");
       const params = new URLSearchParams(targetUrl.slice(queryAt + 1));
       for (const [key, value] of Object.entries(query)) if (value !== undefined) params.set(key, String(value));
-      const path = targetUrl.slice(0, queryAt + 1) + params.toString();
+      const path = await featurePath(targetUrl.slice(0, queryAt + 1) + params.toString(), signal);
       const { response, body } = await send(path, "GET", undefined, signal);
       if (!response.ok) throw apiFailure(body, response.status);
       if (body.view !== query.view || !isEditingApiVersion(body.version)
         || body.componentsVersion !== undefined && !isEditingApiVersion(body.componentsVersion)
         || body.presentationVersion !== undefined && !isEditingApiVersion(body.presentationVersion)
         || body.stylesVersion !== undefined && !isEditingApiVersion(body.stylesVersion)
+        || body.draftStylesVersion !== undefined && !isEditingApiVersion(body.draftStylesVersion)
         || body.nextCursor !== undefined && (typeof body.nextCursor !== "string" || body.nextCursor.length > 2048)) throw new EditingApiClientError("invalid_response", response.status);
       if (["outline", "find"].includes(query.view) && (!Array.isArray(body.items) || body.items.length > 1000
         || body.items.some((item) => !plainRecord(item) || typeof item.id !== "string"))) throw new EditingApiClientError("invalid_response", response.status);
@@ -592,7 +680,7 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       return intent;
     },
     async read(target, signal) {
-      const path = targetPath(target, siteId).replace("{operation}", "pages.read");
+      const path = await featurePath(targetPath(target, siteId).replace("{operation}", "pages.read"), signal);
       const key = `${target.pageId}\u0000${target.locale}`;
       const cached = pageReadCache.get(key);
       const accept = options.editorSnapshot ? EDITING_EDITOR_SNAPSHOT_ACCEPT : "application/json";
@@ -602,14 +690,16 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       const { response, body } = result;
       if (response.status === 304) throw new EditingApiClientError("invalid_response", response.status);
       if (!response.ok) throw apiFailure(body, response.status);
-      const dependencies = Object.fromEntries(PAGE_OPERATION_VERSIONS.flatMap((key) => body[key] === undefined ? [] : [[key, body[key]]]));
+      const dependencyFields = siteStylesFeature ? ["componentsVersion", "presentationVersion", "draftStylesVersion"] as const : PAGE_OPERATION_VERSIONS;
+      const dependencies = Object.fromEntries(dependencyFields.flatMap((key) => body[key] === undefined ? [] : [[key, body[key]]]));
       const snapshotKeys = [
         ...(body.cmsBindings === undefined ? [] : ["cmsBindings"]),
         ...(options.editorSnapshot && body.editorState !== undefined ? ["editorState"] : []),
         ...(options.editorSnapshot && body.presentation !== undefined ? ["presentation"] : [])
       ];
       if (!exactKeys(body, ["document", "version", ...Object.keys(dependencies), ...snapshotKeys]) || !isEditingApiVersion(body.version)
-        || Object.values(dependencies).some((value) => !isEditingApiVersion(value))) throw new EditingApiClientError("invalid_response", response.status);
+        || Object.values(dependencies).some((value) => !isEditingApiVersion(value))
+        || siteStylesFeature && !isEditingApiVersion(body.draftStylesVersion)) throw new EditingApiClientError("invalid_response", response.status);
       const document = parseEditingPageDocumentEnvelope(body.document);
       assertTarget(document, target);
       let editorSnapshot: Pick<EditingPageSnapshot, "editorState" | "presentation"> = {};
@@ -630,9 +720,14 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       return structuredClone(value);
     },
     async applyOperations(target, input, signal) {
-      const path = targetPath(target, siteId).replace("{operation}", "pages.apply");
+      const path = await featurePath(targetPath(target, siteId).replace("{operation}", "pages.apply"), signal);
       if (input.operations.some(pageOperationUsesNodeNames)) await requirePageNodeNames("pages.apply", signal);
-      const { response, body } = await send(path, "POST", { ...input, operations: input.operations.map(pageOperationWire) }, signal);
+      const cacheKey = `${target.pageId}\u0000${target.locale}`, draftStylesVersion = input.draftStylesVersion ?? pageReadCache.get(cacheKey)?.value.draftStylesVersion;
+      if (siteStylesFeature && !isEditingApiVersion(draftStylesVersion)) throw new TypeError("draft style version is required");
+      if (!siteStylesFeature && input.draftStylesVersion !== undefined) throw new EditingApiClientError("not_found", 404);
+      const wireInput = { ...input, ...(siteStylesFeature ? { draftStylesVersion } : {}), operations: input.operations.map(pageOperationWire) };
+      if (siteStylesFeature) delete (wireInput as Record<string, unknown>).stylesVersion;
+      const { response, body } = await send(path, "POST", wireInput, signal);
       if (response.status === 409 && body.error === "version_conflict") {
         if (exactKeys(body, ["error"])) return { status: "conflict" };
         const conditions = ["rebase_supported", "preconditions", "node_exists", "parent_id", "old_value", "child_path"];
@@ -666,13 +761,15 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       if (body.revision !== document.revision) throw new EditingApiClientError("invalid_response", response.status);
       return { status: "applied", version: body.version, revision: document.revision, document };
     },
-    async save(target, expectedVersion, documentValue, signal) {
-      const path = targetPath(target, siteId).replace("{operation}", "pages.save");
+    async save(target, expectedVersion, documentValue, signal, explicitDraftStylesVersion) {
+      const path = await featurePath(targetPath(target, siteId).replace("{operation}", "pages.save"), signal);
       const document = parseEditingPageDocumentEnvelope(documentValue);
       assertTarget(document, target);
       if (!isEditingApiVersion(expectedVersion)) throw new TypeError("invalid editing API version");
       if (pageNodesHaveNames(document.body)) await requirePageNodeNames("pages.save", signal);
-      const { response, body } = await send(path, "PUT", { expectedVersion, document }, signal);
+      const cachedDraftVersion = explicitDraftStylesVersion ?? pageReadCache.get(`${target.pageId}\u0000${target.locale}`)?.value.draftStylesVersion;
+      if (siteStylesFeature && !isEditingApiVersion(cachedDraftVersion)) throw new TypeError("read the page before saving with site styles");
+      const { response, body } = await send(path, "PUT", { expectedVersion, ...(siteStylesFeature ? { draftStylesVersion: cachedDraftVersion } : {}), document }, signal);
       if (response.status === 409 && body.error === "version_conflict") return { status: "conflict" };
       if (!response.ok) throw apiFailure(body, response.status);
       if (!exactKeys(body, ["status", "version", "document"]) || body.status !== "saved" || !isEditingApiVersion(body.version)) throw new EditingApiClientError("invalid_response", response.status);
@@ -681,8 +778,10 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       return { status: "saved", version: body.version, document: savedDocument };
     },
     async prepareRelease(target, request, signal) {
-      const path = targetPath(target, siteId).replace("{operation}", "pages.release-plan");
+      const path = await featurePath(targetPath(target, siteId).replace("{operation}", "pages.release-plan"), signal);
       const input = releaseRequestBody(request);
+      if (siteStylesFeature && request.siteStylesRevision === undefined) throw new TypeError("published style version and site publication epoch are required");
+      if (!siteStylesFeature && request.siteStylesRevision !== undefined) throw new EditingApiClientError("not_found", 404);
       const { response, body } = await send(path, "POST", input, signal);
       if (response.status === 409 && body.error === "version_conflict") throw new EditingApiClientError("version_conflict", 409);
       if (!response.ok) throw apiFailure(body, response.status);
@@ -690,16 +789,20 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       return parseReleasePlan(body.plan, target, request);
     },
     async release(target, plan, operationId, signal) {
-      const path = targetPath(target, siteId).replace("{operation}", "pages.release");
+      const path = await featurePath(targetPath(target, siteId).replace("{operation}", "pages.release"), signal);
       if (!plan || !plainRecord(plan) || !plainRecord(plan.target) || !OPERATION_ID.test(operationId)) throw new TypeError("invalid release plan");
       const request: EditingPageReleaseInput = {
         expectedVersion: String(plan.expectedVersion), action: plan.action as "publish" | "rollback",
         ...(plan.revision === undefined ? {} : { revision: Number(plan.revision) }),
         ...(plan.componentsVersion === undefined ? {} : { componentsVersion: String(plan.componentsVersion) }),
         ...(plan.presentationVersion === undefined ? {} : { presentationVersion: String(plan.presentationVersion) })
+        , ...(plan.siteStylesRevision === undefined ? {} : { siteStylesRevision: plan.siteStylesRevision }), ...(plan.sitePublicationEpoch === undefined ? {} : { sitePublicationEpoch: plan.sitePublicationEpoch })
       };
-      const safePlan = parseReleasePlan(plan, target, request);
-      const { response, body } = await send(path, "POST", { expectedVersion: safePlan.expectedVersion, confirmationToken: safePlan.confirmationToken, operationId }, signal);
+      const { siteStylesRevision, ...internalPlan } = plan;
+      const wirePlan = { ...internalPlan, ...(siteStylesRevision === undefined ? {} : { stylesVersion: siteStylesRevision.version }) };
+      const safePlan = parseReleasePlan(wirePlan, target, request);
+      const { response, body } = await send(path, "POST", { expectedVersion: safePlan.expectedVersion, confirmationToken: safePlan.confirmationToken, operationId,
+        ...(siteStylesFeature ? { stylesVersion: safePlan.siteStylesRevision!.version, sitePublicationEpoch: safePlan.sitePublicationEpoch } : {}) }, signal);
       if (response.status === 409 && body.error === "version_conflict") return { status: "conflict" };
       if (!response.ok) throw apiFailure(body, response.status);
       if (!exactKeys(body, ["status", "operationId", "version", "document"]) || body.status !== "released" || body.operationId !== operationId || !isEditingApiVersion(body.version)) throw new EditingApiClientError("invalid_response", response.status);
@@ -707,23 +810,27 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       assertTarget(document, target);
       return { status: "released", operationId, version: body.version, document };
     },
-    async preparePageReleaseSet(itemsValue, signal, requestedOperationId = crypto.randomUUID()) {
-      const items = normalizePageReleaseSetItems(itemsValue, siteId);
+    async preparePageReleaseSet(itemsValue, signal, requestedOperationId = crypto.randomUUID(), sitePublicationEpoch) {
+      const items = normalizePageReleaseSetItems(itemsValue, siteId, siteStylesFeature);
       if (!OPERATION_ID.test(requestedOperationId)) throw new TypeError("invalid page release set operation ID");
-      const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/pages.release-set-plan`, "POST",
-        { siteId, operationId: requestedOperationId, items }, signal);
+      if (siteStylesFeature && !isEditingApiVersion(sitePublicationEpoch)) throw new TypeError("site publication epoch is required");
+      const path = await featurePath(`/sites/${encodeURIComponent(siteId)}/operations/pages.release-set-plan`, signal);
+      const { response, body } = await send(path, "POST",
+        { siteId, operationId: requestedOperationId, items, ...(siteStylesFeature ? { sitePublicationEpoch } : {}) }, signal);
       if (response.status === 409 && body.error === "version_conflict") throw new EditingApiClientError("version_conflict", 409);
       if (response.status === 409 && body.error === "duplicate_operation") throw new EditingApiClientError("duplicate_operation", 409);
       if (!response.ok) throw apiFailure(body, response.status);
       if (!exactKeys(body, ["plan"])) throw new EditingApiClientError("invalid_response", response.status);
-      return parsePageReleaseSetPlan(body.plan, siteId, requestedOperationId, items);
+      return parsePageReleaseSetPlan(body.plan, siteId, requestedOperationId, items, siteStylesFeature);
     },
     async publishPageReleaseSet(planValue, signal) {
       if (!plainRecord(planValue) || typeof planValue.operationId !== "string" || !OPERATION_ID.test(planValue.operationId)) throw new TypeError("invalid page release set plan");
-      const itemsValue = normalizePageReleaseSetItems(planValue.items, siteId);
-      const plan = parsePageReleaseSetPlan(planValue, siteId, planValue.operationId, itemsValue);
-      const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/pages.release-set`, "POST", {
-        siteId, operationId: plan.operationId, confirmationToken: plan.confirmationToken, items: plan.items
+      const itemsValue = normalizePageReleaseSetItems(planValue.items, siteId, siteStylesFeature);
+      const plan = parsePageReleaseSetPlan(planValue, siteId, planValue.operationId, itemsValue, siteStylesFeature);
+      const path = await featurePath(`/sites/${encodeURIComponent(siteId)}/operations/pages.release-set`, signal);
+      const { response, body } = await send(path, "POST", {
+        siteId, operationId: plan.operationId, confirmationToken: plan.confirmationToken, items: plan.items,
+        ...(siteStylesFeature ? { sitePublicationEpoch: plan.sitePublicationEpoch } : {})
       }, signal);
       if (response.status === 409 && body.error === "version_conflict") return { status: "conflict" };
       if (response.status === 409 && body.error === "duplicate_operation") throw new EditingApiClientError("duplicate_operation", 409);
@@ -770,6 +877,81 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       if (!response.ok) throw apiFailure(body, response.status);
       if (!exactKeys(body, ["status", "version"]) || body.status !== "saved" || !isEditingApiVersion(body.version)) throw new EditingApiClientError("invalid_response", response.status);
       return { status: "saved", version: body.version };
+    },
+    async readSiteStyles(signal) {
+      await requireSiteStylesOperation("site.styles.read", signal);
+      const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/site.styles.read`, "GET", undefined, signal);
+      if (!response.ok) throw apiFailure(body, response.status);
+      try { return parseEditingSiteStylesSnapshot(body); }
+      catch { throw new EditingApiClientError("invalid_response", response.status); }
+    },
+    async saveSiteStyles(expectedVersion, stylesValue, signal) {
+      await requireSiteStylesOperation("site.styles.save", signal);
+      if (!isEditingApiVersion(expectedVersion)) throw new TypeError("invalid expected style version");
+      let styles: SiteStyles;
+      try { styles = parseSiteStyles(stylesValue); } catch { throw new TypeError("invalid site styles"); }
+      const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/site.styles.save`, "PUT", { expectedVersion, styles }, signal);
+      if (response.status === 409 && body.error === "version_conflict") return { status: "conflict" };
+      if (!response.ok) throw apiFailure(body, response.status);
+      if (!exactKeys(body, ["status", "version"]) || body.status !== "saved" || !isEditingApiVersion(body.version) || body.version === expectedVersion) throw new EditingApiClientError("invalid_response", response.status);
+      return { status: "saved", version: body.version };
+    },
+    async prepareSiteStylesRelease(inputValue, signal) {
+      await requireSiteStylesOperation("site.styles.release-plan", signal);
+      let input: EditingSiteStylesReleaseRequest;
+      try { input = parseEditingSiteStylesReleaseRequest(inputValue); } catch { throw new TypeError("invalid site style release request"); }
+      const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/site.styles.release-plan`, "POST", input, signal);
+      if (!response.ok) throw apiFailure(body, response.status);
+      if (!exactKeys(body, ["plan"])) throw new EditingApiClientError("invalid_response", response.status);
+      try { return parseEditingSiteStylesReleasePlan(body.plan, input, siteId); }
+      catch { throw new EditingApiClientError("invalid_response", response.status); }
+    },
+    async releaseSiteStyles(planValue, signal) {
+      await requireSiteStylesOperation("site.styles.release", signal);
+      let plan: EditingSiteStylesReleasePlan;
+      try {
+        const input = parseEditingSiteStylesReleaseRequest({ expectedVersion: planValue.expectedVersion, expectedStylesVersion: planValue.expectedStylesVersion,
+          sitePublicationEpoch: planValue.sitePublicationEpoch, operationId: planValue.operationId });
+        plan = parseEditingSiteStylesReleasePlan(planValue, input, siteId);
+      } catch { throw new TypeError("invalid site style release plan"); }
+      const apply: EditingSiteStylesReleaseApply = { expectedVersion: plan.expectedVersion, expectedStylesVersion: plan.expectedStylesVersion,
+        sitePublicationEpoch: plan.sitePublicationEpoch, operationId: plan.operationId, confirmationToken: plan.confirmationToken };
+      const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/site.styles.release`, "POST", apply, signal);
+      if (response.status === 409 && body.error === "version_conflict") return { status: "conflict" };
+      if (!response.ok) throw apiFailure(body, response.status);
+      if (!exactKeys(body, ["status", "operationId", "stylesVersion", "sitePublicationEpoch"]) || body.status !== "released" || body.operationId !== plan.operationId
+        || !isEditingApiVersion(body.stylesVersion) || body.stylesVersion === plan.expectedStylesVersion
+        || !isEditingApiVersion(body.sitePublicationEpoch) || body.sitePublicationEpoch === plan.sitePublicationEpoch) throw new EditingApiClientError("invalid_response", response.status);
+      return body as unknown as EditingSiteStylesReleaseResult;
+    },
+    async prepareSiteStylesMigration(inputValue, signal) {
+      await requireSiteStylesOperation("site.styles.migration-plan", signal);
+      let input: EditingSiteStylesMigrationRequest;
+      try { input = parseEditingSiteStylesMigrationRequest(inputValue); } catch { throw new TypeError("invalid site style migration request"); }
+      const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/site.styles.migration-plan`, "POST", input, signal);
+      if (!response.ok) throw apiFailure(body, response.status);
+      if (!exactKeys(body, ["plan"])) throw new EditingApiClientError("invalid_response", response.status);
+      try { return parseEditingSiteStylesMigrationPlan(body.plan, input, siteId); }
+      catch { throw new EditingApiClientError("invalid_response", response.status); }
+    },
+    async applySiteStylesMigration(planValue, signal) {
+      await requireSiteStylesOperation("site.styles.migration-apply", signal);
+      let plan: EditingSiteStylesMigrationPlan;
+      try {
+        const input = parseEditingSiteStylesMigrationRequest({ expectedVersion: planValue.expectedVersion, expectedStylesVersion: planValue.expectedStylesVersion,
+          sitePublicationEpoch: planValue.sitePublicationEpoch, operationId: planValue.operationId, changes: planValue.changes });
+        plan = parseEditingSiteStylesMigrationPlan(planValue, input, siteId);
+      } catch { throw new TypeError("invalid site style migration plan"); }
+      const apply: EditingSiteStylesMigrationApply = { expectedVersion: plan.expectedVersion, expectedStylesVersion: plan.expectedStylesVersion,
+        sitePublicationEpoch: plan.sitePublicationEpoch, operationId: plan.operationId, changes: plan.changes, confirmationToken: plan.confirmationToken };
+      const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/site.styles.migration-apply`, "POST", apply, signal);
+      if (response.status === 409 && body.error === "version_conflict") return { status: "conflict" };
+      if (!response.ok) throw apiFailure(body, response.status);
+      if (!exactKeys(body, ["status", "operationId", "version", "stylesVersion", "sitePublicationEpoch"]) || body.status !== "applied" || body.operationId !== plan.operationId
+        || !isEditingApiVersion(body.version) || body.version === plan.expectedVersion
+        || !isEditingApiVersion(body.stylesVersion) || body.stylesVersion === plan.expectedStylesVersion
+        || !isEditingApiVersion(body.sitePublicationEpoch) || body.sitePublicationEpoch === plan.sitePublicationEpoch) throw new EditingApiClientError("invalid_response", response.status);
+      return body as unknown as EditingSiteStylesMigrationResult;
     },
     async readCmsSchema(signal) {
       const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/cms.schema`, "GET", undefined, signal);

@@ -223,6 +223,8 @@ export function parseEditingLocalizationResult<Id extends EditingLocalizationOpe
 }
 type HostRejection<Id extends EditingLocalizationOperationId> =
   | (Id extends "localization.release.prepare" | "localization.release.apply" ? { readonly status: "invalid_token" } : never)
+  | (Id extends "localization.release.prepare" | "localization.release.apply" ? { readonly status: "publication_in_progress" } : never)
+  | (Inputs[Id] extends Versioned ? { readonly status: "migration_in_progress" } : never)
   | (Inputs[Id] extends Write ? { readonly status: "duplicate" } : Id extends "localization.release.prepare" ? { readonly status: "duplicate" } : never);
 
 export type EditingLocalizationHostAdapter = {
