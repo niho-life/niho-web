@@ -66,6 +66,12 @@ async function authorize(store: CmsStore, request: Request, url: URL, master: st
   return { id, hash: row.secret_hash };
 }
 
+async function hasEmptyBody(request: Request): Promise<boolean> {
+  if (request.body === null) return true;
+  try { return (await readCmsDeliveryBytes(request, 1)).byteLength === 0; }
+  catch { return false; }
+}
+
 async function events(store: CmsStore, siteId: string, input: unknown): Promise<Response> {
   const body = record(input, "events");
   keys(body, ["afterSequence"], "events");
@@ -195,7 +201,7 @@ export async function managedCmsDeliveryAdmin(request: Request, store: CmsStore,
     return json({ credentials: list.results });
   }
   if (request.method !== (issuing ? "POST" : "DELETE")) return error("method_not_allowed", 405);
-  if (request.headers.get("Origin") !== url.origin || request.headers.get("Sec-Fetch-Site") !== "same-origin" || request.body !== null)
+  if (request.headers.get("Origin") !== url.origin || request.headers.get("Sec-Fetch-Site") !== "same-origin" || !await hasEmptyBody(request))
     return error("invalid_request", 400);
   if (!await store.db.prepare(OWNER).bind(siteId, projectId, actor.id).first()) return notFound();
   if (issuing) {
