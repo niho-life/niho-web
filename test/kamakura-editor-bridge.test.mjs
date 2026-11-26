@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
+import { EDITING_OPERATIONS } from "@niho/web/editing-api";
+import { createProjectEditorAdapter } from "@niho/web/project-editor";
 
 async function loadKamakuraCatalogContract() {
   const result = await build({
@@ -85,6 +87,37 @@ function catalog(pageTitle = "NIHO Kamakura") {
     }
   };
 }
+
+test("Kamakura Studio の共通Stylesはsite.styles APIを使い、公開メタデータは読み取り専用", async (t) => {
+  const { createKamakuraAdapter } = await loadKamakuraEditor();
+  const requests = [], styles = { tokens: { brand: { type: "color", value: "#195640" } } };
+  t.mock.method(globalThis, "fetch", async (input, init = {}) => {
+    const url = new URL(String(input), "https://studio.niho.life"), method = init.method ?? "GET";
+    requests.push({ method, url: `${url.pathname}${url.search}`, body: init.body === undefined ? undefined : JSON.parse(String(init.body)) });
+    if (url.pathname.endsWith("/capabilities")) return Response.json({ apiVersion: "v1", siteId: "kamakura",
+      operations: EDITING_OPERATIONS.filter(({ id }) => id.startsWith("site.styles.")) });
+    if (url.pathname.endsWith("/operations/site.styles.read")) return Response.json({ sitePublicationEpoch: "epoch-1",
+      draft: { version: "draft-styles-v1", styles }, published: { stylesVersion: "published-styles-v1", styles: {} } });
+    if (url.pathname.endsWith("/operations/site.styles.save")) return Response.json({ status: "saved", version: "draft-styles-v2" });
+    throw new Error(`unexpected request: ${method} ${url.pathname}`);
+  });
+  const source = catalog(), parsed = contract.parseKamakuraCatalog(source), base = createKamakuraAdapter(parsed, () => {});
+  const adapter = createProjectEditorAdapter(base, { ...source.project, members: [] });
+  const signal = new AbortController().signal;
+  assert.equal(adapter.siteSettingsMetadataEditable, false);
+  const snapshot = await adapter.readSiteSettings("kamakura", signal);
+  assert.equal(snapshot.version, "draft-styles-v1");
+  assert.equal(snapshot.settings.title, "鎌倉サイト");
+  assert.deepEqual(snapshot.settings.tokens, styles.tokens);
+  const result = await adapter.saveSiteSettings({ siteId: "kamakura", settings: { ...snapshot.settings, tokens: { brand: styles.tokens.brand, accent: { type: "color", value: "#0066cc" } } }, expectedVersion: snapshot.version }, signal);
+  assert.deepEqual(result, { status: "saved", version: "draft-styles-v2" });
+  assert.deepEqual(requests.map(({ method, url }) => [method, url]), [
+    ["GET", "/api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/capabilities?features=site.styles"],
+    ["GET", "/api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/operations/site.styles.read"],
+    ["PUT", "/api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/operations/site.styles.save"]
+  ]);
+  assert.deepEqual(requests[2].body, { expectedVersion: "draft-styles-v1", styles: { tokens: { brand: styles.tokens.brand, accent: { type: "color", value: "#0066cc" } } } });
+});
 
 test("Studio の編集画面は初回一覧と文書を各1回だけ読み、Access・参加資格のエラー表示を保つ", async (t) => {
   const client = await build({

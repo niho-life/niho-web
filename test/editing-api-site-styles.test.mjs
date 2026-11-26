@@ -120,6 +120,31 @@ test("site.styles and page name capabilities compose once in discovery", async (
   assert.equal(save.inputSchema.required.filter((key) => key === "draftStylesVersion").length, 1);
 });
 
+test("page reads wait for an in-flight site.styles negotiation", async () => {
+  const { api } = fixture();
+  let releaseDiscovery;
+  const discoveryGate = new Promise((resolve) => { releaseDiscovery = resolve; });
+  const requests = [];
+  const client = createPageEditingApiClient({ origin: "https://host.example", siteId, fetch: async (input, init) => {
+    const request = new Request(input, init);
+    requests.push(request.url);
+    if (request.url.includes("/capabilities?features=site.styles")) await discoveryGate;
+    return api(request);
+  } });
+
+  const stylesRead = client.readSiteStyles();
+  const pageRead = client.read({ siteId, pageId: document.pageId, locale: document.locale });
+  await new Promise((resolve) => setImmediate(resolve));
+  const pageReadStartedBeforeDiscovery = requests.some((url) => url.includes("/operations/pages.read/"));
+  releaseDiscovery();
+  const [styles, page] = await Promise.all([stylesRead, pageRead]);
+
+  assert.equal(pageReadStartedBeforeDiscovery, false);
+  assert.equal(styles.draft.version, "draft-1");
+  assert.equal(page.draftStylesVersion, "draft-1");
+  assert.ok(requests.some((url) => url.includes("/operations/pages.read/") && url.includes("features=site.styles")));
+});
+
 test("localization writes preserve stable site fence errors", async () => {
   const { client } = fixture();
   await client.discover();
@@ -219,6 +244,7 @@ test("the EditorAdapter site-settings facade delegates its style slice to the co
       return { status: "saved", version: "draft-8" };
     }
   }, siteId, { title: "Demo", locale: "ja" });
+  assert.equal(facade.siteSettingsMetadataEditable, false);
   assert.deepEqual(await facade.readSiteSettings(siteId), { version: "draft-7", settings: { title: "Demo", locale: "ja", ...initial } });
   assert.deepEqual(await facade.saveSiteSettings({ siteId, expectedVersion: "draft-7", settings: { title: "Demo", locale: "ja", ...initial } }),
     { status: "saved", version: "draft-8" });

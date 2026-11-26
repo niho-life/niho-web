@@ -44,6 +44,22 @@ test("editor session opens a self-contained document when optional site settings
   assert.match(result.warning, /文書単体/);
 });
 
+test("editor session starts site-settings discovery before the page read", async () => {
+  let settingsStarted = false;
+  let pageReadSawSettingsStart = false;
+  await readEditorSession({
+    readSiteSettings: async () => {
+      settingsStarted = true;
+      return { settings: { title: "Demo", locale: "ja" }, version: "s1" };
+    },
+    readDocument: async () => {
+      pageReadSawSettingsStart = settingsStarted;
+      return snapshot();
+    }
+  }, target, new AbortController().signal);
+  assert.equal(pageReadSawSettingsStart, true);
+});
+
 test("editor page cache reuses only the saved session for the same document version", async () => {
   const cache = new EditorSessionCache(2), controller = new AbortController();
   let document = structuredClone(source), version = "v1", reads = 0;

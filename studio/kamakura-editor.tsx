@@ -14,7 +14,7 @@ import { KAMAKURA_CATALOG_CONTRACT_ERROR_CODE, KAMAKURA_CATALOG_CONTRACT_ERROR_S
 import type { KamakuraCatalog } from "./kamakura-catalog.js";
 import { parseEnglishPublicationAccepted } from "../src/english-publication.js";
 import { normalizePageChange, validatePageChangePlan } from "../src/editor-model.js";
-import { createPageEditingApiClient, EditingApiClientError, supportsPageNodeNames } from "../src/editing-client.js";
+import { createEditingApiSiteSettingsFacade, createPageEditingApiClient, EditingApiClientError, supportsPageNodeNames } from "../src/editing-client.js";
 import type { EditingPageReleaseSetItem } from "../src/editing-api.js";
 
 const BASE = "/api/projects/project-kamakura/sites/kamakura/editor";
@@ -275,6 +275,9 @@ function samePageManagementEntries(listed: readonly EditorPage[], current: reado
 
 export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (status: EditorApiStatus | null) => void, origin = "https://studio.niho.life", initialReads?: KamakuraSiteReads): EditorAdapter {
   const editingApi = createPageEditingApiClient({ origin, siteId: KAMAKURA_EDITOR_SITE_ID, basePath: `${BASE}/editing-api/v1`, editorSnapshot: { blocks: catalog.blockContracts } });
+  const site = catalog.sites.find(({ id }) => id === KAMAKURA_EDITOR_SITE_ID);
+  if (!site) throw new Error("鎌倉サイトの設定がありません。");
+  const siteSettings = createEditingApiSiteSettingsFacade(editingApi, KAMAKURA_EDITOR_SITE_ID, { title: site.name, locale: "ja" });
   let currentCatalog = catalog, initialPages = true;
   let localizationRead = initialReads?.localization, breakpointRead = initialReads?.breakpoints;
   const releaseOperationIds = new Map<string, string>();
@@ -318,6 +321,7 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
       : readJapaneseDocument(target, signal);
   }
   return {
+    ...siteSettings,
     listSites: (signal) => request(signal, async () => catalog.sites),
     listPages: (siteId, signal) => request(signal, async () => {
       if (siteId !== "kamakura") throw new Error("編集対象のサイトがありません。");
