@@ -10,6 +10,8 @@ import type { DesignToken, PageDocument, PageNode, StyleProperty, StyleValue, Te
 export type StyleLibraryProps = {
   document: PageDocument;
   scopeLabel?: string;
+  /** サイト共通の定義内だけを集計していることを使用数に示す。ページ本文の参照は含まない。 */
+  usageScope?: "document" | "site" | undefined;
   origins?: Readonly<Record<string, string>> | undefined;
   onPromote?: ((kind: "token" | "textStyle", name: string) => void) | undefined;
   canPromote?: ((kind: "token" | "textStyle", name: string) => boolean) | undefined;
@@ -39,7 +41,7 @@ const defaultLabel = (node: PageNode) => node.type === "text" ? "テキスト" :
 const sizeText = (value: StyleValue | undefined, document: PageDocument) => { const resolved = resolveValue(document, value); return resolved === undefined ? "—" : typeof resolved === "number" ? `${resolved}px` : resolved; };
 
 /** 左レールの「スタイル」。共通カラー・テキストスタイル・その他の共通の値を props だけで編集する独立部品。 */
-export function StyleLibrary({ document, selection, apply, select, disabled, breakpoints = defaultBreakpoints, breakpoint = "base", until, preview, pending = noop, fieldKey = "library", nodeLabel = defaultLabel, scopeLabel, origins, onPromote, canPromote, readOnlyToken, reservedNames = [] }: StyleLibraryProps) {
+export function StyleLibrary({ document, selection, apply, select, disabled, breakpoints = defaultBreakpoints, breakpoint = "base", until, preview, pending = noop, fieldKey = "library", nodeLabel = defaultLabel, scopeLabel, usageScope = "document", origins, onPromote, canPromote, readOnlyToken, reservedNames = [] }: StyleLibraryProps) {
   const [tab, setTab] = useState<Tab>("color"), [open, setOpen] = useState<string | null>(null), [confirm, setConfirm] = useState(false), [problem, setProblem] = useState("");
   const selected = selection ? (() => { try { const node = nodeAt(document, selection); return node.type === "text" ? undefined : node; } catch { return undefined; } })() : undefined;
   const run = (operation: EditorOperation) => { const inheritedRemoval = (operation.type === "token" && !operation.token || operation.type === "textStyle" && !operation.style) && origins?.[`${operation.type}:${operation.name}`] === "サイト共通"; const error = inheritedRemoval ? "サイト共通の定義は「サイト共通」で削除してください。" : apply(operation); setProblem(error ?? ""); return error; };
@@ -47,6 +49,10 @@ export function StyleLibrary({ document, selection, apply, select, disabled, bre
     : { type: "styleRange", path: selection!, breakpoint, until, values: { [property]: { token: name } } };
   const tokens = Object.entries(document.tokens), styles = Object.entries(document.textStyles ?? {});
   const colors = tokens.filter(([, token]) => token.type === "color"), others = tokens.filter(([, token]) => token.type !== "color");
+  const usageCount = (count: number) => usageScope === "site" ? `定義内 ${count} か所` : `${count} か所`;
+  const emptyUsage = usageScope === "site"
+    ? "共通定義内では未使用です。ページへの参照は変更後の全ページ確認に表示します。"
+    : "まだ使われていません。";
   function choose(next: Tab) { setTab(next); setOpen(null); setConfirm(false); setProblem(""); }
   function toggle(name: string) { setOpen(open === name ? null : name); setConfirm(false); setProblem(""); }
   function create() {
@@ -64,11 +70,11 @@ export function StyleLibrary({ document, selection, apply, select, disabled, bre
     }
     if (!run(operation)) { setOpen(name); setConfirm(false); }
   }
-  const usageList = (items: { path: NodePath; nodeId: string }[], extra: string[] = []) => <div className="e-usage"><small className="e-help">使用箇所</small>
+  const usageList = (items: { path: NodePath; nodeId: string }[], extra: string[] = []) => <div className="e-usage"><small className="e-help">{usageScope === "site" ? "共通定義内の使用箇所" : "使用箇所"}</small>
     {items.length || extra.length ? <ul>{[...new Map(items.map((item) => [item.nodeId, item])).values()].map((item) => {
       let text = item.nodeId; try { text = nodeLabel(nodeAt(document, item.path)); } catch { /* 文書の変更中 */ }
       return <li key={item.nodeId}><button type="button" className="e-small" disabled={disabled} onClick={() => select(item.path)}>{text}</button></li>;
-    })}{extra.map((text) => <li key={text}><small>{text}</small></li>)}</ul> : <p className="e-help">まだ使われていません。</p>}</div>;
+    })}{extra.map((text) => <li key={text}><small>{text}</small></li>)}</ul> : <p className="e-help">{emptyUsage}</p>}</div>;
   const removal = (count: number, what: string, operation: EditorOperation) => confirm
     ? <div className="e-confirm" role="group" aria-label="削除の確認"><p>{count ? `使用中の ${count} か所は今の見た目のまま個別の指定に変わります。` : `この${what}を削除します。`}</p>
       <div className="e-actions"><button type="button" className="e-danger" disabled={disabled} onClick={() => { if (!run(operation)) { setOpen(null); setConfirm(false); } }}>削除する</button><button type="button" onClick={() => setConfirm(false)}>やめる</button></div></div>
@@ -94,7 +100,7 @@ export function StyleLibrary({ document, selection, apply, select, disabled, bre
           <Field key={`${fieldKey}-${name}-value-${token.type}`} name="値" value={String(token.value)} fieldKey={`${fieldKey}-${name}-value`} pending={pending} disabled={fixed}
             apply={(value) => { const trimmed = value.trim(); return apply(update({ value: token.type !== "fontFamily" && /^-?(?:\d+(?:\.\d+)?|\.\d+)$/.test(trimmed) ? Number(trimmed) : trimmed })); }} />
         </>}
-      {count > 0 && !reason && <p className="e-help e-reach">{count} か所に反映されます</p>}
+      {count > 0 && !reason && <p className="e-help e-reach">{usageCount(count)}に反映されます</p>}
       {usageList(usage.nodes, [...new Set(usage.textStyles.map((entry) => `テキストスタイル『${document.textStyles?.[entry.name]?.label ?? entry.name}』`))])}
       {selected && token.type === "color" && <div className="e-actions">
         <button type="button" className="e-small" disabled={disabled} onClick={() => run(paint("color", name))}>選択中の要素の文字色に適用</button>
@@ -139,7 +145,7 @@ export function StyleLibrary({ document, selection, apply, select, disabled, bre
         return <UnitField key={`${fieldKey}-${name}-size-${minWidth}`} caption={`${tierName(tier)} のサイズ`} value={value} units={["px", "rem", "em", "%", "vw"]} tokens={tokenChoices("length")}
           placeholder={sizeText(style.base.fontSize, document)} fieldKey={`${fieldKey}-${name}-size-${minWidth}`} pending={pending} disabled={disabled}
           apply={(next) => apply(setAt(minWidth, "fontSize", next))} preview={preview && ((next) => preview(next === null ? null : setAt(minWidth, "fontSize", next)))} />; })}
-      {users.length > 0 && <p className="e-help e-reach">{users.length} か所に反映されます</p>}
+      {users.length > 0 && <p className="e-help e-reach">{usageCount(users.length)}に反映されます</p>}
       {usageList(users)}
       {selected && <div className="e-actions"><button type="button" className="e-small" disabled={disabled || selected.style?.textStyle === name} onClick={() => run({ type: "nodeTextStyle", path: selection!, name })}>選択中の要素に適用</button></div>}
       {removal(users.length, "テキストスタイル", { type: "textStyle", name, style: undefined })}
@@ -149,12 +155,12 @@ export function StyleLibrary({ document, selection, apply, select, disabled, bre
   const count = (name: string) => { const usage = tokenUsage(document, name); return usage.nodes.length + usage.textStyles.length; };
   const rows: [name: string, icon: ReactNode, title: string, detail: string, editor: () => ReactNode][] = tab === "color"
     ? colors.map(([name, token]) => [name, <i className="e-swatch-dot e-lib-swatch" style={{ background: String(token.value) }} aria-hidden="true" />, token.label ?? name,
-      `${colorParts(String(token.value)) ? formatColor(token.value) : String(token.value)} · ${count(name)} か所`, () => tokenEditor(name, token)])
+      `${colorParts(String(token.value)) ? formatColor(token.value) : String(token.value)} · ${usageCount(count(name))}`, () => tokenEditor(name, token)])
     : tab === "text" ? styles.map(([name, style]) => { const weight = resolveValue(document, style.base.fontWeight), family = resolveValue(document, style.base.fontFamily);
       return [name, <b className="e-aa" style={{ ...(weight === undefined ? {} : { fontWeight: weight }), ...(typeof family === "string" ? { fontFamily: family } : {}) }} aria-hidden="true">Aa</b>, style.label ?? name,
-        `${sizeText(style.base.fontSize, document)} · ${textStyleUsage(document, name).length} か所`, () => textEditor(name, style)]; })
+        `${sizeText(style.base.fontSize, document)} · ${usageCount(textStyleUsage(document, name).length)}`, () => textEditor(name, style)]; })
     : others.map(([name, token]) => [name, <b className="e-aa" aria-hidden="true">{token.type === "length" ? "↔" : token.type === "fontFamily" ? "F" : "#"}</b>, token.label ?? name,
-      `${typeof token.value === "number" && token.type === "length" ? `${token.value}px` : String(token.value)} · ${count(name)} か所`, () => tokenEditor(name, token)]);
+      `${typeof token.value === "number" && token.type === "length" ? `${token.value}px` : String(token.value)} · ${usageCount(count(name))}`, () => tokenEditor(name, token)]);
   const [, , heading, add] = tabs.find(([value]) => value === tab)!;
   return <div className="e-library">
     <div className="e-seg e-tabs" role="group" aria-label="スタイルの種類">{tabs.map(([value, text]) =>
