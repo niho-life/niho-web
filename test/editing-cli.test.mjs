@@ -4,10 +4,10 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { readFileSync } from "node:fs";
 import { editDocumentById } from "@niho/web/editor-model";
-import { EDITING_OPERATIONS, withPageNodeNameCapability } from "@niho/web/editing-api";
+import { EDITING_OPERATIONS, withPageCmsBindingsCapability, withPageNodeNameCapability } from "@niho/web/editing-api";
 
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 const command = fileURLToPath(new URL("../cli/niho-edit.mjs", import.meta.url));
@@ -53,7 +53,7 @@ function run(args, { status = 200, result, expectedMethod, expectedUrl, expected
   });
 }
 
-function runSequence(args, requests, { env = {}, token = "fixture-token", stdin = "", studio = false } = {}) {
+async function runSequence(args, requests, { env = {}, token = "fixture-token", stdin = "", studio = false } = {}) {
   const source = [
     "const expected = " + JSON.stringify(requests) + "; let index = 0;",
     "globalThis.fetch = async (url, init) => {",
@@ -69,13 +69,16 @@ function runSequence(args, requests, { env = {}, token = "fixture-token", stdin 
     "};",
     "process.on('beforeExit', () => { if (index !== expected.length) throw new Error('not all expected requests were made'); });"
   ].join("\n");
-  const preload = "data:text/javascript," + encodeURIComponent(source);
-  return new Promise((resolve, reject) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "niho-edit-sequence-"));
+  const preloadFile = join(tempDir, "preload.mjs");
+  await writeFile(preloadFile, source);
+  try {
+    return await new Promise((resolve, reject) => {
     const childEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !["CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET"].includes(key)));
     if (token === null) delete childEnv.NIHO_EDIT_TOKEN;
     else childEnv.NIHO_EDIT_TOKEN = token;
     Object.assign(childEnv, env);
-    const child = spawn(process.execPath, ["--import", preload, command, "--origin", origin, "--site", siteId, ...args], {
+    const child = spawn(process.execPath, ["--import", pathToFileURL(preloadFile).href, command, "--origin", origin, "--site", siteId, ...args], {
       env: childEnv, stdio: ["pipe", "pipe", "pipe"]
     });
     child.stdin.end(stdin);
@@ -84,7 +87,10 @@ function runSequence(args, requests, { env = {}, token = "fixture-token", stdin 
     child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
     child.once("error", reject);
     child.once("close", (exitCode) => resolve({ exitCode, stdout, stderr }));
-  });
+    });
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
 }
 
 function runUpload(args, { uploadUrl, expectedBytes, asset, name = "sea.png", trustedUploadOrigin = origin, accessClientId = null, accessClientSecret = null }) {
@@ -198,6 +204,29 @@ test("niho-edit apply accepts text, token style, add and move operations", async
   assert.equal(output.status, "valid");
   assert.equal(output.diff.length, 4);
   assert.deepEqual(output.touched, ["heading", "new-block", "link"]);
+});
+
+test("niho-edit Studio outline reads and apply writes a CMS sidecar without page operations", async () => {
+  const root = origin + "/api/edit/v1/sites/" + siteId, query = "?locale=" + encodeURIComponent(locale);
+  const catalog = ["pages.read", "pages.inspect", "pages.apply"].map((id) => withPageCmsBindingsCapability(EDITING_OPERATIONS.find((operation) => operation.id === id)));
+  const discovery = { method: "GET", url: root + "/capabilities", result: { apiVersion: "v1", siteId, operations: catalog } };
+  const cmsBindings = { schemaVersion: 1, siteId, pageId, locale, lists: [{ templateNodeId: "hero", collectionId: "posts", limit: 6,
+    fields: [{ nodeId: "heading", fieldId: "title", target: "text" }] }] };
+  const inspected = { view: "outline", version: "v1", definitions: {}, items: [{ id: "hero" }], cmsBindings };
+  const outline = await runSequence(["--studio", "outline", pageId, "--locale", locale, "--depth", "1"], [discovery,
+    { method: "GET", url: root + "/operations/pages.inspect/" + pageId + query + "&view=outline&limit=1000&depth=1", result: inspected }
+  ], { studio: true });
+  assert.equal(outline.exitCode, 0, outline.stderr);
+  assert.deepEqual(JSON.parse(outline.stdout), inspected);
+  const operationId = "123e4567-e89b-42d3-a456-426614174000", revision = fixture.revision + 1;
+  const applied = await runSequence(["--studio", "apply", pageId, "--locale", locale, "--cms-bindings", "-", "--expected-version", "v1", "--operation-id", operationId], [
+    discovery,
+    { method: "GET", url: root + "/operations/pages.read/" + pageId + query, result: { document: fixture, version: "v1", cmsBindings: null } },
+    { method: "POST", url: root + "/operations/pages.apply/" + pageId + query, body: { baseVersion: "v1", operationId, operations: [], cmsBindings },
+      result: { status: "applied", version: "v2", revision, document: { ...fixture, revision } } }
+  ], { studio: true, stdin: JSON.stringify(cmsBindings) });
+  assert.equal(applied.exitCode, 0, applied.stderr);
+  assert.equal(JSON.parse(applied.stdout).result.version, "v2");
 });
 
 test("niho-edit apply uses pages.apply and its dry-run diff matches the saved document", async () => {

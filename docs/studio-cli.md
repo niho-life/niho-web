@@ -48,6 +48,8 @@ CLIはこの値を `cf-access-token` headerだけに入れ、標準出力へ出�
 
 編集は対象の最新状態と版を読み、既存の保存契約へ変更と版を渡す。公開の確認計画で対象サイト、ページ、差分、版を照合し、その計画を公開に適用する。競合時は最新版と手元の変更を比較してから再実行する。
 
+Studio-native の PageEditor は CMS パネルで list / detail とページ要素を結び付けます。機械クライアントは `niho-edit --studio --origin <origin> --site <site> apply <page> --locale <locale> --cms-bindings bindings.json` で sidecar を追加・置換でき、JSON `null` で解除します。`bindings.json` は [CMS v2 契約](cms-v2-contract.md#pagedocument-と-cms-の結び付け) の `CmsPageBindingsDocument` 形式です。対応 host の discovery が `pages.cms-bindings` capability を返す場合だけ操作できます。
+
 Gitから原文が更新されてページの下書きが競合した場合は、`pages.draft-conflict <pageId>` の `published` と `draft` を保存して比較する。調整後の文書は下書きの `revision` を使い、取得した `version` を `expectedVersion` として `pages.draft-resolve <pageId>` に渡す。どちらの操作にもページの編集権限が必要。解消後は通常の公開手順を使う。
 
 公開処理の成功は、配備や公開URLでの反映完了と区別する。ホストがビルドを行う場合は、配備結果と公開URLまで確認する。翻訳の確認と公開は、対象サイトの承認方針と権限に従う。

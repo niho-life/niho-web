@@ -10,6 +10,9 @@ import {
 } from "./cms-v2-schema.js";
 import { parseCmsRouteRevision, parseCmsRouteTable, type CmsRouteTable, type CmsRouteTableVersion } from "./cms-v2-routes.js";
 
+export { cmsBindingAttributes, cmsPageBindingProblems, cmsPageFieldMatches, parseCmsPageBindings, resolveCmsPageBindings } from "./cms-page-bindings.js";
+export type { CmsPageBindingsDocument, CmsPageBindingSource, CmsPageDetailBinding, CmsPageFieldBinding, CmsPageListBinding } from "./cms-page-bindings.js";
+
 export type {
   CmsCollection, CmsField, CmsItemKey, CmsItemRevision, CmsMigratedItem, CmsMigration, CmsMigrationChange, CmsMigrationDraft, CmsMigrationImpact,
   CmsMigrationReplacement, CmsProblem, CmsRemovedItem, CmsRouteBoundMigration, CmsSchema

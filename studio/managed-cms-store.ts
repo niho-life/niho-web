@@ -197,11 +197,11 @@ export class CmsStore {
     return row ? { payload: JSON.parse(row.payload_json) as T, expires: row.expires_at } : null;
   }
 
-  async consumePreview(site: Site, token: string) {
+  async consumePreview(site: Site, token: string, purpose: "preview" | "page-preview" = "preview") {
     const found = await this.db.prepare(`DELETE FROM managed_cms_tokens WHERE token_hash = ?6 AND site_id = ?2
-      AND actor_id = ?3 AND purpose = 'preview' AND expires_at > unixepoch()
+      AND actor_id = ?3 AND purpose = ?8 AND expires_at > unixepoch()
       AND (SELECT generation FROM managed_cms_state WHERE site_id = ?2) IS ?7 AND EXISTS (SELECT 1 ${AUTH}) RETURNING token_hash`)
-      .bind(...scopeValues(site, "cms.read"), await digest(token), site.generation).first<{ token_hash: string }>();
+      .bind(...scopeValues(site, "cms.read"), await digest(token), site.generation, purpose).first<{ token_hash: string }>();
     return found !== null;
   }
 
@@ -224,7 +224,7 @@ export class CmsStore {
   async commit(site: Site, capability: CmsCapability, change: {
     operation: string; operationId: string; inputDigest: string; result: object; state: CmsState;
     revisions?: readonly CmsItemRevision[]; job?: { id: string; kind: Job["kind"]; at: number; payload: JobPayload };
-    cancel?: string; tokenHash?: string; requireFreeSlot?: boolean;
+    cancel?: string; tokenHash?: string; requireFreeSlot?: boolean; bindingsGeneration?: number;
   }): Promise<boolean> {
     const transactionId = opaque("tx"), auditGuard = "EXISTS (SELECT 1 FROM managed_cms_receipts WHERE transaction_id = ?1)";
     const { operation, operationId, inputDigest, state, result, job, revisions, cancel } = change;
@@ -235,8 +235,9 @@ export class CmsStore {
           AND (?12 IS NULL OR EXISTS (SELECT 1 FROM managed_cms_outbox WHERE site_id = ?2 AND id = ?12 AND kind = 'schedule' AND state = 'pending'))
           AND (?13 IS NULL OR EXISTS (SELECT 1 FROM managed_cms_tokens WHERE token_hash = ?13 AND site_id = ?2 AND actor_id = ?3 AND expires_at > unixepoch()))
           AND (?14 = 0 OR (SELECT count(*) FROM managed_cms_outbox WHERE site_id = ?2 AND state = 'pending' AND kind IN ('release', 'schedule')) < 25)
+          AND (?15 IS NULL OR (SELECT bindings_generation FROM managed_sites WHERE site_id = ?2) = ?15)
         ON CONFLICT(site_id, actor_id, operation_id) DO NOTHING`).bind(...scopeValues(site, capability), operationId, operation,
-        inputDigest, transactionId, JSON.stringify(result), site.generation, cancel ?? null, change.tokenHash ?? null, Number(change.requireFreeSlot ?? false)),
+        inputDigest, transactionId, JSON.stringify(result), site.generation, cancel ?? null, change.tokenHash ?? null, Number(change.requireFreeSlot ?? false), change.bindingsGeneration ?? null),
       this.db.prepare(`INSERT INTO managed_cms_state (site_id, generation, state_json) SELECT ?2, ?1, ?3 WHERE ${auditGuard}
         ON CONFLICT(site_id) DO UPDATE SET generation = excluded.generation, state_json = excluded.state_json`)
         .bind(transactionId, site.siteId, JSON.stringify(state)),
