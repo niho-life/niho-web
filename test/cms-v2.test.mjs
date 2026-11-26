@@ -430,6 +430,18 @@ test("release routes reject fixed, template, and redirect-source conflicts and p
   assert.equal(host.routeTables.find((entry) => entry.locale === "ja").revision, table.revision);
 });
 
+test("CMS release routes preserve the case of legacy slugs", () => {
+  const host = new MemoryHost();
+  const current = host.drafts.get(cmsItemKey(post));
+  const legacyCase = host.add(post, { ...current.values, "field-slug": "Legacy-Case" });
+  const selectedTag = host.drafts.get(cmsItemKey(tag));
+  const plan = host.planRelease([pin(legacyCase), pin(selectedTag)]);
+
+  assert.equal(plan.status, "ready");
+  assert.ok(plan.proposal.snapshot.routeTable.reservations.some((entry) => entry.kind === "cms-item" && entry.path === "/posts/Legacy-Case"));
+  assert.equal(plan.proposal.snapshot.items.find(({ itemId }) => itemId === legacyCase.itemId).path, "/posts/Legacy-Case");
+});
+
 test("fixed-page redirect targets are accepted and conflicting sources remain invalid without duplicate reservations", () => {
   const fixedTarget = new MemoryHost();
   fixedTarget.routeTables[0].reservations.push({ kind: "fixed-page", path: "/About", reservationId: "about-page" });
