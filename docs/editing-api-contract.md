@@ -4,7 +4,7 @@
 
 `@niho/web/editing-client` の `createPageEditingApiClient` は同じwire契約を呼ぶReact非依存clientです。ブラウザーのGUIは既定のsame-origin credentialsまたはhost提供headerを使え、Node CLIはhost bearer headerと `credentials: "omit"` を使えます。ホストorigin自体がCloudflare Accessで保護される場合、`niho-edit` は別途設定されたAccess Service Auth headerも指定originだけに送れます。GUIと `niho-edit` CLIはページ本文・CMS項目・ページ管理・ブレークポイント・素材の同じ操作を呼べます。Studio GUIはAccess sessionをWorker BFFで短期の操作別tokenへ委任し、サイトoriginの共通APIへservice bindingで接続します。ブラウザーのAccess tokenやcookieはサイトへ転送しません。
 
-Kamakura の Studio GUI と `niho-studio pages.read` は editor snapshot profile から日本語本文・表示材料・編集状態を同じ共通API読取で取得します。Studio GUIは `editorState` を含む応答を必須にし、欠けた場合はページを開きません。旧read-only snapshot routeから不足分を補う移行fallbackは使いません。`niho-studio` は同じprofileを要求し、CLI利用者へ共通APIの応答を返します。CMS項目・ページ管理・素材の書込は共通APIを使います。翻訳の共通APIは、対応するホストが登録した操作をCUIから直接呼び出せます。Studioの翻訳画面は既存の接続を使います。
+Kamakura の Studio GUI と `niho-studio pages.read` は editor snapshot profile から共通APIでページsnapshotを取得します。日本語キャンバスは `editorState` を、英語キャンバスは `presentation`（alias URL解決用の `presentation.links` を含む）を必須とし、欠けた場合はページを開きません。専用snapshot routeから不足分を補うfallbackは使いません。`niho-studio` は同じprofileを要求し、CLI利用者へ共通APIの応答を返します。CMS項目・ページ管理・素材の書込は共通APIを使います。翻訳の共通APIは、対応するホストが登録した操作をCUIから直接呼び出せます。Studioの翻訳画面は既存の接続を使います。
 
 ## 操作カタログ
 
@@ -80,7 +80,7 @@ outline/find/subtreeは `limit`（既定1000、最大1000件）と `cursor` で�
 
 ホストの `pageOperations.transact(actor, target, transaction)` は、ページ状態と同じCAS/transactionで操作記録を確定します。操作本文は不変の journal blob として保存し、現在状態にはその参照だけを持ちます。`actor + operationId` は正規化入力のhashと保存結果に結び付き、同じ要求の再送は前回と同じ結果、同じIDで違う要求を送った場合は HTTP 409 `duplicate_operation` になります。文書 pointer、journal pointer、ID/hash/結果は同時に確定してください。安全にrebaseした記録には、元要求の `baseVersion` に加えて実際に適用した版 `rebasedFromVersion` を記録します。actor・委任元・GUI/CLI/APIの種別は認証済み文脈から取得し、要求本文から受け取りません。`dryRun: true` は全操作を検証して `{ status: "valid", diff, touched }` を返しますが、保存もoperation IDの消費も行いません。
 
-編集用の完全なスナップショットを読むクライアントは `Accept: application/json; profile=niho-editor-snapshot-v1` を指定します。共通クライアントでは `editorSnapshot: { blocks }` で有効にします。完全対応ホストの `readPage` は、同じ読取結果から `document` と `version`、`editorState`、表示コンテキストがある場合は `presentation` と `presentationVersion` を組にして返します。Kamakura Studioは `editorState` を含む応答を必須とし、未対応応答を旧routeから補完しません。通常の `Accept: application/json` では従来の本文と版の応答を返します。
+編集用の完全なスナップショットを読むクライアントは `Accept: application/json; profile=niho-editor-snapshot-v1` を指定します。共通クライアントでは `editorSnapshot: { blocks }` で有効にします。完全対応ホストの `readPage` は、同じ読取結果から `document` と `version`、`editorState`、表示コンテキストがある場合は `presentation` と `presentationVersion` を組にして返します。Kamakura Studioは日本語canvasでは `editorState`、English canvasでは `presentation` を必須とし、未対応応答を専用routeから補完しません。通常の `Accept: application/json` では従来の本文と版の応答を返します。
 
 `presentation` は core の `SitePresentation` です。APIとクライアントは `parseSitePresentation` で対象・登録ブロック・共通レイアウトや共有文書を検証します。完全なスナップショットでは、`presentationVersion` は `presentation.version` と一致する場合に限り受け付け、どちらもない場合は表示コンテキストを省略できます。`editorState` は `readOnly`、`englishPublication`、公開版一覧の `releases` を必要に応じて保持します。対応ホストは、該当する状態が一つもない場合も空の `editorState` を返します。壊れた完全スナップショットは拒否します。旧ホストの応答には `editorState` がありません。Kamakura Studioは旧snapshotとの複数読取を組み合わせず、ホストが完全なprofileを返すまでページを開きません。
 

@@ -233,6 +233,7 @@ test("翻訳 BFF: Access と D1 の owner/editor を要求ごとに確かめ、�
     ["POST", "/editor/pages/catalog", 404],
     ["POST", "/editor/pages/Home", 404],
     ["POST", "/editor/pages/home/extra", 404],
+    ["POST", "/editor/pages/home/snapshot", 404],
     ["POST", "/editor/pages/home/snapshot/extra", 404],
     ["POST", "/editor/pages/home/save/extra", 404],
     ["POST", "/editor/site/extra", 404],
@@ -240,7 +241,7 @@ test("翻訳 BFF: Access と D1 の owner/editor を要求ごとに確かめ、�
     ["PUT", "/overview", 405],
     ["GET", "/items", 405],
     ["GET", "/editor/pages/home", 405],
-    ["GET", "/editor/pages/home/snapshot", 405],
+    ["GET", "/editor/pages/home/snapshot", 404],
     ["GET", "/editor/site", 405],
     ["GET", "/editor/pages/home/save", 405],
     ["POST", "/settings", 405],
@@ -337,42 +338,14 @@ test("翻訳 BFF: native 編集用ページは所属を確認して署名付き�
   }
 });
 
-test("翻訳 BFF: 英語キャンバス snapshot は actor だけを加え、文書・表示文書・版の scope を検証する", async (t) => {
+test("翻訳 BFF: 英語キャンバス専用snapshot routeを退役し、共通 pages.read に集約する", async (t) => {
   const auth = await accessFixture(), worker = await loadWorker();
   mockAccess(t, auth);
   const h = harness(auth, worker);
   h.roles.set("project-kamakura/kamakura", "editor");
-  const page = (pageId, locale = "en") => ({ schemaVersion: 1, siteId: "kamakura", pageId, locale, revision: 2, title: pageId, tokens: {}, body: [] });
-  const presentation = { schemaVersion: 1, siteId: "kamakura", locale: "en", version: "presentation-1", reset: "neutral-v1", tokens: {}, fonts: [],
-    shared: { header: page("site-header"), footer: page("site-footer") } };
-  const ready = { status: "ready", document: page("home"), version: `l.${"a".repeat(64)}`, presentation };
-  h.setRespond(() => Response.json(ready));
-
-  assert.deepEqual(await expectJson(await h.send("POST", "/editor/pages/home/snapshot", {}), 200), ready);
-  const call = h.calls.at(-1);
-  assert.equal(call.path, `${UPSTREAM}/editor/pages/home/snapshot`);
-  assert.equal(call.body, JSON.stringify({ actor: { email: EMAIL, role: "editor" } }));
-  h.verifySignature(call);
   const before = h.calls.length;
-  await expectJson(await h.send("POST", "/editor/pages/home/snapshot", { pageId: "home" }), 400, "invalid_request");
-  assert.equal(h.calls.length, before, "snapshot はブラウザ由来の値を上流へ渡さない");
-
-  for (const reply of [
-    { ...ready, document: page("other") },
-    { ...ready, document: page("home", "ja") },
-    { ...ready, version: "l.bad" },
-    { ...ready, presentation: { ...presentation, locale: "ja" } },
-    { ...ready, presentation: { ...presentation, version: "bad\nversion" } },
-    { ...ready, presentation: { ...presentation, shared: { ...presentation.shared, header: page("site-header", "ja") } } },
-    { ...ready, extra: true }
-  ]) {
-    h.setRespond(() => Response.json(reply));
-    await expectJson(await h.send("POST", "/editor/pages/home/snapshot", {}), 502, "upstream_contract_invalid");
-  }
-  for (const reply of [{ status: "conflict" }, { status: "unavailable", message: "英語の表示材料を準備できません。" }]) {
-    h.setRespond(() => Response.json(reply));
-    assert.deepEqual(await expectJson(await h.send("POST", "/editor/pages/home/snapshot", {}), 200), reply);
-  }
+  for (const method of ["POST", "GET"]) await expectJson(await h.send(method, "/editor/pages/home/snapshot", method === "POST" ? {} : undefined), 404);
+  assert.equal(h.calls.length, before, "退役したsnapshot routeはKamakura Workerへ転送しない");
 });
 
 test("翻訳 BFF: 英語編集用のページ一覧は所属・署名・状態と公開情報を検証する", async (t) => {

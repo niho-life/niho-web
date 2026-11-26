@@ -223,7 +223,7 @@ Dashboard の「翻訳」と CMS 項目の English タブは、[翻訳の画面]
 - 概要・翻訳案の依頼・原文の同期・プレビュー・公開の操作は 30 秒、それ以外は 12 秒で上流への接続を打ち切ります。翻訳の本文は 4 MiB、応答は 5 MiB（プレビューの材料は 2 MiB + 64 KiB）が上限です。プレビューの枠は鎌倉サイトの `/_studio/localization-preview`（拡張子付きも可）だけを受けます。
 - ブラウザ側の `createKamakuraLocalizationAdapter({ studioOrigin, siteOrigin, ... })` は共通クライアントの `executeLocalization` を使います。該当項目がない場合や権限がない場合は画面用の結果に変換し、版が競合した訳文・設定はサイトから返った現行値を使います。相対パスの画像は表示用 URL だけを `siteOrigin` で補います。翻訳画面は開いたときだけ読み込みます。
 - 訳文に使う画像はサイトで使える公開 URL が必要です。画像のアップロード開始には既存の `POST localization/uploads/intent` を使い、ホストが返す短命のトークンで固定されたアップロード先に画像を直接 PUT します。訳文への適用は共通の `localization.items.command` を通します。下書き用の素材アップロードとは公開時点が異なります。
-- English キャンバスの文書と翻訳情報の読み込み、キャンバスの下書き保存は、既存の `editor/pages/:pageId/snapshot` と `localization/editor/*` を引き続き使います。旧翻訳 workspace 経路は既存クライアントとの互換用です。
+- English キャンバスの文書・表示コンテキストは共通 `pages.read?locale=en` で読み、翻訳情報の読み込みと下書き保存には既存の `localization/editor/*` を使います。専用snapshot routeは公開しません。旧翻訳 workspace 経路は既存クライアントとの互換用です。
 
 テストは `test/studio-worker-localization.test.mjs`（BFF・CSP・bundle の分割）、`test/kamakura-localization-adapter.test.mjs`（adapter）、`test/studio-client-translations.test.mjs`（画面の接続と URL の遷移）です。
 
