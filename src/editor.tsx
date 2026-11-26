@@ -342,10 +342,18 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
     const element = sizeTarget(handleId);
     if (!element) { setHandleRect(null); return; }
     const update = () => { const rect = element.getBoundingClientRect(); setHandleRect({ element, left: rect.left + (body.ownerDocument.defaultView?.scrollX ?? 0), top: rect.top + (body.ownerDocument.defaultView?.scrollY ?? 0), width: rect.width, height: rect.height }); };
-    update();
-    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update); observer?.observe(element);
-    body.ownerDocument.defaultView?.addEventListener("scroll", update);
-    return () => { observer?.disconnect(); body.ownerDocument.defaultView?.removeEventListener("scroll", update); };
+    const view = body.ownerDocument.defaultView;
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update);
+    observer?.observe(element);
+    // Measure the initial selection after layout. ResizeObserver does not report ordinary
+    // inline elements, so the first handle position cannot depend on its callback.
+    let frame: number | undefined;
+    let timer: number | undefined;
+    if (view?.requestAnimationFrame) frame = view.requestAnimationFrame(update);
+    else if (view?.setTimeout) timer = view.setTimeout(update, 0);
+    else update();
+    view?.addEventListener("scroll", update);
+    return () => { observer?.disconnect(); if (frame !== undefined) view?.cancelAnimationFrame(frame); if (timer !== undefined) view?.clearTimeout(timer); view?.removeEventListener("scroll", update); };
   }, [body, handleId, width, document, rendered, slot]);
   function endResize(commit: boolean) {
     const current = resizing.current; if (!current) return;
