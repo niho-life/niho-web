@@ -1823,6 +1823,28 @@ test("page switches reuse the canvas iframe and keep its current keyboard listen
   } finally { await app.cleanup(); }
 });
 
+test("page switches reset uncontrolled DOM state inside the reused canvas iframe", async () => {
+  const doc = structuredClone(fixture);
+  doc.body.push({ type: "element", id: "page-disclosure", tag: "details", children: [
+    { type: "element", id: "page-disclosure-summary", tag: "summary", children: [{ type: "text", text: "詳細" }] },
+    { type: "element", id: "page-disclosure-body", tag: "p", children: [{ type: "text", text: "ページ固有の状態" }] },
+  ] });
+  const app = await setup({ document: doc });
+  try {
+    const frame = document.querySelector("iframe");
+    const firstDisclosure = canvasBody().querySelector('[data-nw-node="page-disclosure"]');
+    assert.ok(firstDisclosure);
+    firstDisclosure.open = true;
+    assert.equal(firstDisclosure.open, true);
+
+    await clickPage("別ページ");
+    const nextDisclosure = canvasBody().querySelector('[data-nw-node="page-disclosure"]');
+    assert.equal(document.querySelector("iframe"), frame, "page switches keep the canvas iframe");
+    assert.notEqual(nextDisclosure, firstDisclosure, "page content is recreated to clear uncontrolled DOM state");
+    assert.equal(nextDisclosure.open, false, "the next page starts with its saved closed state");
+  } finally { await app.cleanup(); }
+});
+
 const png = (name, size) => new File([new Uint8Array(size)], name, { type: "image/png" });
 const imageTypes = ["image/jpeg", "image/png", "image/webp", "image/avif", "image/gif"];
 const garden = { id: "garden", name: "庭の緑.png", mimeType: "image/png", bytes: 2048, width: 600, height: 400, alt: "庭の緑", src: "/media/garden.png", thumbnailUrl: "/media/garden.png" };
