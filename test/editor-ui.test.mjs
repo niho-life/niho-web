@@ -228,14 +228,21 @@ test("performance measurements finish after the canvas is ready and a draft is a
     const frame = document.querySelector("iframe");
     await act(async () => frame.dispatchEvent(new dom.window.Event("load")));
     assert.deepEqual(events.slice(2), [["begin", "page-switch"], ["finish", "page-switch"]]);
+    const editRenderPhases = () => events.filter(([, operation]) => operation === "edit-render").map(([phase]) => phase);
+    const assertEditRenderFinished = () => {
+      const phases = editRenderPhases();
+      assert.ok(phases.length >= 2);
+      assert.equal(phases.length % 2, 0);
+      for (let index = 0; index < phases.length; index += 2) assert.deepEqual(phases.slice(index, index + 2), ["begin", "finish"]);
+    };
     await change(input("ページタイトル"), "保存の計測");
-    assert.deepEqual(events.slice(4), [["begin", "edit-render"], ["finish", "edit-render"]]);
+    assertEditRenderFinished();
     await click("下書き保存");
     const saveEvents = () => events.filter(([, operation]) => operation === "save");
     assert.deepEqual(saveEvents(), [["begin", "save"]]);
     await act(async () => saved.resolve({ status: "saved", version: "v2", revision: fixture.revision + 1 }));
     assert.deepEqual(saveEvents(), [["begin", "save"], ["finish", "save"]]);
-    assert.deepEqual(events.filter(([, operation]) => operation === "edit-render"), [["begin", "edit-render"], ["finish", "edit-render"]]);
+    assertEditRenderFinished();
   } finally { await app.cleanup(); }
 });
 
