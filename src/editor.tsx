@@ -554,6 +554,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const blankEmbedReady = !!blankEmbeds?.entries.length;
   const initialTargetRef = useRef<EditorTarget | null>(initialTarget ?? null);
   const [sites, setSites] = useState<readonly EditorSite[]>([]), [siteId, setSiteId] = useState("");
+  const siteIdRef = useRef(siteId); siteIdRef.current = siteId;
   const [pages, setPages] = useState<readonly EditorPage[]>([]), [session, setSession] = useState<Session | null>(null);
   const [formCompletionPages, setFormCompletionPages] = useState<{ target: string; status: "idle" | "loading" | "ready" | "error"; pages: readonly EditorPage[] }>({ target: "", status: "idle", pages: [] });
   const sessionRef = useRef(session); sessionRef.current = session;
@@ -771,9 +772,9 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     if (!components) return;
     try {
       const snapshot = await components.readLibrary(siteId, signal);
-      if (signal.aborted) return;
-      replaceLibrary(librarySessionFrom(snapshot, siteId, blocks)); setLibraryEpoch((value) => value + 1); refreshUsage(siteId);
-    } catch { if (!signal.aborted) setLibraryFailed(true); }
+      if (signal.aborted || siteIdRef.current !== siteId) return;
+      replaceLibrary(librarySessionFrom(snapshot, siteId, blocks)); setLibraryFailed(false); setLibraryEpoch((value) => value + 1); refreshUsage(siteId);
+    } catch { if (!signal.aborted && siteIdRef.current === siteId) setLibraryFailed(true); }
   }, [components, blocks, replaceLibrary, refreshUsage]);
   const preloadPage = useCallback((target: EditorTarget) => {
     const editorTarget: EditorTarget = { siteId: target.siteId, pageId: target.pageId, locale: target.locale };
@@ -2676,7 +2677,16 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     {releaseSetPages && site && releaseSetAvailable && <PageReleaseSetDialog pages={releaseSetPages} site={site} adapter={adapter}
       {...(libraryRef.current?.version ? { componentsVersion: libraryRef.current.version } : {})}
       close={() => setReleaseSetPages(null)} completed={() => releaseSetCompleted(releaseSetPages)} />}
-    {breakpointSettingsOpen && <BreakpointSettingsDialog state={breakpointSettings} {...(pageDocument ? { document: pageDocument } : {})}
+    {breakpointSettingsOpen && <BreakpointSettingsDialog state={breakpointSettings} adapter={adapter} pages={pages} blocks={blocks}
+      {...(session ? { target: session.target } : {})} {...(pageDocument ? { document: pageDocument } : {})} {...(session?.presentation ? { presentation: session.presentation } : {})}
+      siteStyles={activeSiteStyles} siteStylesReady={!adapter.readSiteSettings || siteSettings.status === "ready"}
+      siteStylesFailed={!!adapter.readSiteSettings && siteSettings.status === "error"} {...(libraryPresent ? { components: libraryPresent } : {})}
+      componentsReady={!components || !!libraryPresent} componentsFailed={libraryFailed}
+      retryDependencies={() => {
+        if (breakpointSettings.status === "error") breakpointSettings.reload();
+        if (adapter.readSiteSettings && siteSettings.status === "error") siteSettings.reload();
+        if (components && libraryFailed) void openLibrary(siteId, new AbortController().signal);
+      }}
       {...(dirty || libraryDirty || hasInput || siteSettings.dirty || siteSettings.busy || !!busy ? { saveBlockedReason: "ページ、コンポーネント、共通スタイル、サイト設定の未保存変更や処理を完了してから保存してください。" } : {})}
       close={() => setBreakpointSettingsOpen(false)} />}
     {conflictView > 0 && session && pageDocument && <ConflictDialog key={conflictView} adapter={adapter} target={session.target} present={pageDocument} blocks={blocks} components={libraryPresent} siteStyles={siteSettings.settings} close={() => setConflictView(0)} discard={loadLatest} overwrite={overwriteWith}

@@ -56,6 +56,7 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 | `EditorAdapter` の任意操作保存 | `applyOperations` を接続したホストはGUIの自動・手動保存を `pages.apply` の操作列で送り、正本追随・条件付きの葉操作rebase・競合回復・操作単位の undo/redo を使えます。未接続hostは従来の `saveDraft` を使います（[編集契約](docs/editor-contract.md#操作単位の保存)、[共通API契約](docs/editing-api-contract.md#操作カタログ)） |
 | レイヤー | キャンバスとの双方向の選択追従、名前と本文での検索、仮想スクロール、キーボード操作に対応します。[編集契約](docs/editor-contract.md#レイヤー) |
 | `@niho/web/editor` の表示幅 | 推奨構成は基本（Mobile）・Tablet・PC の3段です。Mini / Small は個別のレイアウトが必要な場合だけ追加します（[編集契約](docs/editor-contract.md#ブレークポイント構成の目安)） |
+| 編集モードの段分析 | 接続済みの編集モードは全ページと共通内容を分析し、未使用の段と48px以内の近接幅を表示します。削除・統合は正規化の `plan` で確認してから適用します（[編集契約](docs/editor-contract.md#ブレークポイント構成の目安)、[正規化 CLI](docs/normalization-contract.md#cli-での適用と再開)） |
 | 要素の名前 | `EditorAdapter.discoverPageNodeNames` が対応を確認した保存先では、レイヤー行のダブルクリックや F2、GUI の設定タブ、`niho-edit apply` の `name` 操作から名前を保存できます。[文書契約](docs/document-contract.md#ノード)、[編集契約](docs/editor-contract.md#要素の名前)、[編集 API](docs/editing-api-contract.md#操作カタログ) |
 | `EditorAdapter` の任意ページ先読み | `prefetchDocument` を接続すると、ページ行の hover / focus で現在版を先読みし、対象と版を照合してページ切替を軽くできます（[編集契約](docs/editor-contract.md#ホストへの接続)） |
 | `EditorAdapter` の任意公開変更セット | `prepareReleaseSet` / `releaseSet` / `releaseSetStatus` の3メソッドを接続したホストは、`PageEditor` に複数ページ選択・差分確認・変更があるページだけの一括公開・ページ別結果・状態照会と再試行を表示できます。未接続ホストの単一ページ公開は変わりません（[編集・公開契約](docs/editor-contract.md)） |
