@@ -2390,7 +2390,10 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       if (result.status !== "applied") throw new Error("invalid localization command result");
       if (!result.version || result.version === context.version) throw new Error("version must advance");
       localization.reloadPage(); localization.reloadSite();
-      if (command.action === "adopt-candidate" || command.action === "set-value") await load(current.target, { preserveView: true });
+      if (command.action === "adopt-candidate" || command.action === "set-value") {
+        pageSessionCache.current.invalidateLatest(current.target);
+        await load(current.target, { preserveView: true });
+      }
       setNotice(command.action === "request-translation" ? "翻訳を依頼しました。" : command.action === "adopt-candidate" ? "翻訳案を採用しました。" : command.action === "set-value" ? "訳文を直しました。" : "翻訳状態を更新しました。");
       return "applied";
     } catch { if (!controller.signal.aborted) setNotice("翻訳状態を更新できませんでした。入力は保持されています。再試行してください。"); return "failed"; }

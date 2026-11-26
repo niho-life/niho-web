@@ -133,6 +133,9 @@ export class EditorSessionCache {
   /** 保存応答を受け取った最新のクリーンなセッションを再訪時キャッシュへ反映する。 */
   rememberLatest(target: EditorTarget, value: EditorSessionLoad, components?: ComponentLibrary): void { this.remember(target, value, components); }
 
+  /** サーバー側で翻訳済みページが変わったとき、再読込前に古い表示用セッションを破棄する。 */
+  invalidateLatest(target: EditorTarget): void { this.latest.delete(this.targetKey(target)); }
+
   clear(): void { this.entries.clear(); this.latest.clear(); }
 }
 

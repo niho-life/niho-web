@@ -161,6 +161,15 @@ test("editor page cache keeps a clean last-known session and keys it by componen
   assert.equal(cache.getLatest(target, components, -1), undefined, "expired sessions are not served as the last-known page");
 });
 
+test("editor page cache can invalidate the last-known session after a server-side localization change", async () => {
+  const cache = new EditorSessionCache(2), controller = new AbortController();
+  const components = { schemaVersion: 1, siteId: target.siteId, revision: 1, tokens: {}, components: [] };
+  await readEditorSession({ readDocument: async () => snapshot() }, target, controller.signal, {}, components, { cache });
+  assert.ok(cache.getLatest(target, components));
+  cache.invalidateLatest(target);
+  assert.equal(cache.getLatest(target, components), undefined);
+});
+
 test("editor page cache can remember a newly acknowledged saved session", async () => {
   const cache = new EditorSessionCache(2), controller = new AbortController();
   const components = { schemaVersion: 1, siteId: target.siteId, revision: 1, tokens: {}, components: [] };
