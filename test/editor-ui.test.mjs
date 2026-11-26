@@ -103,6 +103,59 @@ test("the adjacent page is prefetched automatically and serves a switch", async 
   } finally { await app.cleanup(); }
 });
 
+test("a previously opened page is shown before its version revalidation finishes", async () => {
+  const reads = [], homeReads = { count: 0 };
+  let resolveHomeRefresh;
+  const homeRefresh = new Promise((resolve) => { resolveHomeRefresh = resolve; });
+  const app = await setup({ adapter: {
+    prefetchDocument: undefined,
+    readDocument: async (target) => {
+      reads.push(target.pageId);
+      if (target.pageId === "home" && ++homeReads.count === 2) return homeRefresh;
+      return { document: { ...structuredClone(fixture), ...target }, version: `${target.pageId}-v${homeReads.count}` };
+    }
+  } });
+  try {
+    await clickPage("別ページ");
+    await clickPage("ホーム");
+    assert.equal(input("ページタイトル").value, fixture.title, "the saved page cache renders without waiting for the second home read");
+    assert.deepEqual(reads, ["home", "other", "home"], "the cached navigation still revalidates the server version");
+
+    const latest = structuredClone(fixture); latest.title = "サーバーで更新されたページ";
+    await act(async () => resolveHomeRefresh({ document: { ...latest, pageId: "home", locale: "ja-JP" }, version: "home-v2" }));
+    await flush();
+    assert.equal(input("ページタイトル").value, latest.title, "a clean editor adopts the refreshed server session");
+  } finally {
+    resolveHomeRefresh({ document: { ...structuredClone(fixture), pageId: "home", locale: "ja-JP" }, version: "home-cleanup" });
+    await app.cleanup();
+  }
+});
+
+test("a page revalidation never replaces a newer local edit", async () => {
+  let homeReads = 0, resolveHomeRefresh;
+  const homeRefresh = new Promise((resolve) => { resolveHomeRefresh = resolve; });
+  const app = await setup({ adapter: {
+    prefetchDocument: undefined,
+    readDocument: async (target) => {
+      if (target.pageId === "home" && ++homeReads === 2) return homeRefresh;
+      return { document: { ...structuredClone(fixture), ...target }, version: `${target.pageId}-v${homeReads}` };
+    }
+  } });
+  try {
+    await clickPage("別ページ");
+    await clickPage("ホーム");
+    await change(input("ページタイトル"), "手元の編集");
+    const latest = structuredClone(fixture); latest.title = "別の編集者の更新";
+    await act(async () => resolveHomeRefresh({ document: { ...latest, pageId: "home", locale: "ja-JP" }, version: "home-v2" }));
+    await flush();
+    assert.equal(input("ページタイトル").value, "手元の編集", "the pending local edit remains visible after server revalidation");
+    assert.equal(button("下書き保存").disabled, false, "the local edit remains available for the existing version conflict flow");
+  } finally {
+    resolveHomeRefresh({ document: { ...structuredClone(fixture), pageId: "home", locale: "ja-JP" }, version: "home-cleanup" });
+    await app.cleanup();
+  }
+});
+
 test("both adjacent pages start prefetching before the first document finishes loading", async () => {
   const prefetches = [], reads = [];
   let finishInitialRead;
