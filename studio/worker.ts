@@ -1305,7 +1305,7 @@ function kamakuraEditorRoute(action: string, method: string): EditorRoute | "met
     if (method !== "GET") return "method_not_allowed";
     return { upstreamPath: `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/catalog`, bodyLimit: MAX_MUTATION_BODY_BYTES };
   }
-  const page = /^\/editor\/((?!(?:catalog|create|index)$)[a-z][a-z0-9-]{0,59})(\/draft|\/draft-conflict|\/release-plan|\/release|\/batch-stage|\/schedule|\/schedule-cancel|\/english-publication-retry)?$/u.exec(action);
+  const page = /^\/editor\/((?!(?:catalog|create|index)$)[a-z][a-z0-9-]{0,59})(\/draft|\/draft-conflict|\/release-plan|\/release|\/batch-stage|\/schedule|\/schedule-cancel|\/english-publication-retry)$/u.exec(action);
   if (!page || !COMMON_PAGE_ID.test(page[1]!)) return null;
   const suffix = page[2] ?? "";
   if (suffix === "/draft-conflict") {
@@ -1610,7 +1610,7 @@ const EDITING_DISCOVERY_PATH = "/sites/kamakura/capabilities";
 const EDITING_LOCALIZATION_ROUTE = /^\/sites\/kamakura\/operations\/(localization\.[a-z.]+)$/u;
 
 function kamakuraEditingCapability(method: string, pathname: string, search: string): EditingCapability | null {
-  if (pathname === EDITING_DISCOVERY_PATH) return method === "GET" && !search ? "pages.read" : null;
+  if (pathname === EDITING_DISCOVERY_PATH) return method === "GET" && (!search || search === "?features=site.styles") ? "pages.read" : null;
   if (pathname === "/sites/kamakura/operations/pages.catalog") return method === "GET" && !search ? "pages.read" : null;
   if (/^\/sites\/kamakura\/operations\/pages\.change-(?:prepare|apply)$/u.test(pathname)) {
     if (search) return null;
@@ -1624,6 +1624,14 @@ function kamakuraEditingCapability(method: string, pathname: string, search: str
     const expectedMethod = operation === "site.breakpoints.read" ? "GET" : "PUT";
     if (method !== expectedMethod) throw new AuthenticationError("editing API method mismatch");
     return operation === "site.breakpoints.read" ? "site.settings.read" : "site.settings.write";
+  }
+  const siteStyles = /^\/sites\/kamakura\/operations\/(site\.styles\.(?:read|save|release-plan|release|migration-plan|migration-apply))$/u.exec(pathname);
+  if (siteStyles) {
+    if (search) return null;
+    const operation = siteStyles[1]!;
+    const expectedMethod = operation === "site.styles.read" ? "GET" : operation === "site.styles.save" ? "PUT" : "POST";
+    if (method !== expectedMethod) throw new AuthenticationError("editing API method mismatch");
+    return operation === "site.styles.read" ? "site.settings.read" : "site.settings.write";
   }
   const assets = /^\/sites\/kamakura\/operations\/(assets\.(?:list|usages|resolve|update|upload-intent|delete|restore))(?:\/([A-Za-z][A-Za-z0-9_-]{0,79})\/([A-Za-z0-9][A-Za-z0-9._~-]{0,127}))?$/u.exec(pathname);
   if (assets) {
@@ -1658,7 +1666,7 @@ function kamakuraEditingCapability(method: string, pathname: string, search: str
   }
   const releaseSet = /^\/sites\/kamakura\/operations\/(pages\.release-set-plan|pages\.release-set|pages\.release-set-status)(?:\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}))?$/iu.exec(pathname);
   if (releaseSet) {
-    if (search) return null;
+    if (search && search !== "?features=site.styles") return null;
     const operation = releaseSet[1]!, operationId = releaseSet[2];
     if (operation === "pages.release-set-status") {
       if (!operationId || method !== "GET") throw new AuthenticationError("editing API method or path mismatch");
@@ -1670,13 +1678,15 @@ function kamakuraEditingCapability(method: string, pathname: string, search: str
   const match = /^\/sites\/kamakura\/operations\/(pages\.(?:read|save|release-plan|release))\/([a-z][a-z0-9-]{0,59})$/u.exec(pathname);
   if (!match) return null;
   const query = new URLSearchParams(search), operation = match[1]!;
-  if (query.size !== 1 || query.getAll("locale").length !== 1 || query.get("locale") !== "ja") return null;
+  const feature = query.getAll("features");
+  if ((query.size !== 1 && query.size !== 2) || query.getAll("locale").length !== 1 || query.get("locale") !== "ja"
+    || feature.length > 1 || feature.length === 1 && feature[0] !== "site.styles") return null;
   const expectedMethod = operation === "pages.read" ? "GET" : operation === "pages.save" ? "PUT" : "POST";
   if (method !== expectedMethod) throw new AuthenticationError("editing API method mismatch");
   return operation === "pages.read" ? "pages.read" : operation === "pages.save" ? "pages.edit" : "pages.publish";
 }
 
-async function kamakuraEditingDelegationToken(env: Env, identity: AccessIdentity, capabilities: readonly EditingCapability[]): Promise<string> {
+async function kamakuraEditingDelegationToken(env: Env, identity: BridgeActor, capabilities: readonly EditingCapability[]): Promise<string> {
   const encode = (value: unknown) => encodeBase64Url(new TextEncoder().encode(JSON.stringify(value)));
   const header = encode({ alg: "HS256", typ: "JWT" });
   const now = Math.floor(Date.now() / 1000);
@@ -1688,7 +1698,7 @@ async function kamakuraEditingDelegationToken(env: Env, identity: AccessIdentity
   return `${signingInput}.${signature}`;
 }
 
-async function signedKamakuraEditingApiRequest(request: Request, env: Env, identity: AccessIdentity, url: URL, action: string, role?: Role, allowLegacyBreakpointBootstrap = true): Promise<Response> {
+async function signedKamakuraEditingApiRequest(request: Request, env: Env, identity: BridgeActor, url: URL, action: string, role?: Role, allowLegacyBreakpointBootstrap = true): Promise<Response> {
   const supportId = crypto.randomUUID(), operation: KamakuraBridgeOperation = "editing_api";
   const fail = (category: KamakuraBridgeFailureCategory, status?: number) => kamakuraBridgeFailure(supportId, operation, category, status);
   const upstreamSuffix = action.slice(KAMAKURA_EDITING_API_EDITOR_PREFIX.length);
@@ -1733,10 +1743,12 @@ async function signedKamakuraEditingApiRequest(request: Request, env: Env, ident
     if (!localizationScopes.includes(capability)) return json({ error: "forbidden" }, 403);
   }
   // 概要の表示権限もサイトの scope から計算する。実行時にはその操作の scope だけを渡す。
+  const siteWideStyleWrite = /^\/sites\/kamakura\/operations\/site\.styles\.(?:release-plan|release|migration-plan|migration-apply)$/u.test(upstreamSuffix);
   const capabilities = upstreamSuffix === EDITING_DISCOVERY_PATH ? [...EDITING_DISCOVERY_SCOPES, ...localizationScopes]
     : localization && localization.id === "localization.overview" ? localizationScopes
       : localization && localization.id === "localization.release.read" && role === "owner"
-        ? [capability, "localization.publish", "localization.rollback"] as const : [capability];
+        ? [capability, "localization.publish", "localization.rollback"] as const
+        : siteWideStyleWrite ? ["site.settings.write", "pages.publish"] as const : [capability];
   let bearer: string;
   try { bearer = await kamakuraEditingDelegationToken(env, identity, capabilities); }
   catch { throw fail("bridge_secret_missing_or_invalid"); }
@@ -1864,8 +1876,7 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
     body = new TextEncoder().encode("{}");
   }
   const isCatalog = route.upstreamPath === `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/catalog`;
-  const isLegacyPageRead = /^\/internal\/studio\/web-content\/[a-z][a-z0-9-]{0,59}$/u.test(route.upstreamPath);
-  const cacheableRead = request.method === "GET" && (isCatalog || isLegacyPageRead);
+  const cacheableRead = request.method === "GET" && isCatalog;
   const ifNoneMatch = cacheableRead ? safeIfNoneMatch(request.headers.get("If-None-Match")) : undefined;
   const bodyBytes = body.slice().buffer;
   const headers = await kamakuraSignedHeaders(env, identity, request.method, route.upstreamPath, body, supportId, operation);
@@ -2943,6 +2954,8 @@ function workerEditorAdapter(resolved: ResolvedTrustedIntegration): WorkerEditor
 if (false) void workerEditorAdapter;
 
 async function liveEditorApi(request: Request, env: Env, identity: AccessIdentity, action: string, resolved: ResolvedTrustedIntegration, adapter: WorkerEditorAdapter): Promise<Response> {
+  if (adapter === KAMAKURA_EDITOR_ADAPTER && request.method === "GET"
+      && /^\/editor\/(?!(?:catalog|create|index)$)[a-z][a-z0-9-]{0,59}$/u.test(action)) return json({ error: "not_found" }, 404);
   if (action === KAMAKURA_EDITING_API_EDITOR_PREFIX || action.startsWith(`${KAMAKURA_EDITING_API_EDITOR_PREFIX}/`)) {
     if (!adapter.dispatchEditingApi) return json({ error: "not_found" }, 404);
     const path = action.slice(KAMAKURA_EDITING_API_EDITOR_PREFIX.length);
@@ -3129,6 +3142,16 @@ function resolveCliDispatch(request: Request, env: Env, url: URL, projectId: str
   } else if (bridgePath.startsWith("/localization/")) {
     const route = kamakuraLocalizationRoute(bridgePath.slice("/localization".length), request.method);
     if (route && route !== "method_not_allowed") return (actor) => signedKamakuraLocalizationRequest(request, env, actor, spec.owner ? "owner" : "editor", route, spec);
+  } else if (spec.id === "pages.read") {
+    const pageId = /^\/editor\/([a-z][a-z0-9-]{0,59})$/u.exec(bridgePath)?.[1];
+    if (!pageId || !KAMAKURA_COMMON_PAGE_ID.test(pageId)) return json({ error: "not_found" }, 404);
+    const action = `${KAMAKURA_EDITING_API_EDITOR_PREFIX}/sites/kamakura/operations/pages.read/${pageId}`;
+    const pageUrl = new URL(`/api/projects/${KAMAKURA_EDITOR_PROJECT_ID}/sites/${KAMAKURA_EDITOR_SITE_ID}${action}`, url.origin);
+    pageUrl.searchParams.set("locale", "ja");
+    const pageRequest = new Request(pageUrl, {
+      method: "GET", signal: request.signal, headers: { Accept: EDITING_EDITOR_SNAPSHOT_ACCEPT }
+    });
+    return (actor) => signedKamakuraEditingApiRequest(pageRequest, env, actor, pageUrl, action);
   } else if (bridgePath.startsWith("/editor/")) {
     const resolved = resolveTrustedEditorApi(KAMAKURA_EDITOR_PROJECT_ID, KAMAKURA_EDITOR_SITE_ID, bridgePath);
     if (!resolved) return json({ error: "not_found" }, 404);

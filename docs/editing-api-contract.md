@@ -4,31 +4,39 @@
 
 `@niho/web/editing-client` の `createPageEditingApiClient` は同じwire契約を呼ぶReact非依存clientです。ブラウザーのGUIは既定のsame-origin credentialsまたはhost提供headerを使え、Node CLIはhost bearer headerと `credentials: "omit"` を使えます。ホストorigin自体がCloudflare Accessで保護される場合、`niho-edit` は別途設定されたAccess Service Auth headerも指定originだけに送れます。GUIと `niho-edit` CLIはページ本文・CMS項目・ページ管理・ブレークポイント・素材の同じ操作を呼べます。Studio GUIはAccess sessionをWorker BFFで短期の操作別tokenへ委任し、サイトoriginの共通APIへservice bindingで接続します。ブラウザーのAccess tokenやcookieはサイトへ転送しません。
 
-Studio GUIは対応ホストでは editor snapshot profile から日本語本文・表示材料・編集状態をまとめて読みます。未対応ホストへの移行中は旧read-only snapshot routeを版照合付きで併用します。CMS項目・ページ管理・素材の書込は共通APIを使います。翻訳の共通APIは、対応するホストが登録した操作をCUIから直接呼び出せます。Studioの翻訳画面は既存の接続を使います。
+Kamakura の Studio GUI と `niho-studio pages.read` は editor snapshot profile から日本語本文・表示材料・編集状態を同じ共通API読取で取得します。Studio GUIは `editorState` を含む応答を必須にし、欠けた場合はページを開きません。旧read-only snapshot routeから不足分を補う移行fallbackは使いません。`niho-studio` は同じprofileを要求し、CLI利用者へ共通APIの応答を返します。CMS項目・ページ管理・素材の書込は共通APIを使います。翻訳の共通APIは、対応するホストが登録した操作をCUIから直接呼び出せます。Studioの翻訳画面は既存の接続を使います。
 
 ## 操作カタログ
 
 ホストは `createPageEditingApi(adapter)` の返すRequest handlerを、自分が選んだoriginとpathへ接続します。既定pathは `/api/edit/v1` です。操作ID・権限・method・path・input/result schema・安定エラーの正本は `EDITING_OPERATIONS` です。公開する操作IDの型もこのcatalogから導出し、discoveryとクライアント型が別々の一覧にならないようにします。1つのWorkerで複数サイトを扱う場合は `createRegisteredPageEditingApi([{ siteIds, adapter }, ...])` を使い、完全一致するsite IDを登録済みadapterへ振り分けます。登録重複は起動時に拒否し、未登録site IDは404になります。ホストごとの処理でsite名を条件分岐する必要はありません。`GET /sites/{siteId}/capabilities` は、その認証主体が使える操作ID・権限・HTTP method・path・JSON Schema・安定エラー一覧を返します。
 
+サイト共通スタイル拡張は `GET /sites/{siteId}/capabilities?features=site.styles` でopt-inします。対応hostは実装済みadapterの操作だけを追加し、queryなしdiscoveryとfeature queryなしrequestでは従来のoperation一覧・schemaを維持します。対応clientは拡張schemaを使う `pages.*` requestにもfeature queryを付け、旧hostがqueryを拒否した場合はlegacy discoveryへfallbackしてstyle operationや拡張fieldを送信しません。
+
 | ID | Method | Path | 権限 | 入力 | 結果 |
 | --- | --- | --- | --- | --- | --- |
-| `pages.inspect` | GET | `/sites/{siteId}/operations/pages.inspect/{pageId}?locale={locale}&view={view}` | `pages.read` | outline/find/subtree/effectiveStyleの投影条件 | 部分読取結果と文書・component・presentation・site styleの各版。対応 host は `cmsBindings?` も返す |
-| `pages.read` | GET | `/sites/{siteId}/operations/pages.read/{pageId}?locale={locale}` | `pages.read` | site/page/locale、任意の editor snapshot profile | `{ document, version, componentsVersion?, presentationVersion?, presentation?, editorState?, cmsBindings? }` |
+| `pages.inspect` | GET | `/sites/{siteId}/operations/pages.inspect/{pageId}?locale={locale}&view={view}[&features=site.styles]` | `pages.read` | outline/find/subtree/effectiveStyleの投影条件 | 部分読取結果と各版。style拡張時は `draftStylesVersion`、対応 host は `cmsBindings?` を含む |
+| `pages.read` | GET | `/sites/{siteId}/operations/pages.read/{pageId}?locale={locale}[&features=site.styles]` | `pages.read` | site/page/locale、任意のeditor snapshot profile | `{ document, version, componentsVersion?, presentationVersion?, presentation?, editorState?, draftStylesVersion?, cmsBindings? }` |
 | `pages.history` | GET | `/sites/{siteId}/operations/pages.history/{pageId}?locale={locale}&cursor={cursor}` | `pages.history.read` | site/page/locale and optional cursor | `{ entries, next? }` (operation summaries only) |
 | `pages.history-read` | POST | `/sites/{siteId}/operations/pages.history-read/{pageId}?locale={locale}` | `pages.history.read` | `{ id }` in the JSON body | `{ document, siteStyles?, presentation? }` for one retained revision |
-| `pages.save` | PUT | `/sites/{siteId}/operations/pages.save/{pageId}?locale={locale}` | `pages.edit` | `{ expectedVersion, document }` | `{ status: "saved", version, document }` |
-| `pages.apply` | POST | `/sites/{siteId}/operations/pages.apply/{pageId}?locale={locale}` | `pages.edit` | `{ baseVersion, operationId, operations, componentsVersion?, presentationVersion?, stylesVersion?, cmsBindings?, dryRun? }`。`pages.cms-bindings` 対応 host だけ sidecar を受理し、sidecar 単独変更では `operations: []` を許可 | `{ status: "applied", version, revision, document }` / dry-run `{ status: "valid", diff, touched }` |
+| `pages.save` | PUT | `/sites/{siteId}/operations/pages.save/{pageId}?locale={locale}[&features=site.styles]` | `pages.edit` | `{ expectedVersion, draftStylesVersion?, document }` | `{ status: "saved", version, document }` |
+| `pages.apply` | POST | `/sites/{siteId}/operations/pages.apply/{pageId}?locale={locale}[&features=site.styles]` | `pages.edit` | `{ baseVersion, operationId, operations, componentsVersion?, presentationVersion?, stylesVersion?, draftStylesVersion?, cmsBindings?, dryRun? }` (`stylesVersion` はlegacy alias)。`pages.cms-bindings` 対応 host だけ sidecar を受理し、sidecar 単独変更では `operations: []` を許可 | `{ status: "applied", version, revision, document }` / dry-run `{ status: "valid", diff, touched }` |
 | `pages.preview-intent` | POST | `/sites/{siteId}/operations/pages.preview-intent/{pageId}?locale={locale}` | `pages.read` | `{}` | `{ url, expiresAt }` |
-| `pages.release-plan` | POST | `/sites/{siteId}/operations/pages.release-plan/{pageId}?locale={locale}` | `pages.publish` | expected version, publish/rollback action, optional rollback revision and dependency versions | `{ plan }` |
-| `pages.release` | POST | `/sites/{siteId}/operations/pages.release/{pageId}?locale={locale}` | `pages.publish` | expected version, one-use confirmation token, UUID v4 operation ID | `{ status: "released", operationId, version, document }` |
-| `pages.release-set-plan` | POST | `/sites/{siteId}/operations/pages.release-set-plan` | `pages.publish` per target | `{ siteId, operationId, items: [{ target, expectedVersion, componentsVersion?, presentationVersion? }] }` (1–50 pages) | `{ plan }` |
-| `pages.release-set` | POST | `/sites/{siteId}/operations/pages.release-set` | `pages.publish` per target | the exact plan's site, operation ID, confirmation token and items | `{ status: "completed" | "publishing", operationId, items: [{ target, status: "released", version } | { target, status: "conflict" | "pending" }] }` |
+| `pages.release-plan` | POST | `/sites/{siteId}/operations/pages.release-plan/{pageId}?locale={locale}[&features=site.styles]` | `pages.publish` | expected page version、公開 `stylesVersion`、`sitePublicationEpoch`、publish/rollback action | `{ plan }` |
+| `pages.release` | POST | `/sites/{siteId}/operations/pages.release/{pageId}?locale={locale}[&features=site.styles]` | `pages.publish` | planの両版、one-use confirmation token、UUID v4 operation ID | `{ status: "released", operationId, version, document }` |
+| `pages.release-set-plan` | POST | `/sites/{siteId}/operations/pages.release-set-plan[?features=site.styles]` | `pages.publish` per target | `{ siteId, operationId, sitePublicationEpoch, items: [{ target, expectedVersion, stylesVersion?, componentsVersion?, presentationVersion? }] }` (1–50 pages) | `{ plan }` |
+| `pages.release-set` | POST | `/sites/{siteId}/operations/pages.release-set[?features=site.styles]` | `pages.publish` per target | the exact plan's site, operation ID, epoch, confirmation token and items | `{ status: "completed" | "publishing", operationId, items: [...] }` |
 | `pages.release-set-status` | GET | `/sites/{siteId}/operations/pages.release-set-status/{operationId}` | `pages.read` | site / operation ID | `{ status, operationId, ... }` |
 | `pages.catalog` | GET | `/sites/{siteId}/operations/pages.catalog` | `pages.read` | site ID | `{ version, pages }` |
 | `pages.change-prepare` | POST | `/sites/{siteId}/operations/pages.change-prepare` | `pages.publish` | `{ expectedVersion, operationId, change }` | `{ plan }` |
 | `pages.change-apply` | POST | `/sites/{siteId}/operations/pages.change-apply` | `pages.publish` | `{ expectedVersion, operationId, confirmationToken, change }` | `{ status: "applied", operationId, page }` |
 | `site.breakpoints.read` | GET | `/sites/{siteId}/operations/site.breakpoints.read` | `site.settings.read` | site ID | `{ settings, version }` |
 | `site.breakpoints.save` | PUT | `/sites/{siteId}/operations/site.breakpoints.save` | `site.settings.write` | `{ expectedVersion, settings }` | `{ status: "saved", version }` |
+| `site.styles.read` | GET | `/sites/{siteId}/operations/site.styles.read` | `site.settings.read` | site ID | `{ sitePublicationEpoch, draft: { version, styles }, published: { stylesVersion, styles } }` |
+| `site.styles.save` | PUT | `/sites/{siteId}/operations/site.styles.save` | `site.settings.write` | `{ expectedVersion, styles }` | `{ status: "saved", version }` |
+| `site.styles.release-plan` | POST | `/sites/{siteId}/operations/site.styles.release-plan` | `site.settings.write` + site-wide `pages.publish` | `{ expectedVersion, expectedStylesVersion, sitePublicationEpoch, operationId }` | `{ plan }` |
+| `site.styles.release` | POST | `/sites/{siteId}/operations/site.styles.release` | `site.settings.write` + site-wide `pages.publish` | planの両版、epoch、operation ID、confirmation token | `{ status: "released", operationId, stylesVersion, sitePublicationEpoch }` |
+| `site.styles.migration-plan` | POST | `/sites/{siteId}/operations/site.styles.migration-plan` | `site.settings.write` + site-wide `pages.publish` | delete/rename change、両版、epoch、operation ID | `{ plan }` |
+| `site.styles.migration-apply` | POST | `/sites/{siteId}/operations/site.styles.migration-apply` | `site.settings.write` + site-wide `pages.publish` | planの変更・両版・epoch・operation ID・confirmation token | `{ status: "applied", operationId, ... }` |
 | `cms.schema` | GET | `/sites/{siteId}/operations/cms.schema` | `cms.read` | site ID | `{ collections }` |
 | `cms.list` | GET | `/sites/{siteId}/operations/cms.list/{collectionId}` | `cms.read` | site / collection ID | `{ collectionId, items }` |
 | `cms.read` | GET | `/sites/{siteId}/operations/cms.read/{collectionId}/{itemId}` | `cms.read` | collection / item ID | `{ item }` |
@@ -51,6 +59,8 @@ Studio GUIは対応ホストでは editor snapshot profile から日本語本文
 
 `pages.save` は `expectedVersion` を原子的に比較します。競合時はHTTP 409と `version_conflict` を返し、ホストは古い下書きを上書きしません。documentは受信側で `parsePageDocument` を通し、pathのsite/pageとqueryのlocaleに一致しない文書、任意HTML・JavaScript・CSSなど検証に失敗する値はHTTP 400 `invalid_request` で拒否します。登録ブロック・部品インスタンス・サイト共通スタイルを使うホストは、adapterの `validationContext(actor, target)` から信頼済みの `blocks`・`components`・`siteStyles` を渡します。読み取り、入力文書、保存後の正規文書の検証に同じcontextを使います。
 
+site.styles対応hostの `pages.read` / `pages.inspect` はdraft版を `draftStylesVersion` として返し、`pages.save` / `pages.apply` は同じdraft版で検証します。ページCAS `version` は文書版とdraft styles versionの両方を束縛します。公開planの `stylesVersion` はpublished版だけを指し、`sitePublicationEpoch` と一緒にcommit時にも再照合します。queryなしlegacy `pages.apply.stylesVersion` はdraft版aliasとして受け付けます。
+
 `pages.inspect` はページ文書を変更せず、`pages.read` と同じ認可でAI向けの小さな投影を返します。`view=outline` は要素のID・型・名前・tag/block・40文字までの本文抜粋・レイアウト要約・token参照・responsive/state override数と、先頭のtoken/text style/breakpoint定義を返します。`depth` と `node` で範囲を絞れます。`view=find` は `text`・`name`・`tag`・`style=property=value`・`usesToken`・`block`・`node` のいずれかで検索し、ID・祖先名・抜粋を返します。`view=subtree` は指定nodeのJSONを返し、結果が大きい場合は `{ path, node }` 項目へ分けて返します。`view=effectiveStyle` は指定nodeのbase・各breakpoint・hover/focus/activeの値と、その値がページ・site shared・component・継承のどこから来たかを返します。
 
 outline/find/subtreeは `limit`（既定1000、最大1000件）と `cursor` で継続できます。1応答は最大240 KiBです。cursorは同じ文書版・同じ検索条件にだけ使えます。ホストは文書版に加えて、取得できる場合は `componentsVersion`、`presentationVersion`、`stylesVersion` も返します。安定エラーは `invalid_request`、`invalid_cursor`、`node_not_found`、`result_too_large` です。ホストが `pages.inspect` に対応しない場合、CLIは `pages.read` の結果から同じ投影をローカル生成します。
@@ -70,15 +80,21 @@ outline/find/subtreeは `limit`（既定1000、最大1000件）と `cursor` で�
 
 ホストの `pageOperations.transact(actor, target, transaction)` は、ページ状態と同じCAS/transactionで操作記録を確定します。操作本文は不変の journal blob として保存し、現在状態にはその参照だけを持ちます。`actor + operationId` は正規化入力のhashと保存結果に結び付き、同じ要求の再送は前回と同じ結果、同じIDで違う要求を送った場合は HTTP 409 `duplicate_operation` になります。文書 pointer、journal pointer、ID/hash/結果は同時に確定してください。安全にrebaseした記録には、元要求の `baseVersion` に加えて実際に適用した版 `rebasedFromVersion` を記録します。actor・委任元・GUI/CLI/APIの種別は認証済み文脈から取得し、要求本文から受け取りません。`dryRun: true` は全操作を検証して `{ status: "valid", diff, touched }` を返しますが、保存もoperation IDの消費も行いません。
 
-編集用の完全なスナップショットを読むクライアントは `Accept: application/json; profile=niho-editor-snapshot-v1` を指定します。共通クライアントでは `editorSnapshot: { blocks }` で有効にします。完全対応ホストの `readPage` は、同じ読取結果から `document` と `version`、`editorState`、表示コンテキストがある場合は `presentation` と `presentationVersion` を組にして返します。移行中は `presentation` だけを先に返しても構いませんが、その場合 Studio は不足する編集状態を旧read-only snapshot routeから補います。`editorState` も返すと旧routeの文書読取を省けます。通常の `Accept: application/json` では従来の本文と版の応答を返します。
+編集用の完全なスナップショットを読むクライアントは `Accept: application/json; profile=niho-editor-snapshot-v1` を指定します。共通クライアントでは `editorSnapshot: { blocks }` で有効にします。完全対応ホストの `readPage` は、同じ読取結果から `document` と `version`、`editorState`、表示コンテキストがある場合は `presentation` と `presentationVersion` を組にして返します。Kamakura Studioは `editorState` を含む応答を必須とし、未対応応答を旧routeから補完しません。通常の `Accept: application/json` では従来の本文と版の応答を返します。
 
-`presentation` は core の `SitePresentation` です。APIとクライアントは `parseSitePresentation` で対象・登録ブロック・共通レイアウトや共有文書を検証します。完全なスナップショットでは、`presentationVersion` は `presentation.version` と一致する場合に限り受け付け、どちらもない場合は表示コンテキストを省略できます。`editorState` は `readOnly`、`englishPublication`、公開版一覧の `releases` を必要に応じて保持します。対応ホストは、該当する状態が一つもない場合も空の `editorState` を返します。壊れた完全スナップショットは拒否します。旧ホストの応答には `editorState` がなく、Studioは旧スナップショットを取得して文書版と表示コンテキスト版の両方を共通 API と照合します。
+`presentation` は core の `SitePresentation` です。APIとクライアントは `parseSitePresentation` で対象・登録ブロック・共通レイアウトや共有文書を検証します。完全なスナップショットでは、`presentationVersion` は `presentation.version` と一致する場合に限り受け付け、どちらもない場合は表示コンテキストを省略できます。`editorState` は `readOnly`、`englishPublication`、公開版一覧の `releases` を必要に応じて保持します。対応ホストは、該当する状態が一つもない場合も空の `editorState` を返します。壊れた完全スナップショットは拒否します。旧ホストの応答には `editorState` がありません。Kamakura Studioは旧snapshotとの複数読取を組み合わせず、ホストが完全なprofileを返すまでページを開きません。
 
 `pages.release-set-*` は同じサイト内のページを、一つの計画・適用操作で公開します。対象は1〜50件で、重複ページは禁止します。単一ページの非同期公開も同じoperation ID・status契約を使えます。各項目の `expectedVersion` と任意の `componentsVersion` / `presentationVersion`、対象一覧、operation IDを計画へ固定します。APIは全対象の `pages.publish` 権限を個別に確認します。ホストadapterは対象ごとに版を再検証し、結果として `released`（公開済み）、`conflict`（版が変わった）、`pending`（処理中）を返します。全体の `status` は未完了項目があれば `publishing`、全項目が確定したら `completed` です。ある対象の競合で他ページの成功を隠さず、全ページ同時切替も要求しません。トップレベルの `version_conflict` は操作が始まっておらず、公開済みページがない場合に限ります。
+
+site.styles対応hostではrelease-set計画に公開 `stylesVersion` とsite全体の `sitePublicationEpoch` を固定し、各commit直前に再検証します。同じrelease-setの非同期残項目はfence lease内で最新epochを引き継ぎます。他の公開操作はlease解放まで409 `site_publication_in_progress` となり、lease失効時は未処理項目をconflictに確定して古いworkerのcommitを拒否します。
 
 確認tokenは対象と全版を含む計画に結び付けます。同じactor・operation ID・入力の再送では、完了済み対象を二重に公開せず、前回の項目別状態を返します。タイムアウト時は同じ計画を再適用して処理を再開でき、`pages.release-set-status` で最終結果を照会できます。競合したページは再読込して新しい計画を作ります。ホストはactor、対象版、各項目の結果を監査記録へ保存します。自動mergeは行いません。
 
 `site.breakpoints.*` は、hostの設定正本へ保存するsite単位の操作です。各操作は対応するadapter関数が登録されているhostだけがdiscoverに出します。settingsは `parseBreakpointSettings` の閉じた契約で検証し、saveはhostの永続層でexpectedVersionを原子的に比較します。stale versionは409 `version_conflict` です。
+
+`site.styles.read/save` は共通スタイルのdraftとimmutableな公開snapshotを扱い、readは同じsnapshotの `sitePublicationEpoch` も返します。saveはdraft `version` をCASし、追加と値更新だけを受け付けます。定義を省く削除やrenameは422 `style_migration_required` です。hostは保存前に全draft page/template/shared document/component/slot styleを同じ新しいstylesで再検証します。release-plan/releaseはdraft `version` と現行 `stylesVersion`、sitePublicationEpoch、影響する全公開ページ・localeと依存版をplanに固定し、`site.settings.write` とsite-wide `pages.publish` の両方を要求します。release時はpublication fenceの下で全公開page/locale snapshotとstyle pointerを一括して切り替えます。
+
+`site.styles.migration-plan/apply` はdelete/rename専用です。全参照とbefore/afterをplanへ固定し、page・component・locale・styleの書込をmigration fence中409 `site_style_migration_in_progress` で拒否します。fence leaseと全依存版をcommit時に再検証し、draft/public pointer・locale snapshot・operation結果を一つのCAS境界で確定します。
 
 `pages.catalog` は管理可能なページと一覧のopaque versionを返します。`pages.change-prepare` は作成・名前/URL変更・公開状態変更を実行せずに影響と短期確認tokenを返し、`pages.change-apply` は同じ `expectedVersion`・UUID v4 `operationId`・change・tokenを照合して適用します。stale versionは409 `version_conflict`、別prepareでのoperation ID再利用は409 `duplicate_operation` です。同じactorが同じapplyを再送した場合は、ホストが記録した同じ結果を返します。
 

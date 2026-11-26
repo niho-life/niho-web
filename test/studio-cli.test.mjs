@@ -202,7 +202,13 @@ testWithD1("CLI grants are isolated by client, project, site, capability, expiry
   assert.equal(h.calls.length, 0);
   assert.equal(h.audit().length, 0);
 
-  await check(await h.request("GET", "pages.read/fixture-page"), 200);
+  assert.deepEqual(await check(await h.request("GET", "pages.read/fixture-page"), 200), { status: "ready" });
+  assert.equal(h.calls.at(-1).path, "/api/edit/v1/sites/kamakura/operations/pages.read/fixture-page");
+  assert.equal(h.calls.at(-1).method, "GET");
+  assert.equal(h.calls.at(-1).headers.get("Accept"), "application/json; profile=niho-editor-snapshot-v1");
+  const delegated = JSON.parse(Buffer.from(h.calls.at(-1).headers.get("Authorization").slice("Bearer ".length).split(".")[1], "base64url").toString("utf8"));
+  assert.equal(delegated.sub, CLI_SUBJECT);
+  assert.deepEqual(delegated.scope, ["pages.read"]);
   h.db.prepare("DELETE FROM studio_cli_grants WHERE client_id = ? AND capability = ?").run(CLIENT, "pages.read");
   await check(await h.request("GET", "pages.read/fixture-page"), 403, "forbidden");
   h.grant("pages.read");

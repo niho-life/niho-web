@@ -68,7 +68,10 @@ export function SharedStyleLibrary({ adapter, pages, blocks, components, siteDis
   function applySite(operation: EditorOperation): string | undefined {
     if (siteDisabled) return "処理が完了してからサイト共通スタイルを編集してください。";
     if (pageDirty) return pageHold;
-    if ((operation.type === "token" && !operation.token && Object.hasOwn(before.tokens ?? {}, operation.name) || operation.type === "textStyle" && !operation.style && Object.hasOwn(before.textStyles ?? {}, operation.name)) && !adapter.siteStyleCapabilities?.atomicReferenceDetachment) return "このホストは全ページの参照を同時に切り離せないため、サイト共通スタイルを削除できません。";
+    if (operation.type === "token" && !operation.token && Object.hasOwn(before.tokens ?? {}, operation.name)
+      || operation.type === "textStyle" && !operation.style && Object.hasOwn(before.textStyles ?? {}, operation.name)) {
+      return "削除・名前変更には site.styles の migration plan/apply が必要です。通常保存では削除できません。";
+    }
     try {
       const next = editDocument(siteDocument, operation);
       const candidate: SiteStyles = { tokens: next.tokens, ...(next.textStyles ? { textStyles: next.textStyles } : {}) };

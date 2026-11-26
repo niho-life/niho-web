@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { detachRemovedSiteStyles, parseSiteStyles, type SiteStyles } from "./site-styles.js";
-import { parsePageDocument } from "./document.js";
+import { parseSiteStyles, type SiteStyles } from "./site-styles.js";
 import { Dialog } from "./editor-dialog.js";
 import { pageChangeProblems, sameTarget, validatePageChangePlan, type EditorOperation } from "./editor-model.js";
 import type { EditorAdapter, EditorBlockRegistry, EditorPage, EditorPageChange, EditorPageChangePlan, EditorPageChangeResult, EditorSite, EditorTarget } from "./editor-types.js";
@@ -323,6 +322,8 @@ export type SiteSettingsState = {
   status: "idle" | "loading" | "error" | "ready";
   /** 保存済みの設定。 */
   settings: SiteSettings | undefined;
+  /** site.styles の draft snapshot を識別する opaque version。 */
+  version: string | undefined;
   styleSaveEpoch: number; styles: SiteStyles; stylesDirty: boolean; latest: SiteSettings | undefined;
   editStyles: (styles: SiteStyles) => string | undefined;
   form: SiteForm; dirty: boolean; problem: string | undefined; canSave: boolean; busy: boolean;
@@ -331,6 +332,7 @@ export type SiteSettingsState = {
 };
 /** サイト設定は文書と別に、opaque な version の楽観ロックで保存する。 */
 export function useSiteSettings(adapter: EditorAdapter, siteId: string, blocks: EditorBlockRegistry, components?: ComponentLibrary): SiteSettingsState {
+  void blocks; void components;
   const [loaded, setLoaded] = useState<{ siteId: string; settings: SiteSettings; version: string } | null>(null);
   const [status, setStatus] = useState<SiteSettingsState["status"]>("idle"), [form, setForm] = useState(emptyForm), [epoch, setEpoch] = useState(0);
   const [styleSaveEpoch, setStyleSaveEpoch] = useState(0);
@@ -366,15 +368,7 @@ export function useSiteSettings(adapter: EditorAdapter, siteId: string, blocks: 
       if (stylesDirty) {
         const before = parseSiteStyles(loaded.settings), after = parseSiteStyles(settings);
         const removed = Object.keys(before.tokens ?? {}).some((name) => !Object.hasOwn(after.tokens ?? {}, name)) || Object.keys(before.textStyles ?? {}).some((name) => !Object.hasOwn(after.textStyles ?? {}, name));
-        if (removed && !adapter.siteStyleCapabilities?.atomicReferenceDetachment) throw new Error("atomic reference detachment is required");
-        const pages = await adapter.listPages(loaded.siteId, controller.signal);
-        await Promise.all(pages.map(async (page) => {
-          if (page.siteId !== loaded.siteId) throw new Error("site mismatch");
-          const snapshot = await adapter.readDocument(page, controller.signal);
-          const document = parsePageDocument(snapshot.document, blocks, { ...(components ? { components } : {}), siteStyles: before });
-          if (!sameTarget(document, page)) throw new Error("page mismatch");
-          parsePageDocument(detachRemovedSiteStyles(document, before, after), blocks, { ...(components ? { components } : {}), siteStyles: after });
-        }));
+        if (removed) throw new Error("site style migration is required");
       }
       if (stylesDirty) {
         const current = await adapter.readSiteSettings!(loaded.siteId, controller.signal);
@@ -391,7 +385,8 @@ export function useSiteSettings(adapter: EditorAdapter, siteId: string, blocks: 
     finally { if (saving.current === controller) { saving.current = null; setBusy(false); } }
   }
   return {
-    supported: typeof adapter.readSiteSettings === "function", editable, status, settings: loaded?.siteId === siteId ? loaded.settings : undefined, form, dirty, problem, styles, stylesDirty, latest, styleSaveEpoch,
+    supported: typeof adapter.readSiteSettings === "function", editable, status, settings: loaded?.siteId === siteId ? loaded.settings : undefined,
+    version: loaded?.siteId === siteId ? loaded.version : undefined, form, dirty, problem, styles, stylesDirty, latest, styleSaveEpoch,
     editStyles: (next) => { if (!editable || status !== "ready" || busy) return "サイト設定を読み込んでから編集してください。"; try { setStyles(parseSiteStyles(next)); setMessage(null); return undefined; } catch { return "共通スタイルの参照・種類・値を確認してください。"; } },
     canSave: editable && dirty && !!parsed && !busy, busy, message, conflict,
     edit: (patch) => { setForm((previous) => ({ ...previous, ...patch })); setMessage(null); },

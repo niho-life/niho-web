@@ -4,6 +4,18 @@ import { parseTextStyles, parseTokens } from "./style-values.js";
 /** サイト設定のスタイル部分。ページ JSON へ継承値を書き戻さない。 */
 export type SiteStyles = { tokens?: Record<string, DesignToken>; textStyles?: Record<string, TextStyle> };
 
+/** A style version is meaningless without the stage whose immutable snapshot it identifies. */
+export type SiteStylesRevision =
+  | { readonly stage: "draft"; readonly version: string }
+  | { readonly stage: "published"; readonly version: string };
+
+export type SiteStylesSnapshot = {
+  /** Site-wide generation that changes whenever a public pointer is committed. */
+  readonly sitePublicationEpoch: string;
+  readonly draft: { readonly version: string; readonly styles: SiteStyles };
+  readonly published: { readonly stylesVersion: string; readonly styles: SiteStyles };
+};
+
 /** サイト単体で解決できる参照だけを受け付ける。ページの値による補完は禁止。 */
 export function parseSiteStyles(input: SiteStyles): SiteStyles {
   const tokens = input.tokens === undefined ? undefined : parseTokens(input.tokens, "$.site.tokens");

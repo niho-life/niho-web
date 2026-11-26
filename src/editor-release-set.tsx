@@ -7,7 +7,7 @@ import { validateReleasePlan } from "./editor-model.js";
 import type { EditorAdapter, EditorPage, EditorReleasePlan, EditorReleaseRequest, EditorSite } from "./editor-types.js";
 
 type Preview = { page: EditorPage; plan: EditorReleasePlan };
-type Completed = Exclude<EditingPageReleaseSetApplyResult, { status: "conflict" | "invalid" | "not_found" | "duplicate" }>;
+type Completed = Exclude<EditingPageReleaseSetApplyResult, { status: "conflict" | "invalid" | "not_found" | "duplicate" | "publication_in_progress" | "migration_in_progress" }>;
 type ReleaseSetAdapter = Pick<EditorAdapter, "readDocument" | "prepareRelease" | "prepareReleaseSet" | "releaseSet" | "releaseSetStatus">;
 
 function targetKey(page: EditorPage): string { return `${page.siteId}\u0000${page.pageId}\u0000${page.locale}`; }
@@ -72,6 +72,8 @@ function failureMessage(status: string): string {
   if (status === "conflict") return "公開計画後にページが更新されました。内容を読み直して、もう一度計画してください。";
   if (status === "duplicate") return "同じ操作IDが別の公開内容に使われています。新しい計画を作成してください。";
   if (status === "invalid") return "公開できないページが含まれています。対象ページを確認して計画し直してください。";
+  if (status === "publication_in_progress") return "別の公開処理が進行中です。完了後に同じ計画を再試行してください。";
+  if (status === "migration_in_progress") return "サイト共通スタイルの移行中です。完了後に計画し直してください。";
   return "公開変更セットを確認できませんでした。状態を確認してから再試行してください。";
 }
 
