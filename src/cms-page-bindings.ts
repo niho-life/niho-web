@@ -36,7 +36,7 @@ export const CMS_PAGE_BINDINGS_MAX_BYTES = 64 * 1024;
 const fieldText = new Set(["text", "longText", "slug", "datetime"]);
 const textTags = new Set("div section article header footer main nav aside h1 h2 h3 h4 h5 h6 p span a li dt dd strong em b i small blockquote figure figcaption time".split(" "));
 const listTags = new Set(["div", "article", "section", "li"]);
-const validSlug = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/u;
+const validSlug = /^[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*$/u;
 
 function fieldBindings(input: unknown, path: string): CmsPageFieldBinding[] {
   const bindings = cmsArray(input, path, 80).map((entry, index): CmsPageFieldBinding => {
@@ -208,7 +208,7 @@ function applyMapping(node: ElementNode, binding: CmsPageFieldBinding, item: Cms
       (node.attrs ??= {}).href = string(value, "$binding.link", 2048);
       return;
     case "detail-link": {
-      if (typeof value !== "string" || !validSlug.test(value) || validatePagePath(binding.path + "/" + value) !== null) fail("$binding.link", "invalid CMS detail link");
+      if (typeof value !== "string" || !validSlug.test(value) || validatePagePath(binding.path + "/" + value.toLowerCase()) !== null) fail("$binding.link", "invalid CMS detail link");
       (node.attrs ??= {}).href = binding.path + "/" + value;
       return;
     }
