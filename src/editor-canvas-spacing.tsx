@@ -13,6 +13,20 @@ export type CanvasSpacingProperty = typeof padding[number]["property"] | "gap" |
 type Rect = { left: number; top: number; width: number; height: number };
 type Drag = { property: CanvasSpacingProperty; pointer: number; position: number; initial: number; value: number; restore: () => void };
 
+function inheritedCanvasVariable(element: HTMLElement, name: string, seen = new Set<string>()): string | undefined {
+  if (seen.has(name)) return undefined;
+  seen.add(name);
+  const value = element.style.getPropertyValue(name) || (element.parentElement ? inheritedCanvasVariable(element.parentElement as HTMLElement, name, seen) : undefined);
+  if (!value) return undefined;
+  const nested = /^var\(\s*(--[\w-]+)\s*(?:,\s*(.+))?\)$/u.exec(value.trim());
+  return nested ? inheritedCanvasVariable(element, nested[1]!, new Set(seen)) ?? nested[2]?.trim() : value;
+}
+function computedCanvasValue(element: HTMLElement, computed: CSSStyleDeclaration | undefined, property: string): string {
+  const value = computed?.getPropertyValue(property) ?? "";
+  const variable = /^var\(\s*(--[\w-]+)\s*(?:,\s*(.+))?\)$/u.exec(value.trim());
+  return variable ? inheritedCanvasVariable(element, variable[1]!) ?? variable[2]?.trim() ?? value : value;
+}
+
 export const canvasSpacingCss = `
   .nw-spacing-handle{position:absolute;z-index:2147483001;width:18px;height:8px;transform:translate(-50%,-50%);border:1px solid ${uiColor.bg};border-radius:4px;padding:0;background:${uiColor.accent};box-shadow:0 0 0 1px ${uiColor.accentStrong};cursor:ns-resize;touch-action:none}
   .nw-spacing-handle[data-axis=x]{width:8px;height:18px;cursor:ew-resize}.nw-spacing-handle[data-gap=true]{background:${uiColor.bg};border-color:${uiColor.accent}}
@@ -26,16 +40,18 @@ export function CanvasSpacingHandles({ element, rect, enabled, allowed, commit }
   const active = useRef<Drag | null>(null);
   const [dragged, setDragged] = useState<{ property: CanvasSpacingProperty; value: number } | null>(null);
   const computed = element.ownerDocument.defaultView?.getComputedStyle(element);
-  const gapAxis = computed?.display.includes("flex") && !computed.flexDirection.startsWith("column") ? "x" : "y";
-  const gapValue = gapAxis === "x" ? computed?.columnGap : computed?.rowGap;
+  const display = computedCanvasValue(element, computed, "display"), flexDirection = computedCanvasValue(element, computed, "flex-direction");
+  const computedGap = computedCanvasValue(element, computed, "gap");
+  const gapAxis = display.includes("flex") && !flexDirection.startsWith("column") ? "x" : "y";
+  const gapValue = computedCanvasValue(element, computed, gapAxis === "x" ? "column-gap" : "row-gap");
   const hasAxisGap = Number.isFinite(Number.parseFloat(gapValue ?? ""));
-  const bothGaps = computed?.gap?.trim().split(/\s+/u) ?? [];
+  const bothGaps = computedGap.trim().split(/\s+/u);
   const gapStart = hasAxisGap ? gapValue : bothGaps[gapAxis === "x" ? 1 : 0] ?? bothGaps[0];
   const gapUsesPercent = gapStart?.includes("%") ?? false;
   const draggedGap = dragged?.property && !dragged.property.startsWith("padding") ? dragged.property : undefined;
-  const gapProperty = draggedGap ?? (bothGaps.length > 1 || hasAxisGap && gapValue !== computed?.gap ? (gapAxis === "x" ? "columnGap" : "rowGap") : "gap");
+  const gapProperty = draggedGap ?? (bothGaps.length > 1 || hasAxisGap && gapValue !== computedGap ? (gapAxis === "x" ? "columnGap" : "rowGap") : "gap");
   const gap = { property: gapProperty, label: "子要素の間隔", x: gapAxis === "x" ? .25 : 1, y: gapAxis === "x" ? 1 : .25, axis: gapAxis, direction: 1 } as const;
-  const handles = [...padding, ...(computed && /flex|grid/u.test(computed.display) && !gapUsesPercent ? [gap] : [])].filter(({ property }) => allowed(property));
+  const handles = [...padding, ...(computed && /flex|grid/u.test(display) && !gapUsesPercent ? [gap] : [])].filter(({ property }) => allowed(property));
 
   useLayoutEffect(() => () => {
     active.current?.restore();
@@ -74,7 +90,7 @@ export function CanvasSpacingHandles({ element, rect, enabled, allowed, commit }
         event.preventDefault(); event.stopPropagation();
         const cssProperty = property.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
         const previous = element.getAttribute("style");
-        const initial = Number.parseFloat((isGap ? gapStart : computed?.[property]) ?? "") || 0;
+        const initial = Number.parseFloat((isGap ? gapStart : computedCanvasValue(element, computed, cssProperty)) ?? "") || 0;
         active.current = { property, pointer: event.pointerId, position: position(event), initial, value: initial,
           restore: () => {
             if (previous === null) element.removeAttribute("style");

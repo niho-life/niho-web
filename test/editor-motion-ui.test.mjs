@@ -21,6 +21,7 @@ const input = (text, root = document) => field(text, root)?.querySelector("input
 const check = (text, root = right()) => [...root.querySelectorAll("label.e-check")].find((node) => node.textContent === text)?.querySelector("input");
 const frame = () => document.querySelector("iframe");
 const pageCss = () => frame().contentDocument.querySelector("style[data-nw-style]").textContent;
+const canvasNodeValue = (id, name) => frame().contentDocument.querySelector(`[data-nw-node="${id}"]`)?.style.getPropertyValue(name) ?? "";
 const canvasExtra = () => [...frame().contentDocument.querySelectorAll("style")].at(-1).textContent;
 const publishedCss = (document) => renderPageToHtml(document).match(/<style data-nw-style="[^"]+">([^]*?)<\/style>/)[1];
 async function click(target) { assert.ok(target); await act(async () => target.click()); await flush(); }
@@ -90,7 +91,10 @@ test("a link's hover and focus look is created with the keyboard, forced on the 
     assert.equal(saved.base.transitionDuration, 200);
     await reloadEditor();
     const css = publishedCss(app.stored());
-    assert.equal(pageCss(), css);
+    assert.notEqual(pageCss(), css, "the canvas keeps style values on nodes while public CSS stays static");
+    assert.ok(pageCss().includes('[data-nw-node="link"]:hover{color:var(--nw-Node-link-state-hover-color);translate:var(--nw-Node-link-state-hover-translate);}'));
+    assert.equal(canvasNodeValue("link", "--nw-Node-link-state-hover-color"), "#c0392b");
+    assert.equal(canvasNodeValue("link", "--nw-Node-link-state-hover-translate"), "0 -2px");
     assert.match(css, /@media \(hover:hover\)\{[^}]*link"\]:hover\{color:#c0392b;translate:0 -2px;\}\}/);
     assert.match(css, /link"\]:focus-visible\{color:#c0392b;translate:0 -2px;\}/);
     assert.match(css, /@media \(prefers-reduced-motion:no-preference\)\{[^}]*link"\]\{transition-property:color,translate;transition-duration:200ms;\}\}/);
@@ -108,7 +112,9 @@ test("transform inspector edits both scale and skew axes and renders safe skew C
     await click(button("下書き保存"));
     assert.equal(app.calls.saves[0].document.body[0].style.base.scale, "1.25 1.5");
     assert.equal(app.calls.saves[0].document.body[0].style.base.skew, "12deg 5deg");
-    assert.ok(pageCss().includes("scale:1.25 1.5;transform:skew(12deg,5deg);"));
+    assert.ok(pageCss().includes("scale:var(--nw-Node-hero-base-scale);transform:var(--nw-Node-hero-base-skew);"));
+    assert.equal(canvasNodeValue("hero", "--nw-Node-hero-base-scale"), "1.25 1.5");
+    assert.equal(canvasNodeValue("hero", "--nw-Node-hero-base-skew"), "skew(12deg,5deg)");
   } finally { await app.cleanup(); }
 });
 
@@ -179,7 +185,10 @@ test("toggle and carousel presets are inserted from the palette and the canvas n
     assert.equal(event.defaultPrevented, true); assert.equal(frame().contentDocument.querySelector("details").open, false);
     const carousel = frame().contentDocument.querySelector('[aria-label="カルーセル"]');
     assert.equal(carousel.getAttribute("tabindex"), "0"); assert.equal(carousel.getAttribute("role"), "region");
-    assert.ok(pageCss().includes("overflow-x:auto;") && pageCss().includes("scroll-snap-type:x mandatory;"));
+    const carouselId = carousel.getAttribute("data-nw-node");
+    assert.ok(pageCss().includes(`overflow-x:var(--nw-Node-${carouselId}-base-overflowX);`) && pageCss().includes(`scroll-snap-type:var(--nw-Node-${carouselId}-base-scrollSnapType);`));
+    assert.equal(canvasNodeValue(carouselId, `--nw-Node-${carouselId}-base-overflowX`), "auto");
+    assert.equal(canvasNodeValue(carouselId, `--nw-Node-${carouselId}-base-scrollSnapType`), "x mandatory");
     await click(button("下書き保存"));
     const body = app.calls.saves[0].document.body;
     assert.deepEqual(body.slice(-2).map((node) => node.tag), ["details", "div"]);

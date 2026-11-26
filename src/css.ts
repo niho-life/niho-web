@@ -1,5 +1,5 @@
 import { resolvePageStyles, type SiteStyles } from "./site-styles.js";
-import type { AppearEffect, BlockContracts, NodeStyle, PageDocument, PageNode, StateName, StateProperty, StyleDeclarations, StyleProperty } from "./types.js";
+import type { AppearEffect, BlockContracts, DesignToken, NodeStyle, PageDocument, PageNode, StateName, StateProperty, StyleDeclarations, StyleProperty } from "./types.js";
 import { parsePageDocument } from "./document.js";
 import { declarationCss, fontFamilyCss, motionProperties, tokenCssValue } from "./style-values.js";
 import { parseResolvedAssets, resolvedAsset, type ResolvedAssetMap } from "./assets.js";
@@ -50,6 +50,78 @@ const sideBorderProperties = new Set<string>([
   "borderTopColor", "borderRightColor", "borderBottomColor", "borderLeftColor"
 ]);
 const isolatedBackgroundProperties = new Set<string>(["backgroundImage", "backgroundSize", "backgroundPosition", "backgroundRepeat", "backgroundFilter"]);
+const canvasMotionProperties = new Set<string>(motionProperties);
+type CanvasValueTier = "base" | `responsive-${number}` | `state-${StateName}` | `text-base` | `text-responsive-${number}` | `slot-${string}-base` | `slot-${string}-responsive-${number}`;
+// Document token names start with a lowercase letter; the uppercase namespace cannot collide with them.
+const canvasValueName = (nodeId: string, tier: CanvasValueTier, property: string) => `--nw-Node-${nodeId}-${tier}-${property}`;
+function canvasCssValue(property: string, value: StyleDeclarations[keyof StyleDeclarations], assets: ResolvedAssetMap): string | undefined {
+  if (property === "backgroundImage") {
+    if (value === "none") return "none";
+    if (!value || typeof value !== "object" || !("asset" in value)) return undefined;
+    const resolved = resolvedAsset(assets, value.asset);
+    return resolved ? `url("${resolved.src}")` : undefined;
+  }
+  if (value === undefined || typeof value === "object" && !("token" in value)) return undefined;
+  const declaration = declarationCss(property as StyleProperty, value);
+  return declaration.slice(declaration.indexOf(":") + 1, -1);
+}
+function canvasVariableDeclarations(values: StyleDeclarations, assets: ResolvedAssetMap, nodeId: string, tier: CanvasValueTier, mode: "all" | "withoutIsolatedBackground" | "isolatedBackground" = "all"): string {
+  return styleDeclarationOrder(values).filter((property) => !canvasMotionProperties.has(property)
+    && (mode === "all" || (mode === "isolatedBackground" ? isolatedBackgroundProperties.has(property) : !isolatedBackgroundProperties.has(property))))
+    .map((property) => {
+      const value = canvasCssValue(property, values[property], assets);
+      if (value === undefined) return "";
+      const cssName = property === "backgroundFilter" ? "filter" : property === "skew" ? "transform" : property.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
+      return `${cssName}:var(${canvasValueName(nodeId, tier, property)});`;
+    }).join("");
+}
+function putCanvasValues(target: Record<string, string>, values: StyleDeclarations | undefined, assets: ResolvedAssetMap, nodeId: string, tier: CanvasValueTier): void {
+  if (!values) return;
+  for (const property of Object.keys(values) as (keyof StyleDeclarations)[]) {
+    const value = canvasCssValue(property, values[property], assets);
+    if (value !== undefined) target[canvasValueName(nodeId, tier, property)] = value;
+  }
+}
+/** 編集キャンバスのノードへ設定する値だけの CSS 変数。公開描画には使わない。 */
+export function canvasNodeStyleValues(node: Exclude<PageNode, { type: "text" | "instance" }>, textStyles: PageDocument["textStyles"], assets: ResolvedAssetMap = {}, viewportHeight?: number): Record<string, string> {
+  const result: Record<string, string> = {};
+  if (node.style?.textStyle) {
+    const style = textStyles?.[node.style.textStyle];
+    if (style) {
+      putCanvasValues(result, style.base, assets, node.id, "text-base");
+      for (const responsive of style.responsive ?? []) putCanvasValues(result, responsive.declarations, assets, node.id, `text-responsive-${responsive.minWidth}`);
+    }
+  }
+  if (node.style) {
+    const isolatedBackground = [node.style.base, ...(node.style.responsive ?? []).map((entry) => entry.declarations)].some((values) => values?.backgroundFilter !== undefined);
+    const base = isolatedBackground && node.style.base?.position === "static" ? { ...node.style.base, position: "relative" } : node.style.base;
+    putCanvasValues(result, base, assets, node.id, "base");
+    for (const responsive of node.style.responsive ?? []) {
+      const declarations = isolatedBackground && responsive.declarations.position === "static" ? { ...responsive.declarations, position: "relative" } : responsive.declarations;
+      putCanvasValues(result, declarations, assets, node.id, `responsive-${responsive.minWidth}`);
+    }
+    for (const state of ["hover", "focus", "active"] as const) putCanvasValues(result, node.style.states?.[state], assets, node.id, `state-${state}`);
+    if (node.style.appear) {
+      result[canvasValueName(node.id, "base", "appearDuration")] = `${node.style.appear.duration}ms`;
+      result[canvasValueName(node.id, "base", "appearDelay")] = `${node.style.appear.delay}ms`;
+      result[canvasValueName(node.id, "base", "appearEasing")] = node.style.appear.easing ?? "ease";
+    }
+  }
+  if (node.type === "component") for (const [slot, style] of Object.entries(node.slots ?? {})) {
+    putCanvasValues(result, style.base, assets, node.id, `slot-${slot}-base`);
+    for (const responsive of style.responsive ?? []) putCanvasValues(result, responsive.declarations, assets, node.id, `slot-${slot}-responsive-${responsive.minWidth}`);
+  }
+  if (viewportHeight) for (const [name, value] of Object.entries(result)) result[name] = resolveViewportHeightUnits(value, viewportHeight);
+  return result;
+}
+/** 編集キャンバスの scope に設定する文書 token の CSS 変数。 */
+export function canvasTokenStyleValues(tokens: Record<string, DesignToken>, viewportHeight?: number): Record<string, string> {
+  const result = Object.fromEntries(Object.entries(tokens).map(([name, token]) => [
+    `--nw-${name}`, token.type === "fontFamily" ? fontFamilyCss(tokenCssValue(token)) : tokenCssValue(token)
+  ]));
+  if (viewportHeight) for (const [name, value] of Object.entries(result)) result[name] = resolveViewportHeightUnits(value, viewportHeight);
+  return result;
+}
 /** @internal Keep normalization verification in the same shorthand order as the renderer. */
 export function styleDeclarationOrder(values: StyleDeclarations): (StyleProperty | "backgroundImage")[] {
   const properties = (Object.keys(values) as (StyleProperty | "backgroundImage")[]).sort();
@@ -88,14 +160,14 @@ const keyframes: Record<AppearEffect, string> = { fade: "opacity:0", "fade-up": 
   "fade-left": "opacity:0;translate:24px 0", "fade-right": "opacity:0;translate:-24px 0", zoom: "opacity:0;scale:.92" };
 const stateRule = (selector: string, state: StateName, body: string) => state === "hover" ? `@media (hover:hover){${selector}:hover{${body}}}` : `${selector}:${state === "focus" ? "focus-visible" : "active"}{${body}}`;
 /** @internal エディターのキャンバス用。forceState は選択中の要素へ状態の見た目を擬似クラスなしで重ね、paused は動きを止める。 */
-export type CanvasCssOptions = { forceState?: { nodeId: string; state: StateName } | undefined; motion?: "paused" | "play" | undefined };
+export type CanvasCssOptions = { forceState?: { nodeId: string; state: StateName } | undefined; motion?: "paused" | "play" | undefined; /** @internal Keep dynamic declarations out of the editor's style sheet. */ inlineStyleValues?: boolean | undefined };
 /** @internal 文書の CSS の後に置く、キャンバスだけの規則。 */
 export function canvasCss(document: PageDocument, options: CanvasCssOptions, assets: ResolvedAssetMap = {}): string {
   const rules: string[] = [], scope = pageScope(document), forced = options.forceState;
   if (forced) {
     const visit = (nodes: PageNode[]): NodeStyle | undefined => { for (const node of nodes) { if (node.type === "text") continue; if (node.id === forced.nodeId) return node.style; if (node.type === "element") { const found = visit(node.children); if (found) return found; } } return undefined; };
     const values = visit(document.body)?.states?.[forced.state];
-    if (values && Object.keys(values).length) rules.push(`[data-nw-scope="${scope}"] [data-nw-owner="${scope}"][data-nw-node="${forced.nodeId}"][data-nw-node="${forced.nodeId}"]{${declarations(values, assets)}}`);
+    if (values && Object.keys(values).length) rules.push(`[data-nw-scope="${scope}"] [data-nw-owner="${scope}"][data-nw-node="${forced.nodeId}"][data-nw-node="${forced.nodeId}"]{${options.inlineStyleValues ? canvasVariableDeclarations(values, assets, forced.nodeId, `state-${forced.state}`) : declarations(values, assets)}}`);
   }
   if (options.motion === "paused") rules.push(`[data-nw-scope="${scope}"],[data-nw-scope="${scope}"] *{animation:none!important;transition:none!important}`);
   return rules.join("\n");
@@ -113,30 +185,42 @@ export function resolveViewportHeightUnits(css: string, viewportHeight: number):
 export function cssForDocument(document: PageDocument, assets: ResolvedAssetMap = {}, options: CanvasCssOptions = {}): string {
   const scope = `[data-nw-scope="${pageScope(document)}"]`;
   const rules: string[] = [];
-  const tokens = Object.entries(document.tokens).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+  const tokens = options.inlineStyleValues ? "" : Object.entries(document.tokens).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
     .map(([name, token]) => `--nw-${name}:${token.type === "fontFamily" ? fontFamilyCss(tokenCssValue(token)) : tokenCssValue(token)};`).join("");
   // box sizing の規則も文書の外には出さない。
   const owner = `[data-nw-owner="${pageScope(document)}"]`;
   rules.push(`${scope}{box-sizing:border-box;${tokens}}`, `${scope} ${owner}[data-nw-node]{box-sizing:border-box;}`);
   // 文字スタイルはノード規則より前に出す。selector の詳細度が同じなので、後に出るノード個別の指定が全幅で勝つ。
-  const users = new Map<string, string[]>();
+  const users = new Map<string, { selector: string; nodeId: string }[]>();
   (function collect(nodes: PageNode[]): void {
     for (const node of nodes) {
       if (node.type === "text") continue;
       if (node.style?.textStyle) {
         let selectors = users.get(node.style.textStyle);
         if (!selectors) { selectors = []; users.set(node.style.textStyle, selectors); }
-        selectors.push(`${scope} ${owner}[data-nw-node="${node.id}"]`);
+        selectors.push({ selector: `${scope} ${owner}[data-nw-node="${node.id}"]`, nodeId: node.id });
       }
       if (node.type === "element") collect(node.children);
     }
   })(document.body);
   for (const [name, style] of Object.entries(document.textStyles ?? {}).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
-    const selector = users.get(name)?.join(",");
-    if (!selector) continue;
-    if (Object.keys(style.base).length) rules.push(`${selector}{${declarations(style.base, assets)}}`);
-    for (const responsive of style.responsive ?? []) {
-      if (Object.keys(responsive.declarations).length) rules.push(`@media (min-width:${responsive.minWidth}px){${selector}{${declarations(responsive.declarations, assets)}}}`);
+    const styleUsers = users.get(name);
+    if (!styleUsers?.length) continue;
+    if (options.inlineStyleValues) {
+      for (const { selector, nodeId } of styleUsers) {
+        const base = canvasVariableDeclarations(style.base, assets, nodeId, "text-base");
+        if (base) rules.push(`${selector}{${base}}`);
+        for (const responsive of style.responsive ?? []) {
+          const body = canvasVariableDeclarations(responsive.declarations, assets, nodeId, `text-responsive-${responsive.minWidth}`);
+          if (body) rules.push(`@media (min-width:${responsive.minWidth}px){${selector}{${body}}}`);
+        }
+      }
+    } else {
+      const selector = styleUsers.map(({ selector }) => selector).join(",");
+      if (Object.keys(style.base).length) rules.push(`${selector}{${declarations(style.base, assets)}}`);
+      for (const responsive of style.responsive ?? []) {
+        if (Object.keys(responsive.declarations).length) rules.push(`@media (min-width:${responsive.minWidth}px){${selector}{${declarations(responsive.declarations, assets)}}}`);
+      }
     }
   }
   function visit(nodes: PageNode[]): void {
@@ -147,50 +231,55 @@ export function cssForDocument(document: PageDocument, assets: ResolvedAssetMap 
       if (node.type === "element" && node.tag === "details") rules.push(`${selector}::details-content{width:100%;min-width:0;}`);
       const isolatedBackground = [node.style?.base, ...(node.style?.responsive ?? []).map((entry) => entry.declarations)]
         .some((values) => values?.backgroundFilter !== undefined);
-      const boxDeclarations = (values: StyleDeclarations) => declarations(isolatedBackground && values.position === "static" ? { ...values, position: "relative" } : values, assets, isolatedBackground ? "withoutIsolatedBackground" : "all");
+      const boxDeclarations = (values: StyleDeclarations, tier: CanvasValueTier) => {
+        const adjusted = isolatedBackground && values.position === "static" ? { ...values, position: "relative" } : values;
+        return options.inlineStyleValues ? canvasVariableDeclarations(adjusted, assets, node.id, tier, isolatedBackground ? "withoutIsolatedBackground" : "all") : declarations(adjusted, assets, isolatedBackground ? "withoutIsolatedBackground" : "all");
+      };
       // 遷移だけの指定は動きの規則に出すので、空の規則を残さない（旧文書の空の規則はそのまま）。
       const motionOnly = (values: StyleDeclarations) => Object.keys(values).some((property) => motion.has(property)) && !declarations(values, assets);
-      if (node.style?.base && !motionOnly(node.style.base)) rules.push(`${selector}{${isolatedBackground ? `isolation:isolate;${node.style?.base?.position ? "" : "position:relative;"}` : ""}${boxDeclarations(node.style.base)}}`);
+      if (node.style?.base && !motionOnly(node.style.base)) rules.push(`${selector}{${isolatedBackground ? `isolation:isolate;${node.style?.base?.position ? "" : "position:relative;"}` : ""}${boxDeclarations(node.style.base, "base")}}`);
       else if (isolatedBackground) rules.push(`${selector}{isolation:isolate;position:relative;}`);
       for (const responsive of node.style?.responsive ?? []) {
-        if (!motionOnly(responsive.declarations)) rules.push(`@media (min-width:${responsive.minWidth}px){${selector}{${boxDeclarations(responsive.declarations)}}}`);
+        if (!motionOnly(responsive.declarations)) rules.push(`@media (min-width:${responsive.minWidth}px){${selector}{${boxDeclarations(responsive.declarations, `responsive-${responsive.minWidth}`)}}}`);
       }
       if (isolatedBackground) {
-        const base = declarations(node.style?.base ?? {}, assets, "isolatedBackground");
+        const base = options.inlineStyleValues ? canvasVariableDeclarations(node.style?.base ?? {}, assets, node.id, "base", "isolatedBackground") : declarations(node.style?.base ?? {}, assets, "isolatedBackground");
         rules.push(`${selector}::before{content:"";position:absolute;inset:0;width:100%;height:100%;border-radius:inherit;pointer-events:none;z-index:-1;${base}}`);
         for (const responsive of node.style?.responsive ?? []) {
-          const body = declarations(responsive.declarations, assets, "isolatedBackground");
+          const body = options.inlineStyleValues ? canvasVariableDeclarations(responsive.declarations, assets, node.id, `responsive-${responsive.minWidth}`, "isolatedBackground") : declarations(responsive.declarations, assets, "isolatedBackground");
           if (body) rules.push(`@media (min-width:${responsive.minWidth}px){${selector}::before{${body}}}`);
         }
       }
       if (node.type === "component") for (const [slot, style] of Object.entries(node.slots ?? {}).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
         // ブロックが data-nw-slot を付けた内側の要素。繰り返すカード等、同じ領域のすべてに適用する。
         const inner = `${selector} [data-nw-slot="${slot}"]`;
-        if (style.base) rules.push(`${inner}{${declarations(style.base, assets)}}`);
-        for (const responsive of style.responsive ?? []) rules.push(`@media (min-width:${responsive.minWidth}px){${inner}{${declarations(responsive.declarations, assets)}}}`);
+        if (style.base) rules.push(`${inner}{${options.inlineStyleValues ? canvasVariableDeclarations(style.base, assets, node.id, `slot-${slot}-base`) : declarations(style.base, assets)}}`);
+        for (const responsive of style.responsive ?? []) rules.push(`@media (min-width:${responsive.minWidth}px){${inner}{${options.inlineStyleValues ? canvasVariableDeclarations(responsive.declarations, assets, node.id, `slot-${slot}-responsive-${responsive.minWidth}`) : declarations(responsive.declarations, assets)}}}`);
       }
       if (node.type === "element") visit(node.children);
     }
   }
   visit(document.body);
   // 状態 → 動き（遷移・登場）→ 幅別の非表示の順。非表示は最後なので、どの段の display より優先する。
-  const styled: { selector: string; style: NodeStyle }[] = [];
+  const styled: { selector: string; nodeId: string; style: NodeStyle }[] = [];
   (function each(nodes: PageNode[]): void {
     for (const node of nodes) {
       if (node.type === "text") continue;
-      if (node.style) styled.push({ selector: `${scope} ${owner}[data-nw-node="${node.id}"]`, style: node.style });
+      if (node.style) styled.push({ selector: `${scope} ${owner}[data-nw-node="${node.id}"]`, nodeId: node.id, style: node.style });
       if (node.type === "element") each(node.children);
     }
   })(document.body);
-  for (const { selector, style } of styled) for (const state of ["hover", "focus", "active"] as const) {
+  for (const { selector, nodeId, style } of styled) for (const state of ["hover", "focus", "active"] as const) {
     const values = style.states?.[state];
-    if (values && Object.keys(values).length) rules.push(stateRule(selector, state, declarations(values, assets)));
+    if (values && Object.keys(values).length) rules.push(stateRule(selector, state, options.inlineStyleValues ? canvasVariableDeclarations(values, assets, nodeId, `state-${state}`) : declarations(values, assets)));
   }
   const paused = options.motion === "paused", effects = new Set<AppearEffect>(), name = (effect: AppearEffect) => `${pageScope(document)}-${effect}`;
-  for (const { selector, style } of paused ? [] : styled) {
+  for (const { selector, nodeId, style } of paused ? [] : styled) {
     const properties = stateTransitionProperties(style).join(",");
-    const timing = (values: StyleDeclarations | undefined) => motionProperties.filter((property) => values?.[property] !== undefined).map((property) => declarationCss(property, values![property]!)).join("");
-    const base = timing(style.base), widths = (style.responsive ?? []).map((entry) => [entry.minWidth, timing(entry.declarations)] as const).filter(([, body]) => body);
+    const timing = (values: StyleDeclarations | undefined, nodeId: string, tier: CanvasValueTier) => motionProperties.filter((property) => values?.[property] !== undefined).map((property) => options.inlineStyleValues
+      ? `${property === "skew" ? "transform" : property.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}:var(${canvasValueName(nodeId, tier, property)});`
+      : declarationCss(property, values![property]!)).join("");
+    const base = timing(style.base, nodeId, "base"), widths = (style.responsive ?? []).map((entry) => [entry.minWidth, timing(entry.declarations, nodeId, `responsive-${entry.minWidth}`)] as const).filter(([, body]) => body);
     if (properties && (base || widths.length)) {
       rules.push(`${reduced}{${selector}{transition-property:${properties};${base}}}`);
       for (const [minWidth, body] of widths) rules.push(`${reduced} and (min-width:${minWidth}px){${selector}{${body}}}`);
@@ -199,8 +288,11 @@ export function cssForDocument(document: PageDocument, assets: ResolvedAssetMap 
     if (!appear) continue;
     effects.add(appear.effect);
     const easing = appear.easing ?? "ease";
-    rules.push(appear.trigger === "load" ? `${reduced}{${selector}{animation:${name(appear.effect)} ${appear.duration}ms ${easing} ${appear.delay}ms both}}`
-      : `${reduced}{@supports (animation-timeline: view()){${selector}{animation:${name(appear.effect)} auto ${easing} both;animation-timeline:view();animation-range:entry 0% entry 60%}}}`);
+    const duration = options.inlineStyleValues ? `var(${canvasValueName(nodeId, "base", "appearDuration")})` : `${appear.duration}ms`;
+    const delay = options.inlineStyleValues ? `var(${canvasValueName(nodeId, "base", "appearDelay")})` : `${appear.delay}ms`;
+    const easingValue = options.inlineStyleValues ? `var(${canvasValueName(nodeId, "base", "appearEasing")})` : easing;
+    rules.push(appear.trigger === "load" ? `${reduced}{${selector}{animation:${name(appear.effect)} ${duration} ${easingValue} ${delay} both}}`
+      : `${reduced}{@supports (animation-timeline: view()){${selector}{animation:${name(appear.effect)} auto ${easingValue} both;animation-timeline:view();animation-range:entry 0% entry 60%}}}`);
   }
   // keyframes は文書 scope 付きの名前で、使われた効果だけ。
   for (const effect of [...effects].sort()) rules.push(`@keyframes ${name(effect)}{from{${keyframes[effect]}}}`);

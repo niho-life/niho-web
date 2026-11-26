@@ -1598,7 +1598,8 @@ test("spacing handles hide percent-based gaps instead of treating percentages as
   try {
     await clickCanvas("hero"); await editorTab("ボックス");
     const hero = canvasNode("hero"), computed = hero.ownerDocument.defaultView.getComputedStyle(hero);
-    assert.equal(computed.gap, "10%");
+    assert.equal(computed.gap, "var(--nw-Node-hero-base-gap)");
+    assert.equal(hero.style.getPropertyValue("--nw-Node-hero-base-gap"), "10%");
     assert.equal(canvasBody().querySelector('[data-spacing="gap"]'), null);
   } finally { await app.cleanup(); }
 });
@@ -2048,8 +2049,11 @@ test("library images can be added inside the selected element and used as its ba
     assert.equal(assetPanel().querySelector("h2").textContent, "背景画像を選ぶ");
     await chooseAsset("庭の緑.png");
     const css = () => document.querySelector("iframe").contentDocument.querySelector("style[data-nw-style]").textContent;
-    assert.ok(css().includes('background-image:url("/media/garden.png");'));
-    await change(input("背景のサイズ"), "cover"); assert.ok(css().includes("background-size:cover;"));
+    assert.ok(css().includes("background-image:var(--nw-Node-hero-base-backgroundImage);"));
+    assert.equal(canvasNode("hero").style.getPropertyValue("--nw-Node-hero-base-backgroundImage"), 'url("/media/garden.png")');
+    await change(input("背景のサイズ"), "cover");
+    assert.ok(css().includes("background-size:var(--nw-Node-hero-base-backgroundSize);"));
+    assert.equal(canvasNode("hero").style.getPropertyValue("--nw-Node-hero-base-backgroundSize"), "cover");
     await click("下書き保存");
     const hero = app.calls.saves[0].document.body[0];
     assert.deepEqual(hero.style.base.backgroundImage, { asset: { provider: "uploads", id: "garden" } }); assert.equal(hero.style.base.backgroundSize, "cover");

@@ -23,6 +23,38 @@ test("React server rendering and Astro HTML helper produce the same initial cont
   assert.ok(html.includes("padding:var(--nw-space)"));
 });
 
+test("canvas keeps its stylesheet stable when only style and token values change", () => {
+  const before = structuredClone(fixture);
+  before.tokens.brand = { type: "color", value: "#123456" };
+  before.textStyles = { headline: { base: { fontSize: 28 } } };
+  before.body[0].children[0].style = { textStyle: "headline", base: { marginTop: 5, color: { token: "brand" } } };
+  const after = structuredClone(before);
+  after.tokens.brand.value = "#654321";
+  after.textStyles.headline.base.fontSize = 29;
+  after.body[0].children[0].style.base.marginTop = 6;
+  const renderCanvas = (document) => new JSDOM(renderToString(createElement(PageRenderer, { document, canvas: {} }))).window.document;
+  const first = renderCanvas(before), second = renderCanvas(after);
+  assert.equal(first.querySelector("style[data-nw-style]").textContent, second.querySelector("style[data-nw-style]").textContent);
+  assert.equal(first.querySelector('[data-nw-scope]').style.getPropertyValue("--nw-brand"), "#123456");
+  assert.equal(second.querySelector('[data-nw-scope]').style.getPropertyValue("--nw-brand"), "#654321");
+  assert.equal(first.querySelector('[data-nw-node="heading"]').style.getPropertyValue("--nw-Node-heading-text-base-fontSize"), "28px");
+  assert.equal(second.querySelector('[data-nw-node="heading"]').style.getPropertyValue("--nw-Node-heading-text-base-fontSize"), "29px");
+  assert.equal(first.querySelector('[data-nw-node="heading"]').style.getPropertyValue("--nw-Node-heading-base-marginTop"), "5px");
+  assert.equal(second.querySelector('[data-nw-node="heading"]').style.getPropertyValue("--nw-Node-heading-base-marginTop"), "6px");
+  assert.ok(renderPageToHtml(before).includes("font-size:28px;"));
+  assert.ok(renderPageToHtml(after).includes("font-size:29px;"));
+});
+
+test("canvas value variables cannot collide with user token names", () => {
+  const document = structuredClone(fixture);
+  document.tokens["node-heading-base-fontSize"] = { type: "length", value: "36px" };
+  document.body[0].children[0].style = { base: { fontSize: { token: "node-heading-base-fontSize" } } };
+  const rendered = new JSDOM(renderToString(createElement(PageRenderer, { document, canvas: {} }))).window.document;
+  assert.equal(rendered.querySelector('[data-nw-scope]').style.getPropertyValue("--nw-node-heading-base-fontSize"), "36px");
+  assert.equal(rendered.querySelector('[data-nw-node="heading"]').style.getPropertyValue("--nw-Node-heading-base-fontSize"), "var(--nw-node-heading-base-fontSize)");
+  assert.ok(rendered.querySelector("style[data-nw-style]").textContent.includes("font-size:var(--nw-Node-heading-base-fontSize);"));
+});
+
 test("text and attribute values are escaped and blank targets gain safe rel", () => {
   const doc = structuredClone(fixture);
   doc.body[0].children[0].children[0].text = "<script>alert('x')</script>&";
@@ -312,6 +344,20 @@ test("background images compile from resolved assets and only the unresolved dec
   assert.ok(renderPageToHtml(doc, {}, { assets: { "uploads:a": { src: "/media/a.webp" } } }).includes('background-image:url("/media/a.webp");'));
 });
 
+test("canvas keeps the resolved base background when a responsive image is unresolved", () => {
+  const doc = structuredClone(fixture);
+  doc.body[0].style.base.backgroundImage = { asset: { provider: "uploads", id: "a" } };
+  doc.body[0].style.responsive[0].declarations.backgroundImage = { asset: { provider: "uploads", id: "wide" } };
+  const rendered = new JSDOM(renderToString(createElement(PageRenderer, { document: doc, assets: { "uploads:a": { src: "/media/a.webp" } }, canvas: {} }))).window.document;
+  const css = rendered.querySelector("style[data-nw-style]").textContent;
+  const values = rendered.querySelector('[data-nw-node="hero"]').style;
+  assert.ok(css.includes("background-image:var(--nw-Node-hero-base-backgroundImage);"));
+  assert.ok(css.includes("@media (min-width:768px)"));
+  assert.ok(!css.includes("--nw-Node-hero-responsive-768-backgroundImage"));
+  assert.equal(values.getPropertyValue("--nw-Node-hero-base-backgroundImage"), 'url("/media/a.webp")');
+  assert.equal(values.getPropertyValue("--nw-Node-hero-responsive-768-backgroundImage"), "");
+});
+
 test("canvas rendering resolves viewport-height units and root-relative image URLs without changing public output", () => {
   const doc = structuredClone(fixture);
   doc.body[0].style = { ...(doc.body[0].style ?? {}), base: { ...(doc.body[0].style?.base ?? {}), minHeight: "100vh", height: "60vh" } };
@@ -320,8 +366,9 @@ test("canvas rendering resolves viewport-height units and root-relative image UR
   assert.ok(publicHtml.includes("min-height:100vh"), "public CSS keeps viewport units");
   assert.ok(publicHtml.includes('src="/placeholder.svg"'), "public HTML keeps root-relative URLs");
   const canvasHtml = renderToString(createElement(PageRenderer, { document: doc, canvas: { viewportHeight: 900, siteOrigin: "https://site.example" } }));
-  assert.ok(canvasHtml.includes("min-height:900px"), "canvas resolves vh against the 100% viewport height");
-  assert.ok(canvasHtml.includes("height:540px"), "every vh value is resolved");
+  assert.ok(canvasHtml.includes("min-height:var(--nw-Node-hero-base-minHeight)"), "canvas CSS reads dynamic values from node variables");
+  assert.ok(canvasHtml.includes("--nw-Node-hero-base-minHeight:900px"), "canvas resolves vh against the 100% viewport height");
+  assert.ok(canvasHtml.includes("--nw-Node-hero-base-height:540px"), "every vh value is resolved");
   assert.ok(!/\d(?:dvh|svh|lvh|vh)\b/.test(canvasHtml.replace(/<[^>]*data-nw-scope="[^"]*"/g, "")), "no viewport-height unit remains in canvas CSS");
   assert.ok(canvasHtml.includes('src="https://site.example/placeholder.svg"'), "canvas resolves root-relative image URLs against the site origin");
   assert.ok(canvasHtml.includes(`data-nw-scope="${pageScope(doc)}"`), "scope names are not rewritten");
