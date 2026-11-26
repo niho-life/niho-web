@@ -40,7 +40,7 @@ const worker = (await import(`data:text/javascript;base64,${Buffer.from(outputFi
 const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const jwk = { ...publicKey.export({ format: "jwk" }), kid: "test-key", alg: "RS256", use: "sig" };
 
-async function fixture(t, { previewOrigin } = {}) {
+async function fixture(t, { previewOrigin, uploadOrigin } = {}) {
   const issuer = `https://access-${crypto.randomUUID()}.example`;
   const audience = "test-audience";
   const now = Math.floor(Date.now() / 1000);
@@ -102,6 +102,7 @@ async function fixture(t, { previewOrigin } = {}) {
     ACCESS_AUDIENCE: audience,
     KAMAKURA_STUDIO_BRIDGE_SECRET: SECRET.toString("base64url"),
     KAMAKURA_CLI_PREVIEW_ORIGIN: previewOrigin,
+    KAMAKURA_PREVIEW_UPLOAD_ORIGIN: uploadOrigin,
     ASSETS: { async fetch() { return new Response("public asset"); } },
     KAMAKURA_SITE: {
       async fetch(request) {
@@ -576,6 +577,26 @@ testWithD1("invalid CLI preview origins fail closed before the Kamakura binding 
       await check(await h.request("POST", "cms.upload-intent", { name: "a.png", mimeType: "image/png", bytes: 100, collectionId: "posts" }), 503, "service_unavailable");
       assert.equal(h.calls.length, 0);
     });
+  }
+});
+
+testWithD1("CLI upload intent uses the dedicated gateway while its API request stays on the site Preview", async (t) => {
+  const previewOrigin = "https://site-preview.example";
+  const uploadOrigin = "https://upload-preview.example";
+  const productionOrigin = "https://next-kamakura.niho.life";
+  const h = await fixture(t, { previewOrigin, uploadOrigin });
+  h.grant("cms.edit");
+  const body = { name: "fixture.png", mimeType: "image/png", bytes: 123, collectionId: "posts" };
+  const uploadId = "a0000000-0000-4000-a000-000000000004";
+  const intent = (origin) => ({ uploadUrl: `${origin}/internal/studio/cms-upload/${uploadId}`, uploadToken: "fixture-upload-token", uploadId });
+  h.replyWith(() => Response.json(intent(uploadOrigin), { status: 201 }));
+  assert.deepEqual(await check(await h.request("POST", "cms.upload-intent", body), 201), intent(uploadOrigin));
+  assert.equal(h.calls.at(-1).origin, previewOrigin, "Service Binding はsite Previewを使う");
+
+  for (const origin of [previewOrigin, productionOrigin, "https://untrusted.example"]) {
+    h.replyWith(() => Response.json(intent(origin), { status: 201 }));
+    await check(await h.request("POST", "cms.upload-intent", body), 502, "upstream_contract_invalid");
+    assert.equal(h.calls.at(-1).origin, previewOrigin);
   }
 });
 

@@ -1673,9 +1673,18 @@ function kamakuraStudioUploadOrigin(env: Env): string {
   return origin;
 }
 
-/** CLI preview はCLIが指定する専用hostを使う。人間向けGUIはStudio Preview環境のupload gatewayを使う。 */
+/** Dedicated gatewayがあればGUI/CLI共通で使い、legacy previewだけ従来originを保つ。 */
 function kamakuraUploadOrigin(env: Env, identity: BridgeActor): string {
-  return kamakuraCliPreviewOrigin(env, identity) ?? kamakuraStudioUploadOrigin(env);
+  return env.KAMAKURA_PREVIEW_UPLOAD_ORIGIN === undefined
+    ? kamakuraCliPreviewOrigin(env, identity) ?? kamakuraStudioUploadOrigin(env)
+    : kamakuraStudioUploadOrigin(env);
+}
+
+/** 翻訳 iframe はPreview時にsite Workerではなく専用gatewayから配信する。 */
+function kamakuraLocalizationPreviewOrigin(env: Env): string {
+  return env.KAMAKURA_PREVIEW_UPLOAD_ORIGIN === undefined
+    ? KAMAKURA_EDITING_API_ORIGIN
+    : kamakuraStudioUploadOrigin(env);
 }
 
 const EDITING_DISCOVERY_SCOPES: readonly EditingCapability[] = [
@@ -1911,7 +1920,7 @@ async function signedKamakuraEditingApiRequest(request: Request, env: Env, ident
     }
     if (response.ok && localization && localization.id === "localization.overview") {
       const result = parseLocalizationOverviewResult(value);
-      if (result.status !== "ready" || result.overview.preview && !isKamakuraLocalizationPreviewFrame(result.overview.preview.frameUrl, KAMAKURA_EDITING_API_ORIGIN)) {
+      if (result.status !== "ready" || result.overview.preview && !isKamakuraLocalizationPreviewFrame(result.overview.preview.frameUrl, kamakuraLocalizationPreviewOrigin(env))) {
         throw fail("upstream_contract_invalid", response.status);
       }
       if (role === "editor") return json({ ...result, overview: { ...result.overview, release: { ...result.overview.release, pending: null } } });
@@ -3489,7 +3498,11 @@ async function handle(request: Request, env: Env): Promise<Response> {
 
   if (url.pathname === "/studio-runtime-config.js") {
     if (url.search || request.method !== "GET" && request.method !== "HEAD") return json({ error: "invalid_request" }, url.search ? 400 : 405);
-    const body = `window.__NIHO_STUDIO_RUNTIME__ = Object.freeze(${JSON.stringify({ kamakuraUploadOrigin: kamakuraStudioUploadOrigin(env) })});\n`;
+    const uploadOrigin = kamakuraStudioUploadOrigin(env);
+    const body = `window.__NIHO_STUDIO_RUNTIME__ = Object.freeze(${JSON.stringify({
+      kamakuraUploadOrigin: uploadOrigin,
+      ...(env.KAMAKURA_PREVIEW_UPLOAD_ORIGIN === undefined ? {} : { kamakuraMediaOrigin: uploadOrigin })
+    })});\n`;
     const headers = securityHeaders("text/javascript; charset=utf-8");
     return withStaticSecurity(new Response(request.method === "HEAD" ? null : body, { status: 200, headers }));
   }

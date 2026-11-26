@@ -12,7 +12,7 @@ import {
   parseKamakuraCmsListConflict, parseKamakuraCmsRemoved, parseKamakuraCmsSchema, parseKamakuraCmsUploadIntent, parseKamakuraCmsUploadResult,
   type KamakuraCmsItemStatus
 } from "./kamakura-cms-contract.js";
-import { kamakuraStudioUploadOrigin } from "./kamakura-runtime-config.js";
+import { kamakuraStudioMediaOrigin, kamakuraStudioUploadOrigin } from "./kamakura-runtime-config.js";
 
 /**
  * 鎌倉サイトの CMS を Studio のコレクション画面（CollectionWorkspace）で編集する adapter。
@@ -583,7 +583,7 @@ export function createKamakuraCmsAdapter(options: KamakuraCmsAdapterOptions): Co
       if (response.status === 413) { await response.body?.cancel(); return { status: "rejected", reason: "size" }; }
       if (response.status === 415) { await response.body?.cancel(); return { status: "rejected", reason: "type" }; }
       if (response.status !== 201 || !jsonMedia(response)) { await response.body?.cancel(); throw new KamakuraCmsRequestError(response.status, null); }
-      const uploaded = parseKamakuraCmsUploadResult(await response.json() as unknown);
+      const uploaded = parseKamakuraCmsUploadResult(await response.json() as unknown, kamakuraStudioMediaOrigin());
       return { status: "uploaded", url: uploaded.url, width: uploaded.width, height: uploaded.height };
     },
 

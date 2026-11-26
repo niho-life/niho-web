@@ -321,7 +321,7 @@ export function parseKamakuraCmsUploadIntent(input: unknown, trustedOrigin = KAM
 
 export type KamakuraCmsUploaded = { readonly url: string; readonly width: number; readonly height: number };
 /** 直接 PUT の 201 `{ url, width, height }`。url は公開画像の置き場の /uploads/ の下だけ。 */
-export function parseKamakuraCmsUploadResult(input: unknown): KamakuraCmsUploaded {
+export function parseKamakuraCmsUploadResult(input: unknown, trustedMediaOrigin = KAMAKURA_MEDIA_ORIGIN): KamakuraCmsUploaded {
   return guarded(() => {
     const value = record(input, "upload");
     exact(value, ["url", "width", "height"], "upload");
@@ -329,7 +329,7 @@ export function parseKamakuraCmsUploadResult(input: unknown): KamakuraCmsUploade
     if (typeof url !== "string" || url.length > 2048 || /[\s\u0000-\u001f\u007f<>"'\\]/u.test(url)) fail("upload.url", "invalid URL");
     let parsed: URL;
     try { parsed = new URL(url); } catch { fail("upload.url", "invalid URL"); }
-    if (parsed.protocol !== "https:" || parsed.origin !== KAMAKURA_MEDIA_ORIGIN || parsed.username || parsed.password || parsed.search || parsed.hash || url.includes("?") || url.includes("#") || !parsed.pathname.startsWith("/uploads/")) fail("upload.url", "unexpected URL");
+    if (parsed.protocol !== "https:" || parsed.origin !== trustedMediaOrigin || parsed.username || parsed.password || parsed.search || parsed.hash || url.includes("?") || url.includes("#") || !parsed.pathname.startsWith("/uploads/")) fail("upload.url", "unexpected URL");
     for (const [name, size] of [["width", width], ["height", height]] as const) {
       if (typeof size !== "number" || !Number.isSafeInteger(size) || size < 1 || size > 100_000) fail(`upload.${name}`, "invalid size");
     }

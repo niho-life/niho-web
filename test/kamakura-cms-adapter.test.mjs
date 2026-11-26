@@ -388,6 +388,38 @@ test("CMS adapter: 画像は intent の URL を確かめてから credentials �
   await assert.rejects(adapter.uploadImage({ collectionId: "posts", file }, signal()), (error) => error.name === "KamakuraCmsRequestError" && error.status === 409);
 });
 
+test("CMS adapter: Preview画像の返却URLは専用upload gatewayだけを受け入れる", async (t) => {
+  const uploadOrigin = "https://upload-preview.example";
+  const uploadUrl = `${uploadOrigin}/internal/studio/cms-upload/${UUID}`;
+  const previousWindow = globalThis.window;
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { __NIHO_STUDIO_RUNTIME__: { kamakuraUploadOrigin: uploadOrigin, kamakuraMediaOrigin: uploadOrigin } }
+  });
+  t.after(() => {
+    if (previousWindow === undefined) delete globalThis.window;
+    else Object.defineProperty(globalThis, "window", { configurable: true, value: previousWindow });
+  });
+
+  const { createKamakuraCmsAdapter } = await loadAdapter();
+  const file = new File([new Uint8Array([1, 2, 3])], "preview.png", { type: "image/png" });
+  let resultUrl = `${uploadOrigin}/uploads/2026/10/aaaaaaaaaaaaaaaa.png`;
+  const calls = fakeBff(t, {
+    "POST /uploads/intent": () => jsonResponse({ uploadUrl, uploadToken: "one-time", uploadId: UUID }, 201),
+    [`PUT ${uploadUrl}`]: () => jsonResponse({ url: resultUrl, width: 1200, height: 800 }, 201)
+  });
+  const adapter = createKamakuraCmsAdapter({ siteOrigin: SITE });
+
+  assert.deepEqual(parseCollectionUploadResult(await adapter.uploadImage({ collectionId: "posts", file }, signal())), {
+    status: "uploaded", url: resultUrl, width: 1200, height: 800
+  });
+  assert.equal(calls[1].path, uploadUrl);
+  assert.equal(calls[1].init.credentials, "omit");
+
+  resultUrl = `https://other-preview.example/uploads/2026/10/aaaaaaaaaaaaaaaa.png`;
+  await assert.rejects(adapter.uploadImage({ collectionId: "posts", file }, signal()));
+});
+
 test("CMS adapter: CMS画像を素材IDで保存し、解決URLは表示だけに使う", async (t) => {
   const { createKamakuraCmsAdapter } = await loadAdapter();
   const reference = { provider: "kamakura-upload", id: UUID };

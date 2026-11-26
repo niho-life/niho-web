@@ -178,6 +178,11 @@ test("共通翻訳 API の BFF は所属と要求を検証し、現在の役割�
   h.setRespond(() => Response.json(withOverview("https://kamakura.niho.life/_studio/localization-preview")));
   await expectJson(await send("GET", "overview"), 200);
   verify(["localization.read", "localization.edit", "localization.review", "localization.translate", "localization.manage", "localization.publish", "localization.rollback"]);
+  const uploadGateway = "https://upload-preview.example";
+  h.env.KAMAKURA_PREVIEW_UPLOAD_ORIGIN = uploadGateway;
+  h.setRespond(() => Response.json(withOverview(`${uploadGateway}/_studio/localization-preview`)));
+  await expectJson(await send("GET", "overview"), 200);
+  verify(["localization.read", "localization.edit", "localization.review", "localization.translate", "localization.manage", "localization.publish", "localization.rollback"]);
   h.setRespond(() => Response.json(withOverview("https://example.test/_studio/localization-preview")));
   t.mock.method(console, "warn", () => {});
   await expectJson(await send("GET", "overview"), 502, "upstream_contract_invalid");
