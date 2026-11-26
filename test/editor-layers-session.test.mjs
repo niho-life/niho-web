@@ -60,6 +60,19 @@ test("editor session starts site-settings discovery before the page read", async
   assert.equal(pageReadSawSettingsStart, true);
 });
 
+test("editor session reuses the current site-settings snapshot without a network read", async () => {
+  let settingsReads = 0;
+  const result = await readEditorSession({
+    readDocument: async () => snapshot(),
+    readSiteSettings: async () => { settingsReads++; throw new Error("should use supplied snapshot"); }
+  }, target, new AbortController().signal, {}, undefined, {
+    siteSettings: { settings: { title: "Demo", locale: "ja" }, version: "s2" }
+  });
+  assert.equal(settingsReads, 0);
+  assert.equal(result.session.selfContained, false);
+  assert.equal(result.warning, undefined);
+});
+
 test("editor page cache reuses only the saved session for the same document version", async () => {
   const cache = new EditorSessionCache(2), controller = new AbortController();
   let document = structuredClone(source), version = "v1", reads = 0;

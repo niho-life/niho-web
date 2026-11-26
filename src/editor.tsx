@@ -88,7 +88,7 @@ const needsPageSave = (session: Session) => {
   return dirty;
 };
 type PagePrefetch = { controller: AbortController; promise: Promise<EditorSnapshot>; components?: ComponentLibrary; completedAt?: number };
-const PAGE_PREFETCH_MAX_AGE_MS = 1000;
+const PAGE_PREFETCH_MAX_AGE_MS = 10_000;
 const PAGE_PREFETCH_LIMIT = 3;
 /** 部品を読み直す確認中の状態。library・page は確認を始めた時点の作業コピーの fingerprint（変わっていれば適用しない）。 */
 type LibraryReload = { fresh: LibrarySession; plan: LibraryReloadPlan; library: string; page: string | undefined };
@@ -640,6 +640,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const request = useRef<AbortController | null>(null), action = useRef<AbortController | null>(null), pageList = useRef<AbortController | null>(null), releaseRead = useRef<AbortController | null>(null);
   const initialLoadPerformance = useRef<EditorPerformanceMeasurement | null>(null), initialLoadPerformanceStarted = useRef(false);
   const pendingLoadPerformance = useRef<{ measurement: EditorPerformanceMeasurement | null; target: EditorTarget } | null>(null);
+  const pendingEditRender = useRef<(() => void) | null>(null);
   useEffect(() => {
     if (initialLoadPerformanceStarted.current) return;
     initialLoadPerformanceStarted.current = true;
@@ -749,7 +750,31 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const autosaveKey = (target: EditorTarget | undefined, lib: LibrarySession | null) => target ? targetKeyOf(target) : lib ? JSON.stringify(["library", lib.siteId]) : "";
   useAutosave(autosaveMs, autosaveActive && pendingChanges && !siteWorkBlocked && (!dirty || !session?.readOnly) && !hasInput && !busy && !modal && !historyMode && online && !problem && localizationReady, autosaveSubject, autosaveKey(session?.target, library),
     (key) => { if (autosaveKey(sessionRef.current?.target, libraryRef.current) === key) void save("auto"); });
-  const replace = useCallback((next: Session | null) => { sessionRef.current = next; setSession(next); }, []);
+  const replace = useCallback((next: Session | null) => {
+    const current = sessionRef.current;
+    if (current && next && sameTarget(current.target, next.target) && current.history.present !== next.history.present && !pendingLoadPerformance.current) {
+      pendingEditRender.current?.();
+      pendingEditRender.current = measurePerformance?.("edit-render") ?? null;
+    }
+    sessionRef.current = next;
+    setSession(next);
+  }, [measurePerformance]);
+  useLayoutEffect(() => {
+    const pending = pendingEditRender.current;
+    if (!pending) return;
+    const view = workspace.current?.ownerDocument.defaultView;
+    if (!view?.requestAnimationFrame) {
+      pendingEditRender.current = null;
+      pending();
+      return;
+    }
+    const frame = view.requestAnimationFrame(() => {
+      if (pendingEditRender.current !== pending) return;
+      pendingEditRender.current = null;
+      pending();
+    });
+    return () => view.cancelAnimationFrame(frame);
+  }, [session?.history.present]);
   const replaceLibrary = useCallback((next: LibrarySession | null) => { libraryRef.current = next; setLibrary(next); }, []);
   useEffect(() => {
     releaseRead.current?.abort(); setLocaleRelease(null); setLocaleRollbackId("");
@@ -811,6 +836,9 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     setBusy("読込中"); setNotice("");
     try {
       const key = targetKeyOf(editorTarget), currentComponents = libraryRef.current?.history.present;
+      const currentSiteSettings = siteSettingsRef.current;
+      const cachedSiteSettings = currentSiteSettings.status === "ready" && currentSiteSettings.settings && currentSiteSettings.version
+        ? { settings: currentSiteSettings.settings, version: currentSiteSettings.version } : undefined;
       const prefetched = pagePrefetches.current.get(key);
       let snapshot: EditorSnapshot | undefined;
       if (prefetched && prefetched.components === currentComponents && (prefetched.completedAt === undefined || Date.now() - prefetched.completedAt <= PAGE_PREFETCH_MAX_AGE_MS)) {
@@ -825,10 +853,10 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       let loaded: EditorSessionLoad;
       try {
         loaded = await readEditorSession(adapter, editorTarget, controller.signal, blocks, currentComponents,
-          { cache: pageSessionCache.current, ...(snapshot ? { snapshot } : {}) });
+          { cache: pageSessionCache.current, ...(snapshot ? { snapshot } : {}), ...(cachedSiteSettings ? { siteSettings: cachedSiteSettings } : {}) });
       } catch (error) {
         if (!snapshot || controller.signal.aborted) throw error;
-        loaded = await readEditorSession(adapter, editorTarget, controller.signal, blocks, currentComponents, { cache: pageSessionCache.current });
+        loaded = await readEditorSession(adapter, editorTarget, controller.signal, blocks, currentComponents, { cache: pageSessionCache.current, ...(cachedSiteSettings ? { siteSettings: cachedSiteSettings } : {}) });
       }
       if (controller.signal.aborted) return false;
       if (finish) pendingMeasurement.current = { target: loaded.session.target, initial, signal: controller.signal, finish };

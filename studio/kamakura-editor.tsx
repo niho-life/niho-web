@@ -278,6 +278,22 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
   const site = catalog.sites.find(({ id }) => id === KAMAKURA_EDITOR_SITE_ID);
   if (!site) throw new Error("鎌倉サイトの設定がありません。");
   const siteSettings = createEditingApiSiteSettingsFacade(editingApi, KAMAKURA_EDITOR_SITE_ID, { title: site.name, locale: "ja" });
+  const siteSettingsReads = new Map<string, Promise<Awaited<ReturnType<NonNullable<typeof siteSettings.readSiteSettings>>>>>();
+  const readSiteSettings = (siteId: string, signal: AbortSignal) => {
+    signal.throwIfAborted();
+    let pending = siteSettingsReads.get(siteId);
+    if (!pending) {
+      pending = siteSettings.readSiteSettings!(siteId, new AbortController().signal);
+      siteSettingsReads.set(siteId, pending);
+      void pending.finally(() => {
+        if (siteSettingsReads.get(siteId) === pending) siteSettingsReads.delete(siteId);
+      }).catch(() => {});
+    }
+    return pending.then((snapshot) => {
+      signal.throwIfAborted();
+      return snapshot;
+    });
+  };
   let currentCatalog = catalog, initialPages = true;
   let localizationRead = initialReads?.localization, breakpointRead = initialReads?.breakpoints;
   const releaseOperationIds = new Map<string, string>();
@@ -322,6 +338,7 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
   }
   return {
     ...siteSettings,
+    readSiteSettings,
     listSites: (signal) => request(signal, async () => catalog.sites),
     listPages: (siteId, signal) => request(signal, async () => {
       if (siteId !== "kamakura") throw new Error("編集対象のサイトがありません。");

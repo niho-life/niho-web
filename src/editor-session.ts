@@ -99,14 +99,19 @@ export class EditorSessionCache {
   clear(): void { this.entries.clear(); }
 }
 
-export type EditorSessionReadOptions = { readonly cache?: EditorSessionCache; readonly snapshot?: EditorSnapshot };
+export type EditorSessionReadOptions = { readonly cache?: EditorSessionCache; readonly snapshot?: EditorSnapshot; readonly siteSettings?: { readonly settings: ReturnType<typeof parseSiteSettings>; readonly version: string } };
 
 /** 文書と任意のサイト設定を独立取得し、設定が無くても単体検証できる文書だけ編集開始する。 */
 export async function readEditorSession(adapter: Pick<EditorAdapter, "readDocument" | "readSiteSettings">, target: EditorTarget, signal: AbortSignal, blocks: EditorBlockRegistry = {}, components?: ComponentLibrary, options: EditorSessionReadOptions = {}): Promise<EditorSessionLoad> {
-  const settingsRead = adapter.readSiteSettings ? adapter.readSiteSettings(target.siteId, signal).then((snapshot) => {
-    if (!snapshot || typeof snapshot.version !== "string" || !snapshot.version) throw new Error("site settings version is required");
-    return { settings: parseSiteSettings(snapshot.settings), version: snapshot.version };
-  }) : Promise.resolve(undefined);
+  const settingsRead = options.siteSettings
+    ? Promise.resolve().then(() => {
+      if (typeof options.siteSettings!.version !== "string" || !options.siteSettings!.version) throw new Error("site settings version is required");
+      return { settings: parseSiteSettings(options.siteSettings!.settings), version: options.siteSettings!.version };
+    })
+    : adapter.readSiteSettings ? adapter.readSiteSettings(target.siteId, signal).then((snapshot) => {
+      if (!snapshot || typeof snapshot.version !== "string" || !snapshot.version) throw new Error("site settings version is required");
+      return { settings: parseSiteSettings(snapshot.settings), version: snapshot.version };
+    }) : Promise.resolve(undefined);
   // Start feature discovery from the site-settings read before the page request chooses its wire shape.
   const documentRead = options.snapshot ? Promise.resolve(options.snapshot) : adapter.readDocument(target, signal);
   const [documentResult, settingsResult] = await Promise.allSettled([documentRead, settingsRead]);

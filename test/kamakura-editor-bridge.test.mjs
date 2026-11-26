@@ -105,7 +105,8 @@ test("Kamakura Studio の共通Stylesはsite.styles APIを使い、公開メタ�
   const adapter = createProjectEditorAdapter(base, { ...source.project, members: [] });
   const signal = new AbortController().signal;
   assert.equal(adapter.siteSettingsMetadataEditable, false);
-  const snapshot = await adapter.readSiteSettings("kamakura", signal);
+  const [snapshot, concurrentSnapshot] = await Promise.all([adapter.readSiteSettings("kamakura", signal), adapter.readSiteSettings("kamakura", signal)]);
+  assert.deepEqual(concurrentSnapshot, snapshot);
   assert.equal(snapshot.version, "draft-styles-v1");
   assert.equal(snapshot.settings.title, "鎌倉サイト");
   assert.deepEqual(snapshot.settings.tokens, styles.tokens);

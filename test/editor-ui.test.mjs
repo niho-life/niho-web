@@ -229,10 +229,11 @@ test("performance measurements finish after the canvas is ready and a draft is a
     await act(async () => frame.dispatchEvent(new dom.window.Event("load")));
     assert.deepEqual(events.slice(2), [["begin", "page-switch"], ["finish", "page-switch"]]);
     await change(input("ページタイトル"), "保存の計測");
+    assert.deepEqual(events.slice(4), [["begin", "edit-render"], ["finish", "edit-render"]]);
     await click("下書き保存");
     assert.deepEqual(events.at(-1), ["begin", "save"]);
     await act(async () => saved.resolve({ status: "saved", version: "v2", revision: fixture.revision + 1 }));
-    assert.deepEqual(events.slice(4), [["begin", "save"], ["finish", "save"]]);
+    assert.deepEqual(events.slice(6), [["begin", "save"], ["finish", "save"]]);
   } finally { await app.cleanup(); }
 });
 

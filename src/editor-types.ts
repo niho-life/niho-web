@@ -355,7 +355,7 @@ export type EditorCanvasPreviewProps = {
   /** 従来の文書描画。編集文書を置き換えない場合はそのまま返せる。 */
   children: ReactNode;
 };
-export type EditorPerformanceOperation = "initial-load" | "page-switch" | "save";
+export type EditorPerformanceOperation = "initial-load" | "page-switch" | "edit-render" | "save";
 
 export type PageEditorProps = {
   adapter: EditorAdapter;
