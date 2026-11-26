@@ -29,21 +29,30 @@ function syntheticDocument() {
   return { schemaVersion: 1, siteId: "synthetic-site", pageId: "synthetic-page", locale: "ja", revision: 1, title: "Synthetic performance document", tokens: {}, body };
 }
 
+function syntheticStyledDocument() {
+  const document = syntheticDocument();
+  document.textStyles = { body: { base: { fontSize: 16, lineHeight: 1.5 } } };
+  for (const section of document.body) for (const node of section.children) node.style = { textStyle: "body" };
+  return document;
+}
+
 async function importDist(directory, file) {
   return import(pathToFileURL(resolve(directory, file)).href);
 }
 
 async function loadSuite(directory) {
-  const [document, model, inspect] = await Promise.all([
+  const [document, model, inspect, css] = await Promise.all([
     importDist(directory, "document.js"),
     importDist(directory, "editor-model.js"),
-    importDist(directory, "page-inspect.js")
+    importDist(directory, "page-inspect.js"),
+    importDist(directory, "css.js")
   ]);
-  if (typeof document.parsePageDocument !== "function" || typeof model.editDocument !== "function" || typeof inspect.inspectPageDocument !== "function") {
+  if (typeof document.parsePageDocument !== "function" || typeof model.editDocument !== "function" || typeof inspect.inspectPageDocument !== "function" || typeof css.cssForDocument !== "function") {
     throw new Error("one of the required performance APIs is missing from dist");
   }
   const parsed = document.parsePageDocument(syntheticDocument());
-  return { document, model, inspect, parsed };
+  const styled = document.parsePageDocument(syntheticStyledDocument());
+  return { document, model, inspect, css, parsed, styled };
 }
 
 async function loadNormalizationAnalyzer(directory) {
@@ -126,6 +135,7 @@ const results = [
   measurePair("document.load-validation", () => baseline.document.parsePageDocument(rawDocument), () => candidate.document.parsePageDocument(rawDocument), consume),
   measurePair("editor.editDocument", () => baseline.model.editDocument(baseline.parsed, textEdit), () => candidate.model.editDocument(candidate.parsed, textEdit), consume),
   measurePair("editor.editStyle", () => baseline.model.editDocument(baseline.parsed, styleEdit), () => candidate.model.editDocument(candidate.parsed, styleEdit), consume),
+  measurePair("render.css-shared-text-style-selectors", () => baseline.css.cssForDocument(baseline.styled), () => candidate.css.cssForDocument(candidate.styled), consume),
   measurePair("pages.inspect-outline", () => baseline.inspect.inspectPageDocument(baseline.parsed, { view: "outline", limit: 1000 }), () => candidate.inspect.inspectPageDocument(candidate.parsed, { view: "outline", limit: 1000 }), consume)
 ];
 
