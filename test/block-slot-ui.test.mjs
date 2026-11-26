@@ -59,6 +59,7 @@ const slotRow = (name) => [...right().querySelectorAll("button.e-slot")].find((n
 const frame = () => document.querySelector('iframe[title="ページのライブキャンバス"]');
 const canvas = () => frame().contentDocument;
 const canvasCss = () => canvas().querySelector("style[data-nw-style]").textContent;
+const canvasNodeValue = (id, name) => canvas().querySelector(`[data-nw-node="${id}"]`)?.style.getPropertyValue(name) ?? "";
 const editorCss = () => [...canvas().querySelectorAll("style")].map((node) => node.textContent).join("\n");
 const card = (name) => document.querySelector(`article.e-part-card[aria-label="${name}"]`);
 const openPanel = () => click(document.querySelector('nav[aria-label="編集ツール"] button[title="コンポーネント"]'));
@@ -109,7 +110,8 @@ test("clicking a region on the canvas selects the block and that region, shows o
     // 繰り返すカードの同じ領域をすべて破線で囲む。
     assert.ok(editorCss().includes('[data-nw-node="cards"] [data-nw-slot="title"]{outline:2px dashed #0f70eb!important;outline-offset:2px;}'));
     await change(input("文字色", right()), "#ff0000");
-    assert.ok(canvasCss().includes('[data-nw-node="cards"] [data-nw-slot="title"]{color:#ff0000;}'));
+    assert.ok(canvasCss().includes('[data-nw-node="cards"] [data-nw-slot="title"]{color:var(--nw-Node-cards-slot-title-base-color);}'));
+    assert.equal(canvasNodeValue("cards", "--nw-Node-cards-slot-title-base-color"), "#ff0000");
     assert.ok(field("文字色", right()).querySelector(".e-dot"), "the changed region field is marked as unsaved");
     assert.ok(!field("文字サイズ", right()).querySelector(".e-dot"));
     await click(button("下書き保存"));
@@ -252,10 +254,12 @@ test("blocks inside a component master support regions, while instances on the p
     await canvasClick('[data-nw-node="n2"] [data-nw-slot="title"]');
     assert.equal(heading(), "体験カード一覧 · カードの見出し");
     await change(input("文字サイズ", right()), "20");
-    assert.ok(canvasCss().includes('[data-nw-node="n2"] [data-nw-slot="title"]{font-size:20px;}'));
+    assert.ok(canvasCss().includes('[data-nw-node="n2"] [data-nw-slot="title"]{font-size:var(--nw-Node-n2-slot-title-base-fontSize);}'));
+    assert.equal(canvasNodeValue("n2", "--nw-Node-n2-slot-title-base-fontSize"), "20px");
     await click(button("ページに戻る", document.querySelector(".e-part-banner"))); await loadCanvas();
     assert.ok(!button("ブロック全体に戻る", right()), "leaving the master clears the region");
-    assert.ok(canvasCss().includes('[data-nw-node="featured--n2"] [data-nw-slot="title"]{font-size:20px;}'));
+    assert.ok(canvasCss().includes('[data-nw-node="featured--n2"] [data-nw-slot="title"]{font-size:var(--nw-Node-featured--n2-slot-title-base-fontSize);}'));
+    assert.equal(canvasNodeValue("featured--n2", "--nw-Node-featured--n2-slot-title-base-fontSize"), "20px");
     await click(button("下書き保存"));
     assert.deepEqual(app.calls.librarySaves[0].library.components[0].root.children[0].slots, { title: { base: { fontSize: 20 } } });
   } finally { await app.cleanup(); }

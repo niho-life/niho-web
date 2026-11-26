@@ -1,9 +1,9 @@
 import { resolvePageLink } from "./presentation-links.js";
 import { resolvePageStyles, type SiteStyles } from "./site-styles.js";
-import { createElement, Fragment, memo, useMemo, type ComponentType, type ReactElement, type ReactNode } from "react";
+import { createElement, Fragment, memo, useMemo, type ComponentType, type CSSProperties, type ReactElement, type ReactNode } from "react";
 import type { BlockContract, PageDocument, PageNode, PublicPropValue, SitePresentation, SitePresentationExternalFrame, SitePresentationHostView, SitePresentationOverlay } from "./types.js";
 import { parsePageDocument } from "./document.js";
-import { cssForDocument, pageScope, resolveViewportHeightUnits } from "./css.js";
+import { canvasNodeStyleValues, canvasTokenStyleValues, cssForDocument, pageScope, resolveViewportHeightUnits } from "./css.js";
 import { parseResolvedAssets, resolvedAsset, type ResolvedAssetMap } from "./assets.js";
 import { cssForValidatedSitePresentation, parseSitePresentation, presentationLayoutDocument, sitePresentationHostViewKey } from "./presentation.js";
 import { editorRendererToken, editorRendererTokenProp } from "./editor-renderer-token.js";
@@ -107,7 +107,7 @@ function PageRendererCore({ document: input, blocks = emptyBlocks, assets: asset
   const blankEmbeds = useMemo(() => blankEmbedInput === undefined ? undefined : parseBlankEmbedRegistry(blankEmbedInput), [blankEmbedInput]);
   const assets = useMemo(() => assetInput === undefined ? emptyAssets : parseResolvedAssets(assetInput), [assetInput]);
   const scope = pageScope(document);
-  const context = [blocks, assets, missingAssets, scope, overlayBindings, hostViews, hostViewBinding, hostViewMode, externalFramePolicy, blankEmbeds, canvas, links] as const;
+  const context = [blocks, assets, missingAssets, scope, document.textStyles, overlayBindings, hostViews, hostViewBinding, hostViewMode, externalFramePolicy, blankEmbeds, canvas, links] as const;
   const videoReady = (node: PageNode | undefined): boolean => node?.type === "element" && node.tag === "video" &&
     (typeof node.attrs?.src === "string" || !!node.asset && !!resolvedAsset(assets, node.asset));
   const render = (node: PageNode, videoInteraction?: VideoInteractionChild, index = 0): ReactElement => createElement(MemoizedPageNode, {
@@ -117,23 +117,28 @@ function PageRendererCore({ document: input, blocks = emptyBlocks, assets: asset
     if (node.type === "text") return node.text;
     // 部品ライブラリなしの検証で拒否済み。下書きは resolvePageDocument で展開してから描画する。
     if (node.type === "instance") throw new Error("Unresolved component instance: resolve the document before rendering");
+    const canvasVariables = canvas ? canvasNodeStyleValues(node, document.textStyles, assets, canvas.viewportHeight) : undefined;
+    const hasCanvasVariables = !!canvasVariables && Object.keys(canvasVariables).length > 0;
+    const canvasStyle = hasCanvasVariables ? canvasVariables as CSSProperties : undefined;
+    const withCanvasStyle = (style?: CSSProperties) => hasCanvasVariables ? { ...style, ...canvasVariables } as CSSProperties : style;
     if (node.type === "component") {
       const candidates = hostViews.filter((view) => view.block === node.block);
       const definition = blocks[node.block]!;
       if (candidates.length && hostViewMode !== "off" && (hostViewMode === "prefer" || !definition?.component)) {
         const view = candidates.find((candidate) => sitePresentationHostViewKey(candidate.block, candidate.props) === sitePresentationHostViewKey(node.block, node.props));
-        if (view) return createElement("div", { key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-block": node.block, "data-nw-host-view": view.id },
+        if (view) return createElement("div", { key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-block": node.block, "data-nw-host-view": view.id, ...(canvasStyle ? { style: canvasStyle } : {}) },
           createElement(PageRenderer, { document: view.document, assets, missingAssets, hostViewBinding: view, hostViewMode: "off", overlayBindings, ...(links ? { links } : {}), ...(externalFramePolicy ? { externalFramePolicy } : {}), ...(blankEmbeds ? { blankEmbeds } : {}), ...(canvas ? { canvas } : {}) }));
         if (!canvas) throw new Error(`Registered host view is missing for block props: ${node.block}`);
       }
       if (!definition?.component) {
-        if (canvas) return createElement("div", { key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-block": node.block, "data-nw-missing-host-view": "", role: "status" }, "このブロックの表示例はありません");
+        if (canvas) return createElement("div", { key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-block": node.block, "data-nw-missing-host-view": "", role: "status", ...(canvasStyle ? { style: canvasStyle } : {}) }, "このブロックの表示例はありません");
         throw new Error(`Registered block has no React component: ${node.block}`);
       }
       // 枠の属性や style をブロックの props へ混ぜない。
-      return createElement("div", { key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-block": node.block }, createElement(definition.component, node.props));
+      return createElement("div", { key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-block": node.block, ...(canvasStyle ? { style: canvasStyle } : {}) }, createElement(definition.component, node.props));
     }
     const attrs = { ...node.attrs };
+    if (hasCanvasVariables) Object.assign(attrs, { style: withCanvasStyle((node.attrs as Record<string, unknown> | undefined)?.style as CSSProperties) });
     if (links && typeof attrs.href === "string") attrs.href = resolvePageLink(attrs.href, links);
     if (typeof attrs.autocomplete === "string") { attrs.autoComplete = attrs.autocomplete; delete attrs.autocomplete; }
     if (canvas?.siteOrigin) withSiteOrigin(attrs, canvas.siteOrigin);
@@ -177,7 +182,7 @@ function PageRendererCore({ document: input, blocks = emptyBlocks, assets: asset
     if (closes) attrs["data-nw-overlay-close"] = closes.id;
     if (node.asset) {
       const resolved = resolvedAsset(assets, node.asset);
-      if (!resolved) return missingAssets === "placeholder" ? createElement("span", { key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-missing-asset": "", role: node.tag === "img" ? "img" : "status",
+      if (!resolved) return missingAssets === "placeholder" ? createElement("span", { key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-missing-asset": "", role: node.tag === "img" ? "img" : "status", ...(canvasStyle ? { style: canvasStyle } : {}),
         "aria-label": node.tag === "img" ? typeof attrs.alt === "string" && attrs.alt ? attrs.alt : "画像を表示できません" : "動画を表示できません" }) : null;
       attrs.src = resolved.src;
       // 寸法を持たない画像にだけ付け、レイアウトのずれを防ぐ。
@@ -262,7 +267,7 @@ function PageRendererCore({ document: input, blocks = emptyBlocks, assets: asset
       return createElement("div", { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-embed": node.embed.provider }, frame);
     }
     if (node.tag === "video") {
-      if (typeof attrs.src !== "string") return missingAssets === "placeholder" ? createElement("span", { key: node.id, "data-nw-node": node.id, "data-nw-owner": scope,
+      if (typeof attrs.src !== "string") return missingAssets === "placeholder" ? createElement("span", { key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, ...(canvasStyle ? { style: canvasStyle } : {}),
         "data-nw-missing-asset": "", role: "status", "aria-label": "動画を選んでください" }, "動画を選んでください") : null;
       if (attrs.controls === undefined) attrs.controls = true;
       if (attrs.preload === undefined) attrs.preload = "metadata";
@@ -279,7 +284,7 @@ function PageRendererCore({ document: input, blocks = emptyBlocks, assets: asset
       if (frameAccess === "blocked") return createElement("div", { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-frame-blocked": "", role: "status" }, "外部コンテンツを表示できません");
       return createElement("iframe", { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, src: frame.src, title: frame.title,
       loading: frame.loading ?? "lazy", referrerPolicy: frame.referrerPolicy ?? "strict-origin-when-cross-origin", sandbox: frameAccess === "retain-origin" ? "allow-scripts allow-same-origin" : "allow-scripts",
-      style: { width: "100%", height: "100%", border: 0, display: "block" },
+      style: withCanvasStyle({ width: "100%", height: "100%", border: 0, display: "block" }),
       ...(frame.frameKey ? { "data-nw-frame-key": frame.frameKey, "data-nw-frame-max-height": frame.autoHeightMax ?? 1200 } : {}),
       ...(frame.allowFullScreen ? { allowFullScreen: true } : {}) });
     }
@@ -298,8 +303,8 @@ function PageRendererCore({ document: input, blocks = emptyBlocks, assets: asset
   return createElement(Fragment, null,
     // React 18 HTML-escapes text children inside <style>, which changes CSS selectors.
     // cssForDocument only emits identifiers and values accepted by the closed CSS schema.
-    createElement("style", { "data-nw-style": scope, dangerouslySetInnerHTML: { __html: canvasCssText(cssForDocument(document, assets), canvas) } }),
-    createElement("div", { "data-nw-scope": scope, lang: document.locale }, ...document.body.map((node, index) => render(node, undefined, index))));
+    createElement("style", { "data-nw-style": scope, dangerouslySetInnerHTML: { __html: canvasCssText(cssForDocument(document, assets, { inlineStyleValues: !!canvas }), canvas) } }),
+    createElement("div", { "data-nw-scope": scope, lang: document.locale, ...(canvas ? { style: canvasTokenStyleValues(document.tokens, canvas.viewportHeight) as CSSProperties } : {}) }, ...document.body.map((node, index) => render(node, undefined, index))));
 }
 
 export type SitePageRendererProps = PageRendererProps & { presentation: unknown };

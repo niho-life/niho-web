@@ -79,6 +79,8 @@ async function change(target, value) {
 const pageRow = (title) => [...document.querySelectorAll("button.e-page")].find((node) => node.querySelector(".e-page-name")?.textContent === title);
 const canvas = () => document.querySelector('iframe[title="ページのライブキャンバス"]');
 const rendered = (id) => canvas().contentDocument.querySelector(`[data-nw-node="${id}"]`);
+const canvasNodeValue = (id, name) => rendered(id)?.style.getPropertyValue(name) ?? "";
+const canvasTokenValue = (name) => [...canvas().contentDocument.querySelectorAll("[data-nw-scope]")].map((node) => node.style.getPropertyValue(`--nw-${name}`)).find(Boolean) ?? "";
 async function loadCanvas() { const frame = canvas(); assert.ok(frame); await act(async () => frame.dispatchEvent(new dom.window.Event("load"))); await flush(); }
 async function canvasEvent(id, type) {
   const frame = canvas(), element = rendered(id); assert.ok(element, id);
@@ -1076,7 +1078,10 @@ test("コンポーネントにする copies site-wide tokens used inside the sel
     await change(input("コンポーネント名", dialog()), "リード文"); await click(button("登録する", dialog()));
     assert.equal(dialog(), null);
     const css = canvas().contentDocument.querySelector("style[data-nw-style]").textContent;
-    assert.ok(css.includes("--nw-paper:#f7f4ec;") && css.includes('[data-nw-node="lead"]{background-color:var(--nw-paper);color:var(--nw-brand);}'), "the instance keeps the site-wide color on the canvas");
+    assert.ok(css.includes('[data-nw-node="lead"]{background-color:var(--nw-Node-lead-base-backgroundColor);color:var(--nw-Node-lead-base-color);}'), "the instance keeps its canvas declarations stable");
+    assert.equal(canvasTokenValue("paper"), "#f7f4ec"); assert.equal(canvasTokenValue("brand"), "#336655");
+    assert.equal(canvasNodeValue("lead", "--nw-Node-lead-base-backgroundColor"), "var(--nw-paper)");
+    assert.equal(canvasNodeValue("lead", "--nw-Node-lead-base-color"), "var(--nw-brand)");
     await click("下書き保存");
     const savedLibrary = parseComponentLibrary(app.calls.librarySaves[0].library), created = savedLibrary.components.find((component) => component.name === "リード文");
     const saved = parsePageDocument(app.calls.saves[0].document, {}, { components: savedLibrary, siteStyles });
@@ -1094,13 +1099,15 @@ test("the component editor draws library tokens with the same-named site-wide de
   const app = await setup({ library: { ...styled(library()), tokens }, adapter: { readSiteSettings: async () => ({ settings: { title: "デモ", locale: "ja", ...siteStyles }, version: "s1" }) } });
   const css = () => canvas().contentDocument.querySelector("style[data-nw-style]").textContent;
   try {
-    assert.ok(css().includes("--nw-brand:#336655;") && css().includes("--nw-accent:#0055aa;"), "the page draws the instance with the site-wide brand");
+    assert.equal(canvasTokenValue("brand"), "#336655"); assert.equal(canvasTokenValue("accent"), "#0055aa");
     await openPanel(); await click(button("コンポーネントを編集", card("サイトヘッダー"))); await loadCanvas();
-    assert.ok(css().includes("--nw-brand:#336655;") && css().includes("--nw-accent:#0055aa;"), "the component editor draws the same colors as the page");
-    assert.ok(css().includes('[data-nw-node="n1"]{background-color:var(--nw-accent);color:var(--nw-brand);}'));
+    assert.equal(canvasTokenValue("brand"), "#336655"); assert.equal(canvasTokenValue("accent"), "#0055aa");
+    assert.ok(css().includes('[data-nw-node="n1"]{background-color:var(--nw-Node-n1-base-backgroundColor);color:var(--nw-Node-n1-base-color);}'));
+    assert.equal(canvasNodeValue("n1", "--nw-Node-n1-base-backgroundColor"), "var(--nw-accent)");
+    assert.equal(canvasNodeValue("n1", "--nw-Node-n1-base-color"), "var(--nw-brand)");
     assert.ok(!css().includes("--nw-paper"), "site-wide definitions the library does not have are not added to the component");
     await click("a · n2"); await change(input("テキスト"), "トップ");
-    assert.ok(css().includes("--nw-brand:#336655;"), "edits keep drawing the site-wide brand");
+    assert.equal(canvasTokenValue("brand"), "#336655", "edits keep drawing the site-wide brand");
     await click("下書き保存");
     assert.equal(app.calls.saves.length, 0);
     assert.deepEqual(app.calls.librarySaves[0].library.tokens, tokens, "the library keeps its own copy and gets no site-wide definition");
@@ -1127,10 +1134,11 @@ test("the component editor's style panel names who owns each library token and l
     assert.ok(styles().textContent.includes("サイト共通の値のため、コンポーネントの編集では変更できません。ページに戻り、スタイルの「サイト共通」で変更してください。"));
     assert.deepEqual([input("名前", styles()).disabled, input("色", styles()).disabled, !!button("このカラーを削除", styles())], [true, true, false]);
     await click(button("選択中の要素の文字色に適用", styles()));
-    assert.ok(css().includes('[data-nw-node="n2"]{color:var(--nw-brand);}'));
+    assert.ok(css().includes('[data-nw-node="n2"]{color:var(--nw-Node-n2-base-color);}'));
+    assert.equal(canvasNodeValue("n2", "--nw-Node-n2-base-color"), "var(--nw-brand)");
     // ライブラリにだけある値は、これまでどおりコンポーネントの編集で変えられる。
     await click(row("アクセント")); await change(input("色", styles()), "#123456");
-    assert.ok(css().includes("--nw-accent:#123456;"));
+    assert.equal(canvasTokenValue("accent"), "#123456");
     // 新しい値の名前は、サイト共通の名前（color-1）を避ける。
     await click(styles().querySelector('button[aria-label="カラーを追加"]'));
     assert.equal(row("カラー 2")?.textContent, "カラー 2コンポーネント本体 · #336655 · 0 か所");
@@ -1176,7 +1184,7 @@ test("the component panel draws thumbnails with the same-named site-wide definit
   const styled = withComponent("site_header", (component) => ({ ...component, root: { ...component.root, style: { base: { color: { token: "brand" }, backgroundColor: { token: "accent" } } } } }));
   const app = await setup({ library: { ...styled(library()), tokens }, adapter: { readSiteSettings: async () => ({ settings: { title: "デモ", locale: "ja", ...siteStyles }, version: "s1" }) } });
   try {
-    assert.ok(canvas().contentDocument.querySelector("style[data-nw-style]").textContent.includes("--nw-brand:#336655;"), "the page draws the instance with the site-wide brand");
+    assert.equal(canvasTokenValue("brand"), "#336655", "the page draws the instance with the site-wide brand");
     await openPanel();
     const thumbnail = card("サイトヘッダー").querySelector("iframe");
     await act(async () => thumbnail.dispatchEvent(new dom.window.Event("load"))); await flush();
