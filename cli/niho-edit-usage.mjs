@@ -7,6 +7,8 @@ niho-edit --origin <https-origin> --site <site-id> find --url <public-url> --loc
 niho-edit --origin <https-origin> --site <site-id> get <page-id> <node-id> --locale <locale> [--effective-style]
 niho-edit --origin <https-origin> --site <site-id> apply <page-id> --locale <locale> [--ops <file|->] [--cms-bindings <file|->] [--dry-run] [--expected-version <version>] [--operation-id <uuid-v4>]
 niho-edit --studio --origin <https-origin> --site <site-id> apply <page-id> --locale <locale> [--ops <file|->] [--cms-bindings <file|->] [--dry-run] [--expected-version <version>] [--operation-id <uuid-v4>]
+niho-edit --origin <https-origin> --site <site-id> lint <page-id> --locale <locale>
+niho-edit --origin <https-origin> --site <site-id> lint all
 niho-edit normalize analyze --json <入力ファイル|->
 niho-edit normalize plan --json <入力ファイル|->
 niho-edit [--studio] --origin <https-origin> --site <site-id> normalize apply --json <計画ファイル> --checkpoint <記録ファイル> [--approve <提案ID> ...]
@@ -73,7 +75,7 @@ styles-release-plan input uses { expectedVersion: draft.version, expectedStylesV
 For a page release set, items-file contains 1 to 50 items: { "items": [{ "target": { "siteId", "pageId", "locale" }, "expectedVersion", "componentsVersion?", "presentationVersion?" }, ...] }.
 The plan is bound to the changed targets and versions. Results report each page as released, conflict, or pending.
 Apply the same saved plan again after a timeout to resume unfinished pages without republishing completed pages, then query page-release-set-status with its operation ID.
-normalize analyze と plan はローカルで実行します。apply は版照合付きで適用し、状態を記録します。色の置換と表示幅の変更には --approve が必要です。resume は未確定のページ操作を再試行し、undo は適用済みの変更を戻します。verify は現在の文書を読み直して描画入力を比較します。`;
+lint は指定したページ、または catalog にある全ページの問題をJSONで表示します。問題があれば終了コード1、なければ0です。normalize analyze と plan はローカルで実行します。apply は版照合付きで適用し、状態を記録します。色の置換と表示幅の変更には --approve が必要です。resume は未確定のページ操作を再試行し、undo は適用済みの変更を戻します。verify は現在の文書を読み直して描画入力を比較します。`;
 
 const commandUsageLines = NIHO_EDIT_USAGE.split("\n")
   .filter((line) => line.startsWith("niho-edit "))
