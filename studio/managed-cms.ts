@@ -18,7 +18,7 @@ import { DocumentValidationError, keys, record } from "../src/validation-utils.j
 import { validatePagePath } from "../src/pages.js";
 import { OPERATION_KEY_HEADER, UUID_V4 } from "../cli/operations.mjs";
 import {
-  CmsStore, MAX_BODY, MAX_ITEMS, MAX_RETAINED_BYTES, MAX_SNAPSHOT, blobSize, cmsPathReserved, dateNow, digest,
+  CmsStore, MAX_BODY, MAX_ITEMS, MAX_REDIRECTS, MAX_RELEASE_BODY, MAX_RETAINED_BYTES, MAX_SNAPSHOT, blobSize, cmsPathReserved, dateNow, digest,
   iso, itemBlobKey, localizationBlobKey, nowSeconds, opaque, routeTableKey, snapshotKey, type CmsCapability, type CmsScope, type ItemMeta, type JobPayload, type Site
 } from "./managed-cms-store.js";
 import { collectionPath, deliverCmsJob, escapeHtml, previewContent, releaseContext, releaseImpacts } from "./managed-cms-release.js";
@@ -27,7 +27,6 @@ import { cmsLocalizationItem, cmsLocalizationOverview, cmsLocalizationSummary, c
 const PLAN_TTL = 10 * 60;
 const PREVIEW_TTL = 5 * 60;
 const LIST_SIZE = 10;
-const MAX_RELEASE_REDIRECTS = 25;
 const MAX_ITEM_SAVE_BODY = 128 * 1024;
 const VERSION_HEADER = "X-Studio-CMS-Version";
 const LEGACY = {
@@ -309,7 +308,7 @@ async function releaseOperation(store: CmsStore, site: Site, capability: CmsCapa
   operation: "cms.release.plan" | "cms.release.apply" | "cms.schedule.create", body: Record<string, unknown>, mutation: Mutation | null) {
   if (operation === "cms.release.plan") {
     const scheduled = Object.hasOwn(body, "at"), input = scheduled ? parseCmsScheduleRequest(body) : parseCmsReleaseInput(body);
-    if (input.locale !== site.state.locale || input.items.length > MAX_ITEMS || input.redirects.length > MAX_RELEASE_REDIRECTS) return invalid();
+    if (input.locale !== site.state.locale || input.items.length > MAX_ITEMS || input.redirects.length > MAX_REDIRECTS) return invalid();
     const { ...selection } = input as CmsReleaseInput & { at?: string };
     delete selection.at;
     const ready = planCmsRelease(selection, opaque("release"), await releaseContext(store, site, input.items));
@@ -686,7 +685,9 @@ async function executeV2(request: Request, store: CmsStore, scope: CmsScope, rou
   const site = await store.site(scope, capability!);
   if (!site) return forbidden();
   if (request.method !== "POST") return error("method_not_allowed", 405);
-  const body = await readBody(request, scope, operation === "cms.items.save" ? MAX_ITEM_SAVE_BODY : MAX_BODY);
+  const maxBody = operation === "cms.release.plan" || operation === "cms.schedule.create"
+    ? MAX_RELEASE_BODY : operation === "cms.items.save" ? MAX_ITEM_SAVE_BODY : MAX_BODY;
+  const body = await readBody(request, scope, maxBody);
   if (!body || body.siteId !== site.siteId) return invalid();
   const cap = capability!;
   let mutation: Mutation | null = null;

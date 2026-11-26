@@ -281,11 +281,11 @@ async function releasePlan(site, schemaRevision, previous, items, at) {
   return { operationId: plan.operationId, confirmationToken: plan.confirmationToken };
 }
 
-testWithD1("Studio CMS stores, publishes and schedules 200 items while tombstones count toward capacity", async (t) => {
+testWithD1("Studio CMS stores, publishes and schedules 500 items while tombstones count toward capacity", async (t) => {
   const h = await fixture(t, { cms: true }), site = await cmsSite(h, "cms-capacity");
   const { schemaRevision } = await site.read("cms.schema.read");
   const drafts = [];
-  for (let number = 1; number <= 200; number++) {
+  for (let number = 1; number <= 500; number++) {
     const draft = await createDraft(site, schemaRevision);
     drafts.push(await saveDraft(site, draft, `Item ${number}`, `item-${number}`));
   }
@@ -301,14 +301,22 @@ testWithD1("Studio CMS stores, publishes and schedules 200 items while tombstone
   const extra = { collectionId: "posts", itemId: "extra-item", revision: "extra-revision" };
   assert.deepEqual(await body(await site.post("cms.release.plan", { ...input, items: [...input.items, extra] }), 400),
     { error: "invalid_request" });
-  const redirects = Array.from({ length: 26 }, (_, index) => ({ from: `/cms/old-item-${index}`, to: "/cms/posts/item-1" }));
+  const redirects = Array.from({ length: 25_001 }, (_, index) => ({ from: `/cms/old-item-${index}`, to: "/cms/posts/item-1" }));
   assert.deepEqual(await body(await site.post("cms.release.plan", { ...input, redirects }), 400), { error: "invalid_request" });
 
   const publish = await releasePlan(site, schemaRevision, null, drafts);
   const { result: { releaseId } } = await site.read("cms.release.apply", publish);
-  assert.equal((await site.read("cms.release.status", { operationId: publish.operationId })).delivery.state, "delivered");
+  assert.equal((await site.read("cms.release.status", { operationId: publish.operationId })).delivery.state, "pending");
+  // Clear older revision-verification jobs within the per-invocation subrequest budget before the large release.
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const status = await site.read("cms.release.status", { operationId: publish.operationId });
+    if (status.delivery.state === "delivered") break;
+    await h.cron();
+  }
+  const delivered = await site.read("cms.release.status", { operationId: publish.operationId });
+  assert.equal(delivered.delivery.state, "delivered", JSON.stringify(delivered));
   assert.deepEqual((await site.read("cms.release.current")).snapshot.items.map(pin), drafts.map(pin));
-  assert.match(await (await site.pub("/posts/item-200")).text(), /Item 200/u);
+  assert.match(await (await site.pub("/posts/item-500")).text(), /Item 500/u);
 
   const future = new Date(Date.now() + 120_000).toISOString();
   const reservation = await releasePlan(site, schemaRevision, releaseId, drafts, future);
@@ -321,6 +329,31 @@ testWithD1("Studio CMS stores, publishes and schedules 200 items while tombstone
   clock.mock.restore();
   assert.equal((await site.read("cms.schedule.status", { scheduleId })).status, "released");
   assert.deepEqual((await site.read("cms.release.current")).snapshot.items.map(pin), drafts.map(pin));
+});
+
+testWithD1("Studio CMS accepts large redirect plans and caps redirects at 25,000", async (t) => {
+  const h = await fixture(t, { cms: true }), site = await cmsSite(h, "cms-redirect-capacity");
+  const { schemaRevision } = await site.read("cms.schema.read");
+  const draft = await createDraft(site, schemaRevision);
+  const item = await saveDraft(site, draft, "Redirect fixture", "redirect-fixture");
+  const initialPlan = await releasePlan(site, schemaRevision, null, [item]);
+  await site.read("cms.release.apply", initialPlan);
+  await h.cron();
+
+  const current = await site.read("cms.release.current");
+  const redirects = Array.from({ length: 2_500 }, (_, index) => ({ from: `/cms/old-${index}`, to: "/cms/posts/redirect-fixture" }));
+  const input = { schemaRevision, locale: "ja", routeTableRevision: current.routeTableRevision,
+    expectedReleaseId: current.snapshot.releaseId, items: [pin(item)], redirects };
+  assert.ok(new TextEncoder().encode(JSON.stringify({ siteId: site.siteId, ...input })).byteLength > 64 * 1024);
+  const { plan } = await site.read("cms.release.plan", input);
+  assert.equal(plan.candidate.snapshot.redirects.length, redirects.length);
+  await site.read("cms.release.apply", { operationId: plan.operationId, confirmationToken: plan.confirmationToken });
+  assert.equal((await site.read("cms.release.status", { operationId: plan.operationId })).delivery.state, "delivered");
+  assert.equal((await site.read("cms.release.current")).snapshot.redirects.length, redirects.length);
+
+  const tooMany = Array.from({ length: 25_001 }, (_, index) => ({ from: `/cms/overflow-${index}`, to: "/cms/posts/redirect-fixture" }));
+  assert.deepEqual(await body(await site.post("cms.release.plan", { ...input, redirects: tooMany }, { headers: headers() }), 400),
+    { error: "invalid_request" });
 });
 
 testWithD1("Studio CMS accepts migration-sized draft saves and enforces operation-specific byte limits", async (t) => {
