@@ -10,6 +10,7 @@ import { colorParts } from "./style-model.js";
 import { parseComponentLibrary } from "./components.js";
 import type { BlockContracts, ComponentLibrary } from "./types.js";
 import { PAGE_OPERATION_LIMIT } from "./editing-page-operations.js";
+import { mergeStyle } from "./component-expand.js";
 
 export type NormalizationDocument = {
   readonly kind: PageKind;
@@ -195,12 +196,25 @@ function allStyleValues(document: PageDocument, visit: (value: unknown, location
     }
   }
 }
-function textStyleFor(node: Exclude<PageNode, { type: "text" }>): TextStyle | undefined {
+function textStyleFor(node: Exclude<PageNode, { type: "text" }>, document: PageDocument, site: SiteStyles, componentTokens: ComponentLibrary["tokens"]): TextStyle | undefined {
   if (node.style?.textStyle) return undefined;
-  const filter = (values: Record<string, unknown> | undefined): Partial<Record<TextStyleProperty, StyleValue>> => Object.fromEntries(
-    Object.entries(values ?? {}).filter(([property, value]) => (textStyleProperties as readonly string[]).includes(property)
-      && (typeof value === "string" || typeof value === "number" || value && typeof value === "object" && typeof (value as { token?: unknown }).token === "string"))
-  ) as Partial<Record<TextStyleProperty, StyleValue>>;
+  const siteTokens = site.tokens ?? {}, localTokens = { ...componentTokens, ...siteTokens, ...document.tokens };
+  const filter = (values: Record<string, unknown> | undefined): Partial<Record<TextStyleProperty, StyleValue>> => {
+    const result: Partial<Record<TextStyleProperty, StyleValue>> = {};
+    for (const [property, value] of Object.entries(values ?? {})) {
+      if (!(textStyleProperties as readonly string[]).includes(property)) continue;
+      if (typeof value === "string" || typeof value === "number") result[property as TextStyleProperty] = value;
+      else if (value && typeof value === "object" && typeof (value as { token?: unknown }).token === "string") {
+        const name = (value as { token: string }).token;
+        if (Object.hasOwn(siteTokens, name) && !Object.hasOwn(document.tokens, name)) result[property as TextStyleProperty] = value as StyleValue;
+        else {
+          const token = localTokens[name];
+          if (token) result[property as TextStyleProperty] = token.value;
+        }
+      }
+    }
+    return result;
+  };
   const base = filter(node.style?.base as Record<string, unknown> | undefined);
   const responsive = (node.style?.responsive ?? []).flatMap((entry) => {
     const declarations = filter(entry.declarations as Record<string, unknown>);
@@ -285,6 +299,7 @@ function analyzeCheckedInput(input: NormalizationInput): NormalizationAnalysis {
     if (occurrences.length < MIN_PROPOSAL_OCCURRENCES) continue;
     const names = new Set([
       ...Object.keys(input.siteStyles.styles.tokens ?? {}),
+      ...Object.keys(input.components?.library.tokens ?? {}),
       ...input.documents.flatMap(({ document }) => Object.keys(document.tokens))
     ]);
     const existing = Object.entries(input.siteStyles.styles.tokens ?? {}).find(([name, token]) => token.type === "color"
@@ -300,7 +315,7 @@ function analyzeCheckedInput(input: NormalizationInput): NormalizationAnalysis {
   const textGroups = new Map<string, { style: TextStyle; occurrences: NormalizationOccurrence[] }>();
   for (const { document } of input.documents) for (const { node, path } of walkNodes(document)) {
     if (node.type === "text") continue;
-    const style = textStyleFor(node);
+    const style = textStyleFor(node, document, input.siteStyles.styles, node.type === "instance" ? input.components?.library.tokens ?? {} : {});
     if (!style) continue;
     const key = stable(style), group = textGroups.get(key) ?? { style, occurrences: [] };
     group.occurrences.push({ target: targetFor(document), nodeId: node.id, path });
@@ -325,23 +340,31 @@ function analyzeCheckedInput(input: NormalizationInput): NormalizationAnalysis {
       if (node.type === "text") continue;
       const effectiveNode = effectiveNodes.get(node.id);
       if (!effectiveNode) continue;
-      const inspectResponsive = (style: NodeStyle | undefined, slot?: string) => {
-        const responsive = style?.responsive ?? [];
+      const inspectResponsive = (sourceStyle: NodeStyle | undefined, slot?: string, componentRootStyle?: NodeStyle) => {
+        const beforeStyle = componentRootStyle ? mergeStyle(componentRootStyle, sourceStyle ?? {}) : sourceStyle;
+        const responsive = sourceStyle?.responsive ?? [];
         for (const entry of responsive) for (const [property, value] of Object.entries(entry.declarations) as [StyleProperty, StyleValue][]) {
-          const nextOverride = responsive.find((candidate) => candidate.minWidth > entry.minWidth && candidate.declarations[property] !== undefined)?.minWidth ?? 3841;
-          const boundaries = new Set([entry.minWidth, ...responsive.filter((candidate) => candidate.minWidth > entry.minWidth && candidate.minWidth < nextOverride).map((candidate) => candidate.minWidth),
-            ...(!slot && effectiveNode.style?.textStyle ? (effectiveDocument.textStyles?.[effectiveNode.style.textStyle]?.responsive ?? []).filter((candidate) => candidate.minWidth >= entry.minWidth && candidate.minWidth < nextOverride).map((candidate) => candidate.minWidth) : [])]);
+          const nextOverride = (beforeStyle?.responsive ?? []).find((candidate) => candidate.minWidth > entry.minWidth && candidate.declarations[property] !== undefined)?.minWidth ?? 3841;
+          const afterSourceStyle = removeResponsiveProperty(sourceStyle, entry.minWidth, property);
+          const afterStyle = componentRootStyle ? mergeStyle(componentRootStyle, afterSourceStyle ?? {}) : afterSourceStyle;
+          const textStyleName = beforeStyle?.textStyle;
+          const boundaries = new Set([entry.minWidth, ...(beforeStyle?.responsive ?? []).filter((candidate) => candidate.minWidth > entry.minWidth && candidate.minWidth < nextOverride).map((candidate) => candidate.minWidth),
+            ...(!slot && textStyleName ? (effectiveDocument.textStyles?.[textStyleName]?.responsive ?? []).filter((candidate) => candidate.minWidth >= entry.minWidth && candidate.minWidth < nextOverride).map((candidate) => candidate.minWidth) : [])]);
           const sameAtEveryBoundary = [...boundaries].every((width) => {
-            const inherited = !slot && effectiveNode.style?.textStyle ? inheritedTextValue(effectiveDocument, effectiveNode, property, width) : undefined;
-            const underlying = inheritedStyleValue(style, property, width, entry.minWidth);
-            return stable(resolveStyleValue(effectiveDocument, value)) === stable(resolveStyleValue(effectiveDocument, underlying ?? inherited));
+            const inherited = !slot && textStyleName ? inheritedTextValue(effectiveDocument, effectiveNode, property, width, textStyleName) : undefined;
+            const before = valueAtWidth(beforeStyle, property, width) ?? inherited;
+            const after = valueAtWidth(afterStyle, property, width) ?? inherited;
+            return stable(resolveStyleValue(effectiveDocument, before)) === stable(resolveStyleValue(effectiveDocument, after));
           });
           if (!sameAtEveryBoundary) continue;
           const occurrence = { target: targetFor(document), nodeId: node.id, path, breakpoint: entry.minWidth, property, ...(slot ? { slot } : {}) };
           proposals.push({ kind: "remove-redundant-override", id: proposalId("redundant", occurrence), classification: "lossless", occurrence, value });
         }
       };
-      inspectResponsive(effectiveNode.style);
+      if (effectiveNode.type === "instance") {
+        const component = input.components?.library.components.find(({ id }) => id === effectiveNode.component);
+        inspectResponsive(effectiveNode.style, undefined, component?.root.style);
+      } else inspectResponsive(effectiveNode.style);
       if (effectiveNode.type === "component") for (const [slot, style] of Object.entries(effectiveNode.slots ?? {})) inspectResponsive(style, slot);
     }
     for (const { node, path } of walkNodes(document)) {
@@ -379,18 +402,30 @@ export function analyzeNormalization(inputValue: NormalizationInput): Normalizat
   return analyzeCheckedInput(checkedInput(inputValue));
 }
 
-function inheritedTextValue(document: PageDocument, node: Exclude<PageNode, { type: "text" }>, property: StyleProperty, width: number): StyleValue | undefined {
-  const name = node.style?.textStyle;
+function inheritedTextValue(document: PageDocument, node: Exclude<PageNode, { type: "text" }>, property: StyleProperty, width: number, textStyleName = node.style?.textStyle): StyleValue | undefined {
+  const name = textStyleName;
   const style = name ? document.textStyles?.[name] : undefined;
   if (!style || !(textStyleProperties as readonly string[]).includes(property)) return undefined;
   let value = style.base[property as TextStyleProperty];
   for (const entry of style.responsive ?? []) if (entry.minWidth <= width && entry.declarations[property as TextStyleProperty] !== undefined) value = entry.declarations[property as TextStyleProperty];
   return value;
 }
-function inheritedStyleValue(style: NodeStyle | undefined, property: StyleProperty, width: number, excludedMinWidth: number): StyleValue | undefined {
+function valueAtWidth(style: NodeStyle | undefined, property: StyleProperty, width: number): StyleValue | undefined {
   let value = style?.base?.[property];
-  for (const entry of style?.responsive ?? []) if (entry.minWidth <= width && entry.minWidth !== excludedMinWidth && entry.declarations[property] !== undefined) value = entry.declarations[property];
+  for (const entry of style?.responsive ?? []) if (entry.minWidth <= width && entry.declarations[property] !== undefined) value = entry.declarations[property];
   return value;
+}
+function removeResponsiveProperty(style: NodeStyle | undefined, minWidth: number, property: StyleProperty): NodeStyle | undefined {
+  if (!style) return undefined;
+  const responsive = (style.responsive ?? []).map((entry) => {
+    if (entry.minWidth !== minWidth) return entry;
+    const declarations = { ...entry.declarations };
+    delete declarations[property];
+    return { ...entry, declarations };
+  }).filter((entry) => Object.keys(entry.declarations).length > 0);
+  const { responsive: _responsive, ...base } = style;
+  const result: NodeStyle = { ...base, ...(responsive.length ? { responsive } : {}) };
+  return Object.keys(result).length ? result : undefined;
 }
 function resolveStyleValue(document: PageDocument, value: StyleValue | undefined): unknown {
   if (value === undefined) return undefined;

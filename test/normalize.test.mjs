@@ -54,11 +54,26 @@ test("matching typography groups become an explicitly approved text style", () =
   assert.ok(plan.pages.every(({ operations }) => operations.some((operation) => operation.type === "nodeTextStyle" && operation.name === proposal.styleName)));
 });
 
+test("page-only text tokens are resolved before creating a site text style", () => {
+  const documentWithPageToken = (pageId, nodeId) => page(pageId, [node(nodeId, { base: { fontSize: { token: "size" }, fontWeight: 600 } })], {
+    tokens: { size: { type: "length", value: 16 } }
+  });
+  const snapshot = input([documentWithPageToken("one", "one-title"), documentWithPageToken("two", "two-title")], {
+    siteStyles: { version: "styles-v1", styles: { tokens: { size: { type: "length", value: 24 } } } }
+  });
+  const proposal = analyzeNormalization(snapshot).proposals.find(({ kind }) => kind === "text-style");
+  assert.ok(proposal);
+  assert.deepEqual(proposal.style.base, { fontSize: 16, fontWeight: 600 });
+  const plan = planNormalization(snapshot, [proposal.id]);
+  assert.deepEqual(plan.siteStyles.textStyles[proposal.styleName].base, { fontSize: 16, fontWeight: 600 });
+});
+
 test("component slot and instance styles normalize across locales without token name collisions", () => {
   const blocks = { Cards: { props: {}, slots: { title: { label: "見出し", style: ["color"] } } } };
-  const components = { version: "components-v1", library: { schemaVersion: 1, siteId: "site", revision: 1, tokens: {}, components: [
+  const components = { version: "components-v1", library: { schemaVersion: 1, siteId: "site", revision: 1,
+    tokens: { "color-336699-2": { type: "color", value: "#000000" } }, components: [
     { id: "badge", name: "バッジ", kind: "part", version: 1, root: { type: "element", id: "root", tag: "span",
-      style: { responsive: [{ minWidth: 768, declarations: { color: "#ff0000" } }] }, children: [] } }
+      style: { base: { color: { token: "color-336699-2" } }, responsive: [{ minWidth: 768, declarations: { color: "#ff0000" } }] }, children: [] } }
   ] } };
   const snapshot = input([
     page("home", [{ type: "component", id: "cards", block: "Cards", props: {}, slots: { title: { base: { color: "#336699" } } } }], { locale: "ja-JP" }),
@@ -70,7 +85,7 @@ test("component slot and instance styles normalize across locales without token 
   });
   const proposal = analyzeNormalization(snapshot).proposals.find(({ kind }) => kind === "color-token");
   assert.ok(proposal);
-  assert.equal(proposal.tokenName, "color-336699-2");
+  assert.equal(proposal.tokenName, "color-336699-3");
   assert.deepEqual(new Set(proposal.occurrences.map(({ target }) => target.locale)), new Set(["ja-JP", "en-US"]));
   assert.equal(analyzeNormalization({ ...snapshot, documents: [...snapshot.documents].reverse() }).proposals.find(({ kind }) => kind === "color-token").id, proposal.id);
   assert.equal(analyzeNormalization(snapshot).proposals.some(({ kind, minWidth }) => kind === "unused-breakpoint" && minWidth === 768), false);
@@ -103,6 +118,14 @@ test("redundant responsive values are lossless only across every inherited style
     type: "instance", id: "badge-instance", component: "badge", style: { base: { color: { token: "light" } }, responsive: [{ minWidth: 768, declarations: { color: { token: "dark" } } }] }
   }])], { components });
   assert.equal(analyzeNormalization(instanceTokens).proposals.some(({ kind }) => kind === "remove-redundant-override"), false);
+
+  const rootBreakpoint = { version: "components-v2", library: { schemaVersion: 1, siteId: "site", revision: 2, tokens: {}, components: [
+    { id: "badge", name: "バッジ", kind: "part", version: 2, root: { type: "element", id: "root", tag: "span",
+      style: { responsive: [{ minWidth: 768, declarations: { color: "#ff0000" } }] }, children: [] } }
+  ] } };
+  const shadowedByComponentRoot = input([page("instance-root", [{ type: "instance", id: "badge-instance", component: "badge",
+    style: { base: { color: "#0000ff" }, responsive: [{ minWidth: 768, declarations: { color: "#0000ff" } }] } }])], { components: rootBreakpoint });
+  assert.equal(analyzeNormalization(shadowedByComponentRoot).proposals.some(({ kind, occurrence }) => kind === "remove-redundant-override" && occurrence.nodeId === "badge-instance"), false);
 });
 
 test("unused breakpoints are lossless while merging nearby used breakpoints requires approval", () => {
