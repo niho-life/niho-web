@@ -345,15 +345,15 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
     const view = body.ownerDocument.defaultView;
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update);
     observer?.observe(element);
-    // Observe the new layout before reading geometry. A synchronous read here forces
-    // layout for the whole canvas on every edit, even when the selected node did not move.
+    // Measure the initial selection after layout. ResizeObserver does not report ordinary
+    // inline elements, so the first handle position cannot depend on its callback.
     let frame: number | undefined;
-    if (!observer) {
-      if (view?.requestAnimationFrame) frame = view.requestAnimationFrame(update);
-      else update();
-    }
+    let timer: number | undefined;
+    if (view?.requestAnimationFrame) frame = view.requestAnimationFrame(update);
+    else if (view?.setTimeout) timer = view.setTimeout(update, 0);
+    else update();
     view?.addEventListener("scroll", update);
-    return () => { observer?.disconnect(); if (frame !== undefined) view?.cancelAnimationFrame(frame); view?.removeEventListener("scroll", update); };
+    return () => { observer?.disconnect(); if (frame !== undefined) view?.cancelAnimationFrame(frame); if (timer !== undefined) view?.clearTimeout(timer); view?.removeEventListener("scroll", update); };
   }, [body, handleId, width, document, rendered, slot]);
   function endResize(commit: boolean) {
     const current = resizing.current; if (!current) return;

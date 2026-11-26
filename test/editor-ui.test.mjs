@@ -1465,7 +1465,7 @@ async function pointer(target, type, clientY) {
   await settle();
 }
 
-test("canvas resize handle geometry waits for ResizeObserver after an edit render", async () => {
+test("canvas resize handle measures inline selections after layout without waiting for ResizeObserver", async () => {
   const previous = globalThis.ResizeObserver, observers = [];
   class TestResizeObserver {
     constructor(callback) { this.callback = callback; this.target = null; observers.push(this); }
@@ -1476,14 +1476,35 @@ test("canvas resize handle geometry waits for ResizeObserver after an edit rende
   let app;
   globalThis.ResizeObserver = TestResizeObserver;
   try {
-    app = await setup();
-    await clickCanvas("hero");
-    const frame = document.querySelector("iframe"), observer = observers.find((entry) => entry.target === canvasNode("hero"));
-    assert.ok(observer, "the selected node is observed");
-    assert.equal(frame.contentDocument.querySelector(".nw-resize-handle"), null, "selection does not synchronously read canvas geometry");
-    await act(async () => observer.deliver());
+    const doc = structuredClone(fixture);
+    doc.body = [
+      { type: "element", id: "block", tag: "div", children: [{ type: "text", text: "Block" }] },
+      { type: "element", id: "inline_link", tag: "a", attrs: { href: "/about" }, children: [{ type: "text", text: "Inline link" }] }
+    ];
+    app = await setup({ document: doc });
+    const frame = document.querySelector("iframe"), scheduled = [];
+    frame.contentWindow.requestAnimationFrame = (callback) => { scheduled.push(callback); return scheduled.length; };
+    frame.contentWindow.cancelAnimationFrame = () => {};
+    const block = canvasNode("block"), inline = canvasNode("inline_link");
+    let blockReads = 0, inlineReads = 0;
+    block.getBoundingClientRect = () => { blockReads++; return { left: 1, top: 2, width: 120, height: 60 }; };
+    inline.getBoundingClientRect = () => { inlineReads++; return { left: 3, top: 4, width: 44, height: 18 }; };
+
+    await clickCanvas("block");
+    assert.ok(observers.some((entry) => entry.target === block), "the selected block is observed");
+    assert.equal(blockReads, 0, "the block is not measured synchronously");
+    assert.equal(scheduled.length, 1, "initial geometry is scheduled after layout");
+    await act(async () => scheduled.shift()(0));
     await settle();
-    assert.ok(frame.contentDocument.querySelector(".nw-resize-handle"), "the resize handle appears after layout observation");
+    assert.equal(frame.contentDocument.querySelector(".nw-resize-handle")?.title, "120 × 60 px");
+
+    await clickCanvas("inline_link");
+    assert.ok(observers.some((entry) => entry.target === inline), "the inline element is observed");
+    assert.equal(inlineReads, 0, "the inline element is not measured synchronously");
+    assert.equal(scheduled.length, 1, "inline geometry is scheduled even without an observer notification");
+    await act(async () => scheduled.shift()(0));
+    await settle();
+    assert.equal(frame.contentDocument.querySelector(".nw-resize-handle")?.title, "44 × 18 px", "the handle follows the current inline selection");
   } finally {
     if (app) await app.cleanup();
     if (previous === undefined) delete globalThis.ResizeObserver;
