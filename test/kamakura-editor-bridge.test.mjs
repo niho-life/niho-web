@@ -548,6 +548,12 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
     const claims = JSON.parse(Buffer.from(request.headers.get("Authorization").slice("Bearer ".length).split(".")[1], "base64url").toString("utf8"));
     const path = new URL(request.url).pathname;
     if (path.endsWith("/capabilities")) return Response.json({ apiVersion: "v1", siteId: "kamakura", operations: [] });
+    if (path.endsWith("/site.styles.read")) return Response.json({
+      sitePublicationEpoch: "epoch-v1",
+      draft: { version: "draft-styles-v1", styles: { tokens: {} } },
+      published: { stylesVersion: "published-styles-v1", styles: { tokens: {} } }
+    });
+    if (path.endsWith("/site.styles.release-plan")) return Response.json({ plan: { status: "fixture" } });
     if (path.includes("/pages.read/")) {
       if (request.headers.get("If-None-Match") === '"page-v1"') return new Response(null, { status: 304, headers: { ETag: '"page-v1"' } });
       if (largeReadMode) {
@@ -597,6 +603,21 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
   assert.equal(delegated.email, "catalog-test@niho.life", "検証済みのAccess identity emailをホスト監査へ委任する");
   assert.equal(delegated.exp - delegated.iat, 60);
   assert.match(delegated.jti, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu);
+
+  const styleCapabilities = await callEditingApi("/sites/kamakura/capabilities?features=site.styles");
+  assert.equal(styleCapabilities.status, 200);
+  assert.equal(editingApiRequest.url, "https://kamakura.niho.life/api/edit/v1/sites/kamakura/capabilities?features=site.styles");
+  assert.deepEqual((await assertDelegationSignature(editingApiRequest)).scope, delegated.scope);
+  const styleRead = await callEditingApi("/sites/kamakura/operations/site.styles.read");
+  assert.equal(styleRead.status, 200);
+  assert.equal((await styleRead.json()).draft.version, "draft-styles-v1");
+  assert.deepEqual((await assertDelegationSignature(editingApiRequest)).scope, ["site.settings.read"]);
+  const styleReleaseInput = { expectedVersion: "draft-styles-v1", expectedStylesVersion: "published-styles-v1",
+    sitePublicationEpoch: "epoch-v1", operationId: "123e4567-e89b-42d3-a456-426614174000" };
+  const styleRelease = await callEditingApi("/sites/kamakura/operations/site.styles.release-plan", "POST", styleReleaseInput);
+  assert.equal(styleRelease.status, 200);
+  assert.deepEqual(await editingApiRequest.clone().json(), styleReleaseInput);
+  assert.deepEqual((await assertDelegationSignature(editingApiRequest)).scope, ["site.settings.write", "pages.publish"]);
 
   const managementBase = "/sites/kamakura/operations";
   const snapshotAccept = "application/json; profile=niho-editor-snapshot-v1";

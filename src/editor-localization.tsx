@@ -108,7 +108,8 @@ function previousValues(value: EditorLocalizationPageSnapshot["previousSourceVal
  * 設定が変わると（保存後）原文・訳文の状態を読み直す。
  */
 export function useEditorLocalization(adapter: EditorAdapter, siteId: string, target: EditorTarget | undefined, blocks: EditorBlockRegistry,
-  canonicalComponents: ComponentLibrary | undefined, siteStylesReady: boolean, siteStyles: SiteStyles | undefined, epoch: number, report: (message: string) => void) {
+  canonicalComponents: ComponentLibrary | undefined, siteStylesReady: boolean, siteStyles: SiteStyles | undefined,
+  siteStylesRevision: { readonly stage: "draft"; readonly version: string } | undefined, epoch: number, report: (message: string) => void) {
   const supported = !!adapter.localization;
   const [site, setSite] = useState<EditorLocalizationSite | null>(null), [context, setContext] = useState<EditorLocalizationContext | null>(null);
   const [siteState, setSiteState] = useState<EditorLocalizationLoadState>(supported ? "loading" : "idle"), [pageState, setPageState] = useState<EditorLocalizationLoadState>("idle");
@@ -139,7 +140,9 @@ export function useEditorLocalization(adapter: EditorAdapter, siteId: string, ta
       const fallbackComponents = snapshot.components === undefined ? undefined : parseComponentLibrary(snapshot.components, blocks);
       const components = canonicalComponents ?? fallbackComponents;
       if (components && components.siteId !== target.siteId) throw new Error("component library scope mismatch");
-      const options: LocalizationExtractionOptions = { blocks, ...(components ? { components } : {}), ...(siteStyles ? { siteStyles } : {}), ...(snapshot.blockLocalization ? { blockLocalization: snapshot.blockLocalization } : {}) };
+      if (siteStyles && !siteStylesRevision) throw new Error("draft style revision is required");
+      const options: LocalizationExtractionOptions = { blocks, ...(components ? { components } : {}),
+        ...(siteStyles ? { siteStyles, siteStylesRevision: siteStylesRevision! } : {}), ...(snapshot.blockLocalization ? { blockLocalization: snapshot.blockLocalization } : {}) };
       const sourceDocument = parsePageDocument(snapshot.sourceDocument, blocks, { ...(components ? { components } : {}), ...(siteStyles ? { siteStyles } : {}) });
       if (sourceDocument.siteId !== target.siteId || sourceDocument.pageId !== target.pageId || sourceDocument.locale !== site.config.documentLocales[site.config.sourceLocale]) throw new Error("source scope mismatch");
       const collection = await collectLocalizationUnits(site.config, sourceDocument, locale, options), overlay = parseLocalizationOverlay(snapshot.overlay);
@@ -153,7 +156,7 @@ export function useEditorLocalization(adapter: EditorAdapter, siteId: string, ta
       setPageState("ready");
     }).catch(() => { if (!controller.signal.aborted) { setPageState("error"); report("この言語の原文・訳文状態を読み込めませんでした。編集内容は保持されています。再試行してください。"); } });
     return () => controller.abort();
-  }, [adapter, site, siteState, target?.siteId, target?.pageId, target?.locale, blocks, canonicalComponents, siteStylesReady, siteStyles, epoch, pageEpoch, report]);
+  }, [adapter, site, siteState, target?.siteId, target?.pageId, target?.locale, blocks, canonicalComponents, siteStylesReady, siteStyles, siteStylesRevision, epoch, pageEpoch, report]);
   const reloadSite = () => setSiteEpoch((value) => value + 1), reloadPage = () => setPageEpoch((value) => value + 1);
   return { supported, site, context, siteState, pageState, siteBusy: siteState === "loading", pageBusy: pageState === "loading", reloadSite, reloadPage,
     reloadAll: () => { reloadSite(); reloadPage(); } };

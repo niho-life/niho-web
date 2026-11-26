@@ -1,4 +1,4 @@
-import type { SiteStyles } from "./site-styles.js";
+import type { SiteStyles, SiteStylesRevision } from "./site-styles.js";
 import type { BuilderDefinition } from "./builder.js";
 import type { ComponentType, ReactNode } from "react";
 import type { AssetLibraryAdapter, ResolvedAssetMap } from "./assets.js";
@@ -124,6 +124,9 @@ export type EditorReleaseRequest = {
   componentsVersion?: string;
   /** presentation がある snapshot では必須。ホストは共有文書等の依存版も CAS する。 */
   presentationVersion?: string;
+  /** Feature-aware hosts bind publication to the immutable published style snapshot. */
+  siteStylesRevision?: Extract<SiteStylesRevision, { stage: "published" }>;
+  sitePublicationEpoch?: string;
 };
 /** 公開確認に添える影響範囲。kind は共通部品・ページ・サイト設定。 */
 export type EditorReleaseAffected = { kind: "shared" | "page" | "site"; name: string; detail?: string };

@@ -128,7 +128,7 @@ readSiteSettings(siteId, signal): Promise<{ settings: unknown; version: string }
 saveSiteSettings({ siteId, settings, expectedVersion }, signal): Promise<{ status: 'saved'; version: string } | { status: 'conflict' }>;
 ```
 
-`parseSiteSettings` で検証し、未知の項目を拒否します。サイト設定の `ogImage.asset` は文書の外にあるため、`collectAssetReferences` には含まれません。ホストは `saveSiteSettings` で参照がそのサイトの使ってよい素材かを確認し、素材の使用状況・削除の可否にもサイト設定の参照を含めてください。保存は ETag 等の opaque な `version` による楽観ロックです。保存したサイト設定は下書きで、ホストは次の公開確認の差分に「サイト共通」の変更として含め、公開時に一緒に反映してください。409 ではエディターが入力を保持し、最新の設定の読込を明示操作にします。
+`parseSiteSettings` で検証し、未知の項目を拒否します。サイト設定の `ogImage.asset` は文書の外にあるため、`collectAssetReferences` には含まれません。ホストは `saveSiteSettings` で参照がそのサイトの使ってよい素材かを確認し、素材の使用状況・削除の可否にもサイト設定の参照を含めてください。公開情報の保存は ETag 等のopaque `version` で楽観ロックし、次の公開確認に含めます。共通token・文字スタイルの版管理と公開は独立した `site.styles.*` 操作が所有し、metadataの公開とは別に全公開ページ・localeへ一括反映します。409ではエディターが入力を保持し、最新設定の読込を明示操作にします。
 
 ### 描画側での使い方
 
@@ -173,24 +173,17 @@ Next.js では `metadata` の各項目へ対応付けます。Astro では `rend
 
 ### サイト共通スタイルの保存と削除
 
-全体の正は [サイト共通スタイルの契約](site-styles-contract.md) です。この節は保存 API の責務を定めます。
+全体の正は [サイト共通スタイルの契約](site-styles-contract.md) です。`SiteSettings` は描画・公開メタデータ用の集約値で `tokens` / `textStyles` を持てますが、共通スタイルの版管理と更新は `site.styles.*` が所有します。既存 `EditorAdapter.readSiteSettings` / `saveSiteSettings` をGUI向けfacadeとして保つhostは、style部分の処理を共通APIへ委譲します。公開情報だけを保存するときも既存スタイル定義を保持します。
 
-`SiteSettings` は任意で `tokens?: Record<string, DesignToken>` と `textStyles?: Record<string, TextStyle>` を持ちます。値と参照の許可範囲はページと共通で、`parseSiteSettings` は未知フィールド・未解決参照・型不一致を拒否します。公開情報だけを編集・保存する場合も既存のスタイル定義を保持します。`readSiteSettings` / `saveSiteSettings` を持たないホストはページのスタイルだけで動作します。
+`site.styles.read` は `sitePublicationEpoch` と、versioned draft `{ version, styles }`、公開 `{ stylesVersion, styles }` を一つのsnapshotで返します。`site.styles.save` は `expectedVersion` と新しい `SiteStyles` をCAS保存します。通常保存は追加・値更新だけで、token / text style定義の削除とrenameは `style_migration_required`（422）です。新しいdraftは、全draft page、template、shared document、component/slot等、共通定義を参照する保存対象で再検証します。
 
-スタイル変更時の保存要求には、保存済み基準の `previousStyles?: SiteStyles` を追加します。エディターは保存前に全ページの実効参照を再検証し、最新のサイト設定と元の version / 内容を比較します。差異または409では入力・元のversion・移行前のページを保持し、競合した最新設定と比較できます。事前確認は補助で、以下の原子的処理はホストの必須責務です。
+`pages.read` / `pages.save` / `pages.apply` はdraft style版で検証します。ホストはstyle版をページrevisionと一緒に保存し、既存のopaque `version` CAS tokenで文書版とstyle版を照合します。`pages.release-plan` / `pages.release*` は公開 `stylesVersion` を使います。公開版にないdraft-only参照を含むページは、共通スタイルを先に公開するまでreleaseできません。`PageDocument` のschemaは変更せず、旧clientのwire shapeも維持します。
 
-1. 認証・サイト権限と `expectedVersion`、`previousStyles` と現在の設定の一致を検証します。
-2. 全ページの下書き・公開 snapshot・共有参照・保護対象を列挙し、ページ override を適用した実効参照を検証します。UIの閲覧可能ページ一覧だけを権限範囲の根拠にしません。
-3. 削除するサイト定義を各ページで切り離し、見た目を保ったページと新しい設定を同じトランザクションで保存します。各ページの CAS / revision、既存ロック、公開 snapshot の不変性を維持します。途中失敗では全体を反映しません。公開版は同じ見た目の新しい公開 snapshot として作り、過去版を書き換えません。
-4. 新しい opaque なサイト version を返します。公開差分・影響ページ・キャッシュ更新対象もサイト設定の変更として扱います。
+`site.styles.release-plan` はdraft版と現在の公開版の両方を照合し、全公開ページ・全locale・依存版とbefore/afterを固定します。`site.styles.release` はconfirmation tokenを再照合して、新しい共通style版と全公開locale snapshotを一度の原子的切替で有効にします。HTML/CSS cache keyはページrevisionと公開 `stylesVersion` を含みます。公開履歴は不変です。
 
-全参照の切り離しを原子的に保証するホストだけ `siteStyleCapabilities: { atomicReferenceDetachment: true }` を設定してください。省略したホストでは共通定義の削除を UI と保存前ガードの両方で拒否します。追加・更新は利用できます。ホストも capability 宣言だけに依存せず、保存 API で同じ条件を強制してください。
+削除・renameは `site.styles.migration-plan` / `site.styles.migration-apply` に限ります。純粋関数 `detachRemovedSiteStyles(page, previousStyles, nextStyles)`（`@niho/web/core`）はページ1件での切り離し補助に残りますが、ホストの全参照列挙・fence・transactionを代行しません。migration planはdraft/publicの両版、すべての対象文書と版、変更後の実効値を固定します。apply時だけhostがpage save/release、翻訳materialize/release、共有文書・部品更新を止めるfenceを取り、変換後の文書・両style snapshot・locale release pointer・操作記録を一つのCAS境界で確定します。途中状態を公開せず、stale planや失敗時は全体を反映しません。全対象を列挙・検証できないhostはmigrationを拒否します。
 
-切り離しの補助関数は `detachRemovedSiteStyles(page, previousStyles, nextStyles)`（`@niho/web/core`）です。削除 token を参照する宣言を旧 literal 値へ置き換え、削除文字スタイルは responsive を含むページ所有の定義へ移します。既存のページ override を優先し、共有参照から独立した状態で以前の見た目を保ちます。切り離し後は `parsePageDocument(result, blocks, { components, siteStyles: nextStyles })` で検証してから保存します。この関数はページ1件の純粋変換で、DBトランザクションや全参照列挙を代行しません。
-
-サイト設定の保存は下書き保存です。`prepareRelease` は現在の公開 snapshot と次の設定を比較し、サイト共通 token / 文字スタイルの before / after と全影響ページを `changes` / `affected` に含めてください。確認 token はサイト設定の version と対象ページ・部品の版に結び付け、`release` で再検証します。削除に伴う切り離しだけで見た目が変わらない場合も、参照の変更を公開差分に明示します。
-
-`readRevision` は共通スタイルを参照する版について、その版に対応する不変の `siteStyles` snapshot を文書とともに返してください。履歴表示・差分・復元では現在のサイト設定を過去版へ合成しません。旧来の自己完結した文書は `siteStyles` を省略できます。ホストは公開版とロールバック版でも同じ snapshot を固定し、後からサイト設定を更新・削除しても過去版の見た目を変えないでください。
+翻訳の原文・訳文はdraft materialize / save検証で同じ `{ siteStyles, siteStylesRevision: { stage: "draft", version } }` を使います。公開snapshot生成には `stage: "published"` のrevisionを渡し、locale release recordには使った公開 `stylesVersion` を保存します。実効値を含むlocale snapshotと公開pointerはstyle release時に全localeで更新します。PageDocumentとsnapshot JSONにはstyle版を追加せず、hostがrevision/release recordのmetadataで保持します。詳しくは[サイト共通スタイル契約](site-styles-contract.md)を参照してください。
 
 ## 鎌倉Studioの接続範囲
 

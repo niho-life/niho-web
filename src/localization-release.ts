@@ -1,7 +1,7 @@
 import { parseComponentLibrary } from "./components.js";
 import { parsePageDocument } from "./document.js";
 import { documentLocaleFor, parseSiteLocalizationConfig } from "./localization.js";
-import { resolvePageStyles, type SiteStyles } from "./site-styles.js";
+import { resolvePageStyles, type SiteStyles, type SiteStylesRevision } from "./site-styles.js";
 import type { BlockContracts, ComponentLibrary, PageDocument, PageNode } from "./types.js";
 import { fail, identifier, isSafeHttpsOrigin, isSafePublicUrl, keys, line, record, string } from "./validation-utils.js";
 import type { LocalizationLocale, SiteLocalizationConfig } from "./localization-types.js";
@@ -69,7 +69,7 @@ export type ReleaseParseOptions = { blocks?: BlockContracts };
  * 公開 snapshot の生成オプション。siteStyles は公開時点の保存済みサイト共通スタイル（SiteSettings の tokens / textStyles）。
  * 渡すと各ページを同じ設定で検証し、実効 token / 文字スタイルを含む自己完結の文書として固定する。保存済み snapshot の読込には不要。
  */
-export type CreateReleaseOptions = ReleaseParseOptions & { siteStyles?: SiteStyles };
+export type CreateReleaseOptions = ReleaseParseOptions & { siteStyles?: SiteStyles; siteStylesRevision?: Extract<SiteStylesRevision, { stage: "published" }> };
 
 function clone<T>(value: T): T { return structuredClone(value); }
 function boundedVersion(value: unknown, path: string): string {
@@ -209,6 +209,10 @@ function navigationPageIds(items: readonly PublishedNavigationItem[]): string[] 
 
 function snapshotPayload(snapshot: Omit<PublishedSiteLocaleSnapshot, "contentDigest">): Omit<PublishedSiteLocaleSnapshot, "contentDigest"> { return clone(snapshot); }
 export async function createPublishedSiteLocaleSnapshot(input: CreatePublishedSiteLocaleSnapshotInput, options: CreateReleaseOptions = {}): Promise<PublishedSiteLocaleSnapshot> {
+  if (options.siteStyles === undefined ? options.siteStylesRevision !== undefined
+    : options.siteStylesRevision?.stage !== "published" || typeof options.siteStylesRevision.version !== "string" || !options.siteStylesRevision.version) {
+    fail("$options.siteStylesRevision", "published style revision must accompany site styles");
+  }
   const inputObject = record(input, "$");
   keys(inputObject, ["config", "locale", "releaseId", "version", "pages", "publicPageIds", "components", "navigation", "manifest", "completeness", "requiredResourceIds", "supportedBlocks"], "$");
   const config = parseSiteLocalizationConfig(input.config), chosen = locale(input.locale, "$.locale");
