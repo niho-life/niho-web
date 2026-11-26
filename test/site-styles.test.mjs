@@ -6,7 +6,7 @@ import { parseSiteSettings } from "@niho/web/pages";
 import { renderPageToHtml } from "@niho/web/server";
 import { collectLocalizationUnits, createLocalizationOverlay, materializeLocalizedPage, validateLocalizedDocumentSave } from "@niho/web/localization";
 import { createPublishedSiteLocaleSnapshot, parsePublishedSiteLocaleSnapshot, verifyPublishedSiteLocaleSnapshot } from "@niho/web/localization-release";
-import { retainPageStyles } from "../dist/site-styles.js";
+import { resolvePageStylesForEditor, retainPageStyles } from "../dist/site-styles.js";
 import { EditorSessionLoadError, readEditorSession } from "../dist/editor-session.js";
 import { runSiteStylesDemo } from "../examples/site-styles-demo.mjs";
 
@@ -87,6 +87,26 @@ test("retainPageStyles drops unchanged inherited values and keeps explicit overr
   assert.deepEqual(retainPageStyles(recolored, original, site).tokens, { ...about.tokens, brand: color("#0055aa", "メイン") }, "a changed inherited value becomes a page override");
   const explicit = parsePageDocument({ ...about, tokens: { ...about.tokens, ink: site.tokens.ink } }, {}, { siteStyles: site });
   assert.deepEqual(retainPageStyles(resolvePageStyles(explicit, site), explicit, site).tokens, explicit.tokens, "an override equal to the site value is kept");
+});
+
+test("editor style resolution reuses equivalent maps and refreshes changed style values", () => {
+  const site = settings(), page = parsePageDocument(about, {}, { siteStyles: site });
+  const first = resolvePageStylesForEditor(page, site);
+  const equivalent = { ...page, tokens: { ...page.tokens }, ...(page.textStyles ? { textStyles: structuredClone(page.textStyles) } : {}) };
+  const second = resolvePageStylesForEditor(equivalent, site);
+  assert.strictEqual(second.tokens, first.tokens);
+  assert.strictEqual(second.textStyles, first.textStyles);
+
+  const changed = { ...site, tokens: { ...site.tokens, ink: color("#123456", "変更色") } };
+  const updated = resolvePageStylesForEditor(equivalent, changed);
+  assert.notStrictEqual(updated.tokens, first.tokens);
+  assert.equal(updated.tokens.ink.value, "#123456");
+});
+
+test("retainPageStyles returns the same document when no inherited values need removal", () => {
+  const site = settings();
+  const page = parsePageDocument({ ...about, tokens: { ...about.tokens, local: color("#222222", "ページ色") }, textStyles: { local: { base: { fontSize: 16 } } } }, {}, { siteStyles: site });
+  assert.strictEqual(retainPageStyles(page, page, site), page);
 });
 
 test("removing site definitions detaches references into page-owned values that keep the appearance", () => {

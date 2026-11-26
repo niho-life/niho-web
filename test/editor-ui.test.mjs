@@ -293,6 +293,21 @@ test("performance measurements finish after the canvas is ready and a draft is a
   } finally { await app.cleanup(); }
 });
 
+test("unrelated page edits preserve the shared text-style context for memoized canvas nodes", async () => {
+  let renders = 0;
+  const blocks = { Counter: { props: {}, component: () => { renders++; return createElement("span", null, "counter"); } } };
+  const page = structuredClone(fixture);
+  page.textStyles = { body: { base: { fontSize: 16 } } };
+  page.body = Array.from({ length: 40 }, (_, index) => ({ type: "component", id: `counter-${index}`, block: "Counter", props: {}, style: { textStyle: "body" } }));
+  const app = await setup({ document: page, blocks });
+  try {
+    const initialRenders = renders;
+    assert.equal(initialRenders, page.body.length);
+    await change(input("ページタイトル"), "更新したページタイトル");
+    assert.equal(renders, initialRenders, "metadata edits should not rerender unchanged canvas nodes");
+  } finally { await app.cleanup(); }
+});
+
 test("form completion inspector filters candidates, shows loading and unresolved IDs, and saves only an eligible page ID", async () => {
   let resolvePages;
   const page = structuredClone(fixture); page.body.push({ type: "element", id: "contact_form", tag: "form", formCompletionPageId: "removed", attrs: { name: "contact" }, children: [

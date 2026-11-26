@@ -1,4 +1,4 @@
-import { resolvePageStyles, retainPageStyles, type SiteStyles } from "./site-styles.js";
+import { resolvePageStylesForEditor, retainPageStyles, type SiteStyles } from "./site-styles.js";
 import { detachInstance } from "./component-model.js";
 import { parsePageDocument, parsePageMeta, parsePageNodeName, validatePageDocument } from "./document.js";
 import { cloneEditorValue, createCopyOnWrite, finishCopyOnWrite } from "./immutable-draft.js";
@@ -444,7 +444,7 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
     const target = nodeAt(document, operation.path);
     if (target.type === "element" && JSON.stringify(target.children) === JSON.stringify(operation.children)) return document;
   }
-  const base = validateDocument ? resolvePageStyles(document, siteStyles) : document;
+  const base = validateDocument ? resolvePageStylesForEditor(document, siteStyles) : document;
   const draft = createCopyOnWrite(base), allLocks = effectiveLocks(document, locks, blocks);
   const parentChildren = (path: NodePath): PageNode[] => siblingsAt(draft, path);
   const targetChildren = (id: string | null): PageNode[] => {
@@ -681,7 +681,7 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
         : operation.type === "resize" ? { width: Math.round(operation.width), height: Math.round(operation.height) } : operation.values;
       const until = operation.type === "styleRange" ? operation.until : operation.type === "resize" ? operation.until : undefined;
       assertStyleProperties(node, Object.keys(values), blocks);
-      if (until !== undefined) preserveRange(resolvePageStyles(document, siteStyles), nodeAt(document, operation.path) as ElementNode | ComponentNode | InstanceNode, node, operation.breakpoint, until, values);
+      if (until !== undefined) preserveRange(resolvePageStylesForEditor(document, siteStyles), nodeAt(document, operation.path) as ElementNode | ComponentNode | InstanceNode, node, operation.breakpoint, until, values);
       const declarations = declarationsAt(node, operation.breakpoint);
       for (const [property, value] of Object.entries(values) as [StyleProperty, StyleValue | undefined][]) if (value === undefined) delete declarations[property]; else declarations[property] = value;
       pruneResponsive(node);
@@ -738,7 +738,7 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
     candidate = canonicalizeEditedDocument(candidate, document, blocks, components);
     validatePageDocument(candidate, blocks, { ...(components ? { components } : {}), ...(siteStyles ? { siteStyles } : {}) });
   }
-  assertLocks(validateDocument ? resolvePageStyles(document, siteStyles) : document, candidate, allLocks);
+  assertLocks(validateDocument ? resolvePageStylesForEditor(document, siteStyles) : document, candidate, allLocks);
   if (groupMayChangeLayout && (operation.type === "wrap" || operation.type === "unwrap") && operation.allowLayoutChange !== true) throw new BoxGroupLayoutChange();
   const ownership = operation.type === "restore" ? operation.document : operation.type === "token" && operation.token ? { ...document, tokens: { ...document.tokens, [operation.name]: operation.token } }
     : operation.type === "textStyle" && operation.style ? { ...document, textStyles: { ...document.textStyles, [operation.name]: operation.style } } : { ...document };
@@ -809,7 +809,7 @@ export function travelHistory(history: EditorHistory, direction: "undo" | "redo"
   const target = direction === "undo" ? history.past.at(-1) : history.future[0];
   if (!target) return history;
   parsePageDocument(target, blocks, { ...(components ? { components } : {}), ...(siteStyles ? { siteStyles } : {}) });
-  assertLocks(resolvePageStyles(history.present, siteStyles), resolvePageStyles(target, siteStyles), effectiveLocks(history.present, locks, blocks));
+  assertLocks(resolvePageStylesForEditor(history.present, siteStyles), resolvePageStylesForEditor(target, siteStyles), effectiveLocks(history.present, locks, blocks));
   return direction === "undo" ? { past: history.past.slice(0, -1), present: target, future: [history.present, ...history.future] }
     : { past: [...history.past, history.present], present: target, future: history.future.slice(1) };
 }

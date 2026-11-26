@@ -13,7 +13,7 @@ import { styleEditorCss } from "./editor-style-css.js";
 import { Field } from "./editor-fields.js";
 import { StyleInspector, type InspectorTab, type StyleRange } from "./editor-style-inspector.js";
 import { SharedStyleLibrary, sharedTokenReason } from "./editor-shared-styles.js";
-import { detachRemovedSiteStyles, parseSiteStyles, resolveComponentStyles, resolvePageStyles, type SiteStyles } from "./site-styles.js";
+import { detachRemovedSiteStyles, parseSiteStyles, resolveComponentStyles, resolvePageStyles, resolvePageStylesForEditor, type SiteStyles } from "./site-styles.js";
 import type { StyleState } from "./editor-style-motion.js";
 import { createInsertionNode, resolveBuilderDefinition, type InsertionCategory } from "./builder.js";
 import { breakpointSettingsFromLegacy, editorTiers, hiddenAt, normalizeBreakpoints, tierForWidth, tierName } from "./style-model.js";
@@ -1824,7 +1824,9 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const master = useMemo(() => libraryPresent && masterId ? componentDocument(libraryPresent, masterId, locale) : undefined, [libraryPresent, masterId, locale]);
   const rawDocument = master ?? session?.history.present;
   const siteStylesReady = !adapter.readSiteSettings || siteSettings.status === "ready" && !!siteSettings.settings || session?.siteStyles !== undefined || !!session?.selfContained;
-  const document = useMemo(() => rawDocument && siteStylesReady ? (master ? resolveComponentStyles(rawDocument, activeSiteStyles) : resolvePageStyles(detachRemovedSiteStyles(rawDocument, session?.siteStyles ?? {}, activeSiteStyles), activeSiteStyles)) : undefined, [rawDocument, master, activeSiteStyles, siteStylesReady, session?.siteStyles]);
+  const document = useMemo(() => rawDocument && siteStylesReady ? (master ? resolveComponentStyles(rawDocument, activeSiteStyles)
+    : resolvePageStylesForEditor(detachRemovedSiteStyles(rawDocument, session?.siteStyles ?? {}, activeSiteStyles), activeSiteStyles)) : undefined,
+  [rawDocument, master, activeSiteStyles, siteStylesReady, session?.siteStyles]);
   const documentKey = document ? JSON.stringify([document.siteId, document.pageId, document.locale, masterId]) : "";
   const selection = document ? pathForNodeId(document, selectedId) : null;
   const entries = useMemo(() => document ? walkNodes(document) : [], [document]);
