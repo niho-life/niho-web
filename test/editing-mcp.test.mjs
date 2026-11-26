@@ -8,6 +8,7 @@ import { createInterface } from "node:readline";
 import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { EDITING_OPERATIONS } from "@niho/web/editing-api";
+import { editDocumentById } from "@niho/web/editor-model";
 import { NIHO_EDIT_COMMANDS } from "../cli/niho-edit-usage.mjs";
 
 const fixture = JSON.parse(await readFile(new URL("../examples/page.json", import.meta.url), "utf8"));
@@ -42,13 +43,13 @@ function startMcp({ env }) {
     }
   });
 
-  function request(method, params) {
+  function request(method, params, timeoutMs = 5000) {
     const id = nextId++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(id);
         reject(new Error(`MCP request timed out: ${method}; ${stderr}`));
-      }, 5000);
+      }, timeoutMs);
       pending.set(id, (message) => {
         clearTimeout(timer);
         resolve(message);
@@ -182,4 +183,181 @@ test("niho-edit MCP mirrors the CLI command list and output, and fixes the confi
   const afterEarlyExit = await mcp.request("tools/list", {});
   assert.equal(afterEarlyExit.error, undefined, JSON.stringify(afterEarlyExit.error));
   assert.deepEqual(afterEarlyExit.result.tools.map(({ name }) => name).sort(), [...NIHO_EDIT_COMMANDS].sort());
+});
+
+test("AI editing guide workflow edits and publishes text and token color on a synthetic site", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "niho-edit-guide-workflow-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const preload = join(directory, "mock-fetch.mjs");
+  const statePath = join(directory, "site-state.json");
+  const previewOut = join(directory, "previews");
+  const operationId = "123e4567-e89b-42d3-a456-426614174000";
+  const releaseOperationId = "123e4567-e89b-42d3-a456-426614174001";
+  const previewUrl = `${origin}/_private-preview/opaque-id`;
+  const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
+  const operations = [
+    { type: "text", parentId: "heading", childPath: [0], value: "ガイド経由で更新した見出し" },
+    { type: "style", nodeId: "heading", breakpoint: "base", property: "color", value: { token: "brand" } }
+  ];
+  const editedDocument = operations.reduce((document, operation) =>
+    editDocumentById(document, operation, {}, [], undefined, undefined, false), structuredClone(fixture));
+  editedDocument.revision = fixture.revision + 1;
+  const catalog = ["pages.inspect", "pages.read", "pages.apply", "pages.preview-intent", "pages.release-plan", "pages.release"]
+    .map((id) => EDITING_OPERATIONS.find((operation) => operation.id === id));
+  const route = `${origin}/api/edit/v1/sites/${siteId}`;
+  const paths = Object.fromEntries(["pages.read", "pages.inspect", "pages.apply", "pages.preview-intent", "pages.release-plan", "pages.release"]
+    .map((operation) => [operation, `${route}/operations/${operation}/${pageId}`]));
+  const plan = {
+    target: { siteId, pageId, locale }, expectedVersion: "v2", action: "publish", confirmationToken: "confirm-v2",
+    domain: origin, changes: [{ path: "h1#heading のテキスト", before: "旧見出し", after: operations[0].value }]
+  };
+  await writeFile(statePath, JSON.stringify({ document: fixture, version: "v1", published: false }));
+  await writeFile(preload, `
+import { readFile, writeFile } from "node:fs/promises";
+const statePath = ${JSON.stringify(statePath)};
+const origin = ${JSON.stringify(origin)};
+const siteId = ${JSON.stringify(siteId)};
+const pageId = ${JSON.stringify(pageId)};
+const locale = ${JSON.stringify(locale)};
+const route = ${JSON.stringify(route)};
+const paths = ${JSON.stringify(paths)};
+const catalog = ${JSON.stringify(catalog)};
+const operations = ${JSON.stringify(operations)};
+const editedDocument = ${JSON.stringify(editedDocument)};
+const operationId = ${JSON.stringify(operationId)};
+const releaseOperationId = ${JSON.stringify(releaseOperationId)};
+const previewUrl = ${JSON.stringify(previewUrl)};
+const expiresAt = ${JSON.stringify(expiresAt)};
+const plan = ${JSON.stringify(plan)};
+const state = async () => JSON.parse(await readFile(statePath, "utf8"));
+const json = (value) => new Response(JSON.stringify(value), { status: 200, headers: { "Content-Type": "application/json" } });
+globalThis.fetch = async (input, init = {}) => {
+  const url = new URL(String(input));
+  const method = (init.method ?? "GET").toUpperCase();
+  if (url.origin !== origin) throw new Error("unexpected origin");
+  if (new Headers(init.headers).get("Authorization") !== "Bearer fixture-token") throw new Error("unexpected authentication");
+  if (url.pathname === new URL(route + "/capabilities").pathname && method === "GET") {
+    return json({ apiVersion: "v1", siteId, operations: catalog });
+  }
+  if (url.pathname === new URL(paths["pages.inspect"]).pathname && method === "GET") {
+    const current = await state();
+    const view = url.searchParams.get("view");
+    if (view === "outline") return json({ view, version: current.version, definitions: {}, items: [{ id: "heading", tag: "h1" }] });
+    if (view === "find") return json({ view, version: current.version, items: [{ id: "heading" }] });
+    throw new Error("unexpected inspection view");
+  }
+  if (url.pathname === new URL(paths["pages.read"]).pathname && method === "GET") {
+    const current = await state();
+    return json({ document: current.document, version: current.version });
+  }
+  if (url.pathname === new URL(paths["pages.apply"]).pathname && method === "POST") {
+    const current = await state();
+    const body = JSON.parse(init.body);
+    if (body.baseVersion !== current.version || body.operationId !== operationId || JSON.stringify(body.operations) !== JSON.stringify(operations)) {
+      throw new Error("unexpected apply input");
+    }
+    if (body.dryRun === true) {
+      return json({ status: "valid", diff: [
+        { path: "h1#heading のテキスト", before: "旧見出し", after: operations[0].value },
+        { path: "h1#heading の見た目（共通）: color", before: "#000", after: "@brand" }
+      ], touched: ["heading"] });
+    }
+    current.document = editedDocument;
+    current.version = "v2";
+    await writeFile(statePath, JSON.stringify(current));
+    return json({ status: "applied", version: current.version, revision: editedDocument.revision, document: editedDocument });
+  }
+  if (url.pathname === new URL(paths["pages.preview-intent"]).pathname && method === "POST") {
+    return json({ url: previewUrl, expiresAt });
+  }
+  if (url.pathname === new URL(paths["pages.release-plan"]).pathname && method === "POST") {
+    const body = JSON.parse(init.body);
+    if (body.expectedVersion !== plan.expectedVersion || body.action !== plan.action) throw new Error("unexpected release-plan input");
+    return json({ plan });
+  }
+  if (url.pathname === new URL(paths["pages.release"]).pathname && method === "POST") {
+    const current = await state();
+    const body = JSON.parse(init.body);
+    if (current.version !== plan.expectedVersion || body.expectedVersion !== plan.expectedVersion
+      || body.confirmationToken !== plan.confirmationToken || body.operationId !== releaseOperationId) throw new Error("unexpected release input");
+    current.published = true;
+    current.publishedVersion = "v3";
+    await writeFile(statePath, JSON.stringify(current));
+    return json({ status: "released", operationId: releaseOperationId, version: "v3", document: current.document });
+  }
+  if (url.href === previewUrl && method === "GET") {
+    return new Response("<!doctype html><title>synthetic preview</title><h1>ガイド経由で更新した見出し</h1>", { status: 200, headers: {
+      "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex"
+    } });
+  }
+  throw new Error("unexpected API request: " + method + " " + url.href);
+};
+`);
+  const env = { ...process.env, NIHO_EDIT_TOKEN: "fixture-token",
+    NODE_OPTIONS: [process.env.NODE_OPTIONS, `--import=${pathToFileURL(preload).href}`].filter(Boolean).join(" ") };
+  delete env.CF_ACCESS_CLIENT_ID;
+  delete env.CF_ACCESS_CLIENT_SECRET;
+
+  const mcp = startMcp({ env });
+  t.after(() => mcp.close());
+  await mcp.initialize();
+
+  const outline = await mcp.request("tools/call", { name: "outline", arguments: { args: [pageId, "--locale", locale, "--depth", "2"] } });
+  assert.equal(outline.error, undefined, JSON.stringify(outline.error));
+  assert.deepEqual(JSON.parse(outline.result.content[0].text).items.map(({ id }) => id), ["heading"]);
+  const found = await mcp.request("tools/call", { name: "find", arguments: { args: [pageId, "--locale", locale, "--text", "旧見出し"] } });
+  assert.equal(found.error, undefined, JSON.stringify(found.error));
+  assert.deepEqual(JSON.parse(found.result.content[0].text).items.map(({ id }) => id), ["heading"]);
+
+  const applyArgs = [pageId, "--locale", locale, "--ops", "-", "--expected-version", "v1", "--operation-id", operationId];
+  const dryRun = await mcp.request("tools/call", {
+    name: "apply", arguments: { args: [...applyArgs, "--dry-run"], stdin: JSON.stringify(operations) }
+  });
+  assert.equal(dryRun.error, undefined, JSON.stringify(dryRun.error));
+  const dryOutput = JSON.parse(dryRun.result.content[0].text).result;
+  assert.equal(dryOutput.status, "valid");
+  assert.equal(dryOutput.validation, "host");
+  assert.equal(dryOutput.diff.length, 2);
+  const applied = await mcp.request("tools/call", {
+    name: "apply", arguments: { args: applyArgs, stdin: JSON.stringify(operations) }
+  });
+  assert.equal(applied.error, undefined, JSON.stringify(applied.error));
+  const appliedOutput = JSON.parse(applied.result.content[0].text).result;
+  assert.equal(appliedOutput.status, "applied");
+  assert.equal(appliedOutput.version, "v2");
+  assert.equal(appliedOutput.diff.length, 2);
+
+  const preview = await mcp.request("tools/call", {
+    name: "preview", arguments: { args: [pageId, "--locale", locale, "--widths", "375,768,1280", "--out", previewOut] }
+  }, 100_000);
+  assert.equal(preview.error, undefined, JSON.stringify(preview.error));
+  assert.equal(JSON.parse(preview.result.content[0].text).url, previewUrl, preview.result.content[0].text);
+  const planned = await mcp.request("tools/call", {
+    name: "release-plan", arguments: { args: [pageId, "--locale", locale, "--action", "publish", "--expected-version", "v2"] }
+  });
+  assert.equal(planned.error, undefined, JSON.stringify(planned.error));
+  const reviewedPlan = JSON.parse(planned.result.content[0].text);
+  assert.equal(reviewedPlan.expectedVersion, "v2");
+  assert.equal(reviewedPlan.domain, origin);
+  const released = await mcp.request("tools/call", {
+    name: "release", arguments: { args: [pageId, "--locale", locale, "--json", "-", "--operation-id", releaseOperationId], stdin: JSON.stringify(reviewedPlan) }
+  });
+  assert.equal(released.error, undefined, JSON.stringify(released.error));
+  assert.equal(JSON.parse(released.result.content[0].text).result.status, "released");
+
+  const finalState = JSON.parse(await readFile(statePath, "utf8"));
+  assert.equal(finalState.version, "v2");
+  assert.equal(finalState.published, true);
+  assert.equal(finalState.publishedVersion, "v3");
+  const findNode = (nodes, id) => {
+    for (const node of nodes) {
+      if (node.id === id) return node;
+      const foundNode = node.children ? findNode(node.children, id) : undefined;
+      if (foundNode) return foundNode;
+    }
+    return undefined;
+  };
+  const heading = findNode(finalState.document.body, "heading");
+  assert.equal(heading.children[0].text, operations[0].value);
+  assert.deepEqual(heading.style.base.color, { token: "brand" });
 });
