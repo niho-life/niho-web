@@ -53,6 +53,8 @@ v1 の意味は既存の通りです。v2 を使う Site の v1 の書込み入�
 
 `cms.schedule.create` は release で固定した内容と時刻を保存します。実行時は `dueCmsSchedule` と `revalidateCmsRelease` を使い、時刻、公開 pointer、定義、選んだ版の存在、削除、現在のルート制約を確認します。あとから保存した新しい下書きは予約へ混ぜません。前提が変われば失敗を保存し、現在の公開を維持します。取消は未確定の予約だけに適用し、scheduler の実行と競合させないよう CAS を使います。再試行では現在の前提にもとづく新しい計画を確認します。
 
+Studio-native site はごみ箱を含めて Site ごとに最大500 CMS item IDを保持します。公開snapshotは2 MiB、保持するCMS revisionは合計100 MiBまでです。公開計画は最大500 itemと25,000転送を受け付け、別途route tableとの衝突を検査します。`cms.release.plan` と `cms.schedule.create` は大きな転送表を受け取るためrequest bodyを4 MiBまで許容しますが、生成snapshotには2 MiB上限が適用されます。上限を超える保存・公開は現在の下書きと公開pointerを変更せず拒否します。公開適用はoutbox経由で非同期に完了する場合があり、`cms.release.status` で状態を確認します。PageEditorのCMS list blockにある表示件数25件は、このCMS保存上限とは別の制約です。
+
 メモリ内参照ホストと Studio-native の適合テストで認可、永続化、公開、復元を確認できます。Studio の保存順序、容量、バックアップと復元は、運用契約を参照してください。[Studio-native site 契約](studio-managed-sites.md#cms-の公開と復旧)
 
 ## CMS 項目の翻訳と locale snapshot
@@ -75,9 +77,9 @@ CMS 定義は Site ごとに一つです。editor は項目を翻訳して local
 
 管理画面は `/api/projects/{projectId}/sites/{siteId}/cms/v2/discover`（GET）と、その `/cms/v2/{operation}`（POST）を使います。機械クライアントには同じ操作を `/api/edit/v2/sites/{siteId}/capabilities`（GET）と `/api/edit/v2/sites/{siteId}/operations/{operation}`（POST）に公開します。POST 本文に `siteId` を含めます。R2 を有効にした Studio-native site のみが対象です。
 
-JSON リクエスト本文は `cms.items.save` が128 KiB、その他の操作が64 KiBまでです。本文全体を UTF-8 のバイト数で数え、上限超過は `400 invalid_request` を返します。
+JSON リクエスト本文は `cms.items.save` が128 KiB、`cms.release.plan` と `cms.schedule.create` が4 MiB、その他の操作が64 KiBまでです。本文全体を UTF-8 のバイト数で数え、上限超過は `400 invalid_request` を返します。
 
-Studio-native の1サイトに保存できる CMS 項目は、全コレクションの復元可能な削除済み項目を含めて200件です。上限を超える作成は `409 quota_exceeded` を返します。公開・予約の1計画には最大200項目と25件の明示転送を指定できます。配信待ちの公開・予約は1サイトで合計25件までです。[Studio-native site の容量制限](studio-managed-sites.md#cms-の公開と復旧)
+Studio-native の1サイトに保存できる CMS 項目は、全コレクションの復元可能な削除済み項目を含めて500件です。上限を超える作成は `409 quota_exceeded` を返します。公開・予約の1計画には最大500項目と25,000件の明示転送を指定できます。配信待ちの公開・予約は1サイトで合計25件までです。[Studio-native site の容量制限](studio-managed-sites.md#cms-の公開と復旧)
 
 旧CMSの公開画像URLを移行する場合、ホストは `kamakura-source` provider の安定参照へ変換し、サイト専用の非公開 `CMS_OBJECTS` manifest に URL と公開metadataを保存できます。公開計画は同じサイトのmanifestにあり、許可された安定参照だけを公開snapshotのasset manifestへ含めます。manifestが無い、別サイトのもの、またはURLが契約外の場合は公開を止めます。
 
