@@ -22,6 +22,18 @@ test("presentation runtime can be reused across style and text-only immutable ed
   assert.equal(samePresentationRuntimeDocument(styled, structureChanged), false);
   const attributeChanged = { ...styled, body: [{ ...styled.body[0], attrs: { id: "new-id" } }] };
   assert.equal(samePresentationRuntimeDocument(styled, attributeChanged), false);
+
+  const loopBefore = parsePageDocument(page("synthetic", "ja", "loop", [{
+    type: "element", id: "loop", tag: "div", interaction: { type: "loop-box", speed: 60, pauseOnHover: true },
+    children: [{ ...element("card", "div", undefined, { base: { backgroundColor: "#fff" } }), children: [element("loop-text", "p", "Before")] }]
+  }]));
+  const loopRoot = loopBefore.body[0];
+  const card = loopRoot.children[0];
+  const cardText = card.children[0];
+  const loopTextChanged = { ...loopBefore, body: [{ ...loopRoot, children: [{ ...card, children: [{ ...cardText, children: [{ type: "text", text: "After" }] }] }] }] };
+  const loopStyleChanged = { ...loopBefore, body: [{ ...loopRoot, children: [{ ...card, style: { ...card.style, base: { ...card.style.base, backgroundColor: "#f00" } } }] }] };
+  assert.equal(samePresentationRuntimeDocument(loopBefore, loopTextChanged), false);
+  assert.equal(samePresentationRuntimeDocument(loopBefore, loopStyleChanged), false);
 });
 const site = (siteId = "synthetic", locale = "en") => ({
   schemaVersion: 1, siteId, locale, version: "site-v7:deps-a1", reset: "neutral-v1", tokens: {},

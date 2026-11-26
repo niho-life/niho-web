@@ -54,6 +54,10 @@ export function samePresentationRuntimeDocument(previous: PageDocument, next: Pa
     for (let index = 0; index < left.length; index += 1) {
       const before = left[index]!, after = right[index]!;
       if (before === after) continue;
+      // Loop Box duplicates its children when the runtime initializes. A value-only edit
+      // under it must refresh those copies so they do not keep stale text or styles.
+      if (before.type === "element" && after.type === "element" &&
+        (before.interaction?.type === "loop-box" || after.interaction?.type === "loop-box")) return false;
       if (before.type !== after.type || before.type === "text" || after.type === "text" || before.id !== after.id) {
         if (before.type === "text" && after.type === "text") continue;
         return false;
