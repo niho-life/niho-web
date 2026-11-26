@@ -1,6 +1,6 @@
 # サイト共通スタイル契約 v1
 
-サイト全体で共有するカラー・長さ・フォント・数値の token と文字スタイル（STUDIO の「スタイル」に相当）を、保存・描画・編集の 3 面で同じ規則で扱う契約です。この文書が正で、[文書・描画契約](document-contract.md#サイト共通スタイル)、[ページ管理・公開情報の契約](page-contract.md#サイト共通スタイルの保存と削除)、[エディター契約](editor-contract.md#サイトとページのスタイル所有権)、[共通部品契約](component-contract.md)、[多言語core契約](localization-contract.md)、[言語別公開契約](localization-release.md) の各節はこの契約の側面ごとの詳細です。
+サイト全体で共有するカラー・長さ・フォント・数値の token と文字スタイル（STUDIO の「スタイル」に相当）を、保存・描画・編集の 3 面で同じ規則で扱う契約です。この文書が正で、[文書・描画契約](document-contract.md#サイト共通スタイル)、[ページ管理・公開情報の契約](page-contract.md#サイト共通スタイルの保存と削除)、[エディター契約](editor-contract.md#サイトスタイル)、[共通部品契約](component-contract.md)、[多言語core契約](localization-contract.md)、[言語別公開契約](localization-release.md) の各節はこの契約の側面ごとの詳細です。
 
 ## 責務
 

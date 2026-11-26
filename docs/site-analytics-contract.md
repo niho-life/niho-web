@@ -57,6 +57,6 @@ Search ConsoleのAPI読取はSearch Analyticsのread-only queryだけを使い�
 
 状態変更前は対象プロジェクト名、公開origin、変更対象（タグ、property、確認方式、解除対象cache）を確認画面に示します。接続チェックやretryはread-onlyで実行できます。失敗時はホストが最新の状態を返し、別プロジェクトの値や古い集計を一時表示しません。
 
-Studio では GA4 / Search Console のレポート接続と集計を提供します。GA4 のストリーム URL と Search Console の URL-prefix は、保存済み公開 origin と照合します。GA4 集計は接続した stream ID と hostname の両方で絞り、Search Console は同じ origin の行だけを返します。接続・集計キャッシュはサイトと接続版で分け、公開 origin の変更や権限失効時は以前の集計を返しません。サービスアカウントの設定は [Studio の運用手順](../studio/README.md#secrets) を参照してください。
+Studio はプロジェクトごとの GA4 / Search Console 接続と集計を提供します。Secret の設定は [Studio の運用手順](../studio/README.md#secret) を参照してください。
 
 今回の契約は公開ライブラリ側の範囲です。NIHOホストでの権限検証、運営承認台帳、サービスアカウントのSecret Manager設定、API・集計保存、および実サイトでの所有確認はホスト側の別実装と受入が必要です。

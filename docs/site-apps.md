@@ -36,6 +36,6 @@ URLプレフィックスとdomain propertyはそのまま保持します。domai
 
 `capabilities` は任意で、既定はすべて `true` です。`trackingTag: false` では計測タグの状態バッジと測定IDだけを示し、タグの設定フォーム・削除ボタンと説明を出しません。`ownershipVerification: false` では「サイト所有権」の欄ごと出さず（状態を持たないホストで「未確認」と誤って見せない）、「所有権確認の準備」・プロパティの種類と確認方法の選択も出しません。Search Console の設定はURLプレフィックスの入力と「レポート接続の準備」（フォームの送信）だけになります。レポートの接続・確認・再試行・解除はどちらの値でも変わりません。説明文は増やしません。
 
-Studio（`studio.niho.life`）は計測タグの公開・削除と所有権確認を扱わないため、owner に両方 `false` で表示し、editor には表示しません。ホスト側の API とガードは [サイト分析・Google接続契約](site-analytics-contract.md#adapter運用) を参照してください。
+Studio は計測タグの公開・削除と所有権確認を扱わないため、owner に両方 `false` で表示し、editor には表示しません。ホスト側の API とガードは [サイト分析・Google接続契約](site-analytics-contract.md#adapter運用) を参照してください。
 
 フォームはnative label/input/buttonと折返しを使います。確認画面はfocus移動・Tab循環・Escape取消・終了時のfocus復帰を持ち、背面はinertにします。320pxでも単一列で操作できます。

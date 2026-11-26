@@ -166,7 +166,6 @@
     "studio:typecheck": "tsc -p studio/tsconfig.json --noEmit",
     "studio:dev": "npm run studio:build && wrangler dev --config studio/wrangler.toml",
     "studio:deploy": "npm run studio:build && wrangler deploy --config studio/wrangler.toml",
-    "test:renderers": "node --test test/render.test.mjs test/presentation.test.mjs test/components.test.mjs test/block-slots.test.mjs test/motion-contract.test.mjs test/style-contract.test.mjs",
     "test:built": "node --test --test-concurrency=4 test/*.test.mjs",
     "test": "npm run build && npm run test:built",
     "demo": "node examples/editor-demo.mjs",
