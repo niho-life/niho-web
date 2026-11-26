@@ -1,563 +1,559 @@
-import { parsePageDocument } from "./document.js";
-import { breakpointUsageCount, parseBreakpointSettings, removeBreakpointSetting } from "./style-model.js";
-import { parseSiteStyles, type SiteStyles } from "./site-styles.js";
-import { textStyleProperties } from "./style-values.js";
-import { walkNodes, type EditorOperationById, type NodePath } from "./editor-model.js";
-import type { EditorBreakpointSettings, EditorTarget } from "./editor-types.js";
-import type { DesignToken, ElementNode, NodeStyle, PageDocument, PageNode, StateName, StyleProperty, StyleValue, TextStyle, TextStyleProperty } from "./types.js";
-import type { PageKind } from "./pages.js";
-import { colorParts } from "./style-model.js";
-import { parseComponentLibrary } from "./components.js";
-import type { BlockContracts, ComponentLibrary } from "./types.js";
-import { PAGE_OPERATION_LIMIT } from "./editing-page-operations.js";
-import { mergeStyle } from "./component-expand.js";
+import { expandDocument, instancesOf } from "./component-expand.js";
+import { PAGE_NODE_NAME_MAX_LENGTH } from "./document.js";
+import { PAGE_OPERATION_LIMIT, pageOperationWire, parsePageOperation, type PageOperationWire } from "./editing-page-operations.js";
+import { editDocumentById, inheritedStyle, walkNodes, type EditorOperationBlocks, type EditorOperationById } from "./editor-model.js";
+import type { EditorBreakpointSettings, EditorBreakpointSettingsSnapshot, EditorLock } from "./editor-types.js";
+import { normalizationKey, verifyNormalization } from "./normalize-verify.js";
+import { parseSiteStyles, resolvePageStyles, type SiteStyles, type SiteStylesRevision } from "./site-styles.js";
+import { colorParts, removeBreakpointSetting } from "./style-model.js";
+import { isStyleProperty, stateNames, styleTokenKind, textStyleProperties } from "./style-values.js";
+import type {
+  ComponentLibrary, NodeStyle, PageDocument, PageNode, SitePresentation, StateName,
+  StateProperty, StyleDeclarations, StyleProperty, StyleValue, TextStyle, TextStyleDeclarations
+} from "./types.js";
+
+export { verifyNormalization } from "./normalize-verify.js";
+export type { PageOperationWire } from "./editing-page-operations.js";
 
 export type NormalizationDocument = {
-  readonly kind: PageKind;
-  readonly version: string;
   readonly document: PageDocument;
+  readonly version?: string;
+  readonly componentsVersion?: string;
+  readonly presentationVersion?: string;
+  readonly presentation?: SitePresentation;
+  readonly locks?: readonly EditorLock[];
 };
 
 export type NormalizationInput = {
-  readonly siteId: string;
-  readonly siteStyles: { readonly version: string; readonly styles: SiteStyles };
-  readonly breakpoints: { readonly version: string; readonly settings: EditorBreakpointSettings };
-  readonly blocks?: BlockContracts;
-  readonly components?: { readonly version: string; readonly library: ComponentLibrary };
-  readonly documents: readonly NormalizationDocument[];
+  readonly documents: readonly (PageDocument | NormalizationDocument)[];
+  readonly siteStyles?: SiteStyles;
+  readonly siteStylesRevision?: SiteStylesRevision;
+  readonly components?: ComponentLibrary;
+  /** Opaque component-library version paired with `components`, when page snapshots declare one. */
+  readonly componentsVersion?: string;
+  readonly blocks?: EditorOperationBlocks;
+  readonly breakpoints?: readonly number[];
+  readonly breakpointSettings?: EditorBreakpointSettingsSnapshot;
 };
 
-export type NormalizationClassification = "lossless" | "semantic" | "lossy";
-export type NormalizationOccurrence = {
-  readonly target: EditorTarget;
-  readonly nodeId: string;
-  readonly path: NodePath;
-  readonly property?: StyleProperty;
-  readonly breakpoint?: number | "base";
-  readonly state?: StateName;
-  readonly slot?: string;
-};
-
-type ColorProposal = {
-  readonly kind: "color-token";
-  readonly id: string;
-  readonly classification: "semantic";
-  readonly tokenName: string;
-  readonly value: string;
-  readonly createToken: boolean;
-  readonly occurrences: readonly NormalizationOccurrence[];
-};
-type TextStyleProposal = {
-  readonly kind: "text-style";
-  readonly id: string;
-  readonly classification: "semantic";
-  readonly styleName: string;
-  readonly style: TextStyle;
-  readonly occurrences: readonly NormalizationOccurrence[];
-};
-type RedundantStyleProposal = {
-  readonly kind: "remove-redundant-override";
-  readonly id: string;
-  readonly classification: "lossless";
-  readonly occurrence: NormalizationOccurrence;
-  readonly value: StyleValue;
-};
-type BreakpointProposal = {
-  readonly kind: "unused-breakpoint" | "merge-breakpoints";
-  readonly id: string;
-  readonly classification: "lossless" | "lossy";
-  readonly removeName: EditorBreakpointSettings["breakpoints"][number]["name"];
-  readonly minWidth: number;
-  readonly keepName?: EditorBreakpointSettings["breakpoints"][number]["name"];
-  readonly keepMinWidth?: number;
-  readonly usageCount: number;
-};
-type SectionNameProposal = {
-  readonly kind: "name-section";
-  readonly id: string;
-  readonly classification: "lossless";
-  readonly occurrence: NormalizationOccurrence;
-  readonly name: string;
-};
-export type NormalizationProposal = ColorProposal | TextStyleProposal | RedundantStyleProposal | BreakpointProposal | SectionNameProposal;
+export type NormalizationTarget = Pick<PageDocument, "siteId" | "pageId" | "locale" | "revision">
+  & Pick<NormalizationDocument, "version" | "componentsVersion" | "presentationVersion">;
+type NodeLocation = { readonly target: NormalizationTarget; readonly nodeId: string };
+type DeclarationLocation = NodeLocation & { readonly slot?: string } & (
+  { readonly breakpoint: number | "base"; readonly state?: never }
+  | { readonly breakpoint?: never; readonly state: StateName }
+);
+type ColorOccurrence = DeclarationLocation & { readonly property: StyleProperty };
+type RedundantOverride = NodeLocation & { readonly slot?: string; readonly breakpoint: number; readonly property: StyleProperty; readonly value: StyleValue };
+type TextGroup = { readonly style: TextStyle; readonly nodes: readonly NodeLocation[] };
+type SectionName = NodeLocation & { readonly name: string; readonly path: readonly number[]; readonly descendants: number };
 
 export type NormalizationAnalysis = {
-  readonly schemaVersion: 1;
+  readonly targets: readonly NormalizationTarget[];
+  readonly siteStylesRevision?: SiteStylesRevision;
+  readonly elements: number;
+  readonly colors: readonly { readonly value: string; readonly count: number; readonly occurrences: readonly ColorOccurrence[] }[];
+  readonly textCombinations: readonly { readonly values: TextStyleDeclarations; readonly count: number }[];
+  readonly textStyleGroups: readonly TextGroup[];
+  readonly redundantOverrides: readonly RedundantOverride[];
+  readonly breakpoints: readonly { readonly minWidth: number; readonly uses: number; readonly configured: boolean }[];
+  readonly unusedBreakpoints: readonly number[];
+  readonly nearbyBreakpoints: readonly { readonly from: number; readonly into: number }[];
+  readonly sectionNames: readonly SectionName[];
+};
+
+export type NormalizationClassification = "lossless" | "semantic change" | "lossy";
+export type NormalizationSiteSettingsChange = {
   readonly siteId: string;
-  readonly proposalCount: number;
+  readonly action: "remove-breakpoint" | "merge-breakpoints";
+  readonly minWidth: number;
+  readonly into?: number;
+  readonly expectedVersion?: string;
+  readonly settings?: EditorBreakpointSettings;
+};
+
+type OperationProposal = {
+  readonly id: string;
+  readonly kind: "color-token" | "text-style" | "redundant-overrides" | "merge-breakpoints";
+  readonly classification: NormalizationClassification;
+  readonly target: NormalizationTarget;
+  readonly operations: readonly PageOperationWire[];
+};
+
+export type NormalizationProposal = OperationProposal
+  | { readonly id: string; readonly kind: "section-name"; readonly classification: "semantic change"; readonly suggestion: SectionName }
+  | { readonly id: string; readonly kind: "remove-breakpoint" | "merge-breakpoints"; readonly classification: "lossy"; readonly siteSettingsChanges: readonly NormalizationSiteSettingsChange[] };
+
+export type NormalizationPlan = {
+  readonly targets: readonly NormalizationTarget[];
+  readonly siteStylesRevision?: SiteStylesRevision;
   readonly proposals: readonly NormalizationProposal[];
 };
 
-export type NormalizationPagePlan = {
-  readonly target: EditorTarget;
-  readonly expectedVersion: string;
-  readonly operations: readonly EditorOperationById[];
-};
-export type NormalizationPlan = {
-  readonly schemaVersion: 1;
-  readonly siteId: string;
-  readonly expectedSiteStylesVersion: string;
-  readonly siteStyles: SiteStyles;
-  readonly expectedBreakpointsVersion: string;
-  readonly expectedComponentsVersion?: string;
-  readonly breakpoints: EditorBreakpointSettings;
-  readonly acceptedProposalIds: readonly string[];
-  readonly pages: readonly NormalizationPagePlan[];
+export type NormalizationOperationBatch = {
+  readonly target: NormalizationTarget;
+  readonly proposalIds: readonly string[];
+  /** JSON wire format. Deletions in property maps are encoded as null. */
+  readonly operations: readonly PageOperationWire[];
 };
 
-const COLOR_PROPERTIES = new Set<StyleProperty>([
-  "color", "backgroundColor", "borderColor", "borderTopColor", "borderRightColor", "borderBottomColor", "borderLeftColor"
-]);
-const MAX_BREAKPOINT_MERGE_GAP = 64;
-const MIN_PROPOSAL_OCCURRENCES = 2;
-const MAX_ANALYSIS_NODES = 100_000;
-const validVersion = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 200 && !/[\u0000-\u001f\u007f]/u.test(value);
-const compareText = (a: string, b: string): number => a < b ? -1 : a > b ? 1 : 0;
-const stable = (value: unknown): string => JSON.stringify(value, (_key, entry) => {
-  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
-  return Object.fromEntries(Object.entries(entry).sort(([a], [b]) => compareText(a, b)));
-});
+export type NormalizationVerification =
+  | { readonly status: "equivalent"; readonly documentsChecked: number }
+  | { readonly status: "changed"; readonly target: NormalizationTarget; readonly reason: string; readonly nodeId?: string;
+      readonly slot?: string; readonly width?: number; readonly states?: readonly StateName[] }
+  | { readonly status: "unsupported"; readonly reason: string; readonly target?: NormalizationTarget };
 
-function hash(value: string): string {
-  let result = 0xcbf29ce484222325n;
-  for (const byte of new TextEncoder().encode(value)) result = BigInt.asUintN(64, (result ^ BigInt(byte)) * 0x100000001b3n);
-  return result.toString(16).padStart(16, "0");
+const nearbyDistance = 48;
+const largeSectionDescendants = 8;
+const typographyProperties = ["fontFamily", "fontSize", "lineHeight", "letterSpacing"] as const;
+
+function targetOf(source: NormalizationDocument): NormalizationTarget {
+  const { siteId, pageId, locale, revision } = source.document;
+  const presentationVersion = source.presentationVersion ?? source.presentation?.version;
+  return { siteId, pageId, locale, revision,
+    ...(source.version === undefined ? {} : { version: source.version }),
+    ...(source.componentsVersion === undefined ? {} : { componentsVersion: source.componentsVersion }),
+    ...(presentationVersion === undefined ? {} : { presentationVersion }) };
 }
-function proposalId(kind: string, value: unknown): string { return `${kind}-${hash(stable(value))}`; }
-function checkedInput(input: NormalizationInput): NormalizationInput {
-  if (!input || typeof input !== "object" || !/^[A-Za-z][A-Za-z0-9_-]{0,79}$/u.test(input.siteId)
-    || !validVersion(input.siteStyles?.version) || !validVersion(input.breakpoints?.version)
-    || !Array.isArray(input.documents) || input.documents.length > 500) throw new TypeError("invalid normalization input");
-  let styles: SiteStyles, settings: EditorBreakpointSettings;
-  try { styles = parseSiteStyles(input.siteStyles.styles); settings = parseBreakpointSettings(input.breakpoints.settings); }
-  catch { throw new TypeError("invalid normalization context"); }
-  const blocks = input.blocks ?? {};
-  let components: { version: string; library: ComponentLibrary } | undefined;
-  if (input.components !== undefined) {
-    if (!validVersion(input.components.version)) throw new TypeError("invalid normalization component version");
-    try {
-      const library = parseComponentLibrary(input.components.library, blocks);
-      if (library.siteId !== input.siteId) throw new TypeError("normalization component site mismatch");
-      components = { version: input.components.version, library };
-    } catch (error) {
-      if (error instanceof TypeError && error.message === "normalization component site mismatch") throw error;
-      throw new TypeError("invalid normalization component library");
+const identity = ({ siteId, pageId, locale }: NormalizationTarget) => JSON.stringify([siteId, pageId, locale]);
+const sortText = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
+const numericSort = (a: number, b: number) => a - b;
+const proposalId = (...parts: (string | number)[]) => parts.map((part) => encodeURIComponent(part)).join(":");
+
+function sourcesOf(input: NormalizationInput): NormalizationDocument[] {
+  const sources = input.documents.map((entry) => "document" in entry ? entry : { document: entry });
+  const identities = sources.map((source) => identity(targetOf(source)));
+  if (new Set(identities).size !== identities.length) throw new Error("正規化の対象ページが重複しています。");
+  if (new Set(sources.map(({ document }) => document.siteId)).size > 1) throw new Error("共通スタイルと同じサイトの文書を指定してください。");
+  return sources;
+}
+
+function pushTo<K, V>(map: Map<K, V[]>, key: K, value: V): void {
+  const values = map.get(key);
+  if (values) values.push(value);
+  else map.set(key, [value]);
+}
+
+function nodeStyles(node: Exclude<PageNode, { type: "text" }>): [string | undefined, NodeStyle][] {
+  return [...(node.style ? [[undefined, node.style] as [undefined, NodeStyle]] : []),
+    ...(node.type === "component" ? Object.entries(node.slots ?? {}).sort(([a], [b]) => sortText(a, b)) : [])];
+}
+
+function collectUsage(document: Pick<PageDocument, "body" | "textStyles">, usage: Map<number, number>): void {
+  const use = (width: number) => usage.set(width, (usage.get(width) ?? 0) + 1);
+  function visit(nodes: readonly PageNode[]): void {
+    for (const node of nodes) {
+      if (node.type === "text") continue;
+      for (const [, style] of nodeStyles(node)) {
+        for (const { minWidth } of style.responsive ?? []) use(minWidth);
+        for (const { minWidth, maxWidth } of style.hidden ?? []) {
+          if (minWidth > 0) use(minWidth);
+          if (maxWidth !== undefined) use(maxWidth + 1);
+        }
+      }
+      if (node.type === "element") visit(node.children);
     }
   }
-  const seen = new Set<string>();
-  let totalNodes = 0;
-  const documents = input.documents.map((entry) => {
-    if (!entry || typeof entry !== "object" || !validVersion(entry.version) || !["page", "template", "shared"].includes(entry.kind)) throw new TypeError("invalid normalization document");
-    const document = parsePageDocument(entry.document, blocks, { siteStyles: styles, ...(components ? { components: components.library } : {}) });
-    if (document.siteId !== input.siteId) throw new TypeError("normalization site mismatch");
-    totalNodes += walkNodes(document).length;
-    if (totalNodes > MAX_ANALYSIS_NODES) throw new TypeError("normalization input exceeds node limit");
-    const key = `${document.pageId}\u0000${document.locale}`;
-    if (seen.has(key)) throw new TypeError("duplicate normalization document");
-    seen.add(key);
-    return { kind: entry.kind, version: entry.version, document };
-  }).sort((a, b) => compareText(`${a.kind}\u0000${a.document.pageId}\u0000${a.document.locale}`, `${b.kind}\u0000${b.document.pageId}\u0000${b.document.locale}`));
-  return { siteId: input.siteId, siteStyles: { version: input.siteStyles.version, styles }, breakpoints: { version: input.breakpoints.version, settings },
-    ...(input.blocks ? { blocks } : {}), ...(components ? { components } : {}), documents };
+  for (const style of Object.values(document.textStyles ?? {})) for (const { minWidth } of style.responsive ?? []) use(minWidth);
+  visit(document.body);
 }
-const targetFor = (document: PageDocument): EditorTarget => ({ siteId: document.siteId, pageId: document.pageId, locale: document.locale });
-const targetKey = (target: EditorTarget): string => `${target.pageId}\u0000${target.locale}`;
 
+function textProperties(values: StyleDeclarations | undefined): TextStyleDeclarations {
+  const result: TextStyleDeclarations = {};
+  for (const property of textStyleProperties) {
+    const value = values?.[property];
+    if (value !== undefined) result[property] = value;
+  }
+  return result;
+}
+function textStyleOf(style: NodeStyle): TextStyle {
+  const responsive = (style.responsive ?? []).map(({ minWidth, declarations }) => ({ minWidth, declarations: textProperties(declarations) }))
+    .filter(({ declarations }) => Object.keys(declarations).length);
+  return { base: textProperties(style.base), ...(responsive.length ? { responsive } : {}) };
+}
+
+function hasContent(values: object): boolean { return Object.keys(values).length > 0; }
+function sameValue(a: StyleValue, b: StyleValue | undefined): boolean {
+  return a === b || typeof a === "object" && typeof b === "object" && a.token === b.token;
+}
 function normalizeHexColor(value: string): string | undefined {
   if (!colorParts(value)) return undefined;
   const digits = value.slice(1).toLowerCase();
   const expanded = digits.length === 3 || digits.length === 4 ? [...digits].map((digit) => digit + digit).join("") : digits;
   return `#${expanded}`;
 }
-function colorTokenName(color: string, names: ReadonlySet<string>): string {
-  const base = `color-${color.slice(1)}`;
-  if (!names.has(base)) return base;
-  let suffix = 2;
-  while (names.has(`${base}-${suffix}`)) suffix++;
-  return `${base}-${suffix}`;
-}
-function allStyleValues(document: PageDocument, visit: (value: unknown, location: NormalizationOccurrence) => void): void {
-  const target = targetFor(document);
-  for (const { node, path } of walkNodes(document)) {
-    if (node.type === "text") continue;
-    const base = node.style?.base;
-    if (base) for (const [property, value] of Object.entries(base)) visit(value, { target, nodeId: node.id, path, property: property as StyleProperty, breakpoint: "base" });
-    for (const entry of node.style?.responsive ?? []) for (const [property, value] of Object.entries(entry.declarations)) {
-      visit(value, { target, nodeId: node.id, path, property: property as StyleProperty, breakpoint: entry.minWidth });
+
+export function analyzeNormalization(input: NormalizationInput): NormalizationAnalysis {
+  const sources = sourcesOf(input).sort((a, b) => sortText(identity(a.document), identity(b.document)));
+  const site = parseSiteStyles(input.siteStyles ?? {});
+  const colors = new Map<string, ColorOccurrence[]>(), combinations = new Map<string, { values: TextStyleDeclarations; count: number }>();
+  const textGroups = new Map<string, { style: TextStyle; nodes: NodeLocation[] }>(), usage = new Map<number, number>();
+  const redundantOverrides: RedundantOverride[] = [], sectionNames: SectionName[] = [];
+  const usageReferences = new Set<PageDocument>();
+  let elements = 0;
+  const countDocument = (document: PageDocument) => {
+    if (!usageReferences.has(document)) {
+      usageReferences.add(document);
+      collectUsage(document, usage);
     }
-    for (const [state, values] of Object.entries(node.style?.states ?? [])) for (const [property, value] of Object.entries(values)) {
-      visit(value, { target, nodeId: node.id, path, property: property as StyleProperty, state: state as StateName });
-    }
-    if (node.type === "component") for (const [slot, style] of Object.entries(node.slots ?? {})) {
-      for (const [property, value] of Object.entries(style.base ?? {})) visit(value, { target, nodeId: node.id, path, property: property as StyleProperty, breakpoint: "base", slot });
-      for (const entry of style.responsive ?? []) for (const [property, value] of Object.entries(entry.declarations)) {
-        visit(value, { target, nodeId: node.id, path, property: property as StyleProperty, breakpoint: entry.minWidth, slot });
+  };
+  collectUsage({ body: input.components?.components.map(({ root }) => root) ?? [], ...(site.textStyles ? { textStyles: site.textStyles } : {}) }, usage);
+
+  for (const source of sources) {
+    const target = targetOf(source), document = source.document;
+    const effective = resolvePageStyles(document, site);
+    const expandedInstances = new Map<string, Exclude<PageNode, { type: "text" }>>();
+    if (input.components && instancesOf(document.body).length) {
+      try {
+        const expanded = expandDocument(effective, input.components);
+        for (const { node } of walkNodes(expanded.document)) {
+          if (node.type !== "text" && expanded.origins.get(node.id)?.instance === node.id) expandedInstances.set(node.id, node);
+        }
+      } catch {
+        // Analyze authored nodes when component context is incomplete.
       }
     }
-  }
-}
-function textStyleFor(node: Exclude<PageNode, { type: "text" }>, document: PageDocument, site: SiteStyles, componentTokens: ComponentLibrary["tokens"]): TextStyle | undefined {
-  if (node.style?.textStyle) return undefined;
-  const siteTokens = site.tokens ?? {}, localTokens = { ...componentTokens, ...siteTokens, ...document.tokens };
-  const filter = (values: Record<string, unknown> | undefined): Partial<Record<TextStyleProperty, StyleValue>> => {
-    const result: Partial<Record<TextStyleProperty, StyleValue>> = {};
-    for (const [property, value] of Object.entries(values ?? {})) {
-      if (!(textStyleProperties as readonly string[]).includes(property)) continue;
-      if (typeof value === "string" || typeof value === "number") result[property as TextStyleProperty] = value;
-      else if (value && typeof value === "object" && typeof (value as { token?: unknown }).token === "string") {
-        const name = (value as { token: string }).token;
-        if (Object.hasOwn(siteTokens, name) && !Object.hasOwn(document.tokens, name)) result[property as TextStyleProperty] = value as StyleValue;
-        else {
-          const token = localTokens[name];
-          if (token) result[property as TextStyleProperty] = token.value;
+    countDocument(document);
+    if (source.presentation) {
+      const { shared, overlays, hostViews, layout } = source.presentation;
+      countDocument(shared.header);
+      countDocument(shared.footer);
+      for (const entry of [...overlays ?? [], ...hostViews ?? []]) countDocument(entry.document);
+      if (layout) collectUsage({ body: [{ type: "element", tag: "div", id: "layout", style: layout, children: [] }] }, usage);
+    }
+
+    const trackColor = (location: DeclarationLocation, values: StyleDeclarations | undefined) => {
+      for (const property of Object.keys(values ?? {}).filter(isStyleProperty).sort(sortText)) {
+        const value = values?.[property];
+        if (styleTokenKind(property) === "color" && typeof value === "string") {
+          const normalized = normalizeHexColor(value);
+          if (normalized) pushTo(colors, normalized, { ...location, property });
         }
       }
-    }
-    return result;
-  };
-  const base = filter(node.style?.base as Record<string, unknown> | undefined);
-  const responsive = (node.style?.responsive ?? []).flatMap((entry) => {
-    const declarations = filter(entry.declarations as Record<string, unknown>);
-    return Object.keys(declarations).length ? [{ minWidth: entry.minWidth, declarations }] : [];
-  });
-  if (!Object.keys(base).length && !responsive.length) return undefined;
-  return { base, ...(responsive.length ? { responsive } : {}) };
-}
-function textOf(node: PageNode): string {
-  if (node.type === "text") return node.text;
-  if (node.type !== "element") return "";
-  return node.children.map(textOf).join(" ");
-}
-function sectionCandidate(node: ElementNode): string {
-  const findHeading = (parent: ElementNode): string | undefined => {
-    for (const child of parent.children) if (child.type === "element" && /^h[1-6]$/u.test(child.tag)) {
-      const value = textOf(child).replace(/\s+/gu, " ").trim();
-      if (value) return value;
-    }
-    for (const child of parent.children) if (child.type === "element") {
-      const value = findHeading(child);
-      if (value) return value;
-    }
-    return undefined;
-  };
-  return findHeading(node) ?? textOf(node);
-}
-function descendantElementCount(node: ElementNode): number {
-  return node.children.reduce((count, child) => count + (child.type === "element" ? 1 + descendantElementCount(child) : 0), 0);
-}
-function componentBreakpointUsageCount(library: ComponentLibrary | undefined, minWidth: number): number {
-  if (!library) return 0;
-  let count = 0;
-  for (const component of library.components) {
-    const pending: PageNode[] = [component.root];
-    while (pending.length) {
-      const node = pending.pop()!;
-      if (node.type === "text") continue;
-      count += (node.style?.responsive ?? []).filter((entry) => entry.minWidth === minWidth).length;
-      count += (node.style?.hidden ?? []).filter((entry) => entry.minWidth === minWidth || entry.maxWidth === minWidth - 1).length;
-      if (node.type === "component") for (const style of Object.values(node.slots ?? {})) {
-        count += (style.responsive ?? []).filter((entry) => entry.minWidth === minWidth).length;
+    };
+
+    function visit(node: PageNode, path: number[]): { count: number; heading?: string; text: string } {
+      if (node.type === "text") return { count: 0, text: node.text };
+      elements++;
+      const location = { target, nodeId: node.id };
+      for (const [slot, style] of nodeStyles(node)) {
+        const declarationTarget = { ...location, ...(slot === undefined ? {} : { slot }) };
+        trackColor({ ...declarationTarget, breakpoint: "base" }, style.base);
+        if (slot === undefined) for (const state of stateNames) trackColor({ ...declarationTarget, state }, style.states?.[state]);
+        for (const { minWidth, declarations } of style.responsive ?? []) {
+          trackColor({ ...declarationTarget, breakpoint: minWidth }, declarations);
+          for (const property of Object.keys(declarations).filter(isStyleProperty).sort(sortText)) {
+            const value = declarations[property]!;
+            const styledNode = slot !== undefined ? { ...node, style } : expandedInstances.get(node.id) ?? node;
+            const inherited = inheritedStyle(effective, styledNode, property, minWidth)?.value;
+            if (sameValue(value, inherited)) redundantOverrides.push({ ...declarationTarget, breakpoint: minWidth, property, value });
+          }
+        }
       }
-      if (node.type === "element") pending.push(...node.children);
+      if (node.type !== "element") return { count: 1, text: "" };
+      if (node.style) {
+        const reference = node.style.textStyle ? effective.textStyles?.[node.style.textStyle] : undefined;
+        const own = new Map<number, StyleDeclarations | undefined>([[0, node.style.base]]);
+        for (const { minWidth, declarations } of node.style.responsive ?? []) own.set(minWidth, declarations);
+        const widths = new Set([...own.keys(), ...(reference?.responsive ?? []).map(({ minWidth }) => minWidth)]);
+        const seen = new Set<string>();
+        for (const width of widths) {
+          const sample = Object.fromEntries(typographyProperties.flatMap((property) => {
+            const value = own.get(width)?.[property] ?? inheritedStyle(effective, node, property, width)?.value;
+            return value === undefined ? [] : [[property, value]];
+          })) as TextStyleDeclarations;
+          if (!hasContent(sample)) continue;
+          const key = normalizationKey(sample);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          combinations.set(key, { values: sample, count: (combinations.get(key)?.count ?? 0) + 1 });
+        }
+        if (!node.style.textStyle) {
+          const style = textStyleOf(node.style);
+          if (hasContent(style.base) || style.responsive?.length) {
+            const key = normalizationKey(style), group = textGroups.get(key);
+            if (group) group.nodes.push(location);
+            else textGroups.set(key, { style, nodes: [location] });
+          }
+        }
+      }
+      let descendants = 0, heading: string | undefined, text = "";
+      for (const [index, child] of node.children.entries()) {
+        const found = visit(child, [...path, index]);
+        descendants += found.count;
+        heading ??= found.heading;
+        if (text.length < 2 * PAGE_NODE_NAME_MAX_LENGTH) text += found.text.slice(0, 2 * PAGE_NODE_NAME_MAX_LENGTH - text.length);
+      }
+      if (/^h[1-6]$/u.test(node.tag) && text.trim()) heading = text;
+      const section = ["section", "article", "header", "footer", "main", "nav", "aside"].includes(node.tag)
+        || node.tag === "div" && path.length === 1;
+      if (section && !node.name && descendants >= largeSectionDescendants) {
+        const cleaned = heading?.replace(/[\u0000-\u001f\u007f-\u009f\s]+/gu, " ").trim();
+        const name = cleaned ? [...cleaned].slice(0, PAGE_NODE_NAME_MAX_LENGTH).join("").trimEnd()
+          : `セクション ${path.map((index) => index + 1).join(".")}`;
+        sectionNames.push({ ...location, name, path, descendants });
+      }
+      return { count: descendants + 1, text, ...(heading === undefined ? {} : { heading }) };
     }
+    document.body.forEach((node, index) => visit(node, [index]));
   }
-  return count;
-}
-function tokenUsageAt(styles: SiteStyles, documents: readonly NormalizationDocument[], minWidth: number, library?: ComponentLibrary): number {
-  let count = 0;
-  for (const style of Object.values(styles.textStyles ?? {})) count += (style.responsive ?? []).filter((entry) => entry.minWidth === minWidth).length;
-  for (const { document } of documents) count += breakpointUsageCount(document, minWidth);
-  return count + componentBreakpointUsageCount(library, minWidth);
-}
-function styleBreakpointUsageCount(styles: SiteStyles, documents: readonly NormalizationDocument[], minWidth: number, library?: ComponentLibrary): number {
-  let count = Object.values(styles.textStyles ?? {}).reduce((sum, style) => sum + (style.responsive ?? []).filter((entry) => entry.minWidth === minWidth).length, 0);
-  for (const { document } of documents) {
-    count += (document.textStyles ? Object.values(document.textStyles) : []).reduce((sum, style) => sum + (style.responsive ?? []).filter((entry) => entry.minWidth === minWidth).length, 0);
-    for (const { node } of walkNodes(document)) {
-      if (node.type === "text") continue;
-      count += (node.style?.responsive ?? []).filter((entry) => entry.minWidth === minWidth).length;
-      if (node.type === "component") for (const style of Object.values(node.slots ?? {})) count += (style.responsive ?? []).filter((entry) => entry.minWidth === minWidth).length;
-    }
-  }
-  return count + componentBreakpointUsageCount(library, minWidth);
+  const configured = new Set([...(input.breakpoints ?? []), ...(input.breakpointSettings?.settings.breakpoints.map(({ minWidth }) => minWidth) ?? [])]);
+  if ([...configured].some((width) => !Number.isInteger(width) || width < 320 || width > 3840)) throw new Error("表示幅の段は 320〜3840px の整数で指定してください。");
+  const widths = [...new Set([...configured, ...[...usage.keys()].filter((width) => width >= 320 && width <= 3840)])].sort(numericSort);
+  const nearbyBreakpoints = widths.slice(1).flatMap((from, index) => {
+    const into = widths[index]!;
+    return from - into <= nearbyDistance ? [{ from, into }] : [];
+  });
+  return {
+    targets: sources.map(targetOf),
+    ...(input.siteStylesRevision ? { siteStylesRevision: { ...input.siteStylesRevision } } : {}),
+    elements,
+    colors: [...colors].sort(([a], [b]) => sortText(a, b)).map(([value, occurrences]) => ({ value, count: occurrences.length, occurrences })),
+    textCombinations: [...combinations].sort(([a], [b]) => sortText(a, b)).map(([, group]) => group),
+    textStyleGroups: [...textGroups].sort(([a], [b]) => sortText(a, b)).map(([, group]) => group).filter(({ nodes }) => nodes.length > 1),
+    redundantOverrides,
+    breakpoints: widths.map((minWidth) => ({ minWidth, uses: usage.get(minWidth) ?? 0, configured: configured.has(minWidth) })),
+    unusedBreakpoints: [...configured].filter((width) => !usage.get(width)).sort(numericSort),
+    nearbyBreakpoints,
+    sectionNames
+  };
 }
 
-/** サイト横断で、実装可能な正規化候補を決定的に抽出する。 */
-function analyzeCheckedInput(input: NormalizationInput): NormalizationAnalysis {
+export function decodeNormalizationOperations(operations: readonly PageOperationWire[]): EditorOperationById[] {
+  return operations.map((operation, index) => parsePageOperation(operation, `$.operations[${index}]`));
+}
+
+function alias(names: Set<string>, prefix: string): string {
+  let name = prefix, serial = 2;
+  while (names.has(name)) name = `${prefix}-${serial++}`;
+  names.add(name);
+  return name;
+}
+
+function colorOperations(name: string, value: string, occurrences: readonly ColorOccurrence[]): EditorOperationById[] {
+  const result: EditorOperationById[] = [{ type: "token", name, token: { type: "color", value } }];
+  const ref = { token: name };
+  const groups = new Map<string, EditorOperationById & { values: Partial<Record<StyleProperty, StyleValue>> }>();
+  for (const { breakpoint, state, slot, nodeId, property } of occurrences) {
+    if (slot !== undefined && breakpoint !== undefined) {
+      result.push({ type: "slotStyle", nodeId, slot, breakpoint, property, value: ref });
+      continue;
+    }
+    const key = JSON.stringify([nodeId, breakpoint, state]);
+    const previous = groups.get(key);
+    if (previous) {
+      previous.values[property] = ref;
+      continue;
+    }
+    const operation = state === undefined
+      ? { type: "styles" as const, nodeId, breakpoint: breakpoint!, values: { [property]: ref } }
+      : { type: "state" as const, nodeId, state, values: { [property as StateProperty]: ref } };
+    groups.set(key, operation);
+    result.push(operation);
+  }
+  return result;
+}
+
+function textOperations(name: string, style: TextStyle, nodes: readonly NodeLocation[]): EditorOperationById[] {
+  const remove = (values: TextStyleDeclarations) => Object.fromEntries(Object.keys(values).map((property) => [property, undefined]));
+  const previous = { ...style.base };
+  const responsive: NonNullable<TextStyle["responsive"]> = [];
+  for (const { minWidth, declarations } of style.responsive ?? []) {
+    const values: TextStyleDeclarations = {};
+    for (const property of textStyleProperties) {
+      const value = declarations[property];
+      if (value !== undefined && !sameValue(value, previous[property])) {
+        values[property] = value;
+        previous[property] = value;
+      }
+    }
+    if (hasContent(values)) responsive.push({ minWidth, declarations: values });
+  }
+  return [{ type: "textStyle", name, style: { base: style.base, ...(responsive.length ? { responsive } : {}) } }, ...nodes.flatMap(({ nodeId }): EditorOperationById[] => [
+    { type: "nodeTextStyle", nodeId, name },
+    ...(hasContent(style.base) ? [{ type: "styles" as const, nodeId, breakpoint: "base" as const, values: remove(style.base) }] : []),
+    ...(style.responsive ?? []).map(({ minWidth, declarations }) => ({ type: "styles" as const, nodeId, breakpoint: minWidth, values: remove(declarations) }))
+  ])];
+}
+
+function redundantOperations(overrides: readonly RedundantOverride[]): EditorOperationById[] {
+  const result: EditorOperationById[] = [];
+  const perRule = new Map<string, Partial<Record<StyleProperty, undefined>>>();
+  for (const { nodeId, breakpoint, property, slot } of overrides) {
+    if (slot !== undefined) result.push({ type: "slotStyle", nodeId, slot, breakpoint, property, value: undefined });
+    else {
+      const key = JSON.stringify([nodeId, breakpoint]);
+      const values = perRule.get(key) ?? {};
+      values[property] = undefined;
+      if (!perRule.has(key)) {
+        perRule.set(key, values);
+        result.push({ type: "styles", nodeId, breakpoint, values });
+      }
+    }
+  }
+  return result;
+}
+
+function applyOperations(source: NormalizationDocument, operations: readonly EditorOperationById[], input: NormalizationInput): PageDocument {
+  return operations.reduce((document, operation) => editDocumentById(document, operation, input.blocks, source.locks, input.components, input.siteStyles), source.document);
+}
+
+function mergeOperations(document: PageDocument, from: number, into: number): EditorOperationById[] | undefined {
+  const operations: EditorOperationById[] = [];
+  const visit = (nodes: readonly PageNode[]): boolean => {
+    for (const node of nodes) {
+      if (node.type === "text") continue;
+      for (const [slot, style] of nodeStyles(node)) {
+        if (style.hidden?.some(({ minWidth, maxWidth }) => minWidth === from || maxWidth === from - 1)) return false;
+        const declarations = style.responsive?.find(({ minWidth }) => minWidth === from)?.declarations;
+        if (!declarations) continue;
+        if (declarations.backgroundImage !== undefined) return false;
+        // Remove first so the operation also works on a node at its tier limit.
+        const properties = Object.keys(declarations).filter(isStyleProperty).sort(sortText);
+        if (slot === undefined) {
+          operations.push({ type: "styles", nodeId: node.id, breakpoint: from, values: Object.fromEntries(properties.map((property) => [property, undefined])) });
+          operations.push({ type: "styles", nodeId: node.id, breakpoint: into, values: declarations });
+        } else {
+          for (const property of properties) operations.push({ type: "slotStyle", nodeId: node.id, slot, breakpoint: from, property, value: undefined });
+          for (const property of properties) operations.push({ type: "slotStyle", nodeId: node.id, slot, breakpoint: into, property, value: declarations[property] });
+        }
+      }
+      if (node.type === "element" && !visit(node.children)) return false;
+    }
+    return true;
+  };
+  if (!visit(document.body)) return undefined;
+  for (const [name, style] of Object.entries(document.textStyles ?? {}).sort(([a], [b]) => sortText(a, b))) {
+    const moved = style.responsive?.find(({ minWidth }) => minWidth === from);
+    if (!moved) continue;
+    const previous = style.responsive?.find(({ minWidth }) => minWidth === into);
+    const responsive = [...style.responsive!.filter(({ minWidth }) => minWidth !== from && minWidth !== into),
+      { minWidth: into, declarations: { ...previous?.declarations, ...moved.declarations } }].sort((a, b) => a.minWidth - b.minWidth);
+    operations.push({ type: "textStyle", name, style: { ...style, responsive } });
+  }
+  return operations;
+}
+
+function settingChange(input: NormalizationInput, siteId: string, minWidth: number, into?: number): NormalizationSiteSettingsChange {
+  const snapshot = input.breakpointSettings;
+  const entry = snapshot?.settings.breakpoints.find((breakpoint) => breakpoint.minWidth === minWidth);
+  const settings = snapshot && entry && entry.name !== "PC" ? removeBreakpointSetting(snapshot.settings, entry.name) : undefined;
+  return { siteId, action: into === undefined ? "remove-breakpoint" : "merge-breakpoints", minWidth,
+    ...(into === undefined ? {} : { into }),
+    ...(snapshot ? { expectedVersion: snapshot.version } : {}),
+    ...(settings ? { settings } : {}) };
+}
+
+export function planNormalization(input: NormalizationInput): NormalizationPlan {
+  const analysis = analyzeNormalization(input), sources = sourcesOf(input);
+  const before = sources.map(({ document }) => document), site = input.siteStyles ?? {};
   const proposals: NormalizationProposal[] = [];
-  const colorGroups = new Map<string, NormalizationOccurrence[]>();
-  for (const { document } of input.documents) allStyleValues(document, (value, location) => {
-    const property = location.property;
-    if (!property || !COLOR_PROPERTIES.has(property) || typeof value !== "string") return;
-    const color = normalizeHexColor(value);
-    if (!color) return;
-    const occurrences = colorGroups.get(color) ?? [];
-    occurrences.push(location);
-    colorGroups.set(color, occurrences);
-  });
-  for (const [value, occurrences] of colorGroups) {
-    if (occurrences.length < MIN_PROPOSAL_OCCURRENCES) continue;
-    const names = new Set([
-      ...Object.keys(input.siteStyles.styles.tokens ?? {}),
-      ...Object.keys(input.components?.library.tokens ?? {}),
-      ...input.documents.flatMap(({ document }) => Object.keys(document.tokens))
-    ]);
-    const existing = Object.entries(input.siteStyles.styles.tokens ?? {}).find(([name, token]) => token.type === "color"
-      && normalizeHexColor(String(token.value)) === value
-      && input.documents.every(({ document }) => !document.tokens[name] || normalizeHexColor(String(document.tokens[name]!.value)) === value));
-    const tokenName = existing?.[0] ?? colorTokenName(value, names);
-    const sortedOccurrences = [...occurrences].sort((a, b) => compareText(`${targetKey(a.target)}\u0000${a.nodeId}\u0000${a.slot ?? ""}\u0000${a.state ?? ""}\u0000${a.breakpoint ?? "base"}\u0000${a.property}`,
-      `${targetKey(b.target)}\u0000${b.nodeId}\u0000${b.slot ?? ""}\u0000${b.state ?? ""}\u0000${b.breakpoint ?? "base"}\u0000${b.property}`));
-    proposals.push({ kind: "color-token", id: proposalId("color", { value, tokenName, occurrences: sortedOccurrences }), classification: "semantic",
-      tokenName, value, createToken: existing === undefined, occurrences: sortedOccurrences });
-  }
-
-  const textGroups = new Map<string, { style: TextStyle; occurrences: NormalizationOccurrence[] }>();
-  for (const { document } of input.documents) for (const { node, path } of walkNodes(document)) {
-    if (node.type === "text") continue;
-    const style = textStyleFor(node, document, input.siteStyles.styles, node.type === "instance" ? input.components?.library.tokens ?? {} : {});
-    if (!style) continue;
-    const key = stable(style), group = textGroups.get(key) ?? { style, occurrences: [] };
-    group.occurrences.push({ target: targetFor(document), nodeId: node.id, path });
-    textGroups.set(key, group);
-  }
-  const usedTextStyleNames = new Set([...Object.keys(input.siteStyles.styles.textStyles ?? {}), ...input.documents.flatMap(({ document }) => Object.keys(document.textStyles ?? {}))]);
-  for (const { style, occurrences } of textGroups.values()) {
-    if (occurrences.length < MIN_PROPOSAL_OCCURRENCES) continue;
-    let index = 1;
-    while (usedTextStyleNames.has(`text-style-${index}`)) index++;
-    const styleName = `text-style-${index}`;
-    usedTextStyleNames.add(styleName);
-    const sortedOccurrences = [...occurrences].sort((a, b) => compareText(`${targetKey(a.target)}\u0000${a.nodeId}`, `${targetKey(b.target)}\u0000${b.nodeId}`));
-    proposals.push({ kind: "text-style", id: proposalId("text-style", { style, styleName, occurrences: sortedOccurrences }), classification: "semantic", styleName, style, occurrences: sortedOccurrences });
-  }
-
-  for (const { document } of input.documents) {
-    const effectiveDocument = { ...document, tokens: { ...(input.components?.library.tokens ?? {}), ...(input.siteStyles.styles.tokens ?? {}), ...document.tokens },
-      textStyles: { ...(input.siteStyles.styles.textStyles ?? {}), ...(document.textStyles ?? {}) } };
-    const effectiveNodes = new Map(walkNodes(effectiveDocument).flatMap(({ node }) => node.type === "text" ? [] : [[node.id, node] as const]));
-    for (const { node, path } of walkNodes(document)) {
-      if (node.type === "text") continue;
-      const effectiveNode = effectiveNodes.get(node.id);
-      if (!effectiveNode) continue;
-      const inspectResponsive = (sourceStyle: NodeStyle | undefined, slot?: string, componentRootStyle?: NodeStyle) => {
-        const beforeStyle = componentRootStyle ? mergeStyle(componentRootStyle, sourceStyle ?? {}) : sourceStyle;
-        const responsive = sourceStyle?.responsive ?? [];
-        for (const entry of responsive) for (const [property, value] of Object.entries(entry.declarations) as [StyleProperty, StyleValue][]) {
-          const nextOverride = (beforeStyle?.responsive ?? []).find((candidate) => candidate.minWidth > entry.minWidth && candidate.declarations[property] !== undefined)?.minWidth ?? 3841;
-          const afterSourceStyle = removeResponsiveProperty(sourceStyle, entry.minWidth, property);
-          const afterStyle = componentRootStyle ? mergeStyle(componentRootStyle, afterSourceStyle ?? {}) : afterSourceStyle;
-          const textStyleName = beforeStyle?.textStyle;
-          const boundaries = new Set([entry.minWidth, ...(beforeStyle?.responsive ?? []).filter((candidate) => candidate.minWidth > entry.minWidth && candidate.minWidth < nextOverride).map((candidate) => candidate.minWidth),
-            ...(!slot && textStyleName ? (effectiveDocument.textStyles?.[textStyleName]?.responsive ?? []).filter((candidate) => candidate.minWidth >= entry.minWidth && candidate.minWidth < nextOverride).map((candidate) => candidate.minWidth) : [])]);
-          const sameAtEveryBoundary = [...boundaries].every((width) => {
-            const inherited = !slot && textStyleName ? inheritedTextValue(effectiveDocument, effectiveNode, property, width, textStyleName) : undefined;
-            const before = valueAtWidth(beforeStyle, property, width) ?? inherited;
-            const after = valueAtWidth(afterStyle, property, width) ?? inherited;
-            return stable(resolveStyleValue(effectiveDocument, before)) === stable(resolveStyleValue(effectiveDocument, after));
-          });
-          if (!sameAtEveryBoundary) continue;
-          const occurrence = { target: targetFor(document), nodeId: node.id, path, breakpoint: entry.minWidth, property, ...(slot ? { slot } : {}) };
-          proposals.push({ kind: "remove-redundant-override", id: proposalId("redundant", occurrence), classification: "lossless", occurrence, value });
+  for (const target of analysis.targets) {
+    const documentKey = identity(target), index = sources.findIndex(({ document }) => identity(document) === documentKey);
+    const source = sources[index]!;
+    const { document } = source;
+    const tokens = new Set([...Object.keys(document.tokens), ...Object.keys(site.tokens ?? {}), ...Object.keys(input.components?.tokens ?? {})]);
+    const styleNames = new Set([...Object.keys(document.textStyles ?? {}), ...Object.keys(site.textStyles ?? {})]);
+    const check = (classification: NormalizationClassification, operations: readonly EditorOperationById[]): boolean => {
+      try {
+        const next = applyOperations(source, operations, input);
+        if (classification === "lossless") {
+          const after = before.map((original, position) => position === index ? next : original);
+          return verifyNormalization(input, after).status === "equivalent";
         }
-      };
-      if (effectiveNode.type === "instance") {
-        const component = input.components?.library.components.find(({ id }) => id === effectiveNode.component);
-        inspectResponsive(effectiveNode.style, undefined, component?.root.style);
-      } else inspectResponsive(effectiveNode.style);
-      if (effectiveNode.type === "component") for (const [slot, style] of Object.entries(effectiveNode.slots ?? {})) inspectResponsive(style, slot);
-    }
-    for (const { node, path } of walkNodes(document)) {
-      if (node.type !== "element" || node.tag !== "section" || node.name?.trim() || descendantElementCount(node) < 4) continue;
-      const candidate = sectionCandidate(node).replace(/\s+/gu, " ").trim().slice(0, 40);
-      if (!candidate) continue;
-      const occurrence = { target: targetFor(document), nodeId: node.id, path };
-      proposals.push({ kind: "name-section", id: proposalId("section-name", { occurrence, name: candidate }), classification: "lossless", occurrence, name: candidate });
-    }
-  }
-
-  const settings = input.breakpoints.settings;
-  for (const [index, breakpoint] of settings.breakpoints.entries()) {
-    const usageCount = tokenUsageAt(input.siteStyles.styles, input.documents, breakpoint.minWidth, input.components?.library);
-    if (usageCount === 0 && breakpoint.name !== "PC") proposals.push({ kind: "unused-breakpoint", id: proposalId("unused-breakpoint", breakpoint), classification: "lossless",
-      removeName: breakpoint.name, minWidth: breakpoint.minWidth, usageCount });
-    const next = settings.breakpoints[index + 1];
-    const styleUsage = styleBreakpointUsageCount(input.siteStyles.styles, input.documents, breakpoint.minWidth, input.components?.library);
-    const nextStyleUsage = next ? styleBreakpointUsageCount(input.siteStyles.styles, input.documents, next.minWidth, input.components?.library) : 0;
-    const libraryUsesEither = componentBreakpointUsageCount(input.components?.library, breakpoint.minWidth) > 0
-      || next !== undefined && componentBreakpointUsageCount(input.components?.library, next.minWidth) > 0;
-    if (next && !libraryUsesEither && next.minWidth - breakpoint.minWidth <= MAX_BREAKPOINT_MERGE_GAP && styleUsage > 0 && nextStyleUsage > 0) {
-      const remove = next.name === "PC" ? breakpoint : next, keep = remove === next ? breakpoint : next;
-      proposals.push({ kind: "merge-breakpoints", id: proposalId("merge-breakpoints", { remove, keep }), classification: "lossy",
-        removeName: remove.name, minWidth: remove.minWidth, keepName: keep.name, keepMinWidth: keep.minWidth,
-        usageCount: styleBreakpointUsageCount(input.siteStyles.styles, input.documents, remove.minWidth, input.components?.library) });
-    }
-  }
-
-  proposals.sort((a, b) => compareText(a.kind, b.kind) || compareText(a.id, b.id));
-  return { schemaVersion: 1, siteId: input.siteId, proposalCount: proposals.length, proposals };
-}
-
-export function analyzeNormalization(inputValue: NormalizationInput): NormalizationAnalysis {
-  return analyzeCheckedInput(checkedInput(inputValue));
-}
-
-function inheritedTextValue(document: PageDocument, node: Exclude<PageNode, { type: "text" }>, property: StyleProperty, width: number, textStyleName = node.style?.textStyle): StyleValue | undefined {
-  const name = textStyleName;
-  const style = name ? document.textStyles?.[name] : undefined;
-  if (!style || !(textStyleProperties as readonly string[]).includes(property)) return undefined;
-  let value = style.base[property as TextStyleProperty];
-  for (const entry of style.responsive ?? []) if (entry.minWidth <= width && entry.declarations[property as TextStyleProperty] !== undefined) value = entry.declarations[property as TextStyleProperty];
-  return value;
-}
-function valueAtWidth(style: NodeStyle | undefined, property: StyleProperty, width: number): StyleValue | undefined {
-  let value = style?.base?.[property];
-  for (const entry of style?.responsive ?? []) if (entry.minWidth <= width && entry.declarations[property] !== undefined) value = entry.declarations[property];
-  return value;
-}
-function removeResponsiveProperty(style: NodeStyle | undefined, minWidth: number, property: StyleProperty): NodeStyle | undefined {
-  if (!style) return undefined;
-  const responsive = (style.responsive ?? []).map((entry) => {
-    if (entry.minWidth !== minWidth) return entry;
-    const declarations = { ...entry.declarations };
-    delete declarations[property];
-    return { ...entry, declarations };
-  }).filter((entry) => Object.keys(entry.declarations).length > 0);
-  const { responsive: _responsive, ...base } = style;
-  const result: NodeStyle = { ...base, ...(responsive.length ? { responsive } : {}) };
-  return Object.keys(result).length ? result : undefined;
-}
-function resolveStyleValue(document: PageDocument, value: StyleValue | undefined): unknown {
-  if (value === undefined) return undefined;
-  if (typeof value === "object") return document.tokens[value.token]?.value;
-  return value;
-}
-function coalesceOperations(operations: readonly EditorOperationById[]): EditorOperationById[] {
-  type StyleOperation = Extract<EditorOperationById, { type: "style" }>;
-  type StateOperation = Extract<EditorOperationById, { type: "state" }>;
-  const styleGroups = new Map<string, { index: number; first: StyleOperation; values: Partial<Record<StyleProperty, StyleValue | undefined>>; count: number }>();
-  const stateGroups = new Map<string, { index: number; first: StateOperation; values: StateOperation["values"]; count: number }>();
-  operations.forEach((operation, index) => {
-    if (operation.type === "style") {
-      const key = `${operation.nodeId}\u0000${operation.breakpoint}`, group = styleGroups.get(key);
-      if (group) {
-        if (Object.hasOwn(group.values, operation.property) && stable(group.values[operation.property]) !== stable(operation.value)) throw new TypeError("conflicting normalization style operations");
-        group.values[operation.property] = operation.value; group.count++;
-      } else styleGroups.set(key, { index, first: operation, values: { [operation.property]: operation.value }, count: 1 });
-    } else if (operation.type === "state") {
-      const key = `${operation.nodeId}\u0000${operation.state}`, group = stateGroups.get(key);
-      if (group) {
-        for (const [property, value] of Object.entries(operation.values)) {
-          if (Object.hasOwn(group.values, property) && stable(group.values[property as keyof typeof group.values]) !== stable(value)) throw new TypeError("conflicting normalization state operations");
-          group.values[property as keyof typeof group.values] = value;
-        }
-        group.count++;
-      } else stateGroups.set(key, { index, first: operation, values: { ...operation.values }, count: 1 });
-    }
-  });
-  return operations.flatMap((operation, index): EditorOperationById[] => {
-    if (operation.type === "style") {
-      const group = styleGroups.get(`${operation.nodeId}\u0000${operation.breakpoint}`)!;
-      if (group.index !== index) return [];
-      return [group.count > 1 ? { type: "styles", nodeId: operation.nodeId, breakpoint: operation.breakpoint, values: group.values } : operation];
-    }
-    if (operation.type === "state") {
-      const group = stateGroups.get(`${operation.nodeId}\u0000${operation.state}`)!;
-      if (group.index !== index) return [];
-      return [group.count > 1 ? { ...group.first, values: group.values } : operation];
-    }
-    return [operation];
-  });
-}
-
-/** lossless候補は既定で含め、semantic / lossy候補はIDを明示承認したものだけ計画する。 */
-export function planNormalization(inputValue: NormalizationInput, approvedProposalIds: readonly string[] = []): NormalizationPlan {
-  const input = checkedInput(inputValue), analysis = analyzeCheckedInput(input), approvals = new Set(approvedProposalIds);
-  if (approvals.size !== approvedProposalIds.length || [...approvals].some((id) => !analysis.proposals.some((proposal) => proposal.id === id))) throw new TypeError("unknown normalization approval");
-  const accepted = analysis.proposals.filter((proposal) => proposal.classification === "lossless" || approvals.has(proposal.id));
-  const mergeWidths = new Set(accepted.filter((proposal): proposal is BreakpointProposal => proposal.kind === "merge-breakpoints").map(({ minWidth }) => minWidth));
-  for (const proposal of accepted) {
-    if (proposal.kind === "color-token" && proposal.occurrences.some((occurrence) => typeof occurrence.breakpoint === "number" && mergeWidths.has(occurrence.breakpoint))) {
-      throw new TypeError("normalization color proposal overlaps a merged breakpoint");
-    }
-    if (proposal.kind === "text-style" && (proposal.style.responsive ?? []).some(({ minWidth }) => mergeWidths.has(minWidth))) {
-      throw new TypeError("normalization text style overlaps a merged breakpoint");
-    }
-  }
-  const redundantKeys = new Set(accepted.flatMap((proposal) => proposal.kind === "remove-redundant-override"
-    ? [`${targetKey(proposal.occurrence.target)}\u0000${proposal.occurrence.nodeId}\u0000${proposal.occurrence.slot ?? ""}\u0000${proposal.occurrence.state ?? ""}\u0000${proposal.occurrence.breakpoint ?? "base"}\u0000${proposal.occurrence.property}`] : []));
-  for (const proposal of accepted) if (proposal.kind === "color-token" && proposal.occurrences.some((occurrence) => redundantKeys.has(
-    `${targetKey(occurrence.target)}\u0000${occurrence.nodeId}\u0000${occurrence.slot ?? ""}\u0000${occurrence.state ?? ""}\u0000${occurrence.breakpoint ?? "base"}\u0000${occurrence.property}`))) {
-    throw new TypeError("normalization color proposal overlaps a redundant override");
-  }
-  const styles = structuredClone(input.siteStyles.styles), breakpoints = structuredClone(input.breakpoints.settings);
-  const pageOperations = new Map<string, { target: EditorTarget; expectedVersion: string; operations: EditorOperationById[] }>();
-  const pageFor = (target: EditorTarget) => input.documents.find(({ document }) => targetKey(targetFor(document)) === targetKey(target));
-  const addOperation = (target: EditorTarget, operation: EditorOperationById) => {
-    const source = pageFor(target);
-    if (!source) throw new TypeError("normalization target missing");
-    const key = targetKey(target), page = pageOperations.get(key) ?? { target, expectedVersion: source.version, operations: [] };
-    page.operations.push(operation); pageOperations.set(key, page);
-  };
-  const removedBreakpoints = new Set<number>();
-  const mergedBreakpoints = new Set(accepted.flatMap((proposal) => proposal.kind === "merge-breakpoints" ? [proposal.minWidth] : []));
-  for (const proposal of accepted) if (proposal.kind === "unused-breakpoint" || proposal.kind === "merge-breakpoints") {
-    if (removedBreakpoints.has(proposal.minWidth)) throw new TypeError("overlapping breakpoint proposals");
-    removedBreakpoints.add(proposal.minWidth);
-    breakpoints.breakpoints = removeBreakpointSetting(breakpoints, proposal.removeName).breakpoints;
-  }
-  if (mergedBreakpoints.size) {
-    for (const [name, style] of Object.entries(styles.textStyles ?? {})) if (style.responsive?.some((entry) => mergedBreakpoints.has(entry.minWidth))) {
-      styles.textStyles![name] = { ...style, responsive: style.responsive.filter((entry) => !mergedBreakpoints.has(entry.minWidth)) };
-    }
-    for (const { document } of input.documents) {
-      const target = targetFor(document);
-      for (const { node } of walkNodes(document)) {
-        if (node.type === "text") continue;
-        for (const entry of node.style?.responsive ?? []) if (mergedBreakpoints.has(entry.minWidth)) for (const property of Object.keys(entry.declarations) as StyleProperty[]) {
-          addOperation(target, { type: "style", nodeId: node.id, breakpoint: entry.minWidth, property, value: undefined });
-        }
-        if (node.type === "component") for (const [slot, style] of Object.entries(node.slots ?? {})) for (const entry of style.responsive ?? []) {
-          if (mergedBreakpoints.has(entry.minWidth)) for (const property of Object.keys(entry.declarations) as StyleProperty[]) addOperation(target, { type: "slotStyle", nodeId: node.id, slot, breakpoint: entry.minWidth, property, value: undefined });
-        }
+        return true;
+      } catch {
+        return false;
       }
-      for (const [name, style] of Object.entries(document.textStyles ?? {})) if (style.responsive?.some((entry) => mergedBreakpoints.has(entry.minWidth))) {
-        addOperation(target, { type: "textStyle", name, style: { ...style, responsive: style.responsive.filter((entry) => !mergedBreakpoints.has(entry.minWidth)) } });
+    };
+    const addProposal = (kind: OperationProposal["kind"], classification: NormalizationClassification, detail: string,
+      operations: EditorOperationById[], checked = false) => {
+      if (operations.length === 0 || !checked && !check(classification, operations)) return;
+      const id = proposalId(kind, target.siteId, target.pageId, target.locale, detail);
+      proposals.push({ id, kind, classification, target, operations: operations.map(pageOperationWire) });
+    };
+    const atTarget = <T extends { target: NormalizationTarget }>(entries: readonly T[]) => entries.filter((entry) => identity(entry.target) === documentKey);
+    for (const group of analysis.colors) {
+      const occurrences = atTarget(group.occurrences);
+      if (occurrences.length < 2 || tokens.size >= 128) continue;
+      const name = alias(tokens, `color-${group.value.toLowerCase().replace(/^#/u, "")}`);
+      addProposal("color-token", "semantic change", group.value, colorOperations(name, group.value, occurrences));
+    }
+    for (const group of analysis.textStyleGroups) {
+      const nodes = atTarget(group.nodes);
+      if (nodes.length < 2 || styleNames.size >= 64) continue;
+      const name = alias(styleNames, "text-style");
+      addProposal("text-style", "lossless", name, textOperations(name, group.style, nodes));
+    }
+    const redundant = atTarget(analysis.redundantOverrides);
+    if (redundant.length) {
+      const all = redundantOperations(redundant);
+      if (check("lossless", all)) addProposal("redundant-overrides", "lossless", "all", all, true);
+      else {
+        const safe = redundant.filter((candidate) => check("lossless", redundantOperations([candidate])));
+        addProposal("redundant-overrides", "lossless", "all", redundantOperations(safe));
       }
     }
-  }
-  for (const proposal of accepted) {
-    if (proposal.kind === "color-token") {
-      if (proposal.createToken) styles.tokens = { ...(styles.tokens ?? {}), [proposal.tokenName]: { type: "color", value: proposal.value } satisfies DesignToken };
-      for (const occurrence of proposal.occurrences) {
-        const value = { token: proposal.tokenName };
-        if (occurrence.slot) addOperation(occurrence.target, { type: "slotStyle", nodeId: occurrence.nodeId, slot: occurrence.slot, breakpoint: occurrence.breakpoint ?? "base", property: occurrence.property!, value });
-        else if (occurrence.state) addOperation(occurrence.target, { type: "state", nodeId: occurrence.nodeId, state: occurrence.state, values: { [occurrence.property!]: value } });
-        else addOperation(occurrence.target, { type: "style", nodeId: occurrence.nodeId, breakpoint: occurrence.breakpoint ?? "base", property: occurrence.property!, value });
+    const componentWidths = new Map<number, number>(), ownedWidths = new Map<number, number>();
+    let hasComponentContext = true;
+    if (instancesOf(document.body).length) {
+      try {
+        if (!input.components || source.componentsVersion !== undefined && source.componentsVersion !== input.componentsVersion) hasComponentContext = false;
+        else {
+          collectUsage(expandDocument(resolvePageStyles(document, site), input.components).document, componentWidths);
+          collectUsage(document, ownedWidths);
+        }
+      } catch {
+        hasComponentContext = false;
       }
-    } else if (proposal.kind === "text-style") {
-      styles.textStyles = { ...(styles.textStyles ?? {}), [proposal.styleName]: structuredClone(proposal.style) };
-      for (const occurrence of proposal.occurrences) {
-        addOperation(occurrence.target, { type: "nodeTextStyle", nodeId: occurrence.nodeId, name: proposal.styleName });
-        const document = pageFor(occurrence.target)!.document;
-        const node = walkNodes(document).find(({ node: candidate }) => candidate.type !== "text" && candidate.id === occurrence.nodeId)?.node;
-        if (!node || node.type === "text") continue;
-        for (const property of Object.keys(proposal.style.base) as StyleProperty[]) addOperation(occurrence.target, { type: "style", nodeId: occurrence.nodeId, breakpoint: "base", property, value: undefined });
-        for (const entry of proposal.style.responsive ?? []) for (const property of Object.keys(entry.declarations) as StyleProperty[]) addOperation(occurrence.target, { type: "style", nodeId: occurrence.nodeId, breakpoint: entry.minWidth, property, value: undefined });
-      }
-    } else if (proposal.kind === "remove-redundant-override") {
-      if (proposal.occurrence.slot) addOperation(proposal.occurrence.target, { type: "slotStyle", nodeId: proposal.occurrence.nodeId, slot: proposal.occurrence.slot, breakpoint: proposal.occurrence.breakpoint!, property: proposal.occurrence.property!, value: undefined });
-      else addOperation(proposal.occurrence.target, { type: "style", nodeId: proposal.occurrence.nodeId, breakpoint: proposal.occurrence.breakpoint!, property: proposal.occurrence.property!, value: undefined });
-    } else if (proposal.kind === "name-section") {
-      addOperation(proposal.occurrence.target, { type: "name", nodeId: proposal.occurrence.nodeId, value: proposal.name });
+    }
+    for (const { from, into } of analysis.nearbyBreakpoints) {
+      // The authored width may also occur inside component masters or site texts,
+      // which are separate editing targets. Avoid claiming to merge their rules.
+      if (!hasComponentContext || (componentWidths.get(from) ?? 0) > (ownedWidths.get(from) ?? 0)) continue;
+      const operations = mergeOperations(document, from, into);
+      if (operations) addProposal("merge-breakpoints", "lossy", `${from}/${into}`, operations);
+    }
+    for (const suggestion of atTarget(analysis.sectionNames)) {
+      proposals.push({ id: proposalId("section-name", target.siteId, target.pageId, target.locale, suggestion.nodeId),
+        kind: "section-name", classification: "semantic change", suggestion });
     }
   }
-  const pages = [...pageOperations.values()].map(({ target, expectedVersion, operations }) => ({ target, expectedVersion, operations: coalesceOperations(operations) }))
-    .filter((page) => page.operations.length > 0)
-    .sort((a, b) => compareText(targetKey(a.target), targetKey(b.target)));
-  if (pages.some((page) => page.operations.length > PAGE_OPERATION_LIMIT)) throw new TypeError("normalization page exceeds the single-apply operation limit");
-  const expectedComponentsVersion = input.components?.version;
-  return { schemaVersion: 1, siteId: input.siteId, expectedSiteStylesVersion: input.siteStyles.version, siteStyles: parseSiteStyles(styles),
-    expectedBreakpointsVersion: input.breakpoints.version, ...(expectedComponentsVersion ? { expectedComponentsVersion } : {}), breakpoints: parseBreakpointSettings(breakpoints),
-    acceptedProposalIds: accepted.map(({ id }) => id).sort(), pages };
+
+  const siteId = analysis.targets[0]?.siteId;
+  if (siteId) {
+    const configured = new Set(analysis.breakpoints.filter(({ configured }) => configured).map(({ minWidth }) => minWidth));
+    const pcWidth = input.breakpointSettings?.settings.breakpoints.find(({ name }) => name === "PC")?.minWidth;
+    for (const width of analysis.unusedBreakpoints) if (width !== pcWidth) proposals.push({
+      id: proposalId("remove-breakpoint", siteId, width), kind: "remove-breakpoint", classification: "lossy",
+      siteSettingsChanges: [settingChange(input, siteId, width)]
+    });
+    for (const { from, into } of analysis.nearbyBreakpoints) if (from !== pcWidth && configured.has(from) && configured.has(into)) proposals.push({
+      id: proposalId("merge-breakpoints", siteId, from, into), kind: "merge-breakpoints", classification: "lossy",
+      siteSettingsChanges: [settingChange(input, siteId, from, into)]
+    });
+  }
+  return { targets: analysis.targets, ...(analysis.siteStylesRevision ? { siteStylesRevision: analysis.siteStylesRevision } : {}), proposals };
+}
+
+export type NormalizationSelection = { readonly approvedProposalIds?: readonly string[]; readonly includeLossless?: boolean };
+
+export function selectNormalizationOperations(plan: NormalizationPlan, selection: NormalizationSelection = {}): NormalizationOperationBatch[] {
+  const approved = new Set(selection.approvedProposalIds ?? []);
+  const known = new Set(plan.proposals.map(({ id }) => id));
+  if ([...approved].some((id) => !known.has(id))) throw new Error("正規化の承認対象が計画にありません。");
+  const batches = new Map<string, { target: NormalizationTarget; proposalIds: string[]; operations: PageOperationWire[]; merge: boolean }>();
+  for (const proposal of plan.proposals) {
+    if (!("operations" in proposal) || !approved.has(proposal.id) && !(proposal.classification === "lossless" && selection.includeLossless !== false)) continue;
+    const key = identity(proposal.target);
+    const batch = batches.get(key) ?? { target: proposal.target, proposalIds: [], operations: [], merge: false };
+    const merge = proposal.kind === "merge-breakpoints";
+    if (batch.merge || merge && batch.operations.length) throw new Error("表示幅の段の統合は、そのページの他の正規化操作と同時に適用できません。");
+    batch.merge = merge;
+    batch.proposalIds.push(proposal.id);
+    batch.operations.push(...proposal.operations);
+    if (batch.operations.length > PAGE_OPERATION_LIMIT) throw new Error(`1ページの正規化操作は ${PAGE_OPERATION_LIMIT} 件以下に絞ってください。`);
+    batches.set(key, batch);
+  }
+  return [...batches.values()].map(({ target, proposalIds, operations }) => ({ target, proposalIds, operations }));
 }
