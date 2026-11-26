@@ -258,6 +258,33 @@ function pairedFormFieldNodeId(document: PageDocument, path: NodePath): string |
      typeof labelTarget === "string" && ["input", "textarea", "select"].includes(candidate.tag) && candidate.attrs?.id === labelTarget));
   return pair?.type === "element" ? pair.id : undefined;
 }
+function resetCanvasPageState(body: HTMLElement, renderedEntries: readonly { node: PageNode }[]): void {
+  body.scrollTop = 0;
+  body.ownerDocument.documentElement.scrollTop = 0;
+  const elements = new Map<string, HTMLElement>();
+  for (const element of Array.from(body.querySelectorAll<HTMLElement>("[data-nw-node]"))) {
+    if (element.scrollTop) element.scrollTop = 0;
+    if (element.scrollLeft) element.scrollLeft = 0;
+    const nodeId = element.dataset.nwNode;
+    if (nodeId) elements.set(nodeId, element);
+  }
+  for (const { node } of renderedEntries) {
+    if (node.type !== "element") continue;
+    const element = elements.get(node.id);
+    if (!element) continue;
+    if (node.tag === "details") (element as HTMLDetailsElement).open = node.attrs?.open === true;
+    else if (node.tag === "input") {
+      const input = element as HTMLInputElement;
+      input.value = typeof node.attrs?.value === "string" ? node.attrs.value : "";
+      input.checked = node.attrs?.checked === true;
+    } else if (node.tag === "textarea") {
+      (element as HTMLTextAreaElement).value = node.children.map((child) => child.type === "text" ? child.text : "").join("");
+    } else if (node.tag === "select") {
+      const select = element as HTMLSelectElement;
+      select.selectedIndex = select.options.length ? 0 : -1;
+    }
+  }
+}
 function Canvas({ document, pageKey, blocks, width, height, breakpoint, selection, selectedNodeId, selectedNodeIds, revealNode, slot, select, canEditNode, dragItem, drop, pending, editText, startTextEdit, onShortcut, resize, spacing, reportError, editable, structureEditable, locks, preview, previewComponent: PreviewComponent, mode, baseVersion, historyRevision, assets, motionCss, replay, rendered, presentation, presentationRuntime, externalFramePolicy, blankEmbeds, xPostFrameUrl, origins, openInstance, viewportHeight, siteOrigin, onReady }: {
   document: PageDocument; blocks: EditorBlockRegistry; width: number; height: number; selection: NodePath | null; selectedNodeId?: string; selectedNodeIds?: readonly string[]; select: (path: NodePath | null, nodeId?: string, slot?: string | null, mode?: SelectionMode) => void;
   pageKey: string;
@@ -291,6 +318,13 @@ function Canvas({ document, pageKey, blocks, width, height, breakpoint, selectio
 }) {
   const [body, setBody] = useState<HTMLElement | null>(null), frame = useRef<HTMLIFrameElement>(null);
   const previousPageKey = useRef(pageKey);
+  const [editingId, setEditingId] = useState<string | null>(null), [dropPlace, setDropPlace] = useState<DropPlace | null>(null);
+  const [handleRect, setHandleRect] = useState<{ element: HTMLElement; left: number; top: number; width: number; height: number } | null>(null);
+  const resizing = useRef<{ element: HTMLElement; path: NodePath; x: number; y: number; width: number; height: number; inlineWidth: string; inlineHeight: string } | null>(null);
+  const [linkOpen, setLinkOpen] = useState(false), [linkHref, setLinkHref] = useState("/"), [linkError, setLinkError] = useState("");
+  const originalHtml = useRef(""), savedRange = useRef<Range | null>(null);
+  const scope = pageScope(rendered), entries = useMemo(() => walkNodes(document), [document]);
+  const renderedEntries = useMemo(() => rendered === document ? entries : walkNodes(rendered), [rendered, document, entries]);
   useEffect(() => { if (body) body.ownerDocument.documentElement.lang = rendered.locale; }, [body, rendered.locale]);
   useEffect(() => {
     const frameDocument = body?.ownerDocument;
@@ -298,21 +332,14 @@ function Canvas({ document, pageKey, blocks, width, height, breakpoint, selectio
     frameDocument?.addEventListener("keydown", listen, true);
     return () => frameDocument?.removeEventListener("keydown", listen, true);
   }, [body, onShortcut]);
-  const [editingId, setEditingId] = useState<string | null>(null), [dropPlace, setDropPlace] = useState<DropPlace | null>(null);
-  const [handleRect, setHandleRect] = useState<{ element: HTMLElement; left: number; top: number; width: number; height: number } | null>(null);
-  const resizing = useRef<{ element: HTMLElement; path: NodePath; x: number; y: number; width: number; height: number; inlineWidth: string; inlineHeight: string } | null>(null);
-  const [linkOpen, setLinkOpen] = useState(false), [linkHref, setLinkHref] = useState("/"), [linkError, setLinkError] = useState("");
-  const originalHtml = useRef(""), savedRange = useRef<Range | null>(null);
   useLayoutEffect(() => {
     if (previousPageKey.current === pageKey) return;
     previousPageKey.current = pageKey;
     if (editingId) pending(`direct-${editingId}`, false);
     setEditingId(null); setDropPlace(null); setHandleRect(null); setLinkOpen(false); setLinkError("");
     resizing.current = null; originalHtml.current = ""; savedRange.current = null; lastRevealedNode.current = null;
-    if (body) { body.scrollTop = 0; body.ownerDocument.documentElement.scrollTop = 0; }
-  }, [body, editingId, pageKey, pending]);
-  const scope = pageScope(rendered), entries = useMemo(() => walkNodes(document), [document]);
-  const renderedEntries = useMemo(() => rendered === document ? entries : walkNodes(rendered), [rendered, document, entries]);
+    if (body) resetCanvasPageState(body, renderedEntries);
+  }, [body, editingId, pageKey, pending, renderedEntries]);
   const nodesById = useMemo(() => new Map(entries.flatMap((entry) => entry.node.type === "text" ? [] : [[entry.node.id, entry] as const])), [entries]);
   const renderedNodesById = useMemo(() => new Map(renderedEntries.flatMap((entry) => entry.node.type === "text" ? [] : [[entry.node.id, entry] as const])), [renderedEntries]);
   const lastRevealedNode = useRef<typeof revealNode>(null);
@@ -480,8 +507,8 @@ function Canvas({ document, pageKey, blocks, width, height, breakpoint, selectio
   }
   const canvasRendering = useMemo(() => ({ viewportHeight, siteOrigin, interactive: mode === "preview" }), [viewportHeight, siteOrigin, mode]);
   const defaultPreview = presentation
-    ? <EditorSitePageRenderer key={`${pageKey}-${replay}`} document={rendered} presentation={presentation} blocks={blocks} {...(externalFramePolicy ? { externalFramePolicy } : {})} {...(blankEmbeds ? { blankEmbeds } : {})} assets={assets} missingAssets="placeholder" canvas={canvasRendering} />
-    : <StablePageRenderer key={`${pageKey}-${replay}`} document={rendered} blocks={blocks} {...(blankEmbeds ? { blankEmbeds } : {})} assets={assets} missingAssets="placeholder" canvas={canvasRendering} />;
+    ? <EditorSitePageRenderer key={replay} document={rendered} presentation={presentation} blocks={blocks} {...(externalFramePolicy ? { externalFramePolicy } : {})} {...(blankEmbeds ? { blankEmbeds } : {})} assets={assets} missingAssets="placeholder" canvas={canvasRendering} />
+    : <StablePageRenderer key={replay} document={rendered} blocks={blocks} {...(blankEmbeds ? { blankEmbeds } : {})} assets={assets} missingAssets="placeholder" canvas={canvasRendering} />;
   const runtimeDocument = useRef(rendered);
   if (!samePresentationRuntimeDocument(runtimeDocument.current, rendered)) runtimeDocument.current = rendered;
   useEffect(() => {
