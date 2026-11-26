@@ -36,6 +36,9 @@ test("CMS の項目から翻訳の itemKey を作り、同じ原文の項目に�
   const key = kamakuraCmsLocalizationItemKey("posts", "morning-walk");
   assert.equal(key, b64("cms:posts:morning-walk"));
   assert.deepEqual(kamakuraLocalizationCmsSource(key), { collectionId: "posts", itemId: "morning-walk" });
+  const canonicalBoundaryKey = kamakuraCmsLocalizationItemKey("p".repeat(40), "x".repeat(105));
+  assert.equal(canonicalBoundaryKey, b64(`cms:${"p".repeat(40)}:${"x".repeat(105)}`), "canonical 150 byte key remains accepted although its base64url form is 200 chars");
+  assert.deepEqual(kamakuraLocalizationCmsSource(canonicalBoundaryKey), { collectionId: "p".repeat(40), itemId: "x".repeat(105) });
   assert.equal(kamakuraCmsLocalizationItemKey("posts", "../bad"), null);
   assert.equal(kamakuraCmsLocalizationItemKey("p".repeat(40), "x".repeat(128)), null, "Worker の一覧に入らない長さはリンクしない");
 });
