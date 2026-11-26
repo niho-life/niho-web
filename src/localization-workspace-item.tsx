@@ -17,6 +17,7 @@ type Value = string | LocalizedRichText;
 type UnitStatus = "idle" | "pending" | "saving" | "saved" | "error" | "conflict" | "invalid" | "gone";
 type CommandPayload =
   | { readonly action: "adopt-candidate"; readonly candidateId: string }
+  | { readonly action: "review-current" }
   | { readonly action: "clear-value" }
   | { readonly action: "set-image"; readonly image: LocalizedAsset | null };
 /** 項目ごとの、画面の中の状態（変えるたびに rev を上げて描き直す）。 */
@@ -71,12 +72,12 @@ function liveFor(server: LocalizationWorkspaceUnit): UnitLive {
 
 export type ItemEditorProps = {
   adapter: LocalizationWorkspaceAdapter; overview: LocalizationOverview; itemKey: string; timeZone: string; autosaveDelay: number; pollInterval: number;
-  confirm: (request: ConfirmRequest) => void; onSummary: (summary: LocalizationItemSummary) => void; onBack: () => void; onOpenRelated?: (itemKey: string) => void; relatedPageLink?: { readonly href: string; readonly label: string }; onForbidden: () => void; backLabel?: string; hideSourceLink?: boolean;
+  confirm: (request: ConfirmRequest) => void; onSummary: (summary: LocalizationItemSummary) => void; onBack: () => void; onOpenRelated?: (itemKey: string) => void; relatedPageLink?: { readonly href: string; readonly label: string }; onForbidden: () => void; backLabel?: string; hideSourceLink?: boolean; showReviewCurrent?: boolean;
   registerBack?: (back: (() => void) | null) => void;
 };
 
 /** 1 件の編集。項目ごとに原文と訳文を並べ、約 1 秒後に項目ごとに自動で保存する。競合は上書きしない。 */
-export function ItemEditor({ adapter, overview, itemKey, timeZone, autosaveDelay, pollInterval, confirm, onSummary, onBack, onOpenRelated, relatedPageLink, onForbidden, backLabel = "一覧へ", hideSourceLink = false, registerBack }: ItemEditorProps) {
+export function ItemEditor({ adapter, overview, itemKey, timeZone, autosaveDelay, pollInterval, confirm, onSummary, onBack, onOpenRelated, relatedPageLink, onForbidden, backLabel = "一覧へ", hideSourceLink = false, showReviewCurrent = false, registerBack }: ItemEditorProps) {
   const requests = useRequests();
   const baseId = useId();
   const heading = useRef<HTMLHeadingElement>(null);
@@ -230,6 +231,7 @@ export function ItemEditor({ adapter, overview, itemKey, timeZone, autosaveDelay
           if (unit.seq === seq) { unit.dirty = false; unit.segments = null; unit.value = null; unit.status = "saved"; }
           else unit.status = "pending";
           unit.message = null;
+          if (result.item) applyItem(result.item);
           latest.current.onSummary(result.summary);
           touch(unit);
           return true;
@@ -238,6 +240,7 @@ export function ItemEditor({ adapter, overview, itemKey, timeZone, autosaveDelay
           unit.server = result.unit;
           unit.status = "conflict";
           unit.conflict = result.unit.sourceVersion !== expectedSourceVersion ? "source" : "edited";
+          if (result.item) applyItem(result.item);
           latest.current.onSummary(result.summary);
           touch(unit);
           return false;
@@ -328,9 +331,11 @@ export function ItemEditor({ adapter, overview, itemKey, timeZone, autosaveDelay
         applyServer(unit, result.unit, payload.action === "adopt-candidate" || payload.action === "clear-value");
         unit.status = "idle";
         unit.actionMessage = { text: success, error: false };
+        if (result.item) applyItem(result.item);
         latest.current.onSummary(result.summary);
       } else if (result.status === "conflict") {
         applyServer(unit, result.unit, true);
+        if (result.item) applyItem(result.item);
         unit.actionMessage = { text: result.unit.sourceVersion !== input.expectedSourceVersion ? "原文が更新されていました。最新を出したので、確かめてからもう一度操作してください。" : "ほかの人が先に直していました。最新を出したので、確かめてからもう一度操作してください。", error: true };
         latest.current.onSummary(result.summary);
       } else if (result.status === "invalid") unit.actionMessage = { text: result.message, error: true };
@@ -427,7 +432,7 @@ export function ItemEditor({ adapter, overview, itemKey, timeZone, autosaveDelay
   const changed = units.filter((unit) => unit.server.state === "review-needed");
   const rest = units.filter((unit) => unit.server.state !== "review-needed");
   const unitNode = (unit: UnitLive) => <UnitCard key={unit.server.unitId} unit={unit} rev={unit.rev} languages={overview.languages} timeZone={timeZone}
-    canEdit={canEdit} canPick={!!adapter.pickAsset} canUpload={!!adapter.uploadImage} actions={stable.current} />;
+    canEdit={canEdit} canPick={!!adapter.pickAsset} canUpload={!!adapter.uploadImage} showReviewCurrent={showReviewCurrent} actions={stable.current} />;
   const sectioned = (list: readonly UnitLive[]) => {
     const nodes: ReactNode[] = [];
     let section: string | null = null;
@@ -490,11 +495,11 @@ type UnitActions = {
 };
 type UnitCardProps = {
   unit: UnitLive; rev: number; languages: LocalizationOverview["languages"]; timeZone: string;
-  canEdit: boolean; canPick: boolean; canUpload: boolean; actions: UnitActions;
+  canEdit: boolean; canPick: boolean; canUpload: boolean; showReviewCurrent: boolean; actions: UnitActions;
 };
 
 /** 1 つの項目。原文（読むだけ）と訳文を並べる。 */
-const UnitCard = memo(function UnitCard({ unit, languages, timeZone, canEdit, canPick, canUpload, actions }: UnitCardProps) {
+const UnitCard = memo(function UnitCard({ unit, languages, timeZone, canEdit, canPick, canUpload, showReviewCurrent, actions }: UnitCardProps) {
   const baseId = useId();
   const [protectedNote, setProtectedNote] = useState(0);
   const server = unit.server, unitId = server.unitId;
@@ -513,6 +518,9 @@ const UnitCard = memo(function UnitCard({ unit, languages, timeZone, canEdit, ca
     {unit.actionMessage.error && <Icon name="alert" />}{unit.actionMessage.text}</p>;
   const clearButton = canEdit && server.kind !== "image" && server.value !== null && status !== "conflict" && status !== "gone"
     && <button type="button" className="cw-link-button" disabled={busy} onClick={() => actions.clear(unitId)}>{unit.busy === "clear-value" ? "消しています…" : "訳を消す"}</button>;
+  const reviewButton = showReviewCurrent && canEdit && server.kind !== "image" && server.value !== null && server.state !== "reviewed"
+    && status !== "conflict" && status !== "gone"
+    && <button type="button" className="cw-button" disabled={busy || !!unit.problem} onClick={() => actions.command(unitId, { action: "review-current" }, "この訳を確認済みにしました。")}>{unit.busy === "review-current" ? "確認しています…" : "この訳を確認済みにする"}</button>;
 
   let target: ReactNode, sourceNode: ReactNode;
   if (server.kind === "image") {
@@ -570,10 +578,10 @@ const UnitCard = memo(function UnitCard({ unit, languages, timeZone, canEdit, ca
       <div className="lw-target"><span className="lw-col-label" id={targetId}>{languages.target}</span>{target}</div>
     </div>
     {conflictBox}{goneBox}{actionNote}
-    {(clearButton || server.updatedAt) && <footer className="lw-unit-foot">
+    {(clearButton || reviewButton || server.updatedAt) && <footer className="lw-unit-foot">
       {server.updatedAt && <span className="cw-by">最終更新 <DateTime value={server.updatedAt} timeZone={timeZone} />{server.updatedBy ? `・${server.updatedBy}` : ""}</span>}
-      {clearButton && <span style={{ display: "flex", alignItems: "center", gap: 12, marginInlineStart: "auto" }}>{clearButton}</span>}
+      {(clearButton || reviewButton) && <span style={{ display: "flex", alignItems: "center", gap: 12, marginInlineStart: "auto" }}>{reviewButton}{clearButton}</span>}
     </footer>}
   </section>;
 }, (previous, next) => previous.rev === next.rev && previous.unit === next.unit && previous.canEdit === next.canEdit
-  && previous.languages === next.languages && previous.canPick === next.canPick && previous.canUpload === next.canUpload);
+  && previous.languages === next.languages && previous.canPick === next.canPick && previous.canUpload === next.canUpload && previous.showReviewCurrent === next.showReviewCurrent);

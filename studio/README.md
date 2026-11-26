@@ -48,6 +48,8 @@ D1 schema、CAS、確認plan、GUI/CLI共通操作、公開rendererの詳細は 
 
 Studio-native CMS は Dashboard の「CMS」または `/projects/<Project>/sites/<Site>/cms` にあります。R2 binding `CMS_OBJECTS` に非公開 bucket を割り当て、D1 migration `0013_managed_cms.sql` と `0014_cms_page_bindings.sql` を適用してから Worker を接続します。Cronは毎分、予約を含む outbox を処理します。ローカルの復元演習、公開ルート、保持期間・容量は運用契約を参照してください。[Studio-native site契約](../docs/studio-managed-sites.md#cms-の公開と復旧)
 
+CMS 項目の翻訳は同じ画面の翻訳 workspace から手入力・確認し、`cms.localization.release.plan` / `apply` で target locale の CMS 全体 snapshot を公開します。公開対象は現行原文 snapshot の項目に限り、未完了・未確認・原文と版がずれた訳文は省略されます。日本語を代わりに表示しません。安全な parser / serializer がない rich-text 項目も省略されます。公開 route は `/en/cms/...` または `/ja/cms/...` です。editor は訳文を公開でき、CMS 定義の変更・適用は owner に限ります。固定ページ公開と CMS snapshot は別々に切り替わります。[CMS v2 契約](../docs/cms-v2-contract.md#cms-項目の翻訳と-locale-snapshot)
+
 ### サイト機能（鎌倉）
 
 鎌倉の Dashboard は「ホーム・CMS・素材・翻訳・アナリティクス」を表示します。CMS は Studio のコレクション画面、翻訳は Studio の翻訳画面、ページと共通コンポーネントはデザインエディタで扱います。素材の入口はエディタと CMS の画像欄です。旧サイト管理画面の埋め込みと切替設定は撤廃しました。

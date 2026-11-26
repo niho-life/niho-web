@@ -114,7 +114,8 @@ export function planCmsRouteTable(input: {
 }): CmsRouteTablePlan | { readonly status: "conflict" } {
   const current = parseCmsRouteTable(input.current, input.siteId, input.locale);
   if (current.revision !== input.expectedRevision || current.revision === input.nextRevision) return { status: "conflict" };
-  const host = current.reservations.filter((entry) => entry.kind !== "cms-item" && !(entry.kind === "redirect" && entry.owner === "cms"));
+  const host = current.reservations.filter((entry) => entry.kind !== "cms-item" && !(entry.kind === "redirect" && entry.owner === "cms")
+    && !(entry.kind === "reserved" && entry.reservationId.startsWith("cms_route_")));
   const hostByPath = new Map(host.filter((entry) => entry.kind !== "template").map((entry) => [entry.path, entry]));
   const hostTemplates = host.filter((entry) => entry.kind === "template");
   const candidates: CmsRouteReservation[] = [];
@@ -194,7 +195,8 @@ export function planCmsRouteTable(input: {
 /** Check migrated draft paths against the current route table; current paths owned by that same item remain valid. */
 export function cmsMigrationRouteProblems(input: { readonly table: unknown; readonly schema: { readonly siteId: string }; readonly routes: readonly CmsRouteCandidate[] }): CmsRouteProblem[] {
   const table = parseCmsRouteTable(input.table, input.schema.siteId);
-  const host = table.reservations.filter((entry) => entry.kind !== "cms-item" && !(entry.kind === "redirect" && entry.owner === "cms"));
+  const host = table.reservations.filter((entry) => entry.kind !== "cms-item" && !(entry.kind === "redirect" && entry.owner === "cms")
+    && !(entry.kind === "reserved" && entry.reservationId.startsWith("cms_route_")));
   const hostByPath = new Map(host.filter((entry) => entry.kind !== "template").map((entry) => [entry.path, entry]));
   const hostTemplates = host.filter((entry) => entry.kind === "template");
   const cmsKeysByPath = new Map<string, Set<string>>();

@@ -137,3 +137,13 @@ niho-edit --studio --origin https://studio.example --site demo-site cms-schema-a
 ```
 
 計画の `candidate.changes` にフィールド削除または型・設定変更が含まれる場合、値への影響を確認し `--confirm-data-loss` を付けて適用します。変換できない値・壊れる参照・ルート衝突を含む計画は問題一覧を返し、適用できません。フォーム定義の編集には対応しません。
+
+Studio-native CMS の翻訳には、共通の `localization-*` CLI を `--studio` とともに使います。対象 locale の CMS snapshot を個別に準備・公開し、下書きや未確認の訳は公開されません。
+
+```sh
+niho-edit --studio --origin https://studio.example --site demo-site localization-release-read
+niho-edit --studio --origin https://studio.example --site demo-site localization-release-prepare --json locale-publish.json > locale-plan.json
+niho-edit --studio --origin https://studio.example --site demo-site localization-release-apply --json locale-apply.json
+```
+
+`locale-publish.json` には `operation: "publish"`、`releaseId: null`、`expectedVersion`、`expectedCurrentVersion: null`、`resumeToken: null`、一意な UUID `operationId` を指定します。CLI は準備時に操作IDを再送キーとして使います。準備応答の `plan.confirmationToken` を使い、`locale-apply.json` に `operation: "publish"`、`expectedVersion`、`confirmationToken`、`resumeToken: null` を指定します。CMS locale 公開では未完了項目を snapshot から省き、日本語への fallback は行いません。詳細は [CMS v2 契約](cms-v2-contract.md#cms-項目の翻訳と-locale-snapshot) を参照してください。

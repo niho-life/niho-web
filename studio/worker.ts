@@ -38,6 +38,8 @@ import {
   managedProjectRegistrations, managedPublicRequest, managedRegistration, publicSitesOrigin, type ManagedActor
 } from "./managed-sites.js";
 import { CmsStore, type CmsActor, type CmsBucket, type CmsCapability } from "./managed-cms-store.js";
+import { CMS_DELIVERY_PREFIX } from "../src/cms-delivery-contract.js";
+import { managedCmsDelivery, managedCmsDeliveryAdmin } from "./managed-cms-delivery.js";
 import { managedCmsApi, managedCmsLegacySpec } from "./managed-cms.js";
 import { managedCmsPublic, runCmsCron } from "./managed-cms-release.js";
 import { dashboardAnalyticsSummary, siteAnalyticsApi, siteAnalyticsRoute } from "./site-analytics-host.js";
@@ -58,6 +60,8 @@ type AssetBinding = { fetch(request: Request): Promise<Response> };
 export interface Env {
   readonly DB: D1Database;
   readonly CMS_OBJECTS?: CmsBucket;
+  /** 32-byte hex master key exclusively for issuing and verifying CMS delivery credentials. */
+  readonly CMS_DELIVERY_MASTER_KEY?: string;
   readonly ASSETS: AssetBinding;
   /** 同一 Cloudflare account の kamakura-site Worker。 */
   readonly KAMAKURA_SITE: AssetBinding;
@@ -3070,6 +3074,11 @@ async function scopedApi(request: Request, env: Env, identity: AccessIdentity, u
       }
     }
   }
+  if (action.startsWith("/cms/delivery/")) {
+    if (!env.CMS_OBJECTS) return json({ error: "not_found" }, 404);
+    return managedCmsDeliveryAdmin(request, new CmsStore(env.DB, env.CMS_OBJECTS),
+      { projectId, siteId, actor: { id: identity.subject, cli: false } }, action, env.CMS_DELIVERY_MASTER_KEY);
+  }
   if (action.startsWith("/cms/v2/")) {
     if (!env.CMS_OBJECTS) return json({ error: "not_found" }, 404);
     return managedCmsApi(request, new CmsStore(env.DB, env.CMS_OBJECTS),
@@ -3425,6 +3434,10 @@ async function handle(request: Request, env: Env): Promise<Response> {
     const store = env.CMS_OBJECTS ? new CmsStore(env.DB, env.CMS_OBJECTS) : undefined;
     const cms = store && await managedCmsPublic(request, store, configuredPublicOrigin);
     return cms || managedPublicRequest(request, env.DB, configuredPublicOrigin, store);
+  }
+  if (url.pathname.startsWith(CMS_DELIVERY_PREFIX)) {
+    if (!env.CMS_OBJECTS) return json({ error: "not_found" }, 404);
+    return managedCmsDelivery(request, new CmsStore(env.DB, env.CMS_OBJECTS), env.CMS_DELIVERY_MASTER_KEY);
   }
   if (url.pathname.startsWith("/api/edit/")) return studioEditingCms(request, env, url);
   const isApi = url.pathname === "/api" || url.pathname.startsWith("/api/");

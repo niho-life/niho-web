@@ -747,6 +747,13 @@ test("niho-edit reads translation items and job state directly from the site", a
   assert.deepEqual(JSON.parse(list.stdout), { apiVersion: "v1", httpStatus: 200, operation: "localization.items.list",
     result: { status: "ready", items: [], nextCursor: null } });
 
+  const studioList = await run(["localization-items-list", "--studio"], {
+    expectedMethod: "POST", expectedUrl: `${origin}/api/edit/v2/sites/${siteId}/operations/cms.localization.items.list`,
+    expectedBody: { siteId }, result: { status: "ready", items: [], nextCursor: null }, studio: true,
+  });
+  assert.equal(studioList.exitCode, 0, studioList.stderr);
+  assert.deepEqual(JSON.parse(studioList.stdout).result, { status: "ready", items: [], nextCursor: null });
+
   const release = await run(["localization-release-read"], {
     expectedMethod: "GET", expectedUrl: `${operations}/localization.release.read`,
     result: { status: "ready", current: null, history: [], pending: null },
@@ -810,6 +817,36 @@ test("niho-edit selects managed CMS v2 with Access authentication and an explici
   });
   assert.equal(updated.exitCode, 0);
   assert.deepEqual(JSON.parse(updated.stdout).result, { status: "saved" });
+
+  const itemKey = Buffer.from("cms:posts:item_example").toString("base64url");
+  const localization = await run(["--studio", "localization-items-read", itemKey], {
+    studio: true, token: "fixture-token", expectedMethod: "POST", expectedUrl: `${origin}/api/edit/v2/sites/${siteId}/operations/cms.localization.items.read`,
+    expectedBody: { siteId, itemKey }, result: { status: "not_found" }
+  });
+  assert.equal(localization.exitCode, 0, localization.stderr);
+  assert.deepEqual(JSON.parse(localization.stdout).result, { status: "not_found" });
+
+  const releaseOperationId = crypto.randomUUID();
+  const prepareInput = { operation: "publish", releaseId: null, expectedVersion: "overview-v1", expectedCurrentVersion: null,
+    resumeToken: null, operationId: releaseOperationId };
+  const prepared = await run(["--studio", "localization-release-prepare", "--json", "-"], {
+    studio: true, operationKey: releaseOperationId, expectedMethod: "POST",
+    expectedUrl: `${origin}/api/edit/v2/sites/${siteId}/operations/cms.localization.release.plan`,
+    expectedBody: { siteId, operationId: releaseOperationId }, stdin: JSON.stringify(prepareInput),
+    result: { status: "ready", plan: { operationId: releaseOperationId, confirmationToken: "token_locale_1" } }
+  });
+  assert.equal(prepared.exitCode, 0, prepared.stderr);
+  assert.equal(JSON.parse(prepared.stdout).result.status, "ready");
+
+  const applyInput = { operation: "publish", expectedVersion: "overview-v1", confirmationToken: "token_locale_1", resumeToken: null };
+  const applied = await run(["--studio", "localization-release-apply", "--json", "-"], {
+    studio: true, expectedMethod: "POST",
+    expectedUrl: `${origin}/api/edit/v2/sites/${siteId}/operations/cms.localization.release.apply`,
+    expectedBody: { siteId, confirmationToken: "token_locale_1" }, stdin: JSON.stringify(applyInput),
+    result: { status: "published", result: { releaseId: "release_en_1", locale: "en", itemCount: 1 } }
+  });
+  assert.equal(applied.exitCode, 0, applied.stderr);
+  assert.deepEqual(JSON.parse(applied.stdout).result.result, { releaseId: "release_en_1", locale: "en", itemCount: 1 });
 });
 
 test("niho-edit plans Studio CMS schema with current revisions and requires impact confirmation to apply", async () => {

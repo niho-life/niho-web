@@ -18,6 +18,8 @@
 
 例外（throw・reject）は画面では一般的な失敗（「保存できませんでした」と再試行）になります。秘密や内部の詳細をエラーの文に含めないでください。
 
+Studio-native CMS はこの共通項目画面を CMS 独自の翻訳 overlay に接続します。workspace は現行の CMS 下書きを原文として表示し、翻訳 overlay は項目・field・source locale・target locale の安定 ID と原文 fingerprint に結び付けます。公開 plan は原文 locale の現行公開 snapshot を基準にし、全訳文がその公開版と一致して確認済みの項目だけを target locale snapshot に入れます。未完了・未確認または原文更新後の項目は省き、原文 locale へフォールバックしません。CMS 自動翻訳サービスは未接続です。安全な rich-text adapter がない Studio では、本文のある rich-text 項目も省きます。固定ページと CMS snapshot の同時原子公開には含めません。詳細は [CMS v2 契約](cms-v2-contract.md#cms-項目の翻訳と-locale-snapshot) を参照してください。
+
 ## 使い方
 
 サイトが [共通 Editing API の翻訳操作](editing-api-contract.md#翻訳操作)を実装している場合、GUI と CLI が同じ操作を使えます。鎌倉の Studio adapter は `@niho/web/editing-client` の `executeLocalization` で接続します。画面から渡す公開反映のコンテキストは、選んだ操作、確認した概要の版、準備済みの公開版です。初回の公開準備に使う操作 ID は同じ準備の再送で再利用します。
@@ -56,7 +58,7 @@ const adapter: LocalizationWorkspaceAdapter = {
 | `autosaveDelay` | 直してから自動で保存するまでの待ち時間（ms）。既定は 1000。 |
 | `pollInterval` | 翻訳の依頼・原文の取り込み・公開の進み具合を読み直す間隔（ms）。既定は 2000。 |
 
-`LocalizationItemWorkspace` には同じ `adapter`、対象の `itemKey`、原文のタブへ戻る `onBack` を渡します。原文の取り込みが進行中なら先に `advanceCatalog` を進め、完了後に対象の 1 件を読みます。一覧全体や公開画面は読みません。`timeZone`・`autosaveDelay`・`pollInterval` も共通です。CMS の言語タブから安全に戻るため、`registerBack` に項目エディタの保存処理を登録します。原文の入力は切替中も残り、訳文は保存してから閉じるので、次に開くと最新の原文を読みます。ホストが `onOpenRelated(itemKey)` を渡すと、同じ一覧行に含まれる別の保存単位へ移れます。移る前に保存待ちを完了し、失敗した場合は確認を出します。`relatedPageLink` を渡すと、その項目に関係するページの安全な URL を別タブで開けます。Kamakura の CMS は記事などの詳細ページの英語エディタに使います。
+`LocalizationItemWorkspace` には同じ `adapter`、対象の `itemKey`、原文のタブへ戻る `onBack` を渡します。原文の取り込みが進行中なら先に `advanceCatalog` を進め、完了後に対象の 1 件を読みます。一覧全体や公開画面は読みません。`timeZone`・`autosaveDelay`・`pollInterval` も共通です。CMS の言語タブから安全に戻るため、`registerBack` に項目エディタの保存処理を登録します。原文の入力は切替中も残り、訳文は保存してから閉じるので、次に開くと最新の原文を読みます。`showReviewCurrent` は既定で `false` です。Studio-native CMS のように、公開前に人が訳文を確認する契約では `true` にし、訳文のある各フィールドに「この訳を確認済みにする」を表示できます。ホストが `onOpenRelated(itemKey)` を渡すと、同じ一覧行に含まれる別の保存単位へ移れます。移る前に保存待ちを完了し、失敗した場合は確認を出します。`relatedPageLink` を渡すと、その項目に関係するページの安全な URL を別タブで開けます。Kamakura の CMS は記事などの詳細ページの英語エディタに使います。
 
 部品は `<style>` で `localizationWorkspaceCss` を入れます（CMS の画面の `collectionCss` を含みます）。inline の `<style>` を CSP で拒むホストは、この文字列をファイルにして読み込んでください。根の class は `.nw-collection.nw-localization`、翻訳の画面だけのクラスの接頭辞は `lw-` です。色・角丸・文字は CMS の画面と同じ `@niho/web/ui-tokens` のトークン（`--nw-*`）を使います。
 
@@ -277,7 +279,7 @@ type LocalizationCommandInput = {
 } & (
   | { action: 'set-value'; value: string | LocalizedRichText }     // 文字・リッチテキスト
   | { action: 'adopt-candidate'; candidateId: string }               // 翻訳案を使う
-  | { action: 'review-current' }                                     // 旧い確認の操作。画面からは送らない（下）
+  | { action: 'review-current' }                                     // 一般の翻訳画面からは送らない（下）
   | { action: 'clear-value' }                                        // 訳文を消して未翻訳に戻す（文字・リッチテキスト）。翻訳案は残す
   | { action: 'set-image'; image: LocalizedAsset | null }            // 画像を差し替える。null は原文と同じに戻す
   | { action: 'review-image' }                                       // 旧い確認の操作。画面からは送らない（下）
@@ -286,12 +288,12 @@ type LocalizationCommandInput = {
 
 - **CAS。** `expectedVersion` が今の項目の版と違う、または `expectedSourceVersion` が今の原文の版と違うときは、書かずに `{ status: "conflict", unit, summary }`（`unit` は最新）を返します。版は項目ごとに比べるので、同じ 1 件の別の項目を別の人が直していても衝突しません。
 - **冪等。** `operationId` は画面が操作ごとに作ります。同じ `operationId` の再送（通信が切れたときの再試行など）は二重に書かず、前回と同じ結果を返してください。保存しておく期間は 24 時間以上を推奨します。
-- **応答。** `applied` の `unit` は書いた後の項目、`summary` はその 1 件の一覧の行（状態・件数の更新に使う）です。`set-value` で訳文を直した項目は、今の原文への訳（`draft`）になります。
+- **応答。** `applied` の `unit` は書いた後の項目、`summary` はその 1 件の一覧の行（状態・件数の更新に使う）です。必要な adapter は `item` に最新の項目全体を付けて、項目内の各 unit の版を同期できます。`set-value` で訳文を直した項目は、今の原文への訳（`draft`）になります。
 - **訳を消す。** `clear-value` は訳文を消し、項目を未翻訳（必須なら `missing`・任意なら `source`）に戻します。翻訳案は残します。訳文の無い項目と画像は `invalid` です（画像は `set-image` に `null` で原文に戻します）。
 - **invalid。** 札が合わない・長すぎる・空にできない項目を空にした・画像が使えない、などは `{ status: "invalid", message }` で、`message` を項目の下に出します。
 - 項目が原文から消えたときは `not_found` です。画面は「この項目は原文から無くなりました」と出し、読み直しを勧めます。
 - 権限の確かめ: `set-value`・`adopt-candidate`・`clear-value`・`set-image` は `edit` です。
-- **旧い確認の操作。** `review-current`・`review-image` は 2026-11-12 に廃止した確認の工程の操作です。画面からは送りませんが、Studio とホストの配備の順序がずれても壊れないよう、型と BFF の経路は残します。ホストは互換のため受けてよく（権限は `review`）、公開の条件には使いません。
+- **確認操作。** 一般ホストの確認工程は 2026-11-12 に廃止し、通常の翻訳画面は `review-current`・`review-image` を送りません。Studio-native CMS は各フィールドの訳文を公開対象に含める前の明示確認に `review-current` を使います。互換性のため型と BFF の経路は維持します。
 
 ### 翻訳の依頼（requestTranslation・readJob）
 
@@ -412,7 +414,7 @@ type PreviewRenderMessage = {
 - 上のバー: 「‹ 一覧へ」・状態・保存の状態・「翻訳案を作る」（`translate`）・「CMS で開く」（`sourceLink`）。本文の上には関連する訳文と、指定があれば詳細ページの英語エディタへのリンクを置く。
 - 原文の CMS に未公開の下書きがあれば帯で知らせ、CMS への入口を出します。
 - `review-needed` の項目は「原文が更新された項目」として先にまとめて出し（印は未翻訳）、「原文が変わりました。訳を直すか、翻訳案を入れてください。」と、前の原文（`previousSource`）を開いて見られる「前の{原文の言語}を見る」を出します。
-- 項目ごとに原文（読むだけ）と訳文を横に並べます（900px 以下は縦）。訳文は直してから `autosaveDelay` 後に自動で保存し、項目ごとに「翻訳案を使う」と「訳を消す」を出します。「確認済みにする」は出しません。
+- 項目ごとに原文（読むだけ）と訳文を横に並べます（900px 以下は縦）。訳文は直してから `autosaveDelay` 後に自動で保存し、項目ごとに「翻訳案を使う」と「訳を消す」を出します。`showReviewCurrent` が `true` の場合、訳文のある未確認フィールドに「この訳を確認済みにする」を追加します。
 - 保存の衝突（`conflict`）は上書きせず、その項目に「ほかの人が先に直しました」（原文の版が違うときは「原文が更新されました」）と「最新を読み込む」を出します。読み込むと、その項目でいま直したところは消えます。ほかの項目の入力は残します。
 - 画像: 原文の画像と訳文の画像を並べ、「素材から選ぶ」（`pickAsset`）・「画像を上げる」（`uploadImage`）・「原文と同じに戻す」。差し替えた画像はそのまま翻訳済みです。
 - プレビュー: 右（1100px 以下は下）に枠を出し、表示するページ・幅（PC・360・320）・言語を切り替えます。まだ保存していない入力も映します。

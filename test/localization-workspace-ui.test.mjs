@@ -10,7 +10,7 @@ for (const key of ["window", "document", "navigator", "HTMLElement", "HTMLInputE
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
-const { LocalizationWorkspace } = await import("@niho/web/localization-workspace");
+const { LocalizationItemWorkspace, LocalizationWorkspace } = await import("@niho/web/localization-workspace");
 
 const M = (id) => `⟦${id}⟧`;
 const wait = (ms) => act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
@@ -54,6 +54,16 @@ async function setup(props) {
   const render = async (next = {}) => { current = { ...current, ...next }; await act(async () => root.render(createElement(LocalizationWorkspace, current))); await flush(); };
   await render();
   return { navigations, render, container, cleanup: async () => { await act(async () => root.unmount()); container.remove(); } };
+}
+async function setupEmbeddedItem({ adapter, itemKey = "YWJvdXQ", showReviewCurrent = false, autosaveDelay = 1000 }) {
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  await act(async () => root.render(createElement(LocalizationItemWorkspace, {
+    adapter, itemKey, showReviewCurrent, autosaveDelay, onBack: () => {},
+  })));
+  await flush();
+  return { container, cleanup: async () => { await act(async () => root.unmount()); container.remove(); } };
 }
 async function openRow(title) {
   await click([...document.querySelectorAll("button.cw-row-open")].find((node) => node.querySelector(".cw-row-title").textContent === title), title);
@@ -155,6 +165,53 @@ test("editor: an outdated translation can adopt a candidate even when the wordin
     // 確認の操作は無いので、同じ文の翻訳案でも採用できないと今の原文に結び付けられず未翻訳のまま残る
     await click(button("翻訳案を使う", card("intro")), "adopt same wording");
     assert.deepEqual(commands(memory, "adopt-candidate").map((call) => [call.input.unitId, call.input.candidateId]), [["intro", "same-wording"]]);
+  } finally { await app.cleanup(); }
+});
+
+test("embedded Studio CMS can explicitly review a translated field", async () => {
+  const memory = createLocalizationMemory();
+  const app = await setupEmbeddedItem({ adapter: memory.adapter, showReviewCurrent: true });
+  try {
+    assert.ok(button("この訳を確認済みにする", card("intro")));
+    await click(button("この訳を確認済みにする", card("intro")), "review current translation");
+    assert.deepEqual(commands(memory, "review-current").map((call) => [call.input.itemKey, call.input.unitId]), [["YWJvdXQ", "intro"]]);
+    assert.equal(card("intro").dataset.state, "reviewed");
+    assert.equal(button("この訳を確認済みにする", card("intro")), undefined);
+  } finally { await app.cleanup(); }
+});
+
+test("embedded Studio CMS refreshes every unit version after a save", async () => {
+  const memory = createLocalizationMemory(), base = memory.adapter;
+  let revision = 1;
+  const submittedVersions = [];
+  const loadCurrent = async (input, signal) => {
+    const result = await base.loadItem(input, signal);
+    return result.status === "ready" ? { ...result, item: { ...result.item,
+      units: result.item.units.map((unit) => ({ ...unit, version: `cms-${revision}` })) } } : result;
+  };
+  const adapter = {
+    ...base,
+    loadItem: loadCurrent,
+    async command(input, signal) {
+      submittedVersions.push(input.expectedVersion);
+      const item = memory.state.items.find((entry) => entry.key === input.itemKey);
+      const unit = item.units.find((entry) => entry.unitId === input.unitId);
+      const result = await base.command({ ...input, expectedVersion: `v${unit.version}` }, signal);
+      if (result.status !== "applied" && result.status !== "conflict") return result;
+      if (result.status === "applied") revision++;
+      const current = await loadCurrent({ itemKey: input.itemKey }, signal);
+      return { ...result, unit: current.item.units.find((entry) => entry.unitId === input.unitId), item: current.item };
+    },
+  };
+  const app = await setupEmbeddedItem({ adapter, autosaveDelay: 0 });
+  try {
+    await setText("title", "A better title");
+    for (let attempt = 0; attempt < 20 && submittedVersions.length < 1; attempt++) await wait(10);
+    assert.equal(submittedVersions[0], "cms-1");
+    await setText("intro", "A small workshop in town.");
+    for (let attempt = 0; attempt < 20 && submittedVersions.length < 2; attempt++) await wait(10);
+    assert.deepEqual(submittedVersions, ["cms-1", "cms-2"], "the second field uses the refreshed item-wide version");
+    assert.equal(card("title").dataset.state === "conflict" || card("intro").dataset.state === "conflict", false);
   } finally { await app.cleanup(); }
 });
 

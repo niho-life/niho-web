@@ -9,6 +9,7 @@ import {
   type CmsMigrationReplacement, type CmsProblem, type CmsRouteBoundMigration, type CmsSchema
 } from "./cms-v2-schema.js";
 import { parseCmsRouteRevision, parseCmsRouteTable, type CmsRouteTable, type CmsRouteTableVersion } from "./cms-v2-routes.js";
+import type { LocalizationCommandInput } from "./localization-workspace-model.js";
 
 export { cmsBindingAttributes, cmsPageBindingProblems, cmsPageFieldMatches, parseCmsPageBindings, resolveCmsPageBindings } from "./cms-page-bindings.js";
 export type { CmsPageBindingsDocument, CmsPageBindingSource, CmsPageDetailBinding, CmsPageFieldBinding, CmsPageListBinding } from "./cms-page-bindings.js";
@@ -23,12 +24,13 @@ export type {
   CmsReleasePlan, CmsReleaseProposal, CmsReleaseSnapshot, CmsSchedule, CmsWorkspacePresentation
 } from "./cms-v2-release.js";
 export { cancelCmsSchedule, cmsWorkspaceItem, cmsWorkspaceStatus, dueCmsSchedule, parseCmsReleaseInput, planCmsRelease, planCmsSchedule, removeCmsItem, restoreCmsItem } from "./cms-v2-release.js";
+export { collectCmsReleaseAssetReferences, parseCmsReleaseAssetManifest, type CmsPublicAsset } from "./cms-v2-assets.js";
 export type { CmsRouteCandidate, CmsRouteProblem, CmsRouteReservation, CmsRouteTable, CmsRouteTablePlan, CmsRouteTableVersion } from "./cms-v2-routes.js";
 export { parseCmsRoutePath, parseCmsRouteTable, planCmsRouteTable } from "./cms-v2-routes.js";
 export {
   applyAutomaticCmsTranslationResult, cmsLocalizationItemKey, cmsLocalizationStatus, collectCmsLocalizationUnits,
   createCmsLocalizationOverlay, editCmsLocalizedValue, materializeCmsLocalizedItem, parseCmsLocalizationIdentity,
-  parseCmsLocalizationItemKey, parseCmsLocalizationOverlay
+  parseCmsLocalizationItemKey, parseCmsLocalizationOverlay, reviewCmsLocalizedValue
 } from "./cms-v2-localization.js";
 export type {
   CmsLocalizationCollection, CmsLocalizationField, CmsLocalizationFieldKind, CmsLocalizationIdentity,
@@ -49,6 +51,13 @@ export const CMS_V2_OPERATIONS = Object.freeze({
   "cms.schedule.create": "cms.publish",
   "cms.schedule.cancel": "cms.publish",
   "cms.schedule.status": "cms.read",
+  "cms.localization.overview": "cms.read",
+  "cms.localization.items.list": "cms.read",
+  "cms.localization.items.read": "cms.read",
+  "cms.localization.items.command": "cms.edit",
+  "cms.localization.release.current": "cms.read",
+  "cms.localization.release.plan": "cms.publish",
+  "cms.localization.release.apply": "cms.publish",
 } as const);
 export type CmsV2Operation = keyof typeof CMS_V2_OPERATIONS;
 export type CmsV2Capability = typeof CMS_V2_OPERATIONS[CmsV2Operation];
@@ -204,7 +213,8 @@ export function revalidateCmsRelease(proposal: CmsReleaseProposal, context: CmsR
   if (snapshot.siteId !== context.schema.siteId || snapshot.locale !== context.locale) return { status: "conflict" };
   const planned = planCmsRelease({ siteId: snapshot.siteId, locale: snapshot.locale, schemaRevision: snapshot.schema.schemaRevision, routeTableRevision: snapshot.routeTableRevision, expectedReleaseId,
     items: snapshot.items.map(({ collectionId, itemId, revision }) => ({ collectionId, itemId, revision })), redirects: snapshot.redirects }, snapshot.releaseId, context);
-  return planned.status === "ready" && canonicalJson(planned.proposal) === canonicalJson(proposal)
+  const previous = snapshot.assetManifest === undefined ? { ...proposal, snapshot: { ...snapshot, assetManifest: [] } } : proposal;
+  return planned.status === "ready" && canonicalJson(planned.proposal) === canonicalJson(previous)
     ? { status: "allowed", candidate: planned.proposal } : { status: "conflict" };
 }
 export function checkCmsReleaseApply(scope: CmsPlanScope, input: unknown, plan: CmsReleaseConfirmation,
@@ -237,6 +247,13 @@ export type CmsV2Input = {
   "cms.schedule.create": CmsApplyInput;
   "cms.schedule.cancel": { readonly siteId: string; readonly scheduleId: string };
   "cms.schedule.status": { readonly siteId: string; readonly scheduleId: string };
+  "cms.localization.overview": { readonly siteId: string };
+  "cms.localization.items.list": { readonly siteId: string };
+  "cms.localization.items.read": { readonly siteId: string; readonly itemKey: string };
+  "cms.localization.items.command": { readonly siteId: string } & LocalizationCommandInput;
+  "cms.localization.release.current": { readonly siteId: string };
+  "cms.localization.release.plan": { readonly siteId: string; readonly operationId?: string };
+  "cms.localization.release.apply": CmsApplyInput;
 };
 export type CmsPlanResult<T> = { readonly status: "ready"; readonly plan: T } | { readonly status: "conflict" }
   | { readonly status: "invalid"; readonly problems: readonly CmsProblem[] };
@@ -254,6 +271,13 @@ export type CmsV2Result = {
   "cms.schedule.create": CmsMutationResult<CmsScheduleResult>;
   "cms.schedule.cancel": { readonly status: "cancelled" | "conflict" | "not_found" };
   "cms.schedule.status": { readonly status: "scheduled" | "failed" | "released" | "cancelled"; readonly schedule: CmsScheduleResult } | { readonly status: "not_found" };
+  "cms.localization.overview": unknown;
+  "cms.localization.items.list": unknown;
+  "cms.localization.items.read": unknown;
+  "cms.localization.items.command": unknown;
+  "cms.localization.release.current": unknown;
+  "cms.localization.release.plan": unknown;
+  "cms.localization.release.apply": unknown;
 };
 export type CmsV2Host = { readonly [Operation in CmsV2Operation]: (scope: CmsPlanScope, input: CmsV2Input[Operation]) => Promise<CmsV2Result[Operation]> };
 

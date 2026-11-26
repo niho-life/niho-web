@@ -231,7 +231,7 @@ export type LocaleReleaseApplyResult =
 
 const RELEASE_ID_RE = /^[A-Za-z][A-Za-z0-9_-]{0,127}$/u;
 const TOKEN_RE = /^[A-Za-z0-9._~+/=-]{1,512}$/u;
-const ITEM_KEY_RE = /^[A-Za-z0-9_-]{1,200}$/u;
+const ITEM_KEY_RE = /^[A-Za-z0-9_-]{1,704}$/u;
 const BLOCKER_ID_RE = /^[A-Za-z0-9_-]{1,80}$/u;
 
 function oneLine(value: unknown, path: string, max: number): string {
