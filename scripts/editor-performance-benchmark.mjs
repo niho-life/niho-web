@@ -53,14 +53,18 @@ async function loadNormalizationAnalyzer(directory) {
   const entry = typeof exported === "string" ? exported : exported?.import;
   if (typeof entry !== "string") return null;
   const module = await import(pathToFileURL(resolve(packageRoot, entry)).href);
-  if (typeof module.analyzeNormalization === "function") return (document) => module.analyzeNormalization({
-    siteId: document.siteId,
-    siteStyles: { version: "benchmark-styles-v1", styles: {} },
-    breakpoints: { version: "benchmark-breakpoints-v1", settings: { base: { name: "PC", previewWidth: 1280 }, breakpoints: [] } },
-    documents: [{ kind: "page", version: "benchmark-page-v1", document }]
-  });
   const analyze = module.analyzeNormalization ?? module.analyzeDocuments ?? module.analyze;
   if (typeof analyze !== "function") return null;
+  if (typeof module.analyzeNormalization === "function") {
+    return (document) => module.selectNormalizationOperations
+      ? analyze({ documents: [document], siteStyles: {} })
+      : analyze({
+        siteId: document.siteId,
+        siteStyles: { version: "benchmark-styles-v1", styles: {} },
+        breakpoints: { version: "benchmark-breakpoints-v1", settings: { base: { name: "PC", previewWidth: 1280 }, breakpoints: [] } },
+        documents: [{ kind: "page", version: "benchmark-page-v1", document }]
+      });
+  }
   return (document) => analyze({ documents: [document], siteStyles: {} });
 }
 
