@@ -9,7 +9,7 @@ const siteId = document.siteId;
 const initial = { tokens: { brand: { type: "color", value: "#195640" } } };
 const operationId = "12345678-1234-4123-8123-123456789abc";
 
-function fixture({ publish = true } = {}) {
+function fixture({ publish = true, pageNodeNames = false, pageRelease = false } = {}) {
   let draft = { version: "draft-1", styles: structuredClone(initial) };
   let published = { stylesVersion: "published-1", styles: {} };
   let epoch = "epoch-1";
@@ -53,10 +53,26 @@ function fixture({ publish = true } = {}) {
     async authenticate() { return { kind: "human", subject: "owner", clientKind: "gui" }; },
     async authorize(_actor, capability) { return capability !== "pages.publish" || publish; },
     siteStyles,
+    pageNodeNames,
     localization: {
       "localization.settings.save": async () => ({ status: "migration_in_progress" }),
       "localization.release.prepare": async () => ({ status: "publication_in_progress" })
     },
+    ...(pageRelease ? {
+      async releaseSite() { return { id: siteId, name: "Example", domains: ["https://host.example"] }; },
+      async preparePageRelease(_actor, request) {
+        return { status: "prepared", plan: { ...request, confirmationToken: "page-release-token", domain: "https://host.example", changes: [] } };
+      },
+      async publishPage(_actor, target, input) {
+        const previous = released.get(input.operationId);
+        if (previous) return JSON.stringify(previous.input) === JSON.stringify(input) ? previous.result : { status: "duplicate" };
+        if (input.confirmationToken !== "page-release-token" || input.expectedVersion !== pageVersion
+          || input.siteStylesRevision?.version !== published.stylesVersion || input.sitePublicationEpoch !== epoch) return { status: "conflict" };
+        pageVersion = "page-2";
+        const result = { status: "released", operationId: input.operationId, version: pageVersion, document };
+        released.set(input.operationId, { input: structuredClone(input), result }); return result;
+      }
+    } : {}),
     async readPage() { return { document, version: pageVersion, draftStylesVersion: draft.version }; },
     async savePage(_actor, _target, expectedVersion, candidate, revision) {
       if (expectedVersion !== pageVersion || revision?.stage !== "draft" || revision.version !== draft.version) return { status: "conflict" };
@@ -94,6 +110,16 @@ test("site.styles is opt-in and preserves queryless discovery", async () => {
   assert.ok(localeRelease.errors.includes("site_style_migration_in_progress"));
 });
 
+test("site.styles and page name capabilities compose once in discovery", async () => {
+  const { client } = fixture({ pageNodeNames: true });
+  const discovery = await client.discover();
+  const save = discovery.operations.find(({ id }) => id === "pages.save");
+  assert.ok(save);
+  assert.equal(save.path.match(/features=site\.styles/g)?.length, 1);
+  assert.deepEqual(save.capabilities, ["pages.name"]);
+  assert.equal(save.inputSchema.required.filter((key) => key === "draftStylesVersion").length, 1);
+});
+
 test("localization writes preserve stable site fence errors", async () => {
   const { client } = fixture();
   await client.discover();
@@ -128,6 +154,19 @@ test("feature-aware page reads and saves bind the opaque page CAS to the draft s
   const saved = await client.save(target, snapshot.version, snapshot.document);
   assert.deepEqual(saved, { status: "saved", version: "page-2", document: snapshot.document });
   assert.deepEqual(await client.save(target, "page-2", snapshot.document, undefined, "stale-draft"), { status: "conflict" });
+});
+
+test("feature-aware page release applies the prepared plan with its published style fence", async () => {
+  const { client } = fixture({ pageRelease: true });
+  await client.discover();
+  const target = { siteId, pageId: document.pageId, locale: document.locale };
+  const snapshot = await client.read(target);
+  const plan = await client.prepareRelease(target, { expectedVersion: snapshot.version, action: "publish",
+    siteStylesRevision: { stage: "published", version: "published-1" }, sitePublicationEpoch: "epoch-1" });
+  assert.equal(plan.siteStylesRevision.version, "published-1");
+  assert.equal(plan.sitePublicationEpoch, "epoch-1");
+  const released = await client.release(target, plan, "12345678-1234-4123-8123-123456789abc");
+  assert.deepEqual(released, { status: "released", operationId: "12345678-1234-4123-8123-123456789abc", version: "page-2", document });
 });
 
 test("release and migration plans bind versions and replay the same operation result", async () => {

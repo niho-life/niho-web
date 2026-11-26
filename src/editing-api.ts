@@ -1257,11 +1257,11 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
             ? await adapter.authorize(actor, "site.settings.write", { siteId }) === true && await adapter.authorize(actor, "pages.publish", { siteId }) === true
             : (await Promise.all(operationCapabilities(operation).map((capability) => adapter.authorize(actor, capability, { siteId })))).some(Boolean);
           if (!allowed) continue;
-          let discoveredOperation: EditingDiscoveredOperation = siteStylesFeature ? withSiteStylesFeature(operation) : operation;
+          let discoveredOperation: EditingDiscoveredOperation = operation;
           if (adapter.pageNodeNames === true && (operation.id === "pages.apply" || operation.id === "pages.save")) {
-            discoveredOperation = withPageNodeNameCapability(discoveredOperation as PageWriteOperation);
-            if (siteStylesFeature) discoveredOperation = withSiteStylesFeature(discoveredOperation as PageWriteOperation);
+            discoveredOperation = withPageNodeNameCapability(operation as PageWriteOperation);
           }
+          if (siteStylesFeature) discoveredOperation = withSiteStylesFeature(discoveredOperation);
           operations.push(discoveredOperation);
         }
         catch { return fail("host_failure", 503); }

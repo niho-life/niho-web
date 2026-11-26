@@ -782,7 +782,9 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
         ...(plan.presentationVersion === undefined ? {} : { presentationVersion: String(plan.presentationVersion) })
         , ...(plan.siteStylesRevision === undefined ? {} : { siteStylesRevision: plan.siteStylesRevision }), ...(plan.sitePublicationEpoch === undefined ? {} : { sitePublicationEpoch: plan.sitePublicationEpoch })
       };
-      const safePlan = parseReleasePlan(plan, target, request);
+      const { siteStylesRevision, ...internalPlan } = plan;
+      const wirePlan = { ...internalPlan, ...(siteStylesRevision === undefined ? {} : { stylesVersion: siteStylesRevision.version }) };
+      const safePlan = parseReleasePlan(wirePlan, target, request);
       const { response, body } = await send(path, "POST", { expectedVersion: safePlan.expectedVersion, confirmationToken: safePlan.confirmationToken, operationId,
         ...(siteStylesFeature ? { stylesVersion: safePlan.siteStylesRevision!.version, sitePublicationEpoch: safePlan.sitePublicationEpoch } : {}) }, signal);
       if (response.status === 409 && body.error === "version_conflict") return { status: "conflict" };
