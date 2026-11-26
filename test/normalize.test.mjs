@@ -215,6 +215,13 @@ test("verification refuses shorthand, hidden and state changes and missing share
   const active = structuredClone(document);
   active.body[0].style.states.active.opacity = 0.7;
   assert.equal(verifyNormalization({ documents: [document] }, [active]).status, "changed");
+  const animated = page("state-transition", [element("child", { base: { color: "currentColor", transitionDuration: 1000 },
+    states: { hover: { color: "currentColor" } } })]);
+  const withoutStateTransition = structuredClone(animated);
+  delete withoutStateTransition.body[0].style.states;
+  const transitionDifference = verifyNormalization({ documents: [animated] }, [withoutStateTransition]);
+  assert.equal(transitionDifference.status, "changed");
+  assert.equal(transitionDifference.reason, "background_motion_or_state_inputs");
   const shared = page("shared", [element("style", { base: { color: { token: "brand" } } })]);
   assert.equal(verifyNormalization({ documents: [shared] }, [shared]).status, "unsupported");
   const fallback = page("fallback", [element("wide", { base: { width: "320px" },
@@ -222,6 +229,43 @@ test("verification refuses shorthand, hidden and state changes and missing share
   const changedFallback = structuredClone(fallback);
   changedFallback.body[0].style.base.width = "300px";
   assert.equal(verifyNormalization({ documents: [fallback] }, [changedFallback]).status, "changed");
+});
+
+test("verification compares site tokens and text styles by their versioned effective values", () => {
+  const before = page("site-style-values", [element("heading", { base: {
+    color: "#ffffff", margin: 8, marginLeft: 12, fontSize: "24px", fontWeight: 700, lineHeight: 1.5,
+  }, responsive: [{ minWidth: 768, declarations: { color: "#f8f8f8", fontSize: "20px" } }],
+  states: { hover: { color: "#111111" } } })]);
+  const after = page("site-style-values", [element("heading", { base: {
+    color: { token: "surface-white" }, margin: 8, marginLeft: 12,
+  }, responsive: [{ minWidth: 768, declarations: { color: { token: "surface-muted" } } }],
+  states: { hover: { color: { token: "text-strong" } } }, textStyle: "heading" })]);
+  const siteStyles = {
+    tokens: {
+      "surface-white": color("#ffffff"), "surface-muted": color("#f8f8f8"), "text-strong": color("#111111"),
+      "heading-large": { type: "length", value: "24px" }, "heading-small": { type: "length", value: "20px" },
+    },
+    textStyles: { heading: { base: { fontSize: { token: "heading-large" }, fontWeight: 700, lineHeight: 1.5 },
+      responsive: [{ minWidth: 768, declarations: { fontSize: { token: "heading-small" } } }] } },
+  };
+  const input = { documents: [before], siteStyles, siteStylesRevision: { stage: "draft", version: "styles-draft-v1" } };
+  assert.deepEqual(verifyNormalization(input, [after]), { status: "equivalent", documentsChecked: 1 });
+
+  const changedBaseToken = structuredClone(siteStyles);
+  changedBaseToken.tokens["surface-white"].value = "#000000";
+  const baseDifference = verifyNormalization({ ...input, siteStyles: changedBaseToken }, [after]);
+  assert.equal(baseDifference.status, "changed");
+  assert.equal(baseDifference.width, 0);
+
+  const changedResponsiveToken = structuredClone(siteStyles);
+  changedResponsiveToken.tokens["heading-small"].value = "22px";
+  const responsiveDifference = verifyNormalization({ ...input, siteStyles: changedResponsiveToken }, [after]);
+  assert.equal(responsiveDifference.status, "changed");
+  assert.equal(responsiveDifference.width, 768);
+
+  const missingToken = structuredClone(siteStyles);
+  delete missingToken.tokens["surface-white"];
+  assert.equal(verifyNormalization({ ...input, siteStyles: missingToken }, [after]).status, "unsupported");
 });
 
 test("1,000-element analysis is deterministic with the benchmark input shape", () => {

@@ -78,6 +78,11 @@ function declarations(values: StyleDeclarations, assets: ResolvedAssetMap, mode:
 const reduced = "@media (prefers-reduced-motion:no-preference)";
 const transitionNames: readonly [StateProperty, string][] = [["color", "color"], ["backgroundColor", "background-color"], ["borderColor", "border-color"], ["opacity", "opacity"],
   ["translate", "translate"], ["rotate", "rotate"], ["scale", "scale"], ["skew", "transform"], ["textDecorationLine", "text-decoration-color"]];
+/** @internal The emitted transition-property list is derived from properties used by state rules. */
+export function stateTransitionProperties(style: NodeStyle | undefined): string[] {
+  const used = new Set(Object.values(style?.states ?? {}).flatMap((values) => Object.keys(values)));
+  return transitionNames.filter(([property]) => used.has(property)).map(([, css]) => css);
+}
 // 動き始めの姿だけを持つ。終わりは要素の通常の見た目なので、動かない環境では内容がそのまま見える。
 const keyframes: Record<AppearEffect, string> = { fade: "opacity:0", "fade-up": "opacity:0;translate:0 24px", "fade-down": "opacity:0;translate:0 -24px",
   "fade-left": "opacity:0;translate:24px 0", "fade-right": "opacity:0;translate:-24px 0", zoom: "opacity:0;scale:.92" };
@@ -183,8 +188,7 @@ export function cssForDocument(document: PageDocument, assets: ResolvedAssetMap 
   }
   const paused = options.motion === "paused", effects = new Set<AppearEffect>(), name = (effect: AppearEffect) => `${pageScope(document)}-${effect}`;
   for (const { selector, style } of paused ? [] : styled) {
-    const used = new Set(Object.values(style.states ?? {}).flatMap((values) => Object.keys(values)));
-    const properties = transitionNames.filter(([property]) => used.has(property)).map(([, css]) => css).join(",");
+    const properties = stateTransitionProperties(style).join(",");
     const timing = (values: StyleDeclarations | undefined) => motionProperties.filter((property) => values?.[property] !== undefined).map((property) => declarationCss(property, values![property]!)).join("");
     const base = timing(style.base), widths = (style.responsive ?? []).map((entry) => [entry.minWidth, timing(entry.declarations)] as const).filter(([, body]) => body);
     if (properties && (base || widths.length)) {
