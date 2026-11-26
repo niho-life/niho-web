@@ -70,7 +70,7 @@ function canvasVariableDeclarations(values: StyleDeclarations, assets: ResolvedA
     && (mode === "all" || (mode === "isolatedBackground" ? isolatedBackgroundProperties.has(property) : !isolatedBackgroundProperties.has(property))))
     .map((property) => {
       const value = canvasCssValue(property, values[property], assets);
-      if (value === undefined && property !== "backgroundImage") return "";
+      if (value === undefined) return "";
       const cssName = property === "backgroundFilter" ? "filter" : property === "skew" ? "transform" : property.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
       return `${cssName}:var(${canvasValueName(nodeId, tier, property)});`;
     }).join("");

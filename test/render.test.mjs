@@ -344,6 +344,20 @@ test("background images compile from resolved assets and only the unresolved dec
   assert.ok(renderPageToHtml(doc, {}, { assets: { "uploads:a": { src: "/media/a.webp" } } }).includes('background-image:url("/media/a.webp");'));
 });
 
+test("canvas keeps the resolved base background when a responsive image is unresolved", () => {
+  const doc = structuredClone(fixture);
+  doc.body[0].style.base.backgroundImage = { asset: { provider: "uploads", id: "a" } };
+  doc.body[0].style.responsive[0].declarations.backgroundImage = { asset: { provider: "uploads", id: "wide" } };
+  const rendered = new JSDOM(renderToString(createElement(PageRenderer, { document: doc, assets: { "uploads:a": { src: "/media/a.webp" } }, canvas: {} }))).window.document;
+  const css = rendered.querySelector("style[data-nw-style]").textContent;
+  const values = rendered.querySelector('[data-nw-node="hero"]').style;
+  assert.ok(css.includes("background-image:var(--nw-Node-hero-base-backgroundImage);"));
+  assert.ok(css.includes("@media (min-width:768px)"));
+  assert.ok(!css.includes("--nw-Node-hero-responsive-768-backgroundImage"));
+  assert.equal(values.getPropertyValue("--nw-Node-hero-base-backgroundImage"), 'url("/media/a.webp")');
+  assert.equal(values.getPropertyValue("--nw-Node-hero-responsive-768-backgroundImage"), "");
+});
+
 test("canvas rendering resolves viewport-height units and root-relative image URLs without changing public output", () => {
   const doc = structuredClone(fixture);
   doc.body[0].style = { ...(doc.body[0].style ?? {}), base: { ...(doc.body[0].style?.base ?? {}), minHeight: "100vh", height: "60vh" } };
