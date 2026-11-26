@@ -90,6 +90,19 @@ test("page rows prefetch on focus and the matching snapshot serves the page swit
   } finally { await app.cleanup(); }
 });
 
+test("the next page is prefetched after the current page becomes ready", async () => {
+  const prefetches = [];
+  const app = await setup({ adapter: { prefetchDocument: async (target) => {
+    prefetches.push(structuredClone(target));
+    return { document: { ...structuredClone(fixture), ...target }, version: `idle-${target.pageId}` };
+  } } });
+  try {
+    assert.deepEqual(prefetches, [{ siteId: "demo", pageId: "other", locale: "ja-JP" }], "idle warmup should not depend on pointer movement");
+    await clickPage("別ページ");
+    assert.equal(app.calls.reads.filter(({ pageId }) => pageId === "other").length, 0, "the warmed snapshot serves the page switch");
+  } finally { await app.cleanup(); }
+});
+
 test("responsive proposal control is absent without the optional host adapter", async () => {
   const absent = await setup();
   try { assert.equal(button("レスポンシブ提案"), undefined); }

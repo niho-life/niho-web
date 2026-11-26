@@ -916,6 +916,32 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     }).catch(() => { if (!controller.signal.aborted) { setNotice("ページ一覧を読み込めませんでした。"); setBusy(""); finishInitialLoadPerformance("failed"); } });
     return () => { controller.abort(); request.current?.abort(); pageList.current?.abort(); };
   }, [adapter, siteId, load, replace, components, openLibrary, replaceLibrary, finishInitialLoadPerformance]);
+  useEffect(() => {
+    if (!adapter.prefetchDocument || busy || !session) return;
+    const available = pages.filter((page) => page.siteId === session.target.siteId && page.kind !== "shared");
+    const sameLocale = available.filter((page) => page.locale === session.target.locale);
+    const ordered = sameLocale.length > 1 ? sameLocale : available;
+    if (ordered.length < 2) return;
+    const current = ordered.findIndex((page) => sameTarget(page, session.target));
+    const next = ordered[(current + 1 + ordered.length) % ordered.length];
+    if (!next || sameTarget(next, session.target)) return;
+
+    let cancelled = false;
+    let timer: number | undefined;
+    const idleWindow = window as typeof window & {
+      requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    const start = () => { if (!cancelled) preloadPage(next); };
+    let idleHandle: number | undefined;
+    if (idleWindow.requestIdleCallback) idleHandle = idleWindow.requestIdleCallback(start, { timeout: 1000 });
+    else timer = window.setTimeout(start, 0);
+    return () => {
+      cancelled = true;
+      if (idleHandle !== undefined) idleWindow.cancelIdleCallback?.(idleHandle);
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [adapter, busy, pages, preloadPage, session?.target.siteId, session?.target.pageId, session?.target.locale]);
   useEffect(() => () => { request.current?.abort(); action.current?.abort(); pageList.current?.abort(); releaseRead.current?.abort(); }, []);
   useEffect(() => {
     pageSessionCache.current.clear();
