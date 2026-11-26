@@ -7,9 +7,34 @@ import { JSDOM } from "jsdom";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SitePageRenderer } from "@niho/web/react";
+import { samePresentationRuntimeDocument } from "../dist/presentation-runtime.js";
 
 const element = (id, tag, text, style) => ({ type: "element", id, tag, ...(style ? { style } : {}), children: text === undefined ? [] : [{ type: "text", text }] });
 const page = (siteId, locale, pageId, body) => ({ schemaVersion: 1, siteId, pageId, locale, revision: 1, title: pageId, tokens: {}, body });
+test("presentation runtime can be reused across style and text-only immutable edits", () => {
+  const before = parsePageDocument(page("synthetic", "ja", "home", [element("heading", "h1", "Before", { base: { fontSize: 28 } })]));
+  const heading = before.body[0];
+  const styled = { ...before, body: [{ ...heading, style: { ...heading.style, base: { ...heading.style.base, fontSize: 29 } } }] };
+  assert.equal(samePresentationRuntimeDocument(before, styled), true);
+  const textChanged = { ...styled, body: [{ ...styled.body[0], children: [{ type: "text", text: "After" }] }] };
+  assert.equal(samePresentationRuntimeDocument(styled, textChanged), true);
+  const structureChanged = { ...styled, body: [{ ...styled.body[0], children: [...styled.body[0].children, element("extra", "span", "New")] }] };
+  assert.equal(samePresentationRuntimeDocument(styled, structureChanged), false);
+  const attributeChanged = { ...styled, body: [{ ...styled.body[0], attrs: { id: "new-id" } }] };
+  assert.equal(samePresentationRuntimeDocument(styled, attributeChanged), false);
+
+  const loopBefore = parsePageDocument(page("synthetic", "ja", "loop", [{
+    type: "element", id: "loop", tag: "div", interaction: { type: "loop-box", speed: 60, pauseOnHover: true },
+    children: [{ ...element("card", "div", undefined, { base: { backgroundColor: "#fff" } }), children: [element("loop-text", "p", "Before")] }]
+  }]));
+  const loopRoot = loopBefore.body[0];
+  const card = loopRoot.children[0];
+  const cardText = card.children[0];
+  const loopTextChanged = { ...loopBefore, body: [{ ...loopRoot, children: [{ ...card, children: [{ ...cardText, children: [{ type: "text", text: "After" }] }] }] }] };
+  const loopStyleChanged = { ...loopBefore, body: [{ ...loopRoot, children: [{ ...card, style: { ...card.style, base: { ...card.style.base, backgroundColor: "#f00" } } }] }] };
+  assert.equal(samePresentationRuntimeDocument(loopBefore, loopTextChanged), false);
+  assert.equal(samePresentationRuntimeDocument(loopBefore, loopStyleChanged), false);
+});
 const site = (siteId = "synthetic", locale = "en") => ({
   schemaVersion: 1, siteId, locale, version: "site-v7:deps-a1", reset: "neutral-v1", tokens: {},
   layout: { base: { display: "flex", flexDirection: "column", alignItems: "center", width: "100%" } },

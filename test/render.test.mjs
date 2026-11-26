@@ -8,6 +8,7 @@ import { createBlankEmbedRegistry, DocumentValidationError, pageScope, parsePage
 import { PageRenderer, SitePageRenderer } from "@niho/web/react";
 import { renderPageToHtml, renderSitePageToHtml } from "@niho/web/server";
 import { generatePageCss } from "@niho/web/core";
+import { sameCanvasCssShape } from "../dist/css.js";
 
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 
@@ -32,6 +33,13 @@ test("canvas keeps its stylesheet stable when only style and token values change
   after.tokens.brand.value = "#654321";
   after.textStyles.headline.base.fontSize = 29;
   after.body[0].children[0].style.base.marginTop = 6;
+  assert.equal(sameCanvasCssShape(before, after), true, "value-only edits preserve the canvas stylesheet shape");
+  const addedProperty = structuredClone(after);
+  addedProperty.body[0].children[0].style.base.padding = 8;
+  assert.equal(sameCanvasCssShape(after, addedProperty), false, "new declarations require a new stylesheet");
+  const newNode = structuredClone(after);
+  newNode.body[0].children.push({ type: "element", id: "new-node", tag: "div", children: [] });
+  assert.equal(sameCanvasCssShape(after, newNode), false, "structural edits require a new stylesheet");
   const renderCanvas = (document) => new JSDOM(renderToString(createElement(PageRenderer, { document, canvas: {} }))).window.document;
   const first = renderCanvas(before), second = renderCanvas(after);
   assert.equal(first.querySelector("style[data-nw-style]").textContent, second.querySelector("style[data-nw-style]").textContent);

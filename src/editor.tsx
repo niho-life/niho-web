@@ -30,7 +30,7 @@ import { assetEditorCss, canvasAssetCss } from "./editor-assets-style.js";
 import { uiColor } from "./ui-tokens.js";
 import { assetKey, type LibraryAsset, type ResolvedAssetMap } from "./assets.js";
 import { presentationAssetDocument } from "./presentation.js";
-import { initializeSitePresentation } from "./presentation-runtime.js";
+import { initializeSitePresentation, samePresentationRuntimeDocument } from "./presentation-runtime.js";
 import { componentIssues, componentUsage, parseComponentLibrary, type ResolvedOrigin } from "./components.js";
 import { bumpChangedComponentVersions, componentCreationLock, componentDocument, createComponentFromNode, duplicateComponent, removeComponent, renameComponent, setComponentKind, setComponentProp, withComponentDocument } from "./component-model.js";
 import { ComponentBanner, ComponentDialogBody, ComponentPanel, ComponentSettings, CreateComponentSection, InstanceInspector, LibraryReloadDialogBody, MasterPropFields, SiteComponentBanner, SiteComponentSettings, componentDialogTitle, type ComponentDialogState, type InputRenderer } from "./component-panel.js";
@@ -468,10 +468,12 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
   const defaultPreview = presentation
     ? <EditorSitePageRenderer key={replay} document={rendered} presentation={presentation} blocks={blocks} {...(externalFramePolicy ? { externalFramePolicy } : {})} {...(blankEmbeds ? { blankEmbeds } : {})} assets={assets} missingAssets="placeholder" canvas={canvasRendering} />
     : <StablePageRenderer key={replay} document={rendered} blocks={blocks} {...(blankEmbeds ? { blankEmbeds } : {})} assets={assets} missingAssets="placeholder" canvas={canvasRendering} />;
+  const runtimeDocument = useRef(rendered);
+  if (!samePresentationRuntimeDocument(runtimeDocument.current, rendered)) runtimeDocument.current = rendered;
   useEffect(() => {
     if (!body) return;
     return initializeSitePresentation(body, { interactive: presentationRuntime, ...(mode === "preview" && xPostFrameUrl ? { xPostFrameUrl } : {}) });
-  }, [body, mode, presentation, presentationRuntime, rendered, replay, xPostFrameUrl]);
+  }, [body, mode, presentation, presentationRuntime, runtimeDocument.current, replay, xPostFrameUrl]);
   useEffect(() => { if (body) onReady?.(); }, [body, onReady]);
   const presentationDocuments = useMemo(() => presentation ? [presentation.shared.header, presentation.shared.footer, ...(presentation.overlays ?? []).map((overlay) => overlay.document), ...(presentation.hostViews ?? []).map((view) => view.document)] : [], [presentation]);
   const presentationHasEmbed = useMemo(() => presentationDocuments.some((source) => walkNodes(source).some(({ node }) => node.type === "element" && !!node.embed?.source)), [presentationDocuments]);
