@@ -134,13 +134,23 @@ export function useKamakuraCatalog(scope: string | null): CatalogLoad {
   };
 }
 
-function parseSnapshot(value: unknown, target: EditorTarget, required = false): EditorSnapshot {
-  const source = record(value), document = record(source.document), checked = validTarget(target);
-  if (document.siteId !== checked.siteId || document.pageId !== checked.pageId || document.locale !== checked.locale || !validVersion(source.version)) throw new Error("文書の対象または版が一致しません。");
-  if (required && source.presentation === undefined) throw new Error("このサイトに必要な表示コンテキストがありません。");
-  const snapshot = { ...source } as unknown as EditorSnapshot;
-  if (source.englishPublication !== undefined) snapshot.englishPublication = parseEnglishPublication(source.englishPublication);
-  return snapshot;
+type PagePresentationRead = Pick<EditorSnapshot, "presentation" | "englishPublication"> & { documentVersion: string; presentationVersion: string; releases: NonNullable<EditorSnapshot["releases"]> };
+
+function parsePagePresentationRead(value: unknown): PagePresentationRead {
+  const source = record(value), presentation = record(source.presentation);
+  if (!validVersion(source.documentVersion) || !validVersion(source.presentationVersion)
+      || presentation.version !== source.presentationVersion || !Array.isArray(source.releases)
+      || source.releases.length > 500 || source.releases.some((entry) => {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) return true;
+        const release = entry as Record<string, unknown>;
+        return !Number.isSafeInteger(release.revision) || Number(release.revision) < 1 || typeof release.label !== "string";
+      })) throw new Error("表示情報の対象または版が一致しません。");
+  const result: PagePresentationRead = {
+    documentVersion: source.documentVersion, presentationVersion: source.presentationVersion,
+    presentation: source.presentation, releases: source.releases as NonNullable<EditorSnapshot["releases"]>,
+  };
+  if (source.englishPublication !== undefined) result.englishPublication = parseEnglishPublication(source.englishPublication);
+  return result;
 }
 
 function safeLine(value: unknown, maximum: number): value is string {
@@ -290,13 +300,19 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
   async function readJapaneseDocument(target: EditorTarget, signal: AbortSignal): Promise<EditorSnapshot> {
     const checked = validTarget(target);
     const requirePresentation = (listedCatalog ?? catalog).nativePresentationPages.includes(checked.pageId);
-    const [wire, legacy] = await Promise.all([
+    const [wire, presentationRead] = await Promise.all([
       editingApi.read(checked, signal),
-      api(pagePath(checked), "GET", undefined, signal).then((value) => parseSnapshot(value, checked, requirePresentation))
+      api(`${pagePath(checked)}/presentation`, "GET", undefined, signal).then(parsePagePresentationRead)
     ]);
-    const presentationVersion = legacy.presentation === undefined ? undefined : record(legacy.presentation).version;
-    if (wire.version !== legacy.version || wire.presentationVersion !== presentationVersion) throw new EditorApiError(409, "version_conflict");
-    return { ...legacy, document: wire.document, version: wire.version };
+    const hasPresentationVersion = wire.presentationVersion !== undefined;
+    if (wire.version !== presentationRead.documentVersion
+        || hasPresentationVersion && wire.presentationVersion !== presentationRead.presentationVersion
+        || requirePresentation && !hasPresentationVersion) throw new EditorApiError(409, "version_conflict");
+    return {
+      document: wire.document, version: wire.version, releases: presentationRead.releases,
+      ...(hasPresentationVersion ? { presentation: presentationRead.presentation } : {}),
+      ...(presentationRead.englishPublication ? { englishPublication: presentationRead.englishPublication } : {}),
+    };
   }
   return {
     listSites: (signal) => request(signal, async () => catalog.sites),
@@ -408,7 +424,7 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
       return editingApi.pageReleaseSetStatus(operationId, signal);
     }),
     englishPublication: {
-      refresh: (target, signal) => request(signal, async () => parseSnapshot(await api(pagePath(target), "GET", undefined, signal), target, catalog.nativePresentationPages.includes(target.pageId)).englishPublication),
+      refresh: (target, signal) => request(signal, async () => parsePagePresentationRead(await api(`${pagePath(target)}/presentation`, "GET", undefined, signal)).englishPublication),
       retry: (target, signal) => conflict(() => request(signal, async () => parseEnglishPublicationAccepted(await api(`${pagePath(target)}/english-publication-retry`, "POST", {}, signal))))
     },
     localization: {
