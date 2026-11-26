@@ -26,7 +26,7 @@ const searchableText = (node: PageNode): string => {
   return Object.values(props).filter((value): value is string => typeof value === "string").join(" ");
 };
 const excerpt = (value: string) => value.replace(/\s+/g, " ").trim().slice(0, 32);
-const embedLabels: Record<EmbedProvider, string> = { map: "Map", youtube: "YouTube", vimeo: "Vimeo", lottie: "Lottie", facebook: "Facebook", x: "X", instagram: "Instagram", blank: "Blank" };
+const embedLabels: Record<EmbedProvider, string> = { map: "Map", youtube: "YouTube", vimeo: "Vimeo", lottie: "Lottie", facebook: "Facebook", x: "X", instagram: "Instagram", blank: "Blank", url: "外部URL" };
 
 /** 要素の種類の表示名。レイヤー行・移動先・インスペクタの見出しで共通に使う。 */
 export const elementTypeLabel: Record<ElementTag, string> = {

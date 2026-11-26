@@ -13,7 +13,9 @@ const xHandle = /^[A-Za-z0-9_]{1,15}$/u;
 const xPostId = /^[0-9]{1,20}$/u;
 const instagramShortcode = /^[A-Za-z0-9_-]{1,64}$/u;
 const blankEmbedKey = /^[a-z][a-z0-9-]{0,31}$/u;
-const providers = new Set<EmbedProvider>(["map", "youtube", "vimeo", "lottie", "facebook", "x", "instagram", "blank"]);
+const providers = new Set<EmbedProvider>(["map", "youtube", "vimeo", "lottie", "facebook", "x", "instagram", "blank", "url"]);
+const nihoTravelOrigins = new Set(["https://travel.niho.life", "https://travel-stg.niho.life"]);
+const nihoTravelBookingPath = /^\/embed\/experiences\/[a-z0-9]+(?:-[a-z0-9]+)*\/book$/u;
 
 export type BlankEmbedSandboxMode = "strict" | "scripts" | "forms" | "scripts-forms" | "same-origin" | "same-origin-forms" | "same-origin-scripts" | "same-origin-scripts-forms";
 export type BlankEmbedRegistryEntry = Readonly<{ key: string; label: string; src: string; sandbox: BlankEmbedSandboxMode }>;
@@ -77,6 +79,7 @@ function invalid(provider: EmbedProvider): never {
     : provider === "facebook" ? "Facebook の公開投稿 URL を入力してください。"
     : provider === "x" ? "X の公開ポスト URL を入力してください。"
     : provider === "instagram" ? "Instagram の公開投稿またはリール URL を入力してください。"
+    : provider === "url" ? "公開された HTTPS URL を入力してください。"
     : "ホストが承認した Blank 埋め込みを選択してください。");
 }
 
@@ -114,6 +117,10 @@ export function normalizeEmbedSource(provider: EmbedProvider, value: string): st
     return value;
   }
   const url = safeUrl(value, provider), host = url.hostname.toLowerCase();
+  if (provider === "url") {
+    if (!/^[a-z0-9-]+(?:\.[a-z0-9-]+)*\.?$/u.test(host) || /%(?:0[0-9a-f]|1[0-9a-f]|7f)/iu.test(value)) invalid(provider);
+    return url.href;
+  }
   if (provider === "x") {
     if (host !== "x.com") invalid(provider);
     const post = /^https:\/\/x\.com\/([^/?#]+)\/status\/([^/?#]+)\/?$/u.exec(value);
@@ -171,6 +178,20 @@ export function normalizeEmbedSource(provider: EmbedProvider, value: string): st
   try { pb = decodeURIComponent(raw); } catch { return invalid(provider); }
   if (pb.length < 10 || pb.length > 16000 || /[\u0000-\u001f\u007f<>]/u.test(pb)) invalid(provider);
   return `https://www.google.com/maps/embed?pb=${encodeURIComponent(pb).replaceAll("'", "%27")}`;
+}
+
+/** 権限を広げられる NIHO Travel 予約画面の正規形だけを識別する。 */
+export function isTrustedNihoTravelEmbedSource(source: string): boolean {
+  let url: URL;
+  try { url = new URL(source); } catch { return false; }
+  return nihoTravelOrigins.has(url.origin) && nihoTravelBookingPath.test(url.pathname);
+}
+
+/** Studio preview では元queryを保ちつつ、予約不可の明示modeを強制する。 */
+export function nihoTravelPreviewSource(source: string): string {
+  const url = new URL(source);
+  url.searchParams.set("preview", "1");
+  return url.href;
 }
 
 export function parseEmbedDescriptor(value: unknown, path: string): EmbedDescriptor {

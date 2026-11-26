@@ -107,9 +107,9 @@ v1\n${timestamp}\n${method}\n${pathname}\n${sha256hex(rawBody)}\n${project}\n${s
 
 STG検証は同じ allowlist と署名契約を使いますが、上流は固定 `https://api-stg.niho.life`、鍵は `NIHO_STUDIO_BRIDGE_SECRET_STG` です。STG UI は環境を明示します。通常の Experience editor ルートや本番用 key/origin は切り替えません。STG API が未配備、secret が無効、または owner 以外なら閉じます。公開・復元の受入操作は STG API 上でのみ行い、本番 API へは送信しません。
 
-Editor HTML route だけ `PageEditor` の inline style と `iframe srcDoc` に必要な `style-src 'unsafe-inline'` / `frame-src 'self'` を追加します。鎌倉の editor route では、標準埋め込みの Google Maps・YouTube・Vimeo の固定配信元、Lottie preview専用の `https://lottie.host/embed/`、Facebook投稿専用の `https://www.facebook.com/plugins/post.php`、Instagramの公式表示先、将来X endpointを置ける既存media frame pathだけを`frame-src`に加えます。Instagramの固定公式script URLだけを`script-src`に加え、不要になった`platform.twitter.com`の親script/frame許可は持ちません。X endpointは別originのCSPで公式widgetの許可を所有しますが、このStudio hostは固定`xPostFrameUrl`を`PageEditor`へ接続します。Lottieのdirect asset path、Facebookの他path、各hostの任意pathは許可しません。Directory / Dashboardなど他routeのCSPは緩和しません。
+Editor HTML route だけ `PageEditor` の inline style と `iframe srcDoc` に必要な `style-src 'unsafe-inline'` / `frame-src 'self'` を追加します。鎌倉の editor route は「外部URL」のプレビュー用に `frame-src` へ `https:` を追加します。Instagramの固定公式script URLを許可し、Directory / Dashboardなど他routeには同じ緩和を適用しません。
 
-鎌倉のキャンバスの外部frameは、`studio/kamakura-catalog.ts` の `KAMAKURA_EXTERNAL_FRAME_SOURCES`（サイト単位の許可）に一致するものだけ読み込みます。そのうち Google Maps（`KAMAKURA_ORIGIN_RETAINING_FRAME_SOURCES`）だけ origin を維持し、不変 embed の配信 prefix（`KAMAKURA_EMBED_FRAME_SOURCE`、上の `frame-src` と同じ値）は `sandbox="allow-scripts"`（`allow-same-origin` なし）の opaque iframe で描きます。許可の外は「外部コンテンツを表示できません」の枠です。
+鎌倉の「外部URL」は編集キャンバスで静的に表示し、プレビューで公開HTTPS URLを隔離iframeに読み込みます。NIHO Travelの予約URLは、Studioと別originの場合に限り予約ウィジェットの表示に必要なoriginとフォーム権限を付け、`preview=1` で予約操作を無効にします。既存のホスト部品が出力するframeには `studio/kamakura-catalog.ts` の `KAMAKURA_EXTERNAL_FRAME_SOURCES` と `KAMAKURA_ORIGIN_RETAINING_FRAME_SOURCES` を引き続き適用します。
 
 ## Kamakura editor bridge
 

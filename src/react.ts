@@ -8,7 +8,7 @@ import { parseResolvedAssets, resolvedAsset, type ResolvedAssetMap } from "./ass
 import { cssForValidatedSitePresentation, parseSitePresentation, presentationLayoutDocument, sitePresentationHostViewKey } from "./presentation.js";
 import { editorRendererToken, editorRendererTokenProp } from "./editor-renderer-token.js";
 import { iconGlyph } from "./icons.js";
-import { parseBlankEmbedRegistry, resolveBlankEmbed, type BlankEmbedRegistry } from "./embeds.js";
+import { isTrustedNihoTravelEmbedSource, nihoTravelPreviewSource, normalizeEmbedSource, parseBlankEmbedRegistry, resolveBlankEmbed, type BlankEmbedRegistry } from "./embeds.js";
 
 export type BlockDefinition = BlockContract & {
   /** ホストアプリが所有する同期 React コンポーネント。JSON から実行コードを読まない。 */
@@ -73,7 +73,7 @@ export type PageRendererProps = {
 const canvasCssText = (css: string, canvas: PageRendererProps["canvas"]) => canvas?.viewportHeight ? resolveViewportHeightUnits(css, canvas.viewportHeight) : css;
 const rootRelative = (value: string) => value.startsWith("/") && !value.startsWith("//");
 const embedAllow = { map: undefined, youtube: "encrypted-media; picture-in-picture; fullscreen", vimeo: "picture-in-picture; fullscreen" } as const;
-const embedLabel = { map: "Map", youtube: "YouTube", vimeo: "Vimeo", lottie: "Lottie", facebook: "Facebook", x: "X", instagram: "Instagram", blank: "Blank" } as const;
+const embedLabel = { map: "Map", youtube: "YouTube", vimeo: "Vimeo", lottie: "Lottie", facebook: "Facebook", x: "X", instagram: "Instagram", blank: "Blank", url: "外部URL" } as const;
 const emptyBlocks: BlockRegistry = Object.freeze({});
 const emptyOverlayBindings: readonly SitePresentationOverlay[] = Object.freeze([]);
 const emptyHostViews: readonly SitePresentationHostView[] = Object.freeze([]);
@@ -199,6 +199,30 @@ function PageRendererCore({ document: input, blocks = emptyBlocks, assets: asset
             createElement("iframe", { src: entry.src, title: node.embed.title, loading: "lazy", referrerPolicy: "strict-origin-when-cross-origin", sandbox: entry.sandboxValue,
               style: { width: "100%", minHeight: 0, flex: "1 1 auto", border: 0, display: "block", ...(canvas ? { pointerEvents: "none" } : {}) } }),
             createElement("a", { href: entry.src, target: "_blank", rel: "noopener noreferrer", "data-nw-blank-fallback": "", style: { flex: "0 0 auto", padding: 8, textAlign: "center" } }, `${entry.label}を新しいタブで開く`)));
+      }
+      if (node.embed.provider === "url") {
+        let source: string;
+        try { source = normalizeEmbedSource("url", node.embed.source); }
+        catch {
+          return missingAssets === "placeholder" ? createElement("div", { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope,
+            "data-nw-empty-embed": "url", role: "status" }, "公開HTTPS URLを確認できません") : null;
+        }
+        if (canvas && !canvas.interactive) return createElement("div", { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope,
+          "data-nw-embed": "url", "data-nw-url-static": "", role: "status" }, `${node.embed.title}（プレビューで表示）`);
+        const travelBooking = isTrustedNihoTravelEmbedSource(source);
+        const parentOrigin = blankEmbeds?.parentOrigin;
+        const trustedTravel = travelBooking && !!parentOrigin && new URL(source).origin !== parentOrigin;
+        const preview = !!canvas?.interactive;
+        const frameSource = preview && travelBooking ? nihoTravelPreviewSource(source) : source;
+        const sandbox = trustedTravel
+          ? preview ? "allow-scripts allow-same-origin allow-forms" : "allow-scripts allow-same-origin allow-forms allow-top-navigation-by-user-activation allow-popups allow-popups-to-escape-sandbox"
+          : "allow-scripts";
+        return createElement("div", { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-embed": "url" },
+          createElement("div", { "data-nw-url-player": "", style: { display: "flex", flexDirection: "column", width: "100%", height: "100%" } },
+            createElement("iframe", { src: frameSource, title: node.embed.title, loading: "lazy", referrerPolicy: trustedTravel ? "origin" : "no-referrer", sandbox,
+              "data-nw-url-embed-frame": "", style: { width: "100%", minHeight: 0, flex: "1 1 auto", border: 0, display: "block" } }),
+            createElement("a", { href: frameSource, target: "_blank", rel: "noopener noreferrer", "data-nw-url-fallback": "",
+              style: { flex: "0 0 auto", padding: 10, textAlign: "center" } }, "元URLを新しいタブで開く")));
       }
       if (node.embed.provider === "lottie") return createElement("div", { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope,
         "data-nw-embed": "lottie", "data-nw-lottie-source": node.embed.source, "data-nw-lottie-title": node.embed.title,
