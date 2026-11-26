@@ -43,12 +43,12 @@ function snapshotTargetsPage(snapshot: EditorSnapshot, target: EditorTarget): bo
   return document.siteId === target.siteId && document.pageId === target.pageId && document.locale === target.locale;
 }
 
-function sessionCacheKey(target: EditorTarget, snapshot: EditorSnapshot, settingsVersion: string | null | undefined): string | undefined {
+function sessionCacheKey(target: EditorTarget, snapshot: EditorSnapshot, settingsVersion: string | null | undefined, componentsKey: number | null): string | undefined {
   const presentationVersion = snapshot.presentation && typeof snapshot.presentation === "object"
     ? (snapshot.presentation as { readonly version?: unknown }).version : undefined;
   try {
     return JSON.stringify([
-      target.siteId, target.pageId, target.locale, snapshot.version,
+      target.siteId, target.pageId, target.locale, snapshot.version, componentsKey,
       snapshot.componentsVersion ?? null, snapshot.presentationVersion ?? null, snapshot.stylesVersion ?? null,
       settingsVersion === undefined ? "unavailable" : settingsVersion === null ? "failed" : settingsVersion,
       snapshot.hasSavedDraft ?? null, snapshot.locks ?? null, snapshot.releases ?? null,
@@ -70,37 +70,70 @@ function cleanSessionCopy(session: EditorSession): EditorSession {
 /** A small per-editor LRU keyed by target and the server's current page/dependency versions. */
 export class EditorSessionCache {
   private readonly entries = new Map<string, EditorSessionLoad>();
+  private readonly latest = new Map<string, { value: EditorSessionLoad; components?: ComponentLibrary; cachedAt: number }>();
+  private readonly componentKeys = new WeakMap<ComponentLibrary, number>();
+  private nextComponentKey = 0;
 
   constructor(private readonly capacity = 4) {
     if (!Number.isSafeInteger(capacity) || capacity < 1) throw new RangeError("Editor session cache capacity must be positive");
   }
 
+  private targetKey(target: EditorTarget): string { return JSON.stringify([target.siteId, target.pageId, target.locale]); }
+
+  private componentsKey(components?: ComponentLibrary): number | null {
+    if (!components) return null;
+    let key = this.componentKeys.get(components);
+    if (key === undefined) { key = ++this.nextComponentKey; this.componentKeys.set(components, key); }
+    return key;
+  }
+
+  private remember(target: EditorTarget, value: EditorSessionLoad, components?: ComponentLibrary): void {
+    const key = this.targetKey(target);
+    this.latest.delete(key);
+    this.latest.set(key, { value: { session: cleanSessionCopy(value.session), ...(value.siteSettings ? { siteSettings: value.siteSettings } : {}), ...(value.warning ? { warning: value.warning } : {}) }, ...(components ? { components } : {}), cachedAt: Date.now() });
+    while (this.latest.size > this.capacity) this.latest.delete(this.latest.keys().next().value!);
+  }
+
   get(target: EditorTarget, snapshot: EditorSnapshot, settingsVersion: string | null | undefined, components?: ComponentLibrary): EditorSessionLoad | undefined {
-    if (components) return undefined;
     if (!snapshotTargetsPage(snapshot, target)) return undefined;
-    const key = sessionCacheKey(target, snapshot, settingsVersion);
+    const key = sessionCacheKey(target, snapshot, settingsVersion, this.componentsKey(components));
     if (!key) return undefined;
     const cached = this.entries.get(key);
     if (!cached) return undefined;
     this.entries.delete(key);
     this.entries.set(key, cached);
+    this.remember(target, cached, components);
     return { session: cleanSessionCopy(cached.session), ...(cached.siteSettings ? { siteSettings: cached.siteSettings } : {}), ...(cached.warning ? { warning: cached.warning } : {}) };
   }
 
   set(target: EditorTarget, snapshot: EditorSnapshot, settingsVersion: string | null | undefined, value: EditorSessionLoad, components?: ComponentLibrary): void {
-    if (components) return;
-    const key = sessionCacheKey(target, snapshot, settingsVersion);
+    const key = sessionCacheKey(target, snapshot, settingsVersion, this.componentsKey(components));
     if (!key) return;
     this.entries.delete(key);
-    this.entries.set(key, {
+    const cached: EditorSessionLoad = {
       session: cleanSessionCopy(value.session),
       ...(value.siteSettings ? { siteSettings: value.siteSettings } : {}),
       ...(value.warning ? { warning: value.warning } : {})
-    });
+    };
+    this.entries.set(key, cached);
+    this.remember(target, cached, components);
     while (this.entries.size > this.capacity) this.entries.delete(this.entries.keys().next().value!);
   }
 
-  clear(): void { this.entries.clear(); }
+  /** 最新の保存済みセッションを、版の再確認中にすぐ表示するために取得する。 */
+  getLatest(target: EditorTarget, components?: ComponentLibrary, maxAgeMs = 5 * 60_000): EditorSessionLoad | undefined {
+    const key = this.targetKey(target), cached = this.latest.get(key);
+    if (!cached) return undefined;
+    if (Date.now() - cached.cachedAt > maxAgeMs || cached.components !== components) { this.latest.delete(key); return undefined; }
+    this.latest.delete(key);
+    this.latest.set(key, cached);
+    return { session: cleanSessionCopy(cached.value.session), ...(cached.value.siteSettings ? { siteSettings: cached.value.siteSettings } : {}), ...(cached.value.warning ? { warning: cached.value.warning } : {}) };
+  }
+
+  /** 保存応答を受け取った最新のクリーンなセッションを再訪時キャッシュへ反映する。 */
+  rememberLatest(target: EditorTarget, value: EditorSessionLoad, components?: ComponentLibrary): void { this.remember(target, value, components); }
+
+  clear(): void { this.entries.clear(); this.latest.clear(); }
 }
 
 export type EditorSessionReadOptions = { readonly cache?: EditorSessionCache; readonly snapshot?: EditorSnapshot; readonly siteSettings?: { readonly settings: ReturnType<typeof parseSiteSettings>; readonly version: string } };

@@ -146,6 +146,32 @@ test("editor page cache reuses only the saved session for the same document vers
   assert.equal(changedVersion.session.history.present.title, "サーバー側の新しい版");
 });
 
+test("editor page cache keeps a clean last-known session and keys it by component-library identity", async () => {
+  const cache = new EditorSessionCache(2), controller = new AbortController();
+  const components = { schemaVersion: 1, siteId: target.siteId, revision: 1, tokens: {}, components: [] };
+  const snapshotValue = snapshot();
+  const first = await readEditorSession({ readDocument: async () => snapshotValue }, target, controller.signal, {}, components, { cache });
+  first.session.history = { past: [source], present: editDocument(first.session.history.present, { type: "title", value: "未保存の編集" }), future: [] };
+
+  const latest = cache.getLatest(target, components);
+  assert.ok(latest);
+  assert.equal(latest.session.history.present.title, source.title, "cache keeps only the saved document");
+  assert.deepEqual(latest.session.history.past, []);
+  assert.equal(cache.getLatest(target, { ...components }), undefined, "a different component-library snapshot cannot reuse the old parsed session");
+  assert.equal(cache.getLatest(target, components, -1), undefined, "expired sessions are not served as the last-known page");
+});
+
+test("editor page cache can remember a newly acknowledged saved session", async () => {
+  const cache = new EditorSessionCache(2), controller = new AbortController();
+  const components = { schemaVersion: 1, siteId: target.siteId, revision: 1, tokens: {}, components: [] };
+  const first = await readEditorSession({ readDocument: async () => snapshot() }, target, controller.signal, {}, components, { cache });
+  const savedDocument = editDocument(first.session.history.present, { type: "title", value: "保存済みの版" });
+  const savedSession = { ...first.session, version: "v2", saved: "saved-v2", history: { past: [], present: savedDocument, future: [] } };
+  cache.rememberLatest(target, { session: savedSession }, components);
+  assert.equal(cache.getLatest(target, components)?.session.history.present.title, "保存済みの版");
+  assert.deepEqual(cache.getLatest(target, components)?.session.history.past, []);
+});
+
 test("editor page cache retains the site-settings snapshot with a prefetched session", async () => {
   const cache = new EditorSessionCache(2), controller = new AbortController();
   const siteSettings = { settings: { title: "Demo", locale: "ja" }, version: "s1" };
