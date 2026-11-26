@@ -111,9 +111,11 @@ const baseline = await loadSuite(baseDirectory);
 const candidate = await loadSuite(candidateDirectory);
 const rawDocument = syntheticDocument();
 const textEdit = { type: "text", path: [0, 0, 0], value: "合成編集後" };
+const styleEdit = { type: "style", path: [0, 0], breakpoint: "base", property: "color", value: "#0055aa" };
 const results = [
   measurePair("document.load-validation", () => baseline.document.parsePageDocument(rawDocument), () => candidate.document.parsePageDocument(rawDocument), consume),
   measurePair("editor.editDocument", () => baseline.model.editDocument(baseline.parsed, textEdit), () => candidate.model.editDocument(candidate.parsed, textEdit), consume),
+  measurePair("editor.editStyle", () => baseline.model.editDocument(baseline.parsed, styleEdit), () => candidate.model.editDocument(candidate.parsed, styleEdit), consume),
   measurePair("pages.inspect-outline", () => baseline.inspect.inspectPageDocument(baseline.parsed, { view: "outline", limit: 1000 }), () => candidate.inspect.inspectPageDocument(candidate.parsed, { view: "outline", limit: 1000 }), consume)
 ];
 
