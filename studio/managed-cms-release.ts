@@ -1,6 +1,6 @@
 import { assetKey } from "../src/assets.js";
 import { galleryEntries, type CollectionImageValue } from "../src/collection-model.js";
-import { collectCmsReleaseAssetReferences, revalidateCmsRelease, type CmsProblem, type CmsPublicAsset, type CmsReleaseContext, type CmsReleasePin, type CmsReleaseSnapshot } from "../src/cms-v2.js";
+import { revalidateCmsRelease, type CmsProblem, type CmsPublicAsset, type CmsReleaseContext, type CmsReleasePin, type CmsReleaseSnapshot } from "../src/cms-v2.js";
 import { cmsItemKey } from "../src/cms-v2-schema.js";
 import type { ManagedD1 } from "./managed-sites.js";
 import { escapeHtml } from "./managed-cms-model.js";
@@ -37,10 +37,7 @@ export async function releaseContext(store: CmsStore, site: Site, pins: readonly
     entry.kind === "fixed-page" || (entry.kind === "reserved" && !entry.reservationId.startsWith("cms_route_")) ? [entry.path] : []));
   const revisions = new Map(await Promise.all(approved.map(async (pin) =>
     [pin.revision, await store.item(site.siteId, site.state.locale, pin)] as const)));
-  const references = store.resolvePublicAssets
-    ? collectCmsReleaseAssetReferences(site.state.schema, [...revisions.values()]) : [];
-  const publicAssets = references.length && store.resolvePublicAssets
-    ? await store.resolvePublicAssets({ siteId: site.siteId, references }) : [];
+  const publicAssets = await store.publicAssets(site.state.schema, [...revisions.values()]);
   return {
     schema: site.state.schema, locale: site.state.locale, currentReleaseId: site.state.current?.id ?? null,
     routeTable, publicAssets,

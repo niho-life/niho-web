@@ -20,7 +20,7 @@
 
 `materializeCmsLocalizedItem` は source revision から target locale の新しい `CmsItemRevision` を組み立て、現在の schema でもう一度値を検証します。ホストが revision ID を渡します。`fallback: "source"` は未訳 field の原文を残し、不足 field ID を返します。`fallback: "omit"` は翻訳可能な field が空または不足した項目を公開候補から除外します。この値は実行時にも厳密に検証し、未知の方針は拒否します。どちらの方針で snapshot を作るかは Site の公開ポリシーに固定してください。
 
-この関数は immutable revision の材料を作るだけです。source/target locale の一覧管理、翻訳保存、previewの分離、locale別の完全な公開snapshot、不変配信と renderer acknowledgement はホストが行い、[CMS v2契約](cms-v2-contract.md) および [公開素材契約](asset-contract.md) と組み合わせます。翻訳済み項目だけを CMS v1 の更新APIに書き戻す使い方はしません。
+この関数は immutable revision の材料を作るだけです。source/target locale の一覧管理、翻訳保存、previewの分離、locale別の完全な公開snapshot、不変配信と renderer acknowledgement はホストが行い、[CMS v2契約](cms-v2-contract.md) および [公開素材契約](asset-contract.md) と組み合わせます。Studio の外部ホストへの取得と配備結果は [CMS 配信契約](cms-delivery-contract.md) に従います。翻訳済み項目だけを CMS v1 の更新APIに書き戻す使い方はしません。
 
 ## ホスト接続チェック
 

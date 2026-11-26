@@ -1,5 +1,6 @@
+import { CMS_DELIVERY_RENDERER_VERSION, serializeCmsDeliverySnapshot } from "../src/cms-delivery-contract.js";
 import { starterCollection } from "./managed-cms-model.js";
-import { parseCmsReleaseAssetManifest, parseCmsRouteTable, type CmsItemRevision, type CmsPublicAsset, type CmsReleasePin, type CmsReleaseSnapshot, type CmsRouteTable, type CmsSchema } from "../src/cms-v2.js";
+import { collectCmsReleaseAssetReferences, parseCmsReleaseAssetManifest, parseCmsRouteTable, type CmsItemRevision, type CmsPublicAsset, type CmsReleasePin, type CmsReleaseSnapshot, type CmsRouteTable, type CmsSchema } from "../src/cms-v2.js";
 import type { AssetReference } from "../src/types.js";
 import type { ManagedD1 } from "./managed-sites.js";
 
@@ -86,6 +87,20 @@ function scopeValues(scope: CmsScope, capability: CmsCapability) {
 
 export class CmsStore {
   constructor(readonly db: ManagedD1, readonly bucket: CmsBucket, readonly resolvePublicAssets?: CmsPublicAssetResolver) {}
+
+  async publicAssets(schema: CmsSchema, items: readonly CmsItemRevision[]) {
+    if (!this.resolvePublicAssets) return [];
+    const references = collectCmsReleaseAssetReferences(schema, items);
+    return references.length ? this.resolvePublicAssets({ siteId: schema.siteId, references }) : [];
+  }
+
+  private async deliveryEvent(transaction: string, snapshot: CmsReleaseSnapshot, guard: string) {
+    const { snapshotDigest } = await serializeCmsDeliverySnapshot(snapshot);
+    return this.db.prepare(`INSERT INTO managed_cms_delivery_events
+      (site_id, sequence, release_id, locale, snapshot_digest, renderer_version)
+      SELECT ?2, COALESCE((SELECT max(sequence) FROM managed_cms_delivery_events WHERE site_id = ?2), 0) + 1, ?3, ?4, ?5, ?6
+      WHERE ${guard}`).bind(transaction, snapshot.siteId, snapshot.releaseId, snapshot.locale, snapshotDigest, CMS_DELIVERY_RENDERER_VERSION);
+  }
 
   async site(scope: CmsScope, capability: CmsCapability): Promise<Site | null> {
     const row = await this.db.prepare(`SELECT ms.slug, m.role,
@@ -236,7 +251,7 @@ export class CmsStore {
   async commit(site: Site, capability: CmsCapability, change: {
     operation: string; operationId: string; inputDigest: string; result: object; state: CmsState;
     revisions?: readonly CmsItemRevision[]; job?: { id: string; kind: Job["kind"]; at: number; payload: JobPayload };
-    cancel?: string; tokenHash?: string; requireFreeSlot?: boolean; bindingsGeneration?: number; publishedReleaseId?: string;
+    cancel?: string; tokenHash?: string; requireFreeSlot?: boolean; bindingsGeneration?: number; publishedSnapshot?: CmsReleaseSnapshot;
   }): Promise<boolean> {
     const transactionId = opaque("tx"), auditGuard = "EXISTS (SELECT 1 FROM managed_cms_receipts WHERE transaction_id = ?1)";
     const { operation, operationId, inputDigest, state, result, job, revisions, cancel } = change;
@@ -255,8 +270,11 @@ export class CmsStore {
         .bind(transactionId, site.siteId, JSON.stringify(state)),
       this.db.prepare(`INSERT INTO managed_cms_audit (id, site_id, actor_id, operation) SELECT ?1, ?2, ?3, ?4 WHERE ${auditGuard}`)
         .bind(transactionId, site.siteId, site.actor.id, operation),
-      ...(change.publishedReleaseId ? [this.db.prepare(`INSERT INTO managed_cms_releases (site_id, release_id) SELECT ?2, ?3 WHERE ${auditGuard}`)
-        .bind(transactionId, site.siteId, change.publishedReleaseId)] : []),
+      ...(change.publishedSnapshot ? [
+        this.db.prepare(`INSERT INTO managed_cms_releases (site_id, release_id) SELECT ?2, ?3 WHERE ${auditGuard}`)
+          .bind(transactionId, site.siteId, change.publishedSnapshot.releaseId),
+        await this.deliveryEvent(transactionId, change.publishedSnapshot, auditGuard)
+      ] : []),
       ...(revisions ?? []).map((item) => this.db.prepare(`INSERT INTO managed_cms_revisions (site_id, revision, collection_id, item_id, locale, schema_revision)
         SELECT ?2, ?3, ?4, ?5, ?6, ?7 WHERE ${auditGuard}`)
         .bind(transactionId, site.siteId, item.revision, item.collectionId, item.itemId, item.locale, item.schemaRevision)),
@@ -277,19 +295,21 @@ export class CmsStore {
     const state: CmsState = { ...site.state, current: { id: snapshot.releaseId, at: dateNow() }, routeTableRevision: snapshot.routeTable.revision };
     const generation = opaque("tx");
     const guard = "EXISTS (SELECT 1 FROM managed_cms_state WHERE site_id = ?2 AND generation = ?1)";
-    const result = await this.db.batch([
+    const statements = [
       this.db.prepare(`UPDATE managed_cms_state SET generation = ?6, state_json = ?7 WHERE site_id = ?2 AND generation = ?8
         AND EXISTS (SELECT 1 ${AUTH})
         AND EXISTS (SELECT 1 FROM managed_cms_outbox WHERE site_id = ?2 AND id = ?9 AND state = 'pending' AND lease_id = ?10
           AND lease_until > unixepoch())`).bind(...scopeValues(site, "cms.publish"), generation, JSON.stringify(state), site.generation, job.id, job.lease_id),
       this.db.prepare(`INSERT INTO managed_cms_releases (site_id, release_id) SELECT ?2, ?3 WHERE ${guard}`)
         .bind(generation, site.siteId, snapshot.releaseId),
+      await this.deliveryEvent(generation, snapshot, guard),
       this.db.prepare(`INSERT INTO managed_cms_audit (id, site_id, actor_id, operation) SELECT ?1, ?2, ?3, 'cms.release.delivered' WHERE ${guard}`)
         .bind(generation, site.siteId, site.actor.id),
       this.db.prepare(`UPDATE managed_cms_outbox SET state = 'delivered', lease_id = NULL, lease_until = NULL, failure = NULL
         WHERE site_id = ?2 AND id = ?3 AND ${guard}`).bind(generation, site.siteId, job.id)
-    ]);
-    if (result.length !== 4 || result.some((entry) => !entry.success)) throw new Error("CMS publication transaction failed");
+    ];
+    const result = await this.db.batch(statements);
+    if (result.length !== statements.length || result.some((entry) => !entry.success)) throw new Error("CMS publication transaction failed");
     return result[0]?.meta?.changes === 1;
   }
 }

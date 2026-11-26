@@ -49,7 +49,7 @@ v1 の意味は既存の通りです。v2 を使う Site の v1 の書込み入�
 
 `planCmsRelease` は同じ Site、locale、版の項目を読んで公開用に変換します。必須値、同じ snapshot 内の参照先、削除済みの項目、スラッグ、重複 path、版付き route table の衝突を検証します。転送先は公開項目または固定 route です。転送は1回で解決し、転送元は現在の route を占有できません。固定ページ、テンプレート、予約 path、ホスト所有転送との照合は route table を通して行います。slug 変更で自動生成する転送と明示転送の合計は25,000件以下です。上限を超える計画は `invalid` を返します。公開される本文にはホストの無害化と公開素材の検査が必要です。
 
-`cms.release.apply` はサーバーで保持した確認内容を `checkCmsReleaseApply` で再構成し、元の計画と一致する場合に確定します。snapshot の保存後、D1 transaction で受領記録・監査・outbox を確定します。この時点では公開 pointer は前の release のままです。outbox worker は前提を再検証してから、公開 pointer・release 履歴・監査・outbox 完了を一つの transaction で切り替えます。`cms.release.status` は現在の権限を再確認し、同じ Site、actor、操作の受領記録と配信状態（`pending` / `delivered` / `dead`）を返します。完全に同じ request の再送だけ既存結果を返します。同じ ID で異なる操作や入力を送ると conflict です。成功済みの再送は確認期限の判定より先に受領記録を確認します。
+`cms.release.apply` はサーバーで保持した確認内容を `checkCmsReleaseApply` で再構成し、元の計画と一致する場合に確定します。snapshot の保存後、D1 transaction で受領記録・監査・outbox を確定します。この時点では公開 pointer は前の release のままです。outbox worker は前提を再検証してから、公開 pointer・release 履歴・監査・通知イベント・outbox 完了を一つの transaction で切り替えます。`cms.release.status` は現在の権限を再確認し、同じ Site、actor、操作の受領記録と配信状態（`pending` / `delivered` / `dead`）を返します。完全に同じ request の再送だけ既存結果を返します。同じ ID で異なる操作や入力を送ると conflict です。成功済みの再送は確認期限の判定より先に受領記録を確認します。
 
 `cms.schedule.create` は release で固定した内容と時刻を保存します。実行時は `dueCmsSchedule` と `revalidateCmsRelease` を使い、時刻、公開 pointer、定義、選んだ版の存在、削除、現在のルート制約を確認します。あとから保存した新しい下書きは予約へ混ぜません。前提が変われば失敗を保存し、現在の公開を維持します。取消は未確定の予約だけに適用し、scheduler の実行と競合させないよう CAS を使います。再試行では現在の前提にもとづく新しい計画を確認します。
 
@@ -95,6 +95,10 @@ locale 公開の確認・適用は `niho-edit --studio localization-release-read
 
 既存の共通 `cms.schema` / `cms.list` / `cms.read` には従来の DTO を返します。同じ `/api/edit/v1` の形式で書き込む Studio クライアントは、`X-Studio-CMS-Version: 2` を送ります。このヘッダーによって版を宣言した要求は内部の v2 revision、release、outbox で処理します。宣言のない書込みは `409 unsupported_version` です。公開 apply の受領応答は再送時も保持されます。v2 の `cms.release.status` は受領記録に加えて outbox の `pending` / `delivered` / `dead` と失敗理由を返し、legacy の `cms.operation-status` は配信後の結果を取得できます。
 
+## 外部ホストへの配信
+
+外部ホストは Site 専用の配信資格で、locale ごとの公開 snapshot と通知イベントを読みます。ホストが配備した成果物の ack は Studio の公開状態と独立しており、現行の release ID、snapshot digest、renderer 版を照合します。認証、ETag、通知 cursor、Astro / Next.js のビルド用関数は [外部ホストへの CMS 配信契約](cms-delivery-contract.md) を参照してください。
+
 ## PageDocument と CMS の結び付け
 
 `CmsPageBindingsDocument` は `PageDocument` に含めず、ページごとの版付き sidecar として保存します。`schemaVersion: 1`、`siteId`、`pageId`、`locale` に加え、繰り返す list node と collection、上限25件、任意の field filter / sort、node・`fieldId`・target の対応を持てます。detail は collection の slug field を使い、ページ path に slug を足した URL で公開します。field は名前が変わらない `fieldId` で参照します。
@@ -107,4 +111,4 @@ bindings の image mapping は安定 asset reference を使います。ホスト
 
 ## CMS 項目の翻訳
 
-CMS v2 の翻訳 identity、下書き overlay、翻訳状態、target locale revision の生成は [CMS翻訳契約](cms-localization-contract.md) を使います。英語の公開 snapshot と素材配信は別の境界で、[素材契約](asset-contract.md) と #380 の delivery 契約に従います。
+CMS v2 の翻訳 identity、下書き overlay、翻訳状態、target locale revision の生成は [CMS翻訳契約](cms-localization-contract.md) を使います。英語の公開 snapshot と素材配信は別の境界で、[素材契約](asset-contract.md) と [外部ホストへの CMS 配信契約](cms-delivery-contract.md) に従います。
