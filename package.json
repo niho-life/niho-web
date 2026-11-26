@@ -24,6 +24,10 @@
       "types": "./dist/core.d.ts",
       "import": "./dist/core.js"
     },
+    "./normalize": {
+      "types": "./dist/normalize.d.ts",
+      "import": "./dist/normalize.js"
+    },
     "./editing-api": {
       "types": "./dist/editing-api.d.ts",
       "import": "./dist/editing-api.js"
