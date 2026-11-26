@@ -578,6 +578,26 @@ test("site-wide color and name inputs are committed while typing in the site sco
   } finally { await app.cleanup(); }
 });
 
+test("a page dependency refresh adopts the matching site-style snapshot for the editor", async () => {
+  const page = structuredClone(fixture);
+  page.body[0].children[0].style = { base: { color: { token: "siteInk" } } };
+  const refreshed = { title: "デモサイト", locale: "ja", tokens: { siteInk: { type: "color", value: "#123456", label: "最新カラー" } } };
+  let settingsReads = 0;
+  const app = await setup({ document: page, adapter: {
+    readSiteSettings: async () => ++settingsReads < 3
+      ? { settings: { title: "デモサイト", locale: "ja" }, version: "draft-1" }
+      : { settings: structuredClone(refreshed), version: "draft-2" },
+    saveSiteSettings: async () => ({ status: "saved", version: "draft-3" }),
+    readDocument: async () => ({ document: structuredClone(page), version: "v1", draftStylesVersion: "draft-2" })
+  } });
+  try {
+    assert.ok(settingsReads >= 3, "a version mismatch triggers a fresh site-settings read");
+    await click(button("スタイル", left()));
+    await click(button("サイト共通", left()));
+    assert.ok(libraryRow("最新カラー"), "the editor adopts the settings snapshot used to validate the page");
+  } finally { await app.cleanup(); }
+});
+
 test("unsaved page changes and page inputs keep site-wide styles locked and say why", async () => {
   const host = siteStyleHost(), app = await setup({ document: host.page, adapter: host.adapter });
   try {
