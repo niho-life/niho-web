@@ -38,6 +38,9 @@ test("Experience editor stays frozen while Kamakura reads pass and site freezes 
       const path = new URL(request.url).pathname;
       kamakuraCalls.push(`${request.method} ${path}`);
       if (path.endsWith("/catalog")) return Response.json(catalog);
+      if (path === "/api/edit/v1/sites/kamakura/operations/pages.read/home") return Response.json({
+        document: { siteId: "kamakura", pageId: "home", locale: "ja" }, version: "v1", presentation: {}, editorState: { readOnly }
+      });
       if (request.method === "GET") return Response.json({ document: { siteId: "kamakura", pageId: "home", locale: "ja" }, version: "v1", readOnly });
       return writeResponse();
     } },
@@ -66,9 +69,12 @@ test("Experience editor stays frozen while Kamakura reads pass and site freezes 
   const catalogResponse = await call(`${kamakura}/editor/catalog`);
   assert.equal(catalogResponse.status, 200);
   assert.deepEqual((await catalogResponse.json()).nativePresentationPages, ["home"]);
-  const page = await call(`${kamakura}/editor/home`);
+  assert.equal((await call(`${kamakura}/editor/home`)).status, 404, "旧ページsnapshot routeをBFFから削除");
+  const page = await call(`${kamakura}/editor/editing-api/v1/sites/kamakura/operations/pages.read/home?locale=ja`, {
+    headers: { Accept: "application/json; profile=niho-editor-snapshot-v1" }
+  });
   assert.equal(page.status, 200);
-  assert.deepEqual((await page.json()).readOnly, readOnly);
+  assert.deepEqual((await page.json()).editorState.readOnly, readOnly);
   for (const [path, method] of [[`${kamakura}/editor/home/draft`, "PUT"], [`${kamakura}/editor/home/release-plan`, "POST"], [`${kamakura}/editor/home/release`, "POST"]]) {
     const response = await write(path, method);
     assert.equal(response.status, 409, path);
@@ -82,7 +88,7 @@ test("Experience editor stays frozen while Kamakura reads pass and site freezes 
   assert.equal((await call(`${kamakura}/editor-staging/catalog`)).status, 404);
   assert.deepEqual(kamakuraCalls, [
     "GET /internal/studio/web-content/catalog",
-    "GET /internal/studio/web-content/home",
+    "GET /api/edit/v1/sites/kamakura/operations/pages.read/home",
     "PUT /internal/studio/web-content/home/draft",
     "POST /internal/studio/web-content/home/release-plan",
     "POST /internal/studio/web-content/home/release",

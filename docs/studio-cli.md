@@ -46,6 +46,8 @@ CLIはこの値を `cf-access-token` headerだけに入れ、標準出力へ出�
 
 ## 編集と公開
 
+Kamakura の `pages.read` は、共通 Editing API の editor snapshot profile を使い、文書・presentation・編集状態を一度の読取で返します。Studio GUI と同じく、旧ページsnapshot経路には接続しません。
+
 編集は対象の最新状態と版を読み、既存の保存契約へ変更と版を渡す。公開の確認計画で対象サイト、ページ、差分、版を照合し、その計画を公開に適用する。競合時は最新版と手元の変更を比較してから再実行する。
 
 Studio-native の PageEditor は CMS パネルで list / detail とページ要素を結び付けます。機械クライアントは `niho-edit --studio --origin <origin> --site <site> apply <page> --locale <locale> --cms-bindings bindings.json` で sidecar を追加・置換でき、JSON `null` で解除します。`bindings.json` は [CMS v2 契約](cms-v2-contract.md#pagedocument-と-cms-の結び付け) の `CmsPageBindingsDocument` 形式です。対応 host の discovery が `pages.cms-bindings` capability を返す場合だけ操作できます。
