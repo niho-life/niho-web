@@ -374,6 +374,8 @@ export type PageEditorProps = {
   blankEmbeds?: BlankEmbedRegistry;
   /** trusted host code が所有する、親documentとは別originの固定HTTPS X投稿frame endpoint。 */
   xPostFrameUrl?: string;
+  /** 汎用の公開HTTPS URL埋め込みを新規追加パレットに表示する。既存nodeの表示・編集には影響しない。 */
+  enableUrlEmbeds?: boolean;
   /** 標準の挿入・モーションカタログを同じ ID で置換、または新しい項目で拡張する。 */
   builder?: BuilderDefinition;
   /** Canvasと同じiframe内で描画する。予約・送信などの副作用を起こさず、未指定時は従来どおり。 */
