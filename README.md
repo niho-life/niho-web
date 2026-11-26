@@ -16,7 +16,7 @@
 
 ブラウザを使わないStudio操作は [CLIの契約と運用](docs/studio-cli.md) を参照してください。
 
-CMS v2 の定義移行、項目容量、公開snapshot・素材manifest・翻訳の境界は [CMS v2契約](docs/cms-v2-contract.md) を参照してください。
+CMS v2 の定義移行、項目・snapshot容量と大きな公開計画、素材manifest・翻訳の境界は [CMS v2契約](docs/cms-v2-contract.md) を参照してください。
 
 AIが編集する対象ごとの正本・GUI/CLI/Gitの経路・公開HTMLからの逆引きと、鎌倉StudioのGUI書込み操作ID・適合テストは[対応表](docs/ai-edit-source-map.md#鎌倉studioのgui書込み経路)を参照してください。
 AIによる読取・検索・dry-run・preview・公開と、Claude Code / Codexから使うstdio MCPの設定は[AI編集手順](docs/ai-editing-guide.md)を参照してください。

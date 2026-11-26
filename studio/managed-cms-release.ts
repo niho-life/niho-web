@@ -5,7 +5,7 @@ import { cmsItemKey } from "../src/cms-v2-schema.js";
 import type { ManagedD1 } from "./managed-sites.js";
 import { escapeHtml } from "./managed-cms-model.js";
 import {
-  CmsStore, cmsPathReserved, nowSeconds, opaque, type Site, type Job, type JobPayload
+  CmsStore, MAX_ITEMS, cmsPathReserved, nowSeconds, opaque, type Site, type Job, type JobPayload
 } from "./managed-cms-store.js";
 
 export { escapeHtml };
@@ -51,8 +51,10 @@ export async function releaseContext(store: CmsStore, site: Site, pins: readonly
 
 const MAX_ATTEMPTS = 5;
 const LEASE_SECONDS = 60;
+const REQUEST_JOB_BUDGET = 45;
+const MAX_JOB_BUDGET = 10 + MAX_ITEMS;
 
-// Bound both Cron and request-time Worker subrequests, including large schema-migration jobs.
+// Keep request-time delivery small; Cron can verify the full maximum item set in one bounded pass.
 const JOB_COST = `CASE kind WHEN 'verify' THEN 3 + json_array_length(payload_json, '$.keys')
                      ELSE 10 + json_array_length(payload_json, '$.pins') END`;
 async function claim(db: ManagedD1, id: string | null, at: number, budget: number) {
@@ -75,7 +77,7 @@ async function endAttempt(store: CmsStore, job: Job, at: number, outcome: "verif
 }
 
 /** Local publication has no network side effect: the immutable snapshot and its D1 pointer are the delivery. */
-export async function deliverCmsJob(store: CmsStore, id: string | null = null, at = nowSeconds(), budget = 45): Promise<number> {
+export async function deliverCmsJob(store: CmsStore, id: string | null = null, at = nowSeconds(), budget = REQUEST_JOB_BUDGET): Promise<number> {
   const job = await claim(store.db, id, at, budget);
   if (!job) return 0;
   if (job.attempts > MAX_ATTEMPTS) {
@@ -123,7 +125,7 @@ export async function runCmsCron(store: CmsStore) {
   const at = nowSeconds();
   await store.db.prepare("DELETE FROM managed_cms_tokens WHERE expires_at <= ?1").bind(at).all();
   // Only one leased job is worked at a time. The lease also recovers an interrupted invocation.
-  let budget = 45;
+  let budget = MAX_JOB_BUDGET;
   for (let index = 0; index < 4 && budget >= 3; index++) {
     const cost = await deliverCmsJob(store, null, at, budget);
     if (cost === 0) break;

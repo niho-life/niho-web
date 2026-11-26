@@ -41,6 +41,7 @@ type Receipt = { operation: string; input_digest: string; result_json: string; t
 export const MAX_ITEMS = 500;
 export const MAX_REDIRECTS = 25_000;
 export const MAX_BODY = 64 * 1024;
+export const MAX_RELEASE_BODY = 4 * 1024 * 1024;
 export const MAX_RETAINED_BYTES = 100 * 1024 * 1024;
 export const MAX_SNAPSHOT = 2 * 1024 * 1024;
 export const opaque = (prefix: string) => `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
@@ -142,14 +143,25 @@ export class CmsStore {
 
   async approvedPins(site: Site, pins: readonly CmsReleasePin[]) {
     if (!pins.length) return [];
-    const rows = await this.db.prepare(`SELECT revision, collection_id, item_id, locale, schema_revision FROM managed_cms_revisions
-       WHERE site_id = ?2 AND revision IN (${pins.map((_, i) => `?${i + 6}`).join(",")})
-       AND EXISTS (SELECT 1 ${AUTH})`).bind(...scopeValues(site, "cms.publish"), ...pins.map((pin) => pin.revision)).all<{
-        revision: string; collection_id: string; item_id: string; locale: string; schema_revision: string;
-      }>();
-    if (!rows.success || !rows.results) throw new Error("CMS revision lookup failed");
-    return pins.filter((pin) => rows.results!.some((row) => row.revision === pin.revision && row.collection_id === pin.collectionId
-      && row.item_id === pin.itemId && row.locale === site.state.locale && row.schema_revision === site.state.schema.schemaRevision));
+    const scope = scopeValues(site, "cms.publish");
+    // D1 allows at most 100 bound parameters per statement; keep the five auth/site values in every chunk.
+    const pinChunkSize = 100 - scope.length;
+    const revisionRows = new Map<string, { revision: string; collection_id: string; item_id: string; locale: string; schema_revision: string }>();
+    for (let offset = 0; offset < pins.length; offset += pinChunkSize) {
+      const chunk = pins.slice(offset, offset + pinChunkSize);
+      const rows = await this.db.prepare(`SELECT revision, collection_id, item_id, locale, schema_revision FROM managed_cms_revisions
+         WHERE site_id = ?2 AND revision IN (${chunk.map((_, i) => `?${i + 6}`).join(",")})
+         AND EXISTS (SELECT 1 ${AUTH})`).bind(...scope, ...chunk.map((pin) => pin.revision)).all<{
+          revision: string; collection_id: string; item_id: string; locale: string; schema_revision: string;
+        }>();
+      if (!rows.success || !rows.results) throw new Error("CMS revision lookup failed");
+      for (const row of rows.results) revisionRows.set(row.revision, row);
+    }
+    return pins.filter((pin) => {
+      const row = revisionRows.get(pin.revision);
+      return row?.collection_id === pin.collectionId && row.item_id === pin.itemId
+        && row.locale === site.state.locale && row.schema_revision === site.state.schema.schemaRevision;
+    });
   }
 
   async fixedRoutes(site: Site, capability: CmsCapability, locale = site.state.locale) {

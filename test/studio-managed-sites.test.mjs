@@ -277,23 +277,36 @@ async function releasePlan(site, schemaRevision, previous, items, at) {
   return { operationId: plan.operationId, confirmationToken: plan.confirmationToken };
 }
 
-testWithD1("Studio CMS imports 90 items and plans them as one atomic snapshot", async (t) => {
+testWithD1("Studio CMS publishes a large snapshot with a request body above 64 KiB", async (t) => {
   const h = await fixture(t, { cms: true }), site = await cmsSite(h, "cms-capacity");
   const { schemaRevision } = await site.read("cms.schema.read");
   const drafts = [];
-  for (let index = 0; index < 90; index++) {
+  for (let index = 0; index < 120; index++) {
     const created = await createDraft(site, schemaRevision);
     drafts.push(await saveDraft(site, created, `Capacity fixture ${index}`, `capacity-${index}`));
   }
 
+  const firstPlan = await releasePlan(site, schemaRevision, null, [drafts[0]]);
+  await site.read("cms.release.apply", firstPlan);
+  await h.cron();
+  const previous = (await site.read("cms.release.current")).snapshot;
+  const redirects = Array.from({ length: 2_500 }, (_, index) => ({ from: `/cms/old-${index}`, to: "/cms/posts/capacity-0" }));
   const current = await site.read("cms.release.current");
-  const { plan } = await site.read("cms.release.plan", { schemaRevision, locale: "ja", routeTableRevision: current.routeTableRevision,
-    expectedReleaseId: null, items: drafts.map(pin), redirects: drafts.slice(0, 30).map((draft, index) => ({
-      from: `/cms/posts/old-${index}`, to: `/cms/posts/capacity-${index}`
-    })) });
-  assert.equal(plan.candidate.snapshot.items.length, 90);
+  const planInput = { schemaRevision, locale: "ja", routeTableRevision: current.routeTableRevision,
+    expectedReleaseId: previous.releaseId, items: drafts.map(pin), redirects };
+  assert.ok(new TextEncoder().encode(JSON.stringify({ siteId: site.siteId, ...planInput })).byteLength > 64 * 1024);
+  const { plan } = await site.read("cms.release.plan", planInput);
+  assert.equal(plan.candidate.snapshot.items.length, 120);
   assert.equal(plan.candidate.snapshot.assetManifest.length, 0);
-  assert.equal(plan.candidate.snapshot.redirects.length, 30);
+  assert.equal(plan.candidate.snapshot.redirects.length, redirects.length);
+  await site.read("cms.release.apply", { operationId: plan.operationId, confirmationToken: plan.confirmationToken });
+  assert.equal((await site.read("cms.release.status", { operationId: plan.operationId })).delivery.state, "pending",
+    "request-time delivery keeps its small budget for a large item set");
+  await h.cron();
+  assert.equal((await site.read("cms.release.status", { operationId: plan.operationId })).delivery.state, "delivered");
+  const published = (await site.read("cms.release.current")).snapshot;
+  assert.equal(published.items.length, 120);
+  assert.equal(published.redirects.length, redirects.length);
 });
 
 testWithD1("Studio CMS localization exposes the shared workspace contract and preserves reviewed manual values after source changes", async (t) => {

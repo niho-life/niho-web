@@ -18,7 +18,7 @@ import { DocumentValidationError, keys, record } from "../src/validation-utils.j
 import { validatePagePath } from "../src/pages.js";
 import { OPERATION_KEY_HEADER, UUID_V4 } from "../cli/operations.mjs";
 import {
-  CmsStore, MAX_BODY, MAX_ITEMS, MAX_REDIRECTS, MAX_RETAINED_BYTES, MAX_SNAPSHOT, blobSize, cmsPathReserved, dateNow, digest,
+  CmsStore, MAX_BODY, MAX_ITEMS, MAX_REDIRECTS, MAX_RELEASE_BODY, MAX_RETAINED_BYTES, MAX_SNAPSHOT, blobSize, cmsPathReserved, dateNow, digest,
   iso, itemBlobKey, localizationBlobKey, nowSeconds, opaque, routeTableKey, snapshotKey, type CmsCapability, type CmsScope, type ItemMeta, type JobPayload, type Site
 } from "./managed-cms-store.js";
 import { collectionPath, deliverCmsJob, escapeHtml, previewContent, releaseContext, releaseImpacts } from "./managed-cms-release.js";
@@ -66,18 +66,18 @@ function exact(value: Record<string, unknown>, names: readonly string[]) {
   if (Object.keys(value).length !== names.length) throw new DocumentValidationError("request", "missing key");
 }
 
-async function readBody(request: Request, scope: CmsScope) {
+async function readBody(request: Request, scope: CmsScope, maxBytes = MAX_BODY) {
   if (!scope.actor.cli && (request.headers.get("Origin") !== new URL(request.url).origin || request.headers.get("Sec-Fetch-Site") !== "same-origin")) return null;
   if (request.headers.get("Content-Type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") return null;
   const declared = request.headers.get("Content-Length");
-  if (declared !== null && (!/^\d+$/u.test(declared) || Number(declared) > MAX_BODY)) return null;
-  const reader = request.body?.getReader(), bytes = new Uint8Array(MAX_BODY);
+  if (declared !== null && (!/^\d+$/u.test(declared) || Number(declared) > maxBytes)) return null;
+  const reader = request.body?.getReader(), bytes = new Uint8Array(maxBytes);
   if (!reader) return null;
   let size = 0;
   while (true) {
     const chunk = await reader.read();
     if (chunk.done) break;
-    if (size + chunk.value.length > MAX_BODY) { await reader.cancel(); return null; }
+    if (size + chunk.value.length > maxBytes) { await reader.cancel(); return null; }
     bytes.set(chunk.value, size);
     size += chunk.value.length;
   }
@@ -684,7 +684,8 @@ async function executeV2(request: Request, store: CmsStore, scope: CmsScope, rou
   const site = await store.site(scope, capability!);
   if (!site) return forbidden();
   if (request.method !== "POST") return error("method_not_allowed", 405);
-  const body = await readBody(request, scope);
+  const maxBody = operation === "cms.release.plan" || operation === "cms.schedule.create" ? MAX_RELEASE_BODY : MAX_BODY;
+  const body = await readBody(request, scope, maxBody);
   if (!body || body.siteId !== site.siteId) return invalid();
   const cap = capability!;
   let mutation: Mutation | null = null;
