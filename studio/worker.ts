@@ -1610,7 +1610,7 @@ const EDITING_DISCOVERY_PATH = "/sites/kamakura/capabilities";
 const EDITING_LOCALIZATION_ROUTE = /^\/sites\/kamakura\/operations\/(localization\.[a-z.]+)$/u;
 
 function kamakuraEditingCapability(method: string, pathname: string, search: string): EditingCapability | null {
-  if (pathname === EDITING_DISCOVERY_PATH) return method === "GET" && !search ? "pages.read" : null;
+  if (pathname === EDITING_DISCOVERY_PATH) return method === "GET" && (!search || search === "?features=site.styles") ? "pages.read" : null;
   if (pathname === "/sites/kamakura/operations/pages.catalog") return method === "GET" && !search ? "pages.read" : null;
   if (/^\/sites\/kamakura\/operations\/pages\.change-(?:prepare|apply)$/u.test(pathname)) {
     if (search) return null;
@@ -1624,6 +1624,14 @@ function kamakuraEditingCapability(method: string, pathname: string, search: str
     const expectedMethod = operation === "site.breakpoints.read" ? "GET" : "PUT";
     if (method !== expectedMethod) throw new AuthenticationError("editing API method mismatch");
     return operation === "site.breakpoints.read" ? "site.settings.read" : "site.settings.write";
+  }
+  const siteStyles = /^\/sites\/kamakura\/operations\/(site\.styles\.(?:read|save|release-plan|release|migration-plan|migration-apply))$/u.exec(pathname);
+  if (siteStyles) {
+    if (search) return null;
+    const operation = siteStyles[1]!;
+    const expectedMethod = operation === "site.styles.read" ? "GET" : operation === "site.styles.save" ? "PUT" : "POST";
+    if (method !== expectedMethod) throw new AuthenticationError("editing API method mismatch");
+    return operation === "site.styles.read" ? "site.settings.read" : "site.settings.write";
   }
   const assets = /^\/sites\/kamakura\/operations\/(assets\.(?:list|usages|resolve|update|upload-intent|delete|restore))(?:\/([A-Za-z][A-Za-z0-9_-]{0,79})\/([A-Za-z0-9][A-Za-z0-9._~-]{0,127}))?$/u.exec(pathname);
   if (assets) {
@@ -1658,7 +1666,7 @@ function kamakuraEditingCapability(method: string, pathname: string, search: str
   }
   const releaseSet = /^\/sites\/kamakura\/operations\/(pages\.release-set-plan|pages\.release-set|pages\.release-set-status)(?:\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}))?$/iu.exec(pathname);
   if (releaseSet) {
-    if (search) return null;
+    if (search && search !== "?features=site.styles") return null;
     const operation = releaseSet[1]!, operationId = releaseSet[2];
     if (operation === "pages.release-set-status") {
       if (!operationId || method !== "GET") throw new AuthenticationError("editing API method or path mismatch");
@@ -1670,7 +1678,9 @@ function kamakuraEditingCapability(method: string, pathname: string, search: str
   const match = /^\/sites\/kamakura\/operations\/(pages\.(?:read|save|release-plan|release))\/([a-z][a-z0-9-]{0,59})$/u.exec(pathname);
   if (!match) return null;
   const query = new URLSearchParams(search), operation = match[1]!;
-  if (query.size !== 1 || query.getAll("locale").length !== 1 || query.get("locale") !== "ja") return null;
+  const feature = query.getAll("features");
+  if ((query.size !== 1 && query.size !== 2) || query.getAll("locale").length !== 1 || query.get("locale") !== "ja"
+    || feature.length > 1 || feature.length === 1 && feature[0] !== "site.styles") return null;
   const expectedMethod = operation === "pages.read" ? "GET" : operation === "pages.save" ? "PUT" : "POST";
   if (method !== expectedMethod) throw new AuthenticationError("editing API method mismatch");
   return operation === "pages.read" ? "pages.read" : operation === "pages.save" ? "pages.edit" : "pages.publish";
@@ -1733,10 +1743,12 @@ async function signedKamakuraEditingApiRequest(request: Request, env: Env, ident
     if (!localizationScopes.includes(capability)) return json({ error: "forbidden" }, 403);
   }
   // 概要の表示権限もサイトの scope から計算する。実行時にはその操作の scope だけを渡す。
+  const siteWideStyleWrite = /^\/sites\/kamakura\/operations\/site\.styles\.(?:release-plan|release|migration-plan|migration-apply)$/u.test(upstreamSuffix);
   const capabilities = upstreamSuffix === EDITING_DISCOVERY_PATH ? [...EDITING_DISCOVERY_SCOPES, ...localizationScopes]
     : localization && localization.id === "localization.overview" ? localizationScopes
       : localization && localization.id === "localization.release.read" && role === "owner"
-        ? [capability, "localization.publish", "localization.rollback"] as const : [capability];
+        ? [capability, "localization.publish", "localization.rollback"] as const
+        : siteWideStyleWrite ? ["site.settings.write", "pages.publish"] as const : [capability];
   let bearer: string;
   try { bearer = await kamakuraEditingDelegationToken(env, identity, capabilities); }
   catch { throw fail("bridge_secret_missing_or_invalid"); }

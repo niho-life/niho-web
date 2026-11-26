@@ -680,7 +680,10 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   // 訳文の原文検証・再構成には保存済みのサイト共通スタイルを使う。設定を読むホストでは読込が終わるまで待ち、読めなければ文書と同じ読込で得た設定か文書単体で進める。
   const savedSiteStylesReady = !adapter.readSiteSettings || siteSettings.status === "ready" || siteSettings.status === "error";
   const savedSiteStyles = siteSettings.status === "ready" ? siteSettings.settings : session?.siteStyles;
-  const localization = useEditorLocalization(adapter, siteId, session?.target, blocks, libraryPresent, savedSiteStylesReady, savedSiteStyles, loadEpoch, setNotice);
+  const savedSiteStylesRevision = siteSettings.status === "ready" && siteSettings.version
+    ? { stage: "draft" as const, version: siteSettings.version } : undefined;
+  const localization = useEditorLocalization(adapter, siteId, session?.target, blocks, libraryPresent,
+    savedSiteStylesReady && (!savedSiteStyles || !!savedSiteStylesRevision), savedSiteStyles, savedSiteStylesRevision, loadEpoch, setNotice);
   const sessionLocalizationSite = localization.site?.config.siteId === session?.target.siteId ? localization.site : null;
   let selectedLocale: LocalizationLocale | undefined;
   try { if (sessionLocalizationSite && session) selectedLocale = editorLocalizationLocaleFor(sessionLocalizationSite.config, session.target.locale); } catch { /* read hook reports the invalid mapping */ }

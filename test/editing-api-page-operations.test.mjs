@@ -277,7 +277,7 @@ test("name support is explicitly advertised for writable operations while old ca
     { type: "element", id: "copied", name: "コピー", tag: "div", children: [] }
   ] }] };
   await assert.rejects(guarded.applyOperations(target, operation([pasted])), { code: "forbidden" });
-  assert.deepEqual(legacyRequests, ["GET"]);
+  assert.deepEqual(legacyRequests, ["GET", "GET"], "feature discovery falls back to the legacy catalog");
   assert.equal((await legacy.call(operation([rename]))).status, 403);
   assert.equal((await legacy.call(operation([pasted]))).status, 403);
   assert.deepEqual(legacy.storage.readJournal(), []);
