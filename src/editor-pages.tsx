@@ -318,7 +318,7 @@ const settingsFrom = (form: SiteForm) => {
 };
 export type SiteSettingsState = {
   /** readSiteSettings / saveSiteSettings をホストが実装しているか。 */
-  supported: boolean; editable: boolean;
+  supported: boolean; editable: boolean; metadataEditable: boolean;
   status: "idle" | "loading" | "error" | "ready";
   /** 保存済みの設定。 */
   settings: SiteSettings | undefined;
@@ -357,6 +357,7 @@ export function useSiteSettings(adapter: EditorAdapter, siteId: string, blocks: 
   let parsed: SiteSettings | undefined, problem: string | undefined;
   if (dirty) try { parsed = parseSiteSettings({ ...settingsFrom(form), ...styles }); } catch (error) { problem = publicInfoMessage(error) ?? "サイト設定の値を確認してください。"; }
   const editable = typeof adapter.saveSiteSettings === "function";
+  const metadataEditable = adapter.siteSettingsMetadataEditable !== false;
   async function save() {
     if (!loaded || !parsed || !adapter.saveSiteSettings || saving.current) return;
     const controller = new AbortController(), settings = parsed; saving.current = controller; setBusy(true); setMessage(null); setConflict(false);
@@ -385,7 +386,7 @@ export function useSiteSettings(adapter: EditorAdapter, siteId: string, blocks: 
     finally { if (saving.current === controller) { saving.current = null; setBusy(false); } }
   }
   return {
-    supported: typeof adapter.readSiteSettings === "function", editable, status, settings: loaded?.siteId === siteId ? loaded.settings : undefined,
+    supported: typeof adapter.readSiteSettings === "function", editable, metadataEditable, status, settings: loaded?.siteId === siteId ? loaded.settings : undefined,
     version: loaded?.siteId === siteId ? loaded.version : undefined, form, dirty, problem, styles, stylesDirty, latest, styleSaveEpoch,
     editStyles: (next) => { if (!editable || status !== "ready" || busy) return "サイト設定を読み込んでから編集してください。"; try { setStyles(parseSiteStyles(next)); setMessage(null); return undefined; } catch { return "共通スタイルの参照・種類・値を確認してください。"; } },
     canSave: editable && dirty && !!parsed && !busy, busy, message, conflict,
@@ -442,7 +443,7 @@ function TextInput({ label, value, change, disabled, multiline = false, placehol
 }
 /** 右レール「サイト」タブの内容。サイト設定は文書と別に保存する。 */
 export function SiteSettingsPanel({ site, state, cover }: { site: EditorSite | undefined; state: SiteSettingsState; cover?: CoverPicker | undefined }) {
-  const { form, status } = state, locked = !state.editable || state.busy, image = formImage(form);
+  const { form, status } = state, locked = !state.editable || state.busy, metadataLocked = locked || !state.metadataEditable, image = formImage(form);
   return <div className="e-site-settings">
     <section className="e-section"><h3>公開ドメイン</h3>{site && <p className="e-help">{site.name}</p>}
       {site?.domains.length ? <ul className="e-domains">{site.domains.map((domain) => <li key={domain}>{domain}</li>)}</ul> : <p className="e-help">公開ドメインはありません。</p>}
@@ -452,15 +453,16 @@ export function SiteSettingsPanel({ site, state, cover }: { site: EditorSite | u
         : status === "error" ? <><p className="e-help e-problem" role="alert">サイト設定を読み込めませんでした。</p><button type="button" className="e-small" onClick={state.reload}>再試行</button></>
         : status !== "ready" ? <p className="e-help" role="status">サイト設定を読み込み中…</p>
         : <>
-          <TextInput label="サイトタイトル" value={form.title} disabled={locked} change={(title) => state.edit({ title })} />
-          <TextInput label="説明文" value={form.description} disabled={locked} multiline change={(description) => state.edit({ description: description.replace(/[\r\n]+/g, " ") })} />
+          {!state.metadataEditable && <p className="e-help">サイト公開メタデータはホスト側で管理しています。ここではスタイルだけ保存できます。</p>}
+          <TextInput label="サイトタイトル" value={form.title} disabled={metadataLocked} change={(title) => state.edit({ title })} />
+          <TextInput label="説明文" value={form.description} disabled={metadataLocked} multiline change={(description) => state.edit({ description: description.replace(/[\r\n]+/g, " ") })} />
           <h4>ソーシャルカバー</h4>
-          <SocialCoverField image={image} src={coverSource(image, cover?.assets, site?.domains[0])} cover={cover} disabled={locked} empty="画像は未設定です" clear={() => state.edit({ imageSrc: "", imageAsset: null, imageAlt: "" })}
-            url={<TextInput label="画像 URL" value={form.imageSrc} disabled={locked} placeholder="https://… または /images/cover.jpg" change={(imageSrc) => state.edit(imageSrc ? { imageSrc, imageAsset: null } : { imageSrc })} />}
-            alt={<TextInput label="画像の説明" value={form.imageAlt} disabled={locked || !image} change={(imageAlt) => state.edit({ imageAlt })} />} />
-          <TextInput label="ファビコン URL" value={form.favicon} disabled={locked} change={(favicon) => state.edit({ favicon })} />
-          <TextInput label="言語" value={form.locale} disabled={locked} placeholder="ja / ja-JP" change={(locale) => state.edit({ locale })} />
-          <label className="e-check"><input type="checkbox" checked={form.noindex} disabled={locked} onChange={(event) => state.edit({ noindex: event.target.checked })} />サイト全体を検索エンジンに表示しない</label>
+          <SocialCoverField image={image} src={coverSource(image, cover?.assets, site?.domains[0])} cover={cover} disabled={metadataLocked} empty="画像は未設定です" clear={() => state.edit({ imageSrc: "", imageAsset: null, imageAlt: "" })}
+            url={<TextInput label="画像 URL" value={form.imageSrc} disabled={metadataLocked} placeholder="https://… または /images/cover.jpg" change={(imageSrc) => state.edit(imageSrc ? { imageSrc, imageAsset: null } : { imageSrc })} />}
+            alt={<TextInput label="画像の説明" value={form.imageAlt} disabled={metadataLocked || !image} change={(imageAlt) => state.edit({ imageAlt })} />} />
+          <TextInput label="ファビコン URL" value={form.favicon} disabled={metadataLocked} change={(favicon) => state.edit({ favicon })} />
+          <TextInput label="言語" value={form.locale} disabled={metadataLocked} placeholder="ja / ja-JP" change={(locale) => state.edit({ locale })} />
+          <label className="e-check"><input type="checkbox" checked={form.noindex} disabled={metadataLocked} onChange={(event) => state.edit({ noindex: event.target.checked })} />サイト全体を検索エンジンに表示しない</label>
           {state.problem && <p className="e-help e-problem" role="alert">{state.problem}</p>}
           {state.message && <p className={state.message.alert ? "e-help e-problem" : "e-help"} role={state.message.alert ? "alert" : "status"}>{state.message.text}</p>}
           {state.latest && <details><summary>競合した保存内容と入力を比較</summary><p>最新の保存内容</p><pre>{JSON.stringify(state.latest, null, 2)}</pre><p>あなたの入力</p><pre>{JSON.stringify({ ...settingsFrom(form), ...state.styles }, null, 2)}</pre></details>}

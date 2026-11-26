@@ -277,6 +277,8 @@ export interface EditorAdapter {
   siteStyleCapabilities?: { atomicReferenceDetachment: true };
   /** サイト共通の設定。version は楽観ロック用の opaque な値。 */
   readSiteSettings?(siteId: string, signal: AbortSignal): Promise<EditorSiteSettingsSnapshot>;
+  /** false の場合、共通スタイルは編集できるがホスト所有のサイト公開メタデータは読み取り専用。 */
+  siteSettingsMetadataEditable?: boolean;
   saveSiteSettings?(request: { siteId: string; settings: SiteSettings; expectedVersion: string;
     /** スタイル変更時の保存済み基準。削除参照を全ページで切り離し、設定と原子的に保存する。 */
     previousStyles?: SiteStyles;
