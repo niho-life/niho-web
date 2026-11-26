@@ -318,6 +318,20 @@ testWithD1("Studio page bindings publish a six-item list and dynamic detail from
   const moveCollisionPlan = await body(await browser("POST", "/page-changes/prepare", { change: moveCollision }), 200);
   await body(await browser("POST", "/page-changes/apply", { change: moveCollision, confirmationToken: moveCollisionPlan.confirmationToken }), 200);
 
+  const staleRoutePlan = await body(await browser("POST", detailPath + "/release-plan", {
+    target: { siteId: site.siteId, pageId: detailPage.pageId, locale: "ja" }, expectedVersion: detailSaved.version, action: "publish"
+  }), 200);
+  const collideAgain = { ...moveCollision, path: "/articles/article-7" };
+  const collideAgainPlan = await body(await browser("POST", "/page-changes/prepare", { change: collideAgain }), 200);
+  await body(await browser("POST", "/page-changes/apply", { change: collideAgain, confirmationToken: collideAgainPlan.confirmationToken }), 200);
+  assert.equal((await browser("POST", detailPath + "/release", {
+    expectedVersion: detailSaved.version, confirmationToken: staleRoutePlan.confirmationToken
+  })).status, 409, "a detail release plan must conflict if its reserved routes changed");
+  assert.equal(h.sqlite.prepare("SELECT count(*) AS count FROM managed_page_publications WHERE site_id = ? AND page_id = ?")
+    .get(site.siteId, detailPage.pageId).count, 0);
+  const clearCollisionPlan = await body(await browser("POST", "/page-changes/prepare", { change: moveCollision }), 200);
+  await body(await browser("POST", "/page-changes/apply", { change: moveCollision, confirmationToken: clearCollisionPlan.confirmationToken }), 200);
+
   const preview = { expectedVersion: detailSaved.version, collectionId: "posts", itemId: items[6].itemId, revision: items[6].revision,
     document: { ...detailDocument, revision: detailSaved.revision }, cmsBindings: detailBindings };
   const { previewId } = await body(await browser("POST", detailPath + "/cms-preview-plan", preview), 200);

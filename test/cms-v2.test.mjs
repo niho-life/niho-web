@@ -54,6 +54,11 @@ test("CMS page projection filters single selects and resolves only approved asse
   assert.match(html, /href="https:\/\/example\.test\/story"/u);
   assert.match(html, /src="https:\/\/assets\.example\.test\/cover\.webp"/u);
   assert.match(html, /&lt;b&gt;&quot;Story&quot;&lt;\/b&gt;/u);
+  const emptyUrl = parseCmsItemRevision({ ...post, siteId, schemaRevision: model.schemaRevision, revision: "rev-empty-url",
+    values: { ...article.values, "field-source": "" } }, model);
+  const withoutOptionalLink = resolveCmsPageBindings(page, bindings, { schema: model, items: [emptyUrl] });
+  assert.equal(withoutOptionalLink.body[0].children[0].attrs?.href, undefined);
+  assert.doesNotMatch(renderPageToHtml(withoutOptionalLink, {}), /href=""/u);
   assert.throws(() => resolveCmsPageBindings(page, bindings, { schema: model, items: [{ ...article, siteId: "wrong-site" }] }), /scope mismatch/u);
   assert.throws(() => resolveCmsPageBindings(page, bindings, { schema: model, items: [{ ...article,
     values: { ...article.values, "field-cover": "https://untrusted.example.test/cover.jpg" } }] }), /expected a JSON object/u);

@@ -198,6 +198,13 @@ function applyMapping(node: ElementNode, binding: CmsPageFieldBinding, item: Cms
       node.children = [{ type: "text", text: string(value, "$binding.text", 100000) }];
       return;
     case "link":
+      if (value === "") {
+        if (node.attrs) {
+          delete node.attrs.href;
+          if (Object.keys(node.attrs).length === 0) delete node.attrs;
+        }
+        return;
+      }
       (node.attrs ??= {}).href = string(value, "$binding.link", 2048);
       return;
     case "detail-link": {

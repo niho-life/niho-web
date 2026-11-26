@@ -500,7 +500,7 @@ async function prepareRelease(request: Request, db: ManagedD1, actor: ManagedAct
   const checked = body && releaseRequest(body, row);
   if (!checked) return json({ error: "invalid_request" }, 400);
   const sourceRevision = checked.action === "publish" ? row.current_revision : checked.revision!;
-  let cmsReleaseId: string | null = null, cmsSchemaRevision: string | null = null;
+  let cmsReleaseId: string | null = null, cmsSchemaRevision: string | null = null, cmsRouteTableRevision: string | null = null;
   if (checked.action === "rollback") {
     const published = await db.prepare(`SELECT cms_release_id, cms_schema_revision FROM managed_page_publications
       WHERE site_id = ?1 AND page_id = ?2 AND locale = ?3 AND source_revision = ?4 ORDER BY rowid DESC LIMIT 1`)
@@ -508,11 +508,21 @@ async function prepareRelease(request: Request, db: ManagedD1, actor: ManagedAct
     if (!published) return json({ error: "revision_not_published" }, 409);
     cmsReleaseId = published.cms_release_id;
     cmsSchemaRevision = published.cms_schema_revision;
+    if (cmsReleaseId) {
+      const site = await cmsSite(store, actor, row);
+      if (!store || !site) return json({ error: "cms_release_required" }, 409);
+      try { cmsRouteTableRevision = (await store.routeTable(site, "cms.read")).revision; }
+      catch { return json({ error: "cms_route_table_unavailable" }, 409); }
+    }
   } else if (row.bindings_json) {
     const site = await cmsSite(store, actor, row), releaseId = site?.state.current?.id;
     if (!store || !site || !releaseId) return json({ error: "cms_release_required" }, 409);
     const released = await store.historicalSnapshot(site, releaseId);
     if (!released || released.locale !== row.locale) return json({ error: "cms_release_required" }, 409);
+    let currentRoutes;
+    try { currentRoutes = await store.routeTable(site, "cms.read"); }
+    catch { return json({ error: "cms_route_table_unavailable" }, 409); }
+    cmsRouteTableRevision = currentRoutes.revision;
     const page = parsePageDocument(JSON.parse(row.document_json));
     let bindings: CmsPageBindingsDocument;
     try { bindings = pageBindings(JSON.parse(row.bindings_json), page, row.path)!; }
@@ -521,7 +531,6 @@ async function prepareRelease(request: Request, db: ManagedD1, actor: ManagedAct
     if (problems.length) return json({ error: "invalid_cms_bindings", problems }, 422);
     try {
       if (bindings.detail) {
-        const currentRoutes = await store.routeTable(site, "cms.read");
         const { collectionId, slugFieldId } = bindings.detail;
         const slugs = new Set<string>();
         for (const item of released.items.filter((entry) => entry.collectionId === collectionId)) {
@@ -539,7 +548,7 @@ async function prepareRelease(request: Request, db: ManagedD1, actor: ManagedAct
     cmsSchemaRevision = released.schema.schemaRevision;
   }
   const payload = { projectId: row.project_id, pageId: row.page_id, locale: row.locale, expectedVersion: row.current_version, action: checked.action, sourceRevision,
-    cmsReleaseId, cmsSchemaRevision };
+    cmsReleaseId, cmsSchemaRevision, cmsRouteTableRevision };
   const token = await storePlan(db, actor, row.site_id, checked.action === "publish" ? "release.publish" : "release.rollback", payload);
   const url = managedPageUrl(origin, row.slug, row.path);
   return json({
@@ -559,6 +568,15 @@ async function applyRelease(request: Request, db: ManagedD1, actor: ManagedActor
   if (!payload || payload.projectId !== row.project_id || payload.pageId !== row.page_id || payload.locale !== row.locale
     || payload.expectedVersion !== row.current_version || !Number.isSafeInteger(payload.sourceRevision)
     || plan.operation !== `release.${payload.action}`) return json({ status: "conflict" }, 409);
+  if (typeof payload.cmsReleaseId === "string") {
+    if (typeof payload.cmsRouteTableRevision !== "string" || !store) return json({ status: "conflict" }, 409);
+    const site = await cmsSite(store, actor, row);
+    if (!site) return json({ status: "conflict" }, 409);
+    try {
+      const currentRoutes = await store.routeTable(site, "cms.read");
+      if (currentRoutes.revision !== payload.cmsRouteTableRevision) return json({ status: "conflict" }, 409);
+    } catch { return json({ status: "conflict" }, 409); }
+  } else if (payload.cmsRouteTableRevision !== null && payload.cmsRouteTableRevision !== undefined) return json({ status: "conflict" }, 409);
   const publicationId = crypto.randomUUID(), token = await tokenHash(String(body.confirmationToken)), version = opaqueVersion();
   const action = payload.action === "rollback" ? "rollback" : "publish";
   const copyVersion = action === "rollback" || row.current_revision === row.published_revision && typeof payload.cmsReleaseId === "string";

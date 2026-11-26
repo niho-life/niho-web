@@ -60,7 +60,7 @@ React 18.3 または 19 と、同じ版の React DOM を利用側で用意して
 
 共通HTTP APIを使うホストは `createEditingApiHistoryAdapter(client)` の返す `listRevisions` / `readRevision` を既存の `PageEditor` adapterへ追加できます。ページ履歴のAPI権限 `pages.history.read` は、通常文書の `pages.read` と別にホストで認可してください。
 
-`EditorAdapter.cmsBindings` を提供する host では、CMS パネルから list のテンプレート、件数・絞り込み・並べ替え、field と text / image / link / 許可属性の対応、slug を使う detail page を設定できます。読み込み・保存・削除は host の API に委ね、bindings は `PageDocument` と別に page version と同じ CAS で保存します。リストは最大25件で、detail slug と既存 route の衝突を公開計画で拒否してください。実データ preview は actor・page・文書版・CMS item revision に固定した短命 token を使い、公開 CDN や公開 snapshot へ下書きを混ぜません。bindings 変更は通常の手動保存・自動保存・端末復元の dirty 状態に含まれます。
+`EditorAdapter.cmsBindings` を提供する host では、CMS パネルから list のテンプレート、件数・絞り込み・並べ替え、field と text / image / link / 許可属性の対応、slug を使う detail page を設定できます。読み込み・保存・削除は host の API に委ね、bindings は `PageDocument` と別に page version と同じ CAS で保存します。リストは最大25件で、detail slug と既存 route の衝突を公開計画で拒否し、計画後に route table が変わった場合は適用時の競合にしてください。実データ preview は actor・page・文書版・CMS item revision に固定した短命 token を使い、公開 CDN や公開 snapshot へ下書きを混ぜません。bindings 変更は通常の手動保存・自動保存・端末復元の dirty 状態に含まれます。
 
 `listPages` の各ページに任意で `path`・`kind`（page / template / shared）・`visibility`・`published` を返すと、左のページパネルにフォルダ（`template` は「テンプレート」の見出しの下）と公開状態の点（緑＝公開中、灰＝未公開、輪郭＝非公開）を表示します。`publication` があれば、その label と description を点のツールチップと読み上げに使います。任意メソッドを実装しないホストでは、ページ操作とサイト設定の保存を表示しません。
 

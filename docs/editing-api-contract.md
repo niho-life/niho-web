@@ -94,7 +94,7 @@ pages.read と pages.catalog は version から生成する opaque な ETag を�
 
 `CmsPageBindingsDocument` は `PageDocument` とは別の sidecar です。`pages.cms-bindings` capability は `pages.read` / `pages.inspect` の応答で sidecar を返し、`pages.apply` の `cmsBindings` 更新を明示する host が公開します。sidecar は下書きの page version と同じ CAS transaction で保存してください。省略は既存 sidecar を保持し、JSON `null` は解除を意味します。sidecar を送るときは `baseVersion` が一致する必要があり、文書操作の stale rebase と同時に適用しません。
 
-Studio の preview は別の editor adapter 操作で、認証済み actor、site/page、文書 version、CMS schema revision、選択した item revision の digest に結び付く短命一回限り token を使います。token は URL・client recovery・履歴・公開文書へ保存しません。外部 host は同じ権限と版検証、保存 CAS、公開 snapshot を実装してください。ページと CMS snapshot は個別に確認・公開し、両方を横断する原子切替は提供しません。schema migration は bindings の field 参照を検査してから適用します。
+Studio の preview は別の editor adapter 操作で、認証済み actor、site/page、文書 version、CMS schema revision、選択した item revision の digest に結び付く短命一回限り token を使います。token は URL・client recovery・履歴・公開文書へ保存しません。外部 host は同じ権限と版検証、保存 CAS、公開 snapshot を実装してください。ページと CMS snapshot は個別に確認・公開し、両方を横断する原子切替は提供しません。CMS を結び付けたページの公開計画は route table revision も固定し、適用直前に同じ revision か照合してください。schema migration は bindings の field 参照を検査してから適用します。
 
 CLI は `niho-edit apply <page> --locale <locale> --cms-bindings bindings.json` で sidecar を追加・置換できます。`--cms-bindings -` は標準入力から JSON を読み、JSON `null` は sidecar を解除します。対応 discovery がなければ CLI は送信前に `cms_bindings_not_supported` で停止します。sidecar の形と許可する field / node target は [CMS v2 契約](cms-v2-contract.md#pagedocument-と-cms-の結び付け) を参照してください。
 
