@@ -87,7 +87,7 @@ const needsPageSave = (session: Session) => {
   pageSaveChecks.set(session, { present, saved: session.saved, dirty });
   return dirty;
 };
-type PagePrefetch = { controller: AbortController; promise: Promise<EditorSessionLoad>; components?: ComponentLibrary; completedAt?: number };
+type PagePrefetch = { controller: AbortController; promise: Promise<EditorSessionLoad>; blocks: EditorBlockRegistry; components?: ComponentLibrary; completedAt?: number };
 const PAGE_PREFETCH_MAX_AGE_MS = 10_000;
 const PAGE_PREFETCH_LIMIT = 3;
 /** 部品を読み直す確認中の状態。library・page は確認を始めた時点の作業コピーの fingerprint（変わっていれば適用しない）。 */
@@ -811,7 +811,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     if (!adapter.prefetchDocument || currentTarget && sameTarget(currentTarget, editorTarget)) return;
     const key = targetKeyOf(editorTarget), currentComponents = libraryRef.current?.history.present;
     const existing = pagePrefetches.current.get(key);
-    if (existing && existing.components === currentComponents && (existing.completedAt === undefined || Date.now() - existing.completedAt <= PAGE_PREFETCH_MAX_AGE_MS)) return;
+    if (existing && existing.blocks === blocks && existing.components === currentComponents && (existing.completedAt === undefined || Date.now() - existing.completedAt <= PAGE_PREFETCH_MAX_AGE_MS)) return;
     existing?.controller.abort();
     const controller = new AbortController();
     const currentSiteSettings = siteSettingsRef.current;
@@ -825,7 +825,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
           { cache: pageSessionCache.current, snapshot, ...(cachedSiteSettings ? { siteSettings: cachedSiteSettings } : {}) }));
     }
     catch (error) { promise = Promise.reject(error); }
-    const entry: PagePrefetch = { controller, ...(currentComponents ? { components: currentComponents } : {}), promise };
+    const entry: PagePrefetch = { controller, blocks, ...(currentComponents ? { components: currentComponents } : {}), promise };
     pagePrefetches.current.set(key, entry);
     void entry.promise.then(() => { entry.completedAt = Date.now(); }, () => {
       if (pagePrefetches.current.get(key) === entry) pagePrefetches.current.delete(key);
@@ -875,13 +875,18 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         ? { settings: currentSiteSettings.settings, version: currentSiteSettings.version } : undefined;
       const prefetched = pagePrefetches.current.get(key);
       let loaded: EditorSessionLoad | undefined;
-      if (prefetched && prefetched.components === currentComponents && (prefetched.completedAt === undefined || Date.now() - prefetched.completedAt <= PAGE_PREFETCH_MAX_AGE_MS)) {
+      if (prefetched && prefetched.blocks === blocks && prefetched.components === currentComponents && (prefetched.completedAt === undefined || Date.now() - prefetched.completedAt <= PAGE_PREFETCH_MAX_AGE_MS)) {
+        const abortPrefetch = () => prefetched.controller.abort();
+        controller.signal.addEventListener("abort", abortPrefetch, { once: true });
         try {
           const prepared = await prefetched.promise;
           if (!cachedSiteSettings || prepared.siteSettings?.version === cachedSiteSettings.version) loaded = prepared;
         }
         catch { if (controller.signal.aborted) return false; }
-        finally { if (pagePrefetches.current.get(key) === prefetched) pagePrefetches.current.delete(key); }
+        finally {
+          controller.signal.removeEventListener("abort", abortPrefetch);
+          if (pagePrefetches.current.get(key) === prefetched) pagePrefetches.current.delete(key);
+        }
       } else if (prefetched) {
         prefetched.controller.abort();
         pagePrefetches.current.delete(key);
