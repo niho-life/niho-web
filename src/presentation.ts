@@ -231,8 +231,7 @@ export function presentationLayoutDocument(presentation: SitePresentation): Page
 }
 
 const quote = (value: string) => JSON.stringify(value);
-export function cssForSitePresentation(presentationInput: unknown, target: Pick<PageDocument, "siteId" | "locale">, blocks: BlockContracts = {}, assetInput: unknown = {}): { presentation: SitePresentation; css: string; scope: string } {
-  const presentation = parseSitePresentation(presentationInput, target, blocks), assets: ResolvedAssetMap = parseResolvedAssets(assetInput);
+export function cssForValidatedSitePresentation(presentation: SitePresentation, assets: ResolvedAssetMap): { css: string; scope: string } {
   const layout = presentationLayoutDocument(presentation), scope = pageScope(layout), root = `[data-nw-presentation="${scope}"]`;
   const fonts = presentation.fonts.map((face) => `@font-face{font-family:${quote(face.family)};${face.style ? `font-style:${face.style};` : ""}${face.weight ? `font-weight:${face.weight};` : ""}${face.display ? `font-display:${face.display};` : ""}${face.unicodeRange ? `unicode-range:${face.unicodeRange};` : ""}src:${face.sources.map((item) => `url(${quote(item.url)}) format(${quote(item.format)})`).join(",")};}`).join("\n");
   const reset = `${root},${root} *{box-sizing:border-box}${root} :where(h1,h2,h3,h4,h5,h6,p,ul,ol,dl,dd,figure,blockquote){margin:0;padding:0}${root} :where(ul,ol){list-style:none}${root} :where(a){color:inherit;text-decoration:none}${root} :where(img){max-width:100%}${root} details:not([open])>:not(summary){display:none!important}${root} summary{list-style:none}${root} summary::-webkit-details-marker{display:none}`;
@@ -240,7 +239,11 @@ export function cssForSitePresentation(presentationInput: unknown, target: Pick<
   const slots = `${root} :where([data-nw-presentation-header],[data-nw-presentation-body],[data-nw-presentation-footer],div[data-nw-scope]){display:contents}`;
   const overlays = `${root} [data-nw-overlay][hidden]{display:none!important}${root} [data-nw-overlay]{position:fixed;inset:0;z-index:2147482000;overflow:auto}${root} [data-nw-overlay-backdrop]{position:fixed;inset:0;width:100%;height:100%;margin:0;padding:0;border:0;background:#00000029;cursor:pointer}${root} [data-nw-overlay-content]{position:relative;z-index:1;height:100%;min-height:100%;pointer-events:none}${root} [data-nw-overlay-content] :where(a[href],button,details,summary,[tabindex="0"]){pointer-events:auto}`;
   const hostViews = `${root} [data-nw-host-view]>[data-nw-scope]{display:contents}${root} [data-nw-carousel-slide][hidden]{display:none!important}`;
-  return { presentation, scope, css: [fonts, reset, slots, overlays, hostViews, cssForDocument(layout, assets)].filter(Boolean).join("\n") };
+  return { scope, css: [fonts, reset, slots, overlays, hostViews, cssForDocument(layout, assets)].filter(Boolean).join("\n") };
+}
+export function cssForSitePresentation(presentationInput: unknown, target: Pick<PageDocument, "siteId" | "locale">, blocks: BlockContracts = {}, assetInput: unknown = {}): { presentation: SitePresentation; css: string; scope: string } {
+  const presentation = parseSitePresentation(presentationInput, target, blocks), assets: ResolvedAssetMap = parseResolvedAssets(assetInput);
+  return { presentation, ...cssForValidatedSitePresentation(presentation, assets) };
 }
 
 /** 素材解決用。本文・共有文書を1文書へ写すだけで、保存や描画には使わない。 */

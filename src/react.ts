@@ -1,11 +1,12 @@
 import { resolvePageLink } from "./presentation-links.js";
 import { resolvePageStyles, type SiteStyles } from "./site-styles.js";
-import { createElement, Fragment, type ComponentType, type ReactElement } from "react";
+import { createElement, Fragment, memo, useMemo, type ComponentType, type ReactElement, type ReactNode } from "react";
 import type { BlockContract, PageDocument, PageNode, PublicPropValue, SitePresentation, SitePresentationExternalFrame, SitePresentationHostView, SitePresentationOverlay } from "./types.js";
 import { parsePageDocument } from "./document.js";
 import { cssForDocument, pageScope, resolveViewportHeightUnits } from "./css.js";
 import { parseResolvedAssets, resolvedAsset, type ResolvedAssetMap } from "./assets.js";
-import { cssForSitePresentation, parseSitePresentation, presentationLayoutDocument, sitePresentationHostViewKey } from "./presentation.js";
+import { cssForValidatedSitePresentation, parseSitePresentation, presentationLayoutDocument, sitePresentationHostViewKey } from "./presentation.js";
+import { editorRendererToken, editorRendererTokenProp } from "./editor-renderer-token.js";
 import { iconGlyph } from "./icons.js";
 import { parseBlankEmbedRegistry, resolveBlankEmbed, type BlankEmbedRegistry } from "./embeds.js";
 
@@ -73,22 +74,46 @@ const canvasCssText = (css: string, canvas: PageRendererProps["canvas"]) => canv
 const rootRelative = (value: string) => value.startsWith("/") && !value.startsWith("//");
 const embedAllow = { map: undefined, youtube: "encrypted-media; picture-in-picture; fullscreen", vimeo: "picture-in-picture; fullscreen" } as const;
 const embedLabel = { map: "Map", youtube: "YouTube", vimeo: "Vimeo", lottie: "Lottie", facebook: "Facebook", x: "X", instagram: "Instagram", blank: "Blank" } as const;
+const emptyBlocks: BlockRegistry = Object.freeze({});
+const emptyOverlayBindings: readonly SitePresentationOverlay[] = Object.freeze([]);
+const emptyHostViews: readonly SitePresentationHostView[] = Object.freeze([]);
+const emptyAssets: ResolvedAssetMap = Object.freeze({});
 function withSiteOrigin(attrs: Record<string, unknown>, siteOrigin: string): void {
   if (typeof attrs.src === "string" && rootRelative(attrs.src)) attrs.src = siteOrigin + attrs.src;
   if (typeof attrs.poster === "string" && rootRelative(attrs.poster)) attrs.poster = siteOrigin + attrs.poster;
   if (typeof attrs.srcSet === "string") attrs.srcSet = attrs.srcSet.split(",").map((entry) => { const trimmed = entry.trim(); return rootRelative(trimmed) ? siteOrigin + trimmed : trimmed; }).join(", ");
 }
 
+type VideoInteractionChild = { role: "video" | "button"; ready: boolean };
+type PageNodeRenderer = (node: PageNode, videoInteraction?: VideoInteractionChild) => ReactNode;
+type MemoizedPageNodeProps = { node: PageNode; videoInteraction: VideoInteractionChild | undefined; context: readonly unknown[]; renderNode: PageNodeRenderer };
+const MemoizedPageNode = memo(function MemoizedPageNode({ node, videoInteraction, renderNode }: MemoizedPageNodeProps): ReactNode {
+  return renderNode(node, videoInteraction);
+}, (previous, next) => {
+  const changedContext = previous.context.flatMap((value, index) => value === next.context[index] ? [] : [index]);
+  return previous.node === next.node && previous.videoInteraction?.role === next.videoInteraction?.role &&
+    previous.videoInteraction?.ready === next.videoInteraction?.ready && previous.context.length === next.context.length && !changedContext.length;
+});
+
+/** Strict public renderer: untrusted documents are parsed and validated before rendering. */
+export function PageRenderer(props: PageRendererProps): ReactElement {
+  const trusted = (props as PageRendererProps & { [editorRendererTokenProp]?: unknown })[editorRendererTokenProp] === editorRendererToken;
+  return PageRendererCore(props, trusted);
+}
+
 /** useEffect を使わず、Next.js の初期 HTML と静的 SSR の両方で本文を返す。 */
-export function PageRenderer({ document: input, blocks = {}, assets: assetInput, missingAssets = "omit", siteStyles, overlayBindings = [], hostViews = [], hostViewBinding, hostViewMode = "prefer", externalFramePolicy, blankEmbeds: blankEmbedInput, canvas, links }: PageRendererProps): ReactElement {
-  const document = resolvePageStyles(parsePageDocument(input, blocks, siteStyles ? { siteStyles } : {}), siteStyles);
-  const blankEmbeds = blankEmbedInput === undefined ? undefined : parseBlankEmbedRegistry(blankEmbedInput);
-  const assets = assetInput === undefined ? {} : parseResolvedAssets(assetInput);
+function PageRendererCore({ document: input, blocks = emptyBlocks, assets: assetInput, missingAssets = "omit", siteStyles, overlayBindings = emptyOverlayBindings, hostViews = emptyHostViews, hostViewBinding, hostViewMode = "prefer", externalFramePolicy, blankEmbeds: blankEmbedInput, canvas, links }: PageRendererProps, trusted: boolean): ReactElement {
+  const document = trusted ? input as PageDocument : resolvePageStyles(parsePageDocument(input, blocks, siteStyles ? { siteStyles } : {}), siteStyles);
+  const blankEmbeds = useMemo(() => blankEmbedInput === undefined ? undefined : parseBlankEmbedRegistry(blankEmbedInput), [blankEmbedInput]);
+  const assets = useMemo(() => assetInput === undefined ? emptyAssets : parseResolvedAssets(assetInput), [assetInput]);
   const scope = pageScope(document);
-  type VideoInteractionChild = { role: "video" | "button"; ready: boolean };
+  const context = [blocks, assets, missingAssets, scope, overlayBindings, hostViews, hostViewBinding, hostViewMode, externalFramePolicy, blankEmbeds, canvas, links] as const;
   const videoReady = (node: PageNode | undefined): boolean => node?.type === "element" && node.tag === "video" &&
     (typeof node.attrs?.src === "string" || !!node.asset && !!resolvedAsset(assets, node.asset));
-  function render(node: PageNode, videoInteraction?: VideoInteractionChild): ReactElement | string | null {
+  const render = (node: PageNode, videoInteraction?: VideoInteractionChild, index = 0): ReactElement => createElement(MemoizedPageNode, {
+    key: node.type === "text" ? `text:${index}` : node.id, node, videoInteraction, context, renderNode
+  });
+  function renderNode(node: PageNode, videoInteraction?: VideoInteractionChild): ReactNode {
     if (node.type === "text") return node.text;
     // 部品ライブラリなしの検証で拒否済み。下書きは resolvePageDocument で展開してから描画する。
     if (node.type === "instance") throw new Error("Unresolved component instance: resolve the document before rendering");
@@ -235,7 +260,7 @@ export function PageRenderer({ document: input, blocks = {}, assets: assetInput,
       ...(frame.allowFullScreen ? { allowFullScreen: true } : {}) });
     }
     if (node.interaction?.type === "loop-box") {
-      const children = node.children.map((child) => render(child));
+      const children = node.children.map((child, index) => render(child, undefined, index));
       return createElement(node.tag, { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope },
         createElement("div", { "data-nw-loop-box-track": "", style: { display: "flex", flexDirection: "inherit", alignItems: "inherit", gap: "inherit", flex: "0 0 auto" } }, ...children),
         createElement("div", { "data-nw-loop-box-clones": "", "aria-hidden": "true", style: { display: "contents" } }));
@@ -244,46 +269,55 @@ export function PageRenderer({ document: input, blocks = {}, assets: assetInput,
     return createElement(node.tag, { ...attrs,
       ...(canvas && node.tag === "video" && (!canvas.interactive || videoInteraction?.role !== "video") ? { onPlay: (event: { currentTarget: { pause(): void } }) => event.currentTarget.pause() } : {}), key: node.id, "data-nw-node": node.id, "data-nw-owner": scope },
       ...(node.children.length ? node.children.map((child, index) => render(child, node.interaction?.type === "video-toggle"
-        ? { role: index === 0 ? "video" : "button", ready: videoReady(node.children[0]) } : undefined)) : []));
+        ? { role: index === 0 ? "video" : "button", ready: videoReady(node.children[0]) } : undefined, index)) : []));
   }
   return createElement(Fragment, null,
     // React 18 HTML-escapes text children inside <style>, which changes CSS selectors.
     // cssForDocument only emits identifiers and values accepted by the closed CSS schema.
     createElement("style", { "data-nw-style": scope, dangerouslySetInnerHTML: { __html: canvasCssText(cssForDocument(document, assets), canvas) } }),
-    createElement("div", { "data-nw-scope": scope, lang: document.locale }, ...document.body.map((node) => render(node))));
+    createElement("div", { "data-nw-scope": scope, lang: document.locale }, ...document.body.map((node, index) => render(node, undefined, index))));
 }
 
 export type SitePageRendererProps = PageRendererProps & { presentation: unknown };
+const StableEditorPageRenderer = memo(PageRenderer);
 /**
  * PageEditor と SSR が共有する native site composition。
  * 編集対象が canonical header/footer 自身なら、その文書を該当 slot にだけ置き、本文へ複製しない。
  */
-export function SitePageRenderer({ document: input, presentation: presentationInput, blocks = {}, assets: assetInput, missingAssets = "omit", siteStyles, hostViewMode = "prefer", externalFramePolicy, blankEmbeds: blankEmbedInput, canvas }: SitePageRendererProps): ReactElement {
-  const document = resolvePageStyles(parsePageDocument(input, blocks, siteStyles ? { siteStyles } : {}), siteStyles);
-  const blankEmbeds = blankEmbedInput === undefined ? undefined : parseBlankEmbedRegistry(blankEmbedInput);
-  const presentation: SitePresentation = parseSitePresentation(presentationInput, document, blocks);
-  const assets = assetInput === undefined ? {} : parseResolvedAssets(assetInput);
-  const output = cssForSitePresentation(presentation, document, blocks, assets), layout = presentationLayoutDocument(presentation);
+export function SitePageRenderer(props: SitePageRendererProps): ReactElement {
+  const trusted = (props as SitePageRendererProps & { [editorRendererTokenProp]?: unknown })[editorRendererTokenProp] === editorRendererToken;
+  return SitePageRendererCore(props, trusted);
+}
+
+function SitePageRendererCore({ document: input, presentation: presentationInput, blocks = emptyBlocks, assets: assetInput, missingAssets = "omit", siteStyles, hostViewMode = "prefer", externalFramePolicy, blankEmbeds: blankEmbedInput, canvas }: SitePageRendererProps, trusted: boolean): ReactElement {
+  const document = trusted ? input as PageDocument : resolvePageStyles(parsePageDocument(input, blocks, siteStyles ? { siteStyles } : {}), siteStyles);
+  const blankEmbeds = useMemo(() => blankEmbedInput === undefined ? undefined : parseBlankEmbedRegistry(blankEmbedInput), [blankEmbedInput]);
+  const presentation: SitePresentation = trusted ? presentationInput as SitePresentation : parseSitePresentation(presentationInput, document, blocks);
+  const assets = useMemo(() => assetInput === undefined ? emptyAssets : parseResolvedAssets(assetInput), [assetInput]);
+  const output = useMemo(() => cssForValidatedSitePresentation(presentation, assets), [presentation, assets]);
+  const layout = useMemo(() => presentationLayoutDocument(presentation), [presentation]);
   const layoutScope = pageScope(layout), shared = presentation.shared;
   const overlays = presentation.overlays ?? [], hostViews = presentation.hostViews ?? [];
   const hostOptions = { hostViews, hostViewMode, ...(presentation.links ? { links: presentation.links } : {}), ...(externalFramePolicy ? { externalFramePolicy } : {}), ...(blankEmbeds ? { blankEmbeds } : {}), ...(canvas ? { canvas } : {}) };
+  const PageView = trusted ? StableEditorPageRenderer : PageRenderer;
+  const withTrust = (props: PageRendererProps): PageRendererProps => trusted ? Object.assign({}, props, { [editorRendererTokenProp]: editorRendererToken }) as PageRendererProps : props;
   const header: PageDocument = document.pageId === shared.header.pageId ? document : shared.header;
   const footer: PageDocument = document.pageId === shared.footer.pageId ? document : shared.footer;
   const body = document.pageId === shared.header.pageId || document.pageId === shared.footer.pageId ? null
     : overlays.some((overlay) => document.pageId === overlay.document.pageId) ? null
-    : createElement("main", { "data-nw-presentation-body": "" }, createElement(PageRenderer, { document, blocks, assets, missingAssets, overlayBindings: overlays, ...hostOptions, ...(siteStyles ? { siteStyles } : {}) }));
+    : createElement("main", { "data-nw-presentation-body": "" }, createElement(PageView, withTrust({ document, blocks, assets, missingAssets, overlayBindings: overlays, ...hostOptions, ...(siteStyles ? { siteStyles } : {}) })));
   return createElement(Fragment, null,
     createElement("style", { "data-nw-presentation-style": output.scope, dangerouslySetInnerHTML: { __html: canvasCssText(output.css, canvas) } }),
     createElement("div", { "data-nw-presentation": output.scope, "data-nw-scope": layoutScope, lang: document.locale },
       createElement("div", { "data-nw-owner": layoutScope, "data-nw-node": "layout" },
-      createElement("div", { "data-nw-presentation-header": "" }, createElement(PageRenderer, { document: header, blocks, assets, missingAssets, overlayBindings: overlays, ...hostOptions })),
+      createElement("div", { "data-nw-presentation-header": "" }, createElement(PageView, withTrust({ document: header, blocks, assets, missingAssets, overlayBindings: overlays, ...hostOptions }))),
       body,
-      createElement("div", { "data-nw-presentation-footer": "" }, createElement(PageRenderer, { document: footer, blocks, assets, missingAssets, overlayBindings: overlays, ...hostOptions })),
+      createElement("div", { "data-nw-presentation-footer": "" }, createElement(PageView, withTrust({ document: footer, blocks, assets, missingAssets, overlayBindings: overlays, ...hostOptions }))),
       ...overlays.map((overlay) => {
         const editing = document.pageId === overlay.document.pageId, overlayDocument = editing ? document : overlay.document;
         return createElement("div", { key: overlay.id, id: overlay.id, role: "dialog", "aria-modal": "true", "aria-label": overlay.label, tabIndex: -1, "data-nw-overlay": overlay.id,
           ...(editing ? { "data-nw-overlay-editing": "" } : { hidden: true }) },
           createElement("button", { type: "button", tabIndex: -1, "aria-hidden": "true", "aria-label": overlay.label + "を閉じる", "data-nw-overlay-backdrop": "", "data-nw-overlay-close": overlay.id }),
-          createElement("div", { "data-nw-overlay-content": "" }, createElement(PageRenderer, { document: overlayDocument, blocks, assets, missingAssets, overlayBindings: overlays, ...hostOptions })));
+          createElement("div", { "data-nw-overlay-content": "" }, createElement(PageView, withTrust({ document: overlayDocument, blocks, assets, missingAssets, overlayBindings: overlays, ...hostOptions }))));
       }))));
 }
