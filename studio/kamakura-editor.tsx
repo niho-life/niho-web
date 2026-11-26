@@ -157,13 +157,29 @@ function statusFromError(error: unknown): EditorApiStatus {
   return { status: 503, errorCode: null, supportId: null };
 }
 
-function parseLegacySnapshot(value: unknown, target: EditorTarget, required: boolean): EditorSnapshot {
-  const source = record(value), document = record(source.document), checked = validTarget(target);
-  if (document.siteId !== checked.siteId || document.pageId !== checked.pageId || document.locale !== checked.locale || !validVersion(source.version)) throw new Error("文書の対象または版が一致しません。");
-  if (required && source.presentation === undefined) throw new Error("このサイトに必要な表示コンテキストがありません。");
-  const snapshot = { ...source } as unknown as EditorSnapshot;
-  if (source.englishPublication !== undefined) snapshot.englishPublication = parseEnglishPublication(source.englishPublication);
-  return snapshot;
+type PagePresentationRead = {
+  documentVersion: string;
+  presentationVersion: string;
+  presentation: unknown;
+  releases: NonNullable<EditorSnapshot["releases"]>;
+  englishPublication?: NonNullable<EditorSnapshot["englishPublication"]>;
+};
+
+function parsePagePresentationRead(value: unknown): PagePresentationRead {
+  const source = record(value), presentation = record(source.presentation);
+  if (!validVersion(source.documentVersion) || !validVersion(source.presentationVersion)
+      || presentation.version !== source.presentationVersion || !Array.isArray(source.releases)
+      || source.releases.length > 500 || source.releases.some((entry) => {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) return true;
+        const release = entry as Record<string, unknown>;
+        return !Number.isSafeInteger(release.revision) || Number(release.revision) < 1 || typeof release.label !== "string";
+      })) throw new Error("表示情報の対象または版が一致しません。");
+  const result: PagePresentationRead = {
+    documentVersion: source.documentVersion, presentationVersion: source.presentationVersion,
+    presentation: source.presentation, releases: source.releases as NonNullable<EditorSnapshot["releases"]>,
+  };
+  if (source.englishPublication !== undefined) result.englishPublication = parseEnglishPublication(source.englishPublication);
+  return result;
 }
 
 function safeLine(value: unknown, maximum: number): value is string {
@@ -287,20 +303,21 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
   let currentCatalog = catalog, initialPages = true;
   let localizationRead = initialReads?.localization, breakpointRead = initialReads?.breakpoints;
   const releaseOperationIds = new Map<string, string>();
-  const legacySnapshotCache = new Map<string, { readonly etag: string; readonly value: EditorSnapshot }>();
-  async function readLegacySnapshot(target: EditorTarget, signal: AbortSignal): Promise<EditorSnapshot> {
+  const editorStateReadPages = new Set<string>();
+  const presentationReadCache = new Map<string, { readonly etag: string; readonly value: PagePresentationRead }>();
+  async function readPagePresentation(target: EditorTarget, signal: AbortSignal): Promise<PagePresentationRead> {
     const checked = validTarget(target), key = `${checked.pageId}\u0000${checked.locale}`, path = pagePath(checked);
-    const cached = legacySnapshotCache.get(key);
-    let result = await apiResult(path, "GET", undefined, signal, cached?.etag);
+    const cached = presentationReadCache.get(key), presentationPath = `${path}/presentation`;
+    let result = await apiResult(presentationPath, "GET", undefined, signal, cached?.etag);
     if (result.notModified && cached && result.etag === cached.etag) return structuredClone(cached.value);
-    if (result.notModified) result = await apiResult(path, "GET", undefined, signal);
+    if (result.notModified) result = await apiResult(presentationPath, "GET", undefined, signal);
     if (result.notModified) throw new EditorApiError(503);
-    const value = parseLegacySnapshot(result.value, checked, currentCatalog.nativePresentationPages.includes(checked.pageId));
+    const value = parsePagePresentationRead(result.value);
     if (result.etag) {
-      legacySnapshotCache.delete(key);
-      legacySnapshotCache.set(key, { etag: result.etag, value: structuredClone(value) });
-      if (legacySnapshotCache.size > 128) legacySnapshotCache.delete(legacySnapshotCache.keys().next().value!);
-    } else legacySnapshotCache.delete(key);
+      presentationReadCache.delete(key);
+      presentationReadCache.set(key, { etag: result.etag, value: structuredClone(value) });
+      if (presentationReadCache.size > 128) presentationReadCache.delete(presentationReadCache.keys().next().value!);
+    } else presentationReadCache.delete(key);
     return value;
   }
   async function request<T>(signal: AbortSignal, run: () => Promise<T>, reportStatus = true): Promise<T> {
@@ -332,17 +349,44 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
   async function readJapaneseDocument(target: EditorTarget, signal: AbortSignal): Promise<EditorSnapshot> {
     const checked = validTarget(target);
     const required = currentCatalog.nativePresentationPages.includes(checked.pageId);
-    const wire = await editingApi.read(checked, signal);
-    const document = wire.document;
-    if (wire.editorState !== undefined) {
-      if (required && wire.presentation === undefined) throw new Error("このサイトに必要な表示コンテキストがありません。");
-      return { ...wire.editorState, document, version: wire.version, ...(wire.presentation === undefined ? {} : { presentation: wire.presentation }) };
+    const tryCombinedRead = !editorStateReadPages.has(checked.pageId);
+    const presentationController = new AbortController();
+    const abortPresentation = () => presentationController.abort();
+    if (signal.aborted) abortPresentation();
+    else if (tryCombinedRead) signal.addEventListener("abort", abortPresentation, { once: true });
+    const presentationRead = tryCombinedRead
+      ? readPagePresentation(checked, presentationController.signal).then((value) => ({ value }), (error: unknown) => ({ error }))
+      : null;
+    try {
+      const wire = await editingApi.read(checked, signal);
+      const document = wire.document;
+      if (wire.editorState !== undefined) {
+        editorStateReadPages.add(checked.pageId);
+        presentationController.abort();
+        if (required && wire.presentation === undefined) throw new Error("このサイトに必要な表示コンテキストがありません。");
+        return { ...wire.editorState, document, version: wire.version, ...(wire.presentation === undefined ? {} : { presentation: wire.presentation }) };
+      }
+      editorStateReadPages.delete(checked.pageId);
+      // Older hosts expose editor metadata separately from the page document.
+      let metadata: PagePresentationRead;
+      if (presentationRead) {
+        const presentationResult = await presentationRead;
+        if ("error" in presentationResult) throw presentationResult.error;
+        metadata = presentationResult.value;
+      } else metadata = await readPagePresentation(checked, signal);
+      const hasPresentationVersion = wire.presentationVersion !== undefined;
+      if (wire.version !== metadata.documentVersion
+          || hasPresentationVersion && wire.presentationVersion !== metadata.presentationVersion
+          || required && !hasPresentationVersion) throw new EditorApiError(409, "version_conflict");
+      return {
+        document, version: wire.version, releases: metadata.releases,
+        ...(hasPresentationVersion ? { presentation: metadata.presentation } : {}),
+        ...(metadata.englishPublication ? { englishPublication: metadata.englishPublication } : {}),
+      };
+    } finally {
+      presentationController.abort();
+      if (tryCombinedRead) signal.removeEventListener("abort", abortPresentation);
     }
-    // Older hosts still expose editor state and presentation in the legacy snapshot.
-    const legacy = await readLegacySnapshot(checked, signal);
-    const presentationVersion = legacy.presentation === undefined ? undefined : record(legacy.presentation).version;
-    if (wire.version !== legacy.version || wire.presentationVersion !== presentationVersion) throw new EditorApiError(409, "version_conflict");
-    return { ...legacy, document, ...(wire.presentation === undefined ? {} : { presentation: wire.presentation }) };
   }
   async function readPageDocument(target: EditorTarget, signal: AbortSignal): Promise<EditorSnapshot> {
     return target.locale === "en"
