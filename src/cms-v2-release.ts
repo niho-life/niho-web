@@ -48,6 +48,19 @@ function cmsRouteRevision(releaseId: string): string {
   }
   return `route_${hash.toString(36)}`;
 }
+
+function validCmsRoutePath(candidate: string): string | null {
+  const separator = candidate.lastIndexOf("/");
+  if (separator < 0) return null;
+  const caseFoldedSlugPath = `${candidate.slice(0, separator + 1)}${candidate.slice(separator + 1).toLowerCase()}`;
+  if (validatePagePath(caseFoldedSlugPath) !== null) return null;
+  try {
+    return parseCmsRoutePath(candidate, "release.items.path");
+  } catch (error) {
+    if (error instanceof DocumentValidationError) return null;
+    throw error;
+  }
+}
 function cmsRouteReservationId(locale: string, collectionId: string): string {
   let hash = 0x811c9dc5;
   for (const character of collectionId) hash = Math.imul(hash ^ character.charCodeAt(0), 0x01000193) >>> 0;
@@ -146,7 +159,7 @@ export function planCmsRelease(input: unknown, releaseIdInput: string, context: 
     }
     const slug = collection.slugField === null ? null : values[collection.slugField];
     const candidate = collection.pathPrefix === null ? null : `${collection.pathPrefix}${String(slug ?? "")}`;
-    const path = candidate !== null && typeof slug === "string" && slug.length > 0 && validatePagePath(candidate) === null ? candidate : null;
+    const path = candidate !== null && typeof slug === "string" && slug.length > 0 ? validCmsRoutePath(candidate) : null;
     if (candidate !== null && path === null) problems.push({ ...target, code: "route", message: "公開 URL に使えるスラッグを入力してください。" });
     problems.push(...cmsValueProblems(collection, values).map((problem) => ({ ...problem, ...target })));
     items.push({ ...item, values, path });

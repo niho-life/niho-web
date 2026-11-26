@@ -568,7 +568,7 @@ testWithD1("Studio page bindings publish a six-item list and dynamic detail from
   const items = [];
   for (let number = 1; number <= 7; number++) {
     const item = await createDraft(site, schemaRevision);
-    items.push((await site.read("cms.items.save", { ...versioned(item), values: { ...values(number === 7 ? "Article <Seven>" : "Article " + number, "article-" + number),
+    items.push((await site.read("cms.items.save", { ...versioned(item), values: { ...values(number === 7 ? "Article <Seven>" : "Article " + number, number === 6 ? "Legacy-Case" : "article-" + number),
       article_date: "2026-10-0" + number + "T12:00:00Z" } }, { headers: headers() })).item);
   }
   const plan = await releasePlan(site, schemaRevision, null, items);
@@ -664,12 +664,16 @@ testWithD1("Studio page bindings publish a six-item list and dynamic detail from
   const list = await lookup("/");
   assert.equal(list.status, 200);
   const html = await list.text();
-  assert.deepEqual([...html.matchAll(/href="\/s\/bound-articles\/articles\/article-(\d)"/gu)].map((match) => match[1]), ["7", "6", "5", "4", "3", "2"]);
+  assert.deepEqual([...html.matchAll(/href="\/s\/bound-articles\/articles\/article-(\d)"/gu)].map((match) => match[1]), ["7", "5", "4", "3", "2"]);
+  assert.match(html, /href="\/s\/bound-articles\/articles\/Legacy-Case"/u);
   assert.match(html, /aria-label="Article &lt;Seven&gt;"/u);
   const detailHtml = await (await lookup("/articles/article-7")).text();
   assert.match(detailHtml, /Article &lt;Seven&gt;/u);
   assert.match(detailHtml, /&lt;script&gt;Fixture only&lt;\/script&gt;/u);
   assert.equal((await lookup("/articles/unknown")).status, 404);
+  assert.match(await (await lookup("/articles/Legacy-Case")).text(), /Article 6/u);
+  assert.equal((await lookup("/articles/legacy-case")).status, 404);
+  assert.equal((await lookup("/ARTICLES/Legacy-Case")).status, 404);
   assert.equal((await lookup("/articles")).status, 404);
 
   const currentSchema = await site.read("cms.schema.read");
@@ -694,7 +698,8 @@ testWithD1("Studio page bindings publish a six-item list and dynamic detail from
   const restored = await body(await browser("POST", "/home/release", { expectedVersion: unbound.version, confirmationToken: rollback.confirmationToken }), 200);
   assert.deepEqual(restored.snapshot.cmsBindings, cmsBindings);
   const restoredHtml = await (await lookup("/")).text();
-  assert.deepEqual([...restoredHtml.matchAll(/href="\/s\/bound-articles\/articles\/article-(\d)"/gu)].map((match) => match[1]), ["7", "6", "5", "4", "3", "2"]);
+  assert.deepEqual([...restoredHtml.matchAll(/href="\/s\/bound-articles\/articles\/article-(\d)"/gu)].map((match) => match[1]), ["7", "5", "4", "3", "2"]);
+  assert.match(restoredHtml, /href="\/s\/bound-articles\/articles\/Legacy-Case"/u);
   assert.equal(h.sqlite.prepare("SELECT p.cms_release_id FROM managed_pages AS m JOIN managed_page_publications AS p ON p.id = m.published_publication_id WHERE m.site_id = ? AND m.page_id = 'home'")
     .get(site.siteId).cms_release_id, cmsRelease.releaseId);
 });
@@ -979,6 +984,26 @@ testWithD1("Studio CMS uses immutable revisions, site/actor boundaries, confirma
   assert.equal((await other.post("cms.items.list", { collectionId: "posts", deleted: false, cursor: page.nextCursor })).status, 404);
   assert.equal((await first.post("cms.items.list", { collectionId: "posts", deleted: false, cursor: page.nextCursor }, { token: h.otherToken })).status, 404);
   assert.equal((await first.read("cms.items.list", { collectionId: "posts", deleted: false, cursor: page.nextCursor })).items.length, 1);
+});
+
+testWithD1("Studio CMS public routes preserve uppercase slug segments", async (t) => {
+  const h = await fixture(t, { cms: true }), site = await cmsSite(h, "uppercase-cms-route");
+  const { schemaRevision } = await site.read("cms.schema.read");
+  const draft = await createDraft(site, schemaRevision);
+  const saved = await saveDraft(site, draft, "Legacy route", "Legacy-Case");
+  const plan = await releasePlan(site, schemaRevision, null, [saved]);
+  await site.read("cms.release.apply", plan);
+  for (let attempt = 0; attempt < 5; attempt++) {
+    if ((await site.read("cms.release.status", { operationId: plan.operationId })).delivery.state === "delivered") break;
+    await h.cron();
+  }
+
+  const current = await site.read("cms.release.current");
+  assert.equal(current.snapshot.items[0].path, "/cms/posts/Legacy-Case");
+  const response = await site.pub("/posts/Legacy-Case");
+  assert.equal(response.status, 200);
+  assert.match(await response.text(), /Legacy route/u);
+  assert.equal((await site.pub("/posts/legacy-case")).status, 404);
 });
 
 testWithD1("Studio CMS CLI actor, scheduled release, cancellation, deletion and database/R2 restore", async (t) => {

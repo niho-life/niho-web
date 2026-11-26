@@ -158,7 +158,7 @@ function publicImage(image: CollectionImageValue | null, assets: ReadonlyMap<str
 export async function managedCmsPublic(request: Request, store: CmsStore, origin: string): Promise<Response | null> {
   const url = new URL(request.url);
   if (url.origin !== origin || (request.method !== "GET" && request.method !== "HEAD")) return null;
-  const match = /^\/s\/([a-z0-9]+(?:-[a-z0-9]+)*)(?:\/(ja|en))?(\/cms(?:\/[a-z0-9_-]+)*)$/u.exec(url.pathname);
+  const match = /^\/s\/([a-z0-9]+(?:-[a-z0-9]+)*)(?:\/(ja|en))?(\/cms(?:\/[A-Za-z0-9_-]+)*)$/u.exec(url.pathname);
   if (!match) return null;
   const [, slug, prefixedLocale, cmsPath] = match, prefix = `/s/${slug}`;
   const current = await store.db.prepare(`SELECT ms.site_id, c.state_json
