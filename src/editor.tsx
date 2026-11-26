@@ -814,7 +814,10 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     if (existing && existing.components === currentComponents && (existing.completedAt === undefined || Date.now() - existing.completedAt <= PAGE_PREFETCH_MAX_AGE_MS)) return;
     existing?.controller.abort();
     const controller = new AbortController();
-    const entry: PagePrefetch = { controller, ...(currentComponents ? { components: currentComponents } : {}), promise: Promise.resolve().then(() => adapter.prefetchDocument!(editorTarget, controller.signal)) };
+    let promise: Promise<EditorSnapshot>;
+    try { promise = Promise.resolve(adapter.prefetchDocument(editorTarget, controller.signal)); }
+    catch (error) { promise = Promise.reject(error); }
+    const entry: PagePrefetch = { controller, ...(currentComponents ? { components: currentComponents } : {}), promise };
     pagePrefetches.current.set(key, entry);
     void entry.promise.then(() => { entry.completedAt = Date.now(); }, () => {
       if (pagePrefetches.current.get(key) === entry) pagePrefetches.current.delete(key);
@@ -826,6 +829,25 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       pagePrefetches.current.delete(oldest[0]);
     }
   }, [adapter]);
+  const preloadAdjacentPages = useCallback((target: EditorTarget, candidates: readonly EditorPage[]) => {
+    if (!adapter.prefetchDocument) return;
+    const available = candidates.filter((page) => page.siteId === target.siteId && page.kind !== "shared");
+    const sameLocale = available.filter((page) => page.locale === target.locale);
+    const ordered = sameLocale.length > 1 ? sameLocale : available;
+    if (ordered.length < 2) return;
+    const current = ordered.findIndex((page) => sameTarget(page, target));
+    const adjacent = current < 0
+      ? ordered.slice(0, 2)
+      : [ordered[(current - 1 + ordered.length) % ordered.length], ordered[(current + 1) % ordered.length]];
+    const seen = new Set<string>();
+    for (const page of adjacent) {
+      if (!page || sameTarget(page, target)) continue;
+      const key = targetKeyOf(page);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      preloadPage(page);
+    }
+  }, [adapter, preloadPage]);
   const load = useCallback(async (target: EditorTarget, options?: { preserveView?: boolean; metric?: "load" | "page-switch" }): Promise<boolean> => {
     const metric = options?.metric ?? "load";
     const measurement = metric === "load" && initialLoadPerformance.current
@@ -918,19 +940,13 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       initialTargetRef.current = null;
       const first = result.find((page) => page.kind !== "shared") ?? result[0];
       const target = requested?.siteId === siteId && result.some((page) => page.pageId === requested.pageId) ? requested : first;
-      if (target) void load(target); else { replace(null); setBusy(""); finishInitialLoadPerformance("failed"); }
+      if (target) { preloadAdjacentPages(target, result); void load(target); } else { replace(null); setBusy(""); finishInitialLoadPerformance("failed"); }
     }).catch(() => { if (!controller.signal.aborted) { setNotice("ページ一覧を読み込めませんでした。"); setBusy(""); finishInitialLoadPerformance("failed"); } });
     return () => { controller.abort(); request.current?.abort(); pageList.current?.abort(); };
-  }, [adapter, siteId, load, replace, components, openLibrary, replaceLibrary, finishInitialLoadPerformance]);
+  }, [adapter, siteId, load, replace, components, openLibrary, replaceLibrary, preloadAdjacentPages, finishInitialLoadPerformance]);
   useEffect(() => {
     if (!adapter.prefetchDocument || busy || !session) return;
-    const available = pages.filter((page) => page.siteId === session.target.siteId && page.kind !== "shared");
-    const sameLocale = available.filter((page) => page.locale === session.target.locale);
-    const ordered = sameLocale.length > 1 ? sameLocale : available;
-    if (ordered.length < 2) return;
-    const current = ordered.findIndex((page) => sameTarget(page, session.target));
-    const next = ordered[(current + 1 + ordered.length) % ordered.length];
-    if (!next || sameTarget(next, session.target)) return;
+    if (pages.filter((page) => page.siteId === session.target.siteId && page.kind !== "shared").length < 2) return;
 
     let cancelled = false;
     let timer: number | undefined;
@@ -938,7 +954,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
       cancelIdleCallback?: (handle: number) => void;
     };
-    const start = () => { if (!cancelled) preloadPage(next); };
+    const start = () => { if (!cancelled) preloadAdjacentPages(session.target, pages); };
     let idleHandle: number | undefined;
     if (idleWindow.requestIdleCallback) idleHandle = idleWindow.requestIdleCallback(start, { timeout: 1000 });
     else timer = window.setTimeout(start, 0);
@@ -947,7 +963,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       if (idleHandle !== undefined) idleWindow.cancelIdleCallback?.(idleHandle);
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [adapter, busy, pages, preloadPage, session?.target.siteId, session?.target.pageId, session?.target.locale]);
+  }, [adapter, busy, pages, preloadAdjacentPages, session?.target.siteId, session?.target.pageId, session?.target.locale]);
   useEffect(() => () => { request.current?.abort(); action.current?.abort(); pageList.current?.abort(); releaseRead.current?.abort(); }, []);
   useEffect(() => {
     pageSessionCache.current.clear();
