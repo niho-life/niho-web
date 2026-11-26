@@ -48,7 +48,7 @@ React 18.3 または 19 と、同じ版の React DOM を利用側で用意して
 | `prefetchDocument(target, signal)`（任意） | ページ行の hover / focus で現在版を先読み。`readDocument` と同じ認可・版検証を行い、画面状態は変更しない |
 | `saveDraft({ target, document, expectedVersion, cmsBindings? }, signal)` | 楽観ロック付き下書き保存。対応 host は page sidecar も同じ CAS で保存。成功時は新しい version とサーバー採番の revision、競合時は `status: 'conflict'` |
 | `cmsBindings.read(target, signal)` / `cmsBindings.preview(request, signal)`（任意） | CMS schema とプレビュー可能な項目を読み、短命の一回限り認可で下書き page と実項目を合成して表示 |
-| `applyOperations({ target, baseVersion, operationId, operations, ...dependencyVersions }, signal)`（任意） | GUIの未送信 `EditorOperationById` を `pages.apply` へ送信。未接続hostは従来の `saveDraft` を使う（[操作単位の保存契約](editing-api-contract.md#操作カタログ)） |
+| `applyOperations({ target, baseVersion, operationId, operations, ...dependencyVersions }, signal)`（任意） | GUIの未送信 `EditorOperationById` を `pages.apply` へ送信。鎌倉Studioの日本語通常編集で接続済み。未接続hostは従来の `saveDraft` を使う（[操作単位の保存契約](editing-api-contract.md#操作カタログ)） |
 | `prepareRelease(request, signal)` | 公開 / rollback の正確な対象ドメイン、公開内容との差分、確認 token を発行 |
 | `release(plan, signal)` | 確認済みの内容を公開 / rollback。成功時は最新 snapshot、競合時は `status: 'conflict'` |
 | `prepareReleaseSet(items, signal)` / `releaseSet(plan, signal)` / `releaseSetStatus(operationId, signal)`（任意） | 同じサイトの複数ページを一つの変更セットとして公開。3メソッドすべてを実装したホストだけ複数選択UIを表示 |
@@ -146,7 +146,7 @@ HTTP 409 は adapter で `{ status: 'conflict' }` へ変換します。`status: 
 
 ## 操作単位の保存
 
-ホストが任意の `EditorAdapter.applyOperations` を実装すると、通常編集の自動保存・手動保存は全文の `saveDraft` ではなく、未送信の操作を `pages.apply` へ送ります。要求は `{ target, baseVersion, operationId, operations, componentsVersion?, presentationVersion?, stylesVersion? }` です。依存版は任意です。操作は配列位置ではなく `nodeId`、テキストでは `parentId` と `childPath` で対象を指定します。`operationId` と同一入力の組を、応答が不明なときの再送にも保管してください。認証済みhostは `gui` / `cli` / `api` の `clientKind` を認証文脈に含めてください。
+ホストが任意の `EditorAdapter.applyOperations` を実装すると、通常編集の自動保存・手動保存は全文の `saveDraft` ではなく、未送信の操作を `pages.apply` へ送ります。要求は `{ target, baseVersion, operationId, operations, componentsVersion?, presentationVersion?, stylesVersion? }` です。サイト共通スタイル機能を交渉した場合は、下書きスタイル版も `draftStylesVersion` として固定します。依存版は任意です。操作は配列位置ではなく `nodeId`、テキストでは `parentId` と `childPath` で対象を指定します。`operationId` と同一入力の組を、応答が不明なときの再送にも保管してください。認証済みhostは `gui` / `cli` / `api` の `clientKind` を認証文脈に含めてください。
 
 エディターは最後に確定した正本 document/version と未送信操作の queue を分けて保持します。送信成功時にはホストの正規文書を次の正本にし、送信中に確定した操作をその文書へ適用し直します。保存中の編集を消したり、古い送信結果で新しい作業コピーを置き換えたりしません。
 

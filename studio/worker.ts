@@ -1737,7 +1737,7 @@ function kamakuraEditingCapability(method: string, pathname: string, search: str
     if (operationId || method !== "POST") throw new AuthenticationError("editing API method or path mismatch");
     return "pages.publish";
   }
-  const match = /^\/sites\/kamakura\/operations\/(pages\.(?:read|save|release-plan|release))\/([a-z][a-z0-9-]{0,59})$/u.exec(pathname);
+  const match = /^\/sites\/kamakura\/operations\/(pages\.(?:read|save|apply|release-plan|release))\/([a-z][a-z0-9-]{0,59})$/u.exec(pathname);
   if (!match) return null;
   const query = new URLSearchParams(search), operation = match[1]!;
   const feature = query.getAll("features");
@@ -1745,7 +1745,7 @@ function kamakuraEditingCapability(method: string, pathname: string, search: str
     || feature.length > 1 || feature.length === 1 && feature[0] !== "site.styles") return null;
   const expectedMethod = operation === "pages.read" ? "GET" : operation === "pages.save" ? "PUT" : "POST";
   if (method !== expectedMethod) throw new AuthenticationError("editing API method mismatch");
-  return operation === "pages.read" ? "pages.read" : operation === "pages.save" ? "pages.edit" : "pages.publish";
+  return operation === "pages.read" ? "pages.read" : operation === "pages.save" || operation === "pages.apply" ? "pages.edit" : "pages.publish";
 }
 
 async function kamakuraEditingDelegationToken(env: Env, identity: BridgeActor, capabilities: readonly EditingCapability[]): Promise<string> {
