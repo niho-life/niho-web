@@ -142,6 +142,37 @@ test("breakpoint analysis fails closed when any page cannot be read", async () =
   } finally { await app.cleanup(); }
 });
 
+test("breakpoint analysis keeps the error state when another read resolves after abort", async () => {
+  let resolveAbout;
+  let contactStarted = false;
+  const aboutRead = new Promise((resolve) => { resolveAbout = resolve; });
+  const settings = { base: { name: "Mobile", previewWidth: 375 }, breakpoints: [{ name: "PC", minWidth: 1280, previewWidth: 1440 }] };
+  const app = await setup({ adapter: {
+    listPages: async () => [
+      { siteId: "demo", pageId: "home", locale: "ja-JP", title: "ホーム" },
+      { siteId: "demo", pageId: "about", locale: "ja-JP", title: "紹介" },
+      { siteId: "demo", pageId: "contact", locale: "ja-JP", title: "問い合わせ" }
+    ],
+    readDocument: async (target) => {
+      if (target.pageId === "about") return aboutRead;
+      contactStarted = true;
+      throw new Error("問い合わせページの読込に失敗しました。");
+    },
+    breakpointSettings: { read: async () => ({ settings, version: "bp-v1" }), save: async () => ({ status: "saved", version: "bp-v2" }) }
+  } });
+  try {
+    await click("編集モード");
+    for (let attempt = 0; attempt < 30 && !document.querySelector(".e-breakpoint-analysis")?.textContent.includes("問い合わせページの読込に失敗しました"); attempt++) await flush();
+    const analysis = document.querySelector(".e-breakpoint-analysis");
+    assert.equal(contactStarted, true);
+    assert.match(analysis.textContent, /問い合わせページの読込に失敗しました/u);
+    resolveAbout({ document: { ...structuredClone(fixture), pageId: "about", locale: "ja-JP" }, version: "v-about" });
+    await flush();
+    assert.match(analysis.textContent, /問い合わせページの読込に失敗しました/u);
+    assert.doesNotMatch(analysis.textContent, /確認中/u);
+  } finally { await app.cleanup(); }
+});
+
 test("responsive proposal reviews exact changes, applies once and undo restores them", async () => {
   let requested;
   const app = await setup({ adapter: { responsiveProposal: { propose: async (request) => {

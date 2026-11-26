@@ -138,7 +138,9 @@ function useBreakpointAnalysis({
         while (!controller.signal.aborted) {
           const index = cursor++;
           if (index >= sitePages.length) return;
-          results[index] = await readOne(index);
+          const result = await readOne(index);
+          if (controller.signal.aborted) return;
+          results[index] = result;
           completed++;
           setState({ status: "loading", completed, total: sitePages.length });
         }
