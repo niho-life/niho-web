@@ -37,8 +37,9 @@ import {
   createManagedProject, managedDashboardOverview, managedEditorOperation, managedPageEditingApi, managedPageUrl,
   managedProjectRegistrations, managedPublicRequest, managedRegistration, publicSitesOrigin, type ManagedActor
 } from "./managed-sites.js";
-import { CmsStore, type CmsActor, type CmsBucket, type CmsCapability } from "./managed-cms-store.js";
+import { CmsStore, type CmsActor, type CmsBucket, type CmsCapability, type CmsPublicAssetResolver } from "./managed-cms-store.js";
 import { CMS_DELIVERY_PREFIX } from "../src/cms-delivery-contract.js";
+import type { CmsPublicAsset } from "../src/cms-v2.js";
 import { managedCmsDelivery, managedCmsDeliveryAdmin } from "./managed-cms-delivery.js";
 import { managedCmsApi, managedCmsLegacySpec } from "./managed-cms.js";
 import { managedCmsPublic, runCmsCron } from "./managed-cms-release.js";
@@ -87,7 +88,64 @@ type Role = "owner" | "editor";
 type AccessIdentity = { readonly kind: "human"; readonly subject: string; readonly email: string };
 type ServiceIdentity = { readonly kind: "service"; readonly clientId: string };
 type CliActor = { readonly kind: "cli"; readonly subject: string; readonly email: string; readonly requestId: string };
-type BridgeActor = AccessIdentity | CliActor;
+type SystemBridgeActor = { readonly kind: "system"; readonly subject: string; readonly email: string };
+type BridgeActor = AccessIdentity | CliActor | SystemBridgeActor;
+
+const CMS_SCHEDULER_BRIDGE_ACTOR: SystemBridgeActor = {
+  kind: "system", subject: "niho-studio-cms-scheduler", email: "cms-scheduler@studio.invalid"
+};
+
+function cmsPublicAssetResolver(env: Env, identity: BridgeActor): CmsPublicAssetResolver {
+  return async ({ siteId, references }) => {
+    if (siteId !== KAMAKURA_EDITOR_SITE_ID || references.length === 0) return [];
+    const route: EditorRoute = {
+      upstreamPath: `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/assets/resolve`,
+      bodyLimit: MAX_EDITOR_SAVE_BODY_BYTES,
+      assetOperation: "resolve"
+    };
+    const assets = new Map<string, CmsPublicAsset>();
+    for (let start = 0; start < references.length; start += 200) {
+      const batch = references.slice(start, start + 200);
+      const request = new Request("https://studio.invalid/cms/assets/resolve", {
+        method: "POST", headers: {
+          "Content-Type": "application/json", Origin: "https://studio.invalid", "Sec-Fetch-Site": "same-origin"
+        },
+        body: JSON.stringify({ siteId, references: batch })
+      });
+      const response = await signedKamakuraEditorRequest(request, env, identity, route);
+      if (!response.ok) throw new Error("CMS public asset resolution failed");
+      const resolved: unknown = await response.json();
+      if (!isRecord(resolved)) throw new Error("CMS public asset resolution contract invalid");
+      const requested = new Set(batch.map(({ provider, id }) => `${provider}:${id}`));
+      if (Object.keys(resolved).some((key) => !requested.has(key))) throw new Error("CMS public asset resolution returned an unexpected asset");
+      for (const reference of batch) {
+        const key = `${reference.provider}:${reference.id}`;
+        if (!Object.hasOwn(resolved, key)) continue;
+        const value = resolved[key];
+        if (!isRecord(value) || typeof value.src !== "string") throw new Error("CMS public asset resolution contract invalid");
+        const allowedFields = new Set(["src", "width", "height", "alt", "altText"]);
+        if (Object.keys(value).some((field) => !allowedFields.has(field))) throw new Error("CMS public asset resolution contract invalid");
+        const dimension = (candidate: unknown) => {
+          if (candidate === undefined || candidate === null) return null;
+          if (typeof candidate !== "number" || !Number.isSafeInteger(candidate) || candidate < 1 || candidate > 100_000) {
+            throw new Error("CMS public asset resolution contract invalid");
+          }
+          return candidate;
+        };
+        const altText = typeof value.altText === "string" ? value.altText : typeof value.alt === "string" ? value.alt : "";
+        assets.set(key, {
+          reference, url: value.src, width: dimension(value.width), height: dimension(value.height), altText
+        });
+      }
+    }
+    return [...assets.values()];
+  };
+}
+
+function cmsStore(env: Env, identity: BridgeActor): CmsStore {
+  if (!env.CMS_OBJECTS) throw new Error("CMS storage unavailable");
+  return new CmsStore(env.DB, env.CMS_OBJECTS, cmsPublicAssetResolver(env, identity));
+}
 type CliDelegatedActor = CliActor & { readonly delegatedBySubject: string };
 type SiteActor = AccessIdentity | CliDelegatedActor;
 const CLI_SUBJECT_PREFIX = "studio-cli:";
@@ -3081,7 +3139,7 @@ async function scopedApi(request: Request, env: Env, identity: AccessIdentity, u
   }
   if (action.startsWith("/cms/v2/")) {
     if (!env.CMS_OBJECTS) return json({ error: "not_found" }, 404);
-    return managedCmsApi(request, new CmsStore(env.DB, env.CMS_OBJECTS),
+    return managedCmsApi(request, cmsStore(env, identity),
       { projectId, siteId, actor: { id: identity.subject, cli: false } }, action.slice("/cms/v2/".length), 2);
   }
   if (action === "/cms" || action.startsWith("/cms/")) return kamakuraCmsApi(request, env, identity, url, projectId, siteId, action.slice("/cms".length));
@@ -3182,7 +3240,8 @@ async function studioServiceCliApi(request: Request, env: Env, url: URL, identit
   const external = projectId === KAMAKURA_EDITOR_PROJECT_ID && siteId === KAMAKURA_EDITOR_SITE_ID;
   const subject = `${CLI_SUBJECT_PREFIX}${identity.clientId}`;
   if (!external && managedOrigin && managedOrigin !== url.origin && operationPath?.startsWith("cms.")) {
-    return managedCmsCliOperation(request, env, { projectId, siteId, actor: { id: subject, clientId: identity.clientId, cli: true } }, operationPath);
+    return managedCmsCliOperation(request, env, { projectId, siteId, actor: { id: subject, clientId: identity.clientId, cli: true } }, operationPath,
+      { kind: "cli", subject, email: `cli-${identity.clientId}@studio.invalid`, requestId: crypto.randomUUID() });
   }
   const managed = managedOrigin && managedOrigin !== url.origin ? await managedRegistration(env.DB, projectId, siteId) : null;
   if (!managed && !external) return json({ error: "not_found" }, 404);
@@ -3304,7 +3363,7 @@ async function studioManagedCliApi(request: Request, env: Env, url: URL, identit
   const origin = publicSitesOrigin(env.PUBLIC_SITES_ORIGIN);
   if (!origin || origin === url.origin) return json({ error: "not_found" }, 404);
   if (operationPath?.startsWith("cms.")) {
-    return managedCmsCliOperation(request, env, { projectId, siteId, actor: { id: identity.subject, cli: true } }, operationPath);
+    return managedCmsCliOperation(request, env, { projectId, siteId, actor: { id: identity.subject, cli: true } }, operationPath, identity);
   }
   if (!await managedRegistration(env.DB, projectId, siteId)) return json({ error: "not_found" }, 404);
   const actor: ManagedActor = { subject: identity.subject, email: identity.email, cli: true };
@@ -3374,12 +3433,12 @@ async function studioCliApi(request: Request, env: Env, url: URL, identity: Acce
 }
 
 function managedCmsCliOperation(request: Request, env: Env,
-  scope: { projectId: string; siteId: string; actor: CmsActor }, operationPath: string) {
+  scope: { projectId: string; siteId: string; actor: CmsActor }, operationPath: string, identity: BridgeActor) {
   const [id, ...parameters] = operationPath.split("/");
   const resolved = id ? resolveOperation(id, parameters) : null;
   if (!env.CMS_OBJECTS || !resolved?.spec.managed) return json({ error: "not_found" }, 404);
   const version = resolved.spec.cmsVersion ?? 1;
-  return managedCmsApi(request, new CmsStore(env.DB, env.CMS_OBJECTS), scope, operationPath, version);
+  return managedCmsApi(request, cmsStore(env, identity), scope, operationPath, version);
 }
 
 async function studioEditingCms(request: Request, env: Env, url: URL): Promise<Response> {
@@ -3401,7 +3460,11 @@ async function studioEditingCms(request: Request, env: Env, url: URL): Promise<R
   const actor: CmsActor = identity.kind === "service" ? { id: `${CLI_SUBJECT_PREFIX}${identity.clientId}`, clientId: identity.clientId, cli: true }
     : { id: identity.subject, cli: accessToken !== null };
   const scope = { actor, siteId: siteId!, projectId: registration.project_id };
-  const store = new CmsStore(env.DB, env.CMS_OBJECTS);
+  const bridgeIdentity: BridgeActor = identity.kind === "human" ? identity : {
+    kind: "cli", subject: `${CLI_SUBJECT_PREFIX}${identity.clientId}`,
+    email: `cli-${identity.clientId}@studio.invalid`, requestId: crypto.randomUUID()
+  };
+  const store = cmsStore(env, bridgeIdentity);
   if (version === "v1" && (path === "capabilities" || operation?.startsWith("pages."))) {
     if (request.method !== "GET" && identity.kind === "human" && accessToken === null &&
       (request.headers.get("Origin") !== url.origin || request.headers.get("Sec-Fetch-Site") !== "same-origin")) return json({ error: "invalid_request" }, 400);
@@ -3507,7 +3570,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
 
 export default {
   async scheduled(_controller: unknown, env: Env): Promise<void> {
-    if (env.CMS_OBJECTS) await runCmsCron(new CmsStore(env.DB, env.CMS_OBJECTS));
+    if (env.CMS_OBJECTS) await runCmsCron(cmsStore(env, CMS_SCHEDULER_BRIDGE_ACTOR));
   },
   async fetch(request: Request, env: Env): Promise<Response> {
     try { return await handle(request, env); }

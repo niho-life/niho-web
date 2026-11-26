@@ -661,6 +661,61 @@ testWithD1("Studio CMS renders only assets approved for the published revision",
   await assert.rejects(store.snapshot(site.siteId, releaseId), /unresolved public asset/u);
 });
 
+testWithD1("Kamakura CMS releases resolve stable image references for plans and scheduled delivery", async (t) => {
+  const h = await fixture(t, { cms: true });
+  h.env.KAMAKURA_STUDIO_BRIDGE_SECRET = Buffer.alloc(32, 7).toString("base64url");
+  const bridgeRequests = [];
+  h.env.KAMAKURA_SITE = { async fetch(request) {
+    const path = new URL(request.url).pathname;
+    const input = await request.json();
+    bridgeRequests.push({ path, method: request.method, siteId: input.siteId, subject: request.headers.get("X-NIHO-Studio-Subject"), references: input.references });
+    return Response.json(Object.fromEntries(input.references.map((reference) => [`${reference.provider}:${reference.id}`, {
+      src: "https://media.example.test/cms-cover.webp", width: 640, height: 480
+    }])));
+  } };
+
+  const projectId = "project-kamakura", siteId = "kamakura";
+  h.sqlite.prepare("INSERT INTO project_members (project_id, access_subject, role, display_name, email) VALUES (?, ?, 'owner', 'Owner', 'owner@example.test')").run(projectId, OWNER);
+  h.sqlite.prepare("INSERT INTO managed_sites (site_id, slug, created_by_subject) VALUES (?, ?, ?)").run(siteId, "cms-resolver", OWNER);
+  h.sqlite.prepare("INSERT INTO managed_pages (site_id, page_id, locale, title, path, current_version, current_revision) VALUES (?, 'home', 'ja', 'Home', '/', 'v1', 1)").run(siteId);
+
+  const endpoint = `/api/projects/${projectId}/sites/${siteId}/cms/v2`;
+  const read = async (operation, input = {}, options = {}) => body(await h.send(MANAGEMENT_ORIGIN, "POST", `${endpoint}/${operation}`,
+    { siteId, ...input }, options), 200);
+  const site = { projectId, siteId, read };
+  const schema = await read("cms.schema.read"), current = await read("cms.release.current"), collection = schema.collections[0];
+  const image = { fieldId: "cover", key: "cover", label: "表紙", type: "image", placement: "main" };
+  const migration = await read("cms.schema.plan", { expectedSchemaRevision: schema.schemaRevision,
+    routeTableVersions: [{ locale: "ja", revision: current.routeTableRevision }], replacements: [],
+    nextSchema: { ...schema, collections: [{ ...collection, fields: [...collection.fields, image] }] } });
+  const { result: { schemaRevision } } = await read("cms.schema.apply", {
+    operationId: migration.plan.operationId, confirmationToken: migration.plan.confirmationToken
+  });
+  const reference = { provider: "kamakura-upload", id: "123e4567-e89b-42d3-a456-426614174000" };
+  const draft = await createDraft(site, schemaRevision);
+  const saved = await read("cms.items.save", { ...versioned(draft), values: { ...values("Published", "notice"), cover: reference } }, { headers: headers() });
+  const currentForPlan = await read("cms.release.current");
+  const scheduledAt = new Date(Date.now() + 60_000).toISOString();
+  const planResponse = await h.send(MANAGEMENT_ORIGIN, "POST", `${endpoint}/cms.release.plan`, {
+    siteId, schemaRevision, locale: "ja", routeTableRevision: currentForPlan.routeTableRevision,
+    expectedReleaseId: null, items: [pin(saved.item)], redirects: [], at: scheduledAt
+  });
+  const planValue = await planResponse.json();
+  assert.equal(planResponse.status, 200, JSON.stringify({ planValue, bridgeRequests }));
+  const plan = planValue.plan;
+  assert.deepEqual(bridgeRequests.map(({ subject }) => subject), [OWNER]);
+  assert.deepEqual(plan.candidate.proposal.snapshot.assetManifest, [{ reference, url: "https://media.example.test/cms-cover.webp", width: 640, height: 480, altText: "" }]);
+  await read("cms.schedule.create", { operationId: plan.operationId, confirmationToken: plan.confirmationToken });
+  assert.deepEqual(bridgeRequests.map(({ subject }) => subject), [OWNER, OWNER]);
+  h.sqlite.prepare("UPDATE managed_cms_outbox SET available_at = 0 WHERE id = ?").run(plan.candidate.id);
+  await h.cron();
+  const published = await read("cms.release.current");
+  assert.equal(published.snapshot.releaseId, plan.candidate.proposal.snapshot.releaseId);
+  assert.deepEqual(bridgeRequests.map(({ subject }) => subject), [OWNER, OWNER, "niho-studio-cms-scheduler"]);
+  assert.ok(bridgeRequests.every(({ references }) => references.length === 1 && references[0].id === reference.id));
+  assert.ok(bridgeRequests.every(({ path, method, siteId: resolvedSiteId }) => path === "/internal/studio/web-content/assets/resolve" && method === "POST" && resolvedSiteId === siteId));
+});
+
 testWithD1("Studio CMS uses immutable revisions, site/actor boundaries, confirmation and recoverable release jobs", async (t) => {
   const h = await fixture(t, { cms: true });
   const first = await cmsSite(h, "first-cms"), other = await cmsSite(h, "other-cms");
