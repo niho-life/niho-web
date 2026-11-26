@@ -321,6 +321,16 @@ export function createProjectEditorAdapter(adapter: EditorAdapter, projectInput:
       const { readOnly: rawReadOnly, ...rest } = snapshot, readOnly = parseEditorReadOnly(rawReadOnly);
       return { ...rest, ...(readOnly ? { readOnly } : {}) };
     },
+    ...(adapter.prefetchDocument ? {
+      async prefetchDocument(target, signal) {
+        const checkedTarget = targetForProject(target, site);
+        const snapshot = structuredClone(await adapter.prefetchDocument!(checkedTarget, signal));
+        assertDocumentTarget(snapshot.document, checkedTarget);
+        assertPresentationTarget(snapshot.presentation, checkedTarget);
+        const { readOnly: rawReadOnly, ...rest } = snapshot, readOnly = parseEditorReadOnly(rawReadOnly);
+        return { ...rest, ...(readOnly ? { readOnly } : {}) };
+      }
+    } satisfies Pick<EditorAdapter, "prefetchDocument"> : {}),
     ...(adapter.discoverPageNodeNames ? {
       discoverPageNodeNames: (target, signal) => adapter.discoverPageNodeNames!(targetForProject(target, site), signal)
     } satisfies Pick<EditorAdapter, "discoverPageNodeNames"> : {}),
