@@ -94,6 +94,8 @@ export type EditorLock = { nodeId: string; fields: readonly string[]; reason: st
 export type EditorReadOnly = { reason: string; editUrl?: string; editLabel?: string };
 export type EditorSnapshot = PageOperationVersions & {
   document: unknown;
+  /** Optional site-style dependency version reported by feature-aware page reads. */
+  draftStylesVersion?: string;
   /** Omitted when the host has no CMS page binding capability. */
   cmsBindings?: CmsPageBindingsDocument | null;
   /** ホストが発行する opaque な楽観ロック値。 */

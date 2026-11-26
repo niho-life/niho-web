@@ -750,9 +750,9 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const autosaveKey = (target: EditorTarget | undefined, lib: LibrarySession | null) => target ? targetKeyOf(target) : lib ? JSON.stringify(["library", lib.siteId]) : "";
   useAutosave(autosaveMs, autosaveActive && pendingChanges && !siteWorkBlocked && (!dirty || !session?.readOnly) && !hasInput && !busy && !modal && !historyMode && online && !problem && localizationReady, autosaveSubject, autosaveKey(session?.target, library),
     (key) => { if (autosaveKey(sessionRef.current?.target, libraryRef.current) === key) void save("auto"); });
-  const replace = useCallback((next: Session | null) => {
+  const replace = useCallback((next: Session | null, options: { measureEdit?: boolean } = {}) => {
     const current = sessionRef.current;
-    if (current && next && sameTarget(current.target, next.target) && current.history.present !== next.history.present && !pendingLoadPerformance.current) {
+    if (options.measureEdit !== false && current && next && sameTarget(current.target, next.target) && current.history.present !== next.history.present && !pendingLoadPerformance.current) {
       pendingEditRender.current?.();
       pendingEditRender.current = measurePerformance?.("edit-render") ?? null;
     }
@@ -859,6 +859,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         loaded = await readEditorSession(adapter, editorTarget, controller.signal, blocks, currentComponents, { cache: pageSessionCache.current, ...(cachedSiteSettings ? { siteSettings: cachedSiteSettings } : {}) });
       }
       if (controller.signal.aborted) return false;
+      if (loaded.siteSettings && loaded.siteSettings.version !== siteSettingsRef.current.version) siteSettingsRef.current.acceptSnapshot(loaded.siteSettings);
       if (finish) pendingMeasurement.current = { target: loaded.session.target, initial, signal: controller.signal, finish };
       pendingLoadPerformance.current = { measurement, target: editorTarget };
       replace(loaded.session);
@@ -1445,7 +1446,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         const latest = sessionRef.current;
         if (latest && sameTarget(latest.target, current.target) && latest.version === current.version) {
           const acknowledged = acceptAppliedOperations(latest.operationQueue, { ...result, document: canonical }, latest.history, applyToPage);
-          replace({ ...latest, history: acknowledged.history, operationQueue: acknowledged.queue, saved: fingerprint(canonical), version: result.version, hasSavedDraft: true });
+          replace({ ...latest, history: acknowledged.history, operationQueue: acknowledged.queue, saved: fingerprint(canonical), version: result.version, hasSavedDraft: true }, { measureEdit: false });
           if (acknowledged.replayFailed) {
             performanceOutcome = "failed";
             failed("conflict", false);
@@ -1471,7 +1472,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
             ...(current.cmsBindings === undefined ? {} : { savedCmsBindings: JSON.stringify(current.cmsBindings) }),
             operationQueue: adapter.applyOperations && !localized
               ? createOperationQueue({ ...document, revision: result.revision })
-              : { ...latest.operationQueue, base: { ...document, revision: result.revision }, pending: [] } });
+              : { ...latest.operationQueue, base: { ...document, revision: result.revision }, pending: [] } }, { measureEdit: false });
         }
       }
       if (sameSession()) { setProblem(null); setSavedAt(new Date()); setConflictView(0); }

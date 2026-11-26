@@ -329,7 +329,10 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
     const wire = await editingApi.read(checked, signal);
     if (!wire.editorState) throw new EditorApiError(503, "editor_state_unavailable");
     if (required && wire.presentation === undefined) throw new Error("このサイトに必要な表示コンテキストがありません。");
-    return { ...wire.editorState, document: wire.document, version: wire.version, ...(wire.presentation === undefined ? {} : { presentation: wire.presentation }) };
+    return { ...wire.editorState, document: wire.document, version: wire.version,
+      ...(wire.stylesVersion === undefined ? {} : { stylesVersion: wire.stylesVersion }),
+      ...(wire.draftStylesVersion === undefined ? {} : { draftStylesVersion: wire.draftStylesVersion }),
+      ...(wire.presentation === undefined ? {} : { presentation: wire.presentation }) };
   }
   async function readPageDocument(target: EditorTarget, signal: AbortSignal): Promise<EditorSnapshot> {
     return target.locale === "en"

@@ -328,7 +328,7 @@ export type SiteSettingsState = {
   editStyles: (styles: SiteStyles) => string | undefined;
   form: SiteForm; dirty: boolean; problem: string | undefined; canSave: boolean; busy: boolean;
   message: { text: string; alert: boolean } | null; conflict: boolean;
-  edit: (patch: Partial<SiteForm>) => void; reset: () => void; reload: () => void; save: () => Promise<void>;
+  edit: (patch: Partial<SiteForm>) => void; reset: () => void; reload: () => void; acceptSnapshot: (snapshot: { settings: SiteSettings; version: string }) => void; save: () => Promise<void>;
 };
 /** サイト設定は文書と別に、opaque な version の楽観ロックで保存する。 */
 export function useSiteSettings(adapter: EditorAdapter, siteId: string, blocks: EditorBlockRegistry, components?: ComponentLibrary): SiteSettingsState {
@@ -393,6 +393,12 @@ export function useSiteSettings(adapter: EditorAdapter, siteId: string, blocks: 
     edit: (patch) => { setForm((previous) => ({ ...previous, ...patch })); setMessage(null); },
     reset: () => { if (loaded) { setForm(formFrom(loaded.settings)); setStyles(parseSiteStyles(loaded.settings)); } setMessage(null); setConflict(false); },
     reload: () => setEpoch((value) => value + 1),
+    acceptSnapshot: (snapshot) => {
+      if (dirty || typeof snapshot.version !== "string" || !snapshot.version) return;
+      const settings = parseSiteSettings(snapshot.settings);
+      setLoaded({ siteId, settings, version: snapshot.version }); setForm(formFrom(settings)); setStyles(parseSiteStyles(settings));
+      setStatus("ready"); setLatest(undefined); setMessage(null); setConflict(false);
+    },
     save
   };
 }
