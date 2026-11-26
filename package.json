@@ -56,6 +56,10 @@
       "types": "./dist/editor-model.d.ts",
       "import": "./dist/editor-model.js"
     },
+    "./normalize": {
+      "types": "./dist/normalize.d.ts",
+      "import": "./dist/normalize.js"
+    },
     "./pages": {
       "types": "./dist/pages.d.ts",
       "import": "./dist/pages.js"
