@@ -5,6 +5,7 @@ import { build } from "esbuild";
 import { JSDOM } from "jsdom";
 import { EDITING_OPERATIONS, withSiteStylesFeature } from "@niho/web/editing-api";
 import { createProjectEditorAdapter } from "@niho/web/project-editor";
+import { renderSitePageToHtml } from "@niho/web/server";
 
 async function loadKamakuraCatalogContract() {
   const result = await build({
@@ -296,7 +297,7 @@ test("Kamakura editor adapter は編集状態と本文を1回で読み、状態�
 
   wire = { document, version, presentation, presentationVersion: presentation.version };
   await assert.rejects(adapter.readDocument(target, signal), (error) => error.status === 503 && error.code === "editor_state_unavailable");
-  assert.deepEqual(calls.splice(0), [commonReadPath], "編集状態が無いときにsnapshot routeへfallbackしない");
+  assert.deepEqual(calls.splice(0), [commonReadPath], "編集状態が無いときに別の読取経路へfallbackしない");
 
   const native = contract.parseKamakuraCatalog({ ...catalog(), nativePresentationPages: [pageId] });
   wire = { document, version, editorState: {} };
@@ -419,17 +420,19 @@ test("Kamakura Studio adapter routes multi-page plan, apply, and status through 
   assert.equal(calls[1].body.confirmationToken, plan.confirmationToken);
 });
 
-test("Kamakura editor adapter は日本語経路を維持し、英語 snapshot・overlay 保存・翻訳操作を localization BFF に限定する", async (t) => {
+test("Kamakura editor adapter は英語読取を共通 pages.read に揃え、保存・翻訳操作は既存の正本を使う", async (t) => {
   const { createKamakuraAdapter } = await loadKamakuraEditor();
   const parsedCatalog = contract.parseKamakuraCatalog(catalog());
   const pageId = "kamakura-community-dinner";
   const base = "/api/projects/project-kamakura/sites/kamakura/editor";
   const document = (id, locale, title = id) => ({ schemaVersion: 1, siteId: "kamakura", pageId: id, locale, revision: 2, title, tokens: {}, body: [] });
   const presentation = { schemaVersion: 1, siteId: "kamakura", locale: "en", version: "presentation-1", reset: "neutral-v1", tokens: {}, fonts: [],
-    shared: { header: document("site-header", "en"), footer: document("site-footer", "en") } };
+    shared: { header: document("site-header", "en"), footer: document("site-footer", "en") },
+    links: { origin: "https://next-kamakura.niho.life", sourcePath: "/en/community-dinner", paths: { "/old-community": "/en/community-dinner" } } };
   const japanesePresentation = { ...presentation, locale: "ja", version: "presentation-version",
     shared: { header: document("site-header", "ja"), footer: document("site-footer", "ja") } };
   const versions = { expectedSourceVersion: `p.${"a".repeat(64)}`, expectedVersion: `l.${"b".repeat(64)}`, expectedOverlayVersion: 1 };
+  const englishDocument = { ...document(pageId, "en", "Community Dinner"), body: [{ type: "element", id: "old-link", tag: "a", attrs: { href: "/old-community" }, children: [{ type: "text", text: "Community Dinner" }] }] };
   const config = { schemaVersion: 1, siteId: "kamakura", sourceLocale: "ja", defaultLocale: "ja", enabledLocales: ["ja", "en"], documentLocales: { ja: "ja-JP", en: "en" }, glossaryVersion: "g1", contextVersion: "c1" };
   const overlay = { schemaVersion: 1, siteId: "kamakura", pageId, sourceLocale: "ja", targetLocale: "en", version: 1, entries: [] };
   const localizedPage = { siteId: "kamakura", pageId, title: "Community Dinner", locales: { ja: { state: "source" }, en: { state: "review-needed", changed: 1, published: false } } };
@@ -449,6 +452,7 @@ test("Kamakura editor adapter は日本語経路を維持し、英語 snapshot�
     [`GET ${breakpointReadPath}`, { settings: breakpointSettings, version: "b.1" }],
     [`PUT ${breakpointSavePath}`, { status: "saved", version: "b.2" }],
     [`GET /api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/operations/pages.read/${pageId}?locale=ja`, () => ({ document: japaneseDocument, version: japaneseVersion, presentationVersion: "presentation-version", presentation: japanesePresentation, editorState: { releases, englishPublication } })],
+    [`GET /api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/operations/pages.read/${pageId}?locale=en`, () => ({ document: englishDocument, version: versions.expectedVersion, presentationVersion: presentation.version, presentation })],
     [`PUT /api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/operations/pages.save/${pageId}?locale=ja`, () => {
       japaneseVersion = "saved-version";
       japaneseDocument = document(pageId, "ja", "保存済みタイトル");
@@ -467,7 +471,6 @@ test("Kamakura editor adapter は日本語経路を維持し、英語 snapshot�
     [`POST /api/projects/project-kamakura/sites/kamakura/editor/${pageId}/release`, { status: "released", snapshot: { document: document(pageId, "ja"), version: "released-version", englishPublication: { state: "publishing", retryable: false } } }],
     [`POST /api/projects/project-kamakura/sites/kamakura/localization/editor/site`, { status: "ready", config, pages: [localizedPage], version: `s.${"c".repeat(64)}` }],
     [`POST /api/projects/project-kamakura/sites/kamakura/localization/editor/pages/${pageId}`, { status: "ready", sourceDocument: document(pageId, "ja-JP"), sourceVersion: versions.expectedSourceVersion, overlay, version: versions.expectedVersion }],
-    [`POST /api/projects/project-kamakura/sites/kamakura/localization/editor/pages/${pageId}/snapshot`, { status: "ready", document: document(pageId, "en", "Community Dinner"), version: versions.expectedVersion, presentation }],
     [`POST /api/projects/project-kamakura/sites/kamakura/localization/editor/pages/${pageId}/save`, { status: "saved", version: `l.${"d".repeat(64)}`, revision: 3 }],
     [`POST /api/projects/project-kamakura/sites/kamakura/localization/editor/pages/${pageId}/command`, { status: "applied", version: `l.${"e".repeat(64)}` }]
   ]);
@@ -495,6 +498,10 @@ test("Kamakura editor adapter は日本語経路を維持し、英語 snapshot�
   const english = await adapter.readDocument(en, signal);
   assert.equal(english.document.locale, "en");
   assert.equal(english.presentation.version, presentation.version);
+  assert.deepEqual(english.presentation.links.paths, { "/old-community": "/en/community-dinner" });
+  assert.match(renderSitePageToHtml(english.document, english.presentation), /href="\/en\/community-dinner"/u, "common presentation resolves legacy English aliases in the preview");
+  assert.equal(calls.findLast(({ key }) => key.includes("operations/pages.read") && key.endsWith("locale=en")).key,
+    `GET ${base}/editing-api/v1/sites/kamakura/operations/pages.read/${pageId}?locale=en`);
   assert.deepEqual(await adapter.localization.readSite("kamakura", signal), { config, pages: [normalizedLocalizedPage], version: `s.${"c".repeat(64)}` });
   assert.deepEqual(await adapter.localization.readPage(en, signal), { sourceDocument: document(pageId, "ja-JP"), sourceVersion: versions.expectedSourceVersion, overlay, version: versions.expectedVersion });
   const saved = await adapter.saveDraft({ target: en, document: english.document, expectedVersion: versions.expectedVersion, presentationVersion: presentation.version, localization: versions }, signal);
@@ -534,9 +541,11 @@ test("Kamakura editor adapter は日本語経路を維持し、英語 snapshot�
   replies.set(`GET ${breakpointReadPath}`, { settings: breakpointSettings, version: "b.2", extra: true });
   await assert.rejects(adapter.breakpointSettings.read("kamakura", signal), (error) => error?.code === "invalid_response");
 
-  replies.set(`POST /api/projects/project-kamakura/sites/kamakura/localization/editor/pages/${pageId}/snapshot`, { status: "unavailable", message: "このページの英語表示材料はまだありません。" });
-  await assert.rejects(adapter.readDocument(en, signal), /英語表示材料/u);
-  replies.set(`POST /api/projects/project-kamakura/sites/kamakura/localization/editor/pages/${pageId}/snapshot`, { status: "conflict" });
+  replies.set(`GET ${base}/editing-api/v1/sites/kamakura/operations/pages.read/${pageId}?locale=en`, {
+    document: englishDocument, version: versions.expectedVersion, presentationVersion: presentation.version, coordinatorEpoch: 1, presentation
+  });
+  await assert.rejects(adapter.readDocument(en, signal), (error) => error.code === "invalid_response", "internal coordinator epochs are rejected by the common read contract");
+  replies.set(`GET ${base}/editing-api/v1/sites/kamakura/operations/pages.read/${pageId}?locale=en`, Response.json({ error: "version_conflict" }, { status: 409 }));
   await assert.rejects(adapter.readDocument(en, signal), (error) => error.status === 409);
   replies.set(`GET /api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/operations/pages.read/${pageId}?locale=ja`, {
     document: document(pageId, "ja"), version: "ja-version", presentationVersion: "presentation-version", presentation: japanesePresentation,

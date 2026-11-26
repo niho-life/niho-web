@@ -22,6 +22,8 @@
 
 ## 鎌倉StudioのGUI書込み経路
 
+鎌倉Studioの `EditorAdapter.readDocument` は日本語・英語の両方で共通 `pages.read` を使います。英語キャンバスは `locale=en` を指定し、alias URLの解決を含む `presentation` を共通snapshotから読みます。英語専用のsnapshot BFF routeはありません。
+
 次の表は、現在の鎌倉Studioが実装する `EditorAdapter` と素材adapterの全メソッドから、永続化・公開・確認計画の書込みを抽出したものです。BFF route欄は認証済みproject/site prefix以降のpathです。GUIはadapterメソッドから共通操作IDへ接続し、同じ操作catalogを `@niho/web/editing-api` または `niho-edit` が使います。ホスト固有のGUI専用保存経路は追加しません。素材アップロード本体だけは、共通APIの `assets.upload-intent` が発行した短命tokenで署名済みURLへ直接PUTします。
 
 | GUI adapter method | 共通操作ID | Studio BFF route | 接続内容 |

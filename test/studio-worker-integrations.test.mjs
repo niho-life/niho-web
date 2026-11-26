@@ -18,7 +18,7 @@ test("Experience editor stays frozen while Kamakura reads pass and site freezes 
   const workerSource = bundled.outputFiles[0].text;
   for (const forbidden of ["https://api.niho.life", "https://api-stg.niho.life"]) assert.equal(workerSource.includes(forbidden), false, forbidden);
   const worker = (await import(`data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].contents).toString("base64")}`)).default;
-  const roles = new Map(), upstream = [], kamakuraCalls = [], assets = [];
+  const roles = new Map(), upstream = [], kamakuraCalls = [], editingRequests = [], assets = [];
   t.mock.method(globalThis, "fetch", async (url) => {
     if (String(url) === `${auth.issuer}/cdn-cgi/access/certs`) return Response.json({ keys: [auth.jwk] });
     upstream.push(String(url));
@@ -35,12 +35,23 @@ test("Experience editor stays frozen while Kamakura reads pass and site freezes 
     DB: { prepare(query) { return { bind(...values) { this.values = values; return this; }, async first() { const role = roles.get(`${this.values[1]}/${this.values[2]}`); return role && (!/m\.role = 'owner'/u.test(query) || role === "owner") ? { allowed: 1 } : null; } }; } },
     ASSETS: { async fetch(request) { assets.push(request.url); return new Response('<div id="root"></div>', { headers: { "Content-Type": "text/html" } }); } },
     KAMAKURA_SITE: { async fetch(request) {
-      const path = new URL(request.url).pathname;
+      const requestUrl = new URL(request.url), path = requestUrl.pathname;
       kamakuraCalls.push(`${request.method} ${path}`);
       if (path.endsWith("/catalog")) return Response.json(catalog);
-      if (path === "/api/edit/v1/sites/kamakura/operations/pages.read/home") return Response.json({
-        document: { siteId: "kamakura", pageId: "home", locale: "ja" }, version: "v1", presentation: {}, editorState: { readOnly }
-      });
+      if (path === "/api/edit/v1/sites/kamakura/operations/pages.read/home") {
+        const locale = requestUrl.searchParams.get("locale") ?? "ja";
+        const document = { schemaVersion: 1, siteId: "kamakura", pageId: "home", locale, revision: 2, title: locale === "en" ? "Home" : "トップ", tokens: {}, body: [] };
+        const token = request.headers.get("Authorization")?.replace(/^Bearer\s+/u, "");
+        const scope = token?.split(".")[1];
+        if (scope) editingRequests.push({ locale, scope: JSON.parse(Buffer.from(scope, "base64url").toString("utf8")).scope });
+        if (locale === "en") {
+          const presentation = { schemaVersion: 1, siteId: "kamakura", locale: "en", version: "presentation-en-v1", reset: "neutral-v1", tokens: {}, fonts: [],
+            shared: { header: { ...document, pageId: "site-header" }, footer: { ...document, pageId: "site-footer" } },
+            links: { origin: "https://next-kamakura.niho.life", sourcePath: "/en", paths: { "/old-home": "/en" } } };
+          return Response.json({ document, version: `l.${"a".repeat(64)}`, presentationVersion: presentation.version, presentation });
+        }
+        return Response.json({ document, version: "v1", presentation: {}, editorState: { readOnly } });
+      }
       if (request.method === "GET") return Response.json({ document: { siteId: "kamakura", pageId: "home", locale: "ja" }, version: "v1", readOnly });
       return writeResponse();
     } },
@@ -75,6 +86,15 @@ test("Experience editor stays frozen while Kamakura reads pass and site freezes 
   });
   assert.equal(page.status, 200);
   assert.deepEqual((await page.json()).editorState.readOnly, readOnly);
+  const englishPage = await call(`${kamakura}/editor/editing-api/v1/sites/kamakura/operations/pages.read/home?locale=en`, {
+    headers: { Accept: "application/json; profile=niho-editor-snapshot-v1" }
+  });
+  assert.equal(englishPage.status, 200);
+  assert.deepEqual((await englishPage.json()).presentation.links.paths, { "/old-home": "/en" });
+  assert.deepEqual(editingRequests.at(-1), { locale: "en", scope: ["pages.read"] }, "English page reads delegate only read permission");
+  const callsBeforeEnglishWrite = kamakuraCalls.length;
+  assert.equal((await write(`${kamakura}/editor/editing-api/v1/sites/kamakura/operations/pages.save/home?locale=en`, "PUT")).status, 404);
+  assert.equal(kamakuraCalls.length, callsBeforeEnglishWrite, "the English read exception does not authorize page writes");
   const applied = await write(`${kamakura}/editor/editing-api/v1/sites/kamakura/operations/pages.apply/home?locale=ja`, "POST");
   assert.equal(applied.status, 409);
   assert.deepEqual(await applied.json(), { error: "visual_editor_frozen", message: "凍結中" });
@@ -91,6 +111,7 @@ test("Experience editor stays frozen while Kamakura reads pass and site freezes 
   assert.equal((await call(`${kamakura}/editor-staging/catalog`)).status, 404);
   assert.deepEqual(kamakuraCalls, [
     "GET /internal/studio/web-content/catalog",
+    "GET /api/edit/v1/sites/kamakura/operations/pages.read/home",
     "GET /api/edit/v1/sites/kamakura/operations/pages.read/home",
     "POST /api/edit/v1/sites/kamakura/operations/pages.apply/home",
     "PUT /internal/studio/web-content/home/draft",
