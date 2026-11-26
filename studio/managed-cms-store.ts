@@ -37,7 +37,7 @@ export type Job = {
 
 type Receipt = { operation: string; input_digest: string; result_json: string; transaction_id: string };
 
-export const MAX_ITEMS = 25;
+export const MAX_ITEMS = 200;
 export const MAX_BODY = 64 * 1024;
 export const MAX_RETAINED_BYTES = 100 * 1024 * 1024;
 export const MAX_SNAPSHOT = 2 * 1024 * 1024;
@@ -140,9 +140,10 @@ export class CmsStore {
 
   async approvedPins(site: Site, pins: readonly CmsReleasePin[]) {
     if (!pins.length) return [];
+    // Pass the revision list as one parameter to stay within D1's per-query bind limit.
     const rows = await this.db.prepare(`SELECT revision, collection_id, item_id, locale, schema_revision FROM managed_cms_revisions
-       WHERE site_id = ?2 AND revision IN (${pins.map((_, i) => `?${i + 6}`).join(",")})
-       AND EXISTS (SELECT 1 ${AUTH})`).bind(...scopeValues(site, "cms.publish"), ...pins.map((pin) => pin.revision)).all<{
+       WHERE site_id = ?2 AND revision IN (SELECT value FROM json_each(?6))
+       AND EXISTS (SELECT 1 ${AUTH})`).bind(...scopeValues(site, "cms.publish"), JSON.stringify(pins.map((pin) => pin.revision))).all<{
         revision: string; collection_id: string; item_id: string; locale: string; schema_revision: string;
       }>();
     if (!rows.success || !rows.results) throw new Error("CMS revision lookup failed");

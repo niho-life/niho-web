@@ -75,6 +75,10 @@ CMS 定義は Site ごとに一つです。editor は項目を翻訳して local
 
 管理画面は `/api/projects/{projectId}/sites/{siteId}/cms/v2/discover`（GET）と、その `/cms/v2/{operation}`（POST）を使います。機械クライアントには同じ操作を `/api/edit/v2/sites/{siteId}/capabilities`（GET）と `/api/edit/v2/sites/{siteId}/operations/{operation}`（POST）に公開します。POST 本文に `siteId` を含めます。R2 を有効にした Studio-native site のみが対象です。
 
+JSON リクエスト本文は `cms.items.save` が128 KiB、その他の操作が64 KiBまでです。本文全体を UTF-8 のバイト数で数え、上限超過は `400 invalid_request` を返します。
+
+Studio-native の1サイトに保存できる CMS 項目は、全コレクションの復元可能な削除済み項目を含めて200件です。上限を超える作成は `409 quota_exceeded` を返します。公開・予約の1計画には最大200項目と25件の明示転送を指定できます。配信待ちの公開・予約は1サイトで合計25件までです。[Studio-native site の容量制限](studio-managed-sites.md#cms-の公開と復旧)
+
 | Studio の追加操作 | 入力と結果 |
 | --- | --- |
 | `cms.items.create` | `collectionId`、`contractVersion: 2`、`expectedSchemaRevision`。空の下書きと不透明な項目ID・revisionを発行 |
