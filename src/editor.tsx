@@ -254,8 +254,9 @@ function pairedFormFieldNodeId(document: PageDocument, path: NodePath): string |
      typeof labelTarget === "string" && ["input", "textarea", "select"].includes(candidate.tag) && candidate.attrs?.id === labelTarget));
   return pair?.type === "element" ? pair.id : undefined;
 }
-function Canvas({ document, blocks, width, height, breakpoint, selection, selectedNodeId, selectedNodeIds, revealNode, slot, select, canEditNode, dragItem, drop, pending, editText, startTextEdit, onShortcut, resize, spacing, reportError, editable, structureEditable, locks, preview, previewComponent: PreviewComponent, mode, baseVersion, historyRevision, assets, motionCss, replay, rendered, presentation, presentationRuntime, externalFramePolicy, blankEmbeds, xPostFrameUrl, origins, openInstance, viewportHeight, siteOrigin, onReady }: {
+function Canvas({ document, pageKey, blocks, width, height, breakpoint, selection, selectedNodeId, selectedNodeIds, revealNode, slot, select, canEditNode, dragItem, drop, pending, editText, startTextEdit, onShortcut, resize, spacing, reportError, editable, structureEditable, locks, preview, previewComponent: PreviewComponent, mode, baseVersion, historyRevision, assets, motionCss, replay, rendered, presentation, presentationRuntime, externalFramePolicy, blankEmbeds, xPostFrameUrl, origins, openInstance, viewportHeight, siteOrigin, onReady }: {
   document: PageDocument; blocks: EditorBlockRegistry; width: number; height: number; selection: NodePath | null; selectedNodeId?: string; selectedNodeIds?: readonly string[]; select: (path: NodePath | null, nodeId?: string, slot?: string | null, mode?: SelectionMode) => void;
+  pageKey: string;
   revealNode: { id: string } | null;
   canEditNode?: (nodeId: string) => boolean;
   slot: string | null;
@@ -285,6 +286,7 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
   onReady?: (() => void) | undefined;
 }) {
   const [body, setBody] = useState<HTMLElement | null>(null), frame = useRef<HTMLIFrameElement>(null);
+  const previousPageKey = useRef(pageKey);
   useEffect(() => { if (body) body.ownerDocument.documentElement.lang = rendered.locale; }, [body, rendered.locale]);
   useEffect(() => {
     const frameDocument = body?.ownerDocument;
@@ -297,6 +299,14 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
   const resizing = useRef<{ element: HTMLElement; path: NodePath; x: number; y: number; width: number; height: number; inlineWidth: string; inlineHeight: string } | null>(null);
   const [linkOpen, setLinkOpen] = useState(false), [linkHref, setLinkHref] = useState("/"), [linkError, setLinkError] = useState("");
   const originalHtml = useRef(""), savedRange = useRef<Range | null>(null);
+  useLayoutEffect(() => {
+    if (previousPageKey.current === pageKey) return;
+    previousPageKey.current = pageKey;
+    if (editingId) pending(`direct-${editingId}`, false);
+    setEditingId(null); setDropPlace(null); setHandleRect(null); setLinkOpen(false); setLinkError("");
+    resizing.current = null; originalHtml.current = ""; savedRange.current = null; lastRevealedNode.current = null;
+    if (body) { body.scrollTop = 0; body.ownerDocument.documentElement.scrollTop = 0; }
+  }, [body, editingId, pageKey, pending]);
   const scope = pageScope(rendered), entries = useMemo(() => walkNodes(document), [document]);
   const renderedEntries = useMemo(() => rendered === document ? entries : walkNodes(rendered), [rendered, document, entries]);
   const nodesById = useMemo(() => new Map(entries.flatMap((entry) => entry.node.type === "text" ? [] : [[entry.node.id, entry] as const])), [entries]);
@@ -474,7 +484,7 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
     if (!body) return;
     return initializeSitePresentation(body, { interactive: presentationRuntime, ...(mode === "preview" && xPostFrameUrl ? { xPostFrameUrl } : {}) });
   }, [body, mode, presentation, presentationRuntime, runtimeDocument.current, replay, xPostFrameUrl]);
-  useEffect(() => { if (body) onReady?.(); }, [body, onReady]);
+  useEffect(() => { if (body) onReady?.(); }, [body, onReady, pageKey]);
   const presentationDocuments = useMemo(() => presentation ? [presentation.shared.header, presentation.shared.footer, ...(presentation.overlays ?? []).map((overlay) => overlay.document), ...(presentation.hostViews ?? []).map((view) => view.document)] : [], [presentation]);
   const presentationHasEmbed = useMemo(() => presentationDocuments.some((source) => walkNodes(source).some(({ node }) => node.type === "element" && !!node.embed?.source)), [presentationDocuments]);
   const canvasHasTrustedFrames = useMemo(() => {
@@ -2580,7 +2590,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         restore={() => { if (recoveryStale) setRecoveryCompare(true); else void restoreRecovered(); }} discard={recoveryState.discard} />}
       <div className="e-stage" ref={stageRef}><HistoryBar history={versions} restore={restoreRevision} {...(session?.readOnly ? { restoreBlocked: session.readOnly.reason } : {})} rollbackHint={session?.readOnly ? session.readOnly.reason : session?.hasSavedDraft === false ? publishHold : dirty || libraryDirty || hasInput ? "未保存の変更を保存してから公開版を戻せます。" : blocked ? "処理が完了してから操作できます。" : undefined}
         rollback={session?.readOnly || session?.hasSavedDraft === false || viewedRelease === undefined ? undefined : () => { versions.exit(); setRollbackRevision(String(viewedRelease)); void prepare("rollback", viewedRelease); }} />
-{document && session && shown && renderedCanvas && localizationReady ? <div className="e-canvas-spacer" data-scale={canvasScale.toFixed(3)} data-viewport-height={canvasHeight} style={{ width: width * canvasScale, height: canvasHeight * canvasScale }}><div className="e-canvas-scaled" style={{ width, transform: `scale(${canvasScale})`, transformOrigin: "0 0" }}><Canvas key={documentKey} document={shown} revealNode={canvasReveal?.target === documentKey ? canvasReveal : null} rendered={renderedCanvas} {...(canvasPresentation ? { presentation: canvasPresentation } : {})} origins={canvasOrigins} openInstance={openInstance} blocks={canvasBlocks} {...(externalFramePolicy ? { externalFramePolicy } : {})} {...(blankEmbeds ? { blankEmbeds } : {})} {...(xPostFrameUrl ? { xPostFrameUrl } : {})} width={width} height={canvasHeight} breakpoint={tier} selection={targetMode ? null : historyMode ? null : selection} {...(!historyMode && canvasSelectedNodeId ? { selectedNodeId: canvasSelectedNodeId } : {})} {...(!historyMode && selectedNodeIds.length > 1 ? { selectedNodeIds } : {})} slot={historyMode ? null : slotName} select={selectCanvas} canEditNode={canEditCanvasNode} dragItem={dragItem} drop={dropAt} pending={pending} editText={editCanvasText} startTextEdit={startTextEdit} onShortcut={onShortcut} resize={(path, width, height) => applyStyle({ type: "resize", path, breakpoint: tier, width, height, ...(until === undefined ? {} : { until }) })}
+{document && session && shown && renderedCanvas && localizationReady ? <div className="e-canvas-spacer" data-scale={canvasScale.toFixed(3)} data-viewport-height={canvasHeight} style={{ width: width * canvasScale, height: canvasHeight * canvasScale }}><div className="e-canvas-scaled" style={{ width, transform: `scale(${canvasScale})`, transformOrigin: "0 0" }}><Canvas pageKey={documentKey} document={shown} revealNode={canvasReveal?.target === documentKey ? canvasReveal : null} rendered={renderedCanvas} {...(canvasPresentation ? { presentation: canvasPresentation } : {})} origins={canvasOrigins} openInstance={openInstance} blocks={canvasBlocks} {...(externalFramePolicy ? { externalFramePolicy } : {})} {...(blankEmbeds ? { blankEmbeds } : {})} {...(xPostFrameUrl ? { xPostFrameUrl } : {})} width={width} height={canvasHeight} breakpoint={tier} selection={targetMode ? null : historyMode ? null : selection} {...(!historyMode && canvasSelectedNodeId ? { selectedNodeId: canvasSelectedNodeId } : {})} {...(!historyMode && selectedNodeIds.length > 1 ? { selectedNodeIds } : {})} slot={historyMode ? null : slotName} select={selectCanvas} canEditNode={canEditCanvasNode} dragItem={dragItem} drop={dropAt} pending={pending} editText={editCanvasText} startTextEdit={startTextEdit} onShortcut={onShortcut} resize={(path, width, height) => applyStyle({ type: "resize", path, breakpoint: tier, width, height, ...(until === undefined ? {} : { until }) })}
         spacing={{ allowed: spacingAllowed, commit: (path, property, value) => applyStyle(until === undefined
           ? { type: "style", path, breakpoint: tier, property, value }
           : { type: "styleRange", path, breakpoint: tier, until, values: { [property]: value } }) }}
