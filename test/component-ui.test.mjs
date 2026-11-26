@@ -217,7 +217,7 @@ test("localized component navigation keeps host page kinds and returns to the or
   } finally { await app.cleanup(); }
 });
 
-test("the library loads before pages and the panel sorts, searches and summarizes usage", async () => {
+test("the library and page list are ready before the panel sorts, searches and summarizes usage", async () => {
   const app = await setup();
   try {
     assert.deepEqual(app.calls.order.slice(0, 3), ["readLibrary", "listPages", "readDocument"]); assert.deepEqual(app.calls.usage, ["demo"]);
@@ -240,6 +240,29 @@ test("the library loads before pages and the panel sorts, searches and summarize
     await change(search, "見出し"); assert.deepEqual(cardNames(), ["セクション見出し"]);
     await change(search, "ヘッダー"); assert.deepEqual(cardNames(), ["サイトヘッダー"]);
     await change(search, "存在しない"); assert.deepEqual(cardNames(), []); assert.ok(text().includes("「存在しない」に一致する再利用コンポーネントはありません。"));
+  } finally { await app.cleanup(); }
+});
+
+test("component library and page catalog load in parallel before the first page document", async () => {
+  let resolveLibrary, resolvePages;
+  const libraryRead = new Promise((resolve) => { resolveLibrary = resolve; });
+  const pagesRead = new Promise((resolve) => { resolvePages = resolve; });
+  let libraryStarted = false, pagesStarted = false;
+  const app = await setup({
+    readLibrary: () => { libraryStarted = true; return libraryRead; },
+    adapter: { listPages: () => { pagesStarted = true; return pagesRead; } }
+  });
+  try {
+    assert.equal(libraryStarted, true);
+    assert.equal(pagesStarted, true, "the catalog request should not wait for the library response");
+    assert.equal(app.calls.reads.length, 0, "page documents still wait for both required inputs");
+    resolvePages([{ siteId: "demo", pageId: "home", locale: "ja-JP", title: "ホーム" }]);
+    await flush();
+    assert.equal(app.calls.reads.length, 0, "the editor must wait for component validation data");
+    resolveLibrary({ library: library(), version: "lib-1" });
+    await waitFor(() => !!canvas(), "initial page document after parallel catalog reads");
+    await loadCanvas();
+    assert.equal(app.calls.reads.length, 1);
   } finally { await app.cleanup(); }
 });
 
