@@ -32,12 +32,8 @@ export function normalizationKey(value: unknown): string {
 }
 
 const targetKey = (document: PageDocument) => JSON.stringify([document.siteId, document.pageId, document.locale]);
-
-/** A compact presentation reference carries identity/title only; the versioned input owns its body. */
-function isCompactPresentationReference(document: PageDocument): boolean {
-  return document.body.length === 0 && Object.keys(document.tokens).length === 0
-    && document.textStyles === undefined && document.meta === undefined;
-}
+const isCompactSharedSnapshot = (document: PageDocument) => document.body.length === 0 && Object.keys(document.tokens).length === 0
+  && document.meta === undefined && document.textStyles === undefined;
 
 function sameCompactReferenceIdentity(reference: PageDocument, document: PageDocument): boolean {
   return normalizationKey({ schemaVersion: reference.schemaVersion, siteId: reference.siteId, pageId: reference.pageId,
@@ -203,13 +199,15 @@ export function verifyNormalization(input: NormalizationInput, afterDocuments: r
       checked++;
       const composed = [presentation.shared.header, presentation.shared.footer, ...(presentation.overlays ?? []).map(({ document }) => document),
         ...(presentation.hostViews ?? []).map(({ document }) => document)];
+      const compactSharedTargets = new Set((presentation.compactSharedReferences ?? []).map((slot) => targetKey(presentation.shared[slot])));
       for (const before of composed) {
         // The selected page occupies the matching shared slot when it is being
         // edited directly. Its resolved inputs were already compared above.
         if (targetKey(before) === targetKey(source.document)) continue;
         const candidateIndex = indexByTarget.get(targetKey(before));
-        const compactReference = isCompactPresentationReference(before);
-        if (candidateIndex === undefined && compactReference) return { status: "unsupported", target, reason: "ambiguous_presentation_document" };
+        const explicitlyCompact = compactSharedTargets.has(targetKey(before));
+        const compactReference = explicitlyCompact || candidateIndex !== undefined && isCompactSharedSnapshot(before);
+        if (candidateIndex === undefined && explicitlyCompact) return { status: "unsupported", target, reason: "ambiguous_presentation_document" };
         let candidate = before;
         let comparisonBefore = before;
         if (candidateIndex !== undefined) {

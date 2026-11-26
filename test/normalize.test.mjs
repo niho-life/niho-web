@@ -147,27 +147,24 @@ test("lossless verification expands components and checks presentation, shared p
     block
   ]);
   const header = page("header", [element("header-title", { base: { color: "#111" }, responsive: [{ minWidth: 800, declarations: { color: "#111" } }] })]);
-  const footer = page("footer", [element("footer-title", undefined)]);
+  const footer = page("footer", []);
   const presentation = { schemaVersion: 1, siteId: "sample", locale: "ja", version: "presentation-1", reset: "neutral-v1",
     tokens: {}, fonts: [], shared: { header, footer }, layout: { responsive: [{ minWidth: 900, declarations: { width: "100%" } }] } };
-  const input = { documents: [{ document: main, componentsVersion: "c-1", presentation }, header, footer], components, componentsVersion: "c-1", blocks };
+  const input = { documents: [{ document: main, componentsVersion: "c-1", presentation }, header], components, componentsVersion: "c-1", blocks };
   const plan = planNormalization(input);
   const batches = selectNormalizationOperations(plan);
   assert.equal(batches.length, 2);
-  const next = [main, header, footer].map((document) => {
-    const batch = batches.find(({ target }) => target.pageId === document.pageId);
-    return batch ? apply(batch, document, input) : document;
-  });
+  const next = [main, header].map((document) => apply(batches.find(({ target }) => target.pageId === document.pageId), document, input));
   assert.equal(next[0].body[0].style?.responsive?.length ?? 0, 0);
   assert.equal(next[0].body[1].slots.item.responsive?.length ?? 0, 0);
-  assert.deepEqual(verifyNormalization(input, next), { status: "equivalent", documentsChecked: 6 });
-  assert.deepEqual(verifyNormalization(input, next.map((document) => ({ ...document, revision: 2 }))), { status: "equivalent", documentsChecked: 6 });
+  assert.deepEqual(verifyNormalization(input, next), { status: "equivalent", documentsChecked: 5 });
+  assert.deepEqual(verifyNormalization(input, next.map((document) => ({ ...document, revision: 2 }))), { status: "equivalent", documentsChecked: 5 });
   assert.equal(verifyNormalization({ ...input, components: undefined }, next).status, "unsupported");
   assert.equal(verifyNormalization({ ...input, componentsVersion: "stale" }, next).status, "unsupported");
   assert.equal(verifyNormalization({ ...input, documents: [{ document: main, presentationVersion: "presentation-1" }, header] }, next).status, "unsupported");
   const changedSlot = structuredClone(main);
   changedSlot.body[1].slots.item.responsive[0].declarations.opacity = 0.6;
-  assert.equal(verifyNormalization(input, [changedSlot, header, footer]).slot, "item");
+  assert.equal(verifyNormalization(input, [changedSlot, header]).slot, "item");
 });
 
 test("verification resolves compact shared references to their versioned documents", () => {
@@ -178,7 +175,7 @@ test("verification resolves compact shared references to their versioned documen
   const compactHeader = { schemaVersion: 1, siteId: header.siteId, pageId: header.pageId, locale: header.locale,
     revision: header.revision, title: header.title, tokens: {}, body: [] };
   const presentation = { schemaVersion: 1, siteId: "sample", locale: "ja", version: "presentation-compact-1",
-    reset: "neutral-v1", tokens: {}, fonts: [], shared: { header: compactHeader, footer } };
+    reset: "neutral-v1", tokens: {}, fonts: [], shared: { header: compactHeader, footer }, compactSharedReferences: ["header"] };
   const input = { documents: [{ document: main, presentation }, header, footer] };
   assert.deepEqual(verifyNormalization(input, [main, header, footer]), { status: "equivalent", documentsChecked: 6 });
 
