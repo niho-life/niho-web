@@ -47,7 +47,7 @@ v1 の意味は既存の通りです。v2 を使う Site の v1 の書込み入�
 
 `cms.release.plan` は1つの Site と locale の現在の release ID、定義の版、ルート表の版、公開後に含めたい全項目の `collectionId` / `itemId` / `revision`、明示する転送表を固定します。日時 `at` を指定した入力は予約用の確認計画です。対象に残す既存項目の版も選択に含めます。snapshot の順序は項目選択の順序で、ホストは適用時も同じ順序を使います。
 
-`planCmsRelease` は同じ Site、locale、版の項目を読んで公開用に変換します。必須値、同じ snapshot 内の参照先、削除済みの項目、スラッグ、重複 path、版付き route table の衝突を検証します。転送先は公開項目または固定 route です。転送は1回で解決し、転送元は現在の route を占有できません。固定ページ、テンプレート、予約 path、ホスト所有転送との照合は route table を通して行います。slug 変更で自動生成する転送と明示転送の合計は25,000件以下です。上限を超える計画は `invalid` を返します。公開される本文にはホストの無害化と公開素材の検査が必要です。
+`planCmsRelease` は同じ Site、locale、版の項目を読んで公開用に変換します。必須値、同じ snapshot 内の参照先、削除済みの項目、スラッグ、重複 path、版付き route table の衝突を検証します。CMS route は route table の case-sensitive な path と CMS slug の大文字・小文字をそのまま保ちます。転送先は公開項目または固定 route です。転送は1回で解決し、転送元は現在の route を占有できません。固定ページ、テンプレート、予約 path、ホスト所有転送との照合は route table を通して行います。slug 変更で自動生成する転送と明示転送の合計は25,000件以下です。上限を超える計画は `invalid` を返します。公開される本文にはホストの無害化と公開素材の検査が必要です。
 
 `cms.release.apply` はサーバーで保持した確認内容を `checkCmsReleaseApply` で再構成し、元の計画と一致する場合に確定します。snapshot の保存後、D1 transaction で受領記録・監査・outbox を確定します。この時点では公開 pointer は前の release のままです。outbox worker は前提を再検証してから、公開 pointer・release 履歴・監査・通知イベント・outbox 完了を一つの transaction で切り替えます。`cms.release.status` は現在の権限を再確認し、同じ Site、actor、操作の受領記録と配信状態（`pending` / `delivered` / `dead`）を返します。完全に同じ request の再送だけ既存結果を返します。同じ ID で異なる操作や入力を送ると conflict です。成功済みの再送は確認期限の判定より先に受領記録を確認します。
 

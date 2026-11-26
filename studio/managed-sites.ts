@@ -52,6 +52,8 @@ type ManagedPageRow = {
   readonly document_json: string;
   readonly bindings_json: string | null;
 };
+
+const CMS_DETAIL_SLUG = /^[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*$/u;
 type StoredPlan = {
   readonly operation: "release.publish" | "release.rollback" | "page.create" | "page.update" | "page.visibility";
   readonly payload_json: string;
@@ -535,7 +537,7 @@ async function prepareRelease(request: Request, db: ManagedD1, actor: ManagedAct
         const slugs = new Set<string>();
         for (const item of released.items.filter((entry) => entry.collectionId === collectionId)) {
           const slug = item.values[slugFieldId];
-          if (typeof slug !== "string" || validatePagePath(row.path + "/" + slug) !== null || slug.includes("/") || slugs.has(slug)) throw new Error("invalid detail URL");
+          if (typeof slug !== "string" || !CMS_DETAIL_SLUG.test(slug) || validatePagePath(row.path + "/" + slug.toLowerCase()) !== null || slugs.has(slug)) throw new Error("invalid detail URL");
           const detailPath = row.path + "/" + slug;
           if (currentRoutes.reservations.some((reservation) => reservation.kind === "template"
             ? matchesTemplatePath(reservation.path, detailPath) : reservation.path === detailPath)) throw new Error("reserved detail URL");
@@ -812,7 +814,8 @@ export async function managedPublicRequest(request: Request, db: ManagedD1, orig
   const url = new URL(request.url), match = /^\/s\/([a-z0-9]+(?:-[a-z0-9]+)*)(?:\/(.*))?$/u.exec(url.pathname);
   if (!match) return new Response(null, { status: 404, headers: responseHeaders("text/plain; charset=utf-8") });
   const path = match[2] ? `/${match[2]}` : "/";
-  if (validatePagePath(path) !== null) return new Response(null, { status: 404, headers: responseHeaders("text/plain; charset=utf-8") });
+  const caseFoldedPath = /^[A-Za-z0-9/_-]+$/u.test(path) ? path.toLowerCase() : path;
+  if (validatePagePath(caseFoldedPath) !== null) return new Response(null, { status: 404, headers: responseHeaders("text/plain; charset=utf-8") });
   const parentPath = path.slice(0, path.lastIndexOf("/")), notFound = () => new Response(null, { status: 404, headers: responseHeaders("text/plain; charset=utf-8") });
   const row = await db.prepare(`
     SELECT mp.site_id, mp.page_id, mp.locale, mp.title, mp.path, version.document_json, version.bindings_json,
@@ -832,6 +835,8 @@ export async function managedPublicRequest(request: Request, db: ManagedD1, orig
     cms_release_id: string | null; cms_schema_revision: string | null;
   }>();
   if (!row) return notFound();
+  const hasUppercaseRoute = /[A-Z]/u.test(path);
+  if (hasUppercaseRoute && (row.path !== parentPath || !row.bindings_json)) return notFound();
   if (match[2] === undefined) {
     url.pathname += "/";
     const headers = responseHeaders("text/plain; charset=utf-8");
@@ -843,6 +848,7 @@ export async function managedPublicRequest(request: Request, db: ManagedD1, orig
   if (row.bindings_json) {
     if (!store || !row.cms_release_id || !row.cms_schema_revision) return notFound();
     const bindings = parseCmsPageBindings(JSON.parse(row.bindings_json), document);
+    if (hasUppercaseRoute && !bindings.detail) return notFound();
     if (bindings.detail && row.path === path) return notFound();
     const released = await store.snapshot(row.site_id, row.cms_release_id);
     if (released.schema.schemaRevision !== row.cms_schema_revision || released.locale !== row.locale) return notFound();
@@ -853,7 +859,7 @@ export async function managedPublicRequest(request: Request, db: ManagedD1, orig
   const rendered = prefixedDocument(document, prefix), publicPath = `${prefix}${path}`;
   // PageDocument の path 契約では home は `/`。共有公開prefixは配信層の責務なので、
   // metadata を通常pathで検証してから canonical / og:url だけを実URLへ射影する。
-  const resolvedMetadata = resolvePageMetadata({ document: rendered, domain: origin, path, visibility: "public" });
+  const resolvedMetadata = resolvePageMetadata({ document: rendered, domain: origin, path: hasUppercaseRoute ? path.toLowerCase() : path, visibility: "public" });
   const publicUrl = `${origin}${publicPath}`;
   const metadata = {
     ...resolvedMetadata,
