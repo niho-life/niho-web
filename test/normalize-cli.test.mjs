@@ -161,7 +161,7 @@ test("normalize refuses an initial CAS conflict before sending any page batch", 
 });
 
 test("normalize requires the draft style version on hosts that expose site.styles", async (t) => {
-  const original = fixture("copy", false);
+  const original = fixture("copy");
   const server = await sandbox(t, [original], { styles: {} });
   await planFor(server.bundle, { documents: [original] });
   const result = await run(["apply", "--json", server.bundle, "--checkpoint", server.checkpoint], server);
