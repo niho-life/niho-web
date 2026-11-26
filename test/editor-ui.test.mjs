@@ -90,7 +90,7 @@ test("page rows prefetch on focus and the matching snapshot serves the page swit
   } finally { await app.cleanup(); }
 });
 
-test("the next page is prefetched after the current page becomes ready", async () => {
+test("the adjacent page is prefetched automatically and serves a switch", async () => {
   const prefetches = [];
   const app = await setup({ adapter: { prefetchDocument: async (target) => {
     prefetches.push(structuredClone(target));
@@ -101,6 +101,40 @@ test("the next page is prefetched after the current page becomes ready", async (
     await clickPage("別ページ");
     assert.equal(app.calls.reads.filter(({ pageId }) => pageId === "other").length, 0, "the warmed snapshot serves the page switch");
   } finally { await app.cleanup(); }
+});
+
+test("both adjacent pages start prefetching before the first document finishes loading", async () => {
+  const prefetches = [], reads = [];
+  let finishInitialRead;
+  const initialRead = new Promise((resolve) => { finishInitialRead = resolve; });
+  const pages = [
+    { siteId: "demo", pageId: "home", locale: "ja-JP", title: "ホーム" },
+    { siteId: "demo", pageId: "other", locale: "ja-JP", title: "別ページ" },
+    { siteId: "demo", pageId: "last", locale: "ja-JP", title: "最後のページ" }
+  ];
+  const app = await setup({ adapter: {
+    listPages: async () => pages,
+    readDocument: async (target) => {
+      reads.push(target.pageId);
+      if (target.pageId === "home") await initialRead;
+      return { document: { ...structuredClone(fixture), ...target }, version: `read-${target.pageId}`, releases: [] };
+    },
+    prefetchDocument: async (target) => {
+      prefetches.push(target.pageId);
+      return { document: { ...structuredClone(fixture), ...target }, version: `prefetched-${target.pageId}` };
+    }
+  } });
+  try {
+    assert.deepEqual(reads, ["home"], "the initial document is still loading");
+    assert.deepEqual(new Set(prefetches), new Set(["last", "other"]), "both visible neighbors warm in parallel");
+    await act(async () => { finishInitialRead(); await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await clickPage("別ページ");
+    assert.deepEqual(reads, ["home"], "the prefetched page skips a new document request");
+    assert.equal(document.querySelector(".e-page[aria-current='page'] .e-page-name")?.textContent, "別ページ");
+  } finally {
+    finishInitialRead();
+    await app.cleanup();
+  }
 });
 
 test("responsive proposal control is absent without the optional host adapter", async () => {
