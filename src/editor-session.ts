@@ -9,8 +9,9 @@ import type { SiteStyles } from "./site-styles.js";
 import { parseSitePresentation } from "./presentation.js";
 import type { SitePresentation } from "./types.js";
 import { parseEnglishPublication } from "./english-publication.js";
+import { parseCmsPageBindings, type CmsPageBindingsDocument } from "./cms-page-bindings.js";
 
-export type EditorSession = { target: EditorTarget; history: EditorHistory; version: string; saved: string; hasSavedDraft?: boolean | undefined; locks: readonly EditorLock[]; releases: NonNullable<EditorSnapshot["releases"]>; readOnly?: EditorReadOnly; siteStyles?: SiteStyles; presentation?: SitePresentation; operationQueue: EditorOperationQueue; dependencyVersions: PageOperationVersions; englishPublication?: EditorSnapshot["englishPublication"]; selfContained: boolean };
+export type EditorSession = { target: EditorTarget; history: EditorHistory; version: string; saved: string; hasSavedDraft?: boolean | undefined; locks: readonly EditorLock[]; releases: NonNullable<EditorSnapshot["releases"]>; readOnly?: EditorReadOnly; siteStyles?: SiteStyles; presentation?: SitePresentation; operationQueue: EditorOperationQueue; dependencyVersions: PageOperationVersions; englishPublication?: EditorSnapshot["englishPublication"]; cmsBindings?: CmsPageBindingsDocument | null; savedCmsBindings?: string; selfContained: boolean };
 export type EditorSessionLoad = { session: EditorSession; warning?: string };
 
 export class EditorSessionLoadError extends Error {
@@ -30,7 +31,9 @@ export function editorSessionFrom(snapshot: EditorSnapshot, target: EditorTarget
   const readOnly = parseEditorReadOnly(snapshot.readOnly);
   const presentation = snapshot.presentation === undefined ? undefined : parseSitePresentation(snapshot.presentation, document, blocks);
   const englishPublication = snapshot.englishPublication === undefined ? undefined : parseEnglishPublication(snapshot.englishPublication);
+  const cmsBindings = snapshot.cmsBindings == null ? snapshot.cmsBindings : parseCmsPageBindings(snapshot.cmsBindings, target);
   return { ...(siteStyles ? { siteStyles } : {}), ...(presentation ? { presentation } : {}), ...(englishPublication ? { englishPublication } : {}), target, history: { past: [], present: document, future: [] }, version: snapshot.version, dependencyVersions, operationQueue: operationQueue(document), saved: fingerprint(document), locks: snapshot.locks ?? [], releases: snapshot.releases ?? [], selfContained,
+    ...(cmsBindings === undefined ? {} : { cmsBindings, savedCmsBindings: JSON.stringify(cmsBindings) }),
     ...(snapshot.hasSavedDraft === undefined ? {} : { hasSavedDraft: snapshot.hasSavedDraft }), ...(readOnly ? { readOnly } : {}) };
 }
 
@@ -49,7 +52,7 @@ function sessionCacheKey(target: EditorTarget, snapshot: EditorSnapshot, setting
       snapshot.componentsVersion ?? null, snapshot.presentationVersion ?? null, snapshot.stylesVersion ?? null,
       settingsVersion === undefined ? "unavailable" : settingsVersion === null ? "failed" : settingsVersion,
       snapshot.hasSavedDraft ?? null, snapshot.locks ?? null, snapshot.releases ?? null,
-      snapshot.readOnly ?? null, snapshot.englishPublication ?? null, presentationVersion ?? null
+      snapshot.readOnly ?? null, snapshot.englishPublication ?? null, presentationVersion ?? null, snapshot.cmsBindings !== undefined
     ]);
   } catch { return undefined; }
 }

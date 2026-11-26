@@ -46,7 +46,7 @@ D1 が Project / Site / Member / Role / Invitation / Audit の正本です。NIH
 
 D1 schema、CAS、確認plan、GUI/CLI共通操作、公開rendererの詳細は [Studio-native site契約](../docs/studio-managed-sites.md) を参照してください。
 
-Studio-native CMS は Dashboard の「CMS」または `/projects/<Project>/sites/<Site>/cms` にあります。R2 binding `CMS_OBJECTS` に非公開 bucket を割り当て、D1 の `0013_managed_cms.sql` を適用してから Worker を接続します。Cronは毎分、予約を含む outbox を処理します。ローカルの復元演習、公開ルート、保持期間・容量は運用契約を参照してください。[Studio-native site契約](../docs/studio-managed-sites.md#cms-の公開と復旧)
+Studio-native CMS は Dashboard の「CMS」または `/projects/<Project>/sites/<Site>/cms` にあります。R2 binding `CMS_OBJECTS` に非公開 bucket を割り当て、D1 migration `0013_managed_cms.sql` と `0014_cms_page_bindings.sql` を適用してから Worker を接続します。Cronは毎分、予約を含む outbox を処理します。ローカルの復元演習、公開ルート、保持期間・容量は運用契約を参照してください。[Studio-native site契約](../docs/studio-managed-sites.md#cms-の公開と復旧)
 
 ### サイト機能（鎌倉）
 
@@ -306,7 +306,7 @@ npm run studio:build
 wrangler d1 migrations apply niho-web-studio --remote --config studio/wrangler.toml
 ```
 
-`0001_studio_registry.sql` は2つの Project/Site を seed し、membership を暗黙追加しません。`0002_membership_administration.sql` は既存 membership を保持したまま nullable email、招待、audit を追加します。`0003_experience_site_metadata.sql` は Experience site を API と同じ metadata に更新します。`0004_kamakura_site_metadata.sql` は Kamakura site のmetadataを更新し、`0010_kamakura_site_name.sql` はcatalogとsite名を揃えます。`0011_managed_sites.sql` はStudio-native site、ページ、immutable version/publication、短命plan、auditを追加し、既存 `sites.public_origin UNIQUE` を変更しません。`0012_site_analytics.sql` はサイト分析の接続・一回用plan・集計cacheを追加するだけで既存tableを変えません。Worker より先に適用します。Migration は既存 membership と owner bootstrap を壊しません。
+`0001_studio_registry.sql` は2つの Project/Site を seed し、membership を暗黙追加しません。`0002_membership_administration.sql` は既存 membership を保持したまま nullable email、招待、audit を追加します。`0003_experience_site_metadata.sql` は Experience site を API と同じ metadata に更新します。`0004_kamakura_site_metadata.sql` は Kamakura site のmetadataを更新し、`0010_kamakura_site_name.sql` はcatalogとsite名を揃えます。`0011_managed_sites.sql` はStudio-native site、ページ、immutable version/publication、短命plan、auditを追加し、既存 `sites.public_origin UNIQUE` を変更しません。`0012_site_analytics.sql` はサイト分析の接続・一回用plan・集計cacheを追加するだけで既存tableを変えません。`0013_managed_cms.sql` は Studio-native CMS の版付き定義・項目・release・予約を追加します。`0014_cms_page_bindings.sql` はページ revision に保存する CMS bindings、公開 page publication の CMS release pin、bindings 更新の operation receipt を追加します。Worker より先に適用します。Migration は既存 membership と owner bootstrap を壊しません。
 
 ## owner の out-of-band bootstrap
 

@@ -30,6 +30,7 @@ export type CmsProblem = {
   readonly message: string;
   readonly collectionId?: string;
   readonly itemId?: string;
+  readonly pageId?: string;
   readonly fieldId?: string;
   readonly path?: string;
   readonly locale?: string;

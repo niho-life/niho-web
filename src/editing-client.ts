@@ -1,11 +1,12 @@
 import { PAGE_OPERATION_VERSIONS, pageNodesHaveNames, pageOperationUsesNodeNames, pageOperationWire, type EditingPageApplyConflict, type EditingPageApplyInput, type EditingPageApplyResult } from "./editing-page-operations.js";
-import { EDITING_API_ERRORS, EDITING_OPERATIONS, PAGE_NODE_NAME_CAPABILITY, withPageNodeNameCapability, withSiteStylesFeature, type EditingApiErrorCode, type EditingCmsOperationStatus, type EditingCmsPublishPlan, type EditingCmsTarget, type EditingDiscoveredOperation, type EditingPageCatalog, type EditingPageReleaseSetItem, type EditingPageReleaseSetItemResult, type EditingPageReleaseSetPlan, type EditingPageReleaseSetStatus, type EditingPageSnapshot, type EditingPageTarget } from "./editing-api.js";
+import { EDITING_API_ERRORS, EDITING_OPERATIONS, PAGE_CMS_BINDINGS_CAPABILITY, PAGE_NODE_NAME_CAPABILITY, withPageCmsBindingsCapability, withPageNodeNameCapability, withSiteStylesFeature, type EditingApiErrorCode, type EditingCmsOperationStatus, type EditingCmsPublishPlan, type EditingCmsTarget, type EditingDiscoveredOperation, type EditingPageCatalog, type EditingPageReleaseSetItem, type EditingPageReleaseSetItemResult, type EditingPageReleaseSetPlan, type EditingPageReleaseSetStatus, type EditingPageSnapshot, type EditingPageTarget } from "./editing-api.js";
 import {
   SITE_STYLES_FEATURE, parseEditingSiteStylesMigrationPlan, parseEditingSiteStylesMigrationRequest,
   parseEditingSiteStylesReleasePlan, parseEditingSiteStylesReleaseRequest, parseEditingSiteStylesSnapshot,
   type EditingSiteStylesMigrationApply, type EditingSiteStylesMigrationPlan, type EditingSiteStylesMigrationRequest, type EditingSiteStylesMigrationResult,
   type EditingSiteStylesReleaseApply, type EditingSiteStylesReleasePlan, type EditingSiteStylesReleaseRequest, type EditingSiteStylesReleaseResult,
 } from "./editing-site-styles.js";
+import { parseCmsPageBindings } from "./cms-page-bindings.js";
 import { parsePageInspectQuery, type PageInspectQuery, type PageInspectView } from "./page-inspect.js";
 import { parsePagePreviewIntent, type EditingPagePreviewIntent } from "./editing-page-preview.js";
 import {
@@ -64,7 +65,11 @@ export type {
 export type EditingApiDiscovery = { readonly apiVersion: "v1"; readonly siteId: string; readonly operations: readonly EditingDiscoveredOperation[] };
 export function supportsPageNodeNames(discovery: EditingApiDiscovery, operationId: "pages.apply" | "pages.save"): boolean {
   return discovery.operations.some((operation) => operation.id === operationId
-    && "capabilities" in operation && operation.capabilities.includes(PAGE_NODE_NAME_CAPABILITY));
+    && "capabilities" in operation && operation.capabilities.some((capability) => capability === PAGE_NODE_NAME_CAPABILITY));
+}
+export function supportsPageCmsBindings(discovery: EditingApiDiscovery): boolean {
+  return discovery.operations.some((operation) => operation.id === "pages.apply"
+    && "capabilities" in operation && operation.capabilities.some((capability) => capability === PAGE_CMS_BINDINGS_CAPABILITY));
 }
 export type EditingPageSaveResult = { readonly status: "saved"; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" };
 export type EditingPageInspectionSnapshot = Readonly<Record<string, unknown>> & { readonly view: PageInspectView; readonly version: string; readonly stylesVersion?: string; readonly draftStylesVersion?: string; readonly componentsVersion?: string; readonly presentationVersion?: string };
@@ -311,7 +316,10 @@ function validDiscoveredOperation(value: unknown, siteStylesFeature = false): va
   if (!plainRecord(value)) return false;
   const expected = EDITING_OPERATIONS.find((operation) => operation.id === value.id);
   if (!expected) return false;
-  let definition: EditingDiscoveredOperation = "capabilities" in value && (expected.id === "pages.apply" || expected.id === "pages.save")
+  const capabilities = Array.isArray(value.capabilities) ? value.capabilities : [];
+  let definition: EditingDiscoveredOperation = capabilities.includes(PAGE_CMS_BINDINGS_CAPABILITY) && (expected.id === "pages.apply" || expected.id === "pages.read" || expected.id === "pages.inspect")
+    ? withPageCmsBindingsCapability(expected, capabilities.includes(PAGE_NODE_NAME_CAPABILITY))
+    : capabilities.includes(PAGE_NODE_NAME_CAPABILITY) && (expected.id === "pages.apply" || expected.id === "pages.save")
     ? withPageNodeNameCapability(expected) : expected;
   if (siteStylesFeature) definition = withSiteStylesFeature(definition as typeof expected);
   return exactKeys(value, Object.keys(definition)) && stableJson(value) === stableJson(definition);
@@ -632,6 +640,10 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
         || !body.complete && (body.format !== "path-nodes" || !Array.isArray(body.items) || body.items.length > 1000
           || body.items.some((item) => !plainRecord(item) || !Array.isArray(item.path) || !plainRecord(item.node))))) throw new EditingApiClientError("invalid_response", response.status);
       if (query.view === "effectiveStyle" && (body.nodeId !== query.node || !plainRecord(body.style))) throw new EditingApiClientError("invalid_response", response.status);
+      if (body.cmsBindings != null) {
+        try { body.cmsBindings = parseCmsPageBindings(body.cmsBindings, target); }
+        catch { throw new EditingApiClientError("invalid_response", response.status); }
+      }
       return body as EditingPageInspectionSnapshot;
     },
     async listPageHistory(target, cursor, signal) {
@@ -681,6 +693,7 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       const dependencyFields = siteStylesFeature ? ["componentsVersion", "presentationVersion", "draftStylesVersion"] as const : PAGE_OPERATION_VERSIONS;
       const dependencies = Object.fromEntries(dependencyFields.flatMap((key) => body[key] === undefined ? [] : [[key, body[key]]]));
       const snapshotKeys = [
+        ...(body.cmsBindings === undefined ? [] : ["cmsBindings"]),
         ...(options.editorSnapshot && body.editorState !== undefined ? ["editorState"] : []),
         ...(options.editorSnapshot && body.presentation !== undefined ? ["presentation"] : [])
       ];
@@ -697,7 +710,10 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
           editorSnapshot = { ...(editorState ? { editorState } : {}), ...(presentation ? { presentation } : {}) };
         } catch { throw new EditingApiClientError("invalid_response", response.status); }
       }
-      const value = { document, version: body.version, ...dependencies, ...editorSnapshot };
+      let cmsBindings: EditingPageSnapshot["cmsBindings"];
+      try { cmsBindings = body.cmsBindings == null ? body.cmsBindings : parseCmsPageBindings(body.cmsBindings, target); }
+      catch { throw new EditingApiClientError("invalid_response", response.status); }
+      const value = { document, version: body.version, ...dependencies, ...editorSnapshot, ...(cmsBindings === undefined ? {} : { cmsBindings }) };
       const etag = responseEtag(response);
       if (etag) rememberPageRead(key, { etag, value: structuredClone(value) });
       else pageReadCache.delete(key);

@@ -428,7 +428,7 @@ function App() {
         : selected && screen.kind === "editor"
           ? <LazyScreenBoundary><Suspense fallback={<StudioLoading />}>
               {managedEditor
-                ? <ManagedEditor project={selected} />
+                ? <ManagedEditor project={selected} actorId={session.identity.subject} />
                 : kamakuraEditor && resolvedEditor
                 ? <KamakuraEditor project={selected} environment={resolvedEditor.environment}
                     {...(session.initialKamakuraLoad ? { initialLoad: session.initialKamakuraLoad } : {})} />

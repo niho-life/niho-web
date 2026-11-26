@@ -1,7 +1,10 @@
 import { useMemo } from "react";
 import { StudioPageEditor } from "./editor-performance.js";
 import { parsePageDocument } from "../src/core.js";
+import { cmsId, parseCmsSchema } from "../src/cms-v2-schema.js";
+import { parseCmsPageBindings } from "../src/cms-page-bindings.js";
 import { createProjectEditorAdapter } from "../src/project-editor-adapter.js";
+import { createBrowserRecoveryStore } from "../src/history.js";
 import type {
   EditorAdapter, EditorPage, EditorPageChange, EditorPageChangePlan, EditorReleasePlan,
   EditorSaveResult, EditorSite, EditorSnapshot, EditorTarget
@@ -56,7 +59,8 @@ function snapshot(value: unknown, checkedTarget: EditorTarget): EditorSnapshot {
   if (!Array.isArray(source.releases) || source.releases.length > 50 || source.releases.some((entry) => {
     const item = record(entry); return !Number.isSafeInteger(item.revision) || Number(item.revision) < 1 || typeof item.label !== "string";
   })) throw new Error("公開履歴が正しくありません。");
-  return { document, version: source.version, hasSavedDraft: source.hasSavedDraft === true, releases: source.releases as { revision: number; label: string }[] };
+  return { document, version: source.version, hasSavedDraft: source.hasSavedDraft === true, releases: source.releases as { revision: number; label: string }[],
+    ...(source.cmsBindings === undefined ? {} : { cmsBindings: source.cmsBindings === null ? null : parseCmsPageBindings(source.cmsBindings, checkedTarget) }) };
 }
 
 export function createManagedEditorAdapter(initial: Catalog, project: Project): EditorAdapter {
@@ -73,8 +77,34 @@ export function createManagedEditorAdapter(initial: Catalog, project: Project): 
       return (await refresh(signal)).pages;
     },
     readDocument: async (input, signal) => snapshot(await api(`${base}/${encodeURIComponent(input.pageId)}`, "GET", undefined, signal), input),
+    cmsBindings: {
+      async read(input, signal) {
+        const value = record(await api(`${base}/${encodeURIComponent(input.pageId)}/cms-bindings`, "GET", undefined, signal));
+        const schema = parseCmsSchema(value.schema);
+        if (schema.siteId !== input.siteId || !Array.isArray(value.items) || value.items.length > 25) throw new Error("CMS の項目が正しくありません。");
+        const items = value.items.map((raw) => {
+          const item = record(raw);
+          if (typeof item.label !== "string" || item.label.length > 500) throw new Error("CMS の項目名が正しくありません。");
+          return { collectionId: cmsId(item.collectionId, "collectionId"), itemId: cmsId(item.itemId, "itemId"),
+            revision: cmsId(item.revision, "revision"), label: item.label };
+        });
+        return { schema, items };
+      },
+      async preview(input, signal) {
+        const path = `${base}/${encodeURIComponent(input.target.pageId)}`;
+        const body = { expectedVersion: input.expectedVersion, document: input.document, cmsBindings: input.cmsBindings,
+          collectionId: input.item.collectionId, itemId: input.item.itemId, revision: input.item.revision };
+        const plan = record(await api(path + "/cms-preview-plan", "POST", body, signal));
+        if (typeof plan.previewId !== "string" || !/^token_[a-f0-9]{32}$/u.test(plan.previewId)) throw new Error("プレビューを開始できません。");
+        const value = record(await api(path + "/cms-preview", "POST", { ...body, previewId: plan.previewId }, signal));
+        const document = parsePageDocument(value.document);
+        if (document.siteId !== input.target.siteId || document.pageId !== input.target.pageId || document.locale !== input.target.locale) throw new Error("プレビューの対象が一致しません。");
+        return document;
+      }
+    },
     saveDraft: (input, signal) => conflict(async () => {
-      const value = record(await api(`${base}/${encodeURIComponent(input.target.pageId)}/draft`, "PUT", { expectedVersion: input.expectedVersion, document: input.document }, signal));
+      const value = record(await api(`${base}/${encodeURIComponent(input.target.pageId)}/draft`, "PUT", { expectedVersion: input.expectedVersion, document: input.document,
+        ...(input.cmsBindings === undefined ? {} : { cmsBindings: input.cmsBindings }) }, signal));
       if (value.status !== "saved" || typeof value.version !== "string" || !VERSION.test(value.version) || !Number.isSafeInteger(value.revision)) throw new Error("保存結果が正しくありません。");
       return { status: "saved", version: value.version, revision: Number(value.revision) } satisfies EditorSaveResult;
     }) as Promise<EditorSaveResult>,
@@ -97,9 +127,10 @@ export function createManagedEditorAdapter(initial: Catalog, project: Project): 
   };
 }
 
-export function ManagedEditor({ project }: { readonly project: Project }) {
+export function ManagedEditor({ project, actorId }: { readonly project: Project; readonly actorId: string }) {
   const adapter = useMemo(() => createProjectEditorAdapter(createManagedEditorAdapter({ sites: [{ id: project.site.id, name: project.site.name, domains: project.site.domains }], pages: [] }, project), project), [project]);
+  const recovery = useMemo(() => createBrowserRecoveryStore({ scope: actorId }), [actorId]);
   return <main className="studio-editor studio-managed-editor">
-    <StudioPageEditor adapter={adapter} autosave toolbarStart={<a href={`/projects/${encodeURIComponent(project.id)}/sites/${encodeURIComponent(project.site.id)}`} aria-label="ダッシュボードに戻る" title="ダッシュボードに戻る">←</a>} />
+    <StudioPageEditor adapter={adapter} autosave recovery={recovery} toolbarStart={<a href={`/projects/${encodeURIComponent(project.id)}/sites/${encodeURIComponent(project.site.id)}`} aria-label="ダッシュボードに戻る" title="ダッシュボードに戻る">←</a>} />
   </main>;
 }

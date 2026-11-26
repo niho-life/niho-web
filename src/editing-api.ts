@@ -1,5 +1,7 @@
 import type { ComponentLibrary, PageDocument, SitePresentation } from "./types.js";
 import { parsePageDocument } from "./document.js";
+import { parseCmsPageBindings, type CmsPageBindingsDocument } from "./cms-page-bindings.js";
+import type { CmsSchema } from "./cms-v2-schema.js";
 import { normalizePageChange, validatePageChangePlan, validateReleasePlan } from "./editor-model.js";
 import type { EditorBreakpointSettings, EditorBreakpointSettingsSaveResult, EditorBreakpointSettingsSnapshot, EditorPage, EditorPageChange, EditorPageChangePlan, EditorReleasePlan, EditorReleaseRequest, EditorSite } from "./editor-types.js";
 import { assetId, identifier, isSafeHttpsOrigin, localeCode, record } from "./validation-utils.js";
@@ -47,8 +49,8 @@ import { parseSitePresentation } from "./presentation.js";
 import { PAGE_PREVIEW_INTENT_HEADERS, parsePagePreviewIntent, type EditingPagePreviewIntent } from "./editing-page-preview.js";
 
 import {
-  PAGE_OPERATION_ID, PAGE_OPERATION_LIMIT, PAGE_OPERATION_VERSIONS, editingOperationProblem, legacyPageApplyInputSchema, pageApplyInputSchema, siteStylesPageApplyInputSchema, pageNodesHaveNames, pageOperationUsesNodeNames,
-  pageApplyResultSchema, pageOperationHash, parsePageOperation, preparePageOperations, type EditingPageApplyInput, type EditingPageOperationStore,
+  PAGE_OPERATION_ID, PAGE_OPERATION_LIMIT, PAGE_OPERATION_VERSIONS, editingOperationProblem, legacyPageApplyInputSchema, pageApplyInputSchema, pageNodesHaveNames, pageOperationUsesNodeNames,
+  pageApplyResultSchema, pageCmsBindingsApplyInputSchema, pageCmsBindingsSchema, siteStylesPageApplyInputSchema, pageOperationHash, parsePageOperation, preparePageOperations, type EditingPageApplyInput, type EditingPageOperationStore,
   pageOperationWire, type PageOperationJournal, type PageOperationVersions,
 } from "./editing-page-operations.js";
 import type { EditorOperationBlocks } from "./editor-model.js";
@@ -91,6 +93,7 @@ export type EditingAuthorizationScope = { readonly siteId: string; readonly page
   readonly localizationItemKey?: string; readonly localizationUnitId?: string; readonly localizationJobId?: string; readonly localizationPreviewId?: string };
 export type EditingPageSnapshot = PageOperationVersions & {
   readonly document: PageDocument;
+  readonly cmsBindings?: CmsPageBindingsDocument | null;
   readonly version: string;
   /** Feature-aware draft style dependency; never exposed to a legacy response. */
   readonly draftStylesVersion?: string;
@@ -143,7 +146,7 @@ export type EditingPageReleaseSetApplyResult = { readonly status: "completed" | 
   | { readonly status: "conflict" } | { readonly status: "invalid" } | { readonly status: "not_found" } | { readonly status: "duplicate" }
   | { readonly status: "publication_in_progress" } | { readonly status: "migration_in_progress" };
 export type EditingPageReleaseSetStatus = EditingCmsOperationStatus;
-export type PageEditingValidationContext = { readonly blocks?: EditorOperationBlocks; readonly components?: ComponentLibrary; readonly siteStyles?: SiteStyles; readonly locks?: readonly EditorLock[] };
+export type PageEditingValidationContext = { readonly blocks?: EditorOperationBlocks; readonly components?: ComponentLibrary; readonly siteStyles?: SiteStyles; readonly locks?: readonly EditorLock[]; readonly cmsSchema?: CmsSchema; readonly cmsPagePath?: string };
 
 export type JsonSchema = boolean | {
   readonly $ref?: string;
@@ -638,10 +641,22 @@ export const EDITING_OPERATIONS = Object.freeze([
 export type EditingOperationDefinition = (typeof EDITING_OPERATIONS)[number];
 type CapabilityValues<T> = T extends { readonly capabilityByInput: { readonly values: infer Values } } ? Values[keyof Values] : never;
 export const PAGE_NODE_NAME_CAPABILITY = "pages.name";
+export const PAGE_CMS_BINDINGS_CAPABILITY = "pages.cms-bindings";
 type PageWriteOperation = Extract<EditingOperationDefinition, { id: "pages.apply" | "pages.save" }>;
+type PageBindingOperation = Extract<EditingOperationDefinition, { id: "pages.apply" | "pages.inspect" | "pages.read" }>;
 export type EditingDiscoveredOperation = EditingOperationDefinition | (PageWriteOperation & {
   readonly capabilities: readonly [typeof PAGE_NODE_NAME_CAPABILITY];
+}) | (Omit<PageBindingOperation, "inputSchema" | "resultSchema"> & {
+  readonly inputSchema: JsonSchema; readonly resultSchema: JsonSchema;
+  readonly capabilities: readonly [typeof PAGE_CMS_BINDINGS_CAPABILITY] | readonly [typeof PAGE_CMS_BINDINGS_CAPABILITY, typeof PAGE_NODE_NAME_CAPABILITY];
 });
+export function withPageCmsBindingsCapability(operation: PageBindingOperation, nodeNames = false): EditingDiscoveredOperation {
+  const capabilities = nodeNames && operation.id === "pages.apply" ? [PAGE_CMS_BINDINGS_CAPABILITY, PAGE_NODE_NAME_CAPABILITY] as const : [PAGE_CMS_BINDINGS_CAPABILITY] as const;
+  if (operation.id === "pages.apply") return { ...operation, capabilities, inputSchema: pageCmsBindingsApplyInputSchema(nodeNames) };
+  const schema = operation.resultSchema;
+  if (typeof schema === "boolean") throw new Error("page binding result schema must be an object");
+  return { ...operation, capabilities, resultSchema: { ...schema, properties: { ...schema.properties, cmsBindings: pageCmsBindingsSchema } } };
+}
 /** Keep the original catalog as the wire contract for hosts that have not added name support. */
 export function withPageNodeNameCapability(operation: PageWriteOperation): EditingDiscoveredOperation {
   const capabilities = [PAGE_NODE_NAME_CAPABILITY] as const;
@@ -679,7 +694,12 @@ export function withSiteStylesFeature(operation: EditingDiscoveredOperation): Ed
       required: Object.freeze([...(input.required ?? []), "draftStylesVersion"]),
       properties: Object.freeze({ ...input.properties, draftStylesVersion: versionSchema }) }, errors: fenceErrors } as unknown as EditingDiscoveredOperation;
   }
-  if (operation.id === "pages.apply") return { ...operation, path: featurePath, inputSchema: siteStylesPageApplyInputSchema, errors: fenceErrors } as unknown as EditingDiscoveredOperation;
+  if (operation.id === "pages.apply") {
+    const capabilities = "capabilities" in operation ? operation.capabilities : [];
+    return { ...operation, path: featurePath,
+      inputSchema: siteStylesPageApplyInputSchema(capabilities.some((capability) => capability === PAGE_NODE_NAME_CAPABILITY), capabilities.some((capability) => capability === PAGE_CMS_BINDINGS_CAPABILITY)),
+      errors: fenceErrors } as unknown as EditingDiscoveredOperation;
+  }
   if (operation.id === "pages.release-plan") {
     const input = schemaObject(operation.inputSchema), planResult = schemaObject(operation.resultSchema), planProperty = schemaObject(planResult.properties!.plan!);
     return { ...operation, path: featurePath,
@@ -729,6 +749,8 @@ export type PageEditingHostAdapter = {
   pageNodeNames?: boolean;
   /** Site-scoped immutable style snapshots and atomic release/migration transactions. */
   siteStyles?: EditingSiteStylesHostAdapter<EditingActor>;
+  /** The host returns the optional CMS sidecar and atomically stores it using pageOperations. */
+  pageCmsBindings?: true;
   /** Trusted host schemas needed for custom blocks, component instances and site-wide style tokens. */
   validationContext?(actor: EditingActor, target: EditingPageTarget): Promise<PageEditingValidationContext>;
   readPage(actor: EditingActor, target: EditingPageTarget): Promise<EditingPageSnapshot | null>;
@@ -1094,15 +1116,15 @@ function editingApiBasePath(value: string | undefined): string {
   return basePath;
 }
 
-async function handlePageApply(store: EditingPageOperationStore, pageNodeNames: boolean, request: Request, actor: EditingActor, target: EditingPageTarget, siteStylesFeature = false): Promise<Response> {
+async function handlePageApply(store: EditingPageOperationStore, pageNodeNames: boolean, pageCmsBindings: boolean, request: Request, actor: EditingActor, target: EditingPageTarget, siteStylesFeature = false): Promise<Response> {
   if (!actor.clientKind) return fail("host_contract_violation", 502);
   let body: Record<string, unknown> | null;
   try { body = await readBody(request); } catch { return fail("invalid_request", 400); }
   const versionFields = siteStylesFeature ? ["componentsVersion", "presentationVersion", "draftStylesVersion"] : PAGE_OPERATION_VERSIONS;
-  if (!body || Object.keys(body).some((key) => !["baseVersion", "operationId", "operations", "dryRun", ...versionFields].includes(key))
+  if (!body || Object.keys(body).some((key) => !["baseVersion", "operationId", "operations", "dryRun", ...(pageCmsBindings ? ["cmsBindings"] : []), ...versionFields].includes(key))
     || !validVersion(body.baseVersion) || !validOperationId(body.operationId)
     || body.dryRun !== undefined && typeof body.dryRun !== "boolean"
-    || !Array.isArray(body.operations) || !body.operations.length || body.operations.length > PAGE_OPERATION_LIMIT
+    || !Array.isArray(body.operations) || !body.operations.length && body.cmsBindings === undefined || body.operations.length > PAGE_OPERATION_LIMIT
     || versionFields.some((key) => body[key] !== undefined && !validVersion(body[key]))) return fail("invalid_request", 400);
   const operations: EditingPageApplyInput["operations"][number][] = [];
   for (const [index, raw] of body.operations.entries()) {
@@ -1113,8 +1135,13 @@ async function handlePageApply(store: EditingPageOperationStore, pageNodeNames: 
     }
   }
   if (!pageNodeNames && operations.some(pageOperationUsesNodeNames)) return fail("forbidden", 403);
-  const dependencies = Object.fromEntries(versionFields.flatMap((key) => body[key] === undefined ? [] : [[key, body[key]]]));
-  const input = { ...dependencies, baseVersion: body.baseVersion, operationId: body.operationId.toLowerCase(), operations };
+  let cmsBindings: CmsPageBindingsDocument | null | undefined;
+  try { cmsBindings = body.cmsBindings == null ? body.cmsBindings : parseCmsPageBindings(body.cmsBindings, target); }
+  catch { return fail("invalid_request", 400); }
+  const dependencies = Object.fromEntries(versionFields.flatMap((key) => body[key] === undefined ? [] : [[key, body[key]]]))
+    as PageOperationVersions & Pick<EditingPageApplyInput, "draftStylesVersion">;
+  const input = { ...dependencies, baseVersion: body.baseVersion, operationId: body.operationId.toLowerCase(), operations,
+    ...(cmsBindings === undefined ? {} : { cmsBindings }) };
   const dryRun = body.dryRun === true;
   let result: Awaited<ReturnType<EditingPageOperationStore["transact"]>>;
   try {
@@ -1146,7 +1173,7 @@ async function handlePageApply(store: EditingPageOperationStore, pageNodeNames: 
     }
     case "duplicate_operation": return fail("duplicate_operation", 409);
     case "validation_failed":
-      if (!Number.isSafeInteger(result.index) || result.index < 0 || result.index >= operations.length || typeof result.reason !== "string") return fail("host_contract_violation", 502);
+      if (!Number.isSafeInteger(result.index) || result.index < 0 || result.index >= Math.max(1, operations.length) || typeof result.reason !== "string") return fail("host_contract_violation", 502);
       return response({ error: "validation_failed", index: result.index, reason: result.reason }, 422);
     case "valid":
       if (dryRun) return response({ status: "valid", diff: result.diff, touched: result.touched });
@@ -1258,7 +1285,9 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
             : (await Promise.all(operationCapabilities(operation).map((capability) => adapter.authorize(actor, capability, { siteId })))).some(Boolean);
           if (!allowed) continue;
           let discoveredOperation: EditingDiscoveredOperation = operation;
-          if (adapter.pageNodeNames === true && (operation.id === "pages.apply" || operation.id === "pages.save")) {
+          if (adapter.pageCmsBindings === true && (operation.id === "pages.apply" || operation.id === "pages.inspect" || operation.id === "pages.read")) {
+            discoveredOperation = withPageCmsBindingsCapability(operation as PageBindingOperation, adapter.pageNodeNames === true);
+          } else if (adapter.pageNodeNames === true && (operation.id === "pages.apply" || operation.id === "pages.save")) {
             discoveredOperation = withPageNodeNameCapability(operation as PageWriteOperation);
           }
           if (siteStylesFeature) discoveredOperation = withSiteStylesFeature(discoveredOperation);
@@ -2008,7 +2037,7 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       if (new TextEncoder().encode(JSON.stringify(result)).byteLength > 4 * 1024 * 1024) return fail("host_contract_violation", 502);
       return response(result);
     }
-    if (operation.id === "pages.apply") return handlePageApply(adapter.pageOperations!, adapter.pageNodeNames === true, request, actor, target, siteStylesFeature);
+    if (operation.id === "pages.apply") return handlePageApply(adapter.pageOperations!, adapter.pageNodeNames === true, adapter.pageCmsBindings === true, request, actor, target, siteStylesFeature);
     if (operation.id === "pages.preview-intent") {
       let body: Record<string, unknown> | null;
       try { body = await readBody(request, 128); } catch { return fail("invalid_request", 400); }
@@ -2045,6 +2074,11 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       try { document = validatedDocument(snapshot.document, context); }
       catch { return fail("host_contract_violation", 502); }
       if (document.siteId !== target.siteId || document.pageId !== target.pageId || document.locale !== target.locale) return fail("host_contract_violation", 502);
+      let cmsBindings: CmsPageBindingsDocument | null | undefined;
+      if (adapter.pageCmsBindings) {
+        try { cmsBindings = snapshot.cmsBindings == null ? snapshot.cmsBindings : parseCmsPageBindings(snapshot.cmsBindings, target); }
+        catch { return fail("host_contract_violation", 502); }
+      }
       if (operation.id === "pages.inspect") {
         let inspected: Record<string, unknown>;
         try {
@@ -2060,7 +2094,7 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
           }
           return fail("host_contract_violation", 502);
         }
-        const result = { ...inspected, version: snapshot.version, ...dependencies };
+        const result = { ...inspected, version: snapshot.version, ...dependencies, ...(cmsBindings === undefined ? {} : { cmsBindings }) };
         if (new TextEncoder().encode(JSON.stringify(result)).byteLength > PAGE_INSPECT_LIMITS.maxResultBytes + 1024) return fail("result_too_large", 413);
         return response(result);
       }
@@ -2072,7 +2106,7 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
           editorSnapshot = { ...(editorState ? { editorState } : {}), ...(presentation ? { presentation } : {}) };
         } catch { return fail("host_contract_violation", 502); }
       }
-      const result = { document, version: snapshot.version, ...dependencies, ...editorSnapshot };
+      const result = { document, version: snapshot.version, ...dependencies, ...editorSnapshot, ...(cmsBindings === undefined ? {} : { cmsBindings }) };
       return readEtag ? versionedResponse(result, readEtag, readVary) : response(result);
     }
     if (operation.id === "pages.release-plan") {
