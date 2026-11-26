@@ -108,6 +108,17 @@ test("removing site definitions detaches references into page-owned values that 
   const owned = parsePageDocument({ ...about, tokens: { ...about.tokens, brand: color("#000000") } }, {}, { siteStyles: site });
   assert.deepEqual(detachRemovedSiteStyles(owned, site, next).body[0].children[0].style.base.color, { token: "brand" });
   assert.strictEqual(detachRemovedSiteStyles(page, site, site), page, "no removal, no document copy");
+
+  // ページ所有 token がある場合も、共有文字スタイルの参照をページへ切り離して表示を保つ。
+  const pageOverride = parsePageDocument({ ...about, tokens: { ...about.tokens, headingSize: { type: "length", value: "3rem" } } }, {}, { siteStyles: site });
+  const { headingSize: _headingSize, ...tokensWithoutHeadingSize } = site.tokens;
+  const nextWithoutHeadingSize = { tokens: tokensWithoutHeadingSize, textStyles: {
+    ...site.textStyles,
+    heading: { ...site.textStyles.heading, responsive: [{ minWidth: 768, declarations: { fontSize: "2rem" } }] }
+  } };
+  const detachedOverride = detachRemovedSiteStyles(pageOverride, site, nextWithoutHeadingSize);
+  assert.deepEqual(detachedOverride.textStyles.heading, site.textStyles.heading);
+  assert.deepEqual(rules(generatePageCss(resolvePageStyles(detachedOverride, nextWithoutHeadingSize))), rules(generatePageCss(resolvePageStyles(pageOverride, site))));
 });
 
 test("parseSiteSettings validates styles with the public information and rejects invalid shapes", () => {
