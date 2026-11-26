@@ -1,9 +1,9 @@
 import { resolvePageLink } from "./presentation-links.js";
 import { resolvePageStyles, type SiteStyles } from "./site-styles.js";
-import { createElement, Fragment, memo, useMemo, type ComponentType, type CSSProperties, type ReactElement, type ReactNode } from "react";
+import { createElement, Fragment, memo, useMemo, useRef, type ComponentType, type CSSProperties, type ReactElement, type ReactNode } from "react";
 import type { BlockContract, PageDocument, PageNode, PublicPropValue, SitePresentation, SitePresentationExternalFrame, SitePresentationHostView, SitePresentationOverlay } from "./types.js";
 import { parsePageDocument } from "./document.js";
-import { canvasNodeStyleValues, canvasTokenStyleValues, cssForDocument, pageScope, resolveViewportHeightUnits } from "./css.js";
+import { canvasNodeStyleValues, canvasTokenStyleValues, cssForDocument, pageScope, resolveViewportHeightUnits, sameCanvasCssShape } from "./css.js";
 import { parseResolvedAssets, resolvedAsset, type ResolvedAssetMap } from "./assets.js";
 import { cssForValidatedSitePresentation, parseSitePresentation, presentationLayoutDocument, sitePresentationHostViewKey } from "./presentation.js";
 import { editorRendererToken, editorRendererTokenProp } from "./editor-renderer-token.js";
@@ -300,10 +300,21 @@ function PageRendererCore({ document: input, blocks = emptyBlocks, assets: asset
       ...(node.children.length ? node.children.map((child, index) => render(child, node.interaction?.type === "video-toggle"
         ? { role: index === 0 ? "video" : "button", ready: videoReady(node.children[0]) } : undefined, index)) : []));
   }
+  const canvasCssCache = useRef<{ document: PageDocument; assets: ResolvedAssetMap; viewportHeight: number | undefined; css: string } | undefined>(undefined);
+  const cachedCanvasCss = canvasCssCache.current;
+  let styleText: string;
+  if (canvas && cachedCanvasCss && cachedCanvasCss.assets === assets && cachedCanvasCss.viewportHeight === canvas.viewportHeight &&
+    sameCanvasCssShape(cachedCanvasCss.document, document)) {
+    cachedCanvasCss.document = document;
+    styleText = cachedCanvasCss.css;
+  } else {
+    styleText = canvasCssText(cssForDocument(document, assets, { inlineStyleValues: !!canvas }), canvas);
+    if (canvas) canvasCssCache.current = { document, assets, viewportHeight: canvas.viewportHeight, css: styleText };
+  }
   return createElement(Fragment, null,
     // React 18 HTML-escapes text children inside <style>, which changes CSS selectors.
     // cssForDocument only emits identifiers and values accepted by the closed CSS schema.
-    createElement("style", { "data-nw-style": scope, dangerouslySetInnerHTML: { __html: canvasCssText(cssForDocument(document, assets, { inlineStyleValues: !!canvas }), canvas) } }),
+    createElement("style", { "data-nw-style": scope, dangerouslySetInnerHTML: { __html: styleText } }),
     createElement("div", { "data-nw-scope": scope, lang: document.locale, ...(canvas ? { style: canvasTokenStyleValues(document.tokens, canvas.viewportHeight) as CSSProperties } : {}) }, ...document.body.map((node, index) => render(node, undefined, index))));
 }
 

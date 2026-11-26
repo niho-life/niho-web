@@ -161,6 +161,56 @@ const keyframes: Record<AppearEffect, string> = { fade: "opacity:0", "fade-up": 
 const stateRule = (selector: string, state: StateName, body: string) => state === "hover" ? `@media (hover:hover){${selector}:hover{${body}}}` : `${selector}:${state === "focus" ? "focus-visible" : "active"}{${body}}`;
 /** @internal エディターのキャンバス用。forceState は選択中の要素へ状態の見た目を擬似クラスなしで重ね、paused は動きを止める。 */
 export type CanvasCssOptions = { forceState?: { nodeId: string; state: StateName } | undefined; motion?: "paused" | "play" | undefined; /** @internal Keep dynamic declarations out of the editor's style sheet. */ inlineStyleValues?: boolean | undefined };
+/** @internal True when an immutable value-only edit leaves the editor stylesheet structure unchanged. */
+export function sameCanvasCssShape(previous: PageDocument, next: PageDocument): boolean {
+  if (previous === next) return true;
+  if (pageScope(previous) !== pageScope(next)) return false;
+  const sameKeys = (left: object | undefined, right: object | undefined): boolean => {
+    if (left === right) return true;
+    if (!left || !right) return false;
+    const leftKeys = Object.keys(left).sort(), rightKeys = Object.keys(right).sort();
+    return leftKeys.length === rightKeys.length && leftKeys.every((key, index) => key === rightKeys[index]);
+  };
+  const sameDeclarations = (left: StyleDeclarations | undefined, right: StyleDeclarations | undefined): boolean =>
+    sameKeys(left, right) && left?.backgroundImage === right?.backgroundImage;
+  const sameStyle = (left: NodeStyle | undefined, right: NodeStyle | undefined): boolean => {
+    if (left === right) return true;
+    if (!left || !right || left.textStyle !== right.textStyle || left.appear !== right.appear || left.hidden !== right.hidden ||
+      !sameDeclarations(left.base, right.base)) return false;
+    const leftResponsive = left.responsive ?? [], rightResponsive = right.responsive ?? [];
+    if (leftResponsive.length !== rightResponsive.length || leftResponsive.some((entry, index) => {
+      const candidate = rightResponsive[index];
+      return !candidate || entry.minWidth !== candidate.minWidth || !sameDeclarations(entry.declarations, candidate.declarations);
+    })) return false;
+    for (const state of ["hover", "focus", "active"] as const) {
+      if (!sameDeclarations(left.states?.[state], right.states?.[state])) return false;
+    }
+    return true;
+  };
+  const sameNodes = (left: readonly PageNode[], right: readonly PageNode[]): boolean => {
+    if (left === right) return true;
+    if (left.length !== right.length) return false;
+    for (let index = 0; index < left.length; index += 1) {
+      const previousNode = left[index]!, nextNode = right[index]!;
+      if (previousNode === nextNode) continue;
+      if (previousNode.type === "text") {
+        if (nextNode.type !== "text") return false;
+        continue;
+      }
+      if (nextNode.type === "text" || previousNode.type !== nextNode.type || previousNode.id !== nextNode.id || !sameStyle(previousNode.style, nextNode.style)) return false;
+      if (previousNode.type === "element" && nextNode.type === "element") {
+        if (previousNode.tag !== nextNode.tag || !sameNodes(previousNode.children, nextNode.children)) return false;
+      } else if (previousNode.type === "component" && nextNode.type === "component") {
+        const leftSlots = previousNode.slots ?? {}, rightSlots = nextNode.slots ?? {};
+        if (!sameKeys(leftSlots, rightSlots) || Object.keys(leftSlots).some((slot) => !sameStyle(leftSlots[slot], rightSlots[slot]))) return false;
+      }
+    }
+    return true;
+  };
+  const leftTextStyles = previous.textStyles ?? {}, rightTextStyles = next.textStyles ?? {};
+  return sameNodes(previous.body, next.body) && sameKeys(leftTextStyles, rightTextStyles) &&
+    Object.keys(leftTextStyles).every((name) => sameStyle(leftTextStyles[name], rightTextStyles[name]));
+}
 /** @internal 文書の CSS の後に置く、キャンバスだけの規則。 */
 export function canvasCss(document: PageDocument, options: CanvasCssOptions, assets: ResolvedAssetMap = {}): string {
   const rules: string[] = [], scope = pageScope(document), forced = options.forceState;
