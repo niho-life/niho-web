@@ -559,6 +559,8 @@ test("site-wide color and name inputs are committed while typing in the site sco
   const host = siteStyleHost(), app = await setup({ document: host.page, adapter: host.adapter });
   try {
     await openSiteColor("ブランド");
+    assert.ok(libraryRow("ブランド").textContent.includes("定義内 0 か所"), "the site library count is scoped to shared definitions");
+    assert.ok(left().textContent.includes("共通定義内では未使用です。ページへの参照は変更後の全ページ確認に表示します。"), "page references are not reported as missing when the site definition document has no body");
     // サイト共通の欄の入力途中は「ページの未確定の入力」に数えず、欄を止めない。
     await type(input("色", left()), "#zz");
     assert.equal(input("色", left()).disabled, false); assert.equal(input("色", left()).closest(".e-frame").dataset.pending, "true");

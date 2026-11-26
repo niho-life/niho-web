@@ -2,7 +2,7 @@
 
 import { Component, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { PageRenderer, SitePageRenderer } from "./react.js";
+import { EditorPageRenderer, EditorSitePageRenderer } from "./editor-renderer.js";
 import { parsePageDocument } from "./document.js";
 import { CmsBindingsPanel } from "./editor-cms-bindings.js";
 import { canvasCss, pageScope } from "./css.js";
@@ -224,7 +224,7 @@ class PreviewBoundary extends Component<{ document: PageDocument; children: Reac
   componentDidUpdate(previous: { document: PageDocument }) { if (previous.document !== this.props.document && this.state.failed) this.setState({ failed: false }); }
   render() { return this.state.failed ? <p role="alert">ブロックのプレビューを表示できません。レイヤーから編集を続けられます。</p> : this.props.children; }
 }
-const StablePageRenderer = memo(PageRenderer);
+const StablePageRenderer = memo(EditorPageRenderer);
 /** ホストの表示部品として受け付けるのは React コンポーネント（関数・class・memo / forwardRef / lazy）だけ。文字列・数値・配列・プレーンオブジェクトは無視して従来の描画を使う。 */
 function hostPreviewComponent(value: unknown): PageEditorProps["previewComponent"] {
   if (typeof value === "function") return value as NonNullable<PageEditorProps["previewComponent"]>;
@@ -456,7 +456,7 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
   }
   const canvasRendering = useMemo(() => ({ viewportHeight, siteOrigin, interactive: mode === "preview" }), [viewportHeight, siteOrigin, mode]);
   const defaultPreview = presentation
-    ? <SitePageRenderer key={replay} document={rendered} presentation={presentation} blocks={blocks} {...(externalFramePolicy ? { externalFramePolicy } : {})} {...(blankEmbeds ? { blankEmbeds } : {})} assets={assets} missingAssets="placeholder" canvas={canvasRendering} />
+    ? <EditorSitePageRenderer key={replay} document={rendered} presentation={presentation} blocks={blocks} {...(externalFramePolicy ? { externalFramePolicy } : {})} {...(blankEmbeds ? { blankEmbeds } : {})} assets={assets} missingAssets="placeholder" canvas={canvasRendering} />
     : <StablePageRenderer key={replay} document={rendered} blocks={blocks} {...(blankEmbeds ? { blankEmbeds } : {})} assets={assets} missingAssets="placeholder" canvas={canvasRendering} />;
   useEffect(() => {
     if (!body) return;
@@ -903,7 +903,9 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     if (!siteId) return;
     const controller = new AbortController(); setPages([]); setBusy("読込中");
     replaceLibrary(null); setLibraryReload(null); setLibraryFailed(false); setUsage(undefined); setEditing(null); usageRequest.current?.abort();
-    const listed = components ? openLibrary(siteId, controller.signal).then(() => controller.signal.aborted ? [] : adapter.listPages(siteId, controller.signal)) : adapter.listPages(siteId, controller.signal);
+    const libraryRead = components ? openLibrary(siteId, controller.signal) : Promise.resolve();
+    const pagesRead = Promise.resolve().then(() => controller.signal.aborted ? [] : adapter.listPages(siteId, controller.signal));
+    const listed = Promise.all([libraryRead, pagesRead]).then(([, result]) => result);
     listed.then((result) => {
       if (controller.signal.aborted) return;
       if (result.some((page) => page.siteId !== siteId)) throw new Error("site mismatch");
@@ -916,6 +918,32 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     }).catch(() => { if (!controller.signal.aborted) { setNotice("ページ一覧を読み込めませんでした。"); setBusy(""); finishInitialLoadPerformance("failed"); } });
     return () => { controller.abort(); request.current?.abort(); pageList.current?.abort(); };
   }, [adapter, siteId, load, replace, components, openLibrary, replaceLibrary, finishInitialLoadPerformance]);
+  useEffect(() => {
+    if (!adapter.prefetchDocument || busy || !session) return;
+    const available = pages.filter((page) => page.siteId === session.target.siteId && page.kind !== "shared");
+    const sameLocale = available.filter((page) => page.locale === session.target.locale);
+    const ordered = sameLocale.length > 1 ? sameLocale : available;
+    if (ordered.length < 2) return;
+    const current = ordered.findIndex((page) => sameTarget(page, session.target));
+    const next = ordered[(current + 1 + ordered.length) % ordered.length];
+    if (!next || sameTarget(next, session.target)) return;
+
+    let cancelled = false;
+    let timer: number | undefined;
+    const idleWindow = window as typeof window & {
+      requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    const start = () => { if (!cancelled) preloadPage(next); };
+    let idleHandle: number | undefined;
+    if (idleWindow.requestIdleCallback) idleHandle = idleWindow.requestIdleCallback(start, { timeout: 1000 });
+    else timer = window.setTimeout(start, 0);
+    return () => {
+      cancelled = true;
+      if (idleHandle !== undefined) idleWindow.cancelIdleCallback?.(idleHandle);
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [adapter, busy, pages, preloadPage, session?.target.siteId, session?.target.pageId, session?.target.locale]);
   useEffect(() => () => { request.current?.abort(); action.current?.abort(); pageList.current?.abort(); releaseRead.current?.abort(); }, []);
   useEffect(() => {
     pageSessionCache.current.clear();
