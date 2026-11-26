@@ -23,6 +23,7 @@ function adapterFor(projectId: string, siteId: string): LocalizationWorkspaceAda
     const value = await response.json().catch(() => null);
     if (response.status === 403) return { status: "forbidden" };
     if (response.status === 404) return { status: "not_found" };
+    if (response.status === 409 && value?.status === "conflict") return value;
     if (!response.ok || value === null) throw new Error("CMS localization request failed");
     return value;
   }
@@ -30,7 +31,13 @@ function adapterFor(projectId: string, siteId: string): LocalizationWorkspaceAda
     loadOverview: (signal) => call("cms.localization.overview", {}, signal),
     listItems: (_input, signal) => call("cms.localization.items.list", {}, signal),
     loadItem: ({ itemKey }, signal) => call("cms.localization.items.read", { itemKey }, signal),
-    command: (input: LocalizationCommandInput, signal) => call("cms.localization.items.command", input as unknown as Record<string, unknown>, signal),
+    async command(input: LocalizationCommandInput, signal) {
+      const result = await call("cms.localization.items.command", input as unknown as Record<string, unknown>, signal);
+      if (result?.status !== "applied" && result?.status !== "conflict") return result;
+      const current = await call("cms.localization.items.read", { itemKey: input.itemKey }, signal);
+      if (current?.status !== "ready" || !current.item) throw new Error("CMS localization item refresh failed");
+      return { ...result, item: current.item };
+    },
     async requestTranslation() { return { status: "invalid", message: "Studio CMS の自動翻訳サービスは未接続です。訳文を入力してください。" }; },
     async readJob({ jobId }) { return { status: "ready", job: { jobId, state: "failed", message: "この項目に翻訳ジョブはありません。" } }; },
     async advanceCatalog() { return { status: "current" }; },
@@ -99,6 +106,6 @@ export function ManagedCmsTranslation({ projectId, siteId, itemKey, onBack, regi
         <button type="button" disabled={busy} onClick={() => setPlan(null)}>計画を破棄</button>
       </div>
     </section>}
-    <LocalizationItemWorkspace adapter={adapterFor(projectId, siteId)} itemKey={itemKey} onBack={onBack} registerBack={registerBack} />
+    <LocalizationItemWorkspace adapter={adapterFor(projectId, siteId)} itemKey={itemKey} onBack={onBack} registerBack={registerBack} showReviewCurrent />
   </section>;
 }

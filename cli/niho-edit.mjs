@@ -398,6 +398,10 @@ async function runLocalization(client, operation, values, positionals) {
     }[id];
     if (!studioOperation || itemTarget && !isCmsLocalizationItemKey(input.itemKey)) throw new CliError("invalid_arguments");
     let studioInput = input;
+    if (id === "localization.items.list") {
+      if (input.cursor !== null) throw new CliError("invalid_arguments");
+      studioInput = {};
+    }
     if (id === "localization.release.read") studioInput = {};
     if (id === "localization.release.prepare") {
       if (input.operation !== "publish" || input.resumeToken !== null) throw new CliError("invalid_arguments");

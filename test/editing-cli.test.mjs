@@ -703,6 +703,13 @@ test("niho-edit reads translation items and job state directly from the site", a
   assert.deepEqual(JSON.parse(list.stdout), { apiVersion: "v1", httpStatus: 200, operation: "localization.items.list",
     result: { status: "ready", items: [], nextCursor: null } });
 
+  const studioList = await run(["localization-items-list", "--studio"], {
+    expectedMethod: "POST", expectedUrl: `${origin}/api/edit/v2/sites/${siteId}/operations/cms.localization.items.list`,
+    expectedBody: { siteId }, result: { status: "ready", items: [], nextCursor: null }, studio: true,
+  });
+  assert.equal(studioList.exitCode, 0, studioList.stderr);
+  assert.deepEqual(JSON.parse(studioList.stdout).result, { status: "ready", items: [], nextCursor: null });
+
   const release = await run(["localization-release-read"], {
     expectedMethod: "GET", expectedUrl: `${operations}/localization.release.read`,
     result: { status: "ready", current: null, history: [], pending: null },

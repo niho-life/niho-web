@@ -149,7 +149,7 @@ export type LocalizationOverviewResult = { readonly status: "ready"; readonly ov
 export type LocalizationListResult = { readonly status: "ready"; readonly items: readonly LocalizationItemSummary[]; readonly nextCursor: string | null } | LocalizationForbidden;
 export type LocalizationItemResult = { readonly status: "ready"; readonly item: LocalizationItem } | LocalizationNotFound | LocalizationForbidden;
 export type LocalizationCommandResult =
-  | { readonly status: "applied" | "conflict"; readonly unit: LocalizationWorkspaceUnit; readonly summary: LocalizationItemSummary }
+  | { readonly status: "applied" | "conflict"; readonly unit: LocalizationWorkspaceUnit; readonly summary: LocalizationItemSummary; readonly item?: LocalizationItem }
   | LocalizationInvalid | LocalizationNotFound | LocalizationForbidden;
 export type LocalizationTranslationResult = { readonly status: "queued"; readonly job: LocalizationJob } | LocalizationInvalid | LocalizationNotFound | LocalizationForbidden;
 export type LocalizationJobResult = { readonly status: "ready"; readonly job: LocalizationJob } | LocalizationNotFound | LocalizationForbidden;
@@ -172,7 +172,7 @@ type CommandBase = {
   /** 画面が見ていた原文の版。 */
   readonly expectedSourceVersion: string;
 };
-/** review-current / review-image は旧い確認の操作。画面からは送らないが、ホストとの互換のため型に残す（2026-11-12）。 */
+/** 一般ホストの画面からは review-current / review-image を送らない。CMS は review-current を公開承認に使える。 */
 export type LocalizationCommandInput = CommandBase & (
   | { readonly action: "set-value"; readonly value: string | LocalizedRichText }
   | { readonly action: "adopt-candidate"; readonly candidateId: string }
@@ -706,12 +706,14 @@ export function parseLocalizationCommandResult(input: unknown, expected: { reado
   const shared = forbiddenOr(value, "command", true);
   if (shared) return shared;
   if (value.status === "invalid") return invalid(value, "command");
-  keys(value, ["status", "unit", "summary"], "command");
+  keys(value, ["status", "unit", "summary", "item"], "command");
   if (value.status !== "applied" && value.status !== "conflict") fail("command.status", "invalid status");
   const unit = parseLocalizationUnit(value.unit, "command.unit"), summary = parseLocalizationItemSummary(value.summary, "command.summary");
+  const item = value.item === undefined ? undefined : parseLocalizationItem(value.item, expected.itemKey);
   if (unit.unitId !== expected.unitId) fail("command.unit.unitId", "unit identity mismatch");
   if (summary.key !== expected.itemKey) fail("command.summary.key", "item identity mismatch");
-  return { status: value.status, unit, summary };
+  if (item && !item.units.some((entry) => entry.unitId === expected.unitId)) fail("command.item.units", "unit identity mismatch");
+  return { status: value.status, unit, summary, ...(item ? { item } : {}) };
 }
 
 export function parseLocalizationTranslationResult(input: unknown): LocalizationTranslationResult {
