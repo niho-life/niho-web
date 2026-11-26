@@ -104,10 +104,19 @@ test("removing site definitions detaches references into page-owned values that 
   const bare = detachRemovedSiteStyles(page, site, { tokens: { ink: site.tokens.ink } });
   assert.equal(bare.textStyles.heading.responsive[0].declarations.fontSize, "2rem");
   parsePageDocument(bare, {}, { siteStyles: { tokens: { ink: site.tokens.ink } } });
+  // サイト token と同名のページ上書きがあっても、削除時は旧共有文字スタイルをページ所有へ切り離す。
+  const overridden = parsePageDocument({ ...about, tokens: { ...about.tokens, headingSize: { ...site.tokens.headingSize, value: "4rem" } } }, {}, { siteStyles: site });
+  const nextWithLiteralStyle = { tokens: Object.fromEntries(Object.entries(site.tokens).filter(([name]) => name !== "headingSize")),
+    textStyles: { ...site.textStyles, heading: { ...site.textStyles.heading, responsive: [{ minWidth: 768, declarations: { fontSize: "2rem" } }] } } };
+  const detachedOverride = detachRemovedSiteStyles(overridden, site, nextWithLiteralStyle);
+  const resolvedOverride = resolvePageStyles(detachedOverride, nextWithLiteralStyle);
+  assert.deepEqual(detachedOverride.textStyles?.heading, site.textStyles.heading, "the old shared style becomes a page override when its token is removed");
+  assert.equal(resolvedOverride.tokens.headingSize.value, "4rem");
+  assert.equal(generatePageCss(resolvePageStyles(overridden, site)), generatePageCss(resolvedOverride), "the page token override keeps its rendered size");
   // ページが同名の定義を持つ参照は触らない。
   const owned = parsePageDocument({ ...about, tokens: { ...about.tokens, brand: color("#000000") } }, {}, { siteStyles: site });
   assert.deepEqual(detachRemovedSiteStyles(owned, site, next).body[0].children[0].style.base.color, { token: "brand" });
-  assert.deepEqual(detachRemovedSiteStyles(page, site, site), page, "no removal, no change");
+  assert.strictEqual(detachRemovedSiteStyles(page, site, site), page, "no removal preserves the immutable page snapshot");
 });
 
 test("parseSiteSettings validates styles with the public information and rejects invalid shapes", () => {

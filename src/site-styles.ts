@@ -56,10 +56,12 @@ export function retainPageStyles(document: PageDocument, original: PageDocument,
 
 /** サイトで削除する定義をページ所有へ切り離す。全 draft / 公開参照の原子的保存はホストが行う。 */
 export function detachRemovedSiteStyles(document: PageDocument, before: SiteStyles, after: SiteStyles): PageDocument {
-  const old = parseSiteStyles(before), next = parseSiteStyles(after), copy = structuredClone(document);
+  const old = parseSiteStyles(before), next = parseSiteStyles(after);
   const removedSiteTokens = new Set(Object.keys(old.tokens ?? {}).filter((name) => !Object.hasOwn(next.tokens ?? {}, name)));
   const removedTokens = new Set([...removedSiteTokens].filter((name) => !Object.hasOwn(document.tokens, name)));
   const removedStyles = Object.keys(old.textStyles ?? {}).filter((name) => !Object.hasOwn(next.textStyles ?? {}, name) && !Object.hasOwn(document.textStyles ?? {}, name));
+  if (!removedSiteTokens.size && !removedStyles.length) return document;
+  const copy = structuredClone(document);
   const usedStyles = new Set<string>();
   const visit = (nodes: readonly PageNode[]): void => { for (const node of nodes) { if (node.type === "text") continue; if (node.style?.textStyle) usedStyles.add(node.style.textStyle); if (node.type === "element") visit(node.children); } };
   visit(document.body);
