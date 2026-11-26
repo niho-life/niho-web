@@ -234,6 +234,8 @@ export type SitePresentation = {
   layout?: NodeStyle;
   fonts: SiteFontFace[];
   shared: { header: PageDocument; footer: PageDocument };
+  /** Explicitly marks empty shared PageDocument snapshots whose bodies are resolved from versioned input documents. */
+  compactSharedReferences?: ("header" | "footer")[];
   overlays?: SitePresentationOverlay[];
   hostViews?: SitePresentationHostView[];
   links?: SitePresentationLinks;
