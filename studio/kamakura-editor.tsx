@@ -165,22 +165,6 @@ function localizationVersion(value: unknown, prefix: "l" | "p" | "s"): value is 
   return typeof value === "string" && new RegExp(`^${prefix}\\.[0-9a-f]{64}$`, "u").test(value);
 }
 
-function parseEnglishSnapshot(value: unknown, target: EditorTarget): EditorSnapshot {
-  const source = record(value), checked = validEnglishTarget(target);
-  if (source.status === "conflict" && Object.keys(source).length === 1) throw new EditorApiError(409, "conflict", null, "英語の編集状態が更新されました。最新の状態を読み直してください。");
-  if (source.status === "unavailable" && Object.keys(source).sort().join(",") === "message,status" && safeLine(source.message, 1000)) {
-    throw new EditorContentUnavailableError(source.message);
-  }
-  if (source.status !== "ready" || Object.keys(source).sort().join(",") !== "document,presentation,status,version" || !localizationVersion(source.version, "l")) {
-    throw new Error("英語文書の応答が正しくありません。");
-  }
-  const document = record(source.document);
-  if (document.siteId !== checked.siteId || document.pageId !== checked.pageId || document.locale !== checked.locale) throw new Error("英語文書の対象が一致しません。");
-  const presentation = record(source.presentation);
-  if (!validVersion(presentation.version)) throw new Error("英語表示コンテキストの版が正しくありません。");
-  return { document: source.document, version: source.version, presentation: source.presentation };
-}
-
 function parseLocalizationSite(value: unknown, catalog: KamakuraCatalog): EditorLocalizationSiteSnapshot {
   const source = record(value);
   if (source.status !== "ready" || Object.keys(source).sort().join(",") !== "config,pages,status,version" || !localizationVersion(source.version, "s") || !Array.isArray(source.pages) || source.pages.length > 500) {
@@ -334,9 +318,14 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
       ...(wire.draftStylesVersion === undefined ? {} : { draftStylesVersion: wire.draftStylesVersion }),
       ...(wire.presentation === undefined ? {} : { presentation: wire.presentation }) };
   }
+  async function readEnglishDocument(target: EditorTarget, signal: AbortSignal): Promise<EditorSnapshot> {
+    const wire = await editingApi.read(validEnglishTarget(target), signal);
+    if (!wire.presentation) throw new Error("このページに必要な英語表示コンテキストがありません。");
+    return { document: wire.document, version: wire.version, presentation: wire.presentation };
+  }
   async function readPageDocument(target: EditorTarget, signal: AbortSignal): Promise<EditorSnapshot> {
     return target.locale === "en"
-      ? parseEnglishSnapshot(await api(`${localizationPagePath(target)}/snapshot`, "POST", {}, signal), target)
+      ? readEnglishDocument(target, signal)
       : readJapaneseDocument(target, signal);
   }
   return {
