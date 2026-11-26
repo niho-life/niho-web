@@ -903,7 +903,9 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     if (!siteId) return;
     const controller = new AbortController(); setPages([]); setBusy("読込中");
     replaceLibrary(null); setLibraryReload(null); setLibraryFailed(false); setUsage(undefined); setEditing(null); usageRequest.current?.abort();
-    const listed = components ? openLibrary(siteId, controller.signal).then(() => controller.signal.aborted ? [] : adapter.listPages(siteId, controller.signal)) : adapter.listPages(siteId, controller.signal);
+    const libraryRead = components ? openLibrary(siteId, controller.signal) : Promise.resolve();
+    const pagesRead = Promise.resolve().then(() => controller.signal.aborted ? [] : adapter.listPages(siteId, controller.signal));
+    const listed = Promise.all([libraryRead, pagesRead]).then(([, result]) => result);
     listed.then((result) => {
       if (controller.signal.aborted) return;
       if (result.some((page) => page.siteId !== siteId)) throw new Error("site mismatch");
