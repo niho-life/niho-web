@@ -258,11 +258,12 @@ function pairedFormFieldNodeId(document: PageDocument, path: NodePath): string |
      typeof labelTarget === "string" && ["input", "textarea", "select"].includes(candidate.tag) && candidate.attrs?.id === labelTarget));
   return pair?.type === "element" ? pair.id : undefined;
 }
-function resetCanvasPageState(body: HTMLElement, renderedEntries: readonly { node: PageNode }[]): void {
+function resetCanvasPageState(body: HTMLElement, renderedEntries: readonly { node: PageNode }[], scope: string): void {
   body.scrollTop = 0;
   body.ownerDocument.documentElement.scrollTop = 0;
   const elements = new Map<string, HTMLElement>();
   for (const element of Array.from(body.querySelectorAll<HTMLElement>("[data-nw-node]"))) {
+    if (element.dataset.nwOwner !== scope) continue;
     if (element.scrollTop) element.scrollTop = 0;
     if (element.scrollLeft) element.scrollLeft = 0;
     const nodeId = element.dataset.nwNode;
@@ -281,7 +282,7 @@ function resetCanvasPageState(body: HTMLElement, renderedEntries: readonly { nod
       (element as HTMLTextAreaElement).value = node.children.map((child) => child.type === "text" ? child.text : "").join("");
     } else if (node.tag === "select") {
       const select = element as HTMLSelectElement;
-      select.selectedIndex = select.options.length ? 0 : -1;
+      select.selectedIndex = Array.from(select.options).findIndex((option) => !option.disabled);
     }
   }
 }
@@ -338,7 +339,7 @@ function Canvas({ document, pageKey, blocks, width, height, breakpoint, selectio
     if (editingId) pending(`direct-${editingId}`, false);
     setEditingId(null); setDropPlace(null); setHandleRect(null); setLinkOpen(false); setLinkError("");
     resizing.current = null; originalHtml.current = ""; savedRange.current = null; lastRevealedNode.current = null;
-    if (body) resetCanvasPageState(body, renderedEntries);
+    if (body) resetCanvasPageState(body, renderedEntries, scope);
   }, [body, editingId, pageKey, pending, renderedEntries]);
   const nodesById = useMemo(() => new Map(entries.flatMap((entry) => entry.node.type === "text" ? [] : [[entry.node.id, entry] as const])), [entries]);
   const renderedNodesById = useMemo(() => new Map(renderedEntries.flatMap((entry) => entry.node.type === "text" ? [] : [[entry.node.id, entry] as const])), [renderedEntries]);

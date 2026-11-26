@@ -1905,7 +1905,7 @@ test("page switches reset uncontrolled form fields while reusing matching DOM no
     { type: "element", id: "shared-textarea", tag: "textarea", attrs: { id: "shared-textarea-control", name: "description" }, children: [{ type: "text", text: "saved" }] },
     { type: "element", id: "shared-select-label", tag: "label", attrs: { htmlFor: "shared-select-control" }, children: [{ type: "text", text: "分類" }] },
     { type: "element", id: "shared-select", tag: "select", attrs: { id: "shared-select-control", name: "category" }, children: [
-      { type: "element", id: "shared-option-one", tag: "option", attrs: { value: "one" }, children: [{ type: "text", text: "一" }] },
+      { type: "element", id: "shared-option-one", tag: "option", attrs: { value: "one", disabled: true }, children: [{ type: "text", text: "一" }] },
       { type: "element", id: "shared-option-two", tag: "option", attrs: { value: "two" }, children: [{ type: "text", text: "二" }] },
     ] },
   ] }] });
@@ -1922,7 +1922,33 @@ test("page switches reset uncontrolled form fields while reusing matching DOM no
     assert.equal(input.value, "initial");
     assert.equal(checkbox.checked, true);
     assert.equal(textarea.value, "saved");
-    assert.equal(select.selectedIndex, 0);
+    assert.equal(select.selectedIndex, 1, "the first enabled option is selected");
+  } finally { await app.cleanup(); }
+});
+
+test("page switches reset only nodes owned by the current page in a shared presentation", async () => {
+  const page = (pageId) => ({ ...structuredClone(fixture), pageId, body: [
+    { type: "element", id: "shared-form", tag: "form", attrs: { name: "contact" }, children: [
+      { type: "element", id: "shared-select-label", tag: "label", attrs: { htmlFor: "category" }, children: [{ type: "text", text: "分類" }] },
+      { type: "element", id: "shared-node-id", tag: "select", attrs: { id: "category", name: "category" }, children: [
+        { type: "element", id: "shared-option-disabled", tag: "option", attrs: { value: "disabled", disabled: true }, children: [{ type: "text", text: "無効" }] },
+        { type: "element", id: "shared-option-enabled", tag: "option", attrs: { value: "enabled" }, children: [{ type: "text", text: "有効" }] },
+      ] },
+    ] },
+  ] });
+  const shared = (pageId) => ({ ...structuredClone(fixture), pageId, body: [{ type: "element", id: "shared-node-id", tag: "div", children: [] }] });
+  const presentation = { schemaVersion: 1, siteId: "demo", locale: "ja-JP", version: "presentation-v1", reset: "neutral-v1", tokens: {}, fonts: [],
+    shared: { header: shared("shared-header"), footer: shared("shared-footer") } };
+  const app = await setup({ adapter: { readDocument: async (target) => ({ document: page(target.pageId), version: "v-" + target.pageId, presentation }) } });
+  try {
+    const frame = document.querySelector("iframe");
+    assert.ok(frame, document.querySelector(".e-notice")?.textContent);
+    const select = frame.contentDocument.body.querySelector("select");
+    assert.ok(select);
+    select.selectedIndex = 0;
+    await clickPage("別ページ");
+    assert.equal(frame.contentDocument.body.querySelector("select"), select);
+    assert.equal(select.selectedIndex, 1, "footer nodes with colliding IDs do not shadow page nodes");
   } finally { await app.cleanup(); }
 });
 
