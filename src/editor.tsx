@@ -2,7 +2,7 @@
 
 import { Component, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { PageRenderer, SitePageRenderer } from "./react.js";
+import { EditorPageRenderer, EditorSitePageRenderer } from "./editor-renderer.js";
 import { parsePageDocument } from "./document.js";
 import { CmsBindingsPanel } from "./editor-cms-bindings.js";
 import { canvasCss, pageScope } from "./css.js";
@@ -224,7 +224,7 @@ class PreviewBoundary extends Component<{ document: PageDocument; children: Reac
   componentDidUpdate(previous: { document: PageDocument }) { if (previous.document !== this.props.document && this.state.failed) this.setState({ failed: false }); }
   render() { return this.state.failed ? <p role="alert">ブロックのプレビューを表示できません。レイヤーから編集を続けられます。</p> : this.props.children; }
 }
-const StablePageRenderer = memo(PageRenderer);
+const StablePageRenderer = memo(EditorPageRenderer);
 /** ホストの表示部品として受け付けるのは React コンポーネント（関数・class・memo / forwardRef / lazy）だけ。文字列・数値・配列・プレーンオブジェクトは無視して従来の描画を使う。 */
 function hostPreviewComponent(value: unknown): PageEditorProps["previewComponent"] {
   if (typeof value === "function") return value as NonNullable<PageEditorProps["previewComponent"]>;
@@ -456,7 +456,7 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
   }
   const canvasRendering = useMemo(() => ({ viewportHeight, siteOrigin, interactive: mode === "preview" }), [viewportHeight, siteOrigin, mode]);
   const defaultPreview = presentation
-    ? <SitePageRenderer key={replay} document={rendered} presentation={presentation} blocks={blocks} {...(externalFramePolicy ? { externalFramePolicy } : {})} {...(blankEmbeds ? { blankEmbeds } : {})} assets={assets} missingAssets="placeholder" canvas={canvasRendering} />
+    ? <EditorSitePageRenderer key={replay} document={rendered} presentation={presentation} blocks={blocks} {...(externalFramePolicy ? { externalFramePolicy } : {})} {...(blankEmbeds ? { blankEmbeds } : {})} assets={assets} missingAssets="placeholder" canvas={canvasRendering} />
     : <StablePageRenderer key={replay} document={rendered} blocks={blocks} {...(blankEmbeds ? { blankEmbeds } : {})} assets={assets} missingAssets="placeholder" canvas={canvasRendering} />;
   useEffect(() => {
     if (!body) return;
