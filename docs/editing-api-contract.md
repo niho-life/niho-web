@@ -4,7 +4,7 @@
 
 `@niho/web/editing-client` の `createPageEditingApiClient` は同じwire契約を呼ぶReact非依存clientです。ブラウザーのGUIは既定のsame-origin credentialsまたはhost提供headerを使え、Node CLIはhost bearer headerと `credentials: "omit"` を使えます。ホストorigin自体がCloudflare Accessで保護される場合、`niho-edit` は別途設定されたAccess Service Auth headerも指定originだけに送れます。GUIと `niho-edit` CLIはページ本文・CMS項目・ページ管理・ブレークポイント・素材の同じ操作を呼べます。Studio GUIはAccess sessionをWorker BFFで短期の操作別tokenへ委任し、サイトoriginの共通APIへservice bindingで接続します。ブラウザーのAccess tokenやcookieはサイトへ転送しません。
 
-Studio GUIは対応ホストでは editor snapshot profile から日本語本文・表示材料・編集状態をまとめて読みます。Kamakura Studioは同じ `pages.read` で `editorState` を含む応答を必須にし、欠けた場合はページを開きません。旧read-only snapshot routeから不足分を補う移行fallbackは使いません。CMS項目・ページ管理・素材の書込は共通APIを使います。翻訳の共通APIは、対応するホストが登録した操作をCUIから直接呼び出せます。Studioの翻訳画面は既存の接続を使います。
+Kamakura の Studio GUI と `niho-studio pages.read` は editor snapshot profile から日本語本文・表示材料・編集状態を同じ共通API読取で取得します。Studio GUIは `editorState` を含む応答を必須にし、欠けた場合はページを開きません。旧read-only snapshot routeから不足分を補う移行fallbackは使いません。`niho-studio` は同じprofileを要求し、CLI利用者へ共通APIの応答を返します。CMS項目・ページ管理・素材の書込は共通APIを使います。翻訳の共通APIは、対応するホストが登録した操作をCUIから直接呼び出せます。Studioの翻訳画面は既存の接続を使います。
 
 ## 操作カタログ
 
