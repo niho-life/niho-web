@@ -61,6 +61,7 @@ Studio の PageEditor は CMS list と detail を `CmsPageBindingsDocument` side
 - オブジェクト保存後に、D1 batch で同一世代への CAS、revision の登録、受領記録、監査、outbox を確定する。配信前の公開は現在の snapshot のまま。必要なオブジェクトが揃い、予約時と現在の公開版・定義が一致した時点で、公開 pointer と outbox 完了を同じ batch で確定する。固定ページの公開は別処理。
 - Cron は毎分、期限到来の outbox を60秒の lease で取得する。一時的な障害は間隔を空けて最大5回まで試す。lease を持つ処理が中断した場合、期限後に別の実行が取得できる。公開前提の不一致と再試行上限は `dead` に残り、現在の公開版を保つ。再実行は現行の公開版・定義・項目版から新しい確認計画を作る。
 - サイトごとに、復元可能な削除済み項目を含めて200項目、同時に25件の公開・予約、D1で確定したR2履歴は100 MiBまで。公開・予約の1計画には最大200項目と25件の明示転送を指定できる。公開時はsnapshotとroute tableの各オブジェクトを履歴サイズに算入する。API 本文は `cms.items.save` が128 KiB、その他の操作が64 KiBまで。単一 snapshot は最大2 MiB（確認計画にも収まる大きさが必要）。確定済み履歴を自動削除する期限はなく、上限到達時は新規保存が409になる。未確定の孤立オブジェクトは公開にも使用済み容量にも含めない。
+- 旧CMSの公開画像URLを移行した安定参照は、`sites/<siteId>/migration/legacy-assets.json` に保存するサイト専用manifestから解決する。manifestは非公開R2に置き、対象サイトに属する `kamakura-source` 参照だけを読み取る。画像ファイル自体は既存の公開URLから配信し、manifestが無い参照は公開できない。
 - 死活確認は `managed_cms_outbox` の `kind`、`state`、`attempts`、`available_at`、`failure` を対象にする。失敗したジョブの行や公開ポインターは直接更新せず、現行版から再計画する。
 
 ### エクスポートと復元演習

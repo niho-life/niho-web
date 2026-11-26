@@ -79,6 +79,8 @@ JSON リクエスト本文は `cms.items.save` が128 KiB、その他の操作�
 
 Studio-native の1サイトに保存できる CMS 項目は、全コレクションの復元可能な削除済み項目を含めて200件です。上限を超える作成は `409 quota_exceeded` を返します。公開・予約の1計画には最大200項目と25件の明示転送を指定できます。配信待ちの公開・予約は1サイトで合計25件までです。[Studio-native site の容量制限](studio-managed-sites.md#cms-の公開と復旧)
 
+旧CMSの公開画像URLを移行する場合、ホストは `kamakura-source` provider の安定参照へ変換し、サイト専用の非公開 `CMS_OBJECTS` manifest に URL と公開metadataを保存できます。公開計画は同じサイトのmanifestにあり、許可された安定参照だけを公開snapshotのasset manifestへ含めます。manifestが無い、別サイトのもの、またはURLが契約外の場合は公開を止めます。
+
 | Studio の追加操作 | 入力と結果 |
 | --- | --- |
 | `cms.items.create` | `collectionId`、`contractVersion: 2`、`expectedSchemaRevision`。空の下書きと不透明な項目ID・revisionを発行 |

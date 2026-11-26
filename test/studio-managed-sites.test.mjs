@@ -356,6 +356,28 @@ testWithD1("Studio CMS accepts migration-sized draft saves and enforces operatio
   assert.equal((await body(await postJson("cms.schema.read", schemaRead), 200)).schemaRevision, schemaRevision);
 });
 
+testWithD1("Studio CMS resolves migration URL assets only from the site's private manifest", async (t) => {
+  const h = await fixture(t, { cms: true }), site = await cmsSite(h, "cms-migration-assets");
+  const schema = await site.read("cms.schema.read"), collection = schema.collections[0];
+  const field = { fieldId: "migration.cover", key: "cover", label: "表紙", type: "image", placement: "main" };
+  const migratedSchema = { ...schema, collections: [{ ...collection, fields: [...collection.fields, field] }] };
+  const reference = { provider: "kamakura-source", id: `src_${"a".repeat(64)}` };
+  const manifestKey = `sites/${site.siteId}/migration/legacy-assets.json`;
+  h.objects.set(manifestKey, JSON.stringify({ formatVersion: 1, siteId: site.siteId, assets: [
+    { reference, url: "https://images.example.test/cms/cover.webp", width: null, height: null, altText: "" }
+  ] }));
+  const store = new CmsStore(h.env.DB, h.env.CMS_OBJECTS);
+  const item = { siteId: site.siteId, schemaRevision: schema.schemaRevision, collectionId: collection.id,
+    itemId: "migration-item", locale: "ja", revision: "migration-revision", values: { "migration.cover": reference } };
+  assert.deepEqual(await store.publicAssets(migratedSchema, [item]), [
+    { reference, url: "https://images.example.test/cms/cover.webp", width: null, height: null, altText: "" }
+  ]);
+
+  const otherSite = { ...migratedSchema, siteId: `${site.siteId}-other` };
+  const otherItem = { ...item, siteId: otherSite.siteId };
+  assert.deepEqual(await store.publicAssets(otherSite, [otherItem]), []);
+});
+
 testWithD1("Studio CMS localization exposes the shared workspace contract and preserves reviewed manual values after source changes", async (t) => {
   const h = await fixture(t, { cms: true }), site = await cmsSite(h, "cms-localization");
   const original = await site.read("cms.schema.read"), route = await site.read("cms.release.current");
