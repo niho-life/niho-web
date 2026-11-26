@@ -7,6 +7,8 @@ import {
   type CmsSchedule, type CmsV2Operation
 } from "../src/cms-v2.js";
 import { cmsCollection, cmsId, cmsItemKey, parseCmsValues } from "../src/cms-v2-schema.js";
+import { cmsPageBindingProblems, parseCmsPageBindings } from "../src/cms-page-bindings.js";
+import { parsePageDocument } from "../src/document.js";
 import { parseCollectionValues, type CollectionItem, type CollectionValues } from "../src/collection-model.js";
 import { DocumentValidationError, keys, record } from "../src/validation-utils.js";
 import { validatePagePath } from "../src/pages.js";
@@ -190,21 +192,38 @@ async function queueRelease(store: CmsStore, mutation: Mutation, proposal: CmsRe
 }
 
 async function migrationContext(store: CmsStore, site: Site, capability: CmsCapability) {
-  const [drafts, routeTable] = await Promise.all([
+  const [drafts, routeTable, pages] = await Promise.all([
     Promise.all(Object.values(site.state.items).map(async (meta): Promise<CmsMigrationDraft> => ({
       item: await store.item(site.siteId, site.state.locale, meta), tombstoned: meta.removedAt !== null
     }))),
-    store.routeTable(site, capability)
+    store.routeTable(site, capability),
+    store.db.prepare(`SELECT ms.bindings_generation, bound.document_json, bound.bindings_json
+      FROM managed_sites AS ms LEFT JOIN (
+        SELECT p.site_id, v.document_json, v.bindings_json FROM managed_pages AS p
+        JOIN managed_page_versions AS v ON v.site_id = p.site_id AND v.page_id = p.page_id
+          AND v.locale = p.locale AND v.revision = p.current_revision WHERE v.bindings_json IS NOT NULL
+      ) AS bound ON bound.site_id = ms.site_id WHERE ms.site_id = ?`)
+      .bind(site.siteId).all<{ bindings_generation: number; document_json: string | null; bindings_json: string | null }>()
   ]);
+  if (!pages.success || !pages.results?.length) throw new Error("managed CMS binding lookup failed");
+  const bindingsGeneration = pages.results[0]!.bindings_generation;
+  const bindings = pages.results.flatMap((row) => {
+    if (row.document_json === null || row.bindings_json === null) return [];
+    const page = parsePageDocument(JSON.parse(row.document_json));
+    return [{ page, bindings: parseCmsPageBindings(JSON.parse(row.bindings_json), page) }];
+  });
   const fixed = new Set(routeTable.reservations.flatMap((entry) =>
     entry.kind === "fixed-page" || entry.kind === "reserved" ? [entry.path] : []));
-  return { drafts, routeTables: [routeTable], impact: (_before: Site["state"]["schema"], after: Site["state"]["schema"]): CmsProblem[] => {
+  return { drafts, routeTables: [routeTable], bindingsGeneration, impact: (_before: Site["state"]["schema"], after: Site["state"]["schema"]): CmsProblem[] => {
     const paths = after.collections.flatMap(({ pathPrefix }) => {
       const path = collectionPath(pathPrefix);
       return path === null ? [] : [path];
     });
-    return paths.filter((path, i) => !cmsPathReserved(path) || path === "/cms" || fixed.has(path) || paths.indexOf(path) !== i)
-      .map((path) => ({ code: "route", path, message: "一覧 URL を /cms 配下の空いているパスに指定してください。" }));
+    return [
+      ...paths.filter((path, i) => !cmsPathReserved(path) || path === "/cms" || fixed.has(path) || paths.indexOf(path) !== i)
+        .map((path): CmsProblem => ({ code: "route", path, message: "一覧 URL を /cms 配下の空いているパスに指定してください。" })),
+      ...bindings.flatMap(({ page, bindings }) => cmsPageBindingProblems(page, bindings, after))
+    ];
   } };
 }
 
@@ -227,7 +246,7 @@ async function schemaOperation(store: CmsStore, site: Site, capability: CmsCapab
   const plan = await readPlan<{ migration: CmsRouteBoundMigration; replacements: ReturnType<typeof parseCmsSchemaPlanInput>["replacements"] }>(
     store, site, capability, operation, input.operationId, input.confirmationToken);
   if (!plan) return notFound();
-  const { drafts, routeTables, impact } = await migrationContext(store, site, capability);
+  const { drafts, routeTables, impact, bindingsGeneration } = await migrationContext(store, site, capability);
   const check = checkCmsSchemaApply(siteScope(site), input, { ...plan, operation, candidate: plan.candidate.migration }, dateNow(),
     site.state.schema, drafts, routeTables, plan.candidate.replacements, impact);
   if (check.status !== "allowed") return json(check, 409);
@@ -242,7 +261,7 @@ async function schemaOperation(store: CmsStore, site: Site, capability: CmsCapab
     retainedBytes: site.state.retainedBytes + revisions.reduce((total, revision) => total + blobSize(revision), 0) };
   if (state.retainedBytes > MAX_RETAINED_BYTES || blobSize(state) > 256 * 1024) return error("quota_exceeded", 409);
   await Promise.all(revisions.map((item) => store.put(itemBlobKey(site.siteId, item.locale, item), item)));
-  return mutate(store, mutation!, { state, revisions, tokenHash: await digest(input.confirmationToken),
+  return mutate(store, mutation!, { state, revisions, bindingsGeneration, tokenHash: await digest(input.confirmationToken),
     result: { status: "recorded", operationId: input.operationId, result: { schemaRevision: state.schema.schemaRevision } } });
 }
 

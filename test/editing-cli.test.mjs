@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
 import { editDocumentById } from "@niho/web/editor-model";
-import { EDITING_OPERATIONS, withPageNodeNameCapability } from "@niho/web/editing-api";
+import { EDITING_OPERATIONS, withPageCmsBindingsCapability, withPageNodeNameCapability } from "@niho/web/editing-api";
 
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 const command = fileURLToPath(new URL("../cli/niho-edit.mjs", import.meta.url));
@@ -198,6 +198,29 @@ test("niho-edit apply accepts text, token style, add and move operations", async
   assert.equal(output.status, "valid");
   assert.equal(output.diff.length, 4);
   assert.deepEqual(output.touched, ["heading", "new-block", "link"]);
+});
+
+test("niho-edit Studio outline reads and apply writes a CMS sidecar without page operations", async () => {
+  const root = origin + "/api/edit/v1/sites/" + siteId, query = "?locale=" + encodeURIComponent(locale);
+  const catalog = ["pages.read", "pages.inspect", "pages.apply"].map((id) => withPageCmsBindingsCapability(EDITING_OPERATIONS.find((operation) => operation.id === id)));
+  const discovery = { method: "GET", url: root + "/capabilities", result: { apiVersion: "v1", siteId, operations: catalog } };
+  const cmsBindings = { schemaVersion: 1, siteId, pageId, locale, lists: [{ templateNodeId: "hero", collectionId: "posts", limit: 6,
+    fields: [{ nodeId: "heading", fieldId: "title", target: "text" }] }] };
+  const inspected = { view: "outline", version: "v1", definitions: {}, items: [{ id: "hero" }], cmsBindings };
+  const outline = await runSequence(["--studio", "outline", pageId, "--locale", locale, "--depth", "1"], [discovery,
+    { method: "GET", url: root + "/operations/pages.inspect/" + pageId + query + "&view=outline&limit=1000&depth=1", result: inspected }
+  ], { studio: true });
+  assert.equal(outline.exitCode, 0, outline.stderr);
+  assert.deepEqual(JSON.parse(outline.stdout), inspected);
+  const operationId = "123e4567-e89b-42d3-a456-426614174000", revision = fixture.revision + 1;
+  const applied = await runSequence(["--studio", "apply", pageId, "--locale", locale, "--cms-bindings", "-", "--expected-version", "v1", "--operation-id", operationId], [
+    discovery,
+    { method: "GET", url: root + "/operations/pages.read/" + pageId + query, result: { document: fixture, version: "v1", cmsBindings: null } },
+    { method: "POST", url: root + "/operations/pages.apply/" + pageId + query, body: { baseVersion: "v1", operationId, operations: [], cmsBindings },
+      result: { status: "applied", version: "v2", revision, document: { ...fixture, revision } } }
+  ], { studio: true, stdin: JSON.stringify(cmsBindings) });
+  assert.equal(applied.exitCode, 0, applied.stderr);
+  assert.equal(JSON.parse(applied.stdout).result.version, "v2");
 });
 
 test("niho-edit apply uses pages.apply and its dry-run diff matches the saved document", async () => {

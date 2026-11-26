@@ -13,6 +13,8 @@ import type {
 } from "./locale-release-contract.js";
 import type { EnglishPublication, EnglishPublicationRetryResult } from "./english-publication.js";
 import type { BlankEmbedRegistry } from "./embeds.js";
+import type { CmsPageBindingsDocument } from "./cms-page-bindings.js";
+import type { CmsSchema } from "./cms-v2-schema.js";
 export type { EnglishPublication, EnglishPublicationRetryResult, EnglishPublicationState } from "./english-publication.js";
 export type { PageKind, PageVisibility, SiteSettings } from "./pages.js";
 /** 言語全体の公開の型は locale-release-contract.ts に移した。互換のためここからも export する。 */
@@ -92,6 +94,8 @@ export type EditorLock = { nodeId: string; fields: readonly string[]; reason: st
 export type EditorReadOnly = { reason: string; editUrl?: string; editLabel?: string };
 export type EditorSnapshot = PageOperationVersions & {
   document: unknown;
+  /** Omitted when the host has no CMS page binding capability. */
+  cmsBindings?: CmsPageBindingsDocument | null;
   /** ホストが発行する opaque な楽観ロック値。 */
   version: string;
   /** false の場合、初回など保存済み下書きがなく公開確認を開始できない。省略時は従来の動作。 */
@@ -218,6 +222,12 @@ export interface EditorResponsiveProposalAdapter {
 export type EditorApplyOperationsRequest = Omit<EditingPageApplyInput, "dryRun"> & { readonly target: EditorTarget };
 export type EditorApplyOperationsResult = EditingPageApplied | EditingPageApplyConflict;
 
+export type EditorCmsPreviewItem = { readonly collectionId: string; readonly itemId: string; readonly revision: string; readonly label: string };
+export interface EditorCmsBindingsAdapter {
+  read(target: EditorTarget, signal: AbortSignal): Promise<{ schema: CmsSchema; items: readonly EditorCmsPreviewItem[] }>;
+  preview(request: { target: EditorTarget; expectedVersion: string; document: PageDocument; cmsBindings: CmsPageBindingsDocument; item: EditorCmsPreviewItem }, signal: AbortSignal): Promise<PageDocument>;
+}
+
 /** 認証・認可・通信・公開処理は、認証済みホストの責務。 */
 export interface EditorAdapter {
   listSites(signal: AbortSignal): Promise<readonly EditorSite[]>;
@@ -225,12 +235,14 @@ export interface EditorAdapter {
   /** form の送信成功後に選べるページ候補。省略時は完了先設定を接続しない。 */
   listFormCompletionPages?(target: EditorTarget, signal: AbortSignal): Promise<readonly EditorPage[]>;
   readDocument(target: EditorTarget, signal: AbortSignal): Promise<EditorSnapshot>;
+  cmsBindings?: EditorCmsBindingsAdapter;
   /** 保存に使う API の discover が pages.name を公開する場合だけ true を返す。 */
   discoverPageNodeNames?(target: EditorTarget, signal: AbortSignal): Promise<boolean>;
   /** ページ行の pointer / focus で呼ぶ先読み。通常読込と同じ認可・版検証を行い、画面状態は変更しない。 */
   prefetchDocument?(target: EditorTarget, signal: AbortSignal): Promise<EditorSnapshot>;
   /** trigger は自動保存のときだけ "autosave"。ホストは履歴の種類の区別に使える。 */
   saveDraft(request: { target: EditorTarget; document: PageDocument; expectedVersion: string; presentationVersion?: string; trigger?: "autosave";
+    cmsBindings?: CmsPageBindingsDocument | null;
     /** Present for translated drafts; the host must CAS these values and persist only validated localized overlays. */
     localization?: { expectedSourceVersion: string; expectedVersion: string; expectedOverlayVersion: number };
   }, signal: AbortSignal): Promise<EditorSaveResult>;

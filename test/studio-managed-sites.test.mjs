@@ -255,6 +255,141 @@ async function releasePlan(site, schemaRevision, previous, items, at) {
   return { operationId: plan.operationId, confirmationToken: plan.confirmationToken };
 }
 
+testWithD1("Studio page bindings publish a six-item list and dynamic detail from an immutable CMS release", async (t) => {
+  const h = await fixture(t, { cms: true });
+  const site = await cmsSite(h, "bound-articles");
+  const api = "/api/projects/" + site.projectId + "/sites/" + site.siteId + "/editor";
+  const editing = "/api/edit/v1/sites/" + site.siteId;
+  const browser = (method, path, input, options) => h.send(MANAGEMENT_ORIGIN, method, api + path, input, options);
+  const cli = (method, path, input, options) => h.send(MANAGEMENT_ORIGIN, method, editing + path, input, { cli: true, ...options });
+  const lookup = (path) => h.send(PUBLIC_ORIGIN, "GET", "/s/bound-articles" + path, undefined, { auth: false });
+  const initial = await site.read("cms.schema.read");
+  const { routeTableRevision } = await site.read("cms.release.current");
+  const definition = structuredClone(initial);
+  definition.collections[0].fields.push({ fieldId: "article_date", key: "article_date", type: "datetime", label: "Article date", placement: "side" });
+  const schemaPlan = (await site.read("cms.schema.plan", { expectedSchemaRevision: initial.schemaRevision,
+    routeTableVersions: [{ locale: "ja", revision: routeTableRevision }], nextSchema: definition, replacements: [] })).plan;
+  const { result: { schemaRevision } } = await site.read("cms.schema.apply", { operationId: schemaPlan.operationId, confirmationToken: schemaPlan.confirmationToken });
+  const items = [];
+  for (let number = 1; number <= 7; number++) {
+    const item = await createDraft(site, schemaRevision);
+    items.push((await site.read("cms.items.save", { ...versioned(item), values: { ...values(number === 7 ? "Article <Seven>" : "Article " + number, "article-" + number),
+      article_date: "2026-10-0" + number + "T12:00:00Z" } }, { headers: headers() })).item);
+  }
+  const plan = await releasePlan(site, schemaRevision, null, items);
+  await site.read("cms.release.apply", plan);
+  await h.cron();
+  const cmsRelease = (await site.read("cms.release.current")).snapshot;
+
+  const createChange = { action: "create", siteId: site.siteId, locale: "ja", title: "Article", path: "/articles" };
+  const createPlan = await body(await browser("POST", "/page-changes/prepare", { change: createChange }), 200);
+  const { page: detailPage } = await body(await browser("POST", "/page-changes/apply", { change: createChange, confirmationToken: createPlan.confirmationToken }), 200);
+  const home = await body(await browser("GET", "/home"), 200);
+  const listDocument = structuredClone(home.document);
+  const element = (id, tag, children, attrs) => ({ type: "element", id, tag, children, ...(attrs ? { attrs } : {}) });
+  const text = (value) => [{ type: "text", text: value }];
+  listDocument.body = [element("article-preview", "article", [element("article-link", "a", text("Placeholder"), { href: "/articles" })])];
+  const base = { schemaVersion: 1, siteId: site.siteId, pageId: "home", locale: "ja" };
+  const cmsBindings = { ...base, lists: [{ templateNodeId: "article-preview", collectionId: "posts", limit: 6,
+    order: { fieldId: "article_date", direction: "desc" }, fields: [
+      { nodeId: "article-link", fieldId: "title", target: "text" },
+      { nodeId: "article-link", fieldId: "title", target: "attribute", attribute: "aria-label" },
+      { nodeId: "article-link", fieldId: "slug", target: "detail-link", path: "/articles" }
+    ] }] };
+  const listSaved = await body(await browser("PUT", "/home/draft", { expectedVersion: home.version, document: listDocument, cmsBindings }), 200);
+  const detail = await body(await browser("GET", "/" + detailPage.pageId), 200);
+  const detailDocument = { ...detail.document, body: [element("article-title", "h1", text("Title")), element("article-text", "p", text("Body"))] };
+  const detailBindings = { ...base, pageId: detailPage.pageId, lists: [], detail: { collectionId: "posts", slugFieldId: "slug", fields: [
+    { nodeId: "article-title", fieldId: "title", target: "text" }, { nodeId: "article-text", fieldId: "body", target: "text" }
+  ] } };
+  const detailPath = "/" + detailPage.pageId;
+  const wrongType = structuredClone(detailBindings);
+  wrongType.detail.fields[0].target = "image";
+  assert.equal((await browser("PUT", detailPath + "/draft", { expectedVersion: detail.version, document: detailDocument, cmsBindings: wrongType })).status, 422);
+  const detailSaved = await body(await browser("PUT", detailPath + "/draft", { expectedVersion: detail.version, document: detailDocument, cmsBindings: detailBindings }), 200);
+
+  const collisionChange = { action: "create", siteId: site.siteId, locale: "ja", title: "Static collision", path: "/articles/article-7" };
+  const collisionPlan = await body(await browser("POST", "/page-changes/prepare", { change: collisionChange }), 200);
+  const { page: collisionPage } = await body(await browser("POST", "/page-changes/apply", { change: collisionChange, confirmationToken: collisionPlan.confirmationToken }), 200);
+  assert.equal((await browser("POST", detailPath + "/release-plan", {
+    target: { siteId: site.siteId, pageId: detailPage.pageId, locale: "ja" }, expectedVersion: detailSaved.version, action: "publish"
+  })).status, 422, "detail paths must not override fixed page reservations");
+  const moveCollision = { action: "update", target: { siteId: site.siteId, pageId: collisionPage.pageId, locale: "ja" }, title: "Static collision", path: "/articles/article-7-static" };
+  const moveCollisionPlan = await body(await browser("POST", "/page-changes/prepare", { change: moveCollision }), 200);
+  await body(await browser("POST", "/page-changes/apply", { change: moveCollision, confirmationToken: moveCollisionPlan.confirmationToken }), 200);
+
+  const preview = { expectedVersion: detailSaved.version, collectionId: "posts", itemId: items[6].itemId, revision: items[6].revision,
+    document: { ...detailDocument, revision: detailSaved.revision }, cmsBindings: detailBindings };
+  const { previewId } = await body(await browser("POST", detailPath + "/cms-preview-plan", preview), 200);
+  assert.equal((await browser("POST", "/home/cms-preview", { ...preview, previewId, expectedVersion: listSaved.version,
+    document: { ...listDocument, revision: listSaved.revision }, cmsBindings })).status, 404);
+  h.sqlite.prepare("INSERT INTO project_members (project_id, access_subject, role, display_name) VALUES (?, ?, 'editor', 'Editor')").run(site.projectId, OTHER);
+  assert.equal((await browser("POST", detailPath + "/cms-preview", { ...preview, previewId }, { token: h.otherToken })).status, 404);
+  const shown = await body(await browser("POST", detailPath + "/cms-preview", { ...preview, previewId }), 200);
+  assert.equal(shown.document.body[0].children[0].text, "Article <Seven>");
+  assert.equal((await browser("POST", detailPath + "/cms-preview", { ...preview, previewId })).status, 404);
+  const stalePreview = await body(await browser("POST", detailPath + "/cms-preview-plan", preview), 200);
+  await site.read("cms.items.save", { ...versioned(items[6]), values: { ...items[6].values, title: "New draft title" } }, { headers: headers() });
+  assert.equal((await browser("POST", detailPath + "/cms-preview", { ...preview, previewId: stalePreview.previewId })).status, 404);
+
+  const discovery = await body(await cli("GET", "/capabilities"), 200);
+  assert.ok(discovery.operations.find(({ id }) => id === "pages.apply").capabilities.includes("pages.cms-bindings"));
+  const inspected = await body(await cli("GET", "/operations/pages.inspect/home?locale=ja&view=outline"), 200);
+  assert.deepEqual(inspected.cmsBindings, cmsBindings);
+  const applyPath = "/operations/pages.apply/home?locale=ja";
+  const write = { baseVersion: listSaved.version, operationId: crypto.randomUUID(), operations: [], cmsBindings };
+  assert.equal((await body(await cli("POST", applyPath, { ...write, dryRun: true }), 200)).status, "valid");
+  const applied = await body(await cli("POST", applyPath, write), 200);
+  assert.deepEqual(await body(await cli("POST", applyPath, write), 200), applied);
+  assert.equal((await cli("POST", applyPath, { ...write, cmsBindings: null })).status, 409);
+
+  const publish = async (pageId, expectedVersion) => {
+    const release = await body(await browser("POST", "/" + pageId + "/release-plan", {
+      target: { siteId: site.siteId, pageId, locale: "ja" }, expectedVersion, action: "publish"
+    }), 200);
+    return body(await browser("POST", "/" + pageId + "/release", { expectedVersion, confirmationToken: release.confirmationToken }), 200);
+  };
+  await publish(detailPage.pageId, detailSaved.version);
+  await publish("home", applied.version);
+  assert.equal(h.sqlite.prepare("SELECT count(*) AS count FROM managed_page_publications WHERE cms_release_id = ? AND cms_schema_revision = ?").get(cmsRelease.releaseId, schemaRevision).count, 2);
+  const list = await lookup("/");
+  assert.equal(list.status, 200);
+  const html = await list.text();
+  assert.deepEqual([...html.matchAll(/href="\/s\/bound-articles\/articles\/article-(\d)"/gu)].map((match) => match[1]), ["7", "6", "5", "4", "3", "2"]);
+  assert.match(html, /aria-label="Article &lt;Seven&gt;"/u);
+  const detailHtml = await (await lookup("/articles/article-7")).text();
+  assert.match(detailHtml, /Article &lt;Seven&gt;/u);
+  assert.match(detailHtml, /&lt;script&gt;Fixture only&lt;\/script&gt;/u);
+  assert.equal((await lookup("/articles/unknown")).status, 404);
+  assert.equal((await lookup("/articles")).status, 404);
+
+  const currentSchema = await site.read("cms.schema.read");
+  const migrate = async (nextSchema) => site.post("cms.schema.plan", { expectedSchemaRevision: schemaRevision,
+    routeTableVersions: [{ locale: "ja", revision: (await site.read("cms.release.current")).routeTableRevision }], nextSchema, replacements: [] });
+  const broken = structuredClone(currentSchema);
+  broken.collections[0].fields = broken.collections[0].fields.map((field) => field.fieldId === "article_date"
+    ? { ...field, type: "url" } : field);
+  const rejected = await body(await migrate(broken), 422);
+  assert.ok(rejected.problems.some((problem) => problem.code === "binding" && problem.pageId === "home" && problem.fieldId === "article_date"));
+  const currentHome = await body(await browser("GET", "/home"), 200);
+  const unbound = await body(await browser("PUT", "/home/draft", { expectedVersion: currentHome.version, document: currentHome.document, cmsBindings: null }), 200);
+  const compatible = structuredClone(currentSchema);
+  compatible.collections[0].fields = compatible.collections[0].fields.filter(({ fieldId }) => fieldId !== "article_date");
+  const updatedSchemaPlan = (await body(await migrate(compatible), 200)).plan;
+  await site.read("cms.schema.apply", { operationId: updatedSchemaPlan.operationId, confirmationToken: updatedSchemaPlan.confirmationToken });
+  assert.equal(await (await lookup("/")).text(), html);
+  assert.equal(await (await lookup("/articles/article-7")).text(), detailHtml);
+  const rollback = await body(await browser("POST", "/home/release-plan", {
+    target: { siteId: site.siteId, pageId: "home", locale: "ja" }, expectedVersion: unbound.version, action: "rollback", revision: applied.revision
+  }), 200);
+  const restored = await body(await browser("POST", "/home/release", { expectedVersion: unbound.version, confirmationToken: rollback.confirmationToken }), 200);
+  assert.deepEqual(restored.snapshot.cmsBindings, cmsBindings);
+  const restoredHtml = await (await lookup("/")).text();
+  assert.deepEqual([...restoredHtml.matchAll(/href="\/s\/bound-articles\/articles\/article-(\d)"/gu)].map((match) => match[1]), ["7", "6", "5", "4", "3", "2"]);
+  assert.equal(h.sqlite.prepare("SELECT p.cms_release_id FROM managed_pages AS m JOIN managed_page_publications AS p ON p.id = m.published_publication_id WHERE m.site_id = ? AND m.page_id = 'home'")
+    .get(site.siteId).cms_release_id, cmsRelease.releaseId);
+});
+
 testWithD1("Studio CMS release snapshots include live unpublished page reservations", async (t) => {
   const h = await fixture(t, { cms: true });
   const site = await cmsSite(h, "reserved-cms-path");

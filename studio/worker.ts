@@ -34,7 +34,7 @@ import {
 } from "../src/editing-localization.js";
 import { DRAFT_RECOVERY_MAX_INPUT_BYTES, DRAFT_RECOVERY_MAX_OUTPUT_BYTES, API_PREFIX, API_VERSION, OPERATIONS, OPERATION_KEY_HEADER, SERVICE_CLIENT_ID, SCOPE_ID, normalizeOperationKey, resolveOperation, type CliOperation } from "../cli/operations.mjs";
 import {
-  createManagedProject, managedDashboardOverview, managedEditorOperation, managedPageUrl,
+  createManagedProject, managedDashboardOverview, managedEditorOperation, managedPageEditingApi, managedPageUrl,
   managedProjectRegistrations, managedPublicRequest, managedRegistration, publicSitesOrigin, type ManagedActor
 } from "./managed-sites.js";
 import { CmsStore, type CmsActor, type CmsBucket, type CmsCapability } from "./managed-cms-store.js";
@@ -3052,7 +3052,8 @@ async function scopedApi(request: Request, env: Env, identity: AccessIdentity, u
     if (origin && origin !== url.origin) {
       const managed = await managedRegistration(env.DB, projectId, siteId);
       if (managed) {
-        return managedEditorOperation(request, env.DB, { subject: identity.subject, email: identity.email, cli: false }, projectId, siteId, action, origin);
+        return managedEditorOperation(request, env.DB, { subject: identity.subject, email: identity.email, cli: false }, projectId, siteId, action, origin,
+          env.CMS_OBJECTS ? new CmsStore(env.DB, env.CMS_OBJECTS) : undefined);
       }
     }
   }
@@ -3195,7 +3196,8 @@ async function studioServiceCliApi(request: Request, env: Env, url: URL, identit
   if (rawRequestKey !== null && requestKey === null) return json({ error: "invalid_request" }, 400);
   if (managed ? !spec.managed : spec.managedOnly) return json({ error: "not_found" }, 404);
   const dispatch = managed && managedOrigin
-    ? (actor: CliDelegatedActor) => managedEditorOperation(request, env.DB, { subject: actor.delegatedBySubject, email: actor.email, cli: true }, projectId, siteId, bridgePath, managedOrigin)
+    ? (actor: CliDelegatedActor) => managedEditorOperation(request, env.DB, { subject: actor.delegatedBySubject, email: actor.email, cli: true }, projectId, siteId, bridgePath, managedOrigin,
+      env.CMS_OBJECTS ? new CmsStore(env.DB, env.CMS_OBJECTS) : undefined)
     : resolveCliDispatch(request, env, url, projectId, siteId, bridgePath, spec);
   if (dispatch instanceof Response) return dispatch;
   const target = Object.fromEntries(spec.parameters.flatMap((parameter, index) =>
@@ -3320,7 +3322,8 @@ async function studioManagedCliApi(request: Request, env: Env, url: URL, identit
 
   let status = 503;
   try {
-    const response = await managedEditorOperation(request, env.DB, actor, projectId, siteId, operation.bridgePath, origin);
+    const response = await managedEditorOperation(request, env.DB, actor, projectId, siteId, operation.bridgePath, origin,
+      env.CMS_OBJECTS ? new CmsStore(env.DB, env.CMS_OBJECTS) : undefined);
     status = response.status;
     response.headers.set("X-Studio-Operation-Id", requestId);
     return response;
@@ -3348,7 +3351,7 @@ function managedCmsCliOperation(request: Request, env: Env,
 }
 
 async function studioEditingCms(request: Request, env: Env, url: URL): Promise<Response> {
-  const match = /^\/api\/edit\/(v1|v2)\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/(capabilities|operations\/(cms\.[^?]+))$/u.exec(url.pathname);
+  const match = /^\/api\/edit\/(v1|v2)\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/(capabilities|operations\/((?:cms|pages)\.[^?]+))$/u.exec(url.pathname);
   if (!env.CMS_OBJECTS || !match) return json({ error: "not_found" }, 404);
   let identity: AccessIdentity | ServiceIdentity;
   const accessToken = request.headers.get("cf-access-token");
@@ -3367,25 +3370,38 @@ async function studioEditingCms(request: Request, env: Env, url: URL): Promise<R
     : { id: identity.subject, cli: accessToken !== null };
   const scope = { actor, siteId: siteId!, projectId: registration.project_id };
   const store = new CmsStore(env.DB, env.CMS_OBJECTS);
-  if (path !== "capabilities" || version === "v2") return managedCmsApi(request, store, scope, operation ?? "discover", version === "v2" ? 2 : 1);
-  if (request.method !== "GET" || request.body !== null || url.search) return json({ error: "invalid_request" }, 400);
-  const capabilities = new Set<CmsCapability>();
-  for (const capability of ["cms.read", "cms.edit", "cms.publish"] as const) {
-    if (await store.site(scope, capability)) capabilities.add(capability);
+  if (version === "v1" && (path === "capabilities" || operation?.startsWith("pages."))) {
+    if (request.method !== "GET" && identity.kind === "human" && accessToken === null &&
+      (request.headers.get("Origin") !== url.origin || request.headers.get("Sec-Fetch-Site") !== "same-origin")) return json({ error: "invalid_request" }, 400);
+    const pageApi = await managedPageEditingApi(request, store, registration.project_id, siteId!, {
+      kind: identity.kind === "human" ? "human" : "machine", subject: actor.id, clientKind: "cli"
+    }, async (capability) => {
+      if (identity.kind === "human") return { subject: identity.subject, email: identity.email, cli: actor.cli };
+      const grant = await env.DB.prepare(`SELECT g.delegated_by_subject ${ACTIVE_CLI_GRANTS} AND g.capability = ?4 LIMIT 1`)
+        .bind(identity.clientId, registration.project_id, siteId, capability).first<{ delegated_by_subject: string }>();
+      return grant ? { subject: grant.delegated_by_subject, email: "", cli: true, cliClientId: identity.clientId } : null;
+    });
+    if (path !== "capabilities" || pageApi.status !== 200 && pageApi.status !== 403) return pageApi;
+    const pageOperations = pageApi.ok ? (await pageApi.json() as { operations: unknown[] }).operations : [];
+    const capabilities = new Set<CmsCapability>();
+    for (const capability of ["cms.read", "cms.edit", "cms.publish"] as const) if (await store.site(scope, capability)) capabilities.add(capability);
+    const cmsOperations = EDITING_OPERATIONS.filter((entry) => {
+      const spec = managedCmsLegacySpec(entry.id);
+      return spec !== null && capabilities.has(spec[1]);
+    });
+    const operations = [...pageOperations, ...cmsOperations];
+    return operations.length ? json({ apiVersion: "v1", siteId, operations }) : pageApi;
   }
-  const operations = EDITING_OPERATIONS.filter((entry) => {
-    const spec = managedCmsLegacySpec(entry.id);
-    return spec !== null && capabilities.has(spec[1]);
-  });
-  return operations.length ? json({ apiVersion: "v1", siteId, operations }) : json({ error: "forbidden" }, 403);
+  return managedCmsApi(request, store, scope, operation ?? "discover", version === "v2" ? 2 : 1);
 }
 
 async function handle(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const configuredPublicOrigin = publicSitesOrigin(env.PUBLIC_SITES_ORIGIN);
   if (configuredPublicOrigin !== null && url.origin === configuredPublicOrigin) {
-    const cms = env.CMS_OBJECTS && await managedCmsPublic(request, new CmsStore(env.DB, env.CMS_OBJECTS), configuredPublicOrigin);
-    return cms || managedPublicRequest(request, env.DB, configuredPublicOrigin);
+    const store = env.CMS_OBJECTS ? new CmsStore(env.DB, env.CMS_OBJECTS) : undefined;
+    const cms = store && await managedCmsPublic(request, store, configuredPublicOrigin);
+    return cms || managedPublicRequest(request, env.DB, configuredPublicOrigin, store);
   }
   if (url.pathname.startsWith("/api/edit/")) return studioEditingCms(request, env, url);
   const isApi = url.pathname === "/api" || url.pathname.startsWith("/api/");

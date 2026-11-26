@@ -7,8 +7,11 @@ import {
   cmsItemKey, cmsLegacyCollections, cmsOperationStatus, cmsRoleCapabilities, cmsWorkspaceItem,
   discoverCmsContract, dueCmsSchedule, parseCmsDiscovery, parseCmsDraftWrite, parseCmsItemRevision, parseCmsSchema,
   parseCmsRouteTable, parseCmsSchemaPlanInput, planCmsMigrationWithRouteTables, planCmsRelease, planCmsRouteTable,
-  planCmsSchedule, removeCmsItem, restoreCmsItem, revalidateCmsRelease
+  planCmsSchedule, removeCmsItem, resolveCmsPageBindings, restoreCmsItem, revalidateCmsRelease
 } from "@niho/web/cms-v2";
+import { assetKey } from "@niho/web/assets";
+import { parsePageDocument } from "@niho/web/core";
+import { renderPageToHtml } from "@niho/web/server";
 import { parseCollectionSchemaResult } from "@niho/web/collection-model";
 import { postsDefinition, tagsDefinition } from "./collection-fixtures.mjs";
 
@@ -23,6 +26,41 @@ const post = { collectionId: "posts", itemId: "post-1", locale }, tag = { collec
 const presentation = { subtitle: null, imageUrl: null, path: null, updatedAt: now, updatedBy: null, order: null };
 const digest = (input) => createHash("sha256").update(JSON.stringify(input)).digest("hex");
 const pin = ({ collectionId, itemId, revision }) => ({ collectionId, itemId, revision });
+
+test("CMS page projection filters single selects and resolves only approved asset references", () => {
+  const model = schema(), pageId = "articles", cover = { provider: "cms-fixture", id: "cover-1" };
+  const article = parseCmsItemRevision({ ...post, siteId, schemaRevision: model.schemaRevision, revision: "rev-1", values: {
+    "field-title": '<b>"Story"</b>', "field-slug": "story", "field-kind": ["news"], "field-cover": cover,
+    "field-source": "https://example.test/story"
+  } }, model);
+  const page = parsePageDocument({ schemaVersion: 1, siteId, pageId, locale, revision: 1, title: "Stories", tokens: {}, body: [
+    { type: "element", tag: "article", id: "story", children: [
+      { type: "element", tag: "a", id: "story-link", attrs: { href: "/" }, children: [{ type: "text", text: "Title" }] },
+      { type: "element", tag: "img", id: "story-cover", attrs: { src: "/fallback.png", alt: "Cover" }, children: [] }
+    ] }
+  ] });
+  const bindings = { schemaVersion: 1, siteId, pageId, locale, lists: [{ templateNodeId: "story", collectionId: "posts", limit: 10,
+    filter: { fieldId: "field-kind", equals: "news" }, fields: [
+      { nodeId: "story-link", target: "text", fieldId: "field-title" }, { nodeId: "story-link", target: "link", fieldId: "field-source" },
+      { nodeId: "story-cover", target: "image", fieldId: "field-cover" }
+    ] }] };
+  assert.throws(() => parsePageDocument({ ...page, cmsBindings: bindings }), /unknown field/u);
+  const excluded = { ...article, itemId: "excluded", revision: "rev-2", values: { ...article.values, "field-kind": ["report"] } };
+  const projected = resolveCmsPageBindings(page, bindings, { schema: model, items: [article, excluded] });
+  assert.equal(projected.body.length, 1);
+  assert.equal(page.body[0].children[1].attrs.src, "/fallback.png");
+  assert.deepEqual(projected.body[0].children[1].asset, cover);
+  const html = renderPageToHtml(projected, {}, { assets: { [assetKey(cover)]: { src: "https://assets.example.test/cover.webp" } } });
+  assert.match(html, /href="https:\/\/example\.test\/story"/u);
+  assert.match(html, /src="https:\/\/assets\.example\.test\/cover\.webp"/u);
+  assert.match(html, /&lt;b&gt;&quot;Story&quot;&lt;\/b&gt;/u);
+  assert.throws(() => resolveCmsPageBindings(page, bindings, { schema: model, items: [{ ...article, siteId: "wrong-site" }] }), /scope mismatch/u);
+  assert.throws(() => resolveCmsPageBindings(page, bindings, { schema: model, items: [{ ...article,
+    values: { ...article.values, "field-cover": "https://untrusted.example.test/cover.jpg" } }] }), /expected a JSON object/u);
+  const invalid = structuredClone(bindings);
+  invalid.lists[0].fields[0].fieldId = "field-missing";
+  assert.throws(() => resolveCmsPageBindings(page, invalid, { schema: model, items: [article] }), /フィールド/u);
+});
 
 class MemoryHost {
   schema = schema();

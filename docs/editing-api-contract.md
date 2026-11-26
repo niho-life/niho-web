@@ -12,12 +12,12 @@ Studio GUIは対応ホストでは editor snapshot profile から日本語本文
 
 | ID | Method | Path | 権限 | 入力 | 結果 |
 | --- | --- | --- | --- | --- | --- |
-| `pages.inspect` | GET | `/sites/{siteId}/operations/pages.inspect/{pageId}?locale={locale}&view={view}` | `pages.read` | outline/find/subtree/effectiveStyleの投影条件 | 部分読取結果と文書・component・presentation・site styleの各版 |
-| `pages.read` | GET | `/sites/{siteId}/operations/pages.read/{pageId}?locale={locale}` | `pages.read` | site/page/locale、任意の editor snapshot profile | `{ document, version, componentsVersion?, presentationVersion?, presentation?, editorState? }` |
+| `pages.inspect` | GET | `/sites/{siteId}/operations/pages.inspect/{pageId}?locale={locale}&view={view}` | `pages.read` | outline/find/subtree/effectiveStyleの投影条件 | 部分読取結果と文書・component・presentation・site styleの各版。対応 host は `cmsBindings?` も返す |
+| `pages.read` | GET | `/sites/{siteId}/operations/pages.read/{pageId}?locale={locale}` | `pages.read` | site/page/locale、任意の editor snapshot profile | `{ document, version, componentsVersion?, presentationVersion?, presentation?, editorState?, cmsBindings? }` |
 | `pages.history` | GET | `/sites/{siteId}/operations/pages.history/{pageId}?locale={locale}&cursor={cursor}` | `pages.history.read` | site/page/locale and optional cursor | `{ entries, next? }` (operation summaries only) |
 | `pages.history-read` | POST | `/sites/{siteId}/operations/pages.history-read/{pageId}?locale={locale}` | `pages.history.read` | `{ id }` in the JSON body | `{ document, siteStyles?, presentation? }` for one retained revision |
 | `pages.save` | PUT | `/sites/{siteId}/operations/pages.save/{pageId}?locale={locale}` | `pages.edit` | `{ expectedVersion, document }` | `{ status: "saved", version, document }` |
-| `pages.apply` | POST | `/sites/{siteId}/operations/pages.apply/{pageId}?locale={locale}` | `pages.edit` | `{ baseVersion, operationId, operations, componentsVersion?, presentationVersion?, stylesVersion?, dryRun? }` | `{ status: "applied", version, revision, document }` / dry-run `{ status: "valid", diff, touched }` |
+| `pages.apply` | POST | `/sites/{siteId}/operations/pages.apply/{pageId}?locale={locale}` | `pages.edit` | `{ baseVersion, operationId, operations, componentsVersion?, presentationVersion?, stylesVersion?, cmsBindings?, dryRun? }`。`pages.cms-bindings` 対応 host だけ sidecar を受理し、sidecar 単独変更では `operations: []` を許可 | `{ status: "applied", version, revision, document }` / dry-run `{ status: "valid", diff, touched }` |
 | `pages.preview-intent` | POST | `/sites/{siteId}/operations/pages.preview-intent/{pageId}?locale={locale}` | `pages.read` | `{}` | `{ url, expiresAt }` |
 | `pages.release-plan` | POST | `/sites/{siteId}/operations/pages.release-plan/{pageId}?locale={locale}` | `pages.publish` | expected version, publish/rollback action, optional rollback revision and dependency versions | `{ plan }` |
 | `pages.release` | POST | `/sites/{siteId}/operations/pages.release/{pageId}?locale={locale}` | `pages.publish` | expected version, one-use confirmation token, UUID v4 operation ID | `{ status: "released", operationId, version, document }` |
@@ -89,6 +89,14 @@ Studio の鎌倉エディタは初期表示に editor catalog の一覧を使い
 `assets.*` は素材の安定IDを操作します。配信URLは `assets.resolve` の応答に限って返し、ページ文書へは保存しません。一覧・使用先・解決は `assets.read`、メタデータ更新は `assets.edit`、一時アップロード許可の発行は `assets.upload`、削除と復元は `assets.delete` を個別に要求します。更新・削除・復元は `expectedVersion` をホストが比較します。`assets.upload-intent` は画像本体を受け取らず、短命の一回限りtokenを返します。クライアントは本体を `PUT` する前に、URLのHTTPS originがAPI originか、明示的に信頼設定したupload originと一致することを確認し、tokenをそのorigin以外へ送ってはいけません。ホストは実データの形式・サイズ・内容を再検査し、操作主体と結果を監査記録へ結び付けます。
 
 pages.read と pages.catalog は version から生成する opaque な ETag を返します。pages.read の tag は文書・components・presentation の各 versionと編集状態の応答形式を含み、pages.catalog は catalog version を使います。再読込は If-None-Match を送り、同じ版ならホストが認証・権限を毎回確認した後に本文なしの304を返します。200と304には Cache-Control: private, no-cache と Vary: Authorization, Cookie（pages.read は Accept も）を設定します。ホストは応答内容が変わるとき version も更新してください。共通clientはETagを受け取った読み取りを保持し、返却値とキャッシュを分離して、304では前回検証済みの値を返します。
+
+## ページと CMS の結び付け
+
+`CmsPageBindingsDocument` は `PageDocument` とは別の sidecar です。`pages.cms-bindings` capability は `pages.read` / `pages.inspect` の応答で sidecar を返し、`pages.apply` の `cmsBindings` 更新を明示する host が公開します。sidecar は下書きの page version と同じ CAS transaction で保存してください。省略は既存 sidecar を保持し、JSON `null` は解除を意味します。sidecar を送るときは `baseVersion` が一致する必要があり、文書操作の stale rebase と同時に適用しません。
+
+Studio の preview は別の editor adapter 操作で、認証済み actor、site/page、文書 version、CMS schema revision、選択した item revision の digest に結び付く短命一回限り token を使います。token は URL・client recovery・履歴・公開文書へ保存しません。外部 host は同じ権限と版検証、保存 CAS、公開 snapshot を実装してください。ページと CMS snapshot は個別に確認・公開し、両方を横断する原子切替は提供しません。schema migration は bindings の field 参照を検査してから適用します。
+
+CLI は `niho-edit apply <page> --locale <locale> --cms-bindings bindings.json` で sidecar を追加・置換できます。`--cms-bindings -` は標準入力から JSON を読み、JSON `null` は sidecar を解除します。対応 discovery がなければ CLI は送信前に `cms_bindings_not_supported` で停止します。sidecar の形と許可する field / node target は [CMS v2 契約](cms-v2-contract.md#pagedocument-と-cms-の結び付け) を参照してください。
 
 ## 翻訳操作
 

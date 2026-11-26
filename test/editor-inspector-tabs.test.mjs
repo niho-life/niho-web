@@ -38,6 +38,42 @@ async function setup(options = {}) {
   await act(async () => frame().dispatchEvent(new dom.window.Event("load")));
   return { cleanup: async () => { await act(async () => root.unmount()); container.remove(); } };
 }
+
+test("PageEditor inserts and saves CMS bindings and includes edits that only change bindings", async () => {
+  let saved;
+  const app = await setup({ adapter: {
+    readDocument: async () => ({ document: structuredClone(fixture), version: "v1", cmsBindings: null }),
+    cmsBindings: {
+      read: async () => ({ schema: { siteId: fixture.siteId, collections: [{ id: "posts", label: "記事", titleField: "title", slugField: null,
+        fields: [{ fieldId: "title", label: "タイトル", type: "text" }] }] }, items: [] })
+    },
+    saveDraft: async (request) => {
+      saved = request;
+      return { status: "saved", version: request.expectedVersion === "v1" ? "v2" : "v3", revision: request.document.revision + 1 };
+    }
+  } });
+  try {
+    const cms = [...right().querySelectorAll("summary")].find((entry) => entry.textContent === "CMS の結び付け");
+    assert.ok(cms);
+    await click(cms);
+    await click(button("CMS リストを挿入", right()));
+    await click(button("下書き保存", right()));
+    assert.equal(saved.cmsBindings.lists[0].limit, 6);
+    assert.ok(saved.document.body.some(({ id }) => id === saved.cmsBindings.lists[0].templateNodeId));
+    const before = saved;
+    await act(async () => {
+      const count = input("表示件数", right());
+      Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value").set.call(count, "3");
+      count.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+    });
+    await click(button("結び付けを適用", right()));
+    assert.equal(button("下書き保存", right()).disabled, false);
+    await click(button("下書き保存", right()));
+    assert.equal(saved.expectedVersion, "v2");
+    assert.equal(saved.cmsBindings.lists[0].limit, 3);
+    assert.deepEqual(saved.document.body, before.document.body);
+  } finally { await app.cleanup(); }
+});
 /** サイト共通のカラーとテキストスタイルを持つホストと、このページだけの定義を 1 つずつ持つ文書。 */
 function siteStyled() {
   const settings = { title: "デモサイト", locale: "ja", tokens: { brand: { type: "color", value: "#336655", label: "ブランド" } }, textStyles: { heading: { label: "見出し", base: { fontSize: 28, fontWeight: 700 } } } };
