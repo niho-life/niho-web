@@ -151,6 +151,45 @@ test("Kamakura uploads go through the signed intent and a one-time direct PUT to
   await assert.rejects(kamakuraAssetLibrary.uploadAsset(request, signal()), /アップロード結果が正しくありません/u);
 });
 
+test("Studio Preview accepts direct PUT only at its dedicated upload gateway", async (t) => {
+  const uploadOrigin = "https://upload-preview.example";
+  const previousWindow = globalThis.window;
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { __NIHO_STUDIO_RUNTIME__: { kamakuraUploadOrigin: uploadOrigin } }
+  });
+  t.after(() => {
+    if (previousWindow === undefined) delete globalThis.window;
+    else Object.defineProperty(globalThis, "window", { configurable: true, value: previousWindow });
+  });
+  const { kamakuraAssetLibrary } = await loadKamakuraAssetLibrary();
+  const file = new Blob([new Uint8Array(16)], { type: "image/png" });
+  const uploadUrl = [uploadOrigin, "/internal/studio/asset-upload/", UUID].join("");
+  const asset = row("kamakura-upload", UUID, { mimeType: "image/png", bytes: 16, width: 2, height: 2 });
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    calls.push({ url: String(url), init });
+    return String(url).endsWith("/upload-intent")
+      ? jsonResponse({ uploadUrl, uploadToken: "one-time", assetId: UUID }, 201)
+      : jsonResponse({ asset }, 201);
+  });
+
+  const result = await kamakuraAssetLibrary.uploadAsset({
+    siteId: "kamakura", folderId: null, file, name: "preview.png", mimeType: "image/png", bytes: 16, provider: "kamakura-upload"
+  }, signal());
+  assert.equal(result.status, "uploaded");
+  assert.equal(calls[1].url, uploadUrl);
+  assert.equal(calls[1].init.credentials, "omit");
+  assert.equal(calls[1].init.headers.Authorization, "Bearer one-time");
+
+  window.__NIHO_STUDIO_RUNTIME__.kamakuraUploadOrigin = "https://untrusted.example";
+  calls.length = 0;
+  await assert.rejects(kamakuraAssetLibrary.uploadAsset({
+    siteId: "kamakura", folderId: null, file, name: "preview.png", mimeType: "image/png", bytes: 16, provider: "kamakura-upload"
+  }, signal()), /正しくありません/u);
+  assert.equal(calls.length, 1, "unknown runtime origin is rejected before token-bearing PUT");
+});
+
 test("Kamakura Studio prefers the shared editing API for asset reads, resolution and metadata updates", async (t) => {
   const { createKamakuraAssetLibrary } = await loadKamakuraAssetLibrary();
   const uploaded = row("kamakura-upload", UUID);

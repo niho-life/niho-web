@@ -12,6 +12,7 @@ import {
   parseKamakuraCmsListConflict, parseKamakuraCmsRemoved, parseKamakuraCmsSchema, parseKamakuraCmsUploadIntent, parseKamakuraCmsUploadResult,
   type KamakuraCmsItemStatus
 } from "./kamakura-cms-contract.js";
+import { kamakuraStudioUploadOrigin } from "./kamakura-runtime-config.js";
 
 /**
  * 鎌倉サイトの CMS を Studio のコレクション画面（CollectionWorkspace）で編集する adapter。
@@ -566,7 +567,7 @@ export function createKamakuraCmsAdapter(options: KamakuraCmsAdapterOptions): Co
       if (reply.status === 400 || reply.status === 422) return { status: "rejected", reason: "invalid" };
       if (reply.status !== 201) failure(reply);
       // 行き先は鎌倉の Worker の /internal/studio/cms-upload/<uploadId> だけ（parser が origin とパスを確かめる）。
-      const intent = parseKamakuraCmsUploadIntent(reply.body);
+      const intent = parseKamakuraCmsUploadIntent(reply.body, kamakuraStudioUploadOrigin());
       if (signal.aborted) throw abortError();
       let response: Response;
       try {

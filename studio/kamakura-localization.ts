@@ -8,6 +8,7 @@ import {
   KAMAKURA_LOCALIZATION_BASE, KAMAKURA_LOCALIZATION_IMAGE_TYPES, KAMAKURA_LOCALIZATION_LIMITS,
   isKamakuraPublicImageUrl, kamakuraLocalizationCmsSource, kamakuraLocalizationPage, parseKamakuraLocalizationUploadIntent, parseKamakuraLocalizationUploadRefusal
 } from "./kamakura-localization-contract.js";
+import { kamakuraStudioUploadOrigin } from "./kamakura-runtime-config.js";
 
 /**
  * 鎌倉サイトの翻訳を Studio の翻訳の画面（LocalizationWorkspace）で直す adapter。
@@ -188,7 +189,7 @@ export function createKamakuraLocalizationAdapter(options: KamakuraLocalizationA
         throw new KamakuraLocalizationRequestError(reply.status, supportId(reply.body));
       }
       // 行き先は鎌倉の Worker の /internal/studio/localization-upload/<uploadId> だけ（parser が origin とパスを確かめる）
-      const intent = parseKamakuraLocalizationUploadIntent(reply.body);
+      const intent = parseKamakuraLocalizationUploadIntent(reply.body, kamakuraStudioUploadOrigin());
       if (signal.aborted) throw abortError();
       let response: Response;
       try {

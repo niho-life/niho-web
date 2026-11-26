@@ -286,7 +286,7 @@ Dashboard の「翻訳」と CMS 項目の English タブは、[翻訳の画面]
 
 1. NIHO アカウントに作成済みの `niho-web-studio` D1 と `studio/wrangler.toml` の binding・account ID を照合する。token、credential、実メールアドレスはリポジトリへ書かない。Studio-native siteを有効にする環境では、管理originとは別の共有HTTPS originを `PUBLIC_SITES_ORIGIN` に設定する。ローカル例は `https://sites.example.com` とし、値にpathを含めない。DNSやcustom domainの作成はこのWorkerの配備手順に含めない。
 2. 作成済みの専用 Cloudflare Access application `NIHO Web Studio` が `studio.niho.life` 全体を保護し、専用ポリシー `Allow NIHO Web Studio staff`（Google ログインと `@niho.life`）のみを使うことを照合する。Cloudflare dashboard membership を Studio role として使わない。Access session は 12 時間、Cookie は HttpOnly。
-3. 作成済み Access application の AUD tag と `ACCESS_AUDIENCE`、issuer `https://niho-coliving.cloudflareaccess.com` を照合する。
+3. 作成済み Access application の AUD tag と `ACCESS_AUDIENCE`、issuerをローカルPreview設定と照合する。
 4. まず NIHO API STG と Studio Worker に、STG 専用 `NIHO_STUDIO_BRIDGE_SECRET_STG` を同じ値で設定する。STG用と本番用の secret は別にする。Kamakura の secret もExperienceとは共用しない。本番 Experience secret は本番受入時まで設定しない。値を shell 引数、リポジトリ、ログへ残さず、対話入力または承認済みの secret handling で設定する。
 
 ```sh
@@ -309,6 +309,20 @@ wrangler d1 migrations apply niho-web-studio --remote --config studio/wrangler.t
 ```
 
 `0001_studio_registry.sql` は2つの Project/Site を seed し、membership を暗黙追加しません。`0002_membership_administration.sql` は既存 membership を保持したまま nullable email、招待、audit を追加します。`0003_experience_site_metadata.sql` は Experience site を API と同じ metadata に更新します。`0004_kamakura_site_metadata.sql` は Kamakura site のmetadataを更新し、`0010_kamakura_site_name.sql` はcatalogとsite名を揃えます。`0011_managed_sites.sql` はStudio-native site、ページ、immutable version/publication、短命plan、auditを追加し、既存 `sites.public_origin UNIQUE` を変更しません。`0012_site_analytics.sql` はサイト分析の接続・一回用plan・集計cacheを追加するだけで既存tableを変えません。`0013_managed_cms.sql` は Studio-native CMS の版付き定義・項目・release・予約を追加します。`0014_cms_page_bindings.sql` はページ revision に保存する CMS bindings、公開 page publication の CMS release pin、bindings 更新の operation receipt を追加します。Worker より先に適用します。Migration は既存 membership と owner bootstrap を壊しません。
+
+## Studio Preview の分離
+
+GUIの素材upload・翻訳previewを受け入れる Preview は、`studio/wrangler.preview.template.toml` から生成する専用 Worker を使う。本番Workerや本番D1/R2は使わず、ローカルPreview設定で指定した専用D1・R2と専用の `KAMAKURA_STUDIO_BRIDGE_SECRET` を使う。Service Binding の相手もローカル設定で指定したKamakura Preview Workerだけにする。Access host・AUD・D1 ID・Worker/R2名は `~/.config/niho-web/studio-preview.env` に保存し、生成されたWrangler configはコマンド終了時に削除する。
+
+Studio Preview の Cloudflare Access application はローカル設定の Preview host だけを対象にし、既存の「Allow NIHO Web Studio staff」（Google login と `@niho.life`）だけを付ける。PINによる別のallow policyは付けず、本番Access applicationや既存policyは変更しない。
+
+Kamakura Preview Worker は外部routeとworkers.devを持たない。ブラウザーが直接PUTする URL は Preview 用upload gatewayが発行し、このgatewayは3つのupload endpointと翻訳preview frameだけを内部Workerへ中継する。Preview用MEDIA R2の画像パスも限定して配信し、保存後のGUI/CLI読戻しには同じPreview URLを返す。UIのPUTは `credentials: omit` なので、gatewayにAccess cookieを要求しない。代わりにhost Workerの10分・一回限りupload tokenと厳密なEditor Origin検査を使う。Studioのruntime config、CSP、GUI側URL parserはローカル設定されたHTTPS Preview originだけを信頼する。
+
+初回は Access application、Kamakura internal Worker、upload gateway、Studio専用D1 migration、Studio Preview Workerの順に用意する。Preview用のbridge keyは両Preview Worker間だけに設定し、本番鍵や本番のD1/R2を複製しない。D1にはmigration後もmembershipが自動作成されないため、Previewの `/api/session` で確認したsubjectをPreview D1へownerとして別途bootstrapする。
+
+ローカルで確認するときも、Preview用の実Access JWTを使う。Preview Workerを配備した後はDashboardを開き、素材一覧・合成fixtureのupload / metadata更新 / 削除 / 復元と、翻訳一覧・read・save・stale versionの409をGUIと `niho-edit` の双方で照合する。本番の画像保存先・contentは受入に使わない。
+
+PreviewのWrangler操作は `npm run studio:preview:wrangler -- <wrangler args>` から行います。D1 migration は `npm run studio:preview:wrangler -- d1 migrations apply preview --remote` です。`preview` はローカル設定にあるD1名へ変換されます。設定項目と初回手順は[Studio Preview runbook](../docs/studio-preview.md)を参照してください。
 
 ## owner の out-of-band bootstrap
 

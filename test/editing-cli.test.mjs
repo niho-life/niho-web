@@ -112,6 +112,7 @@ function runUpload(args, { uploadUrl, expectedBytes, asset, name = "sea.png", tr
       const sameOriginAccess = new URL(${JSON.stringify(uploadUrl)}).origin === ${JSON.stringify(origin)};
       if (headers.get("CF-Access-Client-Id") !== (sameOriginAccess ? ${JSON.stringify(accessClientId)} : null)
         || headers.get("CF-Access-Client-Secret") !== (sameOriginAccess ? ${JSON.stringify(accessClientSecret)} : null)) throw new Error("Access credentials crossed origins");
+      if (headers.get("Origin") !== (sameOriginAccess ? null : ${JSON.stringify(origin)})) throw new Error("upload origin was not bound to the host API origin");
       if (!Buffer.from(init.body).equals(Buffer.from(${JSON.stringify(Buffer.from(expectedBytes).toString("base64"))}, "base64"))) throw new Error("upload bytes differ");
       return new Response(JSON.stringify({ asset: ${JSON.stringify(asset)} }), { status: 201, headers: { "Content-Type": "application/json" } });
     };

@@ -166,6 +166,7 @@
     "studio:typecheck": "tsc -p studio/tsconfig.json --noEmit",
     "studio:dev": "npm run studio:build && wrangler dev --config studio/wrangler.toml",
     "studio:deploy": "npm run studio:build && wrangler deploy --config studio/wrangler.toml",
+    "studio:preview:wrangler": "node scripts/studio-preview-wrangler.mjs",
     "test:built": "node --test test/*.test.mjs",
     "test": "npm run build && npm run test:built",
     "demo": "node examples/editor-demo.mjs",

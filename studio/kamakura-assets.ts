@@ -5,6 +5,7 @@ import {
 } from "../src/assets.js";
 import { createPageEditingApiClient, EditingApiClientError, type EditingApiClient } from "../src/editing-client.js";
 import { parseKamakuraAssetUploadIntent } from "./kamakura-asset-upload-contract.js";
+import { kamakuraStudioUploadOrigin } from "./kamakura-runtime-config.js";
 import { KAMAKURA_EDITING_API_BASE } from "./kamakura-cms-contract.js";
 
 const SITE_ID = "kamakura";
@@ -99,7 +100,7 @@ export function createKamakuraAssetLibrary(origin?: string): AssetLibraryAdapter
 
     const intent = parseKamakuraAssetUploadIntent(commonApi
       ? await commonApi.createAssetUploadIntent({ folderId: null, name: request.name, mimeType: request.mimeType, bytes: request.bytes, provider: providerId }, signal)
-      : await post("upload-intent", { siteId: SITE_ID, folderId: null, name: request.name, mimeType: request.mimeType, bytes: request.bytes, provider: providerId }, signal));
+      : await post("upload-intent", { siteId: SITE_ID, folderId: null, name: request.name, mimeType: request.mimeType, bytes: request.bytes, provider: providerId }, signal), kamakuraStudioUploadOrigin());
     const response = await fetch(intent.uploadUrl, {
       method: "PUT", mode: "cors", credentials: "omit", cache: "no-store", redirect: "error", signal,
       headers: { Authorization: `Bearer ${intent.uploadToken}`, "Content-Type": request.mimeType },

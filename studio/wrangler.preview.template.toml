@@ -1,0 +1,34 @@
+name = __STUDIO_PREVIEW_WORKER_NAME__
+main = "./dist/worker.js"
+compatibility_date = "2026-10-21"
+workers_dev = false
+
+[[routes]]
+pattern = __STUDIO_PREVIEW_HOST__
+custom_domain = true
+
+[vars]
+ACCESS_ISSUER = __STUDIO_PREVIEW_ACCESS_ISSUER__
+ACCESS_AUDIENCE = __STUDIO_PREVIEW_ACCESS_AUDIENCE__
+KAMAKURA_PREVIEW_UPLOAD_ORIGIN = __KAMAKURA_PREVIEW_UPLOAD_ORIGIN__
+KAMAKURA_CLI_PREVIEW_ORIGIN = __KAMAKURA_PREVIEW_SITE_ORIGIN__
+
+[assets]
+directory = "./dist/public"
+binding = "ASSETS"
+run_worker_first = true
+html_handling = "none"
+
+[[services]]
+binding = "KAMAKURA_SITE"
+service = __KAMAKURA_PREVIEW_WORKER_NAME__
+
+[[d1_databases]]
+binding = "DB"
+database_name = __STUDIO_PREVIEW_DATABASE_NAME__
+database_id = __STUDIO_PREVIEW_DATABASE_ID__
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "CMS_OBJECTS"
+bucket_name = __STUDIO_PREVIEW_CMS_BUCKET__

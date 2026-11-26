@@ -810,7 +810,7 @@ async function main() {
     try {
       const response = await fetch(intent.uploadUrl, { method: "PUT", credentials: "omit", cache: "no-store", redirect: "error", signal: AbortSignal.timeout(120_000),
         headers: { Authorization: `Bearer ${intent.uploadToken}`, "Content-Type": mimeType,
-          ...(uploadUrl.origin === baseOrigin ? accessHeaders : {}) }, body: new Uint8Array(bytes) });
+          ...(uploadUrl.origin === baseOrigin ? accessHeaders : { Origin: baseOrigin }) }, body: new Uint8Array(bytes) });
       if (!response.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")) throw new CliError("upload_rejected", response.status);
       const body = await response.json();
       if (!response.ok) throw new CliError("upload_rejected", response.status);

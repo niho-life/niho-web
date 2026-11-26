@@ -1,4 +1,5 @@
 node_modules/
 dist/
 studio/dist/
+studio/.wrangler.preview.generated-*.toml
 *.tgz
