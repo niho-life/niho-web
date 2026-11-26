@@ -324,11 +324,26 @@ export function createProjectEditorAdapter(adapter: EditorAdapter, projectInput:
     ...(adapter.discoverPageNodeNames ? {
       discoverPageNodeNames: (target, signal) => adapter.discoverPageNodeNames!(targetForProject(target, site), signal)
     } satisfies Pick<EditorAdapter, "discoverPageNodeNames"> : {}),
+    ...(adapter.cmsBindings ? { cmsBindings: {
+      async read(target, signal) {
+        const result = await adapter.cmsBindings!.read(targetForProject(target, site), signal);
+        if (result.schema.siteId !== site.id) throw new Error("CMS の対象サイトが一致しません。");
+        return result;
+      },
+      async preview(request, signal) {
+        const target = targetForProject(request.target, site);
+        assertDocumentTarget(request.document, target);
+        const result = await adapter.cmsBindings!.preview({ ...request, target }, signal);
+        assertDocumentTarget(result, target);
+        return result;
+      }
+    } } satisfies Pick<EditorAdapter, "cmsBindings"> : {}),
     async saveDraft(request, signal) {
       const target = targetForProject(request.target, site);
       const document = structuredClone(request.document);
       assertDocumentTarget(document, target);
       return adapter.saveDraft({ target, document, expectedVersion: request.expectedVersion, ...(request.presentationVersion === undefined ? {} : { presentationVersion: request.presentationVersion }), ...(request.trigger === "autosave" ? { trigger: "autosave" as const } : {}),
+        ...(request.cmsBindings === undefined ? {} : { cmsBindings: structuredClone(request.cmsBindings) }),
         ...(request.localization ? { localization: { expectedSourceVersion: request.localization.expectedSourceVersion, expectedVersion: request.localization.expectedVersion,
           expectedOverlayVersion: request.localization.expectedOverlayVersion } } : {}) }, signal);
     },

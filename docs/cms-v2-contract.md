@@ -70,3 +70,13 @@ v1 の意味は既存の通りです。v2 を使う Site の v1 の書込み入�
 GUI、Access 人トークン、Access サービスの現在の権限を操作ごとに照合します。定義の適用は人の owner のみです。プレビューの参照IDはURLに載せず、ログ・履歴・公開 snapshot にも含めません。読み込み応答は no-store / no-referrer / noindex。使い切った参照ID、期限切れ、対象の下書きが更新された参照IDは404になります。
 
 既存の共通 `cms.schema` / `cms.list` / `cms.read` には従来の DTO を返します。同じ `/api/edit/v1` の形式で書き込む Studio クライアントは、`X-Studio-CMS-Version: 2` を送ります。このヘッダーによって版を宣言した要求は内部の v2 revision、release、outbox で処理します。宣言のない書込みは `409 unsupported_version` です。公開 apply の受領応答は再送時も保持されます。v2 の `cms.release.status` は受領記録に加えて outbox の `pending` / `delivered` / `dead` と失敗理由を返し、legacy の `cms.operation-status` は配信後の結果を取得できます。
+
+## PageDocument と CMS の結び付け
+
+`CmsPageBindingsDocument` は `PageDocument` に含めず、ページごとの版付き sidecar として保存します。`schemaVersion: 1`、`siteId`、`pageId`、`locale` に加え、繰り返す list node と collection、上限25件、任意の field filter / sort、node・`fieldId`・target の対応を持てます。detail は collection の slug field を使い、ページ path に slug を足した URL で公開します。field は名前が変わらない `fieldId` で参照します。
+
+対応する `PageEditor` は CMS 項目テンプレートの挿入、field の結び付け、下書きデータのプレビューを行います。プレビューは actor・site・page・文書版・CMS schema revision・item revision に結び付いた5分間の一回限り token を使います。`pages.read` / `pages.inspect` は対応 host だけ `cmsBindings` を返し、`pages.apply` は `pages.cms-bindings` capability を公開する host だけ sidecar の更新を受け付けます。`niho-edit apply --cms-bindings <file|->` は JSON sidecar を追加・置換し、JSON `null` で解除します。空の `operations` と sidecar だけの更新も可能です。
+
+Studio-native は page version row に sidecar を一緒に保存し、公開計画が page publication に CMS `releaseId`、`schemaRevision`、現在の `routeTableRevision` を固定します。公開適用時に route table を読み直し、予約状態が変わっていれば `409 conflict` にして計画を適用しません。公開 HTML はその不変 CMS release の項目から描画し、後の CMS schema / 下書き変更を反映しません。CMS release と固定ページの公開は別々の CAS / snapshot であり、両方をまたぐ原子的な切替はありません。公開計画では list / detail の field 型と node を検証し、detail slug の生成 URL と現在の固定・予約・CMS route を照合します。schema migration は現在のページ sidecar をすべて検査し、影響する bindings を計画へ含めます。過去の公開 page と CMS release は migration で変更しません。
+
+bindings の image mapping は配信 URL を保存せず、安定 asset reference を使います。CMS 画像の公開時検査と manifest 解決は [素材契約](asset-contract.md) の公開素材対応が必要です。

@@ -7,6 +7,8 @@ import { appearEffects, easings, isStyleProperty, parseTokens, stateNames, state
 import { DocumentValidationError, fail, identifier, keys, parseAssetReference, record, string } from "./validation-utils.js";
 import type { EditingActor, EditingPageSnapshot, EditingPageTarget, JsonSchema, PageEditingValidationContext } from "./editing-api.js";
 import type { PageDocument, PageNode } from "./types.js";
+import { cmsBindingAttributes, cmsPageBindingProblems, type CmsPageBindingsDocument } from "./cms-page-bindings.js";
+import { validatePagePath } from "./pages.js";
 
 export const PAGE_OPERATION_LIMIT = 500;
 export const PAGE_OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -16,6 +18,8 @@ export type EditingPageApplyInput = PageOperationVersions & {
   readonly baseVersion: string;
   readonly operationId: string;
   readonly operations: readonly EditorOperationById[];
+  /** Omitted to preserve the current snapshot. Null removes the sidecar. */
+  readonly cmsBindings?: CmsPageBindingsDocument | null;
   readonly dryRun?: boolean;
 };
 export type EditingPageApplied = { readonly status: "applied"; readonly version: string; readonly revision: number; readonly document: PageDocument };
@@ -39,7 +43,7 @@ export type PageOperationTransaction = {
   /** Execute against the page and its trusted validation context from the same versioned read. */
   prepare(snapshot: EditingPageSnapshot, validationContext: PageEditingValidationContext): ApplyRejection
     | Extract<EditingPageApplyResult, { status: "valid" }>
-    | { readonly status: "ready"; readonly document: PageDocument; readonly journal: PageOperationJournal };
+    | { readonly status: "ready"; readonly document: PageDocument; readonly journal: PageOperationJournal; readonly cmsBindings?: CmsPageBindingsDocument | null };
 };
 /**
  * Look up actor + operationId before checking versions. Prepare against the latest page snapshot
@@ -66,6 +70,20 @@ const either = (...oneOf: JsonSchema[]): JsonSchema => ({ oneOf });
 const valuesOf = (values: readonly string[]): JsonSchema => ({ type: "string", enum: values });
 const constant = (value: string | null): JsonSchema => ({ const: value });
 const nullable = (schema: JsonSchema): JsonSchema => either(schema, constant(null));
+const cmsIdentifier: JsonSchema = { type: "string", pattern: "^[A-Za-z0-9_][A-Za-z0-9._~-]{0,127}$" };
+const cmsMappingFields = { nodeId: id, fieldId: cmsIdentifier };
+const cmsFieldBindings = list(either(
+  obj({ ...cmsMappingFields, target: valuesOf(["text", "image", "link"]) }),
+  obj({ ...cmsMappingFields, target: constant("attribute"), attribute: valuesOf(cmsBindingAttributes) }),
+  obj({ ...cmsMappingFields, target: constant("detail-link"), path: text })
+), 0, 80);
+export const pageCmsBindingsSchema = nullable(obj({
+  schemaVersion: { const: 1 }, siteId: id, pageId: id, locale: text,
+  lists: list(obj({ templateNodeId: id, collectionId: cmsIdentifier, fields: cmsFieldBindings,
+    limit: { type: "integer", minimum: 1, maximum: 25 } }, {
+    filter: obj({ fieldId: cmsIdentifier, equals: text }), order: obj({ fieldId: cmsIdentifier, direction: valuesOf(["asc", "desc"]) })
+  }), 0, 12)
+}, { detail: obj({ collectionId: cmsIdentifier, slugFieldId: cmsIdentifier, fields: cmsFieldBindings }) }));
 const breakpoint = either(constant("base"), widthSchema);
 const asset = obj({ provider: id, id: { type: "string", maxLength: 128, pattern: "^[A-Za-z0-9][A-Za-z0-9._~-]*$" } });
 const styleValue = either(text, number, obj({ token: id }));
@@ -102,12 +120,12 @@ const pageNodeNameSchema: JsonSchema = {
   type: "string", minLength: 1, maxLength: PAGE_NODE_NAME_MAX_LENGTH,
   pattern: `^(?![\\s\\S]*${PAGE_NODE_NAME_CONTROL_PATTERN})`
 };
-const applyInputSchema = (nameField: { name?: JsonSchema }): JsonSchema => ({
+const applyInputSchema = (nameField: { name?: JsonSchema }, cmsBindings = false): JsonSchema => ({
   ...obj({
     baseVersion: version,
     operationId: { type: "string", pattern: PAGE_OPERATION_ID.source.replaceAll("a-f", "a-fA-F").replace("[89ab]", "[89abAB]") },
-    operations: list({ $ref: "#/$defs/editorOperationById" }, 1, PAGE_OPERATION_LIMIT)
-  }, { dryRun: bool, componentsVersion: version, presentationVersion: version, stylesVersion: version }),
+    operations: list({ $ref: "#/$defs/editorOperationById" }, cmsBindings ? 0 : 1, PAGE_OPERATION_LIMIT)
+  }, { dryRun: bool, componentsVersion: version, presentationVersion: version, stylesVersion: version, ...(cmsBindings ? { cmsBindings: pageCmsBindingsSchema } : {}) }),
   $defs: {
     editorOperationById: either(
       operation("text", { parentId: nullable(id), childPath: list(indexSchema, 1, 49), value: text }, { preconditions }),
@@ -152,6 +170,7 @@ const applyInputSchema = (nameField: { name?: JsonSchema }): JsonSchema => ({
 });
 export const legacyPageApplyInputSchema = applyInputSchema({});
 export const pageApplyInputSchema = applyInputSchema({ name: pageNodeNameSchema });
+export const pageCmsBindingsApplyInputSchema = (nodeNames: boolean) => applyInputSchema(nodeNames ? { name: pageNodeNameSchema } : {}, true);
 export function pageApplyResultSchema(document: JsonSchema): JsonSchema {
   return either(
     obj({ status: constant("applied"), version, revision: { type: "integer", minimum: 1 }, document }),
@@ -504,6 +523,7 @@ export function preparePageOperations(snapshot: EditingPageSnapshot, context: Pa
   catch { return { status: "host_contract_violation" }; }
   if (before.siteId !== journal.target.siteId || before.pageId !== journal.target.pageId || before.locale !== journal.target.locale) return { status: "host_contract_violation" };
   const stale = snapshot.version !== input.baseVersion;
+  if (stale && input.cmsBindings !== undefined) return { status: "conflict" };
   let document = before, index = 0;
   try {
     for (const operation of input.operations) {
@@ -515,7 +535,27 @@ export function preparePageOperations(snapshot: EditingPageSnapshot, context: Pa
       index++;
     }
     document = parsePageDocument(document, context.blocks, options);
-  } catch (error) { return editingOperationProblem(error, Math.min(index, input.operations.length - 1)); }
-  if (dryRun) return { status: "valid", diff: diffDocuments(before, document), touched: changedPageNodeIds(before, document) };
-  return { status: "ready", document, journal: stale ? { ...journal, rebasedFromVersion: snapshot.version } : journal };
+  } catch (error) { return editingOperationProblem(error, Math.max(0, Math.min(index, input.operations.length - 1))); }
+  const cmsBindings = input.cmsBindings === undefined ? snapshot.cmsBindings : input.cmsBindings;
+  if (input.cmsBindings !== undefined && snapshot.cmsBindings === undefined) {
+    return { status: "validation_failed", index: Math.max(0, input.operations.length - 1), reason: "このページでは CMS の結び付けを使用できません。" };
+  }
+  if (cmsBindings) {
+    if (!context.cmsSchema) return { status: "host_contract_violation" };
+    const problem = cmsPageBindingProblems(document, cmsBindings, context.cmsSchema)[0];
+    if (problem) return { status: "validation_failed", index: Math.max(0, input.operations.length - 1), reason: problem.message };
+    if (cmsBindings.detail && context.cmsPagePath !== undefined && (context.cmsPagePath === "/" || validatePagePath(context.cmsPagePath + "/item") !== null)) {
+      return { status: "validation_failed", index: Math.max(0, input.operations.length - 1), reason: "詳細ページの URL を設定してください。" };
+    }
+  }
+  if (dryRun) {
+    const diff = diffDocuments(before, document, input.cmsBindings === undefined ? {} : { limit: 299 });
+    if (input.cmsBindings !== undefined && JSON.stringify(snapshot.cmsBindings) !== JSON.stringify(cmsBindings)) {
+      const summary = (bindings: CmsPageBindingsDocument | null | undefined) => bindings ? "リスト " + bindings.lists.length + " 件 / 詳細 " + (bindings.detail ? "あり" : "なし") : "（なし）";
+      diff.push({ path: "CMS の結び付け", before: summary(snapshot.cmsBindings), after: summary(cmsBindings) });
+    }
+    return { status: "valid", diff, touched: changedPageNodeIds(before, document) };
+  }
+  return { status: "ready", document, journal: stale ? { ...journal, rebasedFromVersion: snapshot.version } : journal,
+    ...(cmsBindings === undefined ? {} : { cmsBindings }) };
 }

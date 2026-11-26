@@ -5,6 +5,7 @@ import { resolvePageStyles, type SiteStyles } from "./site-styles.js";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { changeLabels, hasRecoveredChanges, libraryChanges, mergeRecoveredLibrary, parseRecoveredLibrary, type LibraryMerge, type RecoveredLibrary } from "./component-session.js";
 import { parsePageDocument } from "./document.js";
+import { parseCmsPageBindings, type CmsPageBindingsDocument } from "./cms-page-bindings.js";
 import { Dialog } from "./editor-dialog.js";
 import { fingerprint, sameTarget } from "./editor-model.js";
 import { Icon } from "./editor-pages.js";
@@ -112,18 +113,19 @@ export function DiffTable({ changes, columns }: { changes: readonly DocumentChan
     <tbody>{changes.length ? changes.map((change, index) => <tr key={index}><td>{change.path}</td><td>{change.before}</td><td>{change.after}</td></tr>) : <tr><td colSpan={3}>内容の差分はありません。</td></tr>}</tbody></table>;
 }
 
-export type RecoveryOffer = { target: EditorTarget; document: PageDocument; baseVersion: string; updatedAt: string };
+export type RecoveryOffer = { target: EditorTarget; document: PageDocument; baseVersion: string; cmsBindings?: CmsPageBindingsDocument | null; updatedAt: string };
 type RecoveryPhase = { epoch: number; key: string; state: "checking" | "offer" | "idle" | "discarded"; at?: PageDocument | undefined };
 // 共通部品のインスタンスを含む文書。ライブラリで展開できない退避内容は、消さずに残す（部品が戻れば復元できる）。
 const hasInstance = (document: unknown) => { try { return JSON.stringify(document).includes('"type":"instance"'); } catch { return false; } };
-function recoveredEntry(stored: unknown, target: EditorTarget, blocks: EditorBlockRegistry, components?: ComponentLibrary, siteStyles?: SiteStyles): RecoveryOffer | "component-unresolved" | "style-unresolved" | null {
+function recoveredEntry(stored: unknown, target: EditorTarget, supportsBindings: boolean, blocks: EditorBlockRegistry, components?: ComponentLibrary, siteStyles?: SiteStyles): RecoveryOffer | "component-unresolved" | "style-unresolved" | null {
   if (!stored || typeof stored !== "object") return null;
-  const { target: place, baseVersion, baseRevision, document, updatedAt } = stored as Record<string, unknown>;
+  const { target: place, baseVersion, baseRevision, document, cmsBindings: rawBindings, updatedAt } = stored as Record<string, unknown>;
   if (!place || typeof place !== "object" || !sameTarget(place as EditorTarget, target) || typeof baseVersion !== "string" || !baseVersion ||
     typeof baseRevision !== "number" || !Number.isSafeInteger(baseRevision) || baseRevision < 1 || typeof updatedAt !== "string" || !Number.isFinite(Date.parse(updatedAt))) return null;
   try {
     const parsed = parsePageDocument(document, blocks, { ...(components ? { components } : {}), ...(siteStyles ? { siteStyles } : {}) });
-    return sameTarget(parsed, target) ? { target: copyTarget(target), document: parsed, baseVersion, updatedAt } : null;
+    const cmsBindings = !supportsBindings || rawBindings === undefined ? undefined : rawBindings === null ? null : parseCmsPageBindings(rawBindings, target);
+    return sameTarget(parsed, target) ? { target: copyTarget(target), document: parsed, baseVersion, updatedAt, ...(cmsBindings === undefined ? {} : { cmsBindings }) } : null;
   } catch { return hasInstance(document) ? "component-unresolved" : siteStyles ? "style-unresolved" : null; }
 }
 /**
@@ -131,7 +133,7 @@ function recoveredEntry(stored: unknown, target: EditorTarget, blocks: EditorBlo
  * 復元の提案中は退避内容を上書き・削除しない。保存などで未保存の変更が無くなったら消す。
  */
 export function useRecovery({ store, session, dirty, blocks, components, siteStyles, epoch, report }: {
-  store: EditorRecoveryStore | undefined; session: { target: EditorTarget; version: string; present: PageDocument } | undefined; dirty: boolean;
+  store: EditorRecoveryStore | undefined; session: { target: EditorTarget; version: string; present: PageDocument; cmsBindings?: CmsPageBindingsDocument | null } | undefined; dirty: boolean;
   /** 退避内容のインスタンスを検証する、文書を開いた時点の共通部品。変わっても確認し直さない。 */
   blocks: EditorBlockRegistry; components?: ComponentLibrary | undefined; siteStyles?: SiteStyles | undefined; epoch: number; report: (text: string) => void;
 }) {
@@ -139,7 +141,7 @@ export function useRecovery({ store, session, dirty, blocks, components, siteSty
   const latest = useRef(session), phaseRef = useRef(phase), reporter = useRef(report), written = useRef(false), warned = useRef(false), pendingWrite = useRef<(() => void) | null>(null);
   const library = useRef(components), sharedStyles = useRef(siteStyles);
   latest.current = session; phaseRef.current = phase; reporter.current = report; library.current = components; sharedStyles.current = siteStyles;
-  const key = targetKeyOf(session?.target), present = session?.present, version = session?.version;
+  const key = targetKeyOf(session?.target), present = session?.present, version = session?.version, cmsBindings = session?.cmsBindings;
   useEffect(() => {
     setOffer(null); written.current = false; warned.current = false; pendingWrite.current = null;
     const current = latest.current, currentKey = targetKeyOf(current?.target);
@@ -149,14 +151,15 @@ export function useRecovery({ store, session, dirty, blocks, components, siteSty
     const target = copyTarget(current.target), loaded = current.present;
     Promise.resolve().then(() => store.read(target)).then((stored) => {
       if (cancelled) return;
-      const recovered = stored ? recoveredEntry(stored, target, blocks, library.current, sharedStyles.current) : null;
+      const recovered = stored ? recoveredEntry(stored, target, current.cmsBindings !== undefined, blocks, library.current, sharedStyles.current) : null;
       if (recovered === "component-unresolved" || recovered === "style-unresolved") {
         reporter.current(recovered === "component-unresolved"
           ? "端末に残っていた変更がありますが、コンポーネントの現在の内容と合わないため復元できません。"
           : "端末に残っていた変更がありますが、共通スタイルの現在の内容と合わないため復元できません。");
         setPhase({ epoch, key: currentKey, state: "idle" }); return;
       }
-      if (recovered && fingerprint({ ...recovered.document, revision: 0 }) !== fingerprint({ ...loaded, revision: 0 })) { setOffer(recovered); setPhase({ epoch, key: currentKey, state: "offer" }); return; }
+      const recoveredBindingsChanged = recovered && recovered.cmsBindings !== undefined && JSON.stringify(recovered.cmsBindings) !== JSON.stringify(current.cmsBindings);
+      if (recovered && (recoveredBindingsChanged || fingerprint({ ...recovered.document, revision: 0 }) !== fingerprint({ ...loaded, revision: 0 }))) { setOffer(recovered); setPhase({ epoch, key: currentKey, state: "offer" }); return; }
       if (stored) silent(() => store.remove(target));
       setPhase({ epoch, key: currentKey, state: "idle" });
     }, () => { if (!cancelled) setPhase({ epoch, key: currentKey, state: "idle" }); });
@@ -172,7 +175,8 @@ export function useRecovery({ store, session, dirty, blocks, components, siteSty
       const now = latest.current;
       if (!now || targetKeyOf(now.target) !== key) return;
       written.current = true;
-      void Promise.resolve().then(() => store.write({ target: copyTarget(now.target), baseVersion: now.version, baseRevision: now.present.revision, document: now.present, updatedAt: new Date().toISOString() })).catch((error: unknown) => {
+      void Promise.resolve().then(() => store.write({ target: copyTarget(now.target), baseVersion: now.version, baseRevision: now.present.revision, document: now.present,
+        ...(now.cmsBindings === undefined ? {} : { cmsBindings: now.cmsBindings }), updatedAt: new Date().toISOString() })).catch((error: unknown) => {
         if (warned.current) return;
         warned.current = true;
         reporter.current(error instanceof RecoveryTooLargeError ? "変更が大きすぎるため端末へ退避していません。保存して作業を残してください。" : "端末への退避ができませんでした。保存して作業を残してください。");
@@ -181,7 +185,7 @@ export function useRecovery({ store, session, dirty, blocks, components, siteSty
     pendingWrite.current = write;
     const timer = setTimeout(write, 800);
     return () => clearTimeout(timer);
-  }, [store, present, version, dirty, phase, epoch, key]);
+  }, [store, present, version, cmsBindings, dirty, phase, epoch, key]);
   useEffect(() => {
     const flush = () => pendingWrite.current?.();
     window.addEventListener("pagehide", flush);
