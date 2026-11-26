@@ -4,7 +4,8 @@ import { createReadStream } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { basename } from "node:path";
 import { parseArgs } from "node:util";
-import { createPageEditingApiClient, EditingApiClientError, isEditingApiVersion, parseEditingPageDocumentEnvelope, supportsPageNodeNames } from "../dist/editing-client.js";
+import { createPageEditingApiClient, EditingApiClientError, isEditingApiVersion, parseEditingPageDocumentEnvelope, supportsPageCmsBindings, supportsPageNodeNames } from "../dist/editing-client.js";
+import { CMS_PAGE_BINDINGS_MAX_BYTES, parseCmsPageBindings } from "../dist/cms-page-bindings.js";
 import { EDITING_OPERATIONS } from "../dist/editing-api.js";
 import { editingLocalizationConflictBody, EDITING_LOCALIZATION_INPUT_BYTES } from "../dist/editing-localization.js";
 import { parseAssetUploadResult } from "../dist/assets.js";
@@ -38,7 +39,7 @@ function argsFromCli() {
   try {
     return parseArgs({ allowPositionals: true, options: {
       studio: { type: "boolean" }, origin: { type: "string" }, site: { type: "string" }, locale: { type: "string" }, json: { type: "string" }, action: { type: "string" },
-      "expected-version": { type: "string" }, "components-version": { type: "string" }, "presentation-version": { type: "string" },
+      "expected-version": { type: "string" }, "components-version": { type: "string" }, "presentation-version": { type: "string" }, "cms-bindings": { type: "string" },
       revision: { type: "string" }, "operation-id": { type: "string" }, redirect: { type: "string" }, base: { type: "string" }, help: { type: "boolean", short: "h" },
       name: { type: "string" }, "mime-type": { type: "string" }, provider: { type: "string" }, search: { type: "string" }, kind: { type: "string" }, "upload-origin": { type: "string" },
       "folder-id": { type: "string" }, cursor: { type: "string" }, limit: { type: "string" }, recent: { type: "boolean" },
@@ -144,15 +145,26 @@ function applyPageOperationsLocally(document, operations) {
 }
 const FALLBACK_VALIDATION_NOTICE = "事前検証はローカル文書だけで行いました。ホストのtrusted contextを含まないため、保存時の最終検証はホストが行います。";
 async function runPageApply(client, pageId, extra, values) {
-  assertCommandOptions(values, ["locale", "ops", "dry-run", "expected-version", "operation-id"]);
+  assertCommandOptions(values, ["locale", "ops", "cms-bindings", "dry-run", "expected-version", "operation-id"]);
   if (!IDENTIFIER.test(pageId ?? "") || extra.length || !LOCALE.test(values.locale ?? "")
     || values["dry-run"] !== undefined && typeof values["dry-run"] !== "boolean"
     || values["expected-version"] !== undefined && !isEditingApiVersion(values["expected-version"])
-    || values["operation-id"] !== undefined && !OPERATION_ID.test(values["operation-id"])) throw new CliError("invalid_arguments");
-  const operations = await inputPageOperations(values.ops);
+    || values["operation-id"] !== undefined && !OPERATION_ID.test(values["operation-id"])
+    || values.ops === "-" && values["cms-bindings"] === "-") throw new CliError("invalid_arguments");
+  const bindingsPath = values["cms-bindings"];
+  const operations = bindingsPath !== undefined && values.ops === undefined ? [] : await inputPageOperations(values.ops);
   const target = { siteId: values.site, pageId, locale: values.locale };
+  let cmsBindings;
+  if (bindingsPath !== undefined) {
+    if (!bindingsPath) throw new CliError("invalid_arguments");
+    try {
+      const raw = await readJsonValue(bindingsPath === "-" ? process.stdin : createReadStream(bindingsPath), CMS_PAGE_BINDINGS_MAX_BYTES);
+      cmsBindings = raw === null ? null : parseCmsPageBindings(raw, target);
+    } catch { throw new CliError("invalid_cms_bindings", 400); }
+  }
   const discovery = await apiCall(() => client.discover(AbortSignal.timeout(30_000)));
   const supportsApply = discovery.operations.some((operation) => operation.id === "pages.apply");
+  if (cmsBindings !== undefined && !supportsPageCmsBindings(discovery)) throw new CliError("cms_bindings_not_supported", 403);
   if (operations.some(pageOperationUsesNodeNames) && !supportsPageNodeNames(discovery, supportsApply ? "pages.apply" : "pages.save")) {
     throw new CliError("name_not_supported", 403);
   }
@@ -164,7 +176,7 @@ async function runPageApply(client, pageId, extra, values) {
   const dryRun = values["dry-run"] === true;
   if (supportsApply) {
     const operationId = values["operation-id"] ?? randomUUID();
-    const input = { baseVersion, operationId, operations, ...(dryRun ? { dryRun: true } : {}) };
+    const input = { baseVersion, operationId, operations, ...(cmsBindings === undefined ? {} : { cmsBindings }), ...(dryRun ? { dryRun: true } : {}) };
     let result;
     try { result = await apiCall(() => client.applyOperations(target, input, AbortSignal.timeout(30_000))); }
     catch (error) {
@@ -434,6 +446,7 @@ async function runPageInspection(client, command, pageId, extra, values) {
     throw error;
   }
   process.stdout.write(JSON.stringify({ ...projected, version: snapshot.version,
+    ...(snapshot.cmsBindings === undefined ? {} : { cmsBindings: snapshot.cmsBindings }),
     ...(snapshot.componentsVersion === undefined ? {} : { componentsVersion: snapshot.componentsVersion }),
     ...(snapshot.presentationVersion === undefined ? {} : { presentationVersion: snapshot.presentationVersion }),
     ...(snapshot.stylesVersion === undefined ? {} : { stylesVersion: snapshot.stylesVersion }) }) + "\n");
@@ -493,7 +506,7 @@ async function main() {
     return;
   }
   if (command !== "preview" && [values.widths, values.compare, values.out].some((value) => value !== undefined)) throw new CliError("invalid_arguments");
-  if (command !== "apply" && (values.ops !== undefined || values["dry-run"] !== undefined)) throw new CliError("invalid_arguments");
+  if (command !== "apply" && (values.ops !== undefined || values["cms-bindings"] !== undefined || values["dry-run"] !== undefined)) throw new CliError("invalid_arguments");
   if (!["outline", "find", "get"].includes(command) && ["node", "depth", "text", "tag", "style", "uses-token", "block", "url", "effective-style"].some((key) => values[key] !== undefined)) throw new CliError("invalid_arguments");
   if (command === "cms-diff") {
     assertCommandOptions(values, ["base", "json"]);
@@ -507,7 +520,7 @@ async function main() {
     process.stdout.write(`${JSON.stringify({ id: edited.id ?? base.id ?? null, version: base.version, changes })}\n`); return;
   }
   const baseOrigin = origin(values.origin);
-  if (values.studio && command !== "discover" && !command?.startsWith("cms-")) throw new CliError("invalid_arguments");
+  if (values.studio && !["discover", "read", "outline", "find", "get", "apply"].includes(command) && !command?.startsWith("cms-")) throw new CliError("invalid_arguments");
   if (!IDENTIFIER.test(values.site ?? "")) throw new CliError("invalid_site");
   const token = process.env.NIHO_EDIT_TOKEN;
 

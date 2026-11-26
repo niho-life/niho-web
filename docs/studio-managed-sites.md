@@ -48,6 +48,12 @@ Studio-native site の Dashboard にある「CMS」から、初期コレクシ�
 
 Studio の共通編集 API と CLI の経路は [CMS v2 契約](cms-v2-contract.md) を参照する。CMS の保存先は Studio の D1 と非公開 R2 binding `CMS_OBJECTS`。Kamakura などの外部ホストの編集先や権限は各ホストで管理する。個人情報・予約台帳・資格情報などは CMS に保存しない。
 
+### PageDocument との結び付け
+
+Studio の PageEditor は CMS list と detail を `CmsPageBindingsDocument` sidecar でページ要素へ結び付けます。sidecar は `managed_page_versions` の当該 revision と一緒に保存し、公開時に page publication が不変 CMS `releaseId` と `schemaRevision` を固定します。公開 HTML はその release の項目だけから描画し、後から行う CMS 保存・schema 移行は過去の公開ページを書き換えません。CMS 公開と固定ページ公開は別の操作で、両者の原子切替はありません。
+
+編集 preview は actor、site/page、page version、CMS item revision に結び付いた5分・一回限り token を使い、公開配信や履歴へ下書きを含めません。schema 移行計画は保存中の全 page bindings を検査します。公開計画は detail slug ごとの path を現在の固定ページ・予約 URL・CMS route と照合します。CMS image の公開表示は素材 manifest と配信を含む #379 / #380 完了後に有効になります。
+
 ## CMS の公開と復旧
 
 - 項目の revision、release snapshot、locale ごとの route table は `sites/{siteId}/items/...`、`sites/{siteId}/releases/...`、`sites/{siteId}/routes/{locale}/{revision}.json` に不変オブジェクトとして置く。D1 state は最後に公開した snapshot の route table revision を保持する。CMS の計画時はStudioで管理する固定・予約 pathと組み合わせた現行版を作り、公開 snapshot に保存する。R2 の条件付き PUT により、同じキーの内容を上書きしない。

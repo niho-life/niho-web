@@ -1,4 +1,5 @@
 import type { EditorTarget } from "./editor-types.js";
+import type { CmsPageBindingsDocument } from "./cms-page-bindings.js";
 import type { ComponentLibrary, ComponentNode, DesignToken, ElementNode, InstanceNode, NodeStyle, PageDocument, PageImage, PageNode } from "./types.js";
 
 /** 人が読む差分。path は日本語の箇所名、before / after は表示用の文字列。 */
@@ -215,9 +216,9 @@ export function parseRevisionPage(input: unknown): EditorRevisionPage {
 }
 
 /** 端末内の退避。入力途中の値・token・ロックは含めない。 */
-export type EditorRecoveryEntry = { target: EditorTarget; baseVersion: string; baseRevision: number; document: PageDocument; updatedAt: string };
+export type EditorRecoveryEntry = { target: EditorTarget; baseVersion: string; baseRevision: number; document: PageDocument; cmsBindings?: CmsPageBindingsDocument | null; updatedAt: string };
 /** 読み出した退避内容。document はエディターが検証するまで信頼しない。 */
-export type StoredRecoveryEntry = Omit<EditorRecoveryEntry, "document"> & { document: unknown };
+export type StoredRecoveryEntry = Omit<EditorRecoveryEntry, "document" | "cmsBindings"> & { document: unknown; cmsBindings?: unknown };
 /** 端末内の共通部品ライブラリの退避（サイト単位）。changed は手元で変えた部品 ID ごとの変更前（保存済み）の version。手元で追加した部品は null。 */
 export type EditorLibraryRecoveryEntry = { siteId: string; baseVersion: string; changed: Readonly<Record<string, number | null>>; /** token の変更前。競合時に別の保存を上書きしないため保持する。 */ baseTokens?: Readonly<Record<string, DesignToken>>; library: ComponentLibrary; updatedAt: string };
 /** 読み出した部品の退避内容。library はエディターが検証するまで信頼しない。 */
@@ -242,12 +243,13 @@ function storedEntry(raw: string | null): (StoredRecoveryEntry & { time: number 
   let value: unknown;
   try { value = JSON.parse(raw); } catch { return null; }
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const { v, target, baseVersion, baseRevision, document, updatedAt } = value as Record<string, unknown>;
+  const { v, target, baseVersion, baseRevision, document, cmsBindings, updatedAt } = value as Record<string, unknown>;
   const place = target && typeof target === "object" ? target as Record<string, unknown> : {};
   const time = typeof updatedAt === "string" ? Date.parse(updatedAt) : NaN;
   if (v !== 1 || typeof place.siteId !== "string" || typeof place.pageId !== "string" || typeof place.locale !== "string" || typeof baseVersion !== "string" ||
     typeof baseRevision !== "number" || !Number.isSafeInteger(baseRevision) || !Number.isFinite(time) || document === undefined) return null;
-  return { target: { siteId: place.siteId, pageId: place.pageId, locale: place.locale }, baseVersion, baseRevision, document, updatedAt: updatedAt as string, time };
+  return { target: { siteId: place.siteId, pageId: place.pageId, locale: place.locale }, baseVersion, baseRevision, document,
+    ...(cmsBindings === undefined ? {} : { cmsBindings }), updatedAt: updatedAt as string, time };
 }
 // 部品ライブラリの鍵は "/" を1つだけ含む。ページの鍵は "/" を2つ含むため、サイト ID が library のページとも区別できる。
 const libraryKey = (siteId: string) => `library/${encodeURIComponent(siteId)}`;
@@ -298,14 +300,16 @@ export function createBrowserRecoveryStore(options: { scope: string; storage?: R
         if (raw === null) return null;
         const entry = storedEntry(raw);
         if (!entry || entry.target.siteId !== target.siteId || entry.target.pageId !== target.pageId || entry.target.locale !== target.locale || expired(entry.time)) { place.removeItem(key); return null; }
-        return { target: entry.target, baseVersion: entry.baseVersion, baseRevision: entry.baseRevision, document: entry.document, updatedAt: entry.updatedAt };
+        return { target: entry.target, baseVersion: entry.baseVersion, baseRevision: entry.baseRevision, document: entry.document,
+          ...(entry.cmsBindings === undefined ? {} : { cmsBindings: entry.cmsBindings }), updatedAt: entry.updatedAt };
       } catch { return null; }
     },
     write(entry) {
       const place = storage();
       if (!place) throw new Error("recovery storage unavailable");
       const target = { siteId: entry.target.siteId, pageId: entry.target.pageId, locale: entry.target.locale };
-      const serialized = JSON.stringify({ v: 1, target, baseVersion: entry.baseVersion, baseRevision: entry.baseRevision, document: entry.document, updatedAt: entry.updatedAt });
+      const serialized = JSON.stringify({ v: 1, target, baseVersion: entry.baseVersion, baseRevision: entry.baseRevision, document: entry.document,
+        ...(entry.cmsBindings === undefined ? {} : { cmsBindings: entry.cmsBindings }), updatedAt: entry.updatedAt });
       if (serialized.length * 2 > maxBytes) throw new RecoveryTooLargeError();
       place.setItem(prefix + targetKey(target), serialized);
     },

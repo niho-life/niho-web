@@ -500,9 +500,9 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
               const jsonReplacement = field && ["image", "gallery", "select", "reference", "tags"].includes(field.type);
               return <li key={`${problem.code}/${problem.collectionId}/${problem.itemId}/${problem.fieldId}/${index}`}>
                 <strong>{CMS_PROBLEM_LABELS[problem.code]}:</strong> {problem.message}
-                {(problem.collectionId || problem.itemId || field || problem.locale) && <small>
-                  {[problem.collectionId && `コレクション ${problem.collectionId}`, problem.itemId && `項目 ${problem.itemId}`,
-                    field && `フィールド ${field.label}`, problem.locale && `locale ${problem.locale}`, problem.path && `path ${problem.path}`].filter(Boolean).join(" / ")}
+                {(problem.pageId || problem.collectionId || problem.itemId || field || problem.locale) && <small>
+                  {[problem.pageId && `ページ ${problem.pageId}`, problem.collectionId && `コレクション ${problem.collectionId}`, problem.itemId && `項目 ${problem.itemId}`,
+                    problem.fieldId && `フィールド ${field?.label ?? problem.fieldId}`, problem.locale && `locale ${problem.locale}`, problem.path && `path ${problem.path}`].filter(Boolean).join(" / ")}
                 </small>}
                 {(problem.code === "conversion" || problem.code === "value") && problem.collectionId && problem.itemId && problem.locale && problem.fieldId && <label>
                   設定する値 <textarea value={schemaReplacements[replacementKey] ?? ""}
