@@ -312,6 +312,28 @@ test("Kamakura editor adapter は編集状態と本文を1回で読み、状態�
   assert.deepEqual(calls.splice(0), [commonReadPath]);
 });
 
+test("Kamakura adapter preserves the draft-style dependency version from feature-aware page reads", async (t) => {
+  const { createKamakuraAdapter } = await loadKamakuraEditor();
+  const pageId = "kamakura-community-dinner", target = { siteId: "kamakura", pageId, locale: "ja" };
+  const document = { schemaVersion: 1, siteId: "kamakura", pageId, locale: "ja", revision: 1, title: "ページ", tokens: {}, body: [] };
+  const editorState = { readOnly: { reason: "読み取り専用" }, englishPublication: { state: "published", retryable: false }, releases: [] };
+  const base = "/api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/operations";
+  t.mock.method(globalThis, "fetch", async (input) => {
+    const url = new URL(String(input), "https://studio.niho.life"), path = `${url.pathname}${url.search}`;
+    if (path.endsWith("/capabilities?features=site.styles")) return Response.json({ apiVersion: "v1", siteId: "kamakura",
+      operations: EDITING_OPERATIONS.filter(({ id }) => id.startsWith("site.styles.")) });
+    if (path.endsWith("/site.styles.read")) return Response.json({ sitePublicationEpoch: "epoch-1",
+      draft: { version: "draft-styles-v1", styles: {} }, published: { stylesVersion: "published-styles-v1", styles: {} } });
+    if (path === `${base}/pages.read/${pageId}?locale=ja&features=site.styles`) return Response.json({ document, version: "page-v1", draftStylesVersion: "draft-styles-v1", editorState });
+    throw new Error(`unexpected request: ${path}`);
+  });
+  const adapter = createKamakuraAdapter(contract.parseKamakuraCatalog(catalog()), () => {}), signal = new AbortController().signal;
+  await adapter.readSiteSettings(target.siteId, signal);
+  const snapshot = await adapter.readDocument(target, signal);
+  assert.equal(snapshot.draftStylesVersion, "draft-styles-v1");
+  assert.equal(snapshot.document.pageId, pageId);
+});
+
 test("Kamakura Studio adapter routes multi-page plan, apply, and status through the shared editing API", async (t) => {
   const { createKamakuraAdapter } = await loadKamakuraEditor();
   const base = "/api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/operations";

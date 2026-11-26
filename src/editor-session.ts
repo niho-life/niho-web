@@ -12,7 +12,7 @@ import { parseEnglishPublication } from "./english-publication.js";
 import { parseCmsPageBindings, type CmsPageBindingsDocument } from "./cms-page-bindings.js";
 
 export type EditorSession = { target: EditorTarget; history: EditorHistory; version: string; saved: string; hasSavedDraft?: boolean | undefined; locks: readonly EditorLock[]; releases: NonNullable<EditorSnapshot["releases"]>; readOnly?: EditorReadOnly; siteStyles?: SiteStyles; presentation?: SitePresentation; operationQueue: EditorOperationQueue; dependencyVersions: PageOperationVersions; englishPublication?: EditorSnapshot["englishPublication"]; cmsBindings?: CmsPageBindingsDocument | null; savedCmsBindings?: string; selfContained: boolean };
-export type EditorSessionLoad = { session: EditorSession; warning?: string };
+export type EditorSessionLoad = { session: EditorSession; siteSettings?: { settings: ReturnType<typeof parseSiteSettings>; version: string }; warning?: string };
 
 export class EditorSessionLoadError extends Error {
   constructor(readonly reason: "document" | "site-settings-required", message: string, options?: ErrorOptions) { super(message, options); this.name = "EditorSessionLoadError"; }
@@ -84,7 +84,7 @@ export class EditorSessionCache {
     if (!cached) return undefined;
     this.entries.delete(key);
     this.entries.set(key, cached);
-    return { session: cleanSessionCopy(cached.session), ...(cached.warning ? { warning: cached.warning } : {}) };
+    return { session: cleanSessionCopy(cached.session), ...(cached.siteSettings ? { siteSettings: cached.siteSettings } : {}), ...(cached.warning ? { warning: cached.warning } : {}) };
   }
 
   set(target: EditorTarget, snapshot: EditorSnapshot, settingsVersion: string | null | undefined, value: EditorSessionLoad, components?: ComponentLibrary): void {
@@ -117,23 +117,38 @@ export async function readEditorSession(adapter: Pick<EditorAdapter, "readDocume
   const [documentResult, settingsResult] = await Promise.allSettled([documentRead, settingsRead]);
   if (signal.aborted) throw new DOMException("Aborted", "AbortError");
   if (documentResult.status === "rejected") throw new EditorSessionLoadError("document", "文書を読み込めませんでした。現在の編集内容は保持されています。", { cause: documentResult.reason });
+  let pageSnapshot = documentResult.value;
+  let siteSettings = settingsResult.status === "fulfilled" ? settingsResult.value : undefined;
+  const pageStylesVersion = (snapshot: EditorSnapshot) => snapshot.draftStylesVersion ?? snapshot.stylesVersion;
+  if (siteSettings && pageStylesVersion(pageSnapshot) !== undefined && siteSettings.version !== pageStylesVersion(pageSnapshot)) {
+    try {
+      if (!adapter.readSiteSettings) throw new Error("site settings cannot be refreshed");
+      const refreshed = await adapter.readSiteSettings(target.siteId, signal);
+      if (!refreshed || typeof refreshed.version !== "string" || !refreshed.version) throw new Error("site settings version is required");
+      siteSettings = { settings: parseSiteSettings(refreshed.settings), version: refreshed.version };
+      if (siteSettings.version !== pageStylesVersion(pageSnapshot)) pageSnapshot = await adapter.readDocument(target, signal);
+      if (siteSettings.version !== pageStylesVersion(pageSnapshot)) throw new Error("page and site settings versions do not match");
+    } catch (error) {
+      if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+      throw new EditorSessionLoadError("site-settings-required", "ページとサイト共通スタイルの版が一致しません。再読込してください。", { cause: error });
+    }
+  }
   if (settingsResult.status === "fulfilled") {
-    const settings = settingsResult.value;
-    const cached = options.cache?.get(target, documentResult.value, settings?.version, components);
+    const cached = options.cache?.get(target, pageSnapshot, siteSettings?.version, components);
     if (cached) return cached;
     try {
-      const loaded = { session: editorSessionFrom(documentResult.value, target, blocks, components, settings?.settings, !settings) };
-      options.cache?.set(target, documentResult.value, settings?.version, loaded, components);
+      const loaded = { session: editorSessionFrom(pageSnapshot, target, blocks, components, siteSettings?.settings, !siteSettings), ...(siteSettings ? { siteSettings } : {}) };
+      options.cache?.set(target, pageSnapshot, siteSettings?.version, loaded, components);
       return loaded;
     } catch (error) {
       throw new EditorSessionLoadError("document", "文書を読み込めませんでした。現在の編集内容は保持されています。", { cause: error });
     }
   }
-  const cached = options.cache?.get(target, documentResult.value, null, components);
+  const cached = options.cache?.get(target, pageSnapshot, null, components);
   if (cached) return cached;
   try {
-    const loaded = { session: editorSessionFrom(documentResult.value, target, blocks, components, undefined, true), warning: "サイト設定を読み込めませんでした。文書単体で編集を開始しました。" };
-    options.cache?.set(target, documentResult.value, null, loaded, components);
+    const loaded = { session: editorSessionFrom(pageSnapshot, target, blocks, components, undefined, true), warning: "サイト設定を読み込めませんでした。文書単体で編集を開始しました。" };
+    options.cache?.set(target, pageSnapshot, null, loaded, components);
     return loaded;
   } catch (error) {
     throw new EditorSessionLoadError("site-settings-required", "この文書に必要なサイト共通スタイルを読み込めませんでした。現在の編集内容は保持されています。", { cause: error });
