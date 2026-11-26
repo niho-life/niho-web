@@ -22,3 +22,4 @@ export {
 
 export { detachRemovedSiteStyles, mergeSiteStyles, parseSiteStyles, resolvePageStyles, type SiteStyles, type SiteStylesRevision, type SiteStylesSnapshot } from "./site-styles.js";
 export { inspectPageDocument, parsePageInspectQuery, PAGE_INSPECT_LIMITS, PageInspectError, type PageInspectContext, type PageInspectQuery, type PageInspectView } from "./page-inspect.js";
+export { lintDocument, lintDocuments, type NormalizationLintCode, type NormalizationLintContext, type NormalizationLintFinding } from "./normalize.js";

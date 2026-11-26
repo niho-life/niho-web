@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  analyzeNormalization, decodeNormalizationOperations, planNormalization, selectNormalizationOperations, verifyNormalization
+  analyzeNormalization, decodeNormalizationOperations, lintDocuments, planNormalization, selectNormalizationOperations, verifyNormalization
 } from "@niho/web/normalize";
 import { editDocumentById } from "@niho/web/editor-model";
+import { lintDocument } from "@niho/web/core";
 
 const page = (pageId, body, tokens = {}, locale = "ja") => ({
   schemaVersion: 1, siteId: "sample", pageId, locale, revision: 1, title: pageId, tokens, body
@@ -20,6 +21,50 @@ const breakpoints = { version: "settings-1", settings: { base: { name: "Mini", p
   { name: "Small", minWidth: 800, previewWidth: 800 },
   { name: "PC", minWidth: 1280, previewWidth: 1280 }
 ] } };
+
+test("lintDocument reports all shared normalization rules with site context", () => {
+  const children = Array.from({ length: 8 }, (_, index) => element(`child-${index}`, { base: { color: "#aabbcc" } }));
+  const document = page("lint", [element("section", { base: { opacity: 0.8 },
+    responsive: [{ minWidth: 768, declarations: { opacity: 0.8 } }] }, children, "section")], {
+    unused: { type: "color", value: "#ffffff" }
+  });
+  const settings = { version: "bp-v1", settings: { base: { name: "Mobile", previewWidth: 375 }, breakpoints: [
+    { name: "Tablet", minWidth: 768, previewWidth: 800 }, { name: "PC", minWidth: 1280, previewWidth: 1360 }
+  ] } };
+  const findings = lintDocument(document, { tokens: { brand: color("#abc") }, breakpointSettings: settings });
+  assert.deepEqual(new Set(findings.map(({ code }) => code)), new Set([
+    "literal-matches-token", "redundant-override", "unnamed-large-section", "unused-token", "unused-breakpoint"
+  ]));
+  assert.ok(findings.some(({ code, tokenName }) => code === "literal-matches-token" && tokenName === "brand"));
+  assert.ok(findings.some(({ code, breakpoint }) => code === "unused-breakpoint" && breakpoint === 1280));
+});
+
+test("lintDocuments still reports configured breakpoints when the catalog is empty", () => {
+  const findings = lintDocuments([], { breakpointSettings: {
+    version: "bp-empty-v1",
+    settings: { base: { name: "Mobile", previewWidth: 375 }, breakpoints: [{ name: "PC", minWidth: 1280, previewWidth: 1360 }] }
+  } });
+  assert.deepEqual(findings.map(({ code, breakpoint }) => ({ code, breakpoint })), [{ code: "unused-breakpoint", breakpoint: 1280 }]);
+});
+
+test("lint does not equate different non-hex colors when comparing tokens", () => {
+  const document = page("color-lint", [element("text", { base: { color: "white" } })]);
+  const findings = lintDocument(document, { tokens: { dark: color("black") } });
+  assert.ok(!findings.some(({ code }) => code === "literal-matches-token"));
+  assert.ok(lintDocument(page("same-color", [element("text", { base: { color: "WHITE" } })]), { tokens: { light: color("white") } })
+    .some(({ code }) => code === "literal-matches-token"));
+});
+
+test("lint counts page tokens used through a referenced site text style", () => {
+  const document = page("inherited-style", [element("heading", { base: {}, textStyle: "heading" })], {
+    headingSize: { type: "length", value: "40px" }
+  });
+  const findings = lintDocument(document, {
+    tokens: { headingSize: { type: "length", value: "32px" } },
+    textStyles: { heading: { base: { fontSize: { token: "headingSize" } } } }
+  });
+  assert.ok(!findings.some(({ code, tokenName }) => code === "unused-token" && tokenName === "headingSize"));
+});
 
 function apply(batch, document, input) {
   const operations = decodeNormalizationOperations(JSON.parse(JSON.stringify(batch.operations)));

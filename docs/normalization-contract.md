@@ -75,3 +75,24 @@ niho-edit --origin https://site.example --site sample normalize undo --json prog
 初回の書き込み前に、計画、変更前の文書、承認 ID とページごとの操作 ID を新しい記録ファイルへ保存します。各操作の送信前と応答の確認後にファイル全体を原子的に更新します。ファイルは所有者だけが読み書きできるモードで作成され、認証ヘッダーや環境変数を含みません。同じ記録ファイルを操作するコマンドは一つずつ実行してください。
 
 `resume` は応答が未確認のページ操作を同じ操作 ID と元の版で再送します。サイト設定の保存応答を受け取れなかった場合は、設定と版を読み直し、適用済みか再送可能かを確認します。`undo` は未確認の操作結果を確定し、適用済みのページと設定を適用直後の版で照合して変更前に戻します。後続の編集があれば競合で止まり、そこまでに確定した進捗が残ります。`verify` は計画に含まれるすべての対象を読み直し、表示コンテキストの版を照合して、描画入力の比較結果を返します。明示承認した意味変更や見た目の変更が現在の文書に含まれると、比較結果は `changed` になり得ます。
+
+## 文書 lint
+
+`@niho/web/core` の `lintDocument(document, siteStyles)` は、`@niho/web/normalize` の `lintDocuments(documents, siteStyles)` と同じ `analyzeNormalization` を使い、決定的な `NormalizationLintFinding[]` を返します。page-owned tokenは文書の本文・文字スタイルから使われていない場合に `unused-token` として報告します。site共通tokenは値参照の照合に使います。
+
+| code | 検出内容 |
+| --- | --- |
+| `literal-matches-token` | tokenと同じ値のリテラル。CSS値と短縮HEXの等価性も見ます |
+| `redundant-override` | 継承値と同じ幅別上書き |
+| `unnamed-large-section` | 名前がなく子孫要素が8個以上あるsection |
+| `unused-token` | 文書に定義され、本文・文字スタイルから参照されないtoken |
+| `unused-breakpoint` | 設定済みで、対象文書群・共通文字スタイルから参照されない表示幅 |
+
+`siteStyles` に `breakpointSettings: { settings, version }` または `breakpoints: number[]` を含めると、設定済み段の未使用を判定します。外部の部品ライブラリやpresentationが使うsite tokenの全サイト使用判定は、page単体の入力だけでは断定しません。
+
+```sh
+niho-edit --origin https://site.example --site sample lint home --locale ja
+niho-edit --origin https://site.example --site sample lint all
+```
+
+CLIは版付きdraft site stylesとbreakpointsを読み、`lint <page-id>` は対象ページ、`lint all` は `pages.catalog` にあるページをすべて確認します。標準出力は `{ status, pagesChecked, findings }` です。問題があれば終了コード `1`、問題がなければ `0` を返します。APIや入力のエラーは通常のCLIエラーとして終了コード `1` になります。

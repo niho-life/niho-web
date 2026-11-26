@@ -6,7 +6,7 @@ import type { EditorBreakpointSettings, EditorBreakpointSettingsSnapshot, Editor
 import { normalizationKey, verifyNormalization } from "./normalize-verify.js";
 import { parseSiteStyles, resolvePageStyles, type SiteStyles, type SiteStylesRevision } from "./site-styles.js";
 import { colorParts, removeBreakpointSetting } from "./style-model.js";
-import { isStyleProperty, stateNames, styleTokenKind, textStyleProperties } from "./style-values.js";
+import { declarationCss, isStyleProperty, stateNames, styleTokenKind, textStyleProperties, tokenCssValue } from "./style-values.js";
 import type {
   ComponentLibrary, NodeStyle, PageDocument, PageNode, SitePresentation, StateName,
   StateProperty, StyleDeclarations, StyleProperty, StyleValue, TextStyle, TextStyleDeclarations
@@ -102,6 +102,26 @@ export type NormalizationVerification =
   | { readonly status: "changed"; readonly target: NormalizationTarget; readonly reason: string; readonly nodeId?: string;
       readonly slot?: string; readonly width?: number; readonly states?: readonly StateName[] }
   | { readonly status: "unsupported"; readonly reason: string; readonly target?: NormalizationTarget };
+
+export type NormalizationLintCode = "literal-matches-token" | "redundant-override" | "unnamed-large-section" | "unused-token" | "unused-breakpoint";
+export type NormalizationLintFinding = {
+  readonly code: NormalizationLintCode;
+  readonly target?: Pick<PageDocument, "siteId" | "pageId" | "locale">;
+  readonly nodeId?: string;
+  readonly slot?: string;
+  readonly breakpoint?: number | "base";
+  readonly state?: StateName;
+  readonly property?: StyleProperty;
+  readonly tokenName?: string;
+  readonly textStyleName?: string;
+  readonly suggestion?: string;
+  readonly message: string;
+};
+/** Optional site-wide context used by lint rules that depend on configured responsive tiers. */
+export type NormalizationLintContext = SiteStyles & {
+  readonly breakpoints?: readonly number[];
+  readonly breakpointSettings?: EditorBreakpointSettingsSnapshot;
+};
 
 const nearbyDistance = 48;
 const largeSectionDescendants = 8;
@@ -317,6 +337,114 @@ export function analyzeNormalization(input: NormalizationInput): NormalizationAn
     nearbyBreakpoints,
     sectionNames
   };
+}
+
+function lintSiteStyles(context: NormalizationLintContext): SiteStyles {
+  return parseSiteStyles({ ...(context.tokens ? { tokens: context.tokens } : {}), ...(context.textStyles ? { textStyles: context.textStyles } : {}) });
+}
+
+function collectTokenReferences(value: unknown, into: Set<string>): void {
+  if (Array.isArray(value)) { value.forEach((entry) => collectTokenReferences(entry, into)); return; }
+  if (!value || typeof value !== "object") return;
+  if ("token" in value && typeof value.token === "string") { into.add(value.token); return; }
+  Object.values(value).forEach((entry) => collectTokenReferences(entry, into));
+}
+
+function matchesTokenLiteral(property: StyleProperty, value: unknown, token: NonNullable<SiteStyles["tokens"]>[string]): boolean {
+  if ((typeof value !== "string" && typeof value !== "number") || token.type !== styleTokenKind(property)) return false;
+  const tokenValue = tokenCssValue(token);
+  if (styleTokenKind(property) === "color") {
+    const literalColor = normalizeHexColor(String(value)), tokenColor = normalizeHexColor(tokenValue);
+    if (literalColor !== undefined || tokenColor !== undefined) return literalColor !== undefined && literalColor === tokenColor;
+    return String(value).toLowerCase() === tokenValue.toLowerCase();
+  }
+  try { return declarationCss(property, value as StyleValue) === declarationCss(property, tokenValue); }
+  catch { return false; }
+}
+
+function lintDeclarationValues(
+  declarations: StyleDeclarations | undefined,
+  tokens: NonNullable<SiteStyles["tokens"]>,
+  target: Pick<PageDocument, "siteId" | "pageId" | "locale">,
+  finding: Pick<NormalizationLintFinding, "nodeId" | "slot" | "breakpoint" | "state" | "textStyleName">
+): NormalizationLintFinding[] {
+  if (!declarations) return [];
+  const findings: NormalizationLintFinding[] = [];
+  for (const [name, value] of Object.entries(declarations)) {
+    if (!isStyleProperty(name) || value === undefined || typeof value === "object") continue;
+    const property = name as StyleProperty;
+    for (const [tokenName, token] of Object.entries(tokens).sort(([a], [b]) => sortText(a, b))) {
+      if (!matchesTokenLiteral(property, value, token)) continue;
+      findings.push({ code: "literal-matches-token", target, ...finding, property, tokenName,
+        message: `${property} の値は共通token「${tokenName}」と同じです。token参照に置き換えてください。` });
+    }
+  }
+  return findings;
+}
+
+function lintFindingOrder(a: NormalizationLintFinding, b: NormalizationLintFinding): number {
+  const left = [a.code, a.target ? identity({ ...a.target, revision: 0 }) : "", a.nodeId ?? "", a.slot ?? "", String(a.breakpoint ?? ""), a.state ?? "", a.property ?? "", a.tokenName ?? ""];
+  const right = [b.code, b.target ? identity({ ...b.target, revision: 0 }) : "", b.nodeId ?? "", b.slot ?? "", String(b.breakpoint ?? ""), b.state ?? "", b.property ?? "", b.tokenName ?? ""];
+  for (let index = 0; index < left.length; index++) {
+    const order = sortText(left[index]!, right[index]!);
+    if (order) return order;
+  }
+  return 0;
+}
+
+/** Lint one or more documents with the same override, section, token, and breakpoint rules used by analyzeNormalization. */
+export function lintDocuments(documents: readonly PageDocument[], context: NormalizationLintContext = {}): NormalizationLintFinding[] {
+  const siteStyles = lintSiteStyles(context);
+  const input: NormalizationInput = { documents, siteStyles,
+    ...(context.breakpointSettings ? { breakpointSettings: context.breakpointSettings } : {}),
+    ...(context.breakpoints ? { breakpoints: context.breakpoints } : {}) };
+  const analysis = analyzeNormalization(input), findings: NormalizationLintFinding[] = [];
+  for (const document of documents) {
+    const target = { siteId: document.siteId, pageId: document.pageId, locale: document.locale };
+    const effective = resolvePageStyles(document, siteStyles), tokens = effective.tokens;
+    const usedTokens = new Set<string>();
+    collectTokenReferences({ body: document.body, textStyles: document.textStyles }, usedTokens);
+    for (const { node } of walkNodes(document)) if (node.type !== "text" && node.style?.textStyle) {
+      const referencedStyle = effective.textStyles?.[node.style.textStyle];
+      if (referencedStyle) collectTokenReferences(referencedStyle, usedTokens);
+    }
+    for (const tokenName of Object.keys(document.tokens).sort(sortText)) if (!usedTokens.has(tokenName)) {
+      findings.push({ code: "unused-token", target, tokenName, message: `文書token「${tokenName}」は本文・文字スタイルから参照されていません。` });
+    }
+
+    const addStyle = (nodeId: string, style: NodeStyle, slot?: string) => {
+      const location = { nodeId, ...(slot === undefined ? {} : { slot }) };
+      findings.push(...lintDeclarationValues(style.base, tokens, target, { ...location, breakpoint: "base" }));
+      for (const [state, declarations] of Object.entries(style.states ?? {})) {
+        findings.push(...lintDeclarationValues(declarations, tokens, target, { ...location, state: state as StateName }));
+      }
+      for (const tier of style.responsive ?? []) findings.push(...lintDeclarationValues(tier.declarations, tokens, target, { ...location, breakpoint: tier.minWidth }));
+    };
+    for (const { node } of walkNodes(document)) {
+      if (node.type === "text") continue;
+      if (node.style) addStyle(node.id, node.style);
+      if (node.type === "component") for (const [slot, style] of Object.entries(node.slots ?? {})) addStyle(node.id, style, slot);
+    }
+    for (const [textStyleName, style] of Object.entries(document.textStyles ?? {})) {
+      findings.push(...lintDeclarationValues(style.base, tokens, target, { textStyleName, breakpoint: "base" }));
+      for (const tier of style.responsive ?? []) findings.push(...lintDeclarationValues(tier.declarations, tokens, target, { textStyleName, breakpoint: tier.minWidth }));
+    }
+  }
+  for (const entry of analysis.redundantOverrides) findings.push({ code: "redundant-override",
+    target: { siteId: entry.target.siteId, pageId: entry.target.pageId, locale: entry.target.locale }, nodeId: entry.nodeId,
+    ...(entry.slot === undefined ? {} : { slot: entry.slot }), breakpoint: entry.breakpoint, property: entry.property,
+    message: `${entry.breakpoint}px の ${entry.property} は継承値と同じため削除できます。` });
+  for (const entry of analysis.sectionNames) findings.push({ code: "unnamed-large-section",
+    target: { siteId: entry.target.siteId, pageId: entry.target.pageId, locale: entry.target.locale }, nodeId: entry.nodeId,
+    suggestion: entry.name, message: `大きなsectionに名前がありません。「${entry.name}」を候補にできます。` });
+  for (const breakpoint of analysis.unusedBreakpoints) findings.push({ code: "unused-breakpoint", breakpoint,
+    message: `${breakpoint}px の表示幅は文書・共通文字スタイルから参照されていません。` });
+  return findings.sort(lintFindingOrder);
+}
+
+/** Lint one document. Supply configured breakpoints in `siteStyles.breakpointSettings` or `siteStyles.breakpoints`. */
+export function lintDocument(document: PageDocument, siteStyles: NormalizationLintContext = {}): NormalizationLintFinding[] {
+  return lintDocuments([document], siteStyles);
 }
 
 export function decodeNormalizationOperations(operations: readonly PageOperationWire[]): EditorOperationById[] {
