@@ -23,7 +23,7 @@ import { PageReleaseSetDialog } from "./editor-release-set.js";
 import { AutosaveSwitch, ConflictDialog, HistoryBar, HistoryDialogs, LibraryRecoveryBanner, RecoveryBanner, RecoveryCompareDialog, ReleaseAffected, SaveStatus, VersionPanel, autosaveDelay, classifySaveError, formatDateTime, isOffline, saveProblemNotice, saveStatus, targetKeyOf, useAutosave, useLibraryRecovery, useOnline, useRecovery, useVersionHistory, type LatestSnapshot, type SaveProblem } from "./editor-history.js";
 import { isDirectlyEditable, readEditableChildren } from "./editor-rich-text.js";
 import { isSafePublicLink } from "./validation-utils.js";
-import type { ComponentUsageEntry, EditorBlockRegistry, EditorCanvasPreviewProps, EditorLocaleReleasePlan, EditorLocaleReleaseState, EditorLock, EditorPage, EditorPageChange, EditorReleasePlan, EditorReleaseRequest, EditorSite, EditorSnapshot, EditorTarget, EnglishPublication, PageEditorProps } from "./editor-types.js";
+import type { ComponentUsageEntry, EditorBlockRegistry, EditorCanvasPreviewProps, EditorLocaleReleasePlan, EditorLocaleReleaseState, EditorLock, EditorPage, EditorPageChange, EditorReleasePlan, EditorReleaseRequest, EditorSite, EditorTarget, EnglishPublication, PageEditorProps } from "./editor-types.js";
 import type { ComponentKind, ComponentLibrary, IconName, PageDocument, PageNode, SitePresentation } from "./types.js";
 import { AssetLibraryPanel, BackgroundImageField, ImageSourceField, VideoSourceField, assetPlacement, socialImageProblem, useLocalAssetUsage, useResolvedAssets, type AssetAction, type AssetPicker } from "./editor-assets.js";
 import { assetEditorCss, canvasAssetCss } from "./editor-assets-style.js";
@@ -87,7 +87,7 @@ const needsPageSave = (session: Session) => {
   pageSaveChecks.set(session, { present, saved: session.saved, dirty });
   return dirty;
 };
-type PagePrefetch = { controller: AbortController; promise: Promise<EditorSnapshot>; components?: ComponentLibrary; completedAt?: number };
+type PagePrefetch = { controller: AbortController; promise: Promise<EditorSessionLoad>; blocks: EditorBlockRegistry; components?: ComponentLibrary; completedAt?: number };
 const PAGE_PREFETCH_MAX_AGE_MS = 10_000;
 const PAGE_PREFETCH_LIMIT = 3;
 /** 部品を読み直す確認中の状態。library・page は確認を始めた時点の作業コピーの fingerprint（変わっていれば適用しない）。 */
@@ -811,13 +811,21 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     if (!adapter.prefetchDocument || currentTarget && sameTarget(currentTarget, editorTarget)) return;
     const key = targetKeyOf(editorTarget), currentComponents = libraryRef.current?.history.present;
     const existing = pagePrefetches.current.get(key);
-    if (existing && existing.components === currentComponents && (existing.completedAt === undefined || Date.now() - existing.completedAt <= PAGE_PREFETCH_MAX_AGE_MS)) return;
+    if (existing && existing.blocks === blocks && existing.components === currentComponents && (existing.completedAt === undefined || Date.now() - existing.completedAt <= PAGE_PREFETCH_MAX_AGE_MS)) return;
     existing?.controller.abort();
     const controller = new AbortController();
-    let promise: Promise<EditorSnapshot>;
-    try { promise = Promise.resolve(adapter.prefetchDocument(editorTarget, controller.signal)); }
+    const currentSiteSettings = siteSettingsRef.current;
+    const cachedSiteSettings = currentSiteSettings.status === "ready" && currentSiteSettings.settings && currentSiteSettings.version
+      ? { settings: currentSiteSettings.settings, version: currentSiteSettings.version } : undefined;
+    let promise: Promise<EditorSessionLoad>;
+    try {
+      // 文書の取得だけでなく検証・編集セッション化まで先に済ませ、クリック後の同期処理を減らす。
+      promise = Promise.resolve(adapter.prefetchDocument(editorTarget, controller.signal)).then((snapshot) =>
+        readEditorSession(adapter, editorTarget, controller.signal, blocks, currentComponents,
+          { cache: pageSessionCache.current, snapshot, ...(cachedSiteSettings ? { siteSettings: cachedSiteSettings } : {}) }));
+    }
     catch (error) { promise = Promise.reject(error); }
-    const entry: PagePrefetch = { controller, ...(currentComponents ? { components: currentComponents } : {}), promise };
+    const entry: PagePrefetch = { controller, blocks, ...(currentComponents ? { components: currentComponents } : {}), promise };
     pagePrefetches.current.set(key, entry);
     void entry.promise.then(() => { entry.completedAt = Date.now(); }, () => {
       if (pagePrefetches.current.get(key) === entry) pagePrefetches.current.delete(key);
@@ -828,7 +836,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       oldest[1].controller.abort();
       pagePrefetches.current.delete(oldest[0]);
     }
-  }, [adapter]);
+  }, [adapter, blocks]);
   const preloadAdjacentPages = useCallback((target: EditorTarget, candidates: readonly EditorPage[]) => {
     if (!adapter.prefetchDocument) return;
     const available = candidates.filter((page) => page.siteId === target.siteId && page.kind !== "shared");
@@ -866,24 +874,26 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       const cachedSiteSettings = currentSiteSettings.status === "ready" && currentSiteSettings.settings && currentSiteSettings.version
         ? { settings: currentSiteSettings.settings, version: currentSiteSettings.version } : undefined;
       const prefetched = pagePrefetches.current.get(key);
-      let snapshot: EditorSnapshot | undefined;
-      if (prefetched && prefetched.components === currentComponents && (prefetched.completedAt === undefined || Date.now() - prefetched.completedAt <= PAGE_PREFETCH_MAX_AGE_MS)) {
-        try { snapshot = await prefetched.promise; }
+      let loaded: EditorSessionLoad | undefined;
+      if (prefetched && prefetched.blocks === blocks && prefetched.components === currentComponents && (prefetched.completedAt === undefined || Date.now() - prefetched.completedAt <= PAGE_PREFETCH_MAX_AGE_MS)) {
+        const abortPrefetch = () => prefetched.controller.abort();
+        controller.signal.addEventListener("abort", abortPrefetch, { once: true });
+        try {
+          const prepared = await prefetched.promise;
+          if (!cachedSiteSettings || prepared.siteSettings?.version === cachedSiteSettings.version) loaded = prepared;
+        }
         catch { if (controller.signal.aborted) return false; }
-        finally { if (pagePrefetches.current.get(key) === prefetched) pagePrefetches.current.delete(key); }
+        finally {
+          controller.signal.removeEventListener("abort", abortPrefetch);
+          if (pagePrefetches.current.get(key) === prefetched) pagePrefetches.current.delete(key);
+        }
       } else if (prefetched) {
         prefetched.controller.abort();
         pagePrefetches.current.delete(key);
       }
       if (controller.signal.aborted) return false;
-      let loaded: EditorSessionLoad;
-      try {
-        loaded = await readEditorSession(adapter, editorTarget, controller.signal, blocks, currentComponents,
-          { cache: pageSessionCache.current, ...(snapshot ? { snapshot } : {}), ...(cachedSiteSettings ? { siteSettings: cachedSiteSettings } : {}) });
-      } catch (error) {
-        if (!snapshot || controller.signal.aborted) throw error;
-        loaded = await readEditorSession(adapter, editorTarget, controller.signal, blocks, currentComponents, { cache: pageSessionCache.current, ...(cachedSiteSettings ? { siteSettings: cachedSiteSettings } : {}) });
-      }
+      if (!loaded) loaded = await readEditorSession(adapter, editorTarget, controller.signal, blocks, currentComponents,
+        { cache: pageSessionCache.current, ...(cachedSiteSettings ? { siteSettings: cachedSiteSettings } : {}) });
       if (controller.signal.aborted) return false;
       if (loaded.siteSettings && loaded.siteSettings.version !== siteSettingsRef.current.version) siteSettingsRef.current.acceptSnapshot(loaded.siteSettings);
       if (finish) pendingMeasurement.current = { target: loaded.session.target, initial, signal: controller.signal, finish };

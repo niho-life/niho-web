@@ -92,7 +92,11 @@ export class EditorSessionCache {
     const key = sessionCacheKey(target, snapshot, settingsVersion);
     if (!key) return;
     this.entries.delete(key);
-    this.entries.set(key, { session: cleanSessionCopy(value.session), ...(value.warning ? { warning: value.warning } : {}) });
+    this.entries.set(key, {
+      session: cleanSessionCopy(value.session),
+      ...(value.siteSettings ? { siteSettings: value.siteSettings } : {}),
+      ...(value.warning ? { warning: value.warning } : {})
+    });
     while (this.entries.size > this.capacity) this.entries.delete(this.entries.keys().next().value!);
   }
 

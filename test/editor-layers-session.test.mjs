@@ -146,6 +146,20 @@ test("editor page cache reuses only the saved session for the same document vers
   assert.equal(changedVersion.session.history.present.title, "サーバー側の新しい版");
 });
 
+test("editor page cache retains the site-settings snapshot with a prefetched session", async () => {
+  const cache = new EditorSessionCache(2), controller = new AbortController();
+  const siteSettings = { settings: { title: "Demo", locale: "ja" }, version: "s1" };
+  const adapter = {
+    readDocument: async () => { throw new Error("should use the prefetched snapshot"); },
+    readSiteSettings: async () => siteSettings
+  };
+  const prefetchedSnapshot = snapshot();
+  const first = await readEditorSession(adapter, target, controller.signal, {}, undefined, { cache, snapshot: prefetchedSnapshot });
+  const cached = await readEditorSession(adapter, target, controller.signal, {}, undefined, { cache, snapshot: prefetchedSnapshot });
+  assert.deepEqual(cached.siteSettings, first.siteSettings);
+  assert.equal(cached.siteSettings.version, "s1");
+});
+
 test("editor session requires unavailable site settings when the document references their tokens", async () => {
   const dependent = structuredClone(source);
   dependent.body[0].style = { base: { color: { token: "siteInk" } } };
