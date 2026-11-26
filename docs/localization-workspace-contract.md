@@ -18,6 +18,8 @@
 
 例外（throw・reject）は画面では一般的な失敗（「保存できませんでした」と再試行）になります。秘密や内部の詳細をエラーの文に含めないでください。
 
+Studio-native CMS はこの共通項目画面を CMS 独自の翻訳 overlay に接続します。workspace は現行の CMS 下書きを原文として表示し、翻訳 overlay は項目・field・source locale・target locale の安定 ID と原文 fingerprint に結び付けます。公開 plan は原文 locale の現行公開 snapshot を基準にし、全訳文がその公開版と一致して確認済みの項目だけを target locale snapshot に入れます。未完了・未確認または原文更新後の項目は省き、原文 locale へフォールバックしません。CMS 自動翻訳サービスは未接続です。安全な rich-text adapter がない Studio では、本文のある rich-text 項目も省きます。固定ページと CMS snapshot の同時原子公開には含めません。詳細は [CMS v2 契約](cms-v2-contract.md#cms-項目の翻訳と-locale-snapshot) を参照してください。
+
 ## 使い方
 
 サイトが [共通 Editing API の翻訳操作](editing-api-contract.md#翻訳操作)を実装している場合、GUI と CLI が同じ操作を使えます。鎌倉の Studio adapter は `@niho/web/editing-client` の `executeLocalization` で接続します。画面から渡す公開反映のコンテキストは、選んだ操作、確認した概要の版、準備済みの公開版です。初回の公開準備に使う操作 ID は同じ準備の再送で再利用します。

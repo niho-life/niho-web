@@ -1,5 +1,5 @@
 import {
-  applyAutomaticTranslationResult, createLocalizationOverlay, editLocalizedValue, localizationStatus, parseLocalizationOverlay, parseLocalizationValue,
+  applyAutomaticTranslationResult, createLocalizationOverlay, editLocalizedValue, localizationStatus, parseLocalizationOverlay, parseLocalizationValue, reviewLocalizedValue,
   type LocalizationCollection, type LocalizationDraftEntry, type LocalizationOverlay, type LocalizationStatus, type LocalizationValue
 } from "./localization.js";
 import type { CmsField, CmsItemRevision, CmsSchema } from "./cms-v2-schema.js";
@@ -261,6 +261,15 @@ export function editCmsLocalizedValue(input: unknown, collection: CmsLocalizatio
   if (!unit) fail("$edit.fieldId", "unknown or non-localizable CMS field");
   const next = editLocalizedValue(overlay, localization, { unitId: unit.unitId, expectedVersion: edit.expectedVersion, value: edit.value });
   return cmsOverlay(next, collection.identity);
+}
+
+/** Mark a current CMS field translation reviewed against the current source fingerprint. */
+export function reviewCmsLocalizedValue(input: unknown, collection: CmsLocalizationCollection,
+  review: { readonly fieldId: string; readonly expectedVersion: number }): CmsLocalizationOverlay {
+  const localization = validateCollection(collection), overlay = genericOverlay(input, collection), fieldId = cmsId(review.fieldId, "$review.fieldId");
+  const field = collection.fields.find((entry) => entry.identity.fieldId === fieldId);
+  if (!field) fail("$review.fieldId", "unknown or non-localizable CMS field");
+  return cmsOverlay(reviewLocalizedValue(overlay, localization, { unitId: field.unitId, expectedVersion: review.expectedVersion }), collection.identity);
 }
 
 export function applyAutomaticCmsTranslationResult(input: unknown, collection: CmsLocalizationCollection, resultInput: unknown): CmsLocalizationOverlay {

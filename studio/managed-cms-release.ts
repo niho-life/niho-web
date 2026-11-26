@@ -17,8 +17,10 @@ export function releaseImpacts(snapshot: CmsReleaseSnapshot, fixedRoutes: Set<st
     const path = collectionPath(pathPrefix);
     return path === null ? [] : [path];
   });
-  const paths = ["/cms", ...listPaths, ...snapshot.items.flatMap(({ path }) => path ? [path] : []), ...snapshot.redirects.map(({ from }) => from)];
-  const routeProblems = paths.filter((path, i) => !cmsPathReserved(path) || fixedRoutes.has(path) || paths.indexOf(path) !== i)
+  const root = snapshot.sourceLocale && snapshot.sourceLocale !== snapshot.locale ? `/${snapshot.locale}/cms` : "/cms";
+  const allowedCmsPath = (path: string) => cmsPathReserved(path) || path === root || path.startsWith(`${root}/`);
+  const paths = [root, ...listPaths, ...snapshot.items.flatMap(({ path }) => path ? [path] : []), ...snapshot.redirects.map(({ from }) => from)];
+  const routeProblems = paths.filter((path, i) => !allowedCmsPath(path) || fixedRoutes.has(path) || paths.indexOf(path) !== i)
     .map((path): CmsProblem => ({ code: "route", path, message: "CMS の一覧・詳細・転送パスが固定ページまたは別の CMS パスと重複しています。" }));
   for (const item of snapshot.items) {
     const collection = snapshot.schema.collections.find(({ id }) => id === item.collectionId)!;
@@ -38,7 +40,7 @@ export async function releaseContext(store: CmsStore, site: Site, pins: readonly
     store.approvedPins(site, pins), store.routeTable(site, "cms.publish")
   ]);
   const fixedRoutes = new Set(routeTable.reservations.flatMap((entry) =>
-    entry.kind === "fixed-page" || entry.kind === "reserved" ? [entry.path] : []));
+    entry.kind === "fixed-page" || (entry.kind === "reserved" && !entry.reservationId.startsWith("cms_route_")) ? [entry.path] : []));
   const revisions = new Map(await Promise.all(approved.map(async (pin) =>
     [pin.revision, await store.item(site.siteId, site.state.locale, pin)] as const)));
   return {
@@ -151,18 +153,24 @@ const publicHeaders = {
 export async function managedCmsPublic(request: Request, store: CmsStore, origin: string): Promise<Response | null> {
   const url = new URL(request.url);
   if (url.origin !== origin || (request.method !== "GET" && request.method !== "HEAD")) return null;
-  const match = /^\/s\/([a-z0-9]+(?:-[a-z0-9]+)*)(\/cms(?:\/[a-z0-9_-]+)*)$/u.exec(url.pathname);
+  const match = /^\/s\/([a-z0-9]+(?:-[a-z0-9]+)*)(?:\/(ja|en))?(\/cms(?:\/[a-z0-9_-]+)*)$/u.exec(url.pathname);
   if (!match) return null;
-  const [, slug, path] = match, prefix = `/s/${slug}`;
-  const current = await store.db.prepare(`SELECT ms.site_id, json_extract(c.state_json, '$.current.id') AS id
-    FROM managed_cms_state AS c JOIN managed_sites AS ms ON ms.site_id = c.site_id WHERE ms.slug = ?1 AND json_extract(c.state_json, '$.current.id') IS NOT NULL`)
-    .bind(slug).first<{ site_id: string; id: string }>();
+  const [, slug, prefixedLocale, cmsPath] = match, prefix = `/s/${slug}`;
+  const current = await store.db.prepare(`SELECT ms.site_id, c.state_json
+    FROM managed_cms_state AS c JOIN managed_sites AS ms ON ms.site_id = c.site_id WHERE ms.slug = ?1`)
+    .bind(slug).first<{ site_id: string; state_json: string }>();
   if (!current) return null;
-  const snapshot = await store.snapshot(current.site_id, current.id);
-  const redirect = snapshot.redirects.find(({ from }) => from === path);
+  const state = JSON.parse(current.state_json) as Site["state"];
+  const locale = prefixedLocale ?? state.locale;
+  if (prefixedLocale === state.locale) return null;
+  const published = locale === state.locale ? state.current : state.localizedReleases?.[locale] ?? null;
+  if (!published) return null;
+  const routePath = prefixedLocale ? `/${prefixedLocale}${cmsPath}` : cmsPath;
+  const snapshot = await store.snapshot(current.site_id, published.id);
+  const redirect = snapshot.redirects.find(({ from }) => from === routePath);
   if (redirect) return new Response(null, { status: 308, headers: { ...publicHeaders, Location: `${prefix}${redirect.to}` } });
-  const entry = snapshot.items.find((item) => item.path === path);
-  const collection = snapshot.schema.collections.find(({ pathPrefix }) => collectionPath(pathPrefix) === path);
+  const entry = snapshot.items.find((item) => item.path === routePath);
+  const collection = snapshot.schema.collections.find(({ pathPrefix }) => collectionPath(pathPrefix) === routePath);
   let title: string, body: string;
   if (entry) {
     const presentation = previewContent(snapshot.schema, entry);
@@ -174,7 +182,7 @@ export async function managedCmsPublic(request: Request, store: CmsStore, origin
         if (typeof value !== "string" || !["text", "longText", "richText", "datetime"].includes(type)) return "";
         return `<p>${type === "richText" ? value : escapeHtml(value).replaceAll("\n", "<br>")}</p>`;
       }).join("");
-  } else if (path === "/cms" || collection) {
+  } else if (routePath === (snapshot.sourceLocale && snapshot.sourceLocale !== snapshot.locale ? `/${snapshot.locale}/cms` : "/cms") || collection) {
     title = collection?.label ?? "CMS";
     const links = collection
       ? snapshot.items.filter((item) => item.collectionId === collection.id && item.path).map((item) =>

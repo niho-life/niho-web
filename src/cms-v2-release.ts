@@ -24,6 +24,8 @@ export type CmsReleaseSnapshot = {
   readonly releaseId: string;
   readonly siteId: string;
   readonly locale: string;
+  /** Present for a translated CMS snapshot whose routes are prefixed by its locale. */
+  readonly sourceLocale?: string;
   /** Route registry used to validate this release. */
   readonly routeTableRevision: string;
   /** Complete route registry that will be published with this release. */
@@ -43,10 +45,16 @@ function cmsRouteRevision(releaseId: string): string {
   }
   return `route_${hash.toString(36)}`;
 }
+function cmsRouteReservationId(locale: string, collectionId: string): string {
+  let hash = 0x811c9dc5;
+  for (const character of collectionId) hash = Math.imul(hash ^ character.charCodeAt(0), 0x01000193) >>> 0;
+  return `cms_route_${locale}_${collectionId.slice(0, 36)}_${hash.toString(36)}`;
+}
 export type CmsReleaseImpact = (snapshot: CmsReleaseSnapshot) => readonly CmsProblem[];
 export type CmsReleaseContext = {
   readonly schema: CmsSchema;
   readonly locale: string;
+  readonly sourceLocale?: string;
   readonly currentReleaseId: string | null;
   readonly routeTable: CmsRouteTable;
   readonly readRevision: (item: CmsReleasePin) => unknown;
@@ -155,7 +163,8 @@ export function planCmsRelease(input: unknown, releaseIdInput: string, context: 
     return { status: "invalid", problems: [{ code: "route", message: "公開転送の件数が上限を超えています。" }] };
   }
   const retainedReservations = currentRoutes.reservations.filter((reservation) => reservation.kind !== "cms-item"
-    && !(reservation.kind === "redirect" && reservation.owner === "cms"));
+    && !(reservation.kind === "redirect" && reservation.owner === "cms")
+    && !(reservation.kind === "reserved" && reservation.reservationId.startsWith("cms_route_")));
   if (retainedReservations.length + routes.length + generatedRedirects.length + selection.redirects.length > CMS_ROUTE_RESERVATION_LIMIT) {
     return { status: "invalid", problems: [{ code: "route", message: "CMS ルート表の予約件数が上限を超えています。" }] };
   }
@@ -165,8 +174,14 @@ export function planCmsRelease(input: unknown, releaseIdInput: string, context: 
   if ("status" in routePlan) return { status: "conflict" };
   const redirects = routePlan.table.reservations.flatMap((reservation) => reservation.kind === "redirect" && reservation.owner === "cms"
     ? [{ from: reservation.path, to: reservation.targetPath }] : []);
+  const routeRoot = context.sourceLocale && context.sourceLocale !== selection.locale ? `/${selection.locale}/cms` : "/cms";
+  const listRoutes = schema.collections.flatMap(({ id, pathPrefix }) => pathPrefix === null ? [] : [{
+    kind: "reserved" as const, path: pathPrefix.slice(0, -1), reservationId: cmsRouteReservationId(selection.locale, id)
+  }]);
+  const cmsRoutes = [{ kind: "reserved" as const, path: routeRoot, reservationId: `cms_route_${selection.locale}_root` }, ...listRoutes];
+  const routeTable = parseCmsRouteTable({ ...routePlan.table, reservations: [...routePlan.table.reservations, ...cmsRoutes] }, schema.siteId, selection.locale);
   const snapshot = freezeJson<CmsReleaseSnapshot>({ contractVersion: 2, releaseId, siteId: schema.siteId,
-    locale: selection.locale, routeTableRevision: selection.routeTableRevision, routeTable: routePlan.table,
+    locale: selection.locale, ...(context.sourceLocale ? { sourceLocale: context.sourceLocale } : {}), routeTableRevision: selection.routeTableRevision, routeTable,
     schema, items, redirects });
   problems.push(...cmsReferenceProblems(schema, items), ...routePlan.problems, ...(context.impact?.(snapshot) ?? []));
   return problems.length ? { status: "invalid", problems } : { status: "ready", proposal: freezeJson({ expectedReleaseId: selection.expectedReleaseId, snapshot }) };

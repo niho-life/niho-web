@@ -7,7 +7,7 @@ import {
   cmsItemKey, cmsLegacyCollections, cmsOperationStatus, cmsRoleCapabilities, cmsWorkspaceItem,
   discoverCmsContract, dueCmsSchedule, parseCmsDiscovery, parseCmsDraftWrite, parseCmsItemRevision, parseCmsSchema,
   parseCmsRouteTable, parseCmsSchemaPlanInput, planCmsMigrationWithRouteTables, planCmsRelease, planCmsRouteTable,
-  planCmsSchedule, removeCmsItem, resolveCmsPageBindings, restoreCmsItem, revalidateCmsRelease
+  planCmsSchedule, removeCmsItem, resolveCmsPageBindings, restoreCmsItem, revalidateCmsRelease,
 } from "@niho/web/cms-v2";
 import { assetKey } from "@niho/web/assets";
 import { parsePageDocument } from "@niho/web/core";
@@ -241,6 +241,8 @@ test("discovery is authorized and v1 cannot write through either a stale or gues
   assert.deepEqual(parseCmsDiscovery(discovery, siteId), discovery);
   assert.throws(() => parseCmsDiscovery({ ...discovery, contractVersion: 3 }, siteId), /unsupported CMS contract version/u);
   assert.ok(discovery.operations.includes("cms.schema.plan"));
+  assert.ok(discovery.operations.includes("cms.localization.items.command"));
+  assert.ok(discovery.operations.includes("cms.localization.release.apply"));
   assert.ok(!discovery.operations.includes("cms.schema.apply"));
   assert.equal(checkCmsWriteVersion({ contractVersion: 1, siteId }, undefined).status, "allowed");
   assert.equal(checkCmsWriteVersion(host.schema, 1).status, "unsupported_version");

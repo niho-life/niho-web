@@ -9,6 +9,7 @@ import { CMS_PAGE_BINDINGS_MAX_BYTES, parseCmsPageBindings } from "../dist/cms-p
 import { EDITING_OPERATIONS } from "../dist/editing-api.js";
 import { editingLocalizationConflictBody, EDITING_LOCALIZATION_INPUT_BYTES } from "../dist/editing-localization.js";
 import { parseAssetUploadResult } from "../dist/assets.js";
+import { parseCmsLocalizationItemKey } from "../dist/cms-v2.js";
 import { editDocumentById } from "../dist/editor-model.js";
 import { PAGE_OPERATION_LIMIT, changedPageNodeIds, editingOperationProblem, pageOperationUsesNodeNames, parsePageOperation } from "../dist/editing-page-operations.js";
 import { diffDocuments } from "../dist/history.js";
@@ -28,6 +29,10 @@ const OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0
 const CMS_COLLECTION_ID = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,79}$/u;
 const CMS_ITEM_ID = /^[A-Za-z0-9_][A-Za-z0-9._~-]{0,127}$/u;
 const RESERVED_CMS_IDS = new Set(["__proto__", "constructor", "prototype"]);
+function isCmsLocalizationItemKey(value) {
+  try { parseCmsLocalizationItemKey(value); return true; }
+  catch { return false; }
+}
 function validCmsCollectionId(value) { return typeof value === "string" && CMS_COLLECTION_ID.test(value) && !RESERVED_CMS_IDS.has(value); }
 function validCmsItemId(value) { return typeof value === "string" && CMS_ITEM_ID.test(value) && value !== "." && value !== ".." && !RESERVED_CMS_IDS.has(value); }
 
@@ -371,6 +376,45 @@ async function runLocalization(client, operation, values, positionals) {
     input = { ...data, ...input };
   }
 
+  if (values.studio) {
+    const studioOperation = {
+      "localization.overview": "cms.localization.overview",
+      "localization.items.list": "cms.localization.items.list",
+      "localization.items.read": "cms.localization.items.read",
+      "localization.items.command": "cms.localization.items.command",
+      "localization.release.read": "cms.localization.release.current",
+      "localization.release.prepare": "cms.localization.release.plan",
+      "localization.release.apply": "cms.localization.release.apply"
+    }[id];
+    if (!studioOperation || itemTarget && !isCmsLocalizationItemKey(input.itemKey)) throw new CliError("invalid_arguments");
+    let studioInput = input;
+    if (id === "localization.release.read") studioInput = {};
+    if (id === "localization.release.prepare") {
+      if (input.operation !== "publish" || input.resumeToken !== null) throw new CliError("invalid_arguments");
+      studioInput = typeof input.operationId === "string" ? { operationId: input.operationId } : {};
+    }
+    if (id === "localization.release.apply") {
+      if (input.operation !== "publish" || input.resumeToken !== null || typeof input.confirmationToken !== "string") throw new CliError("invalid_arguments");
+      studioInput = { confirmationToken: input.confirmationToken };
+    }
+    const url = `${origin(values.origin)}/api/edit/v2/sites/${encodeURIComponent(values.site)}/operations/${studioOperation}`;
+    let response;
+    try {
+      response = await fetch(url, { method: "POST", credentials: "omit", cache: "no-store", redirect: "manual", signal: AbortSignal.timeout(30_000),
+        headers: { "Content-Type": "application/json", ...(values.studio ? {
+          "X-Studio-CMS-Version": "2",
+          ...(process.env.CF_ACCESS_CLIENT_ID && process.env.CF_ACCESS_CLIENT_SECRET
+            ? { "CF-Access-Client-Id": process.env.CF_ACCESS_CLIENT_ID, "CF-Access-Client-Secret": process.env.CF_ACCESS_CLIENT_SECRET }
+            : process.env.NIHO_EDIT_TOKEN ? { "cf-access-token": process.env.NIHO_EDIT_TOKEN } : {}),
+          ...(typeof studioInput.operationId === "string" ? { "X-Studio-Operation-Key": studioInput.operationId } : {})
+        } : {}) }, body: JSON.stringify({ siteId: values.site, ...studioInput }) });
+    } catch { throw new CliError("transport_error"); }
+    if (response.status >= 300 && response.status < 400) throw new CliError("redirect_response", response.status);
+    const payload = await readJson(response.body, 2 * 1024 * 1024);
+    emit(payload, response.status, response.ok ? 0 : 1, studioOperation);
+    return;
+  }
+
   let result;
   try { result = await apiCall(() => client.executeLocalization(id, input, AbortSignal.timeout(30_000))); }
   catch (error) {
@@ -526,7 +570,8 @@ async function main() {
     process.stdout.write(`${JSON.stringify({ id: edited.id ?? base.id ?? null, version: base.version, changes })}\n`); return;
   }
   const baseOrigin = origin(values.origin);
-  if (values.studio && !["discover", "read", "outline", "find", "get", "apply"].includes(command) && !command?.startsWith("cms-")) throw new CliError("invalid_arguments");
+  if (values.studio && !["discover", "read", "outline", "find", "get", "apply"].includes(command)
+    && !command?.startsWith("cms-") && !command?.startsWith("localization-")) throw new CliError("invalid_arguments");
   if (!IDENTIFIER.test(values.site ?? "")) throw new CliError("invalid_site");
   const token = process.env.NIHO_EDIT_TOKEN;
 

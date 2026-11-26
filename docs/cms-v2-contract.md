@@ -11,6 +11,9 @@
 | `cms.schema.read` / `cms.schema.plan` / `cms.release.status` / `cms.schedule.status` | `cms.read` |
 | `cms.items.save` / `cms.items.remove` / `cms.items.restore` | `cms.edit` |
 | `cms.release.plan` / `cms.release.apply` / `cms.schedule.create` / `cms.schedule.cancel` | `cms.publish` |
+| `cms.localization.overview` / `cms.localization.items.list` / `cms.localization.items.read` / `cms.localization.release.current` | `cms.read` |
+| `cms.localization.items.command` | `cms.edit` |
+| `cms.localization.release.plan` / `cms.localization.release.apply` | `cms.publish` |
 | `cms.schema.apply` | `cms.schema.apply`（owner のみ） |
 
 v1 の意味は既存の通りです。v2 を使う Site の v1 の書込み入口は、`checkCmsWriteVersion` により本文を処理する前に閉じます。旧クライアントから版番号が届かない場合は v1 と判断します。v2 の項目変更は、読取り時の `expectedSchemaRevision` と `expectedRevision` の両方が必要です。確認付きの適用要求にも `siteId` を含め、scope と照合します。定義・release 操作は v2 の経路だけに公開します。未対応版と競合は区別し、v2 の変更要求を v1 へフォールバックしません。
@@ -52,6 +55,14 @@ v1 の意味は既存の通りです。v2 を使う Site の v1 の書込み入�
 
 メモリ内参照ホストと Studio-native の適合テストで認可、永続化、公開、復元を確認できます。Studio の保存順序、容量、バックアップと復元は、運用契約を参照してください。[Studio-native site 契約](studio-managed-sites.md#cms-の公開と復旧)
 
+## CMS 項目の翻訳と locale snapshot
+
+Studio-native CMS は同じ `CmsSchema` と項目の `fieldId` を使い、テキスト・長文・URL・slug の field ID ごとに翻訳 overlay を作ります。Studio は翻訳サービスを接続していないため、訳文は人が入力します。手編集は後の自動候補で上書きせず、原文 fingerprint が変わった訳文は再確認が必要です。安全な parser / serializer を持たない Studio の rich-text field は翻訳項目として扱わず、値が入っている項目を locale snapshot から省きます。
+
+翻訳 workspace は現在の CMS 下書きを原文として表示し、項目を保存・確認します。`cms.localization.release.plan` は原文 locale の公開 snapshot にある項目だけを候補にし、全訳文がその公開版と一致して確認済みの項目を新しい locale revision として固定します。未完了・未確認・原文更新後の項目は公開 snapshot から省き、原文 locale の値へフォールバックしません。`cms.localization.release.apply` は route table と現在の target release を再確認してから、locale 専用の不変 CMS snapshot と公開 pointer を更新します。原文 locale の pointer は変わりません。公開 route は `/{locale}/cms/...` で、固定ページや別 route との衝突を検査します。
+
+CMS 定義は Site ごとに一つです。editor は項目を翻訳して locale snapshot を公開できます。定義の変更・適用は owner のみです。Studio-native の CMS snapshot と固定ページは別の CAS / snapshot で公開し、同じ切替にはまとめません。外部 host も CMS 全体の locale snapshot を一単位として公開します。自サイトの認証、保存先、配信・公開 pointer は host が管理します。
+
 ## Studio-native の HTTP 接続
 
 管理画面は `/api/projects/{projectId}/sites/{siteId}/cms/v2/discover`（GET）と、その `/cms/v2/{operation}`（POST）を使います。機械クライアントには同じ操作を `/api/edit/v2/sites/{siteId}/capabilities`（GET）と `/api/edit/v2/sites/{siteId}/operations/{operation}`（POST）に公開します。POST 本文に `siteId` を含めます。R2 を有効にした Studio-native site のみが対象です。
@@ -62,12 +73,17 @@ v1 の意味は既存の通りです。v2 を使う Site の v1 の書込み入�
 | `cms.items.list` | `collectionId`、`deleted`、任意の `cursor`。項目概要と次の cursor を返す。cursor は site・actor・コレクション・ごみ箱の選択・現在世代に固定 |
 | `cms.items.read` | `collectionId`、`itemId`。現行の下書き版と項目概要 |
 | `cms.release.current` / `cms.release.snapshot` | 現在の公開 snapshot、または `releaseId` で公開済みの snapshot を取得 |
+| `cms.localization.overview` / `cms.localization.items.list` / `cms.localization.items.read` | 翻訳対象、項目の安定 unit ID、原文版に対する訳文状態を取得 |
+| `cms.localization.items.command` | `set-value` / `review-current` で訳文を保存・確認。項目 overlay 版と原文 revision の両方を CAS で照合 |
+| `cms.localization.release.current` / `.plan` / `.apply` | 現在の locale snapshot を読む、新しい snapshot の内容と省略項目を確認し、確認 token を適用 |
 | `cms.preview.prepare` / `cms.preview.read` | `collectionId`、`itemId`、現行の `revision` から5分間に1度だけ使える `previewId` を発行し、POST の `previewId` でプレビューを読む。認証中の actor、site、版、定義を照合 |
 | `cms.schedule.cancel` / `cms.schedule.status` | `scheduleId` で予約を取り消すか状態を読む。配信開始済みでも公開 pointer 確定前なら取消と配信の CAS で先着のみ成功 |
 
 作成・保存・削除・復元・予約取消は `X-Studio-Operation-Key` に不透明な操作IDを指定します。定義と公開の適用および予約作成は plan に含まれる `operationId` を本文に入れます。D1 が確定済みの同じ actor、site、操作ID、操作、入力には保存済みの同じ受領記録を返します。公開受領は `cms.release.status`、現在反映された版は `cms.release.current` で確認します。予約を作った後の下書き保存は予約版を変更しません。現在の公開版、schema、固定ルートなどの前提が変わった場合、別の確認計画が必要です。
 
 GUI、Access 人トークン、Access サービスの現在の権限を操作ごとに照合します。定義の適用は人の owner のみです。プレビューの参照IDはURLに載せず、ログ・履歴・公開 snapshot にも含めません。読み込み応答は no-store / no-referrer / noindex。使い切った参照ID、期限切れ、対象の下書きが更新された参照IDは404になります。
+
+locale 公開の確認・適用は `niho-edit --studio localization-release-read`、`localization-release-prepare`、`localization-release-apply` からも同じ Studio CMS 操作を呼びます。準備は publish 操作、`releaseId: null`、`resumeToken: null` と一意な `operationId` を入力し、適用は準備済み `confirmationToken` を使います。
 
 既存の共通 `cms.schema` / `cms.list` / `cms.read` には従来の DTO を返します。同じ `/api/edit/v1` の形式で書き込む Studio クライアントは、`X-Studio-CMS-Version: 2` を送ります。このヘッダーによって版を宣言した要求は内部の v2 revision、release、outbox で処理します。宣言のない書込みは `409 unsupported_version` です。公開 apply の受領応答は再送時も保持されます。v2 の `cms.release.status` は受領記録に加えて outbox の `pending` / `delivered` / `dead` と失敗理由を返し、legacy の `cms.operation-status` は配信後の結果を取得できます。
 

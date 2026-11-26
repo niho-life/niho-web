@@ -14,7 +14,9 @@ export type CmsState = {
   locale: string;
   schema: CmsSchema;
   items: Record<string, ItemMeta>;
+  localizations?: Record<string, { revision: string; version: number }>;
   current: { id: string; at: string } | null;
+  localizedReleases?: Record<string, { id: string; at: string; routeTableRevision: string }>;
   routeTableRevision?: string;
   retainedBytes: number;
 };
@@ -42,6 +44,8 @@ export const itemBlobKey = (siteId: string, locale: string, pin: CmsReleasePin) 
   `sites/${siteId}/items/${locale}/${pin.collectionId}/${pin.itemId}/${pin.revision}.json`;
 export const snapshotKey = (siteId: string, releaseId: string) => `sites/${siteId}/releases/${releaseId}.json`;
 export const routeTableKey = (siteId: string, locale: string, revision: string) => `sites/${siteId}/routes/${locale}/${revision}.json`;
+export const localizationBlobKey = (siteId: string, locale: string, itemKey: string, revision: string) =>
+  `sites/${siteId}/localizations/${locale}/${itemKey}/${revision}.json`;
 
 function initialState(siteId: string, locale: string): CmsState {
   return {
@@ -125,46 +129,48 @@ export class CmsStore {
       && row.item_id === pin.itemId && row.locale === site.state.locale && row.schema_revision === site.state.schema.schemaRevision));
   }
 
-  async fixedRoutes(site: Site, capability: CmsCapability) {
+  async fixedRoutes(site: Site, capability: CmsCapability, locale = site.state.locale) {
     const results = await this.db.prepare(`SELECT path FROM managed_pages WHERE site_id = ?2 AND locale = ?6
-      AND EXISTS (SELECT 1 ${AUTH})`).bind(...scopeValues(site, capability), site.state.locale).all<{ path: string }>();
+      AND EXISTS (SELECT 1 ${AUTH})`).bind(...scopeValues(site, capability), locale).all<{ path: string }>();
     if (!results.success || !results.results) throw new Error("CMS route lookup failed");
     return new Set(results.results.map(({ path }) => path));
   }
 
   /** Compose the current CMS route snapshot with live, published fixed pages. */
-  async routeTable(site: Site, capability: CmsCapability): Promise<CmsRouteTable> {
+  async routeTable(site: Site, capability: CmsCapability, locale = site.state.locale): Promise<CmsRouteTable> {
     let stored: CmsRouteTable | null = null;
-    const revision = site.state.routeTableRevision;
+    const localized = site.state.localizedReleases?.[locale];
+    const revision = locale === site.state.locale ? site.state.routeTableRevision : localized?.routeTableRevision;
     if (revision && revision !== "routes_initial") {
-      const object = await this.bucket.get(routeTableKey(site.siteId, site.state.locale, revision));
+      const object = await this.bucket.get(routeTableKey(site.siteId, locale, revision));
       if (!object) throw new Error("CMS route table unavailable");
       stored = await object.json<CmsRouteTable>();
     }
-    const snapshot = !stored && !revision && site.state.current ? await this.snapshot(site.siteId, site.state.current.id) : null;
+    const published = locale === site.state.locale ? site.state.current : localized ?? null;
+    const snapshot = !stored && !revision && published ? await this.snapshot(site.siteId, published.id) : null;
     if (!stored && snapshot?.routeTable) stored = snapshot.routeTable;
     const legacyReservations = snapshot ? [
       ...snapshot.items.flatMap((item) => item.path ? [{ kind: "cms-item" as const, path: item.path,
         collectionId: item.collectionId, itemId: item.itemId }] : []),
       ...snapshot.redirects.map(({ from, to }) => ({ kind: "redirect" as const, path: from, targetPath: to, owner: "cms" as const }))
     ] : [];
-    const base = stored ?? { siteId: site.siteId, locale: site.state.locale,
+    const base = stored ?? { siteId: site.siteId, locale,
       revision: snapshot?.routeTableRevision ?? (snapshot ? `routes_${await digest(legacyReservations)}` : "routes_initial"),
       reservations: legacyReservations };
     const pages = await this.db.prepare(`SELECT page_id, path, visibility, published_revision FROM managed_pages WHERE site_id = ?2 AND locale = ?6
       AND EXISTS (SELECT 1 ${AUTH}) ORDER BY path, page_id`)
-      .bind(...scopeValues(site, capability), site.state.locale).all<{ page_id: string; path: string; visibility: string; published_revision: number | null }>();
+      .bind(...scopeValues(site, capability), locale).all<{ page_id: string; path: string; visibility: string; published_revision: number | null }>();
     if (!pages.success || !pages.results) throw new Error("CMS route lookup failed");
     const fixed = await Promise.all(pages.results.map(async ({ page_id, path, visibility, published_revision }) => ({
       kind: visibility === "public" && published_revision !== null ? "fixed-page" as const : "reserved" as const, path,
-      reservationId: `managed_page_${(await digest({ siteId: site.siteId, locale: site.state.locale, page_id, path })).slice(0, 32)}`
+      reservationId: `managed_page_${(await digest({ siteId: site.siteId, locale, page_id, path })).slice(0, 32)}`
     })));
     const withoutOldFixed = base.reservations.filter((reservation) => !((reservation.kind === "fixed-page" || reservation.kind === "reserved")
       && reservation.reservationId.startsWith("managed_page_")));
-    const next = parseCmsRouteTable({ siteId: site.siteId, locale: site.state.locale, revision: base.revision,
-      reservations: [...withoutOldFixed, ...fixed] }, site.siteId, site.state.locale);
+    const next = parseCmsRouteTable({ siteId: site.siteId, locale, revision: base.revision,
+      reservations: [...withoutOldFixed, ...fixed] }, site.siteId, locale);
     const unchanged = JSON.stringify(next.reservations) === JSON.stringify(base.reservations);
-    return unchanged ? next : parseCmsRouteTable({ ...next, revision: `routes_${await digest(next.reservations)}` }, site.siteId, site.state.locale);
+    return unchanged ? next : parseCmsRouteTable({ ...next, revision: `routes_${await digest(next.reservations)}` }, site.siteId, locale);
   }
 
   async receipt(site: Site, capability: CmsCapability, operationId: string) {
@@ -224,7 +230,7 @@ export class CmsStore {
   async commit(site: Site, capability: CmsCapability, change: {
     operation: string; operationId: string; inputDigest: string; result: object; state: CmsState;
     revisions?: readonly CmsItemRevision[]; job?: { id: string; kind: Job["kind"]; at: number; payload: JobPayload };
-    cancel?: string; tokenHash?: string; requireFreeSlot?: boolean; bindingsGeneration?: number;
+    cancel?: string; tokenHash?: string; requireFreeSlot?: boolean; bindingsGeneration?: number; publishedReleaseId?: string;
   }): Promise<boolean> {
     const transactionId = opaque("tx"), auditGuard = "EXISTS (SELECT 1 FROM managed_cms_receipts WHERE transaction_id = ?1)";
     const { operation, operationId, inputDigest, state, result, job, revisions, cancel } = change;
@@ -243,6 +249,8 @@ export class CmsStore {
         .bind(transactionId, site.siteId, JSON.stringify(state)),
       this.db.prepare(`INSERT INTO managed_cms_audit (id, site_id, actor_id, operation) SELECT ?1, ?2, ?3, ?4 WHERE ${auditGuard}`)
         .bind(transactionId, site.siteId, site.actor.id, operation),
+      ...(change.publishedReleaseId ? [this.db.prepare(`INSERT INTO managed_cms_releases (site_id, release_id) SELECT ?2, ?3 WHERE ${auditGuard}`)
+        .bind(transactionId, site.siteId, change.publishedReleaseId)] : []),
       ...(revisions ?? []).map((item) => this.db.prepare(`INSERT INTO managed_cms_revisions (site_id, revision, collection_id, item_id, locale, schema_revision)
         SELECT ?2, ?3, ?4, ?5, ?6, ?7 WHERE ${auditGuard}`)
         .bind(transactionId, site.siteId, item.revision, item.collectionId, item.itemId, item.locale, item.schemaRevision)),

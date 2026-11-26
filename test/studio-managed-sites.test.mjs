@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
+import { parseLocalizationItemResult, parseLocalizationListResult, parseLocalizationOverviewResult } from "@niho/web/localization-workspace-model";
+import { cmsLocalizationItemKey } from "@niho/web/cms-v2";
 
 const { DatabaseSync } = await import("node:sqlite").catch(() => ({}));
 const testWithD1 = DatabaseSync ? test : test.skip;
@@ -254,6 +256,119 @@ async function releasePlan(site, schemaRevision, previous, items, at) {
     items: items.map(pin), redirects: [], ...(at ? { at } : {}) });
   return { operationId: plan.operationId, confirmationToken: plan.confirmationToken };
 }
+
+testWithD1("Studio CMS localization exposes the shared workspace contract and preserves reviewed manual values after source changes", async (t) => {
+  const h = await fixture(t, { cms: true }), site = await cmsSite(h, "cms-localization");
+  const schema = await site.read("cms.schema.read"), postSchema = schema.collections.find(({ id }) => id === "posts");
+  const field = (key) => postSchema.fields.find((entry) => entry.key === key).fieldId;
+  const draft0 = await createDraft(site, schema.schemaRevision);
+  const source = await site.read("cms.items.save", { ...versioned(draft0), values: {
+    ...draft0.values, [field("title")]: "Coastal morning walk", [field("slug")]: "morning-walk", [field("body")]: ""
+  } }, { headers: headers() }).then(({ item }) => item);
+  const sourceCurrent = await site.read("cms.release.current");
+  const sourcePlan = await site.read("cms.release.plan", { schemaRevision: schema.schemaRevision, locale: "ja",
+    routeTableRevision: sourceCurrent.routeTableRevision, expectedReleaseId: null, items: [pin(source)], redirects: [] });
+  await site.read("cms.release.apply", { operationId: sourcePlan.plan.operationId, confirmationToken: sourcePlan.plan.confirmationToken });
+  await h.cron();
+  const itemKey = cmsLocalizationItemKey("posts", source.itemId);
+
+  const overview = parseLocalizationOverviewResult(await site.read("cms.localization.overview"));
+  assert.equal(overview.status, "ready");
+  assert.equal(overview.overview.sourceLocale, "ja");
+  assert.equal(overview.overview.targetLocale, "en");
+  assert.ok(overview.overview.permissions.includes("edit"));
+  const list = parseLocalizationListResult(await site.read("cms.localization.items.list"));
+  assert.equal(list.status, "ready");
+  assert.equal(list.items.length, 1);
+  assert.equal(list.items[0].key, itemKey);
+
+  const readItem = async () => parseLocalizationItemResult(await site.read("cms.localization.items.read", { itemKey }), itemKey);
+  let item = (await readItem()).item;
+  const title = item.units.find(({ label }) => label === "タイトル");
+  assert.equal(title.source, "Coastal morning walk");
+  const operationId = crypto.randomUUID();
+  const saved = await site.read("cms.localization.items.command", { itemKey, operationId, action: "set-value", unitId: title.unitId,
+    expectedVersion: title.version, expectedSourceVersion: source.revision, value: "Walk by the shore" }, { headers: headers(operationId) });
+  assert.equal(saved.status, "applied");
+  assert.equal(saved.unit.value, "Walk by the shore");
+  assert.equal(saved.unit.state, "draft");
+
+  item = (await readItem()).item;
+  const currentTitle = item.units.find(({ unitId }) => unitId === title.unitId), reviewId = crypto.randomUUID();
+  const reviewed = await site.read("cms.localization.items.command", { itemKey, operationId: reviewId, action: "review-current", unitId: title.unitId,
+    expectedVersion: currentTitle.version, expectedSourceVersion: source.revision }, { headers: headers(reviewId) });
+  assert.equal(reviewed.unit.state, "reviewed");
+
+  item = (await readItem()).item;
+  for (const unit of item.units.filter(({ unitId }) => unitId !== title.unitId)) {
+    const operationId = crypto.randomUUID();
+    const value = unit.singleLine ? "morning-walk-en" : "A walk beside the sea.";
+    const beforeEditUnit = item.units.find(({ unitId }) => unitId === unit.unitId);
+    await site.read("cms.localization.items.command", { itemKey, operationId, action: "set-value", unitId: unit.unitId,
+      expectedVersion: beforeEditUnit.version, expectedSourceVersion: source.revision, value }, { headers: headers(operationId) });
+    item = (await readItem()).item;
+  }
+  const unreviewedPlan = await site.read("cms.localization.release.plan");
+  assert.equal(unreviewedPlan.includedItems, 0, "draft translations stay out of a published snapshot until reviewed");
+  assert.equal(unreviewedPlan.omittedItems.length, 1);
+
+  for (const unit of item.units.filter(({ unitId }) => unitId !== title.unitId)) {
+    const currentUnit = item.units.find(({ unitId }) => unitId === unit.unitId), reviewId = crypto.randomUUID();
+    await site.read("cms.localization.items.command", { itemKey, operationId: reviewId, action: "review-current", unitId: unit.unitId,
+      expectedVersion: currentUnit.version, expectedSourceVersion: source.revision }, { headers: headers(reviewId) });
+    item = (await readItem()).item;
+  }
+  assert.equal(item.state, "reviewed");
+  const localizedPlan = await site.read("cms.localization.release.plan");
+  assert.equal(localizedPlan.status, "ready");
+  assert.equal(localizedPlan.locale, "en");
+  assert.equal(localizedPlan.includedItems, 1);
+  assert.deepEqual(localizedPlan.omittedItems, []);
+  assert.equal(localizedPlan.plan.candidate.proposal.snapshot.items[0].path, "/en/cms/posts/morning-walk-en");
+  const localizedApply = await site.read("cms.localization.release.apply", {
+    operationId: localizedPlan.plan.operationId, confirmationToken: localizedPlan.plan.confirmationToken
+  }, { headers: headers(localizedPlan.plan.operationId) });
+  assert.equal(localizedApply.status, "published");
+  const localizedCurrent = await site.read("cms.localization.release.current");
+  assert.equal(localizedCurrent.snapshot.releaseId, localizedApply.result.releaseId);
+  assert.equal(localizedCurrent.snapshot.items[0].locale, "en");
+  assert.equal((await site.read("cms.release.current")).snapshot.releaseId, sourcePlan.plan.candidate.snapshot.releaseId,
+    "publishing a locale does not move the source-locale release pointer");
+  const englishResponse = await h.send(PUBLIC_ORIGIN, "GET", "/s/cms-localization/en/cms/posts/morning-walk-en", undefined, { auth: false });
+  assert.equal(englishResponse.status, 200);
+  assert.match(await englishResponse.text(), /Walk by the shore/u);
+  assert.equal((await site.pub("/posts/morning-walk")).status, 200);
+
+  const nextSource = await site.read("cms.items.save", { ...versioned(source), values: { ...source.values, [field("title")]: "A new coastal morning walk" } }, { headers: headers() }).then(({ item: next }) => next);
+  item = (await readItem()).item;
+  const changedTitle = item.units.find(({ unitId }) => unitId === title.unitId);
+  assert.equal(changedTitle.source, "A new coastal morning walk");
+  assert.equal(changedTitle.value, "Walk by the shore");
+  assert.equal(changedTitle.state, "review-needed");
+  assert.equal(item.state, "source-changed");
+  const updatedSourceCurrent = await site.read("cms.release.current");
+  const updatedSourcePlan = await site.read("cms.release.plan", { schemaRevision: schema.schemaRevision, locale: "ja",
+    routeTableRevision: updatedSourceCurrent.routeTableRevision, expectedReleaseId: updatedSourceCurrent.snapshot.releaseId,
+    items: [pin(nextSource)], redirects: [] });
+  await site.read("cms.release.apply", { operationId: updatedSourcePlan.plan.operationId,
+    confirmationToken: updatedSourcePlan.plan.confirmationToken });
+  await h.cron();
+  const stalePlan = await site.read("cms.localization.release.plan");
+  assert.equal(stalePlan.includedItems, 0);
+  assert.equal(stalePlan.omittedItems.length, 1);
+  assert.equal(stalePlan.omittedItems[0].itemId, source.itemId);
+  const staleApply = await site.read("cms.localization.release.apply", {
+    operationId: stalePlan.plan.operationId, confirmationToken: stalePlan.plan.confirmationToken
+  }, { headers: headers(stalePlan.plan.operationId) });
+  assert.equal(staleApply.result.itemCount, 0);
+  assert.equal((await h.send(PUBLIC_ORIGIN, "GET", "/s/cms-localization/en/cms/posts/morning-walk-en", undefined, { auth: false })).status, 404,
+    "a stale translation is omitted instead of falling back to the Japanese source");
+  const staleId = crypto.randomUUID();
+  assert.equal((await site.post("cms.localization.items.command", { itemKey, operationId: staleId, action: "set-value", unitId: title.unitId,
+    expectedVersion: currentTitle.version, expectedSourceVersion: source.revision, value: "Stale write" }, { headers: headers(staleId) })).status, 409);
+  assert.equal(nextSource.revision === source.revision, false);
+  assert.equal(h.sqlite.prepare("SELECT count(*) AS count FROM managed_cms_audit WHERE operation = 'cms.localization.items.command'").get().count, 4);
+});
 
 testWithD1("Studio page bindings publish a six-item list and dynamic detail from an immutable CMS release", async (t) => {
   const h = await fixture(t, { cms: true });

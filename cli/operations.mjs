@@ -85,6 +85,13 @@ export const OPERATIONS = Object.freeze([
   operation("cms.schedule.status", "cms.read", "POST", "/cms/v2/cms.schedule.status", { managed: true, managedOnly: true, cmsVersion: 2 }),
   operation("cms.preview.prepare", "cms.read", "POST", "/cms/v2/cms.preview.prepare", { managed: true, managedOnly: true, cmsVersion: 2 }),
   operation("cms.preview.read", "cms.read", "POST", "/cms/v2/cms.preview.read", { managed: true, managedOnly: true, cmsVersion: 2 }),
+  operation("cms.localization.overview", "cms.read", "POST", "/cms/v2/cms.localization.overview", { managed: true, managedOnly: true, cmsVersion: 2 }),
+  operation("cms.localization.items.list", "cms.read", "POST", "/cms/v2/cms.localization.items.list", { managed: true, managedOnly: true, cmsVersion: 2 }),
+  operation("cms.localization.items.read", "cms.read", "POST", "/cms/v2/cms.localization.items.read", { managed: true, managedOnly: true, cmsVersion: 2 }),
+  operation("cms.localization.items.command", "cms.edit", "POST", "/cms/v2/cms.localization.items.command", { managed: true, managedOnly: true, cmsVersion: 2 }),
+  operation("cms.localization.release.current", "cms.read", "POST", "/cms/v2/cms.localization.release.current", { managed: true, managedOnly: true, cmsVersion: 2 }),
+  operation("cms.localization.release.plan", "cms.publish", "POST", "/cms/v2/cms.localization.release.plan", { managed: true, managedOnly: true, cmsVersion: 2 }),
+  operation("cms.localization.release.apply", "cms.publish", "POST", "/cms/v2/cms.localization.release.apply", { managed: true, managedOnly: true, cmsVersion: 2 }),
   operation("cms.upload-intent", "cms.edit", "POST", "/cms/uploads/intent", { upload: "cms" }),
 
   operation("assets.list", "assets.read", "POST", "/editor/assets/list"),
