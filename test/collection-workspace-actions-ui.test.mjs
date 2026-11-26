@@ -1,3 +1,4 @@
+import { useTestClock } from "./ui-test-clock.mjs";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { JSDOM } from "jsdom";
@@ -13,8 +14,7 @@ const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { CollectionWorkspace } = await import("@niho/web/collection-workspace");
 
-const wait = (ms) => act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
-const flush = async () => { for (let i = 0; i < 4; i++) await wait(0); };
+const flush = () => act(async () => {});
 const nameOf = (node) => (node.getAttribute("aria-label") || node.textContent).replace(/\s+/gu, " ").trim();
 const buttons = (scope = document) => [...scope.querySelectorAll("button")];
 const button = (name, scope = document) => buttons(scope).find((node) => nameOf(node) === name);
@@ -298,7 +298,8 @@ test("changing a published address offers to move the old address, and publish a
   } finally { await later.cleanup(); }
 });
 
-test("gallery rows: add, upload with the collection id, caption, move, remove and the item limit keep the {id,image,caption} shape", async () => {
+test("gallery rows: add, upload with the collection id, caption, move, remove and the item limit keep the {id,image,caption} shape", async (t) => {
+  const advance = useTestClock(t, act);
   const withGallery = () => {
     const value = schema();
     value.collections[1].fields.push({ key: "portfolio", label: "作品／活動", type: "gallery", captionLabel: "説明", placement: "main", maxItems: 3, captionMaxLength: 20 });
@@ -307,7 +308,7 @@ test("gallery rows: add, upload with the collection id, caption, move, remove an
   const fixture = createAdapter({ loadSchema: async () => withGallery() });
   fixture.store.circles.get("c1").values.portfolio = [{ id: "w1", image: "https://media.example.test/w1.jpg", caption: "一つ目" }, { id: "w2", image: null, caption: "二つ目" }];
   const app = await setup({ adapter: fixture.adapter, autosaveDelay: 10, initialCollectionId: "circles", initialItemId: "c1" });
-  const settle = async () => { await wait(40); await flush(); };
+  const settle = async () => { await advance(40); await flush(); };
   try {
     const gallery = () => field("portfolio");
     assert.equal(gallery().getAttribute("role"), "group");

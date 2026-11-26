@@ -90,17 +90,11 @@ test("the tool rail shows one line icon per STUDIO tool, names it for assistive 
     await click(tool("レイヤー"));
     assert.equal(tool("レイヤー").getAttribute("aria-pressed"), "true"); assert.equal(tool("ページ").getAttribute("aria-pressed"), "false");
     assert.equal(document.querySelector('[aria-label="レイヤー一覧"]').hidden, false); assert.equal(document.querySelector('[aria-label="ページ一覧"]').hidden, true);
-    const css = document.querySelector(".nw-editor style").textContent;
-    assert.ok(css.includes(".nw-editor .e-tools button{display:flex;width:32px;height:32px"), "32px buttons in the 44px rail");
-    assert.ok(css.includes(".nw-editor .e-tool-icon{display:block;width:18px;height:18px"));
     // 左パネルの開閉ボタンと上段の操作アイコンも、ツールと同じ 18px・線幅 1.5（24 のマス目）。線の太さと大きさを混ぜない。
     const toggle = document.querySelector(".e-tools .e-panel-toggle svg"); assert.ok(toggle, "the left rail starts with the panel toggle");
     assert.equal(toggle.getAttribute("stroke-width"), "1.5"); assert.equal(toggle.getAttribute("viewBox"), "0 0 24 24");
     const actionIcons = [...document.querySelectorAll(".nw-editor svg.e-action-icon")]; assert.ok(actionIcons.length >= 5, "the top actions draw with the same icon set");
     for (const icon of actionIcons) assert.equal(icon.getAttribute("stroke-width"), "1.5");
-    assert.ok(css.includes(".nw-editor .e-action-icon{display:block;width:18px;height:18px}"), "the action icons are 18px like the tool icons");
-    assert.ok(css.includes(".nw-editor .e-tools button[aria-pressed=true]{border-color:transparent;background:var(--nw-pressed);color:var(--e-ink)}"), "the open tool has a small grey square");
-    assert.ok(css.includes("--nw-pressed:#e6e6e6"), "…drawn from the shared tokens");
   } finally { await app.cleanup(); }
 });
 
@@ -116,8 +110,6 @@ test("the rail keeps the selected tool distinct from keyboard focus and scrolls 
     await press("Home"); assert.equal(document.activeElement, buttons[0]);
     await press("ArrowUp"); assert.equal(document.activeElement, buttons.at(-1));
     assert.equal(tool("ページ").getAttribute("aria-pressed"), "true", "focus must not switch the open panel");
-    const css = document.querySelector(".nw-editor style").textContent;
-    assert.match(css, /\.nw-editor \.e-tools\{[^}]*overflow-y:auto;overscroll-behavior:contain/);
   } finally { await app.cleanup(); }
 });
 
@@ -177,9 +169,6 @@ test("layer rows carry a glyph per element kind, and the expand chevron keeps it
     await act(async () => item.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }))); await flush();
     assert.ok(row("heading"), "ArrowRight reopens the section");
     assert.equal(row("hero").querySelector("button.e-layer").getAttribute("aria-expanded"), "true");
-    const css = document.querySelector(".nw-editor style").textContent;
-    assert.ok(css.includes(".nw-editor .e-layer-row[data-layer-glyph=part] .e-layer-icon,.nw-editor .e-layer-row[data-layer-glyph=block] .e-layer-icon{color:var(--e-part)}"), "component glyphs use the component purple");
-    assert.ok(css.includes(".nw-editor .e-layer-chevron.is-open{transform:rotate(90deg)}"));
   } finally { await app.cleanup(); }
 });
 

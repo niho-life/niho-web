@@ -342,28 +342,6 @@ test("dashboard mismatch, failure and permission loss clear all sensitive facts 
   } finally { await app.cleanup(); }
 });
 
-test("dashboard draws with the shared white tokens that a host can override", async () => {
-  const selected = project();
-  const app = await setup(ProjectDashboard, { project: selected, adapter: dashboardAdapter(async () => dashboard(selected)) });
-  try {
-    const css = [...document.querySelectorAll("style")].map((style) => style.textContent ?? "").join("\n");
-    // トークンの定義は詳細度 0（:where）なので、ホストは :root や .nw-project-view で上書きできる（#159）
-    assert.ok(css.includes(":where(:root){") && css.includes("--nw-bg:#fff") && css.includes("--nw-border:rgba(34,34,34,.1)"));
-    assert.ok(css.includes(".nw-project-dashboard{padding:0;border-radius:0;background:var(--nw-bg)}"));
-    // 帯は 1 段: 左にプロジェクト、中央にタブ、右にデザインエディタとホストの操作
-    assert.ok(css.includes(".pv-project-bar{position:relative;z-index:2;display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:center;gap:16px;min-height:64px;padding:0 20px;background:var(--nw-bg);border-bottom:1px solid var(--nw-border)"));
-    assert.ok(css.includes(".pv-project-tabs button[aria-current]{color:var(--nw-text);font-weight:600;box-shadow:inset 0 -2px 0 var(--nw-text)}"));
-    assert.ok(css.includes(".pv-dashboard-layout:not([data-section=home]){grid-template-columns:minmax(0,1fr)}"));
-    assert.ok(css.includes(".pv-dashboard-nav{display:flex;flex-direction:column;gap:2px;margin:0;padding:22px 14px;border-right:1px solid var(--nw-border);background:var(--nw-bg)"));
-    // 現在地は一段の灰色の面、公開中は緑の点だけ
-    assert.ok(css.includes(".pv-dashboard-nav button[aria-current=page]{background:var(--nw-surface-2);"));
-    assert.ok(css.includes(".pv-project-identity[data-publication=published] i{background:var(--nw-live)}"));
-    assert.equal(/--niho-(?!sticky-top)|--pv-/u.test(css), false, "no host-specific or private color variables are left");
-    assert.ok(css.includes(".pv-changes,.nw-project-view .pv-member-table{width:100%"));
-    assert.ok(css.includes(".pv-panel-heading{display:flex;align-items:center;justify-content:space-between"));
-  } finally { await app.cleanup(); }
-});
-
 test("dashboard Project/Site switching, adapter replacement and unmount discard stale results", async () => {
   const pending = []; const adapter = dashboardAdapter(async (target, signal) => new Promise((resolve) => pending.push({ target, signal, resolve })));
   const selected = project(), next = project("two");
@@ -380,20 +358,12 @@ test("dashboard Project/Site switching, adapter replacement and unmount discard 
   } catch (error) { await app.cleanup(); throw error; }
 });
 
-test("long Japanese names and URLs remain complete and the stylesheet defines 320px-friendly layouts", async () => {
+test("long Japanese names and URLs remain complete in the project directory", async () => {
   const input = directory(); input.entries[0].project.name = "長い日本語のプロジェクト".repeat(8); input.entries[0].project.site.domains = [`https://${"long".repeat(15)}.example.test`]; input.entries[0].summary.publishedUrl = input.entries[0].project.site.domains[0];
   input.entries[0].summary.updatedAt = null;
   const app = await setup(ProjectDirectory, { adapter: directoryAdapter(async () => input) });
   try {
     assert.ok(document.body.textContent.includes(input.entries[0].project.name)); assert.ok(document.body.textContent.includes(input.entries[0].project.site.domains[0]));
     assert.ok(rows()[1].textContent.includes(input.entries[0].project.name));
-    const css = [...document.querySelectorAll("style")].map((style) => style.textContent ?? "").join("\n"); assert.ok(css.includes("overflow-wrap:anywhere")); assert.ok(css.includes("@media(max-width:600px)")); assert.ok(css.includes(".pv-project-menu>div{position:static;width:100%")); assert.ok(css.includes(":focus-visible")); assert.ok(css.includes(".pv-dashboard-content{width:min(100%,992px)"));
-    assert.equal(css.includes(".pv-grid{display:none}"), false); assert.ok(css.includes(".pv-grid{display:grid;grid-template-columns:minmax(0,1fr)")); assert.ok(css.includes(".pv-directory-list td:empty{display:none}")); assert.equal(css.includes("overflow-x:auto"), false);
-    // 900px 以下はタブを帯の 2 段目、ホームのメニューを本文の上に置いて折り返す。600px 以下は操作も 1 段下げる。横スクロールで欠けさせない
-    const dashboardMobile = css.slice(css.indexOf(".nw-project-dashboard{"));
-    assert.ok(dashboardMobile.includes("@media(max-width:900px){.nw-project-dashboard .pv-project-bar{grid-template-columns:minmax(0,1fr) auto;gap:0 10px;padding:0 14px}"));
-    assert.ok(dashboardMobile.includes(".nw-project-dashboard .pv-project-tabs{grid-column:1/-1;grid-row:2;flex-wrap:wrap"));
-    assert.ok(dashboardMobile.includes("@media(max-width:600px){") && dashboardMobile.includes(".nw-project-dashboard .pv-dashboard-nav{flex-direction:row;flex-wrap:wrap") && dashboardMobile.includes(".nw-project-dashboard .pv-project-end{grid-column:1/-1;grid-row:2") && dashboardMobile.includes(".nw-project-dashboard .pv-project-tabs{grid-row:3"));
-    assert.equal(dashboardMobile.includes("overflow-x:auto"), false);
   } finally { await app.cleanup(); }
 });

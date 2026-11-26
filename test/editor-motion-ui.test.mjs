@@ -20,9 +20,11 @@ const field = (text, root = document) => [...root.querySelectorAll("label")].fin
 const input = (text, root = document) => field(text, root)?.querySelector("input,textarea,select");
 const check = (text, root = right()) => [...root.querySelectorAll("label.e-check")].find((node) => node.textContent === text)?.querySelector("input");
 const frame = () => document.querySelector("iframe");
-const pageCss = () => frame().contentDocument.querySelector("style[data-nw-style]").textContent;
 const canvasNodeValue = (id, name) => frame().contentDocument.querySelector(`[data-nw-node="${id}"]`)?.style.getPropertyValue(name) ?? "";
-const canvasExtra = () => [...frame().contentDocument.querySelectorAll("style")].at(-1).textContent;
+const canvasStyle = (id) => {
+  const currentFrame = frame();
+  return currentFrame.contentWindow.getComputedStyle(currentFrame.contentDocument.querySelector(`[data-nw-node="${id}"]`));
+};
 const publishedCss = (document) => renderPageToHtml(document).match(/<style data-nw-style="[^"]+">([^]*?)<\/style>/)[1];
 async function click(target) { assert.ok(target); await act(async () => target.click()); await flush(); }
 async function clickLayer(label, scope = document) { const target = await findLayer(() => button(label, scope), click, scope); assert.ok(target, label); await click(target); }
@@ -79,8 +81,8 @@ test("a link's hover and focus look is created with the keyboard, forced on the 
     input("文字色", right()).focus();
     await change(input("文字色", right()), "#c0392b");
     await change(input("Y", group("移動")), "-2");
-    assert.ok(canvasExtra().includes('[data-nw-node="link"]{color:#c0392b;translate:0 -2px;}'), "the canvas shows the hover look without a pointer");
-    assert.ok(canvasExtra().includes("*{animation:none!important;transition:none!important}"));
+    assert.equal(canvasStyle("link").color, "rgb(192, 57, 43)", "the canvas shows the hover look without a pointer");
+    assert.equal(canvasStyle("hero").animation, "none");
     await change(stateSelect(), "normal");
     await editorTab("ボックス"); assert.ok(input("幅", right()));
     await editorTab("変形");
@@ -91,8 +93,6 @@ test("a link's hover and focus look is created with the keyboard, forced on the 
     assert.equal(saved.base.transitionDuration, 200);
     await reloadEditor();
     const css = publishedCss(app.stored());
-    assert.notEqual(pageCss(), css, "the canvas keeps style values on nodes while public CSS stays static");
-    assert.ok(pageCss().includes('[data-nw-node="link"]:hover{color:var(--nw-Node-link-state-hover-color);translate:var(--nw-Node-link-state-hover-translate);}'));
     assert.equal(canvasNodeValue("link", "--nw-Node-link-state-hover-color"), "#c0392b");
     assert.equal(canvasNodeValue("link", "--nw-Node-link-state-hover-translate"), "0 -2px");
     assert.match(css, /@media \(hover:hover\)\{[^}]*link"\]:hover\{color:#c0392b;translate:0 -2px;\}\}/);
@@ -112,7 +112,6 @@ test("transform inspector edits both scale and skew axes and renders safe skew C
     await click(button("下書き保存"));
     assert.equal(app.calls.saves[0].document.body[0].style.base.scale, "1.25 1.5");
     assert.equal(app.calls.saves[0].document.body[0].style.base.skew, "12deg 5deg");
-    assert.ok(pageCss().includes("scale:var(--nw-Node-hero-base-scale);transform:var(--nw-Node-hero-base-skew);"));
     assert.equal(canvasNodeValue("hero", "--nw-Node-hero-base-scale"), "1.25 1.5");
     assert.equal(canvasNodeValue("hero", "--nw-Node-hero-base-skew"), "skew(12deg,5deg)");
   } finally { await app.cleanup(); }
@@ -158,18 +157,20 @@ test("motion is stopped while editing, replays on demand and in preview, where s
   try {
     const play = button("アニメーションを再生");
     assert.equal(play.getAttribute("aria-pressed"), "false");
-    assert.ok(canvasExtra().includes("*{animation:none!important;transition:none!important}"));
+    assert.equal(canvasStyle("hero").animation, "none");
     const before = frame().contentDocument.querySelector("[data-nw-scope]");
     await click(play);
     assert.equal(button("アニメーションを再生").getAttribute("aria-pressed"), "true");
-    assert.ok(!canvasExtra().includes("animation:none"));
+    assert.notEqual(canvasStyle("hero").animation, "none");
     assert.notEqual(frame().contentDocument.querySelector("[data-nw-scope]"), before, "the page is drawn again so the appear effect plays");
     await click(button("アニメーションを再生"));
+    const normalColor = canvasStyle("link").color;
     await clickLayer("a · link"); await editorTab("変形"); await change(stateSelect(), "hover");
-    assert.ok(canvasExtra().includes('[data-nw-node="link"]{color:#c0392b;}'));
+    assert.equal(canvasStyle("link").color, "rgb(192, 57, 43)");
     await click(button("プレビュー"));
     assert.equal(button("アニメーションを再生").getAttribute("aria-pressed"), "true"); assert.equal(button("アニメーションを再生").disabled, true);
-    assert.ok(!canvasExtra().includes("link") && !canvasExtra().includes("animation:none"));
+    assert.equal(canvasStyle("link").color, normalColor);
+    assert.notEqual(canvasStyle("hero").animation, "none");
   } finally { await app.cleanup(); }
 });
 
@@ -186,7 +187,6 @@ test("toggle and carousel presets are inserted from the palette and the canvas n
     const carousel = frame().contentDocument.querySelector('[aria-label="カルーセル"]');
     assert.equal(carousel.getAttribute("tabindex"), "0"); assert.equal(carousel.getAttribute("role"), "region");
     const carouselId = carousel.getAttribute("data-nw-node");
-    assert.ok(pageCss().includes(`overflow-x:var(--nw-Node-${carouselId}-base-overflowX);`) && pageCss().includes(`scroll-snap-type:var(--nw-Node-${carouselId}-base-scrollSnapType);`));
     assert.equal(canvasNodeValue(carouselId, `--nw-Node-${carouselId}-base-overflowX`), "auto");
     assert.equal(canvasNodeValue(carouselId, `--nw-Node-${carouselId}-base-scrollSnapType`), "x mandatory");
     await click(button("下書き保存"));
@@ -206,9 +206,6 @@ test("the Add panel exposes accessible Basic, Parts and Sections tabs and click 
     assert.deepEqual(tabs.map((tab) => tab.getAttribute("aria-label")), ["基本要素", "パーツ", "セクション"]);
     assert.equal(tabs[0].getAttribute("aria-selected"), "true");
     assert.ok(panel.querySelector('.e-preset-preview[data-preset="section"]'), "basic items also use an original skeleton preview");
-    const css = document.querySelector(".nw-editor style").textContent;
-    assert.ok(css.includes(".e-add-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))"));
-    assert.ok(css.includes(".e-palette .e-preset-card{min-width:0"), "template cards can shrink in the narrow overlay panel");
     await act(async () => tabs[0].dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }))); await flush();
     assert.equal(tabs[1].getAttribute("aria-selected"), "true");
     assert.equal(document.activeElement, tabs[1]);

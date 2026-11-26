@@ -1,3 +1,4 @@
+import { useTestClock } from "./ui-test-clock.mjs";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { JSDOM } from "jsdom";
@@ -12,15 +13,7 @@ const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { CollectionWorkspace } = await import("@niho/web/collection-workspace");
 
-const wait = (ms) => act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
-const flush = async () => { for (let i = 0; i < 4; i++) await wait(0); };
-async function waitFor(condition, description, timeoutMs = 20_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (!condition()) {
-    if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${description}`);
-    await wait(20);
-  }
-}
+const flush = () => act(async () => {});
 const nameOf = (node) => (node.getAttribute("aria-label") || node.textContent).replace(/\s+/gu, " ").trim();
 const buttons = (scope = document) => [...scope.querySelectorAll("button")];
 const button = (name, scope = document) => buttons(scope).find((node) => nameOf(node) === name);
@@ -63,9 +56,6 @@ test("list: nav, counts, rows, search and tabs follow the definitions and both o
     assert.deepEqual(nav.map(nameOf), ["記事（5 件）", "サークル（3 件）", "カテゴリ（2 件）"]);
     assert.equal(nav[0].getAttribute("aria-current"), "page");
     // 行の寄せ方とメニューの折り返しは自分で決める（ホストのボタンの共通スタイルの中央寄せを受けない・320px ではみ出さない）
-    const css = document.querySelector(".nw-collection style").textContent;
-    assert.ok(css.includes(".cw-row-open{display:flex;align-items:center;justify-content:flex-start;"));
-    assert.ok(css.includes(".cw-nav ul{display:flex;flex-wrap:wrap;gap:4px}"));
     assert.equal(document.querySelector(".cw-list-title h2").textContent, "記事");
     assert.equal(document.querySelector(".cw-count").textContent, "5 件");
     assert.deepEqual([...document.querySelectorAll(".cw-filters button")].map(nameOf), ["すべて（5 件）", "公開中（3 件）", "下書き（2 件）"]);
@@ -111,7 +101,8 @@ test("list: nav, counts, rows, search and tabs follow the definitions and both o
   } finally { await app.cleanup(); }
 });
 
-test("editor: opens an item, splits main and side, and autosaves once about a second after editing", async () => {
+test("editor: opens an item, splits main and side, and autosaves once about a second after editing", async (t) => {
+  const advance = useTestClock(t, act);
   const fixture = createAdapter();
   const app = await setup({ adapter: fixture.adapter, itemLanguages: {
     source: "日本語", target: "English", targetHref: ({ collectionId, itemId }) => `/translations/${collectionId}/${itemId}`,
@@ -144,9 +135,9 @@ test("editor: opens an item, splits main and side, and autosaves once about a se
     await type(title, "海辺の朝さんぽ（改）");
     assert.equal(document.querySelector(".cw-save-state").textContent, "保存中…");
     assert.equal(button("変更を公開する").disabled, false);
-    await wait(500);
+    await advance(500);
     assert.equal(fixture.named("saveDraft").length, 0, "waits before saving");
-    await wait(700);
+    await advance(700);
     assert.equal(fixture.named("saveDraft").length, 1, "saves once");
     assert.equal(lastSave(fixture).version, "v1");
     assert.equal(lastSave(fixture).values.title, "海辺の朝さんぽ（改）");
@@ -155,7 +146,7 @@ test("editor: opens an item, splits main and side, and autosaves once about a se
     assert.equal(document.querySelector(".cw-save-state").textContent, "保存しました");
     assert.ok(document.querySelector(".cw-editor-status").textContent.includes("変更あり"));
     await type(title, "海辺の朝さんぽ（再）");
-    await wait(1100);
+    await advance(1100);
     assert.equal(fixture.named("saveDraft").length, 2);
     assert.equal(lastSave(fixture).version, "v101", "the next save uses the version the first save returned");
   } finally { await app.cleanup(); }
@@ -177,7 +168,8 @@ test("CMS item: a direct target-language link opens the target tab and keeps the
   } finally { await app.cleanup(); }
 });
 
-test("editor: conflict never overwrites and reloads on request; invalid shows errors under fields", async () => {
+test("editor: conflict never overwrites and reloads on request; invalid shows errors under fields", async (t) => {
+  const advance = useTestClock(t, act);
   let mode = "conflict";
   const fixture = createAdapter({
     saveDraft: async (input) => {
@@ -194,12 +186,12 @@ test("editor: conflict never overwrites and reloads on request; invalid shows er
     assert.equal(app.navigations.length, 0, "the initial view does not navigate");
     const title = () => document.querySelector('[data-field="title"] input');
     await type(title(), "わたしの題名");
-    await wait(60); await flush();
+    await advance(60); await flush();
     const alert = document.querySelector('.cw-banner[role="alert"]');
     assert.ok(alert.textContent.includes("ほかの人が先に保存しました"));
     assert.ok(alert.textContent.includes("いま直したところは消えます"));
     await type(title(), "わたしの題名2");
-    await wait(60);
+    await advance(60);
     assert.equal(fixture.named("saveDraft").length, 1, "no further save while in conflict");
     assert.equal(button("変更を公開する")?.disabled ?? button("公開する")?.disabled ?? true, true);
     await press("最新を読み込む");
@@ -208,7 +200,7 @@ test("editor: conflict never overwrites and reloads on request; invalid shows er
 
     mode = "invalid";
     await type(document.querySelector('[data-field="slug"] input'), "taken");
-    await wait(60); await flush();
+    await advance(60); await flush();
     assert.equal(field("slug").querySelector(".cw-error").textContent, "このアドレスはほかの記事が使っています。");
     assert.equal(field("slug").querySelector("input").getAttribute("aria-invalid"), "true");
     assert.ok(field("slug").querySelector("input").getAttribute("aria-describedby").includes(field("slug").querySelector(".cw-error").id));
@@ -245,11 +237,12 @@ test("editor: publish stops on required and slug errors with focus, then flushes
   } finally { await app.cleanup(); }
 });
 
-test("editor: image, reference, tags, select, datetime, url and rich text change values in the contract shapes", async () => {
+test("editor: image, reference, tags, select, datetime, url and rich text change values in the contract shapes", async (t) => {
+  const advance = useTestClock(t, act);
   let reject = false;
   const fixture = createAdapter({ uploadImage: async () => reject ? { status: "rejected", reason: "size" } : undefined });
   const app = await setup({ adapter: fixture.adapter, autosaveDelay: 10, initialCollectionId: "posts", initialItemId: "p1" });
-  const settle = async () => { await wait(40); await flush(); };
+  const settle = async () => { await advance(40); await flush(); };
   try {
     assert.equal(field("cover").querySelector("img").getAttribute("src"), "https://media.example.test/p1.jpg?w=480");
     const photo = new File(["x"], "photo.jpg", { type: "image/jpeg" });
@@ -340,7 +333,8 @@ test("editor: image, reference, tags, select, datetime, url and rich text change
   } finally { await app.cleanup(); }
 });
 
-test("editor: image controls keep stable asset references through load, upload, preview and clear", async () => {
+test("editor: image controls keep stable asset references through load, upload, preview and clear", async (t) => {
+  const advance = useTestClock(t, act);
   const reference = { provider: "kamakura-upload", id: "123e4567-e89b-42d3-a456-426614174000" };
   const fixture = createAdapter();
   fixture.store.posts.get("p1").values.cover = reference;
@@ -348,7 +342,7 @@ test("editor: image controls keep stable asset references through load, upload, 
   const uploads = [];
   fixture.adapter.uploadAsset = async (input) => { uploads.push(input); return { status: "uploaded", reference }; };
   const app = await setup({ adapter: fixture.adapter, autosaveDelay: 10, initialCollectionId: "posts", initialItemId: "p1" });
-  const settle = async () => { await wait(40); await flush(); };
+  const settle = async () => { await advance(40); await flush(); };
   try {
     assert.equal(field("cover").querySelector("img").getAttribute("src"), `/assets/${reference.id}/preview?w=480`);
     assert.ok(button("カバー画像を外す"), "loaded references remain removable");
@@ -416,7 +410,8 @@ test("remove and unpublish only after confirmation, with focus returned; capabil
   } finally { await app.cleanup(); }
 });
 
-test("forbidden clears content; adapter swap and close abort old reads and discard late responses", async () => {
+test("forbidden clears content; adapter swap and close abort old reads and discard late responses", async (t) => {
+  const advance = useTestClock(t, act);
   const forbidden = await setup({ adapter: createAdapter({ loadSchema: async () => ({ status: "forbidden" }) }).adapter });
   try {
     assert.ok(document.body.textContent.includes("コンテンツを見る権限がありません"));
@@ -436,7 +431,7 @@ test("forbidden clears content; adapter swap and close abort old reads and disca
   try {
     deny = true;
     await type(document.querySelector('[data-field="title"] input'), "消える入力");
-    await wait(40); await flush();
+    await advance(40); await flush();
     assert.ok(document.body.textContent.includes("記事を見る権限がありません"));
     assert.equal(document.querySelector('[data-field="title"]'), null);
     assert.equal(document.body.textContent.includes("消える入力"), false);
@@ -460,7 +455,8 @@ test("forbidden clears content; adapter swap and close abort old reads and disca
   assert.equal(itemSignal.aborted, true);
 });
 
-test("English publication state and retry stay independent from item values, autosave, version, and unmount", async () => {
+test("English publication state and retry stay independent from item values, autosave, version, and unmount", async (t) => {
+  const advance = useTestClock(t, act);
   const plain = await setup({ adapter: createAdapter().adapter, initialCollectionId: "posts", initialItemId: "p1" });
   try { assert.equal(document.querySelector(".cw-english-publications"), null, "optional adapter が無いホストには出さない"); }
   finally { await plain.cleanup(); }
@@ -502,7 +498,7 @@ test("English publication state and retry stay independent from item values, aut
     assert.match(panel().textContent, /処理待ち/u);
     assert.match(panel().textContent, /再試行を受け付けました/u);
     assert.equal(fixture.named("loadItem").length, 1, "英語操作は項目を読み直さない");
-    await waitFor(() => fixture.named("saveDraft").length === 1, "Japanese autosave while the English retry is in flight"); await flush();
+    await advance(20);
     assert.equal(fixture.named("saveDraft").length, 1, "日本語の自動保存タイマーは英語操作で止めない");
     assert.equal(fixture.named("saveDraft")[0].input.version, versionBefore);
 

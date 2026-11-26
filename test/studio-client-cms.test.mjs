@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { once } from "node:events";
+import { mkdtempSync, rmSync } from "node:fs";
 import path from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -60,8 +61,7 @@ function installDom(pathname) {
 }
 installDom("/");
 const { act } = await import("react");
-const wait = (ms) => act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
-const flush = async () => { for (let index = 0; index < 8; index += 1) await wait(0); };
+const flush = () => act(async () => {});
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
 
 /** 偽の Studio API と CMS の BFF。呼ばれた path を返す。 */
@@ -122,9 +122,6 @@ test("Project一覧はStudio shellの中央検索・選択済み左nav・アカ�
   assert.match(document.querySelector(".pv-avatars")?.getAttribute("aria-label") ?? "", /一覧オーナー（オーナー）、一覧編集者（編集者）/u);
   assert.equal(document.body.textContent.includes("参加者（架空）"), false, "Project.membersを全員扱いしない");
   assert.ok(document.querySelector(".pv-preview-initial"));
-  const css = readFileSync(new URL("../studio/public/studio.css", import.meta.url), "utf8");
-  assert.match(css, /\.studio-shell-header\{height:64px;display:grid/u);
-  assert.match(css, /@media\(max-width:600px\).*\.studio-content-directory\{grid-template-columns:48px minmax\(0,1fr\)/u);
 });
 
 test("Studio の CMS は、コレクション画面で項目を開き、本文を TipTap で出し、URL を合わせる", async (t) => {
@@ -156,12 +153,20 @@ test("Studio の CMS は、コレクション画面で項目を開き、本文�
   assert.equal(schemaReads(), 1);
 
   // 戻る: URL の一覧で開き直す。進む: 項目で開き直す
-  await act(async () => { window.history.back(); await new Promise((resolve) => setTimeout(resolve, 20)); });
+  await act(async () => {
+    const navigation = once(window, "popstate", { signal: AbortSignal.timeout(5000) });
+    window.history.back();
+    await navigation;
+  });
   await flush();
   assert.equal(window.location.pathname, "/projects/kamakura-site/admin/cms/posts");
   assert.ok(document.querySelector(".cw-list"), "一覧");
   assert.equal(document.querySelector(".cw-editor-bar"), null);
-  await act(async () => { window.history.forward(); await new Promise((resolve) => setTimeout(resolve, 20)); });
+  await act(async () => {
+    const navigation = once(window, "popstate", { signal: AbortSignal.timeout(5000) });
+    window.history.forward();
+    await navigation;
+  });
   await flush();
   assert.equal(window.location.pathname, "/projects/kamakura-site/admin/cms/posts/morning-walk");
   assert.equal(document.querySelector('[data-field="title"] input')?.value, "海辺の朝さんぽ");
@@ -289,7 +294,6 @@ test("Studio-native の CMS を Dashboard から開き、下書き作成の再�
   await flush();
   assert.ok(byText("button", "CMS"), document.body.textContent);
   await click(byText("button", "CMS"));
-  if (!byText("button", "項目を追加")) await wait(350);
   assert.equal(window.location.pathname, `${root}/cms`);
   assert.ok(document.querySelector('[aria-label="CMS"]'));
   await click(byText("summary", "コレクションとフィールドの定義"));

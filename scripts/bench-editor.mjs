@@ -90,7 +90,7 @@ if (baselineBenchmarks) {
 }
 
 console.log(`編集性能ベンチマーク: 1,000 要素 / ${Buffer.byteLength(json)} bytes`);
-if (!baselineBenchmarks) console.log("基準版dist未指定のため、CI退行判定をスキップします。");
+if (!baselineBenchmarks) console.log("基準版dist未指定のため、現行版だけを計測します。");
 
 for (let index = 0; index < currentBenchmarks.length; index += 1) {
   const current = currentBenchmarks[index];

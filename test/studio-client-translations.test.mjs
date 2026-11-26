@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { once } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import path from "node:path";
 import { after, test } from "node:test";
@@ -43,8 +44,7 @@ function installDom(pathname) {
 }
 installDom("/");
 const { act } = await import("react");
-const wait = (ms) => act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
-const flush = async () => { for (let index = 0; index < 10; index += 1) await wait(0); };
+const flush = () => act(async () => {});
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
 
 /** 偽の Studio API と翻訳の BFF（中身は W1 のデモ用のメモリの adapter）。呼ばれた要求を返す。 */
@@ -98,7 +98,13 @@ const click = async (node) => { assert.ok(node, "target not found"); await act(a
 const row = (title) => [...document.querySelectorAll("button.cw-row-open")].find((node) => node.querySelector(".cw-row-title")?.textContent === title);
 const rowLink = (title) => [...document.querySelectorAll("a.cw-row-open")].find((node) => node.querySelector(".cw-row-title")?.textContent === title);
 const cmsLink = () => [...document.querySelectorAll(".lw-item a.cw-button")].find((node) => text(node).startsWith("CMS で開く"));
-const historyMove = async (direction) => { await act(async () => { window.history[direction](); await new Promise((resolve) => setTimeout(resolve, 20)); }); await flush(); };
+const historyMove = async (direction) => {
+  await act(async () => {
+    const navigation = once(window, "popstate", { signal: AbortSignal.timeout(5000) });
+    window.history[direction]();
+    await navigation;
+  });
+};
 
 test("Studio の翻訳は、翻訳の画面で URL の 1 件を開き、一覧・1 件の移動と戻る/進むを URL に合わせる", async (t) => {
   const calls = await openStudio(t, "/projects/kamakura-site/admin/translations/aG9tZQ");

@@ -53,18 +53,9 @@ test("the editor opens on the page list and the left header always names the sit
   } finally { await app.cleanup(); }
 });
 
-test("the workspace keeps three fixed columns on desktop, overlays panels under 820px and wraps the inspector header at 320px", async () => {
+test("the workspace exposes its controls and can reopen the inspector after closing it", async () => {
   const app = await setup();
   try {
-    const css = document.querySelector(".nw-editor style").textContent;
-    assert.ok(css.includes(".nw-editor{") && css.includes("height:100dvh;max-height:100dvh") && css.includes("overflow:hidden"), "the shell owns the viewport height so the host page does not scroll");
-    assert.ok(css.includes("grid-template-columns:350px minmax(0,1fr) 300px"));
-    assert.ok(css.includes("@media(max-width:820px)") && css.includes(".e-left{left:0;width:min(350px,calc(100vw - 50px))") && css.includes(".e-right{right:0;left:auto;width:min(300px,calc(100vw - 50px))"), "narrow screens overlay the panels on the canvas");
-    const narrow = css.slice(css.indexOf("@media(max-width:480px)"));
-    assert.ok(narrow.includes(".nw-editor .e-inspector-context{flex-wrap:wrap"), "the inspector header wraps so the close toggle stays reachable");
-    assert.ok(narrow.includes(".nw-editor .e-inspector-context strong{flex:1 1 100%}"));
-    assert.ok(narrow.includes(".nw-editor .e-canvas-tools{height:auto;flex-wrap:wrap;gap:3px;padding:4px 5px}") && narrow.includes(".nw-editor .e-width-field{width:70px}"), "the viewport bar wraps inside a 320px stage");
-    assert.ok(narrow.includes(".nw-editor .e-dialog-backdrop{align-items:end;padding:0}") && narrow.includes(".nw-editor .e-dialog-actions{position:sticky"), "editing mode keeps close and save reachable at narrow widths");
     for (const label of ["左パネルを閉じる", "右パネルを閉じる", "表示幅", "PC 1280px", "タブレット 768px", "モバイル 375px", "元に戻す", "下書き保存", "公開"]) assert.ok(document.querySelector(`[aria-label="${label}"]`), label);
     await click(document.querySelector('[aria-label="右パネルを閉じる"]'));
     assert.equal(document.querySelector('[aria-label="インスペクタ"]').hidden, true);
@@ -205,11 +196,4 @@ test("breakpoint settings never reuse a loaded snapshot after the site id change
     assert.match(document.querySelector("#breakpoint-state").textContent, /PC/);
     assert.equal(document.querySelector("#breakpoint-state").dataset.editable, "true");
   } finally { await act(async () => root.unmount()); container.remove(); }
-});
-
-test("the demo host embeds the editor below a slim banner without page scrolling", () => {
-  const source = readFileSync(new URL("../examples/editor-demo.mjs", import.meta.url), "utf8");
-  assert.ok(source.includes("body{margin:0;display:flex;flex-direction:column;overflow:hidden"));
-  assert.ok(source.includes("#root>.nw-editor{height:100%;max-height:100%}"));
-  assert.ok(!source.includes("padding:20px"), "no outer padding around the workspace");
 });

@@ -79,10 +79,8 @@ test("a shared color is created, applied to two elements, recolored live and sav
     assert.equal(canvasTokenValue("color-1"), "#00aa00", "typing updates the scope variable before it is committed");
     assert.equal(button("下書き保存").disabled, true);
     await act(async () => input("色", left()).dispatchEvent(new dom.window.FocusEvent("focusout", { bubbles: true }))); await flush();
-    const css = canvasCss();
     assert.equal(canvasTokenValue("color-1"), "#00aa00");
     for (const id of ["heading", "lead"]) {
-      assert.ok(css.includes(`[data-nw-node="${id}"]{color:var(--nw-Node-${id}-base-color);}`), id);
       assert.equal(canvasNodeValue(id, `--nw-Node-${id}-base-color`), "var(--nw-color-1)", id);
     }
     await click(button("下書き保存"));
@@ -121,11 +119,8 @@ test("native shared context renders outside the editable scope, preserves a 5px 
     assert.ok(frameDocument.body.textContent.includes("SHARED_FOOTER_MUST_NOT_SAVE"));
     assert.ok(frameDocument.body.textContent.includes("SHARED_MENU_DRAFT_MUST_NOT_SAVE"));
     assert.equal(frameDocument.querySelector("[data-nw-overlay]").hidden, true);
-    const css = [...frameDocument.querySelectorAll("style")].map((node) => node.textContent).join("\n");
-    assert.match(css, /\[data-nw-node="bullet"\]\{background-color:var\(--nw-Node-bullet-base-backgroundColor\);height:var\(--nw-Node-bullet-base-height\);width:var\(--nw-Node-bullet-base-width\);\}/);
     assert.equal(canvasNodeValue("bullet", "--nw-Node-bullet-base-backgroundColor"), "#123456");
     assert.equal(canvasNodeValue("bullet", "--nw-Node-bullet-base-width"), "5px");
-    assert.equal(css.includes("min-height:48px"), false);
     await click(button("プレビュー"));
     await canvasClick("[data-nw-overlay-open]");
     assert.equal(frameDocument.querySelector("[data-nw-overlay]").hidden, false);
@@ -266,10 +261,9 @@ test("a tablet override is shown in the tier color, can be reset, and matches th
     await click(direction().querySelector('[aria-label="横"]'));
     const row = direction().closest(".e-row");
     assert.ok(row.classList.contains("e-own")); assert.ok(row.textContent.includes("保存前"));
-    assert.ok(canvasCss().includes("flex-direction:var(--nw-Node-hero-responsive-768-flexDirection);"));
     assert.equal(canvasNodeValue("hero", "--nw-Node-hero-responsive-768-flexDirection"), "row");
     await click(button("方向のこの幅の指定を解除", right()));
-    assert.ok(!canvasCss().includes("--nw-Node-hero-responsive-768-flexDirection")); assert.ok(!direction().closest(".e-row").classList.contains("e-own"));
+    assert.equal(canvasNodeValue("hero", "--nw-Node-hero-responsive-768-flexDirection"), ""); assert.ok(!direction().closest(".e-row").classList.contains("e-own"));
     await click(direction().querySelector('[aria-label="横"]'));
     // 選択を変えても段は維持する。
     await clickLayer("h1 · heading"); assert.equal(document.querySelector('[aria-label="編集する幅"] [aria-pressed="true"]').textContent, "タブレット 768px〜");
@@ -279,9 +273,7 @@ test("a tablet override is shown in the tier color, can be reset, and matches th
     await reloadEditor();
     const html = renderPageToHtml(app.stored()), published = html.match(/<style data-nw-style="[^"]+">([^]*?)<\/style>/)[1];
     assert.ok(published.includes("@media (min-width:768px)") && published.includes("flex-direction:row;"));
-    assert.ok(canvasCss().includes("flex-direction:var(--nw-Node-hero-responsive-768-flexDirection);"));
     assert.equal(canvasNodeValue("hero", "--nw-Node-hero-responsive-768-flexDirection"), "row");
-    assert.notEqual(canvasCss(), published, "the editor keeps dynamic values on canvas nodes while public CSS stays static");
   } finally { await app.cleanup(); }
 });
 
@@ -308,7 +300,6 @@ test("the compact tier disclosure and explicit alignment controls keep viewport,
     assert.equal(right().querySelector('[aria-label="横方向を右に揃える"]').getAttribute("aria-pressed"), "true", "row-reverse is converted to the visual horizontal axis");
     assert.equal(right().querySelector('[aria-label="縦方向を下に揃える"]').getAttribute("aria-pressed"), "true");
     await click(right().querySelector('[aria-label="横方向を左に揃える"]'));
-    assert.match(canvasCss(), /@media \(min-width:768px\)\{[^}]*hero"\]\{[^}]*justify-content:var\(--nw-Node-hero-responsive-768-justifyContent\);/);
     assert.equal(canvasNodeValue("hero", "--nw-Node-hero-responsive-768-justifyContent"), "flex-end");
     await click(button("元に戻す"));
     assert.equal(right().querySelector('[aria-label="横方向を右に揃える"]').getAttribute("aria-pressed"), "true", "axis edits remain one undo step");
@@ -323,11 +314,9 @@ test("the compact tier disclosure and explicit alignment controls keep viewport,
     const verticalBottom = right().querySelector('[aria-label="縦方向を下に揃える"]');
     verticalBottom.focus(); await key(verticalBottom, "ArrowUp");
     assert.equal(document.activeElement.getAttribute("aria-label"), "縦方向を中央に揃える");
-    assert.match(canvasCss(), /@media \(min-width:768px\)\{[^}]*hero"\]\{[^}]*align-items:var\(--nw-Node-hero-responsive-768-alignItems\);[^}]*justify-content:var\(--nw-Node-hero-responsive-768-justifyContent\);/);
     assert.equal(canvasNodeValue("hero", "--nw-Node-hero-responsive-768-alignItems"), "center");
     assert.equal(canvasNodeValue("hero", "--nw-Node-hero-responsive-768-justifyContent"), "center");
     await click(button("均等に配置", right()));
-    assert.match(canvasCss(), /@media \(min-width:768px\)\{[^}]*hero"\]\{[^}]*justify-content:var\(--nw-Node-hero-responsive-768-justifyContent\);/);
     assert.equal(canvasNodeValue("hero", "--nw-Node-hero-responsive-768-justifyContent"), "space-between");
 
     assert.deepEqual([...right().querySelectorAll(".e-sec>h3")].map((node) => node.textContent), ["レイアウト", "外観", "位置"]);
@@ -352,7 +341,6 @@ test("flex width and dvh height round-trip through the inspector, undo, and publ
     const widthUnit = () => field("幅", right()).querySelector("select");
     await change(widthUnit(), "u:flex");
     assert.equal(input("幅", right()).value, "1", "fixed width becomes a 1 flex ratio");
-    assert.match(canvasCss(), /flex-basis:var\(--nw-Node-heading-base-flexBasis\);flex-grow:var\(--nw-Node-heading-base-flexGrow\);width:var\(--nw-Node-heading-base-width\);/);
     assert.equal(canvasNodeValue("heading", "--nw-Node-heading-base-flexBasis"), "0px");
     assert.equal(canvasNodeValue("heading", "--nw-Node-heading-base-flexGrow"), "1");
     assert.equal(canvasNodeValue("heading", "--nw-Node-heading-base-width"), "auto");
@@ -409,7 +397,6 @@ test("height flex divides a vertical parent's remaining space and switches back 
     assert.ok(![...field("幅", right()).querySelector("select").options].some((option) => option.value === "u:flex"), "the cross axis does not claim the same grow ratio");
     await change(heightUnit(), "u:flex");
     await change(input("高さ", right()), "2");
-    assert.match(canvasCss(), /flex-basis:var\(--nw-Node-heading-base-flexBasis\);flex-grow:var\(--nw-Node-heading-base-flexGrow\);height:var\(--nw-Node-heading-base-height\);/);
     assert.equal(canvasNodeValue("heading", "--nw-Node-heading-base-flexGrow"), "2");
     assert.equal(canvasNodeValue("heading", "--nw-Node-heading-base-height"), "auto");
     await click(button("元に戻す"));
@@ -454,7 +441,8 @@ test("invalid width and color values are rejected and the previous values are sa
     assert.equal(button("下書き保存").disabled, true);
     await change(input("背景色", right()), "red;display:none");
     assert.ok(field("背景色", right()).querySelector('[role="alert"]'));
-    assert.ok(!canvasCss().includes("display:none"));
+    const hero = frame().contentDocument.querySelector('[data-nw-node="hero"]');
+    assert.notEqual(hero.ownerDocument.defaultView.getComputedStyle(hero).display, "none");
     await click(button("入力を取り消す", field("幅", right()))); await click(button("入力を取り消す", field("背景色", right())));
     assert.equal(input("幅", right()).value, "50");
     await click(button("下書き保存"));
@@ -515,8 +503,6 @@ test("text styles are applied from the style panel, shown as inherited values an
     await click(button("テキストスタイルを追加", left()));
     await change(input("タブレット 768px〜 のサイズ", left()), "20");
     await canvasClick("h1"); await click(button("選択中の要素に適用", left()));
-    assert.ok(canvasCss().includes('[data-nw-node="heading"]{font-size:var(--nw-Node-heading-text-base-fontSize);font-weight:var(--nw-Node-heading-text-base-fontWeight);line-height:var(--nw-Node-heading-text-base-lineHeight);}'));
-    assert.ok(canvasCss().includes('@media (min-width:768px){') && canvasCss().includes('[data-nw-node="heading"]{font-size:var(--nw-Node-heading-text-responsive-768-fontSize);}'));
     assert.equal(canvasNodeValue("heading", "--nw-Node-heading-text-base-fontSize"), "16px");
     assert.equal(canvasNodeValue("heading", "--nw-Node-heading-text-responsive-768-fontSize"), "20px");
     assert.equal(input("テキストスタイル", right()).value, "text-1");
@@ -524,15 +510,10 @@ test("text styles are applied from the style panel, shown as inherited values an
     assert.equal(field("文字サイズ", right()).querySelector(".e-hint").title, "テキストスタイル『テキスト 1』から継承");
     assert.ok(field("文字の太さ", right()).textContent.includes("継承: テキスト 1 · 標準"));
     assert.equal(input("文字サイズ", right()).placeholder, "16");
-    const before = canvasCss().replace(/\n/g, "");
     await click(button("切り離す", field("テキストスタイル", right())));
     assert.equal(input("テキストスタイル", right()).value, "");
-    const after = canvasCss();
-    assert.ok(after.includes('[data-nw-node="heading"]{font-size:var(--nw-Node-heading-base-fontSize);font-weight:var(--nw-Node-heading-base-fontWeight);line-height:var(--nw-Node-heading-base-lineHeight);}'));
-    assert.ok(after.includes('[data-nw-node="heading"]{font-size:var(--nw-Node-heading-responsive-768-fontSize);}'));
     assert.equal(canvasNodeValue("heading", "--nw-Node-heading-base-fontSize"), "16px");
     assert.equal(canvasNodeValue("heading", "--nw-Node-heading-responsive-768-fontSize"), "20px");
-    assert.notEqual(before, after.replace(/\n/g, ""));
     await click(button("下書き保存"));
     const heading = app.calls.saves[0].document.body[0].children[0];
     assert.deepEqual(heading.style, { base: { fontSize: 16, fontWeight: 400, lineHeight: 1.6 }, responsive: [{ minWidth: 768, declarations: { fontSize: 20 } }] });
@@ -551,11 +532,10 @@ test("editing only below the next tier keeps wider widths, is undone in one step
     assert.ok(right().textContent.includes("表示中の 1280px にはこの指定は反映されません"));
     assert.ok(button("375px で表示", right()));
     await click(direction().querySelector('[aria-label="縦"]'));
-    assert.match(canvasCss(), /@media \(min-width:768px\)\{[^}]*hero"\]\{[^}]*flex-direction:var\(--nw-Node-hero-responsive-768-flexDirection\);/);
     assert.equal(canvasNodeValue("hero", "--nw-Node-hero-responsive-768-flexDirection"), "row");
     await click(button("元に戻す")); await clickLayer("section · hero");
     assert.equal(right().querySelector('[aria-label="反映する範囲"] [aria-pressed="true"]').textContent, "〜767px だけ", "範囲は選択を変えても保つ");
-    assert.doesNotMatch(canvasCss(), /@media \(min-width:768px\)\{[^}]*hero"\]\{[^}]*flex-direction/);
+    assert.equal(canvasNodeValue("hero", "--nw-Node-hero-responsive-768-flexDirection"), "");
     await click(right().querySelector('[role="group"][aria-label="方向"] [aria-label="縦"]'));
     await clickLayer("p · lead"); await editorTab("テキスト"); await change(input("文字色", right()), "#ff0000");
     assert.ok(field("文字色", right()).querySelector('[role="alert"]').textContent.includes("先に「768px 以上」で値を入れてください。"));

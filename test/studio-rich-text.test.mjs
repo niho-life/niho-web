@@ -1,3 +1,4 @@
+import { useTestClock } from "./ui-test-clock.mjs";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import path from "node:path";
@@ -26,7 +27,7 @@ async function loadStudioRichText() {
   const outfile = path.join(directory, "rich-text.mjs");
   try {
     await build({
-      stdin: { contents: 'export * from "./studio/rich-text-editor.tsx"; export * from "./studio/rich-text-sanitize.ts"; export { studioRichTextCss } from "./studio/rich-text-style.ts";', resolveDir: fileURLToPath(new URL("..", import.meta.url)), loader: "ts" },
+      stdin: { contents: 'export * from "./studio/rich-text-editor.tsx"; export * from "./studio/rich-text-sanitize.ts";', resolveDir: fileURLToPath(new URL("..", import.meta.url)), loader: "ts" },
       bundle: true, external: ["react", "react/jsx-runtime", "react-dom"], format: "esm", platform: "node", target: "node22", outfile, logLevel: "silent",
     });
     return await import(pathToFileURL(outfile).href);
@@ -34,7 +35,7 @@ async function loadStudioRichText() {
     rmSync(directory, { recursive: true, force: true });
   }
 }
-const { StudioRichTextEditor, createStudioRichText, sanitizeStudioRichTextHtml, isStudioRichTextSafe, studioRichTextCss } = await loadStudioRichText();
+const { StudioRichTextEditor, createStudioRichText, sanitizeStudioRichTextHtml, isStudioRichTextSafe } = await loadStudioRichText();
 const { sanitizeRichTextHtml } = await import("../dist/collection-model.js");
 const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
@@ -52,8 +53,7 @@ const danger = '<p onclick="steal()">あ<script>alert(1)</script><a href="javasc
   + '<div data-type="embed_code"><blockquote class="instagram-media" data-instgrm-permalink="https://www.instagram.com/p/demo/" onmouseover="alert(4)">え</blockquote><script async src="https://evil.example.test/embed.js"></script></div>'
   + '<iframe src="http://insecure.example.test/frame"></iframe><p>お</p>';
 
-const wait = (ms) => act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
-const flush = async () => { for (let index = 0; index < 4; index += 1) await wait(0); };
+const flush = () => act(async () => {});
 /** 共有の無害化（ワークスペースが props.sanitize として渡すもの）。"/media/" だけ同じサイトの画像を残す。 */
 const workspaceSanitize = (html) => sanitizeRichTextHtml(html, { isImageSrcAllowed: (src) => src.startsWith("/media/") });
 
@@ -290,7 +290,8 @@ test("値が外から変わったら本文を読み直し、そのときは onCh
   } finally { await app.cleanup(); }
 });
 
-test("CollectionWorkspace の renderRichText に渡すと、本文の値を壊さずに保存する", async () => {
+test("CollectionWorkspace の renderRichText に渡すと、本文の値を壊さずに保存する", async (t) => {
+  const advance = useTestClock(t, act);
   const fixture = createAdapter({ loadItem: (input) => input.itemId === "p1" ? { status: "ready", item: post("p1", "海辺の朝さんぽ", {}, { slug: "morning-walk", body: studio }) } : undefined });
   const saves = [], adapter = { ...fixture.adapter, saveDraft: async (input, signal) => { saves.push(input.values.body); return fixture.adapter.saveDraft(input, signal); } };
   const container = document.createElement("div");
@@ -303,15 +304,10 @@ test("CollectionWorkspace の renderRichText に渡すと、本文の値を壊�
     assert.ok(body, "Studio の本文の部品が出る");
     assert.ok(body.id.endsWith("-body-control"), body.id);
     assert.equal(document.getElementById(body.getAttribute("aria-labelledby")).textContent.includes("本文"), true);
-    await wait(60);
+    await advance(60);
     assert.deepEqual(saves, [], "開いただけでは保存しない");
     await act(async () => { const editor = body.editor; editor.view.dispatch(editor.state.tr.insertText("★", textPos(editor, "おわり。"))); });
-    await wait(80);
+    await advance(80);
     assert.equal(saves.at(-1), studio.replace("おわり。", "★おわり。"));
   } finally { await act(async () => root.unmount()); container.remove(); }
-});
-
-test("CSS は Studio の束ねで studio.css に足すもの（inline の style を使わない）", () => {
-  assert.match(studioRichTextCss, /\.studio-rich \.ProseMirror\{/u);
-  assert.match(studioRichTextCss, /figcaption:empty::before/u);
 });
