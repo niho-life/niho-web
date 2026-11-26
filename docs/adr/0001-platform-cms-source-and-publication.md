@@ -74,7 +74,7 @@ current pointer が指す blob と履歴・予約・outbox が必要とする bl
 
 ### 6. 契約文書と互換性
 
-この ADR だけでは `docs/collection-contract.md` や README の「正本はホスト」という現行契約を書き換えない。#373 以降のコード、適合テスト、Studio-native の受入、外部 snapshot/ack の受入が揃う段階ごとに、実際に提供される範囲に合わせて契約文書と README を同じ PR で更新する。v1 の `cms.*`、外部ホストが正本である既存接続、既存項目の読み書きは移行完了まで維持する。
+この ADR だけでは `docs/collection-contract.md` や README の「正本はホスト」という現行契約を書き換えない。#373 以降のコード、適合テスト、Studio-native の受入、外部 snapshot/ack の受入が揃う段階ごとに、公開 API・通信形式・型が変わる場合は該当する契約文書を更新する。README は目次として入口・利用開始・開発方法が変わる場合だけ更新する。v1 の `cms.*`、外部ホストが正本である既存接続、既存項目の読み書きは移行完了まで維持する。
 
 ## 次の Issue への引継ぎ
 
