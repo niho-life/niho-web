@@ -483,6 +483,7 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
   };
   let discovered: EditingApiDiscovery | undefined;
   let siteStylesFeature = false;
+  let siteStylesDiscovery: Promise<EditingApiDiscovery> | undefined;
   const pageReadCache = new Map<string, { etag: string; value: EditingPageSnapshot }>();
   let pageCatalogCache: { etag: string; value: EditingPageCatalog } | null = null;
   function rememberPageRead(key: string, entry: { etag: string; value: EditingPageSnapshot }): void {
@@ -495,6 +496,10 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
   }
   async function featurePath(path: string, signal?: AbortSignal): Promise<string> {
     void signal;
+    // A site-settings read can negotiate site.styles while the editor starts its page read.
+    // Keep the page request on the same wire contract as that negotiation.
+    const pendingDiscovery = siteStylesDiscovery;
+    if (pendingDiscovery) await pendingDiscovery.catch(() => undefined);
     // Page methods keep the legacy wire shape until the caller has explicitly negotiated
     // discovery. Site-style methods always negotiate through requireSiteStylesOperation().
     // This also preserves direct page clients that talk to pre-discovery hosts.
@@ -503,7 +508,17 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
     return `${path}${path.includes("?") ? "&" : "?"}features=${SITE_STYLES_FEATURE}`;
   }
   async function requireSiteStylesOperation(id: string, signal?: AbortSignal): Promise<void> {
-    const discovery = siteStylesFeature && discovered ? discovered : await performDiscovery(true, signal);
+    let discovery: EditingApiDiscovery;
+    if (siteStylesFeature && discovered) discovery = discovered;
+    else {
+      const pending = siteStylesDiscovery ?? (siteStylesDiscovery = performDiscovery(true, signal));
+      void pending.then(() => {
+        if (siteStylesDiscovery === pending) siteStylesDiscovery = undefined;
+      }, () => {
+        if (siteStylesDiscovery === pending) siteStylesDiscovery = undefined;
+      });
+      discovery = await pending;
+    }
     if (!siteStylesFeature || !discovery.operations.some((operation) => operation.id === id)) throw new EditingApiClientError("not_found", 404);
   }
   async function performDiscovery(requestSiteStyles: boolean, signal?: AbortSignal): Promise<EditingApiDiscovery> {
@@ -682,6 +697,7 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
     },
     async read(target, signal) {
       const path = await featurePath(targetPath(target, siteId).replace("{operation}", "pages.read"), signal);
+      const pageReadHasSiteStyles = new URL(path, origin).searchParams.get("features") === SITE_STYLES_FEATURE;
       const key = `${target.pageId}\u0000${target.locale}`;
       const cached = pageReadCache.get(key);
       const accept = options.editorSnapshot ? EDITING_EDITOR_SNAPSHOT_ACCEPT : "application/json";
@@ -691,7 +707,7 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       const { response, body } = result;
       if (response.status === 304) throw new EditingApiClientError("invalid_response", response.status);
       if (!response.ok) throw apiFailure(body, response.status);
-      const dependencyFields = siteStylesFeature ? ["componentsVersion", "presentationVersion", "draftStylesVersion"] as const : PAGE_OPERATION_VERSIONS;
+      const dependencyFields = pageReadHasSiteStyles ? ["componentsVersion", "presentationVersion", "draftStylesVersion"] as const : PAGE_OPERATION_VERSIONS;
       const dependencies = Object.fromEntries(dependencyFields.flatMap((key) => body[key] === undefined ? [] : [[key, body[key]]]));
       const snapshotKeys = [
         ...(body.cmsBindings === undefined ? [] : ["cmsBindings"]),
@@ -700,7 +716,7 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       ];
       if (!exactKeys(body, ["document", "version", ...Object.keys(dependencies), ...snapshotKeys]) || !isEditingApiVersion(body.version)
         || Object.values(dependencies).some((value) => !isEditingApiVersion(value))
-        || siteStylesFeature && !isEditingApiVersion(body.draftStylesVersion)) throw new EditingApiClientError("invalid_response", response.status);
+        || pageReadHasSiteStyles && !isEditingApiVersion(body.draftStylesVersion)) throw new EditingApiClientError("invalid_response", response.status);
       const document = parseEditingPageDocumentEnvelope(body.document);
       assertTarget(document, target);
       let editorSnapshot: Pick<EditingPageSnapshot, "editorState" | "presentation"> = {};
