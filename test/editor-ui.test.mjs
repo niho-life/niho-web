@@ -697,6 +697,34 @@ test("Basic の標準埋め込みはカード UI、URL 正規化、保存・再�
     }
   } finally { await app.cleanup(); }
 });
+test("外部URLの新規追加はopt-inで、保存とTravel previewの制限権限を共有する", async () => {
+  const blankEmbeds = createBlankEmbedRegistry({ parentOrigin: "https://editor.example.test", entries: [] });
+  const app = await setup({ props: { enableUrlEmbeds: true, blankEmbeds } });
+  const source = "https://travel.niho.life/embed/experiences/sea-kayak/book?locale=ja&campaign=kamakura";
+  try {
+    await click("追加");
+    const card = document.querySelector('.e-preset-preview[data-preset="embed-url"]')?.closest("button");
+    assert.ok(card); assert.match(card.textContent, /外部URL/u);
+    await act(async () => card.click()); await flush();
+    assert.equal(document.querySelector('[aria-label="インスペクタ"] .e-inspector-context strong').textContent, "外部URL");
+    assert.match(document.querySelector("iframe").contentDocument.body.textContent, /外部URL の URL を設定/u);
+    await change(input("公開HTTPS URL"), source);
+    await change(input("アクセシブルなタイトル"), "NIHO Travel 予約");
+    let canvas = document.querySelector("iframe"), root = canvas.contentDocument.querySelector('[data-nw-embed="url"]');
+    assert.ok(root?.hasAttribute("data-nw-url-static")); assert.equal(root.querySelector("iframe"), null, "編集中は外部通信しない");
+    await click("下書き保存");
+    assert.deepEqual(app.stored().body.at(-1).embed, { provider: "url", title: "NIHO Travel 予約", source });
+    assert.equal(app.stored().body.at(-1).style.base.width, "100%");
+    assert.equal(app.stored().body.at(-1).style.base.height, 640);
+    await click("プレビュー"); await settle();
+    canvas = document.querySelector("iframe"); root = canvas.contentDocument.querySelector('[data-nw-embed="url"]');
+    const frame = root.querySelector("iframe"), preview = new URL(frame.getAttribute("src"));
+    assert.equal(preview.searchParams.get("locale"), "ja"); assert.equal(preview.searchParams.get("campaign"), "kamakura"); assert.equal(preview.searchParams.get("preview"), "1");
+    assert.equal(frame.getAttribute("sandbox"), "allow-scripts allow-same-origin allow-forms");
+    assert.equal(frame.getAttribute("referrerpolicy"), "origin"); assert.equal(frame.getAttribute("data-nw-url-embed-frame"), "");
+    assert.equal(root.querySelector("[data-nw-url-fallback]").getAttribute("href"), preview.href);
+  } finally { await app.cleanup(); }
+});
 test("Blank は承認済み key だけを選択し、未接続案内・保存・undo・preview を共有する", async () => {
   const disconnectedDocument = structuredClone(fixture);
   disconnectedDocument.body.push({ type: "element", id: "blank_existing", tag: "div", embed: { provider: "blank", title: "公開ガイド" }, children: [] });

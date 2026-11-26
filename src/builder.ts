@@ -258,6 +258,7 @@ export const standardBuilderDefinition: BuilderDefinition = {
     { id: "embed-facebook", label: "Facebook", description: "Facebook の公開投稿", group: "埋め込み", glyph: "f", create: ({ id }) => embed(id, "facebook", "Facebook の投稿", 650) },
     { id: "embed-x", label: "X", description: "X の公開ポスト", group: "埋め込み", glyph: "X", create: ({ id }) => embed(id, "x", "X のポスト", 650) },
     { id: "embed-instagram", label: "Instagram", description: "Instagram の公開投稿・リール", group: "埋め込み", glyph: "◎", create: ({ id }) => embed(id, "instagram", "Instagram の投稿", 720) },
+    { id: "embed-url", label: "外部URL", description: "公開HTTPS URLの埋め込み", group: "埋め込み", glyph: "↗", create: ({ id }) => embed(id, "url", "外部コンテンツ", 640) },
     { id: "h2", label: "見出し", group: "文字", glyph: "H", create: ({ id }) => element(id, "h2", "新しいテキスト") },
     { id: "a", label: "リンク", group: "文字", glyph: "↗", create: ({ id }) => element(id, "a", "リンク") },
     { id: "carousel", label: "カルーセル", group: "インタラクション", glyph: "⇆", create: ({ id }) => carouselPreset(id) },

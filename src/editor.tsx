@@ -102,7 +102,8 @@ const embedHint = (provider: string, blankReady: boolean): string | undefined =>
   facebook: "公開投稿の facebook.com URL",
   x: "公開ポストの x.com URL",
   instagram: "公開投稿・リールの instagram.com URL",
-  lottie: "lottie.host の Asset link または /embed/ URL"
+  lottie: "lottie.host の Asset link または /embed/ URL",
+  url: "資格情報を含まない公開HTTPS URL"
 } as Record<string, string | undefined>)[provider];
 const englishPublicationLabels: Readonly<Record<EnglishPublication["state"], string>> = {
   "initial-release-required": "最初の英語版公開待ち",
@@ -546,7 +547,7 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
 }
 
 /** 認証済みホストに接続する共通エディター。ネットワーク URL や秘密を所有しない。 */
-export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = emptyBlocks, builder, previewComponent, insertableBlocks, assets, externalFramePolicy, blankEmbeds: blankEmbedInput, xPostFrameUrl, breakpoints: hostBreakpoints, mobilePreviewWidth, autosave, recovery, measurePerformance }: PageEditorProps) {
+export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = emptyBlocks, builder, previewComponent, insertableBlocks, assets, externalFramePolicy, blankEmbeds: blankEmbedInput, xPostFrameUrl, enableUrlEmbeds = false, breakpoints: hostBreakpoints, mobilePreviewWidth, autosave, recovery, measurePerformance }: PageEditorProps) {
   const adapterRef = useRef(adapter); adapterRef.current = adapter;
   const measuredInitialLoad = useRef(false);
   const pendingMeasurement = useRef<{ target: EditorTarget; initial: boolean; signal: AbortSignal; finish: () => void } | null>(null);
@@ -575,7 +576,10 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   // 編集中の状態（ホバー等）はキャンバスへ強制表示する。動きは初期は止め、選択枠がずれないようにする。
   const [styleState, setStyleState] = useState<StyleState>("normal"), [motion, setMotion] = useState(false), [replay, setReplay] = useState(0);
   const [scaleMode, setScaleMode] = useState<WorkspaceScale>("fit"), [stageSize, setStageSize] = useState({ width: 0, height: 0 }), stageRef = useRef<HTMLDivElement>(null);
-  const builderDefinition = useMemo(() => resolveBuilderDefinition(builder), [builder]);
+  const builderDefinition = useMemo(() => {
+    const resolved = resolveBuilderDefinition(builder);
+    return enableUrlEmbeds ? resolved : { ...resolved, insertions: resolved.insertions.filter((entry) => entry.id !== "embed-url") };
+  }, [builder, enableUrlEmbeds]);
   const fallbackBreakpointSettings = useMemo(() => breakpointSettingsFromLegacy(hostBreakpoints, mobilePreviewWidth), [hostBreakpoints, mobilePreviewWidth]);
   const breakpointSettings = useBreakpointSettings(adapter, siteId, fallbackBreakpointSettings), breakpointView = breakpointPreview(breakpointSettings.settings);
   const breakpoints = breakpointSettings.editable ? breakpointView.breakpoints : normalizeBreakpoints(hostBreakpoints);
@@ -2043,6 +2047,10 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       setNotice("ホストで承認済みの Blank 埋め込みが接続されていないため追加できません。");
       return;
     }
+    if (type === "embed-url" && !enableUrlEmbeds) {
+      setNotice("外部URL埋め込みはこのサイトで有効になっていません。");
+      return;
+    }
     try {
       const newNode = makeNode(type); if (!newNode) return;
       const formPart = type.startsWith("form-") && !["form-1", "form-2", "form-3"].includes(type);
@@ -2680,7 +2688,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         </>}
         {elementTab === "settings" && node.embed && <>
           {node.embed.provider === "blank" ? <label className="e-field"><span>承認済みの埋め込み</span><select aria-label="承認済みの埋め込み" value={node.embed.source ?? ""} disabled={editBlocked || !!reason("embed.source") || !blankEmbedReady} onChange={(event) => { const error = apply({ type: "embedSource", path: selection, source: event.target.value }); if (error) setNotice(error); }}><option value="">選択してください</option>{node.embed.source && !blankEmbeds?.entries.some((entry) => entry.key === node.embed!.source) && <option value={node.embed.source}>未承認の設定</option>}{blankEmbeds?.entries.map((entry) => <option key={entry.key} value={entry.key}>{entry.label}</option>)}</select></label>
-            : field(node.embed.provider === "lottie" ? "LottieFiles Asset link" : node.embed.provider === "facebook" ? "Facebook の投稿 URL" : node.embed.provider === "x" ? "X のポスト URL" : node.embed.provider === "instagram" ? "Instagram の投稿・リール URL" : "埋め込み URL", String(node.embed.source ?? ""), (value) => ({ type: "embedSource", path: selection, source: value }), "embed.source", { reason: reason("embed.source"), placeholder: node.embed.provider === "map" ? "https://www.google.com/maps/embed?pb=..." : node.embed.provider === "youtube" ? "https://www.youtube.com/watch?v=..." : node.embed.provider === "vimeo" ? "https://vimeo.com/..." : node.embed.provider === "facebook" ? "https://www.facebook.com/example/posts/123456789" : node.embed.provider === "x" ? "https://x.com/example/status/1234567890123456789" : node.embed.provider === "instagram" ? "https://www.instagram.com/p/AbCdEf12345/" : "https://lottie.host/00000000-0000-4000-8000-000000000000/animation.json" })}
+            : field(node.embed.provider === "url" ? "公開HTTPS URL" : node.embed.provider === "lottie" ? "LottieFiles Asset link" : node.embed.provider === "facebook" ? "Facebook の投稿 URL" : node.embed.provider === "x" ? "X のポスト URL" : node.embed.provider === "instagram" ? "Instagram の投稿・リール URL" : "埋め込み URL", String(node.embed.source ?? ""), (value) => ({ type: "embedSource", path: selection, source: value }), "embed.source", { reason: reason("embed.source"), placeholder: node.embed.provider === "url" ? "https://example.com/public/embed?item=..." : node.embed.provider === "map" ? "https://www.google.com/maps/embed?pb=..." : node.embed.provider === "youtube" ? "https://www.youtube.com/watch?v=..." : node.embed.provider === "vimeo" ? "https://vimeo.com/..." : node.embed.provider === "facebook" ? "https://www.facebook.com/example/posts/123456789" : node.embed.provider === "x" ? "https://x.com/example/status/1234567890123456789" : node.embed.provider === "instagram" ? "https://www.instagram.com/p/AbCdEf12345/" : "https://lottie.host/00000000-0000-4000-8000-000000000000/animation.json" })}
           {field("アクセシブルなタイトル", node.embed.title, (value) => ({ type: "embedTitle", path: selection, title: value }), "embed.title", { reason: reason("embed.title") })}
           {embedHint(node.embed.provider, blankEmbedReady) && <small className="e-help">{embedHint(node.embed.provider, blankEmbedReady)}</small>}
         </>}

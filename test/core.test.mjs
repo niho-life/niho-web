@@ -144,7 +144,8 @@ test("標準埋め込みは閉じた provider ごとの URL だけを正規化�
     ["facebook", "https://www.facebook.com/permalink.php?story_fbid=pfbid012345678901234567890&id=123456789", "https://www.facebook.com/permalink.php?story_fbid=pfbid012345678901234567890&id=123456789"],
     ["x", "https://x.com/Example_Account/status/1234567890123456789/", "https://x.com/example_account/status/1234567890123456789"],
     ["instagram", "https://instagram.com/p/AbCdEf_123-/", "https://www.instagram.com/p/AbCdEf_123-/"],
-    ["instagram", "https://www.instagram.com/reel/ZYX987_-abc", "https://www.instagram.com/reel/ZYX987_-abc/"]
+    ["instagram", "https://www.instagram.com/reel/ZYX987_-abc", "https://www.instagram.com/reel/ZYX987_-abc/"],
+    ["url", "https://PUBLIC.example.test/embed/booking?experience=sea-kayak&locale=ja", "https://public.example.test/embed/booking?experience=sea-kayak&locale=ja"]
   ];
   for (const [provider, source, expected] of sources) assert.equal(normalizeEmbedSource(provider, source), expected);
   const input = doc(); input.body = sources.map(([provider, source], index) => ({
@@ -225,9 +226,17 @@ test("標準埋め込みは任意 iframe データと不正な provider URL を�
     ["instagram", "https://www.instagram.com/p/AbCdEf12345/extra"],
     ["instagram", "https://www.instagram.com/p/../reel/AbCdEf12345/"],
     ["instagram", "https://www.instagram.com/p/AbCd%2FEf12345/"],
-    ["instagram", "<script src=\"https://www.instagram.com/embed.js\"></script>"]
+    ["instagram", "<script src=\"https://www.instagram.com/embed.js\"></script>"],
+    ["url", "http://public.example.test/embed"],
+    ["url", "https://user:secret@public.example.test/embed"],
+    ["url", "https://public.example.test:443/embed"],
+    ["url", "https://public.example.test/embed#section"],
+    ["url", "https://public.example.test/embed?next=%0Ajavascript%3Aalert(1)"],
+    ["url", "https://invalid;host.test/embed"],
+    ["url", "<iframe src=\"https://public.example.test/embed\"></iframe>"]
   ];
   for (const [provider, source] of invalidSources) assert.throws(() => normalizeEmbedSource(provider, source), Error, `${provider}: ${source}`);
+  assert.equal(normalizeEmbedSource("url", "https://public.example.test/embed?q=walking%20tour"), "https://public.example.test/embed?q=walking%20tour");
   const base = { type: "element", id: "embed", tag: "div", embed: { provider: "youtube", title: "動画", source: "https://youtu.be/dQw4w9WgXcQ" }, children: [] };
   for (const change of [
     (node) => { node.embed.provider = "other"; }, (node) => { node.embed.title = ""; }, (node) => { node.embed.sandbox = "allow-scripts"; },
