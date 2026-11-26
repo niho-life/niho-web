@@ -48,7 +48,7 @@ React 18.3 または 19 と、同じ版の React DOM を利用側で用意して
 | `prefetchDocument(target, signal)`（任意） | ページ行の hover / focus で現在版を先読み。`readDocument` と同じ認可・版検証を行い、画面状態は変更しない |
 | `saveDraft({ target, document, expectedVersion, cmsBindings? }, signal)` | 楽観ロック付き下書き保存。対応 host は page sidecar も同じ CAS で保存。成功時は新しい version とサーバー採番の revision、競合時は `status: 'conflict'` |
 | `cmsBindings.read(target, signal)` / `cmsBindings.preview(request, signal)`（任意） | CMS schema とプレビュー可能な項目を読み、短命の一回限り認可で下書き page と実項目を合成して表示 |
-| `applyOperations({ target, baseVersion, operationId, operations, ...dependencyVersions }, signal)`（任意） | GUIの未送信 `EditorOperationById` を `pages.apply` へ送信。未接続hostは従来の `saveDraft` を使う（[操作単位の保存契約](editing-api-contract.md#操作カタログ)） |
+| `applyOperations({ target, baseVersion, operationId, operations, ...dependencyVersions }, signal)`（任意） | GUIの未送信 `EditorOperationById` を `pages.apply` へ送信。鎌倉Studioの日本語通常編集で接続済み。未接続hostは従来の `saveDraft` を使う（[操作単位の保存契約](editing-api-contract.md#操作カタログ)） |
 | `prepareRelease(request, signal)` | 公開 / rollback の正確な対象ドメイン、公開内容との差分、確認 token を発行 |
 | `release(plan, signal)` | 確認済みの内容を公開 / rollback。成功時は最新 snapshot、競合時は `status: 'conflict'` |
 | `prepareReleaseSet(items, signal)` / `releaseSet(plan, signal)` / `releaseSetStatus(operationId, signal)`（任意） | 同じサイトの複数ページを一つの変更セットとして公開。3メソッドすべてを実装したホストだけ複数選択UIを表示 |
@@ -146,7 +146,7 @@ HTTP 409 は adapter で `{ status: 'conflict' }` へ変換します。`status: 
 
 ## 操作単位の保存
 
-ホストが任意の `EditorAdapter.applyOperations` を実装すると、通常編集の自動保存・手動保存は全文の `saveDraft` ではなく、未送信の操作を `pages.apply` へ送ります。要求は `{ target, baseVersion, operationId, operations, componentsVersion?, presentationVersion?, stylesVersion? }` です。依存版は任意です。操作は配列位置ではなく `nodeId`、テキストでは `parentId` と `childPath` で対象を指定します。`operationId` と同一入力の組を、応答が不明なときの再送にも保管してください。認証済みhostは `gui` / `cli` / `api` の `clientKind` を認証文脈に含めてください。
+ホストが任意の `EditorAdapter.applyOperations` を実装すると、通常編集の自動保存・手動保存は全文の `saveDraft` ではなく、未送信の操作を `pages.apply` へ送ります。要求は `{ target, baseVersion, operationId, operations, componentsVersion?, presentationVersion?, stylesVersion? }` です。サイト共通スタイル機能を交渉した場合は、下書きスタイル版も `draftStylesVersion` として固定します。依存版は任意です。操作は配列位置ではなく `nodeId`、テキストでは `parentId` と `childPath` で対象を指定します。`operationId` と同一入力の組を、応答が不明なときの再送にも保管してください。認証済みhostは `gui` / `cli` / `api` の `clientKind` を認証文脈に含めてください。
 
 エディターは最後に確定した正本 document/version と未送信操作の queue を分けて保持します。送信成功時にはホストの正規文書を次の正本にし、送信中に確定した操作をその文書へ適用し直します。保存中の編集を消したり、古い送信結果で新しい作業コピーを置き換えたりしません。
 
@@ -158,9 +158,9 @@ undo/redo は、対応する逆操作/順操作を queue へ追加して通常�
 
 ## 安全な入力と編集範囲
 
-Basicの「埋め込み」群はBlankを先頭に置き、続けてMap / YouTube / Vimeo / Lottie / Facebook / X / Instagramを表示します。Blankは`PageEditor`の任意`blankEmbeds`にある承認済みkeyのselectとアクセシブルなtitleだけを編集し、keyの手入力、URL、HTML、iframe属性を受けません。挿入直後はsource未設定です。registry未接続・空の場合は追加カードと詳細selectを「未接続」として無効化し、中心の追加経路でも拒否します。既存Blank nodeの設定には管理者向け理由を表示し、編集・削除は維持します。
+Basicの「埋め込み」群はBlankを先頭に置き、続けてMap / YouTube / Vimeo / Lottie / Facebook / X / Instagramを表示します。Blankは`PageEditor`の任意`blankEmbeds`にある承認済みkeyのselectとアクセシブルなtitleだけを編集し、keyの手入力、URL、HTML、iframe属性を受けません。挿入直後はsource未設定です。registry未接続・空の場合は追加カードと詳細selectを「未接続」として無効化し、中心の追加経路でも拒否します。既存Blank nodeの設定には管理者向け理由を表示し、編集・削除は維持します。`enableUrlEmbeds` を明示したhostだけ、末尾に「外部URL」カードを追加します。現在のStudioでは鎌倉editorだけが有効にします。フラグは新規追加UIだけを制御し、既存`url` nodeの検証・表示・編集を無効化しません。
 
-テキスト、リンク、画像（素材ライブラリまたはURL）/alt、背景画像、組み込みアイコン、native動画（素材ライブラリまたはURL）、標準のBlank / Map / YouTube / Vimeo / Lottie / Facebook / X / Instagram埋め込み、フォーム、文字色・背景色・フォント・サイズ・余白・Flex/Grid・位置・幅の段ごとの指定、共通カラー・テキストスタイル等の共通の値を編集できます。要素や登録ブロックの追加、複製、親/兄弟間の移動、削除、undo/redo に対応します。複製時はノードIDとHTML IDを作り直し、複製内のアンカー・ARIA ID参照・label参照を付け替えます。
+テキスト、リンク、画像（素材ライブラリまたはURL）/alt、背景画像、組み込みアイコン、native動画（素材ライブラリまたはURL）、標準のBlank / Map / YouTube / Vimeo / Lottie / Facebook / X / Instagram / 外部URL埋め込み、フォーム、文字色・背景色・フォント・サイズ・余白・Flex/Grid・位置・幅の段ごとの指定、共通カラー・テキストスタイル等の共通の値を編集できます。要素や登録ブロックの追加、複製、親/兄弟間の移動、削除、undo/redo に対応します。複製時はノードIDとHTML IDを作り直し、複製内のアンカー・ARIA ID参照・label参照を付け替えます。
 
 追加パレットは Basic / Parts / Sections のタブで分けます。Basic は参照に近い主要順としてセクション・ボックス・画像・テキスト・アイコン・リッチテキスト・動画を揃え、「埋め込み」群にBlank / Map / YouTube / Vimeo / Lottie / Facebook / X / Instagram、続けて見出し・リンク・native interaction（カルーセル、トグル、VideoWithButton）を提供します。「フォーム」には Form1 / Form2 / Form3、「フォームパーツ」には Input / Textarea / Select / Radio / Confirm / Checkbox / File / Submit / Search / Password を4列の既存カタログで表示します。Parts はボタン・カード・見出しセット・リスト、Sections はヘッダー・ヒーロー・特徴グリッド・CTA・FAQ・フッターを提供します。各項目は形と構成を示す簡潔な skeleton preview を持ちます。クリックで選択した親の末尾へ追加するか、キャンバス／レイヤーへドラッグして挿入位置を指定します。フォームパーツをページや通常ボックスへ直接置く場合は有効なformを自動で外側に作り、既存formを追加先に選んだ場合だけそのformの直下へラベルと入力項目を追加します。入れ子のformやform外の入力項目は作りません。既存要素も選択後にキャンバスまたはレイヤーから移動でき、選択枠の右下をドラッグすると現在選んだ編集幅の幅・高さを一操作として変更します。キーボード向けには追加先の選択と上／下／末尾への移動、右インスペクタのサイズ欄を残します。不正な入れ子、循環、ロックされた変更はモデルの検証で拒否します。
 
@@ -177,11 +177,11 @@ VideoWithButtonは、`interaction: { type: "video-toggle" }` を持つ親divの�
 
 Loop BoxはBasicの「インタラクション」群から追加し、通常の編集可能な子を持つdivへ `interaction: { type: "loop-box", speed, pauseOnHover }` を付けます。専用インスペクタは方向（閉じた`flexDirection`の4値）、0〜1000px/秒の速度、ホバー一時停止を編集し、初期値は横・順方向、60px/秒、一時停止ありです。編集キャンバスは選択・直接編集・dropを保った静止表示で、previewだけ公開側と同じruntimeを起動します。初期presetは外部assetを持たない3枚の短いテキストカードです。保存・再読込・複製は通常の文書操作とvalidatorを通し、任意HTML、script、event handler、CSS文字列は保存しません。
 
-標準埋め込みのインスペクタはprovider固定のままURLと「アクセシブルなタイトル」を編集します。Lottieは入力名を「LottieFiles Asset link」とし、Handoff & Embedの`.json` / `.lottie` Asset linkまたは`/embed/` URLを案内します。Facebookは「Facebook の投稿 URL」、Xは「X のポスト URL」、Instagramは「Instagram の投稿・リール URL」とし、それぞれ公開投稿のcanonical化可能なURLだけを受けます。HTMLやiframe codeを貼るeditorは提供しません。挿入直後はsourceを持たず、キャンバスだけに設定案内、公開rendererでは何も出しません。URL更新は専用の`embedSource` operationで正規化し、title更新も`embedTitle` operationとして通常のvalidator・lock・undo/redo・保存・再読込を通ります。embed nodeは追加先にならず、children・asset・iconを持ちません。Lottieは編集canvasで静的fallbackだけを表示し、Studio previewと公開ホストが同じ`initializeSitePresentation`を起動したときだけmotion設定に従って固定iframeを生成します。Facebook / X / Instagramは編集canvasで静的statusと投稿リンクだけを表示し、previewまたは公開ページでも利用者が明示buttonを押した後だけ公式埋め込みを生成します。Xは`PageEditor`の任意`xPostFrameUrl`が別originの固定HTTPS endpointとしてruntime検証を通ったpreviewだけで有効になり、編集モードと未接続hostでは静的なままです。custom `previewComponent`にも同じ値を`EditorCanvasPreviewProps`で渡します。Instagramは従来どおりorigin保持なしのsandboxed `srcdoc`を使います。表示できない場合も投稿リンクを残し、埋め込み内のログイン・共有・外部遷移は保証しません。必要なCSPとURL形・iframe属性は[文書・描画契約の標準埋め込み](document-contract.md#標準埋め込み)を正とします。
+標準埋め込みのインスペクタはprovider固定のままURLと「アクセシブルなタイトル」を編集します。外部URLは「公開HTTPS URL」、既存providerは従来どおりの専用名と案内を使います。HTMLやiframe codeを貼るeditorは提供しません。挿入直後はsourceを持たず、キャンバスだけに設定案内、公開rendererでは何も出しません。URL更新は専用の`embedSource` operationで正規化し、title更新も`embedTitle` operationとして通常のvalidator・lock・undo/redo・保存・再読込を通ります。外部URLの初期boxは幅100%・高さ640pxで、従来のbox UIから幅・高さを変更できます。編集canvasでは外部通信せず案内だけを出し、interactive previewではスクロール可能なiframeと元URLリンクを表示します。NIHO Travelはpreviewで`preview=1`を強制し、top navigation・popupを付けません。他providerの詳細と、必要なCSP・iframe属性は[文書・描画契約の標準埋め込み](document-contract.md#標準埋め込み)を正とします。
 
 XのカードはURLの保存と投稿リンクを常に使えます。別origin endpointを接続していないhostでは表示buttonを出さず、投稿リンクをfallbackにします。このrepositoryのStudio hostはまだ接続していません。
 
-標準埋め込みを含むキャンバスは、内側provider iframeまでsandboxが継承されても動くよう、source設定済みのtrusted embedがある場合だけ外側`srcdoc` frameへ`allow-scripts`を追加します。通常は従来どおり`allow-same-origin`だけです。provider iframeは編集・preview中ともpointer eventを受けず、選択やドラッグを妨げません。公開rendererではpointer eventを戻します。`SitePresentationExternalFrame`はhost viewとtrusted `externalFramePolicy`が所有する別境界であり、標準embedからhost固有origin保持policyや任意sandboxへ接続しません。
+標準埋め込みを含むキャンバスは、内側provider iframeまでsandboxが継承されても動くよう、source設定済みのtrusted embedがある場合だけ外側`srcdoc` frameへ`allow-scripts`を追加します。外部URLもこの既存判定を使いますが、外側frameのform・top navigation・popup権限は広げず、既存のhost data権限に影響しません。通常は従来どおり`allow-same-origin`だけです。provider iframeは編集・preview中ともpointer eventを受けず、選択やドラッグを妨げません。公開rendererではpointer eventを戻します。`SitePresentationExternalFrame`はhost viewとtrusted `externalFramePolicy`が所有する別境界であり、標準embedからhost固有origin保持policyや任意sandboxへ接続しません。
 
 ### 挿入カタログの拡張
 

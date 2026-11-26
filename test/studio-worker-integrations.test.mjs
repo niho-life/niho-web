@@ -75,6 +75,9 @@ test("Experience editor stays frozen while Kamakura reads pass and site freezes 
   });
   assert.equal(page.status, 200);
   assert.deepEqual((await page.json()).editorState.readOnly, readOnly);
+  const applied = await write(`${kamakura}/editor/editing-api/v1/sites/kamakura/operations/pages.apply/home?locale=ja`, "POST");
+  assert.equal(applied.status, 409);
+  assert.deepEqual(await applied.json(), { error: "visual_editor_frozen", message: "凍結中" });
   for (const [path, method] of [[`${kamakura}/editor/home/draft`, "PUT"], [`${kamakura}/editor/home/release-plan`, "POST"], [`${kamakura}/editor/home/release`, "POST"]]) {
     const response = await write(path, method);
     assert.equal(response.status, 409, path);
@@ -89,6 +92,7 @@ test("Experience editor stays frozen while Kamakura reads pass and site freezes 
   assert.deepEqual(kamakuraCalls, [
     "GET /internal/studio/web-content/catalog",
     "GET /api/edit/v1/sites/kamakura/operations/pages.read/home",
+    "POST /api/edit/v1/sites/kamakura/operations/pages.apply/home",
     "PUT /internal/studio/web-content/home/draft",
     "POST /internal/studio/web-content/home/release-plan",
     "POST /internal/studio/web-content/home/release",
@@ -112,7 +116,7 @@ test("Experience editor stays frozen while Kamakura reads pass and site freezes 
     assert.match(csp, /connect-src 'self' https:\/\/next-kamakura\.niho\.life;/u, path);
     assert.match(csp, /script-src 'self' https:\/\/www\.instagram\.com\/embed\.js;/u, path); assert.doesNotMatch(csp, /script-src[^;]*(?:facebook|platform\.twitter\.com)/iu, path);
     assert.match(csp, /font-src 'self' https:\/\/kamakura-media\.niho\.life\/niho-web\/fonts\/v1\//u, path);
-    assert.match(csp, /frame-src 'self' https:\/\/kamakura-media\.niho\.life\/niho-web\/embeds\/v1\/ https:\/\/www\.google\.com\/maps\/embed https:\/\/www\.openstreetmap\.org\/export\/embed\.html https:\/\/www\.youtube-nocookie\.com\/embed\/ https:\/\/player\.vimeo\.com\/video\/ https:\/\/lottie\.host\/embed\/ https:\/\/www\.facebook\.com\/plugins\/post\.php https:\/\/www\.instagram\.com;/u, path);
+    assert.match(csp, /frame-src 'self' https:;/u, path);
     assert.doesNotMatch(csp, /frame-src[^;]*platform\.twitter\.com/iu, path);
   }
   assert.equal((await call("/api/session")).status, 200);

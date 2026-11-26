@@ -122,6 +122,8 @@ test("Worker: 参加者だけに接続を返し、Dashboard は翻訳プレビ�
   }
   const editor = (await call("/projects/kamakura-site/admin/editor")).headers.get("Content-Security-Policy");
   assert.doesNotMatch(editor, /site-admin-test\.example|admin\.example\.test/u);
+  assert.match(editor, / frame-src 'self' https:;/u);
+  assert.match(editor, /script-src 'self' https:\/\/www\.instagram\.com\/embed\.js;/u, "script許可は既存の固定先だけ");
   const shortcut = await call("/project/kamakura-site");
   assert.equal(shortcut.status, 301);
   assert.equal(shortcut.headers.get("Location"), "/projects/kamakura-site/admin");

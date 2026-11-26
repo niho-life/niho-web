@@ -4,7 +4,7 @@ import { parseProjectAliasPath, projectShortcutTarget } from "./project-routes.m
 declare const __STUDIO_INDEX_PATH__: string;
 import { siteAdmin } from "./site-admin.mjs";
 import { integrationIdentity, isTrustedEditorAction, resolveTrustedEditorApi, resolveTrustedEditorPage, type ResolvedTrustedIntegration } from "./integration-registry.mjs";
-import { KAMAKURA_CATALOG_CONTRACT_ERROR_CODE, KAMAKURA_CATALOG_CONTRACT_ERROR_STATUS, KamakuraCatalogContractError, KAMAKURA_COMMON_PAGE_ID, KAMAKURA_EDITOR_SITE_ID, KAMAKURA_EMBED_FRAME_SOURCE, isKamakuraEditorDomain, parseKamakuraCatalog } from "./kamakura-catalog.js";
+import { KAMAKURA_CATALOG_CONTRACT_ERROR_CODE, KAMAKURA_CATALOG_CONTRACT_ERROR_STATUS, KamakuraCatalogContractError, KAMAKURA_COMMON_PAGE_ID, KAMAKURA_EDITOR_SITE_ID, isKamakuraEditorDomain, parseKamakuraCatalog } from "./kamakura-catalog.js";
 import {
   KAMAKURA_CMS_IMAGE_TYPES, KAMAKURA_CMS_LIMITS, KAMAKURA_CMS_PROJECT_ID, KAMAKURA_CMS_SITE_ID, KAMAKURA_CMS_UPLOAD_ORIGIN, KAMAKURA_CMS_UPSTREAM_PREFIX,
   KAMAKURA_MEDIA_ORIGIN, KamakuraCmsContractError,
@@ -1737,7 +1737,7 @@ function kamakuraEditingCapability(method: string, pathname: string, search: str
     if (operationId || method !== "POST") throw new AuthenticationError("editing API method or path mismatch");
     return "pages.publish";
   }
-  const match = /^\/sites\/kamakura\/operations\/(pages\.(?:read|save|release-plan|release))\/([a-z][a-z0-9-]{0,59})$/u.exec(pathname);
+  const match = /^\/sites\/kamakura\/operations\/(pages\.(?:read|save|apply|release-plan|release))\/([a-z][a-z0-9-]{0,59})$/u.exec(pathname);
   if (!match) return null;
   const query = new URLSearchParams(search), operation = match[1]!;
   const feature = query.getAll("features");
@@ -1745,7 +1745,7 @@ function kamakuraEditingCapability(method: string, pathname: string, search: str
     || feature.length > 1 || feature.length === 1 && feature[0] !== "site.styles") return null;
   const expectedMethod = operation === "pages.read" ? "GET" : operation === "pages.save" ? "PUT" : "POST";
   if (method !== expectedMethod) throw new AuthenticationError("editing API method mismatch");
-  return operation === "pages.read" ? "pages.read" : operation === "pages.save" ? "pages.edit" : "pages.publish";
+  return operation === "pages.read" ? "pages.read" : operation === "pages.save" || operation === "pages.apply" ? "pages.edit" : "pages.publish";
 }
 
 async function kamakuraEditingDelegationToken(env: Env, identity: BridgeActor, capabilities: readonly EditingCapability[]): Promise<string> {
@@ -2987,7 +2987,8 @@ const KAMAKURA_EDITOR_ADAPTER: WorkerEditorAdapter = {
   connectOrigins: [KAMAKURA_EDITOR_UPSTREAM_ORIGIN],
   fontSources: [`${KAMAKURA_MEDIA_ORIGIN}/niho-web/fonts/v1/`],
   scriptSources: ["https://www.instagram.com/embed.js"],
-  frameSources: [KAMAKURA_EMBED_FRAME_SOURCE, "https://www.google.com/maps/embed", "https://www.openstreetmap.org/export/embed.html", "https://www.youtube-nocookie.com/embed/", "https://player.vimeo.com/video/", "https://lottie.host/embed/", "https://www.facebook.com/plugins/post.php", "https://www.instagram.com"]
+  // 認証済みの鎌倉 editor だけ、保存済みの公開HTTPS URLを srcdoc 内でpreviewできる。
+  frameSources: ["https:"]
 };
 
 function liveEditorAdapter(resolved: ResolvedTrustedIntegration): WorkerEditorAdapter | null {

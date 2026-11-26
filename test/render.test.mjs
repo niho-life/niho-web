@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { createElement } from "react";
 import { renderToString } from "react-dom/server";
+import { JSDOM } from "jsdom";
 import { createBlankEmbedRegistry, DocumentValidationError, pageScope, parsePageScope, PageRenderer as RootPageRenderer } from "@niho/web";
 import { PageRenderer, SitePageRenderer } from "@niho/web/react";
 import { renderPageToHtml, renderSitePageToHtml } from "@niho/web/server";
@@ -212,6 +213,46 @@ test("closed standard embeds render fixed trusted iframe attributes and empty so
   assert.match(canvas, /data-nw-embed="x"[^>]*data-nw-social-static=""/);
   assert.match(canvas, /data-nw-embed="instagram"[^>]*data-nw-social-static=""/);
   assert.equal((canvas.match(/<iframe/g) ?? []).length, 3, "編集キャンバスは遅延埋め込みを静的に保つ");
+});
+
+test("外部URLは一般先をopaqueに保ち、厳密一致するNIHO Travelだけ予約用権限を分ける", () => {
+  const doc = structuredClone(fixture);
+  const travel = "https://travel.niho.life/embed/experiences/sea-kayak/book?locale=ja&campaign=kamakura";
+  doc.body = [
+    { type: "element", id: "general", tag: "div", embed: { provider: "url", title: "公開ガイド", source: "https://public.example.test/embed/view?item=guide" }, children: [] },
+    { type: "element", id: "travel", tag: "div", embed: { provider: "url", title: "NIHO Travel 予約", source: travel }, children: [] },
+    { type: "element", id: "near", tag: "div", embed: { provider: "url", title: "予約風の別パス", source: "https://travel.niho.life/embed/experiences/sea-kayak/book/extra" }, children: [] }
+  ];
+  const blankEmbeds = createBlankEmbedRegistry({ parentOrigin: "https://kamakura.niho.life", entries: [] });
+  const html = renderPageToHtml(doc, {}, { blankEmbeds }), parsed = new JSDOM(html).window.document;
+  const general = parsed.querySelector('[data-nw-node="general"] iframe');
+  assert.equal(general?.getAttribute("src"), "https://public.example.test/embed/view?item=guide");
+  assert.equal(general?.getAttribute("sandbox"), "allow-scripts");
+  assert.equal(general?.getAttribute("referrerpolicy"), "no-referrer");
+  assert.equal(general?.getAttribute("data-nw-url-embed-frame"), "");
+  assert.equal(parsed.querySelector('[data-nw-node="general"] [data-nw-url-fallback]')?.getAttribute("href"), "https://public.example.test/embed/view?item=guide");
+  const booking = parsed.querySelector('[data-nw-node="travel"] iframe');
+  assert.equal(booking?.getAttribute("src"), travel);
+  assert.equal(booking?.getAttribute("referrerpolicy"), "origin");
+  assert.equal(booking?.getAttribute("sandbox"), "allow-scripts allow-same-origin allow-forms allow-top-navigation-by-user-activation allow-popups allow-popups-to-escape-sandbox");
+  assert.equal(parsed.querySelector('[data-nw-node="near"] iframe')?.getAttribute("sandbox"), "allow-scripts");
+  for (const registry of [undefined, createBlankEmbedRegistry({ parentOrigin: "https://travel.niho.life", entries: [] })]) {
+    const contained = new JSDOM(renderPageToHtml(doc, {}, registry ? { blankEmbeds: registry } : {})).window.document;
+    assert.equal(contained.querySelector('[data-nw-node="travel"] iframe')?.getAttribute("sandbox"), "allow-scripts");
+  }
+
+  const edit = new JSDOM(renderToString(createElement(PageRenderer, { document: doc, missingAssets: "placeholder", canvas: { interactive: false } }))).window.document;
+  assert.equal(edit.querySelectorAll("iframe").length, 0);
+  assert.equal(edit.querySelectorAll("[data-nw-url-static]").length, 3);
+  const preview = new JSDOM(renderToString(createElement(PageRenderer, { document: doc, missingAssets: "placeholder", blankEmbeds, canvas: { interactive: true } }))).window.document;
+  const previewBooking = preview.querySelector('[data-nw-node="travel"] iframe');
+  const previewUrl = new URL(previewBooking?.getAttribute("src") ?? "");
+  assert.equal(previewUrl.searchParams.get("locale"), "ja");
+  assert.equal(previewUrl.searchParams.get("campaign"), "kamakura");
+  assert.equal(previewUrl.searchParams.get("preview"), "1");
+  assert.equal(previewBooking?.getAttribute("sandbox"), "allow-scripts allow-same-origin allow-forms");
+  assert.doesNotMatch(previewBooking?.getAttribute("sandbox") ?? "", /top-navigation|popups/u);
+  assert.equal(preview.querySelector('[data-nw-node="travel"] [data-nw-url-fallback]')?.getAttribute("href"), previewUrl.href);
 });
 
 test("Blank embed resolves only an approved key and edit canvas never starts external communication", () => {
