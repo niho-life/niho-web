@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { createTestClock } from "./test-clock.mjs";
 import { JSDOM } from "jsdom";
 import { createLocalizationMemory } from "../examples/localization-workspace-memory.mjs";
 
@@ -9,11 +9,11 @@ for (const key of ["window", "document", "navigator", "HTMLElement", "HTMLInputE
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const { createElement, act } = await import("react");
+const { test, wait } = createTestClock(act, ["setTimeout", "setInterval", "Date"]);
 const { createRoot } = await import("react-dom/client");
 const { LocalizationItemWorkspace, LocalizationWorkspace } = await import("@niho/web/localization-workspace");
 
 const M = (id) => `⟦${id}⟧`;
-const wait = (ms) => act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
 const flush = async () => { for (let i = 0; i < 6; i++) await wait(0); };
 /** 読み上げに近い名前（aria-label か、aria-hidden を除いた文字）。 */
 const nameOf = (node) => {

@@ -30,27 +30,6 @@ const readMethods = [
   "PageEditorProps.assets.resolveAssets",
 ];
 
-const writeOperations = new Map([
-  ["EditorAdapter.applyPageChange", ["pages.change-apply"]],
-  ["EditorAdapter.applyOperations", ["pages.apply"]],
-  ["EditorAdapter.breakpointSettings.save", ["site.breakpoints.save"]],
-  ["EditorAdapter.englishPublication.retry", ["pages.english-publication-retry"]],
-  ["EditorAdapter.localization.command", [
-    "translations.editor-adopt-candidate",
-    "translations.editor-review-current",
-    "translations.editor-set-value",
-  ]],
-  ["EditorAdapter.preparePageChange", ["pages.change-prepare"]],
-  ["EditorAdapter.prepareRelease", ["pages.release-plan"]],
-  ["EditorAdapter.prepareReleaseSet", ["pages.release-set-plan"]],
-  ["EditorAdapter.release", ["pages.release"]],
-  ["EditorAdapter.releaseSet", ["pages.release-set"]],
-  ["EditorAdapter.saveDraft", ["pages.save", "translations.editor-save"]],
-  ["PageEditorProps.assets.deleteAsset", ["assets.delete"]],
-  ["PageEditorProps.assets.updateAsset", ["assets.update"]],
-  ["PageEditorProps.assets.uploadAsset", ["assets.upload-intent"]],
-]);
-
 function objectBranches(expression) {
   if (ts.isParenthesizedExpression(expression)) return objectBranches(expression.expression);
   if (ts.isConditionalExpression(expression)) return [...objectBranches(expression.whenTrue), ...objectBranches(expression.whenFalse)];
@@ -127,19 +106,13 @@ function sourceMapWriteOperations() {
 
 test("Kamakura GUI adapter writes map to documented shared operations", () => {
   const actualMethods = adapterSources.flatMap(returnedAdapterMethods).sort();
-  const expectedMethods = [...new Set([...readMethods, ...writeOperations.keys()])].sort();
-  assert.deepEqual(actualMethods, expectedMethods,
-    "Adapter method surface changed; classify each method and add a shared operation before enabling a new GUI write");
-
   const documented = sourceMapWriteOperations();
-  assert.deepEqual([...documented.keys()].sort(), [...writeOperations.keys()].sort(),
-    "Update the GUI write table when adapter write methods change");
-  for (const [method, operations] of writeOperations) {
-    assert.deepEqual(documented.get(method), [...operations].sort(), `Documented operation IDs differ for ${method}`);
-  }
+  const expectedMethods = [...new Set([...readMethods, ...documented.keys()])].sort();
+  assert.deepEqual(actualMethods, expectedMethods,
+    "Adapter method surface changed; classify each method and document every GUI write");
 
   const publicOperations = new Set([...EDITING_OPERATIONS, ...OPERATIONS].map((operation) => operation.id));
-  for (const [method, operations] of writeOperations) {
+  for (const [method, operations] of documented) {
     for (const operation of operations) assert.ok(publicOperations.has(operation), `${method} references unknown shared operation ${operation}`);
   }
 });

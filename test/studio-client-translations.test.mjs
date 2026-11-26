@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import path from "node:path";
-import { after, test } from "node:test";
+import { after } from "node:test";
+import { createTestClock } from "./test-clock.mjs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
@@ -43,7 +44,7 @@ function installDom(pathname) {
 }
 installDom("/");
 const { act } = await import("react");
-const wait = (ms) => act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
+const { test, wait } = createTestClock(act);
 const flush = async () => { for (let index = 0; index < 10; index += 1) await wait(0); };
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
 
@@ -98,7 +99,7 @@ const click = async (node) => { assert.ok(node, "target not found"); await act(a
 const row = (title) => [...document.querySelectorAll("button.cw-row-open")].find((node) => node.querySelector(".cw-row-title")?.textContent === title);
 const rowLink = (title) => [...document.querySelectorAll("a.cw-row-open")].find((node) => node.querySelector(".cw-row-title")?.textContent === title);
 const cmsLink = () => [...document.querySelectorAll(".lw-item a.cw-button")].find((node) => text(node).startsWith("CMS で開く"));
-const historyMove = async (direction) => { await act(async () => { window.history[direction](); await new Promise((resolve) => setTimeout(resolve, 20)); }); await flush(); };
+const historyMove = async (direction) => { await act(async () => window.history[direction]()); await wait(20); await flush(); };
 
 test("Studio の翻訳は、翻訳の画面で URL の 1 件を開き、一覧・1 件の移動と戻る/進むを URL に合わせる", async (t) => {
   const calls = await openStudio(t, "/projects/kamakura-site/admin/translations/aG9tZQ");

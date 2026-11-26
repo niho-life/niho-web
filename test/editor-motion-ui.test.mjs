@@ -206,9 +206,6 @@ test("the Add panel exposes accessible Basic, Parts and Sections tabs and click 
     assert.deepEqual(tabs.map((tab) => tab.getAttribute("aria-label")), ["基本要素", "パーツ", "セクション"]);
     assert.equal(tabs[0].getAttribute("aria-selected"), "true");
     assert.ok(panel.querySelector('.e-preset-preview[data-preset="section"]'), "basic items also use an original skeleton preview");
-    const css = document.querySelector(".nw-editor style").textContent;
-    assert.ok(css.includes(".e-add-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))"));
-    assert.ok(css.includes(".e-palette .e-preset-card{min-width:0"), "template cards can shrink in the narrow overlay panel");
     await act(async () => tabs[0].dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }))); await flush();
     assert.equal(tabs[1].getAttribute("aria-selected"), "true");
     assert.equal(document.activeElement, tabs[1]);

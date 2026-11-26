@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { createTestClock } from "./test-clock.mjs";
 import { JSDOM } from "jsdom";
 import { at, createAdapter, schemaWith, schema } from "./collection-fixtures.mjs";
 
@@ -10,10 +10,10 @@ for (const key of ["window", "document", "navigator", "HTMLElement", "HTMLInputE
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const { createElement, act } = await import("react");
+const { test, wait } = createTestClock(act);
 const { createRoot } = await import("react-dom/client");
 const { CollectionWorkspace } = await import("@niho/web/collection-workspace");
 
-const wait = (ms) => act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
 const flush = async () => { for (let i = 0; i < 4; i++) await wait(0); };
 const nameOf = (node) => (node.getAttribute("aria-label") || node.textContent).replace(/\s+/gu, " ").trim();
 const buttons = (scope = document) => [...scope.querySelectorAll("button")];

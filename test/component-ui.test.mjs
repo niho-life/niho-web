@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { test } from "node:test";
+import { createTestClock } from "./test-clock.mjs";
 import { findLayer } from "./editor-layer-fixtures.mjs";
 import { JSDOM } from "jsdom";
 import { parseComponentLibrary, parsePageDocument } from "@niho/web/core";
@@ -9,6 +9,7 @@ const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: "https
 for (const key of ["window", "document", "HTMLElement", "HTMLInputElement", "Element", "Event", "MouseEvent"]) globalThis[key] = dom.window[key];
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const { createElement, act } = await import("react");
+const { test, wait } = createTestClock(act);
 const { createRoot } = await import("react-dom/client");
 const { PageEditor } = await import("@niho/web/editor");
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
@@ -38,8 +39,7 @@ const defaultUsage = () => [
   { target: target("chrome"), title: "サイトの共通枠", reach: 2, components: { site_header: 1 } }
 ];
 
-const flush = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-const wait = (ms) => act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
+const flush = () => wait(0);
 async function waitFor(condition, description, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs;
   while (!condition()) {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import path from "node:path";
-import { test } from "node:test";
+import { createTestClock } from "./test-clock.mjs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
@@ -37,6 +37,7 @@ async function loadStudioRichText() {
 const { StudioRichTextEditor, createStudioRichText, sanitizeStudioRichTextHtml, isStudioRichTextSafe, studioRichTextCss } = await loadStudioRichText();
 const { sanitizeRichTextHtml } = await import("../dist/collection-model.js");
 const { createElement, act } = await import("react");
+const { test, wait } = createTestClock(act);
 const { createRoot } = await import("react-dom/client");
 const { CollectionWorkspace } = await import("@niho/web/collection-workspace");
 
@@ -52,7 +53,6 @@ const danger = '<p onclick="steal()">あ<script>alert(1)</script><a href="javasc
   + '<div data-type="embed_code"><blockquote class="instagram-media" data-instgrm-permalink="https://www.instagram.com/p/demo/" onmouseover="alert(4)">え</blockquote><script async src="https://evil.example.test/embed.js"></script></div>'
   + '<iframe src="http://insecure.example.test/frame"></iframe><p>お</p>';
 
-const wait = (ms) => act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
 const flush = async () => { for (let index = 0; index < 4; index += 1) await wait(0); };
 /** 共有の無害化（ワークスペースが props.sanitize として渡すもの）。"/media/" だけ同じサイトの画像を残す。 */
 const workspaceSanitize = (html) => sanitizeRichTextHtml(html, { isImageSrcAllowed: (src) => src.startsWith("/media/") });
