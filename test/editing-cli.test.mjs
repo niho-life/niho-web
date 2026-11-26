@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { readFileSync } from "node:fs";
 import { editDocumentById } from "@niho/web/editor-model";
 import { EDITING_OPERATIONS, withPageCmsBindingsCapability, withPageNodeNameCapability } from "@niho/web/editing-api";
@@ -53,7 +53,7 @@ function run(args, { status = 200, result, expectedMethod, expectedUrl, expected
   });
 }
 
-function runSequence(args, requests, { env = {}, token = "fixture-token", stdin = "", studio = false } = {}) {
+async function runSequence(args, requests, { env = {}, token = "fixture-token", stdin = "", studio = false } = {}) {
   const source = [
     "const expected = " + JSON.stringify(requests) + "; let index = 0;",
     "globalThis.fetch = async (url, init) => {",
@@ -69,13 +69,16 @@ function runSequence(args, requests, { env = {}, token = "fixture-token", stdin 
     "};",
     "process.on('beforeExit', () => { if (index !== expected.length) throw new Error('not all expected requests were made'); });"
   ].join("\n");
-  const preload = "data:text/javascript," + encodeURIComponent(source);
-  return new Promise((resolve, reject) => {
+  const tempDir = await mkdtemp(join(tmpdir(), "niho-edit-sequence-"));
+  const preloadFile = join(tempDir, "preload.mjs");
+  await writeFile(preloadFile, source);
+  try {
+    return await new Promise((resolve, reject) => {
     const childEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !["CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET"].includes(key)));
     if (token === null) delete childEnv.NIHO_EDIT_TOKEN;
     else childEnv.NIHO_EDIT_TOKEN = token;
     Object.assign(childEnv, env);
-    const child = spawn(process.execPath, ["--import", preload, command, "--origin", origin, "--site", siteId, ...args], {
+    const child = spawn(process.execPath, ["--import", pathToFileURL(preloadFile).href, command, "--origin", origin, "--site", siteId, ...args], {
       env: childEnv, stdio: ["pipe", "pipe", "pipe"]
     });
     child.stdin.end(stdin);
@@ -84,7 +87,10 @@ function runSequence(args, requests, { env = {}, token = "fixture-token", stdin 
     child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
     child.once("error", reject);
     child.once("close", (exitCode) => resolve({ exitCode, stdout, stderr }));
-  });
+    });
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
 }
 
 function runUpload(args, { uploadUrl, expectedBytes, asset, name = "sea.png", trustedUploadOrigin = origin, accessClientId = null, accessClientSecret = null }) {
