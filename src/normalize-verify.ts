@@ -33,6 +33,19 @@ export function normalizationKey(value: unknown): string {
 
 const targetKey = (document: PageDocument) => JSON.stringify([document.siteId, document.pageId, document.locale]);
 
+/** A compact presentation reference carries identity/title only; the versioned input owns its body. */
+function isCompactPresentationReference(document: PageDocument): boolean {
+  return document.body.length === 0 && Object.keys(document.tokens).length === 0
+    && document.textStyles === undefined && document.meta === undefined;
+}
+
+function sameCompactReferenceIdentity(reference: PageDocument, document: PageDocument): boolean {
+  return normalizationKey({ schemaVersion: reference.schemaVersion, siteId: reference.siteId, pageId: reference.pageId,
+    locale: reference.locale, revision: reference.revision, title: reference.title })
+    === normalizationKey({ schemaVersion: document.schemaVersion, siteId: document.siteId, pageId: document.pageId,
+      locale: document.locale, revision: document.revision, title: document.title });
+}
+
 function comparisonWidths(styles: readonly (NodeStyle | TextStyle | undefined)[]): number[] {
   const widths = new Set([0]);
   function sample(boundary: number): void {
@@ -195,17 +208,24 @@ export function verifyNormalization(input: NormalizationInput, afterDocuments: r
         // edited directly. Its resolved inputs were already compared above.
         if (targetKey(before) === targetKey(source.document)) continue;
         const candidateIndex = indexByTarget.get(targetKey(before));
+        const compactReference = isCompactPresentationReference(before);
+        if (candidateIndex === undefined && compactReference) return { status: "unsupported", target, reason: "ambiguous_presentation_document" };
         let candidate = before;
+        let comparisonBefore = before;
         if (candidateIndex !== undefined) {
           const original = documents[candidateIndex]!.document;
           if (original.revision !== before.revision) return { status: "unsupported", target, reason: "ambiguous_presentation_document" };
           const expected = parsePageDocument(original, input.blocks);
-          if (normalizationKey(expected) !== normalizationKey(before)) return { status: "unsupported", target, reason: "ambiguous_presentation_document" };
+          const sameDocument = normalizationKey(expected) === normalizationKey(before);
+          const matchingCompactReference = compactReference
+            && sameCompactReferenceIdentity(before, expected);
+          if (!sameDocument && !matchingCompactReference) return { status: "unsupported", target, reason: "ambiguous_presentation_document" };
+          comparisonBefore = expected;
           candidate = afterDocuments[candidateIndex]!;
         }
         // The renderer builds each embedded snapshot with its own tokens/styles.
         const candidateDocument = parsePageDocument(candidate, input.blocks);
-        const embeddedDifference = documentDifference(before, candidateDocument);
+        const embeddedDifference = documentDifference(comparisonBefore, candidateDocument);
         if (embeddedDifference) change ??= { status: "changed", target, ...embeddedDifference };
         checked++;
       }

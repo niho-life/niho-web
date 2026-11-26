@@ -49,7 +49,7 @@ const verification = verifyNormalization(input, afterDocuments);
 
 ## 描画入力の検証
 
-`verifyNormalization` は、同じ順序・対象（`siteId`、`pageId`、`locale`）の適用前後を同一の表示コンテキストで比較し、`equivalent`、`changed` または `unsupported` を返します。保存後に採番された revision の文書も比較できます。適用時の版照合（CAS）は呼び出し側が行います。部品インスタンスを公開用の文書に展開し、サイトとページのスタイルの優先順位を反映します。presentation を受け取った場合はレイアウト、ヘッダー、フッター、オーバーレイ、登録済み host view の文書も検証します。バージョンとの対応が取れない表示コンテキストや、未解決部品・ブロック・参照がある場合は `unsupported` です。
+`verifyNormalization` は、同じ順序・対象（`siteId`、`pageId`、`locale`）の適用前後を同一の表示コンテキストで比較し、`equivalent`、`changed` または `unsupported` を返します。保存後に採番された revision の文書も比較できます。適用時の版照合（CAS）は呼び出し側が行います。部品インスタンスを公開用の文書に展開し、サイトとページのスタイルの優先順位を反映します。presentation を受け取った場合はレイアウト、ヘッダー、フッター、オーバーレイ、登録済み host view の文書も検証します。共有文書が空本文の compact 参照なら、同じ `siteId`・`pageId`・`locale`・`revision`・`title` を持つ入力内の版付き文書へ解決し、その完全な文書を比較します。対応文書が無い、版や参照内容が一致しない場合は `unsupported` です。通常の完全な `PageDocument` 形式も引き続き使えます。バージョンとの対応が取れない表示コンテキストや、未解決部品・ブロック・参照がある場合は `unsupported` です。
 
 比較には、要素・業務ブロックの枠・slot に対して renderer が使う宣言、文字スタイル、通常・ホバー・フォーカス・アクティブとその組合せ、幅別非表示を含めます。スタイルが切り替わる各開始幅の直前・境界・直後と、非表示の終了境界を確認します。各要素の入力が自身の境界間で一定なので、他の要素の境界でも同じ結果になります。宣言の優先順、shorthand と個別指定の干渉、token 参照、ブラウザーが以前の宣言を使うフォールバックを保守的に比較します。
 
