@@ -353,7 +353,11 @@ function collectTokenReferences(value: unknown, into: Set<string>): void {
 function matchesTokenLiteral(property: StyleProperty, value: unknown, token: NonNullable<SiteStyles["tokens"]>[string]): boolean {
   if ((typeof value !== "string" && typeof value !== "number") || token.type !== styleTokenKind(property)) return false;
   const tokenValue = tokenCssValue(token);
-  if (styleTokenKind(property) === "color") return normalizeHexColor(String(value)) === normalizeHexColor(tokenValue);
+  if (styleTokenKind(property) === "color") {
+    const literalColor = normalizeHexColor(String(value)), tokenColor = normalizeHexColor(tokenValue);
+    if (literalColor !== undefined || tokenColor !== undefined) return literalColor !== undefined && literalColor === tokenColor;
+    return String(value).toLowerCase() === tokenValue.toLowerCase();
+  }
   try { return declarationCss(property, value as StyleValue) === declarationCss(property, tokenValue); }
   catch { return false; }
 }
@@ -400,6 +404,10 @@ export function lintDocuments(documents: readonly PageDocument[], context: Norma
     const effective = resolvePageStyles(document, siteStyles), tokens = effective.tokens;
     const usedTokens = new Set<string>();
     collectTokenReferences({ body: document.body, textStyles: document.textStyles }, usedTokens);
+    for (const { node } of walkNodes(document)) if (node.type !== "text" && node.style?.textStyle) {
+      const referencedStyle = effective.textStyles?.[node.style.textStyle];
+      if (referencedStyle) collectTokenReferences(referencedStyle, usedTokens);
+    }
     for (const tokenName of Object.keys(document.tokens).sort(sortText)) if (!usedTokens.has(tokenName)) {
       findings.push({ code: "unused-token", target, tokenName, message: `文書token「${tokenName}」は本文・文字スタイルから参照されていません。` });
     }

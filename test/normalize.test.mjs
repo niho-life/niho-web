@@ -47,6 +47,25 @@ test("lintDocuments still reports configured breakpoints when the catalog is emp
   assert.deepEqual(findings.map(({ code, breakpoint }) => ({ code, breakpoint })), [{ code: "unused-breakpoint", breakpoint: 1280 }]);
 });
 
+test("lint does not equate different non-hex colors when comparing tokens", () => {
+  const document = page("color-lint", [element("text", { base: { color: "white" } })]);
+  const findings = lintDocument(document, { tokens: { dark: color("black") } });
+  assert.ok(!findings.some(({ code }) => code === "literal-matches-token"));
+  assert.ok(lintDocument(page("same-color", [element("text", { base: { color: "WHITE" } })]), { tokens: { light: color("white") } })
+    .some(({ code }) => code === "literal-matches-token"));
+});
+
+test("lint counts page tokens used through a referenced site text style", () => {
+  const document = page("inherited-style", [element("heading", { base: {}, textStyle: "heading" })], {
+    headingSize: { type: "length", value: "40px" }
+  });
+  const findings = lintDocument(document, {
+    tokens: { headingSize: { type: "length", value: "32px" } },
+    textStyles: { heading: { base: { fontSize: { token: "headingSize" } } } }
+  });
+  assert.ok(!findings.some(({ code, tokenName }) => code === "unused-token" && tokenName === "headingSize"));
+});
+
 function apply(batch, document, input) {
   const operations = decodeNormalizationOperations(JSON.parse(JSON.stringify(batch.operations)));
   return operations.reduce((next, operation) => editDocumentById(next, operation, input.blocks, [], input.components, input.siteStyles), document);
