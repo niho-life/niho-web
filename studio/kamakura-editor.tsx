@@ -12,8 +12,8 @@ import { createBlankEmbedRegistry, parsePageDocument, type BlockContracts } from
 import { parseLocalizationOverlay, parseSiteLocalizationConfig } from "../src/localization.js";
 import { KAMAKURA_CATALOG_CONTRACT_ERROR_CODE, KAMAKURA_CATALOG_CONTRACT_ERROR_STATUS, KAMAKURA_COMMON_PAGE_ID as COMMON_PAGE_ID, KAMAKURA_EDITOR_SITE_ID, KAMAKURA_ORIGIN_RETAINING_FRAME_SOURCES, KamakuraCatalogContractError, parseKamakuraCatalog, parseKamakuraCatalogPage } from "./kamakura-catalog.js";
 import type { KamakuraCatalog } from "./kamakura-catalog.js";
-import { parseEnglishPublication, parseEnglishPublicationAccepted } from "../src/english-publication.js";
-import { normalizePageChange, parseEditorReadOnly, validatePageChangePlan } from "../src/editor-model.js";
+import { parseEnglishPublicationAccepted } from "../src/english-publication.js";
+import { normalizePageChange, validatePageChangePlan } from "../src/editor-model.js";
 import { createPageEditingApiClient, EditingApiClientError, supportsPageNodeNames } from "../src/editing-client.js";
 import type { EditingPageReleaseSetItem } from "../src/editing-api.js";
 
@@ -88,7 +88,7 @@ type ApiResult = { readonly value: unknown; readonly etag: string | null; readon
 async function apiResult(path: string, method: RequestMethod, body: Record<string, unknown> | undefined, signal: AbortSignal, ifNoneMatch?: string): Promise<ApiResult> {
   if (signal.aborted) throw new DOMException("Aborted", "AbortError");
   const pagePath = path.startsWith(`${BASE}/`) ? path.slice(BASE.length + 1) : "";
-  const revalidateRead = method === "GET" && (pagePath === "catalog" || /^[a-z][a-z0-9-]{0,59}$/u.test(pagePath));
+  const revalidateRead = method === "GET" && pagePath === "catalog";
   let response: Response;
   try {
     response = await fetch(path, {
@@ -155,34 +155,6 @@ function statusFromError(error: unknown): EditorApiStatus {
   if (error instanceof EditorApiError) return { status: error.status, errorCode: error.code, supportId: error.supportId };
   if (error instanceof KamakuraCatalogContractError) return { status: KAMAKURA_CATALOG_CONTRACT_ERROR_STATUS, errorCode: KAMAKURA_CATALOG_CONTRACT_ERROR_CODE, supportId: null };
   return { status: 503, errorCode: null, supportId: null };
-}
-
-type PagePresentationRead = {
-  documentVersion: string;
-  presentationVersion: string;
-  presentation: unknown;
-  releases: NonNullable<EditorSnapshot["releases"]>;
-  readOnly?: NonNullable<EditorSnapshot["readOnly"]>;
-  englishPublication?: NonNullable<EditorSnapshot["englishPublication"]>;
-};
-
-function parsePagePresentationRead(value: unknown): PagePresentationRead {
-  const source = record(value), presentation = record(source.presentation);
-  if (!validVersion(source.documentVersion) || !validVersion(source.presentationVersion)
-      || presentation.version !== source.presentationVersion || !Array.isArray(source.releases)
-      || source.releases.length > 500 || source.releases.some((entry) => {
-        if (!entry || typeof entry !== "object" || Array.isArray(entry)) return true;
-        const release = entry as Record<string, unknown>;
-        return !Number.isSafeInteger(release.revision) || Number(release.revision) < 1 || typeof release.label !== "string";
-      })) throw new Error("表示情報の対象または版が一致しません。");
-  const readOnly = parseEditorReadOnly(source.readOnly);
-  const result: PagePresentationRead = {
-    documentVersion: source.documentVersion, presentationVersion: source.presentationVersion,
-    presentation: source.presentation, releases: source.releases as NonNullable<EditorSnapshot["releases"]>,
-    ...(readOnly ? { readOnly } : {}),
-  };
-  if (source.englishPublication !== undefined) result.englishPublication = parseEnglishPublication(source.englishPublication);
-  return result;
 }
 
 function safeLine(value: unknown, maximum: number): value is string {
@@ -306,23 +278,6 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
   let currentCatalog = catalog, initialPages = true;
   let localizationRead = initialReads?.localization, breakpointRead = initialReads?.breakpoints;
   const releaseOperationIds = new Map<string, string>();
-  const editorStateReadPages = new Set<string>();
-  const presentationReadCache = new Map<string, { readonly etag: string; readonly value: PagePresentationRead }>();
-  async function readPagePresentation(target: EditorTarget, signal: AbortSignal): Promise<PagePresentationRead> {
-    const checked = validTarget(target), key = `${checked.pageId}\u0000${checked.locale}`, path = pagePath(checked);
-    const cached = presentationReadCache.get(key), presentationPath = `${path}/presentation`;
-    let result = await apiResult(presentationPath, "GET", undefined, signal, cached?.etag);
-    if (result.notModified && cached && result.etag === cached.etag) return structuredClone(cached.value);
-    if (result.notModified) result = await apiResult(presentationPath, "GET", undefined, signal);
-    if (result.notModified) throw new EditorApiError(503);
-    const value = parsePagePresentationRead(result.value);
-    if (result.etag) {
-      presentationReadCache.delete(key);
-      presentationReadCache.set(key, { etag: result.etag, value: structuredClone(value) });
-      if (presentationReadCache.size > 128) presentationReadCache.delete(presentationReadCache.keys().next().value!);
-    } else presentationReadCache.delete(key);
-    return value;
-  }
   async function request<T>(signal: AbortSignal, run: () => Promise<T>, reportStatus = true): Promise<T> {
     try {
       signal.throwIfAborted();
@@ -352,45 +307,10 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
   async function readJapaneseDocument(target: EditorTarget, signal: AbortSignal): Promise<EditorSnapshot> {
     const checked = validTarget(target);
     const required = currentCatalog.nativePresentationPages.includes(checked.pageId);
-    const tryCombinedRead = !editorStateReadPages.has(checked.pageId);
-    const presentationController = new AbortController();
-    const abortPresentation = () => presentationController.abort();
-    if (signal.aborted) abortPresentation();
-    else if (tryCombinedRead) signal.addEventListener("abort", abortPresentation, { once: true });
-    const presentationRead = tryCombinedRead
-      ? readPagePresentation(checked, presentationController.signal).then((value) => ({ value }), (error: unknown) => ({ error }))
-      : null;
-    try {
-      const wire = await editingApi.read(checked, signal);
-      const document = wire.document;
-      if (wire.editorState !== undefined) {
-        editorStateReadPages.add(checked.pageId);
-        presentationController.abort();
-        if (required && wire.presentation === undefined) throw new Error("このサイトに必要な表示コンテキストがありません。");
-        return { ...wire.editorState, document, version: wire.version, ...(wire.presentation === undefined ? {} : { presentation: wire.presentation }) };
-      }
-      editorStateReadPages.delete(checked.pageId);
-      // Older hosts expose editor metadata separately from the page document.
-      let metadata: PagePresentationRead;
-      if (presentationRead) {
-        const presentationResult = await presentationRead;
-        if ("error" in presentationResult) throw presentationResult.error;
-        metadata = presentationResult.value;
-      } else metadata = await readPagePresentation(checked, signal);
-      const hasPresentationVersion = wire.presentationVersion !== undefined;
-      if (wire.version !== metadata.documentVersion
-          || hasPresentationVersion && wire.presentationVersion !== metadata.presentationVersion
-          || required && !hasPresentationVersion) throw new EditorApiError(409, "version_conflict");
-      return {
-        document, version: wire.version, releases: metadata.releases,
-        ...(metadata.readOnly ? { readOnly: metadata.readOnly } : {}),
-        ...(hasPresentationVersion ? { presentation: metadata.presentation } : {}),
-        ...(metadata.englishPublication ? { englishPublication: metadata.englishPublication } : {}),
-      };
-    } finally {
-      presentationController.abort();
-      if (tryCombinedRead) signal.removeEventListener("abort", abortPresentation);
-    }
+    const wire = await editingApi.read(checked, signal);
+    if (!wire.editorState) throw new EditorApiError(503, "editor_state_unavailable");
+    if (required && wire.presentation === undefined) throw new Error("このサイトに必要な表示コンテキストがありません。");
+    return { ...wire.editorState, document: wire.document, version: wire.version, ...(wire.presentation === undefined ? {} : { presentation: wire.presentation }) };
   }
   async function readPageDocument(target: EditorTarget, signal: AbortSignal): Promise<EditorSnapshot> {
     return target.locale === "en"
