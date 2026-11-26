@@ -1305,7 +1305,7 @@ function kamakuraEditorRoute(action: string, method: string): EditorRoute | "met
     if (method !== "GET") return "method_not_allowed";
     return { upstreamPath: `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/catalog`, bodyLimit: MAX_MUTATION_BODY_BYTES };
   }
-  const page = /^\/editor\/((?!(?:catalog|create|index)$)[a-z][a-z0-9-]{0,59})(\/draft|\/draft-conflict|\/release-plan|\/release|\/batch-stage|\/schedule|\/schedule-cancel|\/english-publication-retry)$/u.exec(action);
+  const page = /^\/editor\/((?!(?:catalog|create|index)$)[a-z][a-z0-9-]{0,59})(\/draft|\/draft-conflict|\/release-plan|\/release|\/batch-stage|\/schedule|\/schedule-cancel|\/english-publication-retry)?$/u.exec(action);
   if (!page || !COMMON_PAGE_ID.test(page[1]!)) return null;
   const suffix = page[2] ?? "";
   if (suffix === "/draft-conflict") {
@@ -1864,7 +1864,8 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
     body = new TextEncoder().encode("{}");
   }
   const isCatalog = route.upstreamPath === `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/catalog`;
-  const cacheableRead = request.method === "GET" && isCatalog;
+  const isCliPageRead = identity.kind === "cli" && /^\/internal\/studio\/web-content\/[a-z][a-z0-9-]{0,59}$/u.test(route.upstreamPath);
+  const cacheableRead = request.method === "GET" && (isCatalog || isCliPageRead);
   const ifNoneMatch = cacheableRead ? safeIfNoneMatch(request.headers.get("If-None-Match")) : undefined;
   const bodyBytes = body.slice().buffer;
   const headers = await kamakuraSignedHeaders(env, identity, request.method, route.upstreamPath, body, supportId, operation);
@@ -2942,6 +2943,8 @@ function workerEditorAdapter(resolved: ResolvedTrustedIntegration): WorkerEditor
 if (false) void workerEditorAdapter;
 
 async function liveEditorApi(request: Request, env: Env, identity: AccessIdentity, action: string, resolved: ResolvedTrustedIntegration, adapter: WorkerEditorAdapter): Promise<Response> {
+  if (adapter === KAMAKURA_EDITOR_ADAPTER && request.method === "GET"
+      && /^\/editor\/(?!(?:catalog|create|index)$)[a-z][a-z0-9-]{0,59}$/u.test(action)) return json({ error: "not_found" }, 404);
   if (action === KAMAKURA_EDITING_API_EDITOR_PREFIX || action.startsWith(`${KAMAKURA_EDITING_API_EDITOR_PREFIX}/`)) {
     if (!adapter.dispatchEditingApi) return json({ error: "not_found" }, 404);
     const path = action.slice(KAMAKURA_EDITING_API_EDITOR_PREFIX.length);
