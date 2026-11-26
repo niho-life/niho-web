@@ -71,7 +71,7 @@ generatePageCss(pageJson, blocks, assets, settings);
 
 ## 版と保存
 
-公開情報を含む `SiteSettings` は描画・メタデータ解決用の集約値です。token と文字スタイルの正本・版管理・公開は `site.styles.*` が所有します。既存 `EditorAdapter.readSiteSettings` / `saveSiteSettings` をGUI向けfacadeとして保つhostは、そのstyle部分を共通APIへ委譲します。別のhost-private style保存経路を残しません。公開metadataは従来のhost経路で読み書きできます。rendererにはstyle snapshotとmetadataを組み合わせた `SiteSettings` を渡します。
+公開情報を含む `SiteSettings` は描画・メタデータ解決用の集約値です。token と文字スタイルの正本・版管理・公開は `site.styles.*` が所有します。既存 `EditorAdapter.readSiteSettings` / `saveSiteSettings` をGUI向けfacadeとして保つhostは、そのstyle部分を共通APIへ委譲します。別のhost-private style保存経路を残しません。公開metadataは従来のhost経路で読み書きできます。rendererにはstyle snapshotとmetadataを組み合わせた `SiteSettings` を渡します。共通style APIだけに接続するadapterは `siteSettingsMetadataEditable: false` を宣言し、GUIでは公開metadataを読み取り専用にします。
 
 ```ts
 type SiteStylesSnapshot = {
@@ -130,7 +130,7 @@ planだけでは書込みを止めません。apply開始時にhostはsite-scope
 
 ## エディターとCLI
 
-CLIは共通編集APIの `site.styles.*` 操作を使います。`site.styles.read` はdraft版・公開版と `sitePublicationEpoch` を同じsnapshotから返します。`site.styles.read` がdiscoveryされないhostではCLIはstyle操作を送りません。GUI向けの `EditorAdapter` facadeも同じAPIを呼びます。スタイルUIはdraft版と公開版を別々に表示し、公開はplan→確認→releaseで行います。409では入力を保持し、上書きや自動mergeはしません。
+CLIは共通編集APIの `site.styles.*` 操作を使います。`site.styles.read` はdraft版・公開版と `sitePublicationEpoch` を同じsnapshotから返します。`site.styles.read` がdiscoveryされないhostではCLIはstyle操作を送りません。GUI向けの `EditorAdapter` facadeも同じAPIを呼びます。スタイルUIはdraft版と公開版を別々に表示し、公開はplan→確認→releaseで行います。共通style facadeを使うhostでは公開metadata欄を読み取り専用にし、styleのCASだけを保存します。409では入力を保持し、上書きや自動mergeはしません。
 
 migrationを提供するGUIは影響対象とbefore/after、lossless / semantic / visual-changeの分類をplanで示し、明示確認後だけapplyします。確認できない文書がある場合はapplyを許可しません。
 

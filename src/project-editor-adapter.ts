@@ -413,6 +413,7 @@ export function createProjectEditorAdapter(adapter: EditorAdapter, projectInput:
       }
     } satisfies Pick<EditorAdapter, "applyPageChange"> : {}),
     ...(adapter.siteStyleCapabilities ? { siteStyleCapabilities: adapter.siteStyleCapabilities } : {}),
+    ...(adapter.siteSettingsMetadataEditable === undefined ? {} : { siteSettingsMetadataEditable: adapter.siteSettingsMetadataEditable }),
     ...(adapter.breakpointSettings ? { breakpointSettings: {
       async read(siteId, signal) {
         if (siteId !== site.id) throw new Error("プロジェクト外のサイトは参照できません。");

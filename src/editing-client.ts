@@ -139,12 +139,13 @@ export function createEditingApiSiteSettingsFacade(
   client: Pick<EditingApiClient, "readSiteStyles" | "saveSiteStyles">,
   siteId: string,
   metadata: Omit<SiteSettings, "tokens" | "textStyles">,
-): Pick<EditorAdapter, "readSiteSettings" | "saveSiteSettings"> {
+): Pick<EditorAdapter, "readSiteSettings" | "saveSiteSettings" | "siteSettingsMetadataEditable"> {
   const stableMetadata = parseSiteSettings(metadata);
   const withoutStyles = (settings: SiteSettings): SiteSettings => {
     const copy = { ...settings }; delete copy.tokens; delete copy.textStyles; return copy;
   };
   return {
+    siteSettingsMetadataEditable: false,
     async readSiteSettings(requestSiteId, signal) {
       if (requestSiteId !== siteId) throw new TypeError("site mismatch");
       const snapshot = await client.readSiteStyles(signal);

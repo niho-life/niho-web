@@ -56,6 +56,7 @@ Git からのインストール時は `prepare` が TypeScript をビルドし�
 | 要素の名前 | `EditorAdapter.discoverPageNodeNames` が対応を確認した保存先では、レイヤー行のダブルクリックや F2、GUI の設定タブ、`niho-edit apply` の `name` 操作から名前を保存できます。[文書契約](docs/document-contract.md#ノード)、[編集契約](docs/editor-contract.md#要素の名前)、[編集 API](docs/editing-api-contract.md#操作カタログ) |
 | `EditorAdapter` の任意ページ先読み | `prefetchDocument` を接続すると、ページ行の hover / focus で現在版を先読みし、対象と版を照合してページ切替を軽くできます（[編集契約](docs/editor-contract.md#ホストへの接続)） |
 | `EditorAdapter` の任意公開変更セット | `prepareReleaseSet` / `releaseSet` / `releaseSetStatus` の3メソッドを接続したホストは、`PageEditor` に複数ページ選択・差分確認・変更があるページだけの一括公開・ページ別結果・状態照会と再試行を表示できます。未接続ホストの単一ページ公開は変わりません（[編集・公開契約](docs/editor-contract.md)） |
+| `EditorAdapter` の共通サイトスタイル | `site.styles.*` を接続するとGUIと `niho-edit` が同じdraft/public版を使います。`siteSettingsMetadataEditable: false` でホスト所有の公開メタデータを読取専用にし、共通スタイルだけ保存できます（[サイト共通スタイル契約](docs/site-styles-contract.md)、[編集契約](docs/editor-contract.md#サイトとページのスタイル所有権)） |
 | `@niho/web/projects` | 1 Project = 1 Site の検証、純粋操作、atomic CAS契約。React不要 |
 | `@niho/web/project-manager` | 認証済みホストadapterへ接続する `ProjectManager`。React / React DOM が必要 |
 | `@niho/web/project-directory` | 管理フォームと独立した日常の `ProjectDirectory`。内部またはhost shellの名前・ドメイン検索、OG画像／頭文字カード、更新順の一覧表、Dashboard / Editorメニュー。任意の `onPreloadEditor` で遷移前のコード先読みを接続できる |
