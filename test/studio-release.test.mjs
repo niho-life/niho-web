@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { build } from "esbuild";
-import { pendingMigrations, readReleaseSettings, smokeStudio, writeConfig } from "../studio/release.mjs";
+import { pendingMigrations, readReleaseSettings, registeredManagedSiteSlug, smokeStudio, writeConfig } from "../studio/release.mjs";
 
 const env = {
   CLOUDFLARE_ACCOUNT_ID: "a".repeat(32),
@@ -48,6 +48,15 @@ test("release parses Wrangler list and blocks pending migrations outside the add
   assert.throws(() => pendingMigrations("unknown Wrangler output"), /読み取れません/u);
 });
 
+test("release parses one registered managed-site slug from Wrangler D1 JSON", () => {
+  assert.equal(registeredManagedSiteSlug(JSON.stringify([{ success: true, results: [{ slug: "example-site" }] }])), "example-site");
+  assert.throws(() => registeredManagedSiteSlug(JSON.stringify([{ success: true, results: [] }])), /一意に確認/u);
+  assert.throws(() => registeredManagedSiteSlug(JSON.stringify([{ success: true, results: [{ slug: "one" }, { slug: "two" }] }])), /一意に確認/u);
+  assert.throws(() => registeredManagedSiteSlug(JSON.stringify([{ success: false, results: [{ slug: "example-site" }] }])), /一意に確認/u);
+  assert.throws(() => registeredManagedSiteSlug(JSON.stringify([{ success: false, results: [{ slug: "bad--slug" }] }])), /一意に確認/u);
+  assert.throws(() => registeredManagedSiteSlug("unknown Wrangler output"), /読み取れません/u);
+});
+
 test("release builds a private Wrangler config from external settings", () => {
   const directory = mkdtempSync(join(tmpdir(), "niho-studio-release-test-"));
   try {
@@ -76,6 +85,11 @@ test("release smoke authenticates only the Studio requests and checks Dashboard 
     script: Buffer.from("fixture entry"), chunk: Buffer.from("fixture chunk")
   };
   const path = `/projects/${settings.project}/sites/${settings.site}`;
+  const readRegisteredSlug = async (project, site) => {
+    assert.equal(project, settings.project);
+    assert.equal(site, settings.site);
+    return "example";
+  };
   const requests = [];
   const ok = (body, type) => new Response(body, { headers: { "Content-Type": type } });
   async function request(rawUrl, options) {
@@ -91,24 +105,72 @@ test("release smoke authenticates only the Studio requests and checks Dashboard 
     assert.equal(options.headers["CF-Access-Token"], settings.token);
     if (url.pathname === "/api/session") return Response.json({ status: "authenticated", subject: "fixture-user", email: "fixture@example.test" });
     if (url.pathname === `/api${path}/dashboard`) return Response.json({ status: "ready", projectId: settings.project, siteId: settings.site,
-      overview: { status: "ready", data: { publishedUrl: `${settings.publicOrigin}/s/example/` } }, members: { status: "ready" } });
+      overview: { status: "ready", data: { publicationStatus: "published", publishedPageCount: 1, publishedUrl: `${settings.publicOrigin}/s/example/` } }, members: { status: "ready" } });
     if (url.pathname === path) return ok(`<script type="module" src="${assets.entry}"></script>`, "text/html; charset=utf-8");
     if (url.pathname === assets.entry) return ok(assets.script, "application/javascript");
     if (url.pathname === assets.chunkPath) return ok(assets.chunk, "text/javascript; charset=utf-8");
     assert.fail("Unexpected smoke request");
   }
-  await smokeStudio(settings, assets, request);
+  await smokeStudio(settings, assets, request, readRegisteredSlug);
   assert.deepEqual(requests, ["/api/session", `/api${path}/dashboard`, path, assets.entry, assets.chunkPath, settings.publicPath]);
   await assert.rejects(() => smokeStudio(settings, assets, (url, options) => url.endsWith(assets.chunkPath)
-    ? ok("old chunk", "application/javascript") : request(url, options)), /遅延読込 chunk/u);
+    ? ok("old chunk", "application/javascript") : request(url, options), readRegisteredSlug), /遅延読込 chunk/u);
   await assert.rejects(() => smokeStudio(settings, assets, (url, options) => url.endsWith(settings.publicPath)
-    ? ok("<html>unexpected page</html>", "text/html") : request(url, options)), /og:url/u);
+    ? ok("<html>unexpected page</html>", "text/html") : request(url, options), readRegisteredSlug), /og:url/u);
   await assert.rejects(() => smokeStudio(settings, assets, (url, options) => url.endsWith("/dashboard")
-    ? Response.json({ status: "forbidden" }) : request(url, options)), /メンバー一覧/u);
+    ? Response.json({ status: "forbidden" }) : request(url, options), readRegisteredSlug), /メンバー一覧/u);
   await assert.rejects(() => smokeStudio(settings, assets, (url, options) => url.endsWith("/dashboard")
     ? Response.json({ status: "ready", projectId: settings.project, siteId: settings.site,
       overview: { status: "ready", data: { publishedUrl: `${settings.publicOrigin}/s/other-site/` } }, members: { status: "ready" } })
-    : request(url, options)), /公開 path が一致/u);
+    : request(url, options), readRegisteredSlug), /公開 path が一致/u);
+  await assert.rejects(() => smokeStudio(settings, assets, request, async () => "other-site"), /登録済み slug/u);
+});
+
+test("release smoke accepts an unpublished managed site only when its public path returns a safe 404", async () => {
+  const settings = readReleaseSettings({ ...env, STUDIO_SMOKE_ACCESS_TOKEN: token() });
+  const assets = {
+    entry: "/assets/app-aaaaaa111111.js", chunkPath: "/assets/chunks/project-dashboard-AAA11111.js",
+    script: Buffer.from("fixture entry"), chunk: Buffer.from("fixture chunk")
+  };
+  const path = `/projects/${settings.project}/sites/${settings.site}`;
+  const readRegisteredSlug = async (project, site) => {
+    assert.equal(project, settings.project);
+    assert.equal(site, settings.site);
+    return "example";
+  };
+  const requests = [];
+  const ok = (body, type) => new Response(body, { headers: { "Content-Type": type } });
+  const safeNotFound = () => new Response(null, { status: 404, headers: {
+    "Cache-Control": "no-store", "Content-Type": "text/plain; charset=utf-8",
+    "Cross-Origin-Resource-Policy": "same-origin", "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY"
+  } });
+  async function request(rawUrl, options) {
+    const url = new URL(rawUrl);
+    requests.push(url.pathname);
+    assert.equal(options.redirect, "error");
+    if (url.origin === settings.publicOrigin) {
+      assert.equal(options.headers["CF-Access-Token"], undefined);
+      assert.equal(url.pathname, settings.publicPath);
+      return safeNotFound();
+    }
+    assert.equal(url.origin, settings.studioOrigin);
+    assert.equal(options.headers["CF-Access-Token"], settings.token);
+    if (url.pathname === "/api/session") return Response.json({ status: "authenticated", subject: "fixture-user", email: "fixture@example.test" });
+    if (url.pathname === `/api${path}/dashboard`) return Response.json({ status: "ready", projectId: settings.project, siteId: settings.site,
+      overview: { status: "ready", data: { publicationStatus: "unpublished", publishedPageCount: 0, publishedUrl: null } }, members: { status: "ready" } });
+    if (url.pathname === path) return ok(`<script type="module" src="${assets.entry}"></script>`, "text/html; charset=utf-8");
+    if (url.pathname === assets.entry) return ok(assets.script, "application/javascript");
+    if (url.pathname === assets.chunkPath) return ok(assets.chunk, "text/javascript; charset=utf-8");
+    assert.fail("Unexpected smoke request");
+  }
+  await smokeStudio(settings, assets, request, readRegisteredSlug);
+  assert.deepEqual(requests, ["/api/session", `/api${path}/dashboard`, path, assets.entry, assets.chunkPath, settings.publicPath]);
+  await assert.rejects(() => smokeStudio(settings, assets, (url, options) => url.endsWith(settings.publicPath)
+    ? new Response(null, { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8" } }) : request(url, options), readRegisteredSlug), /安全な404/u);
+  await assert.rejects(() => smokeStudio(settings, assets, (url, options) => url.endsWith(settings.publicPath)
+    ? ok("unexpected published page", "text/html") : request(url, options), readRegisteredSlug), /安全な404/u);
+  await assert.rejects(() => smokeStudio(settings, assets, request, async () => "another-site"), /登録済み slug/u);
 });
 
 test("Studio reports missing bindings and invalid settings on its first cron event", async (t) => {
