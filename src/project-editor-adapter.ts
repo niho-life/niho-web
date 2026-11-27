@@ -152,6 +152,7 @@ function checkedPlan(plan: EditorReleasePlan, request: EditorReleaseRequest, sit
     domain: plan.domain,
     changes: plan.changes.map((change) => ({ path: change.path, before: change.before, after: change.after })),
     ...(plan.url === undefined ? {} : { url: plan.url }),
+    ...(plan.warnings === undefined ? {} : { warnings: plan.warnings.map((warning) => ({ code: warning.code, message: warning.message })) }),
     ...(plan.affected === undefined ? {} : { affected: Array.isArray(plan.affected) ? plan.affected.map((item) => item && typeof item === "object"
       ? { kind: item.kind, name: item.name, ...(item.detail === undefined ? {} : { detail: item.detail }) } : item) : plan.affected })
   };
