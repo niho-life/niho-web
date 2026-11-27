@@ -22,6 +22,8 @@ niho-edit [--studio] --origin <https-origin> --site <site-id> release <page-id> 
 niho-edit [--studio] --origin <https-origin> --site <site-id> publish <page-id> --locale <locale> (--expected-version <version> | --json <snapshot-file|->)
 niho-edit --studio --origin <studio-origin> --site <site-id> publish <page-id> <page-id> [...] --locale <locale>
 niho-edit --studio --origin <studio-origin> --site <site-id> changes
+niho-edit --studio --origin <studio-origin> --site <site-id> site-history
+niho-edit --studio --origin <studio-origin> --site <site-id> rollback <release-id>
 niho-edit --studio --origin <studio-origin> --site <site-id> publish --site
 niho-edit --studio --origin <studio-origin> --site <site-id> publish --changed
 niho-edit --studio --origin <studio-origin> --site <site-id> publish --all
@@ -101,6 +103,7 @@ Studio 内サイトの GUI 操作と niho-edit --studio の対応
   ページの読取・下書き編集・CMS ブロック設定  read → apply / save
   ページの公開・版履歴・復元                  publish <page-id> / history / restore
   未公開変更の一覧・一括公開                  changes → publish --changed
+  サイト全体の公開履歴・復元                  site-history / rollback <release-id>
   共通設定の公開                              publish --site
   全ページ再生成（移行・コード変更時のみ）    publish --all
   NIHO フォームの接続                        page-embed-register → apply / save

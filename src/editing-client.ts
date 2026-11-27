@@ -1,5 +1,5 @@
 import { PAGE_OPERATION_VERSIONS, pageNodesHaveNames, pageOperationUsesNodeNames, pageOperationWire, type EditingPageApplyConflict, type EditingPageApplyInput, type EditingPageApplyResult } from "./editing-page-operations.js";
-import { EDITING_API_ERRORS, PAGE_CMS_BINDINGS_CAPABILITY, PAGE_NODE_NAME_CAPABILITY, parseEditingApiDiscovery, type EditingApiErrorCode, type EditingCmsOperationStatus, type EditingCmsPublishPlan, type EditingCmsTarget, type EditingDiscoveredOperation, type EditingPageCatalog, type EditingPagePublishNowResult, type EditingPageReleaseSetItem, type EditingPageReleaseSetItemResult, type EditingPageReleaseSetPlan, type EditingPageReleaseSetStatus, type EditingPageSnapshot, type EditingPageTarget, type EditingPublicationChanges, type EditingSitePublishResult } from "./editing-api.js";
+import { EDITING_API_ERRORS, PAGE_CMS_BINDINGS_CAPABILITY, PAGE_NODE_NAME_CAPABILITY, parseEditingApiDiscovery, type EditingApiErrorCode, type EditingCmsOperationStatus, type EditingCmsPublishPlan, type EditingCmsTarget, type EditingDiscoveredOperation, type EditingPageCatalog, type EditingPagePublishNowResult, type EditingPageReleaseSetItem, type EditingPageReleaseSetItemResult, type EditingPageReleaseSetPlan, type EditingPageReleaseSetStatus, type EditingPageSnapshot, type EditingPageTarget, type EditingPublicationChanges, type EditingSitePublicationHistory, type EditingSitePublicationRollbackResult, type EditingSitePublishResult } from "./editing-api.js";
 import {
   SITE_STYLES_FEATURE, parseEditingSiteStylesEditRequest, parseEditingSiteStylesEditResponse,
   parseEditingSiteStylesPublishRequest, parseEditingSiteStylesPublishResponse, parseEditingSiteStylesSnapshot, siteStylesEdits,
@@ -107,6 +107,8 @@ export type EditingApiClient = {
   release(target: EditingPageTarget, plan: EditorReleasePlan, operationId: string, signal?: AbortSignal): Promise<EditingPagePublishResult>;
   publishPageNow(target: EditingPageTarget, request: EditorPublishPageInput, signal?: AbortSignal): Promise<EditingPagePublishNowResult>;
   readPublicationChanges(signal?: AbortSignal): Promise<EditingPublicationChanges>;
+  readSitePublicationHistory(signal?: AbortSignal): Promise<EditingSitePublicationHistory>;
+  rollbackSitePublication(expectedVersion: string, releaseId: string, signal?: AbortSignal): Promise<EditingSitePublicationRollbackResult>;
   publishSiteNow(expectedVersion: string, scope: "site" | "changed" | "all" | readonly Pick<EditingPageTarget, "pageId" | "locale">[],
     signal?: AbortSignal): Promise<EditingSitePublishClientResult>;
   preparePageReleaseSet(items: readonly EditingPageReleaseSetItem[], signal?: AbortSignal, operationId?: string): Promise<EditingPageReleaseSetPlan>;
@@ -590,6 +592,35 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
         throw new EditingApiClientError("invalid_response", response.status);
       });
       return { version: body.version, changes };
+    },
+    async readSitePublicationHistory(signal) {
+      const discovery = await client.discover(signal);
+      if (!discovery.operations.some((operation) => operation.id === "site.publication-history")) throw new EditingApiClientError("not_found", 404);
+      const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/site.publication-history`, "GET", undefined, signal);
+      if (!response.ok) throw apiFailure(body, response.status);
+      if (body.currentReleaseId !== null && !isEditingApiVersion(body.currentReleaseId)
+        || !Array.isArray(body.releases) || body.releases.length > 50) throw new EditingApiClientError("invalid_response", response.status);
+      const releases = body.releases.map((value) => {
+        if (!plainRecord(value) || !isEditingApiVersion(value.releaseId)
+          || typeof value.createdAt !== "string" || value.createdAt.length > 40 || !Number.isFinite(Date.parse(value.createdAt))
+          || value.actorName !== null && (typeof value.actorName !== "string" || value.actorName.length > 130)
+          || value.changedPaths !== null && (!Array.isArray(value.changedPaths) || value.changedPaths.length > 100
+            || value.changedPaths.some((path) => typeof path !== "string" || path.length > 512))
+          || value.changedPathCount !== null && (!Number.isSafeInteger(value.changedPathCount) || Number(value.changedPathCount) < 0)
+          || typeof value.current !== "boolean") throw new EditingApiClientError("invalid_response", response.status);
+        return { releaseId: value.releaseId, createdAt: value.createdAt, actorName: value.actorName,
+          changedPaths: value.changedPaths as string[] | null, changedPathCount: value.changedPathCount as number | null, current: value.current };
+      });
+      return { currentReleaseId: body.currentReleaseId as string | null, releases };
+    },
+    async rollbackSitePublication(expectedVersion, releaseId, signal) {
+      const discovery = await client.discover(signal);
+      if (!discovery.operations.some((operation) => operation.id === "site.publication-rollback")) throw new EditingApiClientError("not_found", 404);
+      const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/site.publication-rollback`, "POST", { expectedVersion, releaseId }, signal);
+      if (response.status === 409 && body.error === "version_conflict") return { status: "conflict" };
+      if (!response.ok) throw apiFailure(body, response.status);
+      if (body.status !== "rolled_back" || body.releaseId !== releaseId) throw new EditingApiClientError("invalid_response", response.status);
+      return { status: "rolled_back", releaseId };
     },
     async publishSiteNow(expectedVersion, scope, signal) {
       if (!isEditingApiVersion(expectedVersion)) throw new TypeError("invalid site publish request");

@@ -656,7 +656,7 @@ async function main() {
     process.stdout.write(`${JSON.stringify({ id: edited.id ?? base.id ?? null, version: base.version, changes })}\n`); return;
   }
   const baseOrigin = origin(values.origin);
-  if (values.studio && !["discover", "read", "outline", "find", "get", "apply", "save", "release-plan", "release", "publish", "history", "restore", "assets-resolve", "pages-catalog", "page-change", "changes", "normalize", "lint", "styles", "site-seo-read", "site-seo-save", "site-redirects-read", "site-redirects-save", "site-public-read", "site-public-save", "page-embed-register"].includes(command)
+  if (values.studio && !["discover", "read", "outline", "find", "get", "apply", "save", "release-plan", "release", "publish", "history", "restore", "assets-resolve", "pages-catalog", "page-change", "changes", "site-history", "rollback", "normalize", "lint", "styles", "site-seo-read", "site-seo-save", "site-redirects-read", "site-redirects-save", "site-public-read", "site-public-save", "page-embed-register"].includes(command)
     && !command?.startsWith("cms-") && !command?.startsWith("localization-")) throw new CliError("invalid_arguments");
   if (!IDENTIFIER.test(values.site ?? "")) throw new CliError("invalid_site");
   const token = process.env.NIHO_EDIT_TOKEN;
@@ -685,6 +685,24 @@ async function main() {
     if (!values.studio || pageId !== undefined || extra.length) throw new CliError("invalid_arguments");
     const result = await apiCall(() => client.readPublicationChanges(AbortSignal.timeout(30_000)));
     process.stdout.write(`${JSON.stringify(result)}\n`); return;
+  }
+
+  if (command === "site-history") {
+    assertCommandOptions(values, []);
+    if (!values.studio || pageId !== undefined || extra.length) throw new CliError("invalid_arguments");
+    const result = await apiCall(() => client.readSitePublicationHistory(AbortSignal.timeout(30_000)));
+    process.stdout.write(`${JSON.stringify(result)}\n`); return;
+  }
+
+  if (command === "rollback") {
+    assertCommandOptions(values, []);
+    if (!values.studio || !pageId || extra.length) throw new CliError("invalid_arguments");
+    const history = await apiCall(() => client.readSitePublicationHistory(AbortSignal.timeout(30_000)));
+    if (!history.releases.some((release) => release.releaseId === pageId)) throw new CliError("publication_not_found", 404);
+    if (!history.currentReleaseId) throw new CliError("no_current_publication", 409);
+    const result = await apiCall(() => client.rollbackSitePublication(history.currentReleaseId, pageId, AbortSignal.timeout(30_000)));
+    if (result.status === "conflict") { emit({ error: "version_conflict" }, 409, 1, "site.publication-rollback"); return; }
+    emit(result, 200, 0, "site.publication-rollback"); return;
   }
 
   if (command === "publish" && (values["publish-site"] || values.changed || values.all || values.studio && extra.length)) {

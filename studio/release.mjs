@@ -29,7 +29,8 @@ const beforeDeployMigrations = new Set([
   "0023_managed_site_primary_host.sql",
   "0024_managed_one_step_publish.sql",
   "0025_managed_site_imports.sql",
-  "0026_managed_site_styles.sql"
+  "0026_managed_site_styles.sql",
+  "0027_managed_site_publication_history_details.sql"
 ]);
 
 class ReleaseError extends Error {}

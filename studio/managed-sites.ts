@@ -9,7 +9,8 @@ import { cmsId, cmsItemKey } from "../src/cms-v2-schema.js";
 import type { CmsReleaseSnapshot } from "../src/cms-v2.js";
 import { isEditingApiVersion } from "../src/editing-client.js";
 import { createPageEditingApi, type EditingActor, type EditingCapability, type EditingPageTarget,
-  type EditingPublicationChanges, type EditingSitePublishInput, type EditingSitePublishResult } from "../src/editing-api.js";
+  type EditingPublicationChanges, type EditingSitePublicationHistory, type EditingSitePublicationRollbackResult,
+  type EditingSitePublishInput, type EditingSitePublishResult } from "../src/editing-api.js";
 import type { EditingPageApplied } from "../src/editing-page-operations.js";
 import { normalizePageChange, pageChangeProblems } from "../src/editor-model.js";
 import type { EditorPage, EditorPageChange, EditorPublishPageInput } from "../src/editor-types.js";
@@ -378,7 +379,8 @@ async function managedSiteRedirects(request: Request, db: ManagedD1, actor: Mana
       .bind(version, siteId, expectedVersion, projectId, actor.subject, preparedManifest?.expectedVersion ?? null),
     ...(preparedManifest ? [db.prepare(`UPDATE managed_site_publication_state SET version = ?1, manifest_key = ?2, updated_at = unixepoch()
       WHERE site_id = ?3 AND version = ?4 AND EXISTS (SELECT 1 FROM managed_sites WHERE site_id = ?3 AND redirect_version = ?5)`)
-      .bind(preparedManifest.manifestVersion, preparedManifest.manifestKey, siteId, preparedManifest.expectedVersion, version)] : [])
+      .bind(preparedManifest.manifestVersion, preparedManifest.manifestKey, siteId, preparedManifest.expectedVersion, version),
+      publicationHistoryDetails(db, siteId, projectId, actor.subject, preparedManifest.manifestVersion, redirects.map(({ fromPath }) => fromPath), actor.cli)] : [])
   ]);
   return changed(results[2]!) && (!preparedManifest || changed(results[3]!))
     ? json({ redirects, version }) : json({ error: "conflict" }, 409);
@@ -773,6 +775,14 @@ export function managedPageEditingApi(request: Request, store: CmsStore, project
       if (!actor) return null;
       return (await managedPublicationSnapshot(store, actor, projectId, siteId))?.changes ?? null;
     },
+    async readSitePublicationHistory(_editingActor, requestedSiteId) {
+      if (!actor || requestedSiteId !== siteId) return null;
+      return managedSitePublicationHistoryData(db, siteId);
+    },
+    async rollbackSitePublication(_editingActor, requestedSiteId, input) {
+      if (!actor || requestedSiteId !== siteId) return { status: "conflict" };
+      return rollbackManagedSitePublicationNow(db, store.bucket, actor, projectId, siteId, input);
+    },
     async publishSiteNow(_editingActor, requestedSiteId, input) {
       if (!publicOrigin || !actor || requestedSiteId !== siteId) return { status: "conflict" };
       return publishManagedPages(store, actor, projectId, siteId, publicOrigin, input);
@@ -886,6 +896,7 @@ async function commitManagedPagePublicationBatch(input: {
   readonly catalogVersion: string;
   readonly cmsGeneration: string | null;
   readonly prepared: { readonly expectedVersion: string; readonly manifestVersion: string; readonly manifestKey: string;
+    readonly changedPaths: readonly string[];
     readonly policyVersion: string; readonly domainVersion: string; readonly expectedPolicyVersion: string;
     readonly expectedDomainVersion: string; readonly expectedSiteStyleDraftVersion: string;
     readonly expectedSiteStylePublishedVersion: string; readonly siteStylesVersion: string; readonly publishSiteStyles: boolean;
@@ -923,7 +934,8 @@ async function commitManagedPagePublicationBatch(input: {
           AND ${pagePublishAccess("?3", "?8", "?10", "?11")}`)
         .bind(prepared.manifestVersion, prepared.manifestKey, siteId, prepared.expectedVersion, catalogVersion,
           prepared.expectedPolicyVersion, prepared.expectedDomainVersion, projectId, prepared.siteStylesVersion,
-          actor.subject, actor.cliClientId ?? null)
+          actor.subject, actor.cliClientId ?? null),
+      publicationHistoryDetails(db, siteId, projectId, actor.subject, prepared.manifestVersion, prepared.changedPaths, actor.cli)
     ]);
     if (results.some((result) => !result.success)) throw new Error("managed page publication batch failed");
     return changed(results[1]);
@@ -1044,6 +1056,7 @@ async function commitManagedPagePublicationBatch(input: {
         AND EXISTS (SELECT 1 FROM managed_site_styles WHERE site_id = ?3 AND published_version = ?8)
         AND ${auditCount("?7")} = ?6`)
       .bind(prepared.manifestVersion, prepared.manifestKey, siteId, prepared.expectedVersion, nextCatalogVersion, expectedCount, payload, prepared.siteStylesVersion),
+    publicationHistoryDetails(db, siteId, projectId, actor.subject, prepared.manifestVersion, prepared.changedPaths, actor.cli),
     ...writes.flatMap((write) => write.copy && write.currentVersion
       ? [discardSupersededDraft(db, write.row, write.currentVersion)] : [])
   ]);
@@ -1529,7 +1542,8 @@ export async function prepareManagedCmsPublication(store: CmsStore, site: Site, 
         AND EXISTS (SELECT 1 FROM managed_cms_state WHERE site_id = ?3 AND generation = ?9)
         AND ${auditCount("?11")} = ?10`)
       .bind(prepared.manifestVersion, prepared.manifestKey, siteId, prepared.expectedVersion, state.manifest_key,
-        state.page_catalog_version, prepared.expectedPolicyVersion, prepared.expectedDomainVersion, generation, expectedCount, payload)
+        state.page_catalog_version, prepared.expectedPolicyVersion, prepared.expectedDomainVersion, generation, expectedCount, payload),
+    publicationHistoryDetails(db, siteId, site.projectId, actor.subject, prepared.manifestVersion, prepared.changedPaths, actor.cli)
   ] };
 }
 
@@ -1661,6 +1675,7 @@ async function publishPageOnce(store: CmsStore, actor: ManagedActor, row: Manage
     db.prepare(`UPDATE managed_site_publication_state SET version = ?1, manifest_key = ?2, updated_at = unixepoch()
       WHERE site_id = ?3 AND EXISTS (SELECT 1 FROM managed_site_audit WHERE id = ?4)`)
       .bind(preparedPublication.manifestVersion, preparedPublication.manifestKey, row.site_id, auditId),
+    publicationHistoryDetails(db, row.site_id, row.project_id, actor.subject, preparedPublication.manifestVersion, preparedPublication.changedPaths, actor.cli),
     discardSupersededDraft(db, row, version)
   ]);
   if (results.some((result) => !result.success)) throw new Error("managed page mutation batch failed");
@@ -1805,7 +1820,8 @@ async function changePageOnce(store: CmsStore, actor: ManagedActor, projectId: s
         WHERE site_id = ?3 AND version = ?4 AND EXISTS (SELECT 1 FROM managed_site_audit WHERE id = ?5)
           AND EXISTS (SELECT 1 FROM managed_pages WHERE site_id = ?3 AND page_id = ?6 AND locale = ?7 AND current_version = ?8)
           AND EXISTS (SELECT 1 FROM managed_sites WHERE site_id = ?3 AND page_catalog_version = ?9)`)
-        .bind(prepared.manifestVersion, prepared.manifestKey, siteId, prepared.expectedVersion, auditId, pageId, locale, version, `catalog.${version}`)] : [])
+        .bind(prepared.manifestVersion, prepared.manifestKey, siteId, prepared.expectedVersion, auditId, pageId, locale, version, `catalog.${version}`),
+        publicationHistoryDetails(db, siteId, projectId, actor.subject, prepared.manifestVersion, prepared.changedPaths, actor.cli)] : [])
     ];
     const { version: _version, ...page } = current;
     resultPage = { ...page, title, path, visibility };
@@ -1819,41 +1835,127 @@ async function changePageOnce(store: CmsStore, actor: ManagedActor, projectId: s
   return { status: "applied" as const, page: resultPage };
 }
 
-async function managedSitePublicationHistory(db: ManagedD1, siteId: string): Promise<Response> {
-  const result = await db.prepare(`SELECT state.version AS current_release_id, history.release_id,
-      history.created_at, history.release_id = state.version AS current
+const MAX_PUBLICATION_HISTORY_PATHS = 100;
+
+function publicationHistoryDetails(db: ManagedD1, siteId: string, projectId: string, actorSubject: string,
+  releaseId: string, changedPaths: readonly string[], isCli = false): D1Statement {
+  const paths = [...new Set(changedPaths)].sort();
+  return db.prepare(`UPDATE managed_site_publication_history SET
+      actor_name = (SELECT member.display_name || CASE WHEN ?7 = 1 THEN '（CLI）' ELSE '' END FROM sites AS site
+        JOIN project_members AS member ON member.project_id = site.project_id
+        WHERE site.id = ?1 AND site.project_id = ?2 AND member.access_subject = ?3 LIMIT 1),
+      changed_paths_json = ?5, changed_path_count = ?6
+    WHERE site_id = ?1 AND release_id = ?4
+      AND EXISTS (SELECT 1 FROM managed_site_publication_state WHERE site_id = ?1 AND version = ?4)`)
+    .bind(siteId, projectId, actorSubject, releaseId, JSON.stringify(paths.slice(0, MAX_PUBLICATION_HISTORY_PATHS)), paths.length, isCli ? 1 : 0);
+}
+
+async function managedSitePublicationHistoryData(db: ManagedD1, siteId: string): Promise<EditingSitePublicationHistory | null> {
+  const result = await db.prepare(`SELECT state.version AS current_release_id, history.release_id, history.created_at,
+      history.actor_name, history.changed_paths_json, history.changed_path_count, history.release_id = state.version AS current
     FROM managed_site_publication_state AS state
     LEFT JOIN managed_site_publication_history AS history ON history.site_id = state.site_id
     WHERE state.site_id = ?1
     ORDER BY history.created_at DESC, history.release_id DESC LIMIT 50`).bind(siteId)
-    .all<{ readonly current_release_id: string; readonly release_id: string | null; readonly created_at: number | null; readonly current: number | null }>();
-  if (!result.success) return json({ error: "publication_history_unavailable" }, 503);
+    .all<{ readonly current_release_id: string; readonly release_id: string | null; readonly created_at: number | null;
+      readonly actor_name: string | null; readonly changed_paths_json: string | null; readonly changed_path_count: number | null; readonly current: number | null }>();
+  if (!result.success) throw new Error("publication history unavailable");
   const rows = result.results ?? [];
-  return json({
-    currentReleaseId: rows[0]?.current_release_id && rows[0].current_release_id !== "initial" ? rows[0].current_release_id : null,
-    releases: rows.flatMap(({ release_id, created_at, current }) => release_id && created_at !== null
-      ? [{ releaseId: release_id, createdAt: created_at, current: current === 1 }] : [])
-  });
+  if (!rows.length) return null;
+  return {
+    currentReleaseId: rows[0]!.current_release_id === "initial" ? null : rows[0]!.current_release_id,
+    releases: rows.flatMap(({ release_id, created_at, actor_name, changed_paths_json, changed_path_count, current }) => {
+      if (!release_id || created_at === null) return [];
+      let changedPaths: string[] | null = null;
+      if (changed_paths_json !== null) {
+        try {
+          const parsed: unknown = JSON.parse(changed_paths_json);
+          if (Array.isArray(parsed) && parsed.length <= MAX_PUBLICATION_HISTORY_PATHS
+            && parsed.every((path) => typeof path === "string" && path.length <= 512)) changedPaths = parsed;
+        } catch { /* Legacy and malformed history still show its timestamp and actor. */ }
+      }
+      return [{ releaseId: release_id, createdAt: new Date(created_at * 1000).toISOString(), actorName: actor_name,
+        changedPaths, changedPathCount: changed_path_count, current: current === 1 }];
+    })
+  };
 }
 
-async function rollbackManagedSitePublication(request: Request, db: ManagedD1, actor: ManagedActor,
+async function managedSitePublicationHistory(db: ManagedD1, siteId: string): Promise<Response> {
+  try {
+    const history = await managedSitePublicationHistoryData(db, siteId);
+    return history ? json(history) : json({ error: "not_found" }, 404);
+  } catch { return json({ error: "publication_history_unavailable" }, 503); }
+}
+
+function changedPublicationPaths(before: PublishedSiteManifest | null, after: PublishedSiteManifest): string[] {
+  const paths = new Set<string>();
+  const previousRoutes = new Map((before?.routes ?? []).map((route) => [`${route.pageId}\u0000${route.locale}`, route]));
+  const nextRoutes = new Map(after.routes.map((route) => [`${route.pageId}\u0000${route.locale}`, route]));
+  for (const key of new Set([...previousRoutes.keys(), ...nextRoutes.keys()])) {
+    const previous = previousRoutes.get(key), next = nextRoutes.get(key);
+    if (JSON.stringify(previous) === JSON.stringify(next)) continue;
+    if (previous) paths.add(previous.path);
+    if (next) paths.add(next.path);
+  }
+  const previousRedirects = new Map((before?.redirects ?? []).map((redirect) => [`${redirect.locale}\u0000${redirect.fromPath}`, redirect.toPath]));
+  const nextRedirects = new Map((after.redirects ?? []).map((redirect) => [`${redirect.locale}\u0000${redirect.fromPath}`, redirect.toPath]));
+  for (const key of new Set([...previousRedirects.keys(), ...nextRedirects.keys()])) {
+    if (previousRedirects.get(key) !== nextRedirects.get(key)) paths.add(key.slice(key.indexOf("\u0000") + 1));
+  }
+  const previousDiscovery = new Map((before?.discoveryFiles ?? []).map((file) => [file.path, `${file.artifactKey}\u0000${file.digest}`]));
+  const nextDiscovery = new Map((after.discoveryFiles ?? []).map((file) => [file.path, `${file.artifactKey}\u0000${file.digest}`]));
+  for (const path of new Set([...previousDiscovery.keys(), ...nextDiscovery.keys()])) {
+    if (previousDiscovery.get(path) !== nextDiscovery.get(path)) paths.add(path);
+  }
+  return [...paths].sort();
+}
+
+async function rollbackManagedSitePublicationNow(db: ManagedD1, bucket: CmsStore["bucket"], actor: ManagedActor,
+  projectId: string, siteId: string, input: { readonly expectedVersion: string; readonly releaseId: string }): Promise<EditingSitePublicationRollbackResult> {
+  if (!MANIFEST_VERSION.test(input.releaseId)) return { status: "not_found" };
+  const state = await db.prepare(`SELECT state.version, state.manifest_key
+    FROM managed_site_publication_state AS state JOIN sites AS site ON site.id = state.site_id
+    JOIN project_members AS member ON member.project_id = site.project_id
+    WHERE state.site_id = ?1 AND site.project_id = ?2 AND member.access_subject = ?3
+      AND member.role IN ('owner', 'editor') LIMIT 1`).bind(siteId, projectId, actor.subject)
+    .first<{ readonly version: string; readonly manifest_key: string | null }>();
+  if (!state) return { status: "not_found" };
+  if (state.version !== input.expectedVersion || state.version === input.releaseId || !state.manifest_key) return { status: "conflict" };
+  const target = await db.prepare(`SELECT manifest_key FROM managed_site_publication_history
+    WHERE site_id = ?1 AND release_id = ?2 LIMIT 1`).bind(siteId, input.releaseId).first<{ readonly manifest_key: string }>();
+  if (!target) return { status: "not_found" };
+  const [currentManifest, targetManifest] = await Promise.all([
+    loadPublishedSiteManifest(bucket, siteId, state.manifest_key), loadPublishedSiteManifest(bucket, siteId, target.manifest_key)
+  ]);
+  if (!targetManifest) return { status: "not_found" };
+  const paths = changedPublicationPaths(currentManifest, targetManifest);
+  const rollbackReleaseId = await digest({ siteId, from: state.version, to: input.releaseId, nonce: crypto.randomUUID() });
+  const result = await db.batch([
+    db.prepare(`UPDATE managed_site_publication_state
+      SET version = ?1, manifest_key = ?2, updated_at = unixepoch()
+      WHERE site_id = ?3 AND version = ?4 AND manifest_key = ?5
+        AND EXISTS (SELECT 1 FROM managed_site_publication_history WHERE site_id = ?3 AND release_id = ?6 AND manifest_key = ?2)
+        AND EXISTS (SELECT 1 FROM sites AS site JOIN project_members AS member ON member.project_id = site.project_id
+          WHERE site.id = ?3 AND site.project_id = ?7 AND member.access_subject = ?8 AND member.role IN ('owner', 'editor'))`)
+      .bind(rollbackReleaseId, target.manifest_key, siteId, input.expectedVersion, state.manifest_key, input.releaseId, projectId, actor.subject),
+    publicationHistoryDetails(db, siteId, projectId, actor.subject, rollbackReleaseId, paths, actor.cli)
+  ]);
+  if (!changed(result[0])) return { status: "conflict" };
+  return { status: "rolled_back", releaseId: input.releaseId };
+}
+
+async function rollbackManagedSitePublication(request: Request, db: ManagedD1, bucket: CmsStore["bucket"], actor: ManagedActor,
   projectId: string, siteId: string): Promise<Response> {
   const body = await readJson(request, actor, 8 * 1024);
   if (!body || !exactKeys(body, ["expectedVersion", "releaseId"])
-    || typeof body.expectedVersion !== "string" || body.expectedVersion.length > 200
+    || !isEditingApiVersion(body.expectedVersion)
     || typeof body.releaseId !== "string" || !MANIFEST_VERSION.test(body.releaseId)
     || body.releaseId === body.expectedVersion) return json({ error: "invalid_request" }, 400);
-  const result = await db.batch([db.prepare(`UPDATE managed_site_publication_state
-    SET version = ?1, manifest_key = (SELECT history.manifest_key FROM managed_site_publication_history AS history
-      WHERE history.site_id = ?2 AND history.release_id = ?1), updated_at = unixepoch()
-    WHERE site_id = ?2 AND version = ?3
-      AND EXISTS (SELECT 1 FROM managed_site_publication_history AS history
-        WHERE history.site_id = ?2 AND history.release_id = ?1)
-      AND EXISTS (SELECT 1 FROM sites AS s JOIN project_members AS member ON member.project_id = s.project_id
-        WHERE s.id = ?2 AND s.project_id = ?4 AND member.access_subject = ?5 AND member.role IN ('owner', 'editor'))`)
-    .bind(body.releaseId, siteId, body.expectedVersion, projectId, actor.subject)]);
-  if (!changed(result[0])) return json({ status: "conflict" }, 409);
-  return json({ status: "rolled_back", releaseId: body.releaseId });
+  const result = await rollbackManagedSitePublicationNow(db, bucket, actor, projectId, siteId,
+    { expectedVersion: body.expectedVersion, releaseId: body.releaseId });
+  if (result.status === "conflict") return json({ status: "conflict" }, 409);
+  if (result.status === "not_found") return json({ error: "not_found" }, 404);
+  return json(result);
 }
 
 /** GUI と CLI が共有する managed page operation dispatcher。 */
@@ -1869,7 +1971,8 @@ export async function managedEditorOperation(
   if (action === "/editor/publication-history") return request.method === "GET"
     ? managedSitePublicationHistory(db, siteId) : json({ error: "method_not_allowed" }, 405);
   if (action === "/editor/rollback") return request.method === "POST"
-    ? rollbackManagedSitePublication(request, db, actor, projectId, siteId) : json({ error: "method_not_allowed" }, 405);
+    ? store ? rollbackManagedSitePublication(request, db, store.bucket, actor, projectId, siteId) : json({ error: "publication_storage_unavailable" }, 503)
+    : json({ error: "method_not_allowed" }, 405);
   if (action === "/editor/catalog") {
     if (request.method !== "GET") return json({ error: "method_not_allowed" }, 405);
     const catalog = await pageCatalog(db, siteId);
