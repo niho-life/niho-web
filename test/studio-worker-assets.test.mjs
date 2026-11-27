@@ -141,6 +141,12 @@ test("Kamakura asset BFF re-checks membership, validates every body, signs upstr
   assert.equal((await expectJson(await post("upload-intent", intent), 201)).assetId, UUID);
   assert.equal(calls.at(-1).path, `${UPSTREAM}/upload-intent`);
   verifySignature(calls.at(-1), auth.subject);
+  const previewUploadOrigin = "https://studio-upload-preview.example.test";
+  env.STUDIO_PREVIEW_UPLOAD_ORIGIN = previewUploadOrigin;
+  respond = () => Response.json({ uploadUrl: `${previewUploadOrigin}/internal/studio/asset-upload/${UUID}`, uploadToken: "t", assetId: UUID }, { status: 201 });
+  assert.equal((await expectJson(await post("upload-intent", intent), 201)).uploadUrl, `${previewUploadOrigin}/internal/studio/asset-upload/${UUID}`);
+  respond = () => Response.json({ uploadUrl: `https://untrusted.example/internal/studio/asset-upload/${UUID}`, uploadToken: "t", assetId: UUID }, { status: 201 });
+  await expectJson(await post("upload-intent", intent), 502, "upstream_contract_invalid");
   respond = () => Response.json({ error: "visual_editor_frozen", message: "凍結中" }, { status: 409 });
   await expectJson(await post("upload-intent", intent), 409, "visual_editor_frozen");
   respond = () => Response.json({ error: "もう一度" }, { status: 409 });
@@ -194,11 +200,15 @@ test("Kamakura asset BFF re-checks membership, validates every body, signs upstr
 
   // 編集画面の CSP は CDN のサムネイルと直接アップロード先を許す
   roles.set("project-kamakura/kamakura", "owner");
+  env.STUDIO_PREVIEW_UPLOAD_ORIGIN = "https://studio-upload-preview.example.test";
   const page = await worker.fetch(new Request(`${STUDIO}/projects/kamakura-site/admin/editor`, { headers: { "Cf-Access-Jwt-Assertion": auth.jwt } }), env);
   assert.equal(page.status, 200);
   const csp = page.headers.get("Content-Security-Policy");
   assert.match(csp, /img-src 'self' https:;/u);
-  assert.match(csp, /connect-src 'self' https:\/\/next-kamakura\.niho\.life;/u);
+  assert.match(csp, /connect-src 'self' https:\/\/next-kamakura\.niho\.life https:\/\/studio-upload-preview\.example\.test;/u);
+  env.STUDIO_PREVIEW_UPLOAD_ORIGIN = "http://untrusted.example";
+  const unsafeConfigPage = await worker.fetch(new Request(`${STUDIO}/projects/kamakura-site/admin/editor`, { headers: { "Cf-Access-Jwt-Assertion": auth.jwt } }), env);
+  assert.doesNotMatch(unsafeConfigPage.headers.get("Content-Security-Policy"), /untrusted\.example/u);
 });
 
 test("Studio caches content-hashed JS/CSS and fonts for a year, while other static responses stay no-store", async (t) => {

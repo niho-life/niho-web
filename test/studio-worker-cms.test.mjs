@@ -183,6 +183,11 @@ test("CMS BFF: 本文を操作ごとの key の集合で確かめ、actor に確
   assert.equal(h.calls.at(-1).path, `${UPSTREAM}/uploads/intent`);
   assert.deepEqual(JSON.parse(h.calls.at(-1).body), { ...intent, actor: { email: EMAIL } });
   h.verifySignature(h.calls.at(-1));
+  const previewUploadOrigin = "https://studio-upload-preview.example.test";
+  h.env.STUDIO_PREVIEW_UPLOAD_ORIGIN = previewUploadOrigin;
+  const previewUploadUrl = `${previewUploadOrigin}/internal/studio/cms-upload/${UUID}`;
+  h.setRespond(() => Response.json({ uploadUrl: previewUploadUrl, uploadToken: "token.value", uploadId: UUID }, { status: 201 }));
+  assert.deepEqual(await expectJson(await h.send("POST", "/uploads/intent", intent), 201), { uploadUrl: previewUploadUrl, uploadToken: "token.value", uploadId: UUID });
   const beforeIntent = h.calls.length;
   for (const body of [
     { ...intent, mimeType: "image/svg+xml" },

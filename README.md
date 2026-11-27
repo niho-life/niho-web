@@ -39,6 +39,6 @@ Node.js 22 以上を使います。
 - **利用開始:** [AI編集手順](docs/ai-editing-guide.md)、[niho-edit の操作](docs/studio-cli.md)
 - **描画と編集:** [文書契約](docs/document-contract.md)、[編集 API](docs/editing-api-contract.md)、[エディターのホスト契約](docs/editor-contract.md)、[編集画面の説明](docs/editor-ui-contract.md)
 - **サイト機能:** [素材](docs/asset-contract.md)、[CMS](docs/cms-v2-contract.md)、[翻訳](docs/localization-contract.md)、[保存と版履歴](docs/save-history-contract.md)、[サイト共通スタイル](docs/site-styles-contract.md)
-- **Studio の運用:** [Studio runbook](studio/README.md)
+- **Studio の運用:** [Studio runbook](studio/README.md)、[Studio Preview の直接アップロード](docs/studio-preview.md)
 
 公開リポジトリですが、第三者による再利用ライセンスはありません。詳しくは package.json の license を参照してください。
