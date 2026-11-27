@@ -16,7 +16,7 @@ import {
 import { normalizePageChange, validatePageChangePlan } from "./editor-model.js";
 import { EDITING_EDITOR_SNAPSHOT_ACCEPT, parseEditingPageEditorState, parseEditingPagePresentation } from "./editing-page-snapshot.js";
 import type { BlockContracts, PageDocument } from "./types.js";
-import type { EditorAdapter, EditorPage, EditorPageChange, EditorPageChangePlan, EditorPageChangeResult, EditorReleasePlan, EditorReleaseRequest, EditorSite } from "./editor-types.js";
+import type { EditorAdapter, EditorPage, EditorPageChange, EditorPageChangePlan, EditorPageChangeResult, EditorPublishPageInput, EditorReleasePlan, EditorReleaseRequest, EditorSite } from "./editor-types.js";
 import type { EditorBreakpointSettings, EditorBreakpointSettingsSaveResult, EditorBreakpointSettingsSnapshot } from "./editor-types.js";
 import { EDITOR_RELEASE_WARNING_CODES, type EditorReleaseWarning } from "./editor-types.js";
 import { identifier, localeCode } from "./validation-utils.js";
@@ -85,6 +85,7 @@ export type EditingApiClient = {
     operationId: Id, input: EditingLocalizationInput<Id>, signal?: AbortSignal,
   ): Promise<EditingLocalizationResult<Id>>;
   readPageCatalog(signal?: AbortSignal): Promise<EditingPageCatalog>;
+  changePageNow(change: EditorPageChange, expectedVersion: string, signal?: AbortSignal): Promise<EditorPageChangeResult>;
   preparePageChange(change: EditorPageChange, expectedVersion: string, signal?: AbortSignal, operationId?: string): Promise<EditorPageChangePlan>;
   applyPageChange(plan: EditorPageChangePlan, signal?: AbortSignal): Promise<EditorPageChangeResult>;
   inspectPage(target: EditingPageTarget, query: PageInspectQuery, signal?: AbortSignal): Promise<EditingPageInspectionSnapshot>;
@@ -100,7 +101,7 @@ export type EditingApiClient = {
   save(target: EditingPageTarget, expectedVersion: string, document: unknown, signal?: AbortSignal): Promise<EditingPageSaveResult>;
   prepareRelease(target: EditingPageTarget, request: EditingPageReleaseInput, signal?: AbortSignal): Promise<EditorReleasePlan>;
   release(target: EditingPageTarget, plan: EditorReleasePlan, operationId: string, signal?: AbortSignal): Promise<EditingPagePublishResult>;
-  publishPageNow(target: EditingPageTarget, request: { readonly action: "publish" | "restore"; readonly revision?: number }, signal?: AbortSignal): Promise<EditingPagePublishNowResult>;
+  publishPageNow(target: EditingPageTarget, request: EditorPublishPageInput, signal?: AbortSignal): Promise<EditingPagePublishNowResult>;
   preparePageReleaseSet(items: readonly EditingPageReleaseSetItem[], signal?: AbortSignal, operationId?: string): Promise<EditingPageReleaseSetPlan>;
   publishPageReleaseSet(plan: EditingPageReleaseSetPlan, signal?: AbortSignal): Promise<EditingPageReleaseSetResult>;
   pageReleaseSetStatus(operationId: string, signal?: AbortSignal): Promise<EditingPageReleaseSetStatus>;
@@ -115,6 +116,8 @@ export type EditingApiClient = {
   createCmsItem(collectionId: string, operationId: string, signal?: AbortSignal): Promise<CollectionItem>;
   saveCmsItem(target: EditingCmsTarget, expectedVersion: string, operationId: string, values: unknown, signal?: AbortSignal): Promise<EditingCmsSaveResult>;
   prepareCmsPublish(target: EditingCmsTarget, expectedVersion: string, operationId: string, signal?: AbortSignal, redirect?: boolean): Promise<EditingCmsPublishPlan>;
+  publishCmsItemNow(target: EditingCmsTarget, expectedVersion: string, operationId: string, signal?: AbortSignal, redirect?: boolean):
+    Promise<{ status: "publishing"; operationId: string } | { status: "conflict" }>;
   publishCmsItem(plan: EditingCmsPublishPlan, signal?: AbortSignal): Promise<EditingCmsPublishResult>;
   cmsOperationStatus(operationId: string, signal?: AbortSignal): Promise<EditingCmsOperationStatus>;
   listAssets(query: Omit<AssetListQuery, "siteId">, signal?: AbortSignal): Promise<ReturnType<typeof parseAssetListResult>>;
@@ -584,6 +587,21 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       pageCatalogCache = etag ? { etag, value: structuredClone(value) } : null;
       return structuredClone(value);
     },
+    async changePageNow(changeValue, expectedVersion, signal) {
+      const change = normalizedManagementChange(changeValue, siteId);
+      if (!isEditingApiVersion(expectedVersion)) throw new TypeError("invalid page change version");
+      const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/pages.change`, "POST", { expectedVersion, change }, signal);
+      if (response.status === 409 && body.error === "version_conflict") return { status: "conflict" };
+      if (!response.ok) throw apiFailure(body, response.status);
+      if (!exactKeys(body, ["status", "page"]) || body.status !== "applied") throw new EditingApiClientError("invalid_response", response.status);
+      const page = parseEditingCatalogPage(body.page, siteId);
+      if (page.locale !== (change.action === "create" ? change.locale : change.target.locale)
+        || change.action !== "create" && page.pageId !== change.target.pageId
+        || change.action === "visibility" && page.visibility !== change.visibility
+        || change.action !== "visibility" && (page.title !== change.title || page.path !== change.path))
+        throw new EditingApiClientError("invalid_response", response.status);
+      return { status: "applied", page };
+    },
     async preparePageChange(changeValue, expectedVersion, signal, requestedOperationId = crypto.randomUUID()) {
       const change = normalizedManagementChange(changeValue, siteId);
       if (!isEditingApiVersion(expectedVersion) || !PAGE_CHANGE_OPERATION_ID.test(requestedOperationId)) throw new TypeError("invalid page change request");
@@ -805,10 +823,10 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       return { status: "released", operationId, version: body.version, document };
     },
     async publishPageNow(target, request, signal) {
-      if (target.siteId !== siteId || request.action === "publish" && request.revision !== undefined
+      if (target.siteId !== siteId || !isEditingApiVersion(request.expectedVersion) || request.action !== "publish" && request.action !== "restore" || request.action === "publish" && request.revision !== undefined
         || request.action === "restore" && (!Number.isSafeInteger(request.revision) || request.revision! < 1)) throw new TypeError("invalid direct publish request");
       const path = targetPath(target, siteId).replace("{operation}", "pages.publish");
-      const input = { action: request.action, ...(request.action === "restore" ? { revision: request.revision } : {}) };
+      const input = { expectedVersion: request.expectedVersion, action: request.action, ...(request.action === "restore" ? { revision: request.revision } : {}) };
       const { response, body } = await send(path, "POST", input, signal);
       if (response.status === 409 && body.error === "version_conflict") return { status: "conflict" };
       if (!response.ok) throw apiFailure(body, response.status);
@@ -1027,6 +1045,19 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
           ...(plan.redirect === undefined ? {} : { redirect: plan.redirect as boolean }) };
       }
       catch { throw new EditingApiClientError("invalid_response", response.status); }
+    },
+    async publishCmsItemNow(targetValue, expectedVersion, operationId, signal, redirect) {
+      const target = cmsTarget(targetValue, siteId);
+      if (!isEditingApiVersion(expectedVersion) || !OPERATION_ID.test(operationId) || redirect !== undefined && typeof redirect !== "boolean")
+        throw new TypeError("invalid CMS publish request");
+      const path = `/sites/${encodeURIComponent(siteId)}/operations/cms.publish-now/${encodeURIComponent(target.collectionId)}/${encodeURIComponent(target.itemId)}`;
+      const { response, body } = await send(path, "POST", { expectedVersion, operationId, ...(redirect === undefined ? {} : { redirect }) }, signal);
+      if (response.status === 409 && (body.error === "version_conflict" || body.status === "conflict")) return { status: "conflict" };
+      if (!response.ok) throw apiFailure(body, response.status);
+      if (!exactKeys(body, ["status", "operationId", "item"]) || body.status !== "publishing" || body.operationId !== operationId
+        || !plainRecord(body.item) || body.item.id !== target.itemId || body.item.version !== expectedVersion || body.item.status !== "publishing")
+        throw new EditingApiClientError("invalid_response", response.status);
+      return { status: "publishing", operationId };
     },
     async publishCmsItem(planValue, signal) {
       if (!plainRecord(planValue) || !exactKeys(planValue, planValue.redirect === undefined ? ["target", "expectedVersion", "operationId", "confirmationToken", "item"] : ["target", "expectedVersion", "operationId", "confirmationToken", "item", "redirect"])) throw new TypeError("invalid CMS publish plan");

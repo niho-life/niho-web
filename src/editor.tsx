@@ -1563,7 +1563,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     const controller = new AbortController(); action.current = controller; setBusy(adapter.publishPageNow ? "公開中" : "公開差分を取得中"); setNotice("");
     if (adapter.publishPageNow) {
       try {
-        const result = await adapter.publishPageNow({ target: current.target, action: actionType === "rollback" ? "restore" : "publish", ...(actionType === "rollback" ? { revision } : {}) }, controller.signal);
+        const result = await adapter.publishPageNow({ target: current.target, expectedVersion: current.version, action: actionType === "rollback" ? "restore" : "publish", ...(actionType === "rollback" ? { revision } : {}) }, controller.signal);
         if (controller.signal.aborted) return;
         if (result.status === "conflict") { setNotice("保存済みの状態が変わりました（409）。最新状態を読み込んでからやり直してください。手元の編集内容は保持しています。"); return; }
         replace(editorSessionFrom(result.snapshot, current.target, blocks, libraryRef.current?.history.present, siteSettingsRef.current.settings, !siteSettingsRef.current.settings));
@@ -1572,11 +1572,13 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         const warningSummary = result.warnings?.length
           ? `SEO警告（${result.warnings.length}件）: ${result.warnings.slice(0, 3).map(({ message }) => message).join(" / ")}${result.warnings.length > 3 ? " / ほか" : ""}`
           : "";
+        await reloadPages();
         setNotice([outcome, result.url ? `公開URL: ${result.url}` : "", warningSummary].filter(Boolean).join("　"));
       } catch { if (!controller.signal.aborted) setNotice("反映結果を確認できませんでした。再試行前に公開状態をホスト側で確認してください。編集内容は保持しています。"); }
       finally { if (!controller.signal.aborted) setBusy(""); action.current = null; }
       return;
     }
+    if (!adapter.prepareRelease) { setBusy(""); action.current = null; return; }
     // 確認 token を、表示している部品ライブラリの version にも結び付ける。
     const input: EditorReleaseRequest = { target: current.target, expectedVersion: current.version, action: actionType,
       ...(actionType === "rollback" ? { revision } : {}), ...(components && libraryRef.current ? { componentsVersion: libraryRef.current.version } : {}),
@@ -1590,7 +1592,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   }
   async function release() {
     const current = sessionRef.current;
-    if (!current || current.readOnly || current.hasSavedDraft === false || siteSettings.dirty || siteSettings.busy || !plan || !confirmed || action.current || busy || dirty || libraryDirty || hasInput || targetMode || !localizationReady) return;
+    if (!adapter.release || !current || current.readOnly || current.hasSavedDraft === false || siteSettings.dirty || siteSettings.busy || !plan || !confirmed || action.current || busy || dirty || libraryDirty || hasInput || targetMode || !localizationReady) return;
     const controller = new AbortController(); action.current = controller; setBusy("公開を反映中");
     try {
       const result = await adapter.release(plan, controller.signal);
@@ -2364,10 +2366,10 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const siteComponents = panelPages.filter((page) => page.kind === "shared"), regularPages = panelPages.filter((page) => page.kind !== "shared");
   const isSiteComponent = !masterId && page?.kind === "shared";
   const siteComponentBack = regularPages.find((page) => page.siteId === siteComponentReturn?.siteId && page.pageId === siteComponentReturn?.pageId) ?? regularPages[0];
-  const pageOperations = !!adapter.preparePageChange && !!adapter.applyPageChange, unsaved = dirty || hasInput;
+  const pageOperations = !!adapter.changePageNow || !!adapter.preparePageChange && !!adapter.applyPageChange, unsaved = dirty || hasInput;
   const pageOperationsDisabled = siteWorkBlocked || unsaved || blocked || !!navigation || !site || historyMode || targetMode || !!session?.readOnly;
   const startPageChange = (start: PageChangeStart) => { if (pageOperations && !pageOperationsDisabled && (!adapter.pageChangeActions || adapter.pageChangeActions.includes(start.action))) setPageChange(start); };
-  const releaseSetAvailable = !!adapter.prepareReleaseSet && !!adapter.releaseSet && !!adapter.releaseSetStatus;
+  const releaseSetAvailable = !!adapter.prepareRelease && !!adapter.prepareReleaseSet && !!adapter.releaseSet && !!adapter.releaseSetStatus;
   const releaseSetDisabled = siteWorkBlocked || unsaved || blocked || !!navigation || !site || historyMode || targetMode || !!masterId || libraryDirty || siteSettings.dirty || siteSettings.busy || !localizationReady || !!session?.readOnly;
   const startReleaseSet = (selected: readonly EditorPage[]) => {
     if (releaseSetAvailable && !releaseSetDisabled && selected.length >= 2) setReleaseSetPages(selected.map((page) => structuredClone(page)));
@@ -2601,7 +2603,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       {targetMode ? localePublication ? <button className="e-primary" title={session?.readOnly?.reason ?? "この言語の全ページと共通内容をまとめて確認します"} onClick={() => void prepareLocaleRelease("publish")}
         disabled={siteSettings.dirty || siteSettings.busy || !localeRelease || localeReleaseLoading || !session || !!session.readOnly || dirty || libraryDirty || !!masterId || blocked || hasInput || historyMode || !localizationReady}>言語全体の公開確認</button>
         : <button className="e-primary" title="このサイトでは訳文の公開を利用できません。管理者に確認してください。" disabled>公開</button>
-        : <button className="e-primary e-publish-button" aria-label="公開" title={session?.readOnly?.reason ?? publishHold ?? "公開前に対象と差分を確認"} onClick={() => void prepare("publish")} disabled={siteSettings.dirty || siteSettings.busy || !session || !!session.readOnly || session.hasSavedDraft === false || dirty || libraryDirty || !!masterId || blocked || hasInput || historyMode || !localizationReady}>公開</button>}
+        : <button className="e-primary e-publish-button" aria-label="公開" title={session?.readOnly?.reason ?? publishHold ?? (adapter.publishPageNow ? "保存した版を公開" : "公開前に対象と差分を確認")} onClick={() => void prepare("publish")} disabled={siteSettings.dirty || siteSettings.busy || !session || !!session.readOnly || session.hasSavedDraft === false || dirty || libraryDirty || !!masterId || blocked || hasInput || historyMode || !localizationReady}>公開</button>}
       {publishHold && !targetMode && <small className="e-hold">{publishHold}</small>}{targetMode && !localePublication && <small className="e-hold">このサイトでは訳文の公開を利用できません。管理者に確認してください。</small>}</div>
       <div className="e-inspector-scroll"><>
       <div className="e-inspector-context"><strong>{inspector === "element" ? multiSelection ? `${selectedNodeIds.length} 個を選択` : node ? label(node, blocks, names) : "要素を選択" : inspector === "site" ? site?.name ?? "サイト" : inspector === "localization" ? "翻訳" : masterComponent?.name ?? page?.title ?? (masterId || isSiteComponent ? "コンポーネント" : "ページ")}</strong>
@@ -2774,9 +2776,12 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     </Dialog>}
     {componentDialog && libraryPresent && <Dialog name={componentDialogTitle(componentDialog)} dismiss={() => setComponentDialog(null)}>
       <ComponentDialogBody dialog={componentDialog} library={libraryPresent} cancel={() => setComponentDialog(null)} submit={(values) => submitComponentDialog(componentDialog, values)} notice={componentDialogNotice} /></Dialog>}
-    {pageChange && site && adapter.preparePageChange && adapter.applyPageChange && <PageChangeDialog pathEditable={adapter.pagePathEditable ?? true} start={pageChange} site={site} pages={pages} locale={session?.target.locale ?? pages[0]?.locale ?? siteSettings.settings?.locale ?? "ja"}
-      prepare={(change, signal) => adapter.preparePageChange!(change, signal)} apply={(plan, signal) => adapter.applyPageChange!(plan, signal)}
-      applied={(page, change) => void pageApplied(page, change)} conflicted={() => void reloadPages()} close={() => setPageChange(null)}
+    {pageChange && site && pageOperations && <PageChangeDialog pathEditable={adapter.pagePathEditable ?? true} start={pageChange} site={site} pages={pages} locale={session?.target.locale ?? pages[0]?.locale ?? siteSettings.settings?.locale ?? "ja"}
+      {...(adapter.changePageNow ? {
+        direct: adapter.changePageNow,
+        ...(session && pageChange.action !== "create" && sameTarget(session.target, pageChange.page) ? { directVersion: session.version } : {})
+      } : { prepare: adapter.preparePageChange!, apply: adapter.applyPageChange! })}
+      applied={(page, change) => void pageApplied(page, change)} conflicted={reloadPages} close={() => setPageChange(null)}
       reload={() => { const current = sessionRef.current?.target; setPageChange(null); void reloadPages().then(() => current && load(current)); }} />}
     {releaseSetPages && site && releaseSetAvailable && <PageReleaseSetDialog pages={releaseSetPages} site={site} adapter={adapter}
       {...(libraryRef.current?.version ? { componentsVersion: libraryRef.current.version } : {})}

@@ -618,7 +618,7 @@ async function main() {
     process.stdout.write(`${JSON.stringify({ id: edited.id ?? base.id ?? null, version: base.version, changes })}\n`); return;
   }
   const baseOrigin = origin(values.origin);
-  if (values.studio && !["discover", "read", "outline", "find", "get", "apply", "save", "release-plan", "release", "publish", "history", "restore", "normalize", "lint", "site-seo-read", "site-seo-save", "site-redirects-read", "site-redirects-save"].includes(command)
+  if (values.studio && !["discover", "read", "outline", "find", "get", "apply", "save", "release-plan", "release", "publish", "history", "restore", "pages-catalog", "page-change", "normalize", "lint", "site-seo-read", "site-seo-save", "site-redirects-read", "site-redirects-save"].includes(command)
     && !command?.startsWith("cms-") && !command?.startsWith("localization-")) throw new CliError("invalid_arguments");
   if (!IDENTIFIER.test(values.site ?? "")) throw new CliError("invalid_site");
   const token = process.env.NIHO_EDIT_TOKEN;
@@ -919,6 +919,18 @@ async function main() {
     process.stdout.write(`${JSON.stringify(plan)}\n`); return;
   }
 
+  if (command === "cms-publish" && pageId !== undefined) {
+    assertCommandOptions(values, ["expected-version", "operation-id", "redirect"]);
+    if (!values.studio || !validCmsCollectionId(pageId) || extra.length !== 1 || !validCmsItemId(extra[0])
+      || !isEditingApiVersion(values["expected-version"]) || !OPERATION_ID.test(values["operation-id"] ?? "")
+      || values.redirect !== undefined && values.redirect !== "true" && values.redirect !== "false") throw new CliError("invalid_arguments");
+    const target = { siteId: values.site, collectionId: pageId, itemId: extra[0] };
+    const result = await apiCall(() => client.publishCmsItemNow(target, values["expected-version"], values["operation-id"], AbortSignal.timeout(30_000),
+      values.redirect === undefined ? undefined : values.redirect === "true"));
+    if (result.status === "conflict") { emit({ error: "version_conflict" }, 409, 1, "cms.publish-now"); return; }
+    emit(result, 200, 0, "cms.publish-now"); return;
+  }
+
   if (command === "cms-publish") {
     assertCommandOptions(values, ["json"]);
     if (pageId !== undefined || extra.length) throw new CliError("invalid_arguments");
@@ -991,6 +1003,15 @@ async function main() {
     process.stdout.write(`${JSON.stringify(await apiCall(() => client.readPageCatalog(AbortSignal.timeout(30_000))))}\n`); return;
   }
 
+  if (command === "page-change") {
+    assertCommandOptions(values, ["expected-version", "json"]);
+    if (pageId !== undefined || extra.length || !isEditingApiVersion(values["expected-version"])) throw new CliError("invalid_arguments");
+    const change = await inputPageManagementJson(values.json, MAX_PAGE_CHANGE_BYTES);
+    const result = await apiCall(() => client.changePageNow(change, values["expected-version"], AbortSignal.timeout(30_000)));
+    if (result.status === "conflict") { emit({ error: "version_conflict" }, 409, 1, "pages.change"); return; }
+    emit(result, 200, 0, "pages.change"); return;
+  }
+
   if (command === "page-change-prepare") {
     if (pageId !== undefined || extra.length || values.locale !== undefined || values.action !== undefined || values["components-version"] !== undefined
       || values["presentation-version"] !== undefined || values.revision !== undefined || values["operation-id"] !== undefined
@@ -1024,7 +1045,7 @@ async function main() {
     emit(result, 200, 0, "pages.history"); return;
   }
   if (command === "publish" || command === "restore") {
-    assertCommandOptions(values, ["locale", "revision"]);
+    assertCommandOptions(values, ["locale", "revision", "expected-version", "json"]);
     if (!IDENTIFIER.test(pageId ?? "") || !LOCALE.test(values.locale ?? "")) throw new CliError("invalid_arguments");
     let revision;
     if (command === "publish") {
@@ -1037,8 +1058,17 @@ async function main() {
       if (!Number.isSafeInteger(revision)) throw new CliError("invalid_arguments");
     }
     const target = { siteId: values.site, pageId, locale: values.locale };
+    let expectedVersion = values["expected-version"];
+    if (values.json !== undefined) {
+      if (expectedVersion !== undefined) throw new CliError("invalid_arguments");
+      const snapshot = await inputSnapshot(values.json);
+      if (snapshot.document.siteId !== target.siteId || snapshot.document.pageId !== target.pageId || snapshot.document.locale !== target.locale)
+        throw new CliError("snapshot_target_mismatch");
+      expectedVersion = snapshot.version;
+    }
+    if (!isEditingApiVersion(expectedVersion)) throw new CliError("invalid_arguments");
     const result = await apiCall(() => client.publishPageNow(target, {
-      action: command === "publish" ? "publish" : "restore", ...(revision === undefined ? {} : { revision })
+      expectedVersion, action: command === "publish" ? "publish" : "restore", ...(revision === undefined ? {} : { revision })
     }, AbortSignal.timeout(30_000)));
     if (result.status === "conflict") { emit({ error: "version_conflict" }, 409, 1, "pages.publish"); return; }
     emit(result, 200, 0, "pages.publish"); return;

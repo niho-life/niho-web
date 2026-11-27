@@ -377,29 +377,31 @@ export function createProjectEditorAdapter(adapter: EditorAdapter, projectInput:
         return structuredClone(result);
       }
     } satisfies Pick<EditorAdapter, "applyOperations"> : {}),
-    async prepareRelease(request, signal) {
-      const checked = releaseRequest(request, targetForProject(request.target, site));
-      const plan = await adapter.prepareRelease(checked, signal);
-      return checkedPlan(plan, checked, site);
-    },
-    async release(request, signal) {
-      const target = targetForProject(request.target, site);
-      const checked = checkedPlan(request, releaseRequest(request, target), site);
-      const result = await adapter.release(checked, signal);
-      if (result.status === "released") {
-        const snapshot = structuredClone(result.snapshot);
-        assertDocumentTarget(snapshot.document, target);
-        assertPresentationTarget(snapshot.presentation, target);
-        const { readOnly: rawReadOnly, ...rest } = snapshot, readOnly = parseEditorReadOnly(rawReadOnly);
-        return { status: "released", snapshot: { ...rest, ...(readOnly ? { readOnly } : {}) } };
+    ...(adapter.prepareRelease && adapter.release ? {
+      async prepareRelease(request, signal) {
+        const checked = releaseRequest(request, targetForProject(request.target, site));
+        const plan = await adapter.prepareRelease!(checked, signal);
+        return checkedPlan(plan, checked, site);
+      },
+      async release(request, signal) {
+        const target = targetForProject(request.target, site);
+        const checked = checkedPlan(request, releaseRequest(request, target), site);
+        const result = await adapter.release!(checked, signal);
+        if (result.status === "released") {
+          const snapshot = structuredClone(result.snapshot);
+          assertDocumentTarget(snapshot.document, target);
+          assertPresentationTarget(snapshot.presentation, target);
+          const { readOnly: rawReadOnly, ...rest } = snapshot, readOnly = parseEditorReadOnly(rawReadOnly);
+          return { status: "released", snapshot: { ...rest, ...(readOnly ? { readOnly } : {}) } };
+        }
+        return result;
       }
-      return result;
-    },
+    } : {}),
     ...(adapter.publishPageNow ? { async publishPageNow(request, signal) {
       const target = targetForProject(request.target, site);
-      if (request.action === "publish" ? request.revision !== undefined
-        : request.action !== "restore" || !Number.isSafeInteger(request.revision) || request.revision! < 1) throw new Error("公開操作と版の指定が一致しません。");
-      const result = await adapter.publishPageNow!({ target, action: request.action, ...(request.revision === undefined ? {} : { revision: request.revision }) }, signal);
+      if (!request.expectedVersion || (request.action === "publish" ? request.revision !== undefined
+        : request.action !== "restore" || !Number.isSafeInteger(request.revision) || request.revision! < 1)) throw new Error("公開操作と版の指定が一致しません。");
+      const result = await adapter.publishPageNow!({ target, expectedVersion: request.expectedVersion, action: request.action, ...(request.revision === undefined ? {} : { revision: request.revision }) }, signal);
       if (result.status !== "released") return result;
       const snapshot = structuredClone(result.snapshot);
       assertDocumentTarget(snapshot.document, target);
@@ -431,6 +433,16 @@ export function createProjectEditorAdapter(adapter: EditorAdapter, projectInput:
     ...(adapter.localization ? { localization: localizationForProject(adapter.localization, site) } : {}),
     ...(adapter.pagePathEditable === undefined ? {} : { pagePathEditable: adapter.pagePathEditable }),
     ...(adapter.pageChangeActions ? { pageChangeActions: [...adapter.pageChangeActions] } : {}),
+    ...(adapter.changePageNow ? {
+      async changePageNow(change, signal, expectedVersion) {
+        const checked = changeForProject(change, site);
+        const result = await adapter.changePageNow!(checked, signal, expectedVersion);
+        if (result.status === "conflict") return result;
+        if (result.page.siteId !== site.id || (checked.action !== "create" && checked.action !== "duplicate"
+          && (result.page.pageId !== checked.target.pageId || result.page.locale !== checked.target.locale))) throw new Error("ページ変更の結果が一致しません。");
+        return { status: "applied", page: pageEntry(result.page) };
+      }
+    } satisfies Pick<EditorAdapter, "changePageNow"> : {}),
     ...(adapter.preparePageChange ? {
       async preparePageChange(change, signal) {
         const checked = changeForProject(change, site);

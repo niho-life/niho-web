@@ -15,7 +15,8 @@ const requiredPublicMigrations = new Set([
   "0019_managed_public_domains.sql",
   "0020_managed_site_redirects.sql",
   "0021_managed_published_paths.sql",
-  "0022_managed_site_redirect_versions.sql"
+  "0022_managed_site_redirect_versions.sql",
+  "0024_managed_one_step_publish.sql"
 ]);
 
 class ReleaseError extends Error {}

@@ -254,7 +254,7 @@ test("direct publish preserves URL and SEO warnings while ignoring unknown keys"
     })
   });
 
-  const result = await client.publishPageNow(target, { action: "publish" });
+  const result = await client.publishPageNow(target, { expectedVersion: "v1", action: "publish" });
 
   assert.equal(result.status, "released");
   assert.equal(result.snapshot.version, "v2");

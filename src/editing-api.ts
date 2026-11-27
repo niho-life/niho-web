@@ -3,7 +3,7 @@ import { parsePageDocument } from "./document.js";
 import { parseCmsPageBindings, type CmsPageBindingsDocument } from "./cms-page-bindings.js";
 import type { CmsSchema } from "./cms-v2-schema.js";
 import { normalizePageChange, validatePageChangePlan, validateReleasePlan } from "./editor-model.js";
-import type { EditorBreakpointSettings, EditorBreakpointSettingsSaveResult, EditorBreakpointSettingsSnapshot, EditorPage, EditorPageChange, EditorPageChangePlan, EditorReleasePlan, EditorReleaseRequest, EditorSite } from "./editor-types.js";
+import type { EditorBreakpointSettings, EditorBreakpointSettingsSaveResult, EditorBreakpointSettingsSnapshot, EditorPage, EditorPageChange, EditorPageChangeResult, EditorPublishPageInput, EditorPageChangePlan, EditorReleasePlan, EditorReleaseRequest, EditorSite } from "./editor-types.js";
 import { EDITOR_RELEASE_WARNING_CODES, type EditorReleaseWarning } from "./editor-types.js";
 import { assetId, identifier, isSafeHttpsOrigin, localeCode, record } from "./validation-utils.js";
 import type { SiteStyles } from "./site-styles.js";
@@ -455,9 +455,9 @@ export const EDITING_OPERATIONS = Object.freeze([
   }),
   Object.freeze({
     id: "pages.publish", capability: "pages.publish", method: "POST", path: "/sites/{siteId}/operations/pages.publish/{pageId}?locale={locale}",
-    inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId", "pageId", "locale", "action"]), additionalProperties: false,
+    inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId", "pageId", "locale", "expectedVersion", "action"]), additionalProperties: false,
       properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), pageId: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }),
-        action: Object.freeze({ type: "string", enum: Object.freeze(["publish", "restore"]) }), revision: Object.freeze({ type: "integer", minimum: 1 }) }) }),
+        expectedVersion: versionSchema, action: Object.freeze({ type: "string", enum: Object.freeze(["publish", "restore"]) }), revision: Object.freeze({ type: "integer", minimum: 1 }) }) }),
     resultSchema: Object.freeze({ type: "object", required: Object.freeze(["status", "snapshot"]), additionalProperties: false,
       properties: Object.freeze({ status: Object.freeze({ const: "released" }), url: Object.freeze({ type: "string", format: "uri", maxLength: 2048 }),
         warnings: Object.freeze({ type: "array", maxItems: 100, items: Object.freeze({ type: "object", required: Object.freeze(["code", "message"]), additionalProperties: false,
@@ -493,6 +493,14 @@ export const EDITING_OPERATIONS = Object.freeze([
     resultSchema: Object.freeze({ type: "object", required: Object.freeze(["version", "pages"]), additionalProperties: false,
       properties: Object.freeze({ version: versionSchema, pages: Object.freeze({ type: "array", maxItems: 500, items: pageCatalogItemSchema }) }) }),
     errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found"] as const)
+  }),
+  Object.freeze({
+    id: "pages.change", capability: "pages.publish", method: "POST", path: "/sites/{siteId}/operations/pages.change",
+    inputSchema: Object.freeze({ type: "object", required: Object.freeze(["expectedVersion", "change"]), additionalProperties: false,
+      properties: Object.freeze({ expectedVersion: versionSchema, change: pageChangeSchema }) }),
+    resultSchema: Object.freeze({ type: "object", required: Object.freeze(["status", "page"]), additionalProperties: false,
+      properties: Object.freeze({ status: Object.freeze({ const: "applied" }), page: pageCatalogItemSchema }) }),
+    errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found", "version_conflict"] as const)
   }),
   Object.freeze({
     id: "pages.change-prepare", capability: "pages.publish", method: "POST", path: "/sites/{siteId}/operations/pages.change-prepare",
@@ -539,6 +547,12 @@ export const EDITING_OPERATIONS = Object.freeze([
     resultSchema: Object.freeze({ type: "object", required: Object.freeze(["status", "operationId", "item"]), additionalProperties: false,
       properties: Object.freeze({ status: Object.freeze({ type: "string", enum: Object.freeze(["published", "publishing"]) }), operationId: operationIdSchema, item: cmsItemSchema }) }),
     errors: Object.freeze(["authentication_required", "duplicate_operation", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found", "version_conflict"] as const) }),
+  Object.freeze({ id: "cms.publish-now", capability: "cms.publish", method: "POST", path: "/sites/{siteId}/operations/cms.publish-now/{collectionId}/{itemId}",
+    inputSchema: Object.freeze({ type: "object", required: Object.freeze(["expectedVersion", "operationId"]), additionalProperties: false,
+      properties: Object.freeze({ expectedVersion: versionSchema, operationId: operationIdSchema, redirect: Object.freeze({ type: "boolean" }) }) }),
+    resultSchema: Object.freeze({ type: "object", required: Object.freeze(["status", "operationId", "item"]), additionalProperties: false,
+      properties: Object.freeze({ status: Object.freeze({ const: "publishing" }), operationId: operationIdSchema, item: cmsItemSchema }) }),
+    errors: Object.freeze(["authentication_required", "duplicate_operation", "forbidden", "host_failure", "invalid_request", "method_not_allowed", "not_found", "validation_failed", "version_conflict"] as const) }),
   Object.freeze({ id: "cms.operation-status", capability: "cms.read", method: "GET", path: "/sites/{siteId}/operations/cms.operation-status/{operationId}",
     inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId", "operationId"]), additionalProperties: false, properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), operationId: operationIdSchema }) }),
     resultSchema: Object.freeze({ type: "object", required: Object.freeze(["status", "operationId"]), additionalProperties: false,
@@ -690,7 +704,7 @@ export type PageEditingHostAdapter = {
   /** Atomically publish after validating the one-use token; same actor + operationId + input must return the stored result. */
   publishPage?(actor: EditingActor, target: EditingPageTarget, input: { readonly expectedVersion: string; readonly confirmationToken: string; readonly operationId: string }): Promise<EditingPagePublishResult>;
   /** Publish the latest saved draft or restore a history revision in one validated request/response. */
-  publishPageNow?(actor: EditingActor, target: EditingPageTarget, input: { readonly action: "publish" | "restore"; readonly revision?: number }): Promise<EditingPagePublishNowResult>;
+  publishPageNow?(actor: EditingActor, target: EditingPageTarget, input: EditorPublishPageInput): Promise<EditingPagePublishNowResult>;
   /**
    * Optional multi-page publish set. Bind every target and version into the one-use token, report each target's
    * released/conflict/pending state, and make retries idempotent per actor + operationId + input so completed targets are not published twice.
@@ -704,6 +718,7 @@ export type PageEditingHostAdapter = {
   saveBreakpointSettings?(actor: EditingActor, siteId: string, expectedVersion: string, settings: EditorBreakpointSettings): Promise<EditorBreakpointSettingsSaveResult>;
   /** Optional native page catalog and two phase page management operations. */
   readPageCatalog?(actor: EditingActor, siteId: string): Promise<EditingPageCatalog | null>;
+  changePageNow?(actor: EditingActor, siteId: string, expectedVersion: string, change: EditingPageChange): Promise<EditorPageChangeResult | { status: "invalid" }>;
   preparePageChange?(actor: EditingActor, siteId: string, expectedVersion: string, operationId: string, change: EditingPageChange): Promise<EditingPageManagementPrepareResult>;
   applyPageChange?(actor: EditingActor, siteId: string, input: EditingPageManagementApplyInput): Promise<EditingPageManagementApplyResult>;
   /** Optional CMS operations use the same site authentication, authorization, audit and wire contract as pages. */
@@ -807,6 +822,7 @@ function supportsOperation(adapter: PageEditingHostAdapter, operation: EditingOp
   if (operation.id === "pages.release-set-plan" || operation.id === "pages.release-set") return typeof adapter.releaseSite === "function" && typeof adapter.preparePageReleaseSet === "function" && typeof adapter.publishPageReleaseSet === "function";
   if (operation.id === "pages.release-set-status") return typeof adapter.readPageReleaseSetStatus === "function";
   if (operation.id === "pages.catalog") return typeof adapter.readPageCatalog === "function";
+  if (operation.id === "pages.change") return typeof adapter.changePageNow === "function";
   if (operation.id === "pages.change-prepare") return typeof adapter.releaseSite === "function" && typeof adapter.preparePageChange === "function";
   if (operation.id === "pages.change-apply") return typeof adapter.releaseSite === "function" && typeof adapter.applyPageChange === "function";
   if (operation.id === "site.breakpoints.read") return typeof adapter.readBreakpointSettings === "function";
@@ -819,6 +835,8 @@ function supportsOperation(adapter: PageEditingHostAdapter, operation: EditingOp
   if (operation.id === "cms.read") return typeof adapter.readCmsItem === "function" && typeof adapter.readCmsSchema === "function";
   if (operation.id === "cms.create") return typeof adapter.createCmsItem === "function" && typeof adapter.readCmsSchema === "function";
   if (operation.id === "cms.save") return typeof adapter.saveCmsItem === "function" && typeof adapter.readCmsSchema === "function";
+  // Studio's managed CMS dispatcher serves this direct operation.
+  if (operation.id === "cms.publish-now") return false;
   if (operation.id === "cms.publish-plan") return typeof adapter.prepareCmsPublish === "function" && typeof adapter.readCmsSchema === "function";
   if (operation.id === "cms.publish") return typeof adapter.publishCmsItem === "function" && typeof adapter.readCmsSchema === "function";
   if (operation.id === "cms.operation-status") return typeof adapter.readCmsOperationStatus === "function";
@@ -1712,7 +1730,7 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       }
       return fail("not_found", 404);
     }
-    const pageManagementMatch = new RegExp(`^${basePath}/sites/([^/]+)/operations/(pages\\.(?:catalog|change-prepare|change-apply))$`, "u").exec(url.pathname);
+    const pageManagementMatch = new RegExp(`^${basePath}/sites/([^/]+)/operations/(pages\\.(?:catalog|change|change-prepare|change-apply))$`, "u").exec(url.pathname);
     if (pageManagementMatch) {
       let siteId: string;
       try { siteId = identifier(decodeURIComponent(pageManagementMatch[1]!), "$siteId"); }
@@ -1747,9 +1765,24 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
 
       let body: Record<string, unknown> | null;
       try { body = await readBody(request); } catch { return fail("invalid_request", 400); }
-      if (!body || !validVersion(body.expectedVersion) || !validOperationId(body.operationId)) return fail("invalid_request", 400);
+      if (!body || !validVersion(body.expectedVersion)) return fail("invalid_request", 400);
       const change = managementChange(body.change, siteId);
       if (!change) return fail("invalid_request", 400);
+      if (operation.id === "pages.change") {
+        if (!exactKeys(body, ["expectedVersion", "change"])) return fail("invalid_request", 400);
+        let result;
+        try { result = await adapter.changePageNow!(actor, siteId, body.expectedVersion, change); }
+        catch { return fail("host_failure", 503); }
+        if (result?.status === "conflict") return fail("version_conflict", 409);
+        if (result?.status === "invalid") return fail("invalid_request", 400);
+        const page = result?.status === "applied" ? catalogPage(result.page, siteId) : null;
+        if (!page || page.locale !== (change.action === "create" ? change.locale : change.target.locale)
+          || change.action !== "create" && page.pageId !== change.target.pageId
+          || change.action === "visibility" && page.visibility !== change.visibility
+          || change.action !== "visibility" && (page.title !== change.title || page.path !== change.path)) return fail("host_contract_violation", 502);
+        return response({ status: "applied", page });
+      }
+      if (!validOperationId(body.operationId)) return fail("invalid_request", 400);
       if (operation.id === "pages.change-prepare") {
         if (!exactKeys(body, ["expectedVersion", "operationId", "change"])) return fail("invalid_request", 400);
         let prepared: EditingPageManagementPrepareResult;
@@ -1905,11 +1938,11 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
     if (operation.id === "pages.publish") {
       let body: Record<string, unknown> | null;
       try { body = await readBody(request); } catch { return fail("invalid_request", 400); }
-      if (!body || body.action !== "publish" && body.action !== "restore"
-        || !exactKeys(body, body.action === "restore" ? ["action", "revision"] : ["action"])
+      if (!body || !validVersion(body.expectedVersion) || body.action !== "publish" && body.action !== "restore"
+        || !exactKeys(body, body.action === "restore" ? ["expectedVersion", "action", "revision"] : ["expectedVersion", "action"])
         || body.action === "restore" && (!Number.isSafeInteger(body.revision) || Number(body.revision) < 1)) return fail("invalid_request", 400);
       let result: EditingPagePublishNowResult;
-      try { result = await adapter.publishPageNow!(actor, target, { action: body.action, ...(body.action === "restore" ? { revision: Number(body.revision) } : {}) }); }
+      try { result = await adapter.publishPageNow!(actor, target, { expectedVersion: body.expectedVersion, action: body.action, ...(body.action === "restore" ? { revision: Number(body.revision) } : {}) }); }
       catch { return fail("host_failure", 503); }
       if (!result || typeof result !== "object" || !["released", "conflict"].includes(result.status)) return fail("host_contract_violation", 502);
       if (result.status === "conflict") return fail("version_conflict", 409);

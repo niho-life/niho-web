@@ -187,6 +187,7 @@ export type EditorPageImpact = {
   notes: readonly string[];
 };
 export type EditorPageChangePlan = { change: EditorPageChange; confirmationToken: string; domain: string; impact: EditorPageImpact; expectedVersion?: string; operationId?: string };
+export type EditorPublishPageInput = { expectedVersion: string; action: "publish" | "restore"; revision?: number };
 export type EditorPageChangeResult = { status: "applied"; page: EditorPage; operationId?: string } | { status: "conflict" };
 export type EditorSiteSettingsSnapshot = { settings: unknown; version: string; publishedVersion?: string; publishedStyles?: SiteStyles };
 export type EditorSiteSettingsSaveResult = { status: "saved"; version: string; styles?: SiteStyles } | { status: "conflict" }
@@ -230,10 +231,10 @@ export interface EditorAdapter {
   }, signal: AbortSignal): Promise<EditorSaveResult>;
   /** 原文ページに対する、操作 ID 付きの原子的な差分保存。 */
   applyOperations?(request: EditorApplyOperationsRequest, signal: AbortSignal): Promise<EditorApplyOperationsResult>;
-  prepareRelease(request: EditorReleaseRequest, signal: AbortSignal): Promise<EditorReleasePlan>;
-  release(request: EditorReleasePlan, signal: AbortSignal): Promise<EditorReleaseResult>;
+  prepareRelease?(request: EditorReleaseRequest, signal: AbortSignal): Promise<EditorReleasePlan>;
+  release?(request: EditorReleasePlan, signal: AbortSignal): Promise<EditorReleaseResult>;
   /** Studio 内サイト用。保存済みの現行下書きの公開、または履歴版の復元を1回の要求で行う。 */
-  publishPageNow?(request: { target: EditorTarget; action: "publish" | "restore"; revision?: number }, signal: AbortSignal): Promise<EditorReleaseResult>;
+  publishPageNow?(request: EditorPublishPageInput & { target: EditorTarget }, signal: AbortSignal): Promise<EditorReleaseResult>;
   /** Same-site, multi-page publish. Hosts without all three methods keep the single-page UI. */
   prepareReleaseSet?(items: readonly EditingPageReleaseSetItem[], signal: AbortSignal): Promise<EditingPageReleaseSetPlan>;
   releaseSet?(plan: EditingPageReleaseSetPlan, signal: AbortSignal): Promise<EditingPageReleaseSetApplyResult>;
@@ -252,6 +253,7 @@ export interface EditorAdapter {
   /** 省略時は全操作。部分接続するホストは対応する操作だけを宣言する。 */
   pageChangeActions?: readonly EditorPageChange["action"][];
   /** ページ操作の影響と確認 token。両方を実装した場合だけページ操作を表示する。 */
+  changePageNow?(change: EditorPageChange, signal: AbortSignal, expectedVersion?: string): Promise<EditorPageChangeResult>;
   preparePageChange?(change: EditorPageChange, signal: AbortSignal): Promise<EditorPageChangePlan>;
   applyPageChange?(plan: EditorPageChangePlan, signal: AbortSignal): Promise<EditorPageChangeResult>;
   /** サイト共通の設定。version は楽観ロック用の opaque な値。 */
