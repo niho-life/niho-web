@@ -207,13 +207,16 @@ export function createManagedEditorAdapter(initial: Catalog, project: Project): 
 
 type PublicationChange = { readonly kind: "page"; readonly title: string; readonly path: string; readonly reason: string }
   | { readonly kind: "shared"; readonly label: string; readonly appliesToAllPages: true };
+type PublicationHistoryEntry = { readonly releaseId: string; readonly createdAt: string; readonly actorName: string | null;
+  readonly changedPaths: readonly string[] | null; readonly changedPathCount: number | null; readonly current: boolean };
 
 function ManagedPublicationPanel({ siteId }: { readonly siteId: string }) {
   const [changes, setChanges] = useState<readonly PublicationChange[]>([]);
   const [version, setVersion] = useState("");
+  const [history, setHistory] = useState<{ readonly currentReleaseId: string | null; readonly releases: readonly PublicationHistoryEntry[] }>({ currentReleaseId: null, releases: [] });
   const [message, setMessage] = useState("");
   const [publicationResult, setPublicationResult] = useState<{ readonly urls: readonly string[]; readonly elapsedMs: number;
-    readonly warnings: readonly EditorReleaseWarning[] } | null>(null);
+    readonly warnings: readonly EditorReleaseWarning[]; readonly undoReleaseId: string | null } | null>(null);
   const [busy, setBusy] = useState(false);
   const endpoint = `/api/edit/v1/sites/${encodeURIComponent(siteId)}/operations`;
   const refresh = async (signal: AbortSignal): Promise<{ readonly version: string; readonly changes: readonly PublicationChange[] }> => {
@@ -231,9 +234,30 @@ function ManagedPublicationPanel({ siteId }: { readonly siteId: string }) {
     setVersion(value.version);
     return { version: value.version, changes: next };
   };
+  const refreshHistory = async (signal: AbortSignal) => {
+    const value = record(await api(`${endpoint}/site.publication-history`, "GET", undefined, signal));
+    if (value.currentReleaseId !== null && typeof value.currentReleaseId !== "string"
+      || !Array.isArray(value.releases) || value.releases.length > 50) throw new Error("公開履歴が正しくありません。");
+    const releases = value.releases.map((raw): PublicationHistoryEntry => {
+      const release = record(raw);
+      if (typeof release.releaseId !== "string" || typeof release.createdAt !== "string"
+        || !Number.isFinite(Date.parse(release.createdAt))
+        || release.actorName !== null && typeof release.actorName !== "string"
+        || release.changedPaths !== null && (!Array.isArray(release.changedPaths) || release.changedPaths.length > 100
+          || release.changedPaths.some((path) => typeof path !== "string" || path.length > 512))
+        || release.changedPathCount !== null && (!Number.isSafeInteger(release.changedPathCount) || Number(release.changedPathCount) < 0)
+        || typeof release.current !== "boolean") throw new Error("公開履歴が正しくありません。");
+      return { releaseId: release.releaseId, createdAt: release.createdAt, actorName: release.actorName,
+        changedPaths: release.changedPaths as string[] | null, changedPathCount: release.changedPathCount as number | null, current: release.current };
+    });
+    const next = { currentReleaseId: value.currentReleaseId as string | null, releases };
+    setHistory(next);
+    return next;
+  };
   useEffect(() => {
     const controller = new AbortController();
-    void refresh(controller.signal).catch(() => setMessage("未公開変更を読み込めませんでした。"));
+    void Promise.all([refresh(controller.signal), refreshHistory(controller.signal)])
+      .catch(() => setMessage("未公開変更または公開履歴を読み込めませんでした。"));
     return () => controller.abort();
   }, [siteId]);
   const publish = async () => {
@@ -241,6 +265,7 @@ function ManagedPublicationPanel({ siteId }: { readonly siteId: string }) {
     setBusy(true); setMessage(""); setPublicationResult(null);
     const controller = new AbortController();
     try {
+      const previousHistory = await refreshHistory(controller.signal);
       const pending = await refresh(controller.signal);
       if (!pending.changes.length) { setMessage("未公開の変更はありません。"); return; }
       const value = record(await api(`${endpoint}/site.publish`, "POST", { expectedVersion: pending.version, scope: "changed" }, controller.signal));
@@ -257,11 +282,12 @@ function ManagedPublicationPanel({ siteId }: { readonly siteId: string }) {
             && typeof entry.message === "string" && entry.message.length <= 1000;
         })) {
         const urls = value.urls as string[], warnings = value.warnings as EditorReleaseWarning[], elapsedMs = Number(value.elapsedMs);
-        setPublicationResult({ urls, elapsedMs, warnings });
+        setPublicationResult({ urls, elapsedMs, warnings, undoReleaseId: urls.length ? previousHistory.currentReleaseId : null });
         setMessage(`${urls.length} URLを公開しました（${elapsedMs} ms、SEO警告 ${warnings.length}件）。`);
       }
       else throw new Error("公開結果が正しくありません。");
       await refresh(controller.signal);
+      await refreshHistory(controller.signal);
     } catch (error) {
       setMessage(error instanceof ManagedApiError && error.status === 409
         ? "変更が同時に更新されました。一覧を確認してください。"
@@ -269,11 +295,33 @@ function ManagedPublicationPanel({ siteId }: { readonly siteId: string }) {
       await refresh(controller.signal).catch(() => undefined);
     } finally { setBusy(false); }
   };
+  const rollback = async (releaseId: string) => {
+    if (busy || !history.currentReleaseId || releaseId === history.currentReleaseId) return;
+    setBusy(true); setMessage("");
+    const controller = new AbortController();
+    try {
+      const current = await refreshHistory(controller.signal);
+      if (!current.currentReleaseId || current.currentReleaseId === releaseId) { setMessage("現在の公開版はすでに切り替わっています。"); return; }
+      const result = record(await api(`${endpoint}/site.publication-rollback`, "POST",
+        { expectedVersion: current.currentReleaseId, releaseId }, controller.signal));
+      if (result.status === "conflict") setMessage("公開版が同時に更新されました。履歴を確認してください。");
+      else if (result.status === "rolled_back" && result.releaseId === releaseId) setMessage("選んだ公開版に戻しました。");
+      else throw new Error("公開版を戻せませんでした。");
+      await refreshHistory(controller.signal);
+      await refresh(controller.signal);
+    } catch (error) {
+      setMessage(error instanceof ManagedApiError && error.status === 409
+        ? "公開版が同時に更新されました。履歴を確認してください。"
+        : "公開版を戻せませんでした。時間をおいて再読込してください。");
+      await refreshHistory(controller.signal).catch(() => undefined);
+    } finally { setBusy(false); }
+  };
   return <details className="studio-publication-panel" onToggle={(event) => {
       if (!event.currentTarget.open) return;
       const controller = new AbortController();
       setMessage("");
-      void refresh(controller.signal).catch(() => setMessage("未公開変更を読み込めませんでした。"));
+      void Promise.all([refresh(controller.signal), refreshHistory(controller.signal)])
+        .catch(() => setMessage("未公開変更または公開履歴を読み込めませんでした。"));
     }}>
     <summary>未公開の変更 {changes.length}件</summary>
     {changes.length ? <ul>{changes.map((change, index) => <li key={`${change.kind}:${index}`}>
@@ -286,7 +334,20 @@ function ManagedPublicationPanel({ siteId }: { readonly siteId: string }) {
     {publicationResult && <details><summary>公開した URL と SEO 警告</summary>
       <ul>{publicationResult.urls.map((url) => <li key={url}><a href={url} target="_blank" rel="noreferrer">{url}</a></li>)}</ul>
       {publicationResult.warnings.length > 0 && <ul>{publicationResult.warnings.map((warning, index) => <li key={`${warning.code}:${index}`}>{warning.message}</li>)}</ul>}
+      {publicationResult.undoReleaseId && <button className="studio-secondary" type="button" disabled={busy} onClick={() => void rollback(publicationResult.undoReleaseId!)}>元に戻す</button>}
     </details>}
+    <details>
+      <summary>公開履歴 {history.releases.length}件</summary>
+      {history.releases.length ? <ol>{history.releases.map((release) => <li key={release.releaseId}>
+        <p>{new Date(release.createdAt).toLocaleString("ja-JP")}・{release.actorName ?? "実行者未記録"}{release.current ? "・現在" : ""}</p>
+        <p>{release.changedPathCount === null ? "変更 URL 未記録" : `変更 URL ${release.changedPathCount}件`}</p>
+        {release.changedPaths?.length ? <ul>{release.changedPaths.map((path) => <li key={path}>{path}</li>)}</ul> : null}
+        {release.changedPathCount !== null && release.changedPaths && release.changedPathCount > release.changedPaths.length
+          ? <p>ほか {release.changedPathCount - release.changedPaths.length}件</p> : null}
+        {!release.current && <button className="studio-secondary" type="button" disabled={busy || !history.currentReleaseId}
+          onClick={() => void rollback(release.releaseId)}>{busy ? "処理中…" : "この版に戻す"}</button>}
+      </li>)}</ol> : <p>公開履歴はありません。</p>}
+    </details>
   </details>;
 }
 

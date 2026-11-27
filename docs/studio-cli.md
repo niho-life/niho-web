@@ -74,13 +74,15 @@ niho-edit --studio --origin https://studio.example --site site-id publish page-o
 niho-edit --studio --origin https://studio.example --site site-id publish --changed
 niho-edit --studio --origin https://studio.example --site site-id publish --site
 niho-edit --studio --origin https://studio.example --site site-id publish --all
+niho-edit --studio --origin https://studio.example --site site-id site-history
+niho-edit --studio --origin https://studio.example --site site-id rollback <release-id>
 niho-edit --studio --origin https://studio.example --site site-id history home --locale ja
 niho-edit --studio --origin https://studio.example --site site-id restore home 4 --locale ja --expected-version "$page_version"
 niho-edit --studio --origin https://studio.example --site site-id pages-catalog
 niho-edit --studio --origin https://studio.example --site site-id page-change --expected-version "$catalog_version" --json new-page.json
 ```
 
-結果は JSON です。ページ単位の `publish` と `restore` は `read` または `save` のスナップショットを `--json` に渡すか、その `version` を `--expected-version` に指定します。`changes` はページ本文・path/visibility・共通設定の未公開変更を返します。`publish --changed` はその全件を一括公開し、`publish --site` は共通設定だけを公開します。複数のページIDを指定すると、指定したページの下書きをまとめて公開します。公開中の版を作り直す `publish --all` はコード変更・移行時の CLI 専用操作です。`restore` の履歴版は `history` の `id` または revision から選びます。`page-change` で `action: "create"` を使う場合は `pages-catalog` の版を、`"update"` または `"visibility"` では対象ページを `read` した版を指定します。例の `new-page.json` は `{ "action": "create", "siteId": "site-id", "locale": "ja", "title": "About", "path": "/about" }` です。
+結果は JSON です。ページ単位の `publish` と `restore` は `read` または `save` のスナップショットを `--json` に渡すか、その `version` を `--expected-version` に指定します。`changes` はページ本文・path/visibility・共通設定の未公開変更を返します。`publish --changed` はその全件を一括公開し、`publish --site` は共通設定だけを公開します。複数のページIDを指定すると、指定したページの下書きをまとめて公開します。公開中の版を作り直す `publish --all` はコード変更・移行時の CLI 専用操作です。`site-history` は公開版の日時・実行者・変更URLを返し、`rollback <release-id>` は選んだ公開版へ一度で戻します。古い履歴では実行者や変更URLが未記録の場合があります。`restore` の履歴版は `history` の `id` または revision から選びます。`page-change` で `action: "create"` を使う場合は `pages-catalog` の版を、`"update"` または `"visibility"` では対象ページを `read` した版を指定します。例の `new-page.json` は `{ "action": "create", "siteId": "site-id", "locale": "ja", "title": "About", "path": "/about" }` です。
 
 版が競合すると HTTP 409 `version_conflict` で終了します。入力ファイルはそのまま使って最新状態と比較できます。機械認証は対象サイトに委任された `pages.publish` grant を使い、読取には対応する読取 grant を使います。
 

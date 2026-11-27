@@ -36,6 +36,10 @@ Kamakura の Studio GUI は editor snapshot profile から共通APIでページs
 | `site.styles.read` | GET | `/sites/{siteId}/operations/site.styles.read` | `site.settings.read` | site ID | `{ draft: { version, styles }, published: { version, styles } }` |
 | `site.styles.edit` | PUT | `/sites/{siteId}/operations/site.styles.edit` | `site.settings.write` | `{ expectedVersion, edits }` | `saved` または `{ status: "referenced", usages }` |
 | `site.styles.publish` | POST | `/sites/{siteId}/operations/site.styles.publish` | `site.settings.write` + site-wide `pages.publish` | `{ expectedDraftVersion, expectedPublishedVersion }` | `{ status: "published", version, styles }` |
+| `site.publication-changes` | GET | `/sites/{siteId}/operations/site.publication-changes` | `pages.read` | site ID | `{ version, changes }` |
+| `site.publish` | POST | `/sites/{siteId}/operations/site.publish` | `pages.publish` | `{ expectedVersion, scope }` または対象ページ一覧 | `{ status: "released", urls, elapsedMs, warnings }` |
+| `site.publication-history` | GET | `/sites/{siteId}/operations/site.publication-history` | `pages.history.read` | site ID | `{ currentReleaseId, releases: [{ releaseId, createdAt, actorName, changedPaths, changedPathCount, current }] }` |
+| `site.publication-rollback` | POST | `/sites/{siteId}/operations/site.publication-rollback` | `pages.publish` | `{ expectedVersion, releaseId }` | `{ status: "rolled_back", releaseId }` |
 | `cms.schema` | GET | `/sites/{siteId}/operations/cms.schema` | `cms.read` | site ID | `{ collections }` |
 | `cms.list` | GET | `/sites/{siteId}/operations/cms.list/{collectionId}` | `cms.read` | site / collection ID | `{ collectionId, items }` |
 | `cms.read` | GET | `/sites/{siteId}/operations/cms.read/{collectionId}/{itemId}` | `cms.read` | collection / item ID | `{ item }` |
@@ -95,6 +99,8 @@ release-setはページとcomponents/presentationの版だけを固定します�
 `site.breakpoints.*` は、hostの設定正本へ保存するsite単位の操作です。各操作は対応するadapter関数が登録されているhostだけがdiscoverに出します。settingsは `parseBreakpointSettings` の閉じた契約で検証し、saveはhostの永続層でexpectedVersionを原子的に比較します。stale versionは409 `version_conflict` です。
 
 `site.styles.read` はdraft/publishedの2状態を返します。`site.styles.edit` はdraft versionをCASし、set/delete/renameを一つのtransactionで適用します。renameは全参照を同時に書き換え、参照中のdeleteは書き込まず利用箇所を返します。`site.styles.publish` はdraft/publishedの両versionを照合し、サイトのpublished pointerを一度に切り替えます。ページごとのstyle版、publication epoch、migration fenceはありません。
+
+`site.publication-history` はサイトの公開版、日時、実行者、変更URLを返します。古い履歴では実行者や変更URLが記録されていないことがあります。`site.publication-rollback` は `expectedVersion` を比較して、選んだ不変manifestへのポインターを一度で切り替えます。追加応答項目はクライアントが使うフィールドを壊さない限り無視します。
 
 `pages.catalog` は管理可能なページと一覧のopaque versionを返します。Studio-native の `pages.change` は作成に一覧の版、名前・URL・公開状態の変更に `pages.read` が返した対象ページの版を使います。対象と版が一致すると一度の要求で操作を確定し、版競合なら HTTP 409 `version_conflict` を返します。
 
