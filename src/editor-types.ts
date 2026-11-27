@@ -96,6 +96,10 @@ export type EditorSnapshot = PageOperationVersions & {
   document: unknown;
   /** Optional site-style dependency version reported by feature-aware page reads. */
   draftStylesVersion?: string;
+  /** Published site-style version negotiated through site.styles. */
+  publishedSiteStylesVersion?: string;
+  /** Opaque publication epoch paired with the published site-style dependency. */
+  sitePublicationEpoch?: string;
   /** Omitted when the host has no CMS page binding capability. */
   cmsBindings?: CmsPageBindingsDocument | null;
   /** ホストが発行する opaque な楽観ロック値。 */
