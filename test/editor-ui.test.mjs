@@ -15,7 +15,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { PageEditor } = await import("@niho/web/editor");
-const { EditorSessionCache, readEditorSession } = await import("../dist/editor-session.js");
+const { EditorSessionCache, editorSiteSettingsIdentity, readEditorSession, sameEditorSiteSettingsIdentity } = await import("../dist/editor-session.js");
 const { createMemoryAssetLibrary } = await import("../examples/memory-asset-library.mjs");
 const { renderPageToHtml } = await import("@niho/web/server");
 const { parseResolvedAssets, uniqueAssetReferences } = await import("@niho/web/assets");
@@ -117,6 +117,9 @@ test("site publication context invalidates a cached editor session even when its
   const signal = new AbortController().signal;
   const first = await readEditorSession(adapter, target, signal, {}, undefined, { cache });
   assert.equal(first.siteSettings.publishedStylesVersion, "published-v1");
+  const advancedContext = { ...first.siteSettings, publishedStylesVersion: "published-v2", sitePublicationEpoch: "epoch-2" };
+  assert.equal(sameEditorSiteSettingsIdentity(first.siteSettings, advancedContext), false);
+  assert.notEqual(editorSiteSettingsIdentity(first.siteSettings), editorSiteSettingsIdentity(advancedContext));
   settings = { ...settings, publishedStylesVersion: "published-v2", sitePublicationEpoch: "epoch-2" };
   const refreshed = await readEditorSession(adapter, target, signal, {}, undefined, { cache });
   assert.equal(refreshed.siteSettings.publishedStylesVersion, "published-v2");
@@ -138,6 +141,32 @@ test("page rows prefetch on focus and the matching snapshot serves the page swit
     assert.equal(app.calls.reads.filter(({ pageId }) => pageId === "other").length, 0, "ページ切替は先読みしたsnapshotを使う");
     assert.equal(document.querySelector(".e-page[aria-current='page'] .e-page-name")?.textContent, "別ページ");
   } finally { await app.cleanup(); }
+});
+
+test("completed page prefetch cannot replace a newer published style context at the same draft version", async () => {
+  let resolveInitialSettings, settingsReads = 0;
+  const initialSettings = new Promise((resolve) => { resolveInitialSettings = resolve; });
+  const draft = { settings: { title: "デモサイト", description: "説明", locale: "ja" }, version: "draft-v1" };
+  const older = { ...draft, publishedStylesVersion: "published-v1", sitePublicationEpoch: "epoch-1" };
+  const newer = { ...draft, publishedStylesVersion: "published-v2", sitePublicationEpoch: "epoch-2" };
+  const app = await setup({ adapter: {
+    readSiteSettings: async () => ++settingsReads === 1 ? initialSettings : structuredClone(older),
+    prefetchDocument: async (target) => ({ document: { ...structuredClone(fixture), ...target }, version: `prefetched-${target.pageId}` })
+  } });
+  try {
+    await settle();
+    assert.ok(settingsReads >= 2, "the initial session loaded a site settings snapshot while the hook read was pending");
+    resolveInitialSettings(structuredClone(newer));
+    await settle();
+    await clickPage("別ページ");
+    await settle();
+    await click("公開");
+    assert.deepEqual(app.calls.prepares[0].siteStylesRevision, { stage: "published", version: "published-v2" });
+    assert.equal(app.calls.prepares[0].sitePublicationEpoch, "epoch-2");
+  } finally {
+    resolveInitialSettings(structuredClone(newer));
+    await app.cleanup();
+  }
 });
 
 test("the adjacent page is prefetched automatically and serves a switch", async () => {

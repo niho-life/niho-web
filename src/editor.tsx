@@ -46,7 +46,7 @@ import { parseEditorLocaleReleaseApplyResult, parseEditorLocaleReleasePlan, pars
 import { documentLocaleFor, validateLocalizedDocumentSave, type LocalizationLocale } from "./localization.js";
 import { PAGE_OPERATION_LIMIT, pageNodesHaveNames, pageOperationChangesNodeNames, pageOperationUsesNodeNames } from "./editing-page-operations.js";
 import { acceptAppliedOperations, canSendOperations, fallbackOperations, operationQueue as createOperationQueue, operationApplier, reviewOperationConflict, queuePageEdit, queuePageTravel } from "./editor-operation-queue.js";
-import { editorSessionFrom, EditorSessionCache, readEditorSession, type EditorSession, type EditorSessionLoad } from "./editor-session.js";
+import { editorSessionFrom, EditorSessionCache, readEditorSession, sameEditorSiteSettingsIdentity, type EditorSession, type EditorSessionLoad } from "./editor-session.js";
 import { canvasViewportHeight, elementTypeLabel, fitCanvasScale, layerLabel, pathForNodeId, projectLayers, visibleLayers } from "./layers.js";
 import { LayerTreePanel } from "./editor-layers.js";
 import { CanvasViewportToolbar, EditorWorkspace, InspectorTabs, PanelToggle, ViewportEdgeHandle, WorkspaceIcon, WorkspaceScaleSelect, viewportPresets, workspaceScales, type WorkspaceScale, type WorkspaceTab } from "./editor-workspace.js";
@@ -63,14 +63,6 @@ import { iconCatalog } from "./icons.js";
 import { parseEnglishPublication } from "./english-publication.js";
 import { BreakpointSettingsDialog, breakpointPreview, useBreakpointSettings } from "./editor-breakpoints.js";
 import { beginEditorPerformance, finishEditorPerformance, type EditorPerformanceMeasurement, type EditorPerformanceOutcome } from "./editor-performance.js";
-
-type SiteSettingsIdentity = { version?: string | undefined; publishedStylesVersion?: string | undefined; sitePublicationEpoch?: string | undefined };
-function siteSettingsIdentity(value: SiteSettingsIdentity | undefined): string | undefined {
-  return value === undefined ? undefined : JSON.stringify([value.version ?? null, value.publishedStylesVersion ?? null, value.sitePublicationEpoch ?? null]);
-}
-function sameSiteSettingsIdentity(left: SiteSettingsIdentity | undefined, right: SiteSettingsIdentity | undefined): boolean {
-  return siteSettingsIdentity(left) === siteSettingsIdentity(right);
-}
 
 const browserClipboardNodeType = `web ${EDITOR_NODE_CLIPBOARD_TYPE}`;
 
@@ -951,7 +943,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         controller.signal.addEventListener("abort", abortPrefetch, { once: true });
         try {
           const result = await prepared.promise;
-          if (!cachedSiteSettings || result.siteSettings?.version === cachedSiteSettings.version) loaded = result;
+          if (!cachedSiteSettings || sameEditorSiteSettingsIdentity(result.siteSettings, cachedSiteSettings)) loaded = result;
         }
         catch { if (controller.signal.aborted) return false; }
         finally {
@@ -971,7 +963,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
             revalidation = (async () => {
               try {
                 const prepared = await reusablePrefetch.promise;
-                if (cachedSiteSettings && !sameSiteSettingsIdentity(prepared.siteSettings, cachedSiteSettings)) {
+                if (cachedSiteSettings && !sameEditorSiteSettingsIdentity(prepared.siteSettings, cachedSiteSettings)) {
                   return await readEditorSession(adapter, editorTarget, controller.signal, blocks, currentComponents,
                     { cache: pageSessionCache.current, ...(cachedSiteSettings ? { siteSettings: cachedSiteSettings } : {}) });
                 }
@@ -990,7 +982,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
           controller.signal.addEventListener("abort", abortPrefetch, { once: true });
           try {
             const prepared = await reusablePrefetch.promise;
-            if (!cachedSiteSettings || sameSiteSettingsIdentity(prepared.siteSettings, cachedSiteSettings)) loaded = prepared;
+            if (!cachedSiteSettings || sameEditorSiteSettingsIdentity(prepared.siteSettings, cachedSiteSettings)) loaded = prepared;
           } catch { if (controller.signal.aborted) return false; }
           finally {
             controller.signal.removeEventListener("abort", abortPrefetch);
@@ -1001,7 +993,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       if (!loaded) loaded = await readEditorSession(adapter, editorTarget, controller.signal, blocks, currentComponents,
         { cache: pageSessionCache.current, ...(cachedSiteSettings ? { siteSettings: cachedSiteSettings } : {}) });
       if (controller.signal.aborted) return false;
-      if (loaded.siteSettings && !sameSiteSettingsIdentity(loaded.siteSettings, siteSettingsRef.current)) siteSettingsRef.current.acceptSnapshot(loaded.siteSettings);
+      if (loaded.siteSettings && !sameEditorSiteSettingsIdentity(loaded.siteSettings, siteSettingsRef.current)) siteSettingsRef.current.acceptSnapshot(loaded.siteSettings);
       if (finish) pendingMeasurement.current = { target: loaded.session.target, initial, signal: controller.signal, finish };
       pendingLoadPerformance.current = { measurement, target: editorTarget };
       replace(loaded.session);
@@ -1016,7 +1008,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
           const current = sessionRef.current;
           if (!current || current !== displayed || !sameTarget(current.target, editorTarget)) return;
           const localInteraction = interactionStateRef.current;
-          const settingsChanged = !!fresh.siteSettings && !sameSiteSettingsIdentity(fresh.siteSettings, siteSettingsRef.current);
+          const settingsChanged = !!fresh.siteSettings && !sameEditorSiteSettingsIdentity(fresh.siteSettings, siteSettingsRef.current);
           const sessionChanged = editorSessionFreshness(current) !== editorSessionFreshness(fresh.session);
           if (needsPageSave(current) || localInteraction.hasInput || localInteraction.hasDraft || localInteraction.editing) {
             if (settingsChanged || sessionChanged) setNotice("ページの保存内容が更新されています。手元の編集は保持しました。保存時に最新の版との競合を確認します。");

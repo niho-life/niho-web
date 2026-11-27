@@ -14,6 +14,15 @@ import { parseCmsPageBindings, type CmsPageBindingsDocument } from "./cms-page-b
 export type EditorSession = { target: EditorTarget; history: EditorHistory; version: string; saved: string; hasSavedDraft?: boolean | undefined; locks: readonly EditorLock[]; releases: NonNullable<EditorSnapshot["releases"]>; readOnly?: EditorReadOnly; siteStyles?: SiteStyles; presentation?: SitePresentation; operationQueue: EditorOperationQueue; dependencyVersions: PageOperationVersions; englishPublication?: EditorSnapshot["englishPublication"]; cmsBindings?: CmsPageBindingsDocument | null; savedCmsBindings?: string; selfContained: boolean };
 type EditorSiteSettings = { settings: ReturnType<typeof parseSiteSettings>; version: string; publishedStylesVersion?: string; sitePublicationEpoch?: string };
 export type EditorSessionLoad = { session: EditorSession; siteSettings?: EditorSiteSettings; warning?: string };
+export type EditorSiteSettingsIdentity = { version?: string | undefined; publishedStylesVersion?: string | undefined; sitePublicationEpoch?: string | undefined };
+
+export function editorSiteSettingsIdentity(value: EditorSiteSettingsIdentity | undefined): string | undefined {
+  return value === undefined ? undefined : JSON.stringify([value.version ?? null, value.publishedStylesVersion ?? null, value.sitePublicationEpoch ?? null]);
+}
+
+export function sameEditorSiteSettingsIdentity(left: EditorSiteSettingsIdentity | undefined, right: EditorSiteSettingsIdentity | undefined): boolean {
+  return editorSiteSettingsIdentity(left) === editorSiteSettingsIdentity(right);
+}
 
 export class EditorSessionLoadError extends Error {
   constructor(readonly reason: "document" | "site-settings-required", message: string, options?: ErrorOptions) { super(message, options); this.name = "EditorSessionLoadError"; }
@@ -142,10 +151,6 @@ export class EditorSessionCache {
 
 export type EditorSessionReadOptions = { readonly cache?: EditorSessionCache; readonly snapshot?: EditorSnapshot; readonly siteSettings?: EditorSiteSettings };
 
-function siteSettingsCacheVersion(snapshot: EditorSiteSettings | undefined): string | undefined {
-  return snapshot === undefined ? undefined : JSON.stringify([snapshot.version, snapshot.publishedStylesVersion ?? null, snapshot.sitePublicationEpoch ?? null]);
-}
-
 /** 文書と任意のサイト設定を独立取得し、設定が無くても単体検証できる文書だけ編集開始する。 */
 export async function readEditorSession(adapter: Pick<EditorAdapter, "readDocument" | "readSiteSettings">, target: EditorTarget, signal: AbortSignal, blocks: EditorBlockRegistry = {}, components?: ComponentLibrary, options: EditorSessionReadOptions = {}): Promise<EditorSessionLoad> {
   const settingsRead = options.siteSettings
@@ -185,11 +190,12 @@ export async function readEditorSession(adapter: Pick<EditorAdapter, "readDocume
     }
   }
   if (settingsResult.status === "fulfilled") {
-    const cached = options.cache?.get(target, pageSnapshot, siteSettingsCacheVersion(siteSettings), components);
+    const settingsIdentity = editorSiteSettingsIdentity(siteSettings);
+    const cached = options.cache?.get(target, pageSnapshot, settingsIdentity, components);
     if (cached) return cached;
     try {
       const loaded = { session: editorSessionFrom(pageSnapshot, target, blocks, components, siteSettings?.settings, !siteSettings), ...(siteSettings ? { siteSettings } : {}) };
-      options.cache?.set(target, pageSnapshot, siteSettingsCacheVersion(siteSettings), loaded, components);
+      options.cache?.set(target, pageSnapshot, settingsIdentity, loaded, components);
       return loaded;
     } catch (error) {
       throw new EditorSessionLoadError("document", "文書を読み込めませんでした。現在の編集内容は保持されています。", { cause: error });
