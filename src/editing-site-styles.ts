@@ -103,32 +103,54 @@ export function parseEditingSiteStylesPublishRequest(value: unknown): EditingSit
     expectedPublishedVersion: editingSiteStylesVersion(source.expectedPublishedVersion, "$input.expectedPublishedVersion") };
 }
 
-function usage(value: unknown, index: number): EditingSiteStylesUsage {
-  const path = `$result.usages[${index}]`, source = record(value, path); keys(source, ["kind", "id", "locale", "path"], path);
+function usage(value: unknown, index: number, strict: boolean): EditingSiteStylesUsage {
+  const path = `$result.usages[${index}]`, source = record(value, path);
+  if (strict) keys(source, ["kind", "id", "locale", "path"], path);
   if (!["page", "locale", "component", "presentation", "shared", "template", "siteStyle"].includes(String(source.kind))) throw new TypeError(`${path}.kind: invalid usage kind`);
   return { kind: source.kind as EditingSiteStylesUsage["kind"], id: identifier(source.id, `${path}.id`),
     ...(source.locale === undefined ? {} : { locale: localeCode(source.locale, `${path}.locale`) }),
     ...(source.path === undefined ? {} : { path: line(source.path, `${path}.path`, 500) }) };
 }
 
-export function parseEditingSiteStylesEditResult(value: unknown, expectedVersion: string): Exclude<EditingSiteStylesEditResult, { status: "conflict" }> {
+function parseSiteStylesEditResult(value: unknown, expectedVersion: string, strict: boolean): Exclude<EditingSiteStylesEditResult, { status: "conflict" }> {
   const source = record(value, "$result");
   if (source.status === "referenced") {
-    keys(source, ["status", "usages"], "$result");
+    if (strict) keys(source, ["status", "usages"], "$result");
     if (!Array.isArray(source.usages) || source.usages.length < 1 || source.usages.length > 10_000) throw new TypeError("$result.usages: invalid usage list");
-    return { status: "referenced", usages: source.usages.map(usage) };
+    return { status: "referenced", usages: source.usages.map((entry, index) => usage(entry, index, strict)) };
   }
-  keys(source, ["status", "version", "styles"], "$result");
+  if (strict) keys(source, ["status", "version", "styles"], "$result");
   const version = editingSiteStylesVersion(source.version, "$result.version");
   if (source.status !== "saved" || version === expectedVersion) throw new TypeError("$result: invalid saved result");
   return { status: "saved", version, styles: checkedStyles(source.styles, "$result.styles") };
 }
 
-export function parseEditingSiteStylesPublishResult(value: unknown, expectedVersion: string): Exclude<EditingSiteStylesPublishResult, { status: "conflict" }> {
-  const source = record(value, "$result"); keys(source, ["status", "version", "styles"], "$result");
+/** Strict host-result validation used by the server adapter boundary. */
+export function parseEditingSiteStylesEditResult(value: unknown, expectedVersion: string): Exclude<EditingSiteStylesEditResult, { status: "conflict" }> {
+  return parseSiteStylesEditResult(value, expectedVersion, true);
+}
+
+/** Tolerant client-result parsing that drops fields added by a newer server. */
+export function parseEditingSiteStylesEditResponse(value: unknown, expectedVersion: string): Exclude<EditingSiteStylesEditResult, { status: "conflict" }> {
+  return parseSiteStylesEditResult(value, expectedVersion, false);
+}
+
+function parseSiteStylesPublishResult(value: unknown, expectedVersion: string, strict: boolean): Exclude<EditingSiteStylesPublishResult, { status: "conflict" }> {
+  const source = record(value, "$result");
+  if (strict) keys(source, ["status", "version", "styles"], "$result");
   const version = editingSiteStylesVersion(source.version, "$result.version");
   if (source.status !== "published" || version === expectedVersion) throw new TypeError("$result: invalid published result");
   return { status: "published", version, styles: checkedStyles(source.styles, "$result.styles") };
+}
+
+/** Strict host-result validation used by the server adapter boundary. */
+export function parseEditingSiteStylesPublishResult(value: unknown, expectedVersion: string): Exclude<EditingSiteStylesPublishResult, { status: "conflict" }> {
+  return parseSiteStylesPublishResult(value, expectedVersion, true);
+}
+
+/** Tolerant client-result parsing that drops fields added by a newer server. */
+export function parseEditingSiteStylesPublishResponse(value: unknown, expectedVersion: string): Exclude<EditingSiteStylesPublishResult, { status: "conflict" }> {
+  return parseSiteStylesPublishResult(value, expectedVersion, false);
 }
 
 /** Rename one local definition and its references inside the draft style library. */
@@ -176,8 +198,13 @@ export function siteStylesEdits(before: SiteStyles, after: SiteStyles, renames: 
       }
     }
     for (const name of new Set([...Object.keys(previous), ...Object.keys(current)])) {
-      if (renamedSources.has(name) || renamedTargets.has(name)) continue;
+      if (renamedTargets.has(name)) continue;
       const value = current[name];
+      if (renamedSources.has(name)) {
+        if (value !== undefined) edits.push(styleKind === "token" ? { type: "set", styleKind, name, value: value as DesignToken }
+          : { type: "set", styleKind, name, value: value as TextStyle });
+        continue;
+      }
       if (value === undefined) edits.push({ type: "delete", styleKind, name });
       else if (JSON.stringify(value) !== JSON.stringify(previous[name])) {
         edits.push(styleKind === "token" ? { type: "set", styleKind, name, value: value as DesignToken }

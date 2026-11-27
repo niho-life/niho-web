@@ -1,8 +1,8 @@
 import { PAGE_OPERATION_VERSIONS, pageNodesHaveNames, pageOperationUsesNodeNames, pageOperationWire, type EditingPageApplyConflict, type EditingPageApplyInput, type EditingPageApplyResult } from "./editing-page-operations.js";
 import { EDITING_API_ERRORS, EDITING_OPERATIONS, PAGE_CMS_BINDINGS_CAPABILITY, PAGE_NODE_NAME_CAPABILITY, withPageCmsBindingsCapability, withPageNodeNameCapability, type EditingApiErrorCode, type EditingCmsOperationStatus, type EditingCmsPublishPlan, type EditingCmsTarget, type EditingDiscoveredOperation, type EditingPageCatalog, type EditingPageReleaseSetItem, type EditingPageReleaseSetItemResult, type EditingPageReleaseSetPlan, type EditingPageReleaseSetStatus, type EditingPageSnapshot, type EditingPageTarget } from "./editing-api.js";
 import {
-  SITE_STYLES_FEATURE, parseEditingSiteStylesEditRequest, parseEditingSiteStylesEditResult,
-  parseEditingSiteStylesPublishRequest, parseEditingSiteStylesPublishResult, parseEditingSiteStylesSnapshot, siteStylesEdits,
+  SITE_STYLES_FEATURE, parseEditingSiteStylesEditRequest, parseEditingSiteStylesEditResponse,
+  parseEditingSiteStylesPublishRequest, parseEditingSiteStylesPublishResponse, parseEditingSiteStylesSnapshot, siteStylesEdits,
   type EditingSiteStylesEditRequest, type EditingSiteStylesEditResult, type EditingSiteStylesPublishRequest, type EditingSiteStylesPublishResult,
 } from "./editing-site-styles.js";
 import { parseCmsPageBindings } from "./cms-page-bindings.js";
@@ -866,7 +866,7 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/site.styles.edit`, "PUT", input, signal);
       if (response.status === 409 && body.error === "version_conflict") return { status: "conflict" };
       if (!response.ok) throw apiFailure(body, response.status);
-      try { return parseEditingSiteStylesEditResult(body, input.expectedVersion); }
+      try { return parseEditingSiteStylesEditResponse(body, input.expectedVersion); }
       catch { throw new EditingApiClientError("invalid_response", response.status); }
     },
     async publishSiteStyles(inputValue, signal) {
@@ -876,7 +876,7 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/site.styles.publish`, "POST", input, signal);
       if (response.status === 409 && body.error === "version_conflict") return { status: "conflict" };
       if (!response.ok) throw apiFailure(body, response.status);
-      try { return parseEditingSiteStylesPublishResult(body, input.expectedPublishedVersion); }
+      try { return parseEditingSiteStylesPublishResponse(body, input.expectedPublishedVersion); }
       catch { throw new EditingApiClientError("invalid_response", response.status); }
     },
     async readCmsSchema(signal) {
