@@ -1,0 +1,13 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "niho-web-public-sites",
+  "main": "./managed-publication.ts",
+  "compatibility_date": "2026-10-21",
+  "workers_dev": true,
+  "d1_databases": [
+    { "binding": "DB", "database_name": "niho-web-studio", "migrations_dir": "migrations" }
+  ],
+  "r2_buckets": [
+    { "binding": "CMS_OBJECTS", "bucket_name": "niho-web-studio-cms" }
+  ]
+}

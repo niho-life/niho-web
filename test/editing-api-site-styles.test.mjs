@@ -37,7 +37,7 @@ function documentUses(document, styleKind, name) {
   return styleKind === "token" ? serialized.includes(`\"token\":\"${name}\"`) : serialized.includes(`\"textStyle\":\"${name}\"`);
 }
 
-function fixture({ publish = true } = {}) {
+function fixture({ publish = true, extraResponseFields = false, extraHostFields = false } = {}) {
   let draft = { version: "draft-1", styles: { tokens: { brand: oldBrand } } };
   let published = { version: "published-1", styles: { tokens: { brand: oldBrand } } };
   let draftNumber = 1, publishedNumber = 1;
@@ -77,12 +77,14 @@ function fixture({ publish = true } = {}) {
       const checked = parseSiteStyles(styles);
       draft = { version: `draft-${++draftNumber}`, styles: checked };
       pages = candidatePages;
-      return { status: "saved", version: draft.version, styles: structuredClone(draft.styles) };
+      const result = { status: "saved", version: draft.version, styles: structuredClone(draft.styles) };
+      return extraHostFields ? { ...result, futureField: "must be rejected by the server" } : result;
     },
     async publish(_actor, _siteId, input) {
       if (input.expectedDraftVersion !== draft.version || input.expectedPublishedVersion !== published.version) return { status: "conflict" };
       published = { version: `published-${++publishedNumber}`, styles: structuredClone(draft.styles) };
-      return { status: "published", version: published.version, styles: structuredClone(published.styles) };
+      const result = { status: "published", version: published.version, styles: structuredClone(published.styles) };
+      return extraHostFields ? { ...result, futureField: "must be rejected by the server" } : result;
     }
   };
   const api = createPageEditingApi({
@@ -99,8 +101,13 @@ function fixture({ publish = true } = {}) {
     }
   });
   const requests = [];
-  const client = createPageEditingApiClient({ origin: "https://host.example", siteId, fetch: (input, init) => {
-    const request = new Request(input, init); requests.push(request.url); return api(request);
+  const client = createPageEditingApiClient({ origin: "https://host.example", siteId, fetch: async (input, init) => {
+    const request = new Request(input, init); requests.push(request.url);
+    const response = await api(request), path = new URL(request.url).pathname;
+    if (!extraResponseFields || !response.ok || !/\/operations\/site\.styles\.(?:edit|publish)$/u.test(path)) return response;
+    const body = await response.json();
+    return Response.json({ ...body, futureField: "ignored",
+      ...(Array.isArray(body.usages) ? { usages: body.usages.map((entry) => ({ ...entry, futureUsageField: "ignored" })) } : {}) }, { status: response.status });
   } });
   return {
     api, client, editCalls, requests,
@@ -137,6 +144,36 @@ test("referenced deletion is refused with usages and does not write", async () =
     { id: "home", locale: "ja-JP", path: "body" }, { id: "about", locale: "en-US", path: "body" }
   ]);
   assert.deepEqual(state.snapshot(), before);
+});
+
+test("client ignores newer site-style response fields while validating known values", async () => {
+  const state = fixture({ extraResponseFields: true });
+  const referenced = await state.client.editSiteStyles({ expectedVersion: "draft-1", edits: [{ type: "delete", styleKind: "token", name: "brand" }] });
+  assert.equal(referenced.status, "referenced");
+  assert.equal(referenced.usages[0].futureUsageField, undefined);
+
+  const saved = await state.client.editSiteStyles({ expectedVersion: "draft-1", edits: [{ type: "set", styleKind: "token", name: "brand", value: newBrand }] });
+  assert.equal(saved.status, "saved");
+  assert.equal(saved.futureField, undefined);
+  const published = await state.client.publishSiteStyles({ expectedDraftVersion: "draft-2", expectedPublishedVersion: "published-1" });
+  assert.equal(published.status, "published");
+  assert.equal(published.futureField, undefined);
+});
+
+test("server still rejects unknown host fields in style edit and publish results", async () => {
+  const state = fixture({ extraHostFields: true });
+  const edit = await state.api(new Request(`https://host.example/api/edit/v1/sites/${siteId}/operations/site.styles.edit`, {
+    method: "PUT", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ expectedVersion: "draft-1", edits: [{ type: "set", styleKind: "token", name: "brand", value: newBrand }] })
+  }));
+  assert.equal(edit.status, 502);
+  assert.equal((await edit.json()).error, "host_contract_violation");
+  const publish = await state.api(new Request(`https://host.example/api/edit/v1/sites/${siteId}/operations/site.styles.publish`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ expectedDraftVersion: "draft-2", expectedPublishedVersion: "published-1" })
+  }));
+  assert.equal(publish.status, 502);
+  assert.equal((await publish.json()).error, "host_contract_violation");
 });
 
 test("rename updates its definition and all references in one edit operation", async () => {
@@ -214,6 +251,25 @@ test("GUI style rename is sent as one explicit edit and publish uses the shared 
   const published = await facade.publishSiteStyles({ siteId, expectedDraftVersion: "draft-2", expectedPublishedVersion: "published-1" });
   assert.equal(published.status, "published");
   assert.deepEqual(publishes, [{ expectedDraftVersion: "draft-2", expectedPublishedVersion: "published-1" }]);
+});
+
+test("GUI can reuse a renamed source name for a new definition before saving", async () => {
+  const oldToken = { type: "color", value: "#123456" }, replacement = { type: "color", value: "#abcdef" };
+  let editRequest;
+  const facade = createEditingApiSiteSettingsFacade({
+    async readSiteStyles() { return { draft: { version: "draft-1", styles: { tokens: { "color-1": oldToken } } },
+      published: { version: "published-1", styles: { tokens: { "color-1": oldToken } } } }; },
+    async editSiteStyles(input) { editRequest = structuredClone(input); return { status: "saved", version: "draft-2", styles: { tokens: { brand: oldToken, "color-1": replacement } } }; }
+  }, siteId, { title: "Demo", locale: "ja" });
+  const current = await facade.readSiteSettings(siteId);
+  const result = await facade.saveSiteSettings({ siteId, expectedVersion: current.version, previousStyles: { tokens: { "color-1": oldToken } },
+    styleRenames: [{ type: "rename", styleKind: "token", from: "color-1", to: "brand" }],
+    settings: { title: "Demo", locale: "ja", tokens: { brand: oldToken, "color-1": replacement } } });
+  assert.equal(result.status, "saved");
+  assert.deepEqual(editRequest.edits, [
+    { type: "rename", styleKind: "token", from: "color-1", to: "brand" },
+    { type: "set", styleKind: "token", name: "color-1", value: replacement }
+  ]);
 });
 
 test("publish permission controls only site.styles.publish", async () => {

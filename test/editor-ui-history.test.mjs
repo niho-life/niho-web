@@ -400,7 +400,10 @@ test("Studio page publish and history restore each use one direct adapter call",
       calls.push(structuredClone(request));
       return { status: "released", snapshot: { document: { ...structuredClone(fixture), revision: request.action === "restore" ? 3 : 2 }, version: `direct-${calls.length}`, releases: [{ revision: 2, label: "公開版 2" }] } };
     },
-    async listRevisions() { return { entries: [{ id: "rev-2", revision: 2, kind: "publish", createdAt: "2026-11-20T00:00:00.000Z" }] }; },
+    async listRevisions() { return { entries: [
+      { id: "rev-3", revision: 3, kind: "draft", createdAt: "2026-11-21T00:00:00.000Z" },
+      { id: "rev-2", revision: 2, kind: "publish", createdAt: "2026-11-20T00:00:00.000Z" }
+    ] }; },
     async readRevision() { return { document: old }; }
   } });
   try {
@@ -409,6 +412,8 @@ test("Studio page publish and history restore each use one direct adapter call",
     assert.deepEqual(calls, [{ target: homeTarget, action: "publish" }]);
     assert.ok(document.querySelector(".e-notice").textContent.includes("公開しました。"));
     await press(historyButton()); await press(versionRows()[1]);
+    assert.equal(button("この版を公開先へ復元"), undefined, "saved drafts are not publishable revisions");
+    await press(versionRows()[2]);
     await click("この版を公開先へ復元");
     assert.deepEqual(calls[1], { target: homeTarget, action: "restore", revision: 2 });
     assert.ok(document.querySelector(".e-notice").textContent.includes("選んだ版を公開先へ復元しました。"));

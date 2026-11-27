@@ -2501,7 +2501,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   };
   const status = saveStatus({ busy, hasInput, problem, dirty: pendingChanges, online, autosave: autosaveActive, savedAt, loaded: !!session });
   const recoveryStale = !!recoveryState.offer && !!session && recoveryState.offer.baseVersion !== session.version;
-  const viewed = versions.viewing?.entry, viewedRelease = viewed && (adapter.publishPageNow || viewed.kind === "publish" || viewed.kind === "rollback")
+  const viewed = versions.viewing?.entry, viewedRelease = viewed && (viewed.kind === "publish" || viewed.kind === "rollback")
     && (adapter.publishPageNow || session?.releases.some((release) => release.revision === viewed.revision)) ? viewed.revision : undefined;
   const activeHistory = masterId ? library?.history : session?.history;
   const publishHold = siteSettings.dirty || siteSettings.busy ? "サイト設定を保存してから公開を確認してください。" : libraryDirty ? "コンポーネントの変更を保存してから公開を確認してください。" : masterId ? "ページに戻ってから公開を確認してください。" : session?.hasSavedDraft === false ? "文字や画像を編集し、下書きを保存してから公開・復元を確認してください。" : undefined;
