@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
-import { pendingPublicMigrations, readPublicSitesReleaseSettings, smokePublicSitesPreview, writePublicSitesConfig } from "../studio/public-sites-release.mjs";
+import { readPublicSitesReleaseSettings, smokePublicSitesPreview, writePublicSitesConfig } from "../studio/public-sites-release.mjs";
 
 const env = {
   CLOUDFLARE_ACCOUNT_ID: "a".repeat(32),
@@ -26,12 +26,6 @@ test("public release settings require distinct HTTPS origins and a preview-only 
   assert.equal(readPublicSitesReleaseSettings(env).hostname, "preview-fixture-worker.account.workers.dev");
 });
 
-test("public release waits for its migrations but permits pending Studio-only migrations", () => {
-  assert.deepEqual(pendingPublicMigrations(["0022_managed_site_redirect_versions.sql", "0024_managed_one_step_publish.sql", "0025_managed_site_imports.sql", "0026_managed_site_styles.sql"]), []);
-  assert.deepEqual(pendingPublicMigrations(["0021_managed_page_sources.sql", "0022_managed_site_redirect_versions.sql"]), ["0021_managed_page_sources.sql"]);
-  assert.deepEqual(pendingPublicMigrations(["0023_managed_site_primary_host.sql"]), ["0023_managed_site_primary_host.sql"]);
-});
-
 test("public release writes a private Wrangler config on the dedicated preview workers.dev hostname", () => {
   const directory = mkdtempSync(join(tmpdir(), "niho-public-sites-release-test-"));
   try {
@@ -45,11 +39,11 @@ test("public release writes a private Wrangler config on the dedicated preview w
     assert.deepEqual(config.vars, { PUBLIC_SITES_PREVIEW_ORIGIN: env.PUBLIC_SITES_PREVIEW_ORIGIN });
     assert.equal(config.main, resolve(new URL("../studio/", import.meta.url).pathname, "managed-publication.ts"));
     assert.ok(existsSync(join(directory, "migrations", "0016_static_page_publication.sql")));
-    assert.ok(existsSync(join(directory, "migrations", "0017_managed_public_embeds.sql")));
-    assert.ok(existsSync(join(directory, "migrations", "0018_managed_public_domains.sql")));
-    assert.ok(existsSync(join(directory, "migrations", "0019_managed_site_redirects.sql")));
-    assert.ok(existsSync(join(directory, "migrations", "0020_managed_published_paths.sql")));
-    assert.ok(existsSync(join(directory, "migrations", "0021_managed_page_sources.sql")));
+    assert.ok(existsSync(join(directory, "migrations", "0017_managed_page_sources.sql")));
+    assert.ok(existsSync(join(directory, "migrations", "0018_managed_public_embeds.sql")));
+    assert.ok(existsSync(join(directory, "migrations", "0019_managed_public_domains.sql")));
+    assert.ok(existsSync(join(directory, "migrations", "0020_managed_site_redirects.sql")));
+    assert.ok(existsSync(join(directory, "migrations", "0021_managed_published_paths.sql")));
     assert.ok(existsSync(join(directory, "migrations", "0022_managed_site_redirect_versions.sql")));
     assert.ok(existsSync(join(directory, "migrations", "0023_managed_site_primary_host.sql")));
     assert.ok(existsSync(join(directory, "migrations", "0024_managed_one_step_publish.sql")));
