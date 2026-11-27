@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { StudioPageEditor } from "./editor-performance.js";
 import { createExternalFramePolicy } from "../src/react.js";
 import { createProjectEditorAdapter } from "../src/project-editor-adapter.js";
-import type { EditorAdapter, EditorPage, EditorPageChange, EditorPageChangePlan, EditorBreakpoint, EditorBreakpointSettingsSnapshot, EditorLocalizedPage, EditorLocalizationCommandResult, EditorLocalizationPageSnapshot, EditorLocalizationSiteSnapshot, EditorReleasePlan, EditorReleaseRequest, EditorSaveResult, EditorSnapshot, EditorTarget } from "../src/editor-types.js";
+import type { EditorAdapter, EditorDocumentRead, EditorPage, EditorPageChange, EditorPageChangePlan, EditorBreakpoint, EditorBreakpointSettingsSnapshot, EditorLocalizedPage, EditorLocalizationCommandResult, EditorLocalizationPageSnapshot, EditorLocalizationSiteSnapshot, EditorReleasePlan, EditorReleaseRequest, EditorSaveResult, EditorSnapshot, EditorTarget } from "../src/editor-types.js";
 import type { Project } from "../src/projects.js";
 import { studioBuilderDefinition } from "./integration-builder.js";
 import { projectRoutePath } from "./project-routes.mjs";
@@ -15,7 +15,7 @@ import type { KamakuraCatalog } from "./kamakura-catalog.js";
 import { parseEnglishPublicationAccepted } from "../src/english-publication.js";
 import { normalizePageChange, validatePageChangePlan } from "../src/editor-model.js";
 import { createEditingApiSiteSettingsFacade, createPageEditingApiClient, EditingApiClientError, supportsPageNodeNames } from "../src/editing-client.js";
-import type { EditingPageReleaseSetItem } from "../src/editing-api.js";
+import type { EditingPageReleaseSetItem, EditingPageSnapshot } from "../src/editing-api.js";
 
 const BASE = "/api/projects/project-kamakura/sites/kamakura/editor";
 const LOCALIZATION_BASE = "/api/projects/project-kamakura/sites/kamakura/localization";
@@ -281,17 +281,17 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
   let currentCatalog = catalog, initialPages = true;
   let localizationRead = initialReads?.localization, breakpointRead = initialReads?.breakpoints;
   const releaseOperationIds = new Map<string, string>();
-  async function request<T>(signal: AbortSignal, run: () => Promise<T>, reportStatus = true): Promise<T> {
+  async function request<T>(signal: AbortSignal, run: () => Promise<T>): Promise<T> {
     try {
       signal.throwIfAborted();
       const result = await run();
       if (signal.aborted) throw new DOMException("Aborted", "AbortError");
-      if (reportStatus) onStatus(null);
+      onStatus(null);
       return result;
     } catch (error) {
       const normalized = error instanceof EditingApiClientError ? new EditorApiError(error.status ?? 503, error.code) : error;
-      if (reportStatus && !signal.aborted && normalized instanceof EditorApiError && (normalized.status !== 409 || normalized.code === VISUAL_EDITOR_FROZEN)) onStatus(statusFromError(normalized));
-      else if (reportStatus && !signal.aborted && !(normalized instanceof EditorApiError) && !(normalized instanceof EditorContentUnavailableError)) onStatus(statusFromError(normalized));
+      if (!signal.aborted && normalized instanceof EditorApiError && (normalized.status !== 409 || normalized.code === VISUAL_EDITOR_FROZEN)) onStatus(statusFromError(normalized));
+      else if (!signal.aborted && !(normalized instanceof EditorApiError) && !(normalized instanceof EditorContentUnavailableError)) onStatus(statusFromError(normalized));
       throw normalized;
     }
   }
@@ -307,24 +307,25 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
     } else validTarget(change.target);
     return change;
   }
-  async function readJapaneseDocument(target: EditorTarget, signal: AbortSignal): Promise<EditorSnapshot> {
-    const checked = validTarget(target);
-    const required = currentCatalog.nativePresentationPages.includes(checked.pageId);
-    const wire = await editingApi.read(checked, signal);
+  function editorSnapshotFromWire(target: EditorTarget, wire: EditingPageSnapshot): EditorSnapshot {
+    if (target.locale === "en") {
+      if (!wire.presentation) throw new Error("このページに必要な英語表示コンテキストがありません。");
+      return { document: wire.document, version: wire.version, presentation: wire.presentation };
+    }
     if (!wire.editorState) throw new EditorApiError(503, "editor_state_unavailable");
-    if (required && wire.presentation === undefined) throw new Error("このサイトに必要な表示コンテキストがありません。");
+    if (currentCatalog.nativePresentationPages.includes(target.pageId) && wire.presentation === undefined) throw new Error("このサイトに必要な表示コンテキストがありません。");
     return { ...wire.editorState, document: wire.document, version: wire.version,
       ...(wire.presentation === undefined ? {} : { presentation: wire.presentation }) };
   }
-  async function readEnglishDocument(target: EditorTarget, signal: AbortSignal): Promise<EditorSnapshot> {
-    const wire = await editingApi.read(validEnglishTarget(target), signal);
-    if (!wire.presentation) throw new Error("このページに必要な英語表示コンテキストがありません。");
-    return { document: wire.document, version: wire.version, presentation: wire.presentation };
-  }
   async function readPageDocument(target: EditorTarget, signal: AbortSignal): Promise<EditorSnapshot> {
-    return target.locale === "en"
-      ? readEnglishDocument(target, signal)
-      : readJapaneseDocument(target, signal);
+    const checked = target.locale === "en" ? validEnglishTarget(target) : validTarget(target);
+    return editorSnapshotFromWire(checked, await editingApi.read(checked, signal));
+  }
+  async function readPageDocumentIfChanged(target: EditorTarget, etag: string | undefined, signal: AbortSignal): Promise<EditorDocumentRead> {
+    const checked = target.locale === "en" ? validEnglishTarget(target) : validTarget(target);
+    const result = await editingApi.readIfChanged(checked, etag, signal);
+    return result.status === "not-modified" ? result
+      : { status: "modified", snapshot: editorSnapshotFromWire(checked, result.snapshot), ...(result.etag ? { etag: result.etag } : {}) };
   }
   return {
     ...siteSettings,
@@ -388,7 +389,7 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
       return supportsPageNodeNames(await editingApi.discover(signal), "pages.save");
     },
     readDocument: (target, signal) => request(signal, () => readPageDocument(target, signal)),
-    prefetchDocument: (target, signal) => request(signal, () => readPageDocument(target, signal), false),
+    readDocumentIfChanged: (target, etag, signal) => request(signal, () => readPageDocumentIfChanged(target, etag, signal)),
     applyOperations: (input, signal) => conflict(() => request(signal, async () => {
       const target = validTarget(input.target);
       const result = await editingApi.applyOperations(target, {
@@ -434,7 +435,7 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
       releaseOperationIds.set(plan.confirmationToken, operationId);
       const result = await editingApi.release(validTarget(plan.target), plan, operationId, signal);
       if (result.status === "conflict") return result;
-      const snapshot = await readJapaneseDocument(plan.target, signal);
+      const snapshot = await readPageDocument(plan.target, signal);
       releaseOperationIds.delete(plan.confirmationToken);
       return { status: "released" as const, snapshot };
     })),
@@ -456,7 +457,7 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
       return editingApi.pageReleaseSetStatus(operationId, signal);
     }),
     englishPublication: {
-      refresh: (target, signal) => request(signal, async () => (await readJapaneseDocument(target, signal)).englishPublication),
+      refresh: (target, signal) => request(signal, async () => (await readPageDocument(target, signal)).englishPublication),
       retry: (target, signal) => conflict(() => request(signal, async () => parseEnglishPublicationAccepted(await api(`${pagePath(target)}/english-publication-retry`, "POST", {}, signal))))
     },
     localization: {
