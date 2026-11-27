@@ -41,6 +41,8 @@ VideoWithButton は `tag: "div"` に `interaction: { type: "video-toggle" }` を
 
 Loop Box は `tag: "div"` に `interaction: { type: "loop-box", speed, pauseOnHover }` を持たせます。`speed` は有限な0〜1000のpx/秒で、0は停止、標準presetは60です。`pauseOnHover` は真偽値です。進行軸と逆方向は別の自由入力ではなく、同じnodeの検証済み`style.flexDirection`（`row` / `row-reverse` / `column` / `column-reverse`）から決まります。childrenは1件以上必要で、Loop Box内に別のinteractionは入れられません。descriptorにHTML、script、selector、keyframes、イベントhandler、任意style文字列、DOM ID参照は保存しません。
 
+前後操作を持つカルーセルは `div` の `interaction: { type: "carousel", binding }` で指定します。`binding.slideIds` は直下の `div` / `article` / `section` の node ID を2〜64件、表示順に渡します。`previousIds`・`nextIds`・`playPauseIds` は、スライドの外に置く同じカルーセル内のフラグメントリンクを指定します。`autoplayMs`（1000〜60000）、`fadeMs`（0〜3000）、`initiallyPlaying`、`loop`、`swipe` は既存の SitePresentation と同じ標準 runtime で処理します。
+
 SSRは元のchildrenを固定track内に1組だけ描き、支援技術から読める正本とします。編集canvasではこの正本を静止したまま選択・編集・dropできます。公開ページとStudio previewで`initializeSitePresentation`を起動すると、runtimeはtrack寸法とviewportから必要な複製数を計算し、resize時にも作り直してWeb Animations APIで無限に流します。`prefers-reduced-motion: reduce`、速度0、未対応APIでは動かさず内容を保持します。ホバー停止が有効ならpointer hover中だけ一時停止します。
 
 runtime複製は`aria-hidden`かつ`inert`で、focus可能要素をtab順から外します。HTML IDとID参照、リンク先、form name、動画・iframe等の読込属性、別runtimeのbinding属性を複製から除きます。画像は元の検証済みsourceを保って表示し、動画・iframe等は追加通信を起こさない不可視placeholderとして寸法だけを保ちます。cleanupはanimationをcancelし、複製、resize・hover・media-query listener、runtimeが加えたinline styleをすべて除去します。runtimeが無い場合も元内容はそのまま利用できます。

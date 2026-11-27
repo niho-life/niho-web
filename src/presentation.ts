@@ -1,13 +1,14 @@
+import { CAROUSEL_CONTROL_LIMIT, CAROUSEL_SLIDE_LIMIT, parseCarousel } from "./carousel.js";
 import { parsePresentationLinks } from "./presentation-links.js";
 import { blockSlots, parsePageDocument } from "./document.js";
 import { cssForDocument, pageScope } from "./css.js";
 import { parseResolvedAssets, type ResolvedAssetMap } from "./assets.js";
 import { parseStyle, parseTokens } from "./style-values.js";
-import type { BlockContracts, ComponentNode, ElementNode, PageDocument, PageNode, PublicPropValue, SiteFontFace, SitePresentation, SitePresentationCarousel, SitePresentationExternalFrame, SitePresentationHostView, SitePresentationOverlay } from "./types.js";
+import type { BlockContracts, ComponentNode, ElementNode, PageDocument, PageNode, PublicPropValue, SiteFontFace, SitePresentation, SitePresentationExternalFrame, SitePresentationHostView, SitePresentationOverlay } from "./types.js";
 import { fail, identifier, isSafePublicUrl, keys, line, localeCode, record } from "./validation-utils.js";
 
 export const SITE_PRESENTATION_LIMITS = Object.freeze({ fonts: 512, sourcesPerFont: 4, versionLength: 256, unicodeRangeLength: 4096, overlays: 8, bindingsPerOverlay: 16, overlayLabelLength: 160,
-  hostViews: 64, hostViewBytes: 5_000_000, hostViewNodes: 20_000, framesPerView: 8, carouselSlides: 64, carouselControls: 16 });
+  hostViews: 64, hostViewBytes: 5_000_000, hostViewNodes: 20_000, framesPerView: 8, carouselSlides: CAROUSEL_SLIDE_LIMIT, carouselControls: CAROUSEL_CONTROL_LIMIT });
 const unicodeRange = /^(?:U\+[0-9A-F?]{1,6}(?:-[0-9A-F]{1,6})?)(?:\s*,\s*U\+[0-9A-F?]{1,6}(?:-[0-9A-F]{1,6})?)*$/iu;
 const emptyCompactSharedSnapshot = (document: PageDocument): boolean => document.body.length === 0
   && Object.keys(document.tokens).length === 0 && document.meta === undefined && document.textStyles === undefined;
@@ -107,34 +108,6 @@ function slotBindings(input: unknown, block: string, blocks: BlockContracts, nod
   return result;
 }
 
-function carousel(input: unknown, nodes: ReadonlyMap<string, ElementNode>, path: string): SitePresentationCarousel | undefined {
-  if (input === undefined) return undefined;
-  const source = record(input, path);
-  keys(source, ["rootId", "slideIds", "previousIds", "nextIds", "playPauseIds", "autoplayMs", "fadeMs", "initiallyPlaying", "loop", "swipe"], path);
-  const rootId = identifier(source.rootId, `${path}.rootId`);
-  if (!nodes.has(rootId)) fail(`${path}.rootId`, "carousel root not found");
-  const readIds = (value: unknown, name: "slideIds" | "previousIds" | "nextIds" | "playPauseIds", required: boolean, limit: number) => {
-    const at = `${path}.${name}`;
-    if (!Array.isArray(value) || required && value.length < 2 || value.length > limit) fail(at, "invalid carousel bindings");
-    const ids = value.map((id, index) => identifier(id, `${at}[${index}]`));
-    if (new Set(ids).size !== ids.length || ids.some((id) => !nodes.has(id))) fail(at, "unknown or duplicate carousel binding");
-    return ids;
-  };
-  const slideIds = readIds(source.slideIds, "slideIds", true, SITE_PRESENTATION_LIMITS.carouselSlides);
-  const previousIds = source.previousIds === undefined ? [] : readIds(source.previousIds, "previousIds", false, SITE_PRESENTATION_LIMITS.carouselControls);
-  const nextIds = source.nextIds === undefined ? [] : readIds(source.nextIds, "nextIds", false, SITE_PRESENTATION_LIMITS.carouselControls);
-  const playPauseIds = source.playPauseIds === undefined ? [] : readIds(source.playPauseIds, "playPauseIds", false, SITE_PRESENTATION_LIMITS.carouselControls);
-  const all = [rootId, ...slideIds, ...previousIds, ...nextIds, ...playPauseIds];
-  if (new Set(all).size !== all.length) fail(path, "carousel bindings overlap");
-  if (source.autoplayMs !== undefined && (typeof source.autoplayMs !== "number" || !Number.isInteger(source.autoplayMs) || source.autoplayMs < 1000 || source.autoplayMs > 60000)) fail(`${path}.autoplayMs`, "invalid autoplay interval");
-  if (source.fadeMs !== undefined && (typeof source.fadeMs !== "number" || !Number.isInteger(source.fadeMs) || source.fadeMs < 0 || source.fadeMs > 3000)) fail(`${path}.fadeMs`, "invalid fade duration");
-  if (source.initiallyPlaying !== undefined && typeof source.initiallyPlaying !== "boolean" || source.loop !== undefined && typeof source.loop !== "boolean" || source.swipe !== undefined && typeof source.swipe !== "boolean") fail(path, "invalid carousel option");
-  if (source.initiallyPlaying !== undefined && source.autoplayMs === undefined) fail(`${path}.initiallyPlaying`, "playing state requires an autoplay interval");
-  return { rootId, slideIds, ...(previousIds.length ? { previousIds } : {}), ...(nextIds.length ? { nextIds } : {}), ...(playPauseIds.length ? { playPauseIds } : {}),
-    ...(source.autoplayMs === undefined ? {} : { autoplayMs: source.autoplayMs }), ...(source.fadeMs === undefined ? {} : { fadeMs: source.fadeMs }), ...(source.initiallyPlaying === undefined ? {} : { initiallyPlaying: source.initiallyPlaying }),
-    ...(source.loop === undefined ? {} : { loop: source.loop }), ...(source.swipe === undefined ? {} : { swipe: source.swipe }) };
-}
-
 /** 外部 snapshot の presentation を対象ページへ固定して検証する。 */
 export function parseSitePresentation(input: unknown, target: Pick<PageDocument, "siteId" | "locale"> & Partial<Pick<PageDocument, "pageId">>, blocks: BlockContracts = {}): SitePresentation {
   const source = record(input, "presentation");
@@ -212,7 +185,7 @@ export function parseSitePresentation(input: unknown, target: Pick<PageDocument,
     hostViewNodes += nodes.size;
     if (hostViewNodes > SITE_PRESENTATION_LIMITS.hostViewNodes) fail("presentation.hostViews", "too many host view nodes");
     const slots = slotBindings(view.slotBindings, block, blocks, nodes, `${path}.slotBindings`);
-    const frames = externalFrames(view.externalFrames, nodes, `${path}.externalFrames`), binding = carousel(view.carousel, nodes, `${path}.carousel`);
+    const frames = externalFrames(view.externalFrames, nodes, `${path}.externalFrames`), binding = parseCarousel(view.carousel, nodes, `${path}.carousel`);
     return { id, block, props, document, ...(Object.keys(slots).length ? { slotBindings: slots } : {}), ...(frames.length ? { externalFrames: frames } : {}), ...(binding ? { carousel: binding } : {}) };
   });
   return { schemaVersion: 1, siteId, locale, version, reset: "neutral-v1", tokens, ...(layout ? { layout } : {}), fonts, shared: { header, footer },

@@ -527,7 +527,8 @@ function Canvas({ document, pageKey, blocks, width, height, breakpoint, selectio
         const target = asElement(event.target);
         if (target?.closest("summary")) return;
         if (target?.closest("[data-nw-video-toggle],[data-nw-video-with-button] video,[data-nw-facebook-load],[data-nw-social-load]")) return;
-        if (presentation && target?.closest("[data-nw-overlay-open],[data-nw-overlay-close],[data-nw-carousel-previous],[data-nw-carousel-next],[data-nw-carousel-play-pause]")) { event.preventDefault(); return; }
+        if (target?.closest("[data-nw-carousel-previous],[data-nw-carousel-next],[data-nw-carousel-play-pause]") ||
+          presentation && target?.closest("[data-nw-overlay-open],[data-nw-overlay-close]")) { event.preventDefault(); return; }
         const anchor = target?.closest<HTMLAnchorElement>("a[href]"), href = anchor?.getAttribute("href") ?? "";
         let targetId: string | undefined;
         try {

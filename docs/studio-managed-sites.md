@@ -56,6 +56,8 @@ URL 変更・非公開化の確認画面では、サイト内の他ページの�
 
 GA4 には計測用に限定した接続先を許可する。標準操作の runtime と NIHO フォームの runtime は別々に必要なページでだけ読み込む。NIHO フォームは iframe 内で送信し、親ページの CSP は `form-action 'none'` を維持する。[ManagedEmbed の保存・公開契約](managed-embed-contract.md)
 
+既存ページの埋め込みとカルーセルを標準描画へ移す手順は [鎌倉専用ブロックの移行](kamakura-block-migration.md) を参照する。
+
 ## CLI認証
 
 既存外部ホストと、operatorが明示的にgrantを設定済みのStudio-native siteは、従来のAccess service tokenと期限付きD1 grantを使える。新規Projectにservice grantがない場合は、Cloudflare Accessでmember本人が取得した短時間のapplication tokenを `cf-access-token` headerで受ける。Workerはブラウザと同じAccess JWT署名・issuer・audience・期限・subject・email検証を再利用し、さらに現在のD1 membershipへ固定する。人の CLI はこの短期 token を `NIHO_EDIT_TOKEN` で渡す。
@@ -69,6 +71,8 @@ Studio-native site の Dashboard にある「CMS」から、初期コレクシ�
 Studio の共通編集 API と CLI の経路は [CMS v2 契約](cms-v2-contract.md) を参照する。CMS の保存先は Studio の D1 と非公開 R2 binding `CMS_OBJECTS`。Kamakura などの外部ホストの編集先や権限は各ホストで管理する。個人情報・予約台帳・資格情報などは CMS に保存しない。
 
 ### PageDocument との結び付け
+
+CMS bindings が生成した画像の参照は、ページ公開版が固定する CMS snapshot の公開素材 manifest から解決する。公開ページで実際に参照され、サイトの配信設定が許可した素材を renderer に渡す。CSP に登録するのも、ページ内で使う素材の origin に限る。
 
 Studio の PageEditor は CMS list と detail を `CmsPageBindingsDocument` sidecar でページ要素へ結び付けます。sidecar は `managed_page_versions` の当該 revision と一緒に保存し、公開時に page publication が不変 CMS `releaseId` と `schemaRevision` を固定します。公開 HTML はその release の項目だけから描画し、後から行う CMS 保存・schema 移行は過去の公開ページを書き換えません。CMS 公開と固定ページ公開は別の操作で、両者の原子切替はありません。
 

@@ -1,6 +1,8 @@
 import { createElement } from "react";
 import type { BlockRegistry } from "../src/react.js";
 import type { ElementAttributes, ElementNode, EmbedDescriptor, PageDocument, PageNode, PublicPropValue } from "../src/types.js";
+import { assetKey, collectAssetReferences, type ResolvedAsset } from "../src/assets.js";
+import type { CmsPublicAsset } from "../src/cms-v2.js";
 import { isSafePublicUrl } from "../src/validation-utils.js";
 import { MANAGED_EMBED_REF, managedEmbedContract, registeredNihoEmbed, type ManagedPublicPolicy } from "./managed-embed-contract.js";
 import type { ManagedD1 } from "./managed-sites.js";
@@ -97,7 +99,8 @@ function frameOrigin(embed: EmbedDescriptor): string | undefined {
   return new URL(embed.source).origin;
 }
 
-export function planManagedPublicRender(document: PageDocument, policy: ManagedPublicPolicy, parentOrigin: string, embeds: readonly PublishedEmbed[]) {
+export function planManagedPublicRender(document: PageDocument, policy: ManagedPublicPolicy, parentOrigin: string, embeds: readonly PublishedEmbed[],
+  assetManifest: readonly CmsPublicAsset[] = []) {
   const frames = new Set<string>(), images = new Set<string>(), media = new Set<string>();
   let presentation = false, managedEmbed = false;
   const embedByRef = new Map(embeds.map(({ refId, src }) => [refId, src.origin]));
@@ -178,10 +181,22 @@ export function planManagedPublicRender(document: PageDocument, policy: ManagedP
   if (faviconSource) images.add(faviconSource);
   else if (meta) delete meta.favicon;
   if (meta?.ogImage && "src" in meta.ogImage && !resource(meta.ogImage.src)) delete meta.ogImage;
+  const rendered = { ...document, body, ...(meta && { meta }) };
+  const assets: Record<string, ResolvedAsset> = {};
+  const manifest = new Map(assetManifest.map((asset) => [assetKey(asset.reference), asset]));
+  for (const { reference, target } of collectAssetReferences(rendered)) {
+    const key = assetKey(reference), asset = manifest.get(key);
+    const source = resource(asset?.url);
+    if (!asset || !source) continue;
+    assets[key] = { src: asset.url, ...(asset.width === null ? {} : { width: asset.width }), ...(asset.height === null ? {} : { height: asset.height }) };
+    if (target === "video") media.add(source);
+    else if (target !== "ogImage") images.add(source);
+  }
   const scriptUrls = [managedEmbed ? publicScriptPaths.nihoEmbeds : null, presentation ? publicScriptPaths.presentation : null]
     .flatMap((path) => path ? [new URL(path, parentOrigin)] : []);
   return {
-    document: { ...document, body, ...(meta && { meta }) },
+    document: rendered,
+    assets,
     head: (measurementId: string | null) => managedPublicHead({
       measurementId, scriptUrls, frameSources: frames, imageSources: images, mediaSources: media, inlineStyles: true, resolveEmbed: managedEmbed
     })

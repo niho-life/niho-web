@@ -947,6 +947,9 @@ testWithD1("Studio CMS localization exposes the shared workspace contract and pr
 testWithD1("Studio page bindings publish a six-item list and dynamic detail from an immutable CMS release", async (t) => {
   const h = await fixture(t, { cms: true });
   const site = await cmsSite(h, "bound-articles");
+  await setFixturePublicPolicy(h, site, {
+    frameOrigins: [], resourceOrigins: ["https://shown.example.test", "https://unused.example.test"], ga4MeasurementId: null
+  });
   const api = "/api/projects/" + site.projectId + "/sites/" + site.siteId + "/editor";
   const editing = "/api/edit/v1/sites/" + site.siteId;
   const browser = (method, path, input, options) => h.send(MANAGEMENT_ORIGIN, method, api + path, input, options);
@@ -955,18 +958,26 @@ testWithD1("Studio page bindings publish a six-item list and dynamic detail from
   const initial = await site.read("cms.schema.read");
   const { routeTableRevision } = await site.read("cms.release.current");
   const definition = structuredClone(initial);
-  definition.collections[0].fields.push({ fieldId: "article_date", key: "article_date", type: "datetime", label: "Article date", placement: "side" });
+  definition.collections[0].fields.push(
+    { fieldId: "article_date", key: "article_date", type: "datetime", label: "Article date", placement: "side" },
+    { fieldId: "cover", key: "cover", type: "image", label: "Cover", placement: "main" }
+  );
   const schemaPlan = (await site.read("cms.schema.plan", { expectedSchemaRevision: initial.schemaRevision,
     routeTableVersions: [{ locale: "ja", revision: routeTableRevision }], nextSchema: definition, replacements: [] })).plan;
   const { result: { schemaRevision } } = await site.read("cms.schema.apply", { operationId: schemaPlan.operationId, confirmationToken: schemaPlan.confirmationToken });
+  const covers = new Map([[1, "unused"], [2, "denied"], [7, "shown"]].map(([index, host]) => [index, {
+    reference: { provider: "fixture", id: `article-${index}` }, url: `https://${host}.example.test/article.webp`, width: 800, height: 600, altText: "Article"
+  }]));
+  const withAssets = cmsOperationsWithAssets(h, site, async ({ references }) =>
+    [...covers.values()].filter(({ reference }) => references.some(({ id }) => id === reference.id)));
   const items = [];
   for (let number = 1; number <= 7; number++) {
     const item = await createDraft(site, schemaRevision);
     items.push((await site.read("cms.items.save", { ...versioned(item), values: { ...values(number === 7 ? "Article <Seven>" : "Article " + number, number === 6 ? "Legacy-Case" : "article-" + number),
-      article_date: "2026-10-0" + number + "T12:00:00Z" } }, { headers: headers() })).item);
+      article_date: "2026-10-0" + number + "T12:00:00Z", cover: covers.get(number)?.reference ?? null } }, { headers: headers() })).item);
   }
-  const plan = await releasePlan(site, schemaRevision, null, items);
-  await site.read("cms.release.apply", plan);
+  const plan = await releasePlan(withAssets, schemaRevision, null, items);
+  await withAssets.read("cms.release.apply", plan);
   await h.cron();
   const cmsRelease = (await site.read("cms.release.current")).snapshot;
 
@@ -977,19 +988,27 @@ testWithD1("Studio page bindings publish a six-item list and dynamic detail from
   const listDocument = structuredClone(home.document);
   const element = (id, tag, children, attrs) => ({ type: "element", id, tag, children, ...(attrs ? { attrs } : {}) });
   const text = (value) => [{ type: "text", text: value }];
-  listDocument.body = [element("article-preview", "article", [element("article-link", "a", text("Placeholder"), { href: "/articles" })])];
+  listDocument.body = [element("article-preview", "article", [
+    element("article-link", "a", text("Placeholder"), { href: "/articles" }),
+    element("card-cover", "img", [], { src: "/placeholder.webp", alt: "Article cover" })
+  ])];
   const base = { schemaVersion: 1, siteId: site.siteId, pageId: "home", locale: "ja" };
   const cmsBindings = { ...base, lists: [{ templateNodeId: "article-preview", collectionId: "posts", limit: 6,
     order: { fieldId: "article_date", direction: "desc" }, fields: [
       { nodeId: "article-link", fieldId: "title", target: "text" },
       { nodeId: "article-link", fieldId: "title", target: "attribute", attribute: "aria-label" },
-      { nodeId: "article-link", fieldId: "slug", target: "detail-link", path: "/articles" }
+      { nodeId: "article-link", fieldId: "slug", target: "detail-link", path: "/articles" },
+      { nodeId: "card-cover", fieldId: "cover", target: "image" }
     ] }] };
   const listSaved = await body(await browser("PUT", "/home/draft", { expectedVersion: home.version, document: listDocument, cmsBindings }), 200);
   const detail = await body(await browser("GET", "/" + detailPage.pageId), 200);
-  const detailDocument = { ...detail.document, body: [element("article-title", "h1", text("Title")), element("article-text", "p", text("Body"))] };
+  const detailDocument = { ...detail.document, body: [
+    element("article-title", "h1", text("Title")), element("article-text", "p", text("Body")),
+    element("detail-cover", "img", [], { src: "/placeholder.webp", alt: "Article cover" })
+  ] };
   const detailBindings = { ...base, pageId: detailPage.pageId, lists: [], detail: { collectionId: "posts", slugFieldId: "slug", fields: [
-    { nodeId: "article-title", fieldId: "title", target: "text" }, { nodeId: "article-text", fieldId: "body", target: "text" }
+    { nodeId: "article-title", fieldId: "title", target: "text" }, { nodeId: "article-text", fieldId: "body", target: "text" },
+    { nodeId: "detail-cover", fieldId: "cover", target: "image" }
   ] } };
   const detailPath = "/" + detailPage.pageId;
   const wrongType = structuredClone(detailBindings);
@@ -1061,9 +1080,18 @@ testWithD1("Studio page bindings publish a six-item list and dynamic detail from
   assert.deepEqual([...html.matchAll(/href="\/s\/bound-articles\/articles\/article-(\d)"/gu)].map((match) => match[1]), ["7", "5", "4", "3", "2"]);
   assert.match(html, /href="\/s\/bound-articles\/articles\/Legacy-Case"/u);
   assert.match(html, /aria-label="Article &lt;Seven&gt;"/u);
-  const detailHtml = await (await lookup("/articles/article-7")).text();
+  assert.match(html, /<img[^>]+src="https:\/\/shown\.example\.test\/article\.webp"[^>]+width="800" height="600"/u);
+  assert.doesNotMatch(html, /(?:unused|denied)\.example\.test/u);
+  assert.match(list.headers.get("Content-Security-Policy"), /img-src 'self' https:\/\/shown\.example\.test;/u);
+  const shownRelease = await lookup("/articles/article-7");
+  const detailHtml = await shownRelease.text();
   assert.match(detailHtml, /Article &lt;Seven&gt;/u);
   assert.match(detailHtml, /&lt;script&gt;Fixture only&lt;\/script&gt;/u);
+  assert.match(detailHtml, /<img[^>]+src="https:\/\/shown\.example\.test\/article\.webp"/u);
+  assert.match(shownRelease.headers.get("Content-Security-Policy"), /img-src https:\/\/shown\.example\.test;/u);
+  const hiddenCover = await lookup("/articles/article-2");
+  assert.doesNotMatch(await hiddenCover.text(), /denied\.example\.test/u);
+  assert.match(hiddenCover.headers.get("Content-Security-Policy"), /img-src 'none';/u);
   assert.equal((await lookup("/articles/unknown")).status, 404);
   assert.match(await (await lookup("/articles/Legacy-Case")).text(), /Article 6/u);
   assert.equal((await lookup("/articles/legacy-case")).status, 404);

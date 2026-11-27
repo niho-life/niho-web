@@ -7,6 +7,7 @@ import { isStyleProperty, parseStyle, parseTextStyles, parseTokens } from "./sty
 import { DocumentValidationError, fail, identifier, isSafePublicLink, isSafePublicUrl, keys, line, localeCode, parseAssetReference, publicImageSrcSet, publicImageUrl, record, string } from "./validation-utils.js";
 import { isIconName } from "./icons.js";
 import { parseEmbedDescriptor } from "./embeds.js";
+import { parseCarouselBinding } from "./carousel.js";
 
 const tags = new Set("div section article header footer main nav aside h1 h2 h3 h4 h5 h6 p span a img picture source video ul ol li dl dt dd strong em b i small blockquote figure figcaption br hr time details summary form label input textarea select option button fieldset legend".split(" "));
 const voidTags = new Set(["img", "source", "br", "hr", "input"]);
@@ -311,6 +312,7 @@ export function parseNode(raw: unknown, at: string, context: NodeContext, depth 
   if (node.icon !== undefined && (tag !== "span" || !isIconName(node.icon))) fail(`${at}.icon`, "unsupported built-in icon");
   if (node.embed !== undefined && tag !== "div") fail(`${at}.embed`, "only div can contain a standard embed");
   let interaction: { interaction?: ElementInteraction } = {};
+  let carouselInput: Record<string, unknown> | undefined;
   if (node.interaction !== undefined) {
     const descriptor = record(node.interaction, `${at}.interaction`);
     if (tag !== "div" || node.asset !== undefined || node.icon !== undefined || node.embed !== undefined || ancestorInteraction === "loop-box") fail(`${at}.interaction`, "unsupported interaction descriptor");
@@ -322,6 +324,9 @@ export function parseNode(raw: unknown, at: string, context: NodeContext, depth 
       if (typeof descriptor.speed !== "number" || !Number.isFinite(descriptor.speed) || descriptor.speed < 0 || descriptor.speed > 1000) fail(`${at}.interaction.speed`, "speed must be between 0 and 1000 px/sec");
       if (typeof descriptor.pauseOnHover !== "boolean") fail(`${at}.interaction.pauseOnHover`, "expected boolean");
       interaction = { interaction: { type: "loop-box", speed: descriptor.speed, pauseOnHover: descriptor.pauseOnHover } };
+    } else if (descriptor.type === "carousel" && ancestorInteraction !== "carousel") {
+      keys(descriptor, ["type", "binding"], `${at}.interaction`);
+      carouselInput = record(descriptor.binding, `${at}.interaction.binding`);
     } else fail(`${at}.interaction`, "unsupported interaction descriptor");
   }
   const asset = node.asset === undefined ? {} : { asset: parseAssetReference(node.asset, `${at}.asset`) };
@@ -341,7 +346,28 @@ export function parseNode(raw: unknown, at: string, context: NodeContext, depth 
   if (tag === "img" && !attrs.attrs) fail(at, "img requires attributes");
   if (tag === "video" && !attrs.attrs) fail(at, "video requires attributes");
   if (node.icon !== undefined && (attrs.attrs?.role !== "img" || typeof attrs.attrs["aria-label"] !== "string" || !attrs.attrs["aria-label"].trim() || attrs.attrs["aria-hidden"] === "true")) fail(at, "icon requires role img and aria-label");
-  const children = parseNodes(node.children, `${at}.children`, context, depth + 1, tag, insideLink || interactive.has(tag) && tag !== "details", inline || phrasingParents.has(tag), insideForm || tag === "form", interaction.interaction?.type ?? ancestorInteraction);
+  const children = parseNodes(node.children, `${at}.children`, context, depth + 1, tag, insideLink || interactive.has(tag) && tag !== "details", inline || phrasingParents.has(tag), insideForm || tag === "form", carouselInput ? "carousel" : interaction.interaction?.type ?? ancestorInteraction);
+  if (carouselInput) {
+    const path = `${at}.interaction.binding`, nodes = new Map<string, ElementNode>();
+    const collect = (input: readonly PageNode[]) => {
+      for (const child of input) {
+        if (child.type !== "element") continue;
+        nodes.set(child.id, child);
+        collect(child.children);
+      }
+    };
+    collect(children);
+    const binding = parseCarouselBinding(carouselInput, nodes, path);
+    const direct = new Set(children.flatMap((child) => child.type === "element" && ["div", "article", "section"].includes(child.tag) ? [child.id] : []));
+    if (binding.slideIds.some((id) => !direct.has(id))) fail(path, "carousel slides must be direct flow children");
+    nodes.clear();
+    collect(children.filter((child) => child.type !== "element" || !binding.slideIds.includes(child.id)));
+    for (const id of [...(binding.previousIds ?? []), ...(binding.nextIds ?? []), ...(binding.playPauseIds ?? [])]) {
+      const control = nodes.get(id);
+      if (control?.tag !== "a" || typeof control.attrs?.href !== "string" || !control.attrs.href.startsWith("#")) fail(path, "carousel control must be a fragment link outside the slides");
+    }
+    interaction = { interaction: { type: "carousel", binding } };
+  }
   if (voidTags.has(tag) && children.length) fail(at, "void element cannot have children");
   if ((tag === "video" || node.icon !== undefined || node.embed !== undefined) && children.length) fail(at, "media element cannot have children");
   if (tag === "label" && !children.some((child) => child.type === "text" ? !!child.text.trim() : true)) fail(at, "label requires text");

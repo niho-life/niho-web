@@ -2,6 +2,7 @@ import { CmsStore, cmsPathReserved, digest, nowSeconds, type Site } from "./mana
 import { parsePageDocument, type PageDocument, type PageNode } from "../src/core.js";
 import { cmsPageBindingProblems, parseCmsPageBindings, resolveCmsPageBindings, type CmsPageBindingsDocument } from "../src/cms-page-bindings.js";
 import { cmsId, cmsItemKey } from "../src/cms-v2-schema.js";
+import type { CmsPublicAsset } from "../src/cms-v2.js";
 import { createBlankEmbedRegistry } from "../src/embeds.js";
 import { createPageEditingApi, type EditingActor, type EditingCapability, type EditingPageTarget } from "../src/editing-api.js";
 import type { EditingPageApplied } from "../src/editing-page-operations.js";
@@ -1163,6 +1164,7 @@ export async function managedPublicRequest(request: Request, db: ManagedD1, orig
   }
   let document = parsePageDocument(JSON.parse(row.document_json) as unknown, managedBlockContracts);
   const publicPath = `${prefix}${path}`;
+  let assetManifest: readonly CmsPublicAsset[] = [];
   if (row.bindings_json) {
     if (!store || !row.cms_release_id || !row.cms_schema_revision) return notFound();
     const bindings = parseCmsPageBindings(JSON.parse(row.bindings_json), document);
@@ -1175,6 +1177,7 @@ export async function managedPublicRequest(request: Request, db: ManagedD1, orig
     });
     if (!projected) return notFound();
     document = projected;
+    assetManifest = released.assetManifest;
   }
   const policy = parseManagedPublicPolicy(JSON.parse(row.public_policy_json), origin) ?? emptyManagedPublicPolicy();
   const embeds = await resolvePublishedEmbeds(db, document, { siteId: row.site_id, pageId: row.page_id, locale: row.locale, parentOrigin: origin, publicPath }, policy);
@@ -1182,11 +1185,11 @@ export async function managedPublicRequest(request: Request, db: ManagedD1, orig
     const embed = embeds.find(({ refId }) => refId === requestedRef);
     return embed ? json({ src: embed.src.href }) : notFound();
   }
-  const plan = planManagedPublicRender(prefixedDocument(document, prefix), policy, origin, embeds);
+  const plan = planManagedPublicRender(prefixedDocument(document, prefix), policy, origin, embeds, assetManifest);
   const rendered = plan.document;
   // PageDocument の path 契約では home は `/`。共有公開prefixは配信層の責務なので、
   // metadata を通常pathで検証してから canonical / og:url だけを実URLへ射影する。
-  const resolvedMetadata = resolvePageMetadata({ document: rendered, domain: origin, path: hasUppercaseRoute ? path.toLowerCase() : path, visibility: "public" });
+  const resolvedMetadata = resolvePageMetadata({ document: rendered, domain: origin, path: hasUppercaseRoute ? path.toLowerCase() : path, visibility: "public", assets: plan.assets });
   const publicUrl = `${origin}${publicPath}`;
   const hostNoindex = customRoute?.noindex === true;
   const { canonical: _canonical, ...metadataWithoutCanonical } = resolvedMetadata;
@@ -1202,7 +1205,7 @@ export async function managedPublicRequest(request: Request, db: ManagedD1, orig
     Promise.resolve(managedStructuredData(rendered, publicUrl, url.origin, row.site_name))
   ]);
   const head = renderPageHead(metadata) + alternates + structuredData, content = renderPageToHtml(rendered, managedPublicBlocks, {
-    blankEmbeds: createBlankEmbedRegistry({ parentOrigin: origin, entries: [] })
+    blankEmbeds: createBlankEmbedRegistry({ parentOrigin: origin, entries: [] }), assets: plan.assets
   });
   const runtime = await plan.head(policy.ga4MeasurementId);
   const html = `<!doctype html><html lang="${escapeAttribute(rendered.locale)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${head}${runtime.scripts}</head><body>${content}</body></html>`;
