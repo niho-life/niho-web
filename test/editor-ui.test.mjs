@@ -1159,14 +1159,15 @@ test("multi-page release selects only pages with changes and can resume from the
   let plannedItems, applied = 0, statusReads = 0, operationId;
   const app = await setup({ adapter: {
     listPages: async () => pages,
-    readDocument: async (target) => ({ document: { ...structuredClone(fixture), ...target }, version: `v-${target.pageId}`, presentation: { version: `p-${target.pageId}` }, hasSavedDraft: true }),
+    readDocument: async (target) => ({ document: { ...structuredClone(fixture), ...target }, version: `v-${target.pageId}`, stylesVersion: `s-${target.pageId}`, presentation: { version: `p-${target.pageId}` }, hasSavedDraft: true }),
     prepareRelease: async (request) => ({ ...request, confirmationToken: `single-${request.target.pageId}`, domain: "https://example.test",
       changes: request.target.pageId === "about" ? [] : [{ path: "title", before: "旧タイトル", after: request.target.pageId === "home" ? "ホーム更新" : "お問い合わせ更新" }] }),
     prepareReleaseSet: async (items) => {
       plannedItems = structuredClone(items); operationId = "550e8400-e29b-41d4-a716-446655440000";
-      return { siteId: "demo", operationId, confirmationToken: "set-token", domain: "https://example.test", items: structuredClone(items) };
+      return { siteId: "demo", operationId, confirmationToken: "set-token", domain: "https://example.test", sitePublicationEpoch: "epoch-demo", items: structuredClone(items) };
     },
     releaseSet: async (plan) => {
+      assert.equal(plan.sitePublicationEpoch, "epoch-demo");
       applied++;
       return { status: "publishing", operationId: plan.operationId, items: plan.items.map((item, index) => index === 0
         ? { target: item.target, status: "released", version: "released-home" } : { target: item.target, status: "pending" }) };
@@ -1190,6 +1191,7 @@ test("multi-page release selects only pages with changes and can resume from the
     assert.ok(!confirmation.textContent.includes("私たちについて"), "unchanged pages are excluded");
     assert.deepEqual(plannedItems.map((item) => item.target.pageId), ["home", "contact"]);
     assert.deepEqual(plannedItems.map((item) => item.presentationVersion), ["p-home", "p-contact"]);
+    assert.deepEqual(plannedItems.map((item) => item.stylesVersion), ["s-home", "s-contact"]);
     const consent = confirmation.querySelector(".e-release-set-confirm input"); await press(consent);
     await click("2 ページを公開");
     assert.equal(applied, 1); assert.match(document.querySelector('[role="dialog"]').textContent, /ページは処理待ち/u);

@@ -6,7 +6,7 @@ import { Dialog } from "./editor-dialog.js";
 import { validateReleasePlan } from "./editor-model.js";
 import type { EditorAdapter, EditorPage, EditorReleasePlan, EditorReleaseRequest, EditorSite } from "./editor-types.js";
 
-type Preview = { page: EditorPage; plan: EditorReleasePlan };
+type Preview = { page: EditorPage; plan: EditorReleasePlan; stylesVersion?: string };
 type Completed = Exclude<EditingPageReleaseSetApplyResult, { status: "conflict" | "invalid" | "not_found" | "duplicate" | "publication_in_progress" | "migration_in_progress" }>;
 type ReleaseSetAdapter = Pick<EditorAdapter, "readDocument" | "prepareRelease" | "prepareReleaseSet" | "releaseSet" | "releaseSetStatus">;
 
@@ -23,9 +23,12 @@ function checkedReleaseSetPlan(value: unknown, expectedItems: readonly EditingPa
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("公開変更セットの確認情報が正しくありません。");
   const source = value as Record<string, unknown>;
   const operationId = source.operationId;
+  const sitePublicationEpoch = source.sitePublicationEpoch;
   if (source.siteId !== site.id || typeof operationId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(operationId)
     || typeof source.confirmationToken !== "string" || !source.confirmationToken || source.confirmationToken.length > 512
-    || typeof source.domain !== "string" || !site.domains.includes(source.domain)) throw new Error("公開変更セットの確認情報が正しくありません。");
+    || typeof source.domain !== "string" || !site.domains.includes(source.domain)
+    || sitePublicationEpoch !== undefined && (typeof sitePublicationEpoch !== "string" || !sitePublicationEpoch || sitePublicationEpoch.length > 512 || /[\u0000-\u001f\u007f]/u.test(sitePublicationEpoch))
+    || expectedItems.some((item) => item.stylesVersion !== undefined) && sitePublicationEpoch === undefined) throw new Error("公開変更セットの確認情報が正しくありません。");
   let domain: URL;
   try { domain = new URL(source.domain); } catch { throw new Error("公開変更セットの公開先が正しくありません。"); }
   if (domain.protocol !== "https:" || domain.origin !== source.domain || domain.username || domain.password || domain.search || domain.hash)
@@ -38,10 +41,12 @@ function checkedReleaseSetPlan(value: unknown, expectedItems: readonly EditingPa
     if (!expected || !target || typeof target !== "object" || Array.isArray(target)) throw new Error("公開変更セットの対象が正しくありません。");
     const checked = target as Record<string, unknown>;
     if (checked.siteId !== expected.target.siteId || checked.pageId !== expected.target.pageId || checked.locale !== expected.target.locale
-      || item.expectedVersion !== expected.expectedVersion || item.componentsVersion !== expected.componentsVersion || item.presentationVersion !== expected.presentationVersion)
+      || item.expectedVersion !== expected.expectedVersion || item.componentsVersion !== expected.componentsVersion || item.presentationVersion !== expected.presentationVersion
+      || item.stylesVersion !== expected.stylesVersion)
       throw new Error("公開変更セットの対象または版が、確認した差分と一致しません。");
   }
-  return { siteId: site.id, operationId, confirmationToken: source.confirmationToken, domain: source.domain, items: structuredClone(expectedItems) };
+  return { siteId: site.id, operationId, confirmationToken: source.confirmationToken, domain: source.domain,
+    ...(sitePublicationEpoch === undefined ? {} : { sitePublicationEpoch }), items: structuredClone(expectedItems) };
 }
 function resultFor(value: unknown, plan: EditingPageReleaseSetPlan): Completed | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -107,7 +112,7 @@ export function PageReleaseSetDialog({ pages, site, adapter, componentsVersion, 
             ...(componentsVersion ? { componentsVersion } : {}), ...(presentation ? { presentationVersion: presentation } : {}) };
           const value = await adapter.prepareRelease(request, signal);
           validateReleasePlan(value, request, site);
-          return { page, plan: structuredClone(value) };
+          return { page, plan: structuredClone(value), ...(snapshot.stylesVersion === undefined ? {} : { stylesVersion: snapshot.stylesVersion }) };
         }));
         changed.push(...values.filter(({ plan: item }) => item.changes.length > 0));
       }
@@ -118,8 +123,9 @@ export function PageReleaseSetDialog({ pages, site, adapter, componentsVersion, 
         setMessage(changed.length === 0 ? "選択したページに公開差分はありません。" : `差分があるページは「${changed[0]!.page.title}」の1件です。通常のページ公開を使ってください。`);
         return;
       }
-      const items: EditingPageReleaseSetItem[] = changed.map(({ plan: item }) => ({ target: item.target, expectedVersion: item.expectedVersion,
-        ...(item.componentsVersion === undefined ? {} : { componentsVersion: item.componentsVersion }), ...(item.presentationVersion === undefined ? {} : { presentationVersion: item.presentationVersion }) }));
+      const items: EditingPageReleaseSetItem[] = changed.map(({ plan: item, stylesVersion }) => ({ target: item.target, expectedVersion: item.expectedVersion,
+        ...(item.componentsVersion === undefined ? {} : { componentsVersion: item.componentsVersion }), ...(item.presentationVersion === undefined ? {} : { presentationVersion: item.presentationVersion }),
+        ...(stylesVersion === undefined ? {} : { stylesVersion }) }));
       const prepared = checkedReleaseSetPlan(await adapter.prepareReleaseSet!(items, signal), items, site);
       if (signal.aborted) return;
       setPlan(prepared); setPhase("review"); setMessage("");
