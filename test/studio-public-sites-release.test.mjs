@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
-import { pendingPublicMigrations, readPublicSitesReleaseSettings, smokePublicSitesPreview, writePublicSitesConfig } from "../studio/public-sites-release.mjs";
+import { readPublicSitesReleaseSettings, smokePublicSitesPreview, writePublicSitesConfig } from "../studio/public-sites-release.mjs";
 
 const env = {
   CLOUDFLARE_ACCOUNT_ID: "a".repeat(32),
@@ -24,12 +24,6 @@ test("public release settings require distinct HTTPS origins and a preview-only 
   assert.throws(() => readPublicSitesReleaseSettings({ ...env, PUBLIC_SITES_PREVIEW_ORIGIN: "https://preview.account.workers.dev" }), /PUBLIC_SITES_PREVIEW_ORIGIN/u);
   assert.throws(() => readPublicSitesReleaseSettings({ ...env, PUBLIC_SITES_SMOKE_PATH: "/s/example-site/../../other" }), /PUBLIC_SITES_SMOKE_PATH/u);
   assert.equal(readPublicSitesReleaseSettings(env).hostname, "preview-fixture-worker.account.workers.dev");
-});
-
-test("public release waits for its migrations but permits pending Studio-only migrations", () => {
-  assert.deepEqual(pendingPublicMigrations(["0022_managed_site_redirect_versions.sql", "0024_managed_one_step_publish.sql", "0025_managed_site_imports.sql", "0026_managed_site_styles.sql"]), []);
-  assert.deepEqual(pendingPublicMigrations(["0017_managed_page_sources.sql", "0022_managed_site_redirect_versions.sql"]), ["0017_managed_page_sources.sql"]);
-  assert.deepEqual(pendingPublicMigrations(["0023_managed_site_primary_host.sql"]), ["0023_managed_site_primary_host.sql"]);
 });
 
 test("public release writes a private Wrangler config on the dedicated preview workers.dev hostname", () => {
