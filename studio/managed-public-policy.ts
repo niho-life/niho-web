@@ -179,7 +179,7 @@ export function planManagedPublicRender(document: PageDocument, policy: ManagedP
       } else if (attrs?.srcSet) hints.sizes = "100vw";
 
       const hasSource = !!imageSource || typeof attrs?.srcSet === "string";
-      if (hasSource && !prioritizedImage) {
+      if (hasSource && !prioritizedImage && attrs?.loading !== "lazy") {
         hints.fetchPriority = "high";
         prioritizedImage = true;
       } else if (hasSource) {
