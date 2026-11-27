@@ -620,14 +620,17 @@ async function localizationReleaseOperation(store: CmsStore, site: Site, operati
   let publication;
   try { publication = await prepareManagedCmsPublication(store, site, snapshot); }
   catch { return error("host_failure", 503); }
+  const localizedReleases = { ...(site.state.localizedReleases ?? {}), [targetLocale]: {
+    id: snapshot.releaseId, at: dateNow(), routeTableRevision: snapshot.routeTable.revision
+  } };
   const result = { status: "published", operationId: mutation.operationId, result: { releaseId: snapshot.releaseId,
     locale: targetLocale, itemCount: snapshot.items.length, omittedItems: candidate.omittedItems } };
-  return mutate(store, mutation!, { state: { ...site.state, retainedBytes }, revisions, tokenHash: await digest(body.confirmationToken),
-    ...(publication ? { publication } : {}),
-    job: { kind: "release", id: snapshot.releaseId, at: nowSeconds(), payload: {
-      releaseId: snapshot.releaseId, expectedReleaseId: current?.id ?? null, locale: targetLocale, sourceReleaseId: site.state.current?.id ?? null,
-      pins: snapshot.items.map(cmsItemKey)
-    } }, result });
+  return mutate(store, mutation!, { state: { ...site.state, localizedReleases, retainedBytes }, revisions,
+    publishedSnapshot: snapshot, tokenHash: await digest(body.confirmationToken), ...(publication ? { publication } : {}),
+    job: { kind: "verify", id: opaque("verify"), at: nowSeconds(), payload: { keys: [
+      snapshotKey(site.siteId, snapshot.releaseId), routeTableKey(site.siteId, targetLocale, snapshot.routeTable.revision),
+      ...revisions.map((item) => itemBlobKey(site.siteId, targetLocale, item))
+    ] } }, result });
 }
 
 async function previewOperation(store: CmsStore, site: Site, operation: "cms.preview.prepare" | "cms.preview.read", body: Record<string, unknown>) {

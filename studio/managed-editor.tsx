@@ -269,7 +269,12 @@ function ManagedPublicationPanel({ siteId }: { readonly siteId: string }) {
       await refresh(controller.signal).catch(() => undefined);
     } finally { setBusy(false); }
   };
-  return <details className="studio-publication-panel">
+  return <details className="studio-publication-panel" onToggle={(event) => {
+      if (!event.currentTarget.open) return;
+      const controller = new AbortController();
+      setMessage("");
+      void refresh(controller.signal).catch(() => setMessage("未公開変更を読み込めませんでした。"));
+    }}>
     <summary>未公開の変更 {changes.length}件</summary>
     {changes.length ? <ul>{changes.map((change, index) => <li key={`${change.kind}:${index}`}>
       {change.kind === "page" ? `${change.title} (${change.path})` : `${change.label}（全ページ）`}

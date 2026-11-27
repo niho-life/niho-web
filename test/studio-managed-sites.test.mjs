@@ -1776,6 +1776,11 @@ testWithD1("Studio CMS localization exposes the shared workspace contract and pr
   publicAssets = [coverAsset];
   const localizedApply = await withAssets.read("cms.localization.release.apply", localizedInput, localizedHeaders);
   assert.equal(localizedApply.status, "published");
+  const localizationJob = h.sqlite.prepare(`SELECT kind, state FROM managed_cms_outbox WHERE site_id = ?1
+    AND receipt_id = (SELECT transaction_id FROM managed_cms_receipts WHERE site_id = ?1 AND operation_id = ?2)`)
+    .get(site.siteId, localizedPlan.plan.operationId);
+  assert.deepEqual({ ...localizationJob }, { kind: "verify", state: "pending" },
+    "the localized CMS release pointer and site manifest commit together before background object verification");
   const localizedCurrent = await site.read("cms.localization.release.current");
   const delivery = await cmsDeliveryFixture(h, site);
   const delivered = await delivery.client.snapshot("en");
