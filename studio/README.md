@@ -16,7 +16,7 @@ Studio Worker の配備、D1 migration、secret、切り戻しの手順です。
 | `PUBLIC_SITES_ORIGIN` | Studio と異なる公開配信用の HTTPS origin |
 | `STUDIO_ACCESS_ISSUER` / `STUDIO_ACCESS_AUDIENCE` | Studio の Access JWT の `iss` と application の AUD。Worker では `ACCESS_ISSUER` / `ACCESS_AUDIENCE` |
 | `STUDIO_SMOKE_PROJECT_ID` / `STUDIO_SMOKE_SITE_ID` | smoke で開く既存プロジェクトとサイトの ID |
-| `STUDIO_SMOKE_PUBLIC_PATH` | 公開中の代表ページの正規パス。 `/s/<site-slug>/` またはその下の公開ページ |
+| `STUDIO_SMOKE_PUBLIC_PATH` | 公開中は代表ページの正規パス。未公開サイトでは `/s/<site-slug>/` を指定し、安全な404を確認。どちらも D1 に登録された対象サイトの slug と照合 |
 | `STUDIO_SMOKE_ACCESS_TOKEN` | 対象プロジェクトのメンバーが取得した短命の Access application JWT |
 
 HTTPS origin は末尾に `/` を付けずに指定します。公開ページはリダイレクト後の URL のパスを指定します。JWT は [Cloudflare Access の CLI 手順](https://developers.cloudflare.com/cloudflare-one/tutorials/cli/) で取得できます。shell のトレースを無効にして実行し、JWT は配備用のサブシェル内に保持します。
@@ -37,7 +37,7 @@ HTTPS origin は末尾に `/` を付けずに指定します。公開ページ�
 2. 切り戻し先、Worker secret、Access セッション、Dashboard API のメンバー権限を確認します。現在の Worker は単一 version が 100% のトラフィックを受けている必要があります。
 3. Wrangler で D1 の適用状況を確認し、配備前に適用できる未適用 migration があれば適用します。再確認で未適用が 0 件になってから配備します。
 4. Wrangler で Worker と静的 asset を配備します。
-5. `/api/session`、対象 Dashboard の API と HTML、今回のビルドと一致する entry script と Dashboard の遅延読込 chunk、代表公開ページの `og:url` を確認します。認証情報は Studio のリクエストにだけ付け、リダイレクトは追跡しません。
+5. `/api/session`、対象 Dashboard の API と HTML、今回のビルドと一致する entry script と Dashboard の遅延読込 chunkを確認します。smoke path の slug が D1 の対象サイトに登録された slug と一致することも確認します。サイトが公開済みなら代表ページの `og:url`、未公開なら公開 path が no-store と安全ヘッダー付きの空の404を返すことを確認します。認証情報は Studio のリクエストにだけ付け、リダイレクトは追跡しません。
 
 失敗したステップを表示し、終了コードは非 0 になります。配備を開始した後の失敗では、切り戻し手順も表示します。
 
