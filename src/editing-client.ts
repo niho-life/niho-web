@@ -211,8 +211,7 @@ export function parseEditingPageDocumentEnvelope(value: unknown): PageDocument {
   } catch { throw new EditingApiClientError("invalid_response"); }
 }
 function parseEditingCatalogPage(value: unknown, siteId: string): EditorPage {
-  if (!plainRecord(value) || Object.keys(value).some((key) => !["siteId", "pageId", "locale", "title", "path", "kind", "visibility", "published"].includes(key))
-    || value.siteId !== siteId || typeof value.title !== "string" || !value.title.trim() || value.title.length > 300
+  if (!plainRecord(value) || value.siteId !== siteId || typeof value.title !== "string" || !value.title.trim() || value.title.length > 300
     || value.path !== undefined && (typeof value.path !== "string" || value.path.length > 300 || /[\u0000-\u001f\u007f]/u.test(value.path))
     || value.kind !== undefined && !["page", "template", "shared"].includes(String(value.kind))
     || value.visibility !== undefined && !["public", "private"].includes(String(value.visibility))
@@ -593,7 +592,7 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/pages.change`, "POST", { expectedVersion, change }, signal);
       if (response.status === 409 && body.error === "version_conflict") return { status: "conflict" };
       if (!response.ok) throw apiFailure(body, response.status);
-      if (!exactKeys(body, ["status", "page"]) || body.status !== "applied") throw new EditingApiClientError("invalid_response", response.status);
+      if (!plainRecord(body) || body.status !== "applied" || !Object.hasOwn(body, "page")) throw new EditingApiClientError("invalid_response", response.status);
       const page = parseEditingCatalogPage(body.page, siteId);
       if (page.locale !== (change.action === "create" ? change.locale : change.target.locale)
         || change.action !== "create" && page.pageId !== change.target.pageId
@@ -1054,7 +1053,7 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       const { response, body } = await send(path, "POST", { expectedVersion, operationId, ...(redirect === undefined ? {} : { redirect }) }, signal);
       if (response.status === 409 && (body.error === "version_conflict" || body.status === "conflict")) return { status: "conflict" };
       if (!response.ok) throw apiFailure(body, response.status);
-      if (!exactKeys(body, ["status", "operationId", "item"]) || body.status !== "publishing" || body.operationId !== operationId
+      if (!plainRecord(body) || body.status !== "publishing" || body.operationId !== operationId
         || !plainRecord(body.item) || body.item.id !== target.itemId || body.item.version !== expectedVersion || body.item.status !== "publishing")
         throw new EditingApiClientError("invalid_response", response.status);
       return { status: "publishing", operationId };
