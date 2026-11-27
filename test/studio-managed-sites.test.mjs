@@ -240,12 +240,15 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   const created = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Static fixture", slug: "static-fixture", locale: "ja" }), 201);
   const api = `/api/projects/${created.projectId}/sites/${created.siteId}/editor`;
   const draft = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/home`), 200);
+  const linkedDocument = structuredClone(draft.document);
+  linkedDocument.body[0].children.push({ type: "element", id: "about-link", tag: "a", attrs: { href: "/about" }, children: [{ type: "text", text: "About" }] });
+  const saved = await body(await h.send(MANAGEMENT_ORIGIN, "PUT", `${api}/home/draft`, { expectedVersion: draft.version, document: linkedDocument }), 200);
   const target = { siteId: created.siteId, pageId: "home", locale: "ja" };
   const plan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/release-plan`, {
-    target, expectedVersion: draft.version, action: "publish"
+    target, expectedVersion: saved.version, action: "publish"
   }), 200);
   await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/release`, {
-    expectedVersion: draft.version, confirmationToken: plan.confirmationToken
+    expectedVersion: saved.version, confirmationToken: plan.confirmationToken
   }), 200);
 
   const state = h.sqlite.prepare("SELECT version, manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(created.siteId);
@@ -258,6 +261,7 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   assert.equal(publication.artifact_key, `managed-sites/${created.siteId}/artifacts/${publication.artifact_digest}.html`);
   assert.equal(publication.content_type, "text/html; charset=utf-8");
   assert.ok(h.objects.has(publication.artifact_key));
+  assert.match(h.objects.get(publication.artifact_key), /href="\/s\/static-fixture\/about"/u);
 
   const previewUrl = "https://preview.sites.example/s/static-fixture/";
   const preview = await publishedSiteRequest(new Request(previewUrl), h.env);
@@ -304,6 +308,10 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   assert.equal(aboutResponse.status, 200);
   assert.equal(aboutResponse.headers.get("X-Robots-Tag"), "noindex, nofollow");
   assert.match(await aboutResponse.text(), /<title>About<\/title>/u);
+  const makePrivate = { action: "visibility", target: aboutTarget, visibility: "private" };
+  const makePrivatePlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/page-changes/prepare`, { change: makePrivate }), 200);
+  await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/page-changes/apply`, { change: makePrivate, confirmationToken: makePrivatePlan.confirmationToken }), 200);
+  assert.equal((await publishedSiteRequest(new Request("https://preview.sites.example/s/static-fixture/about"), h.env)).status, 404);
   const latestState = h.sqlite.prepare("SELECT manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(created.siteId);
   const latest = JSON.parse(h.objects.get(latestState.manifest_key));
   assert.equal(latest.routes.length, 2);

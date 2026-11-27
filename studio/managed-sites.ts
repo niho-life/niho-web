@@ -606,12 +606,13 @@ async function applyRelease(request: Request, db: ManagedD1, actor: ManagedActor
       const sourceDocument = parsePageDocument(JSON.parse(source.document_json) as unknown);
       document = parsePageDocument({ ...sourceDocument, revision });
     } catch { return json({ error: "invalid_managed_page_storage" }, 503); }
-    const pageMetadata = resolvePageMetadata({ document, domain: origin, path: row.path, visibility: "public" });
+    const publicDocument = prefixedDocument(document, `/s/${row.slug}`);
+    const pageMetadata = resolvePageMetadata({ document: publicDocument, domain: origin, path: row.path, visibility: "public" });
     const publicUrl = managedPageUrl(origin, row.slug, row.path);
     const metadata = { ...pageMetadata, ...(pageMetadata.canonical ? { canonical: publicUrl } : {}),
       openGraph: { ...pageMetadata.openGraph, url: publicUrl } };
     const { renderPageToHtml } = await import("../src/server.js");
-    const html = `<!doctype html><html lang="${escapeAttribute(document.locale)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${renderPageHead(metadata)}</head><body>${renderPageToHtml(document)}</body></html>`;
+    const html = `<!doctype html><html lang="${escapeAttribute(publicDocument.locale)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${renderPageHead(metadata)}</head><body>${renderPageToHtml(publicDocument)}</body></html>`;
     try {
       prepared = await preparePublishedSite({ bucket: store.bucket, siteId: row.site_id, publicationId, pageId: row.page_id,
         locale: row.locale, path: row.path, sourceRevision: Number(payload.sourceRevision), html,

@@ -256,7 +256,7 @@ export async function publishedSiteRequest(request: Request, env: PublicEnv): Pr
       FROM managed_page_publications
      WHERE site_id = ?1 AND page_id = ?2 AND locale = ?3 AND artifact_key = ?4 AND artifact_digest = ?5
        AND EXISTS (SELECT 1 FROM managed_pages WHERE site_id = ?1 AND page_id = ?2 AND locale = ?3
-                   AND published_publication_id = managed_page_publications.id)
+                   AND published_publication_id = managed_page_publications.id AND visibility = 'public')
      ORDER BY created_at DESC, rowid DESC LIMIT 1`).bind(host.site_id, route.pageId, route.locale, route.artifactKey, route.digest)
       .first<ArtifactRow>();
     if (!row || row.content_type !== route.contentType || row.content_security_policy !== route.contentSecurityPolicy) return notFound(noindex);
