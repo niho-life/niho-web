@@ -1,129 +1,71 @@
-# AIによるサイト編集手順
+# AI による Studio 内サイトの編集
 
-`niho-edit` は、ホストの編集APIを通じてページを読み、操作を検証して下書きへ適用し、公開計画を確認して公開します。公開HTMLを直接編集しないでください。ホストが公開したHTMLは生成物で、編集の正本ではありません。
+AI は Studio の下書きを編集し、保存内容と公開範囲を確かめてから公開します。公開 HTML を直接編集しません。Studio が正本で、GUI と `niho-edit --studio` は同じデータと API を使います。
 
 ## 接続
 
-Node.js 22以上と、対象サイトの短期 `NIHO_EDIT_TOKEN` が必要です。ホストoriginとsite IDはホストの担当者から受け取ります。originは `https://` で始まるAPIのoriginを指定します。Accessで保護されたoriginでは、対になる `CF_ACCESS_CLIENT_ID` と `CF_ACCESS_CLIENT_SECRET` もプロセス環境へ渡してください。Studio-native CMSを使うときはStudio originを設定し、toolの `args` に `--studio` を加えます。Studioでは短期Access user tokenを `NIHO_EDIT_TOKEN` に渡すか、Service Authの対になる資格情報を渡してください（[Studio-native CMSのCLI契約](studio-cli.md#studio-native-cms)）。tokenとAccess資格情報をCLI引数、MCPのtool引数、編集ファイルへ入れないでください。
+Node.js 22 以上と Studio への認証が必要です。Access の短期 token は `NIHO_EDIT_TOKEN`、サービス認証を使う場合は対になる `CF_ACCESS_CLIENT_ID` と `CF_ACCESS_CLIENT_SECRET` を環境から渡します。認証情報をコマンド引数、編集ファイル、Issue、ログへ書かないでください。
 
-CLIは各コマンドの前に `--origin` と `--site` を指定します。
-
-```sh
-niho-edit --origin https://site.example --site site-id discover
-```
-
-MCPサーバーは同じCLIをstdioで呼びます。ツール名はCLIのコマンド名と一致し、`args` にそのコマンドの引数、`stdin` に `-` で読むJSON本文を渡します。MCP接続時のoriginとsiteは固定され、tool引数から変更できません。
-
-Claude Codeの `.mcp.json` 例です。環境変数はシェルやSecret Managerから設定してください。
-
-```json
-{
-  "mcpServers": {
-    "niho-edit": {
-      "type": "stdio",
-      "command": "niho-edit",
-      "args": ["--origin", "https://site.example", "--site", "site-id", "mcp"],
-      "env": {
-        "NIHO_EDIT_TOKEN": "${NIHO_EDIT_TOKEN}",
-        "CF_ACCESS_CLIENT_ID": "${CF_ACCESS_CLIENT_ID}",
-        "CF_ACCESS_CLIENT_SECRET": "${CF_ACCESS_CLIENT_SECRET}"
-      }
-    }
-  }
-}
-```
-
-Codexの `config.toml` 例です。`env_vars` は親プロセスの環境から渡す変数を選びます。
-
-```toml
-[mcp_servers.niho_edit]
-command = "niho-edit"
-args = ["--origin", "https://site.example", "--site", "site-id", "mcp"]
-env_vars = ["NIHO_EDIT_TOKEN", "CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET"]
-```
-
-Studio-native CMSでは、MCP設定のoriginをStudio originにし、`cms-discover` / `cms-v2` などのtoolを呼ぶとき `args` に `--studio` を加えます。CLIと同じく公開するコマンドは接続先の capabilities に従います。
-
-## 読む・探す
-
-まず `outline` でページ構造を確認します。対象を特定したら `find` または `get` で必要な部分だけ読みます。長いページをまるごと読むより、操作対象の安定IDと現在値を確認してから変更してください。
-
-CLIの例:
+コマンドには Studio の origin と対象 site ID を指定します。
 
 ```sh
-niho-edit --origin https://site.example --site site-id outline home --locale ja --depth 2
-niho-edit --origin https://site.example --site site-id find home --locale ja --text "古い見出し"
-niho-edit --origin https://site.example --site site-id find home --locale ja --name heroTitle
-niho-edit --origin https://site.example --site site-id find home --locale ja --uses-token brand
-niho-edit --origin https://site.example --site site-id get home heading --locale ja
+niho-edit --studio --origin https://studio.example --site site-id discover
 ```
 
-MCPでは同じ操作を `outline` / `find` / `get` ツールで呼び、引数列を `args` に渡します。`find --name` は名前、`find --uses-token` は利用するdesign token、`get` のnode IDはページ文書のアンカーです。`read` の結果には編集対象の文書と `version` が含まれます。
+## 読む
 
-## 直す・確かめる
-
-編集はページ操作のJSON配列にします。次の例は見出し文字列と `brand` tokenの色を変更します。IDは、対象ページの `outline` / `find` / `get` が返した値に置き換えてください。
-
-```json
-[
-  { "type": "text", "parentId": "heading", "childPath": [0], "value": "新しい見出し" },
-  { "type": "style", "nodeId": "heading", "breakpoint": "base", "property": "color", "value": { "token": "brand" } }
-]
-```
-
-最初に `apply --dry-run` を実行します。`stdin` に上のJSONを渡し、`expected-version` には直前に読んだ版、`operation-id` にはUUID v4を指定します。応答の `status`、`diff`、`touched`、`validation` を確認し、対象・文字列・tokenが意図どおりであることを確かめてください。
+まず `pages-catalog` で対象ページを確認します。ページ全体が必要なときは `read` で文書と版を読み、狭い変更では `outline`・`find`・`get` で対象箇所だけ確認します。サイト共通設定や CMS は、それぞれ専用の読取操作を使います。
 
 ```sh
-niho-edit --origin https://site.example --site site-id apply home --locale ja \
-  --ops - --dry-run --expected-version '<read-version>' \
-  --operation-id '<uuid-v4>' <<'JSON'
-[{"type":"text","parentId":"heading","childPath":[0],"value":"新しい見出し"},{"type":"style","nodeId":"heading","breakpoint":"base","property":"color","value":{"token":"brand"}}]
-JSON
+niho-edit --studio --origin https://studio.example --site site-id pages-catalog
+niho-edit --studio --origin https://studio.example --site site-id read home --locale ja > page.json
+niho-edit --studio --origin https://studio.example --site site-id outline home --locale ja --depth 2
 ```
 
-差分を確認してから、同じ操作を `--dry-run` なしで適用します。MCPの場合は同じ `apply` ツールを使い、`args` から `--dry-run` を外し、同じJSONを `stdin` に渡します。下書きが保存されたら `preview` で表示幅ごとの確認を行います。ホストがpreviewを提供しない場合は、公開計画へ進む前にホスト担当者へ確認してください。
+## 直して保存する
 
-MCPのtool入力は次の形です。`preview` は `--widths 375,768,1280` を加えて呼び、実適用とpreview後に `release-plan` を呼びます。
+文章や属性など一部の変更は、`apply` に必要な操作だけを渡します。大きく編集した文書は `save` で保存できます。どちらも直前に読んだ版を指定し、サーバー側の版照合を通します。変更内容を見直し、対象外の下書きや共通設定を含めないでください。
 
-```json
-{
-  "name": "apply",
-  "arguments": {
-    "args": ["home", "--locale", "ja", "--ops", "-", "--dry-run", "--expected-version", "v1", "--operation-id", "123e4567-e89b-42d3-a456-426614174000"],
-    "stdin": "[{\"type\":\"text\",\"parentId\":\"heading\",\"childPath\":[0],\"value\":\"新しい見出し\"},{\"type\":\"style\",\"nodeId\":\"heading\",\"breakpoint\":\"base\",\"property\":\"color\",\"value\":{\"token\":\"brand\"}}]"
-  }
-}
+```sh
+niho-edit --studio --origin https://studio.example --site site-id apply home --locale ja \
+  --ops edits.json --expected-version '<read-version>' --operation-id '<uuid-v4>'
 ```
+
+保存後は応答の版と差分を確かめ、Studio のプレビューで表示を確認します。サイトの SEO 設定、公開許可 origin、リダイレクト、共通スタイルは専用の `site-seo-*`、`site-public-*`、`site-redirects-*`、`styles` 操作を使います。
+
+版が競合したら、最新の文書を読み直して他の人の変更を確認し、自分の意図した変更だけを適用し直します。古い文書をそのまま保存して上書きしないでください。
 
 ## 公開する
 
-適用結果の最新 `version` を使い、`release-plan --action publish` で公開計画を作成します。計画のsite、page、locale、版、差分を確認してから、同じ計画を `release` に渡します。公開時の `operation-id` は先に決め、通信が途切れて結果を受け取れない場合も、同じ計画と同じIDで状態を確かめて再試行してください。
+ページの公開は、そのページの下書きを1回の操作で公開します。保存済みの版を確認し、公開対象をコマンドに明示します。
 
 ```sh
-niho-edit --origin https://site.example --site site-id release-plan home --locale ja \
-  --action publish --expected-version '<applied-version>' > release-plan.json
-niho-edit --origin https://site.example --site site-id release home --locale ja \
-  --json release-plan.json --operation-id '<uuid-v4>'
+niho-edit --studio --origin https://studio.example --site site-id publish home --locale ja --expected-version '<saved-version>'
 ```
 
-MCPでは `release-plan` の応答をレビューし、そのJSONを次の `release` ツール呼出しの `stdin` に渡して `--json -` を指定できます。確認していない公開計画は適用しないでください。
+複数の変更は `changes` で一覧を確認し、すべてをまとめて公開します。共通設定だけを公開する場合も専用の操作を使います。
 
-```json
-{
-  "name": "release",
-  "arguments": {
-    "args": ["home", "--locale", "ja", "--json", "-", "--operation-id", "<new-uuid-v4>"],
-    "stdin": "<reviewed-release-plan-json>"
-  }
-}
+```sh
+niho-edit --studio --origin https://studio.example --site site-id changes
+niho-edit --studio --origin https://studio.example --site site-id publish --changed
+niho-edit --studio --origin https://studio.example --site site-id publish --site
 ```
 
-## 競合・検証エラー
+日常の編集で `publish --all` は使いません。これは初回移行や生成コード変更後の全ページ再生成に限る CLI 操作です。
 
-- **409 `version_conflict`**: `read` で最新文書と版を取り直し、意図した変更を現行文書へ当て直します。新しい版で `apply --dry-run` からやり直してください。古い操作をそのまま再送しないでください。
-- **422の検証エラー**: 応答の `index`、`nodeId`、`reason` を使って該当操作を修正し、もう一度dry-runします。検証エラーを無視して公開へ進みません。
-- **応答を受け取れないタイムアウト**: 書込結果を読み直すか、同じ入力・同じoperation IDで再試行します。別の入力に同じIDを使わず、新しい操作を始める場合は新しいUUID v4にします。
+公開後の履歴と復元は次のとおりです。サイト全体を戻す場合は履歴の release ID を使い、ページだけを戻す場合はページ履歴から版を選びます。
 
-## MCPツールとCLIの対応
+```sh
+niho-edit --studio --origin https://studio.example --site site-id site-history
+niho-edit --studio --origin https://studio.example --site site-id rollback '<release-id>'
+niho-edit --studio --origin https://studio.example --site site-id history home --locale ja
+niho-edit --studio --origin https://studio.example --site site-id restore home '<revision>' --locale ja --expected-version '<current-version>'
+```
 
-`niho-edit --help` に掲載する各コマンドを、同名のMCP toolとして提供します。toolはCLIと同じ引数列を `args` で受け、標準入力を使うコマンドは `stdin` を渡します。実行、認証、入力検証、応答形式は既存CLIを通るため、MCP専用の編集操作はありません。
+公開応答の URL・警告・処理時間を記録し、公開サイトの表示を確認します。通信が切れた場合は、新しい公開を始める前に履歴と現在の版を読み、結果が反映済みか確かめます。
+
+## 旧ホストの手順
+
+鎌倉の切り替えが終わるまでは旧ホスト経路も残っています。その経路は `--studio` を付けない既存の `apply`・`release-plan`・`release` を使います。これは移行期間だけの手順で、Studio 内サイトの標準手順とは分けて扱います。切り替え後は外部ホスト向けの経路を #492 で撤去します。
+
+AI がサイトをファイルとして取得・編集・同期する `pull` → `check` → `push` は、利用可能になった後にこの手順へ追加します。詳細な引数と JSON 形式は [Studio CLI の契約](studio-cli.md) を参照してください。
