@@ -10,6 +10,7 @@ import { ManagedSiteCmsWorkspace, SiteCmsWorkspace } from "./site-cms.js";
 import { SiteTranslationsWorkspace } from "./site-translations.js";
 import { EDITOR_PERFORMANCE_EVENT, readEditorPerformance, readEditorReadPerformance, type EditorPerformanceName } from "../src/editor-performance.js";
 import { LazyScreenBoundary } from "./lazy-screen-boundary.js";
+import { createBrowserRecoveryStore } from "../src/history.js";
 
 type Role = "owner" | "editor";
 type Screen =
@@ -36,9 +37,32 @@ type InvitationPreview = {
 type InvitationState =
   | { readonly status: "loading" }
   | { readonly status: "unavailable" }
+  | { readonly status: "wrongAccount" }
   | { readonly status: "accepting" }
   | { readonly status: "error" }
   | { readonly status: "ready"; readonly value: InvitationPreview };
+
+const INVITATION_RESUME_KEY = "niho-studio:invitation-resume:v1";
+const INVITATION_RESUME_LIFETIME_MS = 10 * 60 * 1000;
+
+function validInvitationToken(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9_-]{43}$/u.test(value);
+}
+
+function invitationTokenFromResume(projectId: string, siteId: string): string {
+  try {
+    const raw = window.sessionStorage.getItem(INVITATION_RESUME_KEY);
+    window.sessionStorage.removeItem(INVITATION_RESUME_KEY);
+    if (!raw) return "";
+    const value = record(JSON.parse(raw));
+    return value.projectId === projectId && value.siteId === siteId && validInvitationToken(value.token)
+      && typeof value.expiresAt === "number" && value.expiresAt > Date.now() && value.expiresAt <= Date.now() + INVITATION_RESUME_LIFETIME_MS
+      ? value.token : "";
+  } catch {
+    try { window.sessionStorage.removeItem(INVITATION_RESUME_KEY); } catch { /* storage が使えない */ }
+    return "";
+  }
+}
 
 const KamakuraEditor = lazy(() => import("./kamakura-editor.js").then(({ KamakuraEditor: Component }) => ({ default: Component })));
 const ManagedEditor = lazy(() => import("./managed-editor.js").then(({ ManagedEditor: Component }) => ({ default: Component })));
@@ -58,7 +82,11 @@ function screenFromLocation(): Screen {
   }
   const invite = /^\/projects\/([A-Za-z][A-Za-z0-9_-]{0,79})\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/invite\/?$/u.exec(window.location.pathname);
   if (invite) {
-    const token = new URLSearchParams(window.location.search).get("token") ?? new URLSearchParams(window.location.hash.slice(1)).get("token") ?? "";
+    const queryToken = new URLSearchParams(window.location.search).get("token") ?? new URLSearchParams(window.location.hash.slice(1)).get("token") ?? "";
+    if (queryToken) {
+      try { window.sessionStorage.removeItem(INVITATION_RESUME_KEY); } catch { /* storage が使えない */ }
+    }
+    const token = queryToken || invitationTokenFromResume(invite[1]!, invite[2]!);
     return { kind: "invite", projectId: invite[1]!, siteId: invite[2]!, token };
   }
   const editor = parseProjectEditorPath(window.location.pathname);
@@ -173,7 +201,21 @@ function AssetsHub({ onOpenEditor, onOpenCms }: { readonly onOpenEditor: () => v
   </section>;
 }
 
-function InvitationAcceptance({ screen, expire, accepted }: { readonly screen: Extract<Screen, { kind: "invite" }>; readonly expire: () => void; readonly accepted: () => void }) {
+function AccountMenu({ identity, onLogout }: { readonly identity: { readonly subject: string; readonly email: string }; readonly onLogout: () => void }) {
+  return <details className="studio-account"><summary><span className="studio-account-avatar" aria-hidden="true">{Array.from(identity.email)[0]?.toUpperCase() ?? "?"}</span><span className="studio-account-email">{identity.email}</span></summary><div>
+    <small>Google / Cloudflare Access</small><label>Access ID <code>{identity.subject}</code></label>
+    <p>Cloudflare Access からログアウトします。同じ Access セッションを使う他のアプリもログアウトします。この端末の未保存作業の復旧データは削除されますが、保存済みの下書きと公開内容は保持されます。</p>
+    <button type="button" onClick={onLogout}>ログアウト</button>
+  </div></details>;
+}
+
+function InvitationAcceptance({ screen, expire, accepted, onSwitchAccount, logoutError }: {
+  readonly screen: Extract<Screen, { kind: "invite" }>;
+  readonly expire: () => void;
+  readonly accepted: () => void;
+  readonly onSwitchAccount: () => void;
+  readonly logoutError: boolean;
+}) {
   const [state, setState] = useState<InvitationState>({ status: "loading" });
   const base = `/api/projects/${encodeURIComponent(screen.projectId)}/sites/${encodeURIComponent(screen.siteId)}/invitations`;
   useEffect(() => {
@@ -185,6 +227,7 @@ function InvitationAcceptance({ screen, expire, accepted }: { readonly screen: E
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
         if (error instanceof SessionExpiredError) expire();
+        else if (error instanceof ApiError && error.code === "invitation_email_mismatch") setState({ status: "wrongAccount" });
         else if (error instanceof ApiError && (error.status === 404 || error.status === 409)) setState({ status: "unavailable" });
         else setState({ status: "error" });
       });
@@ -198,6 +241,7 @@ function InvitationAcceptance({ screen, expire, accepted }: { readonly screen: E
       accepted();
     } catch (error) {
       if (error instanceof SessionExpiredError) expire();
+      else if (error instanceof ApiError && error.code === "invitation_email_mismatch") setState({ status: "wrongAccount" });
       else if (error instanceof ApiError && (error.status === 404 || error.status === 409)) setState({ status: "unavailable" });
       else setState({ status: "error" });
     }
@@ -205,6 +249,13 @@ function InvitationAcceptance({ screen, expire, accepted }: { readonly screen: E
 
   if (state.status === "loading") return <Notice title="招待を確認しています">ログイン中のメールアドレスと招待を照合しています。</Notice>;
   if (state.status === "accepting") return <Notice title="参加処理を進めています">招待を一度だけ使用し、メンバー登録しています。</Notice>;
+  if (state.status === "wrongAccount") return <main className="studio-state studio-invite-accept">
+    <h1>別のアカウントでログインしてください</h1>
+    <p>この招待は、現在ログイン中のアカウント宛てではありません。</p>
+    <p>アカウントを切り替えると、招待 URL を引き継いで再度確認します。</p>
+    {logoutError && <p role="alert">招待を引き継げませんでした。このタブの保存領域が利用できることを確認して、もう一度お試しください。</p>}
+    <button type="button" onClick={onSwitchAccount}>アカウントを切り替える</button>
+  </main>;
   if (state.status === "unavailable") return <Notice title="この招待は利用できません">宛先が異なるか、期限切れ・承諾済み・取消済みの招待です。オーナーへ新しい招待を依頼してください。</Notice>;
   if (state.status === "error") return <Notice title="招待を確認できませんでした">時間をおいて、受け取った URL から再度お試しください。</Notice>;
   return <main className="studio-state studio-invite-accept"><h1>{state.value.projectName} に参加</h1><p>{state.value.siteName} の <strong>{roleLabel(state.value.role)}</strong> として招待されています。</p><dl><div><dt>有効期限</dt><dd>{dateLabel(state.value.expiresAt)}</dd></div></dl><p>参加するには、下のボタンで招待を明示的に承諾してください。招待は一度だけ使用できます。</p><button type="button" onClick={() => { void accept(); }}>招待を承諾する</button></main>;
@@ -217,9 +268,32 @@ function App() {
   const [creatingProject, setCreatingProject] = useState(false);
   const [directoryQuery, setDirectoryQuery] = useState("");
   const [siteAdmin, setSiteAdmin] = useState<{ readonly key: string; readonly value: SiteAdmin | null } | null>(null);
+  const [logoutError, setLogoutError] = useState(false);
   /** 戻る・進むで CMS・翻訳の URL が変わったら、その画面を URL で開き直す（画面の中の移動では作り直さない） */
   const [viewEpoch, setViewEpoch] = useState(0);
   const expire = useCallback(() => setSession({ status: "expired" }), []);
+  const recoveryActorId = session.status === "ready" ? session.identity.subject : null;
+  const recovery = useMemo(() => recoveryActorId ? createBrowserRecoveryStore({ scope: recoveryActorId }) : null, [recoveryActorId]);
+  const logout = useCallback((invite?: Extract<Screen, { kind: "invite" }>) => {
+    setLogoutError(false);
+    const returnPath = invite
+      ? `/projects/${encodeURIComponent(invite.projectId)}/sites/${encodeURIComponent(invite.siteId)}/invite`
+      : "/";
+    if (invite) {
+      try {
+        if (!validInvitationToken(invite.token)) throw new Error("invalid invitation token");
+        window.sessionStorage.setItem(INVITATION_RESUME_KEY, JSON.stringify({ projectId: invite.projectId, siteId: invite.siteId,
+          token: invite.token, expiresAt: Date.now() + INVITATION_RESUME_LIFETIME_MS }));
+      } catch {
+        setLogoutError(true);
+        return;
+      }
+    }
+    recovery?.clear();
+    const logoutUrl = new URL("/cdn-cgi/access/logout", window.location.origin);
+    logoutUrl.searchParams.set("returnTo", new URL(returnPath, window.location.origin).href);
+    window.location.assign(logoutUrl.href);
+  }, [recovery]);
 
   const loadSession = useCallback(() => {
     const controller = new AbortController();
@@ -372,10 +446,14 @@ function App() {
   if (session.status === "expired") return <Notice title="セッションの確認が必要です" retry={() => window.location.reload()}>Cloudflare Access から再度ログインしてください。</Notice>;
   if (session.status === "error") return <Notice title="Studio を読み込めませんでした" retry={loadSession}>時間をおいて再度お試しください。</Notice>;
 
-  if (screen.kind === "invite") return <InvitationAcceptance screen={screen} expire={expire} accepted={() => {
-    navigate({ kind: "dashboard", projectId: screen.projectId, siteId: screen.siteId });
-    loadSession();
-  }} />;
+  const account = <AccountMenu identity={session.identity} onLogout={() => logout()} />;
+  if (screen.kind === "invite") return <div className="studio-app">
+    <header className="studio-shell-header"><a className="studio-logo" href="/" onClick={(event) => { event.preventDefault(); navigate({ kind: "directory" }); }}><span>NIHO</span><b>Studio</b></a><span />{account}</header>
+    <InvitationAcceptance screen={screen} expire={expire} logoutError={logoutError} onSwitchAccount={() => logout(screen)} accepted={() => {
+      navigate({ kind: "dashboard", projectId: screen.projectId, siteId: screen.siteId });
+      loadSession();
+    }} />
+  </div>;
   if (session.directory.status === "forbidden") return <Notice title="アクセス権がありません" retry={loadSession}>Studio 管理者にプロジェクト参加資格を確認してください。</Notice>;
 
   const admin = screen.kind === "dashboard" && siteAdmin?.key === dashboardKey ? siteAdmin.value : null;
@@ -406,8 +484,6 @@ function App() {
   // プロジェクトの中では Dashboard の帯が 1 段のヘッダーになる（Studio のヘッダーを重ねない）。アカウントはその帯の右端に置く
   const projectShell = screen.kind === "dashboard" && selected !== undefined;
   const editorPerformanceEnabled = screen.kind === "editor" && new URLSearchParams(window.location.search).get("editorPerf") === "1";
-  const account = <details className="studio-account"><summary><span className="studio-account-avatar" aria-hidden="true">{Array.from(session.identity.email)[0]?.toUpperCase() ?? "?"}</span><span className="studio-account-email">{session.identity.email}</span></summary><div><small>Google / Cloudflare Access</small><label>Access ID <code>{session.identity.subject}</code></label></div></details>;
-
   return <div className={`studio-app${kamakuraEditor || managedEditor ? " studio-editor-shell" : ""}`}>
     {!projectShell && <header className="studio-shell-header"><a className="studio-logo" href="/" onClick={screen.kind === "editor" ? undefined : (event) => { event.preventDefault(); navigate({ kind: "directory" }); }}><span>NIHO</span><b>Studio</b></a>{screen.kind === "directory" ? <label className="studio-directory-search"><span>プロジェクトを検索</span><input type="search" value={directoryQuery} onChange={(event) => setDirectoryQuery(event.target.value)} placeholder="プロジェクトを検索" /></label> : <span /> }{account}</header>}
     <div className={`studio-content${screen.kind === "directory" ? " studio-content-directory" : ""}${screen.kind === "editor" ? " studio-content-editor" : ""}${kamakuraEditor ? " studio-editor-content" : ""}${projectShell ? " studio-content-project" : ""}`}>
