@@ -16,6 +16,24 @@ niho-edit --studio --origin https://studio.example --site demo-site site-redirec
 
 `site-redirects-read` は `{ redirects, version }` を返します。各項目は `{ locale, fromPath, toPath }` で、パスはサイト内の相対パスです。保存は読み込んだversionとの照合を行い、重複した転送元や転送ループは拒否します。ページのURLを変更したとき自動作成された転送も、同じCLIとGUI一覧から確認・削除できます。
 
+## Studio内サイトの公開配信設定と埋め込み
+
+GUI 操作との対応は `niho-edit --help` の一覧を参照してください。
+
+```sh
+niho-edit --studio --origin https://studio.example --site demo-site site-public-read > public-settings.json
+niho-edit --studio --origin https://studio.example --site demo-site site-public-save --json public-settings.json
+niho-edit --studio --origin https://studio.example --site demo-site page-embed-register home --locale ja --json embed.json
+```
+
+`site-public-read` は `{ domain: { hostname, noindex, version }, origins: { frameOrigins, resourceOrigins, version } }` を返します。独自ドメインにはホスト名を指定し、解除は `hostname: null` を使います。各 origin は `https://` で始まる origin の配列で指定します。編集した JSON を両方の版を保って `site-public-save` へ渡します。変更する項目だけを保存する場合は、`domain` または `origins` の片方を指定できます。`origins.version` は SEO 設定と共有します。
+
+保存時に版が競合したら読み直して編集内容を確認します。両方を変更した際にドメインだけが保存されて後続の許可 origin の保存が失敗すると、CLI は失敗として終了し、`partial_save` と保存済みの項目を返します。再読込してから残りを適用してください。
+
+配信設定は GUI と同じ owner 権限を使います。機械認証には `site.settings.read` / `site.settings.write` の grant が必要です。対応する HTTP 操作は GET `/api/edit/v2/sites/{siteId}/operations/site.public.read` と PUT `/api/edit/v2/sites/{siteId}/operations/site.public.save` です。
+
+`embed.json` の `src` に対象ページ用に NIHO で発行した埋め込み URL を指定します。出力の `result.refId` をページの `ManagedEmbed` ブロックに設定して、`apply` または `save` で保存します。埋め込み先の origin はサイト設定で許可してください。HTTP 操作は POST `/api/edit/v2/sites/{siteId}/operations/pages.embed-register/{pageId}` で、入力は `{ locale, src }` です。GUI と同じ編集権限を使い、機械認証には `pages.edit` の grant が必要です。
+
 ## 鎌倉のページ編集と公開
 
 Studio Worker は Access で検証済みの service identity と、対象 Project・Site の `studio_cli_grants` を照合する。現在のオーナーが委任した有効な `pages.read`、`pages.edit`、`pages.publish` がそれぞれ読取、保存、公開に必要になる。公開は計画を作り、確認した計画と一意の operation ID を渡して適用する。共通 API は `/api/edit/v1/sites/:siteId` 配下で、利用できる操作を `discover` が返す。CMS の読み取り・編集・公開も、応答に含まれる `cms.*` 操作を対応する grant で呼び出す。
