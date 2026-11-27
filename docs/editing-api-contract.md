@@ -53,6 +53,8 @@ Kamakura の Studio GUI は editor snapshot profile から共通APIでページs
 | `assets.delete` | POST | `/sites/{siteId}/operations/assets.delete/{provider}/{assetId}` | `assets.delete` | `{ expectedVersion }` | deleted, in-use, conflict, or rejection |
 | `assets.restore` | POST | `/sites/{siteId}/operations/assets.restore/{provider}/{assetId}` | `assets.delete` | `{ expectedVersion }` | restored, conflict, or rejection |
 
+`createPageEditingApiClient().publishSiteNow()` の成功結果では、`elapsedMs` はclientが呼出しから応答受領までに測った壁時計時間、`serverElapsedMs` はHTTP応答の `elapsedMs` です。Cloudflare Workersでは `Date.now()` と `performance.now()` がI/Oの間だけ進み、CPU処理時間を測れないため、全量公開の判断にはGUI・CLI側の `elapsedMs` を使います。直接HTTPを呼ぶ場合は、呼出し側で操作全体を計測してください（[Cloudflare Workersのtimer仕様](https://developers.cloudflare.com/workers/runtime-apis/performance/)）。
+
 `pages.preview-intent` は、ページ読取権限を持つactorに対してホストが発行する短期プレビューURLです。`PageEditingHostAdapter.createPagePreviewIntent(actor, target)` を実装したhostだけがdiscoveryに公開できます。ホストはURLにbearer token、Access資格情報、cookieなどを含めず、サーバー側の不透明な許可記録をactor・site/page/locale・発行時の文書版・components/presentation/翻訳の依存版・期限・利用回数上限に結び付けます。プレビューHTMLのGET時に認証主体とこれらの版・期限・利用回数を再検証し、一致しない場合は拒否します。CLIは認証header付きでHTMLを一度だけ取得し、幅ごとの撮影には同じメモリ内HTMLを使います。
 
 プレビューHTMLのhost responseには `Cache-Control: no-store`、`Referrer-Policy: no-referrer`、`X-Robots-Tag: noindex` を付け、公開ページ用cache経路を通しません。共通APIが返すintent JSONにも `PAGE_PREVIEW_INTENT_HEADERS` を付けますが、プレビューHTML自体の安全な配信はhostの責務です。HTMLは公開時と同じrenderer・登録block・presentation・host viewで描画します。clientは期限を15分以内に制限し、HTTPSかつAPIと同じoriginのURLだけを受け入れます。
