@@ -14,6 +14,8 @@ export type StyleLibraryProps = {
   usageScope?: "document" | "site" | undefined;
   origins?: Readonly<Record<string, string>> | undefined;
   onPromote?: ((kind: "token" | "textStyle", name: string) => void) | undefined;
+  /** サイト共通の定義 key を変える原子的な操作。 */
+  onRename?: ((kind: "token" | "textStyle", name: string, nextName: string) => string | undefined) | undefined;
   canPromote?: ((kind: "token" | "textStyle", name: string) => boolean) | undefined;
   /** ここでは定義を変更・削除できない共通の値（token）と、その理由。要素への適用はできる。 */
   readOnlyToken?: ((name: string) => string | undefined) | undefined;
@@ -41,7 +43,7 @@ const defaultLabel = (node: PageNode) => node.type === "text" ? "テキスト" :
 const sizeText = (value: StyleValue | undefined, document: PageDocument) => { const resolved = resolveValue(document, value); return resolved === undefined ? "—" : typeof resolved === "number" ? `${resolved}px` : resolved; };
 
 /** 左レールの「スタイル」。共通カラー・テキストスタイル・その他の共通の値を props だけで編集する独立部品。 */
-export function StyleLibrary({ document, selection, apply, select, disabled, breakpoints = defaultBreakpoints, breakpoint = "base", until, preview, pending = noop, fieldKey = "library", nodeLabel = defaultLabel, scopeLabel, usageScope = "document", origins, onPromote, canPromote, readOnlyToken, reservedNames = [] }: StyleLibraryProps) {
+export function StyleLibrary({ document, selection, apply, select, disabled, breakpoints = defaultBreakpoints, breakpoint = "base", until, preview, pending = noop, fieldKey = "library", nodeLabel = defaultLabel, scopeLabel, usageScope = "document", origins, onPromote, onRename, canPromote, readOnlyToken, reservedNames = [] }: StyleLibraryProps) {
   const [tab, setTab] = useState<Tab>("color"), [open, setOpen] = useState<string | null>(null), [confirm, setConfirm] = useState(false), [problem, setProblem] = useState("");
   const selected = selection ? (() => { try { const node = nodeAt(document, selection); return node.type === "text" ? undefined : node; } catch { return undefined; } })() : undefined;
   const run = (operation: EditorOperation) => { const inheritedRemoval = (operation.type === "token" && !operation.token || operation.type === "textStyle" && !operation.style) && origins?.[`${operation.type}:${operation.name}`] === "サイト共通"; const error = inheritedRemoval ? "サイト共通の定義は「サイト共通」で削除してください。" : apply(operation); setProblem(error ?? ""); return error; };
@@ -82,6 +84,16 @@ export function StyleLibrary({ document, selection, apply, select, disabled, bre
   const nameField = (name: string, label: string | undefined, save: (label: string | undefined) => EditorOperation, off = disabled) =>
     <Field key={`${fieldKey}-${name}-label`} name="名前" value={label ?? ""} placeholder={name} fieldKey={`${fieldKey}-${name}-label`} pending={pending} disabled={off}
       apply={(value) => value.trim().length > 60 ? "名前は 60 文字以内で入力してください。" : apply(save(value.trim() ? value.trim() : undefined))} />;
+  const identifierField = (kind: "token" | "textStyle", name: string) => onRename &&
+    <Field key={`${fieldKey}-${name}-identifier`} name="識別名" value={name} fieldKey={`${fieldKey}-${name}-identifier`} pending={pending} disabled={disabled}
+      apply={(value) => {
+        const next = value.trim();
+        if (next === name) return undefined;
+        if (!next || next.length > 80) return "識別名は1〜80文字で入力してください。";
+        const problem = onRename(kind, name, next);
+        if (!problem) setOpen(next);
+        return problem;
+      }} />;
   const tokenChoices = (kind: TokenKind): Choice[] => tokens.filter(([, token]) => token.type === kind).map(([key, token]) => [key, token.label ?? key]);
 
   function tokenEditor(name: string, token: DesignToken): ReactNode {
@@ -91,6 +103,7 @@ export function StyleLibrary({ document, selection, apply, select, disabled, bre
     const label = (value: string | undefined): EditorOperation => { const { label: _label, ...rest } = token; return { type: "token", name, token: value ? { ...rest, label: value } : rest }; };
     return <div className="e-lib-edit">
       {reason && <p className="e-help">{reason}</p>}
+      {identifierField("token", name)}
       {nameField(name, token.label, label, fixed)}
       {token.type === "color" ? <ColorField key={`${fieldKey}-${name}-value`} caption="色" value={token.value} tokens={[]} fieldKey={`${fieldKey}-${name}-value`} pending={pending} disabled={fixed}
         apply={(value) => typeof value === "string" ? apply(update({ value })) : "色を入力してください。"} preview={preview && ((value) => preview(typeof value === "string" ? update({ value }) : null))} />
@@ -132,6 +145,7 @@ export function StyleLibrary({ document, selection, apply, select, disabled, bre
       <Toggle text={text} pressed={style.base[property] === on} disabled={disabled} onChange={(pressed) => run(setBase(property, pressed ? on : undefined))} />;
     const weight = style.base.fontWeight;
     return <div className="e-lib-edit">
+      {identifierField("textStyle", name)}
       {nameField(name, style.label, (label) => save((draft) => { if (label) draft.label = label; else delete draft.label; }))}
       <FontField key={`${fieldKey}-${name}-fontFamily`} caption="フォント" value={style.base.fontFamily} fonts={fontChoices} tokens={tokenChoices("fontFamily")} fieldKey={`${fieldKey}-${name}-fontFamily`} pending={pending} disabled={disabled}
         apply={(value) => apply(setBase("fontFamily", value))} preview={preview && ((value) => preview(value === null ? null : setBase("fontFamily", value)))} />

@@ -2,6 +2,8 @@
 
 `@niho/web/normalize` は React を読み込まず、同一サイトの `PageDocument` と共通スタイルを入力に取ります。通常ページ、翻訳ページ、共有文書、テンプレートを個別の文書として渡せます。入力の文書や設定は変更しません。
 
+normalizationは既存データを一度だけ整理する移行ツールです。通常の保存やpublishのたびには実行しません。継続検査は末尾の軽量lintだけを使います。
+
 ```ts
 import {
   analyzeNormalization, planNormalization, selectNormalizationOperations,
@@ -57,7 +59,7 @@ const verification = verifyNormalization(input, afterDocuments);
 
 ## CLI での適用と再開
 
-`analyze` と `plan` はローカルで実行し、JSON を標準出力に返します。入力ファイルは冒頭の `NormalizationInput` と同じ形式です。オンラインで適用する計画には各文書の `version` が必要です。サイトに共通スタイルがある場合は `styles-read` から `draft.styles` と `draft.version` を取得し、`siteStyles` と `siteStylesRevision: { stage: "draft", version }` に入れます。部品・presentation を使う文書には、同じ版の表示コンテキストを添えてください。
+`analyze` と `plan` はローカルで実行し、JSON を標準出力に返します。入力ファイルは冒頭の `NormalizationInput` と同じ形式です。オンラインで適用する計画には各文書の `version` が必要です。サイトに共通スタイルがある場合は `styles read` から `draft.styles` と `draft.version` を取得し、`siteStyles` と `siteStylesRevision: { stage: "draft", version }` に入れます。これは移行開始snapshotの照合用で、ページへstyle版を固定する値ではありません。部品・presentation を使う文書には、同じ版の表示コンテキストを添えてください。
 
 ```sh
 niho-edit normalize analyze --json input.json
@@ -70,7 +72,7 @@ niho-edit --origin https://site.example --site sample normalize verify --json pr
 niho-edit --origin https://site.example --site sample normalize undo --json progress.json
 ```
 
-`apply` は計画を入力から再計算し、ファイル中の計画と一致することを確認します。既定では検証済みの `lossless` 提案を適用します。色の置換や表示幅の変更も適用する場合は、確認した提案の ID を `--approve <提案ID>` で指定します。複数の ID を指定する場合は `--approve` を繰り返します。`site.styles` 対応ホストでは、共通スタイルが空の場合も `styles-read` の下書き値と版を入力へ含めてください。共通スタイルの版が無い計画は拒否します。サイト設定は一つの版照合付き保存にまとめ、同じ開始幅を変更する提案が重複していれば適用を拒否します。Studio の認証経路を使う場合はオンラインのコマンドに同じ `--studio` を付けます。
+`apply` は計画を入力から再計算し、ファイル中の計画と一致することを確認します。既定では検証済みの `lossless` 提案を適用します。色の置換や表示幅の変更も適用する場合は、確認した提案の ID を `--approve <提案ID>` で指定します。複数の ID を指定する場合は `--approve` を繰り返します。`site.styles` 対応ホストでは、共通スタイルが空の場合も `styles read` の下書き値と版を入力へ含めてください。共通スタイルの版が無い計画は拒否します。サイト設定は一つの版照合付き保存にまとめ、同じ開始幅を変更する提案が重複していれば適用を拒否します。Studio の認証経路を使う場合はオンラインのコマンドに同じ `--studio` を付けます。
 
 初回の書き込み前に、計画、変更前の文書、承認 ID とページごとの操作 ID を新しい記録ファイルへ保存します。各操作の送信前と応答の確認後にファイル全体を原子的に更新します。ファイルは所有者だけが読み書きできるモードで作成され、認証ヘッダーや環境変数を含みません。同じ記録ファイルを操作するコマンドは一つずつ実行してください。
 
@@ -79,6 +81,8 @@ niho-edit --origin https://site.example --site sample normalize undo --json prog
 ## 文書 lint
 
 `@niho/web/core` の `lintDocument(document, siteStyles)` は、`@niho/web/normalize` の `lintDocuments(documents, siteStyles)` と同じ `analyzeNormalization` を使い、決定的な `NormalizationLintFinding[]` を返します。page-owned tokenは文書の本文・文字スタイルから使われていない場合に `unused-token` として報告します。site共通tokenは値参照の照合に使います。
+
+lintは継続して残します。保存データを変えない軽量診断であり、参照整合性や型検証を代行せず、migration fenceやpublish条件にもなりません。
 
 | code | 検出内容 |
 | --- | --- |

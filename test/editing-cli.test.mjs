@@ -143,7 +143,7 @@ test("niho-edit reads a page over the host API without Studio or a browser", asy
   assert.deepEqual(JSON.parse(result.stdout), { document: fixture, version: "v1" });
   assert.deepEqual(EDITING_OPERATIONS.filter(({ id }) => !id.startsWith("localization.")).map(({ id }) => id), ["pages.inspect", "pages.read", "pages.history", "pages.history-read", "pages.save", "pages.apply", "pages.preview-intent", "pages.release-plan", "pages.release", "pages.release-set-plan", "pages.release-set", "pages.release-set-status", "pages.catalog", "pages.change-prepare", "pages.change-apply",
     "cms.schema", "cms.list", "cms.read", "cms.create", "cms.save", "cms.publish-plan", "cms.publish", "cms.operation-status", "site.breakpoints.read", "site.breakpoints.save",
-    "site.styles.read", "site.styles.save", "site.styles.release-plan", "site.styles.release", "site.styles.migration-plan", "site.styles.migration-apply",
+    "site.styles.read", "site.styles.edit", "site.styles.publish",
     "assets.list", "assets.usages", "assets.resolve", "assets.update", "assets.upload-intent", "assets.delete", "assets.restore"]);
 });
 
@@ -335,13 +335,13 @@ test("niho-edit falls back to pages.read and resolves public URLs through pages.
   const result = await runSequence(["find", "--url", "https://public.example/", "--locale", locale, "--node", "heading"], [
     { method: "GET", url: catalogUrl, result: { version: "catalog-v1", pages: [{ siteId, pageId, locale, title: "Home", path: "/" }] } },
     { method: "GET", url: discoverUrl, result: { apiVersion: "v1", siteId, operations: [EDITING_OPERATIONS.find(({ id }) => id === "pages.read")] } },
-    { method: "GET", url: readUrl, result: { document: fixture, version: "v1", stylesVersion: "styles-v1" } }
+    { method: "GET", url: readUrl, result: { document: fixture, version: "v1" } }
   ]);
   assert.equal(result.exitCode, 0, result.stderr);
   const output = JSON.parse(result.stdout);
   assert.equal(output.view, "find");
   assert.equal(output.version, "v1");
-  assert.equal(output.stylesVersion, "styles-v1");
+  assert.equal(output.stylesVersion, undefined);
   assert.deepEqual(output.items.map(({ id }) => id), ["heading"]);
 });
 
@@ -465,8 +465,7 @@ test("niho-edit lists pages directly from the host API", async () => {
 
 test("niho-edit lint returns zero for a clean page", async () => {
   const operations = EDITING_OPERATIONS.filter(({ id }) => id === "site.styles.read");
-  const snapshot = { sitePublicationEpoch: "epoch-1", draft: { version: "styles-1", styles: {} },
-    published: { stylesVersion: "published-1", styles: {} } };
+  const snapshot = { draft: { version: "styles-1", styles: {} }, published: { version: "published-1", styles: {} } };
   const breakpoints = { version: "breakpoints-1", settings: { base: { name: "PC", previewWidth: 1360 }, breakpoints: [] } };
   const document = { schemaVersion: 1, siteId, pageId: "lint-home", locale, revision: 1, title: "Home", tokens: {},
     body: [{ type: "element", id: "copy", tag: "p", children: [{ type: "text", text: "Hello" }] }] };
@@ -474,8 +473,8 @@ test("niho-edit lint returns zero for a clean page", async () => {
     { method: "GET", url: `${origin}/api/edit/v1/sites/${siteId}/capabilities?features=site.styles`, result: { apiVersion: "v1", siteId, operations } },
     { method: "GET", url: `${origin}/api/edit/v1/sites/${siteId}/operations/site.styles.read`, result: snapshot },
     { method: "GET", url: `${origin}/api/edit/v1/sites/${siteId}/operations/site.breakpoints.read`, result: breakpoints },
-    { method: "GET", url: `${origin}/api/edit/v1/sites/${siteId}/operations/pages.read/lint-home?locale=${encodeURIComponent(locale)}&features=site.styles`,
-      result: { document, version: "page-1", draftStylesVersion: "styles-1" } }
+    { method: "GET", url: `${origin}/api/edit/v1/sites/${siteId}/operations/pages.read/lint-home?locale=${encodeURIComponent(locale)}`,
+      result: { document, version: "page-1" } }
   ]);
   assert.equal(result.exitCode, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), { status: "clean", pagesChecked: 1, findings: [] });
@@ -484,8 +483,7 @@ test("niho-edit lint returns zero for a clean page", async () => {
 test("niho-edit lint all reports findings and exits nonzero", async () => {
   const operations = EDITING_OPERATIONS.filter(({ id }) => id === "site.styles.read");
   const styles = { tokens: { brand: { type: "color", value: "#abc" } } };
-  const snapshot = { sitePublicationEpoch: "epoch-1", draft: { version: "styles-1", styles },
-    published: { stylesVersion: "published-1", styles: {} } };
+  const snapshot = { draft: { version: "styles-1", styles }, published: { version: "published-1", styles: {} } };
   const breakpoints = { version: "breakpoints-1", settings: { base: { name: "PC", previewWidth: 1360 }, breakpoints: [] } };
   const document = { schemaVersion: 1, siteId, pageId: "lint-home", locale, revision: 1, title: "Home",
     tokens: { unused: { type: "color", value: "#ffffff" } },
@@ -496,8 +494,8 @@ test("niho-edit lint all reports findings and exits nonzero", async () => {
     { method: "GET", url: `${origin}/api/edit/v1/sites/${siteId}/operations/site.breakpoints.read`, result: breakpoints },
     { method: "GET", url: `${origin}/api/edit/v1/sites/${siteId}/operations/pages.catalog`, result: { version: "catalog-1",
       pages: [{ siteId, pageId: "lint-home", locale, title: "Home" }] } },
-    { method: "GET", url: `${origin}/api/edit/v1/sites/${siteId}/operations/pages.read/lint-home?locale=${encodeURIComponent(locale)}&features=site.styles`,
-      result: { document, version: "page-1", draftStylesVersion: "styles-1" } }
+    { method: "GET", url: `${origin}/api/edit/v1/sites/${siteId}/operations/pages.read/lint-home?locale=${encodeURIComponent(locale)}`,
+      result: { document, version: "page-1" } }
   ]);
   assert.equal(result.exitCode, 1, result.stderr);
   const output = JSON.parse(result.stdout);
@@ -558,14 +556,14 @@ test("niho-edit reads and CAS-saves site breakpoints over the host API", async (
   assert.deepEqual(JSON.parse(conflict.stdout), { apiVersion: "v1", httpStatus: 409, operation: "site.breakpoints.save", result: { error: "version_conflict" } });
 });
 
-test("niho-edit reads and CAS-saves site styles through feature discovery", async (t) => {
-  const operations = EDITING_OPERATIONS.filter(({ id }) => id === "site.styles.read" || id === "site.styles.save");
+test("niho-edit reads and edits site styles through the shared operations", async (t) => {
+  const operations = EDITING_OPERATIONS.filter(({ id }) => id === "site.styles.read" || id === "site.styles.edit");
   const discovery = { apiVersion: "v1", siteId, operations };
   const styles = { tokens: { brand: { type: "color", value: "#195640" } } };
-  const snapshot = { sitePublicationEpoch: "epoch-1", draft: { version: "draft-1", styles }, published: { stylesVersion: "published-1", styles: {} } };
+  const snapshot = { draft: { version: "draft-1", styles }, published: { version: "published-1", styles: {} } };
   const capabilities = `${origin}/api/edit/v1/sites/${siteId}/capabilities?features=site.styles`;
   const readPath = `${origin}/api/edit/v1/sites/${siteId}/operations/site.styles.read`;
-  const read = await runSequence(["styles-read"], [
+  const read = await runSequence(["styles", "read"], [
     { method: "GET", url: capabilities, result: discovery },
     { method: "GET", url: readPath, result: snapshot }
   ]);
@@ -574,14 +572,14 @@ test("niho-edit reads and CAS-saves site styles through feature discovery", asyn
 
   const directory = await mkdtemp(join(tmpdir(), "niho-edit-styles-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  const inputPath = join(directory, "styles.json"), next = { tokens: { brand: { type: "color", value: "#000000" } } };
-  await writeFile(inputPath, JSON.stringify({ version: "draft-1", styles: next }));
-  const save = await runSequence(["styles-save", "--json", inputPath], [
+  const inputPath = join(directory, "styles.json"), next = { type: "set", styleKind: "token", name: "brand", value: { type: "color", value: "#000000" } };
+  await writeFile(inputPath, JSON.stringify({ expectedVersion: "draft-1", edits: [next] }));
+  const save = await runSequence(["styles", "edit", "--json", inputPath], [
     { method: "GET", url: capabilities, result: discovery },
-    { method: "PUT", url: `${origin}/api/edit/v1/sites/${siteId}/operations/site.styles.save`, body: { expectedVersion: "draft-1", styles: next }, result: { status: "saved", version: "draft-2" } }
+    { method: "PUT", url: `${origin}/api/edit/v1/sites/${siteId}/operations/site.styles.edit`, body: { expectedVersion: "draft-1", edits: [next] }, result: { status: "saved", version: "draft-2", styles: { tokens: { brand: next.value } } } }
   ]);
   assert.equal(save.exitCode, 0, save.stderr);
-  assert.deepEqual(JSON.parse(save.stdout), { apiVersion: "v1", httpStatus: 200, operation: "site.styles.save", result: { status: "saved", version: "draft-2" } });
+  assert.deepEqual(JSON.parse(save.stdout), { apiVersion: "v1", httpStatus: 200, operation: "site.styles.edit", result: { status: "saved", version: "draft-2", styles: { tokens: { brand: next.value } } } });
 });
 
 test("niho-edit preserves host-specific component blocks on read and save", async (t) => {

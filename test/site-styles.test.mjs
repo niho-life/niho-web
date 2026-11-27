@@ -166,7 +166,7 @@ const localizationConfig = { schemaVersion: 1, siteId: "demo", sourceLocale: "ja
 test("localization validates and materializes pages that reference site styles with the same settings", async () => {
   const site = settings();
   await rejects(collectLocalizationUnits(localizationConfig, about, "en", {}));
-  const draft = { siteStyles: site, siteStylesRevision: { stage: "draft", version: "styles-draft-1" } };
+  const draft = { siteStyles: site };
   const collection = await collectLocalizationUnits(localizationConfig, about, "en", draft);
   assert.deepEqual(collection.issues, []);
   assert.deepEqual(collection.units.map((unit) => unit.unitId).sort(), ["page.node.about_heading.text", "page.node.about_lead.text", "page.title"], "tokens and text styles are not translation units");
@@ -186,18 +186,19 @@ const releaseInput = (page) => ({ config: localizationConfig, locale: "ja", rele
   manifest: { source: { version: "source-1", digest: sha("a") }, config: { version: "config-1", digest: sha("b") }, resources: [] },
   completeness: { reviewedPageIds: [], sharedReviewed: false, unresolvedIssues: [] } });
 
-test("a locale release fixes the effective site styles into self-contained pages", async () => {
+test("a locale release validates site styles but preserves references for the global published pointer", async () => {
   const site = settings();
   await rejects(createPublishedSiteLocaleSnapshot(releaseInput(about)));
-  const snapshot = await createPublishedSiteLocaleSnapshot(releaseInput(about), { siteStyles: site, siteStylesRevision: { stage: "published", version: "styles-public-1" } });
+  const snapshot = await createPublishedSiteLocaleSnapshot(releaseInput(about), { siteStyles: site });
   const published = snapshot.pages[0].document;
-  assert.deepEqual(Object.keys(published.tokens).sort(), ["accent", "brand", "headingSize", "ink"]);
-  assert.deepEqual(published.textStyles, site.textStyles);
-  assert.equal(generatePageCss(published), generatePageCss(about, {}, undefined, site), "the stored page renders without the settings");
-  parsePublishedSiteLocaleSnapshot(snapshot); await verifyPublishedSiteLocaleSnapshot(snapshot);
-  const changed = await createPublishedSiteLocaleSnapshot(releaseInput(about), { siteStyles: { ...site, tokens: { ...site.tokens, brand: color("#0055aa", "メイン") } }, siteStylesRevision: { stage: "published", version: "styles-public-2" } });
-  assert.notEqual(changed.contentDigest, snapshot.contentDigest, "a site-wide change shows up in the next release");
-  assert.equal(changed.pages[0].document.tokens.brand.value, "#0055aa");
+  assert.deepEqual(published.tokens, about.tokens);
+  assert.equal(published.textStyles, undefined);
+  assert.equal(generatePageCss(published, {}, undefined, site), generatePageCss(about, {}, undefined, site));
+  parsePublishedSiteLocaleSnapshot(snapshot, { siteStyles: site }); await verifyPublishedSiteLocaleSnapshot(snapshot, { siteStyles: site });
+  const nextStyles = { ...site, tokens: { ...site.tokens, brand: color("#0055aa", "メイン") } };
+  const unchanged = await createPublishedSiteLocaleSnapshot(releaseInput(about), { siteStyles: nextStyles });
+  assert.equal(unchanged.contentDigest, snapshot.contentDigest, "style publish does not rewrite locale snapshots");
+  assert.notEqual(generatePageCss(published, {}, undefined, site), generatePageCss(published, {}, undefined, nextStyles), "the site-wide pointer changes rendering");
   const legacyRelease = await createPublishedSiteLocaleSnapshot(releaseInput({ ...legacy, pageId: "about" }));
   assert.deepEqual(legacyRelease.pages[0].document.tokens, legacy.tokens, "self-contained pages release without settings as before");
 });

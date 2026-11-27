@@ -59,7 +59,7 @@ function checkedInput(input) {
   if (!Array.isArray(input.documents) || !input.documents.length) throw new TypeError("invalid documents");
   if (input.siteStylesRevision !== undefined) {
     shape(input.siteStylesRevision, ["stage", "version"]);
-    if (!["draft", "published"].includes(input.siteStylesRevision.stage) || input.siteStyles === undefined) throw new TypeError("invalid style revision");
+    if (input.siteStylesRevision.stage !== "draft" || input.siteStyles === undefined) throw new TypeError("invalid style revision");
     version(input.siteStylesRevision.version);
   }
   if (input.componentsVersion !== undefined) {
@@ -238,7 +238,7 @@ export async function runNormalizationCli(action, options, { client, scope, inpu
 
   const { input, plan } = checkpoint.bundle;
   const styleRevision = input.siteStylesRevision;
-  const draftStylesVersion = styleRevision?.version;
+  const migrationStylesVersion = styleRevision?.version;
   const step = checkpoint.breakpoints;
   const { settings, batches } = selected;
   if (action === "resume" && checkpoint.direction !== "apply") fail("normalization_checkpoint_undo_started", 409);
@@ -256,8 +256,7 @@ export async function runNormalizationCli(action, options, { client, scope, inpu
     const result = await apiCall(() => client.applyOperations(targetOf(page.target), {
       baseVersion, operationId: page.operationId, operations: decodeNormalizationOperations(batch.operations),
       ...(componentsVersion === undefined ? {} : { componentsVersion }),
-      ...(presentationVersion === undefined ? {} : { presentationVersion }),
-      ...(draftStylesVersion === undefined ? {} : { draftStylesVersion })
+      ...(presentationVersion === undefined ? {} : { presentationVersion })
     }, timeout()));
     if (result.status === "conflict") {
       page.state = "pending";
@@ -290,7 +289,7 @@ export async function runNormalizationCli(action, options, { client, scope, inpu
   }
   const applyComplete = checkpoint.pages.every(({ state }) => state === "applied") && (!step || step.state === "applied");
   if (styleRevision && (action !== "resume" || !applyComplete)
-    && (currentStyles.draft.version !== draftStylesVersion || !same(currentStyles.draft.styles, input.siteStyles))) fail("version_conflict", 409);
+    && (currentStyles.draft.version !== migrationStylesVersion || !same(currentStyles.draft.styles, input.siteStyles))) fail("version_conflict", 409);
   const originalByTarget = new Map(input.documents.map((entry) => {
     const { document } = sourceOf(entry);
     return [targetKey(document), document];
@@ -299,9 +298,7 @@ export async function runNormalizationCli(action, options, { client, scope, inpu
   const parseOptions = { ...(input.components ? { components: input.components } : {}), ...(input.siteStyles ? { siteStyles: input.siteStyles } : {}) };
   async function readTarget(target) {
     const snapshot = await apiCall(() => client.read(targetOf(target), timeout()));
-    if (draftStylesVersion === undefined && snapshot.draftStylesVersion !== undefined) fail("normalization_draft_styles_required", 409);
-    if (snapshot.componentsVersion !== target.componentsVersion || snapshot.presentationVersion !== target.presentationVersion
-      || snapshot.draftStylesVersion !== draftStylesVersion || !styleRevision && snapshot.stylesVersion !== undefined) fail("version_conflict", 409);
+    if (snapshot.componentsVersion !== target.componentsVersion || snapshot.presentationVersion !== target.presentationVersion) fail("version_conflict", 409);
     try { return { ...snapshot, document: parsePageDocument(snapshot.document, input.blocks, parseOptions) }; }
     catch { fail("invalid_response", 502); }
   }
@@ -349,7 +346,7 @@ export async function runNormalizationCli(action, options, { client, scope, inpu
         if (current.version !== page.appliedVersion) fail("version_conflict", 409);
         page.state = "restoring";
         await update();
-        const result = await apiCall(() => client.save(target, page.appliedVersion, original, timeout(), draftStylesVersion));
+        const result = await apiCall(() => client.save(target, page.appliedVersion, original, timeout()));
         if (result.status === "conflict") fail("version_conflict", 409);
         if (result.version === page.appliedVersion) fail("invalid_response", 502);
         page.restoredVersion = result.version;

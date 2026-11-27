@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
-import { EDITING_OPERATIONS, withSiteStylesFeature } from "@niho/web/editing-api";
+import { EDITING_OPERATIONS } from "@niho/web/editing-api";
 import { createProjectEditorAdapter } from "../dist/project-editor-adapter.js";
 import { renderSitePageToHtml } from "@niho/web/server";
 
@@ -97,9 +97,10 @@ test("Kamakura Studio の共通Stylesはsite.styles APIを使い、公開メタ�
     requests.push({ method, url: `${url.pathname}${url.search}`, body: init.body === undefined ? undefined : JSON.parse(String(init.body)) });
     if (url.pathname.endsWith("/capabilities")) return Response.json({ apiVersion: "v1", siteId: "kamakura",
       operations: EDITING_OPERATIONS.filter(({ id }) => id.startsWith("site.styles.")) });
-    if (url.pathname.endsWith("/operations/site.styles.read")) return Response.json({ sitePublicationEpoch: "epoch-1",
-      draft: { version: "draft-styles-v1", styles }, published: { stylesVersion: "published-styles-v1", styles: {} } });
-    if (url.pathname.endsWith("/operations/site.styles.save")) return Response.json({ status: "saved", version: "draft-styles-v2" });
+    if (url.pathname.endsWith("/operations/site.styles.read")) return Response.json({
+      draft: { version: "draft-styles-v1", styles }, published: { version: "published-styles-v1", styles: {} } });
+    if (url.pathname.endsWith("/operations/site.styles.edit")) return Response.json({ status: "saved", version: "draft-styles-v2",
+      styles: { tokens: { brand: styles.tokens.brand, accent: { type: "color", value: "#0066cc" } } } });
     throw new Error(`unexpected request: ${method} ${url.pathname}`);
   });
   const source = catalog(), parsed = contract.parseKamakuraCatalog(source), base = createKamakuraAdapter(parsed, () => {});
@@ -111,14 +112,17 @@ test("Kamakura Studio の共通Stylesはsite.styles APIを使い、公開メタ�
   assert.equal(snapshot.version, "draft-styles-v1");
   assert.equal(snapshot.settings.title, "鎌倉サイト");
   assert.deepEqual(snapshot.settings.tokens, styles.tokens);
-  const result = await adapter.saveSiteSettings({ siteId: "kamakura", settings: { ...snapshot.settings, tokens: { brand: styles.tokens.brand, accent: { type: "color", value: "#0066cc" } } }, expectedVersion: snapshot.version }, signal);
-  assert.deepEqual(result, { status: "saved", version: "draft-styles-v2" });
+  const result = await adapter.saveSiteSettings({ siteId: "kamakura", settings: { ...snapshot.settings, tokens: { brand: styles.tokens.brand, accent: { type: "color", value: "#0066cc" } } },
+    expectedVersion: snapshot.version, previousStyles: styles }, signal);
+  assert.equal(result.status, "saved"); assert.equal(result.version, "draft-styles-v2");
   assert.deepEqual(requests.map(({ method, url }) => [method, url]), [
     ["GET", "/api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/capabilities?features=site.styles"],
     ["GET", "/api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/operations/site.styles.read"],
-    ["PUT", "/api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/operations/site.styles.save"]
+    ["PUT", "/api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/operations/site.styles.edit"]
   ]);
-  assert.deepEqual(requests[2].body, { expectedVersion: "draft-styles-v1", styles: { tokens: { brand: styles.tokens.brand, accent: { type: "color", value: "#0066cc" } } } });
+  assert.deepEqual(requests[2].body, { expectedVersion: "draft-styles-v1", edits: [
+    { type: "set", styleKind: "token", name: "accent", value: { type: "color", value: "#0066cc" } }
+  ] });
 });
 
 test("Studio の編集画面は初回一覧と文書を各1回だけ読み、Access・参加資格のエラー表示を保つ", async (t) => {
@@ -313,7 +317,7 @@ test("Kamakura editor adapter は編集状態と本文を1回で読み、状態�
   assert.deepEqual(calls.splice(0), [commonReadPath]);
 });
 
-test("Kamakura adapter preserves the draft-style dependency version from feature-aware page reads", async (t) => {
+test("Kamakura adapter reads pages without a draft-style dependency version", async (t) => {
   const { createKamakuraAdapter } = await loadKamakuraEditor();
   const pageId = "kamakura-community-dinner", target = { siteId: "kamakura", pageId, locale: "ja" };
   const document = { schemaVersion: 1, siteId: "kamakura", pageId, locale: "ja", revision: 1, title: "ページ", tokens: {}, body: [] };
@@ -323,15 +327,15 @@ test("Kamakura adapter preserves the draft-style dependency version from feature
     const url = new URL(String(input), "https://studio.niho.life"), path = `${url.pathname}${url.search}`;
     if (path.endsWith("/capabilities?features=site.styles")) return Response.json({ apiVersion: "v1", siteId: "kamakura",
       operations: EDITING_OPERATIONS.filter(({ id }) => id.startsWith("site.styles.")) });
-    if (path.endsWith("/site.styles.read")) return Response.json({ sitePublicationEpoch: "epoch-1",
-      draft: { version: "draft-styles-v1", styles: {} }, published: { stylesVersion: "published-styles-v1", styles: {} } });
-    if (path === `${base}/pages.read/${pageId}?locale=ja&features=site.styles`) return Response.json({ document, version: "page-v1", draftStylesVersion: "draft-styles-v1", editorState });
+    if (path.endsWith("/site.styles.read")) return Response.json({
+      draft: { version: "draft-styles-v1", styles: {} }, published: { version: "published-styles-v1", styles: {} } });
+    if (path === `${base}/pages.read/${pageId}?locale=ja`) return Response.json({ document, version: "page-v1", editorState });
     throw new Error(`unexpected request: ${path}`);
   });
   const adapter = createKamakuraAdapter(contract.parseKamakuraCatalog(catalog()), () => {}), signal = new AbortController().signal;
   await adapter.readSiteSettings(target.siteId, signal);
   const snapshot = await adapter.readDocument(target, signal);
-  assert.equal(snapshot.draftStylesVersion, "draft-styles-v1");
+  assert.equal(snapshot.draftStylesVersion, undefined);
   assert.equal(snapshot.document.pageId, pageId);
 });
 
@@ -350,13 +354,12 @@ test("Kamakura GUI sends ordinary Japanese page edits through compact pages.appl
     const path = `${url.pathname}${url.search}`, body = init.body === undefined ? undefined : JSON.parse(String(init.body));
     requests.push({ method, path, body });
     if (path.endsWith("/capabilities?features=site.styles")) return Response.json({ apiVersion: "v1", siteId: "kamakura",
-      operations: EDITING_OPERATIONS.filter(({ id }) => ["pages.read", "pages.apply"].includes(id) || id.startsWith("site.styles."))
-        .map((operation) => ["pages.read", "pages.apply"].includes(operation.id) ? withSiteStylesFeature(operation) : operation) });
-    if (path.endsWith("/site.styles.read")) return Response.json({ sitePublicationEpoch: "epoch-1",
-      draft: { version: "draft-styles-v1", styles: {} }, published: { stylesVersion: "published-styles-v1", styles: {} } });
-    if (path === `${base}/pages.read/${pageId}?locale=ja&features=site.styles`) return Response.json({ document, version: "page-v1",
-      draftStylesVersion: "draft-styles-v1", presentationVersion: presentation.version, presentation, editorState });
-    if (path === `${base}/pages.apply/${pageId}?locale=ja&features=site.styles`) return Response.json({ status: "applied", version: "page-v2", revision: 2,
+      operations: EDITING_OPERATIONS.filter(({ id }) => ["pages.read", "pages.apply"].includes(id) || id.startsWith("site.styles.")) });
+    if (path.endsWith("/site.styles.read")) return Response.json({
+      draft: { version: "draft-styles-v1", styles: {} }, published: { version: "published-styles-v1", styles: {} } });
+    if (path === `${base}/pages.read/${pageId}?locale=ja`) return Response.json({ document, version: "page-v1",
+      presentationVersion: presentation.version, presentation, editorState });
+    if (path === `${base}/pages.apply/${pageId}?locale=ja`) return Response.json({ status: "applied", version: "page-v2", revision: 2,
       document: { ...document, title: "変更後", revision: 2 } });
     throw new Error(`unexpected request: ${method} ${path}`);
   });
@@ -364,16 +367,15 @@ test("Kamakura GUI sends ordinary Japanese page edits through compact pages.appl
   await adapter.readSiteSettings(target.siteId, signal);
   const snapshot = await adapter.readDocument(target, signal);
   const result = await adapter.applyOperations({ target, baseVersion: snapshot.version, operationId: crypto.randomUUID(),
-    operations: [{ type: "title", value: "変更後" }], presentationVersion: snapshot.presentationVersion, draftStylesVersion: snapshot.draftStylesVersion }, signal);
+    operations: [{ type: "title", value: "変更後" }], presentationVersion: snapshot.presentationVersion }, signal);
 
   assert.equal(result.status, "applied");
   assert.equal(result.document.title, "変更後");
   const apply = requests.find(({ path }) => path.includes("/pages.apply/"));
   assert.equal(apply.method, "POST");
   assert.equal(apply.body.baseVersion, "page-v1");
-  assert.equal(apply.body.draftStylesVersion, "draft-styles-v1");
+  assert.equal(apply.body.draftStylesVersion, undefined);
   assert.equal(apply.body.stylesVersion, undefined);
-  assert.equal(apply.body.draftStylesVersion, "draft-styles-v1");
   assert.equal(apply.body.document, undefined);
   assert.deepEqual(apply.body.operations, [{ type: "title", value: "変更後" }]);
   assert.ok(Buffer.byteLength(JSON.stringify(apply.body)) < 1024);
@@ -656,11 +658,10 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
     const path = new URL(request.url).pathname;
     if (path.endsWith("/capabilities")) return Response.json({ apiVersion: "v1", siteId: "kamakura", operations: [] });
     if (path.endsWith("/site.styles.read")) return Response.json({
-      sitePublicationEpoch: "epoch-v1",
       draft: { version: "draft-styles-v1", styles: { tokens: {} } },
-      published: { stylesVersion: "published-styles-v1", styles: { tokens: {} } }
+      published: { version: "published-styles-v1", styles: { tokens: {} } }
     });
-    if (path.endsWith("/site.styles.release-plan")) return Response.json({ plan: { status: "fixture" } });
+    if (path.endsWith("/site.styles.publish")) return Response.json({ status: "published", version: "published-styles-v2", styles: { tokens: {} } });
     if (path.includes("/pages.read/")) {
       if (request.headers.get("If-None-Match") === '"page-v1"') return new Response(null, { status: 304, headers: { ETag: '"page-v1"' } });
       if (largeReadMode) {
@@ -719,11 +720,10 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
   assert.equal(styleRead.status, 200);
   assert.equal((await styleRead.json()).draft.version, "draft-styles-v1");
   assert.deepEqual((await assertDelegationSignature(editingApiRequest)).scope, ["site.settings.read"]);
-  const styleReleaseInput = { expectedVersion: "draft-styles-v1", expectedStylesVersion: "published-styles-v1",
-    sitePublicationEpoch: "epoch-v1", operationId: "123e4567-e89b-42d3-a456-426614174000" };
-  const styleRelease = await callEditingApi("/sites/kamakura/operations/site.styles.release-plan", "POST", styleReleaseInput);
-  assert.equal(styleRelease.status, 200);
-  assert.deepEqual(await editingApiRequest.clone().json(), styleReleaseInput);
+  const stylePublishInput = { expectedDraftVersion: "draft-styles-v1", expectedPublishedVersion: "published-styles-v1" };
+  const stylePublish = await callEditingApi("/sites/kamakura/operations/site.styles.publish", "POST", stylePublishInput);
+  assert.equal(stylePublish.status, 200);
+  assert.deepEqual(await editingApiRequest.clone().json(), stylePublishInput);
   assert.deepEqual((await assertDelegationSignature(editingApiRequest)).scope, ["site.settings.write", "pages.publish"]);
 
   const managementBase = "/sites/kamakura/operations";
