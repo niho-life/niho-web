@@ -1151,7 +1151,10 @@ testWithD1("site publication uses saved drafts only for the selected pages and s
   assert.equal(publishedHome.documentElement.lang, "ja");
   assert.match(publishedHome.head.innerHTML, /<style>html\{font-family:system-ui,-apple-system,BlinkMacSystemFont/u);
   assert.equal(publishedHome.querySelector('meta[name="description"]')?.content, "Shared published description");
+  assert.equal(publishedHome.querySelector('meta[property="og:title"]')?.content, homeDraft.document.title);
   assert.equal(publishedHome.querySelector('link[rel="canonical"]')?.href, `${PUBLIC_ORIGIN}/s/shared-release/`);
+  assert.equal(publishedHome.querySelectorAll('link[rel="alternate"][hreflang]').length, 0);
+  assert.ok(publishedHome.querySelector('script[type="application/ld+json"]'));
   const hero = publishedHome.querySelector('[data-nw-node="hero-image"]');
   assert.equal(hero?.getAttribute("src"), `${imageOrigin}/cdn-cgi/image/width=auto,format=auto/uploads/hero.webp`);
   assert.match(hero?.getAttribute("srcset") ?? "", /width=320,format=auto\/uploads\/hero\.webp 320w/u);
