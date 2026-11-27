@@ -4,9 +4,11 @@ Studio-native site の公開出力を、編集・書込みを持つ Studio Worke
 
 ## 現在の縦切り
 
-- 固定ページを公開すると、版付き R2 正本の digest を照合して HTML を生成し、HTML と manifest を内容 hash 付きの R2 key で保存します。[ページ正本と操作](studio-managed-sites.md#ページ正本と操作)
+- 固定ページを公開すると、版付き R2 正本の digest を照合して HTML とサイト共通の SEO 出力を生成し、HTML・sitemap・robots.txt・llms.txt・llms-full.txt と manifest を内容 hash 付きの R2 key で保存します。[ページ正本と操作](studio-managed-sites.md#ページ正本と操作)
 - `managed_site_publication_state` の manifest pointer は D1 の version を条件に更新します。pointer が変わっていた公開は `409` になり、保存済みの古い manifest で新しい公開を上書きしません。
-- `managed_page_publications` に HTML key、digest、manifest key、path、Content-Type、CSP を保存します。読み出し時はmanifest・publication・現在のページpointerの対応と、HTML digestを照合します。
+- `managed_page_publications` に HTML key、digest、manifest key、path、Content-Type、CSP を保存します。復元公開は新しく作ったページ revision をmanifestにも記録し、ページpointer・公開版・HTML digestを照合します。
+- SEO出力は現在の公開route集合から生成します。公開Workerはdiscovery fileを返す前にmanifestと現在の公開route集合を照合し、ずれがあれば `503` で閉じます。これにより公開を外したページのURLや本文が sitemap / llms に残り続けません。
+- 検証hostまたはサイト全体をnoindexにしたhostは、`robots.txt` で全体を拒否し、sitemapとllmsの一覧を空にして返します。noindex応答にも本文に対応する ETag を付けます。
 - `managed_site_hosts` は hostname と path prefix を site に結び付けます。verification host には `noindex=1` を保存し、200・304・307・404・503 の全応答に `X-Robots-Tag: noindex, nofollow` を付けます。
 - HTML は `Cache-Control: no-cache` と digest の ETag を返します。検証hostもETag再検証を使います。
 - 公開 Worker は host 対応表と公開 manifest pointer を isolate 内で最大5秒保持します。返却前にはD1で現在のmanifest pointer・公開page・visibility・host登録を照合します。HTML artifactはhost origin・site ID・manifest publication ID・本文digestを含むCache API keyで再利用し、NIHO接続先の解決応答はcacheしません。
@@ -19,7 +21,7 @@ Studio-native site の公開出力を、編集・書込みを持つ Studio Worke
 
 - CMS bindingを持つページは、公開時生成にまだ含めません。#490 で一覧・詳細ページの依存を確定した後に追加します。
 - manifest の更新は CAS で競合を拒否します。最新manifestと下書きから数回再生成する自動retryは未実装です。
-- 翻訳・サイト全体SEO出力・全ページのstyle再生成は、それぞれ #485、#489、#483 と残りの #510 作業で接続します。埋め込み・計測は #486 で静的公開に接続します。
+- 翻訳・全ページのstyle再生成は、それぞれ #485 と #483 で接続します。既存redirectの取込みと95 URLの受入は #489 に残ります。埋め込み・計測の実サイト受入は #486 に残ります。
 - 既存の `/s/<slug>/` origin は従来の配信経路を維持します。新しい公開 Worker へ切り替えるhostは、完全なmanifestの受入後に割り当てます。
 
 この状態では、公開ページ1枚の静的生成・配信とverification hostのnoindexまでを確認できます。#510 の完了条件ではありません。
