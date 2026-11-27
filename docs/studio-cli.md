@@ -16,6 +16,19 @@ niho-edit --studio --origin https://studio.example --site demo-site site-redirec
 
 `site-redirects-read` は `{ redirects, version }` を返します。各項目は `{ locale, fromPath, toPath }` で、パスはサイト内の相対パスです。保存は読み込んだversionとの照合を行い、重複した転送元や転送ループは拒否します。ページのURLを変更したとき自動作成された転送も、同じCLIとGUI一覧から確認・削除できます。
 
+## Studio-native サイト共通スタイル
+
+Studio-native site の色 token と文字スタイルは、GUI の「スタイル」パネルと同じ `site.styles.*` 操作で読み書きします。
+
+```sh
+niho-edit --studio --origin https://studio.example --site demo-site styles read > styles.json
+# styles.json の draft.styles を編集し、snapshot全体を保持
+niho-edit --studio --origin https://studio.example --site demo-site styles edit --json edits.json
+niho-edit --studio --origin https://studio.example --site demo-site styles publish --json publish.json
+```
+
+`styles read` は `{ draft: { version, styles }, published: { version, styles } }` を返します。`styles edit` には `{ expectedVersion, edits }`、`styles publish` には `{ expectedDraftVersion, expectedPublishedVersion }` を渡します。編集は版照合付きです。ページが参照する共通値の rename/delete は利用箇所を返して拒否し、文字スタイル内の token 参照は rename と同時に更新します。公開済みスタイルはページ生成時の HTML に使われます。スタイルの公開を全ページの作り直しへつなぐ操作は、#527 の共通部分公開に合わせて行います。
+
 ## Studio内サイトの公開配信設定と埋め込み
 
 GUI 操作との対応は `niho-edit --help` の一覧を参照してください。
