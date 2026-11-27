@@ -450,7 +450,7 @@ export function ItemEditor({ adapter, overview, itemKey, timeZone, autosaveDelay
       <button type="button" className="cw-back" onClick={() => void back()} disabled={backBusy}><Icon name="back" /><span className="cw-back-label">{backLabel}</span></button>
       <div className="cw-editor-status">
         <span className="lw-item-title">{item.title || "無題"}</span>
-        <ItemStateBadge state={item.state} />
+        <ItemStateBadge state={item.state} sourceLabel={overview.languages.source} targetLabel={overview.languages.target} />
         <span className="cw-save-state" role="status">{saveText}</span>
       </div>
       <div className="cw-editor-actions">
@@ -570,7 +570,7 @@ const UnitCard = memo(function UnitCard({ unit, languages, timeZone, canEdit, ca
   return <section className="lw-unit" data-unit-id={unitId} data-state={server.state} aria-labelledby={labelId}>
     <header className="lw-unit-head">
       <h4 id={labelId} className="lw-unit-label">{server.label}{server.required && <span className="cw-required">必須</span>}</h4>
-      <UnitStateBadge state={server.state} />
+      <UnitStateBadge state={server.state} sourceLabel={languages.source} targetLabel={languages.target} />
       <span className="cw-save-state lw-unit-save">{unitSave}{status === "error" && <button type="button" className="cw-link-button" onClick={() => actions.retry(unitId)}>再試行</button>}</span>
     </header>
     <div className="lw-pair">

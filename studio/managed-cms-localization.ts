@@ -8,6 +8,8 @@ import { richMarks, type LocalizationItem, type LocalizationItemSummary, type Lo
 export type CmsLocalizationView = {
   readonly schema: CmsSchema;
   readonly source: CmsItemRevision;
+  /** The current source-locale draft differs from the published source revision. */
+  readonly sourceDraftPending: boolean;
   readonly collection: CmsLocalizationCollection;
   readonly overlay: CmsLocalizationOverlay;
   readonly updatedAt?: string | null;
@@ -49,7 +51,7 @@ export function cmsLocalizationSummary(view: CmsLocalizationView): LocalizationI
     path: definition.pathPrefix && typeof slug === "string" && slug ? `${definition.pathPrefix}${slug}` : null,
     state, excludedReason: view.collection.issues.length ? "リッチテキストの安全な翻訳adapterが未接続です。" : null,
     totalUnits: status.units, reviewedUnits: translated, imagesUnreviewed: 0,
-    sourceDraftPending: false, updatedAt: view.updatedAt ?? null, updatedBy: null
+    sourceDraftPending: view.sourceDraftPending, updatedAt: view.updatedAt ?? null, updatedBy: null
   };
 }
 

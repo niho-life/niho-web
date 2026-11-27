@@ -6,21 +6,19 @@ import type { LocalizationItemState, LocalizationUnitState } from "./localizatio
 
 /* ---------- 状態の印（色だけに頼らず、形と言葉でも分かるように） ---------- */
 
-/**
- * 確認の工程は廃止（2026-11-12）。今の原文に対応する訳があれば「翻訳済み」、無ければ（原文が変わって古くなった訳を含む）「未翻訳」。
- * 印（data-lw-state）は表示に合わせた 3 種（untranslated・reviewed・excluded）にし、届いた状態の値は data-lw-item-state / data-lw-unit-state に残す。
- */
-type Shape = "untranslated" | "reviewed" | "excluded";
-const itemShape: Record<LocalizationItemState, Shape> = { untranslated: "untranslated", draft: "untranslated", "source-changed": "untranslated", reviewed: "reviewed", excluded: "excluded" };
-const shapeText: Record<Shape, string> = { untranslated: "未翻訳", reviewed: "翻訳済み", excluded: "対象外" };
-export function ItemStateBadge({ state }: { state: LocalizationItemState }) {
+/** Confirmation was removed. Current translations, missing translations and stale translations have distinct labels. */
+type Shape = "untranslated" | "source-newer" | "reviewed" | "excluded";
+const itemShape: Record<LocalizationItemState, Shape> = { untranslated: "untranslated", draft: "untranslated", "source-changed": "source-newer", reviewed: "reviewed", excluded: "excluded" };
+const shapeText = (shape: Shape, sourceLabel: string, targetLabel: string): string => shape === "source-newer" ? `${sourceLabel}の方が新しい`
+  : shape === "untranslated" ? "未翻訳" : shape === "reviewed" ? `${targetLabel === "English" ? "英語" : targetLabel}あり` : "対象外";
+export function ItemStateBadge({ state, sourceLabel = "原文", targetLabel = "訳文" }: { state: LocalizationItemState; sourceLabel?: string; targetLabel?: string }) {
   const shape = itemShape[state];
-  return <span className="cw-pill lw-pill" data-lw-state={shape} data-lw-item-state={state}><span className="lw-shape" aria-hidden="true" />{shapeText[shape]}</span>;
+  return <span className="cw-pill lw-pill" data-lw-state={shape} data-lw-item-state={state}><span className="lw-shape" aria-hidden="true" />{shapeText(shape, sourceLabel, targetLabel)}</span>;
 }
-const unitShape: Record<LocalizationUnitState, Shape> = { source: "excluded", missing: "untranslated", "review-needed": "untranslated", draft: "reviewed", reviewed: "reviewed" };
-export function UnitStateBadge({ state }: { state: LocalizationUnitState }) {
+const unitShape: Record<LocalizationUnitState, Shape> = { source: "excluded", missing: "untranslated", "review-needed": "source-newer", draft: "reviewed", reviewed: "reviewed" };
+export function UnitStateBadge({ state, sourceLabel = "原文", targetLabel = "訳文" }: { state: LocalizationUnitState; sourceLabel?: string; targetLabel?: string }) {
   const shape = unitShape[state];
-  return <span className="cw-pill lw-pill" data-lw-state={shape} data-lw-unit-state={state}><span className="lw-shape" aria-hidden="true" />{state === "source" ? "原文のまま" : shapeText[shape]}</span>;
+  return <span className="cw-pill lw-pill" data-lw-state={shape} data-lw-unit-state={state}><span className="lw-shape" aria-hidden="true" />{state === "source" ? "原文のまま" : shapeText(shape, sourceLabel, targetLabel)}</span>;
 }
 
 /* ---------- 公開の版の名前 ---------- */

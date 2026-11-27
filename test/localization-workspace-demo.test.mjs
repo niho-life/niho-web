@@ -4,6 +4,30 @@ import { build } from "esbuild";
 import { JSDOM } from "jsdom";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { createLocalizationMemory } from "../examples/localization-workspace-memory.mjs";
+
+test("Japanese source drafts only make English stale after publication", async () => {
+  const memory = createLocalizationMemory();
+  const target = { itemKey: "aG9tZQ" };
+  const read = async () => (await memory.adapter.loadItem(target, new AbortController().signal)).item;
+  const before = await read();
+  const beforeUnit = before.units.find(({ unitId }) => unitId === "title");
+  assert.equal(before.state, "untranslated", "other untranslated units keep the summary incomplete");
+  assert.equal(beforeUnit.state, "draft");
+
+  memory.changeSource(target.itemKey, beforeUnit.unitId, `${beforeUnit.source}（改）`);
+  const draft = await read();
+  assert.equal(draft.state, "untranslated");
+  assert.equal(draft.sourceDraftPending, true);
+  assert.equal(draft.units[0].source, beforeUnit.source);
+
+  memory.publishSource(target.itemKey, beforeUnit.unitId);
+  const published = await read();
+  assert.equal(published.state, "source-changed", "a stale translation takes precedence over untranslated units");
+  assert.equal(published.sourceDraftPending, false);
+  assert.equal(published.units[0].state, "review-needed");
+  assert.equal(published.units[0].previousSource, beforeUnit.source);
+});
 
 test("the bundled localization workspace demo starts on fictional data only", async () => {
   const output = await build({
@@ -29,6 +53,8 @@ test("the bundled localization workspace demo starts on fictional data only", as
   assert.match(document.querySelector(".lw-band h2")?.textContent ?? "", /English版/);
   assert.ok([...document.querySelectorAll(".cw-row-title")].some((node) => node.textContent === "トップ"));
   assert.ok(document.querySelector(".demo-tools select"), "the demo can switch permissions");
+  assert.ok([...document.querySelectorAll(".demo-tools button")].some((node) => node.textContent === "日本語の下書きを変える"));
+  assert.ok([...document.querySelectorAll(".demo-tools button")].some((node) => node.textContent === "日本語を公開する"));
   // 原文の取り込み（2 回）が終わるまで待ってから閉じる
   for (let attempt = 0; attempt < 60 && document.querySelector(".lw-band")?.textContent.includes("原文を取り込んでいます"); attempt++) await new Promise((resolve) => setTimeout(resolve, 100));
   dom.window.close();

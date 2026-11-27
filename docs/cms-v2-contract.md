@@ -97,6 +97,8 @@ Studio-native の1サイトに保存できる CMS 項目は、全コレクショ
 | `cms.preview.prepare` / `cms.preview.read` | `collectionId`、`itemId`、現行の `revision` から5分間に1度だけ使える `previewId` を発行し、POST の `previewId` でプレビューを読む。認証中の actor、site、版、定義を照合 |
 | `cms.schedule.cancel` / `cms.schedule.status` | `scheduleId` で予約を取り消すか状態を読む。配信開始済みでも公開 pointer 確定前なら取消と配信の CAS で先着のみ成功 |
 
+翻訳原文は最後に公開した原文 locale のリリース snapshot から読みます。公開前の CMS 下書きは `sourceDraftPending` で知らせますが、その下書きだけでは英訳を古い状態にしません。原文 locale を公開すると snapshot の版が切り替わり、その版を元にしていない英訳が `source-changed` になります。
+
 作成・保存・削除・復元・予約取消は `X-Studio-Operation-Key` に不透明な操作IDを指定します。定義と公開の適用および予約作成は plan に含まれる `operationId` を本文に入れます。D1 が確定済みの同じ actor、site、操作ID、操作、入力には保存済みの同じ受領記録を返します。公開受領は `cms.release.status`、現在反映された版は `cms.release.current` で確認します。予約を作った後の下書き保存は予約版を変更しません。現在の公開版、schema、固定ルートなどの前提が変わった場合、別の確認計画が必要です。
 
 GUI、Access 人トークン、Access サービスの現在の権限を操作ごとに照合します。定義の適用は人の owner のみです。プレビューの参照IDはURLに載せず、ログ・履歴・公開 snapshot にも含めません。読み込み応答は no-store / no-referrer / noindex。使い切った参照ID、期限切れ、対象の下書きが更新された参照IDは404になります。
