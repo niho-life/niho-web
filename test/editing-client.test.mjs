@@ -254,7 +254,7 @@ test("direct publish preserves URL and SEO warnings while ignoring unknown keys"
     })
   });
 
-  const result = await client.publishPageNow(target, { action: "publish" });
+  const result = await client.publishPageNow(target, { expectedVersion: "v1", action: "publish" });
 
   assert.equal(result.status, "released");
   assert.equal(result.snapshot.version, "v2");
@@ -281,6 +281,24 @@ test("shared editing client reads the page catalog and prepares/applies a versio
   assert.deepEqual(await client.applyPageChange(plan), applied);
   await assert.rejects(client.preparePageChange(change, catalog.version, undefined, operationId),
     (error) => error instanceof EditingApiClientError && error.code === "duplicate_operation" && error.status === 409);
+});
+
+test("shared editing client ignores unknown fields in one-step page and CMS publication responses", async () => {
+  const operationId = "123e4567-e89b-42d3-a456-426614174000";
+  const page = { siteId: target.siteId, pageId: "new-page", locale: "ja", title: "New Page", path: "/new-page", futurePageField: true };
+  const client = createPageEditingApiClient({
+    origin: "https://host.example", siteId: target.siteId,
+    fetch: async (input) => new URL(input).pathname.endsWith("/pages.change")
+      ? Response.json({ status: "applied", page, futureResponseField: true })
+      : Response.json({ status: "publishing", operationId, item: { id: "entry-1", version: "v1", status: "publishing", futureItemField: true }, futureResponseField: true })
+  });
+
+  assert.deepEqual(await client.changePageNow({ action: "create", siteId: target.siteId, locale: "ja", title: "New Page", path: "/new-page" }, "catalog-v1"), {
+    status: "applied", page: { siteId: target.siteId, pageId: "new-page", locale: "ja", title: "New Page", path: "/new-page" }
+  });
+  assert.deepEqual(await client.publishCmsItemNow({ siteId: target.siteId, collectionId: "posts", itemId: "entry-1" }, "v1", operationId), {
+    status: "publishing", operationId
+  });
 });
 
 test("shared editing client reads and saves site breakpoint settings through the discoverable API", async () => {

@@ -437,7 +437,7 @@ test("trusted page storage validates a save once and skips revalidation on read 
   assert.equal(published.status, 200);
   assert.equal(blockContextReads, 1);
 
-  const oneStep = await json(await send("POST", `${route}/pages.publish/${target.pageId}${query}`, { action: "publish" }));
+  const oneStep = await json(await send("POST", `${route}/pages.publish/${target.pageId}${query}`, { expectedVersion: "released-v3", action: "publish" }));
   assert.equal(oneStep.status, 200);
   assert.equal(blockContextReads, 1);
 });

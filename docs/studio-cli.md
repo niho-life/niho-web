@@ -34,15 +34,19 @@ niho-edit --studio --origin https://studio.example --site kamakura release home 
 
 ## Studio-native ページの公開と版履歴
 
-Studio-native site は `publish`、`history`、`restore` を各1回のAPI呼出しで実行します。`publish --changed` の一括公開とサイト全体の公開復元は別途対応中です。鎌倉の既存経路では移行が終わるまで上記の二段階コマンドを使います。
+Studio-native site は `publish`、`history`、`restore`、`page-change` を各1回の API 呼出しで実行します。`publish --changed` の一括公開とサイト全体の公開復元は別途対応中です。鎌倉の既存経路では移行が終わるまで上記の二段階コマンドを使います。
 
 ```sh
-niho-edit --studio --origin https://studio.example --site site-id publish home --locale ja
+niho-edit --studio --origin https://studio.example --site site-id publish home --locale ja --json saved.json
 niho-edit --studio --origin https://studio.example --site site-id history home --locale ja
-niho-edit --studio --origin https://studio.example --site site-id restore home 4 --locale ja
+niho-edit --studio --origin https://studio.example --site site-id restore home 4 --locale ja --expected-version "$page_version"
+niho-edit --studio --origin https://studio.example --site site-id pages-catalog
+niho-edit --studio --origin https://studio.example --site site-id page-change --expected-version "$catalog_version" --json new-page.json
 ```
 
-結果はJSONです。`history` の `id` を確認し、残っているrevisionを `restore` の `<revision>` に渡します。CLIの機械認証には site に委任された `pages.publish` grant が必要です。
+結果は JSON です。`publish` と `restore` は `read` または `save` のスナップショットを `--json` に渡すか、その `version` を `--expected-version` に指定します。`restore` の履歴版は `history` の `id` または revision から選びます。`page-change` で `action: "create"` を使う場合は `pages-catalog` の版を、`"update"` または `"visibility"` では対象ページを `read` した版を指定します。例の `new-page.json` は `{ "action": "create", "siteId": "site-id", "locale": "ja", "title": "About", "path": "/about" }` です。
+
+版が競合すると HTTP 409 `version_conflict` で終了します。入力ファイルはそのまま使って最新状態と比較できます。機械認証は対象サイトに委任された `pages.publish` grant を使い、読取には対応する読取 grant を使います。
 
 ## Studio-native CMS
 
@@ -51,12 +55,15 @@ niho-edit --studio --origin https://studio.example --site site-id restore home 4
 ```sh
 niho-edit --studio --origin https://studio.example --site demo-site cms-schema
 niho-edit --studio --origin https://studio.example --site demo-site cms-list posts
+niho-edit --studio --origin https://studio.example --site demo-site \
+  cms-publish posts item-123 --expected-version "$item_version" --operation-id "$operation_id"
+niho-edit --studio --origin https://studio.example --site demo-site cms-status --operation-id "$operation_id"
 niho-edit --studio --origin https://studio.example --site demo-site cms-discover
 niho-edit --studio --origin https://studio.example --site demo-site \
   cms-v2 cms.schedule.status --json schedule-status.json
 ```
 
-`cms-v2` の入力ファイルには対象の `siteId` を含めます。`cms.release.plan` は事前に `cms.release.current` から得た `routeTableRevision` を含めます。定義計画の `cms.schema.plan` には、同じ応答の locale と `routeTableRevision` を `routeTableVersions` に含めます。予約は `cms.release.plan` にUTCのISO 8601日時 `at` を渡して作った計画を `cms.schedule.create` へ適用します。取消、下書き保存、削除・復元の操作IDは `--operation-id` で渡し、通信障害後は同じ入力とIDを再送します。既存 `cms-publish` の反映結果は `cms-status` で確認できます。同じ入力とIDの再送が受領記録を返す CMS の操作には、汎用 Studio CLI の重複拒否規則に代わって CMS の規則が適用されます。[CMS v2 契約](cms-v2-contract.md)
+`cms-v2` の入力ファイルには対象の `siteId` を含めます。`cms.release.plan` は事前に `cms.release.current` から得た `routeTableRevision` を含めます。定義計画の `cms.schema.plan` には、同じ応答の locale と `routeTableRevision` を `routeTableVersions` に含めます。予約は `cms.release.plan` にUTCのISO 8601日時 `at` を渡して作った計画を `cms.schedule.create` へ適用します。取消、下書き保存、削除・復元の操作IDは `--operation-id` で渡し、通信障害後は同じ入力とIDを再送します。`cms-publish` は `cms-read` または `cms-save` の項目版を使い、項目公開を1回で要求します。応答に含まれる operation ID を `cms-status` に渡して反映結果を確認できます。転送を作る場合は `--redirect true` も送ります。同じ入力とIDの再送が受領記録を返す CMS の操作には、汎用 Studio CLI の重複拒否規則に代わって CMS の規則が適用されます。[CMS v2 契約](cms-v2-contract.md)
 
 コレクション・フィールドの定義変更は Studio GUI と同じ `cms.schema.plan` / `cms.schema.apply` を使います。`cms-schema-plan` が現行定義の版と公開ルート版を取得するため、JSONには変更後の定義と必要な変換値だけを書きます。`cms-v2 cms.schema.read` の応答 `result` を `nextSchema` として編集し、`schema-draft.json` に保存します。
 

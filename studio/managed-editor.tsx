@@ -7,7 +7,7 @@ import { createProjectEditorAdapter } from "../src/project-editor-adapter.js";
 import { createBrowserRecoveryStore, parseRevisionPage } from "../src/history.js";
 import { EDITOR_RELEASE_WARNING_CODES } from "../src/editor-types.js";
 import type {
-  EditorAdapter, EditorPage, EditorPageChange, EditorPageChangePlan, EditorReleasePlan, EditorReleaseWarning,
+  EditorAdapter, EditorPage, EditorPageChange, EditorReleaseWarning,
   EditorSaveResult, EditorSite, EditorSnapshot, EditorTarget
 } from "../src/editor-types.js";
 import { parseProjectSite, type Project } from "../src/projects.js";
@@ -48,14 +48,24 @@ function page(value: unknown): EditorPage {
     || source.visibility !== "public" && source.visibility !== "private" || typeof source.published !== "boolean") throw new Error("ページ一覧が正しくありません。");
   return { ...checked, title: source.title, path: source.path, kind: "page", visibility: source.visibility, published: source.published };
 }
-type Catalog = { readonly sites: readonly EditorSite[]; readonly pages: readonly EditorPage[] };
+type Catalog = { readonly sites: readonly EditorSite[]; readonly pages: readonly EditorPage[];
+  readonly version?: string; readonly versions?: ReadonlyMap<string, string> };
+const pageKey = (target: EditorTarget) => `${target.pageId}/${target.locale}`;
 function catalog(value: unknown): Catalog {
   const source = record(value);
   if (!Array.isArray(source.sites) || source.sites.length !== 1 || !Array.isArray(source.pages) || source.pages.length > 500) throw new Error("ページ一覧が正しくありません。");
   const siteSource = record(source.sites[0]);
   const site = parseProjectSite({ id: siteSource.id, name: siteSource.name, domains: siteSource.domains }, "catalog.sites[0]");
   if (site.domains.length === 0) throw new Error("サイト情報が正しくありません。");
-  return { sites: [site], pages: source.pages.map(page) };
+  if (typeof source.version !== "string" || !VERSION.test(source.version)) throw new Error("ページ一覧の版が正しくありません。");
+  const versions = new Map<string, string>();
+  const pages = source.pages.map((entry) => {
+    const parsed = page(entry), { version } = record(entry);
+    if (typeof version !== "string" || !VERSION.test(version)) throw new Error("ページの版が正しくありません。");
+    versions.set(pageKey(parsed), version);
+    return parsed;
+  });
+  return { sites: [site], version: source.version, pages, versions };
 }
 function snapshot(value: unknown, checkedTarget: EditorTarget): EditorSnapshot {
   const source = record(value), document = parsePageDocument(source.document, managedBlockContracts);
@@ -124,20 +134,12 @@ export function createManagedEditorAdapter(initial: Catalog, project: Project): 
       if (value.status !== "saved" || typeof value.version !== "string" || !VERSION.test(value.version) || !Number.isSafeInteger(value.revision)) throw new Error("保存結果が正しくありません。");
       return { status: "saved", version: value.version, revision: Number(value.revision) } satisfies EditorSaveResult;
     }) as Promise<EditorSaveResult>,
-    prepareRelease: async (input, signal) => await api(`${base}/${encodeURIComponent(input.target.pageId)}/release-plan`, "POST", {
-      target: input.target, expectedVersion: input.expectedVersion, action: input.action, ...(input.action === "rollback" ? { revision: input.revision } : {})
-    }, signal) as EditorReleasePlan,
-    release: (plan, signal) => conflict(async () => {
-      const value = record(await api(`${base}/${encodeURIComponent(plan.target.pageId)}/release`, "POST", { expectedVersion: plan.expectedVersion, confirmationToken: plan.confirmationToken }, signal));
-      if (value.status !== "released") throw new Error("公開結果が正しくありません。");
-      return { status: "released" as const, snapshot: snapshot(value.snapshot, plan.target) };
-    }),
     publishPageNow: (request, signal) => {
       if (request.target.siteId !== project.site.id || request.action === "restore" && (!Number.isSafeInteger(request.revision) || request.revision! < 1)
         || request.action === "publish" && request.revision !== undefined) throw new Error("公開対象または版が正しくありません。");
       return conflict(async () => {
         const value = record(await api(`${base}/${encodeURIComponent(request.target.pageId)}/publish`, "POST",
-          { action: request.action, ...(request.action === "restore" ? { revision: request.revision } : {}) }, signal));
+          { expectedVersion: request.expectedVersion, action: request.action, ...(request.action === "restore" ? { revision: request.revision } : {}) }, signal));
         if (value.status !== "released") throw new Error("公開結果が正しくありません。");
         let url: string | undefined;
         if (value.url !== undefined) {
@@ -161,9 +163,11 @@ export function createManagedEditorAdapter(initial: Catalog, project: Project): 
     },
     pagePathEditable: true,
     pageChangeActions: ["create", "update", "visibility"],
-    preparePageChange: async (change: EditorPageChange, signal: AbortSignal) => await api(`${base}/page-changes/prepare`, "POST", { change }, signal) as EditorPageChangePlan,
-    applyPageChange: (plan: EditorPageChangePlan, signal: AbortSignal) => conflict(async () => {
-      const value = record(await api(`${base}/page-changes/apply`, "POST", { change: plan.change, confirmationToken: plan.confirmationToken }, signal));
+    changePageNow: (change: EditorPageChange, signal: AbortSignal, pageVersion?: string) => conflict(async () => {
+      if (change.action === "duplicate") throw new Error("このページ操作は利用できません。");
+      const expectedVersion = change.action === "create" ? current.version : pageVersion ?? current.versions?.get(pageKey(change.target));
+      if (!expectedVersion) return { status: "conflict" as const };
+      const value = record(await api(`${base}/page-changes`, "POST", { expectedVersion, change }, signal));
       if (value.status !== "applied") throw new Error("ページ操作の結果が正しくありません。");
       return { status: "applied" as const, page: page(value.page) };
     })

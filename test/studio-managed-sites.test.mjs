@@ -84,15 +84,7 @@ async function fixture(t, { cms = false, restore, restoredObjects = [] } = {}) {
         return this;
       },
       async first() {
-        const value = statement.get(...params) ?? null;
-        if (faults.revokeOwnerAfterReleasePlanRead && query.includes("FROM managed_editor_plans") && query.includes("token_hash")) {
-          const { projectId, subject } = faults.revokeOwnerAfterReleasePlanRead;
-          delete faults.revokeOwnerAfterReleasePlanRead;
-          sqlite.prepare("INSERT INTO project_members (project_id, access_subject, role, display_name, email) VALUES (?, 'backup-owner', 'owner', 'Backup owner', 'backup@example.test')")
-            .run(projectId);
-          sqlite.prepare("DELETE FROM project_members WHERE project_id = ? AND access_subject = ?").run(projectId, subject);
-        }
-        return value;
+        return statement.get(...params) ?? null;
       },
       execute() {
         if (/^\s*(?:UPDATE|INSERT|DELETE)\b/u.test(query)) return { success: true, meta: statement.run(...params) };
@@ -113,6 +105,16 @@ async function fixture(t, { cms = false, restore, restoredObjects = [] } = {}) {
     ...(cms ? { CMS_DELIVERY_MASTER_KEY: "a1".repeat(32) } : {}),
     DB: { prepare: wrap, async batch(statements) {
       if (faults.managedProjectBatch) { const error = faults.managedProjectBatch; delete faults.managedProjectBatch; throw error; }
+      if (faults.revokeOwnerBeforePublishCommit && statements[0]?.query.includes("INSERT INTO managed_site_audit")) {
+        const { projectId, subject } = faults.revokeOwnerBeforePublishCommit;
+        delete faults.revokeOwnerBeforePublishCommit;
+        sqlite.prepare("INSERT INTO project_members (project_id, access_subject, role, display_name) VALUES (?, 'backup-owner', 'owner', 'Backup owner')").run(projectId);
+        sqlite.prepare("DELETE FROM project_members WHERE project_id = ? AND access_subject = ?").run(projectId, subject);
+      }
+      if (faults.revokePublishGrant && statements[0]?.query.includes("INSERT INTO managed_site_audit")) {
+        sqlite.prepare("DELETE FROM studio_cli_grants WHERE client_id = ? AND capability = 'pages.publish'").run(SERVICE_CLIENT);
+        delete faults.revokePublishGrant;
+      }
       sqlite.exec("BEGIN");
       try {
         const result = statements.map((statement, index) => {
@@ -161,6 +163,11 @@ async function body(response, status) {
   return value;
 }
 
+async function pageChange(send, change) {
+  const { version } = await body(await send("GET", change.action === "create" ? "/catalog" : `/${change.target.pageId}`), 200);
+  return body(await send("POST", "/page-changes", { change, expectedVersion: version }), 200);
+}
+
 async function setFixturePublicPolicy(h, site, settings) {
   const path = `/api/projects/${site.projectId}/sites/${site.siteId}/editor/public-settings`;
   const { version } = await body(await h.send(MANAGEMENT_ORIGIN, "GET", path), 200);
@@ -179,9 +186,7 @@ testWithD1("published page permits only approved embeds and serves NIHO connecti
   h.sqlite.prepare("INSERT INTO project_members (project_id, access_subject, role, display_name) VALUES (?, ?, 'editor', 'Editor')").run(projectId, OTHER);
   const send = (method, path, value, options) => h.send(MANAGEMENT_ORIGIN, method, path, value, options);
   const publish = async ({ version }) => {
-    const target = { siteId, pageId: "home", locale: "ja" };
-    const plan = await body(await send("POST", api + "/home/release-plan", { target, expectedVersion: version, action: "publish" }), 200);
-    return body(await send("POST", api + "/home/release", { expectedVersion: version, confirmationToken: plan.confirmationToken }), 200);
+    return body(await send("POST", api + "/home/publish", { expectedVersion: version, action: "publish" }), 200);
   };
   const initial = await body(await send("GET", settingsPath), 200);
   const savePolicy = (settings, expectedVersion = initial.version, options) => send("POST", settingsPath, { expectedVersion, settings }, options);
@@ -361,7 +366,6 @@ testWithD1("custom domain serves a noindex root page with its private NIHO embed
 
   const frameOrigins = ["https://niho.life"];
   await setFixturePublicPolicy(h, site, { frameOrigins, resourceOrigins: [], ga4MeasurementId: "G-TEST12345" });
-  const target = { siteId: site.siteId, pageId: "home", locale: "ja" };
   const snapshot = await body(await h.send(MANAGEMENT_ORIGIN, "GET", api + "/home"), 200);
   const payload = { v: 1, flow: "inquiry", spotId: "example", publicId: "example", launchTokenVersion: 1,
     parentOrigin: "https://preview.example.test", allowedPathPrefix: "/" };
@@ -374,8 +378,7 @@ testWithD1("custom domain serves a noindex root page with its private NIHO embed
     { type: "component", id: "form", block: "ManagedEmbed", props: { refId, background: "white", initialHeight: 720 } }
   );
   const saved = await body(await h.send(MANAGEMENT_ORIGIN, "PUT", api + "/home/draft", { expectedVersion: snapshot.version, document: snapshot.document }), 200);
-  const plan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", api + "/home/release-plan", { target, expectedVersion: saved.version, action: "publish" }), 200);
-  await body(await h.send(MANAGEMENT_ORIGIN, "POST", api + "/home/release", { expectedVersion: saved.version, confirmationToken: plan.confirmationToken }), 200);
+  await body(await h.send(MANAGEMENT_ORIGIN, "POST", api + "/home/publish", { expectedVersion: saved.version, action: "publish" }), 200);
 
   const response = await h.fetch("https://preview.example.test/");
   const html = await response.text();
@@ -399,8 +402,7 @@ testWithD1("custom domain serves a noindex root page with its private NIHO embed
   const changed = await body(await h.send(MANAGEMENT_ORIGIN, "GET", api + "/home"), 200);
   changed.document.title = "Custom domain updated";
   const changedDraft = await body(await h.send(MANAGEMENT_ORIGIN, "PUT", api + "/home/draft", { expectedVersion: changed.version, document: changed.document }), 200);
-  const changedPlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", api + "/home/release-plan", { target, expectedVersion: changedDraft.version, action: "publish" }), 200);
-  await body(await h.send(MANAGEMENT_ORIGIN, "POST", api + "/home/release", { expectedVersion: changedDraft.version, confirmationToken: changedPlan.confirmationToken }), 200);
+  await body(await h.send(MANAGEMENT_ORIGIN, "POST", api + "/home/publish", { expectedVersion: changedDraft.version, action: "publish" }), 200);
   assert.match(await (await h.fetch("https://preview.example.test/")).text(), /<title>Custom domain updated<\/title>/u);
   assert.equal(cachedHtml.size, 2);
   const publicScript = await h.fetch("https://preview.example.test/_niho/niho-embeds-012345abcdef.js");
@@ -461,10 +463,8 @@ testWithD1("managed SEO renders alternates and JSON-LD, publishes discovery file
   const oldEditorSave = await body(await h.send(MANAGEMENT_ORIGIN, "POST", publicSettingsPath,
     { expectedVersion: publicSettings.version, settings: { frameOrigins: [], resourceOrigins: [] } }), 200);
   assert.deepEqual(oldEditorSave.settings.seo, seoSettings, "public policy edits preserve the versioned SEO document");
-  const release = async (pageId, locale, version) => {
-    const target = { siteId: site.siteId, pageId, locale };
-    const plan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/${pageId}/release-plan`, { target, expectedVersion: version, action: "publish" }), 200);
-    return body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/${pageId}/release`, { expectedVersion: version, confirmationToken: plan.confirmationToken }), 200);
+  const release = async (pageId, _locale, version) => {
+    return body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/${pageId}/publish`, { expectedVersion: version, action: "publish" }), 200);
   };
   let home = await body(await h.send(MANAGEMENT_ORIGIN, "GET", api + "/home"), 200);
   home.document.meta = { description: "日本語の説明", structuredData: ["organization"] };
@@ -472,16 +472,14 @@ testWithD1("managed SEO renders alternates and JSON-LD, publishes discovery file
   await release("home", "ja", saved.version);
 
   const englishChange = { action: "create", siteId: site.siteId, locale: "en", title: "English home", path: "/en" };
-  const englishPlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", api + "/page-changes/prepare", { change: englishChange }), 200);
-  const englishCreated = await body(await h.send(MANAGEMENT_ORIGIN, "POST", api + "/page-changes/apply", { change: englishChange, confirmationToken: englishPlan.confirmationToken }), 200);
+  const englishCreated = await pageChange((method, suffix, input) => h.send(MANAGEMENT_ORIGIN, method, api + suffix, input), englishChange);
   let english = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/${englishCreated.page.pageId}`), 200);
   english.document.meta = { description: "English description" };
   saved = await body(await h.send(MANAGEMENT_ORIGIN, "PUT", `${api}/${englishCreated.page.pageId}/draft`, { expectedVersion: english.version, document: english.document }), 200);
   await release(englishCreated.page.pageId, "en", saved.version);
 
   const aboutChange = { action: "create", siteId: site.siteId, locale: "ja", title: "About", path: "/about" };
-  const aboutPlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", api + "/page-changes/prepare", { change: aboutChange }), 200);
-  const aboutCreated = await body(await h.send(MANAGEMENT_ORIGIN, "POST", api + "/page-changes/apply", { change: aboutChange, confirmationToken: aboutPlan.confirmationToken }), 200);
+  const aboutCreated = await pageChange((method, suffix, input) => h.send(MANAGEMENT_ORIGIN, method, api + suffix, input), aboutChange);
   const about = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/${aboutCreated.page.pageId}`), 200);
   about.document.title = "SEO Fixture";
   about.document.meta = { description: "日本語の説明" };
@@ -490,18 +488,15 @@ testWithD1("managed SEO renders alternates and JSON-LD, publishes discovery file
     children: [{ type: "text", text: "未公開ページ" }] });
   const aboutSaved = await body(await h.send(MANAGEMENT_ORIGIN, "PUT", `${api}/${aboutCreated.page.pageId}/draft`,
     { expectedVersion: about.version, document: about.document }), 200);
-  const aboutTarget = { siteId: site.siteId, pageId: aboutCreated.page.pageId, locale: "ja" };
-  const aboutReleasePlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/${aboutCreated.page.pageId}/release-plan`,
-    { target: aboutTarget, expectedVersion: aboutSaved.version, action: "publish" }), 200);
-  const warningCodes = aboutReleasePlan.warnings.map(({ code }) => code);
+  const aboutPublished = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/${aboutCreated.page.pageId}/publish`,
+    { expectedVersion: aboutSaved.version, action: "publish" }), 200);
+  const warningCodes = aboutPublished.warnings.map(({ code }) => code);
   assert.ok(warningCodes.includes("duplicate-title"));
   assert.ok(warningCodes.includes("duplicate-description"));
   assert.ok(warningCodes.includes("broken-internal-link"));
-  assert.ok(aboutReleasePlan.warnings.find(({ code }) => code === "broken-internal-link").message.length <= 1000);
-  await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/${aboutCreated.page.pageId}/release`,
-    { expectedVersion: aboutSaved.version, confirmationToken: aboutReleasePlan.confirmationToken }), 200);
+  assert.ok(aboutPublished.warnings.find(({ code }) => code === "broken-internal-link").message.length <= 1000);
   const directPublish = await body(await h.send(MANAGEMENT_ORIGIN, "POST",
-    `/api/edit/v1/sites/${site.siteId}/operations/pages.publish/${aboutCreated.page.pageId}?locale=ja`, { action: "publish" }), 200);
+    `/api/edit/v1/sites/${site.siteId}/operations/pages.publish/${aboutCreated.page.pageId}?locale=ja`, { action: "publish", expectedVersion: aboutPublished.snapshot.version }), 200);
   assert.ok(directPublish.warnings.some(({ code }) => code === "broken-internal-link"));
 
   const html = await (await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/`)).text();
@@ -533,8 +528,7 @@ testWithD1("managed SEO renders alternates and JSON-LD, publishes discovery file
   const redirectBeforeMove = await body(await h.send(MANAGEMENT_ORIGIN, "GET", redirectsPath), 200);
   assert.deepEqual(redirectBeforeMove.redirects, firstRedirects);
   const move = { action: "update", target: { siteId: site.siteId, pageId: aboutCreated.page.pageId, locale: "ja" }, title: "About", path: "/about-us" };
-  const movePlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", api + "/page-changes/prepare", { change: move }), 200);
-  const moved = await body(await h.send(MANAGEMENT_ORIGIN, "POST", api + "/page-changes/apply", { change: move, confirmationToken: movePlan.confirmationToken }), 200);
+  const moved = await pageChange((method, suffix, input) => h.send(MANAGEMENT_ORIGIN, method, api + suffix, input), move);
   const redirectAfterMove = await body(await h.send(MANAGEMENT_ORIGIN, "GET", redirectsPath), 200);
   assert.notEqual(redirectAfterMove.version, redirectBeforeMove.version, "page path changes invalidate old redirect snapshots");
   assert.deepEqual(redirectAfterMove.redirects, [
@@ -625,12 +619,9 @@ testWithD1("Studio-native site stores page sources in R2 for GUI, CAS, history a
   assert.equal((await h.send(MANAGEMENT_ORIGIN, "PUT", `${api}/home/draft`, { expectedVersion: first.version, document: edited })).status, 409);
 
   // GUI経路で版2を公開。履歴行とpointerがbatchで揃い、公開HTMLはpath prefix・head・CSPを持つ。
-  const target = { siteId, pageId: "home", locale: "ja" };
-  const plan2 = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/release-plan`, { target, expectedVersion: saved.version, action: "publish" }), 200);
-  const stalePlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/release-plan`, { target, expectedVersion: saved.version, action: "publish" }), 200);
-  const released2 = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/release`, { expectedVersion: saved.version, confirmationToken: plan2.confirmationToken }), 200);
+  const released2 = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/publish`, { expectedVersion: saved.version, action: "publish" }), 200);
   assert.notEqual(released2.snapshot.version, saved.version);
-  assert.equal((await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/release`, { expectedVersion: saved.version, confirmationToken: stalePlan.confirmationToken })).status, 409);
+  assert.equal((await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/publish`, { expectedVersion: saved.version, action: "publish" })).status, 409);
   const public2 = await h.send(PUBLIC_ORIGIN, "GET", "/s/fixture-site/", undefined, { auth: false });
   assert.equal(public2.status, 200);
   const html2 = await public2.text();
@@ -650,14 +641,12 @@ testWithD1("Studio-native site stores page sources in R2 for GUI, CAS, history a
   thirdDocument.title = "Third version";
   thirdDocument.meta = { noindex: true };
   const saved3 = await body(await h.send(MANAGEMENT_ORIGIN, "PUT", `${api}/home/draft`, { expectedVersion: current.version, document: thirdDocument }), 200);
-  const plan3 = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/release-plan`, { target, expectedVersion: saved3.version, action: "publish" }), 200);
-  const released3 = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/release`, { expectedVersion: saved3.version, confirmationToken: plan3.confirmationToken }), 200);
+  const released3 = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/publish`, { expectedVersion: saved3.version, action: "publish" }), 200);
   const thirdHtml = await (await h.send(PUBLIC_ORIGIN, "GET", "/s/fixture-site/", undefined, { auth: false })).text();
   assert.match(thirdHtml, /<title>Third version<\/title>/u);
   assert.match(thirdHtml, /name="robots" content="noindex, nofollow"/u);
   assert.doesNotMatch(thirdHtml, /rel="canonical"/u);
-  const rollback = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/release-plan`, { target, expectedVersion: released3.snapshot.version, action: "rollback", revision: 2 }), 200);
-  const restored = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/release`, { expectedVersion: released3.snapshot.version, confirmationToken: rollback.confirmationToken }), 200);
+  const restored = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/publish`, { expectedVersion: released3.snapshot.version, action: "restore", revision: 2 }), 200);
   assert.deepEqual(restored.snapshot.document, { ...released2.snapshot.document, revision: 4 });
   const editorRestored = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/home`), 200);
   assert.deepEqual(editorRestored.document, restored.snapshot.document);
@@ -669,48 +658,35 @@ testWithD1("Studio-native site stores page sources in R2 for GUI, CAS, history a
   assert.deepEqual((await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/history-read`, { id: "rev-2" }), 200)).document, released2.snapshot.document);
   assert.equal((await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/history-read`, { id: "rev-999" })).status, 404);
   assert.equal((await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/home/history?cursor=invalid`)).status, 400);
-  const pendingPlanCount = h.sqlite.prepare("SELECT count(*) AS count FROM managed_editor_plans WHERE site_id = ?").get(siteId).count;
-  const directPublish = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/publish`, { action: "publish" }), 200);
+  const directPublish = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/publish`, { expectedVersion: restored.snapshot.version, action: "publish" }), 200);
   assert.equal(directPublish.status, "released");
   assert.equal(directPublish.snapshot.document.revision, 4);
-  assert.equal(h.sqlite.prepare("SELECT count(*) AS count FROM managed_editor_plans WHERE site_id = ?").get(siteId).count, pendingPlanCount);
-  const directRestore = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/publish`, { action: "restore", revision: 2 }), 200);
+  assert.equal(h.sqlite.prepare("SELECT count(*) AS count FROM managed_editor_plans").get().count, 0);
+  h.sqlite.exec(await readFile(new URL("../studio/post-deploy/0025_drop_managed_editor_plans.sql", import.meta.url), "utf8"));
+  assert.equal(h.sqlite.prepare("SELECT name FROM sqlite_schema WHERE name = 'managed_editor_plans'").get(), undefined);
+  const directRestore = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/publish`, { expectedVersion: directPublish.snapshot.version, action: "restore", revision: 2 }), 200);
   assert.equal(directRestore.status, "released");
   assert.deepEqual(directRestore.snapshot.document, { ...released2.snapshot.document, revision: 5 });
   assert.equal(h.sqlite.prepare("SELECT published_revision FROM managed_pages WHERE site_id = ? AND page_id = 'home'").get(siteId).published_revision, 5);
-  assert.equal((await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/publish`, { action: "restore", revision: 999 })).status, 409);
+  assert.equal((await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/publish`, { expectedVersion: directRestore.snapshot.version, action: "restore", revision: 999 })).status, 409);
 
   // 同じpage-change operationで別ページを作る。公開前はpublic GETに出ない。
   const createChange = { action: "create", siteId, locale: "ja", title: "About", path: "/about" };
-  const changePlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/page-changes/prepare`, { change: createChange }), 200);
-  const applied = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/page-changes/apply`, { change: createChange, confirmationToken: changePlan.confirmationToken }), 200);
+  const applied = await pageChange((method, suffix, input) => h.send(MANAGEMENT_ORIGIN, method, api + suffix, input), createChange);
   assert.equal(applied.page.path, "/about");
   assert.equal((await h.send(PUBLIC_ORIGIN, "GET", "/s/fixture-site/about", undefined, { auth: false })).status, 404);
 
-  // plan後にmembershipを失ったactorは反映できず、失敗したplanは消費しない。再参加後だけ同じplanを安全に適用できる。
   const aboutTarget = { siteId, pageId: applied.page.pageId, locale: "ja" };
+  const about = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/${aboutTarget.pageId}`), 200);
   const move = { action: "update", target: aboutTarget, title: "About", path: "/about-us" };
-  const beforePageChange = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/home`), 200);
-  const draft = structuredClone(beforePageChange.document);
-  draft.body[0].children.find(({ id }) => id === "link").attrs.href = "/somewhere-else";
-  draft.body[0].children.push({ type: "element", id: "draft-link", tag: "a", attrs: { href: `${PUBLIC_ORIGIN}/s/fixture-site/about?q=test#details` }, children: [{ type: "text", text: "Draft link" }] });
-  await body(await h.send(MANAGEMENT_ORIGIN, "PUT", `${api}/home/draft`, { expectedVersion: beforePageChange.version, document: draft }), 200);
-  const movePlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/page-changes/prepare`, { change: move }), 200);
-  const links = [{ pageId: "home", locale: "ja", title: "Fixture site", count: 2 }];
-  assert.deepEqual(movePlan.impact.linkedFrom, links);
-  assert.equal(movePlan.impact.after, `${PUBLIC_ORIGIN}/s/fixture-site/about-us`);
-
+  await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/page-changes`, { change: move, expectedVersion: about.version }), 200);
   const visibility = { action: "visibility", target: aboutTarget, visibility: "private" };
-  const visibilityPlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/page-changes/prepare`, { change: visibility }), 200);
-  assert.deepEqual(visibilityPlan.impact.linkedFrom, links);
-  assert.equal(visibilityPlan.impact.after, undefined);
-  h.sqlite.prepare("INSERT INTO project_members (project_id, access_subject, role, display_name, email) VALUES (?, 'backup-owner', 'owner', 'Backup owner', 'backup@example.test')").run(projectId);
-  h.sqlite.prepare("DELETE FROM project_members WHERE project_id = ? AND access_subject = ?").run(projectId, OWNER);
-  assert.equal((await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/page-changes/apply`, { change: visibility, confirmationToken: visibilityPlan.confirmationToken })).status, 403);
-  assert.equal(h.sqlite.prepare("SELECT count(*) AS count FROM managed_editor_plans WHERE site_id = ? AND operation = 'page.visibility'").get(siteId).count, 1);
-  h.sqlite.prepare("INSERT INTO project_members (project_id, access_subject, role, display_name, email) VALUES (?, ?, 'owner', 'Fixture owner', 'owner@example.test')").run(projectId, OWNER);
-  await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/page-changes/apply`, { change: visibility, confirmationToken: visibilityPlan.confirmationToken }), 200);
-  assert.equal(h.sqlite.prepare("SELECT count(*) AS count FROM managed_editor_plans WHERE site_id = ? AND operation = 'page.visibility'").get(siteId).count, 0);
+  const update = (expectedVersion, token) => h.send(MANAGEMENT_ORIGIN, "POST", `${api}/page-changes`, { change: visibility, expectedVersion }, { token });
+  assert.deepEqual(await body(await update(about.version), 409), { error: "version_conflict" });
+  const moved = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/${aboutTarget.pageId}`), 200);
+  assert.equal((await update(moved.version, h.otherToken)).status, 403);
+  assert.equal((await body(await update(moved.version), 200)).page.visibility, "private");
+  assert.deepEqual(await body(await update(moved.version), 409), { error: "version_conflict" });
 
   // 現在の membership がない利用者は同じサイトを操作できない。
   assert.equal((await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/catalog`, undefined, { token: h.otherToken })).status, 403);
@@ -719,13 +695,11 @@ testWithD1("Studio-native site stores page sources in R2 for GUI, CAS, history a
 testWithD1("Managed page sources over 600 KiB save, publish, replay operations, and restore from R2", async (t) => {
   const h = await fixture(t), slug = "large-page";
   const { projectId, siteId } = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Large page", slug, locale: "ja" }), 201);
-  const target = { siteId, pageId: "home", locale: "ja" };
   const editor = `/api/projects/${projectId}/sites/${siteId}/editor/home`;
   const gui = (method, suffix = "", input) => h.send(MANAGEMENT_ORIGIN, method, editor + suffix, input);
   const cli = (method, operation, input) => h.send(MANAGEMENT_ORIGIN, method, `/api/edit/v1/sites/${siteId}/operations/pages.${operation}/home?locale=ja`, input, { cli: true });
   const release = async (expectedVersion, requested) => {
-    const plan = await body(await gui("POST", "/release-plan", { target, expectedVersion, ...requested }), 200);
-    return body(await gui("POST", "/release", { expectedVersion, confirmationToken: plan.confirmationToken }), 200);
+    return body(await gui("POST", "/publish", { expectedVersion, ...requested }), 200);
   };
 
   const original = await body(await gui("GET"), 200);
@@ -765,7 +739,7 @@ testWithD1("Managed page sources over 600 KiB save, publish, replay operations, 
   const small = await body(await cli("PUT", "save", { expectedVersion: applied.version, document: { ...original.document, revision: applied.revision } }), 200);
   assert.equal(version.get(siteId, applied.revision), undefined);
   assert.deepEqual(await body(await cli("POST", "apply", operation), 200), applied);
-  const rolledBack = await release(small.version, { action: "rollback", revision: saved.revision });
+  const rolledBack = await release(small.version, { action: "restore", revision: saved.revision });
   const restoredDocument = { ...document, revision: small.document.revision + 1 };
   assert.deepEqual(rolledBack.snapshot.document, restoredDocument);
   const restored = version.get(siteId, restoredDocument.revision);
@@ -790,12 +764,6 @@ testWithD1("Legacy page sources preserve exact D1 bytes and links across a retri
   const version = () => h.sqlite.prepare(`SELECT document_json, document_key, document_digest, link_index_json
     FROM managed_page_versions WHERE site_id = ? AND page_id = 'legacy'`).get(siteId);
 
-  const warnings = async () => (await body(await gui("POST", "/page-changes/prepare", {
-    change: { action: "visibility", target: { siteId, pageId: "home", locale: "ja" }, visibility: "private" }
-  }), 200)).impact.linkedFrom;
-  const links = [{ pageId: "legacy", locale: "ja", title: "旧ページ", count: 1 }];
-  assert.deepEqual(await warnings(), links);
-
   h.faults.put = "after";
   assert.deepEqual((await body(await gui("GET", "/legacy"), 200)).document, legacy);
   assert.equal(version().document_json, raw);
@@ -818,7 +786,6 @@ testWithD1("Legacy page sources preserve exact D1 bytes and links across a retri
   assert.equal(h.objects.get(moved.document_key), raw);
   assert.equal(moved.document_digest, createHash("sha256").update(raw).digest("hex"));
   assert.deepEqual(JSON.parse(moved.link_index_json), [["legacy-link", "/"]]);
-  assert.deepEqual(await warnings(), links);
   assert.throws(() => h.sqlite.prepare(`UPDATE managed_page_versions SET document_json = '[]'
     WHERE site_id = ? AND page_id = 'legacy'`).run(siteId), /immutable/u);
   assert.match(await (await h.send(PUBLIC_ORIGIN, "GET", `/s/${slug}/old`, undefined, { auth: false })).text(), /ホーム/u);
@@ -829,15 +796,13 @@ testWithD1("Missing or modified R2 page sources fail closed without changing sta
   const { projectId, siteId } = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Verified page", slug, locale: "ja" }), 201);
   const editor = `/api/projects/${projectId}/sites/${siteId}/editor/home`;
   const gui = (method, suffix = "", input) => h.send(MANAGEMENT_ORIGIN, method, editor + suffix, input);
-  const snapshot = await body(await gui("GET"), 200), target = { siteId, pageId: "home", locale: "ja" };
-  const publishPlan = (expectedVersion) => gui("POST", "/release-plan", { target, expectedVersion, action: "publish" }).then((response) => body(response, 200));
-  const plan = await publishPlan(snapshot.version);
-  const published = await body(await gui("POST", "/release", { expectedVersion: snapshot.version, confirmationToken: plan.confirmationToken }), 200);
-  const pending = await publishPlan(published.snapshot.version);
+  const snapshot = await body(await gui("GET"), 200);
+  const publish = (expectedVersion) => gui("POST", "/publish", { expectedVersion, action: "publish" });
+  const published = await body(await publish(snapshot.version), 200);
   const { document_key: key } = h.sqlite.prepare("SELECT document_key FROM managed_page_versions WHERE site_id = ? AND page_id = 'home'").get(siteId);
   const pointer = () => h.sqlite.prepare("SELECT manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(siteId).manifest_key;
   const liveManifest = pointer(), url = `${PUBLIC_ORIGIN}/s/${slug}/`;
-  const submit = () => gui("POST", "/release", { expectedVersion: published.snapshot.version, confirmationToken: pending.confirmationToken });
+  const submit = () => publish(published.snapshot.version);
 
   h.objects.set(key, h.objects.get(key) + "\n");
   assert.equal((await gui("GET")).status, 503);
@@ -864,10 +829,18 @@ testWithD1("Studio Editing API publishes one time and exposes the same revision 
   const discovered = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${base}/capabilities`), 200);
   assert.ok(discovered.operations.some(({ id }) => id === "pages.publish"));
   assert.ok(discovered.operations.some(({ id }) => id === "pages.history"));
+  assert.ok(discovered.operations.some(({ id }) => id === "pages.change"));
+  assert.ok(discovered.operations.every(({ id }) => !["pages.release-plan", "pages.release", "cms.publish-plan", "cms.publish"].includes(id)));
   const first = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${base}/operations/pages.read/home?locale=ja`), 200);
   const edited = { ...structuredClone(first.document), title: "One-step publish" };
   const saved = await body(await h.send(MANAGEMENT_ORIGIN, "PUT", `${base}/operations/pages.save/home?locale=ja`, { expectedVersion: first.version, document: edited }), 200);
-  const published = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${base}/operations/pages.publish/home?locale=ja`, { action: "publish" }), 200);
+  const publishPath = `${base}/operations/pages.publish/home?locale=ja`;
+  const publish = (input) => h.send(MANAGEMENT_ORIGIN, "POST", publishPath, input);
+  assert.equal((await publish({ action: "publish" })).status, 400);
+  assert.deepEqual(await body(await publish({ expectedVersion: first.version, action: "publish" }), 409), { error: "version_conflict" });
+  assert.deepEqual((await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${base}/operations/pages.read/home?locale=ja`), 200)).document, saved.document);
+  assert.equal(h.sqlite.prepare("SELECT count(*) AS count FROM managed_page_publications WHERE site_id = ?").get(siteId).count, 0);
+  const published = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${base}/operations/pages.publish/home?locale=ja`, { expectedVersion: saved.version, action: "publish" }), 200);
   assert.equal(published.status, "released");
   assert.equal(published.url, "https://sites.example/s/direct-publish/");
   assert.ok(Array.isArray(published.warnings));
@@ -882,7 +855,9 @@ testWithD1("Studio Editing API publishes one time and exposes the same revision 
   const history = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${base}/operations/pages.history/home?locale=ja`), 200);
   assert.deepEqual(history.entries.map(({ kind }) => kind), ["publish"]);
   assert.equal((await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${base}/operations/pages.history-read/home?locale=ja`, { id: `rev-${saved.document.revision}` }), 200)).document.title, "One-step publish");
-  const restored = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${base}/operations/pages.publish/home?locale=ja`, { action: "restore", revision: saved.document.revision }), 200);
+  const restoreInput = { action: "restore", revision: saved.document.revision };
+  assert.deepEqual(await body(await publish({ expectedVersion: saved.version, ...restoreInput }), 409), { error: "version_conflict" });
+  const restored = await body(await publish({ expectedVersion: published.snapshot.version, ...restoreInput }), 200);
   assert.equal(restored.status, "released");
   assert.equal(restored.snapshot.document.title, "One-step publish");
   assert.equal(restored.snapshot.document.revision, saved.document.revision + 1);
@@ -900,6 +875,29 @@ testWithD1("Studio Editing API publishes one time and exposes the same revision 
   assert.equal((await h.send(MANAGEMENT_ORIGIN, "POST", `${base}/operations/pages.publish/home?locale=ja`, { action: "restore", revision: -1 })).status, 400);
 });
 
+testWithD1("Studio Editing API page changes use the catalog and page versions independently", async (t) => {
+  const h = await fixture(t);
+  const { siteId } = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Page management", slug: "page-management", locale: "ja" }), 201);
+  const base = `/api/edit/v1/sites/${siteId}/operations`;
+  const request = (method, path, input) => h.send(MANAGEMENT_ORIGIN, method, `${base}/${path}`, input, { cli: true });
+  const initial = await body(await request("GET", "pages.catalog"), 200);
+  const create = {
+    expectedVersion: initial.version,
+    change: { action: "create", siteId, locale: "ja", title: "About", path: "/about" }
+  };
+  const { page } = await body(await request("POST", "pages.change", create), 200);
+  const anotherChange = { ...create.change, path: "/contact" };
+  assert.deepEqual(await body(await request("POST", "pages.change", { ...create, change: anotherChange }), 409), { error: "version_conflict" });
+  const current = await body(await request("GET", "pages.catalog"), 200);
+  assert.notEqual(current.version, initial.version);
+  assert.deepEqual(current.pages.map(({ path }) => path), ["/", "/about"]);
+  const snapshot = await body(await request("GET", `pages.read/${page.pageId}?locale=ja`), 200);
+  const change = { action: "update", target: { siteId, locale: "ja", pageId: page.pageId }, title: "About us", path: "/about-us" };
+  assert.deepEqual(await body(await request("POST", "pages.change", { change, expectedVersion: current.version }), 409), { error: "version_conflict" });
+  const { page: updated } = await body(await request("POST", "pages.change", { change, expectedVersion: snapshot.version }), 200);
+  assert.deepEqual(updated, { ...page, title: "About us", path: "/about-us" });
+});
+
 testWithD1("Static publication serves immutable HTML and applies noindex to the verification host", async (t) => {
   const h = await fixture(t, { cms: true });
   const created = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Static fixture", slug: "static-fixture", locale: "ja" }), 201);
@@ -908,13 +906,7 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   const linkedDocument = structuredClone(draft.document);
   linkedDocument.body[0].children.push({ type: "element", id: "about-link", tag: "a", attrs: { href: "/about" }, children: [{ type: "text", text: "About" }] });
   const saved = await body(await h.send(MANAGEMENT_ORIGIN, "PUT", `${api}/home/draft`, { expectedVersion: draft.version, document: linkedDocument }), 200);
-  const target = { siteId: created.siteId, pageId: "home", locale: "ja" };
-  const plan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/release-plan`, {
-    target, expectedVersion: saved.version, action: "publish"
-  }), 200);
-  await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/release`, {
-    expectedVersion: saved.version, confirmationToken: plan.confirmationToken
-  }), 200);
+  await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/publish`, { expectedVersion: saved.version, action: "publish" }), 200);
 
   const state = h.sqlite.prepare("SELECT version, manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(created.siteId);
   assert.match(state.version, /^[0-9a-f]{64}$/u);
@@ -987,25 +979,16 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   assert.equal(publicResponse.headers.get("X-Robots-Tag"), null);
 
   const create = { action: "create", siteId: created.siteId, locale: "ja", title: "About", path: "/about" };
-  const createPlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/page-changes/prepare`, { change: create }), 200);
-  const createdPage = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/page-changes/apply`, {
-    change: create, confirmationToken: createPlan.confirmationToken
-  }), 200);
+  const createdPage = await pageChange((method, suffix, input) => h.send(MANAGEMENT_ORIGIN, method, api + suffix, input), create);
   const about = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/${createdPage.page.pageId}`), 200);
   const aboutTarget = { siteId: created.siteId, pageId: createdPage.page.pageId, locale: "ja" };
-  const aboutPlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/${createdPage.page.pageId}/release-plan`, {
-    target: aboutTarget, expectedVersion: about.version, action: "publish"
-  }), 200);
-  await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/${createdPage.page.pageId}/release`, {
-    expectedVersion: about.version, confirmationToken: aboutPlan.confirmationToken
-  }), 200);
+  await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/${createdPage.page.pageId}/publish`, { expectedVersion: about.version, action: "publish" }), 200);
   const aboutResponse = await publishedSiteRequest(new Request("https://preview.sites.example/s/static-fixture/about"), h.env);
   assert.equal(aboutResponse.status, 200);
   assert.equal(aboutResponse.headers.get("X-Robots-Tag"), "noindex, nofollow");
   assert.match(await aboutResponse.text(), /<title>About<\/title>/u);
   const makePrivate = { action: "visibility", target: aboutTarget, visibility: "private" };
-  const makePrivatePlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/page-changes/prepare`, { change: makePrivate }), 200);
-  await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/page-changes/apply`, { change: makePrivate, confirmationToken: makePrivatePlan.confirmationToken }), 200);
+  await pageChange((method, suffix, input) => h.send(MANAGEMENT_ORIGIN, method, api + suffix, input), makePrivate);
   assert.equal((await publishedSiteRequest(new Request("https://preview.sites.example/s/static-fixture/about"), h.env)).status, 404);
   const latestState = h.sqlite.prepare("SELECT manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(created.siteId);
   const latest = JSON.parse(h.objects.get(latestState.manifest_key));
@@ -1014,17 +997,9 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   assert.equal(staleDiscovery.status, 503);
 
   const addContact = { action: "create", siteId: created.siteId, locale: "ja", title: "Contact", path: "/contact" };
-  const addContactPlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/page-changes/prepare`, { change: addContact }), 200);
-  const contactPage = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/page-changes/apply`, {
-    change: addContact, confirmationToken: addContactPlan.confirmationToken
-  }), 200);
+  const contactPage = await pageChange((method, suffix, input) => h.send(MANAGEMENT_ORIGIN, method, api + suffix, input), addContact);
   const contactDraft = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/${contactPage.page.pageId}`), 200);
-  const contactReleasePlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/${contactPage.page.pageId}/release-plan`, {
-    target: { siteId: created.siteId, pageId: contactPage.page.pageId, locale: "ja" }, expectedVersion: contactDraft.version, action: "publish"
-  }), 200);
-  await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/${contactPage.page.pageId}/release`, {
-    expectedVersion: contactDraft.version, confirmationToken: contactReleasePlan.confirmationToken
-  }), 200);
+  await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/${contactPage.page.pageId}/publish`, { expectedVersion: contactDraft.version, action: "publish" }), 200);
   const refreshedState = h.sqlite.prepare("SELECT manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(created.siteId);
   const refreshedManifest = JSON.parse(h.objects.get(refreshedState.manifest_key));
   assert.deepEqual(refreshedManifest.routes.map(({ path }) => path).sort(), ["/", "/contact"]);
@@ -1052,32 +1027,37 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   assert.equal(unavailablePage.headers.get("X-Robots-Tag"), "noindex, nofollow");
 });
 
-testWithD1("static publication keeps the previous pointer when membership expires after plan read", async (t) => {
+testWithD1("static publication keeps the previous pointer when membership expires after rendering starts", async (t) => {
   const h = await fixture(t, { cms: true });
   const created = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "CAS fixture", slug: "cas-fixture", locale: "ja" }), 201);
   const api = `/api/projects/${created.projectId}/sites/${created.siteId}/editor`;
   const draft = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/home`), 200);
-  const target = { siteId: created.siteId, pageId: "home", locale: "ja" };
-  const plan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/release-plan`, {
-    target, expectedVersion: draft.version, action: "publish"
-  }), 200);
-
-  h.faults.revokeOwnerAfterReleasePlanRead = { projectId: created.projectId, subject: OWNER };
-  const rejected = await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/release`, {
-    expectedVersion: draft.version, confirmationToken: plan.confirmationToken
-  });
-  assert.equal(rejected.status, 409);
+  h.faults.revokeOwnerBeforePublishCommit = { projectId: created.projectId, subject: OWNER };
+  const publish = () => h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/publish`, { expectedVersion: draft.version, action: "publish" });
+  assert.deepEqual(await body(await publish(), 409), { error: "version_conflict" });
   const state = h.sqlite.prepare("SELECT version, manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(created.siteId);
   assert.equal(state.version, "initial");
   assert.equal(state.manifest_key, null);
   assert.equal(h.sqlite.prepare("SELECT count(*) AS count FROM managed_page_publications WHERE site_id = ?").get(created.siteId).count, 0);
-  assert.equal(h.sqlite.prepare("SELECT count(*) AS count FROM managed_editor_plans WHERE site_id = ? AND operation = 'release.publish'").get(created.siteId).count, 1);
-
+  assert.equal(h.sqlite.prepare("SELECT count(*) AS count FROM managed_site_audit WHERE action = 'page.published' AND site_id = ?").get(created.siteId).count, 0);
   h.sqlite.prepare("INSERT INTO project_members (project_id, access_subject, role, display_name, email) VALUES (?, ?, 'owner', 'Fixture owner', 'owner@example.test')")
     .run(created.projectId, OWNER);
-  await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/release`, {
-    expectedVersion: draft.version, confirmationToken: plan.confirmationToken
-  }), 200);
+  await body(await publish(), 200);
+});
+
+testWithD1("Studio publish fences expired CLI delegation inside the mutation", async (t) => {
+  const h = await fixture(t);
+  const { projectId, siteId } = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Grant fixture", slug: "grant-fixture", locale: "ja" }), 201);
+  const api = `/api/projects/${projectId}/sites/${siteId}/editor`;
+  const { version } = await body(await h.send(MANAGEMENT_ORIGIN, "GET", api + "/home"), 200);
+  h.sqlite.prepare(`INSERT INTO studio_cli_grants (client_id, project_id, site_id, capability, delegated_by_subject, expires_at)
+    VALUES (?, ?, ?, 'pages.publish', ?, unixepoch() + 600)`).run(SERVICE_CLIENT, projectId, siteId, OWNER);
+  h.faults.revokePublishGrant = true;
+  const request = () => h.send(MANAGEMENT_ORIGIN, "POST", `/api/edit/v1/sites/${siteId}/operations/pages.publish/home?locale=ja`,
+    { expectedVersion: version, action: "publish" }, { cli: true, service: true, token: h.serviceToken });
+  assert.deepEqual(await body(await request(), 409), { error: "version_conflict" });
+  assert.equal((await request()).status, 403);
+  assert.equal(h.sqlite.prepare("SELECT count(*) AS count FROM managed_page_publications WHERE site_id = ?").get(siteId).count, 0);
 });
 
 testWithD1("Kamakura machine editing enforces current site grants for discovery, read, save and publish", async (t) => {
@@ -1502,8 +1482,7 @@ testWithD1("Studio page bindings publish a six-item list and dynamic detail from
   const cmsRelease = (await site.read("cms.release.current")).snapshot;
 
   const createChange = { action: "create", siteId: site.siteId, locale: "ja", title: "Article", path: "/articles" };
-  const createPlan = await body(await browser("POST", "/page-changes/prepare", { change: createChange }), 200);
-  const { page: detailPage } = await body(await browser("POST", "/page-changes/apply", { change: createChange, confirmationToken: createPlan.confirmationToken }), 200);
+  const { page: detailPage } = await pageChange(browser, createChange);
   const home = await body(await browser("GET", "/home"), 200);
   const listDocument = structuredClone(home.document);
   const element = (id, tag, children, attrs) => ({ type: "element", id, tag, children, ...(attrs ? { attrs } : {}) });
@@ -1529,28 +1508,21 @@ testWithD1("Studio page bindings publish a six-item list and dynamic detail from
   const detailSaved = await body(await browser("PUT", detailPath + "/draft", { expectedVersion: detail.version, document: detailDocument, cmsBindings: detailBindings }), 200);
 
   const collisionChange = { action: "create", siteId: site.siteId, locale: "ja", title: "Static collision", path: "/articles/article-7" };
-  const collisionPlan = await body(await browser("POST", "/page-changes/prepare", { change: collisionChange }), 200);
-  const { page: collisionPage } = await body(await browser("POST", "/page-changes/apply", { change: collisionChange, confirmationToken: collisionPlan.confirmationToken }), 200);
-  assert.equal((await browser("POST", detailPath + "/release-plan", {
-    target: { siteId: site.siteId, pageId: detailPage.pageId, locale: "ja" }, expectedVersion: detailSaved.version, action: "publish"
+  const { page: collisionPage } = await pageChange(browser, collisionChange);
+  assert.equal((await browser("POST", detailPath + "/publish", {
+    expectedVersion: detailSaved.version, action: "publish"
   })).status, 422, "detail paths must not override fixed page reservations");
   const moveCollision = { action: "update", target: { siteId: site.siteId, pageId: collisionPage.pageId, locale: "ja" }, title: "Static collision", path: "/articles/article-7-static" };
-  const moveCollisionPlan = await body(await browser("POST", "/page-changes/prepare", { change: moveCollision }), 200);
-  await body(await browser("POST", "/page-changes/apply", { change: moveCollision, confirmationToken: moveCollisionPlan.confirmationToken }), 200);
+  await pageChange(browser, moveCollision);
 
-  const staleRoutePlan = await body(await browser("POST", detailPath + "/release-plan", {
-    target: { siteId: site.siteId, pageId: detailPage.pageId, locale: "ja" }, expectedVersion: detailSaved.version, action: "publish"
-  }), 200);
   const collideAgain = { ...moveCollision, path: "/articles/article-7" };
-  const collideAgainPlan = await body(await browser("POST", "/page-changes/prepare", { change: collideAgain }), 200);
-  await body(await browser("POST", "/page-changes/apply", { change: collideAgain, confirmationToken: collideAgainPlan.confirmationToken }), 200);
-  assert.equal((await browser("POST", detailPath + "/release", {
-    expectedVersion: detailSaved.version, confirmationToken: staleRoutePlan.confirmationToken
-  })).status, 409, "a detail release plan must conflict if its reserved routes changed");
+  await pageChange(browser, collideAgain);
+  assert.equal((await browser("POST", detailPath + "/publish", {
+    expectedVersion: detailSaved.version, action: "publish"
+  })).status, 422, "a newly reserved detail path blocks publication");
   assert.equal(h.sqlite.prepare("SELECT count(*) AS count FROM managed_page_publications WHERE site_id = ? AND page_id = ?")
     .get(site.siteId, detailPage.pageId).count, 0);
-  const clearCollisionPlan = await body(await browser("POST", "/page-changes/prepare", { change: moveCollision }), 200);
-  await body(await browser("POST", "/page-changes/apply", { change: moveCollision, confirmationToken: clearCollisionPlan.confirmationToken }), 200);
+  await pageChange(browser, moveCollision);
 
   const preview = { expectedVersion: detailSaved.version, collectionId: "posts", itemId: items[6].itemId, revision: items[6].revision,
     document: { ...detailDocument, revision: detailSaved.revision }, cmsBindings: detailBindings };
@@ -1578,10 +1550,7 @@ testWithD1("Studio page bindings publish a six-item list and dynamic detail from
   assert.equal((await cli("POST", applyPath, { ...write, cmsBindings: null })).status, 409);
 
   const publish = async (pageId, expectedVersion) => {
-    const release = await body(await browser("POST", "/" + pageId + "/release-plan", {
-      target: { siteId: site.siteId, pageId, locale: "ja" }, expectedVersion, action: "publish"
-    }), 200);
-    return body(await browser("POST", "/" + pageId + "/release", { expectedVersion, confirmationToken: release.confirmationToken }), 200);
+    return body(await browser("POST", "/" + pageId + "/publish", { expectedVersion, action: "publish" }), 200);
   };
   await publish(detailPage.pageId, detailSaved.version);
   await publish("home", applied.version);
@@ -1617,10 +1586,7 @@ testWithD1("Studio page bindings publish a six-item list and dynamic detail from
   await site.read("cms.schema.apply", { operationId: updatedSchemaPlan.operationId, confirmationToken: updatedSchemaPlan.confirmationToken });
   assert.equal(await (await lookup("/")).text(), html);
   assert.equal(await (await lookup("/articles/article-7")).text(), detailHtml);
-  const rollback = await body(await browser("POST", "/home/release-plan", {
-    target: { siteId: site.siteId, pageId: "home", locale: "ja" }, expectedVersion: unbound.version, action: "rollback", revision: applied.revision
-  }), 200);
-  const restored = await body(await browser("POST", "/home/release", { expectedVersion: unbound.version, confirmationToken: rollback.confirmationToken }), 200);
+  const restored = await body(await browser("POST", "/home/publish", { expectedVersion: unbound.version, action: "restore", revision: applied.revision }), 200);
   assert.deepEqual(restored.snapshot.cmsBindings, cmsBindings);
   const restoredHtml = await (await lookup("/")).text();
   assert.deepEqual([...restoredHtml.matchAll(/href="\/s\/bound-articles\/articles\/article-(\d)"/gu)].map((match) => match[1]), ["7", "5", "4", "3", "2"]);
@@ -1945,11 +1911,15 @@ testWithD1("Studio CMS CLI actor, scheduled release, cancellation, deletion and 
   const legacySave = await body(await site.cli("PUT", `cms.save/posts/${legacyDraft.id}`, {
     operationId: crypto.randomUUID(), expectedVersion: legacyDraft.version, values: values("Initial public")
   }, service), 200);
-  const { plan } = await body(await site.cli("POST", `cms.publish-plan/posts/${legacyDraft.id}`, {
-    operationId: crypto.randomUUID(), expectedVersion: legacySave.item.version
-  }, service), 200);
-  const { operationId, confirmationToken, expectedVersion } = plan;
-  const applied = await body(await site.cli("POST", `cms.publish/posts/${legacyDraft.id}`, { operationId, confirmationToken, expectedVersion }, service), 200);
+  const operationId = crypto.randomUUID(), expectedVersion = legacySave.item.version;
+  const path = `cms.publish-now/posts/${legacyDraft.id}`;
+  const input = { operationId, expectedVersion };
+  assert.deepEqual(await body(await site.cli("POST", path, { ...input, expectedVersion: legacyDraft.version }, service), 409), { error: "version_conflict" });
+  const attempts = await Promise.all([site.cli("POST", path, input, service), site.cli("POST", path, input, service)]);
+  const applied = await body(attempts[0], 200);
+  assert.deepEqual(await body(attempts[1], 200), applied);
+  assert.deepEqual(await body(await site.cli("POST", path, { ...input, redirect: true }, service), 409), { error: "duplicate_operation" });
+  assert.equal(h.sqlite.prepare("SELECT count(*) AS count FROM managed_cms_receipts WHERE site_id = ? AND operation_id = ?").get(site.siteId, operationId).count, 1);
   assert.equal(applied.status, "publishing");
   const status = await body(await site.cli("GET", `cms.operation-status/${operationId}`, undefined, service), 200);
   assert.equal(status.result.status, "published");

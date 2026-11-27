@@ -1,6 +1,6 @@
 # Studio-native site 契約
 
-Studio は Project、Site、メンバー、ページの版情報と公開履歴を D1 に保存し、固定ページの PageDocument 本文を非公開 R2 に保存する。固定ページの管理・公開・復元は Studio GUI で行う。共通 HTTP API は固定ページの読み取りと編集を扱い、対応コマンドは `niho-edit --studio` で呼び出せる。外部ホストとして登録されたサイトは、各ホストの編集 API と権限を使う。
+Studio は Project、Site、メンバー、ページの版情報と公開履歴を D1 に保存し、固定ページの PageDocument 本文を非公開 R2 に保存する。固定ページの編集・管理・公開・復元は Studio GUI と共通 HTTP API で行う。対応コマンドは `niho-edit --studio` で呼び出せる。外部ホストとして登録されたサイトは、各ホストの編集 API と権限を使う。
 
 ## 作成と識別子
 
@@ -20,7 +20,7 @@ Project と Site の ID、ページの版はサーバーが発行する。共有
 
 `managed_pages` は編集中の版、公開中の版、公開範囲を保持する。`managed_page_versions` は現在の下書きと公開済みの版の R2 キー、本文バイトの SHA-256、リンク索引を保持する。各版の PageDocument は `CMS_OBJECTS` の `sites/{siteId}/pages/{pageId}/{locale}/{revision}/{version}.json` に条件付き PUT で一度だけ保存する。R2 の保存後に D1 の参照を確定する。読取時はキーと文書が対象版に属すること、および本文の digest を照合する。
 
-下書き保存リクエスト（GUI と Editing API）、`pages.apply` のリクエスト、保存する PageDocument のシリアライズ済み UTF-8 はそれぞれ 2 MiB まで。保存するたびに公開されなかった前の下書きの D1 版行を削除する。CLI の操作受領記録には確定時の R2 参照を残し、再送にはそのときの文書を返す。復元では選んだ公開版の内容を新しい版として R2 に保存し、編集中の版と公開中の版に設定する。保存・公開・ページ情報の更新は `current_version` を SQL の更新条件に含める。競合時は HTTP 409 を返す。確認の有効期限は10分で、確認時の対象版と操作を実行時に照合する。
+下書き保存リクエスト（GUI と Editing API）、`pages.apply` のリクエスト、保存する PageDocument のシリアライズ済み UTF-8 はそれぞれ 2 MiB まで。保存するたびに公開されなかった前の下書きの D1 版行を削除する。CLI の操作受領記録には確定時の R2 参照を残し、再送にはそのときの文書を返す。復元では選んだ公開版の内容を新しい版として R2 に保存し、編集中の版と公開中の版に設定する。保存・公開・ページ情報の更新は `current_version` を SQL の更新条件に含める。ページ作成は `page_catalog_version` と一覧の版を照合する。競合時は HTTP 409 `version_conflict` を返し、ページの下書き、公開ポインター、監査履歴は保持する。
 
 D1 に本文が残る旧版は、初回読取時に元の JSON を `legacy.json` として同じ版の R2 キーに保存する。R2 の保存が成功したあとに D1 の参照とリンク索引を確定し、`document_json` を `{}` に置き換える。移行処理が途中で失敗した場合は D1 の本文から読める。
 
@@ -28,11 +28,11 @@ GUI のページ操作は次のとおり。
 
 - page catalog と PageDocument snapshot の読取
 - opaque version CASによる下書き保存
-- 現在版の公開計画・公開
-- 公開済みの指定revisionへの復元計画・反映
+- 保存済みの現行版の公開、指定の公開版の復元（`pages.publish`）
+- ページ作成、名前・URL・公開範囲の変更（`pages.change`）
 - 通常ページの作成、タイトル・path更新、visibility更新
 
-URL 変更・非公開化の確認画面では、サイト内の他ページの下書きと公開版のリンク索引からリンク元を集計する。旧版は D1 に残る本文も集計に含める。CLI の discovery は共通 API が公開する操作のうち呼び出し元に許可された操作を返す。すべての読取・変更は、そのrequest時点の D1 owner/editor membership と Project/Site を照合する。別siteのpage、plan、version、公開pointerは変更できない。
+公開・復元・ページ管理は操作ごとに `expectedVersion` を持つ1要求で完結する。URL 変更は下書きに適用し、次に公開したときに公開URLを切り替える。公開状態の変更は公開済み文書を表示または非表示にする。CLI の discovery は呼び出し元に許可された操作を返す。D1 は Project/Site と現行の owner/editor 権限を照合し、公開版とポインター、監査記録を同じ batch で確定する。
 
 ## 共有公開origin
 
@@ -48,7 +48,7 @@ URL 変更・非公開化の確認画面では、サイト内の他ページの�
 
 既存の共有公開originはリクエスト時にD1の公開版から描画する。静的公開Workerは公開時に生成したHTMLとdiscovery fileをR2から返すが、配備・host切替は未実施。CMS bindingを持つページの静的生成、画像の幅別変換、1サイトへの複数の独自host登録は未対応。
 
-公開SEO出力は `/s/{siteSlug}/sitemap.xml`、`robots.txt`、`llms.txt`、`llms-full.txt`。動的rendererは公開ページとCMS routeを含む出力を返す。静的Workerはmanifestに含まれる公開ページからdiscovery fileを生成し、現在の公開route集合と一致しない古いfileは503で閉じる。ページ文書のmetadataからcanonical、robots、OG、title、descriptionを出し、同じpathの翻訳が公開済みの場合だけhreflangを足す。ページのJSON-LD、CMS詳細・一覧のJSON-LD、301リダイレクト、404も公開rendererが返す。公開計画はdescription・画像alt・英語本文中の日本語、同じ言語の公開ページと重複するtitle/description、ページまたはCMS routeが見つからないサイト内リンクを警告として返し、公開自体は止めない。CMS routeの照合に失敗した場合も公開計画は続行する。サイト名、説明、既定OGP画像、所有権確認タグ、組織JSON-LD、robots方針、GA4を含むSEO設定は、公開許可設定と同じ版で管理する。GUI と `niho-edit --studio site-seo-read` / `site-seo-save` から読み書きでき、公開HTMLへ反映する。固定ページredirectはStudio GUIで一覧・追加・削除でき、`niho-edit --studio site-redirects-read` / `site-redirects-save` でJSON snapshotを読み込み、版照合後に一括保存できる。重複元・不正パス・転送ループを拒否し、ページ移動で自動作成されたredirectも同じ一覧へ現れる。旧データの取込みと95 URLの実サイト受入は未完了で、#489の残りとして扱う。
+公開SEO出力は `/s/{siteSlug}/sitemap.xml`、`robots.txt`、`llms.txt`、`llms-full.txt`。動的rendererは公開ページとCMS routeを含む出力を返す。静的Workerはmanifestに含まれる公開ページからdiscovery fileを生成し、現在の公開route集合と一致しない古いfileは503で閉じる。ページ文書のmetadataからcanonical、robots、OG、title、descriptionを出し、同じpathの翻訳が公開済みの場合だけhreflangを足す。ページのJSON-LD、CMS詳細・一覧のJSON-LD、301リダイレクト、404も公開rendererが返す。公開応答はdescription・画像alt・英語本文中の日本語、同じ言語の公開ページと重複するtitle/description、ページまたはCMS routeが見つからないサイト内リンクを警告として返す。CMS route を取得できないときは警告の対象から外す。静的生成と動的描画は固定ページの HTML、head、hreflang、JSON-LD、CSP に同じ生成関数を使う。管理 API はその出力から不変 artifact と manifest を作り、D1 batch が公開ポインターを確定する。サイト名、説明、既定OGP画像、所有権確認タグ、組織JSON-LD、robots方針、GA4を含むSEO設定は、公開許可設定と同じ版で管理する。GUI と `niho-edit --studio site-seo-read` / `site-seo-save` から読み書きでき、公開HTMLへ反映する。固定ページredirectはStudio GUIで一覧・追加・削除でき、`niho-edit --studio site-redirects-read` / `site-redirects-save` でJSON snapshotを読み込み、版照合後に一括保存できる。重複元・不正パス・転送ループを拒否し、ページ移動で自動作成されたredirectも同じ一覧へ現れる。旧データの取込みと95 URLの実サイト受入は未完了で、#489の残りとして扱う。
 
 ### 埋め込みと計測の設定
 
@@ -83,9 +83,11 @@ CMS bindings が生成した画像の参照は、ページ公開版が固定す�
 
 Studio の PageEditor は CMS list と detail を `CmsPageBindingsDocument` sidecar でページ要素へ結び付けます。sidecar は `managed_page_versions` の当該 revision と一緒に保存し、公開時に page publication が不変 CMS `releaseId` と `schemaRevision` を固定します。公開 HTML はその release の項目だけから描画し、後から行う CMS 保存・schema 移行は過去の公開ページを書き換えません。CMS 公開と固定ページ公開は別の操作で、両者の原子切替はありません。
 
-編集 preview は actor、site/page、page version、CMS item revision に結び付いた5分・一回限り token を使い、公開配信や履歴へ下書きを含めません。schema 移行計画は保存中の全 page bindings を検査します。公開計画は detail slug ごとの path を現在の固定ページ・予約 URL・CMS route と照合します。CMS image の公開表示は素材 manifest と配信を含む #379 / #380 完了後に有効になります。
+編集 preview は actor、site/page、page version、CMS item revision に結び付いた5分・一回限り token を使い、公開配信や履歴へ下書きを含めません。schema 移行計画は保存中の全 page bindings を検査します。固定ページの公開要求は detail slug ごとの path を現在の固定ページ・予約 URL・CMS route と照合します。CMS image の公開表示は素材 manifest と配信を含む #379 / #380 完了後に有効になります。
 
 ## CMS の公開と復旧
+
+CLI からの項目公開は `cms.publish-now` に項目版と operation ID を渡す1要求で受領します。同じ actor・ID・入力の再送は同じ受領結果を返します。`cms.operation-status` は公開ジョブの結果を返します。公開予約・複数項目の選択・定義移行は CMS v2 の各操作で扱います。
 
 - 項目の revision、release snapshot、locale ごとの route table は `sites/{siteId}/items/...`、`sites/{siteId}/releases/...`、`sites/{siteId}/routes/{locale}/{revision}.json` に不変オブジェクトとして置く。D1 state は最後に公開した snapshot の route table revision を保持する。CMS の計画時はStudioで管理する固定・予約 pathと組み合わせた現行版を作り、公開 snapshot に保存する。R2 の条件付き PUT により、同じキーの内容を上書きしない。
 - 項目 blob のキーは site、actor、operation ID、入力 digest、項目の識別子から決まり、R2 書込みの応答が不明でも同じ要求は同じ blob を再利用する。D1 に参照が確定していない blob は公開されない。

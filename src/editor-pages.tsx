@@ -194,17 +194,20 @@ function initialValues(start: PageChangeStart, pages: readonly EditorPage[], sit
 }
 
 /** ページ操作の二段階確認。影響を確認し、明示の同意後だけ反映する。 */
-export function PageChangeDialog({ start, site, pages, locale, prepare, apply, applied, conflicted, reload, close, pathEditable = true }: {
+export function PageChangeDialog({ start, site, pages, locale, prepare, apply, direct, directVersion, applied, conflicted, reload, close, pathEditable = true }: {
   pathEditable?: boolean;
   start: PageChangeStart; site: EditorSite; pages: readonly EditorPage[];
   /** 新しいページの locale。 */
   locale: string;
-  prepare: (change: EditorPageChange, signal: AbortSignal) => Promise<EditorPageChangePlan>;
-  apply: (plan: EditorPageChangePlan, signal: AbortSignal) => Promise<EditorPageChangeResult>;
-  applied: (page: EditorPage, change: EditorPageChange) => void; conflicted: () => void; reload: () => void; close: () => void;
+  prepare?: (change: EditorPageChange, signal: AbortSignal) => Promise<EditorPageChangePlan>;
+  apply?: (plan: EditorPageChangePlan, signal: AbortSignal) => Promise<EditorPageChangeResult>;
+  direct?: NonNullable<EditorAdapter["changePageNow"]>;
+  directVersion?: string;
+  applied: (page: EditorPage, change: EditorPageChange) => void; conflicted: () => Promise<boolean>; reload: () => void; close: () => void;
 }) {
   const canEditPath = pathEditable && !(start.action === "update" && start.page.path === "/");
   const [initial] = useState(() => initialValues(start, pages, site, locale));
+  const version = useRef(directVersion);
   const [title, setTitle] = useState(initial.title), [path, setPath] = useState(initial.path), [touched, setTouched] = useState<readonly string[]>([]);
   const [plan, setPlan] = useState<EditorPageChangePlan | null>(null), [confirmed, setConfirmed] = useState(false);
   const [busy, setBusy] = useState(""), [message, setMessage] = useState(""), [unknown, setUnknown] = useState(false);
@@ -219,36 +222,56 @@ export function PageChangeDialog({ start, site, pages, locale, prepare, apply, a
   const titleProblem = problemFor("title", title), pathProblem = problemFor("path", path), changeProblem = problems.find((problem) => problem.field === "change")?.message;
   const begin = () => { controller.current?.abort(); const next = new AbortController(); controller.current = next; return next; };
   async function review() {
-    if (problems.length || busy) return;
-    const current = begin(), requested = structuredClone(change); setBusy("影響を確認中…"); setMessage("");
+    if (problems.length || busy || unknown) return;
+    const current = begin(), requested = structuredClone(change); setBusy(direct ? "反映中…" : "影響を確認中…"); setMessage("");
+    if (direct) {
+      try {
+        const result = await direct(requested, current.signal, version.current);
+        if (current.signal.aborted) return;
+        if (result.status === "conflict") {
+          version.current = undefined;
+          await conflict();
+        } else applied(result.page, requested);
+      } catch {
+        if (!current.signal.aborted) {
+          setUnknown(true);
+          setMessage("反映されたか確認できません。ページ一覧を再読込して状態を確認してください。");
+        }
+      } finally { if (!current.signal.aborted) setBusy(""); }
+      return;
+    }
     try {
-      const result = await prepare(requested, current.signal);
+      const result = await prepare!(requested, current.signal);
       if (current.signal.aborted) return;
       setPlan(validatePageChangePlan(structuredClone(result), requested, site)); setConfirmed(false);
     } catch (error) {
       if (current.signal.aborted) return;
-      if (isConflict(error)) conflict();
+      if (isConflict(error)) await conflict();
       else setMessage("影響を確認できませんでした。権限と入力を確認して再試行してください。");
     }
     finally { if (!current.signal.aborted) setBusy(""); }
   }
-  function conflict() {
-    setPlan(null); setConfirmed(false); conflicted();
-    setMessage("ほかの変更と競合しました（409）。ページ一覧を再読込しました。内容を確認してやり直してください。");
+  async function conflict() {
+    setPlan(null); setConfirmed(false);
+    const refreshed = await conflicted();
+    setMessage(refreshed
+      ? "ほかの変更と競合しました（409）。ページ一覧を再読込しました。入力内容を確認してやり直してください。"
+      : "ほかの変更と競合しました（409）。入力内容は保持しています。ページ一覧を再読込してください。");
+    if (direct && !refreshed) setUnknown(true);
   }
   async function confirm() {
     if (!plan || !confirmed || busy || unknown) return;
     const current = begin(); setBusy("反映中…"); setMessage("");
     try {
-      const result = await apply(plan, current.signal);
+      const result = await apply!(plan, current.signal);
       if (current.signal.aborted) return;
-      if (result.status === "conflict") { conflict(); return; }
+      if (result.status === "conflict") { await conflict(); return; }
       const page = result.status === "applied" ? result.page : undefined;
       if (!page || page.siteId !== site.id || typeof page.pageId !== "string" || typeof page.locale !== "string" || typeof page.title !== "string") throw new Error("invalid result");
       applied(page, plan.change);
     } catch (error) {
       if (current.signal.aborted) return;
-      if (isConflict(error)) conflict();
+      if (isConflict(error)) await conflict();
       else { setUnknown(true); setMessage("反映されたか確認できません。ページ一覧を再読込して状態を確認してください。"); }
     } finally { if (!current.signal.aborted) setBusy(""); }
   }
@@ -260,7 +283,7 @@ export function PageChangeDialog({ start, site, pages, locale, prepare, apply, a
       <h2>{dialogTitle(start, canEditPath)}</h2>
       {start.action !== "create" && <p className="e-help">{start.page.title}{start.page.path ? ` · ${start.page.path}` : ""}</p>}
       {start.action === "update" && !canEditPath && <p className="e-help">{start.page.path === "/" && pathEditable ? "ホームのURLは固定です。ページ名だけ変更できます。" : "URL変更はまだ利用できません。ページ名だけを変更できます。"}</p>}
-      {start.action === "visibility" ? <p>{makePrivate ? "公開中のURLは表示されなくなり、検索エンジンと sitemap からも外れます。次の画面でリンク元とナビゲーションへの影響を確認できます。" : "公開サイトにこのページを表示できる状態にします。表示する内容は、公開済みの版です。"}</p> : <>
+      {start.action === "visibility" ? <p>{makePrivate ? "公開中のURLは表示されなくなり、検索エンジンと sitemap からも外れます。" + (direct ? "" : "次の画面でリンク元とナビゲーションへの影響を確認できます。") : "公開サイトにこのページを表示できる状態にします。表示する内容は、公開済みの版です。"}</p> : <>
         <label className="e-field" htmlFor={`${id}-title`}><span>ページ名</span>
           <input id={`${id}-title`} value={title} autoFocus disabled={!!busy} aria-invalid={!!titleProblem} aria-describedby={titleProblem ? `${id}-title-problem` : undefined}
             onChange={(event) => setTitle(event.target.value)} onBlur={() => touch("title")} />
@@ -274,9 +297,13 @@ export function PageChangeDialog({ start, site, pages, locale, prepare, apply, a
           <small id={`${id}-path-help`} className="e-help">{start.action === "update" && !canEditPath ? start.page.path === "/" && pathEditable ? "ホームのURLは変更できません。" : "このホストではURLは表示のみです。" : "半角英小文字・数字と - _ を / で区切ります。例: /about/team"}</small>
         </label>
       </>}
+      {direct && start.action === "update" && canEditPath && path !== start.page.path && <p className="e-help">変更後の URL は、次にページを公開したときに使われます。</p>}
       {changeProblem && <p className="e-help">{changeProblem}</p>}
       {status}
-      <div className="e-actions"><button type="button" disabled={!!busy} onClick={close}>キャンセル</button><button type="button" className="e-primary" disabled={problems.length > 0 || !!busy} onClick={() => void review()}>影響を確認</button></div>
+      <div className="e-actions"><button type="button" disabled={!!busy} onClick={close}>キャンセル</button>{unknown && direct ? <button type="button" className="e-primary" disabled={!!busy} onClick={() => {
+        setBusy("読込中…");
+        void conflicted().then((refreshed) => { if (refreshed) { version.current = undefined; setUnknown(false); setMessage(""); } }).finally(() => setBusy(""));
+      }}>ページ一覧を再読込</button> : <button type="button" className={direct && makePrivate ? "e-danger-primary" : "e-primary"} disabled={problems.length > 0 || !!busy} onClick={() => void review()}>{direct ? makePrivate ? "非公開にする" : start.action === "create" ? "ページを作成" : "変更を反映" : "影響を確認"}</button>}</div>
     </>;
   } else {
     const { impact } = plan, list = (items: readonly string[], empty: string) => items.length ? <ul>{items.map((item, index) => <li key={index}>{item}</li>)}</ul> : <p className="e-help">{empty}</p>;

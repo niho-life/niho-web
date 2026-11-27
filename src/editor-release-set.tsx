@@ -95,6 +95,7 @@ export function PageReleaseSetDialog({ pages, site, adapter, componentsVersion, 
   async function prepare(signal: AbortSignal) {
     setPhase("planning"); setMessage("各ページの公開差分を確認しています…"); setPreviews([]); setPlan(null); setResult(null); setConfirmed(false);
     try {
+      if (!adapter.prepareRelease) throw new Error("公開差分を取得できません。");
       if (pages.length < 2 || pages.length > 50 || new Set(pages.map(targetKey)).size !== pages.length) throw new Error("対象は重複のない2〜50ページにしてください。");
       const changed: Preview[] = [];
       for (let offset = 0; offset < pages.length; offset += 5) {
@@ -105,7 +106,7 @@ export function PageReleaseSetDialog({ pages, site, adapter, componentsVersion, 
           const presentation = presentationVersion(snapshot.presentation);
           const request: EditorReleaseRequest = { target: page, expectedVersion: snapshot.version, action: "publish",
             ...(componentsVersion ? { componentsVersion } : {}), ...(presentation ? { presentationVersion: presentation } : {}) };
-          const value = await adapter.prepareRelease(request, signal);
+          const value = await adapter.prepareRelease!(request, signal);
           validateReleasePlan(value, request, site);
           return { page, plan: structuredClone(value) };
         }));

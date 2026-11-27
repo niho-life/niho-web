@@ -36,8 +36,7 @@ const LEGACY = {
   "cms.read": ["GET", "cms.read", 2],
   "cms.create": ["POST", "cms.edit", 1],
   "cms.save": ["PUT", "cms.edit", 2],
-  "cms.publish-plan": ["POST", "cms.publish", 2],
-  "cms.publish": ["POST", "cms.publish", 2],
+  "cms.publish-now": ["POST", "cms.publish", 2],
   "cms.operation-status": ["GET", "cms.read", 1]
 } as const;
 type LegacyOp = keyof typeof LEGACY;
@@ -211,14 +210,14 @@ async function readPlan<T>(store: CmsStore, site: Site, capability: CmsCapabilit
     expiresAt: iso(row.expires), confirmationToken: token as string };
 }
 
-async function queueRelease(store: CmsStore, mutation: Mutation, proposal: CmsReleaseProposal, token: string, result: object, schedule?: CmsSchedule) {
+async function queueRelease(store: CmsStore, mutation: Mutation, proposal: CmsReleaseProposal, token: string | null, result: object, schedule?: CmsSchedule) {
   const site = mutation.site, { snapshot, expectedReleaseId } = proposal;
   const size = blobSize(snapshot), routeTableSize = blobSize(snapshot.routeTable);
   const state = { ...site.state, retainedBytes: site.state.retainedBytes + size + routeTableSize };
   if (size > MAX_SNAPSHOT || state.retainedBytes > MAX_RETAINED_BYTES) return error("quota_exceeded", 409);
   await store.put(routeTableKey(site.siteId, snapshot.locale, snapshot.routeTable.revision), snapshot.routeTable);
   await store.put(snapshotKey(site.siteId, snapshot.releaseId), snapshot);
-  return mutate(store, mutation, { state, result, tokenHash: await digest(token), requireFreeSlot: true, job: {
+  return mutate(store, mutation, { state, result, ...(token === null ? {} : { tokenHash: await digest(token) }), requireFreeSlot: true, job: {
     kind: schedule ? "schedule" : "release", id: schedule?.id ?? snapshot.releaseId, at: schedule ? Math.ceil(Date.parse(schedule.at) / 1000) : nowSeconds(),
     payload: { releaseId: snapshot.releaseId, expectedReleaseId, pins: snapshot.items.map(cmsItemKey) }
   } });
@@ -765,45 +764,29 @@ function legacyFields(site: Site, problems: readonly CmsProblem[]) {
     .find(({ fieldId }) => fieldId === problem.fieldId)?.key ?? "_base", message: problem.message }));
 }
 
-type LegacyPlan = { expectedVersion: string; collectionId: string; itemId: string; redirect?: boolean; proposal: CmsReleaseProposal };
-async function legacyPublish(store: CmsStore, site: Site, operation: "cms.publish-plan" | "cms.publish",
-  draft: CmsItemRevision, item: CollectionItem, body: Record<string, unknown>, mutation: Mutation, context: EditorContext) {
-  exact(body, ["expectedVersion", "operationId", ...(operation === "cms.publish" ? ["confirmationToken"] : []), ...(Object.hasOwn(body, "redirect") ? ["redirect"] : [])]);
-  if (body.redirect !== undefined && typeof body.redirect !== "boolean") return invalid();
+async function publishCmsItemOnce(store: CmsStore, site: Site, draft: CmsItemRevision, item: CollectionItem,
+  body: Record<string, unknown>, mutation: Mutation, context: EditorContext) {
+  exact(body, ["expectedVersion", "operationId", ...(Object.hasOwn(body, "redirect") ? ["redirect"] : [])]);
+  if (typeof body.expectedVersion !== "string" || body.redirect !== undefined && typeof body.redirect !== "boolean") return invalid();
   if (body.expectedVersion !== draft.revision) return error("version_conflict", 409);
-  const { collectionId, itemId } = draft, key = cmsItemKey(draft);
-  if (operation === "cms.publish-plan") {
-    const before = context.current?.items.find((entry) => cmsItemKey(entry) === key)?.path;
-    const after = item.path;
-    const currentRedirects = (context.current?.redirects ?? []).flatMap((redirect) => {
-      if (redirect.from === after) return [];
-      if (redirect.to === before && before !== after) return body.redirect && after ? [{ from: redirect.from, to: after }] : [];
-      return [redirect];
-    });
-    const redirects = body.redirect && before && after && before !== after ? [...currentRedirects, { from: before, to: after }] : currentRedirects;
-    const items = [...(context.current?.items ?? []).filter((entry) => cmsItemKey(entry) !== key), draft]
-      .map(({ collectionId, itemId, revision }) => ({ collectionId, itemId, revision }));
-    const ready = planCmsRelease({ siteId: site.siteId, locale: site.state.locale, schemaRevision: site.state.schema.schemaRevision,
-      routeTableRevision: (await store.routeTable(site, "cms.publish")).revision,
-      expectedReleaseId: context.current?.releaseId ?? null, items, redirects }, opaque("release"), await releaseContext(store, site, items));
-    if (ready.status === "conflict") return error("version_conflict", 409);
-    if (ready.status === "invalid") return json({ error: "validation_failed", fields: legacyFields(site, ready.problems) }, 422);
-    const redirect = body.redirect === undefined ? {} : { redirect: body.redirect };
-    const plan = await storePlan<LegacyPlan>(store, site, "cms.publish", "cms.publish", mutation.operationId,
-      { expectedVersion: draft.revision, collectionId, itemId, ...redirect, proposal: ready.proposal });
-    return plan ? json({ plan: { target: { siteId: site.siteId, collectionId, itemId }, expectedVersion: draft.revision,
-      operationId: mutation.operationId, confirmationToken: plan.confirmationToken, item, ...redirect } }) : error("plan_unavailable", 409);
-  }
-  const plan = await readPlan<LegacyPlan>(store, site, "cms.publish", "cms.publish", mutation.operationId, body.confirmationToken);
-  if (!plan) return notFound();
-  const { candidate } = plan;
-  if (candidate.expectedVersion !== draft.revision || candidate.collectionId !== collectionId || candidate.itemId !== itemId || candidate.redirect !== body.redirect)
-    return error("version_conflict", 409);
-  const input = { siteId: site.siteId, operationId: mutation.operationId, confirmationToken: plan.confirmationToken };
-  const checked = checkCmsReleaseApply(siteScope(site), input, { ...plan, operation: "cms.release.apply", candidate: candidate.proposal }, dateNow(),
-    await releaseContext(store, site, candidate.proposal.snapshot.items));
-  if (checked.status !== "allowed") return error("version_conflict", 409);
-  return queueRelease(store, mutation, checked.candidate, input.confirmationToken,
+  const key = cmsItemKey(draft);
+  const before = context.current?.items.find((entry) => cmsItemKey(entry) === key)?.path;
+  const after = item.path;
+  const currentRedirects = (context.current?.redirects ?? []).flatMap((redirect) => {
+    if (redirect.from === after) return [];
+    if (redirect.to === before && before !== after) return body.redirect && after ? [{ from: redirect.from, to: after }] : [];
+    return [redirect];
+  });
+  const redirects = body.redirect && before && after && before !== after ? [...currentRedirects, { from: before, to: after }] : currentRedirects;
+  const items = [...(context.current?.items ?? []).filter((entry) => cmsItemKey(entry) !== key), draft]
+    .map(({ collectionId, itemId, revision }) => ({ collectionId, itemId, revision }));
+  const release = await releaseContext(store, site, items);
+  const ready = planCmsRelease({ siteId: site.siteId, locale: site.state.locale, schemaRevision: site.state.schema.schemaRevision,
+    routeTableRevision: release.routeTable.revision,
+    expectedReleaseId: context.current?.releaseId ?? null, items, redirects }, opaque("release"), release);
+  if (ready.status === "conflict") return error("version_conflict", 409);
+  if (ready.status === "invalid") return json({ error: "validation_failed", fields: legacyFields(site, ready.problems) }, 422);
+  return queueRelease(store, mutation, ready.proposal, null,
     { status: "publishing", operationId: mutation.operationId, item: { ...item, status: "publishing" } });
 }
 
@@ -826,7 +809,7 @@ async function executeLegacy(request: Request, store: CmsStore, scope: CmsScope,
     const receipt = await store.receipt(site, capability, id);
     if (!receipt) return json({ status: "unknown", operationId: id });
     const result = JSON.parse(receipt.result_json) as { item?: CollectionItem };
-    if (receipt.operation === "cms.publish") {
+    if (receipt.operation === "cms.publish" || receipt.operation === "cms.publish-now") {
       const delivery = await store.deliveryForReceipt(site, receipt.transaction_id);
       if (!delivery || delivery.state === "pending") return json({ status: "received", operationId: id });
       if (delivery.state !== "delivered") {
@@ -882,7 +865,7 @@ async function executeLegacy(request: Request, store: CmsStore, scope: CmsScope,
     const values = parseCmsValues(Object.fromEntries(collection.fields.map(({ fieldId, key }) => [fieldId, normalized[key]])), collection);
     return saveDraft(store, mutation!, { collectionId, itemId, values, create: false, legacy: true });
   }
-  return legacyPublish(store, site, operation, draft, item, body!, mutation!, context);
+  return publishCmsItemOnce(store, site, draft, item, body!, mutation!, context);
 }
 
 export async function managedCmsApi(request: Request, store: CmsStore, scope: CmsScope, operation: string, version: 1 | 2) {

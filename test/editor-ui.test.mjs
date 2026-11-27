@@ -1326,6 +1326,34 @@ test("page change conflicts keep inputs and reload the list; unknown results are
   } finally { await app.cleanup(); }
 });
 
+test("a direct page change keeps entered values on 409 and retries without a review plan", async () => {
+  const host = pageHost(), changes = [];
+  const app = await setup({ adapter: {
+    ...host.adapter,
+    async changePageNow(change) {
+      changes.push(structuredClone(change));
+      return { status: "conflict" };
+    }
+  } });
+  try {
+    await press(document.querySelector('[aria-label="私たちについて の操作"]'));
+    await press(button("名前とURLを変更"));
+    await change(inputIn(dialog(), "ページ名"), "変更後の名前");
+    await change(inputIn(dialog(), "URL パス"), "/company");
+    const lists = host.calls.lists, reads = app.calls.reads.length;
+    assert.equal(buttonIn(dialog(), "影響を確認"), undefined);
+    await press(buttonIn(dialog(), "変更を反映"));
+    assert.match(dialog().textContent, /競合しました（409）/);
+    assert.equal(inputIn(dialog(), "ページ名").value, "変更後の名前");
+    assert.equal(inputIn(dialog(), "URL パス").value, "/company");
+    assert.equal(host.calls.lists, lists + 1);
+    assert.equal(app.calls.reads.length, reads);
+    assert.equal(host.calls.prepares.length, 0);
+    assert.equal(host.calls.applies.length, 0);
+    assert.deepEqual(changes, [{ action: "update", target: { siteId: "demo", pageId: "about", locale: "ja-JP" }, title: "変更後の名前", path: "/company" }]);
+  } finally { await app.cleanup(); }
+});
+
 test("page management prepare conflicts reload the catalog before another review", async () => {
   let conflict = true;
   const host = pageHost({ prepare: (change) => {

@@ -12,7 +12,7 @@ EditorAdapter は GUI 内の境界であり、CLI と GUI の共通 wire 契約�
 
 PageEditor に渡す必須メソッドと任意 capability の型は src/editor-types.ts の EditorAdapter が正本です。接続していない任意機能は UI に有効な入口として表示しません。site name による機能分岐を増やさず、登録済み capability と trusted registry で動作を決めます。
 
-ホストは EditorAdapter の全メソッドを実装する必要はありません。必須の listSites、listPages、readDocument、saveDraft、prepareRelease、release に、素材、翻訳、共通部品、CMS preview、site styles、page management、history 等の必要な capability を追加します。個別 capability のデータ形式と保存規則は、[素材契約](asset-contract.md)、[翻訳契約](localization-contract.md)、[共通部品契約](component-contract.md)、[ページ契約](page-contract.md)、[保存と履歴](save-history-contract.md)を参照してください。
+ホストは EditorAdapter の全メソッドを実装する必要はありません。必須の listSites、listPages、readDocument、saveDraft に、素材、翻訳、共通部品、CMS preview、site styles、page management、history 等の必要な capability を追加します。個別 capability のデータ形式と保存規則は、[素材契約](asset-contract.md)、[翻訳契約](localization-contract.md)、[共通部品契約](component-contract.md)、[ページ契約](page-contract.md)、[保存と履歴](save-history-contract.md)を参照してください。Studio-native の `publishPageNow` は読み取った版を `expectedVersion` として公開・復元に渡し、`changePageNow` は一覧またはページの版を使います。外部ホストの確認画面は `prepareRelease` / `release` と `preparePageChange` / `applyPageChange` の各ペアで接続します。
 
 ページの再読込を最適化する host は、任意の `readDocumentIfChanged(target, etag, signal)` を実装できます。変更が無い場合は同じ ETag の `not-modified` を返し、変わった場合は新しい snapshot と ETag を返します。PageEditor はページごとに未編集の session と ETag を一つだけ保持し、再訪時はその session を表示してから再検証します。変更のあった文書だけを再解析し、未保存の入力・編集は再検証結果で置き換えません。ページ本文の先読みはしません。
 

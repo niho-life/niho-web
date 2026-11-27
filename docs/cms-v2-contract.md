@@ -53,6 +53,8 @@ v1 の意味は既存の通りです。v2 を使う Site の v1 の書込み入�
 
 `cms.schedule.create` は release で固定した内容と時刻を保存します。実行時は `dueCmsSchedule` と `revalidateCmsRelease` を使い、時刻、公開 pointer、定義、選んだ版の存在、削除、現在のルート制約を確認します。あとから保存した新しい下書きは予約へ混ぜません。前提が変われば失敗を保存し、現在の公開を維持します。取消は未確定の予約だけに適用し、scheduler の実行と競合させないよう CAS を使います。再試行では現在の前提にもとづく新しい計画を確認します。
 
+Studio-native の CLI による CMS 項目公開は `cms.publish-now` に `expectedVersion` と `operationId` を渡します。受領記録と outbox は同じ D1 batch で確定し、同じ actor・操作 ID・入力の再送は同じ結果を返します。予約は `cms.release.plan` / `cms.schedule.create` を使い、期限到来後に lease を取得して公開します。
+
 Studio-native site はごみ箱を含めて Site ごとに最大500 CMS item IDを保持します。公開snapshotは2 MiB、保持するCMS revisionは合計100 MiBまでです。公開計画は最大500 itemと25,000転送を受け付け、別途route tableとの衝突を検査します。`cms.release.plan` と `cms.schedule.create` は大きな転送表を受け取るためrequest bodyを4 MiBまで許容しますが、生成snapshotには2 MiB上限が適用されます。上限を超える保存・公開は現在の下書きと公開pointerを変更せず拒否します。公開適用はoutbox経由で非同期に完了する場合があり、`cms.release.status` で状態を確認します。PageEditorのCMS list blockにある表示件数25件は、このCMS保存上限とは別の制約です。
 
 メモリ内参照ホストと Studio-native の適合テストで認可、永続化、公開、復元を確認できます。Studio の保存順序、容量、バックアップと復元は、運用契約を参照してください。[Studio-native site 契約](studio-managed-sites.md#cms-の公開と復旧)
@@ -113,7 +115,7 @@ locale 公開の確認・適用は `niho-edit --studio localization-release-read
 
 対応する `PageEditor` は CMS 項目テンプレートの挿入、field の結び付け、下書きデータのプレビューを行います。プレビューは actor・site・page・文書版・CMS schema revision・item revision に結び付いた5分間の一回限り token を使います。`pages.read` / `pages.inspect` は対応 host だけ `cmsBindings` を返し、`pages.apply` は `pages.cms-bindings` capability を公開する host だけ sidecar の更新を受け付けます。`niho-edit apply --cms-bindings <file|->` は JSON sidecar を追加・置換し、JSON `null` で解除します。空の `operations` と sidecar だけの更新も可能です。
 
-Studio-native は page version row に sidecar を一緒に保存し、公開計画が page publication に CMS `releaseId`、`schemaRevision`、現在の `routeTableRevision` を固定します。公開適用時に route table を読み直し、予約状態が変わっていれば `409 conflict` にして計画を適用しません。公開 HTML はその不変 CMS release の項目から描画し、後の CMS schema / 下書き変更を反映しません。CMS release と固定ページの公開は別々の CAS / snapshot であり、両方をまたぐ原子的な切替はありません。公開計画では list / detail の field 型と node を検証し、detail slug の生成 URL と現在の固定・予約・CMS route を照合します。schema migration は現在のページ sidecar をすべて検査し、影響する bindings を計画へ含めます。過去の公開 page と CMS release は migration で変更しません。
+Studio-native は page version row に sidecar を一緒に保存します。固定ページの公開要求は現在の CMS route table を照合し、CMS `releaseId` と `schemaRevision` を page publication に固定します。要求中に CMS の世代またはページ一覧の版が変わった場合は HTTP 409 `version_conflict` になります。公開 HTML はその不変 CMS release の項目から描画し、後の CMS schema / 下書き変更を反映しません。CMS release と固定ページの公開は別々の CAS / snapshot であり、両方をまたぐ原子的な切替はありません。固定ページの公開要求では list / detail の field 型と node を検証し、detail slug の生成 URL と現在の固定・予約・CMS route を照合します。schema migration は現在のページ sidecar をすべて検査し、影響する bindings を計画へ含めます。過去の公開 page と CMS release は migration で変更しません。
 
 bindings の image mapping は安定 asset reference を使います。ホストがこの参照を公開描画で解決する場合は、[公開素材の manifest](#公開素材の-manifest) に固定された情報を使います。
 

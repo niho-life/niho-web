@@ -394,10 +394,12 @@ test("expired history snapshots keep their summaries visible and cannot be opene
 });
 
 test("Studio page publish and history restore each use one direct adapter call", async () => {
+  let conflict = true;
   const calls = [], old = { ...structuredClone(fixture), title: "以前の公開版", revision: 2 };
   const app = await setup({ adapter: {
     async publishPageNow(request) {
       calls.push(structuredClone(request));
+      if (conflict) return { status: "conflict" };
       return { status: "released", url: "https://site.example/", warnings: [{ code: "missing-description", message: "説明がありません。" }],
         snapshot: { document: { ...structuredClone(fixture), revision: request.action === "restore" ? 3 : 2 }, version: `direct-${calls.length}`, releases: [{ revision: 2, label: "公開版 2" }] } };
     },
@@ -410,7 +412,13 @@ test("Studio page publish and history restore each use one direct adapter call",
   try {
     await click("公開");
     assert.equal(document.querySelector('[role="dialog"]'), null);
-    assert.deepEqual(calls, [{ target: homeTarget, action: "publish" }]);
+    assert.deepEqual(calls, [{ target: homeTarget, action: "publish", expectedVersion: "v1" }]);
+    assert.match(document.querySelector(".e-notice").textContent, /409.*編集内容は保持/);
+    assert.equal(app.calls.reads.length, 1, "a conflict preserves the open editor session");
+    assert.equal(app.calls.prepares.length, 0);
+    conflict = false;
+    await click("公開");
+    assert.deepEqual(calls[1], calls[0]);
     assert.ok(document.querySelector(".e-notice").textContent.includes("公開しました。"));
     assert.ok(document.querySelector(".e-notice").textContent.includes("https://site.example/"));
     assert.ok(document.querySelector(".e-notice").textContent.includes("SEO警告（1件）"));
@@ -418,7 +426,7 @@ test("Studio page publish and history restore each use one direct adapter call",
     assert.equal(button("この版を公開先へ復元"), undefined, "saved drafts are not publishable revisions");
     await press(versionRows()[2]);
     await click("この版を公開先へ復元");
-    assert.deepEqual(calls[1], { target: homeTarget, action: "restore", revision: 2 });
+    assert.deepEqual(calls[2], { target: homeTarget, action: "restore", expectedVersion: "direct-2", revision: 2 });
     assert.ok(document.querySelector(".e-notice").textContent.includes("選んだ版を公開先へ復元しました。"));
   } finally { await app.cleanup(); }
 });
