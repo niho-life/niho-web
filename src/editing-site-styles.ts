@@ -1,6 +1,7 @@
 import { parseSiteStyles, type SiteStyles, type SiteStylesSnapshot } from "./site-styles.js";
 import type { DesignToken, TextStyle } from "./types.js";
 import { identifier, keys, line, localeCode, record } from "./validation-utils.js";
+import { EDITOR_RELEASE_WARNING_CODES, type EditorReleaseWarning } from "./editor-types.js";
 
 export const SITE_STYLES_FEATURE = "site.styles" as const;
 export const SITE_STYLES_OPERATION_IDS = Object.freeze(["site.styles.read", "site.styles.edit", "site.styles.publish"] as const);
@@ -28,13 +29,15 @@ export type EditingSiteStylesEditResult =
   | { readonly status: "conflict" };
 export type EditingSiteStylesPublishRequest = { readonly expectedDraftVersion: string; readonly expectedPublishedVersion: string };
 export type EditingSiteStylesPublishResult =
-  | { readonly status: "published"; readonly version: string; readonly styles: SiteStyles }
+  | { readonly status: "published"; readonly version: string; readonly styles: SiteStyles;
+      readonly urls: readonly string[]; readonly elapsedMs: number; readonly warnings: readonly EditorReleaseWarning[] }
+  | { readonly status: "failed"; readonly failedUrl: string; readonly message: string }
   | { readonly status: "conflict" };
 
 /**
  * `edit` is one storage transaction: rename rewrites every reference with the definition, while a
- * referenced delete returns all usages without writing. `publish` switches the one site-wide
- * published pointer, so pages do not pin style versions or coordinate through publication epochs.
+ * referenced delete returns all usages without writing. `publish` switches the style pointer and
+ * static publication manifest in the same transaction.
  */
 export type EditingSiteStylesHostAdapter<Actor> = {
   read(actor: Actor, siteId: string): Promise<SiteStylesSnapshot | null>;
@@ -137,10 +140,27 @@ export function parseEditingSiteStylesEditResponse(value: unknown, expectedVersi
 
 function parseSiteStylesPublishResult(value: unknown, expectedVersion: string, strict: boolean): Exclude<EditingSiteStylesPublishResult, { status: "conflict" }> {
   const source = record(value, "$result");
-  if (strict) keys(source, ["status", "version", "styles"], "$result");
+  if (source.status === "failed") {
+    if (strict) keys(source, ["status", "failedUrl", "message"], "$result");
+    const failedUrl = line(source.failedUrl, "$result.failedUrl", 512), message = line(source.message, "$result.message", 1000);
+    if (!failedUrl.startsWith("https://")) throw new TypeError("$result.failedUrl: expected HTTPS URL");
+    return { status: "failed", failedUrl, message };
+  }
+  if (strict) keys(source, ["status", "version", "styles", "urls", "elapsedMs", "warnings"], "$result");
   const version = editingSiteStylesVersion(source.version, "$result.version");
   if (source.status !== "published" || version === expectedVersion) throw new TypeError("$result: invalid published result");
-  return { status: "published", version, styles: checkedStyles(source.styles, "$result.styles") };
+  if (!Array.isArray(source.urls) || source.urls.length > 1000 || source.urls.some((value) => {
+    if (typeof value !== "string" || value.length > 2048) return true;
+    try { const parsed = new URL(value); return parsed.protocol !== "https:" || !!parsed.username || !!parsed.password; } catch { return true; }
+  }) || !Number.isSafeInteger(source.elapsedMs) || Number(source.elapsedMs) < 0 || Number(source.elapsedMs) > 600_000
+    || !Array.isArray(source.warnings) || source.warnings.length > 100 || source.warnings.some((warning) => {
+      if (!warning || typeof warning !== "object" || Array.isArray(warning)) return true;
+      const item = warning as Record<string, unknown>;
+      return !EDITOR_RELEASE_WARNING_CODES.includes(item.code as EditorReleaseWarning["code"])
+        || typeof item.message !== "string" || item.message.length > 1000;
+    })) throw new TypeError("$result: invalid publication summary");
+  return { status: "published", version, styles: checkedStyles(source.styles, "$result.styles"),
+    urls: source.urls as string[], elapsedMs: Number(source.elapsedMs), warnings: source.warnings as EditorReleaseWarning[] };
 }
 
 /** Strict host-result validation used by the server adapter boundary. */

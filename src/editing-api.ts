@@ -86,6 +86,20 @@ export type EditingPageTarget = {
   readonly pageId: string;
   readonly locale: string;
 };
+export type EditingPublicationChange =
+  | { readonly kind: "page"; readonly target: EditingPageTarget; readonly title: string; readonly path: string;
+      readonly reason: "new" | "draft" | "path" | "visibility" }
+  | { readonly kind: "shared"; readonly id: string; readonly label: string; readonly appliesToAllPages: true };
+export type EditingPublicationChanges = { readonly version: string; readonly changes: readonly EditingPublicationChange[] };
+export type EditingSitePublishInput = { readonly expectedVersion: string } & (
+  | { readonly scope: "site" | "changed" | "all" }
+  | { readonly scope: "pages"; readonly pages: readonly Pick<EditingPageTarget, "pageId" | "locale">[] }
+);
+
+export type EditingSitePublishResult =
+  | { readonly status: "released"; readonly urls: readonly string[]; readonly elapsedMs: number; readonly warnings: readonly EditorReleaseWarning[] }
+  | { readonly status: "failed"; readonly failedUrl: string; readonly message: string }
+  | { readonly status: "conflict" };
 export type EditingAuthorizationScope = { readonly siteId: string; readonly pageId?: string; readonly locale?: string; readonly collectionId?: string; readonly itemId?: string; readonly assetProvider?: string; readonly assetId?: string;
   readonly localizationItemKey?: string; readonly localizationUnitId?: string; readonly localizationJobId?: string; readonly localizationPreviewId?: string };
 export type EditingPageSnapshot = PageOperationVersions & {
@@ -100,7 +114,9 @@ export type EditingPageSnapshot = PageOperationVersions & {
 export type EditingPageSaveResult = { readonly status: "saved"; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" | "invalid" };
 export type EditingPageReleasePrepareResult = { readonly status: "prepared"; readonly plan: EditorReleasePlan } | { readonly status: "conflict" } | { readonly status: "publication_in_progress" };
 export type EditingPagePublishResult = { readonly status: "released"; readonly operationId: string; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" } | { readonly status: "publication_in_progress" };
-export type EditingPagePublishNowResult = { readonly status: "released"; readonly snapshot: EditingPageSnapshot; readonly url?: string; readonly warnings?: readonly EditorReleaseWarning[] } | { readonly status: "conflict" };
+export type EditingPagePublishNowResult = { readonly status: "released"; readonly snapshot: EditingPageSnapshot; readonly url?: string; readonly urls?: readonly string[]; readonly elapsedMs?: number;
+  readonly warnings?: readonly EditorReleaseWarning[] } | { readonly status: "conflict" }
+  | Extract<EditingSitePublishResult, { status: "failed" }>;
 export type EditingPageCatalog = { readonly version: string; readonly pages: readonly EditorPage[] };
 export type EditingPageChange = Exclude<EditorPageChange, { action: "duplicate" }>;
 export type EditingPageManagementPlan = EditorPageChangePlan & { readonly expectedVersion: string; readonly operationId: string };
@@ -385,6 +401,24 @@ const pageReleaseSetStatusSchema: JsonSchema = Object.freeze({
   properties: Object.freeze({ status: Object.freeze({ type: "string", enum: Object.freeze(["unknown", "received", "completed"]) }), operationId: operationIdSchema,
     httpStatus: Object.freeze({ type: "integer", minimum: 100, maximum: 599 }), result: Object.freeze({ type: "object", additionalProperties: true }) })
 });
+const publicationChangeSchema: JsonSchema = Object.freeze({ oneOf: Object.freeze([
+  Object.freeze({ type: "object", required: Object.freeze(["kind", "target", "title", "path", "reason"]), additionalProperties: false,
+    properties: Object.freeze({ kind: Object.freeze({ const: "page" }), target: pageTargetSchema, title: Object.freeze({ type: "string", maxLength: 500 }),
+      path: Object.freeze({ type: "string", maxLength: 512 }), reason: Object.freeze({ type: "string", enum: Object.freeze(["new", "draft", "path", "visibility"]) }) }) }),
+  Object.freeze({ type: "object", required: Object.freeze(["kind", "id", "label", "appliesToAllPages"]), additionalProperties: false,
+    properties: Object.freeze({ kind: Object.freeze({ const: "shared" }), id: Object.freeze({ type: "string", maxLength: 80 }),
+      label: Object.freeze({ type: "string", maxLength: 200 }), appliesToAllPages: Object.freeze({ const: true }) }) })
+]) });
+const publicationChangesSchema: JsonSchema = Object.freeze({ type: "object", required: Object.freeze(["version", "changes"]), additionalProperties: false,
+  properties: Object.freeze({ version: versionSchema, changes: Object.freeze({ type: "array", maxItems: 503, items: publicationChangeSchema }) }) });
+const sitePublishResultSchema: JsonSchema = Object.freeze({ oneOf: Object.freeze([
+  Object.freeze({ type: "object", required: Object.freeze(["status", "urls", "elapsedMs", "warnings"]), additionalProperties: false,
+    properties: Object.freeze({ status: Object.freeze({ const: "released" }), urls: Object.freeze({ type: "array", maxItems: 1000, items: Object.freeze({ type: "string", format: "uri", maxLength: 2048 }) }),
+      elapsedMs: Object.freeze({ type: "integer", minimum: 0, maximum: 600_000 }), warnings: Object.freeze({ type: "array", maxItems: 100, items: Object.freeze({ type: "object", required: Object.freeze(["code", "message"]), additionalProperties: false,
+        properties: Object.freeze({ code: Object.freeze({ type: "string", enum: EDITOR_RELEASE_WARNING_CODES }), message: Object.freeze({ type: "string", maxLength: 1000 }) }) }) }) }) }),
+  Object.freeze({ type: "object", required: Object.freeze(["status", "failedUrl", "message"]), additionalProperties: false,
+    properties: Object.freeze({ status: Object.freeze({ const: "failed" }), failedUrl: Object.freeze({ type: "string", maxLength: 512 }), message: Object.freeze({ type: "string", maxLength: 1000 }) }) })
+]) });
 
 /** Canonical resource operations for hosts to expose to GUI and machine clients. */
 export const EDITING_OPERATIONS = Object.freeze([
@@ -458,13 +492,19 @@ export const EDITING_OPERATIONS = Object.freeze([
     inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId", "pageId", "locale", "expectedVersion", "action"]), additionalProperties: false,
       properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), pageId: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }),
         expectedVersion: versionSchema, action: Object.freeze({ type: "string", enum: Object.freeze(["publish", "restore"]) }), revision: Object.freeze({ type: "integer", minimum: 1 }) }) }),
-    resultSchema: Object.freeze({ type: "object", required: Object.freeze(["status", "snapshot"]), additionalProperties: false,
+    resultSchema: Object.freeze({ oneOf: Object.freeze([Object.freeze({ type: "object", required: Object.freeze(["status", "snapshot"]), additionalProperties: false,
       properties: Object.freeze({ status: Object.freeze({ const: "released" }), url: Object.freeze({ type: "string", format: "uri", maxLength: 2048 }),
+        urls: Object.freeze({ type: "array", maxItems: 1000, items: Object.freeze({ type: "string", format: "uri", maxLength: 2048 }) }),
+        elapsedMs: Object.freeze({ type: "integer", minimum: 0, maximum: 600_000 }),
         warnings: Object.freeze({ type: "array", maxItems: 100, items: Object.freeze({ type: "object", required: Object.freeze(["code", "message"]), additionalProperties: false,
           properties: Object.freeze({ code: Object.freeze({ type: "string", enum: EDITOR_RELEASE_WARNING_CODES }), message: Object.freeze({ type: "string", maxLength: 1000 }) }) }) }),
         snapshot: Object.freeze({ type: "object", required: Object.freeze(["document", "version"]), additionalProperties: false,
         properties: Object.freeze({ document: documentSchema, version: versionSchema, componentsVersion: versionSchema, presentationVersion: versionSchema,
           presentation: presentationSchema, editorState: editorStateSchema, cmsBindings: Object.freeze({ oneOf: Object.freeze([{ type: "object" }, { const: null }]) }) }) }) }) }),
+      Object.freeze({ type: "object", required: Object.freeze(["status", "failedUrl", "message"]), additionalProperties: false,
+        properties: Object.freeze({ status: Object.freeze({ const: "failed" }), failedUrl: Object.freeze({ type: "string", format: "uri", maxLength: 512 }),
+          message: Object.freeze({ type: "string", maxLength: 1000 }) }) })
+    ]) }),
     errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found", "version_conflict"] as const)
   }),
   Object.freeze({
@@ -493,6 +533,27 @@ export const EDITING_OPERATIONS = Object.freeze([
     resultSchema: Object.freeze({ type: "object", required: Object.freeze(["version", "pages"]), additionalProperties: false,
       properties: Object.freeze({ version: versionSchema, pages: Object.freeze({ type: "array", maxItems: 500, items: pageCatalogItemSchema }) }) }),
     errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found"] as const)
+  }),
+  Object.freeze({
+    id: "site.publication-changes", capability: "pages.read", method: "GET", path: "/sites/{siteId}/operations/site.publication-changes",
+    inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId"]), additionalProperties: false, properties: Object.freeze({ siteId: Object.freeze({ type: "string" }) }) }),
+    resultSchema: publicationChangesSchema,
+    errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found"] as const)
+  }),
+  Object.freeze({
+    id: "site.publish", capability: "pages.publish", method: "POST", path: "/sites/{siteId}/operations/site.publish",
+    inputSchema: Object.freeze({ oneOf: Object.freeze([
+      Object.freeze({ type: "object", required: Object.freeze(["siteId", "expectedVersion", "scope"]), additionalProperties: false,
+        properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), expectedVersion: versionSchema,
+          scope: Object.freeze({ enum: Object.freeze(["site", "changed", "all"]) }) }) }),
+      Object.freeze({ type: "object", required: Object.freeze(["siteId", "expectedVersion", "scope", "pages"]), additionalProperties: false,
+        properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), expectedVersion: versionSchema, scope: Object.freeze({ const: "pages" }),
+          pages: Object.freeze({ type: "array", minItems: 1, maxItems: 500, items: Object.freeze({ type: "object",
+            required: Object.freeze(["pageId", "locale"]), additionalProperties: false,
+            properties: Object.freeze({ pageId: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }) }) }) }) }) })
+    ]) }),
+    resultSchema: sitePublishResultSchema,
+    errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found", "version_conflict"] as const)
   }),
   Object.freeze({
     id: "pages.change", capability: "pages.publish", method: "POST", path: "/sites/{siteId}/operations/pages.change",
@@ -591,8 +652,16 @@ export const EDITING_OPERATIONS = Object.freeze([
   Object.freeze({ id: "site.styles.publish", capability: "site.settings.write", method: "POST", path: "/sites/{siteId}/operations/site.styles.publish",
     inputSchema: Object.freeze({ type: "object", required: Object.freeze(["expectedDraftVersion", "expectedPublishedVersion"]), additionalProperties: false,
       properties: Object.freeze({ expectedDraftVersion: versionSchema, expectedPublishedVersion: versionSchema }) }),
-    resultSchema: Object.freeze({ type: "object", required: Object.freeze(["status", "version", "styles"]), additionalProperties: false,
-      properties: Object.freeze({ status: Object.freeze({ const: "published" }), version: versionSchema, styles: siteStylesSchema }) }),
+    resultSchema: Object.freeze({ oneOf: Object.freeze([
+      Object.freeze({ type: "object", required: Object.freeze(["status", "version", "styles", "urls", "elapsedMs", "warnings"]), additionalProperties: false,
+        properties: Object.freeze({ status: Object.freeze({ const: "published" }), version: versionSchema, styles: siteStylesSchema,
+          urls: Object.freeze({ type: "array", maxItems: 1000, items: Object.freeze({ type: "string", format: "uri", maxLength: 2048 }) }),
+          elapsedMs: Object.freeze({ type: "integer", minimum: 0, maximum: 600_000 }),
+          warnings: Object.freeze({ type: "array", maxItems: 100, items: Object.freeze({ type: "object", required: Object.freeze(["code", "message"]), additionalProperties: false,
+            properties: Object.freeze({ code: Object.freeze({ type: "string", enum: EDITOR_RELEASE_WARNING_CODES }), message: Object.freeze({ type: "string", maxLength: 1000 }) }) }) }) }) }),
+      Object.freeze({ type: "object", required: Object.freeze(["status", "failedUrl", "message"]), additionalProperties: false,
+        properties: Object.freeze({ status: Object.freeze({ const: "failed" }), failedUrl: Object.freeze({ type: "string", format: "uri", maxLength: 512 }), message: Object.freeze({ type: "string", maxLength: 1000 }) }) })
+    ]) }),
     errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found", "version_conflict"] as const) }),
   Object.freeze({ id: "assets.list", capability: "assets.read", method: "GET", path: "/sites/{siteId}/operations/assets.list?search={search}&kind={kind}&limit={limit}&folderId={folderId}&cursor={cursor}&provider={provider}&recent={recent}",
     inputSchema: Object.freeze({ type: "object", required: Object.freeze(["siteId", "search", "kind", "folderId", "limit"]), additionalProperties: false,
@@ -705,6 +774,10 @@ export type PageEditingHostAdapter = {
   publishPage?(actor: EditingActor, target: EditingPageTarget, input: { readonly expectedVersion: string; readonly confirmationToken: string; readonly operationId: string }): Promise<EditingPagePublishResult>;
   /** Publish the latest saved draft or restore a history revision in one validated request/response. */
   publishPageNow?(actor: EditingActor, target: EditingPageTarget, input: EditorPublishPageInput): Promise<EditingPagePublishNowResult>;
+  /** One list is shared by editor UI and CLI; version fences the subsequent publish request. */
+  readPublicationChanges?(actor: EditingActor, siteId: string): Promise<EditingPublicationChanges | null>;
+  /** Rebuild selected pending page/site outputs and switch the site manifest once. */
+  publishSiteNow?(actor: EditingActor, siteId: string, input: EditingSitePublishInput): Promise<EditingSitePublishResult>;
   /**
    * Optional multi-page publish set. Bind every target and version into the one-use token, report each target's
    * released/conflict/pending state, and make retries idempotent per actor + operationId + input so completed targets are not published twice.
@@ -816,6 +889,8 @@ function supportsOperation(adapter: PageEditingHostAdapter, operation: EditingOp
   if (operation.id === "pages.history") return typeof adapter.listPageHistory === "function";
   if (operation.id === "pages.history-read") return typeof adapter.readPageHistoryRevision === "function";
   if (operation.id === "pages.publish") return typeof adapter.publishPageNow === "function";
+  if (operation.id === "site.publication-changes") return typeof adapter.readPublicationChanges === "function";
+  if (operation.id === "site.publish") return typeof adapter.publishSiteNow === "function";
   if (operation.id === "pages.apply") return typeof adapter.pageOperations?.transact === "function";
   if (operation.id === "pages.preview-intent") return typeof adapter.createPagePreviewIntent === "function";
   if (operation.id === "pages.release-plan" || operation.id === "pages.release") return typeof adapter.releaseSite === "function" && typeof adapter.preparePageRelease === "function" && typeof adapter.publishPage === "function";
@@ -1218,6 +1293,89 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       }
       if (operations.length === 0) return fail("forbidden", 403);
       return response({ apiVersion: "v1", siteId, operations });
+    }
+    const sitePublicationMatch = new RegExp(`^${basePath}/sites/([^/]+)/operations/(site\\.publication-changes|site\\.publish)$`, "u").exec(url.pathname);
+    if (sitePublicationMatch) {
+      let siteId: string;
+      try { siteId = identifier(decodeURIComponent(sitePublicationMatch[1]!), "$siteId"); }
+      catch { return fail("invalid_request", 400); }
+      if (url.search) return fail("invalid_request", 400);
+      const operation = EDITING_OPERATIONS.find((item) => item.id === sitePublicationMatch[2]);
+      if (!operation || !supportsOperation(adapter, operation)) return fail("not_found", 404);
+      if (request.method !== operation.method) return fail("method_not_allowed", 405);
+      if (operation.id === "site.publication-changes"
+        ? request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length"))
+        : false) return fail("invalid_request", 400);
+      let actor: EditingActor | null;
+      try { actor = await adapter.authenticate(request); }
+      catch { return fail("host_failure", 503); }
+      if (!actor) return fail("authentication_required", 401);
+      if (!validActor(actor)) return fail("host_contract_violation", 502);
+      try { if (await adapter.authorize(actor, operation.capability, { siteId }) !== true) return fail("forbidden", 403); }
+      catch { return fail("host_failure", 503); }
+
+      if (operation.id === "site.publication-changes") {
+        let result: EditingPublicationChanges | null;
+        try { result = await adapter.readPublicationChanges!(actor, siteId); }
+        catch { return fail("host_failure", 503); }
+        if (result === null) return fail("not_found", 404);
+        if (!result || !exactKeys(result as unknown as Record<string, unknown>, ["version", "changes"])
+          || !validVersion(result.version) || !Array.isArray(result.changes) || result.changes.length > 503) return fail("host_contract_violation", 502);
+        for (const change of result.changes) {
+          if (!change || typeof change !== "object") return fail("host_contract_violation", 502);
+          if (change.kind === "page") {
+            const target = change.target && pageTarget(change.target.siteId, change.target.pageId, change.target.locale);
+            if (!exactKeys(change as unknown as Record<string, unknown>, ["kind", "target", "title", "path", "reason"])
+              || !target || target.siteId !== siteId || typeof change.title !== "string" || change.title.length > 500
+              || typeof change.path !== "string" || change.path.length > 512
+              || !["new", "draft", "path", "visibility"].includes(change.reason)) return fail("host_contract_violation", 502);
+          } else if (change.kind === "shared") {
+            if (!exactKeys(change as unknown as Record<string, unknown>, ["kind", "id", "label", "appliesToAllPages"])
+              || typeof change.id !== "string" || change.id.length > 80 || typeof change.label !== "string" || change.label.length > 200
+              || change.appliesToAllPages !== true) return fail("host_contract_violation", 502);
+          } else return fail("host_contract_violation", 502);
+        }
+        return response(result);
+      }
+
+      let body: Record<string, unknown> | null;
+      try { body = await readBody(request, 64 * 1024); } catch { return fail("invalid_request", 400); }
+      if (!body || !validVersion(body.expectedVersion)) return fail("invalid_request", 400);
+      let input: EditingSitePublishInput;
+      if (body.scope === "pages") {
+        if (!exactKeys(body, ["expectedVersion", "scope", "pages"]) || !Array.isArray(body.pages)
+          || body.pages.length < 1 || body.pages.length > 500) return fail("invalid_request", 400);
+        try {
+          const pages = body.pages.map((page) => {
+            if (!page || typeof page !== "object" || Array.isArray(page) || !exactKeys(page, ["pageId", "locale"])) throw new Error("invalid page target");
+            return { pageId: identifier(page.pageId, "$pageId"), locale: localeCode(page.locale, "$locale") };
+          });
+          if (new Set(pages.map(({ pageId, locale }) => pageId + "\u0000" + locale)).size !== pages.length) return fail("invalid_request", 400);
+          input = { expectedVersion: body.expectedVersion, scope: "pages", pages };
+        } catch { return fail("invalid_request", 400); }
+      } else {
+        if (!exactKeys(body, ["expectedVersion", "scope"]) || body.scope !== "site" && body.scope !== "changed" && body.scope !== "all")
+          return fail("invalid_request", 400);
+        input = { expectedVersion: body.expectedVersion, scope: body.scope };
+      }
+      let result: EditingSitePublishResult;
+      try { result = await adapter.publishSiteNow!(actor, siteId, input); }
+      catch { return fail("host_failure", 503); }
+      if (!result || typeof result !== "object" || !["released", "failed", "conflict"].includes(result.status)) return fail("host_contract_violation", 502);
+      if (result.status === "conflict") return fail("version_conflict", 409);
+      if (result.status === "failed") {
+        return typeof result.failedUrl === "string" && result.failedUrl.length <= 512
+          && typeof result.message === "string" && result.message.length <= 1000 ? response(result) : fail("host_contract_violation", 502);
+      }
+      if (!Array.isArray(result.urls) || result.urls.length > 1000 || result.urls.some((value) => {
+        if (typeof value !== "string" || value.length > 2048) return true;
+        try { const parsed = new URL(value); return parsed.protocol !== "https:" || !!parsed.username || !!parsed.password; } catch { return true; }
+      }) || !Number.isSafeInteger(result.elapsedMs) || result.elapsedMs < 0 || result.elapsedMs > 600_000
+        || !Array.isArray(result.warnings) || result.warnings.length > 100 || result.warnings.some((warning) =>
+          !warning || !EDITOR_RELEASE_WARNING_CODES.includes(warning.code) || typeof warning.message !== "string" || warning.message.length > 1000)) {
+        return fail("host_contract_violation", 502);
+      }
+      return response(result);
     }
     const siteStylesMatch = new RegExp(`^${basePath}/sites/([^/]+)/operations/(site\\.styles\\.(?:read|edit|publish))$`, "u").exec(url.pathname);
     if (siteStylesMatch) {
@@ -1944,8 +2102,16 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       let result: EditingPagePublishNowResult;
       try { result = await adapter.publishPageNow!(actor, target, { expectedVersion: body.expectedVersion, action: body.action, ...(body.action === "restore" ? { revision: Number(body.revision) } : {}) }); }
       catch { return fail("host_failure", 503); }
-      if (!result || typeof result !== "object" || !["released", "conflict"].includes(result.status)) return fail("host_contract_violation", 502);
+      if (!result || typeof result !== "object" || !["released", "failed", "conflict"].includes(result.status)) return fail("host_contract_violation", 502);
       if (result.status === "conflict") return fail("version_conflict", 409);
+      if (result.status === "failed") return typeof result.failedUrl === "string" && result.failedUrl.length <= 512
+        && typeof result.message === "string" && result.message.length <= 1000 ? response(result) : fail("host_contract_violation", 502);
+      if (result.elapsedMs !== undefined && (!Number.isSafeInteger(result.elapsedMs) || result.elapsedMs < 0 || result.elapsedMs > 600_000)
+        || result.urls !== undefined && (!Array.isArray(result.urls) || result.urls.length > 1000 || result.urls.some((url) => {
+          if (typeof url !== "string" || url.length > 2048) return true;
+          try { const parsed = new URL(url); return parsed.protocol !== "https:" || !!parsed.username || !!parsed.password; }
+          catch { return true; }
+        }))) return fail("host_contract_violation", 502);
       if (result.url !== undefined) {
         try {
           const publishedUrl = new URL(result.url);
@@ -1981,6 +2147,7 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       } catch { return fail("host_contract_violation", 502); }
       const dependencies = Object.fromEntries(PAGE_OPERATION_VERSIONS.flatMap((key) => snapshot[key] === undefined ? [] : [[key, snapshot[key]]]));
       return response({ status: "released", ...(result.url ? { url: result.url } : {}), ...(result.warnings ? { warnings: result.warnings } : {}),
+        ...(result.urls ? { urls: result.urls } : {}), ...(result.elapsedMs === undefined ? {} : { elapsedMs: result.elapsedMs }),
         snapshot: { document, version: snapshot.version, ...dependencies,
           ...(editorState ? { editorState } : {}), ...(presentation ? { presentation } : {}), ...(cmsBindings === undefined ? {} : { cmsBindings }) } });
     }

@@ -47,7 +47,7 @@ class CliError extends Error {
 
 function argsFromCli() {
   try {
-    return parseArgs({ allowPositionals: true, options: {
+    const options = {
       studio: { type: "boolean" }, origin: { type: "string" }, site: { type: "string" }, locale: { type: "string" }, json: { type: "string" }, action: { type: "string" },
       "expected-version": { type: "string" }, "components-version": { type: "string" }, "presentation-version": { type: "string" }, "cms-bindings": { type: "string" },
       revision: { type: "string" }, "operation-id": { type: "string" }, redirect: { type: "string" }, base: { type: "string" }, help: { type: "boolean", short: "h" },
@@ -59,8 +59,27 @@ function argsFromCli() {
       widths: { type: "string" }, compare: { type: "string" }, out: { type: "string" },
       "node": { type: "string" }, "depth": { type: "string" }, "text": { type: "string" },
       "tag": { type: "string" }, "style": { type: "string" }, "uses-token": { type: "string" }, "block": { type: "string" },
-      "url": { type: "string" }, "effective-style": { type: "boolean" }
-    } });
+      "url": { type: "string" }, "effective-style": { type: "boolean" }, "publish-site": { type: "boolean" },
+      changed: { type: "boolean" }, all: { type: "boolean" }
+    };
+    const args = process.argv.slice(2);
+    const stringOptions = new Set(Object.entries(options).filter(([, option]) => option.type === "string").map(([name]) => name));
+    let foundPublish = false;
+    for (let index = 0; index < args.length; index++) {
+      const token = args[index];
+      if (foundPublish) {
+        if (token === "--site") args[index] = "--publish-site";
+        continue;
+      }
+      if (token === "--") break;
+      if (token?.startsWith("--")) {
+        const [name, inlineValue] = token.slice(2).split("=", 2);
+        if (inlineValue === undefined && stringOptions.has(name ?? "")) index++;
+        continue;
+      }
+      if (token === "publish") foundPublish = true;
+    }
+    return parseArgs({ allowPositionals: true, options, args });
   } catch { throw new CliError("invalid_arguments"); }
 }
 function origin(value) {
@@ -619,7 +638,7 @@ async function main() {
     process.stdout.write(`${JSON.stringify({ id: edited.id ?? base.id ?? null, version: base.version, changes })}\n`); return;
   }
   const baseOrigin = origin(values.origin);
-  if (values.studio && !["discover", "read", "outline", "find", "get", "apply", "save", "release-plan", "release", "publish", "history", "restore", "pages-catalog", "page-change", "normalize", "lint", "styles", "site-seo-read", "site-seo-save", "site-redirects-read", "site-redirects-save", "site-public-read", "site-public-save", "page-embed-register"].includes(command)
+  if (values.studio && !["discover", "read", "outline", "find", "get", "apply", "save", "release-plan", "release", "publish", "history", "restore", "pages-catalog", "page-change", "changes", "normalize", "lint", "styles", "site-seo-read", "site-seo-save", "site-redirects-read", "site-redirects-save", "site-public-read", "site-public-save", "page-embed-register"].includes(command)
     && !command?.startsWith("cms-") && !command?.startsWith("localization-")) throw new CliError("invalid_arguments");
   if (!IDENTIFIER.test(values.site ?? "")) throw new CliError("invalid_site");
   const token = process.env.NIHO_EDIT_TOKEN;
@@ -642,6 +661,29 @@ async function main() {
     "User-Agent": CLI_USER_AGENT, "X-Studio-CMS-Version": "2", ...(hasAccessCredentials ? accessHeaders : { "cf-access-token": token })
   } : { "User-Agent": CLI_USER_AGENT, Authorization: `Bearer ${token}`, ...accessHeaders };
   const client = createPageEditingApiClient({ origin: baseOrigin, siteId: values.site, credentials: "omit", headers, preferLegacyDiscovery: true });
+
+  if (command === "changes") {
+    assertCommandOptions(values, []);
+    if (!values.studio || pageId !== undefined || extra.length) throw new CliError("invalid_arguments");
+    const result = await apiCall(() => client.readPublicationChanges(AbortSignal.timeout(30_000)));
+    process.stdout.write(`${JSON.stringify(result)}\n`); return;
+  }
+
+  if (command === "publish" && (values["publish-site"] || values.changed || values.all || values.studio && extra.length)) {
+    const selectedPages = values.studio && extra.length ? [pageId, ...extra] : null;
+    assertCommandOptions(values, selectedPages ? ["locale"] : ["publish-site", "changed", "all"]);
+    const scopes = Number(values["publish-site"] === true) + Number(values.changed === true) + Number(values.all === true);
+    const locale = values.locale;
+    if (!values.studio || (selectedPages ? scopes !== 0 || selectedPages.length > 500 || !LOCALE.test(locale ?? "")
+      || selectedPages.some((id) => !IDENTIFIER.test(id ?? "")) || new Set(selectedPages).size !== selectedPages.length
+      : scopes !== 1 || pageId !== undefined || extra.length)) throw new CliError("invalid_arguments");
+    const scope = selectedPages ? selectedPages.map((id) => ({ pageId: id, locale }))
+      : values["publish-site"] ? "site" : values.changed ? "changed" : "all";
+    const pending = await apiCall(() => client.readPublicationChanges(AbortSignal.timeout(30_000)));
+    const result = await apiCall(() => client.publishSiteNow(pending.version, scope, AbortSignal.timeout(60_000)));
+    if (result.status === "conflict") { emit({ error: "version_conflict" }, 409, 1, "site.publish"); return; }
+    emit(result, result.status === "failed" ? 503 : 200, result.status === "failed" ? 1 : 0, "site.publish"); return;
+  }
 
   if (["site-public-read", "site-public-save", "page-embed-register"].includes(command)) {
     const embedding = command === "page-embed-register";
@@ -1117,7 +1159,7 @@ async function main() {
       expectedVersion, action: command === "publish" ? "publish" : "restore", ...(revision === undefined ? {} : { revision })
     }, AbortSignal.timeout(30_000)));
     if (result.status === "conflict") { emit({ error: "version_conflict" }, 409, 1, "pages.publish"); return; }
-    emit(result, 200, 0, "pages.publish"); return;
+    emit(result, result.status === "failed" ? 503 : 200, result.status === "failed" ? 1 : 0, "pages.publish"); return;
   }
   if (!["read", "save", "release-plan", "release"].includes(command) || extra.length || !IDENTIFIER.test(pageId ?? "") || !LOCALE.test(values.locale ?? "")) throw new CliError("invalid_arguments");
   const target = { siteId: values.site, pageId, locale: values.locale };

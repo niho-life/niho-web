@@ -1,5 +1,6 @@
 import { parseSiteStyles, type SiteStyles, type SiteStylesSnapshot } from "../src/site-styles.js";
-import { renameSiteStyle, type EditingSiteStylesEditRequest, type EditingSiteStylesHostAdapter, type EditingSiteStylesPublishRequest } from "../src/editing-site-styles.js";
+import { renameSiteStyle, type EditingSiteStylesEditRequest, type EditingSiteStylesHostAdapter, type EditingSiteStylesPublishRequest,
+  type EditingSiteStylesPublishResult } from "../src/editing-site-styles.js";
 import type { CmsStore } from "./managed-cms-store.js";
 import type { ManagedActor, ManagedD1 } from "./managed-sites.js";
 import { readPageSource, type PageSourceRow } from "./managed-page-source.js";
@@ -180,7 +181,8 @@ async function putStyles(store: CmsStore, siteId: string, styles: SiteStyles): P
   return { version, key, digest, bytes: bytes.byteLength };
 }
 
-export function managedSiteStylesAdapter(store: CmsStore, projectId: string): EditingSiteStylesHostAdapter<ManagedActor> {
+export function managedSiteStylesAdapter(store: CmsStore, projectId: string,
+  publishSiteStyles: (actor: ManagedActor, siteId: string, input: EditingSiteStylesPublishRequest) => Promise<EditingSiteStylesPublishResult>): EditingSiteStylesHostAdapter<ManagedActor> {
   const accessFor = (actor: ManagedActor, siteId: string, capabilities: readonly string[]): Access => ({ projectId, siteId, actor, capabilities });
   return {
     async read(actor, siteId) {
@@ -217,21 +219,7 @@ export function managedSiteStylesAdapter(store: CmsStore, projectId: string): Ed
       if (result.meta?.changes !== 1) return { status: "conflict" };
       return { status: "saved", version: object.version, styles };
     },
-    async publish(actor, siteId, input: EditingSiteStylesPublishRequest) {
-      const access = accessFor(actor, siteId, ["site.settings.write", "pages.publish"]);
-      const state = await scopedState(store.db, access);
-      if (!state || state.draft_version !== input.expectedDraftVersion || state.published_version !== input.expectedPublishedVersion
-        || state.draft_version === state.published_version) return { status: "conflict" };
-      const styles = await readPointer(store, siteId, state.draft_version, state.draft_key, state.draft_digest);
-      const scope = accessSql(access, "managed_site_styles", 5);
-      const result = await store.db.prepare(`UPDATE managed_site_styles
-        SET published_version = draft_version, published_key = draft_key, published_digest = draft_digest,
-            updated_at = unixepoch(), updated_by_subject = ?1
-        WHERE site_id = ?2 AND draft_version = ?3 AND published_version = ?4 AND draft_version <> published_version AND ${scope.sql}`)
-        .bind(actor.subject, siteId, input.expectedDraftVersion, input.expectedPublishedVersion, ...scope.values).all();
-      if (!result.success) throw new Error("managed site style publication failed");
-      return result.meta?.changes === 1 ? { status: "published", version: state.draft_version, styles } : { status: "conflict" };
-    }
+    publish: publishSiteStyles
   };
 }
 

@@ -1,24 +1,25 @@
-import { CmsStore, cmsPathReserved, digest, nowSeconds, type Site } from "./managed-cms-store.js";
-import { localizedPathIdentity, pageText, prepareManagedPageArtifact, prepareManagedPageManifestRemoval, renderManagedPage } from "./managed-page-publication.js";
-import { preparePublishedManifest, type PreparedPublishedManifest } from "./managed-publication.js";
+import { CmsStore, cmsPathReserved, digest, nowSeconds, type CmsPublishCommit, type Site } from "./managed-cms-store.js";
+import { ManagedPagePublicationError, prepareManagedPagePublicationBatch, type ManagedPagePublicationTarget } from "./managed-page-publication.js";
+import { loadPublishedSiteManifest, preparePublishedManifest, type PreparedPublishedManifest, type PublishedRoute, type PublishedSiteManifest } from "./managed-publication.js";
+import { prepareManagedCmsStaticRoutes } from "./managed-cms-static.js";
 import { MAX_MANAGED_PAGE_BYTES, readPageSource, readPageSourceObject, storePageSource, type PageSourceRow } from "./managed-page-source.js";
-import { parsePageDocument, type PageDocument, type PageNode } from "../src/core.js";
+import { parsePageDocument, type PageDocument } from "../src/core.js";
 import { cmsPageBindingProblems, parseCmsPageBindings, resolveCmsPageBindings, type CmsPageBindingsDocument } from "../src/cms-page-bindings.js";
 import { cmsId, cmsItemKey } from "../src/cms-v2-schema.js";
-import type { CmsPublicAsset } from "../src/cms-v2.js";
+import type { CmsReleaseSnapshot } from "../src/cms-v2.js";
 import { isEditingApiVersion } from "../src/editing-client.js";
-import { createPageEditingApi, type EditingActor, type EditingCapability, type EditingPageTarget } from "../src/editing-api.js";
+import { createPageEditingApi, type EditingActor, type EditingCapability, type EditingPageTarget,
+  type EditingPublicationChanges, type EditingSitePublishInput, type EditingSitePublishResult } from "../src/editing-api.js";
 import type { EditingPageApplied } from "../src/editing-page-operations.js";
 import { normalizePageChange, pageChangeProblems } from "../src/editor-model.js";
 import type { EditorPage, EditorPageChange, EditorPublishPageInput } from "../src/editor-types.js";
 import { matchesTemplatePath, validatePagePath } from "../src/pages.js";
-import { emptyManagedPublicPolicy, MANAGED_EMBED_REF, managedBlockContracts, parseManagedPublicPolicy, registeredNihoEmbed } from "./managed-embed-contract.js";
+import { emptyManagedPublicPolicy, managedBlockContracts, parseManagedPublicPolicy, registeredNihoEmbed } from "./managed-embed-contract.js";
 import type { ManagedPublicPolicy } from "./managed-embed-contract.js";
 import { parseManagedSiteSeoSettings } from "../src/managed-seo-settings.js";
 import { parseManagedSiteRedirects, type ManagedSiteRedirect } from "../src/managed-site-redirects.js";
-import { resolvePublishedEmbeds } from "./managed-public-policy.js";
-import { revalidatePublicResponse, withPublicEtag } from "./managed-public-http.js";
 import { managedSiteStylesAdapter, readManagedPublishedSiteStyles, readManagedSiteStyles } from "./managed-site-styles.js";
+import type { EditingSiteStylesPublishRequest, EditingSiteStylesPublishResult } from "../src/editing-site-styles.js";
 
 type D1Meta = { readonly changes?: number };
 type D1Result<T> = { readonly results?: readonly T[]; readonly success: boolean; readonly meta?: D1Meta };
@@ -112,113 +113,11 @@ function boundedManagedSeoWarnings(warnings: readonly ManagedSeoWarning[]): Mana
   }));
 }
 
-function managedSeoWarnings(document: PageDocument): ManagedSeoWarning[] {
-  const warnings: ManagedSeoWarning[] = [];
-  if (!document.meta?.description?.trim()) warnings.push({ code: "missing-description", message: "検索結果に出す説明文がありません。" });
-  const visit = (nodes: readonly PageNode[]) => {
-    for (const node of nodes) {
-      if (node.type !== "element") continue;
-      if (node.tag === "img" && !(typeof node.attrs?.alt === "string" && node.attrs.alt.trim())) {
-        warnings.push({ code: "missing-alt", message: `画像「${node.id}」に代替テキストがありません。` });
-      }
-      visit(node.children);
-    }
-  };
-  visit(document.body);
-  if (document.locale.toLowerCase().startsWith("en") && /[ぁ-ゖァ-ヺ一-龯]/u.test(pageText(document.body))) {
-    warnings.push({ code: "japanese-in-english", message: "英語ページの本文に日本語が残っています。" });
-  }
-  return warnings.slice(0, 100);
-}
-
 function seoComparisonKey(value: string | undefined): string | null {
   const normalized = value?.trim().replace(/\s+/gu, " ").toLocaleLowerCase();
   return normalized || null;
 }
 
-function collectInternalLinks(nodes: readonly PageNode[], output: string[] = []): string[] {
-  for (const node of nodes) {
-    if (node.type !== "element") continue;
-    if (node.tag === "a" && typeof node.attrs?.href === "string") output.push(node.attrs.href);
-    collectInternalLinks(node.children, output);
-  }
-  return output;
-}
-
-function normalizedRoutePath(path: string, prefix: string): string {
-  let local = path;
-  if (prefix && (local === prefix || local === `${prefix}/`)) local = "/";
-  else if (prefix && local.startsWith(`${prefix}/`)) local = local.slice(prefix.length);
-  return local.length > 1 ? local.replace(/\/+$/u, "") : local;
-}
-
-async function managedReleaseSeoWarnings(db: ManagedD1, row: ManagedPageRow, document: PageDocument, origin: string,
-  store?: CmsStore, actor?: ManagedActor): Promise<ManagedSeoWarning[]> {
-  let siteDescription: string | undefined;
-  try {
-    const settings = await db.prepare("SELECT public_policy_json FROM managed_sites WHERE site_id = ?1 LIMIT 1")
-      .bind(row.site_id).first<{ public_policy_json: string }>();
-    const policy = settings && record(JSON.parse(settings.public_policy_json) as unknown), seo = record(policy?.seo);
-    if (typeof seo?.description === "string" && seo.description.trim()) siteDescription = seo.description;
-  } catch { /* settings are optional for non-blocking warnings */ }
-  const warnings = managedSeoWarnings(document).filter(({ code }) => code !== "missing-description" || !siteDescription);
-  const peers = await db.prepare(`SELECT mp.site_id, mp.page_id, mp.locale, version.revision, version.document_json, version.document_key, version.document_digest,
-      COALESCE(publication.published_path, mp.path) AS path
-    FROM managed_pages AS mp
-    JOIN managed_page_publications AS publication ON publication.id = mp.published_publication_id
-    JOIN managed_page_versions AS version ON version.site_id = mp.site_id AND version.page_id = mp.page_id
-      AND version.locale = mp.locale AND version.revision = mp.published_revision
-    WHERE mp.site_id = ?1 AND mp.visibility = 'public' AND mp.published_revision IS NOT NULL
-    ORDER BY publication.published_path, mp.locale LIMIT 500`).bind(row.site_id).all<{
-      site_id: string; page_id: string; locale: string; revision: number; document_json: string; document_key: string | null; document_digest: string | null; path: string;
-    }>();
-  const peerDocuments: { pageId: string; locale: string; path: string; document: PageDocument }[] = [];
-  const publishedStyles = store ? (await readManagedSiteStyles(store, row.site_id)).published.styles : undefined;
-  if (peers.success) for (const peer of peers.results ?? []) try {
-    const other = await readPageSource(store, peer, publishedStyles);
-    if (other.siteId === row.site_id && other.pageId === peer.page_id && other.locale === peer.locale) {
-      peerDocuments.push({ pageId: peer.page_id, locale: peer.locale, path: peer.path, document: other });
-    }
-  } catch { /* invalid historical documents are ignored by non-blocking SEO warnings */ }
-
-  if (!document.meta?.noindex) {
-    const title = seoComparisonKey(document.title), description = seoComparisonKey(document.meta?.description ?? siteDescription);
-    for (const peer of peerDocuments) {
-      if (peer.pageId === row.page_id && peer.locale === row.locale || peer.locale !== row.locale || peer.document.meta?.noindex) continue;
-      if (title && title === seoComparisonKey(peer.document.title)) warnings.push({ code: "duplicate-title", message: `公開ページ「${peer.path}」と title が重複しています。` });
-      if (description && description === seoComparisonKey(peer.document.meta?.description ?? siteDescription)) warnings.push({ code: "duplicate-description", message: `公開ページ「${peer.path}」と description が重複しています。` });
-    }
-  }
-
-  const prefix = row.public_domain ? "" : `/s/${row.slug}`;
-  const publicUrl = managedPageUrl(origin, row.slug, row.path, row.public_domain);
-  const knownPaths = new Set([row.path, ...peerDocuments.filter((peer) => peer.locale === row.locale).map((peer) => peer.path)]
-    .map((path) => normalizedRoutePath(path, prefix)));
-  const templatePaths: string[] = [];
-  if (store && actor) try {
-    const site = await cmsSite(store, actor, row);
-    if (site) {
-      const routes = await store.routeTable(site, "cms.read", row.locale);
-      for (const route of routes.reservations) {
-        if (["fixed-page", "cms-item", "redirect"].includes(route.kind)) knownPaths.add(normalizedRoutePath(route.path, prefix));
-        else if (route.kind === "template") templatePaths.push(normalizedRoutePath(route.path, prefix));
-      }
-    }
-  } catch { /* CMS route lookup is optional for non-blocking warnings */ }
-
-  for (const href of collectInternalLinks(document.body)) try {
-    if (!href.trim() || href.startsWith("#") || href.startsWith("//")) continue;
-    const rootRelative = href.startsWith("/") && prefix ? `${prefix}${href}` : href;
-    const target = new URL(rootRelative, publicUrl);
-    const base = new URL(publicUrl);
-    if (target.origin !== base.origin || !["https:", "http:"].includes(target.protocol)) continue;
-    const path = normalizedRoutePath(target.pathname, prefix);
-    if (!knownPaths.has(path) && !templatePaths.some((template) => matchesTemplatePath(template, path))) {
-      warnings.push({ code: "broken-internal-link", message: `公開中のページ・CMS route が見つかりません: ${path}` });
-    }
-  } catch { /* malformed links are handled by document validation */ }
-  return boundedManagedSeoWarnings(warnings);
-}
 function opaqueVersion(): string { return `p.${crypto.randomUUID()}`; }
 function opaqueId(prefix: string): string { return `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`; }
 function managedProjectD1FailureKind(error: unknown): string {
@@ -812,7 +711,21 @@ export function managedPageEditingApi(request: Request, store: CmsStore, project
   actorFor: (capability: EditingCapability) => Promise<ManagedActor | null>): Promise<Response> {
   const db = store.db;
   let actor: ManagedActor | null = null;
-  const styleStorage = managedSiteStylesAdapter(store, projectId);
+  const publishSiteStyles = async (managedActor: ManagedActor, targetSiteId: string,
+    input: EditingSiteStylesPublishRequest): Promise<EditingSiteStylesPublishResult> => {
+    if (!publicOrigin || targetSiteId !== siteId) return { status: "conflict" };
+    const snapshot = await managedPublicationSnapshot(store, managedActor, projectId, targetSiteId);
+    if (!snapshot || snapshot.styles.draft.version !== input.expectedDraftVersion
+      || snapshot.styles.published.version !== input.expectedPublishedVersion
+      || input.expectedDraftVersion === input.expectedPublishedVersion) return { status: "conflict" };
+    const result = await publishManagedPages(store, managedActor, projectId, targetSiteId, publicOrigin,
+      { expectedVersion: snapshot.changes.version, scope: "site" }, undefined, input);
+    if (result.status === "conflict") return { status: "conflict" };
+    if (result.status === "failed") return { status: "failed", failedUrl: result.failedUrl, message: result.message };
+    return { status: "published", version: input.expectedDraftVersion, styles: snapshot.styles.draft.styles,
+      urls: result.urls, elapsedMs: result.elapsedMs, warnings: result.warnings };
+  };
+  const styleStorage = managedSiteStylesAdapter(store, projectId, publishSiteStyles);
   const load = (target: EditingPageTarget) => actor ? pageRow(db, projectId, siteId, target.pageId, target.locale) : Promise.resolve(null);
   const draftStyles = async () => (await readManagedSiteStyles(store, siteId)).draft.styles;
   const doc = async (row: ManagedPageRow) => readPageSource(store, row, await draftStyles());
@@ -853,6 +766,14 @@ export function managedPageEditingApi(request: Request, store: CmsStore, project
       const catalog = await pageCatalog(db, siteId);
       return { version: catalog.version, pages: catalog.pages.map(({ version: _version, ...page }) => page) };
     },
+    async readPublicationChanges() {
+      if (!actor) return null;
+      return (await managedPublicationSnapshot(store, actor, projectId, siteId))?.changes ?? null;
+    },
+    async publishSiteNow(_editingActor, requestedSiteId, input) {
+      if (!publicOrigin || !actor || requestedSiteId !== siteId) return { status: "conflict" };
+      return publishManagedPages(store, actor, projectId, siteId, publicOrigin, input);
+    },
     async changePageNow(_editingActor, _siteId, expectedVersion, change) {
       if (!actor) return { status: "invalid" };
       const result = await changePageOnce(store, actor, projectId, siteId, publicOrigin, expectedVersion, change);
@@ -870,10 +791,15 @@ export function managedPageEditingApi(request: Request, store: CmsStore, project
       const result = await publishPageOnce(store, actor, row, publicOrigin, input);
       if (result instanceof Response) {
         if (result.status === 409) return { status: "conflict" };
+        if (result.status === 503) {
+          const value = await result.json() as { failedUrl?: string; message?: string };
+          if (value.failedUrl) return { status: "failed", failedUrl: value.failedUrl, message: value.message ?? "ページの公開生成に失敗しました。" };
+        }
         throw new Error("managed direct publish failed");
       }
       const { document, version, releases, cmsBindings } = result.snapshot;
-      return { ...result, snapshot: { document, version, editorState: { releases }, ...(cmsBindings === undefined ? {} : { cmsBindings }) } };
+      return { ...result, snapshot: { document, version, editorState: { releases },
+        ...(cmsBindings === undefined ? {} : { cmsBindings }) } };
     },
     pageOperations: { async transact(actorIdentity, target, transaction) {
       const { operationId, inputHash, dryRun } = transaction;
@@ -928,100 +854,772 @@ function pagePublishAccess(site: string, project: string, subject: string, clien
           AND (grant.expires_at IS NULL OR grant.expires_at > unixepoch()))))`;
 }
 
+type ManagedPagePublicationWrite = {
+  readonly row: ManagedPageRow;
+  readonly expectedVersion: string;
+  readonly sourceRevision: number;
+  readonly revision: number;
+  readonly action: "publish" | "rollback";
+  readonly auditAction: "page.published" | "page.restored";
+  readonly publicationId: string;
+  readonly cmsReleaseId: string | null;
+  readonly cmsSchemaRevision: string | null;
+  readonly publishedPath: string;
+  readonly artifactKey: string | null;
+  readonly artifactDigest: string | null;
+  readonly contentSecurityPolicy: string | null;
+  readonly updateCurrent: boolean;
+  readonly currentVersion?: string;
+  readonly copy?: { readonly kind: "save" | "restore"; readonly bindingsJson: string | null;
+    readonly documentKey: string; readonly documentDigest: string; readonly linkIndex: string };
+};
+
+/** Commit all page history and the new manifest pointer in one D1 transaction. */
+async function commitManagedPagePublicationBatch(input: {
+  readonly db: ManagedD1;
+  readonly actor: ManagedActor;
+  readonly siteId: string;
+  readonly projectId: string;
+  readonly catalogVersion: string;
+  readonly cmsGeneration: string | null;
+  readonly prepared: { readonly expectedVersion: string; readonly manifestVersion: string; readonly manifestKey: string;
+    readonly policyVersion: string; readonly domainVersion: string; readonly expectedPolicyVersion: string;
+    readonly expectedDomainVersion: string; readonly expectedSiteStyleDraftVersion: string;
+    readonly expectedSiteStylePublishedVersion: string; readonly siteStylesVersion: string; readonly publishSiteStyles: boolean;
+    readonly artifacts: ReadonlyMap<string,
+      { readonly pageId: string; readonly locale: string; readonly path: string; readonly artifactKey: string;
+        readonly artifactDigest: string; readonly contentSecurityPolicy: string }>; };
+  readonly writes: readonly ManagedPagePublicationWrite[];
+}): Promise<boolean> {
+  const { db, actor, siteId, projectId, catalogVersion, cmsGeneration, prepared, writes } = input;
+  if (new Set(writes.map(({ row }) => `${row.page_id}\u0000${row.locale}`)).size !== writes.length) return false;
+  if (!writes.length) {
+    const results = await db.batch([
+      db.prepare(`UPDATE managed_site_styles SET
+          published_version = CASE WHEN ?4 = 1 THEN draft_version ELSE published_version END,
+          published_key = CASE WHEN ?4 = 1 THEN draft_key ELSE published_key END,
+          published_digest = CASE WHEN ?4 = 1 THEN draft_digest ELSE published_digest END,
+          updated_at = CASE WHEN ?4 = 1 THEN unixepoch() ELSE updated_at END,
+          updated_by_subject = CASE WHEN ?4 = 1 THEN ?8 ELSE updated_by_subject END
+        WHERE site_id = ?1 AND draft_version = ?2 AND published_version = ?3
+          AND (?4 = 0 OR draft_version = ?5 AND draft_version <> published_version)
+          AND EXISTS (SELECT 1 FROM managed_site_publication_state WHERE site_id = ?1 AND version = ?6)
+          AND EXISTS (SELECT 1 FROM managed_sites WHERE site_id = ?1 AND page_catalog_version = ?9
+            AND public_policy_version = ?10 AND public_domain_version = ?11)
+          AND EXISTS (SELECT 1 FROM sites WHERE id = ?1 AND project_id = ?7)
+          AND ${pagePublishAccess("?1", "?7", "?8", "?12")}`)
+        .bind(siteId, prepared.expectedSiteStyleDraftVersion, prepared.expectedSiteStylePublishedVersion,
+          prepared.publishSiteStyles ? 1 : 0, prepared.siteStylesVersion, prepared.expectedVersion,
+          projectId, actor.subject, catalogVersion, prepared.expectedPolicyVersion, prepared.expectedDomainVersion, actor.cliClientId ?? null),
+      db.prepare(`UPDATE managed_site_publication_state SET version = ?1, manifest_key = ?2, updated_at = unixepoch()
+        WHERE site_id = ?3 AND version = ?4 AND changes() = 1
+          AND EXISTS (SELECT 1 FROM managed_sites WHERE site_id = ?3 AND page_catalog_version = ?5
+            AND public_policy_version = ?6 AND public_domain_version = ?7)
+          AND EXISTS (SELECT 1 FROM sites WHERE id = ?3 AND project_id = ?8)
+          AND EXISTS (SELECT 1 FROM managed_site_styles WHERE site_id = ?3 AND published_version = ?9)
+          AND ${pagePublishAccess("?3", "?8", "?10", "?11")}`)
+        .bind(prepared.manifestVersion, prepared.manifestKey, siteId, prepared.expectedVersion, catalogVersion,
+          prepared.expectedPolicyVersion, prepared.expectedDomainVersion, projectId, prepared.siteStylesVersion,
+          actor.subject, actor.cliClientId ?? null)
+    ]);
+    if (results.some((result) => !result.success)) throw new Error("managed page publication batch failed");
+    return changed(results[1]);
+  }
+  const auditIds = writes.map(() => crypto.randomUUID());
+  const entries = writes.map((write, index) => ({
+    auditId: auditIds[index], pageId: write.row.page_id, locale: write.row.locale, expectedVersion: write.expectedVersion,
+    sourceRevision: write.sourceRevision, revision: write.revision, action: write.action, auditAction: write.auditAction,
+    publicationId: write.publicationId, cmsReleaseId: write.cmsReleaseId, cmsSchemaRevision: write.cmsSchemaRevision,
+    publishedPath: write.publishedPath, artifactKey: write.artifactKey, artifactDigest: write.artifactDigest,
+    manifestKey: prepared.manifestKey, contentType: write.artifactKey ? "text/html; charset=utf-8" : null,
+    contentSecurityPolicy: write.contentSecurityPolicy, updateCurrent: write.updateCurrent,
+    currentVersion: write.currentVersion ?? null, copy: write.copy ?? null,
+    expectedSiteStyleDraftVersion: prepared.expectedSiteStyleDraftVersion,
+    expectedSiteStylePublishedVersion: prepared.expectedSiteStylePublishedVersion
+  }));
+  const payload = JSON.stringify(entries), expectedCount = entries.length, nextCatalogVersion = `catalog.${opaqueVersion()}`;
+  const auditCount = (payloadParameter: string) =>
+    `(SELECT count(*) FROM managed_site_audit WHERE id IN (SELECT json_extract(value, '$.auditId') FROM json_each(${payloadParameter})))`;
+  const candidateAccess = pagePublishAccess("candidate.site_id", "candidate_site.project_id", "?3", "?6");
+  const candidateGuard = `?11 = (SELECT count(*) FROM json_each(?1) AS expected
+      JOIN managed_pages AS candidate ON candidate.site_id = ?2
+        AND candidate.page_id = json_extract(expected.value, '$.pageId') AND candidate.locale = json_extract(expected.value, '$.locale')
+      JOIN managed_sites AS candidate_managed ON candidate_managed.site_id = candidate.site_id
+      JOIN sites AS candidate_site ON candidate_site.id = candidate.site_id
+      WHERE candidate_site.project_id = ?4 AND candidate.current_version = json_extract(expected.value, '$.expectedVersion')
+        AND candidate_managed.page_catalog_version = ?5 AND ${candidateAccess}
+        AND (?7 IS NULL OR EXISTS (SELECT 1 FROM managed_cms_state WHERE site_id = candidate.site_id AND generation = ?7))
+        AND (json_extract(expected.value, '$.cmsReleaseId') IS NULL OR EXISTS (
+          SELECT 1 FROM managed_cms_releases WHERE site_id = candidate.site_id AND release_id = json_extract(expected.value, '$.cmsReleaseId')))
+        AND candidate_managed.public_policy_version = ?8 AND candidate_managed.public_domain_version = ?9
+        AND EXISTS (SELECT 1 FROM managed_site_publication_state WHERE site_id = candidate.site_id AND version = ?10)
+        AND EXISTS (SELECT 1 FROM managed_site_styles WHERE site_id = candidate.site_id
+          AND draft_version = json_extract(expected.value, '$.expectedSiteStyleDraftVersion')
+          AND published_version = json_extract(expected.value, '$.expectedSiteStylePublishedVersion'))
+        AND EXISTS (SELECT 1 FROM managed_page_versions WHERE site_id = candidate.site_id AND page_id = candidate.page_id
+          AND locale = candidate.locale AND revision = json_extract(expected.value, '$.sourceRevision')))`;
+  const access = pagePublishAccess("mp.site_id", "s.project_id", "?3", "?6");
+  const results = await db.batch([
+    db.prepare(`INSERT INTO managed_site_audit (id, project_id, site_id, actor_subject, action, page_id)
+      SELECT json_extract(entry.value, '$.auditId'), s.project_id, mp.site_id, ?3,
+        json_extract(entry.value, '$.auditAction'), mp.page_id
+      FROM json_each(?1) AS entry
+      JOIN managed_pages AS mp ON mp.site_id = ?2 AND mp.page_id = json_extract(entry.value, '$.pageId')
+        AND mp.locale = json_extract(entry.value, '$.locale')
+      JOIN managed_sites AS ms ON ms.site_id = mp.site_id JOIN sites AS s ON s.id = mp.site_id
+      WHERE s.project_id = ?4 AND mp.current_version = json_extract(entry.value, '$.expectedVersion')
+        AND ms.page_catalog_version = ?5 AND ${access}
+        AND (?7 IS NULL OR EXISTS (SELECT 1 FROM managed_cms_state WHERE site_id = mp.site_id AND generation = ?7))
+        AND (json_extract(entry.value, '$.cmsReleaseId') IS NULL OR EXISTS (
+          SELECT 1 FROM managed_cms_releases WHERE site_id = mp.site_id AND release_id = json_extract(entry.value, '$.cmsReleaseId')))
+        AND ms.public_policy_version = ?8 AND ms.public_domain_version = ?9
+        AND EXISTS (SELECT 1 FROM managed_site_publication_state WHERE site_id = mp.site_id AND version = ?10)
+        AND EXISTS (SELECT 1 FROM managed_site_styles WHERE site_id = mp.site_id
+          AND draft_version = json_extract(entry.value, '$.expectedSiteStyleDraftVersion')
+          AND published_version = json_extract(entry.value, '$.expectedSiteStylePublishedVersion'))
+        AND EXISTS (SELECT 1 FROM managed_page_versions WHERE site_id = mp.site_id AND page_id = mp.page_id
+          AND locale = mp.locale AND revision = json_extract(entry.value, '$.sourceRevision'))
+        AND ${candidateGuard}`)
+      .bind(payload, siteId, actor.subject, projectId, catalogVersion, actor.cliClientId ?? null, cmsGeneration,
+        prepared.expectedPolicyVersion, prepared.expectedDomainVersion, prepared.expectedVersion, expectedCount),
+    db.prepare(`UPDATE managed_site_styles SET
+        published_version = CASE WHEN ?4 = 1 THEN draft_version ELSE published_version END,
+        published_key = CASE WHEN ?4 = 1 THEN draft_key ELSE published_key END,
+        published_digest = CASE WHEN ?4 = 1 THEN draft_digest ELSE published_digest END,
+        updated_at = CASE WHEN ?4 = 1 THEN unixepoch() ELSE updated_at END,
+        updated_by_subject = CASE WHEN ?4 = 1 THEN ?11 ELSE updated_by_subject END
+      WHERE site_id = ?1 AND draft_version = ?2 AND published_version = ?3
+        AND (?4 = 0 OR draft_version = ?5 AND draft_version <> published_version)
+        AND EXISTS (SELECT 1 FROM managed_site_publication_state WHERE site_id = ?1 AND version = ?6)
+        AND EXISTS (SELECT 1 FROM managed_sites WHERE site_id = ?1 AND page_catalog_version = ?7
+          AND public_policy_version = ?8 AND public_domain_version = ?9)
+        AND EXISTS (SELECT 1 FROM sites WHERE id = ?1 AND project_id = ?10)
+        AND ${pagePublishAccess("?1", "?10", "?11", "?12")}
+        AND ${auditCount("?13")} = ?14`)
+      .bind(siteId, prepared.expectedSiteStyleDraftVersion, prepared.expectedSiteStylePublishedVersion,
+        prepared.publishSiteStyles ? 1 : 0, prepared.siteStylesVersion, prepared.expectedVersion, catalogVersion,
+        prepared.expectedPolicyVersion, prepared.expectedDomainVersion, projectId, actor.subject,
+        actor.cliClientId ?? null, payload, expectedCount),
+    db.prepare(`INSERT INTO managed_page_versions (site_id, page_id, locale, revision, document_json, kind, created_by_subject,
+        bindings_json, document_key, document_digest, link_index_json)
+      SELECT ?2, json_extract(entry.value, '$.pageId'), json_extract(entry.value, '$.locale'),
+        json_extract(entry.value, '$.revision'), '{}', json_extract(entry.value, '$.copy.kind'), ?3,
+        json_extract(entry.value, '$.copy.bindingsJson'), json_extract(entry.value, '$.copy.documentKey'),
+        json_extract(entry.value, '$.copy.documentDigest'), json_extract(entry.value, '$.copy.linkIndex')
+      FROM json_each(?1) AS entry JOIN managed_site_audit AS audit ON audit.id = json_extract(entry.value, '$.auditId')
+      WHERE json_type(entry.value, '$.copy') = 'object' AND ${auditCount("?1")} = ?4 AND changes() = 1`)
+      .bind(payload, siteId, actor.subject, expectedCount),
+    db.prepare(`INSERT INTO managed_page_publications (id, site_id, page_id, locale, source_revision, action, published_by_subject,
+        cms_release_id, cms_schema_revision, published_path, path, artifact_key, artifact_digest, manifest_key, content_type, content_security_policy)
+      SELECT json_extract(entry.value, '$.publicationId'), ?2, json_extract(entry.value, '$.pageId'), json_extract(entry.value, '$.locale'),
+        json_extract(entry.value, '$.revision'), json_extract(entry.value, '$.action'), ?3,
+        json_extract(entry.value, '$.cmsReleaseId'), json_extract(entry.value, '$.cmsSchemaRevision'),
+        json_extract(entry.value, '$.publishedPath'), json_extract(entry.value, '$.publishedPath'),
+        json_extract(entry.value, '$.artifactKey'), json_extract(entry.value, '$.artifactDigest'), json_extract(entry.value, '$.manifestKey'),
+        json_extract(entry.value, '$.contentType'), json_extract(entry.value, '$.contentSecurityPolicy')
+      FROM json_each(?1) AS entry JOIN managed_site_audit AS audit ON audit.id = json_extract(entry.value, '$.auditId')
+      WHERE ${auditCount("?1")} = ?4
+        AND EXISTS (SELECT 1 FROM managed_site_styles WHERE site_id = ?2 AND published_version = ?5)`)
+      .bind(payload, siteId, actor.subject, expectedCount, prepared.siteStylesVersion),
+    db.prepare(`UPDATE managed_pages AS mp SET
+        published_revision = json_extract(entry.value, '$.revision'),
+        published_publication_id = json_extract(entry.value, '$.publicationId'),
+        current_revision = CASE WHEN json_extract(entry.value, '$.updateCurrent') = 1
+          THEN json_extract(entry.value, '$.revision') ELSE mp.current_revision END,
+        current_version = CASE WHEN json_extract(entry.value, '$.updateCurrent') = 1
+          THEN json_extract(entry.value, '$.currentVersion') ELSE mp.current_version END,
+        updated_at = unixepoch()
+      FROM json_each(?1) AS entry JOIN managed_site_audit AS audit ON audit.id = json_extract(entry.value, '$.auditId')
+      WHERE mp.site_id = ?2 AND mp.page_id = json_extract(entry.value, '$.pageId') AND mp.locale = json_extract(entry.value, '$.locale')
+        AND ${auditCount("?1")} = ?3 AND changes() = ?3`)
+      .bind(payload, siteId, expectedCount),
+    db.prepare(`UPDATE managed_sites SET page_catalog_version = ?1 WHERE site_id = ?2 AND page_catalog_version = ?3
+      AND ${auditCount("?5")} = ?4 AND changes() = ?4`).bind(nextCatalogVersion, siteId, catalogVersion, expectedCount, payload),
+    db.prepare(`UPDATE managed_site_publication_state SET version = ?1, manifest_key = ?2, updated_at = unixepoch()
+      WHERE site_id = ?3 AND version = ?4 AND changes() = 1
+        AND EXISTS (SELECT 1 FROM managed_sites WHERE site_id = ?3 AND page_catalog_version = ?5)
+        AND EXISTS (SELECT 1 FROM managed_site_styles WHERE site_id = ?3 AND published_version = ?8)
+        AND ${auditCount("?7")} = ?6`)
+      .bind(prepared.manifestVersion, prepared.manifestKey, siteId, prepared.expectedVersion, nextCatalogVersion, expectedCount, payload, prepared.siteStylesVersion),
+    ...writes.flatMap((write) => write.copy && write.currentVersion
+      ? [discardSupersededDraft(db, write.row, write.currentVersion)] : [])
+  ]);
+  if (results.some((result) => !result.success)) throw new Error("managed page publication batch failed");
+  return results[0]?.meta?.changes === expectedCount && changed(results[1]) && results[3]?.meta?.changes === expectedCount
+    && results[4]?.meta?.changes === expectedCount && changed(results[5]) && changed(results[6]);
+}
+
+type ManagedPublicationCandidate = {
+  readonly project_id: string; readonly site_id: string; readonly slug: string; readonly public_domain: string | null;
+  readonly cms_locale: string; readonly page_id: string; readonly locale: string; readonly title: string; readonly path: string;
+  readonly visibility: "public" | "private"; readonly current_version: string; readonly page_catalog_version: string;
+  readonly current_revision: number; readonly published_revision: number | null;
+  readonly current_document_json: string; readonly current_document_key: string | null; readonly current_document_digest: string | null;
+  readonly current_bindings_json: string | null;
+  readonly published_document_json: string | null; readonly published_document_key: string | null; readonly published_document_digest: string | null;
+  readonly published_bindings_json: string | null; readonly published_path: string | null; readonly published_at: number | null;
+  readonly published_manifest_key: string | null;
+  readonly cms_release_id: string | null; readonly cms_schema_revision: string | null;
+};
+
+type ManagedPublicationSnapshot = {
+  readonly version: string; readonly publicationVersion: string; readonly manifestKey: string | null;
+  readonly catalogVersion: string; readonly policyVersion: string; readonly domainVersion: string;
+  readonly policyJson: string; readonly slug: string; readonly siteName: string; readonly publicDomain: string | null;
+  readonly manifest: PublishedSiteManifest | null; readonly pages: readonly ManagedPublicationCandidate[];
+  readonly styles: Awaited<ReturnType<typeof readManagedSiteStyles>>;
+  readonly changes: EditingPublicationChanges;
+};
+
+async function managedPublicationSnapshot(store: CmsStore, actor: ManagedActor, projectId: string, siteId: string): Promise<ManagedPublicationSnapshot | null> {
+  const { db } = store;
+  const registration = await managedMemberRegistration(db, actor, projectId, siteId);
+  if (!registration) return null;
+  const state = await db.prepare(`SELECT state.version AS publication_version, state.manifest_key,
+      ms.page_catalog_version, ms.public_policy_json, ms.public_policy_version, ms.public_domain_version,
+      ms.slug, ${PRIMARY_DOMAIN} AS public_domain, s.name AS site_name
+    FROM managed_site_publication_state AS state JOIN managed_sites AS ms ON ms.site_id = state.site_id
+    JOIN sites AS s ON s.id = ms.site_id WHERE state.site_id = ?1 AND s.project_id = ?2`)
+    .bind(siteId, projectId).first<{ publication_version: string; manifest_key: string | null; page_catalog_version: string;
+      public_policy_json: string; public_policy_version: string; public_domain_version: string; slug: string;
+      public_domain: string | null; site_name: string }>();
+  if (!state) return null;
+  const pageResult = await db.prepare(`SELECT s.project_id, mp.site_id, ms.slug, ${PRIMARY_DOMAIN} AS public_domain,
+      COALESCE((SELECT locale FROM managed_pages WHERE site_id = mp.site_id AND page_id = 'home' ORDER BY locale LIMIT 1), mp.locale) AS cms_locale,
+      mp.page_id, mp.locale, mp.title, mp.path, mp.visibility, mp.current_version, ms.page_catalog_version,
+      mp.current_revision, mp.published_revision,
+      current_version.document_json AS current_document_json, current_version.document_key AS current_document_key,
+      current_version.document_digest AS current_document_digest, current_version.bindings_json AS current_bindings_json,
+      published_version.document_json AS published_document_json, published_version.document_key AS published_document_key,
+      published_version.document_digest AS published_document_digest, published_version.bindings_json AS published_bindings_json,
+      publication.published_path, publication.created_at AS published_at, publication.manifest_key AS published_manifest_key,
+      publication.cms_release_id, publication.cms_schema_revision
+    FROM managed_pages AS mp JOIN managed_sites AS ms ON ms.site_id = mp.site_id JOIN sites AS s ON s.id = mp.site_id
+    JOIN managed_page_versions AS current_version ON current_version.site_id = mp.site_id AND current_version.page_id = mp.page_id
+      AND current_version.locale = mp.locale AND current_version.revision = mp.current_revision
+    LEFT JOIN managed_page_versions AS published_version ON published_version.site_id = mp.site_id AND published_version.page_id = mp.page_id
+      AND published_version.locale = mp.locale AND published_version.revision = mp.published_revision
+    LEFT JOIN managed_page_publications AS publication ON publication.id = mp.published_publication_id
+      AND publication.site_id = mp.site_id AND publication.page_id = mp.page_id AND publication.locale = mp.locale
+    WHERE mp.site_id = ?1 AND s.project_id = ?2 ORDER BY mp.path, mp.locale LIMIT 500`)
+    .bind(siteId, projectId).all<ManagedPublicationCandidate>();
+  if (!pageResult.success || !pageResult.results) throw new Error("managed publication page lookup failed");
+  const manifest = await loadPublishedSiteManifest(store.bucket, siteId, state.manifest_key);
+  const styles = await readManagedSiteStyles(store, siteId);
+  const routeKeys = new Set((manifest?.routes ?? []).map((route) => `${route.pageId}\u0000${route.locale}`));
+  const changes: EditingPublicationChanges["changes"][number][] = [];
+  for (const page of pageResult.results) {
+    const key = `${page.page_id}\u0000${page.locale}`;
+    const wasPublic = routeKeys.has(key) || !manifest && page.published_revision !== null && page.visibility === "public";
+    const publishedRoute = manifest?.routes.find((route) => route.pageId === page.page_id && route.locale === page.locale);
+    const publishedPath = publishedRoute?.sourcePath ?? publishedRoute?.path ?? page.published_path;
+    let reason: "new" | "draft" | "path" | "visibility" | null = null;
+    if (page.visibility === "private" && wasPublic || page.visibility === "public" && !wasPublic && page.published_revision !== null) reason = "visibility";
+    else if (page.visibility === "public" && !wasPublic && page.published_revision === null) reason = "new";
+    else if (page.visibility === "public" && wasPublic && publishedPath !== undefined && publishedPath !== page.path) reason = "path";
+    else if (page.visibility === "public" && (!wasPublic || page.published_revision === null || page.current_revision !== (publishedRoute?.sourceRevision ?? page.published_revision))) reason = page.published_revision === null ? "new" : "draft";
+    if (reason) changes.push({ kind: "page", target: { siteId, pageId: page.page_id, locale: page.locale }, title: page.title, path: page.path, reason });
+  }
+  if (manifest?.publicPolicyVersion !== state.public_policy_version) {
+    changes.push({ kind: "shared", id: "public-policy", label: "サイト共通設定", appliesToAllPages: true });
+  }
+  if (manifest?.publicDomainVersion !== state.public_domain_version) {
+    changes.push({ kind: "shared", id: "public-domain", label: "公開ドメイン", appliesToAllPages: true });
+  }
+  if (manifest?.siteStylesVersion !== styles.draft.version) {
+    changes.push({ kind: "shared", id: "site-styles", label: "サイト共通スタイル", appliesToAllPages: true });
+  }
+  const version = `changes.${await digest({ publicationVersion: state.publication_version, manifestKey: state.manifest_key,
+    catalogVersion: state.page_catalog_version, policyVersion: state.public_policy_version, domainVersion: state.public_domain_version,
+    styleDraftVersion: styles.draft.version, stylePublishedVersion: styles.published.version,
+    pages: pageResult.results.map(({ page_id, locale, current_version, current_revision, published_revision, path, visibility }) =>
+      [page_id, locale, current_version, current_revision, published_revision, path, visibility]) })}`;
+  return { version, publicationVersion: state.publication_version, manifestKey: state.manifest_key,
+    catalogVersion: state.page_catalog_version, policyVersion: state.public_policy_version, domainVersion: state.public_domain_version,
+    policyJson: state.public_policy_json, slug: state.slug, siteName: state.site_name, publicDomain: state.public_domain,
+    manifest, pages: pageResult.results, styles, changes: { version, changes } };
+}
+
+function publicationSource(page: ManagedPublicationCandidate, current: boolean): PageSourceRow | null {
+  const revision = current ? page.current_revision : page.published_revision;
+  if (revision === null) return null;
+  return { site_id: page.site_id, page_id: page.page_id, locale: page.locale, revision,
+    document_json: current ? page.current_document_json : page.published_document_json ?? "{}",
+    document_key: current ? page.current_document_key : page.published_document_key,
+    document_digest: current ? page.current_document_digest : page.published_document_digest };
+}
+
+function publicationBindings(page: ManagedPublicationCandidate, current: boolean): string | null {
+  return current ? page.current_bindings_json : page.published_bindings_json;
+}
+
+function publicationRoute(page: Pick<ManagedPublicationCandidate, "page_id" | "locale">, manifest: PublishedSiteManifest | null) {
+  return manifest?.routes.find((route) => route.pageId === page.page_id && route.locale === page.locale);
+}
+
+async function historicalPublishedSource(store: CmsStore, source: PageSourceRow & { bindings_json: string | null }, revision: number) {
+  if (source.revision === revision) return source;
+  const row = await store.db.prepare(`SELECT site_id, page_id, locale, revision, document_json, document_key, document_digest, bindings_json
+    FROM managed_page_versions WHERE site_id = ?1 AND page_id = ?2 AND locale = ?3 AND revision = ?4`)
+    .bind(source.site_id, source.page_id, source.locale, revision).first<PageSourceRow & { bindings_json: string | null }>();
+  if (!row) throw new Error("historical published page is unavailable");
+  return row;
+}
+
+function pageIsPublished(page: ManagedPublicationCandidate, publishedKeys: ReadonlySet<string>, hasManifest: boolean): boolean {
+  return page.published_revision !== null && (publishedKeys.has(page.page_id + "\u0000" + page.locale)
+    || page.visibility === "public" && (!hasManifest || page.published_bindings_json !== null));
+}
+
+async function publishedCmsSnapshots(store: CmsStore, siteId: string, next?: CmsReleaseSnapshot) {
+  const row = await store.db.prepare("SELECT state_json FROM managed_cms_state WHERE site_id = ?1").bind(siteId).first<{ state_json: string }>();
+  const state = row ? JSON.parse(row.state_json) as Site["state"] : null;
+  const refs = new Map(Object.entries(state?.localizedReleases ?? {}).map(([locale, release]) => [locale, release.id]));
+  if (state?.current) refs.set(state.locale, state.current.id);
+  if (next) refs.set(next.locale, next.releaseId);
+  return Promise.all([...refs.values()].map((id) => next?.releaseId === id ? next : store.snapshot(siteId, id)));
+}
+
+function publicReleaseRedirects(pageRedirects: readonly ManagedSiteRedirect[], cmsSnapshots: readonly CmsReleaseSnapshot[]): ManagedSiteRedirect[] {
+  const redirects = new Map<string, ManagedSiteRedirect>();
+  for (const redirect of pageRedirects) redirects.set(redirect.locale + "\u0000" + redirect.fromPath, redirect);
+  for (const snapshot of cmsSnapshots) for (const { from, to } of snapshot.redirects)
+    redirects.set(snapshot.locale + "\u0000" + from, { locale: snapshot.locale, fromPath: from, toPath: to });
+  return [...redirects.values()];
+}
+
+function publishedMetadataWarnings(routes: readonly PublishedRoute[], changedPaths: readonly string[]): ManagedSeoWarning[] {
+  const changed = new Set(changedPaths), warnings: ManagedSeoWarning[] = [];
+  const indexed = routes.filter((route) => !route.noindex);
+  for (const route of indexed) {
+    if (!changed.has(route.path)) continue;
+    const title = seoComparisonKey(route.title), description = seoComparisonKey(route.description);
+    for (const peer of indexed) {
+      if (peer === route || peer.locale !== route.locale) continue;
+      if (title && title === seoComparisonKey(peer.title)) warnings.push({ code: "duplicate-title", message: "公開ページ「" + peer.path + "」と title が重複しています。" });
+      if (description && description === seoComparisonKey(peer.description)) warnings.push({ code: "duplicate-description", message: "公開ページ「" + peer.path + "」と description が重複しています。" });
+      if (warnings.length >= 100) return warnings.slice(0, 100);
+    }
+  }
+  return warnings;
+}
+
+type PublishedPageMutation = Pick<ManagedPagePublicationTarget, "pageId" | "locale" | "path" | "public"> | ManagedPagePublicationTarget;
+
+/** Rebuild the live edition with one explicitly changed source or route. */
+async function prepareManagedPublishedPageMutation(store: CmsStore, edition: ManagedPublicationSnapshot, siteId: string,
+  origin: string, publicationId: string, mutation: PublishedPageMutation, redirects?: readonly ManagedSiteRedirect[]) {
+  const base = new URL(edition.manifest?.publicBaseUrl ?? managedPageUrl(origin, edition.slug, "/", edition.publicDomain));
+  const prefix = base.pathname.replace(/\/$/u, "");
+  const snapshots = await publishedCmsSnapshots(store, siteId);
+  const snapshotsById = new Map(snapshots.map((snapshot) => [snapshot.releaseId, snapshot]));
+  const previousRoutes = edition.manifest?.routes ?? [];
+  const publishedKeys = new Set(previousRoutes.map((route) => route.pageId + "\u0000" + route.locale));
+  const targets: ManagedPagePublicationTarget[] = "readDocument" in mutation ? [mutation] : [];
+  for (const page of edition.pages) {
+    const selected = page.page_id === mutation.pageId && page.locale === mutation.locale;
+    if (selected ? "readDocument" in mutation || !mutation.public
+      : !pageIsPublished(page, publishedKeys, edition.manifest !== null)) continue;
+    const route = publicationRoute(page, edition.manifest);
+    const previousPath = route?.sourcePath ?? route?.path ?? page.published_path ?? page.path;
+    const path = selected ? mutation.path : previousPath;
+    try {
+      const source = publicationSource(page, false);
+      if (!source) throw new Error("missing published page source");
+      const version = { ...source, bindings_json: page.published_bindings_json };
+      const pinned = route ? await historicalPublishedSource(store, version, route.sourceRevision) : version;
+      const identity = { siteId, pageId: page.page_id, locale: page.locale };
+      const bindings = pinned.bindings_json ? parseCmsPageBindings(JSON.parse(pinned.bindings_json), identity) : null;
+      const releaseId = route?.cmsReleaseId ?? page.cms_release_id;
+      const cms = bindings && releaseId ? snapshotsById.get(releaseId) ?? await store.snapshot(siteId, releaseId) : null;
+      if (bindings && (!cms || cms.locale !== page.locale)) throw new Error("missing CMS release");
+      if (cms) snapshotsById.set(cms.releaseId, cms);
+      const original = selected && !route && page.published_manifest_key
+        ? publicationRoute(page, await loadPublishedSiteManifest(store.bucket, siteId, page.published_manifest_key).catch(() => null)) : undefined;
+      const lastModified = original?.lastModified
+        ?? (page.published_at === null ? undefined : new Date(page.published_at * 1000).toISOString());
+      targets.push({ ...identity, path, public: true, sourceRevision: pinned.revision,
+        ...(bindings ? { bindings } : {}), ...(cms ? { cmsSnapshot: cms } : {}),
+        ...(selected ? { previousPath, ...(lastModified ? { lastModified } : {}) } : {}),
+        readDocument: () => readPageSource(store, pinned, edition.styles.published.styles) });
+    } catch (error) { throw new ManagedPagePublicationError(base.origin + prefix + path, { cause: error }); }
+  }
+  const policy = parseManagedPublicPolicy(edition.manifest?.publicPolicy ?? JSON.parse(edition.policyJson), base.origin) ?? emptyManagedPublicPolicy();
+  const cms = await prepareManagedCmsStaticRoutes({ snapshots, previousRoutes, origin: base.origin, prefix, siteName: edition.siteName, policy });
+  const prepared = await prepareManagedPagePublicationBatch({ store, siteId, targets, replacePages: [], replaceAll: true,
+    expectedVersion: edition.publicationVersion, publicationId, publicUrl: base, publicPrefix: prefix, policyMode: "published",
+    siteStyles: edition.styles.published.styles, siteStylesVersion: edition.styles.published.version,
+    additionalRoutes: cms.routes, additionalPaths: cms.paths,
+    redirects: publicReleaseRedirects(redirects ?? edition.manifest?.redirects ?? [], snapshots) });
+  if (!prepared || prepared.expectedPolicyVersion !== edition.policyVersion || prepared.expectedDomainVersion !== edition.domainVersion) return null;
+  return { ...prepared, url: base.origin + prefix + mutation.path, urls: prepared.changedPaths.map((path) => base.origin + prefix + path) };
+}
+
+async function publishManagedPages(store: CmsStore, actor: ManagedActor, projectId: string, siteId: string,
+  publicOrigin: string, input: EditingSitePublishInput,
+  requested?: { readonly target: EditingPageTarget; readonly expectedVersion: string },
+  expectedSiteStyleVersions?: EditingSiteStylesPublishRequest): Promise<EditingSitePublishResult & { readonly pageSnapshot?: unknown; readonly pageUrl?: string }> {
+  const { db } = store;
+  const startedAt = Date.now();
+  const styleOnly = expectedSiteStyleVersions !== undefined;
+  const edition = await managedPublicationSnapshot(store, actor, projectId, siteId);
+  if (!edition) return { status: "conflict" };
+  if (expectedSiteStyleVersions && (edition.styles.draft.version !== expectedSiteStyleVersions.expectedDraftVersion
+    || edition.styles.published.version !== expectedSiteStyleVersions.expectedPublishedVersion
+    || edition.styles.draft.version === edition.styles.published.version)) return { status: "conflict" };
+  if (!requested && edition.version !== input.expectedVersion) return { status: "conflict" };
+
+  const selected = new Set<string>();
+  let requestedPage: ManagedPublicationCandidate | undefined;
+  if (requested) {
+    requestedPage = edition.pages.find((page) => page.page_id === requested.target.pageId && page.locale === requested.target.locale);
+    if (!requestedPage || requestedPage.current_version !== requested.expectedVersion || requested.target.siteId !== siteId) return { status: "conflict" };
+    selected.add(requestedPage.page_id + "\u0000" + requestedPage.locale);
+  } else if (input.scope === "pages") {
+    for (const { pageId, locale } of input.pages) {
+      if (!edition.pages.some((page) => page.page_id === pageId && page.locale === locale)) return { status: "conflict" };
+      selected.add(pageId + "\u0000" + locale);
+    }
+  } else if (input.scope === "changed" && !styleOnly) {
+    for (const change of edition.changes.changes) if (change.kind === "page") selected.add(change.target.pageId + "\u0000" + change.target.locale);
+  }
+  const publishShared = !requested && !styleOnly && (input.scope === "site" || input.scope === "changed")
+    && edition.changes.changes.some((change) => change.kind === "shared");
+  const publishStyles = (publishShared || styleOnly) && edition.styles.draft.version !== edition.styles.published.version;
+  if (!selected.size && !publishShared && !styleOnly && input.scope !== "all") {
+    return { status: "released", urls: [], elapsedMs: Date.now() - startedAt, warnings: [] };
+  }
+  const styles = publishStyles ? edition.styles.draft : edition.styles.published;
+  const baseUrl = publishShared ? managedPageUrl(publicOrigin, edition.slug, "/", edition.publicDomain)
+    : edition.manifest?.publicBaseUrl ?? managedPageUrl(publicOrigin, edition.slug, "/", edition.publicDomain);
+  const base = new URL(baseUrl);
+  const prefix = base.pathname.replace(/\/$/u, "");
+  const publishedKeys = new Set((edition.manifest?.routes ?? []).map((route) => route.pageId + "\u0000" + route.locale));
+  const targets: ManagedPagePublicationTarget[] = [];
+  const writes: ManagedPagePublicationWrite[] = [];
+  let requestedDocument: PageDocument | undefined, requestedBindings: CmsPageBindingsDocument | null = null;
+  let prepared: NonNullable<Awaited<ReturnType<typeof prepareManagedPagePublicationBatch>>>;
+  try {
+    const cmsSnapshots = await publishedCmsSnapshots(store, siteId);
+    const cmsById = new Map(cmsSnapshots.map((snapshot) => [snapshot.releaseId, snapshot]));
+    const cmsByLocale = new Map(cmsSnapshots.map((snapshot) => [snapshot.locale, snapshot]));
+    for (const page of edition.pages) {
+      const current = selected.has(page.page_id + "\u0000" + page.locale);
+      if (!current && !pageIsPublished(page, publishedKeys, edition.manifest !== null)) continue;
+      const source = publicationSource(page, current);
+      if (!source) continue;
+      const route = current ? undefined : publicationRoute(page, edition.manifest);
+      const path = current ? page.path : route?.sourcePath ?? route?.path ?? page.published_path ?? page.path;
+      try {
+        const version = { ...source, bindings_json: publicationBindings(page, current) };
+        const pinned = route ? await historicalPublishedSource(store, version, route.sourceRevision) : version;
+        const bindingsJson = pinned.bindings_json;
+        const releaseId = route?.cmsReleaseId ?? page.cms_release_id;
+        const target = { siteId, pageId: page.page_id, locale: page.locale };
+        const bindings = bindingsJson ? parseCmsPageBindings(JSON.parse(bindingsJson), target) : null;
+        const cms = bindings ? current ? cmsByLocale.get(page.locale)
+          : releaseId ? cmsById.get(releaseId) ?? await store.snapshot(siteId, releaseId) : undefined : undefined;
+        if (bindings && (!cms || cms.locale !== page.locale)) throw new Error("missing CMS release");
+        if (cms) cmsById.set(cms.releaseId, cms);
+        targets.push({ ...target, path, public: current ? page.visibility === "public" : true, sourceRevision: route?.sourceRevision ?? source.revision,
+          ...(bindings ? { bindings } : {}), ...(cms ? { cmsSnapshot: cms } : {}),
+          readDocument: async () => {
+            if (page === requestedPage && requestedDocument) return requestedDocument;
+            const document = await readPageSource(store, pinned, styles.styles);
+            if (page === requestedPage) { requestedDocument = document; requestedBindings = bindings; }
+            return document;
+          } });
+        if (!current) continue;
+        const row: ManagedPageRow = { ...source, project_id: page.project_id, site_id: page.site_id, slug: page.slug,
+          public_domain: page.public_domain, cms_locale: page.cms_locale, title: page.title, path, visibility: page.visibility,
+          current_version: page.current_version, page_catalog_version: page.page_catalog_version, current_revision: page.current_revision,
+          published_revision: page.published_revision, bindings_json: bindingsJson };
+        writes.push({ row, expectedVersion: page.current_version, sourceRevision: source.revision, revision: source.revision,
+          action: "publish", auditAction: "page.published", publicationId: crypto.randomUUID(),
+          cmsReleaseId: cms?.releaseId ?? null, cmsSchemaRevision: cms?.schema.schemaRevision ?? null,
+          publishedPath: path, artifactKey: null, artifactDigest: null, contentSecurityPolicy: null,
+          updateCurrent: true, currentVersion: opaqueVersion() });
+      } catch (error) { throw new ManagedPagePublicationError(base.origin + prefix + path, { cause: error }); }
+    }
+    const policyMode = publishShared ? "current" : "published";
+    const policy = parseManagedPublicPolicy(policyMode === "published" && edition.manifest?.publicPolicy
+      ? edition.manifest.publicPolicy : JSON.parse(edition.policyJson), base.origin) ?? emptyManagedPublicPolicy();
+    const cms = await prepareManagedCmsStaticRoutes({ snapshots: cmsSnapshots, previousRoutes: edition.manifest?.routes ?? [],
+      origin: base.origin, prefix, siteName: edition.siteName, policy });
+    const redirectRows = await db.prepare(`SELECT locale, from_path AS fromPath, to_path AS toPath
+      FROM managed_site_redirects WHERE site_id = ?1 ORDER BY from_path`).bind(siteId).all<ManagedSiteRedirect>();
+    if (!redirectRows.success) throw new Error("managed redirect lookup failed");
+    const redirectSources = publishShared || !edition.manifest ? redirectRows.results ?? [] : edition.manifest.redirects ?? [];
+    const result = await prepareManagedPagePublicationBatch({ store, siteId, targets, replacePages: [], replaceAll: true,
+      expectedVersion: edition.publicationVersion, publicationId: crypto.randomUUID(), publicUrl: base, publicPrefix: prefix,
+      policyMode, siteStyles: styles.styles, siteStylesVersion: styles.version, publishSiteStyles: publishStyles,
+      additionalRoutes: cms.routes, additionalPaths: cms.paths, redirects: publicReleaseRedirects(redirectSources, cmsSnapshots) });
+    if (!result || result.expectedPolicyVersion !== edition.policyVersion || result.expectedDomainVersion !== edition.domainVersion) return { status: "conflict" };
+    prepared = result;
+  } catch (error) {
+    return { status: "failed", failedUrl: error instanceof ManagedPagePublicationError ? error.url : baseUrl,
+      message: "ページの公開生成に失敗しました。" };
+  }
+
+  const writtenPages = writes.map((write) => {
+    const artifact = [...prepared.artifacts.values()].find(({ pageId, locale }) => pageId === write.row.page_id && locale === write.row.locale);
+    return { ...write, artifactKey: artifact?.artifactKey ?? null, artifactDigest: artifact?.artifactDigest ?? null,
+      contentSecurityPolicy: artifact?.contentSecurityPolicy ?? null };
+  });
+  if (!await commitManagedPagePublicationBatch({ db, actor, siteId, projectId, catalogVersion: edition.catalogVersion,
+    cmsGeneration: null, prepared, writes: writtenPages })) return { status: "conflict" };
+
+  const urls = prepared.changedPaths.map((path) => base.origin + prefix + path);
+  const warnings = boundedManagedSeoWarnings([...prepared.warnings, ...publishedMetadataWarnings(prepared.routes, prepared.changedPaths)]);
+  const output = { status: "released" as const, urls, elapsedMs: Date.now() - startedAt, warnings };
+  if (!requestedPage || !requestedDocument) return output;
+  const row = await pageRow(db, projectId, siteId, requestedPage.page_id, requestedPage.locale);
+  if (!row) return output;
+  return { ...output, pageSnapshot: { document: requestedDocument, version: row.current_version, hasSavedDraft: true, releases: await releases(db, row),
+    ...(row.locale === row.cms_locale ? { cmsBindings: requestedBindings } : {}) }, pageUrl: base.origin + prefix + requestedPage.path };
+}
+
+type ManagedCmsBoundPage = ManagedPageRow & {
+  readonly cms_locale: string;
+  readonly published_publication_id: string;
+  readonly published_path: string | null;
+  readonly cms_release_id: string | null;
+};
+
+/** Render the current site with the new CMS snapshot before either pointer changes. */
+export async function prepareManagedCmsPublication(store: CmsStore, site: Site, next: CmsReleaseSnapshot): Promise<CmsPublishCommit | undefined> {
+  const { db } = store, siteId = site.siteId, actor: ManagedActor = {
+    subject: site.actor.id, email: "", cli: site.actor.cli,
+    ...(site.actor.clientId ? { cliClientId: site.actor.clientId } : {})
+  };
+  const state = await db.prepare(`SELECT state.version, state.manifest_key, ms.page_catalog_version, ms.public_policy_version,
+      ms.public_domain_version, ms.public_policy_json, ms.slug, ${PRIMARY_DOMAIN} AS public_domain, s.name AS site_name
+    FROM managed_site_publication_state AS state JOIN managed_sites AS ms ON ms.site_id = state.site_id
+    JOIN sites AS s ON s.id = ms.site_id WHERE state.site_id = ?1 AND s.project_id = ?2`)
+    .bind(siteId, site.projectId).first<{ version: string; manifest_key: string | null; page_catalog_version: string;
+      public_policy_version: string; public_domain_version: string; public_policy_json: string; slug: string; public_domain: string | null; site_name: string }>();
+  if (!state) return undefined;
+  const manifest = state.manifest_key ? await loadPublishedSiteManifest(store.bucket, siteId, state.manifest_key) : null;
+  if (state.manifest_key && !manifest) throw new Error("published site manifest unavailable for CMS publication");
+  const pageResult = await db.prepare(`SELECT s.project_id, mp.site_id, ms.slug, ${PRIMARY_DOMAIN} AS public_domain,
+      mp.locale AS cms_locale, mp.page_id, mp.locale, mp.title, mp.path, mp.visibility, mp.current_version, ms.page_catalog_version,
+      mp.current_revision, mp.published_revision, version.document_json, version.document_key, version.document_digest,
+      version.bindings_json, publication.id AS published_publication_id, publication.published_path, publication.cms_release_id
+    FROM managed_pages AS mp JOIN managed_sites AS ms ON ms.site_id = mp.site_id JOIN sites AS s ON s.id = ms.site_id
+    JOIN managed_page_versions AS version ON version.site_id = mp.site_id AND version.page_id = mp.page_id
+      AND version.locale = mp.locale AND version.revision = mp.published_revision
+    JOIN managed_page_publications AS publication ON publication.id = mp.published_publication_id
+      AND publication.site_id = mp.site_id AND publication.page_id = mp.page_id AND publication.locale = mp.locale
+    WHERE mp.site_id = ?1 AND s.project_id = ?2 AND mp.published_revision IS NOT NULL
+    ORDER BY mp.path, mp.locale LIMIT 500`).bind(siteId, site.projectId).all<ManagedCmsBoundPage>();
+  if (!pageResult.success || !pageResult.results) throw new Error("managed published page lookup failed");
+
+  const sharedHost = await db.prepare(`SELECT hostname FROM managed_site_hosts WHERE site_id = ?1
+    AND path_prefix = ?2 AND noindex = 0 AND enabled = 1 LIMIT 1`).bind(siteId, "/s/" + state.slug).first<{ hostname: string }>();
+  const baseUrl = manifest?.publicBaseUrl ?? (state.public_domain ? "https://" + state.public_domain + "/"
+    : sharedHost ? "https://" + sharedHost.hostname + "/s/" + state.slug
+    : store.publicOrigin ? managedPageUrl(store.publicOrigin, state.slug, "/", null) : null);
+  if (!baseUrl) throw new Error("managed public origin unavailable");
+  const base = new URL(baseUrl), prefix = base.pathname.replace(/\/$/u, "");
+  const styles = await readManagedPublishedSiteStyles(store, siteId);
+  const snapshots = await publishedCmsSnapshots(store, siteId, next);
+  const snapshotsById = new Map(snapshots.map((snapshot) => [snapshot.releaseId, snapshot]));
+  const publishedKeys = new Set((manifest?.routes ?? []).map((route) => route.pageId + "\u0000" + route.locale));
+  const targets: ManagedPagePublicationTarget[] = [], updatedBindings: ManagedPagePublicationTarget[] = [];
+  const rows = new Map<string, ManagedCmsBoundPage>();
+  for (const page of pageResult.results) {
+    const key = page.page_id + "\u0000" + page.locale;
+    if (!publishedKeys.has(key) && (page.visibility !== "public" || manifest && !page.bindings_json)) continue;
+    const source: PageSourceRow = { site_id: siteId, page_id: page.page_id, locale: page.locale,
+      revision: page.published_revision!, document_json: page.document_json, document_key: page.document_key, document_digest: page.document_digest };
+    const route = publicationRoute(page, manifest);
+    const path = route?.sourcePath ?? route?.path ?? page.published_path ?? page.path;
+    try {
+      const version = { ...source, bindings_json: page.bindings_json };
+      const pinned = route ? await historicalPublishedSource(store, version, route.sourceRevision) : version;
+      const bindingsJson = pinned.bindings_json;
+      const releaseId = route?.cmsReleaseId ?? page.cms_release_id;
+      const identity = { siteId, pageId: page.page_id, locale: page.locale };
+      const bindings = bindingsJson ? parseCmsPageBindings(JSON.parse(bindingsJson), identity) : null;
+      const bindingUpdated = !!bindings && page.locale === next.locale;
+      const cms = !bindings ? undefined : bindingUpdated ? next : releaseId
+        ? snapshotsById.get(releaseId) ?? await store.snapshot(siteId, releaseId) : undefined;
+      if (bindings && !cms) throw new Error("missing CMS release");
+      if (cms) snapshotsById.set(cms.releaseId, cms);
+      const target = { ...identity, path, sourceRevision: route?.sourceRevision ?? source.revision, public: true,
+        ...(bindings ? { bindings } : {}), ...(cms ? { cmsSnapshot: cms } : {}),
+        readDocument: () => readPageSource(store, pinned, styles) };
+      targets.push(target);
+      if (bindingUpdated && target.sourceRevision === page.published_revision) {
+        updatedBindings.push(target);
+        rows.set(key, page);
+      }
+    } catch (error) { throw new ManagedPagePublicationError(base.origin + prefix + path, { cause: error }); }
+  }
+
+  const policy = parseManagedPublicPolicy(manifest?.publicPolicy ?? JSON.parse(state.public_policy_json), base.origin) ?? emptyManagedPublicPolicy();
+  const cms = await prepareManagedCmsStaticRoutes({ snapshots, previousRoutes: manifest?.routes ?? [], updatedLocale: next.locale,
+    origin: base.origin, prefix, siteName: state.site_name, policy });
+  const pageRedirects = (manifest?.redirects ?? []).filter(({ fromPath }) => !/^\/(?:[A-Za-z]{2,3}\/)?cms(?:\/|$)/u.test(fromPath));
+  const prepared = await prepareManagedPagePublicationBatch({ store, siteId, targets, replacePages: [], replaceAll: true,
+    expectedVersion: state.version, publicationId: crypto.randomUUID(), publicUrl: base, publicPrefix: prefix,
+    additionalRoutes: cms.routes, additionalPaths: cms.paths, policyMode: "published",
+    redirects: publicReleaseRedirects(pageRedirects, snapshots) });
+  if (!prepared) throw new Error("managed CMS publication version changed");
+  const entries = updatedBindings.map((target) => {
+    const row = rows.get(`${target.pageId}\u0000${target.locale}`)!;
+    const artifact = [...prepared.artifacts.values()].find((candidate) => candidate.pageId === target.pageId && candidate.locale === target.locale);
+    return { auditId: crypto.randomUUID(), pageId: target.pageId, locale: target.locale, expectedVersion: row.current_version,
+      sourceRevision: target.sourceRevision, revision: target.sourceRevision, publicationId: crypto.randomUUID(), cmsReleaseId: next.releaseId,
+      cmsSchemaRevision: next.schema.schemaRevision, publishedPath: target.path, artifactKey: artifact?.artifactKey ?? null,
+      artifactDigest: artifact?.artifactDigest ?? null, contentSecurityPolicy: artifact?.contentSecurityPolicy ?? null,
+      manifestKey: prepared.manifestKey, publishedPublicationId: row.published_publication_id, publishedRevision: row.published_revision };
+  });
+  const payload = JSON.stringify(entries), expectedCount = entries.length;
+  const auditCount = (payloadParameter: string) => `(SELECT count(*) FROM managed_site_audit WHERE id IN
+    (SELECT json_extract(value, '$.auditId') FROM json_each(${payloadParameter})))`;
+  const gateSql = `EXISTS (SELECT 1 FROM managed_site_publication_state WHERE site_id = ?2 AND version = ?11 AND manifest_key IS ?12)
+    AND EXISTS (SELECT 1 FROM managed_sites WHERE site_id = ?2 AND page_catalog_version = ?13
+      AND public_policy_version = ?14 AND public_domain_version = ?15)
+    AND ?17 = (SELECT count(*) FROM json_each(?16) AS expected
+      JOIN managed_pages AS page ON page.site_id = ?2 AND page.page_id = json_extract(expected.value, '$.pageId')
+        AND page.locale = json_extract(expected.value, '$.locale')
+      WHERE page.current_version = json_extract(expected.value, '$.expectedVersion')
+        AND page.published_revision = json_extract(expected.value, '$.publishedRevision')
+        AND page.published_publication_id = json_extract(expected.value, '$.publishedPublicationId')
+        AND EXISTS (SELECT 1 FROM managed_page_versions AS version WHERE version.site_id = page.site_id
+          AND version.page_id = page.page_id AND version.locale = page.locale AND version.revision = json_extract(expected.value, '$.sourceRevision')))`;
+  const statementValues = [payload, siteId, actor.subject, site.projectId, state.page_catalog_version, state.version,
+    state.manifest_key, state.public_policy_version, state.public_domain_version];
+  return { gateSql, gateValues: [state.version, state.manifest_key, state.page_catalog_version, state.public_policy_version,
+    state.public_domain_version, payload, expectedCount], statements: (generation: string) => [
+    db.prepare(`INSERT INTO managed_site_audit (id, project_id, site_id, actor_subject, action, page_id)
+      SELECT json_extract(entry.value, '$.auditId'), ?4, ?2, ?3, 'page.published', json_extract(entry.value, '$.pageId')
+      FROM json_each(?1) AS entry JOIN managed_pages AS page ON page.site_id = ?2
+        AND page.page_id = json_extract(entry.value, '$.pageId') AND page.locale = json_extract(entry.value, '$.locale')
+      JOIN managed_sites AS managed ON managed.site_id = page.site_id
+      WHERE page.current_version = json_extract(entry.value, '$.expectedVersion') AND managed.page_catalog_version = ?5
+        AND managed.public_policy_version = ?8 AND managed.public_domain_version = ?9
+        AND EXISTS (SELECT 1 FROM managed_site_publication_state WHERE site_id = ?2 AND version = ?6 AND manifest_key IS ?7)
+        AND EXISTS (SELECT 1 FROM managed_cms_state WHERE site_id = ?2 AND generation = ?10)
+        AND ?11 = (SELECT count(*) FROM json_each(?1))`)
+      .bind(...statementValues, generation, expectedCount),
+    db.prepare(`INSERT INTO managed_page_publications (id, site_id, page_id, locale, source_revision, action, published_by_subject,
+        cms_release_id, cms_schema_revision, published_path, path, artifact_key, artifact_digest, manifest_key, content_type, content_security_policy)
+      SELECT json_extract(entry.value, '$.publicationId'), ?2, json_extract(entry.value, '$.pageId'), json_extract(entry.value, '$.locale'),
+        json_extract(entry.value, '$.revision'), 'publish', ?3, json_extract(entry.value, '$.cmsReleaseId'),
+        json_extract(entry.value, '$.cmsSchemaRevision'), json_extract(entry.value, '$.publishedPath'), json_extract(entry.value, '$.publishedPath'),
+        json_extract(entry.value, '$.artifactKey'), json_extract(entry.value, '$.artifactDigest'), json_extract(entry.value, '$.manifestKey'),
+        CASE WHEN json_extract(entry.value, '$.artifactKey') IS NULL THEN NULL ELSE 'text/html; charset=utf-8' END,
+        json_extract(entry.value, '$.contentSecurityPolicy')
+      FROM json_each(?1) AS entry JOIN managed_site_audit AS audit ON audit.id = json_extract(entry.value, '$.auditId')
+      WHERE ${auditCount("?1")} = ?4`).bind(payload, siteId, actor.subject, expectedCount),
+    db.prepare(`UPDATE managed_pages AS page SET published_revision = json_extract(entry.value, '$.revision'),
+        published_publication_id = json_extract(entry.value, '$.publicationId'), updated_at = unixepoch()
+      FROM json_each(?1) AS entry JOIN managed_site_audit AS audit ON audit.id = json_extract(entry.value, '$.auditId')
+      WHERE page.site_id = ?2 AND page.page_id = json_extract(entry.value, '$.pageId') AND page.locale = json_extract(entry.value, '$.locale')
+        AND ${auditCount("?1")} = ?3`).bind(payload, siteId, expectedCount),
+    db.prepare(`UPDATE managed_site_publication_state SET version = ?1, manifest_key = ?2, updated_at = unixepoch()
+      WHERE site_id = ?3 AND version = ?4 AND manifest_key IS ?5 AND EXISTS (
+        SELECT 1 FROM managed_sites WHERE site_id = ?3 AND page_catalog_version = ?6
+          AND public_policy_version = ?7 AND public_domain_version = ?8)
+        AND EXISTS (SELECT 1 FROM managed_cms_state WHERE site_id = ?3 AND generation = ?9)
+        AND ${auditCount("?11")} = ?10`)
+      .bind(prepared.manifestVersion, prepared.manifestKey, siteId, prepared.expectedVersion, state.manifest_key,
+        state.page_catalog_version, prepared.expectedPolicyVersion, prepared.expectedDomainVersion, generation, expectedCount, payload)
+  ] };
+}
+
 async function publishPageOnce(store: CmsStore, actor: ManagedActor, row: ManagedPageRow, origin: string, input: EditorPublishPageInput) {
   if (input.expectedVersion !== row.current_version) return json({ error: "version_conflict" }, 409);
-  const { db } = store;
-  const action = input.action === "restore" ? "rollback" : "publish";
-  const sourceRevision = input.action === "restore" ? input.revision! : row.current_revision;
-  const styleDraft = action === "publish" ? await readManagedSiteStyles(store, row.site_id) : null;
-  const draft = styleDraft ? await readPageSource(store, row, styleDraft.draft.styles) : null;
-  const warnings = draft ? await managedReleaseSeoWarnings(db, row, draft, origin, store, actor) : [];
-  let cmsReleaseId: string | null = null, cmsSchemaRevision: string | null = null, cmsGeneration: string | null = null;
-  if (action === "rollback") {
-    const published = await db.prepare(`SELECT cms_release_id, cms_schema_revision FROM managed_page_publications
-      WHERE site_id = ?1 AND page_id = ?2 AND locale = ?3 AND source_revision = ?4 ORDER BY rowid DESC LIMIT 1`)
-      .bind(row.site_id, row.page_id, row.locale, sourceRevision).first<{ cms_release_id: string | null; cms_schema_revision: string | null }>();
-    if (!published) return json({ error: "revision_not_published" }, 409);
-    cmsReleaseId = published.cms_release_id;
-    cmsSchemaRevision = published.cms_schema_revision;
-    if (cmsReleaseId) {
-      const site = await cmsSite(store, actor, row);
-      if (!site) return json({ error: "cms_release_required" }, 409);
-      try { await store.routeTable(site, "cms.read"); }
+  if (input.action === "publish") {
+    if (row.bindings_json) {
+      const site = await cmsSite(store, actor, row), releaseId = site?.state.current?.id;
+      if (!site || !releaseId) return json({ error: "cms_release_required" }, 409);
+      const released = await store.historicalSnapshot(site, releaseId);
+      if (!released || released.locale !== row.locale) return json({ error: "cms_release_required" }, 409);
+      let routes;
+      try { routes = await store.routeTable(site, "cms.read"); }
       catch { return json({ error: "cms_route_table_unavailable" }, 409); }
-      cmsGeneration = site.generation;
+      let document: PageDocument, bindings: CmsPageBindingsDocument;
+      try {
+        const siteStyles = await readManagedPublishedSiteStyles(store, row.site_id);
+        document = await readPageSource(store, row, siteStyles);
+        bindings = pageBindings(JSON.parse(row.bindings_json), document, row.path)!;
+      } catch { return json({ error: "invalid_cms_bindings" }, 422); }
+      if (!bindings) return json({ error: "invalid_cms_bindings" }, 422);
+      const problems = cmsPageBindingProblems(document, bindings, released.schema);
+      if (problems.length) return json({ error: "invalid_cms_bindings", problems }, 422);
+      try {
+        if (bindings.detail) {
+          const { collectionId, slugFieldId } = bindings.detail, slugs = new Set<string>();
+          for (const item of released.items.filter((entry) => entry.collectionId === collectionId)) {
+            const slug = item.values[slugFieldId];
+            if (typeof slug !== "string" || !CMS_DETAIL_SLUG.test(slug)
+              || validatePagePath(`${row.path}/${slug.toLowerCase()}`) !== null || slugs.has(slug)) throw new Error("invalid detail URL");
+            const detailPath = `${row.path}/${slug}`;
+            if (routes.reservations.some((reservation) => reservation.kind === "template"
+              ? matchesTemplatePath(reservation.path, detailPath) : reservation.path === detailPath)) throw new Error("reserved detail URL");
+            slugs.add(slug);
+          }
+        }
+      } catch { return json({ error: "invalid_cms_binding_values" }, 422); }
     }
-  } else if (row.bindings_json) {
-    const site = await cmsSite(store, actor, row), releaseId = site?.state.current?.id;
-    if (!site || !releaseId || !draft) return json({ error: "cms_release_required" }, 409);
-    const released = await store.historicalSnapshot(site, releaseId);
-    if (!released || released.locale !== row.locale) return json({ error: "cms_release_required" }, 409);
-    let currentRoutes;
-    try { currentRoutes = await store.routeTable(site, "cms.read"); }
+    const result = await publishManagedPages(store, actor, row.project_id, row.site_id, origin,
+      { expectedVersion: input.expectedVersion, scope: "changed" },
+      { target: { siteId: row.site_id, pageId: row.page_id, locale: row.locale }, expectedVersion: input.expectedVersion });
+    if (result.status === "conflict") return json({ error: "version_conflict" }, 409);
+    if (result.status === "failed") return json({ error: "publication_artifact_generation_failed", failedUrl: result.failedUrl, message: result.message }, 503);
+    const page = result.pageSnapshot as { document: PageDocument; version: string; releases: readonly { revision: number; label: string }[]; cmsBindings?: CmsPageBindingsDocument | null } | undefined;
+    if (!page) return json({ error: "publication_snapshot_unavailable" }, 503);
+    return { status: "released" as const, url: result.pageUrl ?? managedPageUrl(origin, row.slug, row.path, row.public_domain), warnings: result.warnings, urls: result.urls, elapsedMs: result.elapsedMs,
+      snapshot: { document: page.document, version: page.version, hasSavedDraft: true, releases: page.releases, ...(page.cmsBindings === undefined ? {} : { cmsBindings: page.cmsBindings }) } };
+  }
+  const { db } = store;
+  const startedAt = Date.now();
+  const sourceRevision = input.revision!;
+  const published = await db.prepare(`SELECT cms_release_id, cms_schema_revision FROM managed_page_publications
+      WHERE site_id = ?1 AND page_id = ?2 AND locale = ?3 AND source_revision = ?4 ORDER BY rowid DESC LIMIT 1`)
+    .bind(row.site_id, row.page_id, row.locale, sourceRevision).first<{ cms_release_id: string | null; cms_schema_revision: string | null }>();
+  if (!published) return json({ error: "revision_not_published" }, 409);
+  const { cms_release_id: cmsReleaseId, cms_schema_revision: cmsSchemaRevision } = published;
+  let cmsGeneration: string | null = null;
+  if (cmsReleaseId) {
+    const site = await cmsSite(store, actor, row);
+    if (!site) return json({ error: "cms_release_required" }, 409);
+    try { await store.routeTable(site, "cms.read"); }
     catch { return json({ error: "cms_route_table_unavailable" }, 409); }
     cmsGeneration = site.generation;
-    const page = draft;
-    let bindings: CmsPageBindingsDocument;
-    try { bindings = pageBindings(JSON.parse(row.bindings_json), page, row.path)!; }
-    catch { return json({ error: "invalid_cms_bindings" }, 422); }
-    const problems = cmsPageBindingProblems(page, bindings, released.schema);
-    if (problems.length) return json({ error: "invalid_cms_bindings", problems }, 422);
-    try {
-      if (bindings.detail) {
-        const { collectionId, slugFieldId } = bindings.detail;
-        const slugs = new Set<string>();
-        for (const item of released.items.filter((entry) => entry.collectionId === collectionId)) {
-          const slug = item.values[slugFieldId];
-          if (typeof slug !== "string" || !CMS_DETAIL_SLUG.test(slug) || validatePagePath(row.path + "/" + slug.toLowerCase()) !== null || slugs.has(slug)) throw new Error("invalid detail URL");
-          const detailPath = row.path + "/" + slug;
-          if (currentRoutes.reservations.some((reservation) => reservation.kind === "template"
-            ? matchesTemplatePath(reservation.path, detailPath) : reservation.path === detailPath)) throw new Error("reserved detail URL");
-          slugs.add(slug);
-          resolveCmsPageBindings(page, bindings, released, {
-            detail: { slug }, blocks: managedBlockContracts, page: { siteStyles: styleDraft?.draft.styles ?? {} }
-          });
-        }
-      } else resolveCmsPageBindings(page, bindings, released, {
-        blocks: managedBlockContracts, page: { siteStyles: styleDraft?.draft.styles ?? {} }
-      });
-    } catch { return json({ error: "invalid_cms_binding_values" }, 422); }
-    cmsReleaseId = released.releaseId;
-    cmsSchemaRevision = released.schema.schemaRevision;
   }
   const publicationId = crypto.randomUUID(), auditId = crypto.randomUUID(), version = opaqueVersion();
-  const copyVersion = action === "rollback" || row.current_revision === row.published_revision && cmsReleaseId !== null;
-  const revision = copyVersion ? row.current_revision + 1 : row.current_revision;
-  const auditAction = action === "rollback" ? "page.restored" : "page.published";
+  const revision = row.current_revision + 1;
   const source = sourceRevision === row.current_revision ? row
     : await db.prepare(`SELECT site_id, page_id, locale, revision, document_json, document_key, document_digest, bindings_json
         FROM managed_page_versions WHERE site_id = ?1 AND page_id = ?2 AND locale = ?3 AND revision = ?4`)
       .bind(row.site_id, row.page_id, row.locale, sourceRevision).first<PageSourceRow & { bindings_json: string | null }>();
   if (!source) return json({ error: "version_conflict" }, 409);
-  let document: PageDocument;
-  try { document = parsePageDocument({ ...(draft ?? await readPageSource(store, source, (await readManagedSiteStyles(store, row.site_id)).published.styles)), revision }, managedBlockContracts,
-    { siteStyles: (await readManagedSiteStyles(store, row.site_id)).published.styles }); }
-  catch { return json({ error: "invalid_managed_page_storage" }, 503); }
-  const cmsBindings = row.locale === row.cms_locale
-    ? { cmsBindings: source.bindings_json === null ? null : parseCmsPageBindings(JSON.parse(source.bindings_json), document) } : {};
-  const url = managedPageUrl(origin, row.slug, row.path, row.public_domain);
-  let prepared: Awaited<ReturnType<typeof prepareManagedPageArtifact>> | null = null;
-  let preparedManifest: Awaited<ReturnType<typeof prepareManagedPageManifestRemoval>> = null;
-  if (!cmsReleaseId && !source.bindings_json) {
-    try {
-      prepared = await prepareManagedPageArtifact({ store, document, publicationId, path: row.path, isPublic: row.visibility === "public",
-        publicUrl: new URL(url), publicPrefix: row.public_domain ? "" : `/s/${row.slug}` });
-    } catch { return json({ error: "publication_artifact_generation_failed" }, 503); }
-  } else {
-    try {
-      const publicUrl = new URL(url);
-      preparedManifest = await prepareManagedPageManifestRemoval({ store, siteId: row.site_id, pageId: row.page_id,
-        locale: row.locale, publicBaseUrl: `${publicUrl.origin}${row.public_domain ? "" : `/s/${row.slug}`}` });
-    } catch { return json({ error: "publication_artifact_generation_failed" }, 503); }
+  const fallbackUrl = managedPageUrl(origin, row.slug, row.path, row.public_domain);
+  let preparedPublication: Awaited<ReturnType<typeof prepareManagedPublishedPageMutation>>;
+  let document: PageDocument, bindings: CmsPageBindingsDocument | null;
+  try {
+    const edition = await managedPublicationSnapshot(store, actor, row.project_id, row.site_id);
+    if (!edition || edition.catalogVersion !== row.page_catalog_version) return json({ error: "version_conflict" }, 409);
+    const siteStyles = edition.styles.published.styles;
+    document = parsePageDocument({ ...(await readPageSource(store, source, siteStyles)), revision }, managedBlockContracts, { siteStyles });
+    bindings = source.bindings_json === null ? null : parseCmsPageBindings(JSON.parse(source.bindings_json), document);
+    const cmsSnapshot = bindings && cmsReleaseId ? await store.snapshot(row.site_id, cmsReleaseId) : null;
+    if (bindings && (!cmsSnapshot || cmsSnapshot.locale !== row.locale)) return json({ error: "cms_release_required" }, 409);
+    preparedPublication = await prepareManagedPublishedPageMutation(store, edition, row.site_id, origin, publicationId,
+      { siteId: row.site_id, pageId: row.page_id, locale: row.locale, path: row.path, sourceRevision: revision,
+        public: row.visibility === "public", ...(bindings ? { bindings } : {}), ...(cmsSnapshot ? { cmsSnapshot } : {}),
+        readDocument: async () => document });
+    if (!preparedPublication) return json({ error: "version_conflict" }, 409);
+  } catch (error) {
+    return json({ error: "publication_artifact_generation_failed", failedUrl: error instanceof ManagedPagePublicationError ? error.url : fallbackUrl }, 503);
   }
-  const preparedPublication = prepared ?? preparedManifest;
-  const restoredSource = copyVersion ? await storePageSource(store.bucket, document, version) : null;
-  if (copyVersion && !restoredSource) return json({ error: "page_storage_unavailable" }, 503);
-
+  const preparedArtifact = [...preparedPublication.artifacts.values()].find(({ pageId, locale }) => pageId === row.page_id && locale === row.locale);
+  const restoredSource = await storePageSource(store.bucket, document, version);
+  if (!restoredSource) return json({ error: "page_storage_unavailable" }, 503);
   // The guarded audit insert admits the whole transaction. All later writes depend on its unique ID.
   const results = await db.batch([
     db.prepare(`INSERT INTO managed_site_audit (id, project_id, site_id, actor_subject, action, page_id)
@@ -1033,38 +1631,41 @@ async function publishPageOnce(store: CmsStore, actor: ManagedActor, row: Manage
          AND ${pagePublishAccess("mp.site_id", "s.project_id", "?2", "?16")}
          AND (?10 IS NULL OR EXISTS (SELECT 1 FROM managed_cms_state WHERE site_id = mp.site_id AND generation = ?10))
          AND (?11 IS NULL OR EXISTS (SELECT 1 FROM managed_cms_releases WHERE site_id = mp.site_id AND release_id = ?11))
-         AND (?12 IS NULL OR (ms.public_policy_version = ?13 AND ms.public_domain_version = ?14
-           AND EXISTS (SELECT 1 FROM managed_site_publication_state WHERE site_id = mp.site_id AND version = ?12)))
+         AND ms.public_policy_version = ?13 AND ms.public_domain_version = ?14
+         AND EXISTS (SELECT 1 FROM managed_site_publication_state WHERE site_id = mp.site_id AND version = ?12)
          AND EXISTS (SELECT 1 FROM managed_page_versions WHERE site_id = mp.site_id AND page_id = mp.page_id AND locale = mp.locale AND revision = ?15)`)
-      .bind(auditId, actor.subject, auditAction, row.site_id, row.page_id, row.locale, input.expectedVersion, row.project_id,
-        row.page_catalog_version, cmsGeneration, cmsReleaseId, preparedPublication?.expectedVersion ?? null,
-        preparedPublication?.policyVersion ?? null, preparedPublication?.domainVersion ?? null, sourceRevision, actor.cliClientId ?? null),
-    ...(restoredSource ? [db.prepare(`INSERT INTO managed_page_versions (site_id, page_id, locale, revision, document_json,
+      .bind(auditId, actor.subject, "page.restored", row.site_id, row.page_id, row.locale, input.expectedVersion, row.project_id,
+        row.page_catalog_version, cmsGeneration, cmsReleaseId, preparedPublication.expectedVersion,
+        preparedPublication.expectedPolicyVersion, preparedPublication.expectedDomainVersion, sourceRevision, actor.cliClientId ?? null),
+    db.prepare(`INSERT INTO managed_page_versions (site_id, page_id, locale, revision, document_json,
             kind, created_by_subject, bindings_json, document_key, document_digest, link_index_json)
           SELECT ?1, ?2, ?3, ?4, '{}', ?5, ?6, ?7, ?8, ?9, ?10 WHERE EXISTS (SELECT 1 FROM managed_site_audit WHERE id = ?11)`)
-      .bind(row.site_id, row.page_id, row.locale, revision, action === "rollback" ? "restore" : "save", actor.subject,
-        source.bindings_json, restoredSource.key, restoredSource.digest, restoredSource.linkIndex, auditId)] : []),
+      .bind(row.site_id, row.page_id, row.locale, revision, "restore", actor.subject,
+        source.bindings_json, restoredSource.key, restoredSource.digest, restoredSource.linkIndex, auditId),
     db.prepare(`INSERT INTO managed_page_publications (id, site_id, page_id, locale, source_revision, action, published_by_subject,
         cms_release_id, cms_schema_revision, published_path, path, artifact_key, artifact_digest, manifest_key, content_type, content_security_policy)
       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?11, ?12, ?13, ?14, ?15
         WHERE EXISTS (SELECT 1 FROM managed_site_audit WHERE id = ?16)`)
-      .bind(publicationId, row.site_id, row.page_id, row.locale, revision, action, actor.subject, cmsReleaseId, cmsSchemaRevision,
-        row.path, prepared?.artifactKey ?? null, prepared?.artifactDigest ?? null, preparedPublication?.manifestKey ?? null,
-        prepared ? "text/html; charset=utf-8" : null, prepared?.contentSecurityPolicy ?? null, auditId),
+      .bind(publicationId, row.site_id, row.page_id, row.locale, revision, "rollback", actor.subject, cmsReleaseId, cmsSchemaRevision,
+        row.path, preparedArtifact?.artifactKey ?? null, preparedArtifact?.artifactDigest ?? null, preparedPublication.manifestKey,
+        preparedArtifact ? "text/html; charset=utf-8" : null, preparedArtifact?.contentSecurityPolicy ?? null, auditId),
     db.prepare(`UPDATE managed_pages
        SET published_revision = ?1, published_publication_id = ?2, current_revision = ?1, current_version = ?3, updated_at = unixepoch()
        WHERE site_id = ?4 AND page_id = ?5 AND locale = ?6 AND EXISTS (SELECT 1 FROM managed_site_audit WHERE id = ?7)`)
       .bind(revision, publicationId, version, row.site_id, row.page_id, row.locale, auditId),
     db.prepare(`UPDATE managed_sites SET page_catalog_version = ?1 WHERE site_id = ?2
       AND EXISTS (SELECT 1 FROM managed_site_audit WHERE id = ?3)`).bind(`catalog.${version}`, row.site_id, auditId),
-    ...(preparedPublication ? [db.prepare(`UPDATE managed_site_publication_state SET version = ?1, manifest_key = ?2, updated_at = unixepoch()
+    db.prepare(`UPDATE managed_site_publication_state SET version = ?1, manifest_key = ?2, updated_at = unixepoch()
       WHERE site_id = ?3 AND EXISTS (SELECT 1 FROM managed_site_audit WHERE id = ?4)`)
-      .bind(preparedPublication.manifestVersion, preparedPublication.manifestKey, row.site_id, auditId)] : []),
-    ...(copyVersion ? [discardSupersededDraft(db, row, version)] : [])
+      .bind(preparedPublication.manifestVersion, preparedPublication.manifestKey, row.site_id, auditId),
+    discardSupersededDraft(db, row, version)
   ]);
   if (results.some((result) => !result.success)) throw new Error("managed page mutation batch failed");
   if (!changed(results[0])) return json({ error: "version_conflict" }, 409);
-  return { status: "released" as const, snapshot: { document, version, hasSavedDraft: true, releases: await releases(db, row), ...cmsBindings }, url, warnings };
+  const warnings = boundedManagedSeoWarnings([...preparedPublication.warnings, ...publishedMetadataWarnings(preparedPublication.routes, preparedPublication.changedPaths)]);
+  return { status: "released" as const, snapshot: { document, version, hasSavedDraft: true, releases: await releases(db, row),
+    ...(row.locale === row.cms_locale ? { cmsBindings: bindings } : {}) }, url: preparedPublication.url,
+    urls: preparedPublication.urls, elapsedMs: Date.now() - startedAt, warnings };
 }
 
 type ManagedPageChange = Exclude<EditorPageChange, { action: "duplicate" }>;
@@ -1119,7 +1720,7 @@ async function changePageOnce(store: CmsStore, actor: ManagedActor, projectId: s
     const changesPublishedRouteMetadata = current.published && (movedFrom !== null || currentIsPublic !== nextIsPublic);
     const changesPublishedRoute = current.published && (currentIsPublic !== nextIsPublic
       || currentIsPublic && nextIsPublic && movedFrom !== null);
-    let prepared: Awaited<ReturnType<typeof prepareManagedPageArtifact>> | null = null;
+    let prepared: Awaited<ReturnType<typeof prepareManagedPublishedPageMutation>> = null;
     let redirectVersion: string | null = null;
     let redirects: ManagedSiteRedirect[] | null = null;
     let redirectsChanged = false;
@@ -1147,26 +1748,17 @@ async function changePageOnce(store: CmsStore, actor: ManagedActor, projectId: s
       redirectsChanged = JSON.stringify(originalRedirects.sort((a, b) => a.fromPath.localeCompare(b.fromPath)))
         !== JSON.stringify(redirects);
 
-      const published = await db.prepare(`SELECT ms.slug, ${PRIMARY_DOMAIN} AS public_domain,
-          version.site_id, version.page_id, version.locale, version.revision, version.document_json, version.document_key,
-          version.document_digest, version.bindings_json
-        FROM managed_sites AS ms JOIN managed_pages AS page ON page.site_id = ms.site_id
-        JOIN managed_page_versions AS version ON version.site_id = page.site_id AND version.page_id = page.page_id
-          AND version.locale = page.locale AND version.revision = page.published_revision
-        WHERE page.site_id = ?1 AND page.page_id = ?2 AND page.locale = ?3 AND page.published_revision IS NOT NULL`)
-        .bind(siteId, pageId, locale).first<PageSourceRow & { slug: string; public_domain: string | null; bindings_json: string | null }>();
-      if (!published) return json({ error: "published_page_unavailable" }, 503);
-
-      if (published.bindings_json === null && changesPublishedRoute) {
+      if (changesPublishedRoute) {
         if (!publicOrigin) return json({ error: "managed_public_origin_unavailable" }, 503);
-        let document: PageDocument;
         try {
-          const siteStyles = (await readManagedSiteStyles(store, siteId)).published.styles;
-          document = parsePageDocument({ ...(await readPageSource(store, published, siteStyles)), revision: published.revision }, managedBlockContracts, { siteStyles });
-        prepared = await prepareManagedPageArtifact({ store, document, publicationId: crypto.randomUUID(), path,
-            isPublic: nextIsPublic, publicUrl: new URL(managedPageUrl(publicOrigin, published.slug, path, published.public_domain)),
-            publicPrefix: published.public_domain ? "" : `/s/${published.slug}`, redirects: redirects ?? [] });
-        } catch { return json({ error: "publication_artifact_generation_failed" }, 503); }
+          const edition = await managedPublicationSnapshot(store, actor, projectId, siteId);
+          if (!edition || edition.catalogVersion !== catalog.version) return json({ error: "version_conflict" }, 409);
+          prepared = await prepareManagedPublishedPageMutation(store, edition, siteId, publicOrigin, crypto.randomUUID(),
+            { pageId, locale, path, public: nextIsPublic }, redirects);
+          if (!prepared) return json({ error: "version_conflict" }, 409);
+        } catch (error) {
+          return json({ error: "publication_artifact_generation_failed", ...(error instanceof ManagedPagePublicationError ? { failedUrl: error.url } : {}) }, 503);
+        }
       }
     }
 
@@ -1184,7 +1776,7 @@ async function changePageOnce(store: CmsStore, actor: ManagedActor, projectId: s
             AND (?13 IS NULL OR ms.public_policy_version = ?13)
             AND (?14 IS NULL OR ms.public_domain_version = ?14)`)
         .bind(auditId, projectId, siteId, actor.subject, auditAction, pageId, locale, expectedVersion, currentCatalogVersion,
-          actor.cliClientId ?? null, prepared?.expectedVersion ?? null, redirectVersion, prepared?.policyVersion ?? null, prepared?.domainVersion ?? null),
+          actor.cliClientId ?? null, prepared?.expectedVersion ?? null, redirectVersion, prepared?.expectedPolicyVersion ?? null, prepared?.expectedDomainVersion ?? null),
       db.prepare(`UPDATE managed_pages SET title = ?1, path = ?2, visibility = ?3, current_version = ?4, updated_at = unixepoch()
           WHERE site_id = ?5 AND page_id = ?6 AND locale = ?7 AND current_version = ?8
             AND EXISTS (SELECT 1 FROM managed_site_audit WHERE id = ?9)
@@ -1328,250 +1920,6 @@ export async function managedEditorOperation(
   if (!store || !site) return json({ error: "not_found" }, 404);
   if (match[2] === "/cms-bindings") return request.method === "GET" ? cmsBindingOptions(store, site) : json({ error: "method_not_allowed" }, 405);
   return request.method === "POST" ? cmsBindingPreview(request, store, site, actor, row, match[2] === "/cms-preview") : json({ error: "method_not_allowed" }, 405);
-}
-
-/** CMS bound ページだけを、#527 で静的配信へ移すまで描画する。 */
-async function renderCmsBoundPublic(request: Request, db: ManagedD1, origin: string, store: CmsStore,
-  cache?: ManagedPublicHtmlCache, customRoute?: { readonly slug: string; readonly prefix: ""; readonly noindex?: boolean }): Promise<Response> {
-  const url = new URL(request.url);
-  if (!customRoute && url.origin !== origin || request.method !== "GET" && request.method !== "HEAD")
-    return new Response(null, { status: 404, headers: responseHeaders("text/plain; charset=utf-8") });
-  const match = customRoute ? null : /^\/s\/([a-z0-9]+(?:-[a-z0-9]+)*)(?:\/(.*))?$/u.exec(url.pathname);
-  if (!customRoute && !match) return new Response(null, { status: 404, headers: responseHeaders("text/plain; charset=utf-8") });
-  const slug = customRoute?.slug ?? match![1]!;
-  const prefix = customRoute?.prefix ?? `/s/${slug}`;
-  const path = customRoute ? url.pathname : match![2] ? `/${match![2]}` : "/";
-  const redirectTo = (target: string, status = 301) => {
-    const headers = responseHeaders("text/plain; charset=utf-8");
-    headers.set("Location", `${url.origin}${prefix}${target}${url.search}`);
-    headers.set("Cache-Control", "public, max-age=300");
-    return new Response(null, { status, headers });
-  };
-  if (path.length > 1 && path.endsWith("/")) return redirectTo(path.replace(/\/+$/u, ""));
-  const caseFoldedPath = /^[A-Za-z0-9/_-]+$/u.test(path) ? path.toLowerCase() : path;
-  if (validatePagePath(caseFoldedPath) !== null) return new Response(null, { status: 404, headers: responseHeaders("text/plain; charset=utf-8") });
-  const parentPath = path.slice(0, path.lastIndexOf("/")), notFound = () => {
-    const headers = responseHeaders("text/html; charset=utf-8");
-    headers.set("Content-Security-Policy", "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'");
-    return new Response("<!doctype html><html lang=\"ja\"><meta charset=\"utf-8\"><meta name=\"robots\" content=\"noindex, nofollow\"><title>ページが見つかりません</title><main><h1>ページが見つかりません</h1><p>お探しのページは移動したか、公開を終了しました。</p></main></html>", { status: 404, headers });
-  };
-  const row = await db.prepare(`
-    SELECT mp.site_id, mp.page_id, mp.locale, mp.title, mp.path AS path, mp.published_revision, version.revision, version.bindings_json,
-           version.document_json, version.document_key, version.document_digest,
-           publication.id AS publication_id, publication.cms_release_id, publication.cms_schema_revision,
-           ms.public_policy_json, ms.public_policy_version, ms.public_domain_version, s.name AS site_name
-      FROM managed_sites AS ms
-      JOIN sites AS s ON s.id = ms.site_id
-      JOIN managed_pages AS mp ON mp.site_id = ms.site_id
-      JOIN managed_page_versions AS version
-        ON version.site_id = mp.site_id AND version.page_id = mp.page_id AND version.locale = mp.locale AND version.revision = mp.published_revision
-      LEFT JOIN managed_page_publications AS publication ON publication.id = mp.published_publication_id
-        AND publication.site_id = mp.site_id AND publication.page_id = mp.page_id AND publication.locale = mp.locale
-        AND publication.source_revision = mp.published_revision
-     WHERE ms.slug = ?1 AND mp.visibility = 'public' AND mp.published_revision IS NOT NULL
-       AND version.bindings_json IS NOT NULL
-       AND (mp.path = ?2
-         OR (mp.path = ?3 AND json_type(version.bindings_json, '$.detail') = 'object'))
-     ORDER BY (mp.path = ?2) DESC
-     LIMIT 1
-  `).bind(slug, path, parentPath).first<PageSourceRow & Pick<ManagedPageRow, "title" | "path" | "bindings_json"> & {
-    published_revision: number; publication_id: string | null; cms_release_id: string | null; cms_schema_revision: string | null;
-    public_policy_json: string; public_policy_version: string; public_domain_version: string; site_name: string;
-  }>();
-  if (!row) {
-    const redirect = await db.prepare(`SELECT r.to_path FROM managed_site_redirects AS r JOIN managed_sites AS ms ON ms.site_id = r.site_id
-      WHERE ms.slug = ?1 AND r.from_path = ?2 LIMIT 1`).bind(slug, path).first<{ to_path: string }>();
-    if (redirect) return redirectTo(redirect.to_path);
-    if (path !== caseFoldedPath) {
-      const lower = await db.prepare(`SELECT 1 AS found FROM managed_sites AS ms JOIN managed_pages AS mp ON mp.site_id = ms.site_id
-        JOIN managed_page_publications AS publication ON publication.id = mp.published_publication_id
-        WHERE ms.slug = ?1 AND mp.path = ?2 AND mp.visibility = 'public' AND mp.published_revision IS NOT NULL LIMIT 1`)
-        .bind(slug, caseFoldedPath).first<{ found: number }>();
-      if (lower) return redirectTo(caseFoldedPath);
-    }
-    return notFound();
-  }
-  const hasUppercaseRoute = /[A-Z]/u.test(path);
-  if (hasUppercaseRoute && (row.path !== parentPath || !row.bindings_json)) return notFound();
-  if (!customRoute && match![2] === undefined) {
-    url.pathname += "/";
-    const headers = responseHeaders("text/plain; charset=utf-8");
-    headers.set("Location", url.href);
-    return new Response(null, { status: 301, headers });
-  }
-  const refs = url.searchParams.getAll("_niho_embed");
-  const requestedRef = refs[0];
-  if (refs.length && (refs.length !== 1 || url.searchParams.size !== 1 || request.method !== "GET" ||
-    !requestedRef || !MANAGED_EMBED_REF.test(requestedRef))) return notFound();
-  let cacheKey: Request | undefined;
-  if (!requestedRef && request.method === "GET" && cache) {
-    const key = await digest({ origin: url.origin, path: `${prefix}${path}`, site: row.site_id, page: row.page_id,
-      locale: row.locale, revision: row.published_revision, publication: row.publication_id,
-      cmsRelease: row.cms_release_id, cmsSchema: row.cms_schema_revision, policy: row.public_policy_version,
-      domainVersion: row.public_domain_version });
-    cacheKey = new Request(`${url.origin}/_niho-cache/${key}`);
-    try {
-      const cached = await cache.match(cacheKey);
-      if (cached) return revalidatePublicResponse(request, cached);
-    } catch { /* edge cache is an optional optimization */ }
-  }
-  let document: PageDocument;
-  let publishedStyles: import("../src/site-styles.js").SiteStyles = {};
-  try { publishedStyles = await readManagedPublishedSiteStyles(store, row.site_id); document = await readPageSource(store, row, publishedStyles); }
-  catch { return json({ error: "invalid_managed_page_storage" }, 503); }
-  const publicPath = `${prefix}${path}`;
-  let assetManifest: readonly CmsPublicAsset[] = [];
-  if (row.bindings_json) {
-    if (!store || !row.cms_release_id || !row.cms_schema_revision) return notFound();
-    const bindings = parseCmsPageBindings(JSON.parse(row.bindings_json), document);
-    if (hasUppercaseRoute && !bindings.detail) return notFound();
-    if (bindings.detail && row.path === path) return notFound();
-    const released = await store.snapshot(row.site_id, row.cms_release_id);
-    if (released.schema.schemaRevision !== row.cms_schema_revision || released.locale !== row.locale) return notFound();
-    const projected = resolveCmsPageBindings(document, bindings, released, {
-      blocks: managedBlockContracts, page: { siteStyles: publishedStyles },
-      ...(bindings.detail ? { detail: { slug: path.slice(parentPath.length + 1) } } : {})
-    });
-    if (!projected) return notFound();
-    document = projected;
-    assetManifest = released.assetManifest;
-  }
-  const policy = parseManagedPublicPolicy(JSON.parse(row.public_policy_json), origin) ?? emptyManagedPublicPolicy();
-  const embeds = await resolvePublishedEmbeds(db, document, { siteId: row.site_id, pageId: row.page_id, locale: row.locale, parentOrigin: origin, publicPath }, policy);
-  if (requestedRef) {
-    const embed = embeds.find(({ refId }) => refId === requestedRef);
-    return embed ? json({ src: embed.src.href }) : notFound();
-  }
-  const rendered = await renderManagedPage({ db, store, document, policy, origin, prefix,
-    path: hasUppercaseRoute ? path.toLowerCase() : path, alternatePath: row.path, publicPath,
-    siteName: row.site_name, embeds, assets: assetManifest, siteStyles: publishedStyles, forceNoindex: customRoute?.noindex === true });
-  const headers = responseHeaders("text/html; charset=utf-8");
-  headers.set("Cache-Control", "public, no-cache, s-maxage=300, stale-while-revalidate=60");
-  headers.set("Content-Security-Policy", rendered.contentSecurityPolicy);
-  if (customRoute?.noindex === true || policy.seo.robotsPolicy === "noindex") headers.set("X-Robots-Tag", "noindex, nofollow");
-  headers.set("Cross-Origin-Opener-Policy", "same-origin");
-  headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()");
-  const fullResponse = await withPublicEtag(rendered.html, headers);
-  if (cacheKey && cache) try { await cache.put(cacheKey, fullResponse.clone()); } catch { /* edge cache is an optional optimization */ }
-  const response = revalidatePublicResponse(request, fullResponse);
-  return request.method === "HEAD" && response.status !== 304 ? new Response(null, { status: response.status, headers: response.headers }) : response;
-}
-
-/** #527 がCMS boundページを静的manifestへ移すまでの互換renderer。固定ページには使わない。 */
-export async function managedCmsBoundPublic(request: Request, db: ManagedD1, origin: string, store: CmsStore,
-  cache?: ManagedPublicHtmlCache, customRoute?: { readonly slug: string; readonly prefix: ""; readonly noindex?: boolean }): Promise<Response | null> {
-  const response = await renderCmsBoundPublic(request, db, origin, store, cache, customRoute);
-  return response.status === 404 ? null : response;
-}
-
-type ManagedSeoPage = { locale: string; path: string; title: string; text: string; group: string; lastmod?: string };
-function xml(value: string): string {
-  return value.replace(/[&<>"']/gu, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" })[character]!);
-}
-function managedCollectionPath(prefix: string | null): string | null { return prefix === null ? null : prefix.slice(0, -1); }
-
-/** #527 が CMS discovery を公開時生成へ移すまでの互換出力。通常のページ配信では呼ばない。 */
-export async function managedPublicSeoResponse(request: Request, db: ManagedD1, origin: string, store: CmsStore,
-  customRoute?: { readonly slug: string; readonly prefix: ""; readonly noindex?: boolean }): Promise<Response | null> {
-  const url = new URL(request.url);
-  if (request.method !== "GET" && request.method !== "HEAD") return null;
-  let slug: string, prefix: string, noindex = false, name: string;
-  if (customRoute) { slug = customRoute.slug; prefix = customRoute.prefix; noindex = customRoute.noindex === true; }
-  else {
-    if (url.origin !== origin) return null;
-    const match = /^\/s\/([a-z0-9]+(?:-[a-z0-9]+)*)(\/(?:sitemap\.xml|robots\.txt|llms\.txt|llms-full\.txt))$/u.exec(url.pathname);
-    if (!match) return null;
-    slug = match[1]!; prefix = `/s/${slug}`;
-  }
-  const suffix = customRoute ? url.pathname : url.pathname.slice(prefix.length);
-  if (!["/sitemap.xml", "/robots.txt", "/llms.txt", "/llms-full.txt"].includes(suffix)) return null;
-  const site = await db.prepare(`SELECT s.id AS site_id, s.name, ms.public_policy_json FROM managed_sites AS ms
-    JOIN sites AS s ON s.id = ms.site_id WHERE ms.slug = ?1 LIMIT 1`).bind(slug)
-    .first<{ site_id: string; name: string; public_policy_json: string }>();
-  if (!site) return null;
-  const policy = parseManagedPublicPolicy(JSON.parse(site.public_policy_json), url.origin);
-  if (!policy) return null;
-  name = policy.seo.siteName ?? site.name;
-  noindex ||= policy.seo.robotsPolicy === "noindex";
-  const headers = (contentType: string) => {
-    const result = responseHeaders(contentType);
-    result.set("Cache-Control", "no-cache");
-    if (noindex) result.set("X-Robots-Tag", "noindex, nofollow");
-    return result;
-  };
-
-  const stateRow = await db.prepare(`SELECT ms.site_id, cms.state_json FROM managed_sites AS ms
-    JOIN managed_cms_state AS cms ON cms.site_id = ms.site_id WHERE ms.slug = ?1 LIMIT 1`).bind(slug)
-    .first<{ site_id: string; state_json: string }>();
-  if (!stateRow) return null;
-  const publishedStyles = await readManagedPublishedSiteStyles(store, stateRow.site_id);
-  const state = JSON.parse(stateRow.state_json) as Site["state"];
-  const releases = [
-    ...(state.current ? [{ locale: state.locale, id: state.current.id }] : []),
-    ...Object.entries(state.localizedReleases ?? {}).map(([locale, release]) => ({ locale, id: release.id }))
-  ].slice(0, 3);
-  if (!releases.length) return null;
-  if (suffix === "/robots.txt") {
-    const body = noindex ? "User-agent: *\nDisallow: /\n" : `User-agent: *\nAllow: /\nSitemap: ${url.origin}${prefix}/sitemap.xml\n`;
-    return new Response(request.method === "HEAD" ? null : body, { headers: headers("text/plain; charset=utf-8") });
-  }
-
-  const rows = await db.prepare(`SELECT mp.site_id, mp.page_id, mp.locale, version.revision, publication.published_path AS path,
-      version.document_json, version.document_key, version.document_digest, publication.created_at AS published_at
-    FROM managed_sites AS ms JOIN managed_pages AS mp ON mp.site_id = ms.site_id
-    JOIN managed_page_publications AS publication ON publication.id = mp.published_publication_id
-    JOIN managed_page_versions AS version ON version.site_id = mp.site_id AND version.page_id = mp.page_id
-      AND version.locale = mp.locale AND version.revision = mp.published_revision
-    WHERE ms.slug = ?1 AND mp.visibility = 'public' AND mp.published_revision IS NOT NULL
-    ORDER BY publication.published_path, mp.locale LIMIT 500`).bind(slug).all<PageSourceRow & { path: string; published_at: number | null }>();
-  if (!rows.success) return null;
-  const pages: ManagedSeoPage[] = [];
-  for (const row of rows.results ?? []) {
-    try {
-      const document = await readPageSource(store, row, publishedStyles);
-      if (noindex || document.meta?.noindex) continue;
-      pages.push({ locale: row.locale, path: row.path, title: document.title, text: pageText(document.body),
-        group: `page:${localizedPathIdentity(row.locale, row.path)}`,
-        ...(row.published_at ? { lastmod: new Date(row.published_at * 1000).toISOString() } : {}) });
-    } catch { /* invalid historical pages are omitted from public discovery output */ }
-  }
-  for (const release of releases) try {
-    const snapshot = await store.snapshot(stateRow.site_id, release.id);
-    const cmsPrefix = snapshot.sourceLocale && snapshot.sourceLocale !== snapshot.locale ? `/${snapshot.locale}/cms` : "/cms";
-    pages.push({ locale: snapshot.locale, path: cmsPrefix, title: "CMS", text: "", group: "cms:root" });
-    for (const collection of snapshot.schema.collections) {
-      const path = managedCollectionPath(collection.pathPrefix);
-      if (path) pages.push({ locale: snapshot.locale, path, title: collection.label, text: "", group: `cms:list:${collection.id}` });
-    }
-    for (const item of snapshot.items) if (item.path) {
-      const collection = snapshot.schema.collections.find(({ id }) => id === item.collectionId);
-      const title = collection ? String(item.values[collection.titleField] ?? "") : "";
-      const fields = collection?.fields.filter(({ fieldId, type }) => fieldId !== collection.titleField
-        && ["text", "longText", "richText", "datetime"].includes(type)) ?? [];
-      pages.push({ locale: snapshot.locale, path: item.path, title,
-        text: fields.map(({ fieldId }) => String(item.values[fieldId] ?? "")).join(" "),
-        group: `cms:item:${item.collectionId}:${item.itemId}` });
-    }
-  } catch { /* unpublished or unavailable CMS snapshots are omitted */ }
-  const absolute = (page: ManagedSeoPage) => `${url.origin}${prefix}${page.path}`;
-  if (suffix === "/sitemap.xml") {
-    const groups = new Map<string, ManagedSeoPage[]>();
-    for (const page of pages) groups.set(page.group, [...(groups.get(page.group) ?? []), page]);
-    const entries = pages.map((page) => {
-      const alternatives = groups.get(page.group) ?? [];
-      const languages = alternatives.length > 1 ? alternatives.map((other) =>
-        `<xhtml:link rel="alternate" hreflang="${xml(other.locale.toLowerCase())}" href="${xml(absolute(other))}"/>`).join("") : "";
-      const lastmod = page.lastmod ? `<lastmod>${xml(page.lastmod)}</lastmod>` : "";
-      return `<url><loc>${xml(absolute(page))}</loc>${lastmod}${languages}</url>`;
-    }).join("");
-    const body = `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">${entries}</urlset>`;
-    return new Response(request.method === "HEAD" ? null : body, { headers: headers("application/xml; charset=utf-8") });
-  }
-  const markdown = [`# ${name}`, "", "## Pages", "", ...pages.map((page) =>
-    `- [${page.title || page.path}](${absolute(page)})${page.text ? `: ${page.text.slice(0, 240)}` : ""}`)].join("\n");
-  const full = suffix === "/llms-full.txt" ? [markdown, "", "## Full text", "",
-    ...pages.filter(({ text }) => text).map((page) => `### ${page.title}\n\n${page.text}`)].join("\n") : markdown;
-  return new Response(request.method === "HEAD" ? null : full, { headers: headers("text/plain; charset=utf-8") });
 }
 
 export async function managedDashboardOverview(db: ManagedD1, actor: ManagedActor, projectId: string, siteId: string, origin: string): Promise<Record<string, unknown> | null> {

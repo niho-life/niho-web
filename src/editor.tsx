@@ -1566,6 +1566,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         const result = await adapter.publishPageNow({ target: current.target, expectedVersion: current.version, action: actionType === "rollback" ? "restore" : "publish", ...(actionType === "rollback" ? { revision } : {}) }, controller.signal);
         if (controller.signal.aborted) return;
         if (result.status === "conflict") { setNotice("保存済みの状態が変わりました（409）。最新状態を読み込んでからやり直してください。手元の編集内容は保持しています。"); return; }
+        if (result.status === "failed") { setNotice(result.failedUrl + " の生成に失敗しました。 " + result.message); return; }
         replace(editorSessionFrom(result.snapshot, current.target, blocks, libraryRef.current?.history.present, siteSettingsRef.current.settings, !siteSettingsRef.current.settings));
         setSelection(null); setFieldEpoch((value) => value + 1); setProblem(null); setPicker(null);
         const outcome = actionType === "rollback" ? "選んだ版を公開先へ復元しました。" : "公開しました。";
@@ -1573,7 +1574,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
           ? `SEO警告（${result.warnings.length}件）: ${result.warnings.slice(0, 3).map(({ message }) => message).join(" / ")}${result.warnings.length > 3 ? " / ほか" : ""}`
           : "";
         await reloadPages();
-        setNotice([outcome, result.url ? `公開URL: ${result.url}` : "", warningSummary].filter(Boolean).join("　"));
+        setNotice([outcome, result.url ? `公開URL: ${result.url}` : "", result.elapsedMs === undefined ? "" : "公開にかかった時間 " + result.elapsedMs + " ms", warningSummary].filter(Boolean).join("　"));
       } catch { if (!controller.signal.aborted) setNotice("反映結果を確認できませんでした。再試行前に公開状態をホスト側で確認してください。編集内容は保持しています。"); }
       finally { if (!controller.signal.aborted) setBusy(""); action.current = null; }
       return;

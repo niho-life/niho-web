@@ -494,6 +494,12 @@ testWithD1("published page permits only approved embeds and serves NIHO connecti
   await body(await savePolicy({ frameOrigins: [], resourceOrigins: [], ga4MeasurementId: null }, savedPolicy.version), 200);
   const policyUpdatedPage = await body(await send("GET", api + "/home"), 200);
   await body(await h.send(MANAGEMENT_ORIGIN, "POST", api + "/home/publish", { expectedVersion: policyUpdatedPage.version, action: "publish" }), 200);
+  assert.equal((await publicFetch(resolvePath, { headers: { "Cache-Control": "no-cache" } })).status, 200,
+    "publishing one page leaves the changed shared settings pending");
+  const changes = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `/api/edit/v1/sites/${siteId}/operations/site.publication-changes`), 200);
+  assert.ok(changes.changes.some((change) => change.kind === "shared" && change.id === "public-policy"));
+  await body(await h.send(MANAGEMENT_ORIGIN, "POST", `/api/edit/v1/sites/${siteId}/operations/site.publish`,
+    { expectedVersion: changes.version, scope: "changed" }), 200);
   assert.equal((await publicFetch(resolvePath, { headers: { "Cache-Control": "no-cache" } })).status, 404);
   const revoked = await publicFetch(PUBLIC_ORIGIN + publicPath, { headers: { "Cache-Control": "no-cache" } });
   assert.match(revoked.headers.get("Content-Security-Policy"), /script-src 'none'/u);
@@ -703,7 +709,7 @@ testWithD1("managed SEO renders alternates and JSON-LD, publishes discovery file
   assert.match(sitemap, /hreflang="en"/u);
   assert.match(await (await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/robots.txt`)).text(), /Sitemap: https:\/\/sites\.example\/s\/seo-fixture\/sitemap\.xml/u);
   assert.match(await (await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/llms.txt`)).text(), /English home/u);
-  assert.match(await (await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/llms-full.txt`)).text(), /日本語の説明|# SEO Site Name/u);
+  assert.equal((await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/llms-full.txt`)).status, 404);
   const siteDefaultPage = await (await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/about`)).text();
   assert.match(siteDefaultPage, /"description":"サイト共通の説明"/u);
   const upper = await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/ABOUT`);
@@ -748,15 +754,15 @@ testWithD1("managed SEO renders alternates and JSON-LD, publishes discovery file
   await release(englishCreated.page.pageId, "en", english.version);
   const aboutBeforeNoindex = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/${aboutCreated.page.pageId}`), 200);
   await release(aboutCreated.page.pageId, "ja", aboutBeforeNoindex.version);
-  const noindexRobots = await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/robots.txt`);
-  assert.match(await noindexRobots.text(), /Disallow: \/\n/u);
-  assert.equal(noindexRobots.headers.get("X-Robots-Tag"), "noindex, nofollow");
-  const noindexSitemap = await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/sitemap.xml`);
-  assert.equal(noindexSitemap.headers.get("X-Robots-Tag"), "noindex, nofollow");
-  assert.doesNotMatch(await noindexSitemap.text(), /<loc>/u);
-  const noindexPage = await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/about-us`);
-  assert.equal(noindexPage.headers.get("X-Robots-Tag"), "noindex, nofollow");
-  assert.match(await noindexPage.text(), /name="robots" content="noindex, nofollow"/u);
+  const robotsResponse = await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/robots.txt`);
+  assert.match(await robotsResponse.text(), /Allow: \/\n/u);
+  assert.equal(robotsResponse.headers.get("X-Robots-Tag"), null);
+  const sitemapResponse = await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/sitemap.xml`);
+  assert.equal(sitemapResponse.headers.get("X-Robots-Tag"), null);
+  assert.match(await sitemapResponse.text(), /<loc>https:\/\/sites\.example\/s\/seo-fixture\/about-us<\/loc>/u);
+  const aboutResponse = await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/about-us`);
+  assert.equal(aboutResponse.headers.get("X-Robots-Tag"), null);
+  assert.match(await aboutResponse.text(), /name="robots" content="index, follow"/u);
 });
 
 
@@ -1071,6 +1077,124 @@ testWithD1("Studio Editing API publishes one time and exposes the same revision 
   assert.equal((await h.send(MANAGEMENT_ORIGIN, "POST", `${base}/operations/pages.publish/home?locale=ja`, { action: "restore", revision: -1 })).status, 400);
 });
 
+testWithD1("site publication uses saved drafts only for the selected pages and switches the manifest once", async (t) => {
+  const h = await fixture(t);
+  const site = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Shared release", slug: "shared-release", locale: "ja" }), 201);
+  const editor = "/api/projects/" + site.projectId + "/sites/" + site.siteId + "/editor";
+  const operations = "/api/edit/v1/sites/" + site.siteId + "/operations/";
+  const admin = (method, path, input) => h.send(MANAGEMENT_ORIGIN, method, operations + path, input);
+  const create = (index) => pageChange((method, path, input) => h.send(MANAGEMENT_ORIGIN, method, editor + path, input),
+    { action: "create", siteId: site.siteId, locale: "ja", title: "Page " + index, path: "/page-" + index });
+  const pages = ["home"];
+  for (let index = 1; index < 3; index++) pages.push((await create(index)).page.pageId);
+  const pointer = () => h.sqlite.prepare("SELECT manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(site.siteId).manifest_key;
+  const readManifest = () => JSON.parse(h.objects.get(pointer()));
+  h.sqlite.exec("CREATE TEMP TABLE publish_switches (key TEXT); CREATE TEMP TRIGGER count_publish_switches AFTER UPDATE OF manifest_key ON main.managed_site_publication_state BEGIN INSERT INTO publish_switches VALUES (NEW.manifest_key); END");
+  const switches = () => h.sqlite.prepare("SELECT count(*) AS count FROM publish_switches").get().count;
+  const changes = () => admin("GET", "site.publication-changes").then((response) => body(response, 200));
+  const publish = async (scope, fields = {}) => body(await admin("POST", "site.publish", { expectedVersion: (await changes()).version, scope, ...fields }), 200);
+  const first = await publish("changed");
+  assert.equal(first.urls.length, 3);
+  assert.equal(switches(), 1);
+
+  for (const [index, pageId] of pages.entries()) {
+    const path = pageId + "?locale=ja";
+    const saved = await body(await admin("GET", "pages.read/" + path), 200);
+    const document = { ...saved.document, title: "New draft " + index };
+    await body(await admin("PUT", "pages.save/" + path, { expectedVersion: saved.version, document }), 200);
+  }
+  const initialRoutes = readManifest().routes;
+  const seo = await body(await h.send(MANAGEMENT_ORIGIN, "GET", editor + "/seo-settings"), 200);
+  await body(await h.send(MANAGEMENT_ORIGIN, "POST", editor + "/seo-settings", { expectedVersion: seo.version,
+    settings: { ...seo.settings, description: "Shared published description" } }), 200);
+  assert.equal((await changes()).changes.filter(({ kind }) => kind === "page").length, 3);
+  const shared = await publish("site");
+  assert.equal(shared.urls.length, 3);
+  assert.equal(switches(), 2);
+  const sharedManifest = readManifest();
+  assert.deepEqual(sharedManifest.routes.map(({ lastModified }) => lastModified), initialRoutes.map(({ lastModified }) => lastModified));
+  for (const route of sharedManifest.routes) {
+    assert.match(h.objects.get(route.artifactKey), /Shared published description/u);
+    assert.doesNotMatch(h.objects.get(route.artifactKey), /New draft/u);
+  }
+
+  const selected = await publish("pages", { pages: pages.slice(0, 2).map((pageId) => ({ pageId, locale: "ja" })) });
+  assert.equal(selected.urls.length, 2);
+  assert.equal(switches(), 3);
+  assert.equal(readManifest().routes.find(({ path }) => path === "/page-2").artifactKey,
+    sharedManifest.routes.find(({ path }) => path === "/page-2").artifactKey);
+  assert.equal((await changes()).changes.filter(({ kind }) => kind === "page").length, 1);
+
+  const source = h.sqlite.prepare("SELECT version.document_key FROM managed_pages AS page JOIN managed_page_versions AS version ON version.site_id = page.site_id AND version.page_id = page.page_id AND version.locale = page.locale AND version.revision = page.current_revision WHERE page.site_id = ? AND page.page_id = ?").get(site.siteId, pages[2]);
+  h.objects.delete(source.document_key);
+  const beforeFailure = pointer();
+  const failed = await publish("changed");
+  assert.equal(failed.status, "failed");
+  assert.match(failed.failedUrl, /\/page-2$/u);
+  assert.equal(switches(), 3);
+  assert.equal(pointer(), beforeFailure);
+});
+
+testWithD1("restore and page route changes rebuild the live edition without publishing other drafts", async (t) => {
+  const h = await fixture(t);
+  const site = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Edition changes", slug: "edition-changes", locale: "ja" }), 201);
+  const editor = "/api/projects/" + site.projectId + "/sites/" + site.siteId + "/editor";
+  const operations = "/api/edit/v1/sites/" + site.siteId + "/operations/";
+  const admin = (method, path, input) => h.send(MANAGEMENT_ORIGIN, method, operations + path, input);
+  const change = (input) => pageChange((method, path, value) => h.send(MANAGEMENT_ORIGIN, method, editor + path, value), input);
+  const english = (await change({ action: "create", siteId: site.siteId, locale: "en", title: "English", path: "/en" })).page;
+  const pending = await body(await admin("GET", "site.publication-changes"), 200);
+  await body(await admin("POST", "site.publish", { expectedVersion: pending.version, scope: "changed" }), 200);
+  const pointer = () => h.sqlite.prepare("SELECT manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(site.siteId).manifest_key;
+  const readRoute = (path) => JSON.parse(h.objects.get(pointer())).routes.find((route) => route.path === path);
+  assert.match(h.objects.get(readRoute("/").artifactKey), /hreflang="en".*\/en"/u);
+  const originalDate = readRoute("/en").lastModified;
+  const englishPath = english.pageId + "?locale=en";
+  const draft = await body(await admin("GET", "pages.read/" + englishPath), 200);
+  await body(await admin("PUT", "pages.save/" + englishPath, { expectedVersion: draft.version, document: { ...draft.document, title: "Unpublished English" } }), 200);
+
+  const saved = await body(await admin("GET", "pages.read/home?locale=ja"), 200);
+  const publishedEnglishKey = h.sqlite.prepare("SELECT document_key FROM managed_page_versions WHERE site_id = ? AND page_id = ? AND revision = 1").get(site.siteId, english.pageId).document_key;
+  const publishedEnglishSource = h.objects.get(publishedEnglishKey);
+  const previous = pointer();
+  h.objects.delete(publishedEnglishKey);
+  const restoreInput = { expectedVersion: saved.version, action: "restore", revision: saved.document.revision };
+  const failed = await body(await admin("POST", "pages.publish/home?locale=ja", restoreInput), 200);
+  assert.equal(failed.status, "failed");
+  assert.match(failed.failedUrl, /\/en$/u);
+  assert.equal(pointer(), previous);
+  h.objects.set(publishedEnglishKey, publishedEnglishSource);
+  const restored = await body(await admin("POST", "pages.publish/home?locale=ja", restoreInput), 200);
+  assert.equal(restored.status, "released");
+  assert.equal(readRoute("/en").lastModified, originalDate);
+  assert.doesNotMatch(h.objects.get(readRoute("/en").artifactKey), /Unpublished English/u);
+
+  const englishTarget = { siteId: site.siteId, pageId: english.pageId, locale: "en" };
+  const move = { action: "update", target: englishTarget, title: "English", path: "/english" };
+  const current = pointer();
+  const publishedHome = h.sqlite.prepare("SELECT version.document_key FROM managed_pages AS page JOIN managed_page_versions AS version ON version.site_id = page.site_id AND version.page_id = page.page_id AND version.locale = page.locale AND version.revision = page.published_revision WHERE page.site_id = ? AND page.page_id = 'home'").get(site.siteId).document_key;
+  const homeSource = h.objects.get(publishedHome);
+  h.objects.delete(publishedHome);
+  const englishDraft = await body(await admin("GET", "pages.read/" + englishPath), 200);
+  const failedMove = await body(await h.send(MANAGEMENT_ORIGIN, "POST", editor + "/page-changes", { expectedVersion: englishDraft.version, change: move }), 503);
+  assert.match(failedMove.failedUrl, /edition-changes\/$/u);
+  assert.equal(pointer(), current);
+  h.objects.set(publishedHome, homeSource);
+
+  await change(move);
+  assert.doesNotMatch(h.objects.get(readRoute("/").artifactKey), /hreflang="en"/u, "renaming the English route regenerates the Japanese alternate");
+  assert.match(h.objects.get(readRoute("/english").artifactKey), /<title>English<\/title>/u, "renaming uses the published document");
+  assert.equal(readRoute("/english").lastModified, originalDate);
+  await change({ action: "update", target: englishTarget, title: "English", path: "/en" });
+  assert.match(h.objects.get(readRoute("/").artifactKey), /hreflang="en".*\/en"/u);
+  await change({ action: "visibility", target: englishTarget, visibility: "private" });
+  assert.equal(readRoute("/en"), undefined);
+  assert.doesNotMatch(h.objects.get(readRoute("/").artifactKey), /hreflang="en"/u);
+  await change({ action: "visibility", target: englishTarget, visibility: "public" });
+  assert.equal(readRoute("/en").lastModified, originalDate);
+  assert.doesNotMatch(h.objects.get(readRoute("/en").artifactKey), /Unpublished English/u);
+});
+
 testWithD1("Studio Editing API page changes use the catalog and page versions independently", async (t) => {
   const h = await fixture(t);
   const { siteId } = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Page management", slug: "page-management", locale: "ja" }), 201);
@@ -1115,9 +1239,9 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   assert.equal(publication.content_type, "text/html; charset=utf-8");
   assert.ok(h.objects.has(publication.artifact_key));
   const manifest = JSON.parse(h.objects.get(state.manifest_key));
-  assert.deepEqual(manifest.discoveryFiles.map(({ path }) => path).sort(), ["/llms-full.txt", "/llms.txt", "/robots.txt", "/sitemap.xml"]);
+  assert.deepEqual(manifest.discoveryFiles.map(({ path }) => path).sort(), ["/llms.txt", "/robots.txt", "/sitemap.xml"]);
   assert.equal(Object.hasOwn(manifest.routes[0], "text"), false);
-  assert.ok(manifest.routes[0].textArtifactKey && h.objects.has(manifest.routes[0].textArtifactKey));
+  assert.equal(Object.hasOwn(manifest.routes[0], "textArtifactKey"), false);
   for (const file of manifest.discoveryFiles) assert.ok(h.objects.has(file.artifactKey));
   assert.match(h.objects.get(publication.artifact_key), /href="\/s\/static-fixture\/about"/u);
 
@@ -1155,10 +1279,10 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   assert.equal(publicSitemap.status, 200);
   assert.match(await publicSitemap.text(), /https:\/\/sites\.example\/s\/static-fixture\//u);
   assert.match(await (await publishedSiteRequest(new Request("https://sites.example/s/static-fixture/llms.txt"), h.env)).text(), /# Static fixture/u);
-  assert.match(await (await publishedSiteRequest(new Request("https://sites.example/s/static-fixture/llms-full.txt"), h.env)).text(), /About/u);
+  assert.equal((await publishedSiteRequest(new Request("https://sites.example/s/static-fixture/llms-full.txt"), h.env)).status, 404);
   h.sqlite.prepare("INSERT INTO managed_site_hosts (hostname, path_prefix, site_id, noindex) VALUES (?, '', ?, 1)")
     .run("private.sites.example", created.siteId);
-  for (const path of ["/sitemap.xml", "/llms.txt", "/llms-full.txt"]) {
+  for (const path of ["/sitemap.xml", "/llms.txt"]) {
     const hiddenDiscovery = await publishedSiteRequest(new Request(`https://private.sites.example${path}`), h.env);
     assert.equal(hiddenDiscovery.status, 200);
     assert.equal(hiddenDiscovery.headers.get("X-Robots-Tag"), "noindex, nofollow");
@@ -1239,12 +1363,13 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/${contactPage.page.pageId}/publish`, { expectedVersion: contactDraft.version, action: "publish" }), 200);
   const refreshedState = h.sqlite.prepare("SELECT manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(created.siteId);
   const refreshedManifest = JSON.parse(h.objects.get(refreshedState.manifest_key));
-  assert.deepEqual(refreshedManifest.routes.map(({ path }) => path).sort(), ["/", "/contact"]);
+  assert.deepEqual(refreshedManifest.routes.map(({ path }) => path).sort(), ["/", "/about", "/contact"]);
   const refreshedSitemap = await publishedSiteRequest(new Request("https://sites.example/s/static-fixture/sitemap.xml", { headers: { "Cache-Control": "no-cache" } }), h.env);
   assert.equal(refreshedSitemap.status, 200);
   const refreshedSitemapBody = await refreshedSitemap.text();
   assert.match(refreshedSitemapBody, /\/contact/u);
-  assert.doesNotMatch(refreshedSitemapBody, /\/about/u);
+  assert.match(refreshedSitemapBody, /\/about/u);
+  assert.doesNotMatch(refreshedSitemapBody, /\/about-us/u);
 
   const unknown = await publishedSiteRequest(new Request("https://preview.sites.example/s/static-fixture/missing"), h.env);
   assert.equal(unknown.status, 404);
@@ -1392,7 +1517,8 @@ async function cmsSite(h, slug) {
   const endpoint = `/api/projects/${projectId}/sites/${siteId}/cms/v2`;
   const post = (operation, values = {}, options = {}) => h.send(MANAGEMENT_ORIGIN, "POST", `${endpoint}/${operation}`, { siteId, ...values }, options);
   const read = (operation, values = {}, options = {}) => post(operation, values, options).then((result) => body(result, 200));
-  const pub = (path) => h.send(PUBLIC_ORIGIN, "GET", `/s/${slug}/cms${path}`, undefined, { auth: false });
+  const pub = (path) => h.send(PUBLIC_ORIGIN, "GET", `/s/${slug}/cms${path}`, undefined,
+    { auth: false, headers: { "Cache-Control": "no-cache" } });
   const cli = (method, operation, values, options = {}) => h.send(MANAGEMENT_ORIGIN, method, `/api/edit/v1/sites/${siteId}/operations/${operation}`,
     values, { cli: true, ...options, headers: { "X-Studio-CMS-Version": "2", ...options.headers } });
   return { projectId, siteId, endpoint, post, read, pub, cli };
@@ -1657,7 +1783,8 @@ testWithD1("Studio CMS localization exposes the shared workspace contract and pr
   assert.equal(localizedCurrent.snapshot.items[0].locale, "en");
   assert.equal((await site.read("cms.release.current")).snapshot.releaseId, sourcePlan.plan.candidate.snapshot.releaseId,
     "publishing a locale does not move the source-locale release pointer");
-  const englishResponse = await h.send(PUBLIC_ORIGIN, "GET", "/s/cms-localization/en/cms/posts/morning-walk-en", undefined, { auth: false });
+  const englishResponse = await h.send(PUBLIC_ORIGIN, "GET", "/s/cms-localization/en/cms/posts/morning-walk-en", undefined,
+    { auth: false, headers: { "Cache-Control": "no-cache" } });
   assert.equal(englishResponse.status, 200);
   const localizedHtml = await englishResponse.text();
   assert.match(localizedHtml, /Walk by the shore/u);
@@ -1686,7 +1813,8 @@ testWithD1("Studio CMS localization exposes the shared workspace contract and pr
     operationId: stalePlan.plan.operationId, confirmationToken: stalePlan.plan.confirmationToken
   }, { headers: headers(stalePlan.plan.operationId) });
   assert.equal(staleApply.result.itemCount, 0);
-  assert.equal((await h.send(PUBLIC_ORIGIN, "GET", "/s/cms-localization/en/cms/posts/morning-walk-en", undefined, { auth: false })).status, 404,
+  assert.equal((await h.send(PUBLIC_ORIGIN, "GET", "/s/cms-localization/en/cms/posts/morning-walk-en", undefined,
+    { auth: false, headers: { "Cache-Control": "no-cache" } })).status, 404,
     "a stale translation is omitted instead of falling back to the Japanese source");
   const staleId = crypto.randomUUID();
   assert.equal((await site.post("cms.localization.items.command", { itemKey, operationId: staleId, action: "set-value", unitId: title.unitId,
@@ -1695,7 +1823,7 @@ testWithD1("Studio CMS localization exposes the shared workspace contract and pr
   assert.equal(h.sqlite.prepare("SELECT count(*) AS count FROM managed_cms_audit WHERE operation = 'cms.localization.items.command'").get().count, 4);
 });
 
-testWithD1("Studio page bindings publish a six-item list and dynamic detail from an immutable CMS release", async (t) => {
+testWithD1("Studio page bindings publish a six-item list and static detail from an immutable CMS release", async (t) => {
   const h = await fixture(t, { cms: true });
   const site = await cmsSite(h, "bound-articles");
   const customDomain = "preview.bound-articles.example.test";
@@ -1723,6 +1851,9 @@ testWithD1("Studio page bindings publish a six-item list and dynamic detail from
   await site.read("cms.release.apply", plan);
   await h.cron();
   const cmsRelease = (await site.read("cms.release.current")).snapshot;
+  const initialGenericCmsDetail = await h.fetch(`${PUBLIC_ORIGIN}/s/bound-articles/cms/posts/article-7`);
+  assert.equal(initialGenericCmsDetail.status, 200, "CMS generic routes are generated before the public pointer changes");
+  assert.match(await initialGenericCmsDetail.text(), /Article &lt;Seven&gt;/u);
 
   const createChange = { action: "create", siteId: site.siteId, locale: "ja", title: "Article", path: "/articles" };
   const { page: detailPage } = await pageChange(browser, createChange);
@@ -1805,16 +1936,16 @@ testWithD1("Studio page bindings publish a six-item list and dynamic detail from
   assert.equal(h.sqlite.prepare("SELECT count(*) AS count FROM managed_page_publications WHERE cms_release_id = ? AND cms_schema_revision = ?").get(cmsRelease.releaseId, schemaRevision).count, 2);
   const staticPointer = h.sqlite.prepare("SELECT manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(site.siteId).manifest_key;
   const staticManifest = await (await h.env.CMS_OBJECTS.get(staticPointer)).json();
-  assert.equal(staticManifest.routes.some(({ pageId, locale }) => pageId === "home" && locale === "ja"), false,
-    "publishing a CMS-bound page removes its previous fixed route from the new manifest");
+  assert.equal(staticManifest.routes.some(({ pageId, locale, path }) => pageId === "home" && locale === "ja" && path === "/"), true,
+    "publishing a CMS-bound page writes its list output into the static manifest");
   assert.equal((await publishedSiteRequest(new Request(`${PUBLIC_ORIGIN}/s/bound-articles/`, {
     headers: { "Cache-Control": "no-cache" }
-  }), h.env)).status, 404, "the static worker no longer serves the old fixed HTML for the CMS route");
+  }), h.env)).status, 200, "the static worker serves the CMS-bound page from its manifest");
   const list = await lookup("/");
   assert.equal(list.status, 200);
   const html = await list.text();
-  assert.deepEqual([...html.matchAll(/href="\/s\/bound-articles\/articles\/article-(\d)"/gu)].map((match) => match[1]), ["7", "5", "4", "3", "2"]);
-  assert.match(html, /href="\/s\/bound-articles\/articles\/Legacy-Case"/u);
+  assert.deepEqual([...html.matchAll(/href="\/articles\/article-(\d)"/gu)].map((match) => match[1]), ["7", "5", "4", "3", "2"]);
+  assert.match(html, /href="\/articles\/Legacy-Case"/u);
   assert.match(html, /aria-label="Article &lt;Seven&gt;"/u);
   const detailHtml = await (await lookup("/articles/article-7")).text();
   assert.match(detailHtml, /Article &lt;Seven&gt;/u);
@@ -1825,10 +1956,42 @@ testWithD1("Studio page bindings publish a six-item list and dynamic detail from
   assert.equal((await lookup("/ARTICLES/Legacy-Case")).status, 404);
   assert.equal((await lookup("/articles")).status, 404);
 
+  const changedFirst = await site.read("cms.items.save", { ...versioned(items[0]), values: { ...items[0].values,
+    title: "Updated Article 1", article_date: "2026-10-08T12:00:00Z" } }, { headers: headers() });
+  const nextCmsPlan = await releasePlan(site, schemaRevision, cmsRelease.releaseId, [changedFirst.item, ...items.slice(1)]);
+  await site.read("cms.release.apply", nextCmsPlan);
+  await h.cron();
+  const nextCmsRelease = (await site.read("cms.release.current")).snapshot;
+  assert.notEqual(nextCmsRelease.releaseId, cmsRelease.releaseId);
+  const nextStaticPointer = h.sqlite.prepare("SELECT manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(site.siteId).manifest_key;
+  const nextStaticManifest = await (await h.env.CMS_OBJECTS.get(nextStaticPointer)).json();
+  const oldListRoute = staticManifest.routes.find(({ pageId, path }) => pageId === "home" && path === "/");
+  const newListRoute = nextStaticManifest.routes.find(({ pageId, path }) => pageId === "home" && path === "/");
+  const oldChangedDetail = staticManifest.routes.find(({ pageId, path }) => pageId === detailPage.pageId && path === "/articles/article-1");
+  const newChangedDetail = nextStaticManifest.routes.find(({ pageId, path }) => pageId === detailPage.pageId && path === "/articles/article-1");
+  const oldUnchangedDetail = staticManifest.routes.find(({ pageId, path }) => pageId === detailPage.pageId && path === "/articles/article-2");
+  const newUnchangedDetail = nextStaticManifest.routes.find(({ pageId, path }) => pageId === detailPage.pageId && path === "/articles/article-2");
+  const oldGenericList = staticManifest.routes.find(({ pageId, path }) => pageId.startsWith("cms_") && path === "/cms/posts");
+  const newGenericList = nextStaticManifest.routes.find(({ pageId, path }) => pageId.startsWith("cms_") && path === "/cms/posts");
+  const oldGenericChangedDetail = staticManifest.routes.find(({ pageId, path }) => pageId.startsWith("cms_") && path === "/cms/posts/article-1");
+  const newGenericChangedDetail = nextStaticManifest.routes.find(({ pageId, path }) => pageId.startsWith("cms_") && path === "/cms/posts/article-1");
+  const oldGenericUnchangedDetail = staticManifest.routes.find(({ pageId, path }) => pageId.startsWith("cms_") && path === "/cms/posts/article-2");
+  const newGenericUnchangedDetail = nextStaticManifest.routes.find(({ pageId, path }) => pageId.startsWith("cms_") && path === "/cms/posts/article-2");
+  assert.notEqual(newListRoute.digest, oldListRoute.digest, "the dependent collection list is regenerated");
+  assert.notEqual(newChangedDetail.digest, oldChangedDetail.digest, "the changed item detail is regenerated");
+  assert.equal(newUnchangedDetail.digest, oldUnchangedDetail.digest, "an unrelated detail artifact is retained");
+  assert.notEqual(newGenericList.digest, oldGenericList.digest, "the generic CMS list is regenerated for a changed item");
+  assert.notEqual(newGenericChangedDetail.digest, oldGenericChangedDetail.digest, "the generic CMS detail for the changed item is regenerated");
+  assert.equal(newGenericUnchangedDetail.digest, oldGenericUnchangedDetail.digest, "an unrelated generic CMS detail is retained");
+  const updatedListHtml = await (await lookup("/")).text();
+  const updatedDetailHtml = await (await lookup("/articles/article-1")).text();
+  assert.match(updatedListHtml, /Updated Article 1/u);
+  assert.match(updatedDetailHtml, /Updated Article 1/u);
+
   const customList = await h.fetch(`https://${customDomain}/`, { headers: { "Cache-Control": "no-cache" } });
-  assert.equal(customList.status, 200, "a registered custom host keeps the CMS-bound page fallback");
+  assert.equal(customList.status, 200, "a registered custom host serves the static CMS-bound page");
   assert.equal(customList.headers.get("X-Robots-Tag"), "noindex, nofollow");
-  assert.match(await customList.text(), /name="robots" content="noindex, nofollow"/u);
+  assert.match(await customList.text(), /Updated Article 1/u);
   const customCmsDetail = await h.fetch(`https://${customDomain}/cms/posts/article-7`, { headers: { "Cache-Control": "no-cache" } });
   assert.equal(customCmsDetail.status, 200, "a registered custom host keeps the CMS route fallback");
   assert.equal(customCmsDetail.headers.get("X-Robots-Tag"), "noindex, nofollow");
@@ -1852,15 +2015,15 @@ testWithD1("Studio page bindings publish a six-item list and dynamic detail from
   compatible.collections[0].fields = compatible.collections[0].fields.filter(({ fieldId }) => fieldId !== "article_date");
   const updatedSchemaPlan = (await body(await migrate(compatible), 200)).plan;
   await site.read("cms.schema.apply", { operationId: updatedSchemaPlan.operationId, confirmationToken: updatedSchemaPlan.confirmationToken });
-  assert.equal(await (await lookup("/")).text(), html);
-  assert.equal(await (await lookup("/articles/article-7")).text(), detailHtml);
+  assert.equal(await (await lookup("/")).text(), updatedListHtml);
+  assert.equal(await (await lookup("/articles/article-1")).text(), updatedDetailHtml);
   const restored = await body(await browser("POST", "/home/publish", { expectedVersion: unbound.version, action: "restore", revision: applied.revision }), 200);
   assert.deepEqual(restored.snapshot.cmsBindings, cmsBindings);
   const restoredHtml = await (await lookup("/")).text();
-  assert.deepEqual([...restoredHtml.matchAll(/href="\/s\/bound-articles\/articles\/article-(\d)"/gu)].map((match) => match[1]), ["7", "5", "4", "3", "2"]);
-  assert.match(restoredHtml, /href="\/s\/bound-articles\/articles\/Legacy-Case"/u);
+  assert.deepEqual([...restoredHtml.matchAll(/href="(?:\/s\/bound-articles)?\/articles\/article-(\d)"/gu)].map((match) => match[1]), ["1", "7", "5", "4", "3"]);
+  assert.match(restoredHtml, /href="(?:\/s\/bound-articles)?\/articles\/Legacy-Case"/u);
   assert.equal(h.sqlite.prepare("SELECT p.cms_release_id FROM managed_pages AS m JOIN managed_page_publications AS p ON p.id = m.published_publication_id WHERE m.site_id = ? AND m.page_id = 'home'")
-    .get(site.siteId).cms_release_id, cmsRelease.releaseId);
+    .get(site.siteId).cms_release_id, nextCmsRelease.releaseId);
 });
 
 testWithD1("Studio CMS release snapshots include live unpublished page reservations", async (t) => {

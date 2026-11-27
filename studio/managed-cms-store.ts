@@ -30,12 +30,25 @@ export type CmsState = {
   retainedBytes: number;
 };
 export type Site = CmsScope & { readonly generation: string | null; readonly slug: string; readonly role: "owner" | "editor"; readonly state: CmsState };
-export type JobPayload = { keys: readonly string[] } | { releaseId: string; expectedReleaseId: string | null; pins: readonly string[] };
+export type JobPayload = { keys: readonly string[] } | { releaseId: string; expectedReleaseId: string | null; pins: readonly string[];
+  locale?: string; sourceReleaseId?: string | null };
 export type Job = {
   id: string; site_id: string; project_id: string; actor_id: string; client_id: string | null;
   kind: "verify" | "release" | "schedule"; payload_json: string; scheduled_at: number; attempts: number;
   state: "pending" | "delivered" | "dead" | "cancelled"; lease_id: string | null;
 };
+export type CmsPublishCommit = {
+  readonly gateSql: string;
+  readonly gateValues: readonly unknown[];
+  readonly statements: (generation: string) => readonly ReturnType<ManagedD1["prepare"]>[];
+};
+
+function shiftCmsPublicationGate(sql: string): string {
+  return sql.replace(/\?(\d+)/gu, (placeholder, index: string) => {
+    const value = Number(index);
+    return value > 10 ? `?${value + 5}` : placeholder;
+  });
+}
 
 type Receipt = { operation: string; input_digest: string; result_json: string; transaction_id: string };
 
@@ -93,7 +106,8 @@ function scopeValues(scope: CmsScope, capability: CmsCapability) {
 }
 
 export class CmsStore {
-  constructor(readonly db: ManagedD1, readonly bucket: CmsBucket, readonly resolvePublicAssets?: CmsPublicAssetResolver) {}
+  constructor(readonly db: ManagedD1, readonly bucket: CmsBucket, readonly resolvePublicAssets?: CmsPublicAssetResolver,
+    readonly publicOrigin?: string) {}
 
   async publicAssets(schema: CmsSchema, items: readonly CmsItemRevision[]) {
     const references = collectCmsReleaseAssetReferences(schema, items);
@@ -288,6 +302,7 @@ export class CmsStore {
     operation: string; operationId: string; inputDigest: string; result: object; state: CmsState;
     revisions?: readonly CmsItemRevision[]; job?: { id: string; kind: Job["kind"]; at: number; payload: JobPayload };
     cancel?: string; tokenHash?: string; requireFreeSlot?: boolean; bindingsGeneration?: number; publishedSnapshot?: CmsReleaseSnapshot;
+    publication?: CmsPublishCommit;
   }): Promise<boolean> {
     const transactionId = opaque("tx"), auditGuard = "EXISTS (SELECT 1 FROM managed_cms_receipts WHERE transaction_id = ?1)";
     const { operation, operationId, inputDigest, state, result, job, revisions, cancel } = change;
@@ -299,8 +314,10 @@ export class CmsStore {
           AND (?13 IS NULL OR EXISTS (SELECT 1 FROM managed_cms_tokens WHERE token_hash = ?13 AND site_id = ?2 AND actor_id = ?3 AND expires_at > unixepoch()))
           AND (?14 = 0 OR (SELECT count(*) FROM managed_cms_outbox WHERE site_id = ?2 AND state = 'pending' AND kind IN ('release', 'schedule')) < 25)
           AND (?15 IS NULL OR (SELECT bindings_generation FROM managed_sites WHERE site_id = ?2) = ?15)
+          ${change.publication ? `AND (${shiftCmsPublicationGate(change.publication.gateSql)})` : ""}
         ON CONFLICT(site_id, actor_id, operation_id) DO NOTHING`).bind(...scopeValues(site, capability), operationId, operation,
-        inputDigest, transactionId, JSON.stringify(result), site.generation, cancel ?? null, change.tokenHash ?? null, Number(change.requireFreeSlot ?? false), change.bindingsGeneration ?? null),
+        inputDigest, transactionId, JSON.stringify(result), site.generation, cancel ?? null, change.tokenHash ?? null, Number(change.requireFreeSlot ?? false), change.bindingsGeneration ?? null,
+        ...(change.publication?.gateValues ?? [])),
       this.db.prepare(`INSERT INTO managed_cms_state (site_id, generation, state_json) SELECT ?2, ?1, ?3 WHERE ${auditGuard}
         ON CONFLICT(site_id) DO UPDATE SET generation = excluded.generation, state_json = excluded.state_json`)
         .bind(transactionId, site.siteId, JSON.stringify(state)),
@@ -314,6 +331,7 @@ export class CmsStore {
       ...(revisions ?? []).map((item) => this.db.prepare(`INSERT INTO managed_cms_revisions (site_id, revision, collection_id, item_id, locale, schema_revision)
         SELECT ?2, ?3, ?4, ?5, ?6, ?7 WHERE ${auditGuard}`)
         .bind(transactionId, site.siteId, item.revision, item.collectionId, item.itemId, item.locale, item.schemaRevision)),
+      ...(change.publication?.statements(transactionId) ?? []),
       this.db.prepare(`INSERT INTO managed_cms_outbox (id, site_id, actor_id, client_id, receipt_id, kind, payload_json, scheduled_at, available_at)
         SELECT ?2, ?3, ?4, ?5, ?1, ?6, ?7, ?8, ?8 WHERE ${auditGuard}`).bind(transactionId, job?.id ?? transactionId,
         site.siteId, site.actor.id, site.actor.clientId ?? null, job?.kind ?? "verify",
@@ -326,16 +344,21 @@ export class CmsStore {
     return results[0]?.meta?.changes === 1;
   }
 
-  async publish(site: Site, job: Job, snapshot: CmsReleaseSnapshot) {
+  async publish(site: Site, job: Job, snapshot: CmsReleaseSnapshot, extra?: CmsPublishCommit) {
     await this.put(routeTableKey(site.siteId, snapshot.locale, snapshot.routeTable.revision), snapshot.routeTable);
-    const state: CmsState = { ...site.state, current: { id: snapshot.releaseId, at: dateNow() }, routeTableRevision: snapshot.routeTable.revision };
+    const at = dateNow(), released = { id: snapshot.releaseId, at, routeTableRevision: snapshot.routeTable.revision };
+    const state: CmsState = snapshot.locale === site.state.locale
+      ? { ...site.state, current: { id: released.id, at: released.at }, routeTableRevision: released.routeTableRevision }
+      : { ...site.state, localizedReleases: { ...(site.state.localizedReleases ?? {}), [snapshot.locale]: released } };
     const generation = opaque("tx");
     const guard = "EXISTS (SELECT 1 FROM managed_cms_state WHERE site_id = ?2 AND generation = ?1)";
     const statements = [
       this.db.prepare(`UPDATE managed_cms_state SET generation = ?6, state_json = ?7 WHERE site_id = ?2 AND generation = ?8
         AND EXISTS (SELECT 1 ${AUTH})
         AND EXISTS (SELECT 1 FROM managed_cms_outbox WHERE site_id = ?2 AND id = ?9 AND state = 'pending' AND lease_id = ?10
-          AND lease_until > unixepoch())`).bind(...scopeValues(site, "cms.publish"), generation, JSON.stringify(state), site.generation, job.id, job.lease_id),
+          AND lease_until > unixepoch()) ${extra ? `AND (${extra.gateSql})` : ""}`)
+        .bind(...scopeValues(site, "cms.publish"), generation, JSON.stringify(state), site.generation, job.id, job.lease_id, ...(extra?.gateValues ?? [])),
+      ...(extra?.statements(generation) ?? []),
       this.db.prepare(`INSERT INTO managed_cms_releases (site_id, release_id) SELECT ?2, ?3 WHERE ${guard}`)
         .bind(generation, site.siteId, snapshot.releaseId),
       await this.deliveryEvent(generation, snapshot, guard),

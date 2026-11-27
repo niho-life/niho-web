@@ -1,6 +1,8 @@
 import type { ManagedD1, ManagedPublicHtmlCache } from "./managed-sites.js";
-import { MANAGED_EMBED_REF } from "./managed-embed-contract.js";
-import { parseManagedSiteRedirects, type ManagedSiteRedirect } from "../src/managed-site-redirects.js";
+import { MANAGED_EMBED_REF, parseManagedPublicPolicy, type ManagedPublicPolicy } from "./managed-embed-contract.js";
+import { MAX_MANAGED_SITE_REDIRECTS, parseManagedSiteRedirects, type ManagedSiteRedirect } from "../src/managed-site-redirects.js";
+
+const MAX_PUBLISHED_SITE_REDIRECTS = 25_000 + MAX_MANAGED_SITE_REDIRECTS;
 
 export type PublishedSiteReadObjectStore = {
   get(key: string): Promise<{ json<T>(): Promise<T>; text(): Promise<string> } | null>;
@@ -27,6 +29,9 @@ export type PublishedRoute = {
   readonly textDigest?: string;
   readonly lastModified?: string;
   readonly noindex?: boolean;
+  readonly caseSensitive?: true;
+  readonly sourcePath?: string;
+  readonly cmsReleaseId?: string;
 };
 
 export type PublishedRouteEmbed = { readonly refId: string; readonly src: string };
@@ -47,6 +52,11 @@ export type PublishedSiteManifest = {
   readonly siteName?: string;
   readonly siteDescription?: string;
   readonly robotsPolicy?: "index" | "noindex";
+  readonly publicPolicyVersion?: string;
+  readonly publicDomainVersion?: string;
+  readonly siteStylesVersion?: string;
+  readonly publicBaseUrl?: string;
+  readonly publicPolicy?: ManagedPublicPolicy;
   readonly discoveryFiles?: readonly PublishedDiscoveryFile[];
 };
 
@@ -69,7 +79,8 @@ const HASH = /^[0-9a-f]{64}$/u;
 const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/u;
 const SAFE_LOCALE = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/u;
 const SAFE_PATH = /^\/(?:[A-Za-z0-9._~!$&'()*+,;=:@%+-]+(?:\/[A-Za-z0-9._~!$&'()*+,;=:@%+-]+)*)?$/u;
-const DISCOVERY_PATHS = ["/sitemap.xml", "/robots.txt", "/llms.txt", "/llms-full.txt"] as const;
+const DISCOVERY_PATHS = ["/sitemap.xml", "/robots.txt", "/llms.txt"] as const;
+const RETIRED_DISCOVERY_PATH = "/llms-full.txt";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -106,19 +117,28 @@ export function parsePublishedSiteManifest(value: unknown, siteId: string): Publ
   if (!SAFE_ID.test(siteId) || !isRecord(value) || !exactKeys(value, ["formatVersion", "siteId", "publicationId", "createdAt", "routes",
     ...(Object.hasOwn(value, "siteName") ? ["siteName"] : []), ...(Object.hasOwn(value, "siteDescription") ? ["siteDescription"] : []),
     ...(Object.hasOwn(value, "robotsPolicy") ? ["robotsPolicy"] : []), ...(Object.hasOwn(value, "discoveryFiles") ? ["discoveryFiles"] : []),
+    ...(Object.hasOwn(value, "publicPolicyVersion") ? ["publicPolicyVersion"] : []), ...(Object.hasOwn(value, "publicDomainVersion") ? ["publicDomainVersion"] : []),
+    ...(Object.hasOwn(value, "siteStylesVersion") ? ["siteStylesVersion"] : []),
+    ...(Object.hasOwn(value, "publicBaseUrl") ? ["publicBaseUrl"] : []), ...(Object.hasOwn(value, "publicPolicy") ? ["publicPolicy"] : []),
     ...(Object.hasOwn(value, "redirects") ? ["redirects"] : [])])
     || value.formatVersion !== 1 || value.siteId !== siteId || typeof value.publicationId !== "string" || !SAFE_ID.test(value.publicationId)
     || typeof value.createdAt !== "string" || !Number.isFinite(Date.parse(value.createdAt)) || !Array.isArray(value.routes)
     || Object.hasOwn(value, "siteName") && (typeof value.siteName !== "string" || value.siteName.length > 300)
     || Object.hasOwn(value, "siteDescription") && (typeof value.siteDescription !== "string" || value.siteDescription.length > 1000)
+    || Object.hasOwn(value, "publicPolicyVersion") && (typeof value.publicPolicyVersion !== "string" || !value.publicPolicyVersion || value.publicPolicyVersion.length > 200 || /[\u0000-\u001f\u007f]/u.test(value.publicPolicyVersion))
+    || Object.hasOwn(value, "publicDomainVersion") && (typeof value.publicDomainVersion !== "string" || !value.publicDomainVersion || value.publicDomainVersion.length > 200 || /[\u0000-\u001f\u007f]/u.test(value.publicDomainVersion))
+    || Object.hasOwn(value, "siteStylesVersion") && (typeof value.siteStylesVersion !== "string" || !value.siteStylesVersion || value.siteStylesVersion.length > 200 || /[\u0000-\u001f\u007f]/u.test(value.siteStylesVersion))
+    || Object.hasOwn(value, "publicBaseUrl") && (typeof value.publicBaseUrl !== "string" || value.publicBaseUrl.length > 512 || !validPublicBaseUrl(value.publicBaseUrl))
+    || Object.hasOwn(value, "publicPolicy") && !parseManagedPublicPolicy(value.publicPolicy, "https://publication.invalid")
     || Object.hasOwn(value, "robotsPolicy") && value.robotsPolicy !== "index" && value.robotsPolicy !== "noindex") return null;
-  if (Object.hasOwn(value, "redirects") && !parseManagedSiteRedirects(value.redirects)) return null;
+  if (Object.hasOwn(value, "redirects") && !parseManagedSiteRedirects(value.redirects, MAX_PUBLISHED_SITE_REDIRECTS)) return null;
   if (Object.hasOwn(value, "discoveryFiles")) {
-    if (!Array.isArray(value.discoveryFiles) || value.discoveryFiles.length !== DISCOVERY_PATHS.length) return null;
+    if (!Array.isArray(value.discoveryFiles) || value.discoveryFiles.length < DISCOVERY_PATHS.length
+      || value.discoveryFiles.length > DISCOVERY_PATHS.length + 1) return null;
     const seenFiles = new Set<string>();
     for (const candidate of value.discoveryFiles) {
       if (!isRecord(candidate) || !exactKeys(candidate, ["path", "artifactKey", "digest", "contentType"])
-        || typeof candidate.path !== "string" || !(DISCOVERY_PATHS as readonly string[]).includes(candidate.path)
+        || typeof candidate.path !== "string" || candidate.path !== RETIRED_DISCOVERY_PATH && !(DISCOVERY_PATHS as readonly string[]).includes(candidate.path)
         || seenFiles.has(candidate.path) || typeof candidate.digest !== "string" || !HASH.test(candidate.digest)
         || candidate.artifactKey !== `managed-sites/${siteId}/artifacts/${candidate.digest}.${candidate.path.slice(1)}`
         || candidate.contentType !== (candidate.path === "/sitemap.xml" ? "application/xml; charset=utf-8" : "text/plain; charset=utf-8")) return null;
@@ -126,12 +146,11 @@ export function parsePublishedSiteManifest(value: unknown, siteId: string): Publ
     }
     if (DISCOVERY_PATHS.some((path) => !seenFiles.has(path))) return null;
   }
-  const seen = new Set<string>();
-  const routes: PublishedRoute[] = [];
+  const seenPaths = new Set<string>();
   for (const candidate of value.routes) {
     const hasEmbeds = isRecord(candidate) && Object.hasOwn(candidate, "embeds");
     const optionalRouteKeys = isRecord(candidate)
-      ? ["title", "description", "text", "textArtifactKey", "textDigest", "lastModified", "noindex"].filter((key) => Object.hasOwn(candidate, key)) : [];
+      ? ["title", "description", "text", "textArtifactKey", "textDigest", "lastModified", "noindex", "caseSensitive", "sourcePath", "cmsReleaseId"].filter((key) => Object.hasOwn(candidate, key)) : [];
     if (!isRecord(candidate) || !exactKeys(candidate, ["pageId", "locale", "path", "sourceRevision", "artifactKey", "digest", "contentType", "contentSecurityPolicy",
       ...(hasEmbeds ? ["embeds"] : []), ...optionalRouteKeys])
       || typeof candidate.pageId !== "string" || !SAFE_ID.test(candidate.pageId)
@@ -152,27 +171,23 @@ export function parsePublishedSiteManifest(value: unknown, siteId: string): Publ
       || Object.hasOwn(candidate, "textDigest") && (typeof candidate.textDigest !== "string" || !HASH.test(candidate.textDigest)
         || candidate.textArtifactKey !== `managed-sites/${siteId}/texts/${candidate.textDigest}.txt`)
       || Object.hasOwn(candidate, "lastModified") && (typeof candidate.lastModified !== "string" || !Number.isFinite(Date.parse(candidate.lastModified)))
+      || Object.hasOwn(candidate, "caseSensitive") && candidate.caseSensitive !== true
+      || Object.hasOwn(candidate, "sourcePath") && (typeof candidate.sourcePath !== "string" || !SAFE_PATH.test(candidate.sourcePath))
+      || Object.hasOwn(candidate, "cmsReleaseId") && (typeof candidate.cmsReleaseId !== "string" || !SAFE_ID.test(candidate.cmsReleaseId))
       || Object.hasOwn(candidate, "noindex") && typeof candidate.noindex !== "boolean") return null;
-    const embeds = hasEmbeds ? parsePublishedEmbeds(candidate.embeds) : undefined;
-    if (hasEmbeds && !embeds) return null;
-    const key = `${candidate.pageId}\u0000${candidate.locale}`;
-    const pathKey = String(candidate.path);
-    if (seen.has(key) || routes.some((route) => route.path === pathKey)) return null;
-    seen.add(key);
-    routes.push({
-      pageId: candidate.pageId, locale: candidate.locale, path: candidate.path, sourceRevision: Number(candidate.sourceRevision),
-      artifactKey: candidate.artifactKey, digest: candidate.digest, contentType: "text/html; charset=utf-8",
-      contentSecurityPolicy: candidate.contentSecurityPolicy, ...(embeds ? { embeds } : {}),
-      ...(typeof candidate.title === "string" ? { title: candidate.title } : {}),
-      ...(typeof candidate.description === "string" ? { description: candidate.description } : {}),
-      ...(typeof candidate.text === "string" ? { text: candidate.text } : {}),
-      ...(typeof candidate.textArtifactKey === "string" && typeof candidate.textDigest === "string"
-        ? { textArtifactKey: candidate.textArtifactKey, textDigest: candidate.textDigest } : {}),
-      ...(typeof candidate.lastModified === "string" ? { lastModified: candidate.lastModified } : {}),
-      ...(typeof candidate.noindex === "boolean" ? { noindex: candidate.noindex } : {})
-    });
+    if (hasEmbeds && !parsePublishedEmbeds(candidate.embeds)) return null;
+    if (seenPaths.has(candidate.path)) return null;
+    seenPaths.add(candidate.path);
   }
   return value as unknown as PublishedSiteManifest;
+}
+
+function validPublicBaseUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && !url.username && !url.password && !url.search && !url.hash
+      && (url.pathname === "/" || !url.pathname.endsWith("/")) && !url.pathname.includes("//");
+  } catch { return false; }
 }
 
 async function putImmutable(bucket: PublishedSiteObjectStore, key: string, value: string): Promise<void> {
@@ -181,21 +196,33 @@ async function putImmutable(bucket: PublishedSiteObjectStore, key: string, value
   if (result === null) return;
 }
 
-async function moveLegacyTextOutOfManifest(bucket: PublishedSiteObjectStore, siteId: string,
-  routes: readonly PublishedRoute[]): Promise<PublishedRoute[]> {
-  const migrated: PublishedRoute[] = [];
-  for (const route of routes) {
-    if (route.text === undefined) {
-      migrated.push(route);
-      continue;
-    }
-    const textDigest = await sha256Text(route.text);
-    const textArtifactKey = `managed-sites/${siteId}/texts/${textDigest}.txt`;
-    await putImmutable(bucket, textArtifactKey, route.text);
-    const { text: _legacyText, ...withoutLegacyText } = route;
-    migrated.push({ ...withoutLegacyText, textArtifactKey, textDigest });
+function withoutLegacyText({ text: _text, textArtifactKey: _key, textDigest: _digest, ...route }: PublishedRoute): PublishedRoute {
+  return route;
+}
+
+async function readPublishedManifest(bucket: PublishedSiteObjectStore, siteId: string, key: string): Promise<PublishedSiteManifest> {
+  const prefix = "managed-sites/" + siteId + "/manifests/";
+  if (!key.startsWith(prefix) || !key.endsWith(".json") || !HASH.test(key.slice(prefix.length, -5))) {
+    throw new Error("invalid current publication manifest key");
   }
-  return migrated;
+  const object = await bucket.get(key);
+  if (!object) throw new Error("current publication manifest missing");
+  const manifest = parsePublishedSiteManifest(await object.json<unknown>(), siteId);
+  if (!manifest) throw new Error("current publication manifest invalid");
+  return manifest;
+}
+
+export async function loadPublishedSiteManifest(bucket: PublishedSiteObjectStore, siteId: string, key: string | null): Promise<PublishedSiteManifest | null> {
+  return key === null ? null : readPublishedManifest(bucket, siteId, key);
+}
+
+async function writePublishedManifest(bucket: PublishedSiteObjectStore, manifest: PublishedSiteManifest,
+  expectedVersion: string): Promise<PreparedPublishedManifest> {
+  const manifestText = JSON.stringify(manifest);
+  const manifestVersion = await sha256Text(manifestText);
+  const manifestKey = "managed-sites/" + manifest.siteId + "/manifests/" + manifestVersion + ".json";
+  await putImmutable(bucket, manifestKey, manifestText);
+  return { expectedVersion, manifestKey, manifestVersion };
 }
 
 export async function preparePublishedManifest(input: {
@@ -210,20 +237,16 @@ export async function preparePublishedManifest(input: {
 }): Promise<PreparedPublishedManifest> {
   const { bucket, siteId, publicationId } = input;
   if (!SAFE_ID.test(siteId) || !SAFE_ID.test(publicationId) || !input.expectedVersion || input.expectedVersion.length > 200
-    || !input.currentManifestKey
-    || !new RegExp(`^managed-sites/${siteId}/manifests/${HASH.source.slice(1, -1)}\\.json$`, "u").test(input.currentManifestKey)) {
+    || !input.currentManifestKey) {
     throw new Error("invalid managed manifest update input");
   }
-  const object = await bucket.get(input.currentManifestKey);
-  if (!object) throw new Error("current publication manifest missing");
-  const previous = parsePublishedSiteManifest(await object.json<unknown>(), siteId);
-  if (!previous) throw new Error("current publication manifest invalid");
-  const routes = await moveLegacyTextOutOfManifest(bucket, siteId, previous.routes);
+  const previous = await readPublishedManifest(bucket, siteId, input.currentManifestKey);
+  const routes = previous.routes.map(withoutLegacyText);
   const omitRoute = input.omitRoute;
   const activeRoutes = omitRoute
     ? routes.filter((route) => route.pageId !== omitRoute.pageId || route.locale !== omitRoute.locale)
     : routes;
-  const redirects = input.redirects === undefined ? previous.redirects : parseManagedSiteRedirects(input.redirects);
+  const redirects = input.redirects === undefined ? previous.redirects : parseManagedSiteRedirects(input.redirects, MAX_PUBLISHED_SITE_REDIRECTS);
   if (input.redirects !== undefined && !redirects) throw new Error("invalid managed publication redirects");
   const createdAt = new Date().toISOString();
   const discoveryFiles = await createDiscoveryFiles(bucket, siteId, activeRoutes, {
@@ -236,21 +259,19 @@ export async function preparePublishedManifest(input: {
     ...(previous.siteName !== undefined ? { siteName: previous.siteName } : {}),
     ...(previous.siteDescription !== undefined ? { siteDescription: previous.siteDescription } : {}),
     ...(previous.robotsPolicy !== undefined ? { robotsPolicy: previous.robotsPolicy } : {}),
+    ...(previous.publicPolicyVersion !== undefined ? { publicPolicyVersion: previous.publicPolicyVersion } : {}),
+    ...(previous.publicDomainVersion !== undefined ? { publicDomainVersion: previous.publicDomainVersion } : {}),
+    ...(previous.siteStylesVersion !== undefined ? { siteStylesVersion: previous.siteStylesVersion } : {}),
+    publicBaseUrl: input.publicBaseUrl,
+    ...(previous.publicPolicy !== undefined ? { publicPolicy: previous.publicPolicy } : {}),
     discoveryFiles
   };
-  const manifestText = JSON.stringify(manifest);
-  const manifestVersion = await sha256Text(manifestText);
-  const manifestKey = `managed-sites/${siteId}/manifests/${manifestVersion}.json`;
-  await putImmutable(bucket, manifestKey, manifestText);
-  return { expectedVersion: input.expectedVersion, manifestKey, manifestVersion };
+  return writePublishedManifest(bucket, manifest, input.expectedVersion);
 }
 
-export async function preparePublishedSite(input: {
-  readonly bucket: PublishedSiteObjectStore;
-  readonly siteId: string;
-  readonly publicationId: string;
-  readonly pageId: string;
-  readonly locale: string;
+type PublishedPageKey = Pick<PublishedRoute, "pageId" | "locale">;
+
+export type PublishedRouteInput = PublishedPageKey & {
   readonly path: string;
   readonly sourceRevision: number;
   readonly html: string;
@@ -258,89 +279,153 @@ export async function preparePublishedSite(input: {
   readonly embeds?: readonly PublishedRouteEmbed[];
   readonly title?: string;
   readonly description?: string;
-  readonly text?: string;
   readonly noindex?: boolean;
   readonly isPublic?: boolean;
+  readonly lastModified?: string;
+  readonly caseSensitive?: true;
+  readonly sourcePath?: string;
+  readonly cmsReleaseId?: string;
+};
+
+type PublishedSiteInput = {
+  readonly bucket: PublishedSiteObjectStore;
+  readonly siteId: string;
+  readonly publicationId: string;
   readonly siteName?: string;
   readonly siteDescription?: string;
   readonly robotsPolicy?: "index" | "noindex";
+  readonly publicPolicyVersion?: string;
+  readonly publicDomainVersion?: string;
+  readonly siteStylesVersion?: string;
+  readonly publicPolicy?: ManagedPublicPolicy;
   readonly publicBaseUrl?: string;
-  readonly activeRouteKeys?: readonly { readonly pageId: string; readonly locale: string }[];
   readonly expectedVersion: string;
   readonly currentManifestKey: string | null;
   readonly redirects?: readonly ManagedSiteRedirect[];
-}): Promise<PreparedPublishedSite> {
-  const { bucket, siteId, publicationId, pageId, locale, path, sourceRevision, html } = input;
-  if (!SAFE_ID.test(siteId) || !SAFE_ID.test(publicationId) || !SAFE_ID.test(pageId) || !SAFE_LOCALE.test(locale)
-    || !SAFE_PATH.test(path) || path !== "/" && path.endsWith("/")
-    || !Number.isSafeInteger(sourceRevision) || sourceRevision < 1 || !html || html.length > 2_000_000
-    || !input.expectedVersion || input.expectedVersion.length > 200
-    || input.title !== undefined && (input.title.length > 500 || /[\u0000-\u001f\u007f]/u.test(input.title))
-    || input.description !== undefined && (input.description.length > 1000 || /[\u0000-\u001f\u007f]/u.test(input.description))
-    || input.text !== undefined && (input.text.length > 40_000 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(input.text))
-    || input.siteName !== undefined && input.siteName.length > 300
-    || input.siteDescription !== undefined && input.siteDescription.length > 1000
-    || input.robotsPolicy !== undefined && input.robotsPolicy !== "index" && input.robotsPolicy !== "noindex") throw new Error("invalid managed publication input");
+};
+
+type PreparedPublishedRoute = Pick<PublishedRoute, "pageId" | "locale" | "path"> &
+  Pick<PreparedPublishedSite, "artifactKey" | "artifactDigest" | "contentSecurityPolicy">;
+type PreparedPublishedSiteBatch = PreparedPublishedManifest & {
+  readonly artifacts: ReadonlyMap<string, PreparedPublishedRoute>;
+  readonly routes: readonly PublishedRoute[];
+  readonly changedPaths: readonly string[];
+};
+
+function pageKey({ pageId, locale }: PublishedPageKey): string {
+  if (!SAFE_ID.test(pageId) || !SAFE_LOCALE.test(locale)) throw new Error("invalid managed publication page");
+  return pageId + "\u0000" + locale;
+}
+
+async function writePublishedRoute(bucket: PublishedSiteObjectStore, siteId: string, input: PublishedRouteInput, lastModified: string,
+  knownArtifacts: Set<string>, previous?: PublishedRoute) {
+  const { pageId, locale, path, sourceRevision, html, title, description } = input;
+  const contentSecurityPolicy = input.contentSecurityPolicy ?? DEFAULT_PUBLISHED_CSP;
   const embeds = input.embeds === undefined ? undefined : parsePublishedEmbeds(input.embeds);
+  pageKey(input);
+  if (!SAFE_PATH.test(path) || path !== "/" && path.endsWith("/")
+    || !Number.isSafeInteger(sourceRevision) || sourceRevision < 1 || !html || html.length > 2_000_000
+    || contentSecurityPolicy.length > 2048 || /[\u0000-\u001f\u007f]/u.test(contentSecurityPolicy)
+    || title !== undefined && (title.length > 500 || /[\u0000-\u001f\u007f]/u.test(title))
+    || description !== undefined && (description.length > 1000 || /[\u0000-\u001f\u007f]/u.test(description))
+    || input.lastModified !== undefined && !Number.isFinite(Date.parse(input.lastModified))) {
+    throw new Error("invalid managed publication input");
+  }
   if (input.embeds !== undefined && !embeds) throw new Error("invalid managed publication embeds");
 
   const artifactDigest = await sha256Text(html);
-  const artifactKey = `managed-sites/${siteId}/artifacts/${artifactDigest}.html`;
-  await putImmutable(bucket, artifactKey, html);
+  const artifactKey = "managed-sites/" + siteId + "/artifacts/" + artifactDigest + ".html";
+  if (!knownArtifacts.has(artifactKey)) {
+    await putImmutable(bucket, artifactKey, html);
+    knownArtifacts.add(artifactKey);
+  }
+  const artifact = { pageId, locale, path, artifactKey, artifactDigest, contentSecurityPolicy };
+  if (input.isPublic === false) return { artifact, route: null };
 
-  let previousRoutes: PublishedRoute[] = [];
-  if (input.currentManifestKey) {
-    if (!new RegExp(`^managed-sites/${siteId}/manifests/${HASH.source.slice(1, -1)}\\.json$`, "u").test(input.currentManifestKey)) {
-      throw new Error("invalid current publication manifest key");
-    }
-    const object = await bucket.get(input.currentManifestKey);
-    if (!object) throw new Error("current publication manifest missing");
-    const previous = parsePublishedSiteManifest(await object.json<unknown>(), siteId);
-    if (!previous) throw new Error("current publication manifest invalid");
-    previousRoutes = await moveLegacyTextOutOfManifest(bucket, siteId, previous.routes);
-  }
+  // A rebuild can change HTML without publishing a new version of the page's content.
+  const previousContentDate = previous && previous.pageId === pageId && previous.locale === locale
+    && previous.sourceRevision === sourceRevision
+    && (previous.cmsReleaseId === input.cmsReleaseId || previous.digest === artifactDigest) ? previous.lastModified : undefined;
+  const route: PublishedRoute = { pageId, locale, path, sourceRevision, artifactKey, digest: artifactDigest,
+    contentType: "text/html; charset=utf-8", contentSecurityPolicy, ...(embeds ? { embeds } : {}),
+    ...(title !== undefined ? { title } : {}), ...(description !== undefined ? { description } : {}),
+    lastModified: input.lastModified ?? previousContentDate ?? lastModified,
+    ...(input.noindex ? { noindex: true } : {}), ...(input.caseSensitive ? { caseSensitive: true } : {}),
+    ...(input.sourcePath ? { sourcePath: input.sourcePath } : {}), ...(input.cmsReleaseId ? { cmsReleaseId: input.cmsReleaseId } : {}) };
+  return { artifact, route };
+}
 
-  const contentSecurityPolicy = input.contentSecurityPolicy ?? DEFAULT_PUBLISHED_CSP;
-  const activeRouteKeys = input.activeRouteKeys ? new Set(input.activeRouteKeys.map(({ pageId: activePageId, locale: activeLocale }) => `${activePageId}\u0000${activeLocale}`)) : null;
-  const routes = previousRoutes.filter((route) => (route.pageId !== pageId || route.locale !== locale)
-    && (!activeRouteKeys || activeRouteKeys.has(`${route.pageId}\u0000${route.locale}`)));
-  if (routes.some((route) => route.path === path)) throw new Error("published route is already owned by another page");
-  const createdAt = new Date().toISOString();
-  if (input.isPublic !== false) {
-    let textArtifact: { readonly textArtifactKey: string; readonly textDigest: string } | undefined;
-    if (input.text !== undefined) {
-      const textDigest = await sha256Text(input.text);
-      const textArtifactKey = `managed-sites/${siteId}/texts/${textDigest}.txt`;
-      await putImmutable(bucket, textArtifactKey, input.text);
-      textArtifact = { textArtifactKey, textDigest };
-    }
-    routes.push({ pageId, locale, path, sourceRevision, artifactKey, digest: artifactDigest,
-      contentType: "text/html; charset=utf-8", contentSecurityPolicy, ...(embeds ? { embeds } : {}),
-      ...(input.title !== undefined ? { title: input.title } : {}), ...(input.description !== undefined ? { description: input.description } : {}),
-      ...(textArtifact ?? {}), lastModified: createdAt, ...(input.noindex ? { noindex: true } : {}) });
-  }
-  routes.sort((a, b) => a.path.localeCompare(b.path) || a.locale.localeCompare(b.locale) || a.pageId.localeCompare(b.pageId));
-  let discoveryFiles: PublishedDiscoveryFile[] | undefined;
-  if (input.publicBaseUrl) {
-    discoveryFiles = await createDiscoveryFiles(bucket, siteId, routes, {
-      publicBaseUrl: input.publicBaseUrl, siteName: input.siteName ?? "", siteDescription: input.siteDescription ?? "",
-      robotsPolicy: input.robotsPolicy ?? "index"
-    });
-  }
-  const redirects = input.redirects === undefined ? undefined : parseManagedSiteRedirects(input.redirects);
+/** Consume one rendered URL at a time and write a single immutable manifest after all URLs are ready. */
+export async function preparePublishedSiteBatch(input: PublishedSiteInput & {
+  readonly routes: Iterable<PublishedRouteInput> | AsyncIterable<PublishedRouteInput>;
+  readonly replacePages: readonly PublishedPageKey[];
+  readonly replaceAll?: boolean;
+  readonly activePages?: readonly PublishedPageKey[];
+}): Promise<PreparedPublishedSiteBatch> {
+  const { bucket, siteId, publicationId, siteName, siteDescription, robotsPolicy, publicBaseUrl } = input;
+  if (!SAFE_ID.test(siteId) || !SAFE_ID.test(publicationId) || !input.expectedVersion || input.expectedVersion.length > 200
+    || siteName !== undefined && siteName.length > 300 || siteDescription !== undefined && siteDescription.length > 1000
+    || robotsPolicy !== undefined && robotsPolicy !== "index" && robotsPolicy !== "noindex") throw new Error("invalid managed publication input");
+  const redirects = input.redirects === undefined ? undefined : parseManagedSiteRedirects(input.redirects, MAX_PUBLISHED_SITE_REDIRECTS);
   if (input.redirects !== undefined && !redirects) throw new Error("invalid managed publication redirects");
+
+  const previous = input.currentManifestKey ? await readPublishedManifest(bucket, siteId, input.currentManifestKey) : null;
+  const createdAt = new Date().toISOString();
+  const artifacts = new Map<string, PreparedPublishedRoute>();
+  const previousByPath = new Map(previous?.routes.map((route) => [route.path, route]));
+  const knownArtifacts = new Set(previous?.routes.map(({ artifactKey }) => artifactKey));
+  const newRoutes: PublishedRoute[] = [];
+  for await (const candidate of input.routes) {
+    if (artifacts.has(candidate.path)) throw new Error("duplicate published route path");
+    const { artifact, route } = await writePublishedRoute(bucket, siteId, candidate, createdAt, knownArtifacts, previousByPath.get(candidate.path));
+    artifacts.set(artifact.path, artifact);
+    if (route) newRoutes.push(route);
+  }
+
+  const replacePages = new Set(input.replacePages.map(pageKey));
+  const activePages = input.activePages && new Set(input.activePages.map(pageKey));
+  const retained = input.replaceAll ? [] : (previous?.routes ?? []).filter((route) => {
+    const key = pageKey(route);
+    return !replacePages.has(key) && (!activePages || activePages.has(key));
+  });
+  if (retained.some(({ path }) => artifacts.has(path))) throw new Error("published route is already owned by another page");
+  const routes = [...retained.map(withoutLegacyText), ...newRoutes];
+  routes.sort((a, b) => a.path.localeCompare(b.path) || a.locale.localeCompare(b.locale) || a.pageId.localeCompare(b.pageId));
+  const discoveryFiles = publicBaseUrl ? await createDiscoveryFiles(bucket, siteId, routes, {
+    publicBaseUrl, siteName: siteName ?? "", siteDescription: siteDescription ?? "", robotsPolicy: robotsPolicy ?? "index"
+  }) : undefined;
   const manifest: PublishedSiteManifest = {
     formatVersion: 1, siteId, publicationId, createdAt, routes, ...(redirects ? { redirects } : {}),
-    ...(input.siteName !== undefined ? { siteName: input.siteName } : {}),
-    ...(input.siteDescription !== undefined ? { siteDescription: input.siteDescription } : {}),
-    ...(input.robotsPolicy !== undefined ? { robotsPolicy: input.robotsPolicy } : {}),
-    ...(discoveryFiles ? { discoveryFiles } : {})
+    ...(siteName !== undefined ? { siteName } : {}), ...(siteDescription !== undefined ? { siteDescription } : {}),
+    ...(robotsPolicy !== undefined ? { robotsPolicy } : {}), ...(input.publicPolicyVersion !== undefined ? { publicPolicyVersion: input.publicPolicyVersion } : {}),
+    ...(input.publicDomainVersion !== undefined ? { publicDomainVersion: input.publicDomainVersion } : {}),
+    ...(input.siteStylesVersion !== undefined ? { siteStylesVersion: input.siteStylesVersion } : {}),
+    ...(input.publicPolicy !== undefined ? { publicPolicy: input.publicPolicy } : {}),
+    ...(publicBaseUrl !== undefined ? { publicBaseUrl } : {}), ...(discoveryFiles ? { discoveryFiles } : {})
   };
-  const manifestText = JSON.stringify(manifest);
-  const manifestVersion = await sha256Text(manifestText);
-  const manifestKey = `managed-sites/${siteId}/manifests/${manifestVersion}.json`;
-  await putImmutable(bucket, manifestKey, manifestText);
-  return { expectedVersion: input.expectedVersion, manifestKey, manifestVersion, artifactKey, artifactDigest, contentSecurityPolicy };
+  const prepared = await writePublishedManifest(bucket, manifest, input.expectedVersion);
+  const changedPaths = new Set(previousByPath.keys());
+  for (const route of routes) {
+    const old = previousByPath.get(route.path);
+    if (old && old.digest === route.digest && old.contentSecurityPolicy === route.contentSecurityPolicy
+      && old.noindex === route.noindex && JSON.stringify(old.embeds) === JSON.stringify(route.embeds)) changedPaths.delete(route.path);
+    else changedPaths.add(route.path);
+  }
+  const oldRedirects = new Map(previous?.redirects?.map((redirect) => [redirect.fromPath, redirect.toPath]));
+  const nextRedirects = new Map(redirects?.map((redirect) => [redirect.fromPath, redirect.toPath]));
+  for (const [path, destination] of oldRedirects) if (nextRedirects.get(path) !== destination) changedPaths.add(path);
+  for (const [path, destination] of nextRedirects) if (oldRedirects.get(path) !== destination) changedPaths.add(path);
+  return { ...prepared, artifacts, routes, changedPaths: [...changedPaths].sort() };
+}
+
+export async function preparePublishedSite(input: PublishedSiteInput & PublishedRouteInput & {
+  readonly activeRouteKeys?: readonly PublishedPageKey[];
+}): Promise<PreparedPublishedSite> {
+  const { artifacts, expectedVersion, manifestKey, manifestVersion } = await preparePublishedSiteBatch({
+    ...input, routes: [input], replacePages: [input], ...(input.activeRouteKeys ? { activePages: input.activeRouteKeys } : {})
+  });
+  const { artifactKey, artifactDigest, contentSecurityPolicy } = artifacts.get(input.path)!;
+  return { expectedVersion, manifestKey, manifestVersion, artifactKey, artifactDigest, contentSecurityPolicy };
 }
 
 function xmlEscape(value: string): string {
@@ -352,19 +437,9 @@ function localePathIdentity(locale: string, path: string): string {
   return path === localePrefix ? "/" : path.startsWith(`${localePrefix}/`) ? path.slice(localePrefix.length) : path;
 }
 
-function markdownText(value: string, singleLine = false): string {
+function markdownText(value: string): string {
   const source = value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, " ");
-  return (singleLine ? source.replace(/\s+/gu, " ").trim() : source).replace(/[\\`*_{}\[\]()<>#+.!|\-]/gu, "\\$&");
-}
-
-async function publishedText(bucket: PublishedSiteObjectStore, route: PublishedRoute): Promise<string> {
-  if (route.text !== undefined) return route.text;
-  if (!route.textArtifactKey || !route.textDigest) return "";
-  const object = await bucket.get(route.textArtifactKey);
-  if (!object) throw new Error("published text artifact missing");
-  const text = await object.text();
-  if (await sha256Text(text) !== route.textDigest) throw new Error("published text artifact invalid");
-  return text;
+  return source.replace(/\s+/gu, " ").trim().replace(/[\\`*_{}\[\]()<>#+.!|\-]/gu, "\\$&");
 }
 
 async function createDiscoveryFiles(bucket: PublishedSiteObjectStore, siteId: string, allRoutes: readonly PublishedRoute[], input: {
@@ -391,33 +466,21 @@ async function createDiscoveryFiles(bucket: PublishedSiteObjectStore, siteId: st
   const sitemap = `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">${sitemapEntries}</urlset>`;
   const robots = input.robotsPolicy === "noindex" ? "User-agent: *\nDisallow: /\n"
     : `User-agent: *\nAllow: /\nSitemap: ${new URL("sitemap.xml", base.href.endsWith("/") ? base : `${base.href}/`).href}\n`;
-  const pageLines = routes.map((route) => `- [${markdownText(route.title || route.path, true)}](${absolute(route)})${route.description ? `: ${markdownText(route.description, true)}` : ""}`);
-  const siteName = markdownText(input.siteName || "Site", true);
-  const siteDescription = markdownText(input.siteDescription, true);
+  const pageLines = routes.map((route) => `- [${markdownText(route.title || route.path)}](${absolute(route)})${route.description ? `: ${markdownText(route.description)}` : ""}`);
+  const siteName = markdownText(input.siteName || "Site");
+  const siteDescription = markdownText(input.siteDescription);
   const markdown = [`# ${siteName}`, ...(siteDescription ? ["", siteDescription] : []), "", "## Pages", "", ...pageLines].join("\n");
-  const fullParts = [markdown, "", "## Full text", ""];
-  let fullLength = fullParts.reduce((length, part) => length + part.length + 1, 0);
-  for (const route of routes) {
-    if (fullLength >= 900_000) break;
-    const text = await publishedText(bucket as PublishedSiteObjectStore, route);
-    if (!text) continue;
-    const section = `### ${markdownText(route.title || route.path, true)}\n\n${markdownText(text)}`;
-    fullParts.push(section.slice(0, 900_000 - fullLength));
-    fullLength += section.length + 1;
-  }
-  const full = fullParts.join("\n").slice(0, 900_000);
   const bodies = new Map<string, { body: string; contentType: PublishedDiscoveryFile["contentType"] }>([
     ["/sitemap.xml", { body: sitemap, contentType: "application/xml; charset=utf-8" }],
     ["/robots.txt", { body: robots, contentType: "text/plain; charset=utf-8" }],
-    ["/llms.txt", { body: markdown.slice(0, 900_000), contentType: "text/plain; charset=utf-8" }],
-    ["/llms-full.txt", { body: full, contentType: "text/plain; charset=utf-8" }]
+    ["/llms.txt", { body: markdown.slice(0, 900_000), contentType: "text/plain; charset=utf-8" }]
   ]);
   const files: PublishedDiscoveryFile[] = [];
   for (const path of DISCOVERY_PATHS) {
     const { body, contentType } = bodies.get(path)!;
     const digest = await sha256Text(body);
     const artifactKey = `managed-sites/${siteId}/artifacts/${digest}.${path.slice(1)}`;
-    await putImmutable(bucket as PublishedSiteObjectStore, artifactKey, body);
+    await putImmutable(bucket, artifactKey, body);
     files.push({ path, artifactKey, digest, contentType });
   }
   return files;
@@ -448,7 +511,6 @@ const NOINDEX_DISCOVERY_ETAGS: Readonly<Record<string, string>> = {
   "/sitemap.xml": '"418dbdd4fc8c089c5e66a57636e085689ab9f24e3a9393b6fa7cf854ccb07bac"',
   "/robots.txt": '"331ea9090db0c9f6f597bd9840fd5b171830f6e0b3ba1cb24dfa91f0c95aedc1"',
   "/llms.txt": '"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"',
-  "/llms-full.txt": '"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"'
 };
 type Lookup<T> = Map<string, { readonly value: T; readonly expiresAt: number }>;
 type PublicationLookups = {
@@ -523,7 +585,8 @@ async function publishedManifest(env: PublicEnv, entries: PublicationLookups, si
   if (cached) return cached;
   const object = await env.CMS_OBJECTS.get(key);
   if (!object) return null;
-  const manifest = parsePublishedSiteManifest(await object.json<unknown>(), siteId);
+  const raw = await object.json<unknown>();
+  const manifest = parsePublishedSiteManifest(raw, siteId);
   if (!manifest) return null;
   if (entries.manifests.size >= MAX_CACHED_MANIFESTS) {
     const oldest = entries.manifests.keys().next();
@@ -638,6 +701,7 @@ function redirectSlash(url: URL, pathname: string, noindex: boolean): Response {
 
 async function publishedDiscovery(request: Request, env: PublicEnv, path: string, manifest: PublishedSiteManifest,
   noindex: boolean): Promise<Response | null> {
+  if (path === RETIRED_DISCOVERY_PATH) return notFound(noindex);
   if (!(DISCOVERY_PATHS as readonly string[]).includes(path)) return null;
   const responseNoindex = noindex || manifest.robotsPolicy === "noindex";
   const file = manifest.discoveryFiles?.find((candidate) => candidate.path === path);
@@ -671,6 +735,19 @@ function publishedRedirect(url: URL, host: HostRow, manifest: PublishedSiteManif
   const prefix = host.path_prefix === "/" ? "" : host.path_prefix.replace(/\/+$/u, "");
   const target = new URL(url.href);
   target.pathname = `${prefix}${redirect.toPath}`;
+  const headers = noindexHeader(noindex);
+  headers.set("Cache-Control", "public, max-age=300");
+  headers.set("Location", target.href);
+  return new Response(null, { status: 301, headers });
+}
+
+function publishedCaseRedirect(url: URL, host: HostRow, manifest: PublishedSiteManifest, path: string, noindex: boolean): Response | null {
+  const route = manifest.routes.find((candidate) => !candidate.pageId.startsWith("cms_") && !candidate.caseSensitive
+    && candidate.path.toLowerCase() === path.toLowerCase() && candidate.path !== path);
+  if (!route) return null;
+  const prefix = host.path_prefix === "/" ? "" : host.path_prefix.replace(/\/+$/u, "");
+  const target = new URL(url.href);
+  target.pathname = `${prefix}${route.path}`;
   const headers = noindexHeader(noindex);
   headers.set("Cache-Control", "public, max-age=300");
   headers.set("Location", target.href);
@@ -733,7 +810,8 @@ export async function publishedSiteRequest(request: Request, env: PublicEnv, con
         page = matchPublishedPage(manifest, path);
       }
     }
-    if (!page) return publishedRedirect(url, host, manifest, path, noindex) ?? notFound(noindex);
+    if (!page) return publishedCaseRedirect(url, host, manifest, path, noindex)
+      ?? publishedRedirect(url, host, manifest, path, noindex) ?? notFound(noindex);
     const { route, robotsPolicy, publicationId, trailingSlash } = page;
     noindex = configuredPreview || host.noindex === 1 || route.noindex === true || robotsPolicy === "noindex";
     if (missingRootSlash) return redirectSlash(url, `${url.pathname}/`, noindex);
