@@ -76,6 +76,8 @@ export interface Env {
   readonly STUDIO_PREVIEW_UPLOAD_ORIGIN?: string;
   /** Studio-native siteをpath分離して配信する、Studio認証originとは別のHTTPS origin。 */
   readonly PUBLIC_SITES_ORIGIN?: string;
+  /** Verification host served by the read-only public worker; every response is noindex. */
+  readonly PUBLIC_SITES_PREVIEW_ORIGIN?: string;
   /** サイト分析（GA4 / Search Console）を読む Studio 専用サービスアカウントの JSON 鍵。未設定なら分析は未接続のまま。 */
   readonly STUDIO_ANALYTICS_GOOGLE_SA_JSON?: string;
 }
@@ -2965,7 +2967,8 @@ async function handle(request: Request, env: Env): Promise<Response> {
       if (request.method === "GET") return directory(env, identity);
       if (request.method === "POST") {
         if (!configuredPublicOrigin) return json({ error: "managed_sites_unavailable" }, 503);
-        return createManagedProject(request, env.DB, { subject: identity.subject, email: identity.email, cli: false }, configuredPublicOrigin);
+        return createManagedProject(request, env.DB, { subject: identity.subject, email: identity.email, cli: false }, configuredPublicOrigin,
+          publicSitesOrigin(env.PUBLIC_SITES_PREVIEW_ORIGIN));
       }
       return json({ error: "method_not_allowed" }, 405);
     }
@@ -3027,6 +3030,7 @@ function reportConfiguration(env: Env): void {
   if (publicSitesOrigin(env.ACCESS_ISSUER) === null) invalid.push("ACCESS_ISSUER");
   if (!validAccessAudience(env.ACCESS_AUDIENCE)) invalid.push("ACCESS_AUDIENCE");
   if (publicSitesOrigin(env.PUBLIC_SITES_ORIGIN) === null) invalid.push("PUBLIC_SITES_ORIGIN");
+  if (env.PUBLIC_SITES_PREVIEW_ORIGIN !== undefined && publicSitesOrigin(env.PUBLIC_SITES_PREVIEW_ORIGIN) === null) invalid.push("PUBLIC_SITES_PREVIEW_ORIGIN");
   if (!/^[0-9a-f]{64}$/u.test(env.CMS_DELIVERY_MASTER_KEY ?? "")) invalid.push("CMS_DELIVERY_MASTER_KEY");
   try { bridgeSecret(env.KAMAKURA_STUDIO_BRIDGE_SECRET); }
   catch { invalid.push("KAMAKURA_STUDIO_BRIDGE_SECRET"); }

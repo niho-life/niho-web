@@ -7,7 +7,7 @@ import type { AssetReference } from "../src/types.js";
 import type { ManagedD1 } from "./managed-sites.js";
 
 export type CmsBucket = {
-  get(key: string): Promise<{ json<T>(): Promise<T> } | null>;
+  get(key: string): Promise<{ json<T>(): Promise<T>; text(): Promise<string> } | null>;
   put(key: string, value: string, options: { onlyIf: Headers }): Promise<unknown>;
 };
 /** Resolve only existing, non-deleted images that the host permits this site to publish. */
