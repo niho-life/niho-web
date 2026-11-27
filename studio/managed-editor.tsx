@@ -4,7 +4,9 @@ import { parsePageDocument } from "../src/core.js";
 import { cmsId, parseCmsSchema } from "../src/cms-v2-schema.js";
 import { parseCmsPageBindings } from "../src/cms-page-bindings.js";
 import { createProjectEditorAdapter } from "../src/project-editor-adapter.js";
+import { createEditingApiSiteSettingsFacade, createPageEditingApiClient } from "../src/editing-client.js";
 import { createBrowserRecoveryStore, parseRevisionPage } from "../src/history.js";
+import type { SiteStyles } from "../src/site-styles.js";
 import { EDITOR_RELEASE_WARNING_CODES } from "../src/editor-types.js";
 import type {
   EditorAdapter, EditorPage, EditorPageChange, EditorReleaseWarning,
@@ -67,8 +69,8 @@ function catalog(value: unknown): Catalog {
   });
   return { sites: [site], version: source.version, pages, versions };
 }
-function snapshot(value: unknown, checkedTarget: EditorTarget): EditorSnapshot {
-  const source = record(value), document = parsePageDocument(source.document, managedBlockContracts);
+function snapshot(value: unknown, checkedTarget: EditorTarget, siteStyles?: SiteStyles): EditorSnapshot {
+  const source = record(value), document = parsePageDocument(source.document, managedBlockContracts, siteStyles ? { siteStyles } : {});
   if (document.siteId !== checkedTarget.siteId || document.pageId !== checkedTarget.pageId || document.locale !== checkedTarget.locale || typeof source.version !== "string" || !VERSION.test(source.version)) throw new Error("ページ文書が正しくありません。");
   if (!Array.isArray(source.releases) || source.releases.length > 50 || source.releases.some((entry) => {
     const item = record(entry); return !Number.isSafeInteger(item.revision) || Number(item.revision) < 1 || typeof item.label !== "string";
@@ -80,6 +82,13 @@ function snapshot(value: unknown, checkedTarget: EditorTarget): EditorSnapshot {
 export function createManagedEditorAdapter(initial: Catalog, project: Project): EditorAdapter {
   let current = initial;
   const base = `/api/projects/${encodeURIComponent(project.id)}/sites/${encodeURIComponent(project.site.id)}/editor`;
+  const editingApi = createPageEditingApiClient({ origin: typeof window === "undefined" ? "https://studio.invalid" : window.location.origin,
+    siteId: project.site.id, basePath: "/api/edit/v1", credentials: "same-origin", preferLegacyDiscovery: true });
+  const siteSettings = createEditingApiSiteSettingsFacade(editingApi, project.site.id, { title: project.site.name, locale: "ja" });
+  const readDraftStyles = async (siteId: string, signal: AbortSignal): Promise<SiteStyles> => {
+    if (siteId !== project.site.id) throw new Error("プロジェクト外のサイトは参照できません。");
+    return (await editingApi.readSiteStyles(signal)).draft.styles;
+  };
   const refresh = async (signal: AbortSignal) => { current = catalog(await api(`${base}/catalog`, "GET", undefined, signal)); return current; };
   const conflict = async <T,>(run: () => Promise<T>): Promise<T | { status: "conflict" }> => {
     try { return await run(); } catch (error) { if (error instanceof ManagedApiError && error.status === 409) return { status: "conflict" }; throw error; }
@@ -90,7 +99,12 @@ export function createManagedEditorAdapter(initial: Catalog, project: Project): 
       if (siteId !== project.site.id) throw new Error("別サイトは参照できません。");
       return (await refresh(signal)).pages;
     },
-    readDocument: async (input, signal) => snapshot(await api(`${base}/${encodeURIComponent(input.pageId)}`, "GET", undefined, signal), input),
+    readDocument: async (input, signal) => {
+      const [value, siteStyles] = await Promise.all([
+        api(`${base}/${encodeURIComponent(input.pageId)}`, "GET", undefined, signal), readDraftStyles(input.siteId, signal)
+      ]);
+      return snapshot(value, input, siteStyles);
+    },
     async listRevisions(request, signal) {
       if (request.target.siteId !== project.site.id) throw new Error("プロジェクト外の履歴は参照できません。");
       const query = request.cursor === undefined ? "" : `?cursor=${encodeURIComponent(request.cursor)}`;
@@ -99,7 +113,7 @@ export function createManagedEditorAdapter(initial: Catalog, project: Project): 
     async readRevision(request, signal) {
       if (request.target.siteId !== project.site.id) throw new Error("プロジェクト外の履歴は参照できません。");
       const value = record(await api(`${base}/${encodeURIComponent(request.target.pageId)}/history-read`, "POST", { id: request.id }, signal));
-      const document = parsePageDocument(value.document);
+      const document = parsePageDocument(value.document, managedBlockContracts, { siteStyles: await readDraftStyles(request.target.siteId, signal) });
       if (document.siteId !== request.target.siteId || document.pageId !== request.target.pageId || document.locale !== request.target.locale) throw new Error("履歴の対象が一致しません。");
       return { document };
     },
@@ -123,7 +137,7 @@ export function createManagedEditorAdapter(initial: Catalog, project: Project): 
         const plan = record(await api(path + "/cms-preview-plan", "POST", body, signal));
         if (typeof plan.previewId !== "string" || !/^token_[a-f0-9]{32}$/u.test(plan.previewId)) throw new Error("プレビューを開始できません。");
         const value = record(await api(path + "/cms-preview", "POST", { ...body, previewId: plan.previewId }, signal));
-        const document = parsePageDocument(value.document, managedBlockContracts);
+        const document = parsePageDocument(value.document, managedBlockContracts, { siteStyles: await readDraftStyles(input.target.siteId, signal) });
         if (document.siteId !== input.target.siteId || document.pageId !== input.target.pageId || document.locale !== input.target.locale) throw new Error("プレビューの対象が一致しません。");
         return document;
       }
@@ -158,7 +172,8 @@ export function createManagedEditorAdapter(initial: Catalog, project: Project): 
           })) throw new Error("公開警告が正しくありません。");
           warnings = value.warnings as EditorReleaseWarning[];
         }
-        return { status: "released" as const, snapshot: snapshot(value.snapshot, request.target), ...(url ? { url } : {}), ...(warnings ? { warnings } : {}) };
+        const siteStyles = await readDraftStyles(request.target.siteId, signal);
+        return { status: "released" as const, snapshot: snapshot(value.snapshot, request.target, siteStyles), ...(url ? { url } : {}), ...(warnings ? { warnings } : {}) };
       });
     },
     pagePathEditable: true,
@@ -170,7 +185,8 @@ export function createManagedEditorAdapter(initial: Catalog, project: Project): 
       const value = record(await api(`${base}/page-changes`, "POST", { expectedVersion, change }, signal));
       if (value.status !== "applied") throw new Error("ページ操作の結果が正しくありません。");
       return { status: "applied" as const, page: page(value.page) };
-    })
+    }),
+    ...siteSettings
   };
 }
 

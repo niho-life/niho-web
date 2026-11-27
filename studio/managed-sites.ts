@@ -18,6 +18,7 @@ import { parseManagedSiteSeoSettings } from "../src/managed-seo-settings.js";
 import { parseManagedSiteRedirects, type ManagedSiteRedirect } from "../src/managed-site-redirects.js";
 import { resolvePublishedEmbeds } from "./managed-public-policy.js";
 import { revalidatePublicResponse, withPublicEtag } from "./managed-public-http.js";
+import { managedSiteStylesAdapter, readManagedPublishedSiteStyles, readManagedSiteStyles } from "./managed-site-styles.js";
 
 type D1Meta = { readonly changes?: number };
 type D1Result<T> = { readonly results?: readonly T[]; readonly success: boolean; readonly meta?: D1Meta };
@@ -172,8 +173,9 @@ async function managedReleaseSeoWarnings(db: ManagedD1, row: ManagedPageRow, doc
       site_id: string; page_id: string; locale: string; revision: number; document_json: string; document_key: string | null; document_digest: string | null; path: string;
     }>();
   const peerDocuments: { pageId: string; locale: string; path: string; document: PageDocument }[] = [];
+  const publishedStyles = store ? (await readManagedSiteStyles(store, row.site_id)).published.styles : undefined;
   if (peers.success) for (const peer of peers.results ?? []) try {
-    const other = await readPageSource(store, peer);
+    const other = await readPageSource(store, peer, publishedStyles);
     if (other.siteId === row.site_id && other.pageId === peer.page_id && other.locale === peer.locale) {
       peerDocuments.push({ pageId: peer.page_id, locale: peer.locale, path: peer.path, document: other });
     }
@@ -653,19 +655,21 @@ async function pageRevisionHistory(db: ManagedD1, row: ManagedPageRow, cursor?: 
   return { entries, ...(next ? { next } : {}) };
 }
 
-async function pageRevision(db: ManagedD1, row: ManagedPageRow, id: string, store?: CmsStore) {
+async function pageRevision(db: ManagedD1, row: ManagedPageRow, id: string, store?: CmsStore, siteStyles?: import("../src/site-styles.js").SiteStyles) {
   const match = /^rev-([1-9]\d{0,8})$/u.exec(id);
   if (!match) return null;
   const version = await db.prepare(`SELECT site_id, page_id, locale, revision, document_json, document_key, document_digest FROM managed_page_versions
     WHERE site_id = ?1 AND page_id = ?2 AND locale = ?3 AND revision = ?4 LIMIT 1`)
     .bind(row.site_id, row.page_id, row.locale, Number(match[1])).first<PageSourceRow>();
   if (!version) return null;
-  const document = await readPageSource(store, version);
+  const currentStyles = siteStyles ?? (store ? (await readManagedSiteStyles(store, row.site_id)).draft.styles : undefined);
+  const document = await readPageSource(store, version, currentStyles);
   return { document };
 }
 
 async function snapshot(db: ManagedD1, row: ManagedPageRow, store?: CmsStore): Promise<Record<string, unknown>> {
-  const document = await readPageSource(store, row);
+  const siteStyles = store ? (await readManagedSiteStyles(store, row.site_id)).draft.styles : undefined;
+  const document = await readPageSource(store, row, siteStyles);
   return { document, ...(row.bindings_json ? { cmsBindings: parseCmsPageBindings(JSON.parse(row.bindings_json), document) }
     : store && row.locale === row.cms_locale ? { cmsBindings: null } : {}),
     version: row.current_version, hasSavedDraft: true, releases: await releases(db, row) };
@@ -698,8 +702,10 @@ async function cmsBindingPreview(request: Request, store: CmsStore, site: Site, 
   if (!body || !exactKeys(body, ["expectedVersion", "collectionId", "itemId", "revision", "document", "cmsBindings", ...(read ? ["previewId"] : [])])) return json({ error: "invalid_request" }, 400);
   if (body.expectedVersion !== row.current_version) return json({ status: "conflict" }, 409);
   let document: PageDocument, bindings: CmsPageBindingsDocument | null, key: string;
+  let siteStyles: import("../src/site-styles.js").SiteStyles;
   try {
-    document = parsePageDocument(body.document, managedBlockContracts);
+    siteStyles = (await readManagedSiteStyles(store, row.site_id)).draft.styles;
+    document = parsePageDocument(body.document, managedBlockContracts, { siteStyles });
     bindings = pageBindings(body.cmsBindings, document, row.path);
     key = cmsItemKey({ collectionId: cmsId(body.collectionId, "collectionId"), itemId: cmsId(body.itemId, "itemId") });
   } catch { return json({ error: "invalid_cms_bindings" }, 422); }
@@ -720,7 +726,9 @@ async function cmsBindingPreview(request: Request, store: CmsStore, site: Site, 
   if (!token || token.expires <= nowSeconds() || token.payload.scope !== scope) return json({ error: "not_found" }, 404);
   const item = await store.item(site.siteId, site.state.locale, pin);
   let projected: PageDocument | null;
-  try { projected = resolveCmsPageBindings(document, bindings, { schema: site.state.schema, items: [item] }, { detail: { itemId: item.itemId }, blocks: managedBlockContracts }); }
+  try { projected = resolveCmsPageBindings(document, bindings, { schema: site.state.schema, items: [item] }, {
+    detail: { itemId: item.itemId }, blocks: managedBlockContracts, page: { siteStyles }
+  }); }
   catch { return json({ error: "invalid_cms_binding_values" }, 422); }
   if (!projected || !await store.consumePreview(site, body.previewId, "page-preview")) return json({ error: "not_found" }, 404);
   return json({ document: projected });
@@ -740,7 +748,10 @@ async function saveDraft(request: Request, actor: ManagedActor, row: ManagedPage
   if (!body || !exactKeys(body, ["expectedVersion", "document", ...(Object.hasOwn(body, "cmsBindings") ? ["cmsBindings"] : [])]) || typeof body.expectedVersion !== "string") return json({ error: "invalid_request" }, 400);
   if (body.expectedVersion !== row.current_version) return json({ status: "conflict" }, 409);
   let submitted: PageDocument;
-  try { submitted = parsePageDocument(body.document, managedBlockContracts); } catch { return json({ error: "invalid_document" }, 400); }
+  try {
+    const siteStyles = store ? (await readManagedSiteStyles(store, row.site_id)).draft.styles : undefined;
+    submitted = parsePageDocument(body.document, managedBlockContracts, siteStyles ? { siteStyles } : {});
+  } catch { return json({ error: "invalid_document" }, 400); }
   if (submitted.siteId !== row.site_id || submitted.pageId !== row.page_id || submitted.locale !== row.locale || submitted.revision !== row.current_revision) return json({ error: "invalid_document" }, 400);
   let bindings: CmsPageBindingsDocument | null;
   try { bindings = pageBindings(Object.hasOwn(body, "cmsBindings") ? body.cmsBindings : row.bindings_json ? JSON.parse(row.bindings_json) : null, submitted, row.path); }
@@ -801,15 +812,17 @@ export function managedPageEditingApi(request: Request, store: CmsStore, project
   actorFor: (capability: EditingCapability) => Promise<ManagedActor | null>): Promise<Response> {
   const db = store.db;
   let actor: ManagedActor | null = null;
+  const styleStorage = managedSiteStylesAdapter(store, projectId);
   const load = (target: EditingPageTarget) => actor ? pageRow(db, projectId, siteId, target.pageId, target.locale) : Promise.resolve(null);
-  const doc = (row: ManagedPageRow) => readPageSource(store, row);
+  const draftStyles = async () => (await readManagedSiteStyles(store, siteId)).draft.styles;
+  const doc = async (row: ManagedPageRow) => readPageSource(store, row, await draftStyles());
   const bindings = (row: ManagedPageRow, page: PageDocument) => row.bindings_json ? parseCmsPageBindings(JSON.parse(row.bindings_json), page) : null;
   return createPageEditingApi({
     pageCmsBindings: true,
-    validationContext: async () => ({ blocks: managedBlockContracts }),
+    validationContext: async () => ({ blocks: managedBlockContracts, siteStyles: await draftStyles() }),
     authenticate: async () => editingActor,
     async authorize(_editingActor, capability, scope) {
-      if (scope.siteId !== siteId || !["pages.read", "pages.edit", "pages.history.read", "pages.publish"].includes(capability)) return false;
+      if (scope.siteId !== siteId || !["pages.read", "pages.edit", "pages.history.read", "pages.publish", "site.settings.read", "site.settings.write"].includes(capability)) return false;
       actor = await actorFor(capability);
       return actor !== null && !!await managedMemberRegistration(db, actor, projectId, siteId);
     },
@@ -834,7 +847,7 @@ export function managedPageEditingApi(request: Request, store: CmsStore, project
     },
     async readPageHistoryRevision(_editingActor, target, id) {
       const row = await load(target);
-      return row ? pageRevision(db, row, id, store) : null;
+      return row ? pageRevision(db, row, id, store, await draftStyles()) : null;
     },
     async readPageCatalog() {
       const catalog = await pageCatalog(db, siteId);
@@ -876,7 +889,7 @@ export function managedPageEditingApi(request: Request, store: CmsStore, project
         const { documentKey, documentDigest, ...applied } = result;
         const document = await readPageSourceObject(store.bucket, {
           site_id: target.siteId, page_id: target.pageId, locale: target.locale, revision: applied.revision
-        }, documentKey, documentDigest);
+        }, documentKey, documentDigest, await draftStyles());
         return { ...applied, document };
       };
       const row = await load(target);
@@ -885,7 +898,7 @@ export function managedPageEditingApi(request: Request, store: CmsStore, project
       if (repeated) return repeated;
       const document = await doc(row), site = await cmsSite(store, actor, row);
       const proposed = transaction.prepare({ document, version: row.current_version, ...(site ? { cmsBindings: bindings(row, document) } : {}) },
-        { blocks: managedBlockContracts, ...(site ? { cmsSchema: site.state.schema, cmsPagePath: row.path } : {}) });
+        { blocks: managedBlockContracts, siteStyles: await draftStyles(), ...(site ? { cmsSchema: site.state.schema, cmsPagePath: row.path } : {}) });
       if (proposed.status !== "ready") return proposed;
       let sidecar: CmsPageBindingsDocument | null;
       try { sidecar = pageBindings(proposed.cmsBindings ?? null, proposed.document, row.path); }
@@ -895,6 +908,13 @@ export function managedPageEditingApi(request: Request, store: CmsStore, project
       if (result === "too_large") return { status: "validation_failed", index: Math.max(0, proposed.journal.input.operations.length - 1), reason: "ページ本文がサイズ上限を超えています。" };
       return result ?? await lookup() ?? { status: "conflict" };
     } },
+    siteStyles: {
+      read: async (_editingActor, targetSiteId) => actor ? styleStorage.read(actor, targetSiteId) : null,
+      edit: async (_editingActor, targetSiteId, input) => actor
+        ? styleStorage.edit(actor, targetSiteId, input) : { status: "conflict" },
+      publish: async (_editingActor, targetSiteId, input) => actor
+        ? styleStorage.publish(actor, targetSiteId, input) : { status: "conflict" }
+    },
   }, { maxPageBodyBytes: MAX_MANAGED_PAGE_BYTES, trustedPageStorage: true })(request);
 }
 
@@ -913,7 +933,8 @@ async function publishPageOnce(store: CmsStore, actor: ManagedActor, row: Manage
   const { db } = store;
   const action = input.action === "restore" ? "rollback" : "publish";
   const sourceRevision = input.action === "restore" ? input.revision! : row.current_revision;
-  const draft = action === "publish" ? await readPageSource(store, row) : null;
+  const styleDraft = action === "publish" ? await readManagedSiteStyles(store, row.site_id) : null;
+  const draft = styleDraft ? await readPageSource(store, row, styleDraft.draft.styles) : null;
   const warnings = draft ? await managedReleaseSeoWarnings(db, row, draft, origin, store, actor) : [];
   let cmsReleaseId: string | null = null, cmsSchemaRevision: string | null = null, cmsGeneration: string | null = null;
   if (action === "rollback") {
@@ -956,9 +977,13 @@ async function publishPageOnce(store: CmsStore, actor: ManagedActor, row: Manage
           if (currentRoutes.reservations.some((reservation) => reservation.kind === "template"
             ? matchesTemplatePath(reservation.path, detailPath) : reservation.path === detailPath)) throw new Error("reserved detail URL");
           slugs.add(slug);
-          resolveCmsPageBindings(page, bindings, released, { detail: { slug }, blocks: managedBlockContracts });
+          resolveCmsPageBindings(page, bindings, released, {
+            detail: { slug }, blocks: managedBlockContracts, page: { siteStyles: styleDraft?.draft.styles ?? {} }
+          });
         }
-      } else resolveCmsPageBindings(page, bindings, released, { blocks: managedBlockContracts });
+      } else resolveCmsPageBindings(page, bindings, released, {
+        blocks: managedBlockContracts, page: { siteStyles: styleDraft?.draft.styles ?? {} }
+      });
     } catch { return json({ error: "invalid_cms_binding_values" }, 422); }
     cmsReleaseId = released.releaseId;
     cmsSchemaRevision = released.schema.schemaRevision;
@@ -973,7 +998,8 @@ async function publishPageOnce(store: CmsStore, actor: ManagedActor, row: Manage
       .bind(row.site_id, row.page_id, row.locale, sourceRevision).first<PageSourceRow & { bindings_json: string | null }>();
   if (!source) return json({ error: "version_conflict" }, 409);
   let document: PageDocument;
-  try { document = parsePageDocument({ ...(draft ?? await readPageSource(store, source)), revision }, managedBlockContracts); }
+  try { document = parsePageDocument({ ...(draft ?? await readPageSource(store, source, (await readManagedSiteStyles(store, row.site_id)).published.styles)), revision }, managedBlockContracts,
+    { siteStyles: (await readManagedSiteStyles(store, row.site_id)).published.styles }); }
   catch { return json({ error: "invalid_managed_page_storage" }, 503); }
   const cmsBindings = row.locale === row.cms_locale
     ? { cmsBindings: source.bindings_json === null ? null : parseCmsPageBindings(JSON.parse(source.bindings_json), document) } : {};
@@ -1135,7 +1161,8 @@ async function changePageOnce(store: CmsStore, actor: ManagedActor, projectId: s
         if (!publicOrigin) return json({ error: "managed_public_origin_unavailable" }, 503);
         let document: PageDocument;
         try {
-          document = parsePageDocument({ ...(await readPageSource(store, published)), revision: published.revision }, managedBlockContracts);
+          const siteStyles = (await readManagedSiteStyles(store, siteId)).published.styles;
+          document = parsePageDocument({ ...(await readPageSource(store, published, siteStyles)), revision: published.revision }, managedBlockContracts, { siteStyles });
         prepared = await prepareManagedPageArtifact({ store, document, publicationId: crypto.randomUUID(), path,
             isPublic: nextIsPublic, publicUrl: new URL(managedPageUrl(publicOrigin, published.slug, path, published.public_domain)),
             publicPrefix: published.public_domain ? "" : `/s/${published.slug}`, redirects: redirects ?? [] });
@@ -1370,7 +1397,7 @@ async function renderCmsBoundPublic(request: Request, db: ManagedD1, origin: str
     url.pathname += "/";
     const headers = responseHeaders("text/plain; charset=utf-8");
     headers.set("Location", url.href);
-    return new Response(null, { status: 308, headers });
+    return new Response(null, { status: 301, headers });
   }
   const refs = url.searchParams.getAll("_niho_embed");
   const requestedRef = refs[0];
@@ -1389,7 +1416,8 @@ async function renderCmsBoundPublic(request: Request, db: ManagedD1, origin: str
     } catch { /* edge cache is an optional optimization */ }
   }
   let document: PageDocument;
-  try { document = await readPageSource(store, row); }
+  let publishedStyles: import("../src/site-styles.js").SiteStyles = {};
+  try { publishedStyles = await readManagedPublishedSiteStyles(store, row.site_id); document = await readPageSource(store, row, publishedStyles); }
   catch { return json({ error: "invalid_managed_page_storage" }, 503); }
   const publicPath = `${prefix}${path}`;
   let assetManifest: readonly CmsPublicAsset[] = [];
@@ -1401,7 +1429,8 @@ async function renderCmsBoundPublic(request: Request, db: ManagedD1, origin: str
     const released = await store.snapshot(row.site_id, row.cms_release_id);
     if (released.schema.schemaRevision !== row.cms_schema_revision || released.locale !== row.locale) return notFound();
     const projected = resolveCmsPageBindings(document, bindings, released, {
-      blocks: managedBlockContracts, ...(bindings.detail ? { detail: { slug: path.slice(parentPath.length + 1) } } : {})
+      blocks: managedBlockContracts, page: { siteStyles: publishedStyles },
+      ...(bindings.detail ? { detail: { slug: path.slice(parentPath.length + 1) } } : {})
     });
     if (!projected) return notFound();
     document = projected;
@@ -1415,7 +1444,7 @@ async function renderCmsBoundPublic(request: Request, db: ManagedD1, origin: str
   }
   const rendered = await renderManagedPage({ db, store, document, policy, origin, prefix,
     path: hasUppercaseRoute ? path.toLowerCase() : path, alternatePath: row.path, publicPath,
-    siteName: row.site_name, embeds, assets: assetManifest, forceNoindex: customRoute?.noindex === true });
+    siteName: row.site_name, embeds, assets: assetManifest, siteStyles: publishedStyles, forceNoindex: customRoute?.noindex === true });
   const headers = responseHeaders("text/html; charset=utf-8");
   headers.set("Cache-Control", "public, no-cache, s-maxage=300, stale-while-revalidate=60");
   headers.set("Content-Security-Policy", rendered.contentSecurityPolicy);
@@ -1475,6 +1504,7 @@ export async function managedPublicSeoResponse(request: Request, db: ManagedD1, 
     JOIN managed_cms_state AS cms ON cms.site_id = ms.site_id WHERE ms.slug = ?1 LIMIT 1`).bind(slug)
     .first<{ site_id: string; state_json: string }>();
   if (!stateRow) return null;
+  const publishedStyles = await readManagedPublishedSiteStyles(store, stateRow.site_id);
   const state = JSON.parse(stateRow.state_json) as Site["state"];
   const releases = [
     ...(state.current ? [{ locale: state.locale, id: state.current.id }] : []),
@@ -1498,7 +1528,7 @@ export async function managedPublicSeoResponse(request: Request, db: ManagedD1, 
   const pages: ManagedSeoPage[] = [];
   for (const row of rows.results ?? []) {
     try {
-      const document = await readPageSource(store, row);
+      const document = await readPageSource(store, row, publishedStyles);
       if (noindex || document.meta?.noindex) continue;
       pages.push({ locale: row.locale, path: row.path, title: document.title, text: pageText(document.body),
         group: `page:${localizedPathIdentity(row.locale, row.path)}`,
