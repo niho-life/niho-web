@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { StudioPageEditor } from "./editor-performance.js";
 import { parseResolvedAssets } from "../src/assets.js";
 import { parsePageDocument } from "../src/core.js";
@@ -20,7 +20,7 @@ import { managedEditorBlocks } from "./managed-embed-editor.js";
 const VERSION = /^[^\u0000-\u001f\u007f]{1,200}$/u;
 
 class ManagedApiError extends Error {
-  constructor(readonly status: number, readonly code: string) { super(code); }
+  constructor(readonly status: number, readonly code: string, readonly failedUrl?: string, readonly failureMessage?: string) { super(code); }
 }
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("編集APIの応答が正しくありません。");
@@ -36,7 +36,8 @@ async function api(path: string, method: "GET" | "POST" | "PUT", body: Record<st
   const value = await response.json() as unknown;
   if (!response.ok) {
     const source = record(value), code = typeof source.error === "string" ? source.error : "request_failed";
-    throw new ManagedApiError(response.status, code);
+    throw new ManagedApiError(response.status, code, typeof source.failedUrl === "string" ? source.failedUrl : undefined,
+      typeof source.message === "string" ? source.message : undefined);
   }
   return value;
 }
@@ -181,7 +182,13 @@ export function createManagedEditorAdapter(initial: Catalog, project: Project): 
           warnings = value.warnings as EditorReleaseWarning[];
         }
         const siteStyles = await readDraftStyles(request.target.siteId, signal);
-        return { status: "released" as const, snapshot: snapshot(value.snapshot, request.target, siteStyles), ...(url ? { url } : {}), ...(warnings ? { warnings } : {}) };
+        const elapsedMs = typeof value.elapsedMs === "number" && Number.isSafeInteger(value.elapsedMs) && value.elapsedMs >= 0 ? value.elapsedMs : undefined;
+        return { status: "released" as const, snapshot: snapshot(value.snapshot, request.target, siteStyles), ...(url ? { url } : {}),
+          ...(warnings ? { warnings } : {}), ...(elapsedMs === undefined ? {} : { elapsedMs }) };
+      }).catch((error: unknown) => {
+        if (error instanceof ManagedApiError && error.failedUrl) return { status: "failed" as const, failedUrl: error.failedUrl,
+          message: error.failureMessage ?? "ページの公開生成に失敗しました。" };
+        throw error;
       });
     },
     pagePathEditable: true,
@@ -198,12 +205,100 @@ export function createManagedEditorAdapter(initial: Catalog, project: Project): 
   };
 }
 
+type PublicationChange = { readonly kind: "page"; readonly title: string; readonly path: string; readonly reason: string }
+  | { readonly kind: "shared"; readonly label: string; readonly appliesToAllPages: true };
+
+function ManagedPublicationPanel({ siteId }: { readonly siteId: string }) {
+  const [changes, setChanges] = useState<readonly PublicationChange[]>([]);
+  const [version, setVersion] = useState("");
+  const [message, setMessage] = useState("");
+  const [publicationResult, setPublicationResult] = useState<{ readonly urls: readonly string[]; readonly elapsedMs: number;
+    readonly warnings: readonly EditorReleaseWarning[] } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const endpoint = `/api/edit/v1/sites/${encodeURIComponent(siteId)}/operations`;
+  const refresh = async (signal: AbortSignal): Promise<{ readonly version: string; readonly changes: readonly PublicationChange[] }> => {
+    const value = record(await api(`${endpoint}/site.publication-changes`, "GET", undefined, signal));
+    if (typeof value.version !== "string" || !Array.isArray(value.changes) || value.changes.length > 503) throw new Error("未公開変更の一覧が正しくありません。");
+    const next = value.changes.map((raw): PublicationChange => {
+      const change = record(raw);
+      if (change.kind === "page" && typeof change.title === "string" && typeof change.path === "string" && typeof change.reason === "string")
+        return { kind: "page", title: change.title, path: change.path, reason: change.reason };
+      if (change.kind === "shared" && typeof change.label === "string" && change.appliesToAllPages === true)
+        return { kind: "shared", label: change.label, appliesToAllPages: true };
+      throw new Error("未公開変更の一覧が正しくありません。");
+    });
+    setChanges(next);
+    setVersion(value.version);
+    return { version: value.version, changes: next };
+  };
+  useEffect(() => {
+    const controller = new AbortController();
+    void refresh(controller.signal).catch(() => setMessage("未公開変更を読み込めませんでした。"));
+    return () => controller.abort();
+  }, [siteId]);
+  const publish = async () => {
+    if (busy) return;
+    setBusy(true); setMessage(""); setPublicationResult(null);
+    const controller = new AbortController();
+    try {
+      const pending = await refresh(controller.signal);
+      if (!pending.changes.length) { setMessage("未公開の変更はありません。"); return; }
+      const value = record(await api(`${endpoint}/site.publish`, "POST", { expectedVersion: pending.version, scope: "changed" }, controller.signal));
+      if (value.status === "conflict") setMessage("変更が同時に更新されました。一覧を確認してください。");
+      else if (value.status === "failed" && typeof value.failedUrl === "string" && typeof value.message === "string")
+        setMessage(`${value.failedUrl} の生成に失敗しました。${value.message}`);
+      else if (value.status === "released" && Array.isArray(value.urls) && value.urls.length <= 1000
+        && value.urls.every((url) => typeof url === "string" && url.length <= 2048 && /^https:\/\//u.test(url))
+        && Number.isSafeInteger(value.elapsedMs) && Number(value.elapsedMs) >= 0 && Number(value.elapsedMs) <= 600_000
+        && Array.isArray(value.warnings) && value.warnings.length <= 100 && value.warnings.every((warning) => {
+          if (!warning || typeof warning !== "object" || Array.isArray(warning)) return false;
+          const entry = warning as Record<string, unknown>;
+          return EDITOR_RELEASE_WARNING_CODES.includes(entry.code as EditorReleaseWarning["code"])
+            && typeof entry.message === "string" && entry.message.length <= 1000;
+        })) {
+        const urls = value.urls as string[], warnings = value.warnings as EditorReleaseWarning[], elapsedMs = Number(value.elapsedMs);
+        setPublicationResult({ urls, elapsedMs, warnings });
+        setMessage(`${urls.length} URLを公開しました（${elapsedMs} ms、SEO警告 ${warnings.length}件）。`);
+      }
+      else throw new Error("公開結果が正しくありません。");
+      await refresh(controller.signal);
+    } catch (error) {
+      setMessage(error instanceof ManagedApiError && error.status === 409
+        ? "変更が同時に更新されました。一覧を確認してください。"
+        : "変更を公開できませんでした。時間をおいて再読込してください。");
+      await refresh(controller.signal).catch(() => undefined);
+    } finally { setBusy(false); }
+  };
+  return <details className="studio-publication-panel" onToggle={(event) => {
+      if (!event.currentTarget.open) return;
+      const controller = new AbortController();
+      setMessage("");
+      void refresh(controller.signal).catch(() => setMessage("未公開変更を読み込めませんでした。"));
+    }}>
+    <summary>未公開の変更 {changes.length}件</summary>
+    {changes.length ? <ul>{changes.map((change, index) => <li key={`${change.kind}:${index}`}>
+      {change.kind === "page" ? `${change.title} (${change.path})` : `${change.label}（全ページ）`}
+    </li>)}</ul> : <p>未公開の変更はありません。</p>}
+    {changes.length > 0 && <button className="studio-secondary" type="button" disabled={busy || !version} onClick={() => void publish()}>
+      {busy ? "公開中…" : `変更をまとめて公開（${changes.length}件）`}
+    </button>}
+    {message && <p role="status">{message}</p>}
+    {publicationResult && <details><summary>公開した URL と SEO 警告</summary>
+      <ul>{publicationResult.urls.map((url) => <li key={url}><a href={url} target="_blank" rel="noreferrer">{url}</a></li>)}</ul>
+      {publicationResult.warnings.length > 0 && <ul>{publicationResult.warnings.map((warning, index) => <li key={`${warning.code}:${index}`}>{warning.message}</li>)}</ul>}
+    </details>}
+  </details>;
+}
+
 export function ManagedEditor({ project, actorId }: { readonly project: Project; readonly actorId: string }) {
   const adapter = useMemo(() => createProjectEditorAdapter(createManagedEditorAdapter({ sites: [{ id: project.site.id, name: project.site.name, domains: project.site.domains }], pages: [] }, project), project), [project]);
   const recovery = useMemo(() => createBrowserRecoveryStore({ scope: actorId }), [actorId]);
   const base = `/api/projects/${encodeURIComponent(project.id)}/sites/${encodeURIComponent(project.site.id)}/editor`;
   const blocks = useMemo(() => managedEditorBlocks(base), [base]);
   return <main className="studio-editor studio-managed-editor">
-    <StudioPageEditor adapter={adapter} blocks={blocks} enableUrlEmbeds autosave recovery={recovery} toolbarStart={<a href={`/projects/${encodeURIComponent(project.id)}/sites/${encodeURIComponent(project.site.id)}`} aria-label="ダッシュボードに戻る" title="ダッシュボードに戻る">←</a>} />
+    <StudioPageEditor adapter={adapter} blocks={blocks} enableUrlEmbeds autosave recovery={recovery} toolbarStart={<>
+      <a href={`/projects/${encodeURIComponent(project.id)}/sites/${encodeURIComponent(project.site.id)}`} aria-label="ダッシュボードに戻る" title="ダッシュボードに戻る">←</a>
+      <ManagedPublicationPanel siteId={project.site.id} />
+    </>} />
   </main>;
 }

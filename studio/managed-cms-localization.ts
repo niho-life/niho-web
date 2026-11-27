@@ -13,6 +13,17 @@ export type CmsLocalizationView = {
   readonly updatedAt?: string | null;
 };
 
+export function cmsLocalizedSchema(schema: CmsSchema, targetLocale: string): CmsSchema {
+  const root = `/${targetLocale}/cms`;
+  return { ...schema, collections: schema.collections.map((collection) => {
+    if (collection.pathPrefix === null) return collection;
+    let relative = collection.pathPrefix.replace(/^\/cms(?=\/)/u, "");
+    if (relative === "/") relative = `/${collection.id.toLowerCase()}/`;
+    if (!relative.startsWith("/")) relative = `/${relative}`;
+    return { ...collection, pathPrefix: `${root}${relative}` };
+  }) };
+}
+
 export function cmsLocalizationTargetLocale(sourceLocale: string): "ja" | "en" {
   const family = sourceLocale.split("-", 1)[0]!.toLowerCase();
   if (family === "ja") return "en";

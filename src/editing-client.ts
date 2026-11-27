@@ -1,5 +1,5 @@
 import { PAGE_OPERATION_VERSIONS, pageNodesHaveNames, pageOperationUsesNodeNames, pageOperationWire, type EditingPageApplyConflict, type EditingPageApplyInput, type EditingPageApplyResult } from "./editing-page-operations.js";
-import { EDITING_API_ERRORS, PAGE_CMS_BINDINGS_CAPABILITY, PAGE_NODE_NAME_CAPABILITY, parseEditingApiDiscovery, type EditingApiErrorCode, type EditingCmsOperationStatus, type EditingCmsPublishPlan, type EditingCmsTarget, type EditingDiscoveredOperation, type EditingPageCatalog, type EditingPagePublishNowResult, type EditingPageReleaseSetItem, type EditingPageReleaseSetItemResult, type EditingPageReleaseSetPlan, type EditingPageReleaseSetStatus, type EditingPageSnapshot, type EditingPageTarget } from "./editing-api.js";
+import { EDITING_API_ERRORS, PAGE_CMS_BINDINGS_CAPABILITY, PAGE_NODE_NAME_CAPABILITY, parseEditingApiDiscovery, type EditingApiErrorCode, type EditingCmsOperationStatus, type EditingCmsPublishPlan, type EditingCmsTarget, type EditingDiscoveredOperation, type EditingPageCatalog, type EditingPagePublishNowResult, type EditingPageReleaseSetItem, type EditingPageReleaseSetItemResult, type EditingPageReleaseSetPlan, type EditingPageReleaseSetStatus, type EditingPageSnapshot, type EditingPageTarget, type EditingPublicationChanges, type EditingSitePublishResult } from "./editing-api.js";
 import {
   SITE_STYLES_FEATURE, parseEditingSiteStylesEditRequest, parseEditingSiteStylesEditResponse,
   parseEditingSiteStylesPublishRequest, parseEditingSiteStylesPublishResponse, parseEditingSiteStylesSnapshot, siteStylesEdits,
@@ -102,6 +102,9 @@ export type EditingApiClient = {
   prepareRelease(target: EditingPageTarget, request: EditingPageReleaseInput, signal?: AbortSignal): Promise<EditorReleasePlan>;
   release(target: EditingPageTarget, plan: EditorReleasePlan, operationId: string, signal?: AbortSignal): Promise<EditingPagePublishResult>;
   publishPageNow(target: EditingPageTarget, request: EditorPublishPageInput, signal?: AbortSignal): Promise<EditingPagePublishNowResult>;
+  readPublicationChanges(signal?: AbortSignal): Promise<EditingPublicationChanges>;
+  publishSiteNow(expectedVersion: string, scope: "site" | "changed" | "all" | readonly Pick<EditingPageTarget, "pageId" | "locale">[],
+    signal?: AbortSignal): Promise<EditingSitePublishResult>;
   preparePageReleaseSet(items: readonly EditingPageReleaseSetItem[], signal?: AbortSignal, operationId?: string): Promise<EditingPageReleaseSetPlan>;
   publishPageReleaseSet(plan: EditingPageReleaseSetPlan, signal?: AbortSignal): Promise<EditingPageReleaseSetResult>;
   pageReleaseSetStatus(operationId: string, signal?: AbortSignal): Promise<EditingPageReleaseSetStatus>;
@@ -557,6 +560,58 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
     async discover(signal) {
       return getDiscovery(options.preferLegacyDiscovery !== true, signal);
     },
+    async readPublicationChanges(signal) {
+      const discovery = await client.discover(signal);
+      if (!discovery.operations.some((operation) => operation.id === "site.publication-changes")) throw new EditingApiClientError("not_found", 404);
+      const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/site.publication-changes`, "GET", undefined, signal);
+      if (!response.ok) throw apiFailure(body, response.status);
+      if (!isEditingApiVersion(body.version) || !Array.isArray(body.changes) || body.changes.length > 503) {
+        throw new EditingApiClientError("invalid_response", response.status);
+      }
+      const changes = body.changes.map((value) => {
+        if (!plainRecord(value)) throw new EditingApiClientError("invalid_response", response.status);
+        if (value.kind === "page" && plainRecord(value.target)
+          && typeof value.title === "string" && value.title.length <= 500
+          && typeof value.path === "string" && value.path.length <= 512
+          && ["new", "draft", "path", "visibility"].includes(String(value.reason))) {
+          try {
+            const target = { siteId: identifier(value.target.siteId, "$target.siteId"), pageId: identifier(value.target.pageId, "$target.pageId"), locale: localeCode(value.target.locale, "$target.locale") };
+            if (target.siteId !== siteId) throw new Error("target site mismatch");
+            return { kind: "page" as const, target, title: value.title, path: value.path, reason: value.reason as "new" | "draft" | "path" | "visibility" };
+          } catch { throw new EditingApiClientError("invalid_response", response.status); }
+        }
+        if (value.kind === "shared"
+          && typeof value.id === "string" && value.id.length <= 80 && typeof value.label === "string" && value.label.length <= 200
+          && value.appliesToAllPages === true) return { kind: "shared" as const, id: value.id, label: value.label, appliesToAllPages: true as const };
+        throw new EditingApiClientError("invalid_response", response.status);
+      });
+      return { version: body.version, changes };
+    },
+    async publishSiteNow(expectedVersion, scope, signal) {
+      if (!isEditingApiVersion(expectedVersion)) throw new TypeError("invalid site publish request");
+      const input = typeof scope === "string" ? { expectedVersion, scope } : { expectedVersion, scope: "pages", pages: scope };
+      const discovery = await client.discover(signal);
+      if (!discovery.operations.some((operation) => operation.id === "site.publish")) throw new EditingApiClientError("not_found", 404);
+      const { response, body } = await send(`/sites/${encodeURIComponent(siteId)}/operations/site.publish`, "POST", input, signal);
+      if (response.status === 409 && body.error === "version_conflict") return { status: "conflict" };
+      if (!response.ok) throw apiFailure(body, response.status);
+      if (!plainRecord(body)) throw new EditingApiClientError("invalid_response", response.status);
+      if (body.status === "failed"
+        && typeof body.failedUrl === "string" && body.failedUrl.length <= 512 && typeof body.message === "string" && body.message.length <= 1000) {
+        return { status: "failed", failedUrl: body.failedUrl, message: body.message };
+      }
+      if (body.status !== "released"
+        || !Array.isArray(body.urls) || body.urls.length > 1000 || body.urls.some((value) => {
+          if (typeof value !== "string" || value.length > 2048) return true;
+          try { const parsed = new URL(value); return parsed.protocol !== "https:" || !!parsed.username || !!parsed.password; } catch { return true; }
+        }) || !Number.isSafeInteger(body.elapsedMs) || Number(body.elapsedMs) < 0 || Number(body.elapsedMs) > 600_000
+        || !Array.isArray(body.warnings) || body.warnings.length > 100 || body.warnings.some((value) => {
+          if (!plainRecord(value)) return true;
+          return typeof value.code !== "string" || !EDITOR_RELEASE_WARNING_CODES.includes(value.code as EditorReleaseWarning["code"])
+            || typeof value.message !== "string" || value.message.length > 1000;
+        })) throw new EditingApiClientError("invalid_response", response.status);
+      return { status: "released", urls: body.urls as string[], elapsedMs: Number(body.elapsedMs), warnings: body.warnings as EditorReleaseWarning[] };
+    },
     async readPageCatalog(signal) {
       const path = `/sites/${encodeURIComponent(siteId)}/operations/pages.catalog`;
       let result = await send(path, "GET", undefined, signal, "application/json", pageCatalogCache?.etag);
@@ -818,6 +873,14 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       const { response, body } = await send(path, "POST", input, signal);
       if (response.status === 409 && body.error === "version_conflict") return { status: "conflict" };
       if (!response.ok) throw apiFailure(body, response.status);
+      if (body.status === "failed" && typeof body.failedUrl === "string" && body.failedUrl.length <= 512
+        && typeof body.message === "string" && body.message.length <= 1000) return { status: "failed", failedUrl: body.failedUrl, message: body.message };
+      if (body.elapsedMs !== undefined && (!Number.isSafeInteger(body.elapsedMs) || Number(body.elapsedMs) < 0 || Number(body.elapsedMs) > 600_000)
+        || body.urls !== undefined && (!Array.isArray(body.urls) || body.urls.length > 1000 || body.urls.some((url) => {
+          if (typeof url !== "string" || url.length > 2048) return true;
+          try { const parsed = new URL(url); return parsed.protocol !== "https:" || !!parsed.username || !!parsed.password; }
+          catch { return true; }
+        }))) throw new EditingApiClientError("invalid_response", response.status);
       if (body.status !== "released" || !plainRecord(body.snapshot)) throw new EditingApiClientError("invalid_response", response.status);
       let url: string | undefined;
       if (body.url !== undefined) {
@@ -844,7 +907,8 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       const editorState = source.editorState === undefined ? undefined : parseEditingPageEditorState(source.editorState);
       const presentation = parseEditingPagePresentation(source.presentation, presentationVersion, document);
       const cmsBindings = source.cmsBindings === undefined ? undefined : source.cmsBindings === null ? null : parseCmsPageBindings(source.cmsBindings, target);
-      return { status: "released", ...(url ? { url } : {}), ...(warnings ? { warnings } : {}), snapshot: { document, version: source.version, ...(componentsVersion ? { componentsVersion } : {}),
+      return { status: "released", ...(url ? { url } : {}), ...(warnings ? { warnings } : {}),
+        ...(body.urls === undefined ? {} : { urls: body.urls as string[] }), ...(body.elapsedMs === undefined ? {} : { elapsedMs: Number(body.elapsedMs) }), snapshot: { document, version: source.version, ...(componentsVersion ? { componentsVersion } : {}),
         ...(presentationVersion ? { presentationVersion } : {}), ...(presentation ? { presentation } : {}), ...(editorState ? { editorState } : {}),
         ...(cmsBindings === undefined ? {} : { cmsBindings }) } };
     },

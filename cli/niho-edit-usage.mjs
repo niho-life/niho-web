@@ -20,6 +20,11 @@ niho-edit [--studio] --origin <https-origin> --site <site-id> save <page-id> --l
 niho-edit [--studio] --origin <https-origin> --site <site-id> release-plan <page-id> --locale <locale> --action <publish|rollback> (--json <snapshot-file|-> | --expected-version <version>) [--revision <number>]
 niho-edit [--studio] --origin <https-origin> --site <site-id> release <page-id> --locale <locale> --json <plan-file|-> --operation-id <uuid-v4>
 niho-edit [--studio] --origin <https-origin> --site <site-id> publish <page-id> --locale <locale> (--expected-version <version> | --json <snapshot-file|->)
+niho-edit --studio --origin <studio-origin> --site <site-id> publish <page-id> <page-id> [...] --locale <locale>
+niho-edit --studio --origin <studio-origin> --site <site-id> changes
+niho-edit --studio --origin <studio-origin> --site <site-id> publish --site
+niho-edit --studio --origin <studio-origin> --site <site-id> publish --changed
+niho-edit --studio --origin <studio-origin> --site <site-id> publish --all
 niho-edit [--studio] --origin <https-origin> --site <site-id> history <page-id> --locale <locale> [--cursor <cursor>]
 niho-edit [--studio] --origin <https-origin> --site <site-id> restore <page-id> <revision> --locale <locale> (--expected-version <version> | --json <snapshot-file|->)
 niho-edit --origin <https-origin> --site <site-id> page-release-set-plan --json <items-file|-> --operation-id <uuid-v4>
@@ -94,7 +99,10 @@ Studio 内サイトの GUI 操作と niho-edit --studio の対応
   GUI 操作                                  CLI コマンド
   ページの一覧・作成・URL・公開状態           pages-catalog → page-change
   ページの読取・下書き編集・CMS ブロック設定  read → apply / save
-  ページの公開・版履歴・復元                  publish / history / restore
+  ページの公開・版履歴・復元                  publish <page-id> / history / restore
+  未公開変更の一覧・一括公開                  changes → publish --changed
+  共通設定の公開                              publish --site
+  全ページ再生成（移行・コード変更時のみ）    publish --all
   NIHO フォームの接続                        page-embed-register → apply / save
   独自ドメイン・noindex・許可 origin           site-public-read → site-public-save
   サイト共通 SEO                             site-seo-read → site-seo-save
@@ -106,7 +114,7 @@ Studio 内サイトの GUI 操作と niho-edit --studio の対応
   CMS の翻訳と locale 公開                   localization-* または cms-v2
 
 素材ライブラリは、Studio 内サイトの GUI では提供していません。サイト共通スタイルは、Studio GUI と \`niho-edit --studio styles\` で共通操作を使います。
-サイト全体と変更ページの一括公開は GUI と CLI に同時に追加予定です。`;
+Studio-native site の未公開変更は GUI と CLI 共通の一覧です。`;
 
 const commandUsageLines = NIHO_EDIT_USAGE.split("\n")
   .filter((line) => line.startsWith("niho-edit "))

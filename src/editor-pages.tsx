@@ -353,6 +353,7 @@ export type SiteSettingsState = {
   /** site.styles の draft snapshot を識別する opaque version。 */
   version: string | undefined;
   publishedVersion: string | undefined; publishedStyles: SiteStyles | undefined;
+  publicationResult: { readonly urls: readonly string[]; readonly elapsedMs: number; readonly warnings: readonly EditorReleaseWarning[] } | null;
   styleSaveEpoch: number; styles: SiteStyles; stylesDirty: boolean; latest: SiteSettings | undefined;
   editStyles: (styles: SiteStyles) => string | undefined;
   renameStyle: (kind: EditingSiteStyleKind, from: string, to: string) => string | undefined;
@@ -368,6 +369,7 @@ export function useSiteSettings(adapter: EditorAdapter, siteId: string, blocks: 
   const [loaded, setLoaded] = useState<{ siteId: string; settings: SiteSettings; version: string; publishedVersion?: string; publishedStyles?: SiteStyles } | null>(null);
   const [status, setStatus] = useState<SiteSettingsState["status"]>("idle"), [form, setForm] = useState(emptyForm), [epoch, setEpoch] = useState(0);
   const [styleSaveEpoch, setStyleSaveEpoch] = useState(0);
+  const [publicationResult, setPublicationResult] = useState<SiteSettingsState["publicationResult"]>(null);
   const [styles, setStyles] = useState<SiteStyles>({}), [latest, setLatest] = useState<SiteSettings>();
   const [styleRenames, setStyleRenames] = useState<EditingSiteStylesRename[]>([]);
   const [busy, setBusy] = useState(false), [message, setMessage] = useState<SiteSettingsState["message"]>(null), [conflict, setConflict] = useState(false);
@@ -426,16 +428,18 @@ export function useSiteSettings(adapter: EditorAdapter, siteId: string, blocks: 
   }
   async function publishStyles() {
     if (!loaded || !adapter.publishSiteStyles || !loaded.publishedVersion || !loaded.publishedStyles || dirty || saving.current) return;
-    const controller = new AbortController(); saving.current = controller; setBusy(true); setMessage(null); setConflict(false);
+    const controller = new AbortController(); saving.current = controller; setBusy(true); setMessage(null); setConflict(false); setPublicationResult(null);
     try {
       const result = await adapter.publishSiteStyles({ siteId: loaded.siteId, expectedDraftVersion: loaded.version,
         expectedPublishedVersion: loaded.publishedVersion }, controller.signal);
       if (controller.signal.aborted) return;
       if (result.status === "conflict") { setConflict(true); setMessage({ text: "共通スタイルの公開状態が競合しました。最新状態を読み込んでください。", alert: true }); return; }
+      if (result.status === "failed") { setMessage({ text: `${result.failedUrl} の生成に失敗しました。${result.message}`, alert: true }); return; }
       if (result.status !== "published" || !result.version || result.version === loaded.publishedVersion) throw new Error("published version must advance");
       const publishedStyles = parseSiteStyles(result.styles);
       setLoaded({ ...loaded, publishedVersion: result.version, publishedStyles });
-      setMessage({ text: "サイト共通スタイルを公開しました。公開中の全ページに反映されます。", alert: false });
+      setPublicationResult({ urls: result.urls, elapsedMs: result.elapsedMs, warnings: result.warnings });
+      setMessage({ text: `サイト共通スタイルを公開しました（${result.urls.length} URL、${result.elapsedMs} ms、SEO警告 ${result.warnings.length}件）。`, alert: false });
     } catch { if (!controller.signal.aborted) setMessage({ text: "サイト共通スタイルを公開できませんでした。保存状態を確認してください。", alert: true }); }
     finally { if (saving.current === controller) { saving.current = null; setBusy(false); } }
   }
@@ -460,6 +464,7 @@ export function useSiteSettings(adapter: EditorAdapter, siteId: string, blocks: 
   return {
     supported: typeof adapter.readSiteSettings === "function", editable, metadataEditable, status, settings: loaded?.siteId === siteId ? loaded.settings : undefined,
     version: loaded?.siteId === siteId ? loaded.version : undefined, publishedVersion, publishedStyles, form, dirty, problem, styles, stylesDirty, latest, styleSaveEpoch,
+    publicationResult,
     editStyles: (next) => { if (!editable || status !== "ready" || busy) return "サイト設定を読み込んでから編集してください。"; try { setStyles(parseSiteStyles(next)); setMessage(null); return undefined; } catch { return "共通スタイルの参照・種類・値を確認してください。"; } },
     renameStyle, canPublishStyles,
     canSave: editable && dirty && !!parsed && !busy, busy, message, conflict,
@@ -548,6 +553,10 @@ export function SiteSettingsPanel({ site, state, cover }: { site: EditorSite | u
           <label className="e-check"><input type="checkbox" checked={form.noindex} disabled={metadataLocked} onChange={(event) => state.edit({ noindex: event.target.checked })} />サイト全体を検索エンジンに表示しない</label>
           {state.problem && <p className="e-help e-problem" role="alert">{state.problem}</p>}
           {state.message && <p className={state.message.alert ? "e-help e-problem" : "e-help"} role={state.message.alert ? "alert" : "status"}>{state.message.text}</p>}
+          {state.publicationResult && <details><summary>公開した URL と SEO 警告</summary>
+            <ul>{state.publicationResult.urls.map((url) => <li key={url}><a href={url} target="_blank" rel="noreferrer">{url}</a></li>)}</ul>
+            {state.publicationResult.warnings.length > 0 && <ul>{state.publicationResult.warnings.map((warning, index) => <li key={`${warning.code}:${index}`}>{warning.message}</li>)}</ul>}
+          </details>}
           {state.latest && <details><summary>競合した保存内容と入力を比較</summary><p>最新の保存内容</p><pre>{JSON.stringify(state.latest, null, 2)}</pre><p>あなたの入力</p><pre>{JSON.stringify({ ...settingsFrom(form), ...state.styles }, null, 2)}</pre></details>}
           {state.conflict && <button type="button" className="e-small" disabled={state.busy} onClick={state.reload}>最新の設定を読み込む（入力を破棄）</button>}
           {state.editable ? <div className="e-actions"><button type="button" className="e-primary" disabled={!state.canSave} onClick={() => void state.save()}>サイト設定を保存</button>

@@ -12,8 +12,8 @@ const LOCALE = /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/u;
 const REDIRECT_KEYS = ["fromPath", "locale", "toPath"] as const;
 
 /** Parse an entire versioned redirect snapshot, rejecting ambiguous paths and loops. */
-export function parseManagedSiteRedirects(value: unknown): ManagedSiteRedirect[] | null {
-  if (!Array.isArray(value) || value.length > MAX_MANAGED_SITE_REDIRECTS) return null;
+export function parseManagedSiteRedirects(value: unknown, maximum = MAX_MANAGED_SITE_REDIRECTS): ManagedSiteRedirect[] | null {
+  if (!Array.isArray(value) || value.length > maximum) return null;
   const redirects: ManagedSiteRedirect[] = [];
   const bySource = new Map<string, string>();
   for (const item of value) {
@@ -28,14 +28,17 @@ export function parseManagedSiteRedirects(value: unknown): ManagedSiteRedirect[]
     bySource.set(fromPath as string, toPath as string);
     redirects.push({ locale, fromPath: fromPath as string, toPath: toPath as string });
   }
+  const complete = new Set<string>();
   for (const { fromPath } of redirects) {
-    const seen = new Set<string>();
+    const trail: string[] = [], active = new Set<string>();
     let path: string | undefined = fromPath;
-    while (path !== undefined) {
-      if (seen.has(path)) return null;
-      seen.add(path);
+    while (path !== undefined && bySource.has(path) && !complete.has(path)) {
+      if (active.has(path)) return null;
+      active.add(path);
+      trail.push(path);
       path = bySource.get(path);
     }
+    for (const visited of trail) complete.add(visited);
   }
   return redirects;
 }

@@ -65,17 +65,22 @@ niho-edit --studio --origin https://studio.example --site kamakura release home 
 
 ## Studio-native ページの公開と版履歴
 
-Studio-native site は `publish`、`history`、`restore`、`page-change` を各1回の API 呼出しで実行します。`publish --changed` の一括公開とサイト全体の公開復元は別途対応中です。鎌倉の既存経路では移行が終わるまで上記の二段階コマンドを使います。
+ページの「公開」は指定ページの下書きを公開します。どの公開操作でも、選ばれなかったページは公開中の版から作り直します。内容が同じHTMLは既存の生成物を使います。`changes` と `publish --changed` は、Studio GUI と同じ未公開変更一覧を使います。複数ページと共通設定をまとめて生成し、全URLを用意できた後に公開manifestを1回だけ切り替えます。対象ページ以外は公開済みの版から生成し、保存しただけの下書きは混ぜません。
 
 ```sh
 niho-edit --studio --origin https://studio.example --site site-id publish home --locale ja --json saved.json
+niho-edit --studio --origin https://studio.example --site site-id changes
+niho-edit --studio --origin https://studio.example --site site-id publish page-one page-two --locale ja
+niho-edit --studio --origin https://studio.example --site site-id publish --changed
+niho-edit --studio --origin https://studio.example --site site-id publish --site
+niho-edit --studio --origin https://studio.example --site site-id publish --all
 niho-edit --studio --origin https://studio.example --site site-id history home --locale ja
 niho-edit --studio --origin https://studio.example --site site-id restore home 4 --locale ja --expected-version "$page_version"
 niho-edit --studio --origin https://studio.example --site site-id pages-catalog
 niho-edit --studio --origin https://studio.example --site site-id page-change --expected-version "$catalog_version" --json new-page.json
 ```
 
-結果は JSON です。`publish` と `restore` は `read` または `save` のスナップショットを `--json` に渡すか、その `version` を `--expected-version` に指定します。`restore` の履歴版は `history` の `id` または revision から選びます。`page-change` で `action: "create"` を使う場合は `pages-catalog` の版を、`"update"` または `"visibility"` では対象ページを `read` した版を指定します。例の `new-page.json` は `{ "action": "create", "siteId": "site-id", "locale": "ja", "title": "About", "path": "/about" }` です。
+結果は JSON です。ページ単位の `publish` と `restore` は `read` または `save` のスナップショットを `--json` に渡すか、その `version` を `--expected-version` に指定します。`changes` はページ本文・path/visibility・共通設定の未公開変更を返します。`publish --changed` はその全件を一括公開し、`publish --site` は共通設定だけを公開します。複数のページIDを指定すると、指定したページの下書きをまとめて公開します。公開中の版を作り直す `publish --all` はコード変更・移行時の CLI 専用操作です。`restore` の履歴版は `history` の `id` または revision から選びます。`page-change` で `action: "create"` を使う場合は `pages-catalog` の版を、`"update"` または `"visibility"` では対象ページを `read` した版を指定します。例の `new-page.json` は `{ "action": "create", "siteId": "site-id", "locale": "ja", "title": "About", "path": "/about" }` です。
 
 版が競合すると HTTP 409 `version_conflict` で終了します。入力ファイルはそのまま使って最新状態と比較できます。機械認証は対象サイトに委任された `pages.publish` grant を使い、読取には対応する読取 grant を使います。
 

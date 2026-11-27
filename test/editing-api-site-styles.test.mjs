@@ -83,7 +83,8 @@ function fixture({ publish = true, extraResponseFields = false, extraHostFields 
     async publish(_actor, _siteId, input) {
       if (input.expectedDraftVersion !== draft.version || input.expectedPublishedVersion !== published.version) return { status: "conflict" };
       published = { version: `published-${++publishedNumber}`, styles: structuredClone(draft.styles) };
-      const result = { status: "published", version: published.version, styles: structuredClone(published.styles) };
+      const result = { status: "published", version: published.version, styles: structuredClone(published.styles),
+        urls: ["https://host.example/"], elapsedMs: 12, warnings: [] };
       return extraHostFields ? { ...result, futureField: "must be rejected by the server" } : result;
     }
   };

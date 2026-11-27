@@ -667,7 +667,8 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
       draft: { version: "draft-styles-v1", styles: { tokens: {} } },
       published: { version: "published-styles-v1", styles: { tokens: {} } }
     });
-    if (path.endsWith("/site.styles.publish")) return Response.json({ status: "published", version: "published-styles-v2", styles: { tokens: {} } });
+    if (path.endsWith("/site.styles.publish")) return Response.json({ status: "published", version: "published-styles-v2", styles: { tokens: {} },
+      urls: ["https://kamakura.niho.life/"], elapsedMs: 12, warnings: [] });
     if (path.includes("/pages.read/")) {
       if (request.headers.get("If-None-Match") === '"page-v1"') return new Response(null, { status: 304, headers: { ETag: '"page-v1"', "Server-Timing": "page-read;dur=1.2" } });
       if (largeReadMode) {

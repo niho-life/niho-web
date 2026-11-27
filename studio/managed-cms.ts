@@ -24,7 +24,8 @@ import {
   iso, itemBlobKey, localizationBlobKey, nowSeconds, opaque, routeTableKey, snapshotKey, type CmsCapability, type CmsScope, type ItemMeta, type JobPayload, type Site
 } from "./managed-cms-store.js";
 import { collectionPath, deliverCmsJob, escapeHtml, previewContent, releaseContext, releaseImpacts } from "./managed-cms-release.js";
-import { cmsLocalizationItem, cmsLocalizationOverview, cmsLocalizationSummary, cmsLocalizationTargetLocale, type CmsLocalizationView } from "./managed-cms-localization.js";
+import { cmsLocalizedSchema, cmsLocalizationItem, cmsLocalizationOverview, cmsLocalizationSummary, cmsLocalizationTargetLocale, type CmsLocalizationView } from "./managed-cms-localization.js";
+import { prepareManagedCmsPublication } from "./managed-sites.js";
 
 const PLAN_TTL = 10 * 60;
 const PREVIEW_TTL = 5 * 60;
@@ -220,7 +221,7 @@ async function queueRelease(store: CmsStore, mutation: Mutation, proposal: CmsRe
   await store.put(snapshotKey(site.siteId, snapshot.releaseId), snapshot);
   return mutate(store, mutation, { state, result, ...(token === null ? {} : { tokenHash: await digest(token) }), requireFreeSlot: true, job: {
     kind: schedule ? "schedule" : "release", id: schedule?.id ?? snapshot.releaseId, at: schedule ? Math.ceil(Date.parse(schedule.at) / 1000) : nowSeconds(),
-    payload: { releaseId: snapshot.releaseId, expectedReleaseId, pins: snapshot.items.map(cmsItemKey) }
+    payload: { releaseId: snapshot.releaseId, expectedReleaseId, locale: snapshot.locale, pins: snapshot.items.map(cmsItemKey) }
   } });
 }
 
@@ -495,17 +496,6 @@ async function localizationReleaseContext(store: CmsStore, site: Site, targetLoc
   };
 }
 
-function cmsLocalizedSchema(schema: CmsSchema, targetLocale: string): CmsSchema {
-  const root = `/${targetLocale}/cms`;
-  return { ...schema, collections: schema.collections.map((collection) => {
-    if (collection.pathPrefix === null) return collection;
-    let relative = collection.pathPrefix.replace(/^\/cms(?=\/)/u, "");
-    if (relative === "/") relative = `/${collection.id.toLowerCase()}/`;
-    if (!relative.startsWith("/")) relative = `/${relative}`;
-    return { ...collection, pathPrefix: `${root}${relative}` };
-  }) };
-}
-
 type CmsLocalizationReleasePlan =
   | { readonly status: "ready"; readonly proposal: CmsReleaseProposal; readonly revisions: readonly CmsItemRevision[];
       readonly omittedItems: readonly { readonly collectionId: string; readonly itemId: string; readonly missingFieldIds: readonly string[] }[] }
@@ -627,13 +617,16 @@ async function localizationReleaseOperation(store: CmsStore, site: Site, operati
   ]);
   if (await digest(await store.snapshot(site.siteId, snapshot.releaseId)) !== await digest(snapshot))
     throw new Error("CMS localized snapshot verification failed");
+  let publication;
+  try { publication = await prepareManagedCmsPublication(store, site, snapshot); }
+  catch { return error("host_failure", 503); }
   const localizedReleases = { ...(site.state.localizedReleases ?? {}), [targetLocale]: {
     id: snapshot.releaseId, at: dateNow(), routeTableRevision: snapshot.routeTable.revision
   } };
   const result = { status: "published", operationId: mutation.operationId, result: { releaseId: snapshot.releaseId,
     locale: targetLocale, itemCount: snapshot.items.length, omittedItems: candidate.omittedItems } };
   return mutate(store, mutation!, { state: { ...site.state, localizedReleases, retainedBytes }, revisions,
-    publishedSnapshot: snapshot, tokenHash: await digest(body.confirmationToken),
+    publishedSnapshot: snapshot, tokenHash: await digest(body.confirmationToken), ...(publication ? { publication } : {}),
     job: { kind: "verify", id: opaque("verify"), at: nowSeconds(), payload: { keys: [
       snapshotKey(site.siteId, snapshot.releaseId), routeTableKey(site.siteId, targetLocale, snapshot.routeTable.revision),
       ...revisions.map((item) => itemBlobKey(site.siteId, targetLocale, item))

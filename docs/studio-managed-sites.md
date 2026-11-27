@@ -1,6 +1,6 @@
 # Studio-native site 契約
 
-Studio は Project、Site、メンバー、ページの版情報と公開履歴を D1 に保存し、固定ページの PageDocument 本文を非公開 R2 に保存する。固定ページの編集・管理・公開・復元は Studio GUI と共通 HTTP API で行う。対応コマンドは `niho-edit --studio` で呼び出せる。外部ホストとして登録されたサイトは、各ホストの編集 API と権限を使う。
+Studio は Project、Site、メンバー、ページの版情報と公開履歴を D1 に保存し、固定ページの PageDocument 本文を非公開 R2 に保存する。固定ページの編集・管理・公開・復元は Studio GUI と共通 HTTP API で行う。未公開変更一覧と一括公開もGUI・`niho-edit --studio`で共有する。外部ホストとして登録されたサイトは、各ホストの編集 API と権限を使う。
 
 ## 作成と識別子
 
@@ -40,19 +40,21 @@ GUI のページ操作は次のとおり。
 - ページ作成、名前・URL・公開範囲の変更（`pages.change`）
 - 通常ページの作成、タイトル・path更新、visibility更新
 
+公開対象は「未公開変更」一覧で共有する。ページ編集画面からの公開はそのページの下書きを反映する。他のページは公開中の版から作る。共通設定の公開は全ページを公開中の版から再生成する。`publish --changed` は一覧の変更を一括して順に生成し、全URLを用意できた後に公開ポインターを1回だけ切り替える。生成に失敗した場合はポインターを切り替えない。`publish --all` はコード変更や移行時にCLIからだけ使う。
+
 公開・復元・ページ管理は操作ごとに `expectedVersion` を持つ1要求で完結する。公開済みページのURL変更と公開範囲変更は、ページ情報・redirect・新しい manifest・公開ポインターを同じ batch で切り替える。CLI の discovery は呼び出し元に許可された操作を返す。D1 は Project/Site と現行の owner/editor 権限を照合し、ページ版・ポインター・監査記録を確定する。
 
 ## 公開配信
 
-固定ページは公開操作の中で HTML、CSP、hreflang、JSON-LD、埋め込み参照、sitemap・robots・llms を生成し、内容 hash 付きの不変 R2 artifact と manifest を保存する。公開 Worker は登録 host、現在の manifest pointer、manifest、要求された artifact を読むだけで HTML を返す。manifest は hash key ごとに isolate 内で再利用し、host 対応表と公開 pointer は最大5秒だけキャッシュする。通常のページ表示で行う D1 lookup は host 解決と公開 pointer の2つだけで、ページ状態の再照合や manifest 全体の毎回検証はしない。manifest には本文を入れず、llms-full.txt は公開時に生成した R2 artifact を返す。
+固定ページと CMS の一覧・詳細は公開操作の中で HTML、CSP、hreflang、JSON-LD、埋め込み参照、sitemap・robots・llms を生成し、内容 hash 付きの不変 R2 artifact と manifest を保存する。CMS の項目公開では新しいCMS公開版を使い、サイト全体を作り直す。HTMLが同じURLは、既存の生成物を使う。公開 Worker は登録 host、現在の manifest pointer、manifest、要求された artifact を読むだけで HTML を返す。manifest は hash key ごとに isolate 内で再利用し、host 対応表と公開 pointer は最大5秒だけキャッシュする。通常のページ表示で行う D1 lookup は host 解決と公開 pointer の2つだけで、ページ状態の再照合や manifest 全体の毎回検証はしない。sitemap と llms.txt は本文を読まず、目録の URL と metadata から生成する。
 
 共有 origin の URL は `/s/{siteSlug}/`、主 host の URL は `/`。`managed_site_hosts` が host・path prefix・noindex・主 host の唯一の正本で、公開時の canonical、sitemap、hreflang はその主 host から生成する。独自ドメインの追加・DNS・Worker route は Cloudflare の運用手順に従う。host 設定を変えたときは、そのサイトの公開済み固定ページを再公開して、HTML と discovery file の URL を更新する。旧 `managed_sites.public_domain` / `public_domain_noindex` 列は新 Worker が参照しない。すべての rollback 対象 Worker から依存がなくなった後に `studio/post-deploy/0026_drop_managed_site_domain_mirror.sql` で削除する。
 
 ページ URL の変更と非公開化はページ管理の1操作で新しい manifest を作る。公開 URL の移動は301 redirectになり、非公開ページは manifest と sitemap から外れる。サイト全体の公開履歴から戻すときは、対象 release の manifest pointer だけを切り替える。HTML は immutable、ブラウザーには `Cache-Control: no-cache` と ETag を返し、一致する `If-None-Match` には304で応答する。noindex host では HTML、SEO file、redirect、404、公開 runtime に `X-Robots-Tag: noindex, nofollow` を付け、robots は全体をDisallowし、sitemapとllmsの一覧は空にする。
 
-固定ページを返す経路は公開 Worker に一本化した。CMS binding を持つページ、CMS route、およびそれらを含む sitemap・llms は #527 で静的生成へ移すまで Studio Worker の動的 fallback を使う。登録済み独自 host でもこの互換配信を行い、host の noindex を反映する。CMS の移行後に fallback を削除する。画像の幅別変換と、1サイトへの複数の独自 host 登録は対象外。
+固定ページ、CMS binding を持つページ、CMS route、sitemap・llms は公開 manifest から配信する。CMS の予約公開も同じ静的生成経路を使い、失敗があれば CMS 公開 pointer と manifest pointer の両方を切り替えない。サイト共通設定だけの再生成では route の `lastmod` を維持する。画像の幅別変換と、1サイトへの複数の独自 host 登録は対象外。
 
-公開SEO出力は `/s/{siteSlug}/sitemap.xml`、`robots.txt`、`llms.txt`、`llms-full.txt`。ページ文書の metadata から canonical、robots、OG、title、description を出し、同じ path の翻訳が公開済みの場合だけ hreflang を付ける。公開応答は description・画像 alt・英語本文中の日本語、同じ言語の公開ページと重複する title/description、ページまたは CMS route が見つからないサイト内リンクを警告として返す。CMS route を取得できないときは警告の対象から外す。サイト名、説明、既定 OGP 画像、所有権確認タグ、組織 JSON-LD、robots 方針、GA4 を含む SEO 設定は公開許可設定と同じ版で管理し、GUI と `niho-edit --studio site-seo-read` / `site-seo-save` から読み書きする。固定ページ redirect は Studio GUI または `niho-edit --studio site-redirects-read` / `site-redirects-save` で管理し、ページ移動時に自動作成した redirect も同じ一覧へ反映する。旧データの取込みと95 URLの実サイト受入は未完了で、#489の残りとして扱う。
+公開SEO出力は `/s/{siteSlug}/sitemap.xml`、`robots.txt`、`llms.txt`。ページ文書の metadata から canonical、robots、OG、title、description を出し、同じ path の翻訳が公開済みの場合だけ hreflang を付ける。公開応答は description・画像 alt・英語本文中の日本語、同じ言語の公開ページと重複する title/description、ページまたは CMS route が見つからないサイト内リンクを警告として返す。CMS route を取得できないときは警告の対象から外す。サイト名、説明、既定 OGP 画像、所有権確認タグ、組織 JSON-LD、robots 方針、GA4 を含む SEO 設定は公開許可設定と同じ版で管理し、GUI と `niho-edit --studio site-seo-read` / `site-seo-save` から読み書きする。固定ページ redirect は Studio GUI または `niho-edit --studio site-redirects-read` / `site-redirects-save` で管理し、ページ移動時に自動作成した redirect も同じ一覧へ反映する。旧データの取込みと95 URLの実サイト受入は未完了で、#489の残りとして扱う。
 
 ### 埋め込みと計測の設定
 
@@ -77,7 +79,7 @@ CLIはtoken、service credential、Access subjectを標準出力へ含めない�
 
 ## CMS
 
-Studio-native site の Dashboard にある「CMS」から、初期コレクション「お知らせ」の項目を編集する。owner はコレクションを追加でき、owner と editor は下書き保存、確認付き公開、公開予約、予約取消、公開の取り下げ、削除、下書きへの復元を行える。公開中の項目は先に取り下げ、予約中の項目は先に予約を取り消す。初期実装は home の言語を CMS 全体に使う。公開リストは `/s/{slug}/cms` と `/s/{slug}/cms/posts`、詳細は `/s/{slug}/cms/posts/{itemSlug}`。固定ページ用にこの名前空間を割り当てることはできない。本文はテキストで描画し、詳細の画像とギャラリーは snapshot の公開素材 manifest から描画する。素材付き項目の公開には Site の素材 resolver が必要。既定の Worker に resolver は設定していない。[公開素材の manifest](cms-v2-contract.md#公開素材の-manifest)
+Studio-native site の Dashboard にある「CMS」から、初期コレクション「お知らせ」の項目を編集する。owner はコレクションを追加でき、owner と editor は下書き保存、確認付き公開、公開予約、予約取消、公開の取り下げ、削除、下書きへの復元を行える。公開中の項目は先に取り下げ、予約中の項目は先に予約を取り消す。初期実装は home の言語を CMS 全体に使う。公開リストは `/s/{slug}/cms` と `/s/{slug}/cms/posts`、詳細は `/s/{slug}/cms/posts/{itemSlug}`。固定ページ用にこの名前空間を割り当てることはできない。CMS release はこの route を不変 HTML として生成し、変更項目を使う一覧・詳細 route と discovery artifact を一つの manifest pointer 更新で公開する。本文はテキストで描画し、詳細の画像とギャラリーは snapshot の公開素材 manifest から描画する。素材付き項目の公開には Site の素材 resolver が必要。既定の Worker に resolver は設定していない。[公開素材の manifest](cms-v2-contract.md#公開素材の-manifest)
 
 Studio の共通編集 API と CLI の経路は [CMS v2 契約](cms-v2-contract.md) を参照する。CMS の保存先は Studio の D1 と非公開 R2 binding `CMS_OBJECTS`。Kamakura などの外部ホストの編集先や権限は各ホストで管理する。個人情報・予約台帳・資格情報などは CMS に保存しない。
 
@@ -85,7 +87,7 @@ Studio の共通編集 API と CLI の経路は [CMS v2 契約](cms-v2-contract.
 
 CMS bindings が生成した画像の参照は、ページ公開版が固定する CMS snapshot の公開素材 manifest から解決する。公開ページで実際に参照され、サイトの配信設定が許可した素材を renderer に渡す。CSP に登録するのも、ページ内で使う素材の origin に限る。
 
-Studio の PageEditor は CMS list と detail を `CmsPageBindingsDocument` sidecar でページ要素へ結び付けます。sidecar は `managed_page_versions` の当該 revision と一緒に保存し、公開時に page publication が不変 CMS `releaseId` と `schemaRevision` を固定します。公開 HTML はその release の項目だけから描画し、後から行う CMS 保存・schema 移行は過去の公開ページを書き換えません。CMS 公開と固定ページ公開は別の操作で、両者の原子切替はありません。
+Studio の PageEditor は CMS list と detail を `CmsPageBindingsDocument` sidecar でページ要素へ結び付けます。sidecar は `managed_page_versions` の当該 revision と一緒に保存し、固定ページの公開版は不変 CMS `releaseId` と `schemaRevision` を固定します。公開 HTML はその release の項目だけから描画し、後から行う CMS 保存・schema 移行は過去の公開ページを書き換えません。CMS release の公開では、該当する CMS route と discovery artifact を生成し、CMS の公開版とサイト manifest pointer を一つの D1 batch で切り替えます。固定ページの明示的な公開は別操作で、その時点の CMS release を固定します。
 
 編集 preview は actor、site/page、page version、CMS item revision に結び付いた5分・一回限り token を使い、公開配信や履歴へ下書きを含めません。schema 移行計画は保存中の全 page bindings を検査します。固定ページの公開要求は detail slug ごとの path を現在の固定ページ・予約 URL・CMS route と照合します。CMS image の公開表示は素材 manifest と配信を含む #379 / #380 完了後に有効になります。
 

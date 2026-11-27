@@ -145,7 +145,8 @@ export type EditorReleasePlan = EditorReleaseRequest & {
   affected?: readonly EditorReleaseAffected[];
   warnings?: readonly EditorReleaseWarning[];
 };
-export type EditorReleaseResult = { status: "released"; snapshot: EditorSnapshot; url?: string; warnings?: readonly EditorReleaseWarning[] } | { status: "conflict" };
+export type EditorReleaseResult = { status: "released"; snapshot: EditorSnapshot; url?: string; urls?: readonly string[]; elapsedMs?: number; warnings?: readonly EditorReleaseWarning[] } | { status: "conflict" };
+export type EditorPublishPageResult = EditorReleaseResult | { status: "failed"; failedUrl: string; message: string };
 export type ComponentLibrarySnapshot = {
   /** 検証前のライブラリ。まだないサイトでは revision: 1、components: [] の空ライブラリ。 */
   library: unknown;
@@ -192,7 +193,9 @@ export type EditorPageChangeResult = { status: "applied"; page: EditorPage; oper
 export type EditorSiteSettingsSnapshot = { settings: unknown; version: string; publishedVersion?: string; publishedStyles?: SiteStyles };
 export type EditorSiteSettingsSaveResult = { status: "saved"; version: string; styles?: SiteStyles } | { status: "conflict" }
   | { status: "referenced"; usages: readonly EditingSiteStylesUsage[] };
-export type EditorSiteStylesPublishResult = { status: "published"; version: string; styles: SiteStyles } | { status: "conflict" };
+export type EditorSiteStylesPublishResult = { status: "published"; version: string; styles: SiteStyles;
+  urls: readonly string[]; elapsedMs: number; warnings: readonly EditorReleaseWarning[] }
+  | { status: "failed"; failedUrl: string; message: string } | { status: "conflict" };
 export type EditorBreakpointName = "Mini" | "Mobile" | "Tablet" | "Small" | "PC";
 export type EditorBreakpointSettings = {
   /** mobile-first の最も狭い有効段。PC だけが有効な場合は PC。 */
@@ -236,7 +239,7 @@ export interface EditorAdapter {
   prepareRelease?(request: EditorReleaseRequest, signal: AbortSignal): Promise<EditorReleasePlan>;
   release?(request: EditorReleasePlan, signal: AbortSignal): Promise<EditorReleaseResult>;
   /** Studio 内サイト用。保存済みの現行下書きの公開、または履歴版の復元を1回の要求で行う。 */
-  publishPageNow?(request: EditorPublishPageInput & { target: EditorTarget }, signal: AbortSignal): Promise<EditorReleaseResult>;
+  publishPageNow?(request: EditorPublishPageInput & { target: EditorTarget }, signal: AbortSignal): Promise<EditorPublishPageResult>;
   /** Same-site, multi-page publish. Hosts without all three methods keep the single-page UI. */
   prepareReleaseSet?(items: readonly EditingPageReleaseSetItem[], signal: AbortSignal): Promise<EditingPageReleaseSetPlan>;
   releaseSet?(plan: EditingPageReleaseSetPlan, signal: AbortSignal): Promise<EditingPageReleaseSetApplyResult>;

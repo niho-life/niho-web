@@ -1,4 +1,6 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { createPageEditingApiClient, EditingApiClientError } from "../src/editing-client.js";
+import type { EditingSitePublishResult } from "../src/editing-api.js";
 import type { Project } from "../src/projects.js";
 import { parseManagedSiteRedirects, type ManagedSiteRedirect } from "../src/managed-site-redirects.js";
 import { api, ApiError, record, SessionExpiredError, text } from "./api-client.js";
@@ -8,6 +10,9 @@ export function ManagedPublicSettings({ project, expire }: { project: Project; e
   const seoPath = `/api/projects/${encodeURIComponent(project.id)}/sites/${encodeURIComponent(project.site.id)}/editor/seo-settings`;
   const domainPath = `/api/projects/${encodeURIComponent(project.id)}/sites/${encodeURIComponent(project.site.id)}/editor/public-domain`;
   const redirectsPath = `/api/projects/${encodeURIComponent(project.id)}/sites/${encodeURIComponent(project.site.id)}/editor/redirects`;
+  const client = useMemo(() => createPageEditingApiClient({ origin: window.location.origin, basePath: "/api/edit/v1",
+    siteId: project.site.id, credentials: "same-origin", preferLegacyDiscovery: true }), [project.site.id]);
+  const [published, setPublished] = useState<Extract<EditingSitePublishResult, { status: "released" }> | null>(null);
   const [version, setVersion] = useState("");
   const [seoVersion, setSeoVersion] = useState("");
   const [frames, setFrames] = useState("");
@@ -113,7 +118,7 @@ export function ManagedPublicSettings({ project, expire }: { project: Project; e
         robotsPolicy, ga4MeasurementId: measurementId.trim() || null };
       const result = await api(seoPath, { method: "POST", body: { expectedVersion: seoVersion, settings } });
       applySeo(result);
-      setMessage("SEO設定を保存しました。公開ページは次回の公開で更新されます。");
+      setMessage("SEO設定を保存しました。「共通設定を公開」で公開済みのページに反映できます。");
     } catch (error) {
       if (error instanceof SessionExpiredError) expire();
       else if (error instanceof ApiError && error.status === 409) setMessage("公開設定が別に更新されました。再読込して確認してください。");
@@ -163,6 +168,30 @@ export function ManagedPublicSettings({ project, expire }: { project: Project; e
     } finally { setBusy(false); }
   }
 
+  async function publishSettings() {
+    if (busy || !version) return;
+    setBusy(true);
+    setMessage("");
+    setPublished(null);
+    try {
+      const pending = await client.readPublicationChanges(AbortSignal.timeout(30_000));
+      if (!pending.changes.some((change) => change.kind === "shared")) {
+        setMessage("未公開の共通設定はありません。");
+        return;
+      }
+      const result = await client.publishSiteNow(pending.version, "site", AbortSignal.timeout(60_000));
+      if (result.status === "conflict") setMessage("設定が更新されました。再読込してから公開してください。");
+      else if (result.status === "failed") setMessage(result.failedUrl + " の生成に失敗しました。 " + result.message);
+      else {
+        setPublished(result);
+        setMessage(result.urls.length + " URLを更新しました（" + result.elapsedMs + " ms、SEO警告 " + result.warnings.length + "件）。");
+      }
+    } catch (error) {
+      if (error instanceof EditingApiClientError && error.status === 401) expire();
+      else setMessage("共通設定を公開できませんでした。時間をおいて再読込してください。");
+    } finally { setBusy(false); }
+  }
+
   if (hidden) return null;
   return <section className="studio-members" aria-label="公開配信">
     <div className="studio-section-heading"><h2>公開配信</h2><button className="studio-secondary" type="button" disabled={busy} onClick={() => { setMessage(""); setVersion(""); setAttempt((value) => value + 1); }}>再読込</button></div>
@@ -178,7 +207,7 @@ export function ManagedPublicSettings({ project, expire }: { project: Project; e
       <label>埋め込みを許可する HTTPS origin
         <textarea disabled={busy} rows={4} maxLength={6100} spellCheck={false} value={frames} onChange={(event) => setFrames(event.target.value)} placeholder="https://www.youtube-nocookie.com" />
       </label>
-      <p className="studio-help">URL の先頭にある https:// とドメインを、1行に1件入力します。保存すると公開済みのページにも反映されます。</p>
+      <p className="studio-help">URL の先頭にある https:// とドメインを、1行に1件入力します。保存した変更は「共通設定を公開」で公開済みのページに反映されます。</p>
       <label>画像・動画を許可する HTTPS origin
         <textarea disabled={busy} rows={4} maxLength={6100} spellCheck={false} value={resources} onChange={(event) => setResources(event.target.value)} placeholder="https://media.example.com" />
       </label>
@@ -235,6 +264,12 @@ export function ManagedPublicSettings({ project, expire }: { project: Project; e
       </ul> : <p className="studio-help">redirectは登録されていません。</p>}
       <div><button type="button" disabled={busy} onClick={() => void saveRedirects()}>redirectを保存</button></div>
     </div>}
+    {version && <button type="button" disabled={busy} onClick={() => void publishSettings()}>共通設定を公開</button>}
+    {published && (published.urls.length > 0 || published.warnings.length > 0) && <details>
+      <summary>公開した URL と SEO 警告</summary>
+      <ul>{published.urls.map((url) => <li key={url}><a href={url} target="_blank" rel="noreferrer">{url}</a></li>)}</ul>
+      <ul>{published.warnings.map((warning, index) => <li key={index}>{warning.message}</li>)}</ul>
+    </details>}
     {(message || !version) && <p role="status">{message || "公開配信の設定を読み込んでいます。"}</p>}
   </section>;
 }
