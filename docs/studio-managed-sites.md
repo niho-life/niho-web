@@ -32,27 +32,23 @@ GUI のページ操作は次のとおり。
 - ページ作成、名前・URL・公開範囲の変更（`pages.change`）
 - 通常ページの作成、タイトル・path更新、visibility更新
 
-公開・復元・ページ管理は操作ごとに `expectedVersion` を持つ1要求で完結する。URL 変更は下書きに適用し、次に公開したときに公開URLを切り替える。公開状態の変更は公開済み文書を表示または非表示にする。CLI の discovery は呼び出し元に許可された操作を返す。D1 は Project/Site と現行の owner/editor 権限を照合し、公開版とポインター、監査記録を同じ batch で確定する。
+公開・復元・ページ管理は操作ごとに `expectedVersion` を持つ1要求で完結する。公開済みページのURL変更と公開範囲変更は、ページ情報・redirect・新しい manifest・公開ポインターを同じ batch で切り替える。CLI の discovery は呼び出し元に許可された操作を返す。D1 は Project/Site と現行の owner/editor 権限を照合し、ページ版・ポインター・監査記録を確定する。
 
-## 共有公開origin
+## 公開配信
 
-既存の Studio Worker は `PUBLIC_SITES_ORIGIN` の `GET` / `HEAD /s/{siteSlug}/...` を従来の動的 renderer で配信する。ホームの公開 URL は `/s/{siteSlug}/`。Worker はrequest originの完全一致を先に確認する。公開ページと build が生成した `/_niho/` 配下の専用 JavaScript だけを公開し、管理画面の asset や Access 応答は公開 origin から返さない。静的な公開 Worker のentry/configとR2 artifact配信経路も追加済みだが、公開hostの切替・release配備への組込み前なので、既存の共有originの配信先はまだ変わらない。
+固定ページは公開操作の中で HTML、CSP、hreflang、JSON-LD、埋め込み参照、sitemap・robots・llms を生成し、内容 hash 付きの不変 R2 artifact と manifest を保存する。公開 Worker は登録 host、現在の manifest pointer、manifest、要求された artifact を読むだけで HTML を返す。manifest は hash key ごとに isolate 内で再利用し、host 対応表と公開 pointer は最大5秒だけキャッシュする。通常のページ表示で行う D1 lookup は host 解決と公開 pointer の2つだけで、ページ状態の再照合や manifest 全体の毎回検証はしない。manifest には本文を入れず、llms-full.txt は公開時に生成した R2 artifact を返す。
 
-公開対象はvisibilityがpublicで、現在の `published_revision` が指す不変PageDocumentだけである。root-relativeな本文リンク、画像、poster、favicon、OG画像には描画時に `/s/{siteSlug}` を付ける。保存文書は書き換えない。既存のserver-safe rendererとhead resolverを使い、title、canonical、robots/noindexを反映する。
+共有 origin の URL は `/s/{siteSlug}/`、主 host の URL は `/`。`managed_site_hosts` が host・path prefix・noindex・主 host の唯一の正本で、公開時の canonical、sitemap、hreflang はその主 host から生成する。独自ドメインの追加・DNS・Worker route は Cloudflare の運用手順に従う。host 設定を変えたときは、そのサイトの公開済み固定ページを再公開して、HTML と discovery file の URL を更新する。旧 `managed_sites.public_domain` / `public_domain_noindex` 列は新 Worker が参照しない。すべての rollback 対象 Worker から依存がなくなった後に `studio/post-deploy/0026_drop_managed_site_domain_mirror.sql` で削除する。
 
-オーナーはプロジェクト設定で一意な公開ホスト名を1つ登録できる。Workerに届いたHTTPS hostが登録と完全一致する場合、そのサイトを選び、prefixのない `/`・`/en/...`・CMS pathを同じ公開rendererで返す。登録の変更だけではDNSやWorker routeを設定しない。フォーム接続は現在登録されているhostとpathに固定するため、公開hostを切り替えた後はフォーム参照を再接続してページを再公開する。
+ページ URL の変更と非公開化はページ管理の1操作で新しい manifest を作る。公開 URL の移動は301 redirectになり、非公開ページは manifest と sitemap から外れる。サイト全体の公開履歴から戻すときは、対象 release の manifest pointer だけを切り替える。HTML は immutable、ブラウザーには `Cache-Control: no-cache` と ETag を返し、一致する `If-None-Match` には304で応答する。noindex host では HTML、SEO file、redirect、404、公開 runtime に `X-Robots-Tag: noindex, nofollow` を付け、robots は全体をDisallowし、sitemapとllmsの一覧は空にする。
 
-従来の動的 renderer は公開HTMLをGET時にCloudflare edgeで最大5分キャッシュする。静的公開Workerはhost対応表とmanifest pointerをisolate内で最大5秒保持し、D1で現在のmanifest pointer・ページ公開状態・host登録を照合してからHTMLを返す。HTML Cache API keyにはhost origin・site ID・manifest publication ID・本文digestを含め、再公開後は別keyを使う。ブラウザーには `Cache-Control: no-cache` とHTMLのETagを返し、一致する `If-None-Match` には304で応答する。NIHO接続URLの解決応答は引き続き `no-store` とする。buildが出すJavaScriptは内容hash付きのURLで1年間immutableにする。
+固定ページを返す経路は公開 Worker に一本化した。CMS binding を持つページ、CMS route、およびそれらを含む sitemap・llms は #527 で静的生成へ移すまで Studio Worker の動的 fallback を使う。登録済み独自 host でもこの互換配信を行い、host の noindex を反映する。CMS の移行後に fallback を削除する。画像の幅別変換と、1サイトへの複数の独自 host 登録は対象外。
 
-独自ドメインの noindex が有効な場合、HTML・SEOファイル・リダイレクト・404・公開runtimeの全応答に `X-Robots-Tag: noindex, nofollow` を付ける。`robots.txt` は全体をDisallowし、sitemapとllmsの一覧は空にする。
-
-既存の共有公開originはリクエスト時にD1の公開版から描画する。静的公開Workerは公開時に生成したHTMLとdiscovery fileをR2から返すが、配備・host切替は未実施。CMS bindingを持つページの静的生成、画像の幅別変換、1サイトへの複数の独自host登録は未対応。
-
-公開SEO出力は `/s/{siteSlug}/sitemap.xml`、`robots.txt`、`llms.txt`、`llms-full.txt`。動的rendererは公開ページとCMS routeを含む出力を返す。静的Workerはmanifestに含まれる公開ページからdiscovery fileを生成し、現在の公開route集合と一致しない古いfileは503で閉じる。ページ文書のmetadataからcanonical、robots、OG、title、descriptionを出し、同じpathの翻訳が公開済みの場合だけhreflangを足す。ページのJSON-LD、CMS詳細・一覧のJSON-LD、301リダイレクト、404も公開rendererが返す。公開応答はdescription・画像alt・英語本文中の日本語、同じ言語の公開ページと重複するtitle/description、ページまたはCMS routeが見つからないサイト内リンクを警告として返す。CMS route を取得できないときは警告の対象から外す。静的生成と動的描画は固定ページの HTML、head、hreflang、JSON-LD、CSP に同じ生成関数を使う。管理 API はその出力から不変 artifact と manifest を作り、D1 batch が公開ポインターを確定する。サイト名、説明、既定OGP画像、所有権確認タグ、組織JSON-LD、robots方針、GA4を含むSEO設定は、公開許可設定と同じ版で管理する。GUI と `niho-edit --studio site-seo-read` / `site-seo-save` から読み書きでき、公開HTMLへ反映する。固定ページredirectはStudio GUIで一覧・追加・削除でき、`niho-edit --studio site-redirects-read` / `site-redirects-save` でJSON snapshotを読み込み、版照合後に一括保存できる。重複元・不正パス・転送ループを拒否し、ページ移動で自動作成されたredirectも同じ一覧へ現れる。旧データの取込みと95 URLの実サイト受入は未完了で、#489の残りとして扱う。
+公開SEO出力は `/s/{siteSlug}/sitemap.xml`、`robots.txt`、`llms.txt`、`llms-full.txt`。ページ文書の metadata から canonical、robots、OG、title、description を出し、同じ path の翻訳が公開済みの場合だけ hreflang を付ける。公開応答は description・画像 alt・英語本文中の日本語、同じ言語の公開ページと重複する title/description、ページまたは CMS route が見つからないサイト内リンクを警告として返す。CMS route を取得できないときは警告の対象から外す。サイト名、説明、既定 OGP 画像、所有権確認タグ、組織 JSON-LD、robots 方針、GA4 を含む SEO 設定は公開許可設定と同じ版で管理し、GUI と `niho-edit --studio site-seo-read` / `site-seo-save` から読み書きする。固定ページ redirect は Studio GUI または `niho-edit --studio site-redirects-read` / `site-redirects-save` で管理し、ページ移動時に自動作成した redirect も同じ一覧へ反映する。旧データの取込みと95 URLの実サイト受入は未完了で、#489の残りとして扱う。
 
 ### 埋め込みと計測の設定
 
-オーナーはプロジェクト設定の「公開配信」で iframe と画像・動画の HTTPS origin をそれぞれ登録する。origin は URL の正規化後に完全一致させる。たとえば YouTube は `https://www.youtube-nocookie.com` を登録する。カレンダーなどの公開 URL はエディターの「外部URL」から追加する。SEO設定には GA4 測定 ID とサイト共通 metadata を保存する。設定は公開済みページにも反映される。初期状態で外部 iframe、外部の画像・動画、計測は読み込まない。
+オーナーはプロジェクト設定の「公開配信」で iframe と画像・動画の HTTPS origin をそれぞれ登録する。origin は URL の正規化後に完全一致させる。たとえば YouTube は `https://www.youtube-nocookie.com` を登録する。カレンダーなどの公開 URL はエディターの「外部URL」から追加する。SEO設定には GA4 測定 ID とサイト共通 metadata を保存する。設定は次のページ公開で生成物へ反映する。初期状態で外部 iframe、外部の画像・動画、計測は読み込まない。
 
 `GET /api/projects/{projectId}/sites/{siteId}/editor/public-settings` は `{ settings: { frameOrigins, resourceOrigins, seo }, version }` を返す。同じ URL への `POST` は `{ settings, expectedVersion }` を受け、版が古ければ 409 を返す。SEOだけを編集する `GET` / `POST /api/projects/{projectId}/sites/{siteId}/editor/seo-settings` は `{ settings, version }` を返し、同じ `public_policy_version` をCASに使う。CLI は `site-seo-read` で `{ settings, version }` を読み、編集したsnapshotを `site-seo-save --json` に渡す。古いWorkerとの互換性のため、GA4測定IDは既存public policyにも同じ値を保持する。計測を設定したサイトでは、`noindex` のページも含め、広告連携を無効にした Google tag を読み込む。GA4 を外す場合は `seo.ga4MeasurementId: null` を指定する。
 固定ページ redirect は `GET` / `PUT /api/projects/{projectId}/sites/{siteId}/editor/redirects` で `{ redirects, version }` を読み書きする。`PUT` は `{ redirects, expectedVersion }` を受け、redirect専用版で競合を検出する。保存全体を一つのD1 batchで置き換える。配列要素は `{ locale, fromPath, toPath }` で、転送元はサイト内で一意。GUIは追加・一覧・削除を行い、CLIは `site-redirects-read` で取得したsnapshotを `site-redirects-save --json` で保存する。ページパス変更時もredirect版を進めるので、古いsnapshotの一括保存で自動作成redirectが消えることはない。

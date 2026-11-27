@@ -33,16 +33,16 @@ import {
 } from "../src/editing-localization.js";
 import { SERVICE_CLIENT_ID } from "../src/studio-cli-auth.js";
 import {
-  createManagedProject, managedDashboardOverview, managedEditorOperation, managedPageEditingApi, managedPageUrl,
-  managedProjectRegistrations, managedPublicRequest, managedPublicSeoResponse, managedRegistration, publicSitesOrigin, type ManagedActor, type ManagedPublicHtmlCache
+  createManagedProject, managedCmsBoundPublic, managedDashboardOverview, managedEditorOperation, managedPageEditingApi, managedPageUrl,
+  managedProjectRegistrations, managedPublicSeoResponse, managedRegistration, publicSitesOrigin, type ManagedActor, type ManagedPublicHtmlCache
 } from "./managed-sites.js";
+import { publishedSiteRequest, resolvePublishedSiteHost } from "./managed-publication.js";
 import { CmsStore, type CmsActor, type CmsBucket, type CmsCapability, type CmsPublicAssetResolver } from "./managed-cms-store.js";
 import { CMS_DELIVERY_PREFIX } from "../src/cms-delivery-contract.js";
 import type { CmsPublicAsset } from "../src/cms-v2.js";
 import { managedCmsDelivery, managedCmsDeliveryAdmin } from "./managed-cms-delivery.js";
 import { managedCmsApi, managedCmsLegacySpec } from "./managed-cms.js";
 import { managedCmsPublic, runCmsCron } from "./managed-cms-release.js";
-import { publicScriptPaths } from "./managed-public-policy.js";
 import { dashboardAnalyticsSummary, siteAnalyticsApi, siteAnalyticsRoute } from "./site-analytics-host.js";
 
 type D1Meta = { readonly changes?: number };
@@ -3075,35 +3075,43 @@ async function studioEditingApi(request: Request, env: Env, url: URL, timing: St
 async function handle(request: Request, env: Env, timing: StudioRequestTiming): Promise<Response> {
   const url = new URL(request.url);
   const configuredPublicOrigin = publicSitesOrigin(env.PUBLIC_SITES_ORIGIN);
-  const htmlCache = env.PUBLIC_HTML_CACHE ?? (globalThis as unknown as { caches?: { default?: ManagedPublicHtmlCache } }).caches?.default;
-  const publicScript = async () => {
-    const asset = await env.ASSETS.fetch(new Request(url.href, { method: request.method }));
-    if (asset.status !== 200) return new Response(null, { status: 404 });
-    const headers = securityHeaders("text/javascript; charset=utf-8");
-    headers.set("Cache-Control", "public, max-age=31536000, immutable");
-    return new Response(request.method === "HEAD" ? null : asset.body, { headers });
-  };
-  const serveManagedPublic = async (origin: string, route?: { readonly slug: string; readonly prefix: ""; readonly noindex?: boolean }) => {
-    const withHostRobots = (response: Response) => {
-      if (route?.noindex !== true) return response;
-      const headers = new Headers(response.headers);
-      headers.set("X-Robots-Tag", "noindex, nofollow");
-      return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
-    };
-    if (Object.values(publicScriptPaths).includes(url.pathname) && !url.search && (request.method === "GET" || request.method === "HEAD")) return withHostRobots(await publicScript());
-    const store = env.CMS_OBJECTS ? new CmsStore(env.DB, env.CMS_OBJECTS) : undefined;
-    const seo = await managedPublicSeoResponse(request, env.DB, origin, store, route);
-    if (seo) return withHostRobots(seo);
-    const cms = store && await managedCmsPublic(request, store, origin, route, htmlCache);
-    return withHostRobots(cms || await managedPublicRequest(request, env.DB, origin, store, route, htmlCache));
-  };
   if (configuredPublicOrigin !== null && url.origin === configuredPublicOrigin) {
-    return serveManagedPublic(configuredPublicOrigin);
+    if (!env.CMS_OBJECTS) return json({ error: "managed_sites_unavailable" }, 503);
+    const store = new CmsStore(env.DB, env.CMS_OBJECTS);
+    const seo = await managedPublicSeoResponse(request, env.DB, configuredPublicOrigin, store);
+    if (seo) return seo;
+    const published = await publishedSiteRequest(request, {
+      DB: env.DB, CMS_OBJECTS: env.CMS_OBJECTS, ASSETS: env.ASSETS,
+      ...(env.PUBLIC_SITES_PREVIEW_ORIGIN ? { PUBLIC_SITES_PREVIEW_ORIGIN: env.PUBLIC_SITES_PREVIEW_ORIGIN } : {}),
+      ...(env.PUBLIC_HTML_CACHE ? { PUBLIC_HTML_CACHE: env.PUBLIC_HTML_CACHE } : {})
+    });
+    if (published.status !== 404) return published;
+    const boundPage = await managedCmsBoundPublic(request, env.DB, configuredPublicOrigin, store, env.PUBLIC_HTML_CACHE);
+    if (boundPage) return boundPage;
+    return await managedCmsPublic(request, store, configuredPublicOrigin) ?? published;
   }
-  if (configuredPublicOrigin !== null && url.protocol === "https:" && !url.port && request.method !== "OPTIONS") {
-    const domain = await env.DB.prepare("SELECT slug, public_domain_noindex FROM managed_sites WHERE public_domain = ?1 LIMIT 1")
-      .bind(url.hostname.toLowerCase()).first<{ slug: string; public_domain_noindex: number }>();
-    if (domain) return serveManagedPublic(url.origin, { slug: domain.slug, prefix: "", noindex: domain.public_domain_noindex === 1 });
+  const publicMethod = request.method === "GET" || request.method === "HEAD";
+  const accessProtected = request.headers.has("Cf-Access-Jwt-Assertion") || request.headers.has("cf-access-token");
+  if (publicMethod && !accessProtected && url.protocol === "https:" && !url.port
+    && url.pathname !== "/api" && !url.pathname.startsWith("/api/") && !url.pathname.startsWith(CMS_DELIVERY_PREFIX)
+    && env.CMS_OBJECTS) {
+    const bypassHostCache = request.headers.get("Cache-Control")?.toLowerCase().split(",").some((value) => value.trim() === "no-cache") ?? false;
+    const host = await resolvePublishedSiteHost(request, env.DB, bypassHostCache);
+    if (host?.path_prefix === "") {
+      const route = { slug: host.slug, prefix: "" as const, noindex: host.noindex === 1 };
+      const store = new CmsStore(env.DB, env.CMS_OBJECTS);
+      const seo = await managedPublicSeoResponse(request, env.DB, url.origin, store, route);
+      if (seo) return seo;
+      const published = await publishedSiteRequest(request, {
+        DB: env.DB, CMS_OBJECTS: env.CMS_OBJECTS, ASSETS: env.ASSETS,
+        ...(env.PUBLIC_SITES_PREVIEW_ORIGIN ? { PUBLIC_SITES_PREVIEW_ORIGIN: env.PUBLIC_SITES_PREVIEW_ORIGIN } : {}),
+        ...(env.PUBLIC_HTML_CACHE ? { PUBLIC_HTML_CACHE: env.PUBLIC_HTML_CACHE } : {})
+      }, undefined, host);
+      if (published.status !== 404) return published;
+      const boundPage = await managedCmsBoundPublic(request, env.DB, url.origin, store, env.PUBLIC_HTML_CACHE, route);
+      if (boundPage) return boundPage;
+      return await managedCmsPublic(request, store, url.origin, route, env.PUBLIC_HTML_CACHE) ?? published;
+    }
   }
   if (url.pathname.startsWith(CMS_DELIVERY_PREFIX)) {
     if (!env.CMS_OBJECTS) return json({ error: "not_found" }, 404);
