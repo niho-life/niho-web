@@ -1,5 +1,6 @@
 import type { ComponentDefinition, ComponentLibrary, ElementNode, InstanceNode, NodeStyle, PageDocument, PageNode, StyleDeclarations } from "./types.js";
 import { fail } from "./validation-utils.js";
+import { remapCarouselBinding } from "./carousel.js";
 
 export const COMPONENT_LIMITS = Object.freeze({
   components: 200,
@@ -78,7 +79,10 @@ function expandInstance(instance: InstanceNode, id: string, chain: readonly stri
     spend(state, node, at);
     state.origins.set(resolved, { instance: links[0]!, component: definition.id, node: node.id, chain: links });
     node.id = resolved;
-    if (node.type === "element") node.children = node.children.map((child, index) => visit(child, `${at}.children[${index}]`));
+    if (node.type === "element") {
+      if (node.interaction?.type === "carousel") node.interaction.binding = remapCarouselBinding(node.interaction.binding, (childId) => `${id}--${childId}`);
+      node.children = node.children.map((child, index) => visit(child, `${at}.children[${index}]`));
+    }
     return node;
   };
   return visit(root, at) as ElementNode;

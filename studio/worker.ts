@@ -33,7 +33,7 @@ import {
 import { SERVICE_CLIENT_ID } from "../src/studio-cli-auth.js";
 import {
   createManagedProject, managedDashboardOverview, managedEditorOperation, managedPageEditingApi, managedPageUrl,
-  managedProjectRegistrations, managedPublicRequest, managedRegistration, publicSitesOrigin
+  managedProjectRegistrations, managedPublicRequest, managedPublicSeoResponse, managedRegistration, publicSitesOrigin, type ManagedPublicHtmlCache
 } from "./managed-sites.js";
 import { CmsStore, type CmsActor, type CmsBucket, type CmsCapability, type CmsPublicAssetResolver } from "./managed-cms-store.js";
 import { CMS_DELIVERY_PREFIX } from "../src/cms-delivery-contract.js";
@@ -41,6 +41,7 @@ import type { CmsPublicAsset } from "../src/cms-v2.js";
 import { managedCmsDelivery, managedCmsDeliveryAdmin } from "./managed-cms-delivery.js";
 import { managedCmsApi, managedCmsLegacySpec } from "./managed-cms.js";
 import { managedCmsPublic, runCmsCron } from "./managed-cms-release.js";
+import { publicScriptPaths } from "./managed-public-policy.js";
 import { dashboardAnalyticsSummary, siteAnalyticsApi, siteAnalyticsRoute } from "./site-analytics-host.js";
 
 type D1Meta = { readonly changes?: number };
@@ -76,6 +77,8 @@ export interface Env {
   readonly STUDIO_PREVIEW_UPLOAD_ORIGIN?: string;
   /** Studio-native siteをpath分離して配信する、Studio認証originとは別のHTTPS origin。 */
   readonly PUBLIC_SITES_ORIGIN?: string;
+  /** テスト用の差し替え口。実行時は Workers Cache API の default cache を使う。 */
+  readonly PUBLIC_HTML_CACHE?: ManagedPublicHtmlCache;
   /** Verification host served by the read-only public worker; every response is noindex. */
   readonly PUBLIC_SITES_PREVIEW_ORIGIN?: string;
   /** サイト分析（GA4 / Search Console）を読む Studio 専用サービスアカウントの JSON 鍵。未設定なら分析は未接続のまま。 */
@@ -721,7 +724,8 @@ async function directory(env: Env, identity: AccessIdentity): Promise<Response> 
     const project = projectFromRow(row, identity.subject, registration ? managedOrigin ?? undefined : undefined);
     const publicPage = row.public_origin === null ? null : resolvedPublicPages.get(row.public_origin) ?? null;
     const thumbnailUrl = publicPage?.thumbnailUrl ?? null;
-    const managedPublished = registration?.published_path && managedOrigin ? managedPageUrl(managedOrigin, registration.slug, registration.published_path) : null;
+    const managedPublished = registration?.published_path && managedOrigin
+      ? managedPageUrl(managedOrigin, registration.slug, registration.published_path, registration.public_domain) : null;
     return {
       project,
       summary: {
@@ -2912,7 +2916,7 @@ async function kamakuraMachineEditingApi(request: Request, env: Env, url: URL, i
 }
 
 async function studioEditingApi(request: Request, env: Env, url: URL, timing: StudioRequestTiming): Promise<Response> {
-  const match = /^\/api\/edit\/(v1|v2)\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/(capabilities|operations\/((?:cms|pages)\.[^?]+))$/u.exec(url.pathname);
+  const match = /^\/api\/edit\/(v1|v2)\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/(capabilities|operations\/((?:cms|pages)\.[^?]+|site\.seo\.(?:read|save)))$/u.exec(url.pathname);
   if (!match) return json({ error: "not_found" }, 404);
   let identity: AccessIdentity | ServiceIdentity;
   const accessToken = request.headers.get("cf-access-token");
@@ -2927,7 +2931,6 @@ async function studioEditingApi(request: Request, env: Env, url: URL, timing: St
   if (version === "v1" && siteId === KAMAKURA_EDITOR_SITE_ID && identity.kind === "service") {
     return kamakuraMachineEditingApi(request, env, url, identity, timing);
   }
-  if (!env.CMS_OBJECTS) return json({ error: "not_found" }, 404);
   const registration = await env.DB.prepare(`SELECT s.project_id FROM sites AS s JOIN managed_sites AS ms ON ms.site_id = s.id WHERE s.id = ?1`)
     .bind(siteId).first<{ project_id: string }>();
   if (!registration) return json({ error: "forbidden" }, 403);
@@ -2938,6 +2941,24 @@ async function studioEditingApi(request: Request, env: Env, url: URL, timing: St
     kind: "cli", subject: `${CLI_SUBJECT_PREFIX}${identity.clientId}`,
     email: `cli-${identity.clientId}@studio.invalid`, requestId: crypto.randomUUID()
   };
+  if (version === "v2" && (operation === "site.seo.read" || operation === "site.seo.save")) {
+    const method = operation === "site.seo.read" ? "GET" : "PUT";
+    if (request.method !== method || url.search) return json({ error: "invalid_request" }, 400);
+    if (method !== "GET" && identity.kind === "human" && accessToken === null
+      && (request.headers.get("Origin") !== url.origin || request.headers.get("Sec-Fetch-Site") !== "same-origin")) return json({ error: "invalid_request" }, 400);
+    const capability = method === "GET" ? "site.settings.read" : "site.settings.write";
+    let subject = actor.id;
+    if (identity.kind === "service") {
+      const grant = await env.DB.prepare(`SELECT g.delegated_by_subject ${ACTIVE_CLI_GRANTS} AND g.capability = ?4 LIMIT 1`)
+        .bind(identity.clientId, registration.project_id, siteId, capability).first<{ delegated_by_subject: string }>();
+      if (!grant) return json({ error: "forbidden" }, 403);
+      subject = grant.delegated_by_subject;
+    }
+    return managedEditorOperation(request, env.DB, { subject, email: identity.kind === "human" ? identity.email : bridgeIdentity.email,
+      ...(identity.kind === "service" ? { cliClientId: identity.clientId } : {}), cli: identity.kind === "service" || accessToken !== null },
+      registration.project_id, siteId!, "/editor/seo-settings", url.origin);
+  }
+  if (!env.CMS_OBJECTS) return json({ error: "not_found" }, 404);
   const store = cmsStore(env, bridgeIdentity);
   if (version === "v1" && (path === "capabilities" || operation?.startsWith("pages."))) {
     if (request.method !== "GET" && identity.kind === "human" && accessToken === null &&
@@ -2967,10 +2988,35 @@ async function studioEditingApi(request: Request, env: Env, url: URL, timing: St
 async function handle(request: Request, env: Env, timing: StudioRequestTiming): Promise<Response> {
   const url = new URL(request.url);
   const configuredPublicOrigin = publicSitesOrigin(env.PUBLIC_SITES_ORIGIN);
-  if (configuredPublicOrigin !== null && url.origin === configuredPublicOrigin) {
+  const htmlCache = env.PUBLIC_HTML_CACHE ?? (globalThis as unknown as { caches?: { default?: ManagedPublicHtmlCache } }).caches?.default;
+  const publicScript = async () => {
+    const asset = await env.ASSETS.fetch(new Request(url.href, { method: request.method }));
+    if (asset.status !== 200) return new Response(null, { status: 404 });
+    const headers = securityHeaders("text/javascript; charset=utf-8");
+    headers.set("Cache-Control", "public, max-age=31536000, immutable");
+    return new Response(request.method === "HEAD" ? null : asset.body, { headers });
+  };
+  const serveManagedPublic = async (origin: string, route?: { readonly slug: string; readonly prefix: ""; readonly noindex?: boolean }) => {
+    const withHostRobots = (response: Response) => {
+      if (route?.noindex !== true) return response;
+      const headers = new Headers(response.headers);
+      headers.set("X-Robots-Tag", "noindex, nofollow");
+      return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+    };
+    if (Object.values(publicScriptPaths).includes(url.pathname) && !url.search && (request.method === "GET" || request.method === "HEAD")) return withHostRobots(await publicScript());
     const store = env.CMS_OBJECTS ? new CmsStore(env.DB, env.CMS_OBJECTS) : undefined;
-    const cms = store && await managedCmsPublic(request, store, configuredPublicOrigin);
-    return cms || managedPublicRequest(request, env.DB, configuredPublicOrigin, store);
+    const seo = await managedPublicSeoResponse(request, env.DB, origin, store, route);
+    if (seo) return withHostRobots(seo);
+    const cms = store && await managedCmsPublic(request, store, origin, route, htmlCache);
+    return withHostRobots(cms || await managedPublicRequest(request, env.DB, origin, store, route, htmlCache));
+  };
+  if (configuredPublicOrigin !== null && url.origin === configuredPublicOrigin) {
+    return serveManagedPublic(configuredPublicOrigin);
+  }
+  if (configuredPublicOrigin !== null && url.protocol === "https:" && !url.port && request.method !== "OPTIONS") {
+    const domain = await env.DB.prepare("SELECT slug, public_domain_noindex FROM managed_sites WHERE public_domain = ?1 LIMIT 1")
+      .bind(url.hostname.toLowerCase()).first<{ slug: string; public_domain_noindex: number }>();
+    if (domain) return serveManagedPublic(url.origin, { slug: domain.slug, prefix: "", noindex: domain.public_domain_noindex === 1 });
   }
   if (url.pathname.startsWith(CMS_DELIVERY_PREFIX)) {
     if (!env.CMS_OBJECTS) return json({ error: "not_found" }, 404);

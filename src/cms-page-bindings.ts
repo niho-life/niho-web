@@ -3,6 +3,7 @@ import { parsePageDocument, type PageParseOptions } from "./document.js";
 import { validatePagePath } from "./pages.js";
 import type { BlockContracts, ElementNode, PageDocument, PageNode } from "./types.js";
 import { fail, identifier, keys, localeCode, parseAssetReference, record, string } from "./validation-utils.js";
+import { remapCarouselBinding } from "./carousel.js";
 
 export const cmsBindingAttributes = ["title", "aria-label", "alt", "dateTime"] as const;
 type BindingAttribute = typeof cmsBindingAttributes[number];
@@ -246,19 +247,25 @@ export function resolveCmsPageBindings(page: PageDocument, input: unknown, sourc
     used.add(id);
     return id;
   }
-  function projectNode(node: PageNode, item: CmsItemRevision | undefined, fields: readonly CmsPageFieldBinding[], repeated: boolean): PageNode {
+  function projectNode(node: PageNode, item: CmsItemRevision | undefined, fields: readonly CmsPageFieldBinding[], repeated: Map<string, string> | undefined): PageNode {
     if (++count > 5000) fail("$bindings", "CMS page exceeds the node limit");
     if (node.type !== "element") return node;
     const copy: ElementNode = { ...node, id: repeated ? newId() : node.id, ...(node.attrs ? { attrs: { ...node.attrs } } : {}),
       children: project(node.children, item, fields, repeated) };
+    if (repeated) {
+      repeated.set(node.id, copy.id);
+      if (copy.interaction?.type === "carousel") {
+        copy.interaction = { type: "carousel", binding: remapCarouselBinding(copy.interaction.binding, (id) => repeated.get(id) ?? id) };
+      }
+    }
     if (item) for (const binding of fields) if (binding.nodeId === node.id) applyMapping(copy, binding, item);
     return copy;
   }
-  function project(nodes: readonly PageNode[], item: CmsItemRevision | undefined, fields: readonly CmsPageFieldBinding[], repeated: boolean): PageNode[] {
+  function project(nodes: readonly PageNode[], item: CmsItemRevision | undefined, fields: readonly CmsPageFieldBinding[], repeated: Map<string, string> | undefined): PageNode[] {
     return nodes.flatMap((node) => {
       const list = node.type === "element" ? lists.get(node.id) : undefined;
-      return list ? listItems(list, items, schema).map((entry) => projectNode(node, entry, list.fields, true)) : [projectNode(node, item, fields, repeated)];
+      return list ? listItems(list, items, schema).map((entry) => projectNode(node, entry, list.fields, new Map())) : [projectNode(node, item, fields, repeated)];
     });
   }
-  return parsePageDocument({ ...page, body: project(page.body, detailItem, detail?.fields ?? [], false) }, options.blocks, options.page);
+  return parsePageDocument({ ...page, body: project(page.body, detailItem, detail?.fields ?? [], undefined) }, options.blocks, options.page);
 }

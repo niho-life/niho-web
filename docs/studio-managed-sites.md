@@ -32,9 +32,33 @@ URL 変更・非公開化の確認画面では、サイト内の他ページの�
 
 ## 共有公開origin
 
-公開ページは `PUBLIC_SITES_ORIGIN` の `GET` / `HEAD /s/{siteSlug}/...` で配信する。ホームの公開 URL は `/s/{siteSlug}/`。Worker はrequest originの完全一致を先に確認し、このoriginのそれ以外のpathを404にする。管理画面のassetやAccess応答は公開originから返さない。
+既存の Studio Worker は `PUBLIC_SITES_ORIGIN` の `GET` / `HEAD /s/{siteSlug}/...` を従来の動的 renderer で配信する。ホームの公開 URL は `/s/{siteSlug}/`。Worker はrequest originの完全一致を先に確認する。公開ページと build が生成した `/_niho/` 配下の専用 JavaScript だけを公開し、管理画面の asset や Access 応答は公開 origin から返さない。静的な公開 Worker のentry/configとR2 artifact配信経路も追加済みだが、公開hostの切替・release配備への組込み前なので、既存の共有originの配信先はまだ変わらない。
 
-公開対象はvisibilityがpublicで、現在の `published_revision` が指す不変PageDocumentだけである。root-relativeな本文リンク、画像、poster、favicon、OG画像には描画時に `/s/{siteSlug}` を付ける。保存文書は書き換えない。既存のserver-safe rendererとhead resolverを使い、title、canonical、robots/noindexを反映する。応答はscriptを含めず、`script-src 'none'`、`frame-src 'none'`、`form-action 'none'` を含む制限的なCSPを付ける。
+公開対象はvisibilityがpublicで、現在の `published_revision` が指す不変PageDocumentだけである。root-relativeな本文リンク、画像、poster、favicon、OG画像には描画時に `/s/{siteSlug}` を付ける。保存文書は書き換えない。既存のserver-safe rendererとhead resolverを使い、title、canonical、robots/noindexを反映する。
+
+オーナーはプロジェクト設定で一意な公開ホスト名を1つ登録できる。Workerに届いたHTTPS hostが登録と完全一致する場合、そのサイトを選び、prefixのない `/`・`/en/...`・CMS pathを同じ公開rendererで返す。登録の変更だけではDNSやWorker routeを設定しない。フォーム接続は現在登録されているhostとpathに固定するため、公開hostを切り替えた後はフォーム参照を再接続してページを再公開する。
+
+従来の動的 renderer は公開HTMLをGET時にCloudflare edgeで最大5分キャッシュする。静的公開Workerはhost対応表とmanifest pointerをisolate内で最大5秒保持し、D1で現在のmanifest pointer・ページ公開状態・host登録を照合してからHTMLを返す。HTML Cache API keyにはhost origin・site ID・manifest publication ID・本文digestを含め、再公開後は別keyを使う。ブラウザーには `Cache-Control: no-cache` とHTMLのETagを返し、一致する `If-None-Match` には304で応答する。NIHO接続URLの解決応答は引き続き `no-store` とする。buildが出すJavaScriptは内容hash付きのURLで1年間immutableにする。
+
+独自ドメインの noindex が有効な場合、HTML・SEOファイル・リダイレクト・404・公開runtimeの全応答に `X-Robots-Tag: noindex, nofollow` を付ける。`robots.txt` は全体をDisallowし、sitemapとllmsの一覧は空にする。
+
+既存の共有公開originはリクエスト時にD1の公開版から描画する。静的公開Workerは公開時に生成したHTMLをR2から返すが、配備・host切替は未実施。CMS bindingを持つページの静的生成、画像の幅別変換、1サイトへの複数host登録は未対応。
+
+公開SEO出力は `/s/{siteSlug}/sitemap.xml`、`robots.txt`、`llms.txt`、`llms-full.txt`。ページ文書のmetadataからcanonical、robots、OG、title、descriptionを出し、同じpathの翻訳が公開済みの場合だけhreflangを足す。ページのJSON-LD、CMS詳細・一覧のJSON-LD、301リダイレクト、404も公開rendererが返す。公開計画はdescription・画像alt・英語本文中の日本語を警告として返し、公開自体は止めない。サイト名、説明、既定OGP画像、所有権確認タグ、組織JSON-LD、robots方針、GA4を含むSEO設定は、公開許可設定と同じ版で管理する。GUI と `niho-edit --studio site-seo-read` / `site-seo-save` から読み書きでき、公開HTMLへ反映する。title/descriptionの重複・リンク切れ検査と既存リダイレクト18件の取込みは未対応で、#489の残りとして扱う。
+
+### 埋め込みと計測の設定
+
+オーナーはプロジェクト設定の「公開配信」で iframe と画像・動画の HTTPS origin をそれぞれ登録する。origin は URL の正規化後に完全一致させる。たとえば YouTube は `https://www.youtube-nocookie.com` を登録する。カレンダーなどの公開 URL はエディターの「外部URL」から追加する。SEO設定には GA4 測定 ID とサイト共通 metadata を保存する。設定は公開済みページにも反映される。初期状態で外部 iframe、外部の画像・動画、計測は読み込まない。
+
+`GET /api/projects/{projectId}/sites/{siteId}/editor/public-settings` は `{ settings: { frameOrigins, resourceOrigins, seo }, version }` を返す。同じ URL への `POST` は `{ settings, expectedVersion }` を受け、版が古ければ 409 を返す。SEOだけを編集する `GET` / `POST /api/projects/{projectId}/sites/{siteId}/editor/seo-settings` は `{ settings, version }` を返し、同じ `public_policy_version` をCASに使う。CLI は `site-seo-read` で `{ settings, version }` を読み、編集したsnapshotを `site-seo-save --json` に渡す。古いWorkerとの互換性のため、GA4測定IDは既存public policyにも同じ値を保持する。計測を設定したサイトでは、`noindex` のページも含め、広告連携を無効にした Google tag を読み込む。GA4 を外す場合は `seo.ga4MeasurementId: null` を指定する。
+
+SEO settings の `robotsPolicy: "noindex"` はページの robots meta、`robots.txt`、`X-Robots-Tag`、sitemap/llmsの一覧に反映する。既定OGP画像は同一hostのroot-relative URL、または `resourceOrigins` に登録したHTTPS originだけを使う。組織データは検証済みの値からJSON-LDを生成し、所有権確認タグの内容はHTML属性としてescapeして出力する。鎌倉の旧公開経路は移行完了まで従来設定を維持する。
+
+ページの CSP には、そのページで使う承認済みリソースの origin と必要な専用 JavaScript の URL を入れる。外部画像（`srcSet`、動画の poster、favicon、OG画像を含む）と外部動画は `resourceOrigins` に登録されたものだけが HTML に出る。CMS の一覧・詳細でも、公開素材 manifest と同じ許可リストを照合する。書体は文書で指定されたファミリー名を使う。文書に書体ファイルの URL を指定する入口はなく、書体ファイルの取得は許可しない。
+
+GA4 には計測用に限定した接続先を許可する。標準操作の runtime と NIHO フォームの runtime は別々に必要なページでだけ読み込む。NIHO フォームは iframe 内で送信し、親ページの CSP は `form-action 'none'` を維持する。[ManagedEmbed の保存・公開契約](managed-embed-contract.md)
+
+既存ページの埋め込みとカルーセルを標準描画へ移す手順は [鎌倉専用ブロックの移行](kamakura-block-migration.md) を参照する。
 
 ## CLI認証
 
@@ -49,6 +73,8 @@ Studio-native site の Dashboard にある「CMS」から、初期コレクシ�
 Studio の共通編集 API と CLI の経路は [CMS v2 契約](cms-v2-contract.md) を参照する。CMS の保存先は Studio の D1 と非公開 R2 binding `CMS_OBJECTS`。Kamakura などの外部ホストの編集先や権限は各ホストで管理する。個人情報・予約台帳・資格情報などは CMS に保存しない。
 
 ### PageDocument との結び付け
+
+CMS bindings が生成した画像の参照は、ページ公開版が固定する CMS snapshot の公開素材 manifest から解決する。公開ページで実際に参照され、サイトの配信設定が許可した素材を renderer に渡す。CSP に登録するのも、ページ内で使う素材の origin に限る。
 
 Studio の PageEditor は CMS list と detail を `CmsPageBindingsDocument` sidecar でページ要素へ結び付けます。sidecar は `managed_page_versions` の当該 revision と一緒に保存し、公開時に page publication が不変 CMS `releaseId` と `schemaRevision` を固定します。公開 HTML はその release の項目だけから描画し、後から行う CMS 保存・schema 移行は過去の公開ページを書き換えません。CMS 公開と固定ページ公開は別の操作で、両者の原子切替はありません。
 

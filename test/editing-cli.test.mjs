@@ -560,6 +560,29 @@ test("niho-edit reads and CAS-saves site breakpoints over the host API", async (
   assert.deepEqual(JSON.parse(conflict.stdout), { apiVersion: "v1", httpStatus: 409, operation: "site.breakpoints.save", result: { error: "version_conflict" } });
 });
 
+test("niho-edit reads and CAS-saves versioned site SEO settings through Studio", async (t) => {
+  const settings = { siteName: "Example", description: "Description", defaultOgImage: "/og.png", verificationTags: [], organization: null,
+    robotsPolicy: "index", ga4MeasurementId: null };
+  const readPath = `/api/edit/v2/sites/${siteId}/operations/site.seo.read`;
+  const read = await run(["--studio", "site-seo-read"], { studio: true, expectedMethod: "GET", expectedUrl: `${origin}${readPath}`, result: { settings, version: "seo-v1" } });
+  assert.equal(read.exitCode, 0, read.stderr);
+  assert.deepEqual(JSON.parse(read.stdout), { settings, version: "seo-v1" });
+
+  const directory = await mkdtemp(join(tmpdir(), "niho-edit-seo-"));
+  try {
+    const snapshotPath = join(directory, "site-seo.json");
+    const updated = { ...settings, description: "Updated description" };
+    await writeFile(snapshotPath, JSON.stringify({ settings: updated, version: "seo-v1" }));
+    const savePath = `/api/edit/v2/sites/${siteId}/operations/site.seo.save`;
+    const saved = await run(["--studio", "site-seo-save", "--json", snapshotPath], {
+      studio: true, expectedMethod: "PUT", expectedUrl: `${origin}${savePath}`,
+      expectedBody: { expectedVersion: "seo-v1", settings: updated }, result: { settings: updated, version: "seo-v2" }
+    });
+    assert.equal(saved.exitCode, 0, saved.stderr);
+    assert.deepEqual(JSON.parse(saved.stdout), { apiVersion: "v1", httpStatus: 200, operation: "site.seo.save", result: { settings: updated, version: "seo-v2" } });
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test("niho-edit reads and edits site styles through the shared operations", async (t) => {
   const operations = EDITING_OPERATIONS.filter(({ id }) => id === "site.styles.read" || id === "site.styles.edit");
   const discovery = { apiVersion: "v1", siteId, operations };

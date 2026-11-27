@@ -9,6 +9,7 @@ import type { EditingActor, EditingPageSnapshot, EditingPageTarget, JsonSchema, 
 import type { PageDocument, PageNode } from "./types.js";
 import { cmsBindingAttributes, cmsPageBindingProblems, type CmsPageBindingsDocument } from "./cms-page-bindings.js";
 import { validatePagePath } from "./pages.js";
+import { CAROUSEL_CONTROL_LIMIT, CAROUSEL_SLIDE_LIMIT, parseCarouselBinding } from "./carousel.js";
 
 export const PAGE_OPERATION_LIMIT = 500;
 export const PAGE_OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -161,7 +162,12 @@ const applyInputSchema = (nameField: { name?: JsonSchema }, cmsBindings = false)
       obj({ type: constant("element"), id, tag: text, children: list(node, 0, 5000) }, {
         ...nameField, style: documentStyle, attrs: { type: "object", additionalProperties: primitive, propertyNames: valuesOf(elementAttributeNames) }, asset, icon: valuesOf(iconCatalog.map(({ name }) => name)),
         formCompletionPageId: id, embed: obj({ provider: text, title: text }, { source: text }),
-        interaction: either(obj({ type: constant("video-toggle") }), obj({ type: constant("loop-box"), speed: number, pauseOnHover: bool }))
+        interaction: either(obj({ type: constant("video-toggle") }), obj({ type: constant("loop-box"), speed: number, pauseOnHover: bool }),
+          obj({ type: constant("carousel"), binding: obj({ slideIds: list(id, 2, CAROUSEL_SLIDE_LIMIT) }, {
+            previousIds: list(id, 0, CAROUSEL_CONTROL_LIMIT), nextIds: list(id, 0, CAROUSEL_CONTROL_LIMIT), playPauseIds: list(id, 0, CAROUSEL_CONTROL_LIMIT),
+            autoplayMs: { type: "integer", minimum: 1000, maximum: 60000 }, fadeMs: { type: "integer", minimum: 0, maximum: 3000 },
+            initiallyPlaying: bool, loop: bool, swipe: bool
+          }) }))
       }),
       obj({ type: constant("component"), id, block: id, props: { type: "object", additionalProperties: primitive } }, { ...nameField, style: documentStyle, slots: { type: "object", additionalProperties: documentStyle } }),
       obj({ type: constant("instance"), id, component: id }, { ...nameField, style: documentStyle, props: { type: "object", additionalProperties: text } })
@@ -278,6 +284,7 @@ const dictionary = (check: Check, checkKey?: Check): Check => (value, path) => {
 const checkInteraction: Check = (value, path) => {
   const source = record(value, path);
   if (source.type === "video-toggle") shape(value, path, { type: oneOf(["video-toggle"]) });
+  else if (source.type === "carousel") shape(value, path, { type: oneOf(["carousel"]), binding: (value, path) => { parseCarouselBinding(value, undefined, path); } });
   else shape(value, path, { type: oneOf(["loop-box"]), speed: finite, pauseOnHover: boolean });
 };
 function checkNode(value: unknown, path: string, depth = 0): void {

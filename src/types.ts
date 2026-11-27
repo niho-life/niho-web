@@ -91,7 +91,8 @@ export type EmbedDescriptor = {
 export type ElementInteraction =
   | { type: "video-toggle" }
   /** flexDirection が進行軸と向きを決める、trusted runtime の無限マーキー。 */
-  | { type: "loop-box"; /** px/秒。0 は停止。 */ speed: number; pauseOnHover: boolean };
+  | { type: "loop-box"; /** px/秒。0 は停止。 */ speed: number; pauseOnHover: boolean }
+  | { type: "carousel"; binding: CarouselBinding };
 export type TextNode = { type: "text"; text: string };
 export type ElementNode = {
   type: "element";
@@ -195,8 +196,7 @@ export type SitePresentationExternalFrame = {
   autoHeightMax?: number;
 };
 /** 表示文書内の既知ノードだけへ属性を付ける、実行コードを含まないcarousel binding。 */
-export type SitePresentationCarousel = {
-  rootId: string;
+export type CarouselBinding = {
   slideIds: string[];
   previousIds?: string[];
   nextIds?: string[];
@@ -208,6 +208,7 @@ export type SitePresentationCarousel = {
   loop?: boolean;
   swipe?: boolean;
 };
+export type SitePresentationCarousel = CarouselBinding & { rootId: string };
 /** 登録済みblockと正規化済みpropsへ完全一致する、host所有の読み取り専用表示。 */
 export type SitePresentationHostView = {
   id: string;

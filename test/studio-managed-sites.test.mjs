@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { createHmac, generateKeyPairSync, sign } from "node:crypto";
+import { createHash, createHmac, generateKeyPairSync, sign } from "node:crypto";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
+import { JSDOM } from "jsdom";
 import { parseLocalizationItemResult, parseLocalizationListResult, parseLocalizationOverviewResult } from "../dist/localization-workspace-model.js";
 import { cmsLocalizationItemKey } from "@niho/web/cms-v2";
 import { CMS_DELIVERY_RENDERER_VERSION, cmsDeliveryRoutes, createCmsDeliveryClient } from "@niho/web/cms-delivery";
@@ -18,18 +19,24 @@ const PUBLIC_ORIGIN = "https://sites.example";
 const OWNER = "managed-owner";
 const OTHER = "managed-other";
 const SERVICE_CLIENT = `${"c".repeat(32)}.access`;
+const PUBLIC_EMBED_SCRIPT = "/_niho/niho-embeds-012345abcdef.js";
+const PUBLIC_PRESENTATION_SCRIPT = "/_niho/presentation-012345abcdef.js";
 
 const migrationDirectory = new URL("../studio/migrations/", import.meta.url);
 const migrations = await Promise.all((await readdir(migrationDirectory)).filter((name) => name.endsWith(".sql")).sort().map((name) => readFile(new URL(name, migrationDirectory), "utf8")));
 const bundle = await build({
   stdin: {
-    contents: 'export { default } from "./studio/worker.ts"; export { publishedSiteRequest } from "./studio/managed-publication.ts"; export { managedCmsApi } from "./studio/managed-cms.ts"; export { CmsStore } from "./studio/managed-cms-store.ts";',
+    contents: 'export { default } from "./studio/worker.ts"; export { publishedSiteRequest } from "./studio/managed-publication.ts"; export { managedCmsApi } from "./studio/managed-cms.ts"; export { CmsStore } from "./studio/managed-cms-store.ts"; export { initializePublicNihoEmbeds } from "./studio/public-niho-embeds.ts";',
     resolveDir: fileURLToPath(new URL("..", import.meta.url))
   },
   bundle: true, format: "esm", platform: "node", target: "node22", write: false,
+  define: {
+    __PUBLIC_NIHO_EMBEDS_PATH__: JSON.stringify(PUBLIC_EMBED_SCRIPT),
+    __PUBLIC_PRESENTATION_PATH__: JSON.stringify(PUBLIC_PRESENTATION_SCRIPT)
+  },
   banner: { js: 'import { createRequire as __createRequire } from "node:module"; const require = __createRequire(`${process.cwd()}/studio-worker-test.mjs`);' }
 });
-const { default: worker, publishedSiteRequest, managedCmsApi, CmsStore } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString("base64")}`);
+const { default: worker, publishedSiteRequest, managedCmsApi, CmsStore, initializePublicNihoEmbeds } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString("base64")}`);
 const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const jwk = { ...publicKey.export({ format: "jwk" }), kid: "managed-test", alg: "RS256", use: "sig" };
 
@@ -115,7 +122,10 @@ async function fixture(t, { cms = false, restore, restoredObjects = [] } = {}) {
       }
       catch (error) { sqlite.exec("ROLLBACK"); throw error; }
     } },
-    ASSETS: { async fetch() { return new Response('<div id="root"></div>', { headers: { "Content-Type": "text/html" } }); } },
+    ASSETS: { async fetch(request) {
+      if ([PUBLIC_EMBED_SCRIPT, PUBLIC_PRESENTATION_SCRIPT].includes(new URL(request.url).pathname)) return new Response("export {};", { headers: { "Content-Type": "text/javascript" } });
+      return new Response('<div id="root"></div>', { headers: { "Content-Type": "text/html" } });
+    } },
     KAMAKURA_SITE: { async fetch() { throw new Error("existing host must not be called"); } }
   };
   const send = (origin, method, path, body, options = {}) => {
@@ -136,6 +146,360 @@ async function body(response, status) {
   assert.equal(response.status, status, JSON.stringify(value));
   return value;
 }
+
+async function setFixturePublicPolicy(h, site, settings) {
+  const path = `/api/projects/${site.projectId}/sites/${site.siteId}/editor/public-settings`;
+  const { version } = await body(await h.send(MANAGEMENT_ORIGIN, "GET", path), 200);
+  await body(await h.send(MANAGEMENT_ORIGIN, "POST", path, { expectedVersion: version, settings }), 200);
+}
+async function setFixturePublicDomain(h, site, domain, noindex = true) {
+  const path = `/api/projects/${site.projectId}/sites/${site.siteId}/editor/public-domain`;
+  const { version } = await body(await h.send(MANAGEMENT_ORIGIN, "GET", path), 200);
+  return body(await h.send(MANAGEMENT_ORIGIN, "POST", path, { expectedVersion: version, domain, noindex }), 200);
+}
+
+testWithD1("published page permits only approved embeds and serves NIHO connections only for its active page revision", async (t) => {
+  const h = await fixture(t);
+  const { projectId, siteId } = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Embeds", slug: "embeds", locale: "ja" }), 201);
+  const api = `/api/projects/${projectId}/sites/${siteId}/editor`, settingsPath = api + "/public-settings", publicPath = "/s/embeds/";
+  h.sqlite.prepare("INSERT INTO project_members (project_id, access_subject, role, display_name) VALUES (?, ?, 'editor', 'Editor')").run(projectId, OTHER);
+  const send = (method, path, value, options) => h.send(MANAGEMENT_ORIGIN, method, path, value, options);
+  const publish = async ({ version }) => {
+    const target = { siteId, pageId: "home", locale: "ja" };
+    const plan = await body(await send("POST", api + "/home/release-plan", { target, expectedVersion: version, action: "publish" }), 200);
+    return body(await send("POST", api + "/home/release", { expectedVersion: version, confirmationToken: plan.confirmationToken }), 200);
+  };
+  const initial = await body(await send("GET", settingsPath), 200);
+  const savePolicy = (settings, expectedVersion = initial.version, options) => send("POST", settingsPath, { expectedVersion, settings }, options);
+  const frameOrigins = ["https://niho.life", "https://www.youtube-nocookie.com", "https://calendar.example.test", "https://lottie.host", "https://unused.example.test"];
+  const resourceOrigins = ["https://images.example.test", "https://video.example.test", "https://fonts.example.test"];
+  const measurementId = "G-TEST12345", settings = { frameOrigins, resourceOrigins, ga4MeasurementId: measurementId };
+  assert.equal((await savePolicy(settings, initial.version, { token: h.otherToken })).status, 403);
+  assert.equal((await savePolicy({ ...settings, frameOrigins: ["https://frame.test;"] })).status, 422);
+  assert.equal((await savePolicy({ ...settings, frameOrigins: [PUBLIC_ORIGIN] })).status, 422);
+  assert.equal((await savePolicy({ ...settings, resourceOrigins: ["https://*.example.test"] })).status, 422);
+  assert.equal((await savePolicy({ ...settings, ga4MeasurementId: 'G-BAD"><script>' })).status, 422);
+  const savedPolicy = await body(await savePolicy(settings), 200);
+  assert.equal((await savePolicy(settings)).status, 409);
+  const embedRoute = api + "/home/embed-connection";
+  const token = (parentOrigin, allowedPathPrefix) => {
+    const payload = { v: 1, flow: "rental", spotId: "example", publicId: "example", launchTokenVersion: 1, parentOrigin, allowedPathPrefix };
+    return `${Buffer.from(JSON.stringify(payload)).toString("base64url")}.${"a".repeat(43)}`;
+  };
+  const source = (parentOrigin, allowedPathPrefix) => `https://niho.life/embed/rental/example?launchToken=${token(parentOrigin, allowedPathPrefix)}`;
+  assert.equal((await send("POST", embedRoute, { src: source(MANAGEMENT_ORIGIN, publicPath), locale: "ja" })).status, 422);
+  assert.equal((await send("POST", embedRoute, { src: source(PUBLIC_ORIGIN, "/s/elsewhere/"), locale: "ja" })).status, 422);
+  const src = source(PUBLIC_ORIGIN, publicPath);
+  assert.equal((await send("POST", embedRoute, { src, locale: "en" })).status, 403);
+  const { refId } = await body(await send("POST", embedRoute, { src, locale: "ja" }), 201);
+  const resolvePath = `${PUBLIC_ORIGIN}${publicPath}?_niho_embed=${refId}`;
+  assert.equal((await h.fetch(resolvePath)).status, 404);
+  const snapshot = await body(await send("GET", api + "/home"), 200);
+  snapshot.document.meta = { favicon: "https://denied.example.test/favicon.ico", ogImage: { src: "https://denied.example.test/og.webp", alt: "OG" } };
+  const embed = (id, provider, source) => ({ type: "element", id, tag: "div", embed: { provider, title: id, source }, children: [] });
+  const element = (id, tag, attrs, children = []) => ({ type: "element", id, tag, attrs, children });
+  const lottie = "https://lottie.host/embed/3c903090-d3ad-440d-88f0-495c9793a00d/sample.json";
+  snapshot.document.body[0].children.push(
+    embed("youtube", "youtube", "https://www.youtube.com/watch?v=abcdefghijk"),
+    embed("calendar", "url", "https://calendar.example.test/public"),
+    embed("social", "vimeo", "https://vimeo.com/123"),
+    embed("lottie", "lottie", lottie),
+    element("image", "img", { src: "https://images.example.test/cover.webp", srcSet: "https://denied.example.test/zoom.webp", alt: "Cover" }),
+    element("local-image", "img", { src: "/images/local.webp", alt: "Local" }),
+    element("alt-image", "img", { src: "https://denied.example.test/alt.webp", alt: "Still described" }),
+    element("picture", "picture", {}, [
+      element("picture-source", "source", { srcSet: "https://images.example.test/cover.avif", type: "image/avif" }),
+      element("picture-image", "img", { src: "https://denied.example.test/fallback.webp", srcSet: "https://denied.example.test/fallback-hi.webp", alt: "Responsive" })
+    ]),
+    element("picture-with-blocked-images", "picture", {}, [
+      element("picture-source-denied", "source", { srcSet: "https://denied.example.test/all.avif", type: "image/avif" }),
+      element("picture-image-denied", "img", { src: "https://denied.example.test/all.webp", alt: "Fallback description" })
+    ]),
+    element("picture-with-blocked-source", "picture", {}, [
+      element("picture-source-optional-denied", "source", { srcSet: "https://denied.example.test/optional.avif", type: "image/avif" }),
+      element("picture-image-allowed", "img", { src: "https://images.example.test/allowed.webp", alt: "Allowed description" })
+    ]),
+    element("video", "video", { src: "https://video.example.test/clip.mp4", poster: "https://denied.example.test/poster.webp", "aria-label": "Video" }),
+    element("video-denied", "video", { src: "https://denied.example.test/clip.mp4", poster: "https://denied.example.test/blocked-poster.webp", "aria-label": "Unavailable video" }),
+    { ...element("toggle", "div", {}, [
+      element("toggled-video-denied", "video", { src: "https://denied.example.test/clip.mp4", poster: "https://images.example.test/for-unavailable-video.webp", title: "Unavailable interactive video" }),
+      element("toggle-button", "button", { type: "button" }, [{ type: "text", text: "Play unavailable video" }])
+    ]), interaction: { type: "video-toggle" } },
+    { type: "component", id: "form", block: "ManagedEmbed", props: { refId, background: "white", initialHeight: 720 } }
+  );
+  for (const fontOrigin of ["https://fonts.example.test", "https://denied.example.test"]) {
+    const document = structuredClone(snapshot.document);
+    document.body[0].style = { base: { fontFamily: `url(${fontOrigin}/font.woff2)` } };
+    assert.equal((await send("PUT", api + "/home/draft", { expectedVersion: snapshot.version, document })).status, 400);
+  }
+  const saved = await body(await send("PUT", api + "/home/draft", { expectedVersion: snapshot.version, document: snapshot.document }), 200);
+  assert.equal((await h.fetch(resolvePath)).status, 404);
+  const published = await publish(saved);
+  const response = await h.fetch(PUBLIC_ORIGIN + publicPath + "?ignored=1");
+  const html = await response.text(), csp = response.headers.get("Content-Security-Policy");
+  assert.equal(response.status, 200);
+  assert.match(html, /youtube-nocookie\.com\/embed\/abcdefghijk/u);
+  assert.match(html, /calendar\.example\.test\/public/u);
+  assert.doesNotMatch(html, /vimeo\.com|launchToken|unused\.example\.test|denied\.example\.test|fonts\.example\.test/u);
+  assert.match(html, /<img[^>]+src="https:\/\/images\.example\.test\/cover\.webp"/u);
+  assert.match(html, /srcSet="https:\/\/images\.example\.test\/cover\.avif"/iu);
+  assert.match(html, /aria-label="Still described"/u);
+  assert.match(html, /aria-label="Fallback description"/u);
+  assert.match(html, /src="https:\/\/images\.example\.test\/allowed\.webp"/u);
+  assert.match(html, /src="https:\/\/video\.example\.test\/clip\.mp4"/u);
+  assert.match(html, /Unavailable video<\/span>/u);
+  assert.match(html, /Unavailable interactive video<\/span>/u);
+  assert.doesNotMatch(html, /Play unavailable video|for-unavailable-video\.webp/u);
+  assert.equal([...html.matchAll(/<video\b/gu)].length, 1);
+  assert.ok(html.includes(`data-managed-embed-ref="${refId}"`));
+  assert.ok(html.includes(PUBLIC_EMBED_SCRIPT) && html.includes(PUBLIC_PRESENTATION_SCRIPT));
+  assert.match(csp, /frame-src https:\/\/calendar\.example\.test https:\/\/lottie\.host https:\/\/niho\.life https:\/\/www\.youtube-nocookie\.com/u);
+  assert.match(csp, /img-src 'self' https:\/\/\*\.google-analytics\.com https:\/\/images\.example\.test https:\/\/www\.googletagmanager\.com;/u);
+  assert.match(csp, /media-src https:\/\/video\.example\.test;/u);
+  assert.match(csp, /font-src 'none';/u);
+  assert.doesNotMatch(csp, /unused\.example\.test|vimeo\.com|denied\.example\.test|fonts\.example\.test|https:(?:[ ;]|$)|https:\/\/\*\.google\.com/u);
+  assert.match(csp, /form-action 'none'/u);
+  const analyticsScript = /<script>([^<]+)<\/script>/u.exec(html)[1];
+  assert.ok(csp.includes(`'sha256-${createHash("sha256").update(analyticsScript).digest("base64")}'`));
+  assert.ok(html.includes(`www.googletagmanager.com/gtag/js?id=${measurementId}`));
+  const resolved = await h.fetch(resolvePath);
+  assert.equal(resolved.headers.get("Cache-Control"), "no-store");
+  assert.deepEqual(await body(resolved, 200), { src });
+  for (const path of [
+    resolvePath + "&unexpected=1",
+    resolvePath + "&_niho_embed=" + refId,
+    `${PUBLIC_ORIGIN}/s/another/?_niho_embed=${refId}`,
+    `${PUBLIC_ORIGIN}${publicPath}?_niho_embed=emb_${"a".repeat(32)}`
+  ]) assert.equal((await h.fetch(path)).status, 404);
+  const js = await h.fetch(PUBLIC_ORIGIN + PUBLIC_EMBED_SCRIPT);
+  assert.match(js.headers.get("Content-Type"), /text\/javascript/u);
+  assert.match(js.headers.get("Cache-Control"), /immutable/u);
+  assert.equal((await h.fetch(PUBLIC_ORIGIN + "/_niho/other.js")).status, 404);
+
+  const dom = new JSDOM(html, { url: PUBLIC_ORIGIN + publicPath + "?ignored=1", runScripts: "outside-only" });
+  t.after(() => dom.window.close());
+  dom.window.eval(analyticsScript);
+  assert.equal(dom.window.dataLayer.filter((event) => event[0] === "config").length, 1);
+  assert.equal(dom.window.dataLayer[1][2].page_location, PUBLIC_ORIGIN + publicPath);
+  dom.window.fetch = (input) => {
+    assert.equal(input, resolvePath);
+    return h.fetch(input);
+  };
+  await initializePublicNihoEmbeds(dom.window.document, dom.window);
+  const frame = dom.window.document.querySelector("[data-managed-embed-ref] iframe");
+  assert.equal(new URL(frame.src).searchParams.get("parentHref"), PUBLIC_ORIGIN + publicPath);
+  assert.match(frame.getAttribute("sandbox"), /allow-forms/u);
+  const resize = (origin, source) => dom.window.dispatchEvent(new dom.window.MessageEvent("message", {
+    origin, source, data: { type: "niho-embed-resize", height: 950 }
+  }));
+  resize("https://other.example.test", frame.contentWindow);
+  resize("https://niho.life", dom.window);
+  assert.equal(frame.style.height, "720px");
+  resize("https://niho.life", frame.contentWindow);
+  assert.equal(frame.style.height, "950px");
+  for (const flow of ["inquiry", "dropin"]) dom.window.dispatchEvent(new dom.window.MessageEvent("message", {
+    origin: "https://niho.life", source: frame.contentWindow, data: { type: "niho-embed-submitted", flow }
+  }));
+  const leads = dom.window.dataLayer.filter((event) => event[0] === "event" && event[1] === "generate_lead");
+  assert.equal(leads.length, 1);
+  assert.equal(leads[0][2].flow, "rental");
+
+  const noindexDoc = { ...published.snapshot.document, meta: { noindex: true } };
+  const noindexSaved = await body(await send("PUT", api + "/home/draft", { expectedVersion: published.snapshot.version, document: noindexDoc }), 200);
+  await publish(noindexSaved);
+  const noindexHtml = await (await h.fetch(PUBLIC_ORIGIN + publicPath)).text();
+  assert.match(noindexHtml, /name="robots" content="noindex, nofollow"/u);
+  assert.ok(noindexHtml.includes(`www.googletagmanager.com/gtag/js?id=${measurementId}`));
+  await body(await savePolicy({ frameOrigins: [], resourceOrigins: [], ga4MeasurementId: null }, savedPolicy.version), 200);
+  assert.equal((await h.fetch(resolvePath)).status, 404);
+  const revoked = await h.fetch(PUBLIC_ORIGIN + publicPath);
+  assert.match(revoked.headers.get("Content-Security-Policy"), /script-src 'none'/u);
+  assert.doesNotMatch(await revoked.text(), /iframe|data-managed-embed-ref|type="module"|googletagmanager|images\.example\.test|video\.example\.test/u);
+});
+
+testWithD1("custom domain serves a noindex root page with its private NIHO embed and GA4 tag", async (t) => {
+  const h = await fixture(t);
+  const cachedHtml = new Map();
+  h.env.PUBLIC_HTML_CACHE = {
+    async match(key) { return cachedHtml.get(key.url)?.clone() ?? null; },
+    async put(key, response) { cachedHtml.set(key.url, response.clone()); }
+  };
+  const site = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Custom domain", slug: "custom-domain", locale: "ja" }), 201);
+  const api = `/api/projects/${site.projectId}/sites/${site.siteId}/editor`;
+  const domainPath = api + "/public-domain";
+  const initial = await body(await h.send(MANAGEMENT_ORIGIN, "GET", domainPath), 200);
+  assert.equal(initial.domain, null);
+  assert.equal(initial.noindex, true);
+  assert.equal((await h.send(MANAGEMENT_ORIGIN, "POST", domainPath, { expectedVersion: initial.version, domain: "https://preview.example.test", noindex: true })).status, 422);
+  assert.equal((await h.send(MANAGEMENT_ORIGIN, "POST", domainPath, { expectedVersion: initial.version, domain: "studio.example", noindex: true })).status, 422);
+  assert.equal((await h.send(MANAGEMENT_ORIGIN, "POST", domainPath, { expectedVersion: initial.version, domain: "preview.example.test", noindex: true }, { token: h.otherToken })).status, 403);
+  await body(await h.send(MANAGEMENT_ORIGIN, "POST", domainPath, { expectedVersion: initial.version, domain: "preview.example.test", noindex: true }), 200);
+  const second = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Other domain", slug: "other-domain", locale: "ja" }), 201);
+  const secondDomain = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `/api/projects/${second.projectId}/sites/${second.siteId}/editor/public-domain`), 200);
+  assert.equal((await h.send(MANAGEMENT_ORIGIN, "POST", `/api/projects/${second.projectId}/sites/${second.siteId}/editor/public-domain`, {
+    expectedVersion: secondDomain.version, domain: "preview.example.test", noindex: true
+  })).status, 409);
+
+  const frameOrigins = ["https://niho.life"];
+  await setFixturePublicPolicy(h, site, { frameOrigins, resourceOrigins: [], ga4MeasurementId: "G-TEST12345" });
+  const target = { siteId: site.siteId, pageId: "home", locale: "ja" };
+  const snapshot = await body(await h.send(MANAGEMENT_ORIGIN, "GET", api + "/home"), 200);
+  const payload = { v: 1, flow: "inquiry", spotId: "example", publicId: "example", launchTokenVersion: 1,
+    parentOrigin: "https://preview.example.test", allowedPathPrefix: "/" };
+  const token = `${Buffer.from(JSON.stringify(payload)).toString("base64url")}.${"a".repeat(43)}`;
+  const src = `https://niho.life/embed/inquiry/example?launchToken=${token}`;
+  const { refId } = await body(await h.send(MANAGEMENT_ORIGIN, "POST", api + "/home/embed-connection", { locale: "ja", src }), 201);
+  snapshot.document.meta = { noindex: true };
+  snapshot.document.body[0].children.push(
+    { type: "element", id: "hero", tag: "img", attrs: { src: "/media/hero.webp", alt: "Hero" }, children: [] },
+    { type: "component", id: "form", block: "ManagedEmbed", props: { refId, background: "white", initialHeight: 720 } }
+  );
+  const saved = await body(await h.send(MANAGEMENT_ORIGIN, "PUT", api + "/home/draft", { expectedVersion: snapshot.version, document: snapshot.document }), 200);
+  const plan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", api + "/home/release-plan", { target, expectedVersion: saved.version, action: "publish" }), 200);
+  await body(await h.send(MANAGEMENT_ORIGIN, "POST", api + "/home/release", { expectedVersion: saved.version, confirmationToken: plan.confirmationToken }), 200);
+
+  const response = await h.fetch("https://preview.example.test/");
+  const html = await response.text();
+  assert.equal(response.status, 200);
+  assert.match(html, /<title>Custom domain<\/title>/u);
+  assert.match(html, /name="robots" content="noindex, nofollow"/u);
+  assert.match(html, /src="\/media\/hero\.webp"/u);
+  assert.match(html, /data-managed-embed-ref="[^"]+"/u);
+  assert.match(html, /www\.googletagmanager\.com\/gtag\/js\?id=G-TEST12345/u);
+  assert.match(response.headers.get("Content-Security-Policy"), /https:\/\/niho\.life/u);
+  assert.match(response.headers.get("Cache-Control"), /no-cache/u);
+  assert.ok(response.headers.get("ETag"));
+  assert.equal(response.headers.get("X-Robots-Tag"), "noindex, nofollow");
+  assert.doesNotMatch(html, /\/s\/custom-domain/u);
+  assert.equal(cachedHtml.size, 1);
+  const revalidated = await h.fetch("https://preview.example.test/", { headers: { "If-None-Match": response.headers.get("ETag") } });
+  assert.equal(revalidated.status, 304);
+  assert.equal(revalidated.headers.get("X-Robots-Tag"), "noindex, nofollow");
+  assert.equal(await (await h.fetch("https://preview.example.test/")).text(), html);
+  assert.equal(cachedHtml.size, 1);
+  const changed = await body(await h.send(MANAGEMENT_ORIGIN, "GET", api + "/home"), 200);
+  changed.document.title = "Custom domain updated";
+  const changedDraft = await body(await h.send(MANAGEMENT_ORIGIN, "PUT", api + "/home/draft", { expectedVersion: changed.version, document: changed.document }), 200);
+  const changedPlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", api + "/home/release-plan", { target, expectedVersion: changedDraft.version, action: "publish" }), 200);
+  await body(await h.send(MANAGEMENT_ORIGIN, "POST", api + "/home/release", { expectedVersion: changedDraft.version, confirmationToken: changedPlan.confirmationToken }), 200);
+  assert.match(await (await h.fetch("https://preview.example.test/")).text(), /<title>Custom domain updated<\/title>/u);
+  assert.equal(cachedHtml.size, 2);
+  const publicScript = await h.fetch("https://preview.example.test/_niho/niho-embeds-012345abcdef.js");
+  assert.equal(publicScript.status, 200);
+  assert.equal(publicScript.headers.get("X-Robots-Tag"), "noindex, nofollow");
+  assert.notEqual((await h.fetch("https://unknown.example.test/")).status, 200);
+  const robots = await h.fetch("https://preview.example.test/robots.txt");
+  assert.equal(robots.headers.get("X-Robots-Tag"), "noindex, nofollow");
+  assert.match(await robots.text(), /Disallow: \/\n/u);
+  const sitemap = await h.fetch("https://preview.example.test/sitemap.xml");
+  const sitemapBody = await sitemap.text();
+  assert.match(sitemapBody, /<urlset/u);
+  assert.doesNotMatch(sitemapBody, /preview\.example\.test/u);
+});
+
+testWithD1("managed SEO renders alternates and JSON-LD, publishes discovery files, redirects old paths and returns a 404 page", async (t) => {
+  const h = await fixture(t);
+  const site = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "SEO Fixture", slug: "seo-fixture", locale: "ja" }), 201);
+  const api = `/api/projects/${site.projectId}/sites/${site.siteId}/editor`;
+  const seoPath = api + "/seo-settings", cliSeoPath = `/api/edit/v2/sites/${site.siteId}/operations/site.seo.read`;
+  const initialSeo = await body(await h.send(MANAGEMENT_ORIGIN, "GET", seoPath), 200);
+  const cliRead = await body(await h.send(MANAGEMENT_ORIGIN, "GET", cliSeoPath, undefined, { cli: true }), 200);
+  assert.deepEqual(cliRead.settings, initialSeo.settings);
+  const seoSettings = {
+    siteName: "SEO Site Name", description: "サイト共通の説明", defaultOgImage: "/images/site-og.png",
+    verificationTags: [{ name: "google-site-verification", content: "verify-code-123" }],
+    organization: { name: "SEO Organization", url: "https://organization.example", logo: "https://organization.example/logo.png", sameAs: ["https://social.example/organization"] },
+    robotsPolicy: "index", ga4MeasurementId: "G-SEO12345"
+  };
+  const invalidSeo = await h.send(MANAGEMENT_ORIGIN, "POST", seoPath, {
+    expectedVersion: cliRead.version, settings: { ...seoSettings, defaultOgImage: "/images/og.png#fragment" }
+  });
+  assert.equal(invalidSeo.status, 422, "OG images cannot include URL fragments");
+  const savedSeo = await body(await h.send(MANAGEMENT_ORIGIN, "PUT", cliSeoPath.replace("site.seo.read", "site.seo.save"),
+    { expectedVersion: cliRead.version, settings: seoSettings }, { cli: true, headers: { "X-Studio-CMS-Version": "2" } }), 200);
+  assert.deepEqual(savedSeo.settings, seoSettings);
+  const publicSettingsPath = api + "/public-settings";
+  const publicSettings = await body(await h.send(MANAGEMENT_ORIGIN, "GET", publicSettingsPath), 200);
+  const oldEditorSave = await body(await h.send(MANAGEMENT_ORIGIN, "POST", publicSettingsPath,
+    { expectedVersion: publicSettings.version, settings: { frameOrigins: [], resourceOrigins: [] } }), 200);
+  assert.deepEqual(oldEditorSave.settings.seo, seoSettings, "public policy edits preserve the versioned SEO document");
+  const release = async (pageId, locale, version) => {
+    const target = { siteId: site.siteId, pageId, locale };
+    const plan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/${pageId}/release-plan`, { target, expectedVersion: version, action: "publish" }), 200);
+    return body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/${pageId}/release`, { expectedVersion: version, confirmationToken: plan.confirmationToken }), 200);
+  };
+  let home = await body(await h.send(MANAGEMENT_ORIGIN, "GET", api + "/home"), 200);
+  home.document.meta = { description: "日本語の説明", structuredData: ["organization"] };
+  let saved = await body(await h.send(MANAGEMENT_ORIGIN, "PUT", api + "/home/draft", { expectedVersion: home.version, document: home.document }), 200);
+  await release("home", "ja", saved.version);
+
+  const englishChange = { action: "create", siteId: site.siteId, locale: "en", title: "English home", path: "/en" };
+  const englishPlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", api + "/page-changes/prepare", { change: englishChange }), 200);
+  const englishCreated = await body(await h.send(MANAGEMENT_ORIGIN, "POST", api + "/page-changes/apply", { change: englishChange, confirmationToken: englishPlan.confirmationToken }), 200);
+  let english = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/${englishCreated.page.pageId}`), 200);
+  english.document.meta = { description: "English description" };
+  saved = await body(await h.send(MANAGEMENT_ORIGIN, "PUT", `${api}/${englishCreated.page.pageId}/draft`, { expectedVersion: english.version, document: english.document }), 200);
+  await release(englishCreated.page.pageId, "en", saved.version);
+
+  const aboutChange = { action: "create", siteId: site.siteId, locale: "ja", title: "About", path: "/about" };
+  const aboutPlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", api + "/page-changes/prepare", { change: aboutChange }), 200);
+  const aboutCreated = await body(await h.send(MANAGEMENT_ORIGIN, "POST", api + "/page-changes/apply", { change: aboutChange, confirmationToken: aboutPlan.confirmationToken }), 200);
+  const about = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/${aboutCreated.page.pageId}`), 200);
+  await release(aboutCreated.page.pageId, "ja", about.version);
+
+  const html = await (await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/`)).text();
+  assert.match(html, /hreflang="en" href="https:\/\/sites\.example\/s\/seo-fixture\/en"/u);
+  assert.match(html, /hreflang="ja" href="https:\/\/sites\.example\/s\/seo-fixture\/"/u);
+  assert.match(html, /hreflang="x-default"/u);
+  assert.match(html, /application\/ld\+json/u);
+  assert.match(html, /"@type":"Organization"/u);
+  assert.match(html, /"name":"SEO Organization"/u);
+  assert.match(html, /<meta name="google-site-verification" content="verify-code-123">/u);
+  assert.match(html, /<meta property="og:site_name" content="SEO Site Name">/u);
+  assert.match(html, /<meta property="og:image" content="https:\/\/sites\.example\/s\/seo-fixture\/images\/site-og\.png">/u);
+  assert.match(html, /G-SEO12345/u);
+  assert.match(html, /<meta name="description" content="日本語の説明">/u);
+  const sitemap = await (await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/sitemap.xml`)).text();
+  assert.match(sitemap, /<loc>https:\/\/sites\.example\/s\/seo-fixture\/en<\/loc>/u);
+  assert.match(sitemap, /hreflang="en"/u);
+  assert.match(await (await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/robots.txt`)).text(), /Sitemap: https:\/\/sites\.example\/s\/seo-fixture\/sitemap\.xml/u);
+  assert.match(await (await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/llms.txt`)).text(), /English home/u);
+  assert.match(await (await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/llms-full.txt`)).text(), /日本語の説明|# SEO Site Name/u);
+  const siteDefaultPage = await (await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/about`)).text();
+  assert.match(siteDefaultPage, /<meta name="description" content="サイト共通の説明">/u);
+  const upper = await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/ABOUT`);
+  assert.equal(upper.status, 301);
+  assert.equal(upper.headers.get("Location"), `${PUBLIC_ORIGIN}/s/seo-fixture/about`);
+  const slash = await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/about/`);
+  assert.equal(slash.status, 301);
+  assert.equal(slash.headers.get("Location"), `${PUBLIC_ORIGIN}/s/seo-fixture/about`);
+  const move = { action: "update", target: { siteId: site.siteId, pageId: aboutCreated.page.pageId, locale: "ja" }, title: "About", path: "/about-us" };
+  const movePlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", api + "/page-changes/prepare", { change: move }), 200);
+  const moved = await body(await h.send(MANAGEMENT_ORIGIN, "POST", api + "/page-changes/apply", { change: move, confirmationToken: movePlan.confirmationToken }), 200);
+  assert.equal((await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/about`)).status, 200, "draft path changes do not move the published URL");
+  assert.equal((await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/about-us`)).status, 404);
+  const movedSnapshot = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/${aboutCreated.page.pageId}`), 200);
+  await release(aboutCreated.page.pageId, "ja", movedSnapshot.version);
+  const old = await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/about`);
+  assert.equal(old.status, 301);
+  assert.equal(old.headers.get("Location"), `${PUBLIC_ORIGIN}/s/seo-fixture/about-us`);
+  const missing = await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/missing`);
+  assert.equal(missing.status, 404);
+  assert.match(await missing.text(), /ページが見つかりません/u);
+  const currentSeo = await body(await h.send(MANAGEMENT_ORIGIN, "GET", seoPath), 200);
+  await body(await h.send(MANAGEMENT_ORIGIN, "POST", seoPath, {
+    expectedVersion: currentSeo.version, settings: { ...currentSeo.settings, robotsPolicy: "noindex" }
+  }), 200);
+  const noindexRobots = await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/robots.txt`);
+  assert.match(await noindexRobots.text(), /Disallow: \/\n/u);
+  assert.equal(noindexRobots.headers.get("X-Robots-Tag"), "noindex, nofollow");
+  const noindexSitemap = await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/sitemap.xml`);
+  assert.equal(noindexSitemap.headers.get("X-Robots-Tag"), "noindex, nofollow");
+  assert.doesNotMatch(await noindexSitemap.text(), /<loc>/u);
+  const noindexPage = await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/about-us`);
+  assert.equal(noindexPage.headers.get("X-Robots-Tag"), "noindex, nofollow");
+  assert.match(await noindexPage.text(), /name="robots" content="noindex, nofollow"/u);
+});
 
 testWithD1("Studio-native site uses one D1 page store for GUI, CAS, release history and public rendering", async (t) => {
   const h = await fixture(t);
@@ -177,6 +541,8 @@ testWithD1("Studio-native site uses one D1 page store for GUI, CAS, release hist
   assert.match(html2, /href="\/s\/fixture-site\/about"/u);
   assert.match(html2, /<link rel="canonical" href="https:\/\/sites\.example\/s\/fixture-site\/">/u);
   assert.match(html2, /<title>Fixture site<\/title>/u);
+  assert.match(html2, /application\/ld\+json/u);
+  assert.match(html2, /"@type":"WebSite"/u);
   assert.match(public2.headers.get("Content-Security-Policy"), /script-src 'none'/u);
   const head = await h.send(PUBLIC_ORIGIN, "HEAD", "/s/fixture-site/", undefined, { auth: false });
   assert.equal(head.status, 200); assert.equal(await head.text(), "");
@@ -291,11 +657,33 @@ testWithD1("Studio Editing API publishes one time and exposes the same revision 
 
 testWithD1("Static publication serves immutable HTML and applies noindex to the verification host", async (t) => {
   const h = await fixture(t, { cms: true });
+  let clock = Date.now();
+  t.mock.method(Date, "now", () => clock);
+  const edge = new Map();
+  const cache = {
+    async match(key) { return edge.get(key.url)?.clone(); },
+    async put(key, response) { edge.set(key.url, response); }
+  };
+  h.env.PUBLIC_HTML_CACHE = cache;
+  const cacheMatch = t.mock.method(cache, "match");
+  const dbPrepare = t.mock.method(h.env.DB, "prepare");
+  const r2Get = t.mock.method(h.env.CMS_OBJECTS, "get");
+  const reads = (fragment) => dbPrepare.mock.calls.filter(({ arguments: [query] }) => query.includes(fragment)).length;
+  const artifactReads = () => r2Get.mock.calls.filter(({ arguments: [key] }) => key.includes("/artifacts/")).length;
   const created = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Static fixture", slug: "static-fixture", locale: "ja" }), 201);
   const api = `/api/projects/${created.projectId}/sites/${created.siteId}/editor`;
+  const measurementId = "G-STATIC12345";
+  await setFixturePublicPolicy(h, created, { frameOrigins: ["https://niho.life"], resourceOrigins: [], ga4MeasurementId: measurementId });
+  const embedPayload = { v: 1, flow: "inquiry", spotId: "static-fixture", publicId: "static-fixture", launchTokenVersion: 1,
+    parentOrigin: PUBLIC_ORIGIN, allowedPathPrefix: "/s/static-fixture/" };
+  const embedSrc = `https://niho.life/embed/inquiry/static-fixture?launchToken=${Buffer.from(JSON.stringify(embedPayload)).toString("base64url")}.${"a".repeat(43)}`;
+  const { refId } = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/embed-connection`, { locale: "ja", src: embedSrc }), 201);
   const draft = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/home`), 200);
   const linkedDocument = structuredClone(draft.document);
-  linkedDocument.body[0].children.push({ type: "element", id: "about-link", tag: "a", attrs: { href: "/about" }, children: [{ type: "text", text: "About" }] });
+  linkedDocument.body[0].children.push(
+    { type: "element", id: "about-link", tag: "a", attrs: { href: "/about" }, children: [{ type: "text", text: "About" }] },
+    { type: "component", id: "static-form", block: "ManagedEmbed", props: { refId, background: "white", initialHeight: 720 } }
+  );
   const saved = await body(await h.send(MANAGEMENT_ORIGIN, "PUT", `${api}/home/draft`, { expectedVersion: draft.version, document: linkedDocument }), 200);
   const target = { siteId: created.siteId, pageId: "home", locale: "ja" };
   const plan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/release-plan`, {
@@ -316,6 +704,10 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   assert.equal(publication.content_type, "text/html; charset=utf-8");
   assert.ok(h.objects.has(publication.artifact_key));
   assert.match(h.objects.get(publication.artifact_key), /href="\/s\/static-fixture\/about"/u);
+  assert.ok(h.objects.get(publication.artifact_key).includes(`data-managed-embed-ref="${refId}"`));
+  assert.ok(h.objects.get(publication.artifact_key).includes(PUBLIC_EMBED_SCRIPT));
+  assert.ok(h.objects.get(publication.artifact_key).includes(`gtag/js?id=${measurementId}`));
+  assert.match(publication.content_security_policy, /frame-src https:\/\/niho\.life/u);
 
   const previewUrl = "https://preview.sites.example/s/static-fixture/";
   const preview = await publishedSiteRequest(new Request(previewUrl), h.env);
@@ -324,13 +716,30 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   assert.equal(preview.headers.get("ETag"), `"${publication.artifact_digest}"`);
   assert.equal(preview.headers.get("Content-Security-Policy"), publication.content_security_policy);
   assert.match(await preview.text(), /<title>Static fixture<\/title>/u);
+  const initialManifest = JSON.parse(h.objects.get(state.manifest_key));
+  assert.ok(edge.has(`https://preview.sites.example/_niho-cache/publication/${created.siteId}/${initialManifest.publicationId}/${publication.artifact_digest}`));
+  const hostReads = reads("SELECT site_id, path_prefix, noindex");
+  const pointerReads = reads("SELECT manifest_key FROM managed_site_publication_state");
+  const previewArtifactReads = artifactReads();
+  const previewHit = await publishedSiteRequest(new Request(previewUrl + "?utm_source=test"), h.env);
+  assert.equal(previewHit.status, 200);
+  assert.equal(previewHit.headers.get("X-Robots-Tag"), "noindex, nofollow");
+  assert.equal(previewHit.headers.get("Content-Security-Policy"), publication.content_security_policy);
+  assert.match(await previewHit.text(), /<title>Static fixture<\/title>/u);
+  assert.equal(reads("SELECT site_id, path_prefix, noindex"), hostReads);
+  assert.equal(reads("SELECT manifest_key FROM managed_site_publication_state"), pointerReads);
+  assert.equal(artifactReads(), previewArtifactReads);
 
   // `/` prefix uses the same root route as an empty prefix and never redirects to `//`.
+  clock += 5_000;
   h.sqlite.prepare("UPDATE managed_site_hosts SET path_prefix = '/' WHERE hostname = ? AND site_id = ? AND noindex = 1")
     .run("preview.sites.example", created.siteId);
   const rootPreview = await publishedSiteRequest(new Request("https://preview.sites.example/"), h.env);
   assert.equal(rootPreview.status, 200);
   assert.match(await rootPreview.text(), /<title>Static fixture<\/title>/u);
+  assert.equal(reads("SELECT site_id, path_prefix, noindex"), hostReads + 1);
+  assert.equal(reads("SELECT manifest_key FROM managed_site_publication_state"), pointerReads + 1);
+  clock += 5_000;
   h.sqlite.prepare("UPDATE managed_site_hosts SET path_prefix = ? WHERE hostname = ? AND site_id = ? AND noindex = 1")
     .run(`/s/static-fixture`, "preview.sites.example", created.siteId);
 
@@ -344,6 +753,41 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   const publicResponse = await publishedSiteRequest(new Request("https://sites.example/s/static-fixture/"), h.env);
   assert.equal(publicResponse.status, 200);
   assert.equal(publicResponse.headers.get("X-Robots-Tag"), null);
+  const publishedHtml = await publicResponse.text();
+  const dom = new JSDOM(publishedHtml, { url: "https://sites.example/s/static-fixture/", runScripts: "outside-only" });
+  t.after(() => dom.window.close());
+  const analyticsScript = /<script>([^<]+)<\/script>/u.exec(publishedHtml)?.[1];
+  assert.ok(analyticsScript);
+  dom.window.eval(analyticsScript);
+  assert.equal(dom.window.dataLayer.filter((event) => event[0] === "config").length, 1);
+  assert.equal(dom.window.dataLayer[1][2].page_location, "https://sites.example/s/static-fixture/");
+  dom.window.fetch = (input) => h.fetch(input);
+  await initializePublicNihoEmbeds(dom.window.document, dom.window);
+  const frame = dom.window.document.querySelector("[data-managed-embed-ref] iframe");
+  assert.ok(frame);
+  assert.equal(new URL(frame.src).searchParams.get("parentHref"), "https://sites.example/s/static-fixture/");
+  const resize = (origin, source) => dom.window.dispatchEvent(new dom.window.MessageEvent("message", {
+    origin, source, data: { type: "niho-embed-resize", height: 940 }
+  }));
+  resize("https://other.example.test", frame.contentWindow);
+  assert.equal(frame.style.height, "720px");
+  resize("https://niho.life", frame.contentWindow);
+  assert.equal(frame.style.height, "940px");
+  dom.window.dispatchEvent(new dom.window.MessageEvent("message", {
+    origin: "https://niho.life", source: frame.contentWindow, data: { type: "niho-embed-submitted", flow: "inquiry" }
+  }));
+  assert.equal(dom.window.dataLayer.filter((event) => event[0] === "event" && event[1] === "generate_lead").length, 1);
+  const htmlCacheLookups = cacheMatch.mock.callCount();
+  const embedUrl = `https://sites.example/s/static-fixture/?_niho_embed=${refId}`;
+  const embedResponse = await publishedSiteRequest(new Request(embedUrl), h.env);
+  assert.equal(embedResponse.status, 200);
+  assert.equal(embedResponse.headers.get("Cache-Control"), "no-store");
+  assert.deepEqual(await embedResponse.json(), { src: embedSrc });
+  assert.equal((await publishedSiteRequest(new Request(embedUrl), h.env)).status, 200);
+  assert.equal(cacheMatch.mock.callCount(), htmlCacheLookups);
+  const runtimeScript = await publishedSiteRequest(new Request(`https://sites.example${PUBLIC_EMBED_SCRIPT}`), h.env);
+  assert.equal(runtimeScript.status, 200);
+  assert.equal(runtimeScript.headers.get("Cache-Control"), "public, max-age=31536000, immutable");
 
   const create = { action: "create", siteId: created.siteId, locale: "ja", title: "About", path: "/about" };
   const createPlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/page-changes/prepare`, { change: create }), 200);
@@ -352,22 +796,48 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   }), 200);
   const about = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/${createdPage.page.pageId}`), 200);
   const aboutTarget = { siteId: created.siteId, pageId: createdPage.page.pageId, locale: "ja" };
+  const aboutPayload = { ...embedPayload, spotId: "about", publicId: "about", allowedPathPrefix: "/s/static-fixture/about" };
+  const aboutSrc = `https://niho.life/embed/inquiry/about?launchToken=${Buffer.from(JSON.stringify(aboutPayload)).toString("base64url")}.${"b".repeat(43)}`;
+  const { refId: privateRefId } = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/${createdPage.page.pageId}/embed-connection`, {
+    locale: "ja", src: aboutSrc
+  }), 201);
+  const aboutDocument = structuredClone(about.document);
+  aboutDocument.body[0].children.push({ type: "component", id: "private-form", block: "ManagedEmbed", props: {
+    refId: privateRefId, background: "white", initialHeight: 720
+  } });
+  const aboutSaved = await body(await h.send(MANAGEMENT_ORIGIN, "PUT", `${api}/${createdPage.page.pageId}/draft`, {
+    expectedVersion: about.version, document: aboutDocument
+  }), 200);
   const aboutPlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/${createdPage.page.pageId}/release-plan`, {
-    target: aboutTarget, expectedVersion: about.version, action: "publish"
+    target: aboutTarget, expectedVersion: aboutSaved.version, action: "publish"
   }), 200);
   await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/${createdPage.page.pageId}/release`, {
-    expectedVersion: about.version, confirmationToken: aboutPlan.confirmationToken
+    expectedVersion: aboutSaved.version, confirmationToken: aboutPlan.confirmationToken
   }), 200);
+  const latestState = h.sqlite.prepare("SELECT manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(created.siteId);
+  const latest = JSON.parse(h.objects.get(latestState.manifest_key));
+  assert.notEqual(latest.publicationId, initialManifest.publicationId);
+  const refreshedPreview = await publishedSiteRequest(new Request(previewUrl), h.env);
+  assert.equal(refreshedPreview.status, 200);
+  assert.equal(refreshedPreview.headers.get("ETag"), `"${publication.artifact_digest}"`);
+  assert.ok(edge.has(`https://preview.sites.example/_niho-cache/publication/${created.siteId}/${latest.publicationId}/${publication.artifact_digest}`));
   const aboutResponse = await publishedSiteRequest(new Request("https://preview.sites.example/s/static-fixture/about"), h.env);
   assert.equal(aboutResponse.status, 200);
   assert.equal(aboutResponse.headers.get("X-Robots-Tag"), "noindex, nofollow");
   assert.match(await aboutResponse.text(), /<title>About<\/title>/u);
+  const aboutArtifactReads = artifactReads();
+  const aboutHit = await publishedSiteRequest(new Request("https://preview.sites.example/s/static-fixture/about"), h.env);
+  assert.equal(aboutHit.status, 200);
+  assert.equal(artifactReads(), aboutArtifactReads);
+  const privateEmbedPath = `https://preview.sites.example/s/static-fixture/about?_niho_embed=${privateRefId}`;
+  assert.equal((await publishedSiteRequest(new Request(privateEmbedPath), h.env)).status, 200);
   const makePrivate = { action: "visibility", target: aboutTarget, visibility: "private" };
   const makePrivatePlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/page-changes/prepare`, { change: makePrivate }), 200);
   await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/page-changes/apply`, { change: makePrivate, confirmationToken: makePrivatePlan.confirmationToken }), 200);
+  const beforePrivateRequest = cacheMatch.mock.callCount();
   assert.equal((await publishedSiteRequest(new Request("https://preview.sites.example/s/static-fixture/about"), h.env)).status, 404);
-  const latestState = h.sqlite.prepare("SELECT manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(created.siteId);
-  const latest = JSON.parse(h.objects.get(latestState.manifest_key));
+  assert.equal((await publishedSiteRequest(new Request(privateEmbedPath), h.env)).status, 404);
+  assert.equal(cacheMatch.mock.callCount(), beforePrivateRequest);
   assert.equal(latest.routes.length, 2);
 
   const unknown = await publishedSiteRequest(new Request("https://preview.sites.example/s/static-fixture/missing"), h.env);
@@ -377,6 +847,7 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   assert.equal(rootRedirect.status, 307);
   assert.equal(rootRedirect.headers.get("Location"), "https://preview.sites.example/s/static-fixture/");
   assert.equal(rootRedirect.headers.get("X-Robots-Tag"), "noindex, nofollow");
+  edge.clear();
   h.faults.artifact = true;
   const unavailablePage = await publishedSiteRequest(new Request(previewUrl), h.env);
   assert.equal(unavailablePage.status, 503);
@@ -674,6 +1145,7 @@ testWithD1("Studio CMS localization exposes the shared workspace contract and pr
   const cover = { fieldId: "cover", key: "cover", label: "表紙", type: "image", placement: "main" };
   const coverReference = { provider: "fixture", id: "cover-for-localization" };
   const coverAsset = { reference: coverReference, url: "https://media.example.test/cover.webp", width: 800, height: 600, altText: "" };
+  await setFixturePublicPolicy(h, site, { frameOrigins: [], resourceOrigins: [new URL(coverAsset.url).origin], ga4MeasurementId: null });
   const { plan: schemaPlan } = await site.read("cms.schema.plan", { expectedSchemaRevision: original.schemaRevision,
     routeTableVersions: [{ locale: "ja", revision: route.routeTableRevision }], replacements: [],
     nextSchema: { ...original, collections: [{ ...originalPosts, fields: [...originalPosts.fields, cover] }] } });
@@ -809,6 +1281,9 @@ testWithD1("Studio CMS localization exposes the shared workspace contract and pr
 testWithD1("Studio page bindings publish a six-item list and dynamic detail from an immutable CMS release", async (t) => {
   const h = await fixture(t, { cms: true });
   const site = await cmsSite(h, "bound-articles");
+  await setFixturePublicPolicy(h, site, {
+    frameOrigins: [], resourceOrigins: ["https://shown.example.test", "https://unused.example.test"], ga4MeasurementId: null
+  });
   const api = "/api/projects/" + site.projectId + "/sites/" + site.siteId + "/editor";
   const editing = "/api/edit/v1/sites/" + site.siteId;
   const browser = (method, path, input, options) => h.send(MANAGEMENT_ORIGIN, method, api + path, input, options);
@@ -817,18 +1292,26 @@ testWithD1("Studio page bindings publish a six-item list and dynamic detail from
   const initial = await site.read("cms.schema.read");
   const { routeTableRevision } = await site.read("cms.release.current");
   const definition = structuredClone(initial);
-  definition.collections[0].fields.push({ fieldId: "article_date", key: "article_date", type: "datetime", label: "Article date", placement: "side" });
+  definition.collections[0].fields.push(
+    { fieldId: "article_date", key: "article_date", type: "datetime", label: "Article date", placement: "side" },
+    { fieldId: "cover", key: "cover", type: "image", label: "Cover", placement: "main" }
+  );
   const schemaPlan = (await site.read("cms.schema.plan", { expectedSchemaRevision: initial.schemaRevision,
     routeTableVersions: [{ locale: "ja", revision: routeTableRevision }], nextSchema: definition, replacements: [] })).plan;
   const { result: { schemaRevision } } = await site.read("cms.schema.apply", { operationId: schemaPlan.operationId, confirmationToken: schemaPlan.confirmationToken });
+  const covers = new Map([[1, "unused"], [2, "denied"], [7, "shown"]].map(([index, host]) => [index, {
+    reference: { provider: "fixture", id: `article-${index}` }, url: `https://${host}.example.test/article.webp`, width: 800, height: 600, altText: "Article"
+  }]));
+  const withAssets = cmsOperationsWithAssets(h, site, async ({ references }) =>
+    [...covers.values()].filter(({ reference }) => references.some(({ id }) => id === reference.id)));
   const items = [];
   for (let number = 1; number <= 7; number++) {
     const item = await createDraft(site, schemaRevision);
     items.push((await site.read("cms.items.save", { ...versioned(item), values: { ...values(number === 7 ? "Article <Seven>" : "Article " + number, number === 6 ? "Legacy-Case" : "article-" + number),
-      article_date: "2026-10-0" + number + "T12:00:00Z" } }, { headers: headers() })).item);
+      article_date: "2026-10-0" + number + "T12:00:00Z", cover: covers.get(number)?.reference ?? null } }, { headers: headers() })).item);
   }
-  const plan = await releasePlan(site, schemaRevision, null, items);
-  await site.read("cms.release.apply", plan);
+  const plan = await releasePlan(withAssets, schemaRevision, null, items);
+  await withAssets.read("cms.release.apply", plan);
   await h.cron();
   const cmsRelease = (await site.read("cms.release.current")).snapshot;
 
@@ -839,19 +1322,27 @@ testWithD1("Studio page bindings publish a six-item list and dynamic detail from
   const listDocument = structuredClone(home.document);
   const element = (id, tag, children, attrs) => ({ type: "element", id, tag, children, ...(attrs ? { attrs } : {}) });
   const text = (value) => [{ type: "text", text: value }];
-  listDocument.body = [element("article-preview", "article", [element("article-link", "a", text("Placeholder"), { href: "/articles" })])];
+  listDocument.body = [element("article-preview", "article", [
+    element("article-link", "a", text("Placeholder"), { href: "/articles" }),
+    element("card-cover", "img", [], { src: "/placeholder.webp", alt: "Article cover" })
+  ])];
   const base = { schemaVersion: 1, siteId: site.siteId, pageId: "home", locale: "ja" };
   const cmsBindings = { ...base, lists: [{ templateNodeId: "article-preview", collectionId: "posts", limit: 6,
     order: { fieldId: "article_date", direction: "desc" }, fields: [
       { nodeId: "article-link", fieldId: "title", target: "text" },
       { nodeId: "article-link", fieldId: "title", target: "attribute", attribute: "aria-label" },
-      { nodeId: "article-link", fieldId: "slug", target: "detail-link", path: "/articles" }
+      { nodeId: "article-link", fieldId: "slug", target: "detail-link", path: "/articles" },
+      { nodeId: "card-cover", fieldId: "cover", target: "image" }
     ] }] };
   const listSaved = await body(await browser("PUT", "/home/draft", { expectedVersion: home.version, document: listDocument, cmsBindings }), 200);
   const detail = await body(await browser("GET", "/" + detailPage.pageId), 200);
-  const detailDocument = { ...detail.document, body: [element("article-title", "h1", text("Title")), element("article-text", "p", text("Body"))] };
+  const detailDocument = { ...detail.document, body: [
+    element("article-title", "h1", text("Title")), element("article-text", "p", text("Body")),
+    element("detail-cover", "img", [], { src: "/placeholder.webp", alt: "Article cover" })
+  ] };
   const detailBindings = { ...base, pageId: detailPage.pageId, lists: [], detail: { collectionId: "posts", slugFieldId: "slug", fields: [
-    { nodeId: "article-title", fieldId: "title", target: "text" }, { nodeId: "article-text", fieldId: "body", target: "text" }
+    { nodeId: "article-title", fieldId: "title", target: "text" }, { nodeId: "article-text", fieldId: "body", target: "text" },
+    { nodeId: "detail-cover", fieldId: "cover", target: "image" }
   ] } };
   const detailPath = "/" + detailPage.pageId;
   const wrongType = structuredClone(detailBindings);
@@ -923,9 +1414,18 @@ testWithD1("Studio page bindings publish a six-item list and dynamic detail from
   assert.deepEqual([...html.matchAll(/href="\/s\/bound-articles\/articles\/article-(\d)"/gu)].map((match) => match[1]), ["7", "5", "4", "3", "2"]);
   assert.match(html, /href="\/s\/bound-articles\/articles\/Legacy-Case"/u);
   assert.match(html, /aria-label="Article &lt;Seven&gt;"/u);
-  const detailHtml = await (await lookup("/articles/article-7")).text();
+  assert.match(html, /<img[^>]+src="https:\/\/shown\.example\.test\/article\.webp"[^>]+width="800" height="600"/u);
+  assert.doesNotMatch(html, /(?:unused|denied)\.example\.test/u);
+  assert.match(list.headers.get("Content-Security-Policy"), /img-src 'self' https:\/\/shown\.example\.test;/u);
+  const shownRelease = await lookup("/articles/article-7");
+  const detailHtml = await shownRelease.text();
   assert.match(detailHtml, /Article &lt;Seven&gt;/u);
   assert.match(detailHtml, /&lt;script&gt;Fixture only&lt;\/script&gt;/u);
+  assert.match(detailHtml, /<img[^>]+src="https:\/\/shown\.example\.test\/article\.webp"/u);
+  assert.match(shownRelease.headers.get("Content-Security-Policy"), /img-src https:\/\/shown\.example\.test;/u);
+  const hiddenCover = await lookup("/articles/article-2");
+  assert.doesNotMatch(await hiddenCover.text(), /denied\.example\.test/u);
+  assert.match(hiddenCover.headers.get("Content-Security-Policy"), /img-src 'none';/u);
   assert.equal((await lookup("/articles/unknown")).status, 404);
   assert.match(await (await lookup("/articles/Legacy-Case")).text(), /Article 6/u);
   assert.equal((await lookup("/articles/legacy-case")).status, 404);
@@ -980,6 +1480,7 @@ testWithD1("Studio CMS release snapshots include live unpublished page reservati
 testWithD1("Studio CMS renders only assets approved for the published revision", async (t) => {
   const h = await fixture(t, { cms: true });
   const site = await cmsSite(h, "cms-assets");
+  await setFixturePublicDomain(h, site, "cms-preview.example.test");
   const schema = await site.read("cms.schema.read"), current = await site.read("cms.release.current");
   const collection = schema.collections[0];
   const image = { fieldId: "cover", key: "cover", label: "表紙", type: "image", placement: "main" };
@@ -1031,13 +1532,42 @@ testWithD1("Studio CMS renders only assets approved for the published revision",
   const released = await site.read("cms.release.current");
   assert.equal(released.snapshot.releaseId, releaseId);
   assert.deepEqual(released.snapshot.assetManifest, [coverAsset, slideAsset]);
+  const denied = await site.pub("/posts/notice");
+  const deniedCsp = denied.headers.get("Content-Security-Policy");
+  assert.match(deniedCsp, /img-src 'self';/u);
+  assert.match(deniedCsp, /script-src 'none';/u);
+  assert.match(deniedCsp, /frame-src 'none';/u);
+  assert.doesNotMatch(await denied.text(), /slide\.webp|&lt;Caption&gt;/u);
+  await setFixturePublicPolicy(h, site, {
+    frameOrigins: [], resourceOrigins: ["https://media.example.test", "https://unused.example.test"], ga4MeasurementId: "G-CMS12345"
+  });
   const response = await site.pub("/posts/notice");
   assert.equal(response.status, 200);
-  assert.match(response.headers.get("Content-Security-Policy"), /img-src 'self' https:/u);
+  const csp = response.headers.get("Content-Security-Policy");
+  assert.match(csp, /img-src 'self' https:\/\/\*\.google-analytics\.com https:\/\/media\.example\.test https:\/\/www\.googletagmanager\.com;/u);
+  assert.match(csp, /frame-src 'none';/u);
+  assert.match(csp, /font-src 'none';/u);
+  assert.doesNotMatch(csp, /unused\.example\.test|https:(?:[ ;]|$)|https:\/\/\*\.google\.com/u);
   const html = await response.text();
+  assert.match(html, /googletagmanager\.com\/gtag\/js\?id=G-CMS12345/u);
   assert.match(html, /<img src="\/media\/cover\.webp" alt="Cover &amp; &quot;sea&quot;" width="800" height="600">/u);
   assert.match(html, /<figure><img src="https:\/\/media\.example\.test\/slide\.webp" alt=""><figcaption>&lt;Caption&gt;<\/figcaption><\/figure>/u);
   assert.doesNotMatch(html, /Draft content|draft-only\.webp|private-draft|public-cover|public-slide/u);
+  const list = await site.pub("/posts");
+  assert.doesNotMatch(list.headers.get("Content-Security-Policy"), /media\.example\.test/u);
+  const customDetail = await h.fetch("https://cms-preview.example.test/cms/posts/notice");
+  assert.equal(customDetail.status, 200);
+  assert.equal(customDetail.headers.get("X-Robots-Tag"), "noindex, nofollow");
+  assert.match(customDetail.headers.get("Cache-Control"), /no-cache/u);
+  assert.ok(customDetail.headers.get("ETag"));
+  const customDetailHtml = await customDetail.text();
+  assert.match(customDetailHtml, /<h1>Selected content<\/h1>/u);
+  assert.match(customDetailHtml, /name="robots" content="noindex, nofollow"/u);
+  const customDetailRevalidated = await h.fetch("https://cms-preview.example.test/cms/posts/notice", {
+    headers: { "If-None-Match": customDetail.headers.get("ETag") }
+  });
+  assert.equal(customDetailRevalidated.status, 304);
+  assert.equal(customDetailRevalidated.headers.get("X-Robots-Tag"), "noindex, nofollow");
   const rejected = await body(await post("cms.release.plan", { ...planInput,
     expectedReleaseId: releaseId, routeTableRevision: released.routeTableRevision, items: [pin(draft)] }), 422);
   assert.ok(rejected.problems.some(({ fieldId }) => fieldId === "cover"));

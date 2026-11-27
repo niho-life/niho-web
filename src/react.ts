@@ -1,7 +1,7 @@
 import { resolvePageLink } from "./presentation-links.js";
 import { resolvePageStyles, type SiteStyles } from "./site-styles.js";
 import { createElement, Fragment, memo, useMemo, useRef, type ComponentType, type CSSProperties, type ReactElement, type ReactNode } from "react";
-import type { BlockContract, PageDocument, PageNode, PublicPropValue, SitePresentation, SitePresentationExternalFrame, SitePresentationHostView, SitePresentationOverlay } from "./types.js";
+import type { BlockContract, CarouselBinding, PageDocument, PageNode, PublicPropValue, SitePresentation, SitePresentationExternalFrame, SitePresentationHostView, SitePresentationOverlay } from "./types.js";
 import { parsePageDocument } from "./document.js";
 import { canvasNodeStyleValues, canvasTokenStyleValues, cssForDocument, pageScope, resolveViewportHeightUnits, sameCanvasCssShape } from "./css.js";
 import { parseResolvedAssets, resolvedAsset, type ResolvedAssetMap } from "./assets.js";
@@ -85,6 +85,44 @@ function withSiteOrigin(attrs: Record<string, unknown>, siteOrigin: string): voi
 }
 
 type VideoInteractionChild = { role: "video" | "button"; ready: boolean };
+function carouselAttributes(attrs: Record<string, unknown>, nodeId: string, rootId: string, key: string, binding: CarouselBinding): void {
+  if (rootId === nodeId) {
+    attrs["data-nw-carousel"] = key;
+    attrs["data-nw-carousel-loop"] = String(binding.loop !== false);
+    attrs["data-nw-carousel-swipe"] = String(binding.swipe === true);
+    if (binding.fadeMs !== undefined) attrs["data-nw-carousel-fade"] = binding.fadeMs;
+    if (binding.autoplayMs !== undefined) attrs["data-nw-carousel-autoplay"] = binding.autoplayMs;
+    if (binding.initiallyPlaying === false) attrs["data-nw-carousel-paused"] = "true";
+  }
+  const slide = binding.slideIds.indexOf(nodeId);
+  if (slide >= 0) {
+    attrs["data-nw-carousel-slide"] = slide;
+    attrs["aria-hidden"] = slide === 0 ? "false" : "true";
+    if (slide !== 0) attrs.hidden = true;
+  }
+  if (binding.previousIds?.includes(nodeId)) attrs["data-nw-carousel-previous"] = "";
+  if (binding.nextIds?.includes(nodeId)) attrs["data-nw-carousel-next"] = "";
+  if (binding.playPauseIds?.includes(nodeId)) {
+    attrs["data-nw-carousel-play-pause"] = "";
+    attrs["aria-pressed"] = String(binding.initiallyPlaying === false);
+  }
+}
+
+function nativeCarousels(nodes: readonly PageNode[]) {
+  const result = new Map<string, { rootId: string; binding: CarouselBinding }>();
+  const collect = (body: readonly PageNode[]) => {
+    for (const node of body) {
+      if (node.type !== "element") continue;
+      if (node.interaction?.type === "carousel") {
+        const { binding } = node.interaction, entry = { rootId: node.id, binding };
+        for (const id of [node.id, ...binding.slideIds, ...(binding.previousIds ?? []), ...(binding.nextIds ?? []), ...(binding.playPauseIds ?? [])]) result.set(id, entry);
+      }
+      collect(node.children);
+    }
+  };
+  collect(nodes);
+  return result.size ? result : undefined;
+}
 type PageNodeRenderer = (node: PageNode, videoInteraction?: VideoInteractionChild) => ReactNode;
 type MemoizedPageNodeProps = { node: PageNode; videoInteraction: VideoInteractionChild | undefined; context: readonly unknown[]; renderNode: PageNodeRenderer };
 const MemoizedPageNode = memo(function MemoizedPageNode({ node, videoInteraction, renderNode }: MemoizedPageNodeProps): ReactNode {
@@ -106,8 +144,9 @@ function PageRendererCore({ document: input, blocks = emptyBlocks, assets: asset
   const document = trusted ? input as PageDocument : resolvePageStyles(parsePageDocument(input, blocks, siteStyles ? { siteStyles } : {}), siteStyles);
   const blankEmbeds = useMemo(() => blankEmbedInput === undefined ? undefined : parseBlankEmbedRegistry(blankEmbedInput), [blankEmbedInput]);
   const assets = useMemo(() => assetInput === undefined ? emptyAssets : parseResolvedAssets(assetInput), [assetInput]);
+  const carousels = useMemo(() => nativeCarousels(document.body), [document.body]);
   const scope = pageScope(document);
-  const context = [blocks, assets, missingAssets, scope, document.textStyles, overlayBindings, hostViews, hostViewBinding, hostViewMode, externalFramePolicy, blankEmbeds, canvas, links] as const;
+  const context = [blocks, assets, missingAssets, scope, document.textStyles, overlayBindings, hostViews, hostViewBinding, hostViewMode, externalFramePolicy, blankEmbeds, canvas, links, carousels] as const;
   const videoReady = (node: PageNode | undefined): boolean => node?.type === "element" && node.tag === "video" &&
     (typeof node.attrs?.src === "string" || !!node.asset && !!resolvedAsset(assets, node.asset));
   const render = (node: PageNode, videoInteraction?: VideoInteractionChild, index = 0): ReactElement => createElement(MemoizedPageNode, {
@@ -145,19 +184,13 @@ function PageRendererCore({ document: input, blocks = emptyBlocks, assets: asset
     if (hostViewBinding) {
       for (const [slot, ids] of Object.entries(hostViewBinding.slotBindings ?? {})) if (ids.includes(node.id)) attrs["data-nw-slot"] = slot;
       const binding = hostViewBinding.carousel;
-      if (binding?.rootId === node.id) {
-        attrs["data-nw-carousel"] = hostViewBinding.id;
-        attrs["data-nw-carousel-loop"] = String(binding.loop !== false);
-        attrs["data-nw-carousel-swipe"] = String(binding.swipe === true);
-        if (binding.fadeMs !== undefined) attrs["data-nw-carousel-fade"] = binding.fadeMs;
-        if (binding.autoplayMs !== undefined) attrs["data-nw-carousel-autoplay"] = binding.autoplayMs;
-        if (binding.initiallyPlaying === false) attrs["data-nw-carousel-paused"] = "true";
-      }
-      const slide = binding?.slideIds.indexOf(node.id) ?? -1;
-      if (slide >= 0) { attrs["data-nw-carousel-slide"] = slide; attrs["aria-hidden"] = slide === 0 ? "false" : "true"; if (slide !== 0) attrs.hidden = true; }
-      if (binding?.previousIds?.includes(node.id)) attrs["data-nw-carousel-previous"] = "";
-      if (binding?.nextIds?.includes(node.id)) attrs["data-nw-carousel-next"] = "";
-      if (binding?.playPauseIds?.includes(node.id)) { attrs["data-nw-carousel-play-pause"] = ""; attrs["aria-pressed"] = String(binding.initiallyPlaying === false); }
+      if (binding) carouselAttributes(attrs, node.id, binding.rootId, hostViewBinding.id, binding);
+    }
+    const nativeCarousel = carousels?.get(node.id);
+    if (nativeCarousel && (!canvas || canvas.interactive)) {
+      carouselAttributes(attrs, node.id, nativeCarousel.rootId, nativeCarousel.rootId, nativeCarousel.binding);
+      if (attrs["data-nw-carousel-previous"] !== undefined || attrs["data-nw-carousel-next"] !== undefined ||
+        attrs["data-nw-carousel-play-pause"] !== undefined) attrs.role = "button";
     }
     if (node.interaction?.type === "video-toggle") attrs["data-nw-video-with-button"] = "";
     if (node.interaction?.type === "loop-box") {
@@ -261,7 +294,7 @@ function PageRendererCore({ document: input, blocks = emptyBlocks, assets: asset
       const frame = createElement("iframe", {
         src: node.embed.source, title: node.embed.title, loading: "lazy", referrerPolicy: "strict-origin-when-cross-origin",
         sandbox: "allow-scripts allow-same-origin", ...(embedAllow[node.embed.provider] ? { allow: embedAllow[node.embed.provider] } : {}),
-        ...(node.embed.provider === "youtube" || node.embed.provider === "vimeo" ? { allowFullScreen: true } : {}),
+        ...(node.embed.provider === "youtube" || node.embed.provider === "vimeo" || node.embed.provider === "map" ? { allowFullScreen: true } : {}),
         style: { width: "100%", height: "100%", border: 0, display: "block", ...(canvas ? { pointerEvents: "none" } : {}) }
       });
       return createElement("div", { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-embed": node.embed.provider }, frame);
@@ -311,6 +344,7 @@ function PageRendererCore({ document: input, blocks = emptyBlocks, assets: asset
     styleText = canvasCssText(cssForDocument(document, assets, { inlineStyleValues: !!canvas }), canvas);
     if (canvas) canvasCssCache.current = { document, assets, viewportHeight: canvas.viewportHeight, css: styleText };
   }
+  if (carousels) styleText += `[data-nw-owner="${scope}"][data-nw-carousel-slide][hidden]{display:none!important}`;
   return createElement(Fragment, null,
     // React 18 HTML-escapes text children inside <style>, which changes CSS selectors.
     // cssForDocument only emits identifiers and values accepted by the closed CSS schema.
