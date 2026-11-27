@@ -108,6 +108,7 @@ async function fixture(t, { cms = false, restore, restoredObjects = [] } = {}) {
     CMS_OBJECTS,
     ...(cms ? { CMS_DELIVERY_MASTER_KEY: "a1".repeat(32) } : {}),
     DB: { prepare: wrap, async batch(statements) {
+      if (faults.managedProjectBatch) { const error = faults.managedProjectBatch; delete faults.managedProjectBatch; throw error; }
       sqlite.exec("BEGIN");
       try {
         const result = statements.map((statement, index) => {
@@ -119,7 +120,12 @@ async function fixture(t, { cms = false, restore, restoredObjects = [] } = {}) {
             delete faults.deliveryEvent;
             throw new Error("fixture aborted delivery event");
           }
-          return statement.execute();
+          const executed = statement.execute();
+          if (index === 3 && faults.managedSiteTriggerChanges) {
+            delete faults.managedSiteTriggerChanges;
+            return { ...executed, meta: { ...executed.meta, changes: 2 } };
+          }
+          return executed;
         });
         sqlite.exec("COMMIT");
         return result;
@@ -148,7 +154,31 @@ async function body(response, status) {
   return value;
 }
 
-testWithD1("Studio-native site uses one page store for GUI, CAS, release history and public rendering", async (t) => {
+testWithD1("managed project creation logs a safe D1 failure category without exposing its message", async (t) => {
+  const h = await fixture(t), logged = [];
+  t.mock.method(console, "error", (...args) => { logged.push(args); });
+  logged.length = 0;
+  h.faults.managedProjectBatch = new Error("D1_ERROR: CHECK constraint failed: private_actor@example.test");
+  const response = await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", {
+    title: "Failure fixture", slug: "failure-fixture", locale: "ja"
+  });
+  await body(response, 503);
+  assert.deepEqual(logged.find(([message]) => message === "NIHO Studio managed project D1 batch failed"),
+    ["NIHO Studio managed project D1 batch failed", "d1-check-constraint"]);
+  assert.equal(JSON.stringify(logged).includes("private_actor@example.test"), false);
+  assert.equal(h.sqlite.prepare("SELECT count(*) AS count FROM managed_sites").get().count, 0);
+});
+
+testWithD1("managed project creation accepts D1 change counts that include trigger rows", async (t) => {
+  const h = await fixture(t);
+  h.faults.managedSiteTriggerChanges = true;
+  await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", {
+    title: "Trigger fixture", slug: "trigger-fixture", locale: "ja"
+  }), 201);
+  assert.equal(h.sqlite.prepare("SELECT count(*) AS count FROM managed_sites").get().count, 1);
+});
+
+testWithD1("Studio-native site stores page sources in R2 for GUI, CAS, history and public rendering", async (t) => {
   const h = await fixture(t);
   const created = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Fixture site", slug: "fixture-site", locale: "ja" }), 201);
   const { projectId, siteId } = created, api = `/api/projects/${projectId}/sites/${siteId}/editor`;
