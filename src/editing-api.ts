@@ -4,6 +4,7 @@ import { parseCmsPageBindings, type CmsPageBindingsDocument } from "./cms-page-b
 import type { CmsSchema } from "./cms-v2-schema.js";
 import { normalizePageChange, validatePageChangePlan, validateReleasePlan } from "./editor-model.js";
 import type { EditorBreakpointSettings, EditorBreakpointSettingsSaveResult, EditorBreakpointSettingsSnapshot, EditorPage, EditorPageChange, EditorPageChangePlan, EditorReleasePlan, EditorReleaseRequest, EditorSite } from "./editor-types.js";
+import { EDITOR_RELEASE_WARNING_CODES, type EditorReleaseWarning } from "./editor-types.js";
 import { assetId, identifier, isSafeHttpsOrigin, localeCode, record } from "./validation-utils.js";
 import type { SiteStyles } from "./site-styles.js";
 import { parseBreakpointSettings } from "./style-model.js";
@@ -99,7 +100,7 @@ export type EditingPageSnapshot = PageOperationVersions & {
 export type EditingPageSaveResult = { readonly status: "saved"; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" | "invalid" };
 export type EditingPageReleasePrepareResult = { readonly status: "prepared"; readonly plan: EditorReleasePlan } | { readonly status: "conflict" } | { readonly status: "publication_in_progress" };
 export type EditingPagePublishResult = { readonly status: "released"; readonly operationId: string; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" } | { readonly status: "publication_in_progress" };
-export type EditingPagePublishNowResult = { readonly status: "released"; readonly snapshot: EditingPageSnapshot } | { readonly status: "conflict" };
+export type EditingPagePublishNowResult = { readonly status: "released"; readonly snapshot: EditingPageSnapshot; readonly url?: string; readonly warnings?: readonly EditorReleaseWarning[] } | { readonly status: "conflict" };
 export type EditingPageCatalog = { readonly version: string; readonly pages: readonly EditorPage[] };
 export type EditingPageChange = Exclude<EditorPageChange, { action: "duplicate" }>;
 export type EditingPageManagementPlan = EditorPageChangePlan & { readonly expectedVersion: string; readonly operationId: string };
@@ -458,7 +459,10 @@ export const EDITING_OPERATIONS = Object.freeze([
       properties: Object.freeze({ siteId: Object.freeze({ type: "string" }), pageId: Object.freeze({ type: "string" }), locale: Object.freeze({ type: "string" }),
         action: Object.freeze({ type: "string", enum: Object.freeze(["publish", "restore"]) }), revision: Object.freeze({ type: "integer", minimum: 1 }) }) }),
     resultSchema: Object.freeze({ type: "object", required: Object.freeze(["status", "snapshot"]), additionalProperties: false,
-      properties: Object.freeze({ status: Object.freeze({ const: "released" }), snapshot: Object.freeze({ type: "object", required: Object.freeze(["document", "version"]), additionalProperties: false,
+      properties: Object.freeze({ status: Object.freeze({ const: "released" }), url: Object.freeze({ type: "string", format: "uri", maxLength: 2048 }),
+        warnings: Object.freeze({ type: "array", maxItems: 100, items: Object.freeze({ type: "object", required: Object.freeze(["code", "message"]), additionalProperties: false,
+          properties: Object.freeze({ code: Object.freeze({ type: "string", enum: EDITOR_RELEASE_WARNING_CODES }), message: Object.freeze({ type: "string", maxLength: 1000 }) }) }) }),
+        snapshot: Object.freeze({ type: "object", required: Object.freeze(["document", "version"]), additionalProperties: false,
         properties: Object.freeze({ document: documentSchema, version: versionSchema, componentsVersion: versionSchema, presentationVersion: versionSchema,
           presentation: presentationSchema, editorState: editorStateSchema, cmsBindings: Object.freeze({ oneOf: Object.freeze([{ type: "object" }, { const: null }]) }) }) }) }) }),
     errors: Object.freeze(["authentication_required", "forbidden", "host_contract_violation", "host_failure", "invalid_request", "method_not_allowed", "not_found", "version_conflict"] as const)
@@ -1909,6 +1913,14 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       catch { return fail("host_failure", 503); }
       if (!result || typeof result !== "object" || !["released", "conflict"].includes(result.status)) return fail("host_contract_violation", 502);
       if (result.status === "conflict") return fail("version_conflict", 409);
+      if (result.url !== undefined) {
+        try {
+          const publishedUrl = new URL(result.url);
+          if (publishedUrl.protocol !== "https:" || publishedUrl.username || publishedUrl.password || result.url.length > 2048) return fail("host_contract_violation", 502);
+        } catch { return fail("host_contract_violation", 502); }
+      }
+      if (result.warnings !== undefined && (!Array.isArray(result.warnings) || result.warnings.length > 100 || result.warnings.some((warning) =>
+        !warning || !EDITOR_RELEASE_WARNING_CODES.includes(warning.code) || typeof warning.message !== "string" || warning.message.length > 1000))) return fail("host_contract_violation", 502);
       const source = result.snapshot as unknown;
       if (!source || typeof source !== "object" || Array.isArray(source) || ![Object.prototype, null].includes(Object.getPrototypeOf(source))) return fail("host_contract_violation", 502);
       const snapshot = source as EditingPageSnapshot;
@@ -1935,8 +1947,9 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
         presentation = parseEditingPagePresentation(snapshot.presentation, snapshot.presentationVersion, document, context.blocks);
       } catch { return fail("host_contract_violation", 502); }
       const dependencies = Object.fromEntries(PAGE_OPERATION_VERSIONS.flatMap((key) => snapshot[key] === undefined ? [] : [[key, snapshot[key]]]));
-      return response({ status: "released", snapshot: { document, version: snapshot.version, ...dependencies,
-        ...(editorState ? { editorState } : {}), ...(presentation ? { presentation } : {}), ...(cmsBindings === undefined ? {} : { cmsBindings }) } });
+      return response({ status: "released", ...(result.url ? { url: result.url } : {}), ...(result.warnings ? { warnings: result.warnings } : {}),
+        snapshot: { document, version: snapshot.version, ...dependencies,
+          ...(editorState ? { editorState } : {}), ...(presentation ? { presentation } : {}), ...(cmsBindings === undefined ? {} : { cmsBindings }) } });
     }
     if (operation.id === "pages.read" || operation.id === "pages.inspect") {
       if (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length"))) return fail("invalid_request", 400);

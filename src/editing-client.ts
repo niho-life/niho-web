@@ -18,6 +18,7 @@ import { EDITING_EDITOR_SNAPSHOT_ACCEPT, parseEditingPageEditorState, parseEditi
 import type { BlockContracts, PageDocument } from "./types.js";
 import type { EditorAdapter, EditorPage, EditorPageChange, EditorPageChangePlan, EditorPageChangeResult, EditorReleasePlan, EditorReleaseRequest, EditorSite } from "./editor-types.js";
 import type { EditorBreakpointSettings, EditorBreakpointSettingsSaveResult, EditorBreakpointSettingsSnapshot } from "./editor-types.js";
+import { EDITOR_RELEASE_WARNING_CODES, type EditorReleaseWarning } from "./editor-types.js";
 import { identifier, localeCode } from "./validation-utils.js";
 import { parseBreakpointSettings } from "./style-model.js";
 import { parseRevisionPage, type EditorRevisionPage } from "./history.js";
@@ -812,6 +813,21 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       if (response.status === 409 && body.error === "version_conflict") return { status: "conflict" };
       if (!response.ok) throw apiFailure(body, response.status);
       if (body.status !== "released" || !plainRecord(body.snapshot)) throw new EditingApiClientError("invalid_response", response.status);
+      let url: string | undefined;
+      if (body.url !== undefined) {
+        try {
+          const publishedUrl = new URL(String(body.url));
+          if (publishedUrl.protocol !== "https:" || publishedUrl.username || publishedUrl.password || String(body.url).length > 2048) throw new Error();
+          url = publishedUrl.href;
+        } catch { throw new EditingApiClientError("invalid_response", response.status); }
+      }
+      let warnings: EditorReleaseWarning[] | undefined;
+      if (body.warnings !== undefined) {
+        if (!Array.isArray(body.warnings) || body.warnings.length > 100 || body.warnings.some((warning) => !plainRecord(warning)
+          || typeof warning.code !== "string" || !EDITOR_RELEASE_WARNING_CODES.includes(warning.code as EditorReleaseWarning["code"])
+          || typeof warning.message !== "string" || warning.message.length > 1000)) throw new EditingApiClientError("invalid_response", response.status);
+        warnings = body.warnings as EditorReleaseWarning[];
+      }
       const source = body.snapshot;
       if (!isEditingApiVersion(source.version)) throw new EditingApiClientError("invalid_response", response.status);
       const document = parseEditingPageDocumentEnvelope(source.document);
@@ -822,7 +838,7 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       const editorState = source.editorState === undefined ? undefined : parseEditingPageEditorState(source.editorState);
       const presentation = parseEditingPagePresentation(source.presentation, presentationVersion, document);
       const cmsBindings = source.cmsBindings === undefined ? undefined : source.cmsBindings === null ? null : parseCmsPageBindings(source.cmsBindings, target);
-      return { status: "released", snapshot: { document, version: source.version, ...(componentsVersion ? { componentsVersion } : {}),
+      return { status: "released", ...(url ? { url } : {}), ...(warnings ? { warnings } : {}), snapshot: { document, version: source.version, ...(componentsVersion ? { componentsVersion } : {}),
         ...(presentationVersion ? { presentationVersion } : {}), ...(presentation ? { presentation } : {}), ...(editorState ? { editorState } : {}),
         ...(cmsBindings === undefined ? {} : { cmsBindings }) } };
     },

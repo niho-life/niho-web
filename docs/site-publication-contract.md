@@ -5,6 +5,7 @@ Studio-native site の公開出力を、編集・書込みを持つ Studio Worke
 ## 現在の縦切り
 
 - 固定ページを公開すると、版付き R2 正本の digest を照合して HTML とサイト共通の SEO 出力を生成し、HTML・sitemap・robots.txt・llms.txt・llms-full.txt と manifest を内容 hash 付きの R2 key で保存します。[ページ正本と操作](studio-managed-sites.md#ページ正本と操作)
+- 1ページ公開の結果には公開 URL と SEO 警告を含めます。Studio は URL と警告の件数・先頭3件を表示し、`niho-edit --studio publish` の JSON 応答は警告一覧を保持します。
 - `managed_site_publication_state` の manifest pointer は D1 の version を条件に更新します。pointer が変わっていた公開は `409` になり、保存済みの古い manifest で新しい公開を上書きしません。
 - `managed_page_publications` に HTML key、digest、manifest key、path、Content-Type、CSP を保存します。復元公開は新しく作ったページ revision をmanifestにも記録し、ページpointer・公開版・HTML digestを照合します。
 - SEO出力は現在の公開route集合から生成します。公開Workerはdiscovery fileを返す前にmanifestと現在の公開route集合を照合し、ずれがあれば `503` で閉じます。これにより公開を外したページのURLや本文が sitemap / llms に残り続けません。

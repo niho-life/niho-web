@@ -145,7 +145,7 @@ export type EditorReleasePlan = EditorReleaseRequest & {
   affected?: readonly EditorReleaseAffected[];
   warnings?: readonly EditorReleaseWarning[];
 };
-export type EditorReleaseResult = { status: "released"; snapshot: EditorSnapshot } | { status: "conflict" };
+export type EditorReleaseResult = { status: "released"; snapshot: EditorSnapshot; url?: string; warnings?: readonly EditorReleaseWarning[] } | { status: "conflict" };
 export type ComponentLibrarySnapshot = {
   /** 検証前のライブラリ。まだないサイトでは revision: 1、components: [] の空ライブラリ。 */
   library: unknown;

@@ -398,7 +398,8 @@ test("Studio page publish and history restore each use one direct adapter call",
   const app = await setup({ adapter: {
     async publishPageNow(request) {
       calls.push(structuredClone(request));
-      return { status: "released", snapshot: { document: { ...structuredClone(fixture), revision: request.action === "restore" ? 3 : 2 }, version: `direct-${calls.length}`, releases: [{ revision: 2, label: "公開版 2" }] } };
+      return { status: "released", url: "https://site.example/", warnings: [{ code: "missing-description", message: "説明がありません。" }],
+        snapshot: { document: { ...structuredClone(fixture), revision: request.action === "restore" ? 3 : 2 }, version: `direct-${calls.length}`, releases: [{ revision: 2, label: "公開版 2" }] } };
     },
     async listRevisions() { return { entries: [
       { id: "rev-3", revision: 3, kind: "draft", createdAt: "2026-11-21T00:00:00.000Z" },
@@ -411,6 +412,8 @@ test("Studio page publish and history restore each use one direct adapter call",
     assert.equal(document.querySelector('[role="dialog"]'), null);
     assert.deepEqual(calls, [{ target: homeTarget, action: "publish" }]);
     assert.ok(document.querySelector(".e-notice").textContent.includes("公開しました。"));
+    assert.ok(document.querySelector(".e-notice").textContent.includes("https://site.example/"));
+    assert.ok(document.querySelector(".e-notice").textContent.includes("SEO警告（1件）"));
     await press(historyButton()); await press(versionRows()[1]);
     assert.equal(button("この版を公開先へ復元"), undefined, "saved drafts are not publishable revisions");
     await press(versionRows()[2]);

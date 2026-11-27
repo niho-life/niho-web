@@ -763,12 +763,13 @@ test("niho-edit --studio publishes, lists history, and restores with one request
   const base = ["--studio"], pageArgs = [pageId, "--locale", locale];
   const endpoint = (operation, query = `/${pageId}?locale=${encodeURIComponent(locale)}`) => `${origin}/api/edit/v1/sites/${siteId}/operations/${operation}${query}`;
   const snapshot = { document: fixture, version: "v2" };
+  const publishResult = { status: "released", url: "https://site.example/", warnings: [{ code: "missing-description", message: "説明がありません。" }], snapshot };
   const published = await run([...base, "publish", ...pageArgs], {
     ...access, expectedMethod: "POST", expectedUrl: endpoint("pages.publish"), expectedBody: { action: "publish" },
-    result: { status: "released", snapshot }
+    result: publishResult
   });
   assert.equal(published.exitCode, 0, published.stderr);
-  assert.deepEqual(JSON.parse(published.stdout).result, { status: "released", snapshot });
+  assert.deepEqual(JSON.parse(published.stdout).result, publishResult);
 
   const history = { entries: [{ id: "rev-2", revision: 2, label: "版 2", kind: "publish", createdAt: "2026-11-27T00:00:00.000Z" }] };
   const listed = await run([...base, "history", ...pageArgs], {
