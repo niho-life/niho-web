@@ -131,10 +131,11 @@ export type EditorReleaseRequest = {
 };
 /** 公開確認に添える影響範囲。kind は共通部品・ページ・サイト設定。 */
 export type EditorReleaseAffected = { kind: "shared" | "page" | "site"; name: string; detail?: string };
-export type EditorReleaseWarning = {
-  code: "missing-description" | "missing-alt" | "japanese-in-english" | "duplicate-title" | "duplicate-description" | "broken-internal-link";
-  message: string;
-};
+export const EDITOR_RELEASE_WARNING_CODES = [
+  "missing-description", "missing-alt", "japanese-in-english", "duplicate-title", "duplicate-description", "broken-internal-link"
+] as const;
+export type EditorReleaseWarningCode = typeof EDITOR_RELEASE_WARNING_CODES[number];
+export type EditorReleaseWarning = { code: EditorReleaseWarningCode; message: string };
 export type EditorReleasePlan = EditorReleaseRequest & {
   confirmationToken: string;
   domain: string;

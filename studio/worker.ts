@@ -569,12 +569,16 @@ function domainsFor(origin: string | null): readonly string[] {
   return [origin];
 }
 
-function projectFromRow(row: ProjectRow, subject: string, managedOrigin?: string) {
+function managedSiteDomains(origin: string, publicDomain: string | null): readonly string[] {
+  return [...domainsFor(origin), ...(publicDomain === null ? [] : domainsFor(`https://${publicDomain}`))];
+}
+
+function projectFromRow(row: ProjectRow, subject: string, managedOrigin?: string, managedPublicDomain: string | null = null) {
   if (!validIdentifier(row.project_id) || !validIdentifier(row.site_id) || !validName(row.project_name) || !validName(row.site_name) || !validName(row.display_name)) throw new Error("invalid stored project");
   return {
     id: row.project_id,
     name: row.project_name,
-    site: { id: row.site_id, name: row.site_name, domains: row.public_origin === null && managedOrigin ? [managedOrigin] : domainsFor(row.public_origin) },
+    site: { id: row.site_id, name: row.site_name, domains: row.public_origin === null && managedOrigin ? managedSiteDomains(managedOrigin, managedPublicDomain) : domainsFor(row.public_origin) },
     members: [{ userId: subject, displayName: row.display_name }]
   };
 }
@@ -721,7 +725,7 @@ async function directory(env: Env, identity: AccessIdentity): Promise<Response> 
   const members = await membersPromise;
   const entries = rows.map((row) => {
     const registration = managed.get(`${row.project_id}\u0000${row.site_id}`);
-    const project = projectFromRow(row, identity.subject, registration ? managedOrigin ?? undefined : undefined);
+    const project = projectFromRow(row, identity.subject, registration ? managedOrigin ?? undefined : undefined, registration?.public_domain ?? null);
     const publicPage = row.public_origin === null ? null : resolvedPublicPages.get(row.public_origin) ?? null;
     const thumbnailUrl = publicPage?.thumbnailUrl ?? null;
     const managedPublished = registration?.published_path && managedOrigin
@@ -757,7 +761,7 @@ async function dashboard(env: Env, identity: AccessIdentity, projectId: string, 
   if (row === null) return json({ status: "forbidden", projectId, siteId });
   const managedOrigin = publicSitesOrigin(env.PUBLIC_SITES_ORIGIN);
   const registration = managedOrigin ? await managedRegistration(env.DB, projectId, siteId) : null;
-  const project = projectFromRow(row, identity.subject, registration ? managedOrigin ?? undefined : undefined);
+  const project = projectFromRow(row, identity.subject, registration ? managedOrigin ?? undefined : undefined, registration?.public_domain ?? null);
   // 公開情報は鎌倉だけサイト側から読む。ほかのサイトは値を合成しない（unavailable のまま）。
   // 解析はサイト分析に接続したサイトだけ GA4 の28日の要約を返す（未接続は disconnected、失敗は unavailable）。
   const [overview, members, analytics] = await Promise.all([

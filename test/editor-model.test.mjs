@@ -204,6 +204,10 @@ test("release confirmation binds domain, target, version, action and rollback re
   const plan = { ...request, domain: "https://example.com", confirmationToken: "one-use-token", changes: [{ path: "heading", before: "旧", after: "新" }] };
   const site = { id: "demo", name: "Demo", domains: ["https://example.com"] };
   assert.doesNotThrow(() => validateReleasePlan(plan, request, site));
+  for (const code of ["missing-description", "missing-alt", "japanese-in-english", "duplicate-title", "duplicate-description", "broken-internal-link"]) {
+    assert.doesNotThrow(() => validateReleasePlan({ ...plan, warnings: [{ code, message: "SEO warning" }] }, request, site), code);
+  }
+  assert.throws(() => validateReleasePlan({ ...plan, warnings: [{ code: "unknown-warning", message: "SEO warning" }] }, request, site));
   for (const invalid of [{ ...plan, domain: "https://evil.example" }, { ...plan, domain: "https://example.com/path" }, { ...plan, expectedVersion: "v1" },
     { ...plan, target: { ...plan.target, pageId: "other" } }, { ...plan, action: "rollback", revision: 1 }, { ...plan, confirmationToken: "" }]) assert.throws(() => validateReleasePlan(invalid, request, site));
 });

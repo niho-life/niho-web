@@ -1,40 +1,36 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { build } from "esbuild";
-import { fileURLToPath } from "node:url";
+import { createProjectEditorAdapter } from "../dist/project-editor-adapter.js";
 
 const bundle = await build({
-  entryPoints: [fileURLToPath(new URL("../studio/managed-editor.tsx", import.meta.url))],
-  bundle: true, format: "esm", platform: "node", target: "node22", write: false
+  entryPoints: [new URL("../studio/managed-editor.tsx", import.meta.url).pathname],
+  bundle: true, format: "esm", platform: "node", target: "node22", write: false, logLevel: "silent"
 });
 const { createManagedEditorAdapter } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString("base64")}`);
 
-function fixture(domains) {
-  const project = { id: "project_demo", site: { id: "demo", name: "Demo", domains: ["https://sites.example.test"] } };
-  const adapter = createManagedEditorAdapter({ sites: [project.site], pages: [] }, project);
-  return { project, adapter, response: Response.json({ sites: [{ ...project.site, domains }], pages: [] }) };
-}
-
-test("managed editor refresh accepts the registered public domain alongside the shared origin", async (t) => {
-  const domains = ["https://kamakura.example.test", "https://sites.example.test"];
-  const { adapter, response } = fixture(domains);
-  t.mock.method(globalThis, "fetch", async () => response.clone());
+test("managed editor accepts the project's custom domain alongside its shared origin", async (t) => {
+  const project = {
+    id: "project-one", name: "Project One",
+    site: { id: "site-one", name: "Site One", domains: ["https://sites.example", "https://www.example.test"] },
+    members: [{ userId: "member-one", displayName: "Editor" }]
+  };
+  let catalogDomains = ["https://www.example.test", "https://sites.example"];
+  t.mock.method(globalThis, "fetch", async (input) => {
+    assert.equal(String(input), "/api/projects/project-one/sites/site-one/editor/catalog");
+    return Response.json({
+      sites: [{ id: project.site.id, name: project.site.name, domains: catalogDomains, futureCapability: "ignored" }],
+      pages: [{ siteId: project.site.id, pageId: "home", locale: "ja", title: "Home", path: "/", kind: "page", visibility: "public", published: true }]
+    });
+  });
+  const managed = createManagedEditorAdapter({ sites: [project.site], pages: [] }, project);
+  const adapter = createProjectEditorAdapter(managed, project);
   const signal = new AbortController().signal;
-  assert.deepEqual((await adapter.listSites(signal))[0].domains, domains);
-  assert.deepEqual(await adapter.listPages("demo", signal), []);
-});
 
-test("managed editor rejects unsafe, duplicate and excess public domains", async (t) => {
-  let response = Response.json({ sites: [], pages: [] });
-  const project = { id: "project_demo", site: { id: "demo", name: "Demo", domains: ["https://sites.example.test"] } };
-  const adapter = createManagedEditorAdapter({ sites: [project.site], pages: [] }, project);
-  t.mock.method(globalThis, "fetch", async () => response.clone());
-  for (const domains of [
-    ["https://sites.example.test", "https://evil.example.test/path"],
-    ["https://sites.example.test", "https://sites.example.test"],
-    ["https://a.example.test", "https://b.example.test", "https://c.example.test"]
-  ]) {
-    response = Response.json({ sites: [{ ...project.site, domains }], pages: [] });
-    await assert.rejects(() => adapter.listPages("demo", new AbortController().signal), /サイト情報/u);
-  }
+  assert.equal((await adapter.listPages(project.site.id, signal)).length, 1);
+  assert.deepEqual((await adapter.listSites(signal))[0].domains, project.site.domains);
+
+  catalogDomains = ["https://sites.example"];
+  await adapter.listPages(project.site.id, signal);
+  await assert.rejects(adapter.listSites(signal), /プロジェクトのサイト情報を確認できません/u);
 });

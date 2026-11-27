@@ -9,10 +9,9 @@ import type {
   EditorAdapter, EditorPage, EditorPageChange, EditorPageChangePlan, EditorReleasePlan,
   EditorSaveResult, EditorSite, EditorSnapshot, EditorTarget
 } from "../src/editor-types.js";
-import type { Project } from "../src/projects.js";
+import { parseProjectSite, type Project } from "../src/projects.js";
 import { managedBlockContracts } from "./managed-embed-contract.js";
 import { managedEditorBlocks } from "./managed-embed-editor.js";
-import { isSafeHttpsOrigin } from "../src/validation-utils.js";
 
 const VERSION = /^[^\u0000-\u001f\u007f]{1,200}$/u;
 
@@ -52,10 +51,10 @@ type Catalog = { readonly sites: readonly EditorSite[]; readonly pages: readonly
 function catalog(value: unknown): Catalog {
   const source = record(value);
   if (!Array.isArray(source.sites) || source.sites.length !== 1 || !Array.isArray(source.pages) || source.pages.length > 500) throw new Error("ページ一覧が正しくありません。");
-  const siteSource = record(source.sites[0]), domains = siteSource.domains;
-  if (typeof siteSource.id !== "string" || typeof siteSource.name !== "string" || !Array.isArray(domains) || domains.length < 1 || domains.length > 2
-    || domains.some((domain) => !isSafeHttpsOrigin(domain)) || new Set(domains).size !== domains.length) throw new Error("サイト情報が正しくありません。");
-  return { sites: [{ id: siteSource.id, name: siteSource.name, domains: [...domains] }], pages: source.pages.map(page) };
+  const siteSource = record(source.sites[0]);
+  const site = parseProjectSite({ id: siteSource.id, name: siteSource.name, domains: siteSource.domains }, "catalog.sites[0]");
+  if (site.domains.length === 0) throw new Error("サイト情報が正しくありません。");
+  return { sites: [site], pages: source.pages.map(page) };
 }
 function snapshot(value: unknown, checkedTarget: EditorTarget): EditorSnapshot {
   const source = record(value), document = parsePageDocument(source.document, managedBlockContracts);
@@ -75,7 +74,7 @@ export function createManagedEditorAdapter(initial: Catalog, project: Project): 
     try { return await run(); } catch (error) { if (error instanceof ManagedApiError && error.status === 409) return { status: "conflict" }; throw error; }
   };
   return {
-    listSites: async (signal) => (await refresh(signal)).sites,
+    listSites: async () => current.sites,
     listPages: async (siteId, signal) => {
       if (siteId !== project.site.id) throw new Error("別サイトは参照できません。");
       return (await refresh(signal)).pages;
