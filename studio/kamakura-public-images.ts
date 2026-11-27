@@ -1,6 +1,7 @@
 import { KAMAKURA_MEDIA_ORIGIN } from "./kamakura-cms-contract.js";
 
 const MAX_IMAGE_WIDTH = 4096;
+const RESPONSIVE_IMAGE_WIDTHS = [320, 640, 960, 1280, 1920, 2560] as const;
 const TRANSFORMABLE_IMAGE_PATH = /\.(?:avif|jpe?g|png|webp)$/iu;
 
 function kamakuraMediaImage(value: string): URL | null {
@@ -29,4 +30,11 @@ export function kamakuraResponsiveImageUrl(source: string): string | null {
   const url = kamakuraMediaImage(source);
   if (!url) return null;
   return `${KAMAKURA_MEDIA_ORIGIN}/cdn-cgi/image/width=auto,format=auto${url.pathname}`;
+}
+
+/** iPhone を含むブラウザーが Client Hints なしでも選べる幅別画像候補。 */
+export function kamakuraResponsiveImageSrcSet(source: string): string | null {
+  const url = kamakuraMediaImage(source);
+  if (!url) return null;
+  return RESPONSIVE_IMAGE_WIDTHS.map((width) => `${transformedUrl(url, width)} ${width}w`).join(", ");
 }

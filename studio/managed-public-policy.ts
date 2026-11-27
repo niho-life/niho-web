@@ -1,11 +1,11 @@
 import { createElement } from "react";
 import type { BlockRegistry } from "../src/react.js";
-import type { ElementAttributes, ElementNode, EmbedDescriptor, PageDocument, PageNode, PublicPropValue } from "../src/types.js";
+import type { ElementAttributes, ElementNode, EmbedDescriptor, PageDocument, PageNode, PublicImageRenderHints, PublicPropValue } from "../src/types.js";
 import { assetKey, collectAssetReferences, type ResolvedAsset } from "../src/assets.js";
 import type { CmsPublicAsset } from "../src/cms-v2.js";
 import { isSafePublicUrl } from "../src/validation-utils.js";
 import { MANAGED_EMBED_REF, managedEmbedContract, registeredNihoEmbed, type ManagedPublicPolicy } from "./managed-embed-contract.js";
-import { kamakuraImageUrl, kamakuraResponsiveImageUrl } from "./kamakura-public-images.js";
+import { kamakuraImageUrl, kamakuraResponsiveImageSrcSet, kamakuraResponsiveImageUrl } from "./kamakura-public-images.js";
 import type { ManagedD1 } from "./managed-sites.js";
 
 declare const __PUBLIC_NIHO_EMBEDS_PATH__: string;
@@ -104,8 +104,11 @@ export function planManagedPublicRender(document: PageDocument, policy: ManagedP
   assetManifest: readonly CmsPublicAsset[] = []) {
   const frames = new Set<string>(), images = new Set<string>(), media = new Set<string>();
   let presentation = false, managedEmbed = false;
+  let prioritizedImage = false;
+  const imageHints: Record<string, PublicImageRenderHints> = {};
   const embedByRef = new Map(embeds.map(({ refId, src }) => [refId, src.origin]));
   const approvedAssetUrls = new Set(assetManifest.map(({ url }) => new URL(url, parentOrigin).href));
+  const manifest = new Map(assetManifest.map((asset) => [assetKey(asset.reference), asset]));
   const resource = (value: unknown) => publicResourceSource(value, parentOrigin, policy.resourceOrigins, approvedAssetUrls);
   const resourceAttributes = ["src", "srcSet", "poster"] as const;
   const fallbackImage = (node: ElementNode): ElementNode => {
@@ -162,9 +165,28 @@ export function planManagedPublicRender(document: PageDocument, policy: ManagedP
       delete attrs.srcSet;
       children[children.length - 1] = { ...original, attrs };
     }
-    if (node.tag === "img" && attrs && !attrs.srcSet && typeof attrs.src === "string") {
-      const responsive = kamakuraResponsiveImageUrl(attrs.src);
-      if (responsive) attrs.src = responsive;
+    if (node.tag === "img") {
+      const assetUrl = node.asset ? manifest.get(assetKey(node.asset))?.url : undefined;
+      const imageSource = node.asset ? (resource(assetUrl) ? assetUrl : undefined) : typeof attrs?.src === "string" ? attrs.src : undefined;
+      const hints: PublicImageRenderHints = {};
+      if (!attrs?.srcSet && imageSource) {
+        const candidates = kamakuraResponsiveImageSrcSet(imageSource);
+        if (candidates) {
+          hints.srcSet = candidates;
+          hints.sizes = "100vw";
+          if (!node.asset && attrs && typeof attrs.src === "string") attrs.src = kamakuraResponsiveImageUrl(attrs.src) ?? attrs.src;
+        }
+      } else if (attrs?.srcSet) hints.sizes = "100vw";
+
+      const hasSource = !!imageSource || typeof attrs?.srcSet === "string";
+      if (hasSource && !prioritizedImage) {
+        hints.fetchPriority = "high";
+        prioritizedImage = true;
+      } else if (hasSource) {
+        if (attrs?.loading === undefined) hints.loading = "lazy";
+        if (attrs?.decoding === undefined) hints.decoding = "async";
+      }
+      if (Object.keys(hints).length) imageHints[node.id] = hints;
     }
     return { ...node, ...(attrs && { attrs }), children };
   });
@@ -198,7 +220,6 @@ export function planManagedPublicRender(document: PageDocument, policy: ManagedP
   }
   const rendered = { ...document, body, ...(meta && { meta }) };
   const assets: Record<string, ResolvedAsset> = {};
-  const manifest = new Map(assetManifest.map((asset) => [assetKey(asset.reference), asset]));
   for (const { reference, target } of collectAssetReferences(rendered)) {
     const key = assetKey(reference), asset = manifest.get(key);
     const source = resource(asset?.url);
@@ -214,6 +235,7 @@ export function planManagedPublicRender(document: PageDocument, policy: ManagedP
   return {
     document: rendered,
     assets,
+    imageHints,
     head: (measurementId: string | null) => managedPublicHead({
       measurementId, scriptUrls, frameSources: frames, imageSources: images, mediaSources: media, inlineStyles: true, resolveEmbed: managedEmbed
     })
