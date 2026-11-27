@@ -108,7 +108,7 @@
     "studio:public:release": "node studio/public-sites-release.mjs",
     "studio:deploy": "npm run studio:release",
     "studio:release": "node studio/release.mjs",
-    "test:built": "node --test test/*.test.mjs",
+    "test:built": "node --test --test-concurrency=4 test/*.test.mjs",
     "test": "npm run build && npm run test:built",
     "demo": "node examples/editor-demo.mjs",
     "demo:builder": "npm run build && node examples/builder-demo.mjs",

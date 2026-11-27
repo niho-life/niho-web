@@ -583,6 +583,30 @@ test("niho-edit reads and CAS-saves versioned site SEO settings through Studio",
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
+test("niho-edit reads and CAS-saves fixed page redirects through Studio", async (t) => {
+  const redirects = [{ locale: "ja", fromPath: "/old-page", toPath: "/new-page" }];
+  const readPath = `/api/edit/v2/sites/${siteId}/operations/site.redirects.read`;
+  const read = await run(["--studio", "site-redirects-read"], { studio: true, expectedMethod: "GET", expectedUrl: `${origin}${readPath}`,
+    result: { redirects, version: "redirects-v1" } });
+  assert.equal(read.exitCode, 0, read.stderr);
+  assert.deepEqual(JSON.parse(read.stdout), { redirects, version: "redirects-v1" });
+
+  const directory = await mkdtemp(join(tmpdir(), "niho-edit-redirects-"));
+  try {
+    const snapshotPath = join(directory, "redirects.json");
+    const updated = [...redirects, { locale: "en", fromPath: "/old-en", toPath: "/new-en" }];
+    await writeFile(snapshotPath, JSON.stringify({ redirects: updated, version: "redirects-v1" }));
+    const savePath = `/api/edit/v2/sites/${siteId}/operations/site.redirects.save`;
+    const saved = await run(["--studio", "site-redirects-save", "--json", snapshotPath], {
+      studio: true, expectedMethod: "PUT", expectedUrl: `${origin}${savePath}`,
+      expectedBody: { expectedVersion: "redirects-v1", redirects: updated }, result: { redirects: updated, version: "redirects-v2" }
+    });
+    assert.equal(saved.exitCode, 0, saved.stderr);
+    assert.deepEqual(JSON.parse(saved.stdout), { apiVersion: "v1", httpStatus: 200, operation: "site.redirects.save",
+      result: { redirects: updated, version: "redirects-v2" } });
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test("niho-edit reads and edits site styles through the shared operations", async (t) => {
   const operations = EDITING_OPERATIONS.filter(({ id }) => id === "site.styles.read" || id === "site.styles.edit");
   const discovery = { apiVersion: "v1", siteId, operations };

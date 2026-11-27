@@ -14,7 +14,8 @@ const requiredPublicMigrations = new Set([
   "0018_managed_public_embeds.sql",
   "0019_managed_public_domains.sql",
   "0020_managed_site_redirects.sql",
-  "0021_managed_published_paths.sql"
+  "0021_managed_published_paths.sql",
+  "0022_managed_site_redirect_versions.sql"
 ]);
 
 class ReleaseError extends Error {}
@@ -44,8 +45,12 @@ export function readPublicSitesReleaseSettings(env) {
   const databaseId = requireValue(env, "STUDIO_DATABASE_ID", (value) => /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/iu.test(value));
   const studioOrigin = requireValue(env, "STUDIO_ORIGIN", isHttpsOrigin);
   const publicOrigin = requireValue(env, "PUBLIC_SITES_ORIGIN", (value) => value !== studioOrigin && isHttpsOrigin(value));
-  const previewOrigin = requireValue(env, "PUBLIC_SITES_PREVIEW_ORIGIN", (value) => value !== studioOrigin && value !== publicOrigin && isHttpsOrigin(value));
-  const workerName = requireValue(env, "PUBLIC_SITES_WORKER_NAME", (value) => /^[a-z0-9][a-z0-9_-]{0,62}$/u.test(value));
+  const workerName = requireValue(env, "PUBLIC_SITES_WORKER_NAME", (value) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(value));
+  const previewOrigin = requireValue(env, "PUBLIC_SITES_PREVIEW_ORIGIN", (value) => {
+    if (value === studioOrigin || value === publicOrigin || !isHttpsOrigin(value)) return false;
+    const labels = new URL(value).hostname.split(".");
+    return labels.length === 4 && labels[0] === workerName && labels[2] === "workers" && labels[3] === "dev";
+  });
   if (configuredWorkerNames().includes(workerName)) throw new ReleaseError("PUBLIC_SITES_WORKER_NAME は専用 Worker の名前を指定してください。");
   const smokePath = requireValue(env, "PUBLIC_SITES_SMOKE_PATH", (value) => {
     if (!/^\/s\/[a-z0-9]+(?:-[a-z0-9]+)*\/(?:[A-Za-z0-9/_-]*)$/u.test(value)) return false;
@@ -61,8 +66,8 @@ export function writePublicSitesConfig(directory, settings) {
   config.name = settings.workerName;
   config.main = resolve(studio, config.main);
   config.assets.directory = resolve(studio, config.assets.directory);
-  config.workers_dev = false;
-  config.routes = [{ pattern: settings.hostname, custom_domain: true }];
+  config.workers_dev = true;
+  delete config.routes;
   config.d1_databases[0].database_id = settings.databaseId;
   config.vars = { PUBLIC_SITES_PREVIEW_ORIGIN: settings.previewOrigin };
   const migrationsDirectory = config.d1_databases[0].migrations_dir;

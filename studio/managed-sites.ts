@@ -14,6 +14,7 @@ import { matchesTemplatePath, renderPageHead, resolvePageMetadata, validatePageP
 import { emptyManagedPublicPolicy, MANAGED_EMBED_REF, managedBlockContracts, parseManagedPublicPolicy, registeredNihoEmbed } from "./managed-embed-contract.js";
 import type { ManagedPublicPolicy } from "./managed-embed-contract.js";
 import { managedVerificationTags, parseManagedSiteSeoSettings, type ManagedSiteSeoSettings } from "../src/managed-seo-settings.js";
+import { parseManagedSiteRedirects, type ManagedSiteRedirect } from "../src/managed-site-redirects.js";
 import { managedPublicBlocks, planManagedPublicRender, resolvePublishedEmbeds } from "./managed-public-policy.js";
 import { revalidatePublicResponse, withPublicEtag } from "./managed-public-http.js";
 
@@ -407,6 +408,51 @@ async function managedPublicSeoSettings(request: Request, db: ManagedD1, actor: 
     WHERE site_id = ?1 AND public_policy_version = ?6 AND ${ownerScope}`)
     .bind(siteId, projectId, actor.subject, JSON.stringify({ ...policy, ga4MeasurementId: seo.ga4MeasurementId }), version, body.expectedVersion)]);
   return changed(result) ? json({ settings: seo, version }) : json({ error: "conflict" }, 409);
+}
+
+async function managedSiteRedirects(request: Request, db: ManagedD1, actor: ManagedActor, projectId: string, siteId: string): Promise<Response> {
+  const ownerScope = `EXISTS (SELECT 1 FROM sites AS s JOIN project_members AS member ON member.project_id = s.project_id
+    WHERE s.id = ?1 AND s.project_id = ?2 AND member.access_subject = ?3 AND member.role = 'owner')`;
+  if (request.method === "GET") {
+    const result = await db.prepare(`SELECT ms.redirect_version, redirect.locale, redirect.from_path, redirect.to_path
+      FROM managed_sites AS ms LEFT JOIN managed_site_redirects AS redirect ON redirect.site_id = ms.site_id
+      WHERE ms.site_id = ?1 AND ${ownerScope} ORDER BY redirect.from_path`)
+      .bind(siteId, projectId, actor.subject).all<{ redirect_version: string; locale: string | null; from_path: string | null; to_path: string | null }>();
+    const rows = result.results ?? [];
+    if (!rows.length) return json({ error: "forbidden" }, 403);
+    const redirects = rows.flatMap((row): ManagedSiteRedirect[] => row.locale === null || row.from_path === null || row.to_path === null
+      ? [] : [{ locale: row.locale, fromPath: row.from_path, toPath: row.to_path }]);
+    return json({ redirects, version: rows[0]!.redirect_version });
+  }
+  if (request.method !== "PUT") return json({ error: "method_not_allowed" }, 405);
+  const body = await readJson(request, actor, 512 * 1024);
+  if (!body || !exactKeys(body, ["redirects", "expectedVersion"]) || typeof body.expectedVersion !== "string") return json({ error: "invalid_request" }, 400);
+  const redirects = parseManagedSiteRedirects(body.redirects);
+  if (!redirects) return json({ error: "invalid_redirects" }, 422);
+  const current = await db.prepare(`SELECT redirect_version FROM managed_sites WHERE site_id = ?1 AND ${ownerScope}`)
+    .bind(siteId, projectId, actor.subject).first<{ redirect_version: string }>();
+  if (!current) return json({ error: "forbidden" }, 403);
+  const version = opaqueVersion();
+  const expectedVersion = body.expectedVersion;
+  const results = await db.batch([
+    db.prepare(`DELETE FROM managed_site_redirects WHERE site_id = ?1 AND EXISTS (
+      SELECT 1 FROM managed_sites AS ms WHERE ms.site_id = ?1 AND ms.redirect_version = ?2 AND EXISTS (
+        SELECT 1 FROM sites AS s JOIN project_members AS member ON member.project_id = s.project_id
+        WHERE s.id = ?1 AND s.project_id = ?3 AND member.access_subject = ?4 AND member.role = 'owner'))`)
+      .bind(siteId, expectedVersion, projectId, actor.subject),
+    db.prepare(`INSERT INTO managed_site_redirects (site_id, locale, from_path, to_path)
+      SELECT ?1, json_extract(value, '$.locale'), json_extract(value, '$.fromPath'), json_extract(value, '$.toPath') FROM json_each(?2)
+      WHERE EXISTS (SELECT 1 FROM managed_sites AS ms WHERE ms.site_id = ?1 AND ms.redirect_version = ?3 AND EXISTS (
+        SELECT 1 FROM sites AS s JOIN project_members AS member ON member.project_id = s.project_id
+        WHERE s.id = ?1 AND s.project_id = ?4 AND member.access_subject = ?5 AND member.role = 'owner'))`)
+      .bind(siteId, JSON.stringify(redirects), expectedVersion, projectId, actor.subject),
+    db.prepare(`UPDATE managed_sites SET redirect_version = ?1
+      WHERE site_id = ?2 AND redirect_version = ?3 AND EXISTS (SELECT 1 FROM sites AS s
+        JOIN project_members AS member ON member.project_id = s.project_id
+        WHERE s.id = ?2 AND s.project_id = ?4 AND member.access_subject = ?5 AND member.role = 'owner')`)
+      .bind(version, siteId, expectedVersion, projectId, actor.subject)
+  ]);
+  return changed(results[2]!) ? json({ redirects, version }) : json({ error: "conflict" }, 409);
 }
 
 async function managedPublicDomain(request: Request, db: ManagedD1, actor: ManagedActor, projectId: string, siteId: string, origin: string): Promise<Response> {
@@ -1242,7 +1288,10 @@ async function applyPageChange(request: Request, db: ManagedD1, actor: ManagedAc
       ...(movedFrom && change.action === "update" ? [db.prepare(`INSERT OR REPLACE INTO managed_site_redirects (site_id, locale, from_path, to_path)
                   SELECT site_id, locale, ?1, ?2 FROM managed_pages
                    WHERE site_id = ?3 AND page_id = ?4 AND locale = ?5 AND current_version = ?6`)
-        .bind(movedFrom, change.path, siteId, target.pageId, target.locale, version)] : []),
+        .bind(movedFrom, change.path, siteId, target.pageId, target.locale, version),
+      db.prepare(`UPDATE managed_sites SET redirect_version = ?2 WHERE site_id = ?1
+                  AND EXISTS (SELECT 1 FROM managed_site_audit WHERE id = ?3 AND site_id = ?1)`)
+        .bind(siteId, opaqueVersion(), auditId)] : []),
       db.prepare("DELETE FROM managed_editor_plans WHERE token_hash = ?1 AND actor_subject = ?2 AND EXISTS (SELECT 1 FROM managed_site_audit WHERE id = ?3)")
         .bind(token, actor.subject, auditId)
     ]);
@@ -1260,6 +1309,7 @@ export async function managedEditorOperation(
   if (!registration) return json({ error: "forbidden" }, 403);
   if (action === "/editor/public-settings") return managedPublicSettings(request, db, actor, projectId, siteId, origin);
   if (action === "/editor/seo-settings") return managedPublicSeoSettings(request, db, actor, projectId, siteId, origin);
+  if (action === "/editor/redirects") return managedSiteRedirects(request, db, actor, projectId, siteId);
   if (action === "/editor/public-domain") return managedPublicDomain(request, db, actor, projectId, siteId, origin);
   if (action === "/editor/catalog") {
     if (request.method !== "GET") return json({ error: "method_not_allowed" }, 405);

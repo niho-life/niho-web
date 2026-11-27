@@ -2916,7 +2916,7 @@ async function kamakuraMachineEditingApi(request: Request, env: Env, url: URL, i
 }
 
 async function studioEditingApi(request: Request, env: Env, url: URL, timing: StudioRequestTiming): Promise<Response> {
-  const match = /^\/api\/edit\/(v1|v2)\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/(capabilities|operations\/((?:cms|pages)\.[^?]+|site\.seo\.(?:read|save)))$/u.exec(url.pathname);
+  const match = /^\/api\/edit\/(v1|v2)\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/(capabilities|operations\/((?:cms|pages)\.[^?]+|site\.(?:seo|redirects)\.(?:read|save)))$/u.exec(url.pathname);
   if (!match) return json({ error: "not_found" }, 404);
   let identity: AccessIdentity | ServiceIdentity;
   const accessToken = request.headers.get("cf-access-token");
@@ -2941,8 +2941,10 @@ async function studioEditingApi(request: Request, env: Env, url: URL, timing: St
     kind: "cli", subject: `${CLI_SUBJECT_PREFIX}${identity.clientId}`,
     email: `cli-${identity.clientId}@studio.invalid`, requestId: crypto.randomUUID()
   };
-  if (version === "v2" && (operation === "site.seo.read" || operation === "site.seo.save")) {
-    const method = operation === "site.seo.read" ? "GET" : "PUT";
+  if (version === "v2" && ["site.seo.read", "site.seo.save", "site.redirects.read", "site.redirects.save"].includes(operation ?? "")) {
+    const redirects = operation === "site.redirects.read" || operation === "site.redirects.save";
+    const saving = operation === "site.seo.save" || operation === "site.redirects.save";
+    const method = saving ? "PUT" : "GET";
     if (request.method !== method || url.search) return json({ error: "invalid_request" }, 400);
     if (method !== "GET" && identity.kind === "human" && accessToken === null
       && (request.headers.get("Origin") !== url.origin || request.headers.get("Sec-Fetch-Site") !== "same-origin")) return json({ error: "invalid_request" }, 400);
@@ -2956,7 +2958,7 @@ async function studioEditingApi(request: Request, env: Env, url: URL, timing: St
     }
     return managedEditorOperation(request, env.DB, { subject, email: identity.kind === "human" ? identity.email : bridgeIdentity.email,
       ...(identity.kind === "service" ? { cliClientId: identity.clientId } : {}), cli: identity.kind === "service" || accessToken !== null },
-      registration.project_id, siteId!, "/editor/seo-settings", url.origin);
+      registration.project_id, siteId!, redirects ? "/editor/redirects" : "/editor/seo-settings", url.origin);
   }
   if (!env.CMS_OBJECTS) return json({ error: "not_found" }, 404);
   const store = cmsStore(env, bridgeIdentity);
