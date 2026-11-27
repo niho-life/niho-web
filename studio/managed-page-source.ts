@@ -3,6 +3,7 @@ import type { SiteStyles } from "../src/site-styles.js";
 import { walkNodes } from "../src/node-tree.js";
 import type { PageDocument } from "../src/types.js";
 import type { CmsBucket, CmsStore } from "./managed-cms-store.js";
+import { managedBlockContracts } from "./managed-embed-contract.js";
 
 export const MAX_MANAGED_PAGE_BYTES = 2 * 1024 * 1024;
 
@@ -42,7 +43,7 @@ export async function readPageSourceObject(bucket: CmsBucket, row: SourceScope, 
   const bytes = await object.arrayBuffer();
   if (await sha256(bytes) !== digest) throw new Error("managed page source digest mismatch");
   const input = JSON.parse(decoder.decode(bytes));
-  return checkScope(parsePageDocument(input, {}, siteStyles ? { siteStyles } : {}), row);
+  return checkScope(parsePageDocument(input, managedBlockContracts, siteStyles ? { siteStyles } : {}), row);
 }
 
 async function putSource(bucket: CmsBucket, document: PageDocument, version: string, json: string, bytes: Uint8Array<ArrayBuffer>) {
@@ -75,7 +76,7 @@ export async function readPageSource(store: Pick<CmsStore, "db" | "bucket"> | un
     return readPageSourceObject(store.bucket, row, row.document_key, row.document_digest, siteStyles);
   }
 
-  const document = checkScope(parsePageDocument(JSON.parse(row.document_json), {}, siteStyles ? { siteStyles } : {}), row);
+  const document = checkScope(parsePageDocument(JSON.parse(row.document_json), managedBlockContracts, siteStyles ? { siteStyles } : {}), row);
   if (!store) return document;
   try {
     // Old rows have no separate source version ID. All readers of the same legacy revision use the same key and exact bytes.

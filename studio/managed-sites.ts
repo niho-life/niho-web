@@ -702,8 +702,10 @@ async function cmsBindingPreview(request: Request, store: CmsStore, site: Site, 
   if (!body || !exactKeys(body, ["expectedVersion", "collectionId", "itemId", "revision", "document", "cmsBindings", ...(read ? ["previewId"] : [])])) return json({ error: "invalid_request" }, 400);
   if (body.expectedVersion !== row.current_version) return json({ status: "conflict" }, 409);
   let document: PageDocument, bindings: CmsPageBindingsDocument | null, key: string;
+  let siteStyles: import("../src/site-styles.js").SiteStyles;
   try {
-    document = parsePageDocument(body.document, managedBlockContracts, { siteStyles: (await readManagedSiteStyles(store, row.site_id)).draft.styles });
+    siteStyles = (await readManagedSiteStyles(store, row.site_id)).draft.styles;
+    document = parsePageDocument(body.document, managedBlockContracts, { siteStyles });
     bindings = pageBindings(body.cmsBindings, document, row.path);
     key = cmsItemKey({ collectionId: cmsId(body.collectionId, "collectionId"), itemId: cmsId(body.itemId, "itemId") });
   } catch { return json({ error: "invalid_cms_bindings" }, 422); }
@@ -724,7 +726,9 @@ async function cmsBindingPreview(request: Request, store: CmsStore, site: Site, 
   if (!token || token.expires <= nowSeconds() || token.payload.scope !== scope) return json({ error: "not_found" }, 404);
   const item = await store.item(site.siteId, site.state.locale, pin);
   let projected: PageDocument | null;
-  try { projected = resolveCmsPageBindings(document, bindings, { schema: site.state.schema, items: [item] }, { detail: { itemId: item.itemId }, blocks: managedBlockContracts }); }
+  try { projected = resolveCmsPageBindings(document, bindings, { schema: site.state.schema, items: [item] }, {
+    detail: { itemId: item.itemId }, blocks: managedBlockContracts, page: { siteStyles }
+  }); }
   catch { return json({ error: "invalid_cms_binding_values" }, 422); }
   if (!projected || !await store.consumePreview(site, body.previewId, "page-preview")) return json({ error: "not_found" }, 404);
   return json({ document: projected });
@@ -929,7 +933,8 @@ async function publishPageOnce(store: CmsStore, actor: ManagedActor, row: Manage
   const { db } = store;
   const action = input.action === "restore" ? "rollback" : "publish";
   const sourceRevision = input.action === "restore" ? input.revision! : row.current_revision;
-  const draft = action === "publish" ? await readPageSource(store, row, (await readManagedSiteStyles(store, row.site_id)).draft.styles) : null;
+  const styleDraft = action === "publish" ? await readManagedSiteStyles(store, row.site_id) : null;
+  const draft = styleDraft ? await readPageSource(store, row, styleDraft.draft.styles) : null;
   const warnings = draft ? await managedReleaseSeoWarnings(db, row, draft, origin, store, actor) : [];
   let cmsReleaseId: string | null = null, cmsSchemaRevision: string | null = null, cmsGeneration: string | null = null;
   if (action === "rollback") {
@@ -972,9 +977,13 @@ async function publishPageOnce(store: CmsStore, actor: ManagedActor, row: Manage
           if (currentRoutes.reservations.some((reservation) => reservation.kind === "template"
             ? matchesTemplatePath(reservation.path, detailPath) : reservation.path === detailPath)) throw new Error("reserved detail URL");
           slugs.add(slug);
-          resolveCmsPageBindings(page, bindings, released, { detail: { slug }, blocks: managedBlockContracts });
+          resolveCmsPageBindings(page, bindings, released, {
+            detail: { slug }, blocks: managedBlockContracts, page: { siteStyles: styleDraft?.draft.styles ?? {} }
+          });
         }
-      } else resolveCmsPageBindings(page, bindings, released, { blocks: managedBlockContracts });
+      } else resolveCmsPageBindings(page, bindings, released, {
+        blocks: managedBlockContracts, page: { siteStyles: styleDraft?.draft.styles ?? {} }
+      });
     } catch { return json({ error: "invalid_cms_binding_values" }, 422); }
     cmsReleaseId = released.releaseId;
     cmsSchemaRevision = released.schema.schemaRevision;
@@ -1420,7 +1429,8 @@ async function renderCmsBoundPublic(request: Request, db: ManagedD1, origin: str
     const released = await store.snapshot(row.site_id, row.cms_release_id);
     if (released.schema.schemaRevision !== row.cms_schema_revision || released.locale !== row.locale) return notFound();
     const projected = resolveCmsPageBindings(document, bindings, released, {
-      blocks: managedBlockContracts, ...(bindings.detail ? { detail: { slug: path.slice(parentPath.length + 1) } } : {})
+      blocks: managedBlockContracts, page: { siteStyles: publishedStyles },
+      ...(bindings.detail ? { detail: { slug: path.slice(parentPath.length + 1) } } : {})
     });
     if (!projected) return notFound();
     document = projected;
