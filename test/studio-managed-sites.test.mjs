@@ -281,6 +281,11 @@ testWithD1("Studio Editing API publishes one time and exposes the same revision 
   const restoredState = h.sqlite.prepare("SELECT version, manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(siteId);
   assert.notEqual(restoredState.version, publishedState.version);
   assert.ok(restoredState.manifest_key && h.objects.has(restoredState.manifest_key));
+  const artifact = h.sqlite.prepare("SELECT artifact_key FROM managed_page_publications WHERE site_id = ? AND page_id = 'home' AND locale = 'ja'").get(siteId);
+  const publishedHtml = String(h.objects.get(artifact.artifact_key));
+  assert.match(publishedHtml, /<link rel="canonical" href="https:\/\/sites\.example\/s\/direct-publish\/">/u);
+  assert.match(publishedHtml, /property="og:url" content="https:\/\/sites\.example\/s\/direct-publish\/"/u);
+  assert.doesNotMatch(publishedHtml, /studio\.invalid/u);
   assert.equal((await h.send(MANAGEMENT_ORIGIN, "POST", `${base}/operations/pages.publish/home?locale=ja`, { action: "restore", revision: -1 })).status, 400);
 });
 

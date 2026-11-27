@@ -474,7 +474,7 @@ async function persistDraft(db: ManagedD1, actor: ManagedActor, row: ManagedPage
   return result;
 }
 
-export function managedPageEditingApi(request: Request, store: CmsStore, projectId: string, siteId: string, editingActor: EditingActor,
+export function managedPageEditingApi(request: Request, store: CmsStore, projectId: string, siteId: string, publicOrigin: string | null, editingActor: EditingActor,
   actorFor: (capability: EditingCapability) => Promise<ManagedActor | null>): Promise<Response> {
   const db = store.db;
   let actor: ManagedActor | null = null;
@@ -512,6 +512,7 @@ export function managedPageEditingApi(request: Request, store: CmsStore, project
       return row ? pageRevision(db, row, id) : null;
     },
     async publishPageNow(_editingActor, target, input) {
+      if (!publicOrigin) throw new Error("managed public site origin unavailable");
       if (!actor || target.siteId !== siteId || input.action === "restore" && (!Number.isSafeInteger(input.revision) || input.revision! < 1)
         || input.action === "publish" && input.revision !== undefined) return { status: "conflict" };
       const row = await load(target);
@@ -519,7 +520,7 @@ export function managedPageEditingApi(request: Request, store: CmsStore, project
       const headers = new Headers({ "Content-Type": "application/json" });
       if (!actor.cli) { headers.set("Origin", "https://studio.invalid"); headers.set("Sec-Fetch-Site", "same-origin"); }
       const url = `https://studio.invalid/sites/${encodeURIComponent(siteId)}/operations/pages.publish/${encodeURIComponent(target.pageId)}?locale=${encodeURIComponent(target.locale)}`;
-      const response = await publishPageOnce(new Request(url, { method: "POST", headers, body: JSON.stringify(input) }), db, actor, row, "https://studio.invalid", store);
+      const response = await publishPageOnce(new Request(url, { method: "POST", headers, body: JSON.stringify(input) }), db, actor, row, publicOrigin, store);
       if (response.status === 409) return { status: "conflict" };
       if (!response.ok) throw new Error("managed direct publish failed");
       const body = record(await response.json());

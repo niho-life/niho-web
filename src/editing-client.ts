@@ -811,10 +811,9 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       const { response, body } = await send(path, "POST", input, signal);
       if (response.status === 409 && body.error === "version_conflict") return { status: "conflict" };
       if (!response.ok) throw apiFailure(body, response.status);
-      if (!exactKeys(body, ["status", "snapshot"]) || body.status !== "released" || !plainRecord(body.snapshot)) throw new EditingApiClientError("invalid_response", response.status);
+      if (body.status !== "released" || !plainRecord(body.snapshot)) throw new EditingApiClientError("invalid_response", response.status);
       const source = body.snapshot;
-      if (Object.keys(source).some((key) => !["document", "version", "componentsVersion", "presentationVersion", "presentation", "editorState", "cmsBindings"].includes(key))
-        || !isEditingApiVersion(source.version)) throw new EditingApiClientError("invalid_response", response.status);
+      if (!isEditingApiVersion(source.version)) throw new EditingApiClientError("invalid_response", response.status);
       const document = parseEditingPageDocumentEnvelope(source.document);
       assertTarget(document, target);
       const componentsVersion = source.componentsVersion === undefined ? undefined : isEditingApiVersion(source.componentsVersion) ? source.componentsVersion : null;
