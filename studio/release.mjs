@@ -79,6 +79,35 @@ export function pendingMigrations(stdout) {
   });
 }
 
+export function registeredManagedSiteSlug(stdout) {
+  let output;
+  try { output = JSON.parse(stripVTControlCharacters(stdout)); }
+  catch { throw new ReleaseError("登録済みサイトの slug を読み取れません。"); }
+  const rowArrays = [];
+  let failed = false;
+  const visit = (value) => {
+    if (Array.isArray(value)) {
+      if (value.length && value.every((row) => row && typeof row === "object" && !Array.isArray(row) && Object.hasOwn(row, "slug"))) {
+        rowArrays.push(value);
+      } else {
+        value.forEach(visit);
+      }
+      return;
+    }
+    if (value && typeof value === "object") {
+      if (value.success === false) failed = true;
+      Object.values(value).forEach(visit);
+    }
+  };
+  visit(output);
+  const rows = rowArrays.length === 1 ? rowArrays[0] : [];
+  const slug = rows.length === 1 ? rows[0].slug : undefined;
+  if (failed || typeof slug !== "string" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(slug)) {
+    throw new ReleaseError("登録済みサイトの slug を一意に確認できません。");
+  }
+  return slug;
+}
+
 function childEnv() {
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
@@ -167,7 +196,7 @@ function smokeRequest(settings, request = fetch) {
   return { get, getResponse };
 }
 
-async function smokeDashboardApi(settings, get) {
+async function smokeDashboardApi(settings, get, readRegisteredSlug) {
   const session = JSON.parse(await get("/api/session", "/api/session", ["application/json"]));
   if (session?.status !== "authenticated" || !session.subject || !session.email) throw new ReleaseError("/api/session でユーザーを確認できません。");
   const path = `/projects/${settings.project}/sites/${settings.site}`;
@@ -176,6 +205,11 @@ async function smokeDashboardApi(settings, get) {
     throw new ReleaseError("Dashboard API で対象サイトとメンバー一覧を確認できません。対象サイトとユーザーの権限を確認してください。");
   }
   const configuredSitePath = /^\/s\/[^/]+\//u.exec(settings.publicPath)?.[0] ?? "";
+  const configuredSiteSlug = /^\/s\/([^/]+)\//u.exec(settings.publicPath)?.[1] ?? "";
+  if (typeof readRegisteredSlug !== "function" || !configuredSiteSlug
+    || await readRegisteredSlug(settings.project, settings.site) !== configuredSiteSlug) {
+    throw new ReleaseError("smoke の公開 path が対象サイトの登録済み slug と一致しません。");
+  }
   const publishedUrl = dashboard.overview?.data?.publishedUrl;
   let publishedSitePath = "";
   try {
@@ -193,9 +227,9 @@ async function smokeDashboardApi(settings, get) {
   return { path, published: publishedManagedSite };
 }
 
-export async function smokeStudio(settings, assets, request = fetch) {
+export async function smokeStudio(settings, assets, request = fetch, readRegisteredSlug) {
   const { get, getResponse } = smokeRequest(settings, request);
-  const { path, published } = await smokeDashboardApi(settings, get);
+  const { path, published } = await smokeDashboardApi(settings, get, readRegisteredSlug);
   const dashboard = await get("Dashboard HTML", path, ["text/html"]);
   if (entryScript.exec(dashboard.toString("utf8"))?.[1] !== assets.entry) throw new ReleaseError("Dashboard HTML が今回の配備の entry script を参照していません。");
   const scriptTypes = ["application/javascript", "text/javascript"];
@@ -229,6 +263,11 @@ async function release() {
   try {
     const config = writeConfig(directory, settings);
     const wrangler = (...args) => runWrangler(config, settings, ...args);
+    const readRegisteredSlug = (project, site) => {
+      const sql = `SELECT ms.slug FROM managed_sites AS ms JOIN sites AS s ON s.id = ms.site_id WHERE s.project_id = '${project}' AND s.id = '${site}' LIMIT 2`;
+      const stdout = wrangler("対象サイトの登録済み slug を確認", "d1", "execute", "DB", "--remote", "--json", "--command", sql);
+      return registeredManagedSiteSlug(stdout);
+    };
     const status = () => JSON.parse(wrangler("Worker の配備状況を確認", "deployments", "status", "--json"));
     const previous = status();
     const prior = previous.versions?.length === 1 && previous.versions[0];
@@ -238,7 +277,7 @@ async function release() {
 
     checkExpiry(settings, 120);
     console.log("Access セッションと Dashboard の権限を確認");
-    await smokeDashboardApi(settings, smokeRequest(settings).get);
+    await smokeDashboardApi(settings, smokeRequest(settings).get, readRegisteredSlug);
     const list = () => pendingMigrations(wrangler("D1 の migration 状況を確認", "d1", "migrations", "list", "DB", "--remote"));
     const pending = list();
     if (pending.length) {
@@ -254,7 +293,7 @@ async function release() {
     wrangler("Studio Worker を配備", "deploy");
     console.log("配備後の smoke を実行");
     for (let attempt = 1; ; attempt++) {
-      try { await smokeStudio(settings, assets); break; }
+      try { await smokeStudio(settings, assets, fetch, readRegisteredSlug); break; }
       catch (error) {
         if (attempt === 3) throw error;
         await wait(5_000);
