@@ -2604,6 +2604,24 @@ testWithD1("Kamakura import seeds a noindex verification site and preserves immu
   const document = (pageId, locale, revision, title, body = []) => ({
     document: { schemaVersion: 1, siteId, pageId, locale, revision, title, tokens: {}, body }
   });
+  const postsCollection = schema.collections.find(({ id }) => id === "posts");
+  const cmsField = (key) => postsCollection.fields.find((field) => field.key === key).fieldId;
+  const cmsPageVersion = (pageId, revision, title, limit) => ({
+    ...document(pageId, "ja", revision, title, [
+      { type: "component", id: "cms-list", block: "KamakuraCmsList", props: {} },
+      { type: "component", id: "cms-detail", block: "KamakuraCmsDetail", props: {} }
+    ]),
+    sourceBlocks: { KamakuraCmsList: { props: {} }, KamakuraCmsDetail: { props: {} } },
+    replacements: [
+      { nodeId: "cms-list", kind: "cms-list", body: [{ type: "element", id: `card-${revision}`, tag: "article", children: [
+        { type: "element", id: `heading-${revision}`, tag: "h2", children: [{ type: "text", text: "一覧" }] }
+      ] }], binding: { templateNodeId: `card-${revision}`, collectionId: "posts", limit,
+        fields: [{ nodeId: `heading-${revision}`, fieldId: cmsField("title"), target: "text" }] } },
+      { nodeId: "cms-detail", kind: "cms-detail", body: [{ type: "element", id: `detail-${revision}`, tag: "h1", children: [{ type: "text", text: "詳細" }] }],
+        binding: { collectionId: "posts", slugFieldId: cmsField("slug"),
+          fields: [{ nodeId: `detail-${revision}`, fieldId: cmsField("title"), target: "text" }] } }
+    ]
+  });
   const source = {
     formatVersion: 1, origin, siteId, locale: "ja",
     assets: [
@@ -2624,10 +2642,8 @@ testWithD1("Kamakura import seeds a noindex verification site and preserves immu
       { sourceUrl: origin + "/english", sourcePageId: "english-source", path: "/en", locale: "en", visibility: "private",
         published: null, draft: document("english-source", "en", 3, "Translation fixture") },
       { sourceUrl: origin + "/deferred", sourcePageId: "deferred-source", path: "/deferred", locale: "ja", visibility: "public",
-        published: document("deferred-source", "ja", 2, "Prior deferred fixture"), draft: {
-          ...document("deferred-source", "ja", 5, "Deferred fixture", [{ type: "component", id: "cms-list", block: "KamakuraCmsList", props: {} }]),
-          sourceBlocks: { KamakuraCmsList: { props: {} } }
-        } }
+        published: cmsPageVersion("deferred-source", 2, "Prior CMS fixture", 3),
+        draft: cmsPageVersion("deferred-source", 5, "Current CMS fixture", 6) }
     ],
     cms: { schema: { ...schema, siteId, collections: schema.collections.map((collection) => collection.id === "posts" ? ({ ...collection, fields: [...collection.fields,
       { fieldId: "cover", key: "cover", label: "Cover", type: "image", placement: "main" },
@@ -2687,11 +2703,19 @@ testWithD1("Kamakura import seeds a noindex verification site and preserves immu
   };
   await assert.rejects(() => applyKamakuraSiteImport(prepared, MANAGEMENT_ORIGIN, h.ownerToken, interrupted, loadAsset), /connection loss/);
   const result = await applyKamakuraSiteImport(prepared, MANAGEMENT_ORIGIN, h.ownerToken, h.fetch, loadAsset);
-  assert.equal(result.mapping.pages[2].deferred, "cms-block-conversion");
+  assert.equal(result.mapping.pages[2].deferred, undefined);
   assert.doesNotMatch(JSON.stringify(result), /launchToken/u);
-  const archived = JSON.parse(h.objects.get(`sites/${site.siteId}/migration/deferred-pages/${result.planDigest}/${result.mapping.pages[2].pageId}.json`));
-  assert.equal(archived.published.document.title, "Prior deferred fixture");
-  assert.equal(archived.draft.document.body[0].block, "KamakuraCmsList");
+  const importedCmsPage = result.mapping.pages[2];
+  const importedCmsVersions = h.sqlite.prepare(`SELECT revision, bindings_json, document_key FROM managed_page_versions
+    WHERE site_id = ? AND page_id = ? ORDER BY revision`).all(site.siteId, importedCmsPage.pageId);
+  assert.deepEqual(importedCmsVersions.map(({ revision }) => revision), [1, 2]);
+  const publishedCmsBindings = JSON.parse(importedCmsVersions[0].bindings_json);
+  const draftCmsBindings = JSON.parse(importedCmsVersions[1].bindings_json);
+  assert.equal(publishedCmsBindings.siteId, site.siteId);
+  assert.equal(publishedCmsBindings.pageId, importedCmsPage.pageId);
+  assert.equal(publishedCmsBindings.lists[0].limit, 3);
+  assert.equal(draftCmsBindings.lists[0].limit, 6);
+  assert.ok(importedCmsVersions.every(({ document_key }) => !JSON.stringify(h.objects.get(document_key)).includes("KamakuraCms")));
   const snapshot = [...h.objects], counts = (table) => h.sqlite.prepare(`SELECT count(*) AS n FROM ${table}`).get().n;
   assert.deepEqual(await applyKamakuraSiteImport(prepared, MANAGEMENT_ORIGIN, h.ownerToken, h.fetch, loadAsset), result);
   assert.deepEqual([...h.objects], snapshot);
@@ -2699,7 +2723,7 @@ testWithD1("Kamakura import seeds a noindex verification site and preserves immu
   assert.equal(counts("managed_site_import_asset_blobs"), 1);
   assert.deepEqual(Buffer.from(h.objects.get(`sites/${site.siteId}/migration/assets/${contentSha256}`)), media);
   assert.equal(counts("managed_embed_connections"), 1);
-  assert.equal(counts("managed_page_versions"), 3);
+  assert.equal(counts("managed_page_versions"), 5);
   assert.equal(counts("managed_cms_revisions"), 4);
   assert.equal(counts("managed_page_publications"), 0);
   assert.equal(counts("managed_cms_releases"), 0);
@@ -2712,6 +2736,9 @@ testWithD1("Kamakura import seeds a noindex verification site and preserves immu
     .all(site.siteId).map(({ document_key }) => JSON.parse(h.objects.get(document_key)));
   assert.deepEqual(pageSource.map(({ title }) => title), ["Published fixture", "Current fixture"]);
   assert.equal(pageSource[1].body[0].attrs.href, "/en?ref=fixture#link");
+  const importedCmsRead = await body(await h.send(MANAGEMENT_ORIGIN, "GET",
+    `/api/edit/v1/sites/${site.siteId}/operations/pages.read/${importedCmsPage.pageId}?locale=ja`), 200);
+  assert.deepEqual(importedCmsRead.cmsBindings, draftCmsBindings);
   const item = await site.read("cms.items.read", { collectionId: "posts", itemId: result.mapping.cmsItems[0].itemId });
   assert.equal(item.item.values.title, "Draft post");
   const importedItem = result.mapping.cmsItems[0];

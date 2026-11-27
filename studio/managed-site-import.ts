@@ -2,6 +2,7 @@ import { assetKey, uniqueAssetReferences } from "../src/assets.js";
 import { cmsLocalizationItemKey } from "../src/cms-v2-localization.js";
 import { cmsReleaseAssetUses } from "../src/cms-v2-assets.js";
 import { cmsArray, cmsCollection, cmsId, cmsItemKey, parseCmsValues, type CmsItemRevision } from "../src/cms-v2-schema.js";
+import { cmsPageBindingProblems, parseCmsPageBindings, type CmsPageBindingsDocument } from "../src/cms-page-bindings.js";
 import { parsePageDocument, type PageDocument } from "../src/core.js";
 import { buildSiteImportCmsLocalization, importPageUrl, parseSiteImportPlan, parseSiteImportTarget, resolveSiteImportSourceVersion, SITE_IMPORT_DIGEST, siteImportDigest, siteImportResourceId } from "../src/managed-site-import.js";
 import { MANAGED_EMBED_REF, managedBlockContracts, parseManagedPublicPolicy, registeredNihoEmbed } from "./managed-embed-contract.js";
@@ -101,7 +102,8 @@ async function existingReceipt<T>(scope: Scope, kind: "page" | "cms", sourceKey:
 }
 
 async function archiveDeferredPage(scope: Scope, input: Record<string, unknown>, page: { sourceUrl: string; pageId: string; locale: string; path: string }) {
-  if (input.published !== undefined || input.draft !== undefined || input.connections !== undefined) return { error: "invalid_import" };
+  if (input.published !== undefined || input.draft !== undefined || input.publishedCmsBindings !== undefined || input.draftCmsBindings !== undefined
+    || input.connections !== undefined) return { error: "invalid_import" };
   const { db, store, target, plan, run } = scope;
   const deferred = record(input.deferred, "page.deferred");
   keys(deferred, ["sourcePageId", "published", "draft"], "page.deferred");
@@ -124,7 +126,7 @@ async function archiveDeferredPage(scope: Scope, input: Record<string, unknown>,
 async function importPage(scope: Scope, value: unknown) {
   const { db, target, run, plan } = scope;
   const input = record(value, "page");
-  keys(input, ["sourceUrl", "path", "locale", "title", "visibility", "published", "draft", "connections", "deferred"], "page");
+  keys(input, ["sourceUrl", "path", "locale", "title", "visibility", "published", "draft", "publishedCmsBindings", "draftCmsBindings", "connections", "deferred"], "page");
   const sourceUrl = importPageUrl(input.sourceUrl, plan.sourceOrigin, "page.sourceUrl"), { path, visibility } = input;
   const locale = localeCode(input.locale, "page.locale"), title = line(input.title, "page.title", 120);
   if (typeof path !== "string" || validatePagePath(path) || cmsPathReserved(path) || path === "/" && locale !== plan.locale
@@ -147,6 +149,19 @@ async function importPage(scope: Scope, value: unknown) {
   };
   const published = publishedRevision === null ? null : parseDocument(input.published, publishedRevision);
   const draft = parseDocument(input.draft, draftRevision);
+  const cmsSite = plan.cms ? await scope.store.site({ ...target, actor: { id: run.actor_subject, cli: true } }, "cms.schema.apply") : null;
+  if (plan.cms && (!cmsSite || await siteImportDigest(cmsSite.state.schema) !== await siteImportDigest(plan.cms.schema))) return conflict();
+  const parseBindings = (raw: unknown, document: PageDocument, at: string): CmsPageBindingsDocument | null => {
+    if (raw === undefined || raw === null) return null;
+    if (!cmsSite || !plan.cms) return fail(at, "CMS bindings require an imported CMS schema");
+    const bindings = parseCmsPageBindings(raw, document);
+    const problems = cmsPageBindingProblems(document, bindings, cmsSite.state.schema);
+    if (problems.length) return fail(at, problems.map(({ message }) => message).join(" "));
+    return bindings;
+  };
+  if (published === null && input.publishedCmsBindings != null) return { error: "invalid_import" };
+  const publishedBindings = published === null ? null : parseBindings(input.publishedCmsBindings, published, "page.publishedCmsBindings");
+  const draftBindings = parseBindings(input.draftCmsBindings, draft, "page.draftCmsBindings");
   const refs = new Set([draft, ...(published ? [published] : [])].flatMap((document) => walkNodes(document).flatMap(({ node }) =>
     node.type === "component" && node.block === "ManagedEmbed" ? [node.props.refId] : [])));
   const policy = refs.size ? await db.prepare("SELECT slug, public_policy_json, public_policy_version FROM managed_sites WHERE site_id = ?1")
@@ -162,14 +177,28 @@ async function importPage(scope: Scope, value: unknown) {
     return { refId: entry.refId, src: src.href };
   });
   if (refs.size) return { error: "invalid_import" };
-  const prior = await existingReceipt<{ version: string }>(scope, "page", sourceUrl);
+  const prior = await existingReceipt<{ version: string; publishedRevision: number | null; draftRevision: number }>(scope, "page", sourceUrl);
   if (prior) {
-    const current = await db.prepare("SELECT current_version FROM managed_pages WHERE site_id = ?1 AND page_id = ?2 AND locale = ?3")
-      .bind(target.siteId, pageId, locale).first<{ current_version: string }>();
-    return current?.current_version === prior.version ? prior : conflict();
+    const current = await db.prepare(`SELECT managed.current_version, draft.bindings_json AS draft_bindings_json,
+        (SELECT imported.bindings_json FROM managed_page_versions AS imported WHERE imported.site_id = managed.site_id
+          AND imported.page_id = managed.page_id AND imported.locale = managed.locale AND imported.revision = ?4) AS published_bindings_json
+      FROM managed_pages AS managed JOIN managed_page_versions AS draft ON draft.site_id = managed.site_id AND draft.page_id = managed.page_id
+        AND draft.locale = managed.locale AND draft.revision = managed.current_revision
+      WHERE managed.site_id = ?1 AND managed.page_id = ?2 AND managed.locale = ?3`)
+      .bind(target.siteId, pageId, locale, prior.publishedRevision).first<{
+        current_version: string; draft_bindings_json: string | null; published_bindings_json: string | null;
+      }>();
+    const expectedDraftBindings = draftBindings ? JSON.stringify(draftBindings) : null;
+    const expectedPublishedBindings = publishedBindings ? JSON.stringify(publishedBindings) : null;
+    return current?.current_version === prior.version && current.draft_bindings_json === expectedDraftBindings
+      && current.published_bindings_json === expectedPublishedBindings ? prior : conflict();
   }
-  const version = await draftVersion(run.plan_digest, sourceUrl, draftRevision), transaction = crypto.randomUUID(), documents: { document: PageDocument; version: string }[] = [
-    ...(published ? [{ document: published, version: await draftVersion(run.plan_digest, sourceUrl, published.revision) }] : []), { document: draft, version }
+  const version = await draftVersion(run.plan_digest, sourceUrl, draftRevision), transaction = crypto.randomUUID(), documents: {
+    document: PageDocument; version: string; bindingsJson: string | null;
+  }[] = [
+    ...(published ? [{ document: published, version: await draftVersion(run.plan_digest, sourceUrl, published.revision),
+      bindingsJson: publishedBindings ? JSON.stringify(publishedBindings) : null }] : []),
+    { document: draft, version, bindingsJson: draftBindings ? JSON.stringify(draftBindings) : null }
   ];
   const sources = [];
   for (const entry of documents) {
@@ -198,10 +227,13 @@ async function importPage(scope: Scope, value: unknown) {
       SELECT ?1, ?4, ?5, json_extract(value, '$.refId'), ?6, ?7, json_extract(value, '$.src')
       FROM json_each(?8) WHERE ${receiptFence}`)
       .bind(target.siteId, sourceUrl, transaction, pageId, locale, target.verificationOrigin, publicPath, JSON.stringify(connections))] : []),
-    ...sources.map(({ revision, key, digest, linkIndex }) => db.prepare(`INSERT INTO managed_page_versions
-      (site_id, page_id, locale, revision, document_json, kind, created_by_subject, document_key, document_digest, link_index_json)
-      SELECT ?1, ?4, ?5, ?6, '{}', 'initial', ?7, ?8, ?9, ?10 WHERE ${receiptFence}`)
-      .bind(target.siteId, sourceUrl, transaction, pageId, locale, revision, run.actor_subject, key, digest, linkIndex)),
+    ...sources.map(({ revision, key, digest, linkIndex }) => {
+      const entry = documents.find(({ document }) => document.revision === revision)!;
+      return db.prepare(`INSERT INTO managed_page_versions
+        (site_id, page_id, locale, revision, document_json, kind, created_by_subject, bindings_json, document_key, document_digest, link_index_json)
+        SELECT ?1, ?4, ?5, ?6, '{}', 'initial', ?7, ?8, ?9, ?10, ?11 WHERE ${receiptFence}`)
+        .bind(target.siteId, sourceUrl, transaction, pageId, locale, revision, run.actor_subject, entry.bindingsJson, key, digest, linkIndex);
+    }),
     ...(pageId === "home" ? [db.prepare(`DELETE FROM managed_page_versions WHERE site_id = ?1 AND page_id = 'home' AND locale = ?4 AND revision = 1 AND ${receiptFence}`)
       .bind(target.siteId, sourceUrl, transaction, locale)] : []),
     db.prepare(`UPDATE managed_sites SET page_catalog_version = ?4 WHERE site_id = ?1 AND ${receiptFence}`)
