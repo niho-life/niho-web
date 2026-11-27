@@ -5,13 +5,14 @@ import {
 import { assetKey, type AssetLibraryAdapter, type AssetReference } from "../src/assets.js";
 import { EditingApiClientError, type EditingApiClient } from "../src/editing-client.js";
 import {
-  KAMAKURA_CMS_BASE, KAMAKURA_CMS_IMAGE_TYPES, KAMAKURA_CMS_LIMITS, KAMAKURA_CMS_SITE_ID, KAMAKURA_MEDIA_ORIGIN,
+  KAMAKURA_CMS_BASE, KAMAKURA_CMS_IMAGE_TYPES, KAMAKURA_CMS_LIMITS, KAMAKURA_CMS_SITE_ID,
   isKamakuraCmsCollectionId, isKamakuraCmsItemId,
   kamakuraCmsEnglishPublicationRoutes, parseKamakuraCmsEnglishPublications,
   parseKamakuraCmsConflict, parseKamakuraCmsInvalid, parseKamakuraCmsItemEnvelope, parseKamakuraCmsListChange,
   parseKamakuraCmsListConflict, parseKamakuraCmsRemoved, parseKamakuraCmsUploadIntent, parseKamakuraCmsUploadResult,
   type KamakuraCmsItemStatus
 } from "./kamakura-cms-contract.js";
+import { kamakuraImageUrl } from "./kamakura-public-images.js";
 import { kamakuraUploadOrigin } from "./kamakura-upload-origin.js";
 
 /**
@@ -542,13 +543,7 @@ export function createKamakuraCmsAdapter(options: KamakuraCmsAdapterOptions): Co
     imageUrl(image: CollectionImageValue, width) {
       const url = typeof image === "string" ? image : resolvedImageUrls.get(assetKey(image));
       if (!url) return null;
-      // 公開画像の置き場の画像だけを Cloudflare の画像変換で縮める。ほかの URL はそのまま。
-      if (!Number.isFinite(width) || width <= 0) return url;
-      let parsed: URL;
-      try { parsed = new URL(url); } catch { return url; }
-      if (parsed.origin !== KAMAKURA_MEDIA_ORIGIN || parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.search || parsed.hash || parsed.pathname.startsWith("/cdn-cgi/")) return url;
-      const size = Math.min(4096, Math.max(16, Math.round(width)));
-      return `${KAMAKURA_MEDIA_ORIGIN}/cdn-cgi/image/width=${size},format=auto${parsed.pathname}`;
+      return kamakuraImageUrl(url, width);
     },
 
     previewUrl(_collectionId, item) {

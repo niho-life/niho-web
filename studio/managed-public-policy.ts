@@ -5,6 +5,7 @@ import { assetKey, collectAssetReferences, type ResolvedAsset } from "../src/ass
 import type { CmsPublicAsset } from "../src/cms-v2.js";
 import { isSafePublicUrl } from "../src/validation-utils.js";
 import { MANAGED_EMBED_REF, managedEmbedContract, registeredNihoEmbed, type ManagedPublicPolicy } from "./managed-embed-contract.js";
+import { kamakuraImageUrl, kamakuraResponsiveImageUrl } from "./kamakura-public-images.js";
 import type { ManagedD1 } from "./managed-sites.js";
 
 declare const __PUBLIC_NIHO_EMBEDS_PATH__: string;
@@ -161,6 +162,10 @@ export function planManagedPublicRender(document: PageDocument, policy: ManagedP
       delete attrs.srcSet;
       children[children.length - 1] = { ...original, attrs };
     }
+    if (node.tag === "img" && attrs && !attrs.srcSet && typeof attrs.src === "string") {
+      const responsive = kamakuraResponsiveImageUrl(attrs.src);
+      if (responsive) attrs.src = responsive;
+    }
     return { ...node, ...(attrs && { attrs }), children };
   });
   const body = project(document.body);
@@ -183,7 +188,14 @@ export function planManagedPublicRender(document: PageDocument, policy: ManagedP
   else if (meta) delete meta.favicon;
   const defaultOgSource = resource(policy.seo.defaultOgImage);
   if (defaultOgSource) images.add(defaultOgSource);
-  if (meta?.ogImage && "src" in meta.ogImage && !resource(meta.ogImage.src)) delete meta.ogImage;
+  if (meta?.ogImage && "src" in meta.ogImage) {
+    const source = resource(meta.ogImage.src);
+    if (!source) delete meta.ogImage;
+    else {
+      images.add(source);
+      meta.ogImage = { ...meta.ogImage, src: kamakuraImageUrl(meta.ogImage.src, 1200) };
+    }
+  }
   const rendered = { ...document, body, ...(meta && { meta }) };
   const assets: Record<string, ResolvedAsset> = {};
   const manifest = new Map(assetManifest.map((asset) => [assetKey(asset.reference), asset]));
@@ -191,7 +203,9 @@ export function planManagedPublicRender(document: PageDocument, policy: ManagedP
     const key = assetKey(reference), asset = manifest.get(key);
     const source = resource(asset?.url);
     if (!asset || !source) continue;
-    assets[key] = { src: asset.url, ...(asset.width === null ? {} : { width: asset.width }), ...(asset.height === null ? {} : { height: asset.height }) };
+    const optimized = target === "video" ? null : target === "ogImage"
+      ? kamakuraImageUrl(asset.url, 1200) : kamakuraResponsiveImageUrl(asset.url);
+    assets[key] = { src: optimized ?? asset.url, ...(asset.width === null ? {} : { width: asset.width }), ...(asset.height === null ? {} : { height: asset.height }) };
     if (target === "video") media.add(source);
     else if (target !== "ogImage") images.add(source);
   }
