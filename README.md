@@ -39,7 +39,7 @@ Node.js 22 以上を使います。
 
 | Entry | 用途 |
 | --- | --- |
-| `studio/wrangler.json` | Studio の編集・管理 Worker |
+| `studio/wrangler.json` | Studio の編集・管理 Worker。[固定ページの正本と保存契約](docs/studio-managed-sites.md#ページ正本と操作) |
 | `studio/public-sites.wrangler.json` | R2 の生成物を返す公開 Worker。開発時は `npm run studio:public:dev` |
 
 ## 文書案内

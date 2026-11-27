@@ -46,7 +46,7 @@ HTTPS origin は末尾に `/` を付けずに指定します。公開ページ�
 
 SQL の正本は `studio/migrations/` です。適用済みの SQL は保持し、修正は新規 migration を追加します。配備前に、対象 D1 と復元できるバックアップがあることを確認します。
 
-- 新 Worker の配備前に実行できるのは、旧 Worker の読み書きがそのまま動く列、表、index、補助的な trigger の追加だけです。`0016_static_page_publication.sql` は旧 Worker の `managed_sites` INSERT を変えずに公開 pointer を初期化します。`0017`〜`0020` は公開設定・独自 domain・redirect・公開 path の追加です。既存行と旧 Worker が使う INSERT・UPDATE・SELECT を確認した SQL を、`studio/release.mjs` の `beforeDeployMigrations` に追加します。未登録の migration が保留中なら配備を止めます。
+- 新 Worker の配備前に実行できるのは、旧 Worker の読み書きがそのまま動く列、表、index、補助的な trigger の追加だけです。`0016_static_page_publication.sql` は旧 Worker の `managed_sites` INSERT を変えずに公開 pointer を初期化します。`0017_managed_page_sources.sql` は既存の版行と旧 Worker の INSERT を保ったまま R2 参照欄を追加し、`0018`〜`0021` は公開設定・独自 domain・redirect・公開 path を追加します。既存行と旧 Worker が使う INSERT・UPDATE・SELECT を確認した SQL を、`studio/release.mjs` の `beforeDeployMigrations` に追加します。未登録の migration が保留中なら配備を止めます。
 - 列や表の削除、既存データの意味や制約の変更は、新 Worker が安定して旧 schema に依存する version が切り戻し対象から外れた後、別の release で行います。対象 D1 のバックアップと復元手順を確認し、その作業用の非公開 Wrangler 設定で `d1 migrations list DB --remote` と `d1 migrations apply DB --remote` を使います。
 - `0014` までの履歴 migration は事前適用済みであることを前提にしています。空の D1 の初期化は、既存 Worker への通常配備と別に行います。
 
@@ -62,7 +62,9 @@ Worker は最初の HTTP または cron イベントで設定を確認します�
 
 ## Worker と asset の切り戻し
 
-配備直前の version ID は `studio/.studio-rollback-version` に保存されます。切り戻しの前に配備履歴を開き、問題の version が現在有効であることを確認します。同じ Cloudflare account で次を実行します。
+配備直前の version ID は `studio/.studio-rollback-version` に保存されます。切り戻しの前に配備履歴を開き、問題の version が現在有効であることを確認します。ページ本文を R2 に保存・移行した環境では、切り戻し先も版付き R2 正本を読める version を使います。[ページ正本と操作](../docs/studio-managed-sites.md#ページ正本と操作)
+
+同じ Cloudflare account で次を実行します。
 
 ```sh
 npx wrangler rollback "$(cat studio/.studio-rollback-version)" --name niho-web-studio

@@ -4,7 +4,7 @@ Studio-native site の公開出力を、編集・書込みを持つ Studio Worke
 
 ## 現在の縦切り
 
-- 固定ページを公開すると、HTML を生成し、HTML と manifest を内容 hash 付きの R2 key で保存します。
+- 固定ページを公開すると、版付き R2 正本の digest を照合して HTML を生成し、HTML と manifest を内容 hash 付きの R2 key で保存します。[ページ正本と操作](studio-managed-sites.md#ページ正本と操作)
 - `managed_site_publication_state` の manifest pointer は D1 の version を条件に更新します。pointer が変わっていた公開は `409` になり、保存済みの古い manifest で新しい公開を上書きしません。
 - `managed_page_publications` に HTML key、digest、manifest key、path、Content-Type、CSP を保存します。読み出し時はmanifest・publication・現在のページpointerの対応と、HTML digestを照合します。
 - `managed_site_hosts` は hostname と path prefix を site に結び付けます。verification host には `noindex=1` を保存し、200・304・307・404・503 の全応答に `X-Robots-Tag: noindex, nofollow` を付けます。
@@ -17,7 +17,6 @@ Studio-native site の公開出力を、編集・書込みを持つ Studio Worke
 
 ## 未完了の接続
 
-- 現在の editor source document は既存の D1 `document_json` を読みます。ページ本文の版付きR2保存とdigest照合への移行は未実装です。
 - CMS bindingを持つページは、公開時生成にまだ含めません。#490 で一覧・詳細ページの依存を確定した後に追加します。
 - manifest の更新は CAS で競合を拒否します。最新manifestと下書きから数回再生成する自動retryは未実装です。
 - 翻訳・サイト全体SEO出力・全ページのstyle再生成は、それぞれ #485、#489、#483 と残りの #510 作業で接続します。埋め込み・計測は #486 で静的公開に接続します。

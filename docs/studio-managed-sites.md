@@ -1,12 +1,12 @@
 # Studio-native site 契約
 
-Studio で作成した Project、Site、メンバー、ページの下書きと公開履歴は Studio の D1 に保存する。固定ページの管理・公開・復元は Studio GUI で行う。共通 HTTP API は固定ページの読み取りと編集を扱い、対応コマンドは `niho-edit --studio` で呼び出せる。外部ホストとして登録されたサイトは、各ホストの編集 API と権限を使う。
+Studio は Project、Site、メンバー、ページの版情報と公開履歴を D1 に保存し、固定ページの PageDocument 本文を非公開 R2 に保存する。固定ページの管理・公開・復元は Studio GUI で行う。共通 HTTP API は固定ページの読み取りと編集を扱い、対応コマンドは `niho-edit --studio` で呼び出せる。外部ホストとして登録されたサイトは、各ホストの編集 API と権限を使う。
 
 ## 作成と識別子
 
-`PUBLIC_SITES_ORIGIN` に、Studio の管理 origin と異なる HTTPS origin を正確な origin 形式で設定したときだけ、Project 一覧の「新規プロジェクト」を有効にする。例は `https://sites.example.com`。path、query、fragment、credential を含む値は無効とする。
+`PUBLIC_SITES_ORIGIN` に、Studio の管理 origin と異なる HTTPS origin を正確な origin 形式で設定し、非公開 R2 binding `CMS_OBJECTS` が利用できるときに Project 一覧の「新規プロジェクト」を有効にする。例は `https://sites.example.com`。path、query、fragment、credential を含む値は無効とする。
 
-認証済みの人がタイトル、公開スラッグ、localeを送ると、`POST /api/projects` は次を1つの D1 batch で作る。
+認証済みの人がタイトル、公開スラッグ、locale を送ると、`POST /api/projects` は最初の PageDocument を R2 に保存し、次を1つの D1 batch で作る。
 
 - Project と Site
 - 作成者を owner とする membership
@@ -18,7 +18,11 @@ Project と Site の ID、ページの版はサーバーが発行する。共有
 
 ## ページ正本と操作
 
-`managed_pages` は編集中の版、公開中の版、公開範囲を保持する。`managed_page_versions` に現在の下書きと公開済みの版を保存し、下書きを保存するたびに公開されなかった前の下書きを削除する。復元では選んだ公開版の内容を新しい版として保存し、編集中の版と公開中の版に設定する。保存・公開・ページ情報の更新は `current_version` を SQL の更新条件に含める。競合時は HTTP 409 を返す。確認の有効期限は10分で、確認時の対象版と操作を実行時に照合する。
+`managed_pages` は編集中の版、公開中の版、公開範囲を保持する。`managed_page_versions` は現在の下書きと公開済みの版の R2 キー、本文バイトの SHA-256、リンク索引を保持する。各版の PageDocument は `CMS_OBJECTS` の `sites/{siteId}/pages/{pageId}/{locale}/{revision}/{version}.json` に条件付き PUT で一度だけ保存する。R2 の保存後に D1 の参照を確定する。読取時はキーと文書が対象版に属すること、および本文の digest を照合する。
+
+下書き保存リクエスト（GUI と Editing API）、`pages.apply` のリクエスト、保存する PageDocument のシリアライズ済み UTF-8 はそれぞれ 2 MiB まで。保存するたびに公開されなかった前の下書きの D1 版行を削除する。CLI の操作受領記録には確定時の R2 参照を残し、再送にはそのときの文書を返す。復元では選んだ公開版の内容を新しい版として R2 に保存し、編集中の版と公開中の版に設定する。保存・公開・ページ情報の更新は `current_version` を SQL の更新条件に含める。競合時は HTTP 409 を返す。確認の有効期限は10分で、確認時の対象版と操作を実行時に照合する。
+
+D1 に本文が残る旧版は、初回読取時に元の JSON を `legacy.json` として同じ版の R2 キーに保存する。R2 の保存が成功したあとに D1 の参照とリンク索引を確定し、`document_json` を `{}` に置き換える。移行処理が途中で失敗した場合は D1 の本文から読める。
 
 GUI のページ操作は次のとおり。
 
@@ -28,7 +32,7 @@ GUI のページ操作は次のとおり。
 - 公開済みの指定revisionへの復元計画・反映
 - 通常ページの作成、タイトル・path更新、visibility更新
 
-URL 変更・非公開化の確認画面では、サイト内の他ページの下書きと公開版からリンク元を集計する。CLI の discovery は共通 API が公開する操作のうち呼び出し元に許可された操作を返す。すべての読取・変更は、そのrequest時点の D1 owner/editor membership と Project/Site を照合する。別siteのpage、plan、version、公開pointerは変更できない。
+URL 変更・非公開化の確認画面では、サイト内の他ページの下書きと公開版のリンク索引からリンク元を集計する。旧版は D1 に残る本文も集計に含める。CLI の discovery は共通 API が公開する操作のうち呼び出し元に許可された操作を返す。すべての読取・変更は、そのrequest時点の D1 owner/editor membership と Project/Site を照合する。別siteのpage、plan、version、公開pointerは変更できない。
 
 ## 共有公開origin
 
@@ -93,6 +97,6 @@ Studio の PageEditor は CMS list と detail を `CmsPageBindingsDocument` side
 ### エクスポートと復元演習
 
 1. 管理リクエストの書込みとCronを停止した隔離環境で、D1を `wrangler d1 export <DB> --output studio.sql` で書き出す。同じ時点の非公開 R2 bucket の `sites/` を、権限を限定した S3 互換クライアントで全件コピーし、キー、サイズ、SHA-256 の一覧を付ける。wrangler の `--local` または `--remote` は対象環境を明示する。SQL と R2 のコピーは同じ復元セットとして暗号化し、CMS の書込み再開より先に照合する。期限付きのトークン行が含まれるため共有範囲を運用担当者に限定する。[D1 のエクスポート](https://developers.cloudflare.com/d1/best-practices/import-export-data/) [R2 の S3 API](https://developers.cloudflare.com/r2/api/s3/api/)
-2. 新しいローカルまたは隔離 D1 に `wrangler d1 execute <DB> --file studio.sql --local` で読み込む。別の非公開 bucket に元のキーのまま R2 オブジェクトを戻し、サイズ・ハッシュと `managed_cms_revisions` / `managed_cms_releases` / 未処理の outbox が参照するキーを照合する。確認用の設定で D1 と bucket をバインドする。復元検証が終わるまで Cron を起動しない。
+2. 新しいローカルまたは隔離 D1 に `wrangler d1 execute <DB> --file studio.sql --local` で読み込む。別の非公開 bucket に元のキーのまま R2 オブジェクトを戻し、サイズ・ハッシュと `managed_page_versions` / `managed_page_operations` / `managed_cms_revisions` / `managed_cms_releases` / 未処理の outbox が参照するキーを照合する。確認用の設定で D1 と bucket をバインドする。復元検証が終わるまで Cron を起動しない。
 3. CMS の下書き API と公開一覧・詳細を読み、公開中と最新下書きが異なる場合はその状態が保たれていることを比較する。別サイトの snapshot / preview を表示できないこと、既存操作IDの受領記録が引けること、予約を再開する際に現行の owner / grant を満たすことを確認する。
 4. ローカルの自動演習は `node --test test/studio-managed-sites.test.mjs`。テストは SQLite と条件付き PUT を検証する R2 fixture を同じ時点でエクスポートし、別インスタンスへ復元して公開 HTML、snapshot、下書きの revision を比較する。実際の Cloudflare リソースは利用しない。

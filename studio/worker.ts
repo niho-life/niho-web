@@ -3036,12 +3036,12 @@ async function handle(request: Request, env: Env, timing: StudioRequestTiming): 
 
   if (isApi) {
     if (request.method === "GET" && url.pathname === "/api/session") return json({ status: "authenticated", subject: identity.subject, email: identity.email });
-    if (request.method === "GET" && url.pathname === "/api/config") return json({ managedProjectsEnabled: configuredPublicOrigin !== null && configuredPublicOrigin !== url.origin, publicSitesOrigin: configuredPublicOrigin !== url.origin ? configuredPublicOrigin : null });
+    if (request.method === "GET" && url.pathname === "/api/config") return json({ managedProjectsEnabled: !!env.CMS_OBJECTS && configuredPublicOrigin !== null && configuredPublicOrigin !== url.origin, publicSitesOrigin: configuredPublicOrigin !== url.origin ? configuredPublicOrigin : null });
     if (url.pathname === "/api/projects") {
       if (request.method === "GET") return directory(env, identity);
       if (request.method === "POST") {
-        if (!configuredPublicOrigin) return json({ error: "managed_sites_unavailable" }, 503);
-        return createManagedProject(request, env.DB, { subject: identity.subject, email: identity.email, cli: false }, configuredPublicOrigin,
+        if (!configuredPublicOrigin || !env.CMS_OBJECTS) return json({ error: "managed_sites_unavailable" }, 503);
+        return createManagedProject(request, new CmsStore(env.DB, env.CMS_OBJECTS), { subject: identity.subject, email: identity.email, cli: false }, configuredPublicOrigin,
           publicSitesOrigin(env.PUBLIC_SITES_PREVIEW_ORIGIN));
       }
       return json({ error: "method_not_allowed" }, 405);

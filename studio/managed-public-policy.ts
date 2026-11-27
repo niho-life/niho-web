@@ -57,11 +57,11 @@ async function ga4PublicTag(measurementId: string | null) {
   };
 }
 
-export function publicResourceSource(value: unknown, parentOrigin: string, allowedOrigins: readonly string[]): string | undefined {
+export function publicResourceSource(value: unknown, parentOrigin: string, allowedOrigins: readonly string[], approvedAssetUrls?: ReadonlySet<string>): string | undefined {
   if (!isSafePublicUrl(value) || value.startsWith("#")) return undefined;
-  const { origin } = new URL(value, parentOrigin);
+  const resolved = new URL(value, parentOrigin), { origin } = resolved;
   if (origin === parentOrigin) return "'self'";
-  return allowedOrigins.includes(origin) ? origin : undefined;
+  return allowedOrigins.includes(origin) || approvedAssetUrls?.has(resolved.href) ? origin : undefined;
 }
 
 export async function managedPublicHead({
@@ -104,7 +104,8 @@ export function planManagedPublicRender(document: PageDocument, policy: ManagedP
   const frames = new Set<string>(), images = new Set<string>(), media = new Set<string>();
   let presentation = false, managedEmbed = false;
   const embedByRef = new Map(embeds.map(({ refId, src }) => [refId, src.origin]));
-  const resource = (value: unknown) => publicResourceSource(value, parentOrigin, policy.resourceOrigins);
+  const approvedAssetUrls = new Set(assetManifest.map(({ url }) => new URL(url, parentOrigin).href));
+  const resource = (value: unknown) => publicResourceSource(value, parentOrigin, policy.resourceOrigins, approvedAssetUrls);
   const resourceAttributes = ["src", "srcSet", "poster"] as const;
   const fallbackImage = (node: ElementNode): ElementNode => {
     const alt = node.attrs?.alt;

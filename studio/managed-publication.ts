@@ -196,13 +196,13 @@ const LOOKUP_TTL_MS = 5_000;
 const MAX_LOOKUPS = 256;
 const EDGE_CACHE_SECONDS = 3600;
 type Lookup<T> = Map<string, { readonly value: T; readonly expiresAt: number }>;
-type PublicationLookups = { readonly hosts: Lookup<readonly HostRow[]>; readonly pointers: Lookup<string> };
+type PublicationLookups = { readonly pointers: Lookup<string> };
 const lookupsByDatabase = new WeakMap<PublicDatabase, PublicationLookups>();
 
 function publicationLookups(db: PublicDatabase): PublicationLookups {
   let lookups = lookupsByDatabase.get(db);
   if (!lookups) {
-    lookups = { hosts: new Map(), pointers: new Map() };
+    lookups = { pointers: new Map() };
     lookupsByDatabase.set(db, lookups);
   }
   return lookups;
@@ -223,16 +223,11 @@ function rememberLookup<T>(entries: Lookup<T>, key: string, value: T, startedAt:
   entries.set(key, { value, expiresAt: startedAt + LOOKUP_TTL_MS });
 }
 
-async function publicHosts(db: PublicDatabase, entries: Lookup<readonly HostRow[]>, hostname: string): Promise<readonly HostRow[]> {
-  const cached = cachedLookup(entries, hostname);
-  if (cached) return cached;
-  const startedAt = Date.now();
+async function publicHosts(db: PublicDatabase, hostname: string): Promise<readonly HostRow[]> {
   const result = await db.prepare(`SELECT site_id, path_prefix, noindex FROM managed_site_hosts
     WHERE hostname = ?1 AND enabled = 1 ORDER BY length(path_prefix) DESC LIMIT 100`).bind(hostname).all<HostRow>();
   if (!result.success) throw new Error("managed site host query failed");
-  const hosts = result.results ?? [];
-  if (hosts.length) rememberLookup(entries, hostname, hosts, startedAt);
-  return hosts;
+  return result.results ?? [];
 }
 
 async function publishedPointer(db: PublicDatabase, entries: Lookup<string>, siteId: string): Promise<string | null> {
@@ -380,7 +375,7 @@ export async function publishedSiteRequest(request: Request, env: PublicEnv, con
   const lookups = publicationLookups(env.DB);
   let hosts: readonly HostRow[];
   try {
-    hosts = await publicHosts(env.DB, lookups.hosts, hostname);
+    hosts = await publicHosts(env.DB, hostname);
   } catch (error) {
     if (configuredPreview) return unavailable(true);
     throw error;

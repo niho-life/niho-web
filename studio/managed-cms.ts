@@ -12,8 +12,7 @@ import {
 import { parseEditingLocalizationInput } from "../src/editing-localization.js";
 import { cmsCollection, cmsId, cmsItemKey, parseCmsValues } from "../src/cms-v2-schema.js";
 import { cmsPageBindingProblems, parseCmsPageBindings } from "../src/cms-page-bindings.js";
-import { parsePageDocument } from "../src/document.js";
-import { managedBlockContracts } from "./managed-embed-contract.js";
+import { readPageSource, type PageSourceRow } from "./managed-page-source.js";
 import { parseCollectionValues, type CollectionItem, type CollectionValues } from "../src/collection-model.js";
 import { DocumentValidationError, keys, record } from "../src/validation-utils.js";
 import { validatePagePath } from "../src/pages.js";
@@ -231,21 +230,19 @@ async function migrationContext(store: CmsStore, site: Site, capability: CmsCapa
       item: await store.item(site.siteId, site.state.locale, meta), tombstoned: meta.removedAt !== null
     }))),
     store.routeTable(site, capability),
-    store.db.prepare(`SELECT ms.bindings_generation, bound.document_json, bound.bindings_json
+    store.db.prepare(`SELECT ms.bindings_generation, bound.*
       FROM managed_sites AS ms LEFT JOIN (
-        SELECT p.site_id, v.document_json, v.bindings_json FROM managed_pages AS p
+        SELECT v.site_id, v.page_id, v.locale, v.revision, v.document_json, v.document_key, v.document_digest, v.bindings_json FROM managed_pages AS p
         JOIN managed_page_versions AS v ON v.site_id = p.site_id AND v.page_id = p.page_id
           AND v.locale = p.locale AND v.revision = p.current_revision WHERE v.bindings_json IS NOT NULL
       ) AS bound ON bound.site_id = ms.site_id WHERE ms.site_id = ?`)
-      .bind(site.siteId).all<{ bindings_generation: number; document_json: string | null; bindings_json: string | null }>()
+      .bind(site.siteId).all<{ bindings_generation: number } & (PageSourceRow & { bindings_json: string } | { bindings_json: null })>()
   ]);
   if (!pages.success || !pages.results?.length) throw new Error("managed CMS binding lookup failed");
   const bindingsGeneration = pages.results[0]!.bindings_generation;
-  const bindings = pages.results.flatMap((row) => {
-    if (row.document_json === null || row.bindings_json === null) return [];
-    const page = parsePageDocument(JSON.parse(row.document_json), managedBlockContracts);
-    return [{ page, bindings: parseCmsPageBindings(JSON.parse(row.bindings_json), page) }];
-  });
+  const bindings = await Promise.all(pages.results.flatMap((row) => row.bindings_json === null ? [] : [
+    readPageSource(store, row).then((page) => ({ page, bindings: parseCmsPageBindings(JSON.parse(row.bindings_json), page) }))
+  ]));
   const fixed = new Set(routeTable.reservations.flatMap((entry) =>
     entry.kind === "fixed-page" || (entry.kind === "reserved" && !entry.reservationId.startsWith("cms_route_")) ? [entry.path] : []));
   return { drafts, routeTables: [routeTable], bindingsGeneration, impact: (_before: Site["state"]["schema"], after: Site["state"]["schema"]): CmsProblem[] => {

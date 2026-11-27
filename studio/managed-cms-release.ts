@@ -205,8 +205,9 @@ export async function managedCmsPublic(request: Request, store: CmsStore, origin
   }
   const policy = parseManagedPublicPolicy(JSON.parse(current.public_policy_json), origin) ?? emptyManagedPublicPolicy();
   const imageSources = new Set<string>();
+  const approvedAssetUrls = new Set(snapshot.assetManifest.map(({ url }) => new URL(url, origin).href));
   const include = (url: string) => {
-    const source = publicResourceSource(url, origin, policy.resourceOrigins);
+    const source = publicResourceSource(url, origin, policy.resourceOrigins, approvedAssetUrls);
     if (source) imageSources.add(source);
     return source !== undefined;
   };
