@@ -351,6 +351,7 @@ export function createBrowserRecoveryStore(options: { scope: string; storage?: R
       // 同じ actor scope を使う別インスタンスの遅延・pagehide 書込みも、このタブ内では止める。
       scopeState.writesDisabled = true;
       try { const place = storage(); if (place) for (const key of scopedKeys(place)) place.removeItem(key); } catch { /* 退避先が使えない */ }
+      if (recoveryScopeState.get(scope) === scopeState) recoveryScopeState.delete(scope);
     }
   };
 }
