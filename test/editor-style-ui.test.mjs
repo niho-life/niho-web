@@ -571,11 +571,27 @@ test("editing only below the next tier keeps wider widths, is undone in one step
 
 /** サイト共通スタイルを読み書きできるホスト。ページの h1 はサイト共通のカラーを参照する。 */
 function siteStyleHost() {
-  const saves = []; let settings = { title: "デモサイト", locale: "ja", tokens: { brand: { type: "color", value: "#336655", label: "ブランド" } } }, version = 1;
+  const saves = [], publishes = []; let settings = { title: "デモサイト", locale: "ja", tokens: { brand: { type: "color", value: "#336655", label: "ブランド" } } }, version = 1;
+  let publishedVersion = 1, publishedStyles = {};
   const page = structuredClone(fixture); page.body[0].children[0].style = { base: { color: { token: "brand" } } };
-  return { saves, page, adapter: {
-    readSiteSettings: async () => ({ settings: structuredClone(settings), version: `s${version}` }),
-    saveSiteSettings: async (request) => { saves.push(structuredClone(request)); settings = structuredClone(request.settings); version++; return { status: "saved", version: `s${version}` }; }
+  const rewrite = (value, from, to) => {
+    if (Array.isArray(value)) return value.map((entry) => rewrite(entry, from, to));
+    if (!value || typeof value !== "object") return value;
+    if (Object.keys(value).length === 1 && value.token === from) return { token: to };
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, rewrite(entry, from, to)]));
+  };
+  const stylesOnly = (value) => ({ ...(value.tokens ? { tokens: structuredClone(value.tokens) } : {}), ...(value.textStyles ? { textStyles: structuredClone(value.textStyles) } : {}) });
+  return { saves, publishes, page, adapter: {
+    readSiteSettings: async () => ({ settings: structuredClone(settings), version: `s${version}`, publishedVersion: `p${publishedVersion}`, publishedStyles: structuredClone(publishedStyles) }),
+    saveSiteSettings: async (request) => {
+      saves.push(structuredClone(request)); settings = structuredClone(request.settings); version++;
+      for (const rename of request.styleRenames ?? []) if (rename.styleKind === "token") Object.assign(page, rewrite(page, rename.from, rename.to));
+      return { status: "saved", version: `s${version}`, styles: structuredClone(settings) };
+    },
+    publishSiteStyles: async (request) => {
+      publishes.push(structuredClone(request)); publishedStyles = stylesOnly(settings);
+      publishedVersion++; return { status: "published", version: `p${publishedVersion}`, styles: structuredClone(publishedStyles) };
+    }
   } };
 }
 const libraryRow = (name) => [...left().querySelectorAll(".e-lib-row")].find((node) => node.querySelector(".e-lib-name")?.textContent === name);
@@ -607,20 +623,41 @@ test("site-wide color and name inputs are committed while typing in the site sco
   } finally { await app.cleanup(); }
 });
 
-test("a page dependency refresh adopts the matching site-style snapshot for the editor", async () => {
+test("site-wide style keys rename through one edit and publish from the style panel", async () => {
+  const host = siteStyleHost(), app = await setup({ document: host.page, adapter: {
+    ...host.adapter,
+    readDocument: async () => ({ document: structuredClone(host.page), version: "v1" })
+  } });
+  try {
+    await openSiteColor("ブランド");
+    await change(input("識別名", left()), "brandPrimary");
+    assert.equal(input("識別名", left()).value, "brandPrimary");
+    await click(button("サイト共通スタイルを保存"));
+    assert.deepEqual(host.saves[0].styleRenames, [{ type: "rename", styleKind: "token", from: "brand", to: "brandPrimary" }]);
+    assert.ok(host.saves[0].settings.tokens.brandPrimary);
+    assert.equal(host.saves[0].settings.tokens.brand, undefined);
+    assert.deepEqual(host.page.body[0].children[0].style.base.color, { token: "brandPrimary" }, "the host applies page-reference updates in the same edit transaction");
+    await click(button("サイト共通", left()));
+    assert.ok(button("サイト共通スタイルを公開"), left().textContent);
+    assert.equal(button("サイト共通スタイルを公開").disabled, false);
+    await click(button("サイト共通スタイルを公開"));
+    assert.deepEqual(host.publishes, [{ siteId: "demo", expectedDraftVersion: "s2", expectedPublishedVersion: "p1" }]);
+    assert.ok(left().textContent.includes("公開中の全ページに最新の共通スタイルが反映されています。"));
+  } finally { await app.cleanup(); }
+});
+
+test("the editor validates a page with the current site draft and no page style-version fence", async () => {
   const page = structuredClone(fixture);
   page.body[0].children[0].style = { base: { color: { token: "siteInk" } } };
   const refreshed = { title: "デモサイト", locale: "ja", tokens: { siteInk: { type: "color", value: "#123456", label: "最新カラー" } } };
   let settingsReads = 0;
   const app = await setup({ document: page, adapter: {
-    readSiteSettings: async () => ++settingsReads < 3
-      ? { settings: { title: "デモサイト", locale: "ja" }, version: "draft-1" }
-      : { settings: structuredClone(refreshed), version: "draft-2" },
+    readSiteSettings: async () => { settingsReads++; return { settings: structuredClone(refreshed), version: "draft-2" }; },
     saveSiteSettings: async () => ({ status: "saved", version: "draft-3" }),
-    readDocument: async () => ({ document: structuredClone(page), version: "v1", draftStylesVersion: "draft-2" })
+    readDocument: async () => ({ document: structuredClone(page), version: "v1" })
   } });
   try {
-    assert.ok(settingsReads >= 3, "a version mismatch triggers a fresh site-settings read");
+    assert.ok(settingsReads >= 1);
     await click(button("スタイル", left()));
     await click(button("サイト共通", left()));
     assert.ok(libraryRow("最新カラー"), "the editor adopts the settings snapshot used to validate the page");
@@ -696,23 +733,21 @@ test("a 409 on the site-wide save keeps the edited value and shows the latest se
   } finally { await app.cleanup(); }
 });
 
-test("deleting a site-wide color is reserved for site.styles migration", async () => {
-  const refusal = "削除・名前変更には site.styles の migration plan/apply が必要です。通常保存では削除できません。";
-  const host = siteStyleHost(), app = await setup({ document: host.page, adapter: host.adapter });
+test("deleting a referenced site-wide color reaches the shared operation and shows its usages", async () => {
+  const host = siteStyleHost(), app = await setup({ document: host.page, adapter: { ...host.adapter,
+    saveSiteSettings: async (request) => {
+      host.saves.push(structuredClone(request));
+      return { status: "referenced", usages: [{ kind: "page", id: "home", locale: "ja-JP", path: "body.hero" }] };
+    } } });
   try {
     await openSiteColor("ブランド");
     await click(button("このカラーを削除", left())); await click(button("削除する", left()));
-    assert.ok(left().textContent.includes(refusal)); assert.equal(review(), null);
-    assert.ok(libraryRow("ブランド"), "the definition stays");
+    assert.ok(review(), "the deletion is represented by the same site style edit flow");
+    await click(button("サイト共通スタイルを保存"));
+    await until(() => review()?.textContent.includes("使用中の共通値は削除できません: home (ja-JP): body.hero"));
+    assert.equal(host.saves.length, 1);
+    assert.equal(libraryRow("ブランド"), undefined, "the unsaved edit stays visible after refusal");
   } finally { await app.cleanup(); }
-  const atomic = siteStyleHost();
-  const app2 = await setup({ document: atomic.page, adapter: { ...atomic.adapter, siteStyleCapabilities: { atomicReferenceDetachment: true } } });
-  try {
-    await openSiteColor("ブランド");
-    await click(button("このカラーを削除", left())); await click(button("削除する", left()));
-    assert.ok(left().textContent.includes(refusal), "the removed legacy capability cannot bypass migration planning");
-    assert.equal(review(), null); assert.equal(atomic.saves.length, 0); assert.ok(libraryRow("ブランド"));
-  } finally { await app2.cleanup(); }
 });
 
 test("a host without site settings shows neither the site scope nor owners and keeps page-only styles", async () => {

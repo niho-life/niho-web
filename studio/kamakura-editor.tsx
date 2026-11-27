@@ -314,8 +314,6 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
     if (!wire.editorState) throw new EditorApiError(503, "editor_state_unavailable");
     if (required && wire.presentation === undefined) throw new Error("このサイトに必要な表示コンテキストがありません。");
     return { ...wire.editorState, document: wire.document, version: wire.version,
-      ...(wire.stylesVersion === undefined ? {} : { stylesVersion: wire.stylesVersion }),
-      ...(wire.draftStylesVersion === undefined ? {} : { draftStylesVersion: wire.draftStylesVersion }),
       ...(wire.presentation === undefined ? {} : { presentation: wire.presentation }) };
   }
   async function readEnglishDocument(target: EditorTarget, signal: AbortSignal): Promise<EditorSnapshot> {
@@ -399,8 +397,6 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
         operations: input.operations,
         ...(input.componentsVersion === undefined ? {} : { componentsVersion: input.componentsVersion }),
         ...(input.presentationVersion === undefined ? {} : { presentationVersion: input.presentationVersion }),
-        ...(input.stylesVersion === undefined ? {} : { stylesVersion: input.stylesVersion }),
-        ...(input.draftStylesVersion === undefined ? {} : { draftStylesVersion: input.draftStylesVersion }),
         ...(input.cmsBindings === undefined ? {} : { cmsBindings: input.cmsBindings })
       }, signal);
       if (result.status === "valid") throw new Error("dry-run result cannot be used to save a page.");

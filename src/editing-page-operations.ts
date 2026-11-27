@@ -13,11 +13,9 @@ import { CAROUSEL_CONTROL_LIMIT, CAROUSEL_SLIDE_LIMIT, parseCarouselBinding } fr
 
 export const PAGE_OPERATION_LIMIT = 500;
 export const PAGE_OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
-export const PAGE_OPERATION_VERSIONS = ["componentsVersion", "presentationVersion", "stylesVersion"] as const;
+export const PAGE_OPERATION_VERSIONS = ["componentsVersion", "presentationVersion"] as const;
 export type PageOperationVersions = Readonly<Partial<Record<typeof PAGE_OPERATION_VERSIONS[number], string>>>;
 export type EditingPageApplyInput = PageOperationVersions & {
-  /** Feature-aware draft style revision. stylesVersion remains the legacy draft alias. */
-  readonly draftStylesVersion?: string;
   readonly baseVersion: string;
   readonly operationId: string;
   readonly operations: readonly EditorOperationById[];
@@ -30,7 +28,6 @@ export type EditingPageApplyResult = EditingPageApplied | { readonly status: "va
 export type PageOperationUnmetPrecondition = { readonly index: number; readonly condition: "rebase_supported" | "preconditions" | "node_exists" | "parent_id" | "old_value" | "child_path" };
 export type EditingPageApplyConflict = { readonly status: "conflict"; readonly unmetPreconditions?: readonly PageOperationUnmetPrecondition[] };
 type ApplyRejection = EditingPageApplyConflict | { readonly status: "not_found" | "duplicate_operation" | "host_contract_violation" }
-  | { readonly status: "migration_in_progress" }
   | { readonly status: "validation_failed"; readonly index: number; readonly reason: string };
 export type PageOperationJournal = {
   readonly actor: EditingActor;
@@ -129,7 +126,7 @@ const applyInputSchema = (nameField: { name?: JsonSchema }, cmsBindings = false)
     baseVersion: version,
     operationId: { type: "string", pattern: PAGE_OPERATION_ID.source.replaceAll("a-f", "a-fA-F").replace("[89ab]", "[89abAB]") },
     operations: list({ $ref: "#/$defs/editorOperationById" }, cmsBindings ? 0 : 1, PAGE_OPERATION_LIMIT)
-  }, { dryRun: bool, componentsVersion: version, presentationVersion: version, stylesVersion: version, ...(cmsBindings ? { cmsBindings: pageCmsBindingsSchema } : {}) }),
+  }, { dryRun: bool, componentsVersion: version, presentationVersion: version, ...(cmsBindings ? { cmsBindings: pageCmsBindingsSchema } : {}) }),
   $defs: {
     editorOperationById: either(
       operation("text", { parentId: nullable(id), childPath: list(indexSchema, 1, 49), value: text }, { preconditions }),
@@ -179,12 +176,6 @@ const applyInputSchema = (nameField: { name?: JsonSchema }, cmsBindings = false)
 });
 export const legacyPageApplyInputSchema = applyInputSchema({});
 export const pageApplyInputSchema = applyInputSchema({ name: pageNodeNameSchema });
-export const siteStylesPageApplyInputSchema = (nodeNames = false, cmsBindings = false): JsonSchema => {
-  const schema = applyInputSchema(nodeNames ? { name: pageNodeNameSchema } : {}, cmsBindings) as Exclude<JsonSchema, boolean>;
-  const properties: Record<string, JsonSchema> = { ...schema.properties, draftStylesVersion: version };
-  delete properties.stylesVersion;
-  return { ...schema, properties };
-};
 export const pageCmsBindingsApplyInputSchema = (nodeNames: boolean) => applyInputSchema(nodeNames ? { name: pageNodeNameSchema } : {}, true);
 export function pageApplyResultSchema(document: JsonSchema): JsonSchema {
   return either(
@@ -533,7 +524,6 @@ function unmetRebasePreconditions(document: PageDocument, operation: EditorOpera
 }
 export function preparePageOperations(snapshot: EditingPageSnapshot, context: PageEditingValidationContext, input: EditingPageApplyInput, journal: PageOperationJournal, dryRun: boolean): ReturnType<PageOperationTransaction["prepare"]> {
   if (PAGE_OPERATION_VERSIONS.some((name) => input[name] !== undefined && snapshot[name] !== input[name])) return { status: "conflict" };
-  if (input.draftStylesVersion !== undefined && snapshot.draftStylesVersion !== input.draftStylesVersion) return { status: "conflict" };
   const options = { ...(context.components ? { components: context.components } : {}), ...(context.siteStyles ? { siteStyles: context.siteStyles } : {}) };
   let before: PageDocument;
   try { before = parsePageDocument(snapshot.document, context.blocks, options); }

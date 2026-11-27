@@ -422,7 +422,6 @@ export function createProjectEditorAdapter(adapter: EditorAdapter, projectInput:
         return { status: "applied", page: pageEntry(result.page) };
       }
     } satisfies Pick<EditorAdapter, "applyPageChange"> : {}),
-    ...(adapter.siteStyleCapabilities ? { siteStyleCapabilities: adapter.siteStyleCapabilities } : {}),
     ...(adapter.siteSettingsMetadataEditable === undefined ? {} : { siteSettingsMetadataEditable: adapter.siteSettingsMetadataEditable }),
     ...(adapter.breakpointSettings ? { breakpointSettings: {
       async read(siteId, signal) {
@@ -444,16 +443,27 @@ export function createProjectEditorAdapter(adapter: EditorAdapter, projectInput:
       async readSiteSettings(siteId, signal) {
         if (siteId !== site.id) throw new Error("プロジェクト外のサイトは参照できません。");
         const snapshot = await adapter.readSiteSettings!(site.id, signal);
-        return { settings: structuredClone(snapshot.settings), version: snapshot.version };
+        return { settings: structuredClone(snapshot.settings), version: snapshot.version,
+          ...(snapshot.publishedVersion === undefined ? {} : { publishedVersion: snapshot.publishedVersion }),
+          ...(snapshot.publishedStyles === undefined ? {} : { publishedStyles: structuredClone(snapshot.publishedStyles) }) };
       }
     } satisfies Pick<EditorAdapter, "readSiteSettings"> : {}),
     ...(adapter.saveSiteSettings ? {
       async saveSiteSettings(request, signal) {
         if (request.siteId !== site.id) throw new Error("プロジェクト外のサイトは変更できません。");
         if (request.previousStyles !== undefined) keys(record(request.previousStyles, "$.previousStyles"), ["tokens", "textStyles"], "$.previousStyles");
-        return adapter.saveSiteSettings!({ siteId: site.id, settings: parseSiteSettings(request.settings), expectedVersion: request.expectedVersion, ...(request.previousStyles === undefined ? {} : { previousStyles: parseSiteStyles(request.previousStyles) }) }, signal);
+        return adapter.saveSiteSettings!({ siteId: site.id, settings: parseSiteSettings(request.settings), expectedVersion: request.expectedVersion,
+          ...(request.previousStyles === undefined ? {} : { previousStyles: parseSiteStyles(request.previousStyles) }),
+          ...(request.styleRenames === undefined ? {} : { styleRenames: structuredClone(request.styleRenames) }) }, signal);
       }
     } satisfies Pick<EditorAdapter, "saveSiteSettings"> : {}),
+    ...(adapter.publishSiteStyles ? {
+      async publishSiteStyles(request, signal) {
+        if (request.siteId !== site.id) throw new Error("プロジェクト外のサイトは公開できません。");
+        return adapter.publishSiteStyles!({ siteId: site.id, expectedDraftVersion: request.expectedDraftVersion,
+          expectedPublishedVersion: request.expectedPublishedVersion }, signal);
+      }
+    } satisfies Pick<EditorAdapter, "publishSiteStyles"> : {}),
     ...(adapter.listRevisions ? {
       async listRevisions(request, signal) {
         const target = targetForProject(request.target, site);

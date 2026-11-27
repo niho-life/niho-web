@@ -20,7 +20,7 @@
 
 source言語は訳の完備を要求しませんが、文書identity、公開catalogue、block、共有参照、resource bindingはtargetと同じく検証します。`requiredResourceIds` に指定したCSS/CMS等のbindingが無ければ失敗します。指定されていない外部resourceを「snapshotに固定済み」とは扱いません。
 
-サイト共通スタイル（[契約](site-styles-contract.md)）を参照するページは、`createPublishedSiteLocaleSnapshot(input, { blocks, siteStyles, siteStylesRevision: { stage: "published", version: stylesVersion } })` に現在の公開 `stylesVersion` と対応する `SiteStyles` を渡します。draft materializeで使うrevisionとはstageが異なり、取り違えを型で防ぎます。各ページを同じsnapshotで検証し、実効token / 文字スタイルを含む自己完結の文書を作ります。hostはstyle版をsnapshotのrelease recordに保存し、後から設定を変えても過去releaseを変更しません。共通スタイルの公開では現行の全locale snapshotを新しい版で生成し、style pointerと一緒に原子的に切り替えます。locale release/rollbackは計画と最終commitで公開 `stylesVersion` と `sitePublicationEpoch` を再照合し、どちらかが変わっていれば409 `version_conflict` とします。設定を渡さず共通参照を持つページを渡すと検証で失敗し、途中までを公開しません。
+サイト共通スタイル（[契約](site-styles-contract.md)）を参照するページは、`createPublishedSiteLocaleSnapshot(input, { blocks, siteStyles })` に現在のpublished stylesを渡します。各ページを同じ設定で検証しますが、実効値を文書へ焼き込まず参照を保持します。保存済みsnapshotを `parsePublishedSiteLocaleSnapshot` / `verifyPublishedSiteLocaleSnapshot` などで扱うときも、同じく現在のpublished stylesをoptionsへ渡します。公開描画はサイトの単一published pointerを使うため、スタイル公開は既に公開されている全locale・全ページへ同時に反映されます。locale release/rollbackはページ内容の版だけを扱い、style版やsite publication epochによるfenceを持ちません。設定を渡さず共通参照を持つページを渡すと検証で失敗し、途中までを公開しません。
 
 ```ts
 import { createPublishedSiteLocaleSnapshot } from "@niho/web/localization-release";

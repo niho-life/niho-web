@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { parseSiteStyles, type SiteStyles } from "./site-styles.js";
+import { renameSiteStyle, type EditingSiteStyleKind, type EditingSiteStylesRename } from "./editing-site-styles.js";
 import { Dialog } from "./editor-dialog.js";
 import { pageChangeProblems, sameTarget, validatePageChangePlan, type EditorOperation } from "./editor-model.js";
 import type { EditorAdapter, EditorBlockRegistry, EditorPage, EditorPageChange, EditorPageChangePlan, EditorPageChangeResult, EditorReleaseWarning, EditorSite, EditorTarget } from "./editor-types.js";
@@ -324,30 +325,38 @@ export type SiteSettingsState = {
   settings: SiteSettings | undefined;
   /** site.styles の draft snapshot を識別する opaque version。 */
   version: string | undefined;
+  publishedVersion: string | undefined; publishedStyles: SiteStyles | undefined;
   styleSaveEpoch: number; styles: SiteStyles; stylesDirty: boolean; latest: SiteSettings | undefined;
   editStyles: (styles: SiteStyles) => string | undefined;
+  renameStyle: (kind: EditingSiteStyleKind, from: string, to: string) => string | undefined;
   form: SiteForm; dirty: boolean; problem: string | undefined; canSave: boolean; busy: boolean;
   message: { text: string; alert: boolean } | null; conflict: boolean;
-  edit: (patch: Partial<SiteForm>) => void; reset: () => void; reload: () => void; acceptSnapshot: (snapshot: { settings: SiteSettings; version: string }) => void; save: () => Promise<void>;
+  canPublishStyles: boolean; publishStyles: () => Promise<void>;
+  edit: (patch: Partial<SiteForm>) => void; reset: () => void; reload: () => void;
+  acceptSnapshot: (snapshot: { settings: SiteSettings; version: string; publishedVersion?: string; publishedStyles?: SiteStyles }) => void; save: () => Promise<void>;
 };
 /** サイト設定は文書と別に、opaque な version の楽観ロックで保存する。 */
 export function useSiteSettings(adapter: EditorAdapter, siteId: string, blocks: EditorBlockRegistry, components?: ComponentLibrary): SiteSettingsState {
   void blocks; void components;
-  const [loaded, setLoaded] = useState<{ siteId: string; settings: SiteSettings; version: string } | null>(null);
+  const [loaded, setLoaded] = useState<{ siteId: string; settings: SiteSettings; version: string; publishedVersion?: string; publishedStyles?: SiteStyles } | null>(null);
   const [status, setStatus] = useState<SiteSettingsState["status"]>("idle"), [form, setForm] = useState(emptyForm), [epoch, setEpoch] = useState(0);
   const [styleSaveEpoch, setStyleSaveEpoch] = useState(0);
   const [styles, setStyles] = useState<SiteStyles>({}), [latest, setLatest] = useState<SiteSettings>();
+  const [styleRenames, setStyleRenames] = useState<EditingSiteStylesRename[]>([]);
   const [busy, setBusy] = useState(false), [message, setMessage] = useState<SiteSettingsState["message"]>(null), [conflict, setConflict] = useState(false);
   const saving = useRef<AbortController | null>(null);
   useEffect(() => {
-    saving.current?.abort(); saving.current = null; setLoaded(null); setForm(emptyForm); setStyles({}); setLatest(undefined); setMessage(null); setConflict(false); setBusy(false);
+    saving.current?.abort(); saving.current = null; setLoaded(null); setForm(emptyForm); setStyles({}); setStyleRenames([]); setLatest(undefined); setMessage(null); setConflict(false); setBusy(false);
     if (!siteId || !adapter.readSiteSettings) { setStatus("idle"); return; }
     const controller = new AbortController(); setStatus("loading");
     adapter.readSiteSettings(siteId, controller.signal).then((snapshot) => {
       if (controller.signal.aborted) return;
       if (!snapshot || typeof snapshot.version !== "string" || !snapshot.version) throw new Error("version is required");
       const settings = parseSiteSettings(snapshot.settings);
-      setLoaded({ siteId, settings, version: snapshot.version }); setForm(formFrom(settings)); setStyles(parseSiteStyles(settings)); setStatus("ready");
+      setLoaded({ siteId, settings, version: snapshot.version,
+        ...(snapshot.publishedVersion === undefined ? {} : { publishedVersion: snapshot.publishedVersion }),
+        ...(snapshot.publishedStyles === undefined ? {} : { publishedStyles: parseSiteStyles(snapshot.publishedStyles) }) });
+      setForm(formFrom(settings)); setStyles(parseSiteStyles(settings)); setStatus("ready");
     }).catch(() => { if (!controller.signal.aborted) setStatus("error"); });
     return () => controller.abort();
   }, [adapter, siteId, epoch]);
@@ -367,39 +376,80 @@ export function useSiteSettings(adapter: EditorAdapter, siteId: string, blocks: 
     };
     try {
       if (stylesDirty) {
-        const before = parseSiteStyles(loaded.settings), after = parseSiteStyles(settings);
-        const removed = Object.keys(before.tokens ?? {}).some((name) => !Object.hasOwn(after.tokens ?? {}, name)) || Object.keys(before.textStyles ?? {}).some((name) => !Object.hasOwn(after.textStyles ?? {}, name));
-        if (removed) throw new Error("site style migration is required");
-      }
-      if (stylesDirty) {
         const current = await adapter.readSiteSettings!(loaded.siteId, controller.signal);
         if (controller.signal.aborted) return;
         const currentSettings = parseSiteSettings(current.settings);
         if (current.version !== loaded.version || JSON.stringify(currentSettings) !== JSON.stringify(loaded.settings)) { setLatest(currentSettings); failed({ status: 409 }); return; }
       }
-      const result = await adapter.saveSiteSettings({ siteId: loaded.siteId, settings: structuredClone(settings), expectedVersion: loaded.version, ...(stylesDirty ? { previousStyles: parseSiteStyles(loaded.settings) } : {}) }, controller.signal);
+      const result = await adapter.saveSiteSettings({ siteId: loaded.siteId, settings: structuredClone(settings), expectedVersion: loaded.version,
+        ...(stylesDirty ? { previousStyles: parseSiteStyles(loaded.settings) } : {}), ...(styleRenames.length ? { styleRenames: structuredClone(styleRenames) } : {}) }, controller.signal);
       if (controller.signal.aborted) return;
       if (result.status === "conflict") { try { const conflictSnapshot = await adapter.readSiteSettings!(loaded.siteId, controller.signal); if (!controller.signal.aborted) setLatest(parseSiteSettings(conflictSnapshot.settings)); } catch { /* 比較の取得に失敗しても入力を保持する。 */ } failed({ status: 409 }); return; }
+      if (result.status === "referenced") {
+        const places = result.usages.map((usage) => `${usage.id}${usage.locale ? ` (${usage.locale})` : ""}${usage.path ? `: ${usage.path}` : ""}`);
+        setMessage({ text: `使用中の共通値は削除できません: ${places.join("、")}`, alert: true }); return;
+      }
       if (result.status !== "saved" || typeof result.version !== "string" || !result.version || result.version === loaded.version) throw new Error("version must advance");
-      setLoaded({ siteId: loaded.siteId, settings, version: result.version }); setForm(formFrom(settings)); setStyles(parseSiteStyles(settings)); if (stylesDirty) setStyleSaveEpoch((value) => value + 1); setLatest(undefined); setMessage({ text: "サイト設定を保存しました。", alert: false });
+      const savedStyles = result.styles ? parseSiteStyles(result.styles) : parseSiteStyles(settings);
+      const savedSettings = parseSiteSettings({ ...settings, ...savedStyles });
+      setLoaded({ ...loaded, settings: savedSettings, version: result.version }); setForm(formFrom(savedSettings)); setStyles(savedStyles); setStyleRenames([]);
+      if (stylesDirty) setStyleSaveEpoch((value) => value + 1); setLatest(undefined); setMessage({ text: "サイト設定を保存しました。", alert: false });
     } catch (error) { if (!controller.signal.aborted) failed(error); }
     finally { if (saving.current === controller) { saving.current = null; setBusy(false); } }
   }
+  async function publishStyles() {
+    if (!loaded || !adapter.publishSiteStyles || !loaded.publishedVersion || !loaded.publishedStyles || dirty || saving.current) return;
+    const controller = new AbortController(); saving.current = controller; setBusy(true); setMessage(null); setConflict(false);
+    try {
+      const result = await adapter.publishSiteStyles({ siteId: loaded.siteId, expectedDraftVersion: loaded.version,
+        expectedPublishedVersion: loaded.publishedVersion }, controller.signal);
+      if (controller.signal.aborted) return;
+      if (result.status === "conflict") { setConflict(true); setMessage({ text: "共通スタイルの公開状態が競合しました。最新状態を読み込んでください。", alert: true }); return; }
+      if (result.status !== "published" || !result.version || result.version === loaded.publishedVersion) throw new Error("published version must advance");
+      const publishedStyles = parseSiteStyles(result.styles);
+      setLoaded({ ...loaded, publishedVersion: result.version, publishedStyles });
+      setMessage({ text: "サイト共通スタイルを公開しました。公開中の全ページに反映されます。", alert: false });
+    } catch { if (!controller.signal.aborted) setMessage({ text: "サイト共通スタイルを公開できませんでした。保存状態を確認してください。", alert: true }); }
+    finally { if (saving.current === controller) { saving.current = null; setBusy(false); } }
+  }
+  function renameStyle(kind: EditingSiteStyleKind, from: string, to: string): string | undefined {
+    if (!loaded || !editable || status !== "ready" || busy) return "サイト設定を読み込んでから編集してください。";
+    try {
+      const original = parseSiteStyles(loaded.settings), definitions = kind === "token" ? original.tokens ?? {} : original.textStyles ?? {};
+      if (Object.hasOwn(definitions, to)) throw new TypeError("rename target existed in the saved styles");
+      const next = renameSiteStyle(styles, kind, from, to);
+      const pending = [...styleRenames], priorIndex = pending.findIndex((item) => item.styleKind === kind && item.to === from);
+      if (priorIndex >= 0) {
+        const prior = pending[priorIndex]!; pending.splice(priorIndex, 1);
+        if (Object.hasOwn(definitions, prior.from)) pending.push({ type: "rename", styleKind: kind, from: prior.from, to });
+      } else if (Object.hasOwn(definitions, from)) pending.push({ type: "rename", styleKind: kind, from, to });
+      setStyleRenames(pending); setStyles(next); setMessage(null); return undefined;
+    } catch { return "新しい識別名が既存の共通スタイルと重ならないか確認してください。"; }
+  }
+  const publishedVersion = loaded?.siteId === siteId ? loaded.publishedVersion : undefined;
+  const publishedStyles = loaded?.siteId === siteId ? loaded.publishedStyles : undefined;
+  const canPublishStyles = typeof adapter.publishSiteStyles === "function" && !!loaded && !!publishedVersion && !!publishedStyles
+    && !dirty && !busy && JSON.stringify(styles) !== JSON.stringify(publishedStyles);
   return {
     supported: typeof adapter.readSiteSettings === "function", editable, metadataEditable, status, settings: loaded?.siteId === siteId ? loaded.settings : undefined,
-    version: loaded?.siteId === siteId ? loaded.version : undefined, form, dirty, problem, styles, stylesDirty, latest, styleSaveEpoch,
+    version: loaded?.siteId === siteId ? loaded.version : undefined, publishedVersion, publishedStyles, form, dirty, problem, styles, stylesDirty, latest, styleSaveEpoch,
     editStyles: (next) => { if (!editable || status !== "ready" || busy) return "サイト設定を読み込んでから編集してください。"; try { setStyles(parseSiteStyles(next)); setMessage(null); return undefined; } catch { return "共通スタイルの参照・種類・値を確認してください。"; } },
+    renameStyle, canPublishStyles,
     canSave: editable && dirty && !!parsed && !busy, busy, message, conflict,
     edit: (patch) => { setForm((previous) => ({ ...previous, ...patch })); setMessage(null); },
-    reset: () => { if (loaded) { setForm(formFrom(loaded.settings)); setStyles(parseSiteStyles(loaded.settings)); } setMessage(null); setConflict(false); },
+    reset: () => { if (loaded) { setForm(formFrom(loaded.settings)); setStyles(parseSiteStyles(loaded.settings)); } setStyleRenames([]); setMessage(null); setConflict(false); },
     reload: () => setEpoch((value) => value + 1),
     acceptSnapshot: (snapshot) => {
       if (dirty || typeof snapshot.version !== "string" || !snapshot.version) return;
       const settings = parseSiteSettings(snapshot.settings);
-      setLoaded({ siteId, settings, version: snapshot.version }); setForm(formFrom(settings)); setStyles(parseSiteStyles(settings));
+      const sameSite = loaded?.siteId === siteId;
+      setLoaded({ siteId, settings, version: snapshot.version,
+        ...(snapshot.publishedVersion === undefined ? sameSite && loaded.publishedVersion !== undefined ? { publishedVersion: loaded.publishedVersion } : {} : { publishedVersion: snapshot.publishedVersion }),
+        ...(snapshot.publishedStyles === undefined ? sameSite && loaded.publishedStyles !== undefined ? { publishedStyles: loaded.publishedStyles } : {} : { publishedStyles: parseSiteStyles(snapshot.publishedStyles) }) });
+      setForm(formFrom(settings)); setStyles(parseSiteStyles(settings)); setStyleRenames([]);
       setStatus("ready"); setLatest(undefined); setMessage(null); setConflict(false);
     },
-    save
+    save, publishStyles
   };
 }
 

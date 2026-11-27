@@ -185,7 +185,7 @@ renderer は同期の React ツリーを返します。データ取得は呼び�
 
 保存契約・エディター・多言語と公開 snapshot・ホストの実装手順を含む全体の正は [サイト共通スタイルの契約](site-styles-contract.md) です。この節は文書と描画側の規則です。
 
-ページ JSON の `schemaVersion` と必須フィールドは変更しません。描画用の `SiteSettings` に任意の `tokens` / `textStyles` を含められますが、ホストは版付き `site.styles.*` のdraft/public snapshotとして管理し、ページにはページ所有の定義だけを保持します。`stylesVersion` はPageDocumentに追加せず、ホストがページrevision・release recordのmetadataに保存します。設定を渡さない既存ホストの検証・描画は従来どおりです。
+ページ JSON の `schemaVersion` と必須フィールドは変更しません。描画用の `SiteSettings` に任意の `tokens` / `textStyles` を含められますが、ホストは版付き `site.styles.*` のdraft/published状態として管理し、ページにはページ所有の定義だけを保持します。ページにstyle版は保存しません。設定を渡さない既存ホストの検証・描画は従来どおりです。
 
 ```ts
 const settings = parseSiteSettings(siteSettingsJson);
@@ -200,6 +200,6 @@ const resolved = resolvePageDocument(pageJson, library, blocks, settings);
 
 サイトの文字スタイルはサイトの token だけで検証し、ページによる未定義参照の補完を許しません。その後、実効 token で継承した文字スタイルを再検証します。ページの override によって token の種類が不適合になった場合も拒否します。未解決の token / textStyle、型不一致、未知フィールド、上限超過を許しません。共有値を参照するページは、設定を省略して検証すると拒否されます。
 
-`PageRenderer` の `siteStyles`、`renderPageToHtml(document, blocks, { siteStyles })`、`generatePageCss(document, blocks, assets, siteStyles)` は同じ解決関数を使います。`resolvePageDocument` の返す展開済み文書には実効定義が含まれるため、そのまま設定なしで描画できます。この展開済み文書をページ下書きの正本へ保存しないでください。公開 snapshot に実効定義を固定する方式はホストが選べます。
+`PageRenderer` の `siteStyles`、`renderPageToHtml(document, blocks, { siteStyles })`、`generatePageCss(document, blocks, assets, siteStyles)` は同じ解決関数を使います。`resolvePageDocument` の返す展開済み文書には実効定義が含まれるため、そのまま設定なしで描画できます。この展開済み文書をページ下書きや公開snapshotの正本へ保存しないでください。
 
-共有設定とページを別時点から取得すると公開中の見た目が変わるため、ホストは同じ公開 snapshot の設定・文書を組にして読み出してください。公開style版は全ページで一度に切り替え、cache keyにも `stylesVersion` を含めます。
+公開描画は現在のpublished style snapshotを全ページで共有します。`site.styles.publish` はサイトのpublished pointerを一度に切り替えるため、ページごとのstyle版固定や再公開は不要です。
