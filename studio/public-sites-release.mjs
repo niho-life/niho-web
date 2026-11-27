@@ -15,10 +15,21 @@ const requiredPublicMigrations = new Set([
   "0019_managed_public_domains.sql",
   "0020_managed_site_redirects.sql",
   "0021_managed_published_paths.sql",
-  "0022_managed_site_redirect_versions.sql",
-  "0023_managed_site_primary_host.sql",
-  "0024_managed_one_step_publish.sql"
+  "0023_managed_site_primary_host.sql"
 ]);
+const allowedStudioOnlyMigrations = new Set([
+  "0022_managed_site_redirect_versions.sql",
+  "0024_managed_one_step_publish.sql",
+  "0025_managed_site_imports.sql",
+  "0026_managed_site_styles.sql"
+]);
+
+export function classifyPublicReleaseMigrations(pending) {
+  return {
+    required: pending.filter((name) => requiredPublicMigrations.has(name)),
+    unknown: pending.filter((name) => !requiredPublicMigrations.has(name) && !allowedStudioOnlyMigrations.has(name))
+  };
+}
 
 class ReleaseError extends Error {}
 
@@ -140,11 +151,9 @@ async function release() {
     const config = writePublicSitesConfig(directory, settings);
     const wrangler = (...args) => runWrangler(config, settings, ...args);
     const pending = pendingMigrations(wrangler("D1 の migration 状況を確認", "d1", "migrations", "list", "DB", "--remote"));
-    if (pending.length) {
-      const unapproved = pending.filter((name) => !requiredPublicMigrations.has(name));
-      if (unapproved.length) throw new ReleaseError("配備前に未確認の D1 migration が残っています。Studio 配備手順を確認してください。");
-      throw new ReleaseError("公開配信に必要な D1 migration が未適用です。Studio release を先に実行してください。");
-    }
+    const migrations = classifyPublicReleaseMigrations(pending);
+    if (migrations.unknown.length) throw new ReleaseError("配備前に未確認の D1 migration が残っています。Studio 配備手順を確認してください。");
+    if (migrations.required.length) throw new ReleaseError("公開配信に必要な D1 migration が未適用です。Studio release を先に実行してください。");
     deployStarted = true;
     wrangler("preview host 専用の公開 Worker を配備", "deploy");
     console.log("配備後に preview page の noindex を確認");
