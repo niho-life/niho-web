@@ -551,6 +551,26 @@ test("site-allowed frames outside the origin-retaining limit load as opaque and 
   assert.doesNotMatch(html, /data-nw-frame-blocked/);
 });
 
+test("only a trusted popup source receives popup sandbox permissions", () => {
+  const source = "https://niho.life/embed/schedule";
+  const policy = createExternalFramePolicy({
+    parentOrigin: "https://editor.example.test",
+    sources: [source],
+    siteSources: [source],
+    popupSources: [source]
+  });
+  assert.equal(policy({ src: `${source}/kamakura?view=month` }), "retain-origin-popups");
+  assert.equal(policy({ src: "https://niho.life/embed/schedule-other/kamakura" }), "blocked");
+  assert.equal(createExternalFramePolicy({ parentOrigin: "https://editor.example.test", sources: [source], siteSources: [source] })({ src: `${source}/kamakura` }), "retain-origin");
+  assert.equal(createExternalFramePolicy({ parentOrigin: "https://editor.example.test", sources: [source], siteSources: [source], popupSources: ["https://maps.example.test/embed"] })({ src: `${source}/kamakura` }), "retain-origin");
+  assert.equal(createExternalFramePolicy({ parentOrigin: "https://editor.example.test", sources: [source], siteSources: [], popupSources: [source] })({ src: `${source}/kamakura` }), "blocked");
+
+  const presentation = siteWithHostView();
+  presentation.hostViews[0].externalFrames[0].src = `${source}/kamakura?view=month`;
+  const html = renderSitePageToHtml(page("synthetic", "en", "body", [{ type: "component", id: "gallery", block: "Gallery", props: { variant: "wide" } }]), presentation, hostBlocks, { externalFramePolicy: policy });
+  assert.match(html, /sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"/);
+});
+
 test("editing keeps frame sizing active without starting interactive controls", () => {
   const document = page("synthetic", "en", "body", [{ type: "component", id: "gallery-block", block: "Gallery", props: { variant: "wide" } }]);
   const dom = new JSDOM(`<!doctype html><body>${renderSitePageToHtml(document, siteWithHostView(), hostBlocks)}</body>`, { url: "https://editor.example.test" });
