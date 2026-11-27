@@ -8,7 +8,7 @@ import type { KamakuraEditorLoad } from "./kamakura-editor.js";
 import { isKamakuraProject, parseProjectAliasPath, parseProjectEditorPath, projectRoutePath, projectSourceLocale, type ProjectCmsRoute, type ProjectSiteViewId, type ProjectTranslationsRoute } from "./project-routes.mjs";
 import { ManagedSiteCmsWorkspace, SiteCmsWorkspace } from "./site-cms.js";
 import { SiteTranslationsWorkspace } from "./site-translations.js";
-import { EDITOR_PERFORMANCE_EVENT, readEditorPerformance, type EditorPerformanceName } from "../src/editor-performance.js";
+import { EDITOR_PERFORMANCE_EVENT, readEditorPerformance, readEditorReadPerformance, type EditorPerformanceName } from "../src/editor-performance.js";
 import { LazyScreenBoundary } from "./lazy-screen-boundary.js";
 
 type Role = "owner" | "editor";
@@ -478,20 +478,26 @@ function App() {
 
 function EditorPerformancePanel() {
   const [samples, setSamples] = useState(() => readEditorPerformance());
+  const [readSample, setReadSample] = useState(() => readEditorReadPerformance());
   useEffect(() => {
-    const refresh = () => setSamples(readEditorPerformance());
+    const refresh = () => { setSamples(readEditorPerformance()); setReadSample(readEditorReadPerformance()); };
     window.addEventListener(EDITOR_PERFORMANCE_EVENT, refresh);
     refresh();
     return () => window.removeEventListener(EDITOR_PERFORMANCE_EVENT, refresh);
   }, []);
-  const labels: Readonly<Record<EditorPerformanceName, string>> = { load: "読込", "page-switch": "ページ切替", save: "保存" };
+  const labels: Readonly<Record<EditorPerformanceName, string>> = {
+    load: "読込", "page-switch": "ページ切替", "session-build": "セッション構築", render: "描画", save: "保存"
+  };
   return <aside className="studio-editor-performance" aria-label="編集画面の性能計測">
     <details>
       <summary>編集性能（開発者向け）</summary>
       <dl>{(Object.keys(labels) as EditorPerformanceName[]).map((name) => {
         const sample = samples.get(name);
         return <div key={name}><dt>{labels[name]}</dt><dd>{sample ? <>{sample.durationMs.toFixed(1)} ms · {sample.outcome === "success" ? "完了" : "失敗"}</> : "未計測"}</dd></div>;
-      })}</dl>
+      })}{readSample && <div><dt>pages.read</dt><dd>{readSample.source} · {readSample.durationMs.toFixed(1)} ms
+        {readSample.cachedSession ? " · 保存済みセッションを表示" : ""}
+        {readSample.serverTiming.length ? ` · ${readSample.serverTiming.map((item) => `${item.name}${item.durationMs === undefined ? "" : ` ${item.durationMs.toFixed(1)} ms`}`).join(" / ")}` : ""}
+      </dd></div>}</dl>
     </details>
   </aside>;
 }

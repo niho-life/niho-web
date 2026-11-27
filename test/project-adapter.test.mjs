@@ -7,7 +7,7 @@ const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.
 const project = { id: "project_demo", name: "デモ計画", site: { id: "demo", name: "デモサイト", domains: ["https://example.test", "https://www.example.test"] }, members: [] };
 const signal = () => new AbortController().signal;
 function setup(overrides = {}) {
-  const calls = { sites: 0, pages: [], reads: [], prefetches: [], saves: [], prepares: [], releases: [] };
+  const calls = { sites: 0, pages: [], reads: [], saves: [], prepares: [], releases: [] };
   const adapter = {
     listSites: async () => { calls.sites++; return [{ id: "other", name: "別サイト", domains: ["https://other.example.test"] }, project.site]; },
     listPages: async (siteId) => { calls.pages.push(siteId); return [{ siteId, pageId: "home", locale: "ja-JP", title: "ホーム" }]; },
@@ -60,21 +60,28 @@ test("legal read and save preserve compatibility while forwarding identity field
   await assert.rejects(() => wrapped.saveDraft({ target, document: { ...document, siteId: "other" }, expectedVersion: "v1" }, signal()), /文書の対象/);
 });
 
-test("project editor prefetch stays project-scoped, detached and validates the snapshot", async () => {
-  const target = { siteId: "demo", pageId: "home", locale: "ja-JP", ignored: true };
-  const source = { document: { ...fixture, siteId: "demo", pageId: "home", locale: "ja-JP" }, version: "v1", readOnly: { reason: "参照のみ" } };
-  const { calls, wrapped } = setup({ prefetchDocument: async (checked) => { calls.prefetches.push(structuredClone(checked)); return source; } });
-  const snapshot = await wrapped.prefetchDocument(target, signal());
-  assert.equal(snapshot.version, "v1");
-  assert.deepEqual(calls.prefetches, [{ siteId: "demo", pageId: "home", locale: "ja-JP" }]);
-  assert.notEqual(snapshot.document, source.document);
-  assert.deepEqual(snapshot.readOnly, { reason: "参照のみ" });
-  source.document.title = "変更後";
-  assert.notEqual(snapshot.document.title, "変更後");
-  await assert.rejects(() => wrapped.prefetchDocument({ ...target, siteId: "other" }, signal()), /一致/);
-  const foreign = setup({ prefetchDocument: async () => ({ ...source, document: { ...source.document, siteId: "other" } }) }).wrapped;
-  await assert.rejects(() => foreign.prefetchDocument(target, signal()), /文書の対象/);
-  assert.equal("prefetchDocument" in setup().wrapped, false);
+test("conditional document reads forward the ETag and keep modified snapshots project-scoped", async () => {
+  const requests = [], target = { siteId: "demo", pageId: "home", locale: "ja-JP", ignored: "drop" };
+  const controller = new AbortController();
+  const wrapped = setup({
+    readDocumentIfChanged: async (checked, etag, requestSignal) => {
+      requests.push({ target: checked, etag, signal: requestSignal });
+      if (etag) return { status: "not-modified", etag };
+      return { status: "modified", snapshot: { document: { ...fixture, siteId: "demo", pageId: "home", locale: "ja-JP" }, version: "v2", readOnly: { reason: "表示のみ" } }, etag: "etag-2" };
+    }
+  }).wrapped;
+
+  assert.deepEqual(await wrapped.readDocumentIfChanged(target, "etag-1", controller.signal), { status: "not-modified", etag: "etag-1" });
+  const result = await wrapped.readDocumentIfChanged(target, undefined, controller.signal);
+  assert.equal(result.status, "modified");
+  assert.equal(result.etag, "etag-2");
+  assert.equal(result.snapshot.readOnly.reason, "表示のみ");
+  assert.deepEqual(requests.map(({ target: checked, etag }) => ({ target: checked, etag })), [
+    { target: { siteId: "demo", pageId: "home", locale: "ja-JP" }, etag: "etag-1" },
+    { target: { siteId: "demo", pageId: "home", locale: "ja-JP" }, etag: undefined }
+  ]);
+  assert.ok(requests.every(({ signal: forwarded }) => forwarded === controller.signal));
+  await assert.rejects(() => wrapped.readDocumentIfChanged({ ...target, siteId: "other" }, "etag-1", controller.signal), /一致/);
 });
 
 test("presentation stays target-scoped and its dependency version is forwarded to save and release CAS", async () => {
@@ -163,7 +170,7 @@ test("project editor forwards site frame sources without sharing the source arra
 });
 test("optional page and site methods are absent unless the host implements them", () => {
   const { wrapped } = setup();
-  for (const name of ["listFormCompletionPages", "preparePageChange", "applyPageChange", "readSiteSettings", "saveSiteSettings", "breakpointSettings", "localization"]) assert.equal(name in wrapped, false, name);
+  for (const name of ["listFormCompletionPages", "preparePageChange", "applyPageChange", "readDocumentIfChanged", "readSiteSettings", "saveSiteSettings", "breakpointSettings", "localization"]) assert.equal(name in wrapped, false, name);
   const calls = { pageChanges: [], applies: [], settings: [], settingsSaves: [] };
   const partial = setup({ readSiteSettings: pageHostMethods(calls).readSiteSettings }).wrapped;
   assert.equal(typeof partial.readSiteSettings, "function"); assert.equal("saveSiteSettings" in partial, false); assert.equal("preparePageChange" in partial, false);

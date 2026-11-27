@@ -663,7 +663,7 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
     });
     if (path.endsWith("/site.styles.publish")) return Response.json({ status: "published", version: "published-styles-v2", styles: { tokens: {} } });
     if (path.includes("/pages.read/")) {
-      if (request.headers.get("If-None-Match") === '"page-v1"') return new Response(null, { status: 304, headers: { ETag: '"page-v1"' } });
+      if (request.headers.get("If-None-Match") === '"page-v1"') return new Response(null, { status: 304, headers: { ETag: '"page-v1"', "Server-Timing": "page-read;dur=1.2" } });
       if (largeReadMode) {
         let offset = 0;
         return new Response(new ReadableStream({ pull(controller) {
@@ -673,7 +673,7 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
           controller.enqueue(largeSnapshotBytes.slice(offset, end)); offset = end;
         } }), { headers: { "Content-Type": "application/json", ETag: '"page-v1"' } });
       }
-      return new Response(JSON.stringify(commonSnapshot), { headers: { "Content-Type": "application/json", ETag: '"page-v1"' } });
+      return new Response(JSON.stringify(commonSnapshot), { headers: { "Content-Type": "application/json", ETag: '"page-v1"', "Server-Timing": "page-read;dur=12.5" } });
     }
     if (path.endsWith("/pages.catalog")) return Response.json({ version: "registry-v1", pages: [{ siteId: "kamakura", pageId: "community", locale: "ja", title: "地域のコミュニティ", path: "/community", kind: "page", visibility: "public", published: true }] });
     if (path.endsWith("/pages.change-prepare")) {
@@ -733,11 +733,17 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
   assert.equal(editingApiRequest.headers.get("Accept"), snapshotAccept);
   assert.equal(commonPage.headers.get("ETag"), '"page-v1"');
   assert.equal(commonPage.headers.get("Cache-Control"), "private, no-cache");
+  assert.match(commonPage.headers.get("Server-Timing"), /page-read;dur=12\.5/u);
+  assert.match(commonPage.headers.get("Server-Timing"), /auth;dur=/u);
+  assert.match(commonPage.headers.get("Server-Timing"), /d1;dur=/u);
+  assert.match(commonPage.headers.get("Server-Timing"), /upstream;dur=/u);
   assert.deepEqual(await commonPage.json(), commonSnapshot);
   assert.deepEqual((await assertDelegationSignature(editingApiRequest)).scope, ["pages.read"]);
   const unchangedPage = await callEditingApi(`${managementBase}/pages.read/community?locale=ja`, "GET", undefined,
     { Accept: snapshotAccept, "If-None-Match": '"page-v1"' });
   assert.equal(unchangedPage.status, 304);
+  assert.match(unchangedPage.headers.get("Server-Timing"), /page-read;dur=1\.2/u);
+  assert.match(unchangedPage.headers.get("Server-Timing"), /upstream;dur=/u);
   assert.equal(editingApiRequest.headers.get("If-None-Match"), '"page-v1"');
   assert.equal(await unchangedPage.text(), "");
   largeReadMode = true;

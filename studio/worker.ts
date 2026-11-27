@@ -82,6 +82,28 @@ export interface Env {
   readonly STUDIO_ANALYTICS_GOOGLE_SA_JSON?: string;
 }
 
+type StudioRequestTiming = { auth: number; d1: number; upstream: number };
+
+async function measureRequest<T>(timing: StudioRequestTiming, metric: keyof StudioRequestTiming, run: () => Promise<T>): Promise<T> {
+  const startedAt = performance.now();
+  try { return await run(); }
+  finally { timing[metric] += performance.now() - startedAt; }
+}
+
+function withServerTiming(response: Response, timing: StudioRequestTiming): Response {
+  const values = (["auth", "d1", "upstream"] as const)
+    .filter((name) => Number.isFinite(timing[name]) && timing[name] > 0)
+    .map((name) => `${name};dur=${timing[name].toFixed(1)}`);
+  if (!values.length) return response;
+  const headers = new Headers(response.headers);
+  headers.append("Server-Timing", values.join(", "));
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers
+  });
+}
+
 type Role = "owner" | "editor";
 type AccessIdentity = { readonly kind: "human"; readonly subject: string; readonly email: string };
 type ServiceIdentity = { readonly kind: "service"; readonly clientId: string };
@@ -350,6 +372,8 @@ function conditionalJsonHeaders(response: Response): Headers {
   headers.set("Cache-Control", safeEtag ? "private, no-cache" : "no-store");
   headers.set("Vary", "Accept, Cookie, Authorization");
   if (safeEtag) headers.set("ETag", safeEtag);
+  const serverTiming = response.headers.get("Server-Timing");
+  if (serverTiming && serverTiming.length <= 2_048 && !/[\u0000-\u0008\u000a-\u001f\u007f]/u.test(serverTiming)) headers.set("Server-Timing", serverTiming);
   return headers;
 }
 
@@ -1611,7 +1635,7 @@ async function kamakuraEditingDelegationToken(env: Env, identity: BridgeActor, c
   return `${signingInput}.${signature}`;
 }
 
-async function signedKamakuraEditingApiRequest(request: Request, env: Env, identity: BridgeActor, url: URL, action: string, role?: Role, machineScopes?: readonly EditingCapability[]): Promise<Response> {
+async function signedKamakuraEditingApiRequest(request: Request, env: Env, identity: BridgeActor, url: URL, action: string, role?: Role, machineScopes?: readonly EditingCapability[], timing?: StudioRequestTiming): Promise<Response> {
   const supportId = crypto.randomUUID(), operation: KamakuraBridgeOperation = "editing_api";
   const fail = (category: KamakuraBridgeFailureCategory, status?: number) => kamakuraBridgeFailure(supportId, operation, category, status);
   const upstreamSuffix = action.slice(KAMAKURA_EDITING_API_EDITOR_PREFIX.length);
@@ -1697,7 +1721,7 @@ async function signedKamakuraEditingApiRequest(request: Request, env: Env, ident
       ...(request.method === "GET" ? {} : { body: body.slice().buffer })
     });
     let response: Response;
-    try { response = await env.KAMAKURA_SITE.fetch(upstream); }
+    try { response = timing ? await measureRequest(timing, "upstream", () => env.KAMAKURA_SITE.fetch(upstream)) : await env.KAMAKURA_SITE.fetch(upstream); }
     catch { throw fail(controller.signal.aborted ? "service_binding_timeout" : "service_binding_failed"); }
     if (response.status === 304) {
       await response.body?.cancel().catch(() => undefined);
@@ -2679,15 +2703,19 @@ async function kamakuraLocalizationApi(request: Request, env: Env, identity: Acc
   }
 }
 
-async function editorApi(request: Request, env: Env, identity: AccessIdentity, url: URL, projectId: string, siteId: string, action: string): Promise<Response> {
+async function editorApi(request: Request, env: Env, identity: AccessIdentity, url: URL, projectId: string, siteId: string, action: string, timing: StudioRequestTiming): Promise<Response> {
   if (!isKamakuraProject(projectId, siteId)) return json({ error: "not_found" }, 404);
   try {
     if (action === KAMAKURA_EDITING_API_EDITOR_PREFIX || action.startsWith(`${KAMAKURA_EDITING_API_EDITOR_PREFIX}/`)) {
       const path = action.slice(KAMAKURA_EDITING_API_EDITOR_PREFIX.length);
       const needsRole = path === EDITING_DISCOVERY_PATH || EDITING_LOCALIZATION_ROUTE.test(path);
-      const role = needsRole ? await editorRole(env, identity, projectId, siteId) : undefined;
-      if (role === null || role === undefined && !await editorMember(env, identity, projectId, siteId)) return json({ error: "forbidden" }, 403);
-      return await signedKamakuraEditingApiRequest(request, env, identity, url, action, role);
+      const permission = await measureRequest(timing, "d1", async () => {
+        const role = needsRole ? await editorRole(env, identity, projectId, siteId) : undefined;
+        const allowed = needsRole ? role !== null && role !== undefined : await editorMember(env, identity, projectId, siteId);
+        return { role, allowed };
+      });
+      if (!permission.allowed) return json({ error: "forbidden" }, 403);
+      return await signedKamakuraEditingApiRequest(request, env, identity, url, action, permission.role ?? undefined, undefined, timing);
     }
     if (url.href.includes("?")) return json({ error: "invalid_request" }, 400);
     const assetId = /^\/editor\/assets\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/preview$/iu.exec(action)?.[1];
@@ -2773,7 +2801,7 @@ async function siteAnalyticsHttp(request: Request, env: Env, identity: AccessIde
   return json(result.body, result.status);
 }
 
-async function scopedApi(request: Request, env: Env, identity: AccessIdentity, url: URL): Promise<Response | null> {
+async function scopedApi(request: Request, env: Env, identity: AccessIdentity, url: URL, timing: StudioRequestTiming): Promise<Response | null> {
   const match = /^\/api\/projects\/([A-Za-z][A-Za-z0-9_-]{0,79})\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})(\/[^?]*)?$/u.exec(url.pathname);
   if (!match) return null;
   const projectId = match[1]!;
@@ -2802,7 +2830,7 @@ async function scopedApi(request: Request, env: Env, identity: AccessIdentity, u
   if (action === "/cms" || action.startsWith("/cms/")) return kamakuraCmsApi(request, env, identity, url, projectId, siteId, action.slice("/cms".length));
   if (action === "/localization" || action.startsWith("/localization/")) return kamakuraLocalizationApi(request, env, identity, url, projectId, siteId, action.slice("/localization".length));
   if (action.startsWith("/analytics/")) return siteAnalyticsHttp(request, env, identity, url, projectId, siteId, action.slice("/analytics".length));
-  if (action === "/editor" || action.startsWith("/editor/")) return editorApi(request, env, identity, url, projectId, siteId, action);
+  if (action === "/editor" || action.startsWith("/editor/")) return editorApi(request, env, identity, url, projectId, siteId, action, timing);
   if (action === "/editor-staging" || action.startsWith("/editor-staging/")) return json({ error: "not_found" }, 404);
   if (request.method === "GET") {
     if (action === "/dashboard") return dashboard(env, identity, projectId, siteId);
@@ -2850,46 +2878,46 @@ const KAMAKURA_MACHINE_OPERATIONS: Readonly<Record<string, EditingCapability>> =
   "cms.operation-status": "cms.read"
 };
 
-async function kamakuraMachineEditingApi(request: Request, env: Env, url: URL, identity: ServiceIdentity): Promise<Response> {
+async function kamakuraMachineEditingApi(request: Request, env: Env, url: URL, identity: ServiceIdentity, timing: StudioRequestTiming): Promise<Response> {
   const suffix = url.pathname.slice(KAMAKURA_EDITING_API_PATH_PREFIX.length);
   const discovery = suffix === EDITING_DISCOVERY_PATH;
   const operation = /^\/sites\/kamakura\/operations\/([^/]+)/u.exec(suffix)?.[1];
   const capability = operation && Object.hasOwn(KAMAKURA_MACHINE_OPERATIONS, operation) ? KAMAKURA_MACHINE_OPERATIONS[operation] : undefined;
   if (!discovery && !capability) return json({ error: "not_found" }, 404);
   const scope = [identity.clientId, KAMAKURA_EDITOR_PROJECT_ID, KAMAKURA_EDITOR_SITE_ID] as const;
-  let capabilities: readonly EditingCapability[];
-  if (capability === undefined) {
-    const grants = await env.DB.prepare(`SELECT g.capability ${ACTIVE_CLI_GRANTS} ORDER BY g.capability`)
-      .bind(...scope).all<{ capability: EditingCapability }>();
-    const supported = new Set(Object.values(KAMAKURA_MACHINE_OPERATIONS));
-    capabilities = (grants.results ?? []).map((grant) => grant.capability).filter((grant) => supported.has(grant));
-    if (capabilities.length === 0) return json({ error: "forbidden" }, 403);
-  } else {
+  const capabilities = await measureRequest(timing, "d1", async (): Promise<readonly EditingCapability[] | null> => {
+    if (capability === undefined) {
+      const grants = await env.DB.prepare(`SELECT g.capability ${ACTIVE_CLI_GRANTS} ORDER BY g.capability`)
+        .bind(...scope).all<{ capability: EditingCapability }>();
+      const supported = new Set(Object.values(KAMAKURA_MACHINE_OPERATIONS));
+      const result = (grants.results ?? []).map((grant) => grant.capability).filter((grant) => supported.has(grant));
+      return result.length ? result : null;
+    }
     const grant = await env.DB.prepare(`SELECT 1 AS allowed ${ACTIVE_CLI_GRANTS} AND g.capability = ?4 LIMIT 1`)
       .bind(...scope, capability).first<{ allowed: number }>();
-    if (grant?.allowed !== 1) return json({ error: "forbidden" }, 403);
-    capabilities = [capability];
-  }
+    return grant?.allowed === 1 ? [capability] : null;
+  });
+  if (!capabilities) return json({ error: "forbidden" }, 403);
 
   const actor: CliActor = {
     kind: "cli", subject: `${CLI_SUBJECT_PREFIX}${identity.clientId}`,
     email: `cli-${identity.clientId}@studio.invalid`, requestId: crypto.randomUUID()
   };
   try {
-    return await signedKamakuraEditingApiRequest(request, env, actor, url, `${KAMAKURA_EDITING_API_EDITOR_PREFIX}${suffix}`, undefined, capabilities);
+    return await signedKamakuraEditingApiRequest(request, env, actor, url, `${KAMAKURA_EDITING_API_EDITOR_PREFIX}${suffix}`, undefined, capabilities, timing);
   } catch (error) {
     if (error instanceof AuthenticationError) return json({ error: "invalid_request" }, 400);
     throw error;
   }
 }
 
-async function studioEditingApi(request: Request, env: Env, url: URL): Promise<Response> {
+async function studioEditingApi(request: Request, env: Env, url: URL, timing: StudioRequestTiming): Promise<Response> {
   const match = /^\/api\/edit\/(v1|v2)\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/(capabilities|operations\/((?:cms|pages)\.[^?]+))$/u.exec(url.pathname);
   if (!match) return json({ error: "not_found" }, 404);
   let identity: AccessIdentity | ServiceIdentity;
   const accessToken = request.headers.get("cf-access-token");
   try {
-    identity = await authenticate(request, env, accessToken ?? undefined);
+    identity = await measureRequest(timing, "auth", () => authenticate(request, env, accessToken ?? undefined));
     if (accessToken !== null && identity.kind !== "human") throw new AuthenticationError("wrong Access identity for route");
   } catch (error) {
     if (error instanceof AuthenticationError) return json({ error: "authentication_required" }, 401);
@@ -2897,7 +2925,7 @@ async function studioEditingApi(request: Request, env: Env, url: URL): Promise<R
   }
   const [, version, siteId, path, operation] = match;
   if (version === "v1" && siteId === KAMAKURA_EDITOR_SITE_ID && identity.kind === "service") {
-    return kamakuraMachineEditingApi(request, env, url, identity);
+    return kamakuraMachineEditingApi(request, env, url, identity, timing);
   }
   if (!env.CMS_OBJECTS) return json({ error: "not_found" }, 404);
   const registration = await env.DB.prepare(`SELECT s.project_id FROM sites AS s JOIN managed_sites AS ms ON ms.site_id = s.id WHERE s.id = ?1`)
@@ -2936,7 +2964,7 @@ async function studioEditingApi(request: Request, env: Env, url: URL): Promise<R
   return managedCmsApi(request, store, scope, operation ?? "discover", version === "v2" ? 2 : 1);
 }
 
-async function handle(request: Request, env: Env): Promise<Response> {
+async function handle(request: Request, env: Env, timing: StudioRequestTiming): Promise<Response> {
   const url = new URL(request.url);
   const configuredPublicOrigin = publicSitesOrigin(env.PUBLIC_SITES_ORIGIN);
   if (configuredPublicOrigin !== null && url.origin === configuredPublicOrigin) {
@@ -2948,11 +2976,11 @@ async function handle(request: Request, env: Env): Promise<Response> {
     if (!env.CMS_OBJECTS) return json({ error: "not_found" }, 404);
     return managedCmsDelivery(request, new CmsStore(env.DB, env.CMS_OBJECTS), env.CMS_DELIVERY_MASTER_KEY);
   }
-  if (url.pathname.startsWith("/api/edit/")) return studioEditingApi(request, env, url);
+  if (url.pathname.startsWith("/api/edit/")) return studioEditingApi(request, env, url, timing);
   const isApi = url.pathname === "/api" || url.pathname.startsWith("/api/");
   let identity: AccessIdentity;
   try {
-    const authenticated = await authenticate(request, env);
+    const authenticated = await measureRequest(timing, "auth", () => authenticate(request, env));
     if (authenticated.kind !== "human") throw new AuthenticationError("human Access identity required");
     identity = authenticated;
   } catch (error) {
@@ -2972,7 +3000,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
       }
       return json({ error: "method_not_allowed" }, 405);
     }
-    const scoped = await scopedApi(request, env, identity, url);
+    const scoped = await scopedApi(request, env, identity, url, timing);
     if (scoped) return scoped;
     return json({ error: request.method === "GET" ? "not_found" : "method_not_allowed" }, request.method === "GET" ? 404 : 405);
   }
@@ -3044,12 +3072,15 @@ export default {
   },
   async fetch(request: Request, env: Env): Promise<Response> {
     reportConfiguration(env);
-    try { return await handle(request, env); }
+    const timing: StudioRequestTiming = { auth: 0, d1: 0, upstream: 0 };
+    try { return withServerTiming(await handle(request, env, timing), timing); }
     catch (error) {
-      if (error instanceof KamakuraBridgeFailureError) return kamakuraBridgeErrorResponse(error);
+      if (error instanceof KamakuraBridgeFailureError) return withServerTiming(kamakuraBridgeErrorResponse(error), timing);
       console.error("NIHO Studio request failed", error instanceof Error ? error.name : "UnknownError");
-      if (error instanceof KamakuraCatalogContractError) return json({ error: KAMAKURA_CATALOG_CONTRACT_ERROR_CODE }, KAMAKURA_CATALOG_CONTRACT_ERROR_STATUS);
-      return new URL(request.url).pathname.startsWith("/api/") ? json({ error: "service_unavailable" }, 503) : htmlError("一時的に利用できません。時間をおいて再度お試しください。", 503);
+      const response = error instanceof KamakuraCatalogContractError
+        ? json({ error: KAMAKURA_CATALOG_CONTRACT_ERROR_CODE }, KAMAKURA_CATALOG_CONTRACT_ERROR_STATUS)
+        : new URL(request.url).pathname.startsWith("/api/") ? json({ error: "service_unavailable" }, 503) : htmlError("一時的に利用できません。時間をおいて再度お試しください。", 503);
+      return withServerTiming(response, timing);
     }
   }
 };

@@ -99,7 +99,7 @@ Studio の鎌倉エディタは初期表示に editor catalog の一覧を使い
 
 `assets.*` は素材の安定IDを操作します。配信URLは `assets.resolve` の応答に限って返し、ページ文書へは保存しません。一覧・使用先・解決は `assets.read`、メタデータ更新は `assets.edit`、一時アップロード許可の発行は `assets.upload`、削除と復元は `assets.delete` を個別に要求します。更新・削除・復元は `expectedVersion` をホストが比較します。`assets.upload-intent` は画像本体を受け取らず、短命の一回限りtokenを返します。クライアントは本体を `PUT` する前に、URLのHTTPS originがAPI originか、明示的に信頼設定したupload originと一致することを確認し、tokenをそのorigin以外へ送ってはいけません。ホストは実データの形式・サイズ・内容を再検査し、操作主体と結果を監査記録へ結び付けます。
 
-pages.read と pages.catalog は version から生成する opaque な ETag を返します。pages.read の tag は文書・components・presentation の各 versionと編集状態の応答形式を含み、pages.catalog は catalog version を使います。再読込は If-None-Match を送り、同じ版ならホストが認証・権限を毎回確認した後に本文なしの304を返します。200と304には Cache-Control: private, no-cache と Vary: Authorization, Cookie（pages.read は Accept も）を設定します。ホストは応答内容が変わるとき version も更新してください。共通clientはETagを受け取った読み取りを保持し、返却値とキャッシュを分離して、304では前回検証済みの値を返します。
+pages.read と pages.catalog は version から生成する opaque な ETag を返します。pages.read の tag は文書・components・presentation の各 versionと編集状態の応答形式を含み、pages.catalog は catalog version を使います。同じ版ならホストは認証・権限を毎回確認した後に本文なしの304を返します。200と304には Cache-Control: private, no-cache と Vary: Authorization, Cookie（pages.read は Accept も）を設定します。ホストは応答内容が変わるとき version も更新してください。`EditingApiClient.readIfChanged(target, etag)` は呼び出し側からETagを受け取り、200のsnapshotまたは304の状態を返します。clientはページ本文を独自にキャッシュせず、GUIは未編集のeditor sessionとETagを同じページキャッシュへ置きます。
 
 ## ページと CMS の結び付け
 
