@@ -12,6 +12,7 @@ import {
   parseKamakuraCmsListConflict, parseKamakuraCmsRemoved, parseKamakuraCmsUploadIntent, parseKamakuraCmsUploadResult,
   type KamakuraCmsItemStatus
 } from "./kamakura-cms-contract.js";
+import { kamakuraUploadOrigin } from "./kamakura-upload-origin.js";
 
 /**
  * 鎌倉サイトの CMS を Studio のコレクション画面（CollectionWorkspace）で編集する adapter。
@@ -25,6 +26,8 @@ export type KamakuraCmsAdapterOptions = {
   readonly commonApi: EditingApiClient;
   /** CMS 画像・gallery と素材ライブラリを同じ安定 ID で扱う。 */
   readonly assetLibrary?: AssetLibraryAdapter;
+  /** Studio Worker がページへ渡した、直接アップロード先の環境別 origin。 */
+  readonly uploadOrigin?: string;
 };
 
 /** BFF・アップロード先の失敗。message に内部の詳細を入れない。supportId は BFF が返したときだけ。 */
@@ -130,6 +133,7 @@ export function createKamakuraCmsAdapter(options: KamakuraCmsAdapterOptions): Co
   const siteOrigin = httpsOrigin(options.siteOrigin);
   const commonApi = options.commonApi;
   const assetLibrary = options.assetLibrary;
+  const uploadOrigin = options.uploadOrigin ?? kamakuraUploadOrigin();
   const resolvedImageUrls = new Map<string, string>();
   const commonCmsError = (error: unknown): "forbidden" | "not_found" | "invalid" | null => {
     if (!(error instanceof EditingApiClientError)) return null;
@@ -515,7 +519,7 @@ export function createKamakuraCmsAdapter(options: KamakuraCmsAdapterOptions): Co
       if (reply.status === 400 || reply.status === 422) return { status: "rejected", reason: "invalid" };
       if (reply.status !== 201) failure(reply);
       // 行き先は鎌倉の Worker の /internal/studio/cms-upload/<uploadId> だけ（parser が origin とパスを確かめる）。
-      const intent = parseKamakuraCmsUploadIntent(reply.body);
+      const intent = parseKamakuraCmsUploadIntent(reply.body, uploadOrigin);
       if (signal.aborted) throw abortError();
       let response: Response;
       try {

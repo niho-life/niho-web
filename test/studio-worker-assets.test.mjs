@@ -40,7 +40,7 @@ test("Kamakura asset BFF re-checks membership, validates every body, signs upstr
     ACCESS_AUDIENCE: auth.audience,
     KAMAKURA_STUDIO_BRIDGE_SECRET: secret,
     DB: { prepare(query) { return { bind(...values) { this.values = values; return this; }, async first() { const role = roles.get(`${this.values[1]}/${this.values[2]}`); return role && (!/m\.role = 'owner'/u.test(query) || role === "owner") ? { allowed: 1 } : null; } }; } },
-    ASSETS: { async fetch() { return new Response('<div id="root"></div>', { headers: { "Content-Type": "text/html" } }); } },
+    ASSETS: { async fetch() { return new Response('<!doctype html><html><head></head><body><div id="root"></div></body></html>', { headers: { "Content-Type": "text/html" } }); } },
     KAMAKURA_SITE: { async fetch(request) {
       const body = await request.text();
       calls.push({ method: request.method, path: new URL(request.url).pathname, headers: Object.fromEntries(request.headers), body });
@@ -206,6 +206,7 @@ test("Kamakura asset BFF re-checks membership, validates every body, signs upstr
   const csp = page.headers.get("Content-Security-Policy");
   assert.match(csp, /img-src 'self' https:;/u);
   assert.match(csp, /connect-src 'self' https:\/\/next-kamakura\.niho\.life https:\/\/studio-upload-preview\.example\.test;/u);
+  assert.match(await page.text(), /<meta name="niho-studio-upload-origin" content="https:\/\/studio-upload-preview\.example\.test">/u);
   env.STUDIO_PREVIEW_UPLOAD_ORIGIN = "http://untrusted.example";
   const unsafeConfigPage = await worker.fetch(new Request(`${STUDIO}/projects/kamakura-site/admin/editor`, { headers: { "Cf-Access-Jwt-Assertion": auth.jwt } }), env);
   assert.doesNotMatch(unsafeConfigPage.headers.get("Content-Security-Policy"), /untrusted\.example/u);

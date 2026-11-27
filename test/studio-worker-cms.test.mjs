@@ -42,7 +42,7 @@ function harness(auth, worker) {
     ACCESS_AUDIENCE: auth.audience,
     KAMAKURA_STUDIO_BRIDGE_SECRET: secret,
     DB: { prepare(query) { return { bind(...values) { this.values = values; return this; }, async first() { const role = roles.get(`${this.values[1]}/${this.values[2]}`); return role && (!/m\.role = 'owner'/u.test(query) || role === "owner") ? { allowed: 1 } : null; } }; } },
-    ASSETS: { async fetch() { return new Response('<div id="root"></div>', { headers: { "Content-Type": "text/html" } }); } },
+    ASSETS: { async fetch() { return new Response('<!doctype html><html><head></head><body><div id="root"></div></body></html>', { headers: { "Content-Type": "text/html" } }); } },
     KAMAKURA_SITE: { async fetch(request) {
       const body = await request.text();
       const call = { method: request.method, path: new URL(request.url).pathname, search: new URL(request.url).search, headers: Object.fromEntries(request.headers), body, signal: request.signal };

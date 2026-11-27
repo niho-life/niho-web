@@ -62,7 +62,7 @@ function harness(auth, worker) {
       if (/SELECT m\.role AS role/u.test(query)) return { role };
       return !/m\.role = 'owner'/u.test(query) || role === "owner" ? { allowed: 1 } : null;
     } }; } },
-    ASSETS: { async fetch() { return new Response('<div id="root"></div>', { headers: { "Content-Type": "text/html" } }); } },
+    ASSETS: { async fetch() { return new Response('<!doctype html><html><head></head><body><div id="root"></div></body></html>', { headers: { "Content-Type": "text/html" } }); } },
     KAMAKURA_SITE: { async fetch(request) {
       const body = await request.text();
       const call = { method: request.method, path: new URL(request.url).pathname, search: new URL(request.url).search, headers: Object.fromEntries(request.headers), body, signal: request.signal };

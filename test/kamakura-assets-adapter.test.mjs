@@ -187,9 +187,10 @@ test("Kamakura Studio prefers the shared editing API for asset reads, resolution
   assert.ok(requests.every((request) => request.credentials === "same-origin" && request.authorization === null));
 });
 
-test("Kamakura Studio gets a shared API upload intent then sends the one-time token only to its fixed origin", async (t) => {
+test("Kamakura Studio accepts its configured Preview upload origin and sends the one-time token only there", async (t) => {
   const { createKamakuraAssetLibrary } = await loadKamakuraAssetLibrary();
-  const assetId = UUID, intentUrl = `https://next-kamakura.niho.life/internal/studio/asset-upload/${assetId}`;
+  const uploadOrigin = "https://studio-upload-preview.example.test";
+  const assetId = UUID, intentUrl = `${uploadOrigin}/internal/studio/asset-upload/${assetId}`;
   const intentPath = "https://studio.example/api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/operations/assets.upload-intent";
   const file = new File([new Uint8Array([1, 2, 3])], "sea.png", { type: "image/png" });
   let calls = 0;
@@ -202,7 +203,7 @@ test("Kamakura Studio gets a shared API upload intent then sends the one-time to
     }
     return jsonResponse({ asset: row("kamakura-upload", assetId, { name: "sea.png", mimeType: "image/png", bytes: 3 }) }, 201);
   });
-  const adapter = createKamakuraAssetLibrary("https://studio.example");
+  const adapter = createKamakuraAssetLibrary("https://studio.example", uploadOrigin);
   const result = await adapter.uploadAsset({ siteId: "kamakura", file, folderId: null, name: "sea.png", mimeType: "image/png", bytes: 3 }, signal());
   assert.equal(result.status, "uploaded");
   assert.equal(result.asset.id, assetId);

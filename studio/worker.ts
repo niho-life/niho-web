@@ -2714,6 +2714,23 @@ const VERSIONED_FONT_PATH = /^\/assets\/fonts\/(?:[a-z0-9-]+-\d+\.\d+\.\d+\/[a-z
 const VERSIONED_CODE_ASSET_PATH = /^\/assets\/(?:app-[0-9a-f]{12}\.js|(?:studio|project-view|collection|localization)-[0-9a-f]{12}\.css|chunks\/[A-Za-z0-9_-]+-[A-Za-z0-9_-]{8}\.js)$/u;
 const VERSIONED_FONT_CACHE = "private, max-age=31536000, immutable";
 
+async function withStudioUploadOriginMeta(response: Response, uploadOrigin: string | undefined): Promise<Response> {
+  const contentType = response.headers.get("Content-Type")?.split(";", 1)[0]?.trim().toLowerCase();
+  if (!uploadOrigin || response.status !== 200 || contentType !== "text/html") return response;
+  const html = await response.text();
+  const meta = `<meta name="niho-studio-upload-origin" content="${uploadOrigin}">`;
+  const head = /<head\b[^>]*>/iu;
+  let body = html.replace(head, (tag) => `${tag}${meta}`);
+  if (body === html) body = html.replace(/<html\b[^>]*>/iu, (tag) => `${tag}<head>${meta}</head>`);
+  if (body === html) return new Response(html, { status: response.status, statusText: response.statusText, headers: response.headers });
+  const headers = new Headers(response.headers);
+  headers.delete("Content-Length");
+  headers.delete("Content-Encoding");
+  headers.delete("Content-MD5");
+  headers.delete("ETag");
+  return new Response(body, { status: response.status, statusText: response.statusText, headers });
+}
+
 function withStaticSecurity(response: Response, editor = false, connectOrigins: readonly string[] = [], fontSources: readonly string[] = [], scriptSources: readonly string[] = [], frameSources: readonly string[] = []): Response {
   const headers = new Headers(response.headers);
   headers.set("Cache-Control", "no-store");
@@ -2987,7 +3004,11 @@ async function handle(request: Request, env: Env): Promise<Response> {
         : [...new Set([KAMAKURA_CMS_UPLOAD_ORIGIN, KAMAKURA_LOCALIZATION_UPLOAD_ORIGIN])]
       : [];
     const dashboardFrames = admin && kamakuraDashboard ? [KAMAKURA_LOCALIZATION_PREVIEW_ORIGIN, KAMAKURA_EDITING_API_ORIGIN] : [];
-    return withStaticSecurity(await env.ASSETS.fetch(new Request(indexUrl, { method: request.method, headers: request.headers })), isEditor,
+    const page = await env.ASSETS.fetch(new Request(indexUrl, { method: request.method, headers: request.headers }));
+    const pageWithUploadOrigin = request.method === "GET" && (kamakuraEditor || kamakuraDashboard)
+      ? await withStudioUploadOriginMeta(page, previewUploadOrigin)
+      : page;
+    return withStaticSecurity(pageWithUploadOrigin, isEditor,
       kamakuraEditor ? [KAMAKURA_EDITOR_UPSTREAM_ORIGIN, ...(previewUploadOrigin ? [previewUploadOrigin] : [])] : dashboardConnect,
       kamakuraEditor ? [`${KAMAKURA_MEDIA_ORIGIN}/niho-web/fonts/v1/`] : [],
       kamakuraEditor ? ["https://www.instagram.com/embed.js"] : [], kamakuraEditor ? ["https:"] : dashboardFrames);

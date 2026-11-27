@@ -256,14 +256,16 @@ test("CMS adapter: 英語公開の raw page ID を厳密に検証し、人が読
 
 test("CMS adapter: 画像は intent の URL を確かめてから credentials なしで直接 PUT し、拒否は理由つきで返す", async (t) => {
   const { createKamakuraCmsAdapter } = await loadAdapter();
+  const uploadOrigin = "https://studio-upload-preview.example.test";
+  const uploadUrl = `${uploadOrigin}/internal/studio/cms-upload/${UUID}`;
   const file = new File([new Uint8Array(32)], "朝の\n海.png", { type: "image/png" });
-  let intentReply = () => jsonResponse({ uploadUrl: UPLOAD_URL, uploadToken: "token.value", uploadId: UUID }, 201);
+  let intentReply = () => jsonResponse({ uploadUrl, uploadToken: "token.value", uploadId: UUID }, 201);
   let putReply = () => jsonResponse({ url: "https://kamakura-media.niho.life/uploads/2026/10/aaaaaaaaaaaaaaaa.png", width: 1200, height: 800 }, 201);
   const calls = fakeBff(t, {
     "POST /uploads/intent": (body) => intentReply(body),
-    [`PUT ${UPLOAD_URL}`]: () => putReply()
+    [`PUT ${uploadUrl}`]: () => putReply()
   });
-  const adapter = createKamakuraCmsAdapter({ siteOrigin: SITE, commonApi: { readCmsItem: async () => item() } });
+  const adapter = createKamakuraCmsAdapter({ siteOrigin: SITE, uploadOrigin, commonApi: { readCmsItem: async () => item() } });
 
   const uploaded = parseCollectionUploadResult(await adapter.uploadImage({ collectionId: "posts", file }, signal()));
   assert.deepEqual(uploaded, { status: "uploaded", url: "https://kamakura-media.niho.life/uploads/2026/10/aaaaaaaaaaaaaaaa.png", width: 1200, height: 800 });
@@ -280,16 +282,16 @@ test("CMS adapter: 画像は intent の URL を確かめてから credentials �
   for (const bad of [
     { uploadUrl: `https://evil.example/internal/studio/cms-upload/${UUID}`, uploadToken: "t", uploadId: UUID },
     { uploadUrl: `http://next-kamakura.niho.life/internal/studio/cms-upload/${UUID}`, uploadToken: "t", uploadId: UUID },
-    { uploadUrl: `${UPLOAD_URL}#x`, uploadToken: "t", uploadId: UUID },
-    { uploadUrl: UPLOAD_URL, uploadToken: "t", uploadId: "123e4567-e89b-42d3-a456-426614174001" },
-    { uploadUrl: UPLOAD_URL, uploadToken: "t", uploadId: UUID, extra: true }
+    { uploadUrl: `${uploadUrl}#x`, uploadToken: "t", uploadId: UUID },
+    { uploadUrl, uploadToken: "t", uploadId: "123e4567-e89b-42d3-a456-426614174001" },
+    { uploadUrl, uploadToken: "t", uploadId: UUID, extra: true }
   ]) {
     intentReply = () => jsonResponse(bad, 201);
     const before = calls.length;
     await assert.rejects(adapter.uploadImage({ collectionId: "posts", file }, signal()));
     assert.equal(calls.length, before + 1, "intent だけ呼び、PUT しない");
   }
-  intentReply = () => jsonResponse({ uploadUrl: UPLOAD_URL, uploadToken: "token.value", uploadId: UUID }, 201);
+  intentReply = () => jsonResponse({ uploadUrl, uploadToken: "token.value", uploadId: UUID }, 201);
   for (const url of ["https://cdn.example.test/uploads/a.png", "https://kamakura-media.niho.life/other/a.png", "https://kamakura-media.niho.life/uploads/a.png?x=1"]) {
     putReply = () => jsonResponse({ url, width: 1, height: 1 }, 201);
     await assert.rejects(adapter.uploadImage({ collectionId: "posts", file }, signal()));
@@ -304,7 +306,7 @@ test("CMS adapter: 画像は intent の URL を確かめてから credentials �
     intentReply = () => jsonResponse({ error: "x" }, status);
     assert.deepEqual(await adapter.uploadImage({ collectionId: "posts", file }, signal()), { status: "rejected", reason });
   }
-  intentReply = () => jsonResponse({ uploadUrl: UPLOAD_URL, uploadToken: "token.value", uploadId: UUID }, 201);
+  intentReply = () => jsonResponse({ uploadUrl, uploadToken: "token.value", uploadId: UUID }, 201);
   for (const [status, reason] of [[413, "size"], [415, "type"]]) {
     putReply = () => jsonResponse({ error: "x" }, status);
     assert.deepEqual(await adapter.uploadImage({ collectionId: "posts", file }, signal()), { status: "rejected", reason });

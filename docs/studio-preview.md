@@ -2,7 +2,7 @@
 
 Kamakura Studio Preview で素材、CMS画像、翻訳画像を直接アップロードするときは、Studio Worker・Kamakura API Worker・upload専用WorkerをPreview用に分けます。ProductionのWorker PreviewはService Binding先がProductionになるため、この分離には使いません。[Workers Previewsのresource isolation](https://developers.cloudflare.com/workers/previews/resources/)を参照してください。
 
-Studio Preview Workerには `STUDIO_PREVIEW_UPLOAD_ORIGIN` を設定します。値はupload専用Workerの正確なHTTPS originです。Studioはこのoriginだけをアップロード応答の許可先として検証し、鎌倉の編集画面とCMS Dashboardの `connect-src` に反映します。PreviewのCMS DashboardからProductionのupload originへは接続を許可しません。未設定ならProductionのupload契約がそのまま使われます。不正な値は許可先に加わりません。
+Studio Preview Workerには `STUDIO_PREVIEW_UPLOAD_ORIGIN` を設定します。値はupload専用Workerの正確なHTTPS originです。Studioはこのoriginだけをアップロード応答の許可先として検証し、鎌倉の編集画面とCMS DashboardのCSPおよびページ内設定に反映します。3つのブラウザーadapterも同じoriginでupload intentを再検証します。PreviewのCMS DashboardからProductionのupload originへは接続を許可しません。未設定ならProductionのupload契約がそのまま使われます。不正な値は許可先に加わりません。
 
 Kamakura Preview Workerとupload専用Workerには同じPreview upload originを設定し、専用の非公開R2へ接続します。upload専用Workerは素材・CMS・翻訳画像の3つの直接PUT経路だけを公開します。各経路はStudio origin、短期・一回限りのupload token、Cookieを使わないことを検証します。Browser uploadにCloudflare Access cookieは使いません。
 
