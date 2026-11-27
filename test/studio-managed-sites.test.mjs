@@ -1104,6 +1104,8 @@ testWithD1("Studio Editing API publishes one time and exposes the same revision 
 testWithD1("site publication uses saved drafts only for the selected pages and switches the manifest once", async (t) => {
   const h = await fixture(t);
   const site = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Shared release", slug: "shared-release", locale: "ja" }), 201);
+  const imageOrigin = "https://kamakura-media.niho.life";
+  await setFixturePublicPolicy(h, site, { frameOrigins: [], resourceOrigins: [imageOrigin] });
   const editor = "/api/projects/" + site.projectId + "/sites/" + site.siteId + "/editor";
   const operations = "/api/edit/v1/sites/" + site.siteId + "/operations/";
   const admin = (method, path, input) => h.send(MANAGEMENT_ORIGIN, method, operations + path, input);
@@ -1117,6 +1119,13 @@ testWithD1("site publication uses saved drafts only for the selected pages and s
   const switches = () => h.sqlite.prepare("SELECT count(*) AS count FROM publish_switches").get().count;
   const changes = () => admin("GET", "site.publication-changes").then((response) => body(response, 200));
   const publish = async (scope, fields = {}) => body(await admin("POST", "site.publish", { expectedVersion: (await changes()).version, scope, ...fields }), 200);
+  const homeDraft = await body(await admin("GET", "pages.read/home?locale=ja"), 200);
+  const homeWithImages = structuredClone(homeDraft.document);
+  homeWithImages.body.push(
+    { type: "element", id: "hero-image", tag: "img", attrs: { src: `${imageOrigin}/uploads/hero.webp`, alt: "Fixture hero" }, children: [] },
+    { type: "element", id: "below-fold-image", tag: "img", attrs: { src: `${imageOrigin}/uploads/below-fold.webp`, alt: "Fixture detail" }, children: [] }
+  );
+  await body(await admin("PUT", "pages.save/home?locale=ja", { expectedVersion: homeDraft.version, document: homeWithImages }), 200);
   const first = await publish("changed");
   assert.equal(first.urls.length, 3);
   assert.equal(switches(), 1);
@@ -1141,6 +1150,26 @@ testWithD1("site publication uses saved drafts only for the selected pages and s
     assert.match(h.objects.get(route.artifactKey), /Shared published description/u);
     assert.doesNotMatch(h.objects.get(route.artifactKey), /New draft/u);
   }
+  const homeRoute = sharedManifest.routes.find(({ path }) => path === "/");
+  assert.ok(homeRoute);
+  const publishedHome = new JSDOM(String(h.objects.get(homeRoute.artifactKey))).window.document;
+  assert.equal(publishedHome.documentElement.lang, "ja");
+  assert.match(publishedHome.head.innerHTML, /<style>html\{font-family:system-ui,-apple-system,BlinkMacSystemFont/u);
+  assert.equal(publishedHome.querySelector('meta[name="description"]')?.content, "Shared published description");
+  assert.equal(publishedHome.querySelector('meta[property="og:title"]')?.content, homeDraft.document.title);
+  assert.equal(publishedHome.querySelector('link[rel="canonical"]')?.href, `${PUBLIC_ORIGIN}/s/shared-release/`);
+  assert.equal(publishedHome.querySelectorAll('link[rel="alternate"][hreflang]').length, 0);
+  assert.ok(publishedHome.querySelector('script[type="application/ld+json"]'));
+  const hero = publishedHome.querySelector('[data-nw-node="hero-image"]');
+  assert.equal(hero?.getAttribute("src"), `${imageOrigin}/cdn-cgi/image/width=auto,format=auto/uploads/hero.webp`);
+  assert.match(hero?.getAttribute("srcset") ?? "", /width=320,format=auto\/uploads\/hero\.webp 320w/u);
+  assert.equal(hero?.getAttribute("sizes"), "100vw");
+  assert.equal(hero?.getAttribute("fetchpriority"), "high");
+  assert.equal(hero?.hasAttribute("loading"), false);
+  const belowFold = publishedHome.querySelector('[data-nw-node="below-fold-image"]');
+  assert.equal(belowFold?.getAttribute("loading"), "lazy");
+  assert.equal(belowFold?.getAttribute("decoding"), "async");
+  assert.match(homeRoute.contentSecurityPolicy, /font-src 'none'/u);
 
   const selected = await publish("pages", { pages: pages.slice(0, 2).map((pageId) => ({ pageId, locale: "ja" })) });
   assert.equal(selected.urls.length, 2);
