@@ -3,6 +3,7 @@ import { createHash, createHmac } from "node:crypto";
 import { test } from "node:test";
 import { build } from "esbuild";
 import { createLocalizationMemory } from "../examples/localization-workspace-memory.mjs";
+import { EDITING_OPERATIONS } from "@niho/web/editing-api";
 
 // 鎌倉の翻訳の BFF（studio/worker.ts の /localization/*）・切替の CSP・bundle の分割を確かめる。
 // 値はすべて架空（実在の原稿・人・内部の key は書かない）。上流の応答の形は W1 のデモ用のメモリの adapter から作る。
@@ -159,7 +160,9 @@ test("共通翻訳 API の BFF は所属と要求を検証し、現在の役割�
 
   const data = await fixtures();
   const pending = { operation: "rollback", stage: "apply", progress: { done: 1, total: 2 }, resumeToken: "resume-1", releaseId: "release1", startedAt: "2026-11-20T00:00:00.000Z", startedBy: null };
-  h.setRespond((call) => call.path.endsWith("localization.release.read") ? Response.json({ ...data.release, pending }) : Response.json({ status: "applying" }));
+  h.setRespond((call) => call.path.endsWith("/capabilities")
+    ? Response.json({ apiVersion: "v1", siteId: "kamakura", operations: EDITING_OPERATIONS.filter(({ id }) => id === "pages.read") })
+    : call.path.endsWith("localization.release.read") ? Response.json({ ...data.release, pending }) : Response.json({ status: "applying" }));
   await expectJson(await h.send("GET", "/capabilities", undefined, { base: COMMON_BASE }), 200);
   const discovery = JSON.parse(Buffer.from(h.calls.at(-1).headers.authorization.split(".")[1], "base64url").toString("utf8")).scope;
   assert.deepEqual(discovery.filter((scope) => scope.startsWith("localization.")), ["localization.read", "localization.edit", "localization.review", "localization.translate"]);
