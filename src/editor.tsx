@@ -86,7 +86,7 @@ const needsPageSave = (session: Session) => {
 };
 function editorSessionFreshness(session: Session): string {
   return JSON.stringify([session.version, session.saved, session.dependencyVersions, session.hasSavedDraft ?? null, session.locks, session.releases,
-    session.readOnly ?? null, session.presentation?.version ?? null, session.publishedSiteStylesVersion ?? null, session.sitePublicationEpoch ?? null, session.englishPublication ?? null, session.cmsBindings ?? null]);
+    session.readOnly ?? null, session.presentation?.version ?? null, session.englishPublication ?? null, session.cmsBindings ?? null]);
 }
 type PagePrefetch = { controller: AbortController; promise: Promise<EditorSessionLoad>; blocks: EditorBlockRegistry; components?: ComponentLibrary; completedAt?: number };
 const PAGE_PREFETCH_MAX_AGE_MS = 10_000;
@@ -1685,15 +1685,10 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     if (!current || current.readOnly || !site || action.current || blocked || siteSettings.dirty || siteSettings.busy || dirty || libraryDirty || masterId || hasInput || targetMode || !localizationReady || current.hasSavedDraft === false || (actionType === "rollback" && !current.releases.some((release) => release.revision === revision))) return;
     setAssetResolveEpoch((value) => value + 1);
     const controller = new AbortController(); action.current = controller; setBusy("公開差分を取得中"); setNotice("");
-    const stylesVersion = current.publishedSiteStylesVersion, sitePublicationEpoch = current.sitePublicationEpoch;
-    if ((stylesVersion === undefined) !== (sitePublicationEpoch === undefined)) {
-      action.current = null; setBusy(""); setNotice("サイト共通スタイルの公開版を確認できません。ページを読み直してから再度お試しください。"); return;
-    }
     // 確認 token を、表示している部品ライブラリの version にも結び付ける。
     const input: EditorReleaseRequest = { target: current.target, expectedVersion: current.version, action: actionType,
       ...(actionType === "rollback" ? { revision } : {}), ...(components && libraryRef.current ? { componentsVersion: libraryRef.current.version } : {}),
-      ...(current.presentation ? { presentationVersion: current.presentation.version } : {}),
-      ...(stylesVersion === undefined ? {} : { siteStylesRevision: { stage: "published" as const, version: stylesVersion }, sitePublicationEpoch }) };
+      ...(current.presentation ? { presentationVersion: current.presentation.version } : {}) };
     try {
       const result = await adapter.prepareRelease(input, controller.signal);
       if (controller.signal.aborted) return;
