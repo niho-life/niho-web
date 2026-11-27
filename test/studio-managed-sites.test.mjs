@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
+import { applyKamakuraSiteImport, prepareKamakuraSiteImport } from "../scripts/import-kamakura-site.mjs";
 import { JSDOM } from "jsdom";
 import { EDITING_OPERATIONS } from "@niho/web/editing-api";
 import { parseLocalizationItemResult, parseLocalizationListResult, parseLocalizationOverviewResult } from "../dist/localization-workspace-model.js";
@@ -2394,4 +2395,159 @@ testWithD1("External CMS delivery links committed events, immutable snapshots an
   await assert.rejects(client.snapshot("ja"), /401/u);
   const audit = h.sqlite.prepare("SELECT operation FROM managed_cms_audit WHERE operation GLOB 'cms.delivery.credential.*' ORDER BY operation").all();
   assert.deepEqual(audit.map(({ operation }) => operation), ["cms.delivery.credential.issued", "cms.delivery.credential.revoked"]);
+});
+
+testWithD1("Kamakura import seeds a noindex verification site and preserves immutable public and draft revisions on retry", async (t) => {
+  const h = await fixture(t, { cms: true }), site = await cmsSite(h, "migration-fixture");
+  const target = { projectId: site.projectId, siteId: site.siteId, verificationOrigin: h.env.PUBLIC_SITES_PREVIEW_ORIGIN };
+  const schema = await site.read("cms.schema.read");
+  const origin = "https://migration-source.example.test", siteId = "fixture-source";
+  const media = Buffer.from("synthetic asset bytes"), contentSha256 = createHash("sha256").update(media).digest("hex");
+  const originalUrl = "https://media.example.test/original.webp", aliasUrl = "https://media.example.test/alias.webp";
+  const assetRef = { provider: "fixture-media", id: "original" }, derivedRef = { provider: "fixture-media", id: "alias" };
+  const refId = "emb_" + "a".repeat(32);
+  const launch = { v: 1, flow: "inquiry", spotId: "example", publicId: "example", launchTokenVersion: 1,
+    parentOrigin: target.verificationOrigin, allowedPathPrefix: "/s/migration-fixture/" };
+  const token = Buffer.from(JSON.stringify(launch)).toString("base64url") + "." + "b".repeat(43);
+  const embedConnections = [{ sourceUrl: origin + "/", refId, src: `https://niho.life/embed/inquiry/example?launchToken=${token}` }];
+  await setFixturePublicPolicy(h, site, { frameOrigins: ["https://niho.life"], resourceOrigins: [] });
+  const document = (pageId, locale, revision, title, body = []) => ({
+    document: { schemaVersion: 1, siteId, pageId, locale, revision, title, tokens: {}, body }
+  });
+  const source = {
+    formatVersion: 1, origin, siteId, locale: "ja",
+    assets: [
+      { source: assetRef, url: originalUrl, aliases: [aliasUrl], width: 10, height: 20, altText: "Fixture", byteLength: media.length, contentSha256 },
+      { source: { provider: "fixture-media", id: "same-bytes" }, url: "https://media.example.test/second.webp",
+        width: null, height: null, altText: "", byteLength: media.length, contentSha256 }
+    ],
+    assetVariants: [{ source: derivedRef, original: assetRef }],
+    pages: [
+      { sourceUrl: origin + "/", sourcePageId: "home-source", path: "/", locale: "ja", visibility: "public",
+        published: document("home-source", "ja", 8, "Published fixture"), draft: {
+          ...document("home-source", "ja", 12, "Current fixture", [
+            { type: "element", id: "link", tag: "a", attrs: { href: origin + "/english?ref=fixture#link" }, children: [{ type: "text", text: "Open" }] },
+            { type: "element", id: "photo", tag: "img", attrs: { src: aliasUrl, alt: "Fixture" }, children: [] },
+            { type: "component", id: "form", block: "KamakuraContactForm", props: {} }
+          ]), sourceBlocks: { KamakuraContactForm: { props: {} } }, replacements: [{ nodeId: "form", kind: "managed-embed", refId }]
+        } },
+      { sourceUrl: origin + "/english", sourcePageId: "english-source", path: "/en", locale: "en", visibility: "private",
+        published: null, draft: document("english-source", "en", 3, "Translation fixture") },
+      { sourceUrl: origin + "/deferred", sourcePageId: "deferred-source", path: "/deferred", locale: "ja", visibility: "public",
+        published: document("deferred-source", "ja", 2, "Prior deferred fixture"), draft: {
+          ...document("deferred-source", "ja", 5, "Deferred fixture", [{ type: "component", id: "cms-list", block: "KamakuraCmsList", props: {} }]),
+          sourceBlocks: { KamakuraCmsList: { props: {} } }
+        } }
+    ],
+    cms: { schema: { ...schema, siteId, collections: schema.collections.map((collection) => collection.id === "posts" ? ({ ...collection, fields: [...collection.fields,
+      { fieldId: "cover", key: "cover", label: "Cover", type: "image", placement: "main" },
+      { fieldId: "related", key: "related", label: "Related", type: "reference", multiple: true, collectionId: "posts", placement: "main" }
+    ] }) : collection) }, items: [{ collectionId: "posts", itemId: "fixture-post", published: { ...values("Published post"), cover: derivedRef, related: ["fixture-related"] },
+      draft: { ...values("Draft post"), cover: aliasUrl, related: ["fixture-related"] }, translations: { targetLocale: "en",
+        published: { title: { value: "Published translation", reviewed: true } }, draft: { title: { value: "Current translation", reviewed: false } }
+      } },
+    { collectionId: "posts", itemId: "fixture-related", published: { ...values("Published related post", "published-related") },
+      draft: { ...values("Draft related post", "draft-related") } }] },
+    redirects: [{ locale: "ja", fromPath: "/old", toPath: "/en" }],
+    scheduled: [{ kind: "page", sourceUrl: origin + "/english", at: "2035-01-01T00:00:00.000Z" }]
+  };
+  const missingReference = structuredClone(source);
+  missingReference.cms.items[0].draft.related = ["missing-source-item"];
+  const missingReferenceBytes = Buffer.from(JSON.stringify(missingReference));
+  const missingReferenceDigest = createHash("sha256").update(missingReferenceBytes).digest("hex");
+  await assert.rejects(() => prepareKamakuraSiteImport(missingReferenceBytes, missingReferenceDigest, target, embedConnections), /missing CMS item mapping/u);
+  const bytes = Buffer.from(JSON.stringify(source)), digest = createHash("sha256").update(bytes).digest("hex");
+  await assert.rejects(() => prepareKamakuraSiteImport(Buffer.concat([bytes, Buffer.from("\n")]), digest, target), /source_checksum_mismatch/);
+  const prepared = await prepareKamakuraSiteImport(bytes, digest, target, embedConnections);
+  const loadAsset = async () => media;
+  await assert.rejects(() => applyKamakuraSiteImport(prepared, MANAGEMENT_ORIGIN, h.ownerToken, h.fetch, async () => Buffer.alloc(media.length)),
+    /source_asset_checksum_mismatch/);
+  const endpoint = `/api/edit/v2/sites/${site.siteId}/operations/site.migration-import`;
+  const begin = (target, options = { cli: true }) => h.send(MANAGEMENT_ORIGIN, "POST", endpoint,
+    { target, sourceDigest: digest, action: "begin", payload: prepared.plan }, options);
+  assert.equal((await begin(target, { cli: true, token: h.otherToken })).status, 403);
+  assert.equal((await begin({ ...target, projectId: "other-project" })).status, 403);
+  assert.equal((await begin({ ...target, verificationOrigin: PUBLIC_ORIGIN })).status, 403);
+  h.sqlite.prepare("UPDATE managed_site_hosts SET noindex = 0 WHERE site_id = ? AND hostname = ?")
+    .run(site.siteId, new URL(target.verificationOrigin).hostname);
+  assert.equal((await begin(target)).status, 403);
+  h.sqlite.prepare("UPDATE managed_site_hosts SET noindex = 1 WHERE site_id = ? AND hostname = ?")
+    .run(site.siteId, new URL(target.verificationOrigin).hostname);
+  assert.equal(h.sqlite.prepare("SELECT count(*) AS n FROM managed_site_imports").get().n, 0);
+
+  await body(await begin(target), 200);
+  const failedMedia = await h.fetch(`${MANAGEMENT_ORIGIN}${endpoint}/${contentSha256}`, {
+    method: "PUT", body: Buffer.alloc(media.length), headers: { "cf-access-token": h.ownerToken, "content-type": "application/octet-stream",
+      "x-import-project": site.projectId, "x-import-verification-origin": target.verificationOrigin, "x-import-source-digest": digest }
+  });
+  await body(failedMedia, 400);
+  assert.equal(h.sqlite.prepare("SELECT count(*) AS n FROM managed_site_import_asset_blobs").get().n, 0);
+  await body(await h.send(MANAGEMENT_ORIGIN, "POST", endpoint,
+    { target, sourceDigest: digest, action: "page", payload: prepared.pages[0] }, { cli: true }), 409);
+
+  let applied = false;
+  const interrupted = async (url, init) => {
+    const response = await h.fetch(url, init);
+    if (!applied && init.method === "POST" && JSON.parse(init.body).action === "page") {
+      applied = true;
+      assert.equal(response.status, 200);
+      throw new Error("synthetic connection loss after commit");
+    }
+    return response;
+  };
+  await assert.rejects(() => applyKamakuraSiteImport(prepared, MANAGEMENT_ORIGIN, h.ownerToken, interrupted, loadAsset), /connection loss/);
+  const result = await applyKamakuraSiteImport(prepared, MANAGEMENT_ORIGIN, h.ownerToken, h.fetch, loadAsset);
+  assert.equal(result.mapping.pages[2].deferred, "cms-block-conversion");
+  assert.doesNotMatch(JSON.stringify(result), /launchToken/u);
+  const archived = JSON.parse(h.objects.get(`sites/${site.siteId}/migration/deferred-pages/${result.planDigest}/${result.mapping.pages[2].pageId}.json`));
+  assert.equal(archived.published.document.title, "Prior deferred fixture");
+  assert.equal(archived.draft.document.body[0].block, "KamakuraCmsList");
+  const snapshot = [...h.objects], counts = (table) => h.sqlite.prepare(`SELECT count(*) AS n FROM ${table}`).get().n;
+  assert.deepEqual(await applyKamakuraSiteImport(prepared, MANAGEMENT_ORIGIN, h.ownerToken, h.fetch, loadAsset), result);
+  assert.deepEqual([...h.objects], snapshot);
+  assert.equal(counts("managed_site_import_resources"), 5);
+  assert.equal(counts("managed_site_import_asset_blobs"), 1);
+  assert.deepEqual(Buffer.from(h.objects.get(`sites/${site.siteId}/migration/assets/${contentSha256}`)), media);
+  assert.equal(counts("managed_embed_connections"), 1);
+  assert.equal(counts("managed_page_versions"), 3);
+  assert.equal(counts("managed_cms_revisions"), 4);
+  assert.equal(counts("managed_page_publications"), 0);
+  assert.equal(counts("managed_cms_releases"), 0);
+  assert.equal(counts("managed_cms_outbox"), 0);
+  assert.equal((await h.send(PUBLIC_ORIGIN, "GET", "/s/migration-fixture/", undefined, { auth: false })).status, 404);
+  const proof = await publishedSiteRequest(new Request(`${target.verificationOrigin}/s/migration-fixture/`), h.env);
+  assert.equal(proof.status, 404);
+  assert.equal(proof.headers.get("X-Robots-Tag"), "noindex, nofollow");
+  const pageSource = h.sqlite.prepare("SELECT document_key FROM managed_page_versions WHERE site_id = ? AND page_id = 'home' ORDER BY revision")
+    .all(site.siteId).map(({ document_key }) => JSON.parse(h.objects.get(document_key)));
+  assert.deepEqual(pageSource.map(({ title }) => title), ["Published fixture", "Current fixture"]);
+  assert.equal(pageSource[1].body[0].attrs.href, "/en?ref=fixture#link");
+  const item = await site.read("cms.items.read", { collectionId: "posts", itemId: result.mapping.cmsItems[0].itemId });
+  assert.equal(item.item.values.title, "Draft post");
+  const importedItem = result.mapping.cmsItems[0];
+  const importedRelated = result.mapping.cmsItems.find(({ sourceItemId }) => sourceItemId === "fixture-related");
+  assert.ok(importedRelated);
+  assert.deepEqual(item.item.values.related, [importedRelated.itemId]);
+  const publishedKey = `sites/${site.siteId}/items/ja/posts/${importedItem.itemId}/${importedItem.publishedRevision}.json`;
+  const publishedItem = JSON.parse(h.objects.get(publishedKey));
+  assert.equal(publishedItem.values.title, "Published post");
+  assert.deepEqual(publishedItem.values.related, [importedRelated.itemId]);
+  const { reference } = result.mapping.assets[0];
+  assert.deepEqual(item.item.values.cover, reference);
+  assert.deepEqual(pageSource[1].body[1].asset, reference);
+  assert.deepEqual(pageSource[1].body[2].props.refId, refId);
+  const qualified = `${reference.provider}:${reference.id}`;
+  const resolved = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `/api/edit/v1/sites/${site.siteId}/operations/assets.resolve`,
+    { references: [reference] }, { cli: true }), 200);
+  assert.deepEqual(resolved.assets[qualified], { src: originalUrl, width: 10, height: 20 });
+  const itemKey = cmsLocalizationItemKey("posts", item.item.itemId);
+  const localization = await site.read("cms.localization.items.read", { itemKey });
+  assert.equal(parseLocalizationItemResult(localization, itemKey).item.units.find(({ label }) => label === "タイトル").value, "Current translation");
+  const importPlan = JSON.parse(h.objects.get(`sites/${site.siteId}/migration/plans/${result.planDigest}.json`));
+  assert.deepEqual(importPlan.scheduled, source.scheduled);
+  const redirects = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `/api/projects/${site.projectId}/sites/${site.siteId}/editor/redirects`), 200);
+  assert.deepEqual(redirects.redirects, source.redirects);
+  await body(await h.send(MANAGEMENT_ORIGIN, "POST", endpoint, {
+    target, sourceDigest: digest, action: "page", payload: { ...prepared.pages[0], visibility: "private" }
+  }, { cli: true }), 409);
 });

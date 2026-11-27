@@ -1,3 +1,4 @@
+import { uniqueAssetReferences } from "../src/assets.js";
 import { parsePageDocument, type PageDocument, type PageNode } from "../src/core.js";
 import { createBlankEmbedRegistry } from "../src/embeds.js";
 import { managedVerificationTags, type ManagedSiteSeoSettings } from "../src/managed-seo-settings.js";
@@ -184,7 +185,8 @@ export async function prepareManagedPageArtifact(input: {
   }, policy);
   const rendered = await renderManagedPage({
     db: store.db, store, document, policy, origin, prefix: publicPrefix, path, alternatePath: path, publicPath,
-    siteName: state.site_name, embeds, siteStyles, includeCandidate: input.isPublic
+    siteName: state.site_name, embeds, siteStyles, assets: await store.migratedPublicAssets(document.siteId, uniqueAssetReferences(document)),
+    includeCandidate: input.isPublic
   });
   const activeRoutes = await store.db.prepare(`SELECT page_id, locale FROM managed_pages
     WHERE site_id = ?1 AND visibility = 'public' AND published_revision IS NOT NULL`)

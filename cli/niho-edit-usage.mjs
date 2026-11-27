@@ -59,6 +59,7 @@ Use --studio with existing cms-* commands for a Studio-native site.
 niho-edit --origin <https-origin> --site <site-id> assets-list [--search <text>] [--kind <kind>] [--provider <provider>] [--limit <number>] [--cursor <cursor>] [--folder-id <id>] [--recent]
 niho-edit --origin <https-origin> --site <site-id> assets-usages <provider> <asset-id>
 niho-edit --origin <https-origin> --site <site-id> assets-resolve --json <references-file|->
+niho-edit --studio --origin <studio-origin> --site <site-id> assets-resolve --json <references-file|->
 niho-edit --origin <https-origin> --site <site-id> assets-update <provider> <asset-id> --json <update-file|->
 niho-edit --origin <https-origin> --site <site-id> assets-upload <file> --mime-type <mime> --provider <provider> [--name <name>] [--folder-id <id>] [--upload-origin <https-origin>]
 niho-edit --origin <https-origin> --site <site-id> assets-delete <provider> <asset-id> --expected-version <version>

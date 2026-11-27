@@ -184,6 +184,26 @@ test("browser recovery store keeps component library copies per scope and site n
   assert.deepEqual([...storage.data.keys()], ["niho-web:recovery:v1:staff%3Ab:library/demo"], "clear() removes this scope's library copies only");
 });
 
+test("clearing recovery fences delayed page and library writes from the previous store", () => {
+  const storage = memoryStorage(), scope = `logout:${crypto.randomUUID()}`, now = () => 1_000_000;
+  const editor = createBrowserRecoveryStore({ scope, storage, now }), logout = createBrowserRecoveryStore({ scope, storage, now });
+  const library = { schemaVersion: 1, siteId: "demo", revision: 1, tokens: {}, components: [] };
+  const libraryEntry = { siteId: "demo", baseVersion: "lib-1", changed: { spare: 1 }, library, updatedAt: new Date(now()).toISOString() };
+  editor.write(entryFor());
+  editor.writeLibrary(libraryEntry);
+  assert.equal(storage.length, 2);
+
+  logout.clear();
+  editor.write(entryFor({ baseVersion: "late-page-write" }));
+  editor.writeLibrary({ ...libraryEntry, baseVersion: "late-library-write" });
+  assert.deepEqual([...storage.data.keys()], [], "pagehide writes from the old editor cannot recreate cleared copies");
+
+  const reauthenticated = createBrowserRecoveryStore({ scope, storage, now });
+  reauthenticated.write(entryFor());
+  reauthenticated.writeLibrary(libraryEntry);
+  assert.equal(storage.length, 2, "a new editor session can save recovery again");
+});
+
 test("browser recovery store tolerates an inaccessible localStorage", () => {
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
   Object.defineProperty(globalThis, "localStorage", { configurable: true, get() { throw new Error("SecurityError"); } });

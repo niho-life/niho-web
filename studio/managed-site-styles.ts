@@ -234,4 +234,3 @@ export function managedSiteStylesAdapter(store: CmsStore, projectId: string): Ed
     }
   };
 }
-

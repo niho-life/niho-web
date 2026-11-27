@@ -34,7 +34,9 @@ SELECT site_id,
        max(created_at)
   FROM managed_page_publications
  WHERE manifest_key IS NOT NULL
-   AND manifest_key GLOB 'managed-sites/' || site_id || '/manifests/*.json'
+   AND substr(manifest_key, 1, length('managed-sites/' || site_id || '/manifests/'))
+       = 'managed-sites/' || site_id || '/manifests/'
+   AND substr(manifest_key, -5) = '.json'
  GROUP BY site_id, manifest_key;
 
 INSERT OR IGNORE INTO managed_site_publication_history (site_id, release_id, manifest_key, created_at)

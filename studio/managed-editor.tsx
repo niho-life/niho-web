@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { StudioPageEditor } from "./editor-performance.js";
+import { parseResolvedAssets } from "../src/assets.js";
 import { parsePageDocument } from "../src/core.js";
 import { cmsId, parseCmsSchema } from "../src/cms-v2-schema.js";
 import { parseCmsPageBindings } from "../src/cms-page-bindings.js";
@@ -116,6 +117,13 @@ export function createManagedEditorAdapter(initial: Catalog, project: Project): 
       const document = parsePageDocument(value.document, managedBlockContracts, { siteStyles: await readDraftStyles(request.target.siteId, signal) });
       if (document.siteId !== request.target.siteId || document.pageId !== request.target.pageId || document.locale !== request.target.locale) throw new Error("履歴の対象が一致しません。");
       return { document };
+    },
+    assetResolver: {
+      async resolveAssets({ siteId, references }, signal) {
+        if (siteId !== project.site.id) throw new Error("別サイトの素材は参照できません。");
+        const value = record(await api(`/api/edit/v1/sites/${encodeURIComponent(siteId)}/operations/assets.resolve`, "POST", { references }, signal));
+        return parseResolvedAssets(value.assets);
+      }
     },
     cmsBindings: {
       async read(input, signal) {

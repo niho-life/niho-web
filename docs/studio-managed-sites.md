@@ -16,6 +16,14 @@ Studio は Project、Site、メンバー、ページの版情報と公開履歴�
 
 Project と Site の ID、ページの版はサーバーが発行する。共有公開 origin は `managed_sites` の登録から Project の表示に反映する。作成後の canonical editor URL は `/projects/{projectId}/sites/{siteId}/editor`。
 
+## メンバー招待とログアウト
+
+owner はメールアドレス、role、期限を指定してメンバーを招待する。招待 URL は作成時だけ返し、D1 には token の SHA-256 hash を保存する。受け取った人は指定のメールアドレスで Cloudflare Access にログインし、招待内容を確認してから明示的に承諾する。preview と accept は token、Project/Site、期限、未使用状態、認証済みメールを検証する。token が有効でも認証メールが招待先と異なる場合は `403 invitation_email_mismatch` を返し、招待先のメールアドレスは応答に含めない。
+
+Studio は招待 URL を読み取った後、token をアドレス欄から除く。アカウント切替では同じ招待へ戻れるよう token をタブ単位の `sessionStorage` に最大10分だけ保持し、Cloudflare Access の logout `returnTo` には含めない。Access JWT、個人情報、招待 token をアプリのログには出さない。
+
+Studio のログアウトは Cloudflare Access のセッションを終了し、同じ Access セッションを使う他のアプリからもログアウトする。ログアウト時に削除するのは本人の端末内にある未保存作業の復旧データだけで、サーバーに保存した下書きと公開済みの内容は維持する。
+
 ## ページ正本と操作
 
 `managed_pages` は編集中の版、公開中の版、公開範囲を保持する。`managed_page_versions` は現在の下書きと公開済みの版の R2 キー、本文バイトの SHA-256、リンク索引を保持する。各版の PageDocument は `CMS_OBJECTS` の `sites/{siteId}/pages/{pageId}/{locale}/{revision}/{version}.json` に条件付き PUT で一度だけ保存する。R2 の保存後に D1 の参照を確定する。読取時はキーと文書が対象版に属すること、および本文の digest を照合する。
@@ -59,7 +67,7 @@ SEO settings の `robotsPolicy: "noindex"` はページの robots meta、`robots
 
 GA4 には計測用に限定した接続先を許可する。標準操作の runtime と NIHO フォームの runtime は別々に必要なページでだけ読み込む。NIHO フォームは iframe 内で送信し、親ページの CSP は `form-action 'none'` を維持する。[ManagedEmbed の保存・公開契約](managed-embed-contract.md)
 
-既存ページの埋め込みとカルーセルを標準描画へ移す手順は [鎌倉専用ブロックの移行](kamakura-block-migration.md) を参照する。
+既存ページの埋め込みとカルーセルを標準描画へ移す手順は [鎌倉専用ブロックの移行](kamakura-block-migration.md)、移行元の版と素材を検証サイトへ保存する手順は [鎌倉サイトの取込](kamakura-site-import.md) を参照する。
 
 ## CLI認証
 

@@ -249,7 +249,7 @@ function normalizeManagedPublicDomain(value: unknown, requestHost: string, publi
   return domain;
 }
 
-async function readJson(request: Request, actor: ManagedActor, maximum: number): Promise<Record<string, unknown> | null> {
+export async function readJson(request: Request, actor: ManagedActor, maximum: number): Promise<Record<string, unknown> | null> {
   if (!actor.cli && (request.headers.get("Origin") !== new URL(request.url).origin || request.headers.get("Sec-Fetch-Site") !== "same-origin")) return null;
   if (request.headers.get("Content-Type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") return null;
   const declared = request.headers.get("Content-Length");
@@ -822,9 +822,12 @@ export function managedPageEditingApi(request: Request, store: CmsStore, project
     validationContext: async () => ({ blocks: managedBlockContracts, siteStyles: await draftStyles() }),
     authenticate: async () => editingActor,
     async authorize(_editingActor, capability, scope) {
-      if (scope.siteId !== siteId || !["pages.read", "pages.edit", "pages.history.read", "pages.publish", "site.settings.read", "site.settings.write"].includes(capability)) return false;
+      if (scope.siteId !== siteId || !["pages.read", "pages.edit", "pages.history.read", "pages.publish", "assets.read", "site.settings.read", "site.settings.write"].includes(capability)) return false;
       actor = await actorFor(capability);
       return actor !== null && !!await managedMemberRegistration(db, actor, projectId, siteId);
+    },
+    async resolveAssets(_editingActor, _siteId, references) {
+      return store.resolveMigratedAssets(siteId, references);
     },
     async readPage(_editingActor, target) {
       const row = await load(target);
