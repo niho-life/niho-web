@@ -33,9 +33,9 @@ niho-edit --studio --origin <studio-origin> --site <site-id> site-public-read
 niho-edit --studio --origin <studio-origin> --site <site-id> site-public-save --json <public-settings-snapshot-file|->
 niho-edit --studio --origin <studio-origin> --site <site-id> site-redirects-read
 niho-edit --studio --origin <studio-origin> --site <site-id> site-redirects-save --json <redirect-snapshot-file|->
-niho-edit --origin <https-origin> --site <site-id> styles read
-niho-edit --origin <https-origin> --site <site-id> styles edit --json <edit-request-file|->
-niho-edit --origin <https-origin> --site <site-id> styles publish --json <publish-request-file|->
+niho-edit [--studio] --origin <https-origin> --site <site-id> styles read
+niho-edit [--studio] --origin <https-origin> --site <site-id> styles edit --json <edit-request-file|->
+niho-edit [--studio] --origin <https-origin> --site <site-id> styles publish --json <publish-request-file|->
 niho-edit [--studio] --origin <https-origin> --site <site-id> pages-catalog
 niho-edit --studio --origin <studio-origin> --site <site-id> page-change --expected-version <version> --json <change-file|->
 niho-edit --studio --origin <studio-origin> --site <site-id> page-embed-register <page-id> --locale <locale> --json <embed-file|->
@@ -97,13 +97,14 @@ Studio 内サイトの GUI 操作と niho-edit --studio の対応
   NIHO フォームの接続                        page-embed-register → apply / save
   独自ドメイン・noindex・許可 origin           site-public-read → site-public-save
   サイト共通 SEO                             site-seo-read → site-seo-save
+  サイト共通スタイル                         styles read / edit / publish
   旧 URL の転送                              site-redirects-read → site-redirects-save
   CMS の項目一覧・作成・編集・公開            cms-list / cms-create / cms-read / cms-save / cms-publish
   CMS のプレビュー・公開予約・取下げ・ごみ箱  cms-v2（操作は cms-discover で確認）
   CMS の定義を編集                           cms-schema / cms-schema-plan / cms-schema-apply
   CMS の翻訳と locale 公開                   localization-* または cms-v2
 
-素材ライブラリとサイト共通スタイルは、Studio 内サイトの GUI では提供していません。
+素材ライブラリは、Studio 内サイトの GUI では提供していません。サイト共通スタイルは、Studio GUI と `niho-edit --studio styles` で共通操作を使います。
 サイト全体と変更ページの一括公開は GUI と CLI に同時に追加予定です。`;
 
 const commandUsageLines = NIHO_EDIT_USAGE.split("\n")

@@ -1,12 +1,14 @@
 import { parsePageDocument, type PageDocument, type PageNode } from "../src/core.js";
 import { createBlankEmbedRegistry } from "../src/embeds.js";
 import { managedVerificationTags, type ManagedSiteSeoSettings } from "../src/managed-seo-settings.js";
+import type { SiteStyles } from "../src/site-styles.js";
 import { renderPageHead, resolvePageMetadata, type PageMetadata } from "../src/pages.js";
 import type { CmsPublicAsset } from "../src/cms-v2.js";
 import type { CmsStore } from "./managed-cms-store.js";
 import { emptyManagedPublicPolicy, managedBlockContracts, parseManagedPublicPolicy, type ManagedPublicPolicy } from "./managed-embed-contract.js";
 import { readPageSource, type PageSourceRow } from "./managed-page-source.js";
 import { managedPublicBlocks, planManagedPublicRender, resolvePublishedEmbeds } from "./managed-public-policy.js";
+import { readManagedPublishedSiteStyles } from "./managed-site-styles.js";
 import { preparePublishedManifest, preparePublishedSite } from "./managed-publication.js";
 import type { ManagedSiteRedirect } from "../src/managed-site-redirects.js";
 import type { ManagedD1 } from "./managed-sites.js";
@@ -25,14 +27,14 @@ function prefixedNodes(nodes: readonly PageNode[], prefix: string): PageNode[] {
     return copy;
   });
 }
-function prefixedDocument(document: PageDocument, prefix: string): PageDocument {
+function prefixedDocument(document: PageDocument, prefix: string, siteStyles?: SiteStyles): PageDocument {
   const copy = structuredClone(document);
   copy.body = prefixedNodes(copy.body, prefix);
   if (copy.meta?.favicon?.startsWith("/") && !copy.meta.favicon.startsWith("//")) copy.meta.favicon = `${prefix}${copy.meta.favicon}`;
   if (copy.meta?.ogImage && "src" in copy.meta.ogImage && copy.meta.ogImage.src.startsWith("/") && !copy.meta.ogImage.src.startsWith("//")) {
     copy.meta.ogImage.src = `${prefix}${copy.meta.ogImage.src}`;
   }
-  return parsePageDocument(copy, managedBlockContracts);
+  return parsePageDocument(copy, managedBlockContracts, siteStyles ? { siteStyles } : {});
 }
 function escapeAttribute(value: string): string { return value.replace(/[&<>"']/gu, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!); }
 
@@ -85,6 +87,7 @@ export function localizedPathIdentity(locale: string, path: string): string {
 
 async function managedPageHreflang(db: ManagedD1, siteId: string, locale: string, path: string, origin: string, prefix: string, hidden: boolean, store?: CmsStore, candidate?: PageDocument): Promise<string> {
   if (hidden) return "";
+  const siteStyles = store ? await readManagedPublishedSiteStyles(store, siteId) : undefined;
   const result = await db.prepare(`SELECT mp.site_id, mp.page_id, mp.locale, version.revision, publication.published_path AS path,
       version.document_json, version.document_key, version.document_digest FROM managed_pages AS mp
     JOIN managed_page_publications AS publication ON publication.id = mp.published_publication_id
@@ -97,7 +100,7 @@ async function managedPageHreflang(db: ManagedD1, siteId: string, locale: string
     if (candidate && row.page_id === candidate.pageId && row.locale === candidate.locale) continue;
     if (localizedPathIdentity(row.locale, row.path) !== localizedPathIdentity(locale, path)) continue;
     try {
-      const document = await readPageSource(store, row);
+      const document = await readPageSource(store, row, siteStyles);
       if (!document.meta?.noindex) alternates.push({ locale: row.locale.toLowerCase(), url: `${origin}${prefix}${row.path}` });
     } catch { /* invalid historical documents are omitted from hreflang */ }
   }
@@ -127,11 +130,12 @@ export async function renderManagedPage(input: {
   readonly siteName: string;
   readonly embeds: Awaited<ReturnType<typeof resolvePublishedEmbeds>>;
   readonly assets?: readonly CmsPublicAsset[];
+  readonly siteStyles?: SiteStyles;
   readonly forceNoindex?: boolean;
   readonly includeCandidate?: boolean;
 }) {
   const { db, store, document, policy, origin, prefix, path, alternatePath, publicPath, siteName, embeds, forceNoindex } = input;
-  const plan = planManagedPublicRender(prefixedDocument(document, prefix), policy, origin, embeds, input.assets);
+  const plan = planManagedPublicRender(prefixedDocument(document, prefix, input.siteStyles), policy, origin, embeds, input.assets);
   const rendered = plan.document;
   // Validate the document path before projecting canonical and OpenGraph URLs onto the shared prefix.
   const resolved = resolvePageMetadata({ document: rendered, domain: origin, path, visibility: "public", assets: plan.assets });
@@ -146,7 +150,8 @@ export async function renderManagedPage(input: {
   const head = renderPageHead(metadata) + alternates + managedVerificationTags(policy.seo)
     + managedStructuredData(rendered, publicUrl, origin, siteName, policy.seo);
   const body = renderPageToHtml(rendered, managedPublicBlocks, {
-    blankEmbeds: createBlankEmbedRegistry({ parentOrigin: origin, entries: [] }), assets: plan.assets
+    blankEmbeds: createBlankEmbedRegistry({ parentOrigin: origin, entries: [] }), assets: plan.assets,
+    ...(input.siteStyles ? { siteStyles: input.siteStyles } : {})
   });
   const html = `<!doctype html><html lang="${escapeAttribute(rendered.locale)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${head}${runtime.scripts}</head><body>${body}</body></html>`;
   return { html, contentSecurityPolicy: runtime.csp, metadata, document: rendered };
@@ -172,12 +177,13 @@ export async function prepareManagedPageArtifact(input: {
   if (!state) throw new Error("publication state unavailable");
   const origin = publicUrl.origin, publicPath = publicUrl.pathname;
   const policy = parseManagedPublicPolicy(JSON.parse(state.public_policy_json), origin) ?? emptyManagedPublicPolicy();
+  const siteStyles = await readManagedPublishedSiteStyles(store, document.siteId);
   const embeds = await resolvePublishedEmbeds(store.db, document, {
     siteId: document.siteId, pageId: document.pageId, locale: document.locale, parentOrigin: origin, publicPath
   }, policy);
   const rendered = await renderManagedPage({
     db: store.db, store, document, policy, origin, prefix: publicPrefix, path, alternatePath: path, publicPath,
-    siteName: state.site_name, embeds, includeCandidate: input.isPublic
+    siteName: state.site_name, embeds, siteStyles, includeCandidate: input.isPublic
   });
   const activeRoutes = await store.db.prepare(`SELECT page_id, locale FROM managed_pages
     WHERE site_id = ?1 AND visibility = 'public' AND published_revision IS NOT NULL`)

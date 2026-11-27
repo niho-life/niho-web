@@ -628,7 +628,7 @@ testWithD1("managed SEO renders alternates and JSON-LD, publishes discovery file
   assert.equal(upper.status, 301);
   assert.equal(upper.headers.get("Location"), `${PUBLIC_ORIGIN}/s/seo-fixture/about`);
   const slash = await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/about/`);
-  assert.equal(slash.status, 308);
+  assert.equal(slash.status, 301);
   assert.equal(slash.headers.get("Location"), `${PUBLIC_ORIGIN}/s/seo-fixture/about`);
   const redirectBeforeMove = await body(await h.send(MANAGEMENT_ORIGIN, "GET", redirectsPath), 200);
   assert.deepEqual(redirectBeforeMove.redirects, firstRedirects);
@@ -745,7 +745,7 @@ testWithD1("Studio-native site stores page sources in R2 for GUI, CAS, history a
   const head = await publicRequest("HEAD", "/s/fixture-site/");
   assert.equal(head.status, 200); assert.equal(await head.text(), "");
   const canonicalRedirect = await publicRequest("GET", "/s/fixture-site?utm_source=test");
-  assert.equal(canonicalRedirect.status, 308);
+  assert.equal(canonicalRedirect.status, 301);
   assert.equal(canonicalRedirect.headers.get("Location"), `${PUBLIC_ORIGIN}/s/fixture-site/?utm_source=test`);
   assert.equal((await publicRequest("GET", "/s/fixture-site/?utm_source=test")).status, 200);
 
@@ -1168,7 +1168,7 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   assert.equal(unknown.status, 404);
   assert.equal(unknown.headers.get("X-Robots-Tag"), "noindex, nofollow");
   const rootRedirect = await publishedSiteRequest(new Request("https://preview.sites.example/s/static-fixture"), h.env);
-  assert.equal(rootRedirect.status, 308);
+  assert.equal(rootRedirect.status, 301);
   assert.equal(rootRedirect.headers.get("Location"), "https://preview.sites.example/s/static-fixture/");
 
   const redirects = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/redirects`), 200);
