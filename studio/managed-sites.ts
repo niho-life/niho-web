@@ -638,8 +638,14 @@ async function applyRelease(request: Request, db: ManagedD1, actor: ManagedActor
   const advancePointer = prepared ? [db.prepare(`UPDATE managed_site_publication_state SET version = ?1, manifest_key = ?2, updated_at = unixepoch()
     WHERE site_id = ?3 AND version = ?4
       AND EXISTS (SELECT 1 FROM managed_pages WHERE site_id = ?3 AND page_id = ?5 AND locale = ?6 AND current_version = ?7)
-      AND EXISTS (SELECT 1 FROM managed_editor_plans WHERE token_hash = ?8 AND actor_subject = ?9 AND expires_at > unixepoch())`)
-    .bind(prepared.manifestVersion, prepared.manifestKey, row.site_id, prepared.expectedVersion, row.page_id, row.locale, row.current_version, token, actorId)] : [];
+      AND EXISTS (SELECT 1 FROM managed_editor_plans WHERE token_hash = ?8 AND actor_subject = ?9 AND expires_at > unixepoch())
+      AND EXISTS (SELECT 1 FROM sites AS s JOIN project_members AS member ON member.project_id = s.project_id
+                   WHERE s.id = ?3 AND member.access_subject = ?9 AND member.role IN ('owner', 'editor'))
+      AND EXISTS (SELECT 1 FROM managed_page_versions WHERE site_id = ?3 AND page_id = ?5 AND locale = ?6 AND revision = ?10)
+      AND (?11 <> 'rollback' OR EXISTS (SELECT 1 FROM managed_page_publications
+                                         WHERE site_id = ?3 AND page_id = ?5 AND locale = ?6 AND source_revision = ?10))`)
+    .bind(prepared.manifestVersion, prepared.manifestKey, row.site_id, prepared.expectedVersion, row.page_id, row.locale, row.current_version, token, actorId,
+      payload.sourceRevision, action)] : [];
   const results = await db.batch([
     ...advancePointer,
     ...restore,

@@ -75,7 +75,17 @@ async function fixture(t, { cms = false, restore, restoredObjects = [] } = {}) {
         params = values;
         return this;
       },
-      async first() { return statement.get(...params) ?? null; },
+      async first() {
+        const value = statement.get(...params) ?? null;
+        if (faults.revokeOwnerAfterReleasePlanRead && query.includes("FROM managed_editor_plans") && query.includes("token_hash")) {
+          const { projectId, subject } = faults.revokeOwnerAfterReleasePlanRead;
+          delete faults.revokeOwnerAfterReleasePlanRead;
+          sqlite.prepare("INSERT INTO project_members (project_id, access_subject, role, display_name, email) VALUES (?, 'backup-owner', 'owner', 'Backup owner', 'backup@example.test')")
+            .run(projectId);
+          sqlite.prepare("DELETE FROM project_members WHERE project_id = ? AND access_subject = ?").run(projectId, subject);
+        }
+        return value;
+      },
       execute() {
         if (/^\s*(?:UPDATE|INSERT|DELETE)\b/u.test(query)) return { success: true, meta: statement.run(...params) };
         return { success: true, results: statement.all(...params) };
@@ -257,6 +267,15 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   assert.equal(preview.headers.get("Content-Security-Policy"), publication.content_security_policy);
   assert.match(await preview.text(), /<title>Static fixture<\/title>/u);
 
+  // `/` prefix uses the same root route as an empty prefix and never redirects to `//`.
+  h.sqlite.prepare("UPDATE managed_site_hosts SET path_prefix = '/' WHERE hostname = ? AND site_id = ? AND noindex = 1")
+    .run("preview.sites.example", created.siteId);
+  const rootPreview = await publishedSiteRequest(new Request("https://preview.sites.example/"), h.env);
+  assert.equal(rootPreview.status, 200);
+  assert.match(await rootPreview.text(), /<title>Static fixture<\/title>/u);
+  h.sqlite.prepare("UPDATE managed_site_hosts SET path_prefix = ? WHERE hostname = ? AND site_id = ? AND noindex = 1")
+    .run(`/s/static-fixture`, "preview.sites.example", created.siteId);
+
   const notModified = await publishedSiteRequest(new Request(previewUrl, { headers: { "If-None-Match": `"${publication.artifact_digest}"` } }), h.env);
   assert.equal(notModified.status, 304);
   assert.equal(notModified.headers.get("X-Robots-Tag"), "noindex, nofollow");
@@ -300,6 +319,34 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   const unavailablePage = await publishedSiteRequest(new Request(previewUrl), h.env);
   assert.equal(unavailablePage.status, 503);
   assert.equal(unavailablePage.headers.get("X-Robots-Tag"), "noindex, nofollow");
+});
+
+testWithD1("static publication keeps the previous pointer when membership expires after plan read", async (t) => {
+  const h = await fixture(t, { cms: true });
+  const created = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "CAS fixture", slug: "cas-fixture", locale: "ja" }), 201);
+  const api = `/api/projects/${created.projectId}/sites/${created.siteId}/editor`;
+  const draft = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/home`), 200);
+  const target = { siteId: created.siteId, pageId: "home", locale: "ja" };
+  const plan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/release-plan`, {
+    target, expectedVersion: draft.version, action: "publish"
+  }), 200);
+
+  h.faults.revokeOwnerAfterReleasePlanRead = { projectId: created.projectId, subject: OWNER };
+  const rejected = await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/release`, {
+    expectedVersion: draft.version, confirmationToken: plan.confirmationToken
+  });
+  assert.equal(rejected.status, 409);
+  const state = h.sqlite.prepare("SELECT version, manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(created.siteId);
+  assert.equal(state.version, "initial");
+  assert.equal(state.manifest_key, null);
+  assert.equal(h.sqlite.prepare("SELECT count(*) AS count FROM managed_page_publications WHERE site_id = ?").get(created.siteId).count, 0);
+  assert.equal(h.sqlite.prepare("SELECT count(*) AS count FROM managed_editor_plans WHERE site_id = ? AND operation = 'release.publish'").get(created.siteId).count, 1);
+
+  h.sqlite.prepare("INSERT INTO project_members (project_id, access_subject, role, display_name, email) VALUES (?, ?, 'owner', 'Fixture owner', 'owner@example.test')")
+    .run(created.projectId, OWNER);
+  await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/release`, {
+    expectedVersion: draft.version, confirmationToken: plan.confirmationToken
+  }), 200);
 });
 
 testWithD1("Kamakura machine editing enforces current site grants for discovery, read, save and publish", async (t) => {

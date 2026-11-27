@@ -181,7 +181,7 @@ function isConfiguredPreview(url: URL, env: PublicEnv): boolean {
 }
 
 function resolveSitePath(pathname: string, prefix: string): { readonly path: string; readonly missingRootSlash: boolean } | null {
-  if (prefix === "") return { path: pathname || "/", missingRootSlash: false };
+  if (prefix === "" || prefix === "/") return { path: pathname || "/", missingRootSlash: false };
   if (pathname === prefix) return { path: "/", missingRootSlash: true };
   if (!pathname.startsWith(`${prefix}/`)) return null;
   return { path: pathname.slice(prefix.length) || "/", missingRootSlash: false };
