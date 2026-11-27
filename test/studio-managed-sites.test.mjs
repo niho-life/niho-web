@@ -23,13 +23,13 @@ const migrationDirectory = new URL("../studio/migrations/", import.meta.url);
 const migrations = await Promise.all((await readdir(migrationDirectory)).filter((name) => name.endsWith(".sql")).sort().map((name) => readFile(new URL(name, migrationDirectory), "utf8")));
 const bundle = await build({
   stdin: {
-    contents: 'export { default } from "./studio/worker.ts"; export { managedCmsApi } from "./studio/managed-cms.ts"; export { CmsStore } from "./studio/managed-cms-store.ts";',
+    contents: 'export { default } from "./studio/worker.ts"; export { publishedSiteRequest } from "./studio/managed-publication.ts"; export { managedCmsApi } from "./studio/managed-cms.ts"; export { CmsStore } from "./studio/managed-cms-store.ts";',
     resolveDir: fileURLToPath(new URL("..", import.meta.url))
   },
   bundle: true, format: "esm", platform: "node", target: "node22", write: false,
   banner: { js: 'import { createRequire as __createRequire } from "node:module"; const require = __createRequire(`${process.cwd()}/studio-worker-test.mjs`);' }
 });
-const { default: worker, managedCmsApi, CmsStore } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString("base64")}`);
+const { default: worker, publishedSiteRequest, managedCmsApi, CmsStore } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString("base64")}`);
 const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const jwk = { ...publicKey.export({ format: "jwk" }), kid: "managed-test", alg: "RS256", use: "sig" };
 
@@ -59,7 +59,8 @@ async function fixture(t, { cms = false, restore, restoredObjects = [] } = {}) {
     },
     async get(key) {
       if (faults.release && key.includes("/releases/")) { delete faults.release; throw new Error("fixture release object unavailable"); }
-      return objects.has(key) ? { json: async () => JSON.parse(objects.get(key)) } : null;
+      if (faults.artifact && key.includes("/artifacts/")) { delete faults.artifact; throw new Error("fixture artifact unavailable"); }
+      return objects.has(key) ? { json: async () => JSON.parse(objects.get(key)), text: async () => String(objects.get(key)) } : null;
     }
   };
   t.after(() => sqlite.close());
@@ -83,7 +84,7 @@ async function fixture(t, { cms = false, restore, restoredObjects = [] } = {}) {
     };
   };
   const env = {
-    ACCESS_ISSUER: issuer, ACCESS_AUDIENCE: audience, PUBLIC_SITES_ORIGIN: PUBLIC_ORIGIN,
+    ACCESS_ISSUER: issuer, ACCESS_AUDIENCE: audience, PUBLIC_SITES_ORIGIN: PUBLIC_ORIGIN, PUBLIC_SITES_PREVIEW_ORIGIN: "https://preview.sites.example",
     ...(cms ? { CMS_OBJECTS, CMS_DELIVERY_MASTER_KEY: "a1".repeat(32) } : {}),
     DB: { prepare: wrap, async batch(statements) {
       sqlite.exec("BEGIN");
@@ -222,6 +223,83 @@ testWithD1("Studio-native site uses one D1 page store for GUI, CAS, release hist
 
   // 現在の membership がない利用者は同じサイトを操作できない。
   assert.equal((await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/catalog`, undefined, { token: h.otherToken })).status, 403);
+});
+
+testWithD1("Static publication serves immutable HTML and applies noindex to the verification host", async (t) => {
+  const h = await fixture(t, { cms: true });
+  const created = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Static fixture", slug: "static-fixture", locale: "ja" }), 201);
+  const api = `/api/projects/${created.projectId}/sites/${created.siteId}/editor`;
+  const draft = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/home`), 200);
+  const target = { siteId: created.siteId, pageId: "home", locale: "ja" };
+  const plan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/release-plan`, {
+    target, expectedVersion: draft.version, action: "publish"
+  }), 200);
+  await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/release`, {
+    expectedVersion: draft.version, confirmationToken: plan.confirmationToken
+  }), 200);
+
+  const state = h.sqlite.prepare("SELECT version, manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(created.siteId);
+  assert.match(state.version, /^[0-9a-f]{64}$/u);
+  assert.equal(state.manifest_key, `managed-sites/${created.siteId}/manifests/${state.version}.json`);
+  const publication = h.sqlite.prepare(`SELECT path, artifact_key, artifact_digest, manifest_key, content_type, content_security_policy
+    FROM managed_page_publications WHERE site_id = ? AND page_id = 'home'`).get(created.siteId);
+  assert.equal(publication.path, "/");
+  assert.equal(publication.manifest_key, state.manifest_key);
+  assert.equal(publication.artifact_key, `managed-sites/${created.siteId}/artifacts/${publication.artifact_digest}.html`);
+  assert.equal(publication.content_type, "text/html; charset=utf-8");
+  assert.ok(h.objects.has(publication.artifact_key));
+
+  const previewUrl = "https://preview.sites.example/s/static-fixture/";
+  const preview = await publishedSiteRequest(new Request(previewUrl), h.env);
+  assert.equal(preview.status, 200);
+  assert.equal(preview.headers.get("X-Robots-Tag"), "noindex, nofollow");
+  assert.equal(preview.headers.get("ETag"), `"${publication.artifact_digest}"`);
+  assert.equal(preview.headers.get("Content-Security-Policy"), publication.content_security_policy);
+  assert.match(await preview.text(), /<title>Static fixture<\/title>/u);
+
+  const notModified = await publishedSiteRequest(new Request(previewUrl, { headers: { "If-None-Match": `"${publication.artifact_digest}"` } }), h.env);
+  assert.equal(notModified.status, 304);
+  assert.equal(notModified.headers.get("X-Robots-Tag"), "noindex, nofollow");
+  const head = await publishedSiteRequest(new Request(previewUrl, { method: "HEAD" }), h.env);
+  assert.equal(head.status, 200);
+  assert.equal(await head.text(), "");
+
+  const publicResponse = await publishedSiteRequest(new Request("https://sites.example/s/static-fixture/"), h.env);
+  assert.equal(publicResponse.status, 200);
+  assert.equal(publicResponse.headers.get("X-Robots-Tag"), null);
+
+  const create = { action: "create", siteId: created.siteId, locale: "ja", title: "About", path: "/about" };
+  const createPlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/page-changes/prepare`, { change: create }), 200);
+  const createdPage = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/page-changes/apply`, {
+    change: create, confirmationToken: createPlan.confirmationToken
+  }), 200);
+  const about = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/${createdPage.page.pageId}`), 200);
+  const aboutTarget = { siteId: created.siteId, pageId: createdPage.page.pageId, locale: "ja" };
+  const aboutPlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/${createdPage.page.pageId}/release-plan`, {
+    target: aboutTarget, expectedVersion: about.version, action: "publish"
+  }), 200);
+  await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/${createdPage.page.pageId}/release`, {
+    expectedVersion: about.version, confirmationToken: aboutPlan.confirmationToken
+  }), 200);
+  const aboutResponse = await publishedSiteRequest(new Request("https://preview.sites.example/s/static-fixture/about"), h.env);
+  assert.equal(aboutResponse.status, 200);
+  assert.equal(aboutResponse.headers.get("X-Robots-Tag"), "noindex, nofollow");
+  assert.match(await aboutResponse.text(), /<title>About<\/title>/u);
+  const latestState = h.sqlite.prepare("SELECT manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(created.siteId);
+  const latest = JSON.parse(h.objects.get(latestState.manifest_key));
+  assert.equal(latest.routes.length, 2);
+
+  const unknown = await publishedSiteRequest(new Request("https://preview.sites.example/s/static-fixture/missing"), h.env);
+  assert.equal(unknown.status, 404);
+  assert.equal(unknown.headers.get("X-Robots-Tag"), "noindex, nofollow");
+  const rootRedirect = await publishedSiteRequest(new Request("https://preview.sites.example/s/static-fixture"), h.env);
+  assert.equal(rootRedirect.status, 307);
+  assert.equal(rootRedirect.headers.get("Location"), "https://preview.sites.example/s/static-fixture/");
+  assert.equal(rootRedirect.headers.get("X-Robots-Tag"), "noindex, nofollow");
+  h.faults.artifact = true;
+  const unavailablePage = await publishedSiteRequest(new Request(previewUrl), h.env);
+  assert.equal(unavailablePage.status, 503);
+  assert.equal(unavailablePage.headers.get("X-Robots-Tag"), "noindex, nofollow");
 });
 
 testWithD1("Kamakura machine editing enforces current site grants for discovery, read, save and publish", async (t) => {
