@@ -16,6 +16,7 @@ const requiredPublicMigrations = new Set([
   "0020_managed_site_redirects.sql",
   "0021_managed_published_paths.sql",
   "0022_managed_site_redirect_versions.sql",
+  "0023_managed_site_primary_host.sql",
   "0024_managed_one_step_publish.sql"
 ]);
 

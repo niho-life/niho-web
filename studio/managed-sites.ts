@@ -1,5 +1,6 @@
 import { CmsStore, cmsPathReserved, digest, nowSeconds, type Site } from "./managed-cms-store.js";
 import { localizedPathIdentity, pageText, prepareManagedPageArtifact, renderManagedPage } from "./managed-page-publication.js";
+import { preparePublishedManifest, type PreparedPublishedManifest } from "./managed-publication.js";
 import { MAX_MANAGED_PAGE_BYTES, readPageSource, readPageSourceObject, storePageSource, type PageSourceRow } from "./managed-page-source.js";
 import { parsePageDocument, type PageDocument, type PageNode } from "../src/core.js";
 import { cmsPageBindingProblems, parseCmsPageBindings, resolveCmsPageBindings, type CmsPageBindingsDocument } from "../src/cms-page-bindings.js";
@@ -70,6 +71,9 @@ type ManagedPageRow = PageSourceRow & {
 const CMS_DETAIL_SLUG = /^[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*$/u;
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const LOCALE = /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/u;
+const MANIFEST_VERSION = /^[0-9a-f]{64}$/u;
+const PRIMARY_DOMAIN = "(SELECT host.hostname FROM managed_site_hosts AS host WHERE host.site_id = ms.site_id AND host.is_primary = 1 AND host.path_prefix = '' LIMIT 1)";
+const PRIMARY_HOST_NOINDEX = "(SELECT host.noindex FROM managed_site_hosts AS host WHERE host.site_id = ms.site_id AND host.is_primary = 1 LIMIT 1)";
 const MAX_EDITOR_BODY = MAX_MANAGED_PAGE_BYTES;
 const MAX_MUTATION_BODY = 16 * 1024;
 
@@ -306,7 +310,7 @@ export async function createManagedProject(request: Request, store: CmsStore, ac
                                                        document_key, document_digest, link_index_json)
                   VALUES (?1, ?2, ?3, 1, '{}', 'initial', ?4, ?5, ?6, ?7)`)
         .bind(siteId, pageId, body.locale, actor.subject, source.key, source.digest, source.linkIndex),
-      db.prepare("INSERT INTO managed_site_hosts (hostname, path_prefix, site_id, noindex) VALUES (?1, ?2, ?3, 0)")
+      db.prepare("INSERT INTO managed_site_hosts (hostname, path_prefix, site_id, noindex, is_primary) VALUES (?1, ?2, ?3, 0, 1)")
         .bind(hostname, `/s/${body.slug}`, siteId),
       ...(previewHostname && previewHostname !== hostname ? [db.prepare("INSERT INTO managed_site_hosts (hostname, path_prefix, site_id, noindex) VALUES (?1, ?2, ?3, 1)")
         .bind(previewHostname, `/s/${body.slug}`, siteId)] : []),
@@ -327,13 +331,13 @@ export async function createManagedProject(request: Request, store: CmsStore, ac
 }
 
 export async function managedRegistration(db: ManagedD1, projectId: string, siteId: string): Promise<{ readonly slug: string; readonly public_domain: string | null; readonly site_name: string } | null> {
-  return db.prepare(`SELECT ms.slug, ms.public_domain, s.name AS site_name FROM managed_sites AS ms JOIN sites AS s ON s.id = ms.site_id WHERE s.project_id = ?1 AND s.id = ?2 LIMIT 1`)
+  return db.prepare(`SELECT ms.slug, ${PRIMARY_DOMAIN} AS public_domain, s.name AS site_name FROM managed_sites AS ms JOIN sites AS s ON s.id = ms.site_id WHERE s.project_id = ?1 AND s.id = ?2 LIMIT 1`)
     .bind(projectId, siteId).first<{ readonly slug: string; readonly public_domain: string | null; readonly site_name: string }>();
 }
 
 async function managedMemberRegistration(db: ManagedD1, actor: ManagedActor, projectId: string, siteId: string): Promise<{ readonly slug: string; readonly public_domain: string | null; readonly site_name: string } | null> {
   return db.prepare(`
-    SELECT ms.slug, ms.public_domain, s.name AS site_name
+    SELECT ms.slug, ${PRIMARY_DOMAIN} AS public_domain, s.name AS site_name
       FROM project_members AS member
       JOIN sites AS s ON s.project_id = member.project_id
       JOIN managed_sites AS ms ON ms.site_id = s.id
@@ -412,7 +416,8 @@ async function managedPublicSeoSettings(request: Request, db: ManagedD1, actor: 
   return changed(result) ? json({ settings: seo, version }) : json({ error: "conflict" }, 409);
 }
 
-async function managedSiteRedirects(request: Request, db: ManagedD1, actor: ManagedActor, projectId: string, siteId: string): Promise<Response> {
+async function managedSiteRedirects(request: Request, db: ManagedD1, actor: ManagedActor, projectId: string, siteId: string,
+  origin: string, store?: CmsStore): Promise<Response> {
   const ownerScope = `EXISTS (SELECT 1 FROM sites AS s JOIN project_members AS member ON member.project_id = s.project_id
     WHERE s.id = ?1 AND s.project_id = ?2 AND member.access_subject = ?3 AND member.role = 'owner')`;
   if (request.method === "GET") {
@@ -434,36 +439,61 @@ async function managedSiteRedirects(request: Request, db: ManagedD1, actor: Mana
   const current = await db.prepare(`SELECT redirect_version FROM managed_sites WHERE site_id = ?1 AND ${ownerScope}`)
     .bind(siteId, projectId, actor.subject).first<{ redirect_version: string }>();
   if (!current) return json({ error: "forbidden" }, 403);
+  const [registration, state] = await Promise.all([
+    managedRegistration(db, projectId, siteId),
+    db.prepare("SELECT version, manifest_key FROM managed_site_publication_state WHERE site_id = ?1 LIMIT 1")
+      .bind(siteId).first<{ version: string; manifest_key: string | null }>()
+  ]);
+  if (!registration) return json({ error: "forbidden" }, 403);
+  let preparedManifest: PreparedPublishedManifest | null = null;
+  if (state?.manifest_key) {
+    if (!store) return json({ error: "publication_storage_unavailable" }, 503);
+    try {
+      preparedManifest = await preparePublishedManifest({ bucket: store.bucket, siteId, publicationId: crypto.randomUUID(),
+        expectedVersion: state.version, currentManifestKey: state.manifest_key, redirects,
+        publicBaseUrl: registration.public_domain ? `https://${registration.public_domain}` : `${origin}/s/${registration.slug}` });
+    } catch { return json({ error: "publication_artifact_generation_failed" }, 503); }
+  }
   const version = opaqueVersion();
   const expectedVersion = body.expectedVersion;
   const results = await db.batch([
     db.prepare(`DELETE FROM managed_site_redirects WHERE site_id = ?1 AND EXISTS (
       SELECT 1 FROM managed_sites AS ms WHERE ms.site_id = ?1 AND ms.redirect_version = ?2 AND EXISTS (
         SELECT 1 FROM sites AS s JOIN project_members AS member ON member.project_id = s.project_id
-        WHERE s.id = ?1 AND s.project_id = ?3 AND member.access_subject = ?4 AND member.role = 'owner'))`)
-      .bind(siteId, expectedVersion, projectId, actor.subject),
+        WHERE s.id = ?1 AND s.project_id = ?3 AND member.access_subject = ?4 AND member.role = 'owner')
+        AND (?5 IS NULL OR EXISTS (SELECT 1 FROM managed_site_publication_state WHERE site_id = ?1 AND version = ?5)))`)
+      .bind(siteId, expectedVersion, projectId, actor.subject, preparedManifest?.expectedVersion ?? null),
     db.prepare(`INSERT INTO managed_site_redirects (site_id, locale, from_path, to_path)
       SELECT ?1, json_extract(value, '$.locale'), json_extract(value, '$.fromPath'), json_extract(value, '$.toPath') FROM json_each(?2)
       WHERE EXISTS (SELECT 1 FROM managed_sites AS ms WHERE ms.site_id = ?1 AND ms.redirect_version = ?3 AND EXISTS (
         SELECT 1 FROM sites AS s JOIN project_members AS member ON member.project_id = s.project_id
-        WHERE s.id = ?1 AND s.project_id = ?4 AND member.access_subject = ?5 AND member.role = 'owner'))`)
-      .bind(siteId, JSON.stringify(redirects), expectedVersion, projectId, actor.subject),
+        WHERE s.id = ?1 AND s.project_id = ?4 AND member.access_subject = ?5 AND member.role = 'owner')
+        AND (?6 IS NULL OR EXISTS (SELECT 1 FROM managed_site_publication_state WHERE site_id = ?1 AND version = ?6)))`)
+      .bind(siteId, JSON.stringify(redirects), expectedVersion, projectId, actor.subject, preparedManifest?.expectedVersion ?? null),
     db.prepare(`UPDATE managed_sites SET redirect_version = ?1
       WHERE site_id = ?2 AND redirect_version = ?3 AND EXISTS (SELECT 1 FROM sites AS s
         JOIN project_members AS member ON member.project_id = s.project_id
-        WHERE s.id = ?2 AND s.project_id = ?4 AND member.access_subject = ?5 AND member.role = 'owner')`)
-      .bind(version, siteId, expectedVersion, projectId, actor.subject)
+        WHERE s.id = ?2 AND s.project_id = ?4 AND member.access_subject = ?5 AND member.role = 'owner')
+        AND (?6 IS NULL OR EXISTS (SELECT 1 FROM managed_site_publication_state WHERE site_id = ?2 AND version = ?6))`)
+      .bind(version, siteId, expectedVersion, projectId, actor.subject, preparedManifest?.expectedVersion ?? null),
+    ...(preparedManifest ? [db.prepare(`UPDATE managed_site_publication_state SET version = ?1, manifest_key = ?2, updated_at = unixepoch()
+      WHERE site_id = ?3 AND version = ?4 AND EXISTS (SELECT 1 FROM managed_sites WHERE site_id = ?3 AND redirect_version = ?5)`)
+      .bind(preparedManifest.manifestVersion, preparedManifest.manifestKey, siteId, preparedManifest.expectedVersion, version)] : [])
   ]);
-  return changed(results[2]!) ? json({ redirects, version }) : json({ error: "conflict" }, 409);
+  return changed(results[2]!) && (!preparedManifest || changed(results[3]!))
+    ? json({ redirects, version }) : json({ error: "conflict" }, 409);
 }
 
 async function managedPublicDomain(request: Request, db: ManagedD1, actor: ManagedActor, projectId: string, siteId: string, origin: string): Promise<Response> {
   const ownerScope = `EXISTS (SELECT 1 FROM sites AS s JOIN project_members AS member ON member.project_id = s.project_id
     WHERE s.id = ?1 AND s.project_id = ?2 AND member.access_subject = ?3 AND member.role = 'owner')`;
   if (request.method === "GET") {
-    const row = await db.prepare(`SELECT public_domain, public_domain_noindex, public_domain_version FROM managed_sites WHERE site_id = ?1 AND ${ownerScope}`)
-      .bind(siteId, projectId, actor.subject).first<{ public_domain: string | null; public_domain_noindex: number; public_domain_version: string }>();
-    return row ? json({ domain: row.public_domain, noindex: row.public_domain_noindex === 1, version: row.public_domain_version }) : json({ error: "forbidden" }, 403);
+    const row = await db.prepare(`SELECT ${PRIMARY_DOMAIN} AS domain,
+        COALESCE((SELECT host.noindex FROM managed_site_hosts AS host WHERE host.site_id = ms.site_id AND host.is_primary = 1 AND host.path_prefix = '' LIMIT 1), 1) AS noindex,
+        ms.public_domain_version AS version
+      FROM managed_sites AS ms WHERE ms.site_id = ?1 AND ${ownerScope}`)
+      .bind(siteId, projectId, actor.subject).first<{ domain: string | null; noindex: number; version: string }>();
+    return row ? json({ domain: row.domain, noindex: row.noindex === 1, version: row.version }) : json({ error: "forbidden" }, 403);
   }
   if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
   const owner = await db.prepare(`SELECT 1 AS allowed WHERE ${ownerScope}`)
@@ -474,16 +504,29 @@ async function managedPublicDomain(request: Request, db: ManagedD1, actor: Manag
   const domain = normalizeManagedPublicDomain(body.domain, new URL(request.url).hostname, new URL(origin).hostname);
   if (body.domain !== null && !domain) return json({ error: "invalid_domain" }, 422);
   const version = opaqueVersion();
-  let result: D1Result<unknown> | undefined;
+  let results: readonly D1Result<unknown>[];
   try {
-    [result] = await db.batch([db.prepare(`UPDATE managed_sites SET public_domain = ?4, public_domain_version = ?5, public_domain_noindex = ?6
-      WHERE site_id = ?1 AND public_domain_version = ?7 AND ${ownerScope}`)
-      .bind(siteId, projectId, actor.subject, domain, version, body.noindex ? 1 : 0, body.expectedVersion)]);
+    results = await db.batch([
+      db.prepare(`DELETE FROM managed_site_hosts WHERE site_id = ?1 AND path_prefix = '' AND EXISTS (
+        SELECT 1 FROM managed_sites AS ms WHERE ms.site_id = ?1 AND ms.public_domain_version = ?6 AND ${ownerScope})`)
+        .bind(siteId, projectId, actor.subject, domain, version, body.expectedVersion),
+      db.prepare(`UPDATE managed_site_hosts SET is_primary = CASE WHEN ?4 IS NULL THEN 1 ELSE 0 END
+        WHERE site_id = ?1 AND path_prefix = (SELECT '/s/' || slug FROM managed_sites WHERE site_id = ?1)
+          AND EXISTS (SELECT 1 FROM managed_sites AS ms WHERE ms.site_id = ?1 AND ms.public_domain_version = ?6 AND ${ownerScope})`)
+        .bind(siteId, projectId, actor.subject, domain, version, body.expectedVersion),
+      ...(domain ? [db.prepare(`INSERT INTO managed_site_hosts (hostname, path_prefix, site_id, noindex, is_primary)
+        SELECT ?4, '', ?1, ?7, 1 WHERE EXISTS (
+          SELECT 1 FROM managed_sites AS ms WHERE ms.site_id = ?1 AND ms.public_domain_version = ?6 AND ${ownerScope})`)
+        .bind(siteId, projectId, actor.subject, domain, version, body.expectedVersion, body.noindex ? 1 : 0)] : []),
+      db.prepare(`UPDATE managed_sites SET public_domain = ?4, public_domain_version = ?5, public_domain_noindex = ?7
+        WHERE site_id = ?1 AND public_domain_version = ?6 AND ${ownerScope}`)
+        .bind(siteId, projectId, actor.subject, domain, version, body.expectedVersion, body.noindex ? 1 : 0)
+    ]);
   } catch (error) {
-    if (error instanceof Error && /UNIQUE constraint failed: managed_sites\.public_domain/u.test(error.message)) return json({ error: "domain_taken" }, 409);
+    if (error instanceof Error && /UNIQUE constraint failed: (?:managed_site_hosts\.|managed_sites\.public_domain)/u.test(error.message)) return json({ error: "domain_taken" }, 409);
     throw error;
   }
-  if (changed(result)) return json({ domain, noindex: body.noindex, version });
+  if (results.length && changed(results[results.length - 1])) return json({ domain, noindex: body.noindex, version });
   return json({ error: "conflict" }, 409);
 }
 
@@ -513,7 +556,7 @@ async function registerManagedEmbed(request: Request, db: ManagedD1, actor: Mana
 
 export async function managedProjectRegistrations(db: ManagedD1, subject: string): Promise<Map<string, ManagedProjectRegistration>> {
   const result = await db.prepare(`
-    SELECT p.id AS project_id, s.id AS site_id, ms.slug, ms.public_domain,
+    SELECT p.id AS project_id, s.id AS site_id, ms.slug, ${PRIMARY_DOMAIN} AS public_domain,
            (SELECT count(*) FROM managed_pages AS mp WHERE mp.site_id = s.id AND mp.visibility = 'public' AND mp.published_revision IS NOT NULL) AS published_page_count,
            (SELECT publication.published_path FROM managed_pages AS mp JOIN managed_page_publications AS publication ON publication.id = mp.published_publication_id
              WHERE mp.site_id = s.id AND mp.visibility = 'public' AND mp.published_revision IS NOT NULL
@@ -534,7 +577,7 @@ export async function managedProjectRegistrations(db: ManagedD1, subject: string
 
 async function pageRow(db: ManagedD1, projectId: string, siteId: string, pageId: string, locale?: string): Promise<ManagedPageRow | null> {
   return db.prepare(`
-    SELECT s.project_id, s.id AS site_id, ms.slug, ms.public_domain, mp.page_id, mp.locale, mp.title, mp.path, mp.visibility,
+    SELECT p.id AS project_id, s.id AS site_id, ms.slug, ${PRIMARY_DOMAIN} AS public_domain, mp.page_id, mp.locale, mp.title, mp.path, mp.visibility,
            (SELECT locale FROM managed_pages WHERE site_id = s.id AND page_id = 'home' ORDER BY locale LIMIT 1) AS cms_locale,
            mp.current_version, ms.page_catalog_version, mp.current_revision, mp.published_revision, version.revision, version.document_json, version.document_key, version.document_digest, version.bindings_json
       FROM sites AS s
@@ -1065,6 +1108,43 @@ async function changePageOnce(store: CmsStore, actor: ManagedActor, projectId: s
   return { status: "applied" as const, page: resultPage };
 }
 
+async function managedSitePublicationHistory(db: ManagedD1, siteId: string): Promise<Response> {
+  const result = await db.prepare(`SELECT state.version AS current_release_id, history.release_id,
+      history.created_at, history.release_id = state.version AS current
+    FROM managed_site_publication_state AS state
+    LEFT JOIN managed_site_publication_history AS history ON history.site_id = state.site_id
+    WHERE state.site_id = ?1
+    ORDER BY history.created_at DESC, history.release_id DESC LIMIT 50`).bind(siteId)
+    .all<{ readonly current_release_id: string; readonly release_id: string | null; readonly created_at: number | null; readonly current: number | null }>();
+  if (!result.success) return json({ error: "publication_history_unavailable" }, 503);
+  const rows = result.results ?? [];
+  return json({
+    currentReleaseId: rows[0]?.current_release_id && rows[0].current_release_id !== "initial" ? rows[0].current_release_id : null,
+    releases: rows.flatMap(({ release_id, created_at, current }) => release_id && created_at !== null
+      ? [{ releaseId: release_id, createdAt: created_at, current: current === 1 }] : [])
+  });
+}
+
+async function rollbackManagedSitePublication(request: Request, db: ManagedD1, actor: ManagedActor,
+  projectId: string, siteId: string): Promise<Response> {
+  const body = await readJson(request, actor, 8 * 1024);
+  if (!body || !exactKeys(body, ["expectedVersion", "releaseId"])
+    || typeof body.expectedVersion !== "string" || body.expectedVersion.length > 200
+    || typeof body.releaseId !== "string" || !MANIFEST_VERSION.test(body.releaseId)
+    || body.releaseId === body.expectedVersion) return json({ error: "invalid_request" }, 400);
+  const result = await db.batch([db.prepare(`UPDATE managed_site_publication_state
+    SET version = ?1, manifest_key = (SELECT history.manifest_key FROM managed_site_publication_history AS history
+      WHERE history.site_id = ?2 AND history.release_id = ?1), updated_at = unixepoch()
+    WHERE site_id = ?2 AND version = ?3
+      AND EXISTS (SELECT 1 FROM managed_site_publication_history AS history
+        WHERE history.site_id = ?2 AND history.release_id = ?1)
+      AND EXISTS (SELECT 1 FROM sites AS s JOIN project_members AS member ON member.project_id = s.project_id
+        WHERE s.id = ?2 AND s.project_id = ?4 AND member.access_subject = ?5 AND member.role IN ('owner', 'editor'))`)
+    .bind(body.releaseId, siteId, body.expectedVersion, projectId, actor.subject)]);
+  if (!changed(result[0])) return json({ status: "conflict" }, 409);
+  return json({ status: "rolled_back", releaseId: body.releaseId });
+}
+
 /** GUI と CLI が共有する managed page operation dispatcher。 */
 export async function managedEditorOperation(
   request: Request, db: ManagedD1, actor: ManagedActor, projectId: string, siteId: string, action: string, origin: string, store?: CmsStore
@@ -1073,8 +1153,12 @@ export async function managedEditorOperation(
   if (!registration) return json({ error: "forbidden" }, 403);
   if (action === "/editor/public-settings") return managedPublicSettings(request, db, actor, projectId, siteId, origin);
   if (action === "/editor/seo-settings") return managedPublicSeoSettings(request, db, actor, projectId, siteId, origin);
-  if (action === "/editor/redirects") return managedSiteRedirects(request, db, actor, projectId, siteId);
+  if (action === "/editor/redirects") return managedSiteRedirects(request, db, actor, projectId, siteId, origin, store);
   if (action === "/editor/public-domain") return managedPublicDomain(request, db, actor, projectId, siteId, origin);
+  if (action === "/editor/publication-history") return request.method === "GET"
+    ? managedSitePublicationHistory(db, siteId) : json({ error: "method_not_allowed" }, 405);
+  if (action === "/editor/rollback") return request.method === "POST"
+    ? rollbackManagedSitePublication(request, db, actor, projectId, siteId) : json({ error: "method_not_allowed" }, 405);
   if (action === "/editor/catalog") {
     if (request.method !== "GET") return json({ error: "method_not_allowed" }, 405);
     const catalog = await pageCatalog(db, siteId);
@@ -1149,7 +1233,7 @@ export async function managedPublicSeoResponse(request: Request, db: ManagedD1, 
   }
   const suffix = customRoute ? url.pathname : url.pathname.slice(prefix.length);
   if (!["/sitemap.xml", "/robots.txt", "/llms.txt", "/llms-full.txt"].includes(suffix)) return null;
-  const site = await db.prepare(`SELECT s.id AS site_id, s.name, ms.public_domain_noindex, ms.public_policy_json FROM managed_sites AS ms
+  const site = await db.prepare(`SELECT s.id AS site_id, s.name, ${PRIMARY_HOST_NOINDEX} AS public_domain_noindex, ms.public_policy_json FROM managed_sites AS ms
     JOIN sites AS s ON s.id = ms.site_id WHERE ms.slug = ?1 LIMIT 1`).bind(slug)
     .first<{ site_id: string; name: string; public_domain_noindex: number; public_policy_json: string }>();
   if (!site) return null;
@@ -1243,7 +1327,7 @@ export async function managedPublicSeoResponse(request: Request, db: ManagedD1, 
 
 /** 共有originのslug routeか、host照合済みの独自domainでだけ呼ぶ。 */
 export async function managedPublicRequest(request: Request, db: ManagedD1, origin: string, store?: CmsStore,
-  customRoute?: { readonly slug: string; readonly prefix: ""; readonly noindex?: boolean }, cache?: ManagedPublicHtmlCache): Promise<Response> {
+  customRoute?: { readonly slug: string; readonly prefix: ""; readonly noindex?: boolean }, cache?: ManagedPublicHtmlCache, cmsOnly = false): Promise<Response> {
   if (!customRoute && new URL(request.url).origin !== origin || request.method !== "GET" && request.method !== "HEAD") return new Response(null, { status: 404, headers: responseHeaders("text/plain; charset=utf-8") });
   const url = new URL(request.url), match = customRoute ? null : /^\/s\/([a-z0-9]+(?:-[a-z0-9]+)*)(?:\/(.*))?$/u.exec(url.pathname);
   if (!customRoute && !match) return new Response(null, { status: 404, headers: responseHeaders("text/plain; charset=utf-8") });
@@ -1268,7 +1352,7 @@ export async function managedPublicRequest(request: Request, db: ManagedD1, orig
     SELECT mp.site_id, mp.page_id, mp.locale, mp.title, publication.published_path AS path, mp.published_revision, version.revision, version.bindings_json,
            version.document_json, version.document_key, version.document_digest,
            publication.id AS publication_id, publication.cms_release_id, publication.cms_schema_revision,
-           ms.public_policy_json, ms.public_policy_version, ms.public_domain_noindex, ms.public_domain_version, s.name AS site_name
+           ms.public_policy_json, ms.public_policy_version, ${PRIMARY_HOST_NOINDEX} AS public_domain_noindex, ms.public_domain_version, s.name AS site_name
       FROM managed_sites AS ms
       JOIN sites AS s ON s.id = ms.site_id
       JOIN managed_pages AS mp ON mp.site_id = ms.site_id
@@ -1278,11 +1362,12 @@ export async function managedPublicRequest(request: Request, db: ManagedD1, orig
         AND publication.site_id = mp.site_id AND publication.page_id = mp.page_id AND publication.locale = mp.locale
         AND publication.source_revision = mp.published_revision
      WHERE ms.slug = ?1 AND mp.visibility = 'public' AND mp.published_revision IS NOT NULL
+       AND (?4 = 0 OR version.bindings_json IS NOT NULL AND COALESCE(publication.published_path, mp.path) = mp.path)
        AND (COALESCE(publication.published_path, mp.path) = ?2
          OR (COALESCE(publication.published_path, mp.path) = ?3 AND json_type(version.bindings_json, '$.detail') = 'object'))
      ORDER BY (COALESCE(publication.published_path, mp.path) = ?2) DESC
      LIMIT 1
-  `).bind(slug, path, parentPath).first<PageSourceRow & Pick<ManagedPageRow, "title" | "path" | "bindings_json"> & {
+  `).bind(slug, path, parentPath, cmsOnly ? 1 : 0).first<PageSourceRow & Pick<ManagedPageRow, "title" | "path" | "bindings_json"> & {
     published_revision: number; publication_id: string | null; cms_release_id: string | null; cms_schema_revision: string | null;
     public_policy_json: string; public_policy_version: string; public_domain_noindex: number; public_domain_version: string; site_name: string;
   }>();
@@ -1364,9 +1449,16 @@ export async function managedPublicRequest(request: Request, db: ManagedD1, orig
   return request.method === "HEAD" && response.status !== 304 ? new Response(null, { status: response.status, headers: response.headers }) : response;
 }
 
+/** #527 がCMS boundページを静的manifestへ移すまでの互換renderer。固定ページには使わない。 */
+export async function managedCmsBoundPublic(request: Request, db: ManagedD1, origin: string, store: CmsStore,
+  cache?: ManagedPublicHtmlCache): Promise<Response | null> {
+  const response = await managedPublicRequest(request, db, origin, store, undefined, cache, true);
+  return response.status === 404 ? null : response;
+}
+
 export async function managedDashboardOverview(db: ManagedD1, actor: ManagedActor, projectId: string, siteId: string, origin: string): Promise<Record<string, unknown> | null> {
   const registration = await db.prepare(`
-    SELECT ms.slug, ms.public_domain,
+    SELECT ms.slug, ${PRIMARY_DOMAIN} AS public_domain,
            (SELECT publication.published_path FROM managed_pages AS mp JOIN managed_page_publications AS publication ON publication.id = mp.published_publication_id
              WHERE mp.site_id = s.id AND mp.visibility = 'public' AND mp.published_revision IS NOT NULL
              ORDER BY CASE WHEN publication.published_path = '/' THEN 0 ELSE 1 END, publication.published_path LIMIT 1) AS published_path,

@@ -8,6 +8,7 @@ import { emptyManagedPublicPolicy, managedBlockContracts, parseManagedPublicPoli
 import { readPageSource, type PageSourceRow } from "./managed-page-source.js";
 import { managedPublicBlocks, planManagedPublicRender, resolvePublishedEmbeds } from "./managed-public-policy.js";
 import { preparePublishedSite } from "./managed-publication.js";
+import type { ManagedSiteRedirect } from "../src/managed-site-redirects.js";
 import type { ManagedD1 } from "./managed-sites.js";
 
 function prefixedNodes(nodes: readonly PageNode[], prefix: string): PageNode[] {
@@ -159,6 +160,7 @@ export async function prepareManagedPageArtifact(input: {
   readonly isPublic: boolean;
   readonly publicUrl: URL;
   readonly publicPrefix: string;
+  readonly redirects?: readonly ManagedSiteRedirect[];
 }) {
   const { store, document, path, publicUrl, publicPrefix } = input;
   const state = await store.db.prepare(`SELECT state.version, state.manifest_key, ms.public_policy_json,
@@ -181,6 +183,9 @@ export async function prepareManagedPageArtifact(input: {
     WHERE site_id = ?1 AND visibility = 'public' AND published_revision IS NOT NULL`)
     .bind(document.siteId).all<{ page_id: string; locale: string }>();
   if (!activeRoutes.success) throw new Error("public route lookup failed");
+  const redirectRows = input.redirects === undefined ? await store.db.prepare(`SELECT locale, from_path AS fromPath, to_path AS toPath
+    FROM managed_site_redirects WHERE site_id = ?1 ORDER BY from_path`).bind(document.siteId).all<ManagedSiteRedirect>() : null;
+  if (redirectRows && !redirectRows.success) throw new Error("public redirect lookup failed");
   const activeRouteKeys = (activeRoutes.results ?? []).filter(({ page_id, locale }) => page_id !== document.pageId || locale !== document.locale)
     .map(({ page_id, locale }) => ({ pageId: page_id, locale }));
   if (input.isPublic) activeRouteKeys.push({ pageId: document.pageId, locale: document.locale });
@@ -190,6 +195,7 @@ export async function prepareManagedPageArtifact(input: {
     title: rendered.document.title, description: rendered.metadata.description ?? "",
     text: pageText(rendered.document.body).slice(0, 40_000).replace(/[\uD800-\uDBFF]$/u, ""),
     noindex: rendered.metadata.robots === "noindex, nofollow", isPublic: input.isPublic, activeRouteKeys,
+    redirects: input.redirects ?? redirectRows?.results ?? [],
     siteName: policy.seo.siteName ?? state.site_name, siteDescription: policy.seo.description ?? "",
     robotsPolicy: policy.seo.robotsPolicy, publicBaseUrl: `${origin}${publicPrefix}`,
     expectedVersion: state.version, currentManifestKey: state.manifest_key });

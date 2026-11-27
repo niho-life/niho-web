@@ -326,18 +326,24 @@ testWithD1("published page permits only approved embeds and serves NIHO connecti
   const noindexDoc = { ...published.snapshot.document, meta: { noindex: true } };
   const noindexSaved = await body(await send("PUT", api + "/home/draft", { expectedVersion: published.snapshot.version, document: noindexDoc }), 200);
   await publish(noindexSaved);
-  const noindexHtml = await (await h.fetch(PUBLIC_ORIGIN + publicPath)).text();
+  const noindexHtml = await (await h.fetch(PUBLIC_ORIGIN + publicPath, { headers: { "Cache-Control": "no-cache" } })).text();
   assert.match(noindexHtml, /name="robots" content="noindex, nofollow"/u);
   assert.ok(noindexHtml.includes(`www.googletagmanager.com/gtag/js?id=${measurementId}`));
   await body(await savePolicy({ frameOrigins: [], resourceOrigins: [], ga4MeasurementId: null }, savedPolicy.version), 200);
-  assert.equal((await h.fetch(resolvePath)).status, 404);
-  const revoked = await h.fetch(PUBLIC_ORIGIN + publicPath);
+  await body(await h.send(MANAGEMENT_ORIGIN, "POST", api + "/home/publish", { action: "publish" }), 200);
+  assert.equal((await h.fetch(resolvePath, { headers: { "Cache-Control": "no-cache" } })).status, 404);
+  const revoked = await h.fetch(PUBLIC_ORIGIN + publicPath, { headers: { "Cache-Control": "no-cache" } });
   assert.match(revoked.headers.get("Content-Security-Policy"), /script-src 'none'/u);
   assert.doesNotMatch(await revoked.text(), /iframe|data-managed-embed-ref|type="module"|googletagmanager|images\.example\.test|video\.example\.test/u);
 });
 
 testWithD1("custom domain serves a noindex root page with its private NIHO embed and GA4 tag", async (t) => {
   const h = await fixture(t);
+  const publicFetch = (url, init = {}) => {
+    const headers = new Headers(init.headers);
+    headers.set("Cache-Control", "no-cache");
+    return publishedSiteRequest(new Request(url, { ...init, headers }), h.env);
+  };
   const cachedHtml = new Map();
   h.env.PUBLIC_HTML_CACHE = {
     async match(key) { return cachedHtml.get(key.url)?.clone() ?? null; },
@@ -380,7 +386,7 @@ testWithD1("custom domain serves a noindex root page with its private NIHO embed
   const saved = await body(await h.send(MANAGEMENT_ORIGIN, "PUT", api + "/home/draft", { expectedVersion: snapshot.version, document: snapshot.document }), 200);
   await body(await h.send(MANAGEMENT_ORIGIN, "POST", api + "/home/publish", { expectedVersion: saved.version, action: "publish" }), 200);
 
-  const response = await h.fetch("https://preview.example.test/");
+  const response = await publicFetch("https://preview.example.test/");
   const html = await response.text();
   assert.equal(response.status, 200);
   assert.match(html, /<title>Custom domain<\/title>/u);
@@ -394,10 +400,10 @@ testWithD1("custom domain serves a noindex root page with its private NIHO embed
   assert.equal(response.headers.get("X-Robots-Tag"), "noindex, nofollow");
   assert.doesNotMatch(html, /\/s\/custom-domain/u);
   assert.equal(cachedHtml.size, 1);
-  const revalidated = await h.fetch("https://preview.example.test/", { headers: { "If-None-Match": response.headers.get("ETag") } });
+  const revalidated = await publicFetch("https://preview.example.test/", { headers: { "If-None-Match": response.headers.get("ETag") } });
   assert.equal(revalidated.status, 304);
   assert.equal(revalidated.headers.get("X-Robots-Tag"), "noindex, nofollow");
-  assert.equal(await (await h.fetch("https://preview.example.test/")).text(), html);
+  assert.equal(await (await publicFetch("https://preview.example.test/")).text(), html);
   assert.equal(cachedHtml.size, 1);
   const changed = await body(await h.send(MANAGEMENT_ORIGIN, "GET", api + "/home"), 200);
   changed.document.title = "Custom domain updated";
@@ -405,14 +411,14 @@ testWithD1("custom domain serves a noindex root page with its private NIHO embed
   await body(await h.send(MANAGEMENT_ORIGIN, "POST", api + "/home/publish", { expectedVersion: changedDraft.version, action: "publish" }), 200);
   assert.match(await (await h.fetch("https://preview.example.test/")).text(), /<title>Custom domain updated<\/title>/u);
   assert.equal(cachedHtml.size, 2);
-  const publicScript = await h.fetch("https://preview.example.test/_niho/niho-embeds-012345abcdef.js");
+  const publicScript = await publicFetch("https://preview.example.test/_niho/niho-embeds-012345abcdef.js");
   assert.equal(publicScript.status, 200);
   assert.equal(publicScript.headers.get("X-Robots-Tag"), "noindex, nofollow");
-  assert.notEqual((await h.fetch("https://unknown.example.test/")).status, 200);
-  const robots = await h.fetch("https://preview.example.test/robots.txt");
+  assert.notEqual((await publicFetch("https://unknown.example.test/")).status, 200);
+  const robots = await publicFetch("https://preview.example.test/robots.txt");
   assert.equal(robots.headers.get("X-Robots-Tag"), "noindex, nofollow");
   assert.match(await robots.text(), /Disallow: \/\n/u);
-  const sitemap = await h.fetch("https://preview.example.test/sitemap.xml");
+  const sitemap = await publicFetch("https://preview.example.test/sitemap.xml");
   const sitemapBody = await sitemap.text();
   assert.match(sitemapBody, /<urlset/u);
   assert.doesNotMatch(sitemapBody, /preview\.example\.test/u);
@@ -420,6 +426,11 @@ testWithD1("custom domain serves a noindex root page with its private NIHO embed
 
 testWithD1("managed SEO renders alternates and JSON-LD, publishes discovery files, redirects old paths and returns a 404 page", async (t) => {
   const h = await fixture(t);
+  const publicFetch = (url, init = {}) => {
+    const headers = new Headers(init.headers);
+    headers.set("Cache-Control", "no-cache");
+    return h.fetch(url, { ...init, headers });
+  };
   const site = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "SEO Fixture", slug: "seo-fixture", locale: "ja" }), 201);
   const api = `/api/projects/${site.projectId}/sites/${site.siteId}/editor`;
   const seoPath = api + "/seo-settings", cliSeoPath = `/api/edit/v2/sites/${site.siteId}/operations/site.seo.read`;
@@ -477,6 +488,8 @@ testWithD1("managed SEO renders alternates and JSON-LD, publishes discovery file
   english.document.meta = { description: "English description" };
   saved = await body(await h.send(MANAGEMENT_ORIGIN, "PUT", `${api}/${englishCreated.page.pageId}/draft`, { expectedVersion: english.version, document: english.document }), 200);
   await release(englishCreated.page.pageId, "en", saved.version);
+  home = await body(await h.send(MANAGEMENT_ORIGIN, "GET", api + "/home"), 200);
+  await release("home", "ja", home.version);
 
   const aboutChange = { action: "create", siteId: site.siteId, locale: "ja", title: "About", path: "/about" };
   const aboutCreated = await pageChange((method, suffix, input) => h.send(MANAGEMENT_ORIGIN, method, api + suffix, input), aboutChange);
@@ -499,7 +512,7 @@ testWithD1("managed SEO renders alternates and JSON-LD, publishes discovery file
     `/api/edit/v1/sites/${site.siteId}/operations/pages.publish/${aboutCreated.page.pageId}?locale=ja`, { action: "publish", expectedVersion: aboutPublished.snapshot.version }), 200);
   assert.ok(directPublish.warnings.some(({ code }) => code === "broken-internal-link"));
 
-  const html = await (await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/`)).text();
+  const html = await (await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/`)).text();
   assert.match(html, /hreflang="en" href="https:\/\/sites\.example\/s\/seo-fixture\/en"/u);
   assert.match(html, /hreflang="ja" href="https:\/\/sites\.example\/s\/seo-fixture\/"/u);
   assert.match(html, /hreflang="x-default"/u);
@@ -511,19 +524,19 @@ testWithD1("managed SEO renders alternates and JSON-LD, publishes discovery file
   assert.match(html, /<meta property="og:image" content="https:\/\/sites\.example\/s\/seo-fixture\/images\/site-og\.png">/u);
   assert.match(html, /G-SEO12345/u);
   assert.match(html, /<meta name="description" content="日本語の説明">/u);
-  const sitemap = await (await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/sitemap.xml`)).text();
+  const sitemap = await (await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/sitemap.xml`)).text();
   assert.match(sitemap, /<loc>https:\/\/sites\.example\/s\/seo-fixture\/en<\/loc>/u);
   assert.match(sitemap, /hreflang="en"/u);
-  assert.match(await (await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/robots.txt`)).text(), /Sitemap: https:\/\/sites\.example\/s\/seo-fixture\/sitemap\.xml/u);
-  assert.match(await (await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/llms.txt`)).text(), /English home/u);
-  assert.match(await (await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/llms-full.txt`)).text(), /日本語の説明|# SEO Site Name/u);
-  const siteDefaultPage = await (await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/about`)).text();
+  assert.match(await (await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/robots.txt`)).text(), /Sitemap: https:\/\/sites\.example\/s\/seo-fixture\/sitemap\.xml/u);
+  assert.match(await (await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/llms.txt`)).text(), /English home/u);
+  assert.match(await (await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/llms-full.txt`)).text(), /日本語の説明|# SEO Site Name/u);
+  const siteDefaultPage = await (await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/about`)).text();
   assert.match(siteDefaultPage, /"description":"サイト共通の説明"/u);
-  const upper = await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/ABOUT`);
+  const upper = await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/ABOUT`);
   assert.equal(upper.status, 301);
   assert.equal(upper.headers.get("Location"), `${PUBLIC_ORIGIN}/s/seo-fixture/about`);
-  const slash = await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/about/`);
-  assert.equal(slash.status, 301);
+  const slash = await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/about/`);
+  assert.equal(slash.status, 308);
   assert.equal(slash.headers.get("Location"), `${PUBLIC_ORIGIN}/s/seo-fixture/about`);
   const redirectBeforeMove = await body(await h.send(MANAGEMENT_ORIGIN, "GET", redirectsPath), 200);
   assert.deepEqual(redirectBeforeMove.redirects, firstRedirects);
@@ -538,30 +551,36 @@ testWithD1("managed SEO renders alternates and JSON-LD, publishes discovery file
   assert.equal((await h.send(MANAGEMENT_ORIGIN, "PUT", redirectsPath,
     { redirects: savedRedirects.redirects, expectedVersion: savedRedirects.version })).status, 409,
   "an old CLI snapshot cannot erase a redirect generated by moving a page");
-  assert.equal((await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/about`)).status, 200, "draft path changes do not move the published URL");
-  assert.equal((await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/about-us`)).status, 404);
+  assert.equal((await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/about`)).status, 200, "draft path changes do not move the published URL");
+  assert.equal((await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/about-us`)).status, 404);
   const movedSnapshot = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/${aboutCreated.page.pageId}`), 200);
   await release(aboutCreated.page.pageId, "ja", movedSnapshot.version);
-  const old = await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/about`);
+  const old = await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/about`);
   assert.equal(old.status, 301);
   assert.equal(old.headers.get("Location"), `${PUBLIC_ORIGIN}/s/seo-fixture/about-us`);
-  const legacy = await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/legacy-page`);
+  const legacy = await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/legacy-page`);
   assert.equal(legacy.status, 301);
   assert.equal(legacy.headers.get("Location"), `${PUBLIC_ORIGIN}/s/seo-fixture/about`);
-  const missing = await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/missing`);
+  const missing = await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/missing`);
   assert.equal(missing.status, 404);
   assert.match(await missing.text(), /ページが見つかりません/u);
   const currentSeo = await body(await h.send(MANAGEMENT_ORIGIN, "GET", seoPath), 200);
   await body(await h.send(MANAGEMENT_ORIGIN, "POST", seoPath, {
     expectedVersion: currentSeo.version, settings: { ...currentSeo.settings, robotsPolicy: "noindex" }
   }), 200);
-  const noindexRobots = await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/robots.txt`);
+  home = await body(await h.send(MANAGEMENT_ORIGIN, "GET", api + "/home"), 200);
+  await release("home", "ja", home.version);
+  english = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/${englishCreated.page.pageId}`), 200);
+  await release(englishCreated.page.pageId, "en", english.version);
+  const aboutBeforeNoindex = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/${aboutCreated.page.pageId}`), 200);
+  await release(aboutCreated.page.pageId, "ja", aboutBeforeNoindex.version);
+  const noindexRobots = await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/robots.txt`);
   assert.match(await noindexRobots.text(), /Disallow: \/\n/u);
   assert.equal(noindexRobots.headers.get("X-Robots-Tag"), "noindex, nofollow");
-  const noindexSitemap = await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/sitemap.xml`);
+  const noindexSitemap = await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/sitemap.xml`);
   assert.equal(noindexSitemap.headers.get("X-Robots-Tag"), "noindex, nofollow");
   assert.doesNotMatch(await noindexSitemap.text(), /<loc>/u);
-  const noindexPage = await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/about-us`);
+  const noindexPage = await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/about-us`);
   assert.equal(noindexPage.headers.get("X-Robots-Tag"), "noindex, nofollow");
   assert.match(await noindexPage.text(), /name="robots" content="noindex, nofollow"/u);
 });
@@ -595,6 +614,7 @@ testWithD1("Studio-native site stores page sources in R2 for GUI, CAS, history a
   const h = await fixture(t);
   const created = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Fixture site", slug: "fixture-site", locale: "ja" }), 201);
   const { projectId, siteId } = created, api = `/api/projects/${projectId}/sites/${siteId}/editor`;
+  const publicRequest = (method, path) => h.send(PUBLIC_ORIGIN, method, path, undefined, { auth: false, headers: { "Cache-Control": "no-cache" } });
   assert.equal(created.editorPath, `/projects/${projectId}/sites/${siteId}/editor`);
   assert.equal(h.sqlite.prepare("SELECT public_origin FROM sites WHERE id = ?").get(siteId).public_origin, null);
   assert.equal(h.sqlite.prepare("SELECT slug FROM managed_sites WHERE site_id = ?").get(siteId).slug, "fixture-site");
@@ -603,8 +623,8 @@ testWithD1("Studio-native site stores page sources in R2 for GUI, CAS, history a
   assert.equal(h.sqlite.prepare("SELECT count(*) AS count FROM managed_sites").get().count, 1);
 
   // 作成直後は保存済み下書きだけで、公開originには何も出ない。
-  assert.equal((await h.send(PUBLIC_ORIGIN, "GET", "/s/fixture-site/", undefined, { auth: false })).status, 404);
-  assert.equal((await h.send(PUBLIC_ORIGIN, "GET", "/assets/app.js", undefined, { auth: false })).status, 404);
+  assert.equal((await publicRequest("GET", "/s/fixture-site/")).status, 404);
+  assert.equal((await publicRequest("GET", "/assets/app.js")).status, 404);
   const catalog = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/catalog`), 200);
   assert.deepEqual(catalog.pageChangeActions, ["create", "update", "visibility"]);
   assert.equal(catalog.pages[0].pageId, "home");
@@ -629,12 +649,12 @@ testWithD1("Studio-native site stores page sources in R2 for GUI, CAS, history a
   assert.match(html2, /<link rel="canonical" href="https:\/\/sites\.example\/s\/fixture-site\/">/u);
   assert.match(html2, /<title>Fixture site<\/title>/u);
   assert.match(public2.headers.get("Content-Security-Policy"), /script-src 'none'/u);
-  const head = await h.send(PUBLIC_ORIGIN, "HEAD", "/s/fixture-site/", undefined, { auth: false });
+  const head = await publicRequest("HEAD", "/s/fixture-site/");
   assert.equal(head.status, 200); assert.equal(await head.text(), "");
-  const canonicalRedirect = await h.send(PUBLIC_ORIGIN, "GET", "/s/fixture-site?utm_source=test", undefined, { auth: false });
+  const canonicalRedirect = await publicRequest("GET", "/s/fixture-site?utm_source=test");
   assert.equal(canonicalRedirect.status, 308);
   assert.equal(canonicalRedirect.headers.get("Location"), `${PUBLIC_ORIGIN}/s/fixture-site/?utm_source=test`);
-  assert.equal((await h.send(PUBLIC_ORIGIN, "GET", "/s/fixture-site/?utm_source=test", undefined, { auth: false })).status, 200);
+  assert.equal((await publicRequest("GET", "/s/fixture-site/?utm_source=test")).status, 200);
 
   // 公開済み版2から新しい版を作り、編集画面と公開URLに同じ内容を復元する。
   const current = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/home`), 200), thirdDocument = structuredClone(current.document);
@@ -650,7 +670,7 @@ testWithD1("Studio-native site stores page sources in R2 for GUI, CAS, history a
   assert.deepEqual(restored.snapshot.document, { ...released2.snapshot.document, revision: 4 });
   const editorRestored = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/home`), 200);
   assert.deepEqual(editorRestored.document, restored.snapshot.document);
-  assert.match(await (await h.send(PUBLIC_ORIGIN, "GET", "/s/fixture-site/", undefined, { auth: false })).text(), /<title>Fixture site<\/title>/u);
+  assert.match(await (await publicRequest("GET", "/s/fixture-site/")).text(), /<title>Fixture site<\/title>/u);
   assert.equal(h.sqlite.prepare("SELECT published_revision FROM managed_pages WHERE site_id = ? AND page_id = 'home'").get(siteId).published_revision, 4);
   const history = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/home/history`), 200);
   assert.deepEqual(history.entries.map(({ revision, kind }) => [revision, kind]), [[4, "rollback"], [3, "publish"], [2, "publish"]]);
@@ -674,7 +694,7 @@ testWithD1("Studio-native site stores page sources in R2 for GUI, CAS, history a
   const createChange = { action: "create", siteId, locale: "ja", title: "About", path: "/about" };
   const applied = await pageChange((method, suffix, input) => h.send(MANAGEMENT_ORIGIN, method, api + suffix, input), createChange);
   assert.equal(applied.page.path, "/about");
-  assert.equal((await h.send(PUBLIC_ORIGIN, "GET", "/s/fixture-site/about", undefined, { auth: false })).status, 404);
+  assert.equal((await publicRequest("GET", "/s/fixture-site/about")).status, 404);
 
   const aboutTarget = { siteId, pageId: applied.page.pageId, locale: "ja" };
   const about = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/${aboutTarget.pageId}`), 200);
@@ -788,10 +808,11 @@ testWithD1("Legacy page sources preserve exact D1 bytes and links across a retri
   assert.deepEqual(JSON.parse(moved.link_index_json), [["legacy-link", "/"]]);
   assert.throws(() => h.sqlite.prepare(`UPDATE managed_page_versions SET document_json = '[]'
     WHERE site_id = ? AND page_id = 'legacy'`).run(siteId), /immutable/u);
-  assert.match(await (await h.send(PUBLIC_ORIGIN, "GET", `/s/${slug}/old`, undefined, { auth: false })).text(), /ホーム/u);
+  assert.equal((await publishedSiteRequest(new Request(`${PUBLIC_ORIGIN}/s/${slug}/old`, { headers: { "Cache-Control": "no-cache" } }), h.env)).status, 404,
+    "a legacy D1 publication without a generated manifest artifact is not served dynamically");
 });
 
-testWithD1("Missing or modified R2 page sources fail closed without changing static publication", async (t) => {
+testWithD1("Missing or modified R2 page sources keep the immutable static publication available", async (t) => {
   const h = await fixture(t), slug = "damaged-source";
   const { projectId, siteId } = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Verified page", slug, locale: "ja" }), 201);
   const editor = `/api/projects/${projectId}/sites/${siteId}/editor/home`;
@@ -806,18 +827,18 @@ testWithD1("Missing or modified R2 page sources fail closed without changing sta
 
   h.objects.set(key, h.objects.get(key) + "\n");
   assert.equal((await gui("GET")).status, 503);
-  const legacy = await h.fetch(url);
-  assert.equal(legacy.status, 503);
-  assert.doesNotMatch(await legacy.text(), /Verified page/u);
+  const legacy = await h.fetch(url, { headers: { "Cache-Control": "no-cache" } });
+  assert.equal(legacy.status, 200);
+  assert.match(await legacy.text(), /<title>Verified page<\/title>/u);
   assert.equal((await submit()).status, 503);
   assert.equal(pointer(), liveManifest);
 
   h.objects.delete(key);
   assert.equal((await h.send(MANAGEMENT_ORIGIN, "GET", `/api/edit/v1/sites/${siteId}/operations/pages.read/home?locale=ja`, undefined, { cli: true })).status, 503);
-  assert.equal((await h.fetch(url)).status, 503);
+  assert.equal((await h.fetch(url, { headers: { "Cache-Control": "no-cache" } })).status, 200);
   assert.equal((await submit()).status, 503);
   assert.equal(pointer(), liveManifest);
-  const artifact = await publishedSiteRequest(new Request(url), h.env);
+  const artifact = await publishedSiteRequest(new Request(url, { headers: { "Cache-Control": "no-cache" } }), h.env);
   assert.equal(artifact.status, 200);
   assert.match(await artifact.text(), /<title>Verified page<\/title>/u);
 });
@@ -920,6 +941,8 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   assert.ok(h.objects.has(publication.artifact_key));
   const manifest = JSON.parse(h.objects.get(state.manifest_key));
   assert.deepEqual(manifest.discoveryFiles.map(({ path }) => path).sort(), ["/llms-full.txt", "/llms.txt", "/robots.txt", "/sitemap.xml"]);
+  assert.equal(Object.hasOwn(manifest.routes[0], "text"), false);
+  assert.ok(manifest.routes[0].textArtifactKey && h.objects.has(manifest.routes[0].textArtifactKey));
   for (const file of manifest.discoveryFiles) assert.ok(h.objects.has(file.artifactKey));
   assert.match(h.objects.get(publication.artifact_key), /href="\/s\/static-fixture\/about"/u);
 
@@ -930,6 +953,22 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   assert.equal(preview.headers.get("ETag"), `"${publication.artifact_digest}"`);
   assert.equal(preview.headers.get("Content-Security-Policy"), publication.content_security_policy);
   assert.match(await preview.text(), /<title>Static fixture<\/title>/u);
+  const originalDb = h.env.DB, queries = [], objectReads = [];
+  const originalGet = h.env.CMS_OBJECTS.get.bind(h.env.CMS_OBJECTS);
+  h.env.CMS_OBJECTS.get = async (key) => { objectReads.push(key); return originalGet(key); };
+  h.env.DB = { prepare(query) { queries.push(query); return originalDb.prepare(query); }, batch: (...args) => originalDb.batch(...args) };
+  const firstCachedDelivery = await publishedSiteRequest(new Request(previewUrl), h.env);
+  assert.equal(firstCachedDelivery.status, 200);
+  assert.equal(queries.length, 2);
+  assert.ok(queries.every((query) => !/managed_page_publications|managed_page_versions|managed_pages/iu.test(query)));
+  assert.equal(objectReads.filter((key) => key === state.manifest_key).length, 1);
+  queries.length = 0;
+  const secondCachedDelivery = await publishedSiteRequest(new Request(previewUrl), h.env);
+  assert.equal(secondCachedDelivery.status, 200);
+  assert.equal(queries.length, 0);
+  assert.equal(objectReads.filter((key) => key === state.manifest_key).length, 1);
+  h.env.DB = originalDb;
+  h.env.CMS_OBJECTS.get = originalGet;
   const previewRobots = await publishedSiteRequest(new Request("https://preview.sites.example/s/static-fixture/robots.txt"), h.env);
   assert.equal(previewRobots.headers.get("X-Robots-Tag"), "noindex, nofollow");
   assert.match(await previewRobots.text(), /Disallow: \/\n/u);
@@ -961,20 +1000,20 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   // `/` prefix uses the same root route as an empty prefix and never redirects to `//`.
   h.sqlite.prepare("UPDATE managed_site_hosts SET path_prefix = '/' WHERE hostname = ? AND site_id = ? AND noindex = 1")
     .run("preview.sites.example", created.siteId);
-  const rootPreview = await publishedSiteRequest(new Request("https://preview.sites.example/"), h.env);
+  const rootPreview = await publishedSiteRequest(new Request("https://preview.sites.example/", { headers: { "Cache-Control": "no-cache" } }), h.env);
   assert.equal(rootPreview.status, 200);
   assert.match(await rootPreview.text(), /<title>Static fixture<\/title>/u);
   h.sqlite.prepare("UPDATE managed_site_hosts SET path_prefix = ? WHERE hostname = ? AND site_id = ? AND noindex = 1")
     .run(`/s/static-fixture`, "preview.sites.example", created.siteId);
 
-  const notModified = await publishedSiteRequest(new Request(previewUrl, { headers: { "If-None-Match": `"${publication.artifact_digest}"` } }), h.env);
+  const notModified = await publishedSiteRequest(new Request(previewUrl, { headers: { "Cache-Control": "no-cache", "If-None-Match": `"${publication.artifact_digest}"` } }), h.env);
   assert.equal(notModified.status, 304);
   assert.equal(notModified.headers.get("X-Robots-Tag"), "noindex, nofollow");
-  const head = await publishedSiteRequest(new Request(previewUrl, { method: "HEAD" }), h.env);
+  const head = await publishedSiteRequest(new Request(previewUrl, { method: "HEAD", headers: { "Cache-Control": "no-cache" } }), h.env);
   assert.equal(head.status, 200);
   assert.equal(await head.text(), "");
 
-  const publicResponse = await publishedSiteRequest(new Request("https://sites.example/s/static-fixture/"), h.env);
+  const publicResponse = await publishedSiteRequest(new Request("https://sites.example/s/static-fixture/", { headers: { "Cache-Control": "no-cache" } }), h.env);
   assert.equal(publicResponse.status, 200);
   assert.equal(publicResponse.headers.get("X-Robots-Tag"), null);
 
@@ -992,9 +1031,22 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   assert.equal((await publishedSiteRequest(new Request("https://preview.sites.example/s/static-fixture/about"), h.env)).status, 404);
   const latestState = h.sqlite.prepare("SELECT manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(created.siteId);
   const latest = JSON.parse(h.objects.get(latestState.manifest_key));
-  assert.equal(latest.routes.length, 2);
-  const staleDiscovery = await publishedSiteRequest(new Request("https://sites.example/s/static-fixture/sitemap.xml"), h.env);
-  assert.equal(staleDiscovery.status, 503);
+  assert.deepEqual(latest.routes.map(({ pageId, locale }) => ({ pageId, locale })), [{ pageId: "home", locale: "ja" }]);
+  const updatedSitemap = await publishedSiteRequest(new Request("https://sites.example/s/static-fixture/sitemap.xml", { headers: { "Cache-Control": "no-cache" } }), h.env);
+  assert.equal(updatedSitemap.status, 200);
+  assert.doesNotMatch(await updatedSitemap.text(), /\/about/u);
+
+  const history = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/publication-history`), 200);
+  assert.equal(history.currentReleaseId, latestState.version);
+  assert.ok(history.releases.some(({ releaseId }) => releaseId === aboutReleaseId));
+  const rollback = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/rollback`, {
+    expectedVersion: latestState.version, releaseId: aboutReleaseId
+  }), 200);
+  assert.deepEqual(rollback, { status: "rolled_back", releaseId: aboutReleaseId });
+  assert.equal(h.sqlite.prepare("SELECT version FROM managed_site_publication_state WHERE site_id = ?").get(created.siteId).version, aboutReleaseId);
+  assert.equal((await publishedSiteRequest(new Request("https://preview.sites.example/s/static-fixture/about", { headers: { "Cache-Control": "no-cache" } }), h.env)).status, 200);
+  const restoredSitemap = await publishedSiteRequest(new Request("https://sites.example/s/static-fixture/sitemap.xml", { headers: { "Cache-Control": "no-cache" } }), h.env);
+  assert.match(await restoredSitemap.text(), /\/about/u);
 
   const addContact = { action: "create", siteId: created.siteId, locale: "ja", title: "Contact", path: "/contact" };
   const contactPage = await pageChange((method, suffix, input) => h.send(MANAGEMENT_ORIGIN, method, api + suffix, input), addContact);
@@ -1003,7 +1055,7 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   const refreshedState = h.sqlite.prepare("SELECT manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(created.siteId);
   const refreshedManifest = JSON.parse(h.objects.get(refreshedState.manifest_key));
   assert.deepEqual(refreshedManifest.routes.map(({ path }) => path).sort(), ["/", "/contact"]);
-  const refreshedSitemap = await publishedSiteRequest(new Request("https://sites.example/s/static-fixture/sitemap.xml"), h.env);
+  const refreshedSitemap = await publishedSiteRequest(new Request("https://sites.example/s/static-fixture/sitemap.xml", { headers: { "Cache-Control": "no-cache" } }), h.env);
   assert.equal(refreshedSitemap.status, 200);
   const refreshedSitemapBody = await refreshedSitemap.text();
   assert.match(refreshedSitemapBody, /\/contact/u);
@@ -1013,10 +1065,13 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   assert.equal(unknown.status, 404);
   assert.equal(unknown.headers.get("X-Robots-Tag"), "noindex, nofollow");
   const rootRedirect = await publishedSiteRequest(new Request("https://preview.sites.example/s/static-fixture"), h.env);
-  assert.equal(rootRedirect.status, 301);
+  assert.equal(rootRedirect.status, 308);
   assert.equal(rootRedirect.headers.get("Location"), "https://preview.sites.example/s/static-fixture/");
 
-  h.sqlite.prepare("INSERT INTO managed_site_redirects (site_id, locale, from_path, to_path) VALUES (?, 'ja', '/old-home', '/')").run(created.siteId);
+  const redirects = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/redirects`), 200);
+  await body(await h.send(MANAGEMENT_ORIGIN, "PUT", `${api}/redirects`, {
+    expectedVersion: redirects.version, redirects: [{ locale: "ja", fromPath: "/old-home", toPath: "/" }]
+  }), 200);
   const storedRedirect = await publishedSiteRequest(new Request("https://sites.example/s/static-fixture/old-home?ref=legacy"), h.env);
   assert.equal(storedRedirect.status, 301);
   assert.equal(storedRedirect.headers.get("Location"), "https://sites.example/s/static-fixture/?ref=legacy");
@@ -1462,7 +1517,8 @@ testWithD1("Studio page bindings publish a six-item list and dynamic detail from
   const editing = "/api/edit/v1/sites/" + site.siteId;
   const browser = (method, path, input, options) => h.send(MANAGEMENT_ORIGIN, method, api + path, input, options);
   const cli = (method, path, input, options) => h.send(MANAGEMENT_ORIGIN, method, editing + path, input, { cli: true, ...options });
-  const lookup = (path) => h.send(PUBLIC_ORIGIN, "GET", "/s/bound-articles" + path, undefined, { auth: false });
+  const lookup = (path) => h.send(PUBLIC_ORIGIN, "GET", "/s/bound-articles" + path, undefined,
+    { auth: false, headers: { "Cache-Control": "no-cache" } });
   const initial = await site.read("cms.schema.read");
   const { routeTableRevision } = await site.read("cms.release.current");
   const definition = structuredClone(initial);

@@ -45,6 +45,7 @@ test("public release writes a private Wrangler config on the dedicated preview w
     assert.ok(existsSync(join(directory, "migrations", "0020_managed_site_redirects.sql")));
     assert.ok(existsSync(join(directory, "migrations", "0021_managed_published_paths.sql")));
     assert.ok(existsSync(join(directory, "migrations", "0022_managed_site_redirect_versions.sql")));
+    assert.ok(existsSync(join(directory, "migrations", "0023_managed_site_primary_host.sql")));
     assert.ok(existsSync(join(directory, "migrations", "0024_managed_one_step_publish.sql")));
     assert.equal(statSync(configPath).mode & 0o777, 0o600);
   } finally { rmSync(directory, { recursive: true, force: true }); }
