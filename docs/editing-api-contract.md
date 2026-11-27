@@ -23,6 +23,7 @@ Kamakura の Studio GUI は editor snapshot profile から共通APIでページs
 | `pages.preview-intent` | POST | `/sites/{siteId}/operations/pages.preview-intent/{pageId}?locale={locale}` | `pages.read` | `{}` | `{ url, expiresAt }` |
 | `pages.release-plan` | POST | `/sites/{siteId}/operations/pages.release-plan/{pageId}?locale={locale}` | `pages.publish` | expected page versionとpublish/rollback action | `{ plan }` |
 | `pages.release` | POST | `/sites/{siteId}/operations/pages.release/{pageId}?locale={locale}` | `pages.publish` | plan、one-use confirmation token、UUID v4 operation ID | `{ status: "released", operationId, version, document }` |
+| `pages.publish` | POST | `/sites/{siteId}/operations/pages.publish/{pageId}?locale={locale}` | `pages.publish` | `{ action: "publish" }` または `{ action: "restore", revision }` | `{ status: "released", snapshot }` |
 | `pages.release-set-plan` | POST | `/sites/{siteId}/operations/pages.release-set-plan` | `pages.publish` per target | `{ siteId, operationId, items: [{ target, expectedVersion, componentsVersion?, presentationVersion? }] }` (1–50 pages) | `{ plan }` |
 | `pages.release-set` | POST | `/sites/{siteId}/operations/pages.release-set` | `pages.publish` per target | the exact plan's site, operation ID, confirmation token and items | `{ status: "completed" | "publishing", operationId, items: [...] }` |
 | `pages.release-set-status` | GET | `/sites/{siteId}/operations/pages.release-set-status/{operationId}` | `pages.read` | site / operation ID | `{ status, operationId, ... }` |
@@ -83,6 +84,8 @@ outline/find/subtreeは `limit`（既定1000、最大1000件）と `cursor` で�
 
 `pages.release-set-*` は同じサイト内のページを、一つの計画・適用操作で公開します。対象は1〜50件で、重複ページは禁止します。単一ページの非同期公開も同じoperation ID・status契約を使えます。各項目の `expectedVersion` と任意の `componentsVersion` / `presentationVersion`、対象一覧、operation IDを計画へ固定します。APIは全対象の `pages.publish` 権限を個別に確認します。ホストadapterは対象ごとに版を再検証し、結果として `released`（公開済み）、`conflict`（版が変わった）、`pending`（処理中）を返します。全体の `status` は未完了項目があれば `publishing`、全項目が確定したら `completed` です。ある対象の競合で他ページの成功を隠さず、全ページ同時切替も要求しません。トップレベルの `version_conflict` は操作が始まっておらず、公開済みページがない場合に限ります。
 
+`pages.publish` は直接公開と履歴復元用の一回呼出しです。`action: "publish"` は現在の下書きを公開し、`action: "restore"` は指定した保持版を新しい下書き版として複製して公開します。サーバーは一つの要求内で入力と公開対象を検証し、確認tokenやoperation IDをクライアントへ要求しません。版競合は HTTP 409 `version_conflict` です。ホストがこの操作を公開しない場合、既存の `pages.release-plan` / `pages.release` はそのまま使えます。
+
 release-setはページとcomponents/presentationの版だけを固定します。サイト共通スタイルは公開ページごとの入力に含めず、サイトのpublished pointerから一律に解決します。
 
 確認tokenは対象と全版を含む計画に結び付けます。同じactor・operation ID・入力の再送では、完了済み対象を二重に公開せず、前回の項目別状態を返します。タイムアウト時は同じ計画を再適用して処理を再開でき、`pages.release-set-status` で最終結果を照会できます。競合したページは再読込して新しい計画を作ります。ホストはactor、対象版、各項目の結果を監査記録へ保存します。自動mergeは行いません。
@@ -99,7 +102,7 @@ Studio の鎌倉エディタは初期表示に editor catalog の一覧を使い
 
 `assets.*` は素材の安定IDを操作します。配信URLは `assets.resolve` の応答に限って返し、ページ文書へは保存しません。一覧・使用先・解決は `assets.read`、メタデータ更新は `assets.edit`、一時アップロード許可の発行は `assets.upload`、削除と復元は `assets.delete` を個別に要求します。更新・削除・復元は `expectedVersion` をホストが比較します。`assets.upload-intent` は画像本体を受け取らず、短命の一回限りtokenを返します。クライアントは本体を `PUT` する前に、URLのHTTPS originがAPI originか、明示的に信頼設定したupload originと一致することを確認し、tokenをそのorigin以外へ送ってはいけません。ホストは実データの形式・サイズ・内容を再検査し、操作主体と結果を監査記録へ結び付けます。
 
-pages.read と pages.catalog は version から生成する opaque な ETag を返します。pages.read の tag は文書・components・presentation の各 versionと編集状態の応答形式を含み、pages.catalog は catalog version を使います。再読込は If-None-Match を送り、同じ版ならホストが認証・権限を毎回確認した後に本文なしの304を返します。200と304には Cache-Control: private, no-cache と Vary: Authorization, Cookie（pages.read は Accept も）を設定します。ホストは応答内容が変わるとき version も更新してください。共通clientはETagを受け取った読み取りを保持し、返却値とキャッシュを分離して、304では前回検証済みの値を返します。
+pages.read と pages.catalog は version から生成する opaque な ETag を返します。pages.read の tag は文書・components・presentation の各 versionと編集状態の応答形式を含み、pages.catalog は catalog version を使います。同じ版ならホストは認証・権限を毎回確認した後に本文なしの304を返します。200と304には Cache-Control: private, no-cache と Vary: Authorization, Cookie（pages.read は Accept も）を設定します。ホストは応答内容が変わるとき version も更新してください。`EditingApiClient.readIfChanged(target, etag)` は呼び出し側からETagを受け取り、200のsnapshotまたは304の状態を返します。clientはページ本文を独自にキャッシュせず、GUIは未編集のeditor sessionとETagを同じページキャッシュへ置きます。
 
 ## ページと CMS の結び付け
 

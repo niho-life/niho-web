@@ -110,6 +110,9 @@ export type EditorSnapshot = PageOperationVersions & {
   /** 原文の公開とは独立した、ホスト所有の英語版公開処理の現在値。省略時は表示しない。 */
   englishPublication?: EnglishPublication;
 };
+export type EditorDocumentRead =
+  | { readonly status: "modified"; readonly snapshot: EditorSnapshot; readonly etag?: string }
+  | { readonly status: "not-modified"; readonly etag: string };
 export type EditorSaveResult = {
   status: "saved";
   version: string;
@@ -208,11 +211,11 @@ export interface EditorAdapter {
   /** form の送信成功後に選べるページ候補。省略時は完了先設定を接続しない。 */
   listFormCompletionPages?(target: EditorTarget, signal: AbortSignal): Promise<readonly EditorPage[]>;
   readDocument(target: EditorTarget, signal: AbortSignal): Promise<EditorSnapshot>;
+  /** 文書本文を再取得せず、キャッシュ済みの未編集セッションをETagで再検証する。 */
+  readDocumentIfChanged?(target: EditorTarget, etag: string | undefined, signal: AbortSignal): Promise<EditorDocumentRead>;
   cmsBindings?: EditorCmsBindingsAdapter;
   /** 保存に使う API の discover が pages.name を公開する場合だけ true を返す。 */
   discoverPageNodeNames?(target: EditorTarget, signal: AbortSignal): Promise<boolean>;
-  /** ページ行の pointer / focus で呼ぶ先読み。通常読込と同じ認可・版検証を行い、画面状態は変更しない。 */
-  prefetchDocument?(target: EditorTarget, signal: AbortSignal): Promise<EditorSnapshot>;
   /** trigger は自動保存のときだけ "autosave"。ホストは履歴の種類の区別に使える。 */
   saveDraft(request: { target: EditorTarget; document: PageDocument; expectedVersion: string; presentationVersion?: string; trigger?: "autosave";
     cmsBindings?: CmsPageBindingsDocument | null;
@@ -223,6 +226,8 @@ export interface EditorAdapter {
   applyOperations?(request: EditorApplyOperationsRequest, signal: AbortSignal): Promise<EditorApplyOperationsResult>;
   prepareRelease(request: EditorReleaseRequest, signal: AbortSignal): Promise<EditorReleasePlan>;
   release(request: EditorReleasePlan, signal: AbortSignal): Promise<EditorReleaseResult>;
+  /** Studio 内サイト用。保存済みの現行下書きの公開、または履歴版の復元を1回の要求で行う。 */
+  publishPageNow?(request: { target: EditorTarget; action: "publish" | "restore"; revision?: number }, signal: AbortSignal): Promise<EditorReleaseResult>;
   /** Same-site, multi-page publish. Hosts without all three methods keep the single-page UI. */
   prepareReleaseSet?(items: readonly EditingPageReleaseSetItem[], signal: AbortSignal): Promise<EditingPageReleaseSetPlan>;
   releaseSet?(plan: EditingPageReleaseSetPlan, signal: AbortSignal): Promise<EditingPageReleaseSetApplyResult>;

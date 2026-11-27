@@ -19,6 +19,9 @@ niho-edit --origin <https-origin> --site <site-id> preview <page-id> --locale <l
 niho-edit [--studio] --origin <https-origin> --site <site-id> save <page-id> --locale <locale> --json <snapshot-file|->
 niho-edit [--studio] --origin <https-origin> --site <site-id> release-plan <page-id> --locale <locale> --action <publish|rollback> (--json <snapshot-file|-> | --expected-version <version>) [--revision <number>]
 niho-edit [--studio] --origin <https-origin> --site <site-id> release <page-id> --locale <locale> --json <plan-file|-> --operation-id <uuid-v4>
+niho-edit [--studio] --origin <https-origin> --site <site-id> publish <page-id> --locale <locale>
+niho-edit [--studio] --origin <https-origin> --site <site-id> history <page-id> --locale <locale> [--cursor <cursor>]
+niho-edit [--studio] --origin <https-origin> --site <site-id> restore <page-id> <revision> --locale <locale>
 niho-edit --origin <https-origin> --site <site-id> page-release-set-plan --json <items-file|-> --operation-id <uuid-v4>
 niho-edit --origin <https-origin> --site <site-id> page-release-set-apply --json <plan-file|->
 niho-edit --origin <https-origin> --site <site-id> page-release-set-status --operation-id <uuid-v4>

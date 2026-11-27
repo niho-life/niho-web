@@ -88,12 +88,12 @@ test("editor session uses the supplied site draft without a page style-version f
   assert.equal(result.session.selfContained, false);
 });
 
-test("editor session reuses a prefetched page without a page style dependency", async () => {
+test("editor session accepts a supplied page snapshot without a page style dependency", async () => {
   const dependent = structuredClone(source);
   dependent.body[0].style = { base: { color: { token: "siteInk" } } };
   let pageReads = 0;
   const result = await readEditorSession({
-    readDocument: async () => { pageReads++; throw new Error("should use prefetched page"); },
+    readDocument: async () => { pageReads++; throw new Error("should use the supplied page snapshot"); },
     readSiteSettings: async () => ({ settings: { title: "Demo", locale: "ja", tokens: { siteInk: { type: "color", value: "#123456" } } }, version: "draft-2" })
   }, target, new AbortController().signal, {}, undefined, {
     snapshot: snapshot(dependent),
@@ -154,6 +154,26 @@ test("editor page cache keeps a clean last-known session and keys it by componen
   assert.equal(cache.getLatest(target, components, -1), undefined, "expired sessions are not served as the last-known page");
 });
 
+test("editor page cache reuses its clean session on a matching ETag", async () => {
+  const cache = new EditorSessionCache(2), controller = new AbortController(), validators = [];
+  const adapter = {
+    readDocument: async () => { throw new Error("conditional reads should be used"); },
+    readDocumentIfChanged: async (_target, etag) => {
+      validators.push(etag);
+      return etag
+        ? { status: "not-modified", etag }
+        : { status: "modified", snapshot: snapshot(), etag: '"page-v1"' };
+    }
+  };
+  const first = await readEditorSession(adapter, target, controller.signal, {}, undefined, { cache });
+  const cached = cache.getLatest(target);
+  assert.equal(cached.etag, '"page-v1"');
+  const unchanged = await readEditorSession(adapter, target, controller.signal, {}, undefined, { cache, cached });
+  assert.strictEqual(unchanged.session.history.present, cached.session.history.present);
+  assert.deepEqual(validators, [undefined, '"page-v1"']);
+  assert.equal(first.session.history.present.title, source.title);
+});
+
 test("editor page cache can invalidate the last-known session after a server-side localization change", async () => {
   const cache = new EditorSessionCache(2), controller = new AbortController();
   const components = { schemaVersion: 1, siteId: target.siteId, revision: 1, tokens: {}, components: [] };
@@ -174,16 +194,16 @@ test("editor page cache can remember a newly acknowledged saved session", async 
   assert.deepEqual(cache.getLatest(target, components)?.session.history.past, []);
 });
 
-test("editor page cache retains the site-settings snapshot with a prefetched session", async () => {
+test("editor page cache retains the site-settings snapshot with a supplied snapshot", async () => {
   const cache = new EditorSessionCache(2), controller = new AbortController();
   const siteSettings = { settings: { title: "Demo", locale: "ja" }, version: "s1" };
   const adapter = {
-    readDocument: async () => { throw new Error("should use the prefetched snapshot"); },
+    readDocument: async () => { throw new Error("should use the supplied snapshot"); },
     readSiteSettings: async () => siteSettings
   };
-  const prefetchedSnapshot = snapshot();
-  const first = await readEditorSession(adapter, target, controller.signal, {}, undefined, { cache, snapshot: prefetchedSnapshot });
-  const cached = await readEditorSession(adapter, target, controller.signal, {}, undefined, { cache, snapshot: prefetchedSnapshot });
+  const suppliedSnapshot = snapshot();
+  const first = await readEditorSession(adapter, target, controller.signal, {}, undefined, { cache, snapshot: suppliedSnapshot });
+  const cached = await readEditorSession(adapter, target, controller.signal, {}, undefined, { cache, snapshot: suppliedSnapshot });
   assert.deepEqual(cached.siteSettings, first.siteSettings);
   assert.equal(cached.siteSettings.version, "s1");
 });

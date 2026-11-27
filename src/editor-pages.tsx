@@ -97,7 +97,7 @@ function PageMenu({ page, open, setOpen, disabled, start, actions, pathEditable 
 }
 
 /** 左レールのページ一覧。検索、パスごとのフォルダ、公開状態の点、行ごとの操作を表示する。行はページ名とパスの 1 行にし、言語ごとの翻訳状態は出さない（翻訳画面で見る）。 */
-export function PagePanel({ pages, current, disabled, operations, actions, pathEditable = true, operationsDisabled, unsaved, select, preload, start, releaseSet, releaseSetDisabled = false, children }: {
+export function PagePanel({ pages, current, disabled, operations, actions, pathEditable = true, operationsDisabled, unsaved, select, start, releaseSet, releaseSetDisabled = false, children }: {
   pages: readonly EditorPage[]; current: EditorTarget | undefined; disabled: boolean;
   /** 見出しの下に置くホスト側の部品（サイトの選択など）。 */
   children?: ReactNode;
@@ -106,7 +106,7 @@ export function PagePanel({ pages, current, disabled, operations, actions, pathE
   /** 複数ページ公開を実装したホストだけ指定する。 */
   releaseSet?: (pages: readonly EditorPage[]) => void;
   releaseSetDisabled?: boolean;
-  select: (page: EditorPage) => void; preload?: (page: EditorPage) => void; start: (start: PageChangeStart) => void;
+  select: (page: EditorPage) => void; start: (start: PageChangeStart) => void;
 }) {
   const [searching, setSearching] = useState(false), [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState<readonly string[]>([]), [menu, setMenu] = useState("");
@@ -147,7 +147,7 @@ export function PagePanel({ pages, current, disabled, operations, actions, pathE
       {releaseSet && kind !== "shared" && <label className="e-page-release-select" title="公開変更セットの対象にする"><input type="checkbox" aria-label={`「${page.title}」を一括公開の対象にする`} checked={releaseSelection.includes(key)} disabled={disabled || releaseSetDisabled || !releaseSelection.includes(key) && releaseSelection.length >= 50}
         onChange={(event) => setReleaseSelection((previous) => event.target.checked ? [...previous, key] : previous.filter((entry) => entry !== key))} /></label>}
       <button type="button" className="e-page" aria-current={current && sameTarget(page, current) ? "page" : undefined} style={{ paddingLeft: 8 + node.depth * 14 }}
-        disabled={disabled} title={[page.title, secondary, status.text].filter(Boolean).join(" · ")} onPointerEnter={() => preload?.(page)} onFocus={() => preload?.(page)} onClick={() => select(page)}>
+        disabled={disabled} title={[page.title, secondary, status.text].filter(Boolean).join(" · ")} onClick={() => select(page)}>
         <Icon name={kind === "template" ? "template" : page.path === "/" ? "home" : "page"} />
         {/* STUDIO と同じく、ページ名とパスを 1 行に並べる。状態は札ではなく右端の点で示し（緑＝公開中・灰＝未公開・輪郭＝非公開）、文言はツールチップと読み上げに回す。 */}
         <span className="e-page-label"><span className="e-page-name">{page.title}</span>{secondary && <span className="e-page-path">{secondary}</span>}</span>

@@ -321,16 +321,18 @@ export function createProjectEditorAdapter(adapter: EditorAdapter, projectInput:
       const { readOnly: rawReadOnly, ...rest } = snapshot, readOnly = parseEditorReadOnly(rawReadOnly);
       return { ...rest, ...(readOnly ? { readOnly } : {}) };
     },
-    ...(adapter.prefetchDocument ? {
-      async prefetchDocument(target, signal) {
+    ...(adapter.readDocumentIfChanged ? {
+      async readDocumentIfChanged(target, etag, signal) {
         const checkedTarget = targetForProject(target, site);
-        const snapshot = structuredClone(await adapter.prefetchDocument!(checkedTarget, signal));
+        const result = await adapter.readDocumentIfChanged!(checkedTarget, etag, signal);
+        if (result.status === "not-modified") return result;
+        const snapshot = structuredClone(result.snapshot);
         assertDocumentTarget(snapshot.document, checkedTarget);
         assertPresentationTarget(snapshot.presentation, checkedTarget);
         const { readOnly: rawReadOnly, ...rest } = snapshot, readOnly = parseEditorReadOnly(rawReadOnly);
-        return { ...rest, ...(readOnly ? { readOnly } : {}) };
+        return { status: "modified" as const, snapshot: { ...rest, ...(readOnly ? { readOnly } : {}) }, ...(result.etag ? { etag: result.etag } : {}) };
       }
-    } satisfies Pick<EditorAdapter, "prefetchDocument"> : {}),
+    } satisfies Pick<EditorAdapter, "readDocumentIfChanged"> : {}),
     ...(adapter.discoverPageNodeNames ? {
       discoverPageNodeNames: (target, signal) => adapter.discoverPageNodeNames!(targetForProject(target, site), signal)
     } satisfies Pick<EditorAdapter, "discoverPageNodeNames"> : {}),
@@ -383,6 +385,18 @@ export function createProjectEditorAdapter(adapter: EditorAdapter, projectInput:
       }
       return result;
     },
+    ...(adapter.publishPageNow ? { async publishPageNow(request, signal) {
+      const target = targetForProject(request.target, site);
+      if (request.action === "publish" ? request.revision !== undefined
+        : request.action !== "restore" || !Number.isSafeInteger(request.revision) || request.revision! < 1) throw new Error("公開操作と版の指定が一致しません。");
+      const result = await adapter.publishPageNow!({ target, action: request.action, ...(request.revision === undefined ? {} : { revision: request.revision }) }, signal);
+      if (result.status !== "released") return result;
+      const snapshot = structuredClone(result.snapshot);
+      assertDocumentTarget(snapshot.document, target);
+      assertPresentationTarget(snapshot.presentation, target);
+      const { readOnly: rawReadOnly, ...rest } = snapshot, readOnly = parseEditorReadOnly(rawReadOnly);
+      return { status: "released", snapshot: { ...rest, ...(readOnly ? { readOnly } : {}) } };
+    } } : {}),
     ...(adapter.prepareReleaseSet && adapter.releaseSet && adapter.releaseSetStatus ? {
       async prepareReleaseSet(items, signal) {
         const checked = releaseSetItemsForProject(items, site);

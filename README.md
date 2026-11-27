@@ -17,12 +17,12 @@ Node.js 22 以上を使います。
 | @niho/web | 文書型と標準描画 |
 | @niho/web/core | 文書検証と CSS |
 | @niho/web/normalize | 文書の正規化 |
-| @niho/web/editing-api | ページ・サイト共通スタイルの共通編集 wire 契約 |
-| @niho/web/editing-client | GUI / `niho-edit` 共通の編集 API client |
+| @niho/web/editing-api | ページ・版履歴・1操作公開・サイト共通スタイルの共通編集 wire 契約 |
+| @niho/web/editing-client | GUI / `niho-edit` 共通の編集 API client と条件付き読取 |
 | @niho/web/react | React renderer |
 | @niho/web/presentation-runtime | 公開ページの対話機能 |
 | @niho/web/server | HTML 描画 |
-| @niho/web/editor | Studio 編集画面 |
+| @niho/web/editor | Studio 編集画面と再検証付きページ切替 |
 | @niho/web/editor-model | React 不要の編集操作 |
 | @niho/web/cms-delivery | CMS 公開 |
 | @niho/web/cms-v2 | CMS 定義 |
