@@ -105,8 +105,10 @@ function changed(result: D1Result<unknown> | undefined): boolean {
 function safeTitle(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0 && value.length <= 120 && !/[\u0000-\u001f\u007f]/u.test(value);
 }
-function managedSeoWarnings(document: PageDocument): { code: "missing-description" | "missing-alt" | "japanese-in-english"; message: string }[] {
-  const warnings: { code: "missing-description" | "missing-alt" | "japanese-in-english"; message: string }[] = [];
+type ManagedSeoWarning = { code: "missing-description" | "missing-alt" | "japanese-in-english" | "duplicate-title" | "duplicate-description" | "broken-internal-link"; message: string };
+
+function managedSeoWarnings(document: PageDocument): ManagedSeoWarning[] {
+  const warnings: ManagedSeoWarning[] = [];
   if (!document.meta?.description?.trim()) warnings.push({ code: "missing-description", message: "検索結果に出す説明文がありません。" });
   const visit = (nodes: readonly PageNode[]) => {
     for (const node of nodes) {
@@ -121,6 +123,93 @@ function managedSeoWarnings(document: PageDocument): { code: "missing-descriptio
   if (document.locale.toLowerCase().startsWith("en") && /[ぁ-ゖァ-ヺ一-龯]/u.test(pageText(document.body))) {
     warnings.push({ code: "japanese-in-english", message: "英語ページの本文に日本語が残っています。" });
   }
+  return warnings.slice(0, 100);
+}
+
+function seoComparisonKey(value: string | undefined): string | null {
+  const normalized = value?.trim().replace(/\s+/gu, " ").toLocaleLowerCase();
+  return normalized || null;
+}
+
+function collectInternalLinks(nodes: readonly PageNode[], output: string[] = []): string[] {
+  for (const node of nodes) {
+    if (node.type !== "element") continue;
+    if (node.tag === "a" && typeof node.attrs?.href === "string") output.push(node.attrs.href);
+    collectInternalLinks(node.children, output);
+  }
+  return output;
+}
+
+function normalizedRoutePath(path: string, prefix: string): string {
+  let local = path;
+  if (prefix && (local === prefix || local === `${prefix}/`)) local = "/";
+  else if (prefix && local.startsWith(`${prefix}/`)) local = local.slice(prefix.length);
+  return local.length > 1 ? local.replace(/\/+$/u, "") : local;
+}
+
+async function managedReleaseSeoWarnings(db: ManagedD1, row: ManagedPageRow, document: PageDocument, origin: string,
+  store?: CmsStore, actor?: ManagedActor): Promise<ManagedSeoWarning[]> {
+  let siteDescription: string | undefined;
+  try {
+    const settings = await db.prepare("SELECT public_policy_json FROM managed_sites WHERE site_id = ?1 LIMIT 1")
+      .bind(row.site_id).first<{ public_policy_json: string }>();
+    const policy = settings && record(JSON.parse(settings.public_policy_json) as unknown), seo = record(policy?.seo);
+    if (typeof seo?.description === "string" && seo.description.trim()) siteDescription = seo.description;
+  } catch { /* settings are optional for non-blocking warnings */ }
+  const warnings = managedSeoWarnings(document).filter(({ code }) => code !== "missing-description" || !siteDescription);
+  const peers = await db.prepare(`SELECT mp.page_id, mp.locale, COALESCE(publication.published_path, mp.path) AS path, version.document_json
+    FROM managed_pages AS mp
+    JOIN managed_page_publications AS publication ON publication.id = mp.published_publication_id
+    JOIN managed_page_versions AS version ON version.site_id = mp.site_id AND version.page_id = mp.page_id
+      AND version.locale = mp.locale AND version.revision = mp.published_revision
+    WHERE mp.site_id = ?1 AND mp.visibility = 'public' AND mp.published_revision IS NOT NULL
+    ORDER BY publication.published_path, mp.locale LIMIT 500`).bind(row.site_id).all<{
+      page_id: string; locale: string; path: string; document_json: string;
+    }>();
+  const peerDocuments: { pageId: string; locale: string; path: string; document: PageDocument }[] = [];
+  if (peers.success) for (const peer of peers.results ?? []) try {
+    const other = parsePageDocument(JSON.parse(peer.document_json) as unknown, managedBlockContracts);
+    if (other.siteId === row.site_id && other.pageId === peer.page_id && other.locale === peer.locale) {
+      peerDocuments.push({ pageId: peer.page_id, locale: peer.locale, path: peer.path, document: other });
+    }
+  } catch { /* invalid historical documents are ignored by non-blocking SEO warnings */ }
+
+  if (!document.meta?.noindex) {
+    const title = seoComparisonKey(document.title), description = seoComparisonKey(document.meta?.description ?? siteDescription);
+    for (const peer of peerDocuments) {
+      if (peer.pageId === row.page_id && peer.locale === row.locale || peer.locale !== row.locale || peer.document.meta?.noindex) continue;
+      if (title && title === seoComparisonKey(peer.document.title)) warnings.push({ code: "duplicate-title", message: `公開ページ「${peer.path}」と title が重複しています。` });
+      if (description && description === seoComparisonKey(peer.document.meta?.description ?? siteDescription)) warnings.push({ code: "duplicate-description", message: `公開ページ「${peer.path}」と description が重複しています。` });
+    }
+  }
+
+  const prefix = row.public_domain ? "" : `/s/${row.slug}`;
+  const publicUrl = managedPageUrl(origin, row.slug, row.path, row.public_domain);
+  const knownPaths = new Set([row.path, ...peerDocuments.filter((peer) => peer.locale === row.locale).map((peer) => peer.path)]
+    .map((path) => normalizedRoutePath(path, prefix)));
+  const templatePaths: string[] = [];
+  if (store && actor) try {
+    const site = await cmsSite(store, actor, row);
+    if (site) {
+      const routes = await store.routeTable(site, "cms.read", row.locale);
+      for (const route of routes.reservations) {
+        if (["fixed-page", "cms-item", "redirect"].includes(route.kind)) knownPaths.add(normalizedRoutePath(route.path, prefix));
+        else if (route.kind === "template") templatePaths.push(normalizedRoutePath(route.path, prefix));
+      }
+    }
+  } catch { /* CMS route lookup is optional for non-blocking warnings */ }
+
+  for (const href of collectInternalLinks(document.body)) try {
+    if (!href.trim() || href.startsWith("#") || href.startsWith("//")) continue;
+    const rootRelative = href.startsWith("/") && prefix ? `${prefix}${href}` : href;
+    const target = new URL(rootRelative, publicUrl);
+    const base = new URL(publicUrl);
+    if (target.origin !== base.origin || !["https:", "http:"].includes(target.protocol)) continue;
+    const path = normalizedRoutePath(target.pathname, prefix);
+    if (!knownPaths.has(path) && !templatePaths.some((template) => matchesTemplatePath(template, path))) {
+      warnings.push({ code: "broken-internal-link", message: `公開中のページ・CMS route が見つかりません: ${path}` });
+    }
+  } catch { /* malformed links are handled by document validation */ }
   return warnings.slice(0, 100);
 }
 function opaqueVersion(): string { return `p.${crypto.randomUUID()}`; }
@@ -742,7 +831,9 @@ async function prepareRelease(request: Request, db: ManagedD1, actor: ManagedAct
   const checked = body && releaseRequest(body, row);
   if (!checked) return json({ error: "invalid_request" }, 400);
   const sourceRevision = checked.action === "publish" ? row.current_revision : checked.revision!;
-  const warnings = checked.action === "publish" ? managedSeoWarnings(parsePageDocument(JSON.parse(row.document_json), managedBlockContracts)) : [];
+  const warnings = checked.action === "publish"
+    ? await managedReleaseSeoWarnings(db, row, parsePageDocument(JSON.parse(row.document_json), managedBlockContracts), origin, store, actor)
+    : [];
   let cmsReleaseId: string | null = null, cmsSchemaRevision: string | null = null, cmsRouteTableRevision: string | null = null;
   if (checked.action === "rollback") {
     const published = await db.prepare(`SELECT cms_release_id, cms_schema_revision FROM managed_page_publications

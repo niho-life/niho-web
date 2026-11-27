@@ -445,7 +445,21 @@ testWithD1("managed SEO renders alternates and JSON-LD, publishes discovery file
   const aboutPlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", api + "/page-changes/prepare", { change: aboutChange }), 200);
   const aboutCreated = await body(await h.send(MANAGEMENT_ORIGIN, "POST", api + "/page-changes/apply", { change: aboutChange, confirmationToken: aboutPlan.confirmationToken }), 200);
   const about = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/${aboutCreated.page.pageId}`), 200);
-  await release(aboutCreated.page.pageId, "ja", about.version);
+  about.document.title = "SEO Fixture";
+  about.document.meta = { description: "日本語の説明" };
+  about.document.body[0].children.push({ type: "element", id: "missing-link", tag: "a", attrs: { href: "/not-published" },
+    children: [{ type: "text", text: "未公開ページ" }] });
+  const aboutSaved = await body(await h.send(MANAGEMENT_ORIGIN, "PUT", `${api}/${aboutCreated.page.pageId}/draft`,
+    { expectedVersion: about.version, document: about.document }), 200);
+  const aboutTarget = { siteId: site.siteId, pageId: aboutCreated.page.pageId, locale: "ja" };
+  const aboutReleasePlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/${aboutCreated.page.pageId}/release-plan`,
+    { target: aboutTarget, expectedVersion: aboutSaved.version, action: "publish" }), 200);
+  const warningCodes = aboutReleasePlan.warnings.map(({ code }) => code);
+  assert.ok(warningCodes.includes("duplicate-title"));
+  assert.ok(warningCodes.includes("duplicate-description"));
+  assert.ok(warningCodes.includes("broken-internal-link"));
+  await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/${aboutCreated.page.pageId}/release`,
+    { expectedVersion: aboutSaved.version, confirmationToken: aboutReleasePlan.confirmationToken }), 200);
 
   const html = await (await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/`)).text();
   assert.match(html, /hreflang="en" href="https:\/\/sites\.example\/s\/seo-fixture\/en"/u);
@@ -466,7 +480,7 @@ testWithD1("managed SEO renders alternates and JSON-LD, publishes discovery file
   assert.match(await (await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/llms.txt`)).text(), /English home/u);
   assert.match(await (await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/llms-full.txt`)).text(), /日本語の説明|# SEO Site Name/u);
   const siteDefaultPage = await (await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/about`)).text();
-  assert.match(siteDefaultPage, /<meta name="description" content="サイト共通の説明">/u);
+  assert.match(siteDefaultPage, /"description":"サイト共通の説明"/u);
   const upper = await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/ABOUT`);
   assert.equal(upper.status, 301);
   assert.equal(upper.headers.get("Location"), `${PUBLIC_ORIGIN}/s/seo-fixture/about`);
