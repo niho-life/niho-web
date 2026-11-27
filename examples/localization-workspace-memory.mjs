@@ -81,7 +81,7 @@ function summarize(item) {
   const states = item.units.map(unitState);
   const counted = states.filter((state) => state !== "source");
   // 項目の draft は返さない。今の原文に対応する訳がそろえば reviewed。
-  const state = item.excluded ? "excluded" : states.includes("missing") ? "untranslated" : states.includes("review-needed") ? "source-changed" : "reviewed";
+  const state = item.excluded ? "excluded" : states.includes("review-needed") ? "source-changed" : states.includes("missing") ? "untranslated" : "reviewed";
   return {
     key: item.key, groupId: item.groupId, title: item.title, path: item.path, ...(item.includedParts ? { includedParts: [...item.includedParts] } : {}), state, excludedReason: item.excluded,
     totalUnits: item.excluded ? 0 : counted.length, reviewedUnits: item.excluded ? 0 : counted.filter((entry) => entry === "draft" || entry === "reviewed").length,
@@ -366,10 +366,19 @@ export function createLocalizationMemory(options = {}) {
       const unit = find(itemKey).units.find((entry) => entry.unitId === unitId);
       unit.value = value; unit.editOrigin = unit.kind === "image" ? null : "MANUAL"; unit.version++; translate(unit); unit.updatedBy = "ほかの編集者（架空）"; unit.updatedAt = iso(); state.overviewVersion++;
     },
-    /** 原文が変わったことにする（原文の版が変わる）。 */
+    /** 日本語の下書きだけを変える。公開までは翻訳状態を変えない。 */
     changeSource(itemKey, unitId, source) {
-      const unit = find(itemKey).units.find((entry) => entry.unitId === unitId);
-      unit.previousSource = unit.source; unit.source = source; unit.sourceVersion = `s${Number(unit.sourceVersion.slice(1)) + 1}`; state.overviewVersion++;
+      const item = find(itemKey), unit = item.units.find((entry) => entry.unitId === unitId);
+      unit.pendingSource = structuredClone(source); item.sourceDraftPending = true; state.overviewVersion++;
+    },
+    /** 下書きを日本語公開版へ反映し、初めて古い訳を更新扱いにする。 */
+    publishSource(itemKey, unitId) {
+      const item = find(itemKey), unit = item.units.find((entry) => entry.unitId === unitId);
+      if (unit.pendingSource === undefined) return;
+      unit.previousSource = unit.source; unit.source = unit.pendingSource; delete unit.pendingSource;
+      unit.sourceVersion = `s${Number(unit.sourceVersion.slice(1)) + 1}`;
+      item.sourceDraftPending = item.units.some((entry) => entry.pendingSource !== undefined);
+      state.overviewVersion++;
     },
     setPermissions(list) { state.permissions = [...list]; },
     setBlockers(list) { state.blockersOverride = list; },

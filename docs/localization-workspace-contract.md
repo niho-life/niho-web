@@ -179,7 +179,7 @@ type LocalizationItemSummary = {
   excludedReason: string | null;  // state が excluded のときだけ・必須（例「英語版を作らない設定です」）
   totalUnits: number; reviewedUnits: number;    // 翻訳済み n/m。reviewedUnits は今の原文に対応する訳がある項目の数（reviewedUnits <= totalUnits）
   imagesUnreviewed: number;       // 旧い確認の名残。画面は使わない（鎌倉は常に 0）
-  sourceDraftPending: boolean;    // 原文のページまたは CMS に未公開の下書きがある。ホストは保存済み下書きを翻訳原文として取り込む
+  sourceDraftPending: boolean;    // 原文言語に未公開の下書きがある。翻訳の状態は item / unit が返す原文版に対して判定し、この値は注意表示に使う
   updatedAt: string | null; updatedBy: string | null;
 };
 

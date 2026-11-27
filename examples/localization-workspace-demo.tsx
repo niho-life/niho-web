@@ -40,6 +40,7 @@ function App() {
   const [generation, setGeneration] = useState(0);
   const [opened, setOpened] = useState<string | null>(start.itemKey ?? null);
   const [note, setNote] = useState("");
+  const [pendingSource, setPendingSource] = useState<{ itemKey: string; unitId: string } | null>(null);
   const [blockersCleared, setBlockersCleared] = useState(false);
   const navigate = (state: LocalizationNavigationState) => {
     setOpened(state.itemKey);
@@ -75,8 +76,18 @@ function App() {
         const target = firstTextUnit();
         if (!target) { setNote("先に 1 件を開いてください。"); return; }
         memory.changeSource(target.item.key, target.unit.unitId, `${target.unit.source}（改）`);
-        setNote(`「${target.item.title}」の「${target.unit.label}」の原文が変わったことにしました。`);
-      }}>原文が変わったことにする</button>
+        setPendingSource({ itemKey: target.item.key, unitId: target.unit.unitId });
+        setGeneration((value) => value + 1);
+        setNote(`「${target.item.title}」の「${target.unit.label}」を日本語の下書きで変更しました。公開すると英語が古い状態になります。`);
+      }}>日本語の下書きを変える</button>
+      <button type="button" disabled={!pendingSource} onClick={() => {
+        if (!pendingSource) return;
+        const item = memory.state.items.find((entry: { key: string }) => entry.key === pendingSource.itemKey);
+        memory.publishSource(pendingSource.itemKey, pendingSource.unitId);
+        setPendingSource(null);
+        setGeneration((value) => value + 1);
+        setNote(`「${item?.title ?? "項目"}」の日本語を公開しました。英語の状態を一覧で確認できます。`);
+      }}>日本語を公開する</button>
       <label><input type="checkbox" checked={blockersCleared} onChange={(event) => {
         memory.setBlockers(event.target.checked ? [] : null);
         setBlockersCleared(event.target.checked);
@@ -86,8 +97,8 @@ function App() {
     {embedded ? <LocalizationItemWorkspace key={generation} adapter={memory.adapter} itemKey={start.itemKey ?? "YWJvdXQ"}
       onBack={() => window.location.assign("/")} onOpenRelated={(itemKey) => window.location.assign(`/?embedded=1&item=${encodeURIComponent(itemKey)}`)}
       relatedPageLink={{ href: "/?item=aG9tZQ", label: "英語の詳細ページ" }} />
-      : <LocalizationWorkspace key={generation} adapter={memory.adapter} {...(start.itemKey && generation === 0 ? { initialItemKey: start.itemKey } : {})}
-        {...(start.view && generation === 0 ? { initialView: start.view } : {})} onNavigate={navigate} />}
+      : <LocalizationWorkspace key={generation} adapter={memory.adapter} {...(opened ? { initialItemKey: opened } : {})}
+        {...(start.view ? { initialView: start.view } : {})} onNavigate={navigate} />}
   </>;
 }
 

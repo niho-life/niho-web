@@ -398,6 +398,7 @@ test("conflict: another editor's change or a new source is never overwritten", a
     assert.equal(memory.state.items[0].units[0].value, "Seaside workshop!");
 
     memory.changeSource("aG9tZQ", "title", "海の見える小さな工房");
+    memory.publishSource("aG9tZQ", "title");
     await setText("title", "Small workshop");
     await advance(t, 50);
     assert.ok(card("title").querySelector(".lw-conflict").textContent.includes("原文が更新されました"));
