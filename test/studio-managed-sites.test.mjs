@@ -2389,15 +2389,23 @@ testWithD1("Kamakura import seeds a noindex verification site and preserves immu
           sourceBlocks: { KamakuraCmsList: { props: {} } }
         } }
     ],
-    cms: { schema: { ...schema, siteId, collections: schema.collections.map((collection) => ({ ...collection, fields: [...collection.fields,
-      { fieldId: "cover", key: "cover", label: "Cover", type: "image", placement: "main" }
-    ] })) }, items: [{ collectionId: "posts", itemId: "fixture-post", published: { ...values("Published post"), cover: derivedRef },
-      draft: { ...values("Draft post"), cover: aliasUrl }, translations: { targetLocale: "en",
+    cms: { schema: { ...schema, siteId, collections: schema.collections.map((collection) => collection.id === "posts" ? ({ ...collection, fields: [...collection.fields,
+      { fieldId: "cover", key: "cover", label: "Cover", type: "image", placement: "main" },
+      { fieldId: "related", key: "related", label: "Related", type: "reference", multiple: true, collectionId: "posts", placement: "main" }
+    ] }) : collection) }, items: [{ collectionId: "posts", itemId: "fixture-post", published: { ...values("Published post"), cover: derivedRef, related: ["fixture-related"] },
+      draft: { ...values("Draft post"), cover: aliasUrl, related: ["fixture-related"] }, translations: { targetLocale: "en",
         published: { title: { value: "Published translation", reviewed: true } }, draft: { title: { value: "Current translation", reviewed: false } }
-      } }] },
+      } },
+    { collectionId: "posts", itemId: "fixture-related", published: { ...values("Published related post", "published-related") },
+      draft: { ...values("Draft related post", "draft-related") } }] },
     redirects: [{ locale: "ja", fromPath: "/old", toPath: "/en" }],
     scheduled: [{ kind: "page", sourceUrl: origin + "/english", at: "2035-01-01T00:00:00.000Z" }]
   };
+  const missingReference = structuredClone(source);
+  missingReference.cms.items[0].draft.related = ["missing-source-item"];
+  const missingReferenceBytes = Buffer.from(JSON.stringify(missingReference));
+  const missingReferenceDigest = createHash("sha256").update(missingReferenceBytes).digest("hex");
+  await assert.rejects(() => prepareKamakuraSiteImport(missingReferenceBytes, missingReferenceDigest, target, embedConnections), /missing CMS item mapping/u);
   const bytes = Buffer.from(JSON.stringify(source)), digest = createHash("sha256").update(bytes).digest("hex");
   await assert.rejects(() => prepareKamakuraSiteImport(Buffer.concat([bytes, Buffer.from("\n")]), digest, target), /source_checksum_mismatch/);
   const prepared = await prepareKamakuraSiteImport(bytes, digest, target, embedConnections);
@@ -2447,12 +2455,12 @@ testWithD1("Kamakura import seeds a noindex verification site and preserves immu
   const snapshot = [...h.objects], counts = (table) => h.sqlite.prepare(`SELECT count(*) AS n FROM ${table}`).get().n;
   assert.deepEqual(await applyKamakuraSiteImport(prepared, MANAGEMENT_ORIGIN, h.ownerToken, h.fetch, loadAsset), result);
   assert.deepEqual([...h.objects], snapshot);
-  assert.equal(counts("managed_site_import_resources"), 4);
+  assert.equal(counts("managed_site_import_resources"), 5);
   assert.equal(counts("managed_site_import_asset_blobs"), 1);
   assert.deepEqual(Buffer.from(h.objects.get(`sites/${site.siteId}/migration/assets/${contentSha256}`)), media);
   assert.equal(counts("managed_embed_connections"), 1);
   assert.equal(counts("managed_page_versions"), 3);
-  assert.equal(counts("managed_cms_revisions"), 2);
+  assert.equal(counts("managed_cms_revisions"), 4);
   assert.equal(counts("managed_page_publications"), 0);
   assert.equal(counts("managed_cms_releases"), 0);
   assert.equal(counts("managed_cms_outbox"), 0);
@@ -2467,8 +2475,13 @@ testWithD1("Kamakura import seeds a noindex verification site and preserves immu
   const item = await site.read("cms.items.read", { collectionId: "posts", itemId: result.mapping.cmsItems[0].itemId });
   assert.equal(item.item.values.title, "Draft post");
   const importedItem = result.mapping.cmsItems[0];
+  const importedRelated = result.mapping.cmsItems.find(({ sourceItemId }) => sourceItemId === "fixture-related");
+  assert.ok(importedRelated);
+  assert.deepEqual(item.item.values.related, [importedRelated.itemId]);
   const publishedKey = `sites/${site.siteId}/items/ja/posts/${importedItem.itemId}/${importedItem.publishedRevision}.json`;
-  assert.equal(JSON.parse(h.objects.get(publishedKey)).values.title, "Published post");
+  const publishedItem = JSON.parse(h.objects.get(publishedKey));
+  assert.equal(publishedItem.values.title, "Published post");
+  assert.deepEqual(publishedItem.values.related, [importedRelated.itemId]);
   const { reference } = result.mapping.assets[0];
   assert.deepEqual(item.item.values.cover, reference);
   assert.deepEqual(pageSource[1].body[1].asset, reference);

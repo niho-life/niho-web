@@ -71,9 +71,10 @@ function mapPage(document, bySource, byUrl, publicAssetUrls, paths, sourceOrigin
   return parsePageDocument(document, managedBlockContracts);
 }
 
-function mapCmsValues(raw, collection, bySource, byUrl, path, sourceOrigin) {
+function mapCmsValues(raw, collection, bySource, byUrl, byItem, path, sourceOrigin) {
   const values = parseCmsValues(raw, collection, path);
-  for (const { fieldId, type } of collection.fields) {
+  for (const field of collection.fields) {
+    const { fieldId, type } = field;
     const value = values[fieldId];
     if (value == null || value === "") continue;
     const at = `${path}.${fieldId}`;
@@ -81,6 +82,11 @@ function mapCmsValues(raw, collection, bySource, byUrl, path, sourceOrigin) {
     if (type === "gallery") values[fieldId] = parseGalleryEntries(value, at).map((entry) => ({
       ...entry, image: entry.image === null ? null : mapAsset(entry.image, bySource, byUrl, at, sourceOrigin)
     }));
+    if (type === "reference") values[fieldId] = value.map((sourceItemId, index) => {
+      const targetItemId = byItem.get(cmsItemKey({ collectionId: field.collectionId, itemId: sourceItemId }));
+      if (!targetItemId) fail(`${at}[${index}]`, "missing CMS item mapping");
+      return targetItemId;
+    });
   }
   return parseCmsValues(values, collection, path);
 }
@@ -155,15 +161,25 @@ export async function prepareKamakuraSiteImport(bytes, expectedDigest, targetVal
     const sourceSchema = parseCmsSchema(rawCms.schema);
     if (sourceSchema.siteId !== sourceId) fail("source.cms.schema", "source site mismatch");
     schema = parseCmsSchema({ ...sourceSchema, siteId: target.siteId, schemaRevision: `import_${sourceDigest}`, retiredFields: [] });
-    for (const [index, value] of cmsArray(rawCms.items, "source.cms.items", 500).entries()) {
+    const sourceItems = cmsArray(rawCms.items, "source.cms.items", 500), targetItemIds = new Map();
+    for (const [index, value] of sourceItems.entries()) {
+      const at = `source.cms.items[${index}]`, raw = record(value, at);
+      keys(raw, ["collectionId", "itemId", "published", "draft", "translations"], at);
+      const collectionId = cmsId(raw.collectionId, `${at}.collectionId`), itemId = cmsId(raw.itemId, `${at}.itemId`);
+      const sourceKey = cmsItemKey({ collectionId, itemId });
+      if (targetItemIds.has(sourceKey)) fail(at, "duplicate original CMS item");
+      targetItemIds.set(sourceKey, await siteImportResourceId("item", target.siteId, sourceKey));
+    }
+    for (const [index, value] of sourceItems.entries()) {
       const at = `source.cms.items[${index}]`, raw = record(value, at);
       keys(raw, ["collectionId", "itemId", "published", "draft", "translations"], at);
       const collectionId = cmsId(raw.collectionId, `${at}.collectionId`), itemId = cmsId(raw.itemId, `${at}.itemId`);
       const collection = cmsCollection(schema, collectionId);
-      const item = { collectionId, itemId, published: raw.published === null ? null : mapCmsValues(raw.published, collection, bySource, byUrl, `${at}.published`, input.origin),
-        draft: mapCmsValues(raw.draft, collection, bySource, byUrl, `${at}.draft`, input.origin),
+      const item = { collectionId, itemId, published: raw.published === null ? null : mapCmsValues(raw.published, collection, bySource, byUrl, targetItemIds, `${at}.published`, input.origin),
+        draft: mapCmsValues(raw.draft, collection, bySource, byUrl, targetItemIds, `${at}.draft`, input.origin),
         ...(raw.translations === undefined ? {} : { translations: raw.translations }) };
-      const targetItemId = await siteImportResourceId("item", target.siteId, cmsItemKey(item));
+      const targetItemId = targetItemIds.get(cmsItemKey(item));
+      if (!targetItemId) fail(at, "missing target CMS item mapping");
       if (item.translations !== undefined) {
         const revision = (values, revision) => ({ siteId: target.siteId, schemaRevision: schema.schemaRevision, collectionId, itemId: targetItemId, locale, revision, values });
         await buildSiteImportCmsLocalization(schema, item.published === null ? null : revision(item.published, "public-import"),
