@@ -171,6 +171,16 @@ async function smokeDashboardApi(settings, get) {
   if (dashboard?.status !== "ready" || dashboard.projectId !== settings.project || dashboard.siteId !== settings.site || dashboard.members?.status !== "ready") {
     throw new ReleaseError("Dashboard API で対象サイトとメンバー一覧を確認できません。対象サイトとユーザーの権限を確認してください。");
   }
+  const configuredSitePath = /^\/s\/[^/]+\//u.exec(settings.publicPath)?.[0] ?? "";
+  const publishedUrl = dashboard.overview?.data?.publishedUrl;
+  let publishedSitePath = "";
+  try {
+    const published = new URL(publishedUrl);
+    if (published.origin === settings.publicOrigin) publishedSitePath = /^\/s\/[^/]+\//u.exec(published.pathname)?.[0] ?? "";
+  } catch { /* unavailable or invalid URL */ }
+  if (dashboard.overview?.status !== "ready" || !configuredSitePath || publishedSitePath !== configuredSitePath) {
+    throw new ReleaseError("Dashboard API の対象サイトと smoke の公開 path が一致しません。");
+  }
   return path;
 }
 

@@ -90,7 +90,8 @@ test("release smoke authenticates only the Studio requests and checks Dashboard 
     assert.equal(url.origin, settings.studioOrigin);
     assert.equal(options.headers["CF-Access-Token"], settings.token);
     if (url.pathname === "/api/session") return Response.json({ status: "authenticated", subject: "fixture-user", email: "fixture@example.test" });
-    if (url.pathname === `/api${path}/dashboard`) return Response.json({ status: "ready", projectId: settings.project, siteId: settings.site, members: { status: "ready" } });
+    if (url.pathname === `/api${path}/dashboard`) return Response.json({ status: "ready", projectId: settings.project, siteId: settings.site,
+      overview: { status: "ready", data: { publishedUrl: `${settings.publicOrigin}/s/example/` } }, members: { status: "ready" } });
     if (url.pathname === path) return ok(`<script type="module" src="${assets.entry}"></script>`, "text/html; charset=utf-8");
     if (url.pathname === assets.entry) return ok(assets.script, "application/javascript");
     if (url.pathname === assets.chunkPath) return ok(assets.chunk, "text/javascript; charset=utf-8");
@@ -104,6 +105,10 @@ test("release smoke authenticates only the Studio requests and checks Dashboard 
     ? ok("<html>unexpected page</html>", "text/html") : request(url, options)), /og:url/u);
   await assert.rejects(() => smokeStudio(settings, assets, (url, options) => url.endsWith("/dashboard")
     ? Response.json({ status: "forbidden" }) : request(url, options)), /メンバー一覧/u);
+  await assert.rejects(() => smokeStudio(settings, assets, (url, options) => url.endsWith("/dashboard")
+    ? Response.json({ status: "ready", projectId: settings.project, siteId: settings.site,
+      overview: { status: "ready", data: { publishedUrl: `${settings.publicOrigin}/s/other-site/` } }, members: { status: "ready" } })
+    : request(url, options)), /公開 path が一致/u);
 });
 
 test("Studio reports missing bindings and invalid settings on its first cron event", async (t) => {
