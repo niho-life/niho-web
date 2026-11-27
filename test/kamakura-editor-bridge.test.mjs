@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
-import { EDITING_OPERATIONS } from "@niho/web/editing-api";
+import { EDITING_OPERATIONS, parseEditingApiDiscovery } from "@niho/web/editing-api";
 import { createProjectEditorAdapter } from "../dist/project-editor-adapter.js";
 import { renderSitePageToHtml } from "@niho/web/server";
 
@@ -655,8 +655,14 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
   bindingResponseFactory = async (request) => {
     editingApiRequest = request;
     const claims = JSON.parse(Buffer.from(request.headers.get("Authorization").slice("Bearer ".length).split(".")[1], "base64url").toString("utf8"));
-    const path = new URL(request.url).pathname;
-    if (path.endsWith("/capabilities")) return Response.json({ apiVersion: "v1", siteId: "kamakura", operations: [] });
+    const upstreamUrl = new URL(request.url), path = upstreamUrl.pathname;
+    if (path.endsWith("/capabilities")) {
+      const siteStylesRequested = upstreamUrl.search === "?features=site.styles";
+      const operations = EDITING_OPERATIONS.filter(({ id }) => ["pages.read", "pages.apply"].includes(id)
+        || siteStylesRequested && id.startsWith("site.styles.")).map((operation) => siteStylesRequested && operation.id === "pages.apply"
+        ? { ...operation, path: `${operation.path}&features=site.styles` } : operation);
+      return Response.json({ apiVersion: "v1", siteId: "kamakura", operations });
+    }
     if (path.endsWith("/site.styles.read")) return Response.json({
       draft: { version: "draft-styles-v1", styles: { tokens: {} } },
       published: { version: "published-styles-v1", styles: { tokens: {} } }
@@ -715,6 +721,23 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
   const styleCapabilities = await callEditingApi("/sites/kamakura/capabilities?features=site.styles");
   assert.equal(styleCapabilities.status, 200);
   assert.equal(editingApiRequest.url, "https://kamakura.niho.life/api/edit/v1/sites/kamakura/capabilities?features=site.styles");
+  const parsedStyleCapabilities = parseEditingApiDiscovery(await styleCapabilities.json(), "kamakura");
+  assert.equal(parsedStyleCapabilities.operations.find(({ id }) => id === "pages.apply").path,
+    EDITING_OPERATIONS.find(({ id }) => id === "pages.apply").path);
+  assert.ok(parsedStyleCapabilities.operations.some(({ id }) => id === "site.styles.read"));
+  const validBindingResponseFactory = bindingResponseFactory;
+  bindingResponseFactory = async (request) => {
+    const response = await validBindingResponseFactory(request), requestUrl = new URL(request.url);
+    if (requestUrl.pathname.endsWith("/capabilities") && requestUrl.search === "?features=site.styles") {
+      const body = await response.json();
+      return Response.json({ ...body, operations: body.operations.map((operation) => operation.id === "pages.apply"
+        ? { ...operation, path: `${operation.path}&unexpected=1` } : operation) });
+    }
+    return response;
+  };
+  const invalidStyleCapabilities = await callEditingApi("/sites/kamakura/capabilities?features=site.styles");
+  assert.equal(invalidStyleCapabilities.status, 502, "unknown upstream path variants fail closed at the bridge");
+  bindingResponseFactory = validBindingResponseFactory;
   assert.deepEqual((await assertDelegationSignature(editingApiRequest)).scope, delegated.scope);
   const styleRead = await callEditingApi("/sites/kamakura/operations/site.styles.read");
   assert.equal(styleRead.status, 200);
