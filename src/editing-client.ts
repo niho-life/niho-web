@@ -149,7 +149,8 @@ export function createEditingApiSiteSettingsFacade(
     async readSiteSettings(requestSiteId, signal) {
       if (requestSiteId !== siteId) throw new TypeError("site mismatch");
       const snapshot = await client.readSiteStyles(signal);
-      return { version: snapshot.draft.version, settings: parseSiteSettings({ ...stableMetadata, ...snapshot.draft.styles }) };
+      return { version: snapshot.draft.version, publishedStylesVersion: snapshot.published.stylesVersion, sitePublicationEpoch: snapshot.sitePublicationEpoch,
+        settings: parseSiteSettings({ ...stableMetadata, ...snapshot.draft.styles }) };
     },
     async saveSiteSettings(request, signal) {
       if (request.siteId !== siteId) throw new TypeError("site mismatch");

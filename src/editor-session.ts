@@ -12,7 +12,8 @@ import { parseEnglishPublication } from "./english-publication.js";
 import { parseCmsPageBindings, type CmsPageBindingsDocument } from "./cms-page-bindings.js";
 
 export type EditorSession = { target: EditorTarget; history: EditorHistory; version: string; saved: string; hasSavedDraft?: boolean | undefined; locks: readonly EditorLock[]; releases: NonNullable<EditorSnapshot["releases"]>; readOnly?: EditorReadOnly; siteStyles?: SiteStyles; presentation?: SitePresentation; operationQueue: EditorOperationQueue; dependencyVersions: PageOperationVersions; englishPublication?: EditorSnapshot["englishPublication"]; cmsBindings?: CmsPageBindingsDocument | null; savedCmsBindings?: string; selfContained: boolean };
-export type EditorSessionLoad = { session: EditorSession; siteSettings?: { settings: ReturnType<typeof parseSiteSettings>; version: string }; warning?: string };
+type EditorSiteSettings = { settings: ReturnType<typeof parseSiteSettings>; version: string; publishedStylesVersion?: string; sitePublicationEpoch?: string };
+export type EditorSessionLoad = { session: EditorSession; siteSettings?: EditorSiteSettings; warning?: string };
 
 export class EditorSessionLoadError extends Error {
   constructor(readonly reason: "document" | "site-settings-required", message: string, options?: ErrorOptions) { super(message, options); this.name = "EditorSessionLoadError"; }
@@ -139,18 +140,26 @@ export class EditorSessionCache {
   clear(): void { this.entries.clear(); this.latest.clear(); }
 }
 
-export type EditorSessionReadOptions = { readonly cache?: EditorSessionCache; readonly snapshot?: EditorSnapshot; readonly siteSettings?: { readonly settings: ReturnType<typeof parseSiteSettings>; readonly version: string } };
+export type EditorSessionReadOptions = { readonly cache?: EditorSessionCache; readonly snapshot?: EditorSnapshot; readonly siteSettings?: EditorSiteSettings };
+
+function siteSettingsCacheVersion(snapshot: EditorSiteSettings | undefined): string | undefined {
+  return snapshot === undefined ? undefined : JSON.stringify([snapshot.version, snapshot.publishedStylesVersion ?? null, snapshot.sitePublicationEpoch ?? null]);
+}
 
 /** 文書と任意のサイト設定を独立取得し、設定が無くても単体検証できる文書だけ編集開始する。 */
 export async function readEditorSession(adapter: Pick<EditorAdapter, "readDocument" | "readSiteSettings">, target: EditorTarget, signal: AbortSignal, blocks: EditorBlockRegistry = {}, components?: ComponentLibrary, options: EditorSessionReadOptions = {}): Promise<EditorSessionLoad> {
   const settingsRead = options.siteSettings
     ? Promise.resolve().then(() => {
       if (typeof options.siteSettings!.version !== "string" || !options.siteSettings!.version) throw new Error("site settings version is required");
-      return { settings: parseSiteSettings(options.siteSettings!.settings), version: options.siteSettings!.version };
+      return { settings: parseSiteSettings(options.siteSettings!.settings), version: options.siteSettings!.version,
+        ...(options.siteSettings!.publishedStylesVersion === undefined ? {} : { publishedStylesVersion: options.siteSettings!.publishedStylesVersion }),
+        ...(options.siteSettings!.sitePublicationEpoch === undefined ? {} : { sitePublicationEpoch: options.siteSettings!.sitePublicationEpoch }) };
     })
     : adapter.readSiteSettings ? adapter.readSiteSettings(target.siteId, signal).then((snapshot) => {
       if (!snapshot || typeof snapshot.version !== "string" || !snapshot.version) throw new Error("site settings version is required");
-      return { settings: parseSiteSettings(snapshot.settings), version: snapshot.version };
+      return { settings: parseSiteSettings(snapshot.settings), version: snapshot.version,
+        ...(snapshot.publishedStylesVersion === undefined ? {} : { publishedStylesVersion: snapshot.publishedStylesVersion }),
+        ...(snapshot.sitePublicationEpoch === undefined ? {} : { sitePublicationEpoch: snapshot.sitePublicationEpoch }) };
     }) : Promise.resolve(undefined);
   // Start feature discovery from the site-settings read before the page request chooses its wire shape.
   const documentRead = options.snapshot ? Promise.resolve(options.snapshot) : adapter.readDocument(target, signal);
@@ -165,7 +174,9 @@ export async function readEditorSession(adapter: Pick<EditorAdapter, "readDocume
       if (!adapter.readSiteSettings) throw new Error("site settings cannot be refreshed");
       const refreshed = await adapter.readSiteSettings(target.siteId, signal);
       if (!refreshed || typeof refreshed.version !== "string" || !refreshed.version) throw new Error("site settings version is required");
-      siteSettings = { settings: parseSiteSettings(refreshed.settings), version: refreshed.version };
+      siteSettings = { settings: parseSiteSettings(refreshed.settings), version: refreshed.version,
+        ...(refreshed.publishedStylesVersion === undefined ? {} : { publishedStylesVersion: refreshed.publishedStylesVersion }),
+        ...(refreshed.sitePublicationEpoch === undefined ? {} : { sitePublicationEpoch: refreshed.sitePublicationEpoch }) };
       if (siteSettings.version !== pageStylesVersion(pageSnapshot)) pageSnapshot = await adapter.readDocument(target, signal);
       if (siteSettings.version !== pageStylesVersion(pageSnapshot)) throw new Error("page and site settings versions do not match");
     } catch (error) {
@@ -174,11 +185,11 @@ export async function readEditorSession(adapter: Pick<EditorAdapter, "readDocume
     }
   }
   if (settingsResult.status === "fulfilled") {
-    const cached = options.cache?.get(target, pageSnapshot, siteSettings?.version, components);
+    const cached = options.cache?.get(target, pageSnapshot, siteSettingsCacheVersion(siteSettings), components);
     if (cached) return cached;
     try {
       const loaded = { session: editorSessionFrom(pageSnapshot, target, blocks, components, siteSettings?.settings, !siteSettings), ...(siteSettings ? { siteSettings } : {}) };
-      options.cache?.set(target, pageSnapshot, siteSettings?.version, loaded, components);
+      options.cache?.set(target, pageSnapshot, siteSettingsCacheVersion(siteSettings), loaded, components);
       return loaded;
     } catch (error) {
       throw new EditorSessionLoadError("document", "文書を読み込めませんでした。現在の編集内容は保持されています。", { cause: error });

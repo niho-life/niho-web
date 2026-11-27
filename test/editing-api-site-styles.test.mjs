@@ -245,7 +245,7 @@ test("the EditorAdapter site-settings facade delegates its style slice to the co
     }
   }, siteId, { title: "Demo", locale: "ja" });
   assert.equal(facade.siteSettingsMetadataEditable, false);
-  assert.deepEqual(await facade.readSiteSettings(siteId), { version: "draft-7", settings: { title: "Demo", locale: "ja", ...initial } });
+  assert.deepEqual(await facade.readSiteSettings(siteId), { version: "draft-7", publishedStylesVersion: "published-4", sitePublicationEpoch: "epoch-7", settings: { title: "Demo", locale: "ja", ...initial } });
   assert.deepEqual(await facade.saveSiteSettings({ siteId, expectedVersion: "draft-7", settings: { title: "Demo", locale: "ja", ...initial } }),
     { status: "saved", version: "draft-8" });
   assert.deepEqual(saves, [{ expectedVersion: "draft-7", styles: initial }]);

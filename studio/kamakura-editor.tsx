@@ -233,7 +233,8 @@ function releaseMatches(plan: EditorReleasePlan, request: EditorReleaseRequest, 
   let target: EditorTarget;
   try { target = validTarget(plan.target); validTarget(request.target); }
   catch { return false; }
-  if (target.siteId !== request.target.siteId || target.pageId !== request.target.pageId || target.locale !== request.target.locale || !validVersion(plan.expectedVersion) || plan.expectedVersion !== request.expectedVersion || !validVersion(plan.presentationVersion) || plan.presentationVersion !== request.presentationVersion || plan.action !== request.action || plan.revision !== request.revision || plan.domain !== domain) return false;
+  if (target.siteId !== request.target.siteId || target.pageId !== request.target.pageId || target.locale !== request.target.locale || !validVersion(plan.expectedVersion) || plan.expectedVersion !== request.expectedVersion || !validVersion(plan.presentationVersion) || plan.presentationVersion !== request.presentationVersion || plan.action !== request.action || plan.revision !== request.revision || plan.domain !== domain
+    || plan.siteStylesRevision?.stage !== request.siteStylesRevision?.stage || plan.siteStylesRevision?.version !== request.siteStylesRevision?.version || plan.sitePublicationEpoch !== request.sitePublicationEpoch) return false;
   if (plan.action === "publish" ? plan.revision !== undefined : plan.action !== "rollback" || !Number.isSafeInteger(plan.revision) || plan.revision! <= 0) return false;
   if (typeof plan.confirmationToken !== "string" || !CONFIRMATION_TOKEN.test(plan.confirmationToken) || !Array.isArray(plan.changes) || plan.changes.length > 81) return false;
   return plan.changes.every((change) => !!change && typeof change.path === "string" && change.path.length <= 512 && typeof change.before === "string" && change.before.length <= 1_200 && typeof change.after === "string" && change.after.length <= 1_200);
@@ -426,8 +427,12 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
     prepareRelease: (input, signal) => request(signal, async () => {
       validTarget(input.target);
       if (!validVersion(input.expectedVersion) || !validVersion(input.presentationVersion) || (input.action === "publish" ? input.revision !== undefined : input.action !== "rollback" || !Number.isSafeInteger(input.revision) || input.revision! <= 0)) throw new Error("公開操作と版の指定が一致しません。");
+      if ((input.siteStylesRevision === undefined) !== (input.sitePublicationEpoch === undefined)
+        || input.siteStylesRevision !== undefined && (!validVersion(input.siteStylesRevision.version) || !validVersion(input.sitePublicationEpoch))) throw new Error("サイト共通スタイルの公開版を確認できません。");
       const plan = await editingApi.prepareRelease(input.target, { expectedVersion: input.expectedVersion, presentationVersion: input.presentationVersion,
-        action: input.action, ...(input.action === "rollback" ? { revision: input.revision } : {}) }, signal);
+        action: input.action, ...(input.action === "rollback" ? { revision: input.revision } : {}),
+        ...(input.siteStylesRevision === undefined ? {} : { siteStylesRevision: input.siteStylesRevision }),
+        ...(input.sitePublicationEpoch === undefined ? {} : { sitePublicationEpoch: input.sitePublicationEpoch }) }, signal);
       const parsed = parsePlan(plan, input, catalog.sites[0]!.domains[0]!);
       releaseOperationIds.set(parsed.confirmationToken, crypto.randomUUID());
       return parsed;
@@ -442,17 +447,19 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
       releaseOperationIds.delete(plan.confirmationToken);
       return { status: "released" as const, snapshot };
     })),
-    prepareReleaseSet: (items: readonly EditingPageReleaseSetItem[], signal: AbortSignal) => request(signal, async () => {
+    prepareReleaseSet: (items: readonly EditingPageReleaseSetItem[], signal: AbortSignal, sitePublicationEpoch?: string) => request(signal, async () => {
       if (items.length < 2 || items.length > 50) throw new Error("公開対象は2〜50ページにしてください。");
+      if (sitePublicationEpoch !== undefined && !validVersion(sitePublicationEpoch)) throw new Error("サイト共通スタイルの公開版を確認できません。");
       const seen = new Set<string>();
       for (const item of items) {
         const target = validTarget(item.target), key = `${target.siteId}:${target.pageId}:${target.locale}`;
         if (seen.has(key) || !validVersion(item.expectedVersion)
           || item.componentsVersion !== undefined && !validVersion(item.componentsVersion)
-          || item.presentationVersion !== undefined && !validVersion(item.presentationVersion)) throw new Error("公開変更セットの対象または版が正しくありません。");
+          || item.presentationVersion !== undefined && !validVersion(item.presentationVersion)
+          || item.stylesVersion !== undefined && !validVersion(item.stylesVersion)) throw new Error("公開変更セットの対象または版が正しくありません。");
         seen.add(key);
       }
-      return editingApi.preparePageReleaseSet(items, signal);
+      return editingApi.preparePageReleaseSet(items, signal, undefined, sitePublicationEpoch);
     }),
     releaseSet: (plan, signal) => conflict(() => request(signal, async () => editingApi.publishPageReleaseSet(plan, signal))),
     releaseSetStatus: (operationId, signal) => request(signal, async () => {

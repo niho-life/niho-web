@@ -324,16 +324,18 @@ export type SiteSettingsState = {
   settings: SiteSettings | undefined;
   /** site.styles の draft snapshot を識別する opaque version。 */
   version: string | undefined;
+  publishedStylesVersion: string | undefined;
+  sitePublicationEpoch: string | undefined;
   styleSaveEpoch: number; styles: SiteStyles; stylesDirty: boolean; latest: SiteSettings | undefined;
   editStyles: (styles: SiteStyles) => string | undefined;
   form: SiteForm; dirty: boolean; problem: string | undefined; canSave: boolean; busy: boolean;
   message: { text: string; alert: boolean } | null; conflict: boolean;
-  edit: (patch: Partial<SiteForm>) => void; reset: () => void; reload: () => void; acceptSnapshot: (snapshot: { settings: SiteSettings; version: string }) => void; save: () => Promise<void>;
+  edit: (patch: Partial<SiteForm>) => void; reset: () => void; reload: () => void; acceptSnapshot: (snapshot: { settings: SiteSettings; version: string; publishedStylesVersion?: string; sitePublicationEpoch?: string }) => void; save: () => Promise<void>;
 };
 /** サイト設定は文書と別に、opaque な version の楽観ロックで保存する。 */
 export function useSiteSettings(adapter: EditorAdapter, siteId: string, blocks: EditorBlockRegistry, components?: ComponentLibrary): SiteSettingsState {
   void blocks; void components;
-  const [loaded, setLoaded] = useState<{ siteId: string; settings: SiteSettings; version: string } | null>(null);
+  const [loaded, setLoaded] = useState<{ siteId: string; settings: SiteSettings; version: string; publishedStylesVersion?: string; sitePublicationEpoch?: string } | null>(null);
   const [status, setStatus] = useState<SiteSettingsState["status"]>("idle"), [form, setForm] = useState(emptyForm), [epoch, setEpoch] = useState(0);
   const [styleSaveEpoch, setStyleSaveEpoch] = useState(0);
   const [styles, setStyles] = useState<SiteStyles>({}), [latest, setLatest] = useState<SiteSettings>();
@@ -347,7 +349,10 @@ export function useSiteSettings(adapter: EditorAdapter, siteId: string, blocks: 
       if (controller.signal.aborted) return;
       if (!snapshot || typeof snapshot.version !== "string" || !snapshot.version) throw new Error("version is required");
       const settings = parseSiteSettings(snapshot.settings);
-      setLoaded({ siteId, settings, version: snapshot.version }); setForm(formFrom(settings)); setStyles(parseSiteStyles(settings)); setStatus("ready");
+      setLoaded({ siteId, settings, version: snapshot.version,
+        ...(snapshot.publishedStylesVersion === undefined ? {} : { publishedStylesVersion: snapshot.publishedStylesVersion }),
+        ...(snapshot.sitePublicationEpoch === undefined ? {} : { sitePublicationEpoch: snapshot.sitePublicationEpoch }) });
+      setForm(formFrom(settings)); setStyles(parseSiteStyles(settings)); setStatus("ready");
     }).catch(() => { if (!controller.signal.aborted) setStatus("error"); });
     return () => controller.abort();
   }, [adapter, siteId, epoch]);
@@ -381,13 +386,19 @@ export function useSiteSettings(adapter: EditorAdapter, siteId: string, blocks: 
       if (controller.signal.aborted) return;
       if (result.status === "conflict") { try { const conflictSnapshot = await adapter.readSiteSettings!(loaded.siteId, controller.signal); if (!controller.signal.aborted) setLatest(parseSiteSettings(conflictSnapshot.settings)); } catch { /* 比較の取得に失敗しても入力を保持する。 */ } failed({ status: 409 }); return; }
       if (result.status !== "saved" || typeof result.version !== "string" || !result.version || result.version === loaded.version) throw new Error("version must advance");
-      setLoaded({ siteId: loaded.siteId, settings, version: result.version }); setForm(formFrom(settings)); setStyles(parseSiteStyles(settings)); if (stylesDirty) setStyleSaveEpoch((value) => value + 1); setLatest(undefined); setMessage({ text: "サイト設定を保存しました。", alert: false });
+      setLoaded({ siteId: loaded.siteId, settings, version: result.version,
+        ...(loaded.publishedStylesVersion === undefined ? {} : { publishedStylesVersion: loaded.publishedStylesVersion }),
+        ...(loaded.sitePublicationEpoch === undefined ? {} : { sitePublicationEpoch: loaded.sitePublicationEpoch }) });
+      setForm(formFrom(settings)); setStyles(parseSiteStyles(settings)); if (stylesDirty) setStyleSaveEpoch((value) => value + 1); setLatest(undefined); setMessage({ text: "サイト設定を保存しました。", alert: false });
     } catch (error) { if (!controller.signal.aborted) failed(error); }
     finally { if (saving.current === controller) { saving.current = null; setBusy(false); } }
   }
   return {
     supported: typeof adapter.readSiteSettings === "function", editable, metadataEditable, status, settings: loaded?.siteId === siteId ? loaded.settings : undefined,
-    version: loaded?.siteId === siteId ? loaded.version : undefined, form, dirty, problem, styles, stylesDirty, latest, styleSaveEpoch,
+    version: loaded?.siteId === siteId ? loaded.version : undefined,
+    publishedStylesVersion: loaded?.siteId === siteId ? loaded.publishedStylesVersion : undefined,
+    sitePublicationEpoch: loaded?.siteId === siteId ? loaded.sitePublicationEpoch : undefined,
+    form, dirty, problem, styles, stylesDirty, latest, styleSaveEpoch,
     editStyles: (next) => { if (!editable || status !== "ready" || busy) return "サイト設定を読み込んでから編集してください。"; try { setStyles(parseSiteStyles(next)); setMessage(null); return undefined; } catch { return "共通スタイルの参照・種類・値を確認してください。"; } },
     canSave: editable && dirty && !!parsed && !busy, busy, message, conflict,
     edit: (patch) => { setForm((previous) => ({ ...previous, ...patch })); setMessage(null); },
@@ -396,7 +407,10 @@ export function useSiteSettings(adapter: EditorAdapter, siteId: string, blocks: 
     acceptSnapshot: (snapshot) => {
       if (dirty || typeof snapshot.version !== "string" || !snapshot.version) return;
       const settings = parseSiteSettings(snapshot.settings);
-      setLoaded({ siteId, settings, version: snapshot.version }); setForm(formFrom(settings)); setStyles(parseSiteStyles(settings));
+      setLoaded({ siteId, settings, version: snapshot.version,
+        ...(snapshot.publishedStylesVersion === undefined ? {} : { publishedStylesVersion: snapshot.publishedStylesVersion }),
+        ...(snapshot.sitePublicationEpoch === undefined ? {} : { sitePublicationEpoch: snapshot.sitePublicationEpoch }) });
+      setForm(formFrom(settings)); setStyles(parseSiteStyles(settings));
       setStatus("ready"); setLatest(undefined); setMessage(null); setConflict(false);
     },
     save

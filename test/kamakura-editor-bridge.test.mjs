@@ -383,11 +383,12 @@ test("Kamakura Studio adapter routes multi-page plan, apply, and status through 
   const { createKamakuraAdapter } = await loadKamakuraEditor();
   const base = "/api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/operations";
   const items = [
-    { target: { siteId: "kamakura", pageId: "contact", locale: "ja" }, expectedVersion: "page-version-1", presentationVersion: "presentation-1" },
-    { target: { siteId: "kamakura", pageId: "business-plan", locale: "ja" }, expectedVersion: "page-version-2", presentationVersion: "presentation-2" }
+    { target: { siteId: "kamakura", pageId: "contact", locale: "ja" }, expectedVersion: "page-version-1", presentationVersion: "presentation-1", stylesVersion: "styles-1" },
+    { target: { siteId: "kamakura", pageId: "business-plan", locale: "ja" }, expectedVersion: "page-version-2", presentationVersion: "presentation-2", stylesVersion: "styles-2" }
   ];
   const calls = [];
   let operationId;
+  const sitePublicationEpoch = "epoch-1";
   const result = { status: "publishing", operationId: "pending", items: [
     { target: items[0].target, status: "released", version: "ps2:pv1-result" },
     { target: items[1].target, status: "pending" }
@@ -396,11 +397,15 @@ test("Kamakura Studio adapter routes multi-page plan, apply, and status through 
     const url = new URL(String(input), "https://studio.niho.life"), key = `${init.method ?? "GET"} ${url.pathname}`;
     const body = init.body ? JSON.parse(String(init.body)) : undefined;
     calls.push({ key, body });
+    if (key === `GET ${base.replace(/\/operations$/u, "")}/capabilities`) return Response.json({ apiVersion: "v1", siteId: "kamakura",
+      operations: EDITING_OPERATIONS.map((operation) => withSiteStylesFeature(operation)) });
+    if (key === `GET ${base}/site.styles.read`) return Response.json({ sitePublicationEpoch, draft: { version: "draft-styles-v1", styles: {} },
+      published: { stylesVersion: "published-styles-v1", styles: {} } });
     if (key === `POST ${base}/pages.release-set-plan`) {
       operationId = body.operationId;
       result.operationId = operationId;
       return Response.json({ plan: { siteId: "kamakura", operationId, confirmationToken: "00000000-0000-4000-8000-00000000000011111111-1111-4111-8111-111111111111",
-        domain: "https://next-kamakura.niho.life", items } });
+        domain: "https://next-kamakura.niho.life", sitePublicationEpoch, items } });
     }
     if (key === `POST ${base}/pages.release-set`) return Response.json(result);
     if (key === `GET ${base}/pages.release-set-status/${operationId}`) return Response.json({ status: "completed", operationId, httpStatus: 200, result });
@@ -408,16 +413,19 @@ test("Kamakura Studio adapter routes multi-page plan, apply, and status through 
   });
   const adapter = createKamakuraAdapter(contract.parseKamakuraCatalog(catalog()), () => {});
   const signal = new AbortController().signal;
-  const plan = await adapter.prepareReleaseSet(items, signal);
+  assert.equal((await adapter.readSiteSettings("kamakura", signal)).sitePublicationEpoch, sitePublicationEpoch);
+  const plan = await adapter.prepareReleaseSet(items, signal, sitePublicationEpoch);
   assert.equal(plan.operationId, operationId);
+  assert.equal(plan.sitePublicationEpoch, sitePublicationEpoch);
   assert.deepEqual(plan.items, items);
   assert.deepEqual(await adapter.releaseSet(plan, signal), result);
   assert.deepEqual(await adapter.releaseSetStatus(operationId, signal), { status: "completed", operationId, httpStatus: 200, result });
   assert.deepEqual(calls.map(({ key }) => key), [
-    `POST ${base}/pages.release-set-plan`, `POST ${base}/pages.release-set`, `GET ${base}/pages.release-set-status/${operationId}`
+    `GET ${base.replace(/\/operations$/u, "")}/capabilities`, `GET ${base}/site.styles.read`, `POST ${base}/pages.release-set-plan`, `POST ${base}/pages.release-set`, `GET ${base}/pages.release-set-status/${operationId}`
   ]);
-  assert.deepEqual(calls[0].body.items, items);
-  assert.equal(calls[1].body.confirmationToken, plan.confirmationToken);
+  assert.equal(calls[2].body.sitePublicationEpoch, sitePublicationEpoch);
+  assert.deepEqual(calls[2].body.items, items);
+  assert.equal(calls[3].body.confirmationToken, plan.confirmationToken);
 });
 
 test("Kamakura editor adapter は英語読取を共通 pages.read に揃え、保存・翻訳操作は既存の正本を使う", async (t) => {

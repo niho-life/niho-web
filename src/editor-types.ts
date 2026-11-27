@@ -183,7 +183,15 @@ export type EditorPageImpact = {
 };
 export type EditorPageChangePlan = { change: EditorPageChange; confirmationToken: string; domain: string; impact: EditorPageImpact; expectedVersion?: string; operationId?: string };
 export type EditorPageChangeResult = { status: "applied"; page: EditorPage; operationId?: string } | { status: "conflict" };
-export type EditorSiteSettingsSnapshot = { settings: unknown; version: string };
+export type EditorSiteSettingsSnapshot = {
+  settings: unknown;
+  /** CAS version for the editable site settings draft. */
+  version: string;
+  /** Immutable published style version used to bind page releases. */
+  publishedStylesVersion?: string;
+  /** Opaque generation of the current site publication pointer. */
+  sitePublicationEpoch?: string;
+};
 export type EditorSiteSettingsSaveResult = { status: "saved"; version: string } | { status: "conflict" };
 export type EditorBreakpointName = "Mini" | "Mobile" | "Tablet" | "Small" | "PC";
 export type EditorBreakpointSettings = {
@@ -226,7 +234,7 @@ export interface EditorAdapter {
   prepareRelease(request: EditorReleaseRequest, signal: AbortSignal): Promise<EditorReleasePlan>;
   release(request: EditorReleasePlan, signal: AbortSignal): Promise<EditorReleaseResult>;
   /** Same-site, multi-page publish. Hosts without all three methods keep the single-page UI. */
-  prepareReleaseSet?(items: readonly EditingPageReleaseSetItem[], signal: AbortSignal): Promise<EditingPageReleaseSetPlan>;
+  prepareReleaseSet?(items: readonly EditingPageReleaseSetItem[], signal: AbortSignal, sitePublicationEpoch?: string): Promise<EditingPageReleaseSetPlan>;
   releaseSet?(plan: EditingPageReleaseSetPlan, signal: AbortSignal): Promise<EditingPageReleaseSetApplyResult>;
   releaseSetStatus?(operationId: string, signal: AbortSignal): Promise<EditingPageReleaseSetStatus>;
   /** 省略したホストでは英語公開状態の明示更新・安全な再試行を表示しない。本文や version は更新しない。 */

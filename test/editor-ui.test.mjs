@@ -15,6 +15,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { PageEditor } = await import("@niho/web/editor");
+const { EditorSessionCache, readEditorSession } = await import("../dist/editor-session.js");
 const { createMemoryAssetLibrary } = await import("../examples/memory-asset-library.mjs");
 const { renderPageToHtml } = await import("@niho/web/server");
 const { parseResolvedAssets, uniqueAssetReferences } = await import("@niho/web/assets");
@@ -105,6 +106,22 @@ async function pointer(target, type, clientY) {
   await act(async () => target.dispatchEvent(event));
   await settle();
 }
+
+test("site publication context invalidates a cached editor session even when its draft version is unchanged", async () => {
+  const target = { siteId: "demo", pageId: "home", locale: "ja-JP" }, cache = new EditorSessionCache();
+  let settings = { settings: { title: "デモサイト", description: "説明", locale: "ja" }, version: "draft-v1", publishedStylesVersion: "published-v1", sitePublicationEpoch: "epoch-1" };
+  const adapter = {
+    readDocument: async () => ({ document: { ...structuredClone(fixture), ...target }, version: "page-v1", draftStylesVersion: "draft-v1" }),
+    readSiteSettings: async () => structuredClone(settings)
+  };
+  const signal = new AbortController().signal;
+  const first = await readEditorSession(adapter, target, signal, {}, undefined, { cache });
+  assert.equal(first.siteSettings.publishedStylesVersion, "published-v1");
+  settings = { ...settings, publishedStylesVersion: "published-v2", sitePublicationEpoch: "epoch-2" };
+  const refreshed = await readEditorSession(adapter, target, signal, {}, undefined, { cache });
+  assert.equal(refreshed.siteSettings.publishedStylesVersion, "published-v2");
+  assert.equal(refreshed.siteSettings.sitePublicationEpoch, "epoch-2");
+});
 
 
 test("page rows prefetch on focus and the matching snapshot serves the page switch", async () => {
@@ -1156,15 +1173,17 @@ test("multi-page release selects only pages with changes and can resume from the
   try { assert.equal(document.querySelector(".e-page-release-select"), null, "hosts without the optional methods do not show multi-page controls"); }
   finally { await absent.cleanup(); }
 
-  let plannedItems, applied = 0, statusReads = 0, operationId;
+  let plannedItems, preparedRequests = [], passedEpoch, applied = 0, statusReads = 0, operationId;
   const app = await setup({ adapter: {
     listPages: async () => pages,
-    readDocument: async (target) => ({ document: { ...structuredClone(fixture), ...target }, version: `v-${target.pageId}`, presentation: { version: `p-${target.pageId}` }, hasSavedDraft: true }),
-    prepareRelease: async (request) => ({ ...request, confirmationToken: `single-${request.target.pageId}`, domain: "https://example.test",
-      changes: request.target.pageId === "about" ? [] : [{ path: "title", before: "旧タイトル", after: request.target.pageId === "home" ? "ホーム更新" : "お問い合わせ更新" }] }),
-    prepareReleaseSet: async (items) => {
+    readSiteSettings: async () => ({ settings: { title: "デモサイト", description: "サイトの説明", locale: "ja" }, version: "draft-styles-v1", publishedStylesVersion: "published-styles-v1", sitePublicationEpoch: "epoch-1" }),
+    readDocument: async (target) => ({ document: { ...structuredClone(fixture), ...target }, version: `v-${target.pageId}`, draftStylesVersion: "draft-styles-v1", presentation: { version: `p-${target.pageId}` }, hasSavedDraft: true }),
+    prepareRelease: async (request) => { preparedRequests.push(structuredClone(request)); return { ...request, confirmationToken: `single-${request.target.pageId}`, domain: "https://example.test",
+      changes: request.target.pageId === "about" ? [] : [{ path: "title", before: "旧タイトル", after: request.target.pageId === "home" ? "ホーム更新" : "お問い合わせ更新" }] }; },
+    prepareReleaseSet: async (items, _signal, epoch) => {
+      passedEpoch = epoch;
       plannedItems = structuredClone(items); operationId = "550e8400-e29b-41d4-a716-446655440000";
-      return { siteId: "demo", operationId, confirmationToken: "set-token", domain: "https://example.test", items: structuredClone(items) };
+      return { siteId: "demo", operationId, confirmationToken: "set-token", domain: "https://example.test", sitePublicationEpoch: epoch, items: structuredClone(items) };
     },
     releaseSet: async (plan) => {
       applied++;
@@ -1190,6 +1209,9 @@ test("multi-page release selects only pages with changes and can resume from the
     assert.ok(!confirmation.textContent.includes("私たちについて"), "unchanged pages are excluded");
     assert.deepEqual(plannedItems.map((item) => item.target.pageId), ["home", "contact"]);
     assert.deepEqual(plannedItems.map((item) => item.presentationVersion), ["p-home", "p-contact"]);
+    assert.deepEqual(preparedRequests.map((request) => [request.siteStylesRevision?.version, request.sitePublicationEpoch]), [["published-styles-v1", "epoch-1"], ["published-styles-v1", "epoch-1"], ["published-styles-v1", "epoch-1"]]);
+    assert.deepEqual(plannedItems.map((item) => item.stylesVersion), ["published-styles-v1", "published-styles-v1"]);
+    assert.equal(passedEpoch, "epoch-1");
     const consent = confirmation.querySelector(".e-release-set-confirm input"); await press(consent);
     await click("2 ページを公開");
     assert.equal(applied, 1); assert.match(document.querySelector('[role="dialog"]').textContent, /ページは処理待ち/u);
@@ -1478,9 +1500,19 @@ test("an invalid reload keeps the current session when site settings also fail",
 
 test("release confirmation shows the public URL and the search result information", async () => {
   const doc = { ...structuredClone(fixture), meta: { description: "公開する説明文" } };
-  const host = pageHost(), app = await setup({ document: doc, adapter: host.adapter });
+  const host = pageHost(); let prepared;
+  const app = await setup({ document: doc, adapter: {
+    ...host.adapter,
+    readDocument: async (target) => ({ document: { ...doc, pageId: target.pageId, locale: target.locale }, version: "page-v1", draftStylesVersion: "draft-styles-v1" }),
+    readSiteSettings: async () => ({ settings: { title: "デモサイト", description: "サイトの説明", locale: "ja" }, version: "draft-styles-v1", publishedStylesVersion: "published-styles-v1", sitePublicationEpoch: "epoch-1" }),
+    prepareRelease: async (request) => { prepared = structuredClone(request); return { ...request, confirmationToken: "reviewed-token", domain: "https://example.test", changes: [{ path: "title", before: "現在の見出し", after: "編集した見出し" }] }; }
+  } });
   try {
+    await settle();
     await click("公開");
+    assert.ok(prepared);
+    assert.deepEqual(prepared.siteStylesRevision, { stage: "published", version: "published-styles-v1" });
+    assert.equal(prepared.sitePublicationEpoch, "epoch-1");
     const text = dialog().textContent;
     for (const expected of ["公開URL", "https://example.test/", "検索結果に出る情報", fixture.title, "公開する説明文", "表示する", "現在の見出し"]) assert.ok(text.includes(expected), expected);
   } finally { await app.cleanup(); }
