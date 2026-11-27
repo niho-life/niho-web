@@ -34,7 +34,7 @@ HTTPS origin は末尾に `/` を付けずに指定します。公開ページ�
 
 管理済みの JWT を実行環境に渡せる場合は、直接 `npm run studio:release` を実行します。Access service token は Dashboard のメンバー認証に使えません。`studio:deploy` も同じ配備手順を実行します。
 
-公開配信 Worker は `npm run studio:public:release` で別に配備します。この手順は `studio/public-sites.wrangler.json` から一時設定を作り、route を `PUBLIC_SITES_PREVIEW_ORIGIN` の host だけに限定します。D1 migration は適用せず、`0017`〜`0020` がすべて適用済みの場合だけ続行します。配備後は指定したページが HTML と `noindex, nofollow` を返すことを確認します。公開 origin には route を追加しません。
+公開配信 Worker は `npm run studio:public:release` で別に配備します。この手順は `studio/public-sites.wrangler.json` から一時設定を作り、route を `PUBLIC_SITES_PREVIEW_ORIGIN` の host だけに限定します。D1 migration は適用せず、`0016`〜`0021` がすべて適用済みの場合だけ続行します。配備後は指定したページが HTML と `noindex, nofollow` を返すことを確認します。公開 origin には route を追加しません。
 
 ## 配備と smoke
 

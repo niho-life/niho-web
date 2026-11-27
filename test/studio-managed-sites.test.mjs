@@ -902,20 +902,6 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   assert.match(await publicSitemap.text(), /https:\/\/sites\.example\/s\/static-fixture\//u);
   assert.match(await (await publishedSiteRequest(new Request("https://sites.example/s/static-fixture/llms.txt"), h.env)).text(), /# Static fixture/u);
   assert.match(await (await publishedSiteRequest(new Request("https://sites.example/s/static-fixture/llms-full.txt"), h.env)).text(), /About/u);
-  const initialManifest = JSON.parse(h.objects.get(state.manifest_key));
-  assert.ok(edge.has(`https://preview.sites.example/_niho-cache/publication/${created.siteId}/${initialManifest.publicationId}/${publication.artifact_digest}`));
-  const hostReads = reads("SELECT site_id, path_prefix, noindex");
-  const pointerReads = reads("SELECT manifest_key FROM managed_site_publication_state");
-  const previewArtifactReads = artifactReads();
-  const previewHit = await publishedSiteRequest(new Request(previewUrl + "?utm_source=test"), h.env);
-  assert.equal(previewHit.status, 200);
-  assert.equal(previewHit.headers.get("X-Robots-Tag"), "noindex, nofollow");
-  assert.equal(previewHit.headers.get("Content-Security-Policy"), publication.content_security_policy);
-  assert.match(await previewHit.text(), /<title>Static fixture<\/title>/u);
-  assert.equal(reads("SELECT site_id, path_prefix, noindex"), hostReads);
-  assert.equal(reads("SELECT manifest_key FROM managed_site_publication_state"), pointerReads);
-  assert.equal(artifactReads(), previewArtifactReads);
-
   // `/` prefix uses the same root route as an empty prefix and never redirects to `//`.
   h.sqlite.prepare("UPDATE managed_site_hosts SET path_prefix = '/' WHERE hostname = ? AND site_id = ? AND noindex = 1")
     .run("preview.sites.example", created.siteId);

@@ -36,7 +36,12 @@ test("public release writes a private Wrangler config routed only to the preview
     assert.deepEqual(config.routes, [{ pattern: "preview.example.test", custom_domain: true }]);
     assert.deepEqual(config.vars, { PUBLIC_SITES_PREVIEW_ORIGIN: env.PUBLIC_SITES_PREVIEW_ORIGIN });
     assert.equal(config.main, resolve(new URL("../studio/", import.meta.url).pathname, "managed-publication.ts"));
-    assert.ok(existsSync(join(directory, "migrations", "0020_managed_published_paths.sql")));
+    assert.ok(existsSync(join(directory, "migrations", "0016_static_page_publication.sql")));
+    assert.ok(existsSync(join(directory, "migrations", "0017_managed_page_sources.sql")));
+    assert.ok(existsSync(join(directory, "migrations", "0018_managed_public_embeds.sql")));
+    assert.ok(existsSync(join(directory, "migrations", "0019_managed_public_domains.sql")));
+    assert.ok(existsSync(join(directory, "migrations", "0020_managed_site_redirects.sql")));
+    assert.ok(existsSync(join(directory, "migrations", "0021_managed_published_paths.sql")));
     assert.equal(statSync(configPath).mode & 0o777, 0o600);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
