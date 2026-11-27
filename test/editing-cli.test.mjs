@@ -607,6 +607,49 @@ test("niho-edit reads and CAS-saves fixed page redirects through Studio", async 
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
+test("niho-edit reads and version-saves public delivery settings through Studio", async () => {
+  const route = `${origin}/api/edit/v2/sites/${siteId}/operations/site.public`;
+  const snapshot = {
+    domain: { hostname: null, noindex: true, version: "domain-v1" },
+    origins: { frameOrigins: [], resourceOrigins: [], version: "origins-v1" }
+  };
+  const next = { ...snapshot, domain: { ...snapshot.domain, hostname: "www.example.test" } };
+  const read = await run(["--studio", "site-public-read"], { studio: true, expectedMethod: "GET", expectedUrl: route + ".read",
+    result: { ...snapshot, futureResponseField: true } });
+  assert.equal(read.exitCode, 0, read.stderr);
+  assert.deepEqual(JSON.parse(read.stdout), snapshot);
+  const args = ["--studio", "site-public-save", "--json", "-"];
+  const saved = await run(args, {
+    studio: true, expectedMethod: "PUT", expectedUrl: route + ".save", stdin: JSON.stringify(next), expectedBody: next,
+    result: { ...next, domain: { ...next.domain, version: "domain-v2", futureDomainField: true } }
+  });
+  assert.equal(saved.exitCode, 0, saved.stderr);
+  assert.deepEqual(JSON.parse(saved.stdout).result, { ...next, domain: { ...next.domain, version: "domain-v2" } });
+  const problem = { error: "partial_save", saved: "domain", failed: "origins", cause: "conflict" };
+  const conflict = await run(args, {
+    studio: true, expectedMethod: "PUT", expectedUrl: route + ".save", stdin: JSON.stringify(next), expectedBody: next,
+    status: 409, result: problem
+  });
+  assert.equal(conflict.exitCode, 1);
+  assert.deepEqual(JSON.parse(conflict.stdout), { apiVersion: "v1", httpStatus: 409, operation: "site.public.save", result: problem });
+});
+
+test("niho-edit registers a Studio page embed with a JSON input file", async () => {
+  const src = "https://niho.life/embed/inquiry/example";
+  const refId = `emb_${"a".repeat(32)}`;
+  const args = ["page-embed-register", pageId, "--locale", locale, "--json", "-"];
+  const stdin = JSON.stringify({ src });
+  const result = await run(["--studio", ...args], {
+    studio: true, expectedMethod: "POST", expectedUrl: `${origin}/api/edit/v2/sites/${siteId}/operations/pages.embed-register/${pageId}`,
+    expectedBody: { src, locale }, stdin, status: 201, result: { refId, futureResponseField: true }
+  });
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout).result, { refId });
+  const nonStudio = await run(args, { stdin });
+  assert.equal(nonStudio.exitCode, 1);
+  assert.match(nonStudio.stdout, /invalid_arguments/u);
+});
+
 test("niho-edit reads and edits site styles through the shared operations", async (t) => {
   const operations = EDITING_OPERATIONS.filter(({ id }) => id === "site.styles.read" || id === "site.styles.edit");
   const discovery = { apiVersion: "v1", siteId, operations };

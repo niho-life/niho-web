@@ -19,7 +19,7 @@ Node.js 22 以上を使います。
 | @niho/web/normalize | 文書の正規化 |
 | @niho/web/editing-api | ページ・版履歴・1操作公開（公開URL・SEO警告を返す）・サイト共通スタイルの共通編集 wire 契約 |
 | @niho/web/editing-client | GUI / `niho-edit` 共通の編集 API client と条件付き読取 |
-| niho-edit --studio | Studio-native site の版付きSEO設定とリダイレクト表をJSONで読み書き |
+| niho-edit --studio | Studio-native の配信設定・SEO・リダイレクトを版付きで編集し、ページに埋め込みを登録。[CLI の操作](docs/studio-cli.md#studio内サイトの公開配信設定と埋め込み) |
 | @niho/web/react | React renderer |
 | @niho/web/presentation-runtime | 公開ページの対話機能 |
 | @niho/web/server | HTML 描画 |

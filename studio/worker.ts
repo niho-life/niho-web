@@ -26,6 +26,7 @@ import { parseLocalizationOverlay, parseLocalizationValue, parseSiteLocalization
 import { DocumentValidationError } from "../src/validation-utils.js";
 import { parseEnglishPublicationAccepted } from "../src/english-publication.js";
 import { EDITING_OPERATIONS, type EditingCapability } from "../src/editing-api.js";
+import { isEditingApiVersion } from "../src/editing-client.js";
 import {
   EDITING_LOCALIZATION_INPUT_BYTES, EDITING_LOCALIZATION_RESULT_BYTES, editingLocalizationCapability,
   editingLocalizationOperation, parseEditingLocalizationInput
@@ -33,7 +34,7 @@ import {
 import { SERVICE_CLIENT_ID } from "../src/studio-cli-auth.js";
 import {
   createManagedProject, managedDashboardOverview, managedEditorOperation, managedPageEditingApi, managedPageUrl,
-  managedProjectRegistrations, managedPublicRequest, managedPublicSeoResponse, managedRegistration, publicSitesOrigin, type ManagedPublicHtmlCache
+  managedProjectRegistrations, managedPublicRequest, managedPublicSeoResponse, managedRegistration, publicSitesOrigin, type ManagedActor, type ManagedPublicHtmlCache
 } from "./managed-sites.js";
 import { CmsStore, type CmsActor, type CmsBucket, type CmsCapability, type CmsPublicAssetResolver } from "./managed-cms-store.js";
 import { CMS_DELIVERY_PREFIX } from "../src/cms-delivery-contract.js";
@@ -1228,9 +1229,9 @@ async function removeMember(env: Env, identity: AccessIdentity, projectId: strin
   return json({ status: "removed" });
 }
 
-async function enforceMutationBoundary(request: Request): Promise<Record<string, unknown>> {
-  if (request.headers.get("Origin") !== new URL(request.url).origin) throw new AuthenticationError("invalid request origin");
-  if (request.headers.get("Sec-Fetch-Site") !== "same-origin") throw new AuthenticationError("invalid request site");
+async function enforceMutationBoundary(request: Request, requireSameOrigin = true): Promise<Record<string, unknown>> {
+  if (requireSameOrigin && request.headers.get("Origin") !== new URL(request.url).origin) throw new AuthenticationError("invalid request origin");
+  if (requireSameOrigin && request.headers.get("Sec-Fetch-Site") !== "same-origin") throw new AuthenticationError("invalid request site");
   const mediaType = request.headers.get("Content-Type")?.split(";", 1)[0]?.trim().toLowerCase();
   if (mediaType !== "application/json") throw new AuthenticationError("JSON required");
   const declaredLength = request.headers.get("Content-Length");
@@ -2919,8 +2920,80 @@ async function kamakuraMachineEditingApi(request: Request, env: Env, url: URL, i
   }
 }
 
+async function managedCliPublicSettings(
+  request: Request, db: D1Database, actor: ManagedActor, projectId: string, siteId: string, origin: string
+): Promise<Response> {
+  type SettingsPart = "domain" | "origins";
+  type Domain = { domain: string | null; noindex: boolean; version: string };
+  type Origins = { settings: { frameOrigins: string[]; resourceOrigins: string[] }; version: string };
+  let domainEdit: Record<string, unknown> | undefined;
+  let originsEdit: Record<string, unknown> | undefined;
+  if (request.method === "PUT") {
+    try {
+      const input = await enforceMutationBoundary(request, !actor.cli);
+      const { domain, origins } = input;
+      if (!Object.keys(input).length || Object.keys(input).some((key) => key !== "domain" && key !== "origins")) throw new InvalidInputError("unexpected public settings fields");
+      if (domain !== undefined) {
+        if (!isRecord(domain) || !isEditingApiVersion(domain.version) || (domain.hostname !== null && typeof domain.hostname !== "string")
+          || typeof domain.noindex !== "boolean") throw new InvalidInputError("invalid domain snapshot");
+        exactKeys(domain, ["hostname", "noindex", "version"]);
+        domainEdit = domain;
+      }
+      if (origins !== undefined) {
+        if (!isRecord(origins) || !isEditingApiVersion(origins.version)
+          || !Array.isArray(origins.frameOrigins) || !Array.isArray(origins.resourceOrigins)) throw new InvalidInputError("invalid origins snapshot");
+        exactKeys(origins, ["frameOrigins", "resourceOrigins", "version"]);
+        originsEdit = origins;
+      }
+    } catch (error) {
+      if (error instanceof AuthenticationError || error instanceof InvalidInputError) return json({ error: "invalid_request" }, 400);
+      throw error;
+    }
+  }
+
+  const headers = new Headers(request.headers);
+  headers.delete("Content-Length");
+  const run = (part: SettingsPart, input?: Record<string, unknown>) => managedEditorOperation(new Request(request.url, {
+    method: input ? "POST" : "GET", headers, signal: request.signal, ...(input ? { body: JSON.stringify(input) } : {})
+  }), db, actor, projectId, siteId, part === "domain" ? "/editor/public-domain" : "/editor/public-settings", origin);
+  const [domainResponse, originsResponse] = await Promise.all([run("domain"), run("origins")]);
+  if (!domainResponse.ok) return domainResponse;
+  if (!originsResponse.ok) return originsResponse;
+  let domain = await domainResponse.json() as Domain;
+  let origins = await originsResponse.json() as Origins;
+  if (domainEdit && domainEdit.version !== domain.version) return json({ error: "conflict", part: "domain" }, 409);
+  if (originsEdit && originsEdit.version !== origins.version) return json({ error: "conflict", part: "origins" }, 409);
+
+  let domainSaved = false;
+  if (domainEdit && (domainEdit.hostname !== domain.domain || domainEdit.noindex !== domain.noindex)) {
+    const response = await run("domain", { domain: domainEdit.hostname, noindex: domainEdit.noindex, expectedVersion: domainEdit.version });
+    if (!response.ok) return response;
+    domain = await response.json() as Domain;
+    domainSaved = true;
+  }
+  if (originsEdit && (JSON.stringify(originsEdit.frameOrigins) !== JSON.stringify(origins.settings.frameOrigins)
+    || JSON.stringify(originsEdit.resourceOrigins) !== JSON.stringify(origins.settings.resourceOrigins))) {
+    try {
+      const response = await run("origins", { settings: { frameOrigins: originsEdit.frameOrigins, resourceOrigins: originsEdit.resourceOrigins }, expectedVersion: originsEdit.version });
+      if (!response.ok) {
+        if (!domainSaved) return response;
+        const failure = await response.json() as { error: string };
+        return json({ error: "partial_save", saved: "domain", failed: "origins", cause: failure.error }, response.status);
+      }
+      origins = await response.json() as Origins;
+    } catch (error) {
+      if (!domainSaved) throw error;
+      return json({ error: "partial_save", saved: "domain", failed: "origins", cause: "internal_error" }, 503);
+    }
+  }
+  return json({
+    domain: { hostname: domain.domain, noindex: domain.noindex, version: domain.version },
+    origins: { frameOrigins: origins.settings.frameOrigins, resourceOrigins: origins.settings.resourceOrigins, version: origins.version }
+  });
+}
+
 async function studioEditingApi(request: Request, env: Env, url: URL, timing: StudioRequestTiming): Promise<Response> {
-  const match = /^\/api\/edit\/(v1|v2)\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/(capabilities|operations\/((?:cms|pages)\.[^?]+|site\.(?:seo|redirects)\.(?:read|save)))$/u.exec(url.pathname);
+  const match = /^\/api\/edit\/(v1|v2)\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/(capabilities|operations\/((?:cms|pages)\.[^?]+|site\.(?:seo|redirects|public)\.(?:read|save)))$/u.exec(url.pathname);
   if (!match) return json({ error: "not_found" }, 404);
   let identity: AccessIdentity | ServiceIdentity;
   const accessToken = request.headers.get("cf-access-token");
@@ -2945,14 +3018,14 @@ async function studioEditingApi(request: Request, env: Env, url: URL, timing: St
     kind: "cli", subject: `${CLI_SUBJECT_PREFIX}${identity.clientId}`,
     email: `cli-${identity.clientId}@studio.invalid`, requestId: crypto.randomUUID()
   };
-  if (version === "v2" && ["site.seo.read", "site.seo.save", "site.redirects.read", "site.redirects.save"].includes(operation ?? "")) {
-    const redirects = operation === "site.redirects.read" || operation === "site.redirects.save";
-    const saving = operation === "site.seo.save" || operation === "site.redirects.save";
-    const method = saving ? "PUT" : "GET";
+  const settings = /^site\.(seo|redirects|public)\.(read|save)$/u.exec(operation ?? "");
+  const embed = /^pages\.embed-register\/([A-Za-z][A-Za-z0-9_-]{0,79})$/u.exec(operation ?? "");
+  if (version === "v2" && (settings || embed)) {
+    const method = embed ? "POST" : settings?.[2] === "save" ? "PUT" : "GET";
     if (request.method !== method || url.search) return json({ error: "invalid_request" }, 400);
     if (method !== "GET" && identity.kind === "human" && accessToken === null
       && (request.headers.get("Origin") !== url.origin || request.headers.get("Sec-Fetch-Site") !== "same-origin")) return json({ error: "invalid_request" }, 400);
-    const capability = method === "GET" ? "site.settings.read" : "site.settings.write";
+    const capability = embed ? "pages.edit" : method === "GET" ? "site.settings.read" : "site.settings.write";
     let subject = actor.id;
     if (identity.kind === "service") {
       const grant = await env.DB.prepare(`SELECT g.delegated_by_subject ${ACTIVE_CLI_GRANTS} AND g.capability = ?4 LIMIT 1`)
@@ -2960,9 +3033,17 @@ async function studioEditingApi(request: Request, env: Env, url: URL, timing: St
       if (!grant) return json({ error: "forbidden" }, 403);
       subject = grant.delegated_by_subject;
     }
-    return managedEditorOperation(request, env.DB, { subject, email: identity.kind === "human" ? identity.email : bridgeIdentity.email,
-      ...(identity.kind === "service" ? { cliClientId: identity.clientId } : {}), cli: identity.kind === "service" || accessToken !== null },
-      registration.project_id, siteId!, redirects ? "/editor/redirects" : "/editor/seo-settings", url.origin);
+    const managedActor: ManagedActor = { subject, email: bridgeIdentity.email,
+      ...(identity.kind === "service" ? { cliClientId: identity.clientId } : {}), cli: actor.cli };
+    const projectId = registration.project_id;
+    if (embed || settings?.[1] === "public") {
+      const origin = publicSitesOrigin(env.PUBLIC_SITES_ORIGIN);
+      if (!origin || origin === url.origin) return json({ error: "public_origin_must_be_separate" }, 503);
+      if (embed) return managedEditorOperation(request, env.DB, managedActor, projectId, siteId!, `/editor/${embed[1]}/embed-connection`, origin);
+      return managedCliPublicSettings(request, env.DB, managedActor, projectId, siteId!, origin);
+    }
+    return managedEditorOperation(request, env.DB, managedActor, projectId, siteId!,
+      settings?.[1] === "redirects" ? "/editor/redirects" : "/editor/seo-settings", url.origin);
   }
   if (!env.CMS_OBJECTS) return json({ error: "not_found" }, 404);
   const store = cmsStore(env, bridgeIdentity);
