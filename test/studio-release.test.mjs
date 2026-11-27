@@ -48,7 +48,7 @@ test("release parses Wrangler list and blocks pending migrations outside the add
   const additive = ["0015_cms_delivery.sql", "0016_static_page_publication.sql", "0017_managed_page_sources.sql",
     "0018_managed_public_embeds.sql", "0019_managed_public_domains.sql", "0020_managed_site_redirects.sql", "0021_managed_published_paths.sql",
     "0022_managed_site_redirect_versions.sql",
-    "0023_managed_site_primary_host.sql", "0024_managed_one_step_publish.sql"];
+    "0023_managed_site_primary_host.sql", "0024_managed_one_step_publish.sql", "0025_managed_site_imports.sql"];
   assert.deepEqual(pendingMigrations(list(additive)), additive);
   assert.throws(() => pendingMigrations(list(["0015_cms_delivery.sql", "0016_drop_old_table.sql"])), /一致しません/u);
   assert.throws(() => pendingMigrations("unknown Wrangler output"), /読み取れません/u);

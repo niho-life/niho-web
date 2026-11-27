@@ -619,7 +619,7 @@ async function main() {
     process.stdout.write(`${JSON.stringify({ id: edited.id ?? base.id ?? null, version: base.version, changes })}\n`); return;
   }
   const baseOrigin = origin(values.origin);
-  if (values.studio && !["discover", "read", "outline", "find", "get", "apply", "save", "release-plan", "release", "publish", "history", "restore", "pages-catalog", "page-change", "normalize", "lint", "site-seo-read", "site-seo-save", "site-redirects-read", "site-redirects-save", "site-public-read", "site-public-save", "page-embed-register"].includes(command)
+  if (values.studio && !["discover", "read", "outline", "find", "get", "apply", "save", "release-plan", "release", "publish", "history", "restore", "assets-resolve", "pages-catalog", "page-change", "normalize", "lint", "site-seo-read", "site-seo-save", "site-redirects-read", "site-redirects-save", "site-public-read", "site-public-save", "page-embed-register"].includes(command)
     && !command?.startsWith("cms-") && !command?.startsWith("localization-")) throw new CliError("invalid_arguments");
   if (!IDENTIFIER.test(values.site ?? "")) throw new CliError("invalid_site");
   const token = process.env.NIHO_EDIT_TOKEN;

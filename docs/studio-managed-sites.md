@@ -59,7 +59,7 @@ SEO settings の `robotsPolicy: "noindex"` はページの robots meta、`robots
 
 GA4 には計測用に限定した接続先を許可する。標準操作の runtime と NIHO フォームの runtime は別々に必要なページでだけ読み込む。NIHO フォームは iframe 内で送信し、親ページの CSP は `form-action 'none'` を維持する。[ManagedEmbed の保存・公開契約](managed-embed-contract.md)
 
-既存ページの埋め込みとカルーセルを標準描画へ移す手順は [鎌倉専用ブロックの移行](kamakura-block-migration.md) を参照する。
+既存ページの埋め込みとカルーセルを標準描画へ移す手順は [鎌倉専用ブロックの移行](kamakura-block-migration.md)、移行元の版と素材を検証サイトへ保存する手順は [鎌倉サイトの取込](kamakura-site-import.md) を参照する。
 
 ## CLI認証
 
