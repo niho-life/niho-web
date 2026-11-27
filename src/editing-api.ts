@@ -96,7 +96,7 @@ export type EditingPageSnapshot = PageOperationVersions & {
   /** Presence declares that the snapshot includes the editor state supported by the host. */
   readonly editorState?: EditingPageEditorState;
 };
-export type EditingPageSaveResult = { readonly status: "saved"; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" };
+export type EditingPageSaveResult = { readonly status: "saved"; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" | "invalid" };
 export type EditingPageReleasePrepareResult = { readonly status: "prepared"; readonly plan: EditorReleasePlan } | { readonly status: "conflict" } | { readonly status: "publication_in_progress" };
 export type EditingPagePublishResult = { readonly status: "released"; readonly operationId: string; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" } | { readonly status: "publication_in_progress" };
 export type EditingPageCatalog = { readonly version: string; readonly pages: readonly EditorPage[] };
@@ -172,7 +172,13 @@ type EditingOperationDefinitionShape = {
   readonly resultSchema: JsonSchema;
   readonly errors: readonly EditingApiErrorCode[];
 };
-export type PageEditingApiOptions = { readonly basePath?: string };
+export type PageEditingApiOptions = {
+  readonly basePath?: string;
+  /** @internal Server-side limit for pages.save and pages.apply requests. */
+  readonly maxPageBodyBytes?: number;
+  /** @internal The adapter verifies immutable sources and stores only documents validated on save. */
+  readonly trustedPageStorage?: boolean;
+};
 const documentSchema: JsonSchema = Object.freeze({
   type: "object", required: Object.freeze(["schemaVersion", "siteId", "pageId", "locale", "revision", "title", "tokens", "body"]),
   additionalProperties: false,
@@ -988,6 +994,11 @@ function validatedDocument(value: unknown, context: PageEditingValidationContext
     ...(context.siteStyles ? { siteStyles: context.siteStyles } : {})
   });
 }
+function trustedPageDocument(value: unknown, target: EditingPageTarget): PageDocument | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const document = value as PageDocument;
+  return document.siteId === target.siteId && document.pageId === target.pageId && document.locale === target.locale ? document : null;
+}
 
 /** Framework-neutral HTTP handler for the host page resource API. Authentication and persistence stay in the host. */
 function editingApiBasePath(value: string | undefined): string {
@@ -996,10 +1007,10 @@ function editingApiBasePath(value: string | undefined): string {
   return basePath;
 }
 
-async function handlePageApply(store: EditingPageOperationStore, pageNodeNames: boolean, pageCmsBindings: boolean, request: Request, actor: EditingActor, target: EditingPageTarget): Promise<Response> {
+async function handlePageApply(store: EditingPageOperationStore, pageNodeNames: boolean, pageCmsBindings: boolean, request: Request, actor: EditingActor, target: EditingPageTarget, maxBodyBytes?: number): Promise<Response> {
   if (!actor.clientKind) return fail("host_contract_violation", 502);
   let body: Record<string, unknown> | null;
-  try { body = await readBody(request); } catch { return fail("invalid_request", 400); }
+  try { body = await readBody(request, maxBodyBytes); } catch { return fail("invalid_request", 400); }
   const versionFields = PAGE_OPERATION_VERSIONS;
   if (!body || Object.keys(body).some((key) => !["baseVersion", "operationId", "operations", "dryRun", ...(pageCmsBindings ? ["cmsBindings"] : []), ...versionFields].includes(key))
     || !validVersion(body.baseVersion) || !validOperationId(body.operationId)
@@ -1854,7 +1865,7 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       if (new TextEncoder().encode(JSON.stringify(result)).byteLength > 4 * 1024 * 1024) return fail("host_contract_violation", 502);
       return response(result);
     }
-    if (operation.id === "pages.apply") return handlePageApply(adapter.pageOperations!, adapter.pageNodeNames === true, adapter.pageCmsBindings === true, request, actor, target);
+    if (operation.id === "pages.apply") return handlePageApply(adapter.pageOperations!, adapter.pageNodeNames === true, adapter.pageCmsBindings === true, request, actor, target, options.maxPageBodyBytes);
     if (operation.id === "pages.preview-intent") {
       let body: Record<string, unknown> | null;
       try { body = await readBody(request, 128); } catch { return fail("invalid_request", 400); }
@@ -1884,10 +1895,17 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       const readVary = "Authorization, Cookie, Accept";
       if (readEtag && matchesIfNoneMatch(request.headers.get("If-None-Match"), readEtag)) return notModified(readEtag, readVary);
       let context: PageEditingValidationContext;
-      try { context = await documentContext(adapter, actor, target); }
+      try {
+        context = options.trustedPageStorage && operation.id === "pages.read" && !editorSnapshotRequest
+          ? {} : await documentContext(adapter, actor, target);
+      }
       catch { return fail("host_failure", 503); }
       let document: PageDocument;
-      try { document = validatedDocument(snapshot.document, context); }
+      try {
+        const trusted = options.trustedPageStorage ? trustedPageDocument(snapshot.document, target) : null;
+        if (options.trustedPageStorage && !trusted) return fail("host_contract_violation", 502);
+        document = trusted ?? validatedDocument(snapshot.document, context);
+      }
       catch { return fail("host_contract_violation", 502); }
       if (document.siteId !== target.siteId || document.pageId !== target.pageId || document.locale !== target.locale) return fail("host_contract_violation", 502);
       let cmsBindings: CmsPageBindingsDocument | null | undefined;
@@ -1956,13 +1974,17 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
       if (result.status === "publication_in_progress") return fail("site_publication_in_progress", 409);
       if (result.status !== "released" || result.operationId !== body.operationId || !validVersion(result.version)) return fail("host_contract_violation", 502);
       let document: PageDocument;
-      try { document = validatedDocument(result.document, await documentContext(adapter, actor, target)); }
+      try {
+        const trusted = options.trustedPageStorage ? trustedPageDocument(result.document, target) : null;
+        if (options.trustedPageStorage && !trusted) return fail("host_contract_violation", 502);
+        document = trusted ?? validatedDocument(result.document, await documentContext(adapter, actor, target));
+      }
       catch { return fail("host_contract_violation", 502); }
       if (document.siteId !== target.siteId || document.pageId !== target.pageId || document.locale !== target.locale) return fail("host_contract_violation", 502);
       return response({ status: "released", operationId: result.operationId, version: result.version, document });
     }
     let body: Record<string, unknown> | null;
-    try { body = await readBody(request); } catch { return fail("invalid_request", 400); }
+    try { body = await readBody(request, options.maxPageBodyBytes); } catch { return fail("invalid_request", 400); }
     if (!body || !exactKeys(body, ["expectedVersion", "document"]) || !validVersion(body.expectedVersion)) return fail("invalid_request", 400);
     let context: PageEditingValidationContext;
     try { context = await documentContext(adapter, actor, target); }
@@ -1976,9 +1998,14 @@ export function createPageEditingApi(adapter: PageEditingHostAdapter, options: P
     try { result = await adapter.savePage(actor, target, body.expectedVersion, document); }
     catch { return fail("host_failure", 503); }
     if (result.status === "conflict") return fail("version_conflict", 409);
+    if (result.status === "invalid") return fail("invalid_request", 400);
     if (result.status !== "saved" || !validVersion(result.version)) return fail("host_contract_violation", 502);
     let savedDocument: PageDocument;
-    try { savedDocument = validatedDocument(result.document, context); }
+    try {
+      const trusted = options.trustedPageStorage ? trustedPageDocument(result.document, target) : null;
+      if (options.trustedPageStorage && !trusted) return fail("host_contract_violation", 502);
+      savedDocument = trusted ?? validatedDocument(result.document, context);
+    }
     catch { return fail("host_contract_violation", 502); }
     if (savedDocument.siteId !== target.siteId || savedDocument.pageId !== target.pageId || savedDocument.locale !== target.locale) return fail("host_contract_violation", 502);
     return response({ status: "saved", version: result.version, document: savedDocument });

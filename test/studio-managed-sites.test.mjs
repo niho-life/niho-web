@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHmac, generateKeyPairSync, sign } from "node:crypto";
+import { createHash, createHmac, generateKeyPairSync, sign } from "node:crypto";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -60,7 +60,11 @@ async function fixture(t, { cms = false, restore, restoredObjects = [] } = {}) {
     async get(key) {
       if (faults.release && key.includes("/releases/")) { delete faults.release; throw new Error("fixture release object unavailable"); }
       if (faults.artifact && key.includes("/artifacts/")) { delete faults.artifact; throw new Error("fixture artifact unavailable"); }
-      return objects.has(key) ? { json: async () => JSON.parse(objects.get(key)), text: async () => String(objects.get(key)) } : null;
+      return objects.has(key) ? {
+        json: async () => JSON.parse(objects.get(key)),
+        text: async () => String(objects.get(key)),
+        arrayBuffer: async () => new Response(objects.get(key)).arrayBuffer()
+      } : null;
     }
   };
   t.after(() => sqlite.close());
@@ -90,12 +94,19 @@ async function fixture(t, { cms = false, restore, restoredObjects = [] } = {}) {
         if (/^\s*(?:UPDATE|INSERT|DELETE)\b/u.test(query)) return { success: true, meta: statement.run(...params) };
         return { success: true, results: statement.all(...params) };
       },
-      async all() { return this.execute(); }
+      async all() {
+        if (faults.externalization && query.includes("UPDATE managed_page_versions")) {
+          delete faults.externalization;
+          throw new Error("fixture failed to update the page source pointer");
+        }
+        return this.execute();
+      }
     };
   };
   const env = {
     ACCESS_ISSUER: issuer, ACCESS_AUDIENCE: audience, PUBLIC_SITES_ORIGIN: PUBLIC_ORIGIN, PUBLIC_SITES_PREVIEW_ORIGIN: "https://preview.sites.example",
-    ...(cms ? { CMS_OBJECTS, CMS_DELIVERY_MASTER_KEY: "a1".repeat(32) } : {}),
+    CMS_OBJECTS,
+    ...(cms ? { CMS_DELIVERY_MASTER_KEY: "a1".repeat(32) } : {}),
     DB: { prepare: wrap, async batch(statements) {
       sqlite.exec("BEGIN");
       try {
@@ -137,7 +148,7 @@ async function body(response, status) {
   return value;
 }
 
-testWithD1("Studio-native site uses one D1 page store for GUI, CAS, release history and public rendering", async (t) => {
+testWithD1("Studio-native site uses one page store for GUI, CAS, release history and public rendering", async (t) => {
   const h = await fixture(t);
   const created = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Fixture site", slug: "fixture-site", locale: "ja" }), 201);
   const { projectId, siteId } = created, api = `/api/projects/${projectId}/sites/${siteId}/editor`;
@@ -214,8 +225,12 @@ testWithD1("Studio-native site uses one D1 page store for GUI, CAS, release hist
   // plan後にmembershipを失ったactorは反映できず、失敗したplanは消費しない。再参加後だけ同じplanを安全に適用できる。
   const aboutTarget = { siteId, pageId: applied.page.pageId, locale: "ja" };
   const move = { action: "update", target: aboutTarget, title: "About", path: "/about-us" };
+  const draft = structuredClone(editorRestored.document);
+  draft.body[0].children.find(({ id }) => id === "link").attrs.href = "/somewhere-else";
+  draft.body[0].children.push({ type: "element", id: "draft-link", tag: "a", attrs: { href: `${PUBLIC_ORIGIN}/s/fixture-site/about?q=test#details` }, children: [{ type: "text", text: "Draft link" }] });
+  await body(await h.send(MANAGEMENT_ORIGIN, "PUT", `${api}/home/draft`, { expectedVersion: editorRestored.version, document: draft }), 200);
   const movePlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/page-changes/prepare`, { change: move }), 200);
-  const links = [{ pageId: "home", locale: "ja", title: "Fixture site", count: 1 }];
+  const links = [{ pageId: "home", locale: "ja", title: "Fixture site", count: 2 }];
   assert.deepEqual(movePlan.impact.linkedFrom, links);
   assert.equal(movePlan.impact.after, `${PUBLIC_ORIGIN}/s/fixture-site/about-us`);
 
@@ -233,6 +248,146 @@ testWithD1("Studio-native site uses one D1 page store for GUI, CAS, release hist
 
   // 現在の membership がない利用者は同じサイトを操作できない。
   assert.equal((await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/catalog`, undefined, { token: h.otherToken })).status, 403);
+});
+
+testWithD1("Managed page sources over 600 KiB save, publish, replay operations, and restore from R2", async (t) => {
+  const h = await fixture(t), slug = "large-page";
+  const { projectId, siteId } = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Large page", slug, locale: "ja" }), 201);
+  const target = { siteId, pageId: "home", locale: "ja" };
+  const editor = `/api/projects/${projectId}/sites/${siteId}/editor/home`;
+  const gui = (method, suffix = "", input) => h.send(MANAGEMENT_ORIGIN, method, editor + suffix, input);
+  const cli = (method, operation, input) => h.send(MANAGEMENT_ORIGIN, method, `/api/edit/v1/sites/${siteId}/operations/pages.${operation}/home?locale=ja`, input, { cli: true });
+  const release = async (expectedVersion, requested) => {
+    const plan = await body(await gui("POST", "/release-plan", { target, expectedVersion, ...requested }), 200);
+    return body(await gui("POST", "/release", { expectedVersion, confirmationToken: plan.confirmationToken }), 200);
+  };
+
+  const original = await body(await gui("GET"), 200);
+  const large = structuredClone(original.document), text = "海".repeat(40_000);
+  large.body[0].children.push(...Array.from({ length: 8 }, () => ({ type: "text", text })));
+  assert.ok(Buffer.byteLength(JSON.stringify(large)) > 600 * 1024);
+  const oversized = structuredClone(original.document);
+  oversized.body[0].children.push(...Array.from({ length: 9 }, () => ({ type: "text", text: "海".repeat(85_000) })));
+  assert.ok(Buffer.byteLength(JSON.stringify(oversized)) > 2 * 1024 * 1024);
+  assert.equal((await gui("PUT", "/draft", { expectedVersion: original.version, document: oversized })).status, 400);
+  assert.equal((await cli("PUT", "save", { expectedVersion: original.version, document: oversized })).status, 400);
+
+  const saved = await body(await gui("PUT", "/draft", { expectedVersion: original.version, document: large }), 200);
+  const document = { ...large, revision: saved.revision };
+  assert.deepEqual((await body(await gui("GET"), 200)).document, document);
+  assert.deepEqual((await body(await cli("GET", "read"), 200)).document, document);
+  const version = h.sqlite.prepare(`SELECT document_json, document_key, document_digest, link_index_json
+    FROM managed_page_versions WHERE site_id = ? AND page_id = 'home' AND revision = ?`);
+  const row = version.get(siteId, saved.revision), source = h.objects.get(row.document_key);
+  assert.equal(row.document_json, "{}");
+  assert.equal(row.document_key, `sites/${siteId}/pages/home/ja/${saved.revision}/${saved.version}.json`);
+  assert.equal(row.document_digest, createHash("sha256").update(source).digest("hex"));
+  assert.equal(row.link_index_json, "[]");
+  assert.deepEqual(JSON.parse(source), document);
+
+  const published = await release(saved.version, { action: "publish" });
+  const publicPage = () => publishedSiteRequest(new Request(`${PUBLIC_ORIGIN}/s/${slug}/`), h.env);
+  assert.match(await (await publicPage()).text(), /海{40}/u);
+  const operation = { baseVersion: published.snapshot.version, operationId: crypto.randomUUID(),
+    operations: [{ type: "text", parentId: "heading", childPath: [0], value: "Edited by CLI" }] };
+  const applied = await body(await cli("POST", "apply", operation), 200);
+  const receipt = JSON.parse(h.sqlite.prepare("SELECT result_json FROM managed_page_operations WHERE site_id = ? AND operation_id = ?").get(siteId, operation.operationId).result_json);
+  assert.equal(receipt.documentKey, version.get(siteId, applied.revision).document_key);
+  assert.equal(receipt.document, undefined);
+
+  const small = await body(await cli("PUT", "save", { expectedVersion: applied.version, document: { ...original.document, revision: applied.revision } }), 200);
+  assert.equal(version.get(siteId, applied.revision), undefined);
+  assert.deepEqual(await body(await cli("POST", "apply", operation), 200), applied);
+  const rolledBack = await release(small.version, { action: "rollback", revision: saved.revision });
+  const restoredDocument = { ...document, revision: small.document.revision + 1 };
+  assert.deepEqual(rolledBack.snapshot.document, restoredDocument);
+  const restored = version.get(siteId, restoredDocument.revision);
+  assert.equal(restored.document_json, "{}");
+  assert.notEqual(restored.document_key, row.document_key);
+  assert.deepEqual(JSON.parse(h.objects.get(restored.document_key)), restoredDocument);
+  assert.match(await (await publicPage()).text(), /海{40}/u);
+});
+
+testWithD1("Legacy page sources preserve exact D1 bytes and links across a retried R2 transition", async (t) => {
+  const h = await fixture(t), slug = "legacy-page";
+  const { projectId, siteId } = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Legacy fixture", slug, locale: "ja" }), 201);
+  const api = `/api/projects/${projectId}/sites/${siteId}/editor`;
+  const gui = (method, suffix, input) => h.send(MANAGEMENT_ORIGIN, method, api + suffix, input);
+  const legacy = { schemaVersion: 1, siteId, pageId: "legacy", locale: "ja", revision: 1, title: "旧ページ", tokens: {},
+    body: [{ type: "element", id: "legacy-link", tag: "a", attrs: { href: "/#about" }, children: [{ type: "text", text: "ホーム" }] }] };
+  const raw = JSON.stringify(legacy, null, 2) + "\n";
+  h.sqlite.prepare(`INSERT INTO managed_pages (site_id, page_id, locale, title, path, current_version, current_revision, published_revision)
+    VALUES (?, 'legacy', 'ja', '旧ページ', '/old', 'legacy-1', 1, 1)`).run(siteId);
+  h.sqlite.prepare(`INSERT INTO managed_page_versions (site_id, page_id, locale, revision, document_json, kind, created_by_subject)
+    VALUES (?, 'legacy', 'ja', 1, ?, 'initial', ?)`).run(siteId, raw, OWNER);
+  const version = () => h.sqlite.prepare(`SELECT document_json, document_key, document_digest, link_index_json
+    FROM managed_page_versions WHERE site_id = ? AND page_id = 'legacy'`).get(siteId);
+
+  const warnings = async () => (await body(await gui("POST", "/page-changes/prepare", {
+    change: { action: "visibility", target: { siteId, pageId: "home", locale: "ja" }, visibility: "private" }
+  }), 200)).impact.linkedFrom;
+  const links = [{ pageId: "legacy", locale: "ja", title: "旧ページ", count: 1 }];
+  assert.deepEqual(await warnings(), links);
+
+  h.faults.put = "after";
+  assert.deepEqual((await body(await gui("GET", "/legacy"), 200)).document, legacy);
+  assert.equal(version().document_json, raw);
+  assert.equal(version().document_key, null);
+  const key = `sites/${siteId}/pages/legacy/ja/1/legacy.json`;
+  h.objects.set(key, JSON.stringify(legacy));
+  assert.deepEqual((await body(await gui("GET", "/legacy"), 200)).document, legacy);
+  assert.equal(version().document_json, raw);
+  assert.equal(version().document_key, null);
+  h.objects.set(key, raw);
+  h.faults.externalization = true;
+  assert.deepEqual((await body(await gui("GET", "/legacy"), 200)).document, legacy);
+  assert.equal(version().document_json, raw);
+  assert.equal(version().document_key, null);
+
+  const responses = await Promise.all([gui("GET", "/legacy"), gui("GET", "/legacy")]);
+  for (const response of responses) assert.deepEqual((await body(response, 200)).document, legacy);
+  const moved = version();
+  assert.equal(moved.document_json, "{}");
+  assert.equal(h.objects.get(moved.document_key), raw);
+  assert.equal(moved.document_digest, createHash("sha256").update(raw).digest("hex"));
+  assert.deepEqual(JSON.parse(moved.link_index_json), [["legacy-link", "/"]]);
+  assert.deepEqual(await warnings(), links);
+  assert.throws(() => h.sqlite.prepare(`UPDATE managed_page_versions SET document_json = '[]'
+    WHERE site_id = ? AND page_id = 'legacy'`).run(siteId), /immutable/u);
+  assert.match(await (await h.send(PUBLIC_ORIGIN, "GET", `/s/${slug}/old`, undefined, { auth: false })).text(), /ホーム/u);
+});
+
+testWithD1("Missing or modified R2 page sources fail closed without changing static publication", async (t) => {
+  const h = await fixture(t), slug = "damaged-source";
+  const { projectId, siteId } = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Verified page", slug, locale: "ja" }), 201);
+  const editor = `/api/projects/${projectId}/sites/${siteId}/editor/home`;
+  const gui = (method, suffix = "", input) => h.send(MANAGEMENT_ORIGIN, method, editor + suffix, input);
+  const snapshot = await body(await gui("GET"), 200), target = { siteId, pageId: "home", locale: "ja" };
+  const publishPlan = (expectedVersion) => gui("POST", "/release-plan", { target, expectedVersion, action: "publish" }).then((response) => body(response, 200));
+  const plan = await publishPlan(snapshot.version);
+  const published = await body(await gui("POST", "/release", { expectedVersion: snapshot.version, confirmationToken: plan.confirmationToken }), 200);
+  const pending = await publishPlan(published.snapshot.version);
+  const { document_key: key } = h.sqlite.prepare("SELECT document_key FROM managed_page_versions WHERE site_id = ? AND page_id = 'home'").get(siteId);
+  const pointer = () => h.sqlite.prepare("SELECT manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(siteId).manifest_key;
+  const liveManifest = pointer(), url = `${PUBLIC_ORIGIN}/s/${slug}/`;
+  const submit = () => gui("POST", "/release", { expectedVersion: published.snapshot.version, confirmationToken: pending.confirmationToken });
+
+  h.objects.set(key, h.objects.get(key) + "\n");
+  assert.equal((await gui("GET")).status, 503);
+  const legacy = await h.fetch(url);
+  assert.equal(legacy.status, 503);
+  assert.doesNotMatch(await legacy.text(), /Verified page/u);
+  assert.equal((await submit()).status, 503);
+  assert.equal(pointer(), liveManifest);
+
+  h.objects.delete(key);
+  assert.equal((await h.send(MANAGEMENT_ORIGIN, "GET", `/api/edit/v1/sites/${siteId}/operations/pages.read/home?locale=ja`, undefined, { cli: true })).status, 503);
+  assert.equal((await h.fetch(url)).status, 503);
+  assert.equal((await submit()).status, 503);
+  assert.equal(pointer(), liveManifest);
+  const artifact = await publishedSiteRequest(new Request(url), h.env);
+  assert.equal(artifact.status, 200);
+  assert.match(await artifact.text(), /<title>Verified page<\/title>/u);
 });
 
 testWithD1("Static publication serves immutable HTML and applies noindex to the verification host", async (t) => {
