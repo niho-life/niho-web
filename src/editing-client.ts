@@ -73,9 +73,9 @@ export function supportsPageCmsBindings(discovery: EditingApiDiscovery): boolean
     && "capabilities" in operation && operation.capabilities.some((capability) => capability === PAGE_CMS_BINDINGS_CAPABILITY));
 }
 export type EditingPageSaveResult = { readonly status: "saved"; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" };
-/** `elapsedMs` is the client-observed wall time; `workerElapsedMs` mirrors the host response. */
+/** `elapsedMs` はclient側の経過時間、`serverElapsedMs` はhost応答の値です。 */
 export type EditingSitePublishClientResult =
-  | (Extract<EditingSitePublishResult, { readonly status: "released" }> & { readonly workerElapsedMs: number })
+  | (Extract<EditingSitePublishResult, { readonly status: "released" }> & { readonly serverElapsedMs: number })
   | Exclude<EditingSitePublishResult, { readonly status: "released" }>;
 export type EditingPageInspectionSnapshot = Readonly<Record<string, unknown>> & { readonly view: PageInspectView; readonly version: string; readonly componentsVersion?: string; readonly presentationVersion?: string };
 export type EditingPagePublishResult = { readonly status: "released"; readonly operationId: string; readonly version: string; readonly document: PageDocument } | { readonly status: "conflict" };
@@ -616,7 +616,7 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
             || typeof value.message !== "string" || value.message.length > 1000;
         })) throw new EditingApiClientError("invalid_response", response.status);
       return { status: "released", urls: body.urls as string[], elapsedMs: Math.max(0, Math.round(performance.now() - startedAt)),
-        workerElapsedMs: Number(body.elapsedMs), warnings: body.warnings as EditorReleaseWarning[] };
+        serverElapsedMs: Number(body.elapsedMs), warnings: body.warnings as EditorReleaseWarning[] };
     },
     async readPageCatalog(signal) {
       const path = `/sites/${encodeURIComponent(siteId)}/operations/pages.catalog`;
