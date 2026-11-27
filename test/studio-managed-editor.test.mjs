@@ -20,7 +20,8 @@ test("managed editor accepts the project's custom domain alongside its shared or
     assert.equal(String(input), "/api/projects/project-one/sites/site-one/editor/catalog");
     return Response.json({
       sites: [{ id: project.site.id, name: project.site.name, domains: catalogDomains, futureCapability: "ignored" }],
-      pages: [{ siteId: project.site.id, pageId: "home", locale: "ja", title: "Home", path: "/", kind: "page", visibility: "public", published: true }]
+      version: "catalog-v1",
+      pages: [{ siteId: project.site.id, pageId: "home", locale: "ja", title: "Home", path: "/", kind: "page", visibility: "public", published: true, version: "home-v1" }]
     });
   });
   const managed = createManagedEditorAdapter({ sites: [project.site], pages: [] }, project);
