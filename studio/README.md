@@ -34,7 +34,7 @@ HTTPS origin は末尾に `/` を付けずに指定します。公開ページ�
 
 管理済みの JWT を実行環境に渡せる場合は、直接 `npm run studio:release` を実行します。Access service token は Dashboard のメンバー認証に使えません。`studio:deploy` も同じ配備手順を実行します。
 
-公開配信 Worker は `npm run studio:public:release` で別に配備します。この手順は `studio/public-sites.wrangler.json` から一時設定を作り、公開 Worker と異なる名前の `workers.dev` Worker だけを有効にします。`PUBLIC_SITES_PREVIEW_ORIGIN` の hostname は Worker 名と一致させます。検証 Worker に custom domain や route は追加しません。D1 migration は適用せず、`0016`〜`0024` がすべて適用済みの場合だけ続行します。配備後は指定したページが HTML と `noindex, nofollow` を返すことを確認します。
+公開配信 Worker は `npm run studio:public:release` で別に配備します。この手順は `studio/public-sites.wrangler.json` から一時設定を作り、公開 Worker と異なる名前の `workers.dev` Worker だけを有効にします。`PUBLIC_SITES_PREVIEW_ORIGIN` の hostname は Worker 名と一致させます。検証 Worker に custom domain や route は追加しません。D1 migration は適用せず、公開 Worker が使う `0016`〜`0021` と `0023` が適用済みの場合だけ続行します。Studio 専用の `0022`・`0024`・`0025` が保留中でも公開 Worker の配備は可能です。配備後は指定したページが HTML と `noindex, nofollow` を返すことを確認します。
 
 ## 配備と smoke
 
@@ -50,7 +50,7 @@ HTTPS origin は末尾に `/` を付けずに指定します。公開ページ�
 
 SQL の正本は `studio/migrations/` です。適用済みの SQL は保持し、修正は新規 migration を追加します。配備前に、対象 D1 と復元できるバックアップがあることを確認します。
 
-- 新 Worker の配備前に実行できるのは、旧 Worker の読み書きがそのまま動く列、表、index、補助的な trigger の追加だけです。`0016_static_page_publication.sql` は旧 Worker の `managed_sites` INSERT を変えずに公開 pointer を初期化します。`0017_managed_page_sources.sql` は既存の版行と旧 Worker の INSERT を保ったまま R2 参照欄を追加し、`0018`〜`0021` は公開設定・独自 domain・redirect・公開 path を追加し、`0022` は redirect 編集の版番号を追加します。`0023` は公開 host の正を `managed_site_hosts` に移し、以前の Worker が使う列を残して切り戻し可能にします。`0024` はページ一覧の版、`0025` は検証用移行受領・素材・対応表の追加テーブルを作ります。既存行と旧 Worker の INSERT・UPDATE・SELECT への影響を確認した SQL を、`studio/release.mjs` の `beforeDeployMigrations` に追加します。未登録の migration が保留中なら配備を止めます。
+- 新 Worker の配備前に実行できるのは、旧 Worker の読み書きがそのまま動く列、表、index、補助的な trigger の追加だけです。`0016_static_page_publication.sql` は旧 Worker の `managed_sites` INSERT を変えずに公開 pointer を初期化します。`0017` は embed 設定、`0018` は独自 domain、`0019` は redirect、`0020` は公開 path、`0021_managed_page_sources.sql` は既存の版行と旧 Worker の INSERT を保ったまま R2 参照欄を追加し、`0022` は redirect 編集の版番号を追加します。`0023` は公開 host の正を `managed_site_hosts` に移し、以前の Worker が使う列を残して切り戻し可能にします。`0024` はページ一覧の版、`0025` は検証用移行受領・素材・対応表の追加テーブルを作ります。既存行と旧 Worker の INSERT・UPDATE・SELECT への影響を確認した SQL を、`studio/release.mjs` の `beforeDeployMigrations` に追加します。未登録の migration が保留中なら配備を止めます。
 - 列や表の削除、既存データの意味や制約の変更は、新 Worker が安定して旧 schema に依存する version が切り戻し対象から外れた後、別の release で行います。対象 D1 のバックアップと復元手順を確認し、その作業用の非公開 Wrangler 設定で `d1 migrations list DB --remote` と `d1 migrations apply DB --remote` を使います。
 - `studio/post-deploy/0025_drop_managed_editor_plans.sql` は Studio の旧確認計画テーブルとその index を削除します。一回要求の Worker を配備・検証し、その表を参照する旧 Worker が稼働中の版と切り戻し候補の両方から外れたことを確認してください。復元可能な D1 バックアップを用意し、対象環境の非公開 Wrangler 設定で `wrangler d1 execute DB --remote --file studio/post-deploy/0025_drop_managed_editor_plans.sql` を実行します。SQLite schema から表が消え、ページの公開・復元・管理が動作することを確認します。
 - `studio/post-deploy/0026_drop_managed_site_domain_mirror.sql` は `managed_site_hosts` に移した後の重複列 `managed_sites.public_domain` / `public_domain_noindex` と旧一意 index を削除します。これらの列を読む Worker が稼働中の版と切り戻し候補の両方から外れた後、復元可能な D1 バックアップを用意して `wrangler d1 execute DB --remote --file studio/post-deploy/0026_drop_managed_site_domain_mirror.sql` を実行します。主 host・noindex の読み書きとページ公開を確認します。
