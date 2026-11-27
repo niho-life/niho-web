@@ -142,4 +142,4 @@ shellの高さは `100dvh` が既定で、見出しやバナーを持つホス�
 
 ホスト固有の入口は `toolbarStart` にReact要素を渡す。Studio のエディターは同じ shell を使う。従来の `toolbarLayout` は削除したため、指定していたホストはそのpropを外す。
 
-ローカル確認は `npm run build`、`npm run studio:typecheck`、`npm run studio:build` を実行する。Studio hostの画面確認は `wrangler dev --config studio/wrangler.toml` で起動し、Access認証済みの環境で行う。
+ローカル確認は `npm run build`、`npm run studio:typecheck`、`npm run studio:build` を実行する。Studio host のローカル起動は `npm run studio:dev` を使う。設定は [Studio の運用手順](../studio/README.md#ローカル開発) を参照する。

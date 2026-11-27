@@ -42,7 +42,7 @@ function harness(auth, worker) {
     ACCESS_AUDIENCE: auth.audience,
     KAMAKURA_STUDIO_BRIDGE_SECRET: secret,
     DB: { prepare(query) { return { bind(...values) { this.values = values; return this; }, async first() { const role = roles.get(`${this.values[1]}/${this.values[2]}`); return role && (!/m\.role = 'owner'/u.test(query) || role === "owner") ? { allowed: 1 } : null; } }; } },
-    ASSETS: { async fetch() { return new Response('<div id="root"></div>', { headers: { "Content-Type": "text/html" } }); } },
+    ASSETS: { async fetch() { return new Response('<!doctype html><html><head></head><body><div id="root"></div></body></html>', { headers: { "Content-Type": "text/html" } }); } },
     KAMAKURA_SITE: { async fetch(request) {
       const body = await request.text();
       const call = { method: request.method, path: new URL(request.url).pathname, search: new URL(request.url).search, headers: Object.fromEntries(request.headers), body, signal: request.signal };
@@ -183,6 +183,11 @@ test("CMS BFF: 本文を操作ごとの key の集合で確かめ、actor に確
   assert.equal(h.calls.at(-1).path, `${UPSTREAM}/uploads/intent`);
   assert.deepEqual(JSON.parse(h.calls.at(-1).body), { ...intent, actor: { email: EMAIL } });
   h.verifySignature(h.calls.at(-1));
+  const previewUploadOrigin = "https://studio-upload-preview.example.test";
+  h.env.STUDIO_PREVIEW_UPLOAD_ORIGIN = previewUploadOrigin;
+  const previewUploadUrl = `${previewUploadOrigin}/internal/studio/cms-upload/${UUID}`;
+  h.setRespond(() => Response.json({ uploadUrl: previewUploadUrl, uploadToken: "token.value", uploadId: UUID }, { status: 201 }));
+  assert.deepEqual(await expectJson(await h.send("POST", "/uploads/intent", intent), 201), { uploadUrl: previewUploadUrl, uploadToken: "token.value", uploadId: UUID });
   const beforeIntent = h.calls.length;
   for (const body of [
     { ...intent, mimeType: "image/svg+xml" },

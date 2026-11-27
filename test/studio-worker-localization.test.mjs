@@ -62,7 +62,7 @@ function harness(auth, worker) {
       if (/SELECT m\.role AS role/u.test(query)) return { role };
       return !/m\.role = 'owner'/u.test(query) || role === "owner" ? { allowed: 1 } : null;
     } }; } },
-    ASSETS: { async fetch() { return new Response('<div id="root"></div>', { headers: { "Content-Type": "text/html" } }); } },
+    ASSETS: { async fetch() { return new Response('<!doctype html><html><head></head><body><div id="root"></div></body></html>', { headers: { "Content-Type": "text/html" } }); } },
     KAMAKURA_SITE: { async fetch(request) {
       const body = await request.text();
       const call = { method: request.method, path: new URL(request.url).pathname, search: new URL(request.url).search, headers: Object.fromEntries(request.headers), body, signal: request.signal };
@@ -428,6 +428,15 @@ test("翻訳 BFF: 本文を操作ごとの key の集合と W1 の形で確か�
     h.verifySignature(call);
   }
 
+  const previewUploadOrigin = "https://studio-upload-preview.example.test";
+  const previewUploadUrl = `${previewUploadOrigin}/internal/studio/localization-upload/${UUID}`;
+  h.env.STUDIO_PREVIEW_UPLOAD_ORIGIN = previewUploadOrigin;
+  h.setRespond(() => Response.json({ uploadUrl: previewUploadUrl, uploadToken: "token.value", uploadId: UUID }, { status: 201 }));
+  assert.deepEqual(await expectJson(await h.send("POST", "/uploads/intent", {
+    itemKey: "aG9tZQ", unitId: "cover", name: "海.png", mimeType: "image/png", bytes: 2048
+  }), 201), { uploadUrl: previewUploadUrl, uploadToken: "token.value", uploadId: UUID });
+  h.verifySignature(h.calls.at(-1));
+
   // 本文の確かめに落ちた要求は上流へ届かない
   const before = h.calls.length;
   for (const [method, path, body, headers] of [
@@ -655,11 +664,12 @@ test("鎌倉の Dashboard だけ翻訳プレビューの枠と画像 PUT 先を�
   const worker = await loadWorker();
   mockAccess(t, auth);
   const h = harness(auth, worker);
+  h.env.STUDIO_PREVIEW_UPLOAD_ORIGIN = "https://studio-upload-preview.example.test";
   const page = async (path) => (await worker.fetch(new Request(`${STUDIO}${path}`, { headers: { "Cf-Access-Jwt-Assertion": auth.jwt } }), h.env)).headers.get("Content-Security-Policy");
   const dashboards = ["/projects/kamakura-site/admin", "/projects/kamakura-site/admin/translations", "/projects/kamakura-site/admin/translations/aG9tZQ", "/projects/project-kamakura/sites/kamakura"];
   for (const path of dashboards) {
     const csp = await page(path);
-    assert.match(csp, / connect-src 'self' https:\/\/next-kamakura\.niho\.life;/u, path);
+    assert.match(csp, / connect-src 'self' https:\/\/studio-upload-preview\.example\.test;/u, path);
     assert.match(csp, / frame-src https:\/\/next-kamakura\.niho\.life https:\/\/kamakura\.niho\.life;/u, path);
     assert.doesNotMatch(csp, /site-admin-test\.example|admin\.example\.test/u, path);
     assert.match(csp, / img-src 'self' https:;/u, path);
