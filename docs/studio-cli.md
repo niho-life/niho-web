@@ -8,7 +8,13 @@ Studio-native site の共通SEO設定は owner 権限で読み書きできます
 niho-edit --studio --origin https://studio.example --site demo-site site-seo-read > site-seo.json
 # site-seo.json の settings を編集
 niho-edit --studio --origin https://studio.example --site demo-site site-seo-save --json site-seo.json
+
+niho-edit --studio --origin https://studio.example --site demo-site site-redirects-read > redirects.json
+# redirects.json の redirects 配列を編集
+niho-edit --studio --origin https://studio.example --site demo-site site-redirects-save --json redirects.json
 ```
+
+`site-redirects-read` は `{ redirects, version }` を返します。各項目は `{ locale, fromPath, toPath }` で、パスはサイト内の相対パスです。保存は読み込んだversionとの照合を行い、重複した転送元や転送ループは拒否します。ページのURLを変更したとき自動作成された転送も、同じCLIとGUI一覧から確認・削除できます。
 
 ## 鎌倉のページ編集と公開
 

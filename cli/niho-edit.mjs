@@ -15,6 +15,7 @@ import { PAGE_OPERATION_LIMIT, changedPageNodeIds, editingOperationProblem, page
 import { diffDocuments } from "../dist/history.js";
 import { parseBreakpointSettings } from "../dist/style-model.js";
 import { parseManagedSiteSeoSettings } from "../dist/managed-seo-settings.js";
+import { parseManagedSiteRedirects } from "../dist/managed-site-redirects.js";
 import { inspectPageDocument, PageInspectError, parsePageInspectQuery } from "../dist/page-inspect.js";
 import { OPERATION_KEY_HEADER, SERVICE_CLIENT_ID } from "../dist/studio-cli-auth.js";
 import { MANAGED_CMS_EXTRA_OPERATIONS } from "../dist/managed-cms-operations.js";
@@ -259,6 +260,18 @@ async function inputSiteSeoSnapshot(path) {
   const settings = parseManagedSiteSeoSettings(source.settings);
   if (!settings) throw new CliError("invalid_seo_settings_snapshot");
   return { settings, version: source.version };
+}
+async function inputSiteRedirectSnapshot(path) {
+  if (!path) throw new CliError("missing_json_input");
+  if (path !== "-") {
+    try { if ((await stat(path)).size > 512 * 1024) throw new CliError("input_too_large"); }
+    catch (error) { if (error instanceof CliError) throw error; throw new CliError("invalid_json_input"); }
+  }
+  const source = await readJson(path === "-" ? process.stdin : createReadStream(path), 512 * 1024);
+  if (Object.keys(source).sort().join(",") !== "redirects,version" || !isEditingApiVersion(source.version)) throw new CliError("invalid_redirect_snapshot");
+  const redirects = parseManagedSiteRedirects(source.redirects);
+  if (!redirects) throw new CliError("invalid_redirect_snapshot");
+  return { redirects, version: source.version };
 }
 async function inputPageManagementJson(path, maximumBytes) {
   if (!path) throw new CliError("missing_json_input");
@@ -605,7 +618,7 @@ async function main() {
     process.stdout.write(`${JSON.stringify({ id: edited.id ?? base.id ?? null, version: base.version, changes })}\n`); return;
   }
   const baseOrigin = origin(values.origin);
-  if (values.studio && !["discover", "read", "outline", "find", "get", "apply", "save", "release-plan", "release", "publish", "history", "restore", "normalize", "lint", "site-seo-read", "site-seo-save"].includes(command)
+  if (values.studio && !["discover", "read", "outline", "find", "get", "apply", "save", "release-plan", "release", "publish", "history", "restore", "normalize", "lint", "site-seo-read", "site-seo-save", "site-redirects-read", "site-redirects-save"].includes(command)
     && !command?.startsWith("cms-") && !command?.startsWith("localization-")) throw new CliError("invalid_arguments");
   if (!IDENTIFIER.test(values.site ?? "")) throw new CliError("invalid_site");
   const token = process.env.NIHO_EDIT_TOKEN;
@@ -646,6 +659,26 @@ async function main() {
     const payload = await readJson(response.body, 64 * 1024);
     if (!saving && response.ok) { process.stdout.write(`${JSON.stringify(payload)}\n`); return; }
     emit(payload, response.status, response.ok ? 0 : 1, saving ? "site.seo.save" : "site.seo.read");
+    return;
+  }
+
+  if (command === "site-redirects-read" || command === "site-redirects-save") {
+    const saving = command === "site-redirects-save";
+    assertCommandOptions(values, saving ? ["json"] : []);
+    if (!values.studio || pageId !== undefined || extra.length || saving && !values.json) throw new CliError("invalid_arguments");
+    const snapshot = saving ? await inputSiteRedirectSnapshot(values.json) : undefined;
+    let response;
+    try {
+      response = await fetch(`${baseOrigin}/api/edit/v2/sites/${encodeURIComponent(values.site)}/operations/site.redirects.${saving ? "save" : "read"}`, {
+        method: saving ? "PUT" : "GET", credentials: "omit", cache: "no-store", redirect: "manual", signal: AbortSignal.timeout(30_000),
+        headers: { ...headers, ...(saving ? { "Content-Type": "application/json" } : {}) },
+        ...(snapshot ? { body: JSON.stringify({ expectedVersion: snapshot.version, redirects: snapshot.redirects }) } : {})
+      });
+    } catch { throw new CliError("transport_error"); }
+    if (response.status >= 300 && response.status < 400) throw new CliError("redirect_response", response.status);
+    const payload = await readJson(response.body, 512 * 1024);
+    if (!saving && response.ok) { process.stdout.write(`${JSON.stringify(payload)}\n`); return; }
+    emit(payload, response.status, response.ok ? 0 : 1, saving ? "site.redirects.save" : "site.redirects.read");
     return;
   }
 

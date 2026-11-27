@@ -1,11 +1,13 @@
 import { useEffect, useState, type FormEvent } from "react";
 import type { Project } from "../src/projects.js";
+import { parseManagedSiteRedirects, type ManagedSiteRedirect } from "../src/managed-site-redirects.js";
 import { api, ApiError, record, SessionExpiredError, text } from "./api-client.js";
 
 export function ManagedPublicSettings({ project, expire }: { project: Project; expire: () => void }) {
   const path = `/api/projects/${encodeURIComponent(project.id)}/sites/${encodeURIComponent(project.site.id)}/editor/public-settings`;
   const seoPath = `/api/projects/${encodeURIComponent(project.id)}/sites/${encodeURIComponent(project.site.id)}/editor/seo-settings`;
   const domainPath = `/api/projects/${encodeURIComponent(project.id)}/sites/${encodeURIComponent(project.site.id)}/editor/public-domain`;
+  const redirectsPath = `/api/projects/${encodeURIComponent(project.id)}/sites/${encodeURIComponent(project.site.id)}/editor/redirects`;
   const [version, setVersion] = useState("");
   const [seoVersion, setSeoVersion] = useState("");
   const [frames, setFrames] = useState("");
@@ -24,6 +26,11 @@ export function ManagedPublicSettings({ project, expire }: { project: Project; e
   const [domainVersion, setDomainVersion] = useState("");
   const [domain, setDomain] = useState("");
   const [domainNoindex, setDomainNoindex] = useState(true);
+  const [redirectVersion, setRedirectVersion] = useState("");
+  const [redirects, setRedirects] = useState<ManagedSiteRedirect[]>([]);
+  const [newRedirectLocale, setNewRedirectLocale] = useState("ja");
+  const [newRedirectFrom, setNewRedirectFrom] = useState("");
+  const [newRedirectTo, setNewRedirectTo] = useState("");
 
   function apply(value: unknown) {
     const source = record(value), settings = record(source.settings);
@@ -51,11 +58,17 @@ export function ManagedPublicSettings({ project, expire }: { project: Project; e
     setDomainNoindex(source.noindex !== false);
     setDomainVersion(text(source.version, 200));
   }
+  function applyRedirects(value: unknown) {
+    const source = record(value), parsed = parseManagedSiteRedirects(source.redirects);
+    if (!parsed) throw new Error("redirect設定の形式を確認できません。");
+    setRedirects(parsed);
+    setRedirectVersion(text(source.version, 200));
+  }
 
   useEffect(() => {
     const controller = new AbortController();
-    void Promise.all([api(path, { signal: controller.signal }), api(seoPath, { signal: controller.signal }), api(domainPath, { signal: controller.signal })]).then(([value, seoValue, domainValue]) => {
-      if (!controller.signal.aborted) { apply(value); applySeo(seoValue); applyDomain(domainValue); }
+    void Promise.all([api(path, { signal: controller.signal }), api(seoPath, { signal: controller.signal }), api(domainPath, { signal: controller.signal }), api(redirectsPath, { signal: controller.signal })]).then(([value, seoValue, domainValue, redirectsValue]) => {
+      if (!controller.signal.aborted) { apply(value); applySeo(seoValue); applyDomain(domainValue); applyRedirects(redirectsValue); }
     }).catch((error: unknown) => {
       if (controller.signal.aborted) return;
       if (error instanceof SessionExpiredError) expire();
@@ -63,7 +76,7 @@ export function ManagedPublicSettings({ project, expire }: { project: Project; e
       else setMessage("公開配信の設定を読み込めませんでした。");
     });
     return () => controller.abort();
-  }, [path, seoPath, domainPath, expire, attempt]);
+  }, [path, seoPath, domainPath, redirectsPath, expire, attempt]);
 
   async function save(event: FormEvent) {
     event.preventDefault();
@@ -125,6 +138,31 @@ export function ManagedPublicSettings({ project, expire }: { project: Project; e
     } finally { setBusy(false); }
   }
 
+  function addRedirect(event: FormEvent) {
+    event.preventDefault();
+    const updated = parseManagedSiteRedirects([...redirects, { locale: newRedirectLocale.trim(), fromPath: newRedirectFrom.trim(), toPath: newRedirectTo.trim() }]);
+    if (!updated) { setMessage("言語とURLパスを確認してください。転送元の重複や転送ループは登録できません。"); return; }
+    setRedirects(updated);
+    setNewRedirectFrom("");
+    setNewRedirectTo("");
+    setMessage("変更はまだ保存されていません。");
+  }
+
+  async function saveRedirects() {
+    if (!redirectVersion || busy) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      applyRedirects(await api(redirectsPath, { method: "PUT", body: { expectedVersion: redirectVersion, redirects } }));
+      setMessage("redirectを保存しました。旧URLから新URLへ301で転送します。");
+    } catch (error) {
+      if (error instanceof SessionExpiredError) expire();
+      else if (error instanceof ApiError && error.status === 409) setMessage("redirectが別に更新されました。再読込して確認してください。");
+      else if (error instanceof ApiError && error.status === 422) setMessage("redirectの言語とURLパスを確認してください。");
+      else setMessage("redirectを保存できませんでした。");
+    } finally { setBusy(false); }
+  }
+
   if (hidden) return null;
   return <section className="studio-members" aria-label="公開配信">
     <div className="studio-section-heading"><h2>公開配信</h2><button className="studio-secondary" type="button" disabled={busy} onClick={() => { setMessage(""); setVersion(""); setAttempt((value) => value + 1); }}>再読込</button></div>
@@ -174,6 +212,29 @@ export function ManagedPublicSettings({ project, expire }: { project: Project; e
       </label>
       <div><button type="submit" disabled={busy}>SEO設定を保存</button></div>
     </form>}
+    {redirectVersion && <div className="studio-public-settings-form">
+      <h3>旧URLからの転送</h3>
+      <p className="studio-help">サイト内のURLパスを登録すると、旧URLから新URLへ301で転送します。同じ旧URLは1件だけ登録できます。言語は一覧の管理用です。</p>
+      <form onSubmit={addRedirect}>
+        <label>言語
+          <input disabled={busy} maxLength={40} type="text" value={newRedirectLocale} onChange={(event) => setNewRedirectLocale(event.target.value)} placeholder="ja" />
+        </label>
+        <label>旧URLパス
+          <input disabled={busy} maxLength={160} type="text" autoComplete="off" spellCheck={false} value={newRedirectFrom} onChange={(event) => setNewRedirectFrom(event.target.value)} placeholder="/old-page" />
+        </label>
+        <label>新URLパス
+          <input disabled={busy} maxLength={160} type="text" autoComplete="off" spellCheck={false} value={newRedirectTo} onChange={(event) => setNewRedirectTo(event.target.value)} placeholder="/new-page" />
+        </label>
+        <button type="submit" disabled={busy}>一覧に追加</button>
+      </form>
+      {redirects.length ? <ul aria-label="登録済みredirect">
+        {redirects.map((redirect) => <li key={redirect.fromPath}>
+          <code>{redirect.fromPath}</code> → <code>{redirect.toPath}</code> <span>({redirect.locale})</span>
+          <button className="studio-secondary" type="button" disabled={busy} onClick={() => { setRedirects(redirects.filter(({ fromPath }) => fromPath !== redirect.fromPath)); setMessage("変更はまだ保存されていません。"); }}>削除</button>
+        </li>)}
+      </ul> : <p className="studio-help">redirectは登録されていません。</p>}
+      <div><button type="button" disabled={busy} onClick={() => void saveRedirects()}>redirectを保存</button></div>
+    </div>}
     {(message || !version) && <p role="status">{message || "公開配信の設定を読み込んでいます。"}</p>}
   </section>;
 }

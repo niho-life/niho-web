@@ -8,7 +8,7 @@ export function record(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-export async function api(path: string, options: { readonly method?: "GET" | "POST"; readonly body?: Record<string, unknown>; readonly signal?: AbortSignal } = {}): Promise<unknown> {
+export async function api(path: string, options: { readonly method?: "GET" | "POST" | "PUT"; readonly body?: Record<string, unknown>; readonly signal?: AbortSignal } = {}): Promise<unknown> {
   const method = options.method ?? "GET";
   const response = await fetch(path, {
     method,

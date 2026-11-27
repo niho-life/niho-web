@@ -24,7 +24,8 @@ const beforeDeployMigrations = new Set([
   "0018_managed_public_embeds.sql",
   "0019_managed_public_domains.sql",
   "0020_managed_site_redirects.sql",
-  "0021_managed_published_paths.sql"
+  "0021_managed_published_paths.sql",
+  "0022_managed_site_redirect_versions.sql"
 ]);
 
 class ReleaseError extends Error {}

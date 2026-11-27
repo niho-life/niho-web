@@ -4,7 +4,7 @@ Studio Worker の配備、D1 migration、secret、切り戻しの手順です。
 
 ## 配備の準備
 
-本番配備は owner の依頼がある場合に行います。同じ環境への配備、migration、切り戻しは同時に行わないでください。Node.js 22.12 以上で `npm ci` を済ませ、対象 Cloudflare account にログインするか、配備に必要な権限を持つ `CLOUDFLARE_API_TOKEN` を実行環境に設定します。Cloudflare の管理画面で Worker、D1、R2、Access application、両方の custom domain を照合します。
+本番配備は owner の依頼がある場合に行います。同じ環境への配備、migration、切り戻しは同時に行わないでください。Node.js 22.12 以上で `npm ci` を済ませ、対象 Cloudflare account にログインするか、配備に必要な権限を持つ `CLOUDFLARE_API_TOKEN` を実行環境に設定します。Cloudflare の管理画面で Worker、D1、R2、Access application、公開 Worker の domain と検証 Worker の `workers.dev` hostname を照合します。
 
 次の値を、ローカルの非公開設定または承認済みの secret 管理から実行環境へ渡します。配備スクリプトは非公開の一時ファイルを Wrangler 設定として使い、終了時に削除します。値をリポジトリ、ログ、Issue、PR、shell history に記録しないでください。
 
@@ -14,7 +14,9 @@ Studio Worker の配備、D1 migration、secret、切り戻しの手順です。
 | `STUDIO_DATABASE_ID` | 既存の Studio D1 database ID |
 | `STUDIO_ORIGIN` | Access で保護された Studio の HTTPS origin |
 | `PUBLIC_SITES_ORIGIN` | Studio と異なる公開配信用の HTTPS origin |
-| `PUBLIC_SITES_PREVIEW_ORIGIN` | 任意。公開 Worker を割り当てる検証用 HTTPS origin。D1 の host 登録に noindex を付ける。配備先で公開 Worker の route も割り当てる |
+| `PUBLIC_SITES_PREVIEW_ORIGIN` | 検証 Worker 用の `https://<worker-name>.<account-subdomain>.workers.dev` origin。公開 origin と異なる host を使う |
+| `PUBLIC_SITES_WORKER_NAME` | 検証用 `workers.dev` hostname に使う専用 Worker 名。公開配信用 Worker と異なる名前を使う |
+| `PUBLIC_SITES_SMOKE_PATH` | 検証 host 上で HTTP 200 の HTML と noindex を確認する、公開済みページのパス |
 | `STUDIO_ACCESS_ISSUER` / `STUDIO_ACCESS_AUDIENCE` | Studio の Access JWT の `iss` と application の AUD。Worker では `ACCESS_ISSUER` / `ACCESS_AUDIENCE` |
 | `STUDIO_SMOKE_PROJECT_ID` / `STUDIO_SMOKE_SITE_ID` | smoke で開く既存プロジェクトとサイトの ID |
 | `STUDIO_SMOKE_PUBLIC_PATH` | 公開中は代表ページの正規パス。未公開サイトでは `/s/<site-slug>/` を指定し、安全な404を確認。どちらも D1 に登録された対象サイトの slug と照合 |
@@ -32,6 +34,8 @@ HTTPS origin は末尾に `/` を付けずに指定します。公開ページ�
 
 管理済みの JWT を実行環境に渡せる場合は、直接 `npm run studio:release` を実行します。Access service token は Dashboard のメンバー認証に使えません。`studio:deploy` も同じ配備手順を実行します。
 
+公開配信 Worker は `npm run studio:public:release` で別に配備します。この手順は `studio/public-sites.wrangler.json` から一時設定を作り、公開 Worker と異なる名前の `workers.dev` Worker だけを有効にします。`PUBLIC_SITES_PREVIEW_ORIGIN` の hostname は Worker 名と一致させます。検証 Worker に custom domain や route は追加しません。D1 migration は適用せず、`0016`〜`0022` がすべて適用済みの場合だけ続行します。配備後は指定したページが HTML と `noindex, nofollow` を返すことを確認します。
+
 ## 配備と smoke
 
 1. `npm test`（パッケージの build と全テスト）、`npm run studio:typecheck`、`npm run studio:build` を実行します。
@@ -46,7 +50,7 @@ HTTPS origin は末尾に `/` を付けずに指定します。公開ページ�
 
 SQL の正本は `studio/migrations/` です。適用済みの SQL は保持し、修正は新規 migration を追加します。配備前に、対象 D1 と復元できるバックアップがあることを確認します。
 
-- 新 Worker の配備前に実行できるのは、旧 Worker の読み書きがそのまま動く列、表、index、補助的な trigger の追加だけです。`0016_static_page_publication.sql` は旧 Worker の `managed_sites` INSERT を変えずに公開 pointer を初期化します。`0017_managed_page_sources.sql` は既存の版行と旧 Worker の INSERT を保ったまま R2 参照欄を追加し、`0018`〜`0021` は公開設定・独自 domain・redirect・公開 path を追加します。既存行と旧 Worker が使う INSERT・UPDATE・SELECT を確認した SQL を、`studio/release.mjs` の `beforeDeployMigrations` に追加します。未登録の migration が保留中なら配備を止めます。
+- 新 Worker の配備前に実行できるのは、旧 Worker の読み書きがそのまま動く列、表、index、補助的な trigger の追加だけです。`0016_static_page_publication.sql` は旧 Worker の `managed_sites` INSERT を変えずに公開 pointer を初期化します。`0017_managed_page_sources.sql` は既存の版行と旧 Worker の INSERT を保ったまま R2 参照欄を追加し、`0018`〜`0021` は公開設定・独自 domain・redirect・公開 path を追加し、`0022` はredirect編集の版番号を追加します。既存行と旧 Worker の INSERT・UPDATE・SELECT への影響を確認した SQL を、`studio/release.mjs` の `beforeDeployMigrations` に追加します。未登録の migration が保留中なら配備を止めます。
 - 列や表の削除、既存データの意味や制約の変更は、新 Worker が安定して旧 schema に依存する version が切り戻し対象から外れた後、別の release で行います。対象 D1 のバックアップと復元手順を確認し、その作業用の非公開 Wrangler 設定で `d1 migrations list DB --remote` と `d1 migrations apply DB --remote` を使います。
 - `0014` までの履歴 migration は事前適用済みであることを前提にしています。空の D1 の初期化は、既存 Worker への通常配備と別に行います。
 
