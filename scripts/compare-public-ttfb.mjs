@@ -88,6 +88,10 @@ async function measure(url, timeoutMs) {
   const started = performance.now();
   const response = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(timeoutMs) });
   const ttfbMs = round(performance.now() - started);
+  if (!response.ok) {
+    void response.body?.cancel().catch(() => {});
+    throw new Error(`HTTP ${response.status} for ${url}`);
+  }
   await response.arrayBuffer();
   return {
     ttfbMs,

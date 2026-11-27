@@ -35,3 +35,24 @@ test("public TTFB CLI validates base URLs and route paths", async () => {
   assert.throws(() => parseArgs(["--baseline", "https://baseline.example", "--candidate", "https://candidate.example", "--path", "/../outside"]), /invalid --path/u);
   await assert.rejects(comparePublicTtfb({ baseline: "http://example.test", candidate: "https://candidate.example", path: "/" }), /must use HTTPS/u);
 });
+
+test("public TTFB comparison rejects an error response instead of reporting it as faster", async () => {
+  let candidateRequests = 0;
+  const server = createServer((request, response) => {
+    if (request.url?.includes("candidate") && ++candidateRequests > 1) {
+      response.writeHead(503).end("temporarily unavailable"); return;
+    }
+    response.end("<html></html>");
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const origin = `http://127.0.0.1:${address.port}`;
+  try {
+    await assert.rejects(comparePublicTtfb({ baseline: `${origin}/baseline`, candidate: `${origin}/candidate`, warmSamples: 2, timeoutMs: 1_000 }), /HTTP 503/u);
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
