@@ -446,7 +446,7 @@ function App() {
   if (session.status === "expired") return <Notice title="セッションの確認が必要です" retry={() => window.location.reload()}>Cloudflare Access から再度ログインしてください。</Notice>;
   if (session.status === "error") return <Notice title="Studio を読み込めませんでした" retry={loadSession}>時間をおいて再度お試しください。</Notice>;
 
-  const account = <AccountMenu identity={session.identity} onLogout={() => logout(screen.kind === "invite" ? screen : undefined)} />;
+  const account = <AccountMenu identity={session.identity} onLogout={() => logout()} />;
   if (screen.kind === "invite") return <div className="studio-app">
     <header className="studio-shell-header"><a className="studio-logo" href="/" onClick={(event) => { event.preventDefault(); navigate({ kind: "directory" }); }}><span>NIHO</span><b>Studio</b></a><span />{account}</header>
     <InvitationAcceptance screen={screen} expire={expire} logoutError={logoutError} onSwitchAccount={() => logout(screen)} accepted={() => {
