@@ -95,6 +95,27 @@ function safeTitle(value: unknown): value is string {
 function opaqueVersion(): string { return `p.${crypto.randomUUID()}`; }
 function opaqueId(prefix: string): string { return `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`; }
 
+function managedProjectD1FailureKind(error: unknown): string {
+  const messages: string[] = [];
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && typeof current === "object" && current !== null; depth++) {
+    const item = current as { readonly message?: unknown; readonly cause?: unknown };
+    if (typeof item.message === "string") messages.push(item.message.slice(0, 2_000));
+    current = item.cause;
+  }
+  const message = messages.join(" ").toLowerCase();
+  if (/unique constraint|\bsqlite_constraint_unique\b/u.test(message)) return "d1-unique-constraint";
+  if (/foreign key constraint|\bsqlite_constraint_foreignkey\b/u.test(message)) return "d1-foreign-key-constraint";
+  if (/check constraint|\bsqlite_constraint_check\b/u.test(message)) return "d1-check-constraint";
+  if (/not null constraint|\bsqlite_constraint_notnull\b/u.test(message)) return "d1-not-null-constraint";
+  if (/daily row write limit|maximum account storage limit/u.test(message)) return "d1-write-limit";
+  if (/exceeded maximum db size|storage limit/u.test(message)) return "d1-storage-limit";
+  if (/7429|db overloaded|queued for too long/u.test(message)) return "d1-overloaded";
+  if (/network connection lost|transient issue|d1 db reset|replica disconnected/u.test(message)) return "d1-transient";
+  if (/\bd1_(?:error|exec_error|type_error)\b/u.test(message)) return "d1-error";
+  return "unknown";
+}
+
 export function publicSitesOrigin(value: string | undefined): string | null {
   if (!value) return null;
   try {
@@ -151,6 +172,7 @@ export async function createManagedProject(request: Request, db: ManagedD1, acto
   const document = initialDocument(siteId, pageId, body.locale, body.title);
   const displayName = actor.email.length <= 120 ? actor.email : "Project owner";
   const hostname = new URL(origin).hostname.toLowerCase(), previewHostname = previewOrigin ? new URL(previewOrigin).hostname.toLowerCase() : null;
+  const expectedStatementCount = 8 + (previewHostname && previewHostname !== hostname ? 1 : 0);
   let results: readonly D1Result<unknown>[];
   try {
     results = await db.batch([
@@ -171,9 +193,14 @@ export async function createManagedProject(request: Request, db: ManagedD1, acto
     ]);
   } catch (error) {
     if (error instanceof Error && /(?:UNIQUE|managed_sites\.slug)/iu.test(error.message)) return json({ error: "slug_taken" }, 409);
+    console.error("NIHO Studio managed project D1 batch failed", managedProjectD1FailureKind(error));
     throw error;
   }
-  if (results.some((result) => !result.success) || results.some((result) => result.meta?.changes !== 1)) throw new Error("managed project batch failed");
+  const failedStatements = results.flatMap((result, index) => result.success ? [] : [index]);
+  if (results.length !== expectedStatementCount || failedStatements.length) {
+    console.error("NIHO Studio managed project D1 batch returned an invalid result", failedStatements.length ? failedStatements : "statement-count-mismatch");
+    throw new Error("managed project batch failed");
+  }
   return json({ status: "created", projectId, siteId, editorPath: `/projects/${projectId}/sites/${siteId}/editor` }, 201);
 }
 
