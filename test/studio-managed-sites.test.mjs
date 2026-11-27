@@ -246,6 +246,7 @@ test("published Kamakura images select a request-sized version and negotiated mo
     schemaVersion: 1, siteId: "kamakura", pageId: "home", locale: "ja", revision: 1, title: "画像",
     meta: { ogImage: { src: `${mediaOrigin}/uploads/og.png`, alt: "OG" } }, tokens: {},
     body: [
+      { type: "element", id: "explicit-lazy-image", tag: "img", attrs: { src: `${mediaOrigin}/uploads/lazy.jpg`, alt: "Lazy", loading: "lazy" }, children: [] },
       { type: "element", id: "asset-image", tag: "img", asset: reference, attrs: { alt: "Asset" }, children: [] },
       { type: "element", id: "url-image", tag: "img", attrs: { src: mediaUrl, alt: "URL" }, children: [] },
       { type: "element", id: "gif-image", tag: "img", attrs: { src: `${mediaOrigin}/uploads/animated.gif`, alt: "GIF" }, children: [] },
@@ -259,8 +260,12 @@ test("published Kamakura images select a request-sized version and negotiated mo
   ]);
   const html = renderPageToHtml(plan.document, managedPublicBlocks, { assets: plan.assets, imageHints: plan.imageHints });
   const rendered = new JSDOM(html).window.document;
+  const explicitLazyImage = rendered.querySelector('[data-nw-node="explicit-lazy-image"]');
   const assetImage = rendered.querySelector('[data-nw-node="asset-image"]');
   const urlImage = rendered.querySelector('[data-nw-node="url-image"]');
+  assert.equal(explicitLazyImage?.getAttribute("loading"), "lazy");
+  assert.equal(explicitLazyImage?.hasAttribute("fetchpriority"), false, "an explicitly lazy image does not consume the high-priority slot");
+  assert.equal(explicitLazyImage?.getAttribute("decoding"), "async");
   assert.equal(assetImage?.getAttribute("src"), `${mediaOrigin}/cdn-cgi/image/width=auto,format=auto/uploads/asset.webp`);
   assert.equal(assetImage?.getAttribute("srcset"), [320, 640, 960, 1280, 1920, 2560].map((width) => `${mediaOrigin}/cdn-cgi/image/width=${width},format=auto/uploads/asset.webp ${width}w`).join(", "));
   assert.equal(assetImage?.getAttribute("sizes"), "100vw");

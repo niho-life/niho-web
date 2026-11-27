@@ -15,7 +15,7 @@ Studio-native site の公開出力を、編集・書込みを持つ Studio Worke
 - 検証hostまたはサイト全体をnoindexにしたhostは、`robots.txt` で全体を拒否し、sitemapとllmsの一覧を空にして返します。noindex応答にも本文に対応する ETag を付けます。
 - `managed_site_hosts` は hostname と path prefix を site に結び付けます。verification host には `noindex=1` を保存し、200・304・307・404・503 の全応答に `X-Robots-Tag: noindex, nofollow` を付けます。
 - HTML は `Cache-Control: no-cache` と digest の ETag を返します。検証hostもETag再検証を使います。
-- 公開画像は、許可済みメディア origin の JPEG / PNG / WebP / AVIF に限り、HTML に `width=auto,format=auto` の fallback URL と幅別の `srcset` を出します。`sizes` は既定で `100vw` です。幅別候補は 320〜2560 CSS px で、Client Hints を使わない iPhone などでも表示幅に応じた画像を選べます。ページ内の最初の画像には `fetchpriority="high"`、後続画像には指定がない場合 `loading="lazy"` と `decoding="async"` を付けます。明示された `loading` と `decoding` は保持します。GIF と許可外 origin は変換しません。[独自ドメインの切替と切戻し](site-domain-cutover-runbook.md)
+- 公開画像は、許可済みメディア origin の JPEG / PNG / WebP / AVIF に限り、HTML に `width=auto,format=auto` の fallback URL と幅別の `srcset` を出します。`sizes` は既定で `100vw` です。幅別候補は 320〜2560 CSS px で、Client Hints を使わない iPhone などでも表示幅に応じた画像を選べます。`loading="lazy"` が明示された画像を除き、ページ内の最初の画像には `fetchpriority="high"` を付けます。それ以外の画像には指定がない場合 `loading="lazy"` と `decoding="async"` を付けます。明示された `loading` と `decoding` は保持します。GIF と許可外 origin は変換しません。[独自ドメインの切替と切戻し](site-domain-cutover-runbook.md)
 - 公開HTMLの既定フォントは `system-ui` と日本語の OS フォント fallback を使います。公開 Worker の CSP は `font-src 'none'` とし、Web フォントを読み込みません。
 - 公開 Worker は host 対応表と公開 manifest pointer を isolate 内で最大5秒保持します。配信は選んだ目録のルート・公開設定・生成物を使用します。HTML artifactはhost origin・site ID・manifest publication ID・本文digestを含むCache API keyで再利用し、NIHO接続先の解決応答はcacheしません。
 - `studio/public-sites.wrangler.json` が公開 Worker の entry point です。Studio と同じ D1/R2 bindings を読みます。Worker のコードにはD1/R2書込み操作を置きません。Cloudflare binding自体のread-only権限は別途強制できません。
