@@ -60,6 +60,30 @@ test("legal read and save preserve compatibility while forwarding identity field
   await assert.rejects(() => wrapped.saveDraft({ target, document: { ...document, siteId: "other" }, expectedVersion: "v1" }, signal()), /文書の対象/);
 });
 
+test("conditional document reads forward the ETag and keep modified snapshots project-scoped", async () => {
+  const requests = [], target = { siteId: "demo", pageId: "home", locale: "ja-JP", ignored: "drop" };
+  const controller = new AbortController();
+  const wrapped = setup({
+    readDocumentIfChanged: async (checked, etag, requestSignal) => {
+      requests.push({ target: checked, etag, signal: requestSignal });
+      if (etag) return { status: "not-modified", etag };
+      return { status: "modified", snapshot: { document: { ...fixture, siteId: "demo", pageId: "home", locale: "ja-JP" }, version: "v2", readOnly: { reason: "表示のみ" } }, etag: "etag-2" };
+    }
+  }).wrapped;
+
+  assert.deepEqual(await wrapped.readDocumentIfChanged(target, "etag-1", controller.signal), { status: "not-modified", etag: "etag-1" });
+  const result = await wrapped.readDocumentIfChanged(target, undefined, controller.signal);
+  assert.equal(result.status, "modified");
+  assert.equal(result.etag, "etag-2");
+  assert.equal(result.snapshot.readOnly.reason, "表示のみ");
+  assert.deepEqual(requests.map(({ target: checked, etag }) => ({ target: checked, etag })), [
+    { target: { siteId: "demo", pageId: "home", locale: "ja-JP" }, etag: "etag-1" },
+    { target: { siteId: "demo", pageId: "home", locale: "ja-JP" }, etag: undefined }
+  ]);
+  assert.ok(requests.every(({ signal: forwarded }) => forwarded === controller.signal));
+  await assert.rejects(() => wrapped.readDocumentIfChanged({ ...target, siteId: "other" }, "etag-1", controller.signal), /一致/);
+});
+
 test("presentation stays target-scoped and its dependency version is forwarded to save and release CAS", async () => {
   const target = { siteId: "demo", pageId: "home", locale: "ja-JP" };
   const shared = (pageId) => ({ ...fixture, siteId: "demo", pageId, locale: "ja-JP", title: pageId, body: [] });
@@ -146,7 +170,7 @@ test("project editor forwards site frame sources without sharing the source arra
 });
 test("optional page and site methods are absent unless the host implements them", () => {
   const { wrapped } = setup();
-  for (const name of ["listFormCompletionPages", "preparePageChange", "applyPageChange", "readSiteSettings", "saveSiteSettings", "breakpointSettings", "localization"]) assert.equal(name in wrapped, false, name);
+  for (const name of ["listFormCompletionPages", "preparePageChange", "applyPageChange", "readDocumentIfChanged", "readSiteSettings", "saveSiteSettings", "breakpointSettings", "localization"]) assert.equal(name in wrapped, false, name);
   const calls = { pageChanges: [], applies: [], settings: [], settingsSaves: [] };
   const partial = setup({ readSiteSettings: pageHostMethods(calls).readSiteSettings }).wrapped;
   assert.equal(typeof partial.readSiteSettings, "function"); assert.equal("saveSiteSettings" in partial, false); assert.equal("preparePageChange" in partial, false);
