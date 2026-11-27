@@ -61,8 +61,7 @@ function installDom(pathname) {
 }
 installDom("/");
 const { act } = await import("react");
-const wait = (ms) => act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
-const flush = async () => { for (let index = 0; index < 8; index += 1) await wait(0); };
+const flush = () => act(async () => { await new Promise((resolve) => setImmediate(resolve)); });
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
 
 /** 偽の Studio API と CMS の BFF。呼ばれた path を返す。 */
@@ -290,7 +289,7 @@ test("Studio-native の CMS を Dashboard から開き、下書き作成の再�
   await flush();
   assert.ok(byText("button", "CMS"), document.body.textContent);
   await click(byText("button", "CMS"));
-  if (!byText("button", "項目を追加")) await wait(350);
+  for (let attempt = 0; attempt < 20 && !byText("button", "項目を追加"); attempt++) await flush();
   assert.equal(window.location.pathname, `${root}/cms`);
   assert.ok(document.querySelector('[aria-label="CMS"]'));
   await click(byText("summary", "コレクションとフィールドの定義"));

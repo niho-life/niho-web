@@ -38,13 +38,13 @@ const defaultUsage = () => [
   { target: target("chrome"), title: "サイトの共通枠", reach: 2, components: { site_header: 1 } }
 ];
 
-const flush = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-const wait = (ms) => act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
+const flush = () => act(async () => { await new Promise((resolve) => setImmediate(resolve)); });
+const advance = async (t, ms) => { await act(async () => t.mock.timers.tick(ms)); await flush(); };
 async function waitFor(condition, description, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs;
   while (!condition()) {
     if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${description}`);
-    await wait(50);
+    await new Promise((resolve) => setImmediate(resolve));
   }
 }
 const button = (text, scope = document) => [...scope.querySelectorAll("button")].find((node) => node.textContent === text || node.getAttribute("aria-label") === text) ?? (() => { const id = / · ([^ ]+)$/.exec(text)?.[1]; return id ? scope.querySelector(`[data-node-id="${id}"] button.e-layer`) : undefined; })();
@@ -590,25 +590,27 @@ test("a failed library read shows a notice and still loads pages without compone
   } finally { await app.cleanup(); }
 });
 
-test("autosave saves changed components before the page and pauses without saving the page after a library failure", async () => {
+test("autosave saves changed components before the page and pauses without saving the page after a library failure", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   let fail = false;
   const app = await setup({ props: { autosave: { delayMs: 100 } }, saveLibrary: async () => fail ? { status: "conflict" } : undefined });
   try {
     await openPanel(); await click(button("名前を変更", card("予備の帯"))); await change(input("コンポーネント名", dialog()), "予備の帯 改"); await click(button("変更する", dialog()));
     await change(input("ページタイトル"), "自動保存するタイトル");
+    await advance(t, 100);
     await waitFor(() => app.calls.librarySaves.length === 1 && app.calls.saves.length === 1 && status().startsWith("保存済み"), "initial component and page autosave");
     assert.deepEqual(app.calls.order.filter((call) => call.startsWith("save")), ["saveLibrary", "saveDraft"]);
     assert.equal(app.calls.librarySaves[0].trigger, "autosave"); assert.equal(app.calls.saves[0].trigger, "autosave");
     assert.ok(app.calls.librarySaves[0].library.components.some((component) => component.name === "予備の帯 改"));
     assert.ok(status().startsWith("保存済み"));
-    await click(button("複製", card("予備の帯 改"))); await waitFor(() => app.calls.librarySaves.length === 2, "component-only autosave");
+    await click(button("複製", card("予備の帯 改"))); await advance(t, 100); await waitFor(() => app.calls.librarySaves.length === 2, "component-only autosave");
     assert.equal(app.calls.librarySaves.length, 2, "a component-only change is autosaved"); assert.equal(app.calls.saves.length, 1);
     fail = true;
-    await click(button("複製", card("予備の帯 改"))); await change(input("ページタイトル"), "コンポーネントに失敗した後のタイトル");
+    await click(button("複製", card("予備の帯 改"))); await change(input("ページタイトル"), "コンポーネントに失敗した後のタイトル"); await advance(t, 100);
     await waitFor(() => app.calls.librarySaves.length === 3 && status() === "コンポーネントが競合しています" && text().includes("コンポーネントの保存が競合しました（409）"), "component library conflict notice");
     assert.equal(app.calls.librarySaves.length, 3); assert.equal(app.calls.saves.length, 1, "the page is not saved after the component library failed");
     assert.equal(status(), "コンポーネントが競合しています"); assert.ok(text().includes("コンポーネントの保存が競合しました（409）"));
-    await wait(400); assert.equal(app.calls.librarySaves.length, 3, "autosave pauses after a failure");
+    await advance(t, 400); assert.equal(app.calls.librarySaves.length, 3, "autosave pauses after a failure");
   } finally { await app.cleanup(); }
 });
 
@@ -668,11 +670,12 @@ test("hover styles edit an instance's outer box on the page and nodes inside a c
   } finally { await app.cleanup(); }
 });
 
-test("component-only changes are autosaved on a site without pages", async () => {
+test("component-only changes are autosaved on a site without pages", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   const app = await setup({ props: { autosave: { delayMs: 100 } }, adapter: { listPages: async () => [] } });
   try {
     await openPanel(); await click(button("名前を変更", card("予備の帯"))); await change(input("コンポーネント名", dialog()), "ページのない帯"); await click(button("変更する", dialog()));
-    await wait(400);
+    await advance(t, 100);
     assert.equal(app.calls.librarySaves.length, 1); assert.equal(app.calls.librarySaves[0].trigger, "autosave");
     assert.ok(app.calls.librarySaves[0].library.components.some((component) => component.name === "ページのない帯"));
     assert.equal(app.calls.saves.length, 0);
@@ -846,13 +849,14 @@ test("site-wide styles cannot be saved while the pages that place components can
   } finally { await app.cleanup(); }
 });
 
-test("unsaved component changes are kept on the device per site and offered again after reopening", async () => {
+test("unsaved component changes are kept on the device per site and offered again after reopening", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   const { createBrowserRecoveryStore } = await import("../dist/history.js");
   const storage = memoryStorage(), key = "niho-web:recovery:v1:staff-a:library/demo", store = () => createBrowserRecoveryStore({ scope: "staff-a", storage });
   const first = await setup({ props: { recovery: store() } });
   try {
     await openPanel(); await renameCard("予備の帯", "端末の帯");
-    await wait(900);
+    await advance(t, 800);
     const stored = JSON.parse(storage.data.get(key));
     assert.deepEqual(Object.keys(stored), ["v", "siteId", "baseVersion", "changed", "baseTokens", "library", "updatedAt"]);
     assert.deepEqual([stored.siteId, stored.baseVersion, stored.changed], ["demo", "lib-1", { spare: 1 }]);
@@ -904,7 +908,8 @@ test("recovered component changes skip components saved again later, and 破棄 
   } finally { await again.cleanup(); }
 });
 
-test("two editors add components to the same library under different IDs, so the later one is restored instead of rebuilt", async () => {
+test("two editors add components to the same library under different IDs, so the later one is restored instead of rebuilt", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   const { createBrowserRecoveryStore } = await import("../dist/history.js");
   // 2つの編集画面が同じ保存先を使う。読み込んだ version が最新でなければ保存は競合する。
   let latest = library(), saves = 1;
@@ -919,7 +924,7 @@ test("two editors add components to the same library under different IDs, so the
   const storage = memoryStorage(), recovery = () => createBrowserRecoveryStore({ scope: "staff-a", storage });
   // 1つ目の画面で予備の帯を複製し、保存しないまま閉じた（コンポーネントの変更は端末に残る）。
   const first = await setup({ ...shared, props: { recovery: recovery() } });
-  try { await openPanel(); await click(button("複製", card("予備の帯"))); await wait(900); } finally { await first.cleanup(); }
+  try { await openPanel(); await click(button("複製", card("予備の帯"))); await advance(t, 800); } finally { await first.cleanup(); }
   const { changed } = JSON.parse(storage.data.get("niho-web:recovery:v1:staff-a:library/demo")), [added] = Object.keys(changed);
   assert.deepEqual(changed, { [added]: null });
   // 同じライブラリを開いていた2つ目の画面で「コンポーネントにする」を使い、先に保存した。
@@ -965,16 +970,17 @@ test("device copies of component changes are never offered on another site", asy
   } finally { await other.cleanup(); }
 });
 
-test("discarding unsaved component changes also removes their device copy", async () => {
+test("discarding unsaved component changes also removes their device copy", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   const { createBrowserRecoveryStore } = await import("../dist/history.js");
   const storage = memoryStorage(), key = "niho-web:recovery:v1:staff-a:library/demo";
   const app = await setup({ adapter: twoSites, readLibrary: otherSiteLibrary, saveLibrary: async () => ({ status: "conflict" }), props: { recovery: createBrowserRecoveryStore({ scope: "staff-a", storage }) } });
   try {
-    await openPanel(); await renameCard("予備の帯", "予備の帯 改"); await wait(900);
+    await openPanel(); await renameCard("予備の帯", "予備の帯 改"); await advance(t, 800);
     assert.ok(storage.data.has(key));
     await click("下書き保存"); await click("コンポーネントを読み直す"); await click(button("最新のコンポーネントを読み込む（コンポーネントの変更を破棄）", dialog())); await flush();
     assert.equal(storage.data.has(key), false, "コンポーネントを読み直す removes the discarded copy");
-    await renameCard("予備の帯", "予備の帯 再"); await wait(900);
+    await renameCard("予備の帯", "予備の帯 再"); await advance(t, 800);
     assert.ok(storage.data.has(key));
     await change(document.querySelector('select[aria-label="編集するサイト"]'), "other");
     assert.equal(dialog().getAttribute("aria-label"), "未保存の変更");
@@ -989,13 +995,13 @@ test("component device copies need a component adapter and a store with the libr
   const spy = { read: () => null, write: () => {}, remove: () => {}, readLibrary: (siteId) => { calls.push(`read ${siteId}`); return null; }, writeLibrary: () => { calls.push("write"); }, removeLibrary: () => { calls.push("remove"); } };
   const plain = await setup({ components: false, document: fixture, props: { recovery: spy } });
   try {
-    await flush(); await change(input("ページタイトル"), "コンポーネントのないサイト"); await wait(900); await click("下書き保存");
+    await flush(); await change(input("ページタイトル"), "コンポーネントのないサイト"); await click("下書き保存");
     assert.deepEqual(calls, [], "hosts without components never touch the component copy");
   } finally { await plain.cleanup(); }
   // ページだけの退避ストアでは、コンポーネントの変更を退避せず、従来どおり編集・保存できる。
   const app = await setup({ props: { recovery: { read: () => null, write: () => {}, remove: () => {} } } });
   try {
-    await openPanel(); await renameCard("予備の帯", "ページだけの退避"); await wait(900);
+    await openPanel(); await renameCard("予備の帯", "ページだけの退避");
     assert.equal(libraryBanner(), null); await click("下書き保存");
     assert.equal(app.calls.librarySaves.length, 1); assert.ok(status().startsWith("保存済み"));
   } finally { await app.cleanup(); }
@@ -1166,7 +1172,7 @@ test("component undo cannot change a library token after the site takes ownershi
     await click(button("ページに戻る", document.querySelector(".e-part-banner")));
     await click(document.querySelector('nav[aria-label="編集ツール"] button[title="スタイル"]'));
     await click("サイト共通", styles()); await click(styles().querySelector('button[aria-label="カラーを追加"]'));
-    await wait(20); await click("サイト共通スタイルを保存"); await flush();
+    await flush(); await click("サイト共通スタイルを保存"); await flush();
     assert.equal(savedSettings?.tokens?.["color-1"]?.type, "color");
 
     await openPanel(); await click(button("コンポーネントを編集", card("サイトヘッダー"))); await loadCanvas();

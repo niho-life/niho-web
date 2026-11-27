@@ -52,8 +52,14 @@ const danger = '<p onclick="steal()">あ<script>alert(1)</script><a href="javasc
   + '<div data-type="embed_code"><blockquote class="instagram-media" data-instgrm-permalink="https://www.instagram.com/p/demo/" onmouseover="alert(4)">え</blockquote><script async src="https://evil.example.test/embed.js"></script></div>'
   + '<iframe src="http://insecure.example.test/frame"></iframe><p>お</p>';
 
-const wait = (ms) => act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
-const flush = async () => { for (let index = 0; index < 4; index += 1) await wait(0); };
+const flush = () => act(async () => { await new Promise((resolve) => setImmediate(resolve)); });
+async function waitFor(condition, description) {
+  const deadline = Date.now() + 2_000;
+  while (!condition()) {
+    if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${description}`);
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
 /** 共有の無害化（ワークスペースが props.sanitize として渡すもの）。"/media/" だけ同じサイトの画像を残す。 */
 const workspaceSanitize = (html) => sanitizeRichTextHtml(html, { isImageSrcAllowed: (src) => src.startsWith("/media/") });
 
@@ -303,10 +309,10 @@ test("CollectionWorkspace の renderRichText に渡すと、本文の値を壊�
     assert.ok(body, "Studio の本文の部品が出る");
     assert.ok(body.id.endsWith("-body-control"), body.id);
     assert.equal(document.getElementById(body.getAttribute("aria-labelledby")).textContent.includes("本文"), true);
-    await wait(60);
+    await flush();
     assert.deepEqual(saves, [], "開いただけでは保存しない");
     await act(async () => { const editor = body.editor; editor.view.dispatch(editor.state.tr.insertText("★", textPos(editor, "おわり。"))); });
-    await wait(80);
+    await waitFor(() => saves.length > 0, "rich-text autosave");
     assert.equal(saves.at(-1), studio.replace("おわり。", "★おわり。"));
   } finally { await act(async () => root.unmount()); container.remove(); }
 });

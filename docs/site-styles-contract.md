@@ -23,7 +23,7 @@ type SiteStyles = {
   textStyles?: Record<string, TextStyle>;   // 最大 64 件。規則はページの textStyles と同じ
 };
 
-/** @niho/web/pages の SiteSettings はこれを含む。 */
+/** サイト設定の SiteSettings はこれを含む。 */
 type SiteSettings = SiteStyles & { title: string; description?: string; ogImage?: PageImage; favicon?: string; locale: string; noindex?: boolean };
 ```
 

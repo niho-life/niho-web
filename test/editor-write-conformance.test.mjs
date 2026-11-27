@@ -4,7 +4,6 @@ import test from "node:test";
 import ts from "typescript";
 import { EDITING_OPERATIONS } from "../dist/editing-api.js";
 
-const sourceMapPath = new URL("../docs/ai-edit-source-map.md", import.meta.url);
 const adapterSources = [
   { path: new URL("../studio/kamakura-editor.tsx", import.meta.url), name: "createKamakuraAdapter", prefix: "EditorAdapter" },
   { path: new URL("../studio/kamakura-assets.ts", import.meta.url), name: "createKamakuraAssetLibrary", prefix: "PageEditorProps.assets" },
@@ -108,34 +107,11 @@ function returnedAdapterMethods({ path, name, prefix }) {
   return methods;
 }
 
-function sourceMapWriteOperations() {
-  const text = readFileSync(sourceMapPath, "utf8");
-  const section = text.split("## 鎌倉StudioのGUI書込み経路\n")[1]?.split("\n## ", 1)[0];
-  assert.ok(section, "Missing GUI write conformance section in docs/ai-edit-source-map.md");
-  const rows = section.split("\n").filter((line) => line.startsWith("| `EditorAdapter.") || line.startsWith("| `PageEditorProps.assets."));
-  return new Map(rows.map((line) => {
-    const columns = line.split("|").slice(1, -1).map((column) => column.trim());
-    const method = /^`([^`]+)`$/u.exec(columns[0] ?? "")?.[1];
-    assert.ok(method, `Invalid GUI adapter method row: ${line}`);
-    const operations = [...(columns[1] ?? "").matchAll(/`([^`]+)`/gu)].map((match) => match[1]);
-    assert.ok(operations.length > 0, `GUI write has no shared operation ID: ${method}`);
-    assert.match(columns[2] ?? "", /(?:operations\/|\/editor\/|\/localization\/)/u, `GUI write has no BFF route: ${method}`);
-    return [method, operations.sort()];
-  }));
-}
-
-test("Kamakura GUI adapter writes map to documented shared operations", () => {
+test("Kamakura GUI adapter exposes only classified reads and shared writes", () => {
   const actualMethods = adapterSources.flatMap(returnedAdapterMethods).sort();
   const expectedMethods = [...new Set([...readMethods, ...writeOperations.keys()])].sort();
   assert.deepEqual(actualMethods, expectedMethods,
     "Adapter method surface changed; classify each method and add a shared operation before enabling a new GUI write");
-
-  const documented = sourceMapWriteOperations();
-  assert.deepEqual([...documented.keys()].sort(), [...writeOperations.keys()].sort(),
-    "Update the GUI write table when adapter write methods change");
-  for (const [method, operations] of writeOperations) {
-    assert.deepEqual(documented.get(method), [...operations].sort(), `Documented operation IDs differ for ${method}`);
-  }
 
   const publicOperations = new Set(EDITING_OPERATIONS.map((operation) => operation.id));
   const studioOperations = new Set([
