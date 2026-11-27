@@ -13,6 +13,7 @@ import { parseEditingLocalizationInput } from "../src/editing-localization.js";
 import { cmsCollection, cmsId, cmsItemKey, parseCmsValues } from "../src/cms-v2-schema.js";
 import { cmsPageBindingProblems, parseCmsPageBindings } from "../src/cms-page-bindings.js";
 import { parsePageDocument } from "../src/document.js";
+import { managedBlockContracts } from "./managed-embed-contract.js";
 import { parseCollectionValues, type CollectionItem, type CollectionValues } from "../src/collection-model.js";
 import { DocumentValidationError, keys, record } from "../src/validation-utils.js";
 import { validatePagePath } from "../src/pages.js";
@@ -242,7 +243,7 @@ async function migrationContext(store: CmsStore, site: Site, capability: CmsCapa
   const bindingsGeneration = pages.results[0]!.bindings_generation;
   const bindings = pages.results.flatMap((row) => {
     if (row.document_json === null || row.bindings_json === null) return [];
-    const page = parsePageDocument(JSON.parse(row.document_json));
+    const page = parsePageDocument(JSON.parse(row.document_json), managedBlockContracts);
     return [{ page, bindings: parseCmsPageBindings(JSON.parse(row.bindings_json), page) }];
   });
   const fixed = new Set(routeTable.reservations.flatMap((entry) =>

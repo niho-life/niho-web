@@ -817,6 +817,14 @@ export function sameTarget(left: EditorTarget, right: EditorTarget): boolean {
   return left.siteId === right.siteId && left.pageId === right.pageId && left.locale === right.locale;
 }
 export function validateReleasePlan(plan: EditorReleasePlan, request: EditorReleaseRequest, site: EditorSite): void {
+  const affectedValid = plan.affected === undefined || (Array.isArray(plan.affected) && plan.affected.length <= 100 && plan.affected.every((item: unknown) => {
+    const { kind, name, detail } = (item && typeof item === "object" ? item : {}) as Record<string, unknown>;
+    return (kind === "shared" || kind === "page" || kind === "site") && planText(name, 120) && name.length > 0 && (detail === undefined || planText(detail, 300));
+  }));
+  const warningsValid = plan.warnings === undefined || (Array.isArray(plan.warnings) && plan.warnings.length <= 100 && plan.warnings.every((item: unknown) => {
+    const { code, message } = (item && typeof item === "object" ? item : {}) as Record<string, unknown>;
+    return ["missing-description", "missing-alt", "japanese-in-english"].includes(String(code)) && planText(message, 300) && message.length > 0;
+  }));
   if (!isSafeHttpsOrigin(plan.domain) || !site.domains.includes(plan.domain) || !sameTarget(plan.target, request.target) || plan.expectedVersion !== request.expectedVersion || plan.action !== request.action || plan.revision !== request.revision ||
     plan.componentsVersion !== request.componentsVersion || plan.presentationVersion !== request.presentationVersion ||
     JSON.stringify(plan.siteStylesRevision) !== JSON.stringify(request.siteStylesRevision) || plan.sitePublicationEpoch !== request.sitePublicationEpoch ||
@@ -824,10 +832,7 @@ export function validateReleasePlan(plan: EditorReleasePlan, request: EditorRele
     plan.changes.some((change) => !change || typeof change.path !== "string" || typeof change.before !== "string" || typeof change.after !== "string") ||
     (request.action === "rollback" && (!Number.isSafeInteger(request.revision) || request.revision! < 1)) ||
     (plan.url !== undefined && !(planText(plan.url, 2048) && plan.url.startsWith(`${plan.domain}/`))) ||
-    (plan.affected !== undefined && !(Array.isArray(plan.affected) && plan.affected.length <= 100 && plan.affected.every((item: unknown) => {
-      const { kind, name, detail } = (item && typeof item === "object" ? item : {}) as Record<string, unknown>;
-      return (kind === "shared" || kind === "page" || kind === "site") && planText(name, 120) && name.length > 0 && (detail === undefined || planText(detail, 300));
-    })))) throw new Error("公開対象または差分確認の情報が一致しません。再取得してください。");
+    !affectedValid || !warningsValid) throw new Error("公開対象または差分確認の情報が一致しません。再取得してください。");
 }
 const changeTarget = (change: EditorPageChange): EditorTarget | undefined => change.action === "create" ? undefined : change.action === "duplicate" ? change.source : change.target;
 type PageChangeProblem = { field: "title" | "path" | "change"; message: string };

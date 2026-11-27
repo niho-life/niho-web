@@ -32,9 +32,29 @@ URL 変更・非公開化の確認画面では、サイト内の他ページの�
 
 ## 共有公開origin
 
-公開ページは `PUBLIC_SITES_ORIGIN` の `GET` / `HEAD /s/{siteSlug}/...` で配信する。ホームの公開 URL は `/s/{siteSlug}/`。Worker はrequest originの完全一致を先に確認し、このoriginのそれ以外のpathを404にする。管理画面のassetやAccess応答は公開originから返さない。
+公開ページは `PUBLIC_SITES_ORIGIN` の `GET` / `HEAD /s/{siteSlug}/...` で配信する。ホームの公開 URL は `/s/{siteSlug}/`。Worker はrequest originの完全一致を先に確認する。公開ページと build が生成した `/_niho/` 配下の専用 JavaScript だけを公開し、管理画面の asset や Access 応答は公開 origin から返さない。
 
-公開対象はvisibilityがpublicで、現在の `published_revision` が指す不変PageDocumentだけである。root-relativeな本文リンク、画像、poster、favicon、OG画像には描画時に `/s/{siteSlug}` を付ける。保存文書は書き換えない。既存のserver-safe rendererとhead resolverを使い、title、canonical、robots/noindexを反映する。応答はscriptを含めず、`script-src 'none'`、`frame-src 'none'`、`form-action 'none'` を含む制限的なCSPを付ける。
+公開対象はvisibilityがpublicで、現在の `published_revision` が指す不変PageDocumentだけである。root-relativeな本文リンク、画像、poster、favicon、OG画像には描画時に `/s/{siteSlug}` を付ける。保存文書は書き換えない。既存のserver-safe rendererとhead resolverを使い、title、canonical、robots/noindexを反映する。
+
+オーナーはプロジェクト設定で一意な公開ホスト名を1つ登録できる。Workerに届いたHTTPS hostが登録と完全一致する場合、そのサイトを選び、prefixのない `/`・`/en/...`・CMS pathを同じ公開rendererで返す。登録の変更だけではDNSやWorker routeを設定しない。フォーム接続は現在登録されているhostとpathに固定するため、公開hostを切り替えた後はフォーム参照を再接続してページを再公開する。
+
+公開HTMLはGET時にCloudflare edgeで最大5分キャッシュする。cache keyにはhost/path・公開page revision・CMS release・公開配信設定の版を含め、該当ページの再公開や公開設定変更後は新しいkeyへ切り替える。ブラウザーには `Cache-Control: no-cache` とHTMLのETagを返し、一致する `If-None-Match` には304で応答する。NIHO接続URLの解決応答は引き続き `no-store` とする。buildが出すJavaScriptは内容hash付きのURLで1年間immutableにする。
+
+独自ドメインの noindex が有効な場合、HTML・SEOファイル・リダイレクト・404・公開runtimeの全応答に `X-Robots-Tag: noindex, nofollow` を付ける。`robots.txt` は全体をDisallowし、sitemapとllmsの一覧は空にする。
+
+現在の公開ページはリクエスト時にD1の公開版から描画し、Cache APIで応答を再利用する。公開時のHTML・SEO生成物をR2へ保存し、専用Workerがその生成物だけを返す経路は #510 の範囲で、ここにはまだ含めない。画像の幅別変換と複数hostの登録も未対応。
+
+公開SEO出力は `/s/{siteSlug}/sitemap.xml`、`robots.txt`、`llms.txt`、`llms-full.txt`。ページ文書のmetadataからcanonical、robots、OG、title、descriptionを出し、同じpathの翻訳が公開済みの場合だけhreflangを足す。ページのJSON-LD、CMS詳細・一覧のJSON-LD、301リダイレクト、404も公開rendererが返す。公開計画はdescription・画像alt・英語本文中の日本語を警告として返し、公開自体は止めない。サイト共通のSEO設定と `niho-edit` からのSEO設定編集、title/descriptionの重複・リンク切れ検査、既存リダイレクト18件の取込みは未対応で、#489の残りとして扱う。
+
+### 埋め込みと計測の設定
+
+オーナーはプロジェクト設定の「公開配信」で iframe と画像・動画の HTTPS origin をそれぞれ登録し、GA4 の測定 ID を保存する。origin は URL の正規化後に完全一致させる。たとえば YouTube は `https://www.youtube-nocookie.com` を登録する。カレンダーなどの公開 URL はエディターの「外部URL」から追加する。設定は公開済みページにも反映される。初期状態で外部 iframe、外部の画像・動画、計測は読み込まない。
+
+`GET /api/projects/{projectId}/sites/{siteId}/editor/public-settings` は `{ settings: { frameOrigins, resourceOrigins, ga4MeasurementId }, version }` を返す。同じ URL への `POST` は `{ settings, expectedVersion }` を受け、版が古ければ 409 を返す。計測を設定したサイトでは、`noindex` のページも含め、広告連携を無効にした Google tag を読み込む。GA4 を外す場合は `ga4MeasurementId: null` を指定する。
+
+ページの CSP には、そのページで使う承認済みリソースの origin と必要な専用 JavaScript の URL を入れる。外部画像（`srcSet`、動画の poster、favicon、OG画像を含む）と外部動画は `resourceOrigins` に登録されたものだけが HTML に出る。CMS の一覧・詳細でも、公開素材 manifest と同じ許可リストを照合する。書体は文書で指定されたファミリー名を使う。文書に書体ファイルの URL を指定する入口はなく、書体ファイルの取得は許可しない。
+
+GA4 には計測用に限定した接続先を許可する。標準操作の runtime と NIHO フォームの runtime は別々に必要なページでだけ読み込む。NIHO フォームは iframe 内で送信し、親ページの CSP は `form-action 'none'` を維持する。[ManagedEmbed の保存・公開契約](managed-embed-contract.md)
 
 ## CLI認証
 

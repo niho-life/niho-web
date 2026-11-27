@@ -112,6 +112,9 @@ await Promise.all([
   writeFile(join(publicOutput, "index.html"), indexHtml),
   writeFile(join(publicOutput, indexName), indexHtml)
 ]);
+const [publicNihoEmbedsPath, publicPresentationPath] = await Promise.all([
+  publicScript("niho-embeds"), publicScript("presentation")
+]);
 await build({
   entryPoints: [join(studioDirectory, "worker.ts")],
   outfile: join(outputDirectory, "worker.js"),
@@ -121,8 +124,25 @@ await build({
   target: "es2022",
   minify: true,
   legalComments: "none",
-  define: { __STUDIO_INDEX_PATH__: JSON.stringify(`/${indexName}`) }
+  define: {
+    __STUDIO_INDEX_PATH__: JSON.stringify(`/${indexName}`),
+    __PUBLIC_NIHO_EMBEDS_PATH__: JSON.stringify(publicNihoEmbedsPath),
+    __PUBLIC_PRESENTATION_PATH__: JSON.stringify(publicPresentationPath)
+  }
 });
+
+async function publicScript(name) {
+  const result = await build({
+    entryPoints: [join(studioDirectory, `public-${name}.ts`)],
+    bundle: true, format: "esm", platform: "browser", target: "es2022", minify: true, legalComments: "none", write: false
+  });
+  const bytes = result.outputFiles[0].contents;
+  const directory = join(publicOutput, "_niho");
+  const file = `${name}-${fingerprint(bytes)}.js`;
+  await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, file), bytes);
+  return `/_niho/${file}`;
+}
 
 function fingerprint(value) {
   return createHash("sha256").update(value).digest("hex").slice(0, 12);

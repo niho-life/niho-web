@@ -437,7 +437,7 @@ function App() {
               analyticsContent={<Suspense fallback={<StudioLoading />}><StudioSiteAnalytics key={`${selected.id}:${selected.site.id}`} project={selected} expire={expire}
                 // 共有 origin + path で配信する Studio-native site は分析の接続に未対応（集計は未接続のまま表示する）
                 connectable={!managedProject(selected, session.config)} /></Suspense>}
-              settingsContent={<Suspense fallback={<StudioLoading />}><StudioProjectSettings project={selected} {...(selectedSourceLocale ? { sourceLocale: selectedSourceLocale } : {})} expire={expire} /></Suspense>}
+              settingsContent={<Suspense fallback={<StudioLoading />}><StudioProjectSettings project={selected} managed={managedProject(selected, session.config)} {...(selectedSourceLocale ? { sourceLocale: selectedSourceLocale } : {})} expire={expire} /></Suspense>}
               siteViews={siteViews(selected)}
               activeSiteView={screen.view ?? null}
               onSiteViewChange={(view) => {

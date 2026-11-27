@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { SiteLanguageSettings, type SiteLanguage } from "../src/site-language-settings.js";
 import type { Project } from "../src/projects.js";
 import { ApiError, api, record, role, SessionExpiredError, text, timestamp } from "./api-client.js";
+import { ManagedPublicSettings } from "./managed-public-settings.js";
 
 type Role = "owner" | "editor";
 type Member = {
@@ -159,9 +160,10 @@ function MemberAdministration({ project, expire }: { readonly project: Project; 
   </section>;
 }
 
-export function StudioProjectSettings({ project, sourceLocale, expire }: { readonly project: Project; readonly sourceLocale?: SiteLanguage; readonly expire: () => void }) {
+export function StudioProjectSettings({ project, sourceLocale, managed, expire }: { readonly project: Project; readonly sourceLocale?: SiteLanguage; readonly managed: boolean; readonly expire: () => void }) {
   return <div className="studio-project-settings">
     {sourceLocale && <SiteLanguageSettings value={{ sourceLocale, targetLocale: sourceLocale === "ja" ? "en" : "ja" }} locked={false} />}
+    {managed && <ManagedPublicSettings key={project.site.id} project={project} expire={expire} />}
     <MemberAdministration key={`${project.id}:${project.site.id}`} project={project} expire={expire} />
   </div>;
 }

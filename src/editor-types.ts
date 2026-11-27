@@ -132,6 +132,7 @@ export type EditorReleaseRequest = {
 };
 /** 公開確認に添える影響範囲。kind は共通部品・ページ・サイト設定。 */
 export type EditorReleaseAffected = { kind: "shared" | "page" | "site"; name: string; detail?: string };
+export type EditorReleaseWarning = { code: "missing-description" | "missing-alt" | "japanese-in-english"; message: string };
 export type EditorReleasePlan = EditorReleaseRequest & {
   confirmationToken: string;
   domain: string;
@@ -139,6 +140,7 @@ export type EditorReleasePlan = EditorReleaseRequest & {
   /** このページの公開URL。domain から始まる完全な URL。 */
   url?: string;
   affected?: readonly EditorReleaseAffected[];
+  warnings?: readonly EditorReleaseWarning[];
 };
 export type EditorReleaseResult = { status: "released"; snapshot: EditorSnapshot } | { status: "conflict" };
 export type ComponentLibrarySnapshot = {

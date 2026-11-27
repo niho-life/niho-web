@@ -1,0 +1,71 @@
+import type { BlockContract, BlockContracts } from "../src/types.js";
+import { isSafeHttpsOrigin } from "../src/validation-utils.js";
+
+export const MANAGED_EMBED_REF = /^emb_[0-9a-f]{32}$/u;
+export const managedEmbedContract = {
+  props: {
+    refId: { type: "string", maxLength: 36 },
+    background: { type: "enum", values: ["white", "transparent"], required: true },
+    initialHeight: { type: "number", min: 240, max: 1600, required: true }
+  },
+  slots: { frame: { label: "埋め込み枠", style: ["width", "borderRadius"] } }
+} satisfies BlockContract;
+export const managedBlockContracts = { ManagedEmbed: managedEmbedContract } satisfies BlockContracts;
+
+export type ManagedPublicPolicy = { frameOrigins: string[]; resourceOrigins: string[]; ga4MeasurementId: string | null };
+export function emptyManagedPublicPolicy(): ManagedPublicPolicy {
+  return { frameOrigins: [], resourceOrigins: [], ga4MeasurementId: null };
+}
+export function isCspHttpsOrigin(value: unknown): value is string {
+  return isSafeHttpsOrigin(value) && /^https:\/\/[a-z0-9.-]+(?::[0-9]+)?$/u.test(value);
+}
+
+export function parseManagedPublicPolicy(value: unknown, parentOrigin: string): ManagedPublicPolicy | null {
+  if (!value || typeof value !== "object" || Array.isArray(value) ||
+    Object.keys(value).sort().join(",") !== "frameOrigins,ga4MeasurementId,resourceOrigins") return null;
+  const { frameOrigins, resourceOrigins, ga4MeasurementId } = value as Record<string, unknown>;
+  const validOrigins = (list: unknown): list is string[] =>
+    Array.isArray(list) && list.length <= 24 && list.every((origin) =>
+      isCspHttpsOrigin(origin) && origin.length <= 253 && origin !== parentOrigin && !new URL(origin).port) &&
+    new Set(list).size === list.length;
+  if (!validOrigins(frameOrigins) || !validOrigins(resourceOrigins)) return null;
+  if (ga4MeasurementId !== null && (typeof ga4MeasurementId !== "string" || !/^G-[A-Z0-9]{4,20}$/u.test(ga4MeasurementId))) return null;
+  return { frameOrigins: [...frameOrigins].sort(), resourceOrigins: [...resourceOrigins].sort(), ga4MeasurementId };
+}
+
+const NIHO_ORIGIN = "https://niho.life";
+const NIHO_ROUTE = /^\/embed\/(dropin|rental|inquiry)\/([A-Za-z0-9_-]{1,160})$/u;
+const EMBED_QUERY_KEYS = new Set(["launchToken", "embed", "bg", "accent"]);
+
+export function nihoEmbedTarget(source: string): { url: URL; flow: string; spotId: string } | null {
+  let url: URL;
+  try { url = new URL(source); } catch { return null; }
+  const route = NIHO_ROUTE.exec(url.pathname);
+  if (!route || url.origin !== NIHO_ORIGIN || url.username || url.password || url.hash) return null;
+  return { url, flow: route[1]!, spotId: route[2]! };
+}
+
+/** NIHO が署名を検証する。Studio は設定の形式と公開先の一致だけを検証する。 */
+export function registeredNihoEmbed(value: unknown, parentOrigin: string, publicPath: string): URL | null {
+  if (typeof value !== "string" || value.length > 8192 || /[\s\u0000-\u001f\u007f\\<>]/u.test(value)) return null;
+  const target = nihoEmbedTarget(value);
+  if (!target || target.url.origin === parentOrigin) return null;
+  const { url, flow, spotId } = target, query = url.searchParams;
+  for (const key of query.keys()) if (!EMBED_QUERY_KEYS.has(key) || query.getAll(key).length !== 1) return null;
+  if (query.has("embed") && query.get("embed") !== "1" ||
+    query.has("bg") && query.get("bg") !== "transparent" ||
+    query.has("accent") && !/^[a-f0-9]{6}$/iu.test(query.get("accent")!)) return null;
+  const token = /^([A-Za-z0-9_-]+)\.[A-Za-z0-9_-]{43}$/u.exec(query.get("launchToken") ?? "");
+  if (!token) return null;
+  try {
+    const payload = JSON.parse(atob(token[1]!.replaceAll("-", "+").replaceAll("_", "/"))) as Record<string, unknown> | null;
+    if (!payload || payload.v !== 1 || payload.flow !== flow || payload.spotId !== spotId ||
+      payload.parentOrigin !== parentOrigin || typeof payload.publicId !== "string" || !payload.publicId ||
+      !Number.isSafeInteger(payload.launchTokenVersion) || Number(payload.launchTokenVersion) < 1) return null;
+    const prefix = payload.allowedPathPrefix;
+    if (prefix !== null && (typeof prefix !== "string" ||
+      !/^\/(?:[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*\/?)?$/u.test(prefix) ||
+      prefix !== "/" && publicPath !== prefix.replace(/\/$/u, "") && !publicPath.startsWith(prefix.replace(/\/$/u, "") + "/"))) return null;
+    return url;
+  } catch { return null; }
+}

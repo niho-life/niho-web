@@ -10,6 +10,8 @@ import type {
   EditorSaveResult, EditorSite, EditorSnapshot, EditorTarget
 } from "../src/editor-types.js";
 import type { Project } from "../src/projects.js";
+import { managedBlockContracts } from "./managed-embed-contract.js";
+import { managedEditorBlocks } from "./managed-embed-editor.js";
 
 const VERSION = /^[^\u0000-\u001f\u007f]{1,200}$/u;
 
@@ -54,7 +56,7 @@ function catalog(value: unknown): Catalog {
   return { sites: [{ id: siteSource.id, name: siteSource.name, domains: [domains[0]] }], pages: source.pages.map(page) };
 }
 function snapshot(value: unknown, checkedTarget: EditorTarget): EditorSnapshot {
-  const source = record(value), document = parsePageDocument(source.document);
+  const source = record(value), document = parsePageDocument(source.document, managedBlockContracts);
   if (document.siteId !== checkedTarget.siteId || document.pageId !== checkedTarget.pageId || document.locale !== checkedTarget.locale || typeof source.version !== "string" || !VERSION.test(source.version)) throw new Error("ページ文書が正しくありません。");
   if (!Array.isArray(source.releases) || source.releases.length > 50 || source.releases.some((entry) => {
     const item = record(entry); return !Number.isSafeInteger(item.revision) || Number(item.revision) < 1 || typeof item.label !== "string";
@@ -97,7 +99,7 @@ export function createManagedEditorAdapter(initial: Catalog, project: Project): 
         const plan = record(await api(path + "/cms-preview-plan", "POST", body, signal));
         if (typeof plan.previewId !== "string" || !/^token_[a-f0-9]{32}$/u.test(plan.previewId)) throw new Error("プレビューを開始できません。");
         const value = record(await api(path + "/cms-preview", "POST", { ...body, previewId: plan.previewId }, signal));
-        const document = parsePageDocument(value.document);
+        const document = parsePageDocument(value.document, managedBlockContracts);
         if (document.siteId !== input.target.siteId || document.pageId !== input.target.pageId || document.locale !== input.target.locale) throw new Error("プレビューの対象が一致しません。");
         return document;
       }
@@ -130,7 +132,9 @@ export function createManagedEditorAdapter(initial: Catalog, project: Project): 
 export function ManagedEditor({ project, actorId }: { readonly project: Project; readonly actorId: string }) {
   const adapter = useMemo(() => createProjectEditorAdapter(createManagedEditorAdapter({ sites: [{ id: project.site.id, name: project.site.name, domains: project.site.domains }], pages: [] }, project), project), [project]);
   const recovery = useMemo(() => createBrowserRecoveryStore({ scope: actorId }), [actorId]);
+  const base = `/api/projects/${encodeURIComponent(project.id)}/sites/${encodeURIComponent(project.site.id)}/editor`;
+  const blocks = useMemo(() => managedEditorBlocks(base), [base]);
   return <main className="studio-editor studio-managed-editor">
-    <StudioPageEditor adapter={adapter} autosave recovery={recovery} toolbarStart={<a href={`/projects/${encodeURIComponent(project.id)}/sites/${encodeURIComponent(project.site.id)}`} aria-label="ダッシュボードに戻る" title="ダッシュボードに戻る">←</a>} />
+    <StudioPageEditor adapter={adapter} blocks={blocks} enableUrlEmbeds autosave recovery={recovery} toolbarStart={<a href={`/projects/${encodeURIComponent(project.id)}/sites/${encodeURIComponent(project.site.id)}`} aria-label="ダッシュボードに戻る" title="ダッシュボードに戻る">←</a>} />
   </main>;
 }
