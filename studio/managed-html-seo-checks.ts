@@ -146,7 +146,7 @@ export function inspectManagedHtmlSeo(
     if (!tagMatch || tagMatch[1]) continue;
     const tag = tagMatch[2]!.toLowerCase();
     const attributes = parseAttributes(rawTag.slice(tagMatch[0].length));
-    if (tag === "img" && !(attributes.get("alt")?.trim())) {
+    if (tag === "img" && !attributes.has("alt")) {
       addWarning({ code: "missing-alt", message: "画像に代替テキストがありません。" });
     } else if (tag === "a") {
       const href = attributes.get("href")?.trim();
