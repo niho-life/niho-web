@@ -1,5 +1,5 @@
 import { PAGE_OPERATION_VERSIONS, pageNodesHaveNames, pageOperationUsesNodeNames, pageOperationWire, type EditingPageApplyConflict, type EditingPageApplyInput, type EditingPageApplyResult } from "./editing-page-operations.js";
-import { EDITING_API_ERRORS, EDITING_OPERATIONS, PAGE_CMS_BINDINGS_CAPABILITY, PAGE_NODE_NAME_CAPABILITY, withPageCmsBindingsCapability, withPageNodeNameCapability, type EditingApiErrorCode, type EditingCmsOperationStatus, type EditingCmsPublishPlan, type EditingCmsTarget, type EditingDiscoveredOperation, type EditingPageCatalog, type EditingPageReleaseSetItem, type EditingPageReleaseSetItemResult, type EditingPageReleaseSetPlan, type EditingPageReleaseSetStatus, type EditingPageSnapshot, type EditingPageTarget } from "./editing-api.js";
+import { EDITING_API_ERRORS, EDITING_OPERATIONS, PAGE_CMS_BINDINGS_CAPABILITY, PAGE_NODE_NAME_CAPABILITY, withPageCmsBindingsCapability, withPageNodeNameCapability, type EditingApiErrorCode, type EditingCmsOperationStatus, type EditingCmsPublishPlan, type EditingCmsTarget, type EditingDiscoveredOperation, type EditingPageCatalog, type EditingPagePublishNowResult, type EditingPageReleaseSetItem, type EditingPageReleaseSetItemResult, type EditingPageReleaseSetPlan, type EditingPageReleaseSetStatus, type EditingPageSnapshot, type EditingPageTarget } from "./editing-api.js";
 import {
   SITE_STYLES_FEATURE, parseEditingSiteStylesEditRequest, parseEditingSiteStylesEditResult,
   parseEditingSiteStylesPublishRequest, parseEditingSiteStylesPublishResult, parseEditingSiteStylesSnapshot, siteStylesEdits,
@@ -94,6 +94,7 @@ export type EditingApiClient = {
   save(target: EditingPageTarget, expectedVersion: string, document: unknown, signal?: AbortSignal): Promise<EditingPageSaveResult>;
   prepareRelease(target: EditingPageTarget, request: EditingPageReleaseInput, signal?: AbortSignal): Promise<EditorReleasePlan>;
   release(target: EditingPageTarget, plan: EditorReleasePlan, operationId: string, signal?: AbortSignal): Promise<EditingPagePublishResult>;
+  publishPageNow(target: EditingPageTarget, request: { readonly action: "publish" | "restore"; readonly revision?: number }, signal?: AbortSignal): Promise<EditingPagePublishNowResult>;
   preparePageReleaseSet(items: readonly EditingPageReleaseSetItem[], signal?: AbortSignal, operationId?: string): Promise<EditingPageReleaseSetPlan>;
   publishPageReleaseSet(plan: EditingPageReleaseSetPlan, signal?: AbortSignal): Promise<EditingPageReleaseSetResult>;
   pageReleaseSetStatus(operationId: string, signal?: AbortSignal): Promise<EditingPageReleaseSetStatus>;
@@ -788,6 +789,30 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
       const document = parseEditingPageDocumentEnvelope(body.document);
       assertTarget(document, target);
       return { status: "released", operationId, version: body.version, document };
+    },
+    async publishPageNow(target, request, signal) {
+      if (target.siteId !== siteId || request.action === "publish" && request.revision !== undefined
+        || request.action === "restore" && (!Number.isSafeInteger(request.revision) || request.revision! < 1)) throw new TypeError("invalid direct publish request");
+      const path = targetPath(target, siteId).replace("{operation}", "pages.publish");
+      const input = { action: request.action, ...(request.action === "restore" ? { revision: request.revision } : {}) };
+      const { response, body } = await send(path, "POST", input, signal);
+      if (response.status === 409 && body.error === "version_conflict") return { status: "conflict" };
+      if (!response.ok) throw apiFailure(body, response.status);
+      if (!exactKeys(body, ["status", "snapshot"]) || body.status !== "released" || !plainRecord(body.snapshot)) throw new EditingApiClientError("invalid_response", response.status);
+      const source = body.snapshot;
+      if (Object.keys(source).some((key) => !["document", "version", "componentsVersion", "presentationVersion", "presentation", "editorState", "cmsBindings"].includes(key))
+        || !isEditingApiVersion(source.version)) throw new EditingApiClientError("invalid_response", response.status);
+      const document = parseEditingPageDocumentEnvelope(source.document);
+      assertTarget(document, target);
+      const componentsVersion = source.componentsVersion === undefined ? undefined : isEditingApiVersion(source.componentsVersion) ? source.componentsVersion : null;
+      const presentationVersion = source.presentationVersion === undefined ? undefined : isEditingApiVersion(source.presentationVersion) ? source.presentationVersion : null;
+      if (componentsVersion === null || presentationVersion === null) throw new EditingApiClientError("invalid_response", response.status);
+      const editorState = source.editorState === undefined ? undefined : parseEditingPageEditorState(source.editorState);
+      const presentation = parseEditingPagePresentation(source.presentation, presentationVersion, document);
+      const cmsBindings = source.cmsBindings === undefined ? undefined : source.cmsBindings === null ? null : parseCmsPageBindings(source.cmsBindings, target);
+      return { status: "released", snapshot: { document, version: source.version, ...(componentsVersion ? { componentsVersion } : {}),
+        ...(presentationVersion ? { presentationVersion } : {}), ...(presentation ? { presentation } : {}), ...(editorState ? { editorState } : {}),
+        ...(cmsBindings === undefined ? {} : { cmsBindings }) } };
     },
     async preparePageReleaseSet(itemsValue, signal, requestedOperationId = crypto.randomUUID()) {
       const items = normalizePageReleaseSetItems(itemsValue, siteId);

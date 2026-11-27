@@ -23,6 +23,7 @@ Kamakura の Studio GUI は editor snapshot profile から共通APIでページs
 | `pages.preview-intent` | POST | `/sites/{siteId}/operations/pages.preview-intent/{pageId}?locale={locale}` | `pages.read` | `{}` | `{ url, expiresAt }` |
 | `pages.release-plan` | POST | `/sites/{siteId}/operations/pages.release-plan/{pageId}?locale={locale}` | `pages.publish` | expected page versionとpublish/rollback action | `{ plan }` |
 | `pages.release` | POST | `/sites/{siteId}/operations/pages.release/{pageId}?locale={locale}` | `pages.publish` | plan、one-use confirmation token、UUID v4 operation ID | `{ status: "released", operationId, version, document }` |
+| `pages.publish` | POST | `/sites/{siteId}/operations/pages.publish/{pageId}?locale={locale}` | `pages.publish` | `{ action: "publish" }` または `{ action: "restore", revision }` | `{ status: "released", snapshot }` |
 | `pages.release-set-plan` | POST | `/sites/{siteId}/operations/pages.release-set-plan` | `pages.publish` per target | `{ siteId, operationId, items: [{ target, expectedVersion, componentsVersion?, presentationVersion? }] }` (1–50 pages) | `{ plan }` |
 | `pages.release-set` | POST | `/sites/{siteId}/operations/pages.release-set` | `pages.publish` per target | the exact plan's site, operation ID, confirmation token and items | `{ status: "completed" | "publishing", operationId, items: [...] }` |
 | `pages.release-set-status` | GET | `/sites/{siteId}/operations/pages.release-set-status/{operationId}` | `pages.read` | site / operation ID | `{ status, operationId, ... }` |
@@ -82,6 +83,8 @@ outline/find/subtreeは `limit`（既定1000、最大1000件）と `cursor` で�
 `presentation` は core の `SitePresentation` です。APIとクライアントは `parseSitePresentation` で対象・登録ブロック・共通レイアウトや共有文書を検証します。完全なスナップショットでは、`presentationVersion` は `presentation.version` と一致する場合に限り受け付け、どちらもない場合は表示コンテキストを省略できます。`editorState` は `readOnly`、`englishPublication`、公開版一覧の `releases` を必要に応じて保持します。対応ホストは、該当する状態が一つもない場合も空の `editorState` を返します。壊れた完全スナップショットは拒否します。旧ホストの応答には `editorState` がありません。Kamakura Studioは旧snapshotとの複数読取を組み合わせず、ホストが完全なprofileを返すまでページを開きません。
 
 `pages.release-set-*` は同じサイト内のページを、一つの計画・適用操作で公開します。対象は1〜50件で、重複ページは禁止します。単一ページの非同期公開も同じoperation ID・status契約を使えます。各項目の `expectedVersion` と任意の `componentsVersion` / `presentationVersion`、対象一覧、operation IDを計画へ固定します。APIは全対象の `pages.publish` 権限を個別に確認します。ホストadapterは対象ごとに版を再検証し、結果として `released`（公開済み）、`conflict`（版が変わった）、`pending`（処理中）を返します。全体の `status` は未完了項目があれば `publishing`、全項目が確定したら `completed` です。ある対象の競合で他ページの成功を隠さず、全ページ同時切替も要求しません。トップレベルの `version_conflict` は操作が始まっておらず、公開済みページがない場合に限ります。
+
+`pages.publish` は直接公開と履歴復元用の一回呼出しです。`action: "publish"` は現在の下書きを公開し、`action: "restore"` は指定した保持版を新しい下書き版として複製して公開します。サーバーは一つの要求内で入力と公開対象を検証し、確認tokenやoperation IDをクライアントへ要求しません。版競合は HTTP 409 `version_conflict` です。ホストがこの操作を公開しない場合、既存の `pages.release-plan` / `pages.release` はそのまま使えます。
 
 release-setはページとcomponents/presentationの版だけを固定します。サイト共通スタイルは公開ページごとの入力に含めず、サイトのpublished pointerから一律に解決します。
 
