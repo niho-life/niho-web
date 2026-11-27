@@ -1736,6 +1736,32 @@ testWithD1("Studio CMS resolves migration URL assets only from the site's privat
   assert.deepEqual(await store.publicAssets(otherSite, [otherItem]), []);
 });
 
+testWithD1("CMS localization uses the schema pinned to the published source while a newer schema is unpublished", async (t) => {
+  const h = await fixture(t, { cms: true }), site = await cmsSite(h, "cms-localization-published-schema");
+  const schema = await site.read("cms.schema.read");
+  const draft = await createDraft(site, schema.schemaRevision);
+  const source = await saveDraft(site, draft, "Published title", "published-title");
+  await site.read("cms.release.apply", await releasePlan(site, schema.schemaRevision, null, [source]));
+  await h.cron();
+
+  const current = await site.read("cms.release.current");
+  const collection = schema.collections[0];
+  const schemaPlan = await site.read("cms.schema.plan", { expectedSchemaRevision: schema.schemaRevision,
+    routeTableVersions: [{ locale: "ja", revision: current.routeTableRevision }], replacements: [],
+    nextSchema: { ...schema, collections: [{ ...collection, label: `${collection.label}（更新）` }] } });
+  await site.read("cms.schema.apply", { operationId: schemaPlan.plan.operationId, confirmationToken: schemaPlan.plan.confirmationToken });
+
+  const overview = parseLocalizationOverviewResult(await site.read("cms.localization.overview"));
+  const itemKey = cmsLocalizationItemKey(source.collectionId, source.itemId);
+  const list = parseLocalizationListResult(await site.read("cms.localization.items.list"));
+  const item = parseLocalizationItemResult(await site.read("cms.localization.items.read", { itemKey }), itemKey);
+  assert.equal(overview.status, "ready");
+  assert.equal(list.status, "ready");
+  assert.equal(item.status, "ready");
+  assert.equal(item.item.units[0].source, "Published title");
+  assert.equal(item.item.sourceDraftPending, true, "the newer schema's migrated draft is not the published source");
+});
+
 testWithD1("Studio CMS localization exposes the shared workspace contract and preserves reviewed manual values after source changes", async (t) => {
   const h = await fixture(t, { cms: true }), site = await cmsSite(h, "cms-localization");
   const original = await site.read("cms.schema.read"), route = await site.read("cms.release.current");

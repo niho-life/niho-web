@@ -126,10 +126,11 @@ async function cmsLocalizationView(store: CmsStore, site: Site, collectionId: st
   const publishedPin = publishedSnapshot?.locale === draftSource.locale
     ? publishedSnapshot.items.find((pin) => pin.collectionId === collectionId && pin.itemId === itemId) : undefined;
   const source = publishedPin ? await store.item(site.siteId, draftSource.locale, publishedPin) : draftSource;
+  const sourceSchema = publishedPin ? publishedSnapshot!.schema : site.state.schema;
   const sourceDraftPending = !publishedPin || draftSource.revision !== publishedPin.revision;
-  const collection = await collectCmsLocalizationUnits(site.state.schema, source, targetLocale);
+  const collection = await collectCmsLocalizationUnits(sourceSchema, source, targetLocale);
   const overlay = await cmsLocalizationOverlay(store, site, collection);
-  return { schema: site.state.schema, source, sourceDraftPending, collection, overlay, updatedAt: meta.updatedAt };
+  return { schema: sourceSchema, source, sourceDraftPending, collection, overlay, updatedAt: meta.updatedAt };
 }
 
 async function cmsLocalizationOverlay(store: CmsStore, site: Site, collection: Awaited<ReturnType<typeof collectCmsLocalizationUnits>>): Promise<CmsLocalizationOverlay> {
