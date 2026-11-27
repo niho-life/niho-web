@@ -1,4 +1,4 @@
-import type { ManagedD1 } from "./managed-sites.js";
+import type { ManagedD1, ManagedPublicHtmlCache } from "./managed-sites.js";
 import { MANAGED_EMBED_REF } from "./managed-embed-contract.js";
 
 export type PublishedSiteReadObjectStore = {
@@ -182,10 +182,67 @@ type PublicEnv = {
   readonly CMS_OBJECTS: PublishedSiteReadObjectStore;
   readonly ASSETS?: { fetch(request: Request): Promise<Response> };
   readonly PUBLIC_SITES_PREVIEW_ORIGIN?: string;
+  readonly PUBLIC_HTML_CACHE?: ManagedPublicHtmlCache;
 };
 type HostRow = { readonly site_id: string; readonly path_prefix: string; readonly noindex: number };
 type PointerRow = { readonly manifest_key: string | null };
-type ArtifactRow = { readonly artifact_key: string; readonly digest: string; readonly content_type: string; readonly content_security_policy: string };
+type ArtifactRow = {
+  readonly artifact_key: string; readonly digest: string; readonly content_type: string; readonly content_security_policy: string;
+  readonly noindex: number;
+};
+type CacheWriteContext = { waitUntil(promise: Promise<unknown>): void };
+
+const LOOKUP_TTL_MS = 5_000;
+const MAX_LOOKUPS = 256;
+const EDGE_CACHE_SECONDS = 3600;
+type Lookup<T> = Map<string, { readonly value: T; readonly expiresAt: number }>;
+type PublicationLookups = { readonly hosts: Lookup<readonly HostRow[]>; readonly pointers: Lookup<string> };
+const lookupsByDatabase = new WeakMap<PublicDatabase, PublicationLookups>();
+
+function publicationLookups(db: PublicDatabase): PublicationLookups {
+  let lookups = lookupsByDatabase.get(db);
+  if (!lookups) {
+    lookups = { hosts: new Map(), pointers: new Map() };
+    lookupsByDatabase.set(db, lookups);
+  }
+  return lookups;
+}
+
+function cachedLookup<T>(entries: Lookup<T>, key: string): T | undefined {
+  const entry = entries.get(key);
+  if (entry && entry.expiresAt > Date.now()) return entry.value;
+  entries.delete(key);
+}
+
+function rememberLookup<T>(entries: Lookup<T>, key: string, value: T, startedAt: number): void {
+  entries.delete(key);
+  if (entries.size >= MAX_LOOKUPS) {
+    const oldest = entries.keys().next();
+    if (!oldest.done) entries.delete(oldest.value);
+  }
+  entries.set(key, { value, expiresAt: startedAt + LOOKUP_TTL_MS });
+}
+
+async function publicHosts(db: PublicDatabase, entries: Lookup<readonly HostRow[]>, hostname: string): Promise<readonly HostRow[]> {
+  const cached = cachedLookup(entries, hostname);
+  if (cached) return cached;
+  const startedAt = Date.now();
+  const result = await db.prepare(`SELECT site_id, path_prefix, noindex FROM managed_site_hosts
+    WHERE hostname = ?1 AND enabled = 1 ORDER BY length(path_prefix) DESC LIMIT 100`).bind(hostname).all<HostRow>();
+  if (!result.success) throw new Error("managed site host query failed");
+  const hosts = result.results ?? [];
+  if (hosts.length) rememberLookup(entries, hostname, hosts, startedAt);
+  return hosts;
+}
+
+async function publishedPointer(db: PublicDatabase, entries: Lookup<string>, siteId: string): Promise<string | null> {
+  const startedAt = Date.now();
+  const row = await db.prepare("SELECT manifest_key FROM managed_site_publication_state WHERE site_id = ?1 LIMIT 1")
+    .bind(siteId).first<PointerRow>();
+  if (!row?.manifest_key) return null;
+  rememberLookup(entries, siteId, row.manifest_key, startedAt);
+  return row.manifest_key;
+}
 
 function noindexHeader(enabled: boolean): Headers {
   const headers = new Headers({ "X-Content-Type-Options": "nosniff", "Referrer-Policy": "strict-origin-when-cross-origin" });
@@ -225,7 +282,85 @@ function etagMatches(header: string | null, etag: string): boolean {
   return header.split(",").some((candidate) => candidate.trim() === "*" || candidate.trim() === etag || candidate.trim() === `W/${etag}`);
 }
 
-export async function publishedSiteRequest(request: Request, env: PublicEnv): Promise<Response> {
+async function matchPublishedPage(env: PublicEnv, hostname: string, host: HostRow, path: string, manifestKey: string) {
+  const manifestObject = await env.CMS_OBJECTS.get(manifestKey);
+  if (!manifestObject) return null;
+  const manifest = parsePublishedSiteManifest(await manifestObject.json<unknown>(), host.site_id);
+  if (!manifest) return null;
+  const exact = manifest.routes.find((candidate) => candidate.path === path);
+  const route = exact ?? manifest.routes.find((candidate) => path.endsWith("/") && candidate.path === path.slice(0, -1));
+  if (!route) return null;
+
+  // Recheck the route's current publication, visibility and host registration before serving any bytes.
+  const row = await env.DB.prepare(`SELECT publication.artifact_key, publication.artifact_digest AS digest,
+        publication.content_type, publication.content_security_policy, mapping.noindex
+      FROM managed_page_publications AS publication
+      JOIN managed_pages AS page
+        ON page.site_id = publication.site_id AND page.page_id = publication.page_id AND page.locale = publication.locale
+        AND page.published_publication_id = publication.id AND page.visibility = 'public'
+      JOIN managed_site_hosts AS mapping ON mapping.site_id = publication.site_id
+        AND mapping.hostname = ?6 AND mapping.path_prefix = ?7 AND mapping.enabled = 1
+      JOIN managed_site_publication_state AS state ON state.site_id = publication.site_id AND state.manifest_key = ?8
+     WHERE publication.site_id = ?1 AND publication.page_id = ?2 AND publication.locale = ?3
+       AND publication.artifact_key = ?4 AND publication.artifact_digest = ?5 LIMIT 1`)
+    .bind(host.site_id, route.pageId, route.locale, route.artifactKey, route.digest, hostname, host.path_prefix, manifestKey)
+    .first<ArtifactRow>();
+  if (!row || row.content_type !== route.contentType || row.content_security_policy !== route.contentSecurityPolicy) return null;
+  return { route, row, publicationId: manifest.publicationId, trailingSlash: !exact };
+}
+
+async function htmlCache(env: PublicEnv): Promise<ManagedPublicHtmlCache | undefined> {
+  if (env.PUBLIC_HTML_CACHE) return env.PUBLIC_HTML_CACHE;
+  try {
+    return await globalThis.caches?.open("niho-public-html-v1");
+  } catch { return undefined; }
+}
+
+async function publishedHtml(request: Request, url: URL, env: PublicEnv, siteId: string, publicationId: string, row: ArtifactRow,
+  noindex: boolean, context?: CacheWriteContext): Promise<Response> {
+  const etag = `"${row.digest}"`;
+  const headers = noindexHeader(noindex);
+  headers.set("Content-Type", row.content_type);
+  headers.set("Content-Security-Policy", row.content_security_policy);
+  headers.set("Cache-Control", "no-cache");
+  headers.set("ETag", etag);
+  const notModified = etagMatches(request.headers.get("If-None-Match"), etag);
+  const status = notModified ? 304 : 200;
+  const sendBody = !notModified && request.method !== "HEAD";
+  const cache = await htmlCache(env);
+  const key = new Request(`${url.origin}/_niho-cache/publication/${siteId}/${publicationId}/${row.digest}`);
+  if (cache) {
+    try {
+      const cached = await cache.match(key);
+      if (cached?.status === 200 && cached.headers.get("ETag") === etag && cached.body) {
+        if (!sendBody) void cached.body.cancel().catch(() => undefined);
+        return new Response(sendBody ? cached.body : null, { status, headers });
+      }
+    } catch { /* Cache API is an optional optimization. */ }
+  }
+  const object = await env.CMS_OBJECTS.get(row.artifact_key);
+  if (!object) return unavailable(noindex);
+  const html = await object.text();
+  if (await sha256Text(html) !== row.digest) return unavailable(noindex);
+  if (cache) {
+    const stored = new Response(html, { headers: { "Cache-Control": `public, max-age=${EDGE_CACHE_SECONDS}`, "ETag": etag } });
+    const write = Promise.resolve().then(() => cache.put(key, stored)).catch(() => undefined);
+    if (context) context.waitUntil(write);
+    else await write;
+  }
+  return new Response(sendBody ? html : null, { status, headers });
+}
+
+function redirectSlash(url: URL, pathname: string, noindex: boolean): Response {
+  const target = new URL(url.href);
+  target.pathname = pathname;
+  const headers = noindexHeader(noindex);
+  headers.set("Cache-Control", "no-store");
+  headers.set("Location", target.href);
+  return new Response(null, { status: 307, headers });
+}
+
+export async function publishedSiteRequest(request: Request, env: PublicEnv, context?: CacheWriteContext): Promise<Response> {
   const url = new URL(request.url);
   const configuredPreview = isConfiguredPreview(url, env);
   if (/^\/_niho\/(?:niho-embeds|presentation)-[a-f0-9]{12}\.js$/u.test(url.pathname)) {
@@ -242,69 +377,38 @@ export async function publishedSiteRequest(request: Request, env: PublicEnv): Pr
   }
   const hostname = url.hostname.toLowerCase();
   if (!hostname || hostname.length > 253 || /[^a-z0-9.-]/u.test(hostname)) return notFound(configuredPreview);
-  let hostResult: { readonly success: boolean; readonly results?: readonly HostRow[] };
+  const lookups = publicationLookups(env.DB);
+  let hosts: readonly HostRow[];
   try {
-    hostResult = await env.DB.prepare(`SELECT site_id, path_prefix, noindex FROM managed_site_hosts
-      WHERE hostname = ?1 AND enabled = 1 ORDER BY length(path_prefix) DESC LIMIT 100`).bind(hostname).all<HostRow>();
+    hosts = await publicHosts(env.DB, lookups.hosts, hostname);
   } catch (error) {
     if (configuredPreview) return unavailable(true);
     throw error;
   }
-  if (!hostResult.success) {
-    if (configuredPreview) return unavailable(true);
-    throw new Error("managed site host query failed");
-  }
-  const hosts = hostResult.results ?? [];
   let selected: { readonly host: HostRow; readonly path: string; readonly missingRootSlash: boolean } | null = null;
   for (const host of hosts) {
     const resolved = resolveSitePath(url.pathname, host.path_prefix);
     if (resolved) { selected = { host, ...resolved }; break; }
   }
-  const noindex = configuredPreview || selected?.host.noindex === 1 || hosts.length > 0 && hosts.every((host) => host.noindex === 1);
+  let noindex = configuredPreview || selected?.host.noindex === 1 || hosts.length > 0 && hosts.every((host) => host.noindex === 1);
   if (!selected) return notFound(noindex);
   if (request.method !== "GET" && request.method !== "HEAD") return notFound(noindex);
   const { host, path, missingRootSlash } = selected;
   try {
-    const pointer = await env.DB.prepare("SELECT manifest_key FROM managed_site_publication_state WHERE site_id = ?1 LIMIT 1")
-      .bind(host.site_id).first<PointerRow>();
-    if (!pointer?.manifest_key) return notFound(noindex);
-    const manifestObject = await env.CMS_OBJECTS.get(pointer.manifest_key);
-    if (!manifestObject) return notFound(noindex);
-    const manifest = parsePublishedSiteManifest(await manifestObject.json<unknown>(), host.site_id);
-    if (!manifest) return notFound(noindex);
-
-    if (missingRootSlash) {
-      const headers = noindexHeader(host.noindex === 1);
-      headers.set("Cache-Control", "no-store");
-      const target = new URL(url.href);
-      target.pathname += "/";
-      headers.set("Location", target.href);
-      if (noindex) headers.set("X-Robots-Tag", "noindex, nofollow");
-      return new Response(null, { status: 307, headers });
+    const cachedPointer = cachedLookup(lookups.pointers, host.site_id);
+    const pointer = cachedPointer ?? await publishedPointer(env.DB, lookups.pointers, host.site_id);
+    if (!pointer) return notFound(noindex);
+    let page = await matchPublishedPage(env, hostname, host, path, pointer);
+    if (!page && cachedPointer) {
+      // A new publication can move the pointer while this isolate still remembers its predecessor.
+      const latest = await publishedPointer(env.DB, lookups.pointers, host.site_id);
+      if (latest && latest !== pointer) page = await matchPublishedPage(env, hostname, host, path, latest);
     }
-
-    let route = manifest.routes.find((candidate) => candidate.path === path);
-    if (!route && path !== "/" && path.endsWith("/")) {
-      route = manifest.routes.find((candidate) => candidate.path === path.slice(0, -1));
-      if (route) {
-        const headers = noindexHeader(noindex);
-        headers.set("Cache-Control", "no-store");
-        const target = new URL(url.href);
-        target.pathname = target.pathname.slice(0, -1);
-        headers.set("Location", target.href);
-        return new Response(null, { status: 307, headers });
-      }
-    }
-    if (!route) return notFound(noindex);
-
-    const row = await env.DB.prepare(`SELECT artifact_key, artifact_digest AS digest, content_type, content_security_policy
-      FROM managed_page_publications
-     WHERE site_id = ?1 AND page_id = ?2 AND locale = ?3 AND artifact_key = ?4 AND artifact_digest = ?5
-       AND EXISTS (SELECT 1 FROM managed_pages WHERE site_id = ?1 AND page_id = ?2 AND locale = ?3
-                   AND published_publication_id = managed_page_publications.id AND visibility = 'public')
-     ORDER BY created_at DESC, rowid DESC LIMIT 1`).bind(host.site_id, route.pageId, route.locale, route.artifactKey, route.digest)
-      .first<ArtifactRow>();
-    if (!row || row.content_type !== route.contentType || row.content_security_policy !== route.contentSecurityPolicy) return notFound(noindex);
+    if (!page) return notFound(noindex);
+    const { route, row, publicationId, trailingSlash } = page;
+    noindex = configuredPreview || row.noindex === 1;
+    if (missingRootSlash) return redirectSlash(url, `${url.pathname}/`, noindex);
+    if (trailingSlash) return redirectSlash(url, url.pathname.slice(0, -1), noindex);
     const embedRefs = url.searchParams.getAll("_niho_embed");
     if (embedRefs.length) {
       const requestedRef = embedRefs[0];
@@ -317,18 +421,7 @@ export async function publishedSiteRequest(request: Request, env: PublicEnv): Pr
       headers.set("Content-Type", "application/json; charset=utf-8");
       return new Response(JSON.stringify({ src: embed.src }), { status: 200, headers });
     }
-    const object = await env.CMS_OBJECTS.get(row.artifact_key);
-    if (!object) return unavailable(noindex);
-    const html = await object.text();
-    if (await sha256Text(html) !== row.digest) return unavailable(noindex);
-    const etag = `"${row.digest}"`;
-    const headers = noindexHeader(noindex);
-    headers.set("Content-Type", row.content_type);
-    headers.set("Content-Security-Policy", row.content_security_policy);
-    headers.set("Cache-Control", "no-cache");
-    headers.set("ETag", etag);
-    if (etagMatches(request.headers.get("If-None-Match"), etag)) return new Response(null, { status: 304, headers });
-    return new Response(request.method === "HEAD" ? null : html, { status: 200, headers });
+    return await publishedHtml(request, url, env, host.site_id, publicationId, row, noindex, context);
   } catch (error) {
     if (noindex) return unavailable(true);
     throw error;
@@ -336,8 +429,8 @@ export async function publishedSiteRequest(request: Request, env: PublicEnv): Pr
 }
 
 export default {
-  async fetch(request: Request, env: PublicEnv): Promise<Response> {
-    try { return await publishedSiteRequest(request, env); }
+  async fetch(request: Request, env: PublicEnv, context: CacheWriteContext): Promise<Response> {
+    try { return await publishedSiteRequest(request, env, context); }
     catch (error) {
       console.error("Published site request failed", error instanceof Error ? error.name : "UnknownError");
       const noindex = isConfiguredPreview(new URL(request.url), env);

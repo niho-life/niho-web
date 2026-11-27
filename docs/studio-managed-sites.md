@@ -32,17 +32,17 @@ URL 変更・非公開化の確認画面では、サイト内の他ページの�
 
 ## 共有公開origin
 
-公開ページは `PUBLIC_SITES_ORIGIN` の `GET` / `HEAD /s/{siteSlug}/...` で配信する。ホームの公開 URL は `/s/{siteSlug}/`。Worker はrequest originの完全一致を先に確認する。公開ページと build が生成した `/_niho/` 配下の専用 JavaScript だけを公開し、管理画面の asset や Access 応答は公開 origin から返さない。
+既存の Studio Worker は `PUBLIC_SITES_ORIGIN` の `GET` / `HEAD /s/{siteSlug}/...` を従来の動的 renderer で配信する。ホームの公開 URL は `/s/{siteSlug}/`。Worker はrequest originの完全一致を先に確認する。公開ページと build が生成した `/_niho/` 配下の専用 JavaScript だけを公開し、管理画面の asset や Access 応答は公開 origin から返さない。静的な公開 Worker のentry/configとR2 artifact配信経路も追加済みだが、公開hostの切替・release配備への組込み前なので、既存の共有originの配信先はまだ変わらない。
 
 公開対象はvisibilityがpublicで、現在の `published_revision` が指す不変PageDocumentだけである。root-relativeな本文リンク、画像、poster、favicon、OG画像には描画時に `/s/{siteSlug}` を付ける。保存文書は書き換えない。既存のserver-safe rendererとhead resolverを使い、title、canonical、robots/noindexを反映する。
 
 オーナーはプロジェクト設定で一意な公開ホスト名を1つ登録できる。Workerに届いたHTTPS hostが登録と完全一致する場合、そのサイトを選び、prefixのない `/`・`/en/...`・CMS pathを同じ公開rendererで返す。登録の変更だけではDNSやWorker routeを設定しない。フォーム接続は現在登録されているhostとpathに固定するため、公開hostを切り替えた後はフォーム参照を再接続してページを再公開する。
 
-公開HTMLはGET時にCloudflare edgeで最大5分キャッシュする。cache keyにはhost/path・公開page revision・CMS release・公開配信設定の版を含め、該当ページの再公開や公開設定変更後は新しいkeyへ切り替える。ブラウザーには `Cache-Control: no-cache` とHTMLのETagを返し、一致する `If-None-Match` には304で応答する。NIHO接続URLの解決応答は引き続き `no-store` とする。buildが出すJavaScriptは内容hash付きのURLで1年間immutableにする。
+従来の動的 renderer は公開HTMLをGET時にCloudflare edgeで最大5分キャッシュする。静的公開Workerはhost対応表とmanifest pointerをisolate内で最大5秒保持し、D1で現在のmanifest pointer・ページ公開状態・host登録を照合してからHTMLを返す。HTML Cache API keyにはhost origin・site ID・manifest publication ID・本文digestを含め、再公開後は別keyを使う。ブラウザーには `Cache-Control: no-cache` とHTMLのETagを返し、一致する `If-None-Match` には304で応答する。NIHO接続URLの解決応答は引き続き `no-store` とする。buildが出すJavaScriptは内容hash付きのURLで1年間immutableにする。
 
 独自ドメインの noindex が有効な場合、HTML・SEOファイル・リダイレクト・404・公開runtimeの全応答に `X-Robots-Tag: noindex, nofollow` を付ける。`robots.txt` は全体をDisallowし、sitemapとllmsの一覧は空にする。
 
-現在の公開ページはリクエスト時にD1の公開版から描画し、Cache APIで応答を再利用する。公開時のHTML・SEO生成物をR2へ保存し、専用Workerがその生成物だけを返す経路は #510 の範囲で、ここにはまだ含めない。画像の幅別変換と複数hostの登録も未対応。
+既存の共有公開originはリクエスト時にD1の公開版から描画する。静的公開Workerは公開時に生成したHTMLをR2から返すが、配備・host切替は未実施。CMS bindingを持つページの静的生成、画像の幅別変換、1サイトへの複数host登録は未対応。
 
 公開SEO出力は `/s/{siteSlug}/sitemap.xml`、`robots.txt`、`llms.txt`、`llms-full.txt`。ページ文書のmetadataからcanonical、robots、OG、title、descriptionを出し、同じpathの翻訳が公開済みの場合だけhreflangを足す。ページのJSON-LD、CMS詳細・一覧のJSON-LD、301リダイレクト、404も公開rendererが返す。公開計画はdescription・画像alt・英語本文中の日本語を警告として返し、公開自体は止めない。サイト共通のSEO設定と `niho-edit` からのSEO設定編集、title/descriptionの重複・リンク切れ検査、既存リダイレクト18件の取込みは未対応で、#489の残りとして扱う。
 

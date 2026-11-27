@@ -561,6 +561,19 @@ testWithD1("Studio-native site uses one D1 page store for GUI, CAS, release hist
 
 testWithD1("Static publication serves immutable HTML and applies noindex to the verification host", async (t) => {
   const h = await fixture(t, { cms: true });
+  let clock = Date.now();
+  t.mock.method(Date, "now", () => clock);
+  const edge = new Map();
+  const cache = {
+    async match(key) { return edge.get(key.url)?.clone(); },
+    async put(key, response) { edge.set(key.url, response); }
+  };
+  h.env.PUBLIC_HTML_CACHE = cache;
+  const cacheMatch = t.mock.method(cache, "match");
+  const dbPrepare = t.mock.method(h.env.DB, "prepare");
+  const r2Get = t.mock.method(h.env.CMS_OBJECTS, "get");
+  const reads = (fragment) => dbPrepare.mock.calls.filter(({ arguments: [query] }) => query.includes(fragment)).length;
+  const artifactReads = () => r2Get.mock.calls.filter(({ arguments: [key] }) => key.includes("/artifacts/")).length;
   const created = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Static fixture", slug: "static-fixture", locale: "ja" }), 201);
   const api = `/api/projects/${created.projectId}/sites/${created.siteId}/editor`;
   const measurementId = "G-STATIC12345";
@@ -607,13 +620,30 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   assert.equal(preview.headers.get("ETag"), `"${publication.artifact_digest}"`);
   assert.equal(preview.headers.get("Content-Security-Policy"), publication.content_security_policy);
   assert.match(await preview.text(), /<title>Static fixture<\/title>/u);
+  const initialManifest = JSON.parse(h.objects.get(state.manifest_key));
+  assert.ok(edge.has(`https://preview.sites.example/_niho-cache/publication/${created.siteId}/${initialManifest.publicationId}/${publication.artifact_digest}`));
+  const hostReads = reads("SELECT site_id, path_prefix, noindex");
+  const pointerReads = reads("SELECT manifest_key FROM managed_site_publication_state");
+  const previewArtifactReads = artifactReads();
+  const previewHit = await publishedSiteRequest(new Request(previewUrl + "?utm_source=test"), h.env);
+  assert.equal(previewHit.status, 200);
+  assert.equal(previewHit.headers.get("X-Robots-Tag"), "noindex, nofollow");
+  assert.equal(previewHit.headers.get("Content-Security-Policy"), publication.content_security_policy);
+  assert.match(await previewHit.text(), /<title>Static fixture<\/title>/u);
+  assert.equal(reads("SELECT site_id, path_prefix, noindex"), hostReads);
+  assert.equal(reads("SELECT manifest_key FROM managed_site_publication_state"), pointerReads);
+  assert.equal(artifactReads(), previewArtifactReads);
 
   // `/` prefix uses the same root route as an empty prefix and never redirects to `//`.
+  clock += 5_000;
   h.sqlite.prepare("UPDATE managed_site_hosts SET path_prefix = '/' WHERE hostname = ? AND site_id = ? AND noindex = 1")
     .run("preview.sites.example", created.siteId);
   const rootPreview = await publishedSiteRequest(new Request("https://preview.sites.example/"), h.env);
   assert.equal(rootPreview.status, 200);
   assert.match(await rootPreview.text(), /<title>Static fixture<\/title>/u);
+  assert.equal(reads("SELECT site_id, path_prefix, noindex"), hostReads + 1);
+  assert.equal(reads("SELECT manifest_key FROM managed_site_publication_state"), pointerReads + 1);
+  clock += 5_000;
   h.sqlite.prepare("UPDATE managed_site_hosts SET path_prefix = ? WHERE hostname = ? AND site_id = ? AND noindex = 1")
     .run(`/s/static-fixture`, "preview.sites.example", created.siteId);
 
@@ -651,10 +681,14 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
     origin: "https://niho.life", source: frame.contentWindow, data: { type: "niho-embed-submitted", flow: "inquiry" }
   }));
   assert.equal(dom.window.dataLayer.filter((event) => event[0] === "event" && event[1] === "generate_lead").length, 1);
-  const embedResponse = await publishedSiteRequest(new Request(`https://sites.example/s/static-fixture/?_niho_embed=${refId}`), h.env);
+  const htmlCacheLookups = cacheMatch.mock.callCount();
+  const embedUrl = `https://sites.example/s/static-fixture/?_niho_embed=${refId}`;
+  const embedResponse = await publishedSiteRequest(new Request(embedUrl), h.env);
   assert.equal(embedResponse.status, 200);
   assert.equal(embedResponse.headers.get("Cache-Control"), "no-store");
   assert.deepEqual(await embedResponse.json(), { src: embedSrc });
+  assert.equal((await publishedSiteRequest(new Request(embedUrl), h.env)).status, 200);
+  assert.equal(cacheMatch.mock.callCount(), htmlCacheLookups);
   const runtimeScript = await publishedSiteRequest(new Request(`https://sites.example${PUBLIC_EMBED_SCRIPT}`), h.env);
   assert.equal(runtimeScript.status, 200);
   assert.equal(runtimeScript.headers.get("Cache-Control"), "public, max-age=31536000, immutable");
@@ -684,19 +718,30 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/${createdPage.page.pageId}/release`, {
     expectedVersion: aboutSaved.version, confirmationToken: aboutPlan.confirmationToken
   }), 200);
+  const latestState = h.sqlite.prepare("SELECT manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(created.siteId);
+  const latest = JSON.parse(h.objects.get(latestState.manifest_key));
+  assert.notEqual(latest.publicationId, initialManifest.publicationId);
+  const refreshedPreview = await publishedSiteRequest(new Request(previewUrl), h.env);
+  assert.equal(refreshedPreview.status, 200);
+  assert.equal(refreshedPreview.headers.get("ETag"), `"${publication.artifact_digest}"`);
+  assert.ok(edge.has(`https://preview.sites.example/_niho-cache/publication/${created.siteId}/${latest.publicationId}/${publication.artifact_digest}`));
   const aboutResponse = await publishedSiteRequest(new Request("https://preview.sites.example/s/static-fixture/about"), h.env);
   assert.equal(aboutResponse.status, 200);
   assert.equal(aboutResponse.headers.get("X-Robots-Tag"), "noindex, nofollow");
   assert.match(await aboutResponse.text(), /<title>About<\/title>/u);
+  const aboutArtifactReads = artifactReads();
+  const aboutHit = await publishedSiteRequest(new Request("https://preview.sites.example/s/static-fixture/about"), h.env);
+  assert.equal(aboutHit.status, 200);
+  assert.equal(artifactReads(), aboutArtifactReads);
   const privateEmbedPath = `https://preview.sites.example/s/static-fixture/about?_niho_embed=${privateRefId}`;
   assert.equal((await publishedSiteRequest(new Request(privateEmbedPath), h.env)).status, 200);
   const makePrivate = { action: "visibility", target: aboutTarget, visibility: "private" };
   const makePrivatePlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/page-changes/prepare`, { change: makePrivate }), 200);
   await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/page-changes/apply`, { change: makePrivate, confirmationToken: makePrivatePlan.confirmationToken }), 200);
+  const beforePrivateRequest = cacheMatch.mock.callCount();
   assert.equal((await publishedSiteRequest(new Request("https://preview.sites.example/s/static-fixture/about"), h.env)).status, 404);
   assert.equal((await publishedSiteRequest(new Request(privateEmbedPath), h.env)).status, 404);
-  const latestState = h.sqlite.prepare("SELECT manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(created.siteId);
-  const latest = JSON.parse(h.objects.get(latestState.manifest_key));
+  assert.equal(cacheMatch.mock.callCount(), beforePrivateRequest);
   assert.equal(latest.routes.length, 2);
 
   const unknown = await publishedSiteRequest(new Request("https://preview.sites.example/s/static-fixture/missing"), h.env);
@@ -706,6 +751,7 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   assert.equal(rootRedirect.status, 307);
   assert.equal(rootRedirect.headers.get("Location"), "https://preview.sites.example/s/static-fixture/");
   assert.equal(rootRedirect.headers.get("X-Robots-Tag"), "noindex, nofollow");
+  edge.clear();
   h.faults.artifact = true;
   const unavailablePage = await publishedSiteRequest(new Request(previewUrl), h.env);
   assert.equal(unavailablePage.status, 503);

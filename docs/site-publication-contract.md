@@ -9,6 +9,7 @@ Studio-native site の公開出力を、編集・書込みを持つ Studio Worke
 - `managed_page_publications` に HTML key、digest、manifest key、path、Content-Type、CSP を保存します。読み出し時はmanifest・publication・現在のページpointerの対応と、HTML digestを照合します。
 - `managed_site_hosts` は hostname と path prefix を site に結び付けます。verification host には `noindex=1` を保存し、200・304・307・404・503 の全応答に `X-Robots-Tag: noindex, nofollow` を付けます。
 - HTML は `Cache-Control: no-cache` と digest の ETag を返します。検証hostもETag再検証を使います。
+- 公開 Worker は host 対応表と公開 manifest pointer を isolate 内で最大5秒保持します。返却前にはD1で現在のmanifest pointer・公開page・visibility・host登録を照合します。HTML artifactはhost origin・site ID・manifest publication ID・本文digestを含むCache API keyで再利用し、NIHO接続先の解決応答はcacheしません。
 - `studio/public-sites.wrangler.json` が公開 Worker の entry point です。Studio と同じ D1/R2 bindings を読みます。Worker のコードにはD1/R2書込み操作を置きません。Cloudflare binding自体のread-only権限は別途強制できません。
 - `studio:build` は公開 Worker 用 `dist/public-sites` に `/_niho/` の hash 付きランタイムだけを生成します。公開 Worker はそのパスの許可形式だけを静的 asset binding 経由で返します。Studio の dashboard asset は公開配信用 directory に入りません。
 
