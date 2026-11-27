@@ -243,6 +243,8 @@ niho-edit --origin https://site.example --site site-id localization-jobs-read jo
 niho-edit --origin https://site.example --site site-id localization-release-read
 ```
 
+`--studio localization-items-list` と `--studio localization-items-read` は、機械判定用の `state` を保ったまま、項目に画面向けの `stateLabel` も付けます。日本語を原文にするサイトでは `untranslated` / `draft` は「未翻訳」、`reviewed` は「Englishあり」、`source-changed` は「日本語の方が新しい」です。`excluded` は「対象外」です。
+
 書込の `--json` には操作表の追加フィールドを渡します。`siteId` は `--site` から、commandとtranslateの `itemKey` は位置引数から補います。たとえば `command.json` は `{"action":"set-value","unitId":"title","value":"Workshop by the sea","expectedVersion":"v1","expectedSourceVersion":"s1","operationId":"command-operation-1"}` です。確認・再開tokenを含む `localization-release-prepare` および `localization-release-apply` の入力は `--json -` で標準入力から渡せます。呼出側が応答を確認して続く操作を決めます。CLIの409は終了コード1で、現行値がある場合はJSON出力の `result.current` に保持します。
 
 ### ボックスで囲む・囲みを解除

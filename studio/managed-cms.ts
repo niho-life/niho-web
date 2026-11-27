@@ -120,11 +120,17 @@ function storedItem(site: Site, collectionId: string, itemId: string) {
 async function cmsLocalizationView(store: CmsStore, site: Site, collectionId: string, itemId: string, targetLocale: string): Promise<CmsLocalizationView | null> {
   const meta = storedItem(site, collectionId, itemId);
   if (!meta || meta.removedAt !== null) return null;
-  const source = await store.item(site.siteId, site.state.locale, meta);
-  if (targetLocale === source.locale) throw new DocumentValidationError("targetLocale", "source and target locales must differ");
-  const collection = await collectCmsLocalizationUnits(site.state.schema, source, targetLocale);
+  const draftSource = await store.item(site.siteId, site.state.locale, meta);
+  if (targetLocale === draftSource.locale) throw new DocumentValidationError("targetLocale", "source and target locales must differ");
+  const publishedSnapshot = await currentSnapshot(store, site);
+  const publishedPin = publishedSnapshot?.locale === draftSource.locale
+    ? publishedSnapshot.items.find((pin) => pin.collectionId === collectionId && pin.itemId === itemId) : undefined;
+  const source = publishedPin ? await store.item(site.siteId, draftSource.locale, publishedPin) : draftSource;
+  const sourceSchema = publishedPin ? publishedSnapshot!.schema : site.state.schema;
+  const sourceDraftPending = !publishedPin || draftSource.revision !== publishedPin.revision;
+  const collection = await collectCmsLocalizationUnits(sourceSchema, source, targetLocale);
   const overlay = await cmsLocalizationOverlay(store, site, collection);
-  return { schema: site.state.schema, source, collection, overlay, updatedAt: meta.updatedAt };
+  return { schema: sourceSchema, source, sourceDraftPending, collection, overlay, updatedAt: meta.updatedAt };
 }
 
 async function cmsLocalizationOverlay(store: CmsStore, site: Site, collection: Awaited<ReturnType<typeof collectCmsLocalizationUnits>>): Promise<CmsLocalizationOverlay> {

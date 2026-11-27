@@ -1736,6 +1736,32 @@ testWithD1("Studio CMS resolves migration URL assets only from the site's privat
   assert.deepEqual(await store.publicAssets(otherSite, [otherItem]), []);
 });
 
+testWithD1("CMS localization uses the schema pinned to the published source while a newer schema is unpublished", async (t) => {
+  const h = await fixture(t, { cms: true }), site = await cmsSite(h, "cms-localization-published-schema");
+  const schema = await site.read("cms.schema.read");
+  const draft = await createDraft(site, schema.schemaRevision);
+  const source = await saveDraft(site, draft, "Published title", "published-title");
+  await site.read("cms.release.apply", await releasePlan(site, schema.schemaRevision, null, [source]));
+  await h.cron();
+
+  const current = await site.read("cms.release.current");
+  const collection = schema.collections[0];
+  const schemaPlan = await site.read("cms.schema.plan", { expectedSchemaRevision: schema.schemaRevision,
+    routeTableVersions: [{ locale: "ja", revision: current.routeTableRevision }], replacements: [],
+    nextSchema: { ...schema, collections: [{ ...collection, label: `${collection.label}（更新）` }] } });
+  await site.read("cms.schema.apply", { operationId: schemaPlan.plan.operationId, confirmationToken: schemaPlan.plan.confirmationToken });
+
+  const overview = parseLocalizationOverviewResult(await site.read("cms.localization.overview"));
+  const itemKey = cmsLocalizationItemKey(source.collectionId, source.itemId);
+  const list = parseLocalizationListResult(await site.read("cms.localization.items.list"));
+  const item = parseLocalizationItemResult(await site.read("cms.localization.items.read", { itemKey }), itemKey);
+  assert.equal(overview.status, "ready");
+  assert.equal(list.status, "ready");
+  assert.equal(item.status, "ready");
+  assert.equal(item.item.units[0].source, "Published title");
+  assert.equal(item.item.sourceDraftPending, true, "the newer schema's migrated draft is not the published source");
+});
+
 testWithD1("Studio CMS localization exposes the shared workspace contract and preserves reviewed manual values after source changes", async (t) => {
   const h = await fixture(t, { cms: true }), site = await cmsSite(h, "cms-localization");
   const original = await site.read("cms.schema.read"), route = await site.read("cms.release.current");
@@ -1853,10 +1879,11 @@ testWithD1("Studio CMS localization exposes the shared workspace contract and pr
   const nextSource = await site.read("cms.items.save", { ...versioned(source), values: { ...source.values, [field("title")]: "A new coastal morning walk" } }, { headers: headers() }).then(({ item: next }) => next);
   item = (await readItem()).item;
   const changedTitle = item.units.find(({ unitId }) => unitId === title.unitId);
-  assert.equal(changedTitle.source, "A new coastal morning walk");
+  assert.equal(changedTitle.source, "Coastal morning walk", "translation reads keep using the last published Japanese revision");
   assert.equal(changedTitle.value, "Walk by the shore");
-  assert.equal(changedTitle.state, "review-needed");
-  assert.equal(item.state, "source-changed");
+  assert.equal(changedTitle.state, "reviewed", "an unpublished Japanese draft does not make the English translation stale");
+  assert.equal(item.state, "reviewed");
+  assert.equal(item.sourceDraftPending, true, "the unpublished source draft is still disclosed");
   const updatedSourceCurrent = await site.read("cms.release.current");
   const updatedSourcePlan = await withAssets.read("cms.release.plan", { schemaRevision: schema.schemaRevision, locale: "ja",
     routeTableRevision: updatedSourceCurrent.routeTableRevision, expectedReleaseId: updatedSourceCurrent.snapshot.releaseId,
@@ -1864,6 +1891,11 @@ testWithD1("Studio CMS localization exposes the shared workspace contract and pr
   await withAssets.read("cms.release.apply", { operationId: updatedSourcePlan.plan.operationId,
     confirmationToken: updatedSourcePlan.plan.confirmationToken });
   await h.cron();
+  item = (await readItem()).item;
+  const publishedChangedTitle = item.units.find(({ unitId }) => unitId === title.unitId);
+  assert.equal(publishedChangedTitle.source, "A new coastal morning walk");
+  assert.equal(publishedChangedTitle.state, "review-needed");
+  assert.equal(item.state, "source-changed", "publishing the changed Japanese revision marks the old English translation stale");
   const stalePlan = await withAssets.read("cms.localization.release.plan");
   assert.equal(stalePlan.includedItems, 0);
   assert.equal(stalePlan.omittedItems.length, 1);
