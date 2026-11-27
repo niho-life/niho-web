@@ -82,6 +82,8 @@ niho-edit --studio --origin https://studio.example --site site-id page-change --
 
 結果は JSON です。ページ単位の `publish` と `restore` は `read` または `save` のスナップショットを `--json` に渡すか、その `version` を `--expected-version` に指定します。`changes` はページ本文・path/visibility・共通設定の未公開変更を返します。`publish --changed` はその全件を一括公開し、`publish --site` は共通設定だけを公開します。複数のページIDを指定すると、指定したページの下書きをまとめて公開します。公開中の版を作り直す `publish --all` はコード変更・移行時の CLI 専用操作です。`restore` の履歴版は `history` の `id` または revision から選びます。`page-change` で `action: "create"` を使う場合は `pages-catalog` の版を、`"update"` または `"visibility"` では対象ページを `read` した版を指定します。例の `new-page.json` は `{ "action": "create", "siteId": "site-id", "locale": "ja", "title": "About", "path": "/about" }` です。
 
+公開結果の `elapsedMs` と GUI の表示時間は、変更一覧の取得を含む操作側の壁時計時間です。CLI の `workerElapsedMs` は Worker が返した参考値で、Workers上のtimerはI/O間だけ進むためCPU処理時間を含みません。95 URLの全量公開を15秒以内か判断するときは `elapsedMs` を使います。
+
 版が競合すると HTTP 409 `version_conflict` で終了します。入力ファイルはそのまま使って最新状態と比較できます。機械認証は対象サイトに委任された `pages.publish` grant を使い、読取には対応する読取 grant を使います。
 
 ## Studio-native CMS

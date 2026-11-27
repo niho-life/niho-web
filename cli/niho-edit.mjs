@@ -679,10 +679,12 @@ async function main() {
       : scopes !== 1 || pageId !== undefined || extra.length)) throw new CliError("invalid_arguments");
     const scope = selectedPages ? selectedPages.map((id) => ({ pageId: id, locale }))
       : values["publish-site"] ? "site" : values.changed ? "changed" : "all";
+    const startedAt = performance.now();
     const pending = await apiCall(() => client.readPublicationChanges(AbortSignal.timeout(30_000)));
     const result = await apiCall(() => client.publishSiteNow(pending.version, scope, AbortSignal.timeout(60_000)));
     if (result.status === "conflict") { emit({ error: "version_conflict" }, 409, 1, "site.publish"); return; }
-    emit(result, result.status === "failed" ? 503 : 200, result.status === "failed" ? 1 : 0, "site.publish"); return;
+    emit(result.status === "released" ? { ...result, elapsedMs: Math.max(0, Math.round(performance.now() - startedAt)) } : result,
+      result.status === "failed" ? 503 : 200, result.status === "failed" ? 1 : 0, "site.publish"); return;
   }
 
   if (["site-public-read", "site-public-save", "page-embed-register"].includes(command)) {

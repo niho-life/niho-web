@@ -170,6 +170,7 @@ export function ManagedPublicSettings({ project, expire }: { project: Project; e
 
   async function publishSettings() {
     if (busy || !version) return;
+    const startedAt = performance.now();
     setBusy(true);
     setMessage("");
     setPublished(null);
@@ -183,8 +184,9 @@ export function ManagedPublicSettings({ project, expire }: { project: Project; e
       if (result.status === "conflict") setMessage("設定が更新されました。再読込してから公開してください。");
       else if (result.status === "failed") setMessage(result.failedUrl + " の生成に失敗しました。 " + result.message);
       else {
-        setPublished(result);
-        setMessage(result.urls.length + " URLを更新しました（" + result.elapsedMs + " ms、SEO警告 " + result.warnings.length + "件）。");
+        const elapsedMs = Math.max(0, Math.round(performance.now() - startedAt));
+        setPublished({ ...result, elapsedMs });
+        setMessage(result.urls.length + " URLを更新しました（" + elapsedMs + " ms、SEO警告 " + result.warnings.length + "件）。");
       }
     } catch (error) {
       if (error instanceof EditingApiClientError && error.status === 401) expire();

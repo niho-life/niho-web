@@ -238,6 +238,7 @@ function ManagedPublicationPanel({ siteId }: { readonly siteId: string }) {
   }, [siteId]);
   const publish = async () => {
     if (busy) return;
+    const startedAt = performance.now();
     setBusy(true); setMessage(""); setPublicationResult(null);
     const controller = new AbortController();
     try {
@@ -256,7 +257,7 @@ function ManagedPublicationPanel({ siteId }: { readonly siteId: string }) {
           return EDITOR_RELEASE_WARNING_CODES.includes(entry.code as EditorReleaseWarning["code"])
             && typeof entry.message === "string" && entry.message.length <= 1000;
         })) {
-        const urls = value.urls as string[], warnings = value.warnings as EditorReleaseWarning[], elapsedMs = Number(value.elapsedMs);
+        const urls = value.urls as string[], warnings = value.warnings as EditorReleaseWarning[], elapsedMs = Math.max(0, Math.round(performance.now() - startedAt));
         setPublicationResult({ urls, elapsedMs, warnings });
         setMessage(`${urls.length} URLを公開しました（${elapsedMs} ms、SEO警告 ${warnings.length}件）。`);
       }
