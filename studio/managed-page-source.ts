@@ -1,7 +1,9 @@
 import { parsePageDocument } from "../src/document.js";
+import type { SiteStyles } from "../src/site-styles.js";
 import { walkNodes } from "../src/node-tree.js";
 import type { PageDocument } from "../src/types.js";
 import type { CmsBucket, CmsStore } from "./managed-cms-store.js";
+import { managedBlockContracts } from "./managed-embed-contract.js";
 
 export const MAX_MANAGED_PAGE_BYTES = 2 * 1024 * 1024;
 
@@ -33,14 +35,15 @@ function checkScope(document: PageDocument, row: SourceScope): PageDocument {
   return document;
 }
 
-export async function readPageSourceObject(bucket: CmsBucket, row: SourceScope, key: string, digest: string): Promise<PageDocument> {
+export async function readPageSourceObject(bucket: CmsBucket, row: SourceScope, key: string, digest: string, siteStyles?: SiteStyles): Promise<PageDocument> {
   const prefix = sourcePrefix(row);
   if (!key.startsWith(prefix) || !VERSION_FILENAME.test(key.slice(prefix.length))) throw new Error("invalid managed page source key");
   const object = await bucket.get(key);
   if (!object) throw new Error("managed page source missing");
   const bytes = await object.arrayBuffer();
   if (await sha256(bytes) !== digest) throw new Error("managed page source digest mismatch");
-  return checkScope(JSON.parse(decoder.decode(bytes)) as PageDocument, row);
+  const input = JSON.parse(decoder.decode(bytes));
+  return checkScope(parsePageDocument(input, managedBlockContracts, siteStyles ? { siteStyles } : {}), row);
 }
 
 async function putSource(bucket: CmsBucket, document: PageDocument, version: string, json: string, bytes: Uint8Array<ArrayBuffer>) {
@@ -67,13 +70,13 @@ export async function storePageSource(bucket: CmsBucket, document: PageDocument,
   return bytes.length <= MAX_MANAGED_PAGE_BYTES ? putSource(bucket, document, version, json, bytes) : null;
 }
 
-export async function readPageSource(store: Pick<CmsStore, "db" | "bucket"> | undefined, row: PageSourceRow): Promise<PageDocument> {
+export async function readPageSource(store: Pick<CmsStore, "db" | "bucket"> | undefined, row: PageSourceRow, siteStyles?: SiteStyles): Promise<PageDocument> {
   if (row.document_key !== null) {
     if (!store || row.document_digest === null) throw new Error("managed page source unavailable");
-    return readPageSourceObject(store.bucket, row, row.document_key, row.document_digest);
+    return readPageSourceObject(store.bucket, row, row.document_key, row.document_digest, siteStyles);
   }
 
-  const document = checkScope(parsePageDocument(JSON.parse(row.document_json)), row);
+  const document = checkScope(parsePageDocument(JSON.parse(row.document_json), managedBlockContracts, siteStyles ? { siteStyles } : {}), row);
   if (!store) return document;
   try {
     // Old rows have no separate source version ID. All readers of the same legacy revision use the same key and exact bytes.

@@ -27,7 +27,7 @@ test("public release settings require distinct HTTPS origins and a preview-only 
 });
 
 test("public release waits for its migrations but permits pending Studio-only migrations", () => {
-  assert.deepEqual(pendingPublicMigrations(["0022_managed_site_redirect_versions.sql", "0024_managed_one_step_publish.sql", "0025_managed_site_imports.sql"]), []);
+  assert.deepEqual(pendingPublicMigrations(["0022_managed_site_redirect_versions.sql", "0024_managed_one_step_publish.sql", "0025_managed_site_imports.sql", "0026_managed_site_styles.sql"]), []);
   assert.deepEqual(pendingPublicMigrations(["0021_managed_page_sources.sql", "0022_managed_site_redirect_versions.sql"]), ["0021_managed_page_sources.sql"]);
   assert.deepEqual(pendingPublicMigrations(["0023_managed_site_primary_host.sql"]), ["0023_managed_site_primary_host.sql"]);
 });

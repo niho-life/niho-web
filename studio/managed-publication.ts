@@ -633,7 +633,7 @@ function redirectSlash(url: URL, pathname: string, noindex: boolean): Response {
   const headers = noindexHeader(noindex);
   headers.set("Cache-Control", "no-store");
   headers.set("Location", target.href);
-  return new Response(null, { status: 308, headers });
+  return new Response(null, { status: 301, headers });
 }
 
 async function publishedDiscovery(request: Request, env: PublicEnv, path: string, manifest: PublishedSiteManifest,

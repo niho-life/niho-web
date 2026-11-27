@@ -167,9 +167,11 @@ export async function managedCmsPublic(request: Request, store: CmsStore, origin
   customRoute?: { readonly slug: string; readonly prefix: ""; readonly noindex?: boolean }, cache?: ManagedPublicHtmlCache): Promise<Response | null> {
   const url = new URL(request.url);
   if (!customRoute && url.origin !== origin || (request.method !== "GET" && request.method !== "HEAD")) return null;
+  const trailingSlash = url.pathname.length > 1 && url.pathname.endsWith("/");
+  const routePathname = trailingSlash ? url.pathname.slice(0, -1) : url.pathname;
   const match = customRoute
-    ? /^(?:\/(ja|en))?(\/cms(?:\/[A-Za-z0-9_-]+)*)$/u.exec(url.pathname)
-    : /^\/s\/([a-z0-9]+(?:-[a-z0-9]+)*)(?:\/(ja|en))?(\/cms(?:\/[A-Za-z0-9_-]+)*)$/u.exec(url.pathname);
+    ? /^(?:\/(ja|en))?(\/cms(?:\/[A-Za-z0-9_-]+)*)$/u.exec(routePathname)
+    : /^\/s\/([a-z0-9]+(?:-[a-z0-9]+)*)(?:\/(ja|en))?(\/cms(?:\/[A-Za-z0-9_-]+)*)$/u.exec(routePathname);
   if (!match) return null;
   const slug = customRoute ? customRoute.slug : match[1]!;
   const prefixedLocale = customRoute ? match[1] : match[2];
@@ -187,12 +189,23 @@ export async function managedCmsPublic(request: Request, store: CmsStore, origin
   const routePath = prefixedLocale ? `/${prefixedLocale}${cmsPath}` : cmsPath;
   const snapshot = await store.snapshot(current.site_id, published.id);
   const redirect = snapshot.redirects.find(({ from }) => from === routePath);
-  if (redirect) return new Response(null, { status: 308, headers: {
-    ...publicHeaders, "Content-Security-Policy": (await managedPublicHead()).csp, Location: `${prefix}${redirect.to}`
-  } });
+  if (redirect) {
+    const target = new URL(url.href);
+    target.pathname = `${prefix}${redirect.to}`;
+    return new Response(null, { status: trailingSlash ? 301 : 308, headers: {
+      ...publicHeaders, "Content-Security-Policy": (await managedPublicHead()).csp, Location: target.href
+    } });
+  }
   const entry = snapshot.items.find((item) => item.path === routePath);
   const collection = snapshot.schema.collections.find(({ pathPrefix }) => collectionPath(pathPrefix) === routePath);
   if (!entry && !collection && routePath !== (snapshot.sourceLocale && snapshot.sourceLocale !== snapshot.locale ? `/${snapshot.locale}/cms` : "/cms")) return null;
+  if (trailingSlash) {
+    const target = new URL(url.href);
+    target.pathname = `${prefix}${routePath}`;
+    return new Response(null, { status: 301, headers: {
+      ...publicHeaders, "Content-Security-Policy": (await managedPublicHead()).csp, Location: target.href
+    } });
+  }
   let cacheKey: Request | undefined;
   if (request.method === "GET" && cache) {
     const key = await digest({ origin: url.origin, path: url.pathname, site: current.site_id, locale, release: snapshot.releaseId,
