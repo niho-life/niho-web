@@ -435,9 +435,10 @@ type PublicEnv = {
   readonly PUBLIC_SITES_PREVIEW_ORIGIN?: string;
   readonly PUBLIC_HTML_CACHE?: ManagedPublicHtmlCache;
 };
-type HostRow = { readonly site_id: string; readonly path_prefix: string; readonly noindex: number };
+type HostRow = { readonly site_id: string; readonly path_prefix: string; readonly noindex: number; readonly slug: string };
 type PointerRow = { readonly manifest_key: string | null };
 type CacheWriteContext = { waitUntil(promise: Promise<unknown>): void };
+export type PublishedSiteHost = HostRow & { readonly path: string; readonly missingRootSlash: boolean };
 
 const LOOKUP_TTL_MS = 5_000;
 const MAX_LOOKUPS = 256;
@@ -485,12 +486,25 @@ async function publicHosts(db: PublicDatabase, entries: Lookup<readonly HostRow[
   const cached = refresh ? undefined : cachedLookup(entries, hostname);
   if (cached !== undefined) return cached;
   const startedAt = Date.now();
-  const result = await db.prepare(`SELECT site_id, path_prefix, noindex FROM managed_site_hosts
-    WHERE hostname = ?1 AND enabled = 1 ORDER BY length(path_prefix) DESC LIMIT 100`).bind(hostname).all<HostRow>();
+  const result = await db.prepare(`SELECT host.site_id, host.path_prefix, host.noindex, site.slug FROM managed_site_hosts AS host
+    JOIN managed_sites AS site ON site.site_id = host.site_id
+    WHERE host.hostname = ?1 AND host.enabled = 1 ORDER BY length(host.path_prefix) DESC LIMIT 100`).bind(hostname).all<HostRow>();
   if (!result.success) throw new Error("managed site host query failed");
   const hosts = result.results ?? [];
   rememberLookup(entries, hostname, hosts, startedAt);
   return hosts;
+}
+
+/** Resolve a registered host through the same short-lived lookup cache as public delivery. */
+export async function resolvePublishedSiteHost(request: Request, db: PublicDatabase, refresh = false): Promise<PublishedSiteHost | null> {
+  const url = new URL(request.url), hostname = url.hostname.toLowerCase();
+  if (!hostname || hostname.length > 253 || /[^a-z0-9.-]/u.test(hostname)) return null;
+  const hosts = await publicHosts(db, publicationLookups(db).hosts, hostname, refresh);
+  for (const host of hosts) {
+    const resolved = resolveSitePath(url.pathname, host.path_prefix);
+    if (resolved) return { ...host, ...resolved };
+  }
+  return null;
 }
 
 async function publishedPointer(db: PublicDatabase, entries: Lookup<string | null>, siteId: string, refresh = false): Promise<string | null> {
@@ -663,7 +677,8 @@ function publishedRedirect(url: URL, host: HostRow, manifest: PublishedSiteManif
   return new Response(null, { status: 301, headers });
 }
 
-export async function publishedSiteRequest(request: Request, env: PublicEnv, context?: CacheWriteContext): Promise<Response> {
+export async function publishedSiteRequest(request: Request, env: PublicEnv, context?: CacheWriteContext,
+  resolvedHost?: PublishedSiteHost): Promise<Response> {
   const url = new URL(request.url);
   const configuredPreview = isConfiguredPreview(url, env);
   const bypassCache = request.headers.get("Cache-Control")?.toLowerCase().split(",").some((value) => value.trim() === "no-cache") ?? false;
@@ -679,20 +694,23 @@ export async function publishedSiteRequest(request: Request, env: PublicEnv, con
       return new Response(request.method === "HEAD" ? null : asset.body, { status: asset.status, headers });
     } catch { return unavailable(true); }
   }
-  const hostname = url.hostname.toLowerCase();
-  if (!hostname || hostname.length > 253 || /[^a-z0-9.-]/u.test(hostname)) return notFound(configuredPreview);
   const lookups = publicationLookups(env.DB);
-  let hosts: readonly HostRow[];
-  try {
-    hosts = await publicHosts(env.DB, lookups.hosts, hostname, bypassCache);
-  } catch (error) {
-    if (configuredPreview) return unavailable(true);
-    throw error;
-  }
-  let selected: { readonly host: HostRow; readonly path: string; readonly missingRootSlash: boolean } | null = null;
-  for (const host of hosts) {
-    const resolved = resolveSitePath(url.pathname, host.path_prefix);
-    if (resolved) { selected = { host, ...resolved }; break; }
+  let hosts: readonly HostRow[] = [];
+  let selected: { readonly host: HostRow; readonly path: string; readonly missingRootSlash: boolean } | null = resolvedHost
+    ? { host: resolvedHost, path: resolvedHost.path, missingRootSlash: resolvedHost.missingRootSlash } : null;
+  if (!selected) {
+    const hostname = url.hostname.toLowerCase();
+    if (!hostname || hostname.length > 253 || /[^a-z0-9.-]/u.test(hostname)) return notFound(configuredPreview);
+    try {
+      hosts = await publicHosts(env.DB, lookups.hosts, hostname, bypassCache);
+    } catch (error) {
+      if (configuredPreview) return unavailable(true);
+      throw error;
+    }
+    for (const host of hosts) {
+      const resolved = resolveSitePath(url.pathname, host.path_prefix);
+      if (resolved) { selected = { host, ...resolved }; break; }
+    }
   }
   let noindex = configuredPreview || selected?.host.noindex === 1 || hosts.length > 0 && hosts.every((host) => host.noindex === 1);
   if (!selected) return notFound(noindex);

@@ -42,7 +42,7 @@ GUI のページ操作は次のとおり。
 
 ページ URL の変更と非公開化はページ管理の1操作で新しい manifest を作る。公開 URL の移動は301 redirectになり、非公開ページは manifest と sitemap から外れる。サイト全体の公開履歴から戻すときは、対象 release の manifest pointer だけを切り替える。HTML は immutable、ブラウザーには `Cache-Control: no-cache` と ETag を返し、一致する `If-None-Match` には304で応答する。noindex host では HTML、SEO file、redirect、404、公開 runtime に `X-Robots-Tag: noindex, nofollow` を付け、robots は全体をDisallowし、sitemapとllmsの一覧は空にする。
 
-固定ページを返す経路は公開 Worker に一本化した。CMS binding を持つページと CMS route は #527 で静的生成へ移すまで Studio Worker の動的 fallback を使う。CMS の移行後にこの fallback を削除する。画像の幅別変換と、1サイトへの複数の独自 host 登録は対象外。
+固定ページを返す経路は公開 Worker に一本化した。CMS binding を持つページ、CMS route、およびそれらを含む sitemap・llms は #527 で静的生成へ移すまで Studio Worker の動的 fallback を使う。登録済み独自 host でもこの互換配信を行い、host の noindex を反映する。CMS の移行後に fallback を削除する。画像の幅別変換と、1サイトへの複数の独自 host 登録は対象外。
 
 公開SEO出力は `/s/{siteSlug}/sitemap.xml`、`robots.txt`、`llms.txt`、`llms-full.txt`。ページ文書の metadata から canonical、robots、OG、title、description を出し、同じ path の翻訳が公開済みの場合だけ hreflang を付ける。公開応答は description・画像 alt・英語本文中の日本語、同じ言語の公開ページと重複する title/description、ページまたは CMS route が見つからないサイト内リンクを警告として返す。CMS route を取得できないときは警告の対象から外す。サイト名、説明、既定 OGP 画像、所有権確認タグ、組織 JSON-LD、robots 方針、GA4 を含む SEO 設定は公開許可設定と同じ版で管理し、GUI と `niho-edit --studio site-seo-read` / `site-seo-save` から読み書きする。固定ページ redirect は Studio GUI または `niho-edit --studio site-redirects-read` / `site-redirects-save` で管理し、ページ移動時に自動作成した redirect も同じ一覧へ反映する。旧データの取込みと95 URLの実サイト受入は未完了で、#489の残りとして扱う。
 

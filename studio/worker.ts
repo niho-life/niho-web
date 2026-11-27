@@ -33,9 +33,9 @@ import {
 import { SERVICE_CLIENT_ID } from "../src/studio-cli-auth.js";
 import {
   createManagedProject, managedCmsBoundPublic, managedDashboardOverview, managedEditorOperation, managedPageEditingApi, managedPageUrl,
-  managedProjectRegistrations, managedRegistration, publicSitesOrigin, type ManagedPublicHtmlCache
+  managedProjectRegistrations, managedPublicSeoResponse, managedRegistration, publicSitesOrigin, type ManagedPublicHtmlCache
 } from "./managed-sites.js";
-import { publishedSiteRequest } from "./managed-publication.js";
+import { publishedSiteRequest, resolvePublishedSiteHost } from "./managed-publication.js";
 import { CmsStore, type CmsActor, type CmsBucket, type CmsCapability, type CmsPublicAssetResolver } from "./managed-cms-store.js";
 import { CMS_DELIVERY_PREFIX } from "../src/cms-delivery-contract.js";
 import type { CmsPublicAsset } from "../src/cms-v2.js";
@@ -2996,16 +2996,41 @@ async function handle(request: Request, env: Env, timing: StudioRequestTiming): 
   const configuredPublicOrigin = publicSitesOrigin(env.PUBLIC_SITES_ORIGIN);
   if (configuredPublicOrigin !== null && url.origin === configuredPublicOrigin) {
     if (!env.CMS_OBJECTS) return json({ error: "managed_sites_unavailable" }, 503);
+    const store = new CmsStore(env.DB, env.CMS_OBJECTS);
+    const seo = await managedPublicSeoResponse(request, env.DB, configuredPublicOrigin, store);
+    if (seo) return seo;
     const published = await publishedSiteRequest(request, {
       DB: env.DB, CMS_OBJECTS: env.CMS_OBJECTS, ASSETS: env.ASSETS,
       ...(env.PUBLIC_SITES_PREVIEW_ORIGIN ? { PUBLIC_SITES_PREVIEW_ORIGIN: env.PUBLIC_SITES_PREVIEW_ORIGIN } : {}),
       ...(env.PUBLIC_HTML_CACHE ? { PUBLIC_HTML_CACHE: env.PUBLIC_HTML_CACHE } : {})
     });
     if (published.status !== 404) return published;
-    const store = new CmsStore(env.DB, env.CMS_OBJECTS);
     const boundPage = await managedCmsBoundPublic(request, env.DB, configuredPublicOrigin, store, env.PUBLIC_HTML_CACHE);
     if (boundPage) return boundPage;
     return await managedCmsPublic(request, store, configuredPublicOrigin) ?? published;
+  }
+  const publicMethod = request.method === "GET" || request.method === "HEAD";
+  const accessProtected = request.headers.has("Cf-Access-Jwt-Assertion") || request.headers.has("cf-access-token");
+  if (publicMethod && !accessProtected && url.protocol === "https:" && !url.port
+    && url.pathname !== "/api" && !url.pathname.startsWith("/api/") && !url.pathname.startsWith(CMS_DELIVERY_PREFIX)
+    && env.CMS_OBJECTS) {
+    const bypassHostCache = request.headers.get("Cache-Control")?.toLowerCase().split(",").some((value) => value.trim() === "no-cache") ?? false;
+    const host = await resolvePublishedSiteHost(request, env.DB, bypassHostCache);
+    if (host?.path_prefix === "") {
+      const route = { slug: host.slug, prefix: "" as const, noindex: host.noindex === 1 };
+      const store = new CmsStore(env.DB, env.CMS_OBJECTS);
+      const seo = await managedPublicSeoResponse(request, env.DB, url.origin, store, route);
+      if (seo) return seo;
+      const published = await publishedSiteRequest(request, {
+        DB: env.DB, CMS_OBJECTS: env.CMS_OBJECTS, ASSETS: env.ASSETS,
+        ...(env.PUBLIC_SITES_PREVIEW_ORIGIN ? { PUBLIC_SITES_PREVIEW_ORIGIN: env.PUBLIC_SITES_PREVIEW_ORIGIN } : {}),
+        ...(env.PUBLIC_HTML_CACHE ? { PUBLIC_HTML_CACHE: env.PUBLIC_HTML_CACHE } : {})
+      }, undefined, host);
+      if (published.status !== 404) return published;
+      const boundPage = await managedCmsBoundPublic(request, env.DB, url.origin, store, env.PUBLIC_HTML_CACHE, route);
+      if (boundPage) return boundPage;
+      return await managedCmsPublic(request, store, url.origin, route, env.PUBLIC_HTML_CACHE) ?? published;
+    }
   }
   if (url.pathname.startsWith(CMS_DELIVERY_PREFIX)) {
     if (!env.CMS_OBJECTS) return json({ error: "not_found" }, 404);

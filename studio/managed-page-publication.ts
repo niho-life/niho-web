@@ -7,7 +7,7 @@ import type { CmsStore } from "./managed-cms-store.js";
 import { emptyManagedPublicPolicy, managedBlockContracts, parseManagedPublicPolicy, type ManagedPublicPolicy } from "./managed-embed-contract.js";
 import { readPageSource, type PageSourceRow } from "./managed-page-source.js";
 import { managedPublicBlocks, planManagedPublicRender, resolvePublishedEmbeds } from "./managed-public-policy.js";
-import { preparePublishedSite } from "./managed-publication.js";
+import { preparePublishedManifest, preparePublishedSite } from "./managed-publication.js";
 import type { ManagedSiteRedirect } from "../src/managed-site-redirects.js";
 import type { ManagedD1 } from "./managed-sites.js";
 
@@ -43,11 +43,11 @@ function managedSeoImageUrl(value: string, origin: string, prefix: string): stri
 }
 
 function managedSiteMetadata(metadata: PageMetadata, seo: ManagedSiteSeoSettings, fallbackSiteName: string, origin: string, prefix: string,
-  publicUrl: string): PageMetadata {
+  publicUrl: string, forceNoindex = false): PageMetadata {
   const siteName = seo.siteName ?? fallbackSiteName;
   const description = metadata.description ?? seo.description ?? metadata.openGraph.description;
   const image = metadata.openGraph.image ?? (seo.defaultOgImage ? { url: managedSeoImageUrl(seo.defaultOgImage, origin, prefix), alt: siteName } : undefined);
-  const noindex = seo.robotsPolicy === "noindex" || metadata.robots === "noindex, nofollow";
+  const noindex = forceNoindex || seo.robotsPolicy === "noindex" || metadata.robots === "noindex, nofollow";
   const { canonical, ...withoutCanonical } = metadata;
   return {
     ...withoutCanonical,
@@ -127,15 +127,16 @@ export async function renderManagedPage(input: {
   readonly siteName: string;
   readonly embeds: Awaited<ReturnType<typeof resolvePublishedEmbeds>>;
   readonly assets?: readonly CmsPublicAsset[];
+  readonly forceNoindex?: boolean;
   readonly includeCandidate?: boolean;
 }) {
-  const { db, store, document, policy, origin, prefix, path, alternatePath, publicPath, siteName, embeds } = input;
+  const { db, store, document, policy, origin, prefix, path, alternatePath, publicPath, siteName, embeds, forceNoindex } = input;
   const plan = planManagedPublicRender(prefixedDocument(document, prefix), policy, origin, embeds, input.assets);
   const rendered = plan.document;
   // Validate the document path before projecting canonical and OpenGraph URLs onto the shared prefix.
   const resolved = resolvePageMetadata({ document: rendered, domain: origin, path, visibility: "public", assets: plan.assets });
   const publicUrl = `${origin}${publicPath}`;
-  const metadata = managedSiteMetadata(resolved, policy.seo, siteName, origin, prefix, publicUrl);
+  const metadata = managedSiteMetadata(resolved, policy.seo, siteName, origin, prefix, publicUrl, forceNoindex);
   const [{ renderPageToHtml }, alternates, runtime] = await Promise.all([
     import("../src/server.js"),
     managedPageHreflang(db, document.siteId, document.locale, alternatePath, origin, prefix,
@@ -198,5 +199,26 @@ export async function prepareManagedPageArtifact(input: {
     siteName: policy.seo.siteName ?? state.site_name, siteDescription: policy.seo.description ?? "",
     robotsPolicy: policy.seo.robotsPolicy, publicBaseUrl: `${origin}${publicPrefix}`,
     expectedVersion: state.version, currentManifestKey: state.manifest_key });
+  return { ...prepared, policyVersion: state.public_policy_version, domainVersion: state.public_domain_version };
+}
+
+/** CMS binding へ切り替えたページの旧固定 route を、artifact を作らず manifest から除く。 */
+export async function prepareManagedPageManifestRemoval(input: {
+  readonly store: CmsStore;
+  readonly siteId: string;
+  readonly pageId: string;
+  readonly locale: string;
+  readonly publicBaseUrl: string;
+}) {
+  const state = await input.store.db.prepare(`SELECT state.version, state.manifest_key,
+      ms.public_policy_version, ms.public_domain_version
+    FROM managed_site_publication_state AS state JOIN managed_sites AS ms ON ms.site_id = state.site_id
+    WHERE state.site_id = ?1`)
+    .bind(input.siteId).first<{ version: string; manifest_key: string | null; public_policy_version: string; public_domain_version: string }>();
+  if (!state) throw new Error("publication state unavailable");
+  if (!state.manifest_key) return null;
+  const prepared = await preparePublishedManifest({ bucket: input.store.bucket, siteId: input.siteId,
+    publicationId: crypto.randomUUID(), expectedVersion: state.version, currentManifestKey: state.manifest_key,
+    publicBaseUrl: input.publicBaseUrl, omitRoute: { pageId: input.pageId, locale: input.locale } });
   return { ...prepared, policyVersion: state.public_policy_version, domainVersion: state.public_domain_version };
 }

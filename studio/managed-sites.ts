@@ -1,5 +1,5 @@
 import { CmsStore, cmsPathReserved, digest, nowSeconds, type Site } from "./managed-cms-store.js";
-import { pageText, prepareManagedPageArtifact, renderManagedPage } from "./managed-page-publication.js";
+import { localizedPathIdentity, pageText, prepareManagedPageArtifact, prepareManagedPageManifestRemoval, renderManagedPage } from "./managed-page-publication.js";
 import { preparePublishedManifest, type PreparedPublishedManifest } from "./managed-publication.js";
 import { MAX_MANAGED_PAGE_BYTES, readPageSource, readPageSourceObject, storePageSource, type PageSourceRow } from "./managed-page-source.js";
 import { parsePageDocument, type PageDocument, type PageNode } from "../src/core.js";
@@ -979,12 +979,20 @@ async function publishPageOnce(store: CmsStore, actor: ManagedActor, row: Manage
     ? { cmsBindings: source.bindings_json === null ? null : parseCmsPageBindings(JSON.parse(source.bindings_json), document) } : {};
   const url = managedPageUrl(origin, row.slug, row.path, row.public_domain);
   let prepared: Awaited<ReturnType<typeof prepareManagedPageArtifact>> | null = null;
+  let preparedManifest: Awaited<ReturnType<typeof prepareManagedPageManifestRemoval>> = null;
   if (!cmsReleaseId && !source.bindings_json) {
     try {
       prepared = await prepareManagedPageArtifact({ store, document, publicationId, path: row.path, isPublic: row.visibility === "public",
         publicUrl: new URL(url), publicPrefix: row.public_domain ? "" : `/s/${row.slug}` });
     } catch { return json({ error: "publication_artifact_generation_failed" }, 503); }
+  } else {
+    try {
+      const publicUrl = new URL(url);
+      preparedManifest = await prepareManagedPageManifestRemoval({ store, siteId: row.site_id, pageId: row.page_id,
+        locale: row.locale, publicBaseUrl: `${publicUrl.origin}${row.public_domain ? "" : `/s/${row.slug}`}` });
+    } catch { return json({ error: "publication_artifact_generation_failed" }, 503); }
   }
+  const preparedPublication = prepared ?? preparedManifest;
   const restoredSource = copyVersion ? await storePageSource(store.bucket, document, version) : null;
   if (copyVersion && !restoredSource) return json({ error: "page_storage_unavailable" }, 503);
 
@@ -1003,8 +1011,8 @@ async function publishPageOnce(store: CmsStore, actor: ManagedActor, row: Manage
            AND EXISTS (SELECT 1 FROM managed_site_publication_state WHERE site_id = mp.site_id AND version = ?12)))
          AND EXISTS (SELECT 1 FROM managed_page_versions WHERE site_id = mp.site_id AND page_id = mp.page_id AND locale = mp.locale AND revision = ?15)`)
       .bind(auditId, actor.subject, auditAction, row.site_id, row.page_id, row.locale, input.expectedVersion, row.project_id,
-        row.page_catalog_version, cmsGeneration, cmsReleaseId, prepared?.expectedVersion ?? null,
-        prepared?.policyVersion ?? null, prepared?.domainVersion ?? null, sourceRevision, actor.cliClientId ?? null),
+        row.page_catalog_version, cmsGeneration, cmsReleaseId, preparedPublication?.expectedVersion ?? null,
+        preparedPublication?.policyVersion ?? null, preparedPublication?.domainVersion ?? null, sourceRevision, actor.cliClientId ?? null),
     ...(restoredSource ? [db.prepare(`INSERT INTO managed_page_versions (site_id, page_id, locale, revision, document_json,
             kind, created_by_subject, bindings_json, document_key, document_digest, link_index_json)
           SELECT ?1, ?2, ?3, ?4, '{}', ?5, ?6, ?7, ?8, ?9, ?10 WHERE EXISTS (SELECT 1 FROM managed_site_audit WHERE id = ?11)`)
@@ -1015,7 +1023,7 @@ async function publishPageOnce(store: CmsStore, actor: ManagedActor, row: Manage
       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?11, ?12, ?13, ?14, ?15
         WHERE EXISTS (SELECT 1 FROM managed_site_audit WHERE id = ?16)`)
       .bind(publicationId, row.site_id, row.page_id, row.locale, revision, action, actor.subject, cmsReleaseId, cmsSchemaRevision,
-        row.path, prepared?.artifactKey ?? null, prepared?.artifactDigest ?? null, prepared?.manifestKey ?? null,
+        row.path, prepared?.artifactKey ?? null, prepared?.artifactDigest ?? null, preparedPublication?.manifestKey ?? null,
         prepared ? "text/html; charset=utf-8" : null, prepared?.contentSecurityPolicy ?? null, auditId),
     db.prepare(`UPDATE managed_pages
        SET published_revision = ?1, published_publication_id = ?2, current_revision = ?1, current_version = ?3, updated_at = unixepoch()
@@ -1023,9 +1031,9 @@ async function publishPageOnce(store: CmsStore, actor: ManagedActor, row: Manage
       .bind(revision, publicationId, version, row.site_id, row.page_id, row.locale, auditId),
     db.prepare(`UPDATE managed_sites SET page_catalog_version = ?1 WHERE site_id = ?2
       AND EXISTS (SELECT 1 FROM managed_site_audit WHERE id = ?3)`).bind(`catalog.${version}`, row.site_id, auditId),
-    ...(prepared ? [db.prepare(`UPDATE managed_site_publication_state SET version = ?1, manifest_key = ?2, updated_at = unixepoch()
+    ...(preparedPublication ? [db.prepare(`UPDATE managed_site_publication_state SET version = ?1, manifest_key = ?2, updated_at = unixepoch()
       WHERE site_id = ?3 AND EXISTS (SELECT 1 FROM managed_site_audit WHERE id = ?4)`)
-      .bind(prepared.manifestVersion, prepared.manifestKey, row.site_id, auditId)] : []),
+      .bind(preparedPublication.manifestVersion, preparedPublication.manifestKey, row.site_id, auditId)] : []),
     ...(copyVersion ? [discardSupersededDraft(db, row, version)] : [])
   ]);
   if (results.some((result) => !result.success)) throw new Error("managed page mutation batch failed");
@@ -1297,14 +1305,15 @@ export async function managedEditorOperation(
 
 /** CMS bound ページだけを、#527 で静的配信へ移すまで描画する。 */
 async function renderCmsBoundPublic(request: Request, db: ManagedD1, origin: string, store: CmsStore,
-  cache?: ManagedPublicHtmlCache): Promise<Response> {
+  cache?: ManagedPublicHtmlCache, customRoute?: { readonly slug: string; readonly prefix: ""; readonly noindex?: boolean }): Promise<Response> {
   const url = new URL(request.url);
-  if (url.origin !== origin || request.method !== "GET" && request.method !== "HEAD") return new Response(null, { status: 404, headers: responseHeaders("text/plain; charset=utf-8") });
-  const match = /^\/s\/([a-z0-9]+(?:-[a-z0-9]+)*)(?:\/(.*))?$/u.exec(url.pathname);
-  if (!match) return new Response(null, { status: 404, headers: responseHeaders("text/plain; charset=utf-8") });
-  const slug = match[1]!;
-  const prefix = `/s/${slug}`;
-  const path = match[2] ? `/${match[2]}` : "/";
+  if (!customRoute && url.origin !== origin || request.method !== "GET" && request.method !== "HEAD")
+    return new Response(null, { status: 404, headers: responseHeaders("text/plain; charset=utf-8") });
+  const match = customRoute ? null : /^\/s\/([a-z0-9]+(?:-[a-z0-9]+)*)(?:\/(.*))?$/u.exec(url.pathname);
+  if (!customRoute && !match) return new Response(null, { status: 404, headers: responseHeaders("text/plain; charset=utf-8") });
+  const slug = customRoute?.slug ?? match![1]!;
+  const prefix = customRoute?.prefix ?? `/s/${slug}`;
+  const path = customRoute ? url.pathname : match![2] ? `/${match![2]}` : "/";
   const redirectTo = (target: string, status = 301) => {
     const headers = responseHeaders("text/plain; charset=utf-8");
     headers.set("Location", `${url.origin}${prefix}${target}${url.search}`);
@@ -1357,7 +1366,7 @@ async function renderCmsBoundPublic(request: Request, db: ManagedD1, origin: str
   }
   const hasUppercaseRoute = /[A-Z]/u.test(path);
   if (hasUppercaseRoute && (row.path !== parentPath || !row.bindings_json)) return notFound();
-  if (match[2] === undefined) {
+  if (!customRoute && match![2] === undefined) {
     url.pathname += "/";
     const headers = responseHeaders("text/plain; charset=utf-8");
     headers.set("Location", url.href);
@@ -1406,11 +1415,11 @@ async function renderCmsBoundPublic(request: Request, db: ManagedD1, origin: str
   }
   const rendered = await renderManagedPage({ db, store, document, policy, origin, prefix,
     path: hasUppercaseRoute ? path.toLowerCase() : path, alternatePath: row.path, publicPath,
-    siteName: row.site_name, embeds, assets: assetManifest });
+    siteName: row.site_name, embeds, assets: assetManifest, forceNoindex: customRoute?.noindex === true });
   const headers = responseHeaders("text/html; charset=utf-8");
   headers.set("Cache-Control", "public, no-cache, s-maxage=300, stale-while-revalidate=60");
   headers.set("Content-Security-Policy", rendered.contentSecurityPolicy);
-  if (policy.seo.robotsPolicy === "noindex") headers.set("X-Robots-Tag", "noindex, nofollow");
+  if (customRoute?.noindex === true || policy.seo.robotsPolicy === "noindex") headers.set("X-Robots-Tag", "noindex, nofollow");
   headers.set("Cross-Origin-Opener-Policy", "same-origin");
   headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()");
   const fullResponse = await withPublicEtag(rendered.html, headers);
@@ -1421,9 +1430,118 @@ async function renderCmsBoundPublic(request: Request, db: ManagedD1, origin: str
 
 /** #527 がCMS boundページを静的manifestへ移すまでの互換renderer。固定ページには使わない。 */
 export async function managedCmsBoundPublic(request: Request, db: ManagedD1, origin: string, store: CmsStore,
-  cache?: ManagedPublicHtmlCache): Promise<Response | null> {
-  const response = await renderCmsBoundPublic(request, db, origin, store, cache);
+  cache?: ManagedPublicHtmlCache, customRoute?: { readonly slug: string; readonly prefix: ""; readonly noindex?: boolean }): Promise<Response | null> {
+  const response = await renderCmsBoundPublic(request, db, origin, store, cache, customRoute);
   return response.status === 404 ? null : response;
+}
+
+type ManagedSeoPage = { locale: string; path: string; title: string; text: string; group: string; lastmod?: string };
+function xml(value: string): string {
+  return value.replace(/[&<>"']/gu, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" })[character]!);
+}
+function managedCollectionPath(prefix: string | null): string | null { return prefix === null ? null : prefix.slice(0, -1); }
+
+/** #527 が CMS discovery を公開時生成へ移すまでの互換出力。通常のページ配信では呼ばない。 */
+export async function managedPublicSeoResponse(request: Request, db: ManagedD1, origin: string, store: CmsStore,
+  customRoute?: { readonly slug: string; readonly prefix: ""; readonly noindex?: boolean }): Promise<Response | null> {
+  const url = new URL(request.url);
+  if (request.method !== "GET" && request.method !== "HEAD") return null;
+  let slug: string, prefix: string, noindex = false, name: string;
+  if (customRoute) { slug = customRoute.slug; prefix = customRoute.prefix; noindex = customRoute.noindex === true; }
+  else {
+    if (url.origin !== origin) return null;
+    const match = /^\/s\/([a-z0-9]+(?:-[a-z0-9]+)*)(\/(?:sitemap\.xml|robots\.txt|llms\.txt|llms-full\.txt))$/u.exec(url.pathname);
+    if (!match) return null;
+    slug = match[1]!; prefix = `/s/${slug}`;
+  }
+  const suffix = customRoute ? url.pathname : url.pathname.slice(prefix.length);
+  if (!["/sitemap.xml", "/robots.txt", "/llms.txt", "/llms-full.txt"].includes(suffix)) return null;
+  const site = await db.prepare(`SELECT s.id AS site_id, s.name, ms.public_policy_json FROM managed_sites AS ms
+    JOIN sites AS s ON s.id = ms.site_id WHERE ms.slug = ?1 LIMIT 1`).bind(slug)
+    .first<{ site_id: string; name: string; public_policy_json: string }>();
+  if (!site) return null;
+  const policy = parseManagedPublicPolicy(JSON.parse(site.public_policy_json), url.origin);
+  if (!policy) return null;
+  name = policy.seo.siteName ?? site.name;
+  noindex ||= policy.seo.robotsPolicy === "noindex";
+  const headers = (contentType: string) => {
+    const result = responseHeaders(contentType);
+    result.set("Cache-Control", "no-cache");
+    if (noindex) result.set("X-Robots-Tag", "noindex, nofollow");
+    return result;
+  };
+
+  const stateRow = await db.prepare(`SELECT ms.site_id, cms.state_json FROM managed_sites AS ms
+    JOIN managed_cms_state AS cms ON cms.site_id = ms.site_id WHERE ms.slug = ?1 LIMIT 1`).bind(slug)
+    .first<{ site_id: string; state_json: string }>();
+  if (!stateRow) return null;
+  const state = JSON.parse(stateRow.state_json) as Site["state"];
+  const releases = [
+    ...(state.current ? [{ locale: state.locale, id: state.current.id }] : []),
+    ...Object.entries(state.localizedReleases ?? {}).map(([locale, release]) => ({ locale, id: release.id }))
+  ].slice(0, 3);
+  if (!releases.length) return null;
+  if (suffix === "/robots.txt") {
+    const body = noindex ? "User-agent: *\nDisallow: /\n" : `User-agent: *\nAllow: /\nSitemap: ${url.origin}${prefix}/sitemap.xml\n`;
+    return new Response(request.method === "HEAD" ? null : body, { headers: headers("text/plain; charset=utf-8") });
+  }
+
+  const rows = await db.prepare(`SELECT mp.site_id, mp.page_id, mp.locale, version.revision, publication.published_path AS path,
+      version.document_json, version.document_key, version.document_digest, publication.created_at AS published_at
+    FROM managed_sites AS ms JOIN managed_pages AS mp ON mp.site_id = ms.site_id
+    JOIN managed_page_publications AS publication ON publication.id = mp.published_publication_id
+    JOIN managed_page_versions AS version ON version.site_id = mp.site_id AND version.page_id = mp.page_id
+      AND version.locale = mp.locale AND version.revision = mp.published_revision
+    WHERE ms.slug = ?1 AND mp.visibility = 'public' AND mp.published_revision IS NOT NULL
+    ORDER BY publication.published_path, mp.locale LIMIT 500`).bind(slug).all<PageSourceRow & { path: string; published_at: number | null }>();
+  if (!rows.success) return null;
+  const pages: ManagedSeoPage[] = [];
+  for (const row of rows.results ?? []) {
+    try {
+      const document = await readPageSource(store, row);
+      if (noindex || document.meta?.noindex) continue;
+      pages.push({ locale: row.locale, path: row.path, title: document.title, text: pageText(document.body),
+        group: `page:${localizedPathIdentity(row.locale, row.path)}`,
+        ...(row.published_at ? { lastmod: new Date(row.published_at * 1000).toISOString() } : {}) });
+    } catch { /* invalid historical pages are omitted from public discovery output */ }
+  }
+  for (const release of releases) try {
+    const snapshot = await store.snapshot(stateRow.site_id, release.id);
+    const cmsPrefix = snapshot.sourceLocale && snapshot.sourceLocale !== snapshot.locale ? `/${snapshot.locale}/cms` : "/cms";
+    pages.push({ locale: snapshot.locale, path: cmsPrefix, title: "CMS", text: "", group: "cms:root" });
+    for (const collection of snapshot.schema.collections) {
+      const path = managedCollectionPath(collection.pathPrefix);
+      if (path) pages.push({ locale: snapshot.locale, path, title: collection.label, text: "", group: `cms:list:${collection.id}` });
+    }
+    for (const item of snapshot.items) if (item.path) {
+      const collection = snapshot.schema.collections.find(({ id }) => id === item.collectionId);
+      const title = collection ? String(item.values[collection.titleField] ?? "") : "";
+      const fields = collection?.fields.filter(({ fieldId, type }) => fieldId !== collection.titleField
+        && ["text", "longText", "richText", "datetime"].includes(type)) ?? [];
+      pages.push({ locale: snapshot.locale, path: item.path, title,
+        text: fields.map(({ fieldId }) => String(item.values[fieldId] ?? "")).join(" "),
+        group: `cms:item:${item.collectionId}:${item.itemId}` });
+    }
+  } catch { /* unpublished or unavailable CMS snapshots are omitted */ }
+  const absolute = (page: ManagedSeoPage) => `${url.origin}${prefix}${page.path}`;
+  if (suffix === "/sitemap.xml") {
+    const groups = new Map<string, ManagedSeoPage[]>();
+    for (const page of pages) groups.set(page.group, [...(groups.get(page.group) ?? []), page]);
+    const entries = pages.map((page) => {
+      const alternatives = groups.get(page.group) ?? [];
+      const languages = alternatives.length > 1 ? alternatives.map((other) =>
+        `<xhtml:link rel="alternate" hreflang="${xml(other.locale.toLowerCase())}" href="${xml(absolute(other))}"/>`).join("") : "";
+      const lastmod = page.lastmod ? `<lastmod>${xml(page.lastmod)}</lastmod>` : "";
+      return `<url><loc>${xml(absolute(page))}</loc>${lastmod}${languages}</url>`;
+    }).join("");
+    const body = `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">${entries}</urlset>`;
+    return new Response(request.method === "HEAD" ? null : body, { headers: headers("application/xml; charset=utf-8") });
+  }
+  const markdown = [`# ${name}`, "", "## Pages", "", ...pages.map((page) =>
+    `- [${page.title || page.path}](${absolute(page)})${page.text ? `: ${page.text.slice(0, 240)}` : ""}`)].join("\n");
+  const full = suffix === "/llms-full.txt" ? [markdown, "", "## Full text", "",
+    ...pages.filter(({ text }) => text).map((page) => `### ${page.title}\n\n${page.text}`)].join("\n") : markdown;
+  return new Response(request.method === "HEAD" ? null : full, { headers: headers("text/plain; charset=utf-8") });
 }
 
 export async function managedDashboardOverview(db: ManagedD1, actor: ManagedActor, projectId: string, siteId: string, origin: string): Promise<Record<string, unknown> | null> {

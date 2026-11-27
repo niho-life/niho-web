@@ -1537,6 +1537,8 @@ testWithD1("Studio CMS localization exposes the shared workspace contract and pr
 testWithD1("Studio page bindings publish a six-item list and dynamic detail from an immutable CMS release", async (t) => {
   const h = await fixture(t, { cms: true });
   const site = await cmsSite(h, "bound-articles");
+  const customDomain = "preview.bound-articles.example.test";
+  await setFixturePublicDomain(h, site, customDomain, true);
   const api = "/api/projects/" + site.projectId + "/sites/" + site.siteId + "/editor";
   const editing = "/api/edit/v1/sites/" + site.siteId;
   const browser = (method, path, input, options) => h.send(MANAGEMENT_ORIGIN, method, api + path, input, options);
@@ -1564,6 +1566,9 @@ testWithD1("Studio page bindings publish a six-item list and dynamic detail from
   const createChange = { action: "create", siteId: site.siteId, locale: "ja", title: "Article", path: "/articles" };
   const { page: detailPage } = await pageChange(browser, createChange);
   const home = await body(await browser("GET", "/home"), 200);
+  const firstStaticPublication = await body(await browser("POST", "/home/publish", {
+    expectedVersion: home.version, action: "publish"
+  }), 200);
   const listDocument = structuredClone(home.document);
   const element = (id, tag, children, attrs) => ({ type: "element", id, tag, children, ...(attrs ? { attrs } : {}) });
   const text = (value) => [{ type: "text", text: value }];
@@ -1575,7 +1580,9 @@ testWithD1("Studio page bindings publish a six-item list and dynamic detail from
       { nodeId: "article-link", fieldId: "title", target: "attribute", attribute: "aria-label" },
       { nodeId: "article-link", fieldId: "slug", target: "detail-link", path: "/articles" }
     ] }] };
-  const listSaved = await body(await browser("PUT", "/home/draft", { expectedVersion: home.version, document: listDocument, cmsBindings }), 200);
+  const listSaved = await body(await browser("PUT", "/home/draft", {
+    expectedVersion: firstStaticPublication.snapshot.version, document: listDocument, cmsBindings
+  }), 200);
   const detail = await body(await browser("GET", "/" + detailPage.pageId), 200);
   const detailDocument = { ...detail.document, body: [element("article-title", "h1", text("Title")), element("article-text", "p", text("Body"))] };
   const detailBindings = { ...base, pageId: detailPage.pageId, lists: [], detail: { collectionId: "posts", slugFieldId: "slug", fields: [
@@ -1635,6 +1642,13 @@ testWithD1("Studio page bindings publish a six-item list and dynamic detail from
   await publish(detailPage.pageId, detailSaved.version);
   await publish("home", applied.version);
   assert.equal(h.sqlite.prepare("SELECT count(*) AS count FROM managed_page_publications WHERE cms_release_id = ? AND cms_schema_revision = ?").get(cmsRelease.releaseId, schemaRevision).count, 2);
+  const staticPointer = h.sqlite.prepare("SELECT manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(site.siteId).manifest_key;
+  const staticManifest = await (await h.env.CMS_OBJECTS.get(staticPointer)).json();
+  assert.equal(staticManifest.routes.some(({ pageId, locale }) => pageId === "home" && locale === "ja"), false,
+    "publishing a CMS-bound page removes its previous fixed route from the new manifest");
+  assert.equal((await publishedSiteRequest(new Request(`${PUBLIC_ORIGIN}/s/bound-articles/`, {
+    headers: { "Cache-Control": "no-cache" }
+  }), h.env)).status, 404, "the static worker no longer serves the old fixed HTML for the CMS route");
   const list = await lookup("/");
   assert.equal(list.status, 200);
   const html = await list.text();
@@ -1649,6 +1663,19 @@ testWithD1("Studio page bindings publish a six-item list and dynamic detail from
   assert.equal((await lookup("/articles/legacy-case")).status, 404);
   assert.equal((await lookup("/ARTICLES/Legacy-Case")).status, 404);
   assert.equal((await lookup("/articles")).status, 404);
+
+  const customList = await h.fetch(`https://${customDomain}/`, { headers: { "Cache-Control": "no-cache" } });
+  assert.equal(customList.status, 200, "a registered custom host keeps the CMS-bound page fallback");
+  assert.equal(customList.headers.get("X-Robots-Tag"), "noindex, nofollow");
+  assert.match(await customList.text(), /name="robots" content="noindex, nofollow"/u);
+  const customCmsDetail = await h.fetch(`https://${customDomain}/cms/posts/article-7`, { headers: { "Cache-Control": "no-cache" } });
+  assert.equal(customCmsDetail.status, 200, "a registered custom host keeps the CMS route fallback");
+  assert.equal(customCmsDetail.headers.get("X-Robots-Tag"), "noindex, nofollow");
+  await setFixturePublicDomain(h, site, customDomain, false);
+  const cmsSitemap = await h.fetch(`https://${customDomain}/sitemap.xml`, { headers: { "Cache-Control": "no-cache" } });
+  assert.equal(cmsSitemap.status, 200);
+  assert.ok((await cmsSitemap.text()).includes(`https://${customDomain}/cms/posts/article-7`),
+    "CMS discovery stays available until #527 moves it to publication-time output");
 
   const currentSchema = await site.read("cms.schema.read");
   const migrate = async (nextSchema) => site.post("cms.schema.plan", { expectedSchemaRevision: schemaRevision,
