@@ -198,40 +198,38 @@ export async function prepareKamakuraSiteImport(bytes, expectedDigest, targetVal
     const at = `source.pages[${index}]`;
     const publicSource = page.published === null ? null : resolveSiteImportSourceVersion(page.published, sourceScope, `${at}.published`);
     const draftSource = resolveSiteImportSourceVersion(page.draft, sourceScope, `${at}.draft`);
-    if (publicSource?.deferredCms || draftSource.deferredCms) {
-      if (connections.has(page.sourceUrl)) fail(at, "deferred pages cannot register verification embeds");
-      pages.push({ sourceUrl: page.sourceUrl, path: page.path, locale: page.locale, title: line(page.title ?? draftSource.resolved.title, "page.title", 120),
-        visibility: page.visibility, deferred: { sourcePageId: page.sourcePageId, published: page.published, draft: page.draft } });
-      pageMap.push({ sourceUrl: page.sourceUrl, pageId, locale: page.locale, path: page.path, deferred: "cms-block-conversion" });
-      continue;
-    }
     function convert(source, revision, versionName) {
       const { version } = source, at = `source.pages[${index}].${versionName}`;
       const scope = { siteId: target.siteId, pageId, locale: page.locale, revision };
-      let ready;
+      let ready, cmsBindings;
       if (version.replacements !== undefined) {
-        if (!Array.isArray(version.replacements) || version.replacements.some((entry) => !["carousel", "frame", "managed-embed"].includes(entry?.kind)
-          || entry.kind === "managed-embed" && !MANAGED_EMBED_REF.test(entry.refId ?? ""))) fail(at, "invalid non-CMS replacement");
-        const result = migrateKamakuraBlocks({ ...version, sourceBlocks: version.sourceBlocks ?? managedBlockContracts, target: { ...scope, version: "import" } });
+        if (!Array.isArray(version.replacements) || version.replacements.some((entry) => !["carousel", "cms-detail", "cms-list", "frame", "managed-embed"].includes(entry?.kind)
+          || entry.kind === "managed-embed" && !MANAGED_EMBED_REF.test(entry.refId ?? ""))) fail(at, "invalid replacement");
+        const result = migrateKamakuraBlocks({ ...version, sourceBlocks: version.sourceBlocks ?? managedBlockContracts,
+          ...(schema ? { cmsSchema: schema } : {}), target: { ...scope, version: "import" } });
         if (result.status !== "ready") fail(at, result.blocked.map(({ nodeId, reason }) => `${nodeId}: ${reason}`).join(", "));
         ready = result.snapshot.document;
+        cmsBindings = result.cmsBindings;
       } else {
         ready = parsePageDocument({ ...source.resolved, ...scope }, managedBlockContracts);
       }
       const mapped = mapPage(ready, bySource, byUrl, publicAssetUrls, paths, input.origin);
       if (Buffer.byteLength(JSON.stringify(mapped)) > 2 * 1024 * 1024) fail(at, "page document exceeds size limit");
-      return mapped;
+      return { document: mapped, ...(cmsBindings ? { cmsBindings } : {}) };
     }
     const published = publicSource === null ? null : convert(publicSource, firstRevision, "published");
     const draft = convert(draftSource, firstRevision + Number(published !== null), "draft");
     const pageConnections = connections.get(page.sourceUrl) ?? [];
-    const refs = new Set([draft, ...(published ? [published] : [])].flatMap((document) => walkNodes(document).flatMap(({ node }) =>
+    const refs = new Set([draft.document, ...(published ? [published.document] : [])].flatMap((document) => walkNodes(document).flatMap(({ node }) =>
       node.type === "component" && node.block === "ManagedEmbed" ? [node.props.refId] : [])));
     if (pageConnections.length !== refs.size || pageConnections.some(({ refId }) => !refs.has(refId))) {
       fail(`source.pages[${index}]`, "expected a target-scoped connection for each managed embed");
     }
-    pages.push({ sourceUrl: page.sourceUrl, path: page.path, locale: page.locale, title: line(page.title ?? draft.title, "page.title", 120),
-      visibility: page.visibility, published, draft, ...(pageConnections.length ? { connections: pageConnections } : {}) });
+    pages.push({ sourceUrl: page.sourceUrl, path: page.path, locale: page.locale, title: line(page.title ?? draft.document.title, "page.title", 120),
+      visibility: page.visibility, published: published?.document ?? null, draft: draft.document,
+      ...(published?.cmsBindings ? { publishedCmsBindings: published.cmsBindings } : {}),
+      ...(draft.cmsBindings ? { draftCmsBindings: draft.cmsBindings } : {}),
+      ...(pageConnections.length ? { connections: pageConnections } : {}) });
     pageMap.push({ sourceUrl: page.sourceUrl, pageId, locale: page.locale, path: page.path });
   }
   const plan = parseSiteImportPlan({ sourceOrigin: input.origin, sourceSiteId: sourceId, locale, assets, assetVariants,
