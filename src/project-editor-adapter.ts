@@ -7,7 +7,7 @@ import { parseRevisionEntry, parseRevisionPage } from "./history.js";
 import { parseSiteSettings } from "./pages.js";
 import { parseProject, type Project } from "./projects.js";
 import { parseBreakpointSettings } from "./style-model.js";
-import { identifier, keys, line, record } from "./validation-utils.js";
+import { identifier, isSafeHttpsOrigin, keys, line, record } from "./validation-utils.js";
 
 function targetForProject(target: EditorTarget, site: EditorSite): EditorTarget {
   const normalized: EditorTarget = { siteId: target.siteId, pageId: target.pageId, locale: target.locale };
@@ -16,8 +16,10 @@ function targetForProject(target: EditorTarget, site: EditorSite): EditorTarget 
 }
 
 function sameSite(left: EditorSite, right: EditorSite): boolean {
-  return left.id === right.id && left.domains.length === right.domains.length &&
-    new Set(left.domains).size === left.domains.length && left.domains.every((domain) => right.domains.includes(domain));
+  return left.id === right.id && Array.isArray(left.domains) && Array.isArray(right.domains)
+    && left.domains.length >= right.domains.length && left.domains.length <= right.domains.length + 1
+    && left.domains.every(isSafeHttpsOrigin) && new Set(left.domains).size === left.domains.length
+    && right.domains.every((domain) => left.domains.includes(domain));
 }
 
 function siteFrameSources(input: unknown, domains: readonly string[]): string[] {
@@ -291,16 +293,23 @@ function localizationForProject(localization: EditorLocalizationAdapter, site: E
  */
 export function createProjectEditorAdapter(adapter: EditorAdapter, projectInput: Project): EditorAdapter {
   const project = parseProject(projectInput);
-  const site: EditorSite = { id: project.site.id, name: project.site.name, domains: [...project.site.domains] };
+  const projectSite: EditorSite = { id: project.site.id, name: project.site.name, domains: [...project.site.domains] };
+  let site: EditorSite = { ...projectSite, domains: [...projectSite.domains] };
+  const refreshSite = async (signal: AbortSignal): Promise<EditorSite> => {
+    const sites = await adapter.listSites(signal);
+    const matched = sites.find((candidate) => candidate.id === projectSite.id);
+    if (!matched || !sameSite(matched, projectSite)) throw new Error("プロジェクトのサイト情報を確認できません。");
+    site = { ...projectSite, domains: [...projectSite.domains, ...matched.domains.filter((domain) => !projectSite.domains.includes(domain))] };
+    return matched;
+  };
   return {
     async listSites(signal) {
-      const sites = await adapter.listSites(signal);
-      const matched = sites.find((candidate) => candidate.id === site.id);
-      if (!matched || !sameSite(matched, site)) throw new Error("プロジェクトのサイト情報を確認できません。");
+      const matched = await refreshSite(signal);
       return [{ id: site.id, name: site.name, domains: [...site.domains], ...(matched.structuredData === undefined ? {} : { structuredData: structuredDataPresets(matched.structuredData) }), ...(matched.externalFrameSources === undefined ? {} : { externalFrameSources: siteFrameSources(matched.externalFrameSources, site.domains) }) }];
     },
     async listPages(siteId, signal) {
       if (siteId !== site.id) throw new Error("プロジェクト外のサイトは参照できません。");
+      await refreshSite(signal);
       const pages = await adapter.listPages(site.id, signal);
       if (pages.some((page) => page.siteId !== site.id)) throw new Error("ページ一覧に別サイトの項目が含まれています。");
       return pages.map(pageEntry);

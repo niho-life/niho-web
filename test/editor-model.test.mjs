@@ -549,12 +549,14 @@ test("restore replaces content as an ordinary validated edit while keeping ident
 test("release plans may carry a public URL under the domain and a bounded affected list", () => {
   const request = { target: { siteId: "demo", pageId: "home", locale: "ja-JP" }, expectedVersion: "v2", action: "publish" };
   const plan = { ...request, domain: "https://example.com", confirmationToken: "token", changes: [], url: "https://example.com/about",
-    affected: [{ kind: "shared", name: "ヘッダー", detail: "全ページのナビゲーション" }, { kind: "page", name: "ホーム" }, { kind: "site", name: "サイト共通の設定" }] };
+    affected: [{ kind: "shared", name: "ヘッダー", detail: "全ページのナビゲーション" }, { kind: "page", name: "ホーム" }, { kind: "site", name: "サイト共通の設定" }],
+    warnings: ["duplicate-title", "duplicate-description", "broken-internal-link"].map((code) => ({ code, message: "公開時に確認してください。" })) };
   const site = { id: "demo", name: "Demo", domains: ["https://example.com"] };
   assert.doesNotThrow(() => validateReleasePlan(plan, request, site));
   for (const invalid of [{ ...plan, url: "https://example.com.evil.test/about" }, { ...plan, url: "https://example.com" }, { ...plan, url: "https://evil.test/about" }, { ...plan, url: 1 },
     { ...plan, url: `https://example.com/${"a".repeat(2048)}` }, { ...plan, url: "https://example.com/a\nb" }, { ...plan, affected: "ヘッダー" },
     { ...plan, affected: [{ kind: "layout", name: "x" }] }, { ...plan, affected: [{ kind: "page", name: "" }] }, { ...plan, affected: [{ kind: "page", name: "a".repeat(121) }] },
-    { ...plan, affected: [{ kind: "page", name: "x", detail: "a".repeat(301) }] }, { ...plan, affected: [null] }, { ...plan, affected: Array.from({ length: 101 }, () => ({ kind: "page", name: "x" })) }])
+    { ...plan, affected: [{ kind: "page", name: "x", detail: "a".repeat(301) }] }, { ...plan, affected: [null] }, { ...plan, affected: Array.from({ length: 101 }, () => ({ kind: "page", name: "x" })) },
+    { ...plan, warnings: [{ code: "unknown-warning", message: "無効" }] }])
     assert.throws(() => validateReleasePlan(invalid, request, site), /一致しません/);
 });

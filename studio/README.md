@@ -14,7 +14,9 @@ Studio Worker の配備、D1 migration、secret、切り戻しの手順です。
 | `STUDIO_DATABASE_ID` | 既存の Studio D1 database ID |
 | `STUDIO_ORIGIN` | Access で保護された Studio の HTTPS origin |
 | `PUBLIC_SITES_ORIGIN` | Studio と異なる公開配信用の HTTPS origin |
-| `PUBLIC_SITES_PREVIEW_ORIGIN` | 任意。公開 Worker を割り当てる検証用 HTTPS origin。D1 の host 登録に noindex を付ける。配備先で公開 Worker の route も割り当てる |
+| `PUBLIC_SITES_PREVIEW_ORIGIN` | 公開 Worker を割り当てる検証用 HTTPS origin。公開 origin と異なる host を使う |
+| `PUBLIC_SITES_WORKER_NAME` | 検証 host 専用 Worker の名前。公開配信用 Worker と異なる名前を使う |
+| `PUBLIC_SITES_SMOKE_PATH` | 検証 host 上で HTTP 200 の HTML と noindex を確認する、公開済みページのパス |
 | `STUDIO_ACCESS_ISSUER` / `STUDIO_ACCESS_AUDIENCE` | Studio の Access JWT の `iss` と application の AUD。Worker では `ACCESS_ISSUER` / `ACCESS_AUDIENCE` |
 | `STUDIO_SMOKE_PROJECT_ID` / `STUDIO_SMOKE_SITE_ID` | smoke で開く既存プロジェクトとサイトの ID |
 | `STUDIO_SMOKE_PUBLIC_PATH` | 公開中は代表ページの正規パス。未公開サイトでは `/s/<site-slug>/` を指定し、安全な404を確認。どちらも D1 に登録された対象サイトの slug と照合 |
@@ -31,6 +33,8 @@ HTTPS origin は末尾に `/` を付けずに指定します。公開ページ�
 ```
 
 管理済みの JWT を実行環境に渡せる場合は、直接 `npm run studio:release` を実行します。Access service token は Dashboard のメンバー認証に使えません。`studio:deploy` も同じ配備手順を実行します。
+
+公開配信 Worker は `npm run studio:public:release` で別に配備します。この手順は `studio/public-sites.wrangler.json` から一時設定を作り、route を `PUBLIC_SITES_PREVIEW_ORIGIN` の host だけに限定します。D1 migration は適用せず、`0017`〜`0020` がすべて適用済みの場合だけ続行します。配備後は指定したページが HTML と `noindex, nofollow` を返すことを確認します。公開 origin には route を追加しません。
 
 ## 配備と smoke
 

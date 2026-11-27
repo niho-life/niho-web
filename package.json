@@ -105,6 +105,7 @@
     "studio:typecheck": "tsc -p studio/tsconfig.json --noEmit",
     "studio:dev": "npm run studio:build && wrangler dev --local --config studio/wrangler.json",
     "studio:public:dev": "wrangler dev --local --config studio/public-sites.wrangler.json",
+    "studio:public:release": "node studio/public-sites-release.mjs",
     "studio:deploy": "npm run studio:release",
     "studio:release": "node studio/release.mjs",
     "test:built": "node --test test/*.test.mjs",

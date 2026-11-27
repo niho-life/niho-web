@@ -994,9 +994,21 @@ async function applyRelease(request: Request, db: ManagedD1, actor: ManagedActor
     const runtime = await renderPlan.head(policy.seo.ga4MeasurementId);
     const html = `<!doctype html><html lang="${escapeAttribute(rendered.locale)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${head}${runtime.scripts}</head><body>${body}</body></html>`;
     try {
+      const activeRoutes = await db.prepare(`SELECT page_id, locale FROM managed_pages
+        WHERE site_id = ?1 AND visibility = 'public' AND published_revision IS NOT NULL`)
+        .bind(row.site_id).all<{ readonly page_id: string; readonly locale: string }>();
+      if (!activeRoutes.success) return json({ error: "publication_storage_unavailable" }, 503);
+      const activeRouteKeys = [...(activeRoutes.results ?? []).map(({ page_id, locale }) => ({ pageId: page_id, locale }))];
+      if (row.visibility === "public" && !activeRouteKeys.some(({ pageId, locale }) => pageId === row.page_id && locale === row.locale)) {
+        activeRouteKeys.push({ pageId: row.page_id, locale: row.locale });
+      }
       prepared = await preparePublishedSite({ bucket: store.bucket, siteId: row.site_id, publicationId, pageId: row.page_id,
         locale: row.locale, path: row.path, sourceRevision: Number(payload.sourceRevision), html,
         contentSecurityPolicy: runtime.csp, embeds: embeds.map(({ refId, src }) => ({ refId, src: src.href })),
+        title: rendered.title, description: metadata.description ?? "", text: pageText(rendered.body), noindex: metadata.robots === "noindex, nofollow",
+        isPublic: row.visibility === "public", activeRouteKeys,
+        siteName: policy.seo.siteName ?? policyRow.site_name, siteDescription: policy.seo.description ?? "",
+        robotsPolicy: policy.seo.robotsPolicy, publicBaseUrl: `${publicOrigin}${publicPrefix}`,
         expectedVersion: state.version, currentManifestKey: state.manifest_key });
     } catch { return json({ error: "publication_artifact_generation_failed" }, 503); }
   }

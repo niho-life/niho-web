@@ -878,6 +878,9 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   assert.equal(publication.artifact_key, `managed-sites/${created.siteId}/artifacts/${publication.artifact_digest}.html`);
   assert.equal(publication.content_type, "text/html; charset=utf-8");
   assert.ok(h.objects.has(publication.artifact_key));
+  const manifest = JSON.parse(h.objects.get(state.manifest_key));
+  assert.deepEqual(manifest.discoveryFiles.map(({ path }) => path).sort(), ["/llms-full.txt", "/llms.txt", "/robots.txt", "/sitemap.xml"]);
+  for (const file of manifest.discoveryFiles) assert.ok(h.objects.has(file.artifactKey));
   assert.match(h.objects.get(publication.artifact_key), /href="\/s\/static-fixture\/about"/u);
 
   const previewUrl = "https://preview.sites.example/s/static-fixture/";
@@ -887,6 +890,31 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   assert.equal(preview.headers.get("ETag"), `"${publication.artifact_digest}"`);
   assert.equal(preview.headers.get("Content-Security-Policy"), publication.content_security_policy);
   assert.match(await preview.text(), /<title>Static fixture<\/title>/u);
+  const previewRobots = await publishedSiteRequest(new Request("https://preview.sites.example/s/static-fixture/robots.txt"), h.env);
+  assert.equal(previewRobots.headers.get("X-Robots-Tag"), "noindex, nofollow");
+  assert.match(await previewRobots.text(), /Disallow: \/\n/u);
+  const previewSitemap = await publishedSiteRequest(new Request("https://preview.sites.example/s/static-fixture/sitemap.xml"), h.env);
+  const previewSitemapBody = await previewSitemap.text();
+  assert.match(previewSitemapBody, /<urlset/u);
+  assert.doesNotMatch(previewSitemapBody, /preview\.sites\.example/u);
+  const publicSitemap = await publishedSiteRequest(new Request("https://sites.example/s/static-fixture/sitemap.xml"), h.env);
+  assert.equal(publicSitemap.status, 200);
+  assert.match(await publicSitemap.text(), /https:\/\/sites\.example\/s\/static-fixture\//u);
+  assert.match(await (await publishedSiteRequest(new Request("https://sites.example/s/static-fixture/llms.txt"), h.env)).text(), /# Static fixture/u);
+  assert.match(await (await publishedSiteRequest(new Request("https://sites.example/s/static-fixture/llms-full.txt"), h.env)).text(), /About/u);
+  const initialManifest = JSON.parse(h.objects.get(state.manifest_key));
+  assert.ok(edge.has(`https://preview.sites.example/_niho-cache/publication/${created.siteId}/${initialManifest.publicationId}/${publication.artifact_digest}`));
+  const hostReads = reads("SELECT site_id, path_prefix, noindex");
+  const pointerReads = reads("SELECT manifest_key FROM managed_site_publication_state");
+  const previewArtifactReads = artifactReads();
+  const previewHit = await publishedSiteRequest(new Request(previewUrl + "?utm_source=test"), h.env);
+  assert.equal(previewHit.status, 200);
+  assert.equal(previewHit.headers.get("X-Robots-Tag"), "noindex, nofollow");
+  assert.equal(previewHit.headers.get("Content-Security-Policy"), publication.content_security_policy);
+  assert.match(await previewHit.text(), /<title>Static fixture<\/title>/u);
+  assert.equal(reads("SELECT site_id, path_prefix, noindex"), hostReads);
+  assert.equal(reads("SELECT manifest_key FROM managed_site_publication_state"), pointerReads);
+  assert.equal(artifactReads(), previewArtifactReads);
 
   // `/` prefix uses the same root route as an empty prefix and never redirects to `//`.
   h.sqlite.prepare("UPDATE managed_site_hosts SET path_prefix = '/' WHERE hostname = ? AND site_id = ? AND noindex = 1")
@@ -932,13 +960,41 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   const latestState = h.sqlite.prepare("SELECT manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(created.siteId);
   const latest = JSON.parse(h.objects.get(latestState.manifest_key));
   assert.equal(latest.routes.length, 2);
+  const staleDiscovery = await publishedSiteRequest(new Request("https://sites.example/s/static-fixture/sitemap.xml"), h.env);
+  assert.equal(staleDiscovery.status, 503);
+
+  const addContact = { action: "create", siteId: created.siteId, locale: "ja", title: "Contact", path: "/contact" };
+  const addContactPlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/page-changes/prepare`, { change: addContact }), 200);
+  const contactPage = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/page-changes/apply`, {
+    change: addContact, confirmationToken: addContactPlan.confirmationToken
+  }), 200);
+  const contactDraft = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/${contactPage.page.pageId}`), 200);
+  const contactReleasePlan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/${contactPage.page.pageId}/release-plan`, {
+    target: { siteId: created.siteId, pageId: contactPage.page.pageId, locale: "ja" }, expectedVersion: contactDraft.version, action: "publish"
+  }), 200);
+  await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/${contactPage.page.pageId}/release`, {
+    expectedVersion: contactDraft.version, confirmationToken: contactReleasePlan.confirmationToken
+  }), 200);
+  const refreshedState = h.sqlite.prepare("SELECT manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(created.siteId);
+  const refreshedManifest = JSON.parse(h.objects.get(refreshedState.manifest_key));
+  assert.deepEqual(refreshedManifest.routes.map(({ path }) => path).sort(), ["/", "/contact"]);
+  const refreshedSitemap = await publishedSiteRequest(new Request("https://sites.example/s/static-fixture/sitemap.xml"), h.env);
+  assert.equal(refreshedSitemap.status, 200);
+  const refreshedSitemapBody = await refreshedSitemap.text();
+  assert.match(refreshedSitemapBody, /\/contact/u);
+  assert.doesNotMatch(refreshedSitemapBody, /\/about/u);
 
   const unknown = await publishedSiteRequest(new Request("https://preview.sites.example/s/static-fixture/missing"), h.env);
   assert.equal(unknown.status, 404);
   assert.equal(unknown.headers.get("X-Robots-Tag"), "noindex, nofollow");
   const rootRedirect = await publishedSiteRequest(new Request("https://preview.sites.example/s/static-fixture"), h.env);
-  assert.equal(rootRedirect.status, 307);
+  assert.equal(rootRedirect.status, 301);
   assert.equal(rootRedirect.headers.get("Location"), "https://preview.sites.example/s/static-fixture/");
+
+  h.sqlite.prepare("INSERT INTO managed_site_redirects (site_id, locale, from_path, to_path) VALUES (?, 'ja', '/old-home', '/')").run(created.siteId);
+  const storedRedirect = await publishedSiteRequest(new Request("https://sites.example/s/static-fixture/old-home?ref=legacy"), h.env);
+  assert.equal(storedRedirect.status, 301);
+  assert.equal(storedRedirect.headers.get("Location"), "https://sites.example/s/static-fixture/?ref=legacy");
   assert.equal(rootRedirect.headers.get("X-Robots-Tag"), "noindex, nofollow");
   h.faults.artifact = true;
   const unavailablePage = await publishedSiteRequest(new Request(previewUrl), h.env);

@@ -29,6 +29,21 @@ test("project editor lists only its one approved site and rejects inconsistent s
   await assert.rejects(() => changedDomain.listSites(signal()), /サイト情報/);
 });
 
+test("project editor accepts one server-managed public domain and uses it for release validation", async () => {
+  const publicDomain = "https://managed.example.test";
+  const domains = [...project.site.domains, publicDomain];
+  const request = { target: { siteId: project.site.id, pageId: "home", locale: "ja-JP" }, expectedVersion: "v1", action: "publish" };
+  const { wrapped } = setup({
+    listSites: async () => [{ ...project.site, domains }],
+    prepareRelease: async (input) => ({ ...input, confirmationToken: "token", domain: publicDomain, changes: [] })
+  });
+  assert.deepEqual(await wrapped.listSites(signal()), [{ ...project.site, domains }]);
+  assert.equal((await wrapped.prepareRelease(request, signal())).domain, publicDomain);
+
+  const tooManyDomains = setup({ listSites: async () => [{ ...project.site, domains: [...domains, "https://another.example.test"] }] }).wrapped;
+  await assert.rejects(() => tooManyDomains.listSites(signal()), /サイト情報/);
+});
+
 test("project editor accepts display-name differences and approved domain order differences", async () => {
   const { wrapped } = setup({ listSites: async () => [{ ...project.site, name: "ホスト側の表示名", domains: [...project.site.domains].reverse() }] });
   assert.deepEqual(await wrapped.listSites(signal()), [project.site]);

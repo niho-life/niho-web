@@ -823,7 +823,8 @@ export function validateReleasePlan(plan: EditorReleasePlan, request: EditorRele
   }));
   const warningsValid = plan.warnings === undefined || (Array.isArray(plan.warnings) && plan.warnings.length <= 100 && plan.warnings.every((item: unknown) => {
     const { code, message } = (item && typeof item === "object" ? item : {}) as Record<string, unknown>;
-    return ["missing-description", "missing-alt", "japanese-in-english"].includes(String(code)) && planText(message, 300) && message.length > 0;
+    return ["missing-description", "missing-alt", "japanese-in-english", "duplicate-title", "duplicate-description", "broken-internal-link"]
+      .includes(String(code)) && planText(message, 300) && message.length > 0;
   }));
   if (!isSafeHttpsOrigin(plan.domain) || !site.domains.includes(plan.domain) || !sameTarget(plan.target, request.target) || plan.expectedVersion !== request.expectedVersion || plan.action !== request.action || plan.revision !== request.revision ||
     plan.componentsVersion !== request.componentsVersion || plan.presentationVersion !== request.presentationVersion ||
