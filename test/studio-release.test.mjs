@@ -54,6 +54,13 @@ test("release parses Wrangler list and blocks pending migrations outside the add
   assert.throws(() => pendingMigrations("unknown Wrangler output"), /読み取れません/u);
 });
 
+test("primary-host migration avoids dynamic SQLite GLOB patterns", () => {
+  const migration = readFileSync(new URL("../studio/migrations/0023_managed_site_primary_host.sql", import.meta.url), "utf8");
+  assert.match(migration, /substr\(manifest_key,\s*1,\s*length\('managed-sites\/' \|\| site_id \|\| '\/manifests\/'\)\)/u);
+  assert.match(migration, /substr\(manifest_key,\s*-5\)\s*=\s*'\.json'/u);
+  assert.doesNotMatch(migration, /manifest_key\s+GLOB/iu);
+});
+
 test("release parses one registered managed-site slug from Wrangler D1 JSON", () => {
   assert.equal(registeredManagedSiteSlug(JSON.stringify([{ success: true, results: [{ slug: "example-site" }] }])), "example-site");
   assert.throws(() => registeredManagedSiteSlug(JSON.stringify([{ success: true, results: [] }])), /一意に確認/u);
