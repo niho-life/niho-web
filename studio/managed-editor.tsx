@@ -5,8 +5,9 @@ import { cmsId, parseCmsSchema } from "../src/cms-v2-schema.js";
 import { parseCmsPageBindings } from "../src/cms-page-bindings.js";
 import { createProjectEditorAdapter } from "../src/project-editor-adapter.js";
 import { createBrowserRecoveryStore, parseRevisionPage } from "../src/history.js";
+import { EDITOR_RELEASE_WARNING_CODES } from "../src/editor-types.js";
 import type {
-  EditorAdapter, EditorPage, EditorPageChange, EditorPageChangePlan, EditorReleasePlan,
+  EditorAdapter, EditorPage, EditorPageChange, EditorPageChangePlan, EditorReleasePlan, EditorReleaseWarning,
   EditorSaveResult, EditorSite, EditorSnapshot, EditorTarget
 } from "../src/editor-types.js";
 import { parseProjectSite, type Project } from "../src/projects.js";
@@ -138,7 +139,24 @@ export function createManagedEditorAdapter(initial: Catalog, project: Project): 
         const value = record(await api(`${base}/${encodeURIComponent(request.target.pageId)}/publish`, "POST",
           { action: request.action, ...(request.action === "restore" ? { revision: request.revision } : {}) }, signal));
         if (value.status !== "released") throw new Error("公開結果が正しくありません。");
-        return { status: "released" as const, snapshot: snapshot(value.snapshot, request.target) };
+        let url: string | undefined;
+        if (value.url !== undefined) {
+          try {
+            const publishedUrl = new URL(String(value.url));
+            if (publishedUrl.protocol !== "https:" || publishedUrl.username || publishedUrl.password || String(value.url).length > 2048) throw new Error();
+            url = publishedUrl.href;
+          } catch { throw new Error("公開 URL が正しくありません。"); }
+        }
+        let warnings: EditorReleaseWarning[] | undefined;
+        if (value.warnings !== undefined) {
+          if (!Array.isArray(value.warnings) || value.warnings.length > 100 || value.warnings.some((warning) => {
+            const item = record(warning);
+            return typeof item.code !== "string" || !EDITOR_RELEASE_WARNING_CODES.includes(item.code as EditorReleaseWarning["code"])
+              || typeof item.message !== "string" || item.message.length > 1000;
+          })) throw new Error("公開警告が正しくありません。");
+          warnings = value.warnings as EditorReleaseWarning[];
+        }
+        return { status: "released" as const, snapshot: snapshot(value.snapshot, request.target), ...(url ? { url } : {}), ...(warnings ? { warnings } : {}) };
       });
     },
     pagePathEditable: true,

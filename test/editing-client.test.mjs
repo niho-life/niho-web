@@ -241,12 +241,14 @@ test("shared page editing client discovers, reads custom blocks and saves with C
   assert.deepEqual(await client.save(target, snapshot.version, changed), { status: "conflict" });
 });
 
-test("direct publish ignores unknown response and snapshot keys", async () => {
+test("direct publish preserves URL and SEO warnings while ignoring unknown keys", async () => {
   const client = createPageEditingApiClient({
     origin: "https://host.example",
     siteId: target.siteId,
     fetch: async () => Response.json({
       status: "released",
+      url: "https://host.example/about",
+      warnings: [{ code: "missing-description", message: "説明がありません。" }],
       futureResponseField: "ignored",
       snapshot: { document: blockDocument, version: "v2", futureSnapshotField: "ignored" }
     })
@@ -256,6 +258,8 @@ test("direct publish ignores unknown response and snapshot keys", async () => {
 
   assert.equal(result.status, "released");
   assert.equal(result.snapshot.version, "v2");
+  assert.equal(result.url, "https://host.example/about");
+  assert.deepEqual(result.warnings, [{ code: "missing-description", message: "説明がありません。" }]);
   assert.deepEqual(Object.keys(result.snapshot).sort(), ["document", "version"]);
 });
 

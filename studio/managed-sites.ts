@@ -851,11 +851,17 @@ export function managedPageEditingApi(request: Request, store: CmsStore, project
       const document = rawSnapshot ? parsePageDocument(rawSnapshot.document) : null;
       if (body.status !== "released" || !rawSnapshot || !document || typeof rawSnapshot.version !== "string"
         || document.siteId !== target.siteId || document.pageId !== target.pageId || document.locale !== target.locale) throw new Error("managed direct publish response invalid");
+      const publishUrl = typeof body.url === "string" ? body.url : undefined;
+      const publishWarnings = Array.isArray(body.warnings) && body.warnings.every((warning) => {
+        const item = record(warning);
+        return !!item && typeof item.code === "string" && typeof item.message === "string";
+      }) ? body.warnings as ManagedSeoWarning[] : undefined;
+      if (body.url !== undefined && !publishUrl || body.warnings !== undefined && !publishWarnings) throw new Error("managed direct publish metadata invalid");
       const refreshed = await load(target);
       if (!refreshed) throw new Error("managed direct publish snapshot unavailable");
       return { status: "released", snapshot: { document, version: rawSnapshot.version,
         editorState: { releases: await releases(db, refreshed) },
-        ...(rawSnapshot.cmsBindings === null ? { cmsBindings: null } : {}) } };
+        ...(rawSnapshot.cmsBindings === null ? { cmsBindings: null } : {}) }, ...(publishUrl ? { url: publishUrl } : {}), ...(publishWarnings ? { warnings: publishWarnings } : {}) };
     },
     pageOperations: { async transact(actorIdentity, target, transaction) {
       const { operationId, inputHash, dryRun } = transaction;
@@ -965,7 +971,7 @@ async function prepareRelease(request: Request, db: ManagedD1, actor: ManagedAct
   const url = managedPageUrl(origin, row.slug, row.path, row.public_domain);
   return json({
     ...checked, confirmationToken: token, domain: row.public_domain ? `https://${row.public_domain}` : origin, url,
-    ...(warnings.length ? { warnings } : {}),
+    warnings,
     changes: [{ path: row.path, before: row.published_revision === null ? "未公開" : `公開版 ${row.published_revision}`, after: `版 ${sourceRevision}` }],
     affected: [{ kind: "page", name: row.title, ...(cmsReleaseId ? { detail: "固定した CMS 公開版を使用します。" } : {}) }]
   });
@@ -1153,7 +1159,10 @@ async function publishPageOnce(request: Request, db: ManagedD1, actor: ManagedAc
   if (!plan || typeof plan.confirmationToken !== "string") return json({ error: "host_contract_violation" }, 502);
   const committed = await applyRelease(new Request(request.url, { method: "POST", headers,
     body: JSON.stringify({ expectedVersion: row.current_version, confirmationToken: plan.confirmationToken }) }), db, actor, row, origin, store);
-  return committed;
+  if (!committed.ok) return committed;
+  const result = record(await committed.json());
+  if (!result) return json({ error: "host_contract_violation" }, 502);
+  return json({ ...result, ...(typeof plan.url === "string" ? { url: plan.url } : {}), ...(Array.isArray(plan.warnings) ? { warnings: plan.warnings } : {}) });
 }
 
 function changeOperation(change: EditorPageChange): StoredPlan["operation"] {

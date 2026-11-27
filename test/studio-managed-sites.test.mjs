@@ -864,6 +864,8 @@ testWithD1("Studio Editing API publishes one time and exposes the same revision 
   const saved = await body(await h.send(MANAGEMENT_ORIGIN, "PUT", `${base}/operations/pages.save/home?locale=ja`, { expectedVersion: first.version, document: edited }), 200);
   const published = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${base}/operations/pages.publish/home?locale=ja`, { action: "publish" }), 200);
   assert.equal(published.status, "released");
+  assert.equal(published.url, "https://sites.example/s/direct-publish/");
+  assert.ok(Array.isArray(published.warnings));
   assert.equal(published.snapshot.document.title, "One-step publish");
   assert.equal(published.snapshot.editorState.releases[0].revision, saved.document.revision);
   const publishedState = h.sqlite.prepare("SELECT version, manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(siteId);
