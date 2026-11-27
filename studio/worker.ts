@@ -127,6 +127,7 @@ type InvitationRow = {
   readonly status: "pending" | "expired" | "accepted" | "revoked";
 };
 type InvitationPreviewRow = {
+  readonly email: string;
   readonly project_name: string;
   readonly site_name: string;
   readonly role: Role;
@@ -1015,16 +1016,16 @@ async function invitationPreview(env: Env, identity: AccessIdentity, projectId: 
   if (!validInvitationToken(body.token)) throw new InvalidInputError("invalid invitation token");
   const hash = await tokenHash(body.token);
   const row = await env.DB.prepare(`
-    SELECT p.name AS project_name, s.name AS site_name, i.role, i.expires_at
+    SELECT i.email, p.name AS project_name, s.name AS site_name, i.role, i.expires_at
       FROM project_invitations AS i
       JOIN projects AS p ON p.id = i.project_id
       JOIN sites AS s ON s.project_id = p.id
-     WHERE i.token_hash = ?1 AND i.email = ?2
-       AND i.project_id = ?3 AND s.id = ?4
+     WHERE i.token_hash = ?1 AND i.project_id = ?2 AND s.id = ?3
        AND i.used_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > unixepoch()
      LIMIT 1
-  `).bind(hash, identity.email, projectId, siteId).first<InvitationPreviewRow>();
+  `).bind(hash, projectId, siteId).first<InvitationPreviewRow>();
   if (!row) return json({ error: "invitation_unavailable" }, 404);
+  if (row.email !== identity.email) return json({ error: "invitation_email_mismatch" }, 403);
   if (!validName(row.project_name) || !validName(row.site_name) || !validRole(row.role)) throw new Error("invalid stored invitation");
   return json({
     status: "ready",
@@ -1064,7 +1065,17 @@ async function acceptInvitation(env: Env, identity: AccessIdentity, projectId: s
        WHERE i.token_hash = ?2 AND i.accepted_subject = ?1 AND changes() = 1
     `).bind(identity.subject, hash)
   ]);
-  if (!changed(results[0]) || !changed(results[1])) return json({ error: "invitation_unavailable" }, 409);
+  if (!changed(results[0]) || !changed(results[1])) {
+    const row = await env.DB.prepare(`
+      SELECT i.email FROM project_invitations AS i
+      JOIN sites AS s ON s.project_id = i.project_id
+       WHERE i.token_hash = ?1 AND i.project_id = ?2 AND s.id = ?3
+         AND i.used_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > unixepoch()
+       LIMIT 1
+    `).bind(hash, projectId, siteId).first<{ readonly email: string }>();
+    if (row && row.email !== identity.email) return json({ error: "invitation_email_mismatch" }, 403);
+    return json({ error: "invitation_unavailable" }, 409);
+  }
   return json({ status: "accepted" });
 }
 

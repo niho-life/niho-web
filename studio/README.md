@@ -351,8 +351,8 @@ Project 固有 API はすべて次の prefix 配下です。
 - `POST invitations/revoke`: owner の pending 招待取消
 - `POST members/role`: owner の昇格・降格
 - `POST members/remove`: owner の member 削除
-- `POST invitations/preview`: 招待 token hash、scope、verified email が一致する本人だけ
-- `POST invitations/accept`: 本人の明示承諾。membership と token consume を atomic に実行
+- `POST invitations/preview`: 招待 token hash、scope、verified email が一致する本人だけ。利用可能な招待 token で別メールの Access identity が来た場合は `403 invitation_email_mismatch` を返し、宛先は返さない
+- `POST invitations/accept`: 本人の明示承諾。membership と token consume を atomic に実行。別メールの Access identity には同じ `invitation_email_mismatch` を返す
 - Experience: `GET editor/sites`、`GET editor/sites/experience/pages`、`GET editor/sites/experience/pages/:pageId/en`（通常編集は owner/editor）
 - Experience: `PUT .../draft`、`POST .../release-plan`、`POST .../release`
 - Experience STG: 同じ route を `/editor-staging` 配下で提供し、owner のみ許可
