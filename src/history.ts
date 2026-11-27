@@ -237,7 +237,7 @@ export class RecoveryTooLargeError extends Error {
   constructor() { super("recovery entry is too large"); this.name = "RecoveryTooLargeError"; }
 }
 const prefixOf = (scope: string) => `niho-web:recovery:v1:${encodeURIComponent(scope)}:`;
-const recoveryScopeState = new Map<string, { writesDisabled: boolean }>();
+const recoveryScopeState = new Map<string, { generation: number }>();
 const targetKey = (target: EditorTarget) => `${encodeURIComponent(target.siteId)}/${encodeURIComponent(target.pageId)}/${encodeURIComponent(target.locale)}`;
 function storedEntry(raw: string | null): (StoredRecoveryEntry & { time: number }) | null {
   if (raw === null) return null;
@@ -277,7 +277,8 @@ export function createBrowserRecoveryStore(options: { scope: string; storage?: R
   if (![maxAgeMs, maxBytes].every((value) => typeof value === "number" && Number.isFinite(value) && value > 0)) throw new Error("invalid recovery limits");
   const prefix = prefixOf(scope);
   let scopeState = recoveryScopeState.get(scope);
-  if (!scopeState) { scopeState = { writesDisabled: false }; recoveryScopeState.set(scope, scopeState); }
+  if (!scopeState) { scopeState = { generation: 0 }; recoveryScopeState.set(scope, scopeState); }
+  let writeGeneration = scopeState.generation;
   const storage = (): RecoveryStorage | null => {
     if (options.storage) return options.storage;
     try { return (globalThis as { localStorage?: RecoveryStorage }).localStorage ?? null; } catch { return null; }
@@ -308,7 +309,7 @@ export function createBrowserRecoveryStore(options: { scope: string; storage?: R
       } catch { return null; }
     },
     write(entry) {
-      if (scopeState.writesDisabled) return;
+      if (scopeState.generation !== writeGeneration) return;
       const place = storage();
       if (!place) throw new Error("recovery storage unavailable");
       const target = { siteId: entry.target.siteId, pageId: entry.target.pageId, locale: entry.target.locale };
@@ -334,7 +335,7 @@ export function createBrowserRecoveryStore(options: { scope: string; storage?: R
       } catch { return null; }
     },
     writeLibrary(entry) {
-      if (scopeState.writesDisabled) return;
+      if (scopeState.generation !== writeGeneration) return;
       const place = storage();
       if (!place) throw new Error("recovery storage unavailable");
       // changed は自身のキーだけの新しい object にし、指定した退避情報だけを書く。
@@ -349,7 +350,8 @@ export function createBrowserRecoveryStore(options: { scope: string; storage?: R
     },
     clear() {
       // 同じ actor scope を使う別インスタンスの遅延・pagehide 書込みも、このタブ内では止める。
-      scopeState.writesDisabled = true;
+      scopeState.generation++;
+      writeGeneration = scopeState.generation;
       try { const place = storage(); if (place) for (const key of scopedKeys(place)) place.removeItem(key); } catch { /* 退避先が使えない */ }
       if (recoveryScopeState.get(scope) === scopeState) recoveryScopeState.delete(scope);
     }
