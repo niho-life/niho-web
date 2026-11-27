@@ -323,9 +323,16 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
     const wire = await editingApi.read(checked, signal);
     if (!wire.editorState) throw new EditorApiError(503, "editor_state_unavailable");
     if (required && wire.presentation === undefined) throw new Error("このサイトに必要な表示コンテキストがありません。");
+    const pendingSiteSettings = siteSettingsReads.get(KAMAKURA_EDITOR_SITE_ID);
+    if (pendingSiteSettings) {
+      await pendingSiteSettings.catch(() => undefined);
+      signal.throwIfAborted();
+    }
     return { ...wire.editorState, document: wire.document, version: wire.version,
       ...(wire.stylesVersion === undefined ? {} : { stylesVersion: wire.stylesVersion }),
       ...(wire.draftStylesVersion === undefined ? {} : { draftStylesVersion: wire.draftStylesVersion }),
+      ...(publishedStylesVersion === undefined ? {} : { publishedSiteStylesVersion: publishedStylesVersion }),
+      ...(sitePublicationEpoch === undefined ? {} : { sitePublicationEpoch }),
       ...(wire.presentation === undefined ? {} : { presentation: wire.presentation }) };
   }
   async function readEnglishDocument(target: EditorTarget, signal: AbortSignal): Promise<EditorSnapshot> {

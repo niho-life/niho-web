@@ -11,7 +11,7 @@ import type { SitePresentation } from "./types.js";
 import { parseEnglishPublication } from "./english-publication.js";
 import { parseCmsPageBindings, type CmsPageBindingsDocument } from "./cms-page-bindings.js";
 
-export type EditorSession = { target: EditorTarget; history: EditorHistory; version: string; saved: string; hasSavedDraft?: boolean | undefined; locks: readonly EditorLock[]; releases: NonNullable<EditorSnapshot["releases"]>; readOnly?: EditorReadOnly; siteStyles?: SiteStyles; presentation?: SitePresentation; operationQueue: EditorOperationQueue; dependencyVersions: PageOperationVersions; englishPublication?: EditorSnapshot["englishPublication"]; cmsBindings?: CmsPageBindingsDocument | null; savedCmsBindings?: string; selfContained: boolean };
+export type EditorSession = { target: EditorTarget; history: EditorHistory; version: string; saved: string; hasSavedDraft?: boolean | undefined; locks: readonly EditorLock[]; releases: NonNullable<EditorSnapshot["releases"]>; readOnly?: EditorReadOnly; siteStyles?: SiteStyles; publishedSiteStylesVersion?: string; sitePublicationEpoch?: string; presentation?: SitePresentation; operationQueue: EditorOperationQueue; dependencyVersions: PageOperationVersions; englishPublication?: EditorSnapshot["englishPublication"]; cmsBindings?: CmsPageBindingsDocument | null; savedCmsBindings?: string; selfContained: boolean };
 export type EditorSessionLoad = { session: EditorSession; siteSettings?: { settings: ReturnType<typeof parseSiteSettings>; version: string }; warning?: string };
 
 export class EditorSessionLoadError extends Error {
@@ -28,11 +28,15 @@ export function editorSessionFrom(snapshot: EditorSnapshot, target: EditorTarget
     if (typeof value !== "string" || !value || value.length > 200) throw new Error("依存先の版が正しくありません。");
     return [[key, value]];
   }));
+  const publishedSiteStylesVersion = snapshot.publishedSiteStylesVersion;
+  if (publishedSiteStylesVersion !== undefined && (typeof publishedSiteStylesVersion !== "string" || !publishedSiteStylesVersion || publishedSiteStylesVersion.length > 512 || /[\u0000-\u001f\u007f]/u.test(publishedSiteStylesVersion))) throw new Error("サイト共通スタイルの公開版が正しくありません。");
+  const sitePublicationEpoch = snapshot.sitePublicationEpoch;
+  if (sitePublicationEpoch !== undefined && (typeof sitePublicationEpoch !== "string" || !sitePublicationEpoch || sitePublicationEpoch.length > 512 || /[\u0000-\u001f\u007f]/u.test(sitePublicationEpoch))) throw new Error("サイト公開epochが正しくありません。");
   const readOnly = parseEditorReadOnly(snapshot.readOnly);
   const presentation = snapshot.presentation === undefined ? undefined : parseSitePresentation(snapshot.presentation, document, blocks);
   const englishPublication = snapshot.englishPublication === undefined ? undefined : parseEnglishPublication(snapshot.englishPublication);
   const cmsBindings = snapshot.cmsBindings == null ? snapshot.cmsBindings : parseCmsPageBindings(snapshot.cmsBindings, target);
-  return { ...(siteStyles ? { siteStyles } : {}), ...(presentation ? { presentation } : {}), ...(englishPublication ? { englishPublication } : {}), target, history: { past: [], present: document, future: [] }, version: snapshot.version, dependencyVersions, operationQueue: operationQueue(document), saved: fingerprint(document), locks: snapshot.locks ?? [], releases: snapshot.releases ?? [], selfContained,
+  return { ...(siteStyles ? { siteStyles } : {}), ...(publishedSiteStylesVersion === undefined ? {} : { publishedSiteStylesVersion }), ...(sitePublicationEpoch === undefined ? {} : { sitePublicationEpoch }), ...(presentation ? { presentation } : {}), ...(englishPublication ? { englishPublication } : {}), target, history: { past: [], present: document, future: [] }, version: snapshot.version, dependencyVersions, operationQueue: operationQueue(document), saved: fingerprint(document), locks: snapshot.locks ?? [], releases: snapshot.releases ?? [], selfContained,
     ...(cmsBindings === undefined ? {} : { cmsBindings, savedCmsBindings: JSON.stringify(cmsBindings) }),
     ...(snapshot.hasSavedDraft === undefined ? {} : { hasSavedDraft: snapshot.hasSavedDraft }), ...(readOnly ? { readOnly } : {}) };
 }
@@ -52,7 +56,7 @@ function sessionCacheKey(target: EditorTarget, snapshot: EditorSnapshot, setting
       snapshot.componentsVersion ?? null, snapshot.presentationVersion ?? null, snapshot.stylesVersion ?? null,
       settingsVersion === undefined ? "unavailable" : settingsVersion === null ? "failed" : settingsVersion,
       snapshot.hasSavedDraft ?? null, snapshot.locks ?? null, snapshot.releases ?? null,
-      snapshot.readOnly ?? null, snapshot.englishPublication ?? null, presentationVersion ?? null, snapshot.cmsBindings !== undefined
+      snapshot.readOnly ?? null, snapshot.englishPublication ?? null, presentationVersion ?? null, snapshot.publishedSiteStylesVersion ?? null, snapshot.sitePublicationEpoch ?? null, snapshot.cmsBindings !== undefined
     ]);
   } catch { return undefined; }
 }

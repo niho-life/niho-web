@@ -146,6 +146,15 @@ test("editor page cache reuses only the saved session for the same document vers
   assert.equal(changedVersion.session.history.present.title, "サーバー側の新しい版");
 });
 
+test("editor page cache invalidates the parsed session when the published site-style fence changes", async () => {
+  const cache = new EditorSessionCache(2), controller = new AbortController();
+  const adapter = { readDocument: async () => ({ ...snapshot(), publishedSiteStylesVersion: "published-styles-v1", sitePublicationEpoch: "epoch-v1" }) };
+  const first = await readEditorSession(adapter, target, controller.signal, {}, undefined, { cache });
+  const changed = await readEditorSession({ readDocument: async () => ({ ...snapshot(), publishedSiteStylesVersion: "published-styles-v1", sitePublicationEpoch: "epoch-v2" }) }, target, controller.signal, {}, undefined, { cache });
+  assert.notStrictEqual(changed.session.history.present, first.session.history.present);
+  assert.equal(changed.session.sitePublicationEpoch, "epoch-v2");
+});
+
 test("editor page cache keeps a clean last-known session and keys it by component-library identity", async () => {
   const cache = new EditorSessionCache(2), controller = new AbortController();
   const components = { schemaVersion: 1, siteId: target.siteId, revision: 1, tokens: {}, components: [] };

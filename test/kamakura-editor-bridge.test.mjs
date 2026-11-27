@@ -332,6 +332,8 @@ test("Kamakura adapter preserves the draft-style dependency version from feature
   await adapter.readSiteSettings(target.siteId, signal);
   const snapshot = await adapter.readDocument(target, signal);
   assert.equal(snapshot.draftStylesVersion, "draft-styles-v1");
+  assert.equal(snapshot.publishedSiteStylesVersion, "published-styles-v1");
+  assert.equal(snapshot.sitePublicationEpoch, "epoch-1");
   assert.equal(snapshot.document.pageId, pageId);
 });
 
