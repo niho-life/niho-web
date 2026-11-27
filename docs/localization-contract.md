@@ -137,7 +137,7 @@ const withCandidates = acceptTranslationResult(overlay, jaToEn, result);
 
 どちらを、いつ呼ぶかはホストが決めます。保存のたびに呼ぶ（自動下書きを有効にする）か、最初の一括下書きと「翻訳案を作る」を押したときだけ呼ぶかを選べます。鎌倉は後者で運用します（2026-11-10、#171）。自動・手修正を問わず、今の原文に対応する訳（`draft` と `reviewed`）は翻訳済みで、人の確認なしに公開できます（2026-11-12）。ライブラリはこの運用を強制せず、公開の条件は `docs/localization-release.md` とホストが定めます。
 
-draftには `editOrigin`（`AUTO` / `MANUAL`）と `draftSourceFingerprint` を保存します。原文が変わった単位のdraftは、手修正でも `review-needed`（今の原文に対応する訳が無いので、画面では「未翻訳」）になります。旧overlayに `draftSourceFingerprint` がない場合は、原文との対応を推測せず従来の状態判定を保ち、次の編集・候補採用時に記録します。
+draftには `editOrigin`（`AUTO` / `MANUAL`）と `draftSourceFingerprint` を保存します。原文が変わった単位のdraftは、手修正でも `review-needed` になります。画面では原文言語が日本語なら「日本語の方が新しい」、英語なら「English の方が新しい」と表示します。旧overlayに `draftSourceFingerprint` がない場合は、原文との対応を推測せず従来の状態判定を保ち、次の編集・候補採用時に記録します。
 
 操作は分離されています。
 

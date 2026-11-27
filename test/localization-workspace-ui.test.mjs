@@ -87,7 +87,7 @@ test("list: staged loading, groups, band, filters, search and excluded reasons",
     assert.ok(band.textContent.includes("公開中：10/1 の公開（2026/10/1 10:00）"));
     assert.ok(band.textContent.includes("翻訳済み 1/4"));
     assert.ok(button("English版を公開…"));
-    assert.deepEqual([...document.querySelectorAll(".cw-filters button")].map(nameOf), ["未翻訳（3 件）", "翻訳済み（1 件）", "すべて（5 件）", "対象外（1 件）"]);
+    assert.deepEqual([...document.querySelectorAll(".cw-filters button")].map(nameOf), ["未翻訳（3 件）", "英語あり（1 件）", "すべて（5 件）", "対象外（1 件）"]);
     assert.equal(document.querySelector('.cw-filters button[aria-pressed="true"]').textContent.replace(/\s+/gu, " ").trim(), "未翻訳（3 件）");
     assert.deepEqual(rowTitles(), ["トップ", "私たちについて", "お知らせ一覧"]);
     await press("すべて（5 件）", document.querySelector(".cw-filters"));
@@ -95,12 +95,12 @@ test("list: staged loading, groups, band, filters, search and excluded reasons",
     const byTitle = (title) => rows().find((row) => row.querySelector(".cw-row-title").textContent === title);
     assert.ok(byTitle("トップ").textContent.includes("未翻訳"));
     assert.ok(byTitle("トップ").querySelector(".lw-cell-reviewed").textContent.includes("1/3"), "a translation for the current source counts, automatic or manual");
-    assert.ok(byTitle("私たちについて").textContent.includes("未翻訳"), "an item whose only gap is an outdated translation is untranslated");
-    assert.ok(!byTitle("私たちについて").textContent.includes("原文が更新"));
-    assert.deepEqual([byTitle("私たちについて").querySelector(".lw-pill").dataset.lwState, byTitle("私たちについて").querySelector(".lw-pill").dataset.lwItemState], ["untranslated", "source-changed"]);
+    assert.ok(byTitle("私たちについて").textContent.includes("日本語の方が新しい"), "an item whose translation source is old is identified as stale");
+    assert.ok(!byTitle("私たちについて").textContent.includes("未翻訳"));
+    assert.deepEqual([byTitle("私たちについて").querySelector(".lw-pill").dataset.lwState, byTitle("私たちについて").querySelector(".lw-pill").dataset.lwItemState], ["source-newer", "source-changed"]);
     assert.ok(byTitle("私たちについて").textContent.includes("含むもの：ページ本文 · 案内カード"));
     assert.ok(byTitle("私たちについて").textContent.includes("原文に未公開の下書き"));
-    assert.ok(byTitle("フッター").textContent.includes("翻訳済み"));
+    assert.ok(byTitle("フッター").textContent.includes("英語あり"));
     assert.equal(byTitle("フッター").querySelector(".lw-pill").dataset.lwState, "reviewed");
     assert.equal(document.querySelector(".lw-rows-head").textContent, "題名状態翻訳済み最終更新");
     assert.doesNotMatch(document.body.textContent, /確認済み|未確認|要対応/, "the list never mentions a review step");
@@ -145,11 +145,11 @@ test("list and editor: a legacy draft item is untranslated, while draft and revi
     assert.deepEqual([footer.querySelector(".lw-pill").dataset.lwState, footer.querySelector(".lw-pill").dataset.lwItemState], ["untranslated", "draft"]);
     await openRow("私たちについて");
     const head = (unitId) => card(unitId).querySelector(".lw-unit-head .lw-pill");
-    assert.deepEqual([head("title").textContent, head("title").dataset.lwUnitState, head("title").dataset.lwState], ["翻訳済み", "reviewed", "reviewed"]);
-    assert.deepEqual([head("intro").textContent, head("intro").dataset.lwUnitState, head("intro").dataset.lwState], ["未翻訳", "review-needed", "untranslated"], "an outdated translation is untranslated");
+    assert.deepEqual([head("title").textContent, head("title").dataset.lwUnitState, head("title").dataset.lwState], ["英語あり", "reviewed", "reviewed"]);
+    assert.deepEqual([head("intro").textContent, head("intro").dataset.lwUnitState, head("intro").dataset.lwState], ["日本語の方が新しい", "review-needed", "source-newer"], "an outdated translation is identified as stale");
     await press("一覧へ");
     await openRow("トップ");
-    assert.deepEqual([head("title").textContent, head("title").dataset.lwUnitState], ["翻訳済み", "draft"], "an automatic translation without review is translated");
+    assert.deepEqual([head("title").textContent, head("title").dataset.lwUnitState], ["英語あり", "draft"], "a current translation is available without review");
     assert.deepEqual([head("lead").textContent, head("lead").dataset.lwUnitState], ["未翻訳", "missing"]);
     assert.deepEqual([head("cover").textContent, head("cover").dataset.lwUnitState], ["原文のまま", "source"]);
     assert.doesNotMatch(document.querySelector(".lw-item").textContent, /確認済み|未確認|自動翻訳（|手修正（/);
@@ -304,7 +304,7 @@ test("editor: source and translation side by side, autosave about a second after
     assert.deepEqual([...card("title").querySelectorAll(".lw-col-label")].map((node) => node.textContent), ["日本語（読むだけ）", "English"]);
     assert.equal(card("title").querySelector(".lw-source .lw-text").textContent, "海の見える工房");
     assert.equal(inputText("title"), "Workshop by the sea");
-    assert.ok(card("title").querySelector(".lw-unit-head").textContent.includes("翻訳済み"), "an automatic translation is translated without review");
+    assert.ok(card("title").querySelector(".lw-unit-head").textContent.includes("英語あり"), "a current translation is available without review");
     assert.ok(document.querySelector(".lw-item-meta").textContent.includes("翻訳済み 1/3"));
     assert.doesNotMatch(document.querySelector(".lw-item").textContent, /確認済み|未確認/);
     assert.equal(input("title").getAttribute("role"), "textbox");
@@ -316,7 +316,7 @@ test("editor: source and translation side by side, autosave about a second after
 
     await setText("title", "Workshop by");
     await setText("title", "Workshop by the sea!");
-    assert.ok(card("title").querySelector(".lw-unit-head").textContent.includes("翻訳済み"));
+    assert.ok(card("title").querySelector(".lw-unit-head").textContent.includes("英語あり"));
     assert.doesNotMatch(card("title").querySelector(".lw-unit-head").textContent, /未確認|手修正|自動翻訳/);
     assert.equal(document.querySelector(".cw-editor-status .cw-save-state").textContent, "保存中…");
     await advance(t, 500);
@@ -338,7 +338,7 @@ test("editor: source and translation side by side, autosave about a second after
     await click(button("翻訳案を使う", lead), "adopt");
     assert.equal(commands(memory, "adopt-candidate")[0].input.candidateId, "c-lead-1");
     assert.equal(inputText("lead"), "Open [m0]. Contact us at [m1].", "the input is rebuilt from the adopted candidate");
-    assert.ok(card("lead").querySelector(".lw-unit-head").textContent.includes("翻訳済み"));
+    assert.ok(card("lead").querySelector(".lw-unit-head").textContent.includes("英語あり"));
     assert.equal(card("lead").querySelector(".lw-note").textContent, "翻訳案を入れました。");
     const row = await (async () => { await press("一覧へ"); return rows().find((entry) => entry.querySelector(".cw-row-title").textContent === "トップ"); })();
     assert.equal(document.activeElement, row.querySelector("button.cw-row-open"), "focus returns to the row");
@@ -463,7 +463,7 @@ test("images: pick and go back to the source image", async () => {
     await click(button("素材から選ぶ", cover()), "pick");
     assert.deepEqual(commands(memory, "set-image")[0].input.image, { kind: "image-url", src: "https://media.example.test/cover-en.svg" });
     assert.equal(cover().querySelector(".lw-target img").getAttribute("src"), "https://media.example.test/cover-en.svg");
-    assert.equal(cover().querySelector(".lw-unit-head .lw-pill").textContent, "翻訳済み", "a replaced image for the current source is used without review");
+    assert.equal(cover().querySelector(".lw-unit-head .lw-pill").textContent, "英語あり", "a replaced image for the current source is used without review");
     assert.equal(cover().querySelector(".lw-note").textContent, "画像を差し替えました。");
     assert.equal(button("確認済みにする", cover()), undefined);
     assert.equal(commands(memory, "review-image").length, 0);

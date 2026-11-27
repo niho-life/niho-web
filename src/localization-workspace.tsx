@@ -292,8 +292,8 @@ function AttentionBand({ adapter, overview, onOpen }: { adapter: LocalizationWor
   </section>;
 }
 
-/** キーは状態の値のまま（needs-work = 未翻訳・reviewed = 翻訳済み）。 */
-const filterTabs: readonly [LocalizationFilter, string][] = [["needs-work", "未翻訳"], ["reviewed", "翻訳済み"], ["all", "すべて"], ["excluded", "対象外"]];
+/** キーは状態の値のまま（needs-work = 未翻訳・reviewed = 訳す言語あり）。 */
+const filterTabs = (target: string): readonly [LocalizationFilter, string][] => [["needs-work", "未翻訳"], ["reviewed", `${target === "English" ? "英語" : target}あり`], ["all", "すべて"], ["excluded", "対象外"]];
 
 function ListView({ adapter, overview, list, group, onGroup, timeZone, focusItem, onFocused, onOpen, onRetry }: {
   adapter: LocalizationWorkspaceAdapter; overview: LocalizationOverview; list: ListState; group: string | null; onGroup: (group: string | null) => void; timeZone: string;
@@ -330,6 +330,7 @@ function ListView({ adapter, overview, list, group, onGroup, timeZone, focusItem
   }, [items, focusItem, onFocused]);
   const total = overview.groups.reduce((sum, entry) => sum + entry.items, 0);
   const groupLabel = group === null ? "すべて" : overview.groups.find((entry) => entry.id === group)?.label ?? "すべて";
+  const filters = filterTabs(overview.languages.target);
   const rows = (entries: readonly LocalizationItemSummary[], label: string) => <>
     <div className="cw-rows-head lw-rows-head" aria-hidden="true"><span>題名</span><span>状態</span><span>翻訳済み</span><span>最終更新</span></div>
     <ul className="cw-rows lw-rows" aria-label={label}>{entries.map((item) => {
@@ -346,7 +347,7 @@ function ListView({ adapter, overview, list, group, onGroup, timeZone, focusItem
         {edit ? <a className="cw-row-open lw-edit-link" data-item-key={item.key} href={edit} referrerPolicy="no-referrer">{title}</a>
           : <button type="button" className="cw-row-open" data-item-key={item.key} onClick={() => onOpen(item.key)}>{title}</button>}
         <span className="cw-row-meta">
-          <span className="cw-cell cw-cell-status"><span className="cw-cell-label">状態</span><span className="cw-badges"><ItemStateBadge state={item.state} />
+          <span className="cw-cell cw-cell-status"><span className="cw-cell-label">状態</span><span className="cw-badges"><ItemStateBadge state={item.state} sourceLabel={overview.languages.source} targetLabel={overview.languages.target} />
             {item.sourceDraftPending && <span className="cw-pill lw-pill" data-lw-state="pending-source">原文に未公開の下書き</span>}</span></span>
           <span className="cw-cell lw-cell-reviewed"><span className="cw-cell-label">翻訳済み</span>{item.state === "excluded" ? "—" : `${item.reviewedUnits}/${item.totalUnits}`}</span>
           <span className="cw-cell cw-cell-updated"><span className="cw-cell-label">最終更新</span><DateTime value={item.updatedAt} timeZone={timeZone} />{item.updatedBy && <span className="cw-by">{item.updatedBy}</span>}{source && <a className="lw-source-link" href={source} target="_blank" rel="noopener noreferrer">原文を編集<span className="cw-sr">（新しいタブで開く）</span></a>}</span>
@@ -382,12 +383,12 @@ function ListView({ adapter, overview, list, group, onGroup, timeZone, focusItem
           </div>
         </header>
         {list.status !== "ready" ? <Notice status={list.status} noun="一覧" retry={onRetry} /> : <>
-          <div className="cw-filters" role="group" aria-label="状態で絞り込む">{filterTabs.map(([value, label]) => <button key={value} type="button" aria-pressed={filter === value} onClick={() => setFilter(value)}>
+          <div className="cw-filters" role="group" aria-label="状態で絞り込む">{filters.map(([value, label]) => <button key={value} type="button" aria-pressed={filter === value} onClick={() => setFilter(value)}>
             {label}<span className="cw-filter-count"><span className="cw-sr">（</span>{counts[value]}<span className="cw-sr"> 件）</span></span></button>)}</div>
           {list.more === "error" && <p className="cw-error" role="alert"><Icon name="alert" />一覧の残りを読み込めませんでした。<button type="button" className="cw-link-button" onClick={onRetry}>読み込み直す</button></p>}
           {list.more === "truncated" && <p className="cw-hint">件数が多いため、一部だけを出しています。検索で絞り込んでください。</p>}
           {inGroup.length === 0 ? <div className="cw-empty"><p>{list.more === "loading" ? "読み込んでいます…" : "訳すものはありません。"}</p></div>
-            : visible.length === 0 ? <div className="cw-empty"><p>{needle ? `「${query.trim()}」に当てはまるものはありません。` : `${filterTabs.find(([value]) => value === filter)?.[1]}のものはありません。`}</p>
+            : visible.length === 0 ? <div className="cw-empty"><p>{needle ? `「${query.trim()}」に当てはまるものはありません。` : `${filters.find(([value]) => value === filter)?.[1]}のものはありません。`}</p>
               <button type="button" className="cw-button" onClick={() => { setQuery(""); setFilter("all"); }}>{!needle && filter === "needs-work" ? "すべてを見る" : "絞り込みをやめる"}</button></div>
             : <>
               <p className="cw-sr" role="status">{visible.length} 件が見つかりました{filter !== "excluded" && excluded.length > 0 ? `。対象外 ${excluded.length} 件は別のまとまりにあります` : ""}</p>

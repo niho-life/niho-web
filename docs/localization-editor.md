@@ -43,7 +43,7 @@ const adapter: EditorAdapter = {
 
 `localization` を実装するホストは、原文の保存 locale が接続時に固定されている場合に `sourceDocumentLocale(siteId)` を指定できます。鎌倉は `ja` を返します。現在の文書の locale がこの指定に一致すれば、翻訳の設定取得中や取得失敗時も原文の編集・保存・公開ができます。訳文の操作は言語設定と訳文の版の検証後に受け付けます。原文の保存 locale を指定していないホストでは、原文も言語設定の検証後に操作できます。queued / running 中は「翻訳状況を更新」で `readSite` と `readPage` を再読込できます。
 
-エディター上の訳の状態の表示は「原文 / 未翻訳 / 翻訳中 / 翻訳済み / 失敗」の5つにまとめます。自動翻訳でも手修正でも今の原文に対応する訳があれば「翻訳済み」とし、draft と reviewed を出し分けません。原文が変わって訳が古くなった `review-needed` は、今の原文に対応する訳が無いので「未翻訳」と表示します（2026-11-12。状態の値そのものは従来どおり保存・判定に使います）。「確認済み」「未確認」「更新あり」は出しません。左のページ一覧には言語ごとの状態を出しません。言語の切り替えは「日本語 / English」だけを表示し、原文・訳文の区別は添えません。
+翻訳状態は「未翻訳 / English あり / 日本語の方が新しい」の3つにまとめます。`missing`・`translating`・`failed` は「未翻訳」、今の原文に合う `draft`・`reviewed` は「English あり」、古くなった `review-needed` は「日本語の方が新しい」です。原文側は「原文」と表示します。左のページ一覧では日本語を選んだとき、各ページの English 状態を同じ3つで表示します。言語の切り替えは「日本語 / English」だけを表示し、原文・訳文の区別は添えません。
 
 候補は現在の訳を上書きしません。「翻訳案を採用」で初めてdraftへ入り、そのまま翻訳済みです。人が訳を確認済みにする工程は 2026-11-12 に廃止し、「現在の訳を確認済みにする」ボタンは出しません（`reviewLocalizedValue` は互換のため残します）。
 
@@ -98,7 +98,7 @@ Kamakura の English `saveDraft` は通常の `expectedVersion` と `request.loc
 
 URLと`srcset`は既存文書validatorと同じ制約です。各値は1〜2,048文字のHTTPS URLまたは`/`から始まるroot-relative URLで、空白・制御文字・引用符・`< >`・backslash、`http:`、`data:`、`javascript:`、protocol-relative、資格情報付きURL、fragment-onlyを拒否します。現行`srcset`は候補列ではなく**単一URLだけ**を許可し、commaや空白を含めません。width / height / style / href / ID / token / event / 業務propsは原文共通のままです。URLもasset参照も翻訳providerへ送りません。
 
-OG画像は`page.meta.ogImage.src`の任意・手動専用の画像unitと、従来の`page.meta.ogImage.alt` text unitに分かれます。画像unitの値は本文の画像と同じく素材参照（`{ kind: "asset" }`）か単一URL（`{ kind: "image-url" }`、`srcset`なし）で、「素材を選ぶ」から素材ライブラリの画像も選べます。画像の手動変更は今の原文に対するdraftとなり、確認しなくても翻訳済みとして使います。原文画像が変わっても手動draftは保持し、`review-needed`（未翻訳）へ戻します。素材の権利・出所・公開可否、immutable referenceの発行は引き続きホストの責務であり、このライブラリのURL検証は素材認可ではありません。
+OG画像は`page.meta.ogImage.src`の任意・手動専用の画像unitと、従来の`page.meta.ogImage.alt` text unitに分かれます。画像unitの値は本文の画像と同じく素材参照（`{ kind: "asset" }`）か単一URL（`{ kind: "image-url" }`、`srcset`なし）で、「素材を選ぶ」から素材ライブラリの画像も選べます。画像の手動変更は今の原文に対するdraftとなり、確認しなくても訳文として使います。原文画像が変わっても手動draftは保持し、`review-needed`（原文言語の方が新しい）へ戻します。素材の権利・出所・公開可否、immutable referenceの発行は引き続きホストの責務であり、このライブラリのURL検証は素材認可ではありません。
 
 共通部品のunitは定義ID＋定義内node IDで一度だけ表示します。通常文字・空alt・rich text・asset referenceの手修正と候補採用は`command`でoverlayへ保存します。ホストはshared-component unitをサイト＋target localeの共有値として永続化し、同じ定義を使う全ページの`readPage`で同じ値・状態を返してください。ページごとのoverlay表現を採る場合も、1ページでの`set-value`／採用（旧い確認の操作を受けるならそれも）を同一transactionまたは整合する更新処理で全利用ページへ反映し、ページ移動で値を巻き戻してはいけません。正本`ComponentLibrary`自体は変更しません。
 

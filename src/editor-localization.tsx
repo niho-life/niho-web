@@ -218,11 +218,12 @@ export function localizedOperationProblem(document: PageDocument, operation: Edi
   return denied;
 }
 
-/**
- * 訳の状態の表示名。自動翻訳でも手修正でも、今の原文に対応する訳があれば「翻訳済み」にまとめる（2026-11-12）。
- * 原文が変わって訳が古くなった review-needed は、今の原文に対応する訳が無いので「未翻訳」。
- */
-export const localizationStateLabel = (state: string) => ({ source: "原文", missing: "未翻訳", translating: "翻訳中", draft: "翻訳済み", "review-needed": "未翻訳", reviewed: "翻訳済み", failed: "失敗" }[state] ?? state);
+/** Current translated states collapse to the target language; stale values identify which source language is newer. */
+export function localizationStateLabel(state: string, sourceLocale: LocalizationLocale): string {
+  const source = sourceLocale === "ja" ? "日本語" : "English", target = sourceLocale === "ja" ? "英語" : "日本語";
+  return state === "source" ? "原文" : state === "review-needed" ? `${source}の方が新しい`
+    : state === "draft" || state === "reviewed" ? `${target}あり` : state === "missing" || state === "translating" || state === "failed" ? "未翻訳" : state;
+}
 const textOf = (value: LocalizationValue | undefined): string => value === undefined ? "（なし）" : typeof value === "string" ? value : value.kind === "asset" ? `${value.asset.provider} / ${value.asset.id}`
   : value.kind === "image-url" ? `${value.src}${value.srcset ? ` / ${value.srcset}` : ""}`
     : value.children.map(function flatten(node): string { return node.type === "text" ? node.text : node.children.map(flatten).join(""); }).join("");
@@ -370,7 +371,7 @@ export function LocalizationPanel({ context, document, disabled, selectedUnit, r
   {context.collection.units.map((unit) => {
     const entry = entries.get(unit.unitId), state = states.get(unit.unitId), currentCandidate = entry?.candidate?.sourceFingerprint === unit.sourceFingerprint;
     const currentValue = entry?.draftValue ?? current[unit.unitId] ?? unit.sourceValue, buffer = bufferFor(unit), displayedValue = buffer?.value ?? currentValue;
-    return <section className={`e-section e-localization-unit${selectedUnit === unit.unitId ? " is-selected" : ""}`} data-unit-id={unit.unitId} key={unit.unitId}><div className="e-section-head"><h3>{unitLabel(unit, context)}</h3><span className="e-badge">{unit.scope === "shared-component" ? "コンポーネント" : "ページ"}</span><span className="e-badge">{localizationStateLabel(state?.state ?? "missing")}</span></div>
+    return <section className={`e-section e-localization-unit${selectedUnit === unit.unitId ? " is-selected" : ""}`} data-unit-id={unit.unitId} key={unit.unitId}><div className="e-section-head"><h3>{unitLabel(unit, context)}</h3><span className="e-badge">{unit.scope === "shared-component" ? "コンポーネント" : "ページ"}</span><span className="e-badge">{localizationStateLabel(state?.state ?? "missing", context.config.sourceLocale)}</span></div>
       <dl className="e-rows"><div><dt>現在の原文</dt><dd>{textOf(unit.sourceValue)}</dd></div>
         {context.previousSourceValues[unit.unitId] !== undefined && <div><dt>以前の原文</dt><dd>{textOf(context.previousSourceValues[unit.unitId])}</dd></div>}
         <div><dt>現在の訳</dt><dd>{textOf(currentValue)}</dd></div>

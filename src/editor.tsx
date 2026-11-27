@@ -18,7 +18,7 @@ import type { StyleState } from "./editor-style-motion.js";
 import { createInsertionNode, resolveBuilderDefinition, type InsertionCategory } from "./builder.js";
 import { breakpointSettingsFromLegacy, editorTiers, hiddenAt, normalizeBreakpoints, tierForWidth, tierName } from "./style-model.js";
 import { Dialog } from "./editor-dialog.js";
-import { PageChangeDialog, PageSettings, PagePanel, ReleaseSearchSummary, SiteSettingsPanel, chooseSiteCover, coverReferences, pageChangeNotice, publicInfoMessage, useSiteSettings, type FieldOptions, type PageChangeStart } from "./editor-pages.js";
+import { PageChangeDialog, PageSettings, PagePanel, ReleaseSearchSummary, SiteSettingsPanel, chooseSiteCover, coverReferences, pageChangeNotice, publicInfoMessage, useSiteSettings, type FieldOptions, type PageChangeStart, type PageTranslationStatus } from "./editor-pages.js";
 import { PageReleaseSetDialog } from "./editor-release-set.js";
 import { AutosaveSwitch, ConflictDialog, HistoryBar, HistoryDialogs, LibraryRecoveryBanner, RecoveryBanner, RecoveryCompareDialog, ReleaseAffected, SaveStatus, VersionPanel, autosaveDelay, classifySaveError, formatDateTime, isOffline, saveProblemNotice, saveStatus, targetKeyOf, useAutosave, useLibraryRecovery, useOnline, useRecovery, useVersionHistory, type LatestSnapshot, type SaveProblem } from "./editor-history.js";
 import { isDirectlyEditable, readEditableChildren } from "./editor-rich-text.js";
@@ -2354,6 +2354,15 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     requestNavigation({ type: "page", target: { siteId: current.target.siteId, pageId: current.target.pageId, locale: targetLocale } });
   };
   const panelLocale = selectedLocale ?? localization.site?.config.sourceLocale;
+  const translationSourceLocale = localization.site?.config.sourceLocale;
+  const translationTargetLocale = translationSourceLocale === "ja" ? "en" : "ja";
+  const translationStatusByPage: ReadonlyMap<string, PageTranslationStatus> | undefined = localization.site && panelLocale === translationSourceLocale
+    ? new Map(localization.site.pages.flatMap((entry) => {
+      const state = entry.locales[translationTargetLocale]?.state;
+      const status: PageTranslationStatus | undefined = state === "review-needed" ? "source-newer"
+        : state === "reviewed" ? "available" : state === "missing" || state === "translating" || state === "failed" ? "untranslated" : undefined;
+      return status ? [[entry.pageId, status] as const] : [];
+    })) : undefined;
   const panelPages: readonly EditorPage[] = localization.site && panelLocale ? localization.site.pages.map(({ locales, ...page }) => {
     const sourcePage = pages.find((entry) => entry.siteId === page.siteId && entry.pageId === page.pageId);
     const kind = page.kind ?? sourcePage?.kind;
@@ -2512,6 +2521,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         </section>
         <section hidden={visiblePanel !== "pages"} aria-label="ページ一覧">
           <PagePanel pages={panelPages} current={session?.target} disabled={blocked} operations={pageOperations} pathEditable={adapter.pagePathEditable ?? true} {...(adapter.pageChangeActions ? { actions: adapter.pageChangeActions } : {})} operationsDisabled={pageOperationsDisabled} unsaved={unsaved}
+            {...(translationStatusByPage ? { translationStatusByPage, translationSourceLabel: translationSourceLocale === "ja" ? "日本語" : "English", translationTargetLabel: translationTargetLocale === "en" ? "英語" : "日本語" } : {})}
             {...(releaseSetAvailable ? { releaseSet: startReleaseSet, releaseSetDisabled: releaseSetDisabled || unsaved } : {})}
             select={(target) => { if (!session || !sameTarget(session.target, target)) requestNavigation({ type: "page", target }); }} start={startPageChange}>
             {sites.length > 1 && <select className="e-site-select" aria-label="編集するサイト" value={siteId} disabled={blocked} onChange={(event) => requestNavigation({ type: "site", id: event.target.value })}>{sites.map((site) => <option key={site.id} value={site.id}>{site.name}</option>)}</select>}
