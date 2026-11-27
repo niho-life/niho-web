@@ -104,7 +104,7 @@ Studio 内サイトの GUI 操作と niho-edit --studio の対応
   CMS の定義を編集                           cms-schema / cms-schema-plan / cms-schema-apply
   CMS の翻訳と locale 公開                   localization-* または cms-v2
 
-素材ライブラリは、Studio 内サイトの GUI では提供していません。サイト共通スタイルは、Studio GUI と `niho-edit --studio styles` で共通操作を使います。
+素材ライブラリは、Studio 内サイトの GUI では提供していません。サイト共通スタイルは、Studio GUI と \`niho-edit --studio styles\` で共通操作を使います。
 サイト全体と変更ページの一括公開は GUI と CLI に同時に追加予定です。`;
 
 const commandUsageLines = NIHO_EDIT_USAGE.split("\n")
