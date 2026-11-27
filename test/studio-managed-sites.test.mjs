@@ -485,7 +485,8 @@ testWithD1("managed SEO renders alternates and JSON-LD, publishes discovery file
   const about = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/${aboutCreated.page.pageId}`), 200);
   about.document.title = "SEO Fixture";
   about.document.meta = { description: "日本語の説明" };
-  about.document.body[0].children.push({ type: "element", id: "missing-link", tag: "a", attrs: { href: "/not-published" },
+  const longMissingPath = `/not-published/${"x".repeat(1100)}`;
+  about.document.body[0].children.push({ type: "element", id: "missing-link", tag: "a", attrs: { href: longMissingPath },
     children: [{ type: "text", text: "未公開ページ" }] });
   const aboutSaved = await body(await h.send(MANAGEMENT_ORIGIN, "PUT", `${api}/${aboutCreated.page.pageId}/draft`,
     { expectedVersion: about.version, document: about.document }), 200);
@@ -496,8 +497,12 @@ testWithD1("managed SEO renders alternates and JSON-LD, publishes discovery file
   assert.ok(warningCodes.includes("duplicate-title"));
   assert.ok(warningCodes.includes("duplicate-description"));
   assert.ok(warningCodes.includes("broken-internal-link"));
+  assert.ok(aboutReleasePlan.warnings.find(({ code }) => code === "broken-internal-link").message.length <= 1000);
   await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/${aboutCreated.page.pageId}/release`,
     { expectedVersion: aboutSaved.version, confirmationToken: aboutReleasePlan.confirmationToken }), 200);
+  const directPublish = await body(await h.send(MANAGEMENT_ORIGIN, "POST",
+    `/api/edit/v1/sites/${site.siteId}/operations/pages.publish/${aboutCreated.page.pageId}?locale=ja`, { action: "publish" }), 200);
+  assert.ok(directPublish.warnings.some(({ code }) => code === "broken-internal-link"));
 
   const html = await (await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/`)).text();
   assert.match(html, /hreflang="en" href="https:\/\/sites\.example\/s\/seo-fixture\/en"/u);

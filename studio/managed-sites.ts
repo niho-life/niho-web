@@ -106,6 +106,12 @@ function safeTitle(value: unknown): value is string {
 }
 type ManagedSeoWarning = { code: "missing-description" | "missing-alt" | "japanese-in-english" | "duplicate-title" | "duplicate-description" | "broken-internal-link"; message: string };
 
+function boundedManagedSeoWarnings(warnings: readonly ManagedSeoWarning[]): ManagedSeoWarning[] {
+  return warnings.slice(0, 100).map((warning) => ({ ...warning,
+    message: warning.message.length <= 1000 ? warning.message : `${warning.message.slice(0, 999).replace(/[\uD800-\uDBFF]$/u, "")}…`
+  }));
+}
+
 function managedSeoWarnings(document: PageDocument): ManagedSeoWarning[] {
   const warnings: ManagedSeoWarning[] = [];
   if (!document.meta?.description?.trim()) warnings.push({ code: "missing-description", message: "検索結果に出す説明文がありません。" });
@@ -210,7 +216,7 @@ async function managedReleaseSeoWarnings(db: ManagedD1, row: ManagedPageRow, doc
       warnings.push({ code: "broken-internal-link", message: `公開中のページ・CMS route が見つかりません: ${path}` });
     }
   } catch { /* malformed links are handled by document validation */ }
-  return warnings.slice(0, 100);
+  return boundedManagedSeoWarnings(warnings);
 }
 function opaqueVersion(): string { return `p.${crypto.randomUUID()}`; }
 function opaqueId(prefix: string): string { return `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`; }
