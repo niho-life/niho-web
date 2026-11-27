@@ -29,6 +29,8 @@ niho-edit --origin <https-origin> --site <site-id> breakpoints-read
 niho-edit --origin <https-origin> --site <site-id> breakpoints-save --json <settings-snapshot-file|->
 niho-edit --studio --origin <studio-origin> --site <site-id> site-seo-read
 niho-edit --studio --origin <studio-origin> --site <site-id> site-seo-save --json <settings-snapshot-file|->
+niho-edit --studio --origin <studio-origin> --site <site-id> site-public-read
+niho-edit --studio --origin <studio-origin> --site <site-id> site-public-save --json <public-settings-snapshot-file|->
 niho-edit --studio --origin <studio-origin> --site <site-id> site-redirects-read
 niho-edit --studio --origin <studio-origin> --site <site-id> site-redirects-save --json <redirect-snapshot-file|->
 niho-edit --origin <https-origin> --site <site-id> styles read
@@ -36,6 +38,7 @@ niho-edit --origin <https-origin> --site <site-id> styles edit --json <edit-requ
 niho-edit --origin <https-origin> --site <site-id> styles publish --json <publish-request-file|->
 niho-edit [--studio] --origin <https-origin> --site <site-id> pages-catalog
 niho-edit --studio --origin <studio-origin> --site <site-id> page-change --expected-version <version> --json <change-file|->
+niho-edit --studio --origin <studio-origin> --site <site-id> page-embed-register <page-id> --locale <locale> --json <embed-file|->
 niho-edit --origin <https-origin> --site <site-id> page-change-prepare --expected-version <version> --json <change-file|->
 niho-edit --origin <https-origin> --site <site-id> page-change-apply --json <plan-file|->
 niho-edit --origin <https-origin> --site <site-id> cms-schema
@@ -78,11 +81,30 @@ Edit document while keeping version, then pass the snapshot to save for version-
 Review the release plan before applying it. Keep and reuse the same operation ID when retrying a release.
 styles read returns { draft: { version, styles }, published: { version, styles } }. styles edit accepts { expectedVersion, edits }; rename rewrites references atomically and a referenced delete reports usages. styles publish accepts { expectedDraftVersion, expectedPublishedVersion }.
 site-seo-read returns { settings, version } with the version shared by the site's public settings. Edit its settings object and pass the snapshot to site-seo-save; the write uses version checking. The SEO fields include site name, description, default OGP image, verification tags, organization data, robots policy, and GA4 measurement ID.
+site-public-read は独自ドメインと許可 origin を個別の版付きで返します。編集した snapshot を site-public-save に渡します。
+page-embed-register には { "src": "NIHOで発行した埋め込みURL" } を渡します。結果の refId をページの ManagedEmbed ブロックに設定して保存します。
 site-redirects-read returns { redirects, version }. Edit the redirects array and pass the snapshot to site-redirects-save; the write uses version checking. Each entry is { locale, fromPath, toPath }; paths are site-local and each fromPath can appear once. Invalid paths, duplicates, and redirect loops are rejected.
 For a page release set, items-file contains 1 to 50 items: { "items": [{ "target": { "siteId", "pageId", "locale" }, "expectedVersion", "componentsVersion?", "presentationVersion?" }, ...] }.
 The plan is bound to the changed targets and versions. Results report each page as released, conflict, or pending.
 Apply the same saved plan again after a timeout to resume unfinished pages without republishing completed pages, then query page-release-set-status with its operation ID.
-lint は指定したページ、または catalog にある全ページの問題をJSONで表示します。問題があれば終了コード1、なければ0です。normalize analyze と plan はローカルで実行します。apply は版照合付きで適用し、状態を記録します。色の置換と表示幅の変更には --approve が必要です。resume は未確定のページ操作を再試行し、undo は適用済みの変更を戻します。verify は現在の文書を読み直して描画入力を比較します。`;
+lint は指定したページ、または catalog にある全ページの問題をJSONで表示します。問題があれば終了コード1、なければ0です。normalize analyze と plan はローカルで実行します。apply は版照合付きで適用し、状態を記録します。色の置換と表示幅の変更には --approve が必要です。resume は未確定のページ操作を再試行し、undo は適用済みの変更を戻します。verify は現在の文書を読み直して描画入力を比較します。
+
+Studio 内サイトの GUI 操作と niho-edit --studio の対応
+  GUI 操作                                  CLI コマンド
+  ページの一覧・作成・URL・公開状態           pages-catalog → page-change
+  ページの読取・下書き編集・CMS ブロック設定  read → apply / save
+  ページの公開・版履歴・復元                  publish / history / restore
+  NIHO フォームの接続                        page-embed-register → apply / save
+  独自ドメイン・noindex・許可 origin           site-public-read → site-public-save
+  サイト共通 SEO                             site-seo-read → site-seo-save
+  旧 URL の転送                              site-redirects-read → site-redirects-save
+  CMS の項目一覧・作成・編集・公開            cms-list / cms-create / cms-read / cms-save / cms-publish
+  CMS のプレビュー・公開予約・取下げ・ごみ箱  cms-v2（操作は cms-discover で確認）
+  CMS の定義を編集                           cms-schema / cms-schema-plan / cms-schema-apply
+  CMS の翻訳と locale 公開                   localization-* または cms-v2
+
+素材ライブラリとサイト共通スタイルは、Studio 内サイトの GUI では提供していません。
+サイト全体と変更ページの一括公開は GUI と CLI に同時に追加予定です。`;
 
 const commandUsageLines = NIHO_EDIT_USAGE.split("\n")
   .filter((line) => line.startsWith("niho-edit "))

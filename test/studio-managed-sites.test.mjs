@@ -179,6 +179,85 @@ async function setFixturePublicDomain(h, site, domain, noindex = true) {
   return body(await h.send(MANAGEMENT_ORIGIN, "POST", path, { expectedVersion: version, domain, noindex }), 200);
 }
 
+testWithD1("Studio CLI shares public delivery settings, separate versions and owner grants with the GUI", async (t) => {
+  const h = await fixture(t);
+  const site = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "CLI Settings", slug: "cli-settings", locale: "ja" }), 201);
+  const api = `/api/projects/${site.projectId}/sites/${site.siteId}/editor`;
+  const endpoint = `/api/edit/v2/sites/${site.siteId}/operations/site.public`;
+  const send = (method, path, input, options = { cli: true }) => h.send(MANAGEMENT_ORIGIN, method, path, input, options);
+  const machine = { cli: true, service: true, token: h.serviceToken };
+  h.sqlite.prepare("INSERT INTO project_members (project_id, access_subject, role, display_name) VALUES (?, ?, 'editor', 'Editor')")
+    .run(site.projectId, OTHER);
+  assert.equal((await send("GET", endpoint + ".read", undefined, { auth: false })).status, 401);
+  assert.equal((await send("GET", endpoint + ".read", undefined, { cli: true, token: h.otherToken })).status, 403);
+  assert.equal((await send("GET", endpoint + ".read", undefined, machine)).status, 403);
+
+  const grant = h.sqlite.prepare(`INSERT INTO studio_cli_grants (client_id, project_id, site_id, capability, delegated_by_subject)
+    VALUES (?, ?, ?, ?, ?)`);
+  grant.run(SERVICE_CLIENT, site.projectId, site.siteId, "site.settings.read", OWNER);
+  const initial = await body(await send("GET", endpoint + ".read", undefined, machine), 200);
+  const next = {
+    domain: { ...initial.domain, hostname: "custom.example.test", noindex: false },
+    origins: { ...initial.origins, frameOrigins: ["https://niho.life"], resourceOrigins: ["https://media.example.test"] }
+  };
+  assert.equal((await send("PUT", endpoint + ".save", next, machine)).status, 403);
+  grant.run(SERVICE_CLIENT, site.projectId, site.siteId, "site.settings.write", OWNER);
+  const saved = await body(await send("PUT", endpoint + ".save", next, machine), 200);
+  assert.notEqual(saved.domain.version, initial.domain.version);
+  assert.notEqual(saved.origins.version, initial.origins.version);
+  const guiDomain = await body(await send("GET", api + "/public-domain", undefined, {}), 200);
+  assert.deepEqual(guiDomain, { domain: saved.domain.hostname, noindex: false, version: saved.domain.version });
+  const guiOrigins = await body(await send("GET", api + "/public-settings", undefined, {}), 200);
+  assert.equal(guiOrigins.version, saved.origins.version);
+  assert.deepEqual(guiOrigins.settings.frameOrigins, saved.origins.frameOrigins);
+  assert.deepEqual(guiOrigins.settings.resourceOrigins, saved.origins.resourceOrigins);
+  assert.deepEqual(await body(await send("PUT", endpoint + ".save", next, machine), 409), { error: "conflict", part: "domain" });
+  assert.deepEqual(await body(await send("PUT", endpoint + ".save", saved, machine), 200), saved);
+
+  h.sqlite.exec(`CREATE TEMP TRIGGER simulate_concurrent_policy_edit AFTER UPDATE OF public_domain_version ON managed_sites
+    BEGIN UPDATE managed_sites SET public_policy_version = 'concurrent' WHERE site_id = NEW.site_id; END`);
+  const changed = {
+    domain: { ...saved.domain, hostname: "updated.example.test" },
+    origins: { ...saved.origins, resourceOrigins: [] }
+  };
+  const partial = await body(await send("PUT", endpoint + ".save", changed, machine), 409);
+  assert.deepEqual(partial, { error: "partial_save", saved: "domain", failed: "origins", cause: "conflict" });
+  const after = await body(await send("GET", endpoint + ".read", undefined, machine), 200);
+  assert.equal(after.domain.hostname, "updated.example.test");
+  assert.deepEqual(after.origins, { ...saved.origins, version: "concurrent" });
+});
+
+testWithD1("Studio CLI embed registration uses the current page scope and edit grant", async (t) => {
+  const h = await fixture(t);
+  const site = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "CLI Embed", slug: "cli-embed", locale: "ja" }), 201);
+  await setFixturePublicPolicy(h, site, { frameOrigins: ["https://niho.life"], resourceOrigins: [] });
+  h.sqlite.prepare("INSERT INTO project_members (project_id, access_subject, role, display_name) VALUES (?, ?, 'editor', 'Editor')")
+    .run(site.projectId, OTHER);
+  const endpoint = `/api/edit/v2/sites/${site.siteId}/operations/pages.embed-register`;
+  const send = (pageId, input, options) => h.send(MANAGEMENT_ORIGIN, "POST", `${endpoint}/${pageId}`, input, options);
+  const launch = { v: 1, flow: "inquiry", spotId: "example", publicId: "example", launchTokenVersion: 1,
+    parentOrigin: PUBLIC_ORIGIN, allowedPathPrefix: "/s/cli-embed/" };
+  const token = `${Buffer.from(JSON.stringify(launch)).toString("base64url")}.${"a".repeat(43)}`;
+  const input = { locale: "ja", src: `https://niho.life/embed/inquiry/example?launchToken=${token}` };
+  const machine = { cli: true, service: true, token: h.serviceToken };
+  assert.equal((await send("home", input, machine)).status, 403);
+  const grant = h.sqlite.prepare(`INSERT INTO studio_cli_grants (client_id, project_id, site_id, capability, delegated_by_subject)
+    VALUES (?, ?, ?, ?, ?)`);
+  grant.run(SERVICE_CLIENT, site.projectId, site.siteId, "pages.read", OWNER);
+  assert.equal((await send("home", input, machine)).status, 403);
+  grant.run(SERVICE_CLIENT, site.projectId, site.siteId, "pages.edit", OWNER);
+  assert.equal((await send("other-page", input, machine)).status, 403);
+  assert.equal((await send("home", { ...input, locale: "en" }, machine)).status, 403);
+  assert.equal((await send("home", { ...input, src: "https://example.test/" }, machine)).status, 422);
+  const machineResult = await body(await send("home", input, machine), 201);
+  const editorResult = await body(await send("home", input, { cli: true, token: h.otherToken }), 201);
+  assert.match(machineResult.refId, /^emb_[0-9a-f]{32}$/u);
+  assert.match(editorResult.refId, /^emb_[0-9a-f]{32}$/u);
+  assert.notEqual(machineResult.refId, editorResult.refId);
+  const stored = h.sqlite.prepare("SELECT site_id, page_id, locale FROM managed_embed_connections WHERE ref_id = ?").get(machineResult.refId);
+  assert.deepEqual({ ...stored }, { site_id: site.siteId, page_id: "home", locale: "ja" });
+});
+
 testWithD1("published page permits only approved embeds and serves NIHO connections only for its active page revision", async (t) => {
   const h = await fixture(t);
   const { projectId, siteId } = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Embeds", slug: "embeds", locale: "ja" }), 201);

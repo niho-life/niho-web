@@ -16,6 +16,7 @@ import { diffDocuments } from "../dist/history.js";
 import { parseBreakpointSettings } from "../dist/style-model.js";
 import { parseManagedSiteSeoSettings } from "../dist/managed-seo-settings.js";
 import { parseManagedSiteRedirects } from "../dist/managed-site-redirects.js";
+import { MANAGED_EMBED_REF } from "../dist/managed-embed-block.js";
 import { inspectPageDocument, PageInspectError, parsePageInspectQuery } from "../dist/page-inspect.js";
 import { OPERATION_KEY_HEADER, SERVICE_CLIENT_ID } from "../dist/studio-cli-auth.js";
 import { MANAGED_CMS_EXTRA_OPERATIONS } from "../dist/managed-cms-operations.js";
@@ -618,7 +619,7 @@ async function main() {
     process.stdout.write(`${JSON.stringify({ id: edited.id ?? base.id ?? null, version: base.version, changes })}\n`); return;
   }
   const baseOrigin = origin(values.origin);
-  if (values.studio && !["discover", "read", "outline", "find", "get", "apply", "save", "release-plan", "release", "publish", "history", "restore", "pages-catalog", "page-change", "normalize", "lint", "site-seo-read", "site-seo-save", "site-redirects-read", "site-redirects-save"].includes(command)
+  if (values.studio && !["discover", "read", "outline", "find", "get", "apply", "save", "release-plan", "release", "publish", "history", "restore", "pages-catalog", "page-change", "normalize", "lint", "site-seo-read", "site-seo-save", "site-redirects-read", "site-redirects-save", "site-public-read", "site-public-save", "page-embed-register"].includes(command)
     && !command?.startsWith("cms-") && !command?.startsWith("localization-")) throw new CliError("invalid_arguments");
   if (!IDENTIFIER.test(values.site ?? "")) throw new CliError("invalid_site");
   const token = process.env.NIHO_EDIT_TOKEN;
@@ -641,6 +642,51 @@ async function main() {
     "User-Agent": CLI_USER_AGENT, "X-Studio-CMS-Version": "2", ...(hasAccessCredentials ? accessHeaders : { "cf-access-token": token })
   } : { "User-Agent": CLI_USER_AGENT, Authorization: `Bearer ${token}`, ...accessHeaders };
   const client = createPageEditingApiClient({ origin: baseOrigin, siteId: values.site, credentials: "omit", headers, preferLegacyDiscovery: true });
+
+  if (["site-public-read", "site-public-save", "page-embed-register"].includes(command)) {
+    const embedding = command === "page-embed-register";
+    const reading = command === "site-public-read";
+    assertCommandOptions(values, reading ? [] : embedding ? ["locale", "json"] : ["json"]);
+    if (!values.studio || extra.length || (embedding
+      ? !IDENTIFIER.test(pageId ?? "") || !LOCALE.test(values.locale ?? "")
+      : pageId !== undefined)) throw new CliError("invalid_arguments");
+    const input = reading ? undefined : await inputPageManagementJson(values.json, MAX_PAGE_CHANGE_BYTES);
+    if (embedding && (Object.keys(input).length !== 1 || typeof input.src !== "string" || !input.src || input.src.length > 8192)) {
+      throw new CliError("invalid_embed_input");
+    }
+    const operation = embedding ? "pages.embed-register" : reading ? "site.public.read" : "site.public.save";
+    const path = embedding ? `${operation}/${encodeURIComponent(pageId)}` : operation;
+    let response;
+    try {
+      response = await fetch(`${baseOrigin}/api/edit/v2/sites/${encodeURIComponent(values.site)}/operations/${path}`, {
+        method: reading ? "GET" : embedding ? "POST" : "PUT", credentials: "omit", cache: "no-store", redirect: "manual", signal: AbortSignal.timeout(30_000),
+        headers: { ...headers, ...(input ? { "Content-Type": "application/json" } : {}) },
+        ...(input ? { body: JSON.stringify(embedding ? { src: input.src, locale: values.locale } : input) } : {})
+      });
+    } catch { throw new CliError("transport_error"); }
+    if (response.status >= 300 && response.status < 400) throw new CliError("redirect_response", response.status);
+    const payload = await readJson(response.body, MAX_PAGE_CHANGE_BYTES);
+    if (!response.ok) { emit(payload, response.status, 1, operation); return; }
+    if (embedding) {
+      if (response.status !== 201 || typeof payload.refId !== "string" || !MANAGED_EMBED_REF.test(payload.refId)) throw new CliError("invalid_response", response.status);
+      emit({ refId: payload.refId }, response.status, 0, operation);
+      return;
+    }
+    const { domain, origins } = payload;
+    if (!domain || (domain.hostname !== null && typeof domain.hostname !== "string") || typeof domain.noindex !== "boolean"
+      || !isEditingApiVersion(domain.version) || !origins || !isEditingApiVersion(origins.version)
+      || !Array.isArray(origins.frameOrigins) || !origins.frameOrigins.every((value) => typeof value === "string")
+      || !Array.isArray(origins.resourceOrigins) || !origins.resourceOrigins.every((value) => typeof value === "string")) {
+      throw new CliError("invalid_response", response.status);
+    }
+    const result = {
+      domain: { hostname: domain.hostname, noindex: domain.noindex, version: domain.version },
+      origins: { frameOrigins: origins.frameOrigins, resourceOrigins: origins.resourceOrigins, version: origins.version }
+    };
+    if (reading) { process.stdout.write(`${JSON.stringify(result)}\n`); return; }
+    emit(result, response.status, 0, operation);
+    return;
+  }
 
   if (command === "site-seo-read" || command === "site-seo-save") {
     const saving = command === "site-seo-save";
