@@ -9,6 +9,7 @@ import { emptyManagedPublicPolicy, managedBlockContracts, parseManagedPublicPoli
 import { readPageSource, type PageSourceRow } from "./managed-page-source.js";
 import { managedPublicBlocks, planManagedPublicRender, resolvePublishedEmbeds } from "./managed-public-policy.js";
 import { readManagedPublishedSiteStyles } from "./managed-site-styles.js";
+import { kamakuraImageUrl } from "./kamakura-public-images.js";
 import { preparePublishedManifest, preparePublishedSite } from "./managed-publication.js";
 import type { ManagedSiteRedirect } from "../src/managed-site-redirects.js";
 import type { ManagedD1 } from "./managed-sites.js";
@@ -39,9 +40,9 @@ function prefixedDocument(document: PageDocument, prefix: string, siteStyles?: S
 function escapeAttribute(value: string): string { return value.replace(/[&<>"']/gu, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!); }
 
 function managedSeoImageUrl(value: string, origin: string, prefix: string): string {
-  if (/^https:\/\//iu.test(value)) return value;
-  const path = prefix && value.startsWith("/") && value !== prefix && !value.startsWith(`${prefix}/`) ? `${prefix}${value}` : value;
-  return `${origin}${path}`;
+  const source = /^https:\/\//iu.test(value) ? value
+    : `${origin}${prefix && value.startsWith("/") && value !== prefix && !value.startsWith(`${prefix}/`) ? `${prefix}${value}` : value}`;
+  return kamakuraImageUrl(source, 1200);
 }
 
 function managedSiteMetadata(metadata: PageMetadata, seo: ManagedSiteSeoSettings, fallbackSiteName: string, origin: string, prefix: string,

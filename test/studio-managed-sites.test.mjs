@@ -10,6 +10,7 @@ import { JSDOM } from "jsdom";
 import { parseLocalizationItemResult, parseLocalizationListResult, parseLocalizationOverviewResult } from "../dist/localization-workspace-model.js";
 import { cmsLocalizationItemKey } from "@niho/web/cms-v2";
 import { CMS_DELIVERY_RENDERER_VERSION, cmsDeliveryRoutes, createCmsDeliveryClient } from "@niho/web/cms-delivery";
+import { renderPageToHtml } from "../dist/server.js";
 import { cmsDeliveryHash, parseCmsDeliverySnapshot, serializeCmsDeliverySnapshot, signCmsDeliveryRequest } from "../dist/cms-delivery-contract.js";
 
 const { DatabaseSync } = await import("node:sqlite").catch(() => ({}));
@@ -26,14 +27,14 @@ const migrationDirectory = new URL("../studio/migrations/", import.meta.url);
 const migrations = await Promise.all((await readdir(migrationDirectory)).filter((name) => name.endsWith(".sql")).sort().map((name) => readFile(new URL(name, migrationDirectory), "utf8")));
 const bundle = await build({
   stdin: {
-    contents: 'export { default } from "./studio/worker.ts"; export { publishedSiteRequest } from "./studio/managed-publication.ts"; export { managedCmsApi } from "./studio/managed-cms.ts"; export { CmsStore } from "./studio/managed-cms-store.ts"; export { initializePublicNihoEmbeds } from "./studio/public-niho-embeds.ts";',
+    contents: 'export { default } from "./studio/worker.ts"; export { publishedSiteRequest } from "./studio/managed-publication.ts"; export { managedCmsApi } from "./studio/managed-cms.ts"; export { CmsStore } from "./studio/managed-cms-store.ts"; export { initializePublicNihoEmbeds } from "./studio/public-niho-embeds.ts"; export { managedPublicBlocks, planManagedPublicRender } from "./studio/managed-public-policy.ts"; export { emptyManagedPublicPolicy } from "./studio/managed-embed-contract.ts";',
     resolveDir: fileURLToPath(new URL("..", import.meta.url))
   },
   bundle: true, format: "esm", platform: "node", target: "node22", write: false,
   define: { __PUBLIC_NIHO_EMBEDS_PATH__: JSON.stringify(PUBLIC_EMBED_SCRIPT), __PUBLIC_PRESENTATION_PATH__: JSON.stringify(PUBLIC_PRESENTATION_SCRIPT) },
   banner: { js: 'import { createRequire as __createRequire } from "node:module"; const require = __createRequire(`${process.cwd()}/studio-worker-test.mjs`);' }
 });
-const { default: worker, publishedSiteRequest, managedCmsApi, CmsStore, initializePublicNihoEmbeds } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString("base64")}`);
+const { default: worker, publishedSiteRequest, managedCmsApi, CmsStore, initializePublicNihoEmbeds, managedPublicBlocks, planManagedPublicRender, emptyManagedPublicPolicy } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString("base64")}`);
 const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const jwk = { ...publicKey.export({ format: "jwk" }), kid: "managed-test", alg: "RS256", use: "sig" };
 
@@ -178,6 +179,39 @@ async function setFixturePublicDomain(h, site, domain, noindex = true) {
   const { version } = await body(await h.send(MANAGEMENT_ORIGIN, "GET", path), 200);
   return body(await h.send(MANAGEMENT_ORIGIN, "POST", path, { expectedVersion: version, domain, noindex }), 200);
 }
+
+test("published Kamakura images select a request-sized version and negotiated modern format", async () => {
+  const mediaOrigin = "https://kamakura-media.niho.life", reference = { provider: "kamakura-source", id: "cover" };
+  const mediaUrl = `${mediaOrigin}/uploads/cover.jpg`, assetUrl = `${mediaOrigin}/uploads/asset.webp`;
+  const document = {
+    schemaVersion: 1, siteId: "kamakura", pageId: "home", locale: "ja", revision: 1, title: "画像",
+    meta: { ogImage: { src: `${mediaOrigin}/uploads/og.png`, alt: "OG" } }, tokens: {},
+    body: [
+      { type: "element", id: "asset-image", tag: "img", asset: reference, attrs: { alt: "Asset" }, children: [] },
+      { type: "element", id: "url-image", tag: "img", attrs: { src: mediaUrl, alt: "URL" }, children: [] },
+      { type: "element", id: "gif-image", tag: "img", attrs: { src: `${mediaOrigin}/uploads/animated.gif`, alt: "GIF" }, children: [] },
+      { type: "element", id: "other-image", tag: "img", attrs: { src: "https://images.example.test/cover.jpg", alt: "Other" }, children: [] }
+    ]
+  };
+  const policy = emptyManagedPublicPolicy();
+  policy.resourceOrigins = [mediaOrigin, "https://images.example.test"];
+  const plan = planManagedPublicRender(document, policy, "https://site.example.test", [], [
+    { reference, url: assetUrl, width: 800, height: 600, altText: "" }
+  ]);
+  const html = renderPageToHtml(plan.document, managedPublicBlocks, { assets: plan.assets });
+  const rendered = new JSDOM(html).window.document;
+  const assetImage = rendered.querySelector('[data-nw-node="asset-image"]');
+  const urlImage = rendered.querySelector('[data-nw-node="url-image"]');
+  assert.equal(assetImage?.getAttribute("src"), `${mediaOrigin}/cdn-cgi/image/width=auto,format=auto/uploads/asset.webp`);
+  assert.equal(assetImage?.hasAttribute("srcset"), false, "v1 document srcSet remains a single URL");
+  assert.equal(urlImage?.getAttribute("src"), `${mediaOrigin}/cdn-cgi/image/width=auto,format=auto/uploads/cover.jpg`);
+  assert.equal(rendered.querySelector('[data-nw-node="gif-image"]')?.getAttribute("src"), `${mediaOrigin}/uploads/animated.gif`);
+  assert.equal(rendered.querySelector('[data-nw-node="gif-image"]')?.hasAttribute("srcset"), false);
+  assert.equal(rendered.querySelector('[data-nw-node="other-image"]')?.getAttribute("src"), "https://images.example.test/cover.jpg");
+  assert.equal(rendered.querySelector('[data-nw-node="other-image"]')?.hasAttribute("srcset"), false);
+  assert.equal(plan.document.meta.ogImage.src, `${mediaOrigin}/cdn-cgi/image/width=1200,format=auto/uploads/og.png`);
+  assert.match((await plan.head(null)).csp, new RegExp(`img-src[^;]*${mediaOrigin.replaceAll(".", "\\.")}`, "u"));
+});
 
 testWithD1("Studio CLI shares public delivery settings, separate versions and owner grants with the GUI", async (t) => {
   const h = await fixture(t);
