@@ -27,6 +27,7 @@ import { DocumentValidationError } from "../src/validation-utils.js";
 import { parseEnglishPublicationAccepted } from "../src/english-publication.js";
 import { EDITING_OPERATIONS, type EditingCapability } from "../src/editing-api.js";
 import { isEditingApiVersion } from "../src/editing-client.js";
+import { parseKamakuraEditingApiDiscovery } from "./kamakura-editing-api-contract.js";
 import {
   EDITING_LOCALIZATION_INPUT_BYTES, EDITING_LOCALIZATION_RESULT_BYTES, editingLocalizationCapability,
   editingLocalizationOperation, parseEditingLocalizationInput
@@ -1748,14 +1749,16 @@ async function signedKamakuraEditingApiRequest(request: Request, env: Env, ident
     try { value = await readBoundedResponse(response, localization && localization.id === "localization.preview"
       ? KAMAKURA_LOCALIZATION_LIMITS.previewResponseBytes : EDITING_LOCALIZATION_RESULT_BYTES); }
     catch { throw fail("upstream_invalid_response", response.status); }
-    if (response.ok && machineScopes && upstreamSuffix === EDITING_DISCOVERY_PATH) {
-      if (!isRecord(value) || value.siteId !== KAMAKURA_EDITOR_SITE_ID || !Array.isArray(value.operations)) {
-        throw fail("upstream_contract_invalid", response.status);
-      }
-      const operations = value.operations.filter((entry: unknown) => isRecord(entry) && typeof entry.id === "string"
-        && Object.hasOwn(KAMAKURA_MACHINE_OPERATIONS, entry.id)
-        && machineScopes.includes(KAMAKURA_MACHINE_OPERATIONS[entry.id]!));
-      return json({ ...value, operations }, response.status);
+    if (response.ok && upstreamSuffix === EDITING_DISCOVERY_PATH) {
+      let discovery: ReturnType<typeof parseKamakuraEditingApiDiscovery>;
+      try {
+        discovery = parseKamakuraEditingApiDiscovery(value, KAMAKURA_EDITOR_SITE_ID, url.search === "?features=site.styles");
+      } catch { throw fail("upstream_contract_invalid", response.status); }
+      const operations = machineScopes
+        ? discovery.operations.filter((entry) => Object.hasOwn(KAMAKURA_MACHINE_OPERATIONS, entry.id)
+          && machineScopes.includes(KAMAKURA_MACHINE_OPERATIONS[entry.id]!))
+        : discovery.operations;
+      return json({ ...discovery, operations }, response.status);
     }
     if (response.ok && localization && localization.id === "localization.overview") {
       const result = parseLocalizationOverviewResult(value);

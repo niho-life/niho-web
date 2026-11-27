@@ -1,5 +1,5 @@
 import { PAGE_OPERATION_VERSIONS, pageNodesHaveNames, pageOperationUsesNodeNames, pageOperationWire, type EditingPageApplyConflict, type EditingPageApplyInput, type EditingPageApplyResult } from "./editing-page-operations.js";
-import { EDITING_API_ERRORS, EDITING_OPERATIONS, PAGE_CMS_BINDINGS_CAPABILITY, PAGE_NODE_NAME_CAPABILITY, withPageCmsBindingsCapability, withPageNodeNameCapability, type EditingApiErrorCode, type EditingCmsOperationStatus, type EditingCmsPublishPlan, type EditingCmsTarget, type EditingDiscoveredOperation, type EditingPageCatalog, type EditingPagePublishNowResult, type EditingPageReleaseSetItem, type EditingPageReleaseSetItemResult, type EditingPageReleaseSetPlan, type EditingPageReleaseSetStatus, type EditingPageSnapshot, type EditingPageTarget } from "./editing-api.js";
+import { EDITING_API_ERRORS, PAGE_CMS_BINDINGS_CAPABILITY, PAGE_NODE_NAME_CAPABILITY, parseEditingApiDiscovery, type EditingApiErrorCode, type EditingCmsOperationStatus, type EditingCmsPublishPlan, type EditingCmsTarget, type EditingDiscoveredOperation, type EditingPageCatalog, type EditingPagePublishNowResult, type EditingPageReleaseSetItem, type EditingPageReleaseSetItemResult, type EditingPageReleaseSetPlan, type EditingPageReleaseSetStatus, type EditingPageSnapshot, type EditingPageTarget } from "./editing-api.js";
 import {
   SITE_STYLES_FEATURE, parseEditingSiteStylesEditRequest, parseEditingSiteStylesEditResponse,
   parseEditingSiteStylesPublishRequest, parseEditingSiteStylesPublishResponse, parseEditingSiteStylesSnapshot, siteStylesEdits,
@@ -335,17 +335,6 @@ function recordPageReadPerformance(resourceName: string, response: Response, sta
   const elapsed = entry && Number.isFinite(entry.duration) && entry.duration > 0 ? entry.duration : performance.now() - startedAt;
   recordEditorReadPerformance({ source, durationMs: Math.max(0, elapsed), serverTiming });
 }
-function validDiscoveredOperation(value: unknown): value is EditingDiscoveredOperation {
-  if (!plainRecord(value)) return false;
-  const expected = EDITING_OPERATIONS.find((operation) => operation.id === value.id);
-  if (!expected) return false;
-  const capabilities = Array.isArray(value.capabilities) ? value.capabilities : [];
-  let definition: EditingDiscoveredOperation = capabilities.includes(PAGE_CMS_BINDINGS_CAPABILITY) && (expected.id === "pages.apply" || expected.id === "pages.read" || expected.id === "pages.inspect")
-    ? withPageCmsBindingsCapability(expected, capabilities.includes(PAGE_NODE_NAME_CAPABILITY))
-    : capabilities.includes(PAGE_NODE_NAME_CAPABILITY) && (expected.id === "pages.apply" || expected.id === "pages.save")
-    ? withPageNodeNameCapability(expected) : expected;
-  return exactKeys(value, Object.keys(definition)) && stableJson(value) === stableJson(definition);
-}
 function assertTarget(document: PageDocument, target: EditingPageTarget): void {
   if (document.siteId !== target.siteId || document.pageId !== target.pageId || document.locale !== target.locale) throw new EditingApiClientError("invalid_response");
 }
@@ -511,11 +500,11 @@ export function createPageEditingApiClient(options: EditingApiClientOptions): Ed
     }
     const { response, body } = result;
     if (!response.ok) throw apiFailure(body, response.status);
-    if (!exactKeys(body, ["apiVersion", "siteId", "operations"]) || body.apiVersion !== "v1" || body.siteId !== siteId || !Array.isArray(body.operations)
-      || body.operations.length === 0 || body.operations.some((entry) => !validDiscoveredOperation(entry))
-      || new Set(body.operations.map((entry) => (entry as Record<string, unknown>).id)).size !== body.operations.length) throw new EditingApiClientError("invalid_response", response.status);
+    let discovery: EditingApiDiscovery;
+    try { discovery = parseEditingApiDiscovery(body, siteId); }
+    catch { throw new EditingApiClientError("invalid_response", response.status); }
     siteStylesFeature = negotiated;
-    discovered = body as unknown as EditingApiDiscovery;
+    discovered = discovery;
     return discovered;
   }
   async function getDiscovery(withSiteStyles: boolean, signal?: AbortSignal): Promise<EditingApiDiscovery> {
