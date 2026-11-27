@@ -337,10 +337,11 @@ test("revision methods are wrapped only when present, limited to the project sit
 });
 test("release plans keep a validated public URL and affected list through the project wrapper", async () => {
   const target = { siteId: "demo", pageId: "home", locale: "ja-JP" }, request = { target, expectedVersion: "v1", action: "publish" };
-  const extra = { url: "https://example.test/about", affected: [{ kind: "shared", name: "ヘッダー", detail: "ナビゲーション", hidden: true }, { kind: "site", name: "サイト設定" }] };
+  const extra = { url: "https://example.test/about", warnings: [{ code: "duplicate-title", message: "別の公開ページと重複しています。", hidden: true }], affected: [{ kind: "shared", name: "ヘッダー", detail: "ナビゲーション", hidden: true }, { kind: "site", name: "サイト設定" }] };
   const { wrapped, calls } = setup({ prepareRelease: async (input) => ({ ...input, confirmationToken: "token", domain: "https://example.test", changes: [], ...extra }) });
   const plan = await wrapped.prepareRelease(request, signal());
   assert.equal(plan.url, "https://example.test/about");
+  assert.deepEqual(plan.warnings, [{ code: "duplicate-title", message: "別の公開ページと重複しています。" }]);
   assert.deepEqual(plan.affected, [{ kind: "shared", name: "ヘッダー", detail: "ナビゲーション" }, { kind: "site", name: "サイト設定" }]);
   await wrapped.release(plan, signal()); assert.equal(calls.releases[0].url, "https://example.test/about");
   for (const url of ["https://evil.example.test/about", "https://www.example.test/about", "https://example.test.evil/x"])

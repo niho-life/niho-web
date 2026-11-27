@@ -348,6 +348,11 @@ testWithD1("custom domain serves a noindex root page with its private NIHO embed
   assert.equal((await h.send(MANAGEMENT_ORIGIN, "POST", domainPath, { expectedVersion: initial.version, domain: "studio.example", noindex: true })).status, 422);
   assert.equal((await h.send(MANAGEMENT_ORIGIN, "POST", domainPath, { expectedVersion: initial.version, domain: "preview.example.test", noindex: true }, { token: h.otherToken })).status, 403);
   await body(await h.send(MANAGEMENT_ORIGIN, "POST", domainPath, { expectedVersion: initial.version, domain: "preview.example.test", noindex: true }), 200);
+  const catalog = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/catalog`), 200);
+  assert.deepEqual(new Set(catalog.sites[0].domains), new Set([PUBLIC_ORIGIN, "https://preview.example.test"]));
+  const directory = await body(await h.send(MANAGEMENT_ORIGIN, "GET", "/api/projects"), 200);
+  const listed = directory.entries.find((entry) => entry.project.id === site.projectId);
+  assert.deepEqual(listed.project.site.domains, [PUBLIC_ORIGIN, "https://preview.example.test"]);
   const second = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Other domain", slug: "other-domain", locale: "ja" }), 201);
   const secondDomain = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `/api/projects/${second.projectId}/sites/${second.siteId}/editor/public-domain`), 200);
   assert.equal((await h.send(MANAGEMENT_ORIGIN, "POST", `/api/projects/${second.projectId}/sites/${second.siteId}/editor/public-domain`, {
