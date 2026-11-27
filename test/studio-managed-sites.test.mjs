@@ -1375,7 +1375,15 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
     expectedVersion: latestState.version, releaseId: aboutReleaseId
   }), 200);
   assert.deepEqual(rollback, { status: "rolled_back", releaseId: aboutReleaseId });
-  assert.equal(h.sqlite.prepare("SELECT version FROM managed_site_publication_state WHERE site_id = ?").get(created.siteId).version, aboutReleaseId);
+  const rolledBackState = h.sqlite.prepare("SELECT version, manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(created.siteId);
+  const aboutManifestKey = h.sqlite.prepare("SELECT manifest_key FROM managed_site_publication_history WHERE site_id = ? AND release_id = ?")
+    .get(created.siteId, aboutReleaseId).manifest_key;
+  assert.notEqual(rolledBackState.version, latestState.version);
+  assert.notEqual(rolledBackState.version, aboutReleaseId);
+  assert.equal(rolledBackState.manifest_key, aboutManifestKey);
+  const restoredHistory = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/publication-history`), 200);
+  assert.equal(restoredHistory.currentReleaseId, rolledBackState.version);
+  assert.ok(restoredHistory.releases.some(({ releaseId, current }) => releaseId === rolledBackState.version && current));
   assert.equal((await publishedSiteRequest(new Request("https://preview.sites.example/s/static-fixture/about", { headers: { "Cache-Control": "no-cache" } }), h.env)).status, 200);
   assert.equal((await publishedSiteRequest(new Request("https://preview.sites.example/s/static-fixture/about-us", { headers: { "Cache-Control": "no-cache" } }), h.env)).status, 404);
   const restoredSitemap = await publishedSiteRequest(new Request("https://sites.example/s/static-fixture/sitemap.xml", { headers: { "Cache-Control": "no-cache" } }), h.env);

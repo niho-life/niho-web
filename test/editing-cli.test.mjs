@@ -145,7 +145,7 @@ test("niho-edit reads a page over the host API without Studio or a browser", asy
   });
   assert.equal(result.exitCode, 0, `${result.stderr}\n${result.stdout}`);
   assert.deepEqual(JSON.parse(result.stdout), { document: fixture, version: "v1" });
-  assert.deepEqual(EDITING_OPERATIONS.filter(({ id }) => !id.startsWith("localization.")).map(({ id }) => id), ["pages.inspect", "pages.read", "pages.history", "pages.history-read", "pages.save", "pages.apply", "pages.preview-intent", "pages.release-plan", "pages.release", "pages.publish", "pages.release-set-plan", "pages.release-set", "pages.release-set-status", "pages.catalog", "site.publication-changes", "site.publish", "pages.change", "pages.change-prepare", "pages.change-apply",
+  assert.deepEqual(EDITING_OPERATIONS.filter(({ id }) => !id.startsWith("localization.")).map(({ id }) => id), ["pages.inspect", "pages.read", "pages.history", "pages.history-read", "pages.save", "pages.apply", "pages.preview-intent", "pages.release-plan", "pages.release", "pages.publish", "pages.release-set-plan", "pages.release-set", "pages.release-set-status", "pages.catalog", "site.publication-changes", "site.publication-history", "site.publication-rollback", "site.publish", "pages.change", "pages.change-prepare", "pages.change-apply",
     "cms.schema", "cms.list", "cms.read", "cms.create", "cms.save", "cms.publish-plan", "cms.publish", "cms.publish-now", "cms.operation-status", "site.breakpoints.read", "site.breakpoints.save",
     "site.styles.read", "site.styles.edit", "site.styles.publish",
     "assets.list", "assets.usages", "assets.resolve", "assets.update", "assets.upload-intent", "assets.delete", "assets.restore"]);
