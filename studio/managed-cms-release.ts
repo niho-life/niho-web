@@ -5,6 +5,7 @@ import { cmsItemKey } from "../src/cms-v2-schema.js";
 import type { ManagedD1 } from "./managed-sites.js";
 import { escapeHtml } from "./managed-cms-model.js";
 import { emptyManagedPublicPolicy, parseManagedPublicPolicy } from "./managed-embed-contract.js";
+import { managedVerificationTags } from "../src/managed-seo-settings.js";
 import { managedPublicHead, publicResourceSource } from "./managed-public-policy.js";
 import { revalidatePublicResponse, withPublicEtag } from "./managed-public-http.js";
 import {
@@ -238,17 +239,25 @@ export async function managedCmsPublic(request: Request, store: CmsStore, origin
       });
     body = `<ul>${links.map((link) => `<li><a href="${escapeHtml(prefix + link.path)}">${escapeHtml(link.title)}</a></li>`).join("")}</ul>`;
   } else return null;
-  const head = await managedPublicHead({ measurementId: policy.ga4MeasurementId, imageSources });
-  const noindex = customRoute?.noindex === true;
+  const head = await managedPublicHead({ measurementId: policy.seo.ga4MeasurementId, imageSources });
+  const seo = policy.seo, siteName = seo.siteName ?? current.site_name;
+  description ??= seo.description ?? undefined;
+  const noindex = customRoute?.noindex === true || seo.robotsPolicy === "noindex";
   const publicUrl = `${url.origin}${prefix}${routePath}`;
+  let ogImage: string | undefined;
+  if (seo.defaultOgImage) {
+    const candidate = /^https:\/\//iu.test(seo.defaultOgImage) ? seo.defaultOgImage : `${prefix}${seo.defaultOgImage}`;
+    if (include(candidate)) ogImage = candidate;
+  }
   let metadata = [
     `<meta name="robots" content="${noindex ? "noindex, nofollow" : "index, follow"}">`,
     ...(description ? [`<meta name="description" content="${escapeHtml(description)}">`, `<meta property="og:description" content="${escapeHtml(description)}">`] : []),
     `<meta property="og:type" content="${entry ? "article" : "website"}">`,
     `<meta property="og:title" content="${escapeHtml(title)}">`, `<meta property="og:locale" content="${escapeHtml(snapshot.locale)}">`,
-    `<meta property="og:site_name" content="${escapeHtml(current.site_name)}">`, `<meta property="og:url" content="${escapeHtml(publicUrl)}">`,
+    `<meta property="og:site_name" content="${escapeHtml(siteName)}">`, `<meta property="og:url" content="${escapeHtml(publicUrl)}">`,
+    ...(ogImage ? [`<meta property="og:image" content="${escapeHtml(/^https:\/\//iu.test(ogImage) ? ogImage : `${url.origin}${ogImage}`)}">`, `<meta property="og:image:alt" content="${escapeHtml(siteName)}">`] : []),
     ...(!noindex ? [`<link rel="canonical" href="${escapeHtml(publicUrl)}">`] : [])
-  ].join("");
+  ].join("") + managedVerificationTags(seo);
   const localized = [
     ...(state.current ? [{ locale: state.locale, id: state.current.id }] : []),
     ...Object.entries(state.localizedReleases ?? {}).map(([locale, release]) => ({ locale, id: release.id }))
@@ -268,12 +277,15 @@ export async function managedCmsPublic(request: Request, store: CmsStore, origin
       + `<link rel="alternate" hreflang="x-default" href="${escapeHtml(fallback.url)}">`;
   }
   const structured = jsonLd({ "@context": "https://schema.org", "@graph": [
-    { "@type": "WebSite", "@id": `${url.origin}/#website`, url: `${url.origin}/`, name: current.site_name },
+    { "@type": "WebSite", "@id": `${url.origin}/#website`, url: `${url.origin}/`, name: siteName, ...(seo.description ? { description: seo.description } : {}) },
+    ...(seo.organization ? [{ "@type": "Organization", "@id": `${url.origin}/#organization`, name: seo.organization.name, url: seo.organization.url,
+      ...(seo.organization.logo ? { logo: seo.organization.logo } : {}), ...(seo.organization.sameAs.length ? { sameAs: seo.organization.sameAs } : {}) }] : []),
     { "@type": entry ? "Article" : "CollectionPage", "@id": `${publicUrl}#page`, url: publicUrl, headline: title,
       inLanguage: snapshot.locale, isPartOf: { "@id": `${url.origin}/#website` }, ...(description ? { description } : {}) }
   ] });
   const content = `<!doctype html><html lang="${escapeHtml(snapshot.locale)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title>${metadata}${structured}${head.scripts}</head><body><main><h1>${escapeHtml(title)}</h1>${body}</main></body></html>`;
-  const headers = { ...publicHeaders, "Content-Security-Policy": head.csp, "Cache-Control": "public, no-cache, s-maxage=300, stale-while-revalidate=60" };
+  const headers = { ...publicHeaders, "Content-Security-Policy": head.csp, "Cache-Control": "public, no-cache, s-maxage=300, stale-while-revalidate=60",
+    ...(noindex ? { "X-Robots-Tag": "noindex, nofollow" } : {}) };
   const fullResponse = await withPublicEtag(content, headers);
   if (cacheKey && cache) try { await cache.put(cacheKey, fullResponse.clone()); } catch { /* edge cache is an optional optimization */ }
   const response = revalidatePublicResponse(request, fullResponse);

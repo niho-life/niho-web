@@ -180,6 +180,8 @@ export function planManagedPublicRender(document: PageDocument, policy: ManagedP
   const faviconSource = resource(meta?.favicon);
   if (faviconSource) images.add(faviconSource);
   else if (meta) delete meta.favicon;
+  const defaultOgSource = resource(policy.seo.defaultOgImage);
+  if (defaultOgSource) images.add(defaultOgSource);
   if (meta?.ogImage && "src" in meta.ogImage && !resource(meta.ogImage.src)) delete meta.ogImage;
   const rendered = { ...document, body, ...(meta && { meta }) };
   const assets: Record<string, ResolvedAsset> = {};

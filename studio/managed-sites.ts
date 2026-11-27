@@ -9,9 +9,10 @@ import { createPageEditingApi, type EditingActor, type EditingCapability, type E
 import type { EditingPageApplied } from "../src/editing-page-operations.js";
 import { normalizePageChange, pageChangeProblems } from "../src/editor-model.js";
 import type { EditorPage, EditorPageChange, EditorReleaseRequest, EditorTarget } from "../src/editor-types.js";
-import { matchesTemplatePath, renderPageHead, resolvePageMetadata, validatePagePath } from "../src/pages.js";
+import { matchesTemplatePath, renderPageHead, resolvePageMetadata, validatePagePath, type PageMetadata } from "../src/pages.js";
 import { emptyManagedPublicPolicy, MANAGED_EMBED_REF, managedBlockContracts, parseManagedPublicPolicy, registeredNihoEmbed } from "./managed-embed-contract.js";
 import type { ManagedPublicPolicy } from "./managed-embed-contract.js";
+import { managedVerificationTags, parseManagedSiteSeoSettings, type ManagedSiteSeoSettings } from "../src/managed-seo-settings.js";
 import { managedPublicBlocks, planManagedPublicRender, resolvePublishedEmbeds } from "./managed-public-policy.js";
 import { revalidatePublicResponse, withPublicEtag } from "./managed-public-http.js";
 
@@ -249,13 +250,57 @@ async function managedPublicSettings(request: Request, db: ManagedD1, actor: Man
   if (!owner) return json({ error: "forbidden" }, 403);
   const body = await readJson(request, actor, MAX_MUTATION_BODY);
   if (!body || !exactKeys(body, ["settings", "expectedVersion"]) || typeof body.expectedVersion !== "string") return json({ error: "invalid_request" }, 400);
-  const settings = parseManagedPublicPolicy(body.settings, origin);
+  let settingsInput = body.settings;
+  if (settingsInput && typeof settingsInput === "object" && !Array.isArray(settingsInput) && !Object.hasOwn(settingsInput, "seo")) {
+    const current = await db.prepare(`SELECT public_policy_json FROM managed_sites WHERE site_id = ?1 AND ${ownerScope}`)
+      .bind(siteId, projectId, actor.subject).first<{ public_policy_json: string }>();
+    try {
+      const currentPolicy = current && parseManagedPublicPolicy(JSON.parse(current.public_policy_json), origin);
+      if (currentPolicy) settingsInput = { ...settingsInput,
+        seo: { ...currentPolicy.seo, ...(Object.hasOwn(settingsInput, "ga4MeasurementId") ? { ga4MeasurementId: (settingsInput as Record<string, unknown>).ga4MeasurementId as string | null } : {}) } };
+    } catch { return json({ error: "invalid_settings" }, 500); }
+  }
+  const settings = parseManagedPublicPolicy(settingsInput, origin);
   if (!settings) return json({ error: "invalid_settings" }, 422);
   const version = opaqueVersion();
   const [result] = await db.batch([db.prepare(`UPDATE managed_sites SET public_policy_json = ?4, public_policy_version = ?5
     WHERE site_id = ?1 AND public_policy_version = ?6 AND ${ownerScope}`)
-    .bind(siteId, projectId, actor.subject, JSON.stringify(settings), version, body.expectedVersion)]);
+    .bind(siteId, projectId, actor.subject, JSON.stringify({ ...settings, ga4MeasurementId: settings.seo.ga4MeasurementId }), version, body.expectedVersion)]);
   return changed(result) ? json({ settings, version }) : json({ error: "conflict" }, 409);
+}
+
+async function managedPublicSeoSettings(request: Request, db: ManagedD1, actor: ManagedActor, projectId: string, siteId: string, origin: string): Promise<Response> {
+  const ownerScope = `EXISTS (SELECT 1 FROM sites AS s JOIN project_members AS member ON member.project_id = s.project_id
+    WHERE s.id = ?1 AND s.project_id = ?2 AND member.access_subject = ?3 AND member.role = 'owner')`;
+  if (request.method === "GET") {
+    const row = await db.prepare(`SELECT public_policy_json, public_policy_version FROM managed_sites WHERE site_id = ?1 AND ${ownerScope}`)
+      .bind(siteId, projectId, actor.subject).first<{ public_policy_json: string; public_policy_version: string }>();
+    if (!row) return json({ error: "forbidden" }, 403);
+    try {
+      const policy = parseManagedPublicPolicy(JSON.parse(row.public_policy_json), origin);
+      return policy ? json({ settings: policy.seo, version: row.public_policy_version }) : json({ error: "invalid_settings" }, 500);
+    } catch { return json({ error: "invalid_settings" }, 500); }
+  }
+  if (request.method !== "POST" && request.method !== "PUT") return json({ error: "method_not_allowed" }, 405);
+  const body = await readJson(request, actor, MAX_MUTATION_BODY);
+  if (!body || !exactKeys(body, ["settings", "expectedVersion"]) || typeof body.expectedVersion !== "string") return json({ error: "invalid_request" }, 400);
+  const seo = parseManagedSiteSeoSettings(body.settings);
+  if (!seo) return json({ error: "invalid_settings" }, 422);
+  const current = await db.prepare(`SELECT public_policy_json, public_policy_version FROM managed_sites WHERE site_id = ?1 AND ${ownerScope}`)
+    .bind(siteId, projectId, actor.subject).first<{ public_policy_json: string; public_policy_version: string }>();
+  if (!current) return json({ error: "forbidden" }, 403);
+  let policy: ManagedPublicPolicy;
+  try {
+    const parsed = parseManagedPublicPolicy(JSON.parse(current.public_policy_json), origin);
+    if (!parsed) return json({ error: "invalid_settings" }, 500);
+    policy = { ...parsed, seo };
+    if (!parseManagedPublicPolicy(policy, origin)) return json({ error: "invalid_settings" }, 422);
+  } catch { return json({ error: "invalid_settings" }, 500); }
+  const version = opaqueVersion();
+  const [result] = await db.batch([db.prepare(`UPDATE managed_sites SET public_policy_json = ?4, public_policy_version = ?5
+    WHERE site_id = ?1 AND public_policy_version = ?6 AND ${ownerScope}`)
+    .bind(siteId, projectId, actor.subject, JSON.stringify({ ...policy, ga4MeasurementId: seo.ga4MeasurementId }), version, body.expectedVersion)]);
+  return changed(result) ? json({ settings: seo, version }) : json({ error: "conflict" }, 409);
 }
 
 async function managedPublicDomain(request: Request, db: ManagedD1, actor: ManagedActor, projectId: string, siteId: string, origin: string): Promise<Response> {
@@ -731,8 +776,9 @@ async function applyRelease(request: Request, db: ManagedD1, actor: ManagedActor
     const publicOrigin = new URL(publicUrl).origin;
     const publicPath = new URL(publicUrl).pathname;
     const publicPrefix = row.public_domain ? "" : `/s/${row.slug}`;
-    const policyRow = await db.prepare("SELECT public_policy_json FROM managed_sites WHERE site_id = ?1")
-      .bind(row.site_id).first<{ readonly public_policy_json: string }>();
+    const policyRow = await db.prepare(`SELECT ms.public_policy_json, s.name AS site_name FROM managed_sites AS ms
+      JOIN sites AS s ON s.id = ms.site_id WHERE ms.site_id = ?1`)
+      .bind(row.site_id).first<{ readonly public_policy_json: string; readonly site_name: string }>();
     if (!policyRow) return json({ error: "publication_storage_unavailable" }, 503);
     let policy: ManagedPublicPolicy;
     try { policy = parseManagedPublicPolicy(JSON.parse(policyRow.public_policy_json), publicOrigin) ?? emptyManagedPublicPolicy(); }
@@ -743,14 +789,15 @@ async function applyRelease(request: Request, db: ManagedD1, actor: ManagedActor
     const renderPlan = planManagedPublicRender(prefixedDocument(document, publicPrefix), policy, publicOrigin, embeds);
     const rendered = renderPlan.document;
     const pageMetadata = resolvePageMetadata({ document: rendered, domain: publicOrigin, path: row.path, visibility: "public", assets: renderPlan.assets });
-    const { canonical: _canonical, ...metadataWithoutCanonical } = pageMetadata;
-    const metadata = { ...metadataWithoutCanonical, ...(pageMetadata.canonical ? { canonical: publicUrl } : {}),
-      openGraph: { ...pageMetadata.openGraph, url: publicUrl } };
+    const metadata = managedSiteMetadata(pageMetadata, policy.seo, policyRow.site_name, publicOrigin, publicPrefix, publicUrl);
+    const alternates = await managedPageHreflang(db, row.site_id, row.locale, row.path, publicOrigin, publicPrefix, policy.seo.robotsPolicy === "noindex");
     const { renderPageToHtml } = await import("../src/server.js");
-    const head = renderPageHead(metadata), body = renderPageToHtml(rendered, managedPublicBlocks, {
+    const head = renderPageHead(metadata) + alternates + managedVerificationTags(policy.seo)
+      + managedStructuredData(rendered, publicUrl, publicOrigin, policyRow.site_name, policy.seo);
+    const body = renderPageToHtml(rendered, managedPublicBlocks, {
       blankEmbeds: createBlankEmbedRegistry({ parentOrigin: publicOrigin, entries: [] }), assets: renderPlan.assets
     });
-    const runtime = await renderPlan.head(policy.ga4MeasurementId);
+    const runtime = await renderPlan.head(policy.seo.ga4MeasurementId);
     const html = `<!doctype html><html lang="${escapeAttribute(rendered.locale)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${head}${runtime.scripts}</head><body>${body}</body></html>`;
     try {
       prepared = await preparePublishedSite({ bucket: store.bucket, siteId: row.site_id, publicationId, pageId: row.page_id,
@@ -961,6 +1008,7 @@ export async function managedEditorOperation(
   const registration = await managedMemberRegistration(db, actor, projectId, siteId);
   if (!registration) return json({ error: "forbidden" }, 403);
   if (action === "/editor/public-settings") return managedPublicSettings(request, db, actor, projectId, siteId, origin);
+  if (action === "/editor/seo-settings") return managedPublicSeoSettings(request, db, actor, projectId, siteId, origin);
   if (action === "/editor/public-domain") return managedPublicDomain(request, db, actor, projectId, siteId, origin);
   if (action === "/editor/catalog") {
     if (request.method !== "GET") return json({ error: "method_not_allowed" }, 405);
@@ -1012,17 +1060,43 @@ function prefixedDocument(document: PageDocument, prefix: string): PageDocument 
 }
 function escapeAttribute(value: string): string { return value.replace(/[&<>"']/gu, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!); }
 
-function managedStructuredData(document: PageDocument, publicUrl: string, origin: string, siteName: string): string {
+function managedSeoImageUrl(value: string, origin: string, prefix: string): string {
+  if (/^https:\/\//iu.test(value)) return value;
+  const path = prefix && value.startsWith("/") && value !== prefix && !value.startsWith(`${prefix}/`) ? `${prefix}${value}` : value;
+  return `${origin}${path}`;
+}
+
+function managedSiteMetadata(metadata: PageMetadata, seo: ManagedSiteSeoSettings, fallbackSiteName: string, origin: string, prefix: string,
+  publicUrl: string, forceNoindex = false): PageMetadata {
+  const siteName = seo.siteName ?? fallbackSiteName;
+  const description = metadata.description ?? seo.description ?? metadata.openGraph.description;
+  const image = metadata.openGraph.image ?? (seo.defaultOgImage ? { url: managedSeoImageUrl(seo.defaultOgImage, origin, prefix), alt: siteName } : undefined);
+  const noindex = forceNoindex || seo.robotsPolicy === "noindex" || metadata.robots === "noindex, nofollow";
+  const { canonical, ...withoutCanonical } = metadata;
+  return {
+    ...withoutCanonical,
+    ...(noindex ? {} : canonical ? { canonical: publicUrl } : {}),
+    ...(description ? { description } : {}),
+    robots: noindex ? "noindex, nofollow" : "index, follow",
+    openGraph: { ...metadata.openGraph, ...(description ? { description } : {}), siteName, url: publicUrl, ...(image ? { image } : {}) }
+  };
+}
+
+function managedStructuredData(document: PageDocument, publicUrl: string, origin: string, fallbackSiteName: string, seo = emptyManagedPublicPolicy().seo): string {
+  const siteName = seo.siteName ?? fallbackSiteName;
   const graph: Record<string, unknown>[] = [
-    { "@type": "WebSite", "@id": `${origin}/#website`, url: `${origin}/`, name: siteName, inLanguage: document.locale },
+    { "@type": "WebSite", "@id": `${origin}/#website`, url: `${origin}/`, name: siteName, inLanguage: document.locale, ...(seo.description ? { description: seo.description } : {}) },
     { "@type": "WebPage", "@id": `${publicUrl}#webpage`, url: publicUrl, name: document.title,
-      inLanguage: document.locale, isPartOf: { "@id": `${origin}/#website` }, ...(document.meta?.description ? { description: document.meta.description } : {}) }
+      inLanguage: document.locale, isPartOf: { "@id": `${origin}/#website` }, ...((document.meta?.description ?? seo.description) ? { description: document.meta?.description ?? seo.description } : {}) }
   ];
+  if (seo.organization) graph.push({ "@type": "Organization", "@id": `${origin}/#organization`, name: seo.organization.name,
+    url: seo.organization.url, ...(seo.organization.logo ? { logo: seo.organization.logo } : {}), ...(seo.organization.sameAs.length ? { sameAs: seo.organization.sameAs } : {}) });
   const types: Record<string, string> = { organization: "Organization", localBusiness: "LocalBusiness", website: "WebSite", webPage: "WebPage", article: "Article" };
   for (const id of document.meta?.structuredData ?? []) {
+    if (id === "organization" && seo.organization) continue;
     const type = types[id];
     if (type) graph.push({ "@type": type, "@id": `${publicUrl}#${id}`, name: siteName, url: origin,
-      ...(document.meta?.description ? { description: document.meta.description } : {}) });
+      ...((document.meta?.description ?? seo.description) ? { description: document.meta?.description ?? seo.description } : {}) });
   }
   return `<script type="application/ld+json">${JSON.stringify({ "@context": "https://schema.org", "@graph": graph })
     .replaceAll("<", "\\u003c").replaceAll("\u2028", "\\u2028").replaceAll("\u2029", "\\u2029")}</script>`;
@@ -1077,15 +1151,23 @@ export async function managedPublicSeoResponse(request: Request, db: ManagedD1, 
   }
   const suffix = customRoute ? url.pathname : url.pathname.slice(prefix.length);
   if (!["/sitemap.xml", "/robots.txt", "/llms.txt", "/llms-full.txt"].includes(suffix)) return null;
-  const site = await db.prepare(`SELECT s.id AS site_id, s.name, ms.public_domain_noindex FROM managed_sites AS ms
+  const site = await db.prepare(`SELECT s.id AS site_id, s.name, ms.public_domain_noindex, ms.public_policy_json FROM managed_sites AS ms
     JOIN sites AS s ON s.id = ms.site_id WHERE ms.slug = ?1 LIMIT 1`).bind(slug)
-    .first<{ site_id: string; name: string; public_domain_noindex: number }>();
+    .first<{ site_id: string; name: string; public_domain_noindex: number; public_policy_json: string }>();
   if (!site) return null;
-  name = site.name;
-  if (customRoute && site.public_domain_noindex === 1) noindex = true;
+  let seo: ManagedSiteSeoSettings;
+  try {
+    const policy = parseManagedPublicPolicy(JSON.parse(site.public_policy_json), origin);
+    if (!policy) return null;
+    seo = policy.seo;
+  } catch { return null; }
+  name = seo.siteName ?? site.name;
+  if (customRoute && site.public_domain_noindex === 1 || seo.robotsPolicy === "noindex") noindex = true;
   if (suffix === "/robots.txt") {
     const body = noindex ? "User-agent: *\nDisallow: /\n" : `User-agent: *\nAllow: /\nSitemap: ${url.origin}${prefix}/sitemap.xml\n`;
-    return new Response(request.method === "HEAD" ? null : body, { headers: responseHeaders("text/plain; charset=utf-8") });
+    const headers = responseHeaders("text/plain; charset=utf-8");
+    if (noindex) headers.set("X-Robots-Tag", "noindex, nofollow");
+    return new Response(request.method === "HEAD" ? null : body, { headers });
   }
 
   const rows = await db.prepare(`SELECT mp.page_id, mp.locale, publication.published_path AS path, version.document_json,
@@ -1146,14 +1228,18 @@ export async function managedPublicSeoResponse(request: Request, db: ManagedD1, 
       return `<url><loc>${xml(absolute(page))}</loc>${lastmod}${languages}</url>`;
     }).join("");
     const body = `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">${entries}</urlset>`;
-    return new Response(request.method === "HEAD" ? null : body, { headers: responseHeaders("application/xml; charset=utf-8") });
+    const headers = responseHeaders("application/xml; charset=utf-8");
+    if (noindex) headers.set("X-Robots-Tag", "noindex, nofollow");
+    return new Response(request.method === "HEAD" ? null : body, { headers });
   }
   const markdown = [
     `# ${name}`, "", "## Pages", "",
     ...pages.map((page) => `- [${page.title || page.path}](${absolute(page)})${page.text ? `: ${page.text.slice(0, 240)}` : ""}`)
   ].join("\n");
   const full = suffix === "/llms-full.txt" ? [markdown, "", "## Full text", "", ...pages.filter(({ text }) => text).map((page) => `### ${page.title}\n\n${page.text}`)].join("\n") : markdown;
-  return new Response(request.method === "HEAD" ? null : full, { headers: responseHeaders("text/plain; charset=utf-8") });
+  const headers = responseHeaders("text/plain; charset=utf-8");
+  if (noindex) headers.set("X-Robots-Tag", "noindex, nofollow");
+  return new Response(request.method === "HEAD" ? null : full, { headers });
 }
 
 /** 共有originのslug routeか、host照合済みの独自domainでだけ呼ぶ。 */
@@ -1266,26 +1352,21 @@ export async function managedPublicRequest(request: Request, db: ManagedD1, orig
   const resolvedMetadata = resolvePageMetadata({ document: rendered, domain: origin, path: hasUppercaseRoute ? path.toLowerCase() : path, visibility: "public", assets: plan.assets });
   const publicUrl = `${origin}${publicPath}`;
   const hostNoindex = customRoute?.noindex === true;
-  const { canonical: _canonical, ...metadataWithoutCanonical } = resolvedMetadata;
-  const metadata = {
-    ...metadataWithoutCanonical,
-    robots: hostNoindex ? "noindex, nofollow" as const : resolvedMetadata.robots,
-    ...(!hostNoindex && resolvedMetadata.canonical ? { canonical: publicUrl } : {}),
-    openGraph: { ...resolvedMetadata.openGraph, url: publicUrl }
-  };
+  const metadata = managedSiteMetadata(resolvedMetadata, policy.seo, row.site_name, origin, prefix, publicUrl, hostNoindex);
   const { renderPageToHtml } = await import("../src/server.js");
   const [alternates, structuredData] = await Promise.all([
-    managedPageHreflang(db, row.site_id, row.locale, row.path, url.origin, prefix, hostNoindex),
-    Promise.resolve(managedStructuredData(rendered, publicUrl, url.origin, row.site_name))
+    managedPageHreflang(db, row.site_id, row.locale, row.path, url.origin, prefix, hostNoindex || policy.seo.robotsPolicy === "noindex"),
+    Promise.resolve(managedStructuredData(rendered, publicUrl, url.origin, row.site_name, policy.seo))
   ]);
-  const head = renderPageHead(metadata) + alternates + structuredData, content = renderPageToHtml(rendered, managedPublicBlocks, {
+  const head = renderPageHead(metadata) + alternates + managedVerificationTags(policy.seo) + structuredData, content = renderPageToHtml(rendered, managedPublicBlocks, {
     blankEmbeds: createBlankEmbedRegistry({ parentOrigin: origin, entries: [] }), assets: plan.assets
   });
-  const runtime = await plan.head(policy.ga4MeasurementId);
+  const runtime = await plan.head(policy.seo.ga4MeasurementId);
   const html = `<!doctype html><html lang="${escapeAttribute(rendered.locale)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${head}${runtime.scripts}</head><body>${content}</body></html>`;
   const headers = responseHeaders("text/html; charset=utf-8");
   headers.set("Cache-Control", "public, no-cache, s-maxage=300, stale-while-revalidate=60");
   headers.set("Content-Security-Policy", runtime.csp);
+  if (hostNoindex || policy.seo.robotsPolicy === "noindex") headers.set("X-Robots-Tag", "noindex, nofollow");
   headers.set("Cross-Origin-Opener-Policy", "same-origin");
   headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()");
   const fullResponse = await withPublicEtag(html, headers);

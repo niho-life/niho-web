@@ -2888,7 +2888,7 @@ async function kamakuraMachineEditingApi(request: Request, env: Env, url: URL, i
 }
 
 async function studioEditingApi(request: Request, env: Env, url: URL): Promise<Response> {
-  const match = /^\/api\/edit\/(v1|v2)\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/(capabilities|operations\/((?:cms|pages)\.[^?]+))$/u.exec(url.pathname);
+  const match = /^\/api\/edit\/(v1|v2)\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/(capabilities|operations\/((?:cms|pages)\.[^?]+|site\.seo\.(?:read|save)))$/u.exec(url.pathname);
   if (!match) return json({ error: "not_found" }, 404);
   let identity: AccessIdentity | ServiceIdentity;
   const accessToken = request.headers.get("cf-access-token");
@@ -2903,7 +2903,6 @@ async function studioEditingApi(request: Request, env: Env, url: URL): Promise<R
   if (version === "v1" && siteId === KAMAKURA_EDITOR_SITE_ID && identity.kind === "service") {
     return kamakuraMachineEditingApi(request, env, url, identity);
   }
-  if (!env.CMS_OBJECTS) return json({ error: "not_found" }, 404);
   const registration = await env.DB.prepare(`SELECT s.project_id FROM sites AS s JOIN managed_sites AS ms ON ms.site_id = s.id WHERE s.id = ?1`)
     .bind(siteId).first<{ project_id: string }>();
   if (!registration) return json({ error: "forbidden" }, 403);
@@ -2914,6 +2913,24 @@ async function studioEditingApi(request: Request, env: Env, url: URL): Promise<R
     kind: "cli", subject: `${CLI_SUBJECT_PREFIX}${identity.clientId}`,
     email: `cli-${identity.clientId}@studio.invalid`, requestId: crypto.randomUUID()
   };
+  if (version === "v2" && (operation === "site.seo.read" || operation === "site.seo.save")) {
+    const method = operation === "site.seo.read" ? "GET" : "PUT";
+    if (request.method !== method || url.search) return json({ error: "invalid_request" }, 400);
+    if (method !== "GET" && identity.kind === "human" && accessToken === null
+      && (request.headers.get("Origin") !== url.origin || request.headers.get("Sec-Fetch-Site") !== "same-origin")) return json({ error: "invalid_request" }, 400);
+    const capability = method === "GET" ? "site.settings.read" : "site.settings.write";
+    let subject = actor.id;
+    if (identity.kind === "service") {
+      const grant = await env.DB.prepare(`SELECT g.delegated_by_subject ${ACTIVE_CLI_GRANTS} AND g.capability = ?4 LIMIT 1`)
+        .bind(identity.clientId, registration.project_id, siteId, capability).first<{ delegated_by_subject: string }>();
+      if (!grant) return json({ error: "forbidden" }, 403);
+      subject = grant.delegated_by_subject;
+    }
+    return managedEditorOperation(request, env.DB, { subject, email: identity.kind === "human" ? identity.email : bridgeIdentity.email,
+      ...(identity.kind === "service" ? { cliClientId: identity.clientId } : {}), cli: identity.kind === "service" || accessToken !== null },
+      registration.project_id, siteId!, "/editor/seo-settings", url.origin);
+  }
+  if (!env.CMS_OBJECTS) return json({ error: "not_found" }, 404);
   const store = cmsStore(env, bridgeIdentity);
   if (version === "v1" && (path === "capabilities" || operation?.startsWith("pages."))) {
     if (request.method !== "GET" && identity.kind === "human" && accessToken === null &&

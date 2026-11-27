@@ -19,6 +19,7 @@ Node.js 22 以上を使います。
 | @niho/web/normalize | 文書の正規化 |
 | @niho/web/editing-api | ページ・サイト共通スタイルの共通編集 wire 契約 |
 | @niho/web/editing-client | GUI / `niho-edit` 共通の編集 API client |
+| niho-edit --studio | Studio-native site の版付きSEO設定をJSONで読み書き |
 | @niho/web/react | React renderer |
 | @niho/web/presentation-runtime | 公開ページの対話機能 |
 | @niho/web/server | HTML 描画 |

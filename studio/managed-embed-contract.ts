@@ -1,25 +1,35 @@
 import { isSafeHttpsOrigin } from "../src/validation-utils.js";
+import { emptyManagedSiteSeoSettings, parseManagedSiteSeoSettings, type ManagedSiteSeoSettings } from "../src/managed-seo-settings.js";
 export { MANAGED_EMBED_REF, managedBlockContracts, managedEmbedContract } from "../src/managed-embed-block.js";
 
-export type ManagedPublicPolicy = { frameOrigins: string[]; resourceOrigins: string[]; ga4MeasurementId: string | null };
+export type ManagedPublicPolicy = { frameOrigins: string[]; resourceOrigins: string[]; seo: ManagedSiteSeoSettings };
 export function emptyManagedPublicPolicy(): ManagedPublicPolicy {
-  return { frameOrigins: [], resourceOrigins: [], ga4MeasurementId: null };
+  return { frameOrigins: [], resourceOrigins: [], seo: emptyManagedSiteSeoSettings() };
 }
 export function isCspHttpsOrigin(value: unknown): value is string {
   return isSafeHttpsOrigin(value) && /^https:\/\/[a-z0-9.-]+(?::[0-9]+)?$/u.test(value);
 }
 
 export function parseManagedPublicPolicy(value: unknown, parentOrigin: string): ManagedPublicPolicy | null {
-  if (!value || typeof value !== "object" || Array.isArray(value) ||
-    Object.keys(value).sort().join(",") !== "frameOrigins,ga4MeasurementId,resourceOrigins") return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const keys = Object.keys(value).sort().join(",");
+  if (keys !== "frameOrigins,ga4MeasurementId,resourceOrigins" && keys !== "frameOrigins,resourceOrigins,seo"
+    && keys !== "frameOrigins,ga4MeasurementId,resourceOrigins,seo") return null;
   const { frameOrigins, resourceOrigins, ga4MeasurementId } = value as Record<string, unknown>;
   const validOrigins = (list: unknown): list is string[] =>
     Array.isArray(list) && list.length <= 24 && list.every((origin) =>
       isCspHttpsOrigin(origin) && origin.length <= 253 && origin !== parentOrigin && !new URL(origin).port) &&
     new Set(list).size === list.length;
   if (!validOrigins(frameOrigins) || !validOrigins(resourceOrigins)) return null;
-  if (ga4MeasurementId !== null && (typeof ga4MeasurementId !== "string" || !/^G-[A-Z0-9]{4,20}$/u.test(ga4MeasurementId))) return null;
-  return { frameOrigins: [...frameOrigins].sort(), resourceOrigins: [...resourceOrigins].sort(), ga4MeasurementId };
+  if (ga4MeasurementId !== undefined && ga4MeasurementId !== null && (typeof ga4MeasurementId !== "string" || !/^G-[A-Z0-9]{4,20}$/u.test(ga4MeasurementId))) return null;
+  const rawSeo = (value as Record<string, unknown>).seo;
+  let seo = rawSeo === undefined ? null : parseManagedSiteSeoSettings(rawSeo);
+  if (rawSeo === undefined) seo = { ...emptyManagedSiteSeoSettings(), ga4MeasurementId: typeof ga4MeasurementId === "string" ? ga4MeasurementId : null };
+  if (!seo) return null;
+  if (ga4MeasurementId !== undefined && ga4MeasurementId !== seo.ga4MeasurementId) return null;
+  const image = seo.defaultOgImage;
+  if (image && /^https:\/\//iu.test(image) && new URL(image).origin !== parentOrigin && !resourceOrigins.includes(new URL(image).origin)) return null;
+  return { frameOrigins: [...frameOrigins].sort(), resourceOrigins: [...resourceOrigins].sort(), seo };
 }
 
 const NIHO_ORIGIN = "https://niho.life";

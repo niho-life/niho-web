@@ -44,13 +44,15 @@ URL 変更・非公開化の確認画面では、サイト内の他ページの�
 
 既存の共有公開originはリクエスト時にD1の公開版から描画する。静的公開Workerは公開時に生成したHTMLをR2から返すが、配備・host切替は未実施。CMS bindingを持つページの静的生成、画像の幅別変換、1サイトへの複数host登録は未対応。
 
-公開SEO出力は `/s/{siteSlug}/sitemap.xml`、`robots.txt`、`llms.txt`、`llms-full.txt`。ページ文書のmetadataからcanonical、robots、OG、title、descriptionを出し、同じpathの翻訳が公開済みの場合だけhreflangを足す。ページのJSON-LD、CMS詳細・一覧のJSON-LD、301リダイレクト、404も公開rendererが返す。公開計画はdescription・画像alt・英語本文中の日本語を警告として返し、公開自体は止めない。サイト共通のSEO設定と `niho-edit` からのSEO設定編集、title/descriptionの重複・リンク切れ検査、既存リダイレクト18件の取込みは未対応で、#489の残りとして扱う。
+公開SEO出力は `/s/{siteSlug}/sitemap.xml`、`robots.txt`、`llms.txt`、`llms-full.txt`。ページ文書のmetadataからcanonical、robots、OG、title、descriptionを出し、同じpathの翻訳が公開済みの場合だけhreflangを足す。ページのJSON-LD、CMS詳細・一覧のJSON-LD、301リダイレクト、404も公開rendererが返す。公開計画はdescription・画像alt・英語本文中の日本語を警告として返し、公開自体は止めない。サイト名、説明、既定OGP画像、所有権確認タグ、組織JSON-LD、robots方針、GA4を含むSEO設定は、公開許可設定と同じ版で管理する。GUI と `niho-edit --studio site-seo-read` / `site-seo-save` から読み書きでき、公開HTMLへ反映する。title/descriptionの重複・リンク切れ検査と既存リダイレクト18件の取込みは未対応で、#489の残りとして扱う。
 
 ### 埋め込みと計測の設定
 
-オーナーはプロジェクト設定の「公開配信」で iframe と画像・動画の HTTPS origin をそれぞれ登録し、GA4 の測定 ID を保存する。origin は URL の正規化後に完全一致させる。たとえば YouTube は `https://www.youtube-nocookie.com` を登録する。カレンダーなどの公開 URL はエディターの「外部URL」から追加する。設定は公開済みページにも反映される。初期状態で外部 iframe、外部の画像・動画、計測は読み込まない。
+オーナーはプロジェクト設定の「公開配信」で iframe と画像・動画の HTTPS origin をそれぞれ登録する。origin は URL の正規化後に完全一致させる。たとえば YouTube は `https://www.youtube-nocookie.com` を登録する。カレンダーなどの公開 URL はエディターの「外部URL」から追加する。SEO設定には GA4 測定 ID とサイト共通 metadata を保存する。設定は公開済みページにも反映される。初期状態で外部 iframe、外部の画像・動画、計測は読み込まない。
 
-`GET /api/projects/{projectId}/sites/{siteId}/editor/public-settings` は `{ settings: { frameOrigins, resourceOrigins, ga4MeasurementId }, version }` を返す。同じ URL への `POST` は `{ settings, expectedVersion }` を受け、版が古ければ 409 を返す。計測を設定したサイトでは、`noindex` のページも含め、広告連携を無効にした Google tag を読み込む。GA4 を外す場合は `ga4MeasurementId: null` を指定する。
+`GET /api/projects/{projectId}/sites/{siteId}/editor/public-settings` は `{ settings: { frameOrigins, resourceOrigins, seo }, version }` を返す。同じ URL への `POST` は `{ settings, expectedVersion }` を受け、版が古ければ 409 を返す。SEOだけを編集する `GET` / `POST /api/projects/{projectId}/sites/{siteId}/editor/seo-settings` は `{ settings, version }` を返し、同じ `public_policy_version` をCASに使う。CLI は `site-seo-read` で `{ settings, version }` を読み、編集したsnapshotを `site-seo-save --json` に渡す。古いWorkerとの互換性のため、GA4測定IDは既存public policyにも同じ値を保持する。計測を設定したサイトでは、`noindex` のページも含め、広告連携を無効にした Google tag を読み込む。GA4 を外す場合は `seo.ga4MeasurementId: null` を指定する。
+
+SEO settings の `robotsPolicy: "noindex"` はページの robots meta、`robots.txt`、`X-Robots-Tag`、sitemap/llmsの一覧に反映する。既定OGP画像は同一hostのroot-relative URL、または `resourceOrigins` に登録したHTTPS originだけを使う。組織データは検証済みの値からJSON-LDを生成し、所有権確認タグの内容はHTML属性としてescapeして出力する。鎌倉の旧公開経路は移行完了まで従来設定を維持する。
 
 ページの CSP には、そのページで使う承認済みリソースの origin と必要な専用 JavaScript の URL を入れる。外部画像（`srcSet`、動画の poster、favicon、OG画像を含む）と外部動画は `resourceOrigins` に登録されたものだけが HTML に出る。CMS の一覧・詳細でも、公開素材 manifest と同じ許可リストを照合する。書体は文書で指定されたファミリー名を使う。文書に書体ファイルの URL を指定する入口はなく、書体ファイルの取得は許可しない。
 

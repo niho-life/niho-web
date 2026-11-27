@@ -2,6 +2,14 @@
 
 Node.js 22 以上で `niho-edit --studio` を使う。origin は Studio の管理 origin を指定する。Cloudflare Access Service Auth の資格情報は `CF_ACCESS_CLIENT_ID` と `CF_ACCESS_CLIENT_SECRET` で渡す。Studio-native site を人として操作するときは、短時間の Access application token を `NIHO_EDIT_TOKEN` で渡す。
 
+Studio-native site の共通SEO設定は owner 権限で読み書きできます。`site-seo-read` は `{ settings, version }` を返します。`site-seo-save` には編集したsnapshot全体を渡してください。設定は公開許可設定と同じ版を使うため、競合したら再読込して編集を確認します。
+
+```sh
+niho-edit --studio --origin https://studio.example --site demo-site site-seo-read > site-seo.json
+# site-seo.json の settings を編集
+niho-edit --studio --origin https://studio.example --site demo-site site-seo-save --json site-seo.json
+```
+
 ## 鎌倉のページ編集と公開
 
 Studio Worker は Access で検証済みの service identity と、対象 Project・Site の `studio_cli_grants` を照合する。現在のオーナーが委任した有効な `pages.read`、`pages.edit`、`pages.publish` がそれぞれ読取、保存、公開に必要になる。公開は計画を作り、確認した計画と一意の operation ID を渡して適用する。共通 API は `/api/edit/v1/sites/:siteId` 配下で、利用できる操作を `discover` が返す。CMS の読み取り・編集・公開も、応答に含まれる `cms.*` 操作を対応する grant で呼び出す。

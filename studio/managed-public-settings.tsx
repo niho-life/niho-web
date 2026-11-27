@@ -4,10 +4,18 @@ import { api, ApiError, record, SessionExpiredError, text } from "./api-client.j
 
 export function ManagedPublicSettings({ project, expire }: { project: Project; expire: () => void }) {
   const path = `/api/projects/${encodeURIComponent(project.id)}/sites/${encodeURIComponent(project.site.id)}/editor/public-settings`;
+  const seoPath = `/api/projects/${encodeURIComponent(project.id)}/sites/${encodeURIComponent(project.site.id)}/editor/seo-settings`;
   const domainPath = `/api/projects/${encodeURIComponent(project.id)}/sites/${encodeURIComponent(project.site.id)}/editor/public-domain`;
   const [version, setVersion] = useState("");
+  const [seoVersion, setSeoVersion] = useState("");
   const [frames, setFrames] = useState("");
   const [resources, setResources] = useState("");
+  const [siteName, setSiteName] = useState("");
+  const [description, setDescription] = useState("");
+  const [defaultOgImage, setDefaultOgImage] = useState("");
+  const [verificationTags, setVerificationTags] = useState("[]");
+  const [organization, setOrganization] = useState("null");
+  const [robotsPolicy, setRobotsPolicy] = useState<"index" | "noindex">("index");
   const [measurementId, setMeasurementId] = useState("");
   const [message, setMessage] = useState("");
   const [hidden, setHidden] = useState(false);
@@ -22,8 +30,20 @@ export function ManagedPublicSettings({ project, expire }: { project: Project; e
     if (!Array.isArray(settings.frameOrigins) || !Array.isArray(settings.resourceOrigins)) throw new Error("配信設定の形式を確認できません。");
     setFrames(settings.frameOrigins.map((entry) => text(entry, 253)).join("\n"));
     setResources(settings.resourceOrigins.map((entry) => text(entry, 253)).join("\n"));
-    setMeasurementId(settings.ga4MeasurementId === null ? "" : text(settings.ga4MeasurementId, 22));
     setVersion(text(source.version, 200));
+  }
+  function applySeo(value: unknown) {
+    const source = record(value), settings = record(source.settings);
+    setSiteName(settings.siteName === null ? "" : text(settings.siteName, 200));
+    setDescription(settings.description === null ? "" : text(settings.description, 500));
+    setDefaultOgImage(settings.defaultOgImage === null ? "" : text(settings.defaultOgImage, 2048));
+    setVerificationTags(JSON.stringify(Array.isArray(settings.verificationTags) ? settings.verificationTags : []));
+    setOrganization(JSON.stringify(settings.organization ?? null, null, 2));
+    setRobotsPolicy(settings.robotsPolicy === "noindex" ? "noindex" : "index");
+    setMeasurementId(settings.ga4MeasurementId === null ? "" : text(settings.ga4MeasurementId, 22));
+    const currentVersion = text(source.version, 200);
+    setSeoVersion(currentVersion);
+    setVersion(currentVersion);
   }
   function applyDomain(value: unknown) {
     const source = record(value);
@@ -34,8 +54,8 @@ export function ManagedPublicSettings({ project, expire }: { project: Project; e
 
   useEffect(() => {
     const controller = new AbortController();
-    void Promise.all([api(path, { signal: controller.signal }), api(domainPath, { signal: controller.signal })]).then(([value, domainValue]) => {
-      if (!controller.signal.aborted) { apply(value); applyDomain(domainValue); }
+    void Promise.all([api(path, { signal: controller.signal }), api(seoPath, { signal: controller.signal }), api(domainPath, { signal: controller.signal })]).then(([value, seoValue, domainValue]) => {
+      if (!controller.signal.aborted) { apply(value); applySeo(seoValue); applyDomain(domainValue); }
     }).catch((error: unknown) => {
       if (controller.signal.aborted) return;
       if (error instanceof SessionExpiredError) expire();
@@ -43,7 +63,7 @@ export function ManagedPublicSettings({ project, expire }: { project: Project; e
       else setMessage("公開配信の設定を読み込めませんでした。");
     });
     return () => controller.abort();
-  }, [path, domainPath, expire, attempt]);
+  }, [path, seoPath, domainPath, expire, attempt]);
 
   async function save(event: FormEvent) {
     event.preventDefault();
@@ -53,15 +73,39 @@ export function ManagedPublicSettings({ project, expire }: { project: Project; e
     try {
       const frameOrigins = [...new Set(frames.split(/\s+/u).filter(Boolean))];
       const resourceOrigins = [...new Set(resources.split(/\s+/u).filter(Boolean))];
-      apply(await api(path, { method: "POST", body: {
-        expectedVersion: version, settings: { frameOrigins, resourceOrigins, ga4MeasurementId: measurementId.trim() || null }
-      } }));
+      const result = await api(path, { method: "POST", body: { expectedVersion: version, settings: { frameOrigins, resourceOrigins } } });
+      apply(result);
+      const updatedVersion = text(record(result).version, 200);
+      setSeoVersion(updatedVersion);
       setMessage("公開配信の設定を保存しました。");
     } catch (error) {
       if (error instanceof SessionExpiredError) expire();
       else if (error instanceof ApiError && error.status === 409) setMessage("別の変更が保存されました。再読込して設定を確認してください。");
       else if (error instanceof ApiError && error.status === 422) setMessage("HTTPS origin と GA4 測定 ID の形式を確認してください。");
       else setMessage("公開配信の設定を保存できませんでした。");
+    } finally { setBusy(false); }
+  }
+
+  async function saveSeo(event: FormEvent) {
+    event.preventDefault();
+    if (!seoVersion || busy) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      let tags: unknown, structured: unknown;
+      try { tags = JSON.parse(verificationTags); structured = JSON.parse(organization); }
+      catch { setMessage("確認タグと組織データのJSON形式を確認してください。"); return; }
+      const settings = { siteName: siteName.trim() || null, description: description.trim() || null,
+        defaultOgImage: defaultOgImage.trim() || null, verificationTags: tags, organization: structured,
+        robotsPolicy, ga4MeasurementId: measurementId.trim() || null };
+      const result = await api(seoPath, { method: "POST", body: { expectedVersion: seoVersion, settings } });
+      applySeo(result);
+      setMessage("SEO設定を保存しました。公開ページは次回の公開で更新されます。");
+    } catch (error) {
+      if (error instanceof SessionExpiredError) expire();
+      else if (error instanceof ApiError && error.status === 409) setMessage("公開設定が別に更新されました。再読込して確認してください。");
+      else if (error instanceof ApiError && error.status === 422) setMessage("SEO設定のURL・確認タグ・組織データを確認してください。");
+      else setMessage("SEO設定を保存できませんでした。");
     } finally { setBusy(false); }
   }
 
@@ -100,10 +144,35 @@ export function ManagedPublicSettings({ project, expire }: { project: Project; e
       <label>画像・動画を許可する HTTPS origin
         <textarea disabled={busy} rows={4} maxLength={6100} spellCheck={false} value={resources} onChange={(event) => setResources(event.target.value)} placeholder="https://media.example.com" />
       </label>
+      <div><button type="submit" disabled={busy}>保存</button></div>
+    </form>}
+    {seoVersion && <form className="studio-public-settings-form" onSubmit={(event) => void saveSeo(event)}>
+      <h3>サイトのSEO</h3>
+      <label>サイト名
+        <input disabled={busy} maxLength={200} type="text" value={siteName} onChange={(event) => setSiteName(event.target.value)} placeholder={project.site.name} />
+      </label>
+      <label>サイトの説明
+        <textarea disabled={busy} rows={3} maxLength={500} value={description} onChange={(event) => setDescription(event.target.value)} />
+      </label>
+      <label>既定のOGP画像URL
+        <input disabled={busy} maxLength={2048} type="text" autoComplete="off" spellCheck={false} value={defaultOgImage} onChange={(event) => setDefaultOgImage(event.target.value)} placeholder="https://example.com/og.png または /images/og.png" />
+      </label>
+      <label>所有権確認タグ（JSON配列）
+        <textarea disabled={busy} rows={3} maxLength={5000} spellCheck={false} value={verificationTags} onChange={(event) => setVerificationTags(event.target.value)} />
+      </label>
+      <details><summary>組織の構造化データ（JSON）</summary>
+        <textarea disabled={busy} rows={6} maxLength={5000} spellCheck={false} value={organization} onChange={(event) => setOrganization(event.target.value)} />
+        <p className="studio-help">null または {`{"name":"組織名","url":"https://example.com","logo":null,"sameAs":[]}`} を指定します。</p>
+      </details>
+      <label>robots
+        <select disabled={busy} value={robotsPolicy} onChange={(event) => setRobotsPolicy(event.target.value === "noindex" ? "noindex" : "index")}>
+          <option value="index">検索対象にする</option><option value="noindex">検索対象にしない</option>
+        </select>
+      </label>
       <label>GA4 測定 ID
         <input disabled={busy} maxLength={22} type="text" autoComplete="off" spellCheck={false} value={measurementId} onChange={(event) => setMeasurementId(event.target.value)} placeholder="G-XXXXXXXXXX" />
       </label>
-      <div><button type="submit" disabled={busy}>保存</button></div>
+      <div><button type="submit" disabled={busy}>SEO設定を保存</button></div>
     </form>}
     {(message || !version) && <p role="status">{message || "公開配信の設定を読み込んでいます。"}</p>}
   </section>;

@@ -401,6 +401,28 @@ testWithD1("managed SEO renders alternates and JSON-LD, publishes discovery file
   const h = await fixture(t);
   const site = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "SEO Fixture", slug: "seo-fixture", locale: "ja" }), 201);
   const api = `/api/projects/${site.projectId}/sites/${site.siteId}/editor`;
+  const seoPath = api + "/seo-settings", cliSeoPath = `/api/edit/v2/sites/${site.siteId}/operations/site.seo.read`;
+  const initialSeo = await body(await h.send(MANAGEMENT_ORIGIN, "GET", seoPath), 200);
+  const cliRead = await body(await h.send(MANAGEMENT_ORIGIN, "GET", cliSeoPath, undefined, { cli: true }), 200);
+  assert.deepEqual(cliRead.settings, initialSeo.settings);
+  const seoSettings = {
+    siteName: "SEO Site Name", description: "サイト共通の説明", defaultOgImage: "/images/site-og.png",
+    verificationTags: [{ name: "google-site-verification", content: "verify-code-123" }],
+    organization: { name: "SEO Organization", url: "https://organization.example", logo: "https://organization.example/logo.png", sameAs: ["https://social.example/organization"] },
+    robotsPolicy: "index", ga4MeasurementId: "G-SEO12345"
+  };
+  const invalidSeo = await h.send(MANAGEMENT_ORIGIN, "POST", seoPath, {
+    expectedVersion: cliRead.version, settings: { ...seoSettings, defaultOgImage: "/images/og.png#fragment" }
+  });
+  assert.equal(invalidSeo.status, 422, "OG images cannot include URL fragments");
+  const savedSeo = await body(await h.send(MANAGEMENT_ORIGIN, "PUT", cliSeoPath.replace("site.seo.read", "site.seo.save"),
+    { expectedVersion: cliRead.version, settings: seoSettings }, { cli: true, headers: { "X-Studio-CMS-Version": "2" } }), 200);
+  assert.deepEqual(savedSeo.settings, seoSettings);
+  const publicSettingsPath = api + "/public-settings";
+  const publicSettings = await body(await h.send(MANAGEMENT_ORIGIN, "GET", publicSettingsPath), 200);
+  const oldEditorSave = await body(await h.send(MANAGEMENT_ORIGIN, "POST", publicSettingsPath,
+    { expectedVersion: publicSettings.version, settings: { frameOrigins: [], resourceOrigins: [] } }), 200);
+  assert.deepEqual(oldEditorSave.settings.seo, seoSettings, "public policy edits preserve the versioned SEO document");
   const release = async (pageId, locale, version) => {
     const target = { siteId: site.siteId, pageId, locale };
     const plan = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/${pageId}/release-plan`, { target, expectedVersion: version, action: "publish" }), 200);
@@ -431,13 +453,20 @@ testWithD1("managed SEO renders alternates and JSON-LD, publishes discovery file
   assert.match(html, /hreflang="x-default"/u);
   assert.match(html, /application\/ld\+json/u);
   assert.match(html, /"@type":"Organization"/u);
+  assert.match(html, /"name":"SEO Organization"/u);
+  assert.match(html, /<meta name="google-site-verification" content="verify-code-123">/u);
+  assert.match(html, /<meta property="og:site_name" content="SEO Site Name">/u);
+  assert.match(html, /<meta property="og:image" content="https:\/\/sites\.example\/s\/seo-fixture\/images\/site-og\.png">/u);
+  assert.match(html, /G-SEO12345/u);
   assert.match(html, /<meta name="description" content="日本語の説明">/u);
   const sitemap = await (await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/sitemap.xml`)).text();
   assert.match(sitemap, /<loc>https:\/\/sites\.example\/s\/seo-fixture\/en<\/loc>/u);
   assert.match(sitemap, /hreflang="en"/u);
   assert.match(await (await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/robots.txt`)).text(), /Sitemap: https:\/\/sites\.example\/s\/seo-fixture\/sitemap\.xml/u);
   assert.match(await (await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/llms.txt`)).text(), /English home/u);
-  assert.match(await (await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/llms-full.txt`)).text(), /日本語の説明|# SEO Fixture/u);
+  assert.match(await (await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/llms-full.txt`)).text(), /日本語の説明|# SEO Site Name/u);
+  const siteDefaultPage = await (await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/about`)).text();
+  assert.match(siteDefaultPage, /<meta name="description" content="サイト共通の説明">/u);
   const upper = await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/ABOUT`);
   assert.equal(upper.status, 301);
   assert.equal(upper.headers.get("Location"), `${PUBLIC_ORIGIN}/s/seo-fixture/about`);
@@ -457,6 +486,19 @@ testWithD1("managed SEO renders alternates and JSON-LD, publishes discovery file
   const missing = await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/missing`);
   assert.equal(missing.status, 404);
   assert.match(await missing.text(), /ページが見つかりません/u);
+  const currentSeo = await body(await h.send(MANAGEMENT_ORIGIN, "GET", seoPath), 200);
+  await body(await h.send(MANAGEMENT_ORIGIN, "POST", seoPath, {
+    expectedVersion: currentSeo.version, settings: { ...currentSeo.settings, robotsPolicy: "noindex" }
+  }), 200);
+  const noindexRobots = await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/robots.txt`);
+  assert.match(await noindexRobots.text(), /Disallow: \/\n/u);
+  assert.equal(noindexRobots.headers.get("X-Robots-Tag"), "noindex, nofollow");
+  const noindexSitemap = await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/sitemap.xml`);
+  assert.equal(noindexSitemap.headers.get("X-Robots-Tag"), "noindex, nofollow");
+  assert.doesNotMatch(await noindexSitemap.text(), /<loc>/u);
+  const noindexPage = await h.fetch(`${PUBLIC_ORIGIN}/s/seo-fixture/about-us`);
+  assert.equal(noindexPage.headers.get("X-Robots-Tag"), "noindex, nofollow");
+  assert.match(await noindexPage.text(), /name="robots" content="noindex, nofollow"/u);
 });
 
 testWithD1("Studio-native site uses one D1 page store for GUI, CAS, release history and public rendering", async (t) => {

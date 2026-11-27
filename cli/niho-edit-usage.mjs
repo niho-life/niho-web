@@ -24,6 +24,8 @@ niho-edit --origin <https-origin> --site <site-id> page-release-set-apply --json
 niho-edit --origin <https-origin> --site <site-id> page-release-set-status --operation-id <uuid-v4>
 niho-edit --origin <https-origin> --site <site-id> breakpoints-read
 niho-edit --origin <https-origin> --site <site-id> breakpoints-save --json <settings-snapshot-file|->
+niho-edit --studio --origin <studio-origin> --site <site-id> site-seo-read
+niho-edit --studio --origin <studio-origin> --site <site-id> site-seo-save --json <settings-snapshot-file|->
 niho-edit --origin <https-origin> --site <site-id> styles read
 niho-edit --origin <https-origin> --site <site-id> styles edit --json <edit-request-file|->
 niho-edit --origin <https-origin> --site <site-id> styles publish --json <publish-request-file|->
@@ -68,6 +70,7 @@ Set NIHO_EDIT_TOKEN to a short-lived bearer token. read returns { document, vers
 Edit document while keeping version, then pass the snapshot to save for version-checked persistence.
 Review the release plan before applying it. Keep and reuse the same operation ID when retrying a release.
 styles read returns { draft: { version, styles }, published: { version, styles } }. styles edit accepts { expectedVersion, edits }; rename rewrites references atomically and a referenced delete reports usages. styles publish accepts { expectedDraftVersion, expectedPublishedVersion }.
+site-seo-read returns { settings, version } with the version shared by the site's public settings. Edit its settings object and pass the snapshot to site-seo-save; the write uses version checking. The SEO fields include site name, description, default OGP image, verification tags, organization data, robots policy, and GA4 measurement ID.
 For a page release set, items-file contains 1 to 50 items: { "items": [{ "target": { "siteId", "pageId", "locale" }, "expectedVersion", "componentsVersion?", "presentationVersion?" }, ...] }.
 The plan is bound to the changed targets and versions. Results report each page as released, conflict, or pending.
 Apply the same saved plan again after a timeout to resume unfinished pages without republishing completed pages, then query page-release-set-status with its operation ID.
