@@ -1,7 +1,7 @@
 import { resolvePageLink } from "./presentation-links.js";
 import { resolvePageStyles, type SiteStyles } from "./site-styles.js";
 import { createElement, Fragment, memo, useMemo, useRef, type ComponentType, type CSSProperties, type ReactElement, type ReactNode } from "react";
-import type { BlockContract, CarouselBinding, PageDocument, PageNode, PublicPropValue, SitePresentation, SitePresentationExternalFrame, SitePresentationHostView, SitePresentationOverlay } from "./types.js";
+import type { BlockContract, CarouselBinding, PageDocument, PageNode, PublicImageRenderHints, PublicPropValue, SitePresentation, SitePresentationExternalFrame, SitePresentationHostView, SitePresentationOverlay } from "./types.js";
 import { parsePageDocument } from "./document.js";
 import { canvasNodeStyleValues, canvasTokenStyleValues, cssForDocument, pageScope, resolveViewportHeightUnits, sameCanvasCssShape } from "./css.js";
 import { parseResolvedAssets, resolvedAsset, type ResolvedAssetMap } from "./assets.js";
@@ -73,6 +73,8 @@ export type PageRendererProps = {
    * siteOrigin は文書の root-relative な画像 URL（`/x.svg`）をサイトの公開 origin で解決する（キャンバスの iframe は Studio の origin のため）。
    */
   canvas?: { viewportHeight?: number | undefined; siteOrigin?: string | undefined; /** Studio previewだけで標準media操作を許可する。 */ interactive?: boolean | undefined } | undefined;
+  /** @internal Studio-native publication supplies trusted, generated image hints without mutating the saved page document. */
+  imageHints?: Readonly<Record<string, PublicImageRenderHints>> | undefined;
 };
 
 const canvasCssText = (css: string, canvas: PageRendererProps["canvas"]) => canvas?.viewportHeight ? resolveViewportHeightUnits(css, canvas.viewportHeight) : css;
@@ -145,13 +147,13 @@ export function PageRenderer(props: PageRendererProps): ReactElement {
 }
 
 /** useEffect を使わず、Next.js の初期 HTML と静的 SSR の両方で本文を返す。 */
-function PageRendererCore({ document: input, blocks = emptyBlocks, assets: assetInput, missingAssets = "omit", siteStyles, overlayBindings = emptyOverlayBindings, hostViews = emptyHostViews, hostViewBinding, hostViewMode = "prefer", externalFramePolicy, blankEmbeds: blankEmbedInput, canvas, links }: PageRendererProps, trusted: boolean): ReactElement {
+function PageRendererCore({ document: input, blocks = emptyBlocks, assets: assetInput, missingAssets = "omit", siteStyles, overlayBindings = emptyOverlayBindings, hostViews = emptyHostViews, hostViewBinding, hostViewMode = "prefer", externalFramePolicy, blankEmbeds: blankEmbedInput, canvas, links, imageHints }: PageRendererProps, trusted: boolean): ReactElement {
   const document = trusted ? input as PageDocument : resolvePageStyles(parsePageDocument(input, blocks, siteStyles ? { siteStyles } : {}), siteStyles);
   const blankEmbeds = useMemo(() => blankEmbedInput === undefined ? undefined : parseBlankEmbedRegistry(blankEmbedInput), [blankEmbedInput]);
   const assets = useMemo(() => assetInput === undefined ? emptyAssets : parseResolvedAssets(assetInput), [assetInput]);
   const carousels = useMemo(() => nativeCarousels(document.body), [document.body]);
   const scope = pageScope(document);
-  const context = [blocks, assets, missingAssets, scope, document.textStyles, overlayBindings, hostViews, hostViewBinding, hostViewMode, externalFramePolicy, blankEmbeds, canvas, links, carousels] as const;
+  const context = [blocks, assets, missingAssets, scope, document.textStyles, overlayBindings, hostViews, hostViewBinding, hostViewMode, externalFramePolicy, blankEmbeds, canvas, links, carousels, imageHints] as const;
   const videoReady = (node: PageNode | undefined): boolean => node?.type === "element" && node.tag === "video" &&
     (typeof node.attrs?.src === "string" || !!node.asset && !!resolvedAsset(assets, node.asset));
   const render = (node: PageNode, videoInteraction?: VideoInteractionChild, index = 0): ReactElement => createElement(MemoizedPageNode, {
@@ -182,6 +184,7 @@ function PageRendererCore({ document: input, blocks = emptyBlocks, assets: asset
       return createElement("div", { key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-block": node.block, ...(canvasStyle ? { style: canvasStyle } : {}) }, createElement(definition.component, node.props));
     }
     const attrs = { ...node.attrs };
+    if (node.tag === "img" && imageHints?.[node.id]) Object.assign(attrs, imageHints[node.id]);
     if (hasCanvasVariables) Object.assign(attrs, { style: withCanvasStyle((node.attrs as Record<string, unknown> | undefined)?.style as CSSProperties) });
     if (links && typeof attrs.href === "string") attrs.href = resolvePageLink(attrs.href, links);
     if (typeof attrs.autocomplete === "string") { attrs.autoComplete = attrs.autocomplete; delete attrs.autocomplete; }

@@ -15,12 +15,28 @@ Studio-native site の公開出力を、編集・書込みを持つ Studio Worke
 - 検証hostまたはサイト全体をnoindexにしたhostは、`robots.txt` で全体を拒否し、sitemapとllmsの一覧を空にして返します。noindex応答にも本文に対応する ETag を付けます。
 - `managed_site_hosts` は hostname と path prefix を site に結び付けます。verification host には `noindex=1` を保存し、200・304・307・404・503 の全応答に `X-Robots-Tag: noindex, nofollow` を付けます。
 - HTML は `Cache-Control: no-cache` と digest の ETag を返します。検証hostもETag再検証を使います。
-- 公開画像は、許可済みメディア origin の JPEG / PNG / WebP / AVIF に限り、HTML に `width=auto,format=auto` の画像 URL を出します。Cloudflare は client hints、または User-Agent の幅区分から縮小幅を選び、対応形式に応じて AVIF / WebP を返します。GIF と許可外 origin は変換しません。[独自ドメインの切替と切戻し](site-domain-cutover-runbook.md)
+- 公開画像は、許可済みメディア origin の JPEG / PNG / WebP / AVIF に限り、HTML に `width=auto,format=auto` の fallback URL と幅別の `srcset` を出します。`sizes` は既定で `100vw` です。幅別候補は 320〜2560 CSS px で、Client Hints を使わない iPhone などでも表示幅に応じた画像を選べます。ページ内の最初の画像には `fetchpriority="high"`、後続画像には指定がない場合 `loading="lazy"` と `decoding="async"` を付けます。明示された `loading` と `decoding` は保持します。GIF と許可外 origin は変換しません。[独自ドメインの切替と切戻し](site-domain-cutover-runbook.md)
+- 公開HTMLの既定フォントは `system-ui` と日本語の OS フォント fallback を使います。公開 Worker の CSP は `font-src 'none'` とし、Web フォントを読み込みません。
 - 公開 Worker は host 対応表と公開 manifest pointer を isolate 内で最大5秒保持します。配信は選んだ目録のルート・公開設定・生成物を使用します。HTML artifactはhost origin・site ID・manifest publication ID・本文digestを含むCache API keyで再利用し、NIHO接続先の解決応答はcacheしません。
 - `studio/public-sites.wrangler.json` が公開 Worker の entry point です。Studio と同じ D1/R2 bindings を読みます。Worker のコードにはD1/R2書込み操作を置きません。Cloudflare binding自体のread-only権限は別途強制できません。
 - `studio:build` は公開 Worker 用 `dist/public-sites` に `/_niho/` の hash 付きランタイムだけを生成します。公開 Worker はそのパスの許可形式だけを静的 asset binding 経由で返します。Studio の dashboard asset は公開配信用 directory に入りません。
 
 `PUBLIC_SITES_PREVIEW_ORIGIN` を Studio Worker に設定すると、新規 managed site の hostname/path prefix が `noindex=1` で登録されます。公開 Worker 側にも同じ origin を設定すると、D1 障害時を含む未登録hostのエラー応答にも noindex を付けます。公開hostの割当ては Cloudflare の Custom Domain/Route と合わせて行います。
+
+## TTFB の比較
+
+`scripts/compare-public-ttfb.mjs` は、同じ route を基準 host と候補 host に順番を交互にして要求し、最初の要求と後続要求の TTFB を JSON で出します。計測は対象地域のネットワークから実行し、`--location` に地域を記録します。
+
+```sh
+node scripts/compare-public-ttfb.mjs \
+  --baseline https://baseline.example \
+  --candidate https://preview.example \
+  --path / --path /en/ \
+  --warm-samples 10 \
+  --location Japan
+```
+
+最初の要求は cold isolate の proxy 値として扱います。HTTP だけでは isolate が cold だったことを確認できないため、cold 計測は対象 route がしばらく要求されていない状態から開始し、後続の反復要求を warm 値として記録します。
 
 ## 未完了の接続
 

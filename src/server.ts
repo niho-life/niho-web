@@ -4,10 +4,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { PageRenderer, SitePageRenderer, type BlockRegistry, type ExternalFramePolicy } from "./react.js";
 import type { ResolvedAssetMap } from "./assets.js";
 import type { BlankEmbedRegistry } from "./embeds.js";
+import type { PublicImageRenderHints } from "./types.js";
 
 /** Astro 等の build/server 用。本文と scoped style を含む断片を返す。 */
-export function renderPageToHtml(document: unknown, blocks: BlockRegistry = {}, options: { assets?: ResolvedAssetMap; siteStyles?: SiteStyles; blankEmbeds?: BlankEmbedRegistry } = {}): string {
-  return renderToStaticMarkup(createElement(PageRenderer, { document, blocks, ...(options.siteStyles ? { siteStyles: options.siteStyles } : {}), ...(options.assets === undefined ? {} : { assets: options.assets }), ...(options.blankEmbeds ? { blankEmbeds: options.blankEmbeds } : {}) }));
+export function renderPageToHtml(document: unknown, blocks: BlockRegistry = {}, options: { assets?: ResolvedAssetMap; siteStyles?: SiteStyles; blankEmbeds?: BlankEmbedRegistry; imageHints?: Readonly<Record<string, PublicImageRenderHints>> } = {}): string {
+  return renderToStaticMarkup(createElement(PageRenderer, { document, blocks, ...(options.siteStyles ? { siteStyles: options.siteStyles } : {}), ...(options.assets === undefined ? {} : { assets: options.assets }), ...(options.blankEmbeds ? { blankEmbeds: options.blankEmbeds } : {}), ...(options.imageHints ? { imageHints: options.imageHints } : {}) }));
 }
 
 /** PageEditor canvas と同じ native site composition を静的 HTML にする。 */
