@@ -305,11 +305,17 @@ function ManagedPublicationPanel({ siteId }: { readonly siteId: string }) {
       if (!current.currentReleaseId || current.currentReleaseId === releaseId) { setMessage("現在の公開版はすでに切り替わっています。"); return; }
       const result = record(await api(`${endpoint}/site.publication-rollback`, "POST",
         { expectedVersion: current.currentReleaseId, releaseId }, controller.signal));
+      let rolledBack = false;
       if (result.status === "conflict") setMessage("公開版が同時に更新されました。履歴を確認してください。");
-      else if (result.status === "rolled_back" && result.releaseId === releaseId) setMessage("選んだ公開版に戻しました。");
-      else throw new Error("公開版を戻せませんでした。");
-      await refreshHistory(controller.signal);
-      await refresh(controller.signal);
+      else if (result.status === "rolled_back" && result.releaseId === releaseId) {
+        rolledBack = true;
+        setPublicationResult(null);
+        setMessage("選んだ公開版に戻しました。");
+      } else throw new Error("公開版を戻せませんでした。");
+      const refreshed = await Promise.allSettled([refreshHistory(controller.signal), refresh(controller.signal)]);
+      if (rolledBack && refreshed.some(({ status }) => status === "rejected")) {
+        setMessage("選んだ公開版に戻しました。画面の再読み込みに失敗しました。再読込してください。");
+      }
     } catch (error) {
       setMessage(error instanceof ManagedApiError && error.status === 409
         ? "公開版が同時に更新されました。履歴を確認してください。"
