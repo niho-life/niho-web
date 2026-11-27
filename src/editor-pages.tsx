@@ -28,6 +28,7 @@ export function Icon({ name, className }: { name: keyof typeof iconPaths; classN
 }
 
 export type PageChangeStart = { action: "create" } | { action: "duplicate"; page: EditorPage } | { action: "update"; page: EditorPage } | { action: "visibility"; page: EditorPage; visibility: PageVisibility };
+export type PageTranslationStatus = "untranslated" | "available" | "source-newer";
 export type FieldOptions = { reason?: string | undefined; multiline?: boolean; placeholder?: string; hint?: (value: string) => ReactNode };
 /** editor.tsx の Field を描く関数。未確定・無効な入力の扱いを共通にする。 */
 export type FieldRenderer = (name: string, value: string, operation: (value: string) => EditorOperation, key: string, options?: FieldOptions) => ReactNode;
@@ -96,8 +97,9 @@ function PageMenu({ page, open, setOpen, disabled, start, actions, pathEditable 
   </>;
 }
 
-/** 左レールのページ一覧。検索、パスごとのフォルダ、公開状態の点、行ごとの操作を表示する。行はページ名とパスの 1 行にし、言語ごとの翻訳状態は出さない（翻訳画面で見る）。 */
-export function PagePanel({ pages, current, disabled, operations, actions, pathEditable = true, operationsDisabled, unsaved, select, start, releaseSet, releaseSetDisabled = false, children }: {
+/** 左レールのページ一覧。検索、パスごとのフォルダ、公開状態の点、行ごとの操作を表示する。 */
+export function PagePanel({ pages, current, disabled, operations, actions, pathEditable = true, operationsDisabled, unsaved, select, start, releaseSet, releaseSetDisabled = false,
+  translationStatusByPage, translationSourceLabel = "原文", translationTargetLabel = "訳文", children }: {
   pages: readonly EditorPage[]; current: EditorTarget | undefined; disabled: boolean;
   /** 見出しの下に置くホスト側の部品（サイトの選択など）。 */
   children?: ReactNode;
@@ -106,6 +108,9 @@ export function PagePanel({ pages, current, disabled, operations, actions, pathE
   /** 複数ページ公開を実装したホストだけ指定する。 */
   releaseSet?: (pages: readonly EditorPage[]) => void;
   releaseSetDisabled?: boolean;
+  translationStatusByPage?: ReadonlyMap<string, PageTranslationStatus>;
+  translationSourceLabel?: string;
+  translationTargetLabel?: string;
   select: (page: EditorPage) => void; start: (start: PageChangeStart) => void;
 }) {
   const [searching, setSearching] = useState(false), [query, setQuery] = useState("");
@@ -142,15 +147,19 @@ export function PagePanel({ pages, current, disabled, operations, actions, pathE
       </li>;
     }
     const page: EditorPage = node.page, kind = page.kind ?? "page", key = pageKey(page), status = pageStatus(page);
+    const translationState = translationStatusByPage?.get(page.pageId);
+    const translationText = translationState === "source-newer" ? `${translationSourceLabel}の方が新しい`
+      : translationState === "available" ? `${translationTargetLabel}あり` : translationState === "untranslated" ? "未翻訳" : undefined;
     const secondary = [page.path, multiLocale ? page.locale : undefined].filter(Boolean).join(" · ");
     return <li key={key}><div className="e-page-row">
       {releaseSet && kind !== "shared" && <label className="e-page-release-select" title="公開変更セットの対象にする"><input type="checkbox" aria-label={`「${page.title}」を一括公開の対象にする`} checked={releaseSelection.includes(key)} disabled={disabled || releaseSetDisabled || !releaseSelection.includes(key) && releaseSelection.length >= 50}
         onChange={(event) => setReleaseSelection((previous) => event.target.checked ? [...previous, key] : previous.filter((entry) => entry !== key))} /></label>}
       <button type="button" className="e-page" aria-current={current && sameTarget(page, current) ? "page" : undefined} style={{ paddingLeft: 8 + node.depth * 14 }}
-        disabled={disabled} title={[page.title, secondary, status.text].filter(Boolean).join(" · ")} onClick={() => select(page)}>
+        disabled={disabled} title={[page.title, secondary, translationText, status.text].filter(Boolean).join(" · ")} onClick={() => select(page)}>
         <Icon name={kind === "template" ? "template" : page.path === "/" ? "home" : "page"} />
         {/* STUDIO と同じく、ページ名とパスを 1 行に並べる。状態は札ではなく右端の点で示し（緑＝公開中・灰＝未公開・輪郭＝非公開）、文言はツールチップと読み上げに回す。 */}
-        <span className="e-page-label"><span className="e-page-name">{page.title}</span>{secondary && <span className="e-page-path">{secondary}</span>}</span>
+        <span className="e-page-label"><span className="e-page-name">{page.title}</span>{secondary && <span className="e-page-path">{secondary}</span>}
+          {translationText && translationState && <span className={`e-page-translation-state is-${translationState}`}>{translationText}</span>}</span>
         <span className={`e-page-state is-${status.state}`} role="img" aria-label={status.text} title={status.text} />
       </button>
       {operations && (!actions || actions.some((action) => action !== "create")) && (kind === "page" ? <PageMenu page={page} open={menu === key} setOpen={(open) => setMenu(open ? key : "")} disabled={disabled || operationsDisabled} start={start} pathEditable={pathEditable} {...(actions ? { actions } : {})} /> : <span className="e-page-more-spacer" aria-hidden="true" />)}

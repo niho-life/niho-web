@@ -1104,6 +1104,8 @@ testWithD1("Studio Editing API publishes one time and exposes the same revision 
 testWithD1("site publication uses saved drafts only for the selected pages and switches the manifest once", async (t) => {
   const h = await fixture(t);
   const site = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Shared release", slug: "shared-release", locale: "ja" }), 201);
+  const imageOrigin = "https://kamakura-media.niho.life";
+  await setFixturePublicPolicy(h, site, { frameOrigins: [], resourceOrigins: [imageOrigin] });
   const editor = "/api/projects/" + site.projectId + "/sites/" + site.siteId + "/editor";
   const operations = "/api/edit/v1/sites/" + site.siteId + "/operations/";
   const admin = (method, path, input) => h.send(MANAGEMENT_ORIGIN, method, operations + path, input);
@@ -1117,6 +1119,13 @@ testWithD1("site publication uses saved drafts only for the selected pages and s
   const switches = () => h.sqlite.prepare("SELECT count(*) AS count FROM publish_switches").get().count;
   const changes = () => admin("GET", "site.publication-changes").then((response) => body(response, 200));
   const publish = async (scope, fields = {}) => body(await admin("POST", "site.publish", { expectedVersion: (await changes()).version, scope, ...fields }), 200);
+  const homeDraft = await body(await admin("GET", "pages.read/home?locale=ja"), 200);
+  const homeWithImages = structuredClone(homeDraft.document);
+  homeWithImages.body.push(
+    { type: "element", id: "hero-image", tag: "img", attrs: { src: `${imageOrigin}/uploads/hero.webp`, alt: "Fixture hero" }, children: [] },
+    { type: "element", id: "below-fold-image", tag: "img", attrs: { src: `${imageOrigin}/uploads/below-fold.webp`, alt: "Fixture detail" }, children: [] }
+  );
+  await body(await admin("PUT", "pages.save/home?locale=ja", { expectedVersion: homeDraft.version, document: homeWithImages }), 200);
   const first = await publish("changed");
   assert.equal(first.urls.length, 3);
   assert.equal(switches(), 1);
@@ -1141,6 +1150,26 @@ testWithD1("site publication uses saved drafts only for the selected pages and s
     assert.match(h.objects.get(route.artifactKey), /Shared published description/u);
     assert.doesNotMatch(h.objects.get(route.artifactKey), /New draft/u);
   }
+  const homeRoute = sharedManifest.routes.find(({ path }) => path === "/");
+  assert.ok(homeRoute);
+  const publishedHome = new JSDOM(String(h.objects.get(homeRoute.artifactKey))).window.document;
+  assert.equal(publishedHome.documentElement.lang, "ja");
+  assert.match(publishedHome.head.innerHTML, /<style>html\{font-family:system-ui,-apple-system,BlinkMacSystemFont/u);
+  assert.equal(publishedHome.querySelector('meta[name="description"]')?.content, "Shared published description");
+  assert.equal(publishedHome.querySelector('meta[property="og:title"]')?.content, homeDraft.document.title);
+  assert.equal(publishedHome.querySelector('link[rel="canonical"]')?.href, `${PUBLIC_ORIGIN}/s/shared-release/`);
+  assert.equal(publishedHome.querySelectorAll('link[rel="alternate"][hreflang]').length, 0);
+  assert.ok(publishedHome.querySelector('script[type="application/ld+json"]'));
+  const hero = publishedHome.querySelector('[data-nw-node="hero-image"]');
+  assert.equal(hero?.getAttribute("src"), `${imageOrigin}/cdn-cgi/image/width=auto,format=auto/uploads/hero.webp`);
+  assert.match(hero?.getAttribute("srcset") ?? "", /width=320,format=auto\/uploads\/hero\.webp 320w/u);
+  assert.equal(hero?.getAttribute("sizes"), "100vw");
+  assert.equal(hero?.getAttribute("fetchpriority"), "high");
+  assert.equal(hero?.hasAttribute("loading"), false);
+  const belowFold = publishedHome.querySelector('[data-nw-node="below-fold-image"]');
+  assert.equal(belowFold?.getAttribute("loading"), "lazy");
+  assert.equal(belowFold?.getAttribute("decoding"), "async");
+  assert.match(homeRoute.contentSecurityPolicy, /font-src 'none'/u);
 
   const selected = await publish("pages", { pages: pages.slice(0, 2).map((pageId) => ({ pageId, locale: "ja" })) });
   assert.equal(selected.urls.length, 2);
@@ -1715,6 +1744,32 @@ testWithD1("Studio CMS resolves migration URL assets only from the site's privat
   assert.deepEqual(await store.publicAssets(otherSite, [otherItem]), []);
 });
 
+testWithD1("CMS localization uses the schema pinned to the published source while a newer schema is unpublished", async (t) => {
+  const h = await fixture(t, { cms: true }), site = await cmsSite(h, "cms-localization-published-schema");
+  const schema = await site.read("cms.schema.read");
+  const draft = await createDraft(site, schema.schemaRevision);
+  const source = await saveDraft(site, draft, "Published title", "published-title");
+  await site.read("cms.release.apply", await releasePlan(site, schema.schemaRevision, null, [source]));
+  await h.cron();
+
+  const current = await site.read("cms.release.current");
+  const collection = schema.collections[0];
+  const schemaPlan = await site.read("cms.schema.plan", { expectedSchemaRevision: schema.schemaRevision,
+    routeTableVersions: [{ locale: "ja", revision: current.routeTableRevision }], replacements: [],
+    nextSchema: { ...schema, collections: [{ ...collection, label: `${collection.label}（更新）` }] } });
+  await site.read("cms.schema.apply", { operationId: schemaPlan.plan.operationId, confirmationToken: schemaPlan.plan.confirmationToken });
+
+  const overview = parseLocalizationOverviewResult(await site.read("cms.localization.overview"));
+  const itemKey = cmsLocalizationItemKey(source.collectionId, source.itemId);
+  const list = parseLocalizationListResult(await site.read("cms.localization.items.list"));
+  const item = parseLocalizationItemResult(await site.read("cms.localization.items.read", { itemKey }), itemKey);
+  assert.equal(overview.status, "ready");
+  assert.equal(list.status, "ready");
+  assert.equal(item.status, "ready");
+  assert.equal(item.item.units[0].source, "Published title");
+  assert.equal(item.item.sourceDraftPending, true, "the newer schema's migrated draft is not the published source");
+});
+
 testWithD1("Studio CMS localization exposes the shared workspace contract and preserves reviewed manual values after source changes", async (t) => {
   const h = await fixture(t, { cms: true }), site = await cmsSite(h, "cms-localization");
   const original = await site.read("cms.schema.read"), route = await site.read("cms.release.current");
@@ -1832,10 +1887,11 @@ testWithD1("Studio CMS localization exposes the shared workspace contract and pr
   const nextSource = await site.read("cms.items.save", { ...versioned(source), values: { ...source.values, [field("title")]: "A new coastal morning walk" } }, { headers: headers() }).then(({ item: next }) => next);
   item = (await readItem()).item;
   const changedTitle = item.units.find(({ unitId }) => unitId === title.unitId);
-  assert.equal(changedTitle.source, "A new coastal morning walk");
+  assert.equal(changedTitle.source, "Coastal morning walk", "translation reads keep using the last published Japanese revision");
   assert.equal(changedTitle.value, "Walk by the shore");
-  assert.equal(changedTitle.state, "review-needed");
-  assert.equal(item.state, "source-changed");
+  assert.equal(changedTitle.state, "reviewed", "an unpublished Japanese draft does not make the English translation stale");
+  assert.equal(item.state, "reviewed");
+  assert.equal(item.sourceDraftPending, true, "the unpublished source draft is still disclosed");
   const updatedSourceCurrent = await site.read("cms.release.current");
   const updatedSourcePlan = await withAssets.read("cms.release.plan", { schemaRevision: schema.schemaRevision, locale: "ja",
     routeTableRevision: updatedSourceCurrent.routeTableRevision, expectedReleaseId: updatedSourceCurrent.snapshot.releaseId,
@@ -1843,6 +1899,11 @@ testWithD1("Studio CMS localization exposes the shared workspace contract and pr
   await withAssets.read("cms.release.apply", { operationId: updatedSourcePlan.plan.operationId,
     confirmationToken: updatedSourcePlan.plan.confirmationToken });
   await h.cron();
+  item = (await readItem()).item;
+  const publishedChangedTitle = item.units.find(({ unitId }) => unitId === title.unitId);
+  assert.equal(publishedChangedTitle.source, "A new coastal morning walk");
+  assert.equal(publishedChangedTitle.state, "review-needed");
+  assert.equal(item.state, "source-changed", "publishing the changed Japanese revision marks the old English translation stale");
   const stalePlan = await withAssets.read("cms.localization.release.plan");
   assert.equal(stalePlan.includedItems, 0);
   assert.equal(stalePlan.omittedItems.length, 1);
@@ -2612,6 +2673,24 @@ testWithD1("Kamakura import seeds a noindex verification site and preserves immu
   const document = (pageId, locale, revision, title, body = []) => ({
     document: { schemaVersion: 1, siteId, pageId, locale, revision, title, tokens: {}, body }
   });
+  const postsCollection = schema.collections.find(({ id }) => id === "posts");
+  const cmsField = (key) => postsCollection.fields.find((field) => field.key === key).fieldId;
+  const cmsPageVersion = (pageId, revision, title, limit) => ({
+    ...document(pageId, "ja", revision, title, [
+      { type: "component", id: "cms-list", block: "KamakuraCmsList", props: {} },
+      { type: "component", id: "cms-detail", block: "KamakuraCmsDetail", props: {} }
+    ]),
+    sourceBlocks: { KamakuraCmsList: { props: {} }, KamakuraCmsDetail: { props: {} } },
+    replacements: [
+      { nodeId: "cms-list", kind: "cms-list", body: [{ type: "element", id: `card-${revision}`, tag: "article", children: [
+        { type: "element", id: `heading-${revision}`, tag: "h2", children: [{ type: "text", text: "一覧" }] }
+      ] }], binding: { templateNodeId: `card-${revision}`, collectionId: "posts", limit,
+        fields: [{ nodeId: `heading-${revision}`, fieldId: cmsField("title"), target: "text" }] } },
+      { nodeId: "cms-detail", kind: "cms-detail", body: [{ type: "element", id: `detail-${revision}`, tag: "h1", children: [{ type: "text", text: "詳細" }] }],
+        binding: { collectionId: "posts", slugFieldId: cmsField("slug"),
+          fields: [{ nodeId: `detail-${revision}`, fieldId: cmsField("title"), target: "text" }] } }
+    ]
+  });
   const source = {
     formatVersion: 1, origin, siteId, locale: "ja",
     assets: [
@@ -2632,10 +2711,8 @@ testWithD1("Kamakura import seeds a noindex verification site and preserves immu
       { sourceUrl: origin + "/english", sourcePageId: "english-source", path: "/en", locale: "en", visibility: "private",
         published: null, draft: document("english-source", "en", 3, "Translation fixture") },
       { sourceUrl: origin + "/deferred", sourcePageId: "deferred-source", path: "/deferred", locale: "ja", visibility: "public",
-        published: document("deferred-source", "ja", 2, "Prior deferred fixture"), draft: {
-          ...document("deferred-source", "ja", 5, "Deferred fixture", [{ type: "component", id: "cms-list", block: "KamakuraCmsList", props: {} }]),
-          sourceBlocks: { KamakuraCmsList: { props: {} } }
-        } }
+        published: cmsPageVersion("deferred-source", 2, "Prior CMS fixture", 3),
+        draft: cmsPageVersion("deferred-source", 5, "Current CMS fixture", 6) }
     ],
     cms: { schema: { ...schema, siteId, collections: schema.collections.map((collection) => collection.id === "posts" ? ({ ...collection, fields: [...collection.fields,
       { fieldId: "cover", key: "cover", label: "Cover", type: "image", placement: "main" },
@@ -2695,11 +2772,19 @@ testWithD1("Kamakura import seeds a noindex verification site and preserves immu
   };
   await assert.rejects(() => applyKamakuraSiteImport(prepared, MANAGEMENT_ORIGIN, h.ownerToken, interrupted, loadAsset), /connection loss/);
   const result = await applyKamakuraSiteImport(prepared, MANAGEMENT_ORIGIN, h.ownerToken, h.fetch, loadAsset);
-  assert.equal(result.mapping.pages[2].deferred, "cms-block-conversion");
+  assert.equal(result.mapping.pages[2].deferred, undefined);
   assert.doesNotMatch(JSON.stringify(result), /launchToken/u);
-  const archived = JSON.parse(h.objects.get(`sites/${site.siteId}/migration/deferred-pages/${result.planDigest}/${result.mapping.pages[2].pageId}.json`));
-  assert.equal(archived.published.document.title, "Prior deferred fixture");
-  assert.equal(archived.draft.document.body[0].block, "KamakuraCmsList");
+  const importedCmsPage = result.mapping.pages[2];
+  const importedCmsVersions = h.sqlite.prepare(`SELECT revision, bindings_json, document_key FROM managed_page_versions
+    WHERE site_id = ? AND page_id = ? ORDER BY revision`).all(site.siteId, importedCmsPage.pageId);
+  assert.deepEqual(importedCmsVersions.map(({ revision }) => revision), [1, 2]);
+  const publishedCmsBindings = JSON.parse(importedCmsVersions[0].bindings_json);
+  const draftCmsBindings = JSON.parse(importedCmsVersions[1].bindings_json);
+  assert.equal(publishedCmsBindings.siteId, site.siteId);
+  assert.equal(publishedCmsBindings.pageId, importedCmsPage.pageId);
+  assert.equal(publishedCmsBindings.lists[0].limit, 3);
+  assert.equal(draftCmsBindings.lists[0].limit, 6);
+  assert.ok(importedCmsVersions.every(({ document_key }) => !JSON.stringify(h.objects.get(document_key)).includes("KamakuraCms")));
   const snapshot = [...h.objects], counts = (table) => h.sqlite.prepare(`SELECT count(*) AS n FROM ${table}`).get().n;
   assert.deepEqual(await applyKamakuraSiteImport(prepared, MANAGEMENT_ORIGIN, h.ownerToken, h.fetch, loadAsset), result);
   assert.deepEqual([...h.objects], snapshot);
@@ -2707,7 +2792,7 @@ testWithD1("Kamakura import seeds a noindex verification site and preserves immu
   assert.equal(counts("managed_site_import_asset_blobs"), 1);
   assert.deepEqual(Buffer.from(h.objects.get(`sites/${site.siteId}/migration/assets/${contentSha256}`)), media);
   assert.equal(counts("managed_embed_connections"), 1);
-  assert.equal(counts("managed_page_versions"), 3);
+  assert.equal(counts("managed_page_versions"), 5);
   assert.equal(counts("managed_cms_revisions"), 4);
   assert.equal(counts("managed_page_publications"), 0);
   assert.equal(counts("managed_cms_releases"), 0);
@@ -2720,6 +2805,9 @@ testWithD1("Kamakura import seeds a noindex verification site and preserves immu
     .all(site.siteId).map(({ document_key }) => JSON.parse(h.objects.get(document_key)));
   assert.deepEqual(pageSource.map(({ title }) => title), ["Published fixture", "Current fixture"]);
   assert.equal(pageSource[1].body[0].attrs.href, "/en?ref=fixture#link");
+  const importedCmsRead = await body(await h.send(MANAGEMENT_ORIGIN, "GET",
+    `/api/edit/v1/sites/${site.siteId}/operations/pages.read/${importedCmsPage.pageId}?locale=ja`), 200);
+  assert.deepEqual(importedCmsRead.cmsBindings, draftCmsBindings);
   const item = await site.read("cms.items.read", { collectionId: "posts", itemId: result.mapping.cmsItems[0].itemId });
   assert.equal(item.item.values.title, "Draft post");
   const importedItem = result.mapping.cmsItems[0];

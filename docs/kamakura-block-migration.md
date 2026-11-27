@@ -35,6 +35,8 @@ node scripts/migrate-kamakura-blocks.mjs input.json > result.json
 
 `ready` では `snapshot` と `cmsBindings` が得られる。プレビューと内容を確認したら、移行先の同じ下書きへ `niho-edit save --json` で `snapshot`、続いて `niho-edit apply --ops` の空配列と `--cms-bindings` で binding を保存し、両方そろった文書を公開する。移行元の PageDocument や秘密を含む設定は作業ファイルから公開リポジトリへ移さない。
 
+鎌倉 site import では、同じ recipe を公開版・下書き版に個別適用する。各 `cmsBindings` は対応する文書の版と一緒に取り込み、target site/page/locale と取り込み済み CMS schema に対して再検証する。recipe が足りない版や schema と合わない binding は、未変換のまま保留せず取込計画を停止する。
+
 `blocked` の場合は保存用の文書を出さず、対象の node と理由を返す。省略した置換、読めない旧枠、追加で確認が必要な表示は、対象ページに残す。フォームの URL と配布 token は既存の接続設定で管理する。[ManagedEmbed の保存・公開契約](managed-embed-contract.md)
 
 ## 実ページの確認

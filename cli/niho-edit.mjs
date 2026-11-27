@@ -451,21 +451,39 @@ async function runLocalization(client, operation, values, positionals) {
       if (input.operation !== "publish" || input.resumeToken !== null || typeof input.confirmationToken !== "string") throw new CliError("invalid_arguments");
       studioInput = { confirmationToken: input.confirmationToken };
     }
-    const url = `${origin(values.origin)}/api/edit/v2/sites/${encodeURIComponent(values.site)}/operations/${studioOperation}`;
-    let response;
-    try {
-      response = await fetch(url, { method: "POST", credentials: "omit", cache: "no-store", redirect: "manual", signal: AbortSignal.timeout(30_000),
-        headers: { "User-Agent": CLI_USER_AGENT, "Content-Type": "application/json", ...(values.studio ? {
-          "X-Studio-CMS-Version": "2",
-          ...(process.env.CF_ACCESS_CLIENT_ID && process.env.CF_ACCESS_CLIENT_SECRET
-            ? { "CF-Access-Client-Id": process.env.CF_ACCESS_CLIENT_ID, "CF-Access-Client-Secret": process.env.CF_ACCESS_CLIENT_SECRET }
-            : process.env.NIHO_EDIT_TOKEN ? { "cf-access-token": process.env.NIHO_EDIT_TOKEN } : {}),
-          ...(typeof studioInput.operationId === "string" ? { "X-Studio-Operation-Key": studioInput.operationId } : {})
-        } : {}) }, body: JSON.stringify({ siteId: values.site, ...studioInput }) });
-    } catch { throw new CliError("transport_error"); }
-    if (response.status >= 300 && response.status < 400) throw new CliError("redirect_response", response.status);
-    const payload = await readJson(response.body, 2 * 1024 * 1024);
-    emit(payload, response.status, response.ok ? 0 : 1, studioOperation);
+    const base = `${origin(values.origin)}/api/edit/v2/sites/${encodeURIComponent(values.site)}/operations`;
+    const studioHeaders = { "User-Agent": CLI_USER_AGENT, "Content-Type": "application/json", "X-Studio-CMS-Version": "2",
+      ...(process.env.CF_ACCESS_CLIENT_ID && process.env.CF_ACCESS_CLIENT_SECRET
+        ? { "CF-Access-Client-Id": process.env.CF_ACCESS_CLIENT_ID, "CF-Access-Client-Secret": process.env.CF_ACCESS_CLIENT_SECRET }
+        : process.env.NIHO_EDIT_TOKEN ? { "cf-access-token": process.env.NIHO_EDIT_TOKEN } : {}) };
+    const studioPost = async (name, body) => {
+      let response;
+      try {
+        response = await fetch(`${base}/${name}`, { method: "POST", credentials: "omit", cache: "no-store", redirect: "manual", signal: AbortSignal.timeout(30_000),
+          headers: { ...studioHeaders, ...(typeof body.operationId === "string" ? { "X-Studio-Operation-Key": body.operationId } : {}) },
+          body: JSON.stringify({ siteId: values.site, ...body }) });
+      } catch { throw new CliError("transport_error"); }
+      if (response.status >= 300 && response.status < 400) throw new CliError("redirect_response", response.status);
+      return { response, payload: await readJson(response.body, 2 * 1024 * 1024) };
+    };
+    const { response, payload } = await studioPost(studioOperation, studioInput);
+    let result = payload;
+    if (response.ok && payload.status === "ready" && (id === "localization.items.list" || id === "localization.items.read")) {
+      const labels = await studioPost("cms.localization.overview", {});
+      if (!labels.response.ok || labels.payload.status !== "ready" || !labels.payload.overview?.languages
+        || typeof labels.payload.overview.languages.source !== "string" || typeof labels.payload.overview.languages.target !== "string") {
+        emit(labels.payload, labels.response.status, 1, "cms.localization.overview");
+        return;
+      }
+      const statusLabel = (state) => state === "source-changed" ? `${labels.payload.overview.languages.source}の方が新しい`
+        : state === "reviewed" ? `${labels.payload.overview.languages.target}あり` : state === "excluded" ? "対象外" : "未翻訳";
+      const withLabel = (item) => item && typeof item === "object" && typeof item.state === "string"
+        ? { ...item, stateLabel: statusLabel(item.state) } : item;
+      result = { ...payload,
+        ...(Array.isArray(payload.items) ? { items: payload.items.map(withLabel) } : {}),
+        ...(payload.item && typeof payload.item === "object" ? { item: withLabel(payload.item) } : {}) };
+    }
+    emit(result, response.status, response.ok ? 0 : 1, studioOperation);
     return;
   }
 
@@ -697,10 +715,12 @@ async function main() {
       : scopes !== 1 || pageId !== undefined || extra.length)) throw new CliError("invalid_arguments");
     const scope = selectedPages ? selectedPages.map((id) => ({ pageId: id, locale }))
       : values["publish-site"] ? "site" : values.changed ? "changed" : "all";
+    const startedAt = performance.now();
     const pending = await apiCall(() => client.readPublicationChanges(AbortSignal.timeout(30_000)));
     const result = await apiCall(() => client.publishSiteNow(pending.version, scope, AbortSignal.timeout(60_000)));
     if (result.status === "conflict") { emit({ error: "version_conflict" }, 409, 1, "site.publish"); return; }
-    emit(result, result.status === "failed" ? 503 : 200, result.status === "failed" ? 1 : 0, "site.publish"); return;
+    emit(result.status === "released" ? { ...result, elapsedMs: Math.max(0, Math.round(performance.now() - startedAt)) } : result,
+      result.status === "failed" ? 503 : 200, result.status === "failed" ? 1 : 0, "site.publish"); return;
   }
 
   if (["site-public-read", "site-public-save", "page-embed-register"].includes(command)) {

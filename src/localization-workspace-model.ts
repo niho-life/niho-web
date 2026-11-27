@@ -73,7 +73,7 @@ export type LocalizationOverview = {
   readonly attention?: LocalizationAttention;
 };
 
-/** untranslated・draft・source-changed は「未翻訳」、reviewed は「翻訳済み」（今の原文に対応する訳がそろっている）と表示する。 */
+/** item state は一覧で未翻訳・原文の更新・訳文ありの3状態にまとめ、excluded は別扱いにする。 */
 export type LocalizationItemState = "untranslated" | "draft" | "source-changed" | "reviewed" | "excluded";
 export type LocalizationItemSummary = {
   readonly key: string;

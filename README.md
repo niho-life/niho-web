@@ -40,7 +40,7 @@ Node.js 22 以上を使います。
 | Entry | 用途 |
 | --- | --- |
 | `studio/wrangler.json` | Studio の編集・管理 Worker。公開では全ての公開ページとCMS routeを静的生成し、公開 Worker は manifest の artifact を配信します。[固定ページの正本・保存・公開](docs/studio-managed-sites.md#ページ正本と操作)、[メンバー招待とログアウト](docs/studio-managed-sites.md#メンバー招待とログアウト) |
-| `niho-edit --studio publish / restore / site-history / rollback / page-change / cms-publish` | 保存・読取時の版を指定して Studio-native を公開・管理。[CLI の操作](docs/studio-cli.md#studio-native-ページの公開と版履歴) |
+| `niho-edit --studio publish / restore / site-history / rollback / page-change / cms-publish` | 保存・読取時の版を指定して Studio-native を公開・管理。公開時間は操作側で測ります。[CLI の操作](docs/studio-cli.md#studio-native-ページの公開と版履歴) |
 | `studio/public-sites.wrangler.json` | 公開時に生成した HTML・SEO 出力だけを R2 から返す read-only Worker。画像は幅別 `srcset`、既定フォントは OS のシステムフォントを使います。[公開契約](docs/site-publication-contract.md)。開発時は `npm run studio:public:dev` |
 
 ## 文書案内

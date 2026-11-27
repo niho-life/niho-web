@@ -2,16 +2,18 @@ import { collectionCss } from "./collection-style.js";
 
 /**
  * LocalizationWorkspace だけの CSS。色は ./ui-tokens.ts のトークン（--nw-*）だけを使う（#159）。根は .nw-collection.nw-localization で、ボタン・印・一覧・ダイアログは CMS の画面（collectionCss）を使う。
- * 状態は色だけでなく、印の形（.lw-shape）と言葉でも示す。印は表示の 3 種（未翻訳・翻訳済み・対象外）だけ（2026-11-12）。320px で横にはみ出さない。
+ * 状態は色だけでなく、印の形（.lw-shape）と言葉でも示す。翻訳状態は未翻訳・原文が新しい・訳文ありの3種。320px で横にはみ出さない。
  */
 const localizationCss = `
 .nw-localization{max-width:100%}
 .nw-localization .lw-pill[data-lw-state=untranslated]{color:var(--nw-text-sub)}
+.nw-localization .lw-pill[data-lw-state=source-newer]{background:var(--nw-warning-soft);color:var(--nw-warning)}
 .nw-localization .lw-pill[data-lw-state=reviewed]{color:var(--nw-text)}
 .nw-localization .lw-pill[data-lw-state=excluded]{color:var(--nw-text-sub)}
 .nw-localization .lw-pill[data-lw-state=pending-source]{min-height:20px;padding:0 6px;border-radius:var(--nw-radius-sm);background:var(--nw-surface-2);color:var(--nw-text-sub);font-size:11px;font-weight:600}
 .nw-localization .lw-shape{position:relative;display:inline-block;flex:none;width:9px;height:9px;border:1.6px solid currentColor;border-radius:50%}
 .nw-localization [data-lw-state=reviewed]>.lw-shape{background:currentColor}
+.nw-localization [data-lw-state=source-newer]>.lw-shape{border-radius:2px;transform:rotate(45deg)}
 .nw-localization [data-lw-state=reviewed]>.lw-shape::after{content:"";position:absolute;left:2px;top:0;width:2.5px;height:5px;border:solid var(--nw-bg);border-width:0 1.5px 1.5px 0;transform:rotate(45deg)}
 .nw-localization [data-lw-state=excluded]>.lw-shape{border-radius:var(--nw-radius-sm);background:linear-gradient(135deg,transparent 42%,currentColor 42%,currentColor 58%,transparent 58%)}
 .nw-localization .lw-progress{display:inline-flex;align-items:center;flex-wrap:wrap;gap:4px 10px;font-size:13px}

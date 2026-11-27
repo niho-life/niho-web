@@ -57,6 +57,8 @@ Kamakura の Studio GUI は editor snapshot profile から共通APIでページs
 | `assets.delete` | POST | `/sites/{siteId}/operations/assets.delete/{provider}/{assetId}` | `assets.delete` | `{ expectedVersion }` | deleted, in-use, conflict, or rejection |
 | `assets.restore` | POST | `/sites/{siteId}/operations/assets.restore/{provider}/{assetId}` | `assets.delete` | `{ expectedVersion }` | restored, conflict, or rejection |
 
+`createPageEditingApiClient().publishSiteNow()` の成功結果では、`elapsedMs` はclientが呼出しから応答受領までに測った壁時計時間、`serverElapsedMs` はHTTP応答の `elapsedMs` です。Cloudflare Workersでは `Date.now()` と `performance.now()` がI/Oの間だけ進み、CPU処理時間を測れないため、全量公開の判断にはGUI・CLI側の `elapsedMs` を使います。直接HTTPを呼ぶ場合は、呼出し側で操作全体を計測してください（[Cloudflare Workersのtimer仕様](https://developers.cloudflare.com/workers/runtime-apis/performance/)）。
+
 `pages.preview-intent` は、ページ読取権限を持つactorに対してホストが発行する短期プレビューURLです。`PageEditingHostAdapter.createPagePreviewIntent(actor, target)` を実装したhostだけがdiscoveryに公開できます。ホストはURLにbearer token、Access資格情報、cookieなどを含めず、サーバー側の不透明な許可記録をactor・site/page/locale・発行時の文書版・components/presentation/翻訳の依存版・期限・利用回数上限に結び付けます。プレビューHTMLのGET時に認証主体とこれらの版・期限・利用回数を再検証し、一致しない場合は拒否します。CLIは認証header付きでHTMLを一度だけ取得し、幅ごとの撮影には同じメモリ内HTMLを使います。
 
 プレビューHTMLのhost responseには `Cache-Control: no-store`、`Referrer-Policy: no-referrer`、`X-Robots-Tag: noindex` を付け、公開ページ用cache経路を通しません。共通APIが返すintent JSONにも `PAGE_PREVIEW_INTENT_HEADERS` を付けますが、プレビューHTML自体の安全な配信はhostの責務です。HTMLは公開時と同じrenderer・登録block・presentation・host viewで描画します。clientは期限を15分以内に制限し、HTTPSかつAPIと同じoriginのURLだけを受け入れます。
@@ -246,6 +248,8 @@ niho-edit --origin https://site.example --site site-id localization-items-transl
 niho-edit --origin https://site.example --site site-id localization-jobs-read job-1
 niho-edit --origin https://site.example --site site-id localization-release-read
 ```
+
+`--studio localization-items-list` と `--studio localization-items-read` は、機械判定用の `state` を保ったまま、項目に画面向けの `stateLabel` も付けます。日本語を原文にするサイトでは `untranslated` / `draft` は「未翻訳」、`reviewed` は「Englishあり」、`source-changed` は「日本語の方が新しい」です。`excluded` は「対象外」です。
 
 書込の `--json` には操作表の追加フィールドを渡します。`siteId` は `--site` から、commandとtranslateの `itemKey` は位置引数から補います。たとえば `command.json` は `{"action":"set-value","unitId":"title","value":"Workshop by the sea","expectedVersion":"v1","expectedSourceVersion":"s1","operationId":"command-operation-1"}` です。確認・再開tokenを含む `localization-release-prepare` および `localization-release-apply` の入力は `--json -` で標準入力から渡せます。呼出側が応答を確認して続く操作を決めます。CLIの409は終了コード1で、現行値がある場合はJSON出力の `result.current` に保持します。
 
