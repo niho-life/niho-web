@@ -1,197 +1,216 @@
 import { parseSiteStyles, type SiteStyles, type SiteStylesSnapshot } from "./site-styles.js";
+import type { DesignToken, TextStyle } from "./types.js";
 import { identifier, keys, line, localeCode, record } from "./validation-utils.js";
 
 export const SITE_STYLES_FEATURE = "site.styles" as const;
-export const SITE_STYLES_OPERATION_IDS = Object.freeze([
-  "site.styles.read", "site.styles.save", "site.styles.release-plan", "site.styles.release",
-  "site.styles.migration-plan", "site.styles.migration-apply"
-] as const);
+export const SITE_STYLES_OPERATION_IDS = Object.freeze(["site.styles.read", "site.styles.edit", "site.styles.publish"] as const);
 export type EditingSiteStylesOperationId = typeof SITE_STYLES_OPERATION_IDS[number];
 
-export type SitePublicationEpoch = string;
 export type EditingSiteStyleKind = "token" | "textStyle";
-export type EditingSiteStylesMigrationChange =
-  | { readonly kind: "delete"; readonly styleKind: EditingSiteStyleKind; readonly name: string }
-  | { readonly kind: "rename"; readonly styleKind: EditingSiteStyleKind; readonly from: string; readonly to: string };
+export type EditingSiteStylesRename = { readonly type: "rename"; readonly styleKind: EditingSiteStyleKind; readonly from: string; readonly to: string };
+export type EditingSiteStylesEdit =
+  | { readonly type: "set"; readonly styleKind: "token"; readonly name: string; readonly value: DesignToken }
+  | { readonly type: "set"; readonly styleKind: "textStyle"; readonly name: string; readonly value: TextStyle }
+  | { readonly type: "delete"; readonly styleKind: EditingSiteStyleKind; readonly name: string }
+  | { readonly type: "rename"; readonly styleKind: EditingSiteStyleKind; readonly from: string; readonly to: string };
 
-export type EditingSiteStylesAffected = {
-  readonly kind: "page" | "locale" | "component" | "presentation" | "shared" | "template";
+export type EditingSiteStylesUsage = {
+  readonly kind: "page" | "locale" | "component" | "presentation" | "shared" | "template" | "siteStyle";
   readonly id: string;
-  readonly version: string;
   readonly locale?: string;
+  readonly path?: string;
 };
 
-export type EditingSiteStylesReleaseRequest = {
-  readonly expectedVersion: string;
-  readonly expectedStylesVersion: string;
-  readonly sitePublicationEpoch: SitePublicationEpoch;
-  readonly operationId: string;
-};
-export type EditingSiteStylesReleasePlan = EditingSiteStylesReleaseRequest & {
-  readonly siteId: string;
-  readonly confirmationToken: string;
-  readonly expiresAt: string;
-  readonly before: SiteStyles;
-  readonly after: SiteStyles;
-  readonly affected: readonly EditingSiteStylesAffected[];
-};
-export type EditingSiteStylesReleaseApply = EditingSiteStylesReleaseRequest & { readonly confirmationToken: string };
-export type EditingSiteStylesReleaseResult = {
-  readonly status: "released";
-  readonly operationId: string;
-  readonly stylesVersion: string;
-  readonly sitePublicationEpoch: SitePublicationEpoch;
-};
-
-export type EditingSiteStylesMigrationRequest = EditingSiteStylesReleaseRequest & { readonly changes: readonly EditingSiteStylesMigrationChange[] };
-export type EditingSiteStylesMigrationPlan = EditingSiteStylesMigrationRequest & {
-  readonly siteId: string;
-  readonly confirmationToken: string;
-  readonly expiresAt: string;
-  readonly classification: "lossless" | "semantic" | "visual-change";
-  readonly before: SiteStyles;
-  readonly after: SiteStyles;
-  readonly affected: readonly EditingSiteStylesAffected[];
-};
-export type EditingSiteStylesMigrationApply = EditingSiteStylesMigrationRequest & { readonly confirmationToken: string };
-export type EditingSiteStylesMigrationResult = {
-  readonly status: "applied";
-  readonly operationId: string;
-  readonly version: string;
-  readonly stylesVersion: string;
-  readonly sitePublicationEpoch: SitePublicationEpoch;
-};
-
-export type EditingSiteStylesFailureStatus =
-  | "conflict" | "duplicate" | "invalid" | "not_found" | "migration_required"
-  | "publication_in_progress" | "migration_in_progress";
-export type EditingSiteStylesFailure = { readonly status: EditingSiteStylesFailureStatus };
+export type EditingSiteStylesEditRequest = { readonly expectedVersion: string; readonly edits: readonly EditingSiteStylesEdit[] };
+export type EditingSiteStylesEditResult =
+  | { readonly status: "saved"; readonly version: string; readonly styles: SiteStyles }
+  | { readonly status: "referenced"; readonly usages: readonly EditingSiteStylesUsage[] }
+  | { readonly status: "conflict" };
+export type EditingSiteStylesPublishRequest = { readonly expectedDraftVersion: string; readonly expectedPublishedVersion: string };
+export type EditingSiteStylesPublishResult =
+  | { readonly status: "published"; readonly version: string; readonly styles: SiteStyles }
+  | { readonly status: "conflict" };
 
 /**
- * The host owns immutable snapshots, reference enumeration, operation journaling and the two
- * mutually-exclusive site fences. Apply methods must make their pointer changes and recorded
- * result visible in one storage transaction; the HTTP layer deliberately has no sequential fallback.
+ * `edit` is one storage transaction: rename rewrites every reference with the definition, while a
+ * referenced delete returns all usages without writing. `publish` switches the one site-wide
+ * published pointer, so pages do not pin style versions or coordinate through publication epochs.
  */
 export type EditingSiteStylesHostAdapter<Actor> = {
   read(actor: Actor, siteId: string): Promise<SiteStylesSnapshot | null>;
-  /** Must CAS the draft version and reject any removal/rename even if the HTTP preflight raced. */
-  save(actor: Actor, siteId: string, expectedVersion: string, styles: SiteStyles): Promise<{ readonly status: "saved"; readonly version: string } | EditingSiteStylesFailure>;
-  prepareRelease?(actor: Actor, siteId: string, input: EditingSiteStylesReleaseRequest): Promise<{ readonly status: "prepared"; readonly plan: EditingSiteStylesReleasePlan } | EditingSiteStylesFailure>;
-  release?(actor: Actor, siteId: string, input: EditingSiteStylesReleaseApply): Promise<EditingSiteStylesReleaseResult | EditingSiteStylesFailure>;
-  prepareMigration?(actor: Actor, siteId: string, input: EditingSiteStylesMigrationRequest): Promise<{ readonly status: "prepared"; readonly plan: EditingSiteStylesMigrationPlan } | EditingSiteStylesFailure>;
-  applyMigration?(actor: Actor, siteId: string, input: EditingSiteStylesMigrationApply): Promise<EditingSiteStylesMigrationResult | EditingSiteStylesFailure>;
+  edit(actor: Actor, siteId: string, input: EditingSiteStylesEditRequest): Promise<EditingSiteStylesEditResult>;
+  publish(actor: Actor, siteId: string, input: EditingSiteStylesPublishRequest): Promise<EditingSiteStylesPublishResult>;
 };
 
 const VERSION_LIMIT = 200;
-const OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
-const EXPIRES_AT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
 const styleName = (value: unknown, path: string) => identifier(value, path);
 export const editingSiteStylesVersion = (value: unknown, path: string): string => line(value, path, VERSION_LIMIT);
-export function editingSiteStylesOperationId(value: unknown, path: string): string {
-  const parsed = line(value, path, 36);
-  if (!OPERATION_ID.test(parsed)) throw new TypeError(`${path}: invalid operation ID`);
-  return parsed;
-}
 
 function checkedStyles(value: unknown, path: string): SiteStyles {
   const source = record(value, path); keys(source, ["tokens", "textStyles"], path);
   return parseSiteStyles(source as SiteStyles);
 }
+
 export function parseEditingSiteStylesSnapshot(value: unknown): SiteStylesSnapshot {
-  const source = record(value, "$result"); keys(source, ["draft", "published", "sitePublicationEpoch"], "$result");
+  const source = record(value, "$result"); keys(source, ["draft", "published"], "$result");
   const draft = record(source.draft, "$result.draft"), published = record(source.published, "$result.published");
-  keys(draft, ["version", "styles"], "$result.draft"); keys(published, ["stylesVersion", "styles"], "$result.published");
+  keys(draft, ["version", "styles"], "$result.draft"); keys(published, ["version", "styles"], "$result.published");
   return {
-    sitePublicationEpoch: editingSiteStylesVersion(source.sitePublicationEpoch, "$result.sitePublicationEpoch"),
     draft: { version: editingSiteStylesVersion(draft.version, "$result.draft.version"), styles: checkedStyles(draft.styles, "$result.draft.styles") },
-    published: { stylesVersion: editingSiteStylesVersion(published.stylesVersion, "$result.published.stylesVersion"), styles: checkedStyles(published.styles, "$result.published.styles") }
+    published: { version: editingSiteStylesVersion(published.version, "$result.published.version"), styles: checkedStyles(published.styles, "$result.published.styles") }
   };
 }
 
-export function parseEditingSiteStylesReleaseRequest(value: unknown, path = "$input"): EditingSiteStylesReleaseRequest {
-  const source = record(value, path); keys(source, ["expectedVersion", "expectedStylesVersion", "sitePublicationEpoch", "operationId"], path);
-  return { expectedVersion: editingSiteStylesVersion(source.expectedVersion, `${path}.expectedVersion`),
-    expectedStylesVersion: editingSiteStylesVersion(source.expectedStylesVersion, `${path}.expectedStylesVersion`),
-    sitePublicationEpoch: editingSiteStylesVersion(source.sitePublicationEpoch, `${path}.sitePublicationEpoch`),
-    operationId: editingSiteStylesOperationId(source.operationId, `${path}.operationId`) };
-}
-
-export function parseEditingSiteStylesReleaseApply(value: unknown): EditingSiteStylesReleaseApply {
-  const source = record(value, "$input"); keys(source, ["expectedVersion", "expectedStylesVersion", "sitePublicationEpoch", "operationId", "confirmationToken"], "$input");
-  return { ...parseEditingSiteStylesReleaseRequest({ expectedVersion: source.expectedVersion, expectedStylesVersion: source.expectedStylesVersion,
-    sitePublicationEpoch: source.sitePublicationEpoch, operationId: source.operationId }),
-    confirmationToken: editingSiteStylesVersion(source.confirmationToken, "$input.confirmationToken") };
-}
-
-function migrationChange(value: unknown, index: number): EditingSiteStylesMigrationChange {
-  const path = `$input.changes[${index}]`, source = record(value, path);
-  if (source.styleKind !== "token" && source.styleKind !== "textStyle") throw new TypeError(`${path}.styleKind: invalid style kind`);
-  if (source.kind === "delete") {
-    keys(source, ["kind", "styleKind", "name"], path);
-    return { kind: source.kind, styleKind: source.styleKind, name: styleName(source.name, `${path}.name`) };
+function parsedSet(source: Record<string, unknown>, path: string): EditingSiteStylesEdit {
+  const name = styleName(source.name, `${path}.name`);
+  if (source.styleKind === "token") {
+    const styles = parseSiteStyles({ tokens: { [name]: source.value as DesignToken } });
+    return { type: "set", styleKind: "token", name, value: styles.tokens![name]! };
   }
-  if (source.kind === "rename") {
-    keys(source, ["kind", "styleKind", "from", "to"], path);
+  if (source.styleKind === "textStyle") {
+    // References are validated after the complete edit list is applied to the current draft.
+    return { type: "set", styleKind: "textStyle", name, value: record(source.value, `${path}.value`) as unknown as TextStyle };
+  }
+  throw new TypeError(`${path}.styleKind: invalid style kind`);
+}
+
+function parseEdit(value: unknown, index: number): EditingSiteStylesEdit {
+  const path = `$input.edits[${index}]`, source = record(value, path);
+  if (source.type === "set") { keys(source, ["type", "styleKind", "name", "value"], path); return parsedSet(source, path); }
+  if (source.styleKind !== "token" && source.styleKind !== "textStyle") throw new TypeError(`${path}.styleKind: invalid style kind`);
+  if (source.type === "delete") {
+    keys(source, ["type", "styleKind", "name"], path);
+    return { type: "delete", styleKind: source.styleKind, name: styleName(source.name, `${path}.name`) };
+  }
+  if (source.type === "rename") {
+    keys(source, ["type", "styleKind", "from", "to"], path);
     const from = styleName(source.from, `${path}.from`), to = styleName(source.to, `${path}.to`);
     if (from === to) throw new TypeError(`${path}: rename must change the name`);
-    return { kind: source.kind, styleKind: source.styleKind, from, to };
+    return { type: "rename", styleKind: source.styleKind, from, to };
   }
-  throw new TypeError(`${path}.kind: invalid migration kind`);
-}
-export function parseEditingSiteStylesMigrationRequest(value: unknown): EditingSiteStylesMigrationRequest {
-  const source = record(value, "$input"); keys(source, ["expectedVersion", "expectedStylesVersion", "sitePublicationEpoch", "operationId", "changes"], "$input");
-  if (!Array.isArray(source.changes) || source.changes.length < 1 || source.changes.length > 500) throw new TypeError("$input.changes: expected 1 to 500 changes");
-  const changes = source.changes.map(migrationChange);
-  return { ...parseEditingSiteStylesReleaseRequest({ expectedVersion: source.expectedVersion, expectedStylesVersion: source.expectedStylesVersion,
-    sitePublicationEpoch: source.sitePublicationEpoch, operationId: source.operationId }), changes };
-}
-export function parseEditingSiteStylesMigrationApply(value: unknown): EditingSiteStylesMigrationApply {
-  const source = record(value, "$input"); keys(source, ["expectedVersion", "expectedStylesVersion", "sitePublicationEpoch", "operationId", "changes", "confirmationToken"], "$input");
-  return { ...parseEditingSiteStylesMigrationRequest({ expectedVersion: source.expectedVersion, expectedStylesVersion: source.expectedStylesVersion,
-    sitePublicationEpoch: source.sitePublicationEpoch, operationId: source.operationId, changes: source.changes }),
-    confirmationToken: editingSiteStylesVersion(source.confirmationToken, "$input.confirmationToken") };
+  throw new TypeError(`${path}.type: invalid edit type`);
 }
 
-function affected(value: unknown, index: number): EditingSiteStylesAffected {
-  const path = `$result.plan.affected[${index}]`, source = record(value, path); keys(source, ["kind", "id", "version", "locale"], path);
-  if (!["page", "locale", "component", "presentation", "shared", "template"].includes(String(source.kind))) throw new TypeError(`${path}.kind: invalid dependency kind`);
-  return { kind: source.kind as EditingSiteStylesAffected["kind"], id: identifier(source.id, `${path}.id`),
-    version: editingSiteStylesVersion(source.version, `${path}.version`), ...(source.locale === undefined ? {} : { locale: localeCode(source.locale, `${path}.locale`) }) };
-}
-function planBase(value: Record<string, unknown>, expected: EditingSiteStylesReleaseRequest, migration: boolean) {
-  const request = parseEditingSiteStylesReleaseRequest({ expectedVersion: value.expectedVersion, expectedStylesVersion: value.expectedStylesVersion,
-    sitePublicationEpoch: value.sitePublicationEpoch, operationId: value.operationId });
-  const expectedBase = parseEditingSiteStylesReleaseRequest({ expectedVersion: expected.expectedVersion, expectedStylesVersion: expected.expectedStylesVersion,
-    sitePublicationEpoch: expected.sitePublicationEpoch, operationId: expected.operationId });
-  if (JSON.stringify(request) !== JSON.stringify(expectedBase)) throw new TypeError("$result.plan: request binding mismatch");
-  if (!Array.isArray(value.affected) || value.affected.length > 10_000) throw new TypeError("$result.plan.affected: invalid dependency list");
-  const expiresAt = line(value.expiresAt, "$result.plan.expiresAt", 24);
-  if (!EXPIRES_AT.test(expiresAt) || Date.parse(expiresAt) <= 0) throw new TypeError("$result.plan.expiresAt: invalid expiry");
-  return { ...request, siteId: identifier(value.siteId, "$result.plan.siteId"),
-    confirmationToken: editingSiteStylesVersion(value.confirmationToken, "$result.plan.confirmationToken"), expiresAt,
-    before: checkedStyles(value.before, "$result.plan.before"), after: checkedStyles(value.after, "$result.plan.after"),
-    affected: value.affected.map(affected), ...(migration ? {} : {}) };
-}
-export function parseEditingSiteStylesReleasePlan(value: unknown, expected: EditingSiteStylesReleaseRequest, siteId?: string): EditingSiteStylesReleasePlan {
-  const source = record(value, "$result.plan"); keys(source, ["siteId", "expectedVersion", "expectedStylesVersion", "sitePublicationEpoch", "operationId", "confirmationToken", "expiresAt", "before", "after", "affected"], "$result.plan");
-  const plan = planBase(source, expected, false);
-  if (siteId !== undefined && plan.siteId !== siteId) throw new TypeError("$result.plan.siteId: site mismatch");
-  return plan;
-}
-export function parseEditingSiteStylesMigrationPlan(value: unknown, expected: EditingSiteStylesMigrationRequest, siteId?: string): EditingSiteStylesMigrationPlan {
-  const source = record(value, "$result.plan"); keys(source, ["siteId", "expectedVersion", "expectedStylesVersion", "sitePublicationEpoch", "operationId", "confirmationToken", "expiresAt", "classification", "before", "after", "affected", "changes"], "$result.plan");
-  if (!Array.isArray(source.changes)) throw new TypeError("$result.plan.changes: invalid changes");
-  const parsed = parseEditingSiteStylesMigrationRequest({ expectedVersion: source.expectedVersion, expectedStylesVersion: source.expectedStylesVersion,
-    sitePublicationEpoch: source.sitePublicationEpoch, operationId: source.operationId, changes: source.changes });
-  if (JSON.stringify(parsed) !== JSON.stringify(expected)) throw new TypeError("$result.plan: migration binding mismatch");
-  if (!["lossless", "semantic", "visual-change"].includes(String(source.classification))) throw new TypeError("$result.plan.classification: invalid classification");
-  const base = planBase(source, expected, true);
-  if (siteId !== undefined && base.siteId !== siteId) throw new TypeError("$result.plan.siteId: site mismatch");
-  return { ...base, changes: parsed.changes, classification: source.classification as EditingSiteStylesMigrationPlan["classification"] };
+export function parseEditingSiteStylesEditRequest(value: unknown): EditingSiteStylesEditRequest {
+  const source = record(value, "$input"); keys(source, ["expectedVersion", "edits"], "$input");
+  if (!Array.isArray(source.edits) || source.edits.length < 1 || source.edits.length > 500) throw new TypeError("$input.edits: expected 1 to 500 edits");
+  return { expectedVersion: editingSiteStylesVersion(source.expectedVersion, "$input.expectedVersion"), edits: source.edits.map(parseEdit) };
 }
 
-export function siteStylesRequireMigration(before: SiteStyles, after: SiteStyles): boolean {
-  const old = parseSiteStyles(before), next = parseSiteStyles(after);
-  return Object.keys(old.tokens ?? {}).some((name) => !Object.hasOwn(next.tokens ?? {}, name))
-    || Object.keys(old.textStyles ?? {}).some((name) => !Object.hasOwn(next.textStyles ?? {}, name));
+export function parseEditingSiteStylesPublishRequest(value: unknown): EditingSiteStylesPublishRequest {
+  const source = record(value, "$input"); keys(source, ["expectedDraftVersion", "expectedPublishedVersion"], "$input");
+  return { expectedDraftVersion: editingSiteStylesVersion(source.expectedDraftVersion, "$input.expectedDraftVersion"),
+    expectedPublishedVersion: editingSiteStylesVersion(source.expectedPublishedVersion, "$input.expectedPublishedVersion") };
+}
+
+function usage(value: unknown, index: number, strict: boolean): EditingSiteStylesUsage {
+  const path = `$result.usages[${index}]`, source = record(value, path);
+  if (strict) keys(source, ["kind", "id", "locale", "path"], path);
+  if (!["page", "locale", "component", "presentation", "shared", "template", "siteStyle"].includes(String(source.kind))) throw new TypeError(`${path}.kind: invalid usage kind`);
+  return { kind: source.kind as EditingSiteStylesUsage["kind"], id: identifier(source.id, `${path}.id`),
+    ...(source.locale === undefined ? {} : { locale: localeCode(source.locale, `${path}.locale`) }),
+    ...(source.path === undefined ? {} : { path: line(source.path, `${path}.path`, 500) }) };
+}
+
+function parseSiteStylesEditResult(value: unknown, expectedVersion: string, strict: boolean): Exclude<EditingSiteStylesEditResult, { status: "conflict" }> {
+  const source = record(value, "$result");
+  if (source.status === "referenced") {
+    if (strict) keys(source, ["status", "usages"], "$result");
+    if (!Array.isArray(source.usages) || source.usages.length < 1 || source.usages.length > 10_000) throw new TypeError("$result.usages: invalid usage list");
+    return { status: "referenced", usages: source.usages.map((entry, index) => usage(entry, index, strict)) };
+  }
+  if (strict) keys(source, ["status", "version", "styles"], "$result");
+  const version = editingSiteStylesVersion(source.version, "$result.version");
+  if (source.status !== "saved" || version === expectedVersion) throw new TypeError("$result: invalid saved result");
+  return { status: "saved", version, styles: checkedStyles(source.styles, "$result.styles") };
+}
+
+/** Strict host-result validation used by the server adapter boundary. */
+export function parseEditingSiteStylesEditResult(value: unknown, expectedVersion: string): Exclude<EditingSiteStylesEditResult, { status: "conflict" }> {
+  return parseSiteStylesEditResult(value, expectedVersion, true);
+}
+
+/** Tolerant client-result parsing that drops fields added by a newer server. */
+export function parseEditingSiteStylesEditResponse(value: unknown, expectedVersion: string): Exclude<EditingSiteStylesEditResult, { status: "conflict" }> {
+  return parseSiteStylesEditResult(value, expectedVersion, false);
+}
+
+function parseSiteStylesPublishResult(value: unknown, expectedVersion: string, strict: boolean): Exclude<EditingSiteStylesPublishResult, { status: "conflict" }> {
+  const source = record(value, "$result");
+  if (strict) keys(source, ["status", "version", "styles"], "$result");
+  const version = editingSiteStylesVersion(source.version, "$result.version");
+  if (source.status !== "published" || version === expectedVersion) throw new TypeError("$result: invalid published result");
+  return { status: "published", version, styles: checkedStyles(source.styles, "$result.styles") };
+}
+
+/** Strict host-result validation used by the server adapter boundary. */
+export function parseEditingSiteStylesPublishResult(value: unknown, expectedVersion: string): Exclude<EditingSiteStylesPublishResult, { status: "conflict" }> {
+  return parseSiteStylesPublishResult(value, expectedVersion, true);
+}
+
+/** Tolerant client-result parsing that drops fields added by a newer server. */
+export function parseEditingSiteStylesPublishResponse(value: unknown, expectedVersion: string): Exclude<EditingSiteStylesPublishResult, { status: "conflict" }> {
+  return parseSiteStylesPublishResult(value, expectedVersion, false);
+}
+
+/** Rename one local definition and its references inside the draft style library. */
+export function renameSiteStyle(styles: SiteStyles, styleKind: EditingSiteStyleKind, fromValue: string, toValue: string): SiteStyles {
+  const current = parseSiteStyles(styles), from = styleName(fromValue, "$rename.from"), to = styleName(toValue, "$rename.to");
+  if (from === to) throw new TypeError("rename must change the name");
+  const definitions = styleKind === "token" ? current.tokens ?? {} : current.textStyles ?? {};
+  if (!Object.hasOwn(definitions, from)) throw new TypeError("rename source does not exist");
+  if (Object.hasOwn(definitions, to)) throw new TypeError("rename target already exists");
+  const renamed = Object.fromEntries(Object.entries(definitions).filter(([name]) => name !== from));
+  renamed[to] = definitions[from]!;
+  if (styleKind === "token") {
+    const rewrite = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.map(rewrite);
+      if (!value || typeof value !== "object") return value;
+      if (Object.keys(value).length === 1 && (value as { token?: unknown }).token === from) return { token: to };
+      return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, rewrite(entry)]));
+    };
+    return parseSiteStyles({ ...current, tokens: renamed as NonNullable<SiteStyles["tokens"]>, ...(current.textStyles ? { textStyles: rewrite(current.textStyles) as NonNullable<SiteStyles["textStyles"]> } : {}) });
+  }
+  return parseSiteStyles({ ...current, textStyles: renamed as NonNullable<SiteStyles["textStyles"]> });
+}
+
+/** Build the shared edit request used by the GUI facade and CLI. */
+export function siteStylesEdits(before: SiteStyles, after: SiteStyles, renames: readonly EditingSiteStylesRename[] = []): EditingSiteStylesEdit[] {
+  const old = parseSiteStyles(before), next = parseSiteStyles(after), edits: EditingSiteStylesEdit[] = [];
+  for (const rename of renames) {
+    const source = rename.styleKind === "token" ? old.tokens : old.textStyles;
+    const target = rename.styleKind === "token" ? next.tokens : next.textStyles;
+    if (!source || !Object.hasOwn(source, rename.from) || !target || !Object.hasOwn(target, rename.to)) throw new TypeError("rename does not match the saved and edited styles");
+    edits.push(rename);
+  }
+  for (const styleKind of ["token", "textStyle"] as const) {
+    const previous = styleKind === "token" ? old.tokens ?? {} : old.textStyles ?? {};
+    const current = styleKind === "token" ? next.tokens ?? {} : next.textStyles ?? {};
+    const kindRenames = renames.filter((rename) => rename.styleKind === styleKind);
+    const renamedSources = new Set(kindRenames.map(({ from }) => from));
+    const renamedTargets = new Set(kindRenames.map(({ to }) => to));
+    for (const { from, to } of kindRenames) {
+      const source = previous[from];
+      const destination = current[to];
+      if (destination !== undefined && JSON.stringify(destination) !== JSON.stringify(source)) {
+        edits.push(styleKind === "token" ? { type: "set", styleKind, name: to, value: destination as DesignToken }
+          : { type: "set", styleKind, name: to, value: destination as TextStyle });
+      }
+    }
+    for (const name of new Set([...Object.keys(previous), ...Object.keys(current)])) {
+      if (renamedTargets.has(name)) continue;
+      const value = current[name];
+      if (renamedSources.has(name)) {
+        if (value !== undefined) edits.push(styleKind === "token" ? { type: "set", styleKind, name, value: value as DesignToken }
+          : { type: "set", styleKind, name, value: value as TextStyle });
+        continue;
+      }
+      if (value === undefined) edits.push({ type: "delete", styleKind, name });
+      else if (JSON.stringify(value) !== JSON.stringify(previous[name])) {
+        edits.push(styleKind === "token" ? { type: "set", styleKind, name, value: value as DesignToken }
+          : { type: "set", styleKind, name, value: value as TextStyle });
+      }
+    }
+  }
+  return edits;
 }

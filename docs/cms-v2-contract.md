@@ -11,6 +11,9 @@
 | `cms.schema.read` / `cms.schema.plan` / `cms.release.status` / `cms.schedule.status` | `cms.read` |
 | `cms.items.save` / `cms.items.remove` / `cms.items.restore` | `cms.edit` |
 | `cms.release.plan` / `cms.release.apply` / `cms.schedule.create` / `cms.schedule.cancel` | `cms.publish` |
+| `cms.localization.overview` / `cms.localization.items.list` / `cms.localization.items.read` / `cms.localization.release.current` | `cms.read` |
+| `cms.localization.items.command` | `cms.edit` |
+| `cms.localization.release.plan` / `cms.localization.release.apply` | `cms.publish` |
 | `cms.schema.apply` | `cms.schema.apply`（owner のみ） |
 
 v1 の意味は既存の通りです。v2 を使う Site の v1 の書込み入口は、`checkCmsWriteVersion` により本文を処理する前に閉じます。旧クライアントから版番号が届かない場合は v1 と判断します。v2 の項目変更は、読取り時の `expectedSchemaRevision` と `expectedRevision` の両方が必要です。確認付きの適用要求にも `siteId` を含め、scope と照合します。定義・release 操作は v2 の経路だけに公開します。未対応版と競合は区別し、v2 の変更要求を v1 へフォールバックしません。
@@ -44,17 +47,43 @@ v1 の意味は既存の通りです。v2 を使う Site の v1 の書込み入�
 
 `cms.release.plan` は1つの Site と locale の現在の release ID、定義の版、ルート表の版、公開後に含めたい全項目の `collectionId` / `itemId` / `revision`、明示する転送表を固定します。日時 `at` を指定した入力は予約用の確認計画です。対象に残す既存項目の版も選択に含めます。snapshot の順序は項目選択の順序で、ホストは適用時も同じ順序を使います。
 
-`planCmsRelease` は同じ Site、locale、版の項目を読んで公開用に変換します。必須値、同じ snapshot 内の参照先、削除済みの項目、スラッグ、重複 path、版付き route table の衝突を検証します。転送先は公開項目または固定 route です。転送は1回で解決し、転送元は現在の route を占有できません。固定ページ、テンプレート、予約 path、ホスト所有転送との照合は route table を通して行います。slug 変更で自動生成する転送と明示転送の合計は25,000件以下です。上限を超える計画は `invalid` を返します。公開される本文にはホストの無害化と公開素材の検査が必要です。画像とギャラリーは安定素材参照を使い、プレビュー URL を含む旧 URL 値を公開 release に持ち込みません。素材の公開 manifest と配信は #379 / #380 で扱います。
+`planCmsRelease` は同じ Site、locale、版の項目を読んで公開用に変換します。必須値、同じ snapshot 内の参照先、削除済みの項目、スラッグ、重複 path、版付き route table の衝突を検証します。CMS route は route table の case-sensitive な path と CMS slug の大文字・小文字をそのまま保ちます。転送先は公開項目または固定 route です。転送は1回で解決し、転送元は現在の route を占有できません。固定ページ、テンプレート、予約 path、ホスト所有転送との照合は route table を通して行います。slug 変更で自動生成する転送と明示転送の合計は25,000件以下です。上限を超える計画は `invalid` を返します。公開される本文にはホストの無害化と公開素材の検査が必要です。
 
-`cms.release.apply` はサーバーで保持した確認内容を `checkCmsReleaseApply` で再構成し、元の計画と一致する場合に確定します。snapshot の保存後、D1 transaction で受領記録・監査・outbox を確定します。この時点では公開 pointer は前の release のままです。outbox worker は前提を再検証してから、公開 pointer・release 履歴・監査・outbox 完了を一つの transaction で切り替えます。`cms.release.status` は現在の権限を再確認し、同じ Site、actor、操作の受領記録と配信状態（`pending` / `delivered` / `dead`）を返します。完全に同じ request の再送だけ既存結果を返します。同じ ID で異なる操作や入力を送ると conflict です。成功済みの再送は確認期限の判定より先に受領記録を確認します。
+`cms.release.apply` はサーバーで保持した確認内容を `checkCmsReleaseApply` で再構成し、元の計画と一致する場合に確定します。snapshot の保存後、D1 transaction で受領記録・監査・outbox を確定します。この時点では公開 pointer は前の release のままです。outbox worker は前提を再検証してから、公開 pointer・release 履歴・監査・通知イベント・outbox 完了を一つの transaction で切り替えます。`cms.release.status` は現在の権限を再確認し、同じ Site、actor、操作の受領記録と配信状態（`pending` / `delivered` / `dead`）を返します。完全に同じ request の再送だけ既存結果を返します。同じ ID で異なる操作や入力を送ると conflict です。成功済みの再送は確認期限の判定より先に受領記録を確認します。
 
 `cms.schedule.create` は release で固定した内容と時刻を保存します。実行時は `dueCmsSchedule` と `revalidateCmsRelease` を使い、時刻、公開 pointer、定義、選んだ版の存在、削除、現在のルート制約を確認します。あとから保存した新しい下書きは予約へ混ぜません。前提が変われば失敗を保存し、現在の公開を維持します。取消は未確定の予約だけに適用し、scheduler の実行と競合させないよう CAS を使います。再試行では現在の前提にもとづく新しい計画を確認します。
 
+Studio-native の CLI による CMS 項目公開は `cms.publish-now` に `expectedVersion` と `operationId` を渡します。受領記録と outbox は同じ D1 batch で確定し、同じ actor・操作 ID・入力の再送は同じ結果を返します。予約は `cms.release.plan` / `cms.schedule.create` を使い、期限到来後に lease を取得して公開します。
+
+Studio-native site はごみ箱を含めて Site ごとに最大500 CMS item IDを保持します。公開snapshotは2 MiB、保持するCMS revisionは合計100 MiBまでです。公開計画は最大500 itemと25,000転送を受け付け、別途route tableとの衝突を検査します。`cms.release.plan` と `cms.schedule.create` は大きな転送表を受け取るためrequest bodyを4 MiBまで許容しますが、生成snapshotには2 MiB上限が適用されます。上限を超える保存・公開は現在の下書きと公開pointerを変更せず拒否します。公開適用はoutbox経由で非同期に完了する場合があり、`cms.release.status` で状態を確認します。PageEditorのCMS list blockにある表示件数25件は、このCMS保存上限とは別の制約です。
+
 メモリ内参照ホストと Studio-native の適合テストで認可、永続化、公開、復元を確認できます。Studio の保存順序、容量、バックアップと復元は、運用契約を参照してください。[Studio-native site 契約](studio-managed-sites.md#cms-の公開と復旧)
+
+## CMS 項目の翻訳と locale snapshot
+
+Studio-native CMS は同じ `CmsSchema` と項目の `fieldId` を使い、テキスト・長文・URL・slug の field ID ごとに翻訳 overlay を作ります。Studio は翻訳サービスを接続していないため、訳文は人が入力します。手編集は後の自動候補で上書きせず、原文 fingerprint が変わった訳文は再確認が必要です。安全な parser / serializer を持たない Studio の rich-text field は翻訳項目として扱わず、値が入っている項目を locale snapshot から省きます。
+
+翻訳 workspace は現在の CMS 下書きを原文として表示し、項目を保存・確認します。`cms.localization.release.plan` は原文 locale の公開 snapshot にある項目だけを候補にし、全訳文がその公開版と一致して確認済みの項目を新しい locale revision として固定します。未完了・未確認・原文更新後の項目は公開 snapshot から省き、原文 locale の値へフォールバックしません。`cms.localization.release.apply` は route table と現在の target release を再確認してから、locale 専用の不変 CMS snapshot と公開 pointer を更新します。原文 locale の pointer は変わりません。公開 route は `/{locale}/cms/...` で、固定ページや別 route との衝突を検査します。
+
+CMS 定義は Site ごとに一つです。editor は項目を翻訳して locale snapshot を公開できます。定義の変更・適用は owner のみです。Studio-native の CMS snapshot と固定ページは別の CAS / snapshot で公開し、同じ切替にはまとめません。外部 host も CMS 全体の locale snapshot を一単位として公開します。自サイトの認証、保存先、配信・公開 pointer は host が管理します。
+
+### 公開素材の manifest
+
+画像とギャラリーに保存する値は `{ provider, id }` の安定素材参照です。`collectCmsReleaseAssetReferences` は公開に選んだ項目版から素材参照を集めます。ホストの素材 adapter は対象 Site の素材が存在し、削除されておらず、公開を許可されていることを確認し、該当する素材の公開情報だけを `CmsReleaseContext.publicAssets` に渡します。照合できない素材の情報は返しません。Studio の `CmsStore` には Site と参照一覧を受け取る resolver を接続できます。resolver が未設定の Site では素材付きの公開計画はエラーになります。
+
+公開 snapshot の `assetManifest` は、選んだ版で実際に使用する素材ごとの `reference`、`url`、`width`、`height`、`altText` を含みます。URL は閲覧者が認証なしで利用できる HTTPS URL または配信先と同じ origin のルート相対 URL です。寸法は正の整数または `null` です。素材情報の欠落、未検証の旧 URL、無効な配信情報があれば公開計画を止めます。本文に含まれない下書き素材や adapter が余分に返した素材は manifest に入りません。適用時と Studio の公開切替直前にも公開条件と元の manifest との一致を照合します。
+
+保存済み snapshot は `parseCmsReleaseAssetManifest` で全参照と manifest の一致を確かめます。旧 snapshot に manifest が無い場合、素材参照が無いものは空配列として読めます。Studio の CMS 詳細は manifest の URL、寸法、代替テキストで画像を描画します。下書きプレビューは、認証した actor・Site・項目版に固定された短命の別操作で提供し、素材参照と配信用 URL を含みません。
 
 ## Studio-native の HTTP 接続
 
 管理画面は `/api/projects/{projectId}/sites/{siteId}/cms/v2/discover`（GET）と、その `/cms/v2/{operation}`（POST）を使います。機械クライアントには同じ操作を `/api/edit/v2/sites/{siteId}/capabilities`（GET）と `/api/edit/v2/sites/{siteId}/operations/{operation}`（POST）に公開します。POST 本文に `siteId` を含めます。R2 を有効にした Studio-native site のみが対象です。
+
+JSON リクエスト本文は `cms.items.save` が128 KiB、`cms.release.plan` と `cms.schedule.create` が4 MiB、その他の操作が64 KiBまでです。本文全体を UTF-8 のバイト数で数え、上限超過は `400 invalid_request` を返します。
+
+Studio-native の1サイトに保存できる CMS 項目は、全コレクションの復元可能な削除済み項目を含めて500件です。上限を超える作成は `409 quota_exceeded` を返します。公開・予約の1計画には最大500項目と25,000件の明示転送を指定できます。配信待ちの公開・予約は1サイトで合計25件までです。[Studio-native site の容量制限](studio-managed-sites.md#cms-の公開と復旧)
+
+旧CMSの公開画像URLを移行する場合、ホストは `kamakura-source` provider の安定参照へ変換し、サイト専用の非公開 `CMS_OBJECTS` manifest に URL と公開metadataを保存できます。公開計画は同じサイトのmanifestにあり、許可された安定参照だけを公開snapshotのasset manifestへ含めます。manifestが無い、別サイトのもの、またはURLが契約外の場合は公開を止めます。
 
 | Studio の追加操作 | 入力と結果 |
 | --- | --- |
@@ -62,6 +91,9 @@ v1 の意味は既存の通りです。v2 を使う Site の v1 の書込み入�
 | `cms.items.list` | `collectionId`、`deleted`、任意の `cursor`。項目概要と次の cursor を返す。cursor は site・actor・コレクション・ごみ箱の選択・現在世代に固定 |
 | `cms.items.read` | `collectionId`、`itemId`。現行の下書き版と項目概要 |
 | `cms.release.current` / `cms.release.snapshot` | 現在の公開 snapshot、または `releaseId` で公開済みの snapshot を取得 |
+| `cms.localization.overview` / `cms.localization.items.list` / `cms.localization.items.read` | 翻訳対象、項目の安定 unit ID、原文版に対する訳文状態を取得 |
+| `cms.localization.items.command` | `set-value` / `review-current` で訳文を保存・確認。項目 overlay 版と原文 revision の両方を CAS で照合 |
+| `cms.localization.release.current` / `.plan` / `.apply` | 現在の locale snapshot を読む、新しい snapshot の内容と省略項目を確認し、確認 token を適用 |
 | `cms.preview.prepare` / `cms.preview.read` | `collectionId`、`itemId`、現行の `revision` から5分間に1度だけ使える `previewId` を発行し、POST の `previewId` でプレビューを読む。認証中の actor、site、版、定義を照合 |
 | `cms.schedule.cancel` / `cms.schedule.status` | `scheduleId` で予約を取り消すか状態を読む。配信開始済みでも公開 pointer 確定前なら取消と配信の CAS で先着のみ成功 |
 
@@ -69,7 +101,13 @@ v1 の意味は既存の通りです。v2 を使う Site の v1 の書込み入�
 
 GUI、Access 人トークン、Access サービスの現在の権限を操作ごとに照合します。定義の適用は人の owner のみです。プレビューの参照IDはURLに載せず、ログ・履歴・公開 snapshot にも含めません。読み込み応答は no-store / no-referrer / noindex。使い切った参照ID、期限切れ、対象の下書きが更新された参照IDは404になります。
 
+locale 公開の確認・適用は `niho-edit --studio localization-release-read`、`localization-release-prepare`、`localization-release-apply` からも同じ Studio CMS 操作を呼びます。準備は publish 操作、`releaseId: null`、`resumeToken: null` と一意な `operationId` を入力し、適用は準備済み `confirmationToken` を使います。
+
 既存の共通 `cms.schema` / `cms.list` / `cms.read` には従来の DTO を返します。同じ `/api/edit/v1` の形式で書き込む Studio クライアントは、`X-Studio-CMS-Version: 2` を送ります。このヘッダーによって版を宣言した要求は内部の v2 revision、release、outbox で処理します。宣言のない書込みは `409 unsupported_version` です。公開 apply の受領応答は再送時も保持されます。v2 の `cms.release.status` は受領記録に加えて outbox の `pending` / `delivered` / `dead` と失敗理由を返し、legacy の `cms.operation-status` は配信後の結果を取得できます。
+
+## 外部ホストへの配信
+
+外部ホストは Site 専用の配信資格で、locale ごとの公開 snapshot と通知イベントを読みます。ホストが配備した成果物の ack は Studio の公開状態と独立しており、現行の release ID、snapshot digest、renderer 版を照合します。認証、ETag、通知 cursor、Astro / Next.js のビルド用関数は [外部ホストへの CMS 配信契約](cms-delivery-contract.md) を参照してください。
 
 ## PageDocument と CMS の結び付け
 
@@ -77,6 +115,10 @@ GUI、Access 人トークン、Access サービスの現在の権限を操作ご
 
 対応する `PageEditor` は CMS 項目テンプレートの挿入、field の結び付け、下書きデータのプレビューを行います。プレビューは actor・site・page・文書版・CMS schema revision・item revision に結び付いた5分間の一回限り token を使います。`pages.read` / `pages.inspect` は対応 host だけ `cmsBindings` を返し、`pages.apply` は `pages.cms-bindings` capability を公開する host だけ sidecar の更新を受け付けます。`niho-edit apply --cms-bindings <file|->` は JSON sidecar を追加・置換し、JSON `null` で解除します。空の `operations` と sidecar だけの更新も可能です。
 
-Studio-native は page version row に sidecar を一緒に保存し、公開計画が page publication に CMS `releaseId`、`schemaRevision`、現在の `routeTableRevision` を固定します。公開適用時に route table を読み直し、予約状態が変わっていれば `409 conflict` にして計画を適用しません。公開 HTML はその不変 CMS release の項目から描画し、後の CMS schema / 下書き変更を反映しません。CMS release と固定ページの公開は別々の CAS / snapshot であり、両方をまたぐ原子的な切替はありません。公開計画では list / detail の field 型と node を検証し、detail slug の生成 URL と現在の固定・予約・CMS route を照合します。schema migration は現在のページ sidecar をすべて検査し、影響する bindings を計画へ含めます。過去の公開 page と CMS release は migration で変更しません。
+Studio-native は page version row に sidecar を一緒に保存します。固定ページの公開要求は現在の CMS route table を照合し、CMS `releaseId` と `schemaRevision` を page publication に固定します。要求中に CMS の世代またはページ一覧の版が変わった場合は HTTP 409 `version_conflict` になります。公開 HTML はその不変 CMS release の項目から描画し、後の CMS schema / 下書き変更を反映しません。CMS release と固定ページの公開は別々の CAS / snapshot であり、両方をまたぐ原子的な切替はありません。固定ページの公開要求では list / detail の field 型と node を検証し、detail slug の生成 URL と現在の固定・予約・CMS route を照合します。schema migration は現在のページ sidecar をすべて検査し、影響する bindings を計画へ含めます。過去の公開 page と CMS release は migration で変更しません。
 
-bindings の image mapping は配信 URL を保存せず、安定 asset reference を使います。CMS 画像の公開時検査と manifest 解決は [素材契約](asset-contract.md) の公開素材対応が必要です。
+bindings の image mapping は安定 asset reference を使います。ホストがこの参照を公開描画で解決する場合は、[公開素材の manifest](#公開素材の-manifest) に固定された情報を使います。
+
+## CMS 項目の翻訳
+
+CMS v2 の翻訳 identity、下書き overlay、翻訳状態、target locale revision の生成は [CMS翻訳契約](cms-localization-contract.md) を使います。英語の公開 snapshot と素材配信は別の境界で、[素材契約](asset-contract.md) と [外部ホストへの CMS 配信契約](cms-delivery-contract.md) に従います。

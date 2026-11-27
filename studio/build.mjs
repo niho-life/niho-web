@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 const studioDirectory = dirname(fileURLToPath(import.meta.url));
 const outputDirectory = join(studioDirectory, "dist");
 const publicOutput = join(outputDirectory, "public");
+const publicSitesOutput = join(outputDirectory, "public-sites");
 
 await rm(outputDirectory, { recursive: true, force: true });
 /** webFonts() が書き出す @font-face の CSS の名前（assets/fonts/ の中）。index.html の /assets/fonts.css をこれに置き換える */
@@ -31,9 +32,6 @@ await Promise.all([
     legalComments: "none",
     metafile: true
     });
-    // Kamakura は凍結中も読み取り専用で開く（kamakura-site#84）。Experience の editor は休止のまま入れない。
-    const forbidden = Object.keys(result.metafile.inputs).filter((input) => /studio\/(?:integration-entry|experience-editor)\.tsx$/u.test(input));
-    if (forbidden.length) throw new Error(`Frozen editor code entered the Studio client bundle: ${forbidden.join(", ")}`);
     // 最初に読む分（app.js と、そこから静的に import する chunk）に本文の編集部品・CMS と翻訳の画面を入れない
     const eager = new Set(), queue = [relative(process.cwd(), join(publicOutput, "assets", "app.js")).replaceAll("\\", "/")];
     while (queue.length) {
@@ -115,6 +113,9 @@ await Promise.all([
   writeFile(join(publicOutput, "index.html"), indexHtml),
   writeFile(join(publicOutput, indexName), indexHtml)
 ]);
+const [publicNihoEmbedsPath, publicPresentationPath] = await Promise.all([
+  publicScript("niho-embeds"), publicScript("presentation")
+]);
 await build({
   entryPoints: [join(studioDirectory, "worker.ts")],
   outfile: join(outputDirectory, "worker.js"),
@@ -124,8 +125,27 @@ await build({
   target: "es2022",
   minify: true,
   legalComments: "none",
-  define: { __STUDIO_INDEX_PATH__: JSON.stringify(`/${indexName}`) }
+  define: {
+    __STUDIO_INDEX_PATH__: JSON.stringify(`/${indexName}`),
+    __PUBLIC_NIHO_EMBEDS_PATH__: JSON.stringify(publicNihoEmbedsPath),
+    __PUBLIC_PRESENTATION_PATH__: JSON.stringify(publicPresentationPath)
+  }
 });
+
+async function publicScript(name) {
+  const result = await build({
+    entryPoints: [join(studioDirectory, `public-${name}.ts`)],
+    bundle: true, format: "esm", platform: "browser", target: "es2022", minify: true, legalComments: "none", write: false
+  });
+  const bytes = result.outputFiles[0].contents;
+  const directories = [join(publicOutput, "_niho"), join(publicSitesOutput, "_niho")];
+  const file = `${name}-${fingerprint(bytes)}.js`;
+  await Promise.all(directories.map(async (directory) => {
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, file), bytes);
+  }));
+  return `/_niho/${file}`;
+}
 
 function fingerprint(value) {
   return createHash("sha256").update(value).digest("hex").slice(0, 12);

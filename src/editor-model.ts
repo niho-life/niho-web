@@ -1,8 +1,8 @@
-import { resolvePageStyles, retainPageStyles, type SiteStyles } from "./site-styles.js";
+import { resolvePageStylesForEditor, retainPageStyles, type SiteStyles } from "./site-styles.js";
 import { detachInstance } from "./component-model.js";
 import { parsePageDocument, parsePageMeta, parsePageNodeName, validatePageDocument } from "./document.js";
 import { cloneEditorValue, createCopyOnWrite, finishCopyOnWrite } from "./immutable-draft.js";
-import type { EditorBlockRegistry, EditorLock, EditorPage, EditorPageChange, EditorPageChangePlan, EditorPageImpact, EditorReadOnly, EditorReleasePlan, EditorReleaseRequest, EditorSite, EditorTarget } from "./editor-types.js";
+import { EDITOR_RELEASE_WARNING_CODES, type EditorBlockRegistry, type EditorLock, type EditorPage, type EditorPageChange, type EditorPageChangePlan, type EditorPageImpact, type EditorReadOnly, type EditorReleasePlan, type EditorReleaseRequest, type EditorSite, type EditorTarget } from "./editor-types.js";
 import { findPathConflict, validatePagePath } from "./pages.js";
 import { indexedNodes, indexedNodesById, nodeAt, siblingsAt, walkNodes, type NodePath } from "./node-tree.js";
 import { normalizeNodeFragment } from "./editor-fragment.js";
@@ -444,7 +444,7 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
     const target = nodeAt(document, operation.path);
     if (target.type === "element" && JSON.stringify(target.children) === JSON.stringify(operation.children)) return document;
   }
-  const base = validateDocument ? resolvePageStyles(document, siteStyles) : document;
+  const base = validateDocument ? resolvePageStylesForEditor(document, siteStyles) : document;
   const draft = createCopyOnWrite(base), allLocks = effectiveLocks(document, locks, blocks);
   const parentChildren = (path: NodePath): PageNode[] => siblingsAt(draft, path);
   const targetChildren = (id: string | null): PageNode[] => {
@@ -681,7 +681,7 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
         : operation.type === "resize" ? { width: Math.round(operation.width), height: Math.round(operation.height) } : operation.values;
       const until = operation.type === "styleRange" ? operation.until : operation.type === "resize" ? operation.until : undefined;
       assertStyleProperties(node, Object.keys(values), blocks);
-      if (until !== undefined) preserveRange(resolvePageStyles(document, siteStyles), nodeAt(document, operation.path) as ElementNode | ComponentNode | InstanceNode, node, operation.breakpoint, until, values);
+      if (until !== undefined) preserveRange(resolvePageStylesForEditor(document, siteStyles), nodeAt(document, operation.path) as ElementNode | ComponentNode | InstanceNode, node, operation.breakpoint, until, values);
       const declarations = declarationsAt(node, operation.breakpoint);
       for (const [property, value] of Object.entries(values) as [StyleProperty, StyleValue | undefined][]) if (value === undefined) delete declarations[property]; else declarations[property] = value;
       pruneResponsive(node);
@@ -738,7 +738,7 @@ export function editDocument(document: PageDocument, operation: EditorOperation,
     candidate = canonicalizeEditedDocument(candidate, document, blocks, components);
     validatePageDocument(candidate, blocks, { ...(components ? { components } : {}), ...(siteStyles ? { siteStyles } : {}) });
   }
-  assertLocks(validateDocument ? resolvePageStyles(document, siteStyles) : document, candidate, allLocks);
+  assertLocks(validateDocument ? resolvePageStylesForEditor(document, siteStyles) : document, candidate, allLocks);
   if (groupMayChangeLayout && (operation.type === "wrap" || operation.type === "unwrap") && operation.allowLayoutChange !== true) throw new BoxGroupLayoutChange();
   const ownership = operation.type === "restore" ? operation.document : operation.type === "token" && operation.token ? { ...document, tokens: { ...document.tokens, [operation.name]: operation.token } }
     : operation.type === "textStyle" && operation.style ? { ...document, textStyles: { ...document.textStyles, [operation.name]: operation.style } } : { ...document };
@@ -809,7 +809,7 @@ export function travelHistory(history: EditorHistory, direction: "undo" | "redo"
   const target = direction === "undo" ? history.past.at(-1) : history.future[0];
   if (!target) return history;
   parsePageDocument(target, blocks, { ...(components ? { components } : {}), ...(siteStyles ? { siteStyles } : {}) });
-  assertLocks(resolvePageStyles(history.present, siteStyles), resolvePageStyles(target, siteStyles), effectiveLocks(history.present, locks, blocks));
+  assertLocks(resolvePageStylesForEditor(history.present, siteStyles), resolvePageStylesForEditor(target, siteStyles), effectiveLocks(history.present, locks, blocks));
   return direction === "undo" ? { past: history.past.slice(0, -1), present: target, future: [history.present, ...history.future] }
     : { past: [...history.past, history.present], present: target, future: history.future.slice(1) };
 }
@@ -817,17 +817,21 @@ export function sameTarget(left: EditorTarget, right: EditorTarget): boolean {
   return left.siteId === right.siteId && left.pageId === right.pageId && left.locale === right.locale;
 }
 export function validateReleasePlan(plan: EditorReleasePlan, request: EditorReleaseRequest, site: EditorSite): void {
+  const affectedValid = plan.affected === undefined || (Array.isArray(plan.affected) && plan.affected.length <= 100 && plan.affected.every((item: unknown) => {
+    const { kind, name, detail } = (item && typeof item === "object" ? item : {}) as Record<string, unknown>;
+    return (kind === "shared" || kind === "page" || kind === "site") && planText(name, 120) && name.length > 0 && (detail === undefined || planText(detail, 300));
+  }));
+  const warningsValid = plan.warnings === undefined || (Array.isArray(plan.warnings) && plan.warnings.length <= 100 && plan.warnings.every((item: unknown) => {
+    const { code, message } = (item && typeof item === "object" ? item : {}) as Record<string, unknown>;
+    return EDITOR_RELEASE_WARNING_CODES.some((knownCode) => knownCode === code) && planText(message, 300) && message.length > 0;
+  }));
   if (!isSafeHttpsOrigin(plan.domain) || !site.domains.includes(plan.domain) || !sameTarget(plan.target, request.target) || plan.expectedVersion !== request.expectedVersion || plan.action !== request.action || plan.revision !== request.revision ||
     plan.componentsVersion !== request.componentsVersion || plan.presentationVersion !== request.presentationVersion ||
-    JSON.stringify(plan.siteStylesRevision) !== JSON.stringify(request.siteStylesRevision) || plan.sitePublicationEpoch !== request.sitePublicationEpoch ||
     typeof plan.confirmationToken !== "string" || !plan.confirmationToken || !Array.isArray(plan.changes) ||
     plan.changes.some((change) => !change || typeof change.path !== "string" || typeof change.before !== "string" || typeof change.after !== "string") ||
     (request.action === "rollback" && (!Number.isSafeInteger(request.revision) || request.revision! < 1)) ||
     (plan.url !== undefined && !(planText(plan.url, 2048) && plan.url.startsWith(`${plan.domain}/`))) ||
-    (plan.affected !== undefined && !(Array.isArray(plan.affected) && plan.affected.length <= 100 && plan.affected.every((item: unknown) => {
-      const { kind, name, detail } = (item && typeof item === "object" ? item : {}) as Record<string, unknown>;
-      return (kind === "shared" || kind === "page" || kind === "site") && planText(name, 120) && name.length > 0 && (detail === undefined || planText(detail, 300));
-    })))) throw new Error("公開対象または差分確認の情報が一致しません。再取得してください。");
+    !affectedValid || !warningsValid) throw new Error("公開対象または差分確認の情報が一致しません。再取得してください。");
 }
 const changeTarget = (change: EditorPageChange): EditorTarget | undefined => change.action === "create" ? undefined : change.action === "duplicate" ? change.source : change.target;
 type PageChangeProblem = { field: "title" | "path" | "change"; message: string };

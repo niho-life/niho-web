@@ -44,6 +44,80 @@ test("editor session opens a self-contained document when optional site settings
   assert.match(result.warning, /文書単体/);
 });
 
+test("editor session starts site-settings discovery before the page read", async () => {
+  let settingsStarted = false;
+  let pageReadSawSettingsStart = false;
+  await readEditorSession({
+    readSiteSettings: async () => {
+      settingsStarted = true;
+      return { settings: { title: "Demo", locale: "ja" }, version: "s1" };
+    },
+    readDocument: async () => {
+      pageReadSawSettingsStart = settingsStarted;
+      return snapshot();
+    }
+  }, target, new AbortController().signal);
+  assert.equal(pageReadSawSettingsStart, true);
+});
+
+test("editor session reuses the current site-settings snapshot without a network read", async () => {
+  let settingsReads = 0;
+  const result = await readEditorSession({
+    readDocument: async () => snapshot(),
+    readSiteSettings: async () => { settingsReads++; throw new Error("should use supplied snapshot"); }
+  }, target, new AbortController().signal, {}, undefined, {
+    siteSettings: { settings: { title: "Demo", locale: "ja" }, version: "s2" }
+  });
+  assert.equal(settingsReads, 0);
+  assert.equal(result.session.selfContained, false);
+  assert.equal(result.warning, undefined);
+});
+
+test("editor session uses the supplied site draft without a page style-version fence", async () => {
+  const dependent = structuredClone(source);
+  dependent.body[0].style = { base: { color: { token: "siteInk" } } };
+  let settingsReads = 0;
+  const result = await readEditorSession({
+    readDocument: async () => snapshot(dependent),
+    readSiteSettings: async () => { settingsReads++; throw new Error("should use supplied snapshot"); }
+  }, target, new AbortController().signal, {}, undefined, {
+    siteSettings: { settings: { title: "Demo", locale: "ja", tokens: { siteInk: { type: "color", value: "#123456" } } }, version: "draft-1" }
+  });
+  assert.equal(settingsReads, 0);
+  assert.equal(result.session.siteStyles.tokens.siteInk.value, "#123456");
+  assert.equal(result.session.selfContained, false);
+});
+
+test("editor session accepts a supplied page snapshot without a page style dependency", async () => {
+  const dependent = structuredClone(source);
+  dependent.body[0].style = { base: { color: { token: "siteInk" } } };
+  let pageReads = 0;
+  const result = await readEditorSession({
+    readDocument: async () => { pageReads++; throw new Error("should use the supplied page snapshot"); },
+    readSiteSettings: async () => ({ settings: { title: "Demo", locale: "ja", tokens: { siteInk: { type: "color", value: "#123456" } } }, version: "draft-2" })
+  }, target, new AbortController().signal, {}, undefined, {
+    snapshot: snapshot(dependent),
+    siteSettings: { settings: { title: "Demo", locale: "ja", tokens: { siteInk: { type: "color", value: "#123456" } } }, version: "draft-2" }
+  });
+  assert.equal(pageReads, 0);
+  assert.equal(result.session.history.present.title, dependent.title);
+});
+
+test("editor session has no styles version in page dependency metadata", async () => {
+  const dependent = structuredClone(source);
+  dependent.body[0].style = { base: { color: { token: "siteInk" } } };
+  let settingsReads = 0;
+  const result = await readEditorSession({
+    readDocument: async () => snapshot(dependent),
+    readSiteSettings: async () => { settingsReads++; throw new Error("should use supplied snapshot"); }
+  }, target, new AbortController().signal, {}, undefined, {
+    siteSettings: { settings: { title: "Demo", locale: "ja", tokens: { siteInk: { type: "color", value: "#123456" } } }, version: "s1" }
+  });
+  assert.equal(settingsReads, 0);
+  assert.equal(result.session.siteStyles.tokens.siteInk.value, "#123456");
+  assert.equal(result.session.dependencyVersions.stylesVersion, undefined);
+});
+
 test("editor page cache reuses only the saved session for the same document version", async () => {
   const cache = new EditorSessionCache(2), controller = new AbortController();
   let document = structuredClone(source), version = "v1", reads = 0;
@@ -63,6 +137,75 @@ test("editor page cache reuses only the saved session for the same document vers
   const changedVersion = await readEditorSession(adapter, target, controller.signal, {}, undefined, { cache });
   assert.notStrictEqual(changedVersion.session.history.present, savedDocument);
   assert.equal(changedVersion.session.history.present.title, "サーバー側の新しい版");
+});
+
+test("editor page cache keeps a clean last-known session and keys it by component-library identity", async () => {
+  const cache = new EditorSessionCache(2), controller = new AbortController();
+  const components = { schemaVersion: 1, siteId: target.siteId, revision: 1, tokens: {}, components: [] };
+  const snapshotValue = snapshot();
+  const first = await readEditorSession({ readDocument: async () => snapshotValue }, target, controller.signal, {}, components, { cache });
+  first.session.history = { past: [source], present: editDocument(first.session.history.present, { type: "title", value: "未保存の編集" }), future: [] };
+
+  const latest = cache.getLatest(target, components);
+  assert.ok(latest);
+  assert.equal(latest.session.history.present.title, source.title, "cache keeps only the saved document");
+  assert.deepEqual(latest.session.history.past, []);
+  assert.equal(cache.getLatest(target, { ...components }), undefined, "a different component-library snapshot cannot reuse the old parsed session");
+  assert.equal(cache.getLatest(target, components, -1), undefined, "expired sessions are not served as the last-known page");
+});
+
+test("editor page cache reuses its clean session on a matching ETag", async () => {
+  const cache = new EditorSessionCache(2), controller = new AbortController(), validators = [];
+  const adapter = {
+    readDocument: async () => { throw new Error("conditional reads should be used"); },
+    readDocumentIfChanged: async (_target, etag) => {
+      validators.push(etag);
+      return etag
+        ? { status: "not-modified", etag }
+        : { status: "modified", snapshot: snapshot(), etag: '"page-v1"' };
+    }
+  };
+  const first = await readEditorSession(adapter, target, controller.signal, {}, undefined, { cache });
+  const cached = cache.getLatest(target);
+  assert.equal(cached.etag, '"page-v1"');
+  const unchanged = await readEditorSession(adapter, target, controller.signal, {}, undefined, { cache, cached });
+  assert.strictEqual(unchanged.session.history.present, cached.session.history.present);
+  assert.deepEqual(validators, [undefined, '"page-v1"']);
+  assert.equal(first.session.history.present.title, source.title);
+});
+
+test("editor page cache can invalidate the last-known session after a server-side localization change", async () => {
+  const cache = new EditorSessionCache(2), controller = new AbortController();
+  const components = { schemaVersion: 1, siteId: target.siteId, revision: 1, tokens: {}, components: [] };
+  await readEditorSession({ readDocument: async () => snapshot() }, target, controller.signal, {}, components, { cache });
+  assert.ok(cache.getLatest(target, components));
+  cache.invalidateLatest(target);
+  assert.equal(cache.getLatest(target, components), undefined);
+});
+
+test("editor page cache can remember a newly acknowledged saved session", async () => {
+  const cache = new EditorSessionCache(2), controller = new AbortController();
+  const components = { schemaVersion: 1, siteId: target.siteId, revision: 1, tokens: {}, components: [] };
+  const first = await readEditorSession({ readDocument: async () => snapshot() }, target, controller.signal, {}, components, { cache });
+  const savedDocument = editDocument(first.session.history.present, { type: "title", value: "保存済みの版" });
+  const savedSession = { ...first.session, version: "v2", saved: "saved-v2", history: { past: [], present: savedDocument, future: [] } };
+  cache.rememberLatest(target, { session: savedSession }, components);
+  assert.equal(cache.getLatest(target, components)?.session.history.present.title, "保存済みの版");
+  assert.deepEqual(cache.getLatest(target, components)?.session.history.past, []);
+});
+
+test("editor page cache retains the site-settings snapshot with a supplied snapshot", async () => {
+  const cache = new EditorSessionCache(2), controller = new AbortController();
+  const siteSettings = { settings: { title: "Demo", locale: "ja" }, version: "s1" };
+  const adapter = {
+    readDocument: async () => { throw new Error("should use the supplied snapshot"); },
+    readSiteSettings: async () => siteSettings
+  };
+  const suppliedSnapshot = snapshot();
+  const first = await readEditorSession(adapter, target, controller.signal, {}, undefined, { cache, snapshot: suppliedSnapshot });
+  const cached = await readEditorSession(adapter, target, controller.signal, {}, undefined, { cache, snapshot: suppliedSnapshot });
+  assert.deepEqual(cached.siteSettings, first.siteSettings);
+  assert.equal(cached.siteSettings.version, "s1");
 });
 
 test("editor session requires unavailable site settings when the document references their tokens", async () => {

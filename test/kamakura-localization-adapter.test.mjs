@@ -5,7 +5,7 @@ import {
   parseLocaleReleaseApplyResult, parseLocaleReleasePrepareResult, parseLocaleReleaseStateResult, parseLocalizationCatalogResult, parseLocalizationCommandResult,
   parseLocalizationImageResult, parseLocalizationItemResult, parseLocalizationJobResult, parseLocalizationListResult, parseLocalizationOverviewResult,
   parseLocalizationPreviewResult, parseLocalizationSettingsResult, parseLocalizationTranslationResult
-} from "@niho/web/localization-workspace-model";
+} from "../dist/localization-workspace-model.js";
 import { createLocalizationMemory } from "../examples/localization-workspace-memory.mjs";
 
 // 架空の値だけを使う（実在の原稿・人・内部の key は書かない）。上流の応答の形は W1 のデモ用のメモリの adapter から作る。
@@ -13,7 +13,6 @@ const STUDIO = "https://studio.example.test";
 const OPERATIONS = `${STUDIO}/api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/operations`;
 const BASE = "/api/projects/project-kamakura/sites/kamakura/localization";
 const UUID = "123e4567-e89b-42d3-a456-426614174000";
-const UPLOAD_URL = `https://next-kamakura.niho.life/internal/studio/localization-upload/${UUID}`;
 const MEDIA = "https://kamakura-media.niho.life/uploads/2026/10/aaaaaaaaaaaaaa.png";
 const OP = "op_0123456789abcdef";
 const JOB = `g${"0".repeat(32)}`;
@@ -36,6 +35,9 @@ test("CMS の項目から翻訳の itemKey を作り、同じ原文の項目に�
   const key = kamakuraCmsLocalizationItemKey("posts", "morning-walk");
   assert.equal(key, b64("cms:posts:morning-walk"));
   assert.deepEqual(kamakuraLocalizationCmsSource(key), { collectionId: "posts", itemId: "morning-walk" });
+  const canonicalBoundaryKey = kamakuraCmsLocalizationItemKey("p".repeat(40), "x".repeat(105));
+  assert.equal(canonicalBoundaryKey, b64(`cms:${"p".repeat(40)}:${"x".repeat(105)}`), "canonical 150 byte key remains accepted although its base64url form is 200 chars");
+  assert.deepEqual(kamakuraLocalizationCmsSource(canonicalBoundaryKey), { collectionId: "p".repeat(40), itemId: "x".repeat(105) });
   assert.equal(kamakuraCmsLocalizationItemKey("posts", "../bad"), null);
   assert.equal(kamakuraCmsLocalizationItemKey("p".repeat(40), "x".repeat(128)), null, "Worker の一覧に入らない長さはリンクしない");
 });
@@ -170,11 +172,13 @@ test("翻訳 adapter は権限拒否、該当項目なし、版競合を画面�
 
 test("翻訳 adapter: 画像は intent の URL を確かめてから credentials なしで直接 PUT し、W1 の uploaded を返す。拒否は理由つき", async (t) => {
   const { createKamakuraLocalizationAdapter } = await loadAdapter();
+  const uploadOrigin = "https://studio-upload-preview.example.test";
+  const uploadUrl = `${uploadOrigin}/internal/studio/localization-upload/${UUID}`;
   const uploaded = { status: "uploaded", image: { asset: { kind: "image-url", src: MEDIA }, url: MEDIA } };
-  let intentReply = () => jsonResponse({ uploadUrl: UPLOAD_URL, uploadToken: "token.value", uploadId: UUID }, 201);
+  let intentReply = () => jsonResponse({ uploadUrl, uploadToken: "token.value", uploadId: UUID }, 201);
   let putReply = () => jsonResponse(uploaded, 201);
-  const calls = fakeBff(t, { "POST /uploads/intent": () => intentReply(), [`PUT ${UPLOAD_URL}`]: () => putReply() });
-  const adapter = createKamakuraLocalizationAdapter({ studioOrigin: STUDIO });
+  const calls = fakeBff(t, { "POST /uploads/intent": () => intentReply(), [`PUT ${uploadUrl}`]: () => putReply() });
+  const adapter = createKamakuraLocalizationAdapter({ studioOrigin: STUDIO, uploadOrigin });
   const file = new File([new Uint8Array(32)], "海\n.png", { type: "image/png" });
 
   const result = await adapter.uploadImage({ itemKey: "aG9tZQ", unitId: "cover", file }, signal());
@@ -193,16 +197,16 @@ test("翻訳 adapter: 画像は intent の URL を確かめてから credentials
   for (const bad of [
     { uploadUrl: `https://evil.example/internal/studio/localization-upload/${UUID}`, uploadToken: "t", uploadId: UUID },
     { uploadUrl: `https://next-kamakura.niho.life/internal/studio/cms-upload/${UUID}`, uploadToken: "t", uploadId: UUID },
-    { uploadUrl: `${UPLOAD_URL}#x`, uploadToken: "t", uploadId: UUID },
-    { uploadUrl: UPLOAD_URL, uploadToken: "t", uploadId: "123e4567-e89b-42d3-a456-426614174001" },
-    { uploadUrl: UPLOAD_URL, uploadToken: "t", uploadId: UUID, extra: true }
+    { uploadUrl: `${uploadUrl}#x`, uploadToken: "t", uploadId: UUID },
+    { uploadUrl, uploadToken: "t", uploadId: "123e4567-e89b-42d3-a456-426614174001" },
+    { uploadUrl, uploadToken: "t", uploadId: UUID, extra: true }
   ]) {
     intentReply = () => jsonResponse(bad, 201);
     const before = calls.length;
     await assert.rejects(adapter.uploadImage({ itemKey: "aG9tZQ", unitId: "cover", file }, signal()));
     assert.equal(calls.length, before + 1, "intent だけ呼び、PUT しない");
   }
-  intentReply = () => jsonResponse({ uploadUrl: UPLOAD_URL, uploadToken: "token.value", uploadId: UUID }, 201);
+  intentReply = () => jsonResponse({ uploadUrl, uploadToken: "token.value", uploadId: UUID }, 201);
   for (const reply of [
     { status: "uploaded", image: { asset: { kind: "asset", asset: { provider: "kamakura-upload", id: UUID } }, url: MEDIA } },
     { status: "picked", image: uploaded.image },
@@ -224,7 +228,7 @@ test("翻訳 adapter: 画像は intent の URL を確かめてから credentials
     intentReply = () => jsonResponse(reply, status);
     assert.deepEqual(await adapter.uploadImage({ itemKey: "aG9tZQ", unitId: "cover", file }, signal()), { status: "rejected", reason }, JSON.stringify(reply));
   }
-  intentReply = () => jsonResponse({ uploadUrl: UPLOAD_URL, uploadToken: "token.value", uploadId: UUID }, 201);
+  intentReply = () => jsonResponse({ uploadUrl, uploadToken: "token.value", uploadId: UUID }, 201);
   for (const [status, reason] of [[413, "size"], [415, "type"]]) {
     putReply = () => jsonResponse({ error: "x" }, status);
     assert.deepEqual(await adapter.uploadImage({ itemKey: "aG9tZQ", unitId: "cover", file }, signal()), { status: "rejected", reason });

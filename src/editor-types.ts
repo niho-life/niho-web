@@ -1,10 +1,10 @@
-import type { SiteStyles, SiteStylesRevision } from "./site-styles.js";
+import type { SiteStyles } from "./site-styles.js";
 import type { BuilderDefinition } from "./builder.js";
 import type { ComponentType, ReactNode } from "react";
 import type { AssetLibraryAdapter, ResolvedAssetMap } from "./assets.js";
 import type { BlockDefinition, ExternalFramePolicy } from "./react.js";
 import type { PageKind, PageVisibility, SiteSettings } from "./pages.js";
-import type { ComponentLibrary, ComponentNode, PageDocument, PublicPropValue, SitePresentation, StyleProperty, StyleValue } from "./types.js";
+import type { ComponentLibrary, ComponentNode, PageDocument, PublicPropValue, SitePresentation, StyleProperty } from "./types.js";
 import type { EditorRecoveryStore, EditorRevisionEntry, EditorRevisionPage } from "./history.js";
 import type { BlockLocalizationSchema, LocalizationLocale, LocalizationValue } from "./localization.js";
 import type { EditingPageApplied, EditingPageApplyConflict, EditingPageApplyInput, PageOperationVersions, EditingPageReleaseSetApplyResult, EditingPageReleaseSetItem, EditingPageReleaseSetPlan, EditingPageReleaseSetStatus } from "./editing-api.js";
@@ -15,6 +15,7 @@ import type { EnglishPublication, EnglishPublicationRetryResult } from "./englis
 import type { BlankEmbedRegistry } from "./embeds.js";
 import type { CmsPageBindingsDocument } from "./cms-page-bindings.js";
 import type { CmsSchema } from "./cms-v2-schema.js";
+import type { EditingSiteStylesRename, EditingSiteStylesUsage } from "./editing-site-styles.js";
 export type { EnglishPublication, EnglishPublicationRetryResult, EnglishPublicationState } from "./english-publication.js";
 export type { PageKind, PageVisibility, SiteSettings } from "./pages.js";
 /** 言語全体の公開の型は locale-release-contract.ts に移した。互換のためここからも export する。 */
@@ -109,6 +110,9 @@ export type EditorSnapshot = PageOperationVersions & {
   /** 原文の公開とは独立した、ホスト所有の英語版公開処理の現在値。省略時は表示しない。 */
   englishPublication?: EnglishPublication;
 };
+export type EditorDocumentRead =
+  | { readonly status: "modified"; readonly snapshot: EditorSnapshot; readonly etag?: string }
+  | { readonly status: "not-modified"; readonly etag: string };
 export type EditorSaveResult = {
   status: "saved";
   version: string;
@@ -124,12 +128,14 @@ export type EditorReleaseRequest = {
   componentsVersion?: string;
   /** presentation がある snapshot では必須。ホストは共有文書等の依存版も CAS する。 */
   presentationVersion?: string;
-  /** Feature-aware hosts bind publication to the immutable published style snapshot. */
-  siteStylesRevision?: Extract<SiteStylesRevision, { stage: "published" }>;
-  sitePublicationEpoch?: string;
 };
 /** 公開確認に添える影響範囲。kind は共通部品・ページ・サイト設定。 */
 export type EditorReleaseAffected = { kind: "shared" | "page" | "site"; name: string; detail?: string };
+export const EDITOR_RELEASE_WARNING_CODES = [
+  "missing-description", "missing-alt", "japanese-in-english", "duplicate-title", "duplicate-description", "broken-internal-link"
+] as const;
+export type EditorReleaseWarningCode = typeof EDITOR_RELEASE_WARNING_CODES[number];
+export type EditorReleaseWarning = { code: EditorReleaseWarningCode; message: string };
 export type EditorReleasePlan = EditorReleaseRequest & {
   confirmationToken: string;
   domain: string;
@@ -137,8 +143,9 @@ export type EditorReleasePlan = EditorReleaseRequest & {
   /** このページの公開URL。domain から始まる完全な URL。 */
   url?: string;
   affected?: readonly EditorReleaseAffected[];
+  warnings?: readonly EditorReleaseWarning[];
 };
-export type EditorReleaseResult = { status: "released"; snapshot: EditorSnapshot } | { status: "conflict" };
+export type EditorReleaseResult = { status: "released"; snapshot: EditorSnapshot; url?: string; warnings?: readonly EditorReleaseWarning[] } | { status: "conflict" };
 export type ComponentLibrarySnapshot = {
   /** 検証前のライブラリ。まだないサイトでは revision: 1、components: [] の空ライブラリ。 */
   library: unknown;
@@ -180,9 +187,12 @@ export type EditorPageImpact = {
   notes: readonly string[];
 };
 export type EditorPageChangePlan = { change: EditorPageChange; confirmationToken: string; domain: string; impact: EditorPageImpact; expectedVersion?: string; operationId?: string };
+export type EditorPublishPageInput = { expectedVersion: string; action: "publish" | "restore"; revision?: number };
 export type EditorPageChangeResult = { status: "applied"; page: EditorPage; operationId?: string } | { status: "conflict" };
-export type EditorSiteSettingsSnapshot = { settings: unknown; version: string };
-export type EditorSiteSettingsSaveResult = { status: "saved"; version: string } | { status: "conflict" };
+export type EditorSiteSettingsSnapshot = { settings: unknown; version: string; publishedVersion?: string; publishedStyles?: SiteStyles };
+export type EditorSiteSettingsSaveResult = { status: "saved"; version: string; styles?: SiteStyles } | { status: "conflict" }
+  | { status: "referenced"; usages: readonly EditingSiteStylesUsage[] };
+export type EditorSiteStylesPublishResult = { status: "published"; version: string; styles: SiteStyles } | { status: "conflict" };
 export type EditorBreakpointName = "Mini" | "Mobile" | "Tablet" | "Small" | "PC";
 export type EditorBreakpointSettings = {
   /** mobile-first の最も狭い有効段。PC だけが有効な場合は PC。 */
@@ -192,36 +202,6 @@ export type EditorBreakpointSettings = {
 };
 export type EditorBreakpointSettingsSnapshot = { settings: EditorBreakpointSettings; version: string };
 export type EditorBreakpointSettingsSaveResult = { status: "saved"; version: string } | { status: "conflict" };
-/** ホスト所有のレスポンシブ提案。provider・認証・保存・利用量管理はホストだけが担う。 */
-export type EditorResponsiveProposalScope = { type: "page" } | { type: "node"; nodeId: string };
-export type EditorResponsiveProposalProperty =
-  | "fontSize" | "lineHeight" | "letterSpacing" | "wordSpacing"
-  | "width" | "height" | "minWidth" | "maxWidth" | "minHeight" | "maxHeight"
-  | "margin" | "marginTop" | "marginRight" | "marginBottom" | "marginLeft"
-  | "padding" | "paddingTop" | "paddingRight" | "paddingBottom" | "paddingLeft"
-  | "display" | "flexDirection" | "flexWrap" | "justifyContent" | "alignItems" | "alignSelf" | "alignContent"
-  | "flexGrow" | "flexShrink" | "flexBasis" | "gap" | "rowGap" | "columnGap"
-  | "gridTemplateColumns" | "gridTemplateRows" | "gridColumn" | "gridRow"
-  | "position" | "top" | "right" | "bottom" | "left" | "overflow" | "overflowX" | "objectFit";
-export type EditorResponsiveProposalRequest = {
-  target: EditorTarget;
-  document: PageDocument;
-  fingerprint: string;
-  scope: EditorResponsiveProposalScope;
-  breakpoints: readonly number[];
-};
-export type EditorResponsiveProposalChange = {
-  nodeId: string;
-  breakpoint: number;
-  property: EditorResponsiveProposalProperty;
-  /** null はその幅の直接指定を外す。 */
-  value: StyleValue | null;
-};
-export type EditorResponsiveProposalResponse = { fingerprint: string; changes: readonly EditorResponsiveProposalChange[] };
-export interface EditorResponsiveProposalAdapter {
-  /** 応答は未検証の外部入力として扱われ、editorが全項目を再検証する。 */
-  propose(request: EditorResponsiveProposalRequest, signal: AbortSignal): Promise<unknown>;
-}
 export type EditorApplyOperationsRequest = Omit<EditingPageApplyInput, "dryRun"> & { readonly target: EditorTarget };
 export type EditorApplyOperationsResult = EditingPageApplied | EditingPageApplyConflict;
 
@@ -238,11 +218,11 @@ export interface EditorAdapter {
   /** form の送信成功後に選べるページ候補。省略時は完了先設定を接続しない。 */
   listFormCompletionPages?(target: EditorTarget, signal: AbortSignal): Promise<readonly EditorPage[]>;
   readDocument(target: EditorTarget, signal: AbortSignal): Promise<EditorSnapshot>;
+  /** 文書本文を再取得せず、キャッシュ済みの未編集セッションをETagで再検証する。 */
+  readDocumentIfChanged?(target: EditorTarget, etag: string | undefined, signal: AbortSignal): Promise<EditorDocumentRead>;
   cmsBindings?: EditorCmsBindingsAdapter;
   /** 保存に使う API の discover が pages.name を公開する場合だけ true を返す。 */
   discoverPageNodeNames?(target: EditorTarget, signal: AbortSignal): Promise<boolean>;
-  /** ページ行の pointer / focus で呼ぶ先読み。通常読込と同じ認可・版検証を行い、画面状態は変更しない。 */
-  prefetchDocument?(target: EditorTarget, signal: AbortSignal): Promise<EditorSnapshot>;
   /** trigger は自動保存のときだけ "autosave"。ホストは履歴の種類の区別に使える。 */
   saveDraft(request: { target: EditorTarget; document: PageDocument; expectedVersion: string; presentationVersion?: string; trigger?: "autosave";
     cmsBindings?: CmsPageBindingsDocument | null;
@@ -251,8 +231,10 @@ export interface EditorAdapter {
   }, signal: AbortSignal): Promise<EditorSaveResult>;
   /** 原文ページに対する、操作 ID 付きの原子的な差分保存。 */
   applyOperations?(request: EditorApplyOperationsRequest, signal: AbortSignal): Promise<EditorApplyOperationsResult>;
-  prepareRelease(request: EditorReleaseRequest, signal: AbortSignal): Promise<EditorReleasePlan>;
-  release(request: EditorReleasePlan, signal: AbortSignal): Promise<EditorReleaseResult>;
+  prepareRelease?(request: EditorReleaseRequest, signal: AbortSignal): Promise<EditorReleasePlan>;
+  release?(request: EditorReleasePlan, signal: AbortSignal): Promise<EditorReleaseResult>;
+  /** Studio 内サイト用。保存済みの現行下書きの公開、または履歴版の復元を1回の要求で行う。 */
+  publishPageNow?(request: EditorPublishPageInput & { target: EditorTarget }, signal: AbortSignal): Promise<EditorReleaseResult>;
   /** Same-site, multi-page publish. Hosts without all three methods keep the single-page UI. */
   prepareReleaseSet?(items: readonly EditingPageReleaseSetItem[], signal: AbortSignal): Promise<EditingPageReleaseSetPlan>;
   releaseSet?(plan: EditingPageReleaseSetPlan, signal: AbortSignal): Promise<EditingPageReleaseSetApplyResult>;
@@ -271,23 +253,26 @@ export interface EditorAdapter {
   /** 省略時は全操作。部分接続するホストは対応する操作だけを宣言する。 */
   pageChangeActions?: readonly EditorPageChange["action"][];
   /** ページ操作の影響と確認 token。両方を実装した場合だけページ操作を表示する。 */
+  changePageNow?(change: EditorPageChange, signal: AbortSignal, expectedVersion?: string): Promise<EditorPageChangeResult>;
   preparePageChange?(change: EditorPageChange, signal: AbortSignal): Promise<EditorPageChangePlan>;
   applyPageChange?(plan: EditorPageChangePlan, signal: AbortSignal): Promise<EditorPageChangeResult>;
-  /** 全ページの draft / 公開参照を同一トランザクションで切り離せるホストだけ true。 */
-  siteStyleCapabilities?: { atomicReferenceDetachment: true };
   /** サイト共通の設定。version は楽観ロック用の opaque な値。 */
   readSiteSettings?(siteId: string, signal: AbortSignal): Promise<EditorSiteSettingsSnapshot>;
+  /** false の場合、共通スタイルは編集できるがホスト所有のサイト公開メタデータは読み取り専用。 */
+  siteSettingsMetadataEditable?: boolean;
   saveSiteSettings?(request: { siteId: string; settings: SiteSettings; expectedVersion: string;
-    /** スタイル変更時の保存済み基準。削除参照を全ページで切り離し、設定と原子的に保存する。 */
+    /** スタイル変更時の保存済み基準。共通の edit 操作へ差分化する。 */
     previousStyles?: SiteStyles;
+    /** 定義の名前変更は、参照を書き換える同一 edit 操作の一部として送る。 */
+    styleRenames?: readonly EditingSiteStylesRename[];
   }, signal: AbortSignal): Promise<EditorSiteSettingsSaveResult>;
+  /** 保存済みのサイト共通スタイルを、全ページ共通の公開 pointer へ切り替える。 */
+  publishSiteStyles?(request: { siteId: string; expectedDraftVersion: string; expectedPublishedVersion: string }, signal: AbortSignal): Promise<EditorSiteStylesPublishResult>;
   /** サイト単位の表示幅の段。PC は必須、ほかの段は任意で、base は最も狭い有効段。省略したホストでは PageEditorProps の値を読み取り専用で表示する。 */
   breakpointSettings?: {
     read(siteId: string, signal: AbortSignal): Promise<EditorBreakpointSettingsSnapshot>;
     save(request: { siteId: string; settings: EditorBreakpointSettings; expectedVersion: string }, signal: AbortSignal): Promise<EditorBreakpointSettingsSaveResult>;
   };
-  /** 省略したホストでは提案操作を一切表示しない。niho-web自身はAI/providerを呼ばない。 */
-  responsiveProposal?: EditorResponsiveProposalAdapter;
   /** 版履歴。新しい順で、続きは next を cursor に渡す。実装した場合だけ「履歴」を表示する。 */
   listRevisions?(request: { target: EditorTarget; cursor?: string }, signal: AbortSignal): Promise<EditorRevisionPage>;
   /** 共通スタイルを参照する版は、その版に対応する不変のスタイル snapshot も返す。 */
@@ -353,7 +338,7 @@ export type EditorCanvasPreviewProps = {
   /** 従来の文書描画。編集文書を置き換えない場合はそのまま返せる。 */
   children: ReactNode;
 };
-export type EditorPerformanceOperation = "initial-load" | "page-switch" | "save";
+export type EditorPerformanceOperation = "initial-load" | "page-switch" | "edit-render" | "save";
 
 export type PageEditorProps = {
   adapter: EditorAdapter;
@@ -370,6 +355,8 @@ export type PageEditorProps = {
   blankEmbeds?: BlankEmbedRegistry;
   /** trusted host code が所有する、親documentとは別originの固定HTTPS X投稿frame endpoint。 */
   xPostFrameUrl?: string;
+  /** 汎用の公開HTTPS URL埋め込みを新規追加パレットに表示する。既存nodeの表示・編集には影響しない。 */
+  enableUrlEmbeds?: boolean;
   /** 標準の挿入・モーションカタログを同じ ID で置換、または新しい項目で拡張する。 */
   builder?: BuilderDefinition;
   /** Canvasと同じiframe内で描画する。予約・送信などの副作用を起こさず、未指定時は従来どおり。 */

@@ -1,4 +1,4 @@
-export type EditorPerformanceName = "load" | "page-switch" | "save";
+export type EditorPerformanceName = "load" | "page-switch" | "session-build" | "render" | "save";
 export type EditorPerformanceOutcome = "success" | "failed";
 export type EditorPerformanceSample = {
   readonly name: EditorPerformanceName;
@@ -11,10 +11,33 @@ export type EditorPerformanceMeasurement = {
   readonly endMark: string;
   readonly startedAt: number;
 };
+export type EditorReadPerformanceSample = {
+  readonly source: "cache" | "304" | "200";
+  readonly durationMs: number;
+  readonly cachedSession?: boolean;
+  readonly serverTiming: readonly { readonly name: string; readonly durationMs?: number }[];
+};
 
 export const EDITOR_PERFORMANCE_EVENT = "niho-editor-performance";
 const latest = new Map<EditorPerformanceName, EditorPerformanceSample>();
 let sequence = 0;
+let latestRead: EditorReadPerformanceSample | undefined;
+
+export function recordEditorReadPerformance(sample: EditorReadPerformanceSample): void {
+  if (typeof window === "undefined") return;
+  latestRead = { ...sample, serverTiming: sample.serverTiming.map((item) => ({ ...item })) };
+  window.dispatchEvent(new Event(EDITOR_PERFORMANCE_EVENT));
+}
+
+export function markEditorReadCacheHit(): void {
+  if (!latestRead || typeof window === "undefined") return;
+  latestRead = { ...latestRead, cachedSession: true };
+  window.dispatchEvent(new Event(EDITOR_PERFORMANCE_EVENT));
+}
+
+export function readEditorReadPerformance(): EditorReadPerformanceSample | undefined {
+  return latestRead && { ...latestRead, serverTiming: latestRead.serverTiming.map((item) => ({ ...item })) };
+}
 
 /** Performance entries contain only static operation names; page IDs and document data are never recorded. */
 export function beginEditorPerformance(name: EditorPerformanceName): EditorPerformanceMeasurement | null {

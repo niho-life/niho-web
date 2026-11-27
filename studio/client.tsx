@@ -4,12 +4,11 @@ import type { ProjectSiteView } from "../src/project-dashboard.js";
 import { parseProjectDirectoryResult, type ProjectDirectoryResult } from "../src/project-read-model.js";
 import type { Project } from "../src/projects.js";
 import { ApiError, api, record, role, SessionExpiredError, text, timestamp } from "./api-client.js";
-import { integrationIdentity, resolveTrustedEditorPage, resolveTrustedIntegration, trustedEditorPath } from "./integration-registry.mjs";
 import type { KamakuraEditorLoad } from "./kamakura-editor.js";
-import { parseProjectAliasPath, projectRoutePath, type ProjectCmsRoute, type ProjectSiteViewId, type ProjectTranslationsRoute } from "./project-routes.mjs";
+import { isKamakuraProject, parseProjectAliasPath, parseProjectEditorPath, projectRoutePath, projectSourceLocale, type ProjectCmsRoute, type ProjectSiteViewId, type ProjectTranslationsRoute } from "./project-routes.mjs";
 import { ManagedSiteCmsWorkspace, SiteCmsWorkspace } from "./site-cms.js";
 import { SiteTranslationsWorkspace } from "./site-translations.js";
-import { EDITOR_PERFORMANCE_EVENT, readEditorPerformance, type EditorPerformanceName } from "../src/editor-performance.js";
+import { EDITOR_PERFORMANCE_EVENT, readEditorPerformance, readEditorReadPerformance, type EditorPerformanceName } from "../src/editor-performance.js";
 import { LazyScreenBoundary } from "./lazy-screen-boundary.js";
 import { createBrowserRecoveryStore } from "../src/history.js";
 
@@ -20,7 +19,7 @@ type Screen =
     readonly kind: "dashboard"; readonly projectId: string; readonly siteId: string; readonly view?: ProjectSiteViewId | null;
     readonly cms?: ProjectCmsRoute | null; readonly translations?: ProjectTranslationsRoute | null;
   }
-  | { readonly kind: "editor"; readonly projectId: string; readonly siteId: string; readonly environment: string }
+  | { readonly kind: "editor"; readonly projectId: string; readonly siteId: string }
   | { readonly kind: "invite"; readonly projectId: string; readonly siteId: string; readonly token: string };
 type SessionState =
   | { readonly status: "loading" }
@@ -75,12 +74,11 @@ const StudioProjectSettings = lazy(() => import("./settings-panel.js").then(({ S
 function screenFromLocation(): Screen {
   const projectAlias = parseProjectAliasPath(window.location.pathname);
   if (projectAlias) {
-    return projectAlias.page === "editor"
-      ? { kind: "editor", projectId: projectAlias.projectId, siteId: projectAlias.siteId, environment: "production" }
-      : {
-        kind: "dashboard", projectId: projectAlias.projectId, siteId: projectAlias.siteId, view: projectAlias.page === "dashboard" ? null : projectAlias.page,
-        cms: projectAlias.cms ?? null, translations: projectAlias.translations ?? null
-      };
+    if (projectAlias.page === "editor") return { kind: "editor", projectId: projectAlias.projectId, siteId: projectAlias.siteId };
+    return {
+      kind: "dashboard", projectId: projectAlias.projectId, siteId: projectAlias.siteId, view: projectAlias.page === "dashboard" ? null : projectAlias.page,
+      cms: projectAlias.cms ?? null, translations: projectAlias.translations ?? null
+    };
   }
   const invite = /^\/projects\/([A-Za-z][A-Za-z0-9_-]{0,79})\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/invite\/?$/u.exec(window.location.pathname);
   if (invite) {
@@ -91,10 +89,8 @@ function screenFromLocation(): Screen {
     const token = queryToken || invitationTokenFromResume(invite[1]!, invite[2]!);
     return { kind: "invite", projectId: invite[1]!, siteId: invite[2]!, token };
   }
-  const editor = resolveTrustedEditorPage(window.location.pathname);
-  if (editor) return { kind: "editor", projectId: editor.registration.projectId, siteId: editor.registration.siteId, environment: editor.environment };
-  const managedEditor = /^\/projects\/([A-Za-z][A-Za-z0-9_-]{0,79})\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/editor\/?$/u.exec(window.location.pathname);
-  if (managedEditor) return { kind: "editor", projectId: managedEditor[1]!, siteId: managedEditor[2]!, environment: "managed" };
+  const editor = parseProjectEditorPath(window.location.pathname);
+  if (editor) return { kind: "editor", ...editor };
   const dashboard = /^\/projects\/([A-Za-z][A-Za-z0-9_-]{0,79})\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})(\/cms)?\/?$/u.exec(window.location.pathname);
   return dashboard ? { kind: "dashboard", projectId: dashboard[1]!, siteId: dashboard[2]!, view: dashboard[3] ? "cms" : null } : { kind: "directory" };
 }
@@ -125,10 +121,10 @@ function dateLabel(value: string): string {
 function roleLabel(value: Role): string { return value === "owner" ? "オーナー" : "編集者"; }
 
 function managedProject(project: Project, config: StudioConfig): boolean {
-  return config.managedProjectsEnabled && config.publicSitesOrigin !== null && resolveTrustedIntegration(project.id, project.site.id) === null && project.site.domains.includes(config.publicSitesOrigin);
+  return config.managedProjectsEnabled && config.publicSitesOrigin !== null && projectSourceLocale(project.id, project.site.id) === undefined && project.site.domains.includes(config.publicSitesOrigin);
 }
 function editorEnabled(project: Project, config: StudioConfig): boolean {
-  return resolveTrustedIntegration(project.id, project.site.id) !== null || managedProject(project, config);
+  return isKamakuraProject(project.id, project.site.id) || managedProject(project, config);
 }
 
 const STUDIO_THUMBNAIL_ORIGINS = new Set([
@@ -303,8 +299,7 @@ function App() {
     const controller = new AbortController();
     const initialPathname = window.location.pathname;
     const initialScreen = screenFromLocation();
-    const kamakura = initialScreen.kind === "editor" && initialScreen.environment === "production"
-      && integrationIdentity(initialScreen.projectId, initialScreen.siteId) === integrationIdentity("project-kamakura", "kamakura");
+    const kamakura = initialScreen.kind === "editor" && isKamakuraProject(initialScreen.projectId, initialScreen.siteId);
     setSession({ status: "loading" });
     const kamakuraModule = kamakura ? import("./kamakura-editor.js") : undefined;
     const catalog = kamakuraModule?.then(({ loadKamakuraEditorCatalog }) => loadKamakuraEditorCatalog(controller.signal));
@@ -365,7 +360,7 @@ function App() {
     const path = next.kind === "directory"
       ? "/"
       : next.kind === "editor"
-        ? next.environment === "managed" ? `/projects/${encodeURIComponent(next.projectId)}/sites/${encodeURIComponent(next.siteId)}/editor` : trustedEditorPath(next.projectId, next.siteId, next.environment) ?? "/"
+        ? projectRoutePath(window.location.pathname, next.projectId, next.siteId, "editor")
         : projectRoutePath(window.location.pathname, next.projectId, next.siteId, next.view ?? "dashboard",
           next.kind !== "dashboard" ? null : next.view === "cms" ? next.cms ?? null : next.view === "translations" ? next.translations ?? null : null);
     window.history.pushState(null, "", path);
@@ -428,9 +423,8 @@ function App() {
   }, [dashboardKey, expire]);
 
   const openEditor = useCallback((project: Project) => {
-    const path = trustedEditorPath(project.id, project.site.id);
-    if (path) {
-      window.location.assign(projectRoutePath(window.location.pathname, project.id, project.site.id, "editor") || path);
+    if (isKamakuraProject(project.id, project.site.id)) {
+      window.location.assign(projectRoutePath(window.location.pathname, project.id, project.site.id, "editor"));
       return;
     }
     if (session.status === "ready" && managedProject(project, session.config)) {
@@ -443,8 +437,7 @@ function App() {
   const preloadEditor = useCallback((project: Project) => {
     if (session.status !== "ready") return;
     if (managedProject(project, session.config)) { void import("./managed-editor.js").catch(() => undefined); return; }
-    const integration = resolveTrustedIntegration(project.id, project.site.id);
-    if (integration?.environment === "production" && integrationIdentity(integration.registration.projectId, integration.registration.siteId) === integrationIdentity("project-kamakura", "kamakura")) {
+    if (isKamakuraProject(project.id, project.site.id)) {
       void import("./kamakura-editor.js").catch(() => undefined);
     }
   }, [session]);
@@ -484,13 +477,9 @@ function App() {
   const selected = screen.kind === "dashboard" || screen.kind === "editor"
     ? session.directory.entries.find(({ project }) => project.id === screen.projectId && project.site.id === screen.siteId)?.project
     : undefined;
-  const selectedSourceLocale = selected ? resolveTrustedIntegration(selected.id, selected.site.id)?.registration.sourceLocale : undefined;
-  const resolvedEditor = screen.kind === "editor" && selected
-    ? resolveTrustedIntegration(selected.id, selected.site.id, screen.environment)
-    : null;
+  const selectedSourceLocale = selected ? projectSourceLocale(selected.id, selected.site.id) : undefined;
   const managedEditor = screen.kind === "editor" && selected ? managedProject(selected, session.config) : false;
-  // Kamakura は凍結中も表示の確認だけできる（kamakura-site#84）。Experience は休止のまま。
-  const kamakuraEditor = resolvedEditor?.environment === "production" && integrationIdentity(resolvedEditor.registration.projectId, resolvedEditor.registration.siteId) === integrationIdentity("project-kamakura", "kamakura");
+  const kamakuraEditor = screen.kind === "editor" && selected ? isKamakuraProject(selected.id, selected.site.id) : false;
 
   // プロジェクトの中では Dashboard の帯が 1 段のヘッダーになる（Studio のヘッダーを重ねない）。アカウントはその帯の右端に置く
   const projectShell = screen.kind === "dashboard" && selected !== undefined;
@@ -505,11 +494,9 @@ function App() {
           ? <LazyScreenBoundary><Suspense fallback={<StudioLoading />}>
               {managedEditor
                 ? <ManagedEditor project={selected} actorId={session.identity.subject} />
-                : kamakuraEditor && resolvedEditor
-                ? <KamakuraEditor project={selected} environment={resolvedEditor.environment}
+                : kamakuraEditor
+                ? <KamakuraEditor project={selected}
                     {...(session.initialKamakuraLoad ? { initialLoad: session.initialKamakuraLoad } : {})} />
-                : resolvedEditor
-                ? <Notice title="サイトデザイン編集は休止中です">ヘッダー、余白、レイアウトなどの変更は各サイトの開発で対応します。以前の編集内容は保管しています。記事や体験の原稿は、それぞれの管理画面で引き続き編集できます。</Notice>
                 : <Notice title="エディターを表示できません">このサイトまたは環境のエディターは接続されていません。</Notice>}
             </Suspense></LazyScreenBoundary>
         : selected && screen.kind === "dashboard"
@@ -526,7 +513,7 @@ function App() {
               analyticsContent={<Suspense fallback={<StudioLoading />}><StudioSiteAnalytics key={`${selected.id}:${selected.site.id}`} project={selected} expire={expire}
                 // 共有 origin + path で配信する Studio-native site は分析の接続に未対応（集計は未接続のまま表示する）
                 connectable={!managedProject(selected, session.config)} /></Suspense>}
-              settingsContent={<Suspense fallback={<StudioLoading />}><StudioProjectSettings project={selected} {...(selectedSourceLocale ? { sourceLocale: selectedSourceLocale } : {})} expire={expire} /></Suspense>}
+              settingsContent={<Suspense fallback={<StudioLoading />}><StudioProjectSettings project={selected} managed={managedProject(selected, session.config)} {...(selectedSourceLocale ? { sourceLocale: selectedSourceLocale } : {})} expire={expire} /></Suspense>}
               siteViews={siteViews(selected)}
               activeSiteView={screen.view ?? null}
               onSiteViewChange={(view) => {
@@ -567,20 +554,26 @@ function App() {
 
 function EditorPerformancePanel() {
   const [samples, setSamples] = useState(() => readEditorPerformance());
+  const [readSample, setReadSample] = useState(() => readEditorReadPerformance());
   useEffect(() => {
-    const refresh = () => setSamples(readEditorPerformance());
+    const refresh = () => { setSamples(readEditorPerformance()); setReadSample(readEditorReadPerformance()); };
     window.addEventListener(EDITOR_PERFORMANCE_EVENT, refresh);
     refresh();
     return () => window.removeEventListener(EDITOR_PERFORMANCE_EVENT, refresh);
   }, []);
-  const labels: Readonly<Record<EditorPerformanceName, string>> = { load: "読込", "page-switch": "ページ切替", save: "保存" };
+  const labels: Readonly<Record<EditorPerformanceName, string>> = {
+    load: "読込", "page-switch": "ページ切替", "session-build": "セッション構築", render: "描画", save: "保存"
+  };
   return <aside className="studio-editor-performance" aria-label="編集画面の性能計測">
     <details>
       <summary>編集性能（開発者向け）</summary>
       <dl>{(Object.keys(labels) as EditorPerformanceName[]).map((name) => {
         const sample = samples.get(name);
         return <div key={name}><dt>{labels[name]}</dt><dd>{sample ? <>{sample.durationMs.toFixed(1)} ms · {sample.outcome === "success" ? "完了" : "失敗"}</> : "未計測"}</dd></div>;
-      })}</dl>
+      })}{readSample && <div><dt>pages.read</dt><dd>{readSample.source} · {readSample.durationMs.toFixed(1)} ms
+        {readSample.cachedSession ? " · 保存済みセッションを表示" : ""}
+        {readSample.serverTiming.length ? ` · ${readSample.serverTiming.map((item) => `${item.name}${item.durationMs === undefined ? "" : ` ${item.durationMs.toFixed(1)} ms`}`).join(" / ")}` : ""}
+      </dd></div>}</dl>
     </details>
   </aside>;
 }

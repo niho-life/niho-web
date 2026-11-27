@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { createPageEditingApi, createRegisteredPageEditingApi, EDITING_API_ERRORS, EDITING_OPERATIONS } from "@niho/web/editing-api";
+import { createPageEditingApi, EDITING_API_ERRORS, EDITING_OPERATIONS } from "@niho/web/editing-api";
 
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 const target = { siteId: fixture.siteId, pageId: fixture.pageId, locale: fixture.locale };
 
-function hostFixture({ validationContext, initialDocument = fixture, publishing = false, initialBreakpointSettings, editorSnapshot = {}, versionedInspection = false, pagePreviewIntent, stylesVersion } = {}) {
+function hostFixture({ validationContext, initialDocument = fixture, publishing = false, initialBreakpointSettings, editorSnapshot = {}, versionedInspection = false, pagePreviewIntent, apiOptions } = {}) {
   let document = structuredClone(initialDocument), version = "v1";
   let breakpointSettings = initialBreakpointSettings === undefined ? null : structuredClone(initialBreakpointSettings), breakpointVersion = "b.1";
   const actor = { kind: "human", subject: "owner" };
@@ -18,13 +18,12 @@ function hostFixture({ validationContext, initialDocument = fixture, publishing 
       return token === "Bearer owner" ? actor : token === "Bearer other" ? { kind: "human", subject: "other" } : null;
     },
     async authorize(input, capability, scope) { return input.subject === "owner" && scope.siteId === fixture.siteId && (capability === "pages.read" || capability === "pages.edit" || publishing && capability === "pages.publish" || breakpointSettings !== null && (capability === "site.settings.read" || capability === "site.settings.write")); },
-    ...(validationContext ? { async validationContext() { return validationContext; } } : {}),
+    ...(validationContext ? { async validationContext() { return typeof validationContext === "function" ? validationContext() : validationContext; } } : {}),
     ...(pagePreviewIntent === undefined ? {} : { async createPagePreviewIntent(input, requestTarget) {
       return typeof pagePreviewIntent === "function" ? pagePreviewIntent(input, requestTarget) : pagePreviewIntent;
     } }),
     async readPage(_actor, input) { return input.siteId === target.siteId && input.pageId === target.pageId && input.locale === target.locale ? { document, version, ...editorSnapshot,
-      ...(versionedInspection ? { componentsVersion: "components-v1", presentationVersion: "presentation-v1", stylesVersion: "styles-v1" }
-        : stylesVersion === undefined ? {} : { stylesVersion }) } : null; },
+      ...(versionedInspection ? { componentsVersion: "components-v1", presentationVersion: "presentation-v1" } : {}) } : null; },
     async savePage(_actor, input, expectedVersion, next) {
       if (input.siteId !== target.siteId || input.pageId !== target.pageId || input.locale !== target.locale) return { status: "conflict" };
       if (expectedVersion !== version) return { status: "conflict" };
@@ -54,9 +53,15 @@ function hostFixture({ validationContext, initialDocument = fixture, publishing 
         const result = { status: "released", operationId: request.operationId, version, document };
         completedOperations.set(request.operationId, { expectedVersion: request.expectedVersion, confirmationToken: request.confirmationToken, result });
         return result;
+      },
+      async publishPageNow(_actor, input, request) {
+        if (input.siteId !== target.siteId || input.pageId !== target.pageId || input.locale !== target.locale
+          || request.action !== "publish" && request.action !== "restore") return { status: "conflict" };
+        version = `v${Number(version.slice(1)) + 1}`;
+        return { status: "released", snapshot: { document, version } };
       }
     } : {})
-  });
+  }, apiOptions);
   const send = (method, path, body, authorization = "Bearer owner") => api(new Request(`https://host.example/api/edit/v1${path}`, {
     method,
     headers: { ...(authorization ? { Authorization: authorization } : {}), ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
@@ -90,10 +95,10 @@ test("pages.inspect uses page-read authorization, returns versioned projections 
   assert.equal(result.body.version, "v1");
   assert.equal(result.body.componentsVersion, "components-v1");
   assert.equal(result.body.presentationVersion, "presentation-v1");
-  assert.equal(result.body.stylesVersion, "styles-v1");
+  assert.equal(result.body.stylesVersion, undefined);
   assert.deepEqual(result.body.items.map(({ id }) => id), ["heading"]);
   const read = await json(await send("GET", `/sites/${target.siteId}/operations/pages.read/${target.pageId}?locale=${encodeURIComponent(target.locale)}`));
-  assert.deepEqual(read.body, { document: fixture, version: "v1", componentsVersion: "components-v1", presentationVersion: "presentation-v1", stylesVersion: "styles-v1" });
+  assert.deepEqual(read.body, { document: fixture, version: "v1", componentsVersion: "components-v1", presentationVersion: "presentation-v1" });
   const inspect = EDITING_OPERATIONS.find(({ id }) => id === "pages.inspect");
   assert.equal(inspect.capability, "pages.read");
   assert.ok(inspect.inputSchema && inspect.resultSchema && inspect.errors.includes("invalid_cursor"));
@@ -239,54 +244,6 @@ test("site breakpoint operations use the common catalog, validate settings and e
   assert.deepEqual(await json(await send("PUT", `${base}.read`)), { status: 405, body: { error: "method_not_allowed" } });
   assert.deepEqual(await json(await send("GET", `${base}.read`, undefined, "Bearer other")), { status: 403, body: { error: "forbidden" } });
   assert.deepEqual(await json(await send("GET", `/sites/${target.siteId}/operations/site.breakpoints.read?unexpected=1`)), { status: 400, body: { error: "invalid_request" } });
-});
-
-test("registered page editing hosts route each site to its own adapter", async () => {
-  function registeredHost(siteId, title) {
-    let document = { ...structuredClone(fixture), siteId, title }, version = "v1";
-    const adapter = {
-      async authenticate(request) { return request.headers.get("Authorization") === "Bearer owner" ? { kind: "machine", subject: `agent-${siteId}` } : null; },
-      async authorize(actor, capability, scope) { return actor.kind === "machine" && scope.siteId === siteId && ["pages.read", "pages.edit"].includes(capability); },
-      async readPage(_actor, input) { return input.siteId === siteId && input.pageId === target.pageId && input.locale === target.locale ? { document, version } : null; },
-      async savePage(_actor, input, expectedVersion, next) {
-        if (input.siteId !== siteId || input.pageId !== target.pageId || input.locale !== target.locale || expectedVersion !== version) return { status: "conflict" };
-        document = { ...next, revision: next.revision + 1 };
-        version = `v${Number(version.slice(1)) + 1}`;
-        return { status: "saved", version, document };
-      }
-    };
-    return { adapter, read: () => document };
-  }
-
-  const first = registeredHost(target.siteId, "First host"), second = registeredHost("second-site", "Second host");
-  const api = createRegisteredPageEditingApi([
-    { siteIds: [target.siteId], adapter: first.adapter },
-    { siteIds: ["second-site"], adapter: second.adapter }
-  ]);
-  const send = (siteId, method, body) => api(new Request(`https://host.example/api/edit/v1/sites/${encodeURIComponent(siteId)}/operations/${method === "GET" ? "pages.read" : "pages.save"}/${target.pageId}?locale=${encodeURIComponent(target.locale)}`, {
-    method: method === "GET" ? "GET" : "PUT",
-    headers: { Authorization: "Bearer owner", ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) })
-  }));
-
-  const firstRead = await json(await send(target.siteId, "GET"));
-  const secondRead = await json(await send("second-site", "GET"));
-  assert.equal(firstRead.body.document.title, "First host");
-  assert.equal(secondRead.body.document.title, "Second host");
-
-  const wrongSiteDocument = structuredClone(first.read());
-  assert.deepEqual(await json(await send("second-site", "PUT", { expectedVersion: "v1", document: wrongSiteDocument })), {
-    status: 400, body: { error: "invalid_request" }
-  });
-  const changed = structuredClone(second.read()); changed.title = "Updated second host";
-  assert.equal((await json(await send("second-site", "PUT", { expectedVersion: "v1", document: changed }))).status, 200);
-  assert.equal((await json(await send(target.siteId, "GET"))).body.document.title, "First host");
-  assert.equal((await json(await send("second-site", "GET"))).body.document.title, "Updated second host");
-  assert.deepEqual(await json(await send("unregistered-site", "GET")), { status: 404, body: { error: "not_found" } });
-  assert.throws(() => createRegisteredPageEditingApi([
-    { siteIds: [target.siteId], adapter: first.adapter },
-    { siteIds: [target.siteId], adapter: second.adapter }
-  ]), /already registered/u);
 });
 
 test("page editing API prepares an allowlisted release and applies it idempotently", async () => {
@@ -454,6 +411,35 @@ test("page editing API reads and saves through the host adapter with CAS conflic
   const reread = await json(await send("GET", `${route}/pages.read/${target.pageId}${query}`));
   assert.equal(reread.body.document.title, changed.title);
   assert.equal(reread.body.version, "v2");
+});
+
+test("trusted page storage validates a save once and skips revalidation on read and publish", async () => {
+  let blockContextReads = 0;
+  const context = { get blocks() {
+    blockContextReads++;
+    if (blockContextReads > 1) throw new Error("saved document was revalidated");
+    return {};
+  } };
+  const { send } = hostFixture({ validationContext: context, publishing: true, apiOptions: { trustedPageStorage: true } });
+  const route = `/sites/${target.siteId}/operations`, query = `?locale=${encodeURIComponent(target.locale)}`;
+  assert.equal((await send("GET", `${route}/pages.read/${target.pageId}${query}`)).status, 200);
+  assert.equal(blockContextReads, 0);
+
+  const saved = await json(await send("PUT", `${route}/pages.save/${target.pageId}${query}`, { expectedVersion: "v1", document: fixture }));
+  assert.equal(saved.status, 200);
+  assert.equal(blockContextReads, 1);
+
+  const plan = await json(await send("POST", `${route}/pages.release-plan/${target.pageId}${query}`, { expectedVersion: "v2", action: "publish" }));
+  assert.equal(plan.status, 200);
+  const published = await json(await send("POST", `${route}/pages.release/${target.pageId}${query}`, {
+    expectedVersion: "v2", confirmationToken: plan.body.plan.confirmationToken, operationId: "123e4567-e89b-42d3-a456-426614174000"
+  }));
+  assert.equal(published.status, 200);
+  assert.equal(blockContextReads, 1);
+
+  const oneStep = await json(await send("POST", `${route}/pages.publish/${target.pageId}${query}`, { expectedVersion: "released-v3", action: "publish" }));
+  assert.equal(oneStep.status, 200);
+  assert.equal(blockContextReads, 1);
 });
 
 test("page editing API validates custom blocks with the target host's trusted context", async () => {

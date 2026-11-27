@@ -1,17 +1,16 @@
 import { parseKamakuraAssetUploadIntent } from "./kamakura-asset-upload-contract.js";
 import { EDITING_EDITOR_SNAPSHOT_ACCEPT } from "../src/editing-page-snapshot.js";
-import { parseProjectAliasPath, projectShortcutTarget } from "./project-routes.mjs";
+import { isKamakuraProject, parseProjectAliasPath, parseProjectEditorPath, projectShortcutTarget } from "./project-routes.mjs";
 declare const __STUDIO_INDEX_PATH__: string;
 import { siteAdmin } from "./site-admin.mjs";
-import { integrationIdentity, isTrustedEditorAction, resolveTrustedEditorApi, resolveTrustedEditorPage, type ResolvedTrustedIntegration } from "./integration-registry.mjs";
-import { KAMAKURA_CATALOG_CONTRACT_ERROR_CODE, KAMAKURA_CATALOG_CONTRACT_ERROR_STATUS, KamakuraCatalogContractError, KAMAKURA_COMMON_PAGE_ID, KAMAKURA_EDITOR_SITE_ID, KAMAKURA_EMBED_FRAME_SOURCE, isKamakuraEditorDomain, parseKamakuraCatalog } from "./kamakura-catalog.js";
+import { KAMAKURA_CATALOG_CONTRACT_ERROR_CODE, KAMAKURA_CATALOG_CONTRACT_ERROR_STATUS, KamakuraCatalogContractError, KAMAKURA_COMMON_PAGE_ID, KAMAKURA_EDITOR_SITE_ID, isKamakuraEditorDomain, parseKamakuraCatalog } from "./kamakura-catalog.js";
 import {
   KAMAKURA_CMS_IMAGE_TYPES, KAMAKURA_CMS_LIMITS, KAMAKURA_CMS_PROJECT_ID, KAMAKURA_CMS_SITE_ID, KAMAKURA_CMS_UPLOAD_ORIGIN, KAMAKURA_CMS_UPSTREAM_PREFIX,
   KAMAKURA_MEDIA_ORIGIN, KamakuraCmsContractError,
   isKamakuraCmsCollectionId, isKamakuraCmsItemId, isKamakuraCmsLine, isKamakuraCmsSitePath, isKamakuraCmsVersion, normalizeKamakuraCmsTimestamp,
   parseKamakuraCmsEnglishPublications,
-  parseKamakuraCmsConflict, parseKamakuraCmsInvalid, parseKamakuraCmsItemEnvelope, parseKamakuraCmsList, parseKamakuraCmsListChange,
-  parseKamakuraCmsListConflict, parseKamakuraCmsRemoved, parseKamakuraCmsSchema, parseKamakuraCmsUploadIntent, parseKamakuraCmsValues
+  parseKamakuraCmsConflict, parseKamakuraCmsInvalid, parseKamakuraCmsItemEnvelope, parseKamakuraCmsListChange,
+  parseKamakuraCmsListConflict, parseKamakuraCmsRemoved, parseKamakuraCmsUploadIntent
 } from "./kamakura-cms-contract.js";
 import {
   KAMAKURA_LOCALIZATION_IMAGE_TYPES, KAMAKURA_LOCALIZATION_LIMITS, KAMAKURA_LOCALIZATION_PREVIEW_ORIGIN, KAMAKURA_LOCALIZATION_UPLOAD_ORIGIN,
@@ -26,18 +25,22 @@ import {
 import { parseLocalizationOverlay, parseLocalizationValue, parseSiteLocalizationConfig } from "../src/localization.js";
 import { DocumentValidationError } from "../src/validation-utils.js";
 import { parseEnglishPublicationAccepted } from "../src/english-publication.js";
-import { parseBreakpointSettings } from "../src/style-model.js";
 import { EDITING_OPERATIONS, type EditingCapability } from "../src/editing-api.js";
+import { isEditingApiVersion } from "../src/editing-client.js";
 import {
   EDITING_LOCALIZATION_INPUT_BYTES, EDITING_LOCALIZATION_RESULT_BYTES, editingLocalizationCapability,
   editingLocalizationOperation, parseEditingLocalizationInput
 } from "../src/editing-localization.js";
-import { DRAFT_RECOVERY_MAX_INPUT_BYTES, DRAFT_RECOVERY_MAX_OUTPUT_BYTES, API_PREFIX, API_VERSION, OPERATIONS, OPERATION_KEY_HEADER, SERVICE_CLIENT_ID, SCOPE_ID, normalizeOperationKey, resolveOperation, type CliOperation } from "../cli/operations.mjs";
+import { SERVICE_CLIENT_ID } from "../src/studio-cli-auth.js";
 import {
-  createManagedProject, managedDashboardOverview, managedEditorOperation, managedPageEditingApi, managedPageUrl,
-  managedProjectRegistrations, managedPublicRequest, managedRegistration, publicSitesOrigin, type ManagedActor
+  createManagedProject, managedCmsBoundPublic, managedDashboardOverview, managedEditorOperation, managedPageEditingApi, managedPageUrl,
+  managedProjectRegistrations, managedPublicSeoResponse, managedRegistration, publicSitesOrigin, type ManagedActor, type ManagedPublicHtmlCache
 } from "./managed-sites.js";
-import { CmsStore, type CmsActor, type CmsBucket, type CmsCapability } from "./managed-cms-store.js";
+import { publishedSiteRequest, resolvePublishedSiteHost } from "./managed-publication.js";
+import { CmsStore, type CmsActor, type CmsBucket, type CmsCapability, type CmsPublicAssetResolver } from "./managed-cms-store.js";
+import { CMS_DELIVERY_PREFIX } from "../src/cms-delivery-contract.js";
+import type { CmsPublicAsset } from "../src/cms-v2.js";
+import { managedCmsDelivery, managedCmsDeliveryAdmin } from "./managed-cms-delivery.js";
 import { managedCmsApi, managedCmsLegacySpec } from "./managed-cms.js";
 import { managedCmsPublic, runCmsCron } from "./managed-cms-release.js";
 import { dashboardAnalyticsSummary, siteAnalyticsApi, siteAnalyticsRoute } from "./site-analytics-host.js";
@@ -58,6 +61,8 @@ type AssetBinding = { fetch(request: Request): Promise<Response> };
 export interface Env {
   readonly DB: D1Database;
   readonly CMS_OBJECTS?: CmsBucket;
+  /** 32-byte hex master key exclusively for issuing and verifying CMS delivery credentials. */
+  readonly CMS_DELIVERY_MASTER_KEY?: string;
   readonly ASSETS: AssetBinding;
   /** 同一 Cloudflare account の kamakura-site Worker。 */
   readonly KAMAKURA_SITE: AssetBinding;
@@ -65,27 +70,106 @@ export interface Env {
   readonly ACCESS_ISSUER: string;
   /** Cloudflare Access applicationのAUD tag。 */
   readonly ACCESS_AUDIENCE: string;
-  /** NIHO internal Studio bridgeと共有するbase64url HMAC key。 */
-  readonly NIHO_STUDIO_BRIDGE_SECRET?: string;
-  /** NIHO API stg の internal Studio bridge と共有する別のbase64url HMAC key。 */
-  readonly NIHO_STUDIO_BRIDGE_SECRET_STG?: string;
   /** kamakura-site Studio bridgeと共有するbase64url HMAC key。 */
   readonly KAMAKURA_STUDIO_BRIDGE_SECRET?: string;
   /** 公開サイトのService Bindingと対で指定する、確認用CLIのHTTPS origin。 */
   readonly KAMAKURA_CLI_PREVIEW_ORIGIN?: string;
+  /** Studio Preview専用の直接アップロードorigin。Productionでは設定しない。 */
+  readonly STUDIO_PREVIEW_UPLOAD_ORIGIN?: string;
   /** Studio-native siteをpath分離して配信する、Studio認証originとは別のHTTPS origin。 */
   readonly PUBLIC_SITES_ORIGIN?: string;
+  /** テスト用の差し替え口。実行時は Workers Cache API の default cache を使う。 */
+  readonly PUBLIC_HTML_CACHE?: ManagedPublicHtmlCache;
+  /** Verification host served by the read-only public worker; every response is noindex. */
+  readonly PUBLIC_SITES_PREVIEW_ORIGIN?: string;
   /** サイト分析（GA4 / Search Console）を読む Studio 専用サービスアカウントの JSON 鍵。未設定なら分析は未接続のまま。 */
   readonly STUDIO_ANALYTICS_GOOGLE_SA_JSON?: string;
+}
+
+type StudioRequestTiming = { auth: number; d1: number; upstream: number };
+
+async function measureRequest<T>(timing: StudioRequestTiming, metric: keyof StudioRequestTiming, run: () => Promise<T>): Promise<T> {
+  const startedAt = performance.now();
+  try { return await run(); }
+  finally { timing[metric] += performance.now() - startedAt; }
+}
+
+function withServerTiming(response: Response, timing: StudioRequestTiming): Response {
+  const values = (["auth", "d1", "upstream"] as const)
+    .filter((name) => Number.isFinite(timing[name]) && timing[name] > 0)
+    .map((name) => `${name};dur=${timing[name].toFixed(1)}`);
+  if (!values.length) return response;
+  const headers = new Headers(response.headers);
+  headers.append("Server-Timing", values.join(", "));
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers
+  });
 }
 
 type Role = "owner" | "editor";
 type AccessIdentity = { readonly kind: "human"; readonly subject: string; readonly email: string };
 type ServiceIdentity = { readonly kind: "service"; readonly clientId: string };
 type CliActor = { readonly kind: "cli"; readonly subject: string; readonly email: string; readonly requestId: string };
-type BridgeActor = AccessIdentity | CliActor;
-type CliDelegatedActor = CliActor & { readonly delegatedBySubject: string };
-type SiteActor = AccessIdentity | CliDelegatedActor;
+type SystemBridgeActor = { readonly kind: "system"; readonly subject: string; readonly email: string };
+type BridgeActor = AccessIdentity | CliActor | SystemBridgeActor;
+
+const CMS_SCHEDULER_BRIDGE_ACTOR: SystemBridgeActor = {
+  kind: "system", subject: "niho-studio-cms-scheduler", email: "cms-scheduler@studio.invalid"
+};
+
+function cmsPublicAssetResolver(env: Env, identity: BridgeActor): CmsPublicAssetResolver {
+  return async ({ siteId, references }) => {
+    if (siteId !== KAMAKURA_EDITOR_SITE_ID || references.length === 0) return [];
+    const route: EditorRoute = {
+      upstreamPath: `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/assets/resolve`,
+      bodyLimit: MAX_EDITOR_SAVE_BODY_BYTES,
+      assetOperation: "resolve"
+    };
+    const assets = new Map<string, CmsPublicAsset>();
+    for (let start = 0; start < references.length; start += 200) {
+      const batch = references.slice(start, start + 200);
+      const request = new Request("https://studio.invalid/cms/assets/resolve", {
+        method: "POST", headers: {
+          "Content-Type": "application/json", Origin: "https://studio.invalid", "Sec-Fetch-Site": "same-origin"
+        },
+        body: JSON.stringify({ siteId, references: batch })
+      });
+      const response = await signedKamakuraEditorRequest(request, env, identity, route);
+      if (!response.ok) throw new Error("CMS public asset resolution failed");
+      const resolved: unknown = await response.json();
+      if (!isRecord(resolved)) throw new Error("CMS public asset resolution contract invalid");
+      const requested = new Set(batch.map(({ provider, id }) => `${provider}:${id}`));
+      if (Object.keys(resolved).some((key) => !requested.has(key))) throw new Error("CMS public asset resolution returned an unexpected asset");
+      for (const reference of batch) {
+        const key = `${reference.provider}:${reference.id}`;
+        if (!Object.hasOwn(resolved, key)) continue;
+        const value = resolved[key];
+        if (!isRecord(value) || typeof value.src !== "string") throw new Error("CMS public asset resolution contract invalid");
+        const allowedFields = new Set(["src", "width", "height", "alt", "altText"]);
+        if (Object.keys(value).some((field) => !allowedFields.has(field))) throw new Error("CMS public asset resolution contract invalid");
+        const dimension = (candidate: unknown) => {
+          if (candidate === undefined || candidate === null) return null;
+          if (typeof candidate !== "number" || !Number.isSafeInteger(candidate) || candidate < 1 || candidate > 100_000) {
+            throw new Error("CMS public asset resolution contract invalid");
+          }
+          return candidate;
+        };
+        const altText = typeof value.altText === "string" ? value.altText : typeof value.alt === "string" ? value.alt : "";
+        assets.set(key, {
+          reference, url: value.src, width: dimension(value.width), height: dimension(value.height), altText
+        });
+      }
+    }
+    return [...assets.values()];
+  };
+}
+
+function cmsStore(env: Env, identity: BridgeActor): CmsStore {
+  if (!env.CMS_OBJECTS) throw new Error("CMS storage unavailable");
+  return new CmsStore(env.DB, env.CMS_OBJECTS, cmsPublicAssetResolver(env, identity));
+}
 const CLI_SUBJECT_PREFIX = "studio-cli:";
 type JwtHeader = { readonly alg?: unknown; readonly kid?: unknown; readonly typ?: unknown };
 type JwtClaims = {
@@ -133,16 +217,10 @@ type InvitationPreviewRow = {
   readonly role: Role;
   readonly expires_at: number;
 };
-type BreakpointSettingsRow = { readonly settings_json: string; readonly version: number };
 
 const MAX_MUTATION_BODY_BYTES = 16 * 1024;
 const MAX_EDITOR_SAVE_BODY_BYTES = 600 * 1024;
 const MAX_EDITOR_RESPONSE_BYTES = 2 * 1024 * 1024;
-const EDITOR_UPSTREAM_ORIGIN = "https://api.niho.life";
-const EDITOR_STAGING_UPSTREAM_ORIGIN = "https://api-stg.niho.life";
-const EDITOR_UPSTREAM_PREFIX = "/api/internal/studio/experience";
-const EDITOR_PROJECT_ID = "project-experience";
-const EDITOR_SITE_ID = "experience";
 const EDITOR_TIMEOUT_MILLISECONDS = 12_000;
 // 鎌倉の公開（release）は kamakura-site 側で GitHub への commit と公開後の読み直しまで行い、ほかの操作より長い。
 // 12 秒では commit が済んでも応答が間に合わず「接続できません」になった（kamakura-site#109 の受入）。
@@ -189,16 +267,7 @@ class BridgeUnavailableError extends Error {
 
 type KamakuraBridgeOperation =
   | "catalog"
-  | "page_read"
-  | "draft_save"
-  | "draft_conflict"
-  | "draft_resolve"
-  | "release_plan"
   | "editing_api"
-  | "page_schedule"
-  | "page_batch_stage"
-  | "cms_migration_preflight"
-  | "release"
   | "english_publication_retry"
   | "asset_list"
   | "asset_upload_intent"
@@ -210,14 +279,14 @@ type KamakuraBridgeOperation =
   | "asset_resolve"
   | "embed_import"
   | "embed_status"
-  | "cms_schema"
-  | "cms_list"
-  | "cms_read"
+
+
+
   | "cms_english_publication_read"
   | "cms_english_publication_retry"
-  | "cms_create"
-  | "cms_draft_save"
-  | "cms_publish"
+
+
+
   | "cms_discard_draft"
   | "cms_unpublish"
   | "cms_duplicate"
@@ -242,7 +311,6 @@ type KamakuraBridgeOperation =
   | "localization_settings"
   | "localization_upload_intent"
   | "localization_editor_page"
-  | "localization_editor_snapshot"
   | "localization_editor_site"
   | "localization_editor_save"
   | "localization_editor_command"
@@ -255,7 +323,7 @@ type KamakuraBridgeFailureCategory =
   | "upstream_auth_rejected"
   | "upstream_unexpected_4xx"
   | "catalog_endpoint_missing"
-  | "cms_endpoint_missing"
+
   | "localization_endpoint_missing"
   | "overview_endpoint_missing"
   | "upstream_rate_limited"
@@ -309,6 +377,8 @@ function conditionalJsonHeaders(response: Response): Headers {
   headers.set("Cache-Control", safeEtag ? "private, no-cache" : "no-store");
   headers.set("Vary", "Accept, Cookie, Authorization");
   if (safeEtag) headers.set("ETag", safeEtag);
+  const serverTiming = response.headers.get("Server-Timing");
+  if (serverTiming && serverTiming.length <= 2_048 && !/[\u0000-\u0008\u000a-\u001f\u007f]/u.test(serverTiming)) headers.set("Server-Timing", serverTiming);
   return headers;
 }
 
@@ -382,15 +452,15 @@ function decodeJwtObject<T>(segment: string, maximumLength: number): T {
   return value as T;
 }
 
+function validAccessAudience(value: string | undefined): boolean {
+  return !!value && value.length <= 256 && !/\s/u.test(value);
+}
+
 function accessConfiguration(env: Env): { readonly issuer: string; readonly audience: string; readonly jwksUrl: string } {
-  let issuerUrl: URL;
-  try { issuerUrl = new URL(env.ACCESS_ISSUER); }
-  catch { throw new ConfigurationError("invalid Access issuer"); }
-  if (issuerUrl.protocol !== "https:" || issuerUrl.username || issuerUrl.password || issuerUrl.pathname !== "/" || issuerUrl.search || issuerUrl.hash || issuerUrl.origin !== env.ACCESS_ISSUER) {
-    throw new ConfigurationError("Access issuer must be an exact HTTPS origin");
-  }
-  if (!env.ACCESS_AUDIENCE || env.ACCESS_AUDIENCE.length > 256 || /\s/u.test(env.ACCESS_AUDIENCE)) throw new ConfigurationError("invalid Access audience");
-  return { issuer: env.ACCESS_ISSUER, audience: env.ACCESS_AUDIENCE, jwksUrl: `${env.ACCESS_ISSUER}/cdn-cgi/access/certs` };
+  const issuer = publicSitesOrigin(env.ACCESS_ISSUER);
+  if (issuer === null) throw new ConfigurationError("Access issuer must be an exact HTTPS origin");
+  if (!validAccessAudience(env.ACCESS_AUDIENCE)) throw new ConfigurationError("invalid Access audience");
+  return { issuer, audience: env.ACCESS_AUDIENCE, jwksUrl: `${issuer}/cdn-cgi/access/certs` };
 }
 
 async function loadJwks(url: string, force = false): Promise<readonly SigningJwk[]> {
@@ -501,12 +571,16 @@ function domainsFor(origin: string | null): readonly string[] {
   return [origin];
 }
 
-function projectFromRow(row: ProjectRow, subject: string, managedOrigin?: string) {
+function managedSiteDomains(origin: string, publicDomain: string | null): readonly string[] {
+  return [...domainsFor(origin), ...(publicDomain === null ? [] : domainsFor(`https://${publicDomain}`))];
+}
+
+function projectFromRow(row: ProjectRow, subject: string, managedOrigin?: string, managedPublicDomain: string | null = null) {
   if (!validIdentifier(row.project_id) || !validIdentifier(row.site_id) || !validName(row.project_name) || !validName(row.site_name) || !validName(row.display_name)) throw new Error("invalid stored project");
   return {
     id: row.project_id,
     name: row.project_name,
-    site: { id: row.site_id, name: row.site_name, domains: row.public_origin === null && managedOrigin ? [managedOrigin] : domainsFor(row.public_origin) },
+    site: { id: row.site_id, name: row.site_name, domains: row.public_origin === null && managedOrigin ? managedSiteDomains(managedOrigin, managedPublicDomain) : domainsFor(row.public_origin) },
     members: [{ userId: subject, displayName: row.display_name }]
   };
 }
@@ -653,10 +727,11 @@ async function directory(env: Env, identity: AccessIdentity): Promise<Response> 
   const members = await membersPromise;
   const entries = rows.map((row) => {
     const registration = managed.get(`${row.project_id}\u0000${row.site_id}`);
-    const project = projectFromRow(row, identity.subject, registration ? managedOrigin ?? undefined : undefined);
+    const project = projectFromRow(row, identity.subject, registration ? managedOrigin ?? undefined : undefined, registration?.public_domain ?? null);
     const publicPage = row.public_origin === null ? null : resolvedPublicPages.get(row.public_origin) ?? null;
     const thumbnailUrl = publicPage?.thumbnailUrl ?? null;
-    const managedPublished = registration?.published_path && managedOrigin ? managedPageUrl(managedOrigin, registration.slug, registration.published_path) : null;
+    const managedPublished = registration?.published_path && managedOrigin
+      ? managedPageUrl(managedOrigin, registration.slug, registration.published_path, registration.public_domain) : null;
     return {
       project,
       summary: {
@@ -688,7 +763,7 @@ async function dashboard(env: Env, identity: AccessIdentity, projectId: string, 
   if (row === null) return json({ status: "forbidden", projectId, siteId });
   const managedOrigin = publicSitesOrigin(env.PUBLIC_SITES_ORIGIN);
   const registration = managedOrigin ? await managedRegistration(env.DB, projectId, siteId) : null;
-  const project = projectFromRow(row, identity.subject, registration ? managedOrigin ?? undefined : undefined);
+  const project = projectFromRow(row, identity.subject, registration ? managedOrigin ?? undefined : undefined, registration?.public_domain ?? null);
   // 公開情報は鎌倉だけサイト側から読む。ほかのサイトは値を合成しない（unavailable のまま）。
   // 解析はサイト分析に接続したサイトだけ GA4 の28日の要約を返す（未接続は disconnected、失敗は unavailable）。
   const [overview, members, analytics] = await Promise.all([
@@ -858,11 +933,7 @@ async function kamakuraOverview(env: Env, identity: AccessIdentity, domains: rea
   }
 }
 
-function ownerSubject(actor: SiteActor): string {
-  return actor.kind === "cli" ? actor.delegatedBySubject : actor.subject;
-}
-
-function ownerContextStatement(env: Env, identity: SiteActor, projectId: string, siteId: string): D1Statement {
+function ownerContextStatement(env: Env, identity: AccessIdentity, projectId: string, siteId: string): D1Statement {
   return env.DB.prepare(`
     SELECT p.name AS project_name, s.name AS site_name
       FROM project_members AS actor
@@ -871,7 +942,7 @@ function ownerContextStatement(env: Env, identity: SiteActor, projectId: string,
      WHERE actor.access_subject = ?1 AND actor.role = 'owner'
        AND p.id = ?2 AND s.id = ?3
      LIMIT 1
-  `).bind(ownerSubject(identity), projectId, siteId);
+  `).bind(identity.subject, projectId, siteId);
 }
 
 function firstRow<T>(result: D1Result<unknown> | undefined): T | undefined {
@@ -887,7 +958,7 @@ function unixTimestamp(value: number): string {
   return new Date(value * 1000).toISOString();
 }
 
-async function membershipAdministration(env: Env, identity: SiteActor, projectId: string, siteId: string): Promise<Response> {
+async function membershipAdministration(env: Env, identity: AccessIdentity, projectId: string, siteId: string): Promise<Response> {
   const results = await env.DB.batch<unknown>([
     ownerContextStatement(env, identity, projectId, siteId),
     env.DB.prepare(`
@@ -902,7 +973,7 @@ async function membershipAdministration(env: Env, identity: SiteActor, projectId
          )
        ORDER BY CASE m.role WHEN 'owner' THEN 0 ELSE 1 END, m.display_name COLLATE NOCASE, m.access_subject
        LIMIT 500
-    `).bind(ownerSubject(identity), projectId, siteId),
+    `).bind(identity.subject, projectId, siteId),
     env.DB.prepare(`
       SELECT i.id, i.email, i.role, i.created_at, i.expires_at,
              CASE
@@ -921,7 +992,7 @@ async function membershipAdministration(env: Env, identity: SiteActor, projectId
          )
        ORDER BY i.created_at DESC, i.id DESC
        LIMIT 100
-    `).bind(ownerSubject(identity), projectId, siteId)
+    `).bind(identity.subject, projectId, siteId)
   ]);
   const context = firstRow<AdminContextRow>(results[0]);
   if (!context) return json({ error: "forbidden" }, 403);
@@ -959,10 +1030,9 @@ function auditActionForInvite(prefix: "invitation.created" | "invitation.accepte
   return `${prefix}.${role}`;
 }
 
-async function createInvitation(request: Request, env: Env, identity: SiteActor, projectId: string, siteId: string, body: Record<string, unknown>): Promise<Response> {
+async function createInvitation(request: Request, env: Env, identity: AccessIdentity, projectId: string, siteId: string, body: Record<string, unknown>): Promise<Response> {
   exactKeys(body, ["email", "role", "expiresInDays"]);
   const email = normalizeEmail(body.email, InvalidInputError);
-  if (identity.kind === "cli" && email.endsWith("@studio.invalid")) throw new InvalidInputError("invalid member email");
   if (!validRole(body.role)) throw new InvalidInputError("invalid role");
   if (!Number.isSafeInteger(body.expiresInDays) || (body.expiresInDays as number) < 1 || (body.expiresInDays as number) > 7) throw new InvalidInputError("invalid expiry");
   const role = body.role;
@@ -994,7 +1064,7 @@ async function createInvitation(request: Request, env: Env, identity: SiteActor,
             WHERE project_id = ?2 AND email = ?5
               AND used_at IS NULL AND revoked_at IS NULL AND expires_at > unixepoch()
          )
-    `).bind(ownerSubject(identity), projectId, siteId, invitationId, email, role, hash, now, expiresAt, MAX_PENDING_INVITATIONS, identity.subject),
+    `).bind(identity.subject, projectId, siteId, invitationId, email, role, hash, now, expiresAt, MAX_PENDING_INVITATIONS, identity.subject),
     env.DB.prepare(`
       INSERT INTO studio_audit_records (project_id, actor_subject, action, target)
       SELECT ?2, ?1, ?3, ?4 WHERE changes() = 1
@@ -1079,7 +1149,7 @@ async function acceptInvitation(env: Env, identity: AccessIdentity, projectId: s
   return json({ status: "accepted" });
 }
 
-async function revokeInvitation(env: Env, identity: SiteActor, projectId: string, siteId: string, body: Record<string, unknown>): Promise<Response> {
+async function revokeInvitation(env: Env, identity: AccessIdentity, projectId: string, siteId: string, body: Record<string, unknown>): Promise<Response> {
   exactKeys(body, ["invitationId"]);
   if (!validInvitationId(body.invitationId)) throw new InvalidInputError("invalid invitation id");
   const results = await env.DB.batch<unknown>([
@@ -1095,7 +1165,7 @@ async function revokeInvitation(env: Env, identity: SiteActor, projectId: string
             WHERE actor.access_subject = ?1 AND actor.role = 'owner'
               AND actor.project_id = ?2 AND s.id = ?3
          )
-    `).bind(ownerSubject(identity), projectId, siteId, body.invitationId, identity.subject),
+    `).bind(identity.subject, projectId, siteId, body.invitationId, identity.subject),
     env.DB.prepare(`
       INSERT INTO studio_audit_records (project_id, actor_subject, action, target)
       SELECT ?2, ?1, 'invitation.revoked', ?3 WHERE changes() = 1
@@ -1106,9 +1176,9 @@ async function revokeInvitation(env: Env, identity: SiteActor, projectId: string
   return json({ status: "revoked" });
 }
 
-async function changeMemberRole(env: Env, identity: SiteActor, projectId: string, siteId: string, body: Record<string, unknown>): Promise<Response> {
+async function changeMemberRole(env: Env, identity: AccessIdentity, projectId: string, siteId: string, body: Record<string, unknown>): Promise<Response> {
   exactKeys(body, ["subject", "role"]);
-  if (!validSubject(body.subject) || !validRole(body.role) || (identity.kind === "cli" && body.subject.startsWith(CLI_SUBJECT_PREFIX))) throw new InvalidInputError("invalid member role input");
+  if (!validSubject(body.subject) || !validRole(body.role)) throw new InvalidInputError("invalid member role input");
   const action = body.role === "owner" ? "member.promoted" : "member.demoted";
   let results: readonly D1Result<unknown>[];
   try {
@@ -1124,7 +1194,7 @@ async function changeMemberRole(env: Env, identity: SiteActor, projectId: string
               WHERE actor.access_subject = ?1 AND actor.role = 'owner'
                 AND actor.project_id = ?2 AND s.id = ?3
            )
-      `).bind(ownerSubject(identity), projectId, siteId, body.subject, body.role),
+      `).bind(identity.subject, projectId, siteId, body.subject, body.role),
       env.DB.prepare(`
         INSERT INTO studio_audit_records (project_id, actor_subject, action, target)
         SELECT ?2, ?1, ?3, ?4 WHERE changes() = 1
@@ -1139,9 +1209,9 @@ async function changeMemberRole(env: Env, identity: SiteActor, projectId: string
   return json({ status: "changed" });
 }
 
-async function removeMember(env: Env, identity: SiteActor, projectId: string, siteId: string, body: Record<string, unknown>): Promise<Response> {
+async function removeMember(env: Env, identity: AccessIdentity, projectId: string, siteId: string, body: Record<string, unknown>): Promise<Response> {
   exactKeys(body, ["subject"]);
-  if (!validSubject(body.subject) || (identity.kind === "cli" && body.subject.startsWith(CLI_SUBJECT_PREFIX))) throw new InvalidInputError("invalid member input");
+  if (!validSubject(body.subject)) throw new InvalidInputError("invalid member input");
   let results: readonly D1Result<unknown>[];
   try {
     results = await env.DB.batch<unknown>([
@@ -1155,7 +1225,7 @@ async function removeMember(env: Env, identity: SiteActor, projectId: string, si
               WHERE actor.access_subject = ?1 AND actor.role = 'owner'
                 AND actor.project_id = ?2 AND s.id = ?3
            )
-      `).bind(ownerSubject(identity), projectId, siteId, body.subject),
+      `).bind(identity.subject, projectId, siteId, body.subject),
       env.DB.prepare(`
         INSERT INTO studio_audit_records (project_id, actor_subject, action, target)
         SELECT ?2, ?1, 'member.removed', ?3 WHERE changes() = 1
@@ -1170,11 +1240,9 @@ async function removeMember(env: Env, identity: SiteActor, projectId: string, si
   return json({ status: "removed" });
 }
 
-async function enforceMutationBoundary(request: Request, identity?: SiteActor): Promise<Record<string, unknown>> {
-  if (identity?.kind !== "cli") {
-    if (request.headers.get("Origin") !== new URL(request.url).origin) throw new AuthenticationError("invalid request origin");
-    if (request.headers.get("Sec-Fetch-Site") !== "same-origin") throw new AuthenticationError("invalid request site");
-  }
+async function enforceMutationBoundary(request: Request, requireSameOrigin = true): Promise<Record<string, unknown>> {
+  if (requireSameOrigin && request.headers.get("Origin") !== new URL(request.url).origin) throw new AuthenticationError("invalid request origin");
+  if (requireSameOrigin && request.headers.get("Sec-Fetch-Site") !== "same-origin") throw new AuthenticationError("invalid request site");
   const mediaType = request.headers.get("Content-Type")?.split(";", 1)[0]?.trim().toLowerCase();
   if (mediaType !== "application/json") throw new AuthenticationError("JSON required");
   const declaredLength = request.headers.get("Content-Length");
@@ -1205,7 +1273,7 @@ async function enforceMutationBoundary(request: Request, identity?: SiteActor): 
 }
 
 type KamakuraAssetOperation = "list" | "upload-intent" | "update" | "usages" | "resolve" | "state" | "delete" | "restore";
-type EditorRoute = { readonly upstreamPath: string; readonly bodyLimit: number; readonly assetOperation?: KamakuraAssetOperation; readonly embedOperation?: "import" | "status"; readonly englishPublicationRetry?: true; readonly draftRecovery?: { readonly action: "read" | "resolve"; readonly pageId: string } };
+type EditorRoute = { readonly upstreamPath: string; readonly bodyLimit: number; readonly assetOperation?: KamakuraAssetOperation; readonly embedOperation?: "import" | "status"; readonly englishPublicationRetry?: true };
 
 /** kamakura-site の worker/studio-assets.ts と同じ固定表。kamakura-upload だけが Studio からのアップロード先。 */
 const KAMAKURA_ASSET_PROVIDERS = new Set(["kamakura-upload", "kamakura-admin-upload", "kamakura-studio", "kamakura-cms", "kamakura-approved-remote"]);
@@ -1275,31 +1343,7 @@ function validateKamakuraAssetBody(body: Uint8Array, operation: KamakuraAssetOpe
   return new TextEncoder().encode(JSON.stringify(parsed));
 }
 
-function experienceEditorRoute(action: string, method: string, staging = false): EditorRoute | "method_not_allowed" | null {
-  const routeAction = staging ? action.replace(/^\/editor-staging(?=\/|$)/u, "/editor") : action;
-  const fixed = new Map<string, "GET">([
-    ["/editor/sites", "GET"],
-    ["/editor/sites/experience/pages", "GET"]
-  ]);
-  const page = /^\/editor\/sites\/experience\/pages\/(home|experiences|experience-detail|booking|host|chrome)\/en(\/draft|\/release-plan|\/release)?$/u.exec(routeAction);
-  if (page) {
-    const suffix = page[2] ?? "";
-    const expected = suffix === "/draft" ? "PUT" : suffix === "/release-plan" || suffix === "/release" ? "POST" : "GET";
-    if (method !== expected) return "method_not_allowed";
-    return { upstreamPath: `${EDITOR_UPSTREAM_PREFIX}${routeAction.slice("/editor".length)}`, bodyLimit: suffix === "/draft" ? MAX_EDITOR_SAVE_BODY_BYTES : MAX_MUTATION_BODY_BYTES };
-  }
-  const expected = fixed.get(routeAction);
-  if (!expected) return null;
-  if (method !== expected) return "method_not_allowed";
-  return { upstreamPath: `${EDITOR_UPSTREAM_PREFIX}${routeAction.slice("/editor".length)}`, bodyLimit: MAX_MUTATION_BODY_BYTES };
-}
-
 function kamakuraEditorRoute(action: string, method: string): EditorRoute | "method_not_allowed" | null {
-  if (action === "/editor/cms-migration-preflight") {
-    return method === "POST"
-      ? { upstreamPath: `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/_site/cms-migration-preflight`, bodyLimit: MAX_MUTATION_BODY_BYTES }
-      : "method_not_allowed";
-  }
   const embed = /^\/editor\/embeds\/([a-z][a-z0-9-]{0,59})\/(import|status)$/u.exec(action);
   if (embed) {
     if (method !== "POST") return "method_not_allowed";
@@ -1316,22 +1360,10 @@ function kamakuraEditorRoute(action: string, method: string): EditorRoute | "met
     if (method !== "GET") return "method_not_allowed";
     return { upstreamPath: `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/catalog`, bodyLimit: MAX_MUTATION_BODY_BYTES };
   }
-  const page = /^\/editor\/((?!(?:catalog|create|index)$)[a-z][a-z0-9-]{0,59})(\/draft|\/draft-conflict|\/release-plan|\/release|\/batch-stage|\/schedule|\/schedule-cancel|\/english-publication-retry)?$/u.exec(action);
-  if (!page || !COMMON_PAGE_ID.test(page[1]!)) return null;
-  const suffix = page[2] ?? "";
-  if (suffix === "/draft-conflict") {
-    if (method !== "GET" && method !== "PUT") return "method_not_allowed";
-    return { upstreamPath: `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/${page[1]}${suffix}`, bodyLimit: DRAFT_RECOVERY_MAX_INPUT_BYTES,
-      draftRecovery: { action: method === "GET" ? "read" : "resolve", pageId: page[1]! } };
-  }
-  if (suffix === "/schedule") {
-    if (method !== "GET" && method !== "POST") return "method_not_allowed";
-    return { upstreamPath: `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/${page[1]}${suffix}`, bodyLimit: MAX_MUTATION_BODY_BYTES };
-  }
-  const expected = suffix === "/draft" ? "PUT" : ["/release-plan", "/release", "/batch-stage", "/schedule-cancel", "/english-publication-retry"].includes(suffix) ? "POST" : "GET";
-  if (method !== expected) return "method_not_allowed";
-  return { upstreamPath: `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/${page[1]}${suffix}`, bodyLimit: suffix === "/draft" ? MAX_EDITOR_SAVE_BODY_BYTES : MAX_MUTATION_BODY_BYTES,
-    ...(suffix === "/english-publication-retry" ? { englishPublicationRetry: true as const } : {}) };
+  const pageId = /^\/editor\/([a-z][a-z0-9-]{0,59})\/english-publication-retry$/u.exec(action)?.[1];
+  if (!pageId || !COMMON_PAGE_ID.test(pageId)) return null;
+  if (method !== "POST") return "method_not_allowed";
+  return { upstreamPath: `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/${pageId}/english-publication-retry`, bodyLimit: MAX_MUTATION_BODY_BYTES, englishPublicationRetry: true };
 }
 
 /** Studio のサイト機能への接続を、参加者（owner・editor）だけに返す。 */
@@ -1365,53 +1397,6 @@ async function editorRole(env: Env, identity: AccessIdentity, projectId: string,
   `).bind(identity.subject, projectId, siteId).first<{ readonly role: unknown }>();
   const role = row?.role;
   return role === "owner" || role === "editor" ? role : null;
-}
-
-function storedBreakpointSettings(row: BreakpointSettingsRow): { settings: ReturnType<typeof parseBreakpointSettings>; version: string } {
-  if (!Number.isSafeInteger(row.version) || row.version < 1 || typeof row.settings_json !== "string" || row.settings_json.length > MAX_MUTATION_BODY_BYTES) throw new Error("invalid stored breakpoint settings");
-  let value: unknown;
-  try { value = JSON.parse(row.settings_json) as unknown; }
-  catch { throw new Error("invalid stored breakpoint settings"); }
-  return { settings: parseBreakpointSettings(value), version: `b.${row.version}` };
-}
-
-/** 旧Studio D1に残る設定の読み取り専用移行元。 */
-async function breakpointSettingsApi(request: Request, env: Env, identity: SiteActor, url: URL, projectId: string, siteId: string): Promise<Response> {
-  if (projectId !== KAMAKURA_EDITOR_PROJECT_ID || siteId !== KAMAKURA_EDITOR_SITE_ID) return json({ error: "not_found" }, 404);
-  if (url.href.includes("?")) return json({ error: "invalid_request" }, 400);
-  if (request.method !== "GET") return json({ error: "method_not_allowed" }, 405);
-  if (identity.kind === "human" && !await editorMember(env, identity, projectId, siteId)) return json({ error: "forbidden" }, 403);
-  const cliOwner = identity.kind === "cli" ? ownerContextStatement(env, identity, projectId, siteId) : undefined;
-  if (request.method === "GET") {
-    const read = env.DB.prepare(`
-      SELECT settings_json, version
-        FROM site_breakpoint_settings
-       WHERE site_id = ?1
-       LIMIT 1
-    `).bind(siteId);
-    let row: BreakpointSettingsRow | null | undefined;
-    if (cliOwner) {
-      const [owner, settings] = await env.DB.batch<unknown>([cliOwner, read]);
-      if (!firstRow<AdminContextRow>(owner)) return json({ error: "forbidden" }, 403);
-      row = firstRow<BreakpointSettingsRow>(settings);
-    } else {
-      row = await read.first<BreakpointSettingsRow>();
-    }
-    return row ? json(storedBreakpointSettings(row)) : json({ error: "not_found" }, 404);
-  }
-  return json({ error: "method_not_allowed" }, 405);
-}
-
-async function experienceEditorOwner(env: Env, identity: AccessIdentity): Promise<boolean> {
-  const row = await env.DB.prepare(`
-    SELECT 1 AS allowed
-      FROM project_members AS m
-      JOIN sites AS s ON s.project_id = m.project_id
-     WHERE m.access_subject = ?1 AND m.project_id = ?2 AND s.id = ?3
-       AND m.role = 'owner'
-     LIMIT 1
-  `).bind(identity.subject, EDITOR_PROJECT_ID, EDITOR_SITE_ID).first<{ readonly allowed: number }>();
-  return row?.allowed === 1;
 }
 
 async function readBoundedBody(request: Request, maximumBytes: number, actor: BridgeActor): Promise<Uint8Array> {
@@ -1471,52 +1456,7 @@ async function readBoundedResponse(response: Response, maximumBytes = MAX_EDITOR
   return parsed;
 }
 
-async function signedEditorRequest(
-  request: Request,
-  identity: AccessIdentity,
-  route: EditorRoute,
-  bridge: { readonly origin: string; readonly secret: string | undefined }
-): Promise<Response> {
-  const body = request.method === "GET" ? new Uint8Array() : await readBoundedBody(request, route.bodyLimit, identity);
-  const timestamp = Math.floor(Date.now() / 1000).toString();
-  const bodyBytes = body.slice().buffer;
-  const bodyHash = hexadecimal(await crypto.subtle.digest("SHA-256", bodyBytes));
-  const message = `v1\n${timestamp}\n${request.method}\n${route.upstreamPath}\n${bodyHash}\n${EDITOR_PROJECT_ID}\n${identity.subject}`;
-  const key = await importHmacSigningKey(bridgeSecret(bridge.secret));
-  const signature = hexadecimal(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message)));
-  const controller = new AbortController();
-  const abort = () => controller.abort();
-  request.signal.addEventListener("abort", abort, { once: true });
-  const timeout = setTimeout(abort, EDITOR_TIMEOUT_MILLISECONDS);
-  try {
-    const response = await fetch(`${bridge.origin}${route.upstreamPath}`, {
-      method: request.method,
-      cache: "no-store",
-      redirect: "manual",
-      signal: controller.signal,
-      headers: {
-        Accept: "application/json",
-        "Cache-Control": "no-store",
-        ...(request.method === "GET" ? {} : { "Content-Type": "application/json" }),
-        "X-NIHO-Studio-Project": EDITOR_PROJECT_ID,
-        "X-NIHO-Studio-Subject": identity.subject,
-        "X-NIHO-Studio-Timestamp": timestamp,
-        "X-NIHO-Studio-Signature": `v1=${signature}`
-      },
-      ...(request.method === "GET" ? {} : { body: bodyBytes })
-    });
-    if (response.status >= 300 && response.status < 400) throw new BridgeUnavailableError("bridge redirect rejected");
-    const value = await readBoundedResponse(response);
-    if (response.status === 409) return json({ error: "conflict" }, 409);
-    if (response.status === 401 || response.status === 403 || response.status === 404 || response.status === 429 || response.status >= 500) throw new BridgeUnavailableError("bridge service unavailable");
-    if (!response.ok) return json({ error: "invalid_request" }, response.status === 400 || response.status === 422 ? 400 : 503);
-    return json(value, response.status);
-  } catch { throw new BridgeUnavailableError("bridge request failed"); }
-  finally { clearTimeout(timeout); request.signal.removeEventListener("abort", abort); }
-}
-
 function kamakuraBridgeOperation(route: EditorRoute): KamakuraBridgeOperation {
-  if (route.draftRecovery) return route.draftRecovery.action === "read" ? "draft_conflict" : "draft_resolve";
   if (route.embedOperation === "import") return "embed_import";
   if (route.embedOperation === "status") return "embed_status";
   if (route.assetOperation === "list") return "asset_list";
@@ -1528,14 +1468,7 @@ function kamakuraBridgeOperation(route: EditorRoute): KamakuraBridgeOperation {
   if (route.assetOperation === "usages") return "asset_usages";
   if (route.assetOperation === "resolve") return "asset_resolve";
   if (route.upstreamPath === `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/catalog`) return "catalog";
-  if (route.upstreamPath.endsWith("/draft")) return "draft_save";
-  if (route.upstreamPath.endsWith("/release-plan")) return "release_plan";
-  if (route.upstreamPath.endsWith("/batch-stage")) return "page_batch_stage";
-  if (route.upstreamPath.endsWith("/cms-migration-preflight")) return "cms_migration_preflight";
-  if (/\/schedule(?:-cancel)?$/u.test(route.upstreamPath)) return "page_schedule";
-  if (route.englishPublicationRetry) return "english_publication_retry";
-  if (route.upstreamPath.endsWith("/release")) return "release";
-  return "page_read";
+  return "english_publication_retry";
 }
 
 /** 秘密・署名・subject・本文は出さない。support ID・操作・分類・上流の status だけ。 */
@@ -1607,6 +1540,20 @@ function kamakuraCliPreviewOrigin(env: Env, identity: BridgeActor): string | und
   return origin;
 }
 
+function studioPreviewUploadOrigin(env: Env): string | undefined {
+  const origin = env.STUDIO_PREVIEW_UPLOAD_ORIGIN;
+  if (origin === undefined) return undefined;
+  try {
+    const url = new URL(origin);
+    if (url.protocol !== "https:" || url.origin !== origin || url.username || url.password || url.search || url.hash || isKamakuraEditorDomain(origin)) return undefined;
+    return origin;
+  } catch { return undefined; }
+}
+
+function kamakuraUploadOrigin(env: Env, identity: BridgeActor, cliPreviewOrigin: string | undefined): string | undefined {
+  return studioPreviewUploadOrigin(env) ?? (identity.kind === "cli" ? cliPreviewOrigin : undefined);
+}
+
 const EDITING_DISCOVERY_SCOPES: readonly EditingCapability[] = [
   "pages.read", "pages.edit", "pages.publish", "site.settings.read", "site.settings.write", "cms.read", "cms.edit", "cms.publish",
   "assets.read", "assets.edit", "assets.upload", "assets.delete"
@@ -1636,13 +1583,13 @@ function kamakuraEditingCapability(method: string, pathname: string, search: str
     if (method !== expectedMethod) throw new AuthenticationError("editing API method mismatch");
     return operation === "site.breakpoints.read" ? "site.settings.read" : "site.settings.write";
   }
-  const siteStyles = /^\/sites\/kamakura\/operations\/(site\.styles\.(?:read|save|release-plan|release|migration-plan|migration-apply))$/u.exec(pathname);
+  const siteStyles = /^\/sites\/kamakura\/operations\/(site\.styles\.(?:read|edit|publish))$/u.exec(pathname);
   if (siteStyles) {
     if (search) return null;
     const operation = siteStyles[1]!;
-    const expectedMethod = operation === "site.styles.read" ? "GET" : operation === "site.styles.save" ? "PUT" : "POST";
+    const expectedMethod = operation === "site.styles.read" ? "GET" : operation === "site.styles.edit" ? "PUT" : "POST";
     if (method !== expectedMethod) throw new AuthenticationError("editing API method mismatch");
-    return operation === "site.styles.read" ? "site.settings.read" : "site.settings.write";
+    return operation === "site.styles.read" ? "site.settings.read" : operation === "site.styles.edit" ? "site.settings.write" : "pages.publish";
   }
   const assets = /^\/sites\/kamakura\/operations\/(assets\.(?:list|usages|resolve|update|upload-intent|delete|restore))(?:\/([A-Za-z][A-Za-z0-9_-]{0,79})\/([A-Za-z0-9][A-Za-z0-9._~-]{0,127}))?$/u.exec(pathname);
   if (assets) {
@@ -1677,7 +1624,7 @@ function kamakuraEditingCapability(method: string, pathname: string, search: str
   }
   const releaseSet = /^\/sites\/kamakura\/operations\/(pages\.release-set-plan|pages\.release-set|pages\.release-set-status)(?:\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}))?$/iu.exec(pathname);
   if (releaseSet) {
-    if (search && search !== "?features=site.styles") return null;
+    if (search) return null;
     const operation = releaseSet[1]!, operationId = releaseSet[2];
     if (operation === "pages.release-set-status") {
       if (!operationId || method !== "GET") throw new AuthenticationError("editing API method or path mismatch");
@@ -1686,18 +1633,17 @@ function kamakuraEditingCapability(method: string, pathname: string, search: str
     if (operationId || method !== "POST") throw new AuthenticationError("editing API method or path mismatch");
     return "pages.publish";
   }
-  const match = /^\/sites\/kamakura\/operations\/(pages\.(?:read|save|release-plan|release))\/([a-z][a-z0-9-]{0,59})$/u.exec(pathname);
+  const match = /^\/sites\/kamakura\/operations\/(pages\.(?:read|save|apply|release-plan|release))\/([a-z][a-z0-9-]{0,59})$/u.exec(pathname);
   if (!match) return null;
   const query = new URLSearchParams(search), operation = match[1]!;
-  const feature = query.getAll("features");
-  if ((query.size !== 1 && query.size !== 2) || query.getAll("locale").length !== 1 || query.get("locale") !== "ja"
-    || feature.length > 1 || feature.length === 1 && feature[0] !== "site.styles") return null;
+  const locale = query.get("locale"), localeAllowed = locale === "ja" || operation === "pages.read" && locale === "en";
+  if (query.size !== 1 || query.getAll("locale").length !== 1 || !localeAllowed) return null;
   const expectedMethod = operation === "pages.read" ? "GET" : operation === "pages.save" ? "PUT" : "POST";
   if (method !== expectedMethod) throw new AuthenticationError("editing API method mismatch");
-  return operation === "pages.read" ? "pages.read" : operation === "pages.save" ? "pages.edit" : "pages.publish";
+  return operation === "pages.read" ? "pages.read" : operation === "pages.save" || operation === "pages.apply" ? "pages.edit" : "pages.publish";
 }
 
-async function kamakuraEditingDelegationToken(env: Env, identity: AccessIdentity, capabilities: readonly EditingCapability[]): Promise<string> {
+async function kamakuraEditingDelegationToken(env: Env, identity: BridgeActor, capabilities: readonly EditingCapability[]): Promise<string> {
   const encode = (value: unknown) => encodeBase64Url(new TextEncoder().encode(JSON.stringify(value)));
   const header = encode({ alg: "HS256", typ: "JWT" });
   const now = Math.floor(Date.now() / 1000);
@@ -1709,7 +1655,7 @@ async function kamakuraEditingDelegationToken(env: Env, identity: AccessIdentity
   return `${signingInput}.${signature}`;
 }
 
-async function signedKamakuraEditingApiRequest(request: Request, env: Env, identity: AccessIdentity, url: URL, action: string, role?: Role, allowLegacyBreakpointBootstrap = true): Promise<Response> {
+async function signedKamakuraEditingApiRequest(request: Request, env: Env, identity: BridgeActor, url: URL, action: string, role?: Role, machineScopes?: readonly EditingCapability[], timing?: StudioRequestTiming): Promise<Response> {
   const supportId = crypto.randomUUID(), operation: KamakuraBridgeOperation = "editing_api";
   const fail = (category: KamakuraBridgeFailureCategory, status?: number) => kamakuraBridgeFailure(supportId, operation, category, status);
   const upstreamSuffix = action.slice(KAMAKURA_EDITING_API_EDITOR_PREFIX.length);
@@ -1727,6 +1673,11 @@ async function signedKamakuraEditingApiRequest(request: Request, env: Env, ident
     try { capability = kamakuraEditingCapability(request.method, upstreamSuffix, url.search); }
     catch { return json({ error: "method_not_allowed" }, 405); }
     if (!capability) return json({ error: "not_found" }, 404);
+  }
+  const requiredMachineScopes: readonly EditingCapability[] = upstreamSuffix === "/sites/kamakura/operations/site.styles.publish"
+    ? ["site.settings.write", "pages.publish"] : [capability];
+  if (machineScopes && upstreamSuffix !== EDITING_DISCOVERY_PATH && requiredMachineScopes.some((scope) => !machineScopes.includes(scope))) {
+    return json({ error: "forbidden" }, 403);
   }
 
   if (request.method === "GET" && (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length")))) return json({ error: "invalid_request" }, 400);
@@ -1754,8 +1705,8 @@ async function signedKamakuraEditingApiRequest(request: Request, env: Env, ident
     if (!localizationScopes.includes(capability)) return json({ error: "forbidden" }, 403);
   }
   // 概要の表示権限もサイトの scope から計算する。実行時にはその操作の scope だけを渡す。
-  const siteWideStyleWrite = /^\/sites\/kamakura\/operations\/site\.styles\.(?:release-plan|release|migration-plan|migration-apply)$/u.test(upstreamSuffix);
-  const capabilities = upstreamSuffix === EDITING_DISCOVERY_PATH ? [...EDITING_DISCOVERY_SCOPES, ...localizationScopes]
+  const siteWideStyleWrite = upstreamSuffix === "/sites/kamakura/operations/site.styles.publish";
+  const capabilities = upstreamSuffix === EDITING_DISCOVERY_PATH ? machineScopes ?? [...EDITING_DISCOVERY_SCOPES, ...localizationScopes]
     : localization && localization.id === "localization.overview" ? localizationScopes
       : localization && localization.id === "localization.release.read" && role === "owner"
         ? [capability, "localization.publish", "localization.rollback"] as const
@@ -1790,7 +1741,7 @@ async function signedKamakuraEditingApiRequest(request: Request, env: Env, ident
       ...(request.method === "GET" ? {} : { body: body.slice().buffer })
     });
     let response: Response;
-    try { response = await env.KAMAKURA_SITE.fetch(upstream); }
+    try { response = timing ? await measureRequest(timing, "upstream", () => env.KAMAKURA_SITE.fetch(upstream)) : await env.KAMAKURA_SITE.fetch(upstream); }
     catch { throw fail(controller.signal.aborted ? "service_binding_timeout" : "service_binding_failed"); }
     if (response.status === 304) {
       await response.body?.cancel().catch(() => undefined);
@@ -1808,34 +1759,14 @@ async function signedKamakuraEditingApiRequest(request: Request, env: Env, ident
     try { value = await readBoundedResponse(response, localization && localization.id === "localization.preview"
       ? KAMAKURA_LOCALIZATION_LIMITS.previewResponseBytes : EDITING_LOCALIZATION_RESULT_BYTES); }
     catch { throw fail("upstream_invalid_response", response.status); }
-    if (response.status === 404 && identity.kind === "human" && allowLegacyBreakpointBootstrap
-      && upstreamSuffix === "/sites/kamakura/operations/site.breakpoints.read" && isRecord(value) && value.error === "not_found") {
-      const legacyUrl = new URL(`/api/projects/${KAMAKURA_EDITOR_PROJECT_ID}/sites/${KAMAKURA_EDITOR_SITE_ID}/breakpoints`, url.origin);
-      const legacy = await breakpointSettingsApi(new Request(legacyUrl), env, identity, legacyUrl, KAMAKURA_EDITOR_PROJECT_ID, KAMAKURA_EDITOR_SITE_ID);
-      if (!legacy.ok) return legacy;
-      let snapshot: unknown;
-      try { snapshot = await legacy.json() as unknown; }
-      catch { return json({ error: "invalid_response" }, 502); }
-      if (!isRecord(snapshot) || Object.keys(snapshot).sort().join(",") !== "settings,version" || !/^b\.[1-9][0-9]{0,14}$/u.test(String(snapshot.version))) return json({ error: "invalid_response" }, 502);
-
-      const saveAction = `${KAMAKURA_EDITING_API_EDITOR_PREFIX}/sites/kamakura/operations/site.breakpoints.save`;
-      const saveRequest = new Request(request.url, {
-        method: "PUT",
-        signal: request.signal,
-        headers: { "Content-Type": "application/json", Origin: url.origin, "Sec-Fetch-Site": "same-origin" },
-        body: JSON.stringify({ expectedVersion: snapshot.version, settings: snapshot.settings })
-      });
-      const seeded = await signedKamakuraEditingApiRequest(saveRequest, env, identity, url, saveAction, undefined, false);
-      if (seeded.status === 409) return signedKamakuraEditingApiRequest(request, env, identity, url, action, undefined, false);
-      if (!seeded.ok) return seeded;
-      let result: unknown;
-      try { result = await seeded.json() as unknown; }
-      catch { return json({ error: "invalid_response" }, 502); }
-      if (!isRecord(result) || Object.keys(result).sort().join(",") !== "status,version" || result.status !== "saved"
-        || typeof result.version !== "string" || result.version.length === 0 || result.version.length > 200 || /[\u0000-\u001f\u007f]/u.test(result.version)) {
-        return json({ error: "invalid_response" }, 502);
+    if (response.ok && machineScopes && upstreamSuffix === EDITING_DISCOVERY_PATH) {
+      if (!isRecord(value) || value.siteId !== KAMAKURA_EDITOR_SITE_ID || !Array.isArray(value.operations)) {
+        throw fail("upstream_contract_invalid", response.status);
       }
-      return json({ settings: snapshot.settings, version: result.version });
+      const operations = value.operations.filter((entry: unknown) => isRecord(entry) && typeof entry.id === "string"
+        && Object.hasOwn(KAMAKURA_MACHINE_OPERATIONS, entry.id)
+        && machineScopes.includes(KAMAKURA_MACHINE_OPERATIONS[entry.id]!));
+      return json({ ...value, operations }, response.status);
     }
     if (response.ok && localization && localization.id === "localization.overview") {
       const result = parseLocalizationOverviewResult(value);
@@ -1860,25 +1791,12 @@ async function signedKamakuraEditingApiRequest(request: Request, env: Env, ident
   }
 }
 
-function isKamakuraDraftDocument(value: unknown, pageId: string): boolean {
-  return isRecord(value) && value.schemaVersion === 1 && value.siteId === KAMAKURA_EDITOR_SITE_ID
-    && value.pageId === pageId && value.locale === "ja" && Number.isSafeInteger(value.revision)
-    && Number(value.revision) > 0 && typeof value.title === "string" && Array.isArray(value.body);
-}
-
 async function signedKamakuraEditorRequest(request: Request, env: Env, identity: BridgeActor, route: EditorRoute): Promise<Response> {
   const supportId = identity.kind === "cli" ? identity.requestId : crypto.randomUUID();
   const operation = kamakuraBridgeOperation(route);
   if (request.method === "GET" && (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length")))) throw new AuthenticationError("GET body rejected");
   const rawBody = request.method === "GET" ? new Uint8Array() : await readBoundedBody(request, route.bodyLimit, identity);
   let body = route.assetOperation ? validateKamakuraAssetBody(rawBody, route.assetOperation) : rawBody;
-  if (route.draftRecovery?.action === "resolve") {
-    let parsed: unknown;
-    try { parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(rawBody)); }
-    catch { throw new AuthenticationError("invalid draft recovery JSON"); }
-    if (!isRecord(parsed) || Object.keys(parsed).sort().join(",") !== "document,expectedVersion" || !assetText(parsed.expectedVersion, 200)
-      || !isKamakuraDraftDocument(parsed.document, route.draftRecovery.pageId)) throw new AuthenticationError("invalid draft recovery");
-  }
   if (route.englishPublicationRetry) {
     let parsed: unknown;
     try { parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(rawBody)) as unknown; }
@@ -1887,8 +1805,7 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
     body = new TextEncoder().encode("{}");
   }
   const isCatalog = route.upstreamPath === `${KAMAKURA_EDITOR_UPSTREAM_PREFIX}/catalog`;
-  const isLegacyPageRead = /^\/internal\/studio\/web-content\/[a-z][a-z0-9-]{0,59}$/u.test(route.upstreamPath);
-  const cacheableRead = request.method === "GET" && (isCatalog || isLegacyPageRead);
+  const cacheableRead = request.method === "GET" && isCatalog;
   const ifNoneMatch = cacheableRead ? safeIfNoneMatch(request.headers.get("If-None-Match")) : undefined;
   const bodyBytes = body.slice().buffer;
   const headers = await kamakuraSignedHeaders(env, identity, request.method, route.upstreamPath, body, supportId, operation);
@@ -1898,11 +1815,12 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
   const abortForRequest = () => controller.abort();
   const abortForTimeout = () => { timedOut = true; controller.abort(); };
   request.signal.addEventListener("abort", abortForRequest, { once: true });
-  const timeout = setTimeout(abortForTimeout, (operation === "release" || operation === "page_batch_stage" || operation === "cms_migration_preflight" || operation === "asset_delete") ? KAMAKURA_RELEASE_TIMEOUT_MILLISECONDS : EDITOR_TIMEOUT_MILLISECONDS);
+  const timeout = setTimeout(abortForTimeout, operation === "asset_delete" ? KAMAKURA_RELEASE_TIMEOUT_MILLISECONDS : EDITOR_TIMEOUT_MILLISECONDS);
   const cleanup = () => { clearTimeout(timeout); request.signal.removeEventListener("abort", abortForRequest); };
   let streaming = false;
   try {
     const previewOrigin = kamakuraCliPreviewOrigin(env, identity);
+    const uploadOrigin = kamakuraUploadOrigin(env, identity, previewOrigin);
     const upstream = new Request(`${previewOrigin ?? KAMAKURA_EDITOR_UPSTREAM_ORIGIN}${route.upstreamPath}`, {
       method: request.method,
       cache: "no-store",
@@ -1920,14 +1838,6 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
       return new Response(null, { status: 304, headers: conditionalJsonHeaders(response) });
     }
     if (response.status >= 300 && response.status < 400) throw kamakuraBridgeFailure(supportId, operation, "upstream_redirect_rejected", response.status);
-    if (operation === "cms_migration_preflight" && (response.status === 400 || response.status === 409)) {
-      const value = await readBoundedResponse(response).catch(() => null);
-      if (isRecord(value) && typeof value.error === "string" && /^[a-z_]{1,80}$/u.test(value.error)
-        && (value.location === undefined || typeof value.location === "string" && /^[A-Za-z0-9_./-]{1,200}$/u.test(value.location))) {
-        return json({ error: value.error, ...(value.location === undefined ? {} : { location: value.location }) }, response.status);
-      }
-      return json({ error: response.status === 409 ? "conflict" : "invalid_request" }, response.status);
-    }
     if (response.status === 409) {
       // 凍結中の保存・公開（kamakura-site#84）は競合と分けて返し、画面で凍結中と案内する。
       const error = await readBoundedResponse(response).then((value) => isRecord(value) ? value.error : undefined, () => undefined);
@@ -1960,30 +1870,18 @@ async function signedKamakuraEditorRequest(request: Request, env: Env, identity:
       return streamed;
     }
     let value: unknown;
-    try { value = await readBoundedResponse(response, route.draftRecovery?.action === "read" || operation === "page_batch_stage" ? DRAFT_RECOVERY_MAX_OUTPUT_BYTES : undefined); }
+    try { value = await readBoundedResponse(response); }
     catch {
       if (timedOut) throw kamakuraBridgeFailure(supportId, operation, "service_binding_timeout");
       if (isCatalog) throw kamakuraBridgeFailure(supportId, operation, "upstream_contract_invalid", response.status);
       throw kamakuraBridgeFailure(supportId, operation, "upstream_invalid_response", response.status);
-    }
-    if (route.draftRecovery) {
-      const invalid = () => kamakuraBridgeFailure(supportId, operation, "upstream_contract_invalid", response.status);
-      if (!isRecord(value)) throw invalid();
-      const keys = Object.keys(value).sort().join(",");
-      if (route.draftRecovery.action === "read") {
-        if (value.status === "clean" && keys === "status") return json(value, 200);
-        if (value.status !== "conflict" || keys !== "draft,published,status,version" || !assetText(value.version, 200)
-          || !isKamakuraDraftDocument(value.draft, route.draftRecovery.pageId) || !isKamakuraDraftDocument(value.published, route.draftRecovery.pageId)) throw invalid();
-      } else if (value.status !== "saved" || keys !== "revision,status,version" || !assetText(value.version, 200)
-        || !Number.isSafeInteger(value.revision) || Number(value.revision) < 1) throw invalid();
-      return json(value, 200);
     }
     if (route.englishPublicationRetry) {
       try { return json(parseEnglishPublicationAccepted(value), response.status); }
       catch { throw kamakuraBridgeFailure(supportId, operation, "upstream_contract_invalid", response.status); }
     }
     if (route.assetOperation === "upload-intent") {
-      try { return json(parseKamakuraAssetUploadIntent(value, previewOrigin), response.status); }
+      try { return json(parseKamakuraAssetUploadIntent(value, uploadOrigin), response.status); }
       catch { throw kamakuraBridgeFailure(supportId, operation, "upstream_contract_invalid", response.status); }
     }
     if (!isCatalog) return json(value, response.status);
@@ -2063,24 +1961,18 @@ async function signedKamakuraAssetPreview(request: Request, env: Env, identity: 
 
 /* ---------- Kamakura の CMS（記事・サークル・会社）の BFF ---------- */
 
-type KamakuraCmsOperation = "schema" | "list" | "read" | "english-publication-read" | "english-publication-retry" | "create" | "draft" | "publish" | "discard-draft" | "unpublish" | "duplicate" | "remove" | "schedule" | "cancel-schedule" | "retry-schedule" | "reorder" | "bulk" | "upload-intent";
+type KamakuraCmsOperation = "english-publication-read" | "english-publication-retry" | "discard-draft" | "unpublish" | "duplicate" | "remove" | "schedule" | "cancel-schedule" | "retry-schedule" | "reorder" | "bulk" | "upload-intent";
 type KamakuraCmsRoute = { readonly operation: KamakuraCmsOperation; readonly upstreamPath: string; readonly collectionId: string | null; readonly itemId: string | null };
 type KamakuraCmsOperationSpec = {
-  readonly method: "GET" | "POST" | "PUT"; readonly success: readonly (200 | 201 | 202)[]; readonly log: KamakuraBridgeOperation;
+  readonly method: "GET" | "POST"; readonly success: readonly (200 | 201 | 202)[]; readonly log: KamakuraBridgeOperation;
   /** 必ず要る key（null は本文なし）。optionalKeys は付けてもよい key。それ以外の key は拒否。 */
   readonly bodyKeys: readonly string[] | null; readonly optionalKeys?: readonly string[];
 };
 
 /** 操作ごとの method・上流の成功の status・log の operation・ブラウザの本文の key の集合（actor は BFF が入れる）。 */
 const KAMAKURA_CMS_OPERATIONS: Readonly<Record<KamakuraCmsOperation, KamakuraCmsOperationSpec>> = {
-  schema: { method: "GET", success: [200], log: "cms_schema", bodyKeys: null },
-  list: { method: "GET", success: [200], log: "cms_list", bodyKeys: null },
-  read: { method: "GET", success: [200], log: "cms_read", bodyKeys: null },
   "english-publication-read": { method: "GET", success: [200], log: "cms_english_publication_read", bodyKeys: null },
   "english-publication-retry": { method: "POST", success: [200], log: "cms_english_publication_retry", bodyKeys: [] },
-  create: { method: "POST", success: [201], log: "cms_create", bodyKeys: [] },
-  draft: { method: "PUT", success: [200], log: "cms_draft_save", bodyKeys: ["version", "values"] },
-  publish: { method: "POST", success: [202], log: "cms_publish", bodyKeys: ["version"], optionalKeys: ["redirect"] },
   "discard-draft": { method: "POST", success: [200], log: "cms_discard_draft", bodyKeys: ["version"] },
   unpublish: { method: "POST", success: [202], log: "cms_unpublish", bodyKeys: ["version"] },
   duplicate: { method: "POST", success: [201], log: "cms_duplicate", bodyKeys: ["version"] },
@@ -2092,36 +1984,28 @@ const KAMAKURA_CMS_OPERATIONS: Readonly<Record<KamakuraCmsOperation, KamakuraCms
   bulk: { method: "POST", success: [202, 200], log: "cms_bulk", bodyKeys: ["action", "items"] },
   "upload-intent": { method: "POST", success: [201], log: "cms_upload_intent", bodyKeys: ["collectionId", "name", "mimeType", "bytes"] }
 };
-const KAMAKURA_CMS_ITEM_ACTIONS: ReadonlySet<string> = new Set(["draft", "publish", "discard-draft", "unpublish", "duplicate", "remove", "schedule", "cancel-schedule", "retry-schedule"]);
+const KAMAKURA_CMS_ITEM_ACTIONS: ReadonlySet<string> = new Set(["discard-draft", "unpublish", "duplicate", "remove", "schedule", "cancel-schedule", "retry-schedule"]);
 const KAMAKURA_CMS_BULK_ACTIONS: ReadonlySet<unknown> = new Set(["publish", "unpublish", "remove"]);
 
 /** action は `/cms` より後ろ。collection と item の ID は固定の形だけを通し、上流のパスはこの action をそのまま使う。 */
 function kamakuraCmsRoute(action: string, method: string): KamakuraCmsRoute | "method_not_allowed" | null {
   let operation: KamakuraCmsOperation, collectionId: string | null = null, itemId: string | null = null;
   const listAction = /^\/collections\/([^/]+)\/(reorder|bulk)$/u.exec(action);
-  if (action === "/schema") operation = "schema";
-  else if (action === "/uploads/intent") operation = "upload-intent";
+  if (action === "/uploads/intent") operation = "upload-intent";
   else if (listAction) {
     if (!isKamakuraCmsCollectionId(listAction[1])) return null;
     collectionId = listAction[1];
     operation = listAction[2] as "reorder" | "bulk";
   } else {
-    const match = /^\/collections\/([^/]+)\/items(?:\/([^/]+)(?:\/([^/]+))?)?$/u.exec(action);
-    if (!match || !isKamakuraCmsCollectionId(match[1])) return null;
+    const match = /^\/collections\/([^/]+)\/items\/([^/]+)\/([^/]+)$/u.exec(action);
+    if (!match || !isKamakuraCmsCollectionId(match[1]) || !isKamakuraCmsItemId(match[2])) return null;
     collectionId = match[1];
-    if (match[2] === undefined) {
+    itemId = match[2];
+    if (match[3] === "english-publication") {
       if (method !== "GET" && method !== "POST") return "method_not_allowed";
-      operation = method === "GET" ? "list" : "create";
-    } else {
-      if (!isKamakuraCmsItemId(match[2])) return null;
-      itemId = match[2];
-      if (match[3] === undefined) operation = "read";
-      else if (match[3] === "english-publication") {
-        if (method !== "GET" && method !== "POST") return "method_not_allowed";
-        operation = method === "GET" ? "english-publication-read" : "english-publication-retry";
-      } else if (KAMAKURA_CMS_ITEM_ACTIONS.has(match[3])) operation = match[3] as KamakuraCmsOperation;
-      else return null;
-    }
+      operation = method === "GET" ? "english-publication-read" : "english-publication-retry";
+    } else if (KAMAKURA_CMS_ITEM_ACTIONS.has(match[3]!)) operation = match[3] as KamakuraCmsOperation;
+    else return null;
   }
   if (method !== KAMAKURA_CMS_OPERATIONS[operation].method) return "method_not_allowed";
   return { operation, upstreamPath: `${KAMAKURA_CMS_UPSTREAM_PREFIX}${action}`, collectionId, itemId };
@@ -2137,7 +2021,6 @@ function kamakuraCmsBody(route: KamakuraCmsRoute, raw: Uint8Array, identity: Bri
   const body = parsed;
   if (keys.some((key) => !Object.hasOwn(body, key)) || Object.keys(body).some((key) => !keys.includes(key) && !optionalKeys.includes(key))) throw new AuthenticationError("unexpected CMS body fields");
   const actor = { email: identity.email };
-  if (route.operation === "create") return new TextEncoder().encode(JSON.stringify({ actor }));
   if (route.operation === "english-publication-retry") return new TextEncoder().encode(JSON.stringify({ actor }));
   if (route.operation === "reorder") {
     const { ids, from, to } = body;
@@ -2164,13 +2047,6 @@ function kamakuraCmsBody(route: KamakuraCmsRoute, raw: Uint8Array, identity: Bri
   }
   const version = body.version;
   if (!isKamakuraCmsVersion(version)) throw new AuthenticationError("invalid CMS version");
-  if (route.operation === "draft") {
-    let values: unknown;
-    try { values = parseKamakuraCmsValues(body.values); }
-    catch { throw new AuthenticationError("invalid CMS values"); }
-    return new TextEncoder().encode(JSON.stringify({ version, values, actor }));
-  }
-  // 公開・予約の redirect（前のアドレスから移すか）は boolean だけ。無ければ送らない（上流の既定は true）。
   const redirect = body.redirect;
   if (redirect !== undefined && typeof redirect !== "boolean") throw new AuthenticationError("invalid CMS redirect");
   const redirectPart = redirect === undefined ? {} : { redirect };
@@ -2179,7 +2055,6 @@ function kamakuraCmsBody(route: KamakuraCmsRoute, raw: Uint8Array, identity: Bri
     if (at === null) throw new AuthenticationError("invalid CMS schedule");
     return new TextEncoder().encode(JSON.stringify({ version, at, ...redirectPart, actor }));
   }
-  if (route.operation === "publish") return new TextEncoder().encode(JSON.stringify({ version, ...redirectPart, actor }));
   if (route.operation === "remove") {
     // 削除の移動先: null（移さない）か、サイトの中のパス。何を受け付けるか（同じコレクションの公開中の項目・一覧）は上流が確かめる。
     const redirectTo = body.redirectTo;
@@ -2190,24 +2065,20 @@ function kamakuraCmsBody(route: KamakuraCmsRoute, raw: Uint8Array, identity: Bri
 }
 
 /** 上流の成功の応答を契約の parser で確かめ、既知の field だけにする。 */
-function kamakuraCmsSuccess(route: KamakuraCmsRoute, value: unknown, status: number, previewOrigin?: string): unknown {
+function kamakuraCmsSuccess(route: KamakuraCmsRoute, value: unknown, status: number, uploadOrigin?: string): unknown {
   const itemId = route.itemId ?? undefined;
   switch (route.operation) {
-    case "schema": return parseKamakuraCmsSchema(value);
-    case "list": return parseKamakuraCmsList(value, route.collectionId!);
-    case "read": return parseKamakuraCmsItemEnvelope(value, "ready", itemId);
     case "english-publication-read": return parseKamakuraCmsEnglishPublications(value, "ready", route.collectionId!, route.itemId!);
     case "english-publication-retry": return parseKamakuraCmsEnglishPublications(value, "accepted", route.collectionId!, route.itemId!);
-    case "create": return parseKamakuraCmsItemEnvelope(value, "created");
     case "duplicate": {
       const created = parseKamakuraCmsItemEnvelope(value, "created");
       if (created.item.id === route.itemId) throw new KamakuraCmsContractError("response.item.id");
       return created;
     }
-    case "publish": case "unpublish": return parseKamakuraCmsItemEnvelope(value, "publishing", itemId);
+    case "unpublish": return parseKamakuraCmsItemEnvelope(value, "publishing", itemId);
     case "remove": return parseKamakuraCmsRemoved(value);
-    case "upload-intent": return parseKamakuraCmsUploadIntent(value, previewOrigin);
-    case "draft": case "discard-draft": case "schedule": case "cancel-schedule": case "retry-schedule": return parseKamakuraCmsItemEnvelope(value, "saved", itemId);
+    case "upload-intent": return parseKamakuraCmsUploadIntent(value, uploadOrigin);
+    case "discard-draft": case "schedule": case "cancel-schedule": case "retry-schedule": return parseKamakuraCmsItemEnvelope(value, "saved", itemId);
     // 並べ替え・まとめての操作は commit したら 202 publishing、commit が無ければ（同じ番号どうしの入れ替え・下書きを捨てただけ）200 saved
     case "reorder":
     case "bulk": return parseKamakuraCmsListChange(value, status === 202 ? "publishing" : "saved");
@@ -2221,8 +2092,7 @@ async function signedKamakuraCmsRequest(request: Request, env: Env, identity: Br
   if (method === "GET" && (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length")))) throw new AuthenticationError("GET body rejected");
   const body = method === "GET"
     ? new Uint8Array()
-    : kamakuraCmsBody(route, await readBoundedBody(request, route.operation === "draft" ? KAMAKURA_CMS_LIMITS.draftBodyBytes
-      : route.operation === "reorder" || route.operation === "bulk" ? KAMAKURA_CMS_LIMITS.listBodyBytes : KAMAKURA_CMS_LIMITS.bodyBytes, identity), identity);
+    : kamakuraCmsBody(route, await readBoundedBody(request, route.operation === "reorder" || route.operation === "bulk" ? KAMAKURA_CMS_LIMITS.listBodyBytes : KAMAKURA_CMS_LIMITS.bodyBytes, identity), identity);
   const headers = await kamakuraSignedHeaders(env, identity, method, route.upstreamPath, body, supportId, operation);
   const responseLimit = route.operation === "upload-intent" || route.operation === "english-publication-read" || route.operation === "english-publication-retry"
     ? KAMAKURA_CMS_LIMITS.bodyBytes : KAMAKURA_CMS_LIMITS.responseBytes;
@@ -2246,6 +2116,7 @@ async function signedKamakuraCmsRequest(request: Request, env: Env, identity: Br
   const discard = async (response: Response) => { try { await response.body?.cancel(); } catch { /* 本文は使わない */ } };
   try {
     const previewOrigin = kamakuraCliPreviewOrigin(env, identity);
+    const uploadOrigin = kamakuraUploadOrigin(env, identity, previewOrigin);
     const upstream = new Request(`${previewOrigin ?? KAMAKURA_EDITOR_UPSTREAM_ORIGIN}${route.upstreamPath}`, {
       method, cache: "no-store", redirect: "manual", signal: controller.signal, headers,
       ...(method === "GET" ? {} : { body: body.slice().buffer })
@@ -2277,8 +2148,6 @@ async function signedKamakuraCmsRequest(request: Request, env: Env, identity: Br
     if ((status === 413 || status === 415) && route.operation === "upload-intent") { await discard(response); return json({ error: "image_rejected" }, status); }
     if (status === 404) {
       await discard(response);
-      // schema が無いのは鎌倉の Worker の endpoint が未配備。ほかの 404 はコレクション・項目が無い。
-      if (route.operation === "schema") throw kamakuraBridgeFailure(supportId, operation, "cms_endpoint_missing", status);
       return json({ error: "not_found" }, 404);
     }
     if (status === 400 || status === 413) { await discard(response); return json({ error: "invalid_request" }, 400); }
@@ -2287,7 +2156,7 @@ async function signedKamakuraCmsRequest(request: Request, env: Env, identity: Br
       throw kamakuraBridgeFailure(supportId, operation, status >= 200 && status < 300 ? "upstream_contract_invalid" : "upstream_unexpected_4xx", status);
     }
     const value = await read(response);
-    return checked(response, () => kamakuraCmsSuccess(route, value, status, previewOrigin));
+    return checked(response, () => kamakuraCmsSuccess(route, value, status, uploadOrigin));
   } catch (error) {
     if (error instanceof KamakuraBridgeFailureError) throw error;
     throw kamakuraBridgeFailure(supportId, operation, "bridge_processing_failed");
@@ -2312,7 +2181,7 @@ async function kamakuraCmsApi(request: Request, env: Env, identity: AccessIdenti
 /* ---------- Kamakura の翻訳（LocalizationWorkspace）の BFF ---------- */
 
 type KamakuraLocalizationOperation =
-  "overview" | "list" | "list-after" | "item" | "command" | "translate" | "job" | "catalog" | "preview" | "release" | "prepare" | "apply" | "settings" | "upload-intent" | "editor-site" | "editor-page" | "editor-snapshot" | "editor-save" | "editor-command";
+  "overview" | "list" | "list-after" | "item" | "command" | "translate" | "job" | "catalog" | "preview" | "release" | "prepare" | "apply" | "settings" | "upload-intent" | "editor-site" | "editor-page" | "editor-save" | "editor-command";
 type KamakuraLocalizationRoute = { readonly operation: KamakuraLocalizationOperation; readonly upstreamPath: string; readonly itemKey: string | null; readonly jobId: string | null; readonly pageId: string | null };
 type KamakuraLocalizationSpec = { readonly method: "POST" | "PUT"; readonly log: KamakuraBridgeOperation; readonly bodyKeys: readonly string[] | null; readonly long: boolean };
 type KamakuraLocalizationActor = { readonly email: string; readonly role: Role };
@@ -2338,7 +2207,6 @@ const KAMAKURA_LOCALIZATION_OPERATIONS: Readonly<Record<KamakuraLocalizationOper
   "upload-intent": { method: "POST", log: "localization_upload_intent", bodyKeys: ["itemKey", "unitId", "name", "mimeType", "bytes"], long: false },
   "editor-site": { method: "POST", log: "localization_editor_site", bodyKeys: [], long: true },
   "editor-page": { method: "POST", log: "localization_editor_page", bodyKeys: [], long: true },
-  "editor-snapshot": { method: "POST", log: "localization_editor_snapshot", bodyKeys: [], long: true },
   "editor-save": { method: "POST", log: "localization_editor_save", bodyKeys: ["document", "expectedSourceVersion", "expectedVersion", "expectedOverlayVersion"], long: true },
   "editor-command": { method: "POST", log: "localization_editor_command", bodyKeys: null, long: true }
 };
@@ -2370,7 +2238,7 @@ function kamakuraLocalizationRoute(action: string, method: string): KamakuraLoca
   const after = /^\/items\/after\/([^/]+)$/u.exec(action);
   const item = /^\/items\/([^/]+)(?:\/(command|translate))?$/u.exec(action);
   const job = /^\/jobs\/([^/]+)$/u.exec(action);
-  const editorPage = /^\/editor\/pages\/([^/]+)(?:\/(snapshot|save|command))?$/u.exec(action);
+  const editorPage = /^\/editor\/pages\/([^/]+)(?:\/(save|command))?$/u.exec(action);
   if (Object.hasOwn(KAMAKURA_LOCALIZATION_FIXED, action)) operation = KAMAKURA_LOCALIZATION_FIXED[action]!;
   // 鎌倉の Worker と同じく items/after/<cursor> は一覧の続き（items/after だけなら 1 件）
   else if (after) {
@@ -2388,7 +2256,7 @@ function kamakuraLocalizationRoute(action: string, method: string): KamakuraLoca
   } else if (editorPage) {
     if (!KAMAKURA_COMMON_PAGE_ID.test(editorPage[1]!)) return null;
     pageId = editorPage[1]!;
-    operation = editorPage[2] === "snapshot" ? "editor-snapshot" : editorPage[2] === "save" ? "editor-save" : editorPage[2] === "command" ? "editor-command" : "editor-page";
+    operation = editorPage[2] === "save" ? "editor-save" : editorPage[2] === "command" ? "editor-command" : "editor-page";
   } else return null;
   if (method !== KAMAKURA_LOCALIZATION_OPERATIONS[operation].method) return "method_not_allowed";
   return { operation, upstreamPath: `${KAMAKURA_LOCALIZATION_UPSTREAM_PREFIX}${action}`, itemKey, jobId, pageId };
@@ -2427,7 +2295,7 @@ function kamakuraLocalizationValues(route: KamakuraLocalizationRoute, body: Reco
     return { expectedSourceVersion: body.expectedSourceVersion, expectedVersion: body.expectedVersion, expectedOverlayVersion: body.expectedOverlayVersion };
   };
   switch (route.operation) {
-    case "overview": case "list": case "list-after": case "item": case "job": case "catalog": case "release": case "editor-site": case "editor-page": case "editor-snapshot":
+    case "overview": case "list": case "list-after": case "item": case "job": case "catalog": case "release": case "editor-site": case "editor-page":
       return {};
     case "command": {
       const base = {
@@ -2590,60 +2458,6 @@ function parseKamakuraLocalizationEditorSite(input: unknown) {
   return { status: "ready", config, pages, version: input.version };
 }
 
-function assertKamakuraEnglishDocumentScope(input: unknown, pageId: string | null, path: string): Record<string, unknown> {
-  if (!isRecord(input) || input.schemaVersion !== 1 || input.siteId !== KAMAKURA_EDITOR_SITE_ID || typeof input.pageId !== "string"
-    || (pageId === null ? !/^[A-Za-z][A-Za-z0-9_-]{0,79}$/u.test(input.pageId) : input.pageId !== pageId)
-    || input.locale !== "en"
-    || !Number.isSafeInteger(input.revision) || (input.revision as number) < 1 || typeof input.title !== "string" || !Array.isArray(input.body)) {
-    throw new DocumentValidationError(path, "unexpected English document scope");
-  }
-  return input;
-}
-
-/** snapshot の外枠と、そこに含まれる全 presentation 文書の site / locale / 版を BFF でも固定する。本文の block 契約は client adapter が catalog と組で検証する。 */
-function parseKamakuraLocalizationEditorSnapshot(input: unknown, pageId: string) {
-  if (!isRecord(input)) throw new DocumentValidationError("response", "expected object");
-  if (input.status === "conflict") {
-    if (Object.keys(input).length !== 1) throw new DocumentValidationError("response", "unexpected conflict fields");
-    return { status: "conflict" as const };
-  }
-  if (input.status === "unavailable") {
-    if (Object.keys(input).sort().join(",") !== "message,status" || !isKamakuraCmsLine(input.message, 1000)) {
-      throw new DocumentValidationError("response", "unexpected unavailable result");
-    }
-    return { status: "unavailable" as const, message: input.message };
-  }
-  if (input.status !== "ready" || Object.keys(input).sort().join(",") !== "document,presentation,status,version"
-    || typeof input.version !== "string" || !/^l\.[0-9a-f]{64}$/u.test(input.version)) {
-    throw new DocumentValidationError("response", "unexpected snapshot fields");
-  }
-  const document = assertKamakuraEnglishDocumentScope(input.document, pageId, "response.document");
-  const presentation = input.presentation;
-  if (!isRecord(presentation) || Object.keys(presentation).some((key) => !["schemaVersion", "siteId", "locale", "version", "reset", "tokens", "layout", "fonts", "shared", "overlays", "hostViews"].includes(key))
-    || presentation.schemaVersion !== 1 || presentation.siteId !== KAMAKURA_EDITOR_SITE_ID || presentation.locale !== "en"
-    || !isKamakuraCmsLine(presentation.version, 256) || !isRecord(presentation.shared)
-    || Object.keys(presentation.shared).sort().join(",") !== "footer,header") {
-    throw new DocumentValidationError("response.presentation", "unexpected presentation scope");
-  }
-  assertKamakuraEnglishDocumentScope(presentation.shared.header, null, "response.presentation.shared.header");
-  assertKamakuraEnglishDocumentScope(presentation.shared.footer, null, "response.presentation.shared.footer");
-  if (presentation.overlays !== undefined) {
-    if (!Array.isArray(presentation.overlays) || presentation.overlays.length > 8) throw new DocumentValidationError("response.presentation.overlays", "unexpected overlays");
-    for (const [index, entry] of presentation.overlays.entries()) {
-      if (!isRecord(entry) || !isRecord(entry.document)) throw new DocumentValidationError(`response.presentation.overlays[${index}]`, "unexpected overlay");
-      assertKamakuraEnglishDocumentScope(entry.document, null, `response.presentation.overlays[${index}].document`);
-    }
-  }
-  if (presentation.hostViews !== undefined) {
-    if (!Array.isArray(presentation.hostViews) || presentation.hostViews.length > 64) throw new DocumentValidationError("response.presentation.hostViews", "unexpected host views");
-    for (const [index, entry] of presentation.hostViews.entries()) {
-      if (!isRecord(entry) || !isRecord(entry.document)) throw new DocumentValidationError(`response.presentation.hostViews[${index}]`, "unexpected host view");
-      assertKamakuraEnglishDocumentScope(entry.document, null, `response.presentation.hostViews[${index}].document`);
-    }
-  }
-  return { status: "ready" as const, document, version: input.version, presentation };
-}
-
 /**
  * 上流の契約の結果（本文 `{ status, … }`）を W1 の parser で確かめ、既知の field だけにする。
  * forbidden は 403・not_found は 404・ほかは 200 で返る約束なので、HTTP の status と合わなければ契約違反。
@@ -2710,7 +2524,6 @@ function kamakuraLocalizationResult(route: KamakuraLocalizationRoute, request: R
         }
         return { status: "ready", sourceDocument: document, sourceVersion: value.sourceVersion, overlay, version: value.version };
       }
-      case "editor-snapshot": return parseKamakuraLocalizationEditorSnapshot(value, route.pageId!);
       case "editor-save": case "editor-command": {
         if (!isRecord(value)) throw new DocumentValidationError("response", "expected object");
         if (value.status === "forbidden" || value.status === "not_found" || value.status === "conflict") {
@@ -2818,16 +2631,13 @@ function boundedBridgeJsonStream(
   return new Response(stream, { status: response.status, headers: conditionalJsonHeaders(response) });
 }
 
-async function signedKamakuraLocalizationRequest(request: Request, env: Env, identity: BridgeActor, role: Role, route: KamakuraLocalizationRoute, cliOperation?: CliOperation): Promise<Response> {
+async function signedKamakuraLocalizationRequest(request: Request, env: Env, identity: BridgeActor, role: Role, route: KamakuraLocalizationRoute): Promise<Response> {
   const supportId = identity.kind === "cli" ? identity.requestId : crypto.randomUUID();
   const spec = KAMAKURA_LOCALIZATION_OPERATIONS[route.operation];
   const operation = spec.log, method = spec.method;
   const raw = await readBoundedBody(request, ["command", "editor-save", "editor-command"].includes(route.operation)
     ? KAMAKURA_LOCALIZATION_LIMITS.commandBodyBytes : KAMAKURA_LOCALIZATION_LIMITS.bodyBytes, identity);
   const { body, values } = kamakuraLocalizationBody(route, raw, { email: identity.email, role });
-  if (identity.kind === "cli" && (route.operation === "command" || route.operation === "editor-command")
-    && (!cliOperation?.action || cliOperation.action !== values.action)) invalidLocalizationBody("CLI action");
-  const exposeReleasePending = identity.kind === "human" || cliOperation?.releasePending === true;
   const headers = await kamakuraSignedHeaders(env, identity, method, route.upstreamPath, body, supportId, operation);
   const failure = (category: KamakuraBridgeFailureCategory, status?: number) => kamakuraBridgeFailure(supportId, operation, category, status);
   const controller = new AbortController();
@@ -2848,6 +2658,7 @@ async function signedKamakuraLocalizationRequest(request: Request, env: Env, ide
   const discard = async (response: Response) => { try { await response.body?.cancel(); } catch { /* 本文は使わない */ } };
   try {
     const previewOrigin = kamakuraCliPreviewOrigin(env, identity);
+    const uploadOrigin = kamakuraUploadOrigin(env, identity, previewOrigin);
     const upstream = new Request(`${previewOrigin ?? KAMAKURA_EDITOR_UPSTREAM_ORIGIN}${route.upstreamPath}`, {
       method, cache: "no-store", redirect: "manual", signal: controller.signal, headers, body: body.slice().buffer
     });
@@ -2866,7 +2677,7 @@ async function signedKamakuraLocalizationRequest(request: Request, env: Env, ide
     }
     if (status === 201 && route.operation === "upload-intent") {
       const value = await read(response, KAMAKURA_LOCALIZATION_LIMITS.bodyBytes);
-      return checked(201, () => parseKamakuraLocalizationUploadIntent(value, previewOrigin));
+      return checked(201, () => parseKamakuraLocalizationUploadIntent(value, uploadOrigin));
     }
     if (status === 200 || status === 403 || status === 404) {
       // 契約の結果は本文に status がある。経路の誤り（{ error }）や JSON でない 404 は契約の結果ではない
@@ -2874,7 +2685,7 @@ async function signedKamakuraLocalizationRequest(request: Request, env: Env, ide
       let value: unknown = null;
       if (status !== 404 || isJsonResponse(response)) value = await read(response, limit);
       else await discard(response);
-      if (isRecord(value) && Object.hasOwn(value, "status")) return checked(status, () => kamakuraLocalizationResult(route, values, value, status, exposeReleasePending, previewOrigin));
+      if (isRecord(value) && Object.hasOwn(value, "status")) return checked(status, () => kamakuraLocalizationResult(route, values, value, status, true, previewOrigin));
       if (status === 404) {
         // 概要は画面が最初に読む。ここが経路ごと無いのは、鎌倉の Worker の翻訳の API がまだ配備されていない
         if (route.operation === "overview") throw failure("localization_endpoint_missing", status);
@@ -2912,107 +2723,36 @@ async function kamakuraLocalizationApi(request: Request, env: Env, identity: Acc
   }
 }
 
-type WorkerEditorAdapter = {
-  readonly route: (action: string, method: string, environment: string) => EditorRoute | "method_not_allowed" | null;
-  readonly authorize: (env: Env, identity: AccessIdentity, resolved: ResolvedTrustedIntegration) => Promise<boolean>;
-  readonly dispatch: (request: Request, env: Env, identity: AccessIdentity, route: EditorRoute, resolved: ResolvedTrustedIntegration) => Promise<Response>;
-  readonly dispatchEditingApi?: (request: Request, env: Env, identity: AccessIdentity, url: URL, action: string, role?: Role) => Promise<Response>;
-  readonly assetPreview?: (action: string) => string | null;
-  readonly dispatchAssetPreview?: (request: Request, env: Env, identity: AccessIdentity, assetId: string) => Promise<Response>;
-  readonly connectOrigins?: readonly string[];
-  readonly fontSources?: readonly string[];
-  readonly scriptSources?: readonly string[];
-  readonly frameSources?: readonly string[];
-};
-
-// Kamakura は凍結中も読み取りを通す（kamakura-site#84）。保存・公開を止めるのは kamakura-site で、
-// ページ文書の readOnly と 409 visual_editor_frozen を画面がそのまま案内する。凍結の切り替えはサイト側の 1 か所。
-const KAMAKURA_EDITOR_ADAPTER: WorkerEditorAdapter = {
-  route: (action, method) => kamakuraEditorRoute(action, method),
-  authorize: (env, identity, resolved) => editorMember(env, identity, resolved.registration.projectId, resolved.registration.siteId),
-  dispatch: (request, env, identity, route) => signedKamakuraEditorRequest(request, env, identity, route),
-  dispatchEditingApi: signedKamakuraEditingApiRequest,
-  assetPreview: (action) => /^\/editor\/assets\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/preview$/iu.exec(action)?.[1] ?? null,
-  dispatchAssetPreview: signedKamakuraAssetPreview,
-  connectOrigins: [KAMAKURA_EDITOR_UPSTREAM_ORIGIN],
-  fontSources: [`${KAMAKURA_MEDIA_ORIGIN}/niho-web/fonts/v1/`],
-  scriptSources: ["https://www.instagram.com/embed.js"],
-  frameSources: [KAMAKURA_EMBED_FRAME_SOURCE, "https://www.google.com/maps/embed", "https://www.openstreetmap.org/export/embed.html", "https://www.youtube-nocookie.com/embed/", "https://player.vimeo.com/video/", "https://lottie.host/embed/", "https://www.facebook.com/plugins/post.php", "https://www.instagram.com"]
-};
-
-function liveEditorAdapter(resolved: ResolvedTrustedIntegration): WorkerEditorAdapter | null {
-  return resolved.environment === "production" && integrationIdentity(resolved.registration.projectId, resolved.registration.siteId) === integrationIdentity(KAMAKURA_EDITOR_PROJECT_ID, KAMAKURA_EDITOR_SITE_ID)
-    ? KAMAKURA_EDITOR_ADAPTER
-    : null;
-}
-
-function workerEditorAdapter(resolved: ResolvedTrustedIntegration): WorkerEditorAdapter | null {
-  const frozenAdapters: ReadonlyMap<string, WorkerEditorAdapter> = new Map([
-  [integrationIdentity(EDITOR_PROJECT_ID, EDITOR_SITE_ID), {
-    route: (action, method, environment) => experienceEditorRoute(action, method, environment === "staging"),
-    authorize: (env, identity, resolved) => resolved.environment === "staging"
-      ? experienceEditorOwner(env, identity)
-      : editorMember(env, identity, resolved.registration.projectId, resolved.registration.siteId),
-    dispatch: (request, env, identity, route, resolved) => resolved.environment === "staging"
-      ? signedEditorRequest(request, identity, route, { origin: EDITOR_STAGING_UPSTREAM_ORIGIN, secret: env.NIHO_STUDIO_BRIDGE_SECRET_STG })
-      : signedEditorRequest(request, identity, route, { origin: EDITOR_UPSTREAM_ORIGIN, secret: env.NIHO_STUDIO_BRIDGE_SECRET })
-  }],
-  [integrationIdentity(KAMAKURA_EDITOR_PROJECT_ID, KAMAKURA_EDITOR_SITE_ID), KAMAKURA_EDITOR_ADAPTER]
-  ]);
-  return frozenAdapters.get(integrationIdentity(resolved.registration.projectId, resolved.registration.siteId)) ?? null;
-}
-// Retain the Experience adapter as frozen source only. No active route invokes
-// it while the Experience visual editor is frozen.
-if (false) void workerEditorAdapter;
-
-async function liveEditorApi(request: Request, env: Env, identity: AccessIdentity, action: string, resolved: ResolvedTrustedIntegration, adapter: WorkerEditorAdapter): Promise<Response> {
-  if (action === KAMAKURA_EDITING_API_EDITOR_PREFIX || action.startsWith(`${KAMAKURA_EDITING_API_EDITOR_PREFIX}/`)) {
-    if (!adapter.dispatchEditingApi) return json({ error: "not_found" }, 404);
-    const path = action.slice(KAMAKURA_EDITING_API_EDITOR_PREFIX.length);
-    const needsRole = path === EDITING_DISCOVERY_PATH || EDITING_LOCALIZATION_ROUTE.test(path);
-    const role = needsRole ? await editorRole(env, identity, resolved.registration.projectId, resolved.registration.siteId) : undefined;
-    if (role === null || role === undefined && !await adapter.authorize(env, identity, resolved)) return json({ error: "forbidden" }, 403);
-    try { return await adapter.dispatchEditingApi(request, env, identity, new URL(request.url), action, role); }
-    catch (error) {
-      if (error instanceof AuthenticationError) return json({ error: "invalid_request" }, 400);
-      throw error;
+async function editorApi(request: Request, env: Env, identity: AccessIdentity, url: URL, projectId: string, siteId: string, action: string, timing: StudioRequestTiming): Promise<Response> {
+  if (!isKamakuraProject(projectId, siteId)) return json({ error: "not_found" }, 404);
+  try {
+    if (action === KAMAKURA_EDITING_API_EDITOR_PREFIX || action.startsWith(`${KAMAKURA_EDITING_API_EDITOR_PREFIX}/`)) {
+      const path = action.slice(KAMAKURA_EDITING_API_EDITOR_PREFIX.length);
+      const needsRole = path === EDITING_DISCOVERY_PATH || EDITING_LOCALIZATION_ROUTE.test(path);
+      const permission = await measureRequest(timing, "d1", async () => {
+        const role = needsRole ? await editorRole(env, identity, projectId, siteId) : undefined;
+        const allowed = needsRole ? role !== null && role !== undefined : await editorMember(env, identity, projectId, siteId);
+        return { role, allowed };
+      });
+      if (!permission.allowed) return json({ error: "forbidden" }, 403);
+      return await signedKamakuraEditingApiRequest(request, env, identity, url, action, permission.role ?? undefined, undefined, timing);
     }
-  }
-  const assetId = adapter.assetPreview?.(action) ?? null;
-  if (assetId && adapter.dispatchAssetPreview) {
-    if (request.method !== "GET") return json({ error: "method_not_allowed" }, 405);
-    if (!await adapter.authorize(env, identity, resolved)) return json({ error: "forbidden" }, 403);
-    try { return await adapter.dispatchAssetPreview(request, env, identity, assetId); }
-    catch (error) {
-      if (error instanceof AuthenticationError) return json({ error: "invalid_request" }, 400);
-      throw error;
+    if (url.href.includes("?")) return json({ error: "invalid_request" }, 400);
+    const assetId = /^\/editor\/assets\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/preview$/iu.exec(action)?.[1];
+    if (assetId) {
+      if (request.method !== "GET") return json({ error: "method_not_allowed" }, 405);
+      if (!await editorMember(env, identity, projectId, siteId)) return json({ error: "forbidden" }, 403);
+      return await signedKamakuraAssetPreview(request, env, identity, assetId);
     }
-  }
-  const route = adapter.route(action, request.method, resolved.environment);
-  if (route === null) return json({ error: "not_found" }, 404);
-  if (route === "method_not_allowed") return json({ error: "method_not_allowed" }, 405);
-  if (!await adapter.authorize(env, identity, resolved)) return json({ error: "forbidden" }, 403);
-  try { return await adapter.dispatch(request, env, identity, route, resolved); }
-  catch (error) {
+    const route = kamakuraEditorRoute(action, request.method);
+    if (route === null) return json({ error: "not_found" }, 404);
+    if (route === "method_not_allowed") return json({ error: "method_not_allowed" }, 405);
+    if (!await editorMember(env, identity, projectId, siteId)) return json({ error: "forbidden" }, 403);
+    return await signedKamakuraEditorRequest(request, env, identity, route);
+  } catch (error) {
     if (error instanceof AuthenticationError) return json({ error: "invalid_request" }, 400);
     throw error;
   }
-}
-
-async function editorApi(request: Request, env: Env, identity: AccessIdentity, url: URL, projectId: string, siteId: string, action: string): Promise<Response> {
-  const resolved = resolveTrustedEditorApi(projectId, siteId, action);
-  if (!resolved) return json({ error: "not_found" }, 404);
-  const adapter = liveEditorAdapter(resolved);
-  if (adapter && (action === KAMAKURA_EDITING_API_EDITOR_PREFIX || action.startsWith(`${KAMAKURA_EDITING_API_EDITOR_PREFIX}/`))) {
-    return liveEditorApi(request, env, identity, action, resolved, adapter);
-  }
-  if (url.href.includes("?")) return json({ error: "invalid_request" }, 400);
-  if (adapter) return liveEditorApi(request, env, identity, action, resolved, adapter);
-  const authorized = resolved.environment === "staging"
-    ? resolved.registration.projectId === EDITOR_PROJECT_ID && resolved.registration.siteId === EDITOR_SITE_ID && await experienceEditorOwner(env, identity)
-    : await editorMember(env, identity, resolved.registration.projectId, resolved.registration.siteId);
-  if (!authorized) return json({ error: "forbidden" }, 403);
-  return json({ error: "visual_editor_frozen", message: "Site layout and styling are maintained in code." }, 409);
 }
 
 /**
@@ -3023,6 +2763,23 @@ const VERSIONED_FONT_PATH = /^\/assets\/fonts\/(?:[a-z0-9-]+-\d+\.\d+\.\d+\/[a-z
 /** build が内容 hash を付ける entry の JS/CSS と esbuild の遅延 chunk。hash なしの名前は長期 cache しない。 */
 const VERSIONED_CODE_ASSET_PATH = /^\/assets\/(?:app-[0-9a-f]{12}\.js|(?:studio|project-view|collection|localization)-[0-9a-f]{12}\.css|chunks\/[A-Za-z0-9_-]+-[A-Za-z0-9_-]{8}\.js)$/u;
 const VERSIONED_FONT_CACHE = "private, max-age=31536000, immutable";
+
+async function withStudioUploadOriginMeta(response: Response, uploadOrigin: string | undefined): Promise<Response> {
+  const contentType = response.headers.get("Content-Type")?.split(";", 1)[0]?.trim().toLowerCase();
+  if (!uploadOrigin || response.status !== 200 || contentType !== "text/html") return response;
+  const html = await response.text();
+  const meta = `<meta name="niho-studio-upload-origin" content="${uploadOrigin}">`;
+  const head = /<head\b[^>]*>/iu;
+  let body = html.replace(head, (tag) => `${tag}${meta}`);
+  if (body === html) body = html.replace(/<html\b[^>]*>/iu, (tag) => `${tag}<head>${meta}</head>`);
+  if (body === html) return new Response(html, { status: response.status, statusText: response.statusText, headers: response.headers });
+  const headers = new Headers(response.headers);
+  headers.delete("Content-Length");
+  headers.delete("Content-Encoding");
+  headers.delete("Content-MD5");
+  headers.delete("ETag");
+  return new Response(body, { status: response.status, statusText: response.statusText, headers });
+}
 
 function withStaticSecurity(response: Response, editor = false, connectOrigins: readonly string[] = [], fontSources: readonly string[] = [], scriptSources: readonly string[] = [], frameSources: readonly string[] = []): Response {
   const headers = new Headers(response.headers);
@@ -3040,7 +2797,7 @@ function withStaticSecurity(response: Response, editor = false, connectOrigins: 
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
-function membershipMutation(request: Request, env: Env, identity: SiteActor, projectId: string, siteId: string, action: string, body: Record<string, unknown>): Promise<Response> | null {
+function membershipMutation(request: Request, env: Env, identity: AccessIdentity, projectId: string, siteId: string, action: string, body: Record<string, unknown>): Promise<Response> | null {
   switch (action) {
     case "/invitations": return createInvitation(request, env, identity, projectId, siteId, body);
     case "/invitations/revoke": return revokeInvitation(env, identity, projectId, siteId, body);
@@ -3064,7 +2821,7 @@ async function siteAnalyticsHttp(request: Request, env: Env, identity: AccessIde
   return json(result.body, result.status);
 }
 
-async function scopedApi(request: Request, env: Env, identity: AccessIdentity, url: URL): Promise<Response | null> {
+async function scopedApi(request: Request, env: Env, identity: AccessIdentity, url: URL, timing: StudioRequestTiming): Promise<Response | null> {
   const match = /^\/api\/projects\/([A-Za-z][A-Za-z0-9_-]{0,79})\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})(\/[^?]*)?$/u.exec(url.pathname);
   if (!match) return null;
   const projectId = match[1]!;
@@ -3080,16 +2837,21 @@ async function scopedApi(request: Request, env: Env, identity: AccessIdentity, u
       }
     }
   }
+  if (action.startsWith("/cms/delivery/")) {
+    if (!env.CMS_OBJECTS) return json({ error: "not_found" }, 404);
+    return managedCmsDeliveryAdmin(request, new CmsStore(env.DB, env.CMS_OBJECTS),
+      { projectId, siteId, actor: { id: identity.subject, cli: false } }, action, env.CMS_DELIVERY_MASTER_KEY);
+  }
   if (action.startsWith("/cms/v2/")) {
     if (!env.CMS_OBJECTS) return json({ error: "not_found" }, 404);
-    return managedCmsApi(request, new CmsStore(env.DB, env.CMS_OBJECTS),
+    return managedCmsApi(request, cmsStore(env, identity),
       { projectId, siteId, actor: { id: identity.subject, cli: false } }, action.slice("/cms/v2/".length), 2);
   }
   if (action === "/cms" || action.startsWith("/cms/")) return kamakuraCmsApi(request, env, identity, url, projectId, siteId, action.slice("/cms".length));
   if (action === "/localization" || action.startsWith("/localization/")) return kamakuraLocalizationApi(request, env, identity, url, projectId, siteId, action.slice("/localization".length));
-  if (action === "/breakpoints") return breakpointSettingsApi(request, env, identity, url, projectId, siteId);
   if (action.startsWith("/analytics/")) return siteAnalyticsHttp(request, env, identity, url, projectId, siteId, action.slice("/analytics".length));
-  if (isTrustedEditorAction(action)) return editorApi(request, env, identity, url, projectId, siteId, action);
+  if (action === "/editor" || action.startsWith("/editor/")) return editorApi(request, env, identity, url, projectId, siteId, action, timing);
+  if (action === "/editor-staging" || action.startsWith("/editor-staging/")) return json({ error: "not_found" }, 404);
   if (request.method === "GET") {
     if (action === "/dashboard") return dashboard(env, identity, projectId, siteId);
     if (action === "/membership") return membershipAdministration(env, identity, projectId, siteId);
@@ -3110,8 +2872,7 @@ async function scopedApi(request: Request, env: Env, identity: AccessIdentity, u
   }
 }
 
-// Grant checks use the D1 primary on every request. The owner, project and site
-// are resolved together, and dispatch requires an audit row from the same write.
+// The delegator must still be an owner of the exact project and site on every request.
 const ACTIVE_CLI_GRANTS = `
   FROM studio_cli_grants AS g
   JOIN project_members AS m
@@ -3120,283 +2881,187 @@ const ACTIVE_CLI_GRANTS = `
  WHERE g.client_id = ?1 AND g.project_id = ?2 AND g.site_id = ?3 AND (g.expires_at IS NULL OR g.expires_at > unixepoch())
 `;
 
-type CliGrantScope = readonly [clientId: string, projectId: string, siteId: string];
-type CliAuditRow = { readonly id: string; readonly operation: string; readonly started_at: number; readonly http_status: number | null };
+const KAMAKURA_MACHINE_OPERATIONS: Readonly<Record<string, EditingCapability>> = {
+  "pages.catalog": "pages.read",
+  "pages.read": "pages.read",
+  "pages.save": "pages.edit",
+  "pages.apply": "pages.edit",
+  "pages.release-plan": "pages.publish",
+  "pages.release": "pages.publish",
+  "cms.schema": "cms.read",
+  "cms.list": "cms.read",
+  "cms.read": "cms.read",
+  "cms.create": "cms.edit",
+  "cms.save": "cms.edit",
+  "cms.publish-plan": "cms.publish",
+  "cms.publish": "cms.publish",
+  "cms.operation-status": "cms.read"
+};
 
-async function cliAuditRecord(env: Env, scope: CliGrantScope, subject: string, requestKey: string, requestedCapability: string | null = null): Promise<CliAuditRow | null> {
-  return env.DB.prepare(`
-    SELECT a.id, a.operation, a.started_at, a.http_status
-      FROM studio_cli_audit AS a
-     WHERE a.project_id = ?2 AND a.site_id = ?3 AND a.actor_subject = ?4 AND a.request_key = ?5
-       AND EXISTS (SELECT 1 ${ACTIVE_CLI_GRANTS} AND g.capability = a.capability)
-       AND (?6 IS NULL OR EXISTS (SELECT 1 ${ACTIVE_CLI_GRANTS} AND g.capability = ?6))
-  `).bind(...scope, subject, requestKey, requestedCapability).first<CliAuditRow>();
-}
-
-function resolveCliDispatch(request: Request, env: Env, url: URL, projectId: string, siteId: string, bridgePath: string, spec: CliOperation): ((actor: CliDelegatedActor) => Promise<Response>) | Response {
-  if (bridgePath === "/breakpoints" || bridgePath === "/membership") {
-    if (request.method === "GET" && (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length")))) return json({ error: "invalid_request" }, 400);
-    return bridgePath === "/breakpoints"
-      ? (actor) => breakpointSettingsApi(request, env, actor, url, projectId, siteId)
-      : (actor) => membershipAdministration(env, actor, projectId, siteId);
-  }
-  if (bridgePath === "/invitations" || bridgePath === "/invitations/revoke" || bridgePath === "/members/role" || bridgePath === "/members/remove") {
-    return async (actor) => {
-      const body = await enforceMutationBoundary(request, actor);
-      return await membershipMutation(request, env, actor, projectId, siteId, bridgePath, body) ?? json({ error: "not_found" }, 404);
-    };
-  }
-  if (bridgePath.startsWith("/cms/")) {
-    const route = kamakuraCmsRoute(bridgePath.slice("/cms".length), request.method);
-    if (route && route !== "method_not_allowed") return (actor) => signedKamakuraCmsRequest(request, env, actor, route);
-  } else if (bridgePath.startsWith("/localization/")) {
-    const route = kamakuraLocalizationRoute(bridgePath.slice("/localization".length), request.method);
-    if (route && route !== "method_not_allowed") return (actor) => signedKamakuraLocalizationRequest(request, env, actor, spec.owner ? "owner" : "editor", route, spec);
-  } else if (bridgePath.startsWith("/editor/")) {
-    const resolved = resolveTrustedEditorApi(KAMAKURA_EDITOR_PROJECT_ID, KAMAKURA_EDITOR_SITE_ID, bridgePath);
-    if (!resolved) return json({ error: "not_found" }, 404);
-    const adapter = liveEditorAdapter(resolved);
-    if (!adapter) return json({ error: "visual_editor_frozen" }, 409);
-    const route = adapter.route(bridgePath, request.method, resolved.environment);
-    if (route && route !== "method_not_allowed") return (actor) => signedKamakuraEditorRequest(request, env, actor, route);
-  }
-  return json({ error: "not_found" }, 404);
-}
-
-async function studioServiceCliApi(request: Request, env: Env, url: URL, identity: ServiceIdentity): Promise<Response> {
-  if (url.href.includes("?")) return json({ error: "invalid_request" }, 400);
-  const match = /^\/projects\/([^/]+)\/sites\/([^/]+)\/(?:capabilities|operations\/(.+)|operation-status\/([^/]+))$/u.exec(url.pathname.slice(API_PREFIX.length));
-  if (!match) return json({ error: "not_found" }, 404);
-  const [, projectId, siteId, operationPath, statusKey] = match;
-  if (!projectId || !siteId || !SCOPE_ID.test(projectId) || !SCOPE_ID.test(siteId)) return json({ error: "not_found" }, 404);
-  const managedOrigin = publicSitesOrigin(env.PUBLIC_SITES_ORIGIN);
-  const external = projectId === KAMAKURA_EDITOR_PROJECT_ID && siteId === KAMAKURA_EDITOR_SITE_ID;
-  const subject = `${CLI_SUBJECT_PREFIX}${identity.clientId}`;
-  if (!external && managedOrigin && managedOrigin !== url.origin && operationPath?.startsWith("cms.")) {
-    return managedCmsCliOperation(request, env, { projectId, siteId, actor: { id: subject, clientId: identity.clientId, cli: true } }, operationPath);
-  }
-  const managed = managedOrigin && managedOrigin !== url.origin ? await managedRegistration(env.DB, projectId, siteId) : null;
-  if (!managed && !external) return json({ error: "not_found" }, 404);
-  const grantScope: CliGrantScope = [identity.clientId, projectId, siteId];
-
-  if (operationPath === undefined) {
-    if (request.method !== "GET") return json({ error: "method_not_allowed" }, 405);
-    if (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length"))) return json({ error: "invalid_request" }, 400);
-    if (statusKey !== undefined) {
-      const key = normalizeOperationKey(statusKey);
-      if (!key) return json({ error: "invalid_request" }, 400);
-      const record = await cliAuditRecord(env, grantScope, subject, key);
-      if (!record) return json({ error: "not_found" }, 404);
-      return json({
-        status: record.http_status === null ? "received" : "completed",
-        operationId: record.id,
-        operation: record.operation,
-        startedAt: unixTimestamp(record.started_at),
-        httpStatus: record.http_status
-      });
+async function kamakuraMachineEditingApi(request: Request, env: Env, url: URL, identity: ServiceIdentity, timing: StudioRequestTiming): Promise<Response> {
+  const suffix = url.pathname.slice(KAMAKURA_EDITING_API_PATH_PREFIX.length);
+  const discovery = suffix === EDITING_DISCOVERY_PATH;
+  const operation = /^\/sites\/kamakura\/operations\/([^/]+)/u.exec(suffix)?.[1];
+  const capability = operation && Object.hasOwn(KAMAKURA_MACHINE_OPERATIONS, operation) ? KAMAKURA_MACHINE_OPERATIONS[operation] : undefined;
+  if (!discovery && !capability) return json({ error: "not_found" }, 404);
+  const scope = [identity.clientId, KAMAKURA_EDITOR_PROJECT_ID, KAMAKURA_EDITOR_SITE_ID] as const;
+  const capabilities = await measureRequest(timing, "d1", async (): Promise<readonly EditingCapability[] | null> => {
+    if (capability === undefined) {
+      const grants = await env.DB.prepare(`SELECT g.capability ${ACTIVE_CLI_GRANTS} ORDER BY g.capability`)
+        .bind(...scope).all<{ capability: EditingCapability }>();
+      const supported = new Set(Object.values(KAMAKURA_MACHINE_OPERATIONS));
+      const result = (grants.results ?? []).map((grant) => grant.capability).filter((grant) => supported.has(grant));
+      return result.length ? result : null;
     }
-    const grants = await env.DB.prepare(`SELECT g.capability ${ACTIVE_CLI_GRANTS} ORDER BY g.capability`)
-      .bind(...grantScope).all<{ readonly capability: string }>();
-    if (!grants.success || !grants.results) throw new Error("CLI grant lookup failed");
-    const active = new Set(grants.results.map(({ capability }) => capability));
-    const operations = OPERATIONS.filter((operation) => active.has(operation.capability) && (managed ? operation.managed && (!operation.id.startsWith("cms.") || env.CMS_OBJECTS !== undefined) : !operation.managedOnly))
-      .map(({ id, capability, method, parameters, action, upload }) => ({
-        id, capability, method, parameters,
-        ...(action === undefined ? {} : { action }),
-        ...(upload === undefined ? {} : { upload })
-      }));
-    if (operations.length === 0) return json({ error: "forbidden" }, 403);
-    return json({ apiVersion: API_VERSION, projectId, siteId, capabilities: [...active], operations });
-  }
+    const grant = await env.DB.prepare(`SELECT 1 AS allowed ${ACTIVE_CLI_GRANTS} AND g.capability = ?4 LIMIT 1`)
+      .bind(...scope, capability).first<{ allowed: number }>();
+    return grant?.allowed === 1 ? [capability] : null;
+  });
+  if (!capabilities) return json({ error: "forbidden" }, 403);
 
-  const [id, ...args] = operationPath.split("/");
-  const operation = id ? resolveOperation(id, args) : null;
-  if (!operation) return json({ error: "not_found" }, 404);
-  const { spec, bridgePath } = operation;
-  if (request.method !== spec.method) return json({ error: "method_not_allowed" }, 405);
-  const rawRequestKey = request.headers.get(OPERATION_KEY_HEADER);
-  const requestKey = normalizeOperationKey(rawRequestKey);
-  if (rawRequestKey !== null && requestKey === null) return json({ error: "invalid_request" }, 400);
-  if (managed ? !spec.managed : spec.managedOnly) return json({ error: "not_found" }, 404);
-  const dispatch = managed && managedOrigin
-    ? (actor: CliDelegatedActor) => managedEditorOperation(request, env.DB, { subject: actor.delegatedBySubject, email: actor.email, cli: true }, projectId, siteId, bridgePath, managedOrigin,
-      env.CMS_OBJECTS ? new CmsStore(env.DB, env.CMS_OBJECTS) : undefined)
-    : resolveCliDispatch(request, env, url, projectId, siteId, bridgePath, spec);
-  if (dispatch instanceof Response) return dispatch;
-  const target = Object.fromEntries(spec.parameters.flatMap((parameter, index) =>
-    ["pageId", "collectionId", "itemId", "itemKey", "jobId"].includes(parameter) ? [[parameter, args[index]]] : []));
   const actor: CliActor = {
-    kind: "cli",
-    subject,
-    email: `cli-${identity.clientId}@studio.invalid`,
-    requestId: crypto.randomUUID()
+    kind: "cli", subject: `${CLI_SUBJECT_PREFIX}${identity.clientId}`,
+    email: `cli-${identity.clientId}@studio.invalid`, requestId: crypto.randomUUID()
   };
-  const grant = await env.DB.prepare(`
-    INSERT INTO studio_cli_audit (id, actor_subject, delegated_by_subject, project_id, site_id, capability, operation, target_json, request_key)
-    SELECT ?5, ?6, g.delegated_by_subject, g.project_id, g.site_id, g.capability, ?7, ?8, ?9
-    ${ACTIVE_CLI_GRANTS} AND g.capability = ?4
-    ON CONFLICT(project_id, site_id, actor_subject, request_key) DO NOTHING
-    RETURNING id, delegated_by_subject
-  `).bind(...grantScope, spec.capability, actor.requestId, actor.subject, spec.id, JSON.stringify(target), requestKey).first<{ readonly id: string; readonly delegated_by_subject: string }>();
-  if (!grant) {
-    if (requestKey && await cliAuditRecord(env, grantScope, subject, requestKey, spec.capability)) {
-      return json({ error: "duplicate_operation" }, 409);
-    }
-    return json({ error: "forbidden" }, 403);
-  }
-
-  let status = 503;
   try {
-    let response: Response;
+    return await signedKamakuraEditingApiRequest(request, env, actor, url, `${KAMAKURA_EDITING_API_EDITOR_PREFIX}${suffix}`, undefined, capabilities, timing);
+  } catch (error) {
+    if (error instanceof AuthenticationError) return json({ error: "invalid_request" }, 400);
+    throw error;
+  }
+}
+
+async function managedCliPublicSettings(
+  request: Request, db: D1Database, actor: ManagedActor, projectId: string, siteId: string, origin: string
+): Promise<Response> {
+  type SettingsPart = "domain" | "origins";
+  type Domain = { domain: string | null; noindex: boolean; version: string };
+  type Origins = { settings: { frameOrigins: string[]; resourceOrigins: string[] }; version: string };
+  let domainEdit: Record<string, unknown> | undefined;
+  let originsEdit: Record<string, unknown> | undefined;
+  if (request.method === "PUT") {
     try {
-      response = await dispatch({ ...actor, delegatedBySubject: grant.delegated_by_subject });
+      const input = await enforceMutationBoundary(request, !actor.cli);
+      const { domain, origins } = input;
+      if (!Object.keys(input).length || Object.keys(input).some((key) => key !== "domain" && key !== "origins")) throw new InvalidInputError("unexpected public settings fields");
+      if (domain !== undefined) {
+        if (!isRecord(domain) || !isEditingApiVersion(domain.version) || (domain.hostname !== null && typeof domain.hostname !== "string")
+          || typeof domain.noindex !== "boolean") throw new InvalidInputError("invalid domain snapshot");
+        exactKeys(domain, ["hostname", "noindex", "version"]);
+        domainEdit = domain;
+      }
+      if (origins !== undefined) {
+        if (!isRecord(origins) || !isEditingApiVersion(origins.version)
+          || !Array.isArray(origins.frameOrigins) || !Array.isArray(origins.resourceOrigins)) throw new InvalidInputError("invalid origins snapshot");
+        exactKeys(origins, ["frameOrigins", "resourceOrigins", "version"]);
+        originsEdit = origins;
+      }
     } catch (error) {
-      if (error instanceof AuthenticationError || error instanceof InvalidInputError) response = json({ error: "invalid_request" }, 400);
-      else if (error instanceof KamakuraBridgeFailureError) response = kamakuraBridgeErrorResponse(error);
-      else throw error;
-    }
-    status = response.status;
-    response.headers.set("X-Studio-Operation-Id", actor.requestId);
-    return response;
-  } finally {
-    try {
-      const result = await env.DB.prepare("UPDATE studio_cli_audit SET http_status = ?2 WHERE id = ?1 AND http_status IS NULL")
-        .bind(actor.requestId, status).all();
-      if (!result.success || result.meta?.changes !== 1) throw new Error("CLI audit status update failed");
-    } catch {
-      // Dispatch may already have changed the host. Keep the response and correlate
-      // the outcome with the existing audit row without logging request data.
-      console.error("NIHO Studio CLI audit status update failed", { requestId: actor.requestId, status });
+      if (error instanceof AuthenticationError || error instanceof InvalidInputError) return json({ error: "invalid_request" }, 400);
+      throw error;
     }
   }
+
+  const headers = new Headers(request.headers);
+  headers.delete("Content-Length");
+  const run = (part: SettingsPart, input?: Record<string, unknown>) => managedEditorOperation(new Request(request.url, {
+    method: input ? "POST" : "GET", headers, signal: request.signal, ...(input ? { body: JSON.stringify(input) } : {})
+  }), db, actor, projectId, siteId, part === "domain" ? "/editor/public-domain" : "/editor/public-settings", origin);
+  const [domainResponse, originsResponse] = await Promise.all([run("domain"), run("origins")]);
+  if (!domainResponse.ok) return domainResponse;
+  if (!originsResponse.ok) return originsResponse;
+  let domain = await domainResponse.json() as Domain;
+  let origins = await originsResponse.json() as Origins;
+  if (domainEdit && domainEdit.version !== domain.version) return json({ error: "conflict", part: "domain" }, 409);
+  if (originsEdit && originsEdit.version !== origins.version) return json({ error: "conflict", part: "origins" }, 409);
+
+  let domainSaved = false;
+  if (domainEdit && (domainEdit.hostname !== domain.domain || domainEdit.noindex !== domain.noindex)) {
+    const response = await run("domain", { domain: domainEdit.hostname, noindex: domainEdit.noindex, expectedVersion: domainEdit.version });
+    if (!response.ok) return response;
+    domain = await response.json() as Domain;
+    domainSaved = true;
+  }
+  if (originsEdit && (JSON.stringify(originsEdit.frameOrigins) !== JSON.stringify(origins.settings.frameOrigins)
+    || JSON.stringify(originsEdit.resourceOrigins) !== JSON.stringify(origins.settings.resourceOrigins))) {
+    try {
+      const response = await run("origins", { settings: { frameOrigins: originsEdit.frameOrigins, resourceOrigins: originsEdit.resourceOrigins }, expectedVersion: originsEdit.version });
+      if (!response.ok) {
+        if (!domainSaved) return response;
+        const failure = await response.json() as { error: string };
+        return json({ error: "partial_save", saved: "domain", failed: "origins", cause: failure.error }, response.status);
+      }
+      origins = await response.json() as Origins;
+    } catch (error) {
+      if (!domainSaved) throw error;
+      return json({ error: "partial_save", saved: "domain", failed: "origins", cause: "internal_error" }, 503);
+    }
+  }
+  return json({
+    domain: { hostname: domain.domain, noindex: domain.noindex, version: domain.version },
+    origins: { frameOrigins: origins.settings.frameOrigins, resourceOrigins: origins.settings.resourceOrigins, version: origins.version }
+  });
 }
 
-type ManagedCliAuditRow = { readonly id: string; readonly operation: string; readonly started_at: number; readonly http_status: number | null };
-
-async function managedCliAudit(env: Env, projectId: string, siteId: string, subject: string, key: string): Promise<ManagedCliAuditRow | null> {
-  return env.DB.prepare(`
-    SELECT audit.id, audit.operation, audit.started_at, audit.http_status
-      FROM studio_cli_audit AS audit
-      JOIN sites AS s ON s.project_id = audit.project_id AND s.id = audit.site_id
-      JOIN managed_sites AS ms ON ms.site_id = s.id
-      JOIN project_members AS member ON member.project_id = s.project_id
-     WHERE audit.project_id = ?1 AND audit.site_id = ?2 AND audit.actor_subject = ?3 AND audit.request_key = ?4
-       AND member.access_subject = ?3
-     LIMIT 1
-  `).bind(projectId, siteId, subject, key).first<ManagedCliAuditRow>();
-}
-
-async function studioManagedCliApi(request: Request, env: Env, url: URL, identity: AccessIdentity): Promise<Response> {
-  if (url.href.includes("?")) return json({ error: "invalid_request" }, 400);
-  const match = /^\/projects\/([^/]+)\/sites\/([^/]+)\/(?:capabilities|operations\/(.+)|operation-status\/([^/]+))$/u.exec(url.pathname.slice(API_PREFIX.length));
+async function studioEditingApi(request: Request, env: Env, url: URL, timing: StudioRequestTiming): Promise<Response> {
+  const match = /^\/api\/edit\/(v1|v2)\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/(capabilities|operations\/((?:cms|pages)\.[^?]+|site\.(?:seo|redirects|public)\.(?:read|save)))$/u.exec(url.pathname);
   if (!match) return json({ error: "not_found" }, 404);
-  const [, projectId, siteId, operationPath, statusKey] = match;
-  if (!projectId || !siteId || !SCOPE_ID.test(projectId) || !SCOPE_ID.test(siteId)) return json({ error: "not_found" }, 404);
-  const origin = publicSitesOrigin(env.PUBLIC_SITES_ORIGIN);
-  if (!origin || origin === url.origin) return json({ error: "not_found" }, 404);
-  if (operationPath?.startsWith("cms.")) {
-    return managedCmsCliOperation(request, env, { projectId, siteId, actor: { id: identity.subject, cli: true } }, operationPath);
-  }
-  if (!await managedRegistration(env.DB, projectId, siteId)) return json({ error: "not_found" }, 404);
-  const actor: ManagedActor = { subject: identity.subject, email: identity.email, cli: true };
-  const membership = await env.DB.prepare(`
-    SELECT member.role
-      FROM project_members AS member JOIN sites AS s ON s.project_id = member.project_id JOIN managed_sites AS ms ON ms.site_id = s.id
-     WHERE member.access_subject = ?1 AND member.project_id = ?2 AND s.id = ?3 LIMIT 1
-  `).bind(identity.subject, projectId, siteId).first<{ readonly role: Role }>();
-  if (!membership || !validRole(membership.role)) return json({ error: "forbidden" }, 403);
-  if (operationPath === undefined) {
-    if (request.method !== "GET") return json({ error: "method_not_allowed" }, 405);
-    if (request.body !== null || ![null, "0"].includes(request.headers.get("Content-Length"))) return json({ error: "invalid_request" }, 400);
-    if (statusKey !== undefined) {
-      const key = normalizeOperationKey(statusKey);
-      if (!key) return json({ error: "invalid_request" }, 400);
-      const audit = await managedCliAudit(env, projectId, siteId, identity.subject, key);
-      if (!audit) return json({ error: "not_found" }, 404);
-      return json({ status: audit.http_status === null ? "received" : "completed", operationId: audit.id, operation: audit.operation, startedAt: unixTimestamp(audit.started_at), httpStatus: audit.http_status });
-    }
-    const operations = OPERATIONS.filter((operation) => operation.managed
-      && (!operation.id.startsWith("cms.") || env.CMS_OBJECTS !== undefined)
-      && (!operation.owner || membership.role === "owner")).map(({ id, capability, method, parameters }) => ({ id, capability, method, parameters }));
-    const capabilities = [...new Set(operations.map(({ capability }) => capability))].sort();
-    return json({ apiVersion: API_VERSION, projectId, siteId, capabilities, operations });
-  }
-
-  const [id, ...args] = operationPath.split("/"), operation = id ? resolveOperation(id, args) : null;
-  if (!operation || !operation.spec.managed) return json({ error: "not_found" }, 404);
-  if (request.method !== operation.spec.method) return json({ error: "method_not_allowed" }, 405);
-  const rawKey = request.headers.get(OPERATION_KEY_HEADER), requestKey = normalizeOperationKey(rawKey);
-  if (rawKey !== null && requestKey === null) return json({ error: "invalid_request" }, 400);
-  const requestId = crypto.randomUUID();
-  const target = Object.fromEntries(operation.spec.parameters.flatMap((parameter, index) => parameter === "pageId" ? [[parameter, args[index]]] : []));
-  const inserted = await env.DB.prepare(`
-    INSERT INTO studio_cli_audit (id, actor_subject, delegated_by_subject, project_id, site_id, capability, operation, target_json, request_key)
-    SELECT ?1, member.access_subject, member.access_subject, member.project_id, s.id, ?5, ?6, ?7, ?8
-      FROM project_members AS member JOIN sites AS s ON s.project_id = member.project_id JOIN managed_sites AS ms ON ms.site_id = s.id
-     WHERE member.access_subject = ?2 AND member.project_id = ?3 AND s.id = ?4
-    ON CONFLICT(project_id, site_id, actor_subject, request_key) DO NOTHING
-    RETURNING id
-  `).bind(requestId, identity.subject, projectId, siteId, operation.spec.capability, operation.spec.id, JSON.stringify(target), requestKey)
-    .first<{ readonly id: string }>();
-  if (!inserted) {
-    if (requestKey && await managedCliAudit(env, projectId, siteId, identity.subject, requestKey)) return json({ error: "duplicate_operation" }, 409);
-    return json({ error: "forbidden" }, 403);
-  }
-
-  let status = 503;
-  try {
-    const response = await managedEditorOperation(request, env.DB, actor, projectId, siteId, operation.bridgePath, origin,
-      env.CMS_OBJECTS ? new CmsStore(env.DB, env.CMS_OBJECTS) : undefined);
-    status = response.status;
-    response.headers.set("X-Studio-Operation-Id", requestId);
-    return response;
-  } finally {
-    try {
-      const updated = await env.DB.prepare("UPDATE studio_cli_audit SET http_status = ?2 WHERE id = ?1 AND http_status IS NULL").bind(requestId, status).all();
-      if (!updated.success || updated.meta?.changes !== 1) throw new Error("CLI audit status update failed");
-    } catch {
-      console.error("NIHO Studio CLI audit status update failed", { requestId, status });
-    }
-  }
-}
-
-async function studioCliApi(request: Request, env: Env, url: URL, identity: AccessIdentity | ServiceIdentity): Promise<Response> {
-  return identity.kind === "service" ? studioServiceCliApi(request, env, url, identity) : studioManagedCliApi(request, env, url, identity);
-}
-
-function managedCmsCliOperation(request: Request, env: Env,
-  scope: { projectId: string; siteId: string; actor: CmsActor }, operationPath: string) {
-  const [id, ...parameters] = operationPath.split("/");
-  const resolved = id ? resolveOperation(id, parameters) : null;
-  if (!env.CMS_OBJECTS || !resolved?.spec.managed) return json({ error: "not_found" }, 404);
-  const version = resolved.spec.cmsVersion ?? 1;
-  return managedCmsApi(request, new CmsStore(env.DB, env.CMS_OBJECTS), scope, operationPath, version);
-}
-
-async function studioEditingCms(request: Request, env: Env, url: URL): Promise<Response> {
-  const match = /^\/api\/edit\/(v1|v2)\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/(capabilities|operations\/((?:cms|pages)\.[^?]+))$/u.exec(url.pathname);
-  if (!env.CMS_OBJECTS || !match) return json({ error: "not_found" }, 404);
   let identity: AccessIdentity | ServiceIdentity;
   const accessToken = request.headers.get("cf-access-token");
   try {
-    identity = await authenticate(request, env, accessToken ?? undefined);
+    identity = await measureRequest(timing, "auth", () => authenticate(request, env, accessToken ?? undefined));
     if (accessToken !== null && identity.kind !== "human") throw new AuthenticationError("wrong Access identity for route");
   } catch (error) {
     if (error instanceof AuthenticationError) return json({ error: "authentication_required" }, 401);
     throw error;
   }
   const [, version, siteId, path, operation] = match;
+  if (version === "v1" && siteId === KAMAKURA_EDITOR_SITE_ID && identity.kind === "service") {
+    return kamakuraMachineEditingApi(request, env, url, identity, timing);
+  }
   const registration = await env.DB.prepare(`SELECT s.project_id FROM sites AS s JOIN managed_sites AS ms ON ms.site_id = s.id WHERE s.id = ?1`)
     .bind(siteId).first<{ project_id: string }>();
   if (!registration) return json({ error: "forbidden" }, 403);
   const actor: CmsActor = identity.kind === "service" ? { id: `${CLI_SUBJECT_PREFIX}${identity.clientId}`, clientId: identity.clientId, cli: true }
     : { id: identity.subject, cli: accessToken !== null };
   const scope = { actor, siteId: siteId!, projectId: registration.project_id };
-  const store = new CmsStore(env.DB, env.CMS_OBJECTS);
+  const bridgeIdentity: BridgeActor = identity.kind === "human" ? identity : {
+    kind: "cli", subject: `${CLI_SUBJECT_PREFIX}${identity.clientId}`,
+    email: `cli-${identity.clientId}@studio.invalid`, requestId: crypto.randomUUID()
+  };
+  const settings = /^site\.(seo|redirects|public)\.(read|save)$/u.exec(operation ?? "");
+  const embed = /^pages\.embed-register\/([A-Za-z][A-Za-z0-9_-]{0,79})$/u.exec(operation ?? "");
+  if (version === "v2" && (settings || embed)) {
+    const method = embed ? "POST" : settings?.[2] === "save" ? "PUT" : "GET";
+    if (request.method !== method || url.search) return json({ error: "invalid_request" }, 400);
+    if (method !== "GET" && identity.kind === "human" && accessToken === null
+      && (request.headers.get("Origin") !== url.origin || request.headers.get("Sec-Fetch-Site") !== "same-origin")) return json({ error: "invalid_request" }, 400);
+    const capability = embed ? "pages.edit" : method === "GET" ? "site.settings.read" : "site.settings.write";
+    let subject = actor.id;
+    if (identity.kind === "service") {
+      const grant = await env.DB.prepare(`SELECT g.delegated_by_subject ${ACTIVE_CLI_GRANTS} AND g.capability = ?4 LIMIT 1`)
+        .bind(identity.clientId, registration.project_id, siteId, capability).first<{ delegated_by_subject: string }>();
+      if (!grant) return json({ error: "forbidden" }, 403);
+      subject = grant.delegated_by_subject;
+    }
+    const managedActor: ManagedActor = { subject, email: bridgeIdentity.email,
+      ...(identity.kind === "service" ? { cliClientId: identity.clientId } : {}), cli: actor.cli };
+    const projectId = registration.project_id;
+    if (embed || settings?.[1] === "public") {
+      const origin = publicSitesOrigin(env.PUBLIC_SITES_ORIGIN);
+      if (!origin || origin === url.origin) return json({ error: "public_origin_must_be_separate" }, 503);
+      if (embed) return managedEditorOperation(request, env.DB, managedActor, projectId, siteId!, `/editor/${embed[1]}/embed-connection`, origin);
+      return managedCliPublicSettings(request, env.DB, managedActor, projectId, siteId!, origin);
+    }
+    return managedEditorOperation(request, env.DB, managedActor, projectId, siteId!,
+      settings?.[1] === "redirects" ? "/editor/redirects" : "/editor/seo-settings", url.origin);
+  }
+  if (!env.CMS_OBJECTS) return json({ error: "not_found" }, 404);
+  const store = cmsStore(env, bridgeIdentity);
   if (version === "v1" && (path === "capabilities" || operation?.startsWith("pages."))) {
     if (request.method !== "GET" && identity.kind === "human" && accessToken === null &&
       (request.headers.get("Origin") !== url.origin || request.headers.get("Sec-Fetch-Site") !== "same-origin")) return json({ error: "invalid_request" }, 400);
-    const pageApi = await managedPageEditingApi(request, store, registration.project_id, siteId!, {
+    const pageApi = await managedPageEditingApi(request, store, registration.project_id, siteId!, publicSitesOrigin(env.PUBLIC_SITES_ORIGIN), {
       kind: identity.kind === "human" ? "human" : "machine", subject: actor.id, clientKind: "cli"
     }, async (capability) => {
       if (identity.kind === "human") return { subject: identity.subject, email: identity.email, cli: actor.cli };
@@ -3418,42 +3083,76 @@ async function studioEditingCms(request: Request, env: Env, url: URL): Promise<R
   return managedCmsApi(request, store, scope, operation ?? "discover", version === "v2" ? 2 : 1);
 }
 
-async function handle(request: Request, env: Env): Promise<Response> {
+async function handle(request: Request, env: Env, timing: StudioRequestTiming): Promise<Response> {
   const url = new URL(request.url);
   const configuredPublicOrigin = publicSitesOrigin(env.PUBLIC_SITES_ORIGIN);
   if (configuredPublicOrigin !== null && url.origin === configuredPublicOrigin) {
-    const store = env.CMS_OBJECTS ? new CmsStore(env.DB, env.CMS_OBJECTS) : undefined;
-    const cms = store && await managedCmsPublic(request, store, configuredPublicOrigin);
-    return cms || managedPublicRequest(request, env.DB, configuredPublicOrigin, store);
+    if (!env.CMS_OBJECTS) return json({ error: "managed_sites_unavailable" }, 503);
+    const store = new CmsStore(env.DB, env.CMS_OBJECTS);
+    const seo = await managedPublicSeoResponse(request, env.DB, configuredPublicOrigin, store);
+    if (seo) return seo;
+    const published = await publishedSiteRequest(request, {
+      DB: env.DB, CMS_OBJECTS: env.CMS_OBJECTS, ASSETS: env.ASSETS,
+      ...(env.PUBLIC_SITES_PREVIEW_ORIGIN ? { PUBLIC_SITES_PREVIEW_ORIGIN: env.PUBLIC_SITES_PREVIEW_ORIGIN } : {}),
+      ...(env.PUBLIC_HTML_CACHE ? { PUBLIC_HTML_CACHE: env.PUBLIC_HTML_CACHE } : {})
+    });
+    if (published.status !== 404) return published;
+    const boundPage = await managedCmsBoundPublic(request, env.DB, configuredPublicOrigin, store, env.PUBLIC_HTML_CACHE);
+    if (boundPage) return boundPage;
+    return await managedCmsPublic(request, store, configuredPublicOrigin) ?? published;
   }
-  if (url.pathname.startsWith("/api/edit/")) return studioEditingCms(request, env, url);
+  const publicMethod = request.method === "GET" || request.method === "HEAD";
+  const accessProtected = request.headers.has("Cf-Access-Jwt-Assertion") || request.headers.has("cf-access-token");
+  if (publicMethod && !accessProtected && url.protocol === "https:" && !url.port
+    && url.pathname !== "/api" && !url.pathname.startsWith("/api/") && !url.pathname.startsWith(CMS_DELIVERY_PREFIX)
+    && env.CMS_OBJECTS) {
+    const bypassHostCache = request.headers.get("Cache-Control")?.toLowerCase().split(",").some((value) => value.trim() === "no-cache") ?? false;
+    const host = await resolvePublishedSiteHost(request, env.DB, bypassHostCache);
+    if (host?.path_prefix === "") {
+      const route = { slug: host.slug, prefix: "" as const, noindex: host.noindex === 1 };
+      const store = new CmsStore(env.DB, env.CMS_OBJECTS);
+      const seo = await managedPublicSeoResponse(request, env.DB, url.origin, store, route);
+      if (seo) return seo;
+      const published = await publishedSiteRequest(request, {
+        DB: env.DB, CMS_OBJECTS: env.CMS_OBJECTS, ASSETS: env.ASSETS,
+        ...(env.PUBLIC_SITES_PREVIEW_ORIGIN ? { PUBLIC_SITES_PREVIEW_ORIGIN: env.PUBLIC_SITES_PREVIEW_ORIGIN } : {}),
+        ...(env.PUBLIC_HTML_CACHE ? { PUBLIC_HTML_CACHE: env.PUBLIC_HTML_CACHE } : {})
+      }, undefined, host);
+      if (published.status !== 404) return published;
+      const boundPage = await managedCmsBoundPublic(request, env.DB, url.origin, store, env.PUBLIC_HTML_CACHE, route);
+      if (boundPage) return boundPage;
+      return await managedCmsPublic(request, store, url.origin, route, env.PUBLIC_HTML_CACHE) ?? published;
+    }
+  }
+  if (url.pathname.startsWith(CMS_DELIVERY_PREFIX)) {
+    if (!env.CMS_OBJECTS) return json({ error: "not_found" }, 404);
+    return managedCmsDelivery(request, new CmsStore(env.DB, env.CMS_OBJECTS), env.CMS_DELIVERY_MASTER_KEY);
+  }
+  if (url.pathname.startsWith("/api/edit/")) return studioEditingApi(request, env, url, timing);
   const isApi = url.pathname === "/api" || url.pathname.startsWith("/api/");
-  const isCli = url.pathname === API_PREFIX || url.pathname.startsWith(`${API_PREFIX}/`);
-  let identity: AccessIdentity | ServiceIdentity;
+  let identity: AccessIdentity;
   try {
-    const userCliToken = isCli ? request.headers.get("cf-access-token") : null;
-    identity = await authenticate(request, env, userCliToken ?? undefined);
-    if (isCli ? userCliToken !== null ? identity.kind !== "human" : identity.kind !== "service" : identity.kind !== "human") throw new AuthenticationError("wrong Access identity for route");
+    const authenticated = await measureRequest(timing, "auth", () => authenticate(request, env));
+    if (authenticated.kind !== "human") throw new AuthenticationError("human Access identity required");
+    identity = authenticated;
   } catch (error) {
     if (!(error instanceof AuthenticationError)) throw error;
-    if (isCli) return json({ error: "authentication_required" }, 401);
     return isApi ? json({ error: "session_expired" }, 401) : htmlError("セッションを確認できません。Cloudflare Access から再度ログインしてください。", 401);
   }
-  if (isCli) return studioCliApi(request, env, url, identity);
-  if (identity.kind !== "human") throw new AuthenticationError("human Access identity required");
 
   if (isApi) {
     if (request.method === "GET" && url.pathname === "/api/session") return json({ status: "authenticated", subject: identity.subject, email: identity.email });
-    if (request.method === "GET" && url.pathname === "/api/config") return json({ managedProjectsEnabled: configuredPublicOrigin !== null && configuredPublicOrigin !== url.origin, publicSitesOrigin: configuredPublicOrigin !== url.origin ? configuredPublicOrigin : null });
+    if (request.method === "GET" && url.pathname === "/api/config") return json({ managedProjectsEnabled: !!env.CMS_OBJECTS && configuredPublicOrigin !== null && configuredPublicOrigin !== url.origin, publicSitesOrigin: configuredPublicOrigin !== url.origin ? configuredPublicOrigin : null });
     if (url.pathname === "/api/projects") {
       if (request.method === "GET") return directory(env, identity);
       if (request.method === "POST") {
-        if (!configuredPublicOrigin) return json({ error: "managed_sites_unavailable" }, 503);
-        return createManagedProject(request, env.DB, { subject: identity.subject, email: identity.email, cli: false }, configuredPublicOrigin);
+        if (!configuredPublicOrigin || !env.CMS_OBJECTS) return json({ error: "managed_sites_unavailable" }, 503);
+        return createManagedProject(request, new CmsStore(env.DB, env.CMS_OBJECTS), { subject: identity.subject, email: identity.email, cli: false }, configuredPublicOrigin,
+          publicSitesOrigin(env.PUBLIC_SITES_PREVIEW_ORIGIN));
       }
       return json({ error: "method_not_allowed" }, 405);
     }
-    const scoped = await scopedApi(request, env, identity, url);
+    const scoped = await scopedApi(request, env, identity, url, timing);
     if (scoped) return scoped;
     return json({ error: request.method === "GET" ? "not_found" : "method_not_allowed" }, request.method === "GET" ? 404 : 405);
   }
@@ -3466,43 +3165,74 @@ async function handle(request: Request, env: Env): Promise<Response> {
     return new Response(null, { status: 301, headers });
   }
   const projectAlias = parseProjectAliasPath(url.pathname);
-  const editorPage = resolveTrustedEditorPage(url.pathname);
-  const managedEditorMatch = /^\/projects\/([A-Za-z][A-Za-z0-9_-]{0,79})\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/editor\/?$/u.exec(url.pathname);
-  const managedEditor = managedEditorMatch && configuredPublicOrigin && configuredPublicOrigin !== url.origin
-    ? await managedRegistration(env.DB, managedEditorMatch[1]!, managedEditorMatch[2]!)
+  const editorTarget = parseProjectEditorPath(url.pathname);
+  const kamakuraEditor = editorTarget !== null && isKamakuraProject(editorTarget.projectId, editorTarget.siteId);
+  const managedEditor = editorTarget && !kamakuraEditor && configuredPublicOrigin && configuredPublicOrigin !== url.origin
+    ? await managedRegistration(env.DB, editorTarget.projectId, editorTarget.siteId)
     : null;
-  if (managedEditorMatch && managedEditor && !await editorMember(env, identity, managedEditorMatch[1]!, managedEditorMatch[2]!)) return htmlError("このページを表示できません。", 403);
-  const isEditor = editorPage !== null || managedEditor !== null;
-  const pageAdapter = editorPage ? liveEditorAdapter(editorPage) : null;
+  if (editorTarget && managedEditor && !await editorMember(env, identity, editorTarget.projectId, editorTarget.siteId)) return htmlError("このページを表示できません。", 403);
+  const isEditor = kamakuraEditor || managedEditor !== null;
+  const previewUploadOrigin = studioPreviewUploadOrigin(env);
   const dashboardPage = /^\/projects\/([A-Za-z][A-Za-z0-9_-]{0,79})\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})(\/cms)?\/?$/u.exec(url.pathname);
   if (url.pathname === "/" || dashboardPage || /^\/projects\/[A-Za-z][A-Za-z0-9_-]{0,79}\/sites\/[A-Za-z][A-Za-z0-9_-]{0,79}\/invite\/?$/u.test(url.pathname) || isEditor || projectAlias !== null) {
-    if (editorPage?.environment === "staging" && !await experienceEditorOwner(env, identity)) return htmlError("このページを表示できません。", 403);
     const indexUrl = new URL(typeof __STUDIO_INDEX_PATH__ === "string" ? __STUDIO_INDEX_PATH__ : "/index.html", url);
     // Dashboard は Studio の CMS・翻訳とプレビューを表示する。editor の CSP は別に扱う。
     const dashboardTarget = isEditor ? null : projectAlias ?? (dashboardPage ? { projectId: dashboardPage[1]!, siteId: dashboardPage[2]! } : null);
     const admin = dashboardTarget ? siteAdmin(dashboardTarget.projectId, dashboardTarget.siteId) : null;
     const kamakuraDashboard = dashboardTarget?.projectId === KAMAKURA_CMS_PROJECT_ID && dashboardTarget.siteId === KAMAKURA_CMS_SITE_ID;
     // 鎌倉の CMS・翻訳は常に Studio の画面。直接 PUT と翻訳プレビューの枠だけを許す。
-    const dashboardConnect = admin && kamakuraDashboard ? [...new Set([KAMAKURA_CMS_UPLOAD_ORIGIN, KAMAKURA_LOCALIZATION_UPLOAD_ORIGIN])] : [];
+    const dashboardConnect = admin && kamakuraDashboard
+      ? previewUploadOrigin
+        ? [previewUploadOrigin]
+        : [...new Set([KAMAKURA_CMS_UPLOAD_ORIGIN, KAMAKURA_LOCALIZATION_UPLOAD_ORIGIN])]
+      : [];
     const dashboardFrames = admin && kamakuraDashboard ? [KAMAKURA_LOCALIZATION_PREVIEW_ORIGIN, KAMAKURA_EDITING_API_ORIGIN] : [];
-    return withStaticSecurity(await env.ASSETS.fetch(new Request(indexUrl, { method: request.method, headers: request.headers })), pageAdapter !== null || managedEditor !== null, pageAdapter ? pageAdapter.connectOrigins ?? [] : dashboardConnect, pageAdapter?.fontSources ?? [], pageAdapter?.scriptSources ?? [], pageAdapter ? pageAdapter.frameSources ?? [] : dashboardFrames);
+    const page = await env.ASSETS.fetch(new Request(indexUrl, { method: request.method, headers: request.headers }));
+    const pageWithUploadOrigin = request.method === "GET" && (kamakuraEditor || kamakuraDashboard)
+      ? await withStudioUploadOriginMeta(page, previewUploadOrigin)
+      : page;
+    return withStaticSecurity(pageWithUploadOrigin, isEditor,
+      kamakuraEditor ? [KAMAKURA_EDITOR_UPSTREAM_ORIGIN, ...(previewUploadOrigin ? [previewUploadOrigin] : [])] : dashboardConnect,
+      kamakuraEditor ? [`${KAMAKURA_MEDIA_ORIGIN}/niho-web/fonts/v1/`] : [],
+      kamakuraEditor ? ["https://www.instagram.com/embed.js"] : [], kamakuraEditor ? ["https:"] : dashboardFrames);
   }
   const asset = withStaticSecurity(await env.ASSETS.fetch(request));
   if (asset.status === 200 && (VERSIONED_FONT_PATH.test(url.pathname) || VERSIONED_CODE_ASSET_PATH.test(url.pathname))) asset.headers.set("Cache-Control", VERSIONED_FONT_CACHE);
   return asset;
 }
 
+let configurationReported = false;
+
+function reportConfiguration(env: Env): void {
+  if (configurationReported) return;
+  configurationReported = true;
+  const invalid: string[] = (["DB", "ASSETS", "CMS_OBJECTS", "KAMAKURA_SITE"] as const).filter((name) => !env[name]);
+  if (publicSitesOrigin(env.ACCESS_ISSUER) === null) invalid.push("ACCESS_ISSUER");
+  if (!validAccessAudience(env.ACCESS_AUDIENCE)) invalid.push("ACCESS_AUDIENCE");
+  if (publicSitesOrigin(env.PUBLIC_SITES_ORIGIN) === null) invalid.push("PUBLIC_SITES_ORIGIN");
+  if (env.PUBLIC_SITES_PREVIEW_ORIGIN !== undefined && publicSitesOrigin(env.PUBLIC_SITES_PREVIEW_ORIGIN) === null) invalid.push("PUBLIC_SITES_PREVIEW_ORIGIN");
+  if (!/^[0-9a-f]{64}$/u.test(env.CMS_DELIVERY_MASTER_KEY ?? "")) invalid.push("CMS_DELIVERY_MASTER_KEY");
+  try { bridgeSecret(env.KAMAKURA_STUDIO_BRIDGE_SECRET); }
+  catch { invalid.push("KAMAKURA_STUDIO_BRIDGE_SECRET"); }
+  if (invalid.length) console.error("NIHO Studio configuration missing or invalid", invalid.join(", "));
+}
+
 export default {
   async scheduled(_controller: unknown, env: Env): Promise<void> {
-    if (env.CMS_OBJECTS) await runCmsCron(new CmsStore(env.DB, env.CMS_OBJECTS));
+    reportConfiguration(env);
+    if (env.CMS_OBJECTS) await runCmsCron(cmsStore(env, CMS_SCHEDULER_BRIDGE_ACTOR));
   },
   async fetch(request: Request, env: Env): Promise<Response> {
-    try { return await handle(request, env); }
+    reportConfiguration(env);
+    const timing: StudioRequestTiming = { auth: 0, d1: 0, upstream: 0 };
+    try { return withServerTiming(await handle(request, env, timing), timing); }
     catch (error) {
-      if (error instanceof KamakuraBridgeFailureError) return kamakuraBridgeErrorResponse(error);
+      if (error instanceof KamakuraBridgeFailureError) return withServerTiming(kamakuraBridgeErrorResponse(error), timing);
       console.error("NIHO Studio request failed", error instanceof Error ? error.name : "UnknownError");
-      if (error instanceof KamakuraCatalogContractError) return json({ error: KAMAKURA_CATALOG_CONTRACT_ERROR_CODE }, KAMAKURA_CATALOG_CONTRACT_ERROR_STATUS);
-      return new URL(request.url).pathname.startsWith("/api/") ? json({ error: "service_unavailable" }, 503) : htmlError("一時的に利用できません。時間をおいて再度お試しください。", 503);
+      const response = error instanceof KamakuraCatalogContractError
+        ? json({ error: KAMAKURA_CATALOG_CONTRACT_ERROR_CODE }, KAMAKURA_CATALOG_CONTRACT_ERROR_STATUS)
+        : new URL(request.url).pathname.startsWith("/api/") ? json({ error: "service_unavailable" }, 503) : htmlError("一時的に利用できません。時間をおいて再度お試しください。", 503);
+      return withServerTiming(response, timing);
     }
   }
 };

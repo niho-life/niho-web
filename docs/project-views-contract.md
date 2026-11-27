@@ -1,6 +1,6 @@
 # プロジェクト一覧・ダッシュボードの接続契約
 
-`ProjectDirectory` は日常のサイト選択、`ProjectDashboard` は選択した1 Project・1 Siteの運用状況を表示します。作成・参加者追加・解除は既存 `ProjectManager` に接続し、この2画面には再実装しません。React不要の型・parserは `@niho/web/project-read-model` から利用できます。
+`ProjectDirectory` は日常のサイト選択、`ProjectDashboard` は選択した1 Project・1 Siteの運用状況を表示します。作成・参加者追加・解除は Studio のホストが担当します。React不要の型・parserは `src/project-read-model.ts` にあります。
 
 ## 正本と責務
 
@@ -13,7 +13,7 @@
 ## ProjectDirectory
 
 ```tsx
-import { ProjectDirectory, type ProjectDirectoryAdapter } from '@niho/web/project-directory';
+import { ProjectDirectory, type ProjectDirectoryAdapter } from '../src/project-directory.js';
 
 const adapter: ProjectDirectoryAdapter = {
   loadDirectory: (signal) => authenticatedHost.readProjectDirectory(signal),
@@ -22,7 +22,7 @@ const adapter: ProjectDirectoryAdapter = {
 
 <ProjectDirectory
   adapter={adapter}
-  onCreateProject={openExistingProjectManager}
+  onCreateProject={openCreateProject}
   onOpenDashboard={openProjectDashboard}
   onOpenEditor={openProjectEditor}
   onPreloadEditor={preloadEditorChunk}
@@ -71,7 +71,7 @@ Studio hostは認可済みの最大100 Projectについて参加者をD1から1 
 ## ProjectDashboard
 
 ```tsx
-import { ProjectDashboard, type ProjectDashboardAdapter } from '@niho/web/project-dashboard';
+import { ProjectDashboard, type ProjectDashboardAdapter } from '../src/project-dashboard.js';
 
 const adapter: ProjectDashboardAdapter = {
   loadDashboard: ({ projectId, siteId }, signal) =>
@@ -94,7 +94,7 @@ const adapter: ProjectDashboardAdapter = {
 
 - `settingsContent` を渡すと「プロジェクト設定」はDashboardの中でその中身を開き、`onOpenSettings(project, "site")` は呼びません。渡さなければ従来どおり `onOpenSettings` を呼びます。
 - `settingsAction: "disabled"` は設定画面の無いホストの表示です。`settingsContent` を渡していないホストでは「プロジェクト設定（準備中）」として無効にし、どのホストでも解析の接続操作を「解析接続（準備中）」として無効にします（接続設定の画面を持たないホストが、押しても何も起きないボタンを出さないため）。
-- サイトの言語を設定するホストは `settingsContent` に `SiteLanguageSettings`（`@niho/web/site-language-settings`）を置けます。`value` は明示した `sourceLocale` ともう一方の `targetLocale`、`locked` は初回サブ公開済みの状態です。`onSave` は保存した2言語の組を返します。画面の固定だけに依存せず、ホストが権限・原文の整合・版の競合・初回公開後の変更禁止を確認してから保存します。未対応ホストは `onSave` を渡さず現在値を表示します。
+- サイトの言語を設定するホストは `settingsContent` に `SiteLanguageSettings`（`src/site-language-settings.tsx`）を置けます。`value` は明示した `sourceLocale` ともう一方の `targetLocale`、`locked` は初回サブ公開済みの状態です。`onSave` は保存した2言語の組を返します。画面の固定だけに依存せず、ホストが権限・原文の整合・版の競合・初回公開後の変更禁止を確認してから保存します。未対応ホストは `onSave` を渡さず現在値を表示します。
 - Studio の既存サイトでは、信頼するサイト登録に鎌倉=`ja`、Experience=`en` の原文言語を明記し、この設定画面で表示します。既存原文と公開履歴を移す保存経路はまだ無いため、既存サイトには `onSave` を渡しません。登録外のサイトに原文言語を推測して表示しません。
 - `siteViews` はホストが接続したサイト機能（CMS・素材・翻訳など）です。上のタブの「ホーム」と「アナリティクス」の間に `label` の順で並び、選ぶとホームの左のメニューを閉じて、全幅で `content` を出します（CMSモード）。開いている機能は `activeSiteView` / `onSiteViewChange` でホストが持ち、URLと合わせます。`actions` を渡すと、その機能を開いている間だけ帯の右側（「デザインエディタ」の左）に出します（必要な操作）。
 - `analyticsContent` を渡すと、「アナリティクス」タブでは組込みの要約パネルと「解析接続設定」の代わりにその中身（`SiteAnalytics` と `SiteApps` など）を出し、`onOpenSettings(project, "analytics")` は呼びません。ホームの要約の「アクセス解析を見る」はこのタブを開きます。渡さなければ従来どおりです。
@@ -131,7 +131,7 @@ const adapter: ProjectDashboardAdapter = {
 - 公開情報と解析の部分失敗を別々に表示します。未公開サイトに公開リンクを出しません。直近変更0件と取得失敗も別の状態です。変更は内容と更新日時の表に、ホストが返した順で最大20件表示します。
 - 解析の要約の指標は GA4 の名前のまま `activeUsers`（「アクティブユーザー」）と `pageViews`（screenPageViews、「ページ表示」）です。訪問者数（Visitor）と読み替えません。旧ホストの `uniqueVisitors` は互換のため検証だけして捨て、`activeUsers` は `null`（未取得）にします（`uniqueVisitors` と `activeUsers` の両方は拒否）。
 - 概要には解析の要約（取得できたアクティブユーザー／ページ表示、対象期間、解析取得日時）とアクセス解析画面への導線を表示します。解析が未接続なら一文と導線だけ、取得失敗なら失敗状態と導線を表示し、公開情報の成否とは独立させます。`null` の指標は隠し、`0` は実数値として表示します。
-- メンバー画面は読み取り専用の表です。ホストが `members` を返せば、その表示名・役割（オーナー／編集者。`null` は役割なし）・人数をホストの順で表示します。表示名は1〜120文字、最大500名です。返さないホストでは選択Projectの `members` を役割なしで表示します。0名は空状態、`unavailable` は取得失敗として公開情報と別に表示し、再試行できます。ホストのユーザーID・メールアドレスは契約に含めません。追加・解除・権限変更の操作は置かず、設定画面を持つホストでは表の上の「プロジェクト設定を開く」だけを出します（Studioでは既存のメンバー管理、ライブラリのデモでは既存 `ProjectManager`）。Studioのオーナー用設定では「招待」でフォームを開き、メンバーと招待履歴を表で表示します。
+- メンバー画面は読み取り専用の表です。ホストが `members` を返せば、その表示名・役割（オーナー／編集者。`null` は役割なし）・人数をホストの順で表示します。表示名は1〜120文字、最大500名です。返さないホストでは選択Projectの `members` を役割なしで表示します。0名は空状態、`unavailable` は取得失敗として公開情報と別に表示し、再試行できます。ホストのユーザーID・メールアドレスは契約に含めません。追加・解除・権限変更の操作は置かず、設定画面を持つホストでは表の上の「プロジェクト設定を開く」だけを出します（Studioではメンバー管理）。Studioのオーナー用設定では「招待」でフォームを開き、メンバーと招待履歴を表で表示します。
 - DashboardはSTUDIOを参考に、64pxの1段の帯の左にプロジェクト名・公開ドメイン、中央にタブ（ホーム・ホストが接続したサイト機能・アナリティクス）、右に開いている機能の `actions`・「デザインエディタ」・`headerEnd` を置きます。タブは画面全体の切り替え（モード）です。左220pxのメニュー（ダッシュボード／メンバー／プロジェクト設定）はホームの中だけに出し、サイト機能とアナリティクスでは出しません。サイト機能は全幅で中身を出し、ダッシュボード・メンバー・設定・アナリティクスの本文列は最大992px（内側の余白を除く本文は最大920px）で中央に置きます。同じ画面を2か所から開く入口は作らず、CMS・フォーム・課金などホストに機能がない導線は表示しません。ダッシュボード本文の公開状態は点と文字で示し、ドメイン・取得できた数値・直近の変更と解析概要を表示します。幅900px以下はタブを帯の2段目に、ホームのメニューを本文の上に置いて折り返し、600px以下は右側の操作も1段下げます。横スクロールは使いません（320pxで全項目と現在地が見えます）。現在地は、開いているタブとホームのメニューの項目を `aria-current="page"`（ホームのタブは `aria-current="true"`）で示し、各項目はnative buttonでfocus-visibleを持ちます。
 
 ## 非同期・接続切替・画面遷移
@@ -142,10 +142,10 @@ const adapter: ProjectDashboardAdapter = {
 
 ホストは一覧・Dashboard・Editorを別の画面として切り替え、スマホで一覧の下にDashboardや作成フォームを積まないでください。遷移後の見出しへのfocus・scroll復元、Editorの未保存内容の保持または確認もホストの責務です。一覧へ戻るときは任意の `initialFocusProjectId` を指定すると、読込後に対象の一覧行のボタンへ一度だけfocusを戻し、行を表示範囲へ入れます。未指定・該当Projectなしの場合はfocusを移しません。各操作はnative button/link、検索はlabel、focus-visibleを持ちます。320pxではカードを1列で維持し、表も縦の一覧行に変えて名前とURL、取得できたメンバー・日時、操作を折り返します。
 
-CSSはpackage内にscopeし、Dashboard・CMS・素材・翻訳・分析・設定を同じ白いsurface、境界線、ボタン、neutral pill、空状態の規則で描きます。色・角丸・文字は `@niho/web/ui-tokens` のトークン（`--nw-*`）だけを使います（[見た目と実装の契約](editor-ui-design.md#見た目と実装の契約)）。CSSの先頭にトークンの定義を持ち、詳細度は0なので、ホストは `:root` や `.nw-project-view` で同じ名前を上書きできます。黒のボタンは「作成」だけ、緑は公開中の点だけです。画面固有の色を状態の唯一の手掛かりにせず、NIHOappへのimportはありません。
+CSSはpackage内にscopeし、Dashboard・CMS・素材・翻訳・分析・設定を同じ白いsurface、境界線、ボタン、neutral pill、空状態の規則で描きます。色・角丸・文字は `src/ui-tokens.ts` のトークン（`--nw-*`）だけを使います（[見た目と実装の契約](editor-ui-design.md#見た目と実装の契約)）。CSSの先頭にトークンの定義を持ち、詳細度は0なので、ホストは `:root` や `.nw-project-view` で同じ名前を上書きできます。黒のボタンは「作成」だけ、緑は公開中の点だけです。画面固有の色を状態の唯一の手掛かりにせず、NIHOappへのimportはありません。
 
 ## デモと検証
 
-`npm run demo:projects` は日常一覧 → 選択ProjectのDashboard → Editor / 既存ProjectManagerの導線を提供します。解析値・画像・日時・参加者はすべて合成値で、公開URLも `.example.test` です。画像はローカルサーバーが生成するSVGで、実サイトや外部画像サービスへ接続しません。設定画面はホスト接続先を示す合成画面です。デモで開いたEditorは画面切替時にunmountせず、Projectごとの入力を保持します。
+`npm run demo:projects` は日常一覧 → 選択ProjectのDashboard → Editorの導線を提供します。解析値・画像・日時・参加者はすべて合成値で、公開URLも `.example.test` です。画像はローカルサーバーが生成するSVGで、実サイトや外部画像サービスへ接続しません。設定画面はホスト接続先を示す合成画面です。デモで開いたEditorは画面切替時にunmountせず、Projectごとの入力を保持します。
 
 `test/project-read-model.test.mjs` は正本との分離、ID・URL・画像許可・表示専用メンバー・数値・日時のruntime検証を確認します。`test/project-views-ui.test.mjs` は複数Project、内部／host検索・順序・カード／表／各導線、320px、空状態・画像失敗・未接続・部分失敗・権限喪失、adapter交換・Project切替・unmount後の遅延応答破棄を確認します。`test/studio-worker-directory.test.mjs` はStudioの認可済みメンバーbulk取得、100 Projectで最大3件のOG取得、画像origin・redirect・上限・timeoutと個別縮退を確認します。

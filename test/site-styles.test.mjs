@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { DocumentValidationError, detachRemovedSiteStyles, generatePageCss, mergeSiteStyles, parsePageDocument, parseSiteStyles, resolvePageDocument, resolvePageStyles } from "@niho/web/core";
-import { parseSiteSettings } from "@niho/web/pages";
+import { parseSiteSettings } from "../dist/pages.js";
 import { renderPageToHtml } from "@niho/web/server";
 import { collectLocalizationUnits, createLocalizationOverlay, materializeLocalizedPage, validateLocalizedDocumentSave } from "@niho/web/localization";
 import { createPublishedSiteLocaleSnapshot, parsePublishedSiteLocaleSnapshot, verifyPublishedSiteLocaleSnapshot } from "@niho/web/localization-release";
-import { retainPageStyles } from "../dist/site-styles.js";
+import { resolvePageStylesForEditor, retainPageStyles } from "../dist/site-styles.js";
 import { EditorSessionLoadError, readEditorSession } from "../dist/editor-session.js";
 import { runSiteStylesDemo } from "../examples/site-styles-demo.mjs";
 
@@ -89,6 +89,26 @@ test("retainPageStyles drops unchanged inherited values and keeps explicit overr
   assert.deepEqual(retainPageStyles(resolvePageStyles(explicit, site), explicit, site).tokens, explicit.tokens, "an override equal to the site value is kept");
 });
 
+test("editor style resolution reuses equivalent maps and refreshes changed style values", () => {
+  const site = settings(), page = parsePageDocument(about, {}, { siteStyles: site });
+  const first = resolvePageStylesForEditor(page, site);
+  const equivalent = { ...page, tokens: { ...page.tokens }, ...(page.textStyles ? { textStyles: structuredClone(page.textStyles) } : {}) };
+  const second = resolvePageStylesForEditor(equivalent, site);
+  assert.strictEqual(second.tokens, first.tokens);
+  assert.strictEqual(second.textStyles, first.textStyles);
+
+  const changed = { ...site, tokens: { ...site.tokens, ink: color("#123456", "変更色") } };
+  const updated = resolvePageStylesForEditor(equivalent, changed);
+  assert.notStrictEqual(updated.tokens, first.tokens);
+  assert.equal(updated.tokens.ink.value, "#123456");
+});
+
+test("retainPageStyles returns the same document when no inherited values need removal", () => {
+  const site = settings();
+  const page = parsePageDocument({ ...about, tokens: { ...about.tokens, local: color("#222222", "ページ色") }, textStyles: { local: { base: { fontSize: 16 } } } }, {}, { siteStyles: site });
+  assert.strictEqual(retainPageStyles(page, page, site), page);
+});
+
 test("removing site definitions detaches references into page-owned values that keep the appearance", () => {
   const site = settings(), page = parsePageDocument(about, {}, { siteStyles: site });
   const { brand: _brand, ...tokens } = site.tokens;
@@ -104,10 +124,19 @@ test("removing site definitions detaches references into page-owned values that 
   const bare = detachRemovedSiteStyles(page, site, { tokens: { ink: site.tokens.ink } });
   assert.equal(bare.textStyles.heading.responsive[0].declarations.fontSize, "2rem");
   parsePageDocument(bare, {}, { siteStyles: { tokens: { ink: site.tokens.ink } } });
+  // サイト token と同名のページ上書きがあっても、削除時は旧共有文字スタイルをページ所有へ切り離す。
+  const overridden = parsePageDocument({ ...about, tokens: { ...about.tokens, headingSize: { ...site.tokens.headingSize, value: "4rem" } } }, {}, { siteStyles: site });
+  const nextWithLiteralStyle = { tokens: Object.fromEntries(Object.entries(site.tokens).filter(([name]) => name !== "headingSize")),
+    textStyles: { ...site.textStyles, heading: { ...site.textStyles.heading, responsive: [{ minWidth: 768, declarations: { fontSize: "2rem" } }] } } };
+  const detachedOverride = detachRemovedSiteStyles(overridden, site, nextWithLiteralStyle);
+  const resolvedOverride = resolvePageStyles(detachedOverride, nextWithLiteralStyle);
+  assert.deepEqual(detachedOverride.textStyles?.heading, site.textStyles.heading, "the old shared style becomes a page override when its token is removed");
+  assert.equal(resolvedOverride.tokens.headingSize.value, "4rem");
+  assert.equal(generatePageCss(resolvePageStyles(overridden, site)), generatePageCss(resolvedOverride), "the page token override keeps its rendered size");
   // ページが同名の定義を持つ参照は触らない。
   const owned = parsePageDocument({ ...about, tokens: { ...about.tokens, brand: color("#000000") } }, {}, { siteStyles: site });
   assert.deepEqual(detachRemovedSiteStyles(owned, site, next).body[0].children[0].style.base.color, { token: "brand" });
-  assert.deepEqual(detachRemovedSiteStyles(page, site, site), page, "no removal, no change");
+  assert.strictEqual(detachRemovedSiteStyles(page, site, site), page, "no removal preserves the immutable page snapshot");
 });
 
 test("parseSiteSettings validates styles with the public information and rejects invalid shapes", () => {
@@ -137,7 +166,7 @@ const localizationConfig = { schemaVersion: 1, siteId: "demo", sourceLocale: "ja
 test("localization validates and materializes pages that reference site styles with the same settings", async () => {
   const site = settings();
   await rejects(collectLocalizationUnits(localizationConfig, about, "en", {}));
-  const draft = { siteStyles: site, siteStylesRevision: { stage: "draft", version: "styles-draft-1" } };
+  const draft = { siteStyles: site };
   const collection = await collectLocalizationUnits(localizationConfig, about, "en", draft);
   assert.deepEqual(collection.issues, []);
   assert.deepEqual(collection.units.map((unit) => unit.unitId).sort(), ["page.node.about_heading.text", "page.node.about_lead.text", "page.title"], "tokens and text styles are not translation units");
@@ -157,18 +186,19 @@ const releaseInput = (page) => ({ config: localizationConfig, locale: "ja", rele
   manifest: { source: { version: "source-1", digest: sha("a") }, config: { version: "config-1", digest: sha("b") }, resources: [] },
   completeness: { reviewedPageIds: [], sharedReviewed: false, unresolvedIssues: [] } });
 
-test("a locale release fixes the effective site styles into self-contained pages", async () => {
+test("a locale release validates site styles but preserves references for the global published pointer", async () => {
   const site = settings();
   await rejects(createPublishedSiteLocaleSnapshot(releaseInput(about)));
-  const snapshot = await createPublishedSiteLocaleSnapshot(releaseInput(about), { siteStyles: site, siteStylesRevision: { stage: "published", version: "styles-public-1" } });
+  const snapshot = await createPublishedSiteLocaleSnapshot(releaseInput(about), { siteStyles: site });
   const published = snapshot.pages[0].document;
-  assert.deepEqual(Object.keys(published.tokens).sort(), ["accent", "brand", "headingSize", "ink"]);
-  assert.deepEqual(published.textStyles, site.textStyles);
-  assert.equal(generatePageCss(published), generatePageCss(about, {}, undefined, site), "the stored page renders without the settings");
-  parsePublishedSiteLocaleSnapshot(snapshot); await verifyPublishedSiteLocaleSnapshot(snapshot);
-  const changed = await createPublishedSiteLocaleSnapshot(releaseInput(about), { siteStyles: { ...site, tokens: { ...site.tokens, brand: color("#0055aa", "メイン") } }, siteStylesRevision: { stage: "published", version: "styles-public-2" } });
-  assert.notEqual(changed.contentDigest, snapshot.contentDigest, "a site-wide change shows up in the next release");
-  assert.equal(changed.pages[0].document.tokens.brand.value, "#0055aa");
+  assert.deepEqual(published.tokens, about.tokens);
+  assert.equal(published.textStyles, undefined);
+  assert.equal(generatePageCss(published, {}, undefined, site), generatePageCss(about, {}, undefined, site));
+  parsePublishedSiteLocaleSnapshot(snapshot, { siteStyles: site }); await verifyPublishedSiteLocaleSnapshot(snapshot, { siteStyles: site });
+  const nextStyles = { ...site, tokens: { ...site.tokens, brand: color("#0055aa", "メイン") } };
+  const unchanged = await createPublishedSiteLocaleSnapshot(releaseInput(about), { siteStyles: nextStyles });
+  assert.equal(unchanged.contentDigest, snapshot.contentDigest, "style publish does not rewrite locale snapshots");
+  assert.notEqual(generatePageCss(published, {}, undefined, site), generatePageCss(published, {}, undefined, nextStyles), "the site-wide pointer changes rendering");
   const legacyRelease = await createPublishedSiteLocaleSnapshot(releaseInput({ ...legacy, pageId: "about" }));
   assert.deepEqual(legacyRelease.pages[0].document.tokens, legacy.tokens, "self-contained pages release without settings as before");
 });

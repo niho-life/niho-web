@@ -15,3 +15,7 @@ export function parseProjectAliasPath(pathname: string): ProjectAliasRoute | nul
 export function projectShortcutTarget(pathname: string): string | null;
 export function projectAliasPath(projectId: string, siteId: string, page: ProjectAliasPage, sub?: ProjectCmsRoute | ProjectTranslationsRoute | null): string | null;
 export function projectRoutePath(currentPathname: string, projectId: string, siteId: string, page: ProjectAliasPage, sub?: ProjectCmsRoute | ProjectTranslationsRoute | null): string;
+
+export function isKamakuraProject(projectId: string, siteId: string): boolean;
+export function projectSourceLocale(projectId: string, siteId: string): "ja" | "en" | undefined;
+export function parseProjectEditorPath(pathname: string): { readonly projectId: string; readonly siteId: string } | null;

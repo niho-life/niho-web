@@ -78,20 +78,21 @@ export type ElementTag =
 export type ElementAttributes = Record<string, string | number | boolean>;
 /** 任意の SVG/HTML ではなく、trusted code の閉じたカタログだけを参照する。 */
 export type IconName = "arrow-right" | "arrow-left" | "check" | "close" | "plus" | "minus" | "star" | "heart" | "location" | "info";
-/** 標準埋め込みは trusted renderer が知る静的 provider だけ。blank も任意 iframe 設定は保存しない。 */
-export type EmbedProvider = "map" | "youtube" | "vimeo" | "lottie" | "facebook" | "x" | "instagram" | "blank";
+/** 標準埋め込みは trusted renderer が知る静的 provider だけ。blank / url も iframe 権限は保存しない。 */
+export type EmbedProvider = "map" | "youtube" | "vimeo" | "lottie" | "facebook" | "x" | "instagram" | "blank" | "url";
 export type EmbedDescriptor = {
   provider: EmbedProvider;
   /** iframe のアクセシブルな名前。 */
   title: string;
-  /** provider ごとの canonical URL。blank だけはホスト登録済みの短い key。未設定なら公開 renderer は何も読み込まない。 */
+  /** provider ごとの canonical URL。blank だけはホスト登録済みの短い key。url は検証済み公開HTTPS URL。未設定なら公開 renderer は何も読み込まない。 */
   source?: string;
 };
 /** 実行コードやID参照を持たず、検証済みの固定部分木だけへ結び付く標準操作。 */
 export type ElementInteraction =
   | { type: "video-toggle" }
   /** flexDirection が進行軸と向きを決める、trusted runtime の無限マーキー。 */
-  | { type: "loop-box"; /** px/秒。0 は停止。 */ speed: number; pauseOnHover: boolean };
+  | { type: "loop-box"; /** px/秒。0 は停止。 */ speed: number; pauseOnHover: boolean }
+  | { type: "carousel"; binding: CarouselBinding };
 export type TextNode = { type: "text"; text: string };
 export type ElementNode = {
   type: "element";
@@ -195,8 +196,7 @@ export type SitePresentationExternalFrame = {
   autoHeightMax?: number;
 };
 /** 表示文書内の既知ノードだけへ属性を付ける、実行コードを含まないcarousel binding。 */
-export type SitePresentationCarousel = {
-  rootId: string;
+export type CarouselBinding = {
   slideIds: string[];
   previousIds?: string[];
   nextIds?: string[];
@@ -208,6 +208,7 @@ export type SitePresentationCarousel = {
   loop?: boolean;
   swipe?: boolean;
 };
+export type SitePresentationCarousel = CarouselBinding & { rootId: string };
 /** 登録済みblockと正規化済みpropsへ完全一致する、host所有の読み取り専用表示。 */
 export type SitePresentationHostView = {
   id: string;
@@ -234,6 +235,8 @@ export type SitePresentation = {
   layout?: NodeStyle;
   fonts: SiteFontFace[];
   shared: { header: PageDocument; footer: PageDocument };
+  /** Explicitly marks empty shared PageDocument snapshots whose bodies are resolved from versioned input documents. */
+  compactSharedReferences?: ("header" | "footer")[];
   overlays?: SitePresentationOverlay[];
   hostViews?: SitePresentationHostView[];
   links?: SitePresentationLinks;

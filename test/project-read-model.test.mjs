@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseProjectDirectoryResult, parseProjectDashboardResult } from "@niho/web/project-read-model";
-import { parseProject } from "@niho/web/projects";
+import { parseProjectDirectoryResult, parseProjectDashboardResult } from "../dist/project-read-model.js";
+import { parseProject } from "../dist/projects.js";
 import { at, dashboard, directory, entry, project } from "./project-view-fixtures.mjs";
 
 test("directory preserves separate Project truth and copied, identity-bound host summaries", () => {

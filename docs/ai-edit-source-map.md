@@ -8,8 +8,8 @@
 
 | 編集対象 | 面と正本 | 人のGUI | AIの経路 | 公開出力から戻る手掛かりと現在の境界 |
 | --- | --- | --- | --- | --- |
-| ページ本文、要素、色・文字・余白・幅別スタイル、フォーム表示 | コンテンツ面。検証済み `PageDocument` | `@niho/web/editor` の `PageEditor` | 共通wire契約の `pages.read` で文書と版を読み、`@niho/web/editor-model` の `editDocumentById` またはJSON編集でローカル検証し、`pages.save` にexpectedVersion付きで保存。公開は `pages.release-plan` の差分・originを確認し、`pages.release` に同じoperation IDを渡す。ホストは `@niho/web/editing-api` をサイトoriginへmountする。既存Studio CLIも同じ正本を更新する互換経路として残る | `data-nw-scope` がsite/page/locale/revision、`data-nw-owner` と `data-nw-node` が所有文書と安定ノードIDを示す。テキストノードにはIDがないので親ノードと相対位置を使う。URLからページIDへの対応はホストの公開ルート一覧が必要 |
-| サイト共通スタイル、ブレークポイント、公開設定 | コンテンツ面。ホストのサイト設定API/DB | `PageEditor` のサイト設定adapter。鎌倉Studioはブレークポイントだけ共通wireへ接続 | ブレークポイントは `niho-edit breakpoints-read/save` が共通wireの `site.breakpoints.read/save` を直接呼ぶ。サイト共通スタイルの保存APIは未接続で、対応は [#341](https://github.com/niho-life/niho-web/issues/341) で追跡する | CSSのスコープとノードIDから利用箇所は追える。実効値・所有者・版はサイト設定APIが返す。鎌倉の旧Studio D1値は初回読取時に共通APIへ一度だけ移行する |
+| ページ本文、要素、色・文字・余白・幅別スタイル、フォーム表示 | コンテンツ面。検証済み `PageDocument` | `@niho/web/editor` の `PageEditor`。鎌倉Studioの日本語通常編集は差分操作の `pages.apply` を使い、全文置換やfallbackは `pages.save` を使う | 共通wire契約の `pages.read` で文書と版を読み、`@niho/web/editor-model` の `editDocumentById` またはJSON編集でローカル検証し、`pages.save` にexpectedVersion付きで保存。公開は `pages.release-plan` の差分・originを確認し、`pages.release` に同じoperation IDを渡す。ホストは `@niho/web/editing-api` をサイトoriginへmountする。`niho-edit --studio` もStudio経由で同じ正本を更新する | `data-nw-scope` がsite/page/locale/revision、`data-nw-owner` と `data-nw-node` が所有文書と安定ノードIDを示す。テキストノードにはIDがないので親ノードと相対位置を使う。URLからページIDへの対応はホストの公開ルート一覧が必要 |
+| サイト共通スタイル、ブレークポイント、公開設定 | コンテンツ面。ホストのサイト設定API/DB | `PageEditor` のサイト設定adapter。鎌倉Studioはブレークポイントだけ共通wireへ接続 | ブレークポイントは `niho-edit breakpoints-read/save` が共通wireの `site.breakpoints.read/save` を直接呼ぶ。サイト共通スタイルの保存APIは未接続で、対応は [#341](https://github.com/niho-life/niho-web/issues/341) で追跡する | CSSのスコープとノードIDから利用箇所は追える。実効値・所有者・版はサイト設定APIが返す。鎌倉の設定はサイトAPIが所有する |
 | 共通部品、登録ブロック、業務ブロックの表示props/領域 | 表示値はコンテンツ面のPageDocument/部品文書。実装とregistryはコード面のGitソース | GUIは登録済みのpropsと宣言済みslotだけを編集 | 文書に保存する値は `pages.save`。ブロック実装・registryはGitのbranch/PR/CI。共通部品ライブラリのGUI保存は鎌倉Studioで未接続であり、ホストが利用する段階で共通APIへ接続する | `data-nw-node`、`data-nw-owner`、`data-nw-block`、必要なら `data-nw-slot` が文書のブロックと表示領域へ戻る。propsの宣言元やコード位置はホストの認証済み逆引き情報が必要 |
 | CMS項目・CMSスキーマ | コンテンツ面。ホストのCMS API/DB | CMS用のStudio/ホスト画面 | `cms.*` の委任操作 | 公開HTMLにCMS項目IDが含まれるとは限らない。項目・テンプレートへの逆引きはホストAPIが提供する。HTMLを編集してCMS値を変更しない |
 | 画像・動画などの素材 | コンテンツ面。ホストの素材API/DBと安定素材ID | 素材ライブラリとPageEditor | `assets.*`、アップロード時は一時アップロード許可 | ノードIDからPageDocument内の素材参照へ戻る。公開URLは配信時に解決されるため、URLだけから素材の正本を推定しない |
@@ -22,27 +22,13 @@
 
 ## 鎌倉StudioのGUI書込み経路
 
-次の表は、現在の鎌倉Studioが実装する `EditorAdapter` と素材adapterの全メソッドから、永続化・公開・確認計画の書込みを抽出したものです。BFF route欄は認証済みproject/site prefix以降のpathです。GUIはadapterメソッドから共通操作IDへ接続し、同じ操作catalogを `@niho/web/editing-api` または `niho-edit` が使います。ホスト固有のGUI専用保存経路は追加しません。素材アップロード本体だけは、共通APIの `assets.upload-intent` が発行した短命tokenで署名済みURLへ直接PUTします。
+鎌倉Studioの `EditorAdapter.readDocument` は日本語・英語の両方で共通 `pages.read` を使います。英語キャンバスは `locale=en` を指定し、alias URLの解決を含む `presentation` を共通snapshotから読みます。英語専用のsnapshot BFF routeはありません。
 
-| GUI adapter method | 共通操作ID | Studio BFF route | 接続内容 |
-| --- | --- | --- | --- |
-| `EditorAdapter.applyPageChange` | `pages.change-apply` | `POST /editing-api/v1/sites/kamakura/operations/pages.change-apply` | ページ変更確認後の適用 |
-| `EditorAdapter.breakpointSettings.save` | `site.breakpoints.save` | `PUT /editing-api/v1/sites/kamakura/operations/site.breakpoints.save` | サイト単位の表示幅保存 |
-| `EditorAdapter.englishPublication.retry` | `pages.english-publication-retry` | `POST /editor/:pageId/english-publication-retry` | 明示操作による英語公開再試行 |
-| `EditorAdapter.localization.command` | `translations.editor-set-value`, `translations.editor-adopt-candidate`, `translations.editor-review-current` | `POST /localization/editor/pages/:pageId/command` | actionに応じて訳文編集・候補採用・確認済み化。ページ単位の翻訳依頼はadapterが拒否し、翻訳画面を使う |
-| `EditorAdapter.preparePageChange` | `pages.change-prepare` | `POST /editing-api/v1/sites/kamakura/operations/pages.change-prepare` | ページ変更の影響・確認tokenを取得 |
-| `EditorAdapter.prepareRelease` | `pages.release-plan` | `POST /editing-api/v1/sites/kamakura/operations/pages.release-plan/:pageId?locale=:locale` | 単一ページ公開・rollbackの確認計画 |
-| `EditorAdapter.prepareReleaseSet` | `pages.release-set-plan` | `POST /editing-api/v1/sites/kamakura/operations/pages.release-set-plan` | 複数ページ公開の確認計画 |
-| `EditorAdapter.release` | `pages.release` | `POST /editing-api/v1/sites/kamakura/operations/pages.release/:pageId?locale=:locale` | 単一ページ公開・rollback |
-| `EditorAdapter.releaseSet` | `pages.release-set` | `POST /editing-api/v1/sites/kamakura/operations/pages.release-set` | 複数ページ公開 |
-| `EditorAdapter.saveDraft` | `pages.save`, `translations.editor-save` | `PUT /editing-api/v1/sites/kamakura/operations/pages.save/:pageId?locale=:locale`; `POST /localization/editor/pages/:pageId/save` | 日本語は共通ページ保存、英語は共通翻訳編集操作 |
-| `PageEditorProps.assets.deleteAsset` | `assets.delete` | `POST /editing-api/v1/sites/kamakura/operations/assets.delete/:provider/:assetId` | 使用中でない素材の削除 |
-| `PageEditorProps.assets.updateAsset` | `assets.update` | `PUT /editing-api/v1/sites/kamakura/operations/assets.update/:provider/:assetId` | 素材metadataの更新 |
-| `PageEditorProps.assets.uploadAsset` | `assets.upload-intent` | `POST /editing-api/v1/sites/kamakura/operations/assets.upload-intent` | upload intent発行後、署名済みURLへファイル本体をPUT |
+GUI adapterの実装は `studio/kamakura-editor.tsx` と `studio/kamakura-assets.ts` にあり、許可するadapter methodと共通操作IDは `test/editor-write-conformance.test.mjs` で検証します。英語公開の再試行と英語キャンバスの編集操作はStudio専用経路で扱います。HTTP routeとwire payloadの公開契約は[ページ編集HTTP契約](editing-api-contract.md)を参照してください。素材アップロード本体だけは、共通APIの `assets.upload-intent` が発行した短命tokenで署名済みURLへ直接PUTします。
 
-適合テストはTypeScriptの返却adapterを走査し、読み取りメソッドと上表の書込みメソッドで実装面を網羅していること、全ての操作IDが公開catalogにあることを検証します。鎌倉Studioで未接続のoptional機能（`applyOperations`、共通部品ライブラリ、サイト共通スタイル、snapshot作成、サイト全体翻訳・翻訳版の公開、素材folder/acquire）は書込みUIとして有効化しません。サイト共通スタイルは [#341](https://github.com/niho-life/niho-web/issues/341)、共通部品ライブラリはホストが利用を開始するまで低優先で、接続時に独立したIssueと共通操作IDを用意します。
+鎌倉Studioで未接続のoptional機能（共通部品ライブラリ、サイト共通スタイル、snapshot作成、サイト全体翻訳・翻訳版の公開、素材folder/acquire）は書込みUIとして有効化しません。サイト共通スタイルは [#341](https://github.com/niho-life/niho-web/issues/341)、共通部品ライブラリはホストが利用を開始するまで低優先で、接続時に独立したIssueと共通操作IDを用意します。
 
-ページ編集HTTP契約とホストの責任は[ページ編集HTTP契約](editing-api-contract.md)、既存Studio CLIの操作と認証・保存・公開契約は[Studio CLI](studio-cli.md)を参照してください。`cms.*`、`assets.*`、`translations.*`など、ホスト固有の機能があることは全ホスト共通の操作や保存先があることを意味しません。
+ページ編集HTTP契約とホストの責任は[ページ編集HTTP契約](editing-api-contract.md)、Studioを経由する `niho-edit` の認証・保存・公開契約は[Studio CLI](studio-cli.md)を参照してください。`cms.*`、`assets.*`、`translations.*`など、ホスト固有の機能があることは全ホスト共通の操作や保存先があることを意味しません。
 
 ## 公開DOMからの文書逆引き
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { parsePageDocument } from "./document.js";
 import { editDocument, sameTarget, type EditorOperation } from "./editor-model.js";
 import { Dialog } from "./editor-dialog.js";
@@ -34,6 +34,14 @@ export const sharedTokenReason = (siteEditable: boolean): string =>
 export function SharedStyleLibrary({ adapter, pages, blocks, components, siteDisabled, editingComponent, state, rawDocument, pageDirty, sitePending, migrate, ...props }: Props) {
   const [scope, setScope] = useState<"page" | "site">("page"), [promotion, setPromotion] = useState<Promotion | null>(null), [problem, setProblem] = useState("");
   const [impact, setImpact] = useState<Impact | null>(null), [impactEpoch, setImpactEpoch] = useState(0);
+  const [pendingInputs, setPendingInputs] = useState<Record<string, true>>({});
+  const trackedPending = useMemo<Pending>(() => (key, value) => {
+    sitePending(key, value);
+    setPendingInputs((previous) => {
+      if ((previous[key] === true) === value) return previous;
+      const next = { ...previous }; if (value) next[key] = true; else delete next[key]; return next;
+    });
+  }, [sitePending]);
   const supported = !editingComponent && state.supported && state.editable && state.status === "ready";
   const before: SiteStyles = state.settings ?? {}, after = state.styles;
   const impactKey = JSON.stringify([impactEpoch, rawDocument.siteId, before.tokens, before.textStyles, after, pages.map((page) => [page.pageId, page.locale, page.title])]);
@@ -68,10 +76,6 @@ export function SharedStyleLibrary({ adapter, pages, blocks, components, siteDis
   function applySite(operation: EditorOperation): string | undefined {
     if (siteDisabled) return "処理が完了してからサイト共通スタイルを編集してください。";
     if (pageDirty) return pageHold;
-    if (operation.type === "token" && !operation.token && Object.hasOwn(before.tokens ?? {}, operation.name)
-      || operation.type === "textStyle" && !operation.style && Object.hasOwn(before.textStyles ?? {}, operation.name)) {
-      return "削除・名前変更には site.styles の migration plan/apply が必要です。通常保存では削除できません。";
-    }
     try {
       const next = editDocument(siteDocument, operation);
       const candidate: SiteStyles = { tokens: next.tokens, ...(next.textStyles ? { textStyles: next.textStyles } : {}) };
@@ -107,15 +111,24 @@ export function SharedStyleLibrary({ adapter, pages, blocks, components, siteDis
     {supported && <div className="e-seg" role="group" aria-label="スタイルの保存先"><button type="button" aria-pressed={scope === "page"} onClick={() => { setScope("page"); setProblem(""); }}>このページ</button><button type="button" aria-pressed={scope === "site"} onClick={() => { setScope("site"); setProblem(""); }}>サイト共通</button></div>}
     
     {supported && scope === "site" && pageDirty && <p className="e-help">{pageHold}</p>}
-    {supported && scope === "site" ? <StyleLibrary {...props} document={siteDocument} selection={null} apply={applySite} preview={undefined} pending={sitePending} disabled={siteDisabled || state.busy || pageDirty} scopeLabel="サイト共通" fieldKey={`${props.fieldKey}-site`} />
+    {supported && scope === "site" ? <StyleLibrary {...props} document={siteDocument} selection={null} apply={applySite} preview={undefined} pending={trackedPending}
+      onRename={(kind, from, to) => pageDirty ? pageHold : state.renameStyle(kind, from, to)} disabled={siteDisabled || state.busy || pageDirty} scopeLabel="サイト共通" usageScope="site" fieldKey={`${props.fieldKey}-site`} />
       : <StyleLibrary {...props} origins={supported ? origins : undefined} onPromote={supported && !state.stylesDirty ? promote : undefined} canPromote={(kind, name) => Object.hasOwn(kind === "token" ? rawDocument.tokens : rawDocument.textStyles ?? {}, name)} />}
     {problem && <p className="e-help e-problem" role="alert">{problem}</p>}
     {supported && state.stylesDirty && <section className="e-section" aria-label="サイト共通スタイルの変更確認"><h3>サイト共通スタイルの変更</h3>
       {!readyImpact ? <p role="status">全ページの参照と影響を確認中…</p> : readyImpact.failed ? <><p role="alert" className="e-problem">影響を検証できません。参照の種類・ページの取得権限を確認してください。編集内容は保持しています。</p><button type="button" onClick={() => setImpactEpoch((value) => value + 1)}>影響を再確認</button></> : <><p>{readyImpact.affected.length} ページの参照または見た目に反映されます。</p>{!!readyImpact.affected.length && <ul>{readyImpact.affected.map((name, index) => <li key={`${index}-${name}`}>{name}</li>)}</ul>}</>}
-      <details><summary>保存済み設定からの差分</summary><table><thead><tr><th>名前</th><th>保存済み</th><th>編集中</th></tr></thead><tbody>{(["tokens", "textStyles"] as const).flatMap((kind) => [...new Set([...Object.keys(before[kind] ?? {}), ...Object.keys(after[kind] ?? {})])].filter((name) => !equal(before[kind]?.[name], after[kind]?.[name])).map((name) => <tr key={`${kind}-${name}`}><td>{kind} / {name}</td><td>{JSON.stringify(before[kind]?.[name]) ?? "なし"}</td><td>{JSON.stringify(after[kind]?.[name]) ?? "削除（参照の見た目を保持）"}</td></tr>))}</tbody></table></details>
+      <details><summary>保存済み設定からの差分</summary><table><thead><tr><th>名前</th><th>保存済み</th><th>編集中</th></tr></thead><tbody>{(["tokens", "textStyles"] as const).flatMap((kind) => [...new Set([...Object.keys(before[kind] ?? {}), ...Object.keys(after[kind] ?? {})])].filter((name) => !equal(before[kind]?.[name], after[kind]?.[name])).map((name) => <tr key={`${kind}-${name}`}><td>{kind} / {name}</td><td>{JSON.stringify(before[kind]?.[name]) ?? "なし"}</td><td>{JSON.stringify(after[kind]?.[name]) ?? "削除（使用中なら保存時に拒否）"}</td></tr>))}</tbody></table></details>
       {state.message && <p role={state.message.alert ? "alert" : "status"}>{state.message.text}</p>}
       {state.latest && <details><summary>競合した最新設定と比較</summary><pre>{JSON.stringify(state.latest, null, 2)}</pre><p>編集中</p><pre>{JSON.stringify(after, null, 2)}</pre></details>}
       <div className="e-actions"><button type="button" className="e-primary" disabled={siteDisabled || !state.canSave || !readyImpact || readyImpact.failed} onClick={() => void state.save()}>サイト共通スタイルを保存</button><button type="button" disabled={state.busy} onClick={state.reset}>サイトの変更を取り消す</button></div>
+    </section>}
+    {supported && state.publishedVersion && state.publishedStyles && <section className="e-section" aria-label="サイト共通スタイルの公開">
+      <h3>サイト共通スタイルの公開</h3>
+      <p>{state.stylesDirty || state.dirty ? "下書きを保存すると公開できます。" : equal(state.styles, state.publishedStyles) ? "公開中の全ページに最新の共通スタイルが反映されています。" : "公開すると公開中の全ページへ一度に反映されます。"}</p>
+      {!state.stylesDirty && state.message && <p className={state.message.alert ? "e-help e-problem" : "e-help"} role={state.message.alert ? "alert" : "status"}>{state.message.text}</p>}
+      {state.conflict && <button type="button" className="e-small" disabled={state.busy} onClick={state.reload}>最新の公開状態を読み込む</button>}
+      <div className="e-actions"><button type="button" className="e-primary" disabled={siteDisabled || !state.canPublishStyles || pageDirty || Object.keys(pendingInputs).length > 0}
+        onClick={() => void state.publishStyles()}>サイト共通スタイルを公開</button></div>
     </section>}
     {promotion && <Dialog name="サイト共通スタイルへの移行確認" dismiss={() => setPromotion(null)}><h2>「{promotion.name}」をサイト共通へ移す</h2><p>同じ名前を参照する他のページにも反映されます。確認後はサイト共通スタイルを先に保存し、このページを保存してください。</p>
       {promotion.collisions.length ? <><p role="alert">同名のサイト共通定義があります。以下の値で置き換えます。</p><ul>{promotion.collisions.map((collision) => <li key={collision}>{collision}</li>)}</ul></> : <p>同名のサイト共通定義との衝突はありません。</p>}

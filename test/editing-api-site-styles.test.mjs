@@ -1,226 +1,282 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { createPageEditingApi, EDITING_OPERATIONS } from "@niho/web/editing-api";
+import { createPageEditingApi } from "@niho/web/editing-api";
 import { createEditingApiSiteSettingsFacade, createPageEditingApiClient, EditingApiClientError } from "@niho/web/editing-client";
+import { parseSiteStyles, resolvePageStyles } from "@niho/web/core";
 
-const document = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
-const siteId = document.siteId;
-const initial = { tokens: { brand: { type: "color", value: "#195640" } } };
-const operationId = "12345678-1234-4123-8123-123456789abc";
+const sourceDocument = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
+const siteId = sourceDocument.siteId;
+const oldBrand = { type: "color", value: "#195640" };
+const newBrand = { type: "color", value: "#0055aa" };
 
-function fixture({ publish = true, pageNodeNames = false, pageRelease = false } = {}) {
-  let draft = { version: "draft-1", styles: structuredClone(initial) };
-  let published = { stylesVersion: "published-1", styles: {} };
-  let epoch = "epoch-1";
-  let pageVersion = "page-1";
-  const released = new Map(), migrated = new Map();
+function sharedPage(pageId, locale) {
+  const page = structuredClone(sourceDocument);
+  page.pageId = pageId;
+  page.locale = locale;
+  page.title = pageId;
+  delete page.tokens.ink;
+  page.body[0].style.base.color = { token: "brand" };
+  return page;
+}
+
+function rewriteReferences(value, styleKind, from, to) {
+  if (Array.isArray(value)) return value.map((entry) => rewriteReferences(entry, styleKind, from, to));
+  if (!value || typeof value !== "object") return value;
+  const result = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (styleKind === "token" && key === "token" && entry === from) result[key] = to;
+    else if (styleKind === "textStyle" && key === "textStyle" && entry === from) result[key] = to;
+    else result[key] = rewriteReferences(entry, styleKind, from, to);
+  }
+  return result;
+}
+
+function documentUses(document, styleKind, name) {
+  const serialized = JSON.stringify(document);
+  return styleKind === "token" ? serialized.includes(`\"token\":\"${name}\"`) : serialized.includes(`\"textStyle\":\"${name}\"`);
+}
+
+function fixture({ publish = true, extraResponseFields = false, extraHostFields = false } = {}) {
+  let draft = { version: "draft-1", styles: { tokens: { brand: oldBrand } } };
+  let published = { version: "published-1", styles: { tokens: { brand: oldBrand } } };
+  let draftNumber = 1, publishedNumber = 1;
+  let pages = [sharedPage("home", "ja-JP"), sharedPage("about", "en-US")];
+  const editCalls = [];
   const siteStyles = {
-    async read() { return { sitePublicationEpoch: epoch, draft: structuredClone(draft), published: structuredClone(published) }; },
-    async save(_actor, _siteId, expectedVersion, styles) {
-      if (expectedVersion !== draft.version) return { status: "conflict" };
-      draft = { version: `draft-${Number(draft.version.split("-")[1]) + 1}`, styles: structuredClone(styles) };
-      return { status: "saved", version: draft.version };
+    async read() { return structuredClone({ draft, published }); },
+    async edit(_actor, _siteId, input) {
+      editCalls.push(structuredClone(input));
+      if (input.expectedVersion !== draft.version) return { status: "conflict" };
+      const styles = structuredClone(draft.styles), candidatePages = structuredClone(pages);
+      for (const edit of input.edits) {
+        const collection = edit.styleKind === "token" ? "tokens" : "textStyles";
+        if (edit.type === "set") (styles[collection] ??= {})[edit.name] = structuredClone(edit.value);
+        if (edit.type === "delete") {
+          const usages = candidatePages.flatMap((document) => documentUses(document, edit.styleKind, edit.name)
+            ? [{ kind: "page", id: document.pageId, locale: document.locale, path: "body" }] : []);
+          if (edit.styleKind === "token" && documentUses({ textStyles: styles.textStyles ?? {} }, "token", edit.name)) {
+            usages.push({ kind: "siteStyle", id: edit.name, path: "textStyles" });
+          }
+          if (usages.length) return { status: "referenced", usages };
+          delete styles[collection]?.[edit.name];
+          if (styles[collection] && !Object.keys(styles[collection]).length) delete styles[collection];
+        }
+        if (edit.type === "rename") {
+          if (!styles[collection]?.[edit.from] || styles[collection]?.[edit.to]) return { status: "conflict" };
+          styles[collection][edit.to] = styles[collection][edit.from];
+          delete styles[collection][edit.from];
+          const rewritten = rewriteReferences(styles, edit.styleKind, edit.from, edit.to);
+          Object.keys(styles).forEach((key) => delete styles[key]);
+          Object.assign(styles, rewritten);
+          for (let index = 0; index < candidatePages.length; index++) {
+            candidatePages[index] = rewriteReferences(candidatePages[index], edit.styleKind, edit.from, edit.to);
+          }
+        }
+      }
+      const checked = parseSiteStyles(styles);
+      draft = { version: `draft-${++draftNumber}`, styles: checked };
+      pages = candidatePages;
+      const result = { status: "saved", version: draft.version, styles: structuredClone(draft.styles) };
+      return extraHostFields ? { ...result, futureField: "must be rejected by the server" } : result;
     },
-    async prepareRelease(_actor, requestedSiteId, input) {
-      if (input.expectedVersion !== draft.version || input.expectedStylesVersion !== published.stylesVersion || input.sitePublicationEpoch !== epoch) return { status: "conflict" };
-      return { status: "prepared", plan: { ...input, siteId: requestedSiteId, confirmationToken: "release-token", expiresAt: "2030-01-01T00:00:00.000Z",
-        before: structuredClone(published.styles), after: structuredClone(draft.styles), affected: [{ kind: "page", id: document.pageId, locale: document.locale, version: "page-1" }] } };
-    },
-    async release(_actor, _siteId, input) {
-      const previous = released.get(input.operationId);
-      if (previous) return JSON.stringify(previous.input) === JSON.stringify(input) ? previous.result : { status: "duplicate" };
-      if (input.confirmationToken !== "release-token" || input.expectedVersion !== draft.version || input.expectedStylesVersion !== published.stylesVersion || input.sitePublicationEpoch !== epoch) return { status: "conflict" };
-      published = { stylesVersion: "published-2", styles: structuredClone(draft.styles) }; epoch = "epoch-2";
-      const result = { status: "released", operationId: input.operationId, stylesVersion: published.stylesVersion, sitePublicationEpoch: epoch };
-      released.set(input.operationId, { input: structuredClone(input), result }); return result;
-    },
-    async prepareMigration(_actor, requestedSiteId, input) {
-      if (input.expectedVersion !== draft.version || input.expectedStylesVersion !== published.stylesVersion || input.sitePublicationEpoch !== epoch) return { status: "conflict" };
-      return { status: "prepared", plan: { ...input, siteId: requestedSiteId, confirmationToken: "migration-token", expiresAt: "2030-01-01T00:00:00.000Z",
-        classification: "lossless", before: structuredClone(draft.styles), after: {}, affected: [{ kind: "page", id: document.pageId, locale: document.locale, version: "page-1" }] } };
-    },
-    async applyMigration(_actor, _siteId, input) {
-      const previous = migrated.get(input.operationId);
-      if (previous) return JSON.stringify(previous.input) === JSON.stringify(input) ? previous.result : { status: "duplicate" };
-      if (input.confirmationToken !== "migration-token") return { status: "conflict" };
-      draft = { version: "draft-3", styles: {} }; published = { stylesVersion: "published-3", styles: {} }; epoch = "epoch-3";
-      const result = { status: "applied", operationId: input.operationId, version: draft.version, stylesVersion: published.stylesVersion, sitePublicationEpoch: epoch };
-      migrated.set(input.operationId, { input: structuredClone(input), result }); return result;
+    async publish(_actor, _siteId, input) {
+      if (input.expectedDraftVersion !== draft.version || input.expectedPublishedVersion !== published.version) return { status: "conflict" };
+      published = { version: `published-${++publishedNumber}`, styles: structuredClone(draft.styles) };
+      const result = { status: "published", version: published.version, styles: structuredClone(published.styles) };
+      return extraHostFields ? { ...result, futureField: "must be rejected by the server" } : result;
     }
   };
   const api = createPageEditingApi({
     async authenticate() { return { kind: "human", subject: "owner", clientKind: "gui" }; },
     async authorize(_actor, capability) { return capability !== "pages.publish" || publish; },
     siteStyles,
-    pageNodeNames,
-    localization: {
-      "localization.settings.save": async () => ({ status: "migration_in_progress" }),
-      "localization.release.prepare": async () => ({ status: "publication_in_progress" })
+    async validationContext() { return { siteStyles: draft.styles }; },
+    async readPage(_actor, target) {
+      const document = pages.find((page) => page.pageId === target.pageId && page.locale === target.locale);
+      return document ? { document, version: "page-1" } : null;
     },
-    ...(pageRelease ? {
-      async releaseSite() { return { id: siteId, name: "Example", domains: ["https://host.example"] }; },
-      async preparePageRelease(_actor, request) {
-        return { status: "prepared", plan: { ...request, confirmationToken: "page-release-token", domain: "https://host.example", changes: [] } };
-      },
-      async publishPage(_actor, target, input) {
-        const previous = released.get(input.operationId);
-        if (previous) return JSON.stringify(previous.input) === JSON.stringify(input) ? previous.result : { status: "duplicate" };
-        if (input.confirmationToken !== "page-release-token" || input.expectedVersion !== pageVersion
-          || input.siteStylesRevision?.version !== published.stylesVersion || input.sitePublicationEpoch !== epoch) return { status: "conflict" };
-        pageVersion = "page-2";
-        const result = { status: "released", operationId: input.operationId, version: pageVersion, document };
-        released.set(input.operationId, { input: structuredClone(input), result }); return result;
-      }
-    } : {}),
-    async readPage() { return { document, version: pageVersion, draftStylesVersion: draft.version }; },
-    async savePage(_actor, _target, expectedVersion, candidate, revision) {
-      if (expectedVersion !== pageVersion || revision?.stage !== "draft" || revision.version !== draft.version) return { status: "conflict" };
-      pageVersion = "page-2";
-      return { status: "saved", version: pageVersion, document: candidate };
+    async savePage(_actor, _target, expectedVersion, document) {
+      return expectedVersion === "page-1" ? { status: "saved", version: "page-2", document } : { status: "conflict" };
     }
   });
-  return { api, client: createPageEditingApiClient({ origin: "https://host.example", siteId, fetch: (input, init) => api(new Request(input, init)) }) };
+  const requests = [];
+  const client = createPageEditingApiClient({ origin: "https://host.example", siteId, fetch: async (input, init) => {
+    const request = new Request(input, init); requests.push(request.url);
+    const response = await api(request), path = new URL(request.url).pathname;
+    if (!extraResponseFields || !response.ok || !/\/operations\/site\.styles\.(?:edit|publish)$/u.test(path)) return response;
+    const body = await response.json();
+    return Response.json({ ...body, futureField: "ignored",
+      ...(Array.isArray(body.usages) ? { usages: body.usages.map((entry) => ({ ...entry, futureUsageField: "ignored" })) } : {}) }, { status: response.status });
+  } });
+  return {
+    api, client, editCalls, requests,
+    pages: () => structuredClone(pages),
+    snapshot: () => structuredClone({ draft, published }),
+    publishedValues: () => pages.map((page) => resolvePageStyles(page, published.styles).tokens.brand?.value)
+  };
 }
 
-test("site.styles is opt-in and preserves queryless discovery", async () => {
+test("site.styles exposes only read/edit/publish and does not alter page contracts", async () => {
   const { api } = fixture();
   const legacy = await api(new Request(`https://host.example/api/edit/v1/sites/${siteId}/capabilities`));
   const legacyBody = await legacy.json();
-  assert.equal(legacy.status, 200);
   assert.equal(legacyBody.operations.some(({ id }) => id.startsWith("site.styles.")), false);
-  const legacyRead = legacyBody.operations.find(({ id }) => id === "pages.read");
-  assert.ok(legacyRead.resultSchema.properties.stylesVersion);
-  assert.equal(legacyRead.resultSchema.properties.draftStylesVersion, undefined);
-  assert.equal(legacyBody.operations.find(({ id }) => id === "localization.settings.save").errors.includes("site_style_migration_in_progress"), false);
 
   const opted = await api(new Request(`https://host.example/api/edit/v1/sites/${siteId}/capabilities?features=site.styles`));
-  const optedBody = await opted.json();
-  assert.equal(opted.status, 200);
-  assert.deepEqual(optedBody.operations.filter(({ id }) => id.startsWith("site.styles.")).map(({ id }) => id), [
-    "site.styles.read", "site.styles.save", "site.styles.release-plan", "site.styles.release", "site.styles.migration-plan", "site.styles.migration-apply"
+  const body = await opted.json();
+  assert.deepEqual(body.operations.filter(({ id }) => id.startsWith("site.styles.")).map(({ id }) => id), [
+    "site.styles.read", "site.styles.edit", "site.styles.publish"
   ]);
-  assert.deepEqual(optedBody.operations.find(({ id }) => id === "site.styles.read").resultSchema.required, ["draft", "published", "sitePublicationEpoch"]);
-  const featureRead = optedBody.operations.find(({ id }) => id === "pages.read");
-  assert.ok(featureRead.resultSchema.required.includes("draftStylesVersion"));
-  assert.equal(featureRead.resultSchema.properties.stylesVersion, undefined);
-  assert.ok(optedBody.operations.find(({ id }) => id === "localization.settings.save").errors.includes("site_style_migration_in_progress"));
-  const localeRelease = optedBody.operations.find(({ id }) => id === "localization.release.prepare");
-  assert.ok(localeRelease.errors.includes("site_publication_in_progress"));
-  assert.ok(localeRelease.errors.includes("site_style_migration_in_progress"));
+  const read = body.operations.find(({ id }) => id === "pages.read");
+  assert.equal(read.resultSchema.properties.stylesVersion, undefined);
+  assert.equal(read.resultSchema.properties.draftStylesVersion, undefined);
+  assert.deepEqual(body.operations.find(({ id }) => id === "site.styles.read").resultSchema.required, ["draft", "published"]);
 });
 
-test("site.styles and page name capabilities compose once in discovery", async () => {
-  const { client } = fixture({ pageNodeNames: true });
-  const discovery = await client.discover();
-  const save = discovery.operations.find(({ id }) => id === "pages.save");
-  assert.ok(save);
-  assert.equal(save.path.match(/features=site\.styles/g)?.length, 1);
-  assert.deepEqual(save.capabilities, ["pages.name"]);
-  assert.equal(save.inputSchema.required.filter((key) => key === "draftStylesVersion").length, 1);
+test("referenced deletion is refused with usages and does not write", async () => {
+  const state = fixture();
+  const before = state.snapshot();
+  const result = await state.client.editSiteStyles({ expectedVersion: before.draft.version,
+    edits: [{ type: "delete", styleKind: "token", name: "brand" }] });
+  assert.equal(result.status, "referenced");
+  assert.deepEqual(result.usages.map(({ id, locale, path }) => ({ id, locale, path })), [
+    { id: "home", locale: "ja-JP", path: "body" }, { id: "about", locale: "en-US", path: "body" }
+  ]);
+  assert.deepEqual(state.snapshot(), before);
 });
 
-test("localization writes preserve stable site fence errors", async () => {
-  const { client } = fixture();
-  await client.discover();
-  await assert.rejects(client.executeLocalization("localization.settings.save", {
-    expectedVersion: "locale-1", operationId: "locale_settings_1234", autoDraft: true
-  }), (error) => error instanceof EditingApiClientError && error.code === "site_style_migration_in_progress" && error.status === 409);
-  await assert.rejects(client.executeLocalization("localization.release.prepare", {
-    operation: "publish", releaseId: null, expectedVersion: "locale-1", expectedCurrentVersion: null,
-    resumeToken: null, operationId: "locale_release_12345"
-  }), (error) => error instanceof EditingApiClientError && error.code === "site_publication_in_progress" && error.status === 409);
+test("client ignores newer site-style response fields while validating known values", async () => {
+  const state = fixture({ extraResponseFields: true });
+  const referenced = await state.client.editSiteStyles({ expectedVersion: "draft-1", edits: [{ type: "delete", styleKind: "token", name: "brand" }] });
+  assert.equal(referenced.status, "referenced");
+  assert.equal(referenced.usages[0].futureUsageField, undefined);
+
+  const saved = await state.client.editSiteStyles({ expectedVersion: "draft-1", edits: [{ type: "set", styleKind: "token", name: "brand", value: newBrand }] });
+  assert.equal(saved.status, "saved");
+  assert.equal(saved.futureField, undefined);
+  const published = await state.client.publishSiteStyles({ expectedDraftVersion: "draft-2", expectedPublishedVersion: "published-1" });
+  assert.equal(published.status, "published");
+  assert.equal(published.futureField, undefined);
 });
 
-test("client keeps draft and published versions distinct and style saves are CAS protected", async () => {
-  const { client } = fixture();
-  await client.discover();
-  const snapshot = await client.readSiteStyles();
-  assert.equal(snapshot.sitePublicationEpoch, "epoch-1");
-  assert.equal(snapshot.draft.version, "draft-1");
-  assert.equal(snapshot.published.stylesVersion, "published-1");
-  assert.deepEqual(await client.saveSiteStyles("stale", snapshot.draft.styles), { status: "conflict" });
-  assert.equal((await client.saveSiteStyles(snapshot.draft.version, { tokens: { brand: { type: "color", value: "#000000" }, ink: { type: "color", value: "#111111" } } })).status, "saved");
-  await assert.rejects(client.saveSiteStyles("draft-2", {}), (error) => error instanceof EditingApiClientError && error.code === "style_migration_required" && error.status === 422);
+test("server still rejects unknown host fields in style edit and publish results", async () => {
+  const state = fixture({ extraHostFields: true });
+  const edit = await state.api(new Request(`https://host.example/api/edit/v1/sites/${siteId}/operations/site.styles.edit`, {
+    method: "PUT", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ expectedVersion: "draft-1", edits: [{ type: "set", styleKind: "token", name: "brand", value: newBrand }] })
+  }));
+  assert.equal(edit.status, 502);
+  assert.equal((await edit.json()).error, "host_contract_violation");
+  const publish = await state.api(new Request(`https://host.example/api/edit/v1/sites/${siteId}/operations/site.styles.publish`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ expectedDraftVersion: "draft-2", expectedPublishedVersion: "published-1" })
+  }));
+  assert.equal(publish.status, 502);
+  assert.equal((await publish.json()).error, "host_contract_violation");
 });
 
-test("feature-aware page reads and saves bind the opaque page CAS to the draft style revision", async () => {
-  const { client } = fixture();
-  const target = { siteId, pageId: document.pageId, locale: document.locale };
-  await client.discover();
-  const snapshot = await client.read(target);
-  assert.equal(snapshot.version, "page-1");
-  assert.equal(snapshot.draftStylesVersion, "draft-1");
-  const saved = await client.save(target, snapshot.version, snapshot.document);
-  assert.deepEqual(saved, { status: "saved", version: "page-2", document: snapshot.document });
-  assert.deepEqual(await client.save(target, "page-2", snapshot.document, undefined, "stale-draft"), { status: "conflict" });
+test("rename updates its definition and all references in one edit operation", async () => {
+  const state = fixture();
+  const result = await state.client.editSiteStyles({ expectedVersion: "draft-1",
+    edits: [{ type: "rename", styleKind: "token", from: "brand", to: "primary" }] });
+  assert.equal(result.status, "saved");
+  assert.equal(state.editCalls.length, 1);
+  assert.ok(result.styles.tokens.primary);
+  assert.equal(result.styles.tokens.brand, undefined);
+  for (const page of state.pages()) {
+    assert.equal(documentUses(page, "token", "brand"), false);
+    assert.equal(documentUses(page, "token", "primary"), true);
+  }
 });
 
-test("feature-aware page release applies the prepared plan with its published style fence", async () => {
-  const { client } = fixture({ pageRelease: true });
-  await client.discover();
-  const target = { siteId, pageId: document.pageId, locale: document.locale };
-  const snapshot = await client.read(target);
-  const plan = await client.prepareRelease(target, { expectedVersion: snapshot.version, action: "publish",
-    siteStylesRevision: { stage: "published", version: "published-1" }, sitePublicationEpoch: "epoch-1" });
-  assert.equal(plan.siteStylesRevision.version, "published-1");
-  assert.equal(plan.sitePublicationEpoch, "epoch-1");
-  const released = await client.release(target, plan, "12345678-1234-4123-8123-123456789abc");
-  assert.deepEqual(released, { status: "released", operationId: "12345678-1234-4123-8123-123456789abc", version: "page-2", document });
+test("draft changes stay private and one publish applies to every published page", async () => {
+  const state = fixture();
+  assert.deepEqual(state.publishedValues(), [oldBrand.value, oldBrand.value]);
+  const saved = await state.client.editSiteStyles({ expectedVersion: "draft-1",
+    edits: [{ type: "set", styleKind: "token", name: "brand", value: newBrand }] });
+  assert.equal(saved.status, "saved");
+  assert.deepEqual(state.publishedValues(), [oldBrand.value, oldBrand.value]);
+  const published = await state.client.publishSiteStyles({ expectedDraftVersion: saved.version, expectedPublishedVersion: "published-1" });
+  assert.equal(published.status, "published");
+  assert.deepEqual(state.publishedValues(), [newBrand.value, newBrand.value]);
 });
 
-test("release and migration plans bind versions and replay the same operation result", async () => {
-  const { client } = fixture();
-  await client.discover();
-  const releaseRequest = { expectedVersion: "draft-1", expectedStylesVersion: "published-1", sitePublicationEpoch: "epoch-1", operationId };
-  const plan = await client.prepareSiteStylesRelease(releaseRequest);
-  assert.deepEqual(plan.affected.map(({ kind, id, locale }) => ({ kind, id, locale })), [{ kind: "page", id: document.pageId, locale: document.locale }]);
-  const first = await client.releaseSiteStyles(plan), replay = await client.releaseSiteStyles(plan);
-  assert.deepEqual(replay, first);
-
-  const migrationOperation = "abcdefab-cdef-4abc-8def-abcdefabcdef";
-  const migration = await client.prepareSiteStylesMigration({ expectedVersion: "draft-1", expectedStylesVersion: "published-2", sitePublicationEpoch: "epoch-2",
-    operationId: migrationOperation, changes: [{ kind: "delete", styleKind: "token", name: "brand" }] });
-  const applied = await client.applySiteStylesMigration(migration);
-  assert.equal(applied.status, "applied");
-  assert.deepEqual(await client.applySiteStylesMigration(migration), applied);
+test("page calls have no style version, epoch, or feature fence", async () => {
+  const state = fixture();
+  await state.client.readSiteStyles();
+  const target = { siteId, pageId: "home", locale: "ja-JP" };
+  const snapshot = await state.client.read(target);
+  assert.deepEqual(Object.keys(snapshot).sort(), ["document", "version"]);
+  assert.equal(state.requests.find((url) => url.includes("/operations/pages.read/"))?.includes("features=site.styles"), false);
+  assert.deepEqual(await state.client.save(target, snapshot.version, snapshot.document), { status: "saved", version: "page-2", document: snapshot.document });
 });
 
-test("site-wide release discovery consistently requires publish permission", async () => {
-  const { client } = fixture({ publish: false });
-  const discovery = await client.discover();
-  assert.ok(discovery.operations.some(({ id }) => id === "site.styles.save"));
-  assert.equal(discovery.operations.some(({ id }) => id === "site.styles.release"), false);
-  await assert.rejects(client.prepareSiteStylesRelease({ expectedVersion: "draft-1", expectedStylesVersion: "published-1", sitePublicationEpoch: "epoch-1", operationId }),
-    (error) => error instanceof EditingApiClientError && error.code === "not_found");
-});
-
-test("new clients retry legacy discovery without sending style operations", async () => {
-  const requests = [];
-  const legacyOperation = EDITING_OPERATIONS.find(({ id }) => id === "pages.read");
-  const client = createPageEditingApiClient({ origin: "https://old.example", siteId, fetch: async (input) => {
-    requests.push(String(input));
-    if (String(input).includes("features=site.styles")) return Response.json({ error: "invalid_request" }, { status: 400 });
-    return Response.json({ apiVersion: "v1", siteId, operations: [legacyOperation] });
-  } });
-  await client.discover();
-  await assert.rejects(client.readSiteStyles(), (error) => error instanceof EditingApiClientError && error.code === "not_found");
-  assert.equal(requests.some((url) => url.includes("operations/site.styles")), false);
-});
-
-test("the EditorAdapter site-settings facade delegates its style slice to the common API", async () => {
-  const saves = [];
+test("GUI site settings delegates its style diff to site.styles.edit", async () => {
+  const edits = [];
   const facade = createEditingApiSiteSettingsFacade({
-    async readSiteStyles() {
-      return { sitePublicationEpoch: "epoch-7", draft: { version: "draft-7", styles: initial }, published: { stylesVersion: "published-4", styles: {} } };
-    },
-    async saveSiteStyles(expectedVersion, styles) {
-      saves.push({ expectedVersion, styles: structuredClone(styles) });
-      return { status: "saved", version: "draft-8" };
-    }
+    async readSiteStyles() { return { draft: { version: "draft-1", styles: { tokens: { brand: oldBrand } } }, published: { version: "published-1", styles: {} } }; },
+    async editSiteStyles(input) { edits.push(structuredClone(input)); return { status: "saved", version: "draft-2", styles: { tokens: { brand: newBrand } } }; }
   }, siteId, { title: "Demo", locale: "ja" });
-  assert.deepEqual(await facade.readSiteSettings(siteId), { version: "draft-7", settings: { title: "Demo", locale: "ja", ...initial } });
-  assert.deepEqual(await facade.saveSiteSettings({ siteId, expectedVersion: "draft-7", settings: { title: "Demo", locale: "ja", ...initial } }),
-    { status: "saved", version: "draft-8" });
-  assert.deepEqual(saves, [{ expectedVersion: "draft-7", styles: initial }]);
+  const current = await facade.readSiteSettings(siteId);
+  const result = await facade.saveSiteSettings({ siteId, expectedVersion: current.version, previousStyles: { tokens: { brand: oldBrand } },
+    settings: { title: "Demo", locale: "ja", tokens: { brand: newBrand } } });
+  assert.equal(result.status, "saved");
+  assert.deepEqual(edits, [{ expectedVersion: "draft-1", edits: [{ type: "set", styleKind: "token", name: "brand", value: newBrand }] }]);
+});
+
+test("GUI style rename is sent as one explicit edit and publish uses the shared pointer", async () => {
+  const edits = [], publishes = [];
+  const oldSize = { type: "length", value: 24, label: "見出しサイズ" };
+  const oldTextStyle = { label: "見出し", base: { fontSize: { token: "headingSize" } } };
+  const renamedTextStyle = { label: "見出し", base: { fontSize: { token: "displaySize" } } };
+  const facade = createEditingApiSiteSettingsFacade({
+    async readSiteStyles() { return { draft: { version: "draft-1", styles: { tokens: { headingSize: oldSize }, textStyles: { heading: oldTextStyle } } },
+      published: { version: "published-1", styles: {} } }; },
+    async editSiteStyles(input) { edits.push(structuredClone(input)); return { status: "saved", version: "draft-2", styles: { tokens: { displaySize: oldSize }, textStyles: { heading: renamedTextStyle } } }; },
+    async publishSiteStyles(input) { publishes.push(structuredClone(input)); return { status: "published", version: "published-2", styles: { tokens: { displaySize: oldSize }, textStyles: { heading: renamedTextStyle } } }; }
+  }, siteId, { title: "Demo", locale: "ja" });
+  const current = await facade.readSiteSettings(siteId);
+  assert.equal(current.publishedVersion, "published-1");
+  assert.deepEqual(current.publishedStyles, {});
+  const result = await facade.saveSiteSettings({ siteId, expectedVersion: current.version,
+    previousStyles: { tokens: { headingSize: oldSize }, textStyles: { heading: oldTextStyle } },
+    styleRenames: [{ type: "rename", styleKind: "token", from: "headingSize", to: "displaySize" }],
+    settings: { title: "Demo", locale: "ja", tokens: { displaySize: oldSize }, textStyles: { heading: renamedTextStyle } } });
+  assert.equal(result.status, "saved");
+  assert.deepEqual(edits[0].edits, [
+    { type: "rename", styleKind: "token", from: "headingSize", to: "displaySize" },
+    { type: "set", styleKind: "textStyle", name: "heading", value: renamedTextStyle }
+  ]);
+  const published = await facade.publishSiteStyles({ siteId, expectedDraftVersion: "draft-2", expectedPublishedVersion: "published-1" });
+  assert.equal(published.status, "published");
+  assert.deepEqual(publishes, [{ expectedDraftVersion: "draft-2", expectedPublishedVersion: "published-1" }]);
+});
+
+test("GUI can reuse a renamed source name for a new definition before saving", async () => {
+  const oldToken = { type: "color", value: "#123456" }, replacement = { type: "color", value: "#abcdef" };
+  let editRequest;
+  const facade = createEditingApiSiteSettingsFacade({
+    async readSiteStyles() { return { draft: { version: "draft-1", styles: { tokens: { "color-1": oldToken } } },
+      published: { version: "published-1", styles: { tokens: { "color-1": oldToken } } } }; },
+    async editSiteStyles(input) { editRequest = structuredClone(input); return { status: "saved", version: "draft-2", styles: { tokens: { brand: oldToken, "color-1": replacement } } }; }
+  }, siteId, { title: "Demo", locale: "ja" });
+  const current = await facade.readSiteSettings(siteId);
+  const result = await facade.saveSiteSettings({ siteId, expectedVersion: current.version, previousStyles: { tokens: { "color-1": oldToken } },
+    styleRenames: [{ type: "rename", styleKind: "token", from: "color-1", to: "brand" }],
+    settings: { title: "Demo", locale: "ja", tokens: { brand: oldToken, "color-1": replacement } } });
+  assert.equal(result.status, "saved");
+  assert.deepEqual(editRequest.edits, [
+    { type: "rename", styleKind: "token", from: "color-1", to: "brand" },
+    { type: "set", styleKind: "token", name: "color-1", value: replacement }
+  ]);
+});
+
+test("publish permission controls only site.styles.publish", async () => {
+  const { client } = fixture({ publish: false });
+  const snapshot = await client.readSiteStyles();
+  assert.equal(snapshot.draft.version, "draft-1");
+  assert.equal((await client.editSiteStyles({ expectedVersion: "draft-1", edits: [{ type: "set", styleKind: "token", name: "brand", value: newBrand }] })).status, "saved");
+  await assert.rejects(client.publishSiteStyles({ expectedDraftVersion: "draft-2", expectedPublishedVersion: "published-1" }),
+    (error) => error instanceof EditingApiClientError && error.code === "not_found");
 });

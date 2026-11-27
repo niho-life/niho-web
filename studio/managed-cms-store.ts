@@ -1,11 +1,20 @@
+import { CMS_DELIVERY_RENDERER_VERSION, serializeCmsDeliverySnapshot } from "../src/cms-delivery-contract.js";
 import { starterCollection } from "./managed-cms-model.js";
-import { parseCmsRouteTable, type CmsItemRevision, type CmsReleasePin, type CmsReleaseSnapshot, type CmsRouteTable, type CmsSchema } from "../src/cms-v2.js";
+import { assetKey } from "../src/assets.js";
+import { collectCmsReleaseAssetReferences, parseCmsReleaseAssetManifest, parseCmsRouteTable, type CmsItemRevision, type CmsPublicAsset, type CmsReleasePin, type CmsReleaseSnapshot, type CmsRouteTable, type CmsSchema } from "../src/cms-v2.js";
+import { parseCmsPublicAssets } from "../src/cms-v2-assets.js";
+import type { AssetReference } from "../src/types.js";
 import type { ManagedD1 } from "./managed-sites.js";
 
 export type CmsBucket = {
-  get(key: string): Promise<{ json<T>(): Promise<T> } | null>;
+  get(key: string): Promise<{ json<T>(): Promise<T>; text(): Promise<string>; arrayBuffer(): Promise<ArrayBuffer> } | null>;
   put(key: string, value: string, options: { onlyIf: Headers }): Promise<unknown>;
 };
+/** Resolve only existing, non-deleted images that the host permits this site to publish. */
+export type CmsPublicAssetResolver = (input: {
+  readonly siteId: string;
+  readonly references: readonly Readonly<AssetReference>[];
+}) => Promise<readonly CmsPublicAsset[]>;
 export type CmsActor = { readonly id: string; readonly clientId?: string; readonly cli: boolean };
 export type CmsCapability = "cms.read" | "cms.edit" | "cms.publish" | "cms.schema.apply";
 export type CmsScope = { readonly projectId: string; readonly siteId: string; readonly actor: CmsActor };
@@ -14,7 +23,9 @@ export type CmsState = {
   locale: string;
   schema: CmsSchema;
   items: Record<string, ItemMeta>;
+  localizations?: Record<string, { revision: string; version: number }>;
   current: { id: string; at: string } | null;
+  localizedReleases?: Record<string, { id: string; at: string; routeTableRevision: string }>;
   routeTableRevision?: string;
   retainedBytes: number;
 };
@@ -28,10 +39,15 @@ export type Job = {
 
 type Receipt = { operation: string; input_digest: string; result_json: string; transaction_id: string };
 
-export const MAX_ITEMS = 25;
+/** Per-site metadata stays within the D1 state-row budget; snapshots and retained bytes have separate limits. */
+export const MAX_ITEMS = 500;
+export const MAX_REDIRECTS = 25_000;
 export const MAX_BODY = 64 * 1024;
+export const MAX_RELEASE_BODY = 4 * 1024 * 1024;
 export const MAX_RETAINED_BYTES = 100 * 1024 * 1024;
 export const MAX_SNAPSHOT = 2 * 1024 * 1024;
+const MIGRATED_URL_ASSET_PROVIDER = "kamakura-source";
+const migratedAssetManifestKey = (siteId: string) => `sites/${siteId}/migration/legacy-assets.json`;
 export const opaque = (prefix: string) => `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
 export const nowSeconds = () => Math.floor(Date.now() / 1000);
 export const iso = (seconds: number) => new Date(seconds * 1000).toISOString();
@@ -42,6 +58,8 @@ export const itemBlobKey = (siteId: string, locale: string, pin: CmsReleasePin) 
   `sites/${siteId}/items/${locale}/${pin.collectionId}/${pin.itemId}/${pin.revision}.json`;
 export const snapshotKey = (siteId: string, releaseId: string) => `sites/${siteId}/releases/${releaseId}.json`;
 export const routeTableKey = (siteId: string, locale: string, revision: string) => `sites/${siteId}/routes/${locale}/${revision}.json`;
+export const localizationBlobKey = (siteId: string, locale: string, itemKey: string, revision: string) =>
+  `sites/${siteId}/localizations/${locale}/${itemKey}/${revision}.json`;
 
 function initialState(siteId: string, locale: string): CmsState {
   return {
@@ -75,7 +93,39 @@ function scopeValues(scope: CmsScope, capability: CmsCapability) {
 }
 
 export class CmsStore {
-  constructor(readonly db: ManagedD1, readonly bucket: CmsBucket) {}
+  constructor(readonly db: ManagedD1, readonly bucket: CmsBucket, readonly resolvePublicAssets?: CmsPublicAssetResolver) {}
+
+  async publicAssets(schema: CmsSchema, items: readonly CmsItemRevision[]) {
+    const references = collectCmsReleaseAssetReferences(schema, items);
+    if (!references.length) return [];
+    const external = references.filter(({ provider }) => provider === MIGRATED_URL_ASSET_PROVIDER);
+    const ordinary = references.filter(({ provider }) => provider !== MIGRATED_URL_ASSET_PROVIDER);
+    const resolved = ordinary.length && this.resolvePublicAssets
+      ? await this.resolvePublicAssets({ siteId: schema.siteId, references: ordinary }) : [];
+    if (!external.length) return resolved;
+
+    // Migration manifests live in the same private bucket as immutable CMS revisions.
+    // Only stable references in the explicitly migrated provider can select these URLs.
+    const object = await this.bucket.get(migratedAssetManifestKey(schema.siteId));
+    if (!object) return resolved;
+    const manifest = await object.json<unknown>();
+    if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)
+      || (manifest as any).formatVersion !== 1 || (manifest as any).siteId !== schema.siteId
+      || !Array.isArray((manifest as any).assets)) return resolved;
+    const assets = parseCmsPublicAssets((manifest as any).assets);
+    return [...resolved, ...external.flatMap((reference) => {
+      const asset = assets.get(assetKey(reference));
+      return asset ? [asset] : [];
+    })];
+  }
+
+  private async deliveryEvent(transaction: string, snapshot: CmsReleaseSnapshot, guard: string) {
+    const { snapshotDigest } = await serializeCmsDeliverySnapshot(snapshot);
+    return this.db.prepare(`INSERT INTO managed_cms_delivery_events
+      (site_id, sequence, release_id, locale, snapshot_digest, renderer_version)
+      SELECT ?2, COALESCE((SELECT max(sequence) FROM managed_cms_delivery_events WHERE site_id = ?2), 0) + 1, ?3, ?4, ?5, ?6
+      WHERE ${guard}`).bind(transaction, snapshot.siteId, snapshot.releaseId, snapshot.locale, snapshotDigest, CMS_DELIVERY_RENDERER_VERSION);
+  }
 
   async site(scope: CmsScope, capability: CmsCapability): Promise<Site | null> {
     const row = await this.db.prepare(`SELECT ms.slug, m.role,
@@ -110,61 +160,74 @@ export class CmsStore {
     const snapshot = await object.json<CmsReleaseSnapshot>();
     if (snapshot.contractVersion !== 2 || snapshot.siteId !== siteId || snapshot.releaseId !== releaseId || snapshot.schema.siteId !== siteId)
       throw new Error("CMS snapshot scope mismatch");
-    return snapshot;
+    return { ...snapshot, assetManifest: parseCmsReleaseAssetManifest(snapshot.schema, snapshot.items, snapshot.assetManifest) };
   }
 
   async approvedPins(site: Site, pins: readonly CmsReleasePin[]) {
     if (!pins.length) return [];
-    const rows = await this.db.prepare(`SELECT revision, collection_id, item_id, locale, schema_revision FROM managed_cms_revisions
-       WHERE site_id = ?2 AND revision IN (${pins.map((_, i) => `?${i + 6}`).join(",")})
-       AND EXISTS (SELECT 1 ${AUTH})`).bind(...scopeValues(site, "cms.publish"), ...pins.map((pin) => pin.revision)).all<{
-        revision: string; collection_id: string; item_id: string; locale: string; schema_revision: string;
-      }>();
-    if (!rows.success || !rows.results) throw new Error("CMS revision lookup failed");
-    return pins.filter((pin) => rows.results!.some((row) => row.revision === pin.revision && row.collection_id === pin.collectionId
-      && row.item_id === pin.itemId && row.locale === site.state.locale && row.schema_revision === site.state.schema.schemaRevision));
+    const scope = scopeValues(site, "cms.publish");
+    // D1 allows at most 100 bound parameters per statement; keep the five auth/site values in every chunk.
+    const pinChunkSize = 100 - scope.length;
+    const revisionRows = new Map<string, { revision: string; collection_id: string; item_id: string; locale: string; schema_revision: string }>();
+    for (let offset = 0; offset < pins.length; offset += pinChunkSize) {
+      const chunk = pins.slice(offset, offset + pinChunkSize);
+      const rows = await this.db.prepare(`SELECT revision, collection_id, item_id, locale, schema_revision FROM managed_cms_revisions
+         WHERE site_id = ?2 AND revision IN (${chunk.map((_, i) => `?${i + 6}`).join(",")})
+         AND EXISTS (SELECT 1 ${AUTH})`).bind(...scope, ...chunk.map((pin) => pin.revision)).all<{
+          revision: string; collection_id: string; item_id: string; locale: string; schema_revision: string;
+        }>();
+      if (!rows.success || !rows.results) throw new Error("CMS revision lookup failed");
+      for (const row of rows.results) revisionRows.set(row.revision, row);
+    }
+    return pins.filter((pin) => {
+      const row = revisionRows.get(pin.revision);
+      return row?.collection_id === pin.collectionId && row.item_id === pin.itemId
+        && row.locale === site.state.locale && row.schema_revision === site.state.schema.schemaRevision;
+    });
   }
 
-  async fixedRoutes(site: Site, capability: CmsCapability) {
+  async fixedRoutes(site: Site, capability: CmsCapability, locale = site.state.locale) {
     const results = await this.db.prepare(`SELECT path FROM managed_pages WHERE site_id = ?2 AND locale = ?6
-      AND EXISTS (SELECT 1 ${AUTH})`).bind(...scopeValues(site, capability), site.state.locale).all<{ path: string }>();
+      AND EXISTS (SELECT 1 ${AUTH})`).bind(...scopeValues(site, capability), locale).all<{ path: string }>();
     if (!results.success || !results.results) throw new Error("CMS route lookup failed");
     return new Set(results.results.map(({ path }) => path));
   }
 
   /** Compose the current CMS route snapshot with live, published fixed pages. */
-  async routeTable(site: Site, capability: CmsCapability): Promise<CmsRouteTable> {
+  async routeTable(site: Site, capability: CmsCapability, locale = site.state.locale): Promise<CmsRouteTable> {
     let stored: CmsRouteTable | null = null;
-    const revision = site.state.routeTableRevision;
+    const localized = site.state.localizedReleases?.[locale];
+    const revision = locale === site.state.locale ? site.state.routeTableRevision : localized?.routeTableRevision;
     if (revision && revision !== "routes_initial") {
-      const object = await this.bucket.get(routeTableKey(site.siteId, site.state.locale, revision));
+      const object = await this.bucket.get(routeTableKey(site.siteId, locale, revision));
       if (!object) throw new Error("CMS route table unavailable");
       stored = await object.json<CmsRouteTable>();
     }
-    const snapshot = !stored && !revision && site.state.current ? await this.snapshot(site.siteId, site.state.current.id) : null;
+    const published = locale === site.state.locale ? site.state.current : localized ?? null;
+    const snapshot = !stored && !revision && published ? await this.snapshot(site.siteId, published.id) : null;
     if (!stored && snapshot?.routeTable) stored = snapshot.routeTable;
     const legacyReservations = snapshot ? [
       ...snapshot.items.flatMap((item) => item.path ? [{ kind: "cms-item" as const, path: item.path,
         collectionId: item.collectionId, itemId: item.itemId }] : []),
       ...snapshot.redirects.map(({ from, to }) => ({ kind: "redirect" as const, path: from, targetPath: to, owner: "cms" as const }))
     ] : [];
-    const base = stored ?? { siteId: site.siteId, locale: site.state.locale,
+    const base = stored ?? { siteId: site.siteId, locale,
       revision: snapshot?.routeTableRevision ?? (snapshot ? `routes_${await digest(legacyReservations)}` : "routes_initial"),
       reservations: legacyReservations };
     const pages = await this.db.prepare(`SELECT page_id, path, visibility, published_revision FROM managed_pages WHERE site_id = ?2 AND locale = ?6
       AND EXISTS (SELECT 1 ${AUTH}) ORDER BY path, page_id`)
-      .bind(...scopeValues(site, capability), site.state.locale).all<{ page_id: string; path: string; visibility: string; published_revision: number | null }>();
+      .bind(...scopeValues(site, capability), locale).all<{ page_id: string; path: string; visibility: string; published_revision: number | null }>();
     if (!pages.success || !pages.results) throw new Error("CMS route lookup failed");
     const fixed = await Promise.all(pages.results.map(async ({ page_id, path, visibility, published_revision }) => ({
       kind: visibility === "public" && published_revision !== null ? "fixed-page" as const : "reserved" as const, path,
-      reservationId: `managed_page_${(await digest({ siteId: site.siteId, locale: site.state.locale, page_id, path })).slice(0, 32)}`
+      reservationId: `managed_page_${(await digest({ siteId: site.siteId, locale, page_id, path })).slice(0, 32)}`
     })));
     const withoutOldFixed = base.reservations.filter((reservation) => !((reservation.kind === "fixed-page" || reservation.kind === "reserved")
       && reservation.reservationId.startsWith("managed_page_")));
-    const next = parseCmsRouteTable({ siteId: site.siteId, locale: site.state.locale, revision: base.revision,
-      reservations: [...withoutOldFixed, ...fixed] }, site.siteId, site.state.locale);
+    const next = parseCmsRouteTable({ siteId: site.siteId, locale, revision: base.revision,
+      reservations: [...withoutOldFixed, ...fixed] }, site.siteId, locale);
     const unchanged = JSON.stringify(next.reservations) === JSON.stringify(base.reservations);
-    return unchanged ? next : parseCmsRouteTable({ ...next, revision: `routes_${await digest(next.reservations)}` }, site.siteId, site.state.locale);
+    return unchanged ? next : parseCmsRouteTable({ ...next, revision: `routes_${await digest(next.reservations)}` }, site.siteId, locale);
   }
 
   async receipt(site: Site, capability: CmsCapability, operationId: string) {
@@ -224,7 +287,7 @@ export class CmsStore {
   async commit(site: Site, capability: CmsCapability, change: {
     operation: string; operationId: string; inputDigest: string; result: object; state: CmsState;
     revisions?: readonly CmsItemRevision[]; job?: { id: string; kind: Job["kind"]; at: number; payload: JobPayload };
-    cancel?: string; tokenHash?: string; requireFreeSlot?: boolean; bindingsGeneration?: number;
+    cancel?: string; tokenHash?: string; requireFreeSlot?: boolean; bindingsGeneration?: number; publishedSnapshot?: CmsReleaseSnapshot;
   }): Promise<boolean> {
     const transactionId = opaque("tx"), auditGuard = "EXISTS (SELECT 1 FROM managed_cms_receipts WHERE transaction_id = ?1)";
     const { operation, operationId, inputDigest, state, result, job, revisions, cancel } = change;
@@ -243,6 +306,11 @@ export class CmsStore {
         .bind(transactionId, site.siteId, JSON.stringify(state)),
       this.db.prepare(`INSERT INTO managed_cms_audit (id, site_id, actor_id, operation) SELECT ?1, ?2, ?3, ?4 WHERE ${auditGuard}`)
         .bind(transactionId, site.siteId, site.actor.id, operation),
+      ...(change.publishedSnapshot ? [
+        this.db.prepare(`INSERT INTO managed_cms_releases (site_id, release_id) SELECT ?2, ?3 WHERE ${auditGuard}`)
+          .bind(transactionId, site.siteId, change.publishedSnapshot.releaseId),
+        await this.deliveryEvent(transactionId, change.publishedSnapshot, auditGuard)
+      ] : []),
       ...(revisions ?? []).map((item) => this.db.prepare(`INSERT INTO managed_cms_revisions (site_id, revision, collection_id, item_id, locale, schema_revision)
         SELECT ?2, ?3, ?4, ?5, ?6, ?7 WHERE ${auditGuard}`)
         .bind(transactionId, site.siteId, item.revision, item.collectionId, item.itemId, item.locale, item.schemaRevision)),
@@ -263,19 +331,21 @@ export class CmsStore {
     const state: CmsState = { ...site.state, current: { id: snapshot.releaseId, at: dateNow() }, routeTableRevision: snapshot.routeTable.revision };
     const generation = opaque("tx");
     const guard = "EXISTS (SELECT 1 FROM managed_cms_state WHERE site_id = ?2 AND generation = ?1)";
-    const result = await this.db.batch([
+    const statements = [
       this.db.prepare(`UPDATE managed_cms_state SET generation = ?6, state_json = ?7 WHERE site_id = ?2 AND generation = ?8
         AND EXISTS (SELECT 1 ${AUTH})
         AND EXISTS (SELECT 1 FROM managed_cms_outbox WHERE site_id = ?2 AND id = ?9 AND state = 'pending' AND lease_id = ?10
           AND lease_until > unixepoch())`).bind(...scopeValues(site, "cms.publish"), generation, JSON.stringify(state), site.generation, job.id, job.lease_id),
       this.db.prepare(`INSERT INTO managed_cms_releases (site_id, release_id) SELECT ?2, ?3 WHERE ${guard}`)
         .bind(generation, site.siteId, snapshot.releaseId),
+      await this.deliveryEvent(generation, snapshot, guard),
       this.db.prepare(`INSERT INTO managed_cms_audit (id, site_id, actor_id, operation) SELECT ?1, ?2, ?3, 'cms.release.delivered' WHERE ${guard}`)
         .bind(generation, site.siteId, site.actor.id),
       this.db.prepare(`UPDATE managed_cms_outbox SET state = 'delivered', lease_id = NULL, lease_until = NULL, failure = NULL
         WHERE site_id = ?2 AND id = ?3 AND ${guard}`).bind(generation, site.siteId, job.id)
-    ]);
-    if (result.length !== 4 || result.some((entry) => !entry.success)) throw new Error("CMS publication transaction failed");
+    ];
+    const result = await this.db.batch(statements);
+    if (result.length !== statements.length || result.some((entry) => !entry.success)) throw new Error("CMS publication transaction failed");
     return result[0]?.meta?.changes === 1;
   }
 }

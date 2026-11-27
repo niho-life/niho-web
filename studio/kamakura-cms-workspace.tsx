@@ -25,11 +25,11 @@ function sessionFor(siteOrigin: string | null): Session {
   const key = siteOrigin ?? "";
   const existing = sessions.get(key);
   if (existing) return existing;
-  const commonApi = typeof window === "undefined" ? undefined : createPageEditingApiClient({
+  const commonApi = createPageEditingApiClient({
     origin: window.location.origin, siteId: KAMAKURA_CMS_SITE_ID, basePath: KAMAKURA_EDITING_API_BASE,
   });
   const assetLibrary = typeof window === "undefined" ? undefined : createKamakuraAssetLibrary(window.location.origin);
-  const adapter = createKamakuraCmsAdapter({ siteOrigin, ...(commonApi ? { commonApi } : {}), ...(assetLibrary ? { assetLibrary } : {}) });
+  const adapter = createKamakuraCmsAdapter({ siteOrigin, commonApi, ...(assetLibrary ? { assetLibrary } : {}) });
   const imageUrl = adapter.imageUrl;
   const session: Session = { adapter, renderRichText: createStudioRichText(imageUrl ? { imageUrl: (url, width) => imageUrl(url, width) ?? url } : {}) };
   sessions.set(key, session);

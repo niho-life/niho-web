@@ -9,12 +9,17 @@ import { CMS_PAGE_BINDINGS_MAX_BYTES, parseCmsPageBindings } from "../dist/cms-p
 import { EDITING_OPERATIONS } from "../dist/editing-api.js";
 import { editingLocalizationConflictBody, EDITING_LOCALIZATION_INPUT_BYTES } from "../dist/editing-localization.js";
 import { parseAssetUploadResult } from "../dist/assets.js";
+import { CMS_V2_OPERATIONS, parseCmsLocalizationItemKey } from "../dist/cms-v2.js";
 import { editDocumentById } from "../dist/editor-model.js";
 import { PAGE_OPERATION_LIMIT, changedPageNodeIds, editingOperationProblem, pageOperationUsesNodeNames, parsePageOperation } from "../dist/editing-page-operations.js";
 import { diffDocuments } from "../dist/history.js";
 import { parseBreakpointSettings } from "../dist/style-model.js";
+import { parseManagedSiteSeoSettings } from "../dist/managed-seo-settings.js";
+import { parseManagedSiteRedirects } from "../dist/managed-site-redirects.js";
+import { MANAGED_EMBED_REF } from "../dist/managed-embed-block.js";
 import { inspectPageDocument, PageInspectError, parsePageInspectQuery } from "../dist/page-inspect.js";
-import { OPERATIONS, OPERATION_KEY_HEADER, SERVICE_CLIENT_ID } from "./operations.mjs";
+import { OPERATION_KEY_HEADER, SERVICE_CLIENT_ID } from "../dist/studio-cli-auth.js";
+import { MANAGED_CMS_EXTRA_OPERATIONS } from "../dist/managed-cms-operations.js";
 import { isSafePublicUrl } from "../dist/validation-utils.js";
 import { capturePagePreview } from "./page-preview.mjs";
 import { NIHO_EDIT_USAGE as USAGE } from "./niho-edit-usage.mjs";
@@ -22,12 +27,17 @@ import { NIHO_EDIT_USAGE as USAGE } from "./niho-edit-usage.mjs";
 const MAX_INPUT_BYTES = 4 * 1024 * 1024;
 const MAX_PAGE_CHANGE_BYTES = 16 * 1024;
 const MAX_ASSET_UPLOAD_BYTES = 50 * 1024 * 1024;
+const CLI_USER_AGENT = "niho-edit/0.1.0";
 const IDENTIFIER = /^[A-Za-z][A-Za-z0-9_-]{0,79}$/u;
 const LOCALE = /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/u;
 const OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const CMS_COLLECTION_ID = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,79}$/u;
 const CMS_ITEM_ID = /^[A-Za-z0-9_][A-Za-z0-9._~-]{0,127}$/u;
 const RESERVED_CMS_IDS = new Set(["__proto__", "constructor", "prototype"]);
+function isCmsLocalizationItemKey(value) {
+  try { parseCmsLocalizationItemKey(value); return true; }
+  catch { return false; }
+}
 function validCmsCollectionId(value) { return typeof value === "string" && CMS_COLLECTION_ID.test(value) && !RESERVED_CMS_IDS.has(value); }
 function validCmsItemId(value) { return typeof value === "string" && CMS_ITEM_ID.test(value) && value !== "." && value !== ".." && !RESERVED_CMS_IDS.has(value); }
 
@@ -40,12 +50,12 @@ function argsFromCli() {
     return parseArgs({ allowPositionals: true, options: {
       studio: { type: "boolean" }, origin: { type: "string" }, site: { type: "string" }, locale: { type: "string" }, json: { type: "string" }, action: { type: "string" },
       "expected-version": { type: "string" }, "components-version": { type: "string" }, "presentation-version": { type: "string" }, "cms-bindings": { type: "string" },
-      "styles-version": { type: "string" }, "site-publication-epoch": { type: "string" },
       revision: { type: "string" }, "operation-id": { type: "string" }, redirect: { type: "string" }, base: { type: "string" }, help: { type: "boolean", short: "h" },
       name: { type: "string" }, "mime-type": { type: "string" }, provider: { type: "string" }, search: { type: "string" }, kind: { type: "string" }, "upload-origin": { type: "string" },
       "folder-id": { type: "string" }, cursor: { type: "string" }, limit: { type: "string" }, recent: { type: "boolean" },
       ops: { type: "string" }, "dry-run": { type: "boolean" },
       "confirm-data-loss": { type: "boolean" },
+      checkpoint: { type: "string" }, approve: { type: "string", multiple: true },
       widths: { type: "string" }, compare: { type: "string" }, out: { type: "string" },
       "node": { type: "string" }, "depth": { type: "string" }, "text": { type: "string" },
       "tag": { type: "string" }, "style": { type: "string" }, "uses-token": { type: "string" }, "block": { type: "string" },
@@ -84,18 +94,14 @@ async function inputSnapshot(path) {
   }
   const source = await readJson(path === "-" ? process.stdin : createReadStream(path));
   const snapshotKeys = Object.keys(source);
-  if (!snapshotKeys.includes("document") || !snapshotKeys.includes("version") || snapshotKeys.some((key) => !["document", "version", "componentsVersion", "presentationVersion", "stylesVersion", "draftStylesVersion"].includes(key))
+  if (!snapshotKeys.includes("document") || !snapshotKeys.includes("version") || snapshotKeys.some((key) => !["document", "version", "componentsVersion", "presentationVersion"].includes(key))
     || !isEditingApiVersion(source.version) || source.componentsVersion !== undefined && !isEditingApiVersion(source.componentsVersion)
-    || source.presentationVersion !== undefined && !isEditingApiVersion(source.presentationVersion)
-    || source.stylesVersion !== undefined && !isEditingApiVersion(source.stylesVersion)
-    || source.draftStylesVersion !== undefined && !isEditingApiVersion(source.draftStylesVersion)) throw new CliError("invalid_snapshot");
+    || source.presentationVersion !== undefined && !isEditingApiVersion(source.presentationVersion)) throw new CliError("invalid_snapshot");
   let document;
   try { document = parseEditingPageDocumentEnvelope(source.document); } catch { throw new CliError("invalid_document"); }
   return { document, version: source.version,
     ...(source.componentsVersion === undefined ? {} : { componentsVersion: source.componentsVersion }),
-    ...(source.presentationVersion === undefined ? {} : { presentationVersion: source.presentationVersion }),
-    ...(source.stylesVersion === undefined ? {} : { stylesVersion: source.stylesVersion }),
-    ...(source.draftStylesVersion === undefined ? {} : { draftStylesVersion: source.draftStylesVersion }) };
+    ...(source.presentationVersion === undefined ? {} : { presentationVersion: source.presentationVersion }) };
 }
 function operationNodeId(operation) {
   if (!operation || typeof operation !== "object" || Array.isArray(operation)) return undefined;
@@ -216,15 +222,12 @@ async function inputPlan(path, target) {
     catch (error) { if (error instanceof CliError) throw error; throw new CliError("invalid_json_input"); }
   }
   const plan = await readJson(path === "-" ? process.stdin : createReadStream(path));
-  const allowed = ["target", "expectedVersion", "action", "revision", "componentsVersion", "presentationVersion", "siteStylesRevision", "sitePublicationEpoch", "confirmationToken", "domain", "changes", "url", "affected"];
+  const allowed = ["target", "expectedVersion", "action", "revision", "componentsVersion", "presentationVersion", "confirmationToken", "domain", "changes", "url", "affected"];
   if (Object.keys(plan).some((key) => !allowed.includes(key)) || !plan.target || typeof plan.target !== "object" || Array.isArray(plan.target)
     || Object.keys(plan.target).sort().join(",") !== "locale,pageId,siteId"
     || plan.target.siteId !== target.siteId || plan.target.pageId !== target.pageId || plan.target.locale !== target.locale
     || !isEditingApiVersion(plan.expectedVersion) || (plan.action !== "publish" && plan.action !== "rollback")
-    || !isEditingApiVersion(plan.confirmationToken) || typeof plan.domain !== "string" || !Array.isArray(plan.changes)
-    || (plan.siteStylesRevision === undefined) !== (plan.sitePublicationEpoch === undefined)
-    || plan.siteStylesRevision !== undefined && (Object.keys(plan.siteStylesRevision).sort().join(",") !== "stage,version"
-      || plan.siteStylesRevision.stage !== "published" || !isEditingApiVersion(plan.siteStylesRevision.version) || !isEditingApiVersion(plan.sitePublicationEpoch))) throw new CliError("invalid_release_plan");
+    || !isEditingApiVersion(plan.confirmationToken) || typeof plan.domain !== "string" || !Array.isArray(plan.changes)) throw new CliError("invalid_release_plan");
   if (plan.action === "publish" && plan.revision !== undefined || plan.action === "rollback" && (!Number.isSafeInteger(plan.revision) || plan.revision < 1)) throw new CliError("invalid_release_plan");
   return plan;
 }
@@ -232,8 +235,8 @@ function emit(result, status = null, code = 0, operation = null) {
   process.exitCode = code;
   process.stdout.write(`${JSON.stringify({ apiVersion: "v1", httpStatus: status, operation, result })}\n`);
 }
-function emitSnapshot(document, version, componentsVersion, presentationVersion, stylesVersion, draftStylesVersion) {
-  process.stdout.write(`${JSON.stringify({ document, version, ...(componentsVersion === undefined ? {} : { componentsVersion }), ...(presentationVersion === undefined ? {} : { presentationVersion }), ...(stylesVersion === undefined ? {} : { stylesVersion }), ...(draftStylesVersion === undefined ? {} : { draftStylesVersion }) })}\n`);
+function emitSnapshot(document, version, componentsVersion, presentationVersion) {
+  process.stdout.write(`${JSON.stringify({ document, version, ...(componentsVersion === undefined ? {} : { componentsVersion }), ...(presentationVersion === undefined ? {} : { presentationVersion }) })}\n`);
 }
 async function inputBreakpointSnapshot(path) {
   if (!path) throw new CliError("missing_json_input");
@@ -246,6 +249,30 @@ async function inputBreakpointSnapshot(path) {
   let settings;
   try { settings = parseBreakpointSettings(source.settings); } catch { throw new CliError("invalid_settings_snapshot"); }
   return { settings, version: source.version };
+}
+async function inputSiteSeoSnapshot(path) {
+  if (!path) throw new CliError("missing_json_input");
+  if (path !== "-") {
+    try { if ((await stat(path)).size > 64 * 1024) throw new CliError("input_too_large"); }
+    catch (error) { if (error instanceof CliError) throw error; throw new CliError("invalid_json_input"); }
+  }
+  const source = await readJson(path === "-" ? process.stdin : createReadStream(path), 64 * 1024);
+  if (Object.keys(source).sort().join(",") !== "settings,version" || !isEditingApiVersion(source.version)) throw new CliError("invalid_seo_settings_snapshot");
+  const settings = parseManagedSiteSeoSettings(source.settings);
+  if (!settings) throw new CliError("invalid_seo_settings_snapshot");
+  return { settings, version: source.version };
+}
+async function inputSiteRedirectSnapshot(path) {
+  if (!path) throw new CliError("missing_json_input");
+  if (path !== "-") {
+    try { if ((await stat(path)).size > 512 * 1024) throw new CliError("input_too_large"); }
+    catch (error) { if (error instanceof CliError) throw error; throw new CliError("invalid_json_input"); }
+  }
+  const source = await readJson(path === "-" ? process.stdin : createReadStream(path), 512 * 1024);
+  if (Object.keys(source).sort().join(",") !== "redirects,version" || !isEditingApiVersion(source.version)) throw new CliError("invalid_redirect_snapshot");
+  const redirects = parseManagedSiteRedirects(source.redirects);
+  if (!redirects) throw new CliError("invalid_redirect_snapshot");
+  return { redirects, version: source.version };
 }
 async function inputPageManagementJson(path, maximumBytes) {
   if (!path) throw new CliError("missing_json_input");
@@ -352,6 +379,15 @@ async function apiCall(run) {
   }
 }
 
+async function runNormalization(action, values, client, scope) {
+  const { runNormalizationCli } = await import("./normalize.mjs");
+  const fail = (code, status) => { throw new CliError(code, status); };
+  const result = await runNormalizationCli(action, values, {
+    client, scope, inputJson: inputPageManagementJson, maximumBytes: MAX_INPUT_BYTES, stableJson, fail, apiCall
+  });
+  process.stdout.write(`${JSON.stringify(result)}\n`);
+}
+
 async function runLocalization(client, operation, values, positionals) {
   const { id, method } = operation;
   const itemTarget = ["localization.items.read", "localization.items.command", "localization.items.translate", "localization.preview"].includes(id);
@@ -369,6 +405,49 @@ async function runLocalization(client, operation, values, positionals) {
     const data = await readJson(values.json === "-" ? process.stdin : createReadStream(values.json), EDITING_LOCALIZATION_INPUT_BYTES);
     if (itemTarget && Object.hasOwn(data, "itemKey")) throw new CliError("invalid_json_input");
     input = { ...data, ...input };
+  }
+
+  if (values.studio) {
+    const studioOperation = {
+      "localization.overview": "cms.localization.overview",
+      "localization.items.list": "cms.localization.items.list",
+      "localization.items.read": "cms.localization.items.read",
+      "localization.items.command": "cms.localization.items.command",
+      "localization.release.read": "cms.localization.release.current",
+      "localization.release.prepare": "cms.localization.release.plan",
+      "localization.release.apply": "cms.localization.release.apply"
+    }[id];
+    if (!studioOperation || itemTarget && !isCmsLocalizationItemKey(input.itemKey)) throw new CliError("invalid_arguments");
+    let studioInput = input;
+    if (id === "localization.items.list") {
+      if (input.cursor !== null) throw new CliError("invalid_arguments");
+      studioInput = {};
+    }
+    if (id === "localization.release.read") studioInput = {};
+    if (id === "localization.release.prepare") {
+      if (input.operation !== "publish" || input.resumeToken !== null) throw new CliError("invalid_arguments");
+      studioInput = typeof input.operationId === "string" ? { operationId: input.operationId } : {};
+    }
+    if (id === "localization.release.apply") {
+      if (input.operation !== "publish" || input.resumeToken !== null || typeof input.confirmationToken !== "string") throw new CliError("invalid_arguments");
+      studioInput = { confirmationToken: input.confirmationToken };
+    }
+    const url = `${origin(values.origin)}/api/edit/v2/sites/${encodeURIComponent(values.site)}/operations/${studioOperation}`;
+    let response;
+    try {
+      response = await fetch(url, { method: "POST", credentials: "omit", cache: "no-store", redirect: "manual", signal: AbortSignal.timeout(30_000),
+        headers: { "User-Agent": CLI_USER_AGENT, "Content-Type": "application/json", ...(values.studio ? {
+          "X-Studio-CMS-Version": "2",
+          ...(process.env.CF_ACCESS_CLIENT_ID && process.env.CF_ACCESS_CLIENT_SECRET
+            ? { "CF-Access-Client-Id": process.env.CF_ACCESS_CLIENT_ID, "CF-Access-Client-Secret": process.env.CF_ACCESS_CLIENT_SECRET }
+            : process.env.NIHO_EDIT_TOKEN ? { "cf-access-token": process.env.NIHO_EDIT_TOKEN } : {}),
+          ...(typeof studioInput.operationId === "string" ? { "X-Studio-Operation-Key": studioInput.operationId } : {})
+        } : {}) }, body: JSON.stringify({ siteId: values.site, ...studioInput }) });
+    } catch { throw new CliError("transport_error"); }
+    if (response.status >= 300 && response.status < 400) throw new CliError("redirect_response", response.status);
+    const payload = await readJson(response.body, 2 * 1024 * 1024);
+    emit(payload, response.status, response.ok ? 0 : 1, studioOperation);
+    return;
   }
 
   let result;
@@ -454,8 +533,7 @@ async function runPageInspection(client, command, pageId, extra, values) {
   process.stdout.write(JSON.stringify({ ...projected, version: snapshot.version,
     ...(snapshot.cmsBindings === undefined ? {} : { cmsBindings: snapshot.cmsBindings }),
     ...(snapshot.componentsVersion === undefined ? {} : { componentsVersion: snapshot.componentsVersion }),
-    ...(snapshot.presentationVersion === undefined ? {} : { presentationVersion: snapshot.presentationVersion }),
-    ...(snapshot.stylesVersion === undefined ? {} : { stylesVersion: snapshot.stylesVersion }) }) + "\n");
+    ...(snapshot.presentationVersion === undefined ? {} : { presentationVersion: snapshot.presentationVersion }) }) + "\n");
 }
 
 async function runPagePreview(client, pageId, extra, values, baseOrigin, authorizationHeaders) {
@@ -513,7 +591,22 @@ async function main() {
   }
   if (command !== "preview" && [values.widths, values.compare, values.out].some((value) => value !== undefined)) throw new CliError("invalid_arguments");
   if (command !== "apply" && (values.ops !== undefined || values["cms-bindings"] !== undefined || values["dry-run"] !== undefined)) throw new CliError("invalid_arguments");
+  if (command !== "normalize" && (values.checkpoint !== undefined || values.approve !== undefined)) throw new CliError("invalid_arguments");
   if (!["outline", "find", "get"].includes(command) && ["node", "depth", "text", "tag", "style", "uses-token", "block", "url", "effective-style"].some((key) => values[key] !== undefined)) throw new CliError("invalid_arguments");
+  if (command === "normalize") {
+    const offline = ["analyze", "plan"].includes(pageId);
+    assertCommandOptions(values, pageId === "apply" ? ["json", "checkpoint", "approve"] : ["json"]);
+    if (extra.length || !values.json || !["analyze", "plan", "apply", "resume", "undo", "verify"].includes(pageId)
+      || !offline && values.json === "-" || pageId === "apply" && (!values.checkpoint || values.checkpoint === "-")) throw new CliError("invalid_arguments");
+    if (offline) {
+      await runNormalization(pageId, values);
+      return;
+    }
+  }
+  if (command === "lint") {
+    assertCommandOptions(values, ["locale"]);
+    if (extra.length || !pageId || (pageId === "all" ? values.locale !== undefined : !LOCALE.test(values.locale ?? ""))) throw new CliError("invalid_arguments");
+  }
   if (command === "cms-diff") {
     assertCommandOptions(values, ["base", "json"]);
     if (pageId !== undefined || extra.length) throw new CliError("invalid_arguments");
@@ -526,7 +619,8 @@ async function main() {
     process.stdout.write(`${JSON.stringify({ id: edited.id ?? base.id ?? null, version: base.version, changes })}\n`); return;
   }
   const baseOrigin = origin(values.origin);
-  if (values.studio && !["discover", "read", "outline", "find", "get", "apply"].includes(command) && !command?.startsWith("cms-")) throw new CliError("invalid_arguments");
+  if (values.studio && !["discover", "read", "outline", "find", "get", "apply", "save", "release-plan", "release", "publish", "history", "restore", "pages-catalog", "page-change", "normalize", "lint", "site-seo-read", "site-seo-save", "site-redirects-read", "site-redirects-save", "site-public-read", "site-public-save", "page-embed-register"].includes(command)
+    && !command?.startsWith("cms-") && !command?.startsWith("localization-")) throw new CliError("invalid_arguments");
   if (!IDENTIFIER.test(values.site ?? "")) throw new CliError("invalid_site");
   const token = process.env.NIHO_EDIT_TOKEN;
 
@@ -545,9 +639,107 @@ async function main() {
   }
   const authorizationHeaders = { Authorization: `Bearer ${token}`, ...accessHeaders };
   const headers = values.studio ? {
-    "X-Studio-CMS-Version": "2", ...(hasAccessCredentials ? accessHeaders : { "cf-access-token": token })
-  } : { Authorization: `Bearer ${token}`, ...accessHeaders };
+    "User-Agent": CLI_USER_AGENT, "X-Studio-CMS-Version": "2", ...(hasAccessCredentials ? accessHeaders : { "cf-access-token": token })
+  } : { "User-Agent": CLI_USER_AGENT, Authorization: `Bearer ${token}`, ...accessHeaders };
   const client = createPageEditingApiClient({ origin: baseOrigin, siteId: values.site, credentials: "omit", headers, preferLegacyDiscovery: true });
+
+  if (["site-public-read", "site-public-save", "page-embed-register"].includes(command)) {
+    const embedding = command === "page-embed-register";
+    const reading = command === "site-public-read";
+    assertCommandOptions(values, reading ? [] : embedding ? ["locale", "json"] : ["json"]);
+    if (!values.studio || extra.length || (embedding
+      ? !IDENTIFIER.test(pageId ?? "") || !LOCALE.test(values.locale ?? "")
+      : pageId !== undefined)) throw new CliError("invalid_arguments");
+    const input = reading ? undefined : await inputPageManagementJson(values.json, MAX_PAGE_CHANGE_BYTES);
+    if (embedding && (Object.keys(input).length !== 1 || typeof input.src !== "string" || !input.src || input.src.length > 8192)) {
+      throw new CliError("invalid_embed_input");
+    }
+    const operation = embedding ? "pages.embed-register" : reading ? "site.public.read" : "site.public.save";
+    const path = embedding ? `${operation}/${encodeURIComponent(pageId)}` : operation;
+    let response;
+    try {
+      response = await fetch(`${baseOrigin}/api/edit/v2/sites/${encodeURIComponent(values.site)}/operations/${path}`, {
+        method: reading ? "GET" : embedding ? "POST" : "PUT", credentials: "omit", cache: "no-store", redirect: "manual", signal: AbortSignal.timeout(30_000),
+        headers: { ...headers, ...(input ? { "Content-Type": "application/json" } : {}) },
+        ...(input ? { body: JSON.stringify(embedding ? { src: input.src, locale: values.locale } : input) } : {})
+      });
+    } catch { throw new CliError("transport_error"); }
+    if (response.status >= 300 && response.status < 400) throw new CliError("redirect_response", response.status);
+    const payload = await readJson(response.body, MAX_PAGE_CHANGE_BYTES);
+    if (!response.ok) { emit(payload, response.status, 1, operation); return; }
+    if (embedding) {
+      if (response.status !== 201 || typeof payload.refId !== "string" || !MANAGED_EMBED_REF.test(payload.refId)) throw new CliError("invalid_response", response.status);
+      emit({ refId: payload.refId }, response.status, 0, operation);
+      return;
+    }
+    const { domain, origins } = payload;
+    if (!domain || (domain.hostname !== null && typeof domain.hostname !== "string") || typeof domain.noindex !== "boolean"
+      || !isEditingApiVersion(domain.version) || !origins || !isEditingApiVersion(origins.version)
+      || !Array.isArray(origins.frameOrigins) || !origins.frameOrigins.every((value) => typeof value === "string")
+      || !Array.isArray(origins.resourceOrigins) || !origins.resourceOrigins.every((value) => typeof value === "string")) {
+      throw new CliError("invalid_response", response.status);
+    }
+    const result = {
+      domain: { hostname: domain.hostname, noindex: domain.noindex, version: domain.version },
+      origins: { frameOrigins: origins.frameOrigins, resourceOrigins: origins.resourceOrigins, version: origins.version }
+    };
+    if (reading) { process.stdout.write(`${JSON.stringify(result)}\n`); return; }
+    emit(result, response.status, 0, operation);
+    return;
+  }
+
+  if (command === "site-seo-read" || command === "site-seo-save") {
+    const saving = command === "site-seo-save";
+    assertCommandOptions(values, saving ? ["json"] : []);
+    if (!values.studio || pageId !== undefined || extra.length || saving && !values.json) throw new CliError("invalid_arguments");
+    const snapshot = saving ? await inputSiteSeoSnapshot(values.json) : undefined;
+    let response;
+    try {
+      response = await fetch(`${baseOrigin}/api/edit/v2/sites/${encodeURIComponent(values.site)}/operations/site.seo.${saving ? "save" : "read"}`, {
+        method: saving ? "PUT" : "GET", credentials: "omit", cache: "no-store", redirect: "manual", signal: AbortSignal.timeout(30_000),
+        headers: { ...headers, ...(saving ? { "Content-Type": "application/json" } : {}) },
+        ...(snapshot ? { body: JSON.stringify({ expectedVersion: snapshot.version, settings: snapshot.settings }) } : {})
+      });
+    } catch { throw new CliError("transport_error"); }
+    if (response.status >= 300 && response.status < 400) throw new CliError("redirect_response", response.status);
+    const payload = await readJson(response.body, 64 * 1024);
+    if (!saving && response.ok) { process.stdout.write(`${JSON.stringify(payload)}\n`); return; }
+    emit(payload, response.status, response.ok ? 0 : 1, saving ? "site.seo.save" : "site.seo.read");
+    return;
+  }
+
+  if (command === "site-redirects-read" || command === "site-redirects-save") {
+    const saving = command === "site-redirects-save";
+    assertCommandOptions(values, saving ? ["json"] : []);
+    if (!values.studio || pageId !== undefined || extra.length || saving && !values.json) throw new CliError("invalid_arguments");
+    const snapshot = saving ? await inputSiteRedirectSnapshot(values.json) : undefined;
+    let response;
+    try {
+      response = await fetch(`${baseOrigin}/api/edit/v2/sites/${encodeURIComponent(values.site)}/operations/site.redirects.${saving ? "save" : "read"}`, {
+        method: saving ? "PUT" : "GET", credentials: "omit", cache: "no-store", redirect: "manual", signal: AbortSignal.timeout(30_000),
+        headers: { ...headers, ...(saving ? { "Content-Type": "application/json" } : {}) },
+        ...(snapshot ? { body: JSON.stringify({ expectedVersion: snapshot.version, redirects: snapshot.redirects }) } : {})
+      });
+    } catch { throw new CliError("transport_error"); }
+    if (response.status >= 300 && response.status < 400) throw new CliError("redirect_response", response.status);
+    const payload = await readJson(response.body, 512 * 1024);
+    if (!saving && response.ok) { process.stdout.write(`${JSON.stringify(payload)}\n`); return; }
+    emit(payload, response.status, response.ok ? 0 : 1, saving ? "site.redirects.save" : "site.redirects.read");
+    return;
+  }
+
+  if (command === "normalize") {
+    await runNormalization(pageId, values, client, { origin: baseOrigin, siteId: values.site, studio: values.studio === true });
+    return;
+  }
+
+  if (command === "lint") {
+    const { runLintCli } = await import("./lint.mjs");
+    const result = await runLintCli(pageId, values.locale, { client, siteId: values.site, apiCall });
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    if (result.findings.length) process.exitCode = 1;
+    return;
+  }
 
   if (command === "cms-schema-plan" || command === "cms-schema-apply") {
     const planning = command === "cms-schema-plan";
@@ -606,12 +798,14 @@ async function main() {
   if (command === "cms-discover" || command === "cms-v2") {
     const discovery = command === "cms-discover";
     assertCommandOptions(values, discovery ? [] : ["json", "operation-id"]);
-    const operation = discovery ? null : OPERATIONS.find((entry) => entry.cmsVersion === 2 && entry.id === pageId);
-    if (!values.studio || extra.length || (discovery ? pageId !== undefined : !operation)) throw new CliError("invalid_arguments");
+    const operation = discovery ? null : pageId;
+    const knownOperation = Object.hasOwn(CMS_V2_OPERATIONS, operation) || Object.hasOwn(MANAGED_CMS_EXTRA_OPERATIONS, operation);
+    if (!values.studio || extra.length || (discovery ? pageId !== undefined : !knownOperation)) throw new CliError("invalid_arguments");
     const key = values["operation-id"];
     if (key !== undefined && !OPERATION_ID.test(key)) throw new CliError("invalid_arguments");
-    const input = discovery ? undefined : await inputPageManagementJson(values.json, 64 * 1024);
-    const url = `${baseOrigin}/api/edit/v2/sites/${encodeURIComponent(values.site)}/${operation ? `operations/${operation.id}` : "capabilities"}`;
+    const input = discovery ? undefined : await inputPageManagementJson(values.json,
+      operation === "cms.items.save" ? 128 * 1024 : 64 * 1024);
+    const url = `${baseOrigin}/api/edit/v2/sites/${encodeURIComponent(values.site)}/${operation ? `operations/${operation}` : "capabilities"}`;
     let result;
     try {
       result = await fetch(url, { method: operation ? "POST" : "GET", credentials: "omit", cache: "no-store", redirect: "manual", signal: AbortSignal.timeout(30_000),
@@ -620,7 +814,7 @@ async function main() {
     } catch { throw new CliError("transport_error"); }
     if (result.status >= 300 && result.status < 400) throw new CliError("redirect_response", result.status);
     const payload = await readJson(result.body, 2 * 1024 * 1024);
-    emit(payload, result.status, result.ok ? 0 : 1, operation?.id ?? command);
+    emit(payload, result.status, result.ok ? 0 : 1, operation ?? command);
     return;
   }
   if (command === "preview") { await runPagePreview(client, pageId, extra, values, baseOrigin, authorizationHeaders); return; }
@@ -632,39 +826,19 @@ async function main() {
     return;
   }
 
-  if (command?.startsWith("styles-")) {
-    assertCommandOptions(values, command === "styles-read" ? [] : ["json"]);
-    if (pageId !== undefined || extra.length) throw new CliError("invalid_arguments");
+  if (command === "styles") {
+    assertCommandOptions(values, pageId === "read" ? [] : ["json"]);
+    if (!["read", "edit", "publish"].includes(pageId) || extra.length) throw new CliError("invalid_arguments");
     const signal = AbortSignal.timeout(30_000);
-    if (command === "styles-read") {
+    if (pageId === "read") {
       process.stdout.write(`${JSON.stringify(await apiCall(() => client.readSiteStyles(signal)))}\n`); return;
     }
     const input = await inputPageManagementJson(values.json, MAX_INPUT_BYTES);
-    if (command === "styles-save") {
-      if (Object.keys(input).sort().join(",") !== "styles,version" || !isEditingApiVersion(input.version)) throw new CliError("invalid_styles_snapshot");
-      const result = await apiCall(() => client.saveSiteStyles(input.version, input.styles, signal));
-      if (result.status === "conflict") { emit({ error: "version_conflict" }, 409, 1, "site.styles.save"); return; }
-      emit(result, 200, 0, "site.styles.save"); return;
-    }
-    if (command === "styles-release-plan") {
-      const plan = await apiCall(() => client.prepareSiteStylesRelease(input, signal));
-      process.stdout.write(`${JSON.stringify(plan)}\n`); return;
-    }
-    if (command === "styles-release") {
-      const result = await apiCall(() => client.releaseSiteStyles(input, signal));
-      if (result.status === "conflict") { emit({ error: "version_conflict" }, 409, 1, "site.styles.release"); return; }
-      emit(result, 200, 0, "site.styles.release"); return;
-    }
-    if (command === "styles-migration-plan") {
-      const plan = await apiCall(() => client.prepareSiteStylesMigration(input, signal));
-      process.stdout.write(`${JSON.stringify(plan)}\n`); return;
-    }
-    if (command === "styles-migration-apply") {
-      const result = await apiCall(() => client.applySiteStylesMigration(input, signal));
-      if (result.status === "conflict") { emit({ error: "version_conflict" }, 409, 1, "site.styles.migration-apply"); return; }
-      emit(result, 200, 0, "site.styles.migration-apply"); return;
-    }
-    throw new CliError("invalid_arguments");
+    const result = pageId === "edit"
+      ? await apiCall(() => client.editSiteStyles(input, signal))
+      : await apiCall(() => client.publishSiteStyles(input, signal));
+    if (result.status === "conflict") { emit({ error: "version_conflict" }, 409, 1, `site.styles.${pageId}`); return; }
+    emit(result, 200, result.status === "referenced" ? 1 : 0, `site.styles.${pageId}`); return;
   }
 
   if (command === "assets-list") {
@@ -721,7 +895,7 @@ async function main() {
     let uploaded;
     try {
       const response = await fetch(intent.uploadUrl, { method: "PUT", credentials: "omit", cache: "no-store", redirect: "error", signal: AbortSignal.timeout(120_000),
-        headers: { Authorization: `Bearer ${intent.uploadToken}`, "Content-Type": mimeType,
+        headers: { "User-Agent": CLI_USER_AGENT, Authorization: `Bearer ${intent.uploadToken}`, "Content-Type": mimeType,
           ...(uploadUrl.origin === baseOrigin ? accessHeaders : {}) }, body: new Uint8Array(bytes) });
       if (!response.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")) throw new CliError("upload_rejected", response.status);
       const body = await response.json();
@@ -789,6 +963,18 @@ async function main() {
     const plan = await apiCall(() => client.prepareCmsPublish({ siteId: values.site, collectionId: pageId, itemId: extra[0] }, values["expected-version"], values["operation-id"], AbortSignal.timeout(30_000),
       values.redirect === undefined ? undefined : values.redirect === "true"));
     process.stdout.write(`${JSON.stringify(plan)}\n`); return;
+  }
+
+  if (command === "cms-publish" && pageId !== undefined) {
+    assertCommandOptions(values, ["expected-version", "operation-id", "redirect"]);
+    if (!values.studio || !validCmsCollectionId(pageId) || extra.length !== 1 || !validCmsItemId(extra[0])
+      || !isEditingApiVersion(values["expected-version"]) || !OPERATION_ID.test(values["operation-id"] ?? "")
+      || values.redirect !== undefined && values.redirect !== "true" && values.redirect !== "false") throw new CliError("invalid_arguments");
+    const target = { siteId: values.site, collectionId: pageId, itemId: extra[0] };
+    const result = await apiCall(() => client.publishCmsItemNow(target, values["expected-version"], values["operation-id"], AbortSignal.timeout(30_000),
+      values.redirect === undefined ? undefined : values.redirect === "true"));
+    if (result.status === "conflict") { emit({ error: "version_conflict" }, 409, 1, "cms.publish-now"); return; }
+    emit(result, 200, 0, "cms.publish-now"); return;
   }
 
   if (command === "cms-publish") {
@@ -863,6 +1049,15 @@ async function main() {
     process.stdout.write(`${JSON.stringify(await apiCall(() => client.readPageCatalog(AbortSignal.timeout(30_000))))}\n`); return;
   }
 
+  if (command === "page-change") {
+    assertCommandOptions(values, ["expected-version", "json"]);
+    if (pageId !== undefined || extra.length || !isEditingApiVersion(values["expected-version"])) throw new CliError("invalid_arguments");
+    const change = await inputPageManagementJson(values.json, MAX_PAGE_CHANGE_BYTES);
+    const result = await apiCall(() => client.changePageNow(change, values["expected-version"], AbortSignal.timeout(30_000)));
+    if (result.status === "conflict") { emit({ error: "version_conflict" }, 409, 1, "pages.change"); return; }
+    emit(result, 200, 0, "pages.change"); return;
+  }
+
   if (command === "page-change-prepare") {
     if (pageId !== undefined || extra.length || values.locale !== undefined || values.action !== undefined || values["components-version"] !== undefined
       || values["presentation-version"] !== undefined || values.revision !== undefined || values["operation-id"] !== undefined
@@ -888,23 +1083,58 @@ async function main() {
     return;
   }
   if (command === "apply") { await runPageApply(client, pageId, extra, values); return; }
+  if (command === "history") {
+    assertCommandOptions(values, ["locale", "cursor"]);
+    if (extra.length || !IDENTIFIER.test(pageId ?? "") || !LOCALE.test(values.locale ?? "")) throw new CliError("invalid_arguments");
+    const target = { siteId: values.site, pageId, locale: values.locale };
+    const result = await apiCall(() => client.listPageHistory(target, values.cursor, AbortSignal.timeout(30_000)));
+    emit(result, 200, 0, "pages.history"); return;
+  }
+  if (command === "publish" || command === "restore") {
+    assertCommandOptions(values, ["locale", "revision", "expected-version", "json"]);
+    if (!IDENTIFIER.test(pageId ?? "") || !LOCALE.test(values.locale ?? "")) throw new CliError("invalid_arguments");
+    let revision;
+    if (command === "publish") {
+      if (extra.length || values.revision !== undefined) throw new CliError("invalid_arguments");
+    } else {
+      const requested = extra.length === 1 ? extra[0] : values.revision;
+      if (extra.length > 1 || extra.length === 1 && values.revision !== undefined) throw new CliError("invalid_arguments");
+      const match = /^(?:rev-)?([1-9][0-9]*)$/u.exec(requested ?? "");
+      revision = match ? Number(match[1]) : NaN;
+      if (!Number.isSafeInteger(revision)) throw new CliError("invalid_arguments");
+    }
+    const target = { siteId: values.site, pageId, locale: values.locale };
+    let expectedVersion = values["expected-version"];
+    if (values.json !== undefined) {
+      if (expectedVersion !== undefined) throw new CliError("invalid_arguments");
+      const snapshot = await inputSnapshot(values.json);
+      if (snapshot.document.siteId !== target.siteId || snapshot.document.pageId !== target.pageId || snapshot.document.locale !== target.locale)
+        throw new CliError("snapshot_target_mismatch");
+      expectedVersion = snapshot.version;
+    }
+    if (!isEditingApiVersion(expectedVersion)) throw new CliError("invalid_arguments");
+    const result = await apiCall(() => client.publishPageNow(target, {
+      expectedVersion, action: command === "publish" ? "publish" : "restore", ...(revision === undefined ? {} : { revision })
+    }, AbortSignal.timeout(30_000)));
+    if (result.status === "conflict") { emit({ error: "version_conflict" }, 409, 1, "pages.publish"); return; }
+    emit(result, 200, 0, "pages.publish"); return;
+  }
   if (!["read", "save", "release-plan", "release"].includes(command) || extra.length || !IDENTIFIER.test(pageId ?? "") || !LOCALE.test(values.locale ?? "")) throw new CliError("invalid_arguments");
   const target = { siteId: values.site, pageId, locale: values.locale };
   if (command === "read") {
     if (values.json !== undefined || values.action !== undefined || values["expected-version"] !== undefined || values["components-version"] !== undefined || values["presentation-version"] !== undefined
-      || values["styles-version"] !== undefined || values["site-publication-epoch"] !== undefined || values.revision !== undefined || values["operation-id"] !== undefined) throw new CliError("invalid_arguments");
+      || values.revision !== undefined || values["operation-id"] !== undefined) throw new CliError("invalid_arguments");
     const snapshot = await apiCall(() => client.read(target, AbortSignal.timeout(30_000)));
-    emitSnapshot(snapshot.document, snapshot.version, snapshot.componentsVersion, snapshot.presentationVersion, snapshot.stylesVersion, snapshot.draftStylesVersion); return;
+    emitSnapshot(snapshot.document, snapshot.version, snapshot.componentsVersion, snapshot.presentationVersion); return;
   }
   if (command === "save") {
     if (values.action !== undefined || values["expected-version"] !== undefined || values["components-version"] !== undefined || values["presentation-version"] !== undefined
-      || values["styles-version"] !== undefined || values["site-publication-epoch"] !== undefined || values.revision !== undefined || values["operation-id"] !== undefined) throw new CliError("invalid_arguments");
+      || values.revision !== undefined || values["operation-id"] !== undefined) throw new CliError("invalid_arguments");
     const snapshot = await inputSnapshot(values.json);
     if (snapshot.document.siteId !== values.site || snapshot.document.pageId !== pageId || snapshot.document.locale !== values.locale) throw new CliError("snapshot_target_mismatch");
-    if (snapshot.draftStylesVersion !== undefined) await apiCall(() => client.readSiteStyles(AbortSignal.timeout(30_000)));
-    const result = await apiCall(() => client.save(target, snapshot.version, snapshot.document, AbortSignal.timeout(30_000), snapshot.draftStylesVersion));
+    const result = await apiCall(() => client.save(target, snapshot.version, snapshot.document, AbortSignal.timeout(30_000)));
     if (result.status === "conflict") throw new CliError("version_conflict", 409);
-    emitSnapshot(result.document, result.version, snapshot.componentsVersion, snapshot.presentationVersion, snapshot.stylesVersion, snapshot.draftStylesVersion); return;
+    emitSnapshot(result.document, result.version, snapshot.componentsVersion, snapshot.presentationVersion); return;
   }
   if (command === "release-plan") {
     if (values["operation-id"] !== undefined || !["publish", "rollback"].includes(values.action ?? "")) throw new CliError("invalid_arguments");
@@ -918,24 +1148,19 @@ async function main() {
       presentationVersion = snapshot.presentationVersion;
     }
     if (!isEditingApiVersion(expectedVersion) || componentsVersion !== undefined && !isEditingApiVersion(componentsVersion)
-      || presentationVersion !== undefined && !isEditingApiVersion(presentationVersion)
-      || (values["styles-version"] === undefined) !== (values["site-publication-epoch"] === undefined)
-      || values["styles-version"] !== undefined && (!isEditingApiVersion(values["styles-version"]) || !isEditingApiVersion(values["site-publication-epoch"]))) throw new CliError("invalid_arguments");
+      || presentationVersion !== undefined && !isEditingApiVersion(presentationVersion)) throw new CliError("invalid_arguments");
     const revision = values.revision === undefined ? undefined : Number(values.revision);
     if (values.action === "publish" && revision !== undefined || values.action === "rollback" && (!Number.isSafeInteger(revision) || revision < 1)) throw new CliError("invalid_arguments");
-    if (values["styles-version"] !== undefined) await apiCall(() => client.readSiteStyles(AbortSignal.timeout(30_000)));
     const plan = await apiCall(() => client.prepareRelease(target, {
       expectedVersion, action: values.action, ...(revision === undefined ? {} : { revision }),
-      ...(componentsVersion === undefined ? {} : { componentsVersion }), ...(presentationVersion === undefined ? {} : { presentationVersion }),
-      ...(values["styles-version"] === undefined ? {} : { siteStylesRevision: { stage: "published", version: values["styles-version"] }, sitePublicationEpoch: values["site-publication-epoch"] })
+      ...(componentsVersion === undefined ? {} : { componentsVersion }), ...(presentationVersion === undefined ? {} : { presentationVersion })
     }, AbortSignal.timeout(30_000)));
     process.stdout.write(`${JSON.stringify(plan)}\n`); return;
   }
   if (values.action !== undefined || values["expected-version"] !== undefined || values["components-version"] !== undefined
-    || values["presentation-version"] !== undefined || values["styles-version"] !== undefined || values["site-publication-epoch"] !== undefined || values.revision !== undefined) throw new CliError("invalid_arguments");
+    || values["presentation-version"] !== undefined || values.revision !== undefined) throw new CliError("invalid_arguments");
   if (!OPERATION_ID.test(values["operation-id"] ?? "")) throw new CliError("invalid_operation_id");
   const plan = await inputPlan(values.json, target);
-  if (plan.siteStylesRevision !== undefined) await apiCall(() => client.readSiteStyles(AbortSignal.timeout(30_000)));
   const result = await apiCall(() => client.release(target, plan, values["operation-id"], AbortSignal.timeout(30_000)));
   if (result.status === "conflict") throw new CliError("version_conflict", 409);
   emit(result, 200, 0, "release");

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { StudioPageEditor } from "./editor-performance.js";
 import { createExternalFramePolicy } from "../src/react.js";
 import { createProjectEditorAdapter } from "../src/project-editor-adapter.js";
-import type { EditorAdapter, EditorPage, EditorPageChange, EditorPageChangePlan, EditorBreakpoint, EditorBreakpointSettingsSnapshot, EditorLocalizedPage, EditorLocalizationCommandResult, EditorLocalizationPageSnapshot, EditorLocalizationSiteSnapshot, EditorReleasePlan, EditorReleaseRequest, EditorSaveResult, EditorSnapshot, EditorTarget } from "../src/editor-types.js";
+import type { EditorAdapter, EditorDocumentRead, EditorPage, EditorPageChange, EditorPageChangePlan, EditorBreakpoint, EditorBreakpointSettingsSnapshot, EditorLocalizedPage, EditorLocalizationCommandResult, EditorLocalizationPageSnapshot, EditorLocalizationSiteSnapshot, EditorReleasePlan, EditorReleaseRequest, EditorSaveResult, EditorSnapshot, EditorTarget } from "../src/editor-types.js";
 import type { Project } from "../src/projects.js";
 import { studioBuilderDefinition } from "./integration-builder.js";
 import { projectRoutePath } from "./project-routes.mjs";
@@ -12,10 +12,10 @@ import { createBlankEmbedRegistry, parsePageDocument, type BlockContracts } from
 import { parseLocalizationOverlay, parseSiteLocalizationConfig } from "../src/localization.js";
 import { KAMAKURA_CATALOG_CONTRACT_ERROR_CODE, KAMAKURA_CATALOG_CONTRACT_ERROR_STATUS, KAMAKURA_COMMON_PAGE_ID as COMMON_PAGE_ID, KAMAKURA_EDITOR_SITE_ID, KAMAKURA_ORIGIN_RETAINING_FRAME_SOURCES, KamakuraCatalogContractError, parseKamakuraCatalog, parseKamakuraCatalogPage } from "./kamakura-catalog.js";
 import type { KamakuraCatalog } from "./kamakura-catalog.js";
-import { parseEnglishPublication, parseEnglishPublicationAccepted } from "../src/english-publication.js";
+import { parseEnglishPublicationAccepted } from "../src/english-publication.js";
 import { normalizePageChange, validatePageChangePlan } from "../src/editor-model.js";
-import { createPageEditingApiClient, EditingApiClientError, supportsPageNodeNames } from "../src/editing-client.js";
-import type { EditingPageReleaseSetItem } from "../src/editing-api.js";
+import { createEditingApiSiteSettingsFacade, createPageEditingApiClient, EditingApiClientError, supportsPageNodeNames } from "../src/editing-client.js";
+import type { EditingPageReleaseSetItem, EditingPageSnapshot } from "../src/editing-api.js";
 
 const BASE = "/api/projects/project-kamakura/sites/kamakura/editor";
 const LOCALIZATION_BASE = "/api/projects/project-kamakura/sites/kamakura/localization";
@@ -88,7 +88,7 @@ type ApiResult = { readonly value: unknown; readonly etag: string | null; readon
 async function apiResult(path: string, method: RequestMethod, body: Record<string, unknown> | undefined, signal: AbortSignal, ifNoneMatch?: string): Promise<ApiResult> {
   if (signal.aborted) throw new DOMException("Aborted", "AbortError");
   const pagePath = path.startsWith(`${BASE}/`) ? path.slice(BASE.length + 1) : "";
-  const revalidateRead = method === "GET" && (pagePath === "catalog" || /^[a-z][a-z0-9-]{0,59}$/u.test(pagePath));
+  const revalidateRead = method === "GET" && pagePath === "catalog";
   let response: Response;
   try {
     response = await fetch(path, {
@@ -157,37 +157,12 @@ function statusFromError(error: unknown): EditorApiStatus {
   return { status: 503, errorCode: null, supportId: null };
 }
 
-function parseLegacySnapshot(value: unknown, target: EditorTarget, required: boolean): EditorSnapshot {
-  const source = record(value), document = record(source.document), checked = validTarget(target);
-  if (document.siteId !== checked.siteId || document.pageId !== checked.pageId || document.locale !== checked.locale || !validVersion(source.version)) throw new Error("文書の対象または版が一致しません。");
-  if (required && source.presentation === undefined) throw new Error("このサイトに必要な表示コンテキストがありません。");
-  const snapshot = { ...source } as unknown as EditorSnapshot;
-  if (source.englishPublication !== undefined) snapshot.englishPublication = parseEnglishPublication(source.englishPublication);
-  return snapshot;
-}
-
 function safeLine(value: unknown, maximum: number): value is string {
   return typeof value === "string" && value.trim() !== "" && value.length <= maximum && !/[\u0000-\u001f\u007f]/u.test(value);
 }
 
 function localizationVersion(value: unknown, prefix: "l" | "p" | "s"): value is string {
   return typeof value === "string" && new RegExp(`^${prefix}\\.[0-9a-f]{64}$`, "u").test(value);
-}
-
-function parseEnglishSnapshot(value: unknown, target: EditorTarget): EditorSnapshot {
-  const source = record(value), checked = validEnglishTarget(target);
-  if (source.status === "conflict" && Object.keys(source).length === 1) throw new EditorApiError(409, "conflict", null, "英語の編集状態が更新されました。最新の状態を読み直してください。");
-  if (source.status === "unavailable" && Object.keys(source).sort().join(",") === "message,status" && safeLine(source.message, 1000)) {
-    throw new EditorContentUnavailableError(source.message);
-  }
-  if (source.status !== "ready" || Object.keys(source).sort().join(",") !== "document,presentation,status,version" || !localizationVersion(source.version, "l")) {
-    throw new Error("英語文書の応答が正しくありません。");
-  }
-  const document = record(source.document);
-  if (document.siteId !== checked.siteId || document.pageId !== checked.pageId || document.locale !== checked.locale) throw new Error("英語文書の対象が一致しません。");
-  const presentation = record(source.presentation);
-  if (!validVersion(presentation.version)) throw new Error("英語表示コンテキストの版が正しくありません。");
-  return { document: source.document, version: source.version, presentation: source.presentation };
 }
 
 function parseLocalizationSite(value: unknown, catalog: KamakuraCatalog): EditorLocalizationSiteSnapshot {
@@ -284,36 +259,39 @@ function samePageManagementEntries(listed: readonly EditorPage[], current: reado
 
 export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (status: EditorApiStatus | null) => void, origin = "https://studio.niho.life", initialReads?: KamakuraSiteReads): EditorAdapter {
   const editingApi = createPageEditingApiClient({ origin, siteId: KAMAKURA_EDITOR_SITE_ID, basePath: `${BASE}/editing-api/v1`, editorSnapshot: { blocks: catalog.blockContracts } });
+  const site = catalog.sites.find(({ id }) => id === KAMAKURA_EDITOR_SITE_ID);
+  if (!site) throw new Error("鎌倉サイトの設定がありません。");
+  const siteSettings = createEditingApiSiteSettingsFacade(editingApi, KAMAKURA_EDITOR_SITE_ID, { title: site.name, locale: "ja" });
+  const siteSettingsReads = new Map<string, Promise<Awaited<ReturnType<NonNullable<typeof siteSettings.readSiteSettings>>>>>();
+  const readSiteSettings = (siteId: string, signal: AbortSignal) => {
+    signal.throwIfAborted();
+    let pending = siteSettingsReads.get(siteId);
+    if (!pending) {
+      pending = siteSettings.readSiteSettings!(siteId, new AbortController().signal);
+      siteSettingsReads.set(siteId, pending);
+      void pending.finally(() => {
+        if (siteSettingsReads.get(siteId) === pending) siteSettingsReads.delete(siteId);
+      }).catch(() => {});
+    }
+    return pending.then((snapshot) => {
+      signal.throwIfAborted();
+      return snapshot;
+    });
+  };
   let currentCatalog = catalog, initialPages = true;
   let localizationRead = initialReads?.localization, breakpointRead = initialReads?.breakpoints;
   const releaseOperationIds = new Map<string, string>();
-  const legacySnapshotCache = new Map<string, { readonly etag: string; readonly value: EditorSnapshot }>();
-  async function readLegacySnapshot(target: EditorTarget, signal: AbortSignal): Promise<EditorSnapshot> {
-    const checked = validTarget(target), key = `${checked.pageId}\u0000${checked.locale}`, path = pagePath(checked);
-    const cached = legacySnapshotCache.get(key);
-    let result = await apiResult(path, "GET", undefined, signal, cached?.etag);
-    if (result.notModified && cached && result.etag === cached.etag) return structuredClone(cached.value);
-    if (result.notModified) result = await apiResult(path, "GET", undefined, signal);
-    if (result.notModified) throw new EditorApiError(503);
-    const value = parseLegacySnapshot(result.value, checked, currentCatalog.nativePresentationPages.includes(checked.pageId));
-    if (result.etag) {
-      legacySnapshotCache.delete(key);
-      legacySnapshotCache.set(key, { etag: result.etag, value: structuredClone(value) });
-      if (legacySnapshotCache.size > 128) legacySnapshotCache.delete(legacySnapshotCache.keys().next().value!);
-    } else legacySnapshotCache.delete(key);
-    return value;
-  }
-  async function request<T>(signal: AbortSignal, run: () => Promise<T>, reportStatus = true): Promise<T> {
+  async function request<T>(signal: AbortSignal, run: () => Promise<T>): Promise<T> {
     try {
       signal.throwIfAborted();
       const result = await run();
       if (signal.aborted) throw new DOMException("Aborted", "AbortError");
-      if (reportStatus) onStatus(null);
+      onStatus(null);
       return result;
     } catch (error) {
       const normalized = error instanceof EditingApiClientError ? new EditorApiError(error.status ?? 503, error.code) : error;
-      if (reportStatus && !signal.aborted && normalized instanceof EditorApiError && (normalized.status !== 409 || normalized.code === VISUAL_EDITOR_FROZEN)) onStatus(statusFromError(normalized));
-      else if (reportStatus && !signal.aborted && !(normalized instanceof EditorApiError) && !(normalized instanceof EditorContentUnavailableError)) onStatus(statusFromError(normalized));
+      if (!signal.aborted && normalized instanceof EditorApiError && (normalized.status !== 409 || normalized.code === VISUAL_EDITOR_FROZEN)) onStatus(statusFromError(normalized));
+      else if (!signal.aborted && !(normalized instanceof EditorApiError) && !(normalized instanceof EditorContentUnavailableError)) onStatus(statusFromError(normalized));
       throw normalized;
     }
   }
@@ -329,27 +307,29 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
     } else validTarget(change.target);
     return change;
   }
-  async function readJapaneseDocument(target: EditorTarget, signal: AbortSignal): Promise<EditorSnapshot> {
-    const checked = validTarget(target);
-    const required = currentCatalog.nativePresentationPages.includes(checked.pageId);
-    const wire = await editingApi.read(checked, signal);
-    const document = wire.document;
-    if (wire.editorState !== undefined) {
-      if (required && wire.presentation === undefined) throw new Error("このサイトに必要な表示コンテキストがありません。");
-      return { ...wire.editorState, document, version: wire.version, ...(wire.presentation === undefined ? {} : { presentation: wire.presentation }) };
+  function editorSnapshotFromWire(target: EditorTarget, wire: EditingPageSnapshot): EditorSnapshot {
+    if (target.locale === "en") {
+      if (!wire.presentation) throw new Error("このページに必要な英語表示コンテキストがありません。");
+      return { document: wire.document, version: wire.version, presentation: wire.presentation };
     }
-    // Older hosts still expose editor state and presentation in the legacy snapshot.
-    const legacy = await readLegacySnapshot(checked, signal);
-    const presentationVersion = legacy.presentation === undefined ? undefined : record(legacy.presentation).version;
-    if (wire.version !== legacy.version || wire.presentationVersion !== presentationVersion) throw new EditorApiError(409, "version_conflict");
-    return { ...legacy, document, ...(wire.presentation === undefined ? {} : { presentation: wire.presentation }) };
+    if (!wire.editorState) throw new EditorApiError(503, "editor_state_unavailable");
+    if (currentCatalog.nativePresentationPages.includes(target.pageId) && wire.presentation === undefined) throw new Error("このサイトに必要な表示コンテキストがありません。");
+    return { ...wire.editorState, document: wire.document, version: wire.version,
+      ...(wire.presentation === undefined ? {} : { presentation: wire.presentation }) };
   }
   async function readPageDocument(target: EditorTarget, signal: AbortSignal): Promise<EditorSnapshot> {
-    return target.locale === "en"
-      ? parseEnglishSnapshot(await api(`${localizationPagePath(target)}/snapshot`, "POST", {}, signal), target)
-      : readJapaneseDocument(target, signal);
+    const checked = target.locale === "en" ? validEnglishTarget(target) : validTarget(target);
+    return editorSnapshotFromWire(checked, await editingApi.read(checked, signal));
+  }
+  async function readPageDocumentIfChanged(target: EditorTarget, etag: string | undefined, signal: AbortSignal): Promise<EditorDocumentRead> {
+    const checked = target.locale === "en" ? validEnglishTarget(target) : validTarget(target);
+    const result = await editingApi.readIfChanged(checked, etag, signal);
+    return result.status === "not-modified" ? result
+      : { status: "modified", snapshot: editorSnapshotFromWire(checked, result.snapshot), ...(result.etag ? { etag: result.etag } : {}) };
   }
   return {
+    ...siteSettings,
+    readSiteSettings,
     listSites: (signal) => request(signal, async () => catalog.sites),
     listPages: (siteId, signal) => request(signal, async () => {
       if (siteId !== "kamakura") throw new Error("編集対象のサイトがありません。");
@@ -409,7 +389,20 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
       return supportsPageNodeNames(await editingApi.discover(signal), "pages.save");
     },
     readDocument: (target, signal) => request(signal, () => readPageDocument(target, signal)),
-    prefetchDocument: (target, signal) => request(signal, () => readPageDocument(target, signal), false),
+    readDocumentIfChanged: (target, etag, signal) => request(signal, () => readPageDocumentIfChanged(target, etag, signal)),
+    applyOperations: (input, signal) => conflict(() => request(signal, async () => {
+      const target = validTarget(input.target);
+      const result = await editingApi.applyOperations(target, {
+        baseVersion: input.baseVersion,
+        operationId: input.operationId,
+        operations: input.operations,
+        ...(input.componentsVersion === undefined ? {} : { componentsVersion: input.componentsVersion }),
+        ...(input.presentationVersion === undefined ? {} : { presentationVersion: input.presentationVersion }),
+        ...(input.cmsBindings === undefined ? {} : { cmsBindings: input.cmsBindings })
+      }, signal);
+      if (result.status === "valid") throw new Error("dry-run result cannot be used to save a page.");
+      return result;
+    })),
     saveDraft: (input, signal) => conflict(() => request(signal, async () => {
       if (input.target.locale === "en") {
         const target = validEnglishTarget(input.target), localization = input.localization;
@@ -442,7 +435,7 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
       releaseOperationIds.set(plan.confirmationToken, operationId);
       const result = await editingApi.release(validTarget(plan.target), plan, operationId, signal);
       if (result.status === "conflict") return result;
-      const snapshot = await readJapaneseDocument(plan.target, signal);
+      const snapshot = await readPageDocument(plan.target, signal);
       releaseOperationIds.delete(plan.confirmationToken);
       return { status: "released" as const, snapshot };
     })),
@@ -464,7 +457,7 @@ export function createKamakuraAdapter(catalog: KamakuraCatalog, onStatus: (statu
       return editingApi.pageReleaseSetStatus(operationId, signal);
     }),
     englishPublication: {
-      refresh: (target, signal) => request(signal, async () => (await readJapaneseDocument(target, signal)).englishPublication),
+      refresh: (target, signal) => request(signal, async () => (await readPageDocument(target, signal)).englishPublication),
       retry: (target, signal) => conflict(() => request(signal, async () => parseEnglishPublicationAccepted(await api(`${pagePath(target)}/english-publication-retry`, "POST", {}, signal))))
     },
     localization: {
@@ -511,10 +504,9 @@ export function kamakuraEditorInitialTarget(search: string): EditorTarget | unde
   return { siteId: KAMAKURA_EDITOR_SITE_ID, pageId, locale: "en" };
 }
 
-export function KamakuraEditor({ project, environment, initialLoad }: {
-  readonly project: Project; readonly environment: string; readonly initialLoad?: () => KamakuraEditorLoad | undefined;
+export function KamakuraEditor({ project, initialLoad }: {
+  readonly project: Project; readonly initialLoad?: () => KamakuraEditorLoad | undefined;
 }) {
-  if (environment !== "production") throw new Error("Kamakura editor environment is not registered");
   const [catalog, setCatalog] = useState<CatalogState>({ status: "loading" });
   const [status, setStatus] = useState<EditorApiStatus | null>(null);
   const [reload, setReload] = useState(0);
@@ -546,6 +538,6 @@ export function KamakuraEditor({ project, environment, initialLoad }: {
     {catalog.status === "error" && <section className="studio-kamakura-state" role="alert"><h1>ページを読み込めませんでした</h1><p>{catalog.errorCode === KAMAKURA_CATALOG_CONTRACT_ERROR_CODE ? "ページ一覧の形式に対応できません。編集内容は変更されていません。管理者へ確認してください。" : catalog.errorCode === VISUAL_EDITOR_FROZEN ? `${FROZEN_MESSAGE}ページ一覧はサイト側の更新後に開けます。` : "編集内容は変更されていません。接続状態を確認して再試行してください。"}</p>{catalog.supportId !== null && <p>問い合わせID: <code>{catalog.supportId}</code></p>}<button type="button" onClick={() => setReload((value) => value + 1)}>再試行</button></section>}
     {ready && (ready.pages.length === 0
       ? <section className="studio-kamakura-state"><h1>編集できるページはありません</h1><p>編集対象のページがありません。ページ一覧を再読み込みしてください。</p><button type="button" onClick={() => setReload((value) => value + 1)}>再読み込み</button></section>
-      : adapter && <StudioPageEditor adapter={adapter} {...(initialTarget ? { initialTarget } : {})} externalFramePolicy={externalFramePolicy} blankEmbeds={blankEmbeds} xPostFrameUrl={X_POST_FRAME_URL} blocks={blocks} assets={assets} insertableBlocks={["ManagedEmbed"]} builder={studioBuilderDefinition} breakpoints={KAMAKURA_BREAKPOINTS} mobilePreviewWidth={480} toolbarStart={<a href={projectRoutePath(window.location.pathname, project.id, project.site.id, "dashboard")} aria-label="ダッシュボードに戻る" title="ダッシュボードに戻る">←</a>} />)}
+      : adapter && <StudioPageEditor adapter={adapter} {...(initialTarget ? { initialTarget } : {})} externalFramePolicy={externalFramePolicy} blankEmbeds={blankEmbeds} xPostFrameUrl={X_POST_FRAME_URL} enableUrlEmbeds blocks={blocks} assets={assets} insertableBlocks={["ManagedEmbed"]} builder={studioBuilderDefinition} breakpoints={KAMAKURA_BREAKPOINTS} mobilePreviewWidth={480} toolbarStart={<a href={projectRoutePath(window.location.pathname, project.id, project.site.id, "dashboard")} aria-label="ダッシュボードに戻る" title="ダッシュボードに戻る">←</a>} />)}
   </main>;
 }

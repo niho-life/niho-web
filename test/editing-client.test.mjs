@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { createPageEditingApi } from "@niho/web/editing-api";
+import { createPageEditingApi, EDITING_OPERATIONS } from "@niho/web/editing-api";
 import { createPageEditingApiClient, EditingApiClientError } from "@niho/web/editing-client";
 
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
@@ -10,7 +10,7 @@ const blockDocument = structuredClone(fixture);
 blockDocument.body.push({ type: "component", id: "booking-panel", block: "booking-panel", props: { title: "Book a visit" } });
 const validationContext = { blocks: { "booking-panel": { props: { title: { type: "string", required: true } } } } };
 
-function clientFixture({ token = "owner", initialDocument = blockDocument, publishing = false, versionedInspection = false, stylesVersion, releaseSet = false, staleAfterSetPrepare = false, pendingSetOnce = false, pageManagement = false, initialBreakpointSettings } = {}) {
+function clientFixture({ token = "owner", initialDocument = blockDocument, publishing = false, versionedInspection = false, releaseSet = false, staleAfterSetPrepare = false, pendingSetOnce = false, pageManagement = false, initialBreakpointSettings } = {}) {
   let document = structuredClone(initialDocument), version = "v1";
   const secondTarget = { siteId: target.siteId, pageId: "about", locale: "ja" };
   let secondVersion = "about-v1";
@@ -25,8 +25,7 @@ function clientFixture({ token = "owner", initialDocument = blockDocument, publi
     async authorize(actor, capability, scope) { return actor.subject === "agent" && scope.siteId === target.siteId && (["pages.read", "pages.edit"].includes(capability) || (publishing || releaseSet || pageManagement) && capability === "pages.publish" || breakpointSettings !== null && ["site.settings.read", "site.settings.write"].includes(capability)); },
     async validationContext() { return validationContext; },
     async readPage(_actor, requested) { return requested.siteId === target.siteId && requested.pageId === target.pageId && requested.locale === target.locale
-      ? { document, version, ...(versionedInspection ? { componentsVersion: "components-v1", presentationVersion: "presentation-v1", stylesVersion: "styles-v1" }
-        : stylesVersion === undefined ? {} : { stylesVersion }), ...(publishing ? { componentsVersion: "components-v1", presentationVersion: "presentation-v1" } : {}) } : null; },
+      ? { document, version, ...(versionedInspection ? { componentsVersion: "components-v1", presentationVersion: "presentation-v1" } : {}), ...(publishing ? { componentsVersion: "components-v1", presentationVersion: "presentation-v1" } : {}) } : null; },
     async savePage(_actor, requested, expectedVersion, next) {
       if (requested.siteId !== target.siteId || requested.pageId !== target.pageId || requested.locale !== target.locale || expectedVersion !== version) return { status: "conflict" };
       document = { ...next, revision: next.revision + 1 }; version = `v${Number(version.slice(1)) + 1}`;
@@ -168,7 +167,23 @@ test("page and catalog reads allow private ETag revalidation", async () => {
   assert.deepEqual(requests.map(({ cache }) => cache), ["no-cache", "no-cache"]);
 });
 
-test("page read cache returns isolated snapshots after a 304", async () => {
+test("successful capability discovery is shared for the editing-client session", async () => {
+  const requests = [];
+  const client = createPageEditingApiClient({
+    origin: "https://host.example", siteId: target.siteId,
+    fetch: async (input) => {
+      requests.push(String(input));
+      return Response.json({ apiVersion: "v1", siteId: target.siteId, operations: EDITING_OPERATIONS });
+    }
+  });
+  const [first, concurrent] = await Promise.all([client.discover(), client.discover()]);
+  const cached = await client.discover();
+  assert.deepEqual(concurrent, first);
+  assert.deepEqual(cached, first);
+  assert.equal(requests.length, 1);
+});
+
+test("page reads expose 304 revalidation without retaining a document body", async () => {
   const requests = [];
   const nextDocument = { ...structuredClone(fixture), title: "server version two" };
   const responses = [
@@ -186,16 +201,16 @@ test("page read cache returns isolated snapshots after a 304", async () => {
     }
   });
 
-  const first = await client.read(target);
-  first.document.title = "caller mutation";
-  const second = await client.read(target);
-  assert.equal(second.document.title, fixture.title);
-  second.document.title = "second caller mutation";
-  const third = await client.read(target);
-  assert.equal(third.document.title, nextDocument.title);
-  third.document.title = "third caller mutation";
-  const fourth = await client.read(target);
-  assert.equal(fourth.document.title, nextDocument.title);
+  const first = await client.readIfChanged(target);
+  assert.equal(first.status, "modified");
+  assert.equal(first.etag, '"page-v1"');
+  const unchanged = await client.readIfChanged(target, first.etag);
+  assert.deepEqual(unchanged, { status: "not-modified", etag: '"page-v1"' });
+  const changed = await client.readIfChanged(target, first.etag);
+  assert.equal(changed.status, "modified", "a 304 with a different ETag is retried without a validator");
+  assert.equal(changed.snapshot.document.title, nextDocument.title);
+  const confirmed = await client.readIfChanged(target, changed.etag);
+  assert.deepEqual(confirmed, { status: "not-modified", etag: '"page-v2"' });
   assert.deepEqual(requests, [null, '"page-v1"', '"page-v1"', null, '"page-v2"']);
 });
 
@@ -204,7 +219,7 @@ test("shared client reads partial page projections with dependency versions", as
   const result = await client.inspectPage(target, { view: "outline", depth: 1 });
   assert.equal(result.view, "outline");
   assert.equal(result.version, "v1");
-  assert.equal(result.stylesVersion, "styles-v1");
+  assert.equal(result.stylesVersion, undefined);
   assert.equal(result.componentsVersion, "components-v1");
   assert.equal(result.presentationVersion, "presentation-v1");
   assert.ok(result.items.length > 0);
@@ -226,6 +241,28 @@ test("shared page editing client discovers, reads custom blocks and saves with C
   assert.deepEqual(await client.save(target, snapshot.version, changed), { status: "conflict" });
 });
 
+test("direct publish preserves URL and SEO warnings while ignoring unknown keys", async () => {
+  const client = createPageEditingApiClient({
+    origin: "https://host.example",
+    siteId: target.siteId,
+    fetch: async () => Response.json({
+      status: "released",
+      url: "https://host.example/about",
+      warnings: [{ code: "missing-description", message: "説明がありません。" }],
+      futureResponseField: "ignored",
+      snapshot: { document: blockDocument, version: "v2", futureSnapshotField: "ignored" }
+    })
+  });
+
+  const result = await client.publishPageNow(target, { expectedVersion: "v1", action: "publish" });
+
+  assert.equal(result.status, "released");
+  assert.equal(result.snapshot.version, "v2");
+  assert.equal(result.url, "https://host.example/about");
+  assert.deepEqual(result.warnings, [{ code: "missing-description", message: "説明がありません。" }]);
+  assert.deepEqual(Object.keys(result.snapshot).sort(), ["document", "version"]);
+});
+
 test("shared editing client reads the page catalog and prepares/applies a versioned page change", async () => {
   const client = clientFixture({ pageManagement: true });
   const discovery = await client.discover();
@@ -244,6 +281,24 @@ test("shared editing client reads the page catalog and prepares/applies a versio
   assert.deepEqual(await client.applyPageChange(plan), applied);
   await assert.rejects(client.preparePageChange(change, catalog.version, undefined, operationId),
     (error) => error instanceof EditingApiClientError && error.code === "duplicate_operation" && error.status === 409);
+});
+
+test("shared editing client ignores unknown fields in one-step page and CMS publication responses", async () => {
+  const operationId = "123e4567-e89b-42d3-a456-426614174000";
+  const page = { siteId: target.siteId, pageId: "new-page", locale: "ja", title: "New Page", path: "/new-page", futurePageField: true };
+  const client = createPageEditingApiClient({
+    origin: "https://host.example", siteId: target.siteId,
+    fetch: async (input) => new URL(input).pathname.endsWith("/pages.change")
+      ? Response.json({ status: "applied", page, futureResponseField: true })
+      : Response.json({ status: "publishing", operationId, item: { id: "entry-1", version: "v1", status: "publishing", futureItemField: true }, futureResponseField: true })
+  });
+
+  assert.deepEqual(await client.changePageNow({ action: "create", siteId: target.siteId, locale: "ja", title: "New Page", path: "/new-page" }, "catalog-v1"), {
+    status: "applied", page: { siteId: target.siteId, pageId: "new-page", locale: "ja", title: "New Page", path: "/new-page" }
+  });
+  assert.deepEqual(await client.publishCmsItemNow({ siteId: target.siteId, collectionId: "posts", itemId: "entry-1" }, "v1", operationId), {
+    status: "publishing", operationId
+  });
 });
 
 test("shared editing client reads and saves site breakpoint settings through the discoverable API", async () => {

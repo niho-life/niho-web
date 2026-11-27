@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   createInsertionNode, defineBuilder, formInsertionPresets, layoutInsertionPresets, matchesMotionPreset, partInsertionPresets, resolveBuilderDefinition, sectionInsertionPresets, standardBuilderDefinition
-} from "@niho/web/builder";
+} from "../dist/builder.js";
 import { generatePageCss, parseComponentLibrary, parsePageDocument } from "@niho/web/core";
 import { renderPageToHtml } from "@niho/web/server";
 import { commitHistory, editDocument, travelHistory } from "../dist/editor-model.js";

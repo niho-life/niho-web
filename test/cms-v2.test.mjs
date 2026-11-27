@@ -5,9 +5,9 @@ import { JSDOM } from "jsdom";
 import {
   cancelCmsSchedule, checkCmsReleaseApply, checkCmsReplay, checkCmsScheduleCreate, checkCmsSchemaApply, checkCmsWriteVersion,
   cmsItemKey, cmsLegacyCollections, cmsOperationStatus, cmsRoleCapabilities, cmsWorkspaceItem,
-  discoverCmsContract, dueCmsSchedule, parseCmsDiscovery, parseCmsDraftWrite, parseCmsItemRevision, parseCmsSchema,
+  discoverCmsContract, dueCmsSchedule, parseCmsDiscovery, parseCmsDraftWrite, parseCmsItemRevision, parseCmsReleaseAssetManifest, parseCmsSchema,
   parseCmsRouteTable, parseCmsSchemaPlanInput, planCmsMigrationWithRouteTables, planCmsRelease, planCmsRouteTable,
-  planCmsSchedule, removeCmsItem, resolveCmsPageBindings, restoreCmsItem, revalidateCmsRelease
+  planCmsSchedule, removeCmsItem, resolveCmsPageBindings, restoreCmsItem, revalidateCmsRelease,
 } from "@niho/web/cms-v2";
 import { assetKey } from "@niho/web/assets";
 import { parsePageDocument } from "@niho/web/core";
@@ -241,6 +241,8 @@ test("discovery is authorized and v1 cannot write through either a stale or gues
   assert.deepEqual(parseCmsDiscovery(discovery, siteId), discovery);
   assert.throws(() => parseCmsDiscovery({ ...discovery, contractVersion: 3 }, siteId), /unsupported CMS contract version/u);
   assert.ok(discovery.operations.includes("cms.schema.plan"));
+  assert.ok(discovery.operations.includes("cms.localization.items.command"));
+  assert.ok(discovery.operations.includes("cms.localization.release.apply"));
   assert.ok(!discovery.operations.includes("cms.schema.apply"));
   assert.equal(checkCmsWriteVersion({ contractVersion: 1, siteId }, undefined).status, "allowed");
   assert.equal(checkCmsWriteVersion(host.schema, 1).status, "unsupported_version");
@@ -348,6 +350,52 @@ test("release snapshot is immutable, rejects missing published references and ke
   assert.throws(() => host.planRelease(undefined, [], { locale: "en" }), /site or locale mismatch/u);
 });
 
+test("release assets are pinned to selected image and gallery fields and rechecked at apply", () => {
+  const host = new MemoryHost();
+  host.schema = parseCmsSchema({ ...host.schema, collections: host.schema.collections.map((collection) =>
+    collection.id === "posts" ? { ...collection, fields: [...collection.fields,
+      { fieldId: "field-gallery", key: "gallery", type: "gallery", label: "Gallery", captionLabel: "Caption", placement: "main" }] } : collection) });
+  const cover = { provider: "fixture", id: "cover" }, slide = { provider: "fixture", id: "slide" };
+  const coverAsset = { reference: cover, url: "/media/cover.webp", width: 800, height: 600, altText: "Cover" };
+  const slideAsset = { reference: slide, url: "https://images.example.test/slide.webp", width: null, height: null, altText: "" };
+  const unused = { ...slideAsset, reference: { provider: "fixture", id: "draft-only" } };
+  const selectedValues = { "field-title": "公開記事", "field-slug": "story", "field-cover": cover,
+    "field-gallery": [{ id: "", image: slide, caption: "Gallery image" }, { id: "", image: cover, caption: "" }] };
+  const draft = host.add(post, selectedValues);
+  const context = { ...host.context(), publicAssets: [unused, slideAsset, coverAsset] };
+  const input = { siteId, locale, schemaRevision: host.schema.schemaRevision, routeTableRevision: context.routeTable.revision,
+    expectedReleaseId: null, items: [pin(draft)], redirects: [] };
+  const plan = planCmsRelease(input, "release-assets", context);
+  assert.equal(plan.status, "ready");
+  const { snapshot } = plan.proposal;
+  assert.deepEqual(snapshot.assetManifest, [coverAsset, slideAsset]);
+  assert.notEqual(snapshot.assetManifest[0], coverAsset);
+  assert.ok(Object.isFrozen(snapshot.assetManifest[0].reference));
+  assert.deepEqual(parseCmsReleaseAssetManifest(snapshot.schema, snapshot.items, snapshot.assetManifest), snapshot.assetManifest);
+  assert.throws(() => parseCmsReleaseAssetManifest(snapshot.schema, snapshot.items, undefined), /unresolved public asset/u);
+  assert.throws(() => parseCmsReleaseAssetManifest(snapshot.schema, snapshot.items, [...snapshot.assetManifest, unused]), /unreferenced public asset/u);
+  assert.throws(() => parseCmsReleaseAssetManifest(snapshot.schema, snapshot.items, [coverAsset, { ...slideAsset, url: "//unsafe.example.test/slide" }]), /unsafe image URL/u);
+  assert.equal(revalidateCmsRelease(plan.proposal, { ...context, publicAssets: [{ ...coverAsset, width: 801 }, slideAsset] }).status, "conflict");
+
+  const noCover = planCmsRelease(input, "release-assets", { ...context, publicAssets: [slideAsset] });
+  assert.equal(noCover.status, "invalid");
+  assert.deepEqual(noCover.problems.map(({ fieldId }) => fieldId), ["field-cover", "field-gallery"]);
+  for (const unsafeUrl of ["http://images.example.test/cover.png", "https://user:pass@images.example.test/cover.png", "javascript:alert(1)", "/%2fprivate.webp"]) {
+    assert.equal(planCmsRelease(input, "release-assets", { ...context, publicAssets: [{ ...coverAsset, url: unsafeUrl }, slideAsset] }).status, "invalid");
+  }
+  const raw = host.add(post, { ...selectedValues, "field-cover": coverAsset.url,
+    "field-gallery": [{ id: "", image: slideAsset.url, caption: "Raw URL" }] });
+  const rawPlan = planCmsRelease({ ...input, items: [pin(raw)] }, "release-assets", context);
+  assert.equal(rawPlan.status, "invalid");
+  assert.deepEqual(rawPlan.problems.map(({ fieldId }) => fieldId), ["field-cover", "field-gallery"]);
+
+  const textOnly = planCmsRelease({ ...input, items: [] }, "release-text-only", context);
+  assert.equal(textOnly.status, "ready");
+  const { assetManifest: _assetManifest, ...legacy } = textOnly.proposal.snapshot;
+  assert.deepEqual(parseCmsReleaseAssetManifest(legacy.schema, legacy.items, undefined), []);
+  assert.equal(revalidateCmsRelease({ ...textOnly.proposal, snapshot: legacy }, context).status, "allowed");
+});
+
 test("release routes reject fixed, template, and redirect-source conflicts and pin a slug-change redirect", () => {
   const fixed = new MemoryHost();
   fixed.routeTables[0].reservations.push({ kind: "fixed-page", path: "/posts/coast", reservationId: "fixed-coast" });
@@ -380,6 +428,18 @@ test("release routes reject fixed, template, and redirect-source conflicts and p
   const confirmation = host.confirm(editor, "cms.release.apply", plan.proposal);
   assert.equal(host.publish(editor, confirmation).status, "recorded");
   assert.equal(host.routeTables.find((entry) => entry.locale === "ja").revision, table.revision);
+});
+
+test("CMS release routes preserve the case of legacy slugs", () => {
+  const host = new MemoryHost();
+  const current = host.drafts.get(cmsItemKey(post));
+  const legacyCase = host.add(post, { ...current.values, "field-slug": "Legacy-Case" });
+  const selectedTag = host.drafts.get(cmsItemKey(tag));
+  const plan = host.planRelease([pin(legacyCase), pin(selectedTag)]);
+
+  assert.equal(plan.status, "ready");
+  assert.ok(plan.proposal.snapshot.routeTable.reservations.some((entry) => entry.kind === "cms-item" && entry.path === "/posts/Legacy-Case"));
+  assert.equal(plan.proposal.snapshot.items.find(({ itemId }) => itemId === legacyCase.itemId).path, "/posts/Legacy-Case");
 });
 
 test("fixed-page redirect targets are accepted and conflicting sources remain invalid without duplicate reservations", () => {
@@ -566,7 +626,7 @@ test("CollectionWorkspace displays v2-derived status and failure without changin
   t.after(() => dom.window.close());
   const { createElement, act } = await import("react");
   const { createRoot } = await import("react-dom/client");
-  const { CollectionWorkspace } = await import("@niho/web/collection-workspace");
+  const { CollectionWorkspace } = await import("../dist/collection-workspace.js");
   const host = new MemoryHost();
   publish(host);
   host.add(post, { "field-title": "新しい海辺の案内", "field-slug": "coast" });

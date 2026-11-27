@@ -13,6 +13,7 @@ import { at, dashboard } from "./project-view-fixtures.mjs";
 const ORIGIN = "https://studio.example.test";
 const CMS = "/api/projects/project-kamakura/sites/kamakura/cms";
 const EDITING_API = "/api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1";
+const COMMON_CMS = `${ORIGIN}${EDITING_API}/sites/kamakura/operations`;
 const project = { id: "project-kamakura", name: "架空の鎌倉プロジェクト", site: { id: "kamakura", name: "架空のサイト", domains: ["https://site.example.test"] }, members: [{ userId: "member_one", displayName: "参加者（架空）" }] };
 const directory = { status: "ready", entries: [{ project, summary: { projectId: project.id, siteId: project.site.id, publicationStatus: "published", publishedUrl: project.site.domains[0], thumbnail: null, updatedAt: at, lastAccessedAt: null, members: { status: "ready", data: [{ displayName: "一覧オーナー", role: "owner" }, { displayName: "一覧編集者", role: "editor" }] } } }] };
 const schema = {
@@ -60,8 +61,7 @@ function installDom(pathname) {
 }
 installDom("/");
 const { act } = await import("react");
-const wait = (ms) => act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
-const flush = async () => { for (let index = 0; index < 8; index += 1) await wait(0); };
+const flush = () => act(async () => { await new Promise((resolve) => setImmediate(resolve)); });
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
 
 /** 偽の Studio API と CMS の BFF。呼ばれた path を返す。 */
@@ -82,9 +82,9 @@ function fakeApi(t) {
       members: [{ subject: "subject-one", email: "owner@example.test", role: "owner", displayName: "オーナー（架空）", createdAt: at, isCurrent: true }],
       invitations: [{ id: "invite-one", email: "editor@example.test", role: "editor", createdAt: at, expiresAt: at, status: "pending" }]
     });
-    if (target === `${CMS}/schema`) return json(schema);
-    if (target === `${CMS}/collections/posts/items`) return json({ status: "ready", collectionId: "posts", items: [summary] });
-    if (target === `${CMS}/collections/posts/items/morning-walk`) return json({ status: "ready", item });
+    if (target === `${COMMON_CMS}/cms.schema`) return json({ collections: schema.collections });
+    if (target === `${COMMON_CMS}/cms.list/posts`) return json({ collectionId: "posts", items: [summary] });
+    if (target === `${COMMON_CMS}/cms.read/posts/morning-walk`) return json({ item });
     if (target === `${CMS}/collections/posts/items/morning-walk/english-publication`) return json({ status: "ready", englishPublications: { "cms:posts:morning-walk": { state: "retryable-failure", retryable: true, updatedAt: at } } });
     return json({ error: "not_found" }, 404);
   });
@@ -136,7 +136,7 @@ test("Studio の CMS は、コレクション画面で項目を開き、本文�
   assert.ok(document.querySelector(".studio-content-project > .nw-project-dashboard .pv-project-end .studio-account"));
   assert.equal(document.querySelector(".studio-legacy-link"), null);
   // URL の項目を最初に開き、本文は TipTap の部品（ProseMirror）で出す
-  assert.ok(calls.includes(`GET ${CMS}/collections/posts/items/morning-walk`), JSON.stringify(calls));
+  assert.ok(calls.includes(`GET ${COMMON_CMS}/cms.read/posts/morning-walk`), JSON.stringify(calls));
   assert.ok(calls.includes(`GET ${CMS}/collections/posts/items/morning-walk/english-publication`));
   assert.equal(document.querySelector('[data-field="title"] input')?.value, "海辺の朝さんぽ");
   assert.match(document.querySelector(".cw-english-publications")?.textContent ?? "", /記事ページ.*失敗（再試行可能）/su);
@@ -145,15 +145,15 @@ test("Studio の CMS は、コレクション画面で項目を開き、本文�
   assert.ok(prose, "TipTap");
   assert.match(prose.textContent, /はじめに/u);
 
-  // 一覧へ戻ると URL が一覧になり、項目を開くと項目の URL になる（画面は作り直さない＝schema を読み直さない）
-  const schemaReads = () => calls.filter((call) => call === `GET ${CMS}/schema`).length;
-  assert.equal(schemaReads(), 1);
+  // 一覧へ戻ると URL が一覧になり、項目を開くと項目の URL になる。各項目の読取時に共通 API が定義も検証する。
+  const schemaReads = () => calls.filter((call) => call === `GET ${COMMON_CMS}/cms.schema`).length;
+  assert.equal(schemaReads(), 2);
   await click(byText("button.cw-back", "一覧へ"));
   assert.equal(window.location.pathname, "/projects/kamakura-site/admin/cms/posts");
   assert.ok(document.querySelector(".cw-row-open[data-item-id=\"morning-walk\"]"));
   await click(document.querySelector(".cw-row-open[data-item-id=\"morning-walk\"]"));
   assert.equal(window.location.pathname, "/projects/kamakura-site/admin/cms/posts/morning-walk");
-  assert.equal(schemaReads(), 1);
+  assert.equal(schemaReads(), 3);
 
   // 戻る: URL の一覧で開き直す。進む: 項目で開き直す
   await act(async () => { window.history.back(); await new Promise((resolve) => setTimeout(resolve, 20)); });
@@ -289,7 +289,7 @@ test("Studio-native の CMS を Dashboard から開き、下書き作成の再�
   await flush();
   assert.ok(byText("button", "CMS"), document.body.textContent);
   await click(byText("button", "CMS"));
-  if (!byText("button", "項目を追加")) await wait(350);
+  for (let attempt = 0; attempt < 20 && !byText("button", "項目を追加"); attempt++) await flush();
   assert.equal(window.location.pathname, `${root}/cms`);
   assert.ok(document.querySelector('[aria-label="CMS"]'));
   await click(byText("summary", "コレクションとフィールドの定義"));

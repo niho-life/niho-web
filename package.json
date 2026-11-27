@@ -5,7 +5,6 @@
   "description": "Versioned public page documents and shared React/server renderers",
   "type": "module",
   "bin": {
-    "niho-studio": "cli/niho-studio.mjs",
     "niho-edit": "cli/niho-edit.mjs"
   },
   "files": [
@@ -24,6 +23,10 @@
       "types": "./dist/core.d.ts",
       "import": "./dist/core.js"
     },
+    "./normalize": {
+      "types": "./dist/normalize.d.ts",
+      "import": "./dist/normalize.js"
+    },
     "./editing-api": {
       "types": "./dist/editing-api.d.ts",
       "import": "./dist/editing-api.js"
@@ -31,10 +34,6 @@
     "./editing-client": {
       "types": "./dist/editing-client.d.ts",
       "import": "./dist/editing-client.js"
-    },
-    "./builder": {
-      "types": "./dist/builder.d.ts",
-      "import": "./dist/builder.js"
     },
     "./react": {
       "types": "./dist/react.d.ts",
@@ -56,45 +55,9 @@
       "types": "./dist/editor-model.d.ts",
       "import": "./dist/editor-model.js"
     },
-    "./pages": {
-      "types": "./dist/pages.d.ts",
-      "import": "./dist/pages.js"
-    },
-    "./history": {
-      "types": "./dist/history.d.ts",
-      "import": "./dist/history.js"
-    },
-    "./projects": {
-      "types": "./dist/projects.d.ts",
-      "import": "./dist/projects.js"
-    },
-    "./project-editor": {
-      "types": "./dist/project-editor-adapter.d.ts",
-      "import": "./dist/project-editor-adapter.js"
-    },
-    "./project-manager": {
-      "types": "./dist/project-manager.d.ts",
-      "import": "./dist/project-manager.js"
-    },
-    "./project-directory": {
-      "types": "./dist/project-directory.d.ts",
-      "import": "./dist/project-directory.js"
-    },
-    "./project-dashboard": {
-      "types": "./dist/project-dashboard.d.ts",
-      "import": "./dist/project-dashboard.js"
-    },
-    "./site-language-settings": {
-      "types": "./dist/site-language-settings.d.ts",
-      "import": "./dist/site-language-settings.js"
-    },
-    "./project-read-model": {
-      "types": "./dist/project-read-model.d.ts",
-      "import": "./dist/project-read-model.js"
-    },
-    "./collection-workspace": {
-      "types": "./dist/collection-workspace.d.ts",
-      "import": "./dist/collection-workspace.js"
+    "./cms-delivery": {
+      "types": "./dist/cms-delivery.d.ts",
+      "import": "./dist/cms-delivery.js"
     },
     "./cms-v2": {
       "types": "./dist/cms-v2.d.ts",
@@ -104,14 +67,6 @@
       "types": "./dist/collection-model.d.ts",
       "import": "./dist/collection-model.js"
     },
-    "./localization-workspace": {
-      "types": "./dist/localization-workspace.d.ts",
-      "import": "./dist/localization-workspace.js"
-    },
-    "./localization-workspace-model": {
-      "types": "./dist/localization-workspace-model.d.ts",
-      "import": "./dist/localization-workspace-model.js"
-    },
     "./assets": {
       "types": "./dist/assets.d.ts",
       "import": "./dist/assets.js"
@@ -119,14 +74,6 @@
     "./site-analytics": {
       "types": "./dist/site-analytics.d.ts",
       "import": "./dist/site-analytics.js"
-    },
-    "./site-apps": {
-      "types": "./dist/site-apps.d.ts",
-      "import": "./dist/site-apps.js"
-    },
-    "./ui-tokens": {
-      "types": "./dist/ui-tokens.d.ts",
-      "import": "./dist/ui-tokens.js"
     },
     "./analytics": {
       "types": "./dist/analytics.d.ts",
@@ -156,9 +103,12 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "studio:build": "node studio/build.mjs",
     "studio:typecheck": "tsc -p studio/tsconfig.json --noEmit",
-    "studio:dev": "npm run studio:build && wrangler dev --config studio/wrangler.toml",
-    "studio:deploy": "npm run studio:build && wrangler deploy --config studio/wrangler.toml",
-    "test:built": "node --test test/*.test.mjs",
+    "studio:dev": "npm run studio:build && wrangler dev --local --config studio/wrangler.json",
+    "studio:public:dev": "wrangler dev --local --config studio/public-sites.wrangler.json",
+    "studio:public:release": "node studio/public-sites-release.mjs",
+    "studio:deploy": "npm run studio:release",
+    "studio:release": "node studio/release.mjs",
+    "test:built": "node --test --test-concurrency=4 test/*.test.mjs",
     "test": "npm run build && npm run test:built",
     "demo": "node examples/editor-demo.mjs",
     "demo:builder": "npm run build && node examples/builder-demo.mjs",
@@ -201,7 +151,8 @@
     "jsdom": "30.1.3",
     "react": "19.3.1",
     "react-dom": "19.3.1",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "wrangler": "4.168.0"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.4.0",

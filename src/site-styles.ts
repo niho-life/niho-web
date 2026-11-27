@@ -4,16 +4,12 @@ import { parseTextStyles, parseTokens } from "./style-values.js";
 /** サイト設定のスタイル部分。ページ JSON へ継承値を書き戻さない。 */
 export type SiteStyles = { tokens?: Record<string, DesignToken>; textStyles?: Record<string, TextStyle> };
 
-/** A style version is meaningless without the stage whose immutable snapshot it identifies. */
-export type SiteStylesRevision =
-  | { readonly stage: "draft"; readonly version: string }
-  | { readonly stage: "published"; readonly version: string };
+/** Identifies the draft snapshot consumed by the one-time normalizer; pages do not persist it. */
+export type SiteStylesRevision = { readonly stage: "draft"; readonly version: string };
 
 export type SiteStylesSnapshot = {
-  /** Site-wide generation that changes whenever a public pointer is committed. */
-  readonly sitePublicationEpoch: string;
   readonly draft: { readonly version: string; readonly styles: SiteStyles };
-  readonly published: { readonly stylesVersion: string; readonly styles: SiteStyles };
+  readonly published: { readonly version: string; readonly styles: SiteStyles };
 };
 
 /** サイト単体で解決できる参照だけを受け付ける。ページの値による補完は禁止。 */
@@ -29,6 +25,22 @@ export function mergeSiteStyles(page: SiteStyles, site: SiteStyles = {}): { toke
   const hasStyles = shared.textStyles !== undefined || page.textStyles !== undefined;
   const textStyles = hasStyles ? parseTextStyles({ ...shared.textStyles, ...page.textStyles }, tokens, "$.textStyles") : undefined;
   return { tokens, ...(textStyles === undefined ? {} : { textStyles }) };
+}
+
+const editorResolvedStyles = new Map<string, ReturnType<typeof mergeSiteStyles>>();
+const editorResolvedStylesLimit = 32;
+/** Reuse the merged style values for equivalent editor snapshots; the small LRU stays bounded. */
+export function resolvePageStylesForEditor(document: PageDocument, site: SiteStyles = {}): PageDocument {
+  // retainPageStyles can create equivalent token/style maps while removing inherited values.
+  // Key on those small maps' contents so that equivalent editor snapshots share the same result.
+  const key = JSON.stringify([document.tokens, document.textStyles, site.tokens, site.textStyles]);
+  let styles = editorResolvedStyles.get(key);
+  if (!styles) {
+    styles = mergeSiteStyles(document, site);
+    if (editorResolvedStyles.size >= editorResolvedStylesLimit) editorResolvedStyles.delete(editorResolvedStyles.keys().next().value!);
+  } else editorResolvedStyles.delete(key);
+  editorResolvedStyles.set(key, styles);
+  return { ...document, ...styles };
 }
 
 /** 検証・描画・プレビューで共有する実効値。保存する文書には使用しない。 */
@@ -47,19 +59,31 @@ export function resolveComponentStyles(document: PageDocument, site: SiteStyles 
 
 /** 編集用の実効値から、変更のない継承値だけを外してページの保存形式に戻す。 */
 export function retainPageStyles(document: PageDocument, original: PageDocument, site: SiteStyles): PageDocument {
-  const copy = { ...document, tokens: { ...document.tokens }, ...(document.textStyles ? { textStyles: { ...document.textStyles } } : {}) };
-  for (const name of Object.keys(site.tokens ?? {})) if (!Object.hasOwn(original.tokens, name) && JSON.stringify(copy.tokens[name]) === JSON.stringify(site.tokens![name])) delete copy.tokens[name];
-  for (const name of Object.keys(site.textStyles ?? {})) if (!Object.hasOwn(original.textStyles ?? {}, name) && JSON.stringify(copy.textStyles?.[name]) === JSON.stringify(site.textStyles![name])) delete copy.textStyles?.[name];
-  if (copy.textStyles && !Object.keys(copy.textStyles).length && original.textStyles === undefined) delete copy.textStyles;
-  return copy;
+  let tokens = document.tokens;
+  let textStyles = document.textStyles;
+  for (const name of Object.keys(site.tokens ?? {})) if (!Object.hasOwn(original.tokens, name) && JSON.stringify(tokens[name]) === JSON.stringify(site.tokens![name])) {
+    if (tokens === document.tokens) tokens = { ...document.tokens };
+    delete tokens[name];
+  }
+  for (const name of Object.keys(site.textStyles ?? {})) if (textStyles && !Object.hasOwn(original.textStyles ?? {}, name) && JSON.stringify(textStyles[name]) === JSON.stringify(site.textStyles![name])) {
+    if (textStyles === document.textStyles) textStyles = { ...document.textStyles };
+    delete textStyles[name];
+  }
+  if (textStyles && !Object.keys(textStyles).length && original.textStyles === undefined) textStyles = undefined;
+  if (tokens === document.tokens && textStyles === document.textStyles) return document;
+  const result = { ...document, tokens, ...(textStyles === undefined ? {} : { textStyles }) };
+  if (textStyles === undefined && document.textStyles !== undefined) delete result.textStyles;
+  return result;
 }
 
-/** サイトで削除する定義をページ所有へ切り離す。全 draft / 公開参照の原子的保存はホストが行う。 */
+/** 削除候補の見た目を比較するためページ所有へ切り離す。使用中定義の実削除はhostが拒否する。 */
 export function detachRemovedSiteStyles(document: PageDocument, before: SiteStyles, after: SiteStyles): PageDocument {
-  const old = parseSiteStyles(before), next = parseSiteStyles(after), copy = structuredClone(document);
+  const old = parseSiteStyles(before), next = parseSiteStyles(after);
   const removedSiteTokens = new Set(Object.keys(old.tokens ?? {}).filter((name) => !Object.hasOwn(next.tokens ?? {}, name)));
   const removedTokens = new Set([...removedSiteTokens].filter((name) => !Object.hasOwn(document.tokens, name)));
   const removedStyles = Object.keys(old.textStyles ?? {}).filter((name) => !Object.hasOwn(next.textStyles ?? {}, name) && !Object.hasOwn(document.textStyles ?? {}, name));
+  if (!removedSiteTokens.size && !removedStyles.length) return document;
+  const copy = structuredClone(document);
   const usedStyles = new Set<string>();
   const visit = (nodes: readonly PageNode[]): void => { for (const node of nodes) { if (node.type === "text") continue; if (node.style?.textStyle) usedStyles.add(node.style.textStyle); if (node.type === "element") visit(node.children); } };
   visit(document.body);

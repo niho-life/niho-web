@@ -3,6 +3,7 @@ import { parsePageDocument, type PageParseOptions } from "./document.js";
 import { validatePagePath } from "./pages.js";
 import type { BlockContracts, ElementNode, PageDocument, PageNode } from "./types.js";
 import { fail, identifier, keys, localeCode, parseAssetReference, record, string } from "./validation-utils.js";
+import { remapCarouselBinding } from "./carousel.js";
 
 export const cmsBindingAttributes = ["title", "aria-label", "alt", "dateTime"] as const;
 type BindingAttribute = typeof cmsBindingAttributes[number];
@@ -36,7 +37,7 @@ export const CMS_PAGE_BINDINGS_MAX_BYTES = 64 * 1024;
 const fieldText = new Set(["text", "longText", "slug", "datetime"]);
 const textTags = new Set("div section article header footer main nav aside h1 h2 h3 h4 h5 h6 p span a li dt dd strong em b i small blockquote figure figcaption time".split(" "));
 const listTags = new Set(["div", "article", "section", "li"]);
-const validSlug = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/u;
+const validSlug = /^[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*$/u;
 
 function fieldBindings(input: unknown, path: string): CmsPageFieldBinding[] {
   const bindings = cmsArray(input, path, 80).map((entry, index): CmsPageFieldBinding => {
@@ -208,7 +209,7 @@ function applyMapping(node: ElementNode, binding: CmsPageFieldBinding, item: Cms
       (node.attrs ??= {}).href = string(value, "$binding.link", 2048);
       return;
     case "detail-link": {
-      if (typeof value !== "string" || !validSlug.test(value) || validatePagePath(binding.path + "/" + value) !== null) fail("$binding.link", "invalid CMS detail link");
+      if (typeof value !== "string" || !validSlug.test(value) || validatePagePath(binding.path + "/" + value.toLowerCase()) !== null) fail("$binding.link", "invalid CMS detail link");
       (node.attrs ??= {}).href = binding.path + "/" + value;
       return;
     }
@@ -246,19 +247,25 @@ export function resolveCmsPageBindings(page: PageDocument, input: unknown, sourc
     used.add(id);
     return id;
   }
-  function projectNode(node: PageNode, item: CmsItemRevision | undefined, fields: readonly CmsPageFieldBinding[], repeated: boolean): PageNode {
+  function projectNode(node: PageNode, item: CmsItemRevision | undefined, fields: readonly CmsPageFieldBinding[], repeated: Map<string, string> | undefined): PageNode {
     if (++count > 5000) fail("$bindings", "CMS page exceeds the node limit");
     if (node.type !== "element") return node;
     const copy: ElementNode = { ...node, id: repeated ? newId() : node.id, ...(node.attrs ? { attrs: { ...node.attrs } } : {}),
       children: project(node.children, item, fields, repeated) };
+    if (repeated) {
+      repeated.set(node.id, copy.id);
+      if (copy.interaction?.type === "carousel") {
+        copy.interaction = { type: "carousel", binding: remapCarouselBinding(copy.interaction.binding, (id) => repeated.get(id) ?? id) };
+      }
+    }
     if (item) for (const binding of fields) if (binding.nodeId === node.id) applyMapping(copy, binding, item);
     return copy;
   }
-  function project(nodes: readonly PageNode[], item: CmsItemRevision | undefined, fields: readonly CmsPageFieldBinding[], repeated: boolean): PageNode[] {
+  function project(nodes: readonly PageNode[], item: CmsItemRevision | undefined, fields: readonly CmsPageFieldBinding[], repeated: Map<string, string> | undefined): PageNode[] {
     return nodes.flatMap((node) => {
       const list = node.type === "element" ? lists.get(node.id) : undefined;
-      return list ? listItems(list, items, schema).map((entry) => projectNode(node, entry, list.fields, true)) : [projectNode(node, item, fields, repeated)];
+      return list ? listItems(list, items, schema).map((entry) => projectNode(node, entry, list.fields, new Map())) : [projectNode(node, item, fields, repeated)];
     });
   }
-  return parsePageDocument({ ...page, body: project(page.body, detailItem, detail?.fields ?? [], false) }, options.blocks, options.page);
+  return parsePageDocument({ ...page, body: project(page.body, detailItem, detail?.fields ?? [], undefined) }, options.blocks, options.page);
 }

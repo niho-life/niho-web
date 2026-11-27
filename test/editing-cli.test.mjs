@@ -26,6 +26,7 @@ function run(args, { status = 200, result, expectedMethod, expectedUrl, expected
     if (init.method !== ${JSON.stringify(expectedMethod)}) throw new Error("unexpected method");
     if (init.redirect !== "manual" || init.credentials !== "omit") throw new Error("unsafe API fetch defaults");
     const headers = new Headers(init.headers);
+    if (headers.get("User-Agent") !== "niho-edit/0.1.0") throw new Error("missing CLI user agent");
     if (headers.get("Authorization") !== ${JSON.stringify(studio ? null : "Bearer fixture-token")}) throw new Error("missing authorization");
     if (headers.get("cf-access-token") !== ${JSON.stringify(studio && !accessClientId ? token : null)}) throw new Error("unexpected Access token");
     if (headers.get("X-Studio-CMS-Version") !== ${JSON.stringify(studio ? "2" : null)}) throw new Error("unexpected CMS version");
@@ -61,6 +62,7 @@ async function runSequence(args, requests, { env = {}, token = "fixture-token", 
     "  if (!request || String(url) !== request.url || init.method !== request.method) throw new Error('unexpected request');",
     "  if (init.redirect !== 'manual' || init.credentials !== 'omit') throw new Error('unsafe API fetch defaults');",
     "  const headers = new Headers(init.headers);",
+    "  if (headers.get('User-Agent') !== 'niho-edit/0.1.0') throw new Error('missing CLI user agent');",
     "  if (headers.get('Authorization') !== " + JSON.stringify(studio ? null : "Bearer fixture-token") + ") throw new Error('unexpected authorization');",
     "  if (headers.get('cf-access-token') !== " + JSON.stringify(studio ? "fixture-token" : null) + ") throw new Error('unexpected Access token');",
     "  if (headers.get('X-Studio-CMS-Version') !== " + JSON.stringify(studio ? "2" : null) + ") throw new Error('unexpected Studio CMS version');",
@@ -100,6 +102,7 @@ function runUpload(args, { uploadUrl, expectedBytes, asset, name = "sea.png", tr
       if (calls === 1) {
         if (String(url) !== ${JSON.stringify(`${origin}/api/edit/v1/sites/${siteId}/operations/assets.upload-intent`)} || init.method !== "POST") throw new Error("unexpected intent request");
         const headers = new Headers(init.headers);
+        if (headers.get("User-Agent") !== "niho-edit/0.1.0") throw new Error("missing CLI user agent");
         if (headers.get("Authorization") !== "Bearer fixture-token") throw new Error("missing editing token");
         if (headers.get("CF-Access-Client-Id") !== ${JSON.stringify(accessClientId)} || headers.get("CF-Access-Client-Secret") !== ${JSON.stringify(accessClientSecret)}) throw new Error("missing API Access credentials");
         const body = JSON.parse(init.body);
@@ -108,6 +111,7 @@ function runUpload(args, { uploadUrl, expectedBytes, asset, name = "sea.png", tr
       }
       if (calls !== 2 || String(url) !== ${JSON.stringify(uploadUrl)} || init.method !== "PUT" || init.credentials !== "omit" || init.redirect !== "error") throw new Error("unexpected upload PUT");
       const headers = new Headers(init.headers);
+      if (headers.get("User-Agent") !== "niho-edit/0.1.0") throw new Error("missing CLI user agent");
       if (headers.get("Authorization") !== "Bearer short-lived" || headers.get("Content-Type") !== "image/png") throw new Error("unsafe upload headers");
       const sameOriginAccess = new URL(${JSON.stringify(uploadUrl)}).origin === ${JSON.stringify(origin)};
       if (headers.get("CF-Access-Client-Id") !== (sameOriginAccess ? ${JSON.stringify(accessClientId)} : null)
@@ -141,9 +145,9 @@ test("niho-edit reads a page over the host API without Studio or a browser", asy
   });
   assert.equal(result.exitCode, 0, `${result.stderr}\n${result.stdout}`);
   assert.deepEqual(JSON.parse(result.stdout), { document: fixture, version: "v1" });
-  assert.deepEqual(EDITING_OPERATIONS.filter(({ id }) => !id.startsWith("localization.")).map(({ id }) => id), ["pages.inspect", "pages.read", "pages.history", "pages.history-read", "pages.save", "pages.apply", "pages.preview-intent", "pages.release-plan", "pages.release", "pages.release-set-plan", "pages.release-set", "pages.release-set-status", "pages.catalog", "pages.change-prepare", "pages.change-apply",
-    "cms.schema", "cms.list", "cms.read", "cms.create", "cms.save", "cms.publish-plan", "cms.publish", "cms.operation-status", "site.breakpoints.read", "site.breakpoints.save",
-    "site.styles.read", "site.styles.save", "site.styles.release-plan", "site.styles.release", "site.styles.migration-plan", "site.styles.migration-apply",
+  assert.deepEqual(EDITING_OPERATIONS.filter(({ id }) => !id.startsWith("localization.")).map(({ id }) => id), ["pages.inspect", "pages.read", "pages.history", "pages.history-read", "pages.save", "pages.apply", "pages.preview-intent", "pages.release-plan", "pages.release", "pages.publish", "pages.release-set-plan", "pages.release-set", "pages.release-set-status", "pages.catalog", "pages.change", "pages.change-prepare", "pages.change-apply",
+    "cms.schema", "cms.list", "cms.read", "cms.create", "cms.save", "cms.publish-plan", "cms.publish", "cms.publish-now", "cms.operation-status", "site.breakpoints.read", "site.breakpoints.save",
+    "site.styles.read", "site.styles.edit", "site.styles.publish",
     "assets.list", "assets.usages", "assets.resolve", "assets.update", "assets.upload-intent", "assets.delete", "assets.restore"]);
 });
 
@@ -335,13 +339,13 @@ test("niho-edit falls back to pages.read and resolves public URLs through pages.
   const result = await runSequence(["find", "--url", "https://public.example/", "--locale", locale, "--node", "heading"], [
     { method: "GET", url: catalogUrl, result: { version: "catalog-v1", pages: [{ siteId, pageId, locale, title: "Home", path: "/" }] } },
     { method: "GET", url: discoverUrl, result: { apiVersion: "v1", siteId, operations: [EDITING_OPERATIONS.find(({ id }) => id === "pages.read")] } },
-    { method: "GET", url: readUrl, result: { document: fixture, version: "v1", stylesVersion: "styles-v1" } }
+    { method: "GET", url: readUrl, result: { document: fixture, version: "v1" } }
   ]);
   assert.equal(result.exitCode, 0, result.stderr);
   const output = JSON.parse(result.stdout);
   assert.equal(output.view, "find");
   assert.equal(output.version, "v1");
-  assert.equal(output.stylesVersion, "styles-v1");
+  assert.equal(output.stylesVersion, undefined);
   assert.deepEqual(output.items.map(({ id }) => id), ["heading"]);
 });
 
@@ -463,6 +467,48 @@ test("niho-edit lists pages directly from the host API", async () => {
   assert.deepEqual(JSON.parse(result.stdout), catalog);
 });
 
+test("niho-edit lint returns zero for a clean page", async () => {
+  const operations = EDITING_OPERATIONS.filter(({ id }) => id === "site.styles.read");
+  const snapshot = { draft: { version: "styles-1", styles: {} }, published: { version: "published-1", styles: {} } };
+  const breakpoints = { version: "breakpoints-1", settings: { base: { name: "PC", previewWidth: 1360 }, breakpoints: [] } };
+  const document = { schemaVersion: 1, siteId, pageId: "lint-home", locale, revision: 1, title: "Home", tokens: {},
+    body: [{ type: "element", id: "copy", tag: "p", children: [{ type: "text", text: "Hello" }] }] };
+  const result = await runSequence(["lint", "lint-home", "--locale", locale], [
+    { method: "GET", url: `${origin}/api/edit/v1/sites/${siteId}/capabilities?features=site.styles`, result: { apiVersion: "v1", siteId, operations } },
+    { method: "GET", url: `${origin}/api/edit/v1/sites/${siteId}/operations/site.styles.read`, result: snapshot },
+    { method: "GET", url: `${origin}/api/edit/v1/sites/${siteId}/operations/site.breakpoints.read`, result: breakpoints },
+    { method: "GET", url: `${origin}/api/edit/v1/sites/${siteId}/operations/pages.read/lint-home?locale=${encodeURIComponent(locale)}`,
+      result: { document, version: "page-1" } }
+  ]);
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { status: "clean", pagesChecked: 1, findings: [] });
+});
+
+test("niho-edit lint all reports findings and exits nonzero", async () => {
+  const operations = EDITING_OPERATIONS.filter(({ id }) => id === "site.styles.read");
+  const styles = { tokens: { brand: { type: "color", value: "#abc" } } };
+  const snapshot = { draft: { version: "styles-1", styles }, published: { version: "published-1", styles: {} } };
+  const breakpoints = { version: "breakpoints-1", settings: { base: { name: "PC", previewWidth: 1360 }, breakpoints: [] } };
+  const document = { schemaVersion: 1, siteId, pageId: "lint-home", locale, revision: 1, title: "Home",
+    tokens: { unused: { type: "color", value: "#ffffff" } },
+    body: [{ type: "element", id: "copy", tag: "p", style: { base: { color: "#aabbcc" } }, children: [] }] };
+  const result = await runSequence(["lint", "all"], [
+    { method: "GET", url: `${origin}/api/edit/v1/sites/${siteId}/capabilities?features=site.styles`, result: { apiVersion: "v1", siteId, operations } },
+    { method: "GET", url: `${origin}/api/edit/v1/sites/${siteId}/operations/site.styles.read`, result: snapshot },
+    { method: "GET", url: `${origin}/api/edit/v1/sites/${siteId}/operations/site.breakpoints.read`, result: breakpoints },
+    { method: "GET", url: `${origin}/api/edit/v1/sites/${siteId}/operations/pages.catalog`, result: { version: "catalog-1",
+      pages: [{ siteId, pageId: "lint-home", locale, title: "Home" }] } },
+    { method: "GET", url: `${origin}/api/edit/v1/sites/${siteId}/operations/pages.read/lint-home?locale=${encodeURIComponent(locale)}`,
+      result: { document, version: "page-1" } }
+  ]);
+  assert.equal(result.exitCode, 1, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.status, "issues");
+  assert.equal(output.pagesChecked, 1);
+  assert.ok(output.findings.some(({ code }) => code === "literal-matches-token"));
+  assert.ok(output.findings.some(({ code }) => code === "unused-token"));
+});
+
 test("niho-edit applies a reviewed page-management plan directly to the host API", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "niho-edit-page-change-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -514,14 +560,104 @@ test("niho-edit reads and CAS-saves site breakpoints over the host API", async (
   assert.deepEqual(JSON.parse(conflict.stdout), { apiVersion: "v1", httpStatus: 409, operation: "site.breakpoints.save", result: { error: "version_conflict" } });
 });
 
-test("niho-edit reads and CAS-saves site styles through feature discovery", async (t) => {
-  const operations = EDITING_OPERATIONS.filter(({ id }) => id === "site.styles.read" || id === "site.styles.save");
+test("niho-edit reads and CAS-saves versioned site SEO settings through Studio", async (t) => {
+  const settings = { siteName: "Example", description: "Description", defaultOgImage: "/og.png", verificationTags: [], organization: null,
+    robotsPolicy: "index", ga4MeasurementId: null };
+  const readPath = `/api/edit/v2/sites/${siteId}/operations/site.seo.read`;
+  const read = await run(["--studio", "site-seo-read"], { studio: true, expectedMethod: "GET", expectedUrl: `${origin}${readPath}`, result: { settings, version: "seo-v1" } });
+  assert.equal(read.exitCode, 0, read.stderr);
+  assert.deepEqual(JSON.parse(read.stdout), { settings, version: "seo-v1" });
+
+  const directory = await mkdtemp(join(tmpdir(), "niho-edit-seo-"));
+  try {
+    const snapshotPath = join(directory, "site-seo.json");
+    const updated = { ...settings, description: "Updated description" };
+    await writeFile(snapshotPath, JSON.stringify({ settings: updated, version: "seo-v1" }));
+    const savePath = `/api/edit/v2/sites/${siteId}/operations/site.seo.save`;
+    const saved = await run(["--studio", "site-seo-save", "--json", snapshotPath], {
+      studio: true, expectedMethod: "PUT", expectedUrl: `${origin}${savePath}`,
+      expectedBody: { expectedVersion: "seo-v1", settings: updated }, result: { settings: updated, version: "seo-v2" }
+    });
+    assert.equal(saved.exitCode, 0, saved.stderr);
+    assert.deepEqual(JSON.parse(saved.stdout), { apiVersion: "v1", httpStatus: 200, operation: "site.seo.save", result: { settings: updated, version: "seo-v2" } });
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("niho-edit reads and CAS-saves fixed page redirects through Studio", async (t) => {
+  const redirects = [{ locale: "ja", fromPath: "/old-page", toPath: "/new-page" }];
+  const readPath = `/api/edit/v2/sites/${siteId}/operations/site.redirects.read`;
+  const read = await run(["--studio", "site-redirects-read"], { studio: true, expectedMethod: "GET", expectedUrl: `${origin}${readPath}`,
+    result: { redirects, version: "redirects-v1" } });
+  assert.equal(read.exitCode, 0, read.stderr);
+  assert.deepEqual(JSON.parse(read.stdout), { redirects, version: "redirects-v1" });
+
+  const directory = await mkdtemp(join(tmpdir(), "niho-edit-redirects-"));
+  try {
+    const snapshotPath = join(directory, "redirects.json");
+    const updated = [...redirects, { locale: "en", fromPath: "/old-en", toPath: "/new-en" }];
+    await writeFile(snapshotPath, JSON.stringify({ redirects: updated, version: "redirects-v1" }));
+    const savePath = `/api/edit/v2/sites/${siteId}/operations/site.redirects.save`;
+    const saved = await run(["--studio", "site-redirects-save", "--json", snapshotPath], {
+      studio: true, expectedMethod: "PUT", expectedUrl: `${origin}${savePath}`,
+      expectedBody: { expectedVersion: "redirects-v1", redirects: updated }, result: { redirects: updated, version: "redirects-v2" }
+    });
+    assert.equal(saved.exitCode, 0, saved.stderr);
+    assert.deepEqual(JSON.parse(saved.stdout), { apiVersion: "v1", httpStatus: 200, operation: "site.redirects.save",
+      result: { redirects: updated, version: "redirects-v2" } });
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("niho-edit reads and version-saves public delivery settings through Studio", async () => {
+  const route = `${origin}/api/edit/v2/sites/${siteId}/operations/site.public`;
+  const snapshot = {
+    domain: { hostname: null, noindex: true, version: "domain-v1" },
+    origins: { frameOrigins: [], resourceOrigins: [], version: "origins-v1" }
+  };
+  const next = { ...snapshot, domain: { ...snapshot.domain, hostname: "www.example.test" } };
+  const read = await run(["--studio", "site-public-read"], { studio: true, expectedMethod: "GET", expectedUrl: route + ".read",
+    result: { ...snapshot, futureResponseField: true } });
+  assert.equal(read.exitCode, 0, read.stderr);
+  assert.deepEqual(JSON.parse(read.stdout), snapshot);
+  const args = ["--studio", "site-public-save", "--json", "-"];
+  const saved = await run(args, {
+    studio: true, expectedMethod: "PUT", expectedUrl: route + ".save", stdin: JSON.stringify(next), expectedBody: next,
+    result: { ...next, domain: { ...next.domain, version: "domain-v2", futureDomainField: true } }
+  });
+  assert.equal(saved.exitCode, 0, saved.stderr);
+  assert.deepEqual(JSON.parse(saved.stdout).result, { ...next, domain: { ...next.domain, version: "domain-v2" } });
+  const problem = { error: "partial_save", saved: "domain", failed: "origins", cause: "conflict" };
+  const conflict = await run(args, {
+    studio: true, expectedMethod: "PUT", expectedUrl: route + ".save", stdin: JSON.stringify(next), expectedBody: next,
+    status: 409, result: problem
+  });
+  assert.equal(conflict.exitCode, 1);
+  assert.deepEqual(JSON.parse(conflict.stdout), { apiVersion: "v1", httpStatus: 409, operation: "site.public.save", result: problem });
+});
+
+test("niho-edit registers a Studio page embed with a JSON input file", async () => {
+  const src = "https://niho.life/embed/inquiry/example";
+  const refId = `emb_${"a".repeat(32)}`;
+  const args = ["page-embed-register", pageId, "--locale", locale, "--json", "-"];
+  const stdin = JSON.stringify({ src });
+  const result = await run(["--studio", ...args], {
+    studio: true, expectedMethod: "POST", expectedUrl: `${origin}/api/edit/v2/sites/${siteId}/operations/pages.embed-register/${pageId}`,
+    expectedBody: { src, locale }, stdin, status: 201, result: { refId, futureResponseField: true }
+  });
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout).result, { refId });
+  const nonStudio = await run(args, { stdin });
+  assert.equal(nonStudio.exitCode, 1);
+  assert.match(nonStudio.stdout, /invalid_arguments/u);
+});
+
+test("niho-edit reads and edits site styles through the shared operations", async (t) => {
+  const operations = EDITING_OPERATIONS.filter(({ id }) => id === "site.styles.read" || id === "site.styles.edit");
   const discovery = { apiVersion: "v1", siteId, operations };
   const styles = { tokens: { brand: { type: "color", value: "#195640" } } };
-  const snapshot = { sitePublicationEpoch: "epoch-1", draft: { version: "draft-1", styles }, published: { stylesVersion: "published-1", styles: {} } };
+  const snapshot = { draft: { version: "draft-1", styles }, published: { version: "published-1", styles: {} } };
   const capabilities = `${origin}/api/edit/v1/sites/${siteId}/capabilities?features=site.styles`;
   const readPath = `${origin}/api/edit/v1/sites/${siteId}/operations/site.styles.read`;
-  const read = await runSequence(["styles-read"], [
+  const read = await runSequence(["styles", "read"], [
     { method: "GET", url: capabilities, result: discovery },
     { method: "GET", url: readPath, result: snapshot }
   ]);
@@ -530,14 +666,14 @@ test("niho-edit reads and CAS-saves site styles through feature discovery", asyn
 
   const directory = await mkdtemp(join(tmpdir(), "niho-edit-styles-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  const inputPath = join(directory, "styles.json"), next = { tokens: { brand: { type: "color", value: "#000000" } } };
-  await writeFile(inputPath, JSON.stringify({ version: "draft-1", styles: next }));
-  const save = await runSequence(["styles-save", "--json", inputPath], [
+  const inputPath = join(directory, "styles.json"), next = { type: "set", styleKind: "token", name: "brand", value: { type: "color", value: "#000000" } };
+  await writeFile(inputPath, JSON.stringify({ expectedVersion: "draft-1", edits: [next] }));
+  const save = await runSequence(["styles", "edit", "--json", inputPath], [
     { method: "GET", url: capabilities, result: discovery },
-    { method: "PUT", url: `${origin}/api/edit/v1/sites/${siteId}/operations/site.styles.save`, body: { expectedVersion: "draft-1", styles: next }, result: { status: "saved", version: "draft-2" } }
+    { method: "PUT", url: `${origin}/api/edit/v1/sites/${siteId}/operations/site.styles.edit`, body: { expectedVersion: "draft-1", edits: [next] }, result: { status: "saved", version: "draft-2", styles: { tokens: { brand: next.value } } } }
   ]);
   assert.equal(save.exitCode, 0, save.stderr);
-  assert.deepEqual(JSON.parse(save.stdout), { apiVersion: "v1", httpStatus: 200, operation: "site.styles.save", result: { status: "saved", version: "draft-2" } });
+  assert.deepEqual(JSON.parse(save.stdout), { apiVersion: "v1", httpStatus: 200, operation: "site.styles.edit", result: { status: "saved", version: "draft-2", styles: { tokens: { brand: next.value } } } });
 });
 
 test("niho-edit preserves host-specific component blocks on read and save", async (t) => {
@@ -630,6 +766,97 @@ test("niho-edit reviews a release plan and retries publication with the same ope
   assert.deepEqual(JSON.parse(retried.stdout).result, result);
 });
 
+test("niho-edit --studio sends read, CAS save and two-phase page release with Access service credentials", async () => {
+  const accessClientId = `${"c".repeat(32)}.access`, accessClientSecret = "fixture-secret";
+  const access = { studio: true, token: null, accessClientId, accessClientSecret,
+    env: { CF_ACCESS_CLIENT_ID: accessClientId, CF_ACCESS_CLIENT_SECRET: accessClientSecret } };
+  const base = ["--studio"], args = [pageId, "--locale", locale];
+  const endpoint = (operation) => `${origin}/api/edit/v1/sites/${siteId}/operations/${operation}/${pageId}?locale=${encodeURIComponent(locale)}`;
+  const read = await run([...base, "read", ...args], { ...access, expectedMethod: "GET", expectedUrl: endpoint("pages.read"),
+    result: { document: fixture, version: "v1" } });
+  assert.equal(read.exitCode, 0, read.stdout);
+  const document = { ...fixture, revision: fixture.revision + 1, title: "Updated through Studio" };
+  const saved = await run([...base, "save", ...args, "--json", "-"], {
+    ...access, expectedMethod: "PUT", expectedUrl: endpoint("pages.save"), stdin: read.stdout,
+    expectedBody: { expectedVersion: "v1", document: fixture },
+    result: { status: "saved", version: "v2", document }
+  });
+  assert.equal(saved.exitCode, 0, saved.stdout);
+  const plan = { target: { siteId, pageId, locale }, expectedVersion: "v2", action: "publish",
+    confirmationToken: "fixture-confirmation", domain: origin, changes: [] };
+  const prepared = await run([...base, "release-plan", ...args, "--action", "publish", "--json", "-"], {
+    ...access, expectedMethod: "POST", expectedUrl: endpoint("pages.release-plan"), stdin: saved.stdout,
+    expectedBody: { expectedVersion: "v2", action: "publish" }, result: { plan }
+  });
+  assert.equal(prepared.exitCode, 0, prepared.stdout);
+  const operationId = "123e4567-e89b-42d3-a456-426614174000";
+  const result = { status: "released", operationId, version: "v3", document };
+  const applied = await run([...base, "release", ...args, "--json", "-", "--operation-id", operationId], {
+    ...access, expectedMethod: "POST", expectedUrl: endpoint("pages.release"), stdin: prepared.stdout,
+    expectedBody: { expectedVersion: "v2", confirmationToken: plan.confirmationToken, operationId }, result
+  });
+  assert.equal(applied.exitCode, 0, applied.stdout);
+  assert.deepEqual(JSON.parse(applied.stdout).result, result);
+});
+
+test("niho-edit --studio publishes, lists history, and restores with one request per command", async () => {
+  const accessClientId = `${"c".repeat(32)}.access`, accessClientSecret = "fixture-secret";
+  const access = { studio: true, token: null, accessClientId, accessClientSecret,
+    env: { CF_ACCESS_CLIENT_ID: accessClientId, CF_ACCESS_CLIENT_SECRET: accessClientSecret } };
+  const base = ["--studio"], pageArgs = [pageId, "--locale", locale];
+  const endpoint = (operation, query = `/${pageId}?locale=${encodeURIComponent(locale)}`) => `${origin}/api/edit/v1/sites/${siteId}/operations/${operation}${query}`;
+  const snapshot = { document: fixture, version: "v2" };
+  const publishResult = { status: "released", url: "https://site.example/", warnings: [{ code: "missing-description", message: "説明がありません。" }], snapshot };
+  const published = await run([...base, "publish", ...pageArgs, "--expected-version", "v1"], {
+    ...access, expectedMethod: "POST", expectedUrl: endpoint("pages.publish"), expectedBody: { expectedVersion: "v1", action: "publish" },
+    result: publishResult
+  });
+  assert.equal(published.exitCode, 0, published.stderr);
+  assert.deepEqual(JSON.parse(published.stdout).result, publishResult);
+
+  const stale = await run([...base, "publish", ...pageArgs, "--json", "-"], {
+    ...access, expectedMethod: "POST", expectedUrl: endpoint("pages.publish"),
+    expectedBody: { expectedVersion: "v2", action: "publish" }, stdin: JSON.stringify(snapshot), status: 409,
+    result: { error: "version_conflict" }
+  });
+  assert.equal(stale.exitCode, 1);
+  assert.deepEqual(JSON.parse(stale.stdout).result, { error: "version_conflict" });
+
+  const history = { entries: [{ id: "rev-2", revision: 2, label: "版 2", kind: "publish", createdAt: "2026-11-27T00:00:00.000Z" }] };
+  const listed = await run([...base, "history", ...pageArgs], {
+    ...access, expectedMethod: "GET", expectedUrl: endpoint("pages.history"), result: history
+  });
+  assert.equal(listed.exitCode, 0, listed.stderr);
+  assert.deepEqual(JSON.parse(listed.stdout).result, history);
+
+  const restored = await run([...base, "restore", pageId, "rev-2", "--locale", locale, "--json", "-"], {
+    ...access, expectedMethod: "POST", expectedUrl: endpoint("pages.publish"), expectedBody: { expectedVersion: "v2", action: "restore", revision: 2 }, stdin: JSON.stringify(snapshot),
+    result: { status: "released", snapshot }
+  });
+  assert.equal(restored.exitCode, 0, restored.stderr);
+  assert.deepEqual(JSON.parse(restored.stdout).result, { status: "released", snapshot });
+});
+
+test("Studio page management and CMS publish send the selected version only once", async () => {
+  const base = ["--studio"], version = "v2", operationId = "123e4567-e89b-42d3-a456-426614174000";
+  const change = { action: "create", siteId, locale, title: "New Page", path: "/new" };
+  const changed = { status: "applied", page: { siteId, pageId: "new-page", locale, title: change.title, path: change.path } };
+  const pageResult = await run([...base, "page-change", "--expected-version", version, "--json", "-"], {
+    studio: true, expectedMethod: "POST", expectedUrl: `${origin}/api/edit/v1/sites/${siteId}/operations/pages.change`,
+    expectedBody: { expectedVersion: version, change }, stdin: JSON.stringify(change), result: changed
+  });
+  assert.equal(pageResult.exitCode, 0, pageResult.stdout);
+  assert.deepEqual(JSON.parse(pageResult.stdout).result, changed);
+
+  const published = { status: "publishing", operationId, item: { id: "entry-1", version, status: "publishing" } };
+  const cmsResult = await run([...base, "cms-publish", "posts", "entry-1", "--expected-version", version, "--operation-id", operationId], {
+    studio: true, expectedMethod: "POST", expectedUrl: `${origin}/api/edit/v1/sites/${siteId}/operations/cms.publish-now/posts/entry-1`,
+    expectedBody: { expectedVersion: version, operationId }, result: published
+  });
+  assert.equal(cmsResult.exitCode, 0, cmsResult.stdout);
+  assert.deepEqual(JSON.parse(cmsResult.stdout).result, { status: "publishing", operationId });
+});
+
 test("niho-edit prepares, applies and checks an idempotent multi-page release set", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "niho-edit-release-set-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -703,6 +930,13 @@ test("niho-edit reads translation items and job state directly from the site", a
   assert.deepEqual(JSON.parse(list.stdout), { apiVersion: "v1", httpStatus: 200, operation: "localization.items.list",
     result: { status: "ready", items: [], nextCursor: null } });
 
+  const studioList = await run(["localization-items-list", "--studio"], {
+    expectedMethod: "POST", expectedUrl: `${origin}/api/edit/v2/sites/${siteId}/operations/cms.localization.items.list`,
+    expectedBody: { siteId }, result: { status: "ready", items: [], nextCursor: null }, studio: true,
+  });
+  assert.equal(studioList.exitCode, 0, studioList.stderr);
+  assert.deepEqual(JSON.parse(studioList.stdout).result, { status: "ready", items: [], nextCursor: null });
+
   const release = await run(["localization-release-read"], {
     expectedMethod: "GET", expectedUrl: `${operations}/localization.release.read`,
     result: { status: "ready", current: null, history: [], pending: null },
@@ -756,7 +990,7 @@ test("niho-edit selects managed CMS v2 with Access authentication and an explici
   assert.equal(capabilities.exitCode, 0);
   assert.deepEqual(JSON.parse(capabilities.stdout).result, discovery);
   const payload = { siteId, collectionId: "posts", itemId: "item_example", locale: "ja", contractVersion: 2,
-    expectedSchemaRevision: "initial", expectedRevision: "rev_example", values: { title: "Fixture" } };
+    expectedSchemaRevision: "initial", expectedRevision: "rev_example", values: { title: "Fixture", body: "x".repeat(70 * 1024) } };
   const operationKey = crypto.randomUUID(), accessClientId = `${"e".repeat(32)}.access`, accessClientSecret = "fixture-service";
   const updated = await run(["--studio", "cms-v2", "cms.items.save", "--json", "-", "--operation-id", operationKey], {
     studio: true, operationKey, token: null, accessClientId, accessClientSecret,
@@ -766,6 +1000,36 @@ test("niho-edit selects managed CMS v2 with Access authentication and an explici
   });
   assert.equal(updated.exitCode, 0);
   assert.deepEqual(JSON.parse(updated.stdout).result, { status: "saved" });
+
+  const itemKey = Buffer.from("cms:posts:item_example").toString("base64url");
+  const localization = await run(["--studio", "localization-items-read", itemKey], {
+    studio: true, token: "fixture-token", expectedMethod: "POST", expectedUrl: `${origin}/api/edit/v2/sites/${siteId}/operations/cms.localization.items.read`,
+    expectedBody: { siteId, itemKey }, result: { status: "not_found" }
+  });
+  assert.equal(localization.exitCode, 0, localization.stderr);
+  assert.deepEqual(JSON.parse(localization.stdout).result, { status: "not_found" });
+
+  const releaseOperationId = crypto.randomUUID();
+  const prepareInput = { operation: "publish", releaseId: null, expectedVersion: "overview-v1", expectedCurrentVersion: null,
+    resumeToken: null, operationId: releaseOperationId };
+  const prepared = await run(["--studio", "localization-release-prepare", "--json", "-"], {
+    studio: true, operationKey: releaseOperationId, expectedMethod: "POST",
+    expectedUrl: `${origin}/api/edit/v2/sites/${siteId}/operations/cms.localization.release.plan`,
+    expectedBody: { siteId, operationId: releaseOperationId }, stdin: JSON.stringify(prepareInput),
+    result: { status: "ready", plan: { operationId: releaseOperationId, confirmationToken: "token_locale_1" } }
+  });
+  assert.equal(prepared.exitCode, 0, prepared.stderr);
+  assert.equal(JSON.parse(prepared.stdout).result.status, "ready");
+
+  const applyInput = { operation: "publish", expectedVersion: "overview-v1", confirmationToken: "token_locale_1", resumeToken: null };
+  const applied = await run(["--studio", "localization-release-apply", "--json", "-"], {
+    studio: true, expectedMethod: "POST",
+    expectedUrl: `${origin}/api/edit/v2/sites/${siteId}/operations/cms.localization.release.apply`,
+    expectedBody: { siteId, confirmationToken: "token_locale_1" }, stdin: JSON.stringify(applyInput),
+    result: { status: "published", result: { releaseId: "release_en_1", locale: "en", itemCount: 1 } }
+  });
+  assert.equal(applied.exitCode, 0, applied.stderr);
+  assert.deepEqual(JSON.parse(applied.stdout).result.result, { releaseId: "release_en_1", locale: "en", itemCount: 1 });
 });
 
 test("niho-edit plans Studio CMS schema with current revisions and requires impact confirmation to apply", async () => {

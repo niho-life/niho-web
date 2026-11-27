@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { build } from "esbuild";
 import { JSDOM } from "jsdom";
+import { EDITING_OPERATIONS } from "@niho/web/editing-api";
+import { createProjectEditorAdapter } from "../dist/project-editor-adapter.js";
+import { renderSitePageToHtml } from "@niho/web/server";
 
 async function loadKamakuraCatalogContract() {
   const result = await build({
@@ -85,6 +88,42 @@ function catalog(pageTitle = "NIHO Kamakura") {
     }
   };
 }
+
+test("Kamakura Studio の共通Stylesはsite.styles APIを使い、公開メタデータは読み取り専用", async (t) => {
+  const { createKamakuraAdapter } = await loadKamakuraEditor();
+  const requests = [], styles = { tokens: { brand: { type: "color", value: "#195640" } } };
+  t.mock.method(globalThis, "fetch", async (input, init = {}) => {
+    const url = new URL(String(input), "https://studio.niho.life"), method = init.method ?? "GET";
+    requests.push({ method, url: `${url.pathname}${url.search}`, body: init.body === undefined ? undefined : JSON.parse(String(init.body)) });
+    if (url.pathname.endsWith("/capabilities")) return Response.json({ apiVersion: "v1", siteId: "kamakura",
+      operations: EDITING_OPERATIONS.filter(({ id }) => id.startsWith("site.styles.")) });
+    if (url.pathname.endsWith("/operations/site.styles.read")) return Response.json({
+      draft: { version: "draft-styles-v1", styles }, published: { version: "published-styles-v1", styles: {} } });
+    if (url.pathname.endsWith("/operations/site.styles.edit")) return Response.json({ status: "saved", version: "draft-styles-v2",
+      styles: { tokens: { brand: styles.tokens.brand, accent: { type: "color", value: "#0066cc" } } } });
+    throw new Error(`unexpected request: ${method} ${url.pathname}`);
+  });
+  const source = catalog(), parsed = contract.parseKamakuraCatalog(source), base = createKamakuraAdapter(parsed, () => {});
+  const adapter = createProjectEditorAdapter(base, { ...source.project, members: [] });
+  const signal = new AbortController().signal;
+  assert.equal(adapter.siteSettingsMetadataEditable, false);
+  const [snapshot, concurrentSnapshot] = await Promise.all([adapter.readSiteSettings("kamakura", signal), adapter.readSiteSettings("kamakura", signal)]);
+  assert.deepEqual(concurrentSnapshot, snapshot);
+  assert.equal(snapshot.version, "draft-styles-v1");
+  assert.equal(snapshot.settings.title, "鎌倉サイト");
+  assert.deepEqual(snapshot.settings.tokens, styles.tokens);
+  const result = await adapter.saveSiteSettings({ siteId: "kamakura", settings: { ...snapshot.settings, tokens: { brand: styles.tokens.brand, accent: { type: "color", value: "#0066cc" } } },
+    expectedVersion: snapshot.version, previousStyles: styles }, signal);
+  assert.equal(result.status, "saved"); assert.equal(result.version, "draft-styles-v2");
+  assert.deepEqual(requests.map(({ method, url }) => [method, url]), [
+    ["GET", "/api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/capabilities?features=site.styles"],
+    ["GET", "/api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/operations/site.styles.read"],
+    ["PUT", "/api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/operations/site.styles.edit"]
+  ]);
+  assert.deepEqual(requests[2].body, { expectedVersion: "draft-styles-v1", edits: [
+    { type: "set", styleKind: "token", name: "accent", value: { type: "color", value: "#0066cc" } }
+  ] });
+});
 
 test("Studio の編集画面は初回一覧と文書を各1回だけ読み、Access・参加資格のエラー表示を保つ", async (t) => {
   const client = await build({
@@ -227,7 +266,7 @@ test("鎌倉のフォーム完了先は固定の公開済み完了ページだ�
   assert.deepEqual(await adapter.listFormCompletionPages({ siteId: "kamakura", pageId: "business-plan", locale: "en" }, signal), []);
 });
 
-test("Kamakura editor adapter は新版を1回で読み、旧版は文書と表示コンテキストの版を照合する", async (t) => {
+test("Kamakura editor adapter は編集状態と本文を1回で読み、状態欠損時はfail-closedする", async (t) => {
   const { createKamakuraAdapter } = await loadKamakuraEditor();
   const pageId = "kamakura-community-dinner";
   const target = { siteId: "kamakura", pageId, locale: "ja" };
@@ -235,13 +274,12 @@ test("Kamakura editor adapter は新版を1回で読み、旧版は文書と表�
   const version = "ja-version";
   const base = "/api/projects/project-kamakura/sites/kamakura/editor";
   const commonReadPath = `${base}/editing-api/v1/sites/kamakura/operations/pages.read/${pageId}?locale=ja`;
-  const legacyPath = `${base}/${pageId}`;
   const presentation = { schemaVersion: 1, siteId: target.siteId, locale: target.locale, version: "p.v1", reset: "neutral-v1", tokens: {},
     layout: { base: { backgroundColor: "#edf5ed" } }, fonts: [],
     shared: { header: { ...document, pageId: "site-header" }, footer: { ...document, pageId: "site-footer" } } };
   const editorState = { readOnly: { reason: "読み取り専用" }, englishPublication: { state: "published", retryable: false }, releases: [{ revision: 1, label: "公開中" }] };
+  const fastSnapshot = { document, version, presentation, ...editorState };
   let wire = { document, version, presentation, presentationVersion: presentation.version, editorState };
-  let legacy = { document, version, presentation, ...editorState };
   const calls = [];
   t.mock.method(globalThis, "fetch", async (input, init) => {
     const url = new URL(String(input), "https://studio.niho.life");
@@ -251,7 +289,6 @@ test("Kamakura editor adapter は新版を1回で読み、旧版は文書と表�
       assert.equal(init.headers.get("Accept"), "application/json; profile=niho-editor-snapshot-v1");
       return wire instanceof Response ? wire : Response.json(wire);
     }
-    if (path === legacyPath) return Response.json(legacy);
     throw new Error(`unexpected request: ${path}`);
   });
 
@@ -259,25 +296,15 @@ test("Kamakura editor adapter は新版を1回で読み、旧版は文書と表�
   const adapter = createKamakuraAdapter(parsed, () => {});
   assert.deepEqual(await adapter.listPages(target.siteId, signal), parsed.pages);
   assert.deepEqual(calls, []);
-  assert.deepEqual(await adapter.readDocument(target, signal), legacy);
+  assert.deepEqual(await adapter.readDocument(target, signal), fastSnapshot);
   assert.deepEqual(calls.splice(0), [commonReadPath]);
 
   wire = { document, version, presentation, presentationVersion: presentation.version };
-  assert.deepEqual(await adapter.readDocument(target, signal), legacy, "表示データだけの移行中ホストは旧編集状態を補う");
-  assert.deepEqual(calls.splice(0), [commonReadPath, legacyPath]);
+  await assert.rejects(adapter.readDocument(target, signal), (error) => error.status === 503 && error.code === "editor_state_unavailable");
+  assert.deepEqual(calls.splice(0), [commonReadPath], "編集状態が無いときに別の読取経路へfallbackしない");
 
-  wire = { document, version, presentationVersion: presentation.version };
-  assert.deepEqual(await adapter.readDocument(target, signal), legacy);
-  assert.deepEqual(calls.splice(0), [commonReadPath, legacyPath]);
-  for (const alternate of [{ ...legacy, version: "stale" }, { ...legacy, presentation: { ...presentation, version: "stale" } }]) {
-    legacy = alternate;
-    await assert.rejects(adapter.readDocument(target, signal), (error) => error.status === 409 && error.code === "version_conflict");
-    assert.deepEqual(calls.splice(0), [commonReadPath, legacyPath]);
-  }
-  wire = { document, version, editorState: {} };
-  assert.deepEqual(await adapter.readDocument(target, signal), { document, version });
-  assert.deepEqual(calls.splice(0), [commonReadPath]);
   const native = contract.parseKamakuraCatalog({ ...catalog(), nativePresentationPages: [pageId] });
+  wire = { document, version, editorState: {} };
   await assert.rejects(createKamakuraAdapter(native, () => {}).readDocument(target, signal), /必要な表示コンテキスト/u);
   assert.deepEqual(calls.splice(0), [commonReadPath]);
   for (const [status, code] of [[401, "authentication_required"], [403, "forbidden"]]) {
@@ -288,6 +315,70 @@ test("Kamakura editor adapter は新版を1回で読み、旧版は文書と表�
   wire = { document, version, presentation, presentationVersion: "stale", editorState };
   await assert.rejects(adapter.readDocument(target, signal), (error) => error.code === "invalid_response");
   assert.deepEqual(calls.splice(0), [commonReadPath]);
+});
+
+test("Kamakura adapter reads pages without a draft-style dependency version", async (t) => {
+  const { createKamakuraAdapter } = await loadKamakuraEditor();
+  const pageId = "kamakura-community-dinner", target = { siteId: "kamakura", pageId, locale: "ja" };
+  const document = { schemaVersion: 1, siteId: "kamakura", pageId, locale: "ja", revision: 1, title: "ページ", tokens: {}, body: [] };
+  const editorState = { readOnly: { reason: "読み取り専用" }, englishPublication: { state: "published", retryable: false }, releases: [] };
+  const base = "/api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/operations";
+  t.mock.method(globalThis, "fetch", async (input) => {
+    const url = new URL(String(input), "https://studio.niho.life"), path = `${url.pathname}${url.search}`;
+    if (path.endsWith("/capabilities?features=site.styles")) return Response.json({ apiVersion: "v1", siteId: "kamakura",
+      operations: EDITING_OPERATIONS.filter(({ id }) => id.startsWith("site.styles.")) });
+    if (path.endsWith("/site.styles.read")) return Response.json({
+      draft: { version: "draft-styles-v1", styles: {} }, published: { version: "published-styles-v1", styles: {} } });
+    if (path === `${base}/pages.read/${pageId}?locale=ja`) return Response.json({ document, version: "page-v1", editorState });
+    throw new Error(`unexpected request: ${path}`);
+  });
+  const adapter = createKamakuraAdapter(contract.parseKamakuraCatalog(catalog()), () => {}), signal = new AbortController().signal;
+  await adapter.readSiteSettings(target.siteId, signal);
+  const snapshot = await adapter.readDocument(target, signal);
+  assert.equal(snapshot.draftStylesVersion, undefined);
+  assert.equal(snapshot.document.pageId, pageId);
+});
+
+test("Kamakura GUI sends ordinary Japanese page edits through compact pages.apply", async (t) => {
+  const { createKamakuraAdapter } = await loadKamakuraEditor();
+  const pageId = "kamakura-community-dinner", target = { siteId: "kamakura", pageId, locale: "ja" };
+  const document = { schemaVersion: 1, siteId: target.siteId, pageId, locale: target.locale, revision: 1, title: "ページ", tokens: {}, body: [] };
+  const presentation = { schemaVersion: 1, siteId: target.siteId, locale: target.locale, version: "p.v1", reset: "neutral-v1", tokens: {},
+    layout: { base: { backgroundColor: "#edf5ed" } }, fonts: [],
+    shared: { header: { ...document, pageId: "site-header" }, footer: { ...document, pageId: "site-footer" } } };
+  const editorState = { readOnly: { reason: "読み取り専用" }, englishPublication: { state: "published", retryable: false }, releases: [] };
+  const base = "/api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/operations";
+  const requests = [];
+  t.mock.method(globalThis, "fetch", async (input, init = {}) => {
+    const url = new URL(String(input), "https://studio.niho.life"), method = init.method ?? "GET";
+    const path = `${url.pathname}${url.search}`, body = init.body === undefined ? undefined : JSON.parse(String(init.body));
+    requests.push({ method, path, body });
+    if (path.endsWith("/capabilities?features=site.styles")) return Response.json({ apiVersion: "v1", siteId: "kamakura",
+      operations: EDITING_OPERATIONS.filter(({ id }) => ["pages.read", "pages.apply"].includes(id) || id.startsWith("site.styles.")) });
+    if (path.endsWith("/site.styles.read")) return Response.json({
+      draft: { version: "draft-styles-v1", styles: {} }, published: { version: "published-styles-v1", styles: {} } });
+    if (path === `${base}/pages.read/${pageId}?locale=ja`) return Response.json({ document, version: "page-v1",
+      presentationVersion: presentation.version, presentation, editorState });
+    if (path === `${base}/pages.apply/${pageId}?locale=ja`) return Response.json({ status: "applied", version: "page-v2", revision: 2,
+      document: { ...document, title: "変更後", revision: 2 } });
+    throw new Error(`unexpected request: ${method} ${path}`);
+  });
+  const adapter = createKamakuraAdapter(contract.parseKamakuraCatalog(catalog()), () => {}), signal = new AbortController().signal;
+  await adapter.readSiteSettings(target.siteId, signal);
+  const snapshot = await adapter.readDocument(target, signal);
+  const result = await adapter.applyOperations({ target, baseVersion: snapshot.version, operationId: crypto.randomUUID(),
+    operations: [{ type: "title", value: "変更後" }], presentationVersion: snapshot.presentationVersion }, signal);
+
+  assert.equal(result.status, "applied");
+  assert.equal(result.document.title, "変更後");
+  const apply = requests.find(({ path }) => path.includes("/pages.apply/"));
+  assert.equal(apply.method, "POST");
+  assert.equal(apply.body.baseVersion, "page-v1");
+  assert.equal(apply.body.draftStylesVersion, undefined);
+  assert.equal(apply.body.stylesVersion, undefined);
+  assert.equal(apply.body.document, undefined);
+  assert.deepEqual(apply.body.operations, [{ type: "title", value: "変更後" }]);
+  assert.ok(Buffer.byteLength(JSON.stringify(apply.body)) < 1024);
 });
 
 test("Kamakura Studio adapter routes multi-page plan, apply, and status through the shared editing API", async (t) => {
@@ -331,22 +422,25 @@ test("Kamakura Studio adapter routes multi-page plan, apply, and status through 
   assert.equal(calls[1].body.confirmationToken, plan.confirmationToken);
 });
 
-test("Kamakura editor adapter は日本語経路を維持し、英語 snapshot・overlay 保存・翻訳操作を localization BFF に限定する", async (t) => {
+test("Kamakura editor adapter は英語読取を共通 pages.read に揃え、保存・翻訳操作は既存の正本を使う", async (t) => {
   const { createKamakuraAdapter } = await loadKamakuraEditor();
   const parsedCatalog = contract.parseKamakuraCatalog(catalog());
   const pageId = "kamakura-community-dinner";
   const base = "/api/projects/project-kamakura/sites/kamakura/editor";
   const document = (id, locale, title = id) => ({ schemaVersion: 1, siteId: "kamakura", pageId: id, locale, revision: 2, title, tokens: {}, body: [] });
   const presentation = { schemaVersion: 1, siteId: "kamakura", locale: "en", version: "presentation-1", reset: "neutral-v1", tokens: {}, fonts: [],
-    shared: { header: document("site-header", "en"), footer: document("site-footer", "en") } };
+    shared: { header: document("site-header", "en"), footer: document("site-footer", "en") },
+    links: { origin: "https://next-kamakura.niho.life", sourcePath: "/en/community-dinner", paths: { "/old-community": "/en/community-dinner" } } };
   const japanesePresentation = { ...presentation, locale: "ja", version: "presentation-version",
     shared: { header: document("site-header", "ja"), footer: document("site-footer", "ja") } };
   const versions = { expectedSourceVersion: `p.${"a".repeat(64)}`, expectedVersion: `l.${"b".repeat(64)}`, expectedOverlayVersion: 1 };
+  const englishDocument = { ...document(pageId, "en", "Community Dinner"), body: [{ type: "element", id: "old-link", tag: "a", attrs: { href: "/old-community" }, children: [{ type: "text", text: "Community Dinner" }] }] };
   const config = { schemaVersion: 1, siteId: "kamakura", sourceLocale: "ja", defaultLocale: "ja", enabledLocales: ["ja", "en"], documentLocales: { ja: "ja-JP", en: "en" }, glossaryVersion: "g1", contextVersion: "c1" };
   const overlay = { schemaVersion: 1, siteId: "kamakura", pageId, sourceLocale: "ja", targetLocale: "en", version: 1, entries: [] };
   const localizedPage = { siteId: "kamakura", pageId, title: "Community Dinner", locales: { ja: { state: "source" }, en: { state: "review-needed", changed: 1, published: false } } };
   const normalizedLocalizedPage = { ...localizedPage, title: parsedCatalog.pages[0].title };
   const englishPublication = { state: "retryable-failure", retryable: true, updatedAt: "2026-10-27T01:02:03.000Z" };
+  const releases = [{ revision: 2, label: "版 2（現在公開中）" }, { revision: 1, label: "版 1" }];
   const breakpointSettings = { base: { name: "Mobile", previewWidth: 480 }, breakpoints: [{ name: "Tablet", minWidth: 691, previewWidth: 840 }, { name: "Small", minWidth: 991, previewWidth: 991 }, { name: "PC", minWidth: 1280, previewWidth: 1280 }] };
   const releasePlan = { target: { siteId: "kamakura", pageId, locale: "ja" }, expectedVersion: "ja-version", presentationVersion: "presentation-version", action: "publish",
     confirmationToken: "00000000-0000-4000-8000-00000000000011111111-1111-4111-8111-111111111111", domain: "https://next-kamakura.niho.life", changes: [] };
@@ -359,8 +453,8 @@ test("Kamakura editor adapter は日本語経路を維持し、英語 snapshot�
   const replies = new Map([
     [`GET ${breakpointReadPath}`, { settings: breakpointSettings, version: "b.1" }],
     [`PUT ${breakpointSavePath}`, { status: "saved", version: "b.2" }],
-    [`GET /api/projects/project-kamakura/sites/kamakura/editor/${pageId}`, () => ({ document: japaneseDocument, version: japaneseVersion, presentation: japanesePresentation, englishPublication })],
-    [`GET /api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/operations/pages.read/${pageId}?locale=ja`, () => ({ document: japaneseDocument, version: japaneseVersion, presentationVersion: "presentation-version" })],
+    [`GET /api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/operations/pages.read/${pageId}?locale=ja`, () => ({ document: japaneseDocument, version: japaneseVersion, presentationVersion: "presentation-version", presentation: japanesePresentation, editorState: { releases, englishPublication } })],
+    [`GET /api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/operations/pages.read/${pageId}?locale=en`, () => ({ document: englishDocument, version: versions.expectedVersion, presentationVersion: presentation.version, presentation })],
     [`PUT /api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/operations/pages.save/${pageId}?locale=ja`, () => {
       japaneseVersion = "saved-version";
       japaneseDocument = document(pageId, "ja", "保存済みタイトル");
@@ -379,7 +473,6 @@ test("Kamakura editor adapter は日本語経路を維持し、英語 snapshot�
     [`POST /api/projects/project-kamakura/sites/kamakura/editor/${pageId}/release`, { status: "released", snapshot: { document: document(pageId, "ja"), version: "released-version", englishPublication: { state: "publishing", retryable: false } } }],
     [`POST /api/projects/project-kamakura/sites/kamakura/localization/editor/site`, { status: "ready", config, pages: [localizedPage], version: `s.${"c".repeat(64)}` }],
     [`POST /api/projects/project-kamakura/sites/kamakura/localization/editor/pages/${pageId}`, { status: "ready", sourceDocument: document(pageId, "ja-JP"), sourceVersion: versions.expectedSourceVersion, overlay, version: versions.expectedVersion }],
-    [`POST /api/projects/project-kamakura/sites/kamakura/localization/editor/pages/${pageId}/snapshot`, { status: "ready", document: document(pageId, "en", "Community Dinner"), version: versions.expectedVersion, presentation }],
     [`POST /api/projects/project-kamakura/sites/kamakura/localization/editor/pages/${pageId}/save`, { status: "saved", version: `l.${"d".repeat(64)}`, revision: 3 }],
     [`POST /api/projects/project-kamakura/sites/kamakura/localization/editor/pages/${pageId}/command`, { status: "applied", version: `l.${"e".repeat(64)}` }]
   ]);
@@ -407,6 +500,10 @@ test("Kamakura editor adapter は日本語経路を維持し、英語 snapshot�
   const english = await adapter.readDocument(en, signal);
   assert.equal(english.document.locale, "en");
   assert.equal(english.presentation.version, presentation.version);
+  assert.deepEqual(english.presentation.links.paths, { "/old-community": "/en/community-dinner" });
+  assert.match(renderSitePageToHtml(english.document, english.presentation), /href="\/en\/community-dinner"/u, "common presentation resolves legacy English aliases in the preview");
+  assert.equal(calls.findLast(({ key }) => key.includes("operations/pages.read") && key.endsWith("locale=en")).key,
+    `GET ${base}/editing-api/v1/sites/kamakura/operations/pages.read/${pageId}?locale=en`);
   assert.deepEqual(await adapter.localization.readSite("kamakura", signal), { config, pages: [normalizedLocalizedPage], version: `s.${"c".repeat(64)}` });
   assert.deepEqual(await adapter.localization.readPage(en, signal), { sourceDocument: document(pageId, "ja-JP"), sourceVersion: versions.expectedSourceVersion, overlay, version: versions.expectedVersion });
   const saved = await adapter.saveDraft({ target: en, document: english.document, expectedVersion: versions.expectedVersion, presentationVersion: presentation.version, localization: versions }, signal);
@@ -446,13 +543,17 @@ test("Kamakura editor adapter は日本語経路を維持し、英語 snapshot�
   replies.set(`GET ${breakpointReadPath}`, { settings: breakpointSettings, version: "b.2", extra: true });
   await assert.rejects(adapter.breakpointSettings.read("kamakura", signal), (error) => error?.code === "invalid_response");
 
-  replies.set(`POST /api/projects/project-kamakura/sites/kamakura/localization/editor/pages/${pageId}/snapshot`, { status: "unavailable", message: "このページの英語表示材料はまだありません。" });
-  await assert.rejects(adapter.readDocument(en, signal), /英語表示材料/u);
-  replies.set(`POST /api/projects/project-kamakura/sites/kamakura/localization/editor/pages/${pageId}/snapshot`, { status: "conflict" });
+  replies.set(`GET ${base}/editing-api/v1/sites/kamakura/operations/pages.read/${pageId}?locale=en`, {
+    document: englishDocument, version: versions.expectedVersion, presentationVersion: presentation.version, coordinatorEpoch: 1, presentation
+  });
+  await assert.rejects(adapter.readDocument(en, signal), (error) => error.code === "invalid_response", "internal coordinator epochs are rejected by the common read contract");
+  replies.set(`GET ${base}/editing-api/v1/sites/kamakura/operations/pages.read/${pageId}?locale=en`, Response.json({ error: "version_conflict" }, { status: 409 }));
   await assert.rejects(adapter.readDocument(en, signal), (error) => error.status === 409);
-  replies.set(`GET /api/projects/project-kamakura/sites/kamakura/editor/${pageId}`, { document: document(pageId, "ja"), version: "ja-version", presentation: japanesePresentation, englishPublication: { ...englishPublication, internal: "secret" } });
-  replies.set(`GET /api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/operations/pages.read/${pageId}?locale=ja`, { document: document(pageId, "ja"), version: "ja-version", presentationVersion: "presentation-version" });
-  await assert.rejects(adapter.readDocument(ja, signal), /英語公開状態が正しくありません/u);
+  replies.set(`GET /api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/operations/pages.read/${pageId}?locale=ja`, {
+    document: document(pageId, "ja"), version: "ja-version", presentationVersion: "presentation-version", presentation: japanesePresentation,
+    editorState: { releases, englishPublication: { ...englishPublication, internal: "secret" } }
+  });
+  await assert.rejects(adapter.readDocument(ja, signal));
   replies.set(`POST /api/projects/project-kamakura/sites/kamakura/editor/${pageId}/english-publication-retry`, { status: "accepted", englishPublication: { state: "published", retryable: false }, internal: "secret" });
   await assert.rejects(adapter.englishPublication.retry(ja, signal), /英語公開状態が正しくありません/u);
 });
@@ -490,11 +591,9 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
   t.mock.method(console, "error", () => {});
   t.mock.method(console, "warn", (...args) => { bridgeLogs.push(args); });
 
-  const legacyBreakpointSettings = { base: { name: "Mobile", previewWidth: 480 }, breakpoints: [{ name: "Tablet", minWidth: 691, previewWidth: 840 }, { name: "Small", minWidth: 991, previewWidth: 991 }, { name: "PC", minWidth: 1280, previewWidth: 1280 }] };
+  const breakpointSettings = { base: { name: "Mobile", previewWidth: 480 }, breakpoints: [{ name: "Tablet", minWidth: 691, previewWidth: 840 }, { name: "Small", minWidth: 991, previewWidth: 991 }, { name: "PC", minWidth: 1280, previewWidth: 1280 }] };
   const env = {
-    DB: { prepare(sql) { return { sql, bind() { return this; }, async first() { return this.sql.includes("settings_json")
-      ? { settings_json: JSON.stringify(legacyBreakpointSettings), version: 7 }
-      : { allowed: 1, role: "editor" }; } }; } },
+    DB: { prepare(sql) { assert.doesNotMatch(sql, /site_breakpoint_settings/u); return { bind() { return this; }, async first() { return { allowed: 1, role: "editor" }; } }; } },
     ASSETS: { fetch: async () => new Response("not expected", { status: 500 }) },
     KAMAKURA_SITE: { fetch: async (request) => {
       if (bindingFailure) throw new Error("binding failure detail must not be logged");
@@ -509,9 +608,6 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
 
   const callCatalog = (headers = {}) => workerModule.default.fetch(new Request("https://studio.niho.life/api/projects/project-kamakura/sites/kamakura/editor/catalog", {
     headers: { "Cf-Access-Jwt-Assertion": token, ...headers }
-  }), env);
-  const callPage = () => workerModule.default.fetch(new Request("https://studio.niho.life/api/projects/project-kamakura/sites/kamakura/editor/kamakura-community-dinner", {
-    headers: { "Cf-Access-Jwt-Assertion": token }
   }), env);
   const callAssetList = () => workerModule.default.fetch(new Request("https://studio.niho.life/api/projects/project-kamakura/sites/kamakura/editor/assets/list", {
     method: "POST",
@@ -562,13 +658,12 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
     const path = new URL(request.url).pathname;
     if (path.endsWith("/capabilities")) return Response.json({ apiVersion: "v1", siteId: "kamakura", operations: [] });
     if (path.endsWith("/site.styles.read")) return Response.json({
-      sitePublicationEpoch: "epoch-v1",
       draft: { version: "draft-styles-v1", styles: { tokens: {} } },
-      published: { stylesVersion: "published-styles-v1", styles: { tokens: {} } }
+      published: { version: "published-styles-v1", styles: { tokens: {} } }
     });
-    if (path.endsWith("/site.styles.release-plan")) return Response.json({ plan: { status: "fixture" } });
+    if (path.endsWith("/site.styles.publish")) return Response.json({ status: "published", version: "published-styles-v2", styles: { tokens: {} } });
     if (path.includes("/pages.read/")) {
-      if (request.headers.get("If-None-Match") === '"page-v1"') return new Response(null, { status: 304, headers: { ETag: '"page-v1"' } });
+      if (request.headers.get("If-None-Match") === '"page-v1"') return new Response(null, { status: 304, headers: { ETag: '"page-v1"', "Server-Timing": "page-read;dur=1.2" } });
       if (largeReadMode) {
         let offset = 0;
         return new Response(new ReadableStream({ pull(controller) {
@@ -578,7 +673,7 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
           controller.enqueue(largeSnapshotBytes.slice(offset, end)); offset = end;
         } }), { headers: { "Content-Type": "application/json", ETag: '"page-v1"' } });
       }
-      return new Response(JSON.stringify(commonSnapshot), { headers: { "Content-Type": "application/json", ETag: '"page-v1"' } });
+      return new Response(JSON.stringify(commonSnapshot), { headers: { "Content-Type": "application/json", ETag: '"page-v1"', "Server-Timing": "page-read;dur=12.5" } });
     }
     if (path.endsWith("/pages.catalog")) return Response.json({ version: "registry-v1", pages: [{ siteId: "kamakura", pageId: "community", locale: "ja", title: "地域のコミュニティ", path: "/community", kind: "page", visibility: "public", published: true }] });
     if (path.endsWith("/pages.change-prepare")) {
@@ -625,11 +720,10 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
   assert.equal(styleRead.status, 200);
   assert.equal((await styleRead.json()).draft.version, "draft-styles-v1");
   assert.deepEqual((await assertDelegationSignature(editingApiRequest)).scope, ["site.settings.read"]);
-  const styleReleaseInput = { expectedVersion: "draft-styles-v1", expectedStylesVersion: "published-styles-v1",
-    sitePublicationEpoch: "epoch-v1", operationId: "123e4567-e89b-42d3-a456-426614174000" };
-  const styleRelease = await callEditingApi("/sites/kamakura/operations/site.styles.release-plan", "POST", styleReleaseInput);
-  assert.equal(styleRelease.status, 200);
-  assert.deepEqual(await editingApiRequest.clone().json(), styleReleaseInput);
+  const stylePublishInput = { expectedDraftVersion: "draft-styles-v1", expectedPublishedVersion: "published-styles-v1" };
+  const stylePublish = await callEditingApi("/sites/kamakura/operations/site.styles.publish", "POST", stylePublishInput);
+  assert.equal(stylePublish.status, 200);
+  assert.deepEqual(await editingApiRequest.clone().json(), stylePublishInput);
   assert.deepEqual((await assertDelegationSignature(editingApiRequest)).scope, ["site.settings.write", "pages.publish"]);
 
   const managementBase = "/sites/kamakura/operations";
@@ -639,11 +733,17 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
   assert.equal(editingApiRequest.headers.get("Accept"), snapshotAccept);
   assert.equal(commonPage.headers.get("ETag"), '"page-v1"');
   assert.equal(commonPage.headers.get("Cache-Control"), "private, no-cache");
+  assert.match(commonPage.headers.get("Server-Timing"), /page-read;dur=12\.5/u);
+  assert.match(commonPage.headers.get("Server-Timing"), /auth;dur=/u);
+  assert.match(commonPage.headers.get("Server-Timing"), /d1;dur=/u);
+  assert.match(commonPage.headers.get("Server-Timing"), /upstream;dur=/u);
   assert.deepEqual(await commonPage.json(), commonSnapshot);
   assert.deepEqual((await assertDelegationSignature(editingApiRequest)).scope, ["pages.read"]);
   const unchangedPage = await callEditingApi(`${managementBase}/pages.read/community?locale=ja`, "GET", undefined,
     { Accept: snapshotAccept, "If-None-Match": '"page-v1"' });
   assert.equal(unchangedPage.status, 304);
+  assert.match(unchangedPage.headers.get("Server-Timing"), /page-read;dur=1\.2/u);
+  assert.match(unchangedPage.headers.get("Server-Timing"), /upstream;dur=/u);
   assert.equal(editingApiRequest.headers.get("If-None-Match"), '"page-v1"');
   assert.equal(await unchangedPage.text(), "");
   largeReadMode = true;
@@ -745,8 +845,8 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
 
   const breakpointReadUpstreamPath = "/api/edit/v1/sites/kamakura/operations/site.breakpoints.read";
   const breakpointSaveUpstreamPath = "/api/edit/v1/sites/kamakura/operations/site.breakpoints.save";
-  let hostBreakpointSettings;
-  let hostBreakpointVersion;
+  let hostBreakpointSettings = breakpointSettings;
+  let hostBreakpointVersion = "host-breakpoints-v1";
   const breakpointRequests = [];
   bindingResponseFactory = async (request) => {
     const path = new URL(request.url).pathname;
@@ -759,26 +859,24 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
     }
     if (path === breakpointSaveUpstreamPath && request.method === "PUT") {
       const input = breakpointRequests.at(-1).body;
-      if (hostBreakpointSettings === undefined ? input.expectedVersion !== "b.7" : input.expectedVersion !== hostBreakpointVersion) {
+      if (input.expectedVersion !== hostBreakpointVersion) {
         return Response.json({ error: "version_conflict" }, { status: 409 });
       }
       hostBreakpointSettings = input.settings;
-      hostBreakpointVersion = hostBreakpointVersion === undefined ? "host-breakpoints-v1" : "host-breakpoints-v2";
+      hostBreakpointVersion = "host-breakpoints-v2";
       return Response.json({ status: "saved", version: hostBreakpointVersion });
     }
     throw new Error(`unexpected breakpoint upstream request: ${request.method} ${path}`);
   };
   const breakpointRead = await callEditingApi("/sites/kamakura/operations/site.breakpoints.read");
   assert.equal(breakpointRead.status, 200);
-  assert.deepEqual(await breakpointRead.json(), { settings: legacyBreakpointSettings, version: "host-breakpoints-v1" });
+  assert.deepEqual(await breakpointRead.json(), { settings: breakpointSettings, version: "host-breakpoints-v1" });
   assert.deepEqual(breakpointRequests.map(({ path, method }) => [path, method]), [
-    [breakpointReadUpstreamPath, "GET"], [breakpointSaveUpstreamPath, "PUT"]
-  ], "初回404のとき旧D1値をサイトAPIへ一度だけ引き継ぐ");
+    [breakpointReadUpstreamPath, "GET"]
+  ]);
   assert.deepEqual(breakpointRequests[0].claims.scope, ["site.settings.read"]);
-  assert.deepEqual(breakpointRequests[1].claims.scope, ["site.settings.write"]);
-  assert.deepEqual(breakpointRequests[1].body, { expectedVersion: "b.7", settings: legacyBreakpointSettings });
 
-  const nextBreakpointSettings = structuredClone(legacyBreakpointSettings);
+  const nextBreakpointSettings = structuredClone(breakpointSettings);
   nextBreakpointSettings.breakpoints[0].previewWidth = 800;
   const breakpointSave = await callEditingApi("/sites/kamakura/operations/site.breakpoints.save", "PUT", {
     expectedVersion: hostBreakpointVersion, settings: nextBreakpointSettings
@@ -789,14 +887,11 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
   assert.deepEqual(hostBreakpointSettings, nextBreakpointSettings);
   const breakpointReread = await callEditingApi("/sites/kamakura/operations/site.breakpoints.read");
   assert.deepEqual(await breakpointReread.json(), { settings: nextBreakpointSettings, version: "host-breakpoints-v2" });
-  assert.equal(breakpointRequests.length, 4, "サイトAPIに移行後は旧D1を再読しない");
-
-  const legacyBreakpointUrl = "https://studio.niho.life/api/projects/project-kamakura/sites/kamakura/breakpoints";
-  const legacyWrite = await workerModule.default.fetch(new Request(legacyBreakpointUrl, {
-    method: "PUT", headers: { "Cf-Access-Jwt-Assertion": token, "Content-Type": "application/json", Origin: "https://studio.niho.life", "Sec-Fetch-Site": "same-origin" },
-    body: JSON.stringify({ settings: legacyBreakpointSettings, expectedVersion: "b.7" })
-  }), env);
-  assert.equal(legacyWrite.status, 405, "旧D1 routeは引継ぎ元の読み取り専用");
+  assert.equal(breakpointRequests.length, 3);
+  hostBreakpointSettings = undefined;
+  const missingBreakpoints = await callEditingApi("/sites/kamakura/operations/site.breakpoints.read");
+  assert.equal(missingBreakpoints.status, 404);
+  assert.equal(breakpointRequests.length, 4, "404から保存を起動しない");
   bindingResponseFactory = null;
 
   let embedUpstream;
@@ -830,6 +925,17 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
   assert.equal(retryAccepted.status, 200);
   assert.deepEqual(await retryAccepted.json(), { status: "accepted", englishPublication: { state: "queued", retryable: false, updatedAt: "2026-10-26T16:02:03.000Z" } });
   assert.deepEqual(retryUpstream, { path: "/internal/studio/web-content/kamakura-community-dinner/english-publication-retry", method: "POST", body: {}, project: "project-kamakura", subject: "catalog-contract-test" });
+  const beforeRemovedSnapshotRead = boundRequestIds.length;
+  for (const route of [
+    "/api/projects/project-kamakura/sites/kamakura/editor/kamakura-community-dinner",
+    "/api/projects/project-kamakura/sites/kamakura/editor/kamakura-community-dinner/presentation"
+  ]) {
+    assert.equal((await workerModule.default.fetch(new Request(`https://studio.niho.life${route}`, {
+      headers: { "Cf-Access-Jwt-Assertion": token }
+    }), env)).status, 404);
+  }
+  assert.equal(boundRequestIds.length, beforeRemovedSnapshotRead, "旧snapshotと分離presentationのreadを上流へ通さない");
+  bindingResponseFactory = null;
   const beforeInvalidRetry = boundRequestIds.length;
   assert.equal((await callRetry({ expectedVersion: "must-not-pass" })).status, 400);
   assert.equal(boundRequestIds.length, beforeInvalidRetry, "余計な要求 field は上流へ送らない");
@@ -909,9 +1015,6 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
   upstreamResponse = new Response("ignored", { status: 429 });
   await assertFailure(await callCatalog(), { status: 503, code: "service_unavailable", category: "upstream_rate_limited", upstreamStatus: 429 });
 
-  upstreamResponse = new Response("unexpected method", { status: 405 });
-  await assertFailure(await callPage(), { status: 503, code: "service_unavailable", category: "upstream_unexpected_4xx", upstreamStatus: 405, operation: "page_read" });
-
   upstreamResponse = new Response("asset failure", { status: 500 });
   await assertFailure(await callAssetList(), { status: 503, code: "service_unavailable", category: "upstream_server_error", upstreamStatus: 500, operation: "asset_list" });
 
@@ -928,12 +1031,12 @@ test("Kamakura Worker accepts valid long titles and separates contract errors fr
   await assertFailure(await callAssetList(), { status: 503, code: "service_unavailable", category: "service_binding_timeout", operation: "asset_list" });
   assert.equal(timeouts.at(-1), 12_000);
   // 公開は commit と読み直しを含むので、ほかの操作より長く待つ（kamakura-site#109）。
-  const release = await workerModule.default.fetch(new Request("https://studio.niho.life/api/projects/project-kamakura/sites/kamakura/editor/business-plan/release", {
+  const release = await workerModule.default.fetch(new Request("https://studio.niho.life/api/projects/project-kamakura/sites/kamakura/editor/editing-api/v1/sites/kamakura/operations/pages.release/business-plan?locale=ja", {
     method: "POST",
     headers: { "Cf-Access-Jwt-Assertion": token, "Content-Type": "application/json", Origin: "https://studio.niho.life", "Sec-Fetch-Site": "same-origin" },
     body: JSON.stringify({ expectedVersion: "nw2:none:new:none", confirmationToken: "x" })
   }), env);
-  await assertFailure(release, { status: 503, code: "service_unavailable", category: "service_binding_timeout", operation: "release" });
+  await assertFailure(release, { status: 503, code: "service_unavailable", category: "upstream_invalid_response", upstreamStatus: 200, operation: "editing_api" });
   assert.equal(timeouts.at(-1), 30_000);
   bindingResponseFactory = null;
 

@@ -8,7 +8,7 @@ import {
 } from "@niho/web/core";
 import { PageRenderer } from "@niho/web/react";
 import { renderPageToHtml } from "@niho/web/server";
-import { createProjectEditorAdapter } from "@niho/web/project-editor";
+import { createProjectEditorAdapter } from "../dist/project-editor-adapter.js";
 import { editDocument, validateReleasePlan } from "../dist/editor-model.js";
 import {
   bumpChangedComponentVersions, componentDocument, createComponentFromNode, detachInstance, duplicateComponent, removeComponent, renameComponent,

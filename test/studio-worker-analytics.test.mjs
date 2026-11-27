@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { parseSiteAnalyticsSnapshot } from "@niho/web/analytics-data";
 import { parseSiteAnalyticsChangePlan, parseSiteAnalyticsConnection } from "@niho/web/site-analytics";
-import { parseProjectDashboardResult } from "@niho/web/project-read-model";
+import { parseProjectDashboardResult } from "../dist/project-read-model.js";
 
 // Studio Worker のサイト分析ホスト（GA4 / Search Console）。Google は fetch の mock、D1 は node:sqlite と実 migration。
 // ID・メール・鍵・origin はすべて架空。

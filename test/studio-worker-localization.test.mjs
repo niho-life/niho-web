@@ -62,7 +62,7 @@ function harness(auth, worker) {
       if (/SELECT m\.role AS role/u.test(query)) return { role };
       return !/m\.role = 'owner'/u.test(query) || role === "owner" ? { allowed: 1 } : null;
     } }; } },
-    ASSETS: { async fetch() { return new Response('<div id="root"></div>', { headers: { "Content-Type": "text/html" } }); } },
+    ASSETS: { async fetch() { return new Response('<!doctype html><html><head></head><body><div id="root"></div></body></html>', { headers: { "Content-Type": "text/html" } }); } },
     KAMAKURA_SITE: { async fetch(request) {
       const body = await request.text();
       const call = { method: request.method, path: new URL(request.url).pathname, search: new URL(request.url).search, headers: Object.fromEntries(request.headers), body, signal: request.signal };
@@ -233,6 +233,7 @@ test("翻訳 BFF: Access と D1 の owner/editor を要求ごとに確かめ、�
     ["POST", "/editor/pages/catalog", 404],
     ["POST", "/editor/pages/Home", 404],
     ["POST", "/editor/pages/home/extra", 404],
+    ["POST", "/editor/pages/home/snapshot", 404],
     ["POST", "/editor/pages/home/snapshot/extra", 404],
     ["POST", "/editor/pages/home/save/extra", 404],
     ["POST", "/editor/site/extra", 404],
@@ -240,7 +241,7 @@ test("翻訳 BFF: Access と D1 の owner/editor を要求ごとに確かめ、�
     ["PUT", "/overview", 405],
     ["GET", "/items", 405],
     ["GET", "/editor/pages/home", 405],
-    ["GET", "/editor/pages/home/snapshot", 405],
+    ["GET", "/editor/pages/home/snapshot", 404],
     ["GET", "/editor/site", 405],
     ["GET", "/editor/pages/home/save", 405],
     ["POST", "/settings", 405],
@@ -337,42 +338,14 @@ test("翻訳 BFF: native 編集用ページは所属を確認して署名付き�
   }
 });
 
-test("翻訳 BFF: 英語キャンバス snapshot は actor だけを加え、文書・表示文書・版の scope を検証する", async (t) => {
+test("翻訳 BFF: 英語キャンバス専用snapshot routeを退役し、共通 pages.read に集約する", async (t) => {
   const auth = await accessFixture(), worker = await loadWorker();
   mockAccess(t, auth);
   const h = harness(auth, worker);
   h.roles.set("project-kamakura/kamakura", "editor");
-  const page = (pageId, locale = "en") => ({ schemaVersion: 1, siteId: "kamakura", pageId, locale, revision: 2, title: pageId, tokens: {}, body: [] });
-  const presentation = { schemaVersion: 1, siteId: "kamakura", locale: "en", version: "presentation-1", reset: "neutral-v1", tokens: {}, fonts: [],
-    shared: { header: page("site-header"), footer: page("site-footer") } };
-  const ready = { status: "ready", document: page("home"), version: `l.${"a".repeat(64)}`, presentation };
-  h.setRespond(() => Response.json(ready));
-
-  assert.deepEqual(await expectJson(await h.send("POST", "/editor/pages/home/snapshot", {}), 200), ready);
-  const call = h.calls.at(-1);
-  assert.equal(call.path, `${UPSTREAM}/editor/pages/home/snapshot`);
-  assert.equal(call.body, JSON.stringify({ actor: { email: EMAIL, role: "editor" } }));
-  h.verifySignature(call);
   const before = h.calls.length;
-  await expectJson(await h.send("POST", "/editor/pages/home/snapshot", { pageId: "home" }), 400, "invalid_request");
-  assert.equal(h.calls.length, before, "snapshot はブラウザ由来の値を上流へ渡さない");
-
-  for (const reply of [
-    { ...ready, document: page("other") },
-    { ...ready, document: page("home", "ja") },
-    { ...ready, version: "l.bad" },
-    { ...ready, presentation: { ...presentation, locale: "ja" } },
-    { ...ready, presentation: { ...presentation, version: "bad\nversion" } },
-    { ...ready, presentation: { ...presentation, shared: { ...presentation.shared, header: page("site-header", "ja") } } },
-    { ...ready, extra: true }
-  ]) {
-    h.setRespond(() => Response.json(reply));
-    await expectJson(await h.send("POST", "/editor/pages/home/snapshot", {}), 502, "upstream_contract_invalid");
-  }
-  for (const reply of [{ status: "conflict" }, { status: "unavailable", message: "英語の表示材料を準備できません。" }]) {
-    h.setRespond(() => Response.json(reply));
-    assert.deepEqual(await expectJson(await h.send("POST", "/editor/pages/home/snapshot", {}), 200), reply);
-  }
+  for (const method of ["POST", "GET"]) await expectJson(await h.send(method, "/editor/pages/home/snapshot", method === "POST" ? {} : undefined), 404);
+  assert.equal(h.calls.length, before, "退役したsnapshot routeはKamakura Workerへ転送しない");
 });
 
 test("翻訳 BFF: 英語編集用のページ一覧は所属・署名・状態と公開情報を検証する", async (t) => {
@@ -454,6 +427,15 @@ test("翻訳 BFF: 本文を操作ごとの key の集合と W1 の形で確か�
     assert.deepEqual(JSON.parse(call.body), { ...forwarded, actor }, path);
     h.verifySignature(call);
   }
+
+  const previewUploadOrigin = "https://studio-upload-preview.example.test";
+  const previewUploadUrl = `${previewUploadOrigin}/internal/studio/localization-upload/${UUID}`;
+  h.env.STUDIO_PREVIEW_UPLOAD_ORIGIN = previewUploadOrigin;
+  h.setRespond(() => Response.json({ uploadUrl: previewUploadUrl, uploadToken: "token.value", uploadId: UUID }, { status: 201 }));
+  assert.deepEqual(await expectJson(await h.send("POST", "/uploads/intent", {
+    itemKey: "aG9tZQ", unitId: "cover", name: "海.png", mimeType: "image/png", bytes: 2048
+  }), 201), { uploadUrl: previewUploadUrl, uploadToken: "token.value", uploadId: UUID });
+  h.verifySignature(h.calls.at(-1));
 
   // 本文の確かめに落ちた要求は上流へ届かない
   const before = h.calls.length;
@@ -682,11 +664,12 @@ test("鎌倉の Dashboard だけ翻訳プレビューの枠と画像 PUT 先を�
   const worker = await loadWorker();
   mockAccess(t, auth);
   const h = harness(auth, worker);
+  h.env.STUDIO_PREVIEW_UPLOAD_ORIGIN = "https://studio-upload-preview.example.test";
   const page = async (path) => (await worker.fetch(new Request(`${STUDIO}${path}`, { headers: { "Cf-Access-Jwt-Assertion": auth.jwt } }), h.env)).headers.get("Content-Security-Policy");
   const dashboards = ["/projects/kamakura-site/admin", "/projects/kamakura-site/admin/translations", "/projects/kamakura-site/admin/translations/aG9tZQ", "/projects/project-kamakura/sites/kamakura"];
   for (const path of dashboards) {
     const csp = await page(path);
-    assert.match(csp, / connect-src 'self' https:\/\/next-kamakura\.niho\.life;/u, path);
+    assert.match(csp, / connect-src 'self' https:\/\/studio-upload-preview\.example\.test;/u, path);
     assert.match(csp, / frame-src https:\/\/next-kamakura\.niho\.life https:\/\/kamakura\.niho\.life;/u, path);
     assert.doesNotMatch(csp, /site-admin-test\.example|admin\.example\.test/u, path);
     assert.match(csp, / img-src 'self' https:;/u, path);

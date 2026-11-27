@@ -14,13 +14,6 @@ import type {
 /** 文書検証に渡す同じサイトの部品ライブラリとサイト共通スタイル。省略した項目は付けず、継承値を文書へ書き戻さない。 */
 const parseOptions = (components: ComponentLibrary | undefined, siteStyles: SiteStyles | undefined) => ({ ...(components ? { components } : {}), ...(siteStyles ? { siteStyles } : {}) });
 function draftSiteStyles(options: LocalizationExtractionOptions): SiteStyles | undefined {
-  if (options.siteStyles === undefined) {
-    if (options.siteStylesRevision !== undefined) fail("$options.siteStylesRevision", "style revision requires styles");
-    return undefined;
-  }
-  if (options.siteStylesRevision?.stage !== "draft" || typeof options.siteStylesRevision.version !== "string" || !options.siteStylesRevision.version) {
-    fail("$options.siteStylesRevision", "draft style revision is required");
-  }
   return options.siteStyles;
 }
 

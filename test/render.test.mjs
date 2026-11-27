@@ -3,10 +3,12 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { createElement } from "react";
 import { renderToString } from "react-dom/server";
+import { JSDOM } from "jsdom";
 import { createBlankEmbedRegistry, DocumentValidationError, pageScope, parsePageScope, PageRenderer as RootPageRenderer } from "@niho/web";
 import { PageRenderer, SitePageRenderer } from "@niho/web/react";
 import { renderPageToHtml, renderSitePageToHtml } from "@niho/web/server";
 import { generatePageCss } from "@niho/web/core";
+import { sameCanvasCssShape } from "../dist/css.js";
 
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 
@@ -20,6 +22,45 @@ test("React server rendering and Astro HTML helper produce the same initial cont
   assert.ok(html.includes("<style data-nw-style="));
   assert.ok(html.includes(`data-nw-scope="${pageScope(fixture)}"] [data-nw-owner="${pageScope(fixture)}"][data-nw-node="hero"]`));
   assert.ok(html.includes("padding:var(--nw-space)"));
+});
+
+test("canvas keeps its stylesheet stable when only style and token values change", () => {
+  const before = structuredClone(fixture);
+  before.tokens.brand = { type: "color", value: "#123456" };
+  before.textStyles = { headline: { base: { fontSize: 28 } } };
+  before.body[0].children[0].style = { textStyle: "headline", base: { marginTop: 5, color: { token: "brand" } } };
+  const after = structuredClone(before);
+  after.tokens.brand.value = "#654321";
+  after.textStyles.headline.base.fontSize = 29;
+  after.body[0].children[0].style.base.marginTop = 6;
+  assert.equal(sameCanvasCssShape(before, after), true, "value-only edits preserve the canvas stylesheet shape");
+  const addedProperty = structuredClone(after);
+  addedProperty.body[0].children[0].style.base.padding = 8;
+  assert.equal(sameCanvasCssShape(after, addedProperty), false, "new declarations require a new stylesheet");
+  const newNode = structuredClone(after);
+  newNode.body[0].children.push({ type: "element", id: "new-node", tag: "div", children: [] });
+  assert.equal(sameCanvasCssShape(after, newNode), false, "structural edits require a new stylesheet");
+  const renderCanvas = (document) => new JSDOM(renderToString(createElement(PageRenderer, { document, canvas: {} }))).window.document;
+  const first = renderCanvas(before), second = renderCanvas(after);
+  assert.equal(first.querySelector("style[data-nw-style]").textContent, second.querySelector("style[data-nw-style]").textContent);
+  assert.equal(first.querySelector('[data-nw-scope]').style.getPropertyValue("--nw-brand"), "#123456");
+  assert.equal(second.querySelector('[data-nw-scope]').style.getPropertyValue("--nw-brand"), "#654321");
+  assert.equal(first.querySelector('[data-nw-node="heading"]').style.getPropertyValue("--nw-Node-heading-text-base-fontSize"), "28px");
+  assert.equal(second.querySelector('[data-nw-node="heading"]').style.getPropertyValue("--nw-Node-heading-text-base-fontSize"), "29px");
+  assert.equal(first.querySelector('[data-nw-node="heading"]').style.getPropertyValue("--nw-Node-heading-base-marginTop"), "5px");
+  assert.equal(second.querySelector('[data-nw-node="heading"]').style.getPropertyValue("--nw-Node-heading-base-marginTop"), "6px");
+  assert.ok(renderPageToHtml(before).includes("font-size:28px;"));
+  assert.ok(renderPageToHtml(after).includes("font-size:29px;"));
+});
+
+test("canvas value variables cannot collide with user token names", () => {
+  const document = structuredClone(fixture);
+  document.tokens["node-heading-base-fontSize"] = { type: "length", value: "36px" };
+  document.body[0].children[0].style = { base: { fontSize: { token: "node-heading-base-fontSize" } } };
+  const rendered = new JSDOM(renderToString(createElement(PageRenderer, { document, canvas: {} }))).window.document;
+  assert.equal(rendered.querySelector('[data-nw-scope]').style.getPropertyValue("--nw-node-heading-base-fontSize"), "36px");
+  assert.equal(rendered.querySelector('[data-nw-node="heading"]').style.getPropertyValue("--nw-Node-heading-base-fontSize"), "var(--nw-node-heading-base-fontSize)");
+  assert.ok(rendered.querySelector("style[data-nw-style]").textContent.includes("font-size:var(--nw-Node-heading-base-fontSize);"));
 });
 
 test("text and attribute values are escaped and blank targets gain safe rel", () => {
@@ -214,6 +255,46 @@ test("closed standard embeds render fixed trusted iframe attributes and empty so
   assert.equal((canvas.match(/<iframe/g) ?? []).length, 3, "編集キャンバスは遅延埋め込みを静的に保つ");
 });
 
+test("外部URLは一般先をopaqueに保ち、厳密一致するNIHO Travelだけ予約用権限を分ける", () => {
+  const doc = structuredClone(fixture);
+  const travel = "https://travel.niho.life/embed/experiences/sea-kayak/book?locale=ja&campaign=kamakura";
+  doc.body = [
+    { type: "element", id: "general", tag: "div", embed: { provider: "url", title: "公開ガイド", source: "https://public.example.test/embed/view?item=guide" }, children: [] },
+    { type: "element", id: "travel", tag: "div", embed: { provider: "url", title: "NIHO Travel 予約", source: travel }, children: [] },
+    { type: "element", id: "near", tag: "div", embed: { provider: "url", title: "予約風の別パス", source: "https://travel.niho.life/embed/experiences/sea-kayak/book/extra" }, children: [] }
+  ];
+  const blankEmbeds = createBlankEmbedRegistry({ parentOrigin: "https://kamakura.niho.life", entries: [] });
+  const html = renderPageToHtml(doc, {}, { blankEmbeds }), parsed = new JSDOM(html).window.document;
+  const general = parsed.querySelector('[data-nw-node="general"] iframe');
+  assert.equal(general?.getAttribute("src"), "https://public.example.test/embed/view?item=guide");
+  assert.equal(general?.getAttribute("sandbox"), "allow-scripts");
+  assert.equal(general?.getAttribute("referrerpolicy"), "no-referrer");
+  assert.equal(general?.getAttribute("data-nw-url-embed-frame"), "");
+  assert.equal(parsed.querySelector('[data-nw-node="general"] [data-nw-url-fallback]')?.getAttribute("href"), "https://public.example.test/embed/view?item=guide");
+  const booking = parsed.querySelector('[data-nw-node="travel"] iframe');
+  assert.equal(booking?.getAttribute("src"), travel);
+  assert.equal(booking?.getAttribute("referrerpolicy"), "origin");
+  assert.equal(booking?.getAttribute("sandbox"), "allow-scripts allow-same-origin allow-forms allow-top-navigation-by-user-activation allow-popups allow-popups-to-escape-sandbox");
+  assert.equal(parsed.querySelector('[data-nw-node="near"] iframe')?.getAttribute("sandbox"), "allow-scripts");
+  for (const registry of [undefined, createBlankEmbedRegistry({ parentOrigin: "https://travel.niho.life", entries: [] })]) {
+    const contained = new JSDOM(renderPageToHtml(doc, {}, registry ? { blankEmbeds: registry } : {})).window.document;
+    assert.equal(contained.querySelector('[data-nw-node="travel"] iframe')?.getAttribute("sandbox"), "allow-scripts");
+  }
+
+  const edit = new JSDOM(renderToString(createElement(PageRenderer, { document: doc, missingAssets: "placeholder", canvas: { interactive: false } }))).window.document;
+  assert.equal(edit.querySelectorAll("iframe").length, 0);
+  assert.equal(edit.querySelectorAll("[data-nw-url-static]").length, 3);
+  const preview = new JSDOM(renderToString(createElement(PageRenderer, { document: doc, missingAssets: "placeholder", blankEmbeds, canvas: { interactive: true } }))).window.document;
+  const previewBooking = preview.querySelector('[data-nw-node="travel"] iframe');
+  const previewUrl = new URL(previewBooking?.getAttribute("src") ?? "");
+  assert.equal(previewUrl.searchParams.get("locale"), "ja");
+  assert.equal(previewUrl.searchParams.get("campaign"), "kamakura");
+  assert.equal(previewUrl.searchParams.get("preview"), "1");
+  assert.equal(previewBooking?.getAttribute("sandbox"), "allow-scripts allow-same-origin allow-forms");
+  assert.doesNotMatch(previewBooking?.getAttribute("sandbox") ?? "", /top-navigation|popups/u);
+  assert.equal(preview.querySelector('[data-nw-node="travel"] [data-nw-url-fallback]')?.getAttribute("href"), previewUrl.href);
+});
+
 test("Blank embed resolves only an approved key and edit canvas never starts external communication", () => {
   const doc = structuredClone(fixture); doc.body = [
     { type: "element", id: "approved", tag: "div", embed: { provider: "blank", title: "公開ガイド", source: "public-guide" }, children: [] },
@@ -271,6 +352,20 @@ test("background images compile from resolved assets and only the unresolved dec
   assert.ok(renderPageToHtml(doc, {}, { assets: { "uploads:a": { src: "/media/a.webp" } } }).includes('background-image:url("/media/a.webp");'));
 });
 
+test("canvas keeps the resolved base background when a responsive image is unresolved", () => {
+  const doc = structuredClone(fixture);
+  doc.body[0].style.base.backgroundImage = { asset: { provider: "uploads", id: "a" } };
+  doc.body[0].style.responsive[0].declarations.backgroundImage = { asset: { provider: "uploads", id: "wide" } };
+  const rendered = new JSDOM(renderToString(createElement(PageRenderer, { document: doc, assets: { "uploads:a": { src: "/media/a.webp" } }, canvas: {} }))).window.document;
+  const css = rendered.querySelector("style[data-nw-style]").textContent;
+  const values = rendered.querySelector('[data-nw-node="hero"]').style;
+  assert.ok(css.includes("background-image:var(--nw-Node-hero-base-backgroundImage);"));
+  assert.ok(css.includes("@media (min-width:768px)"));
+  assert.ok(!css.includes("--nw-Node-hero-responsive-768-backgroundImage"));
+  assert.equal(values.getPropertyValue("--nw-Node-hero-base-backgroundImage"), 'url("/media/a.webp")');
+  assert.equal(values.getPropertyValue("--nw-Node-hero-responsive-768-backgroundImage"), "");
+});
+
 test("canvas rendering resolves viewport-height units and root-relative image URLs without changing public output", () => {
   const doc = structuredClone(fixture);
   doc.body[0].style = { ...(doc.body[0].style ?? {}), base: { ...(doc.body[0].style?.base ?? {}), minHeight: "100vh", height: "60vh" } };
@@ -279,8 +374,9 @@ test("canvas rendering resolves viewport-height units and root-relative image UR
   assert.ok(publicHtml.includes("min-height:100vh"), "public CSS keeps viewport units");
   assert.ok(publicHtml.includes('src="/placeholder.svg"'), "public HTML keeps root-relative URLs");
   const canvasHtml = renderToString(createElement(PageRenderer, { document: doc, canvas: { viewportHeight: 900, siteOrigin: "https://site.example" } }));
-  assert.ok(canvasHtml.includes("min-height:900px"), "canvas resolves vh against the 100% viewport height");
-  assert.ok(canvasHtml.includes("height:540px"), "every vh value is resolved");
+  assert.ok(canvasHtml.includes("min-height:var(--nw-Node-hero-base-minHeight)"), "canvas CSS reads dynamic values from node variables");
+  assert.ok(canvasHtml.includes("--nw-Node-hero-base-minHeight:900px"), "canvas resolves vh against the 100% viewport height");
+  assert.ok(canvasHtml.includes("--nw-Node-hero-base-height:540px"), "every vh value is resolved");
   assert.ok(!/\d(?:dvh|svh|lvh|vh)\b/.test(canvasHtml.replace(/<[^>]*data-nw-scope="[^"]*"/g, "")), "no viewport-height unit remains in canvas CSS");
   assert.ok(canvasHtml.includes('src="https://site.example/placeholder.svg"'), "canvas resolves root-relative image URLs against the site origin");
   assert.ok(canvasHtml.includes(`data-nw-scope="${pageScope(doc)}"`), "scope names are not rewritten");

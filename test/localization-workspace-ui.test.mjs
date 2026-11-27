@@ -10,11 +10,18 @@ for (const key of ["window", "document", "navigator", "HTMLElement", "HTMLInputE
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
-const { LocalizationWorkspace } = await import("@niho/web/localization-workspace");
+const { LocalizationItemWorkspace, LocalizationWorkspace } = await import("../dist/localization-workspace.js");
 
 const M = (id) => `⟦${id}⟧`;
-const wait = (ms) => act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
-const flush = async () => { for (let i = 0; i < 6; i++) await wait(0); };
+const flush = () => act(async () => { await new Promise((resolve) => setImmediate(resolve)); });
+const advance = async (t, ms) => { await act(async () => t.mock.timers.tick(ms)); await flush(); };
+async function waitFor(condition, description, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${description}`);
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
 /** 読み上げに近い名前（aria-label か、aria-hidden を除いた文字）。 */
 const nameOf = (node) => {
   if (node.getAttribute("aria-label")) return node.getAttribute("aria-label");
@@ -54,6 +61,16 @@ async function setup(props) {
   const render = async (next = {}) => { current = { ...current, ...next }; await act(async () => root.render(createElement(LocalizationWorkspace, current))); await flush(); };
   await render();
   return { navigations, render, container, cleanup: async () => { await act(async () => root.unmount()); container.remove(); } };
+}
+async function setupEmbeddedItem({ adapter, itemKey = "YWJvdXQ", showReviewCurrent = false, autosaveDelay = 1000 }) {
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  await act(async () => root.render(createElement(LocalizationItemWorkspace, {
+    adapter, itemKey, showReviewCurrent, autosaveDelay, onBack: () => {},
+  })));
+  await flush();
+  return { container, cleanup: async () => { await act(async () => root.unmount()); container.remove(); } };
 }
 async function openRow(title) {
   await click([...document.querySelectorAll("button.cw-row-open")].find((node) => node.querySelector(".cw-row-title").textContent === title), title);
@@ -158,6 +175,53 @@ test("editor: an outdated translation can adopt a candidate even when the wordin
   } finally { await app.cleanup(); }
 });
 
+test("embedded Studio CMS can explicitly review a translated field", async () => {
+  const memory = createLocalizationMemory();
+  const app = await setupEmbeddedItem({ adapter: memory.adapter, showReviewCurrent: true });
+  try {
+    assert.ok(button("この訳を確認済みにする", card("intro")));
+    await click(button("この訳を確認済みにする", card("intro")), "review current translation");
+    assert.deepEqual(commands(memory, "review-current").map((call) => [call.input.itemKey, call.input.unitId]), [["YWJvdXQ", "intro"]]);
+    assert.equal(card("intro").dataset.state, "reviewed");
+    assert.equal(button("この訳を確認済みにする", card("intro")), undefined);
+  } finally { await app.cleanup(); }
+});
+
+test("embedded Studio CMS refreshes every unit version after a save", async () => {
+  const memory = createLocalizationMemory(), base = memory.adapter;
+  let revision = 1;
+  const submittedVersions = [];
+  const loadCurrent = async (input, signal) => {
+    const result = await base.loadItem(input, signal);
+    return result.status === "ready" ? { ...result, item: { ...result.item,
+      units: result.item.units.map((unit) => ({ ...unit, version: `cms-${revision}` })) } } : result;
+  };
+  const adapter = {
+    ...base,
+    loadItem: loadCurrent,
+    async command(input, signal) {
+      submittedVersions.push(input.expectedVersion);
+      const item = memory.state.items.find((entry) => entry.key === input.itemKey);
+      const unit = item.units.find((entry) => entry.unitId === input.unitId);
+      const result = await base.command({ ...input, expectedVersion: `v${unit.version}` }, signal);
+      if (result.status !== "applied" && result.status !== "conflict") return result;
+      if (result.status === "applied") revision++;
+      const current = await loadCurrent({ itemKey: input.itemKey }, signal);
+      return { ...result, unit: current.item.units.find((entry) => entry.unitId === input.unitId), item: current.item };
+    },
+  };
+  const app = await setupEmbeddedItem({ adapter, autosaveDelay: 0 });
+  try {
+    await setText("title", "A better title");
+    await waitFor(() => submittedVersions.length >= 1, "first refreshed unit version");
+    assert.equal(submittedVersions[0], "cms-1");
+    await setText("intro", "A small workshop in town.");
+    await waitFor(() => submittedVersions.length >= 2, "second refreshed unit version");
+    assert.deepEqual(submittedVersions, ["cms-1", "cms-2"], "the second field uses the refreshed item-wide version");
+    assert.equal(card("title").dataset.state === "conflict" || card("intro").dataset.state === "conflict", false);
+  } finally { await app.cleanup(); }
+});
+
 test("list: 対象外は理由ごとにまとまり、理由でも検索できる", async () => {
   const memory = createLocalizationMemory();
   const original = memory.state.items.find((item) => item.excluded);
@@ -222,14 +286,15 @@ test("source catalog advances automatically and reloads when current", async () 
   const memory = createLocalizationMemory({ catalogRounds: 3 });
   const app = await setup({ adapter: memory.adapter });
   try {
-    await wait(120);
+    await waitFor(() => memory.named("advanceCatalog").length === 3 && memory.named("listItems").length >= 6, "source catalog refresh");
     assert.equal(memory.named("advanceCatalog").length, 3, "the screen advances the catalog without a button");
     assert.ok(!document.querySelector(".lw-band").textContent.includes("原文を取り込んでいます"));
     assert.ok(memory.named("listItems").length >= 6, "the list is read again after the catalog is current");
   } finally { await app.cleanup(); }
 });
 
-test("editor: source and translation side by side, autosave about a second after typing, and candidate", async () => {
+test("editor: source and translation side by side, autosave about a second after typing, and candidate", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const memory = createLocalizationMemory();
   const app = await setup({ adapter: memory.adapter });
   try {
@@ -254,9 +319,9 @@ test("editor: source and translation side by side, autosave about a second after
     assert.ok(card("title").querySelector(".lw-unit-head").textContent.includes("翻訳済み"));
     assert.doesNotMatch(card("title").querySelector(".lw-unit-head").textContent, /未確認|手修正|自動翻訳/);
     assert.equal(document.querySelector(".cw-editor-status .cw-save-state").textContent, "保存中…");
-    await wait(500);
+    await advance(t, 500);
     assert.equal(commands(memory).length, 0, "waits before saving");
-    await wait(700);
+    await advance(t, 500);
     assert.equal(commands(memory).length, 1, "saves once");
     const sent = commands(memory)[0].input;
     assert.deepEqual({ ...sent, operationId: "x" }, { itemKey: "aG9tZQ", operationId: "x", unitId: "title", expectedVersion: "v1", expectedSourceVersion: "s1", action: "set-value", value: "Workshop by the sea!" });
@@ -281,7 +346,8 @@ test("editor: source and translation side by side, autosave about a second after
   } finally { await app.cleanup(); }
 });
 
-test("clear: the translation is cleared only after confirming, and the input is emptied", async () => {
+test("clear: the translation is cleared only after confirming, and the input is emptied", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const memory = createLocalizationMemory();
   const app = await setup({ adapter: memory.adapter });
   try {
@@ -302,43 +368,45 @@ test("clear: the translation is cleared only after confirming, and the input is 
     assert.equal(inputText("title"), "", "the input is emptied");
     assert.ok(card("title").querySelector(".lw-unit-head").textContent.includes("未翻訳"));
     assert.equal(button("訳を消す", card("title")), undefined, "nothing left to clear");
-    await wait(1300);
+    await advance(t, 1300);
     assert.equal(commands(memory, "set-value").length, 0, "the dropped input is not saved later");
   } finally { await app.cleanup(); }
 });
 
-test("conflict: another editor's change or a new source is never overwritten", async () => {
+test("conflict: another editor's change or a new source is never overwritten", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   const memory = createLocalizationMemory();
   const app = await setup({ adapter: memory.adapter, autosaveDelay: 50 });
   try {
     await openRow("トップ");
     memory.externalEdit("aG9tZQ", "title", "Seaside workshop");
     await setText("title", "My title");
-    await wait(120);
+    await advance(t, 50);
     assert.equal(commands(memory).length, 1);
     assert.equal(memory.state.items[0].units[0].value, "Seaside workshop", "the other editor's text stays");
     const box = card("title").querySelector(".lw-conflict");
     assert.ok(box.textContent.includes("ほかの人が先にこの項目を直しました"));
     assert.equal(inputText("title"), "My title", "my input stays on screen");
     await setText("title", "My title 2");
-    await wait(120);
+    await advance(t, 50);
     assert.equal(commands(memory).length, 1, "no further saves while in conflict");
     await click(button("最新を読み込む", card("title")), "reload");
     assert.equal(inputText("title"), "Seaside workshop");
     await setText("title", "Seaside workshop!");
-    await wait(120);
+    await advance(t, 50);
     assert.equal(commands(memory).at(-1).input.expectedVersion, "v2");
     assert.equal(memory.state.items[0].units[0].value, "Seaside workshop!");
 
     memory.changeSource("aG9tZQ", "title", "海の見える小さな工房");
     await setText("title", "Small workshop");
-    await wait(120);
+    await advance(t, 50);
     assert.ok(card("title").querySelector(".lw-conflict").textContent.includes("原文が更新されました"));
     assert.equal(memory.state.items[0].units[0].value, "Seaside workshop!");
   } finally { await app.cleanup(); }
 });
 
-test("marks: chips cannot be deleted, a missing chip blocks saving, and chips may move", async () => {
+test("marks: chips cannot be deleted, a missing chip blocks saving, and chips may move", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   const memory = createLocalizationMemory();
   const app = await setup({ adapter: memory.adapter, autosaveDelay: 50 });
   try {
@@ -350,7 +418,7 @@ test("marks: chips cannot be deleted, a missing chip blocks saving, and chips ma
     assert.ok(!card("lead").textContent.includes("⟦"));
 
     await edit("lead", (target) => { const [first, second] = chips(); target.replaceChildren("Open ", first, ". Mail ", second, "."); });
-    await wait(120);
+    await advance(t, 50);
     assert.equal(commands(memory, "set-value").at(-1).input.value, `Open ${M("m0")}. Mail ${M("m1")}.`);
 
     const after = input("lead").childNodes[2];
@@ -365,20 +433,20 @@ test("marks: chips cannot be deleted, a missing chip blocks saving, and chips ma
     await edit("lead", () => chips()[1].remove());
     assert.ok(card("lead").querySelector(".cw-error").textContent.includes("札が足りません：メールアドレス"));
     assert.equal(input("lead").getAttribute("aria-invalid"), "true");
-    await wait(150);
+    await advance(t, 150);
     assert.equal(commands(memory).length, saved, "a missing chip blocks saving");
     await click(button("札を元に戻す", card("lead")), "restore");
     assert.equal(chips().length, 2);
     assert.equal(card("lead").querySelector(".cw-error"), null);
 
     await edit("lead", (target) => { const [first, second] = chips(); target.replaceChildren(document.createTextNode("Mail "), second, document.createTextNode(", open "), first); });
-    await wait(120);
+    await advance(t, 50);
     assert.equal(commands(memory, "set-value").at(-1).input.value, `Mail ${M("m1")}, open ${M("m0")}`, "chips can move");
 
     const rich = () => [...input("body").querySelectorAll(".lw-mark")];
     assert.deepEqual(rich().map((chip) => chip.textContent), ["〔リンク", "リンク〕"]);
     await edit("body", (target) => { const [open, close] = rich(); target.replaceChildren(open, "Click here", close, " for details."); });
-    await wait(120);
+    await advance(t, 50);
     assert.deepEqual(commands(memory, "set-value").at(-1).input.value, { kind: "rich-text", children: [{ type: "element", id: "l1", tag: "a", children: [{ type: "text", text: "Click here" }] }, { type: "text", text: " for details." }] });
     await edit("body", (target) => { const [open, close] = rich(); target.replaceChildren(close, "x", open); });
     assert.ok(card("body").querySelector(".cw-error").textContent.includes("札の並びが原文と合いません"));
@@ -464,7 +532,8 @@ test("first release: confirmation names the page groups, automatic drafts and ex
   } finally { await app.cleanup(); }
 });
 
-test("release: an interrupted publish resumes from the band, and the confirmation can expire", async () => {
+test("release: an interrupted publish resumes from the band, and the confirmation can expire", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
   const memory = createLocalizationMemory({ pending: "apply" });
   const app = await setup({ adapter: memory.adapter });
   try {
@@ -495,7 +564,7 @@ test("release: an interrupted publish resumes from the band, and the confirmatio
     const resumed = second.named("prepareRelease").at(-1).input;
     assert.match(resumed.resumeToken, /^prep-/);
     assert.ok(dialog().textContent.includes("準備ができました"));
-    await wait(1600);
+    await advance(t, 1600);
     assert.ok(dialog().textContent.includes("公開の確認期限が切れたか"));
     assert.ok(button("準備し直す", dialog()));
     await act(async () => held.release());
@@ -580,7 +649,7 @@ test("permissions: the site's list of allowed actions decides what the screen sh
     assert.equal(button("翻訳案を使う"), undefined);
     assert.equal(button("素材から選ぶ"), undefined);
     await setText("title", "typed anyway");
-    await wait(1200);
+    await flush();
     assert.equal(commands(viewer).length, 0, "read-only inputs never save");
   } finally { await app.cleanup(); }
 
@@ -679,35 +748,35 @@ test("translation job and preview frame", async () => {
     frame.contentWindow.postMessage = (message, origin) => posted.push({ message, origin });
     const ready = { type: "niho-localization-preview", protocol: 1, nonce, event: "ready" };
     await act(async () => window.dispatchEvent(new dom.window.MessageEvent("message", { data: ready, source: window })));
-    await wait(200);
+    await flush();
     assert.equal(posted.length, 0, "messages from another window are ignored");
     await act(async () => window.dispatchEvent(new dom.window.MessageEvent("message", { data: { ...ready, nonce: "x".repeat(32) }, source: frame.contentWindow })));
-    await wait(200);
+    await flush();
     assert.equal(posted.length, 0, "a wrong nonce is ignored");
     await act(async () => window.dispatchEvent(new dom.window.MessageEvent("message", { data: ready, source: frame.contentWindow })));
-    await wait(200);
+    await waitFor(() => posted.length === 1, "authenticated preview handshake");
     assert.equal(posted.length, 1);
     assert.equal(posted[0].origin, "*");
     assert.equal(posted[0].message.event, "render");
     assert.equal(posted[0].message.locale, "en");
     assert.equal(posted[0].message.materials.length, 2);
     await setText("title", "Unsaved title");
-    await wait(200);
+    await waitFor(() => posted.at(-1)?.message.overrides?.some((entry) => entry.unitId === "title" && entry.value === "Unsaved title"), "preview reflects unsaved text");
     const override = (unitId) => posted.at(-1).message.overrides.find((entry) => entry.unitId === unitId);
     assert.deepEqual(override("title"), { unitId: "title", value: "Unsaved title" }, "unsaved input is shown in the preview");
     assert.deepEqual(override("lead"), { unitId: "lead", value: null });
     assert.equal(posted.at(-1).message.overrides.length, 4, "every unit's current value is sent");
     assert.equal(commands(memory).length, 0);
     await press("360");
-    await wait(200);
+    await waitFor(() => posted.at(-1)?.message.width === 360, "preview width update");
     assert.equal(posted.at(-1).message.width, 360);
     await press("日本語", document.querySelector(".lw-preview"));
-    await wait(200);
+    await waitFor(() => posted.at(-1)?.message.locale === "ja", "preview locale update");
     assert.equal(posted.at(-1).message.locale, "ja");
     assert.deepEqual(posted.at(-1).message.overrides, []);
 
     await press("翻訳案を作る");
-    await wait(80);
+    await waitFor(() => document.body.textContent.includes("翻訳案ができました"), "translation job completion");
     assert.equal(memory.named("requestTranslation").length, 1);
     assert.ok(memory.named("readJob").length >= 2);
     assert.ok(document.body.textContent.includes("翻訳案ができました"));

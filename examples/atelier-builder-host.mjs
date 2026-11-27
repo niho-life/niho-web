@@ -1,5 +1,5 @@
 import { createElement } from "react";
-import { createInsertionNode, defineBuilder, layoutInsertionPresets } from "@niho/web/builder";
+import { createInsertionNode, defineBuilder, layoutInsertionPresets } from "../dist/builder.js";
 import { componentUsage, parseComponentLibrary, parsePageDocument, resolvePageDocument } from "@niho/web/core";
 import { renderPageToHtml } from "@niho/web/server";
 
@@ -145,15 +145,6 @@ export function createAtelierHost() {
     listUsage: (siteId) => {
       if (siteId !== "atelier") throw new Error("invalid site");
       return [{ target: ATELIER_TARGET, title: "ホーム", role: "page", components: componentUsage(draft, library) }];
-    },
-    responsiveProposal: (request) => {
-      target(request.target);
-      if (request.fingerprint !== JSON.stringify(request.document)) throw new Error("invalid responsive proposal request");
-      const proposedDocument = parsePageDocument(request.document, atelierBlocks, { components: library });
-      documentTarget(proposedDocument);
-      if (!Array.isArray(request.breakpoints) || !request.breakpoints.length) throw new Error("invalid responsive proposal request");
-      const nodeId = request.scope?.type === "node" ? request.scope.nodeId : "atelier_main";
-      return { fingerprint: request.fingerprint, changes: [{ nodeId, breakpoint: request.breakpoints[0], property: "padding", value: "32px" }] };
     },
     prepareRelease: (request) => {
       target(request.target);

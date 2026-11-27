@@ -2,7 +2,7 @@
 
 `PageEditor` の保存状態の表示、自動保存、端末内の緊急復元、409競合の比較、版履歴、公開前レビューの契約です。既存の `EditorAdapter` だけを実装したホストでは、従来の手動保存と公開確認がそのまま動きます。保存状態の表示、409 の比較、「保存して移動」、「再試行」は元のメソッドだけで動くため、どのホストでも使えます。自動保存、端末内の復元、版履歴は、ホストが props と任意メソッドで明示的に有効にした場合だけ表示します。
 
-文書の差分、履歴項目の検証、復元ストアは React 不要の `@niho/web/history` から使えます。ホストの `prepareRelease` で公開差分を作るときも同じ `diffDocuments` を使えます。
+文書の差分、履歴項目の検証、復元ストアは React 不要の Studio 内部モジュール `src/history.ts` にあります。ホストの `prepareRelease` で公開差分を作るときも同じ `diffDocuments` を使えます。
 
 ## 保存状態
 
@@ -45,7 +45,7 @@
 ブラウザや端末を閉じた後、保存失敗の後に作業を戻すため、ホストは復元ストアを渡せます。
 
 ```tsx
-import { createBrowserRecoveryStore } from '@niho/web/history';
+import { createBrowserRecoveryStore } from '../src/history.js';
 
 const recovery = createBrowserRecoveryStore({ scope: opaqueStaffKey }); // メール等をそのまま使わない
 <PageEditor adapter={adapter} recovery={recovery} />
@@ -89,7 +89,7 @@ removeLibrary(siteId: string): void | Promise<void>;
 
 2人が同時に編集した場合も、両者の内容を見比べてから、どちらを残すかを明示的に選びます。
 
-共通部品の保存の競合は「部品が競合しています」と表示し、「部品を読み直す」で最新の部品を `readLibrary` から読み直します。未保存の部品の変更を破棄する前に画面内で確認し、ページの変更は残します（[エディター契約の共通部品](editor-contract.md#共通部品)）。
+共通部品の保存の競合は「部品が競合しています」と表示し、「部品を読み直す」で最新の部品を `readLibrary` から読み直します。未保存の部品の変更を破棄する前に画面内で確認し、ページの変更は残します（[エディター契約の共通部品](component-contract.md)）。
 
 ## 差分の表し方
 

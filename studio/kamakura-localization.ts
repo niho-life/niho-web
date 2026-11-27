@@ -4,6 +4,7 @@ import {
 } from "../src/localization-workspace-model.js";
 import { createPageEditingApiClient, EditingApiClientError, type EditingLocalizationInput, type EditingLocalizationOperationId } from "../src/editing-client.js";
 import { KAMAKURA_CMS_SITE_ID, KAMAKURA_EDITING_API_BASE } from "./kamakura-cms-contract.js";
+import { kamakuraUploadOrigin } from "./kamakura-upload-origin.js";
 import {
   KAMAKURA_LOCALIZATION_BASE, KAMAKURA_LOCALIZATION_IMAGE_TYPES, KAMAKURA_LOCALIZATION_LIMITS,
   isKamakuraPublicImageUrl, kamakuraLocalizationCmsSource, kamakuraLocalizationPage, parseKamakuraLocalizationUploadIntent, parseKamakuraLocalizationUploadRefusal
@@ -24,6 +25,8 @@ export type KamakuraLocalizationAdapterOptions = {
   readonly cmsTranslationUrl?: (collectionId: string, itemId: string) => string | null;
   /** 共通ページの English キャンバスを直接開く Studio 内 URL。 */
   readonly pageTranslationUrl?: (pageId: string) => string | null;
+  /** Studio Worker がページへ渡した、直接アップロード先の環境別 origin。 */
+  readonly uploadOrigin?: string;
   /** 素材から画像を選ぶホストの画面。選んだ鎌倉の公開画像の URL、やめたら null。無ければ「素材から選ぶ」を出さない。 */
   readonly chooseImage?: (input: { readonly itemKey: string; readonly unitId: string }, signal: AbortSignal) => Promise<string | null>;
 };
@@ -94,6 +97,7 @@ function httpsOrigin(value: string | null | undefined): string | null {
 export function createKamakuraLocalizationAdapter(options: KamakuraLocalizationAdapterOptions): LocalizationWorkspaceAdapter {
   const { cmsItemUrl, cmsTranslationUrl, pageTranslationUrl, chooseImage } = options;
   const siteOrigin = httpsOrigin(options.siteOrigin);
+  const uploadOrigin = options.uploadOrigin ?? kamakuraUploadOrigin();
   const client = createPageEditingApiClient({ origin: options.studioOrigin, siteId: KAMAKURA_CMS_SITE_ID, basePath: KAMAKURA_EDITING_API_BASE });
   const execute = async <Id extends EditingLocalizationOperationId>(id: Id, input: EditingLocalizationInput<Id>, signal: AbortSignal, itemOperation = false) => {
     if (signal.aborted) throw abortError();
@@ -188,7 +192,7 @@ export function createKamakuraLocalizationAdapter(options: KamakuraLocalizationA
         throw new KamakuraLocalizationRequestError(reply.status, supportId(reply.body));
       }
       // 行き先は鎌倉の Worker の /internal/studio/localization-upload/<uploadId> だけ（parser が origin とパスを確かめる）
-      const intent = parseKamakuraLocalizationUploadIntent(reply.body);
+      const intent = parseKamakuraLocalizationUploadIntent(reply.body, uploadOrigin);
       if (signal.aborted) throw abortError();
       let response: Response;
       try {

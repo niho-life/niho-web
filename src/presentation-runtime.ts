@@ -1,4 +1,5 @@
 import { normalizeEmbedSource } from "./embeds.js";
+import type { PageDocument, PageNode } from "./types.js";
 
 type OverlayElement = HTMLElement & { hidden: boolean };
 type ScriptSocialProvider = "x" | "instagram";
@@ -7,6 +8,8 @@ export type SitePresentationOptions = {
   interactive?: boolean;
   /** trusted host code が所有する、親documentとは別originの固定X投稿frame endpoint。 */
   xPostFrameUrl?: string;
+  /** 親の CSP が srcdoc 内の script を許可しない公開ページで使用する。 */
+  externalInstagramFrame?: boolean;
 };
 
 function escapeEmbedAttribute(value: string): string {
@@ -41,6 +44,39 @@ function focusableElements(overlay: HTMLElement): HTMLElement[] {
     }
     return true;
   });
+}
+
+/** Editor-only guard: style and text edits do not change the DOM features this runtime binds. */
+export function samePresentationRuntimeDocument(previous: PageDocument, next: PageDocument): boolean {
+  if (previous === next) return true;
+  if (previous.siteId !== next.siteId || previous.pageId !== next.pageId || previous.locale !== next.locale || previous.revision !== next.revision) return false;
+  const sameNodes = (left: readonly PageNode[], right: readonly PageNode[]): boolean => {
+    if (left === right) return true;
+    if (left.length !== right.length) return false;
+    for (let index = 0; index < left.length; index += 1) {
+      const before = left[index]!, after = right[index]!;
+      if (before === after) continue;
+      // Loop Box duplicates its children when the runtime initializes. A value-only edit
+      // under it must refresh those copies so they do not keep stale text or styles.
+      if (before.type === "element" && after.type === "element" &&
+        (before.interaction?.type === "loop-box" || after.interaction?.type === "loop-box")) return false;
+      if (before.type !== after.type || before.type === "text" || after.type === "text" || before.id !== after.id) {
+        if (before.type === "text" && after.type === "text") continue;
+        return false;
+      }
+      if (before.type === "element" && after.type === "element") {
+        if (before.tag !== after.tag || before.formCompletionPageId !== after.formCompletionPageId || before.asset !== after.asset ||
+          before.icon !== after.icon || before.embed !== after.embed || before.interaction !== after.interaction || before.attrs !== after.attrs ||
+          !sameNodes(before.children, after.children)) return false;
+      } else if (before.type === "component" && after.type === "component") {
+        if (before.block !== after.block || before.props !== after.props || before.slots !== after.slots) return false;
+      } else if (before.type === "instance" && after.type === "instance") {
+        if (before.component !== after.component || before.props !== after.props) return false;
+      } else return false;
+    }
+    return true;
+  };
+  return sameNodes(previous.body, next.body);
 }
 
 /** 検証済みdata属性だけを解釈する、公開SSRとeditor preview共通の標準操作runtime。 */
@@ -170,9 +206,11 @@ export function initializeSitePresentation(scope: ParentNode = document, options
         const source = new URL(xPostFrameEndpoint!.href);
         source.searchParams.set("url", binding.source);
         frame.src = source.href;
+      } else if (options.externalInstagramFrame) {
+        frame.src = `${binding.source}embed/`;
       } else frame.srcdoc = instagramSrcDoc(binding.source);
       frame.title = binding.title;
-      frame.setAttribute("loading", "lazy"); frame.setAttribute("referrerpolicy", "no-referrer"); frame.setAttribute("sandbox", binding.provider === "x" ? "allow-scripts allow-same-origin" : "allow-scripts");
+      frame.setAttribute("loading", "lazy"); frame.setAttribute("referrerpolicy", "no-referrer"); frame.setAttribute("sandbox", binding.provider === "x" || options.externalInstagramFrame ? "allow-scripts allow-same-origin" : "allow-scripts");
       frame.setAttribute(`data-nw-${binding.provider}-frame`, "");
       frame.style.gridArea = "1 / 1"; frame.style.width = "100%"; frame.style.height = "100%"; frame.style.border = "0"; frame.style.display = "block";
       if (binding.mount.closest("[data-nw-social-canvas]")) frame.style.pointerEvents = "none";

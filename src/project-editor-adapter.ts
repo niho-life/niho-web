@@ -1,5 +1,5 @@
 import { parseSiteStyles } from "./site-styles.js";
-import { fingerprint, normalizePageChange, parseEditorReadOnly, validatePageChangePlan, validateReleasePlan } from "./editor-model.js";
+import { normalizePageChange, parseEditorReadOnly, validatePageChangePlan, validateReleasePlan } from "./editor-model.js";
 import { parseEditorLocaleReleaseApplyResult, parseEditorLocaleReleasePlan, parseEditorLocaleReleaseState } from "./editor-locale-release.js";
 import type { EditingPageReleaseSetApplyResult, EditingPageReleaseSetItem, EditingPageReleaseSetPlan } from "./editing-api.js";
 import type { EditorAdapter, EditorComponentAdapter, EditorLocaleReleaseApplyRequest, EditorLocaleReleasePrepareRequest, EditorLocalizationAdapter, EditorLocalizationCommand, EditorPage, EditorPageChange, EditorPagePublication, EditorReleasePlan, EditorReleaseRequest, EditorSite, EditorStructuredDataPreset, EditorTarget } from "./editor-types.js";
@@ -7,7 +7,7 @@ import { parseRevisionEntry, parseRevisionPage } from "./history.js";
 import { parseSiteSettings } from "./pages.js";
 import { parseProject, type Project } from "./projects.js";
 import { parseBreakpointSettings } from "./style-model.js";
-import { identifier, keys, line, record } from "./validation-utils.js";
+import { identifier, isSafeHttpsOrigin, keys, line, record } from "./validation-utils.js";
 
 function targetForProject(target: EditorTarget, site: EditorSite): EditorTarget {
   const normalized: EditorTarget = { siteId: target.siteId, pageId: target.pageId, locale: target.locale };
@@ -16,8 +16,10 @@ function targetForProject(target: EditorTarget, site: EditorSite): EditorTarget 
 }
 
 function sameSite(left: EditorSite, right: EditorSite): boolean {
-  return left.id === right.id && left.domains.length === right.domains.length &&
-    new Set(left.domains).size === left.domains.length && left.domains.every((domain) => right.domains.includes(domain));
+  return left.id === right.id && Array.isArray(left.domains) && Array.isArray(right.domains)
+    && left.domains.length >= right.domains.length && left.domains.length <= right.domains.length + 1
+    && left.domains.every(isSafeHttpsOrigin) && new Set(left.domains).size === left.domains.length
+    && right.domains.every((domain) => left.domains.includes(domain));
 }
 
 function siteFrameSources(input: unknown, domains: readonly string[]): string[] {
@@ -152,6 +154,7 @@ function checkedPlan(plan: EditorReleasePlan, request: EditorReleaseRequest, sit
     domain: plan.domain,
     changes: plan.changes.map((change) => ({ path: change.path, before: change.before, after: change.after })),
     ...(plan.url === undefined ? {} : { url: plan.url }),
+    ...(plan.warnings === undefined ? {} : { warnings: plan.warnings.map((warning) => ({ code: warning.code, message: warning.message })) }),
     ...(plan.affected === undefined ? {} : { affected: Array.isArray(plan.affected) ? plan.affected.map((item) => item && typeof item === "object"
       ? { kind: item.kind, name: item.name, ...(item.detail === undefined ? {} : { detail: item.detail }) } : item) : plan.affected })
   };
@@ -291,16 +294,23 @@ function localizationForProject(localization: EditorLocalizationAdapter, site: E
  */
 export function createProjectEditorAdapter(adapter: EditorAdapter, projectInput: Project): EditorAdapter {
   const project = parseProject(projectInput);
-  const site: EditorSite = { id: project.site.id, name: project.site.name, domains: [...project.site.domains] };
+  const projectSite: EditorSite = { id: project.site.id, name: project.site.name, domains: [...project.site.domains] };
+  let site: EditorSite = { ...projectSite, domains: [...projectSite.domains] };
+  const refreshSite = async (signal: AbortSignal): Promise<EditorSite> => {
+    const sites = await adapter.listSites(signal);
+    const matched = sites.find((candidate) => candidate.id === projectSite.id);
+    if (!matched || !sameSite(matched, projectSite)) throw new Error("プロジェクトのサイト情報を確認できません。");
+    site = { ...projectSite, domains: [...projectSite.domains, ...matched.domains.filter((domain) => !projectSite.domains.includes(domain))] };
+    return matched;
+  };
   return {
     async listSites(signal) {
-      const sites = await adapter.listSites(signal);
-      const matched = sites.find((candidate) => candidate.id === site.id);
-      if (!matched || !sameSite(matched, site)) throw new Error("プロジェクトのサイト情報を確認できません。");
+      const matched = await refreshSite(signal);
       return [{ id: site.id, name: site.name, domains: [...site.domains], ...(matched.structuredData === undefined ? {} : { structuredData: structuredDataPresets(matched.structuredData) }), ...(matched.externalFrameSources === undefined ? {} : { externalFrameSources: siteFrameSources(matched.externalFrameSources, site.domains) }) }];
     },
     async listPages(siteId, signal) {
       if (siteId !== site.id) throw new Error("プロジェクト外のサイトは参照できません。");
+      await refreshSite(signal);
       const pages = await adapter.listPages(site.id, signal);
       if (pages.some((page) => page.siteId !== site.id)) throw new Error("ページ一覧に別サイトの項目が含まれています。");
       return pages.map(pageEntry);
@@ -321,6 +331,18 @@ export function createProjectEditorAdapter(adapter: EditorAdapter, projectInput:
       const { readOnly: rawReadOnly, ...rest } = snapshot, readOnly = parseEditorReadOnly(rawReadOnly);
       return { ...rest, ...(readOnly ? { readOnly } : {}) };
     },
+    ...(adapter.readDocumentIfChanged ? {
+      async readDocumentIfChanged(target, etag, signal) {
+        const checkedTarget = targetForProject(target, site);
+        const result = await adapter.readDocumentIfChanged!(checkedTarget, etag, signal);
+        if (result.status === "not-modified") return result;
+        const snapshot = structuredClone(result.snapshot);
+        assertDocumentTarget(snapshot.document, checkedTarget);
+        assertPresentationTarget(snapshot.presentation, checkedTarget);
+        const { readOnly: rawReadOnly, ...rest } = snapshot, readOnly = parseEditorReadOnly(rawReadOnly);
+        return { status: "modified" as const, snapshot: { ...rest, ...(readOnly ? { readOnly } : {}) }, ...(result.etag ? { etag: result.etag } : {}) };
+      }
+    } satisfies Pick<EditorAdapter, "readDocumentIfChanged"> : {}),
     ...(adapter.discoverPageNodeNames ? {
       discoverPageNodeNames: (target, signal) => adapter.discoverPageNodeNames!(targetForProject(target, site), signal)
     } satisfies Pick<EditorAdapter, "discoverPageNodeNames"> : {}),
@@ -355,24 +377,38 @@ export function createProjectEditorAdapter(adapter: EditorAdapter, projectInput:
         return structuredClone(result);
       }
     } satisfies Pick<EditorAdapter, "applyOperations"> : {}),
-    async prepareRelease(request, signal) {
-      const checked = releaseRequest(request, targetForProject(request.target, site));
-      const plan = await adapter.prepareRelease(checked, signal);
-      return checkedPlan(plan, checked, site);
-    },
-    async release(request, signal) {
-      const target = targetForProject(request.target, site);
-      const checked = checkedPlan(request, releaseRequest(request, target), site);
-      const result = await adapter.release(checked, signal);
-      if (result.status === "released") {
-        const snapshot = structuredClone(result.snapshot);
-        assertDocumentTarget(snapshot.document, target);
-        assertPresentationTarget(snapshot.presentation, target);
-        const { readOnly: rawReadOnly, ...rest } = snapshot, readOnly = parseEditorReadOnly(rawReadOnly);
-        return { status: "released", snapshot: { ...rest, ...(readOnly ? { readOnly } : {}) } };
+    ...(adapter.prepareRelease && adapter.release ? {
+      async prepareRelease(request, signal) {
+        const checked = releaseRequest(request, targetForProject(request.target, site));
+        const plan = await adapter.prepareRelease!(checked, signal);
+        return checkedPlan(plan, checked, site);
+      },
+      async release(request, signal) {
+        const target = targetForProject(request.target, site);
+        const checked = checkedPlan(request, releaseRequest(request, target), site);
+        const result = await adapter.release!(checked, signal);
+        if (result.status === "released") {
+          const snapshot = structuredClone(result.snapshot);
+          assertDocumentTarget(snapshot.document, target);
+          assertPresentationTarget(snapshot.presentation, target);
+          const { readOnly: rawReadOnly, ...rest } = snapshot, readOnly = parseEditorReadOnly(rawReadOnly);
+          return { status: "released", snapshot: { ...rest, ...(readOnly ? { readOnly } : {}) } };
+        }
+        return result;
       }
-      return result;
-    },
+    } : {}),
+    ...(adapter.publishPageNow ? { async publishPageNow(request, signal) {
+      const target = targetForProject(request.target, site);
+      if (!request.expectedVersion || (request.action === "publish" ? request.revision !== undefined
+        : request.action !== "restore" || !Number.isSafeInteger(request.revision) || request.revision! < 1)) throw new Error("公開操作と版の指定が一致しません。");
+      const result = await adapter.publishPageNow!({ target, expectedVersion: request.expectedVersion, action: request.action, ...(request.revision === undefined ? {} : { revision: request.revision }) }, signal);
+      if (result.status !== "released") return result;
+      const snapshot = structuredClone(result.snapshot);
+      assertDocumentTarget(snapshot.document, target);
+      assertPresentationTarget(snapshot.presentation, target);
+      const { readOnly: rawReadOnly, ...rest } = snapshot, readOnly = parseEditorReadOnly(rawReadOnly);
+      return { status: "released", snapshot: { ...rest, ...(readOnly ? { readOnly } : {}) } };
+    } } : {}),
     ...(adapter.prepareReleaseSet && adapter.releaseSet && adapter.releaseSetStatus ? {
       async prepareReleaseSet(items, signal) {
         const checked = releaseSetItemsForProject(items, site);
@@ -397,6 +433,16 @@ export function createProjectEditorAdapter(adapter: EditorAdapter, projectInput:
     ...(adapter.localization ? { localization: localizationForProject(adapter.localization, site) } : {}),
     ...(adapter.pagePathEditable === undefined ? {} : { pagePathEditable: adapter.pagePathEditable }),
     ...(adapter.pageChangeActions ? { pageChangeActions: [...adapter.pageChangeActions] } : {}),
+    ...(adapter.changePageNow ? {
+      async changePageNow(change, signal, expectedVersion) {
+        const checked = changeForProject(change, site);
+        const result = await adapter.changePageNow!(checked, signal, expectedVersion);
+        if (result.status === "conflict") return result;
+        if (result.page.siteId !== site.id || (checked.action !== "create" && checked.action !== "duplicate"
+          && (result.page.pageId !== checked.target.pageId || result.page.locale !== checked.target.locale))) throw new Error("ページ変更の結果が一致しません。");
+        return { status: "applied", page: pageEntry(result.page) };
+      }
+    } satisfies Pick<EditorAdapter, "changePageNow"> : {}),
     ...(adapter.preparePageChange ? {
       async preparePageChange(change, signal) {
         const checked = changeForProject(change, site);
@@ -412,7 +458,7 @@ export function createProjectEditorAdapter(adapter: EditorAdapter, projectInput:
         return { status: "applied", page: pageEntry(result.page) };
       }
     } satisfies Pick<EditorAdapter, "applyPageChange"> : {}),
-    ...(adapter.siteStyleCapabilities ? { siteStyleCapabilities: adapter.siteStyleCapabilities } : {}),
+    ...(adapter.siteSettingsMetadataEditable === undefined ? {} : { siteSettingsMetadataEditable: adapter.siteSettingsMetadataEditable }),
     ...(adapter.breakpointSettings ? { breakpointSettings: {
       async read(siteId, signal) {
         if (siteId !== site.id) throw new Error("プロジェクト外のサイトは参照できません。");
@@ -429,32 +475,31 @@ export function createProjectEditorAdapter(adapter: EditorAdapter, projectInput:
         return { status: "saved" as const, version: line(result.version, "breakpointSettings.version", 512) };
       }
     } } : {}),
-    ...(adapter.responsiveProposal ? { responsiveProposal: {
-      async propose(request, signal) {
-        const target = targetForProject(request.target, site), document = structuredClone(request.document);
-        assertDocumentTarget(document, target);
-        if (request.fingerprint !== fingerprint(document)) throw new Error("レスポンシブ提案の文書が一致しません。");
-        const scope = request.scope?.type === "page" ? { type: "page" as const }
-          : request.scope?.type === "node" && typeof request.scope.nodeId === "string" ? { type: "node" as const, nodeId: request.scope.nodeId }
-            : null;
-        if (!scope || !Array.isArray(request.breakpoints) || request.breakpoints.length > 12 || request.breakpoints.some((width) => !Number.isInteger(width))) throw new Error("レスポンシブ提案の範囲が正しくありません。");
-        return structuredClone(await adapter.responsiveProposal!.propose({ target, document, fingerprint: request.fingerprint, scope, breakpoints: [...request.breakpoints] }, signal));
-      }
-    } } : {}),
     ...(adapter.readSiteSettings ? {
       async readSiteSettings(siteId, signal) {
         if (siteId !== site.id) throw new Error("プロジェクト外のサイトは参照できません。");
         const snapshot = await adapter.readSiteSettings!(site.id, signal);
-        return { settings: structuredClone(snapshot.settings), version: snapshot.version };
+        return { settings: structuredClone(snapshot.settings), version: snapshot.version,
+          ...(snapshot.publishedVersion === undefined ? {} : { publishedVersion: snapshot.publishedVersion }),
+          ...(snapshot.publishedStyles === undefined ? {} : { publishedStyles: structuredClone(snapshot.publishedStyles) }) };
       }
     } satisfies Pick<EditorAdapter, "readSiteSettings"> : {}),
     ...(adapter.saveSiteSettings ? {
       async saveSiteSettings(request, signal) {
         if (request.siteId !== site.id) throw new Error("プロジェクト外のサイトは変更できません。");
         if (request.previousStyles !== undefined) keys(record(request.previousStyles, "$.previousStyles"), ["tokens", "textStyles"], "$.previousStyles");
-        return adapter.saveSiteSettings!({ siteId: site.id, settings: parseSiteSettings(request.settings), expectedVersion: request.expectedVersion, ...(request.previousStyles === undefined ? {} : { previousStyles: parseSiteStyles(request.previousStyles) }) }, signal);
+        return adapter.saveSiteSettings!({ siteId: site.id, settings: parseSiteSettings(request.settings), expectedVersion: request.expectedVersion,
+          ...(request.previousStyles === undefined ? {} : { previousStyles: parseSiteStyles(request.previousStyles) }),
+          ...(request.styleRenames === undefined ? {} : { styleRenames: structuredClone(request.styleRenames) }) }, signal);
       }
     } satisfies Pick<EditorAdapter, "saveSiteSettings"> : {}),
+    ...(adapter.publishSiteStyles ? {
+      async publishSiteStyles(request, signal) {
+        if (request.siteId !== site.id) throw new Error("プロジェクト外のサイトは公開できません。");
+        return adapter.publishSiteStyles!({ siteId: site.id, expectedDraftVersion: request.expectedDraftVersion,
+          expectedPublishedVersion: request.expectedPublishedVersion }, signal);
+      }
+    } satisfies Pick<EditorAdapter, "publishSiteStyles"> : {}),
     ...(adapter.listRevisions ? {
       async listRevisions(request, signal) {
         const target = targetForProject(request.target, site);

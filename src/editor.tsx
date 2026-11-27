@@ -2,7 +2,7 @@
 
 import { Component, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { PageRenderer, SitePageRenderer } from "./react.js";
+import { EditorPageRenderer, EditorSitePageRenderer } from "./editor-renderer.js";
 import { parsePageDocument } from "./document.js";
 import { CmsBindingsPanel } from "./editor-cms-bindings.js";
 import { canvasCss, pageScope } from "./css.js";
@@ -13,7 +13,7 @@ import { styleEditorCss } from "./editor-style-css.js";
 import { Field } from "./editor-fields.js";
 import { StyleInspector, type InspectorTab, type StyleRange } from "./editor-style-inspector.js";
 import { SharedStyleLibrary, sharedTokenReason } from "./editor-shared-styles.js";
-import { detachRemovedSiteStyles, parseSiteStyles, resolveComponentStyles, resolvePageStyles, type SiteStyles } from "./site-styles.js";
+import { detachRemovedSiteStyles, parseSiteStyles, resolveComponentStyles, resolvePageStyles, resolvePageStylesForEditor, type SiteStyles } from "./site-styles.js";
 import type { StyleState } from "./editor-style-motion.js";
 import { createInsertionNode, resolveBuilderDefinition, type InsertionCategory } from "./builder.js";
 import { breakpointSettingsFromLegacy, editorTiers, hiddenAt, normalizeBreakpoints, tierForWidth, tierName } from "./style-model.js";
@@ -23,14 +23,14 @@ import { PageReleaseSetDialog } from "./editor-release-set.js";
 import { AutosaveSwitch, ConflictDialog, HistoryBar, HistoryDialogs, LibraryRecoveryBanner, RecoveryBanner, RecoveryCompareDialog, ReleaseAffected, SaveStatus, VersionPanel, autosaveDelay, classifySaveError, formatDateTime, isOffline, saveProblemNotice, saveStatus, targetKeyOf, useAutosave, useLibraryRecovery, useOnline, useRecovery, useVersionHistory, type LatestSnapshot, type SaveProblem } from "./editor-history.js";
 import { isDirectlyEditable, readEditableChildren } from "./editor-rich-text.js";
 import { isSafePublicLink } from "./validation-utils.js";
-import type { ComponentUsageEntry, EditorBlockRegistry, EditorCanvasPreviewProps, EditorLocaleReleasePlan, EditorLocaleReleaseState, EditorLock, EditorPage, EditorPageChange, EditorReleasePlan, EditorReleaseRequest, EditorSite, EditorSnapshot, EditorTarget, EnglishPublication, PageEditorProps } from "./editor-types.js";
+import type { ComponentUsageEntry, EditorBlockRegistry, EditorCanvasPreviewProps, EditorLocaleReleasePlan, EditorLocaleReleaseState, EditorLock, EditorPage, EditorPageChange, EditorReleasePlan, EditorReleaseRequest, EditorSite, EditorTarget, EnglishPublication, PageEditorProps } from "./editor-types.js";
 import type { ComponentKind, ComponentLibrary, IconName, PageDocument, PageNode, SitePresentation } from "./types.js";
 import { AssetLibraryPanel, BackgroundImageField, ImageSourceField, VideoSourceField, assetPlacement, socialImageProblem, useLocalAssetUsage, useResolvedAssets, type AssetAction, type AssetPicker } from "./editor-assets.js";
 import { assetEditorCss, canvasAssetCss } from "./editor-assets-style.js";
 import { uiColor } from "./ui-tokens.js";
 import { assetKey, type LibraryAsset, type ResolvedAssetMap } from "./assets.js";
 import { presentationAssetDocument } from "./presentation.js";
-import { initializeSitePresentation } from "./presentation-runtime.js";
+import { initializeSitePresentation, samePresentationRuntimeDocument } from "./presentation-runtime.js";
 import { componentIssues, componentUsage, parseComponentLibrary, type ResolvedOrigin } from "./components.js";
 import { bumpChangedComponentVersions, componentCreationLock, componentDocument, createComponentFromNode, duplicateComponent, removeComponent, renameComponent, setComponentKind, setComponentProp, withComponentDocument } from "./component-model.js";
 import { ComponentBanner, ComponentDialogBody, ComponentPanel, ComponentSettings, CreateComponentSection, InstanceInspector, LibraryReloadDialogBody, MasterPropFields, SiteComponentBanner, SiteComponentSettings, componentDialogTitle, type ComponentDialogState, type InputRenderer } from "./component-panel.js";
@@ -62,14 +62,11 @@ import { workspaceCss } from "./editor-workspace-style.js";
 import { iconCatalog } from "./icons.js";
 import { parseEnglishPublication } from "./english-publication.js";
 import { BreakpointSettingsDialog, breakpointPreview, useBreakpointSettings } from "./editor-breakpoints.js";
-import { ResponsiveProposalControl, responsiveProposalCss } from "./editor-responsive-proposal.js";
-import { beginEditorPerformance, finishEditorPerformance, type EditorPerformanceMeasurement, type EditorPerformanceOutcome } from "./editor-performance.js";
+import { beginEditorPerformance, finishEditorPerformance, recordEditorReadPerformance, type EditorPerformanceMeasurement, type EditorPerformanceOutcome } from "./editor-performance.js";
 
 const browserClipboardNodeType = `web ${EDITOR_NODE_CLIPBOARD_TYPE}`;
 
 export type * from "./editor-types.js";
-export { prepareResponsiveProposal, requestResponsiveProposal, responsiveProposalProperties, ResponsiveProposalTimeoutError } from "./editor-responsive-proposal.js";
-export type { ResponsiveProposalReview, ResponsiveProposalReviewChange } from "./editor-responsive-proposal.js";
 export { EditorSessionLoadError } from "./editor-session.js";
 export type { EditorSession, EditorSessionLoad } from "./editor-session.js";
 export type { LayerEntry, LayerKind, LayerLabels } from "./layers.js";
@@ -87,9 +84,10 @@ const needsPageSave = (session: Session) => {
   pageSaveChecks.set(session, { present, saved: session.saved, dirty });
   return dirty;
 };
-type PagePrefetch = { controller: AbortController; promise: Promise<EditorSnapshot>; components?: ComponentLibrary; completedAt?: number };
-const PAGE_PREFETCH_MAX_AGE_MS = 1000;
-const PAGE_PREFETCH_LIMIT = 3;
+function editorSessionFreshness(session: Session): string {
+  return JSON.stringify([session.version, session.saved, session.dependencyVersions, session.hasSavedDraft ?? null, session.locks, session.releases,
+    session.readOnly ?? null, session.presentation?.version ?? null, session.englishPublication ?? null, session.cmsBindings ?? null]);
+}
 /** 部品を読み直す確認中の状態。library・page は確認を始めた時点の作業コピーの fingerprint（変わっていれば適用しない）。 */
 type LibraryReload = { fresh: LibrarySession; plan: LibraryReloadPlan; library: string; page: string | undefined };
 type Inspector = "element" | "page" | "site" | "localization";
@@ -102,7 +100,8 @@ const embedHint = (provider: string, blankReady: boolean): string | undefined =>
   facebook: "公開投稿の facebook.com URL",
   x: "公開ポストの x.com URL",
   instagram: "公開投稿・リールの instagram.com URL",
-  lottie: "lottie.host の Asset link または /embed/ URL"
+  lottie: "lottie.host の Asset link または /embed/ URL",
+  url: "資格情報を含まない公開HTTPS URL"
 } as Record<string, string | undefined>)[provider];
 const englishPublicationLabels: Readonly<Record<EnglishPublication["state"], string>> = {
   "initial-release-required": "最初の英語版公開待ち",
@@ -224,7 +223,7 @@ class PreviewBoundary extends Component<{ document: PageDocument; children: Reac
   componentDidUpdate(previous: { document: PageDocument }) { if (previous.document !== this.props.document && this.state.failed) this.setState({ failed: false }); }
   render() { return this.state.failed ? <p role="alert">ブロックのプレビューを表示できません。レイヤーから編集を続けられます。</p> : this.props.children; }
 }
-const StablePageRenderer = memo(PageRenderer);
+const StablePageRenderer = memo(EditorPageRenderer);
 /** ホストの表示部品として受け付けるのは React コンポーネント（関数・class・memo / forwardRef / lazy）だけ。文字列・数値・配列・プレーンオブジェクトは無視して従来の描画を使う。 */
 function hostPreviewComponent(value: unknown): PageEditorProps["previewComponent"] {
   if (typeof value === "function") return value as NonNullable<PageEditorProps["previewComponent"]>;
@@ -253,8 +252,37 @@ function pairedFormFieldNodeId(document: PageDocument, path: NodePath): string |
      typeof labelTarget === "string" && ["input", "textarea", "select"].includes(candidate.tag) && candidate.attrs?.id === labelTarget));
   return pair?.type === "element" ? pair.id : undefined;
 }
-function Canvas({ document, blocks, width, height, breakpoint, selection, selectedNodeId, selectedNodeIds, revealNode, slot, select, canEditNode, dragItem, drop, pending, editText, startTextEdit, onShortcut, resize, spacing, reportError, editable, structureEditable, locks, preview, previewComponent: PreviewComponent, mode, baseVersion, historyRevision, assets, motionCss, replay, rendered, presentation, presentationRuntime, externalFramePolicy, blankEmbeds, xPostFrameUrl, origins, openInstance, viewportHeight, siteOrigin, onReady }: {
+function resetCanvasPageState(body: HTMLElement, renderedEntries: readonly { node: PageNode }[], scope: string): void {
+  body.scrollTop = 0;
+  body.ownerDocument.documentElement.scrollTop = 0;
+  const elements = new Map<string, HTMLElement>();
+  for (const element of Array.from(body.querySelectorAll<HTMLElement>("[data-nw-node]"))) {
+    if (element.dataset.nwOwner !== scope) continue;
+    if (element.scrollTop) element.scrollTop = 0;
+    if (element.scrollLeft) element.scrollLeft = 0;
+    const nodeId = element.dataset.nwNode;
+    if (nodeId) elements.set(nodeId, element);
+  }
+  for (const { node } of renderedEntries) {
+    if (node.type !== "element") continue;
+    const element = elements.get(node.id);
+    if (!element) continue;
+    if (node.tag === "details") (element as HTMLDetailsElement).open = node.attrs?.open === true;
+    else if (node.tag === "input") {
+      const input = element as HTMLInputElement;
+      input.value = typeof node.attrs?.value === "string" ? node.attrs.value : "";
+      input.checked = node.attrs?.checked === true;
+    } else if (node.tag === "textarea") {
+      (element as HTMLTextAreaElement).value = node.children.map((child) => child.type === "text" ? child.text : "").join("");
+    } else if (node.tag === "select") {
+      const select = element as HTMLSelectElement;
+      select.selectedIndex = Array.from(select.options).findIndex((option) => !option.disabled);
+    }
+  }
+}
+function Canvas({ document, pageKey, blocks, width, height, breakpoint, selection, selectedNodeId, selectedNodeIds, revealNode, slot, select, canEditNode, dragItem, drop, pending, editText, startTextEdit, onShortcut, resize, spacing, reportError, editable, structureEditable, locks, preview, previewComponent: PreviewComponent, mode, baseVersion, historyRevision, assets, motionCss, replay, rendered, presentation, presentationRuntime, externalFramePolicy, blankEmbeds, xPostFrameUrl, origins, openInstance, viewportHeight, siteOrigin, onReady }: {
   document: PageDocument; blocks: EditorBlockRegistry; width: number; height: number; selection: NodePath | null; selectedNodeId?: string; selectedNodeIds?: readonly string[]; select: (path: NodePath | null, nodeId?: string, slot?: string | null, mode?: SelectionMode) => void;
+  pageKey: string;
   revealNode: { id: string } | null;
   canEditNode?: (nodeId: string) => boolean;
   slot: string | null;
@@ -284,13 +312,7 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
   onReady?: (() => void) | undefined;
 }) {
   const [body, setBody] = useState<HTMLElement | null>(null), frame = useRef<HTMLIFrameElement>(null);
-  useEffect(() => { if (body) body.ownerDocument.documentElement.lang = rendered.locale; }, [body, rendered.locale]);
-  useEffect(() => {
-    const frameDocument = body?.ownerDocument;
-    const listen = (event: KeyboardEvent) => onShortcut(event, true);
-    frameDocument?.addEventListener("keydown", listen, true);
-    return () => frameDocument?.removeEventListener("keydown", listen, true);
-  }, [body, onShortcut]);
+  const previousPageKey = useRef(pageKey);
   const [editingId, setEditingId] = useState<string | null>(null), [dropPlace, setDropPlace] = useState<DropPlace | null>(null);
   const [handleRect, setHandleRect] = useState<{ element: HTMLElement; left: number; top: number; width: number; height: number } | null>(null);
   const resizing = useRef<{ element: HTMLElement; path: NodePath; x: number; y: number; width: number; height: number; inlineWidth: string; inlineHeight: string } | null>(null);
@@ -298,6 +320,21 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
   const originalHtml = useRef(""), savedRange = useRef<Range | null>(null);
   const scope = pageScope(rendered), entries = useMemo(() => walkNodes(document), [document]);
   const renderedEntries = useMemo(() => rendered === document ? entries : walkNodes(rendered), [rendered, document, entries]);
+  useEffect(() => { if (body) body.ownerDocument.documentElement.lang = rendered.locale; }, [body, rendered.locale]);
+  useEffect(() => {
+    const frameDocument = body?.ownerDocument;
+    const listen = (event: KeyboardEvent) => onShortcut(event, true);
+    frameDocument?.addEventListener("keydown", listen, true);
+    return () => frameDocument?.removeEventListener("keydown", listen, true);
+  }, [body, onShortcut]);
+  useLayoutEffect(() => {
+    if (previousPageKey.current === pageKey) return;
+    previousPageKey.current = pageKey;
+    if (editingId) pending(`direct-${editingId}`, false);
+    setEditingId(null); setDropPlace(null); setHandleRect(null); setLinkOpen(false); setLinkError("");
+    resizing.current = null; originalHtml.current = ""; savedRange.current = null; lastRevealedNode.current = null;
+    if (body) resetCanvasPageState(body, renderedEntries, scope);
+  }, [body, editingId, pageKey, pending, renderedEntries]);
   const nodesById = useMemo(() => new Map(entries.flatMap((entry) => entry.node.type === "text" ? [] : [[entry.node.id, entry] as const])), [entries]);
   const renderedNodesById = useMemo(() => new Map(renderedEntries.flatMap((entry) => entry.node.type === "text" ? [] : [[entry.node.id, entry] as const])), [renderedEntries]);
   const lastRevealedNode = useRef<typeof revealNode>(null);
@@ -335,15 +372,24 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
     const origin = element?.dataset.nwNode ? origins.get(element.dataset.nwNode) : undefined;
     return element && origin && origin.instance !== element.dataset.nwNode ? element.closest<HTMLElement>(`[data-nw-owner="${scope}"][data-nw-node="${origin.instance}"]`) : element;
   };
-  useLayoutEffect(() => {
+  // 編集フレーム内の DOM 計測で React の commit を止めないよう、選択枠の位置は描画後に読む。
+  useEffect(() => {
     if (!body || !handleId) { setHandleRect(null); return; }
     const element = sizeTarget(handleId);
     if (!element) { setHandleRect(null); return; }
     const update = () => { const rect = element.getBoundingClientRect(); setHandleRect({ element, left: rect.left + (body.ownerDocument.defaultView?.scrollX ?? 0), top: rect.top + (body.ownerDocument.defaultView?.scrollY ?? 0), width: rect.width, height: rect.height }); };
-    update();
-    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update); observer?.observe(element);
-    body.ownerDocument.defaultView?.addEventListener("scroll", update);
-    return () => { observer?.disconnect(); body.ownerDocument.defaultView?.removeEventListener("scroll", update); };
+    const view = body.ownerDocument.defaultView;
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update);
+    observer?.observe(element);
+    // Measure the initial selection after layout. ResizeObserver does not report ordinary
+    // inline elements, so the first handle position cannot depend on its callback.
+    let frame: number | undefined;
+    let timer: number | undefined;
+    if (view?.requestAnimationFrame) frame = view.requestAnimationFrame(update);
+    else if (view?.setTimeout) timer = view.setTimeout(update, 0);
+    else update();
+    view?.addEventListener("scroll", update);
+    return () => { observer?.disconnect(); if (frame !== undefined) view?.cancelAnimationFrame(frame); if (timer !== undefined) view?.clearTimeout(timer); view?.removeEventListener("scroll", update); };
   }, [body, handleId, width, document, rendered, slot]);
   function endResize(commit: boolean) {
     const current = resizing.current; if (!current) return;
@@ -456,13 +502,15 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
   }
   const canvasRendering = useMemo(() => ({ viewportHeight, siteOrigin, interactive: mode === "preview" }), [viewportHeight, siteOrigin, mode]);
   const defaultPreview = presentation
-    ? <SitePageRenderer key={replay} document={rendered} presentation={presentation} blocks={blocks} {...(externalFramePolicy ? { externalFramePolicy } : {})} {...(blankEmbeds ? { blankEmbeds } : {})} assets={assets} missingAssets="placeholder" canvas={canvasRendering} />
+    ? <EditorSitePageRenderer key={replay} document={rendered} presentation={presentation} blocks={blocks} {...(externalFramePolicy ? { externalFramePolicy } : {})} {...(blankEmbeds ? { blankEmbeds } : {})} assets={assets} missingAssets="placeholder" canvas={canvasRendering} />
     : <StablePageRenderer key={replay} document={rendered} blocks={blocks} {...(blankEmbeds ? { blankEmbeds } : {})} assets={assets} missingAssets="placeholder" canvas={canvasRendering} />;
+  const runtimeDocument = useRef(rendered);
+  if (!samePresentationRuntimeDocument(runtimeDocument.current, rendered)) runtimeDocument.current = rendered;
   useEffect(() => {
     if (!body) return;
     return initializeSitePresentation(body, { interactive: presentationRuntime, ...(mode === "preview" && xPostFrameUrl ? { xPostFrameUrl } : {}) });
-  }, [body, mode, presentation, presentationRuntime, rendered, replay, xPostFrameUrl]);
-  useEffect(() => { if (body) onReady?.(); }, [body, onReady]);
+  }, [body, mode, presentation, presentationRuntime, runtimeDocument.current, replay, xPostFrameUrl]);
+  useEffect(() => { if (body) onReady?.(); }, [body, onReady, pageKey]);
   const presentationDocuments = useMemo(() => presentation ? [presentation.shared.header, presentation.shared.footer, ...(presentation.overlays ?? []).map((overlay) => overlay.document), ...(presentation.hostViews ?? []).map((view) => view.document)] : [], [presentation]);
   const presentationHasEmbed = useMemo(() => presentationDocuments.some((source) => walkNodes(source).some(({ node }) => node.type === "element" && !!node.embed?.source)), [presentationDocuments]);
   const canvasHasTrustedFrames = useMemo(() => {
@@ -476,7 +524,8 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
         const target = asElement(event.target);
         if (target?.closest("summary")) return;
         if (target?.closest("[data-nw-video-toggle],[data-nw-video-with-button] video,[data-nw-facebook-load],[data-nw-social-load]")) return;
-        if (presentation && target?.closest("[data-nw-overlay-open],[data-nw-overlay-close],[data-nw-carousel-previous],[data-nw-carousel-next],[data-nw-carousel-play-pause]")) { event.preventDefault(); return; }
+        if (target?.closest("[data-nw-carousel-previous],[data-nw-carousel-next],[data-nw-carousel-play-pause]") ||
+          presentation && target?.closest("[data-nw-overlay-open],[data-nw-overlay-close]")) { event.preventDefault(); return; }
         const anchor = target?.closest<HTMLAnchorElement>("a[href]"), href = anchor?.getAttribute("href") ?? "";
         let targetId: string | undefined;
         try {
@@ -546,19 +595,20 @@ function Canvas({ document, blocks, width, height, breakpoint, selection, select
 }
 
 /** 認証済みホストに接続する共通エディター。ネットワーク URL や秘密を所有しない。 */
-export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = emptyBlocks, builder, previewComponent, insertableBlocks, assets, externalFramePolicy, blankEmbeds: blankEmbedInput, xPostFrameUrl, breakpoints: hostBreakpoints, mobilePreviewWidth, autosave, recovery, measurePerformance }: PageEditorProps) {
+export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = emptyBlocks, builder, previewComponent, insertableBlocks, assets, externalFramePolicy, blankEmbeds: blankEmbedInput, xPostFrameUrl, enableUrlEmbeds = false, breakpoints: hostBreakpoints, mobilePreviewWidth, autosave, recovery, measurePerformance }: PageEditorProps) {
   const adapterRef = useRef(adapter); adapterRef.current = adapter;
   const measuredInitialLoad = useRef(false);
   const pendingMeasurement = useRef<{ target: EditorTarget; initial: boolean; signal: AbortSignal; finish: () => void } | null>(null);
+  const pendingRenderPerformance = useRef<EditorPerformanceMeasurement | null>(null);
   const blankEmbeds = useMemo(() => blankEmbedInput === undefined ? undefined : parseBlankEmbedRegistry(blankEmbedInput), [blankEmbedInput]);
   const blankEmbedReady = !!blankEmbeds?.entries.length;
   const initialTargetRef = useRef<EditorTarget | null>(initialTarget ?? null);
   const [sites, setSites] = useState<readonly EditorSite[]>([]), [siteId, setSiteId] = useState("");
+  const siteIdRef = useRef(siteId); siteIdRef.current = siteId;
   const [pages, setPages] = useState<readonly EditorPage[]>([]), [session, setSession] = useState<Session | null>(null);
   const [formCompletionPages, setFormCompletionPages] = useState<{ target: string; status: "idle" | "loading" | "ready" | "error"; pages: readonly EditorPage[] }>({ target: "", status: "idle", pages: [] });
   const sessionRef = useRef(session); sessionRef.current = session;
   const pageSessionCache = useRef(new EditorSessionCache(4));
-  const pagePrefetches = useRef(new Map<string, PagePrefetch>());
   const [selectedId, setSelectedId] = useState<string | null>(null), [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]), [selectedLocalizationUnit, setSelectedLocalizationUnit] = useState<string | null>(null), [selectedCanvasNode, setSelectedCanvasNode] = useState<string | null>(null), [width, setWidth] = useState(1280), [widthField, setWidthField] = useState("1280");
   const selectedIdRef = useRef(selectedId); selectedIdRef.current = selectedId;
   const selectedNodeIdsRef = useRef(selectedNodeIds); selectedNodeIdsRef.current = selectedNodeIds;
@@ -574,7 +624,10 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   // 編集中の状態（ホバー等）はキャンバスへ強制表示する。動きは初期は止め、選択枠がずれないようにする。
   const [styleState, setStyleState] = useState<StyleState>("normal"), [motion, setMotion] = useState(false), [replay, setReplay] = useState(0);
   const [scaleMode, setScaleMode] = useState<WorkspaceScale>("fit"), [stageSize, setStageSize] = useState({ width: 0, height: 0 }), stageRef = useRef<HTMLDivElement>(null);
-  const builderDefinition = useMemo(() => resolveBuilderDefinition(builder), [builder]);
+  const builderDefinition = useMemo(() => {
+    const resolved = resolveBuilderDefinition(builder);
+    return enableUrlEmbeds ? resolved : { ...resolved, insertions: resolved.insertions.filter((entry) => entry.id !== "embed-url") };
+  }, [builder, enableUrlEmbeds]);
   const fallbackBreakpointSettings = useMemo(() => breakpointSettingsFromLegacy(hostBreakpoints, mobilePreviewWidth), [hostBreakpoints, mobilePreviewWidth]);
   const breakpointSettings = useBreakpointSettings(adapter, siteId, fallbackBreakpointSettings), breakpointView = breakpointPreview(breakpointSettings.settings);
   const breakpoints = breakpointSettings.editable ? breakpointView.breakpoints : normalizeBreakpoints(hostBreakpoints);
@@ -612,7 +665,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   // Dialog が元のフォーカスを記録した後に閉じるボタンへ移す。
   useEffect(() => { if (shortcutsOpen) shortcutClose.current?.focus(); }, [shortcutsOpen]);
   const [leftPanelOpen, setLeftPanelOpen] = useState(true), [rightPanelOpen, setRightPanelOpen] = useState(true);
-  const [breakpointSettingsOpen, setBreakpointSettingsOpen] = useState(false), [responsiveProposalOpen, setResponsiveProposalOpen] = useState(false);
+  const [breakpointSettingsOpen, setBreakpointSettingsOpen] = useState(false);
   const [localizationManual, setLocalizationManual] = useState<EditorLocalizationManualBuffer | null>(null);
   const [siteComponentReturn, setSiteComponentReturn] = useState<EditorTarget | null>(null);
   const [layerDrop, setLayerDrop] = useState<{ id: string; position: "before" | "inside" | "after" } | null>(null);
@@ -639,6 +692,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const request = useRef<AbortController | null>(null), action = useRef<AbortController | null>(null), pageList = useRef<AbortController | null>(null), releaseRead = useRef<AbortController | null>(null);
   const initialLoadPerformance = useRef<EditorPerformanceMeasurement | null>(null), initialLoadPerformanceStarted = useRef(false);
   const pendingLoadPerformance = useRef<{ measurement: EditorPerformanceMeasurement | null; target: EditorTarget } | null>(null);
+  const pendingEditRender = useRef<(() => void) | null>(null);
   useEffect(() => {
     if (initialLoadPerformanceStarted.current) return;
     initialLoadPerformanceStarted.current = true;
@@ -682,11 +736,8 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   // 訳文の原文検証・再構成には保存済みのサイト共通スタイルを使う。設定を読むホストでは読込が終わるまで待ち、読めなければ文書と同じ読込で得た設定か文書単体で進める。
   const savedSiteStylesReady = !adapter.readSiteSettings || siteSettings.status === "ready" || siteSettings.status === "error";
   const savedSiteStyles = siteSettings.status === "ready" ? siteSettings.settings : session?.siteStyles;
-  const savedSiteStylesVersion = siteSettings.status === "ready" ? siteSettings.version : undefined;
-  const savedSiteStylesRevision = useMemo(() => savedSiteStylesVersion
-    ? { stage: "draft" as const, version: savedSiteStylesVersion } : undefined, [savedSiteStylesVersion]);
   const localization = useEditorLocalization(adapter, siteId, session?.target, blocks, libraryPresent,
-    savedSiteStylesReady && (!savedSiteStyles || !!savedSiteStylesRevision), savedSiteStyles, savedSiteStylesRevision, loadEpoch, setNotice);
+    savedSiteStylesReady, savedSiteStyles, loadEpoch, setNotice);
   const sessionLocalizationSite = localization.site?.config.siteId === session?.target.siteId ? localization.site : null;
   let selectedLocale: LocalizationLocale | undefined;
   try { if (sessionLocalizationSite && session) selectedLocale = editorLocalizationLocaleFor(sessionLocalizationSite.config, session.target.locale); } catch { /* read hook reports the invalid mapping */ }
@@ -718,6 +769,8 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const pageInputPending = Object.values(pendingFields).includes("page");
   const manualInputPending = !!localizationManual?.pending && !!session && sameTarget(localizationManual.target, session.target);
   const hasInput = Object.keys(pendingFields).length > 0 || manualInputPending, dirty = !!session && needsPageSave(session);
+  const interactionStateRef = useRef({ hasInput, hasDraft: !!draft, editing: !!editing });
+  interactionStateRef.current = { hasInput, hasDraft: !!draft, editing: !!editing };
   const masterId = editing && libraryPresent?.components.some((component) => component.id === editing) ? editing : null;
   const canNameNode = !targetMode && (masterId ? components?.nodeNames === true : pageNodeNames);
   const libraryDirty = !!library && libraryFingerprint(library.history.present) !== library.saved, pendingChanges = dirty || libraryDirty, locale = session?.target.locale ?? "ja";
@@ -740,7 +793,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const autosaveMs = autosaveDelay(autosave), autosaveActive = autosaveMs !== undefined && autosaveOn;
   // オフラインで失敗した後、接続が戻ったら自動保存は1回だけ再試行する。
   const online = useOnline(() => { if (problemRef.current !== "offline") return; if (!autosaveActive) setProblem("failed"); else if (!pendingChanges) setProblem(null); else void save("auto"); });
-  const otherModal = !!plan || !!localeReleasePlan || !!navigation || !!pageChange || !!releaseSetPages || breakpointSettingsOpen || responsiveProposalOpen || conflictView > 0 || recoveryCompare || versions.dialog !== null || !!componentDialog || !!libraryReload || shortcutsOpen || !!groupChange;
+  const otherModal = !!plan || !!localeReleasePlan || !!navigation || !!pageChange || !!releaseSetPages || breakpointSettingsOpen || conflictView > 0 || recoveryCompare || versions.dialog !== null || !!componentDialog || !!libraryReload || shortcutsOpen || !!groupChange;
   const modal = otherModal || commandPaletteOpen;
   // 自動保存は手動保存と同じく部品 → ページの順に保存する。部品とページのどちらが変わっても待ち直す。
   const autosaveSubject = useMemo(() => [session?.history.present, session?.cmsBindings, libraryPresent], [session?.history.present, session?.cmsBindings, libraryPresent]);
@@ -748,7 +801,31 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const autosaveKey = (target: EditorTarget | undefined, lib: LibrarySession | null) => target ? targetKeyOf(target) : lib ? JSON.stringify(["library", lib.siteId]) : "";
   useAutosave(autosaveMs, autosaveActive && pendingChanges && !siteWorkBlocked && (!dirty || !session?.readOnly) && !hasInput && !busy && !modal && !historyMode && online && !problem && localizationReady, autosaveSubject, autosaveKey(session?.target, library),
     (key) => { if (autosaveKey(sessionRef.current?.target, libraryRef.current) === key) void save("auto"); });
-  const replace = useCallback((next: Session | null) => { sessionRef.current = next; setSession(next); }, []);
+  const replace = useCallback((next: Session | null, options: { measureEdit?: boolean } = {}) => {
+    const current = sessionRef.current;
+    if (options.measureEdit !== false && current && next && sameTarget(current.target, next.target) && current.history.present !== next.history.present && !pendingLoadPerformance.current) {
+      pendingEditRender.current?.();
+      pendingEditRender.current = measurePerformance?.("edit-render") ?? null;
+    }
+    sessionRef.current = next;
+    setSession(next);
+  }, [measurePerformance]);
+  useLayoutEffect(() => {
+    const pending = pendingEditRender.current;
+    if (!pending) return;
+    const view = workspace.current?.ownerDocument.defaultView;
+    if (!view?.requestAnimationFrame) {
+      pendingEditRender.current = null;
+      pending();
+      return;
+    }
+    const frame = view.requestAnimationFrame(() => {
+      if (pendingEditRender.current !== pending) return;
+      pendingEditRender.current = null;
+      pending();
+    });
+    return () => view.cancelAnimationFrame(frame);
+  }, [session?.history.present]);
   const replaceLibrary = useCallback((next: LibrarySession | null) => { libraryRef.current = next; setLibrary(next); }, []);
   useEffect(() => {
     releaseRead.current?.abort(); setLocaleRelease(null); setLocaleRollbackId("");
@@ -771,31 +848,10 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     if (!components) return;
     try {
       const snapshot = await components.readLibrary(siteId, signal);
-      if (signal.aborted) return;
-      replaceLibrary(librarySessionFrom(snapshot, siteId, blocks)); setLibraryEpoch((value) => value + 1); refreshUsage(siteId);
-    } catch { if (!signal.aborted) setLibraryFailed(true); }
+      if (signal.aborted || siteIdRef.current !== siteId) return;
+      replaceLibrary(librarySessionFrom(snapshot, siteId, blocks)); setLibraryFailed(false); setLibraryEpoch((value) => value + 1); refreshUsage(siteId);
+    } catch { if (!signal.aborted && siteIdRef.current === siteId) setLibraryFailed(true); }
   }, [components, blocks, replaceLibrary, refreshUsage]);
-  const preloadPage = useCallback((target: EditorTarget) => {
-    const editorTarget: EditorTarget = { siteId: target.siteId, pageId: target.pageId, locale: target.locale };
-    const currentTarget = sessionRef.current?.target;
-    if (!adapter.prefetchDocument || currentTarget && sameTarget(currentTarget, editorTarget)) return;
-    const key = targetKeyOf(editorTarget), currentComponents = libraryRef.current?.history.present;
-    const existing = pagePrefetches.current.get(key);
-    if (existing && existing.components === currentComponents && (existing.completedAt === undefined || Date.now() - existing.completedAt <= PAGE_PREFETCH_MAX_AGE_MS)) return;
-    existing?.controller.abort();
-    const controller = new AbortController();
-    const entry: PagePrefetch = { controller, ...(currentComponents ? { components: currentComponents } : {}), promise: Promise.resolve().then(() => adapter.prefetchDocument!(editorTarget, controller.signal)) };
-    pagePrefetches.current.set(key, entry);
-    void entry.promise.then(() => { entry.completedAt = Date.now(); }, () => {
-      if (pagePrefetches.current.get(key) === entry) pagePrefetches.current.delete(key);
-    });
-    while (pagePrefetches.current.size > PAGE_PREFETCH_LIMIT) {
-      const oldest = pagePrefetches.current.entries().next().value as [string, PagePrefetch] | undefined;
-      if (!oldest || oldest[0] === key) break;
-      oldest[1].controller.abort();
-      pagePrefetches.current.delete(oldest[0]);
-    }
-  }, [adapter]);
   const load = useCallback(async (target: EditorTarget, options?: { preserveView?: boolean; metric?: "load" | "page-switch" }): Promise<boolean> => {
     const metric = options?.metric ?? "load";
     const measurement = metric === "load" && initialLoadPerformance.current
@@ -809,34 +865,59 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     request.current?.abort(); const controller = new AbortController(); request.current = controller;
     setBusy("読込中"); setNotice("");
     try {
-      const key = targetKeyOf(editorTarget), currentComponents = libraryRef.current?.history.present;
-      const prefetched = pagePrefetches.current.get(key);
-      let snapshot: EditorSnapshot | undefined;
-      if (prefetched && prefetched.components === currentComponents && (prefetched.completedAt === undefined || Date.now() - prefetched.completedAt <= PAGE_PREFETCH_MAX_AGE_MS)) {
-        try { snapshot = await prefetched.promise; }
-        catch { if (controller.signal.aborted) return false; }
-        finally { if (pagePrefetches.current.get(key) === prefetched) pagePrefetches.current.delete(key); }
-      } else if (prefetched) {
-        prefetched.controller.abort();
-        pagePrefetches.current.delete(key);
-      }
-      if (controller.signal.aborted) return false;
-      let loaded: EditorSessionLoad;
-      try {
+      const currentComponents = libraryRef.current?.history.present;
+      const currentSiteSettings = siteSettingsRef.current;
+      const cachedSiteSettings = currentSiteSettings.status === "ready" && currentSiteSettings.settings && currentSiteSettings.version
+        ? { settings: currentSiteSettings.settings, version: currentSiteSettings.version,
+          ...(currentSiteSettings.publishedVersion === undefined ? {} : { publishedVersion: currentSiteSettings.publishedVersion }),
+          ...(currentSiteSettings.publishedStyles === undefined ? {} : { publishedStyles: currentSiteSettings.publishedStyles }) } : undefined;
+      const settingsVersion = currentSiteSettings.status === "ready" ? currentSiteSettings.version
+        : currentSiteSettings.status === "error" ? null : undefined;
+      const cached = pageSessionCache.current.getLatest(editorTarget, currentComponents, 5 * 60_000, settingsVersion);
+      let loaded: EditorSessionLoad, revalidation: Promise<EditorSessionLoad> | undefined;
+      if (cached) {
+        recordEditorReadPerformance({ source: "cache", durationMs: 0, serverTiming: [] });
+        loaded = { session: cached.session, ...(cached.siteSettings ? { siteSettings: cached.siteSettings } : {}), ...(cached.warning ? { warning: cached.warning } : {}) };
+        revalidation = readEditorSession(adapter, editorTarget, controller.signal, blocks, currentComponents,
+          { cache: pageSessionCache.current, cached, ...(cachedSiteSettings ? { siteSettings: cachedSiteSettings } : {}) });
+      } else {
         loaded = await readEditorSession(adapter, editorTarget, controller.signal, blocks, currentComponents,
-          { cache: pageSessionCache.current, ...(snapshot ? { snapshot } : {}) });
-      } catch (error) {
-        if (!snapshot || controller.signal.aborted) throw error;
-        loaded = await readEditorSession(adapter, editorTarget, controller.signal, blocks, currentComponents, { cache: pageSessionCache.current });
+          { cache: pageSessionCache.current, ...(cachedSiteSettings ? { siteSettings: cachedSiteSettings } : {}) });
       }
       if (controller.signal.aborted) return false;
+      if (loaded.siteSettings && loaded.siteSettings.version !== siteSettingsRef.current.version) siteSettingsRef.current.acceptSnapshot(loaded.siteSettings);
       if (finish) pendingMeasurement.current = { target: loaded.session.target, initial, signal: controller.signal, finish };
       pendingLoadPerformance.current = { measurement, target: editorTarget };
+      pendingRenderPerformance.current = beginEditorPerformance("render");
       replace(loaded.session);
       if (!options?.preserveView) { setSelectedId(null); setSelectedNodeIds([]); setInspector("page"); setSelectedLocalizationUnit(null); setSelectedCanvasNode(null); setLocalizationManual(null); }
       setFieldEpoch((value) => value + 1); setAssetResolveEpoch((value) => value + 1); setAssetProviderEpoch((value) => value + 1); setPendingFields({}); setPlan(null); setRollbackRevision(""); setParentId("");
       setProblem(null); setSavedAt(null); setConflictView(0); setRecoveryCompare(false); setLoadEpoch((value) => value + 1); setEditing(null);
       if (loaded.warning) setNotice(loaded.warning);
+      if (revalidation) {
+        const displayed = loaded.session;
+        void revalidation.then((fresh) => {
+          if (controller.signal.aborted || request.current !== controller) return;
+          const current = sessionRef.current;
+          if (!current || current !== displayed || !sameTarget(current.target, editorTarget)) return;
+          const localInteraction = interactionStateRef.current;
+          const settingsChanged = !!fresh.siteSettings && fresh.siteSettings.version !== siteSettingsRef.current.version;
+          const sessionChanged = editorSessionFreshness(current) !== editorSessionFreshness(fresh.session);
+          if (needsPageSave(current) || localInteraction.hasInput || localInteraction.hasDraft || localInteraction.editing) {
+            if (settingsChanged || sessionChanged) setNotice("ページの保存内容が更新されています。手元の編集は保持しました。保存時に最新の版との競合を確認します。");
+            return;
+          }
+          if (fresh.siteSettings && settingsChanged) siteSettingsRef.current.acceptSnapshot(fresh.siteSettings);
+          if (settingsChanged || sessionChanged) {
+            replace(fresh.session, { measureEdit: false });
+            setSelectedId(null); setSelectedNodeIds([]); setSelectedCanvasNode(null); setDraft(null); setEditing(null);
+            setFieldEpoch((value) => value + 1); setAssetResolveEpoch((value) => value + 1); setAssetProviderEpoch((value) => value + 1); setLoadEpoch((value) => value + 1);
+            if (fresh.warning) setNotice(fresh.warning);
+          }
+        }).catch(() => {
+          // 読み直しに失敗しても最後に検証できた保存済みセッションは表示し続ける。
+        });
+      }
       return true;
     } catch (error) { performanceOutcome = "failed"; if (!controller.signal.aborted) setNotice(error instanceof Error && error.message ? error.message : "文書を読み込めませんでした。現在の編集内容は保持されています。"); return false; }
     finally { if (!controller.signal.aborted) { if (performanceOutcome === "failed") finishEditorPerformance(measurement, performanceOutcome); setBusy(""); } }
@@ -846,6 +927,9 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     if (!pending || !session || !sameTarget(pending.target, session.target)) return;
     pendingLoadPerformance.current = null;
     finishEditorPerformance(pending.measurement);
+    const renderMeasurement = pendingRenderPerformance.current;
+    pendingRenderPerformance.current = null;
+    finishEditorPerformance(renderMeasurement);
   }, [loadEpoch, session?.target.siteId, session?.target.pageId, session?.target.locale]);
   const lastStyleSave = useRef(siteSettings.styleSaveEpoch);
   useEffect(() => {
@@ -873,7 +957,9 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     if (!siteId) return;
     const controller = new AbortController(); setPages([]); setBusy("読込中");
     replaceLibrary(null); setLibraryReload(null); setLibraryFailed(false); setUsage(undefined); setEditing(null); usageRequest.current?.abort();
-    const listed = components ? openLibrary(siteId, controller.signal).then(() => controller.signal.aborted ? [] : adapter.listPages(siteId, controller.signal)) : adapter.listPages(siteId, controller.signal);
+    const libraryRead = components ? openLibrary(siteId, controller.signal) : Promise.resolve();
+    const pagesRead = Promise.resolve().then(() => controller.signal.aborted ? [] : adapter.listPages(siteId, controller.signal));
+    const listed = Promise.all([libraryRead, pagesRead]).then(([, result]) => result);
     listed.then((result) => {
       if (controller.signal.aborted) return;
       if (result.some((page) => page.siteId !== siteId)) throw new Error("site mismatch");
@@ -889,11 +975,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   useEffect(() => () => { request.current?.abort(); action.current?.abort(); pageList.current?.abort(); releaseRead.current?.abort(); }, []);
   useEffect(() => {
     pageSessionCache.current.clear();
-    return () => {
-      for (const entry of pagePrefetches.current.values()) entry.controller.abort();
-      pagePrefetches.current.clear();
-      pageSessionCache.current.clear();
-    };
+    return () => pageSessionCache.current.clear();
   }, [adapter, blocks]);
   useEffect(() => () => usageRequest.current?.abort(), []);
   useEffect(() => {
@@ -1368,7 +1450,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     let performanceOutcome: EditorPerformanceOutcome = "success";
     const finish = measurePerformance?.("save");
     const controller = new AbortController(), auto = mode === "auto", hadProblem = !!problemRef.current; action.current = controller; if (!auto) setNotice("");
-    let current = sessionRef.current, librarySaved = false, pageSaved = false, applyingOperations = false;
+    let current = sessionRef.current, librarySaved = false, pageSaved = false, applyingOperations = false, acknowledgedPageVersion: string | undefined;
     const sameSession = () => { const latest = sessionRef.current; return !!latest && !!current && sameTarget(latest.target, current.target); };
     const failed = (next: SaveProblem, thrown: boolean) => {
       if (!sameSession()) return;
@@ -1411,12 +1493,13 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         if (result.status === "conflict") { performanceOutcome = "failed"; failed("conflict", false); return false; }
         if (result.status !== "applied" || typeof result.version !== "string" || !result.version || result.version === current.version
           || !Number.isSafeInteger(result.revision) || result.revision <= inFlight.submitted.revision) throw new Error("保存後の revision が正しくありません。");
+        acknowledgedPageVersion = result.version;
         const canonical = parsePageDocument(result.document, blocks, { ...(lib ? { components: lib } : {}), ...(activeSiteStyles ? { siteStyles: activeSiteStyles } : {}) });
         if (!sameTarget(canonical, current.target) || canonical.revision !== result.revision) throw new Error("保存対象が一致しません。");
         const latest = sessionRef.current;
         if (latest && sameTarget(latest.target, current.target) && latest.version === current.version) {
           const acknowledged = acceptAppliedOperations(latest.operationQueue, { ...result, document: canonical }, latest.history, applyToPage);
-          replace({ ...latest, history: acknowledged.history, operationQueue: acknowledged.queue, saved: fingerprint(canonical), version: result.version, hasSavedDraft: true });
+          replace({ ...latest, history: acknowledged.history, operationQueue: acknowledged.queue, saved: fingerprint(canonical), version: result.version, hasSavedDraft: true }, { measureEdit: false });
           if (acknowledged.replayFailed) {
             performanceOutcome = "failed";
             failed("conflict", false);
@@ -1435,6 +1518,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         if (controller.signal.aborted) return false;
         if (result.status === "conflict") { performanceOutcome = "failed"; failed("conflict", false); return false; }
         if (typeof result.version !== "string" || !result.version || result.version === current.version) throw new Error("version must advance");
+        acknowledgedPageVersion = result.version;
         const latest = sessionRef.current;
         if (latest && sameTarget(latest.target, current.target) && latest.version === current.version) {
           const acknowledged = acceptSavedRevision(latest.history, document, result.revision);
@@ -1442,12 +1526,20 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
             ...(current.cmsBindings === undefined ? {} : { savedCmsBindings: JSON.stringify(current.cmsBindings) }),
             operationQueue: adapter.applyOperations && !localized
               ? createOperationQueue({ ...document, revision: result.revision })
-              : { ...latest.operationQueue, base: { ...document, revision: result.revision }, pending: [] } });
+              : { ...latest.operationQueue, base: { ...document, revision: result.revision }, pending: [] } }, { measureEdit: false });
         }
       }
       if (sameSession()) { setProblem(null); setSavedAt(new Date()); setConflictView(0); }
       if (localized) localization.reloadPage();
       if (!auto) setNotice(librarySaved ? "コンポーネントと下書きを保存しました。" : "下書きを保存しました。"); else if (hadProblem) setNotice("");
+      const savedSession = sessionRef.current, currentSettings = siteSettingsRef.current;
+      if (acknowledgedPageVersion && current && savedSession && sameTarget(savedSession.target, current.target)
+        && savedSession.version === acknowledgedPageVersion && !needsPageSave(savedSession)) {
+        pageSessionCache.current.rememberLatest(savedSession.target, { session: savedSession,
+          ...(currentSettings.status === "ready" && currentSettings.settings && currentSettings.version
+            ? { siteSettings: { settings: currentSettings.settings, version: currentSettings.version } } : {}) }, libraryRef.current?.history.present,
+          currentSettings.status === "ready" ? currentSettings.version : currentSettings.status === "error" ? null : undefined);
+      }
       pageSaved = true; return true;
     } catch (error) { performanceOutcome = "failed"; if (!controller.signal.aborted) failed(classifySaveError(error), true); return false; }
     finally {
@@ -1466,9 +1558,27 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   async function prepare(actionType: "publish" | "rollback", revision = Number(rollbackRevision)) {
     if (siteSettings.dirty || siteSettings.busy) { setNotice("サイト設定を保存してから公開内容を確認してください。"); return; }
     const current = sessionRef.current, site = sites.find((site) => site.id === current?.target.siteId);
-    if (!current || current.readOnly || !site || action.current || blocked || siteSettings.dirty || siteSettings.busy || dirty || libraryDirty || masterId || hasInput || targetMode || !localizationReady || current.hasSavedDraft === false || (actionType === "rollback" && !current.releases.some((release) => release.revision === revision))) return;
+    if (!current || current.readOnly || !site || action.current || blocked || siteSettings.dirty || siteSettings.busy || dirty || libraryDirty || masterId || hasInput || targetMode || !localizationReady || current.hasSavedDraft === false || (actionType === "rollback" && !adapter.publishPageNow && !current.releases.some((release) => release.revision === revision))) return;
     setAssetResolveEpoch((value) => value + 1);
-    const controller = new AbortController(); action.current = controller; setBusy("公開差分を取得中"); setNotice("");
+    const controller = new AbortController(); action.current = controller; setBusy(adapter.publishPageNow ? "公開中" : "公開差分を取得中"); setNotice("");
+    if (adapter.publishPageNow) {
+      try {
+        const result = await adapter.publishPageNow({ target: current.target, expectedVersion: current.version, action: actionType === "rollback" ? "restore" : "publish", ...(actionType === "rollback" ? { revision } : {}) }, controller.signal);
+        if (controller.signal.aborted) return;
+        if (result.status === "conflict") { setNotice("保存済みの状態が変わりました（409）。最新状態を読み込んでからやり直してください。手元の編集内容は保持しています。"); return; }
+        replace(editorSessionFrom(result.snapshot, current.target, blocks, libraryRef.current?.history.present, siteSettingsRef.current.settings, !siteSettingsRef.current.settings));
+        setSelection(null); setFieldEpoch((value) => value + 1); setProblem(null); setPicker(null);
+        const outcome = actionType === "rollback" ? "選んだ版を公開先へ復元しました。" : "公開しました。";
+        const warningSummary = result.warnings?.length
+          ? `SEO警告（${result.warnings.length}件）: ${result.warnings.slice(0, 3).map(({ message }) => message).join(" / ")}${result.warnings.length > 3 ? " / ほか" : ""}`
+          : "";
+        await reloadPages();
+        setNotice([outcome, result.url ? `公開URL: ${result.url}` : "", warningSummary].filter(Boolean).join("　"));
+      } catch { if (!controller.signal.aborted) setNotice("反映結果を確認できませんでした。再試行前に公開状態をホスト側で確認してください。編集内容は保持しています。"); }
+      finally { if (!controller.signal.aborted) setBusy(""); action.current = null; }
+      return;
+    }
+    if (!adapter.prepareRelease) { setBusy(""); action.current = null; return; }
     // 確認 token を、表示している部品ライブラリの version にも結び付ける。
     const input: EditorReleaseRequest = { target: current.target, expectedVersion: current.version, action: actionType,
       ...(actionType === "rollback" ? { revision } : {}), ...(components && libraryRef.current ? { componentsVersion: libraryRef.current.version } : {}),
@@ -1482,7 +1592,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   }
   async function release() {
     const current = sessionRef.current;
-    if (!current || current.readOnly || current.hasSavedDraft === false || siteSettings.dirty || siteSettings.busy || !plan || !confirmed || action.current || busy || dirty || libraryDirty || hasInput || targetMode || !localizationReady) return;
+    if (!adapter.release || !current || current.readOnly || current.hasSavedDraft === false || siteSettings.dirty || siteSettings.busy || !plan || !confirmed || action.current || busy || dirty || libraryDirty || hasInput || targetMode || !localizationReady) return;
     const controller = new AbortController(); action.current = controller; setBusy("公開を反映中");
     try {
       const result = await adapter.release(plan, controller.signal);
@@ -1656,8 +1766,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     try {
       const settings = siteSettingsRef.current.settings;
       const fresh = editorSessionFrom(snapshot, current.target, blocks, library?.history.present, settings, !settings);
-      if (fresh.readOnly || (fresh.dependencyVersions.componentsVersion !== undefined && fresh.dependencyVersions.componentsVersion !== library?.version && fresh.dependencyVersions.componentsVersion !== current.dependencyVersions.componentsVersion)
-        || fresh.dependencyVersions.stylesVersion !== current.dependencyVersions.stylesVersion) return undefined;
+      if (fresh.readOnly || (fresh.dependencyVersions.componentsVersion !== undefined && fresh.dependencyVersions.componentsVersion !== library?.version && fresh.dependencyVersions.componentsVersion !== current.dependencyVersions.componentsVersion)) return undefined;
       const reviewed = reviewOperationConflict(current.operationQueue, fresh.history.present, current.history.present, operationApplier(blocks, fresh.locks, library?.history.present, settings));
       return reviewed ? { fresh, reviewed } : undefined;
     } catch { return undefined; }
@@ -1725,7 +1834,9 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const master = useMemo(() => libraryPresent && masterId ? componentDocument(libraryPresent, masterId, locale) : undefined, [libraryPresent, masterId, locale]);
   const rawDocument = master ?? session?.history.present;
   const siteStylesReady = !adapter.readSiteSettings || siteSettings.status === "ready" && !!siteSettings.settings || session?.siteStyles !== undefined || !!session?.selfContained;
-  const document = useMemo(() => rawDocument && siteStylesReady ? (master ? resolveComponentStyles(rawDocument, activeSiteStyles) : resolvePageStyles(detachRemovedSiteStyles(rawDocument, session?.siteStyles ?? {}, activeSiteStyles), activeSiteStyles)) : undefined, [rawDocument, master, activeSiteStyles, siteStylesReady, session?.siteStyles]);
+  const document = useMemo(() => rawDocument && siteStylesReady ? (master ? resolveComponentStyles(rawDocument, activeSiteStyles)
+    : resolvePageStylesForEditor(detachRemovedSiteStyles(rawDocument, session?.siteStyles ?? {}, activeSiteStyles), activeSiteStyles)) : undefined,
+  [rawDocument, master, activeSiteStyles, siteStylesReady, session?.siteStyles]);
   const documentKey = document ? JSON.stringify([document.siteId, document.pageId, document.locale, masterId]) : "";
   const selection = document ? pathForNodeId(document, selectedId) : null;
   const entries = useMemo(() => document ? walkNodes(document) : [], [document]);
@@ -1969,6 +2080,10 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       setNotice("ホストで承認済みの Blank 埋め込みが接続されていないため追加できません。");
       return;
     }
+    if (type === "embed-url" && !enableUrlEmbeds) {
+      setNotice("外部URL埋め込みはこのサイトで有効になっていません。");
+      return;
+    }
     try {
       const newNode = makeNode(type); if (!newNode) return;
       const formPart = type.startsWith("form-") && !["form-1", "form-2", "form-3"].includes(type);
@@ -2204,7 +2319,10 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       if (result.status !== "applied") throw new Error("invalid localization command result");
       if (!result.version || result.version === context.version) throw new Error("version must advance");
       localization.reloadPage(); localization.reloadSite();
-      if (command.action === "adopt-candidate" || command.action === "set-value") await load(current.target, { preserveView: true });
+      if (command.action === "adopt-candidate" || command.action === "set-value") {
+        pageSessionCache.current.invalidateLatest(current.target);
+        await load(current.target, { preserveView: true });
+      }
       setNotice(command.action === "request-translation" ? "翻訳を依頼しました。" : command.action === "adopt-candidate" ? "翻訳案を採用しました。" : command.action === "set-value" ? "訳文を直しました。" : "翻訳状態を更新しました。");
       return "applied";
     } catch { if (!controller.signal.aborted) setNotice("翻訳状態を更新できませんでした。入力は保持されています。再試行してください。"); return "failed"; }
@@ -2248,10 +2366,10 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const siteComponents = panelPages.filter((page) => page.kind === "shared"), regularPages = panelPages.filter((page) => page.kind !== "shared");
   const isSiteComponent = !masterId && page?.kind === "shared";
   const siteComponentBack = regularPages.find((page) => page.siteId === siteComponentReturn?.siteId && page.pageId === siteComponentReturn?.pageId) ?? regularPages[0];
-  const pageOperations = !!adapter.preparePageChange && !!adapter.applyPageChange, unsaved = dirty || hasInput;
+  const pageOperations = !!adapter.changePageNow || !!adapter.preparePageChange && !!adapter.applyPageChange, unsaved = dirty || hasInput;
   const pageOperationsDisabled = siteWorkBlocked || unsaved || blocked || !!navigation || !site || historyMode || targetMode || !!session?.readOnly;
   const startPageChange = (start: PageChangeStart) => { if (pageOperations && !pageOperationsDisabled && (!adapter.pageChangeActions || adapter.pageChangeActions.includes(start.action))) setPageChange(start); };
-  const releaseSetAvailable = !!adapter.prepareReleaseSet && !!adapter.releaseSet && !!adapter.releaseSetStatus;
+  const releaseSetAvailable = !!adapter.prepareRelease && !!adapter.prepareReleaseSet && !!adapter.releaseSet && !!adapter.releaseSetStatus;
   const releaseSetDisabled = siteWorkBlocked || unsaved || blocked || !!navigation || !site || historyMode || targetMode || !!masterId || libraryDirty || siteSettings.dirty || siteSettings.busy || !localizationReady || !!session?.readOnly;
   const startReleaseSet = (selected: readonly EditorPage[]) => {
     if (releaseSetAvailable && !releaseSetDisabled && selected.length >= 2) setReleaseSetPages(selected.map((page) => structuredClone(page)));
@@ -2265,7 +2383,8 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   };
   const status = saveStatus({ busy, hasInput, problem, dirty: pendingChanges, online, autosave: autosaveActive, savedAt, loaded: !!session });
   const recoveryStale = !!recoveryState.offer && !!session && recoveryState.offer.baseVersion !== session.version;
-  const viewed = versions.viewing?.entry, viewedRelease = viewed && (viewed.kind === "publish" || viewed.kind === "rollback") && session?.releases.some((release) => release.revision === viewed.revision) ? viewed.revision : undefined;
+  const viewed = versions.viewing?.entry, viewedRelease = viewed && (viewed.kind === "publish" || viewed.kind === "rollback")
+    && (adapter.publishPageNow || session?.releases.some((release) => release.revision === viewed.revision)) ? viewed.revision : undefined;
   const activeHistory = masterId ? library?.history : session?.history;
   const publishHold = siteSettings.dirty || siteSettings.busy ? "サイト設定を保存してから公開を確認してください。" : libraryDirty ? "コンポーネントの変更を保存してから公開を確認してください。" : masterId ? "ページに戻ってから公開を確認してください。" : session?.hasSavedDraft === false ? "文字や画像を編集し、下書きを保存してから公開・復元を確認してください。" : undefined;
   const rawSelected = document && selection ? nodeAt(document, selection) : undefined;
@@ -2297,15 +2416,6 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   const contextDetail = masterComponent ? "コンポーネント本体" : isSiteComponent ? "サイト全体のコンポーネント" : page?.path ?? (page?.kind === "template" ? "テンプレート" : "");
   const localizationError = localization.supported && !localizationReady && (localization.siteState === "error" || localization.pageState === "error")
     ? "言語設定または翻訳状態を確認できません。編集内容を保持したまま停止しています。再試行してください。" : "";
-  const responsiveProposalReason = !session ? "ページを読み込んでから利用できます。"
-    : masterId ? "コンポーネント本体の編集中は利用できません。"
-      : targetMode ? "翻訳された文書では利用できません。"
-        : historyMode ? "版の表示を閉じてから利用できます。"
-          : session.readOnly ? session.readOnly.reason
-            : locks.length ? "ロックされた値を含む文書では利用できません。"
-              : hasInput ? "入力を確定するか取り消してから利用してください。"
-                : editBlocked ? "処理が完了してから利用してください。"
-                  : breakpoints.length === 0 ? "minWidthを持つ編集モードを設定してから利用してください。" : undefined;
   const blankAddUnavailable = addType === "embed-blank" && !blankEmbedReady;
   const dialogShortcutReason = "ダイアログを閉じてから操作してください。";
   const shortcutUnavailable = otherModal ? dialogShortcutReason
@@ -2373,7 +2483,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     help: { run: () => { setShortcutsOpen(true); return true; } },
   };
   shortcutListener.current = (event, inCanvas) => dispatchEditorShortcut(event, inCanvas, (action) => action === "palette" ? paletteUnavailable : commandPaletteOpen ? dialogShortcutReason : shortcutUnavailable, commands, setNotice);
-  return <EditorWorkspace preview={preview} leftOpen={leftPanelOpen} rightOpen={rightPanelOpen} rootRef={workspace} setBody={(element) => { if (element) element.inert = modal; }} chrome={<><style dangerouslySetInnerHTML={{ __html: workspaceCss + editorCss + pagesCss + styleEditorCss + historyCss + localizationEditorCss + responsiveProposalCss }} />
+  return <EditorWorkspace preview={preview} leftOpen={leftPanelOpen} rightOpen={rightPanelOpen} rootRef={workspace} setBody={(element) => { if (element) element.inert = modal; }} chrome={<><style dangerouslySetInnerHTML={{ __html: workspaceCss + editorCss + pagesCss + styleEditorCss + historyCss + localizationEditorCss }} />
     {assets && <style dangerouslySetInnerHTML={{ __html: assetEditorCss }} />}
     {notice && <div className="e-notice" role="alert">{notice}</div>}
     {session?.readOnly && <div className="e-readonly" role="status"><div><strong>{isSiteComponent ? "コンポーネント（読み取り専用）" : targetMode ? "この言語（読み取り専用）" : "原文（読み取り専用）"}</strong><span>{session.readOnly.reason}</span></div>{session.readOnly.editUrl && <a className="e-small" href={session.readOnly.editUrl} {...(/^https:\/\//iu.test(session.readOnly.editUrl) ? { target: "_blank", rel: "noopener noreferrer" } : {})}>{session.readOnly.editLabel ?? (targetMode ? "原文の編集画面を開く" : "編集画面を開く")}</a>}</div>}
@@ -2401,7 +2511,6 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         </section>
         <section hidden={visiblePanel !== "pages"} aria-label="ページ一覧">
           <PagePanel pages={panelPages} current={session?.target} disabled={blocked} operations={pageOperations} pathEditable={adapter.pagePathEditable ?? true} {...(adapter.pageChangeActions ? { actions: adapter.pageChangeActions } : {})} operationsDisabled={pageOperationsDisabled} unsaved={unsaved}
-            preload={preloadPage}
             {...(releaseSetAvailable ? { releaseSet: startReleaseSet, releaseSetDisabled: releaseSetDisabled || unsaved } : {})}
             select={(target) => { if (!session || !sameTarget(session.target, target)) requestNavigation({ type: "page", target }); }} start={startPageChange}>
             {sites.length > 1 && <select className="e-site-select" aria-label="編集するサイト" value={siteId} disabled={blocked} onChange={(event) => requestNavigation({ type: "site", id: event.target.value })}>{sites.map((site) => <option key={site.id} value={site.id}>{site.name}</option>)}</select>}
@@ -2473,9 +2582,9 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       {libraryRecovery.offer && libraryMerge && <LibraryRecoveryBanner offer={libraryRecovery.offer} merge={libraryMerge} disabled={libraryBlocked || libraryDirty || hasInput || !!masterId} restore={restoreLibrary} discard={libraryRecovery.discard} />}
       {recoveryState.offer && session && !session.readOnly && <RecoveryBanner offer={recoveryState.offer} stale={recoveryStale} disabled={!localizationReady || historyMode || (blocked && busy !== "保存中") || !!masterId} compare={() => setRecoveryCompare(true)}
         restore={() => { if (recoveryStale) setRecoveryCompare(true); else void restoreRecovered(); }} discard={recoveryState.discard} />}
-      <div className="e-stage" ref={stageRef}><HistoryBar history={versions} restore={restoreRevision} {...(session?.readOnly ? { restoreBlocked: session.readOnly.reason } : {})} rollbackHint={session?.readOnly ? session.readOnly.reason : session?.hasSavedDraft === false ? publishHold : dirty || libraryDirty || hasInput ? "未保存の変更を保存してから公開版を戻せます。" : blocked ? "処理が完了してから操作できます。" : undefined}
+      <div className="e-stage" ref={stageRef}><HistoryBar history={versions} restore={restoreRevision} {...(session?.readOnly ? { restoreBlocked: session.readOnly.reason } : {})} {...(adapter.publishPageNow ? { rollbackLabel: "この版を公開先へ復元" } : {})} rollbackHint={session?.readOnly ? session.readOnly.reason : session?.hasSavedDraft === false ? publishHold : dirty || libraryDirty || hasInput ? "未保存の変更を保存してから公開版を戻せます。" : blocked ? "処理が完了してから操作できます。" : undefined}
         rollback={session?.readOnly || session?.hasSavedDraft === false || viewedRelease === undefined ? undefined : () => { versions.exit(); setRollbackRevision(String(viewedRelease)); void prepare("rollback", viewedRelease); }} />
-{document && session && shown && renderedCanvas && localizationReady ? <div className="e-canvas-spacer" data-scale={canvasScale.toFixed(3)} data-viewport-height={canvasHeight} style={{ width: width * canvasScale, height: canvasHeight * canvasScale }}><div className="e-canvas-scaled" style={{ width, transform: `scale(${canvasScale})`, transformOrigin: "0 0" }}><Canvas key={documentKey} document={shown} revealNode={canvasReveal?.target === documentKey ? canvasReveal : null} rendered={renderedCanvas} {...(canvasPresentation ? { presentation: canvasPresentation } : {})} origins={canvasOrigins} openInstance={openInstance} blocks={canvasBlocks} {...(externalFramePolicy ? { externalFramePolicy } : {})} {...(blankEmbeds ? { blankEmbeds } : {})} {...(xPostFrameUrl ? { xPostFrameUrl } : {})} width={width} height={canvasHeight} breakpoint={tier} selection={targetMode ? null : historyMode ? null : selection} {...(!historyMode && canvasSelectedNodeId ? { selectedNodeId: canvasSelectedNodeId } : {})} {...(!historyMode && selectedNodeIds.length > 1 ? { selectedNodeIds } : {})} slot={historyMode ? null : slotName} select={selectCanvas} canEditNode={canEditCanvasNode} dragItem={dragItem} drop={dropAt} pending={pending} editText={editCanvasText} startTextEdit={startTextEdit} onShortcut={onShortcut} resize={(path, width, height) => applyStyle({ type: "resize", path, breakpoint: tier, width, height, ...(until === undefined ? {} : { until }) })}
+{document && session && shown && renderedCanvas && localizationReady ? <div className="e-canvas-spacer" data-scale={canvasScale.toFixed(3)} data-viewport-height={canvasHeight} style={{ width: width * canvasScale, height: canvasHeight * canvasScale }}><div className="e-canvas-scaled" style={{ width, transform: `scale(${canvasScale})`, transformOrigin: "0 0" }}><Canvas pageKey={documentKey} document={shown} revealNode={canvasReveal?.target === documentKey ? canvasReveal : null} rendered={renderedCanvas} {...(canvasPresentation ? { presentation: canvasPresentation } : {})} origins={canvasOrigins} openInstance={openInstance} blocks={canvasBlocks} {...(externalFramePolicy ? { externalFramePolicy } : {})} {...(blankEmbeds ? { blankEmbeds } : {})} {...(xPostFrameUrl ? { xPostFrameUrl } : {})} width={width} height={canvasHeight} breakpoint={tier} selection={targetMode ? null : historyMode ? null : selection} {...(!historyMode && canvasSelectedNodeId ? { selectedNodeId: canvasSelectedNodeId } : {})} {...(!historyMode && selectedNodeIds.length > 1 ? { selectedNodeIds } : {})} slot={historyMode ? null : slotName} select={selectCanvas} canEditNode={canEditCanvasNode} dragItem={dragItem} drop={dropAt} pending={pending} editText={editCanvasText} startTextEdit={startTextEdit} onShortcut={onShortcut} resize={(path, width, height) => applyStyle({ type: "resize", path, breakpoint: tier, width, height, ...(until === undefined ? {} : { until }) })}
         spacing={{ allowed: spacingAllowed, commit: (path, property, value) => applyStyle(until === undefined
           ? { type: "style", path, breakpoint: tier, property, value }
           : { type: "styleRange", path, breakpoint: tier, until, values: { [property]: value } }) }}
@@ -2487,8 +2596,6 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       <SaveStatus {...status} retry={() => void save()} compare={() => setConflictView((value) => value + 1)} reload={() => void reloadLibrary()} retryDisabled={siteWorkBlocked || blocked || hasInput || historyMode || !localizationReady} compareDisabled={targetMode || !!busy || hasInput || historyMode || !localizationReady}
         reloadDisabled={!library || siteWorkBlocked || blocked || hasInput || historyMode || targetMode || !localizationReady} />
       {autosaveMs !== undefined && <AutosaveSwitch on={autosaveOn} set={setAutosaveOn} />}
-      {adapter.responsiveProposal && session && <ResponsiveProposalControl adapter={adapter.responsiveProposal} target={session.target} document={session.history.present} breakpoints={breakpoints} selectedNodeId={selectedId}
-        {...(responsiveProposalReason ? { disabledReason: responsiveProposalReason } : {})} blocks={blocks} locks={session.locks} {...(libraryPresent ? { components: libraryPresent } : {})} siteStyles={activeSiteStyles} onOpenChange={setResponsiveProposalOpen} apply={apply} />}
       <button className="e-action-button" aria-label="元に戻す" title={undoUnavailable ?? "元に戻す"} onClick={() => travel("undo")} disabled={!!undoUnavailable}><WorkspaceIcon name="undo" /><span className="e-vh">元に戻す</span></button>
       <button className="e-action-button" aria-label="やり直す" title={redoUnavailable ?? "やり直す"} onClick={() => travel("redo")} disabled={!!redoUnavailable}><WorkspaceIcon name="redo" /><span className="e-vh">やり直す</span></button>
       <button className="e-action-button" aria-label="プレビュー" title="プレビュー" aria-pressed={false} onClick={() => setPreview(true)} disabled={!document || blocked || historyMode}><WorkspaceIcon name="preview" /><span className="e-vh">プレビュー</span></button>
@@ -2496,7 +2603,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       {targetMode ? localePublication ? <button className="e-primary" title={session?.readOnly?.reason ?? "この言語の全ページと共通内容をまとめて確認します"} onClick={() => void prepareLocaleRelease("publish")}
         disabled={siteSettings.dirty || siteSettings.busy || !localeRelease || localeReleaseLoading || !session || !!session.readOnly || dirty || libraryDirty || !!masterId || blocked || hasInput || historyMode || !localizationReady}>言語全体の公開確認</button>
         : <button className="e-primary" title="このサイトでは訳文の公開を利用できません。管理者に確認してください。" disabled>公開</button>
-        : <button className="e-primary e-publish-button" aria-label="公開" title={session?.readOnly?.reason ?? publishHold ?? "公開前に対象と差分を確認"} onClick={() => void prepare("publish")} disabled={siteSettings.dirty || siteSettings.busy || !session || !!session.readOnly || session.hasSavedDraft === false || dirty || libraryDirty || !!masterId || blocked || hasInput || historyMode || !localizationReady}>公開</button>}
+        : <button className="e-primary e-publish-button" aria-label="公開" title={session?.readOnly?.reason ?? publishHold ?? (adapter.publishPageNow ? "保存した版を公開" : "公開前に対象と差分を確認")} onClick={() => void prepare("publish")} disabled={siteSettings.dirty || siteSettings.busy || !session || !!session.readOnly || session.hasSavedDraft === false || dirty || libraryDirty || !!masterId || blocked || hasInput || historyMode || !localizationReady}>公開</button>}
       {publishHold && !targetMode && <small className="e-hold">{publishHold}</small>}{targetMode && !localePublication && <small className="e-hold">このサイトでは訳文の公開を利用できません。管理者に確認してください。</small>}</div>
       <div className="e-inspector-scroll"><>
       <div className="e-inspector-context"><strong>{inspector === "element" ? multiSelection ? `${selectedNodeIds.length} 個を選択` : node ? label(node, blocks, names) : "要素を選択" : inspector === "site" ? site?.name ?? "サイト" : inspector === "localization" ? "翻訳" : masterComponent?.name ?? page?.title ?? (masterId || isSiteComponent ? "コンポーネント" : "ページ")}</strong>
@@ -2606,7 +2713,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
         </>}
         {elementTab === "settings" && node.embed && <>
           {node.embed.provider === "blank" ? <label className="e-field"><span>承認済みの埋め込み</span><select aria-label="承認済みの埋め込み" value={node.embed.source ?? ""} disabled={editBlocked || !!reason("embed.source") || !blankEmbedReady} onChange={(event) => { const error = apply({ type: "embedSource", path: selection, source: event.target.value }); if (error) setNotice(error); }}><option value="">選択してください</option>{node.embed.source && !blankEmbeds?.entries.some((entry) => entry.key === node.embed!.source) && <option value={node.embed.source}>未承認の設定</option>}{blankEmbeds?.entries.map((entry) => <option key={entry.key} value={entry.key}>{entry.label}</option>)}</select></label>
-            : field(node.embed.provider === "lottie" ? "LottieFiles Asset link" : node.embed.provider === "facebook" ? "Facebook の投稿 URL" : node.embed.provider === "x" ? "X のポスト URL" : node.embed.provider === "instagram" ? "Instagram の投稿・リール URL" : "埋め込み URL", String(node.embed.source ?? ""), (value) => ({ type: "embedSource", path: selection, source: value }), "embed.source", { reason: reason("embed.source"), placeholder: node.embed.provider === "map" ? "https://www.google.com/maps/embed?pb=..." : node.embed.provider === "youtube" ? "https://www.youtube.com/watch?v=..." : node.embed.provider === "vimeo" ? "https://vimeo.com/..." : node.embed.provider === "facebook" ? "https://www.facebook.com/example/posts/123456789" : node.embed.provider === "x" ? "https://x.com/example/status/1234567890123456789" : node.embed.provider === "instagram" ? "https://www.instagram.com/p/AbCdEf12345/" : "https://lottie.host/00000000-0000-4000-8000-000000000000/animation.json" })}
+            : field(node.embed.provider === "url" ? "公開HTTPS URL" : node.embed.provider === "lottie" ? "LottieFiles Asset link" : node.embed.provider === "facebook" ? "Facebook の投稿 URL" : node.embed.provider === "x" ? "X のポスト URL" : node.embed.provider === "instagram" ? "Instagram の投稿・リール URL" : "埋め込み URL", String(node.embed.source ?? ""), (value) => ({ type: "embedSource", path: selection, source: value }), "embed.source", { reason: reason("embed.source"), placeholder: node.embed.provider === "url" ? "https://example.com/public/embed?item=..." : node.embed.provider === "map" ? "https://www.google.com/maps/embed?pb=..." : node.embed.provider === "youtube" ? "https://www.youtube.com/watch?v=..." : node.embed.provider === "vimeo" ? "https://vimeo.com/..." : node.embed.provider === "facebook" ? "https://www.facebook.com/example/posts/123456789" : node.embed.provider === "x" ? "https://x.com/example/status/1234567890123456789" : node.embed.provider === "instagram" ? "https://www.instagram.com/p/AbCdEf12345/" : "https://lottie.host/00000000-0000-4000-8000-000000000000/animation.json" })}
           {field("アクセシブルなタイトル", node.embed.title, (value) => ({ type: "embedTitle", path: selection, title: value }), "embed.title", { reason: reason("embed.title") })}
           {embedHint(node.embed.provider, blankEmbedReady) && <small className="e-help">{embedHint(node.embed.provider, blankEmbedReady)}</small>}
         </>}
@@ -2653,7 +2760,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     {navigation && <Dialog name="未保存の変更" dismiss={() => setNavigation(null)}><h2>未保存の変更があります</h2><p>移動すると、保存前の変更と入力途中の値を破棄します。</p><div className="e-actions"><button autoFocus onClick={() => setNavigation(null)}>編集を続ける</button><button className="e-danger" onClick={() => { if (session && ["site", "page", "reload"].includes(navigation.type)) recoveryState.drop(session.target); if (navigation.type === "site" && libraryDirty && library) libraryRecovery.drop(library.siteId); navigate(navigation); }}>変更を破棄して移動</button>
       {(dirty || navigation.type === "site" && libraryDirty) && !hasInput && !historyMode && (navigation.type === "site" || navigation.type === "page") && !(navigation.type === "site" && siteSettings.dirty) && <button className="e-primary" onClick={() => void saveAndNavigate(navigation)}>保存して移動</button>}</div></Dialog>}
     {plan && <Dialog name="公開前の対象と差分" dismiss={() => { if (!busy) setPlan(null); }}><h2>{plan.action === "rollback" ? `版 ${plan.revision} に戻す前の確認` : "公開前の確認"}</h2><p>反映先のドメイン</p><p className="e-domain">{plan.domain}</p><p>{session?.target.pageId} · {session?.target.locale}</p>
-      <ReleaseSearchSummary document={pageDocument} page={page} domain={plan.domain} settings={siteSettings.settings} rollback={plan.action === "rollback"} url={plan.url} /><ReleaseAffected affected={releaseAffected(plan.affected, pageDocument, libraryPresent)} /><table><thead><tr><th>変更箇所</th><th>現在の公開内容</th><th>反映する内容</th></tr></thead><tbody>{plan.changes.length ? plan.changes.map((change, index) => <tr key={index}><td>{change.path}</td><td>{change.before}</td><td>{change.after}</td></tr>) : <tr><td colSpan={3}>内容の差分はありません。</td></tr>}</tbody></table>
+      <ReleaseSearchSummary document={pageDocument} page={page} domain={plan.domain} settings={siteSettings.settings} rollback={plan.action === "rollback"} url={plan.url} warnings={plan.warnings ?? []} /><ReleaseAffected affected={releaseAffected(plan.affected, pageDocument, libraryPresent)} /><table><thead><tr><th>変更箇所</th><th>現在の公開内容</th><th>反映する内容</th></tr></thead><tbody>{plan.changes.length ? plan.changes.map((change, index) => <tr key={index}><td>{change.path}</td><td>{change.before}</td><td>{change.after}</td></tr>) : <tr><td colSpan={3}>内容の差分はありません。</td></tr>}</tbody></table>
       <label className="e-check"><input type="checkbox" checked={confirmed} disabled={!!busy} onChange={(event) => setConfirmed(event.target.checked)} />このドメインと差分を確認し、反映する内容に同意しました</label>
       <div className="e-actions"><button autoFocus disabled={!!busy} onClick={() => setPlan(null)}>編集に戻る</button><button className="e-primary" disabled={!confirmed || !!busy} onClick={() => void release()}>{plan.action === "rollback" ? "この版に戻す" : "この内容を公開"}</button></div>
     </Dialog>}
@@ -2669,14 +2776,26 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     </Dialog>}
     {componentDialog && libraryPresent && <Dialog name={componentDialogTitle(componentDialog)} dismiss={() => setComponentDialog(null)}>
       <ComponentDialogBody dialog={componentDialog} library={libraryPresent} cancel={() => setComponentDialog(null)} submit={(values) => submitComponentDialog(componentDialog, values)} notice={componentDialogNotice} /></Dialog>}
-    {pageChange && site && adapter.preparePageChange && adapter.applyPageChange && <PageChangeDialog pathEditable={adapter.pagePathEditable ?? true} start={pageChange} site={site} pages={pages} locale={session?.target.locale ?? pages[0]?.locale ?? siteSettings.settings?.locale ?? "ja"}
-      prepare={(change, signal) => adapter.preparePageChange!(change, signal)} apply={(plan, signal) => adapter.applyPageChange!(plan, signal)}
-      applied={(page, change) => void pageApplied(page, change)} conflicted={() => void reloadPages()} close={() => setPageChange(null)}
+    {pageChange && site && pageOperations && <PageChangeDialog pathEditable={adapter.pagePathEditable ?? true} start={pageChange} site={site} pages={pages} locale={session?.target.locale ?? pages[0]?.locale ?? siteSettings.settings?.locale ?? "ja"}
+      {...(adapter.changePageNow ? {
+        direct: adapter.changePageNow,
+        ...(session && pageChange.action !== "create" && sameTarget(session.target, pageChange.page) ? { directVersion: session.version } : {})
+      } : { prepare: adapter.preparePageChange!, apply: adapter.applyPageChange! })}
+      applied={(page, change) => void pageApplied(page, change)} conflicted={reloadPages} close={() => setPageChange(null)}
       reload={() => { const current = sessionRef.current?.target; setPageChange(null); void reloadPages().then(() => current && load(current)); }} />}
     {releaseSetPages && site && releaseSetAvailable && <PageReleaseSetDialog pages={releaseSetPages} site={site} adapter={adapter}
       {...(libraryRef.current?.version ? { componentsVersion: libraryRef.current.version } : {})}
       close={() => setReleaseSetPages(null)} completed={() => releaseSetCompleted(releaseSetPages)} />}
-    {breakpointSettingsOpen && <BreakpointSettingsDialog state={breakpointSettings} {...(pageDocument ? { document: pageDocument } : {})}
+    {breakpointSettingsOpen && <BreakpointSettingsDialog state={breakpointSettings} adapter={adapter} pages={pages} blocks={blocks}
+      {...(session ? { target: session.target } : {})} {...(pageDocument ? { document: pageDocument } : {})} {...(session?.presentation ? { presentation: session.presentation } : {})}
+      siteStyles={activeSiteStyles} siteStylesReady={!adapter.readSiteSettings || siteSettings.status === "ready"}
+      siteStylesFailed={!!adapter.readSiteSettings && siteSettings.status === "error"} {...(libraryPresent ? { components: libraryPresent } : {})}
+      componentsReady={!components || !!libraryPresent} componentsFailed={libraryFailed}
+      retryDependencies={() => {
+        if (breakpointSettings.status === "error") breakpointSettings.reload();
+        if (adapter.readSiteSettings && siteSettings.status === "error") siteSettings.reload();
+        if (components && libraryFailed) void openLibrary(siteId, new AbortController().signal);
+      }}
       {...(dirty || libraryDirty || hasInput || siteSettings.dirty || siteSettings.busy || !!busy ? { saveBlockedReason: "ページ、コンポーネント、共通スタイル、サイト設定の未保存変更や処理を完了してから保存してください。" } : {})}
       close={() => setBreakpointSettingsOpen(false)} />}
     {conflictView > 0 && session && pageDocument && <ConflictDialog key={conflictView} adapter={adapter} target={session.target} present={pageDocument} blocks={blocks} components={libraryPresent} siteStyles={siteSettings.settings} close={() => setConflictView(0)} discard={loadLatest} overwrite={overwriteWith}

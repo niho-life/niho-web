@@ -3,7 +3,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { uiColor, uiInput, uiTokensCss } from "@niho/web/ui-tokens";
+import { uiColor, uiInput, uiTokensCss } from "../dist/ui-tokens.js";
 
 // 配色トークンの一本化（#159）。色の値は src/ui-tokens.ts だけに置き、各画面の CSS は var(--nw-*) だけを使う。
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -136,7 +136,7 @@ test("focus rings are 2px and blue on every screen", () => {
 
 test("no green or warm grey is left in the Studio UI except the published dot", () => {
   // 凍結中の Experience エディター（studio/build.mjs が bundle への混入を拒む）とビルド出力は見ない。
-  const skip = new Set(["studio/dist", "studio/migrations", "studio/experience-editor.tsx"]);
+  const skip = new Set(["studio/dist", "studio/migrations"]);
   const found = [];
   for (const path of [...walk("src", skip), ...walk("studio", skip)]) {
     for (const line of codeLines(read(path))) {

@@ -6,6 +6,7 @@ import {
 import { createPageEditingApiClient, EditingApiClientError, type EditingApiClient } from "../src/editing-client.js";
 import { parseKamakuraAssetUploadIntent } from "./kamakura-asset-upload-contract.js";
 import { KAMAKURA_EDITING_API_BASE } from "./kamakura-cms-contract.js";
+import { kamakuraUploadOrigin } from "./kamakura-upload-origin.js";
 
 const SITE_ID = "kamakura";
 const UPLOAD_PROVIDER = "kamakura-upload";
@@ -75,7 +76,7 @@ const PROVIDERS: AssetProvider[] = parseAssetProviders([
   { id: "kamakura-approved-remote", kind: "cms", label: "承認済み外部素材", origin: "承認済みの外部画像（読み取り専用）", status: "available", capabilities: READ_ONLY }
 ]);
 
-export function createKamakuraAssetLibrary(origin?: string): AssetLibraryAdapter {
+export function createKamakuraAssetLibrary(origin?: string, uploadOrigin = kamakuraUploadOrigin()): AssetLibraryAdapter {
   const commonApi: EditingApiClient | null = origin ? createPageEditingApiClient({ origin, siteId: SITE_ID, basePath: KAMAKURA_EDITING_API_BASE }) : null;
   return {
   async listAssets(query: AssetListQuery, signal: AbortSignal) {
@@ -99,7 +100,7 @@ export function createKamakuraAssetLibrary(origin?: string): AssetLibraryAdapter
 
     const intent = parseKamakuraAssetUploadIntent(commonApi
       ? await commonApi.createAssetUploadIntent({ folderId: null, name: request.name, mimeType: request.mimeType, bytes: request.bytes, provider: providerId }, signal)
-      : await post("upload-intent", { siteId: SITE_ID, folderId: null, name: request.name, mimeType: request.mimeType, bytes: request.bytes, provider: providerId }, signal));
+      : await post("upload-intent", { siteId: SITE_ID, folderId: null, name: request.name, mimeType: request.mimeType, bytes: request.bytes, provider: providerId }, signal), uploadOrigin);
     const response = await fetch(intent.uploadUrl, {
       method: "PUT", mode: "cors", credentials: "omit", cache: "no-store", redirect: "error", signal,
       headers: { Authorization: `Bearer ${intent.uploadToken}`, "Content-Type": request.mimeType },

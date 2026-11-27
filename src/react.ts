@@ -1,13 +1,14 @@
 import { resolvePageLink } from "./presentation-links.js";
 import { resolvePageStyles, type SiteStyles } from "./site-styles.js";
-import { createElement, Fragment, type ComponentType, type ReactElement } from "react";
-import type { BlockContract, PageDocument, PageNode, PublicPropValue, SitePresentation, SitePresentationExternalFrame, SitePresentationHostView, SitePresentationOverlay } from "./types.js";
+import { createElement, Fragment, memo, useMemo, useRef, type ComponentType, type CSSProperties, type ReactElement, type ReactNode } from "react";
+import type { BlockContract, CarouselBinding, PageDocument, PageNode, PublicPropValue, SitePresentation, SitePresentationExternalFrame, SitePresentationHostView, SitePresentationOverlay } from "./types.js";
 import { parsePageDocument } from "./document.js";
-import { cssForDocument, pageScope, resolveViewportHeightUnits } from "./css.js";
+import { canvasNodeStyleValues, canvasTokenStyleValues, cssForDocument, pageScope, resolveViewportHeightUnits, sameCanvasCssShape } from "./css.js";
 import { parseResolvedAssets, resolvedAsset, type ResolvedAssetMap } from "./assets.js";
-import { cssForSitePresentation, parseSitePresentation, presentationLayoutDocument, sitePresentationHostViewKey } from "./presentation.js";
+import { cssForValidatedSitePresentation, parseSitePresentation, presentationLayoutDocument, sitePresentationHostViewKey } from "./presentation.js";
+import { editorRendererToken, editorRendererTokenProp } from "./editor-renderer-token.js";
 import { iconGlyph } from "./icons.js";
-import { parseBlankEmbedRegistry, resolveBlankEmbed, type BlankEmbedRegistry } from "./embeds.js";
+import { isTrustedNihoTravelEmbedSource, nihoTravelPreviewSource, normalizeEmbedSource, parseBlankEmbedRegistry, resolveBlankEmbed, type BlankEmbedRegistry } from "./embeds.js";
 
 export type BlockDefinition = BlockContract & {
   /** ホストアプリが所有する同期 React コンポーネント。JSON から実行コードを読まない。 */
@@ -72,62 +73,124 @@ export type PageRendererProps = {
 const canvasCssText = (css: string, canvas: PageRendererProps["canvas"]) => canvas?.viewportHeight ? resolveViewportHeightUnits(css, canvas.viewportHeight) : css;
 const rootRelative = (value: string) => value.startsWith("/") && !value.startsWith("//");
 const embedAllow = { map: undefined, youtube: "encrypted-media; picture-in-picture; fullscreen", vimeo: "picture-in-picture; fullscreen" } as const;
-const embedLabel = { map: "Map", youtube: "YouTube", vimeo: "Vimeo", lottie: "Lottie", facebook: "Facebook", x: "X", instagram: "Instagram", blank: "Blank" } as const;
+const embedLabel = { map: "Map", youtube: "YouTube", vimeo: "Vimeo", lottie: "Lottie", facebook: "Facebook", x: "X", instagram: "Instagram", blank: "Blank", url: "外部URL" } as const;
+const emptyBlocks: BlockRegistry = Object.freeze({});
+const emptyOverlayBindings: readonly SitePresentationOverlay[] = Object.freeze([]);
+const emptyHostViews: readonly SitePresentationHostView[] = Object.freeze([]);
+const emptyAssets: ResolvedAssetMap = Object.freeze({});
 function withSiteOrigin(attrs: Record<string, unknown>, siteOrigin: string): void {
   if (typeof attrs.src === "string" && rootRelative(attrs.src)) attrs.src = siteOrigin + attrs.src;
   if (typeof attrs.poster === "string" && rootRelative(attrs.poster)) attrs.poster = siteOrigin + attrs.poster;
   if (typeof attrs.srcSet === "string") attrs.srcSet = attrs.srcSet.split(",").map((entry) => { const trimmed = entry.trim(); return rootRelative(trimmed) ? siteOrigin + trimmed : trimmed; }).join(", ");
 }
 
+type VideoInteractionChild = { role: "video" | "button"; ready: boolean };
+function carouselAttributes(attrs: Record<string, unknown>, nodeId: string, rootId: string, key: string, binding: CarouselBinding): void {
+  if (rootId === nodeId) {
+    attrs["data-nw-carousel"] = key;
+    attrs["data-nw-carousel-loop"] = String(binding.loop !== false);
+    attrs["data-nw-carousel-swipe"] = String(binding.swipe === true);
+    if (binding.fadeMs !== undefined) attrs["data-nw-carousel-fade"] = binding.fadeMs;
+    if (binding.autoplayMs !== undefined) attrs["data-nw-carousel-autoplay"] = binding.autoplayMs;
+    if (binding.initiallyPlaying === false) attrs["data-nw-carousel-paused"] = "true";
+  }
+  const slide = binding.slideIds.indexOf(nodeId);
+  if (slide >= 0) {
+    attrs["data-nw-carousel-slide"] = slide;
+    attrs["aria-hidden"] = slide === 0 ? "false" : "true";
+    if (slide !== 0) attrs.hidden = true;
+  }
+  if (binding.previousIds?.includes(nodeId)) attrs["data-nw-carousel-previous"] = "";
+  if (binding.nextIds?.includes(nodeId)) attrs["data-nw-carousel-next"] = "";
+  if (binding.playPauseIds?.includes(nodeId)) {
+    attrs["data-nw-carousel-play-pause"] = "";
+    attrs["aria-pressed"] = String(binding.initiallyPlaying === false);
+  }
+}
+
+function nativeCarousels(nodes: readonly PageNode[]) {
+  const result = new Map<string, { rootId: string; binding: CarouselBinding }>();
+  const collect = (body: readonly PageNode[]) => {
+    for (const node of body) {
+      if (node.type !== "element") continue;
+      if (node.interaction?.type === "carousel") {
+        const { binding } = node.interaction, entry = { rootId: node.id, binding };
+        for (const id of [node.id, ...binding.slideIds, ...(binding.previousIds ?? []), ...(binding.nextIds ?? []), ...(binding.playPauseIds ?? [])]) result.set(id, entry);
+      }
+      collect(node.children);
+    }
+  };
+  collect(nodes);
+  return result.size ? result : undefined;
+}
+type PageNodeRenderer = (node: PageNode, videoInteraction?: VideoInteractionChild) => ReactNode;
+type MemoizedPageNodeProps = { node: PageNode; videoInteraction: VideoInteractionChild | undefined; context: readonly unknown[]; renderNode: PageNodeRenderer };
+const MemoizedPageNode = memo(function MemoizedPageNode({ node, videoInteraction, renderNode }: MemoizedPageNodeProps): ReactNode {
+  return renderNode(node, videoInteraction);
+}, (previous, next) => {
+  const changedContext = previous.context.flatMap((value, index) => value === next.context[index] ? [] : [index]);
+  return previous.node === next.node && previous.videoInteraction?.role === next.videoInteraction?.role &&
+    previous.videoInteraction?.ready === next.videoInteraction?.ready && previous.context.length === next.context.length && !changedContext.length;
+});
+
+/** Strict public renderer: untrusted documents are parsed and validated before rendering. */
+export function PageRenderer(props: PageRendererProps): ReactElement {
+  const trusted = (props as PageRendererProps & { [editorRendererTokenProp]?: unknown })[editorRendererTokenProp] === editorRendererToken;
+  return PageRendererCore(props, trusted);
+}
+
 /** useEffect を使わず、Next.js の初期 HTML と静的 SSR の両方で本文を返す。 */
-export function PageRenderer({ document: input, blocks = {}, assets: assetInput, missingAssets = "omit", siteStyles, overlayBindings = [], hostViews = [], hostViewBinding, hostViewMode = "prefer", externalFramePolicy, blankEmbeds: blankEmbedInput, canvas, links }: PageRendererProps): ReactElement {
-  const document = resolvePageStyles(parsePageDocument(input, blocks, siteStyles ? { siteStyles } : {}), siteStyles);
-  const blankEmbeds = blankEmbedInput === undefined ? undefined : parseBlankEmbedRegistry(blankEmbedInput);
-  const assets = assetInput === undefined ? {} : parseResolvedAssets(assetInput);
+function PageRendererCore({ document: input, blocks = emptyBlocks, assets: assetInput, missingAssets = "omit", siteStyles, overlayBindings = emptyOverlayBindings, hostViews = emptyHostViews, hostViewBinding, hostViewMode = "prefer", externalFramePolicy, blankEmbeds: blankEmbedInput, canvas, links }: PageRendererProps, trusted: boolean): ReactElement {
+  const document = trusted ? input as PageDocument : resolvePageStyles(parsePageDocument(input, blocks, siteStyles ? { siteStyles } : {}), siteStyles);
+  const blankEmbeds = useMemo(() => blankEmbedInput === undefined ? undefined : parseBlankEmbedRegistry(blankEmbedInput), [blankEmbedInput]);
+  const assets = useMemo(() => assetInput === undefined ? emptyAssets : parseResolvedAssets(assetInput), [assetInput]);
+  const carousels = useMemo(() => nativeCarousels(document.body), [document.body]);
   const scope = pageScope(document);
-  type VideoInteractionChild = { role: "video" | "button"; ready: boolean };
+  const context = [blocks, assets, missingAssets, scope, document.textStyles, overlayBindings, hostViews, hostViewBinding, hostViewMode, externalFramePolicy, blankEmbeds, canvas, links, carousels] as const;
   const videoReady = (node: PageNode | undefined): boolean => node?.type === "element" && node.tag === "video" &&
     (typeof node.attrs?.src === "string" || !!node.asset && !!resolvedAsset(assets, node.asset));
-  function render(node: PageNode, videoInteraction?: VideoInteractionChild): ReactElement | string | null {
+  const render = (node: PageNode, videoInteraction?: VideoInteractionChild, index = 0): ReactElement => createElement(MemoizedPageNode, {
+    key: node.type === "text" ? `text:${index}` : node.id, node, videoInteraction, context, renderNode
+  });
+  function renderNode(node: PageNode, videoInteraction?: VideoInteractionChild): ReactNode {
     if (node.type === "text") return node.text;
     // 部品ライブラリなしの検証で拒否済み。下書きは resolvePageDocument で展開してから描画する。
     if (node.type === "instance") throw new Error("Unresolved component instance: resolve the document before rendering");
+    const canvasVariables = canvas ? canvasNodeStyleValues(node, document.textStyles, assets, canvas.viewportHeight) : undefined;
+    const hasCanvasVariables = !!canvasVariables && Object.keys(canvasVariables).length > 0;
+    const canvasStyle = hasCanvasVariables ? canvasVariables as CSSProperties : undefined;
+    const withCanvasStyle = (style?: CSSProperties) => hasCanvasVariables ? { ...style, ...canvasVariables } as CSSProperties : style;
     if (node.type === "component") {
       const candidates = hostViews.filter((view) => view.block === node.block);
       const definition = blocks[node.block]!;
       if (candidates.length && hostViewMode !== "off" && (hostViewMode === "prefer" || !definition?.component)) {
         const view = candidates.find((candidate) => sitePresentationHostViewKey(candidate.block, candidate.props) === sitePresentationHostViewKey(node.block, node.props));
-        if (view) return createElement("div", { key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-block": node.block, "data-nw-host-view": view.id },
+        if (view) return createElement("div", { key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-block": node.block, "data-nw-host-view": view.id, ...(canvasStyle ? { style: canvasStyle } : {}) },
           createElement(PageRenderer, { document: view.document, assets, missingAssets, hostViewBinding: view, hostViewMode: "off", overlayBindings, ...(links ? { links } : {}), ...(externalFramePolicy ? { externalFramePolicy } : {}), ...(blankEmbeds ? { blankEmbeds } : {}), ...(canvas ? { canvas } : {}) }));
         if (!canvas) throw new Error(`Registered host view is missing for block props: ${node.block}`);
       }
       if (!definition?.component) {
-        if (canvas) return createElement("div", { key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-block": node.block, "data-nw-missing-host-view": "", role: "status" }, "このブロックの表示例はありません");
+        if (canvas) return createElement("div", { key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-block": node.block, "data-nw-missing-host-view": "", role: "status", ...(canvasStyle ? { style: canvasStyle } : {}) }, "このブロックの表示例はありません");
         throw new Error(`Registered block has no React component: ${node.block}`);
       }
       // 枠の属性や style をブロックの props へ混ぜない。
-      return createElement("div", { key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-block": node.block }, createElement(definition.component, node.props));
+      return createElement("div", { key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-block": node.block, ...(canvasStyle ? { style: canvasStyle } : {}) }, createElement(definition.component, node.props));
     }
     const attrs = { ...node.attrs };
+    if (hasCanvasVariables) Object.assign(attrs, { style: withCanvasStyle((node.attrs as Record<string, unknown> | undefined)?.style as CSSProperties) });
     if (links && typeof attrs.href === "string") attrs.href = resolvePageLink(attrs.href, links);
     if (typeof attrs.autocomplete === "string") { attrs.autoComplete = attrs.autocomplete; delete attrs.autocomplete; }
     if (canvas?.siteOrigin) withSiteOrigin(attrs, canvas.siteOrigin);
     if (hostViewBinding) {
       for (const [slot, ids] of Object.entries(hostViewBinding.slotBindings ?? {})) if (ids.includes(node.id)) attrs["data-nw-slot"] = slot;
       const binding = hostViewBinding.carousel;
-      if (binding?.rootId === node.id) {
-        attrs["data-nw-carousel"] = hostViewBinding.id;
-        attrs["data-nw-carousel-loop"] = String(binding.loop !== false);
-        attrs["data-nw-carousel-swipe"] = String(binding.swipe === true);
-        if (binding.fadeMs !== undefined) attrs["data-nw-carousel-fade"] = binding.fadeMs;
-        if (binding.autoplayMs !== undefined) attrs["data-nw-carousel-autoplay"] = binding.autoplayMs;
-        if (binding.initiallyPlaying === false) attrs["data-nw-carousel-paused"] = "true";
-      }
-      const slide = binding?.slideIds.indexOf(node.id) ?? -1;
-      if (slide >= 0) { attrs["data-nw-carousel-slide"] = slide; attrs["aria-hidden"] = slide === 0 ? "false" : "true"; if (slide !== 0) attrs.hidden = true; }
-      if (binding?.previousIds?.includes(node.id)) attrs["data-nw-carousel-previous"] = "";
-      if (binding?.nextIds?.includes(node.id)) attrs["data-nw-carousel-next"] = "";
-      if (binding?.playPauseIds?.includes(node.id)) { attrs["data-nw-carousel-play-pause"] = ""; attrs["aria-pressed"] = String(binding.initiallyPlaying === false); }
+      if (binding) carouselAttributes(attrs, node.id, binding.rootId, hostViewBinding.id, binding);
+    }
+    const nativeCarousel = carousels?.get(node.id);
+    if (nativeCarousel && (!canvas || canvas.interactive)) {
+      carouselAttributes(attrs, node.id, nativeCarousel.rootId, nativeCarousel.rootId, nativeCarousel.binding);
+      if (attrs["data-nw-carousel-previous"] !== undefined || attrs["data-nw-carousel-next"] !== undefined ||
+        attrs["data-nw-carousel-play-pause"] !== undefined) attrs.role = "button";
     }
     if (node.interaction?.type === "video-toggle") attrs["data-nw-video-with-button"] = "";
     if (node.interaction?.type === "loop-box") {
@@ -152,7 +215,7 @@ export function PageRenderer({ document: input, blocks = {}, assets: assetInput,
     if (closes) attrs["data-nw-overlay-close"] = closes.id;
     if (node.asset) {
       const resolved = resolvedAsset(assets, node.asset);
-      if (!resolved) return missingAssets === "placeholder" ? createElement("span", { key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-missing-asset": "", role: node.tag === "img" ? "img" : "status",
+      if (!resolved) return missingAssets === "placeholder" ? createElement("span", { key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-missing-asset": "", role: node.tag === "img" ? "img" : "status", ...(canvasStyle ? { style: canvasStyle } : {}),
         "aria-label": node.tag === "img" ? typeof attrs.alt === "string" && attrs.alt ? attrs.alt : "画像を表示できません" : "動画を表示できません" }) : null;
       attrs.src = resolved.src;
       // 寸法を持たない画像にだけ付け、レイアウトのずれを防ぐ。
@@ -174,6 +237,30 @@ export function PageRenderer({ document: input, blocks = {}, assets: assetInput,
             createElement("iframe", { src: entry.src, title: node.embed.title, loading: "lazy", referrerPolicy: "strict-origin-when-cross-origin", sandbox: entry.sandboxValue,
               style: { width: "100%", minHeight: 0, flex: "1 1 auto", border: 0, display: "block", ...(canvas ? { pointerEvents: "none" } : {}) } }),
             createElement("a", { href: entry.src, target: "_blank", rel: "noopener noreferrer", "data-nw-blank-fallback": "", style: { flex: "0 0 auto", padding: 8, textAlign: "center" } }, `${entry.label}を新しいタブで開く`)));
+      }
+      if (node.embed.provider === "url") {
+        let source: string;
+        try { source = normalizeEmbedSource("url", node.embed.source); }
+        catch {
+          return missingAssets === "placeholder" ? createElement("div", { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope,
+            "data-nw-empty-embed": "url", role: "status" }, "公開HTTPS URLを確認できません") : null;
+        }
+        if (canvas && !canvas.interactive) return createElement("div", { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope,
+          "data-nw-embed": "url", "data-nw-url-static": "", role: "status" }, `${node.embed.title}（プレビューで表示）`);
+        const travelBooking = isTrustedNihoTravelEmbedSource(source);
+        const parentOrigin = blankEmbeds?.parentOrigin;
+        const trustedTravel = travelBooking && !!parentOrigin && new URL(source).origin !== parentOrigin;
+        const preview = !!canvas?.interactive;
+        const frameSource = preview && travelBooking ? nihoTravelPreviewSource(source) : source;
+        const sandbox = trustedTravel
+          ? preview ? "allow-scripts allow-same-origin allow-forms" : "allow-scripts allow-same-origin allow-forms allow-top-navigation-by-user-activation allow-popups allow-popups-to-escape-sandbox"
+          : "allow-scripts";
+        return createElement("div", { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-embed": "url" },
+          createElement("div", { "data-nw-url-player": "", style: { display: "flex", flexDirection: "column", width: "100%", height: "100%" } },
+            createElement("iframe", { src: frameSource, title: node.embed.title, loading: "lazy", referrerPolicy: trustedTravel ? "origin" : "no-referrer", sandbox,
+              "data-nw-url-embed-frame": "", style: { width: "100%", minHeight: 0, flex: "1 1 auto", border: 0, display: "block" } }),
+            createElement("a", { href: frameSource, target: "_blank", rel: "noopener noreferrer", "data-nw-url-fallback": "",
+              style: { flex: "0 0 auto", padding: 10, textAlign: "center" } }, "元URLを新しいタブで開く")));
       }
       if (node.embed.provider === "lottie") return createElement("div", { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope,
         "data-nw-embed": "lottie", "data-nw-lottie-source": node.embed.source, "data-nw-lottie-title": node.embed.title,
@@ -207,13 +294,13 @@ export function PageRenderer({ document: input, blocks = {}, assets: assetInput,
       const frame = createElement("iframe", {
         src: node.embed.source, title: node.embed.title, loading: "lazy", referrerPolicy: "strict-origin-when-cross-origin",
         sandbox: "allow-scripts allow-same-origin", ...(embedAllow[node.embed.provider] ? { allow: embedAllow[node.embed.provider] } : {}),
-        ...(node.embed.provider === "youtube" || node.embed.provider === "vimeo" ? { allowFullScreen: true } : {}),
+        ...(node.embed.provider === "youtube" || node.embed.provider === "vimeo" || node.embed.provider === "map" ? { allowFullScreen: true } : {}),
         style: { width: "100%", height: "100%", border: 0, display: "block", ...(canvas ? { pointerEvents: "none" } : {}) }
       });
       return createElement("div", { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-embed": node.embed.provider }, frame);
     }
     if (node.tag === "video") {
-      if (typeof attrs.src !== "string") return missingAssets === "placeholder" ? createElement("span", { key: node.id, "data-nw-node": node.id, "data-nw-owner": scope,
+      if (typeof attrs.src !== "string") return missingAssets === "placeholder" ? createElement("span", { key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, ...(canvasStyle ? { style: canvasStyle } : {}),
         "data-nw-missing-asset": "", role: "status", "aria-label": "動画を選んでください" }, "動画を選んでください") : null;
       if (attrs.controls === undefined) attrs.controls = true;
       if (attrs.preload === undefined) attrs.preload = "metadata";
@@ -230,12 +317,12 @@ export function PageRenderer({ document: input, blocks = {}, assets: assetInput,
       if (frameAccess === "blocked") return createElement("div", { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-frame-blocked": "", role: "status" }, "外部コンテンツを表示できません");
       return createElement("iframe", { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, src: frame.src, title: frame.title,
       loading: frame.loading ?? "lazy", referrerPolicy: frame.referrerPolicy ?? "strict-origin-when-cross-origin", sandbox: frameAccess === "retain-origin" ? "allow-scripts allow-same-origin" : "allow-scripts",
-      style: { width: "100%", height: "100%", border: 0, display: "block" },
+      style: withCanvasStyle({ width: "100%", height: "100%", border: 0, display: "block" }),
       ...(frame.frameKey ? { "data-nw-frame-key": frame.frameKey, "data-nw-frame-max-height": frame.autoHeightMax ?? 1200 } : {}),
       ...(frame.allowFullScreen ? { allowFullScreen: true } : {}) });
     }
     if (node.interaction?.type === "loop-box") {
-      const children = node.children.map((child) => render(child));
+      const children = node.children.map((child, index) => render(child, undefined, index));
       return createElement(node.tag, { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope },
         createElement("div", { "data-nw-loop-box-track": "", style: { display: "flex", flexDirection: "inherit", alignItems: "inherit", gap: "inherit", flex: "0 0 auto" } }, ...children),
         createElement("div", { "data-nw-loop-box-clones": "", "aria-hidden": "true", style: { display: "contents" } }));
@@ -244,46 +331,67 @@ export function PageRenderer({ document: input, blocks = {}, assets: assetInput,
     return createElement(node.tag, { ...attrs,
       ...(canvas && node.tag === "video" && (!canvas.interactive || videoInteraction?.role !== "video") ? { onPlay: (event: { currentTarget: { pause(): void } }) => event.currentTarget.pause() } : {}), key: node.id, "data-nw-node": node.id, "data-nw-owner": scope },
       ...(node.children.length ? node.children.map((child, index) => render(child, node.interaction?.type === "video-toggle"
-        ? { role: index === 0 ? "video" : "button", ready: videoReady(node.children[0]) } : undefined)) : []));
+        ? { role: index === 0 ? "video" : "button", ready: videoReady(node.children[0]) } : undefined, index)) : []));
   }
+  const canvasCssCache = useRef<{ document: PageDocument; assets: ResolvedAssetMap; viewportHeight: number | undefined; css: string } | undefined>(undefined);
+  const cachedCanvasCss = canvasCssCache.current;
+  let styleText: string;
+  if (canvas && cachedCanvasCss && cachedCanvasCss.assets === assets && cachedCanvasCss.viewportHeight === canvas.viewportHeight &&
+    sameCanvasCssShape(cachedCanvasCss.document, document)) {
+    cachedCanvasCss.document = document;
+    styleText = cachedCanvasCss.css;
+  } else {
+    styleText = canvasCssText(cssForDocument(document, assets, { inlineStyleValues: !!canvas }), canvas);
+    if (canvas) canvasCssCache.current = { document, assets, viewportHeight: canvas.viewportHeight, css: styleText };
+  }
+  if (carousels) styleText += `[data-nw-owner="${scope}"][data-nw-carousel-slide][hidden]{display:none!important}`;
   return createElement(Fragment, null,
     // React 18 HTML-escapes text children inside <style>, which changes CSS selectors.
     // cssForDocument only emits identifiers and values accepted by the closed CSS schema.
-    createElement("style", { "data-nw-style": scope, dangerouslySetInnerHTML: { __html: canvasCssText(cssForDocument(document, assets), canvas) } }),
-    createElement("div", { "data-nw-scope": scope, lang: document.locale }, ...document.body.map((node) => render(node))));
+    createElement("style", { "data-nw-style": scope, dangerouslySetInnerHTML: { __html: styleText } }),
+    createElement("div", { "data-nw-scope": scope, lang: document.locale, ...(canvas ? { style: canvasTokenStyleValues(document.tokens, canvas.viewportHeight) as CSSProperties } : {}) }, ...document.body.map((node, index) => render(node, undefined, index))));
 }
 
 export type SitePageRendererProps = PageRendererProps & { presentation: unknown };
+const StableEditorPageRenderer = memo(PageRenderer);
 /**
  * PageEditor と SSR が共有する native site composition。
  * 編集対象が canonical header/footer 自身なら、その文書を該当 slot にだけ置き、本文へ複製しない。
  */
-export function SitePageRenderer({ document: input, presentation: presentationInput, blocks = {}, assets: assetInput, missingAssets = "omit", siteStyles, hostViewMode = "prefer", externalFramePolicy, blankEmbeds: blankEmbedInput, canvas }: SitePageRendererProps): ReactElement {
-  const document = resolvePageStyles(parsePageDocument(input, blocks, siteStyles ? { siteStyles } : {}), siteStyles);
-  const blankEmbeds = blankEmbedInput === undefined ? undefined : parseBlankEmbedRegistry(blankEmbedInput);
-  const presentation: SitePresentation = parseSitePresentation(presentationInput, document, blocks);
-  const assets = assetInput === undefined ? {} : parseResolvedAssets(assetInput);
-  const output = cssForSitePresentation(presentation, document, blocks, assets), layout = presentationLayoutDocument(presentation);
+export function SitePageRenderer(props: SitePageRendererProps): ReactElement {
+  const trusted = (props as SitePageRendererProps & { [editorRendererTokenProp]?: unknown })[editorRendererTokenProp] === editorRendererToken;
+  return SitePageRendererCore(props, trusted);
+}
+
+function SitePageRendererCore({ document: input, presentation: presentationInput, blocks = emptyBlocks, assets: assetInput, missingAssets = "omit", siteStyles, hostViewMode = "prefer", externalFramePolicy, blankEmbeds: blankEmbedInput, canvas }: SitePageRendererProps, trusted: boolean): ReactElement {
+  const document = trusted ? input as PageDocument : resolvePageStyles(parsePageDocument(input, blocks, siteStyles ? { siteStyles } : {}), siteStyles);
+  const blankEmbeds = useMemo(() => blankEmbedInput === undefined ? undefined : parseBlankEmbedRegistry(blankEmbedInput), [blankEmbedInput]);
+  const presentation: SitePresentation = trusted ? presentationInput as SitePresentation : parseSitePresentation(presentationInput, document, blocks);
+  const assets = useMemo(() => assetInput === undefined ? emptyAssets : parseResolvedAssets(assetInput), [assetInput]);
+  const output = useMemo(() => cssForValidatedSitePresentation(presentation, assets), [presentation, assets]);
+  const layout = useMemo(() => presentationLayoutDocument(presentation), [presentation]);
   const layoutScope = pageScope(layout), shared = presentation.shared;
   const overlays = presentation.overlays ?? [], hostViews = presentation.hostViews ?? [];
   const hostOptions = { hostViews, hostViewMode, ...(presentation.links ? { links: presentation.links } : {}), ...(externalFramePolicy ? { externalFramePolicy } : {}), ...(blankEmbeds ? { blankEmbeds } : {}), ...(canvas ? { canvas } : {}) };
+  const PageView = trusted ? StableEditorPageRenderer : PageRenderer;
+  const withTrust = (props: PageRendererProps): PageRendererProps => trusted ? Object.assign({}, props, { [editorRendererTokenProp]: editorRendererToken }) as PageRendererProps : props;
   const header: PageDocument = document.pageId === shared.header.pageId ? document : shared.header;
   const footer: PageDocument = document.pageId === shared.footer.pageId ? document : shared.footer;
   const body = document.pageId === shared.header.pageId || document.pageId === shared.footer.pageId ? null
     : overlays.some((overlay) => document.pageId === overlay.document.pageId) ? null
-    : createElement("main", { "data-nw-presentation-body": "" }, createElement(PageRenderer, { document, blocks, assets, missingAssets, overlayBindings: overlays, ...hostOptions, ...(siteStyles ? { siteStyles } : {}) }));
+    : createElement("main", { "data-nw-presentation-body": "" }, createElement(PageView, withTrust({ document, blocks, assets, missingAssets, overlayBindings: overlays, ...hostOptions, ...(siteStyles ? { siteStyles } : {}) })));
   return createElement(Fragment, null,
     createElement("style", { "data-nw-presentation-style": output.scope, dangerouslySetInnerHTML: { __html: canvasCssText(output.css, canvas) } }),
     createElement("div", { "data-nw-presentation": output.scope, "data-nw-scope": layoutScope, lang: document.locale },
       createElement("div", { "data-nw-owner": layoutScope, "data-nw-node": "layout" },
-      createElement("div", { "data-nw-presentation-header": "" }, createElement(PageRenderer, { document: header, blocks, assets, missingAssets, overlayBindings: overlays, ...hostOptions })),
+      createElement("div", { "data-nw-presentation-header": "" }, createElement(PageView, withTrust({ document: header, blocks, assets, missingAssets, overlayBindings: overlays, ...hostOptions }))),
       body,
-      createElement("div", { "data-nw-presentation-footer": "" }, createElement(PageRenderer, { document: footer, blocks, assets, missingAssets, overlayBindings: overlays, ...hostOptions })),
+      createElement("div", { "data-nw-presentation-footer": "" }, createElement(PageView, withTrust({ document: footer, blocks, assets, missingAssets, overlayBindings: overlays, ...hostOptions }))),
       ...overlays.map((overlay) => {
         const editing = document.pageId === overlay.document.pageId, overlayDocument = editing ? document : overlay.document;
         return createElement("div", { key: overlay.id, id: overlay.id, role: "dialog", "aria-modal": "true", "aria-label": overlay.label, tabIndex: -1, "data-nw-overlay": overlay.id,
           ...(editing ? { "data-nw-overlay-editing": "" } : { hidden: true }) },
           createElement("button", { type: "button", tabIndex: -1, "aria-hidden": "true", "aria-label": overlay.label + "を閉じる", "data-nw-overlay-backdrop": "", "data-nw-overlay-close": overlay.id }),
-          createElement("div", { "data-nw-overlay-content": "" }, createElement(PageRenderer, { document: overlayDocument, blocks, assets, missingAssets, overlayBindings: overlays, ...hostOptions })));
+          createElement("div", { "data-nw-overlay-content": "" }, createElement(PageView, withTrust({ document: overlayDocument, blocks, assets, missingAssets, overlayBindings: overlays, ...hostOptions }))));
       }))));
 }

@@ -1,6 +1,8 @@
+import { assetKey } from "./assets.js";
 import { isIsoTimestamp, parseCollectionItem, type CollectionItem, type CollectionItemStatus, type CollectionValue } from "./collection-model.js";
 import { validatePagePath } from "./pages.js";
-import { fail, keys, localeCode, record } from "./validation-utils.js";
+import { DocumentValidationError, fail, keys, localeCode, record } from "./validation-utils.js";
+import { cmsReleaseAssetUses, parseCmsPublicAssets, type CmsPublicAsset } from "./cms-v2-assets.js";
 import { CMS_ROUTE_RESERVATION_LIMIT, parseCmsRoutePath, parseCmsRouteRevision, parseCmsRouteTable, planCmsRouteTable, type CmsRouteTable } from "./cms-v2-routes.js";
 import {
   cmsArray, cmsCollection, cmsId, cmsItemKey, cmsLegacyCollections, cmsLegacyValues, cmsReferenceProblems, cmsValueProblems,
@@ -24,6 +26,8 @@ export type CmsReleaseSnapshot = {
   readonly releaseId: string;
   readonly siteId: string;
   readonly locale: string;
+  /** Present for a translated CMS snapshot whose routes are prefixed by its locale. */
+  readonly sourceLocale?: string;
   /** Route registry used to validate this release. */
   readonly routeTableRevision: string;
   /** Complete route registry that will be published with this release. */
@@ -31,6 +35,7 @@ export type CmsReleaseSnapshot = {
   readonly schema: CmsSchema;
   readonly items: readonly CmsReleaseEntry[];
   readonly redirects: readonly CmsRedirect[];
+  readonly assetManifest: readonly CmsPublicAsset[];
 };
 
 function cmsRouteRevision(releaseId: string): string {
@@ -43,14 +48,35 @@ function cmsRouteRevision(releaseId: string): string {
   }
   return `route_${hash.toString(36)}`;
 }
+
+function validCmsRoutePath(candidate: string): string | null {
+  const separator = candidate.lastIndexOf("/");
+  if (separator < 0) return null;
+  const caseFoldedSlugPath = `${candidate.slice(0, separator + 1)}${candidate.slice(separator + 1).toLowerCase()}`;
+  if (validatePagePath(caseFoldedSlugPath) !== null) return null;
+  try {
+    return parseCmsRoutePath(candidate, "release.items.path");
+  } catch (error) {
+    if (error instanceof DocumentValidationError) return null;
+    throw error;
+  }
+}
+function cmsRouteReservationId(locale: string, collectionId: string): string {
+  let hash = 0x811c9dc5;
+  for (const character of collectionId) hash = Math.imul(hash ^ character.charCodeAt(0), 0x01000193) >>> 0;
+  return `cms_route_${locale}_${collectionId.slice(0, 36)}_${hash.toString(36)}`;
+}
 export type CmsReleaseImpact = (snapshot: CmsReleaseSnapshot) => readonly CmsProblem[];
 export type CmsReleaseContext = {
   readonly schema: CmsSchema;
   readonly locale: string;
+  readonly sourceLocale?: string;
   readonly currentReleaseId: string | null;
   readonly routeTable: CmsRouteTable;
   readonly readRevision: (item: CmsReleasePin) => unknown;
   readonly isRemoved: (item: CmsItemKey) => boolean;
+  /** The host verifies that these assets exist and can be published for this site. */
+  readonly publicAssets?: readonly CmsPublicAsset[];
   /** Host checks fixed routes, templates, external resources, and the designated public representation of rich text. */
   readonly impact?: CmsReleaseImpact;
   /** Hosts must sanitize and approve public references before returning HTML here. */
@@ -121,10 +147,6 @@ export function planCmsRelease(input: unknown, releaseIdInput: string, context: 
     const collection = cmsCollection(schema, item.collectionId), values: Record<string, CollectionValue> = { ...item.values };
     for (const field of collection.fields) {
       const value = values[field.fieldId];
-      // The public asset manifest resolves these stable references in later hosts.
-      if ((field.type === "image" && typeof value === "string") || (field.type === "gallery" && Array.isArray(value) && value.some((entry) => typeof entry === "object" && typeof entry.image === "string"))) {
-        problems.push({ ...target, fieldId: field.fieldId, code: "value", message: "公開素材を選び直してください。" });
-      }
       if (field.type === "richText" && typeof value === "string" && value !== "") {
         if (!context.publicRichText) {
           problems.push({ ...target, fieldId: field.fieldId, code: "value", message: "本文の公開変換が必要です。" });
@@ -137,10 +159,30 @@ export function planCmsRelease(input: unknown, releaseIdInput: string, context: 
     }
     const slug = collection.slugField === null ? null : values[collection.slugField];
     const candidate = collection.pathPrefix === null ? null : `${collection.pathPrefix}${String(slug ?? "")}`;
-    const path = candidate !== null && typeof slug === "string" && slug.length > 0 && validatePagePath(candidate) === null ? candidate : null;
+    const path = candidate !== null && typeof slug === "string" && slug.length > 0 ? validCmsRoutePath(candidate) : null;
     if (candidate !== null && path === null) problems.push({ ...target, code: "route", message: "公開 URL に使えるスラッグを入力してください。" });
     problems.push(...cmsValueProblems(collection, values).map((problem) => ({ ...problem, ...target })));
     items.push({ ...item, values, path });
+  }
+  const assetManifest = new Map<string, CmsPublicAsset>();
+  try {
+    const available = parseCmsPublicAssets(context.publicAssets);
+    const missingFields = new Set<string>();
+    for (const { reference, ...field } of cmsReleaseAssetUses(schema, items)) {
+      const key = reference === null ? null : assetKey(reference);
+      const asset = key === null ? undefined : available.get(key);
+      if (key !== null && asset !== undefined) {
+        assetManifest.set(key, asset);
+        continue;
+      }
+      const fieldKey = `${cmsItemKey(field)}/${field.fieldId}`;
+      if (missingFields.has(fieldKey)) continue;
+      missingFields.add(fieldKey);
+      problems.push({ ...field, code: "value", message: "公開できる素材を選び直してください。" });
+    }
+  } catch (error) {
+    if (!(error instanceof DocumentValidationError)) throw error;
+    return { status: "invalid", problems: [{ code: "value", message: "公開素材の配信情報を確認できません。" }] };
   }
   const routes = items.filter((item) => item.path !== null).map(({ collectionId, itemId, path }) => ({ collectionId, itemId, path: path! }));
   const routeByItemKey = new Map(routes.map((route) => [cmsItemKey(route), route]));
@@ -155,7 +197,8 @@ export function planCmsRelease(input: unknown, releaseIdInput: string, context: 
     return { status: "invalid", problems: [{ code: "route", message: "公開転送の件数が上限を超えています。" }] };
   }
   const retainedReservations = currentRoutes.reservations.filter((reservation) => reservation.kind !== "cms-item"
-    && !(reservation.kind === "redirect" && reservation.owner === "cms"));
+    && !(reservation.kind === "redirect" && reservation.owner === "cms")
+    && !(reservation.kind === "reserved" && reservation.reservationId.startsWith("cms_route_")));
   if (retainedReservations.length + routes.length + generatedRedirects.length + selection.redirects.length > CMS_ROUTE_RESERVATION_LIMIT) {
     return { status: "invalid", problems: [{ code: "route", message: "CMS ルート表の予約件数が上限を超えています。" }] };
   }
@@ -165,9 +208,15 @@ export function planCmsRelease(input: unknown, releaseIdInput: string, context: 
   if ("status" in routePlan) return { status: "conflict" };
   const redirects = routePlan.table.reservations.flatMap((reservation) => reservation.kind === "redirect" && reservation.owner === "cms"
     ? [{ from: reservation.path, to: reservation.targetPath }] : []);
+  const routeRoot = context.sourceLocale && context.sourceLocale !== selection.locale ? `/${selection.locale}/cms` : "/cms";
+  const listRoutes = schema.collections.flatMap(({ id, pathPrefix }) => pathPrefix === null ? [] : [{
+    kind: "reserved" as const, path: pathPrefix.slice(0, -1), reservationId: cmsRouteReservationId(selection.locale, id)
+  }]);
+  const cmsRoutes = [{ kind: "reserved" as const, path: routeRoot, reservationId: `cms_route_${selection.locale}_root` }, ...listRoutes];
+  const routeTable = parseCmsRouteTable({ ...routePlan.table, reservations: [...routePlan.table.reservations, ...cmsRoutes] }, schema.siteId, selection.locale);
   const snapshot = freezeJson<CmsReleaseSnapshot>({ contractVersion: 2, releaseId, siteId: schema.siteId,
-    locale: selection.locale, routeTableRevision: selection.routeTableRevision, routeTable: routePlan.table,
-    schema, items, redirects });
+    locale: selection.locale, ...(context.sourceLocale ? { sourceLocale: context.sourceLocale } : {}), routeTableRevision: selection.routeTableRevision, routeTable,
+    schema, items, redirects, assetManifest: [...assetManifest.values()] });
   problems.push(...cmsReferenceProblems(schema, items), ...routePlan.problems, ...(context.impact?.(snapshot) ?? []));
   return problems.length ? { status: "invalid", problems } : { status: "ready", proposal: freezeJson({ expectedReleaseId: selection.expectedReleaseId, snapshot }) };
 }

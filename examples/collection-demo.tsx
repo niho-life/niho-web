@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { CollectionWorkspace, type CollectionAdapter, type CollectionNavigationState } from "@niho/web/collection-workspace";
-import { LocalizationItemWorkspace } from "@niho/web/localization-workspace";
+import { CollectionWorkspace, type CollectionAdapter, type CollectionNavigationState } from "../dist/collection-workspace.js";
+import { LocalizationItemWorkspace } from "../dist/localization-workspace.js";
 import { createStudioRichText } from "../studio/rich-text-editor.js";
 import { studioRichTextCss } from "../studio/rich-text-style.js";
 import { adapter, bodyListeners, demo, nextVersion, originalBodies, redirectListeners, store } from "./collection-memory.js";

@@ -52,7 +52,7 @@ function MemberAvatars({ members }: { members: readonly AvatarMember[] }) {
   </span>;
 }
 
-/** 日常の入口。作成・参加者管理はホストの既存ProjectManagerへ接続する。 */
+/** 日常の入口。作成・参加者管理はホストが接続する。 */
 export function ProjectDirectory(props: ProjectDirectoryProps) {
   const [source, setSource] = useState({ adapter: props.adapter, generation: 0 });
   if (source.adapter !== props.adapter) { setSource({ adapter: props.adapter, generation: source.generation + 1 }); return null; }

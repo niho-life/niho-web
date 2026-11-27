@@ -2,9 +2,10 @@
 
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { parseSiteStyles, type SiteStyles } from "./site-styles.js";
+import { renameSiteStyle, type EditingSiteStyleKind, type EditingSiteStylesRename } from "./editing-site-styles.js";
 import { Dialog } from "./editor-dialog.js";
 import { pageChangeProblems, sameTarget, validatePageChangePlan, type EditorOperation } from "./editor-model.js";
-import type { EditorAdapter, EditorBlockRegistry, EditorPage, EditorPageChange, EditorPageChangePlan, EditorPageChangeResult, EditorSite, EditorTarget } from "./editor-types.js";
+import type { EditorAdapter, EditorBlockRegistry, EditorPage, EditorPageChange, EditorPageChangePlan, EditorPageChangeResult, EditorReleaseWarning, EditorSite, EditorTarget } from "./editor-types.js";
 import { resolvedAsset, type LibraryAsset, type ResolvedAssetMap } from "./assets.js";
 import { coverAlt, socialImageProblem } from "./editor-assets.js";
 import { buildPageTree, findPathConflict, pageUrl, parseSiteSettings, resolvePageMetadata, validatePagePath, type PageMetadata, type PageTreeNode, type PageVisibility, type SiteSettings } from "./pages.js";
@@ -96,7 +97,7 @@ function PageMenu({ page, open, setOpen, disabled, start, actions, pathEditable 
 }
 
 /** 左レールのページ一覧。検索、パスごとのフォルダ、公開状態の点、行ごとの操作を表示する。行はページ名とパスの 1 行にし、言語ごとの翻訳状態は出さない（翻訳画面で見る）。 */
-export function PagePanel({ pages, current, disabled, operations, actions, pathEditable = true, operationsDisabled, unsaved, select, preload, start, releaseSet, releaseSetDisabled = false, children }: {
+export function PagePanel({ pages, current, disabled, operations, actions, pathEditable = true, operationsDisabled, unsaved, select, start, releaseSet, releaseSetDisabled = false, children }: {
   pages: readonly EditorPage[]; current: EditorTarget | undefined; disabled: boolean;
   /** 見出しの下に置くホスト側の部品（サイトの選択など）。 */
   children?: ReactNode;
@@ -105,7 +106,7 @@ export function PagePanel({ pages, current, disabled, operations, actions, pathE
   /** 複数ページ公開を実装したホストだけ指定する。 */
   releaseSet?: (pages: readonly EditorPage[]) => void;
   releaseSetDisabled?: boolean;
-  select: (page: EditorPage) => void; preload?: (page: EditorPage) => void; start: (start: PageChangeStart) => void;
+  select: (page: EditorPage) => void; start: (start: PageChangeStart) => void;
 }) {
   const [searching, setSearching] = useState(false), [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState<readonly string[]>([]), [menu, setMenu] = useState("");
@@ -146,7 +147,7 @@ export function PagePanel({ pages, current, disabled, operations, actions, pathE
       {releaseSet && kind !== "shared" && <label className="e-page-release-select" title="公開変更セットの対象にする"><input type="checkbox" aria-label={`「${page.title}」を一括公開の対象にする`} checked={releaseSelection.includes(key)} disabled={disabled || releaseSetDisabled || !releaseSelection.includes(key) && releaseSelection.length >= 50}
         onChange={(event) => setReleaseSelection((previous) => event.target.checked ? [...previous, key] : previous.filter((entry) => entry !== key))} /></label>}
       <button type="button" className="e-page" aria-current={current && sameTarget(page, current) ? "page" : undefined} style={{ paddingLeft: 8 + node.depth * 14 }}
-        disabled={disabled} title={[page.title, secondary, status.text].filter(Boolean).join(" · ")} onPointerEnter={() => preload?.(page)} onFocus={() => preload?.(page)} onClick={() => select(page)}>
+        disabled={disabled} title={[page.title, secondary, status.text].filter(Boolean).join(" · ")} onClick={() => select(page)}>
         <Icon name={kind === "template" ? "template" : page.path === "/" ? "home" : "page"} />
         {/* STUDIO と同じく、ページ名とパスを 1 行に並べる。状態は札ではなく右端の点で示し（緑＝公開中・灰＝未公開・輪郭＝非公開）、文言はツールチップと読み上げに回す。 */}
         <span className="e-page-label"><span className="e-page-name">{page.title}</span>{secondary && <span className="e-page-path">{secondary}</span>}</span>
@@ -193,17 +194,20 @@ function initialValues(start: PageChangeStart, pages: readonly EditorPage[], sit
 }
 
 /** ページ操作の二段階確認。影響を確認し、明示の同意後だけ反映する。 */
-export function PageChangeDialog({ start, site, pages, locale, prepare, apply, applied, conflicted, reload, close, pathEditable = true }: {
+export function PageChangeDialog({ start, site, pages, locale, prepare, apply, direct, directVersion, applied, conflicted, reload, close, pathEditable = true }: {
   pathEditable?: boolean;
   start: PageChangeStart; site: EditorSite; pages: readonly EditorPage[];
   /** 新しいページの locale。 */
   locale: string;
-  prepare: (change: EditorPageChange, signal: AbortSignal) => Promise<EditorPageChangePlan>;
-  apply: (plan: EditorPageChangePlan, signal: AbortSignal) => Promise<EditorPageChangeResult>;
-  applied: (page: EditorPage, change: EditorPageChange) => void; conflicted: () => void; reload: () => void; close: () => void;
+  prepare?: (change: EditorPageChange, signal: AbortSignal) => Promise<EditorPageChangePlan>;
+  apply?: (plan: EditorPageChangePlan, signal: AbortSignal) => Promise<EditorPageChangeResult>;
+  direct?: NonNullable<EditorAdapter["changePageNow"]>;
+  directVersion?: string;
+  applied: (page: EditorPage, change: EditorPageChange) => void; conflicted: () => Promise<boolean>; reload: () => void; close: () => void;
 }) {
   const canEditPath = pathEditable && !(start.action === "update" && start.page.path === "/");
   const [initial] = useState(() => initialValues(start, pages, site, locale));
+  const version = useRef(directVersion);
   const [title, setTitle] = useState(initial.title), [path, setPath] = useState(initial.path), [touched, setTouched] = useState<readonly string[]>([]);
   const [plan, setPlan] = useState<EditorPageChangePlan | null>(null), [confirmed, setConfirmed] = useState(false);
   const [busy, setBusy] = useState(""), [message, setMessage] = useState(""), [unknown, setUnknown] = useState(false);
@@ -218,36 +222,56 @@ export function PageChangeDialog({ start, site, pages, locale, prepare, apply, a
   const titleProblem = problemFor("title", title), pathProblem = problemFor("path", path), changeProblem = problems.find((problem) => problem.field === "change")?.message;
   const begin = () => { controller.current?.abort(); const next = new AbortController(); controller.current = next; return next; };
   async function review() {
-    if (problems.length || busy) return;
-    const current = begin(), requested = structuredClone(change); setBusy("影響を確認中…"); setMessage("");
+    if (problems.length || busy || unknown) return;
+    const current = begin(), requested = structuredClone(change); setBusy(direct ? "反映中…" : "影響を確認中…"); setMessage("");
+    if (direct) {
+      try {
+        const result = await direct(requested, current.signal, version.current);
+        if (current.signal.aborted) return;
+        if (result.status === "conflict") {
+          version.current = undefined;
+          await conflict();
+        } else applied(result.page, requested);
+      } catch {
+        if (!current.signal.aborted) {
+          setUnknown(true);
+          setMessage("反映されたか確認できません。ページ一覧を再読込して状態を確認してください。");
+        }
+      } finally { if (!current.signal.aborted) setBusy(""); }
+      return;
+    }
     try {
-      const result = await prepare(requested, current.signal);
+      const result = await prepare!(requested, current.signal);
       if (current.signal.aborted) return;
       setPlan(validatePageChangePlan(structuredClone(result), requested, site)); setConfirmed(false);
     } catch (error) {
       if (current.signal.aborted) return;
-      if (isConflict(error)) conflict();
+      if (isConflict(error)) await conflict();
       else setMessage("影響を確認できませんでした。権限と入力を確認して再試行してください。");
     }
     finally { if (!current.signal.aborted) setBusy(""); }
   }
-  function conflict() {
-    setPlan(null); setConfirmed(false); conflicted();
-    setMessage("ほかの変更と競合しました（409）。ページ一覧を再読込しました。内容を確認してやり直してください。");
+  async function conflict() {
+    setPlan(null); setConfirmed(false);
+    const refreshed = await conflicted();
+    setMessage(refreshed
+      ? "ほかの変更と競合しました（409）。ページ一覧を再読込しました。入力内容を確認してやり直してください。"
+      : "ほかの変更と競合しました（409）。入力内容は保持しています。ページ一覧を再読込してください。");
+    if (direct && !refreshed) setUnknown(true);
   }
   async function confirm() {
     if (!plan || !confirmed || busy || unknown) return;
     const current = begin(); setBusy("反映中…"); setMessage("");
     try {
-      const result = await apply(plan, current.signal);
+      const result = await apply!(plan, current.signal);
       if (current.signal.aborted) return;
-      if (result.status === "conflict") { conflict(); return; }
+      if (result.status === "conflict") { await conflict(); return; }
       const page = result.status === "applied" ? result.page : undefined;
       if (!page || page.siteId !== site.id || typeof page.pageId !== "string" || typeof page.locale !== "string" || typeof page.title !== "string") throw new Error("invalid result");
       applied(page, plan.change);
     } catch (error) {
       if (current.signal.aborted) return;
-      if (isConflict(error)) conflict();
+      if (isConflict(error)) await conflict();
       else { setUnknown(true); setMessage("反映されたか確認できません。ページ一覧を再読込して状態を確認してください。"); }
     } finally { if (!current.signal.aborted) setBusy(""); }
   }
@@ -259,7 +283,7 @@ export function PageChangeDialog({ start, site, pages, locale, prepare, apply, a
       <h2>{dialogTitle(start, canEditPath)}</h2>
       {start.action !== "create" && <p className="e-help">{start.page.title}{start.page.path ? ` · ${start.page.path}` : ""}</p>}
       {start.action === "update" && !canEditPath && <p className="e-help">{start.page.path === "/" && pathEditable ? "ホームのURLは固定です。ページ名だけ変更できます。" : "URL変更はまだ利用できません。ページ名だけを変更できます。"}</p>}
-      {start.action === "visibility" ? <p>{makePrivate ? "公開中のURLは表示されなくなり、検索エンジンと sitemap からも外れます。次の画面でリンク元とナビゲーションへの影響を確認できます。" : "公開サイトにこのページを表示できる状態にします。表示する内容は、公開済みの版です。"}</p> : <>
+      {start.action === "visibility" ? <p>{makePrivate ? "公開中のURLは表示されなくなり、検索エンジンと sitemap からも外れます。" + (direct ? "" : "次の画面でリンク元とナビゲーションへの影響を確認できます。") : "公開サイトにこのページを表示できる状態にします。表示する内容は、公開済みの版です。"}</p> : <>
         <label className="e-field" htmlFor={`${id}-title`}><span>ページ名</span>
           <input id={`${id}-title`} value={title} autoFocus disabled={!!busy} aria-invalid={!!titleProblem} aria-describedby={titleProblem ? `${id}-title-problem` : undefined}
             onChange={(event) => setTitle(event.target.value)} onBlur={() => touch("title")} />
@@ -273,9 +297,13 @@ export function PageChangeDialog({ start, site, pages, locale, prepare, apply, a
           <small id={`${id}-path-help`} className="e-help">{start.action === "update" && !canEditPath ? start.page.path === "/" && pathEditable ? "ホームのURLは変更できません。" : "このホストではURLは表示のみです。" : "半角英小文字・数字と - _ を / で区切ります。例: /about/team"}</small>
         </label>
       </>}
+      {direct && start.action === "update" && canEditPath && path !== start.page.path && <p className="e-help">変更後の URL は、次にページを公開したときに使われます。</p>}
       {changeProblem && <p className="e-help">{changeProblem}</p>}
       {status}
-      <div className="e-actions"><button type="button" disabled={!!busy} onClick={close}>キャンセル</button><button type="button" className="e-primary" disabled={problems.length > 0 || !!busy} onClick={() => void review()}>影響を確認</button></div>
+      <div className="e-actions"><button type="button" disabled={!!busy} onClick={close}>キャンセル</button>{unknown && direct ? <button type="button" className="e-primary" disabled={!!busy} onClick={() => {
+        setBusy("読込中…");
+        void conflicted().then((refreshed) => { if (refreshed) { version.current = undefined; setUnknown(false); setMessage(""); } }).finally(() => setBusy(""));
+      }}>ページ一覧を再読込</button> : <button type="button" className={direct && makePrivate ? "e-danger-primary" : "e-primary"} disabled={problems.length > 0 || !!busy} onClick={() => void review()}>{direct ? makePrivate ? "非公開にする" : start.action === "create" ? "ページを作成" : "変更を反映" : "影響を確認"}</button>}</div>
     </>;
   } else {
     const { impact } = plan, list = (items: readonly string[], empty: string) => items.length ? <ul>{items.map((item, index) => <li key={index}>{item}</li>)}</ul> : <p className="e-help">{empty}</p>;
@@ -318,36 +346,44 @@ const settingsFrom = (form: SiteForm) => {
 };
 export type SiteSettingsState = {
   /** readSiteSettings / saveSiteSettings をホストが実装しているか。 */
-  supported: boolean; editable: boolean;
+  supported: boolean; editable: boolean; metadataEditable: boolean;
   status: "idle" | "loading" | "error" | "ready";
   /** 保存済みの設定。 */
   settings: SiteSettings | undefined;
   /** site.styles の draft snapshot を識別する opaque version。 */
   version: string | undefined;
+  publishedVersion: string | undefined; publishedStyles: SiteStyles | undefined;
   styleSaveEpoch: number; styles: SiteStyles; stylesDirty: boolean; latest: SiteSettings | undefined;
   editStyles: (styles: SiteStyles) => string | undefined;
+  renameStyle: (kind: EditingSiteStyleKind, from: string, to: string) => string | undefined;
   form: SiteForm; dirty: boolean; problem: string | undefined; canSave: boolean; busy: boolean;
   message: { text: string; alert: boolean } | null; conflict: boolean;
-  edit: (patch: Partial<SiteForm>) => void; reset: () => void; reload: () => void; save: () => Promise<void>;
+  canPublishStyles: boolean; publishStyles: () => Promise<void>;
+  edit: (patch: Partial<SiteForm>) => void; reset: () => void; reload: () => void;
+  acceptSnapshot: (snapshot: { settings: SiteSettings; version: string; publishedVersion?: string; publishedStyles?: SiteStyles }) => void; save: () => Promise<void>;
 };
 /** サイト設定は文書と別に、opaque な version の楽観ロックで保存する。 */
 export function useSiteSettings(adapter: EditorAdapter, siteId: string, blocks: EditorBlockRegistry, components?: ComponentLibrary): SiteSettingsState {
   void blocks; void components;
-  const [loaded, setLoaded] = useState<{ siteId: string; settings: SiteSettings; version: string } | null>(null);
+  const [loaded, setLoaded] = useState<{ siteId: string; settings: SiteSettings; version: string; publishedVersion?: string; publishedStyles?: SiteStyles } | null>(null);
   const [status, setStatus] = useState<SiteSettingsState["status"]>("idle"), [form, setForm] = useState(emptyForm), [epoch, setEpoch] = useState(0);
   const [styleSaveEpoch, setStyleSaveEpoch] = useState(0);
   const [styles, setStyles] = useState<SiteStyles>({}), [latest, setLatest] = useState<SiteSettings>();
+  const [styleRenames, setStyleRenames] = useState<EditingSiteStylesRename[]>([]);
   const [busy, setBusy] = useState(false), [message, setMessage] = useState<SiteSettingsState["message"]>(null), [conflict, setConflict] = useState(false);
   const saving = useRef<AbortController | null>(null);
   useEffect(() => {
-    saving.current?.abort(); saving.current = null; setLoaded(null); setForm(emptyForm); setStyles({}); setLatest(undefined); setMessage(null); setConflict(false); setBusy(false);
+    saving.current?.abort(); saving.current = null; setLoaded(null); setForm(emptyForm); setStyles({}); setStyleRenames([]); setLatest(undefined); setMessage(null); setConflict(false); setBusy(false);
     if (!siteId || !adapter.readSiteSettings) { setStatus("idle"); return; }
     const controller = new AbortController(); setStatus("loading");
     adapter.readSiteSettings(siteId, controller.signal).then((snapshot) => {
       if (controller.signal.aborted) return;
       if (!snapshot || typeof snapshot.version !== "string" || !snapshot.version) throw new Error("version is required");
       const settings = parseSiteSettings(snapshot.settings);
-      setLoaded({ siteId, settings, version: snapshot.version }); setForm(formFrom(settings)); setStyles(parseSiteStyles(settings)); setStatus("ready");
+      setLoaded({ siteId, settings, version: snapshot.version,
+        ...(snapshot.publishedVersion === undefined ? {} : { publishedVersion: snapshot.publishedVersion }),
+        ...(snapshot.publishedStyles === undefined ? {} : { publishedStyles: parseSiteStyles(snapshot.publishedStyles) }) });
+      setForm(formFrom(settings)); setStyles(parseSiteStyles(settings)); setStatus("ready");
     }).catch(() => { if (!controller.signal.aborted) setStatus("error"); });
     return () => controller.abort();
   }, [adapter, siteId, epoch]);
@@ -357,6 +393,7 @@ export function useSiteSettings(adapter: EditorAdapter, siteId: string, blocks: 
   let parsed: SiteSettings | undefined, problem: string | undefined;
   if (dirty) try { parsed = parseSiteSettings({ ...settingsFrom(form), ...styles }); } catch (error) { problem = publicInfoMessage(error) ?? "サイト設定の値を確認してください。"; }
   const editable = typeof adapter.saveSiteSettings === "function";
+  const metadataEditable = adapter.siteSettingsMetadataEditable !== false;
   async function save() {
     if (!loaded || !parsed || !adapter.saveSiteSettings || saving.current) return;
     const controller = new AbortController(), settings = parsed; saving.current = controller; setBusy(true); setMessage(null); setConflict(false);
@@ -366,33 +403,80 @@ export function useSiteSettings(adapter: EditorAdapter, siteId: string, blocks: 
     };
     try {
       if (stylesDirty) {
-        const before = parseSiteStyles(loaded.settings), after = parseSiteStyles(settings);
-        const removed = Object.keys(before.tokens ?? {}).some((name) => !Object.hasOwn(after.tokens ?? {}, name)) || Object.keys(before.textStyles ?? {}).some((name) => !Object.hasOwn(after.textStyles ?? {}, name));
-        if (removed) throw new Error("site style migration is required");
-      }
-      if (stylesDirty) {
         const current = await adapter.readSiteSettings!(loaded.siteId, controller.signal);
         if (controller.signal.aborted) return;
         const currentSettings = parseSiteSettings(current.settings);
         if (current.version !== loaded.version || JSON.stringify(currentSettings) !== JSON.stringify(loaded.settings)) { setLatest(currentSettings); failed({ status: 409 }); return; }
       }
-      const result = await adapter.saveSiteSettings({ siteId: loaded.siteId, settings: structuredClone(settings), expectedVersion: loaded.version, ...(stylesDirty ? { previousStyles: parseSiteStyles(loaded.settings) } : {}) }, controller.signal);
+      const result = await adapter.saveSiteSettings({ siteId: loaded.siteId, settings: structuredClone(settings), expectedVersion: loaded.version,
+        ...(stylesDirty ? { previousStyles: parseSiteStyles(loaded.settings) } : {}), ...(styleRenames.length ? { styleRenames: structuredClone(styleRenames) } : {}) }, controller.signal);
       if (controller.signal.aborted) return;
       if (result.status === "conflict") { try { const conflictSnapshot = await adapter.readSiteSettings!(loaded.siteId, controller.signal); if (!controller.signal.aborted) setLatest(parseSiteSettings(conflictSnapshot.settings)); } catch { /* 比較の取得に失敗しても入力を保持する。 */ } failed({ status: 409 }); return; }
+      if (result.status === "referenced") {
+        const places = result.usages.map((usage) => `${usage.id}${usage.locale ? ` (${usage.locale})` : ""}${usage.path ? `: ${usage.path}` : ""}`);
+        setMessage({ text: `使用中の共通値は削除できません: ${places.join("、")}`, alert: true }); return;
+      }
       if (result.status !== "saved" || typeof result.version !== "string" || !result.version || result.version === loaded.version) throw new Error("version must advance");
-      setLoaded({ siteId: loaded.siteId, settings, version: result.version }); setForm(formFrom(settings)); setStyles(parseSiteStyles(settings)); if (stylesDirty) setStyleSaveEpoch((value) => value + 1); setLatest(undefined); setMessage({ text: "サイト設定を保存しました。", alert: false });
+      const savedStyles = result.styles ? parseSiteStyles(result.styles) : parseSiteStyles(settings);
+      const savedSettings = parseSiteSettings({ ...settings, ...savedStyles });
+      setLoaded({ ...loaded, settings: savedSettings, version: result.version }); setForm(formFrom(savedSettings)); setStyles(savedStyles); setStyleRenames([]);
+      if (stylesDirty) setStyleSaveEpoch((value) => value + 1); setLatest(undefined); setMessage({ text: "サイト設定を保存しました。", alert: false });
     } catch (error) { if (!controller.signal.aborted) failed(error); }
     finally { if (saving.current === controller) { saving.current = null; setBusy(false); } }
   }
+  async function publishStyles() {
+    if (!loaded || !adapter.publishSiteStyles || !loaded.publishedVersion || !loaded.publishedStyles || dirty || saving.current) return;
+    const controller = new AbortController(); saving.current = controller; setBusy(true); setMessage(null); setConflict(false);
+    try {
+      const result = await adapter.publishSiteStyles({ siteId: loaded.siteId, expectedDraftVersion: loaded.version,
+        expectedPublishedVersion: loaded.publishedVersion }, controller.signal);
+      if (controller.signal.aborted) return;
+      if (result.status === "conflict") { setConflict(true); setMessage({ text: "共通スタイルの公開状態が競合しました。最新状態を読み込んでください。", alert: true }); return; }
+      if (result.status !== "published" || !result.version || result.version === loaded.publishedVersion) throw new Error("published version must advance");
+      const publishedStyles = parseSiteStyles(result.styles);
+      setLoaded({ ...loaded, publishedVersion: result.version, publishedStyles });
+      setMessage({ text: "サイト共通スタイルを公開しました。公開中の全ページに反映されます。", alert: false });
+    } catch { if (!controller.signal.aborted) setMessage({ text: "サイト共通スタイルを公開できませんでした。保存状態を確認してください。", alert: true }); }
+    finally { if (saving.current === controller) { saving.current = null; setBusy(false); } }
+  }
+  function renameStyle(kind: EditingSiteStyleKind, from: string, to: string): string | undefined {
+    if (!loaded || !editable || status !== "ready" || busy) return "サイト設定を読み込んでから編集してください。";
+    try {
+      const original = parseSiteStyles(loaded.settings), definitions = kind === "token" ? original.tokens ?? {} : original.textStyles ?? {};
+      if (Object.hasOwn(definitions, to)) throw new TypeError("rename target existed in the saved styles");
+      const next = renameSiteStyle(styles, kind, from, to);
+      const pending = [...styleRenames], priorIndex = pending.findIndex((item) => item.styleKind === kind && item.to === from);
+      if (priorIndex >= 0) {
+        const prior = pending[priorIndex]!; pending.splice(priorIndex, 1);
+        if (Object.hasOwn(definitions, prior.from)) pending.push({ type: "rename", styleKind: kind, from: prior.from, to });
+      } else if (Object.hasOwn(definitions, from)) pending.push({ type: "rename", styleKind: kind, from, to });
+      setStyleRenames(pending); setStyles(next); setMessage(null); return undefined;
+    } catch { return "新しい識別名が既存の共通スタイルと重ならないか確認してください。"; }
+  }
+  const publishedVersion = loaded?.siteId === siteId ? loaded.publishedVersion : undefined;
+  const publishedStyles = loaded?.siteId === siteId ? loaded.publishedStyles : undefined;
+  const canPublishStyles = typeof adapter.publishSiteStyles === "function" && !!loaded && !!publishedVersion && !!publishedStyles
+    && !dirty && !busy && JSON.stringify(styles) !== JSON.stringify(publishedStyles);
   return {
-    supported: typeof adapter.readSiteSettings === "function", editable, status, settings: loaded?.siteId === siteId ? loaded.settings : undefined,
-    version: loaded?.siteId === siteId ? loaded.version : undefined, form, dirty, problem, styles, stylesDirty, latest, styleSaveEpoch,
+    supported: typeof adapter.readSiteSettings === "function", editable, metadataEditable, status, settings: loaded?.siteId === siteId ? loaded.settings : undefined,
+    version: loaded?.siteId === siteId ? loaded.version : undefined, publishedVersion, publishedStyles, form, dirty, problem, styles, stylesDirty, latest, styleSaveEpoch,
     editStyles: (next) => { if (!editable || status !== "ready" || busy) return "サイト設定を読み込んでから編集してください。"; try { setStyles(parseSiteStyles(next)); setMessage(null); return undefined; } catch { return "共通スタイルの参照・種類・値を確認してください。"; } },
+    renameStyle, canPublishStyles,
     canSave: editable && dirty && !!parsed && !busy, busy, message, conflict,
     edit: (patch) => { setForm((previous) => ({ ...previous, ...patch })); setMessage(null); },
-    reset: () => { if (loaded) { setForm(formFrom(loaded.settings)); setStyles(parseSiteStyles(loaded.settings)); } setMessage(null); setConflict(false); },
+    reset: () => { if (loaded) { setForm(formFrom(loaded.settings)); setStyles(parseSiteStyles(loaded.settings)); } setStyleRenames([]); setMessage(null); setConflict(false); },
     reload: () => setEpoch((value) => value + 1),
-    save
+    acceptSnapshot: (snapshot) => {
+      if (dirty || typeof snapshot.version !== "string" || !snapshot.version) return;
+      const settings = parseSiteSettings(snapshot.settings);
+      const sameSite = loaded?.siteId === siteId;
+      setLoaded({ siteId, settings, version: snapshot.version,
+        ...(snapshot.publishedVersion === undefined ? sameSite && loaded.publishedVersion !== undefined ? { publishedVersion: loaded.publishedVersion } : {} : { publishedVersion: snapshot.publishedVersion }),
+        ...(snapshot.publishedStyles === undefined ? sameSite && loaded.publishedStyles !== undefined ? { publishedStyles: loaded.publishedStyles } : {} : { publishedStyles: parseSiteStyles(snapshot.publishedStyles) }) });
+      setForm(formFrom(settings)); setStyles(parseSiteStyles(settings)); setStyleRenames([]);
+      setStatus("ready"); setLatest(undefined); setMessage(null); setConflict(false);
+    },
+    save, publishStyles
   };
 }
 
@@ -442,7 +526,7 @@ function TextInput({ label, value, change, disabled, multiline = false, placehol
 }
 /** 右レール「サイト」タブの内容。サイト設定は文書と別に保存する。 */
 export function SiteSettingsPanel({ site, state, cover }: { site: EditorSite | undefined; state: SiteSettingsState; cover?: CoverPicker | undefined }) {
-  const { form, status } = state, locked = !state.editable || state.busy, image = formImage(form);
+  const { form, status } = state, locked = !state.editable || state.busy, metadataLocked = locked || !state.metadataEditable, image = formImage(form);
   return <div className="e-site-settings">
     <section className="e-section"><h3>公開ドメイン</h3>{site && <p className="e-help">{site.name}</p>}
       {site?.domains.length ? <ul className="e-domains">{site.domains.map((domain) => <li key={domain}>{domain}</li>)}</ul> : <p className="e-help">公開ドメインはありません。</p>}
@@ -452,15 +536,16 @@ export function SiteSettingsPanel({ site, state, cover }: { site: EditorSite | u
         : status === "error" ? <><p className="e-help e-problem" role="alert">サイト設定を読み込めませんでした。</p><button type="button" className="e-small" onClick={state.reload}>再試行</button></>
         : status !== "ready" ? <p className="e-help" role="status">サイト設定を読み込み中…</p>
         : <>
-          <TextInput label="サイトタイトル" value={form.title} disabled={locked} change={(title) => state.edit({ title })} />
-          <TextInput label="説明文" value={form.description} disabled={locked} multiline change={(description) => state.edit({ description: description.replace(/[\r\n]+/g, " ") })} />
+          {!state.metadataEditable && <p className="e-help">サイト公開メタデータはホスト側で管理しています。ここではスタイルだけ保存できます。</p>}
+          <TextInput label="サイトタイトル" value={form.title} disabled={metadataLocked} change={(title) => state.edit({ title })} />
+          <TextInput label="説明文" value={form.description} disabled={metadataLocked} multiline change={(description) => state.edit({ description: description.replace(/[\r\n]+/g, " ") })} />
           <h4>ソーシャルカバー</h4>
-          <SocialCoverField image={image} src={coverSource(image, cover?.assets, site?.domains[0])} cover={cover} disabled={locked} empty="画像は未設定です" clear={() => state.edit({ imageSrc: "", imageAsset: null, imageAlt: "" })}
-            url={<TextInput label="画像 URL" value={form.imageSrc} disabled={locked} placeholder="https://… または /images/cover.jpg" change={(imageSrc) => state.edit(imageSrc ? { imageSrc, imageAsset: null } : { imageSrc })} />}
-            alt={<TextInput label="画像の説明" value={form.imageAlt} disabled={locked || !image} change={(imageAlt) => state.edit({ imageAlt })} />} />
-          <TextInput label="ファビコン URL" value={form.favicon} disabled={locked} change={(favicon) => state.edit({ favicon })} />
-          <TextInput label="言語" value={form.locale} disabled={locked} placeholder="ja / ja-JP" change={(locale) => state.edit({ locale })} />
-          <label className="e-check"><input type="checkbox" checked={form.noindex} disabled={locked} onChange={(event) => state.edit({ noindex: event.target.checked })} />サイト全体を検索エンジンに表示しない</label>
+          <SocialCoverField image={image} src={coverSource(image, cover?.assets, site?.domains[0])} cover={cover} disabled={metadataLocked} empty="画像は未設定です" clear={() => state.edit({ imageSrc: "", imageAsset: null, imageAlt: "" })}
+            url={<TextInput label="画像 URL" value={form.imageSrc} disabled={metadataLocked} placeholder="https://… または /images/cover.jpg" change={(imageSrc) => state.edit(imageSrc ? { imageSrc, imageAsset: null } : { imageSrc })} />}
+            alt={<TextInput label="画像の説明" value={form.imageAlt} disabled={metadataLocked || !image} change={(imageAlt) => state.edit({ imageAlt })} />} />
+          <TextInput label="ファビコン URL" value={form.favicon} disabled={metadataLocked} change={(favicon) => state.edit({ favicon })} />
+          <TextInput label="言語" value={form.locale} disabled={metadataLocked} placeholder="ja / ja-JP" change={(locale) => state.edit({ locale })} />
+          <label className="e-check"><input type="checkbox" checked={form.noindex} disabled={metadataLocked} onChange={(event) => state.edit({ noindex: event.target.checked })} />サイト全体を検索エンジンに表示しない</label>
           {state.problem && <p className="e-help e-problem" role="alert">{state.problem}</p>}
           {state.message && <p className={state.message.alert ? "e-help e-problem" : "e-help"} role={state.message.alert ? "alert" : "status"}>{state.message.text}</p>}
           {state.latest && <details><summary>競合した保存内容と入力を比較</summary><p>最新の保存内容</p><pre>{JSON.stringify(state.latest, null, 2)}</pre><p>あなたの入力</p><pre>{JSON.stringify({ ...settingsFrom(form), ...state.styles }, null, 2)}</pre></details>}
@@ -524,7 +609,7 @@ export function PageSettings({ document, page, site, settings, field, apply, rep
 }
 
 /** 公開確認に添える公開URLと、検索結果に出る情報。rollback は戻す版の内容が手元に無いため URL だけを出す。url は検証済み plan の値を優先する。 */
-export function ReleaseSearchSummary({ document, page, domain, settings, rollback, url }: { document: PageDocument | undefined; page: EditorPage | undefined; domain: string; settings: SiteSettings | undefined; rollback: boolean; url?: string | undefined }) {
+export function ReleaseSearchSummary({ document, page, domain, settings, rollback, url, warnings = [] }: { document: PageDocument | undefined; page: EditorPage | undefined; domain: string; settings: SiteSettings | undefined; rollback: boolean; url?: string | undefined; warnings?: readonly EditorReleaseWarning[] }) {
   if (!document) return null;
   const path = publicPath(page), metadata = rollback ? undefined : metadataFor(document, page, domain, settings), shown = url ?? (path ? pageUrl(domain, path) : undefined);
   return <>
@@ -534,5 +619,6 @@ export function ReleaseSearchSummary({ document, page, domain, settings, rollbac
       <div><dt>説明文</dt><dd>{metadata.description ?? "（なし）"}</dd></div>
       <div><dt>検索エンジン</dt><dd>{metadata.robots === "index, follow" ? "表示する" : "表示しない（noindex）"}</dd></div>
     </dl></div>}
+    {warnings.length > 0 && <div className="e-release-seo" role="note"><p>公開後に確認する項目</p><ul>{warnings.map(({ code, message }, index) => <li key={`${code}-${index}`}>{message}</li>)}</ul></div>}
   </>;
 }

@@ -4,6 +4,7 @@ import { PageEditor, type EditorPerformanceOperation, type PageEditorProps } fro
 const labels = {
   "initial-load": "最初のページが操作可能になるまで",
   "page-switch": "ページ切替",
+  "edit-render": "編集後の再描画",
   save: "下書き保存"
 } satisfies Record<EditorPerformanceOperation, string>;
 const operations = Object.keys(labels) as EditorPerformanceOperation[];

@@ -1,10 +1,17 @@
-import { revalidateCmsRelease, type CmsProblem, type CmsReleaseContext, type CmsReleasePin, type CmsReleaseSnapshot } from "../src/cms-v2.js";
+import { assetKey } from "../src/assets.js";
+import { galleryEntries, type CollectionImageValue } from "../src/collection-model.js";
+import { revalidateCmsRelease, type CmsProblem, type CmsPublicAsset, type CmsReleaseContext, type CmsReleasePin, type CmsReleaseSnapshot } from "../src/cms-v2.js";
 import { cmsItemKey } from "../src/cms-v2-schema.js";
 import type { ManagedD1 } from "./managed-sites.js";
 import { escapeHtml } from "./managed-cms-model.js";
+import { emptyManagedPublicPolicy, parseManagedPublicPolicy } from "./managed-embed-contract.js";
+import { managedVerificationTags } from "../src/managed-seo-settings.js";
+import { managedPublicHead, publicResourceSource } from "./managed-public-policy.js";
+import { revalidatePublicResponse, withPublicEtag } from "./managed-public-http.js";
 import {
-  CmsStore, cmsPathReserved, nowSeconds, opaque, type Site, type Job, type JobPayload
+  CmsStore, MAX_ITEMS, cmsPathReserved, digest, nowSeconds, opaque, type Site, type Job, type JobPayload
 } from "./managed-cms-store.js";
+import type { ManagedPublicHtmlCache } from "./managed-sites.js";
 
 export { escapeHtml };
 
@@ -17,20 +24,14 @@ export function releaseImpacts(snapshot: CmsReleaseSnapshot, fixedRoutes: Set<st
     const path = collectionPath(pathPrefix);
     return path === null ? [] : [path];
   });
-  const paths = ["/cms", ...listPaths, ...snapshot.items.flatMap(({ path }) => path ? [path] : []), ...snapshot.redirects.map(({ from }) => from)];
-  const routeProblems = paths.filter((path, i) => !cmsPathReserved(path) || fixedRoutes.has(path) || paths.indexOf(path) !== i)
+  const root = snapshot.sourceLocale && snapshot.sourceLocale !== snapshot.locale ? `/${snapshot.locale}/cms` : "/cms";
+  const localized = snapshot.sourceLocale !== undefined && snapshot.sourceLocale !== snapshot.locale;
+  const allowedCmsPath = localized
+    ? (path: string) => path === root || path.startsWith(`${root}/`)
+    : cmsPathReserved;
+  const paths = [root, ...listPaths, ...snapshot.items.flatMap(({ path }) => path ? [path] : []), ...snapshot.redirects.map(({ from }) => from)];
+  return paths.filter((path, i) => !allowedCmsPath(path) || fixedRoutes.has(path) || paths.indexOf(path) !== i)
     .map((path): CmsProblem => ({ code: "route", path, message: "CMS の一覧・詳細・転送パスが固定ページまたは別の CMS パスと重複しています。" }));
-  for (const item of snapshot.items) {
-    const collection = snapshot.schema.collections.find(({ id }) => id === item.collectionId)!;
-    for (const field of collection.fields) {
-      const value = item.values[field.fieldId];
-      if ((field.type === "image" && value !== null) || (field.type === "gallery" && Array.isArray(value) && value.length)) {
-        routeProblems.push({ code: "value", collectionId: item.collectionId, itemId: item.itemId, fieldId: field.fieldId,
-          message: "このサイトの CMS で公開できる素材はまだ設定されていません。" });
-      }
-    }
-  }
-  return routeProblems;
 }
 
 export async function releaseContext(store: CmsStore, site: Site, pins: readonly CmsReleasePin[]): Promise<CmsReleaseContext> {
@@ -38,12 +39,13 @@ export async function releaseContext(store: CmsStore, site: Site, pins: readonly
     store.approvedPins(site, pins), store.routeTable(site, "cms.publish")
   ]);
   const fixedRoutes = new Set(routeTable.reservations.flatMap((entry) =>
-    entry.kind === "fixed-page" || entry.kind === "reserved" ? [entry.path] : []));
+    entry.kind === "fixed-page" || (entry.kind === "reserved" && !entry.reservationId.startsWith("cms_route_")) ? [entry.path] : []));
   const revisions = new Map(await Promise.all(approved.map(async (pin) =>
     [pin.revision, await store.item(site.siteId, site.state.locale, pin)] as const)));
+  const publicAssets = await store.publicAssets(site.state.schema, [...revisions.values()]);
   return {
     schema: site.state.schema, locale: site.state.locale, currentReleaseId: site.state.current?.id ?? null,
-    routeTable,
+    routeTable, publicAssets,
     readRevision: (pin) => revisions.get(pin.revision),
     isRemoved: (pin) => !site.state.items[cmsItemKey(pin)] || site.state.items[cmsItemKey(pin)]!.removedAt !== null,
     impact: (snapshot) => releaseImpacts(snapshot, fixedRoutes),
@@ -54,10 +56,13 @@ export async function releaseContext(store: CmsStore, site: Site, pins: readonly
 
 const MAX_ATTEMPTS = 5;
 const LEASE_SECONDS = 60;
+const RELEASE_JOB_OVERHEAD = 10;
+const REQUEST_JOB_BUDGET = 45;
+const MAX_JOB_BUDGET = RELEASE_JOB_OVERHEAD + MAX_ITEMS;
 
-// Bound both Cron and request-time Worker subrequests, including large schema-migration jobs.
+// Keep request-time delivery small; Cron can verify the full maximum item set in one bounded pass.
 const JOB_COST = `CASE kind WHEN 'verify' THEN 3 + json_array_length(payload_json, '$.keys')
-                     ELSE 10 + json_array_length(payload_json, '$.pins') END`;
+                     ELSE ${RELEASE_JOB_OVERHEAD} + json_array_length(payload_json, '$.pins') END`;
 async function claim(db: ManagedD1, id: string | null, at: number, budget: number) {
   const lease = opaque("lease");
   return db.prepare(`UPDATE managed_cms_outbox SET lease_id = ?1, lease_until = ?2, attempts = attempts + 1
@@ -78,7 +83,7 @@ async function endAttempt(store: CmsStore, job: Job, at: number, outcome: "verif
 }
 
 /** Local publication has no network side effect: the immutable snapshot and its D1 pointer are the delivery. */
-export async function deliverCmsJob(store: CmsStore, id: string | null = null, at = nowSeconds(), budget = 45): Promise<number> {
+export async function deliverCmsJob(store: CmsStore, id: string | null = null, at = nowSeconds(), budget = REQUEST_JOB_BUDGET): Promise<number> {
   const job = await claim(store.db, id, at, budget);
   if (!job) return 0;
   if (job.attempts > MAX_ATTEMPTS) {
@@ -104,9 +109,8 @@ export async function deliverCmsJob(store: CmsStore, id: string | null = null, a
         if (snapshot.schema.schemaRevision !== site.state.schema.schemaRevision) {
           outcome = "conflict";
         } else {
-          // Immediate releases were just built and revalidated before their queue transaction.
-          // Scheduled releases recheck the exact saved revisions because they can wait across deployments.
-          const valid = job.kind === "schedule"
+          // Scheduled releases recheck their pins. Any release with assets also rechecks public eligibility before switching the pointer.
+          const valid = job.kind === "schedule" || snapshot.assetManifest.length > 0
             ? revalidateCmsRelease({ expectedReleaseId, snapshot }, await releaseContext(store, site, snapshot.items)).status === "allowed"
             : snapshot.items.every((pin) => site.state.items[cmsItemKey(pin)]?.removedAt === null)
               && releaseImpacts(snapshot, await store.fixedRoutes(site, "cms.publish")).length === 0;
@@ -127,8 +131,8 @@ export async function runCmsCron(store: CmsStore) {
   const at = nowSeconds();
   await store.db.prepare("DELETE FROM managed_cms_tokens WHERE expires_at <= ?1").bind(at).all();
   // Only one leased job is worked at a time. The lease also recovers an interrupted invocation.
-  let budget = 45;
-  for (let index = 0; index < 4 && budget >= 3; index++) {
+  let budget = MAX_JOB_BUDGET;
+  while (budget >= 3) {
     const cost = await deliverCmsJob(store, null, at, budget);
     if (cost === 0) break;
     budget -= cost;
@@ -145,36 +149,87 @@ export function previewContent(schema: CmsReleaseSnapshot["schema"], item: CmsRe
 
 const publicHeaders = {
   "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
-  "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+  "X-Content-Type-Options": "nosniff"
 };
 
-export async function managedCmsPublic(request: Request, store: CmsStore, origin: string): Promise<Response | null> {
+function publicImage(image: CollectionImageValue | null, assets: ReadonlyMap<string, CmsPublicAsset>, include: (url: string) => boolean): string {
+  const asset = image === null || typeof image === "string" ? undefined : assets.get(assetKey(image));
+  if (!asset || !include(asset.url)) return "";
+  const width = asset.width === null ? "" : ` width="${asset.width}"`;
+  const height = asset.height === null ? "" : ` height="${asset.height}"`;
+  return `<img src="${escapeHtml(asset.url)}" alt="${escapeHtml(asset.altText)}"${width}${height}>`;
+}
+function jsonLd(value: unknown): string {
+  return `<script type="application/ld+json">${JSON.stringify(value).replaceAll("<", "\\u003c").replaceAll("\u2028", "\\u2028").replaceAll("\u2029", "\\u2029")}</script>`;
+}
+
+export async function managedCmsPublic(request: Request, store: CmsStore, origin: string,
+  customRoute?: { readonly slug: string; readonly prefix: ""; readonly noindex?: boolean }, cache?: ManagedPublicHtmlCache): Promise<Response | null> {
   const url = new URL(request.url);
-  if (url.origin !== origin || (request.method !== "GET" && request.method !== "HEAD")) return null;
-  const match = /^\/s\/([a-z0-9]+(?:-[a-z0-9]+)*)(\/cms(?:\/[a-z0-9_-]+)*)$/u.exec(url.pathname);
+  if (!customRoute && url.origin !== origin || (request.method !== "GET" && request.method !== "HEAD")) return null;
+  const match = customRoute
+    ? /^(?:\/(ja|en))?(\/cms(?:\/[A-Za-z0-9_-]+)*)$/u.exec(url.pathname)
+    : /^\/s\/([a-z0-9]+(?:-[a-z0-9]+)*)(?:\/(ja|en))?(\/cms(?:\/[A-Za-z0-9_-]+)*)$/u.exec(url.pathname);
   if (!match) return null;
-  const [, slug, path] = match, prefix = `/s/${slug}`;
-  const current = await store.db.prepare(`SELECT ms.site_id, json_extract(c.state_json, '$.current.id') AS id
-    FROM managed_cms_state AS c JOIN managed_sites AS ms ON ms.site_id = c.site_id WHERE ms.slug = ?1 AND json_extract(c.state_json, '$.current.id') IS NOT NULL`)
-    .bind(slug).first<{ site_id: string; id: string }>();
+  const slug = customRoute ? customRoute.slug : match[1]!;
+  const prefixedLocale = customRoute ? match[1] : match[2];
+  const cmsPath = customRoute ? match[2]! : match[3]!;
+  const prefix = customRoute?.prefix ?? `/s/${slug}`;
+  const current = await store.db.prepare(`SELECT ms.site_id, c.state_json, ms.public_policy_json, ms.public_policy_version, s.name AS site_name
+    FROM managed_cms_state AS c JOIN managed_sites AS ms ON ms.site_id = c.site_id JOIN sites AS s ON s.id = ms.site_id WHERE ms.slug = ?1`)
+    .bind(slug).first<{ site_id: string; state_json: string; public_policy_json: string; public_policy_version: string; site_name: string }>();
   if (!current) return null;
-  const snapshot = await store.snapshot(current.site_id, current.id);
-  const redirect = snapshot.redirects.find(({ from }) => from === path);
-  if (redirect) return new Response(null, { status: 308, headers: { ...publicHeaders, Location: `${prefix}${redirect.to}` } });
-  const entry = snapshot.items.find((item) => item.path === path);
-  const collection = snapshot.schema.collections.find(({ pathPrefix }) => collectionPath(pathPrefix) === path);
-  let title: string, body: string;
+  const state = JSON.parse(current.state_json) as Site["state"];
+  const locale = prefixedLocale ?? state.locale;
+  if (prefixedLocale === state.locale) return null;
+  const published = locale === state.locale ? state.current : state.localizedReleases?.[locale] ?? null;
+  if (!published) return null;
+  const routePath = prefixedLocale ? `/${prefixedLocale}${cmsPath}` : cmsPath;
+  const snapshot = await store.snapshot(current.site_id, published.id);
+  const redirect = snapshot.redirects.find(({ from }) => from === routePath);
+  if (redirect) return new Response(null, { status: 308, headers: {
+    ...publicHeaders, "Content-Security-Policy": (await managedPublicHead()).csp, Location: `${prefix}${redirect.to}`
+  } });
+  const entry = snapshot.items.find((item) => item.path === routePath);
+  const collection = snapshot.schema.collections.find(({ pathPrefix }) => collectionPath(pathPrefix) === routePath);
+  if (!entry && !collection && routePath !== (snapshot.sourceLocale && snapshot.sourceLocale !== snapshot.locale ? `/${snapshot.locale}/cms` : "/cms")) return null;
+  let cacheKey: Request | undefined;
+  if (request.method === "GET" && cache) {
+    const key = await digest({ origin: url.origin, path: url.pathname, site: current.site_id, locale, release: snapshot.releaseId,
+      route: routePath, policy: current.public_policy_version, domainNoindex: customRoute?.noindex === true });
+    cacheKey = new Request(`${url.origin}/_niho-cache/${key}`);
+    try {
+      const cached = await cache.match(cacheKey);
+      if (cached) return revalidatePublicResponse(request, cached);
+    } catch { /* edge cache is an optional optimization */ }
+  }
+  const policy = parseManagedPublicPolicy(JSON.parse(current.public_policy_json), origin) ?? emptyManagedPublicPolicy();
+  const imageSources = new Set<string>();
+  const approvedAssetUrls = new Set(snapshot.assetManifest.map(({ url }) => new URL(url, origin).href));
+  const include = (url: string) => {
+    const source = publicResourceSource(url, origin, policy.resourceOrigins, approvedAssetUrls);
+    if (source) imageSources.add(source);
+    return source !== undefined;
+  };
+  let title: string, body: string, description: string | undefined;
   if (entry) {
     const presentation = previewContent(snapshot.schema, entry);
     title = presentation.title;
+    description = presentation.fields.find(({ text }) => !!text.trim())?.text.trim().slice(0, 500);
     const definition = snapshot.schema.collections.find(({ id }) => id === entry.collectionId)!;
+    const assets = new Map(snapshot.assetManifest.map((asset) => [assetKey(asset.reference), asset] as const));
     body = definition.fields.filter(({ fieldId }) => fieldId !== definition.titleField && fieldId !== definition.slugField)
       .map(({ fieldId, type }) => {
         const value = entry.values[fieldId];
+        if (type === "image" && value && typeof value === "object" && "provider" in value) return publicImage(value, assets, include);
+        if (type === "gallery") return galleryEntries(value).map(({ image, caption }) => {
+          const rendered = publicImage(image, assets, include);
+          return rendered ? `<figure>${rendered}${caption ? `<figcaption>${escapeHtml(caption)}</figcaption>` : ""}</figure>` : "";
+        }).join("");
         if (typeof value !== "string" || !["text", "longText", "richText", "datetime"].includes(type)) return "";
         return `<p>${type === "richText" ? value : escapeHtml(value).replaceAll("\n", "<br>")}</p>`;
       }).join("");
-  } else if (path === "/cms" || collection) {
+  } else if (routePath === (snapshot.sourceLocale && snapshot.sourceLocale !== snapshot.locale ? `/${snapshot.locale}/cms` : "/cms") || collection) {
     title = collection?.label ?? "CMS";
     const links = collection
       ? snapshot.items.filter((item) => item.collectionId === collection.id && item.path).map((item) =>
@@ -185,6 +240,55 @@ export async function managedCmsPublic(request: Request, store: CmsStore, origin
       });
     body = `<ul>${links.map((link) => `<li><a href="${escapeHtml(prefix + link.path)}">${escapeHtml(link.title)}</a></li>`).join("")}</ul>`;
   } else return null;
-  const content = `<!doctype html><html lang="${escapeHtml(snapshot.locale)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title></head><body><main><h1>${escapeHtml(title)}</h1>${body}</main></body></html>`;
-  return new Response(request.method === "HEAD" ? null : content, { headers: publicHeaders });
+  const head = await managedPublicHead({ measurementId: policy.seo.ga4MeasurementId, imageSources });
+  const seo = policy.seo, siteName = seo.siteName ?? current.site_name;
+  description ??= seo.description ?? undefined;
+  const noindex = customRoute?.noindex === true || seo.robotsPolicy === "noindex";
+  const publicUrl = `${url.origin}${prefix}${routePath}`;
+  let ogImage: string | undefined;
+  if (seo.defaultOgImage) {
+    const candidate = /^https:\/\//iu.test(seo.defaultOgImage) ? seo.defaultOgImage : `${prefix}${seo.defaultOgImage}`;
+    if (include(candidate)) ogImage = candidate;
+  }
+  let metadata = [
+    `<meta name="robots" content="${noindex ? "noindex, nofollow" : "index, follow"}">`,
+    ...(description ? [`<meta name="description" content="${escapeHtml(description)}">`, `<meta property="og:description" content="${escapeHtml(description)}">`] : []),
+    `<meta property="og:type" content="${entry ? "article" : "website"}">`,
+    `<meta property="og:title" content="${escapeHtml(title)}">`, `<meta property="og:locale" content="${escapeHtml(snapshot.locale)}">`,
+    `<meta property="og:site_name" content="${escapeHtml(siteName)}">`, `<meta property="og:url" content="${escapeHtml(publicUrl)}">`,
+    ...(ogImage ? [`<meta property="og:image" content="${escapeHtml(/^https:\/\//iu.test(ogImage) ? ogImage : `${url.origin}${ogImage}`)}">`, `<meta property="og:image:alt" content="${escapeHtml(siteName)}">`] : []),
+    ...(!noindex ? [`<link rel="canonical" href="${escapeHtml(publicUrl)}">`] : [])
+  ].join("") + managedVerificationTags(seo);
+  const localized = [
+    ...(state.current ? [{ locale: state.locale, id: state.current.id }] : []),
+    ...Object.entries(state.localizedReleases ?? {}).map(([locale, release]) => ({ locale, id: release.id }))
+  ];
+  const alternates: { locale: string; url: string }[] = [];
+  if (!noindex && localized.length > 1) for (const release of localized.slice(0, 3)) try {
+    const other = release.id === snapshot.releaseId ? snapshot : await store.snapshot(current.site_id, release.id);
+    let otherPath: string | null = null;
+    if (entry) otherPath = other.items.find((item) => item.collectionId === entry.collectionId && item.itemId === entry.itemId)?.path ?? null;
+    else if (collection) otherPath = collectionPath(other.schema.collections.find(({ id }) => id === collection.id)?.pathPrefix ?? null);
+    else otherPath = other.sourceLocale && other.sourceLocale !== other.locale ? `/${other.locale}/cms` : "/cms";
+    if (otherPath) alternates.push({ locale: other.locale.toLowerCase(), url: `${url.origin}${prefix}${otherPath}` });
+  } catch { /* an unpublished locale has no alternate URL */ }
+  if (alternates.length > 1) {
+    const fallback = alternates.find(({ locale }) => locale === "ja") ?? alternates[0]!;
+    metadata += alternates.map(({ locale, url: alternate }) => `<link rel="alternate" hreflang="${escapeHtml(locale)}" href="${escapeHtml(alternate)}">`).join("")
+      + `<link rel="alternate" hreflang="x-default" href="${escapeHtml(fallback.url)}">`;
+  }
+  const structured = jsonLd({ "@context": "https://schema.org", "@graph": [
+    { "@type": "WebSite", "@id": `${url.origin}/#website`, url: `${url.origin}/`, name: siteName, ...(seo.description ? { description: seo.description } : {}) },
+    ...(seo.organization ? [{ "@type": "Organization", "@id": `${url.origin}/#organization`, name: seo.organization.name, url: seo.organization.url,
+      ...(seo.organization.logo ? { logo: seo.organization.logo } : {}), ...(seo.organization.sameAs.length ? { sameAs: seo.organization.sameAs } : {}) }] : []),
+    { "@type": entry ? "Article" : "CollectionPage", "@id": `${publicUrl}#page`, url: publicUrl, headline: title,
+      inLanguage: snapshot.locale, isPartOf: { "@id": `${url.origin}/#website` }, ...(description ? { description } : {}) }
+  ] });
+  const content = `<!doctype html><html lang="${escapeHtml(snapshot.locale)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title>${metadata}${structured}${head.scripts}</head><body><main><h1>${escapeHtml(title)}</h1>${body}</main></body></html>`;
+  const headers = { ...publicHeaders, "Content-Security-Policy": head.csp, "Cache-Control": "public, no-cache, s-maxage=300, stale-while-revalidate=60",
+    ...(noindex ? { "X-Robots-Tag": "noindex, nofollow" } : {}) };
+  const fullResponse = await withPublicEtag(content, headers);
+  if (cacheKey && cache) try { await cache.put(cacheKey, fullResponse.clone()); } catch { /* edge cache is an optional optimization */ }
+  const response = revalidatePublicResponse(request, fullResponse);
+  return request.method === "HEAD" && response.status !== 304 ? new Response(null, { status: response.status, headers: response.headers }) : response;
 }

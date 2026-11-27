@@ -14,7 +14,7 @@
 
 ノードの `name`、token の `label`、`textStyles`、node style の `textStyle`、文字の見た目プロパティ（`fontStyle` / `textDecorationLine`）、辺ごとの枠線幅（`borderTopWidth` / `borderRightWidth` / `borderBottomWidth` / `borderLeftWidth`）、element の組み込み `icon`・`video`・`embed`・フォーム要素・`formCompletionPageId` は v1 への後方互換な追加で、`schemaVersion` は 1 のままです。入力に無いキーは出力にも付けないため、既存文書の検証結果・直列化・fingerprint・CSS は変わりません。これらのキーを含む文書は、追加前のパッケージでは未知フィールドとして拒否されます。ホストは保存・公開側の検証も新しい commit SHA へ更新してから、新しい編集機能を使ってください。
 
-`@niho/web/builder` の挿入・モーション定義は編集時だけの設定で、文書wireには保存しません。挿入結果は既存の `PageNode`、モーション結果は既存の `NodeStyle.base/states/appear` です。定義名、関数、任意JS/CSS、新しい識別fieldは `PageDocument` に加わらないため、この拡張を使わない既存ホストと既存文書の直列化は変わりません。
+`@niho/web/core` の挿入・モーション定義は編集時だけの設定で、文書wireには保存しません。挿入結果は既存の `PageNode`、モーション結果は既存の `NodeStyle.base/states/appear` です。定義名、関数、任意JS/CSS、新しい識別fieldは `PageDocument` に加わらないため、この拡張を使わない既存ホストと既存文書の直列化は変わりません。
 
 `siteId/pageId/locale/revision` の組が公開内容を一意に表します。同じ組の内容を変更すると同一 scope の CSS が競合するため、内容更新時は必ず revision を増やします。scope は各値を長さ付きで連結して生成し、他ページ・サイト・revision と衝突しない形にします。`pageScope` は検証済みの ID を持つ文書に対して使います。
 
@@ -41,15 +41,17 @@ VideoWithButton は `tag: "div"` に `interaction: { type: "video-toggle" }` を
 
 Loop Box は `tag: "div"` に `interaction: { type: "loop-box", speed, pauseOnHover }` を持たせます。`speed` は有限な0〜1000のpx/秒で、0は停止、標準presetは60です。`pauseOnHover` は真偽値です。進行軸と逆方向は別の自由入力ではなく、同じnodeの検証済み`style.flexDirection`（`row` / `row-reverse` / `column` / `column-reverse`）から決まります。childrenは1件以上必要で、Loop Box内に別のinteractionは入れられません。descriptorにHTML、script、selector、keyframes、イベントhandler、任意style文字列、DOM ID参照は保存しません。
 
+前後操作を持つカルーセルは `div` の `interaction: { type: "carousel", binding }` で指定します。`binding.slideIds` は直下の `div` / `article` / `section` の node ID を2〜64件、表示順に渡します。`previousIds`・`nextIds`・`playPauseIds` は、スライドの外に置く同じカルーセル内のフラグメントリンクを指定します。`autoplayMs`（1000〜60000）、`fadeMs`（0〜3000）、`initiallyPlaying`、`loop`、`swipe` は既存の SitePresentation と同じ標準 runtime で処理します。
+
 SSRは元のchildrenを固定track内に1組だけ描き、支援技術から読める正本とします。編集canvasではこの正本を静止したまま選択・編集・dropできます。公開ページとStudio previewで`initializeSitePresentation`を起動すると、runtimeはtrack寸法とviewportから必要な複製数を計算し、resize時にも作り直してWeb Animations APIで無限に流します。`prefers-reduced-motion: reduce`、速度0、未対応APIでは動かさず内容を保持します。ホバー停止が有効ならpointer hover中だけ一時停止します。
 
 runtime複製は`aria-hidden`かつ`inert`で、focus可能要素をtab順から外します。HTML IDとID参照、リンク先、form name、動画・iframe等の読込属性、別runtimeのbinding属性を複製から除きます。画像は元の検証済みsourceを保って表示し、動画・iframe等は追加通信を起こさない不可視placeholderとして寸法だけを保ちます。cleanupはanimationをcancelし、複製、resize・hover・media-query listener、runtimeが加えたinline styleをすべて除去します。runtimeが無い場合も元内容はそのまま利用できます。
 
 ### 標準埋め込み
 
-Map / YouTube / Vimeo / Lottie / Facebook / X / Instagram / Blank は `tag: "div"` の element に `embed: { provider, title, source? }` を持たせます。`provider` は `map | youtube | vimeo | lottie | facebook | x | instagram | blank` の閉じた値、`title` は空でない300文字以内の1行、`source` は任意です。通常providerの`source`はcanonical URLですが、`blank`だけはホストが登録した小文字英数字・`-`の1〜32文字のkeyです。embed node の `children` は空で、`asset` / `icon` を併用できません。文書から iframe tag、HTML、`src` 属性、sandbox、allow、referrer policy、loading、JavaScript、任意originを渡す入口はありません。provider は挿入時に固定し、editor は `embedSource` と `embedTitle` の専用操作だけで値を更新します。
+Map / YouTube / Vimeo / Lottie / Facebook / X / Instagram / Blank / 外部URL は `tag: "div"` の element に `embed: { provider, title, source? }` を持たせます。`provider` は `map | youtube | vimeo | lottie | facebook | x | instagram | blank | url` の閉じた値、`title` は空でない300文字以内の1行、`source` は任意です。通常providerの`source`はcanonical URLですが、`blank`だけはホストが登録した小文字英数字・`-`の1〜32文字のkeyです。embed node の `children` は空で、`asset` / `icon` を併用できません。文書から iframe tag、HTML、sandbox、allow、referrer policy、loading、JavaScript、権限要求を渡す入口はありません。provider は挿入時に固定し、editor は `embedSource` と `embedTitle` の専用操作だけで値を更新します。
 
-入力URLは資格情報・port・fragmentのないHTTPSだけを受け、providerごとに次の形へ正規化します。HTTP、任意host、`javascript:` / `data:`、iframe markup、許可外queryを拒否します。YouTubeの共有リンクに付く`si`は検証後に取り除きます。
+入力URLは資格情報・port・fragmentのないHTTPSだけを受け、providerごとに次の形へ正規化します。HTTP、`javascript:` / `data:`、制御文字、iframe markupを拒否します。固定providerはそれぞれのhost・path・query以外も拒否し、YouTubeの共有リンクに付く`si`は検証後に取り除きます。
 
 - YouTube は `youtube.com/watch?v=ID`、`youtube.com/embed/ID`、`youtube.com/shorts/ID`、`youtu.be/ID` の11文字IDだけを受け、`https://www.youtube-nocookie.com/embed/ID` を保存します。
 - Vimeo は `vimeo.com/数字ID` または `player.vimeo.com/video/数字ID` を受けます。任意の単一 `h` query は安全なunlisted hashとして保持し、`https://player.vimeo.com/video/ID`（必要なら `?h=…`）を保存します。
@@ -58,12 +60,17 @@ Map / YouTube / Vimeo / Lottie / Facebook / X / Instagram / Blank は `tag: "div
 - Facebook は `facebook.com` / `www.facebook.com` の `/{actor}/posts/{post-id}`、`/{actor}/posts/{説明slug}/{post-id}`、`/permalink.php?story_fbid={post-id}&id={数字actor-id}` だけを受けます。説明slugは英数字・`_`・`-` の1〜200文字に限り、保存時に除きます。hostを `www.facebook.com`、末尾slashを無しに正規化した公開投稿URLを保存します。actorは1〜80文字の英数字と連続しない内側の`.`、数字actor IDと数字post IDは最大32桁、opaque post IDは`pfbid`に続く20〜195文字の英数字に限定します。資格情報、port、fragment、未知・重複・順序違いquery、短縮共有URL、写真・動画・group path、dot segment、percent encoding、nested URL、protocol-relative URL、markupを拒否します。plugin URLやiframe HTMLは保存しません。
 - X は `https://x.com/{handle}/status/{数字ID}` だけを受け、handleを小文字、末尾slashを無しに正規化します。handleは英数字と`_`の1〜15文字、IDは1〜20桁です。X公式ヘルプが埋め込みをx.comでだけ提供すると案内しているため、`twitter.com`、`www.x.com`、query、fragment、追加path、dot segment、percent encoding、markupを受けず、暗黙変換もしません（[X公式の埋め込み案内](https://help.x.com/en/using-x/how-to-embed-a-post)）。
 - Instagram は `instagram.com` / `www.instagram.com` の `/p/{shortcode}` と `/reel/{shortcode}` だけを受け、hostを`www.instagram.com`、末尾slashありに正規化します。shortcodeは英数字・`_`・`-`の1〜64文字です。profile、Story、`/tv/`、query、fragment、追加path、dot segment、percent encoding、markupを拒否します。公式実装が対応を明示する公開投稿とReelだけを対象にします（[Meta公式実装](https://github.com/facebook/meta-embeds-for-wordpress)）。
+- 外部URL (`url`) は資格情報・port・fragment・制御文字・生HTMLを含まない公開HTTPS絶対URLを受け、必要なqueryを保ちます。検証と正規化の公開APIは`normalizeEmbedSource("url", value)`です。自動fetch、事前接続確認、権限推測は行いません。
 
 Blank は trusted host code が `createBlankEmbedRegistry({ parentOrigin, entries })` で作る静的registryだけから解決します。registryは最大16件でkey重複を許さず、各項目は`key`、表示用`label`、query・fragment・userinfo・portを持たない固定HTTPS絶対`src`、閉じた`sandbox` mode（`strict` / `scripts` / `forms` / `scripts-forms` / `same-origin` / `same-origin-forms` / `same-origin-scripts` / `same-origin-scripts-forms`）を持ちます。top navigation、popup、download等のtokenはありません。親と同一originの`src`でscriptsとsame-originを同時に許可する設定は拒否します。`parseBlankEmbedRegistry`はJavaScript入力も同じ規則で再検証します。
 
 `PageRenderer` / `SitePageRenderer` と `renderPageToHtml` / `renderSitePageToHtml` は任意の`blankEmbeds`を受け、文書keyがregistryに無い場合はfail closedで外部通信しません。編集canvasは承認済みkeyでも静的案内だけを出し、Studio previewと公開rendererだけがregistryの`src`とsandboxからiframeを作ります。iframeを表示できない場合のため固定URLへの外部リンクを残します。ホストはregistry登録とは別に公開・previewのCSP `frame-src`へ各origin/pathを承認する必要があります。鎌倉では公開ホストとStudioに同じ`public-map` keyを登録し、OpenStreetMapの固定埋め込み先だけを各CSPの`frame-src`へ追加します。BlankはManagedEmbedのprivate参照・解決フローを流用しません。
 
 rendererはsource未設定なら公開HTMLにnodeもiframeも出さず、外部リクエストを発生させません。editorのplaceholder modeだけ設定案内を出します。Map / YouTube / Vimeoはsource設定後にnodeの`div`内へtrusted rendererがiframeを生成し、`sandbox="allow-scripts allow-same-origin"`、`loading="lazy"`、`referrerPolicy="strict-origin-when-cross-origin"` を固定します。YouTube/Vimeoのallowとfullscreenもrendererのprovider別定数だけから付与します。
+
+外部URLはrendererで`normalizeEmbedSource("url", source)`を再実行し、一般URLを`data-nw-url-embed-frame=""`付きの`sandbox="allow-scripts"`、`referrerPolicy="no-referrer"`、権限なしのopaque-origin iframeとして描画します。別originから同じoriginへredirectしてもoriginは復元しません。iframeが表示を拒否されても元URLの`noopener noreferrer`リンクを残します。編集canvasは静的案内だけでiframeを作らず、interactive previewと公開SSRだけがiframeを出します。
+
+NIHO Travelの信頼判定は、正規化後URLのoriginが`https://travel.niho.life`または`https://travel-stg.niho.life`で、pathnameが`/embed/experiences/<slug>/book`（slugは小文字ASCII英数字と内側の`-`）に完全一致する場合だけです。信頼済みホスト設定の `blankEmbeds.parentOrigin` があり、埋め込み先と異なる場合に限り、公開SSRは`sandbox="allow-scripts allow-same-origin allow-forms allow-top-navigation-by-user-activation allow-popups allow-popups-to-escape-sandbox"`、`referrerPolicy="origin"`とし、予約画面のAPI・formとユーザー操作によるStripe遷移だけを許可します。Studio previewは元queryを保って`preview=1`を強制し、同じ別origin条件で`sandbox="allow-scripts allow-same-origin allow-forms"`でtop navigationとpopupを許可しません。一般URLはTravel originへredirectしてもこの権限に昇格しません。親へデータを転送するruntimeやmessage bindingはありません。
 
 LottieのSSRはcanonical sourceを`data-nw-lottie-source`に持つwrapperと、titleを示す静的でアクセシブルなfallbackだけを出し、iframeやscriptを出しません。公開ホストとStudio previewが`initializeSitePresentation`を起動し、`prefers-reduced-motion: reduce`でない間だけruntimeが `https://lottie.host/embed/` のcanonical URLからiframeを生成します。iframeは `sandbox="allow-scripts"`（origin保持なし）、`referrerPolicy="no-referrer"`、`loading="lazy"`、descriptor由来のtitle、`tabindex="-1"`、`aria-hidden="true"`、pointer操作なしに固定し、allow/fullscreenは付けません。media queryがreduceへ変わるとiframeを除き、戻ると再生成します。cleanupは生成iframeとlistenerをすべて除きます。編集canvasはruntimeを非操作で初期化するため外部playerを読み込まず、静的fallbackのままです。壊れたdata属性をruntimeで再検証して読み込まず、playerが表示できない場合もSSR fallbackはDOMに残ります。
 
@@ -77,7 +84,7 @@ Instagramは従来どおり固定`instagram-media` blockquoteと`https://www.ins
 
 このLottie実装が扱う編集項目はAsset link、アクセシブルなtitle、通常のbox/layout styleだけです。motion許可時にlottie.host hosted iframeの既定playerを表示しますが、STUDIOの6種類のplayback modeやtrigger・速度・方向を文書設定として提供しません。hosted iframeの閉じたURL契約から制御できない設定を推測して追加しません。
 
-このpage node側の埋め込みと、`SitePresentationExternalFrame` は別の信頼境界です。既存7 providerは従来のURL形・固定iframe属性だけ、Blankは明示された`blankEmbeds`だけを使い、presentation policyを受けません。presentation external frameはhost view内の空divを実行側descriptorで置換し、接続先host/pathとorigin保持の要否をtrustedな `externalFramePolicy` が決めます。page JSONからpresentation policy、任意origin、sandbox権限へ昇格することはできません。
+このpage node側の埋め込みと、`SitePresentationExternalFrame` は別の信頼境界です。固定providerは従来のURL形・固定iframe属性だけ、Blankは明示された`blankEmbeds`だけ、外部URLは上記の固定されたsandbox分岐だけを使い、presentation policyを受けません。presentation external frameはhost view内の空divを実行側descriptorで置換し、接続先host/pathとorigin保持の要否をtrustedな `externalFramePolicy` が決めます。page JSONからpresentation policyやsandbox権限へ昇格することはできません。
 
 ### フォーム
 
@@ -178,7 +185,7 @@ renderer は同期の React ツリーを返します。データ取得は呼び�
 
 保存契約・エディター・多言語と公開 snapshot・ホストの実装手順を含む全体の正は [サイト共通スタイルの契約](site-styles-contract.md) です。この節は文書と描画側の規則です。
 
-ページ JSON の `schemaVersion` と必須フィールドは変更しません。描画用の `SiteSettings` に任意の `tokens` / `textStyles` を含められますが、ホストは版付き `site.styles.*` のdraft/public snapshotとして管理し、ページにはページ所有の定義だけを保持します。`stylesVersion` はPageDocumentに追加せず、ホストがページrevision・release recordのmetadataに保存します。設定を渡さない既存ホストの検証・描画は従来どおりです。
+ページ JSON の `schemaVersion` と必須フィールドは変更しません。描画用の `SiteSettings` に任意の `tokens` / `textStyles` を含められますが、ホストは版付き `site.styles.*` のdraft/published状態として管理し、ページにはページ所有の定義だけを保持します。ページにstyle版は保存しません。設定を渡さない既存ホストの検証・描画は従来どおりです。
 
 ```ts
 const settings = parseSiteSettings(siteSettingsJson);
@@ -193,6 +200,6 @@ const resolved = resolvePageDocument(pageJson, library, blocks, settings);
 
 サイトの文字スタイルはサイトの token だけで検証し、ページによる未定義参照の補完を許しません。その後、実効 token で継承した文字スタイルを再検証します。ページの override によって token の種類が不適合になった場合も拒否します。未解決の token / textStyle、型不一致、未知フィールド、上限超過を許しません。共有値を参照するページは、設定を省略して検証すると拒否されます。
 
-`PageRenderer` の `siteStyles`、`renderPageToHtml(document, blocks, { siteStyles })`、`generatePageCss(document, blocks, assets, siteStyles)` は同じ解決関数を使います。`resolvePageDocument` の返す展開済み文書には実効定義が含まれるため、そのまま設定なしで描画できます。この展開済み文書をページ下書きの正本へ保存しないでください。公開 snapshot に実効定義を固定する方式はホストが選べます。
+`PageRenderer` の `siteStyles`、`renderPageToHtml(document, blocks, { siteStyles })`、`generatePageCss(document, blocks, assets, siteStyles)` は同じ解決関数を使います。`resolvePageDocument` の返す展開済み文書には実効定義が含まれるため、そのまま設定なしで描画できます。この展開済み文書をページ下書きや公開snapshotの正本へ保存しないでください。
 
-共有設定とページを別時点から取得すると公開中の見た目が変わるため、ホストは同じ公開 snapshot の設定・文書を組にして読み出してください。公開style版は全ページで一度に切り替え、cache keyにも `stylesVersion` を含めます。
+公開描画は現在のpublished style snapshotを全ページで共有します。`site.styles.publish` はサイトのpublished pointerを一度に切り替えるため、ページごとのstyle版固定や再公開は不要です。

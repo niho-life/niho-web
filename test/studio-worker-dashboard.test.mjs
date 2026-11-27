@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 import { test } from "node:test";
 import { build } from "esbuild";
-import { parseProjectDashboardResult } from "@niho/web/project-read-model";
+import { parseProjectDashboardResult } from "../dist/project-read-model.js";
 
 const OVERVIEW_PATH = "/internal/studio/web-content/_site/overview";
 const secret = Buffer.alloc(32, 41).toString("base64url");

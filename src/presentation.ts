@@ -1,14 +1,17 @@
+import { CAROUSEL_CONTROL_LIMIT, CAROUSEL_SLIDE_LIMIT, parseCarousel } from "./carousel.js";
 import { parsePresentationLinks } from "./presentation-links.js";
 import { blockSlots, parsePageDocument } from "./document.js";
 import { cssForDocument, pageScope } from "./css.js";
 import { parseResolvedAssets, type ResolvedAssetMap } from "./assets.js";
 import { parseStyle, parseTokens } from "./style-values.js";
-import type { BlockContracts, ComponentNode, ElementNode, PageDocument, PageNode, PublicPropValue, SiteFontFace, SitePresentation, SitePresentationCarousel, SitePresentationExternalFrame, SitePresentationHostView, SitePresentationOverlay } from "./types.js";
+import type { BlockContracts, ComponentNode, ElementNode, PageDocument, PageNode, PublicPropValue, SiteFontFace, SitePresentation, SitePresentationExternalFrame, SitePresentationHostView, SitePresentationOverlay } from "./types.js";
 import { fail, identifier, isSafePublicUrl, keys, line, localeCode, record } from "./validation-utils.js";
 
 export const SITE_PRESENTATION_LIMITS = Object.freeze({ fonts: 512, sourcesPerFont: 4, versionLength: 256, unicodeRangeLength: 4096, overlays: 8, bindingsPerOverlay: 16, overlayLabelLength: 160,
-  hostViews: 64, hostViewBytes: 5_000_000, hostViewNodes: 20_000, framesPerView: 8, carouselSlides: 64, carouselControls: 16 });
+  hostViews: 64, hostViewBytes: 5_000_000, hostViewNodes: 20_000, framesPerView: 8, carouselSlides: CAROUSEL_SLIDE_LIMIT, carouselControls: CAROUSEL_CONTROL_LIMIT });
 const unicodeRange = /^(?:U\+[0-9A-F?]{1,6}(?:-[0-9A-F]{1,6})?)(?:\s*,\s*U\+[0-9A-F?]{1,6}(?:-[0-9A-F]{1,6})?)*$/iu;
+const emptyCompactSharedSnapshot = (document: PageDocument): boolean => document.body.length === 0
+  && Object.keys(document.tokens).length === 0 && document.meta === undefined && document.textStyles === undefined;
 
 function fontFace(input: unknown, path: string): SiteFontFace {
   const source = record(input, path);
@@ -105,38 +108,10 @@ function slotBindings(input: unknown, block: string, blocks: BlockContracts, nod
   return result;
 }
 
-function carousel(input: unknown, nodes: ReadonlyMap<string, ElementNode>, path: string): SitePresentationCarousel | undefined {
-  if (input === undefined) return undefined;
-  const source = record(input, path);
-  keys(source, ["rootId", "slideIds", "previousIds", "nextIds", "playPauseIds", "autoplayMs", "fadeMs", "initiallyPlaying", "loop", "swipe"], path);
-  const rootId = identifier(source.rootId, `${path}.rootId`);
-  if (!nodes.has(rootId)) fail(`${path}.rootId`, "carousel root not found");
-  const readIds = (value: unknown, name: "slideIds" | "previousIds" | "nextIds" | "playPauseIds", required: boolean, limit: number) => {
-    const at = `${path}.${name}`;
-    if (!Array.isArray(value) || required && value.length < 2 || value.length > limit) fail(at, "invalid carousel bindings");
-    const ids = value.map((id, index) => identifier(id, `${at}[${index}]`));
-    if (new Set(ids).size !== ids.length || ids.some((id) => !nodes.has(id))) fail(at, "unknown or duplicate carousel binding");
-    return ids;
-  };
-  const slideIds = readIds(source.slideIds, "slideIds", true, SITE_PRESENTATION_LIMITS.carouselSlides);
-  const previousIds = source.previousIds === undefined ? [] : readIds(source.previousIds, "previousIds", false, SITE_PRESENTATION_LIMITS.carouselControls);
-  const nextIds = source.nextIds === undefined ? [] : readIds(source.nextIds, "nextIds", false, SITE_PRESENTATION_LIMITS.carouselControls);
-  const playPauseIds = source.playPauseIds === undefined ? [] : readIds(source.playPauseIds, "playPauseIds", false, SITE_PRESENTATION_LIMITS.carouselControls);
-  const all = [rootId, ...slideIds, ...previousIds, ...nextIds, ...playPauseIds];
-  if (new Set(all).size !== all.length) fail(path, "carousel bindings overlap");
-  if (source.autoplayMs !== undefined && (typeof source.autoplayMs !== "number" || !Number.isInteger(source.autoplayMs) || source.autoplayMs < 1000 || source.autoplayMs > 60000)) fail(`${path}.autoplayMs`, "invalid autoplay interval");
-  if (source.fadeMs !== undefined && (typeof source.fadeMs !== "number" || !Number.isInteger(source.fadeMs) || source.fadeMs < 0 || source.fadeMs > 3000)) fail(`${path}.fadeMs`, "invalid fade duration");
-  if (source.initiallyPlaying !== undefined && typeof source.initiallyPlaying !== "boolean" || source.loop !== undefined && typeof source.loop !== "boolean" || source.swipe !== undefined && typeof source.swipe !== "boolean") fail(path, "invalid carousel option");
-  if (source.initiallyPlaying !== undefined && source.autoplayMs === undefined) fail(`${path}.initiallyPlaying`, "playing state requires an autoplay interval");
-  return { rootId, slideIds, ...(previousIds.length ? { previousIds } : {}), ...(nextIds.length ? { nextIds } : {}), ...(playPauseIds.length ? { playPauseIds } : {}),
-    ...(source.autoplayMs === undefined ? {} : { autoplayMs: source.autoplayMs }), ...(source.fadeMs === undefined ? {} : { fadeMs: source.fadeMs }), ...(source.initiallyPlaying === undefined ? {} : { initiallyPlaying: source.initiallyPlaying }),
-    ...(source.loop === undefined ? {} : { loop: source.loop }), ...(source.swipe === undefined ? {} : { swipe: source.swipe }) };
-}
-
 /** 外部 snapshot の presentation を対象ページへ固定して検証する。 */
 export function parseSitePresentation(input: unknown, target: Pick<PageDocument, "siteId" | "locale"> & Partial<Pick<PageDocument, "pageId">>, blocks: BlockContracts = {}): SitePresentation {
   const source = record(input, "presentation");
-  keys(source, ["schemaVersion", "siteId", "locale", "version", "reset", "tokens", "layout", "fonts", "shared", "overlays", "hostViews", "links"], "presentation");
+  keys(source, ["schemaVersion", "siteId", "locale", "version", "reset", "tokens", "layout", "fonts", "shared", "compactSharedReferences", "overlays", "hostViews", "links"], "presentation");
   if (source.schemaVersion !== 1) fail("presentation.schemaVersion", "unsupported schema version");
   const siteId = identifier(source.siteId, "presentation.siteId"), locale = localeCode(source.locale, "presentation.locale");
   if (siteId !== target.siteId || locale !== target.locale) fail("presentation", "target mismatch");
@@ -149,6 +124,17 @@ export function parseSitePresentation(input: unknown, target: Pick<PageDocument,
   const shared = record(source.shared, "presentation.shared");
   keys(shared, ["header", "footer"], "presentation.shared");
   const header = parsePageDocument(shared.header, blocks), footer = parsePageDocument(shared.footer, blocks);
+  let compactSharedReferences: ("header" | "footer")[] | undefined;
+  if (source.compactSharedReferences !== undefined) {
+    const references = source.compactSharedReferences;
+    if (!Array.isArray(references) || references.length > 2 || references.some((value) => value !== "header" && value !== "footer")
+      || new Set(references).size !== references.length) fail("presentation.compactSharedReferences", "invalid compact shared references");
+    compactSharedReferences = references as ("header" | "footer")[];
+    if (compactSharedReferences.includes("header") && !emptyCompactSharedSnapshot(header)
+      || compactSharedReferences.includes("footer") && !emptyCompactSharedSnapshot(footer)) {
+      fail("presentation.compactSharedReferences", "compact shared reference must contain identity only");
+    }
+  }
   for (const [name, document] of [["header", header], ["footer", footer]] as const) {
     if (document.siteId !== siteId || document.locale !== locale) fail(`presentation.shared.${name}`, "target mismatch");
   }
@@ -199,10 +185,12 @@ export function parseSitePresentation(input: unknown, target: Pick<PageDocument,
     hostViewNodes += nodes.size;
     if (hostViewNodes > SITE_PRESENTATION_LIMITS.hostViewNodes) fail("presentation.hostViews", "too many host view nodes");
     const slots = slotBindings(view.slotBindings, block, blocks, nodes, `${path}.slotBindings`);
-    const frames = externalFrames(view.externalFrames, nodes, `${path}.externalFrames`), binding = carousel(view.carousel, nodes, `${path}.carousel`);
+    const frames = externalFrames(view.externalFrames, nodes, `${path}.externalFrames`), binding = parseCarousel(view.carousel, nodes, `${path}.carousel`);
     return { id, block, props, document, ...(Object.keys(slots).length ? { slotBindings: slots } : {}), ...(frames.length ? { externalFrames: frames } : {}), ...(binding ? { carousel: binding } : {}) };
   });
-  return { schemaVersion: 1, siteId, locale, version, reset: "neutral-v1", tokens, ...(layout ? { layout } : {}), fonts, shared: { header, footer }, ...(overlays.length ? { overlays } : {}), ...(hostViews.length ? { hostViews } : {}), ...(source.links === undefined ? {} : { links: parsePresentationLinks(source.links) }) };
+  return { schemaVersion: 1, siteId, locale, version, reset: "neutral-v1", tokens, ...(layout ? { layout } : {}), fonts, shared: { header, footer },
+    ...(compactSharedReferences?.length ? { compactSharedReferences } : {}), ...(overlays.length ? { overlays } : {}), ...(hostViews.length ? { hostViews } : {}),
+    ...(source.links === undefined ? {} : { links: parsePresentationLinks(source.links) }) };
 }
 
 /** renderer用の安定した完全一致key。parseSitePresentationでprops検証後だけ使う。 */
@@ -216,8 +204,7 @@ export function presentationLayoutDocument(presentation: SitePresentation): Page
 }
 
 const quote = (value: string) => JSON.stringify(value);
-export function cssForSitePresentation(presentationInput: unknown, target: Pick<PageDocument, "siteId" | "locale">, blocks: BlockContracts = {}, assetInput: unknown = {}): { presentation: SitePresentation; css: string; scope: string } {
-  const presentation = parseSitePresentation(presentationInput, target, blocks), assets: ResolvedAssetMap = parseResolvedAssets(assetInput);
+export function cssForValidatedSitePresentation(presentation: SitePresentation, assets: ResolvedAssetMap): { css: string; scope: string } {
   const layout = presentationLayoutDocument(presentation), scope = pageScope(layout), root = `[data-nw-presentation="${scope}"]`;
   const fonts = presentation.fonts.map((face) => `@font-face{font-family:${quote(face.family)};${face.style ? `font-style:${face.style};` : ""}${face.weight ? `font-weight:${face.weight};` : ""}${face.display ? `font-display:${face.display};` : ""}${face.unicodeRange ? `unicode-range:${face.unicodeRange};` : ""}src:${face.sources.map((item) => `url(${quote(item.url)}) format(${quote(item.format)})`).join(",")};}`).join("\n");
   const reset = `${root},${root} *{box-sizing:border-box}${root} :where(h1,h2,h3,h4,h5,h6,p,ul,ol,dl,dd,figure,blockquote){margin:0;padding:0}${root} :where(ul,ol){list-style:none}${root} :where(a){color:inherit;text-decoration:none}${root} :where(img){max-width:100%}${root} details:not([open])>:not(summary){display:none!important}${root} summary{list-style:none}${root} summary::-webkit-details-marker{display:none}`;
@@ -225,7 +212,11 @@ export function cssForSitePresentation(presentationInput: unknown, target: Pick<
   const slots = `${root} :where([data-nw-presentation-header],[data-nw-presentation-body],[data-nw-presentation-footer],div[data-nw-scope]){display:contents}`;
   const overlays = `${root} [data-nw-overlay][hidden]{display:none!important}${root} [data-nw-overlay]{position:fixed;inset:0;z-index:2147482000;overflow:auto}${root} [data-nw-overlay-backdrop]{position:fixed;inset:0;width:100%;height:100%;margin:0;padding:0;border:0;background:#00000029;cursor:pointer}${root} [data-nw-overlay-content]{position:relative;z-index:1;height:100%;min-height:100%;pointer-events:none}${root} [data-nw-overlay-content] :where(a[href],button,details,summary,[tabindex="0"]){pointer-events:auto}`;
   const hostViews = `${root} [data-nw-host-view]>[data-nw-scope]{display:contents}${root} [data-nw-carousel-slide][hidden]{display:none!important}`;
-  return { presentation, scope, css: [fonts, reset, slots, overlays, hostViews, cssForDocument(layout, assets)].filter(Boolean).join("\n") };
+  return { scope, css: [fonts, reset, slots, overlays, hostViews, cssForDocument(layout, assets)].filter(Boolean).join("\n") };
+}
+export function cssForSitePresentation(presentationInput: unknown, target: Pick<PageDocument, "siteId" | "locale">, blocks: BlockContracts = {}, assetInput: unknown = {}): { presentation: SitePresentation; css: string; scope: string } {
+  const presentation = parseSitePresentation(presentationInput, target, blocks), assets: ResolvedAssetMap = parseResolvedAssets(assetInput);
+  return { presentation, ...cssForValidatedSitePresentation(presentation, assets) };
 }
 
 /** 素材解決用。本文・共有文書を1文書へ写すだけで、保存や描画には使わない。 */

@@ -21,6 +21,8 @@ const field = (text, root = document) => [...root.querySelectorAll("label")].fin
 const input = (text, root = document) => field(text, root)?.querySelector("input,textarea,select");
 const frame = () => document.querySelector("iframe");
 const canvasCss = () => frame().contentDocument.querySelector("style[data-nw-style]").textContent;
+const canvasNodeValue = (id, name) => frame().contentDocument.querySelector(`[data-nw-node="${id}"]`)?.style.getPropertyValue(name) ?? "";
+const canvasTokenValue = (name) => [...frame().contentDocument.querySelectorAll("[data-nw-scope]")].map((node) => node.style.getPropertyValue(`--nw-${name}`)).find(Boolean) ?? "";
 async function click(target) { assert.ok(target); await act(async () => target.click()); await flush(); }
 async function clickLayer(label, scope = document) { const target = await findLayer(() => button(label, scope), click, scope); assert.ok(target, label); await click(target); }
 async function key(target, value) { assert.ok(target); await act(async () => target.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: value, bubbles: true }))); await flush(); }
@@ -71,13 +73,18 @@ test("a shared color is created, applied to two elements, recolored live and sav
     await canvasClick("p"); await click(button("選択中の要素の文字色に適用", left()));
     assert.ok(left().textContent.includes("2 か所に反映されます"));
     assert.deepEqual([...left().querySelectorAll(".e-usage button")].map((node) => node.textContent), ["海のそばで過ごす", "同じ文書を複数の公開サイトで描画できます。"]);
+    const stableCss = canvasCss();
     await type(input("色", left()), "#00aa00");
-    assert.ok(canvasCss().includes("--nw-color-1:#00aa00;"), "typing previews the new value before it is committed");
+    assert.equal(canvasCss(), stableCss, "editing a color keeps the canvas stylesheet unchanged");
+    assert.equal(canvasTokenValue("color-1"), "#00aa00", "typing updates the scope variable before it is committed");
     assert.equal(button("下書き保存").disabled, true);
     await act(async () => input("色", left()).dispatchEvent(new dom.window.FocusEvent("focusout", { bubbles: true }))); await flush();
     const css = canvasCss();
-    assert.ok(css.includes("--nw-color-1:#00aa00;"));
-    for (const id of ["heading", "lead"]) assert.ok(css.includes(`[data-nw-node="${id}"]{color:var(--nw-color-1);}`), id);
+    assert.equal(canvasTokenValue("color-1"), "#00aa00");
+    for (const id of ["heading", "lead"]) {
+      assert.ok(css.includes(`[data-nw-node="${id}"]{color:var(--nw-Node-${id}-base-color);}`), id);
+      assert.equal(canvasNodeValue(id, `--nw-Node-${id}-base-color`), "var(--nw-color-1)", id);
+    }
     await click(button("下書き保存"));
     const saved = app.calls.saves[0].document;
     assert.deepEqual(saved.tokens["color-1"], { type: "color", value: "#00aa00", label: "カラー 1" });
@@ -115,7 +122,9 @@ test("native shared context renders outside the editable scope, preserves a 5px 
     assert.ok(frameDocument.body.textContent.includes("SHARED_MENU_DRAFT_MUST_NOT_SAVE"));
     assert.equal(frameDocument.querySelector("[data-nw-overlay]").hidden, true);
     const css = [...frameDocument.querySelectorAll("style")].map((node) => node.textContent).join("\n");
-    assert.match(css, /\[data-nw-node="bullet"\]\{background-color:#123456;height:5px;width:5px;\}/);
+    assert.match(css, /\[data-nw-node="bullet"\]\{background-color:var\(--nw-Node-bullet-base-backgroundColor\);height:var\(--nw-Node-bullet-base-height\);width:var\(--nw-Node-bullet-base-width\);\}/);
+    assert.equal(canvasNodeValue("bullet", "--nw-Node-bullet-base-backgroundColor"), "#123456");
+    assert.equal(canvasNodeValue("bullet", "--nw-Node-bullet-base-width"), "5px");
     assert.equal(css.includes("min-height:48px"), false);
     await click(button("プレビュー"));
     await canvasClick("[data-nw-overlay-open]");
@@ -257,9 +266,10 @@ test("a tablet override is shown in the tier color, can be reset, and matches th
     await click(direction().querySelector('[aria-label="横"]'));
     const row = direction().closest(".e-row");
     assert.ok(row.classList.contains("e-own")); assert.ok(row.textContent.includes("保存前"));
-    assert.ok(canvasCss().includes("flex-direction:row;"));
+    assert.ok(canvasCss().includes("flex-direction:var(--nw-Node-hero-responsive-768-flexDirection);"));
+    assert.equal(canvasNodeValue("hero", "--nw-Node-hero-responsive-768-flexDirection"), "row");
     await click(button("方向のこの幅の指定を解除", right()));
-    assert.ok(!canvasCss().includes("flex-direction:row;")); assert.ok(!direction().closest(".e-row").classList.contains("e-own"));
+    assert.ok(!canvasCss().includes("--nw-Node-hero-responsive-768-flexDirection")); assert.ok(!direction().closest(".e-row").classList.contains("e-own"));
     await click(direction().querySelector('[aria-label="横"]'));
     // 選択を変えても段は維持する。
     await clickLayer("h1 · heading"); assert.equal(document.querySelector('[aria-label="編集する幅"] [aria-pressed="true"]').textContent, "タブレット 768px〜");
@@ -269,7 +279,9 @@ test("a tablet override is shown in the tier color, can be reset, and matches th
     await reloadEditor();
     const html = renderPageToHtml(app.stored()), published = html.match(/<style data-nw-style="[^"]+">([^]*?)<\/style>/)[1];
     assert.ok(published.includes("@media (min-width:768px)") && published.includes("flex-direction:row;"));
-    assert.equal(canvasCss(), published);
+    assert.ok(canvasCss().includes("flex-direction:var(--nw-Node-hero-responsive-768-flexDirection);"));
+    assert.equal(canvasNodeValue("hero", "--nw-Node-hero-responsive-768-flexDirection"), "row");
+    assert.notEqual(canvasCss(), published, "the editor keeps dynamic values on canvas nodes while public CSS stays static");
   } finally { await app.cleanup(); }
 });
 
@@ -296,7 +308,8 @@ test("the compact tier disclosure and explicit alignment controls keep viewport,
     assert.equal(right().querySelector('[aria-label="横方向を右に揃える"]').getAttribute("aria-pressed"), "true", "row-reverse is converted to the visual horizontal axis");
     assert.equal(right().querySelector('[aria-label="縦方向を下に揃える"]').getAttribute("aria-pressed"), "true");
     await click(right().querySelector('[aria-label="横方向を左に揃える"]'));
-    assert.match(canvasCss(), /@media \(min-width:768px\)\{[^}]*hero"\]\{[^}]*justify-content:flex-end;/);
+    assert.match(canvasCss(), /@media \(min-width:768px\)\{[^}]*hero"\]\{[^}]*justify-content:var\(--nw-Node-hero-responsive-768-justifyContent\);/);
+    assert.equal(canvasNodeValue("hero", "--nw-Node-hero-responsive-768-justifyContent"), "flex-end");
     await click(button("元に戻す"));
     assert.equal(right().querySelector('[aria-label="横方向を右に揃える"]').getAttribute("aria-pressed"), "true", "axis edits remain one undo step");
 
@@ -310,9 +323,12 @@ test("the compact tier disclosure and explicit alignment controls keep viewport,
     const verticalBottom = right().querySelector('[aria-label="縦方向を下に揃える"]');
     verticalBottom.focus(); await key(verticalBottom, "ArrowUp");
     assert.equal(document.activeElement.getAttribute("aria-label"), "縦方向を中央に揃える");
-    assert.match(canvasCss(), /@media \(min-width:768px\)\{[^}]*hero"\]\{[^}]*align-items:center;[^}]*justify-content:center;/);
+    assert.match(canvasCss(), /@media \(min-width:768px\)\{[^}]*hero"\]\{[^}]*align-items:var\(--nw-Node-hero-responsive-768-alignItems\);[^}]*justify-content:var\(--nw-Node-hero-responsive-768-justifyContent\);/);
+    assert.equal(canvasNodeValue("hero", "--nw-Node-hero-responsive-768-alignItems"), "center");
+    assert.equal(canvasNodeValue("hero", "--nw-Node-hero-responsive-768-justifyContent"), "center");
     await click(button("均等に配置", right()));
-    assert.match(canvasCss(), /@media \(min-width:768px\)\{[^}]*hero"\]\{[^}]*justify-content:space-between;/);
+    assert.match(canvasCss(), /@media \(min-width:768px\)\{[^}]*hero"\]\{[^}]*justify-content:var\(--nw-Node-hero-responsive-768-justifyContent\);/);
+    assert.equal(canvasNodeValue("hero", "--nw-Node-hero-responsive-768-justifyContent"), "space-between");
 
     assert.deepEqual([...right().querySelectorAll(".e-sec>h3")].map((node) => node.textContent), ["レイアウト", "外観", "位置"]);
     for (const caption of ["マージン", "パディング", "ギャップ", "配置の基準", "重ね順", "はみ出し"]) assert.ok(field(caption, right()), caption);
@@ -336,7 +352,10 @@ test("flex width and dvh height round-trip through the inspector, undo, and publ
     const widthUnit = () => field("幅", right()).querySelector("select");
     await change(widthUnit(), "u:flex");
     assert.equal(input("幅", right()).value, "1", "fixed width becomes a 1 flex ratio");
-    assert.match(canvasCss(), /flex-basis:0px;flex-grow:1;width:auto;/);
+    assert.match(canvasCss(), /flex-basis:var\(--nw-Node-heading-base-flexBasis\);flex-grow:var\(--nw-Node-heading-base-flexGrow\);width:var\(--nw-Node-heading-base-width\);/);
+    assert.equal(canvasNodeValue("heading", "--nw-Node-heading-base-flexBasis"), "0px");
+    assert.equal(canvasNodeValue("heading", "--nw-Node-heading-base-flexGrow"), "1");
+    assert.equal(canvasNodeValue("heading", "--nw-Node-heading-base-width"), "auto");
     await change(input("幅", right()), "2");
     await click(button("元に戻す"));
     assert.equal(input("幅", right()).value, "1", "the ratio change is one undo step");
@@ -390,7 +409,9 @@ test("height flex divides a vertical parent's remaining space and switches back 
     assert.ok(![...field("幅", right()).querySelector("select").options].some((option) => option.value === "u:flex"), "the cross axis does not claim the same grow ratio");
     await change(heightUnit(), "u:flex");
     await change(input("高さ", right()), "2");
-    assert.match(canvasCss(), /flex-basis:0px;flex-grow:2;height:auto;/);
+    assert.match(canvasCss(), /flex-basis:var\(--nw-Node-heading-base-flexBasis\);flex-grow:var\(--nw-Node-heading-base-flexGrow\);height:var\(--nw-Node-heading-base-height\);/);
+    assert.equal(canvasNodeValue("heading", "--nw-Node-heading-base-flexGrow"), "2");
+    assert.equal(canvasNodeValue("heading", "--nw-Node-heading-base-height"), "auto");
     await click(button("元に戻す"));
     assert.equal(input("高さ", right()).value, "1");
     await click(button("やり直す"));
@@ -494,8 +515,10 @@ test("text styles are applied from the style panel, shown as inherited values an
     await click(button("テキストスタイルを追加", left()));
     await change(input("タブレット 768px〜 のサイズ", left()), "20");
     await canvasClick("h1"); await click(button("選択中の要素に適用", left()));
-    assert.ok(canvasCss().includes('[data-nw-node="heading"]{font-size:16px;font-weight:400;line-height:1.6;}'));
-    assert.ok(canvasCss().includes('@media (min-width:768px){') && canvasCss().includes('[data-nw-node="heading"]{font-size:20px;}'));
+    assert.ok(canvasCss().includes('[data-nw-node="heading"]{font-size:var(--nw-Node-heading-text-base-fontSize);font-weight:var(--nw-Node-heading-text-base-fontWeight);line-height:var(--nw-Node-heading-text-base-lineHeight);}'));
+    assert.ok(canvasCss().includes('@media (min-width:768px){') && canvasCss().includes('[data-nw-node="heading"]{font-size:var(--nw-Node-heading-text-responsive-768-fontSize);}'));
+    assert.equal(canvasNodeValue("heading", "--nw-Node-heading-text-base-fontSize"), "16px");
+    assert.equal(canvasNodeValue("heading", "--nw-Node-heading-text-responsive-768-fontSize"), "20px");
     assert.equal(input("テキストスタイル", right()).value, "text-1");
     assert.ok(field("文字サイズ", right()).textContent.includes("継承: テキスト 1"));
     assert.equal(field("文字サイズ", right()).querySelector(".e-hint").title, "テキストスタイル『テキスト 1』から継承");
@@ -505,7 +528,10 @@ test("text styles are applied from the style panel, shown as inherited values an
     await click(button("切り離す", field("テキストスタイル", right())));
     assert.equal(input("テキストスタイル", right()).value, "");
     const after = canvasCss();
-    assert.ok(after.includes('[data-nw-node="heading"]{font-size:16px;font-weight:400;line-height:1.6;}') && after.includes('[data-nw-node="heading"]{font-size:20px;}'));
+    assert.ok(after.includes('[data-nw-node="heading"]{font-size:var(--nw-Node-heading-base-fontSize);font-weight:var(--nw-Node-heading-base-fontWeight);line-height:var(--nw-Node-heading-base-lineHeight);}'));
+    assert.ok(after.includes('[data-nw-node="heading"]{font-size:var(--nw-Node-heading-responsive-768-fontSize);}'));
+    assert.equal(canvasNodeValue("heading", "--nw-Node-heading-base-fontSize"), "16px");
+    assert.equal(canvasNodeValue("heading", "--nw-Node-heading-responsive-768-fontSize"), "20px");
     assert.notEqual(before, after.replace(/\n/g, ""));
     await click(button("下書き保存"));
     const heading = app.calls.saves[0].document.body[0].children[0];
@@ -525,7 +551,8 @@ test("editing only below the next tier keeps wider widths, is undone in one step
     assert.ok(right().textContent.includes("表示中の 1280px にはこの指定は反映されません"));
     assert.ok(button("375px で表示", right()));
     await click(direction().querySelector('[aria-label="縦"]'));
-    assert.match(canvasCss(), /@media \(min-width:768px\)\{[^}]*hero"\]\{[^}]*flex-direction:row;/);
+    assert.match(canvasCss(), /@media \(min-width:768px\)\{[^}]*hero"\]\{[^}]*flex-direction:var\(--nw-Node-hero-responsive-768-flexDirection\);/);
+    assert.equal(canvasNodeValue("hero", "--nw-Node-hero-responsive-768-flexDirection"), "row");
     await click(button("元に戻す")); await clickLayer("section · hero");
     assert.equal(right().querySelector('[aria-label="反映する範囲"] [aria-pressed="true"]').textContent, "〜767px だけ", "範囲は選択を変えても保つ");
     assert.doesNotMatch(canvasCss(), /@media \(min-width:768px\)\{[^}]*hero"\]\{[^}]*flex-direction/);
@@ -544,11 +571,27 @@ test("editing only below the next tier keeps wider widths, is undone in one step
 
 /** サイト共通スタイルを読み書きできるホスト。ページの h1 はサイト共通のカラーを参照する。 */
 function siteStyleHost() {
-  const saves = []; let settings = { title: "デモサイト", locale: "ja", tokens: { brand: { type: "color", value: "#336655", label: "ブランド" } } }, version = 1;
+  const saves = [], publishes = []; let settings = { title: "デモサイト", locale: "ja", tokens: { brand: { type: "color", value: "#336655", label: "ブランド" } } }, version = 1;
+  let publishedVersion = 1, publishedStyles = {};
   const page = structuredClone(fixture); page.body[0].children[0].style = { base: { color: { token: "brand" } } };
-  return { saves, page, adapter: {
-    readSiteSettings: async () => ({ settings: structuredClone(settings), version: `s${version}` }),
-    saveSiteSettings: async (request) => { saves.push(structuredClone(request)); settings = structuredClone(request.settings); version++; return { status: "saved", version: `s${version}` }; }
+  const rewrite = (value, from, to) => {
+    if (Array.isArray(value)) return value.map((entry) => rewrite(entry, from, to));
+    if (!value || typeof value !== "object") return value;
+    if (Object.keys(value).length === 1 && value.token === from) return { token: to };
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, rewrite(entry, from, to)]));
+  };
+  const stylesOnly = (value) => ({ ...(value.tokens ? { tokens: structuredClone(value.tokens) } : {}), ...(value.textStyles ? { textStyles: structuredClone(value.textStyles) } : {}) });
+  return { saves, publishes, page, adapter: {
+    readSiteSettings: async () => ({ settings: structuredClone(settings), version: `s${version}`, publishedVersion: `p${publishedVersion}`, publishedStyles: structuredClone(publishedStyles) }),
+    saveSiteSettings: async (request) => {
+      saves.push(structuredClone(request)); settings = structuredClone(request.settings); version++;
+      for (const rename of request.styleRenames ?? []) if (rename.styleKind === "token") Object.assign(page, rewrite(page, rename.from, rename.to));
+      return { status: "saved", version: `s${version}`, styles: structuredClone(settings) };
+    },
+    publishSiteStyles: async (request) => {
+      publishes.push(structuredClone(request)); publishedStyles = stylesOnly(settings);
+      publishedVersion++; return { status: "published", version: `p${publishedVersion}`, styles: structuredClone(publishedStyles) };
+    }
   } };
 }
 const libraryRow = (name) => [...left().querySelectorAll(".e-lib-row")].find((node) => node.querySelector(".e-lib-name")?.textContent === name);
@@ -559,6 +602,8 @@ test("site-wide color and name inputs are committed while typing in the site sco
   const host = siteStyleHost(), app = await setup({ document: host.page, adapter: host.adapter });
   try {
     await openSiteColor("ブランド");
+    assert.ok(libraryRow("ブランド").textContent.includes("定義内 0 か所"), "the site library count is scoped to shared definitions");
+    assert.ok(left().textContent.includes("共通定義内では未使用です。ページへの参照は変更後の全ページ確認に表示します。"), "page references are not reported as missing when the site definition document has no body");
     // サイト共通の欄の入力途中は「ページの未確定の入力」に数えず、欄を止めない。
     await type(input("色", left()), "#zz");
     assert.equal(input("色", left()).disabled, false); assert.equal(input("色", left()).closest(".e-frame").dataset.pending, "true");
@@ -575,6 +620,47 @@ test("site-wide color and name inputs are committed while typing in the site sco
     await click(button("サイト共通スタイルを保存"));
     assert.deepEqual(host.saves[0].settings.tokens.brand, { type: "color", value: "#00aa00", label: "ブランド色" });
     assert.equal(app.calls.saves.length, 0, "ページの下書きは保存しない");
+  } finally { await app.cleanup(); }
+});
+
+test("site-wide style keys rename through one edit and publish from the style panel", async () => {
+  const host = siteStyleHost(), app = await setup({ document: host.page, adapter: {
+    ...host.adapter,
+    readDocument: async () => ({ document: structuredClone(host.page), version: "v1" })
+  } });
+  try {
+    await openSiteColor("ブランド");
+    await change(input("識別名", left()), "brandPrimary");
+    assert.equal(input("識別名", left()).value, "brandPrimary");
+    await click(button("サイト共通スタイルを保存"));
+    assert.deepEqual(host.saves[0].styleRenames, [{ type: "rename", styleKind: "token", from: "brand", to: "brandPrimary" }]);
+    assert.ok(host.saves[0].settings.tokens.brandPrimary);
+    assert.equal(host.saves[0].settings.tokens.brand, undefined);
+    assert.deepEqual(host.page.body[0].children[0].style.base.color, { token: "brandPrimary" }, "the host applies page-reference updates in the same edit transaction");
+    await click(button("サイト共通", left()));
+    assert.ok(button("サイト共通スタイルを公開"), left().textContent);
+    assert.equal(button("サイト共通スタイルを公開").disabled, false);
+    await click(button("サイト共通スタイルを公開"));
+    assert.deepEqual(host.publishes, [{ siteId: "demo", expectedDraftVersion: "s2", expectedPublishedVersion: "p1" }]);
+    assert.ok(left().textContent.includes("公開中の全ページに最新の共通スタイルが反映されています。"));
+  } finally { await app.cleanup(); }
+});
+
+test("the editor validates a page with the current site draft and no page style-version fence", async () => {
+  const page = structuredClone(fixture);
+  page.body[0].children[0].style = { base: { color: { token: "siteInk" } } };
+  const refreshed = { title: "デモサイト", locale: "ja", tokens: { siteInk: { type: "color", value: "#123456", label: "最新カラー" } } };
+  let settingsReads = 0;
+  const app = await setup({ document: page, adapter: {
+    readSiteSettings: async () => { settingsReads++; return { settings: structuredClone(refreshed), version: "draft-2" }; },
+    saveSiteSettings: async () => ({ status: "saved", version: "draft-3" }),
+    readDocument: async () => ({ document: structuredClone(page), version: "v1" })
+  } });
+  try {
+    assert.ok(settingsReads >= 1);
+    await click(button("スタイル", left()));
+    await click(button("サイト共通", left()));
+    assert.ok(libraryRow("最新カラー"), "the editor adopts the settings snapshot used to validate the page");
   } finally { await app.cleanup(); }
 });
 
@@ -619,7 +705,7 @@ test("one site-wide color change is confirmed against every page that uses it an
     assert.equal(host.saves[0].settings.tokens.brand.value, "#00aa00");
     for (const page of [host.page, about]) assert.match(renderPageToHtml(page, {}, { siteStyles: host.saves[0].settings }), /--nw-brand:#00aa00;/);
     assert.equal(app.calls.saves.length, 0, "no page draft is written for a site-wide change");
-    await until(() => canvasCss().includes("--nw-brand:#00aa00;"), "the canvas shows the saved site color");
+    await until(() => canvasTokenValue("brand") === "#00aa00", "the canvas shows the saved site color");
   } finally { await app.cleanup(); }
 });
 
@@ -647,23 +733,21 @@ test("a 409 on the site-wide save keeps the edited value and shows the latest se
   } finally { await app.cleanup(); }
 });
 
-test("deleting a site-wide color is reserved for site.styles migration", async () => {
-  const refusal = "削除・名前変更には site.styles の migration plan/apply が必要です。通常保存では削除できません。";
-  const host = siteStyleHost(), app = await setup({ document: host.page, adapter: host.adapter });
+test("deleting a referenced site-wide color reaches the shared operation and shows its usages", async () => {
+  const host = siteStyleHost(), app = await setup({ document: host.page, adapter: { ...host.adapter,
+    saveSiteSettings: async (request) => {
+      host.saves.push(structuredClone(request));
+      return { status: "referenced", usages: [{ kind: "page", id: "home", locale: "ja-JP", path: "body.hero" }] };
+    } } });
   try {
     await openSiteColor("ブランド");
     await click(button("このカラーを削除", left())); await click(button("削除する", left()));
-    assert.ok(left().textContent.includes(refusal)); assert.equal(review(), null);
-    assert.ok(libraryRow("ブランド"), "the definition stays");
+    assert.ok(review(), "the deletion is represented by the same site style edit flow");
+    await click(button("サイト共通スタイルを保存"));
+    await until(() => review()?.textContent.includes("使用中の共通値は削除できません: home (ja-JP): body.hero"));
+    assert.equal(host.saves.length, 1);
+    assert.equal(libraryRow("ブランド"), undefined, "the unsaved edit stays visible after refusal");
   } finally { await app.cleanup(); }
-  const atomic = siteStyleHost();
-  const app2 = await setup({ document: atomic.page, adapter: { ...atomic.adapter, siteStyleCapabilities: { atomicReferenceDetachment: true } } });
-  try {
-    await openSiteColor("ブランド");
-    await click(button("このカラーを削除", left())); await click(button("削除する", left()));
-    assert.ok(left().textContent.includes(refusal), "the removed legacy capability cannot bypass migration planning");
-    assert.equal(review(), null); assert.equal(atomic.saves.length, 0); assert.ok(libraryRow("ブランド"));
-  } finally { await app2.cleanup(); }
 });
 
 test("a host without site settings shows neither the site scope nor owners and keeps page-only styles", async () => {

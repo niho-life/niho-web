@@ -1,4 +1,5 @@
 import { copyId, walkNodes } from "./node-tree.js";
+import { remapCarouselBinding } from "./carousel.js";
 import type { AssetReference, PageDocument, PageNode } from "./types.js";
 
 export const EDITOR_NODE_CLIPBOARD_TYPE = "application/x-niho-web-nodes+json";
@@ -123,10 +124,12 @@ export function parseEditorNodeClipboard(value: unknown): EditorNodeClipboard {
 export function normalizeNodeFragment(source: readonly PageNode[], destination: PageDocument): PageNode[] {
   const copies = structuredClone(source) as PageNode[], usedNodeIds = new Set(walkNodes(destination).flatMap(({ node }) => node.type === "text" ? [] : [node.id]));
   const usedHtmlIds = new Set(walkNodes(destination).flatMap(({ node }) => node.type === "element" && typeof node.attrs?.id === "string" ? [node.attrs.id] : []));
-  const remap = new Map<string, string>();
+  const remap = new Map<string, string>(), nodeIds = new Map<string, string>();
   const rename = (node: PageNode): void => {
     if (node.type === "text") return;
-    node.id = copyId(node.id, usedNodeIds);
+    const oldId = node.id;
+    node.id = copyId(oldId, usedNodeIds);
+    nodeIds.set(oldId, node.id);
     if (node.type === "element") {
       if (typeof node.attrs?.id === "string") {
         const previous = node.attrs.id;
@@ -140,6 +143,7 @@ export function normalizeNodeFragment(source: readonly PageNode[], destination: 
   copies.forEach(rename);
   const updateReferences = (node: PageNode): void => {
     if (node.type !== "element") return;
+    if (node.interaction?.type === "carousel") node.interaction.binding = remapCarouselBinding(node.interaction.binding, (id) => nodeIds.get(id) ?? id);
     if (typeof node.attrs?.href === "string" && node.attrs.href.startsWith("#") && remap.has(node.attrs.href.slice(1))) {
       node.attrs.href = `#${remap.get(node.attrs.href.slice(1))}`;
     }

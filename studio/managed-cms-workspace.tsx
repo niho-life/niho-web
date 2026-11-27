@@ -1,7 +1,9 @@
-import { useEffect, useRef, useState } from "react";
-import type { CmsCollection, CmsDiscovery, CmsItemRevision, CmsProblem, CmsReleasePin, CmsReleaseSnapshot, CmsSchema } from "../src/cms-v2.js";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { cmsLocalizationItemKey, type CmsCollection, type CmsDiscovery, type CmsItemRevision, type CmsProblem, type CmsReleasePin, type CmsReleaseSnapshot, type CmsSchema } from "../src/cms-v2.js";
 import { cmsDraftMatchesPublishedValues, collectionPathForEditor, redirectsForCmsRelease, starterCollection } from "./managed-cms-model.js";
 import type { CollectionFieldType, CollectionValues, CollectionValue } from "../src/collection-model.js";
+
+const ManagedCmsTranslation = lazy(() => import("./managed-cms-localization-workspace.js").then((module) => ({ default: module.ManagedCmsTranslation })));
 
 export type ManagedCmsWorkspaceProps = { readonly projectId: string; readonly siteId: string; readonly origin: string | null };
 type ItemSummary = { id: string; title: string; revision: string; removedAt: string | null; scheduleId: string | null; status: string; scheduledAt: string | null };
@@ -78,6 +80,7 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
   const [jsonInvalidFields, setJsonInvalidFields] = useState<Record<string, boolean>>({});
   const [jsonEditorEpoch, setJsonEditorEpoch] = useState(0);
   const [preview, setPreview] = useState<Preview | null>(null);
+  const [showTranslation, setShowTranslation] = useState(false);
   const [at, setAt] = useState("");
   const [newCollection, setNewCollection] = useState({ label: "", slug: "" });
   const [schemaDraft, setSchemaDraft] = useState<CmsSchema | null>(null);
@@ -171,6 +174,7 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
     void action().catch((error) => setFeedback(failureMessage(error))).finally(() => setBusy(false));
   }
   function showItem(next: CmsItemRevision | null, summary: ItemSummary | null = null) {
+    setShowTranslation(false);
     setItem(next); setItemStatus(summary); setValues(next?.values ?? {}); setJsonInvalidFields({});
     setJsonEditorEpoch((epoch) => epoch + 1); setPreview(null); setAt("");
   }
@@ -557,6 +561,19 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
           {list.nextCursor && <button disabled={busy} onClick={() => run(() => loadList(collectionId, deleted, list.nextCursor!))}>次の項目を表示</button>}
         </div>
         {item && <div className="studio-native-cms-item">
+          {showTranslation ? <>
+            <button type="button" disabled={busy} onClick={() => setShowTranslation(false)}>日本語 CMS に戻る</button>
+            <Suspense fallback={<p>翻訳を読み込んでいます…</p>}>
+              <ManagedCmsTranslation projectId={projectId} siteId={siteId}
+                itemKey={cmsLocalizationItemKey(collectionId, item.itemId)}
+                onBack={() => setShowTranslation(false)} registerBack={() => {}} />
+            </Suspense>
+          </> : <>
+          <div className="studio-site-hub-actions">
+            {(item.locale === "ja" || item.locale === "en") && <button type="button" disabled={busy || dirty} onClick={() => setShowTranslation(true)}>
+              {item.locale === "ja" ? "English の訳文" : "日本語の訳文"}
+            </button>}
+          </div>
           <form onSubmit={(event) => { event.preventDefault(); run(save); }}>
             {currentCollection.fields.map((field) => <CmsFieldEditor key={`${collectionId}/${item.itemId}/${item.revision}/${field.fieldId}/${jsonEditorEpoch}`} field={field} value={values[field.fieldId] ?? null}
               invalidChange={(invalid) => setJsonInvalidFields((previous) => {
@@ -597,6 +614,7 @@ export function ManagedCmsWorkspace({ projectId, siteId, origin }: ManagedCmsWor
             {itemStatus.status === "draft" && !itemStatus.scheduleId && currentCollection.capabilities.remove &&
               <button disabled={busy || dirty} onClick={() => run(() => remove(itemStatus, false))}>ごみ箱へ移す</button>}
           </div>}
+          </>}
         </div>}
       </div>}
     </>}

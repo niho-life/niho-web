@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { createProjectEditorAdapter } from "@niho/web/project-editor";
+import { createProjectEditorAdapter } from "../dist/project-editor-adapter.js";
 
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 const project = { id: "project_demo", name: "デモ計画", site: { id: "demo", name: "デモサイト", domains: ["https://example.test", "https://www.example.test"] }, members: [] };
@@ -27,6 +27,21 @@ test("project editor lists only its one approved site and rejects inconsistent s
   await assert.rejects(() => missing.listSites(signal()), /サイト情報/);
   const changedDomain = setup({ listSites: async () => [{ ...project.site, domains: ["https://evil.example.test"] }] }).wrapped;
   await assert.rejects(() => changedDomain.listSites(signal()), /サイト情報/);
+});
+
+test("project editor accepts one server-managed public domain and uses it for release validation", async () => {
+  const publicDomain = "https://managed.example.test";
+  const domains = [...project.site.domains, publicDomain];
+  const request = { target: { siteId: project.site.id, pageId: "home", locale: "ja-JP" }, expectedVersion: "v1", action: "publish" };
+  const { wrapped } = setup({
+    listSites: async () => [{ ...project.site, domains }],
+    prepareRelease: async (input) => ({ ...input, confirmationToken: "token", domain: publicDomain, changes: [] })
+  });
+  assert.deepEqual(await wrapped.listSites(signal()), [{ ...project.site, domains }]);
+  assert.equal((await wrapped.prepareRelease(request, signal())).domain, publicDomain);
+
+  const tooManyDomains = setup({ listSites: async () => [{ ...project.site, domains: [...domains, "https://another.example.test"] }] }).wrapped;
+  await assert.rejects(() => tooManyDomains.listSites(signal()), /サイト情報/);
 });
 
 test("project editor accepts display-name differences and approved domain order differences", async () => {
@@ -58,6 +73,30 @@ test("legal read and save preserve compatibility while forwarding identity field
   await wrapped.saveDraft({ target, document, expectedVersion: "v3", localization }, signal());
   assert.deepEqual(calls.saves[2].localization, localization);
   await assert.rejects(() => wrapped.saveDraft({ target, document: { ...document, siteId: "other" }, expectedVersion: "v1" }, signal()), /文書の対象/);
+});
+
+test("conditional document reads forward the ETag and keep modified snapshots project-scoped", async () => {
+  const requests = [], target = { siteId: "demo", pageId: "home", locale: "ja-JP", ignored: "drop" };
+  const controller = new AbortController();
+  const wrapped = setup({
+    readDocumentIfChanged: async (checked, etag, requestSignal) => {
+      requests.push({ target: checked, etag, signal: requestSignal });
+      if (etag) return { status: "not-modified", etag };
+      return { status: "modified", snapshot: { document: { ...fixture, siteId: "demo", pageId: "home", locale: "ja-JP" }, version: "v2", readOnly: { reason: "表示のみ" } }, etag: "etag-2" };
+    }
+  }).wrapped;
+
+  assert.deepEqual(await wrapped.readDocumentIfChanged(target, "etag-1", controller.signal), { status: "not-modified", etag: "etag-1" });
+  const result = await wrapped.readDocumentIfChanged(target, undefined, controller.signal);
+  assert.equal(result.status, "modified");
+  assert.equal(result.etag, "etag-2");
+  assert.equal(result.snapshot.readOnly.reason, "表示のみ");
+  assert.deepEqual(requests.map(({ target: checked, etag }) => ({ target: checked, etag })), [
+    { target: { siteId: "demo", pageId: "home", locale: "ja-JP" }, etag: "etag-1" },
+    { target: { siteId: "demo", pageId: "home", locale: "ja-JP" }, etag: undefined }
+  ]);
+  assert.ok(requests.every(({ signal: forwarded }) => forwarded === controller.signal));
+  await assert.rejects(() => wrapped.readDocumentIfChanged({ ...target, siteId: "other" }, "etag-1", controller.signal), /一致/);
 });
 
 test("presentation stays target-scoped and its dependency version is forwarded to save and release CAS", async () => {
@@ -146,7 +185,7 @@ test("project editor forwards site frame sources without sharing the source arra
 });
 test("optional page and site methods are absent unless the host implements them", () => {
   const { wrapped } = setup();
-  for (const name of ["listFormCompletionPages", "preparePageChange", "applyPageChange", "readSiteSettings", "saveSiteSettings", "breakpointSettings", "responsiveProposal", "localization"]) assert.equal(name in wrapped, false, name);
+  for (const name of ["listFormCompletionPages", "preparePageChange", "applyPageChange", "readDocumentIfChanged", "readSiteSettings", "saveSiteSettings", "breakpointSettings", "localization"]) assert.equal(name in wrapped, false, name);
   const calls = { pageChanges: [], applies: [], settings: [], settingsSaves: [] };
   const partial = setup({ readSiteSettings: pageHostMethods(calls).readSiteSettings }).wrapped;
   assert.equal(typeof partial.readSiteSettings, "function"); assert.equal("saveSiteSettings" in partial, false); assert.equal("preparePageChange" in partial, false);
@@ -179,20 +218,6 @@ test("site breakpoint adapter is project-scoped, detached and forwards only CAS 
   assert.deepEqual(calls[1], ["save", { siteId: "demo", settings: snapshot.settings, expectedVersion: "b.1" }]);
   await assert.rejects(() => wrapped.breakpointSettings.save({ ...request, siteId: "other" }, signal()), /プロジェクト外/);
   await assert.rejects(() => setup({ breakpointSettings: { read: async () => ({ settings: { ...snapshot.settings, breakpoints: snapshot.settings.breakpoints.slice(0, -1) }, version: "b.1" }), save: async () => ({ status: "conflict" }) } }).wrapped.breakpointSettings.read("demo", signal()), /ブレークポイント/);
-});
-test("responsive proposal adapter is optional, project-scoped and forwards a detached closed request", async () => {
-  const calls = [], response = { fingerprint: "pending", changes: [] };
-  const { wrapped } = setup({ responsiveProposal: { propose: async (request) => { calls.push(structuredClone(request)); response.fingerprint = request.fingerprint; return response; } } });
-  const source = { ...structuredClone(fixture), siteId: "demo", pageId: "home", locale: "ja-JP" };
-  const input = { target: { siteId: "demo", pageId: "home", locale: "ja-JP", ignored: true }, document: source, fingerprint: JSON.stringify(source),
-    scope: { type: "node", nodeId: "hero", ignored: true }, breakpoints: [768], ignored: true };
-  const result = await wrapped.responsiveProposal.propose(input, signal());
-  assert.deepEqual(Object.keys(calls[0]).sort(), ["breakpoints", "document", "fingerprint", "scope", "target"]);
-  assert.deepEqual(calls[0].target, { siteId: "demo", pageId: "home", locale: "ja-JP" });
-  assert.deepEqual(calls[0].scope, { type: "node", nodeId: "hero" });
-  response.changes.push({ nodeId: "hero" }); assert.deepEqual(result.changes, [], "host response is detached");
-  await assert.rejects(() => wrapped.responsiveProposal.propose({ ...input, target: { ...input.target, siteId: "other" } }, signal()), /一致/u);
-  await assert.rejects(() => wrapped.responsiveProposal.propose({ ...input, fingerprint: "stale" }, signal()), /文書/u);
 });
 test("localization methods remain project-scoped and preserve optimistic command fields", async () => {
   const calls = [];
@@ -278,6 +303,22 @@ test("page changes and site settings are limited to the project site and re-vali
   assert.deepEqual(calls.settings, ["demo"]); assert.deepEqual(calls.settingsSaves, [{ siteId: "demo", settings: { title: "x", locale: "ja" }, expectedVersion: "s1" }]);
 });
 
+test("project adapter preserves shared style publication state and rename request", async () => {
+  const brand = { type: "color", value: "#123456" }, calls = { saves: [], publishes: [] };
+  const { wrapped } = setup({
+    readSiteSettings: async () => ({ settings: { title: "デモ", locale: "ja", tokens: { brand } }, version: "draft-1", publishedVersion: "published-1", publishedStyles: {} }),
+    saveSiteSettings: async (request) => { calls.saves.push(structuredClone(request)); return { status: "saved", version: "draft-2" }; },
+    publishSiteStyles: async (request) => { calls.publishes.push(structuredClone(request)); return { status: "published", version: "published-2", styles: { tokens: { primary: brand } } }; }
+  });
+  assert.deepEqual(await wrapped.readSiteSettings("demo", signal()), { settings: { title: "デモ", locale: "ja", tokens: { brand } }, version: "draft-1", publishedVersion: "published-1", publishedStyles: {} });
+  const styleRenames = [{ type: "rename", styleKind: "token", from: "brand", to: "primary" }];
+  await wrapped.saveSiteSettings({ siteId: "demo", expectedVersion: "draft-1", previousStyles: { tokens: { brand } }, styleRenames,
+    settings: { title: "デモ", locale: "ja", tokens: { primary: brand } } }, signal());
+  assert.deepEqual(calls.saves[0].styleRenames, styleRenames);
+  await wrapped.publishSiteStyles({ siteId: "demo", expectedDraftVersion: "draft-2", expectedPublishedVersion: "published-1" }, signal());
+  assert.deepEqual(calls.publishes, [{ siteId: "demo", expectedDraftVersion: "draft-2", expectedPublishedVersion: "published-1" }]);
+});
+
 const revisionEntry = { id: "rev_2", revision: 2, kind: "draft", createdAt: "2026-10-21T00:00:00.000Z", actor: "編集者" };
 const revisionMethods = (calls, overrides = {}) => ({
   listRevisions: async (request) => { calls.lists.push(structuredClone(request)); return { entries: [revisionEntry], next: "c2" }; },
@@ -311,10 +352,11 @@ test("revision methods are wrapped only when present, limited to the project sit
 });
 test("release plans keep a validated public URL and affected list through the project wrapper", async () => {
   const target = { siteId: "demo", pageId: "home", locale: "ja-JP" }, request = { target, expectedVersion: "v1", action: "publish" };
-  const extra = { url: "https://example.test/about", affected: [{ kind: "shared", name: "ヘッダー", detail: "ナビゲーション", hidden: true }, { kind: "site", name: "サイト設定" }] };
+  const extra = { url: "https://example.test/about", warnings: [{ code: "duplicate-title", message: "別の公開ページと重複しています。", hidden: true }], affected: [{ kind: "shared", name: "ヘッダー", detail: "ナビゲーション", hidden: true }, { kind: "site", name: "サイト設定" }] };
   const { wrapped, calls } = setup({ prepareRelease: async (input) => ({ ...input, confirmationToken: "token", domain: "https://example.test", changes: [], ...extra }) });
   const plan = await wrapped.prepareRelease(request, signal());
   assert.equal(plan.url, "https://example.test/about");
+  assert.deepEqual(plan.warnings, [{ code: "duplicate-title", message: "別の公開ページと重複しています。" }]);
   assert.deepEqual(plan.affected, [{ kind: "shared", name: "ヘッダー", detail: "ナビゲーション" }, { kind: "site", name: "サイト設定" }]);
   await wrapped.release(plan, signal()); assert.equal(calls.releases[0].url, "https://example.test/about");
   for (const url of ["https://evil.example.test/about", "https://www.example.test/about", "https://example.test.evil/x"])

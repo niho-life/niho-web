@@ -159,7 +159,7 @@ export function editorTiers(document: PageDocument, breakpoints: readonly Editor
 export function tierForWidth(tiers: readonly EditorTier[], width: number): EditorTier {
   return [...tiers].reverse().find((tier) => tier.start <= width) ?? tiers[0] ?? { key: "base", start: 0, end: null, label: "基本" };
 }
-export const tierName = (tier: EditorTier) => tier.key === "base" ? tier.label : `${tier.label} ${tier.start}px〜`;
+export const tierName = (tier: EditorTier) => tier.key === "base" || tier.label === `${tier.start}px〜` ? tier.label : `${tier.label} ${tier.start}px〜`;
 export function declarationsAt(style: NodeStyle | undefined, tier: TierKey): StyleDeclarations | undefined {
   return tier === "base" ? style?.base : style?.responsive?.find((entry) => entry.minWidth === tier)?.declarations;
 }

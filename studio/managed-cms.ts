@@ -2,26 +2,33 @@ import {
   CMS_V2_OPERATIONS, checkCmsReleaseApply, checkCmsScheduleCreate, checkCmsSchemaApply, checkCmsWriteVersion,
   cmsLegacyCollections, cmsRoleCapabilities, cmsWorkspaceItem, discoverCmsContract, parseCmsApplyInput,
   parseCmsDraftWrite, parseCmsReleaseInput, parseCmsScheduleRequest, parseCmsSchemaPlanInput,
-  planCmsMigrationWithRouteTables, planCmsRelease, planCmsSchedule, type CmsConfirmedPlan, type CmsItemRevision,
+  planCmsMigrationWithRouteTables, planCmsRelease, planCmsSchedule, revalidateCmsRelease,
+  cmsLocalizationItemKey, cmsLocalizationStatus, collectCmsLocalizationUnits, materializeCmsLocalizedItem,
+  createCmsLocalizationOverlay, editCmsLocalizedValue, parseCmsLocalizationItemKey, parseCmsLocalizationOverlay,
+  reviewCmsLocalizedValue, type CmsItemRevision, type CmsLocalizationOverlay, type CmsSchema,
   type CmsMigrationDraft, type CmsProblem, type CmsReleaseInput, type CmsReleaseProposal, type CmsRouteBoundMigration,
-  type CmsSchedule, type CmsV2Operation
+  type CmsPublicAsset, type CmsReleaseContext, type CmsSchedule, type CmsV2Operation
 } from "../src/cms-v2.js";
+import { parseEditingLocalizationInput } from "../src/editing-localization.js";
 import { cmsCollection, cmsId, cmsItemKey, parseCmsValues } from "../src/cms-v2-schema.js";
 import { cmsPageBindingProblems, parseCmsPageBindings } from "../src/cms-page-bindings.js";
-import { parsePageDocument } from "../src/document.js";
+import { readPageSource, type PageSourceRow } from "./managed-page-source.js";
 import { parseCollectionValues, type CollectionItem, type CollectionValues } from "../src/collection-model.js";
 import { DocumentValidationError, keys, record } from "../src/validation-utils.js";
 import { validatePagePath } from "../src/pages.js";
-import { OPERATION_KEY_HEADER, UUID_V4 } from "../cli/operations.mjs";
+import { OPERATION_KEY_HEADER, UUID_V4 } from "../src/studio-cli-auth.js";
+import { MANAGED_CMS_EXTRA_OPERATIONS } from "../src/managed-cms-operations.js";
 import {
-  CmsStore, MAX_BODY, MAX_ITEMS, MAX_RETAINED_BYTES, MAX_SNAPSHOT, blobSize, cmsPathReserved, dateNow, digest,
-  iso, itemBlobKey, nowSeconds, opaque, routeTableKey, snapshotKey, type CmsCapability, type CmsScope, type ItemMeta, type JobPayload, type Site
+  CmsStore, MAX_BODY, MAX_ITEMS, MAX_REDIRECTS, MAX_RELEASE_BODY, MAX_RETAINED_BYTES, MAX_SNAPSHOT, blobSize, cmsPathReserved, dateNow, digest,
+  iso, itemBlobKey, localizationBlobKey, nowSeconds, opaque, routeTableKey, snapshotKey, type CmsCapability, type CmsScope, type ItemMeta, type JobPayload, type Site
 } from "./managed-cms-store.js";
-import { collectionPath, deliverCmsJob, previewContent, releaseContext } from "./managed-cms-release.js";
+import { collectionPath, deliverCmsJob, escapeHtml, previewContent, releaseContext, releaseImpacts } from "./managed-cms-release.js";
+import { cmsLocalizationItem, cmsLocalizationOverview, cmsLocalizationSummary, cmsLocalizationTargetLocale, type CmsLocalizationView } from "./managed-cms-localization.js";
 
 const PLAN_TTL = 10 * 60;
 const PREVIEW_TTL = 5 * 60;
 const LIST_SIZE = 10;
+const MAX_ITEM_SAVE_BODY = 128 * 1024;
 const VERSION_HEADER = "X-Studio-CMS-Version";
 const LEGACY = {
   "cms.schema": ["GET", "cms.read", 0],
@@ -29,20 +36,14 @@ const LEGACY = {
   "cms.read": ["GET", "cms.read", 2],
   "cms.create": ["POST", "cms.edit", 1],
   "cms.save": ["PUT", "cms.edit", 2],
-  "cms.publish-plan": ["POST", "cms.publish", 2],
-  "cms.publish": ["POST", "cms.publish", 2],
+  "cms.publish-now": ["POST", "cms.publish", 2],
   "cms.operation-status": ["GET", "cms.read", 1]
 } as const;
 type LegacyOp = keyof typeof LEGACY;
-const EXTRA = {
-  "cms.items.create": "cms.edit", "cms.items.list": "cms.read", "cms.items.read": "cms.read",
-  "cms.preview.prepare": "cms.read", "cms.preview.read": "cms.read",
-  "cms.release.current": "cms.read", "cms.release.snapshot": "cms.read"
-} as const;
-type Operation = CmsV2Operation | keyof typeof EXTRA;
+type Operation = CmsV2Operation | keyof typeof MANAGED_CMS_EXTRA_OPERATIONS;
 const MUTATIONS = new Set<Operation>([
   "cms.items.create", "cms.items.save", "cms.items.remove", "cms.items.restore", "cms.schema.apply",
-  "cms.release.apply", "cms.schedule.create", "cms.schedule.cancel"
+  "cms.release.apply", "cms.schedule.create", "cms.schedule.cancel", "cms.localization.items.command", "cms.localization.release.apply"
 ]);
 const json = (value: unknown, status = 200) => Response.json(value, { status, headers: {
   "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff",
@@ -61,18 +62,18 @@ function exact(value: Record<string, unknown>, names: readonly string[]) {
   if (Object.keys(value).length !== names.length) throw new DocumentValidationError("request", "missing key");
 }
 
-async function readBody(request: Request, scope: CmsScope) {
+async function readBody(request: Request, scope: CmsScope, maxBytes = MAX_BODY) {
   if (!scope.actor.cli && (request.headers.get("Origin") !== new URL(request.url).origin || request.headers.get("Sec-Fetch-Site") !== "same-origin")) return null;
   if (request.headers.get("Content-Type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") return null;
   const declared = request.headers.get("Content-Length");
-  if (declared !== null && (!/^\d+$/u.test(declared) || Number(declared) > MAX_BODY)) return null;
-  const reader = request.body?.getReader(), bytes = new Uint8Array(MAX_BODY);
+  if (declared !== null && (!/^\d+$/u.test(declared) || Number(declared) > maxBytes)) return null;
+  const reader = request.body?.getReader(), bytes = new Uint8Array(maxBytes);
   if (!reader) return null;
   let size = 0;
   while (true) {
     const chunk = await reader.read();
     if (chunk.done) break;
-    if (size + chunk.value.length > MAX_BODY) { await reader.cancel(); return null; }
+    if (size + chunk.value.length > maxBytes) { await reader.cancel(); return null; }
     bytes.set(chunk.value, size);
     size += chunk.value.length;
   }
@@ -112,6 +113,37 @@ async function currentSnapshot(store: CmsStore, site: Site) {
 
 function storedItem(site: Site, collectionId: string, itemId: string) {
   return site.state.items[cmsItemKey({ collectionId, itemId })] ?? null;
+}
+
+async function cmsLocalizationView(store: CmsStore, site: Site, collectionId: string, itemId: string, targetLocale: string): Promise<CmsLocalizationView | null> {
+  const meta = storedItem(site, collectionId, itemId);
+  if (!meta || meta.removedAt !== null) return null;
+  const source = await store.item(site.siteId, site.state.locale, meta);
+  if (targetLocale === source.locale) throw new DocumentValidationError("targetLocale", "source and target locales must differ");
+  const collection = await collectCmsLocalizationUnits(site.state.schema, source, targetLocale);
+  const overlay = await cmsLocalizationOverlay(store, site, collection);
+  return { schema: site.state.schema, source, collection, overlay, updatedAt: meta.updatedAt };
+}
+
+async function cmsLocalizationOverlay(store: CmsStore, site: Site, collection: Awaited<ReturnType<typeof collectCmsLocalizationUnits>>): Promise<CmsLocalizationOverlay> {
+  const itemKey = cmsLocalizationItemKey(collection.identity.collectionId, collection.identity.itemId);
+  const pointer = site.state.localizations?.[itemKey];
+  let overlay: CmsLocalizationOverlay;
+  if (!pointer) overlay = createCmsLocalizationOverlay(collection);
+  else {
+    const blob = await store.bucket.get(localizationBlobKey(site.siteId, collection.identity.targetLocale, itemKey, pointer.revision));
+    if (!blob) throw new Error("CMS localization overlay unavailable");
+    overlay = parseCmsLocalizationOverlay(await blob.json(), collection);
+    if (overlay.version !== pointer.version) throw new Error("CMS localization overlay version mismatch");
+  }
+  return overlay;
+}
+
+async function cmsLocalizationViews(store: CmsStore, site: Site): Promise<CmsLocalizationView[]> {
+  const targetLocale = cmsLocalizationTargetLocale(site.state.locale);
+  const metas = Object.values(site.state.items).filter((meta) => meta.removedAt === null);
+  const views = await Promise.all(metas.map((meta) => cmsLocalizationView(store, site, meta.collectionId, meta.itemId, targetLocale)));
+  return views.filter((view): view is CmsLocalizationView => view !== null);
 }
 
 async function editorContext(store: CmsStore, site: Site, capability: CmsCapability) {
@@ -161,7 +193,7 @@ async function saveDraft(store: CmsStore, mutation: Mutation, input: {
   return mutate(store, mutation, { state, revisions: [item], result });
 }
 
-async function storePlan<T>(store: CmsStore, site: Site, capability: CmsCapability, operation: CmsConfirmedPlan<T>["operation"] | "cms.publish",
+async function storePlan<T>(store: CmsStore, site: Site, capability: CmsCapability, operation: string,
   operationId: string, candidate: T) {
   const expires = nowSeconds() + PLAN_TTL, payload = { operation, operationId, candidate };
   if (blobSize(payload) > MAX_SNAPSHOT - MAX_BODY) return null;
@@ -169,7 +201,7 @@ async function storePlan<T>(store: CmsStore, site: Site, capability: CmsCapabili
   return confirmationToken ? { ...payload, siteId: site.siteId, actorId: site.actor.id, expiresAt: iso(expires), confirmationToken } : null;
 }
 
-async function readPlan<T>(store: CmsStore, site: Site, capability: CmsCapability, operation: CmsConfirmedPlan<T>["operation"] | "cms.publish",
+async function readPlan<T>(store: CmsStore, site: Site, capability: CmsCapability, operation: string,
   operationId: string, token: unknown) {
   if (!tokenId(token)) return null;
   const row = await store.readToken<{ operationId: string; candidate: T }>(site, capability, operation, token as string);
@@ -178,14 +210,14 @@ async function readPlan<T>(store: CmsStore, site: Site, capability: CmsCapabilit
     expiresAt: iso(row.expires), confirmationToken: token as string };
 }
 
-async function queueRelease(store: CmsStore, mutation: Mutation, proposal: CmsReleaseProposal, token: string, result: object, schedule?: CmsSchedule) {
+async function queueRelease(store: CmsStore, mutation: Mutation, proposal: CmsReleaseProposal, token: string | null, result: object, schedule?: CmsSchedule) {
   const site = mutation.site, { snapshot, expectedReleaseId } = proposal;
   const size = blobSize(snapshot), routeTableSize = blobSize(snapshot.routeTable);
   const state = { ...site.state, retainedBytes: site.state.retainedBytes + size + routeTableSize };
   if (size > MAX_SNAPSHOT || state.retainedBytes > MAX_RETAINED_BYTES) return error("quota_exceeded", 409);
   await store.put(routeTableKey(site.siteId, snapshot.locale, snapshot.routeTable.revision), snapshot.routeTable);
   await store.put(snapshotKey(site.siteId, snapshot.releaseId), snapshot);
-  return mutate(store, mutation, { state, result, tokenHash: await digest(token), requireFreeSlot: true, job: {
+  return mutate(store, mutation, { state, result, ...(token === null ? {} : { tokenHash: await digest(token) }), requireFreeSlot: true, job: {
     kind: schedule ? "schedule" : "release", id: schedule?.id ?? snapshot.releaseId, at: schedule ? Math.ceil(Date.parse(schedule.at) / 1000) : nowSeconds(),
     payload: { releaseId: snapshot.releaseId, expectedReleaseId, pins: snapshot.items.map(cmsItemKey) }
   } });
@@ -197,23 +229,21 @@ async function migrationContext(store: CmsStore, site: Site, capability: CmsCapa
       item: await store.item(site.siteId, site.state.locale, meta), tombstoned: meta.removedAt !== null
     }))),
     store.routeTable(site, capability),
-    store.db.prepare(`SELECT ms.bindings_generation, bound.document_json, bound.bindings_json
+    store.db.prepare(`SELECT ms.bindings_generation, bound.*
       FROM managed_sites AS ms LEFT JOIN (
-        SELECT p.site_id, v.document_json, v.bindings_json FROM managed_pages AS p
+        SELECT v.site_id, v.page_id, v.locale, v.revision, v.document_json, v.document_key, v.document_digest, v.bindings_json FROM managed_pages AS p
         JOIN managed_page_versions AS v ON v.site_id = p.site_id AND v.page_id = p.page_id
           AND v.locale = p.locale AND v.revision = p.current_revision WHERE v.bindings_json IS NOT NULL
       ) AS bound ON bound.site_id = ms.site_id WHERE ms.site_id = ?`)
-      .bind(site.siteId).all<{ bindings_generation: number; document_json: string | null; bindings_json: string | null }>()
+      .bind(site.siteId).all<{ bindings_generation: number } & (PageSourceRow & { bindings_json: string } | { bindings_json: null })>()
   ]);
   if (!pages.success || !pages.results?.length) throw new Error("managed CMS binding lookup failed");
   const bindingsGeneration = pages.results[0]!.bindings_generation;
-  const bindings = pages.results.flatMap((row) => {
-    if (row.document_json === null || row.bindings_json === null) return [];
-    const page = parsePageDocument(JSON.parse(row.document_json));
-    return [{ page, bindings: parseCmsPageBindings(JSON.parse(row.bindings_json), page) }];
-  });
+  const bindings = await Promise.all(pages.results.flatMap((row) => row.bindings_json === null ? [] : [
+    readPageSource(store, row).then((page) => ({ page, bindings: parseCmsPageBindings(JSON.parse(row.bindings_json), page) }))
+  ]));
   const fixed = new Set(routeTable.reservations.flatMap((entry) =>
-    entry.kind === "fixed-page" || entry.kind === "reserved" ? [entry.path] : []));
+    entry.kind === "fixed-page" || (entry.kind === "reserved" && !entry.reservationId.startsWith("cms_route_")) ? [entry.path] : []));
   return { drafts, routeTables: [routeTable], bindingsGeneration, impact: (_before: Site["state"]["schema"], after: Site["state"]["schema"]): CmsProblem[] => {
     const paths = after.collections.flatMap(({ pathPrefix }) => {
       const path = collectionPath(pathPrefix);
@@ -271,7 +301,7 @@ async function releaseOperation(store: CmsStore, site: Site, capability: CmsCapa
   operation: "cms.release.plan" | "cms.release.apply" | "cms.schedule.create", body: Record<string, unknown>, mutation: Mutation | null) {
   if (operation === "cms.release.plan") {
     const scheduled = Object.hasOwn(body, "at"), input = scheduled ? parseCmsScheduleRequest(body) : parseCmsReleaseInput(body);
-    if (input.locale !== site.state.locale || input.items.length > MAX_ITEMS || input.redirects.length > MAX_ITEMS) return invalid();
+    if (input.locale !== site.state.locale || input.items.length > MAX_ITEMS || input.redirects.length > MAX_REDIRECTS) return invalid();
     const { ...selection } = input as CmsReleaseInput & { at?: string };
     delete selection.at;
     const ready = planCmsRelease(selection, opaque("release"), await releaseContext(store, site, input.items));
@@ -372,6 +402,242 @@ async function itemOperation(store: CmsStore, site: Site, operation: Operation, 
     result: { status: action === "remove" ? "removed" : "restored" } });
 }
 
+async function localizationOperation(store: CmsStore, site: Site, operation: Operation, body: Record<string, unknown>, mutation: Mutation | null) {
+  if (operation === "cms.localization.overview" || operation === "cms.localization.items.list") {
+    exact(body, ["siteId"]);
+    const views = await cmsLocalizationViews(store, site);
+    if (operation === "cms.localization.overview") return json({ status: "ready", overview: cmsLocalizationOverview({
+      schema: site.state.schema, sourceLocale: site.state.locale, views, canEdit: site.role === "owner" || site.role === "editor"
+    }) });
+    const items = views.map(cmsLocalizationSummary).sort((a, b) => a.groupId.localeCompare(b.groupId) || a.key.localeCompare(b.key));
+    return json({ status: "ready", items, nextCursor: null });
+  }
+  if (operation === "cms.localization.items.read") {
+    exact(body, ["siteId", "itemKey"]);
+    const identity = parseCmsLocalizationItemKey(body.itemKey), targetLocale = cmsLocalizationTargetLocale(site.state.locale);
+    const view = await cmsLocalizationView(store, site, identity.collectionId, identity.itemId, targetLocale);
+    return view ? json({ status: "ready", item: cmsLocalizationItem(view) }) : json({ status: "not_found" }, 404);
+  }
+  if (operation !== "cms.localization.items.command") return notFound();
+  const input = parseEditingLocalizationInput("localization.items.command", Object.fromEntries(Object.entries(body).filter(([key]) => key !== "siteId")));
+  if (input.operationId !== mutation?.operationId) return invalid();
+  const identity = parseCmsLocalizationItemKey(input.itemKey), targetLocale = cmsLocalizationTargetLocale(site.state.locale);
+  const view = await cmsLocalizationView(store, site, identity.collectionId, identity.itemId, targetLocale);
+  if (!view) return notFound();
+  const item = cmsLocalizationItem(view), unit = item.units.find((entry) => entry.unitId === input.unitId);
+  if (!unit) return notFound();
+  const field = view.collection.fields.find((entry) => entry.unitId === input.unitId);
+  if (!field) return notFound();
+  const conflictResult = (current: CmsLocalizationView) => {
+    const currentItem = cmsLocalizationItem(current), currentUnit = currentItem.units.find((entry) => entry.unitId === input.unitId);
+    return currentUnit ? json({ status: "conflict", unit: currentUnit, summary: cmsLocalizationSummary(current) }, 409) : notFound();
+  };
+  if (input.expectedSourceVersion !== view.source.revision || input.expectedVersion !== String(view.overlay.version)) return conflictResult(view);
+  let overlay: CmsLocalizationOverlay;
+  switch (input.action) {
+    case "set-value":
+      overlay = editCmsLocalizedValue(view.overlay, view.collection, { fieldId: field.identity.fieldId, value: input.value, expectedVersion: view.overlay.version });
+      break;
+    case "review-current":
+      overlay = reviewCmsLocalizedValue(view.overlay, view.collection, { fieldId: field.identity.fieldId, expectedVersion: view.overlay.version });
+      break;
+    case "adopt-candidate": {
+      const candidate = "candidate" in unit && unit.candidate?.candidateId === input.candidateId ? unit.candidate : null;
+      if (!candidate) return conflictResult(view);
+      overlay = editCmsLocalizedValue(view.overlay, view.collection, { fieldId: field.identity.fieldId, value: candidate.value, expectedVersion: view.overlay.version });
+      break;
+    }
+    case "clear-value":
+      overlay = parseCmsLocalizationOverlay({ ...view.overlay, version: view.overlay.version + 1,
+        entries: view.overlay.entries.filter((entry) => entry.unitId !== input.unitId) }, view.collection);
+      break;
+    default:
+      return json({ status: "invalid", message: "CMS 翻訳ではこの操作を使えません。" }, 422);
+  }
+  const itemKey = cmsLocalizationItemKey(identity.collectionId, identity.itemId), revision = await mutationObjectId("loc", mutation!, {
+    collectionId: identity.collectionId, itemId: identity.itemId
+  });
+  const size = blobSize(overlay), retainedBytes = site.state.retainedBytes + size;
+  if (retainedBytes > MAX_RETAINED_BYTES) return error("quota_exceeded", 409);
+  await store.put(localizationBlobKey(site.siteId, targetLocale, itemKey, revision), overlay);
+  const localizations = { ...(site.state.localizations ?? {}), [itemKey]: { revision, version: overlay.version } };
+  const nextView = { ...view, overlay };
+  const nextItem = cmsLocalizationItem(nextView), nextUnit = nextItem.units.find((entry) => entry.unitId === input.unitId);
+  if (!nextUnit) return notFound();
+  const result = { status: "applied", unit: nextUnit, summary: cmsLocalizationSummary(nextView) };
+  const committed = await store.commit(site, "cms.edit", { operation: mutation!.operation, operationId: mutation!.operationId,
+    inputDigest: mutation!.inputDigest, result, state: { ...site.state, localizations, retainedBytes } });
+  if (committed) return json(result);
+  const repeated = await replay(store, mutation!);
+  if (repeated) return repeated;
+  const latest = await store.site({ projectId: site.projectId, siteId: site.siteId, actor: site.actor }, "cms.edit");
+  if (!latest) return forbidden();
+  const current = await cmsLocalizationView(store, latest, identity.collectionId, identity.itemId, targetLocale);
+  return current ? conflictResult(current) : notFound();
+}
+
+async function localizationReleaseContext(store: CmsStore, site: Site, targetLocale: string,
+  revisions: readonly CmsItemRevision[] = []): Promise<CmsReleaseContext> {
+  const schema = cmsLocalizedSchema(site.state.schema, targetLocale);
+  const [routeTable, fixedRoutes, publicAssets] = await Promise.all([
+    store.routeTable(site, "cms.publish", targetLocale), store.fixedRoutes(site, "cms.publish", targetLocale),
+    store.publicAssets(schema, revisions)
+  ]);
+  const revisionByKey = new Map(revisions.map((item) => [cmsItemKey(item), item]));
+  return {
+    schema, locale: targetLocale, sourceLocale: site.state.locale,
+    currentReleaseId: site.state.localizedReleases?.[targetLocale]?.id ?? null, routeTable, publicAssets,
+    readRevision: (pin) => revisionByKey.get(cmsItemKey(pin)), isRemoved: () => false,
+    impact: (snapshot) => releaseImpacts(snapshot, fixedRoutes),
+    publicRichText: ({ html }) => escapeHtml(html)
+  };
+}
+
+function cmsLocalizedSchema(schema: CmsSchema, targetLocale: string): CmsSchema {
+  const root = `/${targetLocale}/cms`;
+  return { ...schema, collections: schema.collections.map((collection) => {
+    if (collection.pathPrefix === null) return collection;
+    let relative = collection.pathPrefix.replace(/^\/cms(?=\/)/u, "");
+    if (relative === "/") relative = `/${collection.id.toLowerCase()}/`;
+    if (!relative.startsWith("/")) relative = `/${relative}`;
+    return { ...collection, pathPrefix: `${root}${relative}` };
+  }) };
+}
+
+type CmsLocalizationReleasePlan =
+  | { readonly status: "ready"; readonly proposal: CmsReleaseProposal; readonly revisions: readonly CmsItemRevision[];
+      readonly omittedItems: readonly { readonly collectionId: string; readonly itemId: string; readonly missingFieldIds: readonly string[] }[] }
+  | { readonly status: "invalid"; readonly problems: readonly CmsProblem[] }
+  | { readonly status: "conflict" };
+
+async function planCmsLocalizationRelease(input: {
+  readonly schema: CmsSchema;
+  readonly sourceLocale: string;
+  readonly targetLocale: string;
+  readonly sourceItems: readonly CmsItemRevision[];
+  readonly overlays: readonly CmsLocalizationOverlay[];
+  readonly targetRevisions: readonly { readonly collectionId: string; readonly itemId: string; readonly revision: string }[];
+  readonly redirects: CmsReleaseInput["redirects"];
+  readonly routeTableRevision: string;
+  readonly expectedReleaseId: string | null;
+  readonly releaseId: string;
+  readonly context: CmsReleaseContext;
+  readonly publicAssets: (schema: CmsSchema, items: readonly CmsItemRevision[]) => Promise<readonly CmsPublicAsset[]>;
+}): Promise<CmsLocalizationReleasePlan> {
+  if (input.sourceItems.length !== input.overlays.length || input.sourceItems.length !== input.targetRevisions.length) return { status: "conflict" };
+  const revisions: CmsItemRevision[] = [], omittedItems: { collectionId: string; itemId: string; missingFieldIds: readonly string[] }[] = [], problems: CmsProblem[] = [];
+  for (let index = 0; index < input.sourceItems.length; index++) {
+    const source = input.sourceItems[index]!, overlay = input.overlays[index]!, target = input.targetRevisions[index]!;
+    if (target.collectionId !== source.collectionId || target.itemId !== source.itemId) return { status: "conflict" };
+    const collection = await collectCmsLocalizationUnits(input.schema, source, input.targetLocale);
+    const status = cmsLocalizationStatus(overlay, collection);
+    if (!status.complete) {
+      const stateByUnit = new Map(status.details.map(({ unitId, state }) => [unitId, state]));
+      const missingFieldIds = [...collection.fields.filter(({ unitId }) => stateByUnit.get(unitId) !== "reviewed").map(({ identity }) => identity.fieldId),
+        ...collection.issues.map(({ fieldId }) => fieldId)];
+      omittedItems.push({ collectionId: source.collectionId, itemId: source.itemId, missingFieldIds: [...new Set(missingFieldIds)] });
+      continue;
+    }
+    const materialized = materializeCmsLocalizedItem(overlay, collection, { revision: target.revision, fallback: "omit" });
+    if (materialized.status === "omitted") {
+      omittedItems.push({ collectionId: source.collectionId, itemId: source.itemId, missingFieldIds: materialized.missingFieldIds });
+    } else if (materialized.status === "invalid") {
+      problems.push(...materialized.problems.map((problem) => ({ ...problem, collectionId: source.collectionId, itemId: source.itemId })));
+    } else revisions.push(materialized.item);
+  }
+  if (problems.length) return { status: "invalid", problems };
+  const schema = cmsLocalizedSchema(input.schema, input.targetLocale);
+  const revisionByKey = new Map(revisions.map((item) => [cmsItemKey(item), item]));
+  const planned = planCmsRelease({ siteId: schema.siteId, locale: input.targetLocale, schemaRevision: schema.schemaRevision,
+    routeTableRevision: input.routeTableRevision, expectedReleaseId: input.expectedReleaseId,
+    items: revisions.map(({ collectionId, itemId, revision }) => ({ collectionId, itemId, revision })), redirects: input.redirects },
+  input.releaseId, { ...input.context, schema, locale: input.targetLocale, sourceLocale: input.sourceLocale,
+    publicAssets: await input.publicAssets(schema, revisions), readRevision: (pin) => revisionByKey.get(cmsItemKey(pin)) });
+  if (planned.status !== "ready") return planned.status === "invalid"
+    ? { status: "invalid", problems: planned.problems } : { status: "conflict" };
+  return { status: "ready", proposal: planned.proposal, revisions, omittedItems };
+}
+
+type CmsLocalizationReleaseCandidate = {
+  readonly proposal: CmsReleaseProposal;
+  readonly revisions: readonly CmsItemRevision[];
+  readonly expectedGeneration: string | null;
+  readonly targetLocale: string;
+  readonly omittedItems: readonly { readonly collectionId: string; readonly itemId: string; readonly missingFieldIds: readonly string[] }[];
+};
+
+async function localizationReleaseOperation(store: CmsStore, site: Site, operation: Operation,
+  body: Record<string, unknown>, mutation: Mutation | null) {
+  const targetLocale = cmsLocalizationTargetLocale(site.state.locale);
+  if (operation === "cms.localization.release.current") {
+    exact(body, ["siteId"]);
+    const current = site.state.localizedReleases?.[targetLocale] ?? null;
+    return json({ snapshot: current ? await store.snapshot(site.siteId, current.id) : null, sourceLocale: site.state.locale,
+      locale: targetLocale, releaseId: current?.id ?? null, routeTableRevision: (await store.routeTable(site, "cms.read", targetLocale)).revision,
+      collectionRoot: `/s/${site.slug}/${targetLocale}/cms` });
+  }
+  if (operation === "cms.localization.release.plan") {
+    exact(body, body.operationId === undefined ? ["siteId"] : ["siteId", "operationId"]);
+    const sourceSnapshot = await currentSnapshot(store, site);
+    if (sourceSnapshot && sourceSnapshot.locale !== site.state.locale) return conflict();
+    const sourceItems = sourceSnapshot ? await Promise.all(sourceSnapshot.items.map((pin) => store.item(site.siteId, site.state.locale, pin))) : [];
+    const collections = await Promise.all(sourceItems.map((item) => collectCmsLocalizationUnits(site.state.schema, item, targetLocale)));
+    const overlays = await Promise.all(collections.map((collection) => cmsLocalizationOverlay(store, site, collection)));
+    const targetRevisions = sourceItems.map((item) => ({ collectionId: item.collectionId, itemId: item.itemId, revision: opaque("rev") }));
+    const context = await localizationReleaseContext(store, site, targetLocale);
+    const planned = await planCmsLocalizationRelease({ schema: site.state.schema, sourceLocale: site.state.locale, targetLocale,
+      sourceItems, overlays, targetRevisions, redirects: [], routeTableRevision: context.routeTable.revision,
+      expectedReleaseId: context.currentReleaseId, releaseId: opaque("release"), context,
+      publicAssets: (schema, items) => store.publicAssets(schema, items) });
+    if (planned.status === "conflict") return conflict();
+    if (planned.status === "invalid") return json(planned, 422);
+    const candidate: CmsLocalizationReleaseCandidate = { proposal: planned.proposal, revisions: planned.revisions, expectedGeneration: site.generation,
+      targetLocale, omittedItems: planned.omittedItems.map(({ collectionId, itemId, missingFieldIds }) => ({ collectionId, itemId, missingFieldIds })) };
+    const saved = await storePlan(store, site, "cms.publish", "cms.localization.release.apply",
+      body.operationId === undefined ? opaque("op") : parseOperationId(body.operationId), candidate);
+    if (!saved) return error("plan_unavailable", 409);
+    return json({ status: "ready", plan: saved, locale: targetLocale, releaseId: planned.proposal.snapshot.releaseId,
+      includedItems: planned.proposal.snapshot.items.length, omittedItems: planned.omittedItems });
+  }
+  if (operation !== "cms.localization.release.apply") return notFound();
+  exact(body, body.operationId === undefined ? ["siteId", "confirmationToken"] : ["siteId", "operationId", "confirmationToken"]);
+  if (body.operationId !== undefined && body.operationId !== mutation?.operationId) return invalid();
+  if (typeof body.confirmationToken !== "string" || !mutation) return invalid();
+  const saved = await store.readToken<{ operationId: string; candidate: CmsLocalizationReleaseCandidate }>(
+    site, "cms.publish", operation, body.confirmationToken);
+  if (!saved || saved.expires <= nowSeconds()) return notFound();
+  const candidate = saved.payload.candidate, current = site.state.localizedReleases?.[targetLocale] ?? null;
+  if (candidate.targetLocale !== targetLocale || candidate.expectedGeneration !== site.generation
+    || (current?.id ?? null) !== candidate.proposal.expectedReleaseId) return conflict();
+  const context = await localizationReleaseContext(store, site, targetLocale, candidate.revisions);
+  const checked = revalidateCmsRelease(candidate.proposal, context);
+  if (checked.status !== "allowed") return conflict();
+  const snapshot = checked.candidate.snapshot, revisions = candidate.revisions;
+  if (revisions.length !== snapshot.items.length || revisions.some((item) => !snapshot.items.some((entry) =>
+    entry.collectionId === item.collectionId && entry.itemId === item.itemId && entry.revision === item.revision && entry.locale === targetLocale))) return conflict();
+  const snapshotBytes = blobSize(snapshot), routeBytes = blobSize(snapshot.routeTable), itemBytes = revisions.reduce((sum, item) => sum + blobSize(item), 0);
+  const retainedBytes = site.state.retainedBytes + snapshotBytes + routeBytes + itemBytes;
+  if (snapshotBytes > MAX_SNAPSHOT || retainedBytes > MAX_RETAINED_BYTES) return error("quota_exceeded", 409);
+  await Promise.all([
+    store.put(routeTableKey(site.siteId, targetLocale, snapshot.routeTable.revision), snapshot.routeTable),
+    store.put(snapshotKey(site.siteId, snapshot.releaseId), snapshot),
+    ...revisions.map((item) => store.put(itemBlobKey(site.siteId, targetLocale, item), item))
+  ]);
+  if (await digest(await store.snapshot(site.siteId, snapshot.releaseId)) !== await digest(snapshot))
+    throw new Error("CMS localized snapshot verification failed");
+  const localizedReleases = { ...(site.state.localizedReleases ?? {}), [targetLocale]: {
+    id: snapshot.releaseId, at: dateNow(), routeTableRevision: snapshot.routeTable.revision
+  } };
+  const result = { status: "published", operationId: mutation.operationId, result: { releaseId: snapshot.releaseId,
+    locale: targetLocale, itemCount: snapshot.items.length, omittedItems: candidate.omittedItems } };
+  return mutate(store, mutation!, { state: { ...site.state, localizedReleases, retainedBytes }, revisions,
+    publishedSnapshot: snapshot, tokenHash: await digest(body.confirmationToken),
+    job: { kind: "verify", id: opaque("verify"), at: nowSeconds(), payload: { keys: [
+      snapshotKey(site.siteId, snapshot.releaseId), routeTableKey(site.siteId, targetLocale, snapshot.routeTable.revision),
+      ...revisions.map((item) => itemBlobKey(site.siteId, targetLocale, item))
+    ] } }, result });
+}
+
 async function previewOperation(store: CmsStore, site: Site, operation: "cms.preview.prepare" | "cms.preview.read", body: Record<string, unknown>) {
   if (operation === "cms.preview.prepare") {
     exact(body, ["siteId", "collectionId", "itemId", "revision"]);
@@ -395,7 +661,7 @@ async function previewOperation(store: CmsStore, site: Site, operation: "cms.pre
 async function executeV2(request: Request, store: CmsStore, scope: CmsScope, route: string) {
   const operation = route as Operation;
   const capability = Object.hasOwn(CMS_V2_OPERATIONS, operation) ? CMS_V2_OPERATIONS[operation as CmsV2Operation]
-    : Object.hasOwn(EXTRA, operation) ? EXTRA[operation as keyof typeof EXTRA] : null;
+    : Object.hasOwn(MANAGED_CMS_EXTRA_OPERATIONS, operation) ? MANAGED_CMS_EXTRA_OPERATIONS[operation as keyof typeof MANAGED_CMS_EXTRA_OPERATIONS] : null;
   if (!capability && route !== "discover") return notFound();
   if (route === "discover") {
     if (request.method !== "GET") return error("method_not_allowed", 405);
@@ -412,14 +678,21 @@ async function executeV2(request: Request, store: CmsStore, scope: CmsScope, rou
   const site = await store.site(scope, capability!);
   if (!site) return forbidden();
   if (request.method !== "POST") return error("method_not_allowed", 405);
-  const body = await readBody(request, scope);
+  const maxBody = operation === "cms.release.plan" || operation === "cms.schedule.create"
+    ? MAX_RELEASE_BODY : operation === "cms.items.save" ? MAX_ITEM_SAVE_BODY : MAX_BODY;
+  const body = await readBody(request, scope, maxBody);
   if (!body || body.siteId !== site.siteId) return invalid();
   const cap = capability!;
   let mutation: Mutation | null = null;
   if (MUTATIONS.has(operation)) {
+    if (operation === "cms.localization.release.apply" && typeof body.confirmationToken !== "string") return invalid();
     const header = request.headers.get(OPERATION_KEY_HEADER);
-    const operationId = operation === "cms.schema.apply" || operation === "cms.release.apply" || operation === "cms.schedule.create"
-      ? parseCmsApplyInput(body, scope.siteId).operationId : parseOperationId(header);
+    const operationId = operation === "cms.localization.release.apply"
+      ? body.operationId === undefined
+        ? `cmsloc_${(await digest(body.confirmationToken)).slice(0, 32)}`
+        : parseOperationId(body.operationId)
+      : operation === "cms.schema.apply" || operation === "cms.release.apply" || operation === "cms.schedule.create"
+        ? parseCmsApplyInput(body, scope.siteId).operationId : parseOperationId(header);
     if (header !== null && header !== operationId) return invalid();
     mutation = { site, capability: cap, operation, operationId, inputDigest: await digest(body) };
     const same = await replay(store, mutation);
@@ -458,6 +731,15 @@ async function executeV2(request: Request, store: CmsStore, scope: CmsScope, rou
     case "cms.preview.prepare":
     case "cms.preview.read":
       return previewOperation(store, site, operation, body);
+    case "cms.localization.overview":
+    case "cms.localization.items.list":
+    case "cms.localization.items.read":
+    case "cms.localization.items.command":
+      return localizationOperation(store, site, operation, body, mutation);
+    case "cms.localization.release.current":
+    case "cms.localization.release.plan":
+    case "cms.localization.release.apply":
+      return localizationReleaseOperation(store, site, operation, body, mutation);
     case "cms.schedule.status":
     case "cms.schedule.cancel": {
       exact(body, ["siteId", "scheduleId"]);
@@ -482,45 +764,29 @@ function legacyFields(site: Site, problems: readonly CmsProblem[]) {
     .find(({ fieldId }) => fieldId === problem.fieldId)?.key ?? "_base", message: problem.message }));
 }
 
-type LegacyPlan = { expectedVersion: string; collectionId: string; itemId: string; redirect?: boolean; proposal: CmsReleaseProposal };
-async function legacyPublish(store: CmsStore, site: Site, operation: "cms.publish-plan" | "cms.publish",
-  draft: CmsItemRevision, item: CollectionItem, body: Record<string, unknown>, mutation: Mutation, context: EditorContext) {
-  exact(body, ["expectedVersion", "operationId", ...(operation === "cms.publish" ? ["confirmationToken"] : []), ...(Object.hasOwn(body, "redirect") ? ["redirect"] : [])]);
-  if (body.redirect !== undefined && typeof body.redirect !== "boolean") return invalid();
+async function publishCmsItemOnce(store: CmsStore, site: Site, draft: CmsItemRevision, item: CollectionItem,
+  body: Record<string, unknown>, mutation: Mutation, context: EditorContext) {
+  exact(body, ["expectedVersion", "operationId", ...(Object.hasOwn(body, "redirect") ? ["redirect"] : [])]);
+  if (typeof body.expectedVersion !== "string" || body.redirect !== undefined && typeof body.redirect !== "boolean") return invalid();
   if (body.expectedVersion !== draft.revision) return error("version_conflict", 409);
-  const { collectionId, itemId } = draft, key = cmsItemKey(draft);
-  if (operation === "cms.publish-plan") {
-    const before = context.current?.items.find((entry) => cmsItemKey(entry) === key)?.path;
-    const after = item.path;
-    const currentRedirects = (context.current?.redirects ?? []).flatMap((redirect) => {
-      if (redirect.from === after) return [];
-      if (redirect.to === before && before !== after) return body.redirect && after ? [{ from: redirect.from, to: after }] : [];
-      return [redirect];
-    });
-    const redirects = body.redirect && before && after && before !== after ? [...currentRedirects, { from: before, to: after }] : currentRedirects;
-    const items = [...(context.current?.items ?? []).filter((entry) => cmsItemKey(entry) !== key), draft]
-      .map(({ collectionId, itemId, revision }) => ({ collectionId, itemId, revision }));
-    const ready = planCmsRelease({ siteId: site.siteId, locale: site.state.locale, schemaRevision: site.state.schema.schemaRevision,
-      routeTableRevision: (await store.routeTable(site, "cms.publish")).revision,
-      expectedReleaseId: context.current?.releaseId ?? null, items, redirects }, opaque("release"), await releaseContext(store, site, items));
-    if (ready.status === "conflict") return error("version_conflict", 409);
-    if (ready.status === "invalid") return json({ error: "validation_failed", fields: legacyFields(site, ready.problems) }, 422);
-    const redirect = body.redirect === undefined ? {} : { redirect: body.redirect };
-    const plan = await storePlan<LegacyPlan>(store, site, "cms.publish", "cms.publish", mutation.operationId,
-      { expectedVersion: draft.revision, collectionId, itemId, ...redirect, proposal: ready.proposal });
-    return plan ? json({ plan: { target: { siteId: site.siteId, collectionId, itemId }, expectedVersion: draft.revision,
-      operationId: mutation.operationId, confirmationToken: plan.confirmationToken, item, ...redirect } }) : error("plan_unavailable", 409);
-  }
-  const plan = await readPlan<LegacyPlan>(store, site, "cms.publish", "cms.publish", mutation.operationId, body.confirmationToken);
-  if (!plan) return notFound();
-  const { candidate } = plan;
-  if (candidate.expectedVersion !== draft.revision || candidate.collectionId !== collectionId || candidate.itemId !== itemId || candidate.redirect !== body.redirect)
-    return error("version_conflict", 409);
-  const input = { siteId: site.siteId, operationId: mutation.operationId, confirmationToken: plan.confirmationToken };
-  const checked = checkCmsReleaseApply(siteScope(site), input, { ...plan, operation: "cms.release.apply", candidate: candidate.proposal }, dateNow(),
-    await releaseContext(store, site, candidate.proposal.snapshot.items));
-  if (checked.status !== "allowed") return error("version_conflict", 409);
-  return queueRelease(store, mutation, checked.candidate, input.confirmationToken,
+  const key = cmsItemKey(draft);
+  const before = context.current?.items.find((entry) => cmsItemKey(entry) === key)?.path;
+  const after = item.path;
+  const currentRedirects = (context.current?.redirects ?? []).flatMap((redirect) => {
+    if (redirect.from === after) return [];
+    if (redirect.to === before && before !== after) return body.redirect && after ? [{ from: redirect.from, to: after }] : [];
+    return [redirect];
+  });
+  const redirects = body.redirect && before && after && before !== after ? [...currentRedirects, { from: before, to: after }] : currentRedirects;
+  const items = [...(context.current?.items ?? []).filter((entry) => cmsItemKey(entry) !== key), draft]
+    .map(({ collectionId, itemId, revision }) => ({ collectionId, itemId, revision }));
+  const release = await releaseContext(store, site, items);
+  const ready = planCmsRelease({ siteId: site.siteId, locale: site.state.locale, schemaRevision: site.state.schema.schemaRevision,
+    routeTableRevision: release.routeTable.revision,
+    expectedReleaseId: context.current?.releaseId ?? null, items, redirects }, opaque("release"), release);
+  if (ready.status === "conflict") return error("version_conflict", 409);
+  if (ready.status === "invalid") return json({ error: "validation_failed", fields: legacyFields(site, ready.problems) }, 422);
+  return queueRelease(store, mutation, ready.proposal, null,
     { status: "publishing", operationId: mutation.operationId, item: { ...item, status: "publishing" } });
 }
 
@@ -543,7 +809,7 @@ async function executeLegacy(request: Request, store: CmsStore, scope: CmsScope,
     const receipt = await store.receipt(site, capability, id);
     if (!receipt) return json({ status: "unknown", operationId: id });
     const result = JSON.parse(receipt.result_json) as { item?: CollectionItem };
-    if (receipt.operation === "cms.publish") {
+    if (receipt.operation === "cms.publish" || receipt.operation === "cms.publish-now") {
       const delivery = await store.deliveryForReceipt(site, receipt.transaction_id);
       if (!delivery || delivery.state === "pending") return json({ status: "received", operationId: id });
       if (delivery.state !== "delivered") {
@@ -599,7 +865,7 @@ async function executeLegacy(request: Request, store: CmsStore, scope: CmsScope,
     const values = parseCmsValues(Object.fromEntries(collection.fields.map(({ fieldId, key }) => [fieldId, normalized[key]])), collection);
     return saveDraft(store, mutation!, { collectionId, itemId, values, create: false, legacy: true });
   }
-  return legacyPublish(store, site, operation, draft, item, body!, mutation!, context);
+  return publishCmsItemOnce(store, site, draft, item, body!, mutation!, context);
 }
 
 export async function managedCmsApi(request: Request, store: CmsStore, scope: CmsScope, operation: string, version: 1 | 2) {

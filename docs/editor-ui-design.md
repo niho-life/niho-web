@@ -33,8 +33,6 @@ Basicの埋め込み群の先頭にはBlankを置く。ホストの承認済みr
 
 右パネルは対象の種類に応じて項目を出す。
 
-hostが任意の`responsiveProposal`を接続した場合だけ、右パネル上段に「レスポンシブ提案」を出す。開始ダイアログで選択中の要素subtreeまたはページ全体と、設定済みminWidthを1つ以上選ぶ。処理中はキャンセル可能とし、レビューでは要素ID・幅・property・変更前・変更後を表で示して「この変更を適用」または「キャンセル」を明示する。レビューだけではキャンバスを変えず、適用した全変更はundo 1回で戻す。履歴・翻訳・読み取り専用・ロック・未確定入力等で使えない理由は操作の近くに表示し、adapter未接続時は入口を置かない。
-
 | 選択対象 | タブと内容 |
 | --- | --- |
 | ページ全体 | ページ / サイト。既存のページ情報と公開情報、サイト設定 |
@@ -65,7 +63,7 @@ hostが任意の`responsiveProposal`を接続した場合だけ、右パネル�
 
 ### 配色・角丸・文字のトークン
 
-値の定義は `src/ui-tokens.ts`（`@niho/web/ui-tokens`）の 1 か所だけに置き、各画面の CSS は `var(--nw-*)` だけを使う（#159）。値は STUDIO 社の実測（#158）に合わせる。
+値の定義は `src/ui-tokens.ts`の 1 か所だけに置き、各画面の CSS は `var(--nw-*)` だけを使う（#159）。値は STUDIO 社の実測（#158）に合わせる。
 
 - 各画面の CSS（`workspaceCss`・`collectionCss`・`localizationWorkspaceCss`・`projectViewCss`・`projectManagerCss`・`siteAnalyticsCss`・`siteAppsCss`）は先頭にトークンの定義 `uiTokensCss` を持つ。部品を `<style>` で入れるだけで同じ見た目になる。
 - Studio は CSP で inline の `<style>` を使えないので、`studio/build.mjs` が `uiTokensCss` を `assets/studio.css` の先頭に足す。全ページが最初に読むファイルなので、`project-view.css`・`collection.css` からは重複するトークンを外して書き出す。
@@ -142,6 +140,6 @@ shellの高さは `100dvh` が既定で、見出しやバナーを持つホス�
 
 ホストが編集画面の外側に出す帯（環境の注意・読み取り専用の説明・接続の失敗など）は、保存できない・ロック・不正な入力・接続の失敗のときだけ出し、平常時は出さない。環境（STGなど）は帯にせず、`toolbarStart` に小さな印（`title` と `aria-label` に説明）として置く。
 
-ホスト固有の入口は `toolbarStart` にReact要素を渡す。サイト名によるレイアウト切替は持たず、ExperienceとKamakuraも同じshellを使う。従来の `toolbarLayout` は削除したため、指定していたホストはそのpropを外す。
+ホスト固有の入口は `toolbarStart` にReact要素を渡す。Studio のエディターは同じ shell を使う。従来の `toolbarLayout` は削除したため、指定していたホストはそのpropを外す。
 
-ローカル確認は `npm run build`、`npm run studio:typecheck`、`npm run studio:build` を実行する。Studio hostの画面確認は `wrangler dev --config studio/wrangler.toml` で起動し、Access認証済みの環境で行う。
+ローカル確認は `npm run build`、`npm run studio:typecheck`、`npm run studio:build` を実行する。Studio host のローカル起動は `npm run studio:dev` を使う。設定は [Studio の運用手順](../studio/README.md#ローカル開発) を参照する。

@@ -1,4 +1,8 @@
 node_modules/
 dist/
 studio/dist/
+/studio/.dev.vars*
+/studio/.env*
+/studio/.studio-rollback-version*
+.wrangler/
 *.tgz

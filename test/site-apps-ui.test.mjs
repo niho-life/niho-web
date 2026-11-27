@@ -8,7 +8,7 @@ for (const key of ["window", "document", "HTMLElement", "HTMLInputElement", "Ele
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
-const { SiteApps } = await import("@niho/web/site-apps");
+const { SiteApps } = await import("../dist/site-apps.js");
 const flush = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 const target = { projectId: "project_one", siteId: "site_one", siteOrigin: "https://www.one.example.test" };
 const connection = {
