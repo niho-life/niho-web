@@ -7,7 +7,7 @@ const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.
 const project = { id: "project_demo", name: "デモ計画", site: { id: "demo", name: "デモサイト", domains: ["https://example.test", "https://www.example.test"] }, members: [] };
 const signal = () => new AbortController().signal;
 function setup(overrides = {}) {
-  const calls = { sites: 0, pages: [], reads: [], prefetches: [], saves: [], prepares: [], releases: [] };
+  const calls = { sites: 0, pages: [], reads: [], saves: [], prepares: [], releases: [] };
   const adapter = {
     listSites: async () => { calls.sites++; return [{ id: "other", name: "別サイト", domains: ["https://other.example.test"] }, project.site]; },
     listPages: async (siteId) => { calls.pages.push(siteId); return [{ siteId, pageId: "home", locale: "ja-JP", title: "ホーム" }]; },
@@ -58,23 +58,6 @@ test("legal read and save preserve compatibility while forwarding identity field
   await wrapped.saveDraft({ target, document, expectedVersion: "v3", localization }, signal());
   assert.deepEqual(calls.saves[2].localization, localization);
   await assert.rejects(() => wrapped.saveDraft({ target, document: { ...document, siteId: "other" }, expectedVersion: "v1" }, signal()), /文書の対象/);
-});
-
-test("project editor prefetch stays project-scoped, detached and validates the snapshot", async () => {
-  const target = { siteId: "demo", pageId: "home", locale: "ja-JP", ignored: true };
-  const source = { document: { ...fixture, siteId: "demo", pageId: "home", locale: "ja-JP" }, version: "v1", readOnly: { reason: "参照のみ" } };
-  const { calls, wrapped } = setup({ prefetchDocument: async (checked) => { calls.prefetches.push(structuredClone(checked)); return source; } });
-  const snapshot = await wrapped.prefetchDocument(target, signal());
-  assert.equal(snapshot.version, "v1");
-  assert.deepEqual(calls.prefetches, [{ siteId: "demo", pageId: "home", locale: "ja-JP" }]);
-  assert.notEqual(snapshot.document, source.document);
-  assert.deepEqual(snapshot.readOnly, { reason: "参照のみ" });
-  source.document.title = "変更後";
-  assert.notEqual(snapshot.document.title, "変更後");
-  await assert.rejects(() => wrapped.prefetchDocument({ ...target, siteId: "other" }, signal()), /一致/);
-  const foreign = setup({ prefetchDocument: async () => ({ ...source, document: { ...source.document, siteId: "other" } }) }).wrapped;
-  await assert.rejects(() => foreign.prefetchDocument(target, signal()), /文書の対象/);
-  assert.equal("prefetchDocument" in setup().wrapped, false);
 });
 
 test("presentation stays target-scoped and its dependency version is forwarded to save and release CAS", async () => {

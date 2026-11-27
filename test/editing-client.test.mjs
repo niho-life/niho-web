@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { createPageEditingApi } from "@niho/web/editing-api";
+import { createPageEditingApi, EDITING_OPERATIONS } from "@niho/web/editing-api";
 import { createPageEditingApiClient, EditingApiClientError } from "@niho/web/editing-client";
 
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
@@ -167,7 +167,23 @@ test("page and catalog reads allow private ETag revalidation", async () => {
   assert.deepEqual(requests.map(({ cache }) => cache), ["no-cache", "no-cache"]);
 });
 
-test("page read cache returns isolated snapshots after a 304", async () => {
+test("successful capability discovery is shared for the editing-client session", async () => {
+  const requests = [];
+  const client = createPageEditingApiClient({
+    origin: "https://host.example", siteId: target.siteId,
+    fetch: async (input) => {
+      requests.push(String(input));
+      return Response.json({ apiVersion: "v1", siteId: target.siteId, operations: EDITING_OPERATIONS });
+    }
+  });
+  const [first, concurrent] = await Promise.all([client.discover(), client.discover()]);
+  const cached = await client.discover();
+  assert.deepEqual(concurrent, first);
+  assert.deepEqual(cached, first);
+  assert.equal(requests.length, 1);
+});
+
+test("page reads expose 304 revalidation without retaining a document body", async () => {
   const requests = [];
   const nextDocument = { ...structuredClone(fixture), title: "server version two" };
   const responses = [
@@ -185,16 +201,16 @@ test("page read cache returns isolated snapshots after a 304", async () => {
     }
   });
 
-  const first = await client.read(target);
-  first.document.title = "caller mutation";
-  const second = await client.read(target);
-  assert.equal(second.document.title, fixture.title);
-  second.document.title = "second caller mutation";
-  const third = await client.read(target);
-  assert.equal(third.document.title, nextDocument.title);
-  third.document.title = "third caller mutation";
-  const fourth = await client.read(target);
-  assert.equal(fourth.document.title, nextDocument.title);
+  const first = await client.readIfChanged(target);
+  assert.equal(first.status, "modified");
+  assert.equal(first.etag, '"page-v1"');
+  const unchanged = await client.readIfChanged(target, first.etag);
+  assert.deepEqual(unchanged, { status: "not-modified", etag: '"page-v1"' });
+  const changed = await client.readIfChanged(target, first.etag);
+  assert.equal(changed.status, "modified", "a 304 with a different ETag is retried without a validator");
+  assert.equal(changed.snapshot.document.title, nextDocument.title);
+  const confirmed = await client.readIfChanged(target, changed.etag);
+  assert.deepEqual(confirmed, { status: "not-modified", etag: '"page-v2"' });
   assert.deepEqual(requests, [null, '"page-v1"', '"page-v1"', null, '"page-v2"']);
 });
 

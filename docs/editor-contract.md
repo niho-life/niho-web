@@ -14,6 +14,10 @@ PageEditor に渡す必須メソッドと任意 capability の型は src/editor-
 
 ホストは EditorAdapter の全メソッドを実装する必要はありません。必須の listSites、listPages、readDocument、saveDraft、prepareRelease、release に、素材、翻訳、共通部品、CMS preview、site styles、page management、history 等の必要な capability を追加します。個別 capability のデータ形式と保存規則は、[素材契約](asset-contract.md)、[翻訳契約](localization-contract.md)、[共通部品契約](component-contract.md)、[ページ契約](page-contract.md)、[保存と履歴](save-history-contract.md)を参照してください。
 
+ページの再読込を最適化する host は、任意の `readDocumentIfChanged(target, etag, signal)` を実装できます。変更が無い場合は同じ ETag の `not-modified` を返し、変わった場合は新しい snapshot と ETag を返します。PageEditor はページごとに未編集の session と ETag を一つだけ保持し、再訪時はその session を表示してから再検証します。変更のあった文書だけを再解析し、未保存の入力・編集は再検証結果で置き換えません。ページ本文の先読みはしません。
+
+`createPageEditingApiClient().discover()` は成功した capability discovery を client インスタンス内で共有します。編集画面の一つの adapter を使うページ切替では、capabilities を再取得しません。失敗した discovery は次回呼出しで再試行できます。
+
 ## 入力・scope・版
 
 外部入力はホストの信頼境界で厳密に検証します。HTTP 応答は client で一度だけ読み、未知のキーは無視します。Project / Site / resource scope はすべての書込み経路で再確認し、client の選択値だけを認可根拠にしません。

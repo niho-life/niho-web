@@ -107,32 +107,14 @@ async function pointer(target, type, clientY) {
 }
 
 
-test("page rows prefetch on focus and the matching snapshot serves the page switch", async () => {
-  const prefetches = [];
-  const app = await setup({ adapter: { prefetchDocument: async (target) => {
-    prefetches.push(structuredClone(target));
-    return { document: { ...structuredClone(fixture), ...target }, version: `prefetched-${target.pageId}` };
-  } } });
+test("page rows do not prefetch on focus and read once after selection", async () => {
+  const app = await setup();
   try {
     const other = pageRow("別ページ"); assert.ok(other);
     await act(async () => other.focus()); await flush();
-    assert.deepEqual(prefetches, [{ siteId: "demo", pageId: "other", locale: "ja-JP" }]);
+    assert.equal(app.calls.reads.filter(({ pageId }) => pageId === "other").length, 0, "focus does not add a document read");
     await clickPage("別ページ");
-    assert.equal(app.calls.reads.filter(({ pageId }) => pageId === "other").length, 0, "ページ切替は先読みしたsnapshotを使う");
-    assert.equal(document.querySelector(".e-page[aria-current='page'] .e-page-name")?.textContent, "別ページ");
-  } finally { await app.cleanup(); }
-});
-
-test("the adjacent page is prefetched automatically and serves a switch", async () => {
-  const prefetches = [];
-  const app = await setup({ adapter: { prefetchDocument: async (target) => {
-    prefetches.push(structuredClone(target));
-    return { document: { ...structuredClone(fixture), ...target }, version: `idle-${target.pageId}` };
-  } } });
-  try {
-    assert.deepEqual(prefetches, [{ siteId: "demo", pageId: "other", locale: "ja-JP" }], "idle warmup should not depend on pointer movement");
-    await clickPage("別ページ");
-    assert.equal(app.calls.reads.filter(({ pageId }) => pageId === "other").length, 0, "the warmed snapshot serves the page switch");
+    assert.equal(app.calls.reads.filter(({ pageId }) => pageId === "other").length, 1, "selection reads the requested page once");
   } finally { await app.cleanup(); }
 });
 
@@ -141,7 +123,6 @@ test("a previously opened page is shown before its version revalidation finishes
   let resolveHomeRefresh;
   const homeRefresh = new Promise((resolve) => { resolveHomeRefresh = resolve; });
   const app = await setup({ adapter: {
-    prefetchDocument: undefined,
     readDocument: async (target) => {
       reads.push(target.pageId);
       if (target.pageId === "home" && ++homeReads.count === 2) return homeRefresh;
@@ -168,7 +149,6 @@ test("a page revalidation never replaces a newer local edit", async () => {
   let homeReads = 0, resolveHomeRefresh;
   const homeRefresh = new Promise((resolve) => { resolveHomeRefresh = resolve; });
   const app = await setup({ adapter: {
-    prefetchDocument: undefined,
     readDocument: async (target) => {
       if (target.pageId === "home" && ++homeReads === 2) return homeRefresh;
       return { document: { ...structuredClone(fixture), ...target }, version: `${target.pageId}-v${homeReads}` };
@@ -189,8 +169,8 @@ test("a page revalidation never replaces a newer local edit", async () => {
   }
 });
 
-test("both adjacent pages start prefetching before the first document finishes loading", async () => {
-  const prefetches = [], reads = [];
+test("initial page load does not read neighboring pages", async () => {
+  const reads = [];
   let finishInitialRead;
   const initialRead = new Promise((resolve) => { finishInitialRead = resolve; });
   const pages = [
@@ -204,25 +184,19 @@ test("both adjacent pages start prefetching before the first document finishes l
       reads.push(target.pageId);
       if (target.pageId === "home") await initialRead;
       return { document: { ...structuredClone(fixture), ...target }, version: `read-${target.pageId}`, releases: [] };
-    },
-    prefetchDocument: async (target) => {
-      prefetches.push(target.pageId);
-      return { document: { ...structuredClone(fixture), ...target }, version: `prefetched-${target.pageId}` };
     }
   } });
   try {
-    assert.deepEqual(reads, ["home"], "the initial document is still loading");
-    assert.deepEqual(new Set(prefetches), new Set(["last", "other"]), "both visible neighbors warm in parallel");
+    assert.deepEqual(reads, ["home"], "only the selected initial document is read");
     await act(async () => { finishInitialRead(); await new Promise((resolve) => setTimeout(resolve, 0)); });
     await clickPage("別ページ");
-    assert.deepEqual(reads, ["home"], "the prefetched page skips a new document request");
+    assert.deepEqual(reads, ["home", "other"], "selecting a page reads only that page");
     assert.equal(document.querySelector(".e-page[aria-current='page'] .e-page-name")?.textContent, "別ページ");
   } finally {
     finishInitialRead();
     await app.cleanup();
   }
 });
-
 test("breakpoint settings dialog analyzes every page and reports unused and nearby widths", async () => {
   const reads = [];
   const page = (pageId, width) => ({ schemaVersion: 1, siteId: "demo", pageId, locale: "ja-JP", revision: 1, title: pageId,
