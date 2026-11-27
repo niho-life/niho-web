@@ -15,9 +15,9 @@ export type BlockDefinition = BlockContract & {
   component: ComponentType<Record<string, PublicPropValue>>;
 };
 export type BlockRegistry = Readonly<Record<string, BlockDefinition>>;
-/** 実行コード側だけで指定する外部frame policy。snapshotから権限を要求できない。 */
-export type ExternalFramePolicy = (frame: Readonly<SitePresentationExternalFrame>) => "blocked" | "opaque" | "retain-origin";
-export function createExternalFramePolicy({ parentOrigin, sources, siteSources }: { parentOrigin: string; sources: readonly string[]; siteSources?: readonly string[] }): ExternalFramePolicy {
+/** 実行コード側だけで指定する外部frame policy。snapshotから権限を要求できず、popup権限はpopupSourcesに一致するときだけ返す。 */
+export type ExternalFramePolicy = (frame: Readonly<SitePresentationExternalFrame>) => "blocked" | "opaque" | "retain-origin" | "retain-origin-popups";
+export function createExternalFramePolicy({ parentOrigin, sources, siteSources, popupSources = [] }: { parentOrigin: string; sources: readonly string[]; siteSources?: readonly string[]; popupSources?: readonly string[] }): ExternalFramePolicy {
   const parent = new URL(parentOrigin);
   const parseSources = (list: readonly string[] | undefined) => {
     if (!Array.isArray(list) || list.length > 16) throw new Error("Invalid external frame policy");
@@ -30,17 +30,22 @@ export function createExternalFramePolicy({ parentOrigin, sources, siteSources }
   };
   const allowed = parseSources(sources);
   const siteAllowed = siteSources === undefined ? undefined : parseSources(siteSources);
+  const popupAllowed = parseSources(popupSources);
   const matches = (source: URL, candidate: URL, prefix: boolean) => source.origin === candidate.origin && (source.pathname === candidate.pathname || prefix && candidate.pathname.startsWith(source.pathname.endsWith("/") ? source.pathname : `${source.pathname}/`));
   return (frame) => {
     let url: URL;
     try { url = new URL(frame.src); } catch { return siteAllowed ? "blocked" : "opaque"; }
     if (url.protocol !== "https:" || url.username || url.password || url.hash) return siteAllowed ? "blocked" : "opaque";
     // siteSources を渡さない従来の使い方: sources との完全一致だけがorigin維持、他はopaque。
-    if (siteAllowed === undefined) return allowed.some((source) => matches(source, url, false)) ? "retain-origin" : "opaque";
+    if (siteAllowed === undefined) {
+      if (!allowed.some((source) => matches(source, url, false))) return "opaque";
+      return popupAllowed.some((source) => matches(source, url, false)) ? "retain-origin-popups" : "retain-origin";
+    }
     // サイト単位の許可の外は読み込まない。許可の中でも、origin維持は実行コードの上限（sources）にも一致するときだけで、
     // 一致しない不変embedなどは権限なし（allow-same-originなし）のopaque iframeにする。
     if (!siteAllowed.some((source) => matches(source, url, true))) return "blocked";
-    return allowed.some((source) => matches(source, url, true)) ? "retain-origin" : "opaque";
+    if (!allowed.some((source) => matches(source, url, true))) return "opaque";
+    return popupAllowed.some((source) => matches(source, url, true)) ? "retain-origin-popups" : "retain-origin";
   };
 }
 export type PageRendererProps = {
@@ -319,7 +324,9 @@ function PageRendererCore({ document: input, blocks = emptyBlocks, assets: asset
       const frameAccess = externalFramePolicy?.(frame);
       if (frameAccess === "blocked") return createElement("div", { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, "data-nw-frame-blocked": "", role: "status" }, "外部コンテンツを表示できません");
       return createElement("iframe", { ...attrs, key: node.id, "data-nw-node": node.id, "data-nw-owner": scope, src: frame.src, title: frame.title,
-      loading: frame.loading ?? "lazy", referrerPolicy: frame.referrerPolicy ?? "strict-origin-when-cross-origin", sandbox: frameAccess === "retain-origin" ? "allow-scripts allow-same-origin" : "allow-scripts",
+      loading: frame.loading ?? "lazy", referrerPolicy: frame.referrerPolicy ?? "strict-origin-when-cross-origin", sandbox: frameAccess === "retain-origin-popups"
+        ? "allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+        : frameAccess === "retain-origin" ? "allow-scripts allow-same-origin" : "allow-scripts",
       style: withCanvasStyle({ width: "100%", height: "100%", border: 0, display: "block" }),
       ...(frame.frameKey ? { "data-nw-frame-key": frame.frameKey, "data-nw-frame-max-height": frame.autoHeightMax ?? 1200 } : {}),
       ...(frame.allowFullScreen ? { allowFullScreen: true } : {}) });
