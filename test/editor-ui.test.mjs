@@ -999,6 +999,29 @@ test("publish confirmation fails closed when the published site-style fence is i
     assert.ok(document.body.textContent.includes("サイト共通スタイルの公開版を確認できません"));
   } finally { await app.cleanup(); }
 });
+test("a successful page publication refreshes its site epoch before the next plan", async () => {
+  let publication = { stylesVersion: "published-v1", epoch: "epoch-1" };
+  const app = await setup({ adapter: {
+    readSiteSettings: async () => ({ settings: { title: "デモサイト", description: "説明", locale: "ja" }, version: "draft-v1" }),
+    readDocument: async (target) => ({ document: { ...structuredClone(fixture), ...target }, version: "v1",
+      publishedSiteStylesVersion: publication.stylesVersion, sitePublicationEpoch: publication.epoch, releases: [{ revision: 1, label: "最初の公開" }] }),
+    release: async () => {
+      const previous = publication;
+      publication = { stylesVersion: "published-v2", epoch: "epoch-2" };
+      return { status: "released", snapshot: { document: { ...structuredClone(fixture), siteId: "demo", pageId: "home", locale: "ja-JP" }, version: "released-v2",
+        publishedSiteStylesVersion: previous.stylesVersion, sitePublicationEpoch: previous.epoch } };
+    }
+  } });
+  try {
+    await click("公開");
+    await act(async () => document.querySelector('[role="dialog"] input[type="checkbox"]').click());
+    await click("この内容を公開");
+    await settle();
+    await click("公開");
+    assert.deepEqual(app.calls.prepares.at(-1).siteStylesRevision, { stage: "published", version: "published-v2" });
+    assert.equal(app.calls.prepares.at(-1).sitePublicationEpoch, "epoch-2");
+  } finally { await app.cleanup(); }
+});
 test("dirty navigation requires explicit discard and can keep editing", async () => {
   const app = await setup();
   try {
@@ -1170,10 +1193,11 @@ test("multi-page release selects only pages with changes and can resume from the
   try { assert.equal(document.querySelector(".e-page-release-select"), null, "hosts without the optional methods do not show multi-page controls"); }
   finally { await absent.cleanup(); }
 
-  let plannedItems, plannedPageRequests = [], applied = 0, statusReads = 0, operationId;
+  let plannedItems, plannedPageRequests = [], applied = 0, statusReads = 0, siteSettingsReads = 0, publishedStylesVersion = "s-initial", sitePublicationEpoch = "epoch-demo", operationId;
   const app = await setup({ adapter: {
     listPages: async () => pages,
-    readDocument: async (target) => ({ document: { ...structuredClone(fixture), ...target }, version: `v-${target.pageId}`, publishedSiteStylesVersion: `s-${target.pageId}`, sitePublicationEpoch: "epoch-demo", presentation: { version: `p-${target.pageId}` }, hasSavedDraft: true }),
+    readSiteSettings: async () => { siteSettingsReads++; return { settings: { title: "デモサイト", description: "サイトの説明", locale: "ja" }, version: "draft-styles-v1" }; },
+    readDocument: async (target) => ({ document: { ...structuredClone(fixture), ...target }, version: `v-${target.pageId}`, publishedSiteStylesVersion: publishedStylesVersion, sitePublicationEpoch, presentation: { version: `p-${target.pageId}` }, hasSavedDraft: true }),
     prepareRelease: async (request) => { plannedPageRequests.push(structuredClone(request)); return { ...request, confirmationToken: `single-${request.target.pageId}`, domain: "https://example.test",
       changes: request.target.pageId === "about" ? [] : [{ path: "title", before: "旧タイトル", after: request.target.pageId === "home" ? "ホーム更新" : "お問い合わせ更新" }] }; },
     prepareReleaseSet: async (items) => {
@@ -1183,11 +1207,13 @@ test("multi-page release selects only pages with changes and can resume from the
     releaseSet: async (plan) => {
       assert.equal(plan.sitePublicationEpoch, "epoch-demo");
       applied++;
+      publishedStylesVersion = "s-after-partial"; sitePublicationEpoch = "epoch-2";
       return { status: "publishing", operationId: plan.operationId, items: plan.items.map((item, index) => index === 0
         ? { target: item.target, status: "released", version: "released-home" } : { target: item.target, status: "pending" }) };
     },
     releaseSetStatus: async (id) => {
       statusReads++; assert.equal(id, operationId);
+      publishedStylesVersion = "s-after-completion"; sitePublicationEpoch = "epoch-3";
       return { status: "completed", operationId: id, httpStatus: 200, result: { status: "completed", operationId: id,
         items: plannedItems.map((item, index) => ({ target: item.target, status: "released", version: `released-${index}` })) } };
     }
@@ -1199,20 +1225,24 @@ test("multi-page release selects only pages with changes and can resume from the
     }
     await click("選択したページの変更を確認");
     const confirmation = document.querySelector('[role="dialog"]'); assert.ok(confirmation);
-    assert.ok(confirmation.textContent.includes("https://example.test"), "the release destination is visible before confirmation");
+    assert.ok(confirmation.textContent.includes("https://example.test"), `the release destination is visible before confirmation: ${confirmation.textContent}`);
     assert.match(confirmation.textContent, /差分がある 2 ページ/u);
     assert.ok(confirmation.textContent.includes("ホーム")); assert.ok(confirmation.textContent.includes("お問い合わせ"));
     assert.ok(!confirmation.textContent.includes("私たちについて"), "unchanged pages are excluded");
     assert.deepEqual(plannedItems.map((item) => item.target.pageId), ["home", "contact"]);
     assert.deepEqual(plannedItems.map((item) => item.presentationVersion), ["p-home", "p-contact"]);
-    assert.deepEqual(plannedItems.map((item) => item.stylesVersion), ["s-home", "s-contact"]);
+    assert.deepEqual(plannedItems.map((item) => item.stylesVersion), ["s-initial", "s-initial"]);
     assert.equal(plannedPageRequests.length, 3);
     assert.ok(plannedPageRequests.every((request) => request.sitePublicationEpoch === "epoch-demo" && request.siteStylesRevision.stage === "published"));
     const consent = confirmation.querySelector(".e-release-set-confirm input"); await press(consent);
     await click("2 ページを公開");
     assert.equal(applied, 1); assert.match(document.querySelector('[role="dialog"]').textContent, /ページは処理待ち/u);
+    await settle();
+    assert.equal(siteSettingsReads >= 3, true, "the partial result refreshes site settings");
     await click("状態を確認");
     assert.equal(statusReads, 1); assert.equal(document.querySelector('[role="dialog"]').textContent.includes("公開済み"), true);
+    await settle();
+    assert.equal(siteSettingsReads >= 4, true, "each publish result refreshes site settings");
     await click("ページ一覧に戻る"); assert.equal(document.querySelector('[role="dialog"]'), null);
   } finally { await app.cleanup(); }
 });

@@ -20,6 +20,7 @@ import { breakpointSettingsFromLegacy, editorTiers, hiddenAt, normalizeBreakpoin
 import { Dialog } from "./editor-dialog.js";
 import { PageChangeDialog, PageSettings, PagePanel, ReleaseSearchSummary, SiteSettingsPanel, chooseSiteCover, coverReferences, pageChangeNotice, publicInfoMessage, useSiteSettings, type FieldOptions, type PageChangeStart } from "./editor-pages.js";
 import { PageReleaseSetDialog } from "./editor-release-set.js";
+import { parseSiteSettings } from "./pages.js";
 import { AutosaveSwitch, ConflictDialog, HistoryBar, HistoryDialogs, LibraryRecoveryBanner, RecoveryBanner, RecoveryCompareDialog, ReleaseAffected, SaveStatus, VersionPanel, autosaveDelay, classifySaveError, formatDateTime, isOffline, saveProblemNotice, saveStatus, targetKeyOf, useAutosave, useLibraryRecovery, useOnline, useRecovery, useVersionHistory, type LatestSnapshot, type SaveProblem } from "./editor-history.js";
 import { isDirectlyEditable, readEditableChildren } from "./editor-rich-text.js";
 import { isSafePublicLink } from "./validation-utils.js";
@@ -733,6 +734,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   // 文書と同じ読込要求で得た設定は、設定パネル側の独立読込が失敗してもそのセッションの描画・検証に使える。
   const activeSiteStyles = siteSettings.status === "ready" && siteSettings.settings ? siteSettings.styles : session?.siteStyles ?? siteSettings.styles;
   const siteSettingsRef = useRef(siteSettings); siteSettingsRef.current = siteSettings;
+  const sitePublicationRefreshId = useRef(0);
   const [problem, setProblem] = useState<SaveProblem | null>(null), [savedAt, setSavedAt] = useState<Date | null>(null), [loadEpoch, setLoadEpoch] = useState(0);
   const [conflictView, setConflictView] = useState(0), [recoveryCompare, setRecoveryCompare] = useState(false), [autosaveOn, setAutosaveOn] = useState(true);
   // 訳文の原文検証・再構成には保存済みのサイト共通スタイルを使う。設定を読むホストでは読込が終わるまで待ち、読めなければ文書と同じ読込で得た設定か文書単体で進める。
@@ -1709,12 +1711,36 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
       if (controller.signal.aborted) return;
       if (result.status === "conflict") { setNotice("公開が競合しました（409）。編集内容を保持しています。最新状態を確認してからやり直してください。"); setPlan(null); return; }
       replace(editorSessionFrom(result.snapshot, current.target, blocks, libraryRef.current?.history.present, siteSettingsRef.current.settings, !siteSettingsRef.current.settings)); setSelection(null); setFieldEpoch((value) => value + 1); setPlan(null); setProblem(null);
-      setNotice(result.snapshot.englishPublication
+      const successNotice = result.snapshot.englishPublication
         ? plan.action === "rollback" ? "日本語ページを指定した版に戻しました。英語版の状態は上の表示で確認してください。" : "日本語ページを公開しました。英語版の状態は上の表示で確認してください。"
-        : plan.action === "rollback" ? "指定した版に戻しました。" : "公開しました。");
+        : plan.action === "rollback" ? "指定した版に戻しました。" : "公開しました。";
+      const settingsRefreshed = await refreshSitePublicationContext(current.target.siteId, controller.signal);
+      setNotice(settingsRefreshed || !adapter.readSiteSettings ? successNotice : `${successNotice} サイト設定の公開版を更新できませんでした。再読込後に続けてください。`);
       setPicker(null);
     } catch { if (!controller.signal.aborted) { setNotice("反映結果を確認できませんでした。再試行前に公開状態をホスト側で確認してください。編集内容は保持しています。"); setPlan(null); } }
     finally { if (!controller.signal.aborted) setBusy(""); action.current = null; }
+  }
+  async function refreshSitePublicationContext(targetSiteId: string, signal: AbortSignal): Promise<boolean> {
+    if (!adapter.readSiteSettings) return true;
+    const refreshId = ++sitePublicationRefreshId.current;
+    try {
+      const settingsSnapshot = await adapter.readSiteSettings(targetSiteId, signal);
+      if (signal.aborted || siteIdRef.current !== targetSiteId || sitePublicationRefreshId.current !== refreshId) return false;
+      const settings = parseSiteSettings(settingsSnapshot.settings);
+      siteSettingsRef.current.acceptSnapshot({ settings, version: settingsSnapshot.version });
+      const current = sessionRef.current;
+      if (!current || current.target.siteId !== targetSiteId) return true;
+      const pageSnapshot = await adapter.readDocument(current.target, signal);
+      if (signal.aborted || siteIdRef.current !== targetSiteId || sitePublicationRefreshId.current !== refreshId || sessionRef.current !== current) return false;
+      const components = libraryRef.current?.history.present;
+      const refreshed = editorSessionFrom(pageSnapshot, current.target, blocks, components, settings, false);
+      pageSessionCache.current.rememberLatest(current.target, { session: refreshed, siteSettings: { settings, version: settingsSnapshot.version } }, components);
+      replace(refreshed, { measureEdit: false });
+      return true;
+    } catch {
+      if (!signal.aborted && siteIdRef.current === targetSiteId && sitePublicationRefreshId.current === refreshId) siteSettingsRef.current.reload();
+      return false;
+    }
   }
   async function updateEnglishPublication(kind: "refresh" | "retry") {
     const current = sessionRef.current, capability = adapter.englishPublication;
@@ -2487,9 +2513,16 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
   };
   const releaseSetCompleted = (selected: readonly EditorPage[]) => {
     void (async () => {
-      const current = sessionRef.current?.target, listed = await reloadPages();
-      if (current && selected.some((candidate) => sameTarget(candidate, current))) await load(current, { preserveView: true });
-      if (!listed) setNotice("公開結果は記録されましたが、ページ一覧を再読込できませんでした。");
+      const listed = await reloadPages();
+      const targetSiteId = selected[0]?.siteId;
+      const settingsRefreshed = targetSiteId
+        ? await refreshSitePublicationContext(targetSiteId, new AbortController().signal)
+        : !adapter.readSiteSettings;
+      const problems = [
+        ...(!settingsRefreshed ? ["サイト設定の公開版を更新できませんでした。再読込後に続けてください。"] : []),
+        ...(!listed ? ["ページ一覧を再読込できませんでした。"] : [])
+      ];
+      if (problems.length) setNotice(`公開結果は記録されましたが、${problems.join(" ")}`);
     })();
   };
   const status = saveStatus({ busy, hasInput, problem, dirty: pendingChanges, online, autosave: autosaveActive, savedAt, loaded: !!session });
