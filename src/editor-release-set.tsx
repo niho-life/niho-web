@@ -6,7 +6,7 @@ import { Dialog } from "./editor-dialog.js";
 import { validateReleasePlan } from "./editor-model.js";
 import type { EditorAdapter, EditorPage, EditorReleasePlan, EditorReleaseRequest, EditorSite } from "./editor-types.js";
 
-type Preview = { page: EditorPage; plan: EditorReleasePlan };
+type Preview = { page: EditorPage; plan: EditorReleasePlan; stylesVersion?: string };
 type Completed = Exclude<EditingPageReleaseSetApplyResult, { status: "conflict" | "invalid" | "not_found" | "duplicate" | "publication_in_progress" | "migration_in_progress" }>;
 type ReleaseSetAdapter = Pick<EditorAdapter, "readDocument" | "prepareRelease" | "prepareReleaseSet" | "releaseSet" | "releaseSetStatus">;
 
@@ -19,13 +19,17 @@ function presentationVersion(value: unknown): string | undefined {
   if (typeof version !== "string" || !version || version.length > 512) throw new Error("表示設定の版を確認できません。");
   return version;
 }
-function checkedReleaseSetPlan(value: unknown, expectedItems: readonly EditingPageReleaseSetItem[], site: EditorSite): EditingPageReleaseSetPlan {
+function checkedReleaseSetPlan(value: unknown, expectedItems: readonly EditingPageReleaseSetItem[], site: EditorSite, expectedSitePublicationEpoch?: string): EditingPageReleaseSetPlan {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("公開変更セットの確認情報が正しくありません。");
   const source = value as Record<string, unknown>;
   const operationId = source.operationId;
+  const sitePublicationEpoch = source.sitePublicationEpoch;
   if (source.siteId !== site.id || typeof operationId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(operationId)
     || typeof source.confirmationToken !== "string" || !source.confirmationToken || source.confirmationToken.length > 512
-    || typeof source.domain !== "string" || !site.domains.includes(source.domain)) throw new Error("公開変更セットの確認情報が正しくありません。");
+    || typeof source.domain !== "string" || !site.domains.includes(source.domain)
+    || sitePublicationEpoch !== undefined && (typeof sitePublicationEpoch !== "string" || !sitePublicationEpoch || sitePublicationEpoch.length > 512 || /[\u0000-\u001f\u007f]/u.test(sitePublicationEpoch))
+    || expectedSitePublicationEpoch !== undefined && sitePublicationEpoch !== expectedSitePublicationEpoch
+    || expectedItems.some((item) => item.stylesVersion !== undefined) && sitePublicationEpoch === undefined) throw new Error("公開変更セットの確認情報が正しくありません。");
   let domain: URL;
   try { domain = new URL(source.domain); } catch { throw new Error("公開変更セットの公開先が正しくありません。"); }
   if (domain.protocol !== "https:" || domain.origin !== source.domain || domain.username || domain.password || domain.search || domain.hash)
@@ -38,10 +42,12 @@ function checkedReleaseSetPlan(value: unknown, expectedItems: readonly EditingPa
     if (!expected || !target || typeof target !== "object" || Array.isArray(target)) throw new Error("公開変更セットの対象が正しくありません。");
     const checked = target as Record<string, unknown>;
     if (checked.siteId !== expected.target.siteId || checked.pageId !== expected.target.pageId || checked.locale !== expected.target.locale
-      || item.expectedVersion !== expected.expectedVersion || item.componentsVersion !== expected.componentsVersion || item.presentationVersion !== expected.presentationVersion)
+      || item.expectedVersion !== expected.expectedVersion || item.componentsVersion !== expected.componentsVersion || item.presentationVersion !== expected.presentationVersion
+      || item.stylesVersion !== expected.stylesVersion)
       throw new Error("公開変更セットの対象または版が、確認した差分と一致しません。");
   }
-  return { siteId: site.id, operationId, confirmationToken: source.confirmationToken, domain: source.domain, items: structuredClone(expectedItems) };
+  return { siteId: site.id, operationId, confirmationToken: source.confirmationToken, domain: source.domain,
+    ...(sitePublicationEpoch === undefined ? {} : { sitePublicationEpoch }), items: structuredClone(expectedItems) };
 }
 function resultFor(value: unknown, plan: EditingPageReleaseSetPlan): Completed | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -96,19 +102,23 @@ export function PageReleaseSetDialog({ pages, site, adapter, componentsVersion, 
     setPhase("planning"); setMessage("各ページの公開差分を確認しています…"); setPreviews([]); setPlan(null); setResult(null); setConfirmed(false);
     try {
       if (pages.length < 2 || pages.length > 50 || new Set(pages.map(targetKey)).size !== pages.length) throw new Error("対象は重複のない2〜50ページにしてください。");
-      const changed: Preview[] = [];
+      const changed: Preview[] = [], preflighted: Preview[] = [];
       for (let offset = 0; offset < pages.length; offset += 5) {
         const group = pages.slice(offset, offset + 5);
         const values = await Promise.all(group.map(async (page) => {
           const snapshot = await adapter.readDocument(page, signal);
           if (snapshot.hasSavedDraft === false) throw new Error(`「${page.title}」は下書きがありません。編集して保存してから選んでください。`);
           const presentation = presentationVersion(snapshot.presentation);
+          const stylesVersion = snapshot.publishedSiteStylesVersion, sitePublicationEpoch = snapshot.sitePublicationEpoch;
+          if ((stylesVersion === undefined) !== (sitePublicationEpoch === undefined)) throw new Error("サイト共通スタイルの公開版を確認できません。ページを読み直してから再度お試しください。");
           const request: EditorReleaseRequest = { target: page, expectedVersion: snapshot.version, action: "publish",
-            ...(componentsVersion ? { componentsVersion } : {}), ...(presentation ? { presentationVersion: presentation } : {}) };
+            ...(componentsVersion ? { componentsVersion } : {}), ...(presentation ? { presentationVersion: presentation } : {}),
+            ...(stylesVersion === undefined ? {} : { siteStylesRevision: { stage: "published" as const, version: stylesVersion }, sitePublicationEpoch }) };
           const value = await adapter.prepareRelease(request, signal);
           validateReleasePlan(value, request, site);
-          return { page, plan: structuredClone(value) };
+          return { page, plan: structuredClone(value), ...(stylesVersion === undefined ? {} : { stylesVersion }) };
         }));
+        preflighted.push(...values);
         changed.push(...values.filter(({ plan: item }) => item.changes.length > 0));
       }
       if (signal.aborted) return;
@@ -118,9 +128,15 @@ export function PageReleaseSetDialog({ pages, site, adapter, componentsVersion, 
         setMessage(changed.length === 0 ? "選択したページに公開差分はありません。" : `差分があるページは「${changed[0]!.page.title}」の1件です。通常のページ公開を使ってください。`);
         return;
       }
-      const items: EditingPageReleaseSetItem[] = changed.map(({ plan: item }) => ({ target: item.target, expectedVersion: item.expectedVersion,
-        ...(item.componentsVersion === undefined ? {} : { componentsVersion: item.componentsVersion }), ...(item.presentationVersion === undefined ? {} : { presentationVersion: item.presentationVersion }) }));
-      const prepared = checkedReleaseSetPlan(await adapter.prepareReleaseSet!(items, signal), items, site);
+      const items: EditingPageReleaseSetItem[] = changed.map(({ plan: item, stylesVersion }) => ({ target: item.target, expectedVersion: item.expectedVersion,
+        ...(item.componentsVersion === undefined ? {} : { componentsVersion: item.componentsVersion }), ...(item.presentationVersion === undefined ? {} : { presentationVersion: item.presentationVersion }),
+        ...(stylesVersion === undefined ? {} : { stylesVersion }) }));
+      const sitePublicationEpochs = new Set(preflighted.map(({ plan: item }) => item.sitePublicationEpoch).filter((value): value is string => value !== undefined));
+      if (sitePublicationEpochs.size > 1 || preflighted.some(({ plan: item, stylesVersion }) => (stylesVersion === undefined) !== (item.sitePublicationEpoch === undefined))) {
+        throw new Error("ページごとのサイト共通スタイル公開版が一致しません。ページ一覧を読み直してから再度お試しください。");
+      }
+      const expectedSitePublicationEpoch = sitePublicationEpochs.values().next().value as string | undefined;
+      const prepared = checkedReleaseSetPlan(await adapter.prepareReleaseSet!(items, signal), items, site, expectedSitePublicationEpoch);
       if (signal.aborted) return;
       setPlan(prepared); setPhase("review"); setMessage("");
     } catch (error) {
