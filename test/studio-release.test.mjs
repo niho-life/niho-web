@@ -11,6 +11,7 @@ const env = {
   STUDIO_DATABASE_ID: "dddddddd-eeee-4444-8888-ffffffffffff",
   STUDIO_ORIGIN: "https://studio.example.test",
   PUBLIC_SITES_ORIGIN: "https://public.example.test",
+  PUBLIC_SITES_PREVIEW_ORIGIN: "https://preview.example.test",
   STUDIO_ACCESS_ISSUER: "https://access.example.test",
   STUDIO_ACCESS_AUDIENCE: "b".repeat(64),
   STUDIO_SMOKE_PROJECT_ID: "project-fixture",
@@ -33,6 +34,7 @@ test("release preflight rejects missing settings and unsuitable Access credentia
     return true;
   });
   assert.throws(() => readReleaseSettings({ ...env, PUBLIC_SITES_ORIGIN: env.STUDIO_ORIGIN }), /PUBLIC_SITES_ORIGIN/u);
+  assert.throws(() => readReleaseSettings({ ...env, PUBLIC_SITES_PREVIEW_ORIGIN: env.PUBLIC_SITES_ORIGIN }), /PUBLIC_SITES_PREVIEW_ORIGIN/u);
   assert.throws(() => readReleaseSettings({ ...env, STUDIO_SMOKE_PUBLIC_PATH: "/s/example/../../unexpected" }), /STUDIO_SMOKE_PUBLIC_PATH/u);
   assert.throws(() => readReleaseSettings({ ...env, STUDIO_SMOKE_ACCESS_TOKEN: token({ exp: 0 }) }), /有効期限/u);
   assert.throws(() => readReleaseSettings({ ...env, STUDIO_SMOKE_ACCESS_TOKEN: token({ sub: "", email: undefined }) }), /ユーザー JWT/u);
@@ -43,7 +45,7 @@ test("release preflight rejects missing settings and unsuitable Access credentia
 test("release parses Wrangler list and blocks pending migrations outside the additive allowlist", () => {
   const list = (rows) => ["Resource location: remote", "Migrations to be applied:", "│ Name │", ...rows.map((name) => `│ ${name} │`)].join("\n");
   assert.deepEqual(pendingMigrations("✅ No migrations to apply!\n"), []);
-  assert.deepEqual(pendingMigrations(list(["0015_cms_delivery.sql"])), ["0015_cms_delivery.sql"]);
+  assert.deepEqual(pendingMigrations(list(["0015_cms_delivery.sql", "0016_static_page_publication.sql"])), ["0015_cms_delivery.sql", "0016_static_page_publication.sql"]);
   assert.throws(() => pendingMigrations(list(["0015_cms_delivery.sql", "0016_drop_old_table.sql"])), /一致しません/u);
   assert.throws(() => pendingMigrations("unknown Wrangler output"), /読み取れません/u);
 });
@@ -69,11 +71,13 @@ test("release builds a private Wrangler config from external settings", () => {
     assert.equal(config.vars.ACCESS_ISSUER, env.STUDIO_ACCESS_ISSUER);
     assert.equal(config.vars.ACCESS_AUDIENCE, env.STUDIO_ACCESS_AUDIENCE);
     assert.equal(config.vars.PUBLIC_SITES_ORIGIN, env.PUBLIC_SITES_ORIGIN);
+    assert.equal(config.vars.PUBLIC_SITES_PREVIEW_ORIGIN, env.PUBLIC_SITES_PREVIEW_ORIGIN);
     assert.equal(config.keep_vars, true);
     assert.deepEqual(config.secrets.required, ["KAMAKURA_STUDIO_BRIDGE_SECRET"]);
     assert.deepEqual(config.routes.map(({ pattern }) => pattern), ["studio.example.test", "public.example.test"]);
     assert.equal(config.main, resolve(new URL("../studio/", import.meta.url).pathname, "dist/worker.js"));
     assert.ok(existsSync(join(directory, "migrations", "0015_cms_delivery.sql")));
+    assert.ok(existsSync(join(directory, "migrations", "0016_static_page_publication.sql")));
     assert.equal(statSync(configPath).mode & 0o777, 0o600);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

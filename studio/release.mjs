@@ -17,7 +17,14 @@ const entryScript = /<script type="module" src="(\/assets\/app-[a-f0-9]{12}\.js)
 const dashboardImport = /import\("\.\/(chunks\/project-dashboard-[A-Za-z0-9_-]{8}\.js)"\)/u;
 const requiredSecrets = ["KAMAKURA_STUDIO_BRIDGE_SECRET"];
 // List each migration checked against the old Worker's reads and writes before enabling it here.
-const beforeDeployMigrations = new Set(["0015_cms_delivery.sql"]);
+const beforeDeployMigrations = new Set([
+  "0015_cms_delivery.sql",
+  "0016_static_page_publication.sql",
+  "0017_managed_public_embeds.sql",
+  "0018_managed_public_domains.sql",
+  "0019_managed_site_redirects.sql",
+  "0020_managed_published_paths.sql"
+]);
 
 class ReleaseError extends Error {}
 
@@ -39,6 +46,9 @@ export function readReleaseSettings(env) {
   const databaseId = requireValue(env, "STUDIO_DATABASE_ID", (value) => uuid.test(value));
   const studioOrigin = requireValue(env, "STUDIO_ORIGIN", isHttpsOrigin);
   const publicOrigin = requireValue(env, "PUBLIC_SITES_ORIGIN", (value) => value !== studioOrigin && isHttpsOrigin(value));
+  const previewOrigin = env.PUBLIC_SITES_PREVIEW_ORIGIN
+    ? requireValue(env, "PUBLIC_SITES_PREVIEW_ORIGIN", (value) => value !== studioOrigin && value !== publicOrigin && isHttpsOrigin(value))
+    : null;
   const accessIssuer = requireValue(env, "STUDIO_ACCESS_ISSUER", isHttpsOrigin);
   const accessAudience = requireValue(env, "STUDIO_ACCESS_AUDIENCE", (value) => /^[a-f0-9]{64}$/iu.test(value));
   const project = requireValue(env, "STUDIO_SMOKE_PROJECT_ID", (value) => identifier.test(value));
@@ -55,7 +65,7 @@ export function readReleaseSettings(env) {
       claims.iss !== accessIssuer || ![claims.aud].flat().includes(accessAudience) || !Number.isSafeInteger(claims.exp)) {
     throw new ReleaseError("STUDIO_SMOKE_ACCESS_TOKEN に対象の Access application のユーザー JWT を指定してください。");
   }
-  const settings = { accountId, databaseId, studioOrigin, publicOrigin, accessIssuer, accessAudience, project, site, publicPath, token, expiresAt: claims.exp };
+  const settings = { accountId, databaseId, studioOrigin, publicOrigin, previewOrigin, accessIssuer, accessAudience, project, site, publicPath, token, expiresAt: claims.exp };
   checkExpiry(settings, 120);
   return settings;
 }
@@ -111,7 +121,7 @@ export function registeredManagedSiteSlug(stdout) {
 function childEnv() {
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
-    if (key.startsWith("STUDIO_") || key === "PUBLIC_SITES_ORIGIN") delete env[key];
+    if (key.startsWith("STUDIO_") || key === "PUBLIC_SITES_ORIGIN" || key === "PUBLIC_SITES_PREVIEW_ORIGIN") delete env[key];
   }
   return env;
 }
@@ -145,7 +155,8 @@ export function writeConfig(directory, settings) {
   config.assets.directory = resolve(studio, config.assets.directory);
   config.routes = [settings.studioOrigin, settings.publicOrigin].map((origin) => ({ pattern: new URL(origin).hostname, custom_domain: true }));
   config.d1_databases[0].database_id = settings.databaseId;
-  config.vars = { ACCESS_ISSUER: settings.accessIssuer, ACCESS_AUDIENCE: settings.accessAudience, PUBLIC_SITES_ORIGIN: settings.publicOrigin };
+  config.vars = { ACCESS_ISSUER: settings.accessIssuer, ACCESS_AUDIENCE: settings.accessAudience, PUBLIC_SITES_ORIGIN: settings.publicOrigin,
+    ...(settings.previewOrigin ? { PUBLIC_SITES_PREVIEW_ORIGIN: settings.previewOrigin } : {}) };
   config.keep_vars = true;
   config.secrets = { required: requiredSecrets };
   const migrationsDirectory = config.d1_databases[0].migrations_dir;

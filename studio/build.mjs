@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 const studioDirectory = dirname(fileURLToPath(import.meta.url));
 const outputDirectory = join(studioDirectory, "dist");
 const publicOutput = join(outputDirectory, "public");
+const publicSitesOutput = join(outputDirectory, "public-sites");
 
 await rm(outputDirectory, { recursive: true, force: true });
 /** webFonts() が書き出す @font-face の CSS の名前（assets/fonts/ の中）。index.html の /assets/fonts.css をこれに置き換える */
@@ -137,10 +138,12 @@ async function publicScript(name) {
     bundle: true, format: "esm", platform: "browser", target: "es2022", minify: true, legalComments: "none", write: false
   });
   const bytes = result.outputFiles[0].contents;
-  const directory = join(publicOutput, "_niho");
+  const directories = [join(publicOutput, "_niho"), join(publicSitesOutput, "_niho")];
   const file = `${name}-${fingerprint(bytes)}.js`;
-  await mkdir(directory, { recursive: true });
-  await writeFile(join(directory, file), bytes);
+  await Promise.all(directories.map(async (directory) => {
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, file), bytes);
+  }));
   return `/_niho/${file}`;
 }
 

@@ -14,6 +14,7 @@ Studio Worker の配備、D1 migration、secret、切り戻しの手順です。
 | `STUDIO_DATABASE_ID` | 既存の Studio D1 database ID |
 | `STUDIO_ORIGIN` | Access で保護された Studio の HTTPS origin |
 | `PUBLIC_SITES_ORIGIN` | Studio と異なる公開配信用の HTTPS origin |
+| `PUBLIC_SITES_PREVIEW_ORIGIN` | 任意。公開 Worker を割り当てる検証用 HTTPS origin。D1 の host 登録に noindex を付ける。配備先で公開 Worker の route も割り当てる |
 | `STUDIO_ACCESS_ISSUER` / `STUDIO_ACCESS_AUDIENCE` | Studio の Access JWT の `iss` と application の AUD。Worker では `ACCESS_ISSUER` / `ACCESS_AUDIENCE` |
 | `STUDIO_SMOKE_PROJECT_ID` / `STUDIO_SMOKE_SITE_ID` | smoke で開く既存プロジェクトとサイトの ID |
 | `STUDIO_SMOKE_PUBLIC_PATH` | 公開中は代表ページの正規パス。未公開サイトでは `/s/<site-slug>/` を指定し、安全な404を確認。どちらも D1 に登録された対象サイトの slug と照合 |
@@ -36,7 +37,7 @@ HTTPS origin は末尾に `/` を付けずに指定します。公開ページ�
 1. `npm test`（パッケージの build と全テスト）、`npm run studio:typecheck`、`npm run studio:build` を実行します。
 2. 切り戻し先、Worker secret、Access セッション、Dashboard API のメンバー権限を確認します。現在の Worker は単一 version が 100% のトラフィックを受けている必要があります。
 3. Wrangler で D1 の適用状況を確認し、配備前に適用できる未適用 migration があれば適用します。再確認で未適用が 0 件になってから配備します。
-4. Wrangler で Worker と静的 asset を配備します。
+4. Wrangler で Worker と静的 asset を配備します。`studio:build` は Studio 用 `dist/public` と公開 Worker 用 `dist/public-sites` を生成し、公開配信用には許可した `/_niho/` のランタイムだけを含めます。
 5. `/api/session`、対象 Dashboard の API と HTML、今回のビルドと一致する entry script と Dashboard の遅延読込 chunkを確認します。smoke path の slug が D1 の対象サイトに登録された slug と一致することも確認します。サイトが公開済みなら代表ページの `og:url`、未公開なら公開 path が no-store と安全ヘッダー付きの空の404を返すことを確認します。認証情報は Studio のリクエストにだけ付け、リダイレクトは追跡しません。
 
 失敗したステップを表示し、終了コードは非 0 になります。配備を開始した後の失敗では、切り戻し手順も表示します。
@@ -45,7 +46,7 @@ HTTPS origin は末尾に `/` を付けずに指定します。公開ページ�
 
 SQL の正本は `studio/migrations/` です。適用済みの SQL は保持し、修正は新規 migration を追加します。配備前に、対象 D1 と復元できるバックアップがあることを確認します。
 
-- 新 Worker の配備前に実行できるのは、旧 Worker の読み書きがそのまま動く列、表、index の追加だけです。既存行と旧 Worker が使う INSERT・UPDATE・SELECT を確認した SQL を、`studio/release.mjs` の `beforeDeployMigrations` に追加します。未登録の migration が保留中なら配備を止めます。
+- 新 Worker の配備前に実行できるのは、旧 Worker の読み書きがそのまま動く列、表、index、補助的な trigger の追加だけです。`0016_static_page_publication.sql` は旧 Worker の `managed_sites` INSERT を変えずに公開 pointer を初期化します。`0017`〜`0020` は公開設定・独自 domain・redirect・公開 path の追加です。既存行と旧 Worker が使う INSERT・UPDATE・SELECT を確認した SQL を、`studio/release.mjs` の `beforeDeployMigrations` に追加します。未登録の migration が保留中なら配備を止めます。
 - 列や表の削除、既存データの意味や制約の変更は、新 Worker が安定して旧 schema に依存する version が切り戻し対象から外れた後、別の release で行います。対象 D1 のバックアップと復元手順を確認し、その作業用の非公開 Wrangler 設定で `d1 migrations list DB --remote` と `d1 migrations apply DB --remote` を使います。
 - `0014` までの履歴 migration は事前適用済みであることを前提にしています。空の D1 の初期化は、既存 Worker への通常配備と別に行います。
 
