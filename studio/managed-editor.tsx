@@ -51,7 +51,8 @@ type Catalog = { readonly sites: readonly EditorSite[]; readonly pages: readonly
 function catalog(value: unknown): Catalog {
   const source = record(value);
   if (!Array.isArray(source.sites) || source.sites.length !== 1 || !Array.isArray(source.pages) || source.pages.length > 500) throw new Error("ページ一覧が正しくありません。");
-  const site = parseProjectSite(record(source.sites[0]), "catalog.sites[0]");
+  const siteSource = record(source.sites[0]);
+  const site = parseProjectSite({ id: siteSource.id, name: siteSource.name, domains: siteSource.domains }, "catalog.sites[0]");
   if (site.domains.length === 0) throw new Error("サイト情報が正しくありません。");
   return { sites: [site], pages: source.pages.map(page) };
 }

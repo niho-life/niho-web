@@ -19,7 +19,7 @@ test("managed editor accepts the project's custom domain alongside its shared or
   t.mock.method(globalThis, "fetch", async (input) => {
     assert.equal(String(input), "/api/projects/project-one/sites/site-one/editor/catalog");
     return Response.json({
-      sites: [{ id: project.site.id, name: project.site.name, domains: catalogDomains }],
+      sites: [{ id: project.site.id, name: project.site.name, domains: catalogDomains, futureCapability: "ignored" }],
       pages: [{ siteId: project.site.id, pageId: "home", locale: "ja", title: "Home", path: "/", kind: "page", visibility: "public", published: true }]
     });
   });
