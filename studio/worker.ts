@@ -2995,7 +2995,7 @@ async function managedCliPublicSettings(
 }
 
 async function studioEditingApi(request: Request, env: Env, url: URL, timing: StudioRequestTiming): Promise<Response> {
-  const match = /^\/api\/edit\/(v1|v2)\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/(capabilities|operations\/((?:cms|pages)\.[^?]+|site\.(?:seo|redirects|public)\.(?:read|save)|site\.migration-import(?:\/[a-f0-9]{64})?|assets\.resolve))$/u.exec(url.pathname);
+  const match = /^\/api\/edit\/(v1|v2)\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/(capabilities|operations\/((?:cms|pages)\.[^?]+|site\.(?:seo|redirects|public)\.(?:read|save)|site\.migration-import(?:\/[a-f0-9]{64})?|assets\.resolve|site\.styles\.(?:read|edit|publish)))$/u.exec(url.pathname);
   if (!match) return json({ error: "not_found" }, 404);
   let identity: AccessIdentity | ServiceIdentity;
   const accessToken = request.headers.get("cf-access-token");
@@ -3067,7 +3067,7 @@ async function studioEditingApi(request: Request, env: Env, url: URL, timing: St
   }
   if (!env.CMS_OBJECTS) return json({ error: "not_found" }, 404);
   const store = cmsStore(env, bridgeIdentity);
-  if (version === "v1" && (path === "capabilities" || operation === "assets.resolve" || operation?.startsWith("pages."))) {
+  if (version === "v1" && (path === "capabilities" || operation === "assets.resolve" || operation?.startsWith("pages.") || operation?.startsWith("site.styles."))) {
     if (request.method !== "GET" && identity.kind === "human" && accessToken === null &&
       (request.headers.get("Origin") !== url.origin || request.headers.get("Sec-Fetch-Site") !== "same-origin")) return json({ error: "invalid_request" }, 400);
     const pageApi = await managedPageEditingApi(request, store, registration.project_id, siteId!, publicSitesOrigin(env.PUBLIC_SITES_ORIGIN), {

@@ -28,14 +28,15 @@ const migrationDirectory = new URL("../studio/migrations/", import.meta.url);
 const migrations = await Promise.all((await readdir(migrationDirectory)).filter((name) => name.endsWith(".sql")).sort().map((name) => readFile(new URL(name, migrationDirectory), "utf8")));
 const bundle = await build({
   stdin: {
-    contents: 'export { default } from "./studio/worker.ts"; export { publishedSiteRequest } from "./studio/managed-publication.ts"; export { managedCmsApi } from "./studio/managed-cms.ts"; export { CmsStore } from "./studio/managed-cms-store.ts"; export { initializePublicNihoEmbeds } from "./studio/public-niho-embeds.ts"; export { managedPublicBlocks, planManagedPublicRender } from "./studio/managed-public-policy.ts"; export { emptyManagedPublicPolicy } from "./studio/managed-embed-contract.ts";',
+    contents: 'export { default } from "./studio/worker.ts"; export { publishedSiteRequest } from "./studio/managed-publication.ts"; export { managedCmsApi } from "./studio/managed-cms.ts"; export { CmsStore } from "./studio/managed-cms-store.ts"; export { initializePublicNihoEmbeds } from "./studio/public-niho-embeds.ts"; export { managedPublicBlocks, planManagedPublicRender } from "./studio/managed-public-policy.ts"; export { emptyManagedPublicPolicy } from "./studio/managed-embed-contract.ts"; export { inspectManagedHtmlSeo } from "./studio/managed-html-seo-checks.ts";',
     resolveDir: fileURLToPath(new URL("..", import.meta.url))
   },
   bundle: true, format: "esm", platform: "node", target: "node22", write: false,
   define: { __PUBLIC_NIHO_EMBEDS_PATH__: JSON.stringify(PUBLIC_EMBED_SCRIPT), __PUBLIC_PRESENTATION_PATH__: JSON.stringify(PUBLIC_PRESENTATION_SCRIPT) },
   banner: { js: 'import { createRequire as __createRequire } from "node:module"; const require = __createRequire(`${process.cwd()}/studio-worker-test.mjs`);' }
 });
-const { default: worker, publishedSiteRequest, managedCmsApi, CmsStore, initializePublicNihoEmbeds, managedPublicBlocks, planManagedPublicRender, emptyManagedPublicPolicy } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString("base64")}`);
+const { default: worker, publishedSiteRequest, managedCmsApi, CmsStore, initializePublicNihoEmbeds, managedPublicBlocks, planManagedPublicRender, emptyManagedPublicPolicy,
+  inspectManagedHtmlSeo } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString("base64")}`);
 const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const jwk = { ...publicKey.export({ format: "jwk" }), kid: "managed-test", alg: "RS256", use: "sig" };
 
@@ -165,6 +166,12 @@ async function body(response, status) {
   return value;
 }
 
+test("managed HTML SEO checks flag a missing alt attribute and accept intentional empty alt", () => {
+  const inspect = (html) => inspectManagedHtmlSeo(html, { locale: "ja", pageUrl: "https://studio.example/page", knownPaths: ["/page"] });
+  assert.deepEqual(inspect('<img src="/decorative.svg" alt="">'), []);
+  assert.deepEqual(inspect('<img src="/informative.svg">').map(({ code }) => code), ["missing-alt"]);
+});
+
 async function pageChange(send, change) {
   const { version } = await body(await send("GET", change.action === "create" ? "/catalog" : `/${change.target.pageId}`), 200);
   return body(await send("POST", "/page-changes", { change, expectedVersion: version }), 200);
@@ -180,6 +187,47 @@ async function setFixturePublicDomain(h, site, domain, noindex = true) {
   const { version } = await body(await h.send(MANAGEMENT_ORIGIN, "GET", path), 200);
   return body(await h.send(MANAGEMENT_ORIGIN, "POST", path, { expectedVersion: version, domain, noindex }), 200);
 }
+
+testWithD1("managed site styles persist per site, publish by pointer, and block deletion while referenced", async (t) => {
+  const h = await fixture(t);
+  const site = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Shared styles", slug: "shared-styles", locale: "ja" }), 201);
+  const other = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Other styles", slug: "other-styles", locale: "ja" }), 201);
+  const stylesPath = (siteId) => `/api/edit/v1/sites/${siteId}/operations/site.styles`;
+  const readStyles = async (siteId) => body(await h.send(MANAGEMENT_ORIGIN, "GET", `${stylesPath(siteId)}.read`), 200);
+  const initial = await readStyles(site.siteId), otherInitial = await readStyles(other.siteId);
+  assert.deepEqual(initial, { draft: { version: "initial", styles: {} }, published: { version: "initial", styles: {} } });
+  assert.deepEqual(otherInitial, initial);
+
+  const token = { type: "color", value: "#0055aa" };
+  const saved = await body(await h.send(MANAGEMENT_ORIGIN, "PUT", `${stylesPath(site.siteId)}.edit`, {
+    expectedVersion: initial.draft.version, edits: [{ type: "set", styleKind: "token", name: "brand", value: token }]
+  }), 200);
+  assert.equal(saved.status, "saved");
+  const afterSave = await readStyles(site.siteId);
+  assert.deepEqual(afterSave.draft.styles.tokens.brand, token);
+  assert.deepEqual(afterSave.published.styles, {});
+  assert.deepEqual(await readStyles(other.siteId), otherInitial, "style snapshots stay isolated by site");
+
+  const editorPath = `/api/projects/${site.projectId}/sites/${site.siteId}/editor`;
+  const page = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${editorPath}/home`), 200);
+  page.document.body[0].style = { ...(page.document.body[0].style ?? {}), base: { ...(page.document.body[0].style?.base ?? {}), color: { token: "brand" } } };
+  await body(await h.send(MANAGEMENT_ORIGIN, "PUT", `${editorPath}/home/draft`, { expectedVersion: page.version, document: page.document }), 200);
+  const refused = await body(await h.send(MANAGEMENT_ORIGIN, "PUT", `${stylesPath(site.siteId)}.edit`, {
+    expectedVersion: saved.version, edits: [{ type: "delete", styleKind: "token", name: "brand" }]
+  }), 200);
+  assert.equal(refused.status, "referenced");
+  assert.deepEqual(refused.usages.map(({ kind, path }) => ({ kind, path })), [{ kind: "page", path: "/" }]);
+  assert.equal((await readStyles(site.siteId)).draft.version, saved.version, "a rejected deletion does not write a new snapshot");
+
+  const published = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${stylesPath(site.siteId)}.publish`, {
+    expectedDraftVersion: saved.version, expectedPublishedVersion: initial.published.version
+  }), 200);
+  assert.equal(published.status, "published");
+  const afterPublish = await readStyles(site.siteId);
+  assert.equal(afterPublish.published.version, saved.version);
+  assert.deepEqual(afterPublish.published.styles.tokens.brand, token);
+  assert.deepEqual(afterPublish.draft.styles.tokens.brand, token);
+});
 
 test("published Kamakura images select a request-sized version and negotiated modern format", async () => {
   const mediaOrigin = "https://kamakura-media.niho.life", reference = { provider: "kamakura-source", id: "cover" };
@@ -663,7 +711,7 @@ testWithD1("managed SEO renders alternates and JSON-LD, publishes discovery file
   assert.equal(upper.status, 301);
   assert.equal(upper.headers.get("Location"), `${PUBLIC_ORIGIN}/s/seo-fixture/about`);
   const slash = await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/about/`);
-  assert.equal(slash.status, 308);
+  assert.equal(slash.status, 301);
   assert.equal(slash.headers.get("Location"), `${PUBLIC_ORIGIN}/s/seo-fixture/about`);
   const redirectBeforeMove = await body(await h.send(MANAGEMENT_ORIGIN, "GET", redirectsPath), 200);
   assert.deepEqual(redirectBeforeMove.redirects, firstRedirects);
@@ -780,7 +828,7 @@ testWithD1("Studio-native site stores page sources in R2 for GUI, CAS, history a
   const head = await publicRequest("HEAD", "/s/fixture-site/");
   assert.equal(head.status, 200); assert.equal(await head.text(), "");
   const canonicalRedirect = await publicRequest("GET", "/s/fixture-site?utm_source=test");
-  assert.equal(canonicalRedirect.status, 308);
+  assert.equal(canonicalRedirect.status, 301);
   assert.equal(canonicalRedirect.headers.get("Location"), `${PUBLIC_ORIGIN}/s/fixture-site/?utm_source=test`);
   assert.equal((await publicRequest("GET", "/s/fixture-site/?utm_source=test")).status, 200);
 
@@ -1203,7 +1251,7 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   assert.equal(unknown.status, 404);
   assert.equal(unknown.headers.get("X-Robots-Tag"), "noindex, nofollow");
   const rootRedirect = await publishedSiteRequest(new Request("https://preview.sites.example/s/static-fixture"), h.env);
-  assert.equal(rootRedirect.status, 308);
+  assert.equal(rootRedirect.status, 301);
   assert.equal(rootRedirect.headers.get("Location"), "https://preview.sites.example/s/static-fixture/");
 
   const redirects = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/redirects`), 200);

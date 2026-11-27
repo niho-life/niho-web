@@ -13,6 +13,7 @@ import { parseEditingLocalizationInput } from "../src/editing-localization.js";
 import { cmsCollection, cmsId, cmsItemKey, parseCmsValues } from "../src/cms-v2-schema.js";
 import { cmsPageBindingProblems, parseCmsPageBindings } from "../src/cms-page-bindings.js";
 import { readPageSource, type PageSourceRow } from "./managed-page-source.js";
+import { readManagedSiteStyles } from "./managed-site-styles.js";
 import { parseCollectionValues, type CollectionItem, type CollectionValues } from "../src/collection-model.js";
 import { DocumentValidationError, keys, record } from "../src/validation-utils.js";
 import { validatePagePath } from "../src/pages.js";
@@ -239,8 +240,9 @@ async function migrationContext(store: CmsStore, site: Site, capability: CmsCapa
   ]);
   if (!pages.success || !pages.results?.length) throw new Error("managed CMS binding lookup failed");
   const bindingsGeneration = pages.results[0]!.bindings_generation;
+  const siteStyles = (await readManagedSiteStyles(store, site.siteId)).draft.styles;
   const bindings = await Promise.all(pages.results.flatMap((row) => row.bindings_json === null ? [] : [
-    readPageSource(store, row).then((page) => ({ page, bindings: parseCmsPageBindings(JSON.parse(row.bindings_json), page) }))
+    readPageSource(store, row, siteStyles).then((page) => ({ page, bindings: parseCmsPageBindings(JSON.parse(row.bindings_json), page) }))
   ]));
   const fixed = new Set(routeTable.reservations.flatMap((entry) =>
     entry.kind === "fixed-page" || (entry.kind === "reserved" && !entry.reservationId.startsWith("cms_route_")) ? [entry.path] : []));

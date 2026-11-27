@@ -13,9 +13,9 @@ type SiteStylesSnapshot = {
 };
 ```
 
-ページは style version を保持しません。編集・検証はサイトの現在の `draft.styles`、公開描画は現在の `published.styles` を使います。公開pointerを切り替えると、公開中の全ページが同じ新しいスタイルを参照します。ページごとの `stylesVersion`、site publication epoch、migration/publication fenceは使いません。
+ページは style version を保持しません。編集・検証はサイトの現在の `draft.styles`、HTMLを新しく生成するときは現在の `published.styles` を使います。Studio-native managed siteでは、既存HTMLを再生成する接続は#527で追加します。ページごとの `stylesVersion`、site publication epoch、migration/publication fenceは使いません。
 
-実効値は token と文字スタイルごとに `site → page` の順で重ね、同名はページ定義が丸ごと優先します。サイトの文字スタイルはサイトのtokenだけで検証します。`PageRenderer`、`renderPageToHtml`、`generatePageCss`、`resolvePageDocument` は同じ解決規則を使います。公開配信はページと、その時点のサイトのpublished style snapshotを組で読みます。
+実効値は token と文字スタイルごとに `site → page` の順で重ね、同名はページ定義が丸ごと優先します。サイトの文字スタイルはサイトのtokenだけで検証します。`PageRenderer`、`renderPageToHtml`、`generatePageCss`、`resolvePageDocument` は同じ解決規則を使います。生成されるHTMLは、その生成時点のpublished style snapshotを反映します。
 
 ## 共通操作
 
@@ -36,11 +36,11 @@ type SiteStylesEdit =
   | { type: "rename"; styleKind: "token" | "textStyle"; from: string; to: string };
 ```
 
-ホストはedit全体を一つのstorage transactionで処理します。renameは定義と、draft page・template・shared document・component・presentation・locale・サイト文字スタイルにある全参照を同じtransactionで書き換えます。一部だけをrenameした状態を見せません。rename先の衝突、型不一致、未解決参照は書込み前に拒否します。
+ホストはedit全体を一つのstorage transactionで処理します。Studio-native managed siteでは、draftまたは公開中のページが参照するtoken・文字スタイルのrename/deleteを拒否し、参照するページのusageを返します。token renameでは、サイト文字スタイル内のtoken参照を同じedit内で更新します。rename先の衝突、型不一致、未解決参照は書込み前に拒否します。
 
 tokenまたは文字スタイルをdeleteするとき、ホストは全参照を列挙します。参照が1件でもあれば何も書かず、`{ status: "referenced", usages }` を返します。usageはkind、安定ID、任意のlocale/pathを持ち、GUIとCLIは利用箇所を表示します。未参照の定義だけ削除できます。値更新と追加も、変更後のdraft全体を信頼境界で再検証してから保存します。
 
-publishはdraft版とpublished版をCASし、サイト単位のpublished pointerを一度に切り替えます。公開ページを個別に再公開せず、全公開ページが新しいpublished stylesを解決します。ページ公開・rollback・release-setのrequestやplanにstyle版やepochを含めません。
+publishはdraft版とpublished版をCASし、サイト単位のpublished pointerを一度に切り替えます。request時に描画するhostは次の描画から新しいsnapshotを使い、Studio-native managed siteは新たに生成するHTMLから使います。既存HTMLの一括再生成は#527の共通公開経路で接続します。ページ公開・rollback・release-setのrequestやplanにstyle版やepochを含めません。
 
 ## CLI
 
@@ -52,7 +52,7 @@ niho-edit --origin https://site.example --site sample styles publish --json publ
 
 GUI用の `createEditingApiSiteSettingsFacade` はスタイル差分を同じ `site.styles.edit` へ変換します。別のGUI専用保存経路は作りません。409では入力を保持し、`referenced` では返された利用箇所を表示します。
 
-GUIでは表示ラベルと識別名を別に編集できます。識別名の変更は `rename` edit として送信し、ホストがページを含む全参照を同じedit transactionで更新します。下書きを保存した後、公開済み版との差があればスタイルパネルから公開できます。公開は `site.settings.write` と `pages.publish` の両方を要求し、draft・publishedの版を指定して一度でpointerを切り替えます。
+GUIでは表示ラベルと識別名を別に編集できます。識別名の変更は `rename` edit として送信します。ページ参照が残っている場合はusageを表示し、参照を解消してから変更します。下書きを保存した後、公開済み版との差があればスタイルパネルから公開できます。公開は `site.settings.write` と `pages.publish` の両方を要求し、draft・publishedの版を指定して一度でpointerを切り替えます。
 
 ## 正規化とlint
 
@@ -65,5 +65,6 @@ lintは継続利用しますが、役割を保存データを変更しない軽�
 - `read` は同一snapshotからdraft/publishedを返す。
 - `edit` はsite IDとdraft versionを照合し、参照列挙・rename書換え・定義変更を一つのtransactionで確定する。
 - `publish` はdraft/published versionを照合し、site-wide published pointerを原子的に切り替える。
-- 公開描画は現在のpublished stylesを全ページで共有し、過去の履歴snapshotを変更しない。
+- 新たに描画・生成するページは現在のpublished stylesを共有し、過去の履歴snapshotを変更しない。既存Studio-native HTMLの再生成は#527で接続する。
 - site/project scopeを各層で検証し、別サイトの参照を書き換えない。
+- Studio-native managed siteのstyle snapshotはR2のimmutable object、版pointerとdigestはD1で保持する。snapshotは256 KiBまで、参照中の履歴はmanaged CMSと同じ100 MiB上限に従う。
