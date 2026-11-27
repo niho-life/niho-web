@@ -43,11 +43,11 @@ function managedSeoImageUrl(value: string, origin: string, prefix: string): stri
 }
 
 function managedSiteMetadata(metadata: PageMetadata, seo: ManagedSiteSeoSettings, fallbackSiteName: string, origin: string, prefix: string,
-  publicUrl: string, forceNoindex = false): PageMetadata {
+  publicUrl: string): PageMetadata {
   const siteName = seo.siteName ?? fallbackSiteName;
   const description = metadata.description ?? seo.description ?? metadata.openGraph.description;
   const image = metadata.openGraph.image ?? (seo.defaultOgImage ? { url: managedSeoImageUrl(seo.defaultOgImage, origin, prefix), alt: siteName } : undefined);
-  const noindex = forceNoindex || seo.robotsPolicy === "noindex" || metadata.robots === "noindex, nofollow";
+  const noindex = seo.robotsPolicy === "noindex" || metadata.robots === "noindex, nofollow";
   const { canonical, ...withoutCanonical } = metadata;
   return {
     ...withoutCanonical,
@@ -127,16 +127,15 @@ export async function renderManagedPage(input: {
   readonly siteName: string;
   readonly embeds: Awaited<ReturnType<typeof resolvePublishedEmbeds>>;
   readonly assets?: readonly CmsPublicAsset[];
-  readonly forceNoindex?: boolean;
   readonly includeCandidate?: boolean;
 }) {
-  const { db, store, document, policy, origin, prefix, path, alternatePath, publicPath, siteName, embeds, forceNoindex } = input;
+  const { db, store, document, policy, origin, prefix, path, alternatePath, publicPath, siteName, embeds } = input;
   const plan = planManagedPublicRender(prefixedDocument(document, prefix), policy, origin, embeds, input.assets);
   const rendered = plan.document;
   // Validate the document path before projecting canonical and OpenGraph URLs onto the shared prefix.
   const resolved = resolvePageMetadata({ document: rendered, domain: origin, path, visibility: "public", assets: plan.assets });
   const publicUrl = `${origin}${publicPath}`;
-  const metadata = managedSiteMetadata(resolved, policy.seo, siteName, origin, prefix, publicUrl, forceNoindex);
+  const metadata = managedSiteMetadata(resolved, policy.seo, siteName, origin, prefix, publicUrl);
   const [{ renderPageToHtml }, alternates, runtime] = await Promise.all([
     import("../src/server.js"),
     managedPageHreflang(db, document.siteId, document.locale, alternatePath, origin, prefix,

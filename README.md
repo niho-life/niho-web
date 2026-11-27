@@ -41,7 +41,7 @@ Node.js 22 以上を使います。
 | --- | --- |
 | `studio/wrangler.json` | Studio の編集・管理 Worker。[固定ページの正本・保存・公開](docs/studio-managed-sites.md#ページ正本と操作) |
 | `niho-edit --studio publish / restore / page-change / cms-publish` | 保存・読取時の版を指定して Studio-native を公開・管理。[CLI の操作](docs/studio-cli.md#studio-native-ページの公開と版履歴) |
-| `studio/public-sites.wrangler.json` | R2 の生成物を返す公開 Worker。開発時は `npm run studio:public:dev` |
+| `studio/public-sites.wrangler.json` | 公開時に生成した HTML・SEO 出力だけを R2 から返す read-only Worker。開発時は `npm run studio:public:dev` |
 
 ## 文書案内
 

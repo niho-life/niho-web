@@ -183,6 +183,7 @@ testWithD1("published page permits only approved embeds and serves NIHO connecti
   const h = await fixture(t);
   const { projectId, siteId } = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Embeds", slug: "embeds", locale: "ja" }), 201);
   const api = `/api/projects/${projectId}/sites/${siteId}/editor`, settingsPath = api + "/public-settings", publicPath = "/s/embeds/";
+  const publicFetch = (url, init = {}) => publishedSiteRequest(new Request(url, init), h.env);
   h.sqlite.prepare("INSERT INTO project_members (project_id, access_subject, role, display_name) VALUES (?, ?, 'editor', 'Editor')").run(projectId, OTHER);
   const send = (method, path, value, options) => h.send(MANAGEMENT_ORIGIN, method, path, value, options);
   const publish = async ({ version }) => {
@@ -212,7 +213,7 @@ testWithD1("published page permits only approved embeds and serves NIHO connecti
   assert.equal((await send("POST", embedRoute, { src, locale: "en" })).status, 403);
   const { refId } = await body(await send("POST", embedRoute, { src, locale: "ja" }), 201);
   const resolvePath = `${PUBLIC_ORIGIN}${publicPath}?_niho_embed=${refId}`;
-  assert.equal((await h.fetch(resolvePath)).status, 404);
+  assert.equal((await publicFetch(resolvePath)).status, 404);
   const snapshot = await body(await send("GET", api + "/home"), 200);
   snapshot.document.meta = { favicon: "https://denied.example.test/favicon.ico", ogImage: { src: "https://denied.example.test/og.webp", alt: "OG" } };
   const embed = (id, provider, source) => ({ type: "element", id, tag: "div", embed: { provider, title: id, source }, children: [] });
@@ -252,9 +253,9 @@ testWithD1("published page permits only approved embeds and serves NIHO connecti
     assert.equal((await send("PUT", api + "/home/draft", { expectedVersion: snapshot.version, document })).status, 400);
   }
   const saved = await body(await send("PUT", api + "/home/draft", { expectedVersion: snapshot.version, document: snapshot.document }), 200);
-  assert.equal((await h.fetch(resolvePath)).status, 404);
+  assert.equal((await publicFetch(resolvePath)).status, 404);
   const published = await publish(saved);
-  const response = await h.fetch(PUBLIC_ORIGIN + publicPath + "?ignored=1");
+  const response = await publicFetch(PUBLIC_ORIGIN + publicPath + "?ignored=1");
   const html = await response.text(), csp = response.headers.get("Content-Security-Policy");
   assert.equal(response.status, 200);
   assert.match(html, /youtube-nocookie\.com\/embed\/abcdefghijk/u);
@@ -281,7 +282,7 @@ testWithD1("published page permits only approved embeds and serves NIHO connecti
   const analyticsScript = /<script>([^<]+)<\/script>/u.exec(html)[1];
   assert.ok(csp.includes(`'sha256-${createHash("sha256").update(analyticsScript).digest("base64")}'`));
   assert.ok(html.includes(`www.googletagmanager.com/gtag/js?id=${measurementId}`));
-  const resolved = await h.fetch(resolvePath);
+  const resolved = await publicFetch(resolvePath);
   assert.equal(resolved.headers.get("Cache-Control"), "no-store");
   assert.deepEqual(await body(resolved, 200), { src });
   for (const path of [
@@ -289,11 +290,11 @@ testWithD1("published page permits only approved embeds and serves NIHO connecti
     resolvePath + "&_niho_embed=" + refId,
     `${PUBLIC_ORIGIN}/s/another/?_niho_embed=${refId}`,
     `${PUBLIC_ORIGIN}${publicPath}?_niho_embed=emb_${"a".repeat(32)}`
-  ]) assert.equal((await h.fetch(path)).status, 404);
-  const js = await h.fetch(PUBLIC_ORIGIN + PUBLIC_EMBED_SCRIPT);
+  ]) assert.equal((await publicFetch(path)).status, 404);
+  const js = await publicFetch(PUBLIC_ORIGIN + PUBLIC_EMBED_SCRIPT);
   assert.match(js.headers.get("Content-Type"), /text\/javascript/u);
   assert.match(js.headers.get("Cache-Control"), /immutable/u);
-  assert.equal((await h.fetch(PUBLIC_ORIGIN + "/_niho/other.js")).status, 404);
+  assert.equal((await publicFetch(PUBLIC_ORIGIN + "/_niho/other.js")).status, 404);
 
   const dom = new JSDOM(html, { url: PUBLIC_ORIGIN + publicPath + "?ignored=1", runScripts: "outside-only" });
   t.after(() => dom.window.close());
@@ -302,7 +303,7 @@ testWithD1("published page permits only approved embeds and serves NIHO connecti
   assert.equal(dom.window.dataLayer[1][2].page_location, PUBLIC_ORIGIN + publicPath);
   dom.window.fetch = (input) => {
     assert.equal(input, resolvePath);
-    return h.fetch(input);
+    return publicFetch(input);
   };
   await initializePublicNihoEmbeds(dom.window.document, dom.window);
   const frame = dom.window.document.querySelector("[data-managed-embed-ref] iframe");
@@ -326,13 +327,14 @@ testWithD1("published page permits only approved embeds and serves NIHO connecti
   const noindexDoc = { ...published.snapshot.document, meta: { noindex: true } };
   const noindexSaved = await body(await send("PUT", api + "/home/draft", { expectedVersion: published.snapshot.version, document: noindexDoc }), 200);
   await publish(noindexSaved);
-  const noindexHtml = await (await h.fetch(PUBLIC_ORIGIN + publicPath, { headers: { "Cache-Control": "no-cache" } })).text();
+  const noindexHtml = await (await publicFetch(PUBLIC_ORIGIN + publicPath, { headers: { "Cache-Control": "no-cache" } })).text();
   assert.match(noindexHtml, /name="robots" content="noindex, nofollow"/u);
   assert.ok(noindexHtml.includes(`www.googletagmanager.com/gtag/js?id=${measurementId}`));
   await body(await savePolicy({ frameOrigins: [], resourceOrigins: [], ga4MeasurementId: null }, savedPolicy.version), 200);
-  await body(await h.send(MANAGEMENT_ORIGIN, "POST", api + "/home/publish", { action: "publish" }), 200);
-  assert.equal((await h.fetch(resolvePath, { headers: { "Cache-Control": "no-cache" } })).status, 404);
-  const revoked = await h.fetch(PUBLIC_ORIGIN + publicPath, { headers: { "Cache-Control": "no-cache" } });
+  const policyUpdatedPage = await body(await send("GET", api + "/home"), 200);
+  await body(await h.send(MANAGEMENT_ORIGIN, "POST", api + "/home/publish", { expectedVersion: policyUpdatedPage.version, action: "publish" }), 200);
+  assert.equal((await publicFetch(resolvePath, { headers: { "Cache-Control": "no-cache" } })).status, 404);
+  const revoked = await publicFetch(PUBLIC_ORIGIN + publicPath, { headers: { "Cache-Control": "no-cache" } });
   assert.match(revoked.headers.get("Content-Security-Policy"), /script-src 'none'/u);
   assert.doesNotMatch(await revoked.text(), /iframe|data-managed-embed-ref|type="module"|googletagmanager|images\.example\.test|video\.example\.test/u);
 });
@@ -409,7 +411,7 @@ testWithD1("custom domain serves a noindex root page with its private NIHO embed
   changed.document.title = "Custom domain updated";
   const changedDraft = await body(await h.send(MANAGEMENT_ORIGIN, "PUT", api + "/home/draft", { expectedVersion: changed.version, document: changed.document }), 200);
   await body(await h.send(MANAGEMENT_ORIGIN, "POST", api + "/home/publish", { expectedVersion: changedDraft.version, action: "publish" }), 200);
-  assert.match(await (await h.fetch("https://preview.example.test/")).text(), /<title>Custom domain updated<\/title>/u);
+  assert.match(await (await publicFetch("https://preview.example.test/")).text(), /<title>Custom domain updated<\/title>/u);
   assert.equal(cachedHtml.size, 2);
   const publicScript = await publicFetch("https://preview.example.test/_niho/niho-embeds-012345abcdef.js");
   assert.equal(publicScript.status, 200);
@@ -422,6 +424,17 @@ testWithD1("custom domain serves a noindex root page with its private NIHO embed
   const sitemapBody = await sitemap.text();
   assert.match(sitemapBody, /<urlset/u);
   assert.doesNotMatch(sitemapBody, /preview\.example\.test/u);
+
+  h.sqlite.exec(await readFile(new URL("../studio/post-deploy/0026_drop_managed_site_domain_mirror.sql", import.meta.url), "utf8"));
+  const postMigrationDomain = await body(await h.send(MANAGEMENT_ORIGIN, "GET", domainPath), 200);
+  const postMigrationUpdate = await body(await h.send(MANAGEMENT_ORIGIN, "POST", domainPath, {
+    expectedVersion: postMigrationDomain.version, domain: "preview.example.test", noindex: true
+  }), 200);
+  assert.equal(postMigrationUpdate.domain, "preview.example.test");
+  const clearedDomain = await body(await h.send(MANAGEMENT_ORIGIN, "POST", domainPath, {
+    expectedVersion: postMigrationUpdate.version, domain: null, noindex: false
+  }), 200);
+  assert.deepEqual({ domain: clearedDomain.domain, noindex: clearedDomain.noindex }, { domain: null, noindex: true });
 });
 
 testWithD1("managed SEO renders alternates and JSON-LD, publishes discovery files, redirects old paths and returns a 404 page", async (t) => {
@@ -546,13 +559,13 @@ testWithD1("managed SEO renders alternates and JSON-LD, publishes discovery file
   assert.notEqual(redirectAfterMove.version, redirectBeforeMove.version, "page path changes invalidate old redirect snapshots");
   assert.deepEqual(redirectAfterMove.redirects, [
     { locale: "ja", fromPath: "/about", toPath: "/about-us" },
-    ...firstRedirects
+    { locale: "ja", fromPath: "/legacy-page", toPath: "/about-us" }
   ]);
   assert.equal((await h.send(MANAGEMENT_ORIGIN, "PUT", redirectsPath,
     { redirects: savedRedirects.redirects, expectedVersion: savedRedirects.version })).status, 409,
   "an old CLI snapshot cannot erase a redirect generated by moving a page");
-  assert.equal((await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/about`)).status, 200, "draft path changes do not move the published URL");
-  assert.equal((await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/about-us`)).status, 404);
+  assert.equal((await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/about`)).status, 301, "published URL changes update the static manifest immediately");
+  assert.equal((await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/about-us`)).status, 200);
   const movedSnapshot = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/${aboutCreated.page.pageId}`), 200);
   await release(aboutCreated.page.pageId, "ja", movedSnapshot.version);
   const old = await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/about`);
@@ -560,7 +573,7 @@ testWithD1("managed SEO renders alternates and JSON-LD, publishes discovery file
   assert.equal(old.headers.get("Location"), `${PUBLIC_ORIGIN}/s/seo-fixture/about-us`);
   const legacy = await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/legacy-page`);
   assert.equal(legacy.status, 301);
-  assert.equal(legacy.headers.get("Location"), `${PUBLIC_ORIGIN}/s/seo-fixture/about`);
+  assert.equal(legacy.headers.get("Location"), `${PUBLIC_ORIGIN}/s/seo-fixture/about-us`);
   const missing = await publicFetch(`${PUBLIC_ORIGIN}/s/seo-fixture/missing`);
   assert.equal(missing.status, 404);
   assert.match(await missing.text(), /ページが見つかりません/u);
@@ -614,7 +627,8 @@ testWithD1("Studio-native site stores page sources in R2 for GUI, CAS, history a
   const h = await fixture(t);
   const created = await body(await h.send(MANAGEMENT_ORIGIN, "POST", "/api/projects", { title: "Fixture site", slug: "fixture-site", locale: "ja" }), 201);
   const { projectId, siteId } = created, api = `/api/projects/${projectId}/sites/${siteId}/editor`;
-  const publicRequest = (method, path) => h.send(PUBLIC_ORIGIN, method, path, undefined, { auth: false, headers: { "Cache-Control": "no-cache" } });
+  const publicRequest = (method, path) => publishedSiteRequest(new Request(`${PUBLIC_ORIGIN}${path}`, { method,
+    headers: { "Cache-Control": "no-cache" } }), h.env);
   assert.equal(created.editorPath, `/projects/${projectId}/sites/${siteId}/editor`);
   assert.equal(h.sqlite.prepare("SELECT public_origin FROM sites WHERE id = ?").get(siteId).public_origin, null);
   assert.equal(h.sqlite.prepare("SELECT slug FROM managed_sites WHERE site_id = ?").get(siteId).slug, "fixture-site");
@@ -642,7 +656,7 @@ testWithD1("Studio-native site stores page sources in R2 for GUI, CAS, history a
   const released2 = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/publish`, { expectedVersion: saved.version, action: "publish" }), 200);
   assert.notEqual(released2.snapshot.version, saved.version);
   assert.equal((await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/publish`, { expectedVersion: saved.version, action: "publish" })).status, 409);
-  const public2 = await h.send(PUBLIC_ORIGIN, "GET", "/s/fixture-site/", undefined, { auth: false });
+  const public2 = await publicRequest("GET", "/s/fixture-site/");
   assert.equal(public2.status, 200);
   const html2 = await public2.text();
   assert.match(html2, /href="\/s\/fixture-site\/about"/u);
@@ -662,7 +676,7 @@ testWithD1("Studio-native site stores page sources in R2 for GUI, CAS, history a
   thirdDocument.meta = { noindex: true };
   const saved3 = await body(await h.send(MANAGEMENT_ORIGIN, "PUT", `${api}/home/draft`, { expectedVersion: current.version, document: thirdDocument }), 200);
   const released3 = await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/home/publish`, { expectedVersion: saved3.version, action: "publish" }), 200);
-  const thirdHtml = await (await h.send(PUBLIC_ORIGIN, "GET", "/s/fixture-site/", undefined, { auth: false })).text();
+  const thirdHtml = await (await publicRequest("GET", "/s/fixture-site/")).text();
   assert.match(thirdHtml, /<title>Third version<\/title>/u);
   assert.match(thirdHtml, /name="robots" content="noindex, nofollow"/u);
   assert.doesNotMatch(thirdHtml, /rel="canonical"/u);
@@ -1022,14 +1036,23 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   const about = await body(await h.send(MANAGEMENT_ORIGIN, "GET", `${api}/${createdPage.page.pageId}`), 200);
   const aboutTarget = { siteId: created.siteId, pageId: createdPage.page.pageId, locale: "ja" };
   await body(await h.send(MANAGEMENT_ORIGIN, "POST", `${api}/${createdPage.page.pageId}/publish`, { expectedVersion: about.version, action: "publish" }), 200);
+  const aboutReleaseId = h.sqlite.prepare("SELECT version FROM managed_site_publication_state WHERE site_id = ?").get(created.siteId).version;
   const aboutResponse = await publishedSiteRequest(new Request("https://preview.sites.example/s/static-fixture/about"), h.env);
   assert.equal(aboutResponse.status, 200);
   assert.equal(aboutResponse.headers.get("X-Robots-Tag"), "noindex, nofollow");
   assert.match(await aboutResponse.text(), /<title>About<\/title>/u);
+
+  const move = { action: "update", target: aboutTarget, title: "About", path: "/about-us" };
+  await pageChange((method, suffix, input) => h.send(MANAGEMENT_ORIGIN, method, api + suffix, input), move);
+  const oldAbout = await publishedSiteRequest(new Request("https://preview.sites.example/s/static-fixture/about", { headers: { "Cache-Control": "no-cache" } }), h.env);
+  assert.equal(oldAbout.status, 301, "moving a published page updates the static route and redirect together");
+  assert.equal(oldAbout.headers.get("Location"), "https://preview.sites.example/s/static-fixture/about-us");
+  assert.equal((await publishedSiteRequest(new Request("https://preview.sites.example/s/static-fixture/about-us", { headers: { "Cache-Control": "no-cache" } }), h.env)).status, 200);
+
   const makePrivate = { action: "visibility", target: aboutTarget, visibility: "private" };
   await pageChange((method, suffix, input) => h.send(MANAGEMENT_ORIGIN, method, api + suffix, input), makePrivate);
-  assert.equal((await publishedSiteRequest(new Request("https://preview.sites.example/s/static-fixture/about"), h.env)).status, 404);
-  const latestState = h.sqlite.prepare("SELECT manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(created.siteId);
+  assert.equal((await publishedSiteRequest(new Request("https://preview.sites.example/s/static-fixture/about-us", { headers: { "Cache-Control": "no-cache" } }), h.env)).status, 404);
+  const latestState = h.sqlite.prepare("SELECT version, manifest_key FROM managed_site_publication_state WHERE site_id = ?").get(created.siteId);
   const latest = JSON.parse(h.objects.get(latestState.manifest_key));
   assert.deepEqual(latest.routes.map(({ pageId, locale }) => ({ pageId, locale })), [{ pageId: "home", locale: "ja" }]);
   const updatedSitemap = await publishedSiteRequest(new Request("https://sites.example/s/static-fixture/sitemap.xml", { headers: { "Cache-Control": "no-cache" } }), h.env);
@@ -1045,6 +1068,7 @@ testWithD1("Static publication serves immutable HTML and applies noindex to the 
   assert.deepEqual(rollback, { status: "rolled_back", releaseId: aboutReleaseId });
   assert.equal(h.sqlite.prepare("SELECT version FROM managed_site_publication_state WHERE site_id = ?").get(created.siteId).version, aboutReleaseId);
   assert.equal((await publishedSiteRequest(new Request("https://preview.sites.example/s/static-fixture/about", { headers: { "Cache-Control": "no-cache" } }), h.env)).status, 200);
+  assert.equal((await publishedSiteRequest(new Request("https://preview.sites.example/s/static-fixture/about-us", { headers: { "Cache-Control": "no-cache" } }), h.env)).status, 404);
   const restoredSitemap = await publishedSiteRequest(new Request("https://sites.example/s/static-fixture/sitemap.xml", { headers: { "Cache-Control": "no-cache" } }), h.env);
   assert.match(await restoredSitemap.text(), /\/about/u);
 
