@@ -27,14 +27,17 @@ import { DocumentValidationError } from "../src/validation-utils.js";
 import { parseEnglishPublicationAccepted } from "../src/english-publication.js";
 import { EDITING_OPERATIONS, type EditingCapability } from "../src/editing-api.js";
 import { isEditingApiVersion } from "../src/editing-client.js";
+import { parseKamakuraEditingApiDiscovery } from "./kamakura-editing-api-contract.js";
 import {
   EDITING_LOCALIZATION_INPUT_BYTES, EDITING_LOCALIZATION_RESULT_BYTES, editingLocalizationCapability,
   editingLocalizationOperation, parseEditingLocalizationInput
 } from "../src/editing-localization.js";
+import { SITE_IMPORT_MAX_BYTES } from "../src/managed-site-import.js";
+import { managedSiteImport, managedSiteImportAsset } from "./managed-site-import.js";
 import { SERVICE_CLIENT_ID } from "../src/studio-cli-auth.js";
 import {
   createManagedProject, managedDashboardOverview, managedEditorOperation, managedPageEditingApi, managedPageUrl,
-  managedProjectRegistrations, managedRegistration, publicSitesOrigin, type ManagedActor, type ManagedPublicHtmlCache
+  managedProjectRegistrations, managedRegistration, publicSitesOrigin, readJson as readManagedEditorJson, type ManagedActor, type ManagedPublicHtmlCache
 } from "./managed-sites.js";
 import { publishedSiteRequest, resolvePublishedSiteHost } from "./managed-publication.js";
 import { CmsStore, type CmsActor, type CmsBucket, type CmsCapability, type CmsPublicAssetResolver } from "./managed-cms-store.js";
@@ -211,6 +214,7 @@ type InvitationRow = {
   readonly status: "pending" | "expired" | "accepted" | "revoked";
 };
 type InvitationPreviewRow = {
+  readonly email: string;
   readonly project_name: string;
   readonly site_name: string;
   readonly role: Role;
@@ -1085,16 +1089,16 @@ async function invitationPreview(env: Env, identity: AccessIdentity, projectId: 
   if (!validInvitationToken(body.token)) throw new InvalidInputError("invalid invitation token");
   const hash = await tokenHash(body.token);
   const row = await env.DB.prepare(`
-    SELECT p.name AS project_name, s.name AS site_name, i.role, i.expires_at
+    SELECT i.email, p.name AS project_name, s.name AS site_name, i.role, i.expires_at
       FROM project_invitations AS i
       JOIN projects AS p ON p.id = i.project_id
       JOIN sites AS s ON s.project_id = p.id
-     WHERE i.token_hash = ?1 AND i.email = ?2
-       AND i.project_id = ?3 AND s.id = ?4
+     WHERE i.token_hash = ?1 AND i.project_id = ?2 AND s.id = ?3
        AND i.used_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > unixepoch()
      LIMIT 1
-  `).bind(hash, identity.email, projectId, siteId).first<InvitationPreviewRow>();
+  `).bind(hash, projectId, siteId).first<InvitationPreviewRow>();
   if (!row) return json({ error: "invitation_unavailable" }, 404);
+  if (row.email !== identity.email) return json({ error: "invitation_email_mismatch" }, 403);
   if (!validName(row.project_name) || !validName(row.site_name) || !validRole(row.role)) throw new Error("invalid stored invitation");
   return json({
     status: "ready",
@@ -1134,7 +1138,17 @@ async function acceptInvitation(env: Env, identity: AccessIdentity, projectId: s
        WHERE i.token_hash = ?2 AND i.accepted_subject = ?1 AND changes() = 1
     `).bind(identity.subject, hash)
   ]);
-  if (!changed(results[0]) || !changed(results[1])) return json({ error: "invitation_unavailable" }, 409);
+  if (!changed(results[0]) || !changed(results[1])) {
+    const row = await env.DB.prepare(`
+      SELECT i.email FROM project_invitations AS i
+      JOIN sites AS s ON s.project_id = i.project_id
+       WHERE i.token_hash = ?1 AND i.project_id = ?2 AND s.id = ?3
+         AND i.used_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > unixepoch()
+       LIMIT 1
+    `).bind(hash, projectId, siteId).first<{ readonly email: string }>();
+    if (row && row.email !== identity.email) return json({ error: "invitation_email_mismatch" }, 403);
+    return json({ error: "invitation_unavailable" }, 409);
+  }
   return json({ status: "accepted" });
 }
 
@@ -1748,14 +1762,16 @@ async function signedKamakuraEditingApiRequest(request: Request, env: Env, ident
     try { value = await readBoundedResponse(response, localization && localization.id === "localization.preview"
       ? KAMAKURA_LOCALIZATION_LIMITS.previewResponseBytes : EDITING_LOCALIZATION_RESULT_BYTES); }
     catch { throw fail("upstream_invalid_response", response.status); }
-    if (response.ok && machineScopes && upstreamSuffix === EDITING_DISCOVERY_PATH) {
-      if (!isRecord(value) || value.siteId !== KAMAKURA_EDITOR_SITE_ID || !Array.isArray(value.operations)) {
-        throw fail("upstream_contract_invalid", response.status);
-      }
-      const operations = value.operations.filter((entry: unknown) => isRecord(entry) && typeof entry.id === "string"
-        && Object.hasOwn(KAMAKURA_MACHINE_OPERATIONS, entry.id)
-        && machineScopes.includes(KAMAKURA_MACHINE_OPERATIONS[entry.id]!));
-      return json({ ...value, operations }, response.status);
+    if (response.ok && upstreamSuffix === EDITING_DISCOVERY_PATH) {
+      let discovery: ReturnType<typeof parseKamakuraEditingApiDiscovery>;
+      try {
+        discovery = parseKamakuraEditingApiDiscovery(value, KAMAKURA_EDITOR_SITE_ID, url.search === "?features=site.styles");
+      } catch { throw fail("upstream_contract_invalid", response.status); }
+      const operations = machineScopes
+        ? discovery.operations.filter((entry) => Object.hasOwn(KAMAKURA_MACHINE_OPERATIONS, entry.id)
+          && machineScopes.includes(KAMAKURA_MACHINE_OPERATIONS[entry.id]!))
+        : discovery.operations;
+      return json({ ...discovery, operations }, response.status);
     }
     if (response.ok && localization && localization.id === "localization.overview") {
       const result = parseLocalizationOverviewResult(value);
@@ -2993,7 +3009,7 @@ async function managedCliPublicSettings(
 }
 
 async function studioEditingApi(request: Request, env: Env, url: URL, timing: StudioRequestTiming): Promise<Response> {
-  const match = /^\/api\/edit\/(v1|v2)\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/(capabilities|operations\/((?:cms|pages)\.[^?]+|site\.(?:seo|redirects|public)\.(?:read|save)|site\.styles\.(?:read|edit|publish)|site\.publication-changes|site\.publish))$/u.exec(url.pathname);
+  const match = /^\/api\/edit\/(v1|v2)\/sites\/([A-Za-z][A-Za-z0-9_-]{0,79})\/(capabilities|operations\/((?:cms|pages)\.[^?]+|site\.(?:seo|redirects|public)\.(?:read|save)|site\.styles\.(?:read|edit|publish)|site\.publication-changes|site\.publish|site\.migration-import(?:\/[a-f0-9]{64})?|assets\.resolve))$/u.exec(url.pathname);
   if (!match) return json({ error: "not_found" }, 404);
   let identity: AccessIdentity | ServiceIdentity;
   const accessToken = request.headers.get("cf-access-token");
@@ -3018,6 +3034,24 @@ async function studioEditingApi(request: Request, env: Env, url: URL, timing: St
     kind: "cli", subject: `${CLI_SUBJECT_PREFIX}${identity.clientId}`,
     email: `cli-${identity.clientId}@studio.invalid`, requestId: crypto.randomUUID()
   };
+  if (version === "v2" && (operation === "site.migration-import" || operation?.startsWith("site.migration-import/"))) {
+    if (identity.kind !== "human" || accessToken === null) return json({ error: "forbidden" }, 403);
+    const asset = operation.split("/")[1];
+    if (!env.CMS_OBJECTS || request.method !== (asset ? "PUT" : "POST") || url.search) return json({ error: "invalid_request" }, 400);
+    const previewOrigin = publicSitesOrigin(env.PUBLIC_SITES_PREVIEW_ORIGIN), store = cmsStore(env, identity);
+    try {
+      const input = asset ? null : await readManagedEditorJson(request, { subject: identity.subject, email: identity.email, cli: true }, SITE_IMPORT_MAX_BYTES);
+      if (!asset && !input) return json({ error: "invalid_import" }, 400);
+      const result = asset
+        ? await managedSiteImportAsset(store, siteId!, registration.project_id, identity.subject, previewOrigin, request, asset)
+        : await managedSiteImport(store, siteId!, registration.project_id, identity.subject, previewOrigin, input!);
+      return json(result, !("error" in result) ? 200 : result.error === "invalid_import" ? 400
+        : result.error === "verification_target_required" ? 403 : 409);
+    } catch (error) {
+      if (error instanceof DocumentValidationError) return json({ error: "invalid_import" }, 400);
+      throw error;
+    }
+  }
   const settings = /^site\.(seo|redirects|public)\.(read|save)$/u.exec(operation ?? "");
   const embed = /^pages\.embed-register\/([A-Za-z][A-Za-z0-9_-]{0,79})$/u.exec(operation ?? "");
   if (version === "v2" && (settings || embed)) {
@@ -3047,7 +3081,7 @@ async function studioEditingApi(request: Request, env: Env, url: URL, timing: St
   }
   if (!env.CMS_OBJECTS) return json({ error: "not_found" }, 404);
   const store = cmsStore(env, bridgeIdentity);
-  if (version === "v1" && (path === "capabilities" || operation?.startsWith("pages.") || operation?.startsWith("site.styles.") || operation?.startsWith("site.publication-") || operation === "site.publish")) {
+  if (version === "v1" && (path === "capabilities" || operation === "assets.resolve" || operation?.startsWith("pages.") || operation?.startsWith("site.styles.") || operation?.startsWith("site.publication-") || operation === "site.publish")) {
     if (request.method !== "GET" && identity.kind === "human" && accessToken === null &&
       (request.headers.get("Origin") !== url.origin || request.headers.get("Sec-Fetch-Site") !== "same-origin")) return json({ error: "invalid_request" }, 400);
     const pageApi = await managedPageEditingApi(request, store, registration.project_id, siteId!, publicSitesOrigin(env.PUBLIC_SITES_ORIGIN), {

@@ -216,6 +216,8 @@ export interface EditorCmsBindingsAdapter {
 
 /** 認証・認可・通信・公開処理は、認証済みホストの責務。 */
 export interface EditorAdapter {
+  /** Read-only preview resolution for hosts without an asset management UI. */
+  assetResolver?: Pick<AssetLibraryAdapter, "resolveAssets">;
   listSites(signal: AbortSignal): Promise<readonly EditorSite[]>;
   listPages(siteId: string, signal: AbortSignal): Promise<readonly EditorPage[]>;
   /** form の送信成功後に選べるページ候補。省略時は完了先設定を接続しない。 */

@@ -315,6 +315,12 @@ export function createProjectEditorAdapter(adapter: EditorAdapter, projectInput:
       if (pages.some((page) => page.siteId !== site.id)) throw new Error("ページ一覧に別サイトの項目が含まれています。");
       return pages.map(pageEntry);
     },
+    ...(adapter.assetResolver ? { assetResolver: {
+      resolveAssets(request, signal) {
+        if (request.siteId !== site.id) throw new Error("プロジェクト外の素材は参照できません。");
+        return adapter.assetResolver!.resolveAssets(request, signal);
+      }
+    } } satisfies Pick<EditorAdapter, "assetResolver"> : {}),
     ...(adapter.listFormCompletionPages ? {
       async listFormCompletionPages(target, signal) {
         const checked = targetForProject(target, site);

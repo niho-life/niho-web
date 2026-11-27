@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { createPageEditingApi, EDITING_API_ERRORS, EDITING_OPERATIONS } from "@niho/web/editing-api";
+import { createPageEditingApi, EDITING_API_ERRORS, EDITING_OPERATIONS, parseEditingApiDiscovery } from "@niho/web/editing-api";
 
 const fixture = JSON.parse(readFileSync(new URL("../examples/page.json", import.meta.url), "utf8"));
 const target = { siteId: fixture.siteId, pageId: fixture.pageId, locale: fixture.locale };
@@ -84,6 +84,18 @@ test("page editing API discovery exposes machine-readable operations and stable 
   assert.deepEqual(result.body.operations.map(({ id }) => id), ["pages.inspect", "pages.read", "pages.save"]);
   assert.ok(EDITING_API_ERRORS.includes("version_conflict"));
   assert.ok(result.body.operations.every((operation) => operation.inputSchema && operation.resultSchema && operation.errors.length > 0));
+});
+
+test("discovery parser rejects feature query parameters on operation paths", () => {
+  const operations = EDITING_OPERATIONS.filter(({ id }) => id === "pages.apply" || id === "site.styles.read");
+  const discovery = { apiVersion: "v1", siteId: target.siteId, operations: operations.map((operation) => operation.id === "pages.apply"
+    ? { ...operation, path: `${operation.path}&features=site.styles` } : operation) };
+
+  assert.throws(() => parseEditingApiDiscovery(discovery, target.siteId), TypeError);
+
+  const unknownPath = { ...discovery, operations: discovery.operations.map((operation) => operation.id === "pages.apply"
+    ? { ...operation, path: `${operation.path}&features=site.styles&extra=1` } : operation) };
+  assert.throws(() => parseEditingApiDiscovery(unknownPath, target.siteId), TypeError);
 });
 
 test("pages.inspect uses page-read authorization, returns versioned projections and rejects invalid cursors", async () => {

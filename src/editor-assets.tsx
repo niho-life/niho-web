@@ -113,7 +113,8 @@ export function useLocalAssetUsage(document: PageDocument | undefined): Readonly
   }, [document]);
 }
 
-type ResolvedState = { adapter: AssetLibraryAdapter | undefined; siteId: string; epoch: number; map: ResolvedAssetMap; settled: readonly string[]; failed: boolean };
+type AssetResolver = Pick<AssetLibraryAdapter, "resolveAssets">;
+type ResolvedState = { adapter: AssetResolver | undefined; siteId: string; epoch: number; map: ResolvedAssetMap; settled: readonly string[]; failed: boolean };
 const emptyResolved: ResolvedState = { adapter: undefined, siteId: "", epoch: 0, map: {}, settled: [], failed: false };
 const fromKey = (key: string): AssetReference => ({ provider: key.slice(0, key.indexOf(":")), id: key.slice(key.indexOf(":") + 1) });
 /**
@@ -121,7 +122,7 @@ const fromKey = (key: string): AssetReference => ({ provider: key.slice(0, key.i
  * epoch（文書の再読込・公開のたびに増える値）が変わったら全件を取り直し、非公開化・削除された素材をプレビューから外す。
  * extra は文書の外の参照（サイト設定のソーシャルカバー等）。
  */
-export function useResolvedAssets(adapter: AssetLibraryAdapter | undefined, siteId: string | undefined, document: PageDocument | undefined, epoch = 0, extra: readonly AssetReference[] = []): { map: ResolvedAssetMap; failed: boolean; retry: () => void } {
+export function useResolvedAssets(adapter: AssetResolver | undefined, siteId: string | undefined, document: PageDocument | undefined, epoch = 0, extra: readonly AssetReference[] = []): { map: ResolvedAssetMap; failed: boolean; retry: () => void } {
   const [state, setState] = useState(emptyResolved);
   const [retryGeneration, setRetryGeneration] = useState(0);
   const current = adapter && siteId && state.adapter === adapter && state.siteId === siteId ? state : emptyResolved, revalidate = current.epoch !== epoch;

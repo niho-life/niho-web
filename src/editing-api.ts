@@ -733,6 +733,46 @@ export function withPageNodeNameCapability(operation: PageWriteOperation): Editi
     ? { ...operation, capabilities, inputSchema: pageApplyInputSchema }
     : { ...operation, capabilities };
 }
+function discoveryRecord(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+function stableDiscoveryJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableDiscoveryJson).join(",")}]`;
+  if (discoveryRecord(value)) return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableDiscoveryJson(value[key])}`).join(",")}}`;
+  return JSON.stringify(value) ?? "undefined";
+}
+function canonicalDiscoveredOperation(value: unknown): EditingDiscoveredOperation | null {
+  if (!discoveryRecord(value)) return null;
+  const expected = EDITING_OPERATIONS.find((operation) => operation.id === value.id);
+  if (!expected) return null;
+  const capabilities = Array.isArray(value.capabilities) ? value.capabilities : [];
+  const definition: EditingDiscoveredOperation = capabilities.includes(PAGE_CMS_BINDINGS_CAPABILITY) && (expected.id === "pages.apply" || expected.id === "pages.read" || expected.id === "pages.inspect")
+    ? withPageCmsBindingsCapability(expected as PageBindingOperation, capabilities.includes(PAGE_NODE_NAME_CAPABILITY))
+    : capabilities.includes(PAGE_NODE_NAME_CAPABILITY) && (expected.id === "pages.apply" || expected.id === "pages.save")
+    ? withPageNodeNameCapability(expected as PageWriteOperation) : expected;
+  return exactKeys(value, Object.keys(definition)) && stableDiscoveryJson(value) === stableDiscoveryJson(definition) ? definition : null;
+}
+/** Validate capability metadata against the shared catalog and return catalog-owned descriptors. */
+export function parseEditingApiDiscovery(
+  value: unknown,
+  siteId: string
+): { readonly apiVersion: "v1"; readonly siteId: string; readonly operations: readonly EditingDiscoveredOperation[] } {
+  if (!discoveryRecord(value) || !exactKeys(value, ["apiVersion", "siteId", "operations"]) || value.apiVersion !== "v1"
+    || value.siteId !== siteId || !Array.isArray(value.operations) || value.operations.length === 0 || value.operations.length > EDITING_OPERATIONS.length) {
+    throw new TypeError("invalid editing API discovery");
+  }
+  const ids = new Set<string>();
+  const operations: EditingDiscoveredOperation[] = [];
+  for (const entry of value.operations) {
+    const operation = canonicalDiscoveredOperation(entry);
+    if (!operation || ids.has(operation.id)) throw new TypeError("invalid editing API discovery");
+    ids.add(operation.id);
+    operations.push(operation);
+  }
+  return { apiVersion: "v1", siteId, operations };
+}
 export type EditingCapability = EditingOperationDefinition["capability"] | CapabilityValues<EditingOperationDefinition>;
 function operationCapabilities(operation: EditingOperationDefinition): readonly EditingCapability[] {
   if ("capabilityByInput" in operation) return [...new Set(Object.values(operation.capabilityByInput.values))];

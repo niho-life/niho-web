@@ -45,13 +45,21 @@ test("release preflight rejects missing settings and unsuitable Access credentia
 test("release parses Wrangler list and blocks pending migrations outside the additive allowlist", () => {
   const list = (rows) => ["Resource location: remote", "Migrations to be applied:", "│ Name │", ...rows.map((name) => `│ ${name} │`)].join("\n");
   assert.deepEqual(pendingMigrations("✅ No migrations to apply!\n"), []);
-  const additive = ["0015_cms_delivery.sql", "0016_static_page_publication.sql", "0017_managed_page_sources.sql",
-    "0018_managed_public_embeds.sql", "0019_managed_public_domains.sql", "0020_managed_site_redirects.sql", "0021_managed_published_paths.sql",
+  const additive = ["0015_cms_delivery.sql", "0016_static_page_publication.sql", "0017_managed_public_embeds.sql",
+    "0018_managed_public_domains.sql", "0019_managed_site_redirects.sql", "0020_managed_published_paths.sql", "0021_managed_page_sources.sql",
     "0022_managed_site_redirect_versions.sql",
-    "0023_managed_site_primary_host.sql", "0024_managed_one_step_publish.sql"];
+    "0023_managed_site_primary_host.sql", "0024_managed_one_step_publish.sql", "0025_managed_site_imports.sql",
+    "0026_managed_site_styles.sql"];
   assert.deepEqual(pendingMigrations(list(additive)), additive);
   assert.throws(() => pendingMigrations(list(["0015_cms_delivery.sql", "0016_drop_old_table.sql"])), /一致しません/u);
   assert.throws(() => pendingMigrations("unknown Wrangler output"), /読み取れません/u);
+});
+
+test("primary-host migration avoids dynamic SQLite GLOB patterns", () => {
+  const migration = readFileSync(new URL("../studio/migrations/0023_managed_site_primary_host.sql", import.meta.url), "utf8");
+  assert.match(migration, /substr\(manifest_key,\s*1,\s*length\('managed-sites\/' \|\| site_id \|\| '\/manifests\/'\)\)/u);
+  assert.match(migration, /substr\(manifest_key,\s*-5\)\s*=\s*'\.json'/u);
+  assert.doesNotMatch(migration, /manifest_key\s+GLOB/iu);
 });
 
 test("release parses one registered managed-site slug from Wrangler D1 JSON", () => {
@@ -82,9 +90,10 @@ test("release builds a private Wrangler config from external settings", () => {
     assert.equal(config.main, resolve(new URL("../studio/", import.meta.url).pathname, "dist/worker.js"));
     assert.ok(existsSync(join(directory, "migrations", "0015_cms_delivery.sql")));
     assert.ok(existsSync(join(directory, "migrations", "0016_static_page_publication.sql")));
-    for (const name of ["0017_managed_page_sources.sql", "0018_managed_public_embeds.sql", "0019_managed_public_domains.sql",
-      "0020_managed_site_redirects.sql", "0021_managed_published_paths.sql", "0022_managed_site_redirect_versions.sql",
-      "0023_managed_site_primary_host.sql", "0024_managed_one_step_publish.sql"]) {
+    for (const name of ["0017_managed_public_embeds.sql", "0018_managed_public_domains.sql", "0019_managed_site_redirects.sql",
+      "0020_managed_published_paths.sql", "0021_managed_page_sources.sql", "0022_managed_site_redirect_versions.sql",
+      "0023_managed_site_primary_host.sql", "0024_managed_one_step_publish.sql", "0025_managed_site_imports.sql",
+      "0026_managed_site_styles.sql"]) {
       assert.ok(existsSync(join(directory, "migrations", name)));
     }
     assert.equal(statSync(configPath).mode & 0o777, 0o600);

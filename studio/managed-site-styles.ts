@@ -222,4 +222,3 @@ export function managedSiteStylesAdapter(store: CmsStore, projectId: string,
     publish: publishSiteStyles
   };
 }
-

@@ -1930,7 +1930,7 @@ export function PageEditor({ adapter, initialTarget, toolbarStart, blocks = empt
     const current = canvas?.document ?? versions.viewing?.document ?? document;
     return current ? presentationAssetDocument(current, canvasPresentation) : undefined;
   }, [canvas?.document, versions.viewing?.document, document, canvasPresentation]);
-  const resolvedAssets = useResolvedAssets(assets, session?.target.siteId, assetDocument, assetResolveEpoch, coverReferences(document, siteSettings)), localUsage = useLocalAssetUsage(document);
+  const resolvedAssets = useResolvedAssets(adapter.assetResolver ?? assets, session?.target.siteId, assetDocument, assetResolveEpoch, coverReferences(document, siteSettings)), localUsage = useLocalAssetUsage(document);
   const savedMaster = useMemo(() => library && masterId && library.savedLibrary.components.some((component) => component.id === masterId) ? fingerprint(componentDocument(library.savedLibrary, masterId, locale)) : undefined,
     [library?.savedLibrary, masterId, locale]);
   useEffect(() => {

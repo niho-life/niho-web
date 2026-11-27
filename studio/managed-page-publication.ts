@@ -1,3 +1,4 @@
+import { assetKey, uniqueAssetReferences } from "../src/assets.js";
 import { parsePageDocument, type PageDocument, type PageNode } from "../src/core.js";
 import { createBlankEmbedRegistry } from "../src/embeds.js";
 import { managedVerificationTags, type ManagedSiteSeoSettings } from "../src/managed-seo-settings.js";
@@ -312,9 +313,12 @@ export async function prepareManagedPagePublicationBatch(input: {
           const embeds = await resolvePublishedEmbeds(store.db, projected, {
             siteId: projected.siteId, pageId: projected.pageId, locale: projected.locale, parentOrigin: origin, publicPath
           }, policy);
+          const assets = new Map((await store.migratedPublicAssets(projected.siteId, uniqueAssetReferences(projected)))
+            .map((asset) => [assetKey(asset.reference), asset] as const));
+          for (const asset of snapshot?.assetManifest ?? []) assets.set(assetKey(asset.reference), asset);
           const canonicalPath = /[A-Z]/u.test(path) ? path.toLowerCase() : path;
           const rendered = await renderManagedPage({ db: store.db, store, document: projected, policy, origin, prefix: publicPrefix,
-            path: canonicalPath, alternatePath: path, publicPath, siteName, embeds, ...(snapshot ? { assets: snapshot.assetManifest } : {}),
+            path: canonicalPath, alternatePath: path, publicPath, siteName, embeds, assets: [...assets.values()],
             siteStyles, alternatePages, replacedPages: input.replacePages });
           const previousPath = target.previousPath === undefined ? path : target.previousPath + path.slice(target.path.length);
           const previousRoute = manifest?.routes.find((route) => route.pageId === target.pageId && route.locale === target.locale
