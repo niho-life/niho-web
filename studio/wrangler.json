@@ -1,0 +1,17 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "niho-web-studio-local",
+  "main": "./dist/worker.js",
+  "compatibility_date": "2026-10-21",
+  "workers_dev": false,
+  "assets": {
+    "directory": "./dist/public",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+    "html_handling": "none"
+  },
+  "services": [{ "binding": "KAMAKURA_SITE", "service": "kamakura-site" }],
+  "d1_databases": [{ "binding": "DB", "database_name": "niho-web-studio", "migrations_dir": "migrations" }],
+  "r2_buckets": [{ "binding": "CMS_OBJECTS", "bucket_name": "niho-web-studio-cms" }],
+  "triggers": { "crons": ["*/5 * * * *"] }
+}

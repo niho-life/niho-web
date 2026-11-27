@@ -421,15 +421,15 @@ function decodeJwtObject<T>(segment: string, maximumLength: number): T {
   return value as T;
 }
 
+function validAccessAudience(value: string | undefined): boolean {
+  return !!value && value.length <= 256 && !/\s/u.test(value);
+}
+
 function accessConfiguration(env: Env): { readonly issuer: string; readonly audience: string; readonly jwksUrl: string } {
-  let issuerUrl: URL;
-  try { issuerUrl = new URL(env.ACCESS_ISSUER); }
-  catch { throw new ConfigurationError("invalid Access issuer"); }
-  if (issuerUrl.protocol !== "https:" || issuerUrl.username || issuerUrl.password || issuerUrl.pathname !== "/" || issuerUrl.search || issuerUrl.hash || issuerUrl.origin !== env.ACCESS_ISSUER) {
-    throw new ConfigurationError("Access issuer must be an exact HTTPS origin");
-  }
-  if (!env.ACCESS_AUDIENCE || env.ACCESS_AUDIENCE.length > 256 || /\s/u.test(env.ACCESS_AUDIENCE)) throw new ConfigurationError("invalid Access audience");
-  return { issuer: env.ACCESS_ISSUER, audience: env.ACCESS_AUDIENCE, jwksUrl: `${env.ACCESS_ISSUER}/cdn-cgi/access/certs` };
+  const issuer = publicSitesOrigin(env.ACCESS_ISSUER);
+  if (issuer === null) throw new ConfigurationError("Access issuer must be an exact HTTPS origin");
+  if (!validAccessAudience(env.ACCESS_AUDIENCE)) throw new ConfigurationError("invalid Access audience");
+  return { issuer, audience: env.ACCESS_AUDIENCE, jwksUrl: `${issuer}/cdn-cgi/access/certs` };
 }
 
 async function loadJwks(url: string, force = false): Promise<readonly SigningJwk[]> {
@@ -2997,11 +2997,28 @@ async function handle(request: Request, env: Env): Promise<Response> {
   return asset;
 }
 
+let configurationReported = false;
+
+function reportConfiguration(env: Env): void {
+  if (configurationReported) return;
+  configurationReported = true;
+  const invalid: string[] = (["DB", "ASSETS", "CMS_OBJECTS", "KAMAKURA_SITE"] as const).filter((name) => !env[name]);
+  if (publicSitesOrigin(env.ACCESS_ISSUER) === null) invalid.push("ACCESS_ISSUER");
+  if (!validAccessAudience(env.ACCESS_AUDIENCE)) invalid.push("ACCESS_AUDIENCE");
+  if (publicSitesOrigin(env.PUBLIC_SITES_ORIGIN) === null) invalid.push("PUBLIC_SITES_ORIGIN");
+  if (!/^[0-9a-f]{64}$/u.test(env.CMS_DELIVERY_MASTER_KEY ?? "")) invalid.push("CMS_DELIVERY_MASTER_KEY");
+  try { bridgeSecret(env.KAMAKURA_STUDIO_BRIDGE_SECRET); }
+  catch { invalid.push("KAMAKURA_STUDIO_BRIDGE_SECRET"); }
+  if (invalid.length) console.error("NIHO Studio configuration missing or invalid", invalid.join(", "));
+}
+
 export default {
   async scheduled(_controller: unknown, env: Env): Promise<void> {
+    reportConfiguration(env);
     if (env.CMS_OBJECTS) await runCmsCron(cmsStore(env, CMS_SCHEDULER_BRIDGE_ACTOR));
   },
   async fetch(request: Request, env: Env): Promise<Response> {
+    reportConfiguration(env);
     try { return await handle(request, env); }
     catch (error) {
       if (error instanceof KamakuraBridgeFailureError) return kamakuraBridgeErrorResponse(error);
